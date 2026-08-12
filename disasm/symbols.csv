@@ -219,3 +219,6 @@ addr,name,type,is_hw,note
 
 ## ---- the unpack stub (present in revs_mem.bin, dead once the engine runs) -----------------
 0x1200,loader_stub,func,0,"⚠ revs_mem.bin ONLY. Copies $1200-$12FF to $7900 and runs from the copy. In the runtime image this address holds relocated engine code instead."
+0x18EA,copy_dash_data,func,0,"THE SECOND UNPACK. Assembles $7B00-$7FFF (1280 bytes of code) plus the dashboard bitmap out of the tails of 41 dashData blocks spaced $80 apart from $3000. $192F seeds $70-$73 = src $3000 / dst base $7FB0; $3900,X is block X's start offset; the destination DESCENDS to $7768. Bit 7 of A set = run in reverse and stow the code back before switching to MODE 7 — which is why the page is empty in every static image. tools/dashdata.py replays it. See docs/static-map.md open item 6."
+0x3900,dash_block_starts,table,0,"41 bytes — dashData block X's start offset within its $80-byte block, read as $3900,X by copy_dash_data ($190E) and by the fill loop at $31D0. Data always ENDS at offset $4F. Also read by the rasteriser ($1C94, $1DF5, $2FF5)."
+0x192F,dash_ptr_init,table,0,"4 bytes 00 30 B0 7F — copy_dash_data's initial $70/$71 (src $3000) and $72/$73 (dst base $7FB0, so block 0's last byte lands at $7FFF)."

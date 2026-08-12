@@ -543,8 +543,14 @@ a guess dressed as a fact, and it is the exact failure mode `docs/postmortem.md`
 
 ## Open items — what Phase 2 still owes
 
-1. 🔧 **Classify the residual 685 bytes** — `$6C00-$6E84` and `$6F8A-$6FB1` (down from 5327; see
-   §Static coverage).  The indirect-addressing pass is done; these two need reading, not tooling.
+1. ✅ ~~Classify the residual 685 bytes~~ — `$6C00-$6E84` and `$6F8A-$6FB1` (down from 5327; see
+   §Static coverage).  **Answered: it is dashboard bitmap, not code and not a buffer.**  It is
+   one piece of the jigsaw that the unpack leaves alone (`$6C00-$6FFF` is "unchanged" in the
+   relocation), and it is the top of the ~2.8 KB dashboard image block that already sits in the
+   custom mode's screen memory when the loader finishes — the part `copy_dash_data` does *not*
+   have to move because it is already where it belongs.  Consistent with its ~85%-zero shape and
+   with `$3A5C`/`$3A62` poking `$7C79,X` nearby.  Cross-checked against the reference's memory
+   map (`docs/reference-sources.md` — a map, never a source).
 2. ✅ ~~Disassemble the track programs.~~ **Done** — `ModifyGameCode` is read out above, the code
    extents are measured, and the patcher now cross-checks against the differential with zero
    discrepancies.  Still owed: naming the six hook *bodies* by behaviour (they are the per-track
@@ -564,7 +570,9 @@ a guess dressed as a fact, and it is the exact failure mode `docs/postmortem.md`
    gate Phase 3: `disasm/symbols.csv` feeds the transpiler, so a name learned later propagates
    through the whole corpus on the next `make gen` — which is exactly why `docs/toolchain.md` says
    the cost of being only roughly right early is near zero.
-6. 🔧 **Seven calls into `$7B00-$7BFF`, a page nothing ever loads.**  Found in Phase 3 by
+6. ✅ **Seven calls into `$7B00-$7BFF`, ~~a page nothing ever loads~~ — a page the game BUILDS.**
+   *Answered; see the RESOLVED block at the end of this item.  The history is kept because each
+   step was a correct measurement of the wrong question.*  Found in Phase 3 by
    generating the corpus: `JSR $7B00` (`$1739`), `$7B4A` (`$1704`), `$7B9C` (`$502A`, `$503B`,
    `$6612`), `$7BE2` (`$16E6`, `$1748`).  REVS2 covers `$1200-$6FFF` and a track file
    `$70DB-$7814` — on this disc **and** on the Nürburgring hack disc — so the page is zero in
@@ -634,8 +642,83 @@ a guess dressed as a fact, and it is the exact failure mode `docs/postmortem.md`
    RETURN injection works at all, instead of testing it through a game whose state is invisible.
    Only once that passes is it worth driving the front end again.
 
-   ⚠ Until this is answered, **every measurement of the main loop is missing three routines** and
-   `docs/perf-method.md`'s baseline says so.
+   ### ⭐⭐ RESOLVED — the page is built at runtime by `copy_dash_data` ($18EA)
+
+   **There is a SECOND unpack, and nothing in this document knew about it.**  `tools/relocate.py`
+   replays the startup relocation and gets the right answer; it is just not the last thing that
+   moves code.  `$18EA` assembles `$7B00-$7FFF` — 1280 bytes — out of the **tails of 41 "dashData"
+   blocks spaced `$80` apart from `$3000`**, and the destination *descends* from `$7FFF`:
+
+       $18EA  STA $74                       ; bit 7 of A = direction
+       $18EC  $192F-$1932 -> $70-$73        ; = 00 30 B0 7F: src $3000, dst base $7FB0
+       $18F8  LDY #$4F                      ; each block's data ENDS at offset $4F
+              LDA ($70),Y / STA ($72),Y     ; forward  (skipped when bit 7 of $74 is set)
+              LDA ($72),Y / STA ($70),Y     ; reverse  (a harmless read-back when unpacking)
+              INC $76 / DEY / TYA / CMP $3900,X / BNE     ; $3900,X = block X's START offset
+              $72/$73 -= $76                ; destination descends
+              $70/$71 += $80                ; next block
+              INX / CPX #$29 / BNE          ; 41 blocks
+
+   Blocks 0-25 carry **code** and bottom out on exactly `$7B00`; blocks 26-40 carry dashboard
+   **image** and continue down to exactly `$7768`.  With bit 7 of A set the whole thing runs
+   backwards and **stows the code back into the block tails** before the game returns to MODE 7 —
+   which is precisely why the page is empty in `revs_mem.bin`, in `revs_runtime.bin`, and in every
+   RAM dump taken outside a race.  Two phases of "a page nothing ever loads" was the wrong
+   question: nothing ever *loads* it, something *builds* it.
+
+   ⭐ **`$16E3` is `JSR $18EA` and `$16E6` is `JSR $7BE2`.**  The page is built one instruction
+   before it is first called.  That single adjacency is the whole answer, and it was sitting in
+   `listing.txt` the entire time — see the method note below.
+
+   **Replay it with `tools/dashdata.py`.**  Four things agree, none of them copied from anywhere:
+
+   - the 26 code blocks sum to **exactly 1280** bytes and bottom out on **exactly `$7B00`**;
+   - the image blocks bottom out on **exactly `$7768`**, which is a named boundary in the
+     reference's memory map;
+   - block 0 lands at `$7FCC-$7FFF` and decodes as the mirror plotter, engine-shudder idiom and
+     all — `LDX $FE68 / AND $2000,X / AND $61` (User VIA T1 low ∧ game code as a decorrelator ∧
+     engine status), then `SBC #$38 / SBC #$01` to subtract `$138` when a span crosses a
+     character row;
+   - `$7B00` decodes as the mirror update — `LDA $03C8,X / LSR / LSR / LSR` (object size ÷ 8) and
+     then `ADC $B6` / `LDA $B6 / SEC` around the mirror centre line.
+
+   So the three main-loop calls are **the wing mirrors and the dashboard**, at 50 Hz.  Named:
+
+   | Addr | What it is |
+   |---|---|
+   | `$7B00` | update the wing mirrors — called from the main loop body (`$1739`) |
+   | `$7B4A` | called from `$1704`; keys off `$61` (engine status) and `$6C`/`$6D` |
+   | `$7B9C` | lap/best-time readout — `$06A0`/`$06B8`/`$06D0` through `$37D6` and `$5092` |
+   | `$7BE2` | seeds `$70-$73` as screen row pointers, `JSR $7EF3`, `JMP $7D13` |
+   | `$7FCC` | draw one car reflection in one mirror segment |
+
+   ⚠ **Confidence: DERIVED and self-checking, NOT yet measured on a BBC.**  Reaching `$16E3` on
+   real hardware is still behind the front-end line-editor blocker above.  Dumping `$7B00-$7FFF`
+   at `$16E6` is a one-line addition to a probe the moment that clears, and it is worth doing —
+   this is exactly the kind of confident-and-unverified reading the postmortem is about.
+
+   ⚠ **What this costs the port, and it is not small.**  The transpiler emits `platform_brk()` for
+   these seven sites because the page is empty in the image it reads.  `copy_dash_data` itself
+   transpiles fine and moves the bytes correctly in `mem[]` — but transpiled C cannot *execute*
+   bytes assembled at runtime, so the calls still trap.  The bytes are nevertheless **statically
+   known**: they are a deterministic function of the static image.  Resolving it means giving the
+   transpiler the post-`CopyDashData` page and seeding those five addresses as entry points.
+   Until then `docs/perf-method.md`'s ≈2.2 FPS baseline is still missing three main-loop routines,
+   and now we know they are mirror and dashboard work — i.e. **rasterisation**, which shifts the
+   "the hot path is physics, not rasterisation" headline by an unmeasured amount.
+
+   ### Method note — why this took two phases
+
+   Every measurement taken against this page was sound and every conclusion drawn from it was
+   wrong, because they all answered *"what loads `$7B00`?"* and nothing ever does.  The reference's
+   memory map named `$7B00-$7FFF` as game code in one line, which was enough to make the question
+   change shape; from there the copier fell out of `grep` in minutes.  The postmortem's lesson
+   applies literally: **a static walk finds what is reachable from the bytes on disc, and code the
+   program assembles for itself is invisible to it** — the same standing limitation recorded in
+   item 7b for the runtime-computed branch, one order of magnitude larger.
+
+   ⚠ Until the port executes them, **every measurement of the main loop is missing three
+   routines** and `docs/perf-method.md`'s baseline says so.
 
 7. ⭐ **Phase 4 additions to the static map — all three found by RUNNING the corpus.**
    Recorded here because each one is a place where reading the binary gave a confident wrong

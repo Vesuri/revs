@@ -79,6 +79,13 @@ engine. `tools/relocate.py` replays it, verified against a real BBC (9640 of 101
 explained). **Every address in `disasm/symbols.csv`, `ghidra_scripts/entrypoints.csv` and the docs
 is a runtime-image address.** Full mechanism and traps: `docs/static-map.md`.
 
+⚠⚠ **…and `revs_runtime.bin` is still not ALL of it: there is a SECOND unpack.** `copy_dash_data`
+(`$18EA`) assembles `$7B00-$7FFF` — 1280 bytes of live code, incl. the wing mirrors — at *runtime*
+from the tails of 41 `$80`-spaced blocks at `$3000`, and **stows it back** before returning to
+MODE 7, so the page is empty in every static image and every out-of-race RAM dump. `$16E3` builds
+it; `$16E6` calls into it. `tools/dashdata.py` replays it. Three main-loop calls land there, so
+the Phase 4 profile is missing them. Full write-up: `docs/static-map.md` §Open items 6.
+
 `revs_mem.bin` is still built by `tools/ssd_load.py` (default SILVER; `make image TRACK=BRANDS`)
 and is the honest record of what the *loader* produces, plus the input to the replay.
 
