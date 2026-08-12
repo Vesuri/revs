@@ -132,10 +132,11 @@ timing and render bugs precisely where static reasoning kept failing.
 `. ./env.sh` (same shell command) then `amiga/diag_run.sh [delay]`, editing `amiga/diag_timing.gdb`
 to print whatever globals / `mem[0xNNNN]` you need. Details and traps: `docs/headless-fsuae.md`.
 
-**Verified working now:** a plain build reads `vbi=823 painted=0`, an `FPSCOUNT=1` build
-`vbi=824 painted=803` (≈48.8 FPS with nothing yet to draw) — display takeover, 50 Hz VERTB
-handler, copper list, frame pump and the embedded 6502 image all live and readable from gdb by
-name.
+**Verified working now:** the genuine entry chain runs on the target — gdb shows
+`engine_main → engine_init → front_end_menus → FUN_655C → FUN_16DC → platform_render_frame`, the
+50 Hz body ticks in the real VERTB ISR, and `FPSCOUNT=1` reads **≈2.2 FPS** (Phase 4 baseline).
+Two committed gdb scripts: `amiga/phase4_fps.gdb` (segmented framerate + liveness state) and
+`amiga/phase4_prof.gdb` (main-loop phase shares, PROBES build).
 
 ⚠ **Every global a committed `.gdb` script reads must be listed in `PROBE_SYMS` (`amiga/Makefile`).**
 `--gc-sections` drops an unreferenced counter, and gdb then resolves the name into `.text` and
@@ -181,6 +182,10 @@ hand-rename in generated files).
 | `src/gen/revs_manual.c` | Hand-written stubs for self-modifying routines |
 | `src/gen/revs_native.c` | FAITHFUL native twins (idiomatic C `_core` + 6502-ABI shim), `make validate`d, linked into BOTH backends |
 | `src/platform/amiga/revs_native_amiga.cpp` | Genuinely Amiga-only, unvalidated code |
+| `src/platform/mos.cpp` | The MOS (Acorn OS) call layer — the whole closed surface, ONE copy for both backends |
+| `src/platform/bbc_hw.cpp` | The BBC hardware model behind `bus_read`/`bus_write`, and the IRQ1V shim |
+| `src/platform/autorun.cpp` | Scripted keyboard for unattended runs; without it a headless run measures a menu spin |
+| `src/platform/probe.cpp` | Main-loop phase brackets (PROBES only) — the hot-function profile |
 | `src/cpu/` | 6502 register/flag model, the memory bus, the 68000 16-bit math helpers |
 | `src/platform/` | `platform.h` abstraction + the C bridge; `host/` and `amiga/` backends |
 | `tools/validate_native.c` | The `make validate` harness |
@@ -211,10 +216,16 @@ owns the display. Spin-wait points in transpiled code become hooks that drive on
 **Target: 50 FPS on an A500. Floor: 25 FPS** (user decision; reachability unknown). These are
 *displayed* frames (`50 * g_fpsFrames / g_vbiCount`). The **50 Hz sim tick is separate and not
 negotiable** — the game body is a VERTB-ISR interrupt, so 25 FPS means painting every other frame
-with the simulation still at full rate. No *baseline* exists yet: the first honest number comes
-from Phase 4, and a target is never evidence a change bought anything. The Atari port's retired
-"50 FPS is impossible without an algorithm change" conclusion was disproven by hand-asm — the
-ceiling was GCC, not the algorithm; that cuts both ways.
+with the simulation still at full rate.
+
+⭐ **BASELINE (Phase 4, 2026-08-12): ≈2.2 FPS** — ~11× short of the floor, with nothing drawn and
+nothing optimised. The main loop's four hottest calls are **57.4%** between them and they are
+**physics and geometry, not rasterisation**: `$46A1` 24.6%, `$1E15` 13.1%, `$1B12` 9.9%, `$4CA4`
+9.8%. Full conditions, caveats and the 24-phase table: `docs/perf-method.md` §THE BASELINE. ⚠ It
+is measured with three main-loop routines stubbed as no-ops (the `$7Bxx` open item), so the real
+workload is *larger*. A target is never evidence a change bought anything. The Atari port's
+retired "50 FPS is impossible without an algorithm change" conclusion was disproven by hand-asm —
+the ceiling was GCC, not the algorithm; that cuts both ways.
 
 The A500 is a 7 MHz 68000 and a frame is 20 ms — spending 10 ms on *anything* is half the budget.
 Be conscious of absolute milliseconds always.

@@ -583,7 +583,69 @@ a guess dressed as a fact, and it is the exact failure mode `docs/postmortem.md`
    resolution, it is **not** "emit an empty function" — that makes calling into nothing look
    exactly like working.
 
-7. **`DumpHwAccesses.java` still carries Atari ranges.**  The sweep's hardware table above
+   ### ⭐ Phase 4 update — REACHABILITY IS SETTLED, CONTENT IS NOT
+
+   **They are reached, and three of them are in the MAIN LOOP.**  Running the corpus (host and
+   Amiga) trips the trap within seconds: `g_brkCount` climbs by ~3 per game frame and `g_brkPC`
+   cycles through `$7B4A`, `$7B00`, `$7BE2`, with `$7B9C` on the init path.  The engine's
+   per-frame body is `$1701-$1763`, and `$1704`/`$1739`/`$1748` are three of its 24 top-level
+   calls.  Whatever lives in that page runs **fifty times a second**.  "Consistent with
+   unreachable" is dead.
+
+   **What is there is still unknown**, and the earlier "zero executions" measurements were never
+   evidence about the page — they were evidence that the scripted BBC run never got that far, and
+   nobody checked which.  Now measured (`tools/bbc_probe_frontend.mjs`,
+   `tools/bbc_probe_pchist.mjs`): a real BBC driven through the menus stops in **`console_io`
+   (`$6300-$6342`)**, the blocking OSRDCH line editor, whose caller `FUN_3EE0` (`$3EE0`) asks for
+   a **two-digit number** with `X=2` and re-prompts until `FUN_32D0` accepts.  `FUN_3C50` asks two
+   of them, then `FUN_34D0` waits for SPACE.  The port skips all of this because its `rdch()`
+   returns CR immediately — which is exactly why the port reaches the main loop and the reference
+   machine does not.
+
+   **The next step is therefore a reference-loop step, not a disassembly step**: get jsbeeb past
+   `FUN_3EE0` and dump `$7B00-$7BFF` at the first `$16E6`.  `tools/bbc_drive.mjs` is the
+   feedback-driven driver written for it (it watches `$6581` for a menu and `$6316` for the line
+   editor and answers each); as of 2026-08-12 it still loops in the editor — digits and RETURN go
+   in, `FUN_32D0` rejects, reason not yet found.  Instrument `math_lo`/`math_hi` (`$74`/`$75`) at
+   `$32D0` next; that is four bytes of state and it will say immediately whether the characters
+   arrive as typed.
+
+   ⚠ Until this is answered, **every measurement of the main loop is missing three routines** and
+   `docs/perf-method.md`'s baseline says so.
+
+7. ⭐ **Phase 4 additions to the static map — all three found by RUNNING the corpus.**
+   Recorded here because each one is a place where reading the binary gave a confident wrong
+   answer, which is the failure mode the postmortem is about.
+
+   a. **The rasteriser's NOP/INY opcode slots have a THIRD value: `$88` = `DEY`.**
+      `$2BFB` is a literal `LDA #$88` on the arm the operand scan walked past:
+      `$2BF9 BPL $2BFF / $2BFB LDA #$88 / $2BFD BNE $2C01 / $2BFF LDA #$C8`, and `$2C01` stores
+      whichever landed.  So `$2F60`/`$2FA2` take `$88` when `$87` is negative, and `$2F47`/`$2F89`
+      inherit it via `LDA $2F60`, and `$2F18` via `LDA $2F47`.  **The span loop can walk its
+      destination in either direction** — which is what a road rasteriser drawing left-to-right
+      or right-to-left needs.  Reported by `g_smcUnhandled` as `site $2F89 holds $0088`; fixed in
+      `tools/transpile.py` SMC_SITES.
+
+   b. **13 bytes of real code at `$1DC5` that no static walk can reach.**  The patched branch at
+      `$1DD4` (offset written by `STY $1DD5` at `$1DA9`, so the target is a *register value*)
+      jumps there; `$1DC2` is `JMP $1DE0`, so recursive descent leaves `$1DC5-$1DD1` an orphan and
+      both Ghidra and `tools/sweep_entrypoints.py` stopped.  The bytes decode cleanly as the same
+      span loop as `$1DD2`'s, storing through **`($72),Y` instead of `($70),Y`**.  Seeded in
+      `ghidra_scripts/entrypoints.csv` as `span_store_alt`; the listing went 236→237 functions and
+      7083→7098 instructions.
+      ⚠ **This is a standing limitation of the entry-point sweep, not a one-off.**  A
+      runtime-computed branch target is invisible to any static walk, so the sweep's "zero
+      undecodable bytes reached" is only true of statically-reachable code.  The SMC trap is what
+      catches the rest, and it only fires on a code path that actually runs.
+
+   c. **OSBYTE 0 (read OS version) is an 18th MOS call site.**  The Phase 2 inventory's reason
+      codes came from a nearest-preceding-`LDA #imm` heuristic, so a site whose `A` is computed is
+      invisible to it — `docs/bbc-hardware.md` marks them **[DERIVED, heuristic]** for exactly
+      this reason.  Found by `g_mosUnknownCount`; answered as MOS 1.20 in `src/platform/mos.cpp`.
+      Also confirmed at runtime: **OSWORD 10 (read a character definition) is called ~850 times in
+      the first 900 vblanks**, so the MOS font is a real Phase 5 dependency, not a footnote.
+
+8. **`DumpHwAccesses.java` still carries Atari ranges.**  The sweep's hardware table above
    supersedes it for now; retool or retire the script rather than leaving a tool that reports
    GTIA registers for a BBC binary.
 

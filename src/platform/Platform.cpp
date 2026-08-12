@@ -16,8 +16,7 @@ Platform* platform = nullptr;
 Platform::Platform() : quit(false) { platform = this; }
 Platform::~Platform() { if (platform == this) platform = 0; }
 
-uint8_t Platform::hwRead(uint16_t)           { return 0x00; }
-void    Platform::hwWrite(uint16_t, uint8_t) {}
+/* hwRead/hwWrite live in bbc_hw.cpp; mosCall and the input hooks in mos.cpp. */
 void    Platform::shadowWrite(uint16_t, uint8_t) {}
 
 /* ---------------------------------------------------------------------------
@@ -46,9 +45,36 @@ void Platform::brk(uint16_t pc) {
     g_brkPC = pc;
     g_brkCount++;
 #if !defined(REVS_PLATFORM_AMIGA)
+    /* ⚠ ABORT IS THE DEFAULT AND MUST STAY THE DEFAULT.  A run that continues past a BRK
+       has stopped executing the program it thinks it is executing.
+
+       The one opt-out, REVS_BRK_CONTINUE=1, exists because Phase 4 turned this trap from a
+       hypothetical into a routine event: three of the seven $7Bxx calls are in the engine's
+       MAIN LOOP ($1704, $1739, $1748) and fire EVERY FRAME, so aborting on the first one
+       stops the discovery run at the same instruction forever and hides everything behind
+       it.  The opt-out treats the call as a no-op — which is what the Amiga backend already
+       does, counting rather than aborting — and says so on the way past.  Never quote
+       behaviour, and never quote a measurement, from a run with this set without saying it
+       was set: the $7Bxx routines' real cost and real effect are both missing from it. */
+    static int continueOnBrk = -1;
+    if (continueOnBrk < 0) {
+        const char* e = getenv("REVS_BRK_CONTINUE");
+        continueOnBrk = (e && e[0] && e[0] != '0') ? 1 : 0;
+    }
+    static unsigned long reported = 0;
+    if (continueOnBrk) {
+        if (reported < 8)
+            fprintf(stderr, "BRK at $%04X — TREATED AS A NO-OP (REVS_BRK_CONTINUE=1). "
+                            "This run is not faithful.\n", pc);
+        else if (reported == 8)
+            fprintf(stderr, "BRK: further reports suppressed; read g_brkCount at exit.\n");
+        reported++;
+        return;
+    }
     fprintf(stderr, "\nBRK at $%04X — the 6502 trapped through BRKV.  If this is one of the\n"
                     "  $7Bxx targets, the engine called into a page nothing ever loads;\n"
-                    "  docs/static-map.md Open items has the evidence so far.\n", pc);
+                    "  docs/static-map.md Open items has the evidence so far.\n"
+                    "  Set REVS_BRK_CONTINUE=1 to no-op them for a discovery run.\n", pc);
     abort();
 #endif
 }

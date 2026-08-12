@@ -27,6 +27,7 @@
  * never cited as evidence, and expect to state that in every comment that mentions it.
  */
 #include "../platform.h"
+#include "../autorun.h"
 
 #define PlatformClass PlatformHost
 
@@ -42,7 +43,15 @@ public:
     virtual void    tickVBI() override;
     virtual int     loadImage(const char* path) override;
 
+    /* Scripted input (autorun.h).  The host has no keyboard by design — this is what
+       gets a headless discovery run out of the front-end menus.  Set REVS_TRACE_KEYS=1
+       in the environment to log every negative-INKEY query; that log is how the key
+       codes in autorun.cpp were confirmed against the running game rather than guessed. */
+    virtual bool    keyDown(uint8_t x) override;
+
 private:
     void (*vbi)(void);
     unsigned long frames;
+    AutoRun autoRun;
+    bool    traceKeys;
 };

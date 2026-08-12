@@ -117,14 +117,45 @@ Points where the 6502 busy-waits on a hardware or clock value become hooks that 
 drive a real frame (`platform_tick_vbi(); platform_render_frame();`).  ⚠ Only for waits that own
 a whole frame boundary — a raster-position wait would be reset by the tick and could never exit.
 
-**`SPINWAIT_HOOKS` is empty on purpose, and `make gen` reports the candidates instead.**  The
-Atari port's list grew reactively, one runtime hang at a time, and each entry needed a paragraph
-of justification written after the fact.  Revs makes guessing worse: its 50 Hz body is a
-raster-timed User VIA T1 interrupt that reloads the palette mid-frame, so several of its waits are
-intra-frame by design and a tick in one would prevent the very exit it is meant to enable.  The
-report lists every tight backward loop with no `JSR` and at least one memory read (41 of them);
-Phase 4 fills the list from what actually stalls on the target, with the loop's exit condition
-read out first.  `PRE_INSN_HOOKS` is empty for the same reason.
+`SPINWAIT_HOOKS` was **empty on purpose** through Phase 3, with `make gen` reporting the
+candidates instead.  The Atari port's list grew reactively, one runtime hang at a time, and each
+entry needed a paragraph of justification written after the fact.  Revs makes guessing worse: its
+50 Hz body is a raster-timed User VIA T1 interrupt that reloads the palette mid-frame, so several
+of its waits are intra-frame by design and a tick in one would prevent the very exit it is meant
+to enable.  The report lists every tight backward loop with no `JSR` and at least one memory read
+(41 of them).
+
+### ⭐ What Phase 4 actually put in it: ONE entry out of 41
+
+| Address | Loop | Hook |
+|---|---|---|
+| `$1760` | `LDA $62F7 / BMI` in `FUN_16DC` | `PROBE_PHASE(0); platform_tick_vbi(); platform_poll_events();` |
+
+`$175D` stores `$9C` into `$62F7` and the 50 Hz body counts it down, so under a single-threaded
+C port nothing ever clears it.  This is the engine's only true frame-wait.
+
+**The instructive non-entry is `$4E11`** (`BIT $FE4D / BEQ`, hw_init's vsync alignment).  It is a
+spin, it does stall, and hooking it would have *worked* — and been wrong.  It waits on an **I/O
+register**, so the exit condition belongs to the hardware model (`Platform::hwRead`, see
+`src/platform/bbc_hw.cpp`), and a hook there would have papered over the fact that `$FE4D` was
+unmodelled.  **Rule: a wait on `$FCxx-$FExx` is a hardware-model gap; a wait on `mem[]` is a
+SPINWAIT_HOOK.**
+
+`PRE_INSN_HOOKS` gained one entry for the same phase: `$1701`, the top of the main loop, emitting
+`platform_render_frame()`.  Painting is hooked at the loop TOP rather than at the frame wait
+because `$1753` skips the wait entirely when `$62F6` is zero — a paint hooked to the wait would
+stop counting frames whenever the game took that branch, and the framerate would read as a
+rendering drop rather than a change of path.
+
+## Generated phase brackets (`MAIN_LOOP_BRACKET`)
+
+The engine's per-frame body (`$1701-$1748`) is a flat sequence of 24 `JSR`s.  Under `PROBES=1`
+the emitter puts `PROBE_PHASE(n)` before each one, numbered in source order, so a run reports a
+per-callee share of the frame; phase 0 is everything outside the loop.  Generated rather than
+hand-written for two reasons: it survives `make gen`, and a bracket can never drift off the call
+it is supposed to time.  `make gen` prints the phase→callee map, which is what makes the gdb
+read-out legible.  Compiles to nothing without `PROBES`.  See `src/platform/probe.h` for what the
+numbers may and may not be used for — **shares within one run, never a cross-build diff**.
 
 ## What `make gen` reports
 
@@ -152,6 +183,7 @@ a MOS entry; a `VALIDATE_FUNCS` address that is not a function start or mid-func
 - [x] **Emit `src/gen/revs_validate_list.h`** — always, even empty, so an empty list means "no
       twins" and never "stale file".
 - [x] `SPINWAIT_HOOKS` re-checked: emptied, with a gen-time candidate report instead (above).
+      Phase 4 then filled it from what actually stalled — one entry of 41 (above).
 
 Two boundary bugs the port surfaced, both of which **silently dropped code** — worth knowing about
 because both are generic to this pipeline, not to Revs:

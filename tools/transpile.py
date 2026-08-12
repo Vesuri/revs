@@ -98,16 +98,32 @@ SMC_SITES = {
     0x2F90: {'kind': 'operand', 'bytes': {0x2F91, 0x2F92}, 'from': ['$19CC', '$19C3']},
 
     # --- 'opcode': a 1-byte opcode slot switched between known values --------
-    # NOP/INY slots: the loop is specialised per frame to advance Y or not.
-    #   $2F60/$2FA2 written from LDA #$C8 ($2BFF) or LDA #$EA ($2CCE)
+    # NOP/INY/DEY slots: the span loop is specialised per frame to step Y forward,
+    # backward, or not at all.  ⭐ THREE values, not two — and the third was found by
+    # RUNNING the corpus in Phase 4, not by reading it.  g_smcUnhandled reported
+    # `site $2F89 holds $0088` on the first frame that reached the rasteriser.
+    #
+    # The two-value reading came from attributing each store to the nearest preceding
+    # `LDA #imm`, and $2C01 has TWO of them:
+    #     $2BF9  BPL $2BFF        ; sign of $87 selects the direction
+    #     $2BFB  LDA #$88         ; <-- DEY   (the arm the scan walked past)
+    #     $2BFD  BNE $2C01
+    #     $2BFF  LDA #$C8         ;     INY
+    #     $2C01  STA $2F60 / STA $2FA2
+    # so $2F60 and $2FA2 take $88 whenever $87 is negative, and $2F47/$2F89 inherit it
+    # through `LDA $2F60` at $2CC5, and $2F18 through `LDA $2F47`.  A span plotter that
+    # can walk its destination in either direction is exactly what a 3D road rasteriser
+    # needs, so this is semantics, not an oddity.
+    #
+    #   $2F60/$2FA2 written from LDA #$C8 ($2BFF), LDA #$88 ($2BFB) or LDA #$EA ($2CCE)
     #   $2F47/$2F89 written from LDA #$EA ($2C07) or from LDA $2F60 ($2CC5) — i.e. whatever
-    #               $2F60 currently holds, which is one of the same two values
+    #               $2F60 currently holds, which is one of the same three values
     #   $2F18       written from LDA $2F47 ($2F12) — same closure again
-    0x2F18: {'kind': 'opcode', 'values': {0xEA: 'NOP', 0xC8: 'INY'}, 'from': ['$2F15']},
-    0x2F47: {'kind': 'opcode', 'values': {0xEA: 'NOP', 0xC8: 'INY'}, 'from': ['$2C09', '$2CC8']},
-    0x2F60: {'kind': 'opcode', 'values': {0xEA: 'NOP', 0xC8: 'INY'}, 'from': ['$2C01', '$2CD0']},
-    0x2F89: {'kind': 'opcode', 'values': {0xEA: 'NOP', 0xC8: 'INY'}, 'from': ['$2C0C', '$2CCB']},
-    0x2FA2: {'kind': 'opcode', 'values': {0xEA: 'NOP', 0xC8: 'INY'}, 'from': ['$2C04', '$2CD3']},
+    0x2F18: {'kind': 'opcode', 'values': {0xEA: 'NOP', 0xC8: 'INY', 0x88: 'DEY'}, 'from': ['$2F15']},
+    0x2F47: {'kind': 'opcode', 'values': {0xEA: 'NOP', 0xC8: 'INY', 0x88: 'DEY'}, 'from': ['$2C09', '$2CC8']},
+    0x2F60: {'kind': 'opcode', 'values': {0xEA: 'NOP', 0xC8: 'INY', 0x88: 'DEY'}, 'from': ['$2C01', '$2CD0', '$2BFB']},
+    0x2F89: {'kind': 'opcode', 'values': {0xEA: 'NOP', 0xC8: 'INY', 0x88: 'DEY'}, 'from': ['$2C0C', '$2CCB']},
+    0x2FA2: {'kind': 'opcode', 'values': {0xEA: 'NOP', 0xC8: 'INY', 0x88: 'DEY'}, 'from': ['$2C04', '$2CD3', '$2BFB']},
     # CPX-or-RTS slots: written from LDA #$E0 ($2CB4, `CPX #$80`) or LDA #$60 ($2CAA, `RTS`).
     # ⚠ The two forms have different LENGTHS (2 vs 1).  That is representable only because
     # $60 TERMINATES: when the slot holds RTS the operand byte is never executed, so no
@@ -191,12 +207,33 @@ ROM_BASE = 0x8000
 # more likely than the Atari port did: its 50 Hz body is a USER VIA T1 *raster* timer that
 # reloads the palette mid-frame, so several of its waits are intra-frame by design.
 #
-# EMPTY on purpose.  `make gen` now REPORTS every candidate spin loop it finds (see
-# report_spin_candidates) instead of shipping guesses: the Atari port's hook list grew
-# reactively, one runtime hang at a time, and each entry needed a paragraph of
-# justification afterwards.  Phase 4 runs the corpus on the target and fills this in from
-# what actually stalls, with the loop's exit condition read out first.
-SPINWAIT_HOOKS = {}
+# ⭐ FILLED IN PHASE 4 FROM WHAT ACTUALLY STALLED, not from the candidate list.  `make gen`
+# REPORTS 41 candidate spin loops (report_spin_candidates); running the corpus showed that
+# exactly ONE of them is a wait on state the port has to supply, and that the other obvious
+# one is a HARDWARE wait serviced at a different seam entirely:
+#
+#   $4E11  hw_init      BIT $FE4D / BEQ — waits for the System VIA vsync flag.  NOT hooked:
+#                       it is a wait on an I/O register, so Platform::hwRead answers it
+#                       (src/platform/bbc_hw.cpp).  Hooking it here would have worked too
+#                       and been wrong — the exit condition belongs to the hardware model,
+#                       and a hook would have hidden that $FE4D was unmodelled.
+#   $1760  FUN_16dc     LDA $62F7 / BMI — ⭐ THE MAIN LOOP'S FRAME BOUNDARY.  $175D stores
+#                       $9C into $62F7 and the 50 Hz interrupt body counts it down, so
+#                       under a single-threaded C port nothing ever clears it.  This is the
+#                       one true frame-wait in the engine.
+#
+# The other 39 are ordinary counted loops (DEX/BPL over a table) that the candidate
+# heuristic cannot tell apart from a wait, plus intra-frame palette writes inside
+# irq1v_handler itself — where a platform_tick_vbi() would be actively harmful.
+#
+# ⚠ platform_tick_vbi(), NOT platform_render_frame().  On the Amiga the 50 Hz body runs in
+# the real VERTB ISR and preempts this loop, so tickVBI is a no-op there and the wait ends
+# on its own; on the headless host, which has no preemption, tickVBI is what advances the
+# interrupt.  Painting is hooked at the TOP of the loop instead (PRE_INSN_HOOKS below), so
+# one painted frame means one game frame whether or not this wait was entered.
+SPINWAIT_HOOKS = {
+    0x1760: 'PROBE_PHASE(0); platform_tick_vbi(); platform_poll_events();',
+}
 
 # ---------------------------------------------------------------------------
 # Pre-instruction hook injection.
@@ -207,9 +244,34 @@ SPINWAIT_HOOKS = {}
 # (so a forced label would be unreferenced and trip -Wunused-label).
 # Key: 6502 address of the instruction to inject before.  Value: C statement(s).
 #
-# EMPTY on purpose — same reasoning as SPINWAIT_HOOKS.  The likely first entry is inside
-# the IRQ1V handler ($4E5C), whose band dispatch drives the display.
-PRE_INSN_HOOKS = {}
+# ⭐ ONE ENTRY, added in Phase 4: the top of the engine's main loop.
+#
+# $1701 is the first instruction of the ~25-call body at $1701-$1763 that runs the physics
+# and the 3D pipeline once per game frame, and it is a plain JSR chain with no branch label
+# of its own — which is exactly the case PRE_INSN_HOOKS exists for.
+#
+# Painting is hooked HERE rather than at the frame-wait ($1760, see SPINWAIT_HOOKS) because
+# the wait is CONDITIONAL: $1753 skips it entirely when $62F6 is zero.  A paint hooked to
+# the wait would therefore stop counting frames whenever the game took that branch, and the
+# framerate would read as a drop in rendering rather than as a change of path — the
+# "unattended run ending" trap in docs/perf-method.md §Rule 3, dressed up as a measurement.
+# One hook at the top means exactly one painted frame per game frame, always.
+PRE_INSN_HOOKS = {
+    0x1701: 'platform_render_frame();',
+}
+
+# ---------------------------------------------------------------------------
+# Phase brackets over the main loop (PROBES builds only).
+# ---------------------------------------------------------------------------
+# ⭐ Phase 4's "name the hot functions".  The engine's per-frame body is a FLAT sequence of
+# JSRs between these two addresses, which makes exact bracketing possible where PC sampling
+# would have to fight -O2 inlining for attribution (on the host, -O2 collapsed the entire
+# loop into one frame of FUN_16dc).  Generated rather than hand-written so it survives
+# `make gen`, and so a phase can never drift away from the call it is supposed to time.
+#
+# Every JSR whose address is in [lo, hi] gets `PROBE_PHASE(n)` emitted before it, numbered
+# in source order; the frame wait re-opens phase 0.  Compiles to nothing without PROBES.
+MAIN_LOOP_BRACKET = (0x1701, 0x1748)
 
 # ---------------------------------------------------------------------------
 # Parse symbols.csv → addr_int → name
@@ -1299,6 +1361,14 @@ def translate_func(func, all_funcs_by_start, symbols,
         lines.append(f'    goto L_{skip_to:04x};  /* enter past orphan-prefix loop body */')
     hit_split = False
     last_insn = None
+    # Phase numbers for the main loop's top-level JSRs, in source order.  1-based: phase 0
+    # is reserved for everything OUTSIDE the loop (the frame wait and the interrupt), so
+    # the shares add up to the whole frame rather than only to the instrumented part.
+    _lo, _hi = MAIN_LOOP_BRACKET
+    phase_ids = {}
+    for _ins in insns:
+        if _lo <= _ins['addr'] <= _hi and _ins['mnem'] == 'JSR':
+            phase_ids[_ins['addr']] = len(phase_ids) + 1
     for idx, insn in enumerate(insns):
         addr = insn['addr']
         # Peephole: a folded load is dropped entirely (its value moves into the
@@ -1328,6 +1398,13 @@ def translate_func(func, all_funcs_by_start, symbols,
         pre = PRE_INSN_HOOKS.get(addr, '')
         if pre:
             lines.append(f'    {pre}')
+        # Phase bracket: close the previous phase and open this call's, so a PROBES run
+        # reports a per-callee share of the frame.  Only the FLAT top-level JSRs of the
+        # main loop are bracketed — a bracket inside a nested callee would be timing a
+        # subtree of a subtree and the shares would stop summing to the frame.
+        lo, hi = MAIN_LOOP_BRACKET
+        if lo <= addr <= hi and insn['mnem'] == 'JSR':
+            lines.append(f'    PROBE_PHASE({phase_ids[addr]});')
         stmt_lines = translate_insn(insn, func, all_funcs_by_start, symbols,
                                     local_targets, external_entries, wrapper_names,
                                     smc_dispatch_targets)
@@ -1554,6 +1631,7 @@ def main():
         '#define REVS_MEM_ALIASES  /* enable bare lvalue aliases (lap_counter = ...) */',
         '#include "mem.h"   /* MEM_<name> offsets + bare aliases for named RAM/state */',
         '#include "../platform/platform_c.h"',
+        '#include "../platform/probe.h"   /* PROBE_PHASE(): main-loop phase brackets */',
         '',
     ]
     body = []
@@ -1766,10 +1844,22 @@ def report_spin_candidates(funcs, symbols):
             if not any(re.search(r'0x[0-9a-f]+', b['op'] or '') for b in reads): continue
             cands.append((tgt, ins['addr'], f['name'], len(body),
                           ' ; '.join(f'{b["mnem"]} {b["op"]}'.strip() for b in body)))
-    print(f'spin-wait candidates: {len(cands)} tight backward loops with no JSR '
-          f'(SPINWAIT_HOOKS is empty on purpose — Phase 4 fills it from what stalls)')
+    lo, hi = MAIN_LOOP_BRACKET
+    for f in funcs:
+        ids = [(i['addr'], i['op']) for i in f['insns']
+               if lo <= i['addr'] <= hi and i['mnem'] == 'JSR']
+        if not ids: continue
+        print(f'main-loop phase brackets: {len(ids)} top-level calls in {f["name"]} '
+              f'(${lo:04X}-${hi:04X}); phase 0 = outside the loop')
+        for n, (a, op) in enumerate(ids, 1):
+            tgt = int(op, 0) if op.startswith('0x') else 0
+            print(f'  phase {n:2d}  ${a:04X}  -> {symbols.get(tgt, op)}')
+    hooked = sorted(SPINWAIT_HOOKS)
+    print(f'spin-wait candidates: {len(cands)} tight backward loops with no JSR; '
+          f'{len(hooked)} HOOKED (' + ', '.join(f'${a:04X}' for a in hooked) + ')')
     for tgt, br, fname, n, txt in sorted(cands):
-        print(f'  ${tgt:04X}..${br:04X}  {fname:<28} {n} insn  {txt}')
+        mark = ' <-- HOOKED' if tgt in SPINWAIT_HOOKS else ''
+        print(f'  ${tgt:04X}..${br:04X}  {fname:<28} {n} insn  {txt}{mark}')
 
 if __name__ == '__main__':
     main()

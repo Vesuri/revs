@@ -45,6 +45,10 @@ C_SRCS := \
 
 CXX_SRCS := \
     src/platform/Platform.cpp \
+    src/platform/mos.cpp \
+    src/platform/probe.cpp \
+    src/platform/bbc_hw.cpp \
+    src/platform/autorun.cpp \
     src/platform/platform_cbridge.cpp \
     src/platform/host/PlatformHost.cpp \
     src/main.cpp

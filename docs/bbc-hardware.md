@@ -82,6 +82,25 @@ registers across 4 devices, agreed independently by `tools/sweep_entrypoints.py`
   `INTB_VERTB`" in the mapping table below, and in `docs/amiga-arch.md`, is **too simple**: this is
   a raster-timed timer chain that repaints the palette mid-frame, which is copper work with only
   the band-0 boundary belonging in VERTB.  Resolve this before Phase 5 designs the copper list.
+
+  ⭐ **Phase 4's interim answer, and the line Phase 5 has to change.**  One Amiga VERTB drives the
+  WHOLE band cycle — `Revs::vbi()` calls `Platform::fireIrq1v()` until `$4F43` wraps to 0 — because
+  dispatching one band per interrupt would tick the simulation at 10 Hz while everything else
+  looked healthy.  The bands therefore all fire at the top of the frame instead of at their
+  scheduled raster positions, collapsing the mid-screen splits into one; invisible while nothing
+  is drawn.  `g_userT1LatchLo`/`g_userT1LatchHi` (`src/platform/bbc_hw.cpp`) capture the T1 reload
+  the handler writes at the end of each band — **that sequence IS the raster schedule**, and it is
+  what the copper WAITs get built from.
+
+  ⚠ Two things the port had to get right here, both of which read as something else when wrong:
+  - **`fireIrq1v()` must not dispatch until the game has claimed IRQ1V** (`$0204/$0205` = `$4E5C`).
+    The backend installs its vblank before `engine_main()` runs, and `$4F43` starts at 0 in the
+    image — a valid band — so the handler cheerfully steps a state machine whose timers and
+    palette tables do not exist yet.  Measured: the counter ended on `$FE`, a state the dispatch
+    has no arm for, and the 50 Hz body then never ran again.
+  - **The handler ends in `RTI`, emitted as `PLP(); return;`** — so the caller must push a P byte
+    first, exactly as the 6502's IRQ sequence would.  Without it `cpu.S` walks back one byte per
+    frame and page 1 is corrupted 256 frames after the code that caused it.
 - **uPD7002 ADC** is the steering.  A racing sim reading an analogue axis is a *different* input
   problem from a digital joystick, and it is worth getting exactly right early: the feel of the
   game is in it.
@@ -110,7 +129,7 @@ touches the disc.
 
 | Entry | Call | Sites | Reason codes Revs uses |
 |---|---|---|---|
-| `$FFF4` | **OSBYTE** | 10 | `129` negative INKEY (the keyboard); **`128` read ADC — the steering**; `190` ADC conversion type; `154` write the ULA control register via its OS copy; `21` flush a buffer; `4` cursor-key behaviour; `2` select input stream; `126` acknowledge ESCAPE |
+| `$FFF4` | **OSBYTE** | 10 | `129` negative INKEY (the keyboard); **`128` read ADC — the steering**; `190` ADC conversion type; `154` write the ULA control register via its OS copy; `21` flush a buffer; `4` cursor-key behaviour; `2` select input stream; `126` acknowledge ESCAPE; **`0` read the OS version** ⭐ |
 | `$FFF1` | **OSWORD** | 2 | **`8` define a sound ENVELOPE** — so sound goes through the MOS's scheduler, not the SN76489 directly; `10` read a character definition |
 | `$FFEE` | OSWRCH | 4 | VDU output (`127`, `7`, `156`, one from a variable) |
 | `$FFE0` | OSRDCH | 1 | read a character |
@@ -128,6 +147,21 @@ behaviour you will reason about wrongly.  ✅ **Done** (Phase 2, table above).  
 are recovered by a nearest-preceding-`LDA #imm` heuristic, so they are **[DERIVED, heuristic]** —
 and the *parameters* (X/Y) at the ADC and buffer-flush sites are not read out yet, which is what
 an implementation actually needs.
+
+⭐ **Phase 4 added reason code `0` (read the OS version) at runtime.**  It is not a tenth static
+site — it is one of the ten whose `A` is *computed*, so the nearest-preceding-`LDA #imm` heuristic
+attributed it to something else.  That is precisely why the rows above are **[DERIVED,
+heuristic]**, and why `src/platform/mos.cpp` counts an unhandled call instead of returning a
+plausible zero: the counter is what found it.  Also measured on the target: **OSWORD 10 (read a
+character definition) fires ~850 times in the first 900 vblanks**, so reproducing the MOS font is
+a genuine Phase 5 dependency, not a footnote — the port currently returns blank glyphs and counts
+them in `g_mosCharDefCount`.
+
+⚠ The implementation is `src/platform/mos.cpp`, shared by BOTH backends rather than overridden per
+platform.  OSBYTE 129's contract (X=Y=$FF when the key is held) is the 6502's ABI and identical
+everywhere; only *where the input comes from* differs, and that is five virtual hooks
+(`keyDown` / `adcAxis` / `adcButtons` / `rdch` / `wrch`).  Duplicating the dispatch per backend
+would let the host and the target disagree about the OS itself.
 
 Also relevant, and already visible in the BASIC front end: `*FX21` in `!BOOT` is `OSBYTE 21`
 (flush a buffer); `*FX200,3` in `REVINST`/`REVSMEN` disables ESCAPE and clears memory on BREAK;

@@ -1,6 +1,13 @@
 #ifndef CPU_H
 #define CPU_H
+/* ⚠ On the Amiga C++ build the integer types already arrive via the force-included
+   framework/SASCCompat.h, and the framework's own compat-include/stdint.h CONTRADICTS it
+   (`signed char` vs plain `char` for int8_t) — including both is a hard error.  The C
+   build of this same header gets no force-include and does need stdint.h, and so does
+   every host build, so the condition is C++-and-Amiga, not Amiga. */
+#if !(defined(__cplusplus) && defined(REVS_PLATFORM_AMIGA))
 #include <stdint.h>
+#endif
 
 /* 6502 register state.  Flags are stored unpacked (0/1 per flag) for
    readable branch conditions in the transliterated C.  PHP/PLP pack/

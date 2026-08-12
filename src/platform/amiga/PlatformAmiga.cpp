@@ -134,32 +134,40 @@ int PlatformAmiga::loadImage(const char* /*path*/)
     return 0;
 }
 
-uint8_t PlatformAmiga::hwRead(uint16_t addr)
+// hwRead/hwWrite and mosCall are NOT overridden here.  The BBC hardware model
+// (src/platform/bbc_hw.cpp) and the MOS surface (src/platform/mos.cpp) are implemented
+// once for both backends, so the host and the target cannot disagree about the machine
+// itself.  What this backend supplies is the two things that genuinely differ: a real
+// frame boundary, and the input.
+
+bool PlatformAmiga::vsyncElapsed()
 {
-    // TODO(phase: hardware map): service SHEILA reads — System VIA keyboard/timers
-    // ($FE40-$FE5F) and the uPD7002 ADC ($FEC0-$FEDF, the steering input) are the two
-    // Revs actually needs.  Until the hardware-access map (docs/toolchain.md) says
-    // otherwise, return 0 and let the probe build report what got read.
-    (void)addr;
-    return 0x00;
+    // The System VIA vsync flag, taken from the ISR's own counter rather than from a
+    // beam read: it is only ever consulted by hw_init's one alignment spin, and that spin
+    // must end on a frame boundary the rest of the port agrees with.
+    uint16_t now = g_vbiCount;
+    if (now == lastVsyncCount) return false;
+    lastVsyncCount = now;
+    return true;
 }
 
-void PlatformAmiga::hwWrite(uint16_t addr, uint8_t val)
+bool PlatformAmiga::keyDown(uint8_t x)
 {
-    // TODO(phase: hardware map): route the Video ULA palette + 6845 CRTC writes into the
-    // copper list, and the SN76489 sound writes to Paula.  Ignore the rest.
-    (void)addr; (void)val;
+#if defined(REVS_FPSCOUNT) || defined(REVS_PROBE)
+    // Unattended run: the script walks the front end and then holds the throttle, so the
+    // measurement window contains the driving loop instead of a menu spin.
+    return autoRun.keyDown(x);
+#else
+    // ⚠ A shipping build genuinely has no keyboard yet — Phase 5 owns mouse + keyboard,
+    // and answering "nothing held" is the honest placeholder.  It does mean a plain
+    // `make` build parks in the front end; that is a missing feature, not a hang.
+    (void)x;
+    return false;
+#endif
 }
 
-void PlatformAmiga::mosCall(uint16_t entry)
-{
-    // TODO(phase: MOS layer): OSBYTE ($FFF4) / OSWORD ($FFF1) are how Revs reads the
-    // keyboard, the ADC and the disc.  Unlike the Atari port — which simply replaced the
-    // OS — this port has to model the MOS calls the game makes.  See
-    // docs/bbc-hardware.md §MOS calls; enumerate them from the disassembly BEFORE
-    // implementing any (the same discipline as the entry-point sweep).
-    (void)entry;
-}
+uint8_t  PlatformAmiga::adcButtons()             { return 0x00; }
+uint16_t PlatformAmiga::adcAxis(uint8_t channel) { (void)channel; return 0x8000; }
 
 void PlatformAmiga::renderFrame()
 {

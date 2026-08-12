@@ -49,6 +49,10 @@ CXX_SRCS := \
     $(AMIGA_SRC)/PlatformAmiga.cpp \
     $(AMIGA_SRC)/Revs.cpp \
     $(REPO)/src/platform/Platform.cpp \
+    $(REPO)/src/platform/mos.cpp \
+    $(REPO)/src/platform/probe.cpp \
+    $(REPO)/src/platform/bbc_hw.cpp \
+    $(REPO)/src/platform/autorun.cpp \
     $(REPO)/src/platform/platform_cbridge.cpp \
     $(REPO)/src/main.cpp
 
@@ -184,7 +188,10 @@ VASMFLAGS = -m68010 -Felf -quiet -x -no-opt -nowarn=62 $(EXTRA_VASMDEFS)
 # code inside processBlitterQueue).  `--undefined=<sym>` makes the symbol a gc ROOT, at zero
 # runtime cost.  `__attribute__((retain))` does NOT work here — it is ignored on this target.
 # Add a symbol here the moment you add a counter; `make probe-audit` enforces it on every link.
-PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCount g_brkPC
+PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCount g_brkPC \
+             g_mosUnknownCount g_mosUnknownEntry g_mosUnknownA g_mosCharDefCount \
+             g_hwUnknownReads g_hwUnknownAddr g_ulaControl g_userT1LatchLo g_userT1LatchHi \
+             g_phaseTicks g_phaseCount g_phaseFrames
 
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \
             $(addprefix -Wl$(COMMA)--undefined=,$(PROBE_SYMS))

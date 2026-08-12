@@ -22,6 +22,7 @@
  */
 #include "platform.h"           // the abstract base (src/platform, on the build -I path)
 #include "platform_c.h"         // the extern "C" bridge decls
+#include "autorun.h"            // the scripted keyboard for unattended runs
 #include "framework/Util.h"     // uint8_t, uint16_t, uint32_t
 
 // main.cpp instantiates PlatformClass(image) without knowing the concrete type; the
@@ -39,13 +40,33 @@ public:
     // handler, load the boot image, run the Revs scene, restore the system.
     virtual void run() override;
 
-    virtual uint8_t hwRead(uint16_t addr)               override;
-    virtual void    hwWrite(uint16_t addr, uint8_t val) override;
+    // hwRead/hwWrite are NOT overridden either — the two VIA flag bits Revs blocks on are
+    // the machine, and src/platform/bbc_hw.cpp models them for both backends.  Phase 5
+    // adds an override here that calls the base and then routes $FE20/$FE21 to the copper.
     virtual void    renderFrame()                       override;  // present + wait for next VBI
     virtual void    pollEvents()                        override;  // poll quit (left mouse)
     virtual void    tickVBI()                           override;  // no-op: the ISR owns the clock
-    virtual void    mosCall(uint16_t entry)             override;  // OSBYTE/OSWORD service
+    // mosCall is deliberately NOT overridden — src/platform/mos.cpp owns the whole MOS
+    // surface for both backends.  What this backend answers is the input, below.
+    virtual bool     keyDown(uint8_t x)                 override;
+    virtual uint8_t  adcButtons()                       override;
+    virtual uint16_t adcAxis(uint8_t channel)           override;
     virtual int     loadImage(const char* path)         override;  // embedded -> copies incbin
     virtual void    setInterrupt(void (*fn)(void))      override;  // real VBI -> no-op
     virtual int     framesPerSecond()                   override;  // 50 (PAL)
+
+protected:
+    // Backs the System VIA vsync flag ($FE4D bit 1) hw_init's alignment spin blocks on:
+    // here it is a REAL frame boundary, taken from the VERTB ISR's own counter.
+    virtual bool    vsyncElapsed()                      override;
+
+private:
+    // ⭐ Scripted input for unattended runs (src/platform/autorun.h).  Compiled in ONLY
+    // under FPSCOUNT/PROBES: without it a headless run never leaves the front-end menus
+    // and the framerate harness measures a menu spin.  A shipping build has no keyboard
+    // at all yet — real mouse + keyboard input is Phase 5.
+#if defined(REVS_FPSCOUNT) || defined(REVS_PROBE)
+    AutoRun autoRun;
+#endif
+    uint16_t lastVsyncCount = 0;
 };

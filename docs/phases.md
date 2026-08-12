@@ -151,7 +151,7 @@ now trapped rather than silently no-op'd, so Phase 4's first run answers it.
 
 ---
 
-## Phase 4 — End-to-end skeleton ON THE TARGET, then profile ⬜
+## Phase 4 — End-to-end skeleton ON THE TARGET, then profile ✅ (exit criteria met)
 
 Postmortem #4.1: get *something* running end to end on the real machine as early as possible, and
 **profile it before choosing what to optimise**.  On the Atari port an "algorithmic floor"
@@ -167,11 +167,57 @@ number and the hot-function list.  Exiting the phase does *not* require hitting 
 it requires knowing the distance to it.
 
 Phase 3 leaves three specific questions for the first target run to answer, all of them
-instrumented rather than guessed:
+instrumented rather than guessed.  **All three fired, and all three were findings** — the
+instrumentation is the whole reason this phase cost hours rather than days:
 
-- which of the 41 spin-wait candidates actually stall (`SPINWAIT_HOOKS`),
-- whether any of the seven `$7Bxx` calls is ever reached (`g_brkCount` / `g_brkPC`),
-- whether any self-modifying slot takes a value the table does not cover (`g_smcUnhandled`).
+- **Spin-waits: exactly ONE of the 41 candidates needed a hook.**  `$1760` (`LDA $62F7 / BMI`)
+  is the main loop's frame boundary.  The other obvious candidate, `$4E11` (`BIT $FE4D / BEQ`),
+  is a *hardware* wait and is answered by `Platform::hwRead` instead — hooking it would have
+  worked and been wrong, because it would have hidden that `$FE4D` was unmodelled.  The
+  remaining 39 are ordinary counted loops and intra-frame palette writes.
+- **The `$7Bxx` calls ARE reached — three of them are in the main loop, every frame.**
+  `g_brkCount` climbs ~3 per game frame.  What is *in* that page is still open and is now the
+  top open item (`docs/static-map.md`).
+- **An SMC slot took an uncovered value**: `$2F89` held `$88` (`DEY`) — the opcode slots have
+  three values, not two, and the span loop can walk backwards.  Chasing it also turned up
+  **13 bytes of code at `$1DC5` that no static walk can reach**, via the patched branch at
+  `$1DD4`.  Both written up in `docs/static-map.md` §Open items 7.
+
+### What the phase produced
+
+1. **The genuine entry chain runs under `PlatformAmiga`.**  `Revs::run()` → `engine_main()`
+   (`$63BD`), and gdb shows the real stack: `engine_main → engine_init → front_end_menus →
+   FUN_655C → FUN_16DC → platform_render_frame`.  The host backend runs the identical chain.
+2. **The MOS layer exists** (`src/platform/mos.cpp`) — the whole closed surface, four entries
+   and eight OSBYTE reason codes, implemented ONCE for both backends so they cannot disagree
+   about the OS.  Unhandled calls are counted, not absorbed; that is what found OSBYTE 0.
+3. **The BBC hardware model exists** (`src/platform/bbc_hw.cpp`) — two VIA flag bits, which is
+   all Revs blocks on, plus the ULA/T1 registers recorded for Phase 5's copper work.
+4. ⭐ **The 50 Hz body is a RASTER-BAND STATE MACHINE, not a per-frame interrupt.**
+   `irq1v_handler` walks `irq_band_state` 0→4→0, repainting the ULA mode and palette per
+   horizontal band and reloading User VIA T1 for the next one; only the last band does the game
+   work.  One Amiga VERTB therefore drives a whole band cycle — dispatch one band per interrupt
+   and the simulation silently ticks at 10 Hz.  (`src/platform/amiga/Revs.cpp` `Revs::vbi()`.)
+5. **Scripted input** (`src/platform/autorun.h`), clocked on key-poll count so the sequence is
+   bit-identical across builds.  Without it a headless run measures a menu spin.
+6. **Phase brackets are generated, not hand-written** (`MAIN_LOOP_BRACKET`), so the profile
+   survives `make gen` and a bracket cannot drift off the call it times.
+
+### The numbers — `docs/perf-method.md` §THE BASELINE
+
+**≈2.2 FPS** (FPSCOUNT build, nine segments, 1.8–2.3).  Goal 50, floor 25: **~11× short of the
+floor**, with nothing drawn and nothing optimised.  The four hottest of the main loop's 24 calls
+are **57.4%** between them — `$46A1` (24.6%), `$1E15` (13.1%), `$1B12` (9.9%), `$4CA4` (9.8%) —
+and they are **physics and geometry, not rasterisation**.  That is the headline difference from
+the Atari port and it confirms Phase 6's premise.
+
+### Known-unfaithful in this measurement
+
+- The three `$7Bxx` main-loop calls are no-ops (open item above), so the real workload is
+  larger, not smaller.
+- The raster bands all fire at the top of the frame instead of at their scheduled positions;
+  invisible while nothing is drawn, and Phase 5's copper work is where it gets fixed.
+- Nothing is rendered, so 2.2 FPS will get worse before it gets better.
 
 ---
 

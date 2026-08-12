@@ -53,3 +53,18 @@ addr,name,note
 #0x54F1,track_hook_12FB,"JSR patched over $12FB. Target is $54F1 on Brands, $54EF on the other three"
 #0x59E9,track_hook_45CB,"JSR patched over $45CB. Target per track: $59E9 / $59C9 / $59E7 / $59C7"
 #0x59ED,track_hook_2F23,"JSR patched over $2F23 -- DONINGTON AND SNETTERTON ONLY ($59ED / $59E8), and it lands inside the self-modifying $2C00-$2FFF rasteriser region"
+
+## ⭐ FOUND IN PHASE 4 BY RUNNING THE CORPUS, not by any static walk — and that is the point.
+## The self-modified branch at $1DD4 (offset byte $1DD5, written by `STY $1DD5` at $1DA9, so
+## the target IS a register value) jumped to $1DC5, which no static analysis had decoded:
+## $1DC2 is `JMP $1DE0`, so recursive descent leaves $1DC5-$1DD1 as an orphan run and both
+## Ghidra and tools/sweep_entrypoints.py stopped there.  The bytes are unambiguous code —
+##   1DC5 C9 55     CMP #$55        1DCB 91 72     STA ($72),Y
+##   1DC7 D0 02     BNE $1DCB       1DCD 88        DEY
+##   1DC9 A9 00     LDA #$00        1DCE C4 82     CPY $82
+##                                  1DD0 F0 12     BEQ $1DE4
+## — the same span loop as $1DD2's, storing through the OTHER zero-page pointer ($72 vs $70).
+## Reported by platform_smc_unhandled($1DD4, $1DC5), i.e. the trap Phase 3 installed did
+## exactly its job: an SMC branch whose target the generated C could not express said so
+## instead of guessing an arm.
+0x1DC5,span_store_alt,"span-loop variant storing through ($72),Y. Reachable ONLY via the runtime-patched branch at $1DD4 -- seeded here because recursive descent cannot reach it."

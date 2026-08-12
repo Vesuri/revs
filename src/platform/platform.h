@@ -58,11 +58,18 @@ public:
     /* Hardware bus — called by bus_read / bus_write in bus.h              */
     /* ------------------------------------------------------------------ */
 
-    /* Read a BBC I/O address ($FC00-$FEFF).  Default: 0x00. */
+    /* Read / write a BBC I/O address ($FC00-$FEFF).  Implemented ONCE for both backends
+       in src/platform/bbc_hw.cpp — the two VIA flag bits Revs blocks on are the machine,
+       not a platform choice.  A backend overrides only to add a display/audio
+       consequence, and calls the base first. */
     virtual uint8_t hwRead(uint16_t addr);
-
-    /* Write a BBC I/O address.  Default: no-op. */
     virtual void    hwWrite(uint16_t addr, uint8_t val);
+
+    /* Dispatch the game's own 50 Hz body (irq1v_handler, $4E5C) exactly as a 6502 IRQ
+       would — raising the User VIA T1 flag it checks and pushing the P byte its closing
+       RTI pulls.  Call this from the backend's vblank, never irq1v_handler directly.
+       See bbc_hw.cpp for what goes wrong otherwise. */
+    void fireIrq1v();
 
     /* Notification that the game wrote an OS vector / page-2 cell
        ($0200-$02FF) — IRQ1V, EVNTV, BRKV etc. */
@@ -98,8 +105,37 @@ public:
        address JSR'd; A/X/Y come from the cpu struct and are updated in place.
        Unlike the Atari (whose OS the port simply replaced), Revs runs under the
        MOS: OSBYTE/OSWORD are how it reads the keyboard, the ADC and the disc.
-       Default: no-op + carry clear.  See docs/bbc-hardware.md §MOS calls. */
-    virtual void mosCall(uint16_t /*entry*/) {}
+
+       ⚠ NOT virtual-per-backend by design.  src/platform/mos.cpp implements the
+       whole closed surface (4 entries / 17 sites / 8 OSBYTE reason codes, enumerated
+       in Phase 2) once, so the host and the target can never disagree about the OS
+       itself.  A backend supplies only the five genuinely platform-specific answers
+       below.  See docs/bbc-hardware.md §MOS calls. */
+    virtual void mosCall(uint16_t entry);
+
+    /* --- what a backend must answer for the MOS layer --------------------- */
+
+    /* OSBYTE 129 negative INKEY: is the key whose internal number is -(256-x)
+       currently held?  `x` is the raw X register, i.e. the 256-n form stored in
+       menu_key_tbl ($39E0).  Default: nothing is held. */
+    virtual bool keyDown(uint8_t x);
+
+    /* OSBYTE 128 with X=0 — the fire-button/last-channel word.  Only bit 0 is
+       ever read (by $168E).  Default: no buttons. */
+    virtual uint8_t adcButtons();
+
+    /* OSBYTE 128 with X=1..4 — ⭐ the steering axis.  A full 16-bit uPD7002
+       conversion; the game uses only the high byte, biased so $80 is centre.
+       Default: $8000, dead centre. */
+    virtual uint16_t adcAxis(uint8_t channel);
+
+    /* OSRDCH — one blocking site ($6316, the driver-name line editor).  Must
+       always return a real character: signalling ESCAPE instead loops forever.
+       Default: CR, which ends the line immediately. */
+    virtual uint8_t rdch();
+
+    /* OSWRCH — VDU output byte.  Default: discarded. */
+    virtual void wrch(uint8_t c);
 
     /* ------------------------------------------------------------------ */
     /* Image loading                                                      */
@@ -112,6 +148,16 @@ public:
     /* Shared state                                                       */
     /* ------------------------------------------------------------------ */
     bool quit;
+
+protected:
+    /* Has a display frame boundary passed since the last call?  Backs the System VIA
+       vsync flag ($FE4D bit 1) that hw_init's alignment spin blocks on.  Default: yes
+       every time (a headless backend has no raster to align to). */
+    virtual bool vsyncElapsed();
+
+    /* User VIA T1 timeout latch ($FE6D bit 6) — raised by fireIrq1v(), cleared when the
+       handler acknowledges it.  Owned by bbc_hw.cpp. */
+    bool m_userT1Pending = false;
 };
 
 extern Platform* platform;
