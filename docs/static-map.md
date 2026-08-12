@@ -225,6 +225,72 @@ between `NOP`/`INY`/`CPX` and store addresses rewritten from `$19C0-$19CC`.  Tha
 or span-filler specialised at runtime, and it is the single most important region to get right.
 Everything in the table above is destined for `src/gen/revs_manual.c` (`docs/faithfulness-seam.md`).
 
+## The per-track engine patches — the hook inventory
+
+`tools/track_hooks.py`.  `docs/entrypoint-sweep.md` called this "the known, named case"; here it
+is, measured.
+
+**The method matters, because the obvious diff gives the wrong answer.**
+`tools/bbc_refloop_track_diff.mjs` diffs RAM at the REVS2 entry against RAM 1M cycles later and
+reads the result as the hook patch surface — its own header predicts *zero* diffs for Silverstone,
+whose track file is passive data.  Silverstone shows **5805**.  The bulk of any track's diff is the
+engine's own unpack, which happens for every track.  Subtract it first:
+
+```
+patch surface(T) = { a : relocate(before_T)[a] != after_T[a] }  −  runtime-state(SILVER)
+```
+
+Silverstone is the control: exec `$0000`, no hook code, so its residue *is* the engine's runtime
+state.  The `$5300-$5A25` window is excluded — that is where the swap deposits the track's own
+geometry, so it differs per track by construction, not by patching.
+
+### The result: five shared patch sites, six or seven hooks per track
+
+| Track | residue | beyond control | code hooks | rebound data operands |
+|---|---|---|---|---|
+| BRANDS | 113 | 59 | 6 | 11 |
+| DONING | 115 | 61 | 7 | 13 |
+| OULTON | 111 | 57 | 6 | 11 |
+| SNETTER | 111 | 58 | 7 | 12 |
+
+**Every expansion track patches the same 52 bytes**, and the code hooks land at the same five
+sites in every one:
+
+| Patched site | Becomes | Target (BRANDS / DONING / OULTON / SNETTER) |
+|---|---|---|
+| `$1248` | `JSR` | `$5672` — **the same in all four** |
+| `$12FB` | `JSR` | `$54F1` / `$54EF` / `$54EF` / `$54EF` |
+| `$248B` | `JMP` | `$56BC` — **all four** |
+| `$261A` | `JMP` | `$56AF` — **all four** |
+| `$2538` | `JSR` | `$5772` — **all four** |
+| `$45CB` | `JSR` | `$59E9` / `$59C9` / `$59E7` / `$59C7` |
+| `$2F23` | `JSR` | — / `$59ED` / — / `$59E8`  (**Donington and Snetterton only**) |
+
+`$2F23` is the one that earns attention: it is a hook **inside the self-modifying
+`$2C00-$2FFF` region**, present for only two of the four circuits.  So the region that is already
+runtime-specialised is *also* per-track patched, for some tracks.  That is the hardest single spot
+in the binary and it should be treated as such.
+
+### Code hooks vs data rebinding — do not conflate them
+
+Two thirds of the patch bytes are **not** entry points.  A 2-byte patch rewrites an absolute
+*operand*, leaving the instruction where it is and pointing it at a table inside the track file:
+`$4CC1` → `$5762`, `$4CC9` → `$5662`, `$4CD1` → `$5562`, `$4CD7`/`$4CE1` → `$5462`.  The `$100`
+spacing gives it away — that is a row-indexed table, not four hand-written routines.  Only the
+3-byte `JSR`/`JMP` patches create new reachable code.
+
+Two 2-byte changes at `$1310` (Donington, Snetterton) point outside the track file and are
+**unclassified** — reported rather than rounded off into the pointer group.
+
+### Consequences
+
+1. **The hook targets are entry points that exist in no static image**, seeded in
+   `ghidra_scripts/entrypoints.csv` as track-conditional.
+2. **The five shared patch sites are self-modifying by definition**, on top of the 24 the engine
+   does to itself — so `src/gen/revs_manual.c` owes stubs for both sets.
+3. **`$5300-$5A25` is code as well as data** for four of the five circuits: the track file is a
+   program.  A disassembly pass over that window, per track, is still owed.
+
 ### The measured cross-check
 
 A static tool cannot report its own blind spots, so `tools/bbc_trace.mjs` traces real execution
@@ -262,15 +328,9 @@ done requires every run classified before C is generated.
 1. **Classify the seven unclassified runs above.**  Zero-page-pointer data or unreachable code?
    The lever is an indirect-addressing pass: resolve `LDA ($70),Y`-style accesses by finding what
    writes the pointer.
-2. **Re-run the sweep per track.**  Every finding here is Silverstone's runtime image.  The four
-   expansion tracks are *executable* and patch the engine (`docs/reference-sources.md`), so the
-   dispatch structure, the SMC inventory and possibly the entry set differ per track.  The
-   before/after dumps already exist in `tmp/`; `tools/relocate.py` needs a per-track pass.
-   ⚠ **Correct an earlier assumption while doing it:** `tools/bbc_refloop_track_diff.mjs` reads
-   its `$1200-$6FFF` diff as "the per-track hook patch surface", and its header predicts 0 diffs
-   for Silverstone.  Silverstone shows **5805**.  The bulk of that diff is the engine's own
-   unpack, which happens for *every* track — so the script measures unpack + patch together, and
-   the hook surface is whatever remains after `relocate.py` is subtracted.
+2. **Disassemble the track programs.**  The hook *inventory* is done (above); the hook *bodies*
+   are not.  `$5300-$5A25` holds a program for four of the five circuits, and nothing has
+   disassembled it yet.  Sweep it per track with the hook targets as roots.
 3. ~~Read out the OSBYTE/OSWORD reason codes.~~ **Done** — all 17 sites resolved except `$50F6`
    (A from a variable).  Still owed: confirm the heuristic against a trace, and read out the
    *parameters* (X/Y) at the ADC and buffer-flush sites, which is what the implementation needs.

@@ -24,3 +24,21 @@ addr,name,note
 ## destination), so seeding "loader_stub" there would name the wrong bytes.  Use this line only
 ## when importing the pre-unpack image.
 #0x1200,loader_stub,"REVS2's load+exec address. Copies $1200-$12FF to $7900 and JMP $790E, then runs from the copy: OSBYTE 200,3 / OSBYTE 140,0, the checked $5300<->$70DB swap, five block moves, and JMP $63BD. Dead once the engine is running."
+## --- TRACK HOOK TARGETS (tools/track_hooks.py; docs/static-map.md §hook inventory) ---
+## ⚠ These live in the TRACK FILE at $5300-$5A25, which the unpack swap deposits there.  They
+## exist in NO static image of the engine: the track program patches a JSR/JMP over an engine
+## instruction as the engine starts.  Seeding them only makes sense on a per-track runtime image
+## (`make image TRACK=<name> && make runtime`), so they are commented out for the default
+## Silverstone import — Silverstone's track data is passive and has no hooks at all.
+##
+## Patched-in at, and target per track (BRANDS / DONING / OULTON / SNETTER):
+##   $1248 JSR -> $5672 in all four        $248B JMP -> $56BC in all four
+##   $261A JMP -> $56AF in all four        $2538 JSR -> $5772 in all four
+##   $12FB JSR -> $54F1 / $54EF / $54EF / $54EF
+##   $45CB JSR -> $59E9 / $59C9 / $59E7 / $59C7
+##   $2F23 JSR -> ----- / $59ED / ----- / $59E8   (Donington and Snetterton only, and it lands
+##                                                 INSIDE the self-modifying $2C00-$2FFF region)
+#0x5672,track_hook_1248,"JSR patched over the instruction at $1248 by every expansion track"
+#0x56BC,track_hook_248B,"JMP patched over $248B by every expansion track"
+#0x56AF,track_hook_261A,"JMP patched over $261A by every expansion track"
+#0x5772,track_hook_2538,"JSR patched over $2538 by every expansion track"

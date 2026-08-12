@@ -1,0 +1,221 @@
+# control: SILVER (passive track data, exec $0000)
+  54 engine-range bytes differ after the unpack is subtracted.
+  These are the engine's own runtime state, NOT a hook patch:
+    $3864-$3875 (18)
+    $3877-$3877 (1)
+    $39E4-$39E5 (2)
+    $3D14-$3D14 (1)
+    $3D16-$3D17 (2)
+    $40E2-$40E3 (2)
+    $40E5-$40E5 (1)
+    $5F3A-$5F3A (1)
+    $5F40-$5F40 (1)
+    $5FB0-$5FC8 (25)
+
+# BRANDS: 113 residue bytes, 59 beyond the control
+    $1248-$124A (3)   B9->20 05->72 59->56
+    $128A-$128B (2)   E0->1B 13->5A
+    $12FB-$12FD (3)   18->20 69->F1 03->54
+    $13CA-$13CB (2)   DA->72 13->55
+    $1427-$1428 (2)   DA->72 13->55
+    $1594-$1595 (2)   00->A1 0C->57
+    $1947-$1948 (2)   33->C8 19->56
+    $1FE9-$1FE9 (1)   A6->A2
+    $248B-$248D (3)   B0->4C 2B->BC 4C->56
+    $24EA-$24EA (1)   0E->0D
+    $24F3-$24F4 (2)   0B->BD 14->55
+    $2538-$253A (3)   99->20 48->72 5F->57
+    $2543-$2545 (3)   50->F0 34->53 4A->EA
+    $261A-$261C (3)   85->4C 1F->AF 84->56
+    $2772-$2772 (1)   3C->4B
+    $3574-$3574 (1)   00->04
+    $35F4-$35F4 (1)   03->0B
+    $44D6-$44D7 (2)   D0->A0 59->58
+    $45CB-$45CD (3)   0A->20 26->E9 77->59
+    $462C-$462D (2)   50->EB 34->54
+    $4CC1-$4CC2 (2)   E0->62 53->57
+    $4CC9-$4CCA (2)   F0->62 53->56
+    $4CD1-$4CD2 (2)   D0->62 53->55
+    $4CD7-$4CD8 (2)   EA->62 59->54
+    $4CE1-$4CE2 (2)   EA->62 59->54
+    $4F55-$4F55 (1)   12->16
+    $4F59-$4F59 (1)   12->16
+    $5FC9-$5FCD (5)   05->03 59->92 85->03 02->03 BD->03
+
+# DONING: 115 residue bytes, 61 beyond the control
+    $1248-$124A (3)   B9->20 05->72 59->56
+    $128A-$128B (2)   E0->1B 13->5A
+    $12FB-$12FD (3)   18->20 69->EF 03->54
+    $1310-$1311 (2)   29->A9 F8->88
+    $13CA-$13CB (2)   DA->72 13->55
+    $1427-$1428 (2)   DA->72 13->55
+    $1594-$1595 (2)   00->79 0C->57
+    $1947-$1948 (2)   33->C8 19->56
+    $1FE9-$1FE9 (1)   A6->A2
+    $231B-$231B (1)   0F->00
+    $248B-$248D (3)   B0->4C 2B->BC 4C->56
+    $24DF-$24E0 (2)   F3->E9 12->53
+    $24EA-$24EA (1)   0E->0D
+    $24F3-$24F4 (2)   0B->BD 14->55
+    $2538-$253A (3)   99->20 48->72 5F->57
+    $2543-$2545 (3)   50->B6 34->57 4A->EA
+    $261A-$261C (3)   85->4C 1F->AF 84->56
+    $2772-$2772 (1)   3C->4B
+    $2F23-$2F25 (3)   B9->20 60->ED 5F->59
+    $44D6-$44D7 (2)   D0->A0 59->58
+    $45CB-$45CD (3)   0A->20 26->C9 77->59
+    $462C-$462D (2)   50->D7 34->53
+    $4CC1-$4CC2 (2)   E0->62 53->57
+    $4CC9-$4CCA (2)   F0->62 53->56
+    $4CD1-$4CD2 (2)   D0->62 53->55
+    $4CD7-$4CD8 (2)   EA->62 59->54
+    $4CE1-$4CE2 (2)   EA->62 59->54
+    $4F55-$4F55 (1)   12->16
+    $4F59-$4F59 (1)   12->16
+    $5FC9-$5FC9 (1)   05->03
+
+# OULTON: 111 residue bytes, 57 beyond the control
+    $1248-$124A (3)   B9->20 05->72 59->56
+    $128A-$128B (2)   E0->1B 13->5A
+    $12FB-$12FD (3)   18->20 69->EF 03->54
+    $13CA-$13CB (2)   DA->72 13->55
+    $1427-$1428 (2)   DA->72 13->55
+    $1594-$1595 (2)   00->A1 0C->57
+    $1947-$1948 (2)   33->C8 19->56
+    $1FE9-$1FE9 (1)   A6->A2
+    $248B-$248D (3)   B0->4C 2B->BC 4C->56
+    $24EA-$24EA (1)   0E->0D
+    $24F3-$24F4 (2)   0B->BD 14->55
+    $2538-$253A (3)   99->20 48->72 5F->57
+    $2543-$2545 (3)   50->E8 34->53 4A->EA
+    $261A-$261C (3)   85->4C 1F->AF 84->56
+    $2772-$2772 (1)   3C->4B
+    $3574-$3574 (1)   00->04
+    $35F4-$35F4 (1)   03->0B
+    $44D6-$44D7 (2)   D0->A0 59->58
+    $45CB-$45CD (3)   0A->20 26->E7 77->59
+    $462C-$462D (2)   50->E1 34->59
+    $4CC1-$4CC2 (2)   E0->62 53->57
+    $4CC9-$4CCA (2)   F0->62 53->56
+    $4CD1-$4CD2 (2)   D0->62 53->55
+    $4CD7-$4CD8 (2)   EA->62 59->54
+    $4CE1-$4CE2 (2)   EA->62 59->54
+    $4F55-$4F55 (1)   12->16
+    $4F59-$4F59 (1)   12->16
+    $5FC9-$5FCB (3)   05->06 59->03 85->03
+
+# SNETTER: 112 residue bytes, 58 beyond the control
+    $1248-$124A (3)   B9->20 05->72 59->56
+    $128A-$128B (2)   E0->1B 13->5A
+    $12FB-$12FD (3)   18->20 69->EF 03->54
+    $1310-$1311 (2)   29->A9 F8->10
+    $13CA-$13CB (2)   DA->72 13->55
+    $1427-$1428 (2)   DA->72 13->55
+    $1594-$1595 (2)   00->A1 0C->57
+    $1947-$1948 (2)   33->C8 19->56
+    $1FE9-$1FE9 (1)   A6->A2
+    $231B-$231B (1)   0F->00
+    $248B-$248D (3)   B0->4C 2B->BC 4C->56
+    $24EA-$24EA (1)   0E->0D
+    $24F3-$24F4 (2)   0B->BD 14->55
+    $2538-$253A (3)   99->20 48->72 5F->57
+    $2543-$2545 (3)   50->C8 34->53 4A->EA
+    $261A-$261C (3)   85->4C 1F->AF 84->56
+    $2772-$2772 (1)   3C->4B
+    $2F23-$2F25 (3)   B9->20 60->E8 5F->59
+    $44D6-$44D7 (2)   D0->A0 59->58
+    $45CB-$45CD (3)   0A->20 26->C7 77->59
+    $462C-$462D (2)   50->C1 34->59
+    $4CC1-$4CC2 (2)   E0->62 53->57
+    $4CC9-$4CCA (2)   F0->62 53->56
+    $4CD1-$4CD2 (2)   D0->62 53->55
+    $4CD7-$4CD8 (2)   EA->62 59->54
+    $4CE1-$4CE2 (2)   EA->62 59->54
+    $4F55-$4F55 (1)   12->16
+    $4F59-$4F59 (1)   12->16
+
+# CODE HOOKS — new entry points inside the track file ($5300-$5A25 after the swap)
+  BRANDS: 6 code hooks, 11 rebound data operands
+    $54F1  <- JSR patched in at $12FB
+    $5672  <- JSR patched in at $1248
+    $56AF  <- JMP patched in at $261A
+    $56BC  <- JMP patched in at $248B
+    $5772  <- JSR patched in at $2538
+    $59E9  <- JSR patched in at $45CB
+    data operands rebound to: $5462 $54EB $5562 $5572 $55BD $5662 $56C8 $5762 $57A1 $58A0 $5A1B
+  DONING: 7 code hooks, 12 rebound data operands
+    $54EF  <- JSR patched in at $12FB
+    $5672  <- JSR patched in at $1248
+    $56AF  <- JMP patched in at $261A
+    $56BC  <- JMP patched in at $248B
+    $5772  <- JSR patched in at $2538
+    $59C9  <- JSR patched in at $45CB
+    $59ED  <- JSR patched in at $2F23
+    data operands rebound to: $53D7 $53E9 $5462 $5562 $5572 $55BD $5662 $56C8 $5762 $5779 $58A0 $5A1B
+    2-byte changes that are NOT a track-file pointer (unclassified): $1310
+  OULTON: 6 code hooks, 11 rebound data operands
+    $54EF  <- JSR patched in at $12FB
+    $5672  <- JSR patched in at $1248
+    $56AF  <- JMP patched in at $261A
+    $56BC  <- JMP patched in at $248B
+    $5772  <- JSR patched in at $2538
+    $59E7  <- JSR patched in at $45CB
+    data operands rebound to: $5462 $5562 $5572 $55BD $5662 $56C8 $5762 $57A1 $58A0 $59E1 $5A1B
+  SNETTER: 7 code hooks, 11 rebound data operands
+    $54EF  <- JSR patched in at $12FB
+    $5672  <- JSR patched in at $1248
+    $56AF  <- JMP patched in at $261A
+    $56BC  <- JMP patched in at $248B
+    $5772  <- JSR patched in at $2538
+    $59C7  <- JSR patched in at $45CB
+    $59E8  <- JSR patched in at $2F23
+    data operands rebound to: $5462 $5562 $5572 $55BD $5662 $56C8 $5762 $57A1 $58A0 $59C1 $5A1B
+    2-byte changes that are NOT a track-file pointer (unclassified): $1310
+
+  code-hook targets common to every expansion track: $5672 $56AF $56BC $5772
+
+# patched by EVERY expansion track (52 bytes) — the shared hook mechanism (ModifyGameCode / CallTrackHook):
+    $1248-$124A (3)
+    $128A-$128B (2)
+    $12FB-$12FD (3)
+    $13CA-$13CB (2)
+    $1427-$1428 (2)
+    $1594-$1595 (2)
+    $1947-$1948 (2)
+    $1FE9-$1FE9 (1)
+    $248B-$248D (3)
+    $24EA-$24EA (1)
+    $24F3-$24F4 (2)
+    $2538-$253A (3)
+    $2543-$2545 (3)
+    $261A-$261C (3)
+    $2772-$2772 (1)
+    $44D6-$44D7 (2)
+    $45CB-$45CD (3)
+    $462C-$462D (2)
+    $4CC1-$4CC2 (2)
+    $4CC9-$4CCA (2)
+    $4CD1-$4CD2 (2)
+    $4CD7-$4CD8 (2)
+    $4CE1-$4CE2 (2)
+    $4F55-$4F55 (1)
+    $4F59-$4F59 (1)
+
+# BRANDS-only: 7 bytes
+    $3574-$3574 (1)
+    $35F4-$35F4 (1)
+    $5FC9-$5FCD (5)
+# DONING-only: 9 bytes
+    $1310-$1311 (2)
+    $231B-$231B (1)
+    $24DF-$24E0 (2)
+    $2F23-$2F25 (3)
+    $5FC9-$5FC9 (1)
+# OULTON-only: 5 bytes
+    $3574-$3574 (1)
+    $35F4-$35F4 (1)
+    $5FC9-$5FCB (3)
+# SNETTER-only: 6 bytes
+    $1310-$1311 (2)
+    $231B-$231B (1)
+    $2F23-$2F25 (3)
