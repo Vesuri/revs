@@ -77,6 +77,10 @@ public:
        (docs/entrypoint-sweep.md) enumerates every such site up front. */
     virtual void indirectJmp(uint16_t addr) { (void)addr; }
 
+    /* A BRK executed at `pc` — a software interrupt through BRKV, not a no-op.  See
+       platform_c.h; the default implementation reports it the same way smcUnhandled does. */
+    virtual void brk(uint16_t pc);
+
     /* A self-modifying instruction held a value the transpiler's SMC_SITES table does
        not cover (an unlisted opcode byte, or a patched branch offset pointing outside
        the enclosing routine).  The generated C cannot express what the 6502 would

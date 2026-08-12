@@ -39,6 +39,20 @@ volatile uint16_t      g_smcSite    = 0;
 volatile uint16_t      g_smcValue   = 0;
 volatile unsigned long g_smcUnhandled = 0;
 
+volatile uint16_t      g_brkPC   = 0;
+volatile unsigned long g_brkCount = 0;
+
+void Platform::brk(uint16_t pc) {
+    g_brkPC = pc;
+    g_brkCount++;
+#if !defined(REVS_PLATFORM_AMIGA)
+    fprintf(stderr, "\nBRK at $%04X — the 6502 trapped through BRKV.  If this is one of the\n"
+                    "  $7Bxx targets, the engine called into a page nothing ever loads;\n"
+                    "  docs/static-map.md Open items has the evidence so far.\n", pc);
+    abort();
+#endif
+}
+
 void Platform::smcUnhandled(uint16_t site, uint16_t value) {
     g_smcSite  = site;
     g_smcValue = value;

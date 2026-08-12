@@ -36,6 +36,10 @@ void platform_mos_call(uint16_t entry) {
     if (platform) platform->mosCall(entry);
 }
 
+void platform_brk(uint16_t pc) {
+    if (platform) platform->brk(pc);
+}
+
 void platform_smc_unhandled(uint16_t site, uint16_t value) {
     if (platform) platform->smcUnhandled(site, value);
 }

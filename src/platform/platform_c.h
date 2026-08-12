@@ -31,6 +31,13 @@ void platform_indirect_jmp(uint16_t addr);
    See docs/bbc-hardware.md §MOS calls. */
 void platform_mos_call(uint16_t entry);
 
+/* A BRK was executed at `pc`.  On the BBC this is a software interrupt, not a no-op: it
+   vectors through BRKV ($0202) into the MOS error handler and does NOT return to the
+   following instruction.  Revs contains four routines that are a single $00 byte, called
+   from seven sites (docs/static-map.md §Open items) — reaching one means the engine
+   called into memory that holds no code, so this reports rather than returning quietly. */
+void    platform_brk(uint16_t pc);
+
 /* A self-modifying instruction was reached holding a value the transpiler's SMC_SITES
    table does not cover — an opcode slot with an unlisted byte, or a patched branch offset
    pointing outside the enclosing routine's instruction starts.  This is NOT a recoverable

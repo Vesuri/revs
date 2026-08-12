@@ -184,7 +184,7 @@ VASMFLAGS = -m68010 -Felf -quiet -x -no-opt -nowarn=62 $(EXTRA_VASMDEFS)
 # code inside processBlitterQueue).  `--undefined=<sym>` makes the symbol a gc ROOT, at zero
 # runtime cost.  `__attribute__((retain))` does NOT work here — it is ignored on this target.
 # Add a symbol here the moment you add a counter; `make probe-audit` enforces it on every link.
-PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue
+PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCount g_brkPC
 
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \
             $(addprefix -Wl$(COMMA)--undefined=,$(PROBE_SYMS))

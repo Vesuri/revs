@@ -225,6 +225,18 @@ SYMBOL_NOTES = {}
 # raw hex.  Indexed / indirect / 16-bit-pointer accesses keep raw hex.
 VAR_NAMES = {}
 
+def sanitize_note(note):
+    """Make a symbols.csv note safe to paste into a C comment.
+
+    Strips the CSV quoting and neutralises any `*/`, which would otherwise CLOSE the
+    generated doc-comment early and turn the rest of the note into stray C tokens — a
+    build break caused by a documentation edit, in a file nobody hand-edits.  Cheap to
+    prevent, confusing to diagnose."""
+    note = note.strip()
+    if len(note) >= 2 and note[0] == '"' and note[-1] == '"':
+        note = note[1:-1]
+    return note.replace('*/', '* /').strip()
+
 def load_symbols(path):
     sym = {}
     SYMBOL_NOTES.clear()
@@ -240,7 +252,7 @@ def load_symbols(path):
         except ValueError: continue
         sym[addr_i] = name
         if len(parts) >= 5 and parts[4].strip():
-            SYMBOL_NOTES[addr_i] = parts[4].strip()
+            SYMBOL_NOTES[addr_i] = sanitize_note(parts[4])
         # Collect named RAM state for mem[MEM_*] substitution + AtariMem.h.
         if len(parts) >= 4 and parts[2].strip() == 'var' and parts[3].strip() == '0':
             VAR_NAMES[addr_i] = name
@@ -478,13 +490,27 @@ def parse_listing(path, symbols):
             func_insns[fn_start].append(ins)
 
     # Assemble final list in address order.
+    dropped_rom = []
     for (start, end, name) in func_ranges:
         insns = func_insns.get(start, [])
         if not insns: continue
+        # Ghidra creates a "function" at each MOS entry it sees JSR'd ($FFE0/$FFEE/$FFF1/
+        # $FFF4) and decodes the $00 our image holds there as BRK.  Those are ROM entries,
+        # not routines: every call to them is emitted as platform_mos_call(), so a
+        # definition here would be dead code that merely looks like an implementation of
+        # the OS.  Drop them, and say so.
+        if start >= ROM_BASE:
+            dropped_rom.append((start, name))
+            continue
         # Override name from symbols if present.
         final_name = symbols.get(start, name)
         funcs.append({'start': start, 'end': end,
                       'name': final_name, 'insns': insns})
+
+    if dropped_rom:
+        print('[rom] dropped ' + str(len(dropped_rom)) + ' Ghidra function(s) in ROM space '
+              '(MOS entries, intercepted as calls): '
+              + ', '.join(f'${a:04X}' for a, _ in dropped_rom))
 
     # Attach orphan instruction runs (code Ghidra left in inter-function gaps)
     # to the function they fall through into.  See attach_orphan_runs.
@@ -884,7 +910,13 @@ def translate_insn(insn, func, all_funcs_by_start, symbols, local_targets,
         lines.append('    NOP();')
         return lines
     if mnem == 'BRK':
-        lines.append('    /* BRK: software interrupt — ignored in C translation */;')
+        # BRK is NOT a no-op on the BBC: it pushes PC+2/P and vectors through BRKV
+        # ($0202) into the MOS error handler, which does not return to the next
+        # instruction.  Translating it as a comment (the Atari port's choice, where the
+        # engine had no BRKs) would make a routine that traps look like a routine that
+        # falls through — and Revs reaches four of these, see report_brk_targets.
+        lines.append(f'    platform_brk(0x{addr:04X});')
+        lines.append('    return;')
         return lines
 
     # --- Flag ops ---
@@ -1646,6 +1678,7 @@ def main():
     # from the first generation instead of being discovered one runtime hang at a time.
     # -----------------------------------------------------------------------
     report_smc_coverage(funcs)
+    report_brk_targets(funcs, symbols)
     report_spin_candidates(funcs, symbols)
 
 # ---------------------------------------------------------------------------
@@ -1672,6 +1705,41 @@ def report_smc_coverage(funcs):
     print(f'SMC: {len(SMC_SITES)} patched instructions emitted as runtime-dispatched '
           f'({", ".join(f"{k}={v}" for k, v in sorted(by_kind.items()))}) '
           f'in {len(owners)} routines: {", ".join(owners)}')
+
+def report_brk_targets(funcs, symbols):
+    """Report every routine whose whole body is a BRK, with its callers.
+
+    A `JSR` to an address holding $00 is a call into memory that contains no code.  Revs
+    has four such targets — $7B00, $7B4A, $7B9C, $7BE2 — reached from seven sites, and the
+    page they live in is loaded by NOTHING: REVS2 covers $1200-$6FFF, a track file
+    $70DB-$7814, and a real BBC has leftover front-end text there (docs/static-map.md
+    §Open items).  Whether those calls are reachable is unresolved: the one measurement
+    available (tools/bbc_probe_unmapped_calls.mjs) shows zero executions and zero writes
+    to the page, but it also never gets past the front-end gate at $6560, which is exactly
+    what stands between it and the call sites.
+
+    Emitting them as empty functions would have made "calls into nothing" indistinguishable
+    from "works".  They now trap through platform_brk(), so the first target run answers
+    the question instead of hiding it."""
+    lone = {}
+    for f in funcs:
+        if len(f['insns']) == 1 and f['insns'][0]['mnem'] == 'BRK':
+            lone[f['start']] = f['name']
+    if not lone:
+        print('BRK targets: none')
+        return
+    callers = defaultdict(list)
+    for f in funcs:
+        for ins in f['insns']:
+            if ins['mnem'] not in ('JSR', 'JMP'): continue
+            m = re.match(r'^0x([0-9a-fA-F]+)$', (ins['op'] or '').strip())
+            if m and int(m.group(1), 16) in lone:
+                callers[int(m.group(1), 16)].append(ins['addr'])
+    print(f'BRK-only targets: {len(lone)} routines that are a single $00 — calls into them '
+          f'trap via platform_brk() rather than silently returning')
+    for a, n in sorted(lone.items()):
+        cs = ', '.join(f'${c:04X}' for c in sorted(callers.get(a, []))) or 'no callers'
+        print(f'  ${a:04X} {n:<12} called from: {cs}')
 
 def report_spin_candidates(funcs, symbols):
     """List the tight loops that are candidates for a SPINWAIT hook, instead of guessing
