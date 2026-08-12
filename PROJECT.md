@@ -26,19 +26,13 @@ project is deliberately built in the order that document argues for.
 | **Steering / input** | **Mouse + keyboard.** The BBC's own `SHIFT+f1` keyboard mode is the faithful precedent; the mouse replaces the uPD7002 analogue axis. No joystick requirement |
 | **Host renderer** | **None.** Not an SDL port — `make validate` + host algebra proofs only |
 | Reference material | Moxon's annotated reconstruction is a **map, not a source**: no licence, so never copied from. `docs/reference-sources.md` |
+| **A sixth circuit** | **Yes — include the Nürburgring.** Crammond's own track, from the C64 *Revs+* (© Firebird 1987); on the BBC it exists only as Mark Moxon's data conversion, whose engine is byte-identical to the 1986 release (no game code involved). Clean route: **extract the track from a C64 Revs+ image ourselves**, putting every circuit on the same Crammond-original footing rather than copying Moxon's conversion. Cost: BBC and C64 track formats differ and the expansion tracks are executable hook programs, so it means reproducing a conversion, not copying a file. Scheduled in Phase 5 (five BBC tracks first). `docs/reference-sources.md` §A sixth circuit |
 
 ## Open decisions
 
 1. **Machine target.** RoF ended up needing 1 MB and not fitting a bare 512 KB A500. Revs is a
    much smaller binary (24 KB engine) but the track/render buffers are unknown. Decide the minimum
    spec when the first real measurement exists, not before.
-2. **A sixth circuit?** The Nürburgring is Crammond's own track from the C64 Revs+ (© Firebird
-   1987); on the BBC it exists only as Mark Moxon's data conversion. Since his disc's engine is
-   byte-identical to the 1986 release, no game code is involved — so the clean route is to
-   **extract the track from a C64 Revs+ image ourselves**, putting every circuit in the port on the
-   same Crammond-original footing. Cost: the BBC and C64 track formats differ and the expansion
-   tracks are executable hook programs, so it means reproducing a conversion, not copying a file.
-   `docs/reference-sources.md` §A sixth circuit.
 
 ## The source binary
 
