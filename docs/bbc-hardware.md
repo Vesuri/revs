@@ -41,31 +41,48 @@ See `docs/reference-sources.md`.
 The whole I/O window is the contiguous `$FC00-$FEFF`; `src/cpu/bus.h` routes it to
 `Platform::hwRead`/`hwWrite` and everything else to `mem[]`.
 
-| Range | Device | Relevance to Revs |
-|---|---|---|
-| `$FC00-$FCFF` | FRED (1 MHz bus) | **[ASSUMED]** unused |
-| `$FD00-$FDFF` | JIM (1 MHz bus, paged) | **[ASSUMED]** unused |
-| `$FE00-$FE07` | **6845 CRTC** | screen address, sizing, sync — the analogue of ANTIC's display list, but a register set rather than a program |
-| `$FE08-$FE1F` | 6850 ACIA + serial ULA | **[ASSUMED]** unused |
-| `$FE20-$FE2F` | **Video ULA** | `$FE20` control (mode/pixel rate/flash), `$FE21` palette — the analogue of GTIA's colour registers |
-| `$FE30-$FE3F` | ROM select latch | paged ROM / shadow banking |
-| `$FE40-$FE5F` | **System VIA** | keyboard, SN76489 sound, ADC start, **vsync + timer IRQs** |
-| `$FE60-$FE7F` | User VIA | printer / user port |
-| `$FE80-$FE9F` | 1770/8271 FDC | disc — Revs loads track data from it |
-| `$FEC0-$FEDF` | **uPD7002 ADC** | **the analogue joystick — Revs's steering input** |
-| `$FEE0-$FEFF` | Tube | — |
+⭐ **MEASURED.**  The table below is now the sweep's output, not general BBC knowledge — 19
+registers across 4 devices, agreed independently by `tools/sweep_entrypoints.py` and
+`ghidra_scripts/DumpHwAccesses.java`.  Full site lists and what each one implies:
+**`docs/static-map.md`**; regenerate with `make sweep` / `disasm/hw-access.md`.
 
-### The three that actually matter
+| Range | Device | Revs's actual use |
+|---|---|---|
+| `$FC00-$FCFF` | FRED (1 MHz bus) | **[DERIVED]** never touched |
+| `$FD00-$FDFF` | JIM (1 MHz bus, paged) | **[DERIVED]** never touched |
+| `$FE00-$FE01` | **6845 CRTC** | **[DERIVED]** written from one place, `$4DE0`/`$4DE6`, during setup |
+| `$FE08-$FE1F` | 6850 ACIA + serial ULA | **[DERIVED]** never touched |
+| `$FE20-$FE21` | **Video ULA** | **[DERIVED]** ⭐ control at `$FE20` and the 16-entry palette at `$FE21` are rewritten **mid-frame, per raster band, from the IRQ handler** — this is where the visual character lives |
+| `$FE30-$FE3F` | ROM select latch | **[DERIVED]** never touched |
+| `$FE40-$FE5F` | **System VIA** | **[DERIVED]** T1 latch/counter, ACR, IFR, IER — all written once, during setup at `$4E11-$4E47`.  ⚠ *Not* the game's interrupt source |
+| `$FE60-$FE7F` | **User VIA** | **[DERIVED]** ⭐ the game's real interrupt source: **T1 timeout drives the 50 Hz body**, and T2 is read as a free-running clock from six sites |
+| `$FE80-$FE9F` | 1770/8271 FDC | **[DERIVED]** never touched — the BASIC front end did all the loading |
+| `$FEC0-$FEDF` | uPD7002 ADC | **[DERIVED]** ⭐ **never addressed directly.**  The steering is read via `OSBYTE 128`, configured via `OSBYTE 190` |
+| `$FEE0-$FEFF` | Tube | **[DERIVED]** never touched |
+
+### The three that actually matter — and one correction
 
 - **Video ULA + 6845** define the screen composition.  This is the piece with **no Atari
   counterpart in the tooling**: the display-list analyser skill has to be re-tooled for
-  CRTC+ULA (`docs/bbc-reference-loop.md` step 5).  Expect palette tricks and mid-frame register
-  changes to be where the visual character lives, and expect them to map onto copper MOVEs.
-- **System VIA** carries the 50 Hz vsync interrupt — the thing the Amiga port replaces with the
-  real VERTB handler.
+  CRTC+ULA (`docs/bbc-reference-loop.md` step 5).  The guess that "palette tricks and mid-frame
+  register changes are where the visual character lives" was right, and it is now measured: the
+  IRQ handler runs a **5-state raster-band machine** (`$4F43`), each band setting a ULA mode plus
+  a full 16-entry palette — one band's palette read from a table at `$3468`, another *computed* by
+  stepping the high nibble.  `docs/static-map.md` has the code.
+- ⚠ **CORRECTION — the 50 Hz body is a USER VIA T1 timer interrupt, not System VIA vsync.**  The
+  handler at `$4E5C` (claimed via `IRQ1V`) opens with `LDA $FE6D / AND #$40` — the User VIA T1
+  timeout flag — acknowledges it, and chains to the saved previous handler otherwise.  The System
+  VIA registers are written once at setup and never again.  So "System VIA 50 Hz vsync IRQ →
+  `INTB_VERTB`" in the mapping table below, and in `docs/amiga-arch.md`, is **too simple**: this is
+  a raster-timed timer chain that repaints the palette mid-frame, which is copper work with only
+  the band-0 boundary belonging in VERTB.  Resolve this before Phase 5 designs the copper list.
 - **uPD7002 ADC** is the steering.  A racing sim reading an analogue axis is a *different* input
   problem from a digital joystick, and it is worth getting exactly right early: the feel of the
   game is in it.
+  ⚠ **But Revs never touches the ADC registers.**  It reads the axis through **`OSBYTE 128`**
+  (`$168E`, `$5041`) and configures resolution through **`OSBYTE 190`** (`$3879`).  So the steering
+  seam is in `Platform::mosCall`, and `bus.h` has nothing to intercept — the opposite of what the
+  mapping table below implied.
   **Decision: the Amiga port uses mouse + keyboard** (user, 2026-08-12).  The BBC's own
   `SHIFT+f1` keyboard mode is the faithful precedent for digital steering; the mouse stands in for
   the analogue axis.  Note the game has a `HookJoystick` per track and a "SPACE — amplify
@@ -80,13 +97,20 @@ The Atari port simply *replaced* the Atari OS: the game's own code was self-cont
 the OS ROM was mostly a source of shadow registers.  **Revs runs under the MOS.**  It reaches the
 keyboard, the ADC, the disc and the screen through OS entry points:
 
-| Entry | Call | Typical use |
-|---|---|---|
-| `$FFF4` | **OSBYTE** | keyboard scan, ADC read, cursor/flash control, and dozens more (A = reason code) |
-| `$FFF1` | **OSWORD** | multi-byte requests — read line, read/write clock, disc access (A = reason code, XY = control block) |
-| `$FFEE` | OSWRCH | write character (VDU) |
-| `$FFE0` | OSRDCH | read character |
-| `$FFDD` | OSFILE / `$FFDA` OSARGS / `$FFD7` OSBGET / `$FFD4` OSBPUT / `$FFD1` OSGBPB / `$FFCE` OSFIND | filing system |
+⭐ **MEASURED — the list is complete: four entries, 17 call sites.**  `docs/static-map.md` has
+every site with its reason code.  **Revs calls no filing-system entry at all** (no OSFILE, OSARGS,
+OSBGET, OSBPUT, OSGBPB, OSFIND) — the BASIC front end did all the loading, so the engine never
+touches the disc.
+
+| Entry | Call | Sites | Reason codes Revs uses |
+|---|---|---|---|
+| `$FFF4` | **OSBYTE** | 10 | `129` negative INKEY (the keyboard); **`128` read ADC — the steering**; `190` ADC conversion type; `154` write the ULA control register via its OS copy; `21` flush a buffer; `4` cursor-key behaviour; `2` select input stream; `126` acknowledge ESCAPE |
+| `$FFF1` | **OSWORD** | 2 | **`8` define a sound ENVELOPE** — so sound goes through the MOS's scheduler, not the SN76489 directly; `10` read a character definition |
+| `$FFEE` | OSWRCH | 4 | VDU output (`127`, `7`, `156`, one from a variable) |
+| `$FFE0` | OSRDCH | 1 | read a character |
+| — | filing system | **0** | **[DERIVED]** never called |
+
+Plus, in the loader stub only: `OSBYTE 200,3` and `OSBYTE 140,0`.
 
 These are **not** bus addresses — they are `JSR` targets into ROM, so `bus.h` never sees them.
 They are intercepted as MOS calls in the transpiler / native layer and serviced by
@@ -94,7 +118,10 @@ They are intercepted as MOS calls in the transpiler / native layer and serviced 
 
 **The discipline: enumerate every MOS call Revs makes, from the disassembly, BEFORE implementing
 any of them.**  Same reasoning as the entry-point sweep — a MOS call you did not know about is a
-behaviour you will reason about wrongly.  The list belongs in this file as it is derived.
+behaviour you will reason about wrongly.  ✅ **Done** (Phase 2, table above).  ⚠ The reason codes
+are recovered by a nearest-preceding-`LDA #imm` heuristic, so they are **[DERIVED, heuristic]** —
+and the *parameters* (X/Y) at the ADC and buffer-flush sites are not read out yet, which is what
+an implementation actually needs.
 
 Also relevant, and already visible in the BASIC front end: `*FX21` in `!BOOT` is `OSBYTE 21`
 (flush a buffer); `*FX200,3` in `REVINST`/`REVSMEN` disables ESCAPE and clears memory on BREAK;
@@ -111,10 +138,14 @@ reachable are enumerated in `docs/entrypoint-sweep.md` §2 — **IRQ1V (`$0204`)
 
 ## Screen modes
 
-**[ASSUMED]** Revs is generally described as using a two-part display: a graphics mode for the
-3D view plus a text/dashboard area, which on a BBC means **mid-frame register changes** rather
-than two independent regions.  Confirm from the CRTC/ULA write trace before designing the copper
-list; do not build a copper layout on this paragraph.
+**[DERIVED]** Revs uses a multi-band display built by **mid-frame register changes**, not two
+independent regions — as guessed, and now measured.  The IRQ handler at `$4E5C` dispatches on a
+band counter at `$4F43` with five states, and each band writes the ULA control register (`$88` for
+one band, `$C4` for another) followed by all 16 palette entries.  So the viewport needs **at least
+four copper bands**, one of them with a *computed* palette.  `docs/static-map.md` has the
+disassembly.  ⚠ Still to derive before the copper list is designed: which scanlines the bands
+start on (the T1 reload values at `$4F01`/`$4F04` and the CRTC setup at `$4DE0`), and what `$3468`
+holds.
 
 The Amiga side of the mapping (region splits, pointers-before-colours, band rules) is in
 `docs/amiga-lessons.md`.
@@ -125,9 +156,9 @@ The Amiga side of the mapping (region splits, pointers-before-colours, band rule
 |---|---|
 | 6845 CRTC + Video ULA | copper list + bitplanes |
 | Video ULA palette writes (incl. mid-frame) | copper `COLORxx` MOVEs at an end-of-previous-line WAIT |
-| System VIA 50 Hz vsync IRQ | the real `INTB_VERTB` handler (vector takeover) |
-| SN76489 (3 tone + 1 noise) | Paula (4 channels) |
-| uPD7002 ADC steering | **mouse + keyboard** (decided) — reproduce the response curve from the binary |
+| ⚠ **User VIA T1 timer IRQ** (not System VIA vsync) — a raster-timed chain | `INTB_VERTB` for the frame boundary **plus copper MOVEs for the mid-frame band changes**. The one-to-one "vsync → VERTB" mapping does not hold; see the correction above |
+| ⚠ SN76489 **via the MOS sound scheduler** (`OSWORD 8` defines envelopes; the chip is never addressed) | Paula (4 channels) — but the envelope semantics have to be reproduced, not just the tones |
+| ⚠ ADC steering **via `OSBYTE 128`**, never the `$FEC0` registers | **mouse + keyboard** (decided), serviced in `Platform::mosCall` — there is nothing for `bus.h` to intercept |
 | Keyboard via OSBYTE | CIA-A serial-port keyboard handler |
-| Disc-loaded track data | embedded in the binary (see `incbin.s`) |
+| Disc-loaded track data (the engine itself never calls the filing system) | embedded in the binary (see `incbin.s`) |
 | MOS `$C000-$FFFF` | `Platform::mosCall` for the calls Revs actually makes |
