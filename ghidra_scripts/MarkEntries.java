@@ -27,7 +27,13 @@ public class MarkEntries extends GhidraScript {
                 int comma = line.indexOf(',');
                 if (comma < 0) { printerr("MarkEntries: bad line (no comma): " + line); continue; }
                 String hex  = line.substring(0, comma).trim();
-                String name = line.substring(comma + 1).trim();
+                String rest = line.substring(comma + 1).trim();
+                // rest is "name" or "name,note" — the note may be quoted and contain commas.
+                int comma2 = rest.indexOf(',');
+                String name = (comma2 < 0 ? rest : rest.substring(0, comma2)).trim();
+                if (hex.equalsIgnoreCase("addr")) continue;   // the CSV header
+                if (hex.startsWith("0x") || hex.startsWith("0X")) hex = hex.substring(2);
+                if (hex.startsWith("$")) hex = hex.substring(1);
                 long addrVal;
                 try {
                     addrVal = Long.parseLong(hex, 16);

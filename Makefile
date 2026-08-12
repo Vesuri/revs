@@ -10,6 +10,9 @@
 ##   make                     the headless host runner (build/revs)
 ##   make gen                 regenerate the transliterated C from the Ghidra listing
 ##   make image               rebuild disasm/revs_mem.bin from revs.ssd (TRACK=SILVER etc.)
+##   make runtime             replay the engine's startup relocation -> revs_runtime.bin
+##                            ⭐ THIS, not revs_mem.bin, is what to disassemble
+##   make sweep               the entry-point sweep report (docs/entrypoint-sweep.md)
 ##   make endian-lint         fail if anything aliases mem[] as uint16_t*/uint32_t*
 ##
 ## Visual ground truth: jsbeeb / b2 on the real disc (docs/bbc-reference-loop.md).
@@ -51,7 +54,7 @@ CXX_OBJS := $(CXX_SRCS:.cpp=.o)
 OBJS     := $(C_OBJS) $(CXX_OBJS)
 TARGET   := build/revs
 
-.PHONY: all clean gen validate image endian-lint
+.PHONY: all clean gen validate image runtime sweep endian-lint
 
 all: $(TARGET)
 
@@ -103,3 +106,20 @@ endian-lint:
 
 clean:
 	rm -f $(OBJS) $(TARGET) tools/validate_native.o build/validate_native
+
+# ⭐ Replay the engine's own startup unpack -> disasm/revs_runtime.bin.
+# REVS2 relocates itself before running, so revs_mem.bin is NOT the layout the engine
+# executes.  THIS is the image to disassemble.  Full mechanism: tools/relocate.py.
+#   make runtime                                     from disasm/revs_mem.bin
+#   make runtime VERIFY="tmp/dump_SILVER_before.bin tmp/dump_SILVER_after.bin"
+#                                                    cross-check against a real BBC
+runtime:
+	python3 tools/relocate.py $(if $(VERIFY),--verify $(VERIFY),)
+
+# The entry-point sweep report (docs/entrypoint-sweep.md, docs/static-map.md).
+#   make sweep                       -> disasm/sweep.txt
+#   make sweep TRACE=tmp/trace_SILVER.bin  also cross-check against a real execution trace
+sweep:
+	python3 tools/sweep_entrypoints.py $(if $(TRACE),--trace $(TRACE),) > disasm/sweep.txt
+	@echo "wrote disasm/sweep.txt"
+	@sed -n '1,5p' disasm/sweep.txt
