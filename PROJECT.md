@@ -140,10 +140,11 @@ amiga/                  Amiga build infrastructure: Makefile, env.sh, run.sh, de
       `vbi=824 painted=803` on an `FPSCOUNT=1` build (≈48.8 FPS with nothing yet to draw) and
       `painted=0` on a plain one — display takeover, 50 Hz VERTB handler, copper list, frame pump
       and the embedded 6502 image all verified on the target.
-- [x] **Phase 1 — The BBC reference loop.** jsbeeb installed and working (`tools/jsbeeb`); all
-      five tracks' REVS2 engine range and track data confirmed byte-identical to
-      `disasm/revs_mem.bin`. Exit criteria met — remaining nice-to-haves (named-milestone
-      captures, the jsbeeb cycle-diff harness, b2, the CRTC/ULA analyser) no longer gate Phase 2.
+- [x] **Phase 1 — The BBC reference loop.** jsbeeb and b2 both installed and working
+      (`tools/jsbeeb`, `tools/b2`); all five tracks' REVS2 engine range and track data confirmed
+      byte-identical to `disasm/revs_mem.bin`. Exit criteria met — remaining nice-to-haves
+      (named-milestone captures, the jsbeeb cycle-diff harness, the CRTC/ULA analyser) are
+      deferred until a later phase actually needs them; they no longer gate Phase 2.
       `docs/bbc-reference-loop.md` status section.
 - [ ] **Phase 2 — Complete static map** ← next (entry-point sweep, hardware map, MOS-call inventory, naming)
 - [ ] Phase 3 — Transpiler quality, then generate
@@ -156,14 +157,11 @@ See `docs/phases.md` for exit criteria and the gating between phases.
 
 ## Immediate next step
 
-Phase 1 is under way: jsbeeb is installed and working, and Silverstone's REVS2 engine range +
-track data are confirmed byte-identical to `disasm/revs_mem.bin`. Remaining Phase 1 work:
+Phase 1 is done (exit criteria met — see status table above). **Phase 2 is next**: the entry-point
+sweep, the hardware-access map, the MOS-call inventory, and a first behavioural-naming pass into
+`disasm/symbols.csv` (`docs/phases.md` Phase 2, `docs/entrypoint-sweep.md`). This needs Ghidra set
+up (`tools/ghidra/`, ~2 GB), which hasn't happened yet in this repo.
 
-- Run the before/after dump for the other three expansion tracks (only Brands Hatch done so far),
-  and narrow the "after" sample point so the self-modifying-code diff isn't inflated by ordinary
-  gameplay-state mutation in the engine's own memory footprint (currently an upper bound, not a
-  precise hook inventory).
-- Capture reference state at named milestones (title, on the grid, a fixed lap) as committed files.
-- Build the jsbeeb cycle-diff harness for the physics core once there's a port to diff against.
-
-Full detail: `docs/bbc-reference-loop.md` status section.
+Deferred rather than blocking: named-milestone captures and the jsbeeb cycle-diff harness — both
+exist to check a *port's* behaviour against real hardware, and there's no port yet to check.
+Revisit when Phase 4 or 6 need them. Full detail: `docs/bbc-reference-loop.md` status section.
