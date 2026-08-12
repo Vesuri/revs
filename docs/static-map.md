@@ -410,31 +410,66 @@ loop at `$657C` (polling `$0E50` against a key table at `$39E0`), so only 310 of
 instructions ever ran.  It proves the walk covers what executed; it proves nothing about the rest.
 Driving Revs to real coverage needs the key table decoded — open item.
 
-## Static coverage, and what is still unclassified
+## Static coverage — 5327 unclassified bytes down to 685
 
-Of `$0B00-$78FF`: **14669 bytes decode as instructions**, 10665 are referenced as data by a
-decoded instruction, and **5327 are neither**.  Runs of 16+ bytes:
+Of `$0B00-$78FF`: **14669 bytes decode as instructions** and 10665 are named by an absolute
+operand.  The first pass left **5327** bytes that nothing accounted for.  Three additions cut that
+to **685**:
 
-| Run | Size | Content | Reading |
-|---|---|---|---|
-| `$3000-$306B` | 108 | binary | |
-| `$3200-$324F`, `$327E-$32CF` | 80, 82 | binary | |
-| `$41FB-$42CF`, `$42F5-$43CF` | 213, 219 | binary | |
-| `$5B14-$5E3F` | 812 | **all zero** | inside the X=0 zero-filled block `$5A80-$5E40` — workspace, explained |
-| `$66FF-$6E84` | 1926 | binary | overlaps the X=1 move's **dead source** `$64D0-$6C00` |
-| `$6F8A-$6FB1` | 40 | binary | |
-| `$7206-$77DA`, `$77E5-$78FF` | 1493, 283 | binary | the region the swap moved engine data *into* (`$70DB-$7800`) |
+**1. A zero-page pointer pass.**  An absolute-operand scan cannot see through `(zp),Y`, and Revs
+reaches most of its bulk data that way.  `Sweep.resolve_pointers()` finds what writes each half of
+a dereferenced pointer pair and resolves it:
 
-"Unclassified" here means *no decoded instruction names the address directly*.  Most of it is
-expected to be data reached through zero-page pointers, which no absolute-operand scan can see —
-so this list is a **work queue, not a defect list**.  `docs/entrypoint-sweep.md`'s definition of
-done requires every run classified before C is generated.
+| Pointer | Source | Entries |
+|---|---|---|
+| `($70),Y` | table pair `$07A8` (lo) / `$397C` (hi), set at `$5126`/`$5202` | 42 in-range |
+| `($72),Y` | table pair `$3AD0` / `$3B50`, set at `$4D88`/`$4D83` | 47 in-range — the text interpreter |
+| literals | `$3000`, `$3080`, `$4400`, `$4404` | |
+
+**2. Runs split at unpack-region boundaries.**  A run that straddles a boundary was being labelled
+by its first byte alone: `$66FF-$6E84` read as 1926 unexplained bytes, when `$66FF` was a one-byte
+overhang and `$6700-$6BFF` is the dead tail of the X=1 move's source.
+
+**3. The unpack's own leftovers named.**  The zero-filled workspace, the dead move sources, the
+`$70DB-$7800` window the swap filled with engine data, and — verified in a live dump — the track
+file's surviving tail: four checksum cells at `$7800-$7803` and then **the track name as ASCII at
+`$7804`** (`REVSSilverstone` + `$0D`).
+
+### A number that got better for the wrong reason, and was reverted
+
+Widening the pointer-source lookback from one instruction to four took "unexplained" to **zero**.
+It was wrong: the wider window matched unrelated `LDA table,X` instructions, and the index walk
+then fabricated a pointer target at nearly every page boundary — every run came back "body of a
+pointer-reached block".  **A coverage number that improves because the tool got looser is worse
+than no number**, so the lookback is back to one instruction and the comment in
+`tools/sweep_entrypoints.py` says why. The honest figure is 685, not 0.
+
+### The residual: 685 bytes, two runs, mechanism unknown
+
+| Run | Size | Content |
+|---|---|---|
+| `$6C00-$6E84` | 645 | 523 of 645 bytes zero; 58 are `$F0`; 27 distinct values |
+| `$6F8A-$6FB1` | 40 | 36 of 40 zero |
+
+Neither is inside a move source, a fill, or the swap window, and neither is pointed at.  Both are
+~85% zero with sparse values, which reads like a pre-initialised buffer.  What was ruled out:
+
+- **Not the runtime-patched rasteriser stores.**  Those looked like the obvious candidate — the
+  span plotters' `STA` operands are rewritten at `$19C0-$19CC` from a table pair, which is exactly
+  a mechanism that hides a destination from a static scan.  But the table (`$2B1E` hi / `$2B22` lo)
+  holds only four addresses and they are all in pages 5-6: **`$0554`, `$05A4`, `$0600`, `$0650`**.
+  Worth the detour anyway — it explains how one copy of the plotter serves four row buffers.
+- **Not proven dead by the trace.**  Zero writes landed there during the traced run, but that run
+  never left the front end, so this is no evidence either way.
+
+Recorded as the residual rather than argued away.  685 bytes of 27 K is a small enough surface to
+resolve by reading once the naming pass reaches the 3D pipeline, and `make sweep` prints the figure
+every time so it cannot quietly drift.
 
 ## Open items — what Phase 2 still owes
 
-1. **Classify the seven unclassified runs above.**  Zero-page-pointer data or unreachable code?
-   The lever is an indirect-addressing pass: resolve `LDA ($70),Y`-style accesses by finding what
-   writes the pointer.
+1. 🔧 **Classify the residual 685 bytes** — `$6C00-$6E84` and `$6F8A-$6FB1` (down from 5327; see
+   §Static coverage).  The indirect-addressing pass is done; these two need reading, not tooling.
 2. **Disassemble the track programs.**  The hook *inventory* is done (above); the hook *bodies*
    are not.  `$5300-$5A25` holds a program for four of the five circuits, and nothing has
    disassembled it yet.  Sweep it per track with the hook targets as roots.

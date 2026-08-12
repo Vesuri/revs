@@ -91,6 +91,13 @@ addr,name,type,is_hw,note
 0x6300,console_io,func,0,"OSBYTE 2 (select input stream) / OSBYTE 21 / OSRDCH / OSWRCH"
 
 ## ---- the rasteriser: $2C00-$2FFF, SELF-MODIFYING -----------------------------------------
+## ⭐ How the runtime patching actually works, for the two span plotters: $19BD-$19CC reads a
+## 4-entry address table pair and writes it straight into the operands of STA $2F4E and
+## STA $2F90.  So one copy of the plotter serves four destination row buffers, selected by
+## rewriting its own store address rather than by indexing.  That is why those buffers have no
+## static reference anywhere.
+0x2B1E,row_base_hi,table,0,"high bytes of the 4 row-buffer addresses patched into the span plotters' STA operands ($05A4 $0650 $0600 $0554). Read at $19BD/$19C6, written to $2F50/$2F92 and $2F4F/$2F91. ⚠ Only 4 entries: index 4+ reads into $2B26, which is code."
+0x2B22,row_base_lo,table,0,"low bytes of the same 4 row-buffer addresses"
 ## ⚠ The engine rewrites opcodes and operands in this region at runtime (24 sites,
 ## docs/static-map.md), and for Donington and Snetterton a track hook patches $2F23 as well.
 ## These routines cannot be transliterated faithfully — they need hand-written stubs in
@@ -100,6 +107,7 @@ addr,name,type,is_hw,note
 0x2FEE,road_span_advance,func,0,"[PROVISIONAL] called by both span plotters when a column runs past its bound"
 0x628F,colour_pattern_tbl,table,0,"4 entries, indexed by a value AND 3 — the pixel patterns for a 4-colour mode. Read by both the span plotters and $1C1C."
 0x1C1C,project_geometry,func,0,"[PROVISIONAL] 198 instructions, 14 shifts + 6 add/sub over a 22-cell zero-page window, reading colour_pattern_tbl — the largest arithmetic routine reached, and the likeliest projection/perspective step. Name it properly before relying on it."
+0x7804,track_name,table,0,"the track name as ASCII, CR-terminated -- REVSSilverstone followed by $0D. The tail of the track file, left in place because the unpack swap ends at $7800, so the checksum cells at $7800-$7803 and this string are the only parts of the loaded track file still at their DFS load address."
 0x7000,column_buffer,table,0,"[PROVISIONAL] 219 bytes, relocated here from $1500 by the unpack; written per column by road_span_plot"
 
 ## ---- the unpack stub (present in revs_mem.bin, dead once the engine runs) -----------------

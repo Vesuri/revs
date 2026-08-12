@@ -102,6 +102,36 @@ OS_VECTORS = {
 }
 HW_LO, HW_HI = 0xFC00, 0xFEFF
 
+# Regions the STARTUP UNPACK accounts for, so the coverage report can name them instead of
+# listing them as mysteries.  These come straight from `make runtime`'s printout
+# (tools/relocate.py); they are constants here because the sweep is handed an already-unpacked
+# image and should not have to re-derive the move table.
+#
+#   X=4 copy $1500-$15DB -> $7000     X=3 copy $1300-$1500 -> $0B00
+#   X=2 copy $5A80-$645C -> $0D00     X=1 copy $64D0-$6C00 -> $5FD0
+#   X=0 zero-fill $5A80-$5E40
+#
+# A move's SOURCE is dead once the engine is running, unless the destination overlaps it.
+UNPACK_REGIONS = [
+    (0x5A80, 0x5E40, "zero-filled workspace (the X=0 fill)"),
+    (0x6700, 0x6C00, "dead relocation staging (tail of X=1's source $64D0-$6C00)"),
+    (0x70DB, 0x7800, "engine data swapped up from $5300 (the track file went the other way)"),
+    # The swap stops at $7800, so the track file's own tail survives in place: four checksum
+    # cells the unpack decrements, then the track name as ASCII.  Verified in a live dump:
+    # $7804 reads "REVSSilverstone\r".
+    (0x7800, 0x7804, "the unpack's 4 checksum cells"),
+    (0x7804, 0x7815, "the track name, ASCII (\"REVSSilverstone\\r\") — the track file's tail, "
+                     "left in place because the swap ends at $7800"),
+    (0x7815, 0x7900, "past the end of the track file — never loaded"),
+]
+
+
+def unpack_region(a):
+    for lo, hi, why in UNPACK_REGIONS:
+        if lo <= a < hi:
+            return why
+    return None
+
 # Only the reason codes Revs is observed to use — a full OSBYTE table would be a BBC
 # reference manual, and the point here is a port checklist: each row is something
 # Platform::mosCall has to implement.
@@ -151,6 +181,7 @@ class Sweep:
         self.hw = defaultdict(lambda: [set(), set()])   # addr -> [reads, writes]
         self.selfmod = defaultdict(set)    # target -> {sites}
         self.bad = []              # (addr, opcode) undecodable
+        self.ptr_tables = []       # (zp, tbl_lo, tbl_hi, n_entries, site_lo, site_hi)
 
     def w16(self, a):
         return self.mem[a] | (self.mem[a + 1] << 8)
@@ -199,6 +230,84 @@ class Sweep:
                 if self.in_code(addr):
                     out.add(addr)
         return out
+
+    def resolve_pointers(self):
+        """Work out where the `(zp),Y` accesses actually point.
+
+        An absolute-operand scan sees nothing through a zero-page pointer, which is why 5327 bytes
+        of the code range looked unreferenced.  Most of Revs's bulk data is reached that way, so
+        without this the coverage report cannot tell "data nothing reaches" from "data reached by
+        a mechanism I did not model" — and those demand opposite responses.
+
+        For each zero-page pair a `(zp),Y` access uses, find what writes the two halves:
+
+          LDA #lo / STA $72  +  LDA #hi / STA $73        -> one literal target
+          LDA $3AD0,X / STA $72 + LDA $3B50,X / STA $73  -> a TABLE PAIR: one target per index
+
+        The table-pair case is the valuable one (it is how the text interpreter and the geometry
+        data are reached).  Returns {pointer target: [reason, …]}.
+
+        ⚠ This resolves the pointer's TARGET, not the length of the block it points at.  A run
+        containing a resolved target is explained as "something points here"; how far the data
+        extends is a separate question and is not guessed at.
+        """
+        order = sorted(self.insn)
+        pos = {a: i for i, a in enumerate(order)}
+        # which zero-page pairs are dereferenced
+        deref = set()
+        for a in order:
+            mn, mode, operand, n = self.insn[a]
+            if mode in (IZY, IZX):
+                deref.add(operand)
+        # what writes each half
+        srcs = defaultdict(list)     # zp addr -> [(kind, value, site)]
+        for a in order:
+            mn, mode, operand, n = self.insn[a]
+            if mn != "STA" or mode != ZP:
+                continue
+            if operand not in deref and (operand - 1) not in deref:
+                continue
+            # ⚠ Look back exactly ONE instruction.  Widening this to four was tried and had to
+            # be reverted: it matched an unrelated `LDA table,X` a few instructions earlier, the
+            # index walk below then fabricated a target for every index, and the report's
+            # "unexplained" count fell to zero by inventing a pointer to nearly every page.
+            # A coverage number that improves because the tool got looser is worthless.
+            for k in range(pos[a] - 1, max(-1, pos[a] - 2), -1):
+                pmn, pmode, poperand, _ = self.insn[order[k]]
+                if pmn != "LDA":
+                    continue
+                if pmode == IMM:
+                    srcs[operand].append(("imm", poperand, a))
+                elif pmode in (ABX, ABY):
+                    srcs[operand].append(("table", poperand, a))
+                elif pmode == ABS:
+                    srcs[operand].append(("cell", poperand, a))
+                break
+
+        targets = defaultdict(list)
+        for z in sorted(deref):
+            for klo, vlo, slo in srcs.get(z, ()):
+                for khi, vhi, shi in srcs.get(z + 1, ()):
+                    if klo == "imm" and khi == "imm":
+                        t = vlo | (vhi << 8)
+                        if self.in_code(t):
+                            targets[t].append(f"(${z:02X}),Y literal, set at ${slo:04X}/${shi:04X}")
+                    elif klo == "table" and khi == "table":
+                        # One target per index.  Walk indices while both halves yield an
+                        # in-range address; stop at the first that does not, rather than
+                        # assuming a length.
+                        found = 0
+                        for i in range(256):
+                            t = self.mem[(vlo + i) & 0xFFFF] | (
+                                self.mem[(vhi + i) & 0xFFFF] << 8)
+                            if not self.in_code(t):
+                                break
+                            targets[t].append(
+                                f"(${z:02X}),Y via table pair ${vlo:04X}/${vhi:04X}[{i}]")
+                            found += 1
+                        if found:
+                            self.ptr_tables.append((z, vlo, vhi, found, slo, shi))
+        return targets
 
     def run(self, seeds):
         work = list(seeds)
@@ -533,6 +642,21 @@ def main():
     P("")
 
     # --- static coverage: what is left over, and is it plausibly data? -------------------
+    ptr_targets = sw.resolve_pointers()
+    P("## Zero-page pointer targets — what the `(zp),Y` accesses reach")
+    P("# An absolute-operand scan cannot see through a pointer, so without this every")
+    P("# pointer-reached table looks like data nothing references.")
+    if sw.ptr_tables:
+        P("  pointer TABLE PAIRS (one target per index):")
+        for z, tlo, thi, n, slo, shi in sorted(set(sw.ptr_tables)):
+            P(f"    (${z:02X}),Y  <- ${tlo:04X} / ${thi:04X}  {n} in-range entries"
+              f"   set at ${slo:04X}/${shi:04X}")
+    lits = sorted(t for t, r in ptr_targets.items() if any("literal" in x for x in r))
+    if lits:
+        P("  literal pointer targets: " + " ".join(f"${t:04X}" for t in lits))
+    P(f"  {len(ptr_targets)} distinct addresses reached through a zero-page pointer")
+    P("")
+
     P("## Static coverage of the code range")
     referenced = set()
     for a, (mn, mode, operand, n) in sw.insn.items():
@@ -541,20 +665,49 @@ def main():
             if mode in (ABX, ABY):
                 referenced.update(range(operand, min(operand + 256, 0x10000)))
     unknown = [a for a in range(lo, hi)
-               if a not in covers and a not in referenced]
-    P(f"  decoded as instruction bytes : {len(covers)}")
-    P(f"  referenced as data           : {len(referenced & set(range(lo, hi)))}")
-    P(f"  neither  (the suspect set)   : {len(unknown)}")
-    P("  runs of 16+ unclassified bytes — each is either data nothing reaches or code no")
-    P("  entry point leads to.  Classify every one before generating C:")
+               if a not in covers and a not in referenced and a not in ptr_targets]
+    P(f"  decoded as instruction bytes  : {len(covers)}")
+    P(f"  referenced by an abs operand  : {len(referenced & set(range(lo, hi)))}")
+    P(f"  reached via a zp pointer      : {len(set(ptr_targets) & set(range(lo, hi)))}")
+    P(f"  none of the above (suspects)  : {len(unknown)}")
+    P("  runs of 16+ unclassified bytes, each with what accounts for it:")
+    unexplained = 0
     if unknown:
-        for s, e in runs(unknown):
+        # Split runs at unpack-region boundaries.  A run that straddles one would otherwise be
+        # labelled by its first byte alone and read as UNEXPLAINED for its whole length —
+        # $66FF-$6E84 did exactly that, hiding 1926 bytes behind a one-byte overhang.
+        bounds = sorted({b for lo_r, hi_r, _ in UNPACK_REGIONS for b in (lo_r, hi_r)})
+        split = []
+        for s0, e0 in runs(unknown):
+            cuts = [b for b in bounds if s0 < b <= e0]
+            start = s0
+            for c in cuts:
+                split.append((start, c - 1))
+                start = c
+            split.append((start, e0))
+        for s, e in split:
             if e - s + 1 < 16:
                 continue
             blk = bytes(mem[s:e + 1])
             kind = ("all zero" if not any(blk) else
                     "printable text" if all(0x20 <= c < 0x7F for c in blk) else "binary")
-            P(f"    ${s:04X}-${e:04X} ({e - s + 1:5d})  {kind}")
+            # A pointer target just inside or just before the run explains it even when the
+            # run itself starts a byte or two later (a table's first entry is often referenced
+            # absolutely and only the tail is pointer-reached).
+            near = [t for t in ptr_targets if s - 64 <= t <= e]
+            if near:
+                why = ("body of a pointer-reached block, head $%04X"
+                       % min(near, key=lambda t: abs(t - s)))
+            else:
+                why = unpack_region(s) or "UNEXPLAINED"
+            P(f"    ${s:04X}-${e:04X} ({e - s + 1:5d})  {kind:14s} {why}")
+            if why == "UNEXPLAINED":
+                unexplained += e - s + 1
+    P("")
+    P(f"  bytes in 16+ runs that nothing explains: {unexplained}")
+    P("  ^ THIS is the number that has to reach zero (or be argued away one run at a time)")
+    P("    before C is generated — not the raw suspect count, most of which is data the")
+    P("    unpack or a pointer accounts for.")
     P("")
 
     if args.trace:
