@@ -115,11 +115,15 @@ before treating it as settled (open item below).
 `$0204/$0205`, from `$4E4F/$4E54`.  Nothing writes BRKV, EVNTV, or any filing-system vector.
 
 ⚠ The sweep also reports 33 **indexed** stores whose 256-byte span could technically reach the
-vector page — `STA $013B,X`, `STA $018C,Y`, and so on.  All have bases in `$0114-$01A4`, which is
-page 1 used as per-car object arrays; the highest (`$01A4`) would need an index of `$5E` to touch
-`$0202`, far beyond the field size.  **[DERIVED, not proven]** — the index ranges have not been
-bounded from the code, only judged.  Listed rather than silently dropped, because a computed
-vector write is exactly the thing that is invisible until it bites.
+vector page — `STA $013B,X`, `STA $018C,Y`, and so on.  All have bases in `$0114-$01A4`: page 1
+used as per-car object arrays.
+
+✅ **Now settled, and proven rather than judged.**  The naming pass found the two index-wrap
+helpers — `$507E` (DEX, wrapping to 19) and `$5084` (INX, wrapping to 0 at 20) — which fix the
+field at **20 cars**.  So the maximum index is 19, the highest reachable address is
+`$01A4 + 19 = $01B7`, and none of the 33 stores can touch `$0202`.  Worth noting how the answer
+arrived: not by bounding the loops, but by finding the routine whose whole job is to say what the
+bound *is*.
 
 ### MOS calls Revs makes — the complete list, with reason codes
 
@@ -371,7 +375,11 @@ done requires every run classified before C is generated.
 4. **Decode the key table at `$39E0`** (`9d cf ce ee dd ee`, negative-INKEY codes, and `$39E4-$39E5`
    are written at runtime).  Needed to drive the tracer into an actual race — which is what turns
    the coverage cross-check from weak into strong.
-5. **The naming pass** (`disasm/symbols.csv`).
+5. **Extend the naming pass.** 52 symbols are in `disasm/symbols.csv` and applied to the Ghidra
+   project (`ApplyNames`), covering the entry seam, the hardware registers, the math primitives,
+   input, sound, the text interpreter and the rasteriser's outer shape.  **That is ~20% of the 236
+   functions.**  The unnamed remainder is the physics and the 3D pipeline — the parts that need
+   real reading, not profiling.  `--functions` gives the evidence; work down it by caller count.
 6. **`DumpHwAccesses.java` still carries Atari ranges.**  The sweep's hardware table above
    supersedes it for now; retool or retire the script rather than leaving a tool that reports
    GTIA registers for a BBC binary.

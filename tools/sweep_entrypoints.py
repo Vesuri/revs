@@ -333,6 +333,10 @@ def main():
                     help="a 64K coverage map from tools/bbc_trace.mjs; reports addresses the "
                          "real machine executed that the static walk never reached — i.e. the "
                          "sweep's own blind spots, which no static tool can self-report")
+    ap.add_argument("--functions", action="store_true",
+                    help="per-subroutine evidence profile, for the behavioural naming pass: "
+                         "size, callers, MOS calls, hardware touched, zero-page use, and the "
+                         "arithmetic shape.  Naming from this beats naming from a hunch.")
     ap.add_argument("--csv", action="store_true", help="emit entrypoints.csv rows only")
     args = ap.parse_args()
 
@@ -359,6 +363,49 @@ def main():
         if not new:
             break
         sw.run(new)
+
+    if args.functions:
+        # Bound each subroutine by "from its entry to the next entry" — crude, but every
+        # alternative needs a real CFG and the point here is to rank and characterise, not to
+        # produce exact extents.
+        entries = sorted(set(sw.calls) | set(seeds) | {a for h in sw.handlers.values() for a in h})
+        entries = [a for a in entries if a in sw.insn]
+        print("# Per-subroutine evidence profile — input to the naming pass")
+        print("# addr  size ncall  facts")
+        for i, a in enumerate(entries):
+            end = entries[i + 1] if i + 1 < len(entries) else hi
+            body = [x for x in sw.insn if a <= x < end]
+            facts = []
+            zp = set()
+            mos_here, hw_here, consts = set(), set(), set()
+            branches_out = set()
+            for x in body:
+                mn, mode, operand, n = sw.insn[x]
+                if mode in (ZP, ZPX, ZPY, IZX, IZY):
+                    zp.add(operand)
+                if mn == "JSR" and 0xFF00 <= operand <= 0xFFFF:
+                    mos_here.add(MOS_ENTRIES.get(operand, f"${operand:04X}"))
+                if mode in (ABS, ABX, ABY) and HW_LO <= operand <= HW_HI:
+                    hw_here.add(operand)
+                if mn == "JSR" and not (0xFF00 <= operand <= 0xFFFF):
+                    branches_out.add(operand)
+                if mode == IMM:
+                    consts.add(operand)
+            shifts = sum(1 for x in body if sw.insn[x][0] in ("ASL", "LSR", "ROL", "ROR"))
+            adds = sum(1 for x in body if sw.insn[x][0] in ("ADC", "SBC"))
+            if mos_here:
+                facts.append("MOS:" + ",".join(sorted(mos_here)))
+            if hw_here:
+                facts.append("HW:" + ",".join(f"${h:04X}" for h in sorted(hw_here)))
+            if shifts >= 6 and adds >= 2:
+                facts.append(f"MATH? {shifts} shifts/{adds} add-sub — mul or div by shift-add")
+            if zp:
+                zs = sorted(zp)
+                facts.append(f"zp:{len(zs)}[" + " ".join(f"{z:02X}" for z in zs[:10]) + "]")
+            if branches_out:
+                facts.append("calls:" + " ".join(f"${b:04X}" for b in sorted(branches_out)[:8]))
+            print(f"${a:04X} {len(body):4d} {len(sw.calls.get(a, ())):5d}  " + "  ".join(facts))
+        return
 
     if args.csv:
         rows = set()

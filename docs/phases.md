@@ -55,7 +55,7 @@ but no longer gates Phase 2.
 
 ---
 
-## Phase 2 — Complete static map ⬜
+## Phase 2 — Complete static map 🔧 (items 1-3 done; the naming pass is partial)
 
 > ⚑ **Cheaper than the postmortem assumed:** a fully annotated source reconstruction of BBC Revs
 > exists (`docs/reference-sources.md`), so items 1 and 4 are **cross-checks against a reference**
@@ -73,8 +73,35 @@ but no longer gates Phase 2.
    new piece versus the Atari port.
 4. **One concentrated behavioural-naming pass** into `disasm/symbols.csv`.
 
+**Findings live in `docs/static-map.md`** — read that, not this summary.
+
+Status:
+
+1. ✅ **The entry-point sweep.**  `tools/sweep_entrypoints.py` (independent recursive-descent) and
+   Ghidra agree: 7079 vs 7083 instructions, 222 vs 236 functions.  Roots no static walk can reach:
+   the engine entry `$63BD` and the `IRQ1V` handler `$4E5C`.  No indirect dispatch or RTS-tricks
+   anywhere else.  24 self-modifying sites located precisely, clustered in `$2C00-$2FFF`.  A jsbeeb
+   execution trace (`tools/bbc_trace.mjs`) cross-checks it: nothing executed that the walk missed.
+   ⭐ **The sweep also found that the premise was wrong** — REVS2 unpacks itself before running, so
+   `revs_mem.bin` was never the right thing to disassemble.  `make runtime` builds the real image,
+   verified against a BBC.
+2. ✅ **The hardware map.**  `DumpHwAccesses.java` retooled for the BBC; 19 registers, 4 devices.
+   Every **[ASSUMED]** row in `docs/bbc-hardware.md` is now **[DERIVED]**, and three of them were
+   *wrong*: the interrupt is a User VIA timer not System VIA vsync, and neither the ADC nor the
+   sound chip is ever addressed directly.
+3. ✅ **The MOS-call inventory.**  Four entries, 17 sites, reason codes read out.  The engine never
+   calls the filing system at all.
+4. ✅ **The per-track hook inventory** (`tools/track_hooks.py`) — five shared patch sites, 6-7 code
+   hooks per track, with the engine's own unpack subtracted out so the numbers mean something.
+5. 🔧 **The naming pass.**  52 symbols in `disasm/symbols.csv`, applied to the Ghidra project —
+   the entry seam, hardware, math primitives, input, sound, text, and the rasteriser's shape.
+   ~20% of 236 functions.  The unnamed remainder is the physics and the 3D pipeline.
+
 **Exit criteria:** `listing.txt` has no referenced-but-undisassembled address; the hardware and
-MOS-call inventories are complete; names are roughly right everywhere.
+MOS-call inventories are complete; names are roughly right everywhere.  **The first three are met.**
+Still open before Phase 3 (full list in `docs/static-map.md` §Open items): classify the seven
+unclassified byte runs, disassemble the track programs at `$5300-$5A25`, and extend the naming pass
+across the physics and 3D code.
 
 ---
 

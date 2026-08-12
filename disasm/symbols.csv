@@ -4,8 +4,99 @@
 ## type:  func | var | table
 ## is_hw: 1 for a BBC I/O address ($FC00-$FEFF) or an OS vector cell ($0200-$0235), else 0
 ##
+## ⚠⚠ ALL ADDRESSES ARE IN THE RUNTIME IMAGE (disasm/revs_runtime.bin, `make runtime`).
+## REVS2 unpacks itself before running, so an address in revs_mem.bin means something else
+## entirely.  docs/static-map.md.
+##
 ## ⚠ On a binary-only project the names ARE the map.  Do one concentrated
 ## rough-but-directionally-correct naming pass early (docs/phases.md Phase 2.4) rather than
 ## letting names trickle in — every wrong name taxes every later reasoning step.
 ## A name that contradicts behaviour goes in docs/rename.md the moment you notice it.
+##
+## Evidence for every name below: `make sweep` and
+## `python3 tools/sweep_entrypoints.py --functions`.  Names are derived from behaviour in THIS
+## binary, cross-checked against but never copied from revs.bbcelite.com
+## (docs/reference-sources.md — it carries no licence).
 addr,name,type,is_hw,note
+
+## ---- entry points and the interrupt seam -------------------------------------------------
+0x63BD,engine_main,func,0,"THE engine entry — target of the unpack stub's closing JMP. Body is just JMP $3850."
+0x3850,engine_init,func,0,"what engine_main jumps to (a JMP target, never JSRed)"
+0x4DDD,hw_init,func,0,"the ONLY routine that programs the hardware: 6845 CRTC ($FE00/$FE01), Video ULA palette ($FE21), System VIA T1/ACR/IFR/IER, User VIA T1/ACR/IER. 54 instructions, one caller. This is the platform boundary."
+0x4E5C,irq1v_handler,func,0,"the 50 Hz game body, claimed via IRQ1V. Driven by a USER VIA T1 timeout (LDA $FE6D / AND #$40), NOT System VIA vsync. Dispatches on irq_band_state and rewrites the ULA mode + palette per raster band. Chains to saved_irq1v when the interrupt is not its own."
+0x4F23,irq1v_release,func,0,"restores saved_irq1v and disables the User VIA interrupt ($FE6E)"
+0x4F1D,saved_irq1v,var,0,"the previous IRQ1V, saved so irq1v_handler can chain on via JMP ($4F1D)"
+0x4F43,irq_band_state,var,0,"raster-band counter the IRQ handler dispatches on: 0, 1, 2, 3, $FF. Each value selects a ULA mode + palette setup. At least four display bands."
+0x3468,band0_palette,table,0,"16 bytes, written to $FE21 one per entry by irq1v_handler's band 0. The other band computes its palette by stepping the high nibble instead."
+
+## ---- OS vector cells ---------------------------------------------------------------------
+0x0204,IRQ1V,var,1,"the only OS vector Revs claims"
+0x0205,IRQ1V_hi,var,1,""
+
+## ---- hardware registers Revs actually touches (docs/bbc-hardware.md) ---------------------
+0xFE00,CRTC_ADDR,var,1,""
+0xFE01,CRTC_DATA,var,1,""
+0xFE20,ULA_CONTROL,var,1,"mode/pixel rate. Written mid-frame per raster band, from the IRQ handler."
+0xFE21,ULA_PALETTE,var,1,"16-entry palette, rewritten per raster band"
+0xFE4B,SYSVIA_ACR,var,1,""
+0xFE4D,SYSVIA_IFR,var,1,""
+0xFE4E,SYSVIA_IER,var,1,""
+0xFE6B,USRVIA_ACR,var,1,""
+0xFE6D,USRVIA_IFR,var,1,"bit 6 = T1 timeout; the game's interrupt source"
+0xFE6E,USRVIA_IER,var,1,""
+0xFE68,USRVIA_T2CL,var,1,"free-running timer, READ as a clock/entropy source from six sites across the engine — not a printer port. Needs a real Amiga answer, not a stub."
+
+## ---- math primitives ---------------------------------------------------------------------
+0x0C00,mul8,func,0,"8x8 shift-add multiply. A = multiplicand (stored to math_lo), $75 = multiplier; 16-bit product in math_lo/math_hi. 27 callers — the single most-called routine in the engine, so the hottest thing to give a 68000 twin."
+0x3450,abs8,func,0,"absolute value of A, 8-bit two's complement (BPL / EOR #$FF / ADC #1). 21 callers."
+0x0E40,abs16_math,func,0,"negate the 16-bit value in math_lo/math_hi if A is negative (i.e. |x| for a sign-magnitude pair). $0E42 is the unconditional-negate entry."
+0x0E42,neg16_math,func,0,"unconditional 16-bit negate of math_lo/math_hi; the fall-through half of abs16_math"
+0x0074,math_lo,var,0,"low byte of the 16-bit math accumulator (mul8 product, abs16_math operand). $74-$79 are the general scratch/arithmetic window and are reused everywhere."
+0x0075,math_hi,var,0,"high byte of the 16-bit math accumulator"
+
+## ---- the car field ------------------------------------------------------------------------
+## ⭐ 20 cars, PROVEN by the two index-wrap helpers rather than assumed. That also settles the
+## sweep's open question about indexed stores in page 1 possibly reaching the OS vector page:
+## the arrays are based at $0114-$01A4 and the index never exceeds 19, so $01A4+19 = $01B7 and
+## nothing can reach $0202.
+0x507E,car_index_dec,func,0,"DEX, wrapping to 19 when it goes negative — decrement a car index mod 20"
+0x5084,car_index_inc,func,0,"INX, wrapping to 0 at 20 — increment a car index mod 20. Together with car_index_dec this fixes the field size at 20."
+
+## ---- input --------------------------------------------------------------------------------
+0x0E50,kbd_test_key,func,0,"OSBYTE 129 with Y=$FF — negative INKEY for the key code in X; returns Z set when that key is held. 17 callers: the keyboard primitive."
+0x503F,adc_read,func,0,"OSBYTE 128 — read an ADC channel. ⭐ THE STEERING INPUT. Note the ADC registers at $FEC0 are never touched; the axis only ever arrives through this MOS call, so the mouse substitution belongs in Platform::mosCall."
+## $168E (the second OSBYTE 128) and $3879 (OSBYTE 190, set the uPD7002 conversion type) are
+## call SITES inside larger routines, not routines — no name until their containers are named.
+0x39E0,key_binding_tbl,table,0,"negative-INKEY codes for the configurable controls. $39E4-$39E5 are written at runtime, so this is user-rebindable — which is why a blind key-press schedule cannot drive the game (docs/static-map.md)."
+0x6571,key_config_menu,func,0,"waits until one of key_binding_tbl's keys is held, highlighting the selection. Where a jsbeeb trace parks if nothing presses the right key."
+
+## ---- sound ($0B00-$0BCC, relocated there from $1300 by the unpack) -----------------------
+0x0B4A,sound_queue,func,0,"builds an 8-byte MOS SOUND control block at sound_blocks + X*8 + $10 and marks the channel in sound_chan_state"
+0x0B47,sound_queue_default,func,0,"sound_queue with Y taken from $05FE"
+0x0B65,sound_envelope,func,0,"OSWORD 8 at $0B70 — define a MOS sound ENVELOPE. ⭐ Sound goes through the MOS scheduler; the SN76489 is never addressed directly, so the Paula mapping has to reproduce envelope semantics, not just tones."
+0x0B00,sound_blocks,table,0,"8-byte-strided MOS SOUND control blocks"
+0x62BD,sound_chan_state,table,0,"4 bytes, one per MOS sound channel"
+0x0E5A,sound_stop_channel,func,0,"clears sound_chan_state[X] and does OSBYTE 21 on buffer X|4 — BBC buffers 4-7 ARE the four sound channels, so this silences channel X and discards what is queued on it. (Named kbd_ack_key at first from the OSBYTE-21 alone; the ORA #$04 is what gives it away.)"
+0x0E74,sfx_trigger_random,func,0,"reads USRVIA_T2CL, and if it is below $3F uses its low 2 bits to vary which sound is queued — the free-running timer used as a cheap random source"
+
+## ---- text / HUD ---------------------------------------------------------------------------
+0x4D7E,text_script_interp,func,0,"byte-stream interpreter over pointer tables at $3AD0 (lo) / $3B50 (hi) indexed by X: $FF ends, values >= $C8 are commands, and it recurses into itself. 21 callers. Drives the HUD and menu text."
+0x3AD0,text_script_ptr_lo,table,0,"low bytes of text_script_interp's script pointers"
+0x3B50,text_script_ptr_hi,table,0,"high bytes of text_script_interp's script pointers"
+0x5092,vdu_char_def,func,0,"OSWORD 10 (read a character definition) plus OSWRCH output"
+0x6300,console_io,func,0,"OSBYTE 2 (select input stream) / OSBYTE 21 / OSRDCH / OSWRCH"
+
+## ---- the rasteriser: $2C00-$2FFF, SELF-MODIFYING -----------------------------------------
+## ⚠ The engine rewrites opcodes and operands in this region at runtime (24 sites,
+## docs/static-map.md), and for Donington and Snetterton a track hook patches $2F23 as well.
+## These routines cannot be transliterated faithfully — they need hand-written stubs in
+## src/gen/revs_manual.c (docs/faithfulness-seam.md). Treat every name here as provisional.
+0x2F45,road_span_plot,func,0,"[PROVISIONAL] plots a run of road surface: Y is a column (bounded by CPY #$2C = 44), writes a colour pattern from colour_pattern_tbl through two row pointers ($70/$72), and stamps $7000,Y. 16 callers. Its NOP at $2F47 and the operand of STA $7000,Y are both patched at runtime."
+0x2F87,road_span_plot_2,func,0,"[PROVISIONAL] the sibling of road_span_plot, same shape, 16 callers, also runtime-patched"
+0x2FEE,road_span_advance,func,0,"[PROVISIONAL] called by both span plotters when a column runs past its bound"
+0x628F,colour_pattern_tbl,table,0,"4 entries, indexed by a value AND 3 — the pixel patterns for a 4-colour mode. Read by both the span plotters and $1C1C."
+0x1C1C,project_geometry,func,0,"[PROVISIONAL] 198 instructions, 14 shifts + 6 add/sub over a 22-cell zero-page window, reading colour_pattern_tbl — the largest arithmetic routine reached, and the likeliest projection/perspective step. Name it properly before relying on it."
+0x7000,column_buffer,table,0,"[PROVISIONAL] 219 bytes, relocated here from $1500 by the unpack; written per column by road_span_plot"
+
+## ---- the unpack stub (present in revs_mem.bin, dead once the engine runs) -----------------
+0x1200,loader_stub,func,0,"⚠ revs_mem.bin ONLY. Copies $1200-$12FF to $7900 and runs from the copy. In the runtime image this address holds relocated engine code instead."

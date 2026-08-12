@@ -146,7 +146,17 @@ amiga/                  Amiga build infrastructure: Makefile, env.sh, run.sh, de
       (named-milestone captures, the jsbeeb cycle-diff harness, the CRTC/ULA analyser) are
       deferred until a later phase actually needs them; they no longer gate Phase 2.
       `docs/bbc-reference-loop.md` status section.
-- [ ] **Phase 2 — Complete static map** ← next (entry-point sweep, hardware map, MOS-call inventory, naming)
+- [~] **Phase 2 — Complete static map** ← in progress. ⭐ **The sweep found the premise was
+      wrong: REVS2 unpacks itself before running**, so `disasm/revs_mem.bin` was never the right
+      thing to disassemble. `make runtime` replays the unpack (verified against a real BBC:
+      9640 of 10168 changed bytes explained) and `disasm/revs_runtime.bin` is the real input.
+      Done: the entry-point sweep (two independent tools agreeing at 7079/7083 instructions;
+      `IRQ1V` → `$4E5C` is the 50 Hz body and no static walk reaches it), the hardware map
+      (19 registers — every `[ASSUMED]` row now `[DERIVED]`, and three of them were wrong), the
+      MOS-call inventory (4 entries, 17 sites, reason codes read out), and the per-track hook
+      inventory (5 shared patch sites, 6-7 hooks per track). Partial: the naming pass — 52
+      symbols applied, ~20% of 236 functions; the physics and 3D pipeline are still unnamed.
+      **Findings: `docs/static-map.md`.**
 - [ ] Phase 3 — Transpiler quality, then generate
 - [ ] Phase 4 — End-to-end skeleton on the target, then profile, then set a target
 - [ ] Phase 5 — Render + input
@@ -157,10 +167,22 @@ See `docs/phases.md` for exit criteria and the gating between phases.
 
 ## Immediate next step
 
-Phase 1 is done (exit criteria met — see status table above). **Phase 2 is next**: the entry-point
-sweep, the hardware-access map, the MOS-call inventory, and a first behavioural-naming pass into
-`disasm/symbols.csv` (`docs/phases.md` Phase 2, `docs/entrypoint-sweep.md`). This needs Ghidra set
-up (`tools/ghidra/`, ~2 GB), which hasn't happened yet in this repo.
+Finish Phase 2. Three things stand between here and Phase 3, all listed with evidence in
+`docs/static-map.md` §Open items:
+
+1. **Classify the seven unclassified byte runs** in `$0B00-$78FF` (5327 bytes that no decoded
+   instruction names). Most is expected to be data reached through zero-page pointers, which an
+   absolute-operand scan cannot see — so the lever is an indirect-addressing pass that resolves
+   `LDA ($70),Y` by finding what writes the pointer.
+2. **Disassemble the track programs** at `$5300-$5A25`. The hook *inventory* is done; the hook
+   *bodies* have never been disassembled, and for four of five circuits that window is code.
+3. **Extend the naming pass** across the physics and the 3D pipeline — the ~80% of functions still
+   unnamed. `sweep_entrypoints.py --functions` ranks them by caller count.
+
+Also worth doing while still in Phase 2, because it makes the coverage cross-check strong instead
+of weak: **decode the key table at `$39E0`** so `tools/bbc_trace.mjs` can drive the engine into an
+actual race. Right now the trace parks in the key-config menu at `$6571` and only 310 of ~7000
+instructions ever execute.
 
 Deferred rather than blocking: named-milestone captures and the jsbeeb cycle-diff harness — both
 exist to check a *port's* behaviour against real hardware, and there's no port yet to check.

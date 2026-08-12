@@ -5,9 +5,15 @@
 > is deliberately marked up with what is **derived** vs what is still **assumed** — the postmortem's
 > whole theme is not letting an assumption calcify into a documented fact.
 >
-> ⚠ Everything below marked **[ASSUMED]** is from general BBC knowledge, not from Revs's own
-> disassembly or a run.  The hardware-access map (`docs/toolchain.md` §hw map) replaces each of
-> them with a measured answer: *which registers does Revs actually touch, and from where.*
+> ✅ **Phase 2 replaced every [ASSUMED] row here with a [DERIVED] one.**  The hardware-access map
+> now exists twice over, from two independent tools (`tools/sweep_entrypoints.py` and
+> `ghidra_scripts/DumpHwAccesses.java`), and it answered the question this file was written to
+> ask: *which registers does Revs actually touch, and from where.*  Site-level evidence and what
+> each finding implies for the port live in **`docs/static-map.md`**.
+>
+> Three of those answers contradicted the assumption they replaced — the interrupt source, the
+> ADC, and the sound chip.  Each is called out inline with a ⚠.  Anything still resting on general
+> BBC knowledge rather than this binary is marked **[ASSUMED]** and is a to-do, not a fact.
 
 ## The machine
 

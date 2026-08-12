@@ -1,6 +1,9 @@
 // Apply names and comments from disasm/symbols.csv to the Ghidra project.
+//
+// ⚠ Run against disasm/revs_runtime.bin — symbols.csv addresses are RUNTIME-image addresses
+// (REVS2 unpacks itself; docs/static-map.md).
 // Arg0 = path to symbols.csv
-//@category Atari
+//@category BBC
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.*;
 import ghidra.program.model.listing.*;
@@ -24,7 +27,10 @@ public class ApplyNames extends GhidraScript {
             String[] parts = line.split(",", 5);
             if (parts.length < 3) continue;
 
-            String addrStr = parts[0].trim().replaceAll("^\\$", "");
+            // Accept "$63BD", "0x63BD" and bare "63BD" — disasm/symbols.csv and
+            // ghidra_scripts/entrypoints.csv both use the 0x form, and Long.parseLong(...,16)
+            // rejects it, which silently skipped EVERY row (applied=0 skipped=53).
+            String addrStr = parts[0].trim().replaceAll("^\\$", "").replaceAll("^0[xX]", "");
             String name    = parts[1].trim();
             String type    = parts[2].trim();
             // parts[3] = is_hw, parts[4] = note (used as comment if present)

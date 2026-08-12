@@ -71,10 +71,16 @@ modifies the game code as the engine starts, and they generate track geometry at
 (→ `revs_manual.c` stubs), and `disasm/revs_mem.bin` is the **pre-patch** state. Details:
 `docs/reference-sources.md`.
 
-⚠ `disasm/revs_mem.bin` is built by `tools/ssd_load.py` (default SILVER; `make image TRACK=BRANDS`
-for another). The load *order* is derived from the menu's own BASIC, but what the MOS/BASIC left
-resident is not modelled. **Until it is diffed against a real BBC, every address derived from it is
-provisional** — Phase 1.
+⚠⚠ **`disasm/revs_mem.bin` is NOT what the engine executes — disassemble
+`disasm/revs_runtime.bin` (`make runtime`) instead.** REVS2 unpacks itself before running: the
+entry page self-copies to `$7900`, a checksum-verified `$5300`↔`$70DB` swap runs, then five block
+moves, the last of which the stub patches into a zero-filler, and `JMP $63BD` enters the unpacked
+engine. `tools/relocate.py` replays it, verified against a real BBC (9640 of 10168 changed bytes
+explained). **Every address in `disasm/symbols.csv`, `ghidra_scripts/entrypoints.csv` and the docs
+is a runtime-image address.** Full mechanism and traps: `docs/static-map.md`.
+
+`revs_mem.bin` is still built by `tools/ssd_load.py` (default SILVER; `make image TRACK=BRANDS`)
+and is the honest record of what the *loader* produces, plus the input to the replay.
 
 ℹ The 1986 engine differs from the **1985** single-track release in 974 of 24064 bytes (same
 length). That is an authentic Superior/Acornsoft revision, not a repack — worth knowing only so
@@ -95,6 +101,8 @@ make validate FN="name"    # only matching tests — prefer this
 make endian-lint           # fail if mem[] is aliased as a wide pointer
 make gen                   # regenerate src/gen from disasm/listing.txt
 make image                 # rebuild disasm/revs_mem.bin from revs.ssd
+make runtime               # ⭐ replay the engine's self-unpack -> disasm/revs_runtime.bin
+make sweep                 # the entry-point sweep report -> disasm/sweep.txt
 ```
 
 ⚠ **The host build deliberately has NO renderer.** The Atari port's SDL backend was an
@@ -157,6 +165,7 @@ Hard-won detail lives in `docs/`, not here. **Read the relevant one BEFORE worki
 | `docs/amiga-arch.md` ⚑ | The Amiga display/interrupt architecture decisions and why |
 | `docs/headless-fsuae.md` ⚑ | Writing a probe, driving FS-UAE headlessly, or suspecting a stale build |
 | `docs/method-lessons.md` ⚑ | How to work: measuring, bisecting, proving a reordering, recording findings |
+| **`docs/static-map.md`** ⭐ | **What the binary actually IS — the Phase 2 findings.** The self-unpack, the entry-point sweep, the hardware and MOS inventories, the per-track hooks, the self-modifying regions |
 | `docs/rename.md` | A function's name contradicts its behaviour (append to it — see conventions) |
 
 ## Architecture
