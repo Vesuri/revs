@@ -603,12 +603,36 @@ a guess dressed as a fact, and it is the exact failure mode `docs/postmortem.md`
    machine does not.
 
    **The next step is therefore a reference-loop step, not a disassembly step**: get jsbeeb past
-   `FUN_3EE0` and dump `$7B00-$7BFF` at the first `$16E6`.  `tools/bbc_drive.mjs` is the
-   feedback-driven driver written for it (it watches `$6581` for a menu and `$6316` for the line
-   editor and answers each); as of 2026-08-12 it still loops in the editor — digits and RETURN go
-   in, `FUN_32D0` rejects, reason not yet found.  Instrument `math_lo`/`math_hi` (`$74`/`$75`) at
-   `$32D0` next; that is four bytes of state and it will say immediately whether the characters
-   arrive as typed.
+   the line editor and dump `$7B00-$7BFF` at the first `$16E6`.  `tools/bbc_drive.mjs` is the
+   feedback-driven driver written for it — it watches `$6581` (a menu is polling) and `$6316`
+   (the line editor is reading) and answers whichever fired.
+
+   ⭐ **The blocker is now bisected, and it is the harness, not the game.**  Counting `$32D0`
+   (`FUN_32D0`, which runs only once `console_io` RETURNS a completed line) and `$3EEE`
+   (`FUN_3EE0`'s reject-and-re-ask arm) *separately* separates the two explanations that need
+   opposite fixes.  Both read **zero** while `$6316` climbs steadily: **`console_io` never
+   returns, because no `$0D` ever reaches the MOS.**  It is not "the value was rejected" —
+   nothing was ever entered.
+
+   Two harness faults found and fixed on the way, both of which failed silently:
+   - `utils.keyCodes.RETURN` **does not exist** in jsbeeb (that table calls it `ENTER`), so every
+     RETURN press in every probe — including the pre-existing
+     `tools/bbc_probe_unmapped_calls.mjs` — was `keyDown(undefined)`, a no-op.
+   - Speculative driving-key presses **jammed the editor's own buffer**: `$74`/`$75` read
+     `$54,$53` = `'T','S'`, and the field is two characters, so `$6334` answered every later key
+     with a bell instead of storing it.  The run was wedged by its own input.
+
+   Still failing after both fixes and after switching to raw matrix positions
+   (`sysvia.keyDownRaw(utils.BBC.RETURN)`, which bypasses the browser-keycode layout entirely).
+   ⚠ Also note the buffer then read `$10,$02` — **not** the `$0074` two-digit field — so the
+   active prompt may be `FUN_66D4`'s **twelve-character** `console_io` call rather than
+   `FUN_3EE0`'s numeric one; the "two-digit prompt" reading above is inferred from `FUN_3EE0`
+   and is not yet confirmed to be the one that is blocking.
+
+   **Next experiment, and it is self-verifying:** press RETURN at the BASIC prompt, where a
+   working RETURN is directly observable in `tm.drainText()`.  That says in one cheap run whether
+   RETURN injection works at all, instead of testing it through a game whose state is invisible.
+   Only once that passes is it worth driving the front end again.
 
    ⚠ Until this is answered, **every measurement of the main loop is missing three routines** and
    `docs/perf-method.md`'s baseline says so.

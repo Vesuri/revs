@@ -88,7 +88,7 @@ console.log(`writes into $${REGION_LO.toString(16)}-$${REGION_HI.toString(16)} b
 async function answerNumber(d1, d2) {
     await pulse(d1, 120000, 200000);
     await pulse(d2, 120000, 200000);
-    await pulse(utils.keyCodes.RETURN, 120000, 400000);
+    await pulse(utils.keyCodes.ENTER, 120000, 400000);
 }
 
 for (let i = 0; i < 16 && !firstHitAddr; i++) {

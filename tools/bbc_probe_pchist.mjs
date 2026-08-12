@@ -56,7 +56,7 @@ const w = tm.processor.debugInstruction.add((addr) => {
 // misreported as a hang.
 for (let i = 0; i < 6; i++) {
     await pulse(utils.keyCodes.SPACE);
-    await pulse(utils.keyCodes.RETURN);
+    await pulse(utils.keyCodes.ENTER);
     await pulse(utils.keyCodes.K1);
 }
 await tm.runFor(megaCycles * 1000 * 1000);

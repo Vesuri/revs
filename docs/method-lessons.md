@@ -144,6 +144,32 @@ return addresses answered it immediately.
 Generalise: for "where is it stuck", prefer state that persists (stack, flags, a wait variable) over
 events you have to be present for.
 
+## A "zero" from a probe is only evidence if the run REACHED the code ⚑ Revs
+
+Three probes in a row reported **zero executions** of the seven `$7Bxx` call sites and the reading
+was "consistent with unreachable".  It was nothing of the kind: none of the three checked whether
+the run had reached the *surrounding* code, and none had.  Generating and running the corpus
+settled it in seconds — three of those sites are in the engine's **main loop**, called every
+frame.  The probes had been measuring a scripted BBC session that stalled in the front end.
+
+Two rules fall out, and the second is the expensive one:
+
+1. **Every "not observed" probe needs a positive control in the same run** — a landmark on the
+   path that proves the run got as far as the thing being tested.  `tools/bbc_probe_frontend.mjs`
+   is that shape: it counts the whole path in order, so a zero is attributable to a *place*.
+2. **Bisect the explanation with counters, not with guesses.**  "Stuck in the line editor" had two
+   causes needing opposite fixes: input not arriving, or the value rejected.  Counting the
+   validator (`$32D0`) and the reject arm (`$3EEE`) *separately* answered it in one run — both
+   zero means the line was never completed.  Four earlier runs were spent guessing at the value.
+
+And the sting: the harness itself was wrong in a way that produced no error at all.
+`utils.keyCodes.RETURN` does not exist in jsbeeb — that table calls it `ENTER` — so every RETURN
+press was `keyDown(undefined)`, a silent no-op, in the probes AND in the pre-existing one they
+were copied from.  **When an input harness has a name-keyed table, assert the names resolve
+before using them**; an undefined key press fails silently and looks exactly like the program
+ignoring you.  (Separately: speculative key presses jammed a two-character input field, wedging
+the run with its own input.  Do not press keys "just in case" into something that buffers.)
+
 ## Emit the mechanism, not a snapshot of it ⚑ Revs
 
 Revs has 24 self-modifying instructions, all inside the road rasteriser.  The inherited rule was
