@@ -1,0 +1,268 @@
+/* PlatformAmiga — day-one bring-up skeleton.  See PlatformAmiga.h for the design rules.
+ *
+ * What it does today: takes the machine over, installs the real VERTB interrupt, runs
+ * Revs::run(), restores everything.  What it does NOT do yet: render the game, emulate
+ * BBC hardware, service MOS calls, produce audio.  Each of those is a filed phase in
+ * docs/phases.md; the seams are here and marked TODO so they can be filled in place.
+ */
+/* ⚠ INCLUDE ORDER IS LOAD-BEARING.  framework/AmigaHardware.h #defines bare register
+   names (bplcon0, vposr, dmaconr, …) as offsets, and those collide with the `struct Custom`
+   MEMBERS in <hardware/custom.h> — a header the graphics includes pull in.  So: every
+   system header FIRST, AmigaHardware.h LAST. */
+#include <proto/exec.h>
+#include <proto/graphics.h>
+#include <exec/execbase.h>
+#include <exec/interrupts.h>
+#include <exec/nodes.h>
+#include <exec/memory.h>
+#include <graphics/gfxbase.h>
+#include <graphics/view.h>
+#include <hardware/dmabits.h>
+#include <hardware/intbits.h>
+
+#include "framework/AmigaHardware.h"
+#include "PlatformAmiga.h"
+#include "Revs.h"
+
+extern "C" volatile uint8_t mem[65536];      // the 6502 RAM image (src/cpu/cpu.c)
+
+// GfxBase is opened in the constructor (GCCRuntime.cpp defines the global).
+extern struct GfxBase* GfxBase;
+
+// Custom-register pointers (dmaconPointer, intenaPointer, diwstrtPointer, bplcon0Pointer,
+// ciaapraPointer, …) all come from the framework's AmigaHardware.h as macros — do NOT
+// redeclare them here.
+
+// ---------------------------------------------------------------------------
+// VBI state
+// ---------------------------------------------------------------------------
+static Revs* s_scene = 0;
+
+// Real 50 Hz PAL vblank counter.  ⭐ EVERY timing measurement in this port is
+// denominated in this, never in host wall clock: it is immune to emulator speed and
+// to the gdb stub.  (docs/perf-method.md)
+extern "C" { volatile uint16_t g_vbiCount = 0; }
+extern "C" uint16_t platform_frame_count(void) { return g_vbiCount; }
+
+// Painted-frame counter — the numerator of the ONLY honest framerate figure:
+//     FPS = 50 * g_fpsFrames / g_vbiCount
+// Defined in every build (so amiga/fps_seg.gdb can always read it) but only incremented
+// under FPSCOUNT, which is otherwise a shipping binary.  Never quote a framerate from a
+// PROBES build — the probes are what such a build exists to measure.  (docs/perf-method.md)
+extern "C" { volatile unsigned long g_fpsFrames = 0; }
+
+static struct Interrupt  s_vbiServer;
+static struct IntVector  s_savedVertb;
+static bool              s_vertbTaken  = false;
+static uint16_t          s_savedIntena = 0;
+
+// exec puts IntVects[] at ExecBase+84, so VERTB (bit 5) is ExecBase+144 — exactly the
+// offset Kickstart's level-3 autovector stub dispatches through.  If this ever fails to
+// compile, the vector takeover below needs re-deriving before it is trusted.
+static_assert(__builtin_offsetof(struct ExecBase, IntVects) == 84,
+              "ExecBase::IntVects moved — re-check the VERTB vector takeover");
+
+static uint32_t vbiHandler()
+{
+    // ⚠ Clearing the interrupt request is THIS handler's job — exec's server-chain
+    // walker used to do it and we replaced it.  Miss this and level 3 re-triggers
+    // forever.  No SETCLR bit = clear.
+    *intreqPointer = (uint16_t)INTF_VERTB;
+
+    g_vbiCount++;
+
+    // ⚠ Work here is capped at ONE FRAME.  Over that and a displayed frame is silently
+    // dropped — and the dropped frame (a stall, a 2x animation jump, a copper write
+    // landing behind the beam) is what a player reports, not the cost.  Bracket any new
+    // ISR-side work with VPOSR/VHPOSR beam-line reads before theorising.
+    // TODO(phase: Amiga backend): dispatch the game's own IRQ1V/EVNTV body here, and do
+    // all copper bitplane POINTER swaps here — never mid-frame.
+    if (s_scene) s_scene->vbi();
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Embedded boot image (incbin.s)
+// ---------------------------------------------------------------------------
+extern "C" uint8_t revs_mem_bin[];
+extern "C" uint8_t revs_mem_bin_end[];
+
+// ---------------------------------------------------------------------------
+PlatformAmiga::PlatformAmiga(const char* /*imagePath*/)
+{
+    // Open graphics.library here so run()'s display takeover can reach GfxBase.  On
+    // failure set quit so main() bails instead of dereferencing a null GfxBase.
+    GfxBase = (struct GfxBase*)OpenLibrary((CONST_STRPTR)"graphics.library", 33);
+    quit = (GfxBase == 0);
+}
+
+PlatformAmiga::~PlatformAmiga()
+{
+    if (GfxBase) { CloseLibrary((struct Library*)GfxBase); GfxBase = 0; }
+}
+
+int PlatformAmiga::framesPerSecond() { return 50; }
+void PlatformAmiga::setInterrupt(void (*)(void)) {}   // the real VERTB handler owns this
+void PlatformAmiga::tickVBI() {}                      // renderFrame() paces the frame
+
+int PlatformAmiga::loadImage(const char* /*path*/)
+{
+    // The post-load 6502 image is linked in (incbin.s) rather than loaded from disc, so
+    // every build boots the SAME initial state and code path.
+    const uint8_t* src = revs_mem_bin;
+    uint32_t n = (uint32_t)(revs_mem_bin_end - revs_mem_bin);
+    if (n > 65536u) n = 65536u;
+    for (uint32_t i = 0; i < n; i++) mem[i] = src[i];
+    return 0;
+}
+
+uint8_t PlatformAmiga::hwRead(uint16_t addr)
+{
+    // TODO(phase: hardware map): service SHEILA reads — System VIA keyboard/timers
+    // ($FE40-$FE5F) and the uPD7002 ADC ($FEC0-$FEDF, the steering input) are the two
+    // Revs actually needs.  Until the hardware-access map (docs/toolchain.md) says
+    // otherwise, return 0 and let the probe build report what got read.
+    (void)addr;
+    return 0x00;
+}
+
+void PlatformAmiga::hwWrite(uint16_t addr, uint8_t val)
+{
+    // TODO(phase: hardware map): route the Video ULA palette + 6845 CRTC writes into the
+    // copper list, and the SN76489 sound writes to Paula.  Ignore the rest.
+    (void)addr; (void)val;
+}
+
+void PlatformAmiga::mosCall(uint16_t entry)
+{
+    // TODO(phase: MOS layer): OSBYTE ($FFF4) / OSWORD ($FFF1) are how Revs reads the
+    // keyboard, the ADC and the disc.  Unlike the Atari port — which simply replaced the
+    // OS — this port has to model the MOS calls the game makes.  See
+    // docs/bbc-hardware.md §MOS calls; enumerate them from the disassembly BEFORE
+    // implementing any (the same discipline as the entry-point sweep).
+    (void)entry;
+}
+
+void PlatformAmiga::renderFrame()
+{
+    // Present, then wait for the next real vblank.  The wait is on g_vbiCount (the ISR's
+    // own counter), not WaitTOF(): once the VERTB vector is taken over, graphics.library's
+    // VERTB server no longer runs, so WaitTOF() would never be signalled.
+    if (s_scene) s_scene->render();
+    uint16_t start = g_vbiCount;
+    while (g_vbiCount == start) { /* spin */ }
+}
+
+void PlatformAmiga::pollEvents()
+{
+    // Left mouse button quits.  Polled from every spin-wait so the player can always
+    // abort — including out of a compute stretch that never reaches renderFrame().
+    if ((*ciaapraPointer & 0x40u) == 0) quit = true;
+}
+
+// ---------------------------------------------------------------------------
+void PlatformAmiga::run()
+{
+    // The scene holds several KB of shadow buffers; keep it in BSS (static), NOT on the
+    // stack (where the PlatformAmiga instance lives), to avoid stack overflow.
+    static Revs scene;
+
+    // --- takeover: save system state, disable the OS display ------------------
+    struct View* savedView = GfxBase->ActiView;
+    LoadView(NULL);
+    WaitTOF();
+    WaitTOF();
+
+    // Disable raster + sprite + copper DMA so old state can't leak through.  Copper DMA
+    // is re-enabled below, once OUR list is installed.
+    *dmaconPointer = (uint16_t)(DMAF_RASTER | DMAF_SPRITE | DMAF_COPPER);
+
+    // Mask blit-done for the whole window: nothing here consumes it, and every armed one
+    // is a pointless level-3 dispatch into graphics.library's queue handler.  INTENA is
+    // saved and restored verbatim on the way out (the OS needs blit-done back for QBlit).
+    s_savedIntena = (uint16_t)(*intenarPointer);
+    *intenaPointer = (uint16_t)INTF_BLIT;    // no SETCLR = disable
+    *intreqPointer = (uint16_t)INTF_BLIT;    // drop any already-latched request
+
+    // Display window — standard PAL lores 320x200.  No bitplanes yet (bplcon0 = 0): the
+    // whole area shows COLOR00, which the scene's copper list sets.
+    *diwstrtPointer = 0x2C81;   // VSTRT=44,  HSTRT=0x81
+    *diwstopPointer = 0xF4C1;   // VSTOP=244, HSTOP=0xC1 (+256 implicit)
+    *ddfstrtPointer = 0x0038;
+    *ddfstopPointer = 0x00D0;
+    *bplcon0Pointer = 0x0000;
+    *bplcon1Pointer = 0x0000;
+    *bplcon2Pointer = 0x0000;
+
+    // --- take over the whole VERTB vector ------------------------------------
+    // Not AddIntServer: exec's iv_Code is the server-chain walker, so overwriting it drops
+    // graphics.library / gameport.device / timer.device off the vblank entirely (~3.9% of
+    // all wall clock on the Atari port).  iv_Node is cosmetic — it is what OS debug tools
+    // report as the vector's owner.
+    s_vbiServer.is_Node.ln_Type = NT_INTERRUPT;
+    s_vbiServer.is_Node.ln_Pri  = 127;
+    s_vbiServer.is_Node.ln_Name = (char*)"Revs VBI";
+    s_vbiServer.is_Data = 0;
+    s_vbiServer.is_Code = (void(*)())vbiHandler;
+    {
+        struct IntVector* iv = &SysBase->IntVects[INTB_VERTB];
+        Disable();
+        s_savedVertb = *iv;
+        iv->iv_Data  = 0;
+        iv->iv_Code  = (void(*)())vbiHandler;
+        iv->iv_Node  = &s_vbiServer.is_Node;
+        Enable();
+        s_vertbTaken = true;
+    }
+
+    // --- bring up the scene --------------------------------------------------
+    // Load the faithful boot image into mem[] before anything reads it.  Display DMA
+    // stays OFF here: COP1LC still points at the OS LoadView(NULL) copper, so enabling
+    // copper DMA now would let the OS copper run through initialize() and intermittently
+    // reset our one-time custom-register setup.  initialize() installs our first list
+    // (COP1LC = ours) with the copper halted, so there is no race.
+    loadImage(0);
+
+    s_scene = &scene;
+    scene.initialize();
+
+    // Our list is installed and the constant registers are set — safe to start display
+    // DMA.  The copper restarts from COP1LC (ours) at the next vblank.
+    *dmaconPointer = (uint16_t)(DMAF_SETCLR | DMAF_MASTER | DMAF_COPPER |
+                               DMAF_RASTER | DMAF_SPRITE);
+
+    // --- multitasking off for the duration -----------------------------------
+    // Nothing here needs exec's scheduler and we never Wait().  ⚠ Everything between
+    // Forbid() and Permit() must be Wait()-free — the WaitTOF() pairs and every library
+    // open/close are deliberately outside.
+    Forbid();
+
+    scene.run();          // returns when the user quits
+
+    Permit();
+    scene.shutdown();
+
+    // --- restore the system --------------------------------------------------
+    // Hand VERTB back BEFORE the LoadView/WaitTOF restore: WaitTOF() is signalled by
+    // graphics.library's VERTB server, which only runs again once exec's chain walker is
+    // back in the vector.
+    if (s_vertbTaken) {
+        Disable();
+        SysBase->IntVects[INTB_VERTB] = s_savedVertb;
+        Enable();
+        s_vertbTaken = false;
+    }
+    s_scene = 0;
+
+    *dmaconPointer = (uint16_t)(DMAF_COPPER | DMAF_RASTER | DMAF_SPRITE);
+
+    // Put the interrupt enables back exactly as the OS had them.  Drop a latched blit
+    // request first so re-enabling can't immediately fire a stale one into its handler.
+    *intreqPointer = (uint16_t)INTF_BLIT;
+    *intenaPointer = (uint16_t)(INTF_SETCLR | (s_savedIntena & 0x7FFFu));
+
+    LoadView(savedView);
+    WaitTOF();
+    WaitTOF();
+}

@@ -1,0 +1,47 @@
+# Game image and derived binaries — kept LOCAL only, never committed.
+# revs.ssd is the copyrighted source disc image; everything under disasm/files/ and
+# revs_mem.bin is derived from it, so it is equally not ours to distribute.
+*.ssd
+*.dsd
+*.uef
+disasm/files/
+disasm/revs_mem.bin
+disasm/revs_blocks.txt
+
+# Screenshots / comparison captures — local only.
+*.png
+
+# Large / regenerable artifacts
+tools/ghidra/            # extracted Ghidra install (~2 GB)
+tools/ghidra-proj/       # Ghidra project (the annotation DB) — large, machine-local
+tools/__pycache__/
+*.zip
+
+# Generated, regenerable from revs.ssd via the tools
+disasm/listing.txt
+
+# Generated C (regenerate with: make gen)
+src/gen/revs_gen.c
+src/gen/revs_decl.h
+src/gen/mem.h
+src/gen/revs_validate_list.h
+
+# Build output
+build/
+*.o
+*.d
+*.rep
+*.lock
+amiga/obj/
+amiga/out/
+amiga/.run/
+
+# Local probe/debug scratch — savestates, RAM dumps, ad-hoc probe scripts.
+# Regenerable / disposable; committed probes are the *.gdb files, not these.
+/tmp/
+*.dat
+tools/live_*.sh
+amiga/*_probe.sh
+
+# OS
+.DS_Store

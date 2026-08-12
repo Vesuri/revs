@@ -1,0 +1,11 @@
+## The SOURCE OF TRUTH for names.  tools/transpile.py reads this; never hand-rename in
+## generated files.  Grows over time — append as understanding arrives.
+##
+## type:  func | var | table
+## is_hw: 1 for a BBC I/O address ($FC00-$FEFF) or an OS vector cell ($0200-$0235), else 0
+##
+## ⚠ On a binary-only project the names ARE the map.  Do one concentrated
+## rough-but-directionally-correct naming pass early (docs/phases.md Phase 2.4) rather than
+## letting names trickle in — every wrong name taxes every later reasoning step.
+## A name that contradicts behaviour goes in docs/rename.md the moment you notice it.
+addr,name,type,is_hw,note

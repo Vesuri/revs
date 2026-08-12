@@ -1,0 +1,19 @@
+## Ghidra entry points to seed, so code reachable ONLY through indirect vectors gets
+## disassembled into disasm/listing.txt.  MarkEntries.java reads this.
+##
+## ⭐ Fill this from the entry-point sweep BEFORE generating any C — docs/entrypoint-sweep.md.
+## That sweep is the single highest-leverage item carried over from the Atari port, where
+## handlers reachable only via indirect jumps were discovered piecemeal over the whole project
+## and every static conclusion drawn about them beforehand was wrong.
+##
+## Then keep it current: add a newly-found dispatch target or interrupt handler THE MOMENT you
+## find one.  Ghidra's own analysis will never find them.
+##
+## What belongs here (see the doc for the full list):
+##   - the machine-code entry point(s) — $1200 for Revs2, per the DFS catalogue
+##   - every JMP ($xxxx) / computed-jump / RTS-dispatch target, and every entry of its table
+##   - every OS vector Revs claims: BRKV $0202, IRQ1V $0204, IRQ2V $0206, EVNTV $0220, …
+##   - the 6502 hardware vectors: NMI $FFFA, RESET $FFFC, IRQ/BRK $FFFE
+##     (and the BBC's RAM NMI area at $0D00, used by the disc filing system)
+addr,name,note
+0x1200,revs_engine_entry,"Revs2 load+exec address from the DFS catalogue — UNVERIFIED until the reference loop confirms the real entry (docs/bbc-reference-loop.md)"

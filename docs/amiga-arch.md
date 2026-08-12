@@ -1,0 +1,67 @@
+# Amiga architecture decisions
+
+> ⚑ Carried over from the Atari port, where each of these was chosen with a measurement behind
+> it.  The rationale is kept because it is what stops the decision being re-litigated.
+> Implementation: `src/platform/amiga/` (see `PlatformAmiga.cpp` for the sequence).
+
+## Display: takeover, not OS-friendly
+
+- `LoadView(NULL)` + `WaitTOF()` × 2 to suspend the OS display.
+- Our own copper list pointed at by `COP1LC` directly (not `MakeScreen`/`LoadRGB4`).
+- `*dmaconPointer = DMAF_SETCLR | DMAF_MASTER | DMAF_COPPER | …` — copper DMA only at first;
+  bitplane/blitter DMA enabled as needed.
+- On exit: restore the saved DMA/interrupt masks, `LoadView(savedView)`, `WaitTOF()` × 2, close
+  libraries.
+
+**Why takeover:** a port like this needs per-scanline copper rewrites (colour splits, sprite
+pointer patches) every frame.  The OS-friendly route (`OpenScreen CUSTOMBITMAP` +
+`AddIntServer`) re-inserts the system copper list after every `WaitTOF`, which would clobber ours
+or require `MrgCop` overhead.  Takeover also lets us write Paula registers directly instead of
+going through the audio device.
+
+⚠ Order matters at bring-up: install the copper list **while display DMA is off**.  Enable copper
+DMA before the scene's one-time register setup and the OS copper will run through it and
+intermittently reset those registers — a bug that only shows up when an OS-copper frame happens
+to land after your write.
+
+## VBI: take over the VERTB IntVector
+
+Not `AddIntServer(INTB_VERTB, …)`.  Replacing exec's `IntVector` wholesale drops
+graphics.library / gameport.device / timer.device off the vblank — measured **~780 µs per 20 ms
+frame ≈ 3.9% of all wall clock** on the Atari port.
+
+Two obligations that come with it, both of which will bite immediately if missed:
+- **The handler must clear `INTREQ` itself.**  Exec's chain walker used to do that; miss it and
+  level 3 re-triggers forever.
+- **`WaitTOF()` stops working** (it is signalled by graphics.library's VERTB server).  Wait on
+  your own vblank counter, and hand the vector back *before* the closing `LoadView`/`WaitTOF`
+  pair.
+
+A `VERTB_SERVER=1`-style A/B fallback to the old `AddIntServer` chain is worth keeping for
+bisecting an interrupt-delivery regression.
+
+`Forbid()`/`Permit()` around the whole run window: nothing here needs exec's scheduler and we
+never `Wait()`.  ⚠ Everything between them must be `Wait()`-free — the `WaitTOF()` pairs and every
+library open/close stay outside.
+
+## Two-layer split
+
+| Layer | Source | What we take |
+|---|---|---|
+| **Hardware** | dA JoRMaS Template/C++ (vendored, `framework/`) | `AmigaHardware`, `Bitmap`, `CopperList`, `Sprite`, `Palette`, `Util` — hand-written m68k asm via vasm with GCC bridges; `Sprite`/`Palette` are C++ |
+| **App skeleton** | the PETSCII-Robots / WHDLoad-menu pattern | `main()` + the VBI handler + `while(!quit){poll; update; render; waitVBI}` |
+
+Deliberately **not** used: the framework's `Production`/`Part`/`Script`/`ProductionRunner`
+timeline, and its `ModulePlayer` / TrackerPacker replay.  Audio goes through the converted 6502
+sound code translated to Paula directly.
+
+Local modifications to the vendored framework are recorded in `framework/UPSTREAM.md` — keep that
+current, it is what makes a future upstream re-sync possible.
+
+## Build
+
+`make` from `amiga/` (ASSEMBLER is on by default — vasm assembles the framework `*Assembler.s`;
+`-DNO_ASSEMBLER` selects the portable C++ bodies).  Toolchain on PATH via `. amiga/env.sh`.
+
+Every hand-asm twin gets a `REVS_<NAME>_ASM` seam, a `make <NAME>_C=1` C-fallback, and a
+`make VERIFY=1 PROBES=1` in-process differential — the template is in `amiga/Makefile`.
