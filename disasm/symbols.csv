@@ -71,7 +71,7 @@ addr,name,type,is_hw,note
 0x503F,adc_read,func,0,"OSBYTE 128 — read an ADC channel. ⭐ THE STEERING INPUT. Note the ADC registers at $FEC0 are never touched; the axis only ever arrives through this MOS call, so the mouse substitution belongs in Platform::mosCall."
 ## $168E (the second OSBYTE 128) and $3879 (OSBYTE 190, set the uPD7002 conversion type) are
 ## call SITES inside larger routines, not routines — no name until their containers are named.
-0x39E0,key_binding_tbl,table,0,"negative-INKEY codes (the value OSBYTE 129 wants in X = 256-n) for the menu options. ⚠ The STATIC image holds six entries (SPACE 1 2 3 E 3) but the running engine ZEROES $39E4-$39E5, leaving four: SPACE, 1, 2, 3. Read the live values, not the image."
+0x39E0,menu_key_tbl,table,0,"⚠ EXACTLY FOUR entries ($39E0-$39E3): negative-INKEY codes (what OSBYTE 129 wants in X = 256-n) for the menu options SPACE, 1, 2, 3. The two bytes after it are NOT a fifth and sixth key -- $39E4 is the start of car_lap_mid, a separate 20-entry per-car array, which is why they change at runtime. (First read as a six-entry rebindable key table; corrected once $0F64 showed $39E4 used as a car array.)"
 0x6571,menu_wait_key,func,0,"waits until one of key_binding_tbl[0..X] is held and returns which; highlights the selection as it goes. Called from five sites in the $63E0 front-end chain: $63F7 (X=2), $6416 (X=3), $6426 (X=3), $646D (X=2), $64E7. (First named key_config_menu — it is a general menu selector, not specifically key configuration.)"
 
 ## ---- sound ($0B00-$0BCC, relocated there from $1300 by the unpack) -----------------------
@@ -89,6 +89,78 @@ addr,name,type,is_hw,note
 0x3B50,text_script_ptr_hi,table,0,"high bytes of text_script_interp's script pointers"
 0x5092,vdu_char_def,func,0,"OSWORD 10 (read a character definition) plus OSWRCH output"
 0x6300,console_io,func,0,"OSBYTE 2 (select input stream) / OSBYTE 21 / OSRDCH / OSWRCH"
+
+## ---- the road renderer -------------------------------------------------------------------
+## ⭐ The four addresses the span plotters patch into their own STA operands (row_base_lo/hi) are
+## per-COLUMN edge buffers, and $1E9E reads all four to decide which surface a column falls in.
+## That ties the two halves of the renderer together: the plotters WRITE these buffers, the
+## colour resolver READS them.
+0x0554,edge_buf_0,table,0,"per-column road edge/profile buffer 0. One of the four addresses patched into the span plotters' STA operands, and one of the four $1E9E compares against."
+0x05A4,edge_buf_1,table,0,"per-column road edge buffer 1"
+0x0600,edge_buf_2,table,0,"per-column road edge buffer 2"
+0x0650,edge_buf_3,table,0,"per-column road edge buffer 3"
+0x1E9E,column_surface_colour,func,0,"given a column Y and a height in $85, compares against all four edge buffers to decide which track surface the column falls in, and returns its pixel colour from surface_colours. The core of the road renderer's colour decision."
+0x38FC,surface_colours,table,0,"4 colours indexed by surface, returned by column_surface_colour ($38FC-$38FF)"
+0x0400,column_attr_0,table,0,"per-column value column_surface_colour reads when the height lands in edge_buf_1's band (masked with #$7F, then used to index $5EDF)"
+0x0450,column_attr_1,table,0,"per-column value used for edge_buf_2's band"
+
+## ---- lap and race timing (BCD -- note the SED) --------------------------------------------
+## ⚠ These are DECIMAL-mode 24-bit values: $4F77 and $0F64 both SED before arithmetic on them.
+## src/cpu/cpu.h's ADC/SBC already honour cpu.D (it anticipated exactly this), so the
+## TRANSLITERATION is safe. The hazard is a NATIVE TWIN: reimplementing this arithmetic as plain
+## C ints gives plausible-looking wrong lap times that only show up as a wrong number on screen.
+## Any twin over these arrays has to do packed BCD, and make validate is what will catch it.
+0x06A0,car_best_lap_lo,table,0,"per-car best lap time, low byte of a 3-byte BCD value. Initialised by $40EB to $10:00:00. One of the three sort keys $0F64 offers."
+0x06B8,car_best_lap_mid,table,0,"per-car best lap time, middle byte"
+0x06D0,car_best_lap_hi,table,0,"per-car best lap time, high byte"
+0x0898,car_lap_start_lo,table,0,"per-car lap-start timestamp, low byte of a 3-byte BCD value"
+0x08AC,car_lap_start_mid,table,0,"per-car lap-start timestamp, middle byte"
+0x04DC,car_lap_start_hi,table,0,"per-car lap-start timestamp, high byte"
+0x3864,car_lap_lo,table,0,"20-entry per-car 3-byte BCD value, low byte -- the third of $0F64's sort keys. ⚠ It is the reason $3864-$3877 shows up as runtime-changed state."
+0x39E4,car_lap_mid,table,0,"middle byte of the same array. ⚠ Sits immediately after menu_key_tbl, which is only four bytes long -- do not read it as more key bindings."
+0x04F0,car_lap_hi,table,0,"high byte of the same array"
+0x06B4,race_clock_lo,table,0,"the running race clock, low byte (3-byte BCD); cleared by $5011"
+0x06CC,race_clock_mid,table,0,"race clock, middle byte"
+0x06E4,race_clock_hi,table,0,"race clock, high byte"
+0x40EB,car_reset_best_lap,func,0,"sets one car's best lap to $10:00:00 (i.e. worse than any real lap)"
+0x42EC,all_cars_reset_best_lap,func,0,"car_reset_best_lap for X=$13..0 -- all 20 cars"
+0x5011,clear_race_clock,func,0,"zeroes race_clock_lo/mid/hi for index X"
+0x4F77,lap_complete,func,0,"called from track_pos_advance when a car's distance counter wraps a lap. Compares the race clock against the car's lap-start stamp in BCD and updates its best lap; special-cases the player (index in $6F)."
+
+## ---- car ordering and standings ----------------------------------------------------------
+0x0F64,sort_cars_by_key,func,0,"insertion-sorts the 20 cars into car_order, comparing 3-byte values from one of THREE parallel key-array sets selected by bits of A (BIT $78 / BVS / BMI): best lap, the car_lap array, or lap-start. Runs in decimal mode. Called from seven sites in the front end -- this is the standings/classification sort."
+0x013B,car_order_prev,table,0,"scratch half of the sort's order list"
+0x013C,car_order,table,0,"the 20-entry sorted car order sort_cars_by_key produces and find_player_neighbours searches"
+0x63A2,find_player_neighbours,func,0,"locates the player's car ($6F) in car_order and stores the car ahead in $5B and the car behind in $4D, using car_index_inc/car_index_dec to wrap"
+0x006F,player_car,var,0,"the player's car index, 0-19"
+0x005B,car_ahead,var,0,"car_order index of the car ahead, set by find_player_neighbours"
+0x004D,car_behind,var,0,"car_order index of the car behind"
+
+## ---- track position: where a car is on the circuit ---------------------------------------
+## The circuit is a list of segments; a car's position is (segment index, offset within it).
+## ⚠ The segment tables live in the TRACK FILE ($5900-$5A25 after the unpack swap), so these
+## addresses hold different data per circuit.
+0x147C,track_pos_advance,func,0,"move car X forward one step: bump the within-segment offset, roll over to the next segment when it passes segment_len_tbl, wrap at segment_count_x8, and increment the 16-bit distance counter -- calling lap_complete when it reaches lap_length"
+0x14C3,track_pos_retreat,func,0,"the reverse of track_pos_advance, stepping a car backwards"
+0x06E8,car_segment,table,0,"per-car index into the track segment list, stepped in units of 8"
+0x0880,car_seg_offset,table,0,"per-car offset within the current segment"
+0x08D0,car_distance_lo,table,0,"per-car distance-round-the-lap counter, low byte"
+0x08E8,car_distance_hi,table,0,"per-car distance counter, high byte"
+0x5907,segment_len_tbl,table,0,"TRACK FILE: length of each track segment"
+0x59D0,segment_data,table,0,"TRACK FILE: per-segment value compute_segment_scale reads"
+0x59FA,segment_count_x8,var,0,"TRACK FILE: number of segments times 8 -- the wrap point for car_segment"
+0x59FC,lap_length_lo,var,0,"TRACK FILE: lap distance, low byte (compared against car_distance)"
+0x59FD,lap_length_hi,var,0,"TRACK FILE: lap distance, high byte"
+0x5A14,track_scale,table,0,"TRACK FILE: per-track scale factor compute_segment_scale multiplies by"
+0x44C6,compute_segment_scale,func,0,"multiplies segment_data by track_scale for every segment into segment_scale. Explains the $5FB0-$5FC8 runtime-changed range."
+0x5FB0,segment_scale,table,0,"per-segment scaled value compute_segment_scale writes"
+
+## ---- small shared helpers ----------------------------------------------------------------
+0x3D50,print_spaces,func,0,"writes A spaces via vdu_char_def"
+0x43F6,sound_stop_all,func,0,"sound_stop_channel for all four channels"
+0x0DBF,mul8_accum,func,0,"multiply-accumulate: mul8 via its $0C02 entry, then add the previous product back into math_lo/math_hi"
+0x0C02,mul8_noinit,func,0,"mul8's second entry, skipping the STA of the multiplicand"
+0x41D0,select_text_variant,func,0,"copies five bytes from parallel tables at $3BD0/$3BD7/$3BDE/$3BE5/$3BEC into the OPERANDS of instructions at $40E2/$40E3/$40E5/$3D14/$3D16/$3D17, then runs text_script_interp. Self-modifying by design, and it accounts for six of the runtime-changed engine bytes."
 
 ## ---- the rasteriser: $2C00-$2FFF, SELF-MODIFYING -----------------------------------------
 ## ⭐ How the runtime patching actually works, for the two span plotters: $19BD-$19CC reads a
