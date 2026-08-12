@@ -186,6 +186,27 @@ Generalise: before hand-writing around a dynamic mechanism, check whether the me
 small enough to *emit*.  "The transliteration can't express this" is often "the transliteration
 can't express one FROZEN reading of this".
 
+### …and the tool's COUNT of a mechanism is not its SHAPE ⚑ Revs
+
+The same rule applied to the `$7B00` overlay a phase later, and the inventory it inherited was
+misleading in a way worth naming.  `make sweep` reports "17 patched target addresses" — a correct
+static answer to the wrong question.  A store whose *own operand byte* is patched writes to a
+computed address, so what the scan records is the **static operand base**, not the target.  Five
+of the 17 were bases; the real site count was 42, and reading them out turned "17 sites, same
+three classes, inventory work" into two chains of 40 unrolled units, a fourth SMC class, and a
+guard the other three did not need.
+
+Two transferable pieces:
+
+- **A static scan of a dynamic mechanism under-counts by exactly the dynamism.**  When a table
+  says *N* sites, check whether any of the *N* are addresses the code computes rather than uses.
+  Budget from the mechanism, not from the count.
+- ⭐ **The operand ENCODING is evidence, and it is the strongest kind available.**  Every writer
+  here patches only the LOW byte, so a writer based at `$7C0F` can reach page `$7C` and nothing
+  else.  That made the legal target set a *proof* rather than an assumption, and it is what kept
+  the 40-slot expansion from becoming 40 guesses.  Before enumerating a patched target set by
+  observation, ask what the addressing mode makes impossible.
+
 ## A silent no-op is the most expensive translation choice ⚑ Revs
 
 Four separate places in one generation pass could have quietly produced code that runs and does
