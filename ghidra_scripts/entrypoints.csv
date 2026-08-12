@@ -15,6 +15,10 @@
 ## Only ROOTS belong here — addresses nothing in the binary references, so no amount of
 ## following control flow reaches them.  Ordinary JSR/JMP targets are Ghidra's job; listing
 ## the 222 subroutines the sweep already found would just be noise that rots.
+## ⚠⚠ THE $7B00-$7FFF OVERLAY IS NOT LISTED HERE, ON PURPOSE.  copy_dash_data ($18EA)
+## builds that page at runtime, so it does not exist in revs_runtime.bin and seeding it for
+## Ghidra would only mark a BRK.  Its four roots live in tools/dashdata.py (ENGINE_ENTRIES),
+## which disassembles the overlay separately.  docs/static-map.md §Open items 6.
 addr,name,note
 0x63BD,engine_main,"THE engine entry — the target of the unpack stub's closing JMP $63BD, read from $79AB. Not $1200: that is the loader stub, and it overwrites itself."
 0x4E5C,irq1v_handler,"Revs's own IRQ handler. Claimed by STA $0204/$0205 at $4E4F/$4E54 (LDA #$5C / LDA #$4E). The 50 Hz game body — reachable only because the MOS calls it, so a static walk never finds it. Chains to the previous handler via JMP ($4F1D) at $4E59."

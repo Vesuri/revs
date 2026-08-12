@@ -752,7 +752,44 @@ a guess dressed as a fact, and it is the exact failure mode `docs/postmortem.md`
       Also confirmed at runtime: **OSWORD 10 (read a character definition) is called ~850 times in
       the first 900 vblanks**, so the MOS font is a real Phase 5 dependency, not a footnote.
 
-8. **`DumpHwAccesses.java` still carries Atari ranges.**  The sweep's hardware table above
+9. ⚠⚠ **THREE 6502 LOOPS ARE COMPILED AS UNBOUNDED MUTUAL RECURSION — two of them in the
+   corpus that produced the 2.2 FPS baseline.**  Found while wiring in the `$7B00` overlay, by
+   a check written for the overlay that immediately fired on code that predates it.
+
+   The transpiler splits a function at every mid-function entry point and joins the pieces
+   with `name(); return;`.  That is exact for a *call*.  For a **loop** it is a disaster: if
+   control falls through segments S1→S2→…→Sn and Sn jumps back to S1, the C form is mutual
+   recursion, and GCC eliminates none of these tail calls on either target.  The stack then
+   grows with the ITERATION COUNT, and every iteration pays call overhead.
+
+   | Cycle | What it is |
+   |---|---|
+   | `$1DE8 → $1DE5 → $1DE8` | ⚠ the span store loop inside `project_geometry` — **one nested frame pair per pixel of every span**, in the hot path the profile points at |
+   | `$31D0 → $3D68 → $31D0` | the dashData block fill loop (the `$3900,X` start-offset table's other reader) |
+   | `$7BF7 → $7C00 → $7D56 → $7E00 → $7EF3 → $7BF7` | the overlay's 41-block unrolled dashboard blit — overlay-only |
+
+   Measured on the overlay before it was gated off: **300-1000 live frames** on the host and
+   **0 painted frames in 20 s** on the target, versus 2.2 FPS without it.  The two engine
+   cycles are smaller but have been in every build ever measured, so **`docs/perf-method.md`'s
+   baseline includes them** — an unknown slice of the 13.1% charged to `$1E15` may be call
+   overhead and stack traffic, not geometry.
+
+   `tools/transpile.py check_split_cycles()` reports them on every `make gen`.  It is a
+   **warning, not an error**, and deliberately so: hard-failing would block the repo on a
+   defect the check merely revealed.  ⚠ Do not let it go quiet.
+
+   Two candidate fixes, both real work and not yet chosen:
+   - **Dispatch prologue.** Emit a strongly-connected multi-entry region as ONE C function
+     with `switch (entry) { case …: goto L_…; }` at the top and thin wrappers per entry.
+     General, no duplication, changes `translate_func`.
+   - **Full slices.** Stop cutting a split function at the *next* split point — emit its whole
+     slice to the end of the container with local labels, which is what the code comment
+     already claims it does.  Much smaller change; costs duplicated code per entry.
+
+   ⚠ Until one lands, the overlay stays behind `make gen DASHCODE=1` and the four `$7Bxx`
+   call sites keep their `platform_brk()` traps.
+
+10. **`DumpHwAccesses.java` still carries Atari ranges.**  The sweep's hardware table above
    supersedes it for now; retool or retire the script rather than leaving a tool that reports
    GTIA registers for a BBC binary.
 

@@ -222,3 +222,10 @@ addr,name,type,is_hw,note
 0x18EA,copy_dash_data,func,0,"THE SECOND UNPACK. Assembles $7B00-$7FFF (1280 bytes of code) plus the dashboard bitmap out of the tails of 41 dashData blocks spaced $80 apart from $3000. $192F seeds $70-$73 = src $3000 / dst base $7FB0; $3900,X is block X's start offset; the destination DESCENDS to $7768. Bit 7 of A set = run in reverse and stow the code back before switching to MODE 7 — which is why the page is empty in every static image. tools/dashdata.py replays it. See docs/static-map.md open item 6."
 0x3900,dash_block_starts,table,0,"41 bytes — dashData block X's start offset within its $80-byte block, read as $3900,X by copy_dash_data ($190E) and by the fill loop at $31D0. Data always ENDS at offset $4F. Also read by the rasteriser ($1C94, $1DF5, $2FF5)."
 0x192F,dash_ptr_init,table,0,"4 bytes 00 30 B0 7F — copy_dash_data's initial $70/$71 (src $3000) and $72/$73 (dst base $7FB0, so block 0's last byte lands at $7FFF)."
+##
+## ⚠ The $7B00-$7FFF block below is the OVERLAY copy_dash_data ($18EA) builds at runtime.
+## It is not in revs_runtime.bin; tools/dashdata.py --listing disassembles it into
+## disasm/dashcode.txt, which tools/transpile.py reads alongside listing.txt.
+0x7B00,mirrors_update,func,0,"[PROVISIONAL] wing-mirror update, called from the main loop at $1739. Reads object size $03C8,X, LSR x3 (÷8 = half the mirror block height), brackets it around the centre line at $B6, then walks the mirror segments calling mirror_draw_car."
+0x7B9C,lap_time_readout,func,0,"[PROVISIONAL] lap/best-time readout — $06A0/$06B8/$06D0 (the cells car_reset_best_lap $40EB initialises) through $37D6 and $5092. Called from $502A, $503B, $6612."
+0x7FB6,mirror_draw_car,func,0,"[PROVISIONAL] draws one car reflection into one mirror segment, or clears it. Carries the engine-shudder idiom LDX $FE68 / AND $2000,X / AND $61 (User VIA T1 low, decorrelated against game code, gated on engine status) and subtracts $138 via SBC #$38 / SBC #$01 when a span crosses a character row. Spans dashData blocks 1 and 0; block 0's 52 bytes land at $7FCC."

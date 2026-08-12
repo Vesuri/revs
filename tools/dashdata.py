@@ -55,9 +55,12 @@ line-editor blocker (`docs/static-map.md` open item 6, the harness fault).  Do t
 blocker clears — it is a one-line addition to a probe.
 """
 import argparse
+import os
 import sys
 
-SRC_BASE = 0x3000        # dashData block 0; blocks are $80 apart
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+SRC_BASE = 0x3000       # dashData block 0; blocks are $80 apart
 BLOCKS = 0x29            # 41, from CPX #$29 at $192A
 DATA_END = 0x4F          # LDY #$4F at $18F8
 PTR_INIT = 0x192F        # 4 bytes -> $70,$71,$72,$73
@@ -92,6 +95,95 @@ def copy_dash_data(mem, reverse=False, log=print):
     return placed
 
 
+# The engine's own calls into the page — the only way in, since nothing statically
+# references the page's interior.  docs/static-map.md §Open items 6.
+ENGINE_ENTRIES = {
+    0x7B00: [0x1739],
+    0x7B4A: [0x1704],
+    0x7B9C: [0x502A, 0x503B, 0x6612],
+    0x7BE2: [0x16E6, 0x1748],
+}
+
+
+def emit_listing(mem, out):
+    """Disassemble $7B00-$7FFF into `disasm/listing.txt` format, for the transpiler.
+
+    ⚠ **This is NOT Ghidra's output, and that is a real difference from every other line the
+    transpiler reads.**  Ghidra disassembles `revs_runtime.bin`, in which this page is $00.
+    The page only exists after `copy_dash_data` runs, and folding it into that image would
+    make `revs_runtime.bin` mean two things at once — blocks 26-40 would also land on top of
+    the track data at $70DB-$7813, which is faithful to a running machine and useless as a
+    disassembly input.  So the overlay is disassembled here instead, by the SAME
+    recursive-descent walker `make sweep` uses (`tools/sweep_entrypoints.py`), which agrees
+    with Ghidra to within 4 instructions over the rest of the binary.
+
+    ⚠ It therefore has **no Ghidra cross-check**, unlike the other 7098 instructions.  If this
+    page ever disagrees with a real BBC, suspect here first.
+    """
+    import sweep_entrypoints as S
+
+    sw = S.Sweep(mem, CODE_LO, CODE_HI - 1)
+    # Confine the walk to the page: pre-marking everything outside it as "seen" stops the
+    # walker the instant it follows a JSR out into the engine, without special-casing
+    # anything inside.  The engine's own routines are Ghidra's job, not ours.
+    sw.seen.update(a for a in range(0x10000) if not (CODE_LO <= a < CODE_HI))
+    sw.run(list(ENGINE_ENTRIES))
+    sw.seen.difference_update(a for a in range(0x10000) if not (CODE_LO <= a < CODE_HI))
+
+    decoded = sorted(sw.insn)
+    # A function starts at an engine entry or at any in-page JSR target.  Everything else —
+    # branch and JMP targets — stays inside the enclosing range, which is what the
+    # transpiler wants: it turns those into local gotos.
+    starts = sorted(set(ENGINE_ENTRIES) |
+                    {t for t in sw.calls if CODE_LO <= t < CODE_HI})
+
+    ranges, names = [], {}
+    for i, s in enumerate(starts):
+        nxt = starts[i + 1] if i + 1 < len(starts) else CODE_HI
+        body = [a for a in decoded if s <= a < nxt]
+        last = body[-1]
+        ranges.append((s, last + sw.insn[last][3] - 1))
+        names[s] = f"FUN_{s:04x}"
+
+    def operand_text(mode, operand, n):
+        if mode in (S.IMP, S.ACC):
+            return "A" if mode == S.ACC else ""
+        if mode == S.IMM:  return f"#0x{operand:x}"
+        if mode == S.IZX:  return f"(0x{operand:02x},X)"
+        if mode == S.IZY:  return f"(0x{operand:02x}),Y"
+        if mode == S.IND:  return f"(0x{operand:04x})"
+        if mode == S.ZPX:  return f"0x{operand:02x},X"
+        if mode == S.ZPY:  return f"0x{operand:02x},Y"
+        if mode == S.ABX:  return f"0x{operand:04x},X"
+        if mode == S.ABY:  return f"0x{operand:04x},Y"
+        return f"0x{operand:04x}"        # ZP, ABS and REL all print as a bare address
+
+    lines = [
+        f"; ⚠ NOT a Ghidra listing — the $7B00-$7FFF overlay that copy_dash_data ($18EA)",
+        f"; builds at runtime, disassembled by tools/dashdata.py --listing.  Read its",
+        f"; docstring before trusting a line of it.  docs/static-map.md §Open items 6.",
+        f"; {len(ranges)} functions, {len(decoded)} instructions defined",
+    ]
+    for s, e in ranges:
+        lines.append(f"; FUNC {names[s]:<24} {s:04x} - {e:04x}")
+    for a in decoded:
+        mn, mode, operand, n = sw.insn[a]
+        bs = " ".join(f"{b:02X}" for b in mem[a:a + n])
+        lines.append(f"{a:04x}  {bs:<9} {mn:<3} {operand_text(mode, operand, n)}".rstrip())
+
+    open(out, "w").write("\n".join(lines) + "\n")
+    covered = sum(sw.insn[a][3] for a in decoded)
+    print(f"  wrote {out}: {len(ranges)} functions, {len(decoded)} instructions, "
+          f"{covered}/{CODE_HI - CODE_LO} bytes ({100 * covered // (CODE_HI - CODE_LO)}%)")
+    for s, e in ranges:
+        callers = ENGINE_ENTRIES.get(s)
+        tag = ("engine: " + ", ".join(f"${c:04X}" for c in callers)) if callers else "internal"
+        print(f"    ${s:04X}-${e:04X}  {tag}")
+    if sw.bad:
+        print(f"  ⚠ {len(sw.bad)} undecodable byte(s) reached: "
+              + ", ".join(f"${a:04X}=${o:02X}" for a, o in sw.bad[:8]))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("image", nargs="?", default="disasm/revs_runtime.bin")
@@ -99,6 +191,9 @@ def main():
     ap.add_argument("--code-only", metavar="PATH",
                     help=f"write just ${CODE_LO:04X}-${CODE_HI - 1:04X} "
                          f"({CODE_HI - CODE_LO} bytes)")
+    ap.add_argument("--listing", metavar="PATH", nargs="?", const="disasm/dashcode.txt",
+                    help="disassemble the overlay into listing.txt format for the transpiler "
+                         "(default disasm/dashcode.txt)")
     ap.add_argument("--reverse", action="store_true",
                     help="run the stow-back direction (bit 7 of A set) instead")
     args = ap.parse_args()
@@ -127,6 +222,10 @@ def main():
     if args.code_only:
         open(args.code_only, "wb").write(mem[CODE_LO:CODE_HI])
         print(f"  wrote {args.code_only} ({CODE_HI - CODE_LO} bytes, ${CODE_LO:04X} origin)")
+    if args.listing:
+        if args.reverse:
+            sys.exit("--listing needs the forward (unpacked) direction")
+        emit_listing(mem, args.listing)
     return 0
 
 

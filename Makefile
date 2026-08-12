@@ -12,7 +12,10 @@
 ##   make image               rebuild disasm/revs_mem.bin from revs.ssd (TRACK=SILVER etc.)
 ##   make runtime             replay the engine's startup relocation -> revs_runtime.bin
 ##                            ⭐ THIS, not revs_mem.bin, is what to disassemble
-##   make sweep               the entry-point sweep report (docs/entrypoint-sweep.md)
+##                            (also runs `make dashcode` afterwards)
+##   make dashcode            replay the SECOND unpack (copy_dash_data, $18EA) — the
+##                            $7B00-$7FFF overlay Ghidra cannot see -> disasm/dashcode.txt
+##   make sweep             the entry-point sweep report (docs/entrypoint-sweep.md)
 ##   make endian-lint         fail if anything aliases mem[] as uint16_t*/uint32_t*
 ##
 ## Visual ground truth: jsbeeb / b2 on the real disc (docs/bbc-reference-loop.md).
@@ -58,7 +61,7 @@ CXX_OBJS := $(CXX_SRCS:.cpp=.o)
 OBJS     := $(C_OBJS) $(CXX_OBJS)
 TARGET   := build/revs
 
-.PHONY: all clean gen validate image runtime sweep endian-lint
+.PHONY: all clean gen validate image runtime dashcode sweep endian-lint
 
 all: $(TARGET)
 
@@ -119,6 +122,22 @@ clean:
 #                                                    cross-check against a real BBC
 runtime:
 	python3 tools/relocate.py $(if $(VERIFY),--verify $(VERIFY),)
+	@$(MAKE) --no-print-directory dashcode   # ⚠ AFTER: dashcode reads revs_runtime.bin
+
+# ⭐⭐ Replay the SECOND unpack -> disasm/dashcode.txt (and optionally the bytes).
+# copy_dash_data ($18EA) assembles $7B00-$7FFF — 1280 bytes of live code, incl. the wing
+# mirrors, three of which the main loop calls at 50 Hz — out of the tails of 41 blocks at
+# $3000, and stows it back before returning to MODE 7.  So the page is $00 in
+# revs_runtime.bin and Ghidra has nothing to disassemble there.
+#
+# ⚠ Deliberately NOT folded into revs_runtime.bin: the same copy also drops the dashboard
+# bitmap over the track data at $70DB-$7813, which is faithful to a running machine and
+# useless as a disassembly input.  One image, one meaning.  The transpiler reads the overlay
+# listing alongside listing.txt (tools/transpile.py DASHCODE).
+# docs/static-map.md §Open items 6.
+dashcode:
+	python3 tools/dashdata.py --listing disasm/dashcode.txt \
+	                          --code-only disasm/revs_dashcode.bin | tail -n 12
 
 # The entry-point sweep report (docs/entrypoint-sweep.md, docs/static-map.md).
 #   make sweep                       -> disasm/sweep.txt

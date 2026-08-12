@@ -54,9 +54,18 @@ this is not the "unattended run ending" artefact of Rule 3.
 
 - ⬆ **Nothing is rendered.**  `Revs::render()` increments a counter and returns.  The
   moment the 6502 screen RAM is mirrored into bitplanes (Phase 5) this gets worse.
-- ⬆ **Three main-loop calls are no-ops.**  `$1704`/`$1739`/`$1748` (the `$7Bxx` page —
-  `docs/static-map.md` Open items) trap through `platform_brk()` and return, once each per
-  frame.  Their real cost is missing.
+- ⬆ **Three main-loop calls are no-ops.**  `$1704`/`$1739`/`$1748` (the `$7Bxx` page) trap
+  through `platform_brk()` and return, once each per frame.  Their real cost is missing.
+  ⭐ **Now identified: they are the wing mirrors and the dashboard**, built at runtime by
+  `copy_dash_data` (`$18EA`) — so the missing work is *rasterisation*, which cuts against
+  this table's "the hot path is physics, not rasterisation" reading by an unmeasured amount.
+  `docs/static-map.md` §Open items 6.
+- ⬇⬆ **Two 6502 loops in this very build are compiled as unbounded mutual recursion**, one of
+  them the per-pixel span store inside `project_geometry` (`$1DE5 ⇄ $1DE8`).  Every iteration
+  nests a C frame instead of branching.  So some unknown slice of the 13.1% charged to
+  `$1E15` is call overhead and stack traffic rather than geometry, and fixing it moves the
+  number without touching an algorithm.  `docs/static-map.md` §Open items 9 — ⚠ **do not
+  quote the per-call shares below as evidence about algorithms until this is fixed.**
 - ⬇ **Nothing is optimised.**  This is pure transliterated C at `-O2`: zero native twins,
   zero asm, and a 6502 `mem[]` byte model throughout.
 

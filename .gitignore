@@ -8,6 +8,7 @@
 disasm/files/
 disasm/revs_mem.bin
 disasm/revs_runtime.bin
+disasm/revs_dashcode.bin
 disasm/revs_blocks.txt
 
 # Screenshots / comparison captures — local only.
@@ -32,6 +33,7 @@ tools/__pycache__/
 
 # Generated, regenerable from revs.ssd via the tools
 disasm/listing.txt
+disasm/dashcode.txt
 # the entry-point sweep report (make sweep) -- regenerable; its CONCLUSIONS live in
 # docs/static-map.md, which is committed
 disasm/sweep.txt
