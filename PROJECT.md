@@ -111,6 +111,9 @@ regressed.
 revs.ssd                Revs Plus Revs 4 Tracks, 1986 (read-only, git-ignored)
 revs-hack-nurburgring.ssd  Moxon's Revs+ compilation — kept only as the sole copy of the
                         Nurburgring track data; its engine is identical to revs.ssd's (git-ignored)
+revsplus.d64            C64 Revs+ (Firebird 1987) — the source for extracting Crammond's own
+                        Nurburgring track data ourselves, per the sixth-circuit decision
+                        (git-ignored; unused until Phase 5)
 CLAUDE.md               always-loaded working instructions
 PROJECT.md              this file
 docs/                   the reference docs (see CLAUDE.md's index)
@@ -137,11 +140,12 @@ amiga/                  Amiga build infrastructure: Makefile, env.sh, run.sh, de
       `vbi=824 painted=803` on an `FPSCOUNT=1` build (≈48.8 FPS with nothing yet to draw) and
       `painted=0` on a plain one — display takeover, 50 Hz VERTB handler, copper list, frame pump
       and the embedded 6502 image all verified on the target.
-- [~] **Phase 1 — The BBC reference loop** ← in progress, gates everything. jsbeeb installed and
-      working (`tools/jsbeeb`); Silverstone's REVS2 engine range and track data are confirmed
-      byte-identical to `disasm/revs_mem.bin`. Remaining: the four expansion tracks, named-milestone
-      captures, the jsbeeb cycle-diff harness. `docs/bbc-reference-loop.md` status section.
-- [ ] Phase 2 — Complete static map (entry-point sweep, hardware map, MOS-call inventory, naming)
+- [x] **Phase 1 — The BBC reference loop.** jsbeeb installed and working (`tools/jsbeeb`); all
+      five tracks' REVS2 engine range and track data confirmed byte-identical to
+      `disasm/revs_mem.bin`. Exit criteria met — remaining nice-to-haves (named-milestone
+      captures, the jsbeeb cycle-diff harness, b2, the CRTC/ULA analyser) no longer gate Phase 2.
+      `docs/bbc-reference-loop.md` status section.
+- [ ] **Phase 2 — Complete static map** ← next (entry-point sweep, hardware map, MOS-call inventory, naming)
 - [ ] Phase 3 — Transpiler quality, then generate
 - [ ] Phase 4 — End-to-end skeleton on the target, then profile, then set a target
 - [ ] Phase 5 — Render + input

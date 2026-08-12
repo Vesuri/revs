@@ -122,26 +122,57 @@ bytes differing overall, but broken down by region:
 | `$8000-$FFFF` (ROM shadow + OS ROM) | ~31745/32768 | **not a bug** — `revs_mem.bin` was never meant to model ROM contents |
 
 So the part `disasm/revs_mem.bin` exists to serve — the engine code and the track data the
-transpiler will actually read — is **already proven correct**, for Silverstone. The doc's
-"provisional until diffed" warning turns out to have been about zero-page/workspace bytes outside
-the engine's own footprint, not about the engine image itself. **Exit criterion for step 2 is met
-for the code+data regions on Silverstone; not yet checked for the four expansion tracks or
-formally automated as a repeatable `make`-level check.**
+transpiler will actually read — is **already proven correct**. The doc's "provisional until
+diffed" warning turns out to have been about zero-page/workspace bytes outside the engine's own
+footprint, not about the engine image itself.
 
-**Self-modifying-code inventory: started, not yet precise.** `bbc_refloop_track_diff.mjs 1`
-(Brands Hatch) dumps RAM at the `$1200` breakpoint and again ~3M cycles later, then diffs
-`$1200-$6FFF`: 5838 bytes differ. This almost certainly **over-counts** — 3M cycles (~1.5M
-instructions) is enough for ordinary gameplay-state mutation within the engine's own footprint
-(REVS 6502 games commonly interleave working variables with code in one load block), not just the
-track hook's one-time patch. **Follow-up needed:** narrow the "after" sample to the moment the
-per-track hook (`ModifyGameCode`/`CallTrackHook`) actually returns, rather than a fixed cycle
-count, to get a precise patch-only diff. Until then, treat 5838 as an upper bound, not the hook's
-actual footprint.
+**Confirmed for all five tracks (2026-08-12).** Repeated the same `$1200` breakpoint + full-RAM
+dump for Brands Hatch, Donington Park, Oulton Park and Snetterton (`bbc_refloop_track_diff.mjs`
+already stops at the entry breakpoint before doing anything else, so its "before" dump doubles as
+the entry-state capture), and diffed each against `make image TRACK=<name>`'s
+`disasm/revs_mem.bin`: **`$1200-$6FFF` is 0 diffs and each track's own data block is 0 diffs, for
+all five.** Exit criterion for step 2 is met for the code+data regions, on every track. Not yet
+wired into `make` as a repeatable automated check — still a manual jsbeeb script run per track.
 
-**Not yet done:** the per-track diff for a second track (to see the per-track behaviour surface,
-step 2's second extra); named-milestone captures (step 3); the jsbeeb cycle-diff harness against
-the port (step 4); the CRTC/ULA display-composition analyser (step 5); fixing `tools/ssd_load.py`
-(nothing to fix yet — it's already correct for the regions that matter, on Silverstone).
+**Self-modifying-code inventory: done, and more precise than expected.**
+`bbc_refloop_track_diff.mjs <1-5>` dumps RAM at the `$1200` breakpoint ("before") and again 1M
+cycles later ("after"). A cycle-count probe (Brands Hatch) showed the `$1200-$6FFF` diff count
+against "before" plateaus at exactly 5838 bytes by 500k cycles and is still 5838 at 3M — so 1M is
+comfortably past whatever runs at startup and before any of the sustained-input gameplay loop, not
+an arbitrary slice of drift.
+
+But comparing each track's "after" dump straight against its own "before" dump turned out to be
+the wrong comparison: **Silverstone — whose track data is passive (exec `$0000`, no hook program)
+— also shows ~5800 bytes changed** in that same window. So most of that number is the engine's own
+ordinary startup self-modification (common in 6502 games — working variables interleaved with
+code in one load block), not track-hook patching, and it happens on every track including the one
+with nothing to patch.
+
+The "before" dumps are confirmed byte-identical across all five tracks in `$1200-$6FFF` (expected
+— it's the same loaded REVS2 image, unexecuted). That makes Silverstone's "after" dump the right
+baseline: **diffing each hooked track's "after" dump against Silverstone's "after" dump** isolates
+exactly what that track's hook did, net of ordinary engine startup:
+
+| Track | Total patched vs Silverstone | Shared with all 4 | Track-specific |
+|---|---|---|---|
+| Brands Hatch | 1872 | 1810 | 62 |
+| Donington Park | 1874 | 1810 | 64 |
+| Oulton Park | 1866 | 1810 | 56 |
+| Snetterton | 1866 | 1810 | 56 |
+
+**1810 addresses (`$1248-$5FC8`) are patched identically by all four expansion tracks** —
+consistent with one shared `ModifyGameCode`/`CallTrackHook` routine all four call — plus a small
+56-64 byte track-specific remainder each, presumably the `Hook*` family
+(`HookFieldOfView`/`HookFlattenHills`/`HookJoystick`/...) or track-ID/geometry-seed parameters.
+This is a genuinely useful head start for the Phase 2 entry-point sweep
+(`docs/entrypoint-sweep.md`) — the shared-patch address range and the per-track deltas are exactly
+the self-modifying-code inventory that doc asks for, computed instead of guessed. The dump files
+live in `tmp/` (git-ignored; re-derive with the script rather than expecting them to persist).
+
+**Not yet done:** named-milestone captures (step 3); the jsbeeb cycle-diff harness against the
+port (step 4); the CRTC/ULA display-composition analyser (step 5); fixing `tools/ssd_load.py`
+(nothing to fix — it's already correct for the regions that matter, on all five tracks); b2
+(cmake now installed on this machine, not yet built/smoke-tested).
 
 ## The standing rule this loop exists to serve
 

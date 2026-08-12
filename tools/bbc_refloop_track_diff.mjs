@@ -1,11 +1,18 @@
 // Phase 1 self-modifying-code inventory (docs/bbc-reference-loop.md step 2 extras).
-// Boots revs.ssd, selects a track, dumps RAM at REVS2 entry ($1200) and again a
-// short while later, and reports which bytes in the engine's own range changed --
-// the per-track hook patch surface (ModifyGameCode / CallTrackHook / Hook*).
+// Boots revs.ssd, selects a track, dumps RAM at REVS2 entry ($1200) and again 1M cycles
+// later, and reports which bytes in the engine's own range changed -- the per-track hook
+// patch surface (ModifyGameCode / CallTrackHook / Hook*).
+//
+// 1M cycles was chosen by probing how the diff count grows over time: for Brands Hatch it
+// plateaus at 5838 bytes by 500k cycles and is still exactly 5838 at 3M, i.e. the hook
+// patch completes fast and the engine then goes idle (waiting on the next keypress) rather
+// than continuing to mutate its own memory -- so this window captures the patch cleanly,
+// not an arbitrary slice of ongoing gameplay drift. See docs/bbc-reference-loop.md status.
 //
 // jsbeeb loads its ROMs relative to cwd, so run FROM tools/jsbeeb:
 //   cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_track_diff.mjs <1-5>
-//   1=Brands Hatch 2=Donington Park 3=Oulton Park 4=Snetterton 5=Silverstone
+//   1=Brands Hatch 2=Donington Park 3=Oulton Park 4=Snetterton 5=Silverstone (Silverstone's
+//   track data is passive -- exec $0000 -- so 5 is expected to show 0 diffs)
 
 import { TestMachine } from "./jsbeeb/tests/test-machine.js";
 import * as utils from "./jsbeeb/src/utils.js";
@@ -76,11 +83,7 @@ console.log("REVS2 entry reached.");
 const dumpBefore = Buffer.alloc(0x10000);
 for (let a = 0; a < 0x10000; a++) dumpBefore[a] = tm.readbyte(a);
 
-// NOTE: this runs a few million cycles of ordinary execution too, not just the
-// track-hook patch -- treat the byte count as an upper bound on the patch
-// surface, not an exact hook inventory. Narrowing this to "stop at the first
-// post-hook idle/input-wait point" is follow-up work.
-await tm.runFor(3 * 1000 * 1000);
+await tm.runFor(1000000);
 const dumpAfter = Buffer.alloc(0x10000);
 for (let a = 0; a < 0x10000; a++) dumpAfter[a] = tm.readbyte(a);
 

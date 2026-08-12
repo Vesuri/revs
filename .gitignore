@@ -4,6 +4,7 @@
 *.ssd
 *.dsd
 *.uef
+*.d64
 disasm/files/
 disasm/revs_mem.bin
 disasm/revs_blocks.txt
