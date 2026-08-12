@@ -329,6 +329,75 @@ Two 2-byte changes at `$1310` (Donington, Snetterton) point outside the track fi
 3. **`$5300-$5A25` is code as well as data** for four of the five circuits: the track file is a
    program.  A disassembly pass over that window, per track, is still owed.
 
+## The front end, and the key table
+
+`engine_init` (`$3850`) does `OSBYTE 4,1` (cursor keys act as normal keys), clears `$05F4-$05FD`,
+saves the stack pointer to `$6B`, calls **`$5A22`**, sets the ADC conversion type via `OSBYTE 190`,
+and `JMP $63E0` — a chain of menus, each one a `JSR key_config_menu ($6571)` that waits until one
+of the keys in the table at `$39E0` is held.  The five call sites are `$63F7` (X=2), `$6416` (X=3),
+`$6426` (X=3), `$646D` (X=2) and `$64E7`; X is the highest table index on offer.
+
+### ⭐ `$5A22` is `CallTrackHook` — a fixed engine→track-file entry
+
+Not one of the patch sites: it arrives *with* the track data, because the unpack swap deposits the
+track file over `$5300-$5A25` and `$5A22` is the last usable slot in it.
+
+| Track | Bytes at `$5A22` | Meaning |
+|---|---|---|
+| SILVER | `60 EA EA` | `RTS` / `NOP` / `NOP` — a deliberate no-op, since Silverstone has no hook code |
+| BRANDS | `4C 00 57` | `JMP $5700` — into the track program |
+
+So the engine always calls the track file at one known address, and the passive circuit supplies a
+stub.  That is a much cleaner seam for the port than the patch sites: one call, one target.
+
+### The key table, decoded
+
+`$39E0` holds **negative-INKEY** codes, i.e. the value `OSBYTE 129` wants in X, which is `256 − n`
+for `INKEY(−n)`:
+
+| Cell | Byte | `INKEY` | Key |
+|---|---|---|---|
+| `$39E0` | `$9D` | −99 | **SPACE** |
+| `$39E1` | `$CF` | −49 | **1** |
+| `$39E2` | `$CE` | −50 | **2** |
+| `$39E3` | `$EE` | −18 | **3** |
+| `$39E4` | `$DD` → `$00` | −35 | E — **zeroed at runtime** |
+| `$39E5` | `$EE` → `$00` | −18 | 3 — **zeroed at runtime** |
+
+⚠ **The static image has six entries; the running engine has four.**  Reading this table out of
+`revs_runtime.bin` alone would have produced two keys that are never tested.  The live values came
+from a jsbeeb dump — the same "measure, don't reason" rule that the relocation needed.
+
+The decode was cross-checked against jsbeeb's own key matrix rather than trusted from a manual:
+its table gives `[row, col]` per key, and `n = col × 16 + row + 1` reproduces all four values
+(SPACE `[2,6]` → 99, `1` `[0,3]` → 49, `2` `[1,3]` → 50, `3` `[1,1]` → 18).
+
+### ⚠ Driving the engine into a real race: attempted, and deliberately abandoned
+
+The goal was to turn the weak coverage cross-check below into a strong one.  It did not get there,
+and the reason is worth recording so nobody retries it the same way:
+
+- Keys **do** register (`tools/bbc_probe_keys.mjs`: holding `1` yields 22 new engine addresses,
+  SPACE yields 4).  The first trace's problem was a missing *sequence*, not a missing keypress.
+- A pulse chain gets **past the first menu** and raises coverage from 262 to 356 engine addresses,
+  then stops dead.
+- The 6502 stack says why.  At the start the outstanding return address is `$63FA` — inside
+  `menu@$63F7`.  After four pulses it is `$640A` **and `$6563`**: the engine has moved on and is now
+  spinning at `$6560` on `BIT $05F4 / BVS $6560` — **not a key wait at all**, but a wait for bit 6
+  of `$05F4` to be cleared by something else.
+
+So the front end is not a pure keyboard state machine, and getting to a race means understanding
+what clears `$05F4` bit 6.  **That is a worthwhile question but it is not this phase's question.**
+`docs/entrypoint-sweep.md`'s definition of done is *"`listing.txt` has no referenced-but-
+undisassembled address"* — a static property, settled by classifying the unclassified runs, not by
+winning at Revs.  Recorded as an open item with the three facts a future attempt needs: the menu
+call sites, the live key table, and `$05F4` bit 6.
+
+⚠ Note the instrumentation trap this ran into: counting executions of the five menu call sites
+reported "none reached", because the hook was installed *after* the settle period, by which time
+the engine was already parked inside a menu.  A call-site counter cannot see a call that is already
+outstanding — the stack can.  That is why the stack read is what settled it.
+
 ### The measured cross-check
 
 A static tool cannot report its own blind spots, so `tools/bbc_trace.mjs` traces real execution
@@ -372,9 +441,10 @@ done requires every run classified before C is generated.
 3. ~~Read out the OSBYTE/OSWORD reason codes.~~ **Done** — all 17 sites resolved except `$50F6`
    (A from a variable).  Still owed: confirm the heuristic against a trace, and read out the
    *parameters* (X/Y) at the ADC and buffer-flush sites, which is what the implementation needs.
-4. **Decode the key table at `$39E0`** (`9d cf ce ee dd ee`, negative-INKEY codes, and `$39E4-$39E5`
-   are written at runtime).  Needed to drive the tracer into an actual race — which is what turns
-   the coverage cross-check from weak into strong.
+4. ~~Decode the key table at `$39E0`.~~ **Done** (§The front end).  It is SPACE / 1 / 2 / 3 at
+   runtime.  **Driving to a real race is still open, and is now a different question than it
+   looked:** the front end blocks on `BIT $05F4 / BVS` at `$6560`, waiting for bit 6 to be cleared
+   by something other than the keyboard.  Find what clears it and the trace becomes strong.
 5. **Extend the naming pass.** 52 symbols are in `disasm/symbols.csv` and applied to the Ghidra
    project (`ApplyNames`), covering the entry seam, the hardware registers, the math primitives,
    input, sound, the text interpreter and the rasteriser's outer shape.  **That is ~20% of the 236

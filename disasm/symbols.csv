@@ -20,6 +20,10 @@
 addr,name,type,is_hw,note
 
 ## ---- entry points and the interrupt seam -------------------------------------------------
+0x5A22,CallTrackHook,func,0,"⭐ the fixed engine->track-file entry, called once from engine_init. It arrives WITH the track data (the unpack swap deposits the track file over $5300-$5A25), so it is not a patch site. SILVER: 60 EA EA = RTS/NOP/NOP, a deliberate no-op for the circuit with no hook code. BRANDS: 4C 00 57 = JMP $5700. One call, one target — a far cleaner seam for the port than the five patch sites."
+0x63E0,front_end_menus,func,0,"the front-end menu chain engine_init jumps to: five JSR menu_wait_key calls interleaved with text_script_interp output, then per-car setup loops"
+0x6560,wait_flag_05F4,func,0,"spins on BIT $05F4 / BVS — waits for bit 6 to be CLEARED by something other than the keyboard, then tests bit 7. Reached by fallthrough, never JSRed. This is what blocks a headless trace from reaching a race (docs/static-map.md)."
+0x05F4,state_flags,var,0,"cleared with $05F5-$05FD by engine_init. Bit 6 = busy (wait_flag_05F4 spins on it), bit 7 selects a branch. $05F5 is also BIT-tested at $63BF/$6405."
 0x63BD,engine_main,func,0,"THE engine entry — target of the unpack stub's closing JMP. Body is just JMP $3850."
 0x3850,engine_init,func,0,"what engine_main jumps to (a JMP target, never JSRed)"
 0x4DDD,hw_init,func,0,"the ONLY routine that programs the hardware: 6845 CRTC ($FE00/$FE01), Video ULA palette ($FE21), System VIA T1/ACR/IFR/IER, User VIA T1/ACR/IER. 54 instructions, one caller. This is the platform boundary."
@@ -67,8 +71,8 @@ addr,name,type,is_hw,note
 0x503F,adc_read,func,0,"OSBYTE 128 — read an ADC channel. ⭐ THE STEERING INPUT. Note the ADC registers at $FEC0 are never touched; the axis only ever arrives through this MOS call, so the mouse substitution belongs in Platform::mosCall."
 ## $168E (the second OSBYTE 128) and $3879 (OSBYTE 190, set the uPD7002 conversion type) are
 ## call SITES inside larger routines, not routines — no name until their containers are named.
-0x39E0,key_binding_tbl,table,0,"negative-INKEY codes for the configurable controls. $39E4-$39E5 are written at runtime, so this is user-rebindable — which is why a blind key-press schedule cannot drive the game (docs/static-map.md)."
-0x6571,key_config_menu,func,0,"waits until one of key_binding_tbl's keys is held, highlighting the selection. Where a jsbeeb trace parks if nothing presses the right key."
+0x39E0,key_binding_tbl,table,0,"negative-INKEY codes (the value OSBYTE 129 wants in X = 256-n) for the menu options. ⚠ The STATIC image holds six entries (SPACE 1 2 3 E 3) but the running engine ZEROES $39E4-$39E5, leaving four: SPACE, 1, 2, 3. Read the live values, not the image."
+0x6571,menu_wait_key,func,0,"waits until one of key_binding_tbl[0..X] is held and returns which; highlights the selection as it goes. Called from five sites in the $63E0 front-end chain: $63F7 (X=2), $6416 (X=3), $6426 (X=3), $646D (X=2), $64E7. (First named key_config_menu — it is a general menu selector, not specifically key configuration.)"
 
 ## ---- sound ($0B00-$0BCC, relocated there from $1300 by the unpack) -----------------------
 0x0B4A,sound_queue,func,0,"builds an 8-byte MOS SOUND control block at sound_blocks + X*8 + $10 and marks the channel in sound_chan_state"

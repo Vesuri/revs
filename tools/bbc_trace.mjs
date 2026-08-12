@@ -94,26 +94,49 @@ const trace = tm.processor.debugInstruction.add((addr) => {
     return false;
 });
 
-// Once REVS2 starts it takes the screen over, so drainText() sees nothing and there is no
-// way to steer by reading the display.  Drive it blind instead: cycle the documented keys
-// (docs: L/+ steer, S throttle, A brake, T starter, Q gear up, TAB gear down, SPACE amplify)
-// plus RETURN/1/2 for whatever the engine's own front end asks.  The goal is breadth of
-// executed code, not a good lap.
+// Once REVS2 starts it takes the screen over, so drainText() sees nothing and there is no way to
+// steer by reading the display.  Drive it blind — but not randomly.  The engine's front end is a
+// chain of menus at $63E0, each one a call to key_config_menu ($6571) that waits for one of the
+// keys in the table at $39E0.  At runtime that table is SPACE / 1 / 2 / 3 and X on entry is the
+// highest index offered, so the way through is a SEQUENCE of pulses with real release gaps:
+// holding a key satisfies one menu and then just sits there.
+//
+// Measured with tools/bbc_probe_keys.mjs: holding "1" yields 22 new engine addresses and SPACE
+// yields 4, so presses do register — the first weak trace was a missing sequence, not a missing
+// keypress.
+async function pulse(code, hold = 120000, gap = 250000) {
+    tm.processor.sysvia.keyDown(code);
+    await tm.runFor(hold);
+    tm.processor.sysvia.keyUp(code);
+    await tm.runFor(gap);
+}
+
+console.log("phase 1: walking the front-end menu chain");
+for (let i = 0; i < 24; i++) {
+    await pulse(i % 2 === 0 ? utils.keyCodes.K1 : utils.keyCodes.SPACE);
+    if (i % 6 === 5) console.log(`  menu pulse ${i + 1}/24 — ${executed} distinct addresses`);
+}
+
+// Phase 2 — drive.  T is the starter, S the throttle, A the brake, Q/TAB the gears, L/+ steer.
+console.log("phase 2: driving");
+await pulse(utils.keyCodes.T, 400000, 200000);
 const DRIVE = [
-    utils.keyCodes.SPACE,
-    utils.keyCodes.RETURN,
-    utils.keyCodes.K1,
-    utils.keyCodes.K2,
-    utils.keyCodes.T,
+    utils.keyCodes.S,
     utils.keyCodes.S,
     utils.keyCodes.Q,
+    utils.keyCodes.S,
+    utils.keyCodes.L,
+    utils.keyCodes.S,
     utils.keyCodes.A,
+    utils.keyCodes.TAB,
+    utils.keyCodes.SPACE,
 ];
-const steps = megaCycles;
-for (let i = 0; i < steps; i++) {
-    await tm.runFor(1000 * 1000);
-    await pressKey(DRIVE[i % DRIVE.length], 150000);
-    if (i % 5 === 0) console.log(`  ${i + 1}/${steps} Mcycles — ${executed} distinct addresses`);
+for (let i = 0; i < megaCycles; i++) {
+    tm.processor.sysvia.keyDown(DRIVE[i % DRIVE.length]);
+    await tm.runFor(700000);
+    tm.processor.sysvia.keyUp(DRIVE[i % DRIVE.length]);
+    await tm.runFor(300000);
+    if (i % 5 === 0) console.log(`  ${i + 1}/${megaCycles} Mcycles — ${executed} distinct addresses`);
 }
 trace.remove();
 
