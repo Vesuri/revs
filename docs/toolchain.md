@@ -26,12 +26,16 @@ revs.ssd
 | m68k-amiga-elf-gcc, vasm, elf2hunk | `~/.local` (`. amiga/env.sh`) | Amiga cross-build ✅ present |
 | FS-UAE + `m68k-amiga-elf-gdb` | `~/.local/fs-uae` (same `env.sh`) | Amiga measurement loop ✅ present |
 | Kickstart 3.1 | `$KICKSTART` | FS-UAE boot ✅ present |
-| **Ghidra + JDK 21** | not installed yet | disassembly (see below) |
-| **jsbeeb / b2** | not installed yet | BBC reference loop — `docs/bbc-reference-loop.md` |
+| **Ghidra 12.1 + JDK 21** | ✅ present (`tools/ghidra`, see below) | disassembly (see below) |
+| **jsbeeb / b2** | ✅ present (`tools/jsbeeb`, `tools/b2`) | BBC reference loop — `docs/bbc-reference-loop.md` |
 
-Ghidra on the Atari port lived under `tools/ghidra/` (~2 GB, git-ignored) with a persistent
-project at `tools/ghidra-proj/` — that project *is* the annotation database.  Reproduce that
-layout here.  Ghidra needs JDK 21 on `PATH`:
+`tools/ghidra` is a **symlink to a shared install at `~/.local/share/ghidra`**, not a per-repo
+copy — the Rescue on Fractalus repo's `tools/ghidra` points at the same place, so the ~900 MB
+extracted distribution exists once on disk rather than once per binary-only-port repo. (No
+trailing slash on the `tools/ghidra` gitignore entry — a trailing-slash pattern doesn't match a
+symlink to a directory, only a real one.) `tools/ghidra-proj/` stays per-repo — that project *is*
+the annotation database, and it must not be shared. Ghidra needs JDK 21 on `PATH` (installed via
+`brew install openjdk@21`):
 
 ```sh
 export JAVA_HOME="/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"
@@ -40,6 +44,13 @@ export PATH="$JAVA_HOME/bin:$PATH"
 
 > `brew install` on this machine triggers a privilege-elevation prompt, so kick installs off
 > yourself or approve the prompt when one appears.
+>
+> ⚠ **Verify a fresh Ghidra extraction has `support/analyzeHeadless` before trusting it.** The
+> copy found under RoF's `tools/ghidra` on this machine had been pruned down to ~180 MB at some
+> point (missing `support/`, `ghidraRun`, `server/` — just `Ghidra/`, `Extensions/`, `GPL/`,
+> `docs/` survived), which silently breaks headless use while looking like a normal install at a
+> glance. Re-extracted from the official 12.1 release zip
+> (`ghidra_12.1_PUBLIC_20260513.zip`, GitHub releases) to fix it — full size is ~874 MB.
 
 ⚠ **Before Ghidra, read `docs/reference-sources.md`.**  An annotated source reconstruction of BBC
 Revs already exists, which changes how Phase 2 is run (cross-check, not search) — and it carries
