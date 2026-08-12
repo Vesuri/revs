@@ -208,9 +208,13 @@ owns the display. Spin-wait points in transpiled code become hooks that drive on
 
 ## Performance
 
-**No target is set yet — and that is deliberate.** Set one from a measured baseline on the real
-A500 (Phase 4), not from a wish. The Atari port's retired "50 FPS is impossible without an
-algorithm change" conclusion was disproven by hand-asm: the ceiling was GCC, not the algorithm.
+**Target: 50 FPS on an A500. Floor: 25 FPS** (user decision; reachability unknown). These are
+*displayed* frames (`50 * g_fpsFrames / g_vbiCount`). The **50 Hz sim tick is separate and not
+negotiable** — the game body is a VERTB-ISR interrupt, so 25 FPS means painting every other frame
+with the simulation still at full rate. No *baseline* exists yet: the first honest number comes
+from Phase 4, and a target is never evidence a change bought anything. The Atari port's retired
+"50 FPS is impossible without an algorithm change" conclusion was disproven by hand-asm — the
+ceiling was GCC, not the algorithm; that cuts both ways.
 
 The A500 is a 7 MHz 68000 and a frame is 20 ms — spending 10 ms on *anything* is half the budget.
 Be conscious of absolute milliseconds always.

@@ -159,8 +159,12 @@ conclusion was reached by reasoning and later disproven by hand-asm — a crude 
 profile would have shown up front exactly which handful of functions ever needed asm.
 
 **Exit criteria:** the genuine entry chain runs under `PlatformAmiga`, a framerate exists from
-`FPSCOUNT=1` + `fps_seg.gdb`, and a profile names the hot functions.  **Only then** set a
-performance target (`docs/perf-method.md` deliberately does not carry one over).
+`FPSCOUNT=1` + `fps_seg.gdb`, and a profile names the hot functions.
+
+⭐ **The target is 50 FPS, floor 25** (user decision — `docs/perf-method.md` §The target).  That
+is a goal, not a baseline: Phase 4's job is unchanged, which is to produce the first honest
+number and the hot-function list.  Exiting the phase does *not* require hitting the target —
+it requires knowing the distance to it.
 
 Phase 3 leaves three specific questions for the first target run to answer, all of them
 instrumented rather than guessed:

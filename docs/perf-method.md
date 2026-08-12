@@ -12,11 +12,26 @@
 Units: 1 raster scanline = 63.56 µs; a PAL frame = 313 lines.  Be conscious of absolute
 milliseconds, always — a percentage of an unknown total is not a measurement.
 
-**No performance target is set for Revs yet.**  Set one from a measured baseline, not from a
-wish: run the end-to-end skeleton on the target, see what it does, then decide what "good"
-means.  (Postmortem §4.1: profile a slow end-to-end skeleton on real hardware *before*
-committing to an approach.  The Atari port's retired "50 FPS is impossible without an algorithm
-change" conclusion was disproven by hand-asm — the ceiling was GCC, not the algorithm.)
+## The target ⭐
+
+**Goal: 50 FPS.  Floor: 25 FPS.**  User decision, 2026-08-12 — a scope call, not a prediction,
+and explicitly "whether that's reachable remains to be seen".
+
+- **These are DISPLAYED frames**, as measured by Rule 1: `FPS = 50 * g_fpsFrames / g_vbiCount`.
+- **The sim tick is a separate thing and is not negotiable.**  Revs's 50 Hz body is a User VIA
+  T1 interrupt on the BBC (`docs/static-map.md` §The interrupt) and runs in the real
+  `INTB_VERTB` ISR on the Amiga.  It ticks 50×/s whatever the display does — so 25 FPS means
+  painting every other frame with the simulation still at full rate.  A port that hits 50 FPS by
+  slowing the game body is not a port that hits the target.
+- **25 is a floor, not a fallback to settle into.**  Below it the phase is not done; at or above
+  it the remaining gap is an optimisation backlog, not a blocker.
+- ⚠ **The target does not license quoting a number before measuring one.**  Everything below
+  still applies: the first honest figure comes from Phase 4's baseline run, and "we need 50" is
+  never evidence that a change bought anything.  (Postmortem §4.1: profile a slow end-to-end
+  skeleton on real hardware *before* committing to an approach.  The Atari port's retired
+  "50 FPS is impossible without an algorithm change" conclusion was disproven by hand-asm — the
+  ceiling was GCC, not the algorithm.  That cuts both ways: don't declare it impossible from
+  reasoning, and don't declare it reached from optimism.)
 
 ## Rule 1 — the ONLY way to quote a framerate
 

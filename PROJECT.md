@@ -26,6 +26,7 @@ project is deliberately built in the order that document argues for.
 | **Steering / input** | **Mouse + keyboard.** The BBC's own `SHIFT+f1` keyboard mode is the faithful precedent; the mouse replaces the uPD7002 analogue axis. No joystick requirement |
 | **Host renderer** | **None.** Not an SDL port — `make validate` + host algebra proofs only |
 | Reference material | Moxon's annotated reconstruction is a **map, not a source**: no licence, so never copied from. `docs/reference-sources.md` |
+| **Performance target** | **50 FPS on an A500; 25 FPS is the minimum acceptable.** Reachability unknown — a scope call, not a prediction. *Displayed* frames (`50 * g_fpsFrames / g_vbiCount`); the 50 Hz sim tick is separate and stays at full rate, so 25 FPS means painting every other frame. `docs/perf-method.md` §The target |
 | **A sixth circuit** | **Yes — include the Nürburgring.** Crammond's own track, from the C64 *Revs+* (© Firebird 1987); on the BBC it exists only as Mark Moxon's data conversion, whose engine is byte-identical to the 1986 release (no game code involved). Clean route: **extract the track from a C64 Revs+ image ourselves**, putting every circuit on the same Crammond-original footing rather than copying Moxon's conversion. Cost: BBC and C64 track formats differ and the expansion tracks are executable hook programs, so it means reproducing a conversion, not copying a file. Scheduled in Phase 5 (five BBC tracks first). `docs/reference-sources.md` §A sixth circuit |
 
 ## Open decisions
