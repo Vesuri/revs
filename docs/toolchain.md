@@ -8,7 +8,7 @@ All paths relative to the project root (`Revs/`).  Host is macOS (Apple Silicon)
 revs.ssd
   └─ tools/ssd_map.py  ──► the DFS catalogue (what files, load/exec/length)
   └─ tools/ssd_load.py ──► disasm/files/*.bin + disasm/revs_mem.bin (post-load image)
-                           ⚠ load order is a HYPOTHESIS — see docs/bbc-reference-loop.md
+                           ⚠ PRE-PATCH + unconfirmed — see docs/bbc-reference-loop.md
         └─ Ghidra headless (ghidra_scripts/) ──► disasm/listing.txt, xrefs, hw-access map
               └─ disasm/symbols.csv  ◄── shared, grows over time (addr → name/type/is_hw)
                     └─ tools/transpile.py ──► src/gen/*.c   (transliterated 6502)
@@ -41,13 +41,21 @@ export PATH="$JAVA_HOME/bin:$PATH"
 > `brew install` on this machine triggers a privilege-elevation prompt, so kick installs off
 > yourself or approve the prompt when one appears.
 
+⚠ **Before Ghidra, read `docs/reference-sources.md`.**  An annotated source reconstruction of BBC
+Revs already exists, which changes how Phase 2 is run (cross-check, not search) — and it carries
+no licence, so it is a map and never something to copy from.
+
 ## Disc inspection
 
 ```sh
-python3 tools/ssd_map.py  revs.ssd            # DFS catalogue
-python3 tools/ssd_load.py revs.ssd disasm     # -> disasm/files/*.bin + revs_mem.bin + revs_blocks.txt
-make image                                    # same thing, from the root Makefile
+python3 tools/ssd_map.py  revs.ssd                    # DFS catalogue
+python3 tools/ssd_load.py revs.ssd disasm             # -> files/*.bin + revs_mem.bin (track SILVER)
+python3 tools/ssd_load.py revs.ssd disasm BRANDS      # a different circuit
+make image                                            # the default track, from the root Makefile
 ```
+
+Tracks on the disc: `SILVER` `BRANDS` `DONING` `NURBURG` `OULTON` `SNETTER`.  ⚠ The image is the
+**pre-patch** state — a track file patches the engine at startup (`docs/reference-sources.md`).
 
 ## Disassembly (headless Ghidra)
 
@@ -90,10 +98,10 @@ projects.
 ### ⭐ Before the FIRST export is trusted
 Do the **entry-point sweep** — `docs/entrypoint-sweep.md`.  Seeding every indirect-jump target
 and OS vector *before* generating C is the single highest-leverage item carried over from the
-Atari port, and Revs's self-modifying code makes it more important, not less.
+Atari port, and Revs's per-track engine patching makes it more important, not less.
 
 ### Then: one concentrated naming pass
-Postmortem #1.2.  **On a binary-only project the function names are your map**, and every wrong
+Postmortem #1.2.  **On a reverse-engineering project the function names are your map**, and every wrong
 name taxes every later reasoning step.  Give rough-but-directionally-correct names
 (`physics_*`, `track_*`, `vdu_*`) in one focused pass before deep work — not as a trickle.
 `symbols.csv` → transpiler makes a later batch rename cheap, so the cost of being roughly right
@@ -124,7 +132,7 @@ make validate            # the native-twin differential
 make validate FN=<sub>   # only matching tests — use this
 make endian-lint         # the wide-pointer-alias guard
 make gen                 # regenerate src/gen from disasm/listing.txt
-make image               # rebuild disasm/revs_mem.bin from revs.ssd
+make image               # rebuild disasm/revs_mem.bin (make image TRACK=BRANDS for another)
 ```
 
 Why no host renderer: `src/platform/host/PlatformHost.h`.

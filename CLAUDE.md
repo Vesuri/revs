@@ -1,9 +1,16 @@
 # Revs — BBC Micro → Amiga port
 
 Reimplementing Geoff Crammond's 1985 BBC Micro F1 simulation *Revs* (Acornsoft) on the Amiga
-**from a binary only** (`revs.ssd`, no source). Pipeline: decompile (Ghidra) → transliterate 6502
-→ C → abstract hardware → platform backends. **Faithful 1:1 port** — parity before improvements;
+from the game binary (`revs.ssd`). Pipeline: decompile (Ghidra) → transliterate 6502 → C →
+abstract hardware → platform backends. **Faithful 1:1 port** — parity before improvements;
 validate against the 6502 + a real BBC emulator, NEVER against the dev-host backend.
+
+⚠ **This project is NOT binary-only, unlike the Atari port.** A complete, buildable, fully
+annotated source *reconstruction* of BBC Revs exists (Mark Moxon, <https://revs.bbcelite.com/>),
+which largely pre-solves the postmortem's two highest-leverage items — the entry-point sweep and
+the naming pass become **cross-checks against a reference** rather than open-ended searches.
+It carries **no licence** (commentary intertwined with copyrighted game code), so use it as a map
+and never copy from it. **Read `docs/reference-sources.md` before any disassembly work.**
 
 Revs never received an Amiga port, so this is genuine preservation. Real vehicle dynamics + true
 3D Silverstone on a 7 MHz 68000.
@@ -26,7 +33,7 @@ failure mode, so they gate each other:
 | # | Gate | Doc |
 |---|---|---|
 | 1 | **Build the BBC reference loop.** There is no `atari800` here — ground truth must be built. First job: prove `disasm/revs_mem.bin` is byte-correct against a real BBC. | `docs/bbc-reference-loop.md` |
-| 2 | **Exhaustive entry-point sweep**, before a line of C is generated. Every indirect jump, RTS-dispatch table and OS vector seeded. | `docs/entrypoint-sweep.md` |
+| 2 | **Exhaustive entry-point sweep**, before a line of C is generated. Every indirect jump, RTS-dispatch table and OS vector seeded — now *cross-checked against* the reference reconstruction rather than searched blind. | `docs/entrypoint-sweep.md` + `docs/reference-sources.md` |
 | 3 | **Transpiler emits clean C** before mass-generating. One transpiler improvement upgrades the whole corpus; late is pure tax. | `docs/transpiler.md` |
 | 4 | **Profile an end-to-end skeleton on the real A500** before choosing what to optimise, and before setting any performance target. | `docs/perf-method.md` |
 
@@ -38,28 +45,42 @@ Two more that are already done, and must stay done:
 
 ## The source binary
 
-`revs.ssd` — 200 KB single-sided 80-track Acorn DFS image, title "CAR", `*OPT 4,3`.
+`revs.ssd` — 200 KB single-sided 80-track Acorn DFS image, title "REVINST", `*OPT 4,3`.
+**Target release: Revs+** (user decision) — Mark Moxon's 2022 compilation, six circuits on one
+engine.
 
 | File | Load | Length | Ends | What |
 |---|---|---|---|---|
-| `!BOOT` | — | `$2C` | — | `*BASIC` / `PAGE=&1900` / `*FX21` / `CHAIN "CAR"` |
-| `Car` | `$1900` | `$23DB` | `$3CDB` | BASIC front end — "Revs / BBC Version 1 / Copyright (c) Acornsoft Limited 1985", keys, options |
-| `REVS` | `$1900` | `$700` | `$2000` | BASIC + embedded machine code; ends with `*R.Revs2` |
-| **`Revs2`** | `$1200` | `$5E00` | `$7000` | **the 24 KB machine-code engine** |
-| `Revs1` | `$2000` | `$5AF` | `$25AF` | loads *inside* Revs2's range — order matters |
-| `Silvers` | `$70DB` | `$739` | `$7814` | Silverstone track data |
+| `!BOOT` | — | `$30` | — | `*BASIC` / `PAGE=&1900` / `*FX21` / `CHAIN "REVINST"` |
+| `REVINST` | `$1900` | `$2C78` | `$4578` | BASIC — instructions, variant banner, keys |
+| `REVSMEN` | `$1900` | `$49B` | `$1D9B` | BASIC — the track menu; per track does `*LO.<TRACK>` then `*/REVS2` |
+| `PLUSCRN` | `$7C00` | `$400` | `$8000` | MODE 7 teletext title screen the menu `*LOAD`s |
+| **`REVS2`** | `$1200` | `$5E00` | `$7000` | **the 24 KB machine-code engine** — one binary for all six tracks |
+| `SILVER` | `$70DB` | `$739` | `$7814` | Silverstone (the original 1985 circuit) |
+| `BRANDS` `DONING` `OULTON` `SNETTER` | `$70DB` | `$7D0` | `$78AB` | the four *Revs 4 Tracks* circuits |
+| `NURBURG` | `$70DB` | `$7D0` | `$78AB` | Nürburgring, backported from the C64 Revs+ |
 
-⚠ **Two things about this image are open decisions, not settled facts** — see `PROJECT.md`
-§Open decisions:
-1. It is the **single-track (Silverstone)** release, not the four-track expansion the postmortem
-   named as the target.
-2. `disasm/revs_mem.bin` is composed by `tools/ssd_load.py` from a **hypothesised load order**.
-   A DFS disc has no segment table (unlike an Atari `.xex`), the files overlap, and a BASIC loader
-   decides the real sequence. **Until it is diffed against a real BBC, every address derived from
-   it is provisional.**
+⚠⚠ **The track file PATCHES THE ENGINE at runtime.** Track files are not passive data: each
+carries hook code (`ModifyGameCode`, `CallTrackHook`, `HookFieldOfView`, `HookFlattenHills`,
+`HookJoystick`, …) that modifies the game code as the engine starts, and the extra tracks generate
+geometry at runtime. So **the bytes the engine executes differ per track**, this is
+self-modifying code by construction (→ `revs_manual.c` stubs), and `disasm/revs_mem.bin` is the
+**pre-patch** state. Details: `docs/reference-sources.md`.
 
-Documented keys (from `Car`): `L`/`+` steer, `S` throttle, `A` brake, `T` starter, `Q` gears up,
-`TAB` gears down, `SPACE` amplify steering, `SHIFT+f0` return to pits.
+⚠ `disasm/revs_mem.bin` is built by `tools/ssd_load.py` (default track SILVER; pass another as
+argv[3]). The load *order* is now derived from the menu's own BASIC, but what the MOS/BASIC left
+resident is not modelled. **Until it is diffed against a real BBC, every address derived from it
+is provisional** — Phase 1.
+
+⚠ Revs+ is a **2022 fan compilation, not a pristine original**: its `REVS2` differs from the 1985
+single-track engine in **974 of 24064 bytes** (same length — a patched engine). The 1985 disc is
+kept locally as `revs-1985-silverstone.ssd` so that diff stays available. Prefer *documenting* a
+Revs+ change over silently inheriting it.
+
+Documented keys: `L`/`+` steer, `S` throttle, `A` brake, `T` starter, `Q` gears up, `TAB` gears
+down, `SPACE` amplify steering, `SHIFT+f0` return to pits, `SHIFT+f1` keyboard, `SHIFT+f2`
+joystick. **Amiga input: mouse + keyboard** (user decision) — the BBC's own keyboard mode is the
+faithful precedent; mouse replaces the uPD7002 analogue axis.
 
 ## Build / run / debug
 
@@ -112,6 +133,7 @@ Hard-won detail lives in `docs/`, not here. **Read the relevant one BEFORE worki
 |---|---|
 | **`docs/postmortem.md`** | **Early, once, in full.** The retrospective this whole project is built on |
 | `docs/phases.md` | Deciding what to work on next; the gating between phases |
+| **`docs/reference-sources.md`** ⭐ | **Before any disassembly work.** The existing annotated reconstruction, its licence limits, and what is actually on this disc |
 | `docs/bbc-reference-loop.md` ⭐ | Anything about ground truth, jsbeeb/b2, or trusting `revs_mem.bin` |
 | `docs/entrypoint-sweep.md` ⭐ | Before generating C; whenever you find a dispatch table or vector |
 | `docs/bbc-hardware.md` | Touching hardware, MOS calls, screen modes, or input |
@@ -134,7 +156,7 @@ hand-rename in generated files).
 
 | File | Role |
 |---|---|
-| `tools/ssd_map.py` / `ssd_load.py` | DFS catalogue dump / post-load memory image builder |
+| `tools/ssd_map.py` / `ssd_load.py` | DFS catalogue dump / post-load memory image builder (per-track) |
 | `tools/transpile.py` | The transpiler. Reads `disasm/listing.txt` + `symbols.csv`. ⚠ still carries Atari specifics — see `docs/transpiler.md` §Porting checklist |
 | `src/gen/revs_gen.c` | Generated 6502→C transliteration (regenerated; do NOT edit by hand) |
 | `src/gen/revs_manual.c` | Hand-written stubs for self-modifying routines |

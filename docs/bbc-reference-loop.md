@@ -12,11 +12,12 @@
 
 ## Why it is on the critical path here specifically
 
-`tools/ssd_load.py` composes a post-load memory image from the disc — and **it is a hypothesis,
-not a fact.**  An Atari `.xex` carries its own segment table, so the Atari port could reproduce
-loader semantics exactly.  A DFS disc cannot: what is loaded, in what order, and what is already
-resident when the machine code runs is decided by a BASIC loader, and the files overlap
-(`Revs2` covers `$1200-$7000`; `Revs1` loads at `$2000`, *inside* that range).
+`tools/ssd_load.py` composes a post-load memory image from the disc — and **it is a
+reconstruction, not a fact.**  An Atari `.xex` carries its own segment table, so the Atari port
+could reproduce loader semantics exactly.  A DFS disc cannot.  The load *order* is now derived
+from the menu's own BASIC (`*LO.<TRACK>` then `*/REVS2`), but two things are still unmodelled:
+what the MOS and BASIC left resident when the engine starts, and the **runtime patches the track
+file applies to the engine** — so the composed image is the *pre-patch* state.
 
 **So the first job of this loop is: boot the real disc, break at the engine entry, dump RAM, and
 diff it against `disasm/revs_mem.bin`.**  Until that diff is clean, every address derived from
@@ -66,8 +67,12 @@ don't lead with it.
    responds).  Record what actually works — the caveats above are from documentation, not from a
    run on this machine.
 2. **Boot `revs.ssd` to the engine entry and dump RAM.**  Diff against `disasm/revs_mem.bin` and
-   fix `LOAD_ORDER` in `tools/ssd_load.py` until it matches.  ⭐ This is the gate for everything
-   downstream.
+   fix `tools/ssd_load.py` until it matches.  ⭐ This is the gate for everything downstream.
+   Two extras that come nearly free and are worth far more than the diff itself:
+   - **Dump twice — before and after the track hook code runs.**  The difference IS the
+     self-modifying-code inventory (`docs/entrypoint-sweep.md` §the track hooks).
+   - **Dump for two different tracks and diff those.**  The difference is the per-track behaviour
+     surface, i.e. exactly how much of the engine is track-dependent.
 3. **Capture reference state at named milestones** (title, on the grid, a fixed lap) as files in
    the repo, so a later port behaviour can be diffed against a real BBC without re-deriving how.
 4. **A cycle-diff harness on jsbeeb** for the physics core: same inputs, compare the 6502's

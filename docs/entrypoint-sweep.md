@@ -11,6 +11,19 @@
 > The postmortem also says this bites *harder* here: the BBC MOS leans on indirect vectors, and
 > Revs is known for self-modifying code and dispatch tricks.
 
+## ⚑ This sweep is now a CROSS-CHECK, not a search
+
+A fully annotated source reconstruction of BBC Revs exists (`docs/reference-sources.md`), so the
+dispatch structure is already documented by someone else.  That changes the *method* but not the
+*requirement*:
+
+- Use the reference to know **where to look** and to confirm you have found everything.
+- Still derive the entries from **this binary** — the reference covers a different variant, and
+  the site itself flags that code variations exist between Revs variants.  When they disagree, the
+  binary wins.
+- The definition of done below is unchanged.  "The reference doesn't mention any more" is not the
+  same as "`listing.txt` has no unresolved references".
+
 ## The rule
 
 **`disasm/listing.txt` must be COMPLETE before the first line of C is generated.**  Not
@@ -71,6 +84,19 @@ Revs is expected to use self-modifying code.  Two consequences, both learned on 
 A routine that writes to its own instruction stream cannot be transliterated faithfully by the
 transpiler; it gets a hand-written stub in `src/gen/revs_manual.c` (the same seam the Atari port
 used for its self-modifying handlers).  Identify these during this sweep, not later.
+
+### ⭐ The known, named case: the track hooks
+This is no longer hypothetical.  **Every track file patches the engine as it starts** —
+`ModifyGameCode`, `CallTrackHook`, and per-track hooks including `Hook80Percent`,
+`HookFieldOfView`, `HookFlattenHills`, `HookJoystick`, `HookSlopeJump`, `HookUpdateHorizon`.  The
+extra tracks also generate geometry at runtime.
+
+So the sweep has a concrete, high-value target:
+- **enumerate every hook and every byte it patches**, per track;
+- treat the patch sites as entry points (patched code is code Ghidra sees only in its unpatched
+  form);
+- get the inventory for free by dumping RAM **before and after** the hooks run, and for **two
+  different tracks** — see `docs/bbc-reference-loop.md`.
 
 ## Definition of done
 

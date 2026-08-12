@@ -15,22 +15,25 @@ BBC Micro B / B+ / Master: **6502 @ 2 MHz**, 32 KB RAM, MOS in ROM at `$C000-$FF
 ROM slot at `$8000-$BFFF` (BASIC lives there).  So a game's RAM is roughly `$0000-$7FFF`, and
 screen memory is carved out of the top of it.
 
-Revs's own footprint, **[DERIVED from `revs.ssd`]**:
+Revs's own footprint, **[DERIVED from `revs.ssd`]** — the Revs+ compilation, 200 KB
+single-sided 80-track DFS, title "REVINST", `*OPT 4,3`:
 
 | File | Load | Length | Ends | What |
 |---|---|---|---|---|
-| `!BOOT` | — | `$2C` | — | `*BASIC` / `PAGE=&1900` / `*FX21` / `CHAIN "CAR"` |
-| `Car` | `$1900` | `$23DB` | `$3CDB` | BASIC — front end ("Revs / BBC Version 1 / Copyright (c) Acornsoft Limited 1985"), keys, options |
-| `REVS` | `$1900` | `$700` | `$2000` | BASIC + embedded machine code; ends with `*R.Revs2` |
-| **`Revs2`** | `$1200` | `$5E00` | `$7000` | **the 24 KB machine-code engine** |
-| `Revs1` | `$2000` | `$5AF` | `$25AF` | loaded *inside* Revs2's range — order matters |
-| `Silvers` | `$70DB` | `$739` | `$7814` | Silverstone track data |
+| `!BOOT` | — | `$30` | — | `*BASIC` / `PAGE=&1900` / `*FX21` / `CHAIN "REVINST"` |
+| `REVINST` | `$1900` | `$2C78` | `$4578` | BASIC — instructions + the variant banner |
+| `REVSMEN` | `$1900` | `$49B` | `$1D9B` | BASIC — track menu; `*LO.<TRACK>` then `*/REVS2` |
+| `PLUSCRN` | `$7C00` | `$400` | `$8000` | **MODE 7 teletext title screen** ($7C00 is MODE 7 screen RAM) |
+| **`REVS2`** | `$1200` | `$5E00` | `$7000` | **the 24 KB machine-code engine** — one binary, six tracks |
+| `SILVER` | `$70DB` | `$739` | `$7814` | Silverstone (the 1985 original) |
+| `BRANDS` `DONING` `OULTON` `SNETTER` | `$70DB` | `$7D0` | `$78AB` | the *Revs 4 Tracks* circuits |
+| `NURBURG` | `$70DB` | `$7D0` | `$78AB` | Nürburgring, backported from the C64 |
 
-Disc: 200 KB single-sided 80-track DFS, title "CAR", `*OPT 4,3` (`*EXEC !BOOT`).
+So the engine occupies `$1200-$7000`, track data `$70DB-$78AB`, and the MODE 7 screen sits at
+`$7C00-$8000` — i.e. RAM is essentially full from `$1200` up.
 
-⚠ **This image is the single-track (Silverstone) release, not the four-track expansion** the
-postmortem named as the target.  Decide explicitly which release the port targets — see
-`PROJECT.md` §Open decisions.
+⚠⚠ **A track file patches the engine as it starts** (`ModifyGameCode`, `CallTrackHook`, and
+per-track hooks), so the executing bytes differ per track: `docs/reference-sources.md`.
 
 ## Memory-mapped I/O — the platform boundary
 
@@ -62,6 +65,11 @@ The whole I/O window is the contiguous `$FC00-$FEFF`; `src/cpu/bus.h` routes it 
 - **uPD7002 ADC** is the steering.  A racing sim reading an analogue axis is a *different* input
   problem from a digital joystick, and it is worth getting exactly right early: the feel of the
   game is in it.
+  **Decision: the Amiga port uses mouse + keyboard** (user, 2026-08-12).  The BBC's own
+  `SHIFT+f1` keyboard mode is the faithful precedent for digital steering; the mouse stands in for
+  the analogue axis.  Note the game has a `HookJoystick` per track and a "SPACE — amplify
+  steering" key, so the analogue response curve is real logic to be reproduced, not a range to be
+  invented — read it out of the binary rather than tuning by feel.
 
 ## MOS calls — genuinely new vs the Atari port
 
@@ -116,7 +124,7 @@ The Amiga side of the mapping (region splits, pointers-before-colours, band rule
 | Video ULA palette writes (incl. mid-frame) | copper `COLORxx` MOVEs at an end-of-previous-line WAIT |
 | System VIA 50 Hz vsync IRQ | the real `INTB_VERTB` handler (vector takeover) |
 | SN76489 (3 tone + 1 noise) | Paula (4 channels) |
-| uPD7002 ADC steering | analogue joystick / mouse / keyboard — decide, and keep the feel |
+| uPD7002 ADC steering | **mouse + keyboard** (decided) — reproduce the response curve from the binary |
 | Keyboard via OSBYTE | CIA-A serial-port keyboard handler |
 | Disc-loaded track data | embedded in the binary (see `incbin.s`) |
 | MOS `$C000-$FFFF` | `Platform::mosCall` for the calls Revs actually makes |

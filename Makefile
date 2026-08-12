@@ -9,7 +9,7 @@
 ##                            suite run gets slow fast
 ##   make                     the headless host runner (build/revs)
 ##   make gen                 regenerate the transliterated C from the Ghidra listing
-##   make image               rebuild disasm/revs_mem.bin from revs.ssd
+##   make image               rebuild disasm/revs_mem.bin from revs.ssd (TRACK=SILVER etc.)
 ##   make endian-lint         fail if anything aliases mem[] as uint16_t*/uint32_t*
 ##
 ## Visual ground truth: jsbeeb / b2 on the real disc (docs/bbc-reference-loop.md).
@@ -80,10 +80,12 @@ gen:
 	python3 tools/transpile.py
 
 # Rebuild the post-load memory image from the disc.
-# ⚠ Its load order is a hypothesis until diffed against a real machine — see
-# tools/ssd_load.py and docs/bbc-reference-loop.md.
+#   make image              -> the default circuit (SILVER)
+#   make image TRACK=BRANDS -> another (SILVER BRANDS DONING NURBURG OULTON SNETTER)
+# ⚠ The image is the state BEFORE the track file patches the engine, and it is unconfirmed
+# against a real machine — see tools/ssd_load.py and docs/bbc-reference-loop.md.
 image:
-	python3 tools/ssd_load.py revs.ssd disasm
+	python3 tools/ssd_load.py revs.ssd disasm $(TRACK)
 
 # ENDIANNESS LINT (postmortem §3.1).  mem[] is little-endian (6502); the Amiga is
 # big-endian and this host is little-endian, so a uint16_t*/uint32_t* alias of mem[]

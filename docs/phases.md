@@ -40,9 +40,15 @@ scripted "boot to milestone, dump RAM" command exists.
 
 ## Phase 2 — Complete static map ⬜
 
+> ⚑ **Cheaper than the postmortem assumed:** a fully annotated source reconstruction of BBC Revs
+> exists (`docs/reference-sources.md`), so items 1 and 4 are **cross-checks against a reference**
+> rather than open-ended searches.  The reference has no licence — it is a map, never a source.
+
 1. **The entry-point sweep** — `docs/entrypoint-sweep.md`.  Every indirect jump, RTS-dispatch
    table, OS vector and hardware vector enumerated and seeded in
-   `ghidra_scripts/entrypoints.csv`, before any C is generated.  Self-modifying routines listed.
+   `ghidra_scripts/entrypoints.csv`, before any C is generated.  Self-modifying routines listed —
+   including the **known** case: the per-track engine patches (`ModifyGameCode`, `CallTrackHook`,
+   `Hook*`), whose inventory falls out of the Phase 1 before/after RAM dumps.
 2. **The hardware-access map** — retool `DumpHwAccesses.java` for `$FC00-$FEFF` + `$0200-$0235`.
    Its output *is* the abstraction boundary, and it replaces the **[ASSUMED]** rows in
    `docs/bbc-hardware.md` with measured ones.
@@ -83,10 +89,14 @@ performance target (`docs/perf-method.md` deliberately does not carry one over).
 ## Phase 5 — Render + input ⬜
 
 - 6845 CRTC + Video ULA composition → copper list + bitplanes (`docs/amiga-lessons.md` for the
-  rules; a CRTC/ULA analyser is `docs/bbc-reference-loop.md` step 5).
-- The **uPD7002 ADC steering**.  A racing sim's feel lives here — get it right early rather than
-  approximating it and tuning later.
-- Sound: SN76489 → Paula.
+  rules; a CRTC/ULA analyser is `docs/bbc-reference-loop.md` step 5).  Note the MODE 7 teletext
+  title screen (`PLUSCRN`) is a separate rendering problem from the 3D view.
+- **Input: mouse + keyboard** (decided).  A racing sim's feel lives here — and the steering
+  response curve is real logic in the binary (there is a per-track `HookJoystick` and a
+  "SPACE — amplify steering" key), so read it out rather than tuning by feel.
+- Sound: SN76489 (3 tone + 1 noise) → Paula.
+- Six tracks: the engine is one binary, but behaviour is per-track (the hooks).  Decide how track
+  selection works on the Amiga — the BBC's `REVSMEN` menu is BASIC and is not being ported.
 
 ---
 

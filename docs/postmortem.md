@@ -140,6 +140,16 @@ as the first architectural doc, before the first twin.
 
 ## Next target: Revs (BBC Micro → Amiga, 1:1)
 
+> ⚑ **This section was written before the Revs repo existed, and two of its premises turned out to
+> be wrong.  Corrections (2026-08-12), so the section is not read as current fact:**
+> 1. **Revs is NOT binary-only.**  A complete annotated source reconstruction exists (Mark Moxon,
+>    revs.bbcelite.com), which turns items #1.1 and #1.2 below from searches into cross-checks.
+>    `docs/reference-sources.md`.
+> 2. **"The same binary across all tracks" is only approximately true.**  One engine binary, yes —
+>    but the track files carry hook code that PATCHES the engine at startup, so behaviour is
+>    per-track and the port inherits self-modifying code by design.
+> The rest of the section stands, and the checklist above stands unchanged.
+
 The next port is **Revs** — Geoff Crammond's 1985 BBC Micro F1 sim (real vehicle dynamics + true
 3D Silverstone), targeting the **four-track expansion** version. The BBC executable is believed to
 be **the same binary across all tracks** — it loads track data from disc — so the port is one
