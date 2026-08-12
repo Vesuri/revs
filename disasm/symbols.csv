@@ -110,5 +110,17 @@ addr,name,type,is_hw,note
 0x7804,track_name,table,0,"the track name as ASCII, CR-terminated -- REVSSilverstone followed by $0D. The tail of the track file, left in place because the unpack swap ends at $7800, so the checksum cells at $7800-$7803 and this string are the only parts of the loaded track file still at their DFS load address."
 0x7000,column_buffer,table,0,"[PROVISIONAL] 219 bytes, relocated here from $1500 by the unpack; written per column by road_span_plot"
 
+## ---- the track program, $5300-$5A25 (four of five circuits; SILVER is passive data) ------
+## ⚠ These addresses only hold code on an EXPANSION-track runtime image.  Build one with
+##   python3 tools/ssd_load.py revs.ssd tmp/tracks/BRANDS BRANDS
+##   python3 tools/relocate.py tmp/tracks/BRANDS/revs_mem.bin -o tmp/tracks/BRANDS/revs_runtime.bin
+## Code extents measured for Brands Hatch: $5472-$54EA, $54F1-$54FF, $5582-$5619, $5672-$56C5,
+## $5700-$5724, $5772-$57A0, $5800-$5825, $59E9-$59F7 -- 238 instructions.  The rest is geometry.
+0x5700,ModifyGameCode,func,0,"the track program's patcher, entered from CallTrackHook. Applies n+1 two-byte patches from the four-way table below, then chains $5800 -> $5600 (-> $53F3 on Donington) to poke the JSR/JMP opcodes and some constants. ⚠ n is LDX #imm at $5701 and differs per track: $12 (19 patches) for Brands/Oulton, $13 (20) for Donington/Snetterton."
+0x5400,patch_target_lo,table,0,"low bytes of ModifyGameCode's patch target addresses"
+0x5414,patch_target_hi,table,0,"high bytes of ModifyGameCode's patch target addresses"
+0x5500,patch_byte_0,table,0,"first byte ModifyGameCode writes at each target"
+0x5514,patch_byte_1,table,0,"second byte ModifyGameCode writes at each target"
+
 ## ---- the unpack stub (present in revs_mem.bin, dead once the engine runs) -----------------
 0x1200,loader_stub,func,0,"⚠ revs_mem.bin ONLY. Copies $1200-$12FF to $7900 and runs from the copy. In the runtime image this address holds relocated engine code instead."

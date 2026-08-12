@@ -320,6 +320,55 @@ spacing gives it away — that is a row-indexed table, not four hand-written rou
 Two 2-byte changes at `$1310` (Donington, Snetterton) point outside the track file and are
 **unclassified** — reported rather than rounded off into the pointer group.
 
+### `ModifyGameCode` read directly — and it confirms the differential
+
+The differential above observes memory changing.  The patcher can also just be *read*, and the two
+must agree.  They are independent in the way that matters: **a differential cannot tell a patch from
+ordinary state, and a static read cannot tell a live table from a dead one.**  Agreement rules out
+both failures at once.
+
+`CallTrackHook ($5A22) → JMP $5700` — the same entry in all four expansion tracks — then a chain
+`$5700 → $5800 → $5600` (Donington adds a fourth stage at `$53F3`):
+
+```
+5700  LDX #$12          ; ⚠ $12 on Brands/Oulton, $13 on Donington/Snetterton
+5702  LDA $5414,X / STA $75     ; target hi
+5707  LDA $5400,X / STA $74     ; target lo
+570E  LDA $5500,X / STA ($74),Y ; first byte
+5714  LDA $5514,X / STA ($74),Y ; second byte
+571A  BPL $5702                 ; 19 or 20 two-byte patches
+571C  LDA #$4C / STA $261A / STA $248B      ; the JMP opcodes
+5800  LDA #$20 / STA $1248/$12FB/$2538/$45CB ; the JSR opcodes (+ $2F23 on DONING/SNETTER)
+      … then single-byte pokes, RTS
+```
+
+So the two-byte "operand rebinding" patches are one table-driven loop, and the opcodes are separate
+straight-line pokes.  `tools/track_hooks.py` now checks the tables against the measured diff:
+
+| Track | table entries | decoded pokes | in the tables but never seen changing |
+|---|---|---|---|
+| BRANDS | 19 | 16 | **0** ✅ |
+| DONING | 20 | 20 | **0** ✅ |
+| OULTON | 19 | 16 | **0** ✅ |
+| SNETTER | 20 | 18 | **0** ✅ |
+
+The only bytes the differential sees that the patcher does not explain are `$5FC9-$5FCD`, which is
+engine runtime state (Snetterton reports **0 and 0** — an exact match both ways).
+
+⚠ **Getting there needed one bound read from the code rather than assumed**, the same lesson the
+unpack's move tables taught: the patch count is `LDX #n` at `$5701` and it is **not the same for
+every track** — `$12` (19) for Brands and Oulton, `$13` (20) for Donington and Snetterton.
+Hardcoding 19 made Donington and Snetterton report `$2F24/$2F25` as unexplained, which read like a
+real gap in the differential and was an off-by-one in the checker.
+
+### The track program's code extents
+
+Measured for Brands Hatch by sweeping from `$5700` plus the six hook targets: **238 instructions**
+inside `$5300-$5A25`, in ten extents — `$5472-$54EA`, `$54F1-$54FF`, `$5582-$55BC`, `$55C4-$5619`,
+`$5672-$56C5`, `$5700-$5724`, `$5772-$57A0`, `$5800-$5825`, `$59E9-$59F7`.  Everything else in the
+window is track geometry.  So the "executable track file" is ~240 instructions of patcher and hook
+bodies wrapped around ~1600 bytes of data.
+
 ### Consequences
 
 1. **The hook targets are entry points that exist in no static image**, seeded in
@@ -470,9 +519,10 @@ every time so it cannot quietly drift.
 
 1. 🔧 **Classify the residual 685 bytes** — `$6C00-$6E84` and `$6F8A-$6FB1` (down from 5327; see
    §Static coverage).  The indirect-addressing pass is done; these two need reading, not tooling.
-2. **Disassemble the track programs.**  The hook *inventory* is done (above); the hook *bodies*
-   are not.  `$5300-$5A25` holds a program for four of the five circuits, and nothing has
-   disassembled it yet.  Sweep it per track with the hook targets as roots.
+2. ✅ ~~Disassemble the track programs.~~ **Done** — `ModifyGameCode` is read out above, the code
+   extents are measured, and the patcher now cross-checks against the differential with zero
+   discrepancies.  Still owed: naming the six hook *bodies* by behaviour (they are the per-track
+   field-of-view / hill-flattening / horizon variations the reference describes).
 3. ~~Read out the OSBYTE/OSWORD reason codes.~~ **Done** — all 17 sites resolved except `$50F6`
    (A from a variable).  Still owed: confirm the heuristic against a trace, and read out the
    *parameters* (X/Y) at the ADC and buffer-flush sites, which is what the implementation needs.

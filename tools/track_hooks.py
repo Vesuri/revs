@@ -32,6 +32,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from relocate import relocate, runs  # noqa: E402
+from sweep_entrypoints import Sweep, ABS  # noqa: E402
 
 TRACKS = ["SILVER", "BRANDS", "DONING", "OULTON", "SNETTER"]
 CONTROL = "SILVER"
@@ -134,6 +135,57 @@ def main():
     common_hooks = set.intersection(*(set(h) for h in all_hooks.values())) if all_hooks else set()
     print(f"\n  code-hook targets common to every expansion track: "
           + (" ".join(f"${a:04X}" for a in sorted(common_hooks)) or "(none)"))
+    print()
+
+    # --- the other direction: read the patcher's own tables -------------------------------
+    # Everything above is DIFFERENTIAL — it observes memory changing.  ModifyGameCode can also be
+    # read directly, and the two methods must agree.  They are independent in the way that
+    # matters: a differential cannot tell a patch from ordinary state, and a static read cannot
+    # tell a table that is used from one that is dead.  Agreement rules out both failures at once.
+    #
+    # The patcher, entered from CallTrackHook ($5A22 -> JMP $5700):
+    #   $5700  X=$12..0: STA ($74),Y with the target from $5400,X/$5414,X and the two bytes
+    #          from $5500,X/$5514,X  -- 19 two-byte patches
+    #   $571C  LDA #$4C / STA $261A / STA $248B          -- write the JMP opcodes
+    #   $5800  LDA #$20 / STA $1248/$12FB/$2538/$45CB    -- write the JSR opcodes, plus pokes
+    #   $5600  more single-byte pokes, then RTS
+    print("# cross-check: ModifyGameCode's own tables vs the differential above")
+    for t, patch in per_track.items():
+        _, sim, after = residue(t)
+        # ⚠ READ THE ENTRY COUNT FROM THE CODE.  The loop is `LDX #n` at $5700 counting down to
+        # 0, so it applies n+1 patches — and n is NOT the same for every track: Brands and Oulton
+        # use $12 (19 entries), Donington and Snetterton $13 (20).  Hardcoding 19 made Donington
+        # and Snetterton report two bytes ($2F24/$2F25) as unexplained, which looked like a real
+        # gap in the differential and was really an off-by-one in this check.  Same lesson as the
+        # unpack's move tables: take the bound from the instruction, never from the first example.
+        assert sim[0x5700] == 0xA2, f"{t}: $5700 is not LDX #imm — the patcher shape changed"
+        n_entries = sim[0x5701] + 1
+        tbl = {}
+        for x in range(n_entries):
+            addr = sim[0x5400 + x] | sim[0x5414 + x] << 8
+            tbl[addr] = (sim[0x5500 + x], sim[0x5514 + x])
+        # Each table entry writes 2 bytes at addr; the differential should have seen them
+        # wherever they differ from the pre-patch image.
+        expect = {a + k for a, bs in tbl.items() for k in (0, 1)
+                  if sim[a + k] != bs[k]}
+        # The patcher also does a run of straight-line single-byte pokes ($5800 and $5600), which
+        # is where the JSR/JMP opcodes and a handful of constants come from.  DERIVE those by
+        # decoding the patcher rather than listing them: the sequence differs per track
+        # (Donington and Snetterton poke $2F23 and $1310, Brands and Oulton do not), so a
+        # hardcoded list would quietly rot into a false mismatch.
+        sw = Sweep(bytearray(sim), 0x0B00, 0x7900)
+        sw.run([0x5700])
+        pokes = {op for mn, mode, op, n in sw.insn.values()
+                 if mn in ("STA", "STX", "STY") and mode == ABS and 0x0B00 <= op < 0x7900}
+        expect |= {a for a in pokes if sim[a] != after[a]}
+        missing = sorted(expect - patch)
+        extra = sorted(patch - expect)
+        print(f"  {t}: {n_entries} table entries + {len(pokes)} decoded pokes -> "
+              f"{len(expect)} expected changed bytes")
+        print(f"    seen by the differential but not in the tables: {len(extra)}"
+              + ("   " + " ".join(f"${a:04X}" for a in extra[:14]) if extra else ""))
+        print(f"    in the tables but NOT seen changing:            {len(missing)}"
+              + ("   " + " ".join(f"${a:04X}" for a in missing[:14]) if missing else "  ✅"))
     print()
 
     if len(per_track) > 1:

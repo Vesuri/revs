@@ -38,7 +38,18 @@ addr,name,note
 ##   $45CB JSR -> $59E9 / $59C9 / $59E7 / $59C7
 ##   $2F23 JSR -> ----- / $59ED / ----- / $59E8   (Donington and Snetterton only, and it lands
 ##                                                 INSIDE the self-modifying $2C00-$2FFF region)
+## ⭐ $5700 is the patcher itself (ModifyGameCode), reached from CallTrackHook at $5A22 via
+## JMP $5700, and it is the SAME address in all four expansion tracks.  Its chain is
+## $5700 -> $5800 -> $5600 (-> $53F3 on Donington).  It applies 19 or 20 two-byte patches from a
+## four-way table at $5400/$5414 (target lo/hi) + $5500/$5514 (the two bytes), then pokes the
+## JSR/JMP opcodes and a handful of constants directly.
+## ⚠ The entry count is `LDX #n` at $5701 and DIFFERS per track: $12 (19) for Brands and Oulton,
+## $13 (20) for Donington and Snetterton.  Read it, do not assume it.
+#0x5700,ModifyGameCode,"the track program's patcher; entry is the same in all four expansion tracks"
 #0x5672,track_hook_1248,"JSR patched over the instruction at $1248 by every expansion track"
 #0x56BC,track_hook_248B,"JMP patched over $248B by every expansion track"
 #0x56AF,track_hook_261A,"JMP patched over $261A by every expansion track"
 #0x5772,track_hook_2538,"JSR patched over $2538 by every expansion track"
+#0x54F1,track_hook_12FB,"JSR patched over $12FB. Target is $54F1 on Brands, $54EF on the other three"
+#0x59E9,track_hook_45CB,"JSR patched over $45CB. Target per track: $59E9 / $59C9 / $59E7 / $59C7"
+#0x59ED,track_hook_2F23,"JSR patched over $2F23 -- DONINGTON AND SNETTERTON ONLY ($59ED / $59E8), and it lands inside the self-modifying $2C00-$2FFF rasteriser region"
