@@ -30,9 +30,10 @@ the framerate counter, and gdb reported instruction bytes as a frame count
 
 `docs/bbc-reference-loop.md`.  There is no `atari800` here; ground truth has to be built.
 
-1. ✅ Install + smoke-test jsbeeb (headless oracle).  Working, vendored at `tools/jsbeeb`
-   (git-ignored). b2 not yet built (cmake now installed; build not attempted) — not blocking,
-   since jsbeeb's `debugInstruction` hooks already cover breakpoints/registers/peek/poke.
+1. ✅ Install + smoke-test jsbeeb (headless oracle) and b2 (debug HTTP API on `:48075`).  Both
+   working, vendored at `tools/jsbeeb` and `tools/b2` (git-ignored). jsbeeb's `debugInstruction`
+   hooks are the primary scripted oracle; b2's HTTP API (`peek`/`run` confirmed) is available as a
+   secondary/interactive cross-check.
 2. ✅ **Boot the real disc, break at the engine entry, dump RAM, diff against
    `disasm/revs_mem.bin`.** Done for all five tracks: `$1200-$6FFF` (the whole REVS2 engine) and
    each track's own data block are **byte-identical** to `make image TRACK=<name>`'s

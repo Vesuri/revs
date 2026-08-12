@@ -94,11 +94,16 @@ scriptable oracle: `loadDiscData`, `type`/keyDown/keyUp, `runFor`/`runUntilAddre
 `readbyte`/`writebyte`, `debugInstruction.add()` hooks. No jsbeeb caveats hit yet — didn't need b2
 for anything done so far.
 
-**b2 not yet attempted.** `cmake` is missing on this machine (needed to build it); not blocking
-because jsbeeb's `debugInstruction` hooks already give breakpoints, register/PC access and memory
-peek/poke, which covers everything the b2 HTTP API was wanted for so far. Revisit only if jsbeeb
-turns out to lack something (e.g. jsbeeb accuracy is ever in doubt, or a true GUI comparison is
-needed).
+**b2 built and its HTTP API confirmed working.** Vendored at `tools/b2` (git-ignored), cloned with
+submodules (`git clone --recurse-submodules`), built via `make init && cd build/d.osx && ninja`
+(needed `brew install cmake ninja`, plus Xcode command line tools which were already present).
+`build/d.osx` (Debug/unoptimized) *is* the debug build the HTTP API doc describes — no separate
+flag needed. Ran the built `b2.app`, confirmed `GET /peek/b2/0000/+10` returns `200` with real
+memory bytes and `POST .../run/b2?name=revs.ssd` (disc image as the body) returns `200`. No
+headless caveat hit — this was run with a real display available, not under Xvfb, so that
+limitation from the doc's original research is still unconfirmed either way. Not wired into any
+script; jsbeeb remains the primary scripted oracle for everything done so far, b2 is available as
+a secondary/interactive cross-check if jsbeeb's accuracy is ever in doubt.
 
 **Driver scripts:** `tools/bbc_refloop_smoke.mjs` and `tools/bbc_refloop_track_diff.mjs` (both
 committed; jsbeeb loads its ROMs relative to cwd, so run them as
@@ -169,10 +174,11 @@ This is a genuinely useful head start for the Phase 2 entry-point sweep
 the self-modifying-code inventory that doc asks for, computed instead of guessed. The dump files
 live in `tmp/` (git-ignored; re-derive with the script rather than expecting them to persist).
 
-**Not yet done:** named-milestone captures (step 3); the jsbeeb cycle-diff harness against the
-port (step 4); the CRTC/ULA display-composition analyser (step 5); fixing `tools/ssd_load.py`
-(nothing to fix — it's already correct for the regions that matter, on all five tracks); b2
-(cmake now installed on this machine, not yet built/smoke-tested).
+**Not yet done:** named-milestone captures (step 3, deferred — there's no port yet to diff a
+milestone against, so this is better done once Phase 4/6 actually need it); the jsbeeb cycle-diff
+harness against the port (step 4, same reasoning); the CRTC/ULA display-composition analyser
+(step 5). `tools/ssd_load.py` needs no fix — it's already correct for the regions that matter, on
+all five tracks.
 
 ## The standing rule this loop exists to serve
 
