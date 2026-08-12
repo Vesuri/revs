@@ -564,7 +564,26 @@ a guess dressed as a fact, and it is the exact failure mode `docs/postmortem.md`
    gate Phase 3: `disasm/symbols.csv` feeds the transpiler, so a name learned later propagates
    through the whole corpus on the next `make gen` — which is exactly why `docs/toolchain.md` says
    the cost of being only roughly right early is near zero.
-6. **`DumpHwAccesses.java` still carries Atari ranges.**  The sweep's hardware table above
+6. 🔧 **Seven calls into `$7B00-$7BFF`, a page nothing ever loads.**  Found in Phase 3 by
+   generating the corpus: `JSR $7B00` (`$1739`), `$7B4A` (`$1704`), `$7B9C` (`$502A`, `$503B`,
+   `$6612`), `$7BE2` (`$16E6`, `$1748`).  REVS2 covers `$1200-$6FFF` and a track file
+   `$70DB-$7814` — on this disc **and** on the Nürburgring hack disc — so the page is zero in
+   both `revs_mem.bin` and `revs_runtime.bin`, and a real BBC has leftover front-end text there
+   (`$7BE2` = "…ornso", the tail of "Acornsoft").  A `JSR` there executes garbage.
+
+   Not obviously dead code: `$16E6` is four instructions into the routine `$6563` calls when the
+   front end releases, i.e. race init.  Measured (`tools/bbc_probe_unmapped_calls.mjs`): across
+   boot, the track menu and 20M cycles of front end, **zero executions of all seven sites and
+   zero writes into `$7A00-$7C00`**.  Consistent with unreachable — but the same run never gets
+   past the `$6560` gate (open item 4), which is precisely what stands between it and the call
+   sites, so it does not settle it.
+
+   The port's answer is a trap, not a verdict: these emit `platform_brk()`, so the first run that
+   reaches one reports it (`g_brkPC`/`g_brkCount`) instead of silently returning.  ⚠ Whatever the
+   resolution, it is **not** "emit an empty function" — that makes calling into nothing look
+   exactly like working.
+
+7. **`DumpHwAccesses.java` still carries Atari ranges.**  The sweep's hardware table above
    supersedes it for now; retool or retire the script rather than leaving a tool that reports
    GTIA registers for a BBC binary.
 

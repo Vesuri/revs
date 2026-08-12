@@ -4,9 +4,9 @@
 > surprises you.**  The everyday parts — the file table, the native-twin seam, and which file a
 > twin belongs in — are in `CLAUDE.md` §Transpiler and `docs/faithfulness-seam.md`.
 >
-> ⚑ `tools/transpile.py` is carried over from the Atari port **unmodified so far**, so it still
-> emits `rof_*` filenames and knows about Atari address ranges.  Adapting it is Phase 2 work; the
-> §Porting checklist at the bottom lists what has to change.
+> ✅ **The port is done** (Phase 3).  `tools/transpile.py` emits `revs_*`, knows the BBC's
+> address ranges, intercepts MOS calls, and emits the self-modifying code as runtime dispatch
+> rather than hand-stubs.  The §Porting checklist at the bottom records what changed.
 
 ## ⭐ Emit clean C BEFORE mass-generating
 
@@ -64,15 +64,52 @@ store**, and the sequence is straight-line (no end is a branch target / split / 
 Indexed/indirect modes count their index register as a read, and `JSR` reads and clobbers
 everything, so no live value or flag is ever dropped.
 
-## Self-modifying code
+## Self-modifying code — emitted, not stubbed
 
-A routine that writes its own instruction stream **cannot** be transliterated faithfully.  It
-gets a hand-written stub in `src/gen/revs_manual.c`.  Revs is expected to have several — identify
-them during the entry-point sweep (`docs/entrypoint-sweep.md`), not when the generated code
-misbehaves.
+The Atari rule was "a routine that writes its own instruction stream cannot be transliterated
+faithfully → hand-stub it in `*_manual.c`".  **Revs does not follow it**, and the reason is worth
+stating: that rule costs one hand-written, unvalidated, non-regenerable routine per site, and all
+24 of Revs's sites are inside the road rasteriser — the hottest and least-understood code in the
+binary.  Freezing one snapshot of it by hand is the expensive way to be wrong.
+
+Every site is one of three **mechanical** classes, and each has an exactly faithful runtime form.
+`SMC_SITES` in `tools/transpile.py` carries the table, with the writer instructions as evidence
+for every value:
+
+| Class | What is patched | Emitted as |
+|---|---|---|
+| `operand` | operand BYTES, opcode stands | effective address / immediate read from `mem[]` at run time (byte-wise ⇒ endian-safe), routed through `bus_read`/`bus_write` because a runtime EA cannot be range-tested at gen time |
+| `opcode` | a 1-byte opcode SLOT | `switch (mem[site])` with one case per value the writers actually store |
+| `branch` | a branch OFFSET | the 6502's own target computation, dispatched over the enclosing routine's instruction starts |
+
+Anything outside the evidence calls `platform_smc_unhandled()`, which **reports** — it never picks
+a branch.  A silent no-op there reads exactly like a rasteriser that runs and draws nothing.
+
+Two details that make the classes work:
+
+- The `$2FC0`/`$2FD7` slots switch between `CPX #$80` ($E0) and `RTS` ($60) — **different
+  lengths**.  That is representable only because `$60` terminates: with `RTS` in the slot the
+  operand byte is never fetched, so nothing downstream shifts.  Both are function starts, so the
+  whole routine is switched between "compare and continue" and "return immediately".
+- In the static image the four rasteriser `BCC`s read `+0` — a branch to the next instruction, a
+  no-op.  That is what an unpatched slot *should* look like, and it is why a naive transliteration
+  of `$2C00-$2FFF` would run and do nothing.
+
+`MANUAL_FUNCS` is therefore **empty**.  Add to it only for a routine that cannot be expressed as a
+transliteration at all, and say why.
 
 Related trap: **`listing.txt` is the FINAL image.**  Code at an address during one phase may be a
 different routine at the same address during another.
+
+## BRK, and calls into memory that holds no code
+
+`BRK` is **not** a no-op on the BBC: it vectors through BRKV into the MOS error handler and does
+not return to the following instruction.  It emits `platform_brk(pc)`.
+
+This is load-bearing rather than pedantic.  Four "routines" in the image are a single `$00` byte —
+`$7B00`, `$7B4A`, `$7B9C`, `$7BE2` — and the engine JSRs to them from seven sites, one of them four
+instructions into the routine the front end calls on release.  Nothing loads that page.
+`make gen` lists them (`report_brk_targets`); the open question is in `docs/static-map.md`.
 
 ## Spin-waits and hooks
 
@@ -80,15 +117,51 @@ Points where the 6502 busy-waits on a hardware or clock value become hooks that 
 drive a real frame (`platform_tick_vbi(); platform_render_frame();`).  ⚠ Only for waits that own
 a whole frame boundary — a raster-position wait would be reset by the tick and could never exit.
 
-## Porting checklist (transpile.py → Revs)
+**`SPINWAIT_HOOKS` is empty on purpose, and `make gen` reports the candidates instead.**  The
+Atari port's list grew reactively, one runtime hang at a time, and each entry needed a paragraph
+of justification written after the fact.  Revs makes guessing worse: its 50 Hz body is a
+raster-timed User VIA T1 interrupt that reloads the palette mid-frame, so several of its waits are
+intra-frame by design and a tick in one would prevent the very exit it is meant to enable.  The
+report lists every tight backward loop with no `JSR` and at least one memory read (41 of them);
+Phase 4 fills the list from what actually stalls on the target, with the loop's exit condition
+read out first.  `PRE_INSN_HOOKS` is empty for the same reason.
 
-- [ ] Output filenames `rof_*` → `revs_*` (`revs_gen.c`, `revs_decl.h`, `revs_native.c`,
-      `revs_manual.c`, `mem.h`).
-- [ ] `ROF_*` defines → `REVS_*` (notably `ROF_MEM_ALIASES` → `REVS_MEM_ALIASES`).
-- [ ] Hardware range: Atari `$D000-$D7FF` → BBC `$FC00-$FEFF`; shadow page `$0200-$02FF` stays
-      (BBC OS vectors), but the *meaning* of the cells changes.
-- [ ] **MOS-call interception**: a `JSR $FFF4`/`$FFF1`/… must emit `platform_mos_call(entry)`
-      rather than a call into unmapped ROM.  This is new — the Atari port had no equivalent.
-- [ ] **Emit `src/gen/revs_validate_list.h`** — the list of `VALIDATE_FUNCS` names the harness
-      uses for fixture-or-fail (`docs/validation-harness.md`).  The harness already reads it.
-- [ ] Re-check the `SPINWAIT_HOOKS` list against Revs's actual wait sites.
+## What `make gen` reports
+
+Not decoration — each line is one of the ways a generated corpus is silently wrong:
+
+- `[rom]` — Ghidra functions in ROM space, dropped (MOS entries are intercepted, not defined).
+- `[orphan]` — code in inter-function gaps, and which function absorbed it. An orphan run that is
+  neither fallen into nor branched to is flagged `UNREACHABLE?` rather than quietly kept.
+- `SMC:` — the patched instructions, by class, and the routines holding them.
+- `BRK-only targets:` — routines that are a single `$00`, with their callers.
+- `spin-wait candidates:` — see above.
+
+Generation **fails** (rather than emitting a plausible stub) on: a `JSR`/`JMP` into ROM that is not
+a MOS entry; a `VALIDATE_FUNCS` address that is not a function start or mid-function entry; an
+`SMC_SITES` address that is not an instruction start in the current listing.
+
+## Porting checklist (transpile.py → Revs) — ✅ done, Phase 3
+
+- [x] Output filenames `rof_*` → `revs_*`; `ROF_*` defines → `REVS_*`.
+- [x] Hardware range Atari `$D000-$D7FF` → BBC `$FC00-$FEFF`, matching `bus.h`'s `BBC_IO_LO/HI`
+      so the two cannot disagree about what routes.  The `$0200-$02FF` vector page still goes
+      through `bus_write` — now for IRQ1V, the only vector Revs claims.
+- [x] **MOS-call interception** — `$FF00-$FFFF` emits `platform_mos_call(entry)` with the entry
+      named in the comment.  A ROM call that is *not* a MOS entry fails generation; there are none.
+- [x] **Emit `src/gen/revs_validate_list.h`** — always, even empty, so an empty list means "no
+      twins" and never "stale file".
+- [x] `SPINWAIT_HOOKS` re-checked: emptied, with a gen-time candidate report instead (above).
+
+Two boundary bugs the port surfaced, both of which **silently dropped code** — worth knowing about
+because both are generic to this pipeline, not to Revs:
+
+- An orphan run was attached to a function only when it FELL THROUGH into it.  Three of Revs's
+  runs end in a terminator and were dropped — including `$4E59`, the `JMP ($4F1D)` IRQ1V chain-on.
+  The generated handler let a foreign interrupt fall off its end instead of chaining.  Ending in a
+  terminator is not evidence of not belonging: a prefix loop body can perfectly well `RTS` out.
+  A run is now attached if it falls through **or** the function branches back into it.
+- A `JSR` to a nested function start inside the caller's own Ghidra range was treated as a local
+  `goto`, so no wrapper was emitted and the call went undeclared.  Branches inside the range are
+  gotos; a `JSR` never is, because it has to return.  **The C compiler caught this one** — worth
+  remembering that the type system is part of this pipeline's error detection.

@@ -144,6 +144,51 @@ return addresses answered it immediately.
 Generalise: for "where is it stuck", prefer state that persists (stack, flags, a wait variable) over
 events you have to be present for.
 
+## Emit the mechanism, not a snapshot of it ⚑ Revs
+
+Revs has 24 self-modifying instructions, all inside the road rasteriser.  The inherited rule was
+"hand-stub a self-modifying routine", which would have bought 10 hand-written, unvalidated,
+non-regenerable routines in the hottest and least-understood code in the binary.
+
+Reading the *writers* first showed all 24 are three mechanical classes — patched operand bytes,
+a patched 1-byte opcode slot, a patched branch offset — and each has an exactly faithful runtime
+form: read the patched byte from `mem[]` and dispatch on it.  The generated code is then
+patchable in the same way the 6502 code is, so it keeps working for whatever the writers actually
+poke, including a hook only two of the five circuits install.
+
+Generalise: before hand-writing around a dynamic mechanism, check whether the mechanism itself is
+small enough to *emit*.  "The transliteration can't express this" is often "the transliteration
+can't express one FROZEN reading of this".
+
+## A silent no-op is the most expensive translation choice ⚑ Revs
+
+Four separate places in one generation pass could have quietly produced code that runs and does
+nothing: `BRK` translated as a comment, an unmapped call target emitted as an empty function, a
+self-modifying slot holding an unlisted value, and a `VALIDATE_FUNCS` entry with no fixture.
+Each looks *exactly* like working code from the outside — the failure surfaces later, far from
+its cause, as "the rasteriser draws nothing" or "validation is green".
+
+Every one of them is now either a generation-time failure or a run-time report with a name
+attached.  The rule that falls out: **when a translation cannot represent something, make the
+gap loud at the earliest point that can name it.**  A `TODO` comment in generated output is not
+loud; nobody reads 16 000 lines nobody wrote.
+
+Corollary from the same pass: **the C compiler is part of this pipeline's error detection.**  A
+`JSR` mis-emitted as a local `goto` became an undeclared-function error rather than a subtle
+control-flow bug.  Do not paper over generated-code warnings.
+
+## The boundary rule you inherited may encode the previous binary's shape ⚑ Revs
+
+Orphan instruction runs were attached to a function only when they FELL THROUGH into it.  That
+was right for the Atari binary, where the one live case was a clipped loop body.  In Revs three
+runs end in a terminator, and one of them is `JMP ($4F1D)` — the IRQ1V chain-on that hands a
+foreign interrupt back to the handler Revs displaced.  The rule dropped all three, and the
+generated interrupt handler let a foreign IRQ fall off its end.
+
+Ending in a terminator was never evidence of not belonging; it was a proxy that happened to hold
+once.  When porting a heuristic, ask what it is actually *evidence of* — here, ownership, for
+which "the function branches into it" is the direct test.
+
 ## Record findings the moment you find them
 
 Two conventions that exist because deferring cost real time:

@@ -116,15 +116,38 @@ everything downstream.  Both residuals are carried in `docs/static-map.md` §Ope
 
 ---
 
-## Phase 3 — Transpiler quality, then generate ⬜
+## Phase 3 — Transpiler quality, then generate ✅
 
-`docs/transpiler.md`, including its porting checklist.  ⭐ **Clean C is a prerequisite, not a
-later optimisation** — liveness-gated flag elision, named `mem.h` accesses, folded load→store
-idioms *before* mass-generating, because one transpiler improvement upgrades the whole corpus and
-shrinks the twin backlog.
+`docs/transpiler.md`, including its porting checklist (now ticked).  ⭐ **Clean C is a
+prerequisite, not a later optimisation** — liveness-gated flag elision, named `mem.h` accesses,
+folded load→store idioms *before* mass-generating, because one transpiler improvement upgrades
+the whole corpus and shrinks the twin backlog.
 
-**Exit criteria:** `make gen` produces C that builds clean on both backends, and
-`revs_validate_list.h` is emitted.
+**Exit criteria: met.**  `make gen` produces 16289 lines of C from 229 routines / **7079
+instructions** — exactly the figure `tools/sweep_entrypoints.py` reaches independently — building
+clean on the host (`make`, `make validate`, `make endian-lint`) and on the Amiga (`make` with
+muldiv-audit and probe-audit clean).  `revs_validate_list.h` is emitted, empty, so fixture-or-fail
+is live from twin #0.
+
+What the phase actually produced, beyond the mechanical retarget:
+
+1. **The self-modifying rasteriser is generated, not hand-stubbed.**  All 24 sites are one of
+   three mechanical classes with an exactly faithful runtime-dispatched form, so `$2C00-$2FFF`
+   stays regenerable and keeps working for whatever its writers poke — including the `$2F23` hook
+   only two circuits install.  `MANUAL_FUNCS` is empty.  (`docs/transpiler.md` §Self-modifying
+   code.)
+2. **Four silent-wrongness classes turned into loud ones**: an unlisted SMC value, a `BRK`, a
+   ROM call that is not a MOS entry, and a `VALIDATE_FUNCS` entry with no fixture.  Three of them
+   fail at generation time; the other two report at run time.
+3. **Two code-dropping boundary bugs fixed** — orphan runs ending in a terminator (one of which
+   was the IRQ1V chain-on) and `JSR` to a nested function start.
+4. **`SPINWAIT_HOOKS` deliberately empty**, with a 41-entry candidate report for Phase 4 to
+   resolve against the real machine instead of guessing.
+5. **Both builds now boot the RUNTIME image** (`make runtime`).  They still loaded the pre-unpack
+   one, which was correct only while nothing executed 6502 code.
+
+Carried forward: the `$7Bxx` calls into a page nothing loads (`docs/static-map.md` §Open items) —
+now trapped rather than silently no-op'd, so Phase 4's first run answers it.
 
 ---
 
@@ -138,6 +161,13 @@ profile would have shown up front exactly which handful of functions ever needed
 **Exit criteria:** the genuine entry chain runs under `PlatformAmiga`, a framerate exists from
 `FPSCOUNT=1` + `fps_seg.gdb`, and a profile names the hot functions.  **Only then** set a
 performance target (`docs/perf-method.md` deliberately does not carry one over).
+
+Phase 3 leaves three specific questions for the first target run to answer, all of them
+instrumented rather than guessed:
+
+- which of the 41 spin-wait candidates actually stall (`SPINWAIT_HOOKS`),
+- whether any of the seven `$7Bxx` calls is ever reached (`g_brkCount` / `g_brkPC`),
+- whether any self-modifying slot takes a value the table does not cover (`g_smcUnhandled`).
 
 ---
 
