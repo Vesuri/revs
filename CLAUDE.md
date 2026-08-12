@@ -46,36 +46,39 @@ Two more that are already done, and must stay done:
 ## The source binary
 
 `revs.ssd` — 200 KB single-sided 80-track Acorn DFS image, title "REVINST", `*OPT 4,3`.
-**Target release: Revs+** (user decision) — Mark Moxon's 2022 compilation, six circuits on one
-engine.
+**Target release: *Revs Plus Revs 4 Tracks*, © Superior/Acornsoft 1986** (user decision) — a
+genuine commercial release: five circuits on one engine, with Computer Assisted Steering.
 
-| File | Load | Length | Ends | What |
+| File | Load | Exec | Length | What |
 |---|---|---|---|---|
-| `!BOOT` | — | `$30` | — | `*BASIC` / `PAGE=&1900` / `*FX21` / `CHAIN "REVINST"` |
-| `REVINST` | `$1900` | `$2C78` | `$4578` | BASIC — instructions, variant banner, keys |
-| `REVSMEN` | `$1900` | `$49B` | `$1D9B` | BASIC — the track menu; per track does `*LO.<TRACK>` then `*/REVS2` |
-| `PLUSCRN` | `$7C00` | `$400` | `$8000` | MODE 7 teletext title screen the menu `*LOAD`s |
-| **`REVS2`** | `$1200` | `$5E00` | `$7000` | **the 24 KB machine-code engine** — one binary for all six tracks |
-| `SILVER` | `$70DB` | `$739` | `$7814` | Silverstone (the original 1985 circuit) |
-| `BRANDS` `DONING` `OULTON` `SNETTER` | `$70DB` | `$7D0` | `$78AB` | the four *Revs 4 Tracks* circuits |
-| `NURBURG` | `$70DB` | `$7D0` | `$78AB` | Nürburgring, backported from the C64 Revs+ |
+| `!BOOT` | — | — | `$30` | `*BASIC` / `PAGE=&1900` / `*FX21` / `CHAIN "REVINST"` |
+| `REVINST` | `$1900` | `$8023` | `$2C40` | BASIC — instructions, banner, keys |
+| `REVSMEN` | `$1900` | `$1900` | `$433` | the track menu; per track does `*LO.<TRACK>` then `*/REVS2` |
+| `5TRSCRN` | `$7C00` | `$7C00` | `$400` | MODE 7 teletext title screen the menu `*LOAD`s |
+| **`REVS2`** | `$1200` | `$1200` | `$5E00` | **the 24 KB machine-code engine** — one binary, all five tracks |
+| `SILVER` | `$70DB` | **`$0000`** | `$739` | Silverstone (the 1985 circuit) — **passive data** |
+| `BRANDS` | `$70DB` | **`$70DB`** | `$73A` | Brands Hatch — **executable** |
+| `DONING` | `$70DB` | **`$70DB`** | `$73C` | Donington Park — **executable** |
+| `OULTON` | `$70DB` | **`$70DB`** | `$739` | Oulton Park — **executable** |
+| `SNETTER` | `$70DB` | **`$70DB`** | `$738` | Snetterton — **executable** |
 
-⚠⚠ **The track file PATCHES THE ENGINE at runtime.** Track files are not passive data: each
-carries hook code (`ModifyGameCode`, `CallTrackHook`, `HookFieldOfView`, `HookFlattenHills`,
-`HookJoystick`, …) that modifies the game code as the engine starts, and the extra tracks generate
-geometry at runtime. So **the bytes the engine executes differ per track**, this is
-self-modifying code by construction (→ `revs_manual.c` stubs), and `disasm/revs_mem.bin` is the
-**pre-patch** state. Details: `docs/reference-sources.md`.
+⚠⚠ **The expansion track files PATCH THE ENGINE at runtime**, and the exec addresses above are the
+binary's own evidence for it: Silverstone's data has exec `$0000` (not executable), while all four
+expansion tracks have exec `$70DB` — they are *programs*. Each carries hook code
+(`ModifyGameCode`, `CallTrackHook`, `HookFieldOfView`, `HookFlattenHills`, `HookJoystick`, …) that
+modifies the game code as the engine starts, and they generate track geometry at runtime. So
+**the bytes the engine executes differ per track**, this is self-modifying code by construction
+(→ `revs_manual.c` stubs), and `disasm/revs_mem.bin` is the **pre-patch** state. Details:
+`docs/reference-sources.md`.
 
-⚠ `disasm/revs_mem.bin` is built by `tools/ssd_load.py` (default track SILVER; pass another as
-argv[3]). The load *order* is now derived from the menu's own BASIC, but what the MOS/BASIC left
-resident is not modelled. **Until it is diffed against a real BBC, every address derived from it
-is provisional** — Phase 1.
+⚠ `disasm/revs_mem.bin` is built by `tools/ssd_load.py` (default SILVER; `make image TRACK=BRANDS`
+for another). The load *order* is derived from the menu's own BASIC, but what the MOS/BASIC left
+resident is not modelled. **Until it is diffed against a real BBC, every address derived from it is
+provisional** — Phase 1.
 
-⚠ Revs+ is a **2022 fan compilation, not a pristine original**: its `REVS2` differs from the 1985
-single-track engine in **974 of 24064 bytes** (same length — a patched engine). The 1985 disc is
-kept locally as `revs-1985-silverstone.ssd` so that diff stays available. Prefer *documenting* a
-Revs+ change over silently inheriting it.
+ℹ The 1986 engine differs from the **1985** single-track release in 974 of 24064 bytes (same
+length). That is an authentic Superior/Acornsoft revision, not a repack — worth knowing only so
+that a 1985-era reference (including the annotated reconstruction) is read with it in mind.
 
 Documented keys: `L`/`+` steer, `S` throttle, `A` brake, `T` starter, `Q` gears up, `TAB` gears
 down, `SPACE` amplify steering, `SHIFT+f0` return to pits, `SHIFT+f1` keyboard, `SHIFT+f2`
@@ -121,9 +124,16 @@ timing and render bugs precisely where static reasoning kept failing.
 `. ./env.sh` (same shell command) then `amiga/diag_run.sh [delay]`, editing `amiga/diag_timing.gdb`
 to print whatever globals / `mem[0xNNNN]` you need. Details and traps: `docs/headless-fsuae.md`.
 
-**Verified working now:** a 25 s run reports `vbi=1075 painted=1054` — display takeover, 50 Hz
-VERTB handler, copper list, frame pump and the embedded 6502 image are all live and readable from
-gdb by name.
+**Verified working now:** a plain build reads `vbi=823 painted=0`, an `FPSCOUNT=1` build
+`vbi=824 painted=803` (≈48.8 FPS with nothing yet to draw) — display takeover, 50 Hz VERTB
+handler, copper list, frame pump and the embedded 6502 image all live and readable from gdb by
+name.
+
+⚠ **Every global a committed `.gdb` script reads must be listed in `PROBE_SYMS` (`amiga/Makefile`).**
+`--gc-sections` drops an unreferenced counter, and gdb then resolves the name into `.text` and
+prints **instruction bytes as a value** — a fake measurement, not an obvious zero. `make
+probe-audit` runs on every link and fails the build otherwise. (`__attribute__((retain))` does not
+work here — it is ignored on this target.)
 
 ## Reference docs — READ ON DEMAND (this file stays small on purpose)
 

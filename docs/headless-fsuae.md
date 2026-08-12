@@ -4,9 +4,10 @@
 > ⚑ Inherited from the Atari port, where this loop diagnosed several timing and render bugs
 > precisely where static reasoning kept failing — **measure, don't theorize.**
 >
-> Already verified working in this repo: a 25 s run reported `vbi=1075 painted=1054`, i.e. the
-> display takeover, the VERTB handler, the frame pump and the embedded 6502 image are all
-> readable from gdb by name.  The BBC reference side is `docs/bbc-reference-loop.md`.
+> Already verified working in this repo: a plain build reads `vbi=823 painted=0`, an
+> `FPSCOUNT=1` build `vbi=824 painted=803` (≈48.8 FPS with nothing yet to draw).  So the
+> display takeover, the VERTB handler, the frame pump and the embedded 6502 image are all live
+> and readable from gdb by name.  The BBC reference side is `docs/bbc-reference-loop.md`.
 
 ## The loop
 
@@ -32,6 +33,11 @@ make clean && make -j4 PROBES=1
 - **Probe pattern:** add `volatile` globals under `#ifdef REVS_PROBE` (defined in
   `PlatformAmiga.cpp`), stamp `g_vbiCount` at milestones, print the deltas.  A pure-compute
   stretch shows up as a `g_vbiCount` delta, because the real VBI keeps counting through it.
+- **⚠ A dropped probe counter reports GARBAGE, not zero.**  `--gc-sections` removes any counter
+  the current configuration never touches, and gdb then resolves the name into `.text` and prints
+  instruction bytes.  Every global a committed `.gdb` reads must be in **`PROBE_SYMS`** in
+  `amiga/Makefile`; `make probe-audit` runs on every link and fails the build otherwise.  Measured
+  here: a non-FPSCOUNT build read `painted=1223110688`.
 - **⚠ A gdb script ABORTS THE WHOLE FILE at the first unknown symbol** — from that line onward,
   not just that column.  So deleting a probe global silently kills every committed `.gdb` that
   still prints it.  **When you delete or rename a probe global, grep `amiga/*.gdb` for it**, and

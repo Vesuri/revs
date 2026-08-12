@@ -20,6 +20,18 @@ Corollaries:
   it is cheap either way, so just do it.
 - **A probe that reads the same source as the code under test is vacuous.**  If a probe has
   never fired, suspect the probe first.
+- ⭐ **A DROPPED probe counter does not read zero — it reads garbage that looks like data.**
+  Measured in this repo while scaffolding: `-fdata-sections` + `--gc-sections` dropped
+  `g_fpsFrames` in a build where nothing referenced it, gdb resolved the name into `.text`, and
+  the harness reported `painted=1223110688` — m68k instruction bytes inside
+  `processBlitterQueue`.  A zero would have read as "not counting"; garbage reads as a
+  measurement, which is strictly worse.
+  `__attribute__((used, retain))` does **not** fix it (`retain` is ignored on this target;
+  `used` only binds the compiler).  The fix is a linker gc root — `PROBE_SYMS` in
+  `amiga/Makefile` becomes `-Wl,--undefined=<sym>` — plus `make probe-audit`, which fails the
+  link if any listed symbol is missing from the ELF.  **Add every new counter to `PROBE_SYMS`.**
+  Generalisation: when a number looks wrong by orders of magnitude, check that the symbol you
+  read is the symbol you meant, before theorising about the value.
 - **A gdb script ABORTS THE WHOLE FILE at the first unknown symbol**, from that line onward.
   When you delete or rename a probe global, grep every `.gdb` for it — and read "the trace
   stopped after the header" as a stale script, not a dead probe.

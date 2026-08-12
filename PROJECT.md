@@ -22,7 +22,7 @@ project is deliberately built in the order that document argues for.
 | Ground truth | **jsbeeb** (scriptable headless oracle) + **b2** (interactive/HTTP debugger). MAME `bbc` held in reserve. Never the dev-host backend |
 | Host build | **No renderer.** `make validate` + host algebra proofs only — the RoF SDL backend's approximation cost real time |
 | Repo | Commit directly to `main`, one logical change per commit |
-| **Target release** | **Revs+** (Moxon's 2022 compilation): six circuits on ONE engine binary. Beats the authentic two-disc split (1985 Revs + 1986 Revs 4 Tracks) on scope-per-effort. ⚠ It is a fan compilation — see `docs/reference-sources.md` |
+| **Target release** | ***Revs Plus Revs 4 Tracks*, © Superior/Acornsoft 1986** — a genuine commercial release: five circuits on ONE engine, with Computer Assisted Steering. Verified free of fan modification (see the three-way engine diff in `docs/reference-sources.md`) |
 | **Steering / input** | **Mouse + keyboard.** The BBC's own `SHIFT+f1` keyboard mode is the faithful precedent; the mouse replaces the uPD7002 analogue axis. No joystick requirement |
 | **Host renderer** | **None.** Not an SDL port — `make validate` + host algebra proofs only |
 | Reference material | Moxon's annotated reconstruction is a **map, not a source**: no licence, so never copied from. `docs/reference-sources.md` |
@@ -32,52 +32,55 @@ project is deliberately built in the order that document argues for.
 1. **Machine target.** RoF ended up needing 1 MB and not fitting a bare 512 KB A500. Revs is a
    much smaller binary (24 KB engine) but the track/render buffers are unknown. Decide the minimum
    spec when the first real measurement exists, not before.
-2. **How far to chase Revs+'s own modifications.** Its engine differs from the 1985 original in
-   974 bytes, and Computer Assisted Steering comes from the Superior Software variant. A faithful
-   port of a compilation should at least *know* which behaviour is the compilation's — decide
-   whether any of it should be optional at runtime once the diff is understood.
+2. **A sixth circuit?** The Nürburgring is Crammond's own track from the C64 Revs+ (© Firebird
+   1987); on the BBC it exists only as Mark Moxon's data conversion. Since his disc's engine is
+   byte-identical to the 1986 release, no game code is involved — so the clean route is to
+   **extract the track from a C64 Revs+ image ourselves**, putting every circuit in the port on the
+   same Crammond-original footing. Cost: the BBC and C64 track formats differ and the expansion
+   tracks are executable hook programs, so it means reproducing a conversion, not copying a file.
+   `docs/reference-sources.md` §A sixth circuit.
 
 ## The source binary
 
 `revs.ssd` — 200 KB single-sided 80-track Acorn DFS image, title "REVINST", `*OPT 4,3`.
+***Revs Plus Revs 4 Tracks*, © Superior/Acornsoft 1986** — "Revs Plus Revs 4 Tracks / Computer
+Assisted Steering / Copyright (c) Superior/Acornsoft 1986".
 
 ```
 $ python3 tools/ssd_map.py revs.ssd
 file            load    exec  length sector  offset  ends
-$.REVS2*        1200    1200    5E00    105    6900  7000    <- the engine (24 KB), ONE binary for all 6 tracks
-$.SNETTER*      70DB    70DB     7D0     97    6100  78AB    <- Snetterton        \
-$.SILVER*       70DB    70DB     739     89    5900  7814    <- Silverstone (1985)|
-$.OULTON*       70DB    70DB     7D0     81    5100  78AB    <- Oulton Park      | six circuits,
-$.NURBURG*      70DB    70DB     7D0     73    4900  78AB    <- Nurburgring (C64)| all at $70DB
-$.DONING*       70DB    70DB     7D0     65    4100  78AB    <- Donington Park   |
-$.BRANDS*       70DB    70DB     7D0     57    3900  78AB    <- Brands Hatch     /
-$.PLUSCRN*      7C00    7C00     400     53    3500  8000    <- MODE 7 title screen
-$.REVSMEN*      1900    8023     49B     48    3000  1D9B    <- BASIC track menu
-$.REVINST*      1900    8023    2C78      3     300  4578    <- BASIC instructions
+$.REVS2*        1200    1200    5E00     97    6100  7000    <- the engine (24 KB), ONE binary, all 5 tracks
+$.SILVER*       70DB       0     739     89    5900  7814    <- Silverstone (1985) -- PASSIVE DATA
+$.SNETTER*      70DB    70DB     738     81    5100  7813    <- Snetterton     \
+$.OULTON*       70DB    70DB     739     73    4900  7814    <- Oulton Park     | the four expansion
+$.DONING*       70DB    70DB     73C     65    4100  7817    <- Donington Park  | tracks -- EXECUTABLE
+$.BRANDS*       70DB    70DB     73A     57    3900  7815    <- Brands Hatch    /
+$.5TRSCRN*      7C00    7C00     400     53    3500  8000    <- MODE 7 title screen
+$.REVSMEN*      1900    1900     433     48    3000  1D33    <- the track menu
+$.REVINST*      1900    8023    2C40      3     300  4540    <- BASIC instructions
 $.!BOOT*           0       0      30      2     200  30
 ```
 
 `!BOOT` is `*BASIC` / `PAGE=&1900` / `*FX21` / `CLOSE#0:CHAIN "REVINST"`, and `REVSMEN`'s per-track
 branch is `*LO.<TRACK>` then `*/REVS2` — **track data first, engine second, engine runs.**
 
-This is **Revs+**, Mark Moxon's 2022 compilation: "Variant: Revs+ / Contains the Nurburgring track
-from the Commodore 64, backported by Mark Moxon / Computer Assisted Steering / Copyright (c) 1985,
-1986, 2022".
+⚠⚠ **The four expansion track files patch the engine at runtime** (`ModifyGameCode` /
+`CallTrackHook` / per-track hooks) and generate track geometry at runtime. The exec addresses above
+are the binary's own evidence: Silverstone's data is exec `$0000` (not executable) while all four
+expansion tracks are exec `$70DB` — they are *programs*. So the bytes the engine executes differ
+per track, and this is self-modifying code by construction.
 
-⚠⚠ **The track file patches the engine at runtime** (`ModifyGameCode` / `CallTrackHook` /
-per-track hooks), and the extra tracks generate geometry at runtime. So the bytes the engine
-executes differ per track, and this is self-modifying code by construction.
-⚠ **It is a fan compilation, not a pristine original** — measured: its `REVS2` differs from the
-1985 single-track engine in **974 of 24064 bytes**, same length. Silverstone's track data is
-byte-identical between the two discs. The 1985 disc is kept locally as
-`revs-1985-silverstone.ssd` so that diff stays available.
-⚠ **`disasm/revs_mem.bin` is still a reconstruction.** The load *order* is now derived from the
-menu's own BASIC, but what the MOS/BASIC left resident is not modelled, and the image is the
-pre-patch state. Proving it against a real BBC is Phase 1 — `docs/bbc-reference-loop.md`.
+✅ **The engine is authentic.** Three discs were diffed while scaffolding: this 1986 engine is
+**byte-identical** to the one in Mark Moxon's Revs+ compilation (0 of 24064 bytes differ — his
+patch is entirely in the track files), and differs from the **1985** single-track engine in 974 of
+24064 bytes, which is a real Superior/Acornsoft revision. Full table:
+`docs/reference-sources.md`.
 
-Full account: `docs/reference-sources.md`.
+⚠ **`disasm/revs_mem.bin` is still a reconstruction.** The load *order* is derived from the menu's
+own BASIC, but what the MOS/BASIC left resident is not modelled, and the image is the pre-patch
+state. Proving it against a real BBC is Phase 1 — `docs/bbc-reference-loop.md`.
 
-Neither `.ssd` is committed (copyrighted binaries, same policy as RoF's `.xex`).
+No `.ssd` is committed (copyrighted binaries, same policy as RoF's `.xex`).
 
 ## Approach / pipeline
 
@@ -111,8 +114,9 @@ regressed.
 ## Repository layout
 
 ```
-revs.ssd                Revs+ disc image (read-only, git-ignored)
-revs-1985-silverstone.ssd  the original 1985 release, kept for the engine diff (git-ignored)
+revs.ssd                Revs Plus Revs 4 Tracks, 1986 (read-only, git-ignored)
+revs-hack-nurburgring.ssd  Moxon's Revs+ compilation — kept only as the sole copy of the
+                        Nurburgring track data; its engine is identical to revs.ssd's (git-ignored)
 CLAUDE.md               always-loaded working instructions
 PROJECT.md              this file
 docs/                   the reference docs (see CLAUDE.md's index)
@@ -135,9 +139,10 @@ amiga/                  Amiga build infrastructure: Makefile, env.sh, run.sh, de
 ## Status
 
 - [x] **Phase 0 — Scaffolding.** Host build + `make validate` + `make endian-lint` clean; Amiga
-      build links with a clean muldiv audit; a headless 25 s FS-UAE run reports
-      `vbi=1075 painted=1054` — display takeover, 50 Hz VERTB handler, copper list, frame pump and
-      the embedded 6502 image all verified on the target.
+      build links with clean muldiv and probe-symbol audits; a headless FS-UAE run reports
+      `vbi=824 painted=803` on an `FPSCOUNT=1` build (≈48.8 FPS with nothing yet to draw) and
+      `painted=0` on a plain one — display takeover, 50 Hz VERTB handler, copper list, frame pump
+      and the embedded 6502 image all verified on the target.
 - [ ] **Phase 1 — The BBC reference loop** ← next, and it gates everything
 - [ ] Phase 2 — Complete static map (entry-point sweep, hardware map, MOS-call inventory, naming)
 - [ ] Phase 3 — Transpiler quality, then generate

@@ -54,8 +54,9 @@ python3 tools/ssd_load.py revs.ssd disasm BRANDS      # a different circuit
 make image                                            # the default track, from the root Makefile
 ```
 
-Tracks on the disc: `SILVER` `BRANDS` `DONING` `NURBURG` `OULTON` `SNETTER`.  ⚠ The image is the
-**pre-patch** state — a track file patches the engine at startup (`docs/reference-sources.md`).
+Tracks on the disc: `SILVER` `BRANDS` `DONING` `OULTON` `SNETTER`.  ⚠ The image is the
+**pre-patch** state — the four expansion track files are executable and patch the engine at
+startup (`docs/reference-sources.md`).
 
 ## Disassembly (headless Ghidra)
 

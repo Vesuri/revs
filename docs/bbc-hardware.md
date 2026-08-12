@@ -15,25 +15,26 @@ BBC Micro B / B+ / Master: **6502 @ 2 MHz**, 32 KB RAM, MOS in ROM at `$C000-$FF
 ROM slot at `$8000-$BFFF` (BASIC lives there).  So a game's RAM is roughly `$0000-$7FFF`, and
 screen memory is carved out of the top of it.
 
-Revs's own footprint, **[DERIVED from `revs.ssd`]** — the Revs+ compilation, 200 KB
-single-sided 80-track DFS, title "REVINST", `*OPT 4,3`:
+Revs's own footprint, **[DERIVED from `revs.ssd`]** — *Revs Plus Revs 4 Tracks*, ©
+Superior/Acornsoft 1986; 200 KB single-sided 80-track DFS, title "REVINST", `*OPT 4,3`:
 
-| File | Load | Length | Ends | What |
+| File | Load | Exec | Length | What |
 |---|---|---|---|---|
-| `!BOOT` | — | `$30` | — | `*BASIC` / `PAGE=&1900` / `*FX21` / `CHAIN "REVINST"` |
-| `REVINST` | `$1900` | `$2C78` | `$4578` | BASIC — instructions + the variant banner |
-| `REVSMEN` | `$1900` | `$49B` | `$1D9B` | BASIC — track menu; `*LO.<TRACK>` then `*/REVS2` |
-| `PLUSCRN` | `$7C00` | `$400` | `$8000` | **MODE 7 teletext title screen** ($7C00 is MODE 7 screen RAM) |
-| **`REVS2`** | `$1200` | `$5E00` | `$7000` | **the 24 KB machine-code engine** — one binary, six tracks |
-| `SILVER` | `$70DB` | `$739` | `$7814` | Silverstone (the 1985 original) |
-| `BRANDS` `DONING` `OULTON` `SNETTER` | `$70DB` | `$7D0` | `$78AB` | the *Revs 4 Tracks* circuits |
-| `NURBURG` | `$70DB` | `$7D0` | `$78AB` | Nürburgring, backported from the C64 |
+| `!BOOT` | — | — | `$30` | `*BASIC` / `PAGE=&1900` / `*FX21` / `CHAIN "REVINST"` |
+| `REVINST` | `$1900` | `$8023` | `$2C40` | BASIC — instructions + banner |
+| `REVSMEN` | `$1900` | `$1900` | `$433` | track menu; `*LO.<TRACK>` then `*/REVS2` |
+| `5TRSCRN` | `$7C00` | `$7C00` | `$400` | **MODE 7 teletext title screen** (`$7C00` is MODE 7 screen RAM) |
+| **`REVS2`** | `$1200` | `$1200` | `$5E00` | **the 24 KB machine-code engine** — one binary, five tracks |
+| `SILVER` | `$70DB` | **`$0000`** | `$739` | Silverstone (1985) — **passive data** |
+| `BRANDS` `DONING` `OULTON` `SNETTER` | `$70DB` | **`$70DB`** | `$738`–`$73C` | the expansion circuits — **executable** |
 
-So the engine occupies `$1200-$7000`, track data `$70DB-$78AB`, and the MODE 7 screen sits at
+So the engine occupies `$1200-$7000`, track data `$70DB-$7817`, and the MODE 7 screen sits at
 `$7C00-$8000` — i.e. RAM is essentially full from `$1200` up.
 
-⚠⚠ **A track file patches the engine as it starts** (`ModifyGameCode`, `CallTrackHook`, and
-per-track hooks), so the executing bytes differ per track: `docs/reference-sources.md`.
+⚠⚠ **The expansion track files patch the engine as it starts** (`ModifyGameCode`, `CallTrackHook`,
+per-track hooks), so the executing bytes differ per track.  The exec addresses above are the
+binary's own evidence for it — Silverstone's data is not executable; every expansion track is.
+See `docs/reference-sources.md`.
 
 ## Memory-mapped I/O — the platform boundary
 
@@ -95,9 +96,11 @@ They are intercepted as MOS calls in the transpiler / native layer and serviced 
 any of them.**  Same reasoning as the entry-point sweep — a MOS call you did not know about is a
 behaviour you will reason about wrongly.  The list belongs in this file as it is derived.
 
-Also relevant: `*FX21` in `!BOOT` is `OSBYTE 21` (flush a buffer) and `*FX200,3` in `Car`
-disables ESCAPE and clears memory on BREAK — so the game is already using OSBYTE before the
-engine starts.
+Also relevant, and already visible in the BASIC front end: `*FX21` in `!BOOT` is `OSBYTE 21`
+(flush a buffer); `*FX200,3` in `REVINST`/`REVSMEN` disables ESCAPE and clears memory on BREAK;
+`*FX15` flushes input; and `REVINST` calls `A%=114:X%=1:CALL &FFF4` — an explicit **OSBYTE 114**
+(select the shadow/main screen bank on a B+/Master).  So the game is using OSBYTE well before the
+engine starts, and `$FFF4` appears in the BASIC as a literal.
 
 ## OS vectors — the interrupt seam
 

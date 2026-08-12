@@ -177,12 +177,23 @@ ASFLAGS   = -mcpu=68000 -g --register-prefix-optional -I"$(SDKDIR)" -I"$(CURDIR)
 # ⚠ -no-opt is LOAD-BEARING (it keeps hand-written encodings exactly as written), which
 # means in-range hot branches must be hand-marked `.s` or they assemble as long branches.
 VASMFLAGS = -m68010 -Felf -quiet -x -no-opt -nowarn=62 $(EXTRA_VASMDEFS)
-LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map
+# ⚠⚠ PROBE SYMBOLS — every global a committed .gdb script reads MUST be listed here.
+# --gc-sections drops any section nothing in the current configuration references, and a dropped
+# probe counter is WORSE than a missing one: gdb resolves the name into .text and prints
+# instruction bytes as a value (measured: a non-FPSCOUNT build read `painted=1223110688`, which is
+# code inside processBlitterQueue).  `--undefined=<sym>` makes the symbol a gc ROOT, at zero
+# runtime cost.  `__attribute__((retain))` does NOT work here — it is ignored on this target.
+# Add a symbol here the moment you add a counter; `make probe-audit` enforces it on every link.
+PROBE_SYMS = g_vbiCount g_fpsFrames
+
+LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \
+            $(addprefix -Wl$(COMMA)--undefined=,$(PROBE_SYMS))
+COMMA := ,
 
 # ---------------------------------------------------------------------------
 # Rules
 # ---------------------------------------------------------------------------
-.PHONY: all clean muldiv-audit
+.PHONY: all clean muldiv-audit probe-audit
 
 all: $(OUT).exe
 
@@ -195,6 +206,7 @@ $(OUT).elf: $(OBJECTS)
 	@$(CC) $(CCFLAGS) $(LDFLAGS) $(OBJECTS) -o $@
 	@$(OBJDUMP) --disassemble --no-show-raw-ins -S $@ > $(OUT).s 2>/dev/null || true
 	@$(MAKE) --no-print-directory muldiv-audit
+	@$(MAKE) --no-print-directory probe-audit
 
 # ⚠ MANDATORY AUDIT: the 68000 has NO 32-bit multiply or divide, so GCC lowers any
 # 32-bit * / / / % into __mulsi3/__divsi3/__udivsi3/__modsi3/__umodsi3 — ~200-600 cycles
@@ -206,6 +218,19 @@ muldiv-audit:
 	  $(OBJDUMP) -d $(OUT).elf | grep -E '__(u?div|u?mod|mul)si3' | head; \
 	  exit 1; \
 	else echo "muldiv-audit: clean"; fi
+
+# ⚠ MANDATORY AUDIT: every PROBE_SYMS symbol must be a real data symbol in the linked ELF.
+# A gc-dropped probe counter makes gdb print instruction bytes as a measurement — see PROBE_SYMS.
+probe-audit:
+	@bad=""; for s in $(PROBE_SYMS); do \
+	  $(OBJDUMP) -t $(OUT).elf | grep -qE "[[:space:]]O[[:space:]]+\.(bss|data)[[:space:]].*[[:space:]]$$s$$" \
+	    || bad="$$bad $$s"; \
+	done; \
+	if [ -n "$$bad" ]; then \
+	  echo "*** probe symbol(s) missing from $(OUT).elf (gc-sections ate them):$$bad"; \
+	  echo "    gdb would resolve these into .text and print instruction bytes as values."; \
+	  exit 1; \
+	else echo "probe-audit: clean ($(words $(PROBE_SYMS)) symbols)"; fi
 
 # C++ (framework + Revs app + shared platform layer).
 obj/%.o : %.cpp

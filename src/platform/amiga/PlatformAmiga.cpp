@@ -38,6 +38,21 @@ extern struct GfxBase* GfxBase;
 // ---------------------------------------------------------------------------
 static Revs* s_scene = 0;
 
+// ⚠⚠ EVERY PROBE COUNTER MUST BE LISTED IN amiga/Makefile's PROBE_SYMS.
+//
+// This build uses -fdata-sections + --gc-sections, so a counter that nothing in the CURRENT
+// configuration reads or writes gets its whole section dropped at link time.  The symbol does not
+// merely vanish: gdb then resolves the name into .text and prints INSTRUCTION BYTES as a value.
+// Measured during scaffolding — a non-FPSCOUNT build reported `painted=1223110688` (0x48E73020,
+// which is m68k code inside AmigaHardware::processBlitterQueue).  A zero would have read as "not
+// counting"; garbage reads as a measurement.  This is docs/method-lessons.md's "if a probe has
+// never fired, suspect the probe" in its worst form: the probe fired and lied.
+//
+// ⚠ `__attribute__((used, retain))` does NOT fix it — `retain` is IGNORED on this target
+// (-Wattributes), and `used` only stops the compiler, not the linker.  The fix is a linker gc
+// root: PROBE_SYMS in amiga/Makefile becomes -Wl,--undefined=<sym>, and `make probe-audit` fails
+// the build if any listed symbol is missing from the ELF.  Zero runtime cost.
+//
 // Real 50 Hz PAL vblank counter.  ⭐ EVERY timing measurement in this port is
 // denominated in this, never in host wall clock: it is immune to emulator speed and
 // to the gdb stub.  (docs/perf-method.md)

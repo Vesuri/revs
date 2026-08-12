@@ -13,10 +13,16 @@ Repo structure, gitignores, the reusable machinery carried over from the Atari p
 model, platform abstraction, Amiga framework + build system, Ghidra scripts, the transpiler), the
 docs that encode what that project learned, and a **bring-up skeleton that runs on the target**.
 
-Verified: host `make` + `make validate` + `make endian-lint` clean; Amiga `make` links with a
-clean muldiv audit; a 25 s headless FS-UAE run reports `vbi=1075 painted=1054` — display
+Verified: host `make` + `make validate` + `make endian-lint` clean; Amiga `make` links with clean
+muldiv and probe-symbol audits; a headless FS-UAE run reports `vbi=824 painted=803` on an
+`FPSCOUNT=1` build (≈48.8 FPS with nothing yet to draw) and `painted=0` on a plain one — display
 takeover, 50 Hz VERTB handler, copper list, frame pump, and the embedded 6502 image all live and
 readable from gdb by name.
+
+One real bug was found and fixed by running it rather than reading it: `--gc-sections` was dropping
+the framerate counter, and gdb reported instruction bytes as a frame count
+(`painted=1223110688`).  Guarded now by `PROBE_SYMS` + `make probe-audit`
+(`docs/method-lessons.md`).
 
 ---
 
@@ -90,13 +96,14 @@ performance target (`docs/perf-method.md` deliberately does not carry one over).
 
 - 6845 CRTC + Video ULA composition → copper list + bitplanes (`docs/amiga-lessons.md` for the
   rules; a CRTC/ULA analyser is `docs/bbc-reference-loop.md` step 5).  Note the MODE 7 teletext
-  title screen (`PLUSCRN`) is a separate rendering problem from the 3D view.
+  title screen (`5TRSCRN`) is a separate rendering problem from the 3D view.
 - **Input: mouse + keyboard** (decided).  A racing sim's feel lives here — and the steering
   response curve is real logic in the binary (there is a per-track `HookJoystick` and a
   "SPACE — amplify steering" key), so read it out rather than tuning by feel.
 - Sound: SN76489 (3 tone + 1 noise) → Paula.
-- Six tracks: the engine is one binary, but behaviour is per-track (the hooks).  Decide how track
-  selection works on the Amiga — the BBC's `REVSMEN` menu is BASIC and is not being ported.
+- Five tracks: the engine is one binary, but behaviour is per-track (the expansion tracks are
+  executable and patch it).  Decide how track selection works on the Amiga — the BBC's `REVSMEN`
+  menu is BASIC and is not being ported.
 
 ---
 

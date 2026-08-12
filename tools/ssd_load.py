@@ -22,9 +22,9 @@ So: **track data first, engine second, engine runs.**  The two ranges do not ove
 ($70DB-$78AB vs $1200-$7000), so for a static image the order is immaterial — but the
 sequence matters for a different reason, below.
 
-`PLUSCRN` ($7C00, 1 KB) is the MODE 7 teletext title screen the menu `*LOAD`s; `REVSMEN` and
-`REVINST` are BASIC and load at PAGE ($1900).  None of the three is part of the engine image,
-so none is composed in.
+`5TRSCRN` ($7C00, 1 KB) is the MODE 7 teletext title screen the menu `*LOAD`s; `REVSMEN` and
+`REVINST` are the BASIC front end at PAGE ($1900).  None of the three is part of the engine
+image, so none is composed in.
 
 ## ⚠⚠ THE TRACK FILE PATCHES THE ENGINE AT RUNTIME
 
@@ -54,8 +54,17 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ssd_map import read_catalogue  # noqa: E402
 
-# The six circuits on the Revs+ disc.  All load at $70DB; SILVER is $739, the rest $7D0.
-TRACKS = ["SILVER", "BRANDS", "DONING", "NURBURG", "OULTON", "SNETTER"]
+# The five circuits on the Revs Plus Revs 4 Tracks disc, all loading at $70DB.
+#
+# ⭐ NOTE THE EXEC ADDRESSES in the catalogue — they are direct binary evidence for the
+# engine-patching fact below:
+#     SILVER   load $70DB  exec $0000   <- passive data, not executable
+#     BRANDS / DONING / OULTON / SNETTER
+#              load $70DB  exec $70DB   <- EXECUTABLE: these files run code
+# Silverstone was the original release's track and is plain data; each expansion track is a
+# program that patches the engine.  (`revs-hack-nurburgring.ssd` normalises SILVER's exec to
+# $70DB, which is exactly the sort of detail a repack quietly changes.)
+TRACKS = ["SILVER", "BRANDS", "DONING", "OULTON", "SNETTER"]
 DEFAULT_TRACK = "SILVER"          # the original 1985 circuit
 
 # Applied in this order, later writes winning.  Mirrors `*LO.<TRACK>` then `*/REVS2`.

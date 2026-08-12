@@ -28,6 +28,10 @@ cd amiga && make clean && make -j4 FPSCOUNT=1 FIXED_RNG=1
 `FPS = 50 * g_fpsFrames / g_vbiCount` — painted frames per **emulated** vblank, so host speed
 and the gdb stub's own slowness cancel out completely.
 
+⚠ Both counters must be listed in `PROBE_SYMS` (`amiga/Makefile`), or `--gc-sections` drops the
+unreferenced one and gdb prints **instruction bytes** in its place — a fake measurement rather
+than an obvious zero.  `make probe-audit` enforces this on every link.
+
 - `FPSCOUNT=1` adds *only* the headless auto-run and one increment per painted frame.
 - ⚠ **Never quote a framerate from a `PROBES` build.**  On the Atari port a lean probe build
   read ~35% slower, because the timing brackets are two chip-register reads plus a 16×16

@@ -49,42 +49,83 @@ Revs is © Acornsoft 1985 (Geoffrey J Crammond); the commentary is © Mark Moxon
 The port's own artifacts must remain independently derived.  Using a reference to know *where to
 look* is different from copying what it says.
 
-## Still verify against the binary
+**Scope of the caution:** it covers Moxon's *own authorship* — the annotated source and its
+commentary.  It is not a claim about Revs itself, and it does not extend to the game data he
+converted: his disc's engine is byte-identical to the 1986 release (measured below), so he modified
+no game code, and the Nürburgring he added is Crammond's own C64 track data.  See §A sixth circuit.
 
-The reconstruction is of "the version released on the Complete BBC Micro Games Archive", and the
-site itself flags that **code variations exist between BBC Micro Revs variants**.  This repo's
-disc is a *third* thing again (see below).  So:
+## Still verify against the binary
 
 > **The binary in this repo remains the authority.**  When the reference and `revs.ssd` disagree,
 > the binary wins — and the disagreement is worth a note in `disasm/symbols.csv` or
-> `docs/rename.md`.
+> `docs/rename.md`.  See §"Which variant is the reference documenting?" below for why disagreement
+> is actively expected.
 
-## What is actually on this repo's disc
+## What is actually on this repo's disc — and the three-way engine diff
 
-`revs.ssd` is **Revs+**, Mark Moxon's own compilation — the front end identifies itself as
-"Variant: Revs+ / Contains the Nurburgring track from the Commodore 64, backported by Mark Moxon /
-Computer Assisted Steering / Copyright (c) 1985, 1986, 2022".  Six circuits: Silverstone (the
-original 1985 track), the four *Revs 4 Tracks* circuits (Brands Hatch, Donington Park, Oulton
-Park, Snetterton), and the Nürburgring (from the C64 Revs+, © Firebird 1987, backported to the
-BBC by Moxon).  Computer Assisted Steering originates in the **Superior Software** release.
+`revs.ssd` is ***Revs Plus Revs 4 Tracks*, © Superior/Acornsoft 1986** — a genuine commercial
+release, not a repack.  The front end reads "Revs Plus Revs 4 Tracks / Computer Assisted Steering
+/ Copyright (c) Superior/Acornsoft 1986".  Five circuits: Silverstone (the 1985 track) plus Brands
+Hatch, Donington Park, Oulton Park and Snetterton.  **Computer Assisted Steering is part of this
+release**, not a later addition.
 
-⚠ **So this is a 2022 fan compilation, not a pristine 1985/1986 original.**  Measured: its
-`REVS2` engine differs from the 1985 single-track release's `Revs2` in **974 of 24064 bytes**
-(first difference `$1737`, last `$6A80`) — same length, so a patched engine rather than a
-rebuild.  The Silverstone track data is byte-identical between the two discs.
+Three discs were in hand while scaffolding, so the engine was diffed all three ways.  The result
+settles which differences are authentic and which are a repack's:
 
-The 1985 single-track disc is kept locally as `revs-1985-silverstone.ssd` precisely so that
-diff stays available; it is the reference point for "what did the original engine do here?"
+| Comparison | `REVS2` diff | Reading |
+|---|---|---|
+| 1985 single-track Revs → **this disc (1986)** | **974 / 24064 bytes** (same length; first `$1737`, last `$6A80`) | an **authentic Superior/Acornsoft revision** — the 1986 engine is a genuinely different, later engine |
+| **this disc (1986)** → Moxon's Revs+ compilation | **0 / 24064 — IDENTICAL** | Moxon did **not** patch the engine at all |
 
-**This is a fidelity decision, and it is the user's:** the port targets the Revs+ compilation
-(user decision — six tracks and one engine beats an authentic two-disc split).  Where a Revs+
-change is visible in behaviour, prefer documenting it over silently inheriting it — a faithful
-port of a hack should at least know which parts are the hack.
+So the "Mark Moxon patch" is entirely in the *track files*, not the engine: he added a `NURBURG`
+file (the Nürburgring, from the C64 Revs+, © Firebird 1987, backported by him), padded the four
+expansion track files from their original `$738`–`$73C` to a uniform `$7D0`, and normalised
+`SILVER`'s exec address from `$0000` to `$70DB`.
+
+⭐ **This is what the port targets, and it is clean:** an authentic 1986 commercial binary, with no
+fan modifications in the engine.  The earlier worry about porting a hack does not apply.
+
+### A sixth circuit, and why its provenance is cleaner than it first looks
+`revs-hack-nurburgring.ssd` is kept locally (git-ignored) as the only copy on this machine of the
+Nürburgring track data.
+
+The licensing caution in this document is about **Moxon's annotated source and commentary** — his
+original authorship.  It does **not** extend to the Nürburgring track: measured above, his disc's
+engine is byte-identical to the 1986 release, so he modified no game code at all.  What he did was
+convert **Crammond's own track data** from the C64 Revs+ (© Firebird 1987) into the BBC's track
+format — a data conversion that is reproducible from the C64 original by anyone, including us.
+
+So if a sixth circuit is ever wanted, the honest route is: **take the C64 Revs+ disk image and
+extract the Nürburgring data ourselves.**  Then every track in the port descends from a Crammond
+original, on the same footing as the other five, with no dependence on a third party's work.
+⚠ Not free, though: the BBC and C64 track formats differ (converting between them is precisely
+what the backport did), and the expansion tracks are *executable* hook programs rather than plain
+data — so a sixth track means reproducing that conversion, not copying a file.  Scope decision,
+not a legal one.
+
+### ⚠ Which variant is the reference documenting?
+The reconstruction is of "the version released on the Complete BBC Micro Games Archive", and the
+site flags that code variations exist between BBC Revs variants.  Given the 974-byte gap measured
+above, **assume the reference may be describing the 1985 engine, not this one**, until a specific
+routine is confirmed against `revs.ssd`.  That is not a reason to distrust it — it is the reason
+the binary stays the authority.
 
 ## The extra tracks patch the engine at runtime
 
-The single most consequential structural fact, from the reference's deep dives ("Secrets of the
-extra tracks", "How the extra track files modify the main game code using code hooks"):
+The single most consequential structural fact — and this repo's own binaries corroborate it
+independently of the reference.  **The DFS exec addresses say it outright:**
+
+```
+SILVER   load $70DB  exec $0000   <- passive data; not executable
+BRANDS   load $70DB  exec $70DB   <- executable
+DONING   load $70DB  exec $70DB   <- executable
+OULTON   load $70DB  exec $70DB   <- executable
+SNETTER  load $70DB  exec $70DB   <- executable
+```
+
+Silverstone, the original release's circuit, is plain data.  Every expansion track is a *program*.
+From the reference's deep dives ("Secrets of the extra tracks", "How the extra track files modify
+the main game code using code hooks"):
 
 **The extra track files are not passive data.**  Each carries hook code that modifies the game
 code as the engine starts — `ModifyGameCode`, `CallTrackHook`, and per-track hooks including

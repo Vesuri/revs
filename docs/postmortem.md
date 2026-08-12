@@ -146,8 +146,12 @@ as the first architectural doc, before the first twin.
 >    revs.bbcelite.com), which turns items #1.1 and #1.2 below from searches into cross-checks.
 >    `docs/reference-sources.md`.
 > 2. **"The same binary across all tracks" is only approximately true.**  One engine binary, yes —
->    but the track files carry hook code that PATCHES the engine at startup, so behaviour is
->    per-track and the port inherits self-modifying code by design.
+>    but the four expansion track files are EXECUTABLE (DFS exec $70DB, against Silverstone's
+>    $0000) and carry hook code that PATCHES the engine at startup, so behaviour is per-track and
+>    the port inherits self-modifying code by design.
+> 3. **The target is the four-track expansion after all** — *Revs Plus Revs 4 Tracks*,
+>    © Superior/Acornsoft 1986, five circuits on one engine.  So this section's premise was right;
+>    only the "binary-only" and "same binary" parts needed correcting.
 > The rest of the section stands, and the checklist above stands unchanged.
 
 The next port is **Revs** — Geoff Crammond's 1985 BBC Micro F1 sim (real vehicle dynamics + true
