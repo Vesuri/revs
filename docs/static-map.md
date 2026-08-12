@@ -515,6 +515,32 @@ Recorded as the residual rather than argued away.  685 bytes of 27 K is a small 
 resolve by reading once the naming pass reaches the 3D pipeline, and `make sweep` prints the figure
 every time so it cannot quietly drift.
 
+## What the naming pass mapped
+
+Three subsystems came out coherent rather than as isolated names, which is the payoff for ranking
+by caller count instead of by address:
+
+- **The road renderer joins up.**  The four addresses the span plotters patch into their own `STA`
+  operands are per-**column** edge buffers (`$0554`, `$05A4`, `$0600`, `$0650`), and
+  `column_surface_colour` (`$1E9E`) compares a height against all four to decide which track
+  surface a column falls in, returning a colour from a 4-entry table at `$38FC`.  The plotters
+  write those buffers; the resolver reads them.  Two halves of one mechanism.
+- **Lap and race timing is packed BCD.**  `car_reset_best_lap`, `lap_complete`, `sort_cars_by_key`
+  and `clear_race_clock` all work on 3-byte BCD with `SED` set.  `src/cpu/cpu.h`'s ADC/SBC already
+  honour `cpu.D` — it anticipated exactly this — so the *transliteration* is safe.  The hazard is a
+  **native twin** doing it in plain C ints, which yields plausible-looking wrong lap times.
+- **The track model.**  A circuit is a segment list and a car's position is (segment index, offset
+  within segment).  `track_pos_advance`/`track_pos_retreat` step it, wrap at `segment_count_x8`,
+  and call `lap_complete` when the distance counter reaches `lap_length`.  ⚠ The segment tables
+  live in the **track file** (`$5900-$5A25` after the swap), so those addresses hold different data
+  per circuit.
+
+And a name that was wrong, corrected: **`menu_key_tbl` at `$39E0` has exactly four entries.**  The
+two bytes after it are not a fifth and sixth key binding — `$39E4` is the start of `car_lap_mid`, a
+20-entry per-car array, which is why they change at runtime.  Finding `sort_cars_by_key` using
+`$39E4` as a car array is what settled it.  The earlier reading ("six-entry, user-rebindable") was
+a guess dressed as a fact, and it is the exact failure mode `docs/postmortem.md` is about.
+
 ## Open items — what Phase 2 still owes
 
 1. 🔧 **Classify the residual 685 bytes** — `$6C00-$6E84` and `$6F8A-$6FB1` (down from 5327; see
@@ -530,11 +556,14 @@ every time so it cannot quietly drift.
    runtime.  **Driving to a real race is still open, and is now a different question than it
    looked:** the front end blocks on `BIT $05F4 / BVS` at `$6560`, waiting for bit 6 to be cleared
    by something other than the keyboard.  Find what clears it and the trace becomes strong.
-5. **Extend the naming pass.** 52 symbols are in `disasm/symbols.csv` and applied to the Ghidra
-   project (`ApplyNames`), covering the entry seam, the hardware registers, the math primitives,
-   input, sound, the text interpreter and the rasteriser's outer shape.  **That is ~20% of the 236
-   functions.**  The unnamed remainder is the physics and the 3D pipeline — the parts that need
-   real reading, not profiling.  `--functions` gives the evidence; work down it by caller count.
+5. 🔧 **Extend the naming pass.**  **129 symbols**, applied to the Ghidra project.  That is 42 of
+   222 call targets (19%) but **45% of all call sites** — the difference is the point: the pass
+   worked down `--functions` by caller count, so the routines everything funnels through are named
+   first.  13 symbols carry **[PROVISIONAL]** and say so.
+   Still unnamed: most of the physics, and the interior of the 3D pipeline.  ⚠ This does **not**
+   gate Phase 3: `disasm/symbols.csv` feeds the transpiler, so a name learned later propagates
+   through the whole corpus on the next `make gen` — which is exactly why `docs/toolchain.md` says
+   the cost of being only roughly right early is near zero.
 6. **`DumpHwAccesses.java` still carries Atari ranges.**  The sweep's hardware table above
    supersedes it for now; retool or retire the script rather than leaving a tool that reports
    GTIA registers for a BBC binary.

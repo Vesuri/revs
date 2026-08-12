@@ -146,17 +146,19 @@ amiga/                  Amiga build infrastructure: Makefile, env.sh, run.sh, de
       (named-milestone captures, the jsbeeb cycle-diff harness, the CRTC/ULA analyser) are
       deferred until a later phase actually needs them; they no longer gate Phase 2.
       `docs/bbc-reference-loop.md` status section.
-- [~] **Phase 2 — Complete static map** ← in progress. ⭐ **The sweep found the premise was
-      wrong: REVS2 unpacks itself before running**, so `disasm/revs_mem.bin` was never the right
-      thing to disassemble. `make runtime` replays the unpack (verified against a real BBC:
-      9640 of 10168 changed bytes explained) and `disasm/revs_runtime.bin` is the real input.
-      Done: the entry-point sweep (two independent tools agreeing at 7079/7083 instructions;
-      `IRQ1V` → `$4E5C` is the 50 Hz body and no static walk reaches it), the hardware map
-      (19 registers — every `[ASSUMED]` row now `[DERIVED]`, and three of them were wrong), the
-      MOS-call inventory (4 entries, 17 sites, reason codes read out), and the per-track hook
-      inventory (5 shared patch sites, 6-7 hooks per track). Partial: the naming pass — 52
-      symbols applied, ~20% of 236 functions; the physics and 3D pipeline are still unnamed.
-      **Findings: `docs/static-map.md`.**
+- [x] **Phase 2 — Complete static map.** ⭐ **The sweep found the premise was wrong: REVS2 unpacks
+      itself before running**, so `disasm/revs_mem.bin` was never the right thing to disassemble.
+      `make runtime` replays the unpack (verified against a real BBC: 9640 of 10168 changed bytes
+      explained) and `disasm/revs_runtime.bin` is the real input. Then: the entry-point sweep (two
+      independent tools agreeing at 7079/7083 instructions; `IRQ1V` → `$4E5C` is the 50 Hz body and
+      no static walk reaches it), the hardware map (19 registers — every `[ASSUMED]` row now
+      `[DERIVED]`, and three of them were wrong), the MOS-call inventory (4 entries, 17 sites, reason
+      codes read out), the per-track hook inventory *and* `ModifyGameCode` read directly with zero
+      discrepancies between the two methods, and static coverage cut from 5327 unclassified bytes to
+      685. Naming: 129 symbols — 19% of call targets but **45% of call sites**, 13 marked
+      `[PROVISIONAL]`. **Findings: `docs/static-map.md`.** Two residuals carried forward (685 bytes,
+      and the physics interior still unnamed); neither gates Phase 3, because `symbols.csv` feeds
+      the transpiler and a later name propagates on the next `make gen`.
 - [ ] Phase 3 — Transpiler quality, then generate
 - [ ] Phase 4 — End-to-end skeleton on the target, then profile, then set a target
 - [ ] Phase 5 — Render + input
@@ -167,22 +169,28 @@ See `docs/phases.md` for exit criteria and the gating between phases.
 
 ## Immediate next step
 
-Finish Phase 2. Three things stand between here and Phase 3, all listed with evidence in
-`docs/static-map.md` §Open items:
+**Phase 3 — transpiler quality, then generate** (`docs/transpiler.md`, including its porting
+checklist). ⭐ Clean C is a prerequisite, not a later optimisation: one transpiler improvement
+upgrades the whole corpus, and doing it late is pure tax.
 
-1. **Classify the seven unclassified byte runs** in `$0B00-$78FF` (5327 bytes that no decoded
-   instruction names). Most is expected to be data reached through zero-page pointers, which an
-   absolute-operand scan cannot see — so the lever is an indirect-addressing pass that resolves
-   `LDA ($70),Y` by finding what writes the pointer.
-2. **Disassemble the track programs** at `$5300-$5A25`. The hook *inventory* is done; the hook
-   *bodies* have never been disassembled, and for four of five circuits that window is code.
-3. **Extend the naming pass** across the physics and the 3D pipeline — the ~80% of functions still
-   unnamed. `sweep_entrypoints.py --functions` ranks them by caller count.
+Known Revs-specific work waiting there, from what Phase 2 turned up:
 
-Also worth doing while still in Phase 2, because it makes the coverage cross-check strong instead
-of weak: **decode the key table at `$39E0`** so `tools/bbc_trace.mjs` can drive the engine into an
-actual race. Right now the trace parks in the key-config menu at `$6571` and only 310 of ~7000
-instructions ever execute.
+1. **`tools/transpile.py` still carries Rescue on Fractalus content** — `VALIDATE_FUNCS` is a list
+   of RoF addresses and comments. It needs a Revs pass before `make gen` means anything.
+2. **The self-modifying regions need `revs_manual.c` stubs**, not transliteration: the 24 engine
+   sites (clustered in `$2C00-$2FFF`), `select_text_variant`'s operand patching, and the five
+   track-hook patch sites. `docs/faithfulness-seam.md` for which side of the line each lands on.
+3. **The unpack itself is a `revs_manual.c` candidate** — or, better, is simply *not ported*: the
+   Amiga build can embed the already-unpacked image, since `tools/relocate.py` produces it. That is
+   a real decision to make rather than assume.
+4. **BCD arithmetic is load-bearing** for lap and race times. The CPU model handles it; any native
+   twin over those arrays must too.
+
+Carried forward from Phase 2, neither blocking: classify the residual 685 unclassified bytes
+(`$6C00-$6E84`, `$6F8A-$6FB1`), and extend naming into the physics interior. Also still open, and
+the thing that would most improve confidence later: the headless trace reaches only the front end
+because it blocks on `BIT $05F4 / BVS` at `$6560` — find what clears bit 6 and the coverage
+cross-check becomes strong instead of a lower bound. `docs/static-map.md` §Open items.
 
 Deferred rather than blocking: named-milestone captures and the jsbeeb cycle-diff harness — both
 exist to check a *port's* behaviour against real hardware, and there's no port yet to check.

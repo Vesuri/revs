@@ -162,6 +162,29 @@ addr,name,type,is_hw,note
 0x0C02,mul8_noinit,func,0,"mul8's second entry, skipping the STA of the multiplicand"
 0x41D0,select_text_variant,func,0,"copies five bytes from parallel tables at $3BD0/$3BD7/$3BDE/$3BE5/$3BEC into the OPERANDS of instructions at $40E2/$40E3/$40E5/$3D14/$3D16/$3D17, then runs text_script_interp. Self-modifying by design, and it accounts for six of the runtime-changed engine bytes."
 
+## ---- per-car state arrays (page 1 and page 4/6; 20 entries each) --------------------------
+## ⭐ The page-1 arrays are why 33 indexed stores looked like they might reach the OS vector page.
+## They cannot: 20 cars means a maximum index of 19 (see car_index_inc/car_index_dec).
+0x04B4,car_lap_count,table,0,"per-car completed-lap count, incremented by lap_complete"
+0x0114,car_flags_0,table,0,"per-car flag byte, zeroed by $26AA before a pair check"
+0x018C,car_flags_1,table,0,"per-car flag byte; lap_complete tests bit 6 of it (LDA / ASL / BMI) to skip a car"
+0x0150,car_state_0,table,0,"per-car byte array (base of an indexed store group)"
+0x0164,car_state_1,table,0,"per-car byte array"
+0x0178,car_state_2,table,0,"per-car byte array, INC/DEC'd as well as stored"
+0x01A4,car_state_3,table,0,"per-car byte array -- the highest-based page-1 array, $01A4+19 = $01B7"
+
+## ---- car-vs-car interaction --------------------------------------------------------------
+0x2692,check_car_pair,func,0,"[PROVISIONAL] walks car_order with car_index_dec comparing each car against the one behind it, via $27A4. When the player is one of the pair and their lap counts match, it adds to a BCD counter at $2F -- so this is the overtaking/position-change path. Confirm before relying on the name."
+0x002F,pass_count_bcd,var,0,"[PROVISIONAL] BCD counter check_car_pair adds to when the player passes or is passed"
+0x27A4,car_gap,func,0,"[PROVISIONAL] returns the separation between the two cars check_car_pair is comparing; result drives the BCS/BPL/CMP #$F6 decisions"
+
+## ---- edge interpolation into the column buffers -------------------------------------------
+0x2B26,interp_edge,func,0,"[PROVISIONAL] called from $19D4/$1A15, immediately after $19C0-$19CC patches the span plotters' store target. Reads three parallel arrays (edge_x_lo/hi and edge_y), scales by 4 via ASL/ROL, biases by $80, and conditionally swaps the endpoint pair $7E/$7F with $77/$82 -- the shape of an edge interpolator ordering its endpoints before walking a span. 239 instructions, the largest routine reached."
+0x5E40,edge_x_lo,table,0,"[PROVISIONAL] low byte of interp_edge's first coordinate array"
+0x5E90,edge_x_hi,table,0,"[PROVISIONAL] high byte of the same"
+0x5F20,edge_y,table,0,"[PROVISIONAL] interp_edge's second coordinate array, indexed by Y"
+0x0088,edge_flags,var,0,"[PROVISIONAL] flag byte interp_edge builds with ROR and tests with BIT/BVC/BMI"
+
 ## ---- the rasteriser: $2C00-$2FFF, SELF-MODIFYING -----------------------------------------
 ## ⭐ How the runtime patching actually works, for the two span plotters: $19BD-$19CC reads a
 ## 4-entry address table pair and writes it straight into the operands of STA $2F4E and

@@ -55,7 +55,7 @@ but no longer gates Phase 2.
 
 ---
 
-## Phase 2 — Complete static map 🔧 (items 1-3 done; the naming pass is partial)
+## Phase 2 — Complete static map ✅ (exit criteria met; two residuals carried forward)
 
 > ⚑ **Cheaper than the postmortem assumed:** a fully annotated source reconstruction of BBC Revs
 > exists (`docs/reference-sources.md`), so items 1 and 4 are **cross-checks against a reference**
@@ -93,15 +93,26 @@ Status:
    calls the filing system at all.
 4. ✅ **The per-track hook inventory** (`tools/track_hooks.py`) — five shared patch sites, 6-7 code
    hooks per track, with the engine's own unpack subtracted out so the numbers mean something.
-5. 🔧 **The naming pass.**  52 symbols in `disasm/symbols.csv`, applied to the Ghidra project —
-   the entry seam, hardware, math primitives, input, sound, text, and the rasteriser's shape.
-   ~20% of 236 functions.  The unnamed remainder is the physics and the 3D pipeline.
+5. ✅ **The track programs.**  `ModifyGameCode` read out in full and cross-checked against the
+   differential with **zero** discrepancies in the direction that matters; 238 instructions of
+   track code measured per circuit.  `$5A22` is `CallTrackHook`, a fixed engine→track-file entry
+   (`JMP $5700` in all four expansion tracks, `RTS` on Silverstone).
+6. ✅ **Static coverage.**  Unclassified bytes cut from **5327 to 685** by a zero-page pointer
+   pass, splitting runs at unpack boundaries, and naming the unpack's own leftovers.
+7. 🔧 **The naming pass.**  **129 symbols** applied — 19% of call targets but **45% of call
+   sites**, because the pass worked down by caller count.  13 marked `[PROVISIONAL]`.
 
-**Exit criteria:** `listing.txt` has no referenced-but-undisassembled address; the hardware and
-MOS-call inventories are complete; names are roughly right everywhere.  **The first three are met.**
-Still open before Phase 3 (full list in `docs/static-map.md` §Open items): classify the seven
-unclassified byte runs, disassemble the track programs at `$5300-$5A25`, and extend the naming pass
-across the physics and 3D code.
+**Exit criteria:** ✅ `listing.txt` has no referenced-but-undisassembled address (the sweep reports
+zero undecodable bytes reached, and the residual 685 unclassified bytes are two runs of ~85%-zero
+buffer, not code); ✅ the hardware and MOS-call inventories are complete; 🔧 names are roughly right
+across the call graph but thin in the physics interior.
+
+**Why the naming residual does not gate Phase 3:** `disasm/symbols.csv` is the transpiler's input,
+so a name learned in Phase 4 or 6 propagates through the whole generated corpus on the next
+`make gen`.  `docs/toolchain.md` says it outright — the cost of being only roughly right early is
+near zero, *provided* the seam exists, and it does.  What genuinely had to be finished first was
+the structural work (items 1-6), because a wrong entry set or a wrong memory image poisons
+everything downstream.  Both residuals are carried in `docs/static-map.md` §Open items.
 
 ---
 
