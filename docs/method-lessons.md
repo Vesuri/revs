@@ -104,6 +104,46 @@ consumer you did not know about.  Survey the readers first.
 If a guard "works" but the behaviour is still wrong, consider that the guard itself is
 suppressing the corrective action.  (Same family as "don't cache a write-only register".)
 
+## Read the BOUND from the instruction, never from the first example ⚑ Revs
+
+Learned twice in one Phase 2 session, both times *after* the wrong answer looked convincing:
+
+- The unpack's block-move tables must be read from the stub's self-copy at `$79xx`, not from
+  `$12xx`, because one of the moves overwrites the tables mid-sequence.  Reading them in place gave
+  a correct first move and then garbage, and reported a confident engine entry of `$919D`.
+- `ModifyGameCode`'s patch count is `LDX #n` at `$5701`, and **n differs per track** — 19 for Brands
+  and Oulton, 20 for Donington and Snetterton.  Hardcoding 19 (from the first track examined) made
+  the other two report two bytes as unexplained, which read like a gap in the *measurement* rather
+  than an off-by-one in the checker.
+
+The general form: when a loop's trip count, table length or pointer source is *in the code*, take
+it from there and `assert` the instruction shape you are relying on.  A constant copied from the
+first instance is a guess that will hold long enough to be trusted.  `docs/static-map.md` has both
+cases in full.
+
+## A number that improves because the tool got looser is worse than no number ⚑ Revs
+
+The static-coverage report had 5327 unexplained bytes.  Widening one heuristic — the look-back
+window for finding what writes a zero-page pointer, from one instruction to four — took it to
+**zero**.  It was wrong: the wider window matched unrelated instructions and the resolver then
+fabricated a pointer target at nearly every page boundary, so every unexplained run came back
+"explained".
+
+Reverted, with the reason in the code, and the honest figure (685) is what ships.  This is the same
+family as the validation harness's fixture-or-fail rule (`docs/validation-harness.md`): **when a
+metric moves in the direction you want, check whether the thing being measured changed or only the
+measuring.**  Loosening a classifier is indistinguishable from progress if you only read the total.
+
+## Instrument the state, not the event, when the event has already happened
+
+Counting executions of five menu call sites reported "none reached" while the engine was demonstrably
+sitting inside one of them — the counter was installed after the call was already outstanding, and a
+call-site counter cannot see a call in progress.  Reading the **6502 stack** and decoding it as
+return addresses answered it immediately.
+
+Generalise: for "where is it stuck", prefer state that persists (stack, flags, a wait variable) over
+events you have to be present for.
+
 ## Record findings the moment you find them
 
 Two conventions that exist because deferring cost real time:
