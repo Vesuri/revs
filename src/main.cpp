@@ -19,10 +19,14 @@
    Amiga main takes none — a mismatched signature reads garbage off the stack. */
 #if defined(REVS_PLATFORM_AMIGA)
 int main(void) {
-    const char* image = "revs.bin";
+    const char* image = "revs.bin";   /* unused: the Amiga image is linked in (incbin.s) */
 #else
 int main(int argc, char* argv[]) {
-    const char* image = (argc > 1) ? argv[1] : "disasm/revs_mem.bin";
+    /* ⚠ The RUNTIME image (`make runtime`), not revs_mem.bin: REVS2 unpacks itself
+       before running and src/gen/revs_gen.c is a transliteration of the unpacked
+       layout, so the pre-unpack image would put every address in the wrong place.
+       docs/static-map.md. */
+    const char* image = (argc > 1) ? argv[1] : "disasm/revs_runtime.bin";
 #endif
 
     /* Constructing PlatformClass brings the platform up (window/DMA/audio, loads

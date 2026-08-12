@@ -184,7 +184,7 @@ VASMFLAGS = -m68010 -Felf -quiet -x -no-opt -nowarn=62 $(EXTRA_VASMDEFS)
 # code inside processBlitterQueue).  `--undefined=<sym>` makes the symbol a gc ROOT, at zero
 # runtime cost.  `__attribute__((retain))` does NOT work here — it is ignored on this target.
 # Add a symbol here the moment you add a counter; `make probe-audit` enforces it on every link.
-PROBE_SYMS = g_vbiCount g_fpsFrames
+PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue
 
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \
             $(addprefix -Wl$(COMMA)--undefined=,$(PROBE_SYMS))
@@ -255,7 +255,7 @@ obj/gcc8_a_support.o : $(SUPPORT)/gcc8_a_support.s
 # ⚠ .incbin dependencies are INVISIBLE to `gcc -MMD`, so list them explicitly.  Without
 # this, regenerating an embedded blob leaves a stale copy in the binary while the on-disk
 # file looks correct.  Paths are relative to this amiga/ directory.
-INCBIN_DEPS := ../disasm/revs_mem.bin
+INCBIN_DEPS := ../disasm/revs_runtime.bin
 obj/incbin.o : $(AMIGA_SRC)/incbin.s $(INCBIN_DEPS)
 	$(info ASM  $<)
 	@$(AS) $(ASFLAGS) -o $@ "$(abspath $(AMIGA_SRC)/incbin.s)"

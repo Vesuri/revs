@@ -11,12 +11,18 @@
 	.section .rodata
 	.align 4
 
-| revs_mem.bin — the post-load 6502 memory image built from revs.ssd by
-| tools/ssd_load.py.  Embedding it (rather than loading from disc at runtime) means
-| every build boots the SAME initial state and the SAME code path, which is what makes
-| a cross-build comparison mean anything at all.
-	.global revs_mem_bin
-	.global revs_mem_bin_end
-revs_mem_bin:
-	.incbin "../disasm/revs_mem.bin"
-revs_mem_bin_end:
+| revs_runtime.bin — the 6502 memory image AFTER REVS2's own startup unpack, built by
+| tools/relocate.py (`make runtime`).  Embedding it (rather than loading from disc at
+| runtime) means every build boots the SAME initial state and the SAME code path, which
+| is what makes a cross-build comparison mean anything at all.
+|
+| ⚠⚠ This must be the RUNTIME image, not revs_mem.bin.  REVS2 relocates itself before
+| running, and src/gen/revs_gen.c is generated from a disassembly of the relocated
+| layout — so booting the pre-unpack image would run correct code against a memory map
+| where every address means something else.  The transliteration REPLACES the unpack
+| stub; it does not execute it.  docs/static-map.md.
+	.global revs_runtime_bin
+	.global revs_runtime_bin_end
+revs_runtime_bin:
+	.incbin "../disasm/revs_runtime.bin"
+revs_runtime_bin_end:

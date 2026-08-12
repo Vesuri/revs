@@ -100,8 +100,8 @@ static uint32_t vbiHandler()
 // ---------------------------------------------------------------------------
 // Embedded boot image (incbin.s)
 // ---------------------------------------------------------------------------
-extern "C" uint8_t revs_mem_bin[];
-extern "C" uint8_t revs_mem_bin_end[];
+extern "C" uint8_t revs_runtime_bin[];
+extern "C" uint8_t revs_runtime_bin_end[];
 
 // ---------------------------------------------------------------------------
 PlatformAmiga::PlatformAmiga(const char* /*imagePath*/)
@@ -123,10 +123,12 @@ void PlatformAmiga::tickVBI() {}                      // renderFrame() paces the
 
 int PlatformAmiga::loadImage(const char* /*path*/)
 {
-    // The post-load 6502 image is linked in (incbin.s) rather than loaded from disc, so
-    // every build boots the SAME initial state and code path.
-    const uint8_t* src = revs_mem_bin;
-    uint32_t n = (uint32_t)(revs_mem_bin_end - revs_mem_bin);
+    // The 6502 image is linked in (incbin.s) rather than loaded from disc, so every
+    // build boots the SAME initial state and code path.  It is the POST-UNPACK runtime
+    // image: the generated C is a transliteration of the relocated layout and replaces
+    // REVS2's unpack stub rather than running it (docs/static-map.md).
+    const uint8_t* src = revs_runtime_bin;
+    uint32_t n = (uint32_t)(revs_runtime_bin_end - revs_runtime_bin);
     if (n > 65536u) n = 65536u;
     for (uint32_t i = 0; i < n; i++) mem[i] = src[i];
     return 0;
