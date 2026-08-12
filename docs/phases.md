@@ -26,21 +26,31 @@ the framerate counter, and gdb reported instruction bytes as a frame count
 
 ---
 
-## Phase 1 — The reference loop ⬜  ⭐ DO THIS FIRST
+## Phase 1 — The reference loop 🔧  ⭐ DO THIS FIRST
 
 `docs/bbc-reference-loop.md`.  There is no `atari800` here; ground truth has to be built.
 
-1. Install + smoke-test jsbeeb (headless oracle) and b2 (debug HTTP API on `:48075`).  Record
-   what actually works — the documented caveats are not yet confirmed on this machine.
-2. **Boot the real disc, break at the engine entry, dump RAM, diff against
-   `disasm/revs_mem.bin`.**  Fix `LOAD_ORDER` in `tools/ssd_load.py` until it matches.
-3. Capture reference state at named milestones, committed as files.
+1. ✅ Install + smoke-test jsbeeb (headless oracle).  Working, vendored at `tools/jsbeeb`
+   (git-ignored). b2 not attempted yet (`cmake` missing on this machine) — not blocking, since
+   jsbeeb's `debugInstruction` hooks already cover breakpoints/registers/peek/poke.
+2. 🔧 **Boot the real disc, break at the engine entry, dump RAM, diff against
+   `disasm/revs_mem.bin`.** Done for Silverstone: `$1200-$6FFF` (the whole REVS2 engine) and the
+   SILVER track data are **byte-identical** to `disasm/revs_mem.bin` — no `ssd_load.py` fix was
+   needed for the regions that matter. Remaining diffs are zero-page/workspace/ROM, which
+   `revs_mem.bin` never modelled and don't affect the transpiler's inputs. Not yet repeated for
+   the four expansion tracks, and not yet wired into `make` as a repeatable check. Full detail and
+   the scripted commands: `docs/bbc-reference-loop.md` status section.
+3. ⬜ Capture reference state at named milestones, committed as files.
 
 **Exit criteria:** the composed memory image is confirmed byte-correct against a real BBC, and a
-scripted "boot to milestone, dump RAM" command exists.
+scripted "boot to milestone, dump RAM" command exists. **The scripted command exists
+(`tools/bbc_refloop_smoke.mjs`, `tools/bbc_refloop_track_diff.mjs`) and Silverstone is confirmed
+byte-correct where it matters; the four expansion tracks are not yet checked**, so this phase
+isn't closed out yet.
 
-> ⚠ Until step 2 passes, every address derived from `revs_mem.bin` is provisional.  Nothing
-> downstream should be treated as settled.
+> ⚠ Zero-page/workspace addresses derived from `revs_mem.bin` are still provisional (real MOS/
+> BASIC leaves them populated; `ssd_load.py` doesn't model that). Addresses inside `$1200-$6FFF`
+> (REVS2) and the per-track data blocks are now measured, not provisional, for Silverstone.
 
 ---
 

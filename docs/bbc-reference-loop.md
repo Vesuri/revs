@@ -83,6 +83,66 @@ don't lead with it.
    savestate, say what the screen composition *is*, so the Amiga copper list can be generated
    from a description instead of re-derived by hand from disassembly and dumps.
 
+## Status (2026-08-12) — step 1 and the core of step 2 done
+
+**jsbeeb installed and working.** Vendored at `tools/jsbeeb` (git-ignored, like `tools/ghidra/`) —
+`git clone https://github.com/mattgodbolt/jsbeeb.git tools/jsbeeb`, then `npm install` **under
+Node ≥24.15** (the repo's own engines field; this machine's default Volta node was 22.14, so
+`volta run --node 24.15.0 -- npm install` was used — no jsbeeb source changes needed). The
+`tests/test-machine.js` `TestMachine` class (exported from the package, not test-only) is the
+scriptable oracle: `loadDiscData`, `type`/keyDown/keyUp, `runFor`/`runUntilAddress`,
+`readbyte`/`writebyte`, `debugInstruction.add()` hooks. No jsbeeb caveats hit yet — didn't need b2
+for anything done so far.
+
+**b2 not yet attempted.** `cmake` is missing on this machine (needed to build it); not blocking
+because jsbeeb's `debugInstruction` hooks already give breakpoints, register/PC access and memory
+peek/poke, which covers everything the b2 HTTP API was wanted for so far. Revisit only if jsbeeb
+turns out to lack something (e.g. jsbeeb accuracy is ever in doubt, or a true GUI comparison is
+needed).
+
+**Driver scripts:** `tools/bbc_refloop_smoke.mjs` and `tools/bbc_refloop_track_diff.mjs` (both
+committed; jsbeeb loads its ROMs relative to cwd, so run them as
+`cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_smoke.mjs`). They replay the
+disc by hand: `*EXEC !BOOT` → page through REVINST's instructions screens with SPACE → REVSMEN's
+track menu (`PRESS 1 BRANDS HATCH 2 DONINGTON PARK 3 OULTON PARK 4 SNETTERTON 5 SILVERSTONE`) →
+select a track → handle the "PRESS SPACE BAR TO CONTINUE" / "1 PRACTICE 2 COMPETITION" prompts →
+watch for `debugInstruction` hitting `$1200` (REVS2's documented exec address) as the engine-entry
+breakpoint.
+
+**Finding: REVS2's own memory image is already byte-correct.** Dumping full 64 KB RAM at the
+`$1200` breakpoint for Silverstone and diffing against `disasm/revs_mem.bin` gives 34392/65536
+bytes differing overall, but broken down by region:
+
+| Region | Diffs | |
+|---|---|---|
+| `$1200-$6FFF` (the whole 24 KB REVS2 engine) | **0** | byte-identical |
+| `$70DB-$7813` (SILVER track data) | **0** | byte-identical |
+| `$0000-$02FF` (zero page/stack/OS vars) | 513/768 | real MOS/BASIC state `ssd_load.py` never modelled — expected, see below |
+| `$0300-$11FF` (BASIC/MOS workspace) | 1062/3840 | same reason |
+| `$8000-$FFFF` (ROM shadow + OS ROM) | ~31745/32768 | **not a bug** — `revs_mem.bin` was never meant to model ROM contents |
+
+So the part `disasm/revs_mem.bin` exists to serve — the engine code and the track data the
+transpiler will actually read — is **already proven correct**, for Silverstone. The doc's
+"provisional until diffed" warning turns out to have been about zero-page/workspace bytes outside
+the engine's own footprint, not about the engine image itself. **Exit criterion for step 2 is met
+for the code+data regions on Silverstone; not yet checked for the four expansion tracks or
+formally automated as a repeatable `make`-level check.**
+
+**Self-modifying-code inventory: started, not yet precise.** `bbc_refloop_track_diff.mjs 1`
+(Brands Hatch) dumps RAM at the `$1200` breakpoint and again ~3M cycles later, then diffs
+`$1200-$6FFF`: 5838 bytes differ. This almost certainly **over-counts** — 3M cycles (~1.5M
+instructions) is enough for ordinary gameplay-state mutation within the engine's own footprint
+(REVS 6502 games commonly interleave working variables with code in one load block), not just the
+track hook's one-time patch. **Follow-up needed:** narrow the "after" sample to the moment the
+per-track hook (`ModifyGameCode`/`CallTrackHook`) actually returns, rather than a fixed cycle
+count, to get a precise patch-only diff. Until then, treat 5838 as an upper bound, not the hook's
+actual footprint.
+
+**Not yet done:** the per-track diff for a second track (to see the per-track behaviour surface,
+step 2's second extra); named-milestone captures (step 3); the jsbeeb cycle-diff harness against
+the port (step 4); the CRTC/ULA display-composition analyser (step 5); fixing `tools/ssd_load.py`
+(nothing to fix yet — it's already correct for the regions that matter, on Silverstone).
+
 ## The standing rule this loop exists to serve
 
 > **Validate against the 6502 + the reference emulator — never against the dev-host backend.**

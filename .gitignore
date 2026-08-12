@@ -12,8 +12,16 @@ disasm/revs_blocks.txt
 *.png
 
 # Large / regenerable artifacts
-tools/ghidra/            # extracted Ghidra install (~2 GB)
-tools/ghidra-proj/       # Ghidra project (the annotation DB) — large, machine-local
+# (gitignore has no inline-comment syntax -- a trailing "# ..." on a pattern line
+# is taken as literal glob text and matches nothing, so comments go on their own line)
+# tools/ghidra/ -- extracted Ghidra install (~2 GB)
+tools/ghidra/
+# tools/ghidra-proj/ -- Ghidra project (the annotation DB) -- large, machine-local
+tools/ghidra-proj/
+# tools/jsbeeb/ -- vendored jsbeeb checkout, the BBC reference-loop oracle (docs/bbc-reference-loop.md)
+tools/jsbeeb/
+# tools/b2/ -- vendored b2 checkout, if/when built
+tools/b2/
 tools/__pycache__/
 *.zip
 
