@@ -71,13 +71,25 @@ startup (`docs/reference-sources.md`).
 
 ## Disassembly (headless Ghidra)
 
+⚠ **`analyzeHeadless` needs JAVA_HOME set** or it dies with "Unable to locate a Java Runtime"
+and, headless, "no TTY detected" rather than prompting:
+
+```sh
+export JAVA_HOME="/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"
+export PATH="$JAVA_HOME/bin:$PATH"
+```
+
+⚠⚠ **The imported program is `revs_runtime.bin`, NOT `revs_mem.bin`** — the Phase 2 self-unpack
+finding (`docs/static-map.md`).  Everything below names it accordingly; a `-process
+revs_mem.bin` finds no such program and exports nothing while still exiting 0.
+
 One-shot import + auto-analysis + listing export, mirroring the Atari port's invocation:
 
 ```sh
 GH="tools/ghidra/ghidra_12.1_PUBLIC"
 ABS="$(pwd)"
 "$GH/support/analyzeHeadless" tools/ghidra-proj Revs \
-  -import disasm/revs_mem.bin \
+  -import disasm/revs_runtime.bin \
   -processor "6502:LE:16:default" \
   -loader BinaryLoader \
   -scriptPath ghidra_scripts \
@@ -85,10 +97,22 @@ ABS="$(pwd)"
   -postScript ExportListing.java "$ABS/disasm/listing.txt"
 ```
 
-Re-run a script against the **already-imported** program (no re-analysis):
+**Re-seed entry points and re-export** — the loop to run after adding a row to
+`ghidra_scripts/entrypoints.csv` (Phase 4 used it to disassemble `$1DC5`, which no static walk
+reaches).  `MarkEntries` must be a `-preScript` so the new entry is disassembled by the analysis
+that follows it; with `-noanalysis` the seed is recorded and nothing decodes:
 
 ```sh
-"$GH/support/analyzeHeadless" tools/ghidra-proj Revs -process revs_mem.bin \
+"$GH/support/analyzeHeadless" tools/ghidra-proj Revs -process revs_runtime.bin \
+  -scriptPath ghidra_scripts \
+  -preScript  MarkEntries.java \
+  -postScript ExportListing.java "$ABS/disasm/listing.txt"
+```
+
+Re-run a script against the already-imported program with **no** re-analysis (export only):
+
+```sh
+"$GH/support/analyzeHeadless" tools/ghidra-proj Revs -process revs_runtime.bin \
   -scriptPath ghidra_scripts -noanalysis \
   -postScript ExportListing.java "$ABS/disasm/listing.txt"
 ```
