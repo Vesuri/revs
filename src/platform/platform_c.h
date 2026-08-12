@@ -31,6 +31,14 @@ void platform_indirect_jmp(uint16_t addr);
    See docs/bbc-hardware.md §MOS calls. */
 void platform_mos_call(uint16_t entry);
 
+/* A self-modifying instruction was reached holding a value the transpiler's SMC_SITES
+   table does not cover — an opcode slot with an unlisted byte, or a patched branch offset
+   pointing outside the enclosing routine's instruction starts.  This is NOT a recoverable
+   condition: the emitted C cannot represent what the 6502 would now execute, so the
+   platform reports it loudly (and the host build aborts).  A silent no-op here would look
+   exactly like a working rasteriser that draws nothing.  docs/transpiler.md §SMC. */
+void    platform_smc_unhandled(uint16_t site, uint16_t value);
+
 /* Present the current display state if a new frame has been produced since the
    last call.  Safe to call from a spin-wait — returns immediately if none is
    pending. */

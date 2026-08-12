@@ -77,6 +77,15 @@ public:
        (docs/entrypoint-sweep.md) enumerates every such site up front. */
     virtual void indirectJmp(uint16_t addr) { (void)addr; }
 
+    /* A self-modifying instruction held a value the transpiler's SMC_SITES table does
+       not cover (an unlisted opcode byte, or a patched branch offset pointing outside
+       the enclosing routine).  The generated C cannot express what the 6502 would
+       execute next, so this is a BUG REPORT, not an event to absorb: the default
+       implementation is deliberately noisy, and a backend must not quietly ignore it.
+       A silent no-op here reads exactly like a rasteriser that runs and draws nothing.
+       docs/transpiler.md §Self-modifying code. */
+    virtual void smcUnhandled(uint16_t site, uint16_t value);
+
     /* ------------------------------------------------------------------ */
     /* MOS calls                                                          */
     /* ------------------------------------------------------------------ */

@@ -1,26 +1,35 @@
 #!/usr/bin/env python3
-"""Transpile the Ghidra 6502 disassembly listing to C.
+"""Transpile the Ghidra 6502 disassembly listing to C.  BBC Micro Revs.
 
-Reads  disasm/listing.txt  +  disasm/symbols.csv
-Writes src/gen/rof_gen.c       (one C function per 6502 routine)
-       src/gen/rof_decl.h      (forward declarations)
-       src/gen/rof_manual.c    (hand-written replacements for SMC routines)
+Reads  disasm/listing.txt        (⚠ the RUNTIME image — see below)
+       disasm/symbols.csv        the source of truth for names
+Writes src/gen/revs_gen.c            one C function per 6502 routine
+       src/gen/revs_decl.h           forward declarations
+       src/gen/mem.h                 MEM_<name> offsets + opt-in lvalue aliases
+       src/gen/revs_validate_list.h  VALIDATE_FUNCS names, for fixture-or-fail
+
+⚠⚠ `listing.txt` must be a disassembly of `disasm/revs_runtime.bin` (`make runtime`),
+NOT `revs_mem.bin`.  REVS2 unpacks itself before running, so an address in the loaded
+image means something else entirely in the running engine (docs/static-map.md).
 
 Design
 ------
 * Each 6502 routine becomes a void C function.
-* JSR  → direct function call (always static; no indirect JMPs exist).
+* JSR  → direct function call.
+* JSR/JMP into the MOS entry block ($FF00-$FFFF) → platform_mos_call(entry).
 * RTS  → return;
-* RTI  → platform_rti(); return;
+* RTI  → PLP(); return;
 * Branches (BEQ etc.) → if (flag) goto L_xxxx;
 * JMP  within same function → goto L_xxxx;
 * JMP  to a different function → callee(); return;   (tail call)
+* JMP ($xxxx) → platform_indirect_jmp() (Revs has exactly one: the IRQ1V chain-on).
 * Stack, flags, registers modelled via cpu.h macros.
-* Hardware addresses ($D000-$D7FF) → bus_read/bus_write.
+* BBC I/O ($FC00-$FEFF) → bus_read/bus_write; OS vector page writes also go through
+  bus_write so the platform sees the game claim IRQ1V.
 * All other addresses → mem[] direct.
 * ZP-indexed wraps using (uint8_t) cast.
-* Known self-modifying function screen_page_swap ($1A62) is skipped
-  and provided hand-written in rof_manual.c.
+* **Self-modifying instructions are emitted as runtime-dispatched forms** rather than
+  hand-stubbed — see SMC_SITES.
 """
 import re
 import sys
@@ -30,523 +39,177 @@ from collections import defaultdict
 ROOT = Path(__file__).parent.parent
 LISTING  = ROOT / "disasm/listing.txt"
 SYM_CSV  = ROOT / "disasm/symbols.csv"
-OUT_C    = ROOT / "src/gen/rof_gen.c"
-OUT_H    = ROOT / "src/gen/rof_decl.h"
-OUT_MAN  = ROOT / "src/gen/rof_manual.c"
+OUT_C    = ROOT / "src/gen/revs_gen.c"
+OUT_H    = ROOT / "src/gen/revs_decl.h"
+OUT_MAN  = ROOT / "src/gen/revs_manual.c"
 OUT_MEM  = ROOT / "src/gen/mem.h"
+OUT_VAL  = ROOT / "src/gen/revs_validate_list.h"
 
-# Self-modifying functions: skip in generated code, provide manual impl.
-MANUAL_FUNCS = {
-    0x1a62,  # screen_page_swap
-    0x49EE,  # dli_handler_game   — needs INC $C7 after dispatch + cockpit variant
-    0x6CC2,  # dli_handler_game2  — same
-    # Attract per-frame leaves: the genuine station_init control FLOW runs, but these
-    # heavy animation routines must be native (the transpiled CPU-emulation is ~60x too
-    # slow on the 68000).  Native versions in rof_manual.c do the same mem[] mutations
-    # in plain C.  (display_scroll $1CF7 + station_sub_1f51 $1F51 are folded into these
-    # as private helpers — their only callers are these three, so the transpiled copies
-    # are dead.)
-    0x1D9A,  # station_anim_frame  (calls display_scroll)
-    0x1EB4,  # station_sub_1EB4
-    0x1F48,  # station_sub_1F48    (walks channels via station_sub_1f51)
+# ---------------------------------------------------------------------------
+# Self-modifying code
+# ---------------------------------------------------------------------------
+# ⭐ Revs does NOT get hand-written stubs for its self-modifying routines.
+#
+# The Atari port's rule was "a routine that writes its own instruction stream cannot be
+# transliterated faithfully → hand-stub it in *_manual.c".  That rule costs a hand-written,
+# unvalidated, non-regenerable routine per site, and Revs has 24 sites — all of them inside
+# the road rasteriser, i.e. the hottest and least-understood code in the binary.
+#
+# Every one of those 24 sites is one of three MECHANICAL classes, and each class has an
+# exactly faithful runtime-dispatched C form.  So the transpiler emits the patchability
+# instead of freezing one snapshot of it:
+#
+#   'operand'  the instruction's operand BYTES are rewritten, the opcode is not.  Emit an
+#              instruction whose effective address / immediate is read from mem[] at run
+#              time.  Byte-wise reads, so it is endian-safe on the 68000 by construction.
+#   'opcode'   a one-byte opcode SLOT is switched between a small, statically known set of
+#              values.  Emit a switch on mem[site] with one case per value; an unlisted
+#              value is a hard trap, never a silent fall-through.
+#   'branch'   a branch OFFSET is rewritten, so the target varies.  Emit the target
+#              computed at run time, dispatched over the instruction starts of the
+#              enclosing function.  Anything else traps.
+#
+# Result: `make gen` stays the single source of the corpus, the rasteriser keeps working
+# for whatever the writers actually poke (including the per-track $2F23 hook, which only
+# two circuits install), and there is nothing hand-written to drift.
+#
+# Evidence for every row: docs/static-map.md §Self-modifying code (24 sites, from
+# `make sweep`), plus the writer instructions read out of the listing — the 'values' below
+# are the LDA immediates / sources those writers actually store, not assumptions.
+#
+# Keyed by the address of the INSTRUCTION whose bytes get patched.
+SMC_SITES = {
+    # --- 'operand': patched operand bytes, opcode untouched ------------------
+    # $196F  STA $0400,Y — LOW operand byte at $1970 rewritten from $193E.
+    #        One copy of the loop serving several screen-row destinations.
+    0x196F: {'kind': 'operand', 'bytes': {0x1970}, 'from': ['$193E']},
+    # $1DDB  LDA #$55 — the IMMEDIATE at $1DDC rewritten from $1DAC.
+    0x1DDB: {'kind': 'operand', 'bytes': {0x1DDC}, 'from': ['$1DAC']},
+    # $1DDD  STA ($70),Y — the ZERO-PAGE POINTER NUMBER at $1DDE rewritten from $1DA6
+    #        (STX), so the store walks a different pointer pair per call.
+    0x1DDD: {'kind': 'operand', 'bytes': {0x1DDE}, 'from': ['$1DA6']},
+    # $2F4E  STA $7000,Y — BOTH operand bytes rewritten: lo $2F4F from $19C9, hi $2F50
+    #        from $19C0, sourced from the table pair $2B22 (lo) / $2B1E (hi).  That table
+    #        holds the four per-column edge buffers $0554/$05A4/$0600/$0650, which is how
+    #        one span plotter serves four row buffers (docs/static-map.md).
+    0x2F4E: {'kind': 'operand', 'bytes': {0x2F4F, 0x2F50}, 'from': ['$19C9', '$19C0']},
+    # $2F90  STA $7000,Y — the second plotter, same mechanism ($2F91 from $19CC,
+    #        $2F92 from $19C3).
+    0x2F90: {'kind': 'operand', 'bytes': {0x2F91, 0x2F92}, 'from': ['$19CC', '$19C3']},
+
+    # --- 'opcode': a 1-byte opcode slot switched between known values --------
+    # NOP/INY slots: the loop is specialised per frame to advance Y or not.
+    #   $2F60/$2FA2 written from LDA #$C8 ($2BFF) or LDA #$EA ($2CCE)
+    #   $2F47/$2F89 written from LDA #$EA ($2C07) or from LDA $2F60 ($2CC5) — i.e. whatever
+    #               $2F60 currently holds, which is one of the same two values
+    #   $2F18       written from LDA $2F47 ($2F12) — same closure again
+    0x2F18: {'kind': 'opcode', 'values': {0xEA: 'NOP', 0xC8: 'INY'}, 'from': ['$2F15']},
+    0x2F47: {'kind': 'opcode', 'values': {0xEA: 'NOP', 0xC8: 'INY'}, 'from': ['$2C09', '$2CC8']},
+    0x2F60: {'kind': 'opcode', 'values': {0xEA: 'NOP', 0xC8: 'INY'}, 'from': ['$2C01', '$2CD0']},
+    0x2F89: {'kind': 'opcode', 'values': {0xEA: 'NOP', 0xC8: 'INY'}, 'from': ['$2C0C', '$2CCB']},
+    0x2FA2: {'kind': 'opcode', 'values': {0xEA: 'NOP', 0xC8: 'INY'}, 'from': ['$2C04', '$2CD3']},
+    # CPX-or-RTS slots: written from LDA #$E0 ($2CB4, `CPX #$80`) or LDA #$60 ($2CAA, `RTS`).
+    # ⚠ The two forms have different LENGTHS (2 vs 1).  That is representable only because
+    # $60 TERMINATES: when the slot holds RTS the operand byte is never executed, so no
+    # following instruction shifts.  Both $2FC0 and $2FD7 are FUNCTION STARTS, so the whole
+    # routine is switched between "compare and continue" and "return immediately".
+    0x2FC0: {'kind': 'opcode', 'values': {0xE0: 'CPX', 0x60: 'RTS'}, 'from': ['$2CAF', '$2CB9']},
+    0x2FD7: {'kind': 'opcode', 'values': {0xE0: 'CPX', 0x60: 'RTS'}, 'from': ['$2CAC', '$2CB6']},
+
+    # --- 'branch': patched branch offset, so the target varies ---------------
+    # $1DD4  BNE — offset at $1DD5 rewritten from $1DA9 (STY), so the target is a
+    #        register value, not a constant: it cannot be enumerated statically.
+    0x1DD4: {'kind': 'branch', 'bytes': {0x1DD5}, 'from': ['$1DA9']},
+    # The four rasteriser BCCs: offset rewritten from a per-column table
+    #   $2D28 from $2D1A (LDA $3E50,X)    $2DAB from $2D9D (LDA $40D0,X)
+    #   $2E2F from $2E23 (LDA $3ED0,X)    $2EA8 from $2E9C (LDA $3ED8,X)
+    # In the static image every one of these reads `BCC +0` (branch to the next
+    # instruction — a no-op), which is exactly what an unpatched slot should look like and
+    # is why a straight transliteration of this region would run but do nothing.
+    0x2D27: {'kind': 'branch', 'bytes': {0x2D28}, 'from': ['$2D1A']},
+    0x2DAA: {'kind': 'branch', 'bytes': {0x2DAB}, 'from': ['$2D9D']},
+    0x2E2E: {'kind': 'branch', 'bytes': {0x2E2F}, 'from': ['$2E23']},
+    0x2EA7: {'kind': 'branch', 'bytes': {0x2EA8}, 'from': ['$2E9C']},
 }
+
+# Functions that STILL need a hand-written stub in src/gen/revs_manual.c.
+# Empty on purpose: SMC_SITES above covers all 24 self-modifying sites generically.
+# Add an address here only when a routine genuinely cannot be expressed as a
+# transliteration at all (docs/faithfulness-seam.md), and say why.
+MANUAL_FUNCS = set()
 
 # Functions being reimplemented natively, validated against the transliteration.
 # For each address here the transpiler still emits the faithful transliterated
 # body, but DEFINES it under a `<name>__t6502` suffix instead of the plain name.
 # The plain `<name>()` — the one all call sites invoke — is provided by a
-# hand-written native version in src/gen/rof_native.c.  Both coexist so the
+# hand-written native version in src/gen/revs_native.c.  Both coexist so the
 # validation harness (tools/validate_native.c) can run them on the same input
 # state and diff the full machine state.  This is the regen-safe strangler-fig
 # seam: drop an address in, write the native twin, prove equivalence, ship it;
 # everything not listed here stays transliterated and fully regenerable.
-VALIDATE_FUNCS = {
-    0x40B0,  # draw_ah_ground_fill_p2 — AH ground-fill column (flight HUD draw, cache-gated) [native]
-    0x40E5,  # draw_altimeter_bars — altimeter terrain/ship bar columns (flight HUD draw, cache-gated) [native]
-    0x43C7,  # dispatch_43cb_half_70 — Y=terrain_clearance>>1, tail draw_dial_bar_column (flight HUD draw) [native]
-    0x44D6,  # update_altitude_digit_display — altitude digit glyph + colour (flight HUD draw, cache-gated) [native]
-    0x9D6F,  # divide_16x16 — restoring 16-bit divide (prototype target)
-    0xAD5F,  # clear_terrain_column — clear a terrain column band + object-table cells (flight leaf #1)
-    0x9C97,  # signed_mul_8x16 — fixed-point signed 8x16 multiply (flight leaf #2)
-    0x9C55,  # sine_table_lookup — quarter-wave sine/cos table lookup (flight leaf #3a)
-    0x9BDB,  # trig_interp_lookup — sine interpolation angle..angle+1 (flight leaf #3b)
-    0xAD2B,  # compute_row_xspans — per-row horizontal span endpoints (flight leaf #4)
-    0xAC42,  # check_target_in_window — 2-consecutive-hit target latch (flight leaf #5)
-    0x4E58,  # obj_table_set_active — promote first eligible object slot (flight leaf #6)
-    0x55FF,  # ring_push_0719 — push to event ring + restore caller X (flight leaf #7)
-    0x9BA0,  # compute_heading_sincos — sin/cos of 16-bit heading (flight mid #1)
-    0xA0A3,  # build_view_transform_matrix — rotated view components (flight mid #2)
-    0xAC93,  # setup_projection_params — per-frame projection/view setup (flight mid #3)
-    0xAB7B,  # set_plot_mask_and_halve_step — plot base ptr + step/4 (flight mid #4)
-    0xA8AF,  # terrain_point_distance — Manhattan dist, nearest-point latch (flight mid #5)
-    0xB2CC,  # terrain_midpoint_displace — fractal midpoint subdivision (flight mid #6)
-    0xA6D3,  # terrain_plot_pixel — OR voxel mask into terrain bitmap (flight raster #1)
-    0xA6CB,  # terrain_clip_row_top — clip column top vs row limit (flight raster #2)
-    0xAB9A,  # raster_scaled_object — nested 12x32 cell fill via terrain_clip_row_top (flight raster #3)
-    0xA822,  # terrain_plot_object_a — plot one terrain object, variant A (flight raster #4)
-    0xA90A,  # terrain_plot_object_b — plot one terrain object, variant B (flight raster #5)
-    0xA63B,  # terrain_plot_object — per-object raster dispatch (flight raster #6)
-    0xB33D,  # terrain_column_rasterize — fractal column renderer (flight raster #7, the big one)
-    0xB172,  # terrain_subdivide_column — fractal subdivision driver (flight raster #8)
-    0xA613,  # terrain_jitter_column — per-frame random terrain jitter (flight top #1)
-    0x9E54,  # terrain_frame_setup — terrain gen step 1: view setup + per-column transform (flight top #2)
-    0xA11F,  # project_terrain_points — per-object world->screen projection via divide_16x16 (flight top #3)
-    0xAE53,  # fill_terrain_silhouette — per-column surface scan + sky/body fill (NOT collision; flight top #4)
-    0xA31E,  # terrain_draw_frame — main per-frame terrain driver (flight top #5, the last)
-    0x4FF5,  # vbi_handler_flight — the in-flight VBI handler itself (orchestrates the whole flight frame)
-    # --- flight ISR de-transpile (2026-06-11): eliminate transpiled code on the
-    #     per-frame VBI path.  Small subtrees first; the flight_control_integrate
-    #     tree (~27 fns) is deferred. ---
-    0x49A0,  # render_bcd_counter — score BCD render (self-contained $49A0-$49ED fall-through chain)
-    # update_terrain_scanline_proj subtree, leaves first:
-    0x9B87,  # init_proj_scratch_pointers — set game_state + 3 ZP ptr bytes (trivial leaf)
-    0x5815,  # ring_push_marked — push X|$80 to the $0719 event ring (tail to ring_push_0719)
-    0x55FC,  # game_sub_55FC — push Y to the $0719 event ring (falls into ring_push_0719)
-    0x9A36,  # sample_terrain_height_bilerp — bilinear height sample over the $0900 map (leaf)
-    0x451D,  # game_sub_451d — 14-iter table-fill into $2159/$2189 (leaf; called by update_terrain_horizon_lr)
-    0x9B0D,  # enter_terrain_special_state — set flags + ring events (calls game_sub_55FC/ring_push_marked)
-    0x9B4C,  # exit_terrain_special_state — inverse of enter (calls game_sub_55FC)
-    0x992D,  # update_terrain_horizon_lr — L/R horizon update (calls sample_terrain_height_bilerp + game_sub_451d)
-    0x9833,  # update_terrain_scanline_proj — TOP of subtree: map coords + depth + horizon (calls all the above)
-    # --- flight_control_integrate subtree (2026-06-12): the last transpiled code on
-    #     the flight VBI path (~31 fns). Leaves-first. ---
-    0x4E98,  # reset_flags_ff — set $006A/$0063/$2826 = $FF (leaf, mem-only)
-    0x94BF,  # load_velocity_from_param_block — seed vel accums $2854-$2863 from param block (tail ring_push_marked)
-    0x7B88,  # bcd_inc_counter_0641 — $0641 += 1 (binary; cpu core ignores decimal mode)
-    0x7B80,  # set_place_params_inc_count — $0045=0,$0046=1, tail bcd_inc_counter_0641
-    0x96D9,  # trigger_object_explosion — set explosion sprite ptrs + INC $0041, tail ring_push_marked X=$0F
-    0x9677,  # reset_object_slot — $0036=$80, tail ring_push_marked X=$0E
-    0xB756,  # enqueue_indicator_event — write indicator HUD params, tail game_sub_55FC Y=$08
-    0x930E,  # object_integrate_position — 24-bit world-pos integrate + blip $2821/$2824 (mem-only)
-    0xAA95,  # jitter_roll_pitch — random-walk pitch/roll accums $0029/$0026 + decay $002E (RANDOM, mem-only)
-    0x9821,  # mul_u8 — shift-add multiply, result in cpu.A (consumes $006B/$28D6)
-    0x9713,  # compute_target_blip_position — derive blip $0021/$0027 from range/depth/parallax (mem-only)
-    0x4E1C,  # obj_table_scan_replace — random-start stride-$43 scan to place entry val in a free obj slot (RANDOM)
-    # batch 2 — shallow drivers (1 transpiled callee each):
-    0x4E18,  # obj_table_scan_y1_c8 — set Y=1, tail obj_table_scan_a_c8
-    0x4E1A,  # obj_table_scan_a_c8 — set A=$C8, tail obj_table_scan_replace
-    0x4EA2,  # store_676_init — $0676=A, tail set_hud_fields_678_679
-    0x4EA5,  # set_hud_fields_678_679 — $0678/$0679=A, tail refresh_hud_field_0b
-    0x4EAB,  # refresh_hud_field_0b — Y=$0B game_sub_55FC, tail refresh_hud_field_0d_entry
-    0x4EB0,  # refresh_hud_field_0d_entry — Y=$0D, tail refresh_hud_fields_0d_0e
-    0x4EB2,  # refresh_hud_fields_0d_0e — game_sub_55FC at Y, INY, game_sub_55FC
-    0x9473,  # step_object_along_axes — step $0023/$0024 by $14, depth dec / tail reset_flags_ff (mem-only)
-    0xB786,  # reset_indicator_event — $0035=0, tail enqueue_indicator_event
-    0x97A0,  # compute_obj_rel_angle_scale — 10-bit angle build + 2x mul_u8 -> $002B/$2881 (reads ENTRY CARRY)
-    0x43E8,  # draw_object_column — draw PMG dial-bar column via $4581 ptr table (absorbs bare-RTS draw_bar_loop_end $442D)
-    0x444A,  # setup_dial_bar_draw — set bar params, tail draw_object_column
-    0x4447,  # game_sub_4447 — A+=8, tail setup_dial_bar_draw
-    # batch 3 — mid drivers:
-    0x7B3C,  # countdown_show_char_0620 — place countdown glyph in obj slot + DEC $0620
-    0x93BD,  # check_object_in_target_box — in-box trigger ($003B/$2892/$3355/$2891)
-    0x9680,  # check_player_proximity_hit — hit test vs player -> pickup/explosion (reads ENTRY CARRY)
-    # batch 4 — apex:
-    0x9552,  # object_step_and_collide — integrate pos + terrain/obj collision + pickup dispatch (PHA/PLA stack)
-    0x8E5B,  # flight_control_integrate — THE flight VBI root: joystick+throttle integrate, HUD, ring rotate
-    # --- flight main-loop de-transpile (2026-06-12): the last transpiled code on
-    #     the flight per-frame path (game_state_update + enemy_check, called by
-    #     flight_frame_native).  Leaves-first.  plot_line_done $AB26 is a bare RTS
-    #     and is ABSORBED (native callers just return); game_sub_4f3f $4F3F is the
-    #     0-callers event/teardown closure (reaches the whole program) and is NOT
-    #     ported — enemy_check's $063D branch tail-calls it transpiled. ---
-    0xAB27,  # plot_scanline_up — Bresenham point plotter, walks up (calls native terrain_plot_pixel)
-    0xAAD4,  # plot_scanline_down — line-plot loop walking down (calls native terrain_plot_pixel)
-    0xAACF,  # plot_scanline_rand_dir — RANDOM picks up vs down
-    0xA99C,  # game_state_update — flight state machine (scanline plots + ring events)
-    0x7AB8,  # alien_attack_tick — enemy PMG update (RANDOM; tail ring_push_marked + jitter_roll_pitch)
-    0x3FCD,  # enemy_check — event dispatch ($063D->game_sub_4f3f [transpiled] / $0633->alien_attack_tick)
-    # --- in-game SFX engine (2026-06-12): the $548D voice/gauge engine, run each
-    #     flight VBI (Atari VBI tail $534D), drains the $0719 event ring the native
-    #     flight code already fills.  Leaves-first.  POKEY writes via bus_write ->
-    #     Paula on Amiga (the indexed $D1FE+X writes are masked in validation). ---
-    0x5667,  # sfx_voice_write_freq — write AUDF for voice Y to POKEY $D1FE+X (skip if reg idx 0)
-    0x5673,  # sfx_voice_write_freq_ctrl — write AUDF + AUDC (prio|distortion) for voice Y
-    0x568A,  # sfx_pick_top_voice — scan 12 slots, latch max-priority active voice -> $0714/0715/0716
-    0x56AF,  # sfx_pick_next_voice — scan for next-best priority excluding $0715 -> $0716/0717
-    0x5553,  # sfx_engine_step — explosion/noise engine (RANDOM x2, descending-pitch via $55DC); entry A=$0634
-    0x5614,  # reorder_sprite_slot — voice-priority mixer (calls 5673/568a/56af); entry X/Y, Y restored
-    0x581C,  # sfx_event_load — load a new voice from event tables $56D4..$57F4 (stack-aware; tail game_sub_55FC)
-    0x548D,  # sfx_voice_envelope_tick — APEX: per-frame voice/gauge envelope engine + ring drain (Atari VBI tail)
-    # --- startup/cinematic de-transpile (2026-06-15): the boot_standby_launch_driver ($5F1D)
-    #     subtree that drives the Standby + Doors/Tunnel/Planet cinematic — the
-    #     slow part of boot (the flight loop is already native).  Leaves-first. ---
-    0x4E84,  # bin_to_bcd — A(0-99)->packed BCD; units->$00C1, tens->Y, BCD->A (pure leaf)
-    0x782A,  # copy_title_text_block_to_screen — Standby per-frame: copy 20-byte $5A9F+X block to $32B7..$32CA (leaf, entry Y)
-    0x6DDF,  # init_row_coords_9c — store 5 constants into $009C-$00A0 (pure leaf)
-    0x6B71,  # clear_scroll_accum — zero $02C0-$02C3, $00A1-$00A5 (pure leaf)
-    0x75A5,  # copy_192_to_1800 — copy 192 bytes $350C->$1810..$18CF via $BB/$BC ptr (leaf)
-    0x7460,  # build_row_addr_table — build 85-entry $073D/$0793 addr table from $C3:$C4 base + $C1 stride (leaf)
-    0x65DF,  # build_line_addr_table_2000 — set base $2000/stride $2E, tail build_row_addr_table
-    0x65D2,  # build_line_addr_table_1000_stride — set base $1000/stride=A, tail build_row_addr_table (entry A)
-    0x65D0,  # build_line_addr_table_1000 — A=$2E, tail build_line_addr_table_1000_stride
-    0x6B85,  # init_object_positions — zero $08D1-$08D3, build 22-entry word array $08A4/$08A5 = $6E2D table + $2EE0 (pure leaf)
-    0x712D,  # audio_timer_setup — zero $00E7/$0655/$00E5 + POKEY timers $D201-$D207, AUDCTL=$60 (leaf; POKEY via bus_write)
-    0x7148,  # sfx_seq_step — advance SFX theme sequencer $073C through $71DB; load AUDF/AUDC presets -> POKEY; set $073A/$073B
-    0x70F9,  # sfx_voice_tick — tick SFX theme: count down $073A (sfx_seq_step on underflow), emit ramped AUDC to voices 1-3
-    0x6B47,  # random_terrain_height — 2 RANDOM reads -> sparse height (result in A; seeded-LFSR test)
-    0x665D,  # fill_horizontal_span — write pattern $00B9 across a row span into two row ptrs (leaf)
-    0x66DE,  # plot_masked_pixel — OR/AND a 2-bit pixel into ($80)+Y via mask tbls $66E9/$66FB (leaf, entry X/Y)
-    0x66D5,  # plot_pixel_masked — A=col -> Y/X mask index, tail plot_masked_pixel (entry A)
-    0x66C8,  # set_row_ptr — $80/$81 = addr-table[Y] (leaf, entry Y)
-    0x66C6,  # set_row_ptr_from_count — Y=$0092, tail set_row_ptr
-    0x669C,  # fill_vertical_span — per-row masked plot of cols $9C/$9D via plot_pixel_masked/plot_masked_pixel
-    0x6C92,  # plot_pixel_2bpp — 4x ROL 2bpp pack of ($80)+Y, mask via BIT $0082 (leaf, entry Y+carry; preserves X)
-    0x6642,  # draw_symmetric_span_loop — $0096x {fill_horizontal_span + fill_vertical_span}, steps coords $9C-$9F
-    0x6B2E,  # gen_terrain_column — fill one column (Y) of 4 buffers $0C32/$0D32/$0E32/$0F32 via random_terrain_height
-    0x6AE5,  # fill_terrain_columns — 89x gen_terrain_column over Y=$59..1 (RNG; direct buffer writes)
-    0x6AEE,  # scroll_field_columns — $0089-gated stars/planet scroll: shift 4 buffers left 1 col + new col (VBI hot path)
-    0x6620,  # draw_frame_guide_columns — 86 rows: set_row_ptr_from_count + masked-plot cols $9C/$9D/$A0 (screen ptr)
-    0x65FB,  # draw_frame_pattern_seq — per-frame doors/tunnel drawer: 20x draw_symmetric_span_loop + tail draw_frame_guide_columns
-    0x6C4D,  # draw_vline_pair — plot a symmetric pair of vertical lines (rows A..$00B8) via plot_pixel_2bpp/bus_write
-    0x6BED,  # update_object_distance — clamped 16-bit dist subtract -> $08A4/$08A5[X]; up to 3 draw_vline_pair draws
-    0x6BA8,  # advance_object_positions — INC $08D1, +$18 to $08D2/$08D3, then per slot (X=$2A..0 step2) update_object_distance
-    # batch — clean pure-mem init/clear/fill/copy leaves:
-    0x7F74,  # clear_alien_knock_active — $0632 = 0
-    0x3FBF,  # clear_pm_state — fill $00DA-$00DD/$02C0-$02C3/$00D9 with entry A
-    0x6B63,  # clear_terrain_lo_buffers — zero $0E32-$0E91/$0F32-$0F91
-    0x6899,  # fill_four_bufs_ff — $FF into $0C87/$0D87/$0E87/$0F87 +8..+1
-    0x6890,  # fill_buf_08d4 — fill $08D4-$08D9 with entry A
-    0x5D3B,  # copy_4byte_table_to_02c4 — copy 4 bytes $5D48+X down into $02C4-$02C7 (entry X)
-    0x70E7,  # reset_audctl_flags — $00E7=1, AUDCTL=0, $073A/$0090=0, $073C=$FF
-    0x5DDB,  # game_init_first — $0043 = 1
-    0x7B74,  # mark_grid_slot_active — $0A00[$28E6] = 1
-    0x70A9,  # push_grid_cell — $2500[$0098] = $009C, INC $0098
-    0x41DA,  # vobj_pos_to_pmstrip_index — Y = ($DC - $062F) >> 2 (result in Y/A)
-    0x45EE,  # copy_terrain_seed_rows — copy 3x8 seed rows $4DD2/$4DDA/$4DE2 -> $0C88/$0D88/$0B88
-    0x7483,  # copy_row_addr_subset — copy 48 row-addr entries $073D/$0793[Y] -> $2932/$2962[X]
-    0x3C93,  # memset_or_copy — fill $00B7 to dest ptr $C1/$C2, 16-bit count $C3/$C4 (pointer fill)
-    0x3C61,  # copy_bytes_to_dst — write entry A to dest ptr $BD/$BE, X times; then INC $BB/$BC (pointer fill)
-    # batch — boot_standby_launch_driver-subtree mem-effect leaves:
-    0x3FDE,  # draw_compass_heading — copy 4 bytes $4B0B[base..base-3] -> $32E3[3..0] (base from $281C/$2836/$3FF6)
-    0x45A1,  # fill_buffer2_region_ff — 8x 32-byte $FF runs from $2098 stride $30
-    0x4606,  # game_sub_4606 — init target-state cells $32E3[0..3]/$3355-$3357/$3388/$33DF/$33E0
-    0x480F,  # fill_message_buffer — store entry A into $32B6+X down to +1 (entry A/X; X=0 => 256 fill)
-    0x4FE0,  # intro_fill_display_params — build $00CF..$00D6 from $4DF1 nibble | $00C2; poke $D019; INC $C2
-    0x5B45,  # match_code_sequence — cheat-code matcher; advance/reset $063F, copy payload $5B17->$36AB at 6
-    0x68AD,  # init_terrain_dl — fill $2F75..$2FA3=$88 + LMS ptr pairs $300A/$308B = $2F74 every 3rd entry
-    0x7238,  # music_init_state — copy 6 bytes $731E[Y..]-> $0657[5..0]; clear $0651/$D208; $0653/$0655=1 (entry Y)
-    0x7253,  # music_player_tick — note-stream tune player: tick envelopes + advance cmd stream -> POKEY AUDF/AUDC
-    0x75B8,  # count_up_to_level — bump $0604 + binary counter $C3 until $0604 == $006D
-    0x811F,  # alien_field1_fill — INC $0081 when $0081 >= $2928 (+ 5-byte copy in the else path)
-    0x8168,  # alien_field3_fill — INC $0083 when $0083 >= $A8 (+ 7-byte font copy in the else path)
-    # batch — tail-wrappers + RANDOM/compute A-returning leaves:
-    0x480B,  # clear_message_buffer — X=$0E,A=0, tail fill_message_buffer (zero $32B7..$32C4)
-    0x66D3,  # plot_pixel_col93 — A=$0093, tail plot_pixel_masked
-    0x5A59,  # random_digit — POKEY RANDOM -> decimal digit 0-9 (rejection sample; result in A)
-    0x5A4D,  # random_alpha_index — POKEY RANDOM -> letter code $21..$3A (rejection sample; result in A)
-    0x7047,  # test_marked_neighbor — $0900 marker-map 3-neighbor probe; result in A
-    # batch — fill-region wrappers + RANDOM/compute leaves:
-    0x3C83,  # fill_region_2000 — seed $C1=$2000/count $0F73, tail memset_or_copy ($00B7 fill)
-    0x7F60,  # silence_audio_channels — $0634=A + POKEY AUDF1-4 + AUDCTL=$60, tail clear_alien_knock_active (entry A)
-    0x753B,  # init_terrain_render_buffers — $260E..$270D=$FF, then $1070 fill via memset_or_copy
-    0x7813,  # init_terrain_col_tables — terrain_col_pixel_mask ($BC00) + clear terrain_col_byte_offset ($BD00) (pure)
-    0x7B54,  # game_sub_7B54 — maybe-seed $2849 from (RANDOM|$08)&$3F shifted by 0/1/3
-    0x687D,  # rng_signed_jitter — $0085 +/- entry-A magnitude, sign from RANDOM bit7; result in A
-    # batch — cockpit/score init + the zero-suppress char plotter:
-    0x45C5,  # init_cockpit_bar_cells — seed cockpit bar graphic cells $2107.. = $BE/$AA (pure)
-    0x497D,  # add_and_show_bcd_counter — score += delta $0045/$0046 (binary), tail render_bcd_counter
-    0x49D9,  # plot_char_bounded — zero-suppress digit plotter via ($C5)+Y; X=suppress flag (entry A/X/Y)
-    # batch — BCD digit-pair, slot drivers, and bare-RTS stubs:
-    0x49CE,  # emit_bcd_byte_digits — plot hi+lo nibble of packed-BCD A via plot_char_bounded (PHA/PLA)
-    0x7B39,  # mark_slot_and_countdown_char — mark_grid_slot_active + countdown_show_char_0620
-    0x7B7D,  # mark_slot_and_inc_count — mark_grid_slot_active + set_place_params_inc_count
-    0x40AF,  # return_stub_40af — bare RTS (no-op)
-    0xA821,  # terrain_obj_skip_return — bare RTS (no-op)
-    0x6A26,  # ret_stub_6a26 — bare RTS (no-op)
-    0x442D,  # draw_bar_loop_end — bare RTS (no-op)
-    0xA63A,  # terrain_plot_return — bare RTS (no-op)
-    0xA909,  # terrain_distance_clamp_return — bare RTS (no-op)
-    0xAB26,  # plot_line_done — bare RTS (no-op)
-    # batch — grid-neighbor scan, ring-push drivers, RLE run fill:
-    0x7069,  # scan_grid_neighbors — 4 diagonal test_marked_neighbor probes + push_grid_cell
-    0x4FCE,  # intro_reset_score_slots — clear $066A/$0686, $0678=$0C, tail game_sub_55FC (Y=$0D)
-    0x7AA8,  # init_event_state_5815_x16 — seed $0044/$3388/$003C, tail ring_push_marked (X=$16, entry A)
-    0x3C58,  # rle_run_fill — bump src $BB/$BC, read run byte ($BB)+Y, tail copy_bytes_to_dst (entry A/Y)
-    0x678B,  # blit_glyph_8rows — blit 8-row glyph; row ptr walks up $2E/row, bits -> plot_pixel_col93
-    # batch — RANDOM-driven intro object-map seeders:
-    0x7498,  # intro_seed_object_map — clear $0A00, scan-place entries, stride-$43 RANDOM $64 markers
-    0x70B3,  # intro_unmark_random_cells — RANDOM-gated $0900 marker sweep (clear bit7)
-    # batch — font/voice init + cockpit message renderer:
-    0x5433,  # sfx_engine_reset — clear music/voice tables + seed slots/timers (POKEY via bus_write)
-    0x47B8,  # show_cockpit_message — render HUD message (entry Y id) into $32B7 from glyph tables
-    0x6811,  # game_sub_6811 — scatter random jittered dots via rng_signed_jitter/set_row_ptr/plot_pixel_masked
-    0x692A,  # plot_terrain_span — run of vertical spans via fill_vertical_span; steps cols, shifts row window
-    # batch — event/score/message wrappers + object-table shift:
-    0x7AA6,  # trigger_effect_4a — A=$4A, tail init_event_state_5815_x16
-    0xA6F8,  # terrain_plot_skip_return — bare RTS (no-op)
-    0x49AE,  # render_bcd_low_bytes — emit $0602/$0603 digit pairs via emit_bcd_byte_digits
-    0x49C5,  # set_zsupp_pos_clear_delta — set $0619=Y, clear $0045/$0046, tail emit_bcd_byte_digits
-    0x47B2,  # save_color_clear_y_bit5 — $00D8=A, clear Y bit5, tail show_cockpit_message
-    0x6A0F,  # shift_object_table_up — shift DL LMS pairs $3007/$3008 -> $300A/$300B up by 3 (entry A count)
-    # batch — glyph blit wrappers + 2x2 glyph draw:
-    0x6805,  # set_coord_y_e0 — glyph src $0084/$0085 = $E0(A+$80), tail blit_glyph_8rows
-    0x6773,  # glyph_ptr_from_index — glyph src = $E000 + (A<<3), tail blit_glyph_8rows
-    0x4099,  # draw_glyph_2rows — 2x2 glyph from $4AE3[A..A+3] | $00BF via ($BB) at cols 0,1,$30,$31
-    # batch — RLE expanders:
-    0x757B,  # rle_expand_list — expand (count,value) run list via rle_run_fill; 0 count terminates
-    0x3C3D,  # rle_decompress — literal/run RLE decompressor ($C0 markers); the 60x-slow cinematic one
-    # batch — region-clear loader + PMG bit-table init:
-    0x3C00,  # loader_util — clear $32B5/$1000/$0B00 regions via 3x memset_or_copy (pure)
-    0x77DF,  # game_init_77DF — build $BE00/$BF00 256-entry bit tables (pure; PHA/PLA -> mask stack)
-    0x7D38,  # plot_clipped_pixel — clipped masked HUD/radar pixel via row table + ($C1)+col RMW
-    0x74D7,  # unpack_bitmap_4d3e — bit-reversal bitmap unpacker via $4D3E ptr table (8x4 passes)
-    0x6FBF,  # intro_random_setup — DFS maze gen on $0900 grid (RANDOM; scan_grid_neighbors/test_marked_neighbor)
-    0x68CF,  # emit_dl_coord_pairs — emit DL LMS coord pairs into $300A/$308B from row table, tail plot_terrain_span
-    # batch — the largest remaining boot_standby_launch_driver leaf:
-    0x75F5,  # compute_stage_display_geometry — derive gauge param block $0617-$062A from $006D (branchy clamps; native bin_to_bcd)
-    # batch — the message-text blitters (boot_standby_launch_driver front):
-    0x6750,  # blit_label_row — blit 5 glyphs ($6E23[$00C5..] codes) via glyph_ptr_from_index; index base 0/5 from $0004
-    0x672D,  # blit_message_block — 11 rows of 3 pixels ($15/$2E/$47) via set_row_ptr_from_count/plot_pixel_masked, tail blit_label_row
-    # batch — tail-call wrappers on the boot_standby_launch_driver front (compose native callees):
-    0x4095,  # draw_digit_low_nibble — A=(A&$0F)<<2, tail draw_glyph_2rows
-    0x4084,  # draw_2digit_value — draw hi nibble glyph, advance dest ptr $BD/$BE->$BB/$BC, tail draw_digit_low_nibble
-    0x6802,  # glyph_ptr_shift3 — A<<3, tail set_coord_y_e0
-    0x49C0,  # render_bcd_top_byte — Y=5, X=$0600, tail set_zsupp_pos_clear_delta (renders entry-A byte via emit chain)
-    # batch — RLE-composer init wrappers (boot_standby_launch_driver front; compose native RLE):
-    0x7558,  # unpack_terrain_seed_cols — set src/dst ptrs, 2x rle_expand_list ($4DFA->$0C32, $4E09->$0D32)
-    0x7588,  # game_init_7588 — fill $32FD..$332C=$AA, then rle_decompress $6E6E -> $332D
-    # batch — score/HUD digit renderers (boot_standby_launch_driver front; compose native glyph/bcd):
-    0x49BA,  # render_bcd_digits_supp_all — Y=7,X=0 -> set_zsupp_pos_clear_delta (LDX#0 makes BEQ unconditional)
-    0x67C3,  # blit_numeric_readout — $0004!=0: 4 glyphs from $060D-$0610; else BCD of $006D (clamp $63) as 2 glyphs
-    # batch — DL LMS fill + cockpit dial-bar column (boot_standby_launch_driver front):
-    0x69F1,  # dl_lms_fill — copy $073D/$0793[X=$8B..$0086] pairs into ($C5)+Y (Y+=3), tail shift_object_table_up/ret_stub
-    0x43CB,  # draw_dial_bar_column — gate on Y vs $062E/8, set bar params, tail draw_object_column (entry Y)
-    # batch — the big lock-on indicator sprite drawer (boot_standby_launch_driver front, 311 bytes):
-    0x42A7,  # draw_player3_object — player-3 lock-on sprite: HPOS/size via bus_write, mask blit $0F1E/$0F71, RANDOM
-    0x8C58,  # build_player2_sprite — depth-scaled object/explosion P2 sprite builder (per-frame while object_anim_frame != 0)
-    0x4467,  # update_p3_indicator_stripe — rewrites the P3 scope-indicator PM buffer ($0F98) 50Hz when a P3 object/target is active
-    # batch — DL-build wrappers + initials BCD (now unblocked by dl_lms_fill/render_bcd_digits_supp_all):
-    0x69E5,  # dl_lms_build — set $C5/$C6=$300A, $0086=$56, tail dl_lms_fill
-    0x76CB,  # game_init_76CB — build the flight display list ($30xx-$32xx) + 2x build_row_addr_table/dl_lms_fill
-    0x5A63,  # setup_initials_ptr — $C5/$C6=$3694, BCD of $006D, $3694=0, tail render_bcd_digits_supp_all
-    # batch — the score/level HUD refresh driver:
-    0x3FFA,  # startup_init — refresh level/score/lives HUD digits (draw_digit_low_nibble/draw_2digit_value, ring_push)
-    # batch — DL index wrappers (now unblocked by dl_lms_build):
-    0x69E3,  # dl_index_dec — DEC $8B, tail dl_lms_build
-    0x69DD,  # dl_index_dec_or_reset — $8B=0 (LDA#0 makes BEQ unconditional), tail dl_lms_build
-    # batch — the 2D scaled-shape blitter (last portable boot_standby_launch_driver-front leaf):
-    0x7C9A,  # draw_scaled_shape — scale/blit a shape: div-by-subtraction count, nested row/col accum, mask bits -> plot_clipped_pixel
-    # batch — empty the front: the deferred/HW leaves (faithfulness, little/no speedup):
-    0x8181,  # reorder_cell_bits — interleave A + $0084 via ROL/ROR carry chain (result in A); unblocks alien_field0_fill/2
-    0x5A78,  # read_console_trig_delta — A = (CONSOL & 1) - TRIG0 (HW $D01F/$D010 via bus_read; result in A)
-    0x5D0D,  # validate_save_state — compare $3700/$3714 + 38-byte $37C7 vs $7BDA; result in Z (no mem writes)
-    0x4430,  # cockpit_dial_update — $006F=A, derive $0022 (0 or $4457[A+$0625]), tail draw_cockpit_dial_bar
-    # batch — HUD fill fields (unblocked by reorder_cell_bits):
-    0x8105,  # alien_field0_fill — pack 5 bytes ($85)+Y via reorder_cell_bits into $8F-$93 (or INC $0080)
-    0x8138,  # alien_field2_fill — copy/pack ($89)+Y into $8F-$9A per $292D flag (or INC $0082)
-    0x80C5,  # alien_shape_blit — clear $8F-$9F, fill 4 fields, compose cells via $BE00 + ($8B)/($8D), advance ptrs
-    # --- NATIVE APEX (2026-06-15): the orchestration apex, hand-written in rof_native.c.
-    #     NOT validated by `make validate` (spin-waits on VBI state / live input would hang
-    #     the harness) — verified on FS-UAE by behaviour.  Its __t6502 oracle is kept for
-    #     reference; the native twin replaces the spin-wait SPINWAIT-hooks with ds_frame().
-    0x5F1D,  # boot_standby_launch_driver — main display setup + Standby/attract idle loop + launch cinematic driver
-    0x3D48,  # game_main_loop — one-time game init + L_3e0f boot_standby_launch_driver + the in-game flight loop (never returns)
-    0x587B,  # standby_scoreboard_render — Standby/Title scoreboard render + input dispatch; tail-calls the live-input standby_level_select_loop / sound_retrigger_random loops + spins on $00E5 (would hang the harness)
-    # --- flight-init de-transpile (2026-06-22): the last transpiled orchestrator on the
-    #     game/level-init path.  Every leaf it calls is already native; this just sheds the
-    #     $73C8 body itself.  Like the apex it calls the wait_timer_4c_frames spin-pacer
-    #     (wait_frames) so it is NOT in `make validate` — verified on FS-UAE. ---
-    0x73C8,  # init_gameplay_state — per-game/level init: seed heading/arrays, compass, cockpit bars; tail cockpit_dial_update
-    # --- HW beam spin, hand-written in rof_native.c.  NOT in `make validate` (it busy-waits on
-    #     the live ANTIC VCOUNT / real Amiga beam, which the headless harness can't reproduce);
-    #     its __t6502 oracle is kept for reference only. ---
-    0x3C7B,  # wait_vcount_ge_7a — spin until VCOUNT ($D40B) >= $7A (beam-sync a DL/colour swap)
-    # --- frame-wait spin-pacers, hand-written in rof_native.c (2026-07-05).  NOT in
-    #     `make validate` (they busy-wait on RTCLOK, advanced async by the $4FF5 ISR, which
-    #     the headless harness can't reproduce); __t6502 oracles kept for reference only.
-    #     The clean twins fold the 0x3CB8 SPINWAIT-hook overshoot mitigation into plain C. ---
-    0x3CB1,  # wait_frames — PHA, wait frame_wait_count ($4C) frames, PLA (accumulator preserved)
-    0x3CB2,  # wait_timer_4c_frames — wait the caller-set frame_wait_count ($4C) count of vertical-blank periods
-    # --- enemy lock-on indicator animation cluster (2026-07-06): the 6-light targeting
-    #     indicator (#11, cells $3491-$3497).  Driven by both the standby VBI (planet
-    #     descent) and the flight VBI (via lock_on_indicator_dispatch); the native twins
-    #     raise platform_lockon_changed() at each cell write so the Amiga re-decodes them
-    #     (keeps the lights blinking through the descent — faithful to the Atari). ---
-    0x4225,  # lock_on_indicator_dispatch — gate on $0043: phase_advance vs lock_on_indicator_tick
-    0x4229,  # lock_on_indicator_tick — state machine on $007E (init / step / blink / reverse-fill)
-    0x4258,  # lock_on_indicator_fill_cells (lock_on_indicator_fill_cells) — fill the 6 lit glyphs $3492-$3497
-    0x4265,  # lock_on_indicator_step — advance one light per timer tick ($007E 1..7)
-    0x4285,  # lock_on_indicator_write_cell — write a glyph to $3491+Y, then ring_push_marked X=$12
-    0x428D,  # lock_on_indicator_return — empty RTS landing pad (shared exit)
-    0x428E,  # lock_on_indicator_phase_advance — reverse-fill phase driver ($007E >= $81)
-    # --- standby/launch tunnel-ring + door-scroll cinematic driver (2026-07-11):
-    #     these are pure mem[] 6502 logic (not Amiga-specific), so they move out of
-    #     rof_native_amiga.cpp into rof_native.c as faithful native twins.  The Amiga
-    #     dirty-band glue (g_tun*) draw_ring_frame_step publishes lives under
-    #     #ifdef ROF_PLATFORM_AMIGA; advance_history_6a4d's reorder_sprite_slot tail is
-    #     skipped on Amiga (#ifndef ROF_PLATFORM_AMIGA) to preserve the confirmed cinematic. ---
-    0x6AB5,  # add_multibyte_a1 — multi-byte accumulator add ($00A1..$00A4), returns top byte
-    0x6A4D,  # advance_history_6a4d — rotate the 6-byte colour ring $08D4-$08D9 + $0685 bump
-    0x670D,  # draw_ring_frame_step — one tunnel-ring frame-clear step (draw_symmetric_span_loop)
-    0x6A38,  # step_accum_add_75 — add $75, gate the ring step + ring rotate
-    0x6A8F,  # step_accum_sub_7e — reverse ring step: sub $7E, draw_symmetric_span_loop + g_tun* publish
-    0x69A9,  # dl_lms_scroll_up — shift top-half DL LMS entries up one slot
-    0x69C3,  # dl_lms_scroll_down — shift bottom-half DL LMS entries down one slot
-    0x6973,  # dl_lms_push_top — push a fresh top-edge LMS row pointer (X-=3)
-    0x698E,  # dl_lms_push_bottom — push a fresh bottom-edge LMS row pointer (Y+=3)
-    0x6953,  # scroll_terrain_dl — one door-open step: scroll both DL halves + push edges
-    # --- pilot-rescue state machine (2026-07-11): native-ize the cluster around
-    #     pilot_render ($7854) to understand + fix the Systems-off/rescue FREEZE
-    #     (the L_78d6<->L_792e hold loop stuck on $003D/$003E). Leaves-first. ---
-    0x4968,  # clear_pilot_rescue_state — clears $003E + pilot_visible/pilot_prev (entry A)
-    0x495F,  # reset_pilot_state_if_no_2830 — clears $003D if $2830==0, tail clear_pilot_rescue_state
-    0x4971,  # copy_display_params_to_buffer — copy 16 bytes $00CF..$00DE -> $07E9..$07F8
-    0x47A3,  # set_colpf0_from_flag — pick COLPF0 by Y bit5, tail save_color_clear_y_bit5 (entry Y)
-    # frame-driven colour-clear sweeps (validated via the opt-in RTCLOK-tick fixture):
-    0x6DF4,  # audf2_sweep_clear_colors — AUDF2 pitch sweep over frame_wait_count frames
-    0x7A89,  # clear_colors_sweep_5x — 5-pass colour-clear timer gated on $003E (load-bearing exit Z)
-    0x7A17,  # animate_clear_colors_timed — RTCLOK-gated colour-clear stepper (nested waits + RANDOM)
-    # batch 3 — message drivers (call native show_cockpit_message; entry regs):
-    0x4958,  # show_message_with_d8 — $00D8=$48, tail show_cockpit_message (entry Y id)
-    0x4956,  # show_message_id_a — $0072=A, tail show_message_with_d8 (entry A,Y)
-    0x493D,  # show_ace_or_message — ACE ($3A bit7) vs pilot message driver (entry Y)
-    # batch 3 — rescue FX loops (frame-driven; RTCLOK-tick fixture):
-    0x7B94,  # level_clear_fx_loop — INC $283C; 15x ring pairs + waits; $3C-iter RANDOM $DB flash
-    0x7EC7,  # alien_knock_setup_loop — rescue SFX/zoom setup + descending-pitch sweep (flight-snapshot fixture, $3E==0)
-    # batch 4 — the in-flight keyboard-command dispatcher:
-    0x4644,  # event_sequence_dispatcher — match keycode vs $4816, dispatch by mode/slot (flight-snapshot fixture)
-    # batch 5 — the pilot-rescue state machine (the hold loop lives here):
-    0x7854,  # pilot_render — pilot/rescue render + rescue state machine (validated $3E==0 path; loop inspection-only)
-    # batch 6 — the alien-creature animation/blit driver (jump-scare hot path):
-    0x7F85,  # alien_creature_animate_draw — 3-voice frame sequencer + shape-table setup + the row-blit draw loop
-}
+#
+# ⚠ Adding an address here is only HALF the job — register a fixture in
+# tools/validate_native.c too.  The names are emitted to src/gen/revs_validate_list.h and
+# the harness FAILS on a listed name with no fixture, because a fixture-less PASS runs
+# zero comparisons (docs/validation-harness.md).
+#
+# EMPTY until Phase 6 (docs/phases.md).  Phase 4 profiles the transliterated corpus on the
+# real A500 FIRST and lets the measurement pick the twins — the Atari port chose them by
+# reasoning and got the choice wrong (docs/perf-method.md).
+VALIDATE_FUNCS = set()
 VALIDATE_SUFFIX = '__t6502'
 
-HW_BASE, HW_END = 0xD000, 0xD800   # bus_read/bus_write range
+# ---------------------------------------------------------------------------
+# Address ranges
+# ---------------------------------------------------------------------------
+# BBC memory-mapped I/O: FRED $FC00 / JIM $FD00 / SHEILA $FE00 — one contiguous
+# window, matching bus.h's BBC_IO_LO/HI.  Reads and writes both route through the
+# platform.  (Revs never touches FRED or JIM, and never addresses the uPD7002 ADC
+# directly — the steering arrives via OSBYTE 128.  docs/static-map.md.)
+HW_BASE, HW_END = 0xFC00, 0xFF00
 
+# The MOS entry block.  A JSR/JMP in here is an OS call, not a target in the image:
+# it must become platform_mos_call(), or the generated C would call into a function
+# that does not exist.  Revs uses four entries at 17 sites — OSBYTE $FFF4, OSWORD $FFF1,
+# OSWRCH $FFEE, OSRDCH $FFE0 — plus `JMP ($FFFC)` (reset) in the loader stub, which is
+# not part of the running engine.  docs/static-map.md §MOS calls.
+MOS_BASE, MOS_END = 0xFF00, 0x10000
+
+# Sideways / language / MOS ROM.  Nothing in the engine should call into here; a call
+# that does is reported at gen time rather than silently emitted as a missing function.
+ROM_BASE = 0x8000
+
+# ---------------------------------------------------------------------------
 # Spin-wait hook injection.
-# When a backward branch loops back to one of these addresses, inject the
-# listed platform call(s) so the SDL event loop / VBI can fire.  Without
-# these, tight C spin-wait loops starve the platform and VBI never fires.
-# Key: 6502 address of the loop-back label. Value: C statement(s) to inject.
-SPINWAIT_HOOKS = {
-    # L_1A18: station_init attract loop — spins on the $0080 sync flag set by the
-    # attract VBI ($1B30).  Drive a frame each iteration so the attract animates and
-    # the VBI fires (sets $0080 + RTCLOK); without it the loop is a frozen tight spin.
-    0x1A18: 'platform_tick_vbi(); platform_render_frame();',
-    # VCOUNT position wait (wait_vcount_eq $3C75): spin until ANTIC VCOUNT $D40B == A (an EXACT-
-    # equality beam sync before a DL-pointer / VDSLST / hardware-register write).  Safe on the
-    # Atari (the 6502 polls VCOUNT thousands of times/frame under a SHORT VBI, so it never skips the
-    # target value).  On the Amiga the emulated VCOUNT ($D40B = rof_beam_line()>>1) is read far less
-    # often AND the loop can be preempted by the HEAVY flight VBI ($4FF5) — which is still the active
-    # VBI when boot_standby_launch_driver is re-entered on the mother-ship RETURN path (game_main_loop only sets
-    # the light $53CC VBI once at the top, not on the outer-loop re-entry) — so consecutive reads step
-    # OVER the target and the exact-equality test HANGS, blocking the $52D7 install (no launch
-    # cinematic on the return).  The beam sync guards writes that are copper-irrelevant on the Amiga
-    # anyway (cf. wait_vcount_ge_7a, a NO-OP here), so force the match: set cpu.A to the just-read
-    # VCOUNT so the following CMP is equal → exit immediately (mirrors the $3CB8 RTCLOK reached-or-
-    # passed hook).  Atari/SDL keep the faithful spin.
-    0x3C75: 'platform_poll_events();\n#ifdef ROF_PLATFORM_AMIGA\n    cpu.A = bus_read(0xD40B);\n#endif',
-    # RTCLOK frame wait (wait_timer_4c_frames $3CB2): "wait N frames" -- STA $14=0 then spin until
-    # RTCLOK_LOW($14) reaches target (A=$4C).  The 6502 uses an EXACT-equality exit (CMP $14 /
-    # BNE), safe on HW because the CPU polls $14 thousands of times/frame so it never skips a
-    # value.  On the Amiga port RTCLOK is advanced ASYNC by the $4FF5 flight ISR, and each spin
-    # iteration drives one render that can span several real VBIs (~5 frames) -- so $14 jumps by
-    # >1 per iteration and can step OVER the target.  The emitted CMP/BNE then keeps spinning
-    # while the ISR drags $14 a full 256-tick lap back to the exact value: a ~256-frame (~5s)
-    # stall, hit or missed by pure render-timing alignment = the run-by-run flight-transition
-    # variance (init_gameplay_state's 5 push_a_thunk waits).  A SPINWAIT hook can't change the
-    # emitted CMP/BNE, so make the exit reached-or-passed by clobbering the THROWAWAY cpu.A
-    # (PLA'd at $3CBC, never reused) to equal $14 once target is met/passed -- forcing the next
-    # CMP to match.  RTCLOK ($14) itself is left untouched (monotonic; keeps the few-tick
-    # overshoot).  While still SHORT, tick one real frame (poll-then-advance).  "Short" = target
-    # is 1..127 ahead of $14 ((A-$14)&0xFF < 0x80); else $14 has reached/passed it (incl. target
-    # 0, vobj_step_down's gauge-wrap row: $14==0==A -> immediate match, 0-frame wait, as on HW).
-    0x3CB8: 'if (mem[0x0014] != cpu.A) { if ((uint8_t)(cpu.A - mem[0x0014]) < 0x80u) { platform_tick_vbi(); platform_render_frame(); } else cpu.A = mem[0x0014]; }',  # RTCLOK frame wait
+# ---------------------------------------------------------------------------
+# When a backward branch loops back to one of these addresses, inject the listed
+# platform call(s) so the display/VBI can advance.  Without them a tight C spin-wait
+# starves the platform and the loop never exits.
+#
+# ⚠ ONLY for waits that own a whole frame boundary.  A raster-position wait is reset by
+# platform_tick_vbi() and could never exit (docs/transpiler.md).  Revs makes that trap
+# more likely than the Atari port did: its 50 Hz body is a USER VIA T1 *raster* timer that
+# reloads the palette mid-frame, so several of its waits are intra-frame by design.
+#
+# EMPTY on purpose.  `make gen` now REPORTS every candidate spin loop it finds (see
+# report_spin_candidates) instead of shipping guesses: the Atari port's hook list grew
+# reactively, one runtime hang at a time, and each entry needed a paragraph of
+# justification afterwards.  Phase 4 runs the corpus on the target and fills this in from
+# what actually stalls, with the loop's exit condition read out first.
+SPINWAIT_HOOKS = {}
 
-    # L_3eba: main flight loop in FUN_3d48 — one full frame of terrain gen,
-    # collision, enemy + game-state update per iteration, loops until the
-    # flight phase ($72) reaches 2. On real HW the VBI fires asynchronously;
-    # here it only fires when we tick it, so without a hook nothing renders
-    # during flight (display frozen) and VBI-driven state never advances.
-    0x3EBA: 'platform_tick_vbi(); platform_render_frame();',
-    0x3F6D: 'platform_tick_vbi(); platform_render_frame();',
-    0x4F43: 'platform_tick_vbi(); platform_render_frame();',
-    0x5C4B: 'platform_tick_vbi(); platform_render_frame();',
-    0x61C6: 'platform_tick_vbi(); platform_render_frame();',
-    0x63D7: 'platform_tick_vbi(); platform_render_frame();',
-    0x645B: 'platform_tick_vbi(); platform_render_frame();',
-    0x646C: 'platform_tick_vbi(); platform_render_frame();',
-    0x6478: 'platform_tick_vbi(); platform_render_frame();',
-    0x656E: 'platform_tick_vbi(); platform_render_frame();',
-    # L_6578: planet-rise loop in boot_standby_launch_driver — paces FUN_6ba8 every 2 VBI
-    # frames off RTCLOK ($14) until $1002==$FF. Without a VBI tick here the
-    # frame counter never advances and the loop spins forever (planet never
-    # rises into view after the star scroll).
-    0x6578: 'platform_tick_vbi(); platform_render_frame();',
-    0x79D0: 'platform_tick_vbi(); platform_render_frame();',
-    # L_78d6: TOP of pilot_render's whole rescue loop.  pilot_render's body is one big loop
-    # (L_78d6 ... L_7a14 -> goto L_78d6) that is entered ONLY while systems are off
-    # ($003E != 0) — with systems on, L_78f2 falls through to L_78fd and the function RETURNS
-    # instead of looping.  So systems-off during a rescue runs this loop (advancing the landing
-    # sequence $003D, playing knock SFX, colour sweeps) and is FAITHFUL: the real Atari does the
-    # same (measured 2026-07-12; at $003D==2 it even hard-hold-loops there too).  But unlike the
-    # $06FF sound-wait below (which HAS a yield), this loop had none, so on the Amiga renderFrame
-    # is never called for most of it and the display/cockpit freeze except during a knock sound.
-    # The Atari stays alive because ANTIC shows the persistent field + the VBI updates the cockpit.
-    # Restore that: drive one frame per loop iteration whenever the loop is active ($003E set).
-    # Gated on $003E so normal (systems-on) passes through $78d6 add NO spurious frames; the yield
-    # also lets the VBI process a later S/systems-on press (clears $003E -> loop exits -> resume).
-    0x78D6: 'if (mem[0x003E]) { platform_tick_vbi(); platform_render_frame(); }',
-    # L_7c08: animate_zoom_sequence's per-phase RTCLOK frame wait ("LDA #3; CMP $14; BCS L_7c08"
-    # -> spin until RTCLOK_LOW>=4, then reset $14=0).  This is the rescue "figure walks to the
-    # airlock" zoom (called ONLY from pilot_render's systems-off rescue path, L_79a2, so it never
-    # runs in normal flight).  Like the L_78d6 hold loop it had NO yield, so on the Amiga the display
-    # freezes through the ~4-frame-per-phase x 8-phase zoom -- the cockpit only ever refreshed during
-    # the footstep-SFX sound spin (L_79d0, which HAS a yield).  Drive one frame per RTCLOK-wait
-    # iteration so the zoom animates + the cockpit/PMG stay live (same fix as the knock hold loop).
-    # RTCLOK is advanced by the flight VBI (platform_tick_vbi), so the yield also lets the spin exit.
-    0x7C08: 'platform_tick_vbi(); platform_render_frame();',
-    # Attract-mode loops: need VBI to fire for animation, audio, and input.
-    # L_62EB: outer loop entry — tick VBI to drive the game
-    # L_62F6: inner input-poll loop — tick VBI here too so audio/rtclok work
-    # L_634A: tightest inner loop (FUN_5A78 check) — poll events to detect keys
-    0x62EB: 'platform_tick_vbi(); platform_render_frame();',
-    0x62F6: 'platform_tick_vbi(); platform_render_frame();',
-    0x634A: 'platform_poll_events();',
-    # L_596d: standby_scoreboard_render's game-over / high-score wait — "LDA $00E5; BNE L_596d" spins
-    # while the game-over countdown $00E5 (set to 5 by the death teardown $4F76) is nonzero,
-    # played out under the $53CC in-game VBI while the game-over jingle runs.  On real HW ANTIC
-    # keeps showing screen RAM and the VBI decrements $00E5, so the LAST/HIGH SCORE + level
-    # digits (already written into $365B before this spin) are visible the whole time.  This
-    # spin had NO yield, so on the Amiga renderFrame never ran during it: the Title-screen value
-    # cells (marked dirty by the digit writers) were never decoded into titleScreenBitmap until
-    # the spin exited and standby resumed rendering -> the score/level appeared only once the
-    # standby music started (measured 2026-07-13, PC frozen at rof_gen.c:5693, g_renderFrameCount
-    # stuck, cellLo/Hi=57/119 unconsumed).  Drive one frame per iteration so the game-over screen
-    # renders (and decodeTitleCells consumes the dirty range) immediately; the VBI advance also
-    # keeps decrementing $00E5 so the spin still exits.
-    0x596D: 'platform_tick_vbi(); platform_render_frame();',
-}
-
+# ---------------------------------------------------------------------------
 # Pre-instruction hook injection.
-# Unlike SPINWAIT_HOOKS (emitted at a branch-target LABEL), these inject a C
-# statement immediately BEFORE the instruction at the given address, with no
-# label.  Used for faithful hardware seams that land mid-instruction-stream
-# where no branch label exists (so a forced label would be unreferenced and
-# trip -Wunused-label).
+# ---------------------------------------------------------------------------
+# Unlike SPINWAIT_HOOKS (emitted at a branch-target LABEL), these inject a C statement
+# immediately BEFORE the instruction at the given address, with no label.  Used for
+# faithful hardware seams that land mid-instruction-stream where no branch label exists
+# (so a forced label would be unreferenced and trip -Wunused-label).
 # Key: 6502 address of the instruction to inject before.  Value: C statement(s).
-PRE_INSN_HOOKS = {
-    # $519c — the flight VBI's 1-instruction CLI window (vbi_handler_flight).
-    # The 6502 does `LDX #$FF` ($519a) then `CLI`($519c)/`SEI`($519d): if a POKEY
-    # KEYBOARD/BREAK IRQ ($D20E IRQEN=$C0, vector irq_handler $462A) fires inside
-    # that window it leaves the event id (KBCODE&$3F, or $80 for BREAK) in X, and
-    # $51a6 `BMI` skips the dispatch when X stays $FF (no key).  The Amiga has no
-    # such IRQ, so we deliver an in-flight command keycode here instead: the CIA-A
-    # keyboard handler stashes a pending Atari KBCODE, platform_flight_irq_key()
-    # returns+clears it (or $FF if none) — exactly mimicking the handler clobbering
-    # X.  No-op everywhere it returns $FF (SDL / validate headless): X stays $FF.
-    0x519c: '{ unsigned char _k = platform_flight_irq_key(); if (_k != 0xFFu) cpu.X = _k; }',
-    # (The creature-blit capture is NOT a hook here: $80C5 is a native twin (alien_shape_blit),
-    #  so the running game never executes the transpiled oracle — the capture lives in the native
-    #  twin in rof_native.c instead, gated on $0632 alien_knock_active.)
-    # NB: vbi_handler_flight ($4FF5) is now a native twin (rof_native.c) — only its __t6502
-    # validation oracle is transpiled here, so the $519c key-injection hook above still applies
-    # to the oracle (keeping its keyboard behaviour identical to the native).  The old
-    # top/atmo/hud/score/tail PRE_INSN_HOOKS sub-phase profilers were removed when the handler
-    # went native; the native is timed as a whole by flight_vbi_native (g_flightProf.isrLines)
-    # with integ/proj/sfx still sub-measured by their wrappers.
-}
+#
+# EMPTY on purpose — same reasoning as SPINWAIT_HOOKS.  The likely first entry is inside
+# the IRQ1V handler ($4E5C), whose band dispatch drives the display.
+PRE_INSN_HOOKS = {}
 
 # ---------------------------------------------------------------------------
 # Parse symbols.csv → addr_int → name
@@ -558,7 +221,7 @@ SYMBOL_NOTES = {}
 # addr_int → snake_case name, restricted to non-hardware *var* rows of
 # symbols.csv.  These are the named RAM/state addresses; the emitter rewrites a
 # direct single-byte access mem[0xADDR] → mem[MEM_<name>] (defined in the
-# generated AtariMem.h) so the transliterated C reads as named state rather than
+# generated mem.h) so the transliterated C reads as named state rather than
 # raw hex.  Indexed / indirect / 16-bit-pointer accesses keep raw hex.
 VAR_NAMES = {}
 
@@ -587,7 +250,7 @@ def mem_alias(addr):
     """Bare lvalue alias (e.g. `level_stage`) for a named non-hardware address,
     else None.  Used for DIRECT single-byte accesses, which read cleanest as
     `level_stage = cpu.A` (the alias expands to mem[MEM_level_stage] via the
-    ROF_MEM_ALIASES block of mem.h)."""
+    REVS_MEM_ALIASES block of mem.h)."""
     return VAR_NAMES.get(addr)
 
 def mem_index(addr):
@@ -604,12 +267,12 @@ def mem_base(addr):
     name = VAR_NAMES.get(addr)
     return f'MEM_{name}' if name else f'(0x{addr:04X})'
 
-def write_atari_mem_header(path):
-    """Generate AtariMem.h from VAR_NAMES (symbols.csv var rows).
+def write_mem_header(path):
+    """Generate src/gen/mem.h from VAR_NAMES (symbols.csv var rows).
 
     Emits MEM_<name> = 0xADDR offset macros (usable in C and C++), plus an
     OPT-IN block of bare `<name> -> mem[MEM_<name>]` lvalue aliases gated on
-    ROF_MEM_ALIASES (C files only; they would textually clobber any local of the
+    REVS_MEM_ALIASES (C files only; they would textually clobber any local of the
     same name, so each consumer opts in deliberately)."""
     items = sorted(VAR_NAMES.items())  # by address
     width = max((len(n) for n in VAR_NAMES.values()), default=1)
@@ -619,17 +282,20 @@ def write_atari_mem_header(path):
         '// AUTO-GENERATED by tools/transpile.py from disasm/symbols.csv (var rows).',
         '// Do NOT edit by hand — regenerate with `make gen`.',
         '//',
-        '// Named offsets into the shared mem[65536] snapshot of the Atari 6502',
+        '// Named offsets into the shared mem[65536] snapshot of the BBC Micro 6502',
         '// address space.  symbols.csv is the source of truth for the names.',
         '//',
         '//   MEM_<name>   numeric offset (C and C++).  Use as mem[MEM_level_stage].',
         '//   <name>       OPT-IN bare lvalue alias for mem[MEM_<name>]; enable with',
-        '//                `#define ROF_MEM_ALIASES` before including (C only — a macro',
+        '//                `#define REVS_MEM_ALIASES` before including (C only — a macro',
         '//                of a plain name would clobber same-named locals / C++ members).',
         '//',
-        '// These are general RAM / OS-shadow addresses, NOT just zero page (e.g.',
-        '// $08D4 color_ring, $2885 heading_lo) — named after the mem[] snapshot',
-        '// they index, not "zero page" (the old AtariZp.h was a misnomer).',
+        '// ⚠ ADDRESSES ARE IN THE RUNTIME IMAGE (disasm/revs_runtime.bin).  REVS2 unpacks',
+        '// itself before running, so the same address in revs_mem.bin holds something else',
+        '// entirely (docs/static-map.md).',
+        '//',
+        '// These are general RAM addresses, not just zero page (e.g. $05F4 the front-end',
+        '// state byte, $39E0 menu_key_tbl) — named after the mem[] snapshot they index.',
         '',
     ]
     for addr, name in items:
@@ -640,12 +306,12 @@ def write_atari_mem_header(path):
         lines.append(f'#define MEM_{name:<{width}} 0x{addr:04X}{comment}')
     lines += [
         '',
-        '#ifdef ROF_MEM_ALIASES',
+        '#ifdef REVS_MEM_ALIASES',
         '// Bare lvalue aliases: write `level_stage` for `mem[MEM_level_stage]`.',
     ]
     for addr, name in items:
         lines.append(f'#define {name:<{width}} mem[MEM_{name}]')
-    lines += ['#endif /* ROF_MEM_ALIASES */', '']
+    lines += ['#endif /* REVS_MEM_ALIASES */', '']
     path.write_text('\n'.join(lines))
     print(f'Wrote {path}  ({len(items)} named addresses)')
 
@@ -670,12 +336,24 @@ def func_lo(f):
 # the 8-byte normalization loop at $9D67-$9D6E was orphaned before the $9D6F
 # entry, breaking the terrain projection divide.
 #
-# Fix: find each maximal run of contiguous orphan instructions that FALLS
-# THROUGH (no terminator) directly into a known function's start, and prepend
-# that run to the function as a body prefix.  The function's named entry stays
-# at its original start (callers still enter there); translate_func emits a
-# `goto L_<entry>` so a normal call skips the prefix, while an internal branch
-# into the prefix becomes a local `goto`.
+# Fix: find each maximal run of contiguous orphan instructions that ABUTS a known
+# function's start, and prepend that run to the function as a body prefix.  The
+# function's named entry stays at its original start (callers still enter there);
+# translate_func emits a `goto L_<entry>` so a normal call skips the prefix, while an
+# internal branch into the prefix becomes a local `goto`.
+#
+# ⚠ A run is attached when EITHER it falls through into the function OR the function
+# branches back into it.  Requiring fall-through — as this originally did — silently
+# DROPPED three runs from Revs, and one of them was `JMP ($4F1D)` at $4E59: the IRQ1V
+# chain-on that hands an interrupt that is not Revs's own back to the handler it
+# displaced.  It is a 3-byte orphan run ending in a terminator, sitting immediately
+# before irq1v_handler ($4E5C) and reached by `BEQ $4E59` at $4E61 from inside it.
+# Dropping it produced C where a foreign interrupt fell off the end of the handler
+# instead of chaining — a plausible-looking corpus with the interrupt structure quietly
+# wrong, which is postmortem finding #1.1 all over again.  The other two are the same
+# shape: $262D-$2636 (BMI from $263A in FUN_2637) and $4978-$49CB (BEQ from $49D0 in
+# FUN_49ce).  Ending in a terminator is not evidence of not belonging: a prefix loop
+# body can perfectly well RTS or JMP out.
 # ---------------------------------------------------------------------------
 def attach_orphan_runs(all_insns, funcs, func_ranges):
     insns_sorted = sorted(all_insns, key=lambda i: i['addr'])
@@ -702,24 +380,43 @@ def attach_orphan_runs(all_insns, funcs, func_ranges):
     runs.append(cur)
 
     TERMINATORS = {'RTS', 'RTI', 'JMP', 'BRK'}
+
+    def branches_into(f, lo, hi):
+        """Does f's own body branch/JMP into [lo,hi]?  That makes the run part of f
+        however it ends — the branch is the evidence of ownership."""
+        for ins in f['insns']:
+            if ins['mnem'] not in BRANCH_FLAGS and ins['mnem'] != 'JMP':
+                continue
+            m = re.match(r'^0x([0-9a-fA-F]+)$', (ins['op'] or '').strip())
+            if m and lo <= int(m.group(1), 16) <= hi:
+                return True
+        return False
+
     for run in runs:
         last  = run[-1]
         after = last['addr'] + len(last['bytes'])
         lo, hi = run[0]['addr'], last['addr']
-        if last['mnem'] in TERMINATORS:
-            print(f'[orphan] run ${lo:04X}-${hi:04X} ends in {last["mnem"]} '
-                  f'(no fall-through) — left as-is')
-            continue
         tgt = funcs_by_start.get(after)
         if tgt is None:
-            print(f'[orphan] run ${lo:04X}-${hi:04X} falls through to ${after:04X} '
+            print(f'[orphan] run ${lo:04X}-${hi:04X} continues to ${after:04X} '
                   f'(not a function start) — left as-is')
+            continue
+        falls_through = last['mnem'] not in TERMINATORS
+        targeted      = branches_into(tgt, lo, hi)
+        if not falls_through and not targeted:
+            # Abuts a function but neither flows into it nor is branched to from it:
+            # unreferenced, so attaching it would invent a caller.  Report it — an
+            # orphan run nothing reaches is either dead code or a missed entry point,
+            # and both are worth a line of output (docs/entrypoint-sweep.md).
+            print(f'[orphan] run ${lo:04X}-${hi:04X} ends in {last["mnem"]} and '
+                  f'{tgt["name"]} never branches into it — left as-is (UNREACHABLE?)')
             continue
         tgt['insns']      = run + tgt['insns']
         tgt['body_start'] = lo
         tgt['skip_to']    = tgt['start']   # named entry; prefix runs above it
+        why = 'falls through' if falls_through else f'branch target from {tgt["name"]}'
         print(f'[orphan] attached run ${lo:04X}-${hi:04X} as prefix of '
-              f'{tgt["name"]} (entry ${tgt["start"]:04X})')
+              f'{tgt["name"]} (entry ${tgt["start"]:04X}) — {why}')
 
 # ---------------------------------------------------------------------------
 # Parse listing into a list of functions, each with instructions.
@@ -806,6 +503,23 @@ def parse_listing(path, symbols):
 # ---------------------------------------------------------------------------
 def is_hw(addr):
     return HW_BASE <= addr < HW_END
+
+# The MOS entries Revs actually calls, for the comment on each emitted seam.  Naming them
+# in the generated C is the difference between "some OS call" and "this is the steering
+# input" when someone reads revs_gen.c a phase later.  docs/static-map.md.
+MOS_ENTRY_NAMES = {
+    0xFFE0: 'OSRDCH', 0xFFE3: 'OSASCI', 0xFFE7: 'OSNEWL', 0xFFEE: 'OSWRCH',
+    0xFFF1: 'OSWORD', 0xFFF4: 'OSBYTE', 0xFFF7: 'OSCLI',
+    0xFFCE: 'OSFIND', 0xFFD1: 'OSGBPB', 0xFFD4: 'OSBPUT', 0xFFD7: 'OSBGET',
+    0xFFDA: 'OSARGS', 0xFFDD: 'OSFILE', 0xFFE9: 'OSWRCR',
+}
+
+def is_mos(addr):
+    """A JSR/JMP into the MOS entry block is an OS call, not a target in the image."""
+    return MOS_BASE <= addr < MOS_END
+
+def mos_name(addr):
+    return MOS_ENTRY_NAMES.get(addr, f'MOS ${addr:04X} — UNIDENTIFIED entry')
 
 def addr_read(addr):
     if is_hw(addr):
@@ -902,13 +616,15 @@ def operand_addr_expr(mode, addr, idx):
     return '0'
 
 def needs_bus_write(addr):
-    """True for addresses that must go through bus_write() so the
-    platform layer is notified.  Hardware ($D000-$D7FF) is always
-    routed.  OS page-2 shadow registers ($0200-$02FF) must also go
-    through bus_write so platform_shadow_write() is called — without
-    this, writes to VVBLKI ($0222/$0223), VDSLST ($0200/$0201),
-    SDMCTL ($022F), SDLSTL/H ($0230/$0231) etc. are silent and the
-    VBI/DLI handler dispatch never updates."""
+    """True for addresses that must go through bus_write() so the platform layer is
+    notified.  BBC I/O ($FC00-$FEFF) is always routed.  The OS vector page
+    ($0200-$02FF) must also go through bus_write so platform_shadow_write() is
+    called — without it the game claiming IRQ1V ($0204/$0205, written at
+    $4E4F/$4E54) is invisible to the platform and the 50 Hz handler is never
+    dispatched.  Revs claims IRQ1V and nothing else (docs/static-map.md), but the
+    whole page is routed because bus.h routes the whole page: the two must agree or
+    a write is notified in one build and not the other.
+    Reads of the vector page stay plain mem[] — matching bus_read."""
     return is_hw(addr) or (0x0200 <= addr < 0x0300)
 
 def write_expr(mode, addr, idx, val_expr):
@@ -935,12 +651,143 @@ BRANCH_FLAGS = {
     'BVS': 'cpu.V', 'BVC': '!cpu.V',
 }
 
+# ---------------------------------------------------------------------------
+# Self-modifying instruction emission (SMC_SITES)
+# ---------------------------------------------------------------------------
+# The three classes get three faithful runtime-dispatched forms.  Every one reads the
+# patched byte(s) out of mem[] — which holds the code image as well as the data, so the
+# emitted C sees exactly what the 6502 would fetch — and every one traps loudly on a
+# value the evidence does not cover.  Nothing here guesses.
+
+# Opcode-slot alternatives: how to emit a 1-byte opcode that is NOT the statically
+# decoded one.  Deliberately tiny — an opcode outside this table is an error at gen time,
+# not a silent mis-emission.
+SMC_ALT_OPCODE = {
+    'NOP': 'NOP();',
+    'INY': 'INY();',
+    'INX': 'INX();',
+    'DEY': 'DEY();',
+    'DEX': 'DEX();',
+    'RTS': 'return;',
+}
+
+def smc_dyn_ea(insn, mode, val):
+    """Effective-address expression for an instruction whose operand BYTES are patched.
+    Both operand bytes are read from mem[] even when only one is rewritten: the static
+    one reads back its own image value, and reading both keeps the emitted C honest
+    about where the address comes from.  Byte-wise, so it is endian-safe on the 68000."""
+    a = insn['addr']
+    if mode in ('abs', 'absx', 'absy'):
+        base = f'(uint16_t)(mem[0x{a+1:04X}] | (mem[0x{a+2:04X}] << 8))'
+    elif mode in ('zp', 'zpx', 'zpy'):
+        base = f'(uint16_t)mem[0x{a+1:04X}]'
+    else:
+        raise SystemExit(f'SMC: no dynamic EA form for mode {mode} at ${a:04X}')
+    if mode in ('absx', 'zpx'): return f'(uint16_t)({base} + cpu.X)'
+    if mode in ('absy', 'zpy'): return f'(uint16_t)({base} + cpu.Y)'
+    return base
+
+def emit_smc_operand(insn, mode, val, site):
+    """'operand' class: the opcode stands, the operand bytes are rewritten at run time.
+    Length is unchanged, so nothing downstream shifts — only the address/value moves."""
+    a, mnem = insn['addr'], insn['mnem']
+    frm = ' / '.join(site['from'])
+    patched = ' '.join(f'${b:04X}' for b in sorted(site['bytes']))
+    out = [f'    /* {a:04x} */',
+           f'    /* ⚠ SMC: operand byte(s) {patched} rewritten from {frm} — '
+           f'address/value read from mem[] at run time */']
+    if mode == 'imm':
+        src = f'mem[0x{a+1:04X}]'
+        if mnem in ('LDA', 'LDX', 'LDY'):
+            out.append(f'    LD{mnem[2]}({src});'); return out
+        if mnem in ('CMP', 'CPX', 'CPY', 'ADC', 'SBC', 'AND', 'ORA', 'EOR', 'BIT'):
+            out.append(f'    {mnem}({src});'); return out
+        raise SystemExit(f'SMC: no immediate form for {mnem} at ${a:04X}')
+    if mode in ('indy', 'indx'):
+        # The zero-page POINTER NUMBER itself is patched, so the store/load walks a
+        # different pointer pair per call.  ZP_IND_Y/X take an expression, so the
+        # patched byte drops straight in.
+        macro = 'ZP_IND_Y' if mode == 'indy' else 'ZP_IND_X'
+        ea = f'{macro}(mem[0x{a+1:04X}])'
+    else:
+        ea = smc_dyn_ea(insn, mode, val)
+    # A runtime EA cannot be range-tested at gen time, so route through the bus: it
+    # dispatches I/O vs mem[] itself and is correct for either.
+    if mnem in ('STA', 'STX', 'STY'):
+        out.append(f'    bus_write({ea}, cpu.{mnem[2]});')
+    elif mnem in ('LDA', 'LDX', 'LDY'):
+        out.append(f'    LD{mnem[2]}(bus_read({ea}));')
+    elif mnem in ('CMP', 'CPX', 'CPY', 'ADC', 'SBC', 'AND', 'ORA', 'EOR', 'BIT'):
+        out.append(f'    {mnem}(bus_read({ea}));')
+    elif mnem in ('INC', 'DEC', 'ASL', 'LSR', 'ROL', 'ROR'):
+        suffix = '_M'
+        out.append(f'    {mnem}{suffix}({ea});')
+    else:
+        raise SystemExit(f'SMC: no dynamic-EA form for {mnem} at ${a:04X}')
+    return out
+
+def emit_smc_opcode(insn, site, normal_lines):
+    """'opcode' class: a 1-byte opcode slot switched between known values.  Dispatch on
+    the byte in mem[]; the statically decoded value reuses the ordinary translation."""
+    a, mnem = insn['addr'], insn['mnem']
+    frm = ' / '.join(site['from'])
+    out = [f'    /* {a:04x} */',
+           f'    /* ⚠ SMC: opcode slot rewritten from {frm} — dispatched on mem[${a:04X}] */',
+           f'    switch (mem[0x{a:04X}]) {{']
+    if mnem not in site['values'].values():
+        raise SystemExit(f'SMC ${a:04X}: listing decodes {mnem}, which is not among the '
+                         f'documented values {sorted(site["values"].values())}')
+    for byte, alt in sorted(site['values'].items()):
+        out.append(f'    case 0x{byte:02X}:  /* {alt} */')
+        if alt == mnem:
+            # The decoded instruction: emit its ordinary translation (drop the address
+            # comment, which the switch header already carries).
+            for ln in normal_lines:
+                if ln.strip().startswith('/*'): continue
+                out.append('        ' + ln.strip())
+        elif alt in SMC_ALT_OPCODE:
+            out.append('        ' + SMC_ALT_OPCODE[alt])
+        else:
+            raise SystemExit(f'SMC ${a:04X}: no emission for alternative opcode {alt} — '
+                             f'add it to SMC_ALT_OPCODE with evidence')
+        if alt != 'RTS':
+            out.append('        break;')
+    out.append(f'    default: platform_smc_unhandled(0x{a:04X}, mem[0x{a:04X}]); return;')
+    out.append('    }')
+    return out
+
+def emit_smc_branch(insn, site, mnem, dispatch_targets):
+    """'branch' class: the branch OFFSET is rewritten, so the target is only known at run
+    time.  Compute it the way the 6502 does and dispatch over the enclosing function's
+    instruction starts.  An offset landing anywhere else (mid-instruction, or outside the
+    function) traps — a computed goto into the middle of an instruction has no meaning in
+    C, and pretending otherwise is how a wrong rasteriser ships looking plausible."""
+    a = insn['addr']
+    flag = BRANCH_FLAGS[mnem]
+    frm = ' / '.join(site['from'])
+    off = f'(int8_t)mem[0x{a+1:04X}]'
+    out = [f'    /* {a:04x} */',
+           f'    /* ⚠ SMC: branch offset at ${a+1:04X} rewritten from {frm} — '
+           f'target computed at run time */',
+           f'    if ({flag}) {{',
+           f'        uint16_t _smct = (uint16_t)(0x{a+2:04X} + {off});',
+           f'        switch (_smct) {{']
+    for t in dispatch_targets:
+        out.append(f'        case 0x{t:04X}: goto L_{t:04x};')
+    out.append(f'        default: platform_smc_unhandled(0x{a:04X}, _smct); return;')
+    out += ['        }', '    }']
+    return out
+
 def translate_insn(insn, func, all_funcs_by_start, symbols, local_targets,
-                   external_entries=None, wrapper_names=None):
+                   external_entries=None, wrapper_names=None,
+                   smc_dispatch_targets=None, _no_smc=False):
     """external_entries: {addr → container_func} from main pass-1 analysis.
-    wrapper_names:      {addr → C name} for mid-function entry wrappers."""
+    wrapper_names:      {addr → C name} for mid-function entry wrappers.
+    smc_dispatch_targets: sorted instruction starts of the enclosing function, used as
+                          the case set for a runtime-computed ('branch' SMC) target."""
     if external_entries is None:  external_entries = {}
     if wrapper_names   is None:  wrapper_names    = {}
+    if smc_dispatch_targets is None: smc_dispatch_targets = []
 
     addr  = insn['addr']
     mnem  = insn['mnem']
@@ -949,6 +796,22 @@ def translate_insn(insn, func, all_funcs_by_start, symbols, local_targets,
     mode, val, idx = parse_operand(op, nbytes, symbols)
 
     lines = [f'    /* {addr:04x} */']
+
+    # --- Self-modifying instruction? ---
+    site = None if _no_smc else SMC_SITES.get(addr)
+    if site is not None:
+        if site['kind'] == 'operand':
+            return emit_smc_operand(insn, mode, val, site)
+        if site['kind'] == 'branch':
+            if mnem not in BRANCH_FLAGS:
+                raise SystemExit(f'SMC ${addr:04X}: marked "branch" but decodes as {mnem}')
+            return emit_smc_branch(insn, site, mnem, smc_dispatch_targets)
+        if site['kind'] == 'opcode':
+            normal = translate_insn(insn, func, all_funcs_by_start, symbols,
+                                    local_targets, external_entries, wrapper_names,
+                                    smc_dispatch_targets, _no_smc=True)
+            return emit_smc_opcode(insn, site, normal)
+        raise SystemExit(f'SMC ${addr:04X}: unknown kind {site["kind"]!r}')
 
     def resolve_target_name(target):
         """Return the C name to call for a branch/JMP to target.
@@ -975,11 +838,18 @@ def translate_insn(insn, func, all_funcs_by_start, symbols, local_targets,
     # --- JMP ---
     if mnem == 'JMP':
         if mode == 'jmpind':
-            # Indirect JMP via ZP pointer (DLI chain: JMP ($E0) etc.)
-            # Dereference ZP at runtime and dispatch via the VBI/DLI table.
+            # Indirect JMP through a pointer cell.  Revs has exactly one — `JMP ($4F1D)`
+            # at $4E59, the IRQ1V chain-on to the handler it displaced — so the target is
+            # MOS ROM, not engine code, and the platform decides what that means.
+            # The high byte wraps WITHIN the page, reproducing the NMOS 6502's
+            # JMP-($xxFF) bug: a faithful emitter must not silently fix hardware.
+            hi = (val & 0xFF00) | ((val + 1) & 0x00FF)
             lines.append(f'    {{ uint16_t _t = (uint16_t)(mem[0x{val:04X}] | '
-                         f'((uint16_t)mem[0x{(val+1)&0xFF:04X}] << 8)); '
+                         f'((uint16_t)mem[0x{hi:04X}] << 8)); '
                          f'platform_indirect_jmp(_t); return; }}')
+        elif is_mos(val):
+            lines.append(f'    platform_mos_call(0x{val:04X});  /* {mos_name(val)} */')
+            lines.append('    return;')
         else:
             target = val
             if target in local_targets:
@@ -992,6 +862,11 @@ def translate_insn(insn, func, all_funcs_by_start, symbols, local_targets,
     # --- JSR ---
     if mnem == 'JSR':
         target = val
+        if is_mos(target):
+            # An OS entry, not a routine in the image: A/X/Y cross the seam through the
+            # global cpu struct, exactly as on the 6502.  docs/static-map.md §MOS calls.
+            lines.append(f'    platform_mos_call(0x{target:04X});  /* {mos_name(target)} */')
+            return lines
         name = resolve_target_name(target)
         lines.append(f'    {name}();')
         return lines
@@ -1200,9 +1075,20 @@ def compute_liveness(insns, symbols, local_targets):
     succ = []
     for i, ins in enumerate(insns):
         mnem, op, nbytes = ins['mnem'], ins['op'], len(ins['bytes'])
-        eff.append(insn_effects(mnem, parse_operand(op, nbytes, symbols)[0]))
+        # An SMC site's real instruction is only known at run time, so model it as
+        # reading AND clobbering everything: nothing around it can be folded away on the
+        # strength of a decode that the writers are free to change.
+        if ins['addr'] in SMC_SITES:
+            eff.append((set(ALL_LIVE), set(ALL_LIVE)))
+        else:
+            eff.append(insn_effects(mnem, parse_operand(op, nbytes, symbols)[0]))
         s = []
-        if mnem in BRANCH_FLAGS:
+        if ins['addr'] in SMC_SITES and SMC_SITES[ins['addr']]['kind'] == 'branch':
+            # Patched offset: the taken target is a run-time value, so treat it as an
+            # exit (all regs/flags live) plus the fall-through.
+            s.append('EXIT')
+            s.append(i + 1 if i + 1 < n else 'EXIT')
+        elif mnem in BRANCH_FLAGS:
             _, val, _ = parse_operand(op, nbytes, symbols)
             s.append(idx_by_addr[val] if val in local_targets and val in idx_by_addr else 'EXIT')
             s.append(i + 1 if i + 1 < n else 'EXIT')         # fall-through
@@ -1313,7 +1199,7 @@ def translate_func(func, all_funcs_by_start, symbols,
     if wrapper_names           is None: wrapper_names         = {}
 
     if start in MANUAL_FUNCS:
-        return [f'/* {name} @ ${start:04X}: manual implementation in rof_manual.c */']
+        return [f'/* {name} @ ${start:04X}: manual implementation in revs_manual.c */']
 
     func_end = func['end']
     # body_lo: lowest body address (start, or lower if an orphan prefix was
@@ -1338,8 +1224,25 @@ def translate_func(func, all_funcs_by_start, symbols,
     if skip_to is not None:
         local_targets.add(skip_to)
 
+    # A function containing a patched-offset branch (SMC 'branch') needs a label on EVERY
+    # instruction start it could reach, because the target is not known until run time.
+    # The switch in emit_smc_branch dispatches over exactly this set; -Wno-unused-label
+    # (both Makefiles) covers the labels no static branch reaches.
+    smc_dispatch_targets = []
+    if any(insn['addr'] in SMC_SITES and SMC_SITES[insn['addr']]['kind'] == 'branch'
+           for insn in insns):
+        for insn in insns:
+            a = insn['addr']
+            if a in external_entry_labels:      continue   # a different C function now
+            if first_split is not None and a >= first_split: continue
+            local_targets.add(a)
+            smc_dispatch_targets.append(a)
+        smc_dispatch_targets.sort()
+
     # Peephole: fold `LD{R}(#imm); ST{R} addr;` → `addr = imm;` (liveness-checked).
-    blocked_addrs = set(PRE_INSN_HOOKS) | set(SPINWAIT_HOOKS)
+    # Never fold a load/store pair that touches a self-modifying instruction: what it
+    # does is not what the listing says, so the liveness proof does not apply to it.
+    blocked_addrs = set(PRE_INSN_HOOKS) | set(SPINWAIT_HOOKS) | set(SMC_SITES)
     skip_loads, store_vals = compute_imm_store_folds(
         insns, symbols, local_targets, external_entry_labels, blocked_addrs)
 
@@ -1356,7 +1259,7 @@ def translate_func(func, all_funcs_by_start, symbols,
     def_name = name + VALIDATE_SUFFIX if start in VALIDATE_FUNCS else name
     if start in VALIDATE_FUNCS:
         lines.append(f'/* faithful transliteration kept as the validation oracle; '
-                     f'native {name}() lives in rof_native.c (see VALIDATE_FUNCS) */')
+                     f'native {name}() lives in revs_native.c (see VALIDATE_FUNCS) */')
     lines.append(f'void {def_name}(void) {{')
     # Orphan-prefix functions: the named entry is mid-body, so callers must
     # skip the prefix (which is reachable only via an internal backward branch).
@@ -1394,7 +1297,8 @@ def translate_func(func, all_funcs_by_start, symbols,
         if pre:
             lines.append(f'    {pre}')
         stmt_lines = translate_insn(insn, func, all_funcs_by_start, symbols,
-                                    local_targets, external_entries, wrapper_names)
+                                    local_targets, external_entries, wrapper_names,
+                                    smc_dispatch_targets)
         lines.extend(stmt_lines)
         last_insn = insn
 
@@ -1432,7 +1336,7 @@ def find_containing_func(addr, funcs):
 
 def main():
     symbols = load_symbols(SYM_CSV)
-    write_atari_mem_header(OUT_MEM)
+    write_mem_header(OUT_MEM)
     funcs, func_by_addr = parse_listing(LISTING, symbols)
     funcs_by_start = {f['start']: f for f in funcs}
 
@@ -1462,7 +1366,14 @@ def main():
             if val == 0:
                 continue
             # Is target within THIS function's range (incl. orphan prefix)?
-            if func_lo(func) <= val <= func['end']:
+            # A branch/JMP there is a plain local goto — but a JSR is NOT: it has to
+            # return, so it needs a real C function even when the caller and callee sit
+            # inside the same Ghidra function.  Revs has three such nested routines
+            # (Ghidra put FUN_1DA6/FUN_1DAF inside project_geometry and FUN_3273 inside
+            # FUN_3261); skipping them here emitted a call to a function that was never
+            # defined, which the C compiler caught — a reminder that the C type system is
+            # part of this pipeline's error detection, not an obstacle to it.
+            if func_lo(func) <= val <= func['end'] and mnem != 'JSR':
                 continue
             # Target is outside. Find which function contains it.
             container = find_containing_func(val, funcs)
@@ -1548,15 +1459,28 @@ def main():
             if val in funcs_by_start: continue
             if val in external_entries: continue
             if val in wrapper_names: continue
+            # A MOS entry is an OS call, emitted as platform_mos_call() — not a routine
+            # in the image, so it must never become a stub.
+            if is_mos(val): continue
             # Check if it falls in any function range
             if find_containing_func(val, funcs) is not None: continue
             jsr_targets_unknown.add(val)
+
+    # A call into ROM that is NOT a MOS entry cannot be emitted at all: there is no code
+    # for it in the image and no OS semantics to service.  Revs has none (17 MOS sites and
+    # nothing else — docs/static-map.md), so if one appears, the listing or the entry set
+    # changed and that is worth stopping for rather than emitting an empty stub.
+    rom_calls = sorted(a for a in jsr_targets_unknown if a >= ROM_BASE)
+    if rom_calls:
+        raise SystemExit('JSR/JMP into ROM that is not a MOS entry: '
+                         + ', '.join(f'${a:04X}' for a in rom_calls)
+                         + '\n  -> identify each before generating (docs/bbc-hardware.md).')
 
     # -----------------------------------------------------------------------
     # Forward declarations header — includes wrapper function names.
     # -----------------------------------------------------------------------
     decl_lines = [
-        '#ifndef ROF_DECL_H', '#define ROF_DECL_H',
+        '#ifndef REVS_DECL_H', '#define REVS_DECL_H',
         '/* Auto-generated by tools/transpile.py — do not edit */',
         '#include <stdint.h>', '',
         '/* Forward declarations for all 6502 routines */',
@@ -1564,7 +1488,7 @@ def main():
     for f in funcs:
         decl_lines.append(f'void {f["name"]}(void);')
         # Validated funcs: the plain name (declared above) is the native version
-        # in rof_native.c; also declare the transliterated reference twin.
+        # in revs_native.c; also declare the transliterated reference twin.
         if f['start'] in VALIDATE_FUNCS:
             decl_lines.append(f'void {f["name"]}{VALIDATE_SUFFIX}(void);')
     # Wrappers for mid-function entry points.
@@ -1583,7 +1507,7 @@ def main():
     for addr in sorted(jsr_targets_unknown):
         name = symbols.get(addr, f'FUN_{addr:04x}')
         decl_lines.append(f'void {name}(void);')
-    decl_lines += ['', '#endif /* ROF_DECL_H */']
+    decl_lines += ['', '#endif /* REVS_DECL_H */']
     OUT_H.write_text('\n'.join(decl_lines) + '\n')
     print(f'Wrote {OUT_H}')
 
@@ -1594,8 +1518,8 @@ def main():
         '/* Auto-generated by tools/transpile.py — do not edit */',
         '#include "../cpu/cpu.h"',
         '#include "../cpu/bus.h"',
-        '#include "rof_decl.h"',
-        '#define ROF_MEM_ALIASES  /* enable bare lvalue aliases (level_stage = ...) */',
+        '#include "revs_decl.h"',
+        '#define REVS_MEM_ALIASES  /* enable bare lvalue aliases (lap_counter = ...) */',
         '#include "mem.h"   /* MEM_<name> offsets + bare aliases for named RAM/state */',
         '#include "../platform/platform_c.h"',
         '',
@@ -1663,37 +1587,121 @@ def main():
     print(f'Wrote {OUT_C}  ({len(header)+len(body)} lines)')
 
     # -----------------------------------------------------------------------
-    # Manual implementations stub (only written once).
+    # revs_validate_list.h — the fixture-or-fail list (docs/validation-harness.md).
+    # Emitted even when empty: the harness includes it if present, and an empty list
+    # must mean "no twins yet", never "the list is stale".
     # -----------------------------------------------------------------------
-    if not OUT_MAN.exists():
+    val_names = []
+    for f in funcs:
+        if f['start'] in VALIDATE_FUNCS:
+            val_names.append(f['name'])
+    for addr, wname in sorted(wrapper_names.items()):
+        if addr in VALIDATE_FUNCS:
+            val_names.append(wname)
+    missing = sorted(set(VALIDATE_FUNCS) - {f['start'] for f in funcs} - set(wrapper_names))
+    if missing:
+        raise SystemExit('VALIDATE_FUNCS lists addresses that are not a function start '
+                         'or a mid-function entry in listing.txt: '
+                         + ', '.join(f'${a:04X}' for a in missing))
+    val_lines = [
+        '#pragma once',
+        '/* AUTO-GENERATED by tools/transpile.py from VALIDATE_FUNCS — do not edit.',
+        '   Every name here has a native twin in src/gen/revs_native.c and a __t6502',
+        '   transliteration oracle in src/gen/revs_gen.c.  tools/validate_native.c FAILS if',
+        '   a name here has no fixture: a fixture-less PASS runs zero comparisons.',
+        '   docs/validation-harness.md */',
+        'static const char* const VALIDATE_NAMES[] = {',
+    ]
+    val_lines += [f'    "{n}",' for n in sorted(val_names)]
+    val_lines += ['    0', '};', '']
+    OUT_VAL.write_text('\n'.join(val_lines) + '\n')
+    print(f'Wrote {OUT_VAL}  ({len(val_names)} validated names)')
+
+    # -----------------------------------------------------------------------
+    # Manual implementations stub — only when something actually needs one.
+    # SMC_SITES handles all 24 self-modifying sites generically, so this file does not
+    # exist by default.  Both Makefiles wildcard it, so its absence is fine.
+    # -----------------------------------------------------------------------
+    if MANUAL_FUNCS and not OUT_MAN.exists():
         manual = [
-            '/* Hand-written implementations for self-modifying / special-case routines.',
-            '   These are NOT auto-generated; edit this file freely. */',
+            '/* Hand-written implementations for routines the transliteration cannot',
+            '   represent.  NOT auto-generated; edit freely.  One per MANUAL_FUNCS entry,',
+            '   each with the evidence for why it cannot be transliterated.',
+            '   docs/faithfulness-seam.md */',
             '#include "../cpu/cpu.h"',
             '#include "../cpu/bus.h"',
-            '#include "rof_decl.h"',
+            '#include "revs_decl.h"',
             '#include <string.h>',
             '',
-            '/* screen_page_swap ($1A62): swaps 5 x 256-byte pages between $40xx and $06xx.',
-            '   The original code is self-modifying: it patches the high bytes of its own',
-            '   LDA/STA instructions to cycle through pages $40-$44 and $06-$0A.',
-            '   The semantics are straightforward so we translate the intent directly. */',
-            'void screen_page_swap(void) {',
-            '    int page;',
-            '    for (page = 0; page < 5; page++) {',
-            '        uint8_t *a = mem + ((0x40 + page) << 8);',
-            '        uint8_t *b = mem + ((0x06 + page) << 8);',
-            '        uint8_t tmp[256];',
-            '        memcpy(tmp, a,   256);',
-            '        memcpy(a,   b,   256);',
-            '        memcpy(b,   tmp, 256);',
-            '    }',
-            '}',
         ]
+        for a in sorted(MANUAL_FUNCS):
+            manual.append(f'/* TODO: {symbols.get(a, f"FUN_{a:04x}")} @ ${a:04X} */')
         OUT_MAN.write_text('\n'.join(manual) + '\n')
         print(f'Wrote {OUT_MAN}  (manual stubs)')
-    else:
+    elif OUT_MAN.exists():
         print(f'Skipped {OUT_MAN}  (already exists)')
+
+    # -----------------------------------------------------------------------
+    # Gen-time reports.  These exist so the things that bit the Atari port are visible
+    # from the first generation instead of being discovered one runtime hang at a time.
+    # -----------------------------------------------------------------------
+    report_smc_coverage(funcs)
+    report_spin_candidates(funcs, symbols)
+
+# ---------------------------------------------------------------------------
+# Reports
+# ---------------------------------------------------------------------------
+def report_smc_coverage(funcs):
+    """Every SMC_SITES address must land on a decoded instruction start, and every
+    routine that contains one is named.  A site that does not match an instruction is a
+    hard failure: it means the listing moved under the table (a re-import, a different
+    track's runtime image) and the emitted rasteriser would be quietly wrong."""
+    starts = {}
+    for f in funcs:
+        for ins in f['insns']:
+            starts[ins['addr']] = f
+    stale = sorted(a for a in SMC_SITES if a not in starts)
+    if stale:
+        raise SystemExit('SMC_SITES addresses are not instruction starts in listing.txt: '
+                         + ', '.join(f'${a:04X}' for a in stale)
+                         + '\n  -> re-check against `make sweep` (docs/static-map.md).')
+    by_kind = defaultdict(int)
+    for site in SMC_SITES.values():
+        by_kind[site['kind']] += 1
+    owners = sorted({starts[a]['name'] for a in SMC_SITES})
+    print(f'SMC: {len(SMC_SITES)} patched instructions emitted as runtime-dispatched '
+          f'({", ".join(f"{k}={v}" for k, v in sorted(by_kind.items()))}) '
+          f'in {len(owners)} routines: {", ".join(owners)}')
+
+def report_spin_candidates(funcs, symbols):
+    """List the tight loops that are candidates for a SPINWAIT hook, instead of guessing
+    at hooks up front.  A candidate is a backward branch whose whole loop body contains no
+    JSR and at least one memory read — i.e. it can only exit when something ELSE changes
+    memory, which under a single-threaded C port is nothing.  Reported, not hooked:
+    Revs's 50 Hz body is a raster-timed User VIA T1 interrupt, so some of these are
+    intra-frame waits where a platform_tick_vbi() would prevent the exit it is meant to
+    enable (docs/transpiler.md §Spin-waits and hooks)."""
+    cands = []
+    for f in funcs:
+        idx = {ins['addr']: i for i, ins in enumerate(f['insns'])}
+        for i, ins in enumerate(f['insns']):
+            if ins['mnem'] not in BRANCH_FLAGS: continue
+            _, tgt, _ = parse_operand(ins['op'], len(ins['bytes']), symbols)
+            if tgt not in idx or idx[tgt] > i: continue          # forward branch
+            body = f['insns'][idx[tgt]:i + 1]
+            if len(body) > 8: continue                            # not a tight spin
+            if any(b['mnem'] in ('JSR', 'JMP') for b in body): continue
+            reads = [b for b in body if b['mnem'] in
+                     ('LDA', 'LDX', 'LDY', 'BIT', 'CMP', 'CPX', 'CPY', 'INC', 'DEC')]
+            if not reads: continue
+            # A loop that only touches registers is a delay, not a wait on state.
+            if not any(re.search(r'0x[0-9a-f]+', b['op'] or '') for b in reads): continue
+            cands.append((tgt, ins['addr'], f['name'], len(body),
+                          ' ; '.join(f'{b["mnem"]} {b["op"]}'.strip() for b in body)))
+    print(f'spin-wait candidates: {len(cands)} tight backward loops with no JSR '
+          f'(SPINWAIT_HOOKS is empty on purpose — Phase 4 fills it from what stalls)')
+    for tgt, br, fname, n, txt in sorted(cands):
+        print(f'  ${tgt:04X}..${br:04X}  {fname:<28} {n} insn  {txt}')
 
 if __name__ == '__main__':
     main()
