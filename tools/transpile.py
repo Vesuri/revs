@@ -1328,7 +1328,8 @@ def compute_imm_store_folds(insns, symbols, local_targets, external_entry_labels
 # ---------------------------------------------------------------------------
 def translate_func(func, all_funcs_by_start, symbols,
                    external_entry_labels=None,
-                   external_entries=None, wrapper_names=None):
+                   external_entries=None, wrapper_names=None,
+                   unit_addrs=None, dispatch_entries=None):
     """Translate one 6502 function to C.
 
     external_entry_labels: set of addresses within this function that are
@@ -1337,6 +1338,13 @@ def translate_func(func, all_funcs_by_start, symbols,
     tail-call to the corresponding wrapper, so that external callers can
     invoke the correct code slice directly.  They are NOT emitted as goto
     labels in the container — instead they become function calls.
+
+    unit_addrs / dispatch_entries: REGION mode (build_regions).  A region is a set of
+    segments that form a control-flow cycle, emitted as ONE function so the cycle is a goto
+    loop instead of unbounded mutual recursion.  `unit_addrs` is every instruction address in
+    the region — it replaces the [lo, hi] range test when deciding what is local, because a
+    region's segments need not be adjacent in memory.  `dispatch_entries` are the region's
+    entry addresses: the function takes the 6502 entry address and switches to its label.
     """
     start = func['start']
     name  = func['name']
@@ -1360,13 +1368,25 @@ def translate_func(func, all_funcs_by_start, symbols,
     # in a different C function and cannot be reached via goto.
     first_split = min(external_entry_labels) if external_entry_labels else None
     local_targets = set()
+
+    def is_local(val):
+        """In region mode membership is by address set — a region's segments need not be
+        adjacent, so a range test would wrongly claim the gaps between them."""
+        if unit_addrs is not None:
+            return val in unit_addrs
+        if not (body_lo <= val <= func_end) or val in external_entry_labels:
+            return False
+        return first_split is None or val < first_split
+
     for insn in insns:
         mnem, op, nbytes = insn['mnem'], insn['op'], len(insn['bytes'])
         if mnem in BRANCH_FLAGS or mnem == 'JMP':
             mode, val, idx = parse_operand(op, nbytes, symbols)
-            if body_lo <= val <= func_end and val not in external_entry_labels:
-                if first_split is None or val < first_split:
-                    local_targets.add(val)
+            if mode != 'jmpind' and is_local(val):
+                local_targets.add(val)
+    # Region entries need labels for the dispatch prologue to reach them.
+    if dispatch_entries:
+        local_targets.update(dispatch_entries)
     # The named entry needs an L_ label so the prefix-skipping goto can reach it.
     if skip_to is not None:
         local_targets.add(skip_to)
@@ -1407,7 +1427,15 @@ def translate_func(func, all_funcs_by_start, symbols,
     if start in VALIDATE_FUNCS:
         lines.append(f'/* faithful transliteration kept as the validation oracle; '
                      f'native {name}() lives in revs_native.c (see VALIDATE_FUNCS) */')
-    lines.append(f'void {def_name}(void) {{')
+    if dispatch_entries:
+        lines.append(f'void {def_name}(uint16_t _entry) {{')
+        lines.append('    switch (_entry) {')
+        for e in dispatch_entries:
+            lines.append(f'    case 0x{e:04X}: goto L_{e:04x};')
+        lines.append(f'    default: platform_bad_region_entry(0x{start:04X}, _entry); return;')
+        lines.append('    }')
+    else:
+        lines.append(f'void {def_name}(void) {{')
     # Orphan-prefix functions: the named entry is mid-body, so callers must
     # skip the prefix (which is reachable only via an internal backward branch).
     if skip_to is not None:
@@ -1422,8 +1450,24 @@ def translate_func(func, all_funcs_by_start, symbols,
     for _ins in insns:
         if _lo <= _ins['addr'] <= _hi and _ins['mnem'] == 'JSR':
             phase_ids[_ins['addr']] = len(phase_ids) + 1
+    expect = None      # where the PREVIOUS instruction falls through to
     for idx, insn in enumerate(insns):
         addr = insn['addr']
+        # ⚠ A region's segments need not be adjacent in memory, so emitting its instructions
+        # in address order can jump over a gap.  C would fall straight through the seam and
+        # silently execute the wrong instruction next, so make the 6502's real fall-through
+        # explicit whenever the address is not the one the previous instruction reaches.
+        if (expect is not None and addr != expect
+                and last_insn is not None and last_insn['mnem'] not in TERMINATORS):
+            if is_local(expect):
+                lines.append(f'    goto L_{expect:04x};  /* fall-through across a gap */')
+                local_targets.add(expect)
+            else:
+                tgt = all_funcs_by_start.get(expect)
+                nm = (tgt['name'] if tgt else wrapper_names.get(
+                          expect, symbols.get(expect, f'FUN_{expect:04x}')))
+                lines.append(f'    {nm}(); return;  /* fall-through out of the region */')
+        expect = addr + len(insn['bytes'])
         # Peephole: a folded load is dropped entirely (its value moves into the
         # following store); the store is rewritten to assign the literal directly.
         if idx in skip_loads:
@@ -1639,6 +1683,11 @@ def main():
                          + '\n  -> identify each before generating (docs/bbc-hardware.md).')
 
     # -----------------------------------------------------------------------
+    # ⭐ Group cyclic segment groups into regions BEFORE the declarations are written: a
+    # region needs its own prototype, and every name it absorbs becomes a thin wrapper.
+    regions, region_of = build_regions(funcs, external_entries, symbols)
+    check_split_cycles(regions, region_of, funcs, external_entries, symbols)
+
     # Forward declarations header — includes wrapper function names.
     # -----------------------------------------------------------------------
     decl_lines = [
@@ -1653,6 +1702,12 @@ def main():
         # in revs_native.c; also declare the transliterated reference twin.
         if f['start'] in VALIDATE_FUNCS:
             decl_lines.append(f'void {f["name"]}{VALIDATE_SUFFIX}(void);')
+    # Region bodies: one C function per cyclic segment group, entered by 6502 address.
+    if regions:
+        decl_lines.append('')
+        decl_lines.append('/* Merged loop regions (build_regions) — entered by 6502 address */')
+        for r in regions:
+            decl_lines.append(f'void {r["name"]}(uint16_t entry);')
     # Wrappers for mid-function entry points.
     decl_lines.append('')
     decl_lines.append('/* Wrappers for cross-function branch/JMP entry points */')
@@ -1687,10 +1742,30 @@ def main():
         '#include "../platform/probe.h"   /* PROBE_PHASE(): main-loop phase brackets */',
         '',
     ]
-    check_split_cycles(funcs, external_entries, wrapper_names, symbols)
-
     body = []
+    # ⭐ Region bodies first: one C function per cyclic segment group, entered by address.
+    # Every name that used to own one of those segments becomes a thin wrapper below, so
+    # callers, symbols.csv names and the main-loop phase brackets are all unchanged.
+    for r in regions:
+        pseudo = {'start': r['lo'], 'end': r['hi'], 'name': r['name'], 'insns': r['insns']}
+        body.append(f'/* {r["name"]}: ${r["lo"]:04X}-${r["hi"]:04X} — a 6502 loop whose '
+                    f'segments would otherwise tail-call each other in a cycle.  Entries: '
+                    + ', '.join(f'${a:04X}' for a in r['entries']) + '.')
+        body.append(f'   See build_regions() in tools/transpile.py. */')
+        body.extend(translate_func(pseudo, funcs_by_start, symbols,
+                                   external_entry_labels=set(),
+                                   external_entries=external_entries,
+                                   wrapper_names=wrapper_names,
+                                   unit_addrs={i['addr'] for i in r['insns']},
+                                   dispatch_entries=r['entries']))
+
     for f in funcs:
+        if f['start'] in region_of:
+            r = region_of[f['start']]
+            nm = f['name'] + (VALIDATE_SUFFIX if f['start'] in VALIDATE_FUNCS else '')
+            body.append(f'void {nm}(void) {{ {r["name"]}(0x{f["start"]:04X}); }}')
+            body.append('')
+            continue
         ext_labels = external_labels_for_func.get(f['start'], set())
         body.extend(translate_func(f, funcs_by_start, symbols,
                                    external_entry_labels=ext_labels,
@@ -1714,6 +1789,15 @@ def main():
     for addr in sorted(external_entries):
         container  = external_entries[addr]
         wname      = wrapper_names[addr]
+
+        # This segment belongs to a region: its code lives in the region body, so the name
+        # becomes a thin wrapper that enters the region at this address.
+        if addr in region_of:
+            r = region_of[addr]
+            nm = wname + (VALIDATE_SUFFIX if addr in VALIDATE_FUNCS else '')
+            body.append(f'void {nm}(void) {{ {r["name"]}(0x{addr:04X}); }}')
+            body.append('')
+            continue
 
         # Build an instruction index for the container.
         insns = container['insns']
@@ -1839,89 +1923,174 @@ def report_smc_coverage(funcs):
           f'({", ".join(f"{k}={v}" for k, v in sorted(by_kind.items()))}) '
           f'in {len(owners)} routines: {", ".join(owners)}')
 
-def check_split_cycles(funcs, external_entries, wrapper_names, symbols):
-    """Fail generation if a 6502 LOOP has been cut into a cycle of C tail calls.
+def build_segments(funcs, external_entries, symbols):
+    """Split the corpus into SEGMENTS — the units the emitter actually produces.
 
-    A container split at a mid-function entry becomes separate C functions joined by
-    `name(); return;`.  That is semantically exact and structurally fine for a *call*.  It is
-    NOT fine for a **loop**: if the code falls through segments S1→S2→…→Sn and Sn jumps back
-    to S1, the C form is mutual recursion, and GCC does not eliminate these tail calls on
-    either target.  The stack then grows with the iteration count — measured 300-1000 live
-    frames on the host for the $7B00 overlay's 41-block unrolled chain, and 0 painted frames
-    in 20 s on the Amiga, where it is a stack-overflow risk rather than merely slow.
+    A container is cut at every mid-function entry point, so what comes out of `main()` is
+    already one C function per segment: `[func_lo, first_split)` for the container body, then
+    `[entry, next_split)` for each split function.  Making that explicit here is what lets
+    cycles among segments be found and fixed.
 
-    Ghidra's own function boundaries happen never to cut a loop in this binary, so this has
-    been latent the whole time; the runtime-built overlay is the first thing to hit it.  Cheap
-    to detect, invisible at runtime until it corrupts a stack — so it stops the build.
+    Returns (segments, seg_of) where segments is {seg_start: {'lo','hi','insns','func'}} and
+    seg_of(addr) -> seg_start or None.
     """
-    terminators = {'RTS', 'RTI', 'JMP', 'BRK'}
-    # Segment boundaries per container, in address order.
     splits = defaultdict(list)
     for addr, container in external_entries.items():
         splits[container['start']].append(addr)
 
-    # ⚠ The graph must be GLOBAL, not per-container.  A cycle can run through several
-    # functions: the $7B00 overlay's loop is $7BF7 -> $7C00 -> $7D56 -> $7E00 -> $7EF3 ->
-    # $7BF7, and $7C00/$7E00/$7EF3 are separate *functions*, so a container-local graph sees
-    # none of it.  Nodes are segment starts across the whole corpus.
-    seg_starts = set()
+    segments = {}
     for f in funcs:
-        seg_starts.add(f['start'])
-        seg_starts.update(splits.get(f['start'], []))
-    ordered = sorted(seg_starts)
+        bounds = sorted(splits.get(f['start'], []))
+        starts = [func_lo(f)] + bounds
+        ends   = bounds + [f['end'] + 1]
+        for s, e in zip(starts, ends):
+            segments[s] = {'lo': s, 'hi': e - 1, 'func': f,
+                           'insns': [i for i in f['insns'] if s <= i['addr'] < e]}
 
-    def seg_of(a):
-        import bisect
-        i = bisect.bisect_right(ordered, a) - 1
-        return ordered[i] if i >= 0 else None
+    ordered = sorted(segments)
+    owner = {}
+    for s in ordered:
+        for i in segments[s]['insns']:
+            owner[i['addr']] = s
+    return segments, owner
 
-    edges = defaultdict(set)     # segment start -> segment starts it tail-calls
-    for f in funcs:
-        for insn in f['insns']:
-            src = seg_of(insn['addr'])
+
+def segment_graph(segments, owner, symbols):
+    """Edges between segments that the emitter renders as `name(); return;`.
+
+    ⚠ GLOBAL, not per-container.  A cycle can run through several *functions*: the $7B00
+    overlay's loop is $7BF7 -> $7C00 -> $7D56 -> $7E00 -> $7EF3 -> $7BF7, and three of those
+    are separate function starts, so a container-local graph sees none of it.
+
+    A JSR is NOT an edge: it returns, so it can never form a growing chain.
+    """
+    terminators = {'RTS', 'RTI', 'JMP', 'BRK'}
+    edges = defaultdict(set)
+    for s, seg in segments.items():
+        for insn in seg['insns']:
             mode, target, _ = parse_operand(insn['op'], len(insn['bytes']), symbols)
-            # A JSR is a genuine call: it returns, so it never forms a growing chain.
             if insn['mnem'] in BRANCH_FLAGS or insn['mnem'] == 'JMP':
-                if mode != 'jmpind' and target in seg_starts:
-                    dst = seg_of(target)
-                    if dst != src:
-                        edges[src].add(dst)
-            # Fall-through into the next segment is emitted as a tail call too.
+                # A transfer to a segment START is a tail call; into a segment's interior it
+                # is a goto, which cannot grow the stack.
+                if mode != 'jmpind' and target in segments and owner.get(target) != s:
+                    edges[s].add(target)
             nxt = insn['addr'] + len(insn['bytes'])
-            if insn['mnem'] not in terminators and nxt in seg_starts and seg_of(nxt) != src:
-                edges[src].add(seg_of(nxt))
+            if insn['mnem'] not in terminators and nxt in segments and owner.get(nxt) != s:
+                edges[s].add(nxt)
+    return edges
 
-    # Any cycle in that graph is a loop compiled as unbounded recursion.
-    cycles, state = [], {}
 
-    def walk(n, path):
-        state[n] = 1
-        for m in sorted(edges.get(n, ())):
-            if state.get(m) == 1:
-                cycles.append(path[path.index(m):] + [m])
-            elif state.get(m) is None:
-                walk(m, path + [m])
-        state[n] = 2
+def strongly_connected(nodes, edges):
+    """Tarjan.  Returns only the components that actually contain a cycle."""
+    index, low, on_stack, stack, order, out = {}, {}, set(), [], [], []
+    counter = [0]
+    for root in nodes:
+        if root in index:
+            continue
+        work = [(root, iter(sorted(edges.get(root, ()), key=str)))]
+        index[root] = low[root] = counter[0]; counter[0] += 1
+        stack.append(root); on_stack.add(root)
+        while work:
+            node, it = work[-1]
+            advanced = False
+            for nxt in it:
+                if nxt not in index:
+                    index[nxt] = low[nxt] = counter[0]; counter[0] += 1
+                    stack.append(nxt); on_stack.add(nxt)
+                    work.append((nxt, iter(sorted(edges.get(nxt, ()), key=str))))
+                    advanced = True
+                    break
+                if nxt in on_stack:
+                    low[node] = min(low[node], index[nxt])
+            if advanced:
+                continue
+            work.pop()
+            if work:
+                low[work[-1][0]] = min(low[work[-1][0]], low[node])
+            if low[node] == index[node]:
+                comp = []
+                while True:
+                    w = stack.pop(); on_stack.discard(w); comp.append(w)
+                    if w == node:
+                        break
+                if len(comp) > 1 or node in edges.get(node, ()):
+                    out.append(sorted(comp))
+    return out
 
-    for n in sorted(edges):
-        if state.get(n) is None:
-            walk(n, [n])
 
-    if not cycles:
-        print(f'split-cycle check: clean ({len(external_entries)} mid-function entries)')
+def build_regions(funcs, external_entries, symbols):
+    """Group every cyclic set of segments into ONE emission unit — a REGION.
+
+    ⭐ THE FIX for the tail-call-cycle defect.  A container split at a mid-function entry is
+    emitted as a separate C function reached by `name(); return;`.  That is exact for a CALL
+    and ruinous for a LOOP: fall through S1..Sn, jump back to S1, and the C form is mutual
+    recursion which GCC flattens on neither target — the stack grows with the iteration count
+    and every iteration pays call overhead.  Two such loops shipped in every build up to
+    Phase 4, one of them the per-pixel span store in project_geometry.
+
+    A region is emitted as ONE C function taking the 6502 entry address, with a `switch`
+    prologue that `goto`s the right label.  Every transfer inside it is then a goto, so the
+    loop is a loop.  Each entry keeps its own name as a thin wrapper, so callers and the
+    profile are unchanged.  Segments in no cycle are untouched — this changes nothing about
+    the ~99% of the corpus that was always fine.
+
+    Returns (regions, region_of): regions is a list of dicts with 'name'/'entries'/'insns',
+    region_of maps a segment start -> its region.
+    """
+    segments, owner = build_segments(funcs, external_entries, symbols)
+    edges = segment_graph(segments, owner, symbols)
+    comps = strongly_connected(sorted(segments), edges)
+
+    regions, region_of = [], {}
+    for comp in comps:
+        insns = sorted((i for s in comp for i in segments[s]['insns']),
+                       key=lambda i: i['addr'])
+        r = {'name': f'region_{comp[0]:04x}', 'entries': comp, 'insns': insns,
+             'lo': insns[0]['addr'], 'hi': max(i['addr'] + len(i['bytes']) - 1
+                                               for i in insns)}
+        regions.append(r)
+        for s in comp:
+            region_of[s] = r
+    return regions, region_of
+
+
+def check_split_cycles(regions, region_of, funcs, external_entries, symbols):
+    """Verify the regions actually removed every tail-call cycle, and report what was merged.
+
+    Runs the segment analysis again with each region collapsed to a single node.  Anything
+    still cyclic would compile to unbounded mutual recursion, and that is a hard stop: it is
+    invisible at runtime until it corrupts a stack.  (Before build_regions() existed this
+    check could only warn, because the defect predated it — docs/static-map.md §Open items 9.)
+    """
+    if not regions:
+        print('split-cycle check: clean (no cyclic segment groups)')
         return
-    # ⚠ A WARNING, NOT AN ERROR, and only because this defect PREDATES the check: the
-    # $1DE5/$1DE8 span loop has been in every build, including the one that produced
-    # docs/perf-method.md's 2.2 FPS baseline.  Hard-failing would block the repo on a bug the
-    # check merely revealed.  It stays loud, and it is an open item — do not let it go quiet.
-    print(f'⚠ split-cycle check: {len(cycles)} 6502 LOOP(S) SPLIT INTO A CYCLE OF C TAIL '
-          f'CALLS — each iteration nests a frame instead of looping, so the stack grows with '
-          f'the iteration count and the loop runs at call speed:')
-    for cyc in cycles:
-        print('    ' + ' -> '.join(f'${a:04X}' for a in cyc))
-    print('  Each region needs to be ONE C function with a dispatch prologue, or split '
-          'functions must emit their FULL slice with local labels instead of cutting at the '
-          'next split point.  docs/static-map.md §Open items 9.')
+    print(f'split-cycle fix: {len(regions)} 6502 loop(s) merged into single C functions with '
+          f'a dispatch prologue (were cycles of tail calls — see build_regions):')
+    for r in regions:
+        print(f'  {r["name"]}  ${r["lo"]:04X}-${r["hi"]:04X}  '
+              f'{len(r["insns"])} insn, entries: '
+              + ', '.join(f'${a:04X}' for a in r['entries']))
+
+    segments, owner = build_segments(funcs, external_entries, symbols)
+    edges = segment_graph(segments, owner, symbols)
+    # Collapse each region to one node and re-test.
+    def node(s):
+        r = region_of.get(s)
+        return r['name'] if r else s
+    collapsed = defaultdict(set)
+    for s, tgts in edges.items():
+        for t in tgts:
+            a, b = node(s), node(t)
+            if a != b:
+                collapsed[a].add(b)
+    left = strongly_connected(sorted(collapsed, key=str), collapsed)
+    if left:
+        raise SystemExit('tail-call cycles SURVIVED region merging:\n' +
+                         '\n'.join('  ' + ' -> '.join(str(x) for x in c) for c in left) +
+                         '\n  -> build_regions() is not closing over the cycle; do not ship '
+                         'this (docs/static-map.md §Open items 9).')
+    print('  split-cycle check: clean after merging')
 
 
 def report_brk_targets(funcs, symbols):

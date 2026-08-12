@@ -108,8 +108,51 @@ not return to the following instruction.  It emits `platform_brk(pc)`.
 
 This is load-bearing rather than pedantic.  Four "routines" in the image are a single `$00` byte —
 `$7B00`, `$7B4A`, `$7B9C`, `$7BE2` — and the engine JSRs to them from seven sites, one of them four
-instructions into the routine the front end calls on release.  Nothing loads that page.
-`make gen` lists them (`report_brk_targets`); the open question is in `docs/static-map.md`.
+instructions into the routine the front end calls on release.  ~~Nothing loads that page.~~
+**The game BUILDS it** — `copy_dash_data` (`$18EA`) assembles `$7B00-$7FFF` at runtime from the
+tails of 41 blocks at `$3000`.  `make dashcode` replays it and `make gen DASHCODE=1` ingests the
+resulting overlay listing; it is off by default because the page is heavily self-modifying and its
+SMC sites are not yet in `SMC_SITES`.  `make gen` lists the traps (`report_brk_targets`).
+Full story: `docs/static-map.md` §Open items 6 and 10.
+
+## Merged loop regions (`build_regions`) — ⚠ read this before splitting a function
+
+The transpiler cuts a function at every **mid-function entry point** (an address JSR'd or JMP'd to
+from outside) and emits each piece as its own C function, joined by `name(); return;`.
+
+That is exact for a **call**.  For a **loop** it is a trap: if control falls through segments
+S1→S2→…→Sn and Sn jumps back to S1, the C form is *mutual recursion*, and GCC eliminates none of
+those tail calls on either target.  The stack then grows with the iteration count.  **Two such
+loops shipped in every build up to Phase 4**, one of them the per-pixel span store inside
+`project_geometry` — Ghidra's own boundaries never cut a loop in this binary, so it stayed latent
+until the runtime-built `$7B00` overlay hit it (300-1000 live frames, 0 painted frames on target).
+
+`build_regions()` finds every strongly-connected group of segments and emits it as **ONE** C
+function taking the 6502 entry address:
+
+```c
+void region_1de5(uint16_t _entry) {
+    switch (_entry) {
+    case 0x1DE5: goto L_1de5;
+    case 0x1DE8: goto L_1de8;
+    default: platform_bad_region_entry(0x1DE5, _entry); return;
+    }
+L_1de5: ...            /* every transfer inside the region is now a goto */
+}
+void FUN_1de5(void) { region_1de5(0x1DE5); }   /* each name survives as a thin wrapper */
+```
+
+Three things to know:
+
+- **A region's segments need not be adjacent.**  `region_31d0` spans `$31D0-$3D77` with 29
+  instructions — one loop, two halves of the jigsaw binary.  Membership is therefore by address
+  *set*, not range, and a fall-through across a gap is emitted explicitly rather than left to C's
+  own fall-through, which would silently run the wrong instruction next.
+- **`check_split_cycles()` re-runs the analysis with each region collapsed and HARD-FAILS** if
+  anything is still cyclic.  Don't downgrade it.
+- ⚠ **It bought no framerate** — re-measured at 2.3-2.5 FPS against a 2.2 baseline.  It fixed a
+  stack-growth hazard, not a hot path.  A structural defect is not automatically a performance
+  defect (`docs/perf-method.md`).
 
 ## Spin-waits and hooks
 

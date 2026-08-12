@@ -46,6 +46,20 @@ void    platform_brk(uint16_t pc);
    exactly like a working rasteriser that draws nothing.  docs/transpiler.md §SMC. */
 void    platform_smc_unhandled(uint16_t site, uint16_t value);
 
+/* A merged loop region was entered at an address its dispatch switch does not cover.
+   A region is a set of 6502 segments that form a control-flow cycle, emitted as ONE C
+   function so the cycle is a goto loop rather than unbounded mutual recursion
+   (tools/transpile.py build_regions, docs/static-map.md §Open items 9).  The switch is
+   generated from exactly the region's entry set and the only callers are the generated
+   thin wrappers, so this is unreachable by construction — which is precisely why it
+   reports instead of falling through: "unreachable by construction" is the assumption
+   this project keeps being wrong about. */
+void    platform_bad_region_entry(uint16_t region, uint16_t entry);
+
+/* Counters for the above, readable from gdb (see amiga/PROBE_SYMS). */
+extern unsigned long g_badRegionCount;
+extern uint16_t      g_badRegionEntry;
+
 /* Present the current display state if a new frame has been produced since the
    last call.  Safe to call from a spin-wait — returns immediately if none is
    pending. */

@@ -44,6 +44,18 @@ void platform_smc_unhandled(uint16_t site, uint16_t value) {
     if (platform) platform->smcUnhandled(site, value);
 }
 
+/* Deliberately NOT a Platform virtual: this is a property of the generated code, identical
+   on every backend, and adding an interface method for it would imply a backend could
+   sensibly differ about it.  Counted rather than aborted so a headless run reports it in
+   one gdb read instead of dying with no state to inspect. */
+unsigned long g_badRegionCount = 0;
+uint16_t      g_badRegionEntry = 0;
+
+void platform_bad_region_entry(uint16_t region, uint16_t entry) {
+    g_badRegionCount++;
+    g_badRegionEntry = entry;
+}
+
 void platform_render_frame(void) {
     if (platform) platform->renderFrame();
 }

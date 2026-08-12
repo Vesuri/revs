@@ -752,9 +752,9 @@ a guess dressed as a fact, and it is the exact failure mode `docs/postmortem.md`
       Also confirmed at runtime: **OSWORD 10 (read a character definition) is called ~850 times in
       the first 900 vblanks**, so the MOS font is a real Phase 5 dependency, not a footnote.
 
-9. ⚠⚠ **THREE 6502 LOOPS ARE COMPILED AS UNBOUNDED MUTUAL RECURSION — two of them in the
-   corpus that produced the 2.2 FPS baseline.**  Found while wiring in the `$7B00` overlay, by
-   a check written for the overlay that immediately fired on code that predates it.
+9. ✅ **~~Three 6502 loops are compiled as unbounded mutual recursion~~ — FIXED.**  Two of them
+   were in the corpus that produced the 2.2 FPS baseline.  Found while wiring in the `$7B00`
+   overlay, by a check written for the overlay that immediately fired on code predating it.
 
    The transpiler splits a function at every mid-function entry point and joins the pieces
    with `name(); return;`.  That is exact for a *call*.  For a **loop** it is a disaster: if
@@ -774,22 +774,59 @@ a guess dressed as a fact, and it is the exact failure mode `docs/postmortem.md`
    baseline includes them** — an unknown slice of the 13.1% charged to `$1E15` may be call
    overhead and stack traffic, not geometry.
 
-   `tools/transpile.py check_split_cycles()` reports them on every `make gen`.  It is a
-   **warning, not an error**, and deliberately so: hard-failing would block the repo on a
-   defect the check merely revealed.  ⚠ Do not let it go quiet.
+   ### ✅ FIXED — the dispatch prologue (`tools/transpile.py build_regions`)
 
-   Two candidate fixes, both real work and not yet chosen:
-   - **Dispatch prologue.** Emit a strongly-connected multi-entry region as ONE C function
-     with `switch (entry) { case …: goto L_…; }` at the top and thin wrappers per entry.
-     General, no duplication, changes `translate_func`.
-   - **Full slices.** Stop cutting a split function at the *next* split point — emit its whole
-     slice to the end of the container with local labels, which is what the code comment
-     already claims it does.  Much smaller change; costs duplicated code per entry.
+   Every cyclic set of segments is now emitted as ONE C function taking the 6502 entry
+   address, with a `switch` prologue that `goto`s the right label.  Every transfer inside the
+   region becomes a goto, so a loop is a loop.  Each absorbed name survives as a thin wrapper
+   (`void FUN_1de5(void) { region_1de5(0x1DE5); }`), so callers, `symbols.csv` names and the
+   main-loop phase brackets are all unchanged, and segments in no cycle are untouched.
 
-   ⚠ Until one lands, the overlay stays behind `make gen DASHCODE=1` and the four `$7Bxx`
-   call sites keep their `platform_brk()` traps.
+   `check_split_cycles()` now re-runs the analysis with each region collapsed to one node and
+   **hard-fails** if anything is still cyclic — it can, now that the defect is fixed rather
+   than merely revealed.  `platform_bad_region_entry()` reports an entry the switch does not
+   cover; unreachable by construction, and reported anyway, because "unreachable by
+   construction" is the assumption this project keeps being wrong about.
 
-10. **`DumpHwAccesses.java` still carries Atari ranges.**  The sweep's hardware table above
+   Two things worth keeping:
+
+   - ⭐ **The performance guess was WRONG, and that is the useful part.**  Re-measured after
+     the fix: **2.3-2.5 FPS against a 2.2 baseline — no change.**  The recursion was a genuine
+     stack-growth hazard (300-1000 live frames on the overlay) and cost no measurable
+     framerate.  `docs/perf-method.md` now says so where it used to speculate the opposite.
+   - It also silently fixed a latent SMC bug: the runtime-computed-branch dispatch set was
+     truncated at the container's first split point, so a patched branch into a later segment
+     had no `case`.  A region has no splits, so the set is now complete.
+
+   The rejected alternative was **full slices** — stop cutting a split function at the next
+   split point and emit its whole slice with local labels.  Smaller change, but it duplicates
+   code per entry, which costs binary size on a 512 KB machine for no correctness gain.
+
+10. 🔧 **The `$7B00` overlay is HEAVILY SELF-MODIFYING, and that is why it still does not
+    run.**  Found by fixing item 9 and watching what broke next — the region loop spun
+    forever on the host with a stable stack.
+
+    `$7D13` is `LDA #$60 / STA $7EEE`: it writes an **RTS over the `CPX #$2C` that terminates
+    the loop**.  The transpiler emitted the unpatched `CPX`/`BEQ`, so the loop has no exit.
+    Full inventory (`tools/sweep_entrypoints.py`'s selfmod pass over the overlay) — **17
+    target addresses, 23 stores, and zero stores out into engine space**:
+
+    | Kind | Targets |
+    |---|---|
+    | opcode (instruction starts) | `$7C00` `$7C0F` `$7E00` `$7E0F` `$7EEE` |
+    | operand (mid-instruction bytes) | `$7BD4` `$7BD7` `$7BDA` `$7D24` `$7D2F` `$7D4D` `$7F24` `$7F2F` `$7F68` `$7F7D` `$7F88` `$7F9B` |
+
+    That is the **same three mechanical classes** as the `$2C00-$2FFF` rasteriser, which
+    `SMC_SITES` already handles generically — so this is inventory work (read out each opcode
+    slot's value set, each operand's meaning) rather than new machinery.  ⚠ Do NOT guess the
+    value sets: `g_smcUnhandled` exists precisely because the `$2F89`/`$88` case was guessed
+    wrong once already (item 7a).
+
+    ⚠ Until this lands, the overlay stays behind `make gen DASHCODE=1` and the four `$7Bxx`
+    call sites keep their `platform_brk()` traps.  The three main-loop calls therefore remain
+    missing from the baseline.
+
+11. **`DumpHwAccesses.java` still carries Atari ranges.**  The sweep's hardware table above
    supersedes it for now; retool or retire the script rather than leaving a tool that reports
    GTIA registers for a BBC binary.
 

@@ -60,12 +60,13 @@ this is not the "unattended run ending" artefact of Rule 3.
   `copy_dash_data` (`$18EA`) — so the missing work is *rasterisation*, which cuts against
   this table's "the hot path is physics, not rasterisation" reading by an unmeasured amount.
   `docs/static-map.md` §Open items 6.
-- ⬇⬆ **Two 6502 loops in this very build are compiled as unbounded mutual recursion**, one of
-  them the per-pixel span store inside `project_geometry` (`$1DE5 ⇄ $1DE8`).  Every iteration
-  nests a C frame instead of branching.  So some unknown slice of the 13.1% charged to
-  `$1E15` is call overhead and stack traffic rather than geometry, and fixing it moves the
-  number without touching an algorithm.  `docs/static-map.md` §Open items 9 — ⚠ **do not
-  quote the per-call shares below as evidence about algorithms until this is fixed.**
+- ✅ **Two 6502 loops in this build were compiled as unbounded mutual recursion** — one of
+  them the per-pixel span store inside `project_geometry` (`$1DE5 ⇄ $1DE8`).  **Fixed**
+  (`tools/transpile.py build_regions`, `docs/static-map.md` §Open items 9), and
+  **re-measured: 2.3-2.5 FPS, i.e. no change.**  Worth writing down because the guess was
+  wrong: the defect was a real stack-growth hazard (300-1000 live frames on the overlay), but
+  it cost no measurable framerate, so the per-call shares below were NOT distorted by it.
+  ⚠ A structural defect is not automatically a performance defect — Rule 1 cuts both ways.
 - ⬇ **Nothing is optimised.**  This is pure transliterated C at `-O2`: zero native twins,
   zero asm, and a 6502 `mem[]` byte model throughout.
 
