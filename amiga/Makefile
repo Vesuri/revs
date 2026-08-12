@@ -190,8 +190,15 @@ VASMFLAGS = -m68010 -Felf -quiet -x -no-opt -nowarn=62 $(EXTRA_VASMDEFS)
 # Add a symbol here the moment you add a counter; `make probe-audit` enforces it on every link.
 PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCount g_brkPC \
              g_mosUnknownCount g_mosUnknownEntry g_mosUnknownA g_mosCharDefCount \
-             g_hwUnknownReads g_hwUnknownAddr g_ulaControl g_userT1LatchLo g_userT1LatchHi \
-             g_phaseTicks g_phaseCount g_phaseFrames
+             g_hwUnknownReads g_hwUnknownAddr g_ulaControl g_userT1LatchLo g_userT1LatchHi
+# ⚠ CONDITIONAL, because these only EXIST under PROBES (src/platform/probe.cpp compiles to
+# nothing otherwise).  Listing them unconditionally makes --undefined=<sym> unsatisfiable and a
+# plain `make` fails at probe-audit — which is the audit working, not a bug in it.  The rule
+# stays: a symbol a committed .gdb script reads must be listed in the configuration that
+# script is run against.  phase4_prof.gdb is a PROBES script.
+ifdef PROBES
+PROBE_SYMS += g_phaseTicks g_phaseCount g_phaseFrames
+endif
 
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \
             $(addprefix -Wl$(COMMA)--undefined=,$(PROBE_SYMS))
