@@ -86,8 +86,10 @@ build:
 
 # Regenerate the transliterated C from the Ghidra listing.
 # Requires disasm/listing.txt to be current (see docs/toolchain.md).
+#   make gen              ingest disasm/dashcode.txt too (the $7B00-$7FFF overlay)
+#   make gen DASHCODE=0   leave it out; the four $7Bxx call sites keep platform_brk() traps
 gen:
-	python3 tools/transpile.py
+	REVS_DASHCODE=$(if $(DASHCODE),$(DASHCODE),1) python3 tools/transpile.py
 
 # Rebuild the post-load memory image from the disc.
 #   make image              -> the default circuit (SILVER)

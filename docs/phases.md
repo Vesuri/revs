@@ -147,7 +147,8 @@ What the phase actually produced, beyond the mechanical retarget:
    one, which was correct only while nothing executed 6502 code.
 
 Carried forward: the `$7Bxx` calls into a page nothing loads (`docs/static-map.md` §Open items) —
-now trapped rather than silently no-op'd, so Phase 4's first run answers it.
+now trapped rather than silently no-op'd, so Phase 4's first run answers it.  ✅ Closed after
+Phase 4: nothing *loads* the page, the game *builds* it, and it now runs (§Open items 6 and 10).
 
 ---
 
@@ -176,8 +177,10 @@ instrumentation is the whole reason this phase cost hours rather than days:
   worked and been wrong, because it would have hidden that `$FE4D` was unmodelled.  The
   remaining 39 are ordinary counted loops and intra-frame palette writes.
 - **The `$7Bxx` calls ARE reached — three of them are in the main loop, every frame.**
-  `g_brkCount` climbs ~3 per game frame.  What is *in* that page is still open and is now the
-  top open item (`docs/static-map.md`).
+  `g_brkCount` climbed ~3 per game frame.  ✅ **Resolved after the phase closed**: the page is
+  the wing mirrors and the dashboard, *built* at runtime by `copy_dash_data` (`$18EA`), and it
+  is now ingested and executing (`g_brkCount` = 0).  Reading out its 42 self-modifying sites
+  cost the baseline 36% — see §The numbers below (`docs/static-map.md` §Open items 6 and 10).
 - **An SMC slot took an uncovered value**: `$2F89` held `$88` (`DEY`) — the opcode slots have
   three values, not two, and the span loop can walk backwards.  Chasing it also turned up
   **13 bytes of code at `$1DC5` that no static walk can reach**, via the patched branch at
@@ -205,19 +208,23 @@ instrumentation is the whole reason this phase cost hours rather than days:
 
 ### The numbers — `docs/perf-method.md` §THE BASELINE
 
-**≈2.2 FPS** (FPSCOUNT build, nine segments, 1.8–2.3).  Goal 50, floor 25: **~11× short of the
-floor**, with nothing drawn and nothing optimised.  The four hottest of the main loop's 24 calls
-are **57.4%** between them — `$46A1` (24.6%), `$1E15` (13.1%), `$1B12` (9.9%), `$4CA4` (9.8%) —
-and they are **physics and geometry, not rasterisation**.  That is the headline difference from
-the Atari port and it confirms Phase 6's premise.
+**≈1.4 FPS** (FPSCOUNT build, nine segments, all 1.4).  Goal 50, floor 25: **~18× short of the
+floor**, with nothing drawn and nothing optimised.  ⚠ This **supersedes the ≈2.2 FPS the phase
+originally reported**: that build stubbed the three `$7Bxx` main-loop calls as no-ops, and the
+mirrors + dashboard turned out to be ~36% of the frame.  The share table taken with them stubbed
+put the four hottest of the 24 calls at **57.4%** — `$46A1` (24.6%), `$1E15` (13.1%), `$1B12`
+(9.9%), `$4CA4` (9.8%) — i.e. **physics and geometry, not rasterisation**.  That was the headline
+difference from the Atari port; it needs re-reading against a share table taken with the overlay
+in, because the work that was missing *is* rasterisation.
 
 ### Known-unfaithful in this measurement
 
-- The three `$7Bxx` main-loop calls are no-ops (open item above), so the real workload is
-  larger, not smaller.
+- ✅ ~~The three `$7Bxx` main-loop calls are no-ops~~ — they run as of 2026-08-12, which is what
+  moved the baseline from 2.2 to 1.4.  What is still unverified is the overlay's *bytes*: they
+  are DERIVED from a replay of `$18EA`, never dumped off a real BBC.
 - The raster bands all fire at the top of the frame instead of at their scheduled positions;
   invisible while nothing is drawn, and Phase 5's copper work is where it gets fixed.
-- Nothing is rendered, so 2.2 FPS will get worse before it gets better.
+- Nothing is rendered, so 1.4 FPS will get worse before it gets better.
 
 ---
 

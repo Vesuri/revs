@@ -35,31 +35,37 @@ and explicitly "whether that's reachable remains to be seen".
 
 ## ⭐ THE BASELINE — measured 2026-08-12, Phase 4
 
-**≈2.2 FPS.**  Goal 50, floor 25.  So the port is **~11× short of the floor** and ~23× short
+**≈1.4 FPS.**  Goal 50, floor 25.  So the port is **~18× short of the floor** and ~36× short
 of the goal, before a single native twin exists and before anything is drawn.
 
 | | |
 |---|---|
 | Build | `make clean && make -j4 FPSCOUNT=1 FIXED_RNG=1` (no probes) |
-| Harness | `GDBSCRIPT=phase4_fps.gdb ./diag_run.sh 200`, FS-UAE A500+, Kickstart 3.1 |
-| Window | nine ~100-vblank segments from vbi 300 to 1213 |
-| Rows | 2.1, 2.1, 1.8, 2.3, 2.3, 2.3, 2.3, 2.3, 2.3 |
+| Harness | `GDBSCRIPT=fps_seg.gdb ./diag_run.sh 200`, FS-UAE A500+, Kickstart 3.1 |
+| Window | nine ~200-vblank segments from vbi 200 to 2020 |
+| Rows | 1.4 in every segment (`f/vbi` = 0.029 in every segment) |
 | Workload | Silverstone, scripted input (`src/platform/autorun.h`) past the front end |
 
-The nine segments agree to ±0.25 FPS, and `$62F7` (the frame counter the 50 Hz body
-decrements) changed in every one, so the run was still doing the work in all of them —
-this is not the "unattended run ending" artefact of Rule 3.
+The segments agree to better than ±0.05 FPS, so the run was still doing the work in all of
+them — this is not the "unattended run ending" artefact of Rule 3.
+
+⚠ **This SUPERSEDES the ≈2.2 FPS first measured on 2026-08-12**, and the difference is not
+noise or a regression: that build had the `$7B00` overlay's three main-loop calls stubbed as
+`platform_brk()` no-ops.  With the wing mirrors and the dashboard actually executing, the
+frame is ~36% longer.  Rule 4 applies to the 2.2 figure now: **do not quote it.**
 
 **What the number does NOT include, and both directions matter:**
 
 - ⬆ **Nothing is rendered.**  `Revs::render()` increments a counter and returns.  The
   moment the 6502 screen RAM is mirrored into bitplanes (Phase 5) this gets worse.
-- ⬆ **Three main-loop calls are no-ops.**  `$1704`/`$1739`/`$1748` (the `$7Bxx` page) trap
-  through `platform_brk()` and return, once each per frame.  Their real cost is missing.
-  ⭐ **Now identified: they are the wing mirrors and the dashboard**, built at runtime by
-  `copy_dash_data` (`$18EA`) — so the missing work is *rasterisation*, which cuts against
-  this table's "the hot path is physics, not rasterisation" reading by an unmeasured amount.
-  `docs/static-map.md` §Open items 6.
+- ✅ ~~**Three main-loop calls are no-ops.**~~  `$1704`/`$1739`/`$1748` (the `$7Bxx` page) used
+  to trap through `platform_brk()` and return.  They now run: the page is built by
+  `copy_dash_data` (`$18EA`), replayed into a second listing by `tools/dashdata.py --listing`
+  and ingested by `make gen`.  ⭐ **Their cost, measured by the difference, is ~36% of the
+  frame** (2.2 → 1.4 FPS), and it is *rasterisation* — the mirrors and the dashboard.  So the
+  share table below, which was taken with them stubbed, understates rasterisation; the
+  "physics, not rasterisation" reading needs re-reading against the new table.
+  `docs/static-map.md` §Open items 6 and 10.
 - ✅ **Two 6502 loops in this build were compiled as unbounded mutual recursion** — one of
   them the per-pixel span store inside `project_geometry` (`$1DE5 ⇄ $1DE8`).  **Fixed**
   (`tools/transpile.py build_regions`, `docs/static-map.md` §Open items 9), and
@@ -72,7 +78,7 @@ this is not the "unattended run ending" artefact of Rule 3.
 
 ⚠ Per postmortem §4.1 this figure exists to be *the distance to the target*, not a verdict.
 The Atari port's "50 FPS is impossible without an algorithm change" was reached by reasoning
-and disproven by hand-asm.  2.2 is a starting line measured on the real machine, which is
+and disproven by hand-asm.  1.4 is a starting line measured on the real machine, which is
 exactly what Phase 4 was for.
 
 ### Where the time goes — main-loop phase shares
@@ -181,7 +187,9 @@ size of a "regression" that had been filed as the top performance item.
 
 Any framerate or cost figure in an older note or commit was measured on a different build, a
 different probe set, or a different workload.  **Re-measure, don't quote.**  That includes
-the 2.2 FPS baseline above the moment anything is drawn.  Two specific traps:
+the 1.4 FPS baseline above the moment anything is drawn — and it already superseded a 2.2 FPS
+baseline measured the same day, once three stubbed main-loop calls started running.  Two
+specific traps:
 
 - **Instrumentation** (Rule 1) — probe builds are much slower than shipping ones, and a PC
   profile taken on a probe build inflates exactly the buckets that contain the brackets.

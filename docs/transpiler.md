@@ -68,11 +68,12 @@ everything, so no live value or flag is ever dropped.
 
 The Atari rule was "a routine that writes its own instruction stream cannot be transliterated
 faithfully → hand-stub it in `*_manual.c`".  **Revs does not follow it**, and the reason is worth
-stating: that rule costs one hand-written, unvalidated, non-regenerable routine per site, and all
-24 of Revs's sites are inside the road rasteriser — the hottest and least-understood code in the
-binary.  Freezing one snapshot of it by hand is the expensive way to be wrong.
+stating: that rule costs one hand-written, unvalidated, non-regenerable routine per site, and
+Revs has **59** sites — 24 in the road rasteriser and 35 more in the `$7B00` dashboard/mirror
+overlay, i.e. the hottest and least-understood code in the binary.  Freezing one snapshot of it
+by hand is the expensive way to be wrong.
 
-Every site is one of three **mechanical** classes, and each has an exactly faithful runtime form.
+Every site is one of four **mechanical** classes, and each has an exactly faithful runtime form.
 `SMC_SITES` in `tools/transpile.py` carries the table, with the writer instructions as evidence
 for every value:
 
@@ -81,6 +82,7 @@ for every value:
 | `operand` | operand BYTES, opcode stands | effective address / immediate read from `mem[]` at run time (byte-wise ⇒ endian-safe), routed through `bus_read`/`bus_write` because a runtime EA cannot be range-tested at gen time |
 | `opcode` | a 1-byte opcode SLOT | `switch (mem[site])` with one case per value the writers actually store |
 | `branch` | a branch OFFSET | the 6502's own target computation, dispatched over the enclosing routine's instruction starts |
+| `call` | a `JSR`'s operand BYTES | the computed target, dispatched over an explicit legal-target set — one real call per case, because a call must RETURN and so cannot be a `goto` |
 
 Anything outside the evidence calls `platform_smc_unhandled()`, which **reports** — it never picks
 a branch.  A silent no-op there reads exactly like a rasteriser that runs and draws nothing.
@@ -94,6 +96,16 @@ Two details that make the classes work:
 - In the static image the four rasteriser `BCC`s read `+0` — a branch to the next instruction, a
   no-op.  That is what an unpatched slot *should* look like, and it is why a naive transliteration
   of `$2C00-$2FFF` would run and do nothing.
+- ⭐ **A `'operand'` site may carry `'targets'`.**  The `$7B00` overlay's patched stores write an
+  *opcode slot*, so a low byte that is not a slot boundary would land mid-instruction, the opcode
+  dispatch at the real slot would still read its unpatched value, and the C would diverge from the
+  6502 **silently**.  `'targets'` makes the emitter check the computed address against the set the
+  writer's fixed HIGH operand byte can reach, and trap otherwise.  Where a legal set is known,
+  say so — the guard is what turns a wrong address into a report.
+- ⭐ **A `'call'` target may be inside a merged region.**  All three of the overlay's computed
+  calls enter the middle of an unrolled chain, so each case is `region_xxxx(0xTTTT)` and those
+  addresses are added to the region's dispatch prologue (`build_regions`, `r['dispatch']`) —
+  `build_segments` would never produce them, since nothing branches to them statically.
 
 `MANUAL_FUNCS` is therefore **empty**.  Add to it only for a routine that cannot be expressed as a
 transliteration at all, and say why.
@@ -110,9 +122,11 @@ This is load-bearing rather than pedantic.  Four "routines" in the image are a s
 `$7B00`, `$7B4A`, `$7B9C`, `$7BE2` — and the engine JSRs to them from seven sites, one of them four
 instructions into the routine the front end calls on release.  ~~Nothing loads that page.~~
 **The game BUILDS it** — `copy_dash_data` (`$18EA`) assembles `$7B00-$7FFF` at runtime from the
-tails of 41 blocks at `$3000`.  `make dashcode` replays it and `make gen DASHCODE=1` ingests the
-resulting overlay listing; it is off by default because the page is heavily self-modifying and its
-SMC sites are not yet in `SMC_SITES`.  `make gen` lists the traps (`report_brk_targets`).
+tails of 41 blocks at `$3000`.  `make dashcode` replays it and **`make gen` ingests the resulting
+overlay listing by default** — `make gen DASHCODE=0` opts out and puts the four traps back.  It was
+off by default for two phases because the emitted C did not run: the page's loop compiled to
+unbounded mutual recursion (fixed by `build_regions`) and it is heavily self-modifying (fixed by
+`DASH_CHAINS`).  `make gen` lists any remaining traps (`report_brk_targets`).
 Full story: `docs/static-map.md` §Open items 6 and 10.
 
 ## Merged loop regions (`build_regions`) — ⚠ read this before splitting a function
@@ -213,7 +227,9 @@ Not decoration — each line is one of the ways a generated corpus is silently w
 
 Generation **fails** (rather than emitting a plausible stub) on: a `JSR`/`JMP` into ROM that is not
 a MOS entry; a `VALIDATE_FUNCS` address that is not a function start or mid-function entry; an
-`SMC_SITES` address that is not an instruction start in the current listing.
+`SMC_SITES` address that is not an instruction start in the current listing; an `SMC_SITES`
+`'call'` target that is neither a region entry nor a function start (a computed `JSR` could not
+reach it, so the table and the listing disagree).
 
 ## Porting checklist (transpile.py → Revs) — ✅ done, Phase 3
 

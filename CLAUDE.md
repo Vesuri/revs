@@ -83,8 +83,10 @@ is a runtime-image address.** Full mechanism and traps: `docs/static-map.md`.
 (`$18EA`) assembles `$7B00-$7FFF` — 1280 bytes of live code, incl. the wing mirrors — at *runtime*
 from the tails of 41 `$80`-spaced blocks at `$3000`, and **stows it back** before returning to
 MODE 7, so the page is empty in every static image and every out-of-race RAM dump. `$16E3` builds
-it; `$16E6` calls into it. `tools/dashdata.py` replays it. Three main-loop calls land there, so
-the Phase 4 profile is missing them. Full write-up: `docs/static-map.md` §Open items 6.
+it; `$16E6` calls into it. `make dashcode` replays it into `disasm/dashcode.txt`, which `make gen`
+now ingests **by default** (`make gen DASHCODE=0` opts out). ⚠ The page is also the **MODE 7
+screen** — the same 1 KB, time-multiplexed — and it is heavily self-modifying (two unrolled column
+chains steered by 42 patch sites). Full write-up: `docs/static-map.md` §Open items 6 and 10.
 
 `revs_mem.bin` is still built by `tools/ssd_load.py` (default SILVER; `make image TRACK=BRANDS`)
 and is the honest record of what the *loader* produces, plus the input to the replay.
@@ -106,7 +108,7 @@ make                       # build/revs — HEADLESS by design, no renderer (see
 make validate              # the native-twin byte-exact differential
 make validate FN="name"    # only matching tests — prefer this
 make endian-lint           # fail if mem[] is aliased as a wide pointer
-make gen                   # regenerate src/gen from disasm/listing.txt
+make gen                   # regenerate src/gen from listing.txt + dashcode.txt (DASHCODE=0 skips)
 make image                 # rebuild disasm/revs_mem.bin from revs.ssd
 make runtime               # ⭐ replay the engine's self-unpack -> disasm/revs_runtime.bin
 make sweep                 # the entry-point sweep report -> disasm/sweep.txt
@@ -225,12 +227,11 @@ owns the display. Spin-wait points in transpiled code become hooks that drive on
 negotiable** — the game body is a VERTB-ISR interrupt, so 25 FPS means painting every other frame
 with the simulation still at full rate.
 
-⭐ **BASELINE (Phase 4, 2026-08-12): ≈2.2 FPS** — ~11× short of the floor, with nothing drawn and
-nothing optimised. The main loop's four hottest calls are **57.4%** between them and they are
-**physics and geometry, not rasterisation**: `$46A1` 24.6%, `$1E15` 13.1%, `$1B12` 9.9%, `$4CA4`
-9.8%. Full conditions, caveats and the 24-phase table: `docs/perf-method.md` §THE BASELINE. ⚠ It
-is measured with three main-loop routines stubbed as no-ops (the `$7Bxx` open item), so the real
-workload is *larger*. A target is never evidence a change bought anything. The Atari port's
+⭐ **BASELINE (Phase 4, 2026-08-12): ≈1.4 FPS** — ~18× short of the floor, with nothing drawn and
+nothing optimised. ⚠ This **supersedes the ≈2.2 FPS** measured the same day: that build stubbed the
+three `$7Bxx` main-loop calls as no-ops, and the mirrors + dashboard turned out to be ~36% of the
+frame. Full conditions, caveats and the 24-phase share table: `docs/perf-method.md` §THE BASELINE.
+A target is never evidence a change bought anything. The Atari port's
 retired "50 FPS is impossible without an algorithm change" conclusion was disproven by hand-asm —
 the ceiling was GCC, not the algorithm; that cuts both ways.
 

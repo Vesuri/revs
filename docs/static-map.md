@@ -697,15 +697,21 @@ a guess dressed as a fact, and it is the exact failure mode `docs/postmortem.md`
    at `$16E6` is a one-line addition to a probe the moment that clears, and it is worth doing —
    this is exactly the kind of confident-and-unverified reading the postmortem is about.
 
-   ⚠ **What this costs the port, and it is not small.**  The transpiler emits `platform_brk()` for
-   these seven sites because the page is empty in the image it reads.  `copy_dash_data` itself
-   transpiles fine and moves the bytes correctly in `mem[]` — but transpiled C cannot *execute*
-   bytes assembled at runtime, so the calls still trap.  The bytes are nevertheless **statically
-   known**: they are a deterministic function of the static image.  Resolving it means giving the
-   transpiler the post-`CopyDashData` page and seeding those five addresses as entry points.
-   Until then `docs/perf-method.md`'s ≈2.2 FPS baseline is still missing three main-loop routines,
-   and now we know they are mirror and dashboard work — i.e. **rasterisation**, which shifts the
-   "the hot path is physics, not rasterisation" headline by an unmeasured amount.
+   ⚠ ~~**What this costs the port, and it is not small.**~~  ✅ **Closed 2026-08-12.**  The
+   transpiler used to emit `platform_brk()` for these seven sites because the page is empty in the
+   image it reads: `copy_dash_data` transpiles fine and moves the bytes correctly in `mem[]`, but
+   transpiled C cannot *execute* bytes assembled at runtime.  The bytes are nevertheless
+   **statically known** — a deterministic function of the static image — so `tools/dashdata.py
+   --listing` produces a second listing and `tools/transpile.py` ingests it alongside
+   `listing.txt` (`make gen`, `DASHCODE=0` to opt out).  Two further defects had to be fixed
+   before the emitted C would run: the tail-call-cycle defect (item 9) and the overlay's
+   self-modifying code (item 10).
+
+   ⭐ **All four `$7Bxx` call sites are now live and `g_brkCount` reads 0.**  The baseline
+   accordingly **fell from ≈2.2 to ≈1.4 FPS** — those three main-loop calls are ~36% of the
+   frame, and they are mirror and dashboard work, i.e. **rasterisation**.  So the Phase 4
+   headline "the hot path is physics, not rasterisation" is now measured with them in rather than
+   shifted by an unmeasured amount; see `docs/perf-method.md` §THE BASELINE.
 
    ### Method note — why this took two phases
 
@@ -717,8 +723,11 @@ a guess dressed as a fact, and it is the exact failure mode `docs/postmortem.md`
    program assembles for itself is invisible to it** — the same standing limitation recorded in
    item 7b for the runtime-computed branch, one order of magnitude larger.
 
-   ⚠ Until the port executes them, **every measurement of the main loop is missing three
-   routines** and `docs/perf-method.md`'s baseline says so.
+   ✅ ~~Until the port executes them, **every measurement of the main loop is missing three
+   routines**~~ — it executes them as of 2026-08-12 (item 10).  What is still owed is the
+   **BBC cross-check**: the overlay's bytes are DERIVED from a replay of `$18EA`, never compared
+   against a dump from real hardware, and that is still blocked on the front-end line editor
+   above.  Dumping `$7B00-$7FFF` at the first `$16E6` remains a one-line addition to a probe.
 
 7. ⭐ **Phase 4 additions to the static map — all three found by RUNNING the corpus.**
    Recorded here because each one is a place where reading the binary gave a confident wrong
@@ -802,29 +811,89 @@ a guess dressed as a fact, and it is the exact failure mode `docs/postmortem.md`
    split point and emit its whole slice with local labels.  Smaller change, but it duplicates
    code per entry, which costs binary size on a 512 KB machine for no correctness gain.
 
-10. 🔧 **The `$7B00` overlay is HEAVILY SELF-MODIFYING, and that is why it still does not
-    run.**  Found by fixing item 9 and watching what broke next — the region loop spun
-    forever on the host with a stable stack.
+10. ✅ **The `$7B00` overlay is HEAVILY SELF-MODIFYING — read out, emitted, and RUNNING
+    (2026-08-12).**  Found by fixing item 9 and watching what broke next: the region loop spun
+    forever on the host with a stable stack, because `$7D13` is `LDA #$60 / STA $7EEE` — it
+    writes an **RTS over the `CPX #$2C` that terminates the loop**, and the transpiler was
+    emitting the unpatched `CPX`/`BEQ`.
 
-    `$7D13` is `LDA #$60 / STA $7EEE`: it writes an **RTS over the `CPX #$2C` that terminates
-    the loop**.  The transpiler emitted the unpatched `CPX`/`BEQ`, so the loop has no exit.
-    Full inventory (`tools/sweep_entrypoints.py`'s selfmod pass over the overlay) — **17
-    target addresses, 23 stores, and zero stores out into engine space**:
+    `make sweep` reports **17 target addresses from 23 stores, and zero stores out into engine
+    space**.  ⚠ **That count is the static scan's answer and it is NOT the shape of the
+    mechanism.**  Five of the 17 (`$7C00` `$7C0F` `$7E00` `$7E0F`, plus `$7EEE`'s
+    neighbours) are only the *static operand base* of a store whose own operand is patched, so
+    the address actually written is computed.  Read out instruction by instruction it is **ONE
+    idiom used three ways**, and the real site count is **42**, not 17.
 
-    | Kind | Targets |
-    |---|---|
-    | opcode (instruction starts) | `$7C00` `$7C0F` `$7E00` `$7E0F` `$7EEE` |
-    | operand (mid-instruction bytes) | `$7BD4` `$7BD7` `$7BDA` `$7D24` `$7D2F` `$7D4D` `$7F24` `$7F2F` `$7F68` `$7F7D` `$7F88` `$7F9B` |
+    **The idiom.**  `$7C00-$7CFF` and `$7D56-$7EDD` are two **fully unrolled chains** of a
+    17-byte column unit:
 
-    That is the **same three mechanical classes** as the `$2C00-$2FFF` rasteriser, which
-    `SMC_SITES` already handles generically — so this is inventory work (read out each opcode
-    slot's value set, each operand's meaning) rather than new machinery.  ⚠ Do NOT guess the
-    value sets: `g_smcUnhandled` exists precisely because the `$2F89`/`$88` case was guessed
-    wrong once already (item 7a).
+        LDY table,X ; BEQ +8 ; LDA #0 ; STA table,X ; LDA $6000,Y ; LDY #<row> ; STA (zp),Y
 
-    ⚠ Until this lands, the overlay stays behind `make gen DASHCODE=1` and the four `$7Bxx`
-    call sites keep their `platform_brk()` traps.  The three main-loop calls therefore remain
-    missing from the baseline.
+    16 units in chain A (tables `$3000,$3080…$3780`) and 24 in chain B (`$3800…$4380`) — the 40
+    `$80`-spaced blocks `copy_dash_data` works from, i.e. **one unit per dashboard/mirror
+    column**.  Chain A's last unit does `JMP $7D56`, so the two run as one 40-column sweep;
+    the tail at `$7EEE` is `CPX #$2C / BEQ $7F17 / DEX`.  The overlay then steers that
+    straight-line code entirely by writing bytes into it:
+
+    | Way | What is patched | Sites |
+    |---|---|---|
+    | **COUNT** — stop the sweep after column *k* | plant `RTS` (`$60`) over the `STA (zp),Y` at unit+`$0F`, and put `STA` (`$91`) back over the previously planted one | **29** opcode slots + the 9 stores that plant them |
+    | **START** — enter the sweep at column *k* | `JSR $7C00` / `JSR $7E00` with the low operand byte patched (`$7F68`, `$7D4D`, `$7F9B`) — a **computed call into the middle of a chain** | **3** |
+    | **TERMINATE** | `$7EEE` toggles `CPX #$2C` (`$E0`) ↔ `RTS` (`$60`); `$7D13` writes the RTS on entry, `$7BBF` restores the CPX on exit | **1** |
+
+    ⭐ **The fixed HIGH operand byte is what makes this tractable.** Every writer patches only
+    the LOW byte, so a writer based at `$7C0F` can reach page `$7C` and nothing else. The
+    patchable set is therefore **derived from the operand encoding, not guessed**: chain A's
+    slot at `$7D0E` and chain B's first ten (`$7D65..$7DFE`) are unreachable by construction
+    and stay plain `STA (zp),Y`.
+
+    **Two entry offsets within a unit**, and the second one was found by RUNNING the corpus,
+    exactly as `$2F89`/`$88` was in Phase 4 — the trap reported `site $7D4C holds $7E05` on
+    the first frame that reached the overlay:
+
+    - **+`$00`** the unit start.  It is the operand the image holds, and `$7D13`'s
+      `BEQ $7D37` skips the pair that patches `$7D4D`, so the first iteration really does
+      execute `JSR $7E00` unpatched.
+    - **+`$05`** skips the `LDY table,X / BEQ` dirty test and drops into
+      `LDA #0 / STA table,X / LDA $6000,Y` — "force this column, and index the pattern table
+      with the Y I am handing you".  All three call sites do `TAY` immediately before the
+      `JSR`, which is dead code for any other entry offset; that liveness argument is what
+      makes +`$05` the only other offset the code can mean.
+
+    **What was needed in the transpiler** (`tools/transpile.py`, `DASH_CHAINS`):
+
+    - a new SMC class **`'call'`** — a `JSR` whose operand bytes are patched.  Unlike
+      `'branch'` it must *return*, so it cannot be a `goto`: it dispatches over the legal
+      target set and each case is a real call.  All three targets land inside `region_7bf7`,
+      so each case is `region_7bf7(0xTTTT)` — which is what item 9's dispatch prologue is
+      for.  The region now carries **59 extra dispatch entries** on top of its 5 segment
+      entries, because a computed call reaches mid-unit addresses `build_segments` would
+      never produce.
+    - a **`'targets'` guard on the `'operand'` class**.  These stores patch an *opcode slot*;
+      a low byte that is not a slot boundary would land mid-instruction, the opcode dispatch
+      at the real slot would still read `$91`, and the C would diverge from the 6502
+      **silently**.  The guard turns that into a `platform_smc_unhandled` trap.
+
+    **Confirmation** (host, one full `$7BE2` call): `mem[$7EEE]` is back to `$E0`, i.e. the
+    40-column sweep completed and `$7BBF` restored the page; every recorded operand is exactly
+    `$05+$11k` (`$7D4D`=`$16`, `$7F68`=`$5A`, `$7F9B`=`$7C`) or `$0F+$11k` (`$7D24`=`$DB`,
+    `$7F24`=`$75`, `$7F7D`=`$97`); `mem[$7C0F]`/`mem[$7E0F]` are `$91`.  45 s of host run and
+    a 200 s FS-UAE run: **zero** `platform_smc_unhandled`, `platform_bad_region_entry`,
+    `platform_brk`, and a stack that stays 11 frames deep.
+
+    ⚠⚠ **THE THREE ENGINE STORES INTO THIS PAGE ARE NOT SELF-MODIFYING CODE.**  `$3A5C`/`$3A62`
+    (`STA $7C79,X`), `$65B7` (`STA $7E85,X`) and `$6597` (`STA $7FC5`) write teletext codes
+    (`$97` white-graphics, `$E2`/`$E6` mosaics, `$84`/`$81`/`$98`) — **`$7C00-$7FFF` is the
+    MODE 7 SCREEN**.  The overlay and the teletext screen are the *same 1 KB, time-multiplexed*,
+    which is exactly why `copy_dash_data` stows the page back before returning to MODE 7
+    (item 6).  `$7C79` genuinely is operand byte 2 of the `LDY $3380,X` at `$7C77`, so a
+    static scan cannot tell the two apart — only the values can.
+
+    ⭐ **The overlay is now ON BY DEFAULT** (`make gen`; `make gen DASHCODE=0` opts out and
+    restores the `platform_brk()` traps).  The four `$7Bxx` call sites are live, so the
+    baseline finally includes the mirrors and the dashboard — and it **fell from ≈2.2 to
+    ≈1.4 FPS**, i.e. those three main-loop calls are ~36% of the frame.  See
+    `docs/perf-method.md` §THE BASELINE.
 
 11. **`DumpHwAccesses.java` still carries Atari ranges.**  The sweep's hardware table above
    supersedes it for now; retool or retire the script rather than leaving a tool that reports

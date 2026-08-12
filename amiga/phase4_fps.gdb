@@ -4,7 +4,10 @@
 #   band  = irq_band_state ($4F43); cycling 0-4 means the 50 Hz body is alive
 #   62F7  = the frame counter the 50 Hz body decrements; CHANGING between rows is the
 #           liveness check that fps_seg.gdb's header asks for
-#   brk   = the $7Bxx no-op traps; ~3 per game frame is expected today
+#   brk   = platform_brk() hits.  ⭐ Expected **0** since the $7B00 overlay was ingested
+#           (docs/static-map.md §Open items 6/10).  It used to climb by ~3 per game frame,
+#           which was the wing mirrors and the dashboard not running; a non-zero reading now
+#           means a REGRESSION, not a known gap.
 #
 # Build: cd amiga && make clean && make -j4 FPSCOUNT=1 FIXED_RNG=1     (NOT a PROBES build)
 # Run:   . ./env.sh && GDBSCRIPT=phase4_fps.gdb ./diag_run.sh 200
