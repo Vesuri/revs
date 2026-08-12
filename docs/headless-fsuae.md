@@ -60,34 +60,46 @@ behaviour).
 **Treat any unexplained runtime regression right after a header edit or a `PROBES` toggle as a
 stale build until a clean rebuild rules it out** — don't chase it as a logic bug first.
 
-## ⚠ Never rebuild while a run is live
+## ⚠⚠ `Remote connection closed` mid-run is usually ANOTHER SESSION, not your build
+
+`diag_run.sh`, `run.sh` and `debug.sh` all begin with an **unqualified `pkill -9 fs-uae`**.  That
+is correct housekeeping against a stale copy of your own, and it is also a **machine-wide** kill:
+any other terminal, session, or *other project* launching a run murders yours.  The victim sees
+
+    <script>.gdb:7: Error in sourced command file:
+    Remote connection closed
+
+which reads exactly like the build under test crashing, and `.run/fsuae-dbg.log` stops abruptly
+with no error — so the natural (wrong) conclusion is "my code dies after N vblanks".
+
+**Diagnose it in one command before theorising about your own build:**
+
+```sh
+pgrep -fl "diag_run.sh|fs-uae" | grep -v $$      # anything here means you are sharing the machine
+```
+
+Measured 2026-08-12: three profile runs were read as "the PROBES build crashes somewhere past
+vbi 262" and one as "PROBES is ~10× slower than FPSCOUNT, budget 1250 s".  Both were wrong.  A
+concurrent Rescue-on-Fractalus session's `diag_run.sh` was `pkill`ing them, and the surviving
+short run was simply the one that happened not to overlap a launch.  ⚠ **A killed run is not a
+slow run**, and a timing figure derived from a run that ended this way is worthless — the wall
+clock includes however long the script sat out its timeout after the emulator was gone.
+
+Corollary worth its own line, because it makes the above much harder to spot: `diag_run.sh` sits
+out its **full** `$1` seconds even when FS-UAE and gdb are long dead, and prints only at the end.
+**A live `diag_run.sh` in `pgrep` does not mean a live run.**  Check for `fs-uae` itself.
+
+## ⚠ Don't rebuild while a run is live either
 
 `diag_run.sh` copies `out/Revs.exe` into `.run/dh1/Revs`, so the emulated Amiga has its own copy —
 but **gdb reads symbols from `out/Revs.elf` in place**.  Running `make` (or worse, `make clean`)
 in `amiga/` while a run is in flight replaces the file gdb resolved its symbols from, and a
 different flag set (`PROBES` vs `FPSCOUNT`) means those symbols no longer describe the inferior.
-A long run is exactly when it is tempting to "just do something else in the meantime".  **Don't
-build in `amiga/` while `pgrep -f diag_run.sh` says one is alive** — start a second checkout or
-wait.  (Measured 2026-08-12: a `make clean && make` landed mid-way through a 1250 s profile run.)
+A long run is exactly when it is tempting to "just do something else in the meantime".
 
-## ⚠ A PROBES profile run needs ~20 minutes of wall clock, not 200 seconds
-
-The two builds are nowhere near the same speed under the gdb stub.  Measured on the 1.4 FPS
-baseline build:
-
-| Build | Emulated vblanks per real second |
-|---|---|
-| `FPSCOUNT=1` | ~10 (vbi 2020 in 200 s) |
-| `PROBES=1` | **~0.9** (vbi 262 in 300 s) |
-
-`phase4_prof.gdb` waits for `g_vbiCount >= 900` because the main loop does not start until the
-front end releases, so **900 vblanks is not a tunable number** — lower it and the script reads
-`loopFrames=0`, every `g_phaseTicks[]` is zero, and it dies on `Division by zero` in the
-share computation.  Budget `./diag_run.sh 1250` and run it in the background.
-
-⚠ This is also the third independent reason never to quote a framerate from a PROBES build
-(`docs/perf-method.md` Rule 1): it is not "20-35% slower", it is an order of magnitude slower
-under the remote debugger.
+⚠ This is a real hazard but it was **not** the cause of the 2026-08-12 failures above — that was
+the cross-session `pkill`.  Recorded separately so the two are not conflated: this one corrupts
+your *symbols*, the `pkill` one ends your *run*.
 
 ## Judging appearance
 
