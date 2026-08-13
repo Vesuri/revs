@@ -62,10 +62,10 @@ frame is ~36% longer.  Rule 4 applies to the 2.2 figure now: **do not quote it.*
   to trap through `platform_brk()` and return.  They now run: the page is built by
   `copy_dash_data` (`$18EA`), replayed into a second listing by `tools/dashdata.py --listing`
   and ingested by `make gen`.  ⭐ **Their cost, measured by the difference, is ~36% of the
-  frame** (2.2 → 1.4 FPS), and it is *rasterisation* — the mirrors and the dashboard.  So the
-  share table below, which was taken with them stubbed, understates rasterisation; the
-  "physics, not rasterisation" reading needs re-reading against the new table.
-  `docs/static-map.md` §Open items 6 and 10.
+  frame** (2.2 → 1.4 FPS), and it is *rasterisation* — the mirrors and the dashboard.  ⚠ The
+  share table below cannot settle the "physics, not rasterisation" reading either way: it is
+  measured with a broken instrument (see the 🛑 block under it).  `docs/static-map.md`
+  §Open items 6 and 10.
 - ✅ **Two 6502 loops in this build were compiled as unbounded mutual recursion** — one of
   them the per-pixel span store inside `project_geometry` (`$1DE5 ⇄ $1DE8`).  **Fixed**
   (`tools/transpile.py build_regions`, `docs/static-map.md` §Open items 9), and
@@ -114,14 +114,53 @@ rasterisation — which is the headline difference from the Atari port, where th
 rasteriser was the target.  `docs/phases.md` Phase 6 already predicted the physics hot path;
 this is the measurement behind it.
 
-Read with these caveats:
+## 🛑 …AND THAT TABLE IS NOT SAFE TO USE.  The instrument loses ~95% of the frame
+
+Found 2026-08-13 while re-taking the shares with the `$7B00` overlay in.  **This invalidates the
+57.4% headline above and every share in the table; both are left in place, struck through in
+spirit, only so the error is not silently rewritten out of history.**
+
+`probe_phase()` (`src/platform/probe.cpp`) times with `beamTick()` = `line * 256 + hpos`, which
+**wraps once per DISPLAY frame** (313 × 256 = 80 128 ticks, 20 ms), and handles the wrap by
+`if (d >= 0)` — *discarding* any negative delta.  Its comment says that "costs one bracket per
+frame out of hundreds", and that reasoning is sound only while a bracket is much shorter than a
+display frame.  **It isn't.**  At 1.4 FPS one game-loop iteration spans ~34 display frames, so the
+beam wraps ~34 times per iteration and most individual phases are themselves longer than 20 ms.
+A phase that spans a wrap is dropped whole; a phase that spans several loses whole multiples of
+80 128.
+
+Measured both ways, and the two agree on the diagnosis:
+
+| Run | Bracketed ticks/frame | Actually elapsed | Captured |
+|---|---|---|---|
+| `DASHCODE=0`, 2.2 FPS, n=29 | 103 750 | 1 821 091 | **5.7%** |
+| `DASHCODE=1`, 1.4 FPS, n=20 | 104 037 | 2 688 859 | **3.9%** |
+
+⭐ The tell is that **both builds bracket ~104 000 ticks per frame regardless of how long the
+frame actually is** — about 1.3 display frames.  That is not a measurement of the work; it is the
+sub-display-frame remainder that happened to survive.  Phases 5, 11 and 24 reading *exactly* zero
+is the same effect at its limit: those brackets span a wrap every single time.
+
+⚠ So the shares are shares **of the 4-6% that survived**, not of the frame, and they are biased
+against exactly the long phases you care about.  In particular the overlay's own three calls
+(phases 2/19/24) sum to 1.7% here while the FPS difference prices them at **~36%** — the two
+numbers cannot both be right, and the FPS one is the trustworthy one (Rule 1).
+
+**The fix** is to make the tick monotonic across frames without a 32-bit multiply (`__mulsi3` is
+banned): have the VERTB ISR add the constant 80 128 to a `g_beamEpoch` global under `REVS_PROBE`,
+and return `g_beamEpoch + beam`.  One addition per display frame, exact, no multiply.  Until that
+lands **no phase-share table from this harness may be quoted**, and "where does the time go" has
+no measured answer.
+
+Read the old table with these caveats too — all of them still apply on top of the above:
 - A bracket **includes nested callees**, so each row is a subtree cost, not an own cost.
 - **n = 30 frames.**  Enough to rank, not enough to price a change.
 - Phases 2/19/24 (`$7B4A`/`$7B00`/`$7BE2`) read ~0.3% because they are the no-op traps.
-- Phase 5 (`$24F6`) reads exactly 0 ticks.  Either it is genuinely trivial or its bracket
-  is losing deltas to the frame wrap; **do not treat 0 as measured** until it is re-read.
-- This is a PROBES build.  **No framerate may be quoted from it** — the 2.2 above comes
-  from the FPSCOUNT build.
+- ⭐ Phase 5 (`$24F6`) reading exactly 0 was flagged here as "either genuinely trivial or losing
+  deltas to the frame wrap; **do not treat 0 as measured**".  It was the frame wrap, and the note
+  was right to hedge and wrong to leave it at one phase — the same defect was eating most of
+  every other row.  A single suspicious zero was the whole bug, visible from the first run.
+- This is a PROBES build.  **No framerate may be quoted from it.**
 
 ## Rule 1 — the ONLY way to quote a framerate
 
