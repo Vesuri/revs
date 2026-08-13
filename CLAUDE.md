@@ -154,6 +154,12 @@ to print whatever globals / `mem[0xNNNN]` you need. Details and traps: `docs/hea
 Two committed gdb scripts: `amiga/phase4_fps.gdb` (segmented framerate + liveness state) and
 `amiga/phase4_prof.gdb` (main-loop phase shares, PROBES build).
 
+⭐ **The port RENDERS as of Phase 5** — `src/platform/bbc_screen.h` is the display model (read it
+before any visual work) and `amiga/screen_dump.gdb` + `tools/amiga_ppm.py` dump what the target is
+actually showing and decode it on the host. ⚠ Out of a race the game is in MODE 7 teletext, which
+is NOT rendered (black screen, and it needs a hand-drawn font), so a plain build is only reachable
+through the scripted auto-run.
+
 ⚠ **Every global a committed `.gdb` script reads must be listed in `PROBE_SYMS` (`amiga/Makefile`).**
 `--gc-sections` drops an unreferenced counter, and gdb then resolves the name into `.text` and
 prints **instruction bytes as a value** — a fake measurement, not an obvious zero. `make
@@ -198,7 +204,10 @@ hand-rename in generated files).
 | `src/gen/revs_manual.c` | Hand-written stubs for self-modifying routines |
 | `src/gen/revs_native.c` | FAITHFUL native twins (idiomatic C `_core` + 6502-ABI shim), `make validate`d, linked into BOTH backends |
 | `src/platform/amiga/revs_native_amiga.cpp` | Genuinely Amiga-only, unvalidated code |
-| `src/platform/mos.cpp` | The MOS (Acorn OS) call layer — the whole closed surface, ONE copy for both backends |
+| `src/platform/mos.cpp` | The MOS (Acorn OS) call layer — ⚠ a FLOOR, not a closed surface: OSBYTE 0, OSWORD 0 and OSWORD 7 were all found by RUNNING it |
+| **`src/platform/bbc_screen.h`** ⭐ | **THE DISPLAY MODEL** — geometry, pixel format and the five raster bands, derived and cross-checked. Read before touching anything visual |
+| `src/platform/amiga/RevsScreen.*` | BBC frame buffer → 2 bitplanes + the copper palette bands |
+| `src/platform/amiga/RevsInput.*` | Mouse + keyboard onto the game's own two input paths |
 | `src/platform/bbc_hw.cpp` | The BBC hardware model behind `bus_read`/`bus_write`, and the IRQ1V shim |
 | `src/platform/autorun.cpp` | Scripted keyboard for unattended runs; without it a headless run measures a menu spin |
 | `src/platform/probe.cpp` | Main-loop phase brackets (PROBES only) — the hot-function profile |
