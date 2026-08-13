@@ -11,6 +11,15 @@
 #
 # ⚠ A gdb script ABORTS THE WHOLE FILE at the first unknown symbol.  If this prints only its
 # header, suspect a probe global missing from PROBE_SYMS, not a dead scene.
+#
+# ⚠⚠ WHAT THIS INSTRUMENT CANNOT SEE — know it before quoting it as "verified on the target".
+# It dumps the bitplane BUFFER and the copper list.  It therefore covers the decode, the
+# interleave, the palette and the band raster lines, and NOTHING about how Agnus scans that
+# buffer out: DIWSTRT/DIWSTOP, DDFSTRT/DDFSTOP, BPLCON0's plane count, BPLxMOD, FMODE.  A
+# wrong DDFSTOP (measured: 0x5E instead of 0xD0 — six words fetched per line instead of
+# twenty, garbage left, black right) leaves this dump BYTE-IDENTICAL to a correct one.  Those
+# registers are write-only, so gdb cannot read them back either; they are checked at compile
+# time in RevsScreen::setConstantRegisters() instead, which is the only place that can.
 set pagination off
 set confirm off
 

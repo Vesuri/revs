@@ -127,17 +127,36 @@ void RevsScreen::setConstantRegisters()
        and kDisplayTop rather than written as four magic literals, because every copper band
        WAIT below is relative to kDisplayTop: if the window and the band waits could disagree
        the whole palette schedule slides, and a slid schedule looks like a decode bug.
-         DDF: lores fetch of kW/8 = 40 words starts at 0x38 and stops at 0x38 + 4*(40-1)/2,
-       i.e. 0xD0 — the standard 320-pixel pair.
+
+         DDF: kW/16 = 20 words per line, and in LORES Agnus takes one 16-bit fetch every
+       EIGHT colour clocks (hires is every four).  So DDFSTOP = DDFSTRT + 8*(words-1)
+       = 0x38 + 8*19 = 0xD0, the standard 320-pixel lores pair.
+       ⚠ The four values are CHECKED against that pair below, not just derived.  Getting the
+       fetch stride wrong here (2 instead of 8) made Agnus fetch six words a line — colourful
+       garbage on the left, black on the right — and NOTHING in the port's instrument set
+       noticed: screen_dump.gdb decodes the bitplane BUFFER, and DDF/DIW affect only what
+       Agnus scans out of it.  The buffer dump was byte-identical and the bands were at the
+       same raster lines, so "verified on the target" was verified by an instrument that
+       cannot see this class of bug at all.  Hence the compile-time check: the one place that
+       CAN catch it is the build.  (docs/method-lessons.md, and cf. bbc_screen.h's rule that
+       a derived number gets confirmed a second way.)
+
        ⚠ DIWHIGH is deliberately NOT written, and the framework's AmigaHardware::setPlayfield
        deliberately NOT called for this: it hard-codes a DIWHIGH whose VSTOP-high bit belongs
        to the Atari port's 276-line window.  Every field below fits the OCS-compatible 8-bit
        encoding (VSTRT 44, VSTOP 252, HSTRT 0x81, HSTOP 0xC1 + the implicit 256), so the high
        register has nothing to add here and writing that value would push VSTOP off the frame. */
-    *diwstrtPointer = (uint16_t)((kDisplayTop << 8) | 0x81);
-    *diwstopPointer = (uint16_t)((((kDisplayTop + kH) & 0xFF) << 8) | 0xC1);
-    *ddfstrtPointer = 0x0038;
-    *ddfstopPointer = (uint16_t)(0x0038 + 2 * ((kW / 16) - 1));
+    const uint16_t kDiwStrt = (uint16_t)((kDisplayTop << 8) | 0x81);
+    const uint16_t kDiwStop = (uint16_t)((((kDisplayTop + kH) & 0xFF) << 8) | 0xC1);
+    const uint16_t kDdfStrt = 0x0038;
+    const uint16_t kDdfStop = (uint16_t)(kDdfStrt + 8 * ((kW / 16) - 1));
+    static_assert(kDiwStrt == 0x2C81, "DIWSTRT: VSTRT must be 44, HSTRT 0x81");
+    static_assert(kDiwStop == 0xFCC1, "DIWSTOP: VSTOP must be 252 = 44+208, HSTOP 0xC1");
+    static_assert(kDdfStop == 0x00D0, "DDFSTOP: lores 320px is 0xD0 — check the fetch stride");
+    *diwstrtPointer = kDiwStrt;
+    *diwstopPointer = kDiwStop;
+    *ddfstrtPointer = kDdfStrt;
+    *ddfstopPointer = kDdfStop;
 
     /* Chip-set fetch mode.  0 = the OCS/ECS 16-bit fetch, which is the A500 target.  Write
        it rather than inherit it: on an AGA machine the OS may have left 32/64-bit fetch on,
