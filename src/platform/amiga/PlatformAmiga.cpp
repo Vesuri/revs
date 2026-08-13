@@ -67,6 +67,28 @@ extern "C" uint16_t platform_frame_count(void) { return g_vbiCount; }
 // PROBES build — the probes are what such a build exists to measure.  (docs/perf-method.md)
 extern "C" { volatile unsigned long g_fpsFrames = 0; }
 
+#ifdef REVS_FPSCOUNT
+/* ⭐⭐ THE FRAMERATE SERIES, SAMPLED BY THE PROGRAM ITSELF — no gdb stop inside the
+ * measurement window.
+ *
+ * ⚠ WHY THIS REPLACES A SEGMENTED gdb SCRIPT.  fps_seg.gdb re-arms a CONDITIONAL
+ * breakpoint per segment, so gdb halts the machine at every call to Revs::render to
+ * evaluate it.  Measured 2026-08-13, both on the SAME binary: fps_seg reported 1.4 FPS
+ * where a single free run of the same build reported 0.43, and on a slower build it
+ * reported 0.02 against 0.66 — the instruments disagree by 3x and 30x, in both
+ * directions.  Sampling in the ISR and reading the whole series in ONE stop after the run
+ * removes the stops from the window entirely.
+ *
+ * Cost: a mask, a compare and three stores once every 512 vblanks, inside a build that
+ * exists only to be measured.  (docs/perf-method.md) */
+#define FPS_SERIES_MAX   24u
+extern "C" {
+volatile unsigned long g_fpsSeries[FPS_SERIES_MAX];
+volatile uint16_t      g_fpsSeriesVbi[FPS_SERIES_MAX];
+volatile uint8_t       g_fpsSeriesN = 0;
+}
+#endif
+
 static struct Interrupt  s_vbiServer;
 static struct IntVector  s_savedVertb;
 static bool              s_vertbTaken  = false;
@@ -86,6 +108,17 @@ static uint32_t vbiHandler()
     *intreqPointer = (uint16_t)INTF_VERTB;
 
     g_vbiCount++;
+
+#ifdef REVS_FPSCOUNT
+    // Sample the painted-frame counter every 512 vblanks — a mask and three stores, so the
+    // framerate series costs nothing and needs no gdb stop inside the window.  See the
+    // g_fpsSeries comment above for the 3x/30x measurement error this replaces.
+    if ((g_vbiCount & 511u) == 0u && g_fpsSeriesN < FPS_SERIES_MAX) {
+        g_fpsSeries[g_fpsSeriesN]    = g_fpsFrames;
+        g_fpsSeriesVbi[g_fpsSeriesN] = g_vbiCount;
+        g_fpsSeriesN++;
+    }
+#endif
 
     // ⭐ Advance the phase-bracket clock by exactly one display frame.  Without this the
     // brackets time with a counter that wraps every 20 ms and they measure ~4% of a game

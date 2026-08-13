@@ -234,8 +234,18 @@ owns the display. Spin-wait points in transpiled code become hooks that drive on
 negotiable** — the game body is a VERTB-ISR interrupt, so 25 FPS means painting every other frame
 with the simulation still at full rate.
 
-⭐ **BASELINE: ≈1.4 FPS** (2026-08-12) — ~18× short of the floor, nothing drawn, nothing
-optimised. Supersedes an earlier ≈2.2 FPS taken with the `$7Bxx` overlay stubbed out.
+⭐ **BASELINE: 0.78 FPS RENDERED / 1.46 FPS unrendered** (2026-08-13) — ~32× short of the
+floor. Phase 5 draws now, and rendering roughly halves the frame: two thirds of that cost is
+display DMA against a program in chip RAM (structural on a stock A500), one third the
+frame-buffer decode (~250 ms).
+
+⚠ **Quote a framerate ONLY from `GDBSCRIPT=fps_series.gdb`** (in-program sampling, no gdb stop
+inside the window). `fps_seg.gdb`'s conditional breakpoints halted the machine at every frame
+and read **0.02 where the truth was 0.78** — a 30× error that reads as a catastrophic
+regression. Every framerate taken before 2026-08-13 came from that instrument.
+
+⚠ An **intermittent stall** freezes `g_fpsFrames` part-way through some runs, in EVERY build
+including the pre-Phase-5 one. Unexplained; discard frozen segments (`docs/perf-method.md`).
 
 ⭐⭐ **THE HOT PATH IS RASTERISATION, NOT PHYSICS** (re-measured 2026-08-13). Top three of the
 main loop's 24 calls are **76.2%**: `$7BE2` **36.1%** (the dashboard), `$1A20` **21.1%** (the

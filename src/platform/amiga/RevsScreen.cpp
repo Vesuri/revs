@@ -212,6 +212,9 @@ void RevsScreen::present()
 
 void RevsScreen::vbiUpdate()
 {
+#ifdef REVS_SCREEN_NO_BANDS
+    return;
+#endif
     if (!m_copper) return;
     buildBands();
     present();
@@ -222,6 +225,10 @@ void RevsScreen::vbiUpdate()
    --------------------------------------------------------------------------- */
 void RevsScreen::decode()
 {
+#ifdef REVS_SCREEN_NO_DECODE
+    m_ready = true;
+    return;
+#endif
     Bitmap* bm = m_bitmap[m_back];
     if (!bm) return;
 

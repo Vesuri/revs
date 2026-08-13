@@ -114,6 +114,12 @@ endif
 #     FPS = 50 * g_fpsFrames / g_vbiCount
 # — frames per EMULATED vblank, immune to host speed and to the gdb stub.
 # Run: . ./env.sh && GDBSCRIPT=fps_seg.gdb ./diag_run.sh 200
+ifdef NODECODE
+EXTRA_DEFINES += -DREVS_SCREEN_NO_DECODE
+endif
+ifdef NOBANDS
+EXTRA_DEFINES += -DREVS_SCREEN_NO_BANDS
+endif
 ifdef FPSCOUNT
 EXTRA_DEFINES += -DREVS_FPSCOUNT
 endif
@@ -202,6 +208,10 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
 # script is run against.  phase4_prof.gdb is a PROBES script.
 ifdef PROBES
 PROBE_SYMS += g_phaseTicks g_phaseCount g_phaseFrames g_beamEpoch
+endif
+# Same rule, same reason: the FPS series exists only in an FPSCOUNT build.
+ifdef FPSCOUNT
+PROBE_SYMS += g_fpsSeries g_fpsSeriesVbi g_fpsSeriesN
 endif
 
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \

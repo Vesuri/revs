@@ -33,7 +33,45 @@ and explicitly "whether that's reachable remains to be seen".
   ceiling was GCC, not the algorithm.  That cuts both ways: don't declare it impossible from
   reasoning, and don't declare it reached from optimism.)
 
-## ⭐ THE BASELINE — measured 2026-08-12, Phase 4
+## ⭐ THE BASELINE — 1.46 FPS unrendered, 0.78 FPS RENDERED (re-measured 2026-08-13)
+
+**The port draws now** (Phase 5, `RevsScreen`), and the honest pair of numbers, taken with the
+same instrument on the same day, is:
+
+| Build | FPS | frame | what it is |
+|---|---|---|---|
+| pre-Phase-5 (`Revs::render` counts and returns) | **1.46** | 685 ms | the old baseline, reproduced |
+| + copper bands + 2-bitplane display DMA + double buffer (`NODECODE=1`) | **0.97** | 1031 ms | −35%, and it is DMA/contention, not code |
+| + the frame-buffer decode (shipping Phase 5 build) | **0.78** | 1282 ms | −19% more: the decode itself, ~250 ms |
+
+So **rendering roughly halves the framerate**, and only about a third of that is the decode
+loop.  The rest is what turning display DMA on costs a CPU whose program and `mem[]` are in
+chip RAM — on a stock A500 (512 KB chip, no fast RAM) that is unavoidable, so treat it as the
+new floor of the rendered configuration rather than something to optimise away.  ⚠ The two
+rows are separate runs, so per docs' own rule they are a sizing, not a differential: the decode
+is worth ~250 ms, ±a trajectory.
+
+Goal 50, floor 25.  Rendered, the port is **~32× short of the floor**.
+
+⚠⚠ **AND EVERY EARLIER FRAMERATE IN THIS PROJECT WAS MEASURED WITH A BIASED INSTRUMENT** — see
+§How to quote a framerate below.  `fps_seg.gdb` halts the machine at every call to
+`Revs::render` to evaluate a breakpoint condition; on the same binary it read 1.4 where a free
+run read 0.43, and on the rendered build it read **0.02 where the truth was 0.66-0.78** — a 30×
+error in the direction that looks like a catastrophic regression, which is exactly what it was
+first taken for.  The replacement (`amiga/fps_series.gdb` + the in-program sampler in
+`PlatformAmiga.cpp`) puts NO gdb stop inside the window: the ISR samples `g_fpsFrames` every
+512 vblanks and one stop after the run prints the series.  The 1.46 above is that instrument
+agreeing with the old 1.4 for the unrendered build — the old number was right, the instrument
+that produced it was not trustworthy, and the difference only showed up on a slower build.
+
+⚠ **An intermittent stall affects EVERY build, including the pre-Phase-5 one.**  In some runs
+`g_fpsFrames` stops advancing part-way (measured: baseline steady to vbi 11784 in one run,
+frozen from vbi ~8700 in another; the `NODECODE=1` build froze after one segment).  It is not
+caused by the renderer and it is not the "unattended run ending" artefact — it is unexplained,
+and it is why the series is printed per segment.  **Discard frozen rows, and do not average
+across a freeze.**  Open item.
+
+### The pre-Phase-5 baseline, as it was recorded (2026-08-12, Phase 4)
 
 **≈1.4 FPS.**  Goal 50, floor 25.  So the port is **~18× short of the floor** and ~36× short
 of the goal, before a single native twin exists and before anything is drawn.
@@ -192,8 +230,27 @@ the first line `phase4_prof.gdb` prints.
 
 ```
 cd amiga && make clean && make -j4 FPSCOUNT=1 FIXED_RNG=1
-. ./env.sh && GDBSCRIPT=fps_seg.gdb ./diag_run.sh 200
+. ./env.sh && GDBSCRIPT=fps_series.gdb ./diag_run.sh 240
 ```
+
+⚠⚠ **`fps_series.gdb`, NOT `fps_seg.gdb` — the instrument itself was biasing the number.**
+`fps_seg` re-arms a CONDITIONAL breakpoint per segment (`tbreak Revs::render if g_vbiCount >=
+N`), so gdb halts the machine at every call to evaluate it.  Measured 2026-08-13 on the SAME
+binaries:
+
+| build | fps_seg (conditional stops) | free run / in-program series |
+|---|---|---|
+| pre-Phase-5 | 1.4 | 0.43 (single free window) / **1.46** (series) |
+| Phase 5, rendering | **0.02** | 0.66 (single free window) / **0.78** (series) |
+
+The 30× error on the rendered build was first read as a catastrophic regression and sent this
+session bisecting a renderer that was fine.  Two lessons, both cheap:
+
+- **Put no gdb stop inside a measurement window.**  `fps_series.gdb` reads a series the PROGRAM
+  sampled for itself — the VERTB handler stores `g_fpsFrames` every 512 vblanks (a mask and
+  three stores) and ONE stop after the run prints all of it.
+- **A biased instrument can agree with the truth on one build and be 30× out on another.**
+  fps_seg's 1.4 for the unrendered build was right; that is exactly why nobody caught it.
 
 `FPS = 50 * g_fpsFrames / g_vbiCount` — painted frames per **emulated** vblank, so host speed
 and the gdb stub's own slowness cancel out completely.
