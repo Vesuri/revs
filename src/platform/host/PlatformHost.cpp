@@ -1,6 +1,7 @@
 /* PlatformHost — headless development backend.  See PlatformHost.h for why it has no
    renderer. */
 #include "PlatformHost.h"
+#include "../bbc_screen.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -16,6 +17,10 @@ PlatformHost::PlatformHost(const char* imagePath) : vbi(0), frames(0), traceKeys
 {
     const char* t = std::getenv("REVS_TRACE_KEYS");
     traceKeys = (t && t[0] && t[0] != '0');
+
+    dumpPath = std::getenv("REVS_SCREEN_DUMP");
+    const char* df = std::getenv("REVS_SCREEN_FRAME");
+    dumpFrame = (df && df[0]) ? (unsigned long)std::strtoul(df, 0, 0) : 400ul;
 
     if (loadImage(imagePath) != 0) {
         std::fprintf(stderr, "PlatformHost: cannot load memory image '%s'\n",
@@ -47,6 +52,56 @@ void PlatformHost::renderFrame()
     /* No display.  Just count: this is the hook at the top of the engine's main loop
        ($1701), so `frames` is a game-frame counter and nothing else. */
     frames++;
+
+    /* ⭐ THE 50 Hz BODY MUST RUN EVEN WHEN THE MAIN LOOP DOES NOT WAIT FOR IT.
+       The only host driver for the band cycle used to be the frame-wait hook at $1760 —
+       but the main loop reaches $1760 only when $62F6 is non-zero ($1753: `LDA $62F6 /
+       BEQ $178F`), and on the other arm it loops straight back to $1701.  Measured: in
+       the driving loop the wait is skipped, so the host ran the foreground with NO
+       interrupt body at all — no palette bands, no $52A4 — while everything visible still
+       looked healthy.  On a BBC the User VIA fires regardless of what the foreground is
+       doing, so the honest host model is one band cycle per game frame; the $1760 hook
+       then still drives the spin when the game does use it.
+       (The Amiga backend is unaffected: there the body is the real VERTB ISR.) */
+    if (!tickedThisFrame) tickVBI();
+    tickedThisFrame = false;
+
+    if (dumpPath && frames == dumpFrame) {
+        std::FILE* f = std::fopen(dumpPath, "wb");
+        if (f) {
+            for (unsigned i = 0; i < BBC_SCREEN_BYTES; i++)
+                std::fputc(mem[BBC_SCREEN_BASE + i], f);
+            std::fclose(f);
+            std::printf("PlatformHost: screen dump frame %lu -> %s\n", frames, dumpPath);
+        }
+        std::fflush(stdout);
+    }
+}
+
+/* The band record beside the framebuffer dump: the same raster schedule the Amiga copper
+   is built from, in a form screen_ppm.py can colour the dump with.  One line per band:
+   state duration(us) ulaControl pal0..pal15.
+   ⚠ Written from the END of a band cycle, not from renderFrame(): the record describes
+   the cycle just dispatched, and reading it at an arbitrary point in the main loop shows
+   a partial one.  That is not a detail — the first attempt read it from renderFrame() and
+   saw ONE band, which reads exactly like a broken recorder. */
+void PlatformHost::dumpBands()
+{
+    char sidecar[512];
+    std::snprintf(sidecar, sizeof sidecar, "%s.bands", dumpPath);
+    std::FILE* b = std::fopen(sidecar, "a");
+    if (!b) return;
+    std::fprintf(b, "# frame %lu anchor_us %d overflow %u horizon_latch $%02X%02X\n",
+                 frames, (int)BBC_BAND0_ANCHOR_US, (unsigned)g_bandOverflow,
+                 mem[0x4F20], mem[0x4F1F]);
+    for (unsigned i = 0; i < g_bandCount; i++) {
+        std::fprintf(b, "%02X %5u %02X", g_bandState[i], g_bandDuration[i],
+                     g_bandControl[i]);
+        for (unsigned c = 0; c < 16; c++)
+            std::fprintf(b, " %02X", g_bandPalette[i][c]);
+        std::fputc('\n', b);
+    }
+    std::fclose(b);
 }
 
 void PlatformHost::tickVBI()
@@ -64,10 +119,13 @@ void PlatformHost::tickVBI()
 
        One call = one full raster-band cycle = one 50 Hz tick, the same rule Revs::vbi()
        follows on the Amiga; see the comment there for why it is a cycle and not a band. */
+    tickedThisFrame = true;
+    bbc_begin_band_cycle();
     for (int band = 0; band < 8; band++) {
         fireIrq1v();
         if (mem[0x4F43] == 0) break;      // $4F43 = irq_band_state; 0 = cycle complete
     }
+    if (dumpPath && frames >= dumpFrame && frames < dumpFrame + 3) dumpBands();
 }
 
 bool PlatformHost::keyDown(uint8_t x)

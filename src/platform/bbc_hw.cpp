@@ -28,6 +28,7 @@
  * observes.  Where a real VIA is more subtle than this, the comment says so.
  */
 #include "platform.h"
+#include "bbc_screen.h"
 #include "../cpu/cpu.h"
 
 extern "C" void irq1v_handler(void);   /* $4E5C, from the generated transliteration */
@@ -45,6 +46,40 @@ volatile uint8_t  g_ulaPalette[16] = {0};  /* $FE21 — 16 physical/logical colo
    change.  Phase 5 turns the sequence into copper WAITs, so capture it now. */
 volatile uint8_t  g_userT1LatchLo = 0;
 volatile uint8_t  g_userT1LatchHi = 0;
+
+/* ⭐ THE RASTER-BAND RECORD — the display, as the game itself describes it.
+ *
+ * The 6845 gives the geometry (one static mode: 40x26 cells of 8 lines at $5A80) but the
+ * game's *colours and pixel depth* are a function of raster position, rewritten by
+ * irq1v_handler once per band: ULA control to $FE20, some subset of the 16 palette
+ * entries to $FE21, then the User VIA T1 latch = how long until the next band.  A frame
+ * is five bands whose durations sum to 20000 us (one 312.5-line interlace-sync field).
+ *
+ * So rather than hard-code a band table — which would freeze a *variable* (band 1's
+ * duration is the horizon, and it moves with the hills) — the model records what the
+ * handler actually wrote, per cycle, and the Amiga backend turns that into copper WAITs.
+ * The game stays the source of truth for its own display, which is the whole point of
+ * the faithfulness seam.
+ *
+ * Closing rule: every band arm ends `STX $FE67 / STA $FE66` ($4F01/$4F04), so the write
+ * to $FE66 is what completes a record.  The palette snapshot is CUMULATIVE because the
+ * ULA's palette RAM is: bands 3 and 4 rewrite only four entries each and inherit the
+ * rest from band 2.
+ */
+volatile uint8_t  g_bandCount = 0;             /* bands recorded this cycle */
+volatile uint8_t  g_bandOverflow = 0;          /* more bands than BBC_MAX_BANDS: a finding */
+volatile uint16_t g_bandDuration[BBC_MAX_BANDS] = {0};   /* microseconds until the next */
+volatile uint8_t  g_bandControl[BBC_MAX_BANDS] = {0};    /* $FE20 during this band */
+volatile uint8_t  g_bandState[BBC_MAX_BANDS] = {0};      /* $4F43: which band this IS */
+volatile uint8_t  g_bandPalette[BBC_MAX_BANDS][16] = {{0}};
+
+/* Start of a band cycle: the backend calls this immediately before dispatching the five
+   fireIrq1v() bands that make up one field, so the record describes ONE field and a
+   half-written cycle can never be read as a whole one. */
+void bbc_begin_band_cycle(void)
+{
+    g_bandCount = 0;
+}
 /* Reads of an I/O address the Phase 2 inventory does not list.  A finding, not noise. */
 volatile unsigned long g_hwUnknownReads = 0;
 volatile uint16_t      g_hwUnknownAddr  = 0;
@@ -119,9 +154,34 @@ void Platform::hwWrite(uint16_t addr, uint8_t val)
         g_ulaPalette[(val >> 4) & 0x0F] = val;
         break;
 
-    /* User VIA T1 counter/latch — the raster schedule (see the extern above). */
+    /* User VIA T1 counter/latch — the raster schedule (see the extern above).
+       ⭐ $FE66 is the LAST write of every band arm ($4F04, after $4F01's $FE67), so it is
+       what closes a band record: duration = the latch + 2 for the 6522's own reload
+       cycles, which is what makes the five durations sum to exactly one 20000 us field
+       instead of missing it by 10.  Everything else about the band — mode and palette —
+       is already in g_ulaControl/g_ulaPalette by now, so the record is a snapshot. */
     case 0xFE64: case 0xFE66:
         g_userT1LatchLo = val;
+        if (addr == 0xFE66) {
+            if (g_bandCount < BBC_MAX_BANDS) {
+                unsigned b = g_bandCount;
+                g_bandDuration[b] = (uint16_t)(((unsigned)g_userT1LatchHi << 8) |
+                                                g_userT1LatchLo) + 2u;
+                g_bandControl[b]  = g_ulaControl;
+                /* ⭐ WHICH band this is, straight from the game's own counter.  $4F43 is
+                   INC'd at $4F07, AFTER this write, so it still holds the state whose arm
+                   just ran — i.e. the band identity.  Recording it rather than trusting
+                   arrival order is what makes the raster anchor unambiguous when a cycle
+                   is dispatched starting from a state other than 0. */
+                g_bandState[b]    = mem[0x4F43];
+                for (unsigned i = 0; i < 16; i++) g_bandPalette[b][i] = g_ulaPalette[i];
+                g_bandCount = (uint8_t)(b + 1);
+            } else {
+                /* More bands in one field than the five the handler has arms for.  Not
+                   absorbed: a sixth band means this model has the cycle wrong. */
+                g_bandOverflow++;
+            }
+        }
         break;
     case 0xFE65: case 0xFE67:
         g_userT1LatchHi = val;

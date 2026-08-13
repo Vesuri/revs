@@ -54,4 +54,11 @@ private:
     unsigned long frames;
     AutoRun autoRun;
     bool    traceKeys;
+
+    /* Raw framebuffer dump for tools/screen_ppm.py — a decode-experiment aid, never a
+       renderer and never evidence.  REVS_SCREEN_DUMP / REVS_SCREEN_FRAME. */
+    const char*   dumpPath;
+    unsigned long dumpFrame;
+    bool          tickedThisFrame = false;
+    void dumpBands();
 };
