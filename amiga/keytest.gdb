@@ -1,3 +1,16 @@
+# ⚠⚠ SUSPECT INSTRUMENT — DO NOT TRUST A RESULT FROM THIS SCRIPT WITHOUT RE-DERIVING IT.
+#
+# Everything below stimulates the game with `set var g_keyDown[…]`, and on 2026-08-13 gdb writes
+# were measured NOT to reach this emulated machine at all: a plain global, a volatile array
+# element and `mem[]` all read back unchanged immediately after assignment and after a continue,
+# with no error printed (docs/headless-fsuae.md §gdb can READ but not WRITE).  Under that
+# behaviour this script can only ever print unchanged values, i.e. report a failure it cannot
+# distinguish from a broken key path.
+#
+# The working substitute is a build flag, not a poke: `make STRAIGHT_TO_RACE=1 FPSCOUNT=1` puts
+# the key presses in the binary and `amiga/straight_to_race.gdb` reads the game's own response
+# ($0061 engine, $0063 speed).  That path is verified on the target.
+#
 # End-to-end proof that a key reaches the game, on a headless target with no keyboard.
 #
 # A plain build parks in the FRONT END (nothing presses a key, so Revs::render is never

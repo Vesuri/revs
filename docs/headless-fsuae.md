@@ -42,6 +42,17 @@ make clean && make -j4 PROBES=1
   not just that column.  So deleting a probe global silently kills every committed `.gdb` that
   still prints it.  **When you delete or rename a probe global, grep `amiga/*.gdb` for it**, and
   treat "the trace stopped after the header" as a stale script, not a dead probe.
+- **⚠⚠ gdb can READ the emulated machine but NOT WRITE it — `set var` is silently dropped.**
+  Measured 2026-08-13 against this FS-UAE build, stopped at a `tbreak` in `Revs::render`, with
+  three different targets: a `volatile uint8_t` array element (`g_keyDown[0x21]`), a plain
+  `volatile` global (`g_keyUnmappedCode`), and the 6502 image (`mem[0x9000]`).  All three read
+  back **unchanged immediately after the assignment**, and still unchanged after a `continue`.
+  gdb prints **no error** — the write just does not happen, so a poke-and-observe script reports
+  "the poke had no effect", which is indistinguishable from "the code under test is broken".
+  ⚠ **`amiga/keytest.gdb` is built entirely on `set var g_keyDown[…]`** and is therefore suspect;
+  see the warning at its head.  **Verify anything you would have poked with a build flag
+  instead** — that is what `STRAIGHT_TO_RACE` and `FIXED_RNG` are for: put the stimulus in the
+  binary, where it demonstrably runs.
 - **A faster CPU exposes beam-timing races**: `AMIGA_MODEL=A1200`,
   `EXTRA_ARGS=--cpu=68040`.  See `docs/amiga-lessons.md` §SPRxPT — A1200 alone was not enough
   there; the 68040 is what made the violation fire.
