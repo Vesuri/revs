@@ -38,6 +38,7 @@ extern struct GfxBase* GfxBase;
 // VBI state
 // ---------------------------------------------------------------------------
 static Revs* s_scene = 0;
+static PlatformAmiga* s_platform = 0;   // for the ISR's mouse sampling
 
 // ⚠⚠ EVERY PROBE COUNTER MUST BE LISTED IN amiga/Makefile's PROBE_SYMS.
 //
@@ -133,6 +134,12 @@ static uint32_t vbiHandler()
     // ISR-side work with VPOSR/VHPOSR beam-line reads before theorising.
     // TODO(phase: Amiga backend): dispatch the game's own IRQ1V/EVNTV body here, and do
     // all copper bitplane POINTER swaps here — never mid-frame.
+    // The mouse counter is 8 bits and free-running, so it MUST be sampled every frame:
+    // a missed frame loses the delta, and a delta taken across the wrap is a fast flick
+    // in the wrong direction.  Two register reads, above the game body so it cannot be
+    // starved by an overrunning one.
+    if (s_platform) s_platform->sampleMouse();
+
     if (s_scene) s_scene->vbi();
 
     return 0;
@@ -196,19 +203,24 @@ bool PlatformAmiga::keyDown(uint8_t x)
 {
 #if defined(REVS_FPSCOUNT) || defined(REVS_PROBE)
     // Unattended run: the script walks the front end and then holds the throttle, so the
-    // measurement window contains the driving loop instead of a menu spin.
-    return autoRun.keyDown(x);
+    // measurement window contains the driving loop instead of a menu spin.  ⚠ It overrides
+    // the real keyboard on purpose — a measurement must not depend on what is on the desk.
+    //
+    // ⭐ But it drives the REAL input path rather than short-circuiting it: the script's
+    // answer is pushed into the same rawkey state the CIA-A handler writes, and the answer
+    // returned is RevsInput's.  So an unattended run that still reaches a race is an
+    // end-to-end test of the key map — which is otherwise unverifiable on a headless
+    // target, because there is no keyboard to press.
+    bool held = autoRun.keyDown(x);
+    input.pressBbcKey(x, held);
+    return input.keyDown(x);
 #else
-    // ⚠ A shipping build genuinely has no keyboard yet — Phase 5 owns mouse + keyboard,
-    // and answering "nothing held" is the honest placeholder.  It does mean a plain
-    // `make` build parks in the front end; that is a missing feature, not a hang.
-    (void)x;
-    return false;
+    return input.keyDown(x);
 #endif
 }
 
-uint8_t  PlatformAmiga::adcButtons()             { return 0x00; }
-uint16_t PlatformAmiga::adcAxis(uint8_t channel) { (void)channel; return 0x8000; }
+uint8_t  PlatformAmiga::adcButtons()             { return input.buttons(); }
+uint16_t PlatformAmiga::adcAxis(uint8_t channel) { return input.axis(channel); }
 
 void PlatformAmiga::renderFrame()
 {
@@ -292,7 +304,13 @@ void PlatformAmiga::run()
     loadImage(0);
 
     s_scene = &scene;
+    s_platform = this;
     scene.initialize();
+
+    // Real input.  ⚠ AFTER the display takeover and BEFORE Forbid(): OpenResource and the
+    // AddICRVector dance are OS calls, and the ICR vector must be ours before the game
+    // starts asking which keys are held.
+    input.initialize();
 
     // Our list is installed and the constant registers are set — safe to start display
     // DMA.  The copper restarts from COP1LC (ours) at the next vblank.
@@ -308,6 +326,7 @@ void PlatformAmiga::run()
     scene.run();          // returns when the user quits
 
     Permit();
+    input.shutdown();        // hand the SP vector back to keyboard.device
     scene.shutdown();
 
     // --- restore the system --------------------------------------------------
@@ -321,6 +340,7 @@ void PlatformAmiga::run()
         s_vertbTaken = false;
     }
     s_scene = 0;
+    s_platform = 0;
 
     *dmaconPointer = (uint16_t)(DMAF_COPPER | DMAF_RASTER | DMAF_SPRITE);
 

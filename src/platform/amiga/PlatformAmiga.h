@@ -23,6 +23,7 @@
 #include "platform.h"           // the abstract base (src/platform, on the build -I path)
 #include "platform_c.h"         // the extern "C" bridge decls
 #include "autorun.h"            // the scripted keyboard for unattended runs
+#include "RevsInput.h"          // real mouse + keyboard (Phase 5)
 #include "framework/Util.h"     // uint8_t, uint16_t, uint32_t
 
 // main.cpp instantiates PlatformClass(image) without knowing the concrete type; the
@@ -55,6 +56,9 @@ public:
     virtual void    setInterrupt(void (*fn)(void))      override;  // real VBI -> no-op
     virtual int     framesPerSecond()                   override;  // 50 (PAL)
 
+    // Called from the VERTB ISR: accumulate the mouse counter (see RevsInput::sampleMouse).
+    void sampleMouse() { input.sampleMouse(); }
+
 protected:
     // Backs the System VIA vsync flag ($FE4D bit 1) hw_init's alignment spin blocks on:
     // here it is a REAL frame boundary, taken from the VERTB ISR's own counter.
@@ -68,5 +72,9 @@ private:
 #if defined(REVS_FPSCOUNT) || defined(REVS_PROBE)
     AutoRun autoRun;
 #endif
+    // Real input: the CIA-A keyboard and the mouse, mapped onto the game's own two input
+    // paths (RevsInput.h).  ⚠ Under FPSCOUNT/PROBES the SCRIPT wins, so an unattended
+    // measurement run is bit-identical across builds no matter what the keyboard does.
+    RevsInput input;
     uint16_t lastVsyncCount = 0;
 };
