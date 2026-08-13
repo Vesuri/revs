@@ -13,8 +13,7 @@
  * drives the genuine 6502 entry chain.
  */
 #include "framework/Util.h"
-
-class CopperList;
+#include "RevsScreen.h"
 
 // ⚠ Deliberately TRIVIALLY constructible + destructible (no user ctor/dtor, member
 // initialised in-class).  A function-local `static Revs` with a non-trivial ctor pulls in
@@ -40,5 +39,7 @@ public:
     void vbi();
 
 private:
-    CopperList* copper = 0;
+    // The BBC display, re-hosted: two bitplanes + the copper palette bands.  Held by
+    // value so the scene stays trivially constructible (see the note above).
+    RevsScreen screen;
 };

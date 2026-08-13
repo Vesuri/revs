@@ -3,35 +3,26 @@
 #include "PlatformAmiga.h"
 #include "framework/AmigaHardware.h"
 #include "framework/CopperList.h"
+#include "../bbc_screen.h"
 
 extern "C" volatile uint16_t g_vbiCount;
 extern "C" volatile unsigned long g_fpsFrames;
 extern "C" volatile uint8_t mem[65536];   // the 6502 RAM image (src/cpu/cpu.c)
 extern "C" void engine_main(void);        // $63BD, the transpiled engine entry
 
-// A minimal copper list: set the background colour, then wait forever.
-//   COLOR00 = $DFF180.  Colour writes take effect immediately, so a colour-only poke is
-//   safe on a live list (pointer writes are NOT — those are VBI-only).
-static uint32_t s_copperData[] = {
-    copperMove(0x180, 0x0123),      // COLOR00 — a recognisable non-black, so a booted
-                                    // build is visibly distinguishable from a hang
-    copperWait(255, 255),           // park the copper
-    0xFFFFFFFEu,                    // end of list
-};
 
 void Revs::initialize()
 {
     // ⚠ Install the copper list while the copper is halted (display DMA is off at this
     // point — PlatformAmiga::run() guarantees it).  Installing into a running copper is
     // how the Atari port lost its one-time register setup to stray OS-copper frames.
-    copper = new CopperList(s_copperData, sizeof(s_copperData) / sizeof(s_copperData[0]));
-    AmigaHardware::setCopperList(copper->data());
+    screen.initialize();
+    if (screen.copper()) AmigaHardware::setCopperList(*screen.copper());
 }
 
 void Revs::shutdown()
 {
-    delete copper;
-    copper = 0;
+    screen.shutdown();
 }
 
 void Revs::render()
@@ -42,9 +33,9 @@ void Revs::render()
     // it stops being the honest baseline.  (docs/perf-method.md)
     g_fpsFrames++;
 #endif
-    // TODO(phase: Amiga backend): mirror the 6502 screen RAM into bitplanes here.
-    // Keep the work proportional to what CHANGED — a full-screen re-decode per frame is
-    // affordable on a 7 MHz 68000 exactly once, and this is not the place to spend it.
+    // ⭐ The BBC frame buffer -> the back bitplane buffer.  Main-loop context: the
+    // POINTER swap that presents it happens in vbi(), never here.
+    screen.decode();
 }
 
 void Revs::vbi()
@@ -71,10 +62,16 @@ void Revs::vbi()
     // state machine the game can change is how an ISR eats every frame.  8 = the five
     // real bands plus slack; overrunning it drops the rest of this frame's bands rather
     // than the whole display.
+    bbc_begin_band_cycle();
     for (int band = 0; band < 8; band++) {
         platform->fireIrq1v();
         if (mem[0x4F43] == 0) break;      // $4F43 = irq_band_state; 0 = cycle complete
     }
+
+    // ⭐ The five bands the cycle just wrote are now a record of this field's palette and
+    // pixel depth as a function of raster position (src/platform/bbc_screen.h).  Turn it
+    // into copper WAITs and present the finished frame — both belong here and only here.
+    screen.vbiUpdate();
 }
 
 void Revs::run()

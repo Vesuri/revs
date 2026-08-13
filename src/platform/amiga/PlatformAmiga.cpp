@@ -218,10 +218,11 @@ void PlatformAmiga::run()
     *intenaPointer = (uint16_t)INTF_BLIT;    // no SETCLR = disable
     *intreqPointer = (uint16_t)INTF_BLIT;    // drop any already-latched request
 
-    // Display window — standard PAL lores 320x200.  No bitplanes yet (bplcon0 = 0): the
-    // whole area shows COLOR00, which the scene's copper list sets.
+    // Display window — PAL lores 320x208, which is the BBC custom mode's exact height
+    // (26 character rows of 8 lines; src/platform/bbc_screen.h).  ⚠ kDisplayTop in
+    // RevsScreen.cpp must match VSTRT: every copper band WAIT is relative to it.
     *diwstrtPointer = 0x2C81;   // VSTRT=44,  HSTRT=0x81
-    *diwstopPointer = 0xF4C1;   // VSTOP=244, HSTOP=0xC1 (+256 implicit)
+    *diwstopPointer = 0xFCC1;   // VSTOP=252 = 44+208, HSTOP=0xC1 (+256 implicit)
     *ddfstrtPointer = 0x0038;
     *ddfstopPointer = 0x00D0;
     *bplcon0Pointer = 0x0000;

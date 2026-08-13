@@ -48,6 +48,7 @@ CXX_SRCS := \
     $(AMIGA_SRC)/GCCRuntime.cpp \
     $(AMIGA_SRC)/PlatformAmiga.cpp \
     $(AMIGA_SRC)/Revs.cpp \
+    $(AMIGA_SRC)/RevsScreen.cpp \
     $(REPO)/src/platform/Platform.cpp \
     $(REPO)/src/platform/mos.cpp \
     $(REPO)/src/platform/probe.cpp \
@@ -191,7 +192,9 @@ VASMFLAGS = -m68010 -Felf -quiet -x -no-opt -nowarn=62 $(EXTRA_VASMDEFS)
 PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCount g_brkPC \
              g_mosUnknownCount g_mosUnknownEntry g_mosUnknownA g_mosCharDefCount \
              g_hwUnknownReads g_hwUnknownAddr g_ulaControl g_userT1LatchLo g_userT1LatchHi \
-             g_badRegionCount g_badRegionEntry
+             g_badRegionCount g_badRegionEntry \
+             g_screenFrontAddr g_screenCopperAddr g_screenBytes g_bandRejects \
+             g_bandCount g_bandOverflow
 # ⚠ CONDITIONAL, because these only EXIST under PROBES (src/platform/probe.cpp compiles to
 # nothing otherwise).  Listing them unconditionally makes --undefined=<sym> unsatisfiable and a
 # plain `make` fails at probe-audit — which is the audit working, not a bug in it.  The rule
