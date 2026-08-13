@@ -38,6 +38,22 @@ void probe_phase(int id);
    plus id 0, plus slack. */
 #define PROBE_PHASES 40
 
+/* ⭐ The DISPLAY-frame wait, bracketed on its own.
+ *
+ * platform_render_frame() is injected at the top of the main loop ($1701, PRE_INSN_HOOKS)
+ * and on the Amiga it paints and then spins until the VERTB ISR bumps g_vbiCount.  That
+ * spin is not engine work, and until 2026-08-13 it was charged to whichever phase happened
+ * to be open across the loop seam — phase 24 ($7BE2, the dashboard), because the engine's
+ * own frame wait at $1760 is conditional and usually skipped.  At 1.4 FPS one game frame
+ * spans ~34 display frames so the wait is only ~1 in 34, but it sat on top of the single
+ * largest row in the table, which is exactly the row someone is about to optimise.
+ *
+ * It gets an id of its own rather than being folded into phase 0, so that "the boot cost"
+ * and "the wait" stay separable.  Ids 1..N are the main loop's JSRs (N = 24 today), so
+ * this must stay above the highest of them: tools/transpile.py mirrors the value and
+ * `make gen` FAILS if the JSR count ever reaches it. */
+#define PROBE_PHASE_FRAMEWAIT 25
+
 /* ⭐ Beam ticks in one PAL display frame, in the units beamTick() composes
    (line * 256 + hpos, 313 lines).  The VERTB ISR adds this to g_beamEpoch once per
    frame, which is what makes the tick monotonic ACROSS frames.

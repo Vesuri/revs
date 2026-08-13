@@ -441,9 +441,20 @@ SPINWAIT_HOOKS = {
 # framerate would read as a drop in rendering rather than as a change of path — the
 # "unattended run ending" trap in docs/perf-method.md §Rule 3, dressed up as a measurement.
 # One hook at the top means exactly one painted frame per game frame, always.
+#
+# ⭐ The hook is BRACKETED as its own phase (PROBE_PHASE_FRAMEWAIT).  renderFrame() paints
+# and then spins until the VERTB ISR bumps g_vbiCount, and without a bracket of its own that
+# spin lands in whatever phase is open across the loop seam — phase 24 ($7BE2, the dashboard,
+# the biggest row in the table).  The engine's own frame wait at $1760 already re-opens phase
+# 0, but $1753 usually branches past it, so phase 0 was NOT catching this.
 PRE_INSN_HOOKS = {
-    0x1701: 'platform_render_frame();',
+    0x1701: 'PROBE_PHASE(PROBE_PHASE_FRAMEWAIT); platform_render_frame();',
 }
+
+# Mirror of PROBE_PHASE_FRAMEWAIT in src/platform/probe.h.  The main loop's JSRs take ids
+# 1..N; if N ever reaches this, the wait would be added to a real phase's row instead of its
+# own and the table would be quietly wrong, so `make gen` fails loudly instead.
+PROBE_PHASE_FRAMEWAIT = 25
 
 # ---------------------------------------------------------------------------
 # Phase brackets over the main loop (PROBES builds only).
@@ -1656,6 +1667,12 @@ def translate_func(func, all_funcs_by_start, symbols,
     for _ins in insns:
         if _lo <= _ins['addr'] <= _hi and _ins['mnem'] == 'JSR':
             phase_ids[_ins['addr']] = len(phase_ids) + 1
+    if len(phase_ids) >= PROBE_PHASE_FRAMEWAIT:
+        raise SystemExit(
+            f'MAIN_LOOP_BRACKET now yields {len(phase_ids)} phases, which collides with '
+            f'PROBE_PHASE_FRAMEWAIT={PROBE_PHASE_FRAMEWAIT}. Raise it here and in '
+            f'src/platform/probe.h (and PROBE_PHASES if needed), plus the loop bounds in '
+            f'amiga/phase4_prof.gdb.')
     expect = None      # where the PREVIOUS instruction falls through to
     for idx, insn in enumerate(insns):
         addr = insn['addr']

@@ -238,9 +238,11 @@ with the simulation still at full rate.
 optimised. Supersedes an earlier ≈2.2 FPS taken with the `$7Bxx` overlay stubbed out.
 
 ⭐⭐ **THE HOT PATH IS RASTERISATION, NOT PHYSICS** (re-measured 2026-08-13). Top three of the
-main loop's 24 calls are **80.6%**: `$7BE2` **34.7%** (the dashboard), `$1A20` **27.3%** (the
-road rasteriser), `$24F6` **18.6%** (unnamed, compute — naming it is the top `docs/rename.md`
-item). `$46A1` is 6.5%. ⚠ **This REVERSES the Phase 4 headline**, which had `$46A1` at 24.6% and
+main loop's 24 calls are **76.2%**: `$7BE2` **36.1%** (the dashboard), `$1A20` **21.1%** (the
+road rasteriser), `build_road_edge_lists` `$24F6` **19.0%** (the road-geometry projection pass —
+it builds the very edge lists `$1A20` draws, so **those two rows are ONE subsystem, 40% of the
+frame, build-then-draw**). `$46A1` is 6.6%; the display-frame wait is its own phase 25 at 2.5% (port overhead, not engine
+work). ⚠ **This REVERSES the Phase 4 headline**, which had `$46A1` at 24.6% and
 concluded "physics and geometry, not rasterisation" — that table was taken with a phase-bracket
 clock that wrapped every display frame and accounted for only 4% of the frame. Every share
 published before 2026-08-13 is void; `docs/phases.md` Phase 6's premise went with it. Full

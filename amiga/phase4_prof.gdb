@@ -27,9 +27,16 @@ printf "=== vbi=%u loopFrames=%lu brk=%lu smc=%lu ===\n", \
   g_vbiCount, g_phaseFrames, g_brkCount, g_smcUnhandled
 # Phase 0 is a ONE-OFF: it accumulates from program start to the first bracket (boot + front
 # end), so it is reported but excluded from the shares, which are shares of the LOOP.
+#
+# Phases 1-24 are the main loop's 24 top-level JSRs, in source order.  Phase 25 is
+# PROBE_PHASE_FRAMEWAIT — platform_render_frame(), i.e. the paint plus the spin on the next
+# real vblank.  It IS part of the loop's wall time so it counts toward the total (the
+# accounted-for check would otherwise stop reaching ~100%), but it is not engine work: read
+# it as the port's own overhead, not as a function to optimise.  Before 2026-08-13 it had no
+# bracket and landed on phase 24.
 set $i = 1
 set $tot = 0
-while $i < 25
+while $i < 26
   set $tot = $tot + g_phaseTicks[$i]
   set $i = $i + 1
 end
@@ -37,7 +44,12 @@ set $per = $tot / 1000
 set $eper = g_beamEpoch / 1000
 printf "loop ticks %lu of %lu elapsed  (accounted %d.%01d%% + phase 0 — MUST total ~100)\n", \
   $tot, g_beamEpoch, ($tot/$eper)/10, ($tot/$eper)%10
-printf "phase 0 (boot, one-off, excluded): %lu\n", g_phaseTicks[0]
+# ⚠ calls MATTERS here.  Phase 0 is re-opened at L_1760, the ENGINE's own frame wait, which
+# $1753 branches past whenever $62F6 is zero.  calls=0 ⇒ that wait is never entered and phase 0
+# really is just boot; calls>0 ⇒ phase 0 is boot PLUS a per-frame engine wait and must not be
+# read as a one-off.
+printf "phase 0 (boot + engine wait at $1760, excluded): ticks=%lu calls=%lu\n", \
+  g_phaseTicks[0], g_phaseCount[0]
 set $i = 1
 while $i < 25
   printf "phase %2d  ticks=%10lu  calls=%7lu  share=%2d.%01d%%  %4lu ms/frame\n", \
@@ -46,5 +58,9 @@ while $i < 25
      (g_phaseTicks[$i]/g_phaseFrames)/4006
   set $i = $i + 1
 end
+printf "phase 25  ticks=%10lu  calls=%7lu  share=%2d.%01d%%  %4lu ms/frame  <- FRAME WAIT (not engine work)\n", \
+   g_phaseTicks[25], g_phaseCount[25], \
+   (g_phaseTicks[25]/$per)/10, (g_phaseTicks[25]/$per)%10, \
+   (g_phaseTicks[25]/g_phaseFrames)/4006
 detach
 quit

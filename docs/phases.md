@@ -217,8 +217,9 @@ mirrors + dashboard turned out to be ~36% of the frame.
 at **57.4%** — `$46A1` (24.6%), `$1E15` (13.1%), `$1B12` (9.9%), `$4CA4` (9.8%) — i.e. "physics
 and geometry, not rasterisation", called out as *the* headline difference from the Atari port.
 Re-measured 2026-08-13 with a phase-bracket clock that does not wrap every display frame:
-**`$7BE2` 34.7% (the dashboard), `$1A20` 27.3% (the road rasteriser), `$24F6` 18.6%** — 80.6%
-between them, and `$46A1` is 6.5% while `$1B12` is 0.0%.  **The hot path is rasterisation**, the
+**`$7BE2` 36.1% (the dashboard), `$1A20` 21.1% (the road rasteriser), `build_road_edge_lists`
+`$24F6` 19.0% (the road-geometry pass that FEEDS `$1A20`)** — 76.2% between them, and `$46A1` is
+6.6% while `$1B12` is 0.0%.  **The hot path is rasterisation**, the
 Atari port's experience applies more directly than assumed, and Phase 6's premise below is
 void.  `docs/perf-method.md` §Where the time goes has the table and the defect.
 
@@ -263,9 +264,15 @@ corrected profile the targets are, in order:
 
 | | | |
 |---|---|---|
-| `$7BE2` | 34.7% | the dashboard, in the `$7B00` overlay (⚠ ~2.7pp of that row is the vblank wait — split the bracket before optimising it) |
-| `$1A20` | 27.3% | the road rasteriser — `$193E` and `$19AF` → `interp_edge` → the span plotters |
-| `$24F6` | 18.6% | **unnamed compute.**  Name it before choosing between it and `$1A20` |
+| `$7BE2` | 36.1% | the dashboard, in the `$7B00` overlay.  ✅ The vblank wait that used to be folded into this row is now its own phase 25 (2.5%), so the figure is clean |
+| `$1A20` | 21.1% | the road rasteriser — `$193E` and `$19AF` → `interp_edge` → the span plotters |
+| `build_road_edge_lists` `$24F6` | 19.0% | the road-geometry projection pass — it BUILDS the edge lists `$1A20` draws |
+
+⭐ **Rows 2 and 3 are one subsystem, 40% of the frame: build the road's edge lists, then draw
+them.**  That reframes the choice.  It is not "optimise `$1A20` or `$24F6`" — a change to how the
+road geometry is represented (`edge_x_lo/hi` + `edge_y`, 2×40 points, produced by phase 5 and
+consumed by `interp_edge` in phase 11) moves both rows at once, and is likely worth more than
+hand-asm on either half alone.  Look at the representation before writing any asm.
 
 So the eventual hand-asm target IS a rasteriser after all, and the Atari port's terrain-loop
 experience transfers as more than method.  The lever is unchanged: control the registers, force
