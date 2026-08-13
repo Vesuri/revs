@@ -13,6 +13,7 @@ enum : uint8_t {
     KEY_A     = 0xBE,   /* -66  brake      ($166D) */
     KEY_TAB   = 0x9F,   /* -97  gear down  ($16A5) */
     KEY_Q     = 0xEF,   /* -17  gear up    ($16AC) */
+    KEY_T     = 0xDC,   /* -36  starter motor ($497A) — BBC 'T' */
 };
 
 struct AutoStep {
@@ -42,6 +43,16 @@ static const AutoStep s_script[] = {
     MENU_ANSWER,
     MENU_ANSWER,
     MENU_ANSWER,
+    /* ⚠ INTENDED to start the engine, and measured NOT to.  The window is otherwise a race
+       with the engine OFF, which is how this was found: an Amiga run reaches a race and
+       paints, but issues ZERO sound calls (`g_mosUnknownCount` stays 0 while OSWORD 7 is
+       unimplemented, so a single sound would show up as an unknown MOS call).  Pressing
+       -36 changes neither that nor the framerate, so either -36 is not 'T' (the internal
+       key number is DERIVED from a row/col decode, not confirmed) or the starter needs a
+       state this script never reaches.
+       ⭐ Consequence for every number measured with this script, old and new: the
+       measurement window is a STATIONARY car.  docs/perf-method.md. */
+    {KEY_T,    200}, {KEY_NONE, 100},
 };
 static const unsigned S_SCRIPT_LEN = sizeof(s_script) / sizeof(s_script[0]);
 
