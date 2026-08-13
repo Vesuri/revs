@@ -62,9 +62,12 @@ stale build until a clean rebuild rules it out** — don't chase it as a logic b
 
 ## ⚠⚠ `Remote connection closed` mid-run is usually ANOTHER SESSION, not your build
 
-`diag_run.sh`, `run.sh` and `debug.sh` all begin with an **unqualified `pkill -9 fs-uae`**.  That
-is correct housekeeping against a stale copy of your own, and it is also a **machine-wide** kill:
-any other terminal, session, or *other project* launching a run murders yours.  The victim sees
+`diag_run.sh`, `run.sh` and `debug.sh` used to begin with an **unqualified `pkill -9 fs-uae`** —
+correct housekeeping against a stale copy of your own, but also a **machine-wide** kill: any other
+terminal, session, or *other project* launching a run murdered yours.  They now go through
+`~/.local/share/amiga/fsuae_common.sh` (outside the repos) and stop only the emulator recorded in
+this directory's `.run/fsuae.pid`, on a per-directory `$DEBUG_PORT`.  If a run still dies, it is
+either your own previous run in *this* checkout, or a hand-typed `pkill`.  The victim sees
 
     <script>.gdb:7: Error in sourced command file:
     Remote connection closed
@@ -118,5 +121,6 @@ SIGINT gdb (never `kill -9`) on their cue.
 
 ## Housekeeping
 
-`kill -9` stray `fs-uae` processes before a run to avoid attaching to a stale copy (`diag_run.sh`
-already does `pkill -9 fs-uae`).
+Stray `fs-uae` copies of your own are handled by the scripts (`fsuae_stop_previous` /
+`fsuae_claim_port` in `~/.local/share/amiga/fsuae_common.sh`).  Kill anything else **by pid** —
+never `pkill fs-uae`, which also takes down the other projects' emulators.

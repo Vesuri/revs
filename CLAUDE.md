@@ -125,9 +125,16 @@ proofs. Full rationale: `src/platform/host/PlatformHost.h`.
 . env.sh        # put the ~/.local Amiga toolchain on PATH (source it, SAME shell command)
 make            # build out/Revs.exe (+ Revs.elf; runs the muldiv audit on every link)
 ./run.sh        # boot in FS-UAE (Kickstart 3.1; left mouse button quits)
-./debug.sh      # source-level debug via the FS-UAE GDB stub (port 2345)
+./debug.sh      # source-level debug via the FS-UAE GDB stub (prints its $DEBUG_PORT)
 ./diag_run.sh N # headless probe run for N seconds (needs a PROBES=1 build)
 ```
+
+**Never `pkill fs-uae` / `pkill gdb`** in these scripts or by hand: several Amiga projects run
+their own emulator at the same time.  The run/debug/probe scripts source
+`~/.local/share/amiga/fsuae_common.sh` (shared, outside every repo; `$FSUAE_COMMON` overrides the
+path), which kills only the pid this directory's previous run recorded in `.run/fsuae.pid` and
+gives each project its own gdb-stub `$DEBUG_PORT`.  Stop a stranger's emulator by pid, or not at
+all.
 
 ⚠ **`make clean` before any `PROBES=1` build and after editing a widely-included header.** The
 Amiga Makefile tracks neither, so a partial rebuild links stale objects into a
