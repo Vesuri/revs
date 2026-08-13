@@ -118,6 +118,29 @@
 /* One microsecond of User VIA T1 is 1/64 of a 64 us scan line. */
 #define BBC_US_PER_LINE     64u
 
+/* ⭐⭐ WHICH DISPLAY LINE A BAND FIRST OWNS: CEILING, never round-to-nearest.
+ *
+ * A band boundary lands at a fractional line (81.094, 100.5, 166.094 below) because the chain
+ * is timed in microseconds, not lines.  The band that STARTS at 81.094 does not own line 81 —
+ * line 81 is still the previous band's, because the previous band was already displaying when
+ * the timer fired partway through it.  So the first line the new band owns is ceil().
+ *
+ * [DERIVED, and cross-checked against the reference reconstruction's visible band heights of
+ * 18/64/19/66/41 lines, which give boundaries 18 / 82 / 101 / 167.]  ceil reproduces all four
+ * exactly.  Round-to-nearest gives 18 / 81 / 101 / 166 — TWO of the four wrong by a line.
+ *
+ * ⚠ THAT OFF-BY-ONE IS VISIBLE, not academic, and it is why this is a macro in the shared
+ * model rather than an expression in one backend.  Line 81 is the last line of the engine code
+ * and variables that live inside the frame buffer ($5E40-$66FF) and are invisible ONLY because
+ * band 1 maps all sixteen palette entries to the same blue.  Hand line 81 to band 2, whose pen
+ * 0 is BLACK, and 248 of its 320 pixels turn into a black bar across the sky.  Measured on the
+ * target, 2026-08-14: exactly that bar, and it disappears with ceil.
+ *
+ * `(us + 63) >> 6` is floor((us+63)/64) = ceil(us/64) for both signs — the >> is an arithmetic
+ * shift, so it floors on negatives too, which band 0's pre-display anchor needs.  A shift and
+ * not a divide: the 68000 has no 32-bit divide (make muldiv-audit). */
+#define BBC_US_TO_FIRST_LINE(us)  (((int)(us) + (int)BBC_US_PER_LINE - 1) >> 6)
+
 /* The band record, filled by src/platform/bbc_hw.cpp (see the long comment there). */
 #define BBC_MAX_BANDS       8u
 

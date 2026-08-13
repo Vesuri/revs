@@ -250,18 +250,26 @@ void RevsScreen::shutdown()
 }
 
 /* ---------------------------------------------------------------------------
-   VBI: the band record -> copper palette bands + the per-line mode table.
+   The band snapshot -> the raster PLAN (main loop), then the plan -> the copper (VBI).
+
+   ⭐ WHY IT IS TWO HALVES.  The line boundaries are shared: the per-line MODE table is read
+   by decode() in the main loop, and the copper WAITs are written in the VBI at the swap, and
+   both must describe the SAME frame.  Deriving them twice from a record that moves 50 times a
+   second is how they came apart.  So the arithmetic runs ONCE, in the main loop, into
+   m_plan — and the VBI only copies numbers into copper words, which is all an ISR should do.
+   (It also removes the old main-loop-reads / VBI-writes race on m_lineMode.)
    --------------------------------------------------------------------------- */
-void RevsScreen::buildBands()
+void RevsScreen::buildLineModes()
 {
     /* The record must be the game's five bands, identified by the state it wrote them
        under ($4F43): 0,1,2,3 and $FF for the last.  Anything else and the previous
-       frame's list stands — see g_bandRejects. */
-    if (g_bandCount != 5) { g_bandRejects++; return; }
+       frame's plan stands — see g_bandRejects. */
+    const BandSnapshot& s = m_bandSnap;
+    if (s.count != 5) { g_bandRejects++; return; }
     unsigned slot[5];
     for (unsigned i = 0; i < 5; i++) slot[i] = 0xFFu;
     for (unsigned i = 0; i < 5; i++) {
-        unsigned st = g_bandState[i];
+        unsigned st = s.state[i];
         if (st == 0xFFu) st = 4;
         if (st > 4 || slot[st] != 0xFFu) { g_bandRejects++; return; }
         slot[st] = i;
@@ -271,8 +279,6 @@ void RevsScreen::buildBands()
        band n+1's, because the 6522 reloads T1 from the latch only at the NEXT timeout.
        So the interval that starts at band n is the one recorded against band n-1. */
     int startUs = (int)BBC_BAND0_ANCHOR_US;
-    uint32_t* d = m_copper->data();
-    unsigned emitted = 0;
 
     for (unsigned n = 0; n < 5; n++) {
         unsigned rec  = slot[n];
@@ -280,33 +286,49 @@ void RevsScreen::buildBands()
         /* us -> display lines, rounded to the nearest.  A shift, not a divide: the
            68000 has no 32-bit divide, and >> on a negative is the floor, which is what
            the pre-display band 0 wants anyway. */
-        int nextUs    = startUs + (int)g_bandDuration[prev];
-        int lineStart = (startUs + (int)BBC_US_PER_LINE / 2) >> 6;
-        int lineEnd   = (nextUs  + (int)BBC_US_PER_LINE / 2) >> 6;
+        int nextUs    = startUs + (int)s.duration[prev];
+        int lineStart = BBC_US_TO_FIRST_LINE(startUs);
+        int lineEnd   = BBC_US_TO_FIRST_LINE(nextUs);
 
         /* The line-mode table for the part of this band that is on screen. */
         int a = lineStart < 0 ? 0 : lineStart;
         int b = lineEnd > (int)kH ? (int)kH : lineEnd;
-        unsigned mode = (g_bandControl[rec] == BBC_ULA_MODE4) ? 4u : 5u;
+        unsigned mode = (s.control[rec] == BBC_ULA_MODE4) ? 4u : 5u;
         for (int y = a; y < b; y++) m_lineMode[y] = (unsigned char)mode;
 
-        /* The colours.  A band starting at or before the first displayed line owns the
-           list header (no WAIT); the later ones get a WAIT at the end of the previous
-           line.  A band starting past the bottom of the display is dropped — its palette
-           is never seen, and the cumulative record means the next band that IS seen
-           already carries every entry it did not overwrite. */
+        m_plan.line[n] = (short)lineStart;
+        m_plan.rec[n]  = (unsigned char)rec;
+
+        startUs = nextUs;
+    }
+    m_plan.valid = 1;
+}
+
+void RevsScreen::buildBands()
+{
+    if (!m_plan.valid) return;
+    const BandSnapshot& s = m_bandSnap;
+    uint32_t* d = m_copper->data();
+    unsigned emitted = 0;
+
+    for (unsigned n = 0; n < 5; n++) {
+        int lineStart   = (int)m_plan.line[n];
+        unsigned rec    = m_plan.rec[n];
+        /* A band starting at or before the first displayed line owns the list header (no
+           WAIT); the later ones get a WAIT at the end of the previous line.  A band starting
+           past the bottom of the display is dropped — its palette is never seen, and the
+           cumulative record means the next band that IS seen already carries every entry it
+           did not overwrite. */
         uint16_t at = (uint16_t)((lineStart <= 0) ? IDX_TOPPAL
                                                  : IDX_BANDS + emitted * BAND_WORDS);
         if (lineStart > 0) {
-            if (lineStart >= (int)kH || emitted >= MAX_BANDS) { startUs = nextUs; continue; }
+            if (lineStart >= (int)kH || emitted >= MAX_BANDS) continue;
             d[at++] = copperWait(kDisplayTop + lineStart - 1, 0xE0);
             emitted++;
         }
         for (unsigned pen = 0; pen < 4; pen++)
             d[at + pen] = copperMove(color00 + (pen << 1),
-                                     bbcColour(g_bandPalette[rec][kLogicalForPen[pen]]));
-
-        startUs = nextUs;
+                                     bbcColour(s.palette[rec][kLogicalForPen[pen]]));
     }
 
     /* Any band slot the game did not use this frame goes back to a copper NOP, so a
@@ -327,12 +349,55 @@ void RevsScreen::present()
     m_ready  = false;
 }
 
+/* ⭐⭐ SNAPSHOT THE BAND RECORD WITH THE FRAME IT DESCRIBES.  Main-loop context, called from
+   decode() — and the pairing is the whole point.
+ *
+ * THE BUG THIS FIXES (measured, 2026-08-14).  The band record is rewritten by the game's own
+ * IRQ1V band cycle in EVERY VERTB, 50 times a second.  The frame buffer is decoded once per
+ * GAME frame, which is ~1.1 s at the current baseline.  buildBands() used to run in every
+ * vbiUpdate(), so the copper's palette schedule was rebuilt ~50-100 times from ever-newer
+ * records while the pixels on screen stayed from one much older frame.
+ *
+ * That is not a cosmetic mismatch, because band 2's boundary IS the horizon: `MoveHorizon`
+ * ($4F44) recomputes band 2's duration every game frame as a function of pitch, so the
+ * sky/track split MOVES WITH THE HILLS (bbc_screen.h).  Pair frame N's pixels with frame
+ * N+k's boundary and the rows in between get the wrong band's palette — and band 2's pen 0 is
+ * BLACK where band 1's is blue, so sky rows the game left at byte 0 turn into the horizontal
+ * black lines the port was showing, appearing and disappearing frame to frame exactly as
+ * reported.  Confirmed on the host, same frame: with the record and the pixels from ONE frame
+ * they agree exactly — band 2 spans lines 81.1-100.5 and the frame buffer holds sky ($0F, pen
+ * 1) on 81-99 and ground ($FF, pen 3) from 100.
+ *
+ * ⚠ SINGLE SLOT, and it is safe because of m_ready: decode() writes the snapshot only while
+ * m_ready is false, and vbiUpdate() reads it only when m_ready is true.  Do not "optimise"
+ * the flag away.
+ * ⚠ Rejects a partial cycle rather than storing it — the ISR may be mid-cycle when the main
+ * loop gets here, and half a record silently produces a plausible wrong schedule (that was
+ * failure 3 in the project's verify-the-instrument list).  The previous snapshot then stands,
+ * which is one frame stale in a value that changes slowly. */
+void RevsScreen::snapshotBands()
+{
+    if (g_bandCount != 5) { g_bandRejects++; return; }
+    m_bandSnap.count = 5;
+    for (unsigned i = 0; i < 5; i++) {
+        m_bandSnap.state[i]    = g_bandState[i];
+        m_bandSnap.duration[i] = g_bandDuration[i];
+        m_bandSnap.control[i]  = g_bandControl[i];
+        for (unsigned c = 0; c < 16; c++)
+            m_bandSnap.palette[i][c] = g_bandPalette[i][c];
+    }
+}
+
 void RevsScreen::vbiUpdate()
 {
 #ifdef REVS_SCREEN_NO_BANDS
     return;
 #endif
     if (!m_copper) return;
+    /* ⚠ ONLY when a finished frame is going up.  Rebuilding the bands on a VBI that presents
+       nothing would re-introduce exactly the mismatch above, and it would also spend ISR time
+       rewriting a schedule for pixels that are not changing. */
+    if (!m_ready) return;
     buildBands();
     present();
 }
@@ -348,6 +413,13 @@ void RevsScreen::decode()
 #endif
     Bitmap* bm = m_bitmap[m_back];
     if (!bm) return;
+
+    /* ⭐ FIRST, before a single pixel is decoded: capture the raster schedule that belongs to
+       the frame buffer we are about to read.  See snapshotBands() — the pixels and the band
+       boundaries have to come from the same game frame or the horizon lands in the wrong
+       palette.  It also fills m_lineMode, which the loop below reads per row. */
+    snapshotBands();
+    buildLineModes();
 
     /* ⚠ NOT A WIDE-POINTER ALIAS OF mem[].  Every read below is a byte read; the two
        stores are bytes into a bitplane the Amiga reads as bits, so there is no multi-byte
