@@ -38,6 +38,19 @@ void probe_phase(int id);
    plus id 0, plus slack. */
 #define PROBE_PHASES 40
 
+/* ⭐ Beam ticks in one PAL display frame, in the units beamTick() composes
+   (line * 256 + hpos, 313 lines).  The VERTB ISR adds this to g_beamEpoch once per
+   frame, which is what makes the tick monotonic ACROSS frames.
+   ⚠ It must be an ADDITION, never `frames * PROBE_BEAM_TICKS_PER_FRAME`: a 32-bit
+   multiply emits __mulsi3 and the 68000 has none (amiga/Makefile muldiv-audit). */
+#define PROBE_BEAM_TICKS_PER_FRAME 80128UL   /* 313 * 256 */
+
+/* Accumulated whole display frames, in beam ticks.  Bumped by the VERTB ISR only. */
+extern volatile unsigned long g_beamEpoch;
+
+/* Call once per display frame from the VERTB ISR, before any game work. */
+#define PROBE_VBI() (g_beamEpoch += PROBE_BEAM_TICKS_PER_FRAME)
+
 #ifdef __cplusplus
 }
 #endif
@@ -46,4 +59,5 @@ void probe_phase(int id);
 
 #else
 #define PROBE_PHASE(id) ((void)0)
+#define PROBE_VBI()     ((void)0)
 #endif

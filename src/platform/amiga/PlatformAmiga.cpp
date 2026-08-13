@@ -23,6 +23,7 @@
 #include "framework/AmigaHardware.h"
 #include "PlatformAmiga.h"
 #include "Revs.h"
+#include "../probe.h"   /* PROBE_VBI(): advance the phase-bracket beam epoch */
 
 extern "C" volatile uint8_t mem[65536];      // the 6502 RAM image (src/cpu/cpu.c)
 
@@ -85,6 +86,13 @@ static uint32_t vbiHandler()
     *intreqPointer = (uint16_t)INTF_VERTB;
 
     g_vbiCount++;
+
+    // ⭐ Advance the phase-bracket clock by exactly one display frame.  Without this the
+    // brackets time with a counter that wraps every 20 ms and they measure ~4% of a game
+    // frame — see beamTick() in src/platform/probe.cpp.  Compiles to nothing without
+    // PROBES.  Must stay ABOVE the game body, so a phase opened inside it is timed
+    // against the frame it actually ran in.
+    PROBE_VBI();
 
     // ⚠ Work here is capped at ONE FRAME.  Over that and a displayed frame is silently
     // dropped — and the dropped frame (a stall, a 2x animation jump, a copper write

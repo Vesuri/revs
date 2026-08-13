@@ -144,6 +144,34 @@ return addresses answered it immediately.
 Generalise: for "where is it stuck", prefer state that persists (stack, flags, a wait variable) over
 events you have to be present for.
 
+## A known failure mode you have not TESTED for is a conclusion you have not earned ⚑ Revs
+
+The Phase 4 profile named the physics core as the hot path and called it "the headline difference
+from the Atari port".  It was wrong end to end: re-measured, the top three are the dashboard
+(34.7%), the road rasteriser (27.3%) and an unnamed compute routine (18.6%), and the old #1 is
+6.5%.  The hot path is rasterisation, exactly as it was on the Atari port.
+
+The instrument timed with the beam position, which wraps once per **display** frame, and dropped
+negative deltas.  Sound while a bracket is shorter than 20 ms; at 1.4 FPS a game frame spans ~37
+display frames and the long phases each spanned several, so **the longest phases lost the most
+time** — the precise inversion a profile must not have.  It accounted for 4% of the frame.
+
+What makes this a method lesson rather than a bug report: **the failure mode was already written
+down, in the same document, under the table it invalidated.**  One phase read exactly zero and
+the note said *"either it is genuinely trivial or its bracket is losing deltas to the frame wrap;
+do not treat 0 as measured."*  Correct, and filed as a caveat beneath a headline that depended on
+it being false.
+
+- **A hedge is not a control.**  Writing "this might be broken" next to a number does not license
+  quoting the number.  Either test the hypothesis or do not publish the conclusion.
+- **Every instrument needs a cheap total-accounting check, and it must be printed every run.**
+  Here it was one division — bracketed ticks vs elapsed ticks — and it would have failed loudly
+  from the very first run, two phases before anyone acted on the table.  `phase4_prof.gdb` now
+  prints it as its first line, with "MUST be ~100" next to it.
+- **Suspect the instrument hardest when it agrees with what you expected.**  "Physics is the hot
+  path" was the predicted answer (`docs/phases.md` Phase 6 had already assumed it), so the table
+  confirming it drew no scrutiny.  The zeros were right there.
+
 ## A "zero" from a probe is only evidence if the run REACHED the code ⚑ Revs
 
 Three probes in a row reported **zero executions** of the seven `$7Bxx` call sites and the reading

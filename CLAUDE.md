@@ -234,13 +234,17 @@ owns the display. Spin-wait points in transpiled code become hooks that drive on
 negotiable** — the game body is a VERTB-ISR interrupt, so 25 FPS means painting every other frame
 with the simulation still at full rate.
 
-⭐ **BASELINE (Phase 4, 2026-08-12): ≈1.4 FPS** — ~18× short of the floor, with nothing drawn and
-nothing optimised. ⚠ This **supersedes the ≈2.2 FPS** measured the same day: that build stubbed the
-three `$7Bxx` main-loop calls as no-ops, and the mirrors + dashboard turned out to be ~36% of the
-frame. Full conditions, caveats and the 24-phase share table: `docs/perf-method.md` §THE BASELINE.
-A target is never evidence a change bought anything. The Atari port's
-retired "50 FPS is impossible without an algorithm change" conclusion was disproven by hand-asm —
-the ceiling was GCC, not the algorithm; that cuts both ways.
+⭐ **BASELINE: ≈1.4 FPS** (2026-08-12) — ~18× short of the floor, nothing drawn, nothing
+optimised. Supersedes an earlier ≈2.2 FPS taken with the `$7Bxx` overlay stubbed out.
+
+⭐⭐ **THE HOT PATH IS RASTERISATION, NOT PHYSICS** (re-measured 2026-08-13). Top three of the
+main loop's 24 calls are **80.6%**: `$7BE2` **34.7%** (the dashboard), `$1A20` **27.3%** (the
+road rasteriser), `$24F6` **18.6%** (unnamed, compute — naming it is the top `docs/rename.md`
+item). `$46A1` is 6.5%. ⚠ **This REVERSES the Phase 4 headline**, which had `$46A1` at 24.6% and
+concluded "physics and geometry, not rasterisation" — that table was taken with a phase-bracket
+clock that wrapped every display frame and accounted for only 4% of the frame. Every share
+published before 2026-08-13 is void; `docs/phases.md` Phase 6's premise went with it. Full
+table, the defect, and the lesson: `docs/perf-method.md` §Where the time goes.
 
 The A500 is a 7 MHz 68000 and a frame is 20 ms — spending 10 ms on *anything* is half the budget.
 Be conscious of absolute milliseconds always.

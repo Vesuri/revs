@@ -211,17 +211,24 @@ instrumentation is the whole reason this phase cost hours rather than days:
 **≈1.4 FPS** (FPSCOUNT build, nine segments, all 1.4).  Goal 50, floor 25: **~18× short of the
 floor**, with nothing drawn and nothing optimised.  ⚠ This **supersedes the ≈2.2 FPS the phase
 originally reported**: that build stubbed the three `$7Bxx` main-loop calls as no-ops, and the
-mirrors + dashboard turned out to be ~36% of the frame.  The share table taken with them stubbed
-put the four hottest of the 24 calls at **57.4%** — `$46A1` (24.6%), `$1E15` (13.1%), `$1B12`
-(9.9%), `$4CA4` (9.8%) — i.e. **physics and geometry, not rasterisation**.  That was the headline
-difference from the Atari port; it needs re-reading against a share table taken with the overlay
-in, because the work that was missing *is* rasterisation.
+mirrors + dashboard turned out to be ~36% of the frame.
+
+🛑 **AND THE PHASE'S HEADLINE FINDING WAS WRONG.**  It reported the four hottest of the 24 calls
+at **57.4%** — `$46A1` (24.6%), `$1E15` (13.1%), `$1B12` (9.9%), `$4CA4` (9.8%) — i.e. "physics
+and geometry, not rasterisation", called out as *the* headline difference from the Atari port.
+Re-measured 2026-08-13 with a phase-bracket clock that does not wrap every display frame:
+**`$7BE2` 34.7% (the dashboard), `$1A20` 27.3% (the road rasteriser), `$24F6` 18.6%** — 80.6%
+between them, and `$46A1` is 6.5% while `$1B12` is 0.0%.  **The hot path is rasterisation**, the
+Atari port's experience applies more directly than assumed, and Phase 6's premise below is
+void.  `docs/perf-method.md` §Where the time goes has the table and the defect.
 
 ### Known-unfaithful in this measurement
 
 - ✅ ~~The three `$7Bxx` main-loop calls are no-ops~~ — they run as of 2026-08-12, which is what
   moved the baseline from 2.2 to 1.4.  What is still unverified is the overlay's *bytes*: they
   are DERIVED from a replay of `$18EA`, never dumped off a real BBC.
+- ⚰ The phase-share table this phase produced was taken with a broken instrument (above) and
+  accounted for ~6% of the frame.  The exit criteria were met; one of the conclusions was not.
 - The raster bands all fire at the top of the frame instead of at their scheduled positions;
   invisible while nothing is drawn, and Phase 5's copper work is where it gets fixed.
 - Nothing is rendered, so 1.4 FPS will get worse before it gets better.
@@ -249,9 +256,20 @@ in, because the work that was missing *is* rasterisation.
 `docs/validation-harness.md` for the guarantees; `docs/m68k-optimisation.md` for the 68000 rules;
 `docs/perf-method.md` for how to price a change honestly.
 
-The physics hot path replaces the terrain rasterizer as the eventual hand-asm target: different
-loop shape, same lever (control the registers, force `(a0)+`, verify with an in-process
-differential, never cross-run).
+⚠ ~~The physics hot path replaces the terrain rasterizer as the eventual hand-asm target:
+different loop shape, same lever.~~  **Retracted 2026-08-13** — it rested on the Phase 4 share
+table, which was measured with a phase-bracket clock that wrapped every display frame.  On the
+corrected profile the targets are, in order:
+
+| | | |
+|---|---|---|
+| `$7BE2` | 34.7% | the dashboard, in the `$7B00` overlay (⚠ ~2.7pp of that row is the vblank wait — split the bracket before optimising it) |
+| `$1A20` | 27.3% | the road rasteriser — `$193E` and `$19AF` → `interp_edge` → the span plotters |
+| `$24F6` | 18.6% | **unnamed compute.**  Name it before choosing between it and `$1A20` |
+
+So the eventual hand-asm target IS a rasteriser after all, and the Atari port's terrain-loop
+experience transfers as more than method.  The lever is unchanged: control the registers, force
+`(a0)+`, verify with an in-process differential, never cross-run.
 
 ---
 

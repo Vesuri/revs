@@ -10,6 +10,11 @@ names are your map** — every wrong name taxes every later reasoning step (post
 counter-measure is one concentrated naming pass up front (`docs/phases.md` Phase 2.4) plus this
 file for everything found afterwards.
 
+⭐ **Top priority: `$24F6`.**  Not a wrong name — no name at all, and the corrected profile puts
+it at **18.6% of the frame**, third of the main loop's 24 calls (`docs/perf-method.md`).  It
+calls `$22FF`, `$23D2`, `$254A`, `$3450`; none of those store through `(zp),Y`, so it is compute
+rather than a span plotter.  A Phase 6 target cannot be chosen while the #3 cost is anonymous.
+
 | Addr | Current name | What it actually does | Suggested name |
 |---|---|---|---|
 | `$7BBF` | *(none — absorbed into `lap_time_readout`, `$7B9C`)* | Nothing to do with lap times. It is the `$7B00` overlay's **restore routine**: puts `STA` (`$91`) back over the three `STA (zp),Y` slots the column sweep planted `RTS` on (addresses recovered from `$7D24`/`$7F24`/`$7F7D`) and `CPX` (`$E0`) back at `$7EEE`. Reached only by `JMP $7BBF` from `$7FB3`, i.e. it is the sweep's epilogue; it merely follows `$7B9C`'s `RTS` at `$7BBE` inside the same listing bracket. `docs/static-map.md` §Open items 10 | `dash_sweep_unpatch` |

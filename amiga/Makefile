@@ -198,7 +198,7 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
 # stays: a symbol a committed .gdb script reads must be listed in the configuration that
 # script is run against.  phase4_prof.gdb is a PROBES script.
 ifdef PROBES
-PROBE_SYMS += g_phaseTicks g_phaseCount g_phaseFrames
+PROBE_SYMS += g_phaseTicks g_phaseCount g_phaseFrames g_beamEpoch
 endif
 
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \
