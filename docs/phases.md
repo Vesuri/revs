@@ -236,18 +236,78 @@ void.  `docs/perf-method.md` §Where the time goes has the table and the defect.
 
 ---
 
-## Phase 5 — Render + input ⬜
+## Phase 5 — Render + input 🔧 (the race view and input are DONE and verified on the target)
 
-- 6845 CRTC + Video ULA composition → copper list + bitplanes (`docs/amiga-lessons.md` for the
-  rules; a CRTC/ULA analyser is `docs/bbc-reference-loop.md` step 5).  Note the MODE 7 teletext
-  title screen (`5TRSCRN`) is a separate rendering problem from the 3D view.
-- **Input: mouse + keyboard** (decided).  A racing sim's feel lives here — and the steering
-  response curve is real logic in the binary (there is a per-track `HookJoystick` and a
-  "SPACE — amplify steering" key), so read it out rather than tuning by feel.
-- Sound: SN76489 (3 tone + 1 noise) → Paula.
-- Five tracks: the engine is one binary, but behaviour is per-track (the expansion tracks are
-  executable and patch it).  Decide how track selection works on the Amiga — the BBC's `REVSMEN`
-  menu is BASIC and is not being ported.
+### ✅ 1. The display — `src/platform/bbc_screen.h` + `src/platform/amiga/RevsScreen.*`
+
+**The port draws, and the picture is Revs**: blue sky, green grass, black road, white kerbs, the
+red steering wheel, black dials with red numerals, the wing mirrors, cyan dashboard shading.
+
+The BBC side is ONE static 6845 mode whose depth and palette are rewritten five times per field
+by the game's own User VIA timer interrupt, and it is all derived and written down in
+`bbc_screen.h`: geometry from the CRTC table at `$4F0F` (40×26 cells of 8 lines at `$5A80`, 208
+lines, ending exactly where the `$7B00` overlay begins), pixel format from the ULA's shift
+register (a pixel's bits land in palette-index bits 3 and 1; bits 2 and 0 are the NEXT pixels' —
+which is why the game's palette tables come in groups of four), and the band schedule recorded
+live from what `irq1v_handler` writes.
+
+The mapping: 320×208, **two bitplanes**, interleaved, double-buffered with the pointer swap in
+the VBI.  MODE 5's high nibble IS plane 2's four pixels and its low nibble plane 1's, so a byte
+becomes one byte per plane through two 256-entry tables; MODE 4 goes into plane 2 with plane 1
+zeroed.  ⭐ Both modes land on the same four colour registers (BBC logical 0, 2, 8, 10), so the
+copper never touches BPLCON0 and the mode is purely a decode choice.
+
+⭐⭐ **The finding that made this harder than it looked: the sky is a hiding place for live
+code.**  `$5E40-$66FF` — 5.5 KB of engine variables *and* executable routines — is inside the
+frame buffer, on display, invisible only because all sixteen of band 1's palette entries are the
+same blue.  Nothing clears it and nothing can: it is the program.  So the raster phase matters to
+the pixel, and it is pinned two independent ways (the decoded content of a real frame, and the
+reference's stated band heights).  Band 2's duration is the horizon and moves with the hills
+(`$4F44` computes it as `$04D8 ±` whole scan lines), which is why the model records what the
+handler wrote instead of freezing a table.
+
+Verified ON THE TARGET, not by eye: `amiga/screen_dump.gdb` dumps the displayed bitplane block
+and the copper list out of FS-UAE and `tools/amiga_ppm.py` decodes them as the hardware would.
+The bands come out at display lines 18 / 81 / 100 / 166 with the derived palettes.
+
+### ✅ 2. Input — `src/platform/amiga/RevsInput.*`
+
+Mouse + keyboard (the user's decision), mapped onto the game's **own** two input paths rather
+than a new one: `$05F5` bit 7 picks ADC channels 1/2 + the fire button, or the keys.  The twelve
+negative-INKEY codes the game tests were enumerated from every `LDX #imm / JSR $0E50` site, so
+the table is closed; an unmapped code is counted, not silently answered.  The mode switches are
+the game's own SHIFT+f1 / SHIFT+f2 (decoded from `$3DE2`/`$39D4`), and that decode is what
+confirms the BBC key-number layout.  Keyboard via CIA-A's serial interrupt through
+`ciaa.resource`; the mouse drives channel 1, sampled in the VBI because the counter wraps.
+
+Verified end to end by making the scripted auto-run drive the real map (it reaches a race).
+[ASSUMED], both one-liners: which of -87/-88 is left, and the sign of the mouse axis.
+
+### ⬜ 3. The MODE 7 front end — the blocker for actually PLAYING it
+
+Out of a race the game returns to MODE 7 teletext (`$7C00`), and the port renders nothing there:
+a plain build shows a black screen and parks in the front end, because nothing presses a key and
+nothing is drawn.  Two dependencies, and neither is small:
+- a teletext renderer (a different geometry and a different colour model from the race view), and
+- **a font.**  `OSWORD 10` fires ~90-850 times per run asking the MOS for character definitions;
+  the port returns blanks and counts them.  The MOS font cannot be lifted from a licensed source,
+  so the 96 glyphs have to be drawn.
+Until then the game is only reachable through the scripted auto-run.
+
+### ⬜ 4. Sound
+
+Per the reference: two tones plus noise on channels 0-2 (0 is the BBC's noise channel), a fixed
+interval of 28 between the tones, pitch chasing the rev count in steps of 1, and one envelope for
+the tyre squeal — **all through OSWORD 7 sound commands**, never the SN76489 directly.
+⚠ `OSWORD 7` is **missing from the Phase 2 MOS inventory** (a computed reason code, the same
+blind spot that hid OSBYTE 0 and OSWORD 0), so `mos.cpp` has nothing for it — which is how we
+know the scripted run never starts the engine: not one sound call has ever been counted.
+
+### ⬜ 5. Track selection
+
+Unstarted.  The BBC's `REVSMEN` menu is BASIC and is not being ported, and the four expansion
+tracks are *programs* that patch the engine as it starts (`docs/static-map.md`), so this is a
+loader design decision, not a menu.
 
 ---
 
