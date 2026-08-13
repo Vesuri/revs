@@ -10,10 +10,21 @@ names are your map** — every wrong name taxes every later reasoning step (post
 counter-measure is one concentrated naming pass up front (`docs/phases.md` Phase 2.4) plus this
 file for everything found afterwards.
 
-⭐ **Top priority: `$24F6`.**  Not a wrong name — no name at all, and the corrected profile puts
-it at **18.6% of the frame**, third of the main loop's 24 calls (`docs/perf-method.md`).  It
-calls `$22FF`, `$23D2`, `$254A`, `$3450`; none of those store through `(zp),Y`, so it is compute
-rather than a span plotter.  A Phase 6 target cannot be chosen while the #3 cost is anonymous.
+✅ **`$24F6` — DONE 2026-08-13.  It is `build_road_edge_lists`**, the frame's road-geometry
+projection pass: it turns the track ahead into the two 40-point edge lists (`edge_x_lo/hi`,
+`edge_y`) that `interp_edge` and the road rasteriser `$1A20` consume.  Evidence, names for its
+whole subtree (`road_edge_start` `$22FF`, `road_edge_walk` `$23D2`, `project_point` `$2285`,
+`road_edge_side` `$254A`) and for the state it produces (`horizon_extent` `$1F`, `horizon_index`
+`$51`, `edge_cursor` `$12`, `horizon_half_width` `$62FC`) are in `disasm/symbols.csv`.
+⭐ The payoff was not the name but the *adjacency*: phases 5 and 11 are the same subsystem —
+**build then draw, 40% of the frame between them** — so the #3 cost was never an independent
+third optimisation target.  `docs/perf-method.md` §Where the time goes.
+
+⭐ **Next up: `$1C1C`, currently `project_geometry`.**  That name now looks wrong, and it is in the
+way: `$2285` (`project_point`) is the engine's actual perspective divide, and `$1C1C` reads
+`colour_pattern_tbl`, which a projection has no business touching.  Suspect a pixel-pattern /
+column-shading computation.  Worth resolving before the name is leaned on, because two routines
+called "project…" doing different things is exactly the tax this file exists to prevent.
 
 | Addr | Current name | What it actually does | Suggested name |
 |---|---|---|---|
