@@ -112,6 +112,18 @@ frame is ~36% longer.  Rule 4 applies to the 2.2 figure now: **do not quote it.*
   ⚠ A structural defect is not automatically a performance defect — Rule 1 cuts both ways.
 - ⬇ **Nothing is optimised.**  This is pure transliterated C at `-O2`: zero native twins,
   zero asm, and a 6502 `mem[]` byte model throughout.
+- ⬆⬆ **THE CAR IS PARKED, ENGINE OFF, IN NEUTRAL.**  Every figure on this page — the 1.4, the
+  0.78/1.46 baseline, and the whole share table below — was measured with the default
+  `autorun.h` script, which reaches the circuit and then holds only the throttle.  It never
+  started the engine (its `-36` press landed in a window where `$4978` was not asking) and it
+  never selected a gear, and `$0063` road speed is **0 in neutral no matter what the throttle
+  does**.  So the window contains a stationary car on a static piece of Silverstone: no
+  opponents closing, no scenery flowing, and the road rasteriser drawing the least it ever
+  will.  **The real workload is heavier than every number here.**
+  ⭐ `make STRAIGHT_TO_RACE=1 FPSCOUNT=1` is the moving-car window — engine running (`$0061 =
+  $FF`), first gear, throttle held; verified on the target with `amiga/straight_to_race.gdb`
+  (`$0063` rising).  ⚠ It is a **different workload**: re-baseline before quoting anything from
+  it, and never diff a figure taken with it against one on this page.
 
 ⚠ Per postmortem §4.1 this figure exists to be *the distance to the target*, not a verdict.
 The Atari port's "50 FPS is impossible without an algorithm change" was reached by reasoning
