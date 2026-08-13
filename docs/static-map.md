@@ -541,6 +541,28 @@ two bytes after it are not a fifth and sixth key binding — `$39E4` is the star
 `$39E4` as a car array is what settled it.  The earlier reading ("six-entry, user-rebindable") was
 a guess dressed as a fact, and it is the exact failure mode `docs/postmortem.md` is about.
 
+## ⭐ Phase 5 addition — the display is fully derived, and the sky hides live code
+
+`src/platform/bbc_screen.h` is now the reference for the screen: the CRTC table at `$4F0F` gives
+40×26 cells of 8 lines at `$5A80` (208 lines, `$5A80 + 8320 = $7B00` exactly), the ULA's shift
+register gives the pixel format (a pixel's two bits land in palette-index bits 3 and 1; bits 2 and
+0 hold the following pixels' bits and are don't-care — which is why every palette table in the
+game comes in groups of four), and the five raster bands are recorded live from what
+`irq1v_handler` writes rather than hard-coded, because band 2's duration is the horizon.
+
+⭐⭐ **`$5E40-$66FF` — 5.5 KB of engine variables AND executable code — is inside the frame
+buffer, on display.**  It is invisible because all sixteen of band 1's palette entries are the
+same blue; nothing clears it and nothing can, because it is the program.  Measured here first (the
+frame-buffer rows over that range are byte-identical to the boot image except where live variables
+churn, and `listing.txt` disassembles 462 instructions inside them), then cross-checked against
+the reference's write-up of the custom mode.  Two consequences: the raster phase matters to the
+pixel, and any future "clear the screen" optimisation would erase the game.
+
+Band boundaries, in display lines: band 0 (MODE 4, the two text rows) −26.4..18, band 1 (the sky
+and the code) 18..81.1, band 2 (horizon + rear wings) 81.1..100.5, band 3 (the track, blue→red)
+100.5..166.1, band 4 (the dashboard, green→cyan) 166.1..286.1.  ⚠ The latch is PIPELINED: the T1
+value written during band n is band n+1's duration.
+
 ## Open items — what Phase 2 still owes
 
 1. ✅ ~~Classify the residual 685 bytes~~ — `$6C00-$6E84` and `$6F8A-$6FB1` (down from 5327; see

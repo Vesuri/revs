@@ -108,6 +108,12 @@ registers across 4 devices, agreed independently by `tools/sweep_entrypoints.py`
   (`$168E`, `$5041`) and configures resolution through **`OSBYTE 190`** (`$3879`).  So the steering
   seam is in `Platform::mosCall`, and `bus.h` has nothing to intercept — the opposite of what the
   mapping table below implied.
+  ✅ **IMPLEMENTED in Phase 5** (`src/platform/amiga/RevsInput.*`): the flag that picks analogue
+  vs keys is `$05F5` bit 7, `engine_init` zeroes it (so the game boots in KEYBOARD mode), and the
+  player switches with the game's own SHIFT+f1 / SHIFT+f2 — decoded from the key table at `$3DE2`
+  paired with the action bytes at `$39D4`.  That decode also settles the BBC internal key-number
+  layout: `(row = n>>4, col = n&15)`, row 7 = f0..f9, so -114 is f1 and -115 is f2.
+
   **Decision: the Amiga port uses mouse + keyboard** (user, 2026-08-12).  The BBC's own
   `SHIFT+f1` keyboard mode is the faithful precedent for digital steering; the mouse stands in for
   the analogue axis.  Note the game has a `HookJoystick` per track and a "SPACE — amplify
@@ -147,6 +153,21 @@ behaviour you will reason about wrongly.  ✅ **Done** (Phase 2, table above).  
 are recovered by a nearest-preceding-`LDA #imm` heuristic, so they are **[DERIVED, heuristic]** —
 and the *parameters* (X/Y) at the ADC and buffer-flush sites are not read out yet, which is what
 an implementation actually needs.
+
+⭐⭐ **Phase 5 added TWO more, and one of them is a whole subsystem.**  Measured on the target
+with `amiga/mos.gdb` (`g_mosUnknownCount` + entry + A):
+
+- **`OSWORD 0` (read a line)** — caught in the front end.  So `console_io` reaches the OS through
+  OSWORD 0, not only the OSRDCH site `docs/static-map.md` §Open items 6 assumes.
+- **`OSWORD 7` (SOUND)** — not caught, and that absence is the measurement: the engine sound is
+  built from OSWORD 7 command blocks (two tones plus noise on channels 0-2, pitch chasing the rev
+  count, one envelope for tyre squeal — the reference's write-up), so a single sound would show up
+  as an unhandled MOS call.  None ever has, which is how we know **the scripted run never starts
+  the engine**.  Sound is therefore a Phase 5 item with no implementation and no traffic yet.
+
+Both were invisible to the static pass for the same reason as OSBYTE 0: the reason codes come from
+a nearest-preceding-`LDA #imm` heuristic and a *computed* `A` defeats it.  **Treat the table above
+as a floor, not a closed set** — three of its rows were found by running the game, not reading it.
 
 ⭐ **Phase 4 added reason code `0` (read the OS version) at runtime.**  It is not a tenth static
 site — it is one of the ten whose `A` is *computed*, so the nearest-preceding-`LDA #imm` heuristic
