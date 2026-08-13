@@ -23,7 +23,11 @@ printf "=== bands=%u rejects=%lu overflow=%u ula=%02x brk=%lu\n", \
   g_bandCount, g_bandRejects, g_bandOverflow, g_ulaControl, g_brkCount
 
 dump binary memory .run/planes.bin ((char*)g_screenFrontAddr) ((char*)g_screenFrontAddr + g_screenBytes)
-dump binary memory .run/copper.bin ((char*)g_screenCopperAddr) ((char*)g_screenCopperAddr + 4*53)
+# ⚠ The length comes from the program (g_screenCopperWords = LIST_LENGTH), not from a
+# constant retyped here.  A hard-coded word count silently truncates the moment the list
+# layout grows — and a truncated copper dump decodes as "the bands are missing", which reads
+# exactly like a band bug.  (docs/method-lessons.md: verify the instrument.)
+dump binary memory .run/copper.bin ((char*)g_screenCopperAddr) ((char*)g_screenCopperAddr + 4*g_screenCopperWords)
 printf "=== dumped\n"
 detach
 quit

@@ -221,7 +221,8 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_mosUnknownCount g_mosUnknownEntry g_mosUnknownA g_mosCharDefCount \
              g_hwUnknownReads g_hwUnknownAddr g_ulaControl g_userT1LatchLo g_userT1LatchHi \
              g_badRegionCount g_badRegionEntry \
-             g_screenFrontAddr g_screenCopperAddr g_screenBytes g_bandRejects \
+             g_screenFrontAddr g_screenCopperAddr g_screenBytes g_screenCopperWords \
+             g_bandRejects \
              g_bandCount g_bandOverflow g_keyUnmapped g_keyUnmappedCode g_keyEvents g_keyDown
 # ⚠ CONDITIONAL, because these only EXIST under PROBES (src/platform/probe.cpp compiles to
 # nothing otherwise).  Listing them unconditionally makes --undefined=<sym> unsatisfiable and a

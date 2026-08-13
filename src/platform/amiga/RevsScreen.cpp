@@ -10,6 +10,7 @@
 #include "framework/AmigaHardware.h"
 #include "framework/Bitmap.h"
 #include "framework/CopperList.h"
+#include "framework/Sprite.h"
 #include "../bbc_screen.h"
 #include "../../cpu/m68k_math.h"   /* the 68000 has NO 32-bit mul/div (make muldiv-audit) */
 
@@ -28,8 +29,15 @@ static const uint16_t kRowBytes   = (kW / 8) * kBP;          /* 80: interleaved 
 /* ---- fixed copper-list layout (indices in 32-bit MOVE/WAIT words) -------------
    d[0] is the CopperList ctor's copperWait(16,0) and d[LEN-1] its park.  Unused band
    slots keep the ctor's copper-NOP prefill — that prefill is why a band the game does
-   not use costs a wasted copper cycle instead of halting the copper (CopperList.cpp). */
-#define IDX_PLAYFIELD   1                       /* BPLCON0 + BPL1MOD + BPL2MOD   (3) */
+   not use costs a wasted copper cycle instead of halting the copper (CopperList.cpp).
+
+   ⚠ THE SPRITE POINTERS COME FIRST because they have the tightest deadline in the list:
+   Agnus fetches each channel's control words in the sprite DMA slots near the START of a
+   line, so SPRxPT must already be right when it does.  Everything else — BPLCON0, the
+   modulos, the bitplane pointers, the top palette — is consumed later in the line or
+   later in the frame.  (docs/amiga-lessons.md: SPRxPT is stricter than BPLxPT.) */
+#define IDX_SPRITES     1                       /* 8 channels x SPRxPTH/L       (16) */
+#define IDX_PLAYFIELD   (IDX_SPRITES + 16)      /* BPLCON0 + BPL1MOD + BPL2MOD   (3) */
 #define IDX_BPL         (IDX_PLAYFIELD + 3)     /* 2 interleaved planes          (4) */
 #define IDX_TOPPAL      (IDX_BPL + 4)           /* COLOR00..03 for display line 0 (4) */
 #define IDX_BANDS       (IDX_TOPPAL + 4)
@@ -92,6 +100,56 @@ extern "C" {
 volatile uint32_t g_screenFrontAddr  = 0;   /* the displayed interleaved bitplane block */
 volatile uint32_t g_screenCopperAddr = 0;   /* the copper list, incl. the palette bands */
 volatile uint16_t g_screenBytes      = 0;   /* size of the bitplane block               */
+volatile uint16_t g_screenCopperWords = 0;  /* LIST_LENGTH — so the dump can't go stale  */
+}
+
+/* ---------------------------------------------------------------------------
+   ONE-TIME custom registers, written with the CPU.
+
+   ⭐ THE SPLIT, and it is a rule rather than a preference (docs/amiga-lessons.md, and the
+   same shape as the Atari port's AmigaHardware::setPlayfield + per-list CopperList::
+   setPlayfield): a register that is CONSTANT for the whole run is written ONCE here with
+   the CPU; only what genuinely varies down the screen or from frame to frame belongs in
+   the copper list.  Re-emitting a constant from the copper every frame spends copper
+   cycles — in the display window, the same cycles the bitplane fetch wants — to write a
+   value that never changes.  What stays in the list: BPLCON0 + the interleave modulos
+   (CopperList::setPlayfield), the bitplane pointers, the eight SPRxPT pairs, and the five
+   palette bands.
+
+   ⚠ Called with display DMA OFF and the copper halted (PlatformAmiga::run guarantees it).
+   That ordering is load-bearing: with copper DMA on, COP1LC still points at the OS's
+   LoadView(NULL) list, and an OS-copper frame landing here would overwrite these.
+   --------------------------------------------------------------------------- */
+void RevsScreen::setConstantRegisters()
+{
+    /* Chip-set fetch mode.  0 = the OCS/ECS 16-bit fetch, which is the A500 target.  Write
+       it rather than inherit it: on an AGA machine the OS may have left 32/64-bit fetch on,
+       and a bitplane block sized for 16-bit fetch then reads garbage past its own end. */
+    *fmodePointer   = 0x0000;
+
+    /* No horizontal scroll — both playfields at delay 0. */
+    *bplcon1Pointer = 0x0000;
+
+    /* ⭐ PLAYFIELD IN FRONT OF EVERY SPRITE GROUP.  PFxP = 4 means "the playfield is behind
+       sprite groups 0..3 and in front of groups 4..", i.e. in front of all four — the BBC
+       has no sprite layer, so nothing may ever appear over the game.  The reset value 0 is
+       the OPPOSITE (playfield behind every group), which is what let the unpointed sprite
+       channels paint over the picture.  Belt and braces with the null sprites: the sprites
+       are disarmed AND would lose the priority fight if they weren't. */
+    *bplcon2Pointer = 0x0024;
+
+    /* ECS Denise border blanking: the area outside the display window renders BLACK instead
+       of COLOR00.  Without it the border tracks the copper's current COLOR00 — which this
+       port rewrites five times a field — so the surround would flash blue/black/green in
+       step with the palette bands.  ⚠ Needs ECSENA (BPLCON0 bit 0), which the copper's
+       BPLCON0 MOVE carries as USE_BPLCON3 (CopperList::setPlayfield); BPLCON3 is inert
+       without it.  Bits 14-9 (0x0c00) are the BANK/PF2OFx reset field the framework writes.
+       ⚠ DIWHIGH is deliberately NOT written: DIWSTRT/DIWSTOP (PlatformAmiga::run) are
+       44..252 and 0x81..0x1C1, every field of which fits the OCS-compatible 8-bit encoding,
+       and the framework's setPlayfield hard-codes a DIWHIGH whose VSTOP-high bit belongs to
+       the Atari port's 276-line window — writing that here would push VSTOP off the bottom
+       of the frame. */
+    *bplcon3Pointer = (uint16_t)(0x0c00 | BPLCON3_BRDNBLNK | BPLCON3_BRDNTRAN);
 }
 
 /* --------------------------------------------------------------------------- */
@@ -105,15 +163,37 @@ void RevsScreen::initialize()
        the five bands, and the fifth covers blank rows. */
     for (unsigned y = 0; y < kH; y++) m_lineMode[y] = 5;
 
-    m_bitmap[0] = Bitmap::allocate(kW, kH, kBP, /*interleaved*/true);
-    m_bitmap[1] = Bitmap::allocate(kW, kH, kBP, /*interleaved*/true);
-    m_copper    = CopperList::allocate(LIST_LENGTH);
-    if (!m_bitmap[0] || !m_bitmap[1] || !m_copper) return;
+    m_bitmap[0]   = Bitmap::allocate(kW, kH, kBP, /*interleaved*/true);
+    m_bitmap[1]   = Bitmap::allocate(kW, kH, kBP, /*interleaved*/true);
+    m_copper      = CopperList::allocate(LIST_LENGTH);
+    m_nullSprite  = Sprite::allocate(0);
+    if (!m_bitmap[0] || !m_bitmap[1] || !m_copper || !m_nullSprite) return;
 
+    setConstantRegisters();
+
+    /* ⭐ ALL EIGHT SPRITE CHANNELS POINTED AT ONE EMPTY SPRITE, every frame.
+       The BBC has no sprites and Revs never wants one, but sprite DMA is ON (PlatformAmiga
+       ::run) — and a channel whose SPRxPT nothing writes does not sit still: Agnus ADVANCES
+       the pointer as it fetches, so after one frame it is walking chip RAM and reading
+       whatever it finds as control words.  Symptom on the target: garbage sprites tearing
+       across the picture in colours nobody set (COLOR17..31 are still whatever the OS left),
+       and with BPLCON2's playfield priority at its reset value they render IN FRONT of the
+       game.  Two of the three artefacts this port was showing.
+       Sprite::allocate(0) is 8 cleared bytes: control words 0,0 — VSTART == VSTOP == 0, so
+       the channel is never armed on any line — followed by the 0,0 terminator.  ⚠ The list
+       must re-point all eight EVERY frame, which is exactly what a copper list does; a
+       one-time CPU write would hold for the first frame only. */
+    for (unsigned s = 0; s < 8; s++)
+        m_copper->showSprite(IDX_SPRITES + s * 2, (uint16_t)s, *m_nullSprite);
+
+    /* Per-frame / per-band playfield state: BPLCON0 (plane count + ECSENA) and the
+       interleave modulos.  These are the only playfield registers the copper touches —
+       everything constant is in setConstantRegisters() above. */
     m_copper->setPlayfield(IDX_PLAYFIELD, kW, kH, kBP, /*interleaved*/true);
     m_copper->showBitmap(IDX_BPL, *m_bitmap[0], 1, 1, 0, 0, kBP);
 
-    g_screenCopperAddr = (uint32_t)m_copper->data();
+    g_screenCopperAddr  = (uint32_t)m_copper->data();
+    g_screenCopperWords = LIST_LENGTH;
     g_screenFrontAddr  = (uint32_t)m_bitmap[0]->data;
     g_screenBytes      = (uint16_t)revs_mulu16(kH, kRowBytes);
 
@@ -127,9 +207,10 @@ void RevsScreen::initialize()
 
 void RevsScreen::shutdown()
 {
-    delete m_copper;  m_copper = 0;
-    delete m_bitmap[0]; m_bitmap[0] = 0;
-    delete m_bitmap[1]; m_bitmap[1] = 0;
+    delete m_copper;      m_copper     = 0;
+    delete m_bitmap[0];   m_bitmap[0]  = 0;
+    delete m_bitmap[1];   m_bitmap[1]  = 0;
+    delete m_nullSprite;  m_nullSprite = 0;
 }
 
 /* ---------------------------------------------------------------------------

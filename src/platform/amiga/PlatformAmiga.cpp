@@ -272,10 +272,17 @@ void PlatformAmiga::run()
     // Display window — PAL lores 320x208, which is the BBC custom mode's exact height
     // (26 character rows of 8 lines; src/platform/bbc_screen.h).  ⚠ kDisplayTop in
     // RevsScreen.cpp must match VSTRT: every copper band WAIT is relative to it.
+    // Every field here fits the OCS-compatible 8-bit encoding, which is why DIWHIGH is
+    // left alone — see RevsScreen::setConstantRegisters().
     *diwstrtPointer = 0x2C81;   // VSTRT=44,  HSTRT=0x81
     *diwstopPointer = 0xFCC1;   // VSTOP=252 = 44+208, HSTOP=0xC1 (+256 implicit)
     *ddfstrtPointer = 0x0038;
     *ddfstopPointer = 0x00D0;
+    // A KNOWN-BLANK display for the window between here and scene.initialize(): no
+    // bitplanes, no scroll.  ⚠ These three are the SCENE's registers from initialize()
+    // onward — RevsScreen::setConstantRegisters() writes BPLCON1/2/3 + FMODE once, and the
+    // copper list owns BPLCON0.  Do not "also" set them here later: two owners for one
+    // write-only register is how a value gets fixed in the wrong place.
     *bplcon0Pointer = 0x0000;
     *bplcon1Pointer = 0x0000;
     *bplcon2Pointer = 0x0000;

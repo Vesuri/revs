@@ -34,6 +34,7 @@
 
 class Bitmap;
 class CopperList;
+class Sprite;
 
 class RevsScreen {
 public:
@@ -53,6 +54,10 @@ public:
     void vbiUpdate();
 
 private:
+    /* One-time custom registers (FMODE / BPLCON1 / BPLCON2 / BPLCON3), CPU-written with the
+       copper halted.  The rule and the reasoning are at the definition: constants go here,
+       and only per-frame or per-band state goes in the copper list. */
+    void setConstantRegisters();
     void buildBands();
     void present();
 
@@ -63,6 +68,9 @@ private:
        initialize() sets everything that must not start at zero. */
     Bitmap*     m_bitmap[2];
     CopperList* m_copper;
+    /* One 8-byte all-zero sprite (VSTART == VSTOP == 0), pointed to by all eight channels
+       so sprite DMA has somewhere harmless to go.  See initialize(). */
+    Sprite*     m_nullSprite;
     unsigned    m_back;               /* index of the buffer decode() writes */
     bool        m_ready;              /* the back buffer holds a finished frame */
 
