@@ -122,6 +122,23 @@ volatile uint16_t g_screenCopperWords = 0;  /* LIST_LENGTH — so the dump can't
    --------------------------------------------------------------------------- */
 void RevsScreen::setConstantRegisters()
 {
+    /* ⭐ THE DISPLAY WINDOW AND DATA FETCH — PAL lores 320x208, which is the BBC custom
+       mode's exact height (26 character rows of 8 lines; bbc_screen.h).  Derived from kW/kH
+       and kDisplayTop rather than written as four magic literals, because every copper band
+       WAIT below is relative to kDisplayTop: if the window and the band waits could disagree
+       the whole palette schedule slides, and a slid schedule looks like a decode bug.
+         DDF: lores fetch of kW/8 = 40 words starts at 0x38 and stops at 0x38 + 4*(40-1)/2,
+       i.e. 0xD0 — the standard 320-pixel pair.
+       ⚠ DIWHIGH is deliberately NOT written, and the framework's AmigaHardware::setPlayfield
+       deliberately NOT called for this: it hard-codes a DIWHIGH whose VSTOP-high bit belongs
+       to the Atari port's 276-line window.  Every field below fits the OCS-compatible 8-bit
+       encoding (VSTRT 44, VSTOP 252, HSTRT 0x81, HSTOP 0xC1 + the implicit 256), so the high
+       register has nothing to add here and writing that value would push VSTOP off the frame. */
+    *diwstrtPointer = (uint16_t)((kDisplayTop << 8) | 0x81);
+    *diwstopPointer = (uint16_t)((((kDisplayTop + kH) & 0xFF) << 8) | 0xC1);
+    *ddfstrtPointer = 0x0038;
+    *ddfstopPointer = (uint16_t)(0x0038 + 2 * ((kW / 16) - 1));
+
     /* Chip-set fetch mode.  0 = the OCS/ECS 16-bit fetch, which is the A500 target.  Write
        it rather than inherit it: on an AGA machine the OS may have left 32/64-bit fetch on,
        and a bitplane block sized for 16-bit fetch then reads garbage past its own end. */

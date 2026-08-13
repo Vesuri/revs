@@ -269,23 +269,18 @@ void PlatformAmiga::run()
     *intenaPointer = (uint16_t)INTF_BLIT;    // no SETCLR = disable
     *intreqPointer = (uint16_t)INTF_BLIT;    // drop any already-latched request
 
-    // Display window — PAL lores 320x208, which is the BBC custom mode's exact height
-    // (26 character rows of 8 lines; src/platform/bbc_screen.h).  ⚠ kDisplayTop in
-    // RevsScreen.cpp must match VSTRT: every copper band WAIT is relative to it.
-    // Every field here fits the OCS-compatible 8-bit encoding, which is why DIWHIGH is
-    // left alone — see RevsScreen::setConstantRegisters().
-    *diwstrtPointer = 0x2C81;   // VSTRT=44,  HSTRT=0x81
-    *diwstopPointer = 0xFCC1;   // VSTOP=252 = 44+208, HSTOP=0xC1 (+256 implicit)
-    *ddfstrtPointer = 0x0038;
-    *ddfstopPointer = 0x00D0;
-    // A KNOWN-BLANK display for the window between here and scene.initialize(): no
-    // bitplanes, no scroll.  ⚠ These three are the SCENE's registers from initialize()
-    // onward — RevsScreen::setConstantRegisters() writes BPLCON1/2/3 + FMODE once, and the
-    // copper list owns BPLCON0.  Do not "also" set them here later: two owners for one
-    // write-only register is how a value gets fixed in the wrong place.
+    // A KNOWN-BLANK display for the window between here and scene.initialize(): zero
+    // bitplanes, whatever the OS left in the window registers.  Nothing can appear —
+    // raster DMA is off and BPLCON0 selects no planes.
+    //
+    // ⚠ THE DISPLAY GEOMETRY IS NOT SET HERE.  It has exactly one owner,
+    // RevsScreen::setConstantRegisters(), which writes DIWSTRT/DIWSTOP, DDFSTRT/DDFSTOP,
+    // FMODE and BPLCON1/2/3 in one place from the same constants the decode and the copper
+    // bands are derived from (src/platform/bbc_screen.h).  Two owners for one write-only
+    // register is how a value ends up fixed in the wrong file — and the band WAITs are all
+    // relative to VSTRT, so the window and the copper list have to agree by construction,
+    // not by two matching literals in two files.
     *bplcon0Pointer = 0x0000;
-    *bplcon1Pointer = 0x0000;
-    *bplcon2Pointer = 0x0000;
 
     // --- take over the whole VERTB vector ------------------------------------
     // Not AddIntServer: exec's iv_Code is the server-chain walker, so overwriting it drops
