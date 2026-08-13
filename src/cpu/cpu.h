@@ -23,6 +23,33 @@ typedef struct {
 extern Cpu6502 cpu;
 extern volatile uint8_t mem[65536]; /* shared between main thread and VBI audio thread */
 
+/* ---------- the 6502 stack-drop return ----------------------------------------
+ * ⭐⭐ ONE routine in Revs returns TWO LEVELS UP, and C cannot express it.
+ *
+ * $2F7E does `TSX / INX / INX / TXS` and then `RTS`: it throws away its own caller's
+ * return address, so the RTS pops the level ABOVE that.  Revs uses it as the exit from
+ * the four unrolled road-span chains ($2D17, $2D9A, $2E20, $2E99): each chain repeatedly
+ * `JSR road_span_plot[_2]`, and when the plotter finds `Y == $82` (the last column) it
+ * branches to $2F7E, drops the plotter's frame, and RTSes straight out of the CHAIN to
+ * the chain's caller.
+ *
+ * The transliteration models `TXS` as `cpu.S = cpu.X`, which is faithful to the register
+ * and completely inert on the C call stack — so the plotter returned normally and the
+ * chain kept looping.  ⚠ MEASURED CONSEQUENCE: the chain's inner loop is
+ * `plot / ADC $83 / BCC`, so once $83 reads 0 (it does, at $82 == Y) the port WEDGES —
+ * pc parked in FUN_2e99, g_fpsFrames frozen, ~112 s into a STRAIGHT_TO_RACE run.  That is
+ * the "intermittent stall, unexplained" of docs/perf-method.md; it is neither.
+ *
+ * The model: an unwind flag, set where the drop happens and consumed by the call site of
+ * the routine whose frame was dropped, which then returns as the RTS would have.  Exactly
+ * one level — two bytes is one return address, so the flag never needs a counter.  The
+ * transpiler places both halves; see STACK_DROP_TXS / UNWIND_CALLEES in
+ * tools/transpile.py.  ⚠ Not volatile and not in Cpu6502: it is pure control flow within
+ * one call chain, never interrupt state, and `make validate` diffs the Cpu6502 struct.  */
+extern uint8_t cpu_unwind;
+#define UNWIND_SET()    do { cpu_unwind = 1; } while(0)
+#define UNWIND_TAKEN()  (cpu_unwind ? (cpu_unwind = 0, 1) : 0)
+
 /* ---------- flag helpers ------------------------------------------ */
 #define UPD_NZ(v)  do { uint8_t _nzv=(uint8_t)(v); cpu.N=_nzv>>7; cpu.Z=(_nzv==0); } while(0)
 

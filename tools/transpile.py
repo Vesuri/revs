@@ -451,6 +451,31 @@ PRE_INSN_HOOKS = {
     0x1701: 'PROBE_PHASE(PROBE_PHASE_FRAMEWAIT); platform_render_frame();',
 }
 
+# ---------------------------------------------------------------------------
+# The 6502 stack-drop return: an RTS that unwinds TWO levels.
+# ---------------------------------------------------------------------------
+# ⭐⭐ `TSX / INX / INX / TXS` followed by RTS discards the current routine's own return
+# address, so the RTS returns to its CALLER'S caller.  Modelling TXS as `cpu.S = cpu.X` is
+# faithful to the register and inert on the C call stack, which turns a two-level return
+# into a one-level one — and in Revs that is not cosmetic: it is the exit from the four
+# unrolled road-span chains, whose inner loop is `plot / ADC $83 / BCC`, so missing the
+# exit WEDGES the port (see the note in src/cpu/cpu.h for the measurement).
+#
+# There is exactly ONE such site in the image (`grep TSX disasm/listing.txt` finds two, and
+# $386D merely stashes S in $6B), so this is a table of one rather than an analysis: the
+# TXS that completes the drop, and the routines that can carry it back to their call site.
+# If a future disassembly pass finds another, add it here — do NOT hand-patch revs_gen.c.
+#
+#   $2F81  the TXS in $2F7E              -> UNWIND_SET()
+#   $2F45  road_span_plot                -> its callers must return when the flag is set
+#   $2F87  road_span_plot_2                  (both `BEQ $2F7E` on Y == $82, the last column)
+#
+# ⚠ The check must be at the CALL SITE, not inside the callee: what the RTS skips is the
+# callee's frame, so it is the caller that must not resume.  One level only — two bytes is
+# one return address — which is why the flag needs no depth counter.
+STACK_DROP_TXS  = {0x2F81}
+UNWIND_CALLEES  = {0x2F45, 0x2F87}
+
 # Mirror of PROBE_PHASE_FRAMEWAIT in src/platform/probe.h.  The main loop's JSRs take ids
 # 1..N; if N ever reaches this, the wait would be added to a real phase's row instead of its
 # own and the table would be quietly wrong, so `make gen` fails loudly instead.
@@ -1227,6 +1252,11 @@ def translate_insn(insn, func, all_funcs_by_start, symbols, local_targets,
             return lines
         name = resolve_target_name(target)
         lines.append(f'    {name}();')
+        if target in UNWIND_CALLEES:
+            # ⭐ This routine can reach the stack-drop RTS at $2F7E, which discards THIS
+            # frame's return address — so when it does, the 6502 never comes back here.
+            # (STACK_DROP_TXS / UNWIND_CALLEES; src/cpu/cpu.h.)
+            lines.append('    if (UNWIND_TAKEN()) return;   /* $2F7E dropped this frame */')
         return lines
 
     # --- RTS / RTI ---
@@ -1270,6 +1300,11 @@ def translate_insn(insn, func, all_funcs_by_start, symbols, local_targets,
                     ('INX','INX()'),('INY','INY()'),('DEX','DEX()'),('DEY','DEY()')]:
         if mnem == mn:
             lines.append(f'    {mac};')
+            if mnem == 'TXS' and addr in STACK_DROP_TXS:
+                # The register write is faithful and inert; THIS is the control flow it
+                # stands for.  Consumed at the call site of whichever UNWIND_CALLEES
+                # routine we are inside (src/cpu/cpu.h).
+                lines.append('    UNWIND_SET();   /* the RTS below returns TWO levels up */')
             return lines
 
     # --- Load ---
@@ -2132,6 +2167,7 @@ def main():
     # from the first generation instead of being discovered one runtime hang at a time.
     # -----------------------------------------------------------------------
     report_smc_coverage(funcs)
+    report_stack_drops(funcs, symbols)
     report_brk_targets(funcs, symbols)
     report_spin_candidates(funcs, symbols)
 
@@ -2159,6 +2195,88 @@ def report_smc_coverage(funcs):
     print(f'SMC: {len(SMC_SITES)} patched instructions emitted as runtime-dispatched '
           f'({", ".join(f"{k}={v}" for k, v in sorted(by_kind.items()))}) '
           f'in {len(owners)} routines: {", ".join(owners)}')
+
+def report_stack_drops(funcs, symbols):
+    """The two-level RTS, audited rather than trusted.
+
+    STACK_DROP_TXS / UNWIND_CALLEES is a hand-written table of one site, and the failure it
+    guards against is silent: an unmodelled drop does not crash, it turns the road-span
+    chain's exit into an infinite `plot / ADC $83 / BCC` (src/cpu/cpu.h).  So this checks
+    the four things that would make the table wrong, and every one of them is fatal:
+
+      1. each STACK_DROP_TXS address really decodes as TXS;
+      2. each UNWIND_CALLEES address really is a function start (the call-site check is
+         emitted per JSR target, so a mid-body address would silently emit nothing);
+      3. NO OTHER `TSX / INX / INX / TXS` run exists in the image — this is the one that
+         finds a second stack drop after a re-import, instead of a hang finding it;
+      4. UNWIND_CALLEES are entered only by JSR.  A JMP or a cross-function conditional
+         tail call into one puts the dropped frame at a different depth than the emitted
+         check assumes, so the unwind would land one level off.
+    """
+    starts, by_addr, tgt = {}, {}, {}
+    for f in funcs:
+        for ins in f['insns']:
+            starts[ins['addr']] = f
+            by_addr[ins['addr']] = ins
+            # 'val' is not a parsed field — the emitter derives it per instruction, so an
+            # audit that reads ins['val'] silently sees None and passes vacuously.
+            _, v, _ = parse_operand(ins['op'], len(ins['bytes']), symbols)
+            tgt[ins['addr']] = v
+
+    bad = sorted(a for a in STACK_DROP_TXS
+                 if a not in by_addr or by_addr[a]['mnem'] != 'TXS')
+    if bad:
+        raise SystemExit('STACK_DROP_TXS addresses do not decode as TXS: '
+                         + ', '.join(f'${a:04X}' for a in bad))
+
+    func_starts = {func_lo(f) for f in funcs}
+    bad = sorted(a for a in UNWIND_CALLEES if a not in func_starts)
+    if bad:
+        raise SystemExit('UNWIND_CALLEES addresses are not function starts: '
+                         + ', '.join(f'${a:04X}' for a in bad)
+                         + '\n  -> the per-JSR unwind check would emit nowhere.')
+
+    # (3) any other TSX/INX/INX/TXS run.
+    unlisted = []
+    for f in funcs:
+        ins = f['insns']
+        for i in range(len(ins) - 3):
+            if [x['mnem'] for x in ins[i:i + 4]] == ['TSX', 'INX', 'INX', 'TXS']:
+                if ins[i + 3]['addr'] not in STACK_DROP_TXS:
+                    unlisted.append((ins[i]['addr'], f['name']))
+    if unlisted:
+        raise SystemExit('UNLISTED 6502 stack drop (TSX/INX/INX/TXS) — an RTS that returns '
+                         'two levels up, which the transliteration cannot express:\n'
+                         + '\n'.join(f'  ${a:04X} in {n}' for a, n in unlisted)
+                         + '\n  -> add its TXS to STACK_DROP_TXS and the routines that can '
+                           'carry it to UNWIND_CALLEES (see src/cpu/cpu.h).')
+
+    # (4) entry other than JSR.
+    wrong_entry = []
+    for f in funcs:
+        for ins in f['insns']:
+            if tgt[ins['addr']] not in UNWIND_CALLEES:
+                continue
+            mnem = ins['mnem']
+            if mnem == 'JSR':
+                continue
+            if mnem in BRANCH_FLAGS or mnem == 'JMP':
+                # A branch INSIDE the callee is just its own local flow.
+                if not (func_lo(f) <= tgt[ins['addr']] <= f['end']):
+                    wrong_entry.append((ins['addr'], mnem, tgt[ins['addr']], f['name']))
+    if wrong_entry:
+        raise SystemExit('UNWIND_CALLEES entered other than by JSR — the dropped frame '
+                         'would be at a different depth than the emitted check assumes:\n'
+                         + '\n'.join(f'  ${a:04X} {m} ${t:04X} in {n}'
+                                     for a, m, t, n in wrong_entry))
+
+    callers = sorted({starts[ins['addr']]['name']
+                      for f in funcs for ins in f['insns']
+                      if ins['mnem'] == 'JSR' and tgt[ins['addr']] in UNWIND_CALLEES})
+    sites = sum(1 for f in funcs for ins in f['insns']
+                if ins['mnem'] == 'JSR' and tgt[ins['addr']] in UNWIND_CALLEES)
+    print(f'stack drops: {len(STACK_DROP_TXS)} two-level RTS site(s), '
+          f'{sites} guarded call site(s) in {len(callers)} routines: {", ".join(callers)}')
 
 def build_segments(funcs, external_entries, symbols):
     """Split the corpus into SEGMENTS — the units the emitter actually produces.
