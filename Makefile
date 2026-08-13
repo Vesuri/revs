@@ -38,6 +38,19 @@ CFLAGS   := -std=c11   -g $(OPT) -Wall -Wno-unused-label -fsigned-char \
 CXXFLAGS := -std=c++11 -g $(OPT) -Wall -Wno-reorder -fsigned-char \
             -Isrc -Isrc/cpu -Isrc/platform -Isrc/gen
 
+# `make STRAIGHT_TO_RACE=1` — ⚠ `make clean` when you toggle it; this Makefile tracks the
+# define no more than the Amiga one does, so a partial rebuild links objects compiled the
+# other way and the flag silently does nothing.
+#
+# answer the front end's ONE practice-mode question the instant
+# it is asked and press the starter, instead of the timed 8-menu walk.  Same flag and same
+# script as the Amiga build (amiga/Makefile has the rationale); here it is the fast loop for
+# checking that the answer lands, since the host reaches the driving loop in a second.
+ifdef STRAIGHT_TO_RACE
+CFLAGS   += -DREVS_STRAIGHT_TO_RACE
+CXXFLAGS += -DREVS_STRAIGHT_TO_RACE
+endif
+
 # C sources: the 6502 CPU model + the generated transliteration + native twins.
 # The generated files do not exist until `make gen`; wildcard so a fresh clone builds.
 C_SRCS := \

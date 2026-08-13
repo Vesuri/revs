@@ -65,16 +65,17 @@ protected:
     virtual bool    vsyncElapsed()                      override;
 
 private:
-    // ⭐ Scripted input for unattended runs (src/platform/autorun.h).  Compiled in ONLY
-    // under FPSCOUNT/PROBES: without it a headless run never leaves the front-end menus
-    // and the framerate harness measures a menu spin.  A shipping build has no keyboard
-    // at all yet — real mouse + keyboard input is Phase 5.
-#if defined(REVS_FPSCOUNT) || defined(REVS_PROBE)
+    // ⭐ Scripted input (src/platform/autorun.h).  Compiled in under FPSCOUNT/PROBES,
+    // where without it a headless run never leaves the front-end menus and the framerate
+    // harness measures a menu spin — and under STRAIGHT_TO_RACE, where it answers the one
+    // menu question a practice session has and then gets out of the player's way.
+#if defined(REVS_FPSCOUNT) || defined(REVS_PROBE) || defined(REVS_STRAIGHT_TO_RACE)
     AutoRun autoRun;
 #endif
     // Real input: the CIA-A keyboard and the mouse, mapped onto the game's own two input
-    // paths (RevsInput.h).  ⚠ Under FPSCOUNT/PROBES the SCRIPT wins, so an unattended
-    // measurement run is bit-identical across builds no matter what the keyboard does.
+    // paths (RevsInput.h).  ⚠ Under FPSCOUNT/PROBES the SCRIPT wins for the whole run, so
+    // an unattended measurement is bit-identical across builds no matter what the keyboard
+    // does; under STRAIGHT_TO_RACE it wins only until autoRun.done().
     RevsInput input;
     uint16_t lastVsyncCount = 0;
 };

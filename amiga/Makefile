@@ -5,6 +5,9 @@
 #   make clean           remove obj/ and out/
 #   make PROBES=1        + headless auto-run and the timing probes (diag_run.sh needs this)
 #   make FPSCOUNT=1      the HONEST framerate build: one counter, no probe instrumentation
+#   make STRAIGHT_TO_RACE=1  ⭐ boot into a Silverstone practice session, engine running,
+#                        then hand the keyboard to the player — the only way to SEE this
+#                        port, since the MODE 7 front end is not rendered
 #   ./run.sh             boot in FS-UAE (left mouse button quits)
 #   ./debug.sh           source-level debug via the FS-UAE GDB stub
 #   ./diag_run.sh [secs] headless probe run (needs PROBES=1)
@@ -123,6 +126,24 @@ EXTRA_DEFINES += -DREVS_SCREEN_NO_BANDS
 endif
 ifdef FPSCOUNT
 EXTRA_DEFINES += -DREVS_FPSCOUNT
+endif
+
+# `make STRAIGHT_TO_RACE=1` — boot straight into a Silverstone PRACTICE session with the
+# engine running, then hand the keyboard back to the player.
+#
+# It is NOT a state-seeding hack: front_end_menus ($63E0) runs in full, and the build only
+# answers the ONE menu question the practice path has ($63F7 `1 PRACTICE 2 COMPETITION`)
+# the instant it is asked, plus 'T' for the starter motor.  Everything else the front end
+# would ask — class, qualifying duration, driver names, ANOTHER/START — is on the
+# COMPETITION branch and genuinely never reached.  src/platform/autorun.cpp has the trace.
+#
+# Why it exists: out of a race the game is in MODE 7 teletext, which this port does not
+# render, so a plain build is a black screen you cannot navigate.  This is how you SEE the
+# port.  Combine with FPSCOUNT=1 for a perf run whose window is a MOVING car — ⚠ which is
+# a different workload from every published baseline (those were measured with the engine
+# off); do not diff across that boundary.
+ifdef STRAIGHT_TO_RACE
+EXTRA_DEFINES += -DREVS_STRAIGHT_TO_RACE
 endif
 
 # `make FIXED_RNG=1` — pin any RNG seeding so every build drives the SAME simulation.

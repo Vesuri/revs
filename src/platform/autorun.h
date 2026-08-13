@@ -30,6 +30,14 @@ public:
     /* Answer OSBYTE 129 for the raw X register (the 256-n negative-INKEY form). */
     bool keyDown(uint8_t x);
 
+    /* True once the script has run out AND this build hands the keyboard back to the
+       player — a REVS_STRAIGHT_TO_RACE build, whose whole point is to be driven.  A
+       measurement build never reports done: its steady state (throttle held) is part of
+       the script, because the window has to have the same key set in every build.
+       ⚠ A caller that pushes the script's answers into the real key state must stop doing
+       so here, or it clears the keys the player is actually holding. */
+    bool done() const;
+
     /* How many key polls the script has answered — the script's clock, and a useful
        liveness read from gdb: if it stops advancing, the game stopped asking. */
     unsigned long polls() const { return m_polls; }
@@ -42,4 +50,5 @@ private:
     unsigned long m_polls    = 0;   /* total answered polls */
     unsigned long m_stepAt   = 0;   /* m_polls when the current step began */
     unsigned      m_step     = 0;   /* index into the script table */
+    unsigned      m_hits     = 0;   /* times the current step's key was answered HELD */
 };

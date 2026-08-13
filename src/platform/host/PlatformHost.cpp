@@ -130,7 +130,9 @@ void PlatformHost::tickVBI()
 
 bool PlatformHost::keyDown(uint8_t x)
 {
-    bool held = autoRun.keyDown(x);
+    /* The host has no keyboard at all, so a script that has handed control back leaves
+       every key up — which is the honest answer here, not a bug. */
+    bool held = autoRun.done() ? false : autoRun.keyDown(x);
     if (traceKeys)
         std::printf("inkey %5lu step %2u  X=$%02X (-%u) -> %s\n",
                     autoRun.polls(), autoRun.stepIndex(), x, 256u - x, held ? "HELD" : ".");

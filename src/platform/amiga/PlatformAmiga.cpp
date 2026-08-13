@@ -201,7 +201,7 @@ bool PlatformAmiga::vsyncElapsed()
 
 bool PlatformAmiga::keyDown(uint8_t x)
 {
-#if defined(REVS_FPSCOUNT) || defined(REVS_PROBE)
+#if defined(REVS_FPSCOUNT) || defined(REVS_PROBE) || defined(REVS_STRAIGHT_TO_RACE)
     // Unattended run: the script walks the front end and then holds the throttle, so the
     // measurement window contains the driving loop instead of a menu spin.  ⚠ It overrides
     // the real keyboard on purpose — a measurement must not depend on what is on the desk.
@@ -211,8 +211,14 @@ bool PlatformAmiga::keyDown(uint8_t x)
     // returned is RevsInput's.  So an unattended run that still reaches a race is an
     // end-to-end test of the key map — which is otherwise unverifiable on a headless
     // target, because there is no keyboard to press.
-    bool held = autoRun.keyDown(x);
-    input.pressBbcKey(x, held);
+    //
+    // ⚠ A STRAIGHT_TO_RACE build stops routing through the script the moment it is done:
+    // pressBbcKey() WRITES the rawkey state, so answering `false` for a key would clear
+    // one the player is holding.  done() is false forever in a measurement build.
+    if (!autoRun.done()) {
+        bool held = autoRun.keyDown(x);
+        input.pressBbcKey(x, held);
+    }
     return input.keyDown(x);
 #else
     return input.keyDown(x);

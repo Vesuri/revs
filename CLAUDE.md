@@ -124,6 +124,7 @@ proofs. Full rationale: `src/platform/host/PlatformHost.h`.
 ```
 . env.sh        # put the ~/.local Amiga toolchain on PATH (source it, SAME shell command)
 make            # build out/Revs.exe (+ Revs.elf; runs the muldiv audit on every link)
+make STRAIGHT_TO_RACE=1   # ⭐ boot straight into the race — see below
 ./run.sh        # boot in FS-UAE (Kickstart 3.1; left mouse button quits)
 ./debug.sh      # source-level debug via the FS-UAE GDB stub (prints its $DEBUG_PORT)
 ./diag_run.sh N # headless probe run for N seconds (needs a PROBES=1 build)
@@ -159,6 +160,17 @@ before any visual work) and `amiga/screen_dump.gdb` + `tools/amiga_ppm.py` dump 
 actually showing and decode it on the host. ⚠ Out of a race the game is in MODE 7 teletext, which
 is NOT rendered (black screen, and it needs a hand-drawn font), so a plain build is only reachable
 through the scripted auto-run.
+
+⭐ **`make STRAIGHT_TO_RACE=1` boots into a Silverstone PRACTICE session with the engine running
+and in first gear, then hands the keyboard to the player** — the way to actually *see* and drive
+the port while the MODE 7 front end is unrendered. It skips **no** game code: practice needs
+exactly ONE menu answer (`$63F7` `1 PRACTICE 2 COMPETITION`; option 1 stores `$5F3B = $FF` at
+`$6401` and enters the session at `$6407`), so `src/platform/autorun.cpp` just answers it the
+instant it is asked, then SPACE for `SPACE BAR TO CONTINUE`, `T` for the starter (`$4978`) and `Q`
+for first gear. Class / qualifying duration / driver names / ANOTHER-START are all on the
+COMPETITION branch and genuinely never reached. Verify with `amiga/straight_to_race.gdb`.
+⚠ Combine with `FPSCOUNT=1` and the script holds the throttle instead of handing over — a perf
+window with a **moving** car, which is a different workload from every baseline below.
 
 ⚠ **Every global a committed `.gdb` script reads must be listed in `PROBE_SYMS` (`amiga/Makefile`).**
 `--gc-sections` drops an unreferenced counter, and gdb then resolves the name into `.text` and
