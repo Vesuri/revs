@@ -255,18 +255,24 @@ owns the display. Spin-wait points in transpiled code become hooks that drive on
 negotiable** — the game body is a VERTB-ISR interrupt, so 25 FPS means painting every other frame
 with the simulation still at full rate.
 
-⭐ **BASELINE: 0.78 FPS RENDERED / 1.46 FPS unrendered** (2026-08-13) — ~32× short of the
-floor. Phase 5 draws now, and rendering roughly halves the frame: two thirds of that cost is
-display DMA against a program in chip RAM (structural on a stock A500), one third the
-frame-buffer decode (~250 ms).
+⭐ **BASELINE: 0.87 FPS RENDERED** (2026-08-14; 0.78 before the two-level-RTS fix below, which
+stopped the road-span chains over-plotting) **/ 1.46 FPS unrendered** — ~29× short of the floor.
+Phase 5 draws now, and rendering roughly halves the frame: two thirds of that cost is display
+DMA against a program in chip RAM (structural on a stock A500), one third the frame-buffer
+decode (~250 ms).
 
 ⚠ **Quote a framerate ONLY from `GDBSCRIPT=fps_series.gdb`** (in-program sampling, no gdb stop
 inside the window). `fps_seg.gdb`'s conditional breakpoints halted the machine at every frame
 and read **0.02 where the truth was 0.78** — a 30× error that reads as a catastrophic
 regression. Every framerate taken before 2026-08-13 came from that instrument.
 
-⚠ An **intermittent stall** freezes `g_fpsFrames` part-way through some runs, in EVERY build
-including the pre-Phase-5 one. Unexplained; discard frozen segments (`docs/perf-method.md`).
+✅ The **"intermittent stall"** that used to freeze `g_fpsFrames` part-way through a run is
+SOLVED, and it was a deterministic hang: `$2F7E`'s `TSX/INX/INX/TXS` + `RTS` returns **two levels
+up**, which is how the unrolled road-span chains exit, and the transliteration modelled `TXS` as
+a register write — inert on the C call stack. The chain then spun on `ADC $83 / BCC` with `$83`
+== 0. ⭐ **A 6502 idiom that touches the STACK POINTER has no C equivalent and is dropped
+silently** — suspect that class first for any hang inside generated code. `make gen` now fails on
+any *other* `TSX/INX/INX/TXS` (`report_stack_drops`). Full write-up: `docs/perf-method.md`.
 
 ⭐⭐ **THE HOT PATH IS RASTERISATION, NOT PHYSICS** (re-measured 2026-08-13). Top three of the
 main loop's 24 calls are **76.2%**: `$7BE2` **36.1%** (the dashboard), `$1A20` **21.1%** (the

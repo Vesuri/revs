@@ -64,12 +64,40 @@ first taken for.  The replacement (`amiga/fps_series.gdb` + the in-program sampl
 agreeing with the old 1.4 for the unrendered build — the old number was right, the instrument
 that produced it was not trustworthy, and the difference only showed up on a slower build.
 
-⚠ **An intermittent stall affects EVERY build, including the pre-Phase-5 one.**  In some runs
-`g_fpsFrames` stops advancing part-way (measured: baseline steady to vbi 11784 in one run,
-frozen from vbi ~8700 in another; the `NODECODE=1` build froze after one segment).  It is not
-caused by the renderer and it is not the "unattended run ending" artefact — it is unexplained,
-and it is why the series is printed per segment.  **Discard frozen rows, and do not average
-across a freeze.**  Open item.
+### ✅ CLOSED: the "intermittent stall" was a two-level RTS (2026-08-14)
+
+For weeks this doc said: *an intermittent stall affects EVERY build, `g_fpsFrames` stops
+advancing part-way, unexplained, discard frozen rows.*  It was neither intermittent nor
+unexplained — it was a **hang**, and a deterministic one:
+
+`$2F7E` does `TSX / INX / INX / TXS` and then `RTS`.  It throws away its own caller's return
+address, so the RTS returns **two levels up**.  That is how all four unrolled road-span chains
+($2D17, $2D9A, $2E20, $2E99) exit: each repeatedly `JSR road_span_plot[_2]`, and when the
+plotter finds `Y == $82` (the last column) it branches to $2F7E, drops the plotter's frame and
+returns straight out of the chain.  The transliteration modelled `TXS` as `cpu.S = cpu.X` —
+faithful to the register and completely inert on the C call stack — so the plotter returned
+normally and the chain kept looping.  Its inner loop is `plot / ADC $83 / BCC`, and at
+`Y == $82` the slope byte `$83` reads 0, so the carry never sets.  Infinite loop.
+
+Caught state, `STRAIGHT_TO_RACE=1 FPSCOUNT=1`, A500+: pc parked at `revs_gen.c` inside
+`FUN_2e99` (the `ADC mem[0x83]` at $2ECF), `cpu.Y == mem[$82] == $36`, `mem[$83] == 0`, and
+`cpu.S` walking +2 per iteration — the drop happening over and over.  `g_smcUnhandled == 0`, so
+no SMC dispatch was involved.  Before: frozen from vbi ~5600 for the remaining 4200 vblanks.
+After: 12783 vblanks with no gap, and the same configuration reads **0.87 FPS against 0.78** —
+the chain had been over-plotting past its own exit.
+
+⭐ **The lesson, which is bigger than this bug: a 6502 idiom that manipulates the STACK POINTER
+has no C equivalent, and the transliteration drops it silently.**  No unhandled-SMC counter
+fires, nothing crashes, the control flow is just wrong.  Suspect that class FIRST for any hang
+whose pc parks inside a generated function.  The fix is an unwind flag placed by the transpiler
+(`STACK_DROP_TXS` / `UNWIND_CALLEES` in `tools/transpile.py`, `UNWIND_SET` / `UNWIND_TAKEN` in
+`src/cpu/cpu.h`), and `report_stack_drops()` fails `make gen` if the image contains any *other*
+`TSX/INX/INX/TXS` run — so the next one is found at generation time, not by a hang.
+
+⚠ What survives from the old note: **the series is still printed per segment, and a row out of
+line with its neighbours is still discarded.**  A single low segment (0.29 against 0.87 either
+side) still shows up occasionally and is host-side emulator jitter, not a freeze — a freeze read
+0.00 for every remaining row.
 
 ### The pre-Phase-5 baseline, as it was recorded (2026-08-12, Phase 4)
 
