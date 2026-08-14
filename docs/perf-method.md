@@ -33,6 +33,21 @@ and explicitly "whether that's reachable remains to be seen".
   ceiling was GCC, not the algorithm.  That cuts both ways: don't declare it impossible from
   reasoning, and don't declare it reached from optimism.)
 
+## ⭐ MOVING-CAR BASELINE — 1.03 FPS (2026-08-14, after the game body left the VERTB ISR)
+
+⚠ **A different scene from every number below**, and not comparable to them: this one holds the
+throttle (`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1`), so the car is *driving*, where every figure
+in the table below was measured with the car standing still. Quote it only against itself.
+
+| Build (same scene, same instrument, `GDBSCRIPT=fps_series.gdb ./diag_run.sh 220`) | FPS |
+|---|---|
+| body in the VERTB ISR (`BODY_IN_ISR=1`) | 0.96 (206 painted / 10786 vblanks) |
+| body drained at the engine's frame wait (default, and correct — `docs/amiga-arch.md`) | **1.03** (223 / 10837) |
+
++7.7%, which is only just outside the ~3% noise floor, so the honest claim is **"no regression, and
+possibly a small win"** — not a speed-up to bank. The reason to make the change was correctness (the
+horizon artefact); this table exists so nobody later reads the architecture change as a perf cost.
+
 ## ⭐ THE BASELINE — 1.46 FPS unrendered, 0.78 FPS RENDERED (re-measured 2026-08-13)
 
 **The port draws now** (Phase 5, `RevsScreen`), and the honest pair of numbers, taken with the
