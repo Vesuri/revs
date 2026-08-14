@@ -29,6 +29,7 @@
  */
 #include "platform.h"
 #include "bbc_screen.h"
+#include "platform_c.h"     /* g_irqClobberCount/Which — the interrupt register contract */
 #include "../cpu/cpu.h"
 
 extern "C" void irq1v_handler(void);   /* $4E5C, from the generated transliteration */
@@ -232,8 +233,37 @@ void Platform::fireIrq1v(void)
 
     m_userT1Pending = true;      /* $FE6D bit 6: this interrupt is ours, not the MOS's */
     PUSH(P_pack());              /* what the 6502's IRQ sequence would have pushed */
+
+    /* ⭐⭐ AND WHAT THE MOS'S IRQ ENTRY WOULD HAVE DONE: `STA $FC`.
+       irq1v_handler ends `PLA / TAX / LDA $FC / RTI` ($4F0A) — it saves only X for itself
+       and gets the INTERRUPTED A back out of $FC, because on a real BBC the OS's interrupt
+       entry stashes A there before `JMP (IRQ1V)`.  Nothing here used to write $FC, so it
+       held 0 forever and every ISR return silently set A = 0.
+       ⚠ On the host that is invisible: tickVBI() fires at the top of renderFrame, where no
+       foreground routine is mid-computation.  On the Amiga the VERTB preempts the main loop
+       at an arbitrary instruction — including inside the unrolled fill chain in the
+       $7B00-$7FFF overlay, whose whole mechanism is that A CARRIES the previous cell's byte
+       across elements whose column source is zero ($7C00: `LDY src / BEQ skip / ... /
+       skip: STA ($70),Y`).  Zero A mid-chain and every remaining cell of that display line
+       is written 0, i.e. a BLACK RUN TO THE RIGHT EDGE — the horizon stripes, on scattered
+       lines, on the Amiga only.  A real BBC does not show them (confirmed with
+       `make refloop`: band 2 never holds a zero run longer than 3 cells). */
+    mem[0x00FC] = cpu.A;
+
     cpu.I = 1;
+
+    /* The contract measured on hardware: all three come back unchanged.  Checked, not assumed
+       — three byte compares per frame, against a class of bug that is otherwise invisible
+       until it shows up as a wrong pixel in an unrelated routine. */
+    const uint8_t a0 = cpu.A, x0 = cpu.X, y0 = cpu.Y;
+
     irq1v_handler();
+
+    uint8_t which = 0;
+    if (cpu.A != a0) which |= 1;
+    if (cpu.X != x0) which |= 2;
+    if (cpu.Y != y0) which |= 4;
+    if (which) { g_irqClobberCount++; g_irqClobberWhich |= which; }
 }
 
 /* Default: no display, so every check reports a frame boundary.  A backend with a real

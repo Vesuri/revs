@@ -314,6 +314,68 @@ The port shows **long** black horizontal runs there.  The real game does not.  S
 black horizon lines are a **port bug in the fill, not a palette or band problem** — and the
 window to compare against is band 2, lines 81..100, moving-car frames only.
 
+## ⭐⭐ What it found: the horizon stripes were an INTERRUPT-CONTRACT bug (2026-08-14)
+
+The loop's first real job, and it paid for itself. The port's black horizontal runs above the
+horizon were **`irq1v_handler` returning with A = 0**.
+
+**The fill loop.** `--fill=81-101` attributes every frame-buffer write in the horizon band to the
+routine that made it, and the answer is not in the engine at all — it is the unrolled chain in the
+**runtime-assembled `$7B00-$7FFF` overlay** (`make dashcode`), PCs marching at a 17-byte stride
+from `$7C11`. One element per screen CELL:
+
+```
+LDY $3000+k*$80,X   ; this cell's column source
+BEQ skip            ; ⭐ zero means "same as the previous cell" — A CARRIES ACROSS
+LDA #0
+STA $3000+k*$80,X
+LDA $6000,Y         ; translate
+skip:
+LDY #k*8
+STA ($70),Y         ; ⭐ opcode slot: patched to RTS ($60) to END the span
+```
+
+So **A is the live pixel value threaded through the whole line.** Corrupt A mid-chain and every
+later element whose source is zero stores the corrupt value — a run to the RIGHT EDGE of that
+display line, which is exactly the artefact's shape.
+
+**The corruption.** `irq1v_handler` ends `PLA / TAX / LDA $FC / RTI` (`$4F0A`): it saves only X
+for itself and recovers the interrupted **A from `$FC`**, because on a real BBC the MOS's
+interrupt entry does `STA $FC` before `JMP (IRQ1V)`. The port's shim called the handler directly
+and **never wrote `$FC`**, which therefore held 0 forever — so every ISR return set A = 0.
+
+**Why it looked Amiga-only.** On the host `tickVBI()` fires at a controlled point (the top of
+`renderFrame`), where no foreground routine is mid-computation. On the Amiga the game body is a
+*real* VERTB that preempts the main loop anywhere — including inside the fill chain. Identical
+generated C, identical `mem[]`, opposite outcome. ⚠ And the first host/target comparison nearly
+mis-attributed it, because the host build sat **parked** while the Amiga was moving: the autorun
+only holds the throttle under `FPSCOUNT`/`PROBES`. `make STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` now
+exists so the host can run a moving car and the two are the same scene.
+
+**The contract, measured not reasoned.** `--irq-abi` catches the CPU at the OS interrupt entry
+(where A/X/Y are still the interrupted program's), reads the return address off the 6502 stack,
+and compares again on arrival back there. ⚠ It **must** be filtered to interrupts whose return
+address is in the engine (`$1200-$7FFF`): unfiltered it reports "A, X and Y are all clobbered",
+which is true of the machine as a whole (interrupts during MOS code) and useless as a contract.
+Filtered, over 2858 engine-context interrupts: **A, X and Y are preserved every single time.**
+That contract is now asserted at the seam in `Platform::fireIrq1v` on **both** backends
+(`g_irqClobberCount` / `g_irqClobberWhich`, in `PROBE_SYMS`), because the next violation will
+look like something else entirely too.
+
+**Verified.** Band 2 holds zero zero-bytes on 10/10 consecutive Amiga frames from the race start
+(`amiga/stripes_series.gdb` + `tools/stripe_check.py`, whose ≥8-cell criterion is calibrated
+against the real machine's ≤3), `g_irqClobberCount` is 0, and the host detector
+(`REVS_STRIPE_WATCH=1`) reports nothing over a long moving-car run.
+
+⬜ **Residual, and the honest remaining risk.** A single frame with a *green* (not black) fill run
+has been seen since. Same carry mechanism with a non-zero A, and the register contract is held, so
+the most likely cause is a fidelity gap the counter cannot see: **a 6502 IRQ is taken only between
+instructions, but the Amiga's VERTB preempts transliterated C mid-statement** — e.g. between
+`mem[]` being read and `cpu.Z` being assigned inside one `LDY(...)`. A real BBC cannot split that;
+the port can. The two ways out are to run the body at a 6502-instruction boundary (defer it to the
+main loop / spin-wait hooks, at the cost of the 50 Hz tick's regularity) or to mask the VERTB
+around transliterated code. Not attempted yet — recorded so it is not re-derived.
+
 ### Still not done
 
 Named-milestone captures (step 3) and the jsbeeb cycle-diff harness against the port's physics

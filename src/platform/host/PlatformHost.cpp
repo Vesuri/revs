@@ -2,6 +2,7 @@
    renderer. */
 #include "PlatformHost.h"
 #include "../bbc_screen.h"
+#include "../platform_c.h"   /* g_irqClobberCount/Which — the interrupt register contract */
 
 #include <cstdio>
 #include <cstdlib>
@@ -21,6 +22,14 @@ PlatformHost::PlatformHost(const char* imagePath) : vbi(0), frames(0), traceKeys
     dumpPath = std::getenv("REVS_SCREEN_DUMP");
     const char* df = std::getenv("REVS_SCREEN_FRAME");
     dumpFrame = (df && df[0]) ? (unsigned long)std::strtoul(df, 0, 0) : 400ul;
+    /* REVS_SCREEN_COUNT > 1 dumps that many CONSECUTIVE frames as <path>.<frame>.
+       One frame per process is far too slow to hunt an artefact that comes and goes: the
+       engine has to be re-driven from the disc image every time, and a run to frame 400
+       costs minutes.  Consecutive frames also make "present in most frames" checkable,
+       which a single frame cannot be. */
+    const char* dc = std::getenv("REVS_SCREEN_COUNT");
+    dumpCount = (dc && dc[0]) ? (unsigned long)std::strtoul(dc, 0, 0) : 1ul;
+    if (dumpCount < 1) dumpCount = 1;
 
     if (loadImage(imagePath) != 0) {
         std::fprintf(stderr, "PlatformHost: cannot load memory image '%s'\n",
@@ -66,13 +75,65 @@ void PlatformHost::renderFrame()
     if (!tickedThisFrame) tickVBI();
     tickedThisFrame = false;
 
-    if (dumpPath && frames == dumpFrame) {
-        std::FILE* f = std::fopen(dumpPath, "wb");
+    /* ⭐ THE STRIPE DETECTOR.  REVS_STRIPE_WATCH reports any band-2 line whose zero run
+       reaches the right edge — the signature of the horizon stripes: the fill stopped
+       part-way and everything to its right stayed black.
+       ⚠ The criterion is calibrated against a real BBC, not invented: `make refloop` shows
+       band 2 (display lines 81-100, the only window where pen 0 is black) holding at most a
+       3-cell zero run on any sampled frame, so a run of 8 or more reaching cell 39 is an
+       artefact and not the road.  Dumping frames and eyeballing them cannot answer "does
+       this EVER happen on the host?", which is the question that decides whether the bug can
+       be debugged here at all or only on the target. */
+    if (std::getenv("REVS_STRIPE_WATCH")) {
+        static unsigned long lastClobber = 0;
+        if (g_irqClobberCount != lastClobber) {
+            lastClobber = g_irqClobberCount;
+            std::printf("IRQ-CLOBBER frame %lu: count=%lu which=%s%s%s\n", frames,
+                        g_irqClobberCount,
+                        (g_irqClobberWhich & 1) ? "A" : "", (g_irqClobberWhich & 2) ? "X" : "",
+                        (g_irqClobberWhich & 4) ? "Y" : "");
+            std::fflush(stdout);
+        }
+        for (unsigned y = 81; y <= 101; y++) {
+            const unsigned row = y / BBC_SCREEN_LINES, line = y % BBC_SCREEN_LINES;
+            unsigned run = 0;
+            for (unsigned c = 0; c < BBC_SCREEN_CELLS; c++) {
+                const unsigned off = row * BBC_SCREEN_BPR + c * BBC_SCREEN_LINES + line;
+                if (mem[BBC_SCREEN_BASE + off] == 0) run++; else run = 0;
+            }
+            if (run >= 8) {
+                std::printf("STRIPE frame %lu line %u: zero run of %u cells to the right edge\n",
+                            frames, y, run);
+                std::fflush(stdout);
+            }
+        }
+    }
+
+    if (dumpPath && frames >= dumpFrame && frames < dumpFrame + dumpCount) {
+        char path[512];
+        if (dumpCount > 1) std::snprintf(path, sizeof path, "%s.%lu", dumpPath, frames);
+        else               std::snprintf(path, sizeof path, "%s", dumpPath);
+        std::FILE* f = std::fopen(path, "wb");
         if (f) {
             for (unsigned i = 0; i < BBC_SCREEN_BYTES; i++)
                 std::fputc(mem[BBC_SCREEN_BASE + i], f);
             std::fclose(f);
-            std::printf("PlatformHost: screen dump frame %lu -> %s\n", frames, dumpPath);
+            std::printf("PlatformHost: screen dump frame %lu -> %s\n", frames, path);
+        }
+        /* ⭐ The WHOLE 64 KB beside the frame buffer, when asked.  A frame-buffer-only dump
+           can say the picture is wrong but never why: the fill chain in the $7B00 overlay
+           reads its columns from $3000-$4400 and translates through $6000, and its span ends
+           are SMC opcode slots in its own code.  Dumping everything lets a host/target diff
+           localise upstream-vs-downstream without guessing the regions first. */
+        if (std::getenv("REVS_MEM_DUMP")) {
+            char mpath[512];
+            std::snprintf(mpath, sizeof mpath, "%s.mem.%lu", dumpPath, frames);
+            std::FILE* mf = std::fopen(mpath, "wb");
+            if (mf) {
+                for (unsigned i = 0; i < 0x10000; i++) std::fputc(mem[i], mf);
+                std::fclose(mf);
+                std::printf("PlatformHost: mem dump frame %lu -> %s\n", frames, mpath);
+            }
         }
         std::fflush(stdout);
     }

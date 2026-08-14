@@ -59,6 +59,7 @@ private:
        renderer and never evidence.  REVS_SCREEN_DUMP / REVS_SCREEN_FRAME. */
     const char*   dumpPath;
     unsigned long dumpFrame;
+    unsigned long dumpCount;      /* consecutive frames to dump, as <dumpPath>.<frame> */
     bool          tickedThisFrame = false;
     void dumpBands();
 };

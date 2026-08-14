@@ -3,7 +3,14 @@
 // for every "is the port faithful?" pixel question about the 3D view.
 //
 //   cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs [--frames=N]
-//                                                     [--track=1..5] [--dump=DIR] [--laps]
+//        [--track=1..5] [--wing=0..40] [--drive] [--dump=DIR] [--fill=lo-hi] [--irq-abi]
+//
+//   --drive     start the engine, engage first gear and hold the throttle (a MOVING car; a
+//               parked car gives byte-identical frames and a confident useless answer)
+//   --fill=a-b  attribute every frame-buffer write in those display lines to the routine that
+//               made it — how the horizon-stripe fill loop was found
+//   --irq-abi   measure which registers survive an interrupt, i.e. the contract the port's ISR
+//               shim has to reproduce (it got A wrong, and that WAS the stripes)
 //
 // ── Why the previous attempts failed, and what actually fixed it ──────────────────────────
 //
@@ -104,6 +111,15 @@ const track = Number(opt("track", 5)); // 5 = Silverstone
 const dumpDir = opt("dump", null);
 const drive = argv.includes("--drive");
 const wing = String(opt("wing", "20")); // rear and front wing, 0-40 (the game has no default)
+// --fill=lo-hi : attribute every frame-buffer write in those DISPLAY LINES to the routine
+// that made it.  This is how you find the fill loop the port is failing to run: the real BBC
+// writes these bytes, so whoever writes them is the code to compare against.
+const fillArg = opt("fill", null);
+// --irq-abi : measure, on real hardware, WHICH REGISTERS SURVIVE AN INTERRUPT.
+// The port's ISR shim has to reproduce this contract exactly.  It already got A wrong once
+// (irq1v_handler restores A from $FC, which only the MOS's entry ever writes), and the way to
+// find the rest is to measure the contract rather than read the handler and reason about it.
+const irqAbi = argv.includes("--irq-abi");
 
 // ── negative INKEY -> jsbeeb keyboard matrix ──────────────────────────────────────────────
 function inkeyToColRow(b) {
@@ -330,10 +346,86 @@ tm.processor.debugInstruction.add((addr) => {
 // in lines that belong to the flat-blue sky band (where a zero is invisible) or to the track
 // band (where black is the road).  Comparing the port's stripes against the real machine needs
 // the real boundaries, not a nominal table.
+// ── fill attribution: WHO writes these pixels on a real BBC ───────────────────────────────
+// The port leaves black runs at display lines 83/88/93/98 (5-line period, widths growing
+// downward) that the real machine fills.  Rather than read the disassembly hoping to spot the
+// loop, ask the running machine: flag every frame-buffer byte belonging to those lines and
+// record the PC of whatever writes one.  The answer is a routine, not a guess.
+const fillFlags = new Uint8Array(0x10000);
+const fillLineOf = new Int16Array(0x10000).fill(-1);
+const fillPC = new Map(); // pc -> {n, lines:Set}
+let fillWrites = 0;
+if (fillArg) {
+    const [lo, hi] = fillArg.split("-").map(Number);
+    for (let y = lo; y <= hi; y++) {
+        const row = (y / LINES) | 0, line = y % LINES;
+        for (let c = 0; c < CELLS; c++) {
+            const a = FB_BASE + row * BPR + c * LINES + line;
+            fillFlags[a] = 1;
+            fillLineOf[a] = y;
+        }
+    }
+    console.log(`fill attribution armed for display lines ${lo}..${hi}\n`);
+}
+
+// ── the interrupt register contract, measured ─────────────────────────────────────────────
+// Catch the CPU at the OS's IRQ entry (the address in $FFFE/$FFFF), where A/X/Y are still the
+// INTERRUPTED program's, read the return address off the 6502 stack the sequence just pushed,
+// and compare A/X/Y again when execution arrives back there.  Whatever fails to match is a
+// register the foreground must not rely on across an interrupt — and therefore a register the
+// port's shim must treat exactly the same way.
+const irqStats = { taken: 0, engine: 0, aBad: 0, xBad: 0, yBad: 0, pBad: 0, samples: [] };
+let irqPending = null;
+if (irqAbi) {
+    const vec = rd(0xfffe) | (rd(0xffff) << 8);
+    console.log(`IRQ ABI probe: OS interrupt entry is $${vec.toString(16)}\n`);
+    tm.processor.debugInstruction.add((addr) => {
+        const p = tm.processor;
+        if (addr === vec && !irqPending) {
+            // The 6502 pushed PCH, PCL then P, so S+1 = P, S+2 = PCL, S+3 = PCH.
+            const s = p.s;
+            const ret = rd(0x100 + ((s + 2) & 0xff)) | (rd(0x100 + ((s + 3) & 0xff)) << 8);
+            irqPending = { a: p.a, x: p.x, y: p.y, p: p.p, ret, fc: rd(0xfc) };
+            irqStats.taken++;
+        } else if (irqPending && addr === irqPending.ret) {
+            const q = irqPending;
+            irqPending = null;
+            // ⚠ ONLY interrupts taken while the ENGINE was running count.  Interrupts during
+            // MOS code (return address in ROM) go through the OS's own chained handler and
+            // clobber registers that OS code does not rely on — including them reports "A, X
+            // and Y are all clobbered", which is true of the machine as a whole and useless
+            // as a contract for the port, which never runs the MOS's foreground.
+            if (q.ret < 0x1200 || q.ret >= 0x8000) return false;
+            irqStats.engine++;
+            const bad = [];
+            if (p.a !== q.a) { irqStats.aBad++; bad.push(`A ${q.a}->${p.a}`); }
+            if (p.x !== q.x) { irqStats.xBad++; bad.push(`X ${q.x}->${p.x}`); }
+            if (p.y !== q.y) { irqStats.yBad++; bad.push(`Y ${q.y}->${p.y}`); }
+            // The FLAGS matter as much as the registers here: the fill chain's
+            // `LDY src / BEQ skip` decides a cell from Z, so a lost Z is a wrong pixel.
+            if (p.p !== q.p) { irqStats.pBad++; bad.push(`P ${q.p}->${p.p}`); }
+            if (bad.length && irqStats.samples.length < 8)
+                irqStats.samples.push(`ret $${q.ret.toString(16)}: ${bad.join(", ")}`);
+        }
+        return false;
+    });
+}
+
 const ULA_CTRL = 0xfe20, ULA_PAL = 0xfe21;
 const bandFrames = []; // one entry per captured field: the writes and the line they landed on
 let curBand = null;
 tm.processor.debugWrite.add((addr, b) => {
+    if (fillArg && frames > 8 && frames < 24 && fillFlags[addr]) {
+        // ⚠ Only a few frames' worth: this fires on every frame-buffer write in the window
+        // and the point is to name the routine, not to measure it.
+        const pc = tm.processor.pc;
+        let e = fillPC.get(pc);
+        if (!e) fillPC.set(pc, (e = { n: 0, lines: new Set(), nonzero: 0 }));
+        e.n++;
+        e.lines.add(fillLineOf[addr]);
+        if (b !== 0) e.nonzero++;
+        fillWrites++;
+    }
     if (addr !== ULA_CTRL && addr !== ULA_PAL) return;
     if (frames === 0) return;
     const v = tm.processor.video;
@@ -553,6 +645,47 @@ if (frames > 0) {
         `engine-running $61 = $${rd(ENGINE_ON).toString(16)}):`);
     for (const [x, n] of rows)
         console.log(`   $${x.toString(16).padStart(2, "0")} ${(NAME[x] || "?").padEnd(24)} ${n}`);
+}
+
+// ── the measured interrupt register contract ───────────────────────────────────────────────
+if (irqAbi) {
+    const s = irqStats;
+    console.log(`\n⭐ INTERRUPT REGISTER CONTRACT, measured over ${s.engine} interrupts taken\n   while the ENGINE was running (of ${s.taken} total; the rest interrupted MOS code):`);
+    for (const [name, n] of [["A", s.aBad], ["X", s.xBad], ["Y", s.yBad], ["P (flags)", s.pBad]])
+        console.log(`   ${name}: ${n === 0
+            ? "PRESERVED across every interrupt — the port's shim must preserve it too"
+            : `CLOBBERED on ${n}/${s.engine} interrupts — the foreground cannot rely on it, ` +
+              `and neither may the port`}`);
+    for (const line of s.samples) console.log(`     e.g. ${line}`);
+}
+
+// ── who filled those lines ────────────────────────────────────────────────────────────────
+if (fillArg && fillWrites) {
+    // Name the PCs from disasm/symbols.csv — the nearest preceding symbol, so a write from
+    // the middle of a routine still lands on that routine.
+    const syms = [];
+    try {
+        const csv = fs.readFileSync(new URL("../disasm/symbols.csv", import.meta.url), "utf8");
+        for (const line of csv.split("\n")) {
+            const m = line.match(/^0x([0-9A-Fa-f]{4}),([^,]+),/);
+            if (m) syms.push([parseInt(m[1], 16), m[2]]);
+        }
+        syms.sort((a, b) => a[0] - b[0]);
+    } catch { /* names are a convenience; the addresses are the finding */ }
+    const nameOf = (pc) => {
+        let best = null;
+        for (const [a, n] of syms) { if (a <= pc) best = [a, n]; else break; }
+        return best ? `${best[1]}${best[0] === pc ? "" : "+" + (pc - best[0])}` : "?";
+    };
+    const rows = [...fillPC.entries()].sort((a, b) => b[1].n - a[1].n);
+    console.log(`\n⭐ WHO FILLS DISPLAY LINES ${fillArg} ON A REAL BBC — ${fillWrites} writes ` +
+        `from ${rows.length} distinct PCs over frames 9..23:`);
+    for (const [pc, e] of rows.slice(0, 14)) {
+        const ls = [...e.lines].sort((a, b) => a - b);
+        console.log(`   PC $${pc.toString(16).padStart(4, "0")}  ${String(e.n).padStart(6)} writes ` +
+            `(${e.nonzero} non-zero)  lines ${ls.length > 8 ? ls[0] + ".." + ls[ls.length - 1] : ls.join(",")}` +
+            `   ${nameOf(pc)}`);
+    }
 }
 
 // ── the measured band schedule ─────────────────────────────────────────────────────────────

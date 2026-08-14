@@ -51,6 +51,17 @@ CFLAGS   += -DREVS_STRAIGHT_TO_RACE
 CXXFLAGS += -DREVS_STRAIGHT_TO_RACE
 endif
 
+# `make STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` — hold the throttle past the end of the script, so
+# the host runs a MOVING car.  ⚠ Without it the script hands the keyboard back and the host
+# sits parked in gear, which is a DIFFERENT SCENE from an Amiga FPSCOUNT/PROBES build (those
+# hold automatically).  Comparing the two then compares a moving target against a parked host
+# and attributes the difference to the backend.  Measured: that is exactly what happened while
+# chasing the horizon stripes.
+ifdef HOLD_THROTTLE
+CFLAGS   += -DREVS_HOLD_THROTTLE
+CXXFLAGS += -DREVS_HOLD_THROTTLE
+endif
+
 # C sources: the 6502 CPU model + the generated transliteration + native twins.
 # The generated files do not exist until `make gen`; wildcard so a fresh clone builds.
 C_SRCS := \

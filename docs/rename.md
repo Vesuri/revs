@@ -33,3 +33,19 @@ called "project…" doing different things is exactly the tax this file exists t
 | `$7D56` | *(absorbed into `FUN_7c00`)* | The second chain (24 units, tables `$3800…$4380`) | `dash_column_chain_b` |
 | `$7E00` | `FUN_7e00` | Unit 10 of chain B, not a function start — it is a `JSR` target only because the computed call's fixed high operand byte is `$7E` | *(fold into the chain)* |
 | `$7EF3` | `FUN_7ef3` | Advances the destination row pointers `$70/$71`,`$72/$73` and re-enters chain A at `$7BF7`; never returns to its caller by falling out, only through a planted `RTS` in a chain | `dash_next_row` |
+
+⭐ **`$7C00`/`$7D56` confirmed from a running machine (2026-08-14), plus the detail that mattered.**
+`make refloop --fill=81-101` attributes every horizon-band frame-buffer write on a real BBC, and it
+lands squarely on these chains — PCs marching at the 17-byte stride from `$7C11`, 315 writes each
+over 15 frames, i.e. one element per screen CELL covering all 40 cells of every line. So the
+"unrolled column chain" reading above is right, and `lap_time_readout` really is just the nearest
+preceding symbol.
+
+The detail the names do not carry, and the one that cost a visible artefact: **`A` is the live pixel
+value threaded through the entire chain.** Each element is
+`LDY src / BEQ skip / LDA #0 / STA src / LDA $6000,Y / skip: LDY #cell*8 / STA ($70),Y` — a zero
+column source means "same as the previous cell", so the `BEQ` deliberately leaves `A` alone. Corrupt
+`A` mid-chain and every later element with a zero source stores the corrupt byte, giving a run to the
+RIGHT EDGE of that display line. That is what the port's horizon stripes were: `irq1v_handler`
+returning with `A` = 0 because nothing wrote `$FC`. Full write-up: `docs/bbc-reference-loop.md`
+§What it found.

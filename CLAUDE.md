@@ -330,6 +330,12 @@ Three rules that must survive without opening `docs/perf-method.md`:
   `make endian-lint` guards this.
 - **An interrupt handler that leaves a register untouched ⇒ the copper list must too.** But every
   write-only register is still per-scene state with a named owner (`docs/amiga-lessons.md`).
+- **The ISR shim must reproduce the MOS's IRQ entry, not just call the handler.** `irq1v_handler`
+  recovers the interrupted **A from `$FC`** — which only the MOS's `STA $FC` ever wrote — so
+  omitting it silently zeroed A on every return. Measured contract (`make refloop --irq-abi`, 2858
+  engine-context interrupts): **A, X and Y are all preserved.** It is now asserted at the seam on
+  both backends (`g_irqClobberCount`); keep it at 0. ⚠ Invisible on the host, where the ISR fires
+  at a controlled point — it only bites where a real VERTB preempts mid-routine.
 
 ## Working conventions
 

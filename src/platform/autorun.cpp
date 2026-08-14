@@ -34,7 +34,11 @@ struct AutoStep {
 /* Does the script hold the throttle forever once it runs out, or hand the keyboard back?
    A measurement window must be a fixed key set every build (perf-method.md §Rule 2), so
    the measurement builds hold; a straight-to-race build exists so a HUMAN can drive. */
-#if defined(REVS_FPSCOUNT) || defined(REVS_PROBE)
+/* REVS_HOLD_THROTTLE forces it on for a build that is neither: the host build needs it to
+   reproduce a MOVING car, and without it a host/target comparison silently compares a moving
+   Amiga against a parked host — two different scenes, which is how "the host frame buffer is
+   clean" nearly became "the bug is Amiga-only". */
+#if defined(REVS_FPSCOUNT) || defined(REVS_PROBE) || defined(REVS_HOLD_THROTTLE)
   #define AUTORUN_HOLD_THROTTLE 1
 #else
   #define AUTORUN_HOLD_THROTTLE 0

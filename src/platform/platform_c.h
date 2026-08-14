@@ -60,6 +60,13 @@ void    platform_bad_region_entry(uint16_t region, uint16_t entry);
 extern unsigned long g_badRegionCount;
 extern uint16_t      g_badRegionEntry;
 
+/* The interrupt register contract (see platform_cbridge.cpp): A, X and Y must come back out of
+   irq1v_handler unchanged, as they do on a real BBC.  Non-zero here means a foreground routine
+   can be resumed with a corrupted register — which surfaces as a drawing artefact somewhere
+   far away, not as a crash. */
+extern unsigned long g_irqClobberCount;
+extern uint8_t       g_irqClobberWhich;
+
 /* Present the current display state if a new frame has been produced since the
    last call.  Safe to call from a spin-wait — returns immediately if none is
    pending. */

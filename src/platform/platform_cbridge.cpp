@@ -56,6 +56,20 @@ void platform_bad_region_entry(uint16_t region, uint16_t entry) {
     g_badRegionEntry = entry;
 }
 
+/* ⭐ THE INTERRUPT REGISTER CONTRACT, asserted at the seam.
+   Measured on real hardware with `make refloop --irq-abi`: over 2858 interrupts taken while
+   the ENGINE was running, A, X and Y were preserved EVERY time.  (Interrupts taken during MOS
+   code do clobber all three, which is why that measurement has to be filtered to the engine —
+   unfiltered it reports "everything is clobbered" and is useless as a contract.)
+   The port broke that contract for A and it cost a visible artefact: irq1v_handler restores A
+   from $FC, nothing wrote $FC, so every ISR return zeroed A — invisible on the host, where the
+   ISR fires at a controlled point, and a black run to the right edge on the Amiga, where a
+   real VERTB preempts the fill chain mid-line.  So the contract is now CHECKED rather than
+   assumed, on both backends, because the next violation of it will look like something else
+   entirely too. */
+unsigned long g_irqClobberCount = 0;
+uint8_t       g_irqClobberWhich = 0;   /* bit 0 = A, bit 1 = X, bit 2 = Y */
+
 void platform_render_frame(void) {
     if (platform) platform->renderFrame();
 }
