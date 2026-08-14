@@ -253,10 +253,16 @@ hand-rename in generated files).
 a small Amiga variation **stays in `revs_native.c`** with the variation under
 `#ifdef REVS_PLATFORM_AMIGA`. Full decision procedure: `docs/faithfulness-seam.md`.
 
-**Amiga specifics:** the game's 50 Hz body runs in the *real* INTB_VERTB ISR (the vector is taken
-over wholesale, so the handler clears INTREQ itself and `WaitTOF()` is unavailable). The copper
-owns the display. Spin-wait points in transpiled code become hooks that drive one real Amiga frame.
-`bus_write` to BBC hardware is largely ignored on Amiga.
+**Amiga specifics:** the INTB_VERTB vector is taken over wholesale (so the handler clears INTREQ
+itself and `WaitTOF()` is unavailable). ⭐⭐ The real VERTB ISR does the **copper work only** and
+*counts* fields; the game's 50 Hz body is drained from main-loop context at the engine's own frame
+hook (`$1701`) and frame-wait spin (`$1760`) — because **the body DRAWS** (frame buffer
+`$6E00-$70FF`, display lines 120-143) and running it in the ISR meant ~50 scene changes per painted
+frame under a rasteriser that takes one: measured 238/239 frames torn, 327 decode mismatches, and
+the horizon's green/black runs. Now 0/0/0. `make BODY_IN_ISR=1` reproduces the old model;
+`amiga/fill_catch.gdb` is the detector. Full reasoning: `docs/amiga-arch.md` §the game body.
+The copper owns the display. Spin-wait points in transpiled code become hooks that drive one real
+Amiga frame. `bus_write` to BBC hardware is largely ignored on Amiga.
 
 ## Performance
 

@@ -40,6 +40,36 @@ Two obligations that come with it, both of which will bite immediately if missed
 A `VERTB_SERVER=1`-style A/B fallback to the old `AddIntServer` chain is worth keeping for
 bisecting an interrupt-delivery regression.
 
+### ⭐⭐ …but the GAME BODY does NOT run in that handler (decided 2026-08-14, measured)
+
+The obvious shape — Amiga VERTB drives the game's own IRQ1V band cycle, whose last band is
+`FUN_52a4`, the 50 Hz simulation — is what this port shipped first, and it produced a visible
+artefact roughly once a minute: one or two display lines drawn with the road's left edge tens of
+pixels off, leaving grass green where the road belongs.
+
+**Why, and it is not a bug in anything.** The body *draws*: it writes the frame buffer at
+`$6E00-$70FF`, display lines 120-143 — the road just below the horizon. On a BBC the main loop is
+vsync-locked, so the body runs **once per drawn frame** and always at the same point in the drawing
+sequence. Here a frame takes ~50 fields, so the body ran ~50 times per painted frame, landing
+anywhere: the rasteriser was drawing a scene that changed under it, and the decode was reading one.
+Measured over 198 painted frames with the body in the ISR: **238 frames where a character row moved
+under the decode, 327 line-instances where the decoded bitplanes no longer matched `mem[]`**, plus
+the green/black horizon runs. Everything else was provably intact — A/X/Y preserved, flags
+preserved, the two-level-RTS flag preserved, zero page untouched by the body (it writes exactly one
+byte there, `$FC`, and that is the port's own ISR shim), no writes to the engine's code, the column
+sources or the `$7B00` overlay.
+
+**The model now:** `Revs::vbi()` *counts* fields; `Revs::drainTicks()` runs them, from main-loop
+context, at the two points where the engine is provably not drawing — its own frame hook (`$1701`,
+before the decode) and its own frame-wait spin (`$1760`, which is exactly where a BBC's main loop
+sits waiting for this interrupt). Same 50 ticks per second of wall clock, same fixed-step
+trajectory; what changes is only that the drawing is atomic with respect to them. After: **0 rows
+moved, 0 decode mismatches, 0 horizon runs**, and the reporter stopped seeing broken frames.
+
+`make BODY_IN_ISR=1` restores the old model for A/B; `amiga/fill_catch.gdb` is the detector.
+⚠ As the framerate rises the burst shrinks — at 25-50 FPS it is one or two ticks per frame, i.e. it
+converges on the BBC's own interleaving rather than diverging from it.
+
 `Forbid()`/`Permit()` around the whole run window: nothing here needs exec's scheduler and we
 never `Wait()`.  ⚠ Everything between them must be `Wait()`-free — the `WaitTOF()` pairs and every
 library open/close stay outside.

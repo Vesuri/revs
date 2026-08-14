@@ -167,7 +167,14 @@ PlatformAmiga::~PlatformAmiga()
 
 int PlatformAmiga::framesPerSecond() { return 50; }
 void PlatformAmiga::setInterrupt(void (*)(void)) {}   // the real VERTB handler owns this
-void PlatformAmiga::tickVBI() {}                      // renderFrame() paces the frame
+// ⭐⭐ THE GAME'S OWN FRAME WAIT is where the 50 Hz body runs.  This is called from the engine's
+// spin at $1760, where the BBC's main loop sits waiting for exactly this interrupt to advance
+// $62F7 — so it is the faithful place for the body, and the one place the engine is provably not
+// drawing.  See Revs.h (drainTicks) for the measurement that moved it out of the ISR.
+void PlatformAmiga::tickVBI()
+{
+    if (s_scene) s_scene->drainTicks();
+}
 
 int PlatformAmiga::loadImage(const char* /*path*/)
 {

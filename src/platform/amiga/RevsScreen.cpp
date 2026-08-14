@@ -137,6 +137,109 @@ volatile unsigned long g_beamEntries     = 0;
 volatile unsigned long g_beamEntriesLate = 0;
 }
 
+/* The per-painted-frame plan/pixel log — see the block in decode() that fills it.  A power of
+   two so the wrap is a mask (no __umodsi3), and small enough to print in one gdb loop.
+   ⚠ ALL of this is `make FILLWATCH=1` only: the checks it feeds re-read the whole frame buffer. */
+#define PLAN_LOG_MAX 64u
+#ifdef REVS_FILLWATCH
+extern "C" {
+volatile uint8_t  g_planLogBand2[PLAN_LOG_MAX];   /* band 2's first display line, from T1     */
+volatile uint8_t  g_planLogBand3[PLAN_LOG_MAX];   /* band 3's — where the ground should start  */
+volatile uint8_t  g_planLogGroundL[PLAN_LOG_MAX]; /* first green cell, LEFT edge, from pixels  */
+volatile uint8_t  g_planLogGroundR[PLAN_LOG_MAX]; /* ...and the RIGHT edge                     */
+volatile uint8_t  g_planLogStale[PLAN_LOG_MAX];   /* 1 = the record was rejected this frame    */
+volatile unsigned long g_planLogN       = 0;      /* frames logged (index = N & 63)            */
+volatile unsigned long g_planStaleFrames = 0;
+}
+#endif
+
+/* ⭐⭐ DID THE SOURCE MOVE UNDER THE DECODE?  The BBC frame buffer is SINGLE-buffered — it is the
+ * game's only screen — and this port has a second, unsynchronised reader: decode() spends ~250 ms
+ * walking it in the main loop while the VERTB handler keeps running the game's 50 Hz body.  Any
+ * write that lands in a character row the decode has not reached yet is baked into the bitplane
+ * buffer and stays on screen for the WHOLE painted frame, clearing only on the next one — which
+ * is exactly the reported behaviour of what is left of the artefact.
+ *
+ * So: a per-character-row checksum taken as the decode reads each row (free — the bytes are in
+ * registers anyway), then a second pass afterwards to see which rows changed.  8320 extra byte
+ * reads against a 250 ms pass. */
+extern "C" {
+/* ⭐⭐ CATCH THE BAD FRAME, do not sample for it.  The artefact is rarer than a dozen frames, so
+ * dumping frames and looking is a lottery; the invariant is cheap and exact instead.
+ *
+ * THE INVARIANT.  Band 2 spans the horizon.  Above the ground line — the first line that is green
+ * nearly all the way across — every cell of it is SKY, byte $0F (pen 1).  A real BBC agrees: `make
+ * refloop` finds band 2's lines completely free of any other value, with the road's vanishing-point
+ * triangle only from line 102 down.  So a $00 (black) or $FF (green) cell above the ground line is
+ * the artefact, in both of its reported colours, and its run length says how far the bad fill got.
+ * (White is excluded deliberately: distant scenery — the marshal's post — is legitimately white.)
+ *
+ * When it trips, the whole horizon neighbourhood is LATCHED into g_fillEvidence, because the next
+ * painted frame overwrites the buffer and the artefact is gone.  amiga/fill_catch.gdb prints it.
+ */
+/* ⚠ 74..167 = the whole 3D view down to the dashboard, NOT just band 2.  The first version of
+ * this stopped at 116 and read clean for hundreds of frames while the artefact sat at display line
+ * 125: the horizon MOVES WITH THE HILLS (the user's own screenshot has the ground starting at 118,
+ * mine at 100), so a window pinned around one hill's horizon misses the next hill's entirely.
+ * Measured from that screenshot: one display line green where the lines above and below it are
+ * black — a single line whose fill did not happen, showing the previous frame's colour. */
+#define FILL_EV_LO   74u
+#define FILL_EV_HI   167u
+#ifdef REVS_FILLWATCH
+extern "C" {
+volatile unsigned long g_fillBadFrames = 0;   /* painted frames that violated the invariant   */
+volatile unsigned long g_fillBadFrameN = 0;   /* which painted frame the evidence is from     */
+volatile uint16_t g_fillBadLine   = 0xFFFFu;  /* the first offending display line             */
+volatile uint8_t  g_fillBadCell   = 0;        /* leftmost offending cell on it                */
+volatile uint8_t  g_fillBadValue  = 0;        /* $00 = black run, $FF = green run              */
+volatile uint8_t  g_fillBadRun    = 0;        /* how many cells                               */
+volatile uint8_t  g_fillGroundLine = 0;       /* the ground line the check used               */
+volatile uint8_t  g_fillEvidence[(FILL_EV_HI - FILL_EV_LO) * BBC_SCREEN_CELLS] = {0};
+
+/* ⭐ TWO MORE EXACT CHECKS, because the invariant above only covers the sky side of the horizon and
+ * the artefact can sit BELOW the ground line, where green and black are both legitimate shapes and
+ * no invariant exists.  So instead of asking "is this frame right?", ask the two questions that
+ * have exact answers:
+ *
+ *  1. CHANGE.  With the car stationary the horizon is identical frame to frame, so a one-frame
+ *     outlier stands out: count the cells of lines 74..115 that differ from the previous painted
+ *     frame.  A handful is a car or a marshal's post moving; dozens is the artefact.
+ *  2. DECODE.  Re-derive what the bitplanes MUST hold for those lines straight from mem[] and
+ *     compare with what the decode actually produced.  This is the only check that can see a
+ *     source byte changing behind the read, or the expansion writing the wrong plane — i.e. it
+ *     separates "the game wrote it" from "we drew it wrong" with no interpretation left over. */
+volatile unsigned long g_horizonChangeMax = 0;    /* worst frame-to-frame cell delta seen      */
+volatile unsigned long g_horizonChangeBig = 0;    /* frames with a delta over the threshold    */
+volatile uint8_t  g_horizonChangeSeries[64] = {0};/* per painted frame, capped at 255          */
+volatile unsigned long g_decodeMismatch    = 0;   /* decoded bitplanes != mem[] afterwards     */
+volatile uint16_t g_decodeMismatchLine     = 0xFFFFu;
+
+/* ⭐⭐ THE ARTEFACT'S ACTUAL SHAPE, measured off the user's screenshot rather than guessed.
+ *
+ * Decoding that screenshot line by line: the road's RIGHT edge marches smoothly down the screen
+ * (199, 201, 213, 217, 225 px) while its LEFT edge reads 80, then 136, then 186, then 34, then 20.
+ * Two consecutive display lines have the left edge tens of pixels too far right, so grass green
+ * stands where the road belongs.  That is not a fill running away to the right edge — it is two
+ * lines drawn from DIFFERENT GEOMETRY than the lines around them.
+ *
+ * So the check is an outlier test on the left edge, with the right edge as the control: a line
+ * whose leftmost black cell differs from both neighbours by >= 4 cells while the rightmost black
+ * cell stays within 2 cells of them.  The control is what separates this from a curve or a crest,
+ * where the WHOLE road moves and both edges move together. */
+volatile unsigned long g_edgeJumpFrames = 0;
+volatile uint16_t g_edgeJumpLine  = 0xFFFFu;
+volatile uint8_t  g_edgeJumpPrev  = 0;   /* leftmost black cell on the line above  */
+volatile uint8_t  g_edgeJumpHere  = 0;   /* ...on the offending line               */
+volatile uint8_t  g_edgeJumpNext  = 0;   /* ...and below                           */
+}
+#endif  /* REVS_FILLWATCH */
+
+volatile unsigned long g_tearFrames = 0;      /* painted frames whose source moved mid-decode */
+volatile unsigned long g_tearRows   = 0;      /* total character rows caught moving           */
+volatile uint16_t g_tearRowCount[BBC_SCREEN_ROWS] = {0}; /* per character row, how often      */
+volatile uint16_t g_tearLastRow  = 0xFFFFu;
+}
+
 /* The raster line, from the two beam registers: VPOSR bit 0 is V8, VHPOSR's high byte is
    V7..V0.  Read VPOSR first — the pair is not atomic, and taking the high bit after the low
    byte can straddle a line-256 crossing. */
@@ -485,6 +588,100 @@ void RevsScreen::decode()
     snapshotBands();
     buildLineModes();
 
+#ifdef REVS_FILLWATCH
+    const unsigned long rejects0 = g_bandRejects;
+
+    /* ⭐⭐ ONE LOG LINE PER PAINTED FRAME: does the band boundary AGREE WITH THE PIXELS?
+     *
+     * The remaining artefact survives a whole PAINTED frame (~1 s, ~50 fields) and clears on the
+     * next one — so it is not a beam race any more, it is this frame's DATA: either the pixels or
+     * the schedule they are shown under.  Band 3's boundary is where the ground starts, and the
+     * game draws the ground's first green row there, so the two are one number measured two ways:
+     * `m_plan.line[3]` from the T1 latches, and the topmost right-edge green cell from the frame
+     * buffer.  They must match; a disagreement is a wrong-palette strip across the horizon, and
+     * that is the artefact.
+     *
+     * ⚠ Logged rather than counted, because the suspect is snapshotBands() REJECTING a record it
+     * caught mid-cycle and leaving the PREVIOUS frame's plan in place ("one frame stale in a
+     * value that changes slowly" — which is false at 1 FPS: the horizon moves with the hills and
+     * a frame is a second of game time).  A counter cannot show that; the sequence can. */
+    {
+        const uint8_t* col = (const uint8_t*)mem + BBC_SCREEN_BASE + (BBC_SCREEN_CELLS - 1) * 8;
+        unsigned groundR = 0, groundL = 0;
+        for (unsigned y = 60; y < 140; y++) {
+            const unsigned row = y >> 3, line = y & 7;
+            const unsigned off = revs_mulu16((uint16_t)row, BBC_SCREEN_BPR) + line;
+            if (!groundR && col[off] == 0xFFu) groundR = y;
+            if (!groundL && ((const uint8_t*)mem + BBC_SCREEN_BASE)[off] == 0xFFu) groundL = y;
+            if (groundR && groundL) break;
+        }
+        const unsigned i = g_planLogN & (PLAN_LOG_MAX - 1u);
+        g_planLogBand2[i]  = (uint8_t)m_plan.line[2];
+        g_planLogBand3[i]  = (uint8_t)m_plan.line[3];
+        g_planLogGroundL[i] = (uint8_t)groundL;
+        g_planLogGroundR[i] = (uint8_t)groundR;
+        g_planLogStale[i]  = (uint8_t)(g_bandRejects != rejects0);   /* this frame's plan is old */
+        g_planLogN++;
+        if (g_bandRejects != rejects0) g_planStaleFrames++;
+    }
+
+    /* ⭐⭐ THE INVARIANT CHECK — see g_fillEvidence above for what it is and why it is exact. */
+    {
+        const uint8_t* base = (const uint8_t*)mem + BBC_SCREEN_BASE;
+        int band2 = m_plan.valid ? (int)m_plan.line[2] : 82;
+        if (band2 < 2) band2 = 82;
+
+        /* The ground line: the first line at or below band 2 that is green nearly all the way
+           across.  Counted rather than assumed, so a hill or a moved horizon cannot fool it. */
+        unsigned ground = 0;
+        for (unsigned y = (unsigned)band2; y < FILL_EV_HI && !ground; y++) {
+            const unsigned off = revs_mulu16((uint16_t)(y >> 3), BBC_SCREEN_BPR) + (y & 7u);
+            unsigned green = 0;
+            for (unsigned c = 0; c < BBC_SCREEN_CELLS; c++)
+                if (base[off + c * 8u] == 0xFFu) green++;
+            if (green >= 30u) ground = y;
+        }
+        g_fillGroundLine = (uint8_t)ground;
+
+        unsigned badLine = 0, badCell = 0, badRun = 0, badVal = 0;
+        for (unsigned y = (unsigned)band2; y < ground && !badRun; y++) {
+            const unsigned off = revs_mulu16((uint16_t)(y >> 3), BBC_SCREEN_BPR) + (y & 7u);
+            unsigned run = 0, start = 0, val = 0;
+            for (unsigned c = 0; c < BBC_SCREEN_CELLS; c++) {
+                const uint8_t b = base[off + c * 8u];
+                if ((b == 0x00u || b == 0xFFu) && (run == 0 || b == val)) {
+                    if (run == 0) { start = c; val = b; }
+                    run++;
+                } else if (run >= 8u) {
+                    break;                     /* a long enough run: report it */
+                } else {
+                    run = 0;
+                }
+            }
+            if (run >= 8u) { badLine = y; badCell = start; badRun = run; badVal = val; }
+        }
+
+        if (badRun) {
+            g_fillBadFrames++;
+            /* Latch the FIRST one only: the next painted frame overwrites the buffer, and the
+               first catch is the one whose neighbourhood is still intact to look at. */
+            if (g_fillBadLine == 0xFFFFu) {
+                g_fillBadLine  = (uint16_t)badLine;
+                g_fillBadCell  = (uint8_t)badCell;
+                g_fillBadRun   = (uint8_t)badRun;
+                g_fillBadValue = (uint8_t)badVal;
+                g_fillBadFrameN = g_planLogN;
+                for (unsigned y = FILL_EV_LO; y < FILL_EV_HI; y++) {
+                    const unsigned off = revs_mulu16((uint16_t)(y >> 3), BBC_SCREEN_BPR) + (y & 7u);
+                    for (unsigned c = 0; c < BBC_SCREEN_CELLS; c++)
+                        g_fillEvidence[(y - FILL_EV_LO) * BBC_SCREEN_CELLS + c] = base[off + c * 8u];
+                }
+            }
+        }
+    }
+
+#endif  /* REVS_FILLWATCH */
+
     /* ⚠ NOT A WIDE-POINTER ALIAS OF mem[].  Every read below is a byte read; the two
        stores are bytes into a bitplane the Amiga reads as bits, so there is no multi-byte
        value whose order could differ between the host and the target (make endian-lint).
@@ -498,9 +695,14 @@ void RevsScreen::decode()
     const uint8_t* base = (const uint8_t*)mem + BBC_SCREEN_BASE;
     uint8_t* dst = (uint8_t*)bm->data;
 
+#ifdef REVS_FILLWATCH
+    uint16_t rowSum[BBC_SCREEN_ROWS];
+#endif
+
     unsigned y = 0;
     for (unsigned row = 0; row < BBC_SCREEN_ROWS; row++) {
         const uint8_t* rowBase = base + revs_mulu16((uint16_t)row, BBC_SCREEN_BPR);
+        uint16_t sum = 0; (void)sum;
         for (unsigned line = 0; line < BBC_SCREEN_LINES; line++, y++) {
             /* One character row is 40 cells of 8 bytes, one byte per scan line, so a
                single display line is 40 bytes with a stride of 8. */
@@ -511,6 +713,9 @@ void RevsScreen::decode()
             if (m_lineMode[y] == 5) {
                 for (unsigned i = 0; i < BBC_SCREEN_CELLS; i++) {
                     uint8_t b = *s; s += BBC_SCREEN_LINES;
+#ifdef REVS_FILLWATCH
+                    sum = (uint16_t)(sum + b + i);   /* +i so a swap of two cells still differs */
+#endif
                     *p1++ = s_expandLo[b];
                     *p2++ = s_expandHi[b];
                 }
@@ -520,11 +725,116 @@ void RevsScreen::decode()
                    bit 3 selects. */
                 for (unsigned i = 0; i < BBC_SCREEN_CELLS; i++) {
                     uint8_t b = *s; s += BBC_SCREEN_LINES;
+#ifdef REVS_FILLWATCH
+                    sum = (uint16_t)(sum + b + i);
+#endif
                     *p1++ = 0;
                     *p2++ = b;
                 }
             }
         }
+#ifdef REVS_FILLWATCH
+        rowSum[row] = sum;
+#endif
     }
+
+#ifdef REVS_FILLWATCH
+    /* ⭐ Second pass: the same checksum over the same bytes.  Anything that differs was written
+       by the VERTB handler's game body WHILE this decode was reading — a tear that is now baked
+       into the bitplanes for the whole painted frame.  See g_tearFrames above. */
+    unsigned torn = 0;
+    for (unsigned row = 0; row < BBC_SCREEN_ROWS; row++) {
+        const uint8_t* rowBase = base + revs_mulu16((uint16_t)row, BBC_SCREEN_BPR);
+        uint16_t sum = 0;
+        for (unsigned line = 0; line < BBC_SCREEN_LINES; line++) {
+            const uint8_t* s = rowBase + line;
+            for (unsigned i = 0; i < BBC_SCREEN_CELLS; i++) {
+                sum = (uint16_t)(sum + *s + i);
+                s += BBC_SCREEN_LINES;
+            }
+        }
+        if (sum != rowSum[row]) {
+            torn++;
+            g_tearRows++;
+            if (g_tearRowCount[row] != 0xFFFFu) g_tearRowCount[row]++;
+            g_tearLastRow = (uint16_t)row;
+        }
+    }
+    if (torn) g_tearFrames++;
+
+    /* ---- check 1: how much of the horizon changed since the last painted frame? ---- */
+    {
+        static uint8_t prev[(FILL_EV_HI - FILL_EV_LO) * BBC_SCREEN_CELLS];
+        static int havePrev = 0;
+        unsigned changed = 0;
+        for (unsigned y = FILL_EV_LO; y < FILL_EV_HI; y++) {
+            const unsigned off = revs_mulu16((uint16_t)(y >> 3), BBC_SCREEN_BPR) + (y & 7u);
+            uint8_t* p = &prev[(y - FILL_EV_LO) * BBC_SCREEN_CELLS];
+            for (unsigned c = 0; c < BBC_SCREEN_CELLS; c++) {
+                const uint8_t b = base[off + c * 8u];
+                if (havePrev && p[c] != b) changed++;
+                p[c] = b;
+            }
+        }
+        havePrev = 1;
+        if (changed > g_horizonChangeMax) g_horizonChangeMax = changed;
+        if (changed >= 40u) g_horizonChangeBig++;
+        g_horizonChangeSeries[(g_planLogN - 1u) & 63u] =
+            (uint8_t)(changed > 255u ? 255u : changed);
+    }
+
+    /* ---- check 3: the road's LEFT edge, against its own neighbours ---- */
+    {
+        /* Leftmost / rightmost black cell per line, over the road region only. */
+        uint8_t L[FILL_EV_HI - FILL_EV_LO], R[FILL_EV_HI - FILL_EV_LO];
+        for (unsigned y = FILL_EV_LO; y < FILL_EV_HI; y++) {
+            const unsigned off = revs_mulu16((uint16_t)(y >> 3), BBC_SCREEN_BPR) + (y & 7u);
+            unsigned l = 0xFFu, r = 0xFFu;
+            for (unsigned c = 0; c < BBC_SCREEN_CELLS; c++)
+                if (base[off + c * 8u] == 0x00u) { if (l == 0xFFu) l = c; r = c; }
+            L[y - FILL_EV_LO] = (uint8_t)l;
+            R[y - FILL_EV_LO] = (uint8_t)r;
+        }
+        for (unsigned i = 1; i + 1 < (FILL_EV_HI - FILL_EV_LO); i++) {
+            if (L[i] == 0xFFu || L[i-1] == 0xFFu || L[i+1] == 0xFFu) continue;
+            if (R[i] == 0xFFu || R[i-1] == 0xFFu || R[i+1] == 0xFFu) continue;
+            const int dPrev = (int)L[i] - (int)L[i-1], dNext = (int)L[i] - (int)L[i+1];
+            const int rPrev = (int)R[i] - (int)R[i-1], rNext = (int)R[i] - (int)R[i+1];
+            if (dPrev >= 4 && dNext >= 4 &&                    /* the left edge jumped RIGHT */
+                rPrev > -3 && rPrev < 3 && rNext > -3 && rNext < 3) {   /* ...and only it did */
+                g_edgeJumpFrames++;
+                if (g_edgeJumpLine == 0xFFFFu) {
+                    g_edgeJumpLine = (uint16_t)(FILL_EV_LO + i);
+                    g_edgeJumpPrev = L[i-1];
+                    g_edgeJumpHere = L[i];
+                    g_edgeJumpNext = L[i+1];
+                    for (unsigned y = FILL_EV_LO; y < FILL_EV_HI; y++) {
+                        const unsigned o = revs_mulu16((uint16_t)(y >> 3), BBC_SCREEN_BPR) + (y & 7u);
+                        for (unsigned c = 0; c < BBC_SCREEN_CELLS; c++)
+                            g_fillEvidence[(y - FILL_EV_LO) * BBC_SCREEN_CELLS + c] = base[o + c * 8u];
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    /* ---- check 2: do the decoded bitplanes still match mem[] for those lines? ---- */
+    for (unsigned y = FILL_EV_LO; y < FILL_EV_HI; y++) {
+        if (m_lineMode[y] != 5) continue;
+        const unsigned off = revs_mulu16((uint16_t)(y >> 3), BBC_SCREEN_BPR) + (y & 7u);
+        const uint8_t* p1 = dst + revs_mulu16((uint16_t)y, kRowBytes);
+        const uint8_t* p2 = p1 + (kW / 8);
+        for (unsigned c = 0; c < BBC_SCREEN_CELLS; c++) {
+            const uint8_t b = base[off + c * 8u];
+            if (p1[c] != s_expandLo[b] || p2[c] != s_expandHi[b]) {
+                g_decodeMismatch++;
+                if (g_decodeMismatchLine == 0xFFFFu) g_decodeMismatchLine = (uint16_t)y;
+                break;
+            }
+        }
+    }
+#endif  /* REVS_FILLWATCH */
+
     m_ready = true;
 }

@@ -232,6 +232,12 @@ void Platform::fireIrq1v(void)
     if (mem[0x0204] != 0x5C || mem[0x0205] != 0x4E) return;
 
     m_userT1Pending = true;      /* $FE6D bit 6: this interrupt is ours, not the MOS's */
+
+    /* ⚠ BEFORE the push, not after: the handler ends in RTI, which pops the P this pushes, so a
+       balanced handler leaves S where it was BEFORE the push.  Sampling after it reported an
+       imbalance on all 13275 interrupts — the instrument's off-by-one, not the machine's. */
+    const uint8_t s0 = cpu.S;
+
     PUSH(P_pack());              /* what the 6502's IRQ sequence would have pushed */
 
     /* ⭐⭐ AND WHAT THE MOS'S IRQ ENTRY WOULD HAVE DONE: `STA $FC`.
@@ -257,7 +263,24 @@ void Platform::fireIrq1v(void)
        until it shows up as a wrong pixel in an unrelated routine. */
     const uint8_t a0 = cpu.A, x0 = cpu.X, y0 = cpu.Y;
 
+    /* ⭐⭐ AND THE C-SIDE STATE THE 6502 DOES NOT HAVE, which is the part a register contract
+       cannot cover.  `cpu_unwind` models the ONE routine that returns two levels up ($2F7E's
+       TSX/INX/INX/TXS + RTS, the exit from the four unrolled road-span chains): the drop sets the
+       flag and the call site of the dropped frame consumes it (src/cpu/cpu.h).  On a 6502 that
+       state is the STACK POINTER, saved and restored by the interrupt sequence itself.  Here it is
+       a global, and an interrupt can land in the window between the set and the consume — so if
+       anything in the handler's own call tree consumed or set it, the interrupted chain would
+       either keep plotting past its exit (a run to the RIGHT EDGE in the carried colour: green) or
+       exit early (leaving the rest of the line black).  Exactly the residual artefact's two forms.
+       Saved and restored here, and COUNTED, because "the handler never uses it" is a claim about
+       reachability through 33 sites and one indirect dispatch — not something to assume. */
+    const uint8_t unwind0 = cpu_unwind;
+    if (unwind0) g_irqUnwindPending++;   /* preempted mid-drop: the window is real, count it */
+
     irq1v_handler();
+
+    if (cpu_unwind != unwind0) { g_irqUnwindTouched++; cpu_unwind = unwind0; }
+    if (cpu.S != s0) g_irqStackImbalance++;   /* the handler must leave the 6502 stack as it found it */
 
     uint8_t which = 0;
     if (cpu.A != a0) which |= 1;

@@ -49,3 +49,17 @@ column source means "same as the previous cell", so the `BEQ` deliberately leave
 RIGHT EDGE of that display line. That is what the port's horizon stripes were: `irq1v_handler`
 returning with `A` = 0 because nothing wrote `$FC`. Full write-up: `docs/bbc-reference-loop.md`
 §What it found.
+
+## `FUN_52a4` (`$4EF5`'s callee, the band-4 arm) — it DRAWS, and the name says nothing about it
+
+Called as the last arm of the IRQ1V band cycle, i.e. "the 50 Hz game body".  Measured on the Amiga
+target (`make ISRWATCH=1`, 2223 fields): per field it writes **`$6200-$62FF`** (live variables in
+the sky region) and **`$6E00-$70FF`, which is FRAME BUFFER — display lines 120-143, the road just
+below the horizon**.  It writes nothing else: no engine code, no column sources, no `$7B00` overlay,
+and exactly one zero-page byte (`$FC`, and that one is the port's own ISR shim, not the game).
+
+That it draws at all is the fact that mattered: it makes the body and the main-loop rasteriser two
+writers of the same screen rows, which is why the port had to stop running the body inside the VERTB
+ISR (`docs/amiga-arch.md`).  Suggested name: something that says both halves, e.g.
+`sim_tick_and_plot_horizon` — but the *what* it plots there is not yet identified, so this is
+recorded as behaviour rather than as a rename.

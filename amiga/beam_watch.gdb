@@ -25,5 +25,10 @@ printf "VERTB entries=%lu late(in display)=%lu last=%u\n", \
   g_beamEntries, g_beamEntriesLate, g_beamEntryLine
 printf "bands=%u rejects=%lu overflow=%u irqClobber=%lu\n", \
   g_bandCount, g_bandRejects, g_bandOverflow, g_irqClobberCount
+# ⭐ The C-only half of the interrupt contract: the two-level-RTS flag is the 6502's STACK POINTER,
+# which real hardware saves across an interrupt and a C global does not.  Pending only says
+# interrupts do land inside the drop window; Touched and Imbalance are the bugs and must be 0.
+printf "unwind: pending=%lu touched=%lu   stack imbalance=%lu\n", \
+  g_irqUnwindPending, g_irqUnwindTouched, g_irqStackImbalance
 detach
 quit

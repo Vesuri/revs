@@ -146,6 +146,16 @@ ifdef STRAIGHT_TO_RACE
 EXTRA_DEFINES += -DREVS_STRAIGHT_TO_RACE
 endif
 
+# `make HOLD_THROTTLE=1` — keep the throttle held after the script ends instead of handing the
+# keyboard over.  FPSCOUNT and PROBES do this implicitly; this flag is for a diagnostic build that
+# wants neither.  ⚠ It matters more than it looks: with the keyboard handed over the car is PARKED
+# and the horizon is byte-identical frame after frame (measured: g_horizonChangeSeries all zero over
+# 240 painted frames), so a run like that never exercises the fill at all and a detector on it
+# reports a confident clean.  The host Makefile has had the same flag since the $FC hunt.
+ifdef HOLD_THROTTLE
+EXTRA_DEFINES += -DREVS_HOLD_THROTTLE
+endif
+
 # `make FIXED_RNG=1` — pin any RNG seeding so every build drives the SAME simulation.
 # On the Atari port, render speed shifted the free-running main loop against the 50 Hz
 # interrupt, which shifted the RNG read count, which selected a DIFFERENT level — the
@@ -155,6 +165,40 @@ endif
 # rendering or gameplay from a FIXED_RNG build).
 ifdef FIXED_RNG
 EXTRA_DEFINES += -DREVS_FIXED_RNG
+endif
+
+# `make ISRWATCH=1` — does the 50 Hz body write the fill chain's inputs ($3000-$43FF column
+# sources, $7B00-$7FFF overlay code) while the main loop may be inside the chain?  ~11 KB of extra
+# reads per field, so a diagnostic build only.  Read with amiga/isr_watch.gdb; the reasoning is at
+# the instrument in src/platform/amiga/Revs.cpp.
+# `make BODY_IN_ISR=1` — the OLD model: run the game's 50 Hz body inside the VERTB ISR, where it
+# preempts the main loop's drawing wherever it happens to be.  Kept only so the artefact it causes
+# can be reproduced on demand (amiga/fill_catch.gdb shows the edge jumps and decode mismatches come
+# back).  Default is the body at the engine's own frame wait — see Revs.h (drainTicks).
+ifdef BODY_IN_ISR
+EXTRA_DEFINES += -DREVS_BODY_IN_ISR
+endif
+
+# `make FILLWATCH=1` — the fill/tear/edge detectors inside decode() (amiga/fill_catch.gdb).
+# ⚠ NOT in a default build: they re-read the whole 8320-byte frame buffer to see which rows moved
+# under the decode, plus a 93-line bitplane verify — real milliseconds on a 7 MHz 68000, and a
+# framerate quoted from a build carrying them is not the baseline.
+ifdef FILLWATCH
+EXTRA_DEFINES += -DREVS_FILLWATCH
+PROBE_SYMS_FILLWATCH = g_planLogBand2 g_planLogBand3 g_planLogGroundL g_planLogGroundR \
+                       g_planLogStale g_planLogN g_planStaleFrames \
+                       g_tearFrames g_tearRows g_tearRowCount g_tearLastRow \
+                       g_fillBadFrames g_fillBadFrameN g_fillBadLine g_fillBadCell \
+                       g_fillBadValue g_fillBadRun g_fillGroundLine g_fillEvidence \
+                       g_horizonChangeMax g_horizonChangeBig g_horizonChangeSeries \
+                       g_decodeMismatch g_decodeMismatchLine \
+                       g_edgeJumpFrames g_edgeJumpLine g_edgeJumpPrev g_edgeJumpHere g_edgeJumpNext
+endif
+
+ifdef ISRWATCH
+EXTRA_DEFINES += -DREVS_ISRWATCH
+PROBE_SYMS_ISRWATCH = g_isrWroteSrc g_isrWroteOvl g_isrWroteCode g_isrSamples \
+                      g_isrSrcBlocks g_isrOvlBlocks g_isrCodeBlocks g_isrZpWrites g_isrZpFields
 endif
 
 # Objects (flattened into obj/ by basename).
@@ -225,8 +269,10 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_bandRejects \
              g_bandCount g_bandOverflow g_keyUnmapped g_keyUnmappedCode g_keyEvents g_keyDown \
              g_irqClobberCount g_irqClobberWhich \
+             g_irqUnwindPending g_irqUnwindTouched g_irqStackImbalance \
              g_beamPresentLine g_beamPresentMin g_beamPresentMax \
-             g_beamPresents g_beamPresentsLate g_beamEntryLine g_beamEntries g_beamEntriesLate
+             g_beamPresents g_beamPresentsLate g_beamEntryLine g_beamEntries g_beamEntriesLate \
+             g_bodyTicksDropped g_bodyDrains g_bodyTicks g_bodyPending
 # ⚠ CONDITIONAL, because these only EXIST under PROBES (src/platform/probe.cpp compiles to
 # nothing otherwise).  Listing them unconditionally makes --undefined=<sym> unsatisfiable and a
 # plain `make` fails at probe-audit — which is the audit working, not a bug in it.  The rule
@@ -238,6 +284,13 @@ endif
 # Same rule, same reason: the FPS series exists only in an FPSCOUNT build.
 ifdef FPSCOUNT
 PROBE_SYMS += g_fpsSeries g_fpsSeriesVbi g_fpsSeriesN
+endif
+# Same rule again: these exist only in an ISRWATCH build (see the flag above).
+ifdef ISRWATCH
+PROBE_SYMS += $(PROBE_SYMS_ISRWATCH)
+endif
+ifdef FILLWATCH
+PROBE_SYMS += $(PROBE_SYMS_FILLWATCH)
 endif
 
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \

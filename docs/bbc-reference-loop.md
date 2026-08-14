@@ -393,6 +393,41 @@ way it was killed matters more than the guess:
 Amiga's VERTB *can* preempt transliterated C mid-statement. Nothing has been attributed to it —
 recorded so it is not re-derived, not as a suspect with evidence.
 
+## ⭐⭐ And the artefact that survived THAT: the body was drawing while the loop drew (2026-08-14)
+
+The raster-race fix left a rarer version — the reporter's words: "much more rarely, and it does NOT
+correct itself on the next hardware frame, only on the next Revs frame". That sentence is the whole
+diagnosis: one hardware frame is 20 ms and one Revs frame is ~1 s, so the wrong pixels were in the
+**data**, not in the palette or the copper. (The renderer paints runs in one pass and never clears —
+`road_span_plot` at `$2F45` reads the destination and merges when it is non-zero — so a wrong byte
+survives exactly until the game next paints that area.)
+
+**How it was found, after four hypotheses died.** Each was killed by a cheap measurement, and the
+dead ones are worth as much as the live one:
+
+| Hypothesis | Instrument | Verdict |
+|---|---|---|
+| the fill's A carry is corrupted again | `g_irqClobberCount` + the sky invariant | A/X/Y preserved; buffer clean |
+| the body preempts a patched span end | `ISRWATCH` over `$3000-$43FF` and `$7B00-$7FFF` | body writes neither, 1809 fields |
+| the body clobbers a self-modified operand | `ISRWATCH` over `$1200-$59FF` | body writes no code |
+| the body clobbers the plotter's zero page | `ISRWATCH` over `$0000-$00FF`, byte granularity | body writes exactly **`$FC`** — the port's own shim |
+| **the body DRAWS, ~50× per painted frame** | `ISRWATCH` over the frame buffer + the decode/tear checks | **`$6E00-$70FF`, lines 120-143; 238/239 frames torn, 327 decode mismatches** |
+
+⚠ **Two instrument lessons, both of which produced confident clean answers first.**
+1. **The window was pinned to one hill's horizon.** The checks ran over display lines 74-116 and
+   read clean for hundreds of frames while the artefact sat at line **125** — the horizon moves with
+   the hills (the reporter's frame had the ground at 118, the test run's at 100). Widened to 74-166.
+2. **The car was PARKED.** Without `FPSCOUNT`/`PROBES` the autorun hands the keyboard over, and the
+   horizon was then byte-identical frame after frame (`g_horizonChangeSeries` all zero over 240
+   painted frames) — a detector cannot catch a fill that never runs. Hence `make HOLD_THROTTLE=1`
+   on the Amiga side too.
+
+**What decided it was measuring the reporter's own screenshot**, rather than sampling more frames:
+decoded line by line, the road's right edge marched smoothly (199, 201, 213, 217, 225 px) while the
+left edge read 80, **136**, **186**, 34, 20. Two lines drawn from different geometry than their
+neighbours — not a fill running away. That is what turned the search from "who corrupted a byte" to
+"what changed between one line and the next", and the answer is in `docs/amiga-arch.md`.
+
 ### Still not done
 
 Named-milestone captures (step 3) and the jsbeeb cycle-diff harness against the port's physics

@@ -67,6 +67,14 @@ extern uint16_t      g_badRegionEntry;
 extern unsigned long g_irqClobberCount;
 extern uint8_t       g_irqClobberWhich;
 
+/* The same contract for the C-only state: the two-level-RTS flag (which is the 6502's S, and
+   therefore interrupt-saved on real hardware) and the 6502 stack pointer.  Pending is expected to
+   be non-zero — it only says interrupts do land inside the drop window; Touched and Imbalance must
+   both stay 0. */
+extern unsigned long g_irqUnwindPending;
+extern unsigned long g_irqUnwindTouched;
+extern unsigned long g_irqStackImbalance;
+
 /* Present the current display state if a new frame has been produced since the
    last call.  Safe to call from a spin-wait — returns immediately if none is
    pending. */

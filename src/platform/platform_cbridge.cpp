@@ -70,6 +70,17 @@ void platform_bad_region_entry(uint16_t region, uint16_t entry) {
 unsigned long g_irqClobberCount = 0;
 uint8_t       g_irqClobberWhich = 0;   /* bit 0 = A, bit 1 = X, bit 2 = Y */
 
+/* ⭐ The same contract for the state the 6502 keeps in its STACK POINTER and this port keeps in a
+   C global: `cpu_unwind`, the two-level-RTS flag (src/cpu/cpu.h).  An interrupt taken between the
+   drop and the consume must not disturb it — on the 6502 it cannot, because there the state is S
+   and the interrupt sequence saves it.  Pending counts how often an interrupt landed inside that
+   window at all (the window is real, so this is expected to be non-zero); Touched counts the ones
+   where the handler's own call tree actually moved the flag, which is the bug and must stay 0.
+   Imbalance is the matching check for the 6502 stack itself. */
+unsigned long g_irqUnwindPending  = 0;
+unsigned long g_irqUnwindTouched  = 0;
+unsigned long g_irqStackImbalance = 0;
+
 void platform_render_frame(void) {
     if (platform) platform->renderFrame();
 }

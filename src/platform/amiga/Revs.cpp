@@ -10,6 +10,109 @@ extern "C" volatile unsigned long g_fpsFrames;
 extern "C" volatile uint8_t mem[65536];   // the 6502 RAM image (src/cpu/cpu.c)
 extern "C" void engine_main(void);        // $63BD, the transpiled engine entry
 
+// ⭐⭐ DOES THE 50 Hz BODY WRITE THE FILL CHAIN'S INPUTS?  (`make ISRWATCH=1`)
+//
+// The remaining artefact is a green or black run to the right edge of the horizon that lasts one
+// PAINTED frame.  The game's renderer paints runs in a single pass and never clears (the plotter
+// at $2F45 reads the destination and merges when it is non-zero), so a wrong byte survives until
+// the game next paints that area — which is exactly one Revs frame.  Two inputs decide a run:
+//
+//   $3000-$43FF  the per-cell COLUMN SOURCES the $7C00 chain consumes (a zero means "same as the
+//                previous cell", which is how A carries a colour along the line)
+//   $7B00-$7FFF  the chain ITSELF — 42 patched opcode slots, one per span end ($91 STA vs $60 RTS)
+//
+// On a real BBC the T1 interrupt is raster-scheduled and cannot land where it would matter.  Here
+// the whole band cycle plus the game body fires in one burst at the top of the frame, so it CAN
+// preempt the main loop inside the chain.  If the body writes either range, that is the mechanism;
+// if it writes neither, the hypothesis is dead and the search moves on.  Measured, not argued.
+//
+// ⚠ Costs ~11 KB of extra reads per field, so it is a build flag, not standing instrumentation.
+// ⭐ MEASURED FIRST TIME ROUND: over 1809 fields the body wrote NEITHER range — so a preempted
+// column source and a preempted span-end opcode are both out.  The watch then widened, because the
+// renderer is full of SELF-MODIFIED OPERANDS and they are all in the engine's own code region:
+// $193E opens with `STA $1970`, patching the destination of the `STA $0400,Y` at $196F, and $19AF
+// patches $2F4F/$2F50/$2F91/$2F92 — the operand bytes of the span plotters' own stores.  Preempt
+// the main loop between a patch and the loop that uses it and the resumed loop writes a run of the
+// right colour to the WRONG address, or the wrong colour to the right one.
+//
+// So the range is now the whole engine image below the frame buffer, by 256-byte block, and the
+// answer is read against disasm/listing.txt: a block that is code and moves during the body is a
+// shared SMC site.  ⚠ Sampled every 8th field — 37 KB of extra reads is over half the CPU at 50 Hz
+// and the question is "ever", not "how often".
+#ifdef REVS_ISRWATCH
+// ⭐⭐ THE RANGE MATTERS, and the first two versions of this had it wrong: the game's live
+// variables — INCLUDING the road edge lists at $5E40/$5E90/$5F20 that the rasteriser draws from —
+// live INSIDE the frame buffer, in the sky region ($5E40-$66FF, invisible because band 1 maps all
+// sixteen palette entries to the same blue).  A watch that stopped at the frame buffer's base was
+// blind to exactly the state the artefact is about.  So: $1200 up to the end of the screen.
+#define ISRWATCH_LO    0x1200u
+#define ISRWATCH_BLKS  105u                  // $1200-$7AFF: engine image AND the frame buffer
+extern "C" {
+volatile unsigned long g_isrWroteSrc = 0;    // fields in which the body wrote $3000-$43FF
+volatile unsigned long g_isrWroteOvl = 0;    // ...or the $7B00-$7FFF overlay code
+volatile unsigned long g_isrWroteCode = 0;   // ...or anything in $1200-$59FF
+volatile unsigned long g_isrSamples = 0;
+volatile uint8_t  g_isrSrcBlocks[20] = {0};  // which 256-byte block of the sources, ever
+volatile uint8_t  g_isrOvlBlocks[5]  = {0};
+volatile uint8_t  g_isrCodeBlocks[ISRWATCH_BLKS] = {0};
+/* ⭐⭐ AND ZERO PAGE, BYTE BY BYTE — the range the first two passes did not cover and the one that
+   matters most.  The road plotters keep ALL their live state there: the destination pointers
+   ($70-$73), the last column and step ($82/$83), the pixel bytes ($85/$8A/$8B), the cursors
+   ($12/$1F/$50/$51).  If the 50 Hz body writes any of those, then an interrupt taken inside the
+   plotter resumes it with a different destination or a different end column — one display line
+   whose fill stops early or runs long, which is EXACTLY what the reported artefact is (measured
+   from the user's screenshot: a single line green where the lines above and below are black).
+   ⚠ On a real BBC the same body writes the same zero page, so this is not "the game is broken":
+   there the main loop is vsync-locked, so the band-4 interrupt lands at the SAME point in the
+   drawing sequence every field.  Here a frame takes ~50 fields, so it lands everywhere. */
+volatile uint8_t  g_isrZpWrites[256] = {0};
+volatile unsigned long g_isrZpFields = 0;
+}
+
+static uint16_t blockSum(unsigned addr)
+{
+    uint16_t s = 0;
+    for (unsigned i = 0; i < 256; i++) s = (uint16_t)(s + mem[addr + i] + i);
+    return s;
+}
+#endif
+
+// ⭐ Fields counted by the ISR, run by drainTicks() from main-loop context.  volatile: the ISR
+// writes it and the main loop reads it, and 8 bits so a 68000 load/store of it is atomic — a
+// 16-bit counter would need the interrupt masked around the decrement.
+static volatile uint8_t s_pendingTicks = 0;
+// Re-entrancy guard: the body itself can reach a spin-wait hook (that is what drives frames), and
+// draining from inside the body would run the 50 Hz chain nested inside itself.
+static bool s_inBody = false;
+extern "C" {
+volatile unsigned long g_bodyTicksDropped = 0;  // the cap hit: game time slowed, and we say so
+volatile unsigned long g_bodyDrains       = 0;  // drain calls that ran at least one tick
+volatile unsigned long g_bodyTicks        = 0;  // ticks run in total
+volatile uint8_t       g_bodyPending      = 0;  // ...and what is queued right now
+}
+
+void Revs::runBandCycle()
+{
+    // ⚠ Bounded, because an unbounded loop over a state machine the game can change is how a
+    // frame gets eaten.  8 = the five real bands plus slack; overrunning drops the rest of this
+    // field's bands rather than hanging.
+    bbc_begin_band_cycle();
+    for (int band = 0; band < 8; band++) {
+        platform->fireIrq1v();
+        if (mem[0x4F43] == 0) break;      // $4F43 = irq_band_state; 0 = cycle complete
+    }
+}
+
+void Revs::drainTicks()
+{
+    if (s_inBody) return;
+    s_inBody = true;
+    unsigned ran = 0;
+    while (s_pendingTicks) { s_pendingTicks--; runBandCycle(); ran++; }
+    s_inBody = false;
+    if (ran) { g_bodyDrains++; g_bodyTicks += ran; }
+    g_bodyPending = s_pendingTicks;
+}
 
 void Revs::initialize()
 {
@@ -27,6 +130,13 @@ void Revs::shutdown()
 
 void Revs::render()
 {
+    // ⭐ DRAIN THE PENDING 50 Hz TICKS HERE FIRST, before a single pixel is read.  This is the
+    // engine's own frame hook ($1701, the top of the main loop): the previous iteration's drawing
+    // is finished and this iteration's has not started, so it is one of exactly two points where
+    // running the game body cannot change the scene underneath either the rasteriser or the decode.
+    // (The other is the frame-wait spin at $1760 — PlatformAmiga::tickVBI.)
+    drainTicks();
+
 #ifdef REVS_FPSCOUNT
     // ⭐ The framerate numerator: exactly one increment per PAINTED frame, and nothing
     // else.  Keep it that way — the moment this build reads a chip register or multiplies,
@@ -90,11 +200,59 @@ void Revs::vbi()
     // state machine the game can change is how an ISR eats every frame.  8 = the five
     // real bands plus slack; overrunning it drops the rest of this frame's bands rather
     // than the whole display.
-    bbc_begin_band_cycle();
-    for (int band = 0; band < 8; band++) {
-        platform->fireIrq1v();
-        if (mem[0x4F43] == 0) break;      // $4F43 = irq_band_state; 0 = cycle complete
+#ifdef REVS_ISRWATCH
+    static uint16_t code0[ISRWATCH_BLKS], ovl0[5];
+    const bool watch = ((g_vbiCount & 7u) == 0u);
+    if (watch) {
+        for (unsigned b = 0; b < ISRWATCH_BLKS; b++) code0[b] = blockSum(ISRWATCH_LO + (b << 8));
+        for (unsigned b = 0; b < 5; b++)             ovl0[b]  = blockSum(0x7B00 + (b << 8));
     }
+    /* Zero page is cheap enough to check EVERY field, and it is the interesting one. */
+    static uint8_t zp0[256];
+    for (unsigned i = 0; i < 256; i++) zp0[i] = mem[i];
+#endif
+
+#ifdef REVS_BODY_IN_ISR
+    /* The old model, kept for A/B measurement only: run the body here, in the ISR, where it
+       preempts the main loop's drawing at an arbitrary point.  `make BODY_IN_ISR=1` restores it,
+       and amiga/fill_catch.gdb then shows the edge jumps and the decode mismatches come back. */
+    Revs::runBandCycle();
+#else
+    /* ⭐ COUNT the field; do not run the body here.  See Revs.h for the measurement behind this.
+       Capped: if the main loop ever stops reaching a drain point, ticks must not accumulate
+       without bound — dropping them slows game time, which is visible and debuggable, where an
+       unbounded counter would eventually run thousands of ticks in one burst. */
+    if (s_pendingTicks < 200u) s_pendingTicks++;
+    else                       g_bodyTicksDropped++;
+#endif
+
+#ifdef REVS_ISRWATCH
+    if (watch) {
+        unsigned hitSrc = 0, hitOvl = 0, hitCode = 0;
+        for (unsigned b = 0; b < ISRWATCH_BLKS; b++) {
+            if (blockSum(ISRWATCH_LO + (b << 8)) == code0[b]) continue;
+            hitCode++;
+            g_isrCodeBlocks[b] = 1;
+            /* $3000-$43FF is the column-source array, inside this range: keep the two answers
+               separate, because "the body wrote a source" and "the body wrote code" are
+               different findings. */
+            const unsigned addr = ISRWATCH_LO + (b << 8);
+            if (addr >= 0x3000u && addr < 0x4400u) { hitSrc++; g_isrSrcBlocks[(addr - 0x3000u) >> 8] = 1; }
+        }
+        for (unsigned b = 0; b < 5; b++)
+            if (blockSum(0x7B00 + (b << 8)) != ovl0[b]) { hitOvl++; g_isrOvlBlocks[b] = 1; }
+        if (hitSrc)  g_isrWroteSrc++;
+        if (hitOvl)  g_isrWroteOvl++;
+        if (hitCode) g_isrWroteCode++;
+        g_isrSamples++;
+    }
+    {
+        unsigned zpHits = 0;
+        for (unsigned i = 0; i < 256; i++)
+            if (mem[i] != zp0[i]) { g_isrZpWrites[i] = 1; zpHits++; }
+        if (zpHits) g_isrZpFields++;
+    }
+#endif
 }
 
 void Revs::run()
