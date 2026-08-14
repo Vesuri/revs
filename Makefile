@@ -75,6 +75,7 @@ CXX_SRCS := \
     src/platform/mos.cpp \
     src/platform/probe.cpp \
     src/platform/bbc_hw.cpp \
+    src/platform/teletext.cpp \
     src/platform/autorun.cpp \
     src/platform/platform_cbridge.cpp \
     src/platform/host/PlatformHost.cpp \
@@ -85,7 +86,8 @@ CXX_OBJS := $(CXX_SRCS:.cpp=.o)
 OBJS     := $(C_OBJS) $(CXX_OBJS)
 TARGET   := build/revs
 
-.PHONY: all clean gen validate image runtime dashcode sweep endian-lint refloop refloop-keys
+.PHONY: all clean gen validate image runtime dashcode sweep endian-lint refloop refloop-keys \
+        mode7 mode7-fixture font
 
 all: $(TARGET)
 
@@ -98,6 +100,27 @@ VALIDATE_OBJS := $(filter-out src/main.o,$(OBJS)) tools/validate_native.o
 validate: $(VALIDATE_OBJS) | build
 	$(CXX) $(CXXFLAGS) -o build/validate_native $(VALIDATE_OBJS)
 	./build/validate_native $(FN)
+
+# ⭐ MODE 7 validation — the port's VDU driver + SAA5050 against a REAL BBC, byte for byte.
+#   make mode7-fixture      re-record the fixture off jsbeeb (needs volta/node; see the probe)
+#   make mode7              replay it through the port's driver and diff every page
+#   make mode7 PPM=tmp/m7   ...and write both decoded pages as PPMs to look at
+# The fixture is an ordered log of the engine's VDU bytes AND its direct screen pokes, because
+# the real page is built by two writers; tools/validate_mode7.c has the full rationale.
+MODE7_OBJS := src/cpu/cpu.o src/platform/teletext.o tools/validate_mode7.o
+mode7: $(MODE7_OBJS) | build
+	$(CC) $(CFLAGS) -o build/validate_mode7 $(MODE7_OBJS)
+	./build/validate_mode7 $(if $(PPM),--ppm=$(PPM),)
+
+mode7-fixture:
+	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_probe_mode7.mjs \
+	    --dump=../../tmp/mode7
+
+# Regenerate the MODE 7 character generator.  Sources the SAA5050 glyph shapes from jsbeeb's
+# teletext data and GENERATES the two mosaic sets; see the generator's header for provenance and
+# for why the cell is 8x10.  Checked in, so this is only needed when the layout changes.
+font:
+	python3 tools/gen_teletext_font.py
 
 build:
 	mkdir -p build
@@ -138,7 +161,8 @@ endian-lint:
 	else echo "endian-lint: clean"; fi
 
 clean:
-	rm -f $(OBJS) $(TARGET) tools/validate_native.o build/validate_native
+	rm -f $(OBJS) $(TARGET) tools/validate_native.o build/validate_native \
+	      tools/validate_mode7.o build/validate_mode7
 
 # ⭐ Replay the engine's own startup unpack -> disasm/revs_runtime.bin.
 # REVS2 relocates itself before running, so revs_mem.bin is NOT the layout the engine
