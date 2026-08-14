@@ -178,6 +178,15 @@ character definition) fires ~850 times in the first 900 vblanks**, so reproducin
 a genuine Phase 5 dependency, not a footnote — the port currently returns blank glyphs and counts
 them in `g_mosCharDefCount`.
 
+⚠⚠ **THOSE `OSWORD 10` CALLS ARE THE RACE VIEW, NOT THE FRONT END — do not read them as a MODE 7
+dependency** (they were, for two phases).  `vdu_char_def` (`$5092`) has two arms selected by `$64`
+bit 7 and they use two *different fonts*: the bitmap arm asks `OSWORD 10` for a **MOS ROM** glyph
+and plots it into the frame buffer, while the MODE 7 arm calls **OSWRCH** and the **SAA5050**
+teletext chip — which has its own character ROM and is not addressable by the CPU at all — draws
+the cell.  Measured on a real BBC in the front end (`tools/bbc_probe_mode7.mjs`): **310 OSWRCH
+calls and ZERO OSWORD 10 calls.**  So MODE 7 needed a VDU driver, not a font (done —
+`src/platform/teletext.h`), and `OSWORD 10` remains open for the race view's own text.
+
 ⚠ The implementation is `src/platform/mos.cpp`, shared by BOTH backends rather than overridden per
 platform.  OSBYTE 129's contract (X=Y=$FF when the key is held) is the 6502's ABI and identical
 everywhere; only *where the input comes from* differs, and that is five virtual hooks

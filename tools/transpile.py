@@ -416,8 +416,25 @@ ROM_BASE = 0x8000
 # on its own; on the headless host, which has no preemption, tickVBI is what advances the
 # interrupt.  Painting is hooked at the TOP of the loop instead (PRE_INSN_HOOKS below), so
 # one painted frame means one game frame whether or not this wait was entered.
+# ⭐ $6577 added in Phase 5: THE FRONT END'S FRAME BOUNDARY, and the reason the MODE 7 page
+# rendered as a black screen on the target even though its screen RAM was byte-perfect.
+#
+# The race's paint hook is at $1701, the top of the main loop — but the front end never gets
+# there.  menu_wait_key ($6571) is the only menu primitive and it spins: $6577 re-reads the whole
+# of key_binding_tbl through kbd_test_key and three branches come back to it ($658B, $6593,
+# $65C6).  So out of a race the engine sits in that loop for the entire time, the main loop's
+# hook is never reached, and nothing ever painted.  ⚠ THE SYMPTOM IS INDISTINGUISHABLE FROM A
+# BROKEN RENDERER: the page in mem[] was correct, the copper list was correct, the bitmap was
+# all zeroes.  What separated the two was dumping BOTH — the page matched the BBC byte for byte
+# while the bitplanes were empty, which can only mean the blit never ran.
+#
+# platform_render_frame() and not just tick_vbi: this loop owns a whole frame boundary in the
+# front end exactly as $1760 does in the race, and the page has to be PAINTED here or nowhere.
+# It is cheap — RevsScreen::decodeTeletext() checksums the 1 KB page and returns without
+# drawing unless it (or the flash phase) changed.
 SPINWAIT_HOOKS = {
     0x1760: 'PROBE_PHASE(0); platform_tick_vbi(); platform_poll_events();',
+    0x6577: 'platform_render_frame(); platform_tick_vbi(); platform_poll_events();',
 }
 
 # ---------------------------------------------------------------------------

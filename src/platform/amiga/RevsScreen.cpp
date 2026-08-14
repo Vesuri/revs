@@ -12,6 +12,7 @@
 #include "framework/CopperList.h"
 #include "framework/Sprite.h"
 #include "../bbc_screen.h"
+#include "../teletext.h"           /* the MODE 7 model: the VDU driver's page + the SAA5050 */
 #include "../../cpu/m68k_math.h"   /* the 68000 has NO 32-bit mul/div (make muldiv-audit) */
 
 extern "C" volatile uint8_t mem[65536];
@@ -44,6 +45,44 @@ static const uint16_t kRowBytes   = (kW / 8) * kBP;          /* 80: interleaved 
 #define BAND_WORDS      5                       /* WAIT + COLOR00..03                */
 #define MAX_BANDS       8
 #define LIST_LENGTH     (IDX_BANDS + MAX_BANDS * BAND_WORDS + 1)
+
+/* ═══ MODE 7 ═══════════════════════════════════════════════════════════════════════════════
+   ⭐ A SECOND, SEPARATE DISPLAY CONFIGURATION — its own bitmap and its own copper list, and
+   the race view's is not touched.  Three reasons it is not one shared list:
+
+     1. TELETEXT NEEDS EIGHT COLOURS, so three bitplanes.  Giving the race view a third plane
+        it never uses would cost display DMA in the ONE place this port cannot afford it:
+        display DMA against a program in chip RAM is already about two thirds of a rendered
+        race frame (docs/perf-method.md).  MODE 7 is a static front end with no game work, so
+        the extra plane is free there and unaffordable here.
+     2. THE GEOMETRY DIFFERS.  40x25 cells of 8x10 is 320x250, against the race view's
+        320x208 — a different DIWSTOP, so the two cannot share a window either.
+     3. Switching whole lists at a mode change is one COP1LC write; merging them would mean
+        rewriting BPLCON0, six pointers and eight colours in the VBI on every frame.
+
+   The cell is 8x10 because 25 rows of the SAA5050's native 10-row cell is 250 lines, which is
+   a legal PAL display, while its doubled 12x20 form would need 500 — see the derivation in
+   tools/gen_teletext_font.py.  So the chip's own character ROM maps one source row to one scan
+   line with no resampling. */
+static const uint16_t kTtW        = TT_WIDTH;                    /* 320 */
+static const uint16_t kTtH        = TT_HEIGHT;                   /* 250 */
+static const uint8_t  kTtBP       = 3;                           /* eight teletext colours */
+static const uint16_t kTtRowBytes = (kTtW / 8) * kTtBP;           /* 120: interleaved */
+static const uint16_t kTtPlaneGap = (kTtW / 8);                   /* 40: plane stride in a row */
+
+#define IDX_TT_SPRITES   1
+#define IDX_TT_PLAYFIELD (IDX_TT_SPRITES + 16)  /* BPLCON0 + BPL1MOD + BPL2MOD    (3) */
+#define IDX_TT_BPL       (IDX_TT_PLAYFIELD + 3) /* 3 interleaved planes           (6) */
+#define IDX_TT_PAL       (IDX_TT_BPL + 6)       /* COLOR00..07                    (8) */
+#define TT_LIST_LENGTH   (IDX_TT_PAL + 8 + 1)
+
+/* The SAA5050's palette, and there is nothing to choose: the chip drives one RGB line per
+   primary, so every teletext colour is fully saturated and the pen index IS the colour code
+   (bit 0 red, bit 1 green, bit 2 blue).  That is also why the plane-building loop in
+   decodeTeletext() can treat a cell's colour as a per-plane bit mask. */
+static const uint16_t kTtPalette[8] = {
+    0x000, 0xF00, 0x0F0, 0xFF0, 0x00F, 0xF0F, 0x0FF, 0xFFF,
+};
 
 /* ---- MODE 5 nibble expansion --------------------------------------------------
    A MODE 5 byte holds four pixels; the high nibble is those four pixels' HIGH bits and
@@ -101,6 +140,19 @@ volatile uint32_t g_screenFrontAddr  = 0;   /* the displayed interleaved bitplan
 volatile uint32_t g_screenCopperAddr = 0;   /* the copper list, incl. the palette bands */
 volatile uint16_t g_screenBytes      = 0;   /* size of the bitplane block               */
 volatile uint16_t g_screenCopperWords = 0;  /* LIST_LENGTH — so the dump can't go stale  */
+/* ⭐ The display's SHAPE, so `amiga/screen_dump.gdb` + `tools/amiga_ppm.py` can decode either
+   configuration without being told which.  The port now has two (320x208 two-plane race view,
+   320x250 three-plane MODE 7) and a dumper that assumes one would decode the other as garbage
+   and read as a render bug — the exact "instrument blind to the case" failure this project has
+   hit repeatedly (docs/method-lessons.md). */
+volatile uint16_t g_screenPlanes  = 0;      /* bitplanes in the CURRENT configuration */
+volatile uint16_t g_screenHeight  = 0;      /* display lines in it */
+volatile uint16_t g_screenMode7   = 0;      /* non-zero while the MODE 7 page is on screen */
+/* ⚠ MODE 7's bitmap is 30000 bytes of CHIP RAM and its list another 148.  A failed allocation
+   must not degrade quietly into "the front end is black", which is indistinguishable from a
+   renderer bug — the whole point of the counters in this port.  Non-zero here means the front
+   end cannot be displayed at all, and says which half failed. */
+volatile uint16_t g_ttAllocFailed = 0;      /* bit 0 = bitmap, bit 1 = copper list */
 }
 
 /* ⭐⭐ WHERE THE BEAM ACTUALLY IS when the copper list and the bitplane pointers are rewritten.
@@ -352,6 +404,14 @@ void RevsScreen::initialize()
     m_nullSprite  = Sprite::allocate(0);
     if (!m_bitmap[0] || !m_bitmap[1] || !m_copper || !m_nullSprite) return;
 
+    /* MODE 7's own configuration.  ⚠ Allocated up front, never on the mode switch: a chip-RAM
+       allocation inside a frame is the Atari port's 3.6-second freeze, and a FAILED one at a
+       mode switch would blank the front end with no way to attribute it. */
+    m_ttBitmap = Bitmap::allocate(kTtW, kTtH, kTtBP, /*interleaved*/true);
+    m_ttCopper = CopperList::allocate(TT_LIST_LENGTH);
+    if (!m_ttBitmap) g_ttAllocFailed |= 1u;
+    if (!m_ttCopper) g_ttAllocFailed |= 2u;
+
     setConstantRegisters();
 
     /* ⭐ ALL EIGHT SPRITE CHANNELS POINTED AT ONE EMPTY SPRITE, every frame.
@@ -375,6 +435,12 @@ void RevsScreen::initialize()
     m_copper->setPlayfield(IDX_PLAYFIELD, kW, kH, kBP, /*interleaved*/true);
     m_copper->showBitmap(IDX_BPL, *m_bitmap[0], 1, 1, 0, 0, kBP);
 
+    /* MODE 7's list is fixed, so it is built once here.  ⚠ The RACE list stays the one
+       installed at start-up (Revs::initialize) even though the machine boots in MODE 7: the
+       first VBI's applyMode() does the switch, which keeps "who installs the copper list" in
+       exactly one place instead of two that can disagree. */
+    buildTeletextCopper();
+
     g_screenCopperAddr  = (uint32_t)m_copper->data();
     g_screenCopperWords = LIST_LENGTH;
     g_screenFrontAddr  = (uint32_t)m_bitmap[0]->data;
@@ -388,8 +454,180 @@ void RevsScreen::initialize()
         d[IDX_TOPPAL + pen] = copperMove(color00 + (pen << 1), 0x000);
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════════════════════
+   MODE 7 — the front end.  src/platform/teletext.h is the model; this is only the display.
+   ═══════════════════════════════════════════════════════════════════════════════════════════ */
+
+/* The display window, which differs between the two configurations: 208 lines for the race
+   view, 250 for MODE 7's 25 rows of 10.
+   ⚠ THE OCS DIWSTOP ENCODING IS WHY THIS IS ONE FUNCTION AND NOT TWO LITERALS.  DIWSTOP's
+   vertical bit 8 is not stored — the hardware supplies it as the COMPLEMENT of bit 7 — so the
+   low eight bits are written for both and the two cases land on different sides of 256 without
+   any special case: 44+208 = 252 -> $FC (bit 7 set, V8 = 0), 44+250 = 294 -> $26 (bit 7 clear,
+   V8 = 1, giving 256+38).  Writing 294 & 0xFF "by accident" is correct here; writing 294
+   truncated to a byte anywhere else would not be, which is exactly why it is derived once. */
+void RevsScreen::setDisplayWindow(unsigned height)
+{
+    const unsigned vstop = kDisplayTop + height;
+    *diwstrtPointer = (uint16_t)((kDisplayTop << 8) | 0x81);
+    *diwstopPointer = (uint16_t)(((vstop & 0xFFu) << 8) | 0xC1);
+}
+
+/* The MODE 7 list is FIXED — built once, never rewritten.  Nothing about a teletext display
+   varies down the screen: one plane count, one set of pointers (single-buffered), one palette
+   of eight.  All the per-frame work is in the bitmap. */
+void RevsScreen::buildTeletextCopper()
+{
+    if (!m_ttCopper || !m_ttBitmap || !m_nullSprite) return;
+
+    for (unsigned s = 0; s < 8; s++)
+        m_ttCopper->showSprite(IDX_TT_SPRITES + s * 2, (uint16_t)s, *m_nullSprite);
+    m_ttCopper->setPlayfield(IDX_TT_PLAYFIELD, kTtW, kTtH, kTtBP, /*interleaved*/true);
+    m_ttCopper->showBitmap(IDX_TT_BPL, *m_ttBitmap, 1, 1, 0, 0, kTtBP);
+
+    /* ⭐ The pen index IS the teletext colour code, so COLORnn = colour n with no mapping
+       table — see kTtPalette and the plane-building loop in decodeTeletext(). */
+    uint32_t* d = m_ttCopper->data();
+    for (unsigned c = 0; c < 8; c++)
+        d[IDX_TT_PAL + c] = copperMove(color00 + (c << 1), kTtPalette[c]);
+}
+
+/* ⭐ THE PAGE -> THREE BITPLANES.  Main-loop context, and REDRAWN ONLY WHEN IT CHANGES.
+ *
+ * A full redraw is 1000 cells x 10 rows x 3 planes = 30000 byte stores, which at ~8 cycles a
+ * store is ~34 ms — over a frame, so doing it unconditionally would put the front end below
+ * 25 FPS to re-draw a page that is identical to the last one.  A teletext page changes only on
+ * a keypress or a flash phase, so the check is a 1 KB checksum (~1.4 ms) and the redraw is the
+ * exception.  ⚠ The checksum has to include the FLASH PHASE: without it the flashing "PRESS"
+ * prompt would be drawn once and then never change, which looks like a decode bug rather than
+ * a missing dependency.
+ *
+ * ⚠ `(sig << 5) - sig` is sig*31 — a shift and a subtract.  A literal `* 31u` on a 32-bit value
+ * emits __mulsi3, which does not exist on this target (make muldiv-audit fails the link). */
+void RevsScreen::decodeTeletext()
+{
+    if (!m_ttBitmap) return;
+
+    unsigned long sig = 0;
+    for (unsigned i = 0; i < TT_SCREEN_SIZE; i++)
+        sig = ((sig << 5) - sig) + mem[TT_SCREEN_BASE + i];
+
+    const unsigned char phase = (unsigned char)tt_flash_phase();
+    if (sig == m_ttSignature && phase == m_ttFlashSeen) return;
+    m_ttSignature = sig;
+    m_ttFlashSeen = phase;
+
+    uint8_t* const base = (uint8_t*)m_ttBitmap->data;
+    unsigned row = 0;
+    while (row < TT_ROWS) {
+        TtCell cells[TT_COLS];
+        /* mem[] is volatile; the decode wants a plain byte pointer.  Casting away volatile is
+           safe here (the page is only written from main-loop context and from the VDU driver,
+           both of which are this same thread) and it is NOT a widening cast — mem[] must never
+           be aliased as a 16- or 32-bit pointer, which make endian-lint enforces. */
+        const unsigned char* src =
+            (const unsigned char*)(const void*)(mem + TT_SCREEN_BASE + row * TT_COLS);
+        const int dbl = tt_decode_row(src, cells, (int)phase);
+
+        /* A double-height row draws the TOP halves here and the BOTTOM halves on the next row,
+           and that next row's own content is not displayed — the chip's rule.  Revs writes the
+           same text on both rows for its REVS logo, so either reading would look right here;
+           this is the one that is also right for a page that does not. */
+        const unsigned halves = dbl ? 2u : 1u;
+        for (unsigned half = 0; half < halves; half++) {
+            const unsigned dy = (row + half) * TT_CELL_H;
+            if (dy + TT_CELL_H > kTtH) break;
+            uint8_t* const rowBase = base + revs_mulu16((uint16_t)dy, kTtRowBytes);
+
+            for (unsigned col = 0; col < TT_COLS; col++) {
+                const TtCell* c = &cells[col];
+                const uint8_t* g = &g_ttFont[((unsigned)c->set * 128u + c->code)
+                                             << TT_GLYPH_SHIFT];
+                /* ⭐ Colour becomes a per-plane BIT MASK, which is what makes this three
+                   stores and no branches: pen index == teletext colour code, so plane p's byte
+                   is the glyph where the foreground has bit p set and its complement where the
+                   background does. */
+                const uint8_t f0 = (c->fg & 1u) ? 0xFFu : 0x00u;
+                const uint8_t f1 = (c->fg & 2u) ? 0xFFu : 0x00u;
+                const uint8_t f2 = (c->fg & 4u) ? 0xFFu : 0x00u;
+                const uint8_t b0 = (c->bg & 1u) ? 0xFFu : 0x00u;
+                const uint8_t b1 = (c->bg & 2u) ? 0xFFu : 0x00u;
+                const uint8_t b2 = (c->bg & 4u) ? 0xFFu : 0x00u;
+
+                uint8_t* dst = rowBase + col;
+                for (unsigned y = 0; y < TT_CELL_H; y++) {
+                    /* Double height stretches each source row over two display lines: the top
+                       half of the glyph on the first row, the bottom half on the second. */
+                    const uint8_t bits = dbl ? g[half * (TT_CELL_H / 2) + (y >> 1)] : g[y];
+                    const uint8_t inv  = (uint8_t)~bits;
+                    dst[0]               = (uint8_t)((bits & f0) | (inv & b0));
+                    dst[kTtPlaneGap]     = (uint8_t)((bits & f1) | (inv & b1));
+                    dst[kTtPlaneGap * 2] = (uint8_t)((bits & f2) | (inv & b2));
+                    dst += kTtRowBytes;   /* one scan line: the `lea 120(a1),a1` step */
+                }
+            }
+        }
+        if (dbl) row++;      /* the bottom-half row is consumed, not decoded again */
+        row++;
+    }
+}
+
+/* ⭐ HAND THE DISPLAY TO WHICHEVER MODE THE MACHINE IS IN.  VBI context.
+ *
+ * The switch is one COP1LC write plus COPJMP1, and a DIW change.  It happens twice a session,
+ * so a single glitched field at the transition is acceptable — a real BBC's mode change is far
+ * more violent than that.  Returns non-zero when it switched, so the caller does not then go on
+ * to rebuild bands into a list that is no longer the active one. */
+int RevsScreen::applyMode()
+{
+    const unsigned char want = tt_active() ? 1u : 0u;
+
+    /* ⚠ CROSS-CHECK, not a second source of truth.  `$64` is the GAME's own mode flag, written
+       only by $16E1 (clear, entering the race) and $4F3B (set, in irq1v_release).  This port
+       derives the mode from HARDWARE events instead — the engine's VDU 22,7 and hw_init's CRTC
+       writes — so the two derivations are independent and a disagreement means one of them is
+       wrong.  Counted rather than resolved here, because guessing which to believe is how an
+       assumption calcifies; the counter says whether there is anything to resolve. */
+    if ((unsigned char)((mem[0x64] & 0x80u) ? 1u : 0u) != want) g_ttModeDisagree++;
+
+    if (want == m_ttOnScreen) return 0;
+    /* ⚠ VALIDATE BEFORE LATCHING.  Latching m_ttOnScreen first and then bailing on a missing
+       bitmap would record a switch that never happened and never retry it — the display would
+       stay on the race list for the whole run with no counter moving.  Cost me a target run. */
+    if (want && (!m_ttCopper || !m_ttBitmap)) return 0;
+    m_ttOnScreen = want;
+
+    setDisplayWindow(want ? kTtH : kH);
+    if (want) {
+        /* Force a redraw: the page has to be re-blitted into a buffer that may hold the last
+           front end, and the signature would otherwise say "unchanged". */
+        m_ttSignature = 0;
+        m_ttFlashSeen = 0xFFu;
+        g_screenCopperAddr  = (uint32_t)m_ttCopper->data();
+        g_screenCopperWords = TT_LIST_LENGTH;
+        g_screenFrontAddr   = (uint32_t)m_ttBitmap->data;
+        g_screenBytes       = (uint16_t)revs_mulu16(kTtH, kTtRowBytes);
+        g_screenPlanes      = kTtBP;
+        g_screenHeight      = kTtH;
+        g_screenMode7       = 1;
+        AmigaHardware::setCopperList(*m_ttCopper, /*immediate*/true);
+    } else {
+        g_screenCopperAddr  = (uint32_t)m_copper->data();
+        g_screenCopperWords = LIST_LENGTH;
+        g_screenFrontAddr   = (uint32_t)m_bitmap[m_back ^ 1u]->data;
+        g_screenBytes       = (uint16_t)revs_mulu16(kH, kRowBytes);
+        g_screenPlanes      = kBP;
+        g_screenHeight      = kH;
+        g_screenMode7       = 0;
+        AmigaHardware::setCopperList(*m_copper, /*immediate*/true);
+    }
+    return 1;
+}
+
 void RevsScreen::shutdown()
 {
+    delete m_ttCopper;    m_ttCopper   = 0;
+    delete m_ttBitmap;    m_ttBitmap   = 0;
     delete m_copper;      m_copper     = 0;
     delete m_bitmap[0];   m_bitmap[0]  = 0;
     delete m_bitmap[1];   m_bitmap[1]  = 0;
@@ -549,6 +787,15 @@ void RevsScreen::vbiUpdate()
     return;
 #endif
     if (!m_copper) return;
+
+    /* ⭐ THE MODE SWITCH GOES FIRST, before anything reads m_ready or touches a list.  A switch
+       returns immediately: the band schedule below belongs to the race list, and rebuilding it
+       into a list the copper is no longer running would be invisible until the next race. */
+    if (applyMode()) return;
+    /* MODE 7 is single-buffered and has no palette bands — the page is blitted in main-loop
+       context and there is nothing for the VBI to present. */
+    if (tt_active()) return;
+
     /* ⚠ ONLY when a finished frame is going up.  Rebuilding the bands on a VBI that presents
        nothing would re-introduce exactly the mismatch above, and it would also spend ISR time
        rewriting a schedule for pixels that are not changing. */
@@ -578,6 +825,11 @@ void RevsScreen::decode()
     m_ready = true;
     return;
 #endif
+    /* ⭐ MODE 7 IS A DIFFERENT PASS ENTIRELY, and it must come first: the race decode below
+       reads the BBC frame buffer $5A80-$7AFF, which out of a race holds nothing it should be
+       drawing, while $7C00-$7FFF holds the teletext page instead of the dashboard overlay. */
+    if (tt_active()) { decodeTeletext(); return; }
+
     Bitmap* bm = m_bitmap[m_back];
     if (!bm) return;
 

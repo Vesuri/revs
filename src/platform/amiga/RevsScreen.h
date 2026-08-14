@@ -64,6 +64,20 @@ private:
        copper halted.  The rule and the reasoning are at the definition: constants go here,
        and only per-frame or per-band state goes in the copper list. */
     void setConstantRegisters();
+
+    /* ── MODE 7, the front end ─────────────────────────────────────────────────────────────
+       A SECOND display configuration: 320x250, THREE bitplanes (teletext has eight colours)
+       and its own copper list, so the race view's two-plane list and its display DMA cost are
+       untouched.  The reasoning is at the constants in the .cpp.  Which of the two is on
+       screen follows tt_active() — set by the engine's own VDU 22,7 and cleared when hw_init
+       programs the 6845 — because $7C00-$7FFF is the teletext page AND the dashboard code
+       overlay, time-multiplexed. */
+    void decodeTeletext();          /* main loop: the page -> the 3-plane bitmap */
+    void buildTeletextCopper();     /* one-time: sprites, playfield, pointers, 8 colours */
+    void setDisplayWindow(unsigned height);  /* DIWSTRT/DIWSTOP for 208 or 250 lines */
+    /* VBI: hand the display to whichever mode the machine is in now.  Returns non-zero if it
+       switched, in which case nothing else this field should touch the other list. */
+    int  applyMode();
     /* Main-loop half: capture the band record for the frame being decoded, and turn it into
        the raster plan + the per-line mode table.  Both must describe the SAME game frame as
        the pixels — see the long note at snapshotBands(). */
@@ -96,6 +110,16 @@ private:
        initialize() sets everything that must not start at zero. */
     Bitmap*     m_bitmap[2];
     CopperList* m_copper;
+    /* MODE 7's own pair.  ⚠ SINGLE-buffered, deliberately: the page is static between
+       keypresses, so it is redrawn only when it CHANGES (m_ttSignature below), and a real BBC
+       tears here too — the MOS writes screen RAM while the beam is scanning it.  A second
+       250-line 3-plane buffer would cost 30 KB of chip RAM to hide an artefact the original
+       hardware shows. */
+    Bitmap*     m_ttBitmap;
+    CopperList* m_ttCopper;
+    unsigned char m_ttOnScreen;      /* which configuration the display is set up for */
+    unsigned char m_ttFlashSeen;     /* the flash phase the current picture was drawn in */
+    unsigned long m_ttSignature;     /* checksum of the page: redraw only on a change */
     /* One 8-byte all-zero sprite (VSTART == VSTOP == 0), pointed to by all eight channels
        so sprite DMA has somewhere harmless to go.  See initialize(). */
     Sprite*     m_nullSprite;

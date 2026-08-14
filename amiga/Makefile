@@ -57,6 +57,7 @@ CXX_SRCS := \
     $(REPO)/src/platform/mos.cpp \
     $(REPO)/src/platform/probe.cpp \
     $(REPO)/src/platform/bbc_hw.cpp \
+    $(REPO)/src/platform/teletext.cpp \
     $(REPO)/src/platform/autorun.cpp \
     $(REPO)/src/platform/platform_cbridge.cpp \
     $(REPO)/src/main.cpp
@@ -272,7 +273,9 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_irqUnwindPending g_irqUnwindTouched g_irqStackImbalance \
              g_beamPresentLine g_beamPresentMin g_beamPresentMax \
              g_beamPresents g_beamPresentsLate g_beamEntryLine g_beamEntries g_beamEntriesLate \
-             g_bodyTicksDropped g_bodyDrains g_bodyTicks g_bodyPending
+             g_bodyTicksDropped g_bodyDrains g_bodyTicks g_bodyPending \
+             g_ttUnknownVdu g_ttLastUnknown g_ttVduBytes g_ttModeSwitches \
+             g_ttModeDisagree g_screenPlanes g_screenHeight g_screenMode7 g_ttAllocFailed g_ttFlashPhase g_ttFlashToggles
 # ⚠ CONDITIONAL, because these only EXIST under PROBES (src/platform/probe.cpp compiles to
 # nothing otherwise).  Listing them unconditionally makes --undefined=<sym> unsatisfiable and a
 # plain `make` fails at probe-audit — which is the audit working, not a bug in it.  The rule

@@ -29,6 +29,7 @@
  */
 #include "platform.h"
 #include "bbc_screen.h"
+#include "teletext.h"       /* tt_set_active — leaving MODE 7 is a CRTC write, see hwWrite */
 #include "platform_c.h"     /* g_irqClobberCount/Which — the interrupt register contract */
 #include "../cpu/cpu.h"
 
@@ -196,6 +197,19 @@ void Platform::hwWrite(uint16_t addr, uint8_t val)
 
     /* System VIA IFR write = acknowledge.  Nothing here latches, so nothing to clear. */
     case 0xFE4D:
+        break;
+
+    /* ⭐ 6845 CRTC ($FE00 address register / $FE01 data).  hw_init ($4DDD) programs all 14
+       registers from the table at $4F0F, and that is the moment the machine STOPS being a
+       teletext screen: it is how Revs leaves MODE 7 for the custom race mode, bypassing the
+       MOS entirely (which is why no VDU 22 accompanies it).
+       ⚠ This matters to the PIXEL, not just to bookkeeping: $7C00-$7FFF is the MODE 7 screen
+       AND the dashboard code overlay, time-multiplexed (docs/static-map.md), so a renderer that
+       kept treating it as a page would draw executable code as mosaics.  Leaving MODE 7 is a
+       hardware event and it is detected as one, rather than trusting the game's $64 flag. */
+    case 0xFE00:
+    case 0xFE01:
+        tt_set_active(0);
         break;
 
     /* Everything else Revs writes — System VIA T1/T2 and ACR/IER ($FE45/$FE46/$FE47/

@@ -93,6 +93,8 @@ extern volatile unsigned long g_ttModeSwitches; /* VDU 22 calls */
    state — so a disagreement means one of the two is wrong and is worth a loud counter rather
    than a silent wrong screen. */
 extern volatile unsigned long g_ttModeDisagree;
+extern volatile unsigned char g_ttFlashPhase;   /* the SAA5050 flash phase, advanced per FIELD */
+extern volatile unsigned long g_ttFlashToggles; /* ...and how many times it has flipped */
 
 /* ── the MOS VDU driver ─────────────────────────────────────────────────────────────────── */
 /* Feed it one OSWRCH byte.  Writes screen RAM through mem[] exactly where the MOS would. */

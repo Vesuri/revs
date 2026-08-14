@@ -23,6 +23,7 @@
  * which is the one thing that must not vary between them.
  */
 #include "platform.h"
+#include "teletext.h"
 #include "../cpu/cpu.h"
 
 /* ⚠ Counters, not silence.  Listed in amiga/Makefile PROBE_SYMS so --gc-sections cannot
@@ -198,9 +199,15 @@ void Platform::mosCall(uint16_t entry)
 
     /* OSWRCH — VDU output.  Four sites: VDU 127 (delete, $3EF3), VDU 7 (bell, $633F),
        VDU 156 ($6651) and one from a variable ($50F6).  All of them belong to the MODE 7
-       front end / line editor, which the port renders itself; the backend gets the byte
-       and decides. */
+       front end / line editor.
+       ⭐ THE VDU DRIVER IS SHARED, NOT PER-BACKEND.  It maintains the teletext page in mem[]
+       exactly where the MOS would, which is the majority of the front end's screen writes
+       (measured: 29878 MOS writes vs 1105 from the game) and is faithful BBC behaviour rather
+       than an Amiga decision — so it belongs here, on the same side of the seam as bbc_hw.cpp
+       (docs/faithfulness-seam.md).  `make mode7` validates it byte-for-byte against a real
+       BBC.  The backend still gets the byte, for anything display-side it wants to notice. */
     case 0xFFEE:
+        tt_vdu(cpu.A);
         if (platform) platform->wrch(cpu.A);
         break;
 

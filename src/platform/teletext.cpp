@@ -179,7 +179,11 @@ unsigned tt_cursor_y(void){ return s_cy; }
    kind of artefact this project has twice spent a day attributing to the wrong layer.
 */
 
-static int s_flashPhase = 0;
+/* ⚠ A GLOBAL, not a static, so gdb can read it on the target (amiga/Makefile PROBE_SYMS).
+   "The flash prompt is missing" has two causes — the phase never advancing, or the glyph never
+   drawn — and they are indistinguishable from a screen dump alone. */
+volatile unsigned char g_ttFlashPhase  = 0;
+volatile unsigned long g_ttFlashToggles = 0;
 static unsigned s_flashCount = 0;
 
 /* [ASSUMED] ~0.64 s each way at 50 Hz.  The standard specifies a nominal 1 s flash period; the
@@ -187,12 +191,13 @@ static unsigned s_flashCount = 0;
    "PRESS" prompt), and it is measurable off a real BBC if it ever matters. */
 #define TT_FLASH_FIELDS 32u
 
-int  tt_flash_phase(void) { return s_flashPhase; }
+int  tt_flash_phase(void) { return (int)g_ttFlashPhase; }
 void tt_tick_flash(void)
 {
     if (++s_flashCount >= TT_FLASH_FIELDS) {
         s_flashCount = 0;
-        s_flashPhase = !s_flashPhase;
+        g_ttFlashPhase = (unsigned char)!g_ttFlashPhase;
+        g_ttFlashToggles++;
     }
 }
 

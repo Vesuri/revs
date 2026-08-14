@@ -113,6 +113,9 @@ make image                 # rebuild disasm/revs_mem.bin from revs.ssd
 make runtime               # ⭐ replay the engine's self-unpack -> disasm/revs_runtime.bin
 make sweep                 # the entry-point sweep report -> disasm/sweep.txt
 make refloop               # ⭐⭐ RACE A REAL BBC under jsbeeb -> tmp/bbcref (the visual ground truth)
+make mode7                 # ⭐ the MODE 7 front end vs a real BBC, byte for byte (PPM=tmp/m7 to look)
+make mode7-fixture         #   ...re-record that fixture off jsbeeb
+make font                  #   regenerate the MODE 7 character generator (checked in)
 ```
 
 ⭐⭐ **`make refloop` is the visual ground truth, and it DRIVES** (2026-08-14): it boots `revs.ssd`,
@@ -167,13 +170,22 @@ Two committed gdb scripts: `amiga/phase4_fps.gdb` (segmented framerate + livenes
 
 ⭐ **The port RENDERS as of Phase 5** — `src/platform/bbc_screen.h` is the display model (read it
 before any visual work) and `amiga/screen_dump.gdb` + `tools/amiga_ppm.py` dump what the target is
-actually showing and decode it on the host. ⚠ Out of a race the game is in MODE 7 teletext, which
-is NOT rendered (black screen, and it needs a hand-drawn font), so a plain build is only reachable
-through the scripted auto-run.
+actually showing and decode it on the host (`--planes=N --height=N` — there are now TWO display
+configurations and the decoder must be told which).
+
+⭐⭐ **THE MODE 7 FRONT END RENDERS** (2026-08-15), so a plain build is no longer a black screen:
+`src/platform/teletext.*` is the model and `make mode7` proves it byte-for-byte against a real BBC
+(1024/1024 on the target too). Two things to know before touching it. **MODE 7 does NOT use the
+MOS font** — `vdu_char_def` `$5092` branches on `$64` bit 7 and the MODE 7 arm calls OSWRCH so the
+**SAA5050** draws the cell; the `OSWORD 10` calls belong to the RACE view (that font is still
+open). And **the front end never reaches `$1701`**: `menu_wait_key` spins at `$6577`, which is now
+its own `SPINWAIT_HOOKS` paint hook — without it the page is byte-perfect and the screen is black.
+MODE 7 is a SECOND display configuration (320x250, three bitplanes, its own copper list) so the
+race view's display DMA is untouched; `amiga/mode7_dump.gdb` dumps it.
 
 ⭐ **`make STRAIGHT_TO_RACE=1` boots into a Silverstone PRACTICE session with the engine running
-and in first gear, then hands the keyboard to the player** — the way to actually *see* and drive
-the port while the MODE 7 front end is unrendered. It skips **no** game code: practice needs
+and in first gear, then hands the keyboard to the player** — the fast way into the race without
+walking the (now rendered) front end. It skips **no** game code: practice needs
 exactly ONE menu answer (`$63F7` `1 PRACTICE 2 COMPETITION`; option 1 stores `$5F3B = $FF` at
 `$6401` and enters the session at `$6407`), so `src/platform/autorun.cpp` just answers it the
 instant it is asked, then SPACE for `SPACE BAR TO CONTINUE`, `T` for the starter (`$4978`) and `Q`
@@ -230,6 +242,7 @@ hand-rename in generated files).
 | **`src/platform/bbc_screen.h`** ⭐ | **THE DISPLAY MODEL** — geometry, pixel format and the five raster bands, derived and cross-checked. Read before touching anything visual |
 | `src/platform/amiga/RevsScreen.*` | BBC frame buffer → 2 bitplanes + the copper palette bands |
 | `src/platform/amiga/RevsInput.*` | Mouse + keyboard onto the game's own two input paths |
+| **`src/platform/teletext.*`** ⭐ | **THE MODE 7 MODEL** — the MOS VDU driver + the SAA5050. Read before any front-end work; it carries the measurements. `teletext_font.h` is generated |
 | `src/platform/bbc_hw.cpp` | The BBC hardware model behind `bus_read`/`bus_write`, and the IRQ1V shim |
 | `src/platform/autorun.cpp` | Scripted keyboard for unattended runs; without it a headless run measures a menu spin |
 | `src/platform/probe.cpp` | Main-loop phase brackets (PROBES only) — the hot-function profile |

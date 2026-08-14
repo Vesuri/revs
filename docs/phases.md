@@ -283,16 +283,47 @@ confirms the BBC key-number layout.  Keyboard via CIA-A's serial interrupt throu
 Verified end to end by making the scripted auto-run drive the real map (it reaches a race).
 [ASSUMED], both one-liners: which of -87/-88 is left, and the sign of the mouse axis.
 
-### ⬜ 3. The MODE 7 front end — the blocker for actually PLAYING it
+### ✅ 3. The MODE 7 front end — `src/platform/teletext.*` + `RevsScreen`'s second configuration
 
-Out of a race the game returns to MODE 7 teletext (`$7C00`), and the port renders nothing there:
-a plain build shows a black screen and parks in the front end, because nothing presses a key and
-nothing is drawn.  Two dependencies, and neither is small:
-- a teletext renderer (a different geometry and a different colour model from the race view), and
-- **a font.**  `OSWORD 10` fires ~90-850 times per run asking the MOS for character definitions;
-  the port returns blanks and counts them.  The MOS font cannot be lifted from a licensed source,
-  so the 96 glyphs have to be drawn.
-Until then the game is only reachable through the scripted auto-run.
+**The front end RENDERS, and its screen RAM is byte-identical to a real BBC's** (2026-08-15) —
+verified on the target, not by eye: the Amiga's `$7C00-$7FFF` matched the reference dump
+`tmp/mode7/mode7_23.bin` in **1024 of 1024 bytes**, and the decoded bitplanes are the real menu
+(double-height rainbow REVS logo, chequered mosaic bands, blue option chips, flashing cyan
+"PRESS").  `make mode7` is the host-side differential; `amiga/mode7_dump.gdb` is the target one.
+
+🛑 **THIS ITEM'S ORIGINAL PREMISE WAS WRONG IN BOTH HALVES, and measuring it shrank the job.**
+It read: *"a teletext renderer, and **a font** — `OSWORD 10` fires ~90-850 times per run asking
+the MOS for character definitions… the MOS font cannot be lifted from a licensed source, so the
+96 glyphs have to be drawn."*  Neither claim survived `tools/bbc_probe_mode7.mjs`:
+
+1. **MODE 7 does not use the MOS font at all.**  `vdu_char_def` (`$5092`) branches on `$64`
+   bit 7: the bitmap arm asks `OSWORD 10` for a MOS ROM glyph and plots it into the frame
+   buffer, but the MODE 7 arm just calls **OSWRCH** and the **SAA5050** — a Philips teletext
+   chip with its own character ROM — draws the cell.  Measured in the front end: **310 OSWRCH
+   calls, ZERO OSWORD 10 calls.**  So those `OSWORD 10` hits are the RACE VIEW's text path, a
+   separate (still open) gap, and they were attributed to the wrong screen mode.
+2. **So the work was a VDU DRIVER, not a font.**  The MOS's driver does **29878** of the writes
+   to `$7C00-$7FFF` against the game's **1105**, and the engine's entire vocabulary is FIVE
+   commands: `VDU 22,7` / `23,0,10,32` / `12` / `31,x,y` / `127`.  ⚠ A raw byte histogram hides
+   that — `VDU 31`'s x/y masquerade as `VDU 2` and `VDU 4` — so the stream has to be parsed with
+   per-command parameter counts.  The glyphs themselves cost one generator script.
+
+Three findings worth keeping:
+- ⭐ **Screen RAM is the single source of truth**, and that is a measurement: the game also pokes
+  the page directly (70 writes from `$3A65`, 8 from `$65BA`, 1 from `$659A`).  A driver with its
+  own shadow grid would lose those silently.
+- ⭐⭐ **The front end never reaches the main loop's paint hook.**  `menu_wait_key` (`$6571`) spins
+  at `$6577` re-reading `key_binding_tbl`, so `$1701` is never executed out of a race and
+  *nothing painted* — with a byte-perfect page in `mem[]` and an all-zero bitmap.  ⚠ That is
+  indistinguishable from a broken renderer from either dump alone; what separated them was
+  dumping BOTH.  `$6577` is now a `SPINWAIT_HOOKS` entry: the front end's frame boundary.
+- ⚠ `VDU 127` was derived from the BYTES, not a manual: the engine sends `$9D $7F` and the real
+  screen keeps neither, so 127 is backspace-blank-stay.  Treating it as a printable block shifts
+  the whole REVS logo one cell.
+
+**Still open here:** the ~90-850 `OSWORD 10` calls the RACE view makes for its bitmap text (lap
+times and the like) — that one really is the MOS software font, and those glyphs do have to be
+drawn rather than extracted.  The front end no longer depends on it.
 
 ### ⬜ 4. Sound
 
