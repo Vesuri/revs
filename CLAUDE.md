@@ -32,7 +32,7 @@ failure mode, so they gate each other:
 
 | # | Gate | Doc |
 |---|---|---|
-| 1 | **Build the BBC reference loop.** There is no `atari800` here — ground truth must be built. First job: prove `disasm/revs_mem.bin` is byte-correct against a real BBC. | `docs/bbc-reference-loop.md` |
+| 1 | ✅ **The BBC reference loop is built and DRIVES** (`make refloop`) — the memory image is proven byte-correct on all five tracks, and a real BBC now races and renders. | `docs/bbc-reference-loop.md` |
 | 2 | **Exhaustive entry-point sweep**, before a line of C is generated. Every indirect jump, RTS-dispatch table and OS vector seeded — now *cross-checked against* the reference reconstruction rather than searched blind. | `docs/entrypoint-sweep.md` + `docs/reference-sources.md` |
 | 3 | **Transpiler emits clean C** before mass-generating. One transpiler improvement upgrades the whole corpus; late is pure tax. | `docs/transpiler.md` |
 | 4 | **Profile an end-to-end skeleton on the real A500** before choosing what to optimise, and before setting any performance target. | `docs/perf-method.md` |
@@ -112,7 +112,17 @@ make gen                   # regenerate src/gen from listing.txt + dashcode.txt 
 make image                 # rebuild disasm/revs_mem.bin from revs.ssd
 make runtime               # ⭐ replay the engine's self-unpack -> disasm/revs_runtime.bin
 make sweep                 # the entry-point sweep report -> disasm/sweep.txt
+make refloop               # ⭐⭐ RACE A REAL BBC under jsbeeb -> tmp/bbcref (the visual ground truth)
 ```
+
+⭐⭐ **`make refloop` is the visual ground truth, and it DRIVES** (2026-08-14): it boots `revs.ssd`,
+answers the front end, starts the engine, engages first gear and drives, then dumps both the BBC
+frame buffer and **what the real 6845 + Video ULA actually displayed**. Use it to settle any
+"faithful or port bug?" pixel question — never the host backend. It also prints the *measured*
+band schedule, which confirms `bbc_screen.h`'s derived boundaries against real hardware. What had
+blocked it for two days was NOT key injection (that always worked): jsbeeb's default `FakeVideo`
+never raises vertical sync, so the engine spun forever at `$4E11` (`BIT $FE4D`). Full write-up:
+`docs/bbc-reference-loop.md`.
 
 ⚠ **The host build deliberately has NO renderer.** The Atari port's SDL backend was an
 approximation of the real machine, and hours went into bugs that were only ever bugs in the
