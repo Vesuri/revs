@@ -1,3 +1,17 @@
+// ⛔ SUPERSEDED (2026-08-14) — USE tools/bbc_refloop_race.mjs, which does reach a race.
+//
+// The instinct below is right (watch what the engine asks for) but it watches the wrong thing.
+// The front end prints through ONE routine, print_message ($4D7E), indexed by X with its string
+// table at $3AD0/$3B50 — hooking that and decoding the string gives a readable transcript of
+// the whole dialogue, so there was never a need to infer the prompt from which poll fired.
+//
+// ⚠ Its bisect verdict "console_io NEVER RETURNED: no RETURN reached the MOS.  Fix key
+// injection." is FALSE, and it stood for two days.  tools/bbc_probe_return.mjs proves RETURN
+// arrives on all three injection paths at the BASIC prompt.  What actually blocked a race was
+// the unseen wing-settings prompt ($3C50) plus jsbeeb's `FakeVideo` never raising vertical sync,
+// which hangs the engine at $4E11 (`BIT $FE4D`) forever.
+//
+// ── original header ───────────────────────────────────────────────────────────────────────
 // Drive the real BBC into a race, by WATCHING what the engine is asking for.
 //
 // Three blind scripted probes failed here in a row, each one reporting its own stall as

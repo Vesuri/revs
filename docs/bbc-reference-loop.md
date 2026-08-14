@@ -8,7 +8,12 @@
 > assumption.
 >
 > **There is no atari800 here.**  This loop has to be built, and the postmortem is explicit that
-> it should be built **before** the port needs it.  Status: **not built yet.**
+> it should be built **before** the port needs it.
+>
+> ⭐ **Status (2026-08-14): IT DRIVES.**  A real BBC now boots the disc, answers the front end,
+> and races with a moving car, dumping both the frame buffer and the real ULA output.  See
+> §Status (2026-08-14) below for the tool, the three false beliefs that had blocked it, and what
+> it already settled about the 3D view's black stripes.
 
 ## Why it is on the critical path here specifically
 
@@ -179,6 +184,142 @@ milestone against, so this is better done once Phase 4/6 actually need it); the 
 harness against the port (step 4, same reasoning); the CRTC/ULA display-composition analyser
 (step 5). `tools/ssd_load.py` needs no fix — it's already correct for the regions that matter, on
 all five tracks.
+
+## ⭐⭐ Status (2026-08-14) — THE LOOP DRIVES.  A real BBC now races, and it renders.
+
+`tools/bbc_refloop_race.mjs` boots `revs.ssd`, answers the front end, enters a Silverstone
+practice session, starts the engine, engages first gear and drives with the throttle held, for as
+many frames as asked.  Run it from inside `tools/jsbeeb` (jsbeeb resolves its ROMs against cwd):
+
+```
+cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs \
+    --frames=200 --drive --dump=tmp/bbcref [--track=1..5] [--wing=0..40]
+```
+
+It writes two kinds of ground truth per run: the BBC frame buffer (`$5A80+$2580`, exactly the
+bytes `src/platform/bbc_screen.h` models) and **what the real 6845 + Video ULA actually put on
+the screen**, as a 1024x625 PPM.  The second is the half no memory dump can give.
+
+### What was actually wrong — three beliefs, all false
+
+1. **"No RETURN reaches the MOS; fix key injection."**  This was `bbc_drive.mjs`'s own bisect
+   verdict and it stood for two days.  `tools/bbc_probe_return.mjs` types `PRINT 1+1` at the
+   BASIC prompt — where success is visible in `drainText()` — and RETURN arrives on **all three**
+   injection paths (`keyDownRaw([9,4])`, `keyDown(13)`, `keyDown(keyCodes.ENTER)`).  The verdict
+   had been measured through a game whose state could not be seen, where "the key did not arrive"
+   and "we are not where we think we are" look identical.
+
+2. **⭐⭐ `TestMachine` has NO VERTICAL SYNC.**  It defaults to jsbeeb's `FakeVideo`, whose
+   `polltime()` is empty and which never calls `sysvia.setVBlankInt()`.  The MOS does not care —
+   it runs on the System VIA's 100 Hz timer — which is exactly why booting, REVINST, the track
+   menu and the whole of Revs' front end always worked, and why this hid for so long.  But the
+   engine's display setup spins on `LDA #2 / BIT $FE4D / BEQ` at **`$4E11`** (System VIA IFR bit
+   1 = CA1 = vsync), and that bit never arrived.  **Every "cannot reach a race" run ended in that
+   two-instruction loop.**  Fitting a real `Video` (as `src/machine-session.js` already does)
+   fixes it and pays twice, because a real Video also renders real pixels.
+
+3. **The `$63F7` poke-and-jump did not skip the front end — it skipped the ANSWER.**
+   `$6407` is `JSR $655A`, and when `$655A` returns execution falls into `$640A`, which is the
+   **COMPETITION** chain: class, qualifying duration, then the driver-name line editor.  That is
+   where all those unexplained OSRDCH hits came from.  Answering the menu properly is both more
+   faithful and shorter.
+
+### The prompt nobody had ever seen
+
+The front end draws in MODE 4/5, so `drainText()` shows nothing and every earlier probe drove
+blind.  But it prints through **one** routine — `print_message` (`$4D7E`), indexed by X, strings
+via the pointer pair `$3AD0`/`$3B50`, with `$FF` end, `>= $C8` nested message, `$A0+n` = n
+spaces.  Hooking that address and decoding the string yields a readable transcript, and the
+transcript immediately named the blocker:
+
+> `SELECT WING SETTINGS ] range 0 to 40` — **rear**, then **front**
+
+`$3C50`, the session driver's own preamble, asks for both through the two-character line editor
+`console_io` (`$6300`, buffer at `$0074`), validated by `$32D0` (carry clear = 0..40 in range).
+Nothing reaches a race until both are answered.  It is a genuine game prompt, not a bug.
+
+### How it drives, and why every stimulus is acknowledged
+
+`menu_wait_key` (`$6571`) is the only menu primitive: with X = option count it polls
+`menu_key_tbl` (`$39E0`) from X down to 0, where entry 0 is the **confirm** key and 1..X are the
+options.  So the driver reads the key the engine is *actually* polling out of live memory and
+presses that — no guessed keys, no timed pulses.  ⭐ The mapping is exact and worth reusing:
+
+> a BBC negative-INKEY byte `b` is internal key number `255 - b`, and the internal key number is
+> `(row << 4) | col` on the very matrix `jsbeeb`'s `keyDownRaw()` takes.
+> `$9D -> 98 -> [col 2, row 6] = SPACE`, `$CF -> 48 -> [col 0, row 3] = '1'`.
+
+It is asserted against jsbeeb's own `utils.BBC` table at startup, so a bad derivation fails loudly
+instead of becoming a silent no-op.  The same relation gives the **complete input inventory** —
+every `LDX #imm / JSR $0E50` site in the listing:
+
+| INKEY | key | polled at | what |
+|---|---|---|---|
+| `$9D` | SPACE | `$1583` | amplify steering |
+| `$9F` | TAB | `$16A5` | gear down |
+| `$A8` | `;+` | `$15C0` | steer right |
+| `$A9` | `L` | `$15B5` | steer left |
+| `$AE` | `S` | `$1660` | throttle |
+| `$BE` | `A` | `$166D` | brake |
+| `$DC` | `T` | `$497A` | starter |
+| `$EF` | `Q` | `$16AC` | gear up |
+| `$FF` / `$86` | SHIFT / RIGHT | `$3263` | the abort combo (restores S from `$6B`, `JMP $63E0`) |
+
+Every keystroke waits on the engine's own state, never a timer, because three separate silent
+failures were caught exactly there:
+
+- a digit was confirmed by "the buffer byte now holds what I sent" — but the buffer is **reused**
+  between the rear and front wing prompts, so the byte was often already there and the key was
+  never pressed.  `"20"` silently became `2`.  The fix is to acknowledge on `console_io`'s own
+  `STA ($70),Y` at `$633C`.  The run now also checks the values the engine *stored*.
+- a 0.15 s tap on `T` looked fine — the engine polled `$DC` once per frame all race — and left
+  `$61` (engine-running) at 0 for 200 frames.  Hold until `$61 == $FF` instead.
+- with the car parked the scene never changes, so 50 sampled frames returned **byte-identical**
+  counts and a perfectly confident, useless answer.  The scan now checksums the picture and says
+  `⚠ THE SCENE NEVER CHANGED` rather than reporting a number.
+
+⚠ And one wrong sampling point: `$655A` is entered **once**, not once per frame — `$16DC` does not
+return until the session ends, and the per-frame back-edge is inside it (`$1768 BMI $16EE`).
+Sampling at `$6560` produced a confident "no samples", which reads as "no stripes".
+
+### What it says about the stripes
+
+Two results, both from a **moving** car on Silverstone practice (`--wing=20`):
+
+**1. The band model is confirmed against real hardware.**  Hooking writes to `$FE20`/`$FE21` and
+recording the raster line each landed on gives the real band schedule.  ⚠ `video.bitmapY` is a
+row in a 625-row **doubled**-scanline buffer whose first displayed row is 112, so
+`display line = (bitmapY - 112) / 2`.  Converted:
+
+| measured | derived in `bbc_screen.h` | band |
+|---|---|---|
+| -26 (MODE 4) | -26.4 | 0, top text rows |
+| 18 (MODE 5) | 18.0 | 1, sky |
+| 81 | 81.1 | 2, horizon |
+| 101 | 100.5 | 3, track |
+| 166 | 166.1 | 4, dashboard |
+
+All five match.  **So the stripes are not a band-phase error**, and `bbc_screen.h`'s table moves
+from [DERIVED] to measured.
+
+**2. The horizon band is essentially never left unfilled.**  ⚠⚠ The window must be band 2
+**alone** — lines 81..100 — because band 1 (the sky) maps all sixteen palette entries to the same
+blue, so a zero byte there is invisible, and band 3's pen-0 black is the **road**.  The old 80..99
+window straddles them: line 80 by itself contributes a 16-cell run of zeros and inverts the
+answer.  Over 74 sampled frames, band 2 holds **min 0, max 18, mean 4.3 zero bytes of 800, with
+the longest run only 3 cells** — and a per-line map shows lines 81..101 completely zero-free, the
+remaining zeros being the road's vanishing-point triangle from line 102 down.
+
+The port shows **long** black horizontal runs there.  The real game does not.  So the port's
+black horizon lines are a **port bug in the fill, not a palette or band problem** — and the
+window to compare against is band 2, lines 81..100, moving-car frames only.
+
+### Still not done
+
+Named-milestone captures (step 3) and the jsbeeb cycle-diff harness against the port's physics
+(step 4).  Step 5's display-composition analyser now exists in the specific form the stripes
+needed (the measured band schedule above) but is not yet a general savestate-to-composition
+description.  Not yet wired into `make` as a repeatable check.
 
 ## The standing rule this loop exists to serve
 

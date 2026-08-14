@@ -74,7 +74,7 @@ CXX_OBJS := $(CXX_SRCS:.cpp=.o)
 OBJS     := $(C_OBJS) $(CXX_OBJS)
 TARGET   := build/revs
 
-.PHONY: all clean gen validate image runtime dashcode sweep endian-lint
+.PHONY: all clean gen validate image runtime dashcode sweep endian-lint refloop refloop-keys
 
 all: $(TARGET)
 
@@ -153,6 +153,31 @@ runtime:
 dashcode:
 	python3 tools/dashdata.py --listing disasm/dashcode.txt \
 	                          --code-only disasm/revs_dashcode.bin | tail -n 12
+
+# ⭐⭐ THE BBC DRIVING REFERENCE LOOP — ground truth from a real BBC, in a real race.
+# Boots revs.ssd under jsbeeb, answers the front end (incl. the wing-settings prompt that
+# blocked this for two days), starts the engine, engages first gear and drives, then dumps
+# BOTH the BBC frame buffer and what the real 6845 + Video ULA actually displayed.
+#
+#   make refloop                                  200 frames of Silverstone practice
+#   make refloop FRAMES=400 TRACK=1 WING=30       Brands Hatch, more downforce
+#
+# ⚠ jsbeeb resolves its ROMs against cwd, so it MUST be run from inside tools/jsbeeb, and
+# output paths inside the script are relative to the SCRIPT — "../tmp" is this repo's tmp;
+# "../../tmp" silently writes into ~/Documents/tmp and the run still looks successful.
+# ⚠ Needs Node >= 24.15 (jsbeeb's own engines field); this machine's default Volta node is
+# older, hence `volta run`.  Full write-up: docs/bbc-reference-loop.md.
+FRAMES ?= 200
+WING   ?= 20
+TRACK  ?= 5
+refloop:
+	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs \
+	    --frames=$(FRAMES) --track=$(TRACK) --wing=$(WING) --drive --dump=tmp/bbcref
+
+# Is key injection working at all?  Verified at the BASIC prompt, where success is VISIBLE —
+# never through the game, where a silent no-op and a rejected value look identical.
+refloop-keys:
+	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_probe_return.mjs
 
 # The entry-point sweep report (docs/entrypoint-sweep.md, docs/static-map.md).
 #   make sweep                       -> disasm/sweep.txt

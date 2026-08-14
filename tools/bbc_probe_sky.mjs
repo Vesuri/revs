@@ -1,3 +1,21 @@
+// ⛔⛔ SUPERSEDED (2026-08-14) — USE tools/bbc_refloop_race.mjs INSTEAD.
+//
+// This probe never reached a race, and the reasons it gives below for why are WRONG.  Kept only
+// as the record of a wrong diagnosis; do not take a reading from it.
+//
+//  - "bbc_drive.mjs does not reach a race and never has / no RETURN reached the MOS."  RETURN
+//    was never the problem — tools/bbc_probe_return.mjs delivers it three different ways at the
+//    BASIC prompt, where success is visible.
+//  - The real blocker was TWO things nobody had seen: (1) the session's own preamble $3C50 asks
+//    for the REAR and FRONT WING settings through a line editor, and (2) `TestMachine` defaults
+//    to jsbeeb's `FakeVideo`, which never raises vertical sync, so the engine spun forever at
+//    $4E11 (`BIT $FE4D`) waiting for it.
+//  - The $63F7 poke-and-jump below does NOT skip the front end: $6407 is `JSR $655A`, and when
+//    that returns execution falls into $640A, the COMPETITION chain.  It skipped the ANSWER.
+//  - Its window (lines 80-99) straddles the flat-blue sky band and the horizon band, so line 80
+//    alone contributes a 16-cell run of zeros and the answer reads inverted.
+//
+// ── original header ───────────────────────────────────────────────────────────────────────
 // ⭐ BBC GROUND TRUTH FOR THE HORIZON BLACK LINES.
 //
 // The port shows horizontal BLACK runs in the sky just above the horizon, and a few on the
