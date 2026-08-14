@@ -103,6 +103,50 @@ volatile uint16_t g_screenBytes      = 0;   /* size of the bitplane block       
 volatile uint16_t g_screenCopperWords = 0;  /* LIST_LENGTH — so the dump can't go stale  */
 }
 
+/* ⭐⭐ WHERE THE BEAM ACTUALLY IS when the copper list and the bitplane pointers are rewritten.
+ *
+ * ⚠ THE RULE (docs/amiga-lessons.md, CLAUDE.md): bitplane POINTER swaps happen in the VBI,
+ * never mid-frame.  vbiUpdate() IS called from the VERTB handler, which is why the rule looked
+ * satisfied by construction — but "in the VERTB handler" and "in the vertical blank" are the
+ * same thing only while the handler is SHORTER THAN A FRAME.  Here it is not: Revs::vbi() runs
+ * the game's whole 50 Hz body (band 4 of the IRQ1V cycle is FUN_52a4) before it gets to
+ * vbiUpdate(), and the body takes hundreds of milliseconds at the current baseline.  So the
+ * swap and the band rebuild can land ANYWHERE in a much later field, with the copper already
+ * past the words being edited.
+ *
+ * That cannot be reasoned about from the source and it cannot be seen in a dump either — a
+ * copper list dumped at a frame boundary is consistent whatever the beam did while it was
+ * being written.  So it is MEASURED: two register reads once per PAINTED frame (~1/s), which
+ * is why they are affordable in a build that also quotes a framerate.
+ *
+ * Read with amiga/beam_watch.gdb.  A display line here means the write raced the beam.
+ * ⚠ Must stay in PROBE_SYMS (amiga/Makefile) or --gc-sections drops them and gdb prints
+ * instruction bytes as a measurement. */
+extern "C" {
+volatile uint16_t g_beamPresentLine  = 0;   /* raster line of the most recent present()     */
+volatile uint16_t g_beamPresentMin   = 0xFFFF;
+volatile uint16_t g_beamPresentMax   = 0;
+volatile unsigned long g_beamPresents = 0;  /* presents counted                              */
+volatile unsigned long g_beamPresentsLate = 0; /* ...of which the beam was inside the display */
+/* And the same question one level up: where is the beam when the VERTB handler is ENTERED?
+   It answers whether a swap moved to the TOP of the handler would actually be in the blank —
+   an overrunning handler leaves VERTB pending, so the next one is taken the instant interrupts
+   are enabled again, which can be mid-display no matter what the code order is. */
+volatile uint16_t g_beamEntryLine  = 0;
+volatile unsigned long g_beamEntries     = 0;
+volatile unsigned long g_beamEntriesLate = 0;
+}
+
+/* The raster line, from the two beam registers: VPOSR bit 0 is V8, VHPOSR's high byte is
+   V7..V0.  Read VPOSR first — the pair is not atomic, and taking the high bit after the low
+   byte can straddle a line-256 crossing. */
+static inline uint16_t beamLine()
+{
+    uint16_t hi = *vposrPointer;
+    uint16_t lo = *vhposrPointer;
+    return (uint16_t)(((hi & 1u) << 8) | (lo >> 8));
+}
+
 /* ---------------------------------------------------------------------------
    ONE-TIME custom registers, written with the CPU.
 
@@ -388,6 +432,14 @@ void RevsScreen::snapshotBands()
     }
 }
 
+void RevsScreen::noteVbiEntry()
+{
+    const uint16_t line = beamLine();
+    g_beamEntryLine = line;
+    g_beamEntries++;
+    if (line >= kDisplayTop && line < kDisplayTop + kH) g_beamEntriesLate++;
+}
+
 void RevsScreen::vbiUpdate()
 {
 #ifdef REVS_SCREEN_NO_BANDS
@@ -398,6 +450,18 @@ void RevsScreen::vbiUpdate()
        nothing would re-introduce exactly the mismatch above, and it would also spend ISR time
        rewriting a schedule for pixels that are not changing. */
     if (!m_ready) return;
+
+    /* ⭐ MEASURE THE BEAM BEFORE TOUCHING THE LIST, not after: what matters is whether the
+       copper had already read these words this field, and that is decided by where the beam is
+       when the write starts.  See beamLine() above for why this is here at all. */
+    const uint16_t line = beamLine();
+    g_beamPresentLine = line;
+    if (line < g_beamPresentMin) g_beamPresentMin = line;
+    if (line > g_beamPresentMax) g_beamPresentMax = line;
+    g_beamPresents++;
+    /* kDisplayTop..kDisplayTop+kH is the display window; a swap inside it raced the beam. */
+    if (line >= kDisplayTop && line < kDisplayTop + kH) g_beamPresentsLate++;
+
     buildBands();
     present();
 }

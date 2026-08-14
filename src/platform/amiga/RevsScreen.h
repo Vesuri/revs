@@ -53,6 +53,12 @@ public:
        buffer by swapping the bitplane pointers. */
     void vbiUpdate();
 
+    /* Records the beam line at VERTB entry (g_beamEntry*, read by amiga/beam_watch.gdb).
+       Two register reads: the ISR comment in PlatformAmiga.cpp asks for exactly this before
+       theorising about ISR-side work, and it is what says whether the handler is being
+       entered in the blank at all. */
+    void noteVbiEntry();
+
 private:
     /* One-time custom registers (FMODE / BPLCON1 / BPLCON2 / BPLCON3), CPU-written with the
        copper halted.  The rule and the reasoning are at the definition: constants go here,

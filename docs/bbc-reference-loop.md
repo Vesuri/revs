@@ -367,14 +367,31 @@ look like something else entirely too.
 against the real machine's ≤3), `g_irqClobberCount` is 0, and the host detector
 (`REVS_STRIPE_WATCH=1`) reports nothing over a long moving-car run.
 
-⬜ **Residual, and the honest remaining risk.** A single frame with a *green* (not black) fill run
-has been seen since. Same carry mechanism with a non-zero A, and the register contract is held, so
-the most likely cause is a fidelity gap the counter cannot see: **a 6502 IRQ is taken only between
-instructions, but the Amiga's VERTB preempts transliterated C mid-statement** — e.g. between
-`mem[]` being read and `cpu.Z` being assigned inside one `LDY(...)`. A real BBC cannot split that;
-the port can. The two ways out are to run the body at a 6502-instruction boundary (defer it to the
-main loop / spin-wait hooks, at the cost of the 50 Hz tick's regularity) or to mask the VERTB
-around transliterated code. Not attempted yet — recorded so it is not re-derived.
+✅ **The residual — black OR green fill runs, still there after the `$FC` fix — was NOT in the
+fill at all.  It was a RASTER RACE, 2026-08-14.** The hypothesis recorded here (a VERTB preempting
+transliterated C mid-statement, which a real 6502 IRQ cannot do) was plausible and wrong, and the
+way it was killed matters more than the guess:
+
+- The game's frame buffer is **clean**.  24 consecutive captures of `mem[$5A80]` — moving car and
+  parked car — hold sky (pen 1) above the horizon and ground (pen 3) below, with the road
+  triangle, and `python3 tools/fill_check.py` finds no wrong-value run reaching the right edge.
+  ⚠ Nor could `tools/amiga_ppm.py` reproduce the artefact from the *displayed* bitplanes + copper
+  list: twelve consecutive frames decoded correctly while the FS-UAE window was visibly broken.
+  **When every dump is clean and the screen is not, stop dumping data and go measure timing.**
+- `screen.vbiUpdate()` — the palette-band rebuild *and* the bitplane-pointer swap — ran at the
+  END of `Revs::vbi()`, i.e. after the game's whole 50 Hz body. Two `VPOSR`/`VHPOSR` reads at the
+  write: **49 of 49 presents at raster line 46-149, inside the 44..251 display window**, while
+  the handler was entered at line 1 every single time. A rebuilt copper `WAIT` behind the beam
+  blocks the copper for the rest of the field, so the bands after it never run and the horizon
+  keeps the previous band's pen 0 (black) or pen 3 (green) — the artefact, exactly.
+- The fix is an ORDER: do the copper work first in the handler, above the game body. One field of
+  latency in a ~50-field frame. `g_beamPresentsLate` is now a standing check that must read 0
+  (`amiga/beam_watch.gdb`), and the general lesson is written up in `docs/amiga-lessons.md`
+  §"In the VBI ISR" is not the same as "in the vblank".
+
+⬜ Still true and still unaddressed: a 6502 IRQ is taken only between instructions, and the
+Amiga's VERTB *can* preempt transliterated C mid-statement. Nothing has been attributed to it —
+recorded so it is not re-derived, not as a suspect with evidence.
 
 ### Still not done
 

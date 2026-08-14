@@ -100,6 +100,30 @@ copper's own fetch and desyncs which buffer is displayed.
 **Colour-only mid-frame pokes are tolerable** (a torn colour is invisible for one frame).
 Pointer pokes are not.
 
+### ⭐⭐ "In the VBI ISR" is not the same as "in the vblank" — Revs, 2026-08-14
+The rule above says *where in the code*; what it means is *where the beam is*.  Those coincide
+only while the handler is **shorter than the blank**, and this port's VERTB handler is not: it
+runs the game's whole 50 Hz body (the IRQ1V band cycle ends in `FUN_52a4`, the simulation) before
+it got to the swap.  Measured with two `VPOSR`/`VHPOSR` reads at the swap itself: **49 of 49
+presents at raster line 46-149, every one inside the 44..251 display window** — while the handler
+was being *entered* at line 1 every time, 0 late.  The body costs only a few milliseconds, and a
+few milliseconds is a hundred scanlines.
+
+Consequence, and it is worse than a torn pointer, because the same call also rebuilt the palette
+bands: **a rewritten `WAIT` whose line is already behind the beam blocks the copper until the
+next field, so every band after it is skipped** and the rest of the screen keeps the previous
+band's colours.  In Revs that painted a black or green run across the horizon, appearing and
+disappearing frame to frame — read for a week as a bug in the game's own fill.
+
+Two things follow:
+- **Do the copper work FIRST in the handler, above any game work.**  One field of extra latency
+  in a frame that takes fifty of them.
+- ⚠ **A frame-boundary dump CANNOT see this.**  The list you dump after the field is consistent;
+  the damage was the copper's *execution* of it.  Twelve consecutive clean captures preceded an
+  obviously broken screen.  The instrument for a raster race is the beam position at the write
+  (`amiga/beam_watch.gdb`, `g_beamPresentsLate` — a standing check that must read 0), not the
+  bytes afterwards.
+
 ### `SPRxPT` operands obey the same rule, with an earlier deadline
 The copper executes a list's sprite-pointer MOVEs at **scanline 16** (`d[0] = copperWait(16,0)`),
 and the sprite's control-word DMA fetch is at **~scanline 25**.  So a per-frame `SPRxPT`

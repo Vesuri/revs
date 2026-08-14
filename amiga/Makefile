@@ -224,7 +224,9 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_screenFrontAddr g_screenCopperAddr g_screenBytes g_screenCopperWords \
              g_bandRejects \
              g_bandCount g_bandOverflow g_keyUnmapped g_keyUnmappedCode g_keyEvents g_keyDown \
-             g_irqClobberCount g_irqClobberWhich
+             g_irqClobberCount g_irqClobberWhich \
+             g_beamPresentLine g_beamPresentMin g_beamPresentMax \
+             g_beamPresents g_beamPresentsLate g_beamEntryLine g_beamEntries g_beamEntriesLate
 # ⚠ CONDITIONAL, because these only EXIST under PROBES (src/platform/probe.cpp compiles to
 # nothing otherwise).  Listing them unconditionally makes --undefined=<sym> unsatisfiable and a
 # plain `make` fails at probe-audit — which is the audit working, not a bug in it.  The rule

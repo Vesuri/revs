@@ -51,13 +51,41 @@ void Revs::vbi()
     // per interrupt and the simulation would tick at 10 Hz while everything else looked
     // right.  perf-method.md is explicit that the 50 Hz sim tick is not negotiable.
     //
-    // ⚠ APPROXIMATION, and a deliberate one: the bands all fire here at the top of the
-    // frame instead of at their scheduled raster positions, so the mid-screen palette
-    // splits collapse into one.  That is invisible today (nothing is drawn) and is Phase
-    // 5's job — g_userT1LatchLo/Hi in bbc_hw.cpp capture the schedule so the bands can
-    // become copper WAITs, which is where they belong.  Recorded here rather than in a
-    // doc because this is the line that has to change.
+    // ⚠ APPROXIMATION, and a deliberate one: the bands all fire here at the top of the frame
+    // instead of at their scheduled raster positions, so the palette WRITES collapse into one
+    // point in time.  What keeps that faithful is that they are only a RECORD (bbc_hw.cpp
+    // captures the T1 latch per band); the schedule itself is re-emitted as copper WAITs by
+    // RevsScreen, which is where a raster-position palette change belongs.  So the collapse
+    // costs nothing as long as the record is snapshot with the frame it describes.
     //
+    // ⚠ Bounded, because Rule 5 caps ISR work at one frame and an unbounded loop over a
+    // state machine the game can change is how an ISR eats every frame.  8 = the five
+    // real bands plus slack; overrunning it drops the rest of this frame's bands rather
+    // than the whole display.
+    // Where is the beam right now?  Two register reads, and the answer decides whether the
+    // present/band rebuild below can legally happen at all (RevsScreen.cpp, beamLine()).
+    screen.noteVbiEntry();
+
+    // ⭐⭐ THE COPPER WORK COMES FIRST, IN THE BLANK — and this ORDER is the whole point.
+    //
+    // "In the VERTB handler" and "in the vertical blank" are the same thing only while the
+    // handler is shorter than the blank.  The game body below is not: the band cycle ends in
+    // FUN_52a4, the 50 Hz simulation, and it runs for MILLISECONDS.  With vbiUpdate() after
+    // it, every band rebuild and every bitplane-pointer swap landed at raster line 46..149 —
+    // MEASURED, 49 of 49 presents inside the 44..251 display window (amiga/beam_watch.gdb).
+    // The copper has already executed the words being rewritten by then, so a rebuilt WAIT
+    // whose line is behind the beam blocks the copper until the NEXT field and every band
+    // after it is skipped: the horizon keeps the previous band's pen 0 (BLACK) or pen 3
+    // (GREEN) all the way down.  That is the "black or green fill run at the horizon" this
+    // port was showing, and it is a raster race, not a fill bug.
+    //
+    // Presenting BEFORE the body costs one field of latency in a frame that takes ~50 of
+    // them, and it puts the writes where the rule says they go: g_beamPresentsLate must stay
+    // 0.  It is also why the band record has to be SNAPSHOT in decode() (snapshotBands) —
+    // the record the loop below writes belongs to the frame the main loop has not decoded
+    // yet, not to the pixels going up here.
+    screen.vbiUpdate();
+
     // ⚠ Bounded, because Rule 5 caps ISR work at one frame and an unbounded loop over a
     // state machine the game can change is how an ISR eats every frame.  8 = the five
     // real bands plus slack; overrunning it drops the rest of this frame's bands rather
@@ -67,11 +95,6 @@ void Revs::vbi()
         platform->fireIrq1v();
         if (mem[0x4F43] == 0) break;      // $4F43 = irq_band_state; 0 = cycle complete
     }
-
-    // ⭐ The five bands the cycle just wrote are now a record of this field's palette and
-    // pixel depth as a function of raster position (src/platform/bbc_screen.h).  Turn it
-    // into copper WAITs and present the finished frame — both belong here and only here.
-    screen.vbiUpdate();
 }
 
 void Revs::run()

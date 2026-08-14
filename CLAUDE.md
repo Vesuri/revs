@@ -321,7 +321,11 @@ Three rules that must survive without opening `docs/perf-method.md`:
 - **Copper bitplane POINTER swaps happen in the VBI ISR, never mid-frame** — a torn pointer
   garbages the whole viewport for a frame. Colour-only pokes mid-frame are tolerable.
   `SPRxPT` operands are stricter still (the copper reads them at scanline 16).
-  (`docs/amiga-lessons.md`)
+  ⚠⚠ **"In the VBI ISR" ≠ "in the vblank":** this handler runs the game's 50 Hz body, so anything
+  after it lands 100+ scanlines into the display (measured 46-149). The copper work goes FIRST in
+  the handler, and `g_beamPresentsLate` (`amiga/beam_watch.gdb`) must stay 0. A rebuilt copper
+  WAIT behind the beam blocks the copper for the field and skips every band after it — that was
+  the horizon's black/green runs, and no frame-boundary dump can see it. (`docs/amiga-lessons.md`)
 - **Work in the vblank ISR is capped at ONE FRAME.** Over that you silently drop a displayed
   frame, and the dropped frame is what the user reports — not the cost.
 - **`mem[]` is little-endian; the Amiga is big-endian; the host is little-endian.** Never alias
