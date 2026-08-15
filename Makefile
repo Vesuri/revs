@@ -66,6 +66,7 @@ endif
 # The generated files do not exist until `make gen`; wildcard so a fresh clone builds.
 C_SRCS := \
     src/cpu/cpu.c \
+    src/platform/sound.c \
     $(wildcard src/gen/revs_gen.c) \
     $(wildcard src/gen/revs_manual.c) \
     $(wildcard src/gen/revs_native.c)
@@ -87,7 +88,7 @@ OBJS     := $(C_OBJS) $(CXX_OBJS)
 TARGET   := build/revs
 
 .PHONY: all clean gen validate image runtime dashcode sweep endian-lint refloop refloop-keys \
-        mode7 mode7-fixture font
+        mode7 mode7-fixture font sound sound-fixture sound-fixture-race
 
 all: $(TARGET)
 
@@ -115,6 +116,31 @@ mode7: $(MODE7_OBJS) | build
 mode7-fixture:
 	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_probe_mode7.mjs \
 	    --dump=../../tmp/mode7
+
+# ⭐ SOUND validation — the port's MOS sound scheduler against a REAL BBC, tick for tick.
+#   make sound                     replay both fixtures through src/platform/sound.c
+#   make sound VERBOSE=1           ...and print the first mismatching ticks in full
+#   make sound FIX=<file>          just one fixture
+#   make sound-fixture             re-record the MOS sweeps (pitch/amplitude/envelope/flush)
+#   make sound-fixture-race        re-record REVS'S OWN sound out of a real driving race
+# Revs never addresses the SN76489 — it issues OSWORD 7/8 — so what is under test is the OS's
+# scheduler, and none of it can be recovered from the game binary.  src/platform/sound.h has the
+# model and where each number was measured.
+SOUND_OBJS := src/platform/sound.o tools/validate_sound.o
+sound: $(SOUND_OBJS) | build
+	$(CC) $(CFLAGS) -o build/validate_sound $(SOUND_OBJS)
+	./build/validate_sound $(if $(VERBOSE),--verbose,) $(FIX)
+
+sound-fixture:
+	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_probe_sound.mjs \
+	    --dump=../../tmp/soundref
+
+# ⚠ --drive is not optional here: the engine sound IS the rev count, so a parked car records
+# silence and the fixture would pass on nothing.
+sound-fixture-race:
+	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs \
+	    --frames=$(FRAMES) --track=$(TRACK) --wing=$(WING) --drive \
+	    --sound=tmp/soundref/revs_race.json
 
 # Regenerate the MODE 7 character generator.  Sources the SAA5050 glyph shapes from jsbeeb's
 # teletext data and GENERATES the two mosaic sets; see the generator's header for provenance and
@@ -162,7 +188,8 @@ endian-lint:
 
 clean:
 	rm -f $(OBJS) $(TARGET) tools/validate_native.o build/validate_native \
-	      tools/validate_mode7.o build/validate_mode7
+	      tools/validate_mode7.o build/validate_mode7 \
+	      tools/validate_sound.o build/validate_sound
 
 # ⭐ Replay the engine's own startup unpack -> disasm/revs_runtime.bin.
 # REVS2 relocates itself before running, so revs_mem.bin is NOT the layout the engine

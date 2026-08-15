@@ -60,6 +60,7 @@
 import { TestMachine } from "./jsbeeb/tests/test-machine.js";
 import { Video } from "./jsbeeb/src/video.js";
 import * as utils from "./jsbeeb/src/utils.js";
+import { CaptureSoundChip, attachSoundCapture, hookOswordSound, writeFixture } from "./bbc_sound_capture.mjs";
 import fs from "fs";
 import path from "path";
 
@@ -162,9 +163,23 @@ const video = new Video(false, fb32, function () {
     completeFb8.set(fb8); // snapshot at paint time: always a whole frame, never mid-render
 });
 
+// ── --sound: what the ENGINE asks the MOS for, and what the MOS writes to the chip ────────
+// Revs never addresses the SN76489: every note is an OSWORD 7 block (`sound_queue` $0B4A) and
+// one OSWORD 8 envelope (`sound_envelope` $0B65), so the port has to reproduce the MOS's
+// scheduler.  Both halves have to come off a real machine WITH THE ENGINE RUNNING — the sound is
+// the rev count, so a parked car measures silence.  Use --drive with this.
+const soundOut = opt("sound", null);
+const soundChip = soundOut ? new CaptureSoundChip() : undefined;
+const soundCmds = [];
+
 const data = fs.readFileSync(new URL("../revs.ssd", import.meta.url));
-const tm = new TestMachine("B-DFS1.2", { video });
+const tm = new TestMachine("B-DFS1.2", soundChip ? { video, soundChip } : { video });
 await tm.initialise();
+if (soundChip) {
+    attachSoundCapture(tm, soundChip);
+    soundChip.tag = () => ({ frame: frames });
+    hookOswordSound(tm, soundChip, soundCmds);
+}
 tm.loadDiscData(new Uint8Array(data));
 tm.startCapture();
 const rd = (a) => tm.processor.readmem(a);
@@ -756,6 +771,45 @@ if (skySamples.length) {
           `${Math.max(...skyR)} cells) — compare the port's count against this before blaming the port.`);
 } else if (frames > 0) {
     console.log("\n(no zero-byte samples: the race ran fewer than the 8 warm-up frames the scan skips)");
+}
+
+// ── the engine's sound, as the MOS actually played it ─────────────────────────────────────
+if (soundOut) {
+    const dir = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", path.dirname(soundOut));
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, path.basename(soundOut));
+    fs.writeFileSync(file, JSON.stringify({ cmds: soundCmds, writes: soundChip.writes }, null, 1));
+    // ...and the tick-quantised fixture `make sound` replays through the port's own scheduler.
+    const fixture = file.replace(/\.json$/, "") + "_events.txt";
+    const q = writeFixture(fixture, soundCmds, soundChip.writes, fs);
+    const sevens = soundCmds.filter((c) => c.osword === 7);
+    console.log(`\nSOUND CAPTURE: ${sevens.length} OSWORD 7, ${soundCmds.length - sevens.length} OSWORD 8, ` +
+        `${soundChip.writes.length} chip writes -> ${file}`);
+    console.log(`  fixture: ${fixture}  (${q.events} events over ${q.ticks} ticks, ` +
+        `worst grid residual ${q.worstResidualCycles} cycles)`);
+    if (!sevens.length)
+        console.log("  ⚠ NOT ONE SOUND COMMAND.  The engine was never started (--drive) or it never revved:\n" +
+            "     this run is silence, not evidence about sound.");
+    else {
+        const byChan = new Map();
+        for (const c of sevens) {
+            const ch = c.bytes[0] & 3;
+            const e = byChan.get(ch) || { n: 0, pitches: new Set(), amps: new Set(), durs: new Set() };
+            e.n++;
+            e.pitches.add(c.bytes[4]);
+            e.amps.add(c.bytes[2] | (c.bytes[3] << 8));
+            e.durs.add(c.bytes[6]);
+            byChan.set(ch, e);
+        }
+        for (const [ch, e] of [...byChan].sort()) {
+            const p = [...e.pitches].sort((a, b) => a - b);
+            console.log(`  BBC ch${ch}: ${e.n} commands  pitch ${p[0]}..${p[p.length - 1]} (${p.length} distinct)  ` +
+                `amp {${[...e.amps].map((a) => (a & 0x8000 ? a - 0x10000 : a)).join(",")}}  ` +
+                `duration {${[...e.durs].join(",")}}`);
+        }
+        const last = soundChip.writes[soundChip.writes.length - 1];
+        console.log(`  final chip state: tone=[${last.tone}] noise=${last.noise} vol=[${last.vol}]`);
+    }
 }
 
 // ── ground truth out ──────────────────────────────────────────────────────────────────────
