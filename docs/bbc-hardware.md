@@ -120,6 +120,30 @@ registers across 4 devices, agreed independently by `tools/sweep_entrypoints.py`
   steering" key, so the analogue response curve is real logic to be reproduced, not a range to be
   invented — read it out of the binary rather than tuning by feel.
 
+  ⭐ **The steering DIRECTION is [DERIVED], and the one link that was not cost a play-test**
+  (2026-08-16).  The chain from the mouse to the wheel is derivable end to end: `kbd_test_key`
+  returns **Z set when held**, so `$15B3`'s fall-through arm is the held arm and L gives `$76 = 2`
+  while `;/+` gives 1; `$15E7` EORs `$76` with `$62A2` and ANDs #1, which proves `$76` bit 0 *is*
+  the direction bit; `adc_read`'s `TYA / LDX #1 / ADC #$80 / BPL` (`$5044`) leaves X = 1 for an ADC
+  high byte ≥ `$80`, and `$15A7`'s `TXA / ORA $74` makes that the same bit (`mul8` at `$0C02` is
+  fully unrolled and never touches X, so it survives the intervening call).  The disc's own
+  `REVINST` prints "L - Steer left" / "+ - Steer right", so **direction bit 0 = LEFT** with nothing
+  assumed.  ⚠ The single link *not* in that chain was the Amiga mouse's own counter direction, and
+  it was assumed — wrongly.  It steered backwards on the target while every derived step was right,
+  which is why `MOUSE_X_SIGN` in `RevsInput.cpp` is one named constant carrying the empirical sign.
+
+  ⭐ **The mouse BUTTONS are a deliberate divergence** (user, 2026-08-16): **right = throttle, left
+  = brake**, driving ADC channel 2 the way the S/A keys already do.  There is no BBC precedent to be
+  faithful to — analogue mode has exactly **one** button and spends it on the gearbox (`$168E` reads
+  it, `$1696` picks up-vs-down itself from `$3E`/`$3F`; the player never chooses a direction), so
+  that faithful meaning goes on the **middle** button and nothing is lost.  ⚠ Left/right/middle come
+  from two different places — left is `CIAAPRA` bit 6, right and middle are `POTINP` bits 10 and 8 —
+  and the `POTINP` pair only report while the pot pins are **inputs**, hence the one-off `POTGO`
+  clear in `initialize()`.  ⚠⚠ **FS-UAE does not model that dependency**: removing the clear
+  entirely still reads both buttons correctly (measured by sabotage), so this is a real-hardware-only
+  requirement that no host run can verify.  `amiga/mousebtn.gdb` proves the released state reads
+  released and says so in its own header.
+
 ## MOS calls — genuinely new vs the Atari port
 
 ⚠ **This is the structural difference from RoF, and it needs a design decision, not just code.**

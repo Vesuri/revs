@@ -155,7 +155,7 @@ proofs. Full rationale: `src/platform/host/PlatformHost.h`.
 . env.sh        # put the ~/.local Amiga toolchain on PATH (source it, SAME shell command)
 make            # build out/Revs.exe (+ Revs.elf; runs the muldiv audit on every link)
 make STRAIGHT_TO_RACE=1   # ⭐ boot straight into the race — see below
-./run.sh        # boot in FS-UAE (Kickstart 3.1; left mouse button quits)
+./run.sh        # boot in FS-UAE (Kickstart 3.1; CTRL + left mouse button quits)
 ./debug.sh      # source-level debug via the FS-UAE GDB stub (prints its $DEBUG_PORT)
 ./diag_run.sh N # headless probe run for N seconds (needs a PROBES=1 build)
 ```

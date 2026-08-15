@@ -39,10 +39,17 @@ public:
     /* OSBYTE 129 negative INKEY: is the key with internal number -(256-x) held? */
     bool keyDown(uint8_t x) const;
 
-    /* OSBYTE 128.  channel 1 = steering (the mouse), 2 = throttle/brake (keys),
-       X=0 = the fire-button word (gear-change keys). */
+    /* OSBYTE 128.  channel 1 = steering (the mouse), 2 = throttle/brake (the mouse
+       buttons and the keys), X=0 = the fire-button word (middle button, gear keys). */
     uint16_t axis(uint8_t channel) const;
     uint8_t  buttons() const;
+
+    /* ⭐ THE MOUSE BUTTONS, and the one place that knows which register each lives in.
+       0 = left, 1 = right, 2 = middle.  Active-low in hardware; true means HELD here.
+       ⚠ Right and middle come from POTINP, which only reports them while the pot pins are
+       INPUTS — initialize() clears POTGO once for that.  Read them without it and both
+       buttons read "held" forever, which looks like a stuck throttle, not a dead read. */
+    bool mouseButton(uint8_t which) const;
 
     /* ⭐ Press/release the Amiga key that this map pairs with a BBC negative-INKEY code,
        as if the CIA-A handler had seen it.  Used by the scripted auto-run so that an

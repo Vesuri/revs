@@ -2,7 +2,7 @@
 /* Revs — the Amiga application/scene class.
  *
  * ⚠ SCAFFOLD.  Today this is the minimum that proves the machine is ours: one copper
- * list, one background colour, a run() loop that pumps frames until the left mouse
+ * list, one background colour, a run() loop that pumps frames until CTRL + the left mouse
  * button quits.  It is deliberately the same shape the finished app will have, so
  * filling it in never means restructuring it.
  *

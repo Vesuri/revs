@@ -292,6 +292,7 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_screenFrontAddr g_screenCopperAddr g_screenBytes g_screenCopperWords \
              g_bandRejects \
              g_bandCount g_bandOverflow g_keyUnmapped g_keyUnmappedCode g_keyEvents g_keyDown \
+             g_mouseBtnMask g_mouseBtnSeen \
              g_irqClobberCount g_irqClobberWhich \
              g_irqUnwindPending g_irqUnwindTouched g_irqStackImbalance \
              g_stackLow g_stackHigh g_stackTrespass \

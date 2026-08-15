@@ -28,6 +28,7 @@
 #include "../trackmenu.h"  /* ...and the menu that makes it the PLAYER's */
 
 extern "C" volatile uint8_t mem[65536];      // the 6502 RAM image (src/cpu/cpu.c)
+extern "C" volatile uint8_t g_keyDown[128];  // RevsInput's rawkey state, for the quit chord
 
 // GfxBase is opened in the constructor (GCCRuntime.cpp defines the global).
 extern struct GfxBase* GfxBase;
@@ -249,9 +250,12 @@ void PlatformAmiga::renderFrame()
 
 void PlatformAmiga::pollEvents()
 {
-    // Left mouse button quits.  Polled from every spin-wait so the player can always
+    // ⚠ QUIT IS CTRL + LEFT BUTTON, not the bare left button it used to be: the left button
+    // is the BRAKE PEDAL now (RevsInput::axis channel 2), so a bare-button quit would end the
+    // program the first time the player braked.  Ctrl is not a key the game ever tests, so the
+    // chord cannot collide with anything.  Polled from every spin-wait so the player can always
     // abort — including out of a compute stretch that never reaches renderFrame().
-    if ((*ciaapraPointer & 0x40u) == 0) quit = true;
+    if ((*ciaapraPointer & 0x40u) == 0 && g_keyDown[0x63]) quit = true;
 }
 
 // ⭐⭐ THE CIRCUIT MENU.  src/platform/trackmenu.h is the model and `make trackmenu` proves the

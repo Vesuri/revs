@@ -62,14 +62,17 @@ struct KeyMap { uint8_t bbc; uint8_t rawkey; };
    **;/+** — cross-checked against jsbeeb's own key matrix by inverting it, and they are exactly the
    two keys the manual documents for steering ("L/+ steer").  Both are mapped below, on the SAME
    letters, alongside the arrow keys an Amiga player reaches for first.
-   ⚠ WHICH WAY EACH ONE GOES IS STILL [ASSUMED].  $15B5 tests -87 first (setting $76=2) and $15C0
-   tests -88 (making it 1 or 3); nothing in that code says which value is left.  L sits to the LEFT
-   of ;/+ on the keyboard, so L is assumed to steer left.  One line to flip, and the honest way to
-   settle it is to hold each on a real BBC and watch the car's track position — not by feel. */
+   ⭐ WHICH WAY EACH ONE GOES IS NOW [DERIVED] AND CONFIRMED ON THE TARGET.  $15B5 tests -87 and
+   sets $76=2, $15C0 tests -88 and makes it 1 — and kbd_test_key returns Z SET when the key is
+   held, so in both cases the FALL-THROUGH arm is the held arm.  $15E7 then EORs $76 with $62A2
+   and ANDs #1, which is what proves $76 bit 0 IS the direction bit: L = 0, ;/+ = 1.  The disc's
+   own instructions settle the rest — REVINST prints "L - Steer left" and "+ - Steer right" — so
+   direction bit 0 is LEFT, with no assumption left in the chain.  Confirmed by the player driving
+   it.  ⚠ Do not read the arrow rows below as independent evidence: they are pinned to these. */
 static const KeyMap kKeys[] = {
     /* --- driving -------------------------------------------------------- */
-    { 0xA9, RK_LEFT   },   /* -87  steer left  [ASSUMED direction]            */
-    { 0xA8, RK_RIGHT  },   /* -88  steer right [ASSUMED direction]            */
+    { 0xA9, RK_LEFT   },   /* -87  steer left  ($76=2, direction bit 0)       */
+    { 0xA8, RK_RIGHT  },   /* -88  steer right ($76=1, direction bit 1)       */
     { 0xA9, RK_L      },   /*      ...and the BBC's OWN steering keys, L and  */
     { 0xA8, RK_SEMI   },   /*      ;/+ — [DERIVED], see the note above.  A    */
                            /*      player following the game's own docs was   */
@@ -134,6 +137,15 @@ extern "C" {
 volatile unsigned long g_keyUnmapped = 0;
 volatile unsigned char g_keyUnmappedCode = 0;
 volatile unsigned long g_keyEvents = 0;     /* keycodes seen; 0 = the handler never ran */
+
+/* ⭐ PROBE_SYMS: the three mouse buttons as a bitmask (1 = left, 2 = right, 4 = middle),
+   sampled every VBI, plus a sticky OR of everything ever seen.  This exists because the
+   POTINP failure mode is SILENT and inverted: get the POTGO setup wrong and right/middle
+   read as permanently HELD, which is a stuck throttle and a stuck brake rather than a dead
+   control.  A headless run cannot press a button, but it CAN prove the idle state reads 0 —
+   which is the half of the contract that breaks silently (amiga/mousebtn.gdb). */
+volatile unsigned char g_mouseBtnMask = 0;
+volatile unsigned char g_mouseBtnSeen = 0;
 }
 
 static struct Library*   s_ciaaBase    = 0;
@@ -170,6 +182,11 @@ bool RevsInput::initialize()
     m_steer      = 0x80;      /* dead centre */
     m_lastMouseX = (uint8_t)(*joy0datPointer & 0xFFu);
     for (unsigned i = 0; i < 128; i++) g_keyDown[i] = 0;
+
+    /* ⚠ Make the pot pins INPUTS so POTINP reports the right and middle buttons.  Clearing
+       POTGO's four OUT* enables is the whole requirement; the START bit is for the paddle
+       counters, which nothing here uses.  Without this both buttons read as held. */
+    *potgoPointer = 0x0000u;
 
     s_ciaaBase = (struct Library*)OpenResource((CONST_STRPTR)CIAANAME);
     if (!s_ciaaBase) return false;
@@ -225,13 +242,33 @@ bool RevsInput::keyDown(uint8_t x) const
 /* ---------------------------------------------------------------------------
    The mouse as the analogue axis.
    --------------------------------------------------------------------------- */
+/* ⭐ WHICH WAY THE COUNTER RUNS IS [MEASURED], AND IT IS NOT WHAT THE ALGEBRA PREDICTED.
+   Every step from the mouse to the wheel is derivable except this one, and the derivation
+   said "counter up = right", so that is what shipped — and it steered backwards on the
+   target.  The whole rest of the chain is now confirmed correct, in both directions:
+
+     - the manual on the disc is explicit ("L - Steer left" / "+ - Steer right"), and
+     - $15B3 gives L $76=2 (direction bit 0) and ;/+ $76=1 (direction bit 1) — kbd_test_key
+       returns Z SET when held, so the fall-through arm is the HELD arm, and
+     - $15E7 EORs $76 with $62A2 and ANDs #1, so $76 bit 0 IS $62A2's direction bit, and
+     - adc_read ($5044) does TYA / LDX #1 / ADC #$80 / BPL, so ADC high byte >= $80 leaves
+       X = 1 and below it X = 0, and $15A7's TXA / ORA $74 makes that same direction bit
+       (mul8 at $0C02 is fully unrolled and never touches X, so it survives the call), and
+     - the player confirms L and ;/+ steer the documented way on the target.
+
+   So "ADC high byte below $80" is genuinely LEFT, and the only link left to be wrong was
+   this one: the horizontal counter does not move the way assumed here.  Negating the delta
+   is therefore the fix, and it is the ONE line that carries the empirical sign — do not
+   "correct" it back from a hardware manual without moving a mouse and watching the wheel. */
+#define MOUSE_X_SIGN (-1)
+
 void RevsInput::sampleMouse()
 {
     /* JOY0DAT's low byte is the mouse's horizontal counter: 8 bits, free-running, wraps.
        The delta must be taken every frame — a skipped frame loses movement, and a delta
        computed across a wrap is indistinguishable from a fast flick the other way. */
     uint8_t now   = (uint8_t)(*joy0datPointer & 0xFFu);
-    int8_t  delta = (int8_t)(now - m_lastMouseX);
+    int8_t  delta = (int8_t)(MOUSE_X_SIGN * (int)(int8_t)(now - m_lastMouseX));
     m_lastMouseX  = now;
 
     /* ⚠ SENSITIVITY IS A FEEL DECISION AND IT IS PROVISIONAL.  The game's own response
@@ -243,22 +280,34 @@ void RevsInput::sampleMouse()
     if (pos < 0)   pos = 0;
     if (pos > 255) pos = 255;
     m_steer = (uint8_t)pos;
+
+    unsigned char b = (unsigned char)((mouseButton(0) ? 1u : 0u) |
+                                      (mouseButton(1) ? 2u : 0u) |
+                                      (mouseButton(2) ? 4u : 0u));
+    g_mouseBtnMask  = b;
+    g_mouseBtnSeen |= b;
 }
 
 uint16_t RevsInput::axis(uint8_t channel) const
 {
     if (channel == 1) {
         /* Channel 1 = steering.  $503F uses ONLY the high byte, biased so $80 is centre
-           ($1587 -> $158E).  ⚠ Polarity is [ASSUMED]: increasing = right. */
+           ($1587 -> $158E).  ⭐ Polarity is [DERIVED]: high byte >= $80 leaves adc_read's
+           X = 1, which is ;/+ = RIGHT.  The mouse's own sign lives in MOUSE_X_SIGN. */
         return (uint16_t)((unsigned)m_steer << 8);
     }
     if (channel == 2) {
         /* Channel 2 = throttle/brake ($163F -> $1646).  There is no second mouse axis
            worth spending here (pushing a mouse forward to accelerate is nobody's idea of
-           a throttle), so the digital keys are projected onto the axis: full deflection
-           either side, centre when neither or both are held.  This is what makes ANALOGUE
-           mode usable without a joystick. */
-        bool up = keyDown(0xAE), dn = keyDown(0xBE);
+           a throttle), so full deflection either side, centre when neither or both are
+           held.  This is what makes ANALOGUE mode usable without a joystick.
+           ⭐ THE PEDALS ARE THE MOUSE BUTTONS (user decision) — right accelerates, left
+           brakes — which is a DELIBERATE DIVERGENCE: the BBC's analogue mode has exactly
+           one button and spends it on the gearbox ($168E -> $1696), so there is no
+           precedent to be faithful to here.  The S/A keys stay live alongside them, so
+           nothing that worked before this stops working. */
+        bool up = keyDown(0xAE) || mouseButton(1);
+        bool dn = keyDown(0xBE) || mouseButton(0);
         if (up == dn) return 0x8000u;
         return up ? 0xFF00u : 0x0000u;
     }
@@ -268,7 +317,21 @@ uint16_t RevsInput::axis(uint8_t channel) const
 uint8_t RevsInput::buttons() const
 {
     /* X=0 reads the fire-button word; only bit 0 is ever looked at ($1691: TXA / AND #1).
-       In analogue mode the button IS the gear change, with the throttle axis choosing up
-       or down ($1696), so either gear key presses it. */
-    return (keyDown(0xEF) || keyDown(0x9F)) ? 0x01u : 0x00u;
+       ⭐ In analogue mode this button IS the whole gearbox, and the player does NOT choose
+       the direction: $1696 reads $3E/$3F and picks up or down itself.  That is the one
+       faithful button meaning, so it goes on the MIDDLE button — the two outer ones are
+       the pedals above.  The gear keys press it too, exactly as before. */
+    return (mouseButton(2) || keyDown(0xEF) || keyDown(0x9F)) ? 0x01u : 0x00u;
+}
+
+bool RevsInput::mouseButton(uint8_t which) const
+{
+    /* Left is a CIA-A parallel-port bit; right and middle are the pot pins of port 0 read
+       back through POTINP — bit 10 (DATLY) is right, bit 8 (DATLX) is middle.  All three
+       are active LOW. */
+    if (which == 0) return (*ciaapraPointer & 0x40u) == 0u;
+    uint16_t p = *potinpPointer;
+    if (which == 1) return (p & 0x0400u) == 0u;
+    if (which == 2) return (p & 0x0100u) == 0u;
+    return false;
 }

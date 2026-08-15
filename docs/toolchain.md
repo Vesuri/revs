@@ -179,7 +179,7 @@ Why no host renderer: `src/platform/host/PlatformHost.h`.
 cd amiga && . ./env.sh
 make                     # out/Revs.exe  (+ Revs.elf for debug, and a muldiv audit on every link)
 make clean               # ⚠ mandatory before a PROBES build / after a header edit
-./run.sh                 # boot in FS-UAE (left mouse quits)
+./run.sh                 # boot in FS-UAE (CTRL + left mouse quits)
 ./debug.sh               # source-level debug via the FS-UAE gdb stub
 ./diag_run.sh [secs]     # headless probe run (needs PROBES=1)
 ```
