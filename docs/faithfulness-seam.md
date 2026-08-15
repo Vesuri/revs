@@ -11,6 +11,7 @@
 |---|---|---|---|
 | `src/gen/revs_gen.c` | The generated 6502 transliteration. Faithful by construction. Never edited by hand. | is the oracle | both backends |
 | `src/gen/revs_native.c` | **FAITHFUL native twins.** Byte-identical to the `__t6502` oracle. | ✅ `make validate` | **both** backends |
+| `src/platform/sound.c` | ⭐ A WORKED EXAMPLE OF THE SEAM, and not a twin: the MOS's sound scheduler is OS behaviour, so it is faithful, shared, and validated against real hardware (`make sound`) even though no 6502 routine corresponds to it — the same argument as `teletext.cpp` and `bbc_hw.cpp`. Its Amiga half (`amiga/RevsAudio.cpp`) decides nothing about what sounds, only how Paula reproduces a chip state. When a subsystem lives BEHIND an OS call, that split is where the line goes. | ✅ is | both |
 | `src/platform/amiga/revs_native_amiga.cpp` | Genuinely Amiga-only code. Deliberately lossy — drops hardware-register writes, routes audio to Paula, frame-driven entry points. | ❌ cannot be | Amiga only |
 
 ## The rule

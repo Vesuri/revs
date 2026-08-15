@@ -159,11 +159,11 @@ with `amiga/mos.gdb` (`g_mosUnknownCount` + entry + A):
 
 - **`OSWORD 0` (read a line)** — caught in the front end.  So `console_io` reaches the OS through
   OSWORD 0, not only the OSRDCH site `docs/static-map.md` §Open items 6 assumes.
-- **`OSWORD 7` (SOUND)** — not caught, and that absence is the measurement: the engine sound is
-  built from OSWORD 7 command blocks (two tones plus noise on channels 0-2, pitch chasing the rev
-  count, one envelope for tyre squeal — the reference's write-up), so a single sound would show up
-  as an unhandled MOS call.  None ever has, which is how we know **the scripted run never starts
-  the engine**.  Sound is therefore a Phase 5 item with no implementation and no traffic yet.
+- **`OSWORD 7` (SOUND)** — was not caught, and that absence was the measurement: the engine sound
+  is built from OSWORD 7 command blocks, so a single sound would have shown up as an unhandled MOS
+  call.  None ever did, which is how we knew **the scripted run never started the engine**.
+  ✅ **IMPLEMENTED AND MEASURED, 2026-08-15** — see §Sound below.  A `STRAIGHT_TO_RACE` run with the
+  throttle held now counts 298 of them.
 
 Both were invisible to the static pass for the same reason as OSBYTE 0: the reason codes come from
 a nearest-preceding-`LDA #imm` heuristic and a *computed* `A` defeats it.  **Treat the table above
@@ -227,8 +227,55 @@ The Amiga side of the mapping (region splits, pointers-before-colours, band rule
 | 6845 CRTC + Video ULA | copper list + bitplanes |
 | Video ULA palette writes (incl. mid-frame) | copper `COLORxx` MOVEs at an end-of-previous-line WAIT |
 | ⚠ **User VIA T1 timer IRQ** (not System VIA vsync) — a raster-timed chain | `INTB_VERTB` for the frame boundary **plus copper MOVEs for the mid-frame band changes**. The one-to-one "vsync → VERTB" mapping does not hold; see the correction above |
-| ⚠ SN76489 **via the MOS sound scheduler** (`OSWORD 8` defines envelopes; the chip is never addressed) | Paula (4 channels) — but the envelope semantics have to be reproduced, not just the tones |
+| ⚠ SN76489 **via the MOS sound scheduler** (`OSWORD 7`/`8`; the chip is never addressed) | `src/platform/sound.c` reproduces the SCHEDULER (validated: `make sound`), `RevsAudio.cpp` maps the chip state onto Paula — §Sound below |
 | ⚠ ADC steering **via `OSBYTE 128`**, never the `$FEC0` registers | **mouse + keyboard** (decided), serviced in `Platform::mosCall` — there is nothing for `bus.h` to intercept |
 | Keyboard via OSBYTE | CIA-A serial-port keyboard handler |
 | Disc-loaded track data (the engine itself never calls the filing system) | embedded in the binary (see `incbin.s`) |
 | MOS `$C000-$FFFF` | `Platform::mosCall` for the calls Revs actually makes |
+
+## Sound — ⭐ MEASURED, and the model is validated tick-for-tick (2026-08-15)
+
+**Revs never addresses the SN76489.**  Every note is an `OSWORD 7` (SOUND) control block and one
+`OSWORD 8` (ENVELOPE) definition, through `sound_queue` (`$0B4A`), `sound_queue_default` (`$0B47`)
+and `sound_envelope` (`$0B65`) — one `JSR $FFF1` at `$0B70` serving two reason codes, which is
+exactly why the Phase 2 nearest-`LDA #imm` scan never attributed reason 7 to it.  So what the port
+had to reproduce is **the OS's scheduler**, and none of that is in the game binary.
+
+**The model and every number in it are in `src/platform/sound.h`** — read that, not this.  The
+Amiga mapping onto Paula is in `src/platform/amiga/RevsAudio.h`.  What belongs here is the
+instrument and the shape of the evidence:
+
+| Command | What it does |
+|---|---|
+| `make sound-fixture` | sweep a real MOS 1.20 under jsbeeb: all 256 pitches, every amplitude, the same pitch on all three tone channels, all 8 noise modes, Revs's own envelope, duration expiry, the release phase, and an `OSBYTE 21` flush |
+| `make sound-fixture-race` | capture **Revs's own** command + chip stream out of a real driving race (`--drive`; a parked car records silence) |
+| `make sound` | replay both through `src/platform/sound.c` and diff the chip state **tick by tick** — currently 0 of 8918 and 0 of 8083 |
+| `GDBSCRIPT=sound.gdb ./diag_run.sh 70` | on the target: OS calls → scheduler ticks → chip writes → Paula updates, so a zero says *which* link is broken |
+
+Five things the measurement settled that no amount of reading the game could:
+
+1. **pitch → divider** is one octave of 48 dividers shifted right by the octave, **plus the channel
+   index** — the same pitch on channels 1/2/3 comes out one divider count apart.  The MOS detunes
+   its own channels, and Revs's two engine tones (a fixed 28 pitch units apart) beat accordingly.
+2. **attenuation = 15 - (level >> 3)** for static amplitudes and envelopes alike, and **only the low
+   byte of the amplitude word counts**.  Revs writes just that byte and leaves the template's `$FF`
+   high byte, so the real machine sees `$FF00` and plays silence — read as a signed word it is −256.
+3. **the pitch envelope repeats** unless byte 1 bit 7 is set, and the accumulated pitch is *not*
+   reset at the repeat.  That is why Revs's sections are net-zero (+2 ×4, −2, −6).
+4. **`OSBYTE 21` on buffer 4+channel really silences a playing sound** (and resets its divider).
+   Load-bearing: it is the only way Revs stops anything, since every sound has duration 255.
+5. **the engine sound is one mechanism with two halves.**  Below rev `$5C` the NOISE channel plays
+   and channel 1 is muted *purely to supply its divider* (noise pitch 3 = "use tone 1's frequency");
+   above it the noise channel is flushed off and the two tones sound.  A port that ignored a muted
+   channel's pitch would play a fixed-pitch buzz.
+
+⚠ **The engine note ramps ~50× too slowly, and that is the FRAMERATE, not the audio.**
+`sfx_trigger_random` (`$0E74`) steps the rev counter `$0060` by one toward `$005F` per call and is
+called from the main loop, which paints at ~1 FPS instead of 50 — so the pitch crawls to where a
+real BBC would arrive in a fifth of a second.  The 100 Hz scheduler tick itself is *not* affected:
+it runs off the VERTB, two per field (`RevsAudio.h`).
+
+⚠ **Untested paths, deliberately counted rather than guessed:** the channel byte's SYNC and HOLD
+nibbles and any *queued* (non-flush) sound.  Revs has never issued one — all five of its blocks are
+`$10..$13`, i.e. flush — so `g_sndSyncRequests`/`g_sndHoldRequests`/`g_sndQueued` exist to say if it
+ever does.  They must stay 0.

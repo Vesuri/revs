@@ -325,14 +325,23 @@ Three findings worth keeping:
 times and the like) — that one really is the MOS software font, and those glyphs do have to be
 drawn rather than extracted.  The front end no longer depends on it.
 
-### ⬜ 4. Sound
+### ✅ 4. Sound — DONE (2026-08-15)
 
-Per the reference: two tones plus noise on channels 0-2 (0 is the BBC's noise channel), a fixed
-interval of 28 between the tones, pitch chasing the rev count in steps of 1, and one envelope for
-the tyre squeal — **all through OSWORD 7 sound commands**, never the SN76489 directly.
-⚠ `OSWORD 7` is **missing from the Phase 2 MOS inventory** (a computed reason code, the same
-blind spot that hid OSBYTE 0 and OSWORD 0), so `mos.cpp` has nothing for it — which is how we
-know the scripted run never starts the engine: not one sound call has ever been counted.
+Two tones plus periodic noise, a fixed interval of 28 between the tones, pitch chasing the rev
+count in steps of 1, and one envelope for the tyre squeal — **all through OSWORD 7/8**, never the
+SN76489 directly, so the port reproduces the MOS's *scheduler*.  `src/platform/sound.c` is that
+scheduler (validated tick-for-tick against a real BBC: `make sound`, 0 of 8918 and 0 of 8083) and
+`src/platform/amiga/RevsAudio.cpp` maps the chip state onto Paula.  Measured on the target with
+`amiga/sound.gdb`: 298 SOUND commands, 6482 scheduler ticks, 121 Paula updates, and a final chip
+state of the same shape a real BBC ends a drive in.  The write-up is `docs/bbc-hardware.md` §Sound
+plus the two headers.
+
+Three things left here, none of them blocking:
+- **the pitch ramps ~50× too slowly**, because `sfx_trigger_random` is a MAIN-LOOP call and the main
+  loop paints at ~1 FPS.  It is a framerate consequence, not an audio bug, and it fixes itself as
+  Phase 6 lands.
+- **the by-ear pass has not happened** (audio cannot be verified headlessly).
+- **sync/hold/queued sounds are unimplemented and counted**; Revs has never issued one.
 
 ### ⬜ 5. Track selection
 

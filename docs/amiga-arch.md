@@ -82,8 +82,13 @@ library open/close stay outside.
 | **App skeleton** | the PETSCII-Robots / WHDLoad-menu pattern | `main()` + the VBI handler + `while(!quit){poll; update; render; waitVBI}` |
 
 Deliberately **not** used: the framework's `Production`/`Part`/`Script`/`ProductionRunner`
-timeline, and its `ModulePlayer` / TrackerPacker replay.  Audio goes through the converted 6502
-sound code translated to Paula directly.
+timeline, and its `ModulePlayer` / TrackerPacker replay.  Audio does not come through converted 6502
+sound code either, because there is none to convert: Revs reaches the sound chip only through the
+MOS, so `src/platform/sound.c` reproduces the OS's **scheduler** (faithful, validated by
+`make sound`) and `src/platform/amiga/RevsAudio.cpp` maps the resulting SN76489 state onto Paula.
+⚠ Its tick is 100 Hz and comes off the 50 Hz VERTB two at a time — placed AFTER the copper work in
+the handler, because a Paula DMA restart busy-waits on the beam and nothing that waits on the beam
+may precede the copper writes.  See `RevsAudio.h`.
 
 Local modifications to the vendored framework are recorded in `framework/UPSTREAM.md` — keep that
 current, it is what makes a future upstream re-sync possible.

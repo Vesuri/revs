@@ -116,6 +116,9 @@ make refloop               # ⭐⭐ RACE A REAL BBC under jsbeeb -> tmp/bbcref (
 make mode7                 # ⭐ the MODE 7 front end vs a real BBC, byte for byte (PPM=tmp/m7 to look)
 make mode7-fixture         #   ...re-record that fixture off jsbeeb
 make font                  #   regenerate the MODE 7 character generator (checked in)
+make sound                 # ⭐ the MOS SOUND SCHEDULER vs a real BBC, tick for tick (VERBOSE=1)
+make sound-fixture         #   ...re-record the MOS sweeps off jsbeeb
+make sound-fixture-race    #   ...and REVS'S OWN sound out of a real driving race
 ```
 
 ⭐⭐ **`make refloop` is the visual ground truth, and it DRIVES** (2026-08-14): it boots `revs.ssd`,
@@ -183,6 +186,16 @@ its own `SPINWAIT_HOOKS` paint hook — without it the page is byte-perfect and 
 MODE 7 is a SECOND display configuration (320x250, three bitplanes, its own copper list) so the
 race view's display DMA is untouched; `amiga/mode7_dump.gdb` dumps it.
 
+⭐⭐ **THE PORT MAKES SOUND** (2026-08-15).  Revs never touches the SN76489 — every note is an
+`OSWORD 7` block plus one `OSWORD 8` envelope — so the port reproduces the MOS's **scheduler**:
+`src/platform/sound.*` (faithful, `make sound` diffs it against a real BBC tick for tick, 0/8918 and
+0/8083) and `src/platform/amiga/RevsAudio.*` (Paula only).  Read `sound.h` before touching pitch,
+amplitude or envelopes and `RevsAudio.h` before touching Paula; `docs/bbc-hardware.md` §Sound has
+the five things the measurement settled.  ⚠ The engine note ramps ~50x too slowly and that is the
+FRAMERATE (`sfx_trigger_random` is a main-loop call), not an audio bug.  Verify with
+`GDBSCRIPT=sound.gdb ./diag_run.sh 70` on a `STRAIGHT_TO_RACE` build — a run that never starts the
+engine measures silence.
+
 ⭐ **`make STRAIGHT_TO_RACE=1` boots into a Silverstone PRACTICE session with the engine running
 and in first gear, then hands the keyboard to the player** — the fast way into the race without
 walking the (now rendered) front end. It skips **no** game code: practice needs
@@ -242,6 +255,8 @@ hand-rename in generated files).
 | **`src/platform/bbc_screen.h`** ⭐ | **THE DISPLAY MODEL** — geometry, pixel format and the five raster bands, derived and cross-checked. Read before touching anything visual |
 | `src/platform/amiga/RevsScreen.*` | BBC frame buffer → 2 bitplanes + the copper palette bands |
 | `src/platform/amiga/RevsInput.*` | Mouse + keyboard onto the game's own two input paths |
+| **`src/platform/sound.*`** ⭐ | **THE SOUND MODEL** — the MOS sound scheduler + the SN76489 state it drives, all of it measured off a real MOS.  Read before any pitch/amplitude/envelope work |
+| `src/platform/amiga/RevsAudio.*` | That chip state → Paula: waveforms in chip RAM, the period conversion, the stereo placement.  Amiga-only, unvalidated by construction |
 | **`src/platform/teletext.*`** ⭐ | **THE MODE 7 MODEL** — the MOS VDU driver + the SAA5050. Read before any front-end work; it carries the measurements. `teletext_font.h` is generated |
 | `src/platform/bbc_hw.cpp` | The BBC hardware model behind `bus_read`/`bus_write`, and the IRQ1V shim |
 | `src/platform/autorun.cpp` | Scripted keyboard for unattended runs; without it a headless run measures a menu spin |
