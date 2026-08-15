@@ -754,6 +754,32 @@ SPACE accepted with no release, and a missing fixture file (a hard error, not a 
 sabotage round was **contaminated by a stale object file** and produced two coherent wrong answers
 — verify the patch took effect, *then* read the result.
 
+### 🐛 Known open defects, all found on 2026-08-16 while fixing the rev counter
+
+The dial itself is **fixed and verified pixel-exact** against a real BBC at the same `$3C`
+(`make refloop --park --force-revs=40` vs `amiga/screen_dump.gdb`; the needle went from ~40 wrong
+pixels to zero).  Three things that measurement turned up and did **not** fix:
+
+1. ⚠⚠ **`$FE68` returns a constant `$0` on both backends, and it is the User VIA's T1 low-order
+   COUNTER, not port B** (`bbc_hw.cpp`'s comment is wrong about which register it is).  Revs uses
+   it as its only entropy source, in at least four places: the starter's catch delay
+   (`$498C`, `AND $09` — with 0 the engine catches on the FIRST poll instead of after a random
+   crank), the idle-rev jitter (`$49BD`, `AND #7` — which is exactly why the port idles at `$28`
+   where a real BBC reads `$2C`), the random gravel/skid trigger (`$0E7C`, `CMP #$3F` — with 0 it
+   fires EVERY call), and the mirrors' engine shudder (`$7FB6`).  ⭐ The faithful model is a
+   free-running 1 MHz down-counter derived from elapsed cycles — **not** a PRNG: T1 is decorrelated
+   from game code because it is a *clock*, and `bbc_hw.cpp` already tracks time for the band
+   schedule.  On the Amiga the cheap equivalent is one `move.w` from `VHPOSR`.
+2. ⚠ **The port's engine never STALLS.**  Parked in first gear with nothing held, a real BBC drops
+   `$61` to `$00` and `$3C` to `$00` within a second (`make refloop --park`); the target sits at
+   `$61=$FF`, `$3C=$28` indefinitely (`amiga/dash_state.gdb` at vbi 639/1235/2423).  Route not yet
+   identified — `$4A3F`'s `CMP #$03 / INC $61` is the stall, and what feeds it revs below 3 is the
+   `$4988` arm, which is only reachable while `$61` is already 0.
+3. ⚠ **The gear indicator differs by 18 pixels** at x274-285, y192-198 — the only dial-band
+   difference left after the needle fix.  Suspect the double-width `vdu_char_def` entry `$508C`.
+4. ⚠ **On the host, `REVS_QUIT_AFTER_DUMP=1` exits BEFORE the `REVS_MEM_DUMP` block runs**
+   (`PlatformHost.cpp`), so asking for both silently yields no memory dump.
+
 **Exit criteria for Phase 5: ✅ met.**  The race view, input, sound, the MODE 7 front end, both
 fonts, COMPETITION mode with its field of cars, per-circuit code execution and now circuit
 selection all work on the target.  What Phase 5 does **not** claim is performance: that is Phase 6,
