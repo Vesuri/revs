@@ -97,6 +97,7 @@ C_SRCS := \
     src/platform/track.c \
     $(wildcard src/gen/revs_tracks.c) \
     $(wildcard src/gen/revs_gen.c) \
+    $(wildcard src/gen/revs_track_hooks.c) \
     $(wildcard src/gen/revs_manual.c) \
     $(wildcard src/gen/revs_native.c)
 
@@ -118,7 +119,7 @@ TARGET   := build/revs
 
 .PHONY: all clean gen validate image runtime dashcode sweep endian-lint refloop refloop-keys \
         mode7 mode7-fixture font mos-font refloop-charset refloop-comp track-patch \
-        tracks tracks-gen track-fixtures track-smc \
+        tracks tracks-gen track-fixtures track-smc track-smc-check track-run \
         sound sound-fixture sound-fixture-race
 
 all: $(TARGET)
@@ -209,6 +210,10 @@ track-patch:
 track-smc:
 	python3 tools/track_smc.py $(if $(EMIT),--emit disasm/track_smc.txt,)
 
+# The staleness guard on its own (`make gen` runs it too).
+track-smc-check:
+	python3 tools/track_smc.py --check
+
 # ⭐ The per-circuit DATA TABLE the port selects between -> src/gen/revs_tracks.[ch].
 # ⚠ The Nürburgring block comes from the git-ignored revs-hack-nurburgring.ssd, so a checkout
 # without that disc generates FIVE circuits, not six, and says so.  That is not an error —
@@ -225,10 +230,64 @@ track-fixtures:
 # installer *and* re-proves that nothing outside the two extents differs per circuit.
 # ⚠ An expansion circuit REFUSING to install is the correct behaviour until its SMC sites exist,
 # and is reported as its own outcome — never counted as a verified install (src/platform/track.h).
+# ⚠ revs_track_hooks.o is deliberately NOT here.  The harness needs the hook TABLE (which circuit
+# has a body for which address) and never a hook BODY: it installs data and diffs bytes, it runs no
+# engine code.  The table is header-only for exactly that reason — linking the bodies would drag
+# the whole platform in and turn a data differential into an integration test.
 TRACKS_OBJS := src/cpu/cpu.o src/platform/track.o src/gen/revs_tracks.o tools/validate_tracks.o
 tracks: track-fixtures $(TRACKS_OBJS) | build
 	$(CC) $(CFLAGS) -o build/validate_tracks $(TRACKS_OBJS)
 	./build/validate_tracks
+
+# ⭐⭐ DOES THE CIRCUIT'S OWN CODE ACTUALLY EXECUTE?  `make tracks` proves the DATA path; this
+# proves the CODE path, and the two are genuinely different questions — an expansion circuit can
+# install byte-perfectly and then run Silverstone's control flow over its geometry, which is not a
+# crash and not visible in any byte diff of the install.
+#
+# So: race each circuit for real (STRAIGHT_TO_RACE, so the window is the RACE and not the front
+# end) and require g_trackHookCalls > 0 with g_trackHookMissing == 0.  Silverstone is passive and
+# must report exactly 0 — which is what makes the others' non-zero counts mean something.
+#
+# ⚠⚠ THE WINDOW IS THE WHOLE MEASUREMENT.  A plain build reports `hook calls 0` at frame 40 and
+# looks like a dead seam; frame 40 is still MODE 7, and the rasteriser — hence every hook — is only
+# reached once the race starts.  Hence STRAIGHT_TO_RACE and a small frame number here.
+#   make track-run              every circuit in this build
+#   make track-run TRACKS="0 1" just those
+#   make track-run FRAME=40     dump later (slower: each frame costs seconds on the host)
+track-run:
+	@set -e; \
+	frame=$(if $(FRAME),$(FRAME),15); \
+	list="$(if $(TRACKS),$(TRACKS),0 1 2 3 4 5)"; \
+	fails=0; \
+	for t in $$list; do \
+	  $(MAKE) --no-print-directory clean >/dev/null; \
+	  $(MAKE) --no-print-directory STRAIGHT_TO_RACE=1 TRACK=$$t >/dev/null; \
+	  out=$$(REVS_SCREEN_DUMP=tmp/trackrun_$$t.bin REVS_SCREEN_FRAME=$$frame \
+	         REVS_QUIT_AFTER_DUMP=1 \
+	         timeout $(if $(TIMEOUT),$(TIMEOUT),300) ./build/revs 2>&1 | tail -3); \
+	  echo "$$out" | sed -n 's/^/  /p'; \
+	  calls=$$(echo "$$out" | sed -n 's/.*hook calls \([0-9]*\).*/\1/p'); \
+	  missing=$$(echo "$$out" | sed -n 's/.*missing \([0-9]*\).*/\1/p'); \
+	  if [ -z "$$calls" ]; then \
+	    echo "  FAIL track $$t: no dump line — the run HUNG or died before frame $$frame."; \
+	    echo "       ⚠ 'no output' is a FAILURE here, not a pass: a circuit that hangs mid-race"; \
+	    echo "       produces exactly this, and an untimed loop would have hung make instead."; \
+	    fails=1; \
+	  elif [ "$$missing" != "0" ]; then echo "  FAIL track $$t: $$missing hook(s) with no body"; fails=1; \
+	  elif [ "$$t" = "0" ] && [ "$$calls" != "0" ]; then \
+	    echo "  FAIL track 0: Silverstone is PASSIVE and called $$calls hooks"; fails=1; \
+	  elif [ "$$t" != "0" ] && [ "$$calls" = "0" ]; then \
+	    echo "  FAIL track $$t: installed but its hooks NEVER RAN — the seam is dead, or the"; \
+	    echo "       window never reached the race (see the note above this target)"; fails=1; \
+	  fi; \
+	done; \
+	[ $$fails = 0 ] || exit 1; \
+	echo "track-run: every circuit's own code executes"; \
+	python3 -c 'import itertools,sys,glob; \
+f={p:open(p,"rb").read() for p in sorted(glob.glob("tmp/trackrun_*.bin"))}; \
+same=[(a,b) for a,b in itertools.combinations(sorted(f),2) if f[a]==f[b]]; \
+print("track-run: all %d frame pairs differ" % len(list(itertools.combinations(f,2))) if not same \
+else "FAIL: identical frames: %s" % same); sys.exit(1 if same else 0)'
 
 # ⭐ Which character codes does the RACE VIEW actually ask the MOS for, and where do the glyphs
 # land?  Measures it on a real BBC in a real driving race — the input to mos-font above.
@@ -270,6 +329,11 @@ DEPFLAGS := -MMD -MP
 #   make gen              ingest disasm/dashcode.txt too (the $7B00-$7FFF overlay)
 #   make gen DASHCODE=0   leave it out; the four $7Bxx call sites keep platform_brk() traps
 gen:
+	@# ⚠ FIRST: the committed extent table must still match the circuits on disc.  A stale
+	@# table is silently wrong rather than loudly missing — a new circuit's patch addresses
+	@# would still be in the union revs_smc_bytes.h publishes, so the installer would accept
+	@# it and an arm would bake somebody else's operand (docs/phases.md §5b).
+	python3 tools/track_smc.py --check
 	REVS_DASHCODE=$(if $(DASHCODE),$(DASHCODE),1) python3 tools/transpile.py
 	@$(MAKE) --no-print-directory tracks-gen   # ⚠ AFTER: gen_tracks.py needs revs_smc_bytes.h's
 	                                           # sibling outputs to exist for a from-scratch clone

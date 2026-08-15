@@ -543,10 +543,22 @@ is a conjunction over the whole signature and not one byte: both its shapes star
 
 Three things worth carrying forward:
 
-1. ⭐ **Read the operands from `mem[]` in EVERY arm, including Silverstone's.**  A guard tests
-   opcodes, so it cannot prove *which circuit* is running — baking Silverstone's operand into the
-   arm its opcodes happen to match is exactly the plausible-looking wrong game.  Costs one `mem[]`
-   load; right for all six.
+1. ⭐⭐ **An operand is variable PER ARM, not per extent — and the over-conservative version broke
+   SILVERSTONE.**  The first cut read every patchable operand from `mem[]` in every arm, on the
+   argument that a guard tests opcodes and so cannot prove which circuit is running.  That argument
+   is half right: a guard often *does* pin the circuit.  `$248B`'s unpatched arm needs `BCS` at
+   offset 0 and `JMP` at offset 2, and all five expansion circuits write `$4C` over offset 0 — so
+   only Silverstone can be in that arm, and its branch offset is Silverstone's, statically.
+   Treating it as variable turned that `BCS` into a **runtime-computed branch**, which has to
+   dispatch over the enclosing function's labels — and when §5c later split that function at
+   `$2490`, `$24B8` fell out of the dispatch set and a plain Silverstone race died with
+   `SMC UNHANDLED: site $248B holds $24B8`.
+   ⭐ *Being conservative about what varies is not free: it manufactures runtime machinery whose
+   preconditions then have to keep holding.*  The table now records, per arm, which offsets circuits
+   **that satisfy that arm's guard** patch — still shape-only, no values — and all ten multi-arm
+   extents' base arms come out empty, i.e. fully static. A staleness guard (`make track-smc
+   --check`, run by `make gen`) fails if a newly-present disc would imply a different table, because
+   a stale table is silently wrong rather than loudly missing.
 2. ⭐ **Two structural preconditions are CHECKED, not assumed** — nothing branches into the middle
    of an extent (its interior is the middle of a *different* instruction in the patched arm), and
    no extent crosses a function boundary.  Both fire under sabotage: widen `$248B`'s extent to
@@ -575,7 +587,7 @@ Verified: 30 extents emitted, `make tracks` 6/6 byte-exact with every patch byte
 and Amiga builds clean (muldiv + probe audits clean), and **Silverstone's frame 40 is byte-identical
 to the pre-change build** — the arms did not change the circuit that takes the unpatched one.
 
-### 🔧 5c. The hook BODIES — measured, not yet transliterated
+### ✅ 5c. The hook BODIES — transliterated, and ALL SIX CIRCUITS NOW INSTALL (2026-08-15)
 
 `tools/track_hooks_dis.py` reads them out: bounded recursive descent inside `$5300-$5A25` that
 **stops dead at the window boundary** and records the engine address it left for, with
@@ -593,17 +605,61 @@ operands themselves.)
 The exits are coherent — `$0C00` `$0E40` `$13E0` `$140B` `$1933` `$2490` `$253B` `$3450` `$4610`
 `$461B`, i.e. exactly the engine routines the patches displaced, plus the maths helpers.
 
-What remains: generate per-circuit C from those listings under a name prefix (five bodies share one
-address range), resolve the exits to the engine's own C names, and fill `implemented_hooks[]` in
-`src/platform/track.c` so `revs_track_hook()` dispatches instead of trapping.
+**The shape chosen: ONE C function per circuit, entered by 6502 address** — exactly the `region`
+form `build_regions()` already produces for a cyclic segment group, emitted into
+`src/gen/revs_track_hooks.[ch]` by a second `make gen` pass. That choice is what made it tractable:
 
+- every branch and `JMP` inside the window becomes a plain `goto`, so **no function decomposition
+  is needed at all** — which matters because Ghidra has never seen this code and has no boundaries
+  for it
+- the ~5 intra-window `JSR`s per circuit become a recursive `trk_<name>(0xTTTT)`, which **returns**,
+  as a `JSR` must and a `goto` cannot
+- a transfer out of the window resolves through the engine pass's own symbol and wrapper tables
+
+⚠⚠ **The engine exits had to be collected BEFORE the engine's wrapper fixpoint, not after.** A
+circuit's hook returns to the engine at `$2490` / `$253B` / `$461B` — mid-function addresses the
+engine itself only ever reaches by falling through or branching, so they exist as `L_2490:` labels
+and **not as callable C**. Discovering them downstream would have emitted `FUN_2490()` against a
+function that was never defined. So `collect_track_hooks()` runs early in `main()` and feeds its
+exits into `external_entries` alongside every other mid-function entry.
+
+One transpiler change was needed for the engine corpus too: a `JSR` now resolves through
+`resolve_call()` rather than `resolve_target_name()`, so a target that is a **region entry** is
+reached as `region_xxxx(0xTTTT)`. Checked: the engine corpus is byte-identical apart from two sites
+where `FUN_7ef3()` became `region_7bf7(0x7EF3)` — and `FUN_7ef3` is literally
+`{ region_7bf7(0x7EF3); }`, so that inlines a thin wrapper and changes nothing.
+
+**Result: `make tracks` installs 6 of 6 circuits, byte-exact, with no refusals** — one binary, six
+circuits, both halves of "playable" in place. Host and Amiga builds clean.
+
+Three checks that make that more than a build success:
+- **The five bodies genuinely differ** (9796-11026 chars, every pair distinct), and an intra-window
+  `JSR` dispatches to the circuit's OWN function: `trk_brands(0x55C4)` in Brands, `trk_snetter(0x55C4)`
+  in Snetterton. ⭐ `$5572` is a hook entry in **every** circuit and is different code in each, so an
+  address-only dispatch would have compiled, run, and taken Brands Hatch's corner through
+  Snetterton's hook.
+- **Sabotage:** removing one entry from the generated table refuses exactly that circuit and names
+  exactly that address (`BRANDS … 1 hook bodies unbuilt (first $5672)`).
+- ⭐ **`g_trackHookCalls` counts SUCCESSFUL dispatches**, because "the circuit installed and nothing
+  crashed" is entirely compatible with the hooks never being reached — which is precisely what an
+  expansion circuit silently running Silverstone's control flow would look like. On an expansion
+  circuit it must be > 0.
+
+⚠ A false negative worth remembering from this session: the first Brands run reported `hook calls 0`
+and looked like a dead seam. It was reading **frame 3**, which is still the MODE 7 front end — the
+rasteriser, and therefore every hook, is only reached once the race starts. The instrument was fine;
+the window was wrong. (And the run before *that* reported nothing at all, because `2>&1 | tail`
+re-buffered the deliberately-unbuffered stderr — the same trap `docs/method-lessons.md` already
+carries, walked into again.)
+
+**What remains for Phase 5:**
 - **`CallTrackHook` (`$5A22`) dispatch** — one call, one target, and Silverstone supplies an `RTS`
   stub, which is a far cleaner seam than the patch sites.
 - **The menu itself**, and embedding the blocks.
 
-⚠ Until the hook bodies exist, selecting an expansion track FAILS LOUDLY: `revs_track_check()`
-refuses it, and `revs_track_hook()` traps through `platform_smc_unhandled()` if one is somehow
-reached anyway, rather than running Silverstone's control flow under another circuit's name.
+⚠ If a hook is ever reached with no body, `revs_track_hook()` counts it and traps through
+`platform_smc_unhandled()` rather than returning quietly — a silent return would be the engine
+carrying on with Silverstone's control flow under another circuit's name.
 
 ---
 

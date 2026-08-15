@@ -73,6 +73,12 @@ void    revs_track_hook(uint16_t addr);
 extern unsigned long g_trackHookMissing;
 extern uint16_t      g_trackHookMissingAddr;
 
+/* ⭐ …and the calls that DID dispatch.  "The circuit installed and nothing crashed" is entirely
+   compatible with the hooks never being reached — which is precisely what an expansion circuit
+   silently running Silverstone's control flow would look like.  This is the number that says the
+   per-circuit code executes; on an expansion circuit it must be > 0. */
+extern unsigned long g_trackHookCalls;
+
 /* The interrupt register contract (see platform_cbridge.cpp): A, X and Y must come back out of
    irq1v_handler unchanged, as they do on a real BBC.  Non-zero here means a foreground routine
    can be resumed with a corrupted register — which surfaces as a drawing artefact somewhere

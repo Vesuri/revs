@@ -51,6 +51,9 @@ src/gen/revs_smc_bytes.h
 # present (five circuits without that one, and it says so).
 src/gen/revs_tracks.c
 src/gen/revs_tracks.h
+# Same reasoning, more strongly: these hold the Nurburgring's own HOOK CODE, transliterated.
+src/gen/revs_track_hooks.c
+src/gen/revs_track_hooks.h
 
 # Build output
 build/

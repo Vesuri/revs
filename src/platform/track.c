@@ -1,9 +1,8 @@
 /* track.c — install one circuit's data into mem[].  See track.h for the whole model. */
 #include "track.h"
-#include "../cpu/cpu.h"                /* mem[] — ⚠ BEFORE platform_c.h, which wants uint16_t
-                                          from its includer and does not include <stdint.h> */
-#include "platform_c.h"                /* revs_track_hook + its counters */
+#include "../cpu/cpu.h"                /* mem[] */
 #include "../gen/revs_smc_bytes.h"
+#include "../gen/revs_track_hooks.h"  /* the GENERATED per-circuit hook dispatch */
 
 unsigned char  g_track = 0;
 unsigned char  g_trackInstalled = 0xFF;
@@ -56,38 +55,24 @@ static int honoured(unsigned short addr)
  * 'extent', tools/transpile.py) because that address means a DIFFERENT routine per circuit,
  * so the engine side cannot resolve it and this side owns the map.
  *
- * ⚠⚠ THE MAP IS EMPTY TODAY, and that is the honest state of the port: the hook BODIES are
- * not transliterated yet (docs/phases.md §5b).  So:
- *   - `revs_track_check()` refuses any circuit with a hook that has no body, alongside the
- *     patch-byte check it already did.  Silverstone has zero hooks and installs.
- *   - if one is somehow reached anyway it is COUNTED and reported, never ignored.  A silent
- *     return would be the engine carrying on with Silverstone's control flow over another
- *     circuit's geometry — the plausible-looking wrong game track.h's header is about.
+ * The MAP IS GENERATED — `src/gen/revs_track_hooks.h`, from the same pass that transliterates the
+ * bodies (`tools/transpile.py` collect_track_hooks / emit_track_hooks).  It is keyed on BOTH the
+ * circuit index and the address, and both halves are load-bearing: $5572 is a hook entry in every
+ * circuit and is DIFFERENT CODE in each, so an address-only dispatch would compile, run, and take
+ * Brands Hatch's corner through Snetterton's hook.
+ *
+ * ⚠ `revs_track_hook()` itself lives in the GENERATED src/gen/revs_track_hooks.c, next to the
+ * bodies it calls.  Keeping it here would mean every consumer of this file links the whole
+ * transliteration — including tools/validate_tracks.c, which runs no engine code and whose whole
+ * value is being a small, independent differential.  What stays here is only the TABLE lookup,
+ * which is header-only for that reason.
+ *
+ * `revs_track_check()` therefore refuses any circuit with a hook the build has no body for,
+ * alongside the patch-byte check.  Silverstone has zero hooks and installs.
  */
-unsigned long g_trackHookMissing = 0;
-uint16_t      g_trackHookMissingAddr = 0;
-
-/* Hook entries this build can execute, ascending.  Empty until §5b lands. */
-static const unsigned short implemented_hooks[] = { 0 };
-#define IMPLEMENTED_HOOK_COUNT 0
-
-static int hook_implemented(unsigned short addr)
+static int hook_implemented(unsigned char index, unsigned short addr)
 {
-    unsigned i;
-    for (i = 0; i < IMPLEMENTED_HOOK_COUNT; i++)
-        if (implemented_hooks[i] == addr) return 1;
-    (void)implemented_hooks;
-    return 0;
-}
-
-void revs_track_hook(uint16_t addr)
-{
-    /* No body: record the FIRST one, count them all.  ⚠ Do not try to be clever and fall back
-       to the unpatched engine routine — the patch replaced it precisely because this circuit
-       needs different behaviour there. */
-    if (g_trackHookMissing == 0) g_trackHookMissingAddr = addr;
-    g_trackHookMissing++;
-    platform_smc_unhandled(0x5A22, addr);
+    return revs_track_hook_has(index, addr);
 }
 
 unsigned short revs_track_check(unsigned char index)
@@ -111,7 +96,7 @@ unsigned short revs_track_check(unsigned char index)
        counters stay separate so the report says WHICH half is missing.  Collapsing them would
        repeat the reporting defect the fallback note below is about. */
     for (i = 0; i < t->hookCount; i++) {
-        if (!hook_implemented(t->hookAddr[i])) {
+        if (!hook_implemented(index, t->hookAddr[i])) {
             if (g_trackHooksUnbuilt == 0) g_trackHooksUnbuiltAddr = t->hookAddr[i];
             g_trackHooksUnbuilt++;
         }

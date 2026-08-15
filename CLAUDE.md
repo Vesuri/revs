@@ -119,7 +119,18 @@ make font                  #   regenerate the MODE 7 character generator (checke
 make sound                 # ⭐ the MOS SOUND SCHEDULER vs a real BBC, tick for tick (VERBOSE=1)
 make sound-fixture         #   ...re-record the MOS sweeps off jsbeeb
 make sound-fixture-race    #   ...and REVS'S OWN sound out of a real driving race
+make tracks                # ⭐⭐ the circuit installer, 64K byte-exact per circuit (the DATA path)
+make track-run             # ⭐⭐ ...and the CODE path: race each circuit, require its hooks to RUN
+make track-smc             #   the per-circuit SMC surface as EXTENTS (EMIT=1 regenerates the table)
+make track-patch           #   what each circuit's ModifyGameCode writes (VERIFY=1 vs a real BBC)
 ```
+
+⚠ **`make tracks` and `make track-run` answer DIFFERENT questions and you need both.** `tracks`
+proves the bytes land; `track-run` proves the circuit's own code executes. An expansion circuit can
+install byte-perfectly and then run Silverstone's control flow over its geometry — not a crash, and
+invisible to any byte diff of the install. `g_trackHookCalls` is the number that separates them.
+⚠⚠ And the window is the whole measurement: a plain build reports `hook calls 0` at frame 40 because
+frame 40 is still MODE 7 — the hooks are only reached once the race starts, hence `STRAIGHT_TO_RACE`.
 
 ⭐⭐ **`make refloop` is the visual ground truth, and it DRIVES** (2026-08-14): it boots `revs.ssd`,
 answers the front end, starts the engine, engages first gear and drives, then dumps both the BBC

@@ -198,6 +198,37 @@ before using them**; an undefined key press fails silently and looks exactly lik
 ignoring you.  (Separately: speculative key presses jammed a two-character input field, wedging
 the run with its own input.  Do not press keys "just in case" into something that buffers.)
 
+## Being conservative is not free — it manufactures machinery whose preconditions can rot ⚑ Revs
+
+The per-circuit SMC `extent` class emits one arm per instruction shape, and the first cut read
+**every** patchable operand from `mem[]` in **every** arm.  The argument was sound-sounding: a guard
+tests opcodes, so it cannot prove which circuit is running, so baking Silverstone's operand into the
+arm its opcodes happen to match would be the plausible-looking wrong game.
+
+It was half right, and the wrong half cost a working game.  A guard often *does* pin the circuit:
+`$248B`'s unpatched arm needs `BCS` at offset 0, and all five expansion circuits write `$4C` over
+offset 0, so only Silverstone can be in that arm.  Reading its branch offset from `mem[]` turned a
+constant branch into a **runtime-computed** one — which then needs a dispatch over the enclosing
+function's labels.  Two commits later, an unrelated change (hook exits becoming callable mid-function
+entries) split that function, `$24B8` dropped out of the dispatch set, and a plain **Silverstone**
+race — a circuit with no patches at all — died with `SMC UNHANDLED: site $248B holds $24B8`.
+
+⭐ **The rule:** "read it at run time, to be safe" adds a mechanism, and a mechanism has
+preconditions that some later change can break. When the evidence lets you narrow what actually
+varies, narrow it — the tighter emission has fewer things that can stop being true. Here the
+narrowing was derivable and stayed provenance-clean: record, per arm, which offsets are patched by
+circuits **whose bytes satisfy that arm's guard** — offsets only, never values.
+
+Two more that generalise:
+- **A derived table needs a staleness guard, not just a regeneration command.** This one is derived
+  from whichever circuit discs are present, and a stale version is *silently* wrong rather than
+  loudly missing: the new circuit's patch addresses would still be in the union the coverage check
+  publishes, so the installer would accept it and an arm would bake somebody else's operand.
+  `make gen` now re-derives and fails on any difference.
+- **Run the base case after every change to the general mechanism.** The regression was in
+  Silverstone, the one circuit the change was not about. It surfaced only because the check races
+  *every* circuit including the passive one.
+
 ## Emit the mechanism, not a snapshot of it ⚑ Revs
 
 Revs has 24 self-modifying instructions, all inside the road rasteriser.  The inherited rule was

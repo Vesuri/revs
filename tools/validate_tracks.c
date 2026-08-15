@@ -149,14 +149,3 @@ int main(void)
     }
     return fails ? 1 : 0;
 }
-
-/* The trap behind revs_track_hook(), stubbed for this harness.  ⚠ It is FATAL rather than a
-   no-op: this harness never reaches a hook (it installs data and diffs bytes; it runs no engine
-   code), so reaching it means the harness started executing something it does not model, and a
-   silent stub would let that pass as a green run. */
-void platform_smc_unhandled(unsigned short site, unsigned short value)
-{
-    fprintf(stderr, "FAIL: platform_smc_unhandled($%04X, $%04X) — this harness runs no engine "
-                    "code and must never reach an SMC trap\n", site, value);
-    exit(2);
-}

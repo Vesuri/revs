@@ -36,24 +36,39 @@
  * zero.  Sizing this extent off the five would have truncated the sixth, silently.
  *
  * ═══════════════════════════════════════════════════════════════════════════════════════════
- * ⚠⚠ THE PART THAT IS NOT DONE YET, AND WHY THIS REFUSES RATHER THAN TRIES
+ * ⚠⚠ WHY INSTALLING THE BYTES IS ONLY HALF OF IT — AND WHAT THE OTHER HALF IS
  * ═══════════════════════════════════════════════════════════════════════════════════════════
- * Installing a patch byte into mem[] is necessary and NOT sufficient.  The transliteration bakes
- * operands and opcodes into C: `LDA $5905,Y` is compiled, so rewriting mem[$1248] from $B9 to $20
- * changes nothing about what the C does.  Only bytes declared in `SMC_SITES`
- * (tools/transpile.py) are read from mem[] at run time.
+ * Putting a patch byte into mem[] is necessary and NOT sufficient, for two independent reasons,
+ * and a circuit is playable only when BOTH are answered.  Either one alone would produce a
+ * circuit that installs perfectly and then runs SILVERSTONE'S CODE over another circuit's
+ * geometry — not a crash, a plausible-looking wrong game, the exact failure class this project
+ * keeps paying for.
  *
- * Therefore a circuit whose patch set is not fully covered by SMC_SITES would run SILVERSTONE'S
- * CODE over another circuit's geometry — which is not a crash, it is a plausible-looking wrong
- * game, the exact failure class this project keeps paying for.  So:
+ *   1. THE ENGINE MUST READ THE BYTE.  The transliteration bakes operands and opcodes into C:
+ *      `LDA $5905,Y` is compiled, so rewriting mem[$1248] from $B9 to $20 changes nothing on its
+ *      own.  Only bytes covered by an SMC site — for these, the `extent` class — are read from
+ *      mem[] at run time.  ⭐ `revs_track_install()` checks every patch address against
+ *      `revs_smc_bytes.h`, which the TRANSPILER generates.  A hand-maintained list would drift
+ *      the moment a site was added; a generated one cannot.  (A patch to a DATA byte is honoured
+ *      for free — every data access already goes through mem[]; hence the code-range map.)
  *
- *   ⭐ `revs_track_install()` checks every patch address against `revs_smc_bytes.h`, which the
- *      TRANSPILER generates from SMC_SITES.  Unhonoured bytes are counted, the first is recorded,
- *      and the install is REFUSED.  A hand-maintained list would drift the moment a site was
- *      added; a generated one cannot.
+ *   2. SOMETHING MUST BE AT THE OTHER END.  Ten of those extents turn an engine instruction into
+ *      `JSR`/`JMP $5xxx` — a call into the circuit's own hook bodies.  Those are transliterated
+ *      per circuit into `src/gen/revs_track_hooks.[ch]`, and the install checks every hook entry
+ *      against that generated table.
  *
- * Silverstone has an empty patch set, so it installs unconditionally and the mechanism is
- * exercised by every ordinary run rather than only by an expansion circuit.
+ * ⭐ The two are counted SEPARATELY (`g_trackUnhonoured` vs `g_trackHooksUnbuilt`) because they
+ * landed at different times: while (1) was outstanding, every circuit reported "patch bytes await
+ * SMC sites"; the moment it landed that count went to zero and a single combined number would have
+ * read as "playable" with no hook bodies at all.
+ *
+ * Silverstone has an empty patch set and no hooks, so it installs unconditionally and the
+ * mechanism is exercised by every ordinary run rather than only by an expansion circuit.
+ *
+ * ⚠ "Installs" is still not "its code runs": an expansion circuit whose hooks are never REACHED
+ * looks identical to one running Silverstone's control flow.  `g_trackHookCalls` is that number,
+ * and `make track-run` is the check — it races each circuit and requires the count to be non-zero
+ * (and exactly zero for passive Silverstone).
  */
 #ifndef REVS_TRACK_H
 #define REVS_TRACK_H

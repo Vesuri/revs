@@ -382,20 +382,29 @@ def _load_track_extents(path):
         fields = [f.strip() for f in line.split('|')]
         lo_s, hi_s = fields[0].split()
         lo, hi = int(lo_s, 16), int(hi_s, 16)
-        sigs, patchable = [], set()
+        sigs, per_arm = [], []
         for f in fields[1:]:
-            if f.startswith('sig:'):
-                nums = [int(x, 16) for x in f[4:].split(',')]
-                sigs.append(tuple(zip(nums[0::2], nums[1::2])))
-            elif f.startswith('patchable:'):
-                patchable = {lo + int(x, 16) for x in f[10:].split(',') if x}
+            if not f.startswith('sig:'):
+                continue
+            # ⭐ `sig:<offset,opcode pairs>@<offsets that can vary IN THAT ARM>`.  Per arm, not per
+            # extent: an arm's guard is often satisfiable by only one circuit, and then its operands
+            # are that circuit's and are STATIC.  Reading them from mem[] anyway is not merely
+            # wasteful — in the unpatched arm of $248B it turned a `BCS` into a runtime-computed
+            # branch, whose label dispatch then broke when an unrelated change split the enclosing
+            # function, and it broke SILVERSTONE, a circuit with no patches at all.
+            spec, _, pa = f[4:].partition('@')
+            nums = [int(x, 16) for x in spec.split(',')]
+            sigs.append(tuple(zip(nums[0::2], nums[1::2])))
+            per_arm.append({lo + int(x, 16) for x in pa.split(',') if x})
         if not sigs:
             raise SystemExit(f'{path}: ${lo:04X} has no signature')
         # Every byte a guard reads is read at run time too, and revs_smc_bytes.h documents
         # itself as exactly that set — so declare both, not just the patched ones.
         guard = {lo + off for sig in sigs for off, _op in sig}
+        allpatch = set().union(*per_arm) if per_arm else set()
         sites[lo] = {'kind': 'extent', 'hi': hi, 'sigs': sigs,
-                     'patch': patchable, 'bytes': patchable | guard,
+                     'arm_patch': per_arm, 'patch': allpatch,
+                     'bytes': allpatch | guard,
                      'from': ["each circuit's ModifyGameCode ($5700, via $5A22)"]}
     return sites
 
@@ -418,6 +427,78 @@ SMC_SITES.update(TRACK_EXTENTS)
 # separately, because the extent's arms already account for every byte in the range.
 TRACK_EXTENT_INNER = {a for lo, s in TRACK_EXTENTS.items()
                       for a in range(lo + 1, s['hi'] + 1)}
+
+# ---------------------------------------------------------------------------
+# …and the OTHER END of those patched calls: the per-circuit HOOK BODIES
+# ---------------------------------------------------------------------------
+# ⭐ Every circuit's hook code lives at the SAME addresses ($5300-$5A25) and is DIFFERENT code.
+# So one address range has five bodies, and the corpus needs all five at once — which rules out
+# the normal one-listing pipeline and is why this is its own pass.
+#
+# The shape chosen, and why: ONE C function per circuit, entered by 6502 address, exactly the
+# `region` form build_regions() already produces for a cyclic segment group.
+#   * every branch and JMP inside the window becomes a plain `goto` — no segmentation needed,
+#     which matters because Ghidra has never seen this code and has no function boundaries for it
+#   * the ~5 intra-window JSRs per circuit become a recursive `trk_<name>(0xTTTT)`, which RETURNS,
+#     as a JSR must and a goto cannot
+#   * a transfer OUT of the window is a call into the shared engine C, resolved through the same
+#     symbol/wrapper tables the engine pass builds
+#
+# ⚠ `ModifyGameCode` is excluded (tools/track_hooks_dis.py subtracts it).  It is start-up-only and
+# its effect is already applied as data by the installer; transliterating it would apply every
+# patch a second time, to an image that already has them.
+#
+# ⚠ Needs the discs, like `make gen`'s tracks-gen step already does.  A checkout without
+# revs-hack-nurburgring.ssd generates five circuits and says so.  REVS_TRACK_HOOKS=0 opts out
+# entirely, which leaves every expansion circuit refused by revs_track_check().
+TRACK_HOOKS_ENABLED = os.environ.get('REVS_TRACK_HOOKS', '1') == '1'
+OUT_HOOKS = ROOT / "src/gen/revs_track_hooks.c"
+OUT_HOOKS_H = ROOT / "src/gen/revs_track_hooks.h"
+
+def collect_track_hooks():
+    """[{dfs, disp, index, entries, insns}] — one row per circuit that patches the engine.
+
+    `index` is the position in revs_tracks[], taken from the SAME CIRCUITS list gen_tracks.py
+    uses, so the two orderings cannot drift.  `insns` are in parse_listing's own dict shape.
+    """
+    if not TRACK_HOOKS_ENABLED:
+        return []
+    sys.path.insert(0, str(ROOT / "tools"))
+    from track_hooks_dis import walk, WINDOW, HOOK, operand_text
+    from gen_tracks import CIRCUITS, runtime_image, patch_list
+    from track_smc import hook_targets, extent_rows
+
+    rows, ext = [], extent_rows()
+    for index, (ssd, dfs, disp) in enumerate(CIRCUITS):
+        if not (ROOT / ssd).exists():
+            print(f'  track hooks: {ssd} absent — {disp} has no hook bodies in this build')
+            continue
+        img = runtime_image(str(ROOT / ssd), dfs)
+        if img[HOOK] == 0x60:                    # RTS — a passive circuit (Silverstone)
+            continue
+        patches = dict(patch_list(runtime_image(str(ROOT / ssd), dfs)))
+        entries = hook_targets(bytes(img), patches, ext)
+        mgc, _e, _b = walk(img, [img[HOOK + 1] | (img[HOOK + 2] << 8)])
+        found, exits, bad = walk(img, entries, exclude=set(mgc))
+        if bad:
+            raise SystemExit(f'track hooks {dfs}: undecodable bytes at '
+                             + ', '.join(f'${a:04X}' for a in sorted(bad)))
+        insns = []
+        for a in sorted(found):
+            mn, mode, operand, n = found[a]
+            insns.append({'addr': a, 'bytes': bytes(img[a:a + n]), 'mnem': mn,
+                          'op': operand_text(mn, mode, operand, a, n)})
+        # A JSR inside the window is an entry too — the dispatch prologue must reach it.
+        lo, hi = WINDOW
+        for i in insns:
+            if i['mnem'] == 'JSR':
+                m = re.match(r'^0x([0-9a-fA-F]+)$', i['op'])
+                if m and lo <= int(m.group(1), 16) <= hi:
+                    entries.append(int(m.group(1), 16))
+        rows.append({'dfs': dfs, 'disp': disp, 'index': index,
+                     'entries': sorted(set(entries)), 'insns': insns,
+                     'exits': sorted(a for a in exits if not (lo <= a <= hi))})
+    return rows
 
 # Addresses a 'call' site can compute.  A computed call reaches the MIDDLE of a merged
 # region, so the region's dispatch prologue needs a case for each of them — they are not
@@ -1290,7 +1371,7 @@ def emit_smc_extent(insn, site, translate_one):
                    f'{"   /* unpatched: Silverstone */" if n == 0 else ""}')
         for k, (off, op) in enumerate(sig):
             end = (sig[k + 1][0] if k + 1 < len(sig) else hi + 1 - lo)
-            out += ['    ' + ln for ln in translate_one(lo + off, op, end - off)]
+            out += ['    ' + ln for ln in translate_one(lo + off, op, end - off, n)]
     out += ['    } else {',
             f'        platform_smc_unhandled(0x{lo:04X}, mem[0x{lo:04X}]); return;',
             '    }']
@@ -1337,10 +1418,11 @@ def _make_extent_translator(insn, site, func, all_funcs_by_start, symbols, local
         five opcodes the six circuits' patchers actually emit and nothing more.
     """
     ext_lo = insn['addr']
-    patch = site['patch']
     by_addr = {i['addr']: i for i in func['insns']}
 
-    def emit(a, opcode, navail):
+    def emit(a, opcode, navail, arm):
+        # ⭐ THE ARM'S OWN patchable set, not the extent's.  See _load_track_extents().
+        patch = site['arm_patch'][arm]
         want = TRACK_OPCODES.get(opcode)
         listed = by_addr.get(a)
         if listed is not None and listed['bytes'][0] == opcode:
@@ -1486,8 +1568,13 @@ def translate_insn(insn, func, all_funcs_by_start, symbols, local_targets,
             # global cpu struct, exactly as on the 6502.  docs/static-map.md §MOS calls.
             lines.append(f'    platform_mos_call(0x{target:04X});  /* {mos_name(target)} */')
             return lines
-        name = resolve_target_name(target)
-        lines.append(f'    {name}();')
+        # resolve_call, not resolve_target_name: a target that is a REGION ENTRY has no function
+        # of its own and is reached as `region_xxxx(0xTTTT)`.  The engine's own JSRs never hit
+        # that case (a static JSR to a mid-region address became a wrapper in pass 1, and the
+        # emitted corpus is byte-identical either way — checked), but the per-circuit hook bodies
+        # do: their ~5 intra-window JSRs land inside the one function that holds all of a
+        # circuit's hooks.  A JSR must RETURN, so it cannot be the `goto` a branch there becomes.
+        lines.append('    ' + resolve_call(target))
         if target in UNWIND_CALLEES:
             # ⭐ This routine can reach the stack-drop RTS at $2F7E, which discards THIS
             # frame's return address — so when it does, the 6502 never comes back here.
@@ -1897,8 +1984,11 @@ def translate_func(func, all_funcs_by_start, symbols,
         s = SMC_SITES.get(a)
         if s is None or s['kind'] != 'extent':
             return False
+        # ⚠ Per ARM.  The union would claim $248B needs a runtime branch dispatch, when only its
+        # patched arm varies those bytes and that arm holds a JMP, not a branch.
         return any(i['mnem'] in BRANCH_FLAGS and
-                   ({i['addr'] + k for k in range(1, len(i['bytes']))} & s['patch'])
+                   ({i['addr'] + k for k in range(1, len(i['bytes']))} & pa)
+                   for pa in s['arm_patch']
                    for i in insns if a <= i['addr'] <= s['hi'])
 
     smc_dispatch_targets = []
@@ -2064,6 +2154,177 @@ def find_containing_func(addr, funcs):
             return f
     return None
 
+def emit_track_hooks(rows, funcs_by_start, symbols, external_entries, wrapper_names):
+    """src/gen/revs_track_hooks.[ch] — one region-form C function per circuit, plus the
+    address→body dispatch src/platform/track.c consults.
+
+    ⚠ The dispatch is BY CIRCUIT INDEX AND ADDRESS, and both halves matter: $5572 exists in every
+    circuit and is different code in each.  A dispatch on address alone would compile, run, and
+    drive Brands Hatch's corner through Snetterton's hook."""
+    # ⭐ revs_track_hook() ITSELF is emitted here, not in src/platform/track.c, and the file is
+    # always written even with zero circuits.  Two reasons, both structural:
+    #   * it calls the bodies, so putting it in track.c would make every consumer of track.c link
+    #     the whole transliteration — including tools/validate_tracks.c, whose value is being a
+    #     small differential that runs no engine code;
+    #   * the engine's generated C references it unconditionally, so a build with no hook bodies
+    #     still needs the symbol.  Emitting a trapping version is the honest form of "absent".
+    seam = [
+        '/* The engine→track-file seam.  src/platform/platform_c.h declares it; the per-circuit',
+        ' * extents in revs_gen.c call it with a $5300-$5A25 target.  ⚠ g_track, not',
+        ' * g_trackInstalled: this is the circuit the engine is RUNNING, and the patched operands',
+        ' * in mem[] belong to it. */',
+        'unsigned long g_trackHookMissing = 0;',
+        'uint16_t      g_trackHookMissingAddr = 0;',
+        '/* ⭐ SUCCESSFUL calls, and this one is not decoration.  "the circuit installed and did',
+        ' * not crash" is compatible with the hooks never being reached at all — which is exactly',
+        ' * what an expansion circuit running Silverstone\'s control flow would look like.  A',
+        ' * non-zero count here is the evidence that the per-circuit code actually EXECUTES. */',
+        'unsigned long g_trackHookCalls = 0;',
+        '',
+        'void revs_track_hook(uint16_t addr)',
+        '{',
+        '    if (revs_track_hook_call(g_track, (unsigned short)addr)) { g_trackHookCalls++; return; }',
+        '    /* No body for this circuit at this address: record the FIRST, count them all.',
+        '       ⚠ Never fall back to the unpatched engine routine — the patch replaced it',
+        '       precisely because this circuit needs different behaviour there. */',
+        '    if (g_trackHookMissing == 0) g_trackHookMissingAddr = addr;',
+        '    g_trackHookMissing++;',
+        '    platform_smc_unhandled(0x5A22, addr);',
+        '}',
+        '',
+    ]
+
+    if not rows:
+        OUT_HOOKS_H.write_text(
+            '/* GENERATED by tools/transpile.py — DO NOT EDIT.  No circuit has hook bodies in\n'
+            ' * this build (REVS_TRACK_HOOKS=0, or no expansion disc present), so every expansion\n'
+            ' * circuit is refused by revs_track_check() and the seam always traps. */\n'
+            '#ifndef REVS_TRACK_HOOKS_H\n#define REVS_TRACK_HOOKS_H\n'
+            '#define REVS_TRACK_HOOK_CIRCUITS 0\n'
+            '/* `inline` so a consumer that needs only one of the two (track.c needs _has, the\n'
+            ' * generated bodies need _call) does not draw an unused-function warning. */\n'
+            '#define REVS_HOOK_FN inline\n'
+            'static REVS_HOOK_FN int revs_track_hook_has(unsigned char t, unsigned short a)\n'
+            '{ (void)t; (void)a; return 0; }\n'
+            'static REVS_HOOK_FN int revs_track_hook_call(unsigned char t, unsigned short a)\n'
+            '{ (void)t; (void)a; return 0; }\n'
+            '#endif\n')
+        OUT_HOOKS.write_text('\n'.join(
+            ['/* GENERATED by tools/transpile.py — DO NOT EDIT.  No hook bodies in this build. */',
+             '#include "../cpu/cpu.h"',
+             '#include "../platform/platform_c.h"',
+             '#include "../platform/track.h"',
+             '#include "revs_track_hooks.h"',
+             ''] + seam) + '\n')
+        print(f'Wrote {OUT_HOOKS_H}  (no circuits — the seam traps)')
+        return
+
+    body = [
+        '/* GENERATED by tools/transpile.py — DO NOT EDIT.',
+        ' *',
+        ' * The per-circuit HOOK BODIES: the code each expansion circuit\'s patched JSR/JMPs call.',
+        ' * All of it lives at $5300-$5A25, so every circuit\'s body occupies the SAME addresses and',
+        ' * they can only coexist under different C names.  One function per circuit, entered by',
+        ' * 6502 address (the `region` form) — see the note above collect_track_hooks() in',
+        ' * tools/transpile.py, docs/phases.md §5c, and src/platform/track.h for the model.',
+        ' *',
+        ' * ⚠ ModifyGameCode is NOT here.  It runs once at start-up on real hardware and its effect',
+        ' * is already applied as data by the installer; running it again would patch a patched image.',
+        ' */',
+        '#include "../cpu/cpu.h"',
+        '#include "../cpu/bus.h"',
+        '#include "revs_decl.h"',
+        '#define REVS_MEM_ALIASES',
+        '#include "mem.h"',
+        '#include "../platform/platform_c.h"',
+        '#include "../platform/probe.h"',
+        '#include "../platform/track.h"   /* g_track — which circuit the engine is running */',
+        '#include "revs_track_hooks.h"',
+        '',
+    ] + seam
+    decl = [
+        '/* GENERATED by tools/transpile.py — DO NOT EDIT.  See revs_track_hooks.c. */',
+        '#ifndef REVS_TRACK_HOOKS_H',
+        '#define REVS_TRACK_HOOKS_H',
+        '',
+        f'#define REVS_TRACK_HOOK_CIRCUITS {len(rows)}',
+        '/* `inline` so a consumer that needs only one of the two (track.c needs _has, the',
+        ' * generated bodies need _call) does not draw an unused-function warning. */',
+        '#define REVS_HOOK_FN inline',
+        '',
+    ]
+    for row in rows:
+        decl.append(f'void trk_{row["dfs"].lower()}(unsigned short entry);'
+                    f'   /* {row["disp"]} */')
+    decl.append('')
+
+    # ⭐ Register the dispatch entries so an intra-window JSR emits `trk_x(0xTTTT)` rather than a
+    # call to a function name that does not exist.  Same mechanism the SMC 'call' class uses.
+    for row in rows:
+        for a in row['entries']:
+            SMC_REGION_OF[a] = f'trk_{row["dfs"].lower()}'
+
+    for row in rows:
+        name = f'trk_{row["dfs"].lower()}'
+        addrs = {i['addr'] for i in row['insns']}
+        pseudo = {'start': min(addrs), 'end': max(addrs), 'name': name,
+                  'insns': row['insns']}
+        body.append(f'/* ---- {row["disp"]} ({row["dfs"]}) — {len(row["insns"])} instructions, '
+                    f'{len(row["entries"])} entries ---- */')
+        # ⚠ SMC_REGION_OF must name THIS circuit while its body is emitted: $5572 is an entry in
+        # every circuit, so the map is per-circuit and is re-pointed before each pass.
+        for r2 in rows:
+            for a in r2['entries']:
+                SMC_REGION_OF[a] = f'trk_{r2["dfs"].lower()}'
+        for a in row['entries']:
+            SMC_REGION_OF[a] = name
+        lines = translate_func(pseudo, funcs_by_start, symbols,
+                               external_entry_labels=set(),
+                               external_entries=external_entries,
+                               wrapper_names=wrapper_names,
+                               unit_addrs=addrs,
+                               dispatch_entries=row['entries'])
+        # translate_func emits `void <name>(uint16_t _entry)`; the header declares it with
+        # `unsigned short`, which is the same type — keep the signatures textually identical so
+        # the Amiga C++ build (which has no <stdint.h>) does not see two different declarations.
+        body.extend(ln.replace(f'void {name}(uint16_t _entry)',
+                               f'void {name}(unsigned short _entry)') for ln in lines)
+
+    decl += [
+        '/* Does circuit `t` have a body for hook address `a`?  ⚠ Both arguments are load-bearing:',
+        '   $5572 is a hook entry in every circuit and is DIFFERENT CODE in each. */',
+        'static REVS_HOOK_FN int revs_track_hook_has(unsigned char t, unsigned short a)',
+        '{',
+        '    switch (t) {',
+    ]
+    for row in rows:
+        cases = ' '.join(f'case 0x{a:04X}:' for a in row['entries'])
+        decl += [f'    case {row["index"]}:  /* {row["disp"]} */',
+                 f'        switch (a) {{ {cases} return 1; default: return 0; }}']
+    decl += ['    default: return 0;',
+             '    }',
+             '}',
+             '',
+             '/* Run it.  Returns 0 if this circuit has no body at that address — the caller',
+             '   reports that; it must never be treated as "nothing to do". */',
+             'static REVS_HOOK_FN int revs_track_hook_call(unsigned char t, unsigned short a)',
+             '{',
+             '    if (!revs_track_hook_has(t, a)) return 0;',
+             '    switch (t) {']
+    for row in rows:
+        decl.append(f'    case {row["index"]}: trk_{row["dfs"].lower()}(a); return 1;')
+    decl += ['    default: return 0;',
+             '    }',
+             '}',
+             '',
+             '#endif /* REVS_TRACK_HOOKS_H */',
+             '']
+    OUT_HOOKS_H.write_text('\n'.join(decl))
+    OUT_HOOKS.write_text('\n'.join(body) + '\n')
+    tot = sum(len(r['insns']) for r in rows)
+    print(f'Wrote {OUT_HOOKS}  ({len(rows)} circuits, {tot} hook instructions: '
+          + ', '.join(f'{r["dfs"]}={len(r["insns"])}' for r in rows) + ')')
+
 def main():
     symbols = load_symbols(SYM_CSV)
     write_mem_header(OUT_MEM)
@@ -2112,6 +2373,24 @@ def main():
             if val == container['start']:
                 continue  # it's a normal tail call to another function's start
             # Mid-function entry: needs a wrapper and a label in the container.
+            external_entries[val] = container
+            external_labels_for_func[container['start']].add(val)
+
+    # ⭐ THE HOOK BODIES' ENGINE EXITS ARE EXTERNAL ENTRIES TOO, and they have to be collected
+    # HERE — before the wrapper fixpoint — not after.  A circuit's hook returns to the engine at
+    # $2490 / $253B / $461B, which are mid-function addresses the engine itself only ever reaches
+    # by falling through or branching, so they exist as `L_2490:` labels and NOT as callable C.
+    # Discovering them later would emit `FUN_2490()` against a function that was never defined.
+    # (The compiler would catch it — but the fix belongs here, where every other mid-function
+    # entry is already handled, rather than as a special case bolted on downstream.)
+    track_hooks = collect_track_hooks()
+    for row in track_hooks:
+        for val in row['exits']:
+            if val in funcs_by_start or is_mos(val):
+                continue
+            container = find_containing_func(val, funcs)
+            if container is None or val == container['start']:
+                continue
             external_entries[val] = container
             external_labels_for_func[container['start']].add(val)
 
@@ -2372,6 +2651,8 @@ def main():
 
     OUT_C.write_text('\n'.join(header + body) + '\n')
     print(f'Wrote {OUT_C}  ({len(header)+len(body)} lines)')
+
+    emit_track_hooks(track_hooks, funcs_by_start, symbols, external_entries, wrapper_names)
 
     # -----------------------------------------------------------------------
     # revs_smc_bytes.h — every mem[] byte the emitted C consults at RUN TIME.

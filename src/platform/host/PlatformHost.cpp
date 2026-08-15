@@ -55,10 +55,14 @@ PlatformHost::PlatformHost(const char* imagePath) : vbi(0), frames(0), traceKeys
                 std::fprintf(stderr, "PlatformHost: no circuit %u (this build has %d)\n",
                              want, REVS_TRACK_COUNT);
             else
-                std::fprintf(stderr, "PlatformHost: circuit %u (%s) REFUSED — %u patch bytes have "
-                             "no SMC site yet (first $%04X); see src/platform/track.h\n",
+                /* ⚠ TWO reasons, reported separately: patch bytes the transliteration does not
+                   read, and hook bodies this build does not have.  One number for both would have
+                   read identically before and after the SMC work landed (docs/phases.md §5b). */
+                std::fprintf(stderr, "PlatformHost: circuit %u (%s) REFUSED — %u patch bytes with "
+                             "no SMC site (first $%04X), %u hook bodies unbuilt (first $%04X); "
+                             "see src/platform/track.h\n",
                              want, revs_tracks[want].name, g_trackUnhonoured,
-                             g_trackUnhonouredAddr);
+                             g_trackUnhonouredAddr, g_trackHooksUnbuilt, g_trackHooksUnbuiltAddr);
             revs_track_install(0);
         }
         std::fprintf(stderr, "PlatformHost: circuit %u = %s\n",
@@ -145,7 +149,29 @@ void PlatformHost::renderFrame()
             for (unsigned i = 0; i < BBC_SCREEN_BYTES; i++)
                 std::fputc(mem[BBC_SCREEN_BASE + i], f);
             std::fclose(f);
-            std::printf("PlatformHost: screen dump frame %lu -> %s\n", frames, path);
+            /* ⭐ The circuit's own hook traffic goes out WITH the dump, unbuffered.  "The
+               expansion circuit installed and did not crash" is compatible with its hooks never
+               being reached, i.e. with the engine quietly running Silverstone's control flow over
+               another circuit's geometry — and that is the failure this whole seam exists to
+               prevent, so the dump a comparison is made from must carry the proof beside it.
+               ⚠ stderr, not stdout: a run killed by a timeout loses buffered stdout, which is how
+               an earlier measurement came back empty and read as "the code never ran". */
+            std::fprintf(stderr, "PlatformHost: screen dump frame %lu -> %s  "
+                         "(circuit %u, hook calls %lu, missing %lu)\n",
+                         frames, path, g_trackInstalled, g_trackHookCalls, g_trackHookMissing);
+        }
+        /* ⭐ REVS_QUIT_AFTER_DUMP=1 — stop once the last requested frame is written.
+           Without it the host races on forever after the dump, so a scripted check has to rely
+           on an external timeout to end each run, and then WAITS OUT that timeout for every
+           circuit even though the measurement finished in seconds.  (That is exactly how
+           `make track-run` first appeared to hang on circuit 1: it was still circuit 0, dumped
+           and running.)  Not the default — an interactive or perf run wants to keep going. */
+        /* ⚠ exit(), not `quit = true`: `quit` is only read before run(), and the engine's main
+           loop has no return path — it is 6502 code that never ends.  There is nothing to unwind
+           to, so leaving is the only way out. */
+        if (frames + 1 >= dumpFrame + dumpCount && std::getenv("REVS_QUIT_AFTER_DUMP")) {
+            std::fflush(0);
+            std::exit(0);
         }
         /* ⭐ The WHOLE 64 KB beside the frame buffer, when asked.  A frame-buffer-only dump
            can say the picture is wrong but never why: the fill chain in the $7B00 overlay

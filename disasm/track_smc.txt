@@ -3,44 +3,49 @@
 # The per-circuit SMC surface, at INSTRUCTION-EXTENT granularity.  One row per
 # extent of the engine that some circuit's ModifyGameCode rewrites:
 #
-#   lo hi | sig:off,opcode,off,opcode,... | sig:... | patchable:off,off,...
+#   lo hi | sig:off,opcode,...@patchable-offsets | sig:...@... 
 #
 # `lo`-`hi` are inclusive engine addresses; each `sig` is one instruction-stream
 # shape the extent takes, as (byte offset from lo, opcode) pairs, the FIRST being
-# the unpatched Silverstone shape; `patchable` are the offsets some circuit writes.
+# the unpatched Silverstone shape.  After the `@` are the offsets that can VARY IN
+# THAT ARM — i.e. offsets patched by a circuit whose bytes satisfy that arm's guard.
+# ⚠ Per arm, not per extent: an arm's guard is often satisfiable by only one circuit,
+# and then its operands are that circuit's and are static.  Treating the extent's
+# whole patchable set as variable in every arm manufactured a runtime-computed branch
+# in the UNPATCHED arm, which broke Silverstone (see docs/phases.md §5b).
 #
 # ⭐ There are NO per-circuit values here by design — the operands live in mem[]
 # and are read at run time, so this table is the same for all six circuits and
 # carries no third party's data.  tools/transpile.py turns each row into an
 # 'extent' SMC site.
 # 30 extents, derived from: BRANDS DONING OULTON SNETTER NURBURG
-1248 124A | sig:0,B9 | sig:0,20 | patchable:0,1,2
-1289 128B | sig:0,20 | patchable:1,2
-12FB 12FD | sig:0,18,1,69 | sig:0,20 | patchable:0,1,2
-1310 1311 | sig:0,29 | sig:0,A9 | patchable:0,1
-13C9 13CB | sig:0,20 | patchable:1,2
-1426 1428 | sig:0,20 | patchable:1,2
-1593 1595 | sig:0,20 | patchable:1,2
-1946 1948 | sig:0,20 | patchable:1,2
-1FE9 1FEA | sig:0,A6 | sig:0,A2 | patchable:0
-231A 231B | sig:0,F0 | patchable:1
-248B 248F | sig:0,B0,2,4C | sig:0,4C | patchable:0,1,2
-24DE 24E0 | sig:0,20 | patchable:1,2
-24E9 24EA | sig:0,C9 | patchable:1
-24F2 24F4 | sig:0,20 | patchable:1,2
-2538 253A | sig:0,99 | sig:0,20 | patchable:0,1,2
-2542 2545 | sig:0,20,3,4A | sig:0,20,3,EA | patchable:1,2,3
-261A 261D | sig:0,85,2,84 | sig:0,4C | patchable:0,1,2
-2771 2772 | sig:0,C9 | patchable:1
-298D 298E | sig:0,29 | patchable:1
-2F23 2F25 | sig:0,B9 | sig:0,20 | patchable:0,1,2
-44D5 44D7 | sig:0,B9 | patchable:1,2
-45CB 45CD | sig:0,0A,1,26 | sig:0,20 | patchable:0,1,2
-462B 462D | sig:0,20 | patchable:1,2
-4CC0 4CC2 | sig:0,BD | patchable:1,2
-4CC8 4CCA | sig:0,BD | patchable:1,2
-4CD0 4CD2 | sig:0,BD | patchable:1,2
-4CD6 4CD8 | sig:0,BD | patchable:1,2
-4CE0 4CE2 | sig:0,BD | patchable:1,2
-4F54 4F55 | sig:0,C9 | patchable:1
-4F58 4F59 | sig:0,A9 | patchable:1
+1248 124A | sig:0,B9@ | sig:0,20@0,1,2
+1289 128B | sig:0,20@1,2
+12FB 12FD | sig:0,18,1,69@ | sig:0,20@0,1,2
+1310 1311 | sig:0,29@ | sig:0,A9@0,1
+13C9 13CB | sig:0,20@1,2
+1426 1428 | sig:0,20@1,2
+1593 1595 | sig:0,20@1,2
+1946 1948 | sig:0,20@1,2
+1FE9 1FEA | sig:0,A6@ | sig:0,A2@0
+231A 231B | sig:0,F0@1
+248B 248F | sig:0,B0,2,4C@ | sig:0,4C@0,1,2
+24DE 24E0 | sig:0,20@1,2
+24E9 24EA | sig:0,C9@1
+24F2 24F4 | sig:0,20@1,2
+2538 253A | sig:0,99@ | sig:0,20@0,1,2
+2542 2545 | sig:0,20,3,4A@ | sig:0,20,3,EA@1,2,3
+261A 261D | sig:0,85,2,84@ | sig:0,4C@0,1,2
+2771 2772 | sig:0,C9@1
+298D 298E | sig:0,29@1
+2F23 2F25 | sig:0,B9@ | sig:0,20@0,1,2
+44D5 44D7 | sig:0,B9@1,2
+45CB 45CD | sig:0,0A,1,26@ | sig:0,20@0,1,2
+462B 462D | sig:0,20@1,2
+4CC0 4CC2 | sig:0,BD@1,2
+4CC8 4CCA | sig:0,BD@1,2
+4CD0 4CD2 | sig:0,BD@1,2
+4CD6 4CD8 | sig:0,BD@1,2
+4CE0 4CE2 | sig:0,BD@1,2
+4F54 4F55 | sig:0,C9@1
+4F58 4F59 | sig:0,A9@1

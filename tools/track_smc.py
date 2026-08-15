@@ -93,7 +93,10 @@ TRACK_WINDOW = (0x5300, 0x5A25)     # where the unpack swap deposits the circuit
 
 
 def extent_rows(path=None):
-    """[(lo, hi, sigs, patchable_offsets)] from the committed table."""
+    """[(lo, hi, sigs, per_arm_patchable)] from the committed table.
+
+    `per_arm_patchable[i]` is the set of byte offsets that can vary in arm `i` — see the header
+    of disasm/track_smc.txt for why that is per arm and not per extent."""
     path = path or os.path.join(ROOT, "disasm/track_smc.txt")
     rows = []
     for line in open(path):
@@ -103,14 +106,15 @@ def extent_rows(path=None):
         f = [x.strip() for x in line.split("|")]
         lo_s, hi_s = f[0].split()
         lo, hi = int(lo_s, 16), int(hi_s, 16)
-        sigs, patch = [], set()
+        sigs, per_arm = [], []
         for fld in f[1:]:
-            if fld.startswith("sig:"):
-                n = [int(x, 16) for x in fld[4:].split(",")]
-                sigs.append(tuple(zip(n[0::2], n[1::2])))
-            elif fld.startswith("patchable:"):
-                patch = {int(x, 16) for x in fld[10:].split(",") if x}
-        rows.append((lo, hi, sigs, patch))
+            if not fld.startswith("sig:"):
+                continue
+            spec, _, pa = fld[4:].partition("@")
+            n = [int(x, 16) for x in spec.split(",")]
+            sigs.append(tuple(zip(n[0::2], n[1::2])))
+            per_arm.append({int(x, 16) for x in pa.split(",") if x})
+        rows.append((lo, hi, sigs, per_arm))
     return rows
 
 
@@ -167,7 +171,13 @@ def main():
     ap.add_argument("--summary", action="store_true")
     ap.add_argument("--emit", metavar="PATH", nargs="?", const="-",
                     help="write the machine-readable extent table (default stdout)")
+    ap.add_argument("--check", metavar="PATH", nargs="?",
+                    const="disasm/track_smc.txt",
+                    help="re-derive and FAIL if the committed table no longer matches the "
+                         "circuits present (a stale table is silently wrong, not missing)")
     args = ap.parse_args()
+    if args.check and not args.emit:
+        args.emit = args.check
 
     from gen_tracks import CIRCUITS, runtime_image, patch_list
 
@@ -336,9 +346,35 @@ def main():
             sig = tuple((x[0] - lo, x[1][0]) for x in stream(v, lo) if not x[3])
             if sig not in sigs:
                 sigs.append(sig)
-        patchable = sorted(k for k in range(len(b))
-                           if any(lo + k in patches[t] for t in tracks))
-        table.append((lo, hi, sigs, patchable))
+
+        # ⭐⭐ PATCHABLE **PER ARM**, and the difference is not cosmetic.
+        #
+        # An operand inside an arm is only variable across the circuits that can TAKE that arm —
+        # and an arm's guard is often satisfiable by exactly one of them.  $248B's unpatched arm
+        # needs `BCS` at offset 0 and `JMP` at offset 2; all five expansion circuits write $4C over
+        # offset 0, so only Silverstone can be in that arm, so its branch offset is Silverstone's,
+        # statically.
+        #
+        # Treating the extent's whole patchable set as variable in every arm turned that BCS into a
+        # runtime-computed branch — and a runtime branch has to dispatch over the enclosing
+        # function's labels, which broke the moment an unrelated change split that function.  So
+        # the over-conservative form was not merely wasteful: it manufactured a dispatch that could
+        # not always be satisfied, and it broke SILVERSTONE, a circuit with no patches at all.
+        #
+        # ⚠ Still shape-only: this records WHICH OFFSETS can vary in each arm, never any value.
+        per_arm = []
+        for sig in sigs:
+            need = {(o, op) for o, op in sig}
+            who = []                       # circuits whose bytes satisfy this arm's guard
+            for t in tracks:
+                v = variants[t] if variants[t] is not None else b
+                if all(v[o] == op for o, op in need):
+                    who.append(t)
+            if all(b[o] == op for o, op in need):
+                who.append(None)           # the unpatched image itself
+            per_arm.append(sorted(k for k in range(len(b))
+                                  if any(t is not None and lo + k in patches[t] for t in who)))
+        table.append((lo, hi, sigs, per_arm))
 
         if args.summary or args.emit:
             continue
@@ -373,11 +409,16 @@ def main():
             "# The per-circuit SMC surface, at INSTRUCTION-EXTENT granularity.  One row per",
             "# extent of the engine that some circuit's ModifyGameCode rewrites:",
             "#",
-            "#   lo hi | sig:off,opcode,off,opcode,... | sig:... | patchable:off,off,...",
+            "#   lo hi | sig:off,opcode,...@patchable-offsets | sig:...@... ",
             "#",
             "# `lo`-`hi` are inclusive engine addresses; each `sig` is one instruction-stream",
             "# shape the extent takes, as (byte offset from lo, opcode) pairs, the FIRST being",
-            "# the unpatched Silverstone shape; `patchable` are the offsets some circuit writes.",
+            "# the unpatched Silverstone shape.  After the `@` are the offsets that can VARY IN",
+            "# THAT ARM — i.e. offsets patched by a circuit whose bytes satisfy that arm's guard.",
+            "# ⚠ Per arm, not per extent: an arm's guard is often satisfiable by only one circuit,",
+            "# and then its operands are that circuit's and are static.  Treating the extent's",
+            "# whole patchable set as variable in every arm manufactured a runtime-computed branch",
+            "# in the UNPATCHED arm, which broke Silverstone (see docs/phases.md \u00a75b).",
             "#",
             "# ⭐ There are NO per-circuit values here by design — the operands live in mem[]",
             "# and are read at run time, so this table is the same for all six circuits and",
@@ -385,14 +426,34 @@ def main():
             "# 'extent' SMC site.",
             f"# {len(table)} extents, derived from: {' '.join(tracks)}",
         ]
-        for lo, hi, sigs, patchable in table:
+        for lo, hi, sigs, per_arm in table:
             parts = [f"{lo:04X} {hi - 1:04X}"]
-            for sig in sigs:
-                parts.append("sig:" + ",".join(f"{o:X},{op:02X}" for o, op in sig))
-            parts.append("patchable:" + ",".join(f"{o:X}" for o in patchable))
+            for sig, pa in zip(sigs, per_arm):
+                parts.append("sig:" + ",".join(f"{o:X},{op:02X}" for o, op in sig)
+                             + "@" + ",".join(f"{o:X}" for o in pa))
             out.append(" | ".join(parts))
         text = "\n".join(out) + "\n"
-        if args.emit == "-":
+        if args.check:
+            # ⭐ STALENESS GUARD.  The committed table is derived from whichever discs are present,
+            # so adding a circuit changes it — and a stale table is silently wrong rather than
+            # loudly missing: the new circuit's patch addresses would still be in the union that
+            # revs_smc_bytes.h publishes, so the installer would accept it and an arm would bake
+            # somebody else's operand.  `make gen` runs this.
+            have = ""
+            if os.path.exists(args.emit) and args.emit != "-":
+                have = open(args.emit).read()
+            # Compare only the data lines: the header carries the derived-from list, which is
+            # allowed to differ between a five-disc and a six-disc checkout.
+            def rows_of(t):
+                return [l for l in t.splitlines() if l and not l.startswith("#")]
+            if rows_of(have) != rows_of(text):
+                print(f"⚠ {args.emit} is STALE — the circuits present imply a different extent "
+                      f"table.\n  -> run `make track-smc EMIT=1` and re-check the diff.",
+                      file=sys.stderr)
+                return 1
+            print(f"track-smc: {args.emit} is current "
+                  f"({len(table)} extents, {' '.join(tracks)})")
+        elif args.emit == "-":
             sys.stdout.write(text)
         else:
             open(args.emit, "w").write(text)
