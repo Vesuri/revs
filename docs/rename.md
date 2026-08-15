@@ -68,3 +68,23 @@ writers of the same screen rows, which is why the port had to stop running the b
 ISR (`docs/amiga-arch.md`).  Suggested name: something that says both halves, e.g.
 `sim_tick_and_plot_horizon` — but the *what* it plots there is not yet identified, so this is
 recorded as behaviour rather than as a rename.
+
+## `FUN_5204` (`$5204`) — it is the DIAL/LINE PLOTTER, and its direction is SELF-MODIFYING
+
+Found while fixing the rev counter (2026-08-16).  `$51A8` turns the engine revs `$003C` into an
+angle and `$5204` draws the needle: a Bresenham line whose **major- and minor-axis step opcodes are
+patched into itself** from two 8-byte octant tables (`$3B86` -> `$5220`, `$3B8E` -> `$529B`, indexed
+by the octant `$0076`).  Names worth having, none of them in `symbols.csv` yet:
+
+| Addr | Suggested | Evidence |
+|---|---|---|
+| `$51A8` | `dial_needle_angle` | reads `$3C`, clamps to `$1E`, `revs * 0.75`, rotates by `$4C`, decomposes mod `$98` into quadrant (`/$26`) + offset folded about `$13` |
+| `$5204` | `plot_line_octant` | the two SMC step slots + `($70),Y` frame-buffer write; `$76` is its octant |
+| `$3B86` | `octant_major_step_tbl` | `INX DEY INY INX DEX INY DEY DEX` |
+| `$3B8E` | `octant_minor_step_tbl` | `DEY INX INX INY INY DEX DEX DEY` |
+| `$0076` | `plot_octant` | `(quadrant << 1) | mirror`, built at `$51DB-$51E1` |
+| `$003C` | `engine_revs` | already called "the rev counter" in the refloop's DASH table; range `$00`, idle `$28`-`$2C`, clamped max `$AA` |
+| `$005A` | `engine_revs_prev` | the over-rev limiter's decay source (`$4A2C`, −2/call above `$6C`) |
+
+⚠ `$5204` has callers other than the needle — anything that draws a straight line goes through it,
+so the name should not say "needle".
