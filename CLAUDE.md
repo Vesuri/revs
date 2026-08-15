@@ -262,7 +262,7 @@ Hard-won detail lives in `docs/`, not here. **Read the relevant one BEFORE worki
 | `docs/validation-harness.md` | Writing or trusting a `make validate` fixture |
 | `docs/faithfulness-seam.md` | Deciding where a routine lives (validated twin vs Amiga-only) |
 | `docs/perf-method.md` ⚑ | Quoting, sizing or judging ANY performance number |
-| **`docs/direct-bitplane-plan.md`** ⭐ | **Before touching any plotter, or any Phase 6 asm.** Rendering DIRECT to bitplanes instead of decoding a BBC-shaped buffer — the ~250 ms of pure port overhead, the layout choices, and how the decode becomes the ORACLE |
+| **`docs/direct-bitplane-plan.md`** ⭐ | **Before touching any plotter, any dashboard work, or any Phase 6 asm.** Rendering DIRECT to bitplanes instead of decoding a BBC-shaped buffer — the ~250 ms of pure port overhead, the layout choices, how the decode becomes the ORACLE, and §8 the SPRITE lever (the BBC had none; the cockpit could be static) |
 | `docs/m68k-optimisation.md` ⚑ | Optimising a hot function or writing an asm twin (68000 rules) |
 | `docs/amiga-lessons.md` ⚑ | Copper lists, sprites, the VBI, write-only registers |
 | `docs/amiga-arch.md` ⚑ | The Amiga display/interrupt architecture decisions and why |

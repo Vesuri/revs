@@ -790,6 +790,27 @@ asm and not direct rendering but **per-instrument dirty flags, ~23×** — and R
 item is the **dashboard** at 36.1%.  ⚠ With the caveat that the `$7B00` overlay already carries a
 per-column dirty test, so the analogy needs one shape counter before it is believed.
 
+### ⭐⭐ 0b. …AND THEN HARDWARE SPRITES for the instruments — `docs/direct-bitplane-plan.md` §8
+
+⚠ **A second omission the user raised** (2026-08-16, and also correct): **the BBC has no sprites, so
+every moving thing on the dashboard is CPU-drawn — and the Amiga has eight sitting idle.**  Put the
+wheel, the rev-counter, the steering marker and the gear indicator on sprites and the **cockpit
+bitmap becomes fully static**, drawn once and never touched.  That aims squarely at `$7BE2`, the
+36.1% item.  Three of the four constraints turn out favourable (a 2-bitplane playfield means one
+unattached sprite already covers the whole palette, with sprite colours 16-31 free of the copper's
+band list; the 320 px display is exactly sprite resolution; and the dashboard's position at the
+bottom of the field makes its data late-safe) — the open one is **width**: 8 × 16 px = 128 px of 320,
+in a single 42-line band where vertical sprite reuse buys nothing.
+
+**Placement: a Phase 6 item, gated behind item 0** (user decision, 2026-08-16) — sprite work written
+against the current frame-buffer arrangement gets rewritten by the representation change, exactly as
+asm would.  It is gated behind the §7 dirty-column counter too, which *sizes* it: if the overlay's
+existing per-column tests already make the static cockpit nearly free, the win shrinks to the moving
+instruments alone.  ⭐ And the faithfulness rule is the same one as the decode's: **pre-render each
+sprite variant by running the game's own drawing code**, so the images are derived from the oracle
+rather than redrawn by hand.  The wing mirrors stay CPU-drawn — their content is the scene, not a
+glyph with N states.
+
 ### 1. Then the twins and the asm
 
 `docs/faithfulness-seam.md` for which side of the line each routine lands on;

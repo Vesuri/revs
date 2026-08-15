@@ -163,3 +163,52 @@ frame, and how many bytes each dirty column actually writes. That is one shape c
 overlay's unit prologue. Until it exists, "the dashboard is 36% and mostly static" is an assumption,
 and this project's own rule is that an assumption with a one-command measurement behind it is a
 to-do, not a tag.
+
+## 8. ⭐⭐ HARDWARE SPRITES for the instruments — capability the BBC never had (user, 2026-08-16)
+
+**The observation.** The BBC has no sprites, so *every* moving thing on the Revs dashboard is drawn
+by the CPU into the frame buffer. The Amiga has eight. If the wheel, the rev-counter, the steering
+marker and the gear indicator were sprites, the **cockpit bitmap would be fully static — drawn once
+and never touched again**. `$7BE2` is the number-one item in the profile at **36.1%** of the frame,
+so this aims at the largest single cost the port has.
+
+**Why it is more than "draw it somewhere else".** The instruments are not translating images; their
+pixels are a function of a continuous value (wheel angle, rev level). Sprites convert that from
+*"redraw the shape every frame"* into *"pick one of N pre-rendered images and set a pointer"* — the
+per-frame CPU cost collapses to a pointer write, paid for once in chip RAM at startup. That is the
+same trade as `$3980`, the angle-indexed table the wheel drawing already reads (`$5168`); this just
+carries it all the way to the hardware.
+
+**Four constraints, and three of them happen to be favourable here:**
+
+- ✅ **Colours fit.** A sprite gives 3 colours + transparent, 15 for an attached pair. The race view
+  is **2 bitplanes = 4 colours**, so a single unattached sprite already matches the playfield's whole
+  palette. Sprite colours live in entries 16-31, which a 2-bitplane playfield never uses, so there is
+  **no palette conflict with the copper's band list** either.
+- ✅ **Resolution fits.** The display is **320 px** wide (`bbc_screen.h`), i.e. lores, which is
+  exactly sprite resolution — one sprite pixel per display pixel, no halving.
+- ✅ **The beam timing is easy for once.** The dashboard is **band 4, display lines 166-208** — the
+  bottom of the field — so its sprite data can be updated long after vblank without racing the beam.
+  ⚠ But `SPRxPT` *in the copper list* is read at **scanline 16** (CLAUDE.md), so the pointers
+  themselves still belong in the VBI; only the sprite data words are late-safe.
+- ⚠ **Width is the real limit, and it is unmeasured.** Eight sprites is **128 px per scanline** out
+  of 320, and the whole dashboard sits in one 42-line band, so vertical sprite reuse — the usual way
+  past the eight-sprite limit — buys nothing here. Whether the wheel rim alone fits inside that
+  budget is **the open question**, and it is a pixel-width measurement, not a judgement call.
+
+**What must stay CPU-drawn regardless:** the **wing mirrors**. Their content is the scene behind the
+car, not a glyph with N states, so they are rendered output and no sprite can hold them.
+
+**⭐ How this stays a faithful port — the same trick as §5.** Do not redraw the instruments by hand.
+**Pre-render every sprite variant by running the game's own drawing code** (`$7BE2`'s wheel/dial
+arms) once per angle/level and capturing the pixels it produces. Then the sprite images are
+*derived from the oracle* rather than reinterpreted, and the differential is exact: for any state,
+sprite output must equal what the decode produces. A hand-drawn wheel that merely looks right is the
+failure mode this rule exists to prevent.
+
+**Sequencing — gated behind §6 (user decision, 2026-08-16).** This is a Phase 6 item, *after* direct
+bitplane rendering, for the same reason the asm is: both change how the dashboard reaches the screen,
+and sprite work written against the current arrangement gets rewritten. It is also gated behind §7's
+measurement — if the overlay's existing per-column dirty tests already make the static cockpit nearly
+free, then the win here is only the moving instruments, which is a much smaller number than 36.1%.
+**Measure §7 first; it is one counter and it sizes this whole item.**
