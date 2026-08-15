@@ -109,6 +109,28 @@ whose pc parks inside a generated function.  The fix is an unwind flag placed by
 `src/cpu/cpu.h`), and `report_stack_drops()` fails `make gen` if the image contains any *other*
 `TSX/INX/INX/TXS` run — so the next one is found at generation time, not by a hang.
 
+⚠⚠ **AND THE FIX ITSELF CARRIED THE SEQUEL BUG, for a day (2026-08-15).**  The `TXS()` register
+write was left in place next to `UNWIND_SET()`, on the reasoning quoted above — "faithful to the
+register and completely inert on the C call stack".  Half of that is wrong: the two bytes
+`INX/INX` discards are a **return address**, and this model keeps return addresses on the C
+stack, so nothing ever cancels the `+2`.  `S` leaked two bytes per road-span exit, climbed past
+its `$F8` entry value, **wrapped `$FF` → `$00`**, and pushes then landed on `mem[$0100]` =
+`car_order`.  A COMPETITION race hung in `check_car_pair`'s field walk — a frozen race view where
+no key responds — while PRACTICE, which skips the multi-car path entirely, kept looking fine.
+The transpiler now emits `UNWIND_SET()` **alone** at `$2F81`.
+
+⭐ So the rule has two halves, and this bug is the second: **model the CONTROL FLOW, and leave
+`S` alone.**  Modelling neither is a hang; modelling the register too is a silent leak.
+
+⚠ And the diagnostic note, because it cost the first hour: the low-watermark trap reported
+"`S` fell to `$00`" **having never reported `$DF`**.  `S` descends one push at a time, so a
+watermark that appears without its predecessors was *arrived at*, not descended to — i.e. the
+leak was UPWARD.  `g_stackHigh` now sits next to `g_stackLow` (both are in `PROBE_SYMS` and in
+`amiga/competition.gdb`; `$F3..$F8` is the healthy window), and `make STACK_TRAP=1` with
+`REVS_STACK_TRAP=<hex>` / `REVS_STACK_CEIL=<hex>` prints ONE host backtrace at the first breach
+in either direction.  Because the transliteration keeps the 6502 call graph on the C call stack,
+that backtrace names the 6502 routines directly — it found `FUN_2f7e` in a single run.
+
 ⚠ What survives from the old note: **the series is still printed per segment, and a row out of
 line with its neighbours is still discarded.**  A single low segment (0.29 against 0.87 either
 side) still shows up occasionally and is host-side emulator jitter, not a freeze — a freeze read

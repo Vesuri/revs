@@ -70,6 +70,16 @@ CFLAGS   += -DREVS_HOLD_THROTTLE
 CXXFLAGS += -DREVS_HOLD_THROTTLE
 endif
 
+# ⭐ `make STACK_TRAP=1` — arm the 6502 stack-watermark backtrace (host only; cpu.c has the
+# mechanism).  Then run with a hex threshold: `REVS_STACK_TRAP=f0 ./build/revs`, and the first
+# push that takes S below $F0 prints ONE backtrace naming the 6502 routines that leaked it.
+# S is a correctness invariant in Revs, not bookkeeping — page 1's bottom is the per-car arrays
+# (cpu.h) — so "how far it fell" is far less useful than "where".
+ifdef STACK_TRAP
+CFLAGS   += -DREVS_STACK_TRAP -g -fno-omit-frame-pointer
+CXXFLAGS += -DREVS_STACK_TRAP -g -fno-omit-frame-pointer
+endif
+
 # C sources: the 6502 CPU model + the generated transliteration + native twins.
 # The generated files do not exist until `make gen`; wildcard so a fresh clone builds.
 C_SRCS := \

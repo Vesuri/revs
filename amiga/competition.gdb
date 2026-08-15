@@ -49,8 +49,12 @@ printf "\n"
 # S = $F2 after 200 frames of a 20-car race — six bytes used, no drift.
 printf "=== 6502 stack: S=$%02x  entry-S saved at $6B=$%02x  (real BBC: $F8 entry, $F2 mid-race)\n", \
   cpu.S, mem[0x6b]
-printf "===   lowest S ever=$%02x   pushes landing in the per-car arrays=%lu  (must be 0)\n", \
-  g_stackLow, g_stackTrespass
+printf "===   lowest S ever=$%02x  HIGHEST S ever=$%02x  pushes into the per-car arrays=%lu\n", \
+  g_stackLow, g_stackHigh, g_stackTrespass
+# ⚠ THE CEILING IS THE ONE THAT BIT.  S enters at $F8, so g_stackHigh above $F8 means an
+# unbalanced PULL (or a TXS that raises S) — it walks to $FF, WRAPS to $00, and pushes then land
+# on car_order at mem[$0100].  That arrives looking exactly like a downward leak, and chasing it
+# as one wastes the run.  Both watermarks, always: $F3..$F8 is the healthy window here.
 printf "=== OSWORD 10: served=%lu outOfRange=%lu   unknown MOS calls=%lu\n", \
   g_mosCharDefCount, g_mosCharDefOutOfRange, g_mosUnknownCount
 printf "=== smc unhandled=%lu site=$%04x value=$%02x   brk=%lu\n", \

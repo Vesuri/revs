@@ -1312,16 +1312,24 @@ def translate_insn(insn, func, all_funcs_by_start, symbols, local_targets,
     if mnem == 'PLP': lines.append('    PLP();'); return lines
 
     # --- Transfer ---
+    # ⚠⚠ THE STACK-DROP TXS MUST NOT WRITE cpu.S, and the note that used to sit here said the
+    # opposite ("faithful and inert").  It is faithful to the register and it is NOT inert: the
+    # two bytes `TSX/INX/INX/TXS` discards are a RETURN ADDRESS, and in the transliteration
+    # return addresses live on the C call stack, not in mem[$0100].  So the +2 has nothing to
+    # cancel it — S leaks 2 bytes per road-span exit, climbs to $FF, WRAPS to $00, and pushes
+    # then land on car_order.  Measured 2026-08-15: `S rose to $FA` inside FUN_2f7e in the first
+    # rendered frame, and a competition race hung in check_car_pair's field walk.
+    # UNWIND_SET() alone carries the whole meaning of the idiom here.
+    if mnem == 'TXS' and addr in STACK_DROP_TXS:
+        lines.append('    UNWIND_SET();   /* $%04x TSX/INX/INX/TXS: the RTS below returns TWO'
+                     ' levels up.  NO cpu.S write — the discarded bytes are a return address,'
+                     ' which this model keeps on the C stack. */' % addr)
+        return lines
     for mn, mac in [('TAX','TAX()'),('TAY','TAY()'),('TXA','TXA()'),('TYA','TYA()'),
                     ('TSX','TSX()'),('TXS','TXS()'),
                     ('INX','INX()'),('INY','INY()'),('DEX','DEX()'),('DEY','DEY()')]:
         if mnem == mn:
             lines.append(f'    {mac};')
-            if mnem == 'TXS' and addr in STACK_DROP_TXS:
-                # The register write is faithful and inert; THIS is the control flow it
-                # stands for.  Consumed at the call site of whichever UNWIND_CALLEES
-                # routine we are inside (src/cpu/cpu.h).
-                lines.append('    UNWIND_SET();   /* the RTS below returns TWO levels up */')
             return lines
 
     # --- Load ---

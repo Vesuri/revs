@@ -69,7 +69,14 @@ private:
     // where without it a headless run never leaves the front-end menus and the framerate
     // harness measures a menu spin — and under STRAIGHT_TO_RACE, where it answers the one
     // menu question a practice session has and then gets out of the player's way.
-#if defined(REVS_FPSCOUNT) || defined(REVS_PROBE) || defined(REVS_STRAIGHT_TO_RACE)
+    // ⚠ REVS_COMPETITION MUST BE IN THIS LIST, and it was missing until 2026-08-15.  The
+    // competition script is selected in autorun.cpp by REVS_COMPETITION alone, so a
+    // `make COMPETITION=1` build COMPILED the script and then never instantiated the object
+    // that runs it — the target sat in the front end for the whole run with $5F3B = $9D,
+    // which reads as "the script's timing is wrong" and was documented as such.  Any new
+    // AUTORUN_* build flag has to be added here and at the call site in the .cpp.
+#if defined(REVS_FPSCOUNT) || defined(REVS_PROBE) || defined(REVS_STRAIGHT_TO_RACE) || \
+    defined(REVS_COMPETITION)
     AutoRun autoRun;
 #endif
     // Real input: the CIA-A keyboard and the mouse, mapped onto the game's own two input

@@ -34,7 +34,7 @@ extern volatile uint8_t mem[65536]; /* shared between main thread and VBI audio 
  * the chain's caller.
  *
  * The transliteration models `TXS` as `cpu.S = cpu.X`, which is faithful to the register
- * and completely inert on the C call stack — so the plotter returned normally and the
+ * and does nothing whatever to the C call stack — so the plotter returned normally and the
  * chain kept looping.  ⚠ MEASURED CONSEQUENCE: the chain's inner loop is
  * `plot / ADC $83 / BCC`, so once $83 reads 0 (it does, at $82 == Y) the port WEDGES —
  * pc parked in FUN_2e99, g_fpsFrames frozen, ~112 s into a STRAIGHT_TO_RACE run.  That is
@@ -45,7 +45,18 @@ extern volatile uint8_t mem[65536]; /* shared between main thread and VBI audio 
  * one level — two bytes is one return address, so the flag never needs a counter.  The
  * transpiler places both halves; see STACK_DROP_TXS / UNWIND_CALLEES in
  * tools/transpile.py.  ⚠ Not volatile and not in Cpu6502: it is pure control flow within
- * one call chain, never interrupt state, and `make validate` diffs the Cpu6502 struct.  */
+ * one call chain, never interrupt state, and `make validate` diffs the Cpu6502 struct.
+ *
+ * ⚠⚠ AND THE TXS AT THAT SITE EMITS NO `cpu.S` WRITE AT ALL (fixed 2026-08-15).  Keeping the
+ * register write "because it is faithful" was a 2-byte-per-span LEAK: the bytes `INX/INX`
+ * discards are a RETURN ADDRESS, and this model keeps return addresses on the C stack, so
+ * nothing ever cancels the +2.  S climbed past $F8, wrapped $FF -> $00, and pushes then landed
+ * on mem[$0100] = car_order — which hung a COMPETITION race in check_car_pair's field walk while
+ * practice mode (which skips the multi-car path) looked fine.  g_stackHigh is the counter that
+ * says whether it is back: it must stay at $F8.  ⭐ The general rule this cost a day of two
+ * separate hunts to learn: when a 6502 idiom manipulates S to talk about RETURN ADDRESSES, the
+ * faithful transliteration is to model the CONTROL FLOW and leave S alone — modelling the
+ * register instead is a silent leak, and modelling neither is a hang.  */
 extern uint8_t cpu_unwind;
 #define UNWIND_SET()    do { cpu_unwind = 1; } while(0)
 #define UNWIND_TAKEN()  (cpu_unwind ? (cpu_unwind = 0, 1) : 0)
@@ -77,13 +88,36 @@ static inline void P_unpack(uint8_t p) {
  * "competitor cars don't work", which is where an hour goes.
  */
 extern unsigned char g_stackLow;      /* lowest S ever seen (starts $FF) */
+extern unsigned char g_stackHigh;     /* HIGHEST S ever seen (starts $00) — see below */
 extern unsigned long g_stackTrespass; /* pushes that landed in the per-car arrays */
 #define STACK_FLOOR 0xA0              /* $019F is the top of car_flags_1 */
+/* ⭐ `make STACK_TRAP=1` (host) + REVS_STACK_TRAP=<hex S> prints ONE backtrace at the first push
+   below that S — see cpu_stack_watermark() in cpu.c.  Compiles to nothing otherwise. */
+#if defined(REVS_STACK_TRAP)
+#ifdef __cplusplus
+extern "C" {
+#endif
+void cpu_stack_watermark(unsigned char s);
+void cpu_stack_ceiling(unsigned char s);
+#ifdef __cplusplus
+}
+#endif
+#define STACK_WATERMARK_HOOK(s)  cpu_stack_watermark(s)
+#define STACK_CEILING_HOOK(s)    cpu_stack_ceiling(s)
+#else
+#define STACK_WATERMARK_HOOK(s)  ((void)0)
+#define STACK_CEILING_HOOK(s)    ((void)0)
+#endif
 #define PUSH(v)  do { mem[0x100|cpu.S]=(uint8_t)(v); \
-                      if (cpu.S < g_stackLow) g_stackLow = cpu.S; \
+                      if (cpu.S < g_stackLow) { g_stackLow = cpu.S; \
+                                                STACK_WATERMARK_HOOK(cpu.S); } \
                       if (cpu.S < STACK_FLOOR) g_stackTrespass++; \
                       cpu.S--; } while(0)
-#define PULL(v)  do { cpu.S++; (v)=mem[0x100|cpu.S]; } while(0)
+/* ⚠ The ceiling matters as much as the floor: S starts at $F8, so a PULL that takes it higher is
+   unbalanced, and a few more walk it to $FF and WRAP it to $00 — where pushes hit car_order. */
+#define PULL(v)  do { cpu.S++; (v)=mem[0x100|cpu.S]; \
+                      if (cpu.S > g_stackHigh) { g_stackHigh = cpu.S; \
+                                                 STACK_CEILING_HOOK(cpu.S); } } while(0)
 #define PHA()    PUSH(cpu.A)
 #define PLA()    do { PULL(cpu.A); UPD_NZ(cpu.A); } while(0)
 #define PHP()    PUSH(P_pack())
@@ -100,7 +134,12 @@ extern unsigned long g_stackTrespass; /* pushes that landed in the per-car array
 #define TXA()   do { cpu.A=cpu.X; UPD_NZ(cpu.A); } while(0)
 #define TYA()   do { cpu.A=cpu.Y; UPD_NZ(cpu.A); } while(0)
 #define TSX()   do { cpu.X=cpu.S; UPD_NZ(cpu.X); } while(0)
-#define TXS()   do { cpu.S=cpu.X; } while(0)  /* TXS: no flag change */
+/* ⚠ TXS is the OTHER way S can rise, and on this image it is the two-level-RTS idiom ($2F81,
+   `TSX/INX/INX/TXS`) — so it is watched by the same ceiling as PULL.  A TXS that raises S
+   without the two C-level returns that are supposed to accompany it leaks 2 bytes a time. */
+#define TXS()   do { cpu.S=cpu.X; \
+                     if (cpu.S > g_stackHigh) { g_stackHigh = cpu.S; \
+                                                STACK_CEILING_HOOK(cpu.S); } } while(0)
 
 /* ---------- arithmetic -------------------------------------------- */
 /* ADC: A = A + v + C.  Honours decimal mode (cpu.D) — a 1985 6502 game will use

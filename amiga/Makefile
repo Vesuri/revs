@@ -284,7 +284,7 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_bandCount g_bandOverflow g_keyUnmapped g_keyUnmappedCode g_keyEvents g_keyDown \
              g_irqClobberCount g_irqClobberWhich \
              g_irqUnwindPending g_irqUnwindTouched g_irqStackImbalance \
-             g_stackLow g_stackTrespass \
+             g_stackLow g_stackHigh g_stackTrespass \
              g_beamPresentLine g_beamPresentMin g_beamPresentMax \
              g_beamPresents g_beamPresentsLate g_beamEntryLine g_beamEntries g_beamEntriesLate \
              g_bodyTicksDropped g_bodyDrains g_bodyTicks g_bodyPending \

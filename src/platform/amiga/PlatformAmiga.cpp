@@ -208,7 +208,8 @@ bool PlatformAmiga::vsyncElapsed()
 
 bool PlatformAmiga::keyDown(uint8_t x)
 {
-#if defined(REVS_FPSCOUNT) || defined(REVS_PROBE) || defined(REVS_STRAIGHT_TO_RACE)
+#if defined(REVS_FPSCOUNT) || defined(REVS_PROBE) || defined(REVS_STRAIGHT_TO_RACE) || \
+    defined(REVS_COMPETITION)
     // Unattended run: the script walks the front end and then holds the throttle, so the
     // measurement window contains the driving loop instead of a menu spin.  ⚠ It overrides
     // the real keyboard on purpose — a measurement must not depend on what is on the desk.

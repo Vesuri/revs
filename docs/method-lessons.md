@@ -308,6 +308,21 @@ business touching.
 `PUSH()`.  An invariant the hardware maintains for free (`S` stays high) becomes something the port
 must *assert*, or the next drift is silent again.
 
+**Third, added the day after, because the SAME corruption arrived from the opposite direction.**
+A one-sided invariant is half an invariant.  `S` was being leaked *upward* — two bytes per
+road-span exit at the two-level-RTS site (`docs/perf-method.md`) — so it walked to `$FF`, **wrapped
+to `$00`**, and pushes landed on `car_order` exactly as before.  `g_stackLow` reported it faithfully
+and misleadingly: "`S` fell to `$00`", which reads as a runaway push depth.
+
+⭐ Two generalisations, both cheap:
+- **On a wrapping register, a watermark that appears WITHOUT ITS PREDECESSORS was arrived at, not
+  reached.**  `S` descends one push at a time, so a low watermark of `$00` with `$DF` never seen is
+  proof the value came from the other side.  That one observation named the direction; before it,
+  an hour went into looking for phantom pushes.
+- **Assert both ends of a bounded quantity.**  `g_stackHigh` costs the same one comparison
+  `g_stackLow` does and covers the half that was open.  The healthy window is now stated as a
+  window (`$F3..$F8`), not a floor.
+
 ## Record findings the moment you find them
 
 Two conventions that exist because deferring cost real time:

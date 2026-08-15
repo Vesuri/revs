@@ -318,6 +318,17 @@ a register write — inert on the C call stack. The chain then spun on `ADC $83 
 silently** — suspect that class first for any hang inside generated code. `make gen` now fails on
 any *other* `TSX/INX/INX/TXS` (`report_stack_drops`). Full write-up: `docs/perf-method.md`.
 
+⚠⚠ **…and the FIX carried the sequel bug (2026-08-15): keeping the `TXS` register write next to
+`UNWIND_SET()` LEAKED `S` by 2 per road-span exit.** Those two bytes are a return address, and
+this model keeps return addresses on the C stack, so nothing cancels the `+2`: `S` climbed past
+its `$F8` entry, **wrapped `$FF` → `$00`**, and pushes landed on `mem[$0100]` = `car_order`. A
+COMPETITION race then hung in `check_car_pair`'s field walk — a frozen race view where no key
+responds — while PRACTICE (which skips the multi-car path) looked fine. ⭐ **When a 6502 idiom
+manipulates `S` to talk about RETURN ADDRESSES, model the control flow and leave `S` alone**:
+modelling neither is a hang, modelling the register too is a silent leak. `g_stackLow` AND
+`g_stackHigh` must both read inside `$F3..$F8`; `make STACK_TRAP=1` + `REVS_STACK_TRAP=<hex>` /
+`REVS_STACK_CEIL=<hex>` prints one host backtrace at the first breach either way.
+
 ⭐⭐ **THE HOT PATH IS RASTERISATION, NOT PHYSICS** (re-measured 2026-08-13). Top three of the
 main loop's 24 calls are **76.2%**: `$7BE2` **36.1%** (the dashboard), `$1A20` **21.1%** (the
 road rasteriser), `build_road_edge_lists` `$24F6` **19.0%** (the road-geometry projection pass —

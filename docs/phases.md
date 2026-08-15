@@ -378,17 +378,51 @@ Fixed and verified on the target (`S` = `$F8`, lowest `$F3`, **0** pushes into t
 real BBC's shape), with `validate` / `mode7` 3/3 / `sound` 0 of 8083 / endian-lint all still clean.
 `g_stackLow` / `g_stackTrespass` now make the class report itself.
 
+#### ⭐⭐ …and then a SECOND stack bug, which was the frozen race view (2026-08-15)
+
+Reported by the user: pick 2 COMPETITION → 1 Novice → 1 five minutes, the race view appears, and
+it is **frozen — `T` does nothing, waiting does nothing.**  Two independent defects, found in
+order:
+
+1. **The competition harness was never wired on the Amiga.**  `autorun.cpp` selects the
+   competition script on `REVS_COMPETITION`, but `PlatformAmiga.h`/`.cpp` gated the `autoRun`
+   member and its call site on `FPSCOUNT || PROBE || STRAIGHT_TO_RACE` — so `make COMPETITION=1`
+   *compiled* the script and never instantiated the object that runs it.  That is the whole of
+   the "the port does not yet reach a competition race on the Amiga / the script's timing is the
+   next thing to bisect" item above: it was not timing.  With the flag added, the target reaches
+   a competition race immediately (`$5F3B` = `$04`, `$6F` = 19, engine running, a field at a
+   spread of distances).
+
+2. ⭐⭐ **The "second, slower stack leak" was a leak UPWARD, at the two-level-RTS site.**
+   `$2F81`'s `TSX/INX/INX/TXS` discards a RETURN ADDRESS, and this model keeps return addresses
+   on the C call stack — so emitting the register write "because it is faithful to the register"
+   added +2 to `S` per road-span exit with nothing to cancel it.  `S` climbed past `$F8`, wrapped
+   `$FF` → `$00`, and pushes then landed on `mem[$0100]` = `car_order` — the *same* corruption as
+   the uninitialised-`S` bug, arrived at from the opposite direction.  `find_player_neighbours`
+   again stored `$FF` in `$0003` and `check_car_pair`'s field walk never terminated: the main
+   loop never returns, so nothing paints and no key is polled.  A frozen race view.
+
+   ⚠ **It read as a downward leak and was chased as one.**  The low-watermark trap reported
+   "`S` fell to `$00`" having never seen `$DF` — and *that* is the tell: `S` can only descend one
+   push at a time, so a value that appears without its predecessors was ARRIVED at, not descended
+   to.  `g_stackHigh` now exists next to `g_stackLow` for exactly this, and `make STACK_TRAP=1`
+   plus `REVS_STACK_TRAP` / `REVS_STACK_CEIL` prints one backtrace at the first breach in either
+   direction — which named `FUN_2f7e` in a single run.
+
+   The transpiler now emits `UNWIND_SET()` alone at that site, with no `cpu.S` write.  ⭐ The
+   general rule: **when a 6502 idiom manipulates `S` to talk about return addresses, model the
+   CONTROL FLOW and leave `S` alone.**  Modelling the register instead is a silent leak;
+   modelling neither is a hang (that was the Phase 5 "intermittent stall").
+
+Measured after both fixes — host and target agree, and both match the real BBC: `S` = `$F8`,
+lowest `$F3`, **highest `$F8`**, 0 pushes into the per-car arrays, `$0003` = `$04` (not `$FF`).
+`validate` / `mode7` 3/3 / `sound` 0 of 8083 / `endian-lint` / `muldiv-audit` / `probe-audit` all
+still clean.
+
 **Still open here:**
-- ⚠ **A second, slower stack leak.**  With the entry value right the target holds `$F8`/`$F3`
-  through the front end, but the host — which gets further, into the race — still parks `S` around
-  `$8D`, ~107 bytes low, and `car_order` still corrupts.  The burst is in the FRONT END (the race
-  loop drifts ~1 byte per 12 s and `g_irqStackImbalance` is 0, so it is not the ISR).  The
-  watermark counters are the instrument.
-- **The port does not yet reach a competition race on the Amiga** — the host does, but the target
-  is still in the front end after 150 s with `$5F3B` = `$9D`.  The script's timing, or an
-  earlier stall, is the next thing to bisect.
-- Consequently **competitor-car rendering is still unverified**: the stimulus now exists on the
-  BBC side and on the host, but not yet on the target.
+- **Competitor-car rendering is still unverified as a PICTURE.**  The stimulus now exists on the
+  BBC side, on the host and on the target, and the field is populated — but nobody has yet
+  compared a competition frame against `make refloop-comp`'s.
 
 ### ✅ 4. Sound — DONE (2026-08-15)
 
