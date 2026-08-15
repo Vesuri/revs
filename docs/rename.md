@@ -10,6 +10,11 @@ names are your map** — every wrong name taxes every later reasoning step (post
 counter-measure is one concentrated naming pass up front (`docs/phases.md` Phase 2.4) plus this
 file for everything found afterwards.
 
+⭐⭐ **There is a DEADLINE on this backlog, and it is Phase 6 item 0c** (`docs/phases.md`): the queued
+renames — routines *and* `mem[]` cells — must be resolved and batched through `symbols.csv` **before
+the first native twin is written**, because a twin is hand-written and `make gen` cannot re-rename it.
+Renaming is cheap right up to that moment and stops being cheap immediately after.
+
 ✅ **`$24F6` — DONE 2026-08-13.  It is `build_road_edge_lists`**, the frame's road-geometry
 projection pass: it turns the track ahead into the two 40-point edge lists (`edge_x_lo/hi`,
 `edge_y`) that `interp_edge` and the road rasteriser `$1A20` consume.  Evidence, names for its

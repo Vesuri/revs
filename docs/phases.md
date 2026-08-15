@@ -811,6 +811,33 @@ sprite variant by running the game's own drawing code**, so the images are deriv
 rather than redrawn by hand.  The wing mirrors stay CPU-drawn — their content is the scene, not a
 glyph with N states.
 
+### ⭐ 0c. …AND THE NAMING BATCH RUNS BEFORE THE FIRST TWIN — `docs/rename.md`
+
+**Gated ahead of item 1** (user decision, 2026-08-16), for the same reason items 0 and 0b are gated
+ahead of the asm, and the argument is mechanical rather than aesthetic: **a twin is HAND-WRITTEN, so
+`make gen` cannot re-rename it.**  Every generated `$1C1C` in `revs_gen.c` is fixed by editing
+`disasm/symbols.csv` and regenerating; the same name typed into `revs_native.c` — in the `_core`
+signature, in its locals, in its comments — is fixed by hand, once per site, forever.  Renaming is
+cheap exactly up to the moment the first twin is written, and stops being cheap immediately after.
+
+Three things this batch has to produce, in this order:
+
+1. **Resolve the queued rename candidates**, `docs/rename.md`'s table plus its ⭐ next-up item
+   (`$1C1C`, currently `project_geometry`, suspected to be a pixel-pattern / column-shading pass —
+   two routines called "project…" doing different things is the precise tax that file exists to
+   prevent).  Anything in the three hot subtrees below is in scope; the rest of the backlog is not.
+2. ⚠ **Name the CELLS, not just the routines** — `src/gen/mem.h` currently carries **17** names,
+   generated from `symbols.csv`'s var rows, and a hot-path twin touches far more `mem[]` cells than
+   that.  Without this pass "use the `mem.h` name" degrades to `mem[0x62FC]` typed into hand-written
+   C, which is the transliteration's readability with none of its regenerability.
+3. **Then batch-rename via the transpiler** (`symbols.csv` → `make gen`), and only then start item 1.
+
+Scope is the three item-1 targets and their subtrees — `$7BE2` (the `$7B00` overlay), `$1A20` →
+`interp_edge` → the span plotters, and `build_road_edge_lists` `$24F6` → `road_edge_start` /
+`road_edge_walk` / `project_point` / `road_edge_side`.  This is not a re-run of Phase 2.4's
+concentrated pass over the whole image; it is that pass finished for the 40% of the frame Phase 6
+is about to rewrite by hand.
+
 ### 1. Then the twins and the asm
 
 `docs/faithfulness-seam.md` for which side of the line each routine lands on;
@@ -837,6 +864,52 @@ hand-asm on either half alone.  Look at the representation before writing any as
 So the eventual hand-asm target IS a rasteriser after all, and the Atari port's terrain-loop
 experience transfers as more than method.  The lever is unchanged: control the registers, force
 `(a0)+`, verify with an in-process differential, never cross-run.
+
+### ⭐⭐ 1a. The per-function checklist — what "make it native" MEANS, item by item
+
+⚠ **This list did not exist until the user asked for it** (2026-08-16).  Phase 6 named its targets
+and its levers and then said "the twins", leaving the actual per-routine work implicit — and two of
+the eight items below turn out to be *constrained* rather than free, which is exactly what an
+implicit list hides.  `VALIDATE_FUNCS` is still empty and `src/gen/revs_native.c` does not exist:
+the first routine through this list is the first twin the project has.
+
+For each routine promoted out of `revs_gen.c`:
+
+1. **Make it native.**  Address into `VALIDATE_FUNCS`, transliteration becomes the `__t6502`
+   oracle, plain name links from `revs_native.c`, **and register a fixture in
+   `validate_native.c`** — step 1 alone creates an oracle with nothing comparing against it, and the
+   harness now fails rather than passing vacuously (`docs/validation-harness.md`).
+2. **Real C, no 6502 idioms.**  ⚠ With one class called out by name: an idiom that touches the
+   **stack pointer** has no C equivalent and both known ways of handling it were bugs — modelling
+   `TXS` as a register write was a hang, modelling it *and* the control flow leaked `S` upward until
+   it wrapped.  Model the control flow, leave `S` alone (`docs/perf-method.md`).
+3. **A typed `_core(...)` taking real arguments**, plus the `void <name>(void)` 6502-ABI shim that
+   marshals `mem[]`/`cpu` ↔ the core.  The shim is the only part that knows about the ABI.
+4. **Structured control flow and real locals instead of `mem[]`** — ⚠ **bounded per cell, not
+   blanket.**  The harness diffs the whole of `mem[]`, so a cell may become a local only where it is
+   *proven* dead (no reader before the next write); an output cell stays an output.  Proven-dead
+   cells go in the fixture's ignore list **with the proof in a comment**, never to make a test pass
+   (`docs/faithfulness-seam.md` §What "validated" costs).
+5. **`mem.h` names for every cell that has one** — which is what item 0c above exists to guarantee.
+   A twin written before that pass bakes bare hex into hand-written code.
+6. **BBC hardware writes: `#ifdef`-GUARD them, do not delete them.** ⚠ Deleting is the one item on
+   this list that can quietly cost the routine its proof: the BBC-faithful path is what the oracle
+   diff compares against, so a removed `bus_write` is a permanent hole in the differential rather
+   than a saved cycle.  The seam rule already covers it — the Amiga variation is an
+   `#ifdef REVS_PLATFORM_AMIGA` *omission* inside a still-validated twin.  And ⚠ "does nothing on
+   the Amiga" is a claim to check per register, not per routine: `bbc_hw.cpp` models the **User VIA
+   timers**, and those timers ARE the raster band schedule.
+7. **Comment what the routine DOES, not what the instructions did.**  The transliteration is already
+   a complete record of the instructions and stays checked in as the oracle; a twin that re-narrates
+   it adds nothing and ages badly.  Say what it computes, what it reads, what it leaves behind, and
+   name any cell the fixture ignores together with why it is dead.
+8. **Append every bad or missing name to `docs/rename.md` as you find it** — the standing convention,
+   unchanged.  Item 0c is the concentrated batch *before* the twins; this is the trickle *during*
+   them, and the trickle still gets batched through `symbols.csv`, never renamed piecemeal in
+   generated files.
+
+Then `make validate FN=<name>` must show **0 mem mismatch**, and the perf claim comes from the
+in-process differential (`make VERIFY=1 PROBES=1 FIXED_RNG=1`), never from a cross-run framerate.
 
 ---
 
