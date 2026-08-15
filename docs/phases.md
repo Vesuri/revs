@@ -674,11 +674,23 @@ carries, walked into again.)
   Moving the sampling point turned that line from evidence into noise; `mem[$5300]`/`mem[$5301]`
   are the in-race block check that still holds.
 
-**What remains for Phase 5:**
-- **`CallTrackHook` (`$5A22`) dispatch** — one call, one target, and Silverstone supplies an `RTS`
-  stub, which is a far cleaner seam than the patch sites.  Very likely already covered by the hook
-  seam; check rather than assume.
-- **The menu itself**, and embedding the blocks.
+### ✅ 5d. `CallTrackHook` (`$5A22`) — closed with a note, not with code
+
+It is emitted as `return;`, i.e. Silverstone's own `RTS`, and on an expansion circuit `$5A22` holds
+`JMP $5700` = `ModifyGameCode`.  **Returning is correct for every circuit** — the port applies that
+patcher's *output* as data at selection time, so running it here would patch an already-patched
+image.  ⭐ But "correct" and "correct for a recorded reason" are different states, and the second is
+the one that survives someone else reading it: as written it was indistinguishable from having baked
+Silverstone's byte by accident.  The reason now lives in `disasm/symbols.csv`, so it propagates into
+the generated comment on every `make gen`.
+
+The guarantee that the replay covered whatever is actually at that target is a **generation-time**
+one: `tools/track_patch.py`'s interpreter raises on any opcode outside its twelve-form vocabulary.
+So no runtime dispatch is needed.
+
+**What remains for Phase 5: the MENU, and nothing else.**  `REVSMEN` is BASIC and is not being
+ported, so this is a port-authored MODE 7 page feeding `revs_track_install()`.  ⚠ Selection must
+happen before any engine code reads `$5300-$5A25` (`src/platform/track.h`).
 
 ⚠ If a hook is ever reached with no body, `revs_track_hook()` counts it and traps through
 `platform_smc_unhandled()` rather than returning quietly — a silent return would be the engine
