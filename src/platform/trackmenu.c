@@ -248,6 +248,14 @@ void tm_tick(unsigned keys, unsigned fields)
     }
 }
 
+unsigned tm_option_for_track(unsigned track)
+{
+    unsigned n;
+    for (n = 1; n <= s_options; n++)
+        if (kOptions[n - 1].track == track) return n;
+    return 0;
+}
+
 int      tm_finished(void) { return g_tmPhase == TM_FINISHED; }
 unsigned tm_phase(void)   { return g_tmPhase; }
 unsigned tm_option(void)  { return g_tmOption; }
