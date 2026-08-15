@@ -350,7 +350,7 @@ Verified on the target: served 92 (exactly the real BBC's 92), out-of-range 0, a
 shows "Lap Time"/"Best Time" plus a double-width '1' whose base serif crosses into the second cell.
 `amiga/charset.gdb`.
 
-### ⚠ 4b. ⭐⭐ COMPETITION MODE — and it found a five-phase-old bug
+### ✅ 4b. ⭐⭐ COMPETITION MODE — DONE (2026-08-15), and it found TWO stack bugs on the way
 
 **Every measurement this project had ever taken was a PRACTICE session**, and `$2637`'s
 `LDA $5F3B / BMI $262D` means the engine *skips the entire multi-car path* when the practice flag
@@ -419,10 +419,16 @@ lowest `$F3`, **highest `$F8`**, 0 pushes into the per-car arrays, `$0003` = `$0
 `validate` / `mode7` 3/3 / `sound` 0 of 8083 / `endian-lint` / `muldiv-audit` / `probe-audit` all
 still clean.
 
-**Still open here:**
-- **Competitor-car rendering is still unverified as a PICTURE.**  The stimulus now exists on the
-  BBC side, on the host and on the target, and the field is populated — but nobody has yet
-  compared a competition frame against `make refloop-comp`'s.
+✅ **AND THE COMPETITOR CARS RENDER CORRECTLY — confirmed by the user on the target, 2026-08-15.**
+That closes the item this whole sub-phase existed for.  Worth being explicit about how it was
+closed, because it is the pattern: the *stimulus* was built headlessly (`make refloop-comp`,
+`make COMPETITION=1`, the field populated and lapping) and every counter said the session was
+right, but "are the other nineteen cars drawn, and drawn right?" is a judgement about a moving
+picture — the remote debugger greys the display, so no dump this project owns can answer it.
+⚠ It stayed open through several green measurements for exactly that reason.  **Watch for the
+shape: an item whose evidence is necessarily a human looking at the screen should be routed to the
+user early rather than accumulating more headless confirmation.**  Same class as the sound
+subsystem's still-owed by-ear pass.
 
 ### ✅ 4. Sound — DONE (2026-08-15)
 
