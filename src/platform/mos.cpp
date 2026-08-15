@@ -24,6 +24,7 @@
  */
 #include "platform.h"
 #include "teletext.h"
+#include "sound.h"
 #include "../cpu/cpu.h"
 
 /* ⚠ Counters, not silence.  Listed in amiga/Makefile PROBE_SYMS so --gc-sections cannot
@@ -70,9 +71,13 @@ static void osbyte(void)
         break;
 
     /* 21 — flush buffer X.  Sites $0E6B (sound channel buffers 4-7) and $6311 (keyboard
-       buffer 0).  We have no MOS buffers: sound is scheduled by the port, and the
-       keyboard is polled not buffered.  A genuine no-op, not a stub. */
+       buffer 0).  The keyboard is polled, not buffered, so that one is a genuine no-op.
+       ⭐ THE SOUND BUFFERS ARE NOT.  Flushing buffer 4+channel SILENCES the channel on a real
+       BBC (measured: attenuation 15, and the divider resets), and `sound_stop_channel` ($0E5A)
+       is the ONLY way Revs ever stops a sound — every one of them has duration 255 = play
+       forever.  Treat this as a no-op and the engine noise never goes quiet. */
     case 0x15:
+        if ((cpu.X & 0xFC) == 0x04) snd_flush_channel((uint8_t)(cpu.X & 3));
         break;
 
     /* 126 — acknowledge ESCAPE.  Site $6349, inside console_io's line editor.  Returns
@@ -156,13 +161,30 @@ static void osword(void)
 
     switch (cpu.A) {
 
-    /* 8 — define a sound ENVELOPE (14-byte block).  Site $0B70.  Revs drives the SN76489
-       through the MOS scheduler, so the envelope semantics have to be reproduced rather
-       than the chip registers mirrored — that is Phase 5's audio work, and deliberately
-       not faked here.  The block stays in mem[] where the audio backend will read it. */
-    case 0x08:
-        (void)blk;
+    /* ⭐ 7 — SOUND, and 8 — define an ENVELOPE.  Sites $0B70 (both: `sound_queue` $0B4A reaches
+       it with A=7, `sound_envelope` $0B65 with A=8) — one JSR, two reason codes, which is exactly
+       why the Phase 2 nearest-`LDA #imm` scan never attributed reason 7 to it.
+       Revs drives the SN76489 ONLY through here, so what is behind these two arms is the OS's
+       whole sound scheduler: src/platform/sound.c, validated tick-for-tick against a real BBC by
+       `make sound`.  The blocks are copied out of mem[] a byte at a time — never aliased as
+       words, because mem[] is little-endian and the Amiga is not (make endian-lint).
+       ⚠ Accepting a command is not the same as playing it: something has to call `snd_tick()` at
+       100 Hz.  The Amiga backend does (RevsAudio.h); the HOST DELIBERATELY DOES NOT, because it
+       has no audio hardware and no renderer by design — the model's test is `make sound`, not a
+       host that half-plays it. */
+    case 0x07: {
+        uint8_t b[8];
+        for (int i = 0; i < 8; i++) b[i] = mem[(uint16_t)(blk + i)];
+        snd_sound(b);
         break;
+    }
+
+    case 0x08: {
+        uint8_t b[14];
+        for (int i = 0; i < 14; i++) b[i] = mem[(uint16_t)(blk + i)];
+        snd_envelope(b);
+        break;
+    }
 
     /* 10 — read a character definition.  Site $50A7 (X=$C3, so the block is at $00C3).
        Block: byte 0 = character code (in), bytes 1..8 = the 8x8 bitmap (out).

@@ -53,6 +53,7 @@ CXX_SRCS := \
     $(AMIGA_SRC)/Revs.cpp \
     $(AMIGA_SRC)/RevsScreen.cpp \
     $(AMIGA_SRC)/RevsInput.cpp \
+    $(AMIGA_SRC)/RevsAudio.cpp \
     $(REPO)/src/platform/Platform.cpp \
     $(REPO)/src/platform/mos.cpp \
     $(REPO)/src/platform/probe.cpp \
@@ -68,6 +69,7 @@ CXX_SRCS := \
 # `make gen` at the repo root, so they are wildcarded.
 CORE_C_SRCS := \
     $(REPO)/src/cpu/cpu.c \
+    $(REPO)/src/platform/sound.c \
     $(wildcard $(REPO)/src/gen/revs_gen.c) \
     $(wildcard $(REPO)/src/gen/revs_native.c) \
     $(wildcard $(REPO)/src/gen/revs_manual.c)
@@ -214,7 +216,7 @@ OBJECTS := $(CXX_OBJS) $(CORE_C_OBJS) $(SUPPORT_C_OBJS) $(ASM_OBJS) $(FRAMEWORK_
 # Locate sources for the pattern rules.  (gcc8_c_support.c is deliberately NOT on
 # vpath %.c — it has its own explicit rule so it builds with CCFLAGS, not CORE_CFLAGS.)
 vpath %.cpp $(AMIGA_SRC)/framework $(AMIGA_SRC) $(REPO)/src/platform $(REPO)/src
-vpath %.c   $(REPO)/src/cpu $(REPO)/src/gen
+vpath %.c   $(REPO)/src/cpu $(REPO)/src/gen $(REPO)/src/platform
 vpath %.s   $(AMIGA_SRC)/framework $(AMIGA_SRC)
 
 WARN = -Wall -Wno-unused-function -Wno-unused-parameter -Wno-unused-variable
@@ -275,7 +277,11 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_beamPresents g_beamPresentsLate g_beamEntryLine g_beamEntries g_beamEntriesLate \
              g_bodyTicksDropped g_bodyDrains g_bodyTicks g_bodyPending \
              g_ttUnknownVdu g_ttLastUnknown g_ttVduBytes g_ttModeSwitches \
-             g_ttModeDisagree g_screenPlanes g_screenHeight g_screenMode7 g_ttAllocFailed g_ttFlashPhase g_ttFlashToggles
+             g_ttModeDisagree g_screenPlanes g_screenHeight g_screenMode7 g_ttAllocFailed g_ttFlashPhase g_ttFlashToggles \
+             g_sndCommands g_sndEnvelopes g_sndFlushes g_sndTicks g_sndChipWrites \
+             g_sndSyncRequests g_sndHoldRequests g_sndQueued g_sndQueueDrops g_sndBadEnvelope \
+             g_audioAllocFailed g_audioRestarts g_audioUpdates g_audioTicks g_audioWaitLines \
+             g_sndChip g_audioPaulaPer g_audioPaulaVol
 # ⚠ CONDITIONAL, because these only EXIST under PROBES (src/platform/probe.cpp compiles to
 # nothing otherwise).  Listing them unconditionally makes --undefined=<sym> unsatisfiable and a
 # plain `make` fails at probe-audit — which is the audit working, not a bug in it.  The rule

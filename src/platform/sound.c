@@ -61,8 +61,14 @@ typedef struct {
 
 static SndChan   s_chan[SND_CHANNELS];
 static SndEnvDef s_env[4];
-static SndChip   s_chip;
 static unsigned long s_gen = 0;
+
+/* ⭐ NOT static, and that is deliberate: this is the one thing a debugger has to be able to read
+   to tell "the scheduler produced nothing" from "the backend dropped it".  Listed in
+   amiga/Makefile PROBE_SYMS so --gc-sections cannot turn the name into a .text address and make
+   gdb print instruction bytes as a value (docs/method-lessons.md). */
+SndChip g_sndChip;
+#define s_chip g_sndChip
 
 /* ── the chip ──────────────────────────────────────────────────────────────────────────── */
 

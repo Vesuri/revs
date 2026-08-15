@@ -67,7 +67,13 @@
  * envelope has already taken one step (measured: the first attenuation written is AA, not 0).
  */
 
+/* ⚠ NOT <stdint.h> under C++.  The Amiga build force-includes framework/SASCCompat.h, whose
+   int8_t is `char` where the toolchain's own compat stdint.h says `signed char`, and the two
+   typedefs conflict; C++ translation units get the types from there (host: platform.h's
+   <cstdint>).  The C ones — sound.c and tools/validate_sound.c — need the real header. */
+#ifndef __cplusplus
 #include <stdint.h>
+#endif
 
 #define SND_TICK_HZ    100u   /* the System VIA timer rate the MOS schedules sound on */
 #define SND_CHANNELS   4u     /* BBC sound channels 0..3; 0 is the noise generator */
@@ -114,6 +120,9 @@ void snd_flush_channel(uint8_t channel);
 void snd_tick(void);
 
 /* ── the chip, for the backend ──────────────────────────────────────────────────────────── */
+/* The live chip state.  Exposed as a symbol as well as through snd_chip() so a gdb probe can read
+   it directly (amiga/sound.gdb) — the counters say a sound was scheduled, this says what it was. */
+extern SndChip g_sndChip;
 const SndChip* snd_chip(void);
 /* Bumped whenever snd_tick / snd_flush_channel changes the chip state, so a backend can skip
    reprogramming its hardware on an unchanged tick (the common case: nothing is playing). */

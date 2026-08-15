@@ -5,6 +5,7 @@
 #include "framework/CopperList.h"
 #include "../bbc_screen.h"
 #include "../teletext.h"      // tt_tick_flash — the SAA5050 flash phase is a per-FIELD counter
+#include "RevsAudio.h"        // the SN76489 the MOS drives, re-hosted on Paula
 
 extern "C" volatile uint16_t g_vbiCount;
 extern "C" volatile unsigned long g_fpsFrames;
@@ -122,10 +123,14 @@ void Revs::initialize()
     // how the Atari port lost its one-time register setup to stray OS-copper frames.
     screen.initialize();
     if (screen.copper()) AmigaHardware::setCopperList(*screen.copper());
+    // Paula and the chip-RAM waveforms.  Before the first VERTB, because revs_audio_vbi() is
+    // what ticks the MOS's sound scheduler and it does nothing until this has run.
+    revs_audio_init();
 }
 
 void Revs::shutdown()
 {
+    revs_audio_shutdown();
     screen.shutdown();
 }
 
@@ -203,6 +208,14 @@ void Revs::vbi()
     // the record the loop below writes belongs to the frame the main loop has not decoded
     // yet, not to the pixels going up here.
     screen.vbiUpdate();
+
+    // ⭐ SOUND, and it belongs here for the same reason as the flash phase above: the MOS
+    // schedules sound on the System VIA's 100 Hz timer, NOT on vsync, so it has to keep its own
+    // rate whatever the port's framerate is doing — two ticks per field.  It is also why this sits
+    // AFTER the copper work and BEFORE the body: a waveform switch busy-waits ~7 rasterlines for
+    // Paula's DMA restart (RevsAudio.h), and nothing that waits on the beam may precede the
+    // copper writes (docs/amiga-lessons.md).
+    revs_audio_vbi();
 
     // ⚠ Bounded, because Rule 5 caps ISR work at one frame and an unbounded loop over a
     // state machine the game can change is how an ISR eats every frame.  8 = the five
