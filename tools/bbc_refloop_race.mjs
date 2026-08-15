@@ -759,7 +759,35 @@ if (frames === 0) {
 // $DC once per frame all race — and left $61 (engine-running) at 0 for 200 frames.  The car
 // stayed parked, and a parked car yields a scene that never changes, which the zero-byte scan
 // would have reported as a perfectly confident (and useless) answer.
+// ⭐⭐ WHAT THE DASHBOARD AND THE INPUT ACTUALLY HOLD, ON REAL HARDWARE.  Added 2026-08-16 to
+// settle three reports off the Amiga build — a rev counter pinned to maximum with the engine OFF,
+// a throttle that behaves as if it were held, and a steering indicator that does not move.  Every
+// one of those is a claim about state the game keeps, so the only way to judge it is to read the
+// same bytes off a machine that is definitively right.
+//
+//   $05F5  input mode: bit 7 set = ADC (mouse, on the port), clear = keyboard.  engine_init
+//          zeroes $05F4-$05FD, so a real BBC is in KEYBOARD mode unless SHIFT+f2 was pressed.
+//   $0076  the keyboard steering path's own answer ($15B3): 0 none, 1 right, 2 left, 3 both
+//   $0074/$0075  the steering value the rest of the engine reads (both paths converge here)
+//   $0061  engine running ($FF once it catches)   $003C  the rev counter
+//   $0063  road speed    $0040  gear
+const DASH = [
+    [0x05f5, "input mode ($05F5, bit7 = ADC)"],
+    [0x0076, "steer keys ($76: 0/1/2/3)"],
+    [0x0074, "steer value lo ($74)"],
+    [0x0075, "steer value hi ($75)"],
+    [0x0061, "engine running ($61)"],
+    [0x003c, "rev counter ($3C)"],
+    [0x0063, "road speed ($63)"],
+    [0x0040, "gear ($40)"],
+];
+const dashRow = (tag) =>
+    console.log(`   [${tag}] ` + DASH.map(([a, n]) => `${n}=$${rd(a).toString(16).padStart(2, "0")}`).join("  "));
+
 if (drive) {
+    // ⭐ BEFORE THE STARTER — this is the state the report is about: engine OFF, neutral, no
+    // throttle.  A rev counter reading maximum here would be wrong on any machine.
+    dashRow("engine off, in the pits");
     const gear0 = rd(0x40);
     const cranked = await holdUntil(utils.BBC.T, () => rd(ENGINE_ON) === 0xff,
         "'T' held but the engine never caught ($61 stayed 0)", 8 * CPS);
@@ -769,7 +797,24 @@ if (drive) {
     const geared = await holdUntil(utils.BBC.Q, () => rd(0x40) !== gear0,
         "'Q' held but the gear at $40 never changed", 4 * CPS);
     console.log(`   first gear: $40 ${gear0} -> ${rd(0x40)} ${geared ? "✓" : "✗"}`);
+    dashRow("engine on, first gear, no throttle");
     tm.processor.sysvia.keyDownRaw(utils.BBC.S); // hold the throttle down from here
+    await tm.runFor(CPS);
+    dashRow("throttle held");
+
+    // ⭐ AND STEER, which no probe here has ever done.  $15B3 polls -87 then -88; the report is
+    // that neither the keys nor the mouse move the indicator on the port, so the first thing to
+    // establish is what the KEYS do on real hardware.  Held for a second each so the value has
+    // time to ramp — steering is integrated, not instantaneous ($1EE9 onwards).
+    for (const [name, code] of [["-87 (steer one way)", 0xa9], ["-88 (steer the other)", 0xa8]]) {
+        const colrow = inkeyToColRow(code);
+        tm.processor.sysvia.keyDownRaw(colrow);
+        await tm.runFor(CPS);
+        dashRow(`throttle + ${name}`);
+        tm.processor.sysvia.keyUpRaw(colrow);
+        await tm.runFor(CPS / 2);
+    }
+    dashRow("throttle, steering released");
 }
 
 const f0 = frames;

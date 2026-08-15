@@ -34,6 +34,8 @@ struct KeyMap { uint8_t bbc; uint8_t rawkey; };
 #define RK_T        0x14
 #define RK_A        0x20
 #define RK_S        0x21
+#define RK_L        0x28
+#define RK_SEMI     0x29
 #define RK_SPACE    0x40
 #define RK_BACKSPC  0x41
 #define RK_TAB      0x42
@@ -55,15 +57,23 @@ struct KeyMap { uint8_t bbc; uint8_t rawkey; };
 #define RK_RSHIFT   0x61
 #define RK_HELP     0x5F
 
-/* ⚠ WHICH WAY THE STEERING KEYS GO IS [ASSUMED].  $15B5 tests -87 first (setting $76=2)
-   and $15C0 tests -88 (making it 1 or 3); the codes are adjacent in the same keyboard row,
-   which on a BBC is a pair of adjacent keys, and the left one is assumed to steer left.
-   One line to flip if driving shows otherwise, and worth confirming on the reference
-   machine rather than by feel. */
+/* ⭐ WHICH KEYS THEY ARE IS NOW [DERIVED], not assumed: internal key number is (row<<4)|col and a
+   negative-INKEY byte is 255 - internal, so -87 = $56 = row 5 col 6 = **L** and -88 = $57 =
+   **;/+** — cross-checked against jsbeeb's own key matrix by inverting it, and they are exactly the
+   two keys the manual documents for steering ("L/+ steer").  Both are mapped below, on the SAME
+   letters, alongside the arrow keys an Amiga player reaches for first.
+   ⚠ WHICH WAY EACH ONE GOES IS STILL [ASSUMED].  $15B5 tests -87 first (setting $76=2) and $15C0
+   tests -88 (making it 1 or 3); nothing in that code says which value is left.  L sits to the LEFT
+   of ;/+ on the keyboard, so L is assumed to steer left.  One line to flip, and the honest way to
+   settle it is to hold each on a real BBC and watch the car's track position — not by feel. */
 static const KeyMap kKeys[] = {
     /* --- driving -------------------------------------------------------- */
     { 0xA9, RK_LEFT   },   /* -87  steer left  [ASSUMED direction]            */
     { 0xA8, RK_RIGHT  },   /* -88  steer right [ASSUMED direction]            */
+    { 0xA9, RK_L      },   /*      ...and the BBC's OWN steering keys, L and  */
+    { 0xA8, RK_SEMI   },   /*      ;/+ — [DERIVED], see the note above.  A    */
+                           /*      player following the game's own docs was   */
+                           /*      pressing keys this map did not carry.      */
     { 0xAE, RK_S      },   /* -82  throttle (BBC 'S')                         */
     { 0xAE, RK_UP     },   /*      ...and the up arrow, which is what a hand  */
     { 0xBE, RK_A      },   /* -66  brake (BBC 'A')                            */
