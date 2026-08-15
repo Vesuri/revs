@@ -236,7 +236,7 @@ void.  `docs/perf-method.md` §Where the time goes has the table and the defect.
 
 ---
 
-## Phase 5 — Render + input 🔧 (race view, input, sound, MODE 7 and both fonts DONE on the target)
+## Phase 5 — Render + input ✅ (race view, input, sound, MODE 7, both fonts, COMPETITION, track selection AND the menu — all DONE on the target)
 
 ### ✅ 1. The display — `src/platform/bbc_screen.h` + `src/platform/amiga/RevsScreen.*`
 
@@ -688,13 +688,76 @@ The guarantee that the replay covered whatever is actually at that target is a *
 one: `tools/track_patch.py`'s interpreter raises on any opcode outside its twelve-form vocabulary.
 So no runtime dispatch is needed.
 
-**What remains for Phase 5: the MENU, and nothing else.**  `REVSMEN` is BASIC and is not being
-ported, so this is a port-authored MODE 7 page feeding `revs_track_install()`.  ⚠ Selection must
-happen before any engine code reads `$5300-$5A25` (`src/platform/track.h`).
+~~**What remains for Phase 5: the MENU, and nothing else.**~~  ✅ **Done 2026-08-16 — §5e.**
 
 ⚠ If a hook is ever reached with no body, `revs_track_hook()` counts it and traps through
 `platform_smc_unhandled()` rather than returning quietly — a silent return would be the engine
 carrying on with Silverstone's control flow under another circuit's name.
+
+### ✅ 5e. THE MENU — port-authored, and MEASURED anyway (2026-08-16)
+
+`REVSMEN` is BASIC (43 lines, detokenised straight off the disc), so this is the one screen in the
+game with no transliteration to check against.  That is a reason to record an oracle, not a licence
+to eyeball it:
+
+| | |
+|---|---|
+| `tools/bbc_probe_trackmenu.mjs` | CHAINs the **real REVSMEN** under jsbeeb and dumps MODE 7 screen RAM: the title page, the menu page, and the page after each of the five digits |
+| `src/platform/trackmenu.c` | paints the same pages through the port's own (already validated) MOS VDU driver — `tt_vdu()`, so screen RAM stays the single source of truth |
+| `make trackmenu` | requires them to be **identical**.  13 checks, 0 failures |
+| `tools/trackmenu_check.py` | ...and the same diff against a page dumped off the **Amiga** (`amiga/trackmenu.gdb`): **22 of 22 shared rows byte-exact on the target** |
+
+⭐ **Three things the fixture settled that the BASIC listing did not**, and each would have been a
+confident wrong answer:
+
+- **Selecting an option changes TWO bytes, not three.**  Line 240 is `VDU129,157,131` at
+  `TAB(5,10+2*A%)`, but column 6 already holds `$9D`, so that write is idempotent.  A correct
+  implementation checked against the listing would have looked off-by-one.
+- **The title dwell is 10900001 cycles = 5.45 s = 273 display fields**, measured between the title
+  page appearing and the menu page completing.  The alternative was guessing at BASIC's own
+  `FOR X=0 TO 10000:NEXT` speed.  ⭐ The target reproduces it *to the field* (`fields=273`).
+- **`*LOAD 5TRSCRN` is exactly a memcpy**: the page a real BBC *displays* is byte-identical to the
+  file on the disc, so the title screen needs no interpreting — `src/platform/titlescreen.h`
+  (generated, git-ignored: it is a kilobyte of Superior/Acornsoft's screen data).
+
+**The one deliberate divergence: a SIXTH option, NURBURGRING** (user decision).  It was reachable
+only via `make TRACK=5` before.  The differential is honest about it — every comparison runs with
+`TM_OPTIONS_FAITHFUL` (5), which covers every row, column and attribute the two configurations
+share; the sixth row comes out of the same loop, and its **routing** is checked by the
+option→`revs_tracks[]` cross-check, which is the half of the menu no page can show.
+
+⚠⚠ **REVSMEN's option order is NOT `revs_tracks[]`'s** (option 5 is track 0 — Silverstone is
+first in the table because it is the engine's own default), so an option→index table is
+unavoidable and a wrong entry there installs a circuit that works perfectly and is not the one the
+player chose.  `tm_begin()` cross-checks every entry against `revs_tracks[].name` and counts
+`g_tmMisrouted`; reordering `gen_tracks.py`'s CIRCUITS now breaks loudly.
+
+⚠⚠ **THE MENU EXPOSED A HAZARD THAT DID NOT EXIST BEFORE — installing is not idempotent across
+circuits.**  `install_data()` writes the block, the tail and this circuit's patch bytes, and cannot
+undo the *previous* circuit's: their unpatched values exist only in the boot image.  So `make
+TRACK=1` followed by a player choosing Silverstone would have left 54 of Brands Hatch's bytes in
+the engine.  Closed structurally: the menu is the **single installer** (`revs_track_boot()` no
+longer runs at startup, and an unattended build reaches its `make TRACK=n` circuit through the
+menu's own auto path), and a second install of a *different* circuit is refused and counted
+(`g_trackOverinstalls`).  A caller that has really restored the image says so with
+`revs_track_forget()`.
+
+⭐ **The 50 Hz body is suspended while the menu is up** (`Revs::setFrontEnd`).  The menu runs ~5.5 s
+*before* `engine_main`, so `vbi()` would have counted 273 fields, hit the 200-tick cap and handed
+the engine a **200-tick backlog to run in one burst** before it had initialised anything — while
+filling `g_bodyTicksDropped` with ~70 drops and thereby retiring a counter whose whole meaning is
+"the main loop stopped reaching a drain point".  The *counting* is suppressed, not the ISR: the
+flash phase, the copper work and `applyMode()` are all still needed for the menu to be on screen.
+
+**Sabotaged five ways before being believed**: a 38-mosaic rule, a mis-routed option, no highlight,
+SPACE accepted with no release, and a missing fixture file (a hard error, not a pass).  ⚠ The first
+sabotage round was **contaminated by a stale object file** and produced two coherent wrong answers
+— verify the patch took effect, *then* read the result.
+
+**Exit criteria for Phase 5: ✅ met.**  The race view, input, sound, the MODE 7 front end, both
+fonts, COMPETITION mode with its field of cars, per-circuit code execution and now circuit
+selection all work on the target.  What Phase 5 does **not** claim is performance: that is Phase 6,
+and the baseline is still ~0.87 FPS.
 
 ---
 

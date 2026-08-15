@@ -123,6 +123,9 @@ make tracks                # ⭐⭐ the circuit installer, 64K byte-exact per ci
 make track-run             # ⭐⭐ ...and the CODE path: race each circuit, require its hooks to RUN
 make track-smc             #   the per-circuit SMC surface as EXTENTS (EMIT=1 regenerates the table)
 make track-patch           #   what each circuit's ModifyGameCode writes (VERIFY=1 vs a real BBC)
+make trackmenu             # ⭐ the CIRCUIT MENU vs the real REVSMEN, byte for byte (PPM=tmp/tm)
+make trackmenu-fixture     #   ...re-record those pages off jsbeeb
+make titlescreen           #   regenerate the embedded 5TRSCRN page (git-ignored: disc bytes)
 ```
 
 ⚠ **`make tracks` and `make track-run` answer DIFFERENT questions and you need both.** `tracks`
@@ -207,6 +210,24 @@ FRAMERATE (`sfx_trigger_random` is a main-loop call), not an audio bug.  Verify 
 `GDBSCRIPT=sound.gdb ./diag_run.sh 70` on a `STRAIGHT_TO_RACE` build — a run that never starts the
 engine measures silence.
 
+⭐⭐ **THE CIRCUIT MENU IS THE PORT'S OWN PAGE, AND IT IS STILL MEASURED** (2026-08-16).  `REVSMEN`
+is BASIC, so `src/platform/trackmenu.*` is port-authored — and `make trackmenu` diffs it against the
+**real REVSMEN** recorded off jsbeeb (6 pages, byte-exact), while `tools/trackmenu_check.py` does the
+same for a page dumped off the Amiga (22 of 22 shared rows, `amiga/trackmenu.gdb`).  Three things the
+fixture settled that the BASIC listing would have got wrong: a selection changes **two** bytes not
+three (column 6 already holds `$9D`), the title dwell is a **measured** 273 display fields, and
+`*LOAD 5TRSCRN` is exactly a memcpy.  One deliberate divergence: a **sixth option, NURBURGRING**
+(user decision), so the differential runs at `TM_OPTIONS_FAITHFUL` = 5 and the sixth row's *routing*
+is what gets checked instead.
+⚠⚠ **The menu is now the SINGLE circuit installer** — `revs_track_boot()` no longer runs at startup,
+because installing is **not idempotent across circuits** (`install_data()` cannot undo the previous
+circuit's patch bytes) and a default-then-choice sequence would leave 54 of one circuit's bytes in
+another's engine.  A second install of a different circuit is refused and counted
+(`g_trackOverinstalls`); `revs_track_forget()` is how a caller that restored the boot image says so.
+⭐ And the 50 Hz body is SUSPENDED while the menu is up (`Revs::setFrontEnd`): the menu runs ~5.5 s
+before `engine_main`, so counting those fields would hand the engine a 200-tick backlog to run in one
+burst and fill `g_bodyTicksDropped` with drops that mean nothing.
+
 ⭐ **`make STRAIGHT_TO_RACE=1` boots into a Silverstone PRACTICE session with the engine running
 and in first gear, then hands the keyboard to the player** — the fast way into the race without
 walking the (now rendered) front end. It skips **no** game code: practice needs
@@ -270,7 +291,8 @@ hand-rename in generated files).
 | `src/platform/amiga/RevsAudio.*` | That chip state → Paula: waveforms in chip RAM, the period conversion, the stereo placement.  Amiga-only, unvalidated by construction |
 | **`src/platform/teletext.*`** ⭐ | **THE MODE 7 MODEL** — the MOS VDU driver + the SAA5050. Read before any front-end work; it carries the measurements. `teletext_font.h` is generated |
 | `src/platform/bbc_hw.cpp` | The BBC hardware model behind `bus_read`/`bus_write`, and the IRQ1V shim |
-| `src/platform/autorun.cpp` | Scripted keyboard for unattended runs; without it a headless run measures a menu spin |
+| **`src/platform/trackmenu.*`** ⭐ | **THE CIRCUIT MENU** — port-authored (REVSMEN is BASIC) and validated against a recorded real page anyway.  The model is shared; only the Amiga drives it |
+| `src/platform/autorun.cpp` | Scripted keyboard for unattended runs; without it a headless run measures a menu spin.  `REVS_AUTORUN_BUILD` is the one predicate for "this build drives itself" |
 | `src/platform/probe.cpp` | Main-loop phase brackets (PROBES only) — the hot-function profile |
 | `src/cpu/` | 6502 register/flag model, the memory bus, the 68000 16-bit math helpers |
 | `src/platform/` | `platform.h` abstraction + the C bridge; `host/` and `amiga/` backends |
