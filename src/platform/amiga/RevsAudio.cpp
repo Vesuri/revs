@@ -26,8 +26,12 @@ static const uint32_t kAudioBase[4] = { 0xDFF0A0u, 0xDFF0B0u, 0xDFF0C0u, 0xDFF0D
 /* ---- waveforms in chip RAM ---------------------------------------------------
    ⚠ Chip RAM, not a static array: Paula's DMA cannot reach the program's own (possibly fast)
    memory, and a silent failure there is a channel that plays whatever was last at that address. */
-static const unsigned kWhiteBytes    = 32766u;  /* one full 15-bit LFSR period, minus one for
-                                                   evenness — Paula LEN counts WORDS */
+/* ⚠ SIZED, not maximal.  The chip's white-noise LFSR has a period of 32767 samples, but 32 KB of
+   chip RAM is real on a 512 KB A500 whose PROGRAM already lives in chip RAM.  Revs's only
+   white-noise sound is the $0B30 block, duration 4 = 0.2 s, and the fastest noise rate here plays
+   this buffer in 0.52 s — so the truncation point is never reached and there is no loop to hear.
+   (A word count, because Paula LEN counts words.) */
+static const unsigned kWhiteBytes    = 8190u;
 static const unsigned kPeriodicBytes = 30u;     /* two 15-sample periods */
 
 static int8_t*  s_square   = 0;   /* 2 samples */

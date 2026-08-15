@@ -19,8 +19,9 @@
  *
  *   3 tone channels   a 2-sample square (+127/-127), so one wave cycle per two samples: the
  *                     played frequency is 125000/divider Hz, which is the chip's own tone.
- *   white noise       the chip's actual 15-bit LFSR (taps 0 and 1) rendered as one FULL period —
- *                     32766 samples — so there is no loop artefact to hear at all.
+ *   white noise       the chip's actual 15-bit LFSR (taps 0 and 1), rendered out — 8190 samples of
+ *                     it, which is longer than any white-noise sound Revs plays (see the .cpp: the
+ *                     full 32767-sample period would cost 32 KB of chip RAM for nothing).
  *   periodic noise    the same register walking a single 1 through 15 stages, i.e. a 1-in-15 pulse
  *                     train.  Two periods = 30 samples (Paula LEN counts words, so it must be even).
  *
@@ -51,8 +52,8 @@
  * a period or volume change is a plain register poke with no restart — the expensive case (Paula
  * only latches AUDxPTR/LEN at a loop wrap, so a waveform change needs the channel held off) is
  * then only reached when the NOISE waveform switches between white and periodic.  It matters:
- * the white buffer is 16383 words, so without a restart a switch away from it would keep hissing
- * for up to a second.
+ * the white buffer is 4095 words, so without a restart a switch away from it would keep hissing for
+ * up to half a second.
  */
 
 /* Allocates the chip-RAM waveforms and takes Paula over.  Safe to call twice. */
