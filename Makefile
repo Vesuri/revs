@@ -75,6 +75,15 @@ endif
 # push that takes S below $F0 prints ONE backtrace naming the 6502 routines that leaked it.
 # S is a correctness invariant in Revs, not bookkeeping — page 1's bottom is the per-car arrays
 # (cpu.h) — so "how far it fell" is far less useful than "where".
+# ⭐ `make TRACK=n` — boot circuit n instead of Silverstone (0=Silverstone, 1=Brands, 2=Donington,
+# 3=Oulton, 4=Snetterton, 5=Nurburgring if that disc is present).  On the host $REVS_TRACK
+# overrides it at run time too.  ⚠ An expansion circuit is REFUSED until its SMC sites exist and
+# the build falls back to Silverstone, loudly — src/platform/track.h has the contract.
+ifdef TRACK
+CFLAGS   += -DREVS_TRACK_DEFAULT=$(TRACK)
+CXXFLAGS += -DREVS_TRACK_DEFAULT=$(TRACK)
+endif
+
 ifdef STACK_TRAP
 CFLAGS   += -DREVS_STACK_TRAP -g -fno-omit-frame-pointer
 CXXFLAGS += -DREVS_STACK_TRAP -g -fno-omit-frame-pointer
@@ -85,6 +94,8 @@ endif
 C_SRCS := \
     src/cpu/cpu.c \
     src/platform/sound.c \
+    src/platform/track.c \
+    $(wildcard src/gen/revs_tracks.c) \
     $(wildcard src/gen/revs_gen.c) \
     $(wildcard src/gen/revs_manual.c) \
     $(wildcard src/gen/revs_native.c)
@@ -107,6 +118,7 @@ TARGET   := build/revs
 
 .PHONY: all clean gen validate image runtime dashcode sweep endian-lint refloop refloop-keys \
         mode7 mode7-fixture font mos-font refloop-charset refloop-comp track-patch \
+        tracks tracks-gen track-fixtures \
         sound sound-fixture sound-fixture-race
 
 all: $(TARGET)
@@ -182,6 +194,27 @@ mos-font:
 track-patch:
 	python3 tools/track_patch.py $(if $(VERIFY),--verify,)
 
+# ⭐ The per-circuit DATA TABLE the port selects between -> src/gen/revs_tracks.[ch].
+# ⚠ The Nürburgring block comes from the git-ignored revs-hack-nurburgring.ssd, so a checkout
+# without that disc generates FIVE circuits, not six, and says so.  That is not an error —
+# docs/reference-sources.md §The Nürburgring file, MEASURED has the provenance reasoning.
+tracks-gen:
+	python3 tools/gen_tracks.py
+
+track-fixtures:
+	python3 tools/gen_tracks.py --check --fixtures tmp/tracks
+
+# ⭐⭐ THE CIRCUIT INSTALLER, byte-exact against the disc.  Installs each circuit into mem[] the
+# way the port will and diffs the whole 64K against an image built down an independent path
+# (relocate the disc for THAT circuit, then replay its ModifyGameCode).  So it verifies the
+# installer *and* re-proves that nothing outside the two extents differs per circuit.
+# ⚠ An expansion circuit REFUSING to install is the correct behaviour until its SMC sites exist,
+# and is reported as its own outcome — never counted as a verified install (src/platform/track.h).
+TRACKS_OBJS := src/cpu/cpu.o src/platform/track.o src/gen/revs_tracks.o tools/validate_tracks.o
+tracks: track-fixtures $(TRACKS_OBJS) | build
+	$(CC) $(CFLAGS) -o build/validate_tracks $(TRACKS_OBJS)
+	./build/validate_tracks
+
 # ⭐ Which character codes does the RACE VIEW actually ask the MOS for, and where do the glyphs
 # land?  Measures it on a real BBC in a real driving race — the input to mos-font above.
 # It records CODES and CELLS only, never the ROM's bitmaps.
@@ -211,6 +244,8 @@ build:
 #   make gen DASHCODE=0   leave it out; the four $7Bxx call sites keep platform_brk() traps
 gen:
 	REVS_DASHCODE=$(if $(DASHCODE),$(DASHCODE),1) python3 tools/transpile.py
+	@$(MAKE) --no-print-directory tracks-gen   # ⚠ AFTER: gen_tracks.py needs revs_smc_bytes.h's
+	                                           # sibling outputs to exist for a from-scratch clone
 
 # Rebuild the post-load memory image from the disc.
 #   make image              -> the default circuit (SILVER)

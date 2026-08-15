@@ -448,7 +448,7 @@ Three things left here, none of them blocking:
 - **the by-ear pass has not happened** (audio cannot be verified headlessly).
 - **sync/hold/queued sounds are unimplemented and counted**; Revs has never issued one.
 
-### 🔧 5. Track selection — the design is settled and the foundation is measured
+### 🔧 5. Track selection — the data path is DONE; the code path is next
 
 **User decision (2026-08-15): ONE BINARY with a runtime track menu**, not five per-track builds.
 
@@ -467,6 +467,54 @@ The BBC's `REVSMEN` menu is BASIC and is not being ported, and the four expansio
    being the documented `$5FC9-$5FCD` runtime state.  Verified by sabotage in both directions.
 
 So the patcher never has to run in the port: its output is applied as data at selection time.
+
+### ✅ 5a. The data table, the installer and its differential — DONE (2026-08-15)
+
+`tools/gen_tracks.py` -> `src/gen/revs_tracks.[ch]`, `src/platform/track.[ch]`, `make tracks`.
+
+**Both enabling measurements were re-derived rather than trusted, and the second one moved:**
+the per-circuit delta is `$5300-$5A25` (1830 B) **plus `$7800-$78AA` (171 B)**, and that tail bound
+comes from the longest track FILE, not from diffing the commercial five.  Those files are
+`$738`-`$73C` long so they cannot write past `$7816` — their diff stops exactly there, which makes
+`$7816` look like the answer.  ⚠ The Nürburgring file is padded to `$7D0`, reaches `$78AA`, and
+*uses* the space: a table of 5-byte records at `$786B-$78AA` that every commercial circuit leaves
+zero.  Sizing the extent off the five would have truncated the sixth silently.
+
+**`make tracks` is the differential, and the two sides are built down different paths:** the
+installer starts from Silverstone's post-unpack image and writes two extents plus the patches; the
+fixture relocates the disc image *for that circuit* and applies its own `ModifyGameCode` replay, as
+a whole 64K image.  **6 of 6 circuits byte-identical.**  So it verifies the installer AND re-proves
+that nothing outside those extents differs per circuit.
+
+⭐⭐ **The first version of that harness was nearly VACUOUS, and a sabotage run is what caught it** —
+truncating the installer's tail loop by one byte still PASSED.  Two causes, both general:
+- **The base was the thing under test.**  `mem[]` was seeded from Silverstone's own image and then
+  Silverstone's block installed over it: identical bytes, so the diff could not see a byte the
+  installer failed to write.  Fixed by POISONING both extents with `$5A` first.  ⭐ *An installer
+  test whose "before" state already equals the expected "after" state measures nothing.*
+- **It could only ever install 1 circuit of 6**, the other five being correctly refused (below).
+  Fixed with a harness-only `revs_track_install_forced()`; the refusal is now asserted separately.
+Both sabotages fail loudly now (tail bound -> `$78AA`, dropped patch -> `$4F59`).
+
+⚠ **An unfinished circuit is REFUSED, not attempted.** Installing a patch byte into `mem[]` is
+necessary and not sufficient — the transliteration bakes operands and opcodes, so only bytes
+declared in `SMC_SITES` are read at run time.  `revs_track_install()` therefore checks every patch
+address against `src/gen/revs_smc_bytes.h`, which **the transpiler now generates** from `SMC_SITES`
+(a hand-kept list would drift the moment a site was added), and refuses if any is uncovered.
+Today: Silverstone installs; the other five report `54-60 patch bytes await SMC sites (first
+$1248)`.  `make TRACK=n` selects, `$REVS_TRACK` overrides on the host, `amiga/track.gdb` reads it
+on the target.
+
+⚠ And a reporting defect worth remembering, found on the target: the fallback's own check RESET
+`g_trackUnhonoured` to 0, so "asked for Silverstone" and "asked for Nürburgring and could not have
+it" read identically — `unhonoured=0` beside `first=$1248`, incoherent, and noticed only because
+the address survived.  `revs_track_boot()` now re-takes the requested circuit's verdict *after* the
+fallback, and `g_trackRequested` records what was asked for.
+
+⭐ **The sixth circuit works in the same machinery** (see docs/reference-sources.md §The Nürburgring
+file, MEASURED): identical hook entry, same patcher vocabulary, one extra patch address (`$298E`).
+Its block is generated from the **git-ignored** `revs-hack-nurburgring.ssd`, so the repo carries no
+third party's file; a checkout without that disc generates five circuits and says so.
 
 **What remains, in order:**
 - **~54-60 SMC sites per track** (union ~70 addresses) declared in `tools/transpile.py`'s

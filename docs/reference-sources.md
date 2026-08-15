@@ -98,10 +98,60 @@ format — a data conversion that is reproducible from the C64 original by anyon
 So if a sixth circuit is ever wanted, the honest route is: **take the C64 Revs+ disk image and
 extract the Nürburgring data ourselves.**  Then every track in the port descends from a Crammond
 original, on the same footing as the other five, with no dependence on a third party's work.
-⚠ Not free, though: the BBC and C64 track formats differ (converting between them is precisely
-what the backport did), and the expansion tracks are *executable* hook programs rather than plain
-data — so a sixth track means reproducing that conversion, not copying a file.  Scope decision,
-not a legal one.
+⚠ ~~Not free, though: the BBC and C64 track formats differ (converting between them is precisely
+what the backport did)~~ — **[was ASSUMED, written as if measured; now MEASURED, and it is the
+wrong shape.  2026-08-15.]**  See the next section.  The one part that stands unchanged: the
+expansion tracks are *executable* hook programs rather than plain data.
+
+### ⭐ The Nürburgring file, MEASURED (2026-08-15)
+
+The paragraph above inferred "the formats differ" from the word *backported* and stated it as fact.
+Four cheap measurements say something more useful, and they change the scope call.
+
+**1. It is a normal BBC track file, in the same format as the commercial four.**  `$5A22` holds
+`4C 00 57` (`JMP $5700`), identical to Brands/Donington/Oulton/Snetterton; `tools/track_patch.py`'s
+`ModifyGameCode` replay runs it to completion in **259 steps with no opcode outside the twelve-form
+vocabulary**, patching **54 engine bytes** with the loop bound `LDX #$12` (19 table patches) like
+Brands and Oulton.  So it needs no new machinery at all.
+
+**2. Its patch ADDRESS SET adds exactly one address to the commercial union: `$298E`.**  The other
+62 are already accounted for, and nine of the union's addresses it simply does not touch.
+
+**3. Its hook CODE is overwhelmingly Crammond's, not new authorship.**  Diffing the nine code
+extents (502 bytes) against the commercial tracks:
+
+| vs | identical |
+|---|---|
+| BRANDS | **351/502 = 69.9%** |
+| OULTON | 350/502 = 69.7% |
+| SNETTER | 344/502 = 68.5% |
+| DONING | 317/502 = 63.1% |
+| SILVER (passive, no hook code — the control) | 11/502 = 2.2% |
+
+and two whole extents are **byte-identical** to a commercial track: the patcher `$5700-$5724` and
+`$5582-$55BC`.  What differs is the small per-track hook bodies (`$54F1`, `$59E9`, `$55C4`) — the
+same shapes with different constants, which is what a per-circuit hook body *is*.
+
+**4. ⚠ But "mostly a relocation of the C64 data" does NOT survive its own control, and neither does
+any byte-level claim from `revsplus.d64`.**  `NURBURG` shares 619 of 2000 bytes (30.9%) with the C64
+`REVS+` program in runs ≥16 bytes — and **SILVER, which cannot be Moxon's work, shares 911 of 1849
+(49.3%)**.  Brands 36.8%, Donington 31.2%, Snetterton 29.8%, Oulton 23.2%.  So that similarity is
+BASELINE for any BBC track file against this program, and the run deltas are not constant
+(`$0C55`…`$1DF0`), i.e. not a relocated block.  ⭐ **The control is the whole lesson: a byte-overlap
+number means nothing until the same measurement is run on a file that could not have the property
+being tested for.**
+
+**5. ⚠⚠ And `revsplus.d64` HAS NO NÜRBURGRING.**  Five files — one program (`REVS+ /HZ`) plus
+`HORIZON #1`-`#4` — no `NURB` string in any of them under ASCII or PETSCII, while the program does
+contain `BRANDS` and `SNETT`.  So the "extract it from the C64 ourselves" route is not merely "not
+free", it is **blocked on not having the source data**: that release would have to be found first.
+
+**Consequence for the port, and it is the resolution:** the mechanism is built for **N tracks** and
+`$298E` is carried in the SMC surface, so a sixth circuit is pure data.  The Nürburgring block is
+read from the **local, git-ignored** `revs-hack-nurburgring.ssd` at generation time, exactly as
+`revs.ssd` already is — so the repository never contains a third party's file and has no committed
+dependence on one, while the circuit works on a machine that has the disc.  If the C64 release that
+actually carries the track ever turns up, the same slot takes our own extraction instead.
 
 ### ⚠ Which variant is the reference documenting?
 The reconstruction is of "the version released on the Complete BBC Micro Games Archive", and the

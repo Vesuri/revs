@@ -3,6 +3,7 @@
 #include "PlatformHost.h"
 #include "../bbc_screen.h"
 #include "../platform_c.h"   /* g_irqClobberCount/Which — the interrupt register contract */
+#include "../track.h"       /* circuit selection — the model and the refusal contract */
 
 #include <cstdio>
 #include <cstdlib>
@@ -36,6 +37,32 @@ PlatformHost::PlatformHost(const char* imagePath) : vbi(0), frames(0), traceKeys
                      imagePath ? imagePath : "(null)");
         std::fprintf(stderr, "  build it first:  python3 tools/ssd_load.py revs.ssd disasm\n");
         quit = true;
+        return;
+    }
+
+    /* ⭐ CIRCUIT SELECTION, and it must be HERE: after the boot image and before any engine code
+       reads $5300-$5A25.  src/platform/track.h is the model.  $REVS_TRACK overrides the build
+       default on the host only — the target has no environment, so there it is `make TRACK=n`. */
+    {
+        const char* tr = std::getenv("REVS_TRACK");
+        unsigned char want = tr && tr[0] ? (unsigned char)std::strtoul(tr, 0, 0)
+                                         : (unsigned char)REVS_TRACK_DEFAULT;
+        int ok = (want < REVS_TRACK_COUNT) && revs_track_install(want);
+        if (!ok) {
+            /* ⚠ Say WHICH of the two reasons, and never continue with the requested circuit's
+               geometry under Silverstone's code — install() refuses that, and this reports it. */
+            if (want >= REVS_TRACK_COUNT)
+                std::fprintf(stderr, "PlatformHost: no circuit %u (this build has %d)\n",
+                             want, REVS_TRACK_COUNT);
+            else
+                std::fprintf(stderr, "PlatformHost: circuit %u (%s) REFUSED — %u patch bytes have "
+                             "no SMC site yet (first $%04X); see src/platform/track.h\n",
+                             want, revs_tracks[want].name, g_trackUnhonoured,
+                             g_trackUnhonouredAddr);
+            revs_track_install(0);
+        }
+        std::fprintf(stderr, "PlatformHost: circuit %u = %s\n",
+                     g_trackInstalled, revs_tracks[g_trackInstalled].name);
     }
 }
 

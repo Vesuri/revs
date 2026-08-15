@@ -43,6 +43,14 @@ src/gen/revs_gen.c
 src/gen/revs_decl.h
 src/gen/mem.h
 src/gen/revs_validate_list.h
+src/gen/revs_smc_bytes.h
+# ⚠⚠ GENERATED, AND IT MUST STAY UNTRACKED FOR A SECOND REASON: revs_tracks.c embeds the
+# Nurburgring block, which is generated from the git-ignored revs-hack-nurburgring.ssd.  Committing
+# it would put a third party's converted track data in this repository — the one dependence
+# docs/reference-sources.md concluded to avoid.  `make gen` rebuilds it from whichever discs are
+# present (five circuits without that one, and it says so).
+src/gen/revs_tracks.c
+src/gen/revs_tracks.h
 
 # Build output
 build/

@@ -70,6 +70,8 @@ CXX_SRCS := \
 CORE_C_SRCS := \
     $(REPO)/src/cpu/cpu.c \
     $(REPO)/src/platform/sound.c \
+    $(REPO)/src/platform/track.c \
+    $(wildcard $(REPO)/src/gen/revs_tracks.c) \
     $(wildcard $(REPO)/src/gen/revs_gen.c) \
     $(wildcard $(REPO)/src/gen/revs_native.c) \
     $(wildcard $(REPO)/src/gen/revs_manual.c)
@@ -155,6 +157,12 @@ endif
 # rendering; this is the build that has a stimulus for it.  src/platform/autorun.cpp has the menu
 # chain.  ⚠ Takes precedence over STRAIGHT_TO_RACE in autorun.cpp (it is the first #if arm), and
 # like every other script flag it needs `make clean` when toggled.
+# ⭐ `make TRACK=n` — boot a circuit other than Silverstone.  See src/platform/track.h; an
+# unfinished circuit is refused and the build falls back, with g_trackUnhonoured saying why.
+ifdef TRACK
+EXTRA_DEFINES += -DREVS_TRACK_DEFAULT=$(TRACK)
+endif
+
 ifdef COMPETITION
 EXTRA_DEFINES += -DREVS_COMPETITION
 endif
@@ -285,6 +293,7 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_irqClobberCount g_irqClobberWhich \
              g_irqUnwindPending g_irqUnwindTouched g_irqStackImbalance \
              g_stackLow g_stackHigh g_stackTrespass \
+             g_track g_trackInstalled g_trackRequested g_trackUnhonoured g_trackUnhonouredAddr \
              g_beamPresentLine g_beamPresentMin g_beamPresentMax \
              g_beamPresents g_beamPresentsLate g_beamEntryLine g_beamEntries g_beamEntriesLate \
              g_bodyTicksDropped g_bodyDrains g_bodyTicks g_bodyPending \

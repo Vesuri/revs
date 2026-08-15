@@ -24,6 +24,7 @@
 #include "PlatformAmiga.h"
 #include "Revs.h"
 #include "../probe.h"   /* PROBE_VBI(): advance the phase-bracket beam epoch */
+#include "../track.h"   /* circuit selection (revs_track_boot) */
 
 extern "C" volatile uint8_t mem[65536];      // the 6502 RAM image (src/cpu/cpu.c)
 
@@ -318,6 +319,13 @@ void PlatformAmiga::run()
     // reset our one-time custom-register setup.  initialize() installs our first list
     // (COP1LC = ours) with the copper halted, so there is no race.
     loadImage(0);
+
+    // ⭐ CIRCUIT SELECTION — after the boot image, before any engine code reads $5300-$5A25.
+    // src/platform/track.h is the model.  A plain build is Silverstone (the embedded image's own
+    // circuit); `make TRACK=n` picks another, and an unfinished one is REFUSED rather than run
+    // under Silverstone's code.  ⚠ The refusal is only visible as a probe value here — there is
+    // no stderr on the target — so g_trackInstalled / g_trackUnhonoured are in PROBE_SYMS.
+    revs_track_boot();
 
     scene.initialize();
 
