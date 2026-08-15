@@ -264,6 +264,50 @@ Ending in a terminator was never evidence of not belonging; it was a proxy that 
 once.  When porting a heuristic, ask what it is actually *evidence of* — here, ownership, for
 which "the function branches into it" is the direct test.
 
+## A MODE the port never exercises is a whole subsystem you have never tested ⚑ Revs
+
+Revs has two session types.  Five phases of green measurements were **all** practice sessions, and
+`$2637`'s `LDA $5F3B / BMI $262D` makes the consequence exact: with the practice flag set the
+engine *skips the entire multi-car path*.  Practice runs the player alone, so a clean practice
+frame is not weak evidence about competitor cars — it is **no** evidence, structurally.
+
+The first competition race hung immediately, on a bug that had been latent the whole time
+(`docs/phases.md` Phase 5 item 4b: `cpu.S` never initialised).
+
+The lesson is not "test more".  It is that a *coverage* question hides behind an apparently
+complete one: "does the port render?" was answered honestly and repeatedly, for the only mode
+anyone ran.  When a target has modes, difficulty levels, or session types, enumerate them and ask
+which code each one *excludes* — the exclusion is where the untested subsystem is.  A one-line grep
+for the flag that gates the branch (`$5F3B` here) finds it faster than any amount of frame-staring.
+
+## Page 1 is not all stack — and a register can be un-modelled state ⚑ Revs
+
+Two lessons in one bug, both cheap to state and expensive to find.
+
+**First: an image built from the disc does not model REGISTERS.**  `docs/bbc-reference-loop.md`
+already warns that zero page and workspace are provisional because the real MOS/BASIC leaves them
+populated.  The stack POINTER is the same class and is easy to miss because it lives in `cpu`, not
+in `mem[]`.  Nothing in REVS2 ever loads `S`: `engine_init` does `TSX / STX $6B` — it *inherits*
+whatever the OS handed it (measured `$F8`).  A zero-initialised global gave it 0.
+
+**Second, and the reason it cost time: the symptom was in a different subsystem entirely.**  Revs
+puts eight 20-entry per-car arrays in the BOTTOM of page 1 (`$0100 $0114 $0128 $013C $0150 $0164
+$0178 $018C`), because a real BBC's `S` never descends past `$019F`.  So a low `S` does not
+overflow or crash — it quietly scribbles pushed bytes into the field.  The observable was
+`car_order` full of ASCII, then an infinite loop in a routine three call levels away that merely
+*read* a derived index.
+
+Generalise: **before assuming a memory region belongs to the machine, check whether the game has
+claimed it.** And when a data structure is corrupt with values that look like they came from
+somewhere else — ASCII in an index array, digits in a coordinate — ask what else writes that
+address range, not what is wrong with the code that reads it.  The tell here was `48 49 50` =
+`'0' '1' '2'`: those are characters, so a character-emitting path reached an array it has no
+business touching.
+
+⭐ The fix that matters beyond the bug is the counter: `g_stackLow` / `g_stackTrespass` in
+`PUSH()`.  An invariant the hardware maintains for free (`S` stays high) becomes something the port
+must *assert*, or the next drift is silent again.
+
 ## Record findings the moment you find them
 
 Two conventions that exist because deferring cost real time:

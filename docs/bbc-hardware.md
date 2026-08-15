@@ -178,6 +178,21 @@ character definition) fires ~850 times in the first 900 vblanks**, so reproducin
 a genuine Phase 5 dependency, not a footnote — the port currently returns blank glyphs and counts
 them in `g_mosCharDefCount`.
 
+✅ **`OSWORD 10` is IMPLEMENTED as of 2026-08-15** — `src/platform/mos_font.h`, 96 printable glyphs,
+**drawn** rather than extracted (the MOS software font is Acorn's ROM with no published spec behind
+it, unlike the SAA5050 set).  Measured need: 88 calls / 15 codes / all `$20..$74` in one practice
+race (`make refloop-charset`); the whole printable range is drawn anyway and anything outside it is
+counted in `g_mosCharDefOutOfRange`, because one session's vocabulary is a floor.
+
+⭐⭐ **And there is a THIRD entry to `vdu_char_def`: `$508C`, which is DOUBLE WIDTH.**  It stores the
+code and `JMP $509D`, skipping `$509B`'s `LDA #0 / STA $77`, so the caller's `$77` survives to reach
+the arm at `$50AE` — `AND #$F0` keeps the glyph's left four columns, `ASL A` x4 lifts its right four
+into place, and each half becomes one MODE 5 cell.  Its only caller is the gearstick readout
+`$42D0` (`$77` = `$22` then `$FF`; codes 'N' and '1').  **Reading the code says that arm is dead**,
+because `$509B` zeroes the flag unconditionally — it was found by counting entries on real hardware
+(92 reads at `$50AA` vs 88 at `$5096`).  It also constrains the font: the glyph body must be CENTRED
+in the cell or narrow characters lose their second half.
+
 ⚠⚠ **THOSE `OSWORD 10` CALLS ARE THE RACE VIEW, NOT THE FRONT END — do not read them as a MODE 7
 dependency** (they were, for two phases).  `vdu_char_def` (`$5092`) has two arms selected by `$64`
 bit 7 and they use two *different fonts*: the bitmap arm asks `OSWORD 10` for a **MOS ROM** glyph
@@ -185,7 +200,8 @@ and plots it into the frame buffer, while the MODE 7 arm calls **OSWRCH** and th
 teletext chip — which has its own character ROM and is not addressable by the CPU at all — draws
 the cell.  Measured on a real BBC in the front end (`tools/bbc_probe_mode7.mjs`): **310 OSWRCH
 calls and ZERO OSWORD 10 calls.**  So MODE 7 needed a VDU driver, not a font (done —
-`src/platform/teletext.h`), and `OSWORD 10` remains open for the race view's own text.
+`src/platform/teletext.h`), and `OSWORD 10` belongs to the race view's own text — now implemented
+above, with its own drawn font.
 
 ⚠ The implementation is `src/platform/mos.cpp`, shared by BOTH backends rather than overridden per
 platform.  OSBYTE 129's contract (X=Y=$FF when the key is held) is the 6502's ABI and identical
