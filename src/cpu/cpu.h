@@ -62,7 +62,27 @@ static inline void P_unpack(uint8_t p) {
 }
 
 /* ---------- stack -------------------------------------------------- */
-#define PUSH(v)  do { mem[0x100|cpu.S]=(uint8_t)(v); cpu.S--; } while(0)
+/* ⚠⚠ PAGE ONE IS NOT ALL STACK.  Revs puts EIGHT 20-entry per-car arrays in the BOTTOM of the
+ * stack page — $0100, $0114, $0128, $013C (car_order), $0150, $0164, $0178, $018C — on the
+ * assumption that S never descends past $019F.  A real BBC honours that: measured mid-race in a
+ * 20-car competition session, S = $F2 (`make refloop-comp`).
+ *
+ * So S is a CORRECTNESS INVARIANT here, not bookkeeping.  The moment it drops below $A0 a
+ * PHA/PHP writes into car_order, and the failure that surfaces is nothing like a stack bug:
+ * find_player_neighbours ($63A2) stops finding the player, stores X = $FF into $0003, and
+ * check_car_pair's field walk ($2797 `car_index_inc / CPX $03`) never terminates — the port
+ * HANGS.  Measured: S = $B8 and falling, with ASCII ('0','1','2') sitting in car_order.
+ *
+ * g_stackLow is therefore tracked and reported rather than trusted.  A silent leak here reads as
+ * "competitor cars don't work", which is where an hour goes.
+ */
+extern unsigned char g_stackLow;      /* lowest S ever seen (starts $FF) */
+extern unsigned long g_stackTrespass; /* pushes that landed in the per-car arrays */
+#define STACK_FLOOR 0xA0              /* $019F is the top of car_flags_1 */
+#define PUSH(v)  do { mem[0x100|cpu.S]=(uint8_t)(v); \
+                      if (cpu.S < g_stackLow) g_stackLow = cpu.S; \
+                      if (cpu.S < STACK_FLOOR) g_stackTrespass++; \
+                      cpu.S--; } while(0)
 #define PULL(v)  do { cpu.S++; (v)=mem[0x100|cpu.S]; } while(0)
 #define PHA()    PUSH(cpu.A)
 #define PLA()    do { PULL(cpu.A); UPD_NZ(cpu.A); } while(0)
