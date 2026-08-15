@@ -362,6 +362,13 @@ gen:
 	@# would still be in the union revs_smc_bytes.h publishes, so the installer would accept
 	@# it and an arm would bake somebody else's operand (docs/phases.md §5b).
 	python3 tools/track_smc.py --check
+	@# ⚠⚠ THEN: every self-modifying site the entry-point sweep found must be DECLARED in
+	@# transpile.py, or waived with a reason.  An undeclared site does not crash — the
+	@# transliteration freezes whatever opcode the static image happened to hold, which is
+	@# always one of the legal values, so it runs and looks plausible and no mem[] diff can
+	@# see it.  That is exactly how the rev counter pointed at 9000 rpm for months
+	@# ($5220/$529B, the dial needle's octant).  The sweep had reported both all along.
+	python3 tools/sweep_entrypoints.py --audit-smc > disasm/sweep.txt
 	REVS_DASHCODE=$(if $(DASHCODE),$(DASHCODE),1) python3 tools/transpile.py
 	@$(MAKE) --no-print-directory tracks-gen   # ⚠ AFTER: gen_tracks.py needs revs_smc_bytes.h's
 	                                           # sibling outputs to exist for a from-scratch clone
@@ -451,6 +458,6 @@ refloop-keys:
 #   make sweep                       -> disasm/sweep.txt
 #   make sweep TRACE=tmp/trace_SILVER.bin  also cross-check against a real execution trace
 sweep:
-	python3 tools/sweep_entrypoints.py $(if $(TRACE),--trace $(TRACE),) > disasm/sweep.txt
+	python3 tools/sweep_entrypoints.py --audit-smc $(if $(TRACE),--trace $(TRACE),) > disasm/sweep.txt
 	@echo "wrote disasm/sweep.txt"
 	@sed -n '1,5p' disasm/sweep.txt

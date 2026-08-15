@@ -24,6 +24,7 @@ startup (docs/reference-sources.md).  --copy replays a block move the code perfo
 itself, so the sweep can follow control flow through a relocation.
 """
 import argparse
+import os
 import sys
 from collections import defaultdict
 
@@ -426,6 +427,84 @@ def runs(addrs):
     return out
 
 
+# ---------------------------------------------------------------------------
+# The SMC audit — does the TRANSPILER declare every site this sweep found?
+# ---------------------------------------------------------------------------
+# ⭐⭐ WHY THIS EXISTS.  For most of this project the sweep reported 24 self-modifying sites
+# and tools/transpile.py's SMC_SITES declared 19 of them, and nothing anywhere compared the
+# two lists.  Two of the five undeclared sites were $5220 and $529B, the octant step opcodes
+# of the dial's line plotter, and the consequence was a rev counter that pointed at 9000 rpm
+# where a real BBC pointed at 2500 — for three months, in every screenshot.
+#
+# ⚠⚠ THE FAILURE MODE IS WHAT MAKES THE AUDIT WORTH ITS LINES.  An undeclared SMC site does
+# not crash and does not blank.  The transliteration simply freezes whatever opcode the
+# static image happened to hold, which is always ONE of the legal values — so the code runs,
+# produces a plausible picture, and is invisible to every mem[] differential the project has,
+# because the divergence is in which instruction executed, not in any byte either side wrote.
+# Finding a site in the sweep report is not acting on it; this closes that gap mechanically.
+#
+# A site may be WAIVED, but only with a reason, and the reason is checked by a human once
+# rather than re-argued every time the report is read.
+SMC_AUDIT_WAIVED = {
+    # ⭐ These three are NOT instruction patching.  They are INDEXED stores — `STA $3850,X`,
+    # `STA $3864,X/,Y`, `STA $3878,X` with X/Y = the car index 0-19 — whose BASE happens to
+    # land inside bytes the walk decoded as instructions.  The sweep cannot know the index
+    # range, so it reports the base conservatively, which is the right default for a tool
+    # whose job is to miss nothing.
+    #
+    # What they actually are is the BBC's oldest memory economy: $3850 is engine_init, the
+    # code `engine_main` ($63BD) jumps to ONCE to set the screen mode and clear $05F4-$05FD.
+    # After it has run, its bytes are reused as three 20-byte per-car arrays.  Nothing
+    # re-enters $3850, so the transliteration — a C function that runs once, plus ordinary
+    # mem[] writes afterwards — is already exactly right, and declaring an SMC site here
+    # would be modelling a patch that never happens.
+    0x3850: "init code at engine_init, reclaimed as a 20-byte per-car array (STA $3850,X)",
+    0x3864: "same block: the second per-car array (STA $3864,X at $4D63, $3864,Y at $66A0)",
+    0x3878: "same block: the third per-car array (STA $3878,X at $5A27 and $5A69)",
+}
+
+
+def smc_audit(real, covers, P):
+    """Cross-check the sweep's self-modifying sites against transpile.py's SMC_SITES."""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import transpile
+        declared = set(transpile.SMC_SITES)
+    except Exception as exc:                       # noqa: BLE001 - report, never mask
+        P(f"## SMC audit — SKIPPED: could not import transpile.py ({exc})")
+        P("⚠ A skipped audit is not a passing audit.  Fix the import.")
+        P("")
+        return ["transpile.py could not be imported"]
+
+    # SMC_SITES is keyed by the address of the patched INSTRUCTION; the sweep reports the
+    # patched BYTE.  Map each reported byte back to its instruction before comparing, or an
+    # operand-byte site would look undeclared when its instruction is declared.
+    undeclared, waived = [], []
+    for t in sorted(real):
+        ia = covers[t][0]
+        if ia in declared or t in declared:
+            continue
+        (waived if (ia in SMC_AUDIT_WAIVED or t in SMC_AUDIT_WAIVED) else undeclared).append((t, ia))
+
+    P("## SMC audit — every self-modifying site above must be DECLARED in transpile.py")
+    P(f"  sites found {len(real)}   declared {len(real) - len(undeclared) - len(waived)}   "
+      f"waived {len(waived)}   UNDECLARED {len(undeclared)}")
+    for t, ia in waived:
+        P(f"  waived  ${t:04X} (insn ${ia:04X})  — {SMC_AUDIT_WAIVED.get(ia) or SMC_AUDIT_WAIVED[t]}")
+    for t, ia in undeclared:
+        ia_, k, mn = covers[t]
+        part = "opcode" if k == 0 else f"operand byte {k}"
+        P(f"  ⚠ UNDECLARED  ${t:04X}  {part} of {mn} @ ${ia_:04X}  written from "
+          + " ".join(f"${s:04X}" for s in sorted(real[t])[:6]))
+    if undeclared:
+        P("  ⚠⚠ The transpiler will FREEZE the static image's byte at each of these, which")
+        P("  runs, looks plausible and is invisible to every mem[] differential.  Declare it")
+        P("  in SMC_SITES (kind operand/opcode/branch/extent) or waive it with a reason in")
+        P("  SMC_AUDIT_WAIVED — never leave it silent.")
+    P("")
+    return [f"${t:04X}" for t, _ in undeclared]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("image", nargs="?", default="disasm/revs_runtime.bin")
@@ -447,6 +526,11 @@ def main():
                          "size, callers, MOS calls, hardware touched, zero-page use, and the "
                          "arithmetic shape.  Naming from this beats naming from a hunch.")
     ap.add_argument("--csv", action="store_true", help="emit entrypoints.csv rows only")
+    ap.add_argument("--audit-smc", action="store_true",
+                    help="exit NON-ZERO if any self-modifying site the sweep found is not "
+                         "declared in transpile.py's SMC_SITES (or waived in "
+                         "SMC_AUDIT_WAIVED).  This is what `make gen` gates on: an "
+                         "undeclared site freezes one opcode and fails silently.")
     args = ap.parse_args()
 
     mem = bytearray(open(args.image, "rb").read())
@@ -641,6 +725,8 @@ def main():
         P(f"  ${t:04X}  {part} of {mn} @ ${ia:04X}   written from {sites}{more}")
     P("")
 
+    undeclared_smc = smc_audit(real, covers, P)
+
     # --- static coverage: what is left over, and is it plausibly data? -------------------
     ptr_targets = sw.resolve_pointers()
     P("## Zero-page pointer targets — what the `(zp),Y` accesses reach")
@@ -732,6 +818,12 @@ def main():
         P(f"  ${a:04X}  opcode ${op:02X}")
     if len(sw.bad) > 60:
         P(f"  … +{len(sw.bad) - 60} more")
+
+    # ⚠ Deliberately the LAST thing main() does, so the full report is still written when the
+    # audit fails.  A gate that suppresses the evidence it is gating on is worse than no gate.
+    if args.audit_smc and undeclared_smc:
+        sys.exit(f"SMC AUDIT FAILED: {len(undeclared_smc)} self-modifying site(s) the sweep "
+                 f"found are undeclared in transpile.py — {' '.join(undeclared_smc)}")
 
 
 if __name__ == "__main__":
