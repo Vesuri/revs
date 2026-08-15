@@ -59,6 +59,18 @@ public:
     // Called from the VERTB ISR: accumulate the mouse counter (see RevsInput::sampleMouse).
     void sampleMouse() { input.sampleMouse(); }
 
+private:
+    // ⭐⭐ THE CIRCUIT MENU (src/platform/trackmenu.h), driven here because this is the only place
+    // that has both the real keyboard and the frame pump.  Returns false if the player quit.
+    //
+    // ⚠ IT MUST RUN BEFORE engine_main() AND AFTER input.initialize(), which is a narrower window
+    // than it looks: revs_track_boot() installs a circuit into $5300-$5A25 before the scene even
+    // exists, and the engine reads that window during init, so the menu's own install has to land
+    // in between.  See the call site in run() for the ordering argument.
+    bool runTrackMenu();
+
+public:
+
 protected:
     // Backs the System VIA vsync flag ($FE4D bit 1) hw_init's alignment spin blocks on:
     // here it is a REAL frame boundary, taken from the VERTB ISR's own counter.
@@ -75,8 +87,7 @@ private:
     // that runs it — the target sat in the front end for the whole run with $5F3B = $9D,
     // which reads as "the script's timing is wrong" and was documented as such.  Any new
     // AUTORUN_* build flag has to be added here and at the call site in the .cpp.
-#if defined(REVS_FPSCOUNT) || defined(REVS_PROBE) || defined(REVS_STRAIGHT_TO_RACE) || \
-    defined(REVS_COMPETITION)
+#ifdef REVS_AUTORUN_BUILD   // autorun.h — one predicate, not four flags per site
     AutoRun autoRun;
 #endif
     // Real input: the CIA-A keyboard and the mouse, mapped onto the game's own two input

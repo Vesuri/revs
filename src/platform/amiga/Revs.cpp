@@ -86,6 +86,9 @@ static volatile uint8_t s_pendingTicks = 0;
 // Re-entrancy guard: the body itself can reach a spin-wait hook (that is what drives frames), and
 // draining from inside the body would run the 50 Hz chain nested inside itself.
 static bool s_inBody = false;
+// ⭐ The port's own front end (the circuit menu) is up: count no fields.  volatile — the ISR reads
+// it, main-loop context writes it.  See Revs.h §setFrontEnd for why this is not "pause the game".
+static volatile bool s_frontEnd = false;
 extern "C" {
 volatile unsigned long g_bodyTicksDropped = 0;  // the cap hit: game time slowed, and we say so
 volatile unsigned long g_bodyDrains       = 0;  // drain calls that ran at least one tick
@@ -103,6 +106,19 @@ void Revs::runBandCycle()
         platform->fireIrq1v();
         if (mem[0x4F43] == 0) break;      // $4F43 = irq_band_state; 0 = cycle complete
     }
+}
+
+void Revs::setFrontEnd(bool on)
+{
+    s_frontEnd = on;
+    /* Whatever slipped through before the flag was seen is not the game's time either. */
+    if (on) s_pendingTicks = 0;
+}
+
+void Revs::discardPendingTicks()
+{
+    s_pendingTicks = 0;
+    g_bodyPending  = 0;
 }
 
 void Revs::drainTicks()
@@ -232,6 +248,11 @@ void Revs::vbi()
     static uint8_t zp0[256];
     for (unsigned i = 0; i < 256; i++) zp0[i] = mem[i];
 #endif
+
+    /* ⭐ NOTHING BELOW HERE WHILE THE CIRCUIT MENU IS UP — see Revs.h §setFrontEnd.  It guards
+       both models: under BODY_IN_ISR the body would RUN, before engine_main has initialised a
+       thing, which is worse than queueing it. */
+    if (s_frontEnd) return;
 
 #ifdef REVS_BODY_IN_ISR
     /* The old model, kept for A/B measurement only: run the body here, in the ISR, where it

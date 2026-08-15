@@ -59,6 +59,20 @@ public:
 
     static void runBandCycle();
 
+    // ⭐⭐ SUSPEND THE 50 Hz BODY WHILE THE PORT'S OWN FRONT END IS UP (the circuit menu,
+    // src/platform/trackmenu.h).  The menu runs BEFORE engine_main, so there is no engine state
+    // for the band chain to tick yet — and vbi() would otherwise count a field every 20 ms for
+    // the ~5.5 s the menu is on screen, hit the 200-tick cap, and hand engine_main a queue of
+    // 200 body ticks to run in one burst before the game had initialised anything.
+    //
+    // ⚠ It suppresses the COUNTING, not the drain: everything else the ISR does during the menu
+    // is still needed — tt_tick_flash() (the "PRESS" prompt flashes), the copper work, and
+    // applyMode()'s switch to the MODE 7 list.  And it keeps g_bodyTicksDropped honest: that
+    // counter means "the main loop stopped reaching a drain point", which is a real fault, and
+    // starting every run with ~70 of them would retire it as a signal.
+    static void setFrontEnd(bool on);
+    static void discardPendingTicks();
+
 private:
     // The BBC display, re-hosted: two bitplanes + the copper palette bands.  Held by
     // value so the scene stays trivially constructible (see the note above).

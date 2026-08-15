@@ -26,6 +26,9 @@ struct KeyMap { uint8_t bbc; uint8_t rawkey; };
 #define RK_1        0x01
 #define RK_2        0x02
 #define RK_3        0x03
+#define RK_4        0x04
+#define RK_5        0x05
+#define RK_6        0x06
 #define RK_Q        0x10
 #define RK_E        0x12
 #define RK_T        0x14
@@ -73,6 +76,15 @@ static const KeyMap kKeys[] = {
     { 0xCF, RK_1      },   /* -49  '1'                                        */
     { 0xCE, RK_2      },   /* -50  '2'                                        */
     { 0xEE, RK_3      },   /* -18  '3'                                        */
+    /* ⭐ '4'..'6' are NOT keys the GAME asks about — they are the port's own circuit menu
+       (src/platform/trackmenu.h), which offers five circuits plus Nurburgring.  Kept in this one
+       map anyway, so there is still exactly one place where a BBC key code meets an Amiga rawkey.
+       Derived like the rest and cross-checked against jsbeeb's key matrix: internal number is
+       (row<<4)|col and the negative-INKEY byte is 255 - internal, so '4' [col 2, row 1] = $12 ->
+       $ED.  SPACE's $9D falls out of the same arithmetic, which is what checks it. */
+    { 0xED, RK_4      },   /* -19  '4'  menu only                             */
+    { 0xEC, RK_5      },   /* -20  '5'  menu only                             */
+    { 0xCB, RK_6      },   /* -53  '6'  menu only (Nurburgring)               */
     { 0xDD, RK_E      },   /* -35  the sixth menu_key_tbl entry               */
     { 0xB6, RK_RETURN },   /* -74  RETURN                                     */
     { 0xA6, RK_BACKSPC},   /* -90  DELETE                                     */

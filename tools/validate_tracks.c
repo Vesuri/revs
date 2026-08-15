@@ -86,6 +86,10 @@ int main(void)
            embedded image, selection applied on top.  Reset in full so a leak from the previous
            iteration cannot pass as a success. */
         for (k = 0; k < sizeof base; k++) mem[k] = base[k];
+        /* ...and SAY SO: one boot image installs one circuit (track.h §INSTALLING IS NOT
+           IDEMPOTENT), so without this the second circuit onwards would be refused as an
+           over-install — correctly, because this loop is the only thing that makes it legal. */
+        revs_track_forget();
         /* …then POISON the two extents.  See note 1 in the header: without this, installing
            Silverstone over Silverstone's own image writes identical bytes and the diff is blind to
            anything the installer fails to write.  $5A is not a byte either extent legitimately

@@ -71,6 +71,7 @@ CORE_C_SRCS := \
     $(REPO)/src/cpu/cpu.c \
     $(REPO)/src/platform/sound.c \
     $(REPO)/src/platform/track.c \
+    $(REPO)/src/platform/trackmenu.c \
     $(wildcard $(REPO)/src/gen/revs_tracks.c) \
     $(wildcard $(REPO)/src/gen/revs_gen.c) \
     $(wildcard $(REPO)/src/gen/revs_track_hooks.c) \
@@ -296,7 +297,8 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_stackLow g_stackHigh g_stackTrespass \
              g_track g_trackInstalled g_trackRequested g_trackUnhonoured g_trackUnhonouredAddr \
              g_trackHooksUnbuilt g_trackHooksUnbuiltAddr \
-             g_trackHookMissing g_trackHookMissingAddr g_trackHookCalls \
+             g_trackHookMissing g_trackHookMissingAddr g_trackHookCalls g_trackOverinstalls \
+             g_tmPhase g_tmOption g_tmTrack g_tmMisrouted g_tmRefusals g_tmFields \
              g_beamPresentLine g_beamPresentMin g_beamPresentMax \
              g_beamPresents g_beamPresentsLate g_beamEntryLine g_beamEntries g_beamEntriesLate \
              g_bodyTicksDropped g_bodyDrains g_bodyTicks g_bodyPending \

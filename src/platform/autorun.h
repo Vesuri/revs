@@ -19,6 +19,18 @@
  * It is NOT a substitute for real input (Phase 5, mouse + keyboard) and never renders a
  * gameplay judgement — it exists so a number can be measured.
  */
+/* ⭐ ONE PREDICATE FOR "THIS BUILD DRIVES ITSELF", and it exists because the four-flag test below
+ * was written out by hand at each site and one of them went stale: `make COMPETITION=1` compiled
+ * the script and never instantiated the object that runs it, so the target sat in the front end
+ * for a whole run and it was documented as a timing bug (PlatformAmiga.h has the full note).
+ * Every new place that must behave differently in an unattended run tests THIS, so adding a flag
+ * is one edit rather than N.
+ */
+#if defined(REVS_FPSCOUNT) || defined(REVS_PROBE) || defined(REVS_STRAIGHT_TO_RACE) || \
+    defined(REVS_COMPETITION)
+#define REVS_AUTORUN_BUILD 1
+#endif
+
 /* ⚠ Same include dance as platform.h: the Amiga build is freestanding with no libstdc++,
    and gets its integer types from the force-included framework/SASCCompat.h. */
 #if !defined(REVS_PLATFORM_AMIGA)

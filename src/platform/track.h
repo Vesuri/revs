@@ -96,6 +96,19 @@ extern unsigned short g_trackUnhonouredAddr; /* the first such address, for the 
    fallback note in track.c is about.  So: two numbers, one verdict. */
 extern unsigned short g_trackHooksUnbuilt;     /* hook entries with no C body in this build */
 extern unsigned short g_trackHooksUnbuiltAddr; /* the first such address */
+/* ⚠⚠ INSTALLING IS NOT IDEMPOTENT ACROSS CIRCUITS, and the circuit MENU is what made that
+ * reachable.  install_data() writes the block, the tail and this circuit's patch bytes — it has no
+ * way to UNDO the previous circuit's patches, which live outside the block and whose unpatched
+ * values only exist in the boot image.  So installing Brands Hatch and then Silverstone leaves 54
+ * of Brands Hatch's bytes in the engine: a circuit that installs perfectly and runs somebody
+ * else's code, which is precisely the failure this file's header is about.
+ *
+ * Rather than document that and hope, a second install of a DIFFERENT circuit is REFUSED and
+ * counted.  A caller that has genuinely restored the boot image says so with
+ * revs_track_forget() — which is what tools/validate_tracks.c does between circuits, and saying it
+ * out loud is better than the comment that used to stand in for it.
+ */
+extern unsigned short g_trackOverinstalls;     /* refused second installs (must stay 0) */
 
 /* Install a circuit into mem[].  Returns 1 on success, 0 if REFUSED (see the header note).
  *
@@ -119,6 +132,12 @@ unsigned short revs_track_check(unsigned char index);
  * refuses.  Calling this from the game would produce exactly the plausible-looking wrong game
  * that track.h's header warns about. */
 int revs_track_install_forced(unsigned char index);
+
+/* "mem[] is the pristine boot image again."  Clears the installed-circuit latch so the next
+ * install is a first install.  ⚠ Only correct if the caller really has restored the image — this
+ * is an assertion by the caller, not a check.
+ */
+void revs_track_forget(void);
 
 /* Which circuit a plain build boots.  ⚠ 0 (Silverstone) until the front end has a track menu —
  * `make TRACK=n` on either backend overrides it, which is how an expansion circuit gets tested

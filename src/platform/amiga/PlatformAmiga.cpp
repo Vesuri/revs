@@ -24,7 +24,8 @@
 #include "PlatformAmiga.h"
 #include "Revs.h"
 #include "../probe.h"   /* PROBE_VBI(): advance the phase-bracket beam epoch */
-#include "../track.h"   /* circuit selection (revs_track_boot) */
+#include "../track.h"      /* circuit selection */
+#include "../trackmenu.h"  /* ...and the menu that makes it the PLAYER's */
 
 extern "C" volatile uint8_t mem[65536];      // the 6502 RAM image (src/cpu/cpu.c)
 
@@ -209,8 +210,7 @@ bool PlatformAmiga::vsyncElapsed()
 
 bool PlatformAmiga::keyDown(uint8_t x)
 {
-#if defined(REVS_FPSCOUNT) || defined(REVS_PROBE) || defined(REVS_STRAIGHT_TO_RACE) || \
-    defined(REVS_COMPETITION)
+#ifdef REVS_AUTORUN_BUILD   // autorun.h — one predicate, not four flags per site
     // Unattended run: the script walks the front end and then holds the throttle, so the
     // measurement window contains the driving loop instead of a menu spin.  ⚠ It overrides
     // the real keyboard on purpose — a measurement must not depend on what is on the desk.
@@ -252,6 +252,81 @@ void PlatformAmiga::pollEvents()
     // Left mouse button quits.  Polled from every spin-wait so the player can always
     // abort — including out of a compute stretch that never reaches renderFrame().
     if ((*ciaapraPointer & 0x40u) == 0) quit = true;
+}
+
+// ⭐⭐ THE CIRCUIT MENU.  src/platform/trackmenu.h is the model and `make trackmenu` proves the
+// page against a real BBC; what lives here is only the DRIVING of it — the keyboard and the frame
+// pump, which is the one thing that cannot be shared with the host build or the differential.
+bool PlatformAmiga::runTrackMenu()
+{
+    // ⭐ Suspend the 50 Hz body for the duration.  engine_main() has not run, so there is no game
+    // state to tick, and ~5.5 s of counted fields would hand it a 200-tick backlog (Revs.h).
+    Revs::setFrontEnd(true);
+    tm_begin(TM_OPTIONS_MAX);
+
+#ifdef REVS_AUTORUN_BUILD
+    // ⭐ UNATTENDED: answer the menu instead of skipping it, so the auto path still exercises
+    // tm_begin(), the paint, the option→circuit routing and the install — the parts that can be
+    // wrong without a keyboard.  `make TRACK=n` therefore now arrives at its circuit the same way
+    // a player does.
+    //
+    // ⚠ AND IT PAINTS NO FRAMES, deliberately.  Every published framerate is `50 *
+    // g_fpsFrames / g_vbiCount` over a whole run (docs/perf-method.md), so a handful of cheap
+    // teletext frames at the start would inflate it — ~2% on a 200 s window, which is inside the
+    // range this project has already been burned by quoting.  A measurement build must not have a
+    // front end in its window at all.
+    tm_tick(0, TM_TITLE_FIELDS);                  // spend the title dwell in one go
+    {
+        unsigned opt = tm_option_for_track((unsigned char)REVS_TRACK_DEFAULT);
+        if (opt) {
+            tm_tick(TM_KEY_OPTION(opt), 1);       // the digit
+            tm_tick(0, 1);                        // release — SPACE only counts after one
+            tm_tick(TM_KEY_SPACE, 1);             // confirm
+        }
+    }
+#else
+    // Interactive: one real display frame per iteration, reading the real keyboard through the
+    // real map.  ⚠ Fields, not iterations, drive the dwell: a frame here costs a teletext decode
+    // and may span more than one field, and 273 iterations of an unknown length is not 5.45 s.
+    uint16_t last = g_vbiCount;
+    while (!tm_finished() && !quit) {
+        renderFrame();                            // decode the page, then wait one field
+        pollEvents();                             // left mouse button still quits
+
+        unsigned keys = 0;
+        for (unsigned i = 0; i <= TM_OPTIONS_MAX; i++)
+            if (input.keyDown(tm_key_codes[i])) keys |= (1u << i);
+
+        uint16_t now = g_vbiCount;
+        tm_tick(keys, (uint16_t)(now - last));
+        last = now;
+
+        // The install is attempted INSIDE the loop so a refusal can put the player back in the
+        // menu.  ⚠ revs_track_install() validates before it writes a byte (track.c), so a refused
+        // choice leaves mem[] untouched and the next choice installs into a clean image — which is
+        // what makes retrying safe at all.
+        if (tm_finished()) {
+            // ⚠ RECORD THE ASK BEFORE MAKING IT.  g_trackRequested is what distinguishes "this run
+            // wanted Silverstone" from "this run wanted Nurburgring and could not have it", and
+            // revs_track_boot() used to be the only thing that set it — so when the menu took over
+            // installation it read 255 for the whole run and the refusal signal was gone.  That is
+            // the same defect track.c's fallback note is about, one layer up.
+            g_trackRequested = (unsigned char)tm_track();
+            if (!revs_track_install((unsigned char)tm_track())) tm_reject();
+        }
+    }
+#endif
+
+#ifdef REVS_AUTORUN_BUILD
+    if (tm_finished()) {
+        g_trackRequested = (unsigned char)tm_track();       // see the note in the loop above
+        if (!revs_track_install((unsigned char)tm_track())) tm_reject();
+    }
+#endif
+
+    Revs::setFrontEnd(false);
+    Revs::discardPendingTicks();
+    return !quit;
 }
 
 // ---------------------------------------------------------------------------
@@ -320,13 +395,6 @@ void PlatformAmiga::run()
     // (COP1LC = ours) with the copper halted, so there is no race.
     loadImage(0);
 
-    // ⭐ CIRCUIT SELECTION — after the boot image, before any engine code reads $5300-$5A25.
-    // src/platform/track.h is the model.  A plain build is Silverstone (the embedded image's own
-    // circuit); `make TRACK=n` picks another, and an unfinished one is REFUSED rather than run
-    // under Silverstone's code.  ⚠ The refusal is only visible as a probe value here — there is
-    // no stderr on the target — so g_trackInstalled / g_trackUnhonoured are in PROBE_SYMS.
-    revs_track_boot();
-
     scene.initialize();
 
     // Real input.  ⚠ AFTER the display takeover and BEFORE Forbid(): OpenResource and the
@@ -368,7 +436,19 @@ void PlatformAmiga::run()
     // open/close are deliberately outside.
     Forbid();
 
-    scene.run();          // returns when the user quits
+    // ⭐⭐ CIRCUIT SELECTION, and the position in this sequence is the whole argument.
+    //
+    // It must be AFTER input.initialize() and the DMA enable (the menu reads the real keyboard and
+    // has to be on screen) and BEFORE scene.run() (engine_init reads $5300-$5A25 immediately, so
+    // installing later would swap the geometry under a session that had already read it —
+    // src/platform/track.h).  Between Forbid() and scene.run() is the only window that is both.
+    //
+    // ⚠ revs_track_boot() USED TO RUN HERE, ~40 lines earlier, and it no longer does: the menu is
+    // now the single installer.  That is not tidying, it is the fix for a real hazard — one boot
+    // image installs exactly one circuit (track.h §INSTALLING IS NOT IDEMPOTENT), so a default
+    // install followed by the player's choice would leave the default's patch bytes in the engine.
+    // An unattended build reaches its `make TRACK=n` circuit through the menu's own auto path.
+    if (runTrackMenu()) scene.run();   // returns when the user quits
 
     Permit();
     input.shutdown();        // hand the SP vector back to keyboard.device

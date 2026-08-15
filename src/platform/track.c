@@ -11,6 +11,7 @@ unsigned short g_trackUnhonoured = 0;
 unsigned short g_trackUnhonouredAddr = 0;
 unsigned short g_trackHooksUnbuilt = 0;
 unsigned short g_trackHooksUnbuiltAddr = 0;
+unsigned short g_trackOverinstalls = 0;
 
 /* Does the transliteration read this byte from mem[] at run time?  TWO ways it can:
  *
@@ -127,6 +128,12 @@ int revs_track_install(unsigned char index)
        mem[] is not touched until it passes.  (Same shape as applyMode()'s "validate, then latch"
        in RevsScreen: the bug that taught it is in docs/amiga-lessons.md.) */
     if (index >= REVS_TRACK_COUNT) return 0;
+    /* ⚠⚠ ONE CIRCUIT PER BOOT IMAGE — see track.h.  The previous circuit's patch bytes are still
+       in the engine and nothing here can put them back, so this is refused rather than allowed to
+       produce a half-and-half engine.  Re-installing the SAME circuit is harmless (identical
+       bytes) and stays allowed, because that is what an unattended build does when the menu
+       answers itself with the circuit revs_track_boot() already chose. */
+    if (g_trackInstalled != 0xFF && index != g_trackInstalled) { g_trackOverinstalls++; return 0; }
     if (revs_track_check(index)) return 0;    /* REFUSED — the caller reports it */
     install_data(&revs_tracks[index]);
     g_track = index;
@@ -150,6 +157,11 @@ int revs_track_boot(void)
     revs_track_install(0);
     revs_track_check(want < REVS_TRACK_COUNT ? want : 0);
     return 0;
+}
+
+void revs_track_forget(void)
+{
+    g_trackInstalled = 0xFF;
 }
 
 /* ⚠⚠ HARNESS ONLY — see the warning in track.h.  Installs the data with the SMC check SKIPPED. */

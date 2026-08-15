@@ -1,6 +1,13 @@
 #ifndef REVS_TRACKMENU_H
 #define REVS_TRACKMENU_H
-/* trackmenu.h — THE CIRCUIT MENU.  One copy, both backends.
+/* trackmenu.h — THE CIRCUIT MENU.
+ *
+ * ⚠ The MODEL is shared and validated; only the Amiga DRIVES it.  Everything here is pure — it
+ * paints into mem[] and is advanced by a key mask and a field count — so the differential
+ * (tools/validate_trackmenu.c) runs it on the host with no display at all.  What the Amiga adds is
+ * the keyboard and the frame pump (PlatformAmiga::runTrackMenu), and the host build deliberately
+ * has neither: it has no renderer by design (src/platform/host/PlatformHost.h), so it keeps
+ * selecting a circuit the way it always has, from the build.
  *
  * ═══════════════════════════════════════════════════════════════════════════════════════════
  * WHY THIS FILE IS PORT-AUTHORED, AND WHY IT IS STILL VALIDATED
@@ -102,6 +109,11 @@ void tm_begin(unsigned options);
 /* Advance by `fields` display fields, with `keys` held (a TM_KEY_* mask).  Repaints only when
    something changes, so it is safe to call every frame. */
 void tm_tick(unsigned keys, unsigned fields);
+
+/* Which option installs `track`, or 0 if none does.  ⭐ The inverse of the option table, and the
+ * reason it is public: an unattended build has to answer the menu with the circuit `make TRACK=n`
+ * asked for, and open-coding that mapping at the call site is how the two copies drift apart. */
+unsigned tm_option_for_track(unsigned track);
 
 int      tm_finished(void);
 unsigned tm_phase(void);
