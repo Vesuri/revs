@@ -369,8 +369,10 @@ every painted frame — **~250 ms of a ~1282 ms frame, and none of it work the B
 render path's memory traffic.  Render DIRECT to bitplanes instead; asm written against the current
 arrangement has to be rewritten after it.  ⚑ RoF shipped this (~339 → ~172 ticks/frame) and its own
 verdict was "real but not transformative" — necessary, not sufficient.  Full plan, the layout choices,
-the live-code-in-the-frame-buffer constraint and **the decode becoming the validated oracle**:
-`docs/direct-bitplane-plan.md`.
+and **the decode becoming the validated oracle**: `docs/direct-bitplane-plan.md`.  ⚠ Its §4 used to
+call the live code inside the frame buffer a constraint on this change; it is not one (corrected
+2026-08-16) — on the Amiga those bytes are just code in `mem[]`, and filling the sky instead of
+decoding it *deletes* the band-boundary hazard rather than being limited by it.
 
 ⭐⭐ **THE HOT PATH IS RASTERISATION, NOT PHYSICS** (re-measured 2026-08-13). Top three of the
 main loop's 24 calls are **76.2%**: `$7BE2` **36.1%** (the dashboard), `$1A20` **21.1%** (the

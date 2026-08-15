@@ -779,11 +779,19 @@ expectation here too, and the reason it still comes first is that **asm written 
 arrangement is asm that has to be rewritten after it.**
 
 The full treatment, including the layout choices it unlocks (interleaved planes, the blitter for
-solid fills, single vs double buffer), the constraint it cannot design away (5.5 KB of **live engine
-code renders as the sky**, inside the frame buffer), the ⭐ free ~75 ms available today from skipping
-that sky band in the decode, and — the part that keeps it a faithful port — **the decode becoming the
-validated ORACLE rather than the shipping path**, is in `docs/direct-bitplane-plan.md`.  Read it
-before touching a plotter.
+solid fills, single vs double buffer), the ⭐ free ~75 ms available today from skipping the sky band
+in the decode, and — the part that keeps it a faithful port — **the decode becoming the validated
+ORACLE rather than the shipping path**, is in `docs/direct-bitplane-plan.md`.  Read it before
+touching a plotter.
+
+🛑 **What this item does NOT have to design around, corrected 2026-08-16 (user, and correct): the
+5.5 KB of live engine code that renders as the sky.** §4 used to call it "the constraint that cannot
+be designed away".  It is not a constraint at all — from the Amiga's side those bytes are ordinary
+code and variables in `mem[]`, the bitplane is a separate buffer that aliases nothing, and the BBC's
+own band 1 made their content unobservable anyway.  ⭐⭐ It in fact **inverts**: the "band boundary
+wrong ⇒ engine code shows as noise" failure mode (the measured black bar of 2026-08-14) exists *only*
+because `decode()` reads those bytes and expands them into pixels.  Filling the sky rather than
+decoding it deletes the hazard.
 
 ⭐⭐ It also records the OTHER inherited lever, which may be larger: RoF's biggest single win was not
 asm and not direct rendering but **per-instrument dirty flags, ~23×** — and Revs's number-one hot

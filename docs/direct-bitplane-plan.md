@@ -76,19 +76,42 @@ copper palette matches.
    tearing it shows is the tearing the original showed. ⚑ RoF hit this and had to add a terrain
    double-buffer to stop plane-1 flicker (`afc509f`), so decide it deliberately and measure it.
 
-## 4. The constraint that cannot be designed away — and a free win hiding in it
+## 4. The code-in-the-sky is NOT a constraint on this plan — it is a hazard the plan DELETES
 
-⚠⚠ **THE FRAME BUFFER IS NOT AN OUTPUT BUFFER.** `$5E40-$66FF` — 5.5 KB of engine variables *and*
-462 disassembled instructions — sits **inside** the BBC frame buffer and is on display under
-palette band 1, where all sixteen entries are the same blue, so the running program renders as flat
-sky (`bbc_screen.h` §THE SKY IS A HIDING PLACE FOR LIVE CODE). Nothing clears it and nothing can: it
-is the program. So `mem[]` keeps that role whatever this plan does — only the **drawing** moves.
+🛑 **This section used to be headed "the constraint that cannot be designed away", and that was
+wrong** (raised by the user, 2026-08-16, and correct). The claim was that `$5E40-$66FF` — 5.5 KB of
+engine variables *and* 462 disassembled instructions sitting **inside** the BBC frame buffer, on
+display under palette band 1 — somehow bounds the Amiga's bitplane design. It does not, and the
+reason is worth stating plainly because the phrasing had already propagated into `docs/phases.md`:
 
-⭐ Which hands over a cheap, independent win, available today with no architecture change: **the
-decode does not need to convert the sky band at all.** It renders flat blue whatever the bytes say,
-so those ~63 of 208 display lines (~30% of the pass, ~75 ms) can be skipped for a boundary check.
-⚠ The band boundary can cut mid-character-row and the boundary moves with the hills, so take it
-from `m_plan`/`m_lineMode` — which `decode()` already builds — and not from a literal.
+**From the Amiga's point of view those bytes are just code and variables in `mem[]`.** The
+transliteration executes them as C functions; they occupy an address in `mem[]` for the same reason
+every other engine routine does. That the BBC's 6845 also *scanned* that address range is a fact
+about the BBC's shared-memory video, and it carries over to the Amiga in exactly one respect: the
+picture there must come out flat blue. And it does, for free — the BBC's own band 1 maps all sixteen
+palette entries to the same blue, so the byte content was **unobservable on the original too**. A
+direct-to-bitplane renderer never copies those bytes anywhere, and a bitplane is a separate buffer
+in chip RAM, so nothing aliases anything.
+
+⭐⭐ **And the aliasing inverts: direct rendering removes a hazard the decode currently carries.**
+`bbc_screen.h` records that the raster phase "matters to the pixel" — get a band boundary wrong by a
+few lines and the port shows the engine's own code as noise where the sky belongs, which is precisely
+the measured black bar of 2026-08-14. That failure mode exists **only because `decode()` reads those
+`mem[]` bytes and expands them into pixels.** Fill the sky instead of decoding it and there is no byte
+to misinterpret and no boundary error that can turn code into noise. Likewise a plotter whose address
+arithmetic wandered into the range would corrupt the running program on a BBC; on the Amiga the same
+write lands in a bitplane and is merely a wrong pixel.
+
+The one thing that genuinely does not move: **`mem[]` keeps its role as the program's address
+space.** Nothing here reclaims the frame-buffer region of `mem[]` or shrinks it to a display-sized
+buffer. Only the **drawing** moves out.
+
+⭐ And the free win that section 4 was really carrying survives intact, available today with no
+architecture change: **the decode does not need to convert the sky band at all.** It renders flat
+blue whatever the bytes say, so those ~63 of 208 display lines (~30% of the pass, ~75 ms) can be
+skipped for a boundary check. ⚠ The band boundary can cut mid-character-row and it moves with the
+hills, so take it from `m_plan`/`m_lineMode` — which `decode()` already builds — and not from a
+literal.
 
 ## 5. Validation — how this stays a faithful port
 
