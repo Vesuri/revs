@@ -88,7 +88,8 @@ OBJS     := $(C_OBJS) $(CXX_OBJS)
 TARGET   := build/revs
 
 .PHONY: all clean gen validate image runtime dashcode sweep endian-lint refloop refloop-keys \
-        mode7 mode7-fixture font sound sound-fixture sound-fixture-race
+        mode7 mode7-fixture font mos-font refloop-charset \
+        sound sound-fixture sound-fixture-race
 
 all: $(TARGET)
 
@@ -147,6 +148,20 @@ sound-fixture-race:
 # for why the cell is 8x10.  Checked in, so this is only needed when the layout changes.
 font:
 	python3 tools/gen_teletext_font.py
+
+# Regenerate the RACE VIEW's character generator — the OTHER font, the one OSWORD 10 returns.
+# ⚠ Unlike `font` above, these 96 glyphs are DRAWN rather than sourced: the MOS software font is
+# Acorn's copyrighted ROM with no standards document behind it.  Metrics match, letterforms are
+# ours.  Checked in; see tools/gen_mos_font.py.
+mos-font:
+	python3 tools/gen_mos_font.py
+
+# ⭐ Which character codes does the RACE VIEW actually ask the MOS for, and where do the glyphs
+# land?  Measures it on a real BBC in a real driving race — the input to mos-font above.
+# It records CODES and CELLS only, never the ROM's bitmaps.
+refloop-charset:
+	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs \
+	    --frames=$(FRAMES) --track=$(TRACK) --wing=$(WING) --drive --charset
 
 build:
 	mkdir -p build

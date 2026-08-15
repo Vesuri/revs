@@ -265,7 +265,8 @@ VASMFLAGS = -m68010 -Felf -quiet -x -no-opt -nowarn=62 $(EXTRA_VASMDEFS)
 # runtime cost.  `__attribute__((retain))` does NOT work here — it is ignored on this target.
 # Add a symbol here the moment you add a counter; `make probe-audit` enforces it on every link.
 PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCount g_brkPC \
-             g_mosUnknownCount g_mosUnknownEntry g_mosUnknownA g_mosCharDefCount \
+             g_mosUnknownCount g_mosUnknownEntry g_mosUnknownA \
+             g_mosCharDefCount g_mosCharDefOutOfRange g_mosCharDefLastBad \
              g_hwUnknownReads g_hwUnknownAddr g_ulaControl g_userT1LatchLo g_userT1LatchHi \
              g_badRegionCount g_badRegionEntry \
              g_screenFrontAddr g_screenCopperAddr g_screenBytes g_screenCopperWords \

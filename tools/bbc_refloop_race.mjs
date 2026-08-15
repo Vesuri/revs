@@ -121,6 +121,17 @@ const fillArg = opt("fill", null);
 // (irq1v_handler restores A from $FC, which only the MOS's entry ever writes), and the way to
 // find the rest is to measure the contract rather than read the handler and reason about it.
 const irqAbi = argv.includes("--irq-abi");
+// --charset : measure THE RACE VIEW'S BITMAP TEXT — which character codes the engine asks the
+// MOS for through OSWORD 10, and where each glyph lands.  `vdu_char_def` ($5092) has two arms
+// and this is the OTHER one from MODE 7's: $5096 stores the code in the OSWORD block at $62C3,
+// calls OSWORD 10 at $50A7, and plots the eight returned bytes into the frame buffer.  The port
+// has no MOS ROM and will not lift Acorn's font, so those 96 glyphs have to be DRAWN — and the
+// first thing to know is which of them are ever asked for.
+//
+// ⚠ THIS PROBE DELIBERATELY DOES NOT RECORD THE RETURNED BITMAPS, only the codes and the
+// positions — the same line tools/bbc_probe_mode7.mjs holds.  A "tmp-only" capture of the MOS
+// font would still be the ROM, and a fixture has a way of becoming a source.
+const charset = argv.includes("--charset");
 
 // ── negative INKEY -> jsbeeb keyboard matrix ──────────────────────────────────────────────
 function inkeyToColRow(b) {
@@ -426,6 +437,68 @@ if (irqAbi) {
     });
 }
 
+// ── the race view's bitmap character set, measured ────────────────────────────────────────
+const charStats = {
+    calls: 0,                 // times the bitmap arm ran
+    codes: new Map(),         // char code -> count
+    cells: new Set(),         // "col,row" the glyphs landed on
+    callers: new Map(),       // return address of the JSR $5092 -> count
+    modeFlag: new Set(),      // $64 as seen by the bitmap arm (must be < $80 every time)
+    // ⭐ $77 AT $50AA — the DOUBLE-WIDTH selector.  $509B zeroes it just before the OSWORD, so
+    // reading the code says it is always 0 and the nibble-expansion arm at $50AE is dead.  That
+    // is a reading, not a measurement, and the two halves of that arm are exactly a double-width
+    // renderer: `AND #$F0` keeps the glyph's LEFT four columns where they are, `ASL A` x4 lifts
+    // the RIGHT four into their place, so one glyph is plotted across TWO cells.  Whether it
+    // ever runs is a question only the machine can answer.
+    widthFlag: new Map(),     // $77 as seen at $50AA -> count
+    // ⚠ Attributing a MID-ENTRY to the last $5096 caller is a stale reading, not a measurement.
+    // Any address in $5092-$50AA reached from OUTSIDE that span is an entry point, so record
+    // the transition itself: (entry, whence) -> count.  A JSR from the $7B00 overlay is invisible
+    // to every static walk, because the overlay is BUILT at runtime (docs/static-map.md §10).
+    entries: new Map(),
+};
+if (charset) {
+    const CHAR_BMP = 0x5096;      // vdu_char_def's bitmap arm — A is the character code
+    const CHAR_EXP = 0x50aa;      // ...where it reads $77 and decides whether to half-expand
+    const CHAR_BLK = 0x62c3;      // the OSWORD 10 control block: [0]=code, [1..8]=bitmap
+    const CHAR_COL = 0x62cc;      // the cell column the glyph is plotted at
+    const CHAR_ROW = 0x62cd;      // ...and the frame-buffer scan line of its BOTTOM row
+    const WIDTH_FLAG = 0x77;
+    const SPAN_LO = 0x5092, SPAN_HI = 0x50aa;
+    let prevPC = 0;
+    tm.processor.debugInstruction.add((addr) => {
+        const inSpan = addr >= SPAN_LO && addr <= SPAN_HI;
+        const wasIn = prevPC >= SPAN_LO && prevPC <= SPAN_HI;
+        if (inSpan && !wasIn) {
+            const k = `${addr.toString(16)}<-${prevPC.toString(16)}`;
+            const e = charStats.entries.get(k) || { n: 0, w: new Set(), codes: new Set() };
+            e.n++;
+            e.w.add(rd(WIDTH_FLAG));
+            e.codes.add(rd(0x62c3));
+            charStats.entries.set(k, e);
+        }
+        prevPC = addr;
+        if (addr === CHAR_EXP) {
+            const w = rd(WIDTH_FLAG);
+            charStats.widthFlag.set(w, (charStats.widthFlag.get(w) || 0) + 1);
+            return false;
+        }
+        if (addr !== CHAR_BMP) return false;
+        const p = tm.processor;
+        charStats.calls++;
+        charStats.codes.set(p.a, (charStats.codes.get(p.a) || 0) + 1);
+        charStats.cells.add(`${rd(CHAR_COL)},${rd(CHAR_ROW)}`);
+        charStats.modeFlag.add(rd(0x64));
+        // Who prints?  The JSR that got here is still on the stack: S+1/S+2 hold the return
+        // address minus one.  Attributing the codes to a caller is what separates the lap-time
+        // readout from any other text the race view has.
+        const s = p.s;
+        const ret = ((rd(0x100 + ((s + 1) & 0xff)) | (rd(0x100 + ((s + 2) & 0xff)) << 8)) + 1) & 0xffff;
+        charStats.callers.set(ret, (charStats.callers.get(ret) || 0) + 1);
+        return false;
+    });
+}
+
 const ULA_CTRL = 0xfe20, ULA_PAL = 0xfe21;
 const bandFrames = []; // one entry per captured field: the writes and the line they landed on
 let curBand = null;
@@ -672,6 +745,56 @@ if (irqAbi) {
             : `CLOBBERED on ${n}/${s.engine} interrupts — the foreground cannot rely on it, ` +
               `and neither may the port`}`);
     for (const line of s.samples) console.log(`     e.g. ${line}`);
+}
+
+// ── the race view's character set, measured ───────────────────────────────────────────────
+if (charset) {
+    const c = charStats;
+    console.log(`\n⭐ THE RACE VIEW'S BITMAP TEXT — ${c.calls} calls to vdu_char_def's OSWORD 10 arm:`);
+    if (c.calls === 0) {
+        console.log("   NONE.  Either the run never reached the race view, or the text this");
+        console.log("   session draws is elsewhere — do not read a zero here as 'no font needed'.");
+    } else {
+        const codes = [...c.codes.entries()].sort((a, b) => a[0] - b[0]);
+        const glyph = (k) => (k >= 0x20 && k < 0x7f ? `'${String.fromCharCode(k)}'` : "   ");
+        console.log(`   ${codes.length} distinct codes, ${c.cells.size} distinct cells, ` +
+            `$64 seen as {${[...c.modeFlag].map((v) => "$" + v.toString(16)).join(",")}} ` +
+            `(the bitmap arm requires bit 7 clear)`);
+        let line = "   ";
+        for (const [k, n] of codes) {
+            line += `$${k.toString(16).padStart(2, "0")}${glyph(k)}x${String(n).padEnd(5)} `;
+            if (line.length > 90) { console.log(line); line = "   "; }
+        }
+        if (line.trim()) console.log(line);
+        const lo = Math.min(...codes.map((e) => e[0])), hi = Math.max(...codes.map((e) => e[0]));
+        console.log(`   range $${lo.toString(16)}..$${hi.toString(16)} — ` +
+            (lo >= 0x20 && hi <= 0x7f
+                ? "entirely inside printable ASCII, so a 96-glyph font is the whole job"
+                : "⚠ OUTSIDE printable ASCII: user-defined characters are in play too"));
+        const callers = [...c.callers.entries()].sort((a, b) => b[1] - a[1]);
+        console.log("   printed from:");
+        for (const [pc, n] of callers.slice(0, 8))
+            console.log(`     $${pc.toString(16).padStart(4, "0")}  x${n}`);
+        console.log("   every way INTO $5092-$50AA (entry <- whence), which is how a call that");
+        console.log("   skips $509B's `STA $77` shows itself:");
+        for (const [k, e] of [...c.entries.entries()].sort((a, b) => b[1].n - a[1].n)) {
+            const codes = [...e.codes].map((v) => "$" + v.toString(16)).join(",");
+            console.log(`     $${k}  x${String(e.n).padEnd(5)} ` +
+                `$77={${[...e.w].map((v) => "$" + v.toString(16)).join(",")}}  code={${codes}}`);
+        }
+        const wf = [...c.widthFlag.entries()].sort((a, b) => a[0] - b[0]);
+        console.log(`   ⭐ $77 at $50AA (the DOUBLE-WIDTH selector): ` +
+            wf.map(([v, n]) => `$${v.toString(16)} x${n}`).join("  "));
+        if (wf.length === 1 && wf[0][0] === 0) {
+            console.log("      only 0 — the nibble-expansion arm at $50AE never runs in this");
+            console.log("      session, so every glyph is plotted whole, one cell wide.");
+        } else {
+            console.log("      NONZERO VALUES OCCUR — $509B's `LDA #0 / STA $77` is NOT the last");
+            console.log("      word, so something writes $77 between it and $50AA, and the port");
+            console.log("      must reproduce whatever that is or double-width text comes out");
+            console.log("      single-width (or blank, when the half it wants is empty).");
+        }
+    }
 }
 
 // ── who filled those lines ────────────────────────────────────────────────────────────────
