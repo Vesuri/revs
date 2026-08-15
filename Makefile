@@ -88,7 +88,7 @@ OBJS     := $(C_OBJS) $(CXX_OBJS)
 TARGET   := build/revs
 
 .PHONY: all clean gen validate image runtime dashcode sweep endian-lint refloop refloop-keys \
-        mode7 mode7-fixture font mos-font refloop-charset \
+        mode7 mode7-fixture font mos-font refloop-charset track-patch \
         sound sound-fixture sound-fixture-race
 
 all: $(TARGET)
@@ -155,6 +155,14 @@ font:
 # ours.  Checked in; see tools/gen_mos_font.py.
 mos-font:
 	python3 tools/gen_mos_font.py
+
+# ⭐ What each expansion track PATCHES INTO THE ENGINE, by replaying its own ModifyGameCode
+# rather than pattern-matching it.  The port cannot run the patcher (engine code is C, not bytes
+# in mem[]), so it applies the replay's output as data at track-selection time.
+#   make track-patch                 the patch sets, and the SMC surface they imply
+#   make track-patch VERIFY=1        cross-check against the real-BBC differential
+track-patch:
+	python3 tools/track_patch.py $(if $(VERIFY),--verify,)
 
 # ⭐ Which character codes does the RACE VIEW actually ask the MOS for, and where do the glyphs
 # land?  Measures it on a real BBC in a real driving race — the input to mos-font above.
