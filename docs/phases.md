@@ -652,9 +652,32 @@ the window was wrong. (And the run before *that* reported nothing at all, becaus
 re-buffered the deliberately-unbuffered stderr — the same trap `docs/method-lessons.md` already
 carries, walked into again.)
 
+**✅ AND IT RUNS ON THE TARGET** (`make PROBES=1 STRAIGHT_TO_RACE=1 TRACK=1` +
+`GDBSCRIPT=track.gdb ./diag_run.sh 150`):
+
+```
+=== vbi=1878
+=== requested=1  installed=1
+=== requested circuit unhonoured bytes=0  first=$0000
+=== requested circuit hook bodies unbuilt=0  first=$0000
+=== hook calls=323  missing=0
+=== mem[$5300]=$01 mem[$5301]=$d1   mem[$1248]=$20 (patched circuits: $20)
+```
+
+⚠ Two things about that script, both learned the hard way:
+- **It used to sample at the FIRST render** (`tbreak Revs::render`), i.e. vbi≈38 — under a second in,
+  with the autorun script still pressing keys. It reported `hook calls=0` beside a flawless install,
+  which reads as a dead seam. It now skips 30 painted frames. Third instance this session of *the
+  window being the measurement*.
+- **`=== name at $7808` is only meaningful BEFORE the race.** `copy_dash_data` drops the dashboard
+  bitmap over `$70DB-$7813`, which contains `$7808`, so in-race it prints garbage — faithfully.
+  Moving the sampling point turned that line from evidence into noise; `mem[$5300]`/`mem[$5301]`
+  are the in-race block check that still holds.
+
 **What remains for Phase 5:**
 - **`CallTrackHook` (`$5A22`) dispatch** — one call, one target, and Silverstone supplies an `RTS`
-  stub, which is a far cleaner seam than the patch sites.
+  stub, which is a far cleaner seam than the patch sites.  Very likely already covered by the hook
+  seam; check rather than assume.
 - **The menu itself**, and embedding the blocks.
 
 ⚠ If a hook is ever reached with no body, `revs_track_hook()` counts it and traps through
