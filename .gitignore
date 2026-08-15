@@ -54,6 +54,10 @@ src/gen/revs_tracks.h
 # Same reasoning, more strongly: these hold the Nurburgring's own HOOK CODE, transliterated.
 src/gen/revs_track_hooks.c
 src/gen/revs_track_hooks.h
+# ⚠ SAME REASONING AGAIN, and it is easy to miss because this one lives outside src/gen/:
+# titlescreen.h is 1 KB of 5TRSCRN — Superior/Acornsoft's teletext title page — baked into a C
+# array.  Generated, never committed (`make titlescreen`, or any `make gen`).
+src/platform/titlescreen.h
 
 # Build output
 build/

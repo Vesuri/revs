@@ -120,6 +120,7 @@ TARGET   := build/revs
 .PHONY: all clean gen validate image runtime dashcode sweep endian-lint refloop refloop-keys \
         mode7 mode7-fixture font mos-font refloop-charset refloop-comp track-patch \
         tracks tracks-gen track-fixtures track-smc track-smc-check track-run \
+        trackmenu trackmenu-fixture titlescreen \
         sound sound-fixture sound-fixture-race
 
 all: $(TARGET)
@@ -148,6 +149,33 @@ mode7: $(MODE7_OBJS) | build
 mode7-fixture:
 	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_probe_mode7.mjs \
 	    --dump=../../tmp/mode7
+
+# ⭐ TRACK MENU validation — the port's circuit menu against the REAL REVSMEN, byte for byte.
+#   make trackmenu-fixture      record the real pages off jsbeeb (needs volta/node + revs.ssd)
+#   make trackmenu              paint them through the port and diff all six
+#   make trackmenu PPM=tmp/tm   ...and write each page as a PPM to look at
+#   make titlescreen            regenerate the embedded 5TRSCRN header (checked in)
+# The menu is PORT-AUTHORED — REVSMEN is BASIC and is not transliterated — so this is the only
+# screen in the game whose oracle has to be RECORDED rather than derived.  It is also the reason
+# `make mode7` reports the REVSMEN snapshots as SKIPPED: they are BASIC's work, and this is where
+# they get checked instead.  tools/validate_trackmenu.c has the scope note.
+TRACKMENU_OBJS := src/cpu/cpu.o src/platform/teletext.o src/platform/trackmenu.o \
+                  src/gen/revs_tracks.o tools/validate_trackmenu.o
+trackmenu: $(TRACKMENU_OBJS) | build
+	$(CXX) $(CXXFLAGS) -o build/validate_trackmenu $(TRACKMENU_OBJS)
+	./build/validate_trackmenu $(if $(PPM),--ppm=$(PPM),)
+
+trackmenu-fixture:
+	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_probe_trackmenu.mjs \
+	    --dump=../../tmp/trackmenu
+
+titlescreen: src/platform/titlescreen.h
+
+# ⚠ A FILE RULE, not just the phony above: trackmenu.c #includes this and it is git-ignored (it is
+# a kilobyte of the disc), so a fresh clone must be able to produce it on demand rather than fail
+# with a missing-header error that says nothing about revs.ssd.
+src/platform/titlescreen.h: revs.ssd tools/gen_titlescreen.py tools/ssd_map.py
+	python3 tools/gen_titlescreen.py revs.ssd $@
 
 # ⭐ SOUND validation — the port's MOS sound scheduler against a REAL BBC, tick for tick.
 #   make sound                     replay both fixtures through src/platform/sound.c
@@ -337,6 +365,8 @@ gen:
 	REVS_DASHCODE=$(if $(DASHCODE),$(DASHCODE),1) python3 tools/transpile.py
 	@$(MAKE) --no-print-directory tracks-gen   # ⚠ AFTER: gen_tracks.py needs revs_smc_bytes.h's
 	                                           # sibling outputs to exist for a from-scratch clone
+	@$(MAKE) --no-print-directory titlescreen  # the front end's 5TRSCRN page (git-ignored: it is
+	                                           # a kilobyte of the disc, like revs_tracks.c)
 
 # Rebuild the post-load memory image from the disc.
 #   make image              -> the default circuit (SILVER)
