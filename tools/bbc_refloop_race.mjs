@@ -136,6 +136,15 @@ const charset = argv.includes("--charset");
 // of 19 other cars in it.  Practice runs the player alone, so it is structurally incapable of
 // showing whether competitor-car rendering works — a clean practice frame is not evidence.
 const competition = argv.includes("--competition");
+// --park : start the engine, engage first gear, and then TOUCH NOTHING — no throttle, no
+// steering — before rendering the frames and dumping.  ⭐ This exists so a dump can be compared
+// with the port's, because `src/platform/autorun.cpp` parks in exactly this state (measured with
+// amiga/dash_state.gdb: $61=$FF, $40=2, $63=0, $3C=$28).  ⚠ Plain --drive holds the throttle and
+// steers, so its dump is taken at speed on a moving car: comparing it against a parked target is
+// comparing two different scenes, which is the trap this project has paid for more than once.
+// The dashboard is the reason it matters — a needle is a function of $3C, so the two machines
+// have to be at the same $3C before a pixel diff of the dial means anything.
+const park = argv.includes("--park");
 
 // ── negative INKEY -> jsbeeb keyboard matrix ──────────────────────────────────────────────
 function inkeyToColRow(b) {
@@ -404,6 +413,27 @@ if (fillArg) {
 // and compare A/X/Y again when execution arrives back there.  Whatever fails to match is a
 // register the foreground must not rely on across an interrupt — and therefore a register the
 // port's shim must treat exactly the same way.
+// ⭐⭐ --force-revs=NN : PIN $003C to NN at the instant the rev-counter needle reads it, so the
+// real 6502 draws the dial for a rev value WE choose.  This exists because "the port's needle is
+// wrong" and "the port's rev VALUE is wrong" produce the same wrong picture, and the only way to
+// separate them is to put both machines at the same $3C and diff the pixels.  Pinning the value
+// where the DRAWING reads it ($51AC, `LDA $3C` at the top of the needle routine) rather than
+// poking it periodically is what makes the sample exact: the engine rewrites $3C every body
+// frame, so a poke between frames is a race the dial usually wins.
+// ⚠ It deliberately does NOT stop the engine recomputing $3C — the physics stays untouched and
+// only the dial's own input is substituted, so nothing else in the picture is perturbed.
+const forceRevs = opt("force-revs", null);
+if (forceRevs !== null) {
+    const v = Number(forceRevs) & 0xff;
+    const DIAL_READ = 0x51ac;
+    let pinned = 0;
+    tm.processor.debugInstruction.add((addr) => {
+        if (addr === DIAL_READ) { tm.processor.writemem(0x3c, v); pinned++; }
+        return false;
+    });
+    process.on("exit", () => console.log(`   --force-revs=$${v.toString(16)}: pinned at $51AC ${pinned}x`));
+}
+
 const irqStats = { taken: 0, engine: 0, aBad: 0, xBad: 0, yBad: 0, pBad: 0, samples: [] };
 let irqPending = null;
 if (irqAbi) {
@@ -798,6 +828,14 @@ if (drive) {
         "'Q' held but the gear at $40 never changed", 4 * CPS);
     console.log(`   first gear: $40 ${gear0} -> ${rd(0x40)} ${geared ? "✓" : "✗"}`);
     dashRow("engine on, first gear, no throttle");
+    if (park) {
+        // ⭐ Stop here, matching the port's parked autorun state.  Let the idle settle for a
+        // second so the sample and the dump describe the same steady state rather than the
+        // frame the gear change landed on.
+        await tm.runFor(CPS);
+        dashRow("PARKED (--park: nothing held)");
+    }
+    if (!park) {
     tm.processor.sysvia.keyDownRaw(utils.BBC.S); // hold the throttle down from here
     await tm.runFor(CPS);
     dashRow("throttle held");
@@ -815,6 +853,7 @@ if (drive) {
         await tm.runFor(CPS / 2);
     }
     dashRow("throttle, steering released");
+    }
 }
 
 const f0 = frames;

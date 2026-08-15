@@ -171,6 +171,26 @@ SMC_SITES = {
     # routine is switched between "compare and continue" and "return immediately".
     0x2FC0: {'kind': 'opcode', 'values': {0xE0: 'CPX', 0x60: 'RTS'}, 'from': ['$2CAF', '$2CB9']},
     0x2FD7: {'kind': 'opcode', 'values': {0xE0: 'CPX', 0x60: 'RTS'}, 'from': ['$2CAC', '$2CB6']},
+    # ⭐⭐ THE DIAL NEEDLE'S OCTANT — the line plotter $5204 steps along its major and minor
+    # axes through TWO patched opcode slots, and the octant index $76 (0-7) is what chooses
+    # them.  $5209 stores $3B86,X into $5220 and $520F stores $3B8E,X into $529B, so the
+    # needle's DIRECTION is not in the code at all; it is in two 8-byte tables.
+    #
+    # The values are read out of disasm/revs_runtime.bin, not assumed — all four step
+    # opcodes appear in each table, and every octant gets one of each axis:
+    #   $3B86 (-> $5220):  INX DEY INY INX DEX INY DEY DEX
+    #   $3B8E (-> $529B):  DEY INX INX INY INY DEX DEX DEY
+    #
+    # ⚠⚠ WHAT UNDECLARED LOOKED LIKE.  The static image holds INY at $5220 and INX at $529B
+    # — which is octant 2's pair — so a frozen transliteration draws EVERY line as octant 2.
+    # It does not crash, it does not blank, and it is not visible in any mem[] diff of the
+    # engine: the rev counter simply pointed at "9-10" where a real BBC pointed at "2-3",
+    # mirrored about the dial's vertical axis, for the SAME $3C.  Measured both ways with
+    # `make refloop --park --force-revs=40` against amiga/screen_dump.gdb, 2026-08-16.
+    0x5220: {'kind': 'opcode', 'values': {0xC8: 'INY', 0x88: 'DEY', 0xE8: 'INX', 0xCA: 'DEX'},
+             'from': ['$5209']},
+    0x529B: {'kind': 'opcode', 'values': {0xC8: 'INY', 0x88: 'DEY', 0xE8: 'INX', 0xCA: 'DEX'},
+             'from': ['$520F']},
 
     # --- 'branch': patched branch offset, so the target varies ---------------
     # $1DD4  BNE — offset at $1DD5 rewritten from $1DA9 (STY), so the target is a
