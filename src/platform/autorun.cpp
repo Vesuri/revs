@@ -9,6 +9,10 @@ enum : uint8_t {
     KEY_NONE  = 0x00,
     KEY_SPACE = 0x9D,   /* -99  menu confirm; in the driving loop, amplify steering */
     KEY_1     = 0xCF,   /* -49  menu option 1 */
+    KEY_2     = 0xCE,   /* -50  menu option 2 — menu_key_tbl[2].  Derived the same way as
+                           KEY_1 and cross-checked on a real BBC: the refloop reports the
+                           engine polling [col 1, row 3] for option 2, internal key number
+                           (3<<4)|1 = 49, and a negative INKEY byte is 255 - internal. */
     KEY_S     = 0xAE,   /* -82  throttle   ($1660) */
     KEY_A     = 0xBE,   /* -66  brake      ($166D) */
     KEY_TAB   = 0x9F,   /* -97  gear down  ($16A5) */
@@ -44,7 +48,58 @@ struct AutoStep {
   #define AUTORUN_HOLD_THROTTLE 0
 #endif
 
-#if defined(REVS_STRAIGHT_TO_RACE)
+#if defined(REVS_COMPETITION)
+
+/* ⭐ STRAIGHT TO A COMPETITION RACE — the session that has a FIELD OF CARS in it.
+ *
+ * Why this exists as its own script rather than a flag on the one below: PRACTICE runs the
+ * player alone on the circuit, so it is structurally incapable of showing whether competitor-car
+ * rendering works.  A clean practice frame is not evidence about the other nineteen cars, and
+ * every measurement this port has taken so far was a practice frame.
+ *
+ * The COMPETITION branch is the long arm of front_end_menus ($640A onwards).  Driven on a real
+ * BBC by `make refloop-comp`, it asks, in order:
+ *
+ *     $63F7  X=2   1 PRACTICE / 2 COMPETITION            -> 2
+ *     $6416  X=3   SELECT THE CLASS OF RACE              -> 1  (Novice)
+ *     $6426  X=3   DURATION OF QUALIFYING LAPS           -> 1  (5 mins)
+ *            —     ENTER NAME OF DRIVER (console_io)     -> no key: see below
+ *            —     WING SETTINGS, rear then front        -> no key: see below
+ *
+ * ⚠ THE TWO LINE-EDITOR PROMPTS NEED NO KEYS HERE, and that is a property of the PORT, not of
+ * the game: both read through OSRDCH, and Platform::rdch() returns CR — an immediate
+ * end-of-line.  The name comes out empty and the wings take the validator's default.  On the
+ * real BBC those same prompts had to be typed, which is why the reference loop grew answerName()
+ * and answerNumber() and this script did not.  If rdch() ever starts returning real characters,
+ * this script wedges at the name prompt and that is the first place to look.
+ *
+ * The result is $5F3B = $4 rather than practice's $FF — measured on a real BBC, and the cheapest
+ * single check that this script took the branch it thinks it did.
+ */
+static const AutoStep s_script[] = {
+    {KEY_2,     600, 2}, /* 1 PRACTICE / 2 COMPETITION -> COMPETITION                    */
+    {KEY_NONE,  4,   0}, /* release: menu_wait_key scans high-to-low and stops at the
+                            first key HELD, so a held '2' masks everything below it      */
+    {KEY_SPACE, 600, 2},
+    {KEY_NONE,  4,   0},
+    {KEY_1,     600, 2}, /* SELECT THE CLASS OF RACE -> Novice                           */
+    {KEY_NONE,  4,   0},
+    {KEY_SPACE, 600, 2},
+    {KEY_NONE,  4,   0},
+    {KEY_1,     600, 2}, /* DURATION OF QUALIFYING LAPS -> 5 mins                        */
+    {KEY_NONE,  4,   0},
+    {KEY_SPACE, 600, 2},
+    {KEY_NONE,  4,   0},
+    /* ...name and wings answer themselves through rdch().  Then the pits page. */
+    {KEY_SPACE, 900, 2},
+    {KEY_NONE,  4,   0},
+    {KEY_T,     400, 1}, /* starter — one hit is the whole job ($4978 stops polling)     */
+    {KEY_NONE,  2,   0},
+    {KEY_Q,     400, 1}, /* first gear, or the "race" is a parked car                    */
+    {KEY_NONE,  2,   0},
+};
+
+#elif defined(REVS_STRAIGHT_TO_RACE)
 
 /* ⭐ STRAIGHT TO RACE — and it skips NO game code at all.
  *

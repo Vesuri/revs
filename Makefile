@@ -51,6 +51,14 @@ CFLAGS   += -DREVS_STRAIGHT_TO_RACE
 CXXFLAGS += -DREVS_STRAIGHT_TO_RACE
 endif
 
+# `make COMPETITION=1` — the COMPETITION branch instead of practice, so the session has a FIELD
+# of other cars in it and competitor-car rendering finally has a stimulus (amiga/Makefile has the
+# full rationale; src/platform/autorun.cpp has the menu chain).  Same `make clean` caveat.
+ifdef COMPETITION
+CFLAGS   += -DREVS_COMPETITION
+CXXFLAGS += -DREVS_COMPETITION
+endif
+
 # `make STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` — hold the throttle past the end of the script, so
 # the host runs a MOVING car.  ⚠ Without it the script hands the keyboard back and the host
 # sits parked in gear, which is a DIFFERENT SCENE from an Amiga FPSCOUNT/PROBES build (those
@@ -88,7 +96,7 @@ OBJS     := $(C_OBJS) $(CXX_OBJS)
 TARGET   := build/revs
 
 .PHONY: all clean gen validate image runtime dashcode sweep endian-lint refloop refloop-keys \
-        mode7 mode7-fixture font mos-font refloop-charset track-patch \
+        mode7 mode7-fixture font mos-font refloop-charset refloop-comp track-patch \
         sound sound-fixture sound-fixture-race
 
 all: $(TARGET)
@@ -167,6 +175,13 @@ track-patch:
 # ⭐ Which character codes does the RACE VIEW actually ask the MOS for, and where do the glyphs
 # land?  Measures it on a real BBC in a real driving race — the input to mos-font above.
 # It records CODES and CELLS only, never the ROM's bitmaps.
+# ⭐ A real BBC in a COMPETITION race — the session with a FIELD of other cars.  Practice runs
+# the player alone, so it cannot answer "does competitor-car rendering work"; this can.
+refloop-comp:
+	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs \
+	    --frames=$(FRAMES) --track=$(TRACK) --wing=$(WING) --drive --competition \
+	    --dump=tmp/bbccomp
+
 refloop-charset:
 	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs \
 	    --frames=$(FRAMES) --track=$(TRACK) --wing=$(WING) --drive --charset

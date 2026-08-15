@@ -132,6 +132,10 @@ const irqAbi = argv.includes("--irq-abi");
 // positions — the same line tools/bbc_probe_mode7.mjs holds.  A "tmp-only" capture of the MOS
 // font would still be the ROM, and a fixture has a way of becoming a source.
 const charset = argv.includes("--charset");
+// --competition : take the COMPETITION branch instead of PRACTICE, so the session has a FIELD
+// of 19 other cars in it.  Practice runs the player alone, so it is structurally incapable of
+// showing whether competitor-car rendering works — a clean practice frame is not evidence.
+const competition = argv.includes("--competition");
 
 // ── negative INKEY -> jsbeeb keyboard matrix ──────────────────────────────────────────────
 function inkeyToColRow(b) {
@@ -589,6 +593,35 @@ async function answerNumber(text, why) {
     return true;
 }
 
+// ⭐ Answer the DRIVER-NAME line editor — the competition branch's third prompt, and the one
+// that has no numeric validator behind it.
+//
+// ⚠ It is NOT the same prompt shape as the wing settings, and treating it as one is what
+// stalled the first competition run: the wing editor is $3EE0 (read + VALIDATE), so `numAsks`
+// counts it and `numValidations` says when RETURN landed.  The name goes straight through
+// console_io ($6300) with no validator at all, so BOTH of those counters stay flat, the pump
+// falls through to its `hold(SPACE)` arm forever, and the transcript fills with the echo of
+// whatever key the fallback happens to be holding.  Detect it from the TEXT the engine printed
+// and complete it on `console_io RETURNING`, which is the only event that actually means the
+// line was taken.
+async function answerName(text, why) {
+    console.log(`  -> type "${text}" (${why})`);
+    const LETTER = { R: utils.BBC.R, E: utils.BBC.E, V: utils.BBC.V, S: utils.BBC.S };
+    for (const ch of text) {
+        const c0 = charsStored;
+        if (!LETTER[ch]) throw new Error(`no key mapping for '${ch}'`);
+        if (!(await holdUntil(LETTER[ch], () => charsStored > c0,
+                              `letter '${ch}' was never stored by console_io`)))
+            return false;
+    }
+    // console_io's caller moves on as soon as the line is entered, and the next thing the front
+    // end does is print.  A new transcript message is therefore the completion signal; the
+    // character counter is not, because it stops moving on a rejected key too.
+    const t0 = transcript.length, m0 = menuEntries;
+    return holdUntil(utils.BBC.RETURN, () => transcript.length > t0 || menuEntries > m0,
+                     "RETURN never ended the name line");
+}
+
 // ── boot ──────────────────────────────────────────────────────────────────────────────────
 const SPACE = utils.BBC.SPACE;
 await tm.runUntilInput(20);
@@ -619,21 +652,39 @@ console.log(`REVS2 loaded (track ${track}); driving the front end by transcript\
 const deadline = 180 * CPS;
 let spent = 0;
 let wingsAsked = 0;
+let nameAsked = false;
 while (spent < deadline && frames === 0) {
     const e0 = menuEntries, a0 = numAsks;
     await tm.runFor(400000);
     spent += 400000;
 
-    for (const t of transcript.splice(0))
+    for (const t of transcript.splice(0)) {
         if (t.msg !== MSG_SPACEBAR) console.log(`  [$${t.msg.toString(16).padStart(2, "0")}] ${t.text}`);
+        // ⚠ Match with \s* between the words, not a literal space.  print_message's token/space
+        // encoding emits this prompt as "ENTERNAME OFDRIVER" — the spaces fall where the tokens
+        // do, not where English puts them, so /ENTER NAME/ never fires and the pump falls
+        // through to its SPACE arm until the deadline.  Measured, not assumed.
+        if (/NAME\s*OF\s*DRIVER/i.test(t.text)) nameAsked = true;
+    }
 
-    if (numAsks > a0 || (rdchHits > 0 && numValidations < numAsks)) {
+    if (nameAsked) {
+        nameAsked = false;
+        if (!(await answerName("REVS", "driver name"))) break;
+        spent += 2 * CPS;
+    } else if (numAsks > a0 || (rdchHits > 0 && numValidations < numAsks)) {
         // The numeric line editor is open.  On the practice path this is the wing settings,
         // rear then front.
         if (!(await answerNumber(wing, `wing setting ${++wingsAsked === 1 ? "rear" : "front"}`))) break;
         spent += 2 * CPS;
     } else if (menuEntries > e0 || (menuPolls > 0 && menuAnswers < menuEntries)) {
-        if (!(await answerMenu(1, "take the first option"))) break;
+        // ⭐ --competition takes option 2 at the FIRST menu only ($63F7, message $27,
+        // `1 PRACTICE 2 COMPETITION`).  Everything after it is the competition branch's own
+        // chain — class, qualifying duration, driver names — and the first option is a fine
+        // answer to each; what matters is that the session has a FIELD OF CARS in it, which
+        // practice does not, so competitor-car rendering has a stimulus at all.
+        const wantTwo = competition && menuAnswers === 0;
+        if (!(await answerMenu(wantTwo ? 2 : 1,
+                               wantTwo ? "COMPETITION" : "take the first option"))) break;
         spent += 2 * CPS;
     } else {
         await hold(SPACE, 60000); // a "PRESS SPACE BAR TO CONTINUE" page ($34D0)
@@ -650,6 +701,46 @@ if (frames === 0) {
 } else {
     console.log(`\n⭐ RACING.  session=$655A entered ${sessionEntries}x, menu choices [${answered}], ` +
         `wings entered ${numValidations}`);
+    // ⭐ $0003 — the FIELD-WALK TERMINATOR, and worth printing on every run.
+    // check_car_pair ($2692) starts at `LDX $03` and loops `car_index_inc / CPX $03 / BNE`
+    // ($2797), so it walks all 20 cars and stops when the index wraps back to $03.
+    // car_index_inc wraps 19->0, so a value outside 0..19 here NEVER matches and the loop spins
+    // forever.  The port hung there in its first competition race with $03 = $FF: zero page is
+    // exactly what revs_mem.bin does not model (the real MOS/BASIC leaves it populated), so this
+    // is the ground truth for what the cell should hold.  $2637's `LDA $5F3B / BMI` is why
+    // practice never reaches any of it.
+    console.log(`   ⭐ $0003 (check_car_pair's field-walk terminator) = ` +
+        `$${rd(0x0003).toString(16).padStart(2, "0")} (${rd(0x0003)})` +
+        (rd(0x0003) < 20 ? "  — a valid car index, so the walk terminates"
+                         : "  ⚠ NOT a valid car index (0..19)"));
+    // ...and the array it walks.  find_player_neighbours ($63A2) searches car_order for the
+    // player's index ($6F) and falls out with X = $FF when it is not there, which is how $0003
+    // becomes an impossible terminator.  So print both: a car_order that is not a permutation of
+    // 0..19 is the upstream fault, and $0003 is only the symptom.
+    // ⚠⚠ AND THE 6502 STACK POINTER, because car_order lives in PAGE ONE.
+    // $0100-$019F holds eight 20-entry per-car arrays ($0100 $0114 $0128 $013C $0150 $0164
+    // $0178 $018C) — i.e. the game deliberately uses the BOTTOM of the stack page as data, on
+    // the assumption that S never descends that far.  So S is a correctness invariant, not a
+    // curiosity: the moment it drops below $9F a PHA/PHP lands in car_order and the field is
+    // silently corrupted.  The port was measured at S = $B8 and falling, with ASCII ('0','1','2')
+    // sitting in car_order — pushed characters, exactly what that failure looks like.
+    // engine_init ($386D `TSX / STX $6B`) saves S and $3275 (`TXS`) restores it, which is the
+    // mechanism that is supposed to keep this bounded.
+    // $6B is engine_init's own saved copy ($386D `TSX / STX $6B`), i.e. the S the MOS handed the
+    // engine — which is the value the port has to START at.  Nothing in the game sets S up; it
+    // INHERITS it, and `mem[]` built from the disc does not model that (docs/bbc-reference-loop.md
+    // on provisional zero page).
+    console.log(`   ⭐ entry S saved at $6B = $${rd(0x6b).toString(16)} ` +
+        "— what the MOS handed the engine, i.e. what cpu.S must be initialised to");
+    console.log(`   ⭐ 6502 S = $${tm.processor.s.toString(16)} ` +
+        `(pushes land at $${(0x100 + tm.processor.s).toString(16)}; ` +
+        `page-1 car arrays end at $019F — S must stay ABOVE $9F)`);
+    const order = Array.from({ length: 20 }, (_, i) => rd(0x013c + i));
+    const perm = new Set(order).size === 20 && order.every((v) => v < 20);
+    console.log(`   car_order $013C = [${order.join(" ")}]`);
+    console.log(`   player $6F = ${rd(0x6f)}; car_order is ` +
+        (perm ? "a permutation of 0..19 ✓" : "⚠ NOT a permutation of 0..19") +
+        `, player ${order.includes(rd(0x6f)) ? "IS" : "is NOT"} in it`);
     const rear = rd(0x5f3e), front = rd(0x5f3d);
     console.log(`   $5F3B (practice flag) = $${rd(0x5f3b).toString(16)}  ` +
         `rear wing $5F3E = ${rear}  front wing $5F3D = ${front}`);

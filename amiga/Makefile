@@ -149,6 +149,16 @@ ifdef STRAIGHT_TO_RACE
 EXTRA_DEFINES += -DREVS_STRAIGHT_TO_RACE
 endif
 
+# ⭐ `make COMPETITION=1` — boot into a COMPETITION race instead of a practice session, i.e. the
+# one that puts a FIELD OF NINETEEN OTHER CARS on the circuit.  Practice runs the player alone,
+# so every frame this port has ever measured is structurally silent about competitor-car
+# rendering; this is the build that has a stimulus for it.  src/platform/autorun.cpp has the menu
+# chain.  ⚠ Takes precedence over STRAIGHT_TO_RACE in autorun.cpp (it is the first #if arm), and
+# like every other script flag it needs `make clean` when toggled.
+ifdef COMPETITION
+EXTRA_DEFINES += -DREVS_COMPETITION
+endif
+
 # `make HOLD_THROTTLE=1` — keep the throttle held after the script ends instead of handing the
 # keyboard over.  FPSCOUNT and PROBES do this implicitly; this flag is for a diagnostic build that
 # wants neither.  ⚠ It matters more than it looks: with the keyboard handed over the car is PARKED
@@ -274,6 +284,7 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_bandCount g_bandOverflow g_keyUnmapped g_keyUnmappedCode g_keyEvents g_keyDown \
              g_irqClobberCount g_irqClobberWhich \
              g_irqUnwindPending g_irqUnwindTouched g_irqStackImbalance \
+             g_stackLow g_stackTrespass \
              g_beamPresentLine g_beamPresentMin g_beamPresentMax \
              g_beamPresents g_beamPresentsLate g_beamEntryLine g_beamEntries g_beamEntriesLate \
              g_bodyTicksDropped g_bodyDrains g_bodyTicks g_bodyPending \
