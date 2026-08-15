@@ -230,6 +230,35 @@ graphics.library's queue handler doing nothing for you (measured ~6 per render i
 ~52 µs).  Save `INTENAR`, mask `INTF_BLIT`, drop any latched request, and restore verbatim on
 exit (the OS needs it back for QBlit).
 
+### ⭐⭐ The ISR must not see a HALF-BUILT scene — and a non-null pointer is not "built"
+**Measured 2026-08-15, and it presented as a black screen that looked exactly like a hang.**
+The VERTB vector is taken over ~40 lines *before* `scene.initialize()` runs, so the handler is
+already firing at 50 Hz while the scene is being constructed — and construction is full of OS
+calls (`AllocMem` for ~50 KB of chip RAM, `OpenResource`, `AddICRVector`) that comfortably span
+a vblank.  `RevsScreen::initialize()` assigns `m_copper` / `m_ttCopper` / `m_ttBitmap` the
+instant each allocation returns, ~40 lines before it fills either copper list in.  A VERTB
+landing in that window ran `applyMode()`, found the machine in MODE 7, **latched
+`m_ttOnScreen = 1` and installed the still-empty teletext list**.  `initialize()` then finished
+by writing the race list and installing it with its four pens deliberately black — and because
+the latch was already set, `applyMode()` never switched again for the rest of the run.
+
+Two things make this expensive to find, and both are the lesson:
+- **`if (!m_copper) return;` reads like the guard for exactly this and is not.** A non-null
+  pointer means the allocation returned, nothing more.  The guard has to be a flag set on the
+  LAST line of `initialize()` (`m_built`), so every early `return` leaves it clear.
+- **Every probe read healthy.** The teletext page in `mem[]` was byte-correct, `mode7=1`,
+  `planes=3`, `height=250`, `ttAllocFailed=0`, `unknown=0`.  What gave it away was that the
+  probe set was INCOHERENT rather than wrong: `g_screenBytes`/`g_screenCopperAddr`/
+  `g_screenFrontAddr` held race-view values (16640 / `m_copper` / `m_bitmap[0]`) while
+  `planes`/`height`/`mode7` held teletext ones — i.e. two writers had interleaved.  A probe dump
+  is worth cross-checking for internal consistency, not just for plausible individual values.
+  (`g_ttModeDisagree` also read 9, which was the one honest complaint in the set; it is 0 now.)
+
+The fix is at the platform layer — publish `s_scene`/`s_platform` to the ISR only after BOTH
+`scene.initialize()` and `input.initialize()` — with the `m_built` flag as the structural guard
+so a future reordering cannot reintroduce it.  Reordering *inside* `initialize()` is not a fix:
+"allocate, then build" is unavoidable.
+
 ### Don't take over PORTS (level 2)
 Tried and rejected on RoF: the chain is `ciaa.resource` plus FS-UAE's host-filesystem trap
 server, and starving that trap server makes FS-UAE **reset the machine**.  Measured cost of

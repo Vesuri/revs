@@ -318,14 +318,35 @@ void PlatformAmiga::run()
     // (COP1LC = ours) with the copper halted, so there is no race.
     loadImage(0);
 
-    s_scene = &scene;
-    s_platform = this;
     scene.initialize();
 
     // Real input.  ⚠ AFTER the display takeover and BEFORE Forbid(): OpenResource and the
     // AddICRVector dance are OS calls, and the ICR vector must be ours before the game
     // starts asking which keys are held.
     input.initialize();
+
+    // ⭐⭐ PUBLISH THE SCENE TO THE ISR ONLY ONCE IT IS BUILT — and that means AFTER both
+    // initialize() calls, not before them.  The VERTB vector was taken over ~40 lines above,
+    // so the handler is already firing at 50 Hz while these run, and both of them make OS
+    // calls (AllocMem for ~50 KB of chip RAM, OpenResource, AddICRVector) that comfortably
+    // span a vblank.
+    //
+    // THE BUG THIS FIXES (measured 2026-08-15, and it was the black screen).  RevsScreen::
+    // initialize() assigns m_copper / m_ttCopper / m_ttBitmap the instant each allocation
+    // returns, ~40 lines before it fills either list in.  A VERTB landing in that window ran
+    // vbiUpdate() -> applyMode(), which found tt_active() true, LATCHED m_ttOnScreen = 1 and
+    // installed the still-empty MODE 7 list.  initialize() then finished by writing the RACE
+    // list and installing it (Revs::initialize) with its four pens deliberately black — and
+    // because m_ttOnScreen was already 1, applyMode() never switched again for the whole run.
+    // The target sat on a 2-bitplane race list with an all-black palette while every MODE 7
+    // probe read healthy: page correct, planes=3, height=250, mode7=1, ttAllocFailed=0.
+    // Symptom: a black screen that looks exactly like a hang.
+    //
+    // ⚠ Not fixed by reordering inside initialize(): "allocate, then build" is unavoidable,
+    // so the only durable rule is that the ISR cannot see a half-built scene at all.
+    // RevsScreen::vbiUpdate() carries the matching guard on its own side.
+    s_scene = &scene;
+    s_platform = this;
 
     // Our list is installed and the constant registers are set — safe to start display
     // DMA.  The copper restarts from COP1LC (ours) at the next vblank.

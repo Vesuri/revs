@@ -108,6 +108,13 @@ private:
        initialisation is not constant makes the compiler emit __cxa_guard_acquire, which
        does not exist here (the link fails).  Static storage is zero-initialised, and
        initialize() sets everything that must not start at zero. */
+    /* ⭐ SET LAST BY initialize(), AND THE ONLY THING vbiUpdate() MAY TRUST.  A non-null
+       m_copper means "the object exists", not "the list has been written" — initialize()
+       allocates ~40 lines before it fills either list in, and the VERTB handler is already
+       running at 50 Hz by then.  A VERTB in that window used to install an EMPTY MODE 7 list
+       and latch m_ttOnScreen, which is what left the target on an all-black race list for a
+       whole run (PlatformAmiga::run has the full write-up). */
+    unsigned char m_built;
     Bitmap*     m_bitmap[2];
     CopperList* m_copper;
     /* MODE 7's own pair.  ⚠ SINGLE-buffered, deliberately: the page is static between

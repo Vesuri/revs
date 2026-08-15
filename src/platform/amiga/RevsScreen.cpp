@@ -452,6 +452,12 @@ void RevsScreen::initialize()
     uint32_t* d = m_copper->data();
     for (unsigned pen = 0; pen < 4; pen++)
         d[IDX_TOPPAL + pen] = copperMove(color00 + (pen << 1), 0x000);
+
+    /* ⭐ LAST LINE OF THE FUNCTION, deliberately: this is what opens the scene to the VERTB
+       handler (see m_built in the header, and PlatformAmiga::run for the black screen it
+       cost).  Every early `return` above therefore leaves it clear, which is right — a scene
+       that failed to allocate must not be driven either. */
+    m_built = 1;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════════════════
@@ -786,7 +792,9 @@ void RevsScreen::vbiUpdate()
 #ifdef REVS_SCREEN_NO_BANDS
     return;
 #endif
-    if (!m_copper) return;
+    /* ⚠ m_built, NOT m_copper: a non-null pointer only means the allocation returned, and
+       initialize() fills both lists in long after that.  See the header. */
+    if (!m_built || !m_copper) return;
 
     /* ⭐ THE MODE SWITCH GOES FIRST, before anything reads m_ready or touches a list.  A switch
        returns immediately: the band schedule below belongs to the race list, and rebuilding it
