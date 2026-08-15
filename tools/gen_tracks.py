@@ -43,6 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from relocate import relocate            # noqa: E402
 from ssd_load import read_catalogue      # noqa: E402
 from track_patch import Patcher, HOOK, TRACK_LO, TRACK_HI, ENGINE_LO, ENGINE_HI  # noqa: E402
+from track_smc import hook_targets, extent_rows                                  # noqa: E402
 
 BLOCK_LO, BLOCK_HI = 0x5300, 0x5A26      # [lo, hi)
 TAIL_LO,  TAIL_HI  = 0x7800, 0x78AB      # [lo, hi)  — see the header note on the bound
@@ -96,6 +97,7 @@ def patch_list(mem):
 
 def collect():
     out = []
+    rows = extent_rows()
     for ssd, dfs, disp in CIRCUITS:
         if not os.path.exists(ssd):
             print(f"# note: {ssd} not present — skipping {disp} "
@@ -105,7 +107,13 @@ def collect():
         block = bytes(img[BLOCK_LO:BLOCK_HI])
         tail = bytes(img[TAIL_LO:TAIL_HI])
         patches = patch_list(runtime_image(ssd, dfs))    # fresh image: patch_list mutates
-        out.append(dict(dfs=dfs, disp=disp, block=block, tail=tail, patches=patches))
+        # ⭐ The circuit's HOOK ENTRIES — the track-window addresses its patched JSR/JMPs call.
+        # Installing the patch bytes is half the job; something has to be at the other end, and
+        # a circuit whose hooks have no C bodies must be REFUSED rather than run into a trap
+        # mid-race.  Derived by decoding the patched extents (tools/track_smc.py hook_targets).
+        hooks = hook_targets(bytes(img), dict(patches), rows)
+        out.append(dict(dfs=dfs, disp=disp, block=block, tail=tail, patches=patches,
+                        hooks=hooks))
     return out
 
 
@@ -141,10 +149,14 @@ def emit(tracks):
             parts.append(f"static const unsigned char  pv{i}[{len(t['patches'])}] = {{{vals}}};")
         else:
             parts.append(f"/* {t['disp']} is PASSIVE — $5A22 is RTS, the engine is not patched. */")
+        if t["hooks"]:
+            hk = "".join(f"0x{a:04X}," for a in t["hooks"])
+            parts.append(f"static const unsigned short hk{i}[{len(t['hooks'])}] = {{{hk}}};")
     parts.append(f"\nconst RevsTrack revs_tracks[REVS_TRACK_COUNT] = {{")
     for i, t in enumerate(tracks):
         pa = f"pa{i}, pv{i}, {len(t['patches'])}" if t["patches"] else "0, 0, 0"
-        parts.append(f'    {{ "{t["disp"]}", blk{i}, tail{i}, {pa} }},')
+        hk = f"hk{i}, {len(t['hooks'])}" if t["hooks"] else "0, 0"
+        parts.append(f'    {{ "{t["disp"]}", blk{i}, tail{i}, {pa}, {hk} }},')
     parts.append("};\n")
     return "\n".join(parts)
 
@@ -168,6 +180,13 @@ typedef struct {
     const unsigned short* patchAddr;
     const unsigned char*  patchVal;
     unsigned short        patchCount;
+    /* ⭐ The track-window ($5300-$5A25) addresses this circuit's patched JSR/JMPs call — its
+       HOOK ENTRIES, ascending.  revs_track_hook() must have a body for every one of them or the
+       circuit is refused: patch bytes in mem[] with nothing at the other end is not a playable
+       circuit, it is a trap waiting for the first corner.  Derived by decoding the patched
+       extents (tools/track_smc.py hook_targets), never by matching the patch values. */
+    const unsigned short* hookAddr;
+    unsigned short        hookCount;
 } RevsTrack;
 
 #ifdef __cplusplus

@@ -1,6 +1,8 @@
 /* track.c — install one circuit's data into mem[].  See track.h for the whole model. */
 #include "track.h"
-#include "../cpu/cpu.h"                /* mem[] */
+#include "../cpu/cpu.h"                /* mem[] — ⚠ BEFORE platform_c.h, which wants uint16_t
+                                          from its includer and does not include <stdint.h> */
+#include "platform_c.h"                /* revs_track_hook + its counters */
 #include "../gen/revs_smc_bytes.h"
 
 unsigned char  g_track = 0;
@@ -8,14 +10,35 @@ unsigned char  g_trackInstalled = 0xFF;
 unsigned char  g_trackRequested = 0xFF;
 unsigned short g_trackUnhonoured = 0;
 unsigned short g_trackUnhonouredAddr = 0;
+unsigned short g_trackHooksUnbuilt = 0;
+unsigned short g_trackHooksUnbuiltAddr = 0;
 
-/* Is this byte one the transliteration reads from mem[] at run time?  revs_smc_bytes[] is
-   generated sorted, so this bisects — the check runs over ~60 addresses at selection time, so
-   speed is irrelevant, but a linear scan over a sorted array is the kind of thing that gets
-   copied into a hot path later. */
+/* Does the transliteration read this byte from mem[] at run time?  TWO ways it can:
+ *
+ *   1. it is not part of an INSTRUCTION at all, so every access to it is an ordinary mem[] read
+ *      and a patch lands exactly as it would on the 6502.  ⚠ Two circuits rely on this: $3574
+ *      and $35F4 are data, reached through `mem[(0x3500)+cpu.X]`.
+ *   2. it is inside an instruction, and the transpiler declared an SMC site over it.
+ *
+ * Both tables are GENERATED (revs_smc_bytes.h) from the transpiler's own tables, because a
+ * hand-kept copy would drift the moment a site or an instruction moved.
+ *
+ * revs_smc_bytes[] is sorted, so that half bisects — the check runs over ~60 addresses once at
+ * selection time, so speed is irrelevant, but a linear scan over a sorted array is the kind of
+ * thing that gets copied into a hot path later.
+ */
+static int is_code(unsigned short addr)
+{
+    unsigned i;
+    for (i = 0; i < REVS_CODE_RANGE_COUNT; i++)
+        if (addr >= revs_code_ranges[i][0] && addr <= revs_code_ranges[i][1]) return 1;
+    return 0;
+}
+
 static int honoured(unsigned short addr)
 {
     int lo = 0, hi = REVS_SMC_BYTE_COUNT - 1;
+    if (!is_code(addr)) return 1;             /* data: read from mem[] by construction */
     while (lo <= hi) {
         int mid = lo + ((hi - lo) >> 1);
         unsigned short v = revs_smc_bytes[mid];
@@ -25,12 +48,55 @@ static int honoured(unsigned short addr)
     return 0;
 }
 
+/* ═════════════════════════════════════════════════════════════════════════════════════════
+ * THE ENGINE→TRACK-FILE SEAM
+ * ═════════════════════════════════════════════════════════════════════════════════════════
+ * Ten of the thirty per-circuit extents turn an engine instruction into `JSR`/`JMP $5xxx` —
+ * a call into the circuit's own file.  The generated C hands the target here (SMC kind
+ * 'extent', tools/transpile.py) because that address means a DIFFERENT routine per circuit,
+ * so the engine side cannot resolve it and this side owns the map.
+ *
+ * ⚠⚠ THE MAP IS EMPTY TODAY, and that is the honest state of the port: the hook BODIES are
+ * not transliterated yet (docs/phases.md §5b).  So:
+ *   - `revs_track_check()` refuses any circuit with a hook that has no body, alongside the
+ *     patch-byte check it already did.  Silverstone has zero hooks and installs.
+ *   - if one is somehow reached anyway it is COUNTED and reported, never ignored.  A silent
+ *     return would be the engine carrying on with Silverstone's control flow over another
+ *     circuit's geometry — the plausible-looking wrong game track.h's header is about.
+ */
+unsigned long g_trackHookMissing = 0;
+uint16_t      g_trackHookMissingAddr = 0;
+
+/* Hook entries this build can execute, ascending.  Empty until §5b lands. */
+static const unsigned short implemented_hooks[] = { 0 };
+#define IMPLEMENTED_HOOK_COUNT 0
+
+static int hook_implemented(unsigned short addr)
+{
+    unsigned i;
+    for (i = 0; i < IMPLEMENTED_HOOK_COUNT; i++)
+        if (implemented_hooks[i] == addr) return 1;
+    (void)implemented_hooks;
+    return 0;
+}
+
+void revs_track_hook(uint16_t addr)
+{
+    /* No body: record the FIRST one, count them all.  ⚠ Do not try to be clever and fall back
+       to the unpatched engine routine — the patch replaced it precisely because this circuit
+       needs different behaviour there. */
+    if (g_trackHookMissing == 0) g_trackHookMissingAddr = addr;
+    g_trackHookMissing++;
+    platform_smc_unhandled(0x5A22, addr);
+}
+
 unsigned short revs_track_check(unsigned char index)
 {
     const RevsTrack* t;
     unsigned i;
 
     g_trackUnhonoured = 0;
+    g_trackHooksUnbuilt = 0;
     if (index >= REVS_TRACK_COUNT) return 0xFFFF;
     t = &revs_tracks[index];
     for (i = 0; i < t->patchCount; i++) {
@@ -39,7 +105,18 @@ unsigned short revs_track_check(unsigned char index)
             g_trackUnhonoured++;
         }
     }
-    return g_trackUnhonoured;
+    /* ⭐ BOTH HALVES, ONE VERDICT — but TWO COUNTERS.  Covering the patch bytes was never
+       sufficient: a patched `JSR $5672` reads its target from mem[] correctly and then has
+       nothing to call.  The verdict adds them so "installable" keeps meaning "playable"; the
+       counters stay separate so the report says WHICH half is missing.  Collapsing them would
+       repeat the reporting defect the fallback note below is about. */
+    for (i = 0; i < t->hookCount; i++) {
+        if (!hook_implemented(t->hookAddr[i])) {
+            if (g_trackHooksUnbuilt == 0) g_trackHooksUnbuiltAddr = t->hookAddr[i];
+            g_trackHooksUnbuilt++;
+        }
+    }
+    return (unsigned short)(g_trackUnhonoured + g_trackHooksUnbuilt);
 }
 
 static void install_data(const RevsTrack* t)

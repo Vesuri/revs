@@ -118,7 +118,7 @@ TARGET   := build/revs
 
 .PHONY: all clean gen validate image runtime dashcode sweep endian-lint refloop refloop-keys \
         mode7 mode7-fixture font mos-font refloop-charset refloop-comp track-patch \
-        tracks tracks-gen track-fixtures \
+        tracks tracks-gen track-fixtures track-smc \
         sound sound-fixture sound-fixture-race
 
 all: $(TARGET)
@@ -194,6 +194,21 @@ mos-font:
 track-patch:
 	python3 tools/track_patch.py $(if $(VERIFY),--verify,)
 
+# ⭐⭐ THE SAME SURFACE AT INSTRUCTION GRANULARITY, which is the granularity the transpiler emits
+# at.  Folds every circuit's byte writes onto the listing's instruction boundaries and reports
+# EXTENTS — a patch that turns `CLC / ADC #$03` into one `JSR $54F1` is one substitution, not two
+# mangled instructions.  Also checks the two structural preconditions the emission relies on
+# (nothing branches into an extent; no extent crosses a function boundary).
+#   make track-smc                the human-readable report (start here)
+#   make track-smc EMIT=1         regenerate disasm/track_smc.txt, which `make gen` ingests
+#
+# ⚠ The committed table is derived from whichever discs are present.  It carries only shapes and
+# offsets — no per-circuit values — so it is identical for all six circuits and committing it
+# carries no third party's data.  Regenerating it with the Nürburgring disc present is therefore
+# safe; it will produce the same file.
+track-smc:
+	python3 tools/track_smc.py $(if $(EMIT),--emit disasm/track_smc.txt,)
+
 # ⭐ The per-circuit DATA TABLE the port selects between -> src/gen/revs_tracks.[ch].
 # ⚠ The Nürburgring block comes from the git-ignored revs-hack-nurburgring.ssd, so a checkout
 # without that disc generates FIVE circuits, not six, and says so.  That is not an error —
@@ -232,11 +247,23 @@ refloop-charset:
 build:
 	mkdir -p build
 
+# ⚠⚠ HEADER DEPENDENCIES ARE TRACKED, and they were not until 2026-08-15.
+#
+# `make tracks` reported a GREEN, STALE answer: a sabotage run that removed an SMC extent should
+# have shown three unhonoured patch bytes and showed none, because track.o had been compiled
+# against the previous revs_smc_bytes.h and nothing told make to rebuild it.  A generated header
+# whose consumer is not rebuilt does not fail — it answers the OLD question, confidently.
+# (Same class as the Amiga Makefile's `make clean` warning in CLAUDE.md, which stays: that build
+# tracks neither headers nor PROBES.)
+DEPFLAGS := -MMD -MP
+
 %.o: %.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 
 %.o: %.cpp
-	$(CXX) $(CXXFLAGS) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c -o $@ $<
+
+-include $(OBJS:.o=.d) $(TRACKS_OBJS:.o=.d) tools/validate_native.d
 
 # Regenerate the transliterated C from the Ghidra listing.
 # Requires disasm/listing.txt to be current (see docs/toolchain.md).
@@ -272,7 +299,9 @@ endian-lint:
 clean:
 	rm -f $(OBJS) $(TARGET) tools/validate_native.o build/validate_native \
 	      tools/validate_mode7.o build/validate_mode7 \
-	      tools/validate_sound.o build/validate_sound
+	      tools/validate_sound.o build/validate_sound \
+	      tools/validate_tracks.o build/validate_tracks
+	rm -f $(OBJS:.o=.d) tools/*.d
 
 # ⭐ Replay the engine's own startup unpack -> disasm/revs_runtime.bin.
 # REVS2 relocates itself before running, so revs_mem.bin is NOT the layout the engine

@@ -73,7 +73,7 @@ Revs has **59** sites — 24 in the road rasteriser and 35 more in the `$7B00` d
 overlay, i.e. the hottest and least-understood code in the binary.  Freezing one snapshot of it
 by hand is the expensive way to be wrong.
 
-Every site is one of four **mechanical** classes, and each has an exactly faithful runtime form.
+Every site is one of five **mechanical** classes, and each has an exactly faithful runtime form.
 `SMC_SITES` in `tools/transpile.py` carries the table, with the writer instructions as evidence
 for every value:
 
@@ -83,6 +83,35 @@ for every value:
 | `opcode` | a 1-byte opcode SLOT | `switch (mem[site])` with one case per value the writers actually store |
 | `branch` | a branch OFFSET | the 6502's own target computation, dispatched over the enclosing routine's instruction starts |
 | `call` | a `JSR`'s operand BYTES | the computed target, dispatched over an explicit legal-target set — one real call per case, because a call must RETURN and so cannot be a `goto` |
+| `extent` | a whole byte RANGE, by another program | one arm per instruction-stream shape, guarded on the opcode bytes in `mem[]` |
+
+⭐ **`extent` is a different animal from the other four**, and the difference is what makes it a
+class of its own rather than a variant.  The first four describe code that patches *itself* while
+it runs; `extent` describes code that **another program patches once, at start-up** — each
+expansion circuit's `ModifyGameCode` (`docs/phases.md` §5b, `src/platform/track.h`).  Two
+consequences:
+
+- **The unit is a byte RANGE, not an instruction.**  Ten of the thirty sites replace a whole
+  instruction with a different one, and `$12FB`'s patch turns `CLC` + `ADC #$03` — two
+  instructions, three bytes — into the single `JSR $54F1`.  There is no "the operand" to read.
+- **The dispatch is over a SIGNATURE, not one byte.**  A shape is the `(offset, opcode)` pairs of
+  its instruction stream, and the guards are conjunctions because `$2542`'s two shapes share
+  their first opcode (`JSR $3450` + `LSR A` vs `JSR $53F0` + `NOP`) and differ only at offset 3.
+  Guard mutual-exclusivity is checked at generation time, not assumed.
+
+Two rules the class lives or dies by:
+
+- ⭐ **Every arm reads its patchable operands from `mem[]`, including the unpatched one.**  A guard
+  tests opcodes, so it cannot prove which circuit is running; baking Silverstone's operand into
+  the arm its opcodes happen to match is precisely the plausible-looking wrong game.
+- ⭐ **A patched `JSR`/`JMP` into `$5300-$5A25` goes through ONE seam**, `revs_track_hook()` — the
+  track window holds a *different* routine per circuit at the same address, so that is the one
+  transfer the engine's C genuinely cannot resolve, and it is worth having exactly one place to
+  look.  An engine-side target is still an ordinary named call.
+
+The table itself is **generated** (`make track-smc EMIT=1` → `disasm/track_smc.txt`), because a
+hand-kept copy would drift the moment a circuit was added — the same argument that generates
+`revs_smc_bytes.h`.  It carries only extents, signatures and offsets, never per-circuit values.
 
 Anything outside the evidence calls `platform_smc_unhandled()`, which **reports** — it never picks
 a branch.  A silent no-op there reads exactly like a rasteriser that runs and draws nothing.

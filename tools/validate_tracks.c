@@ -134,8 +134,29 @@ int main(void)
            compared, REVS_TRACK_COUNT, fails);
     for (i = 0; i < REVS_TRACK_COUNT; i++) {
         unsigned short u = revs_track_check((unsigned char)i);
-        if (u) printf("  note: %-8s is NOT yet playable — %u patch bytes await SMC sites "
-                      "(first $%04X)\n", kDfs[i], u, g_trackUnhonouredAddr);
+        if (!u) continue;
+        /* ⚠ Say WHICH half is missing.  The two halves land in the port at different times, so a
+           single number would read the same before and after the SMC work — and it did: every
+           circuit said "awaits SMC sites" on the day the SMC sites landed. */
+        printf("  note: %-8s is NOT yet playable —", kDfs[i]);
+        if (g_trackUnhonoured)
+            printf(" %u patch bytes await SMC sites (first $%04X);",
+                   g_trackUnhonoured, g_trackUnhonouredAddr);
+        if (g_trackHooksUnbuilt)
+            printf(" %u hook bodies unbuilt (first $%04X);",
+                   g_trackHooksUnbuilt, g_trackHooksUnbuiltAddr);
+        printf("\n");
     }
     return fails ? 1 : 0;
+}
+
+/* The trap behind revs_track_hook(), stubbed for this harness.  ⚠ It is FATAL rather than a
+   no-op: this harness never reaches a hook (it installs data and diffs bytes; it runs no engine
+   code), so reaching it means the harness started executing something it does not model, and a
+   silent stub would let that pass as a green run. */
+void platform_smc_unhandled(unsigned short site, unsigned short value)
+{
+    fprintf(stderr, "FAIL: platform_smc_unhandled($%04X, $%04X) — this harness runs no engine "
+                    "code and must never reach an SMC trap\n", site, value);
+    exit(2);
 }

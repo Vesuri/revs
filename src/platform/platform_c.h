@@ -60,6 +60,19 @@ void    platform_bad_region_entry(uint16_t region, uint16_t entry);
 extern unsigned long g_badRegionCount;
 extern uint16_t      g_badRegionEntry;
 
+/* ⭐ THE ENGINE→TRACK-FILE SEAM.  A per-circuit extent (SMC kind 'extent') holds a JSR or JMP
+   whose target lands in $5300-$5A25 — the window the unpack swap fills with the selected
+   circuit's own file.  The SAME address is a DIFFERENT routine per circuit, so the engine's C
+   cannot resolve it: it hands the address here and this owns the per-circuit map.
+   Implemented in src/platform/track.c.  docs/phases.md §5, src/platform/track.h. */
+void    revs_track_hook(uint16_t addr);
+
+/* Hook calls that had no body for the selected circuit — see revs_track_hook().  ⚠ A missing
+   body must be a NUMBER, not a shrug: running on past it would be the engine executing
+   Silverstone's control flow over another circuit's geometry. */
+extern unsigned long g_trackHookMissing;
+extern uint16_t      g_trackHookMissingAddr;
+
 /* The interrupt register contract (see platform_cbridge.cpp): A, X and Y must come back out of
    irq1v_handler unchanged, as they do on a real BBC.  Non-zero here means a foreground routine
    can be resumed with a corrupted register — which surfaces as a drawing artefact somewhere

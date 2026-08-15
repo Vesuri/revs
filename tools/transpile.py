@@ -328,6 +328,97 @@ def _dash_smc_sites():
 if DASHCODE_ENABLED:
     SMC_SITES.update(_dash_smc_sites())
 
+# ---------------------------------------------------------------------------
+# The PER-CIRCUIT self-modifying code — the fifth class, and a different animal
+# ---------------------------------------------------------------------------
+# ⭐ The four classes above all describe code that patches ITSELF while it runs.  This one
+# describes code that ANOTHER PROGRAM patches once, at start-up: each expansion circuit's
+# `ModifyGameCode` rewrites 54-60 engine bytes as the engine boots (src/platform/track.h).
+#
+# ⚠ And it is NOT the "operand rewritten, opcode untouched" shape.  Ten of the thirty sites
+# replace a WHOLE INSTRUCTION with a different one — `LDA $5905,Y` becomes `JSR $5672`, and
+# `CLC / ADC #$03` (two instructions, three bytes) becomes the single `JSR $54F1`.  So the
+# unit is not an instruction but an EXTENT, and the dispatch is not over one byte's value but
+# over which instruction-stream SHAPE the extent currently holds:
+#
+#   'extent'   a byte range holding one of a small set of instruction streams.  Emit one arm
+#              per shape, guarded on the opcode bytes in mem[], with every patchable operand
+#              read from mem[] inside the arm.  An unrecognised shape traps.
+#
+# Each arm is a straight-line block, which is sound because two structural preconditions are
+# CHECKED rather than assumed (tools/track_smc.py): nothing branches into the middle of an
+# extent, and no extent crosses a function boundary.  Both are verified by sabotage.
+#
+# The table is DERIVED — `make track-smc` replays every circuit's patcher and folds the byte
+# writes onto the listing's instruction boundaries.  A hand-kept version would drift the
+# moment a circuit was added, which is the same argument that generates revs_smc_bytes.h.
+#
+# ⭐ It carries no per-circuit VALUES, only shapes and offsets: the operands live in mem[] and
+# are read at run time.  So one table serves all six circuits and the committed file contains
+# no third party's data (docs/reference-sources.md §The Nürburgring file).
+TRACK_SMC = ROOT / "disasm/track_smc.txt"
+
+# Where a circuit's own code lives after the unpack swap.  A patched JSR/JMP operand pointing
+# in here is a call into the track file's hook bodies, which is the ONE thing the engine's C
+# cannot resolve statically — the target address means a different routine per circuit.
+TRACK_WINDOW = (0x5300, 0x5A25)
+
+# The opcodes a patched arm may introduce.  ⚠ Deliberately minimal: these five are what the
+# six circuits' patchers actually produce, and an unlisted opcode is a gen-time failure rather
+# than a guess, exactly as with the patcher interpreter in tools/track_patch.py.
+TRACK_OPCODES = {
+    0x20: ('JSR', 3), 0x4C: ('JMP', 3), 0xA9: ('LDA#', 2), 0xA2: ('LDX#', 2), 0xEA: ('NOP', 1),
+}
+
+def _load_track_extents(path):
+    """Parse disasm/track_smc.txt into 'extent' SMC_SITES rows."""
+    if not path.exists():
+        raise SystemExit(f'{path} is missing — run `make track-smc` (it needs revs.ssd).')
+    sites = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        fields = [f.strip() for f in line.split('|')]
+        lo_s, hi_s = fields[0].split()
+        lo, hi = int(lo_s, 16), int(hi_s, 16)
+        sigs, patchable = [], set()
+        for f in fields[1:]:
+            if f.startswith('sig:'):
+                nums = [int(x, 16) for x in f[4:].split(',')]
+                sigs.append(tuple(zip(nums[0::2], nums[1::2])))
+            elif f.startswith('patchable:'):
+                patchable = {lo + int(x, 16) for x in f[10:].split(',') if x}
+        if not sigs:
+            raise SystemExit(f'{path}: ${lo:04X} has no signature')
+        # Every byte a guard reads is read at run time too, and revs_smc_bytes.h documents
+        # itself as exactly that set — so declare both, not just the patched ones.
+        guard = {lo + off for sig in sigs for off, _op in sig}
+        sites[lo] = {'kind': 'extent', 'hi': hi, 'sigs': sigs,
+                     'patch': patchable, 'bytes': patchable | guard,
+                     'from': ["each circuit's ModifyGameCode ($5700, via $5A22)"]}
+    return sites
+
+TRACK_EXTENTS = _load_track_extents(TRACK_SMC)
+_clash = sorted(set(TRACK_EXTENTS) & set(SMC_SITES))
+if _clash:
+    raise SystemExit('a per-circuit extent starts on an existing SMC site: '
+                     + ', '.join(f'${a:04X}' for a in _clash)
+                     + '\n  -> the two mechanisms would both claim the instruction; merge them.')
+# ⚠ …and an extent may not SWALLOW an existing site either: the arm emits the range as one
+# block, so a self-patching instruction inside it would lose its own runtime dispatch.
+_swallow = sorted(a for a in SMC_SITES
+                  for lo, s in TRACK_EXTENTS.items() if lo < a <= s['hi'])
+if _swallow:
+    raise SystemExit('a per-circuit extent covers an existing SMC site: '
+                     + ', '.join(f'${a:04X}' for a in _swallow))
+SMC_SITES.update(TRACK_EXTENTS)
+
+# Addresses covered by an extent but not its start: translate_func must NOT emit them
+# separately, because the extent's arms already account for every byte in the range.
+TRACK_EXTENT_INNER = {a for lo, s in TRACK_EXTENTS.items()
+                      for a in range(lo + 1, s['hi'] + 1)}
+
 # Addresses a 'call' site can compute.  A computed call reaches the MIDDLE of a merged
 # region, so the region's dispatch prologue needs a case for each of them — they are not
 # segment entries and build_segments would never produce them.
@@ -1172,6 +1263,125 @@ def emit_smc_call(insn, site, resolve_call):
     out += ['        }', '    }']
     return out
 
+def emit_smc_extent(insn, site, translate_one):
+    """'extent' class: a byte range holding one of several instruction streams, because a
+    per-circuit `ModifyGameCode` rewrote it (src/platform/track.h).
+
+    One arm per shape, guarded on the opcode bytes in mem[] and tested in declaration order.
+    tools/track_smc.py has already proved the guards mutually exclusive, that nothing branches
+    into the range, and that it stays inside one function — so each arm is a plain block.
+
+    ⭐ Every patchable operand is read from mem[] in EVERY arm, including the unpatched
+    Silverstone one.  A guard tests opcodes only, so it cannot prove which circuit is running;
+    baking Silverstone's operand into the arm its opcodes happen to match is exactly the
+    plausible-looking wrong game this class exists to prevent.  Reading it back costs one mem[]
+    load and is right for all six.
+    """
+    lo, hi = insn['addr'], site['hi']
+    frm = ' / '.join(site['from'])
+    out = [f'    /* {lo:04x} */',
+           f'    /* ⚠ SMC: per-circuit extent ${lo:04X}-${hi:04X}, rewritten by {frm}.',
+           f'       {len(site["sigs"])} instruction-stream shape(s), dispatched on the opcodes '
+           f'in mem[]; operands read from mem[] (make track-smc) */']
+    for n, sig in enumerate(site['sigs']):
+        guard = ' && '.join(f'mem[0x{lo+off:04X}] == 0x{op:02X}' for off, op in sig)
+        kw = 'if' if n == 0 else '} else if'
+        out.append(f'    {kw} ({guard}) {{'
+                   f'{"   /* unpatched: Silverstone */" if n == 0 else ""}')
+        for k, (off, op) in enumerate(sig):
+            end = (sig[k + 1][0] if k + 1 < len(sig) else hi + 1 - lo)
+            out += ['    ' + ln for ln in translate_one(lo + off, op, end - off)]
+    out += ['    } else {',
+            f'        platform_smc_unhandled(0x{lo:04X}, mem[0x{lo:04X}]); return;',
+            '    }']
+    return out
+
+def emit_track_transfer(a, mnem, static_target, resolve_call):
+    """A JSR or JMP inside a per-circuit extent whose operand bytes some circuit rewrites.
+
+    ⭐ THE ONE THING THE ENGINE'S C CANNOT RESOLVE STATICALLY.  The target either stands (the
+    engine address in the unpatched image) or points into $5300-$5A25 — the track file's own
+    window, where the SAME address holds a DIFFERENT routine per circuit.  So the window case
+    goes through one seam, `revs_track_hook()`, which owns the per-circuit address→body map;
+    the engine side stays circuit-agnostic and there is exactly one place to look.
+
+    `static_target` is None in an arm the patch INTRODUCED (the unpatched image has no JSR
+    there at all), so the only legal target is the window.
+    """
+    lo_w, hi_w = TRACK_WINDOW
+    out = ['{',
+           f'    uint16_t _smct = (uint16_t)(mem[0x{a+1:04X}] | (mem[0x{a+2:04X}] << 8));']
+    first = 'if'
+    if static_target is not None:
+        out.append(f'    if (_smct == 0x{static_target:04X}) '
+                   f'{{ {resolve_call(static_target)} }}')
+        first = 'else if'
+    out += [f'    {first} (_smct >= 0x{lo_w:04X} && _smct <= 0x{hi_w:04X}) '
+            f'revs_track_hook(_smct);',
+            f'    else {{ platform_smc_unhandled(0x{a:04X}, _smct); return; }}',
+            '}']
+    if mnem == 'JMP':
+        # A JMP is a tail transfer: the 6502 never comes back here, and neither may the C.
+        out.append('return;')
+    return out
+
+def _make_extent_translator(insn, site, func, all_funcs_by_start, symbols, local_targets,
+                            external_entries, wrapper_names, smc_dispatch_targets,
+                            resolve_call):
+    """Build the per-arm instruction emitter emit_smc_extent() calls back into.
+
+    Two kinds of instruction appear in an arm:
+      * one the LISTING has — the unpatched shape's own instructions.  Translate it the
+        ordinary way, except that an operand byte some circuit rewrites is read from mem[].
+      * one only a PATCH produces — decoded from TRACK_OPCODES, which is deliberately the
+        five opcodes the six circuits' patchers actually emit and nothing more.
+    """
+    ext_lo = insn['addr']
+    patch = site['patch']
+    by_addr = {i['addr']: i for i in func['insns']}
+
+    def emit(a, opcode, navail):
+        want = TRACK_OPCODES.get(opcode)
+        listed = by_addr.get(a)
+        if listed is not None and listed['bytes'][0] == opcode:
+            n = len(listed['bytes'])
+            pmnem = listed['mnem']
+            pmode, pval, _pidx = parse_operand(listed['op'], n, symbols)
+            operands = {a + k for k in range(1, n)} & patch
+            if not operands:
+                return translate_insn(listed, func, all_funcs_by_start, symbols,
+                                      local_targets, external_entries, wrapper_names,
+                                      smc_dispatch_targets, _no_smc=True)
+            if pmnem in ('JSR', 'JMP'):
+                if pmode == 'jmpind':
+                    raise SystemExit(f'track SMC ${a:04X}: patched indirect JMP is not '
+                                     f'modelled — read out what the circuit means by it')
+                return emit_track_transfer(a, pmnem, pval, resolve_call)
+            if pmnem in BRANCH_FLAGS:
+                return emit_smc_branch(listed, {'bytes': operands, 'from': site['from']},
+                                       pmnem, smc_dispatch_targets)
+            return emit_smc_operand(listed, pmode, pval,
+                                    {'bytes': operands, 'from': site['from']})
+        if want is None:
+            raise SystemExit(
+                f'track SMC ${ext_lo:04X}: opcode ${opcode:02X} at ${a:04X} is neither the '
+                f'listing\'s nor one of the patchers\' five (TRACK_OPCODES). The patch surface '
+                f'changed — re-run `make track-smc` and read out what the new form means.')
+        pmnem, n = want
+        if n > navail:
+            raise SystemExit(f'track SMC ${ext_lo:04X}: {pmnem} at ${a:04X} needs {n} bytes '
+                             f'but only {navail} remain in the extent')
+        if pmnem == 'NOP':
+            return ['NOP();']
+        if pmnem in ('JSR', 'JMP'):
+            return emit_track_transfer(a, pmnem, None, resolve_call)
+        # LDA#/LDX#: the immediate is the patched byte, so read it back.
+        reg = pmnem[2]
+        return [f'/* ${a:04X} {pmnem} — immediate read from mem[] */',
+                f'LD{reg}(mem[0x{a+1:04X}]);']
+
+    return emit
+
 def translate_insn(insn, func, all_funcs_by_start, symbols, local_targets,
                    external_entries=None, wrapper_names=None,
                    smc_dispatch_targets=None, _no_smc=False):
@@ -1225,6 +1435,10 @@ def translate_insn(insn, func, all_funcs_by_start, symbols, local_targets,
                                     local_targets, external_entries, wrapper_names,
                                     smc_dispatch_targets, _no_smc=True)
             return emit_smc_opcode(insn, site, normal)
+        if site['kind'] == 'extent':
+            return emit_smc_extent(insn, site, _make_extent_translator(
+                insn, site, func, all_funcs_by_start, symbols, local_targets,
+                external_entries, wrapper_names, smc_dispatch_targets, resolve_call))
         raise SystemExit(f'SMC ${addr:04X}: unknown kind {site["kind"]!r}')
 
     # --- Branches ---
@@ -1677,13 +1891,28 @@ def translate_func(func, all_funcs_by_start, symbols,
     # instruction start it could reach, because the target is not known until run time.
     # The switch in emit_smc_branch dispatches over exactly this set; -Wno-unused-label
     # (both Makefiles) covers the labels no static branch reaches.
+    # A per-circuit extent whose unpatched shape contains a BRANCH needs the same treatment:
+    # the offset is one of the bytes a circuit rewrites, so the target is a run-time value.
+    def _extent_has_patched_branch(a):
+        s = SMC_SITES.get(a)
+        if s is None or s['kind'] != 'extent':
+            return False
+        return any(i['mnem'] in BRANCH_FLAGS and
+                   ({i['addr'] + k for k in range(1, len(i['bytes']))} & s['patch'])
+                   for i in insns if a <= i['addr'] <= s['hi'])
+
     smc_dispatch_targets = []
-    if any(insn['addr'] in SMC_SITES and SMC_SITES[insn['addr']]['kind'] == 'branch'
+    if any((insn['addr'] in SMC_SITES and SMC_SITES[insn['addr']]['kind'] == 'branch')
+           or _extent_has_patched_branch(insn['addr'])
            for insn in insns):
         for insn in insns:
             a = insn['addr']
             if a in external_entry_labels:      continue   # a different C function now
             if first_split is not None and a >= first_split: continue
+            # ⚠ An instruction inside a per-circuit extent is never emitted on its own, so it
+            # has no label to dispatch to.  It is also unreachable by construction — the extent
+            # is replaced as a unit and nothing branches into it (tools/track_smc.py checks).
+            if a in TRACK_EXTENT_INNER:         continue
             local_targets.add(a)
             smc_dispatch_targets.append(a)
         smc_dispatch_targets.sort()
@@ -1691,7 +1920,8 @@ def translate_func(func, all_funcs_by_start, symbols,
     # Peephole: fold `LD{R}(#imm); ST{R} addr;` → `addr = imm;` (liveness-checked).
     # Never fold a load/store pair that touches a self-modifying instruction: what it
     # does is not what the listing says, so the liveness proof does not apply to it.
-    blocked_addrs = set(PRE_INSN_HOOKS) | set(SPINWAIT_HOOKS) | set(SMC_SITES)
+    blocked_addrs = (set(PRE_INSN_HOOKS) | set(SPINWAIT_HOOKS) | set(SMC_SITES)
+                     | TRACK_EXTENT_INNER)
     skip_loads, store_vals = compute_imm_store_folds(
         insns, symbols, local_targets, external_entry_labels, blocked_addrs)
 
@@ -1758,6 +1988,12 @@ def translate_func(func, all_funcs_by_start, symbols,
         expect = addr + len(insn['bytes'])
         # Peephole: a folded load is dropped entirely (its value moves into the
         # following store); the store is rewritten to assign the literal directly.
+        # Inside a per-circuit extent: the extent's own arms already emitted every byte of the
+        # range, including this instruction, so emitting it again would run it twice.  ⚠ Nothing
+        # branches here (tools/track_smc.py proves it), so it needs no label either.
+        if addr in TRACK_EXTENT_INNER:
+            last_insn = insn
+            continue
         if idx in skip_loads:
             last_insn = insn
             continue
@@ -2170,9 +2406,46 @@ def main():
     ]
     for i in range(0, len(smc_sorted), 12):
         smc_lines.append('    ' + ' '.join(f'0x{a:04X},' for a in smc_sorted[i:i + 12]))
+    smc_lines += ['};', '']
+
+    # ⭐ …AND THE CODE MAP, because "is this byte read at run time" has TWO answers and the list
+    # above is only one of them.
+    #
+    # A byte the transpiler never turned into an instruction is DATA, and every data access in the
+    # emitted C is a real mem[] read — `mem[(0x3500)+cpu.X]` consults mem[$3574] whatever is in
+    # it.  So a circuit patching a data byte is honoured for free, and the only bytes that need an
+    # SMC site are the ones inside an instruction.
+    #
+    # ⚠ Two circuits patch exactly that: $3574 and $35F4 (Brands, Oulton, Nürburgring), reached
+    # through `mem[(0x3500)+cpu.X]` / `mem[(0x3580)+cpu.X]`.  Without this map they read as
+    # unhonoured and the circuits were refused for a reason that was not true.
+    code_runs = []
+    for f in funcs:
+        for ins in f['insns']:
+            a, n = ins['addr'], len(ins['bytes'])
+            code_runs.append((a, a + n - 1))
+    code_runs.sort()
+    merged = []
+    for lo, hi in code_runs:
+        if merged and lo <= merged[-1][1] + 1:
+            merged[-1][1] = max(merged[-1][1], hi)
+        else:
+            merged.append([lo, hi])
+    smc_lines += [
+        '/* Every byte the transpiler turned into an INSTRUCTION, as merged [lo, hi] ranges.',
+        ' * Outside these the emitted C reads mem[] anyway, so a patch there needs no SMC site.',
+        ' * See the note in tools/transpile.py and src/platform/track.c honoured(). */',
+        f'#define REVS_CODE_RANGE_COUNT {len(merged)}',
+        '',
+        'static const unsigned short revs_code_ranges[REVS_CODE_RANGE_COUNT][2] = {',
+    ]
+    for lo, hi in merged:
+        smc_lines.append(f'    {{ 0x{lo:04X}, 0x{hi:04X} }},')
     smc_lines += ['};', '', '#endif', '']
     OUT_SMC.write_text('\n'.join(smc_lines))
-    print(f'Wrote {OUT_SMC}  ({len(smc_sorted)} run-time bytes)')
+    print(f'Wrote {OUT_SMC}  ({len(smc_sorted)} run-time bytes, '
+          f'{len(merged)} code ranges covering '
+          f'{sum(h - l + 1 for l, h in merged)} bytes)')
 
     # -----------------------------------------------------------------------
     # revs_validate_list.h — the fixture-or-fail list (docs/validation-harness.md).

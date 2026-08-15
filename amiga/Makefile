@@ -294,6 +294,8 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_irqUnwindPending g_irqUnwindTouched g_irqStackImbalance \
              g_stackLow g_stackHigh g_stackTrespass \
              g_track g_trackInstalled g_trackRequested g_trackUnhonoured g_trackUnhonouredAddr \
+             g_trackHooksUnbuilt g_trackHooksUnbuiltAddr \
+             g_trackHookMissing g_trackHookMissingAddr \
              g_beamPresentLine g_beamPresentMin g_beamPresentMax \
              g_beamPresents g_beamPresentsLate g_beamEntryLine g_beamEntries g_beamEntriesLate \
              g_bodyTicksDropped g_bodyDrains g_bodyTicks g_bodyPending \

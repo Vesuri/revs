@@ -74,6 +74,13 @@ extern unsigned char  g_trackInstalled;      /* index actually installed (0xFF =
 extern unsigned char  g_trackRequested;      /* index the BUILD asked for — differs on a fallback */
 extern unsigned short g_trackUnhonoured;     /* patch bytes SMC_SITES does not cover */
 extern unsigned short g_trackUnhonouredAddr; /* the first such address, for the report */
+/* ⭐ THE SECOND HALF OF "PLAYABLE", counted separately on purpose.  A circuit's patched JSR/JMPs
+   call into $5300-$5A25 — its own hook bodies — and those are transliterated per circuit
+   (docs/phases.md §5b).  A build with every patch byte honoured and no hook bodies would report
+   `unhonoured=0` and still be unplayable, which is exactly the incoherent-report failure the
+   fallback note in track.c is about.  So: two numbers, one verdict. */
+extern unsigned short g_trackHooksUnbuilt;     /* hook entries with no C body in this build */
+extern unsigned short g_trackHooksUnbuiltAddr; /* the first such address */
 
 /* Install a circuit into mem[].  Returns 1 on success, 0 if REFUSED (see the header note).
  *

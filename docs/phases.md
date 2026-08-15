@@ -516,25 +516,94 @@ file, MEASURED): identical hook entry, same patcher vocabulary, one extra patch 
 Its block is generated from the **git-ignored** `revs-hack-nurburgring.ssd`, so the repo carries no
 third party's file; a checkout without that disc generates five circuits and says so.
 
-**What remains, in order:**
-- **~54-60 SMC sites per track** (union ~70 addresses) declared in `tools/transpile.py`'s
-  `SMC_SITES`, so the generated C reads those bytes from `mem[]` at run time instead of baking
-  Silverstone's.  `make track-patch` already prints the surface with unpatched and patched values,
-  which is exactly the evidence the four existing classes (`operand` / `opcode` / `branch` /
-  `call`) want.  The class per site is derivable: address == instruction start ⇒ opcode, else
-  operand.
-- **The hook BODIES as C.**  Unlike the patcher these are called during gameplay, so they must
-  execute: ~90 instructions per track in ten extents (`$5472 $54F1 $5582 $55C4 $5672 $56AF $56BC
-  $5700 $5772 $57BB $59E9` for Brands, located with `tools/sweep_entrypoints.py`).  ~360
-  instructions over four circuits — the volume is small; the work is the plumbing, i.e. a per-track
-  listing and a name prefix so five bodies can share one address range, plus a `g_track` selector
-  in the `call`-class dispatch.
+### ✅ 5b. The SMC sites — the ENGINE now reads every per-circuit byte (2026-08-15)
+
+`tools/track_smc.py` -> `disasm/track_smc.txt` (committed) -> `tools/transpile.py`'s fifth SMC
+class.  `make track-smc` is the report; `make track-smc EMIT=1` regenerates the table.
+
+⭐⭐ **The unit is not an instruction, it is an EXTENT — and getting that wrong would have
+produced 60 plausible sites that were each subtly wrong.**  `make track-patch` answers "which
+BYTES does each patcher write", which is the installer's question.  Folded onto the listing's
+instruction boundaries the same surface is **30 extents**, and **10 of them replace a WHOLE
+INSTRUCTION with a different one**:
+
+| | |
+|---|---|
+| `$1248` | `LDA $5905,Y` → `JSR $5672` — same length, completely different operation |
+| `$12FB` | `CLC` + `ADC #$03` → the single `JSR $54F1` — **two instructions, one substitution** |
+| `$248B` | `BCS $24B8` + `JMP $2403` → `JMP $56BC` + **2 dead bytes** |
+| `$2542` | `JSR $3450` + `LSR A` → `JSR $53F0` + `NOP` — the two arms share their FIRST opcode |
+| `$1FE9` | `LDX $1F` (zp) → `LDX #$1F` (imm) — an addressing-mode change |
+
+So the existing four classes (`operand` / `opcode` / `branch` / `call`) do not fit: they all
+assume the instruction stays the instruction.  The fifth class, **`extent`**, emits one arm per
+instruction-stream SHAPE, guarded on the opcode bytes in `mem[]`, with every patchable operand
+read from `mem[]` inside the arm and a trap for an unrecognised shape.  `$2542` is why the guard
+is a conjunction over the whole signature and not one byte: both its shapes start with `$20`.
+
+Three things worth carrying forward:
+
+1. ⭐ **Read the operands from `mem[]` in EVERY arm, including Silverstone's.**  A guard tests
+   opcodes, so it cannot prove *which circuit* is running — baking Silverstone's operand into the
+   arm its opcodes happen to match is exactly the plausible-looking wrong game.  Costs one `mem[]`
+   load; right for all six.
+2. ⭐ **Two structural preconditions are CHECKED, not assumed** — nothing branches into the middle
+   of an extent (its interior is the middle of a *different* instruction in the patched arm), and
+   no extent crosses a function boundary.  Both fire under sabotage: widen `$248B`'s extent to
+   `$24C0` and five targets appear; span it to `$2545` and it names `FUN_23d2`/`FUN_24f6`.
+3. ⭐ **The committed table carries no per-circuit VALUES** — only extents, opcode signatures and
+   patchable offsets.  The operands live in `mem[]`, so one table serves all six circuits and the
+   file contains no third party's data (`docs/reference-sources.md` §The Nürburgring file).
+
+**And the coverage check learned its second half.**  `revs_track_check()` counted uncovered patch
+bytes; with the extents in place that count went to 0 for every circuit — which would have read as
+"playable" while every patched `JSR` had nothing to call.  So it now counts **hook entries with no
+C body** too, in a *separate* counter (`g_trackHooksUnbuilt`), because the two halves land at
+different times and one number would have read identically before and after this work.  It also
+learned that a patch to a **data** byte needs no SMC site at all: `$3574`/`$35F4` are reached
+through `mem[(0x3500)+cpu.X]`, so the generated C already consults them.  `revs_smc_bytes.h` now
+carries a 35-entry **code range** map for exactly that question.
+
+⚠⚠ **A defect the sabotage found in the BUILD, not the code:** dropping an extent from the table
+should have shown three unhonoured bytes at `$1248` and showed none — `track.o` had been compiled
+against the previous `revs_smc_bytes.h` and nothing told `make` to rebuild it.  ⭐ *A generated
+header whose consumer is not rebuilt does not fail; it answers the OLD question, confidently.*
+The host Makefile now tracks header dependencies (`-MMD -MP`).  (The Amiga Makefile's `make clean`
+rule stands — it tracks neither headers nor `PROBES`.)
+
+Verified: 30 extents emitted, `make tracks` 6/6 byte-exact with every patch byte honoured, host
+and Amiga builds clean (muldiv + probe audits clean), and **Silverstone's frame 40 is byte-identical
+to the pre-change build** — the arms did not change the circuit that takes the unpatched one.
+
+### 🔧 5c. The hook BODIES — measured, not yet transliterated
+
+`tools/track_hooks_dis.py` reads them out: bounded recursive descent inside `$5300-$5A25` that
+**stops dead at the window boundary** and records the engine address it left for, with
+`ModifyGameCode`'s own instructions subtracted (it is start-up-only and its effect is already
+applied as data — transliterating it would apply every patch twice).
+
+⚠ **The volume is 3-4x the earlier estimate.**  This section used to say "~90 instructions per
+track in ten extents … ~360 over four circuits".  Measured: **254-287 instructions per circuit,
+1366 in total**, from 13-15 hook entries, with 10-11 engine exits each and **zero undecodable
+bytes**.  The earlier figure came from reading extents out of a sweep rather than walking the
+entries the patches actually name.  (The entry list also differs: `$53F0 $54EB $54F1 $5572 $55BD
+$5672 $56AF $56BC $56C8 $5772 $57A1 $59E9 $5A1B` for Brands, derived from the patched JSR/JMP
+operands themselves.)
+
+The exits are coherent — `$0C00` `$0E40` `$13E0` `$140B` `$1933` `$2490` `$253B` `$3450` `$4610`
+`$461B`, i.e. exactly the engine routines the patches displaced, plus the maths helpers.
+
+What remains: generate per-circuit C from those listings under a name prefix (five bodies share one
+address range), resolve the exits to the engine's own C names, and fill `implemented_hooks[]` in
+`src/platform/track.c` so `revs_track_hook()` dispatches instead of trapping.
+
 - **`CallTrackHook` (`$5A22`) dispatch** — one call, one target, and Silverstone supplies an `RTS`
   stub, which is a far cleaner seam than the patch sites.
 - **The menu itself**, and embedding the blocks.
 
-⚠ Until the SMC sites exist, selecting an expansion track must FAIL LOUDLY through
-`platform_smc_unhandled()` rather than run Silverstone's bytes under another circuit's name.
+⚠ Until the hook bodies exist, selecting an expansion track FAILS LOUDLY: `revs_track_check()`
+refuses it, and `revs_track_hook()` traps through `platform_smc_unhandled()` if one is somehow
+reached anyway, rather than running Silverstone's control flow under another circuit's name.
 
 ---
 
