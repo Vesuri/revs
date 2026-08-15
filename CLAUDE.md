@@ -262,6 +262,7 @@ Hard-won detail lives in `docs/`, not here. **Read the relevant one BEFORE worki
 | `docs/validation-harness.md` | Writing or trusting a `make validate` fixture |
 | `docs/faithfulness-seam.md` | Deciding where a routine lives (validated twin vs Amiga-only) |
 | `docs/perf-method.md` ⚑ | Quoting, sizing or judging ANY performance number |
+| **`docs/direct-bitplane-plan.md`** ⭐ | **Before touching any plotter, or any Phase 6 asm.** Rendering DIRECT to bitplanes instead of decoding a BBC-shaped buffer — the ~250 ms of pure port overhead, the layout choices, and how the decode becomes the ORACLE |
 | `docs/m68k-optimisation.md` ⚑ | Optimising a hot function or writing an asm twin (68000 rules) |
 | `docs/amiga-lessons.md` ⚑ | Copper lists, sprites, the VBI, write-only registers |
 | `docs/amiga-arch.md` ⚑ | The Amiga display/interrupt architecture decisions and why |
@@ -361,6 +362,15 @@ manipulates `S` to talk about RETURN ADDRESSES, model the control flow and leave
 modelling neither is a hang, modelling the register too is a silent leak. `g_stackLow` AND
 `g_stackHigh` must both read inside `$F3..$F8`; `make STACK_TRAP=1` + `REVS_STACK_TRAP=<hex>` /
 `REVS_STACK_CEIL=<hex>` prints one host backtrace at the first breach either way.
+
+⭐⭐ **AND THE FIRST PHASE 6 ITEM IS THE REPRESENTATION, NOT THE ASM** (2026-08-16): the engine plots
+into a BBC-shaped frame buffer in `mem[]` and `RevsScreen::decode()` converts 8320 bytes to bitplanes
+every painted frame — **~250 ms of a ~1282 ms frame, and none of it work the BBC did**, plus ~2x the
+render path's memory traffic.  Render DIRECT to bitplanes instead; asm written against the current
+arrangement has to be rewritten after it.  ⚑ RoF shipped this (~339 → ~172 ticks/frame) and its own
+verdict was "real but not transformative" — necessary, not sufficient.  Full plan, the layout choices,
+the live-code-in-the-frame-buffer constraint and **the decode becoming the validated oracle**:
+`docs/direct-bitplane-plan.md`.
 
 ⭐⭐ **THE HOT PATH IS RASTERISATION, NOT PHYSICS** (re-measured 2026-08-13). Top three of the
 main loop's 24 calls are **76.2%**: `$7BE2` **36.1%** (the dashboard), `$1A20` **21.1%** (the

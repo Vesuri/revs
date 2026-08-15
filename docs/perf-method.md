@@ -59,6 +59,14 @@ same instrument on the same day, is:
 | + copper bands + 2-bitplane display DMA + double buffer (`NODECODE=1`) | **0.97** | 1031 ms | −35%, and it is DMA/contention, not code |
 | + the frame-buffer decode (shipping Phase 5 build) | **0.78** | 1282 ms | −19% more: the decode itself, ~250 ms |
 
+⭐⭐ **THE DECODE IS PORT OVERHEAD, AND DELETING IT IS A PHASE 6 ITEM IN ITS OWN RIGHT.**  Those
+~250 ms buy nothing the BBC did: they exist only because the engine plots into a BBC-shaped buffer
+in `mem[]` and the display wants bitplanes.  Rendering direct to bitplanes removes the pass entirely
+and roughly halves the render path's memory traffic — sizing, layout choices, the constraint that
+5.5 KB of live engine code renders as the sky, and how the *existing* decode becomes the validated
+oracle for a plotter that no longer writes `mem[]`: **`docs/direct-bitplane-plan.md`**.  ⚑ The
+predecessor project shipped it and measured ~339 → ~172 ticks/frame for the stage it replaced.
+
 So **rendering roughly halves the framerate**, and only about a third of that is the decode
 loop.  The rest is what turning display DMA on costs a CPU whose program and `mem[]` are in
 chip RAM — on a stock A500 (512 KB chip, no fast RAM) that is unavoidable, so treat it as the

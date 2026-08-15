@@ -763,6 +763,35 @@ and the baseline is still ~0.87 FPS.
 
 ## Phase 6 — Native twins, then asm ⬜
 
+### ⭐⭐ 0. FIRST, THE REPRESENTATION: render DIRECT to bitplanes — `docs/direct-bitplane-plan.md`
+
+⚠⚠ **This section used to start at the asm, and that was the plan's biggest omission** (raised by
+the user, 2026-08-16, and correct).  The port plots into a **BBC-shaped** frame buffer in `mem[]` and
+then pays `RevsScreen::decode()` — 8320 bytes expanded to two bitplanes — to turn it into something
+an Amiga can display: **~250 ms of a ~1282 ms frame, ~20%, and none of it is work the BBC did.**  It
+also roughly doubles the render path's memory traffic (~33 000 accesses per frame against ~17 000),
+on a machine whose standing rule is to reduce the NUMBER of accesses.
+
+⚑ **The predecessor project shipped exactly this change and measured it**: ~339 → ~172 ticks/frame
+for the stage it replaced (`~/Documents/Rescue on Fractalus`, `docs/terrain-render-plan.md` +
+`docs/flight-perf-log.md`).  Its own verdict — "real but **not transformative**" — is the right
+expectation here too, and the reason it still comes first is that **asm written against the current
+arrangement is asm that has to be rewritten after it.**
+
+The full treatment, including the layout choices it unlocks (interleaved planes, the blitter for
+solid fills, single vs double buffer), the constraint it cannot design away (5.5 KB of **live engine
+code renders as the sky**, inside the frame buffer), the ⭐ free ~75 ms available today from skipping
+that sky band in the decode, and — the part that keeps it a faithful port — **the decode becoming the
+validated ORACLE rather than the shipping path**, is in `docs/direct-bitplane-plan.md`.  Read it
+before touching a plotter.
+
+⭐⭐ It also records the OTHER inherited lever, which may be larger: RoF's biggest single win was not
+asm and not direct rendering but **per-instrument dirty flags, ~23×** — and Revs's number-one hot
+item is the **dashboard** at 36.1%.  ⚠ With the caveat that the `$7B00` overlay already carries a
+per-column dirty test, so the analogy needs one shape counter before it is believed.
+
+### 1. Then the twins and the asm
+
 `docs/faithfulness-seam.md` for which side of the line each routine lands on;
 `docs/validation-harness.md` for the guarantees; `docs/m68k-optimisation.md` for the 68000 rules;
 `docs/perf-method.md` for how to price a change honestly.
