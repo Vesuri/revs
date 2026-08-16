@@ -302,6 +302,29 @@ ifdef MEMVOL
 EXTRA_DEFINES += -DREVS_MEM_VOLATILE
 endif
 
+# ⭐⭐ `make BANDSKIP=0` — run the WHOLE five-interrupt raster-band cycle every field, instead of
+# reusing the band record when its 43 input bytes have not moved.  ON by default.  The cycle
+# produces a RECORD that the copper executes, not a picture, and that record is a pure function of
+# five palette tables plus the horizon — which the main loop moves about once every 25 fields at
+# this framerate.  Measured before the change: 6.1 ms of a 20 ms field, of which 233 us ($52A4) was
+# the only game work.  This flag is the control and it is the OLD CODE, not a restructure of it —
+# see docs/perf-method.md on why that distinction is the measurement.
+# ⭐ The switch prints its own state: g_bandRuns vs g_bandSkips (amiga/band_prof.gdb).
+ifeq ($(BANDSKIP),0)
+EXTRA_DEFINES += -DREVS_NO_BANDSKIP
+endif
+
+# ⭐⭐ `make BANDCHECK=1` — the ORACLE for that reuse, and it is not optional diligence: the
+# obvious sabotage (drop the horizon from the digest) PASSED the host's 300-frame byte
+# differential, because a host run is ~36 fields and the horizon never moves in one.  This build
+# always runs the real cycle AND asks what the predicate would have said; every "reuse" it
+# predicts must match the record the real cycle then built.  g_bandCheckMismatch must be 0 with
+# g_bandCheckChecks large.  Never quote a framerate from it — it skips nothing by construction.
+ifeq ($(BANDCHECK),1)
+EXTRA_DEFINES += -DREVS_BAND_CHECK
+PROBE_SYMS_BANDCHECK = g_bandCheckChecks g_bandCheckMismatch
+endif
+
 # `make FILLWATCH=1` — the fill/tear/edge detectors inside decode() (amiga/fill_catch.gdb).
 # ⚠ NOT in a default build: they re-read the whole 8320-byte frame buffer to see which rows moved
 # under the decode, plus a 93-line bitplane verify — real milliseconds on a 7 MHz 68000, and a
@@ -395,7 +418,7 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_decodeCells g_decodeCellsMax g_decodeCellsTotal g_decodeFullFrames \
              g_decodeModeDirty g_decodeDirtyChecks g_decodeDirtyMismatch \
              g_decodeDirtyMismatchOff \
-             g_bandCount g_bandOverflow g_keyUnmapped g_keyUnmappedCode g_keyEvents g_keyDown \
+             g_bandCount g_bandOverflow g_bandSkips g_bandRuns g_bandHorizonMoves g_keyUnmapped g_keyUnmappedCode g_keyEvents g_keyDown \
              g_mouseBtnMask g_mouseBtnSeen \
              g_irqClobberCount g_irqClobberWhich \
              g_irqUnwindPending g_irqUnwindTouched g_irqStackImbalance \
@@ -421,6 +444,7 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
 ifdef PROBES
 PROBE_SYMS += g_phaseTicks g_phaseCount g_phaseFrames g_beamEpoch \
              g_probeIsrTicks g_probeIsrCount g_probeIrqTicks g_probeIrqCount \
+             g_probeBandTicks g_probeBandCount \
 
 endif
 # Same rule, same reason: the FPS series exists only in an FPSCOUNT build.
@@ -440,7 +464,7 @@ endif
 ifdef HWTIME
 PROBE_SYMS += g_probeHwWrites g_probeHwReads g_probeHwTicks
 endif
-PROBE_SYMS += $(PROBE_SYMS_CHECK) $(PROBE_SYMS_PLOT)
+PROBE_SYMS += $(PROBE_SYMS_CHECK) $(PROBE_SYMS_PLOT) $(PROBE_SYMS_BANDCHECK)
 
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \
             $(addprefix -Wl$(COMMA)--undefined=,$(PROBE_SYMS))

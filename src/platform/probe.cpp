@@ -101,6 +101,10 @@ volatile unsigned long g_probeIsrCount = 0;
 volatile unsigned long g_probeIrqTicks = 0;    /* irq1v_handler, one band arm per call */
 volatile unsigned long g_probeIrqCount = 0;
 
+/* ...and the same total SPLIT BY BAND, because the five arms are not the same job (probe.h). */
+volatile unsigned long g_probeBandTicks[PROBE_BANDS] = {0};
+volatile unsigned long g_probeBandCount[PROBE_BANDS] = {0};
+
 static unsigned long s_isrMark = 0;
 static unsigned long s_irqMark = 0;
 
@@ -125,11 +129,31 @@ void probe_hw_end(void)
 }
 #endif
 
+/* ⭐⭐ THE EMPTY-BRACKET CONTROL, slot 6.  The per-band split says a band arm costs ~600 us
+   BEFORE it does any work — band 3 writes four palette bytes and reads 685 us against band 2's
+   sixteen at 820 — so the fixed part is either the shim or THIS INSTRUMENT, and those two lead to
+   opposite conclusions.  Measure a bracket around nothing, on the same path, at the same rate:
+   whatever it reads is the floor under every other row in the table.
+   (docs/method-lessons.md — the hardware counters in this same file already moved the row they
+   were measuring by 2x, so the instrument is a first-class suspect, not a last resort.) */
+void probe_irq_null(void)
+{
+    unsigned long a = beamTick();
+    long d = (long)beamTick() - (long)a;
+    if (d >= 0) { g_probeBandTicks[6] += (unsigned long)d; g_probeBandCount[6]++; }
+}
+
 void probe_irq_begin(void) { s_irqMark = beamTick(); }
-void probe_irq_end(void)
+/* `state` is mem[$4F43] as the handler FOUND it — see probe.h for why the attribution is by
+   entry band and why the per-band counts are not equal. */
+void probe_irq_end(int state)
 {
     long d = (long)beamTick() - (long)s_irqMark;
-    if (d >= 0) { g_probeIrqTicks += (unsigned long)d; g_probeIrqCount++; }
+    if (d >= 0) {
+        g_probeIrqTicks += (unsigned long)d; g_probeIrqCount++;
+        int slot = (state >= 0 && state <= 4) ? state : (state == 0xFF ? 5 : 7);
+        g_probeBandTicks[slot] += (unsigned long)d; g_probeBandCount[slot]++;
+    }
 }
 
 } /* extern "C" */

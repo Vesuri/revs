@@ -35,6 +35,7 @@
 #include "../cpu/cpu.h"
 
 extern "C" void irq1v_handler(void);   /* $4E5C, from the generated transliteration */
+extern "C" void FUN_52a4(void);        /* band 4's arm — the ONLY game work in the cycle */
 
 /* ---------------------------------------------------------------------------
    Registers Phase 5 will need, recorded rather than dropped.  Keeping the last
@@ -337,9 +338,13 @@ void Platform::fireIrq1v(void)
     const uint8_t unwind0 = cpu_unwind;
     if (unwind0) g_irqUnwindPending++;   /* preempted mid-drop: the window is real, count it */
 
+    /* ⭐ Which band this call is about to service, read BEFORE the handler steps $4F43. */
+    const int band = mem[0x4F43];
+
+    PROBE_IRQ_NULL();          /* the control: the same bracket around no work at all */
     PROBE_IRQ_BEGIN();
     irq1v_handler();
-    PROBE_IRQ_END();
+    PROBE_IRQ_END(band);
 
     if (cpu_unwind != unwind0) { g_irqUnwindTouched++; cpu_unwind = unwind0; }
     if (cpu.S != s0) g_irqStackImbalance++;   /* the handler must leave the 6502 stack as it found it */
@@ -349,6 +354,187 @@ void Platform::fireIrq1v(void)
     if (cpu.X != x0) which |= 2;
     if (cpu.Y != y0) which |= 4;
     if (which) { g_irqClobberCount++; g_irqClobberWhich |= which; }
+}
+
+/* ---------------------------------------------------------------------------
+   ⭐⭐ ONE FIELD OF THE BAND CYCLE — and the fast path that skips almost all of it.
+
+   WHAT THE MEASUREMENT SAID (2026-08-17, amiga/band_prof.gdb, a bracket per band arm).
+   One field costs 6.1 ms of its 20 ms budget, split:
+
+       band 0   792 us      band 1   735 us      band 2   838 us
+       band 3   675 us      band 4  1128 us  (of which $52A4 is 233)
+       the fireIrq1v shim, five times over:            ~1720 us
+
+   So 96% of the "50 Hz body" is machinery and 233 us is game work.  The earlier reading of
+   this row — "~810 us a call for sixteen palette stores, unexplained" — was an AVERAGE over
+   five arms that do different jobs; band 3 writes FOUR palette bytes and still costs 675 us,
+   which is what says the cost is per-CALL, not per-store.  An empty bracket on the same path
+   reads 33 us, so none of this is the instrument.
+
+   WHY IT CAN BE SKIPPED, AND WHY THAT IS STILL FAITHFUL.  The five interrupts do not draw.
+   Each one repaints the Video ULA for the band about to be scanned and reloads User VIA T1
+   with that band's duration — a raster split, which on this machine the COPPER executes.
+   The port never switches a palette from the CPU: bbc_hw.cpp records what the handler wrote
+   and RevsScreen re-emits it as copper WAITs.  So the cycle's whole output is the RECORD, and
+   the record is a pure function of five palette tables ($3458/$3468/$3478/$347C), the horizon
+   ($4F1F/$4F20) and the state it starts from ($4F43).  Everything else it leaves behind is
+   idempotent: $4F21/$4F22 are the horizon remainder (same inputs, same value), $4F43 returns
+   to 0, and the 6502 stack balances.  Run it twice on unchanged inputs and the second run is
+   observably a no-op — apart from $52A4, which is the game work and therefore always runs.
+
+   MoveHorizon ($4F44) is a MAIN-LOOP routine, so at this framerate the inputs change about
+   once every 25 fields and the other 24 re-derive a record byte-for-byte identical to the one
+   already sitting in g_band*.
+
+   ⚠ The comparison is the WHOLE 43 bytes, not a hash: a digest that collides here would put
+   the wrong palette on the screen for a frame, and 43 byte compares cost ~1% of what they
+   save.  ⚠ The cache is seeded invalid and the fast path also demands a cached count of 5 —
+   the count RevsScreen requires (g_bandRejects) — so a half-built record can never be
+   re-asserted as a whole one.
+
+   `make BANDSKIP=0` is the control, and it is the OLD CODE, not a restructure of it.
+   --------------------------------------------------------------------------- */
+extern "C" {
+volatile unsigned long g_bandSkips = 0;   /* fields whose record was reused */
+volatile unsigned long g_bandRuns  = 0;   /* fields that ran the real cycle */
+/* BANDCHECK only: predictions of "reuse" made, and how many the real cycle contradicted. */
+volatile unsigned long g_bandCheckChecks   = 0;
+volatile unsigned long g_bandCheckMismatch = 0;
+/* ⭐⭐ THE STIMULUS, counted over the whole run instead of sampled at the end.  The horizon is
+   the one input that moves while driving ($4F44 MoveHorizon, a main-loop routine), so it is what
+   makes a reuse test non-trivial — and a run with zero here has proved only that a static record
+   stays static.  ⚠ It must be a COUNT, not a state read: the first attempt read $61/$63/$3C after
+   the run and concluded the car was parked, when in fact those are the values a car has AFTER it
+   leaves the track and stalls, i.e. at the end of a run that drove the whole way. */
+volatile unsigned long g_bandHorizonMoves  = 0;
+}
+
+/* $3458 band 2 (16) · $3468 band 0 (16) · $3478 band 3 (4) · $347C band 4 (4) ·
+   the horizon (2) · the entry state (1).  Band 1's palette is a computed constant
+   sequence and its mode writes are literals, so neither is an input. */
+enum { BAND_INPUT_BYTES = 43 };
+static unsigned char s_bandInputs[BAND_INPUT_BYTES];
+static bool          s_bandInputsValid = false;
+static unsigned char s_bandCachedCount = 0;
+
+static bool band_inputs_unchanged(void)
+{
+    unsigned char buf[BAND_INPUT_BYTES];
+    unsigned n = 0, i;
+    for (i = 0; i < 16; i++) buf[n++] = mem[0x3458 + i];
+    for (i = 0; i < 16; i++) buf[n++] = mem[0x3468 + i];
+    for (i = 0; i < 4;  i++) buf[n++] = mem[0x3478 + i];
+    for (i = 0; i < 4;  i++) buf[n++] = mem[0x347C + i];
+    buf[n++] = mem[0x4F1F];
+    buf[n++] = mem[0x4F20];
+    buf[n++] = mem[0x4F43];
+
+    bool same = s_bandInputsValid;
+    for (i = 0; i < n; i++) {
+        if (buf[i] != s_bandInputs[i]) {
+            /* The horizon pair sits at the end, just before the entry state — count it on its
+               own, because it is the input that makes this test worth running (see the counter). */
+            if (i == BAND_INPUT_BYTES - 3 || i == BAND_INPUT_BYTES - 2) g_bandHorizonMoves++;
+            same = false;
+            s_bandInputs[i] = buf[i];
+        }
+    }
+    s_bandInputsValid = true;
+    return same;
+}
+
+unsigned Platform::fireIrq1vField(void)
+{
+    /* ⚠⚠ BEFORE the IRQ1V gate, not after, and `make determinism` is why: this call does two
+       jobs — it zeroes the band record AND advances the 1 MHz field clock behind $FE68, the
+       game's only entropy source.  Both backends used to call it unconditionally and let
+       fireIrq1v apply the gate internally, so the clock ticked through the pre-claim fields
+       too.  Hoisting the gate above it looked like a tidy-up and silently re-seeded the RNG:
+       the whole-corpus differential diverged at mem[$0004] within 300 frames. */
+    bbc_begin_band_cycle();
+
+    /* The same gate fireIrq1v applies, hoisted out of the loop: until the game has claimed
+       IRQ1V there is no cycle to run and no record worth caching. */
+    if (mem[0x0204] != 0x5C || mem[0x0205] != 0x4E) return 0;
+
+#ifdef REVS_BAND_CHECK
+    /* ⭐⭐ THE ORACLE (`make BANDCHECK=1`), and it exists because the obvious test was blind.
+       Dropping the horizon from the digest — a sabotage that must break the picture — PASSED
+       the host's 300-frame byte differential, because a host run is only ~36 FIELDS and the
+       horizon never moved in it.  A skip that is never wrong on static inputs proves nothing
+       about the case the whole change is about.
+       So: always run the REAL cycle, and separately ask what the predicate would have decided.
+       Whenever it says "reuse", the record the real cycle just built must equal the one it
+       would have reused.  Exact, no double-run of $52A4, and it fires on a moving car —
+       which on this port means the target, not the host. */
+    {
+        unsigned char  pCount = s_bandCachedCount;
+        unsigned short pDur[BBC_MAX_BANDS];
+        unsigned char  pCtl[BBC_MAX_BANDS], pSt[BBC_MAX_BANDS], pPal[BBC_MAX_BANDS][16];
+        for (unsigned b = 0; b < BBC_MAX_BANDS; b++) {
+            pDur[b] = g_bandDuration[b]; pCtl[b] = g_bandControl[b]; pSt[b] = g_bandState[b];
+            for (unsigned c = 0; c < 16; c++) pPal[b][c] = g_bandPalette[b][c];
+        }
+        const bool predicted = (pCount == 5) && band_inputs_unchanged();
+
+        unsigned n = 0;
+        for (int band = 0; band < 8; band++) {
+            fireIrq1v(); n++;
+            if (mem[0x4F43] == 0) break;
+        }
+        s_bandCachedCount = g_bandCount;
+        g_bandRuns++;
+
+        if (predicted) {
+            g_bandCheckChecks++;
+            bool bad = (g_bandCount != pCount);
+            for (unsigned b = 0; !bad && b < g_bandCount; b++) {
+                if (pDur[b] != g_bandDuration[b] || pCtl[b] != g_bandControl[b] ||
+                    pSt[b]  != g_bandState[b])   { bad = true; break; }
+                for (unsigned c = 0; c < 16; c++)
+                    if (pPal[b][c] != g_bandPalette[b][c]) { bad = true; break; }
+            }
+            if (bad) g_bandCheckMismatch++;
+        }
+        return n;
+    }
+#endif
+
+#ifndef REVS_NO_BANDSKIP
+    if (s_bandCachedCount == 5 && band_inputs_unchanged()) {
+        /* The record in g_band* is still the right answer; only its count was just zeroed. */
+        g_bandCount = s_bandCachedCount;
+
+        /* Band 4's arm, and nothing else.  The register setup is the one the twin performs
+           at $4EF5 — measured to make no difference to the differential, kept for the same
+           reason it is kept there.  A/X/Y are saved around it because on the real path the
+           closing RTI restores them (A via $FC) and the measured contract is that all three
+           survive an engine-context interrupt. */
+        const uint8_t a0 = cpu.A, x0 = cpu.X, y0 = cpu.Y;
+        cpu.A = mem[0x347C]; cpu.X = 0xFF; cpu.N = 1; cpu.Z = 0; cpu.C = 1;
+        PROBE_PHASE(PROBE_PHASE_BODYARM);
+        FUN_52a4();
+        PROBE_PHASE(PROBE_PHASE_DRAIN);
+        cpu.A = a0; cpu.X = x0; cpu.Y = y0;
+
+        g_bandSkips++;
+        return 0;
+    }
+#endif
+
+    unsigned dispatched = 0;
+    /* ⚠ Bounded, because an unbounded loop over a state machine the game can change is how a
+       frame gets eaten.  8 = the five real bands plus slack; overrunning drops the rest of
+       this field's bands rather than hanging. */
+    for (int band = 0; band < 8; band++) {
+        fireIrq1v();
+        dispatched++;
+        if (mem[0x4F43] == 0) break;      /* $4F43 = irq_band_state; 0 = cycle complete */
+    }
+    s_bandCachedCount = g_bandCount;
+    g_bandRuns++;
+    return dispatched;
 }
 
 /* Default: no display, so every check reports a frame boundary.  A backend with a real

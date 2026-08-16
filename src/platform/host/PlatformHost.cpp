@@ -232,9 +232,16 @@ void PlatformHost::renderFrame()
                prevent, so the dump a comparison is made from must carry the proof beside it.
                ⚠ stderr, not stdout: a run killed by a timeout loses buffered stdout, which is how
                an earlier measurement came back empty and read as "the code never ran". */
+            /* ⭐ The band-record reuse PRINTS ITS OWN STATE, and that is not a nicety: the
+               first sabotage of it (drop the horizon from the digest) PASSED, and the reason
+               was that neither number had ever been looked at.  A skip rate of 0 and a
+               correct fast path are indistinguishable from every byte this dump compares.
+               runs/skips: both large ⇒ the path under test actually ran. */
             std::fprintf(stderr, "PlatformHost: screen dump frame %lu -> %s  "
-                         "(circuit %u, hook calls %lu, missing %lu)\n",
-                         frames, path, g_trackInstalled, g_trackHookCalls, g_trackHookMissing);
+                         "(circuit %u, hook calls %lu, missing %lu; "
+                         "band cycles run %lu, skipped %lu)\n",
+                         frames, path, g_trackInstalled, g_trackHookCalls, g_trackHookMissing,
+                         g_bandRuns, g_bandSkips);
         }
         /* ⭐ REVS_QUIT_AFTER_DUMP=1 — stop once the last requested frame is written.
            Without it the host races on forever after the dump, so a scripted check has to rely
@@ -322,11 +329,10 @@ void PlatformHost::tickVBI()
        One call = one full raster-band cycle = one 50 Hz tick, the same rule Revs::vbi()
        follows on the Amiga; see the comment there for why it is a cycle and not a band. */
     tickedThisFrame = true;
-    bbc_begin_band_cycle();
-    for (int band = 0; band < 8; band++) {
-        fireIrq1v();
-        if (mem[0x4F43] == 0) break;      // $4F43 = irq_band_state; 0 = cycle complete
-    }
+    // The loop, its bound, and the record-reuse fast path are in Platform::fireIrq1vField
+    // (src/platform/bbc_hw.cpp) — shared with the Amiga deliberately, so that this build's
+    // differentials (`make determinism`, `mode7`, `tracks`) are the oracle for the skip.
+    fireIrq1vField();
     if (dumpPath && frames >= dumpFrame && frames < dumpFrame + 3) dumpBands();
 }
 

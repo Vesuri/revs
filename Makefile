@@ -44,6 +44,30 @@ CFLAGS   := -std=c11   -g $(OPT) -Wall -Wno-unused-label -fsigned-char -DREVS_HW
 CXXFLAGS := -std=c++11 -g $(OPT) -Wall -Wno-reorder -fsigned-char -DREVS_HW_TRACE \
             -Isrc -Isrc/cpu -Isrc/platform -Isrc/gen
 
+# ⭐ `make BANDSKIP=0` — the control for the raster-band record reuse (src/platform/bbc_hw.cpp
+# §fireIrq1vField).  Present on the host too, and not as a convenience: `make determinism` is the
+# oracle for that change, so the A/B has to be runnable on the build that owns the differential.
+# ⚠ `make clean` when you toggle it — this Makefile tracks the define no better than the flags below.
+# ⚠⚠ THE CONTROL DIFFERS FROM THE DEFAULT BY EXACTLY 2 BYTES, and they are not a defect: the real
+# cycle pushes P and X on the 6502 stack five times a field and pulls them straight back, so it
+# leaves scratch at mem[$01F7]/mem[$01F8] — BELOW the entry S of $F8, i.e. dead.  The fast path
+# pushes nothing.  Everything else at frame 300 is identical, frame buffer included, and the band
+# record matches byte for byte.  So `make determinism BANDSKIP=0` will report those two bytes
+# against a reference recorded from the default build; that is the expected result, not a
+# divergence, and it is written down here rather than papered over in the differential.
+ifeq ($(BANDSKIP),0)
+CFLAGS   += -DREVS_NO_BANDSKIP
+CXXFLAGS += -DREVS_NO_BANDSKIP
+endif
+
+# `make BANDCHECK=1` — the oracle for the reuse (see amiga/Makefile for the full argument).
+# ⚠ On the host it is weak by construction: ~36 fields per run and a horizon that never moves.
+# It lives here so the sabotage can be developed quickly; the verdict comes off the target.
+ifeq ($(BANDCHECK),1)
+CFLAGS   += -DREVS_BAND_CHECK
+CXXFLAGS += -DREVS_BAND_CHECK
+endif
+
 # `make STRAIGHT_TO_RACE=1` — ⚠ `make clean` when you toggle it; this Makefile tracks the
 # define no more than the Amiga one does, so a partial rebuild links objects compiled the
 # other way and the flag silently does nothing.

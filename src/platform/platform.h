@@ -71,6 +71,16 @@ public:
        See bbc_hw.cpp for what goes wrong otherwise. */
     void fireIrq1v();
 
+    /* ⭐⭐ ONE WHOLE FIELD of the band cycle, and the fast path that usually skips it.
+       The five interrupts produce a RECORD, not a picture — the copper executes the raster
+       splits — and the record is a pure function of five palette tables plus the horizon,
+       which the main loop moves about once every 25 fields at this framerate.  So when the
+       inputs are unchanged the entire cycle is a no-op apart from $52A4, and this runs that
+       alone.  Measured cost of the full cycle: 6.1 ms of a 20 ms field, 96% of it machinery.
+       Returns the number of irq1v_handler dispatches it actually made (0 on the fast path).
+       `make BANDSKIP=0` is the control — see bbc_hw.cpp for the faithfulness argument. */
+    unsigned fireIrq1vField();
+
     /* Notification that the game wrote an OS vector / page-2 cell
        ($0200-$02FF) — IRQ1V, EVNTV, BRKV etc. */
     virtual void    shadowWrite(uint16_t addr, uint8_t val);

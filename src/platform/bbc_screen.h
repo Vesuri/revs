@@ -155,6 +155,17 @@ extern volatile unsigned char  g_bandState[BBC_MAX_BANDS];
 extern volatile unsigned char  g_bandPalette[BBC_MAX_BANDS][16];
 extern volatile unsigned char  g_ulaControl;
 extern volatile unsigned char  g_ulaPalette[16];
+/* Fields that ran the real five-interrupt cycle vs fields that reused the record it would
+   have rebuilt (bbc_hw.cpp §fireIrq1vField).  ⚠ Read BOTH before believing any measurement of
+   the reuse: a skip rate of 0 looks exactly like a correct fast path to every byte-differential
+   in this repo, and that is how its first sabotage passed. */
+extern volatile unsigned long  g_bandSkips;
+extern volatile unsigned long  g_bandRuns;
+/* `make BANDCHECK=1` only — the oracle's tally.  Mismatch must be 0 with Checks large. */
+extern volatile unsigned long  g_bandCheckChecks;
+extern volatile unsigned long  g_bandCheckMismatch;
+/* Fields in which the horizon moved — the stimulus that makes a reuse test non-trivial. */
+extern volatile unsigned long  g_bandHorizonMoves;
 /* Call immediately before dispatching one field's worth of bands, so the record always
    describes a whole field rather than a half-written one. */
 void bbc_begin_band_cycle(void);

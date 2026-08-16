@@ -38,7 +38,8 @@ void probe_phase(int id);
 void probe_isr_begin(void);
 void probe_isr_end(void);
 void probe_irq_begin(void);
-void probe_irq_end(void);
+void probe_irq_end(int state);
+void probe_irq_null(void);   /* the empty-bracket control — see probe.cpp */
 #ifdef REVS_PROBE_HWTIME
 void probe_hw_begin(void);
 void probe_hw_end(void);
@@ -47,10 +48,24 @@ extern volatile unsigned long g_probeHwWrites, g_probeHwReads;
 #endif
 extern volatile unsigned long g_probeIsrTicks, g_probeIsrCount;
 extern volatile unsigned long g_probeIrqTicks, g_probeIrqCount;
+
+/* ⭐⭐ THE BRACKET INSIDE THE HANDLER (2026-08-17).  irq1v_handler is one row in the phase
+ * table and five completely different jobs: four band arms that write a palette and reload a
+ * timer, and band 4, which also runs $52A4.  A per-CALL average over the five therefore prices
+ * a palette write and the band-4 arm as if they were the same thing, and that average ("~810 us
+ * a call for sixteen stores") is what made the cost look unexplained.  Split by the band the
+ * call SERVICES — mem[$4F43] read at entry, before the handler steps it.
+ * ⚠ Bands 1->2->3 fall THROUGH inside one interrupt when a band has no height, so a call is
+ * attributed to the band it entered on, and the count per band need not be equal.  Index 5 is
+ * the $FF wrap arm and 6 the "not our interrupt" exit; 7 catches anything else. */
+#define PROBE_BANDS 8
+extern volatile unsigned long g_probeBandTicks[PROBE_BANDS], g_probeBandCount[PROBE_BANDS];
+
 #define PROBE_ISR_BEGIN() probe_isr_begin()
 #define PROBE_ISR_END()   probe_isr_end()
 #define PROBE_IRQ_BEGIN() probe_irq_begin()
-#define PROBE_IRQ_END()   probe_irq_end()
+#define PROBE_IRQ_END(s)  probe_irq_end(s)
+#define PROBE_IRQ_NULL()  probe_irq_null()
 
 /* Number of phases the table below can hold — one per top-level call in $1701-$1763,
    plus id 0, plus slack. */
@@ -122,7 +137,8 @@ extern volatile unsigned long g_beamEpoch;
 #define PROBE_ISR_BEGIN() ((void)0)
 #define PROBE_ISR_END()   ((void)0)
 #define PROBE_IRQ_BEGIN() ((void)0)
-#define PROBE_IRQ_END()   ((void)0)
+#define PROBE_IRQ_END(s)  ((void)(s))
+#define PROBE_IRQ_NULL()  ((void)0)
 /* ⚠ The phase IDs are plain numbers and must exist in EVERY build: `make SHAPE=1` without PROBES
    passes them to the shape probe (src/platform/shape.h §WHO ACTUALLY DRAWS), and inside the
    PROBE_PHASE macro they were only ever unevaluated macro arguments — so a non-PROBES build

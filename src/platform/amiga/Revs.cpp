@@ -101,14 +101,11 @@ volatile uint8_t       g_bodyPending      = 0;  // ...and what is queued right n
 
 void Revs::runBandCycle()
 {
-    // ⚠ Bounded, because an unbounded loop over a state machine the game can change is how a
-    // frame gets eaten.  8 = the five real bands plus slack; overrunning drops the rest of this
-    // field's bands rather than hanging.
-    bbc_begin_band_cycle();
-    for (int band = 0; band < 8; band++) {
-        platform->fireIrq1v();
-        if (mem[0x4F43] == 0) break;      // $4F43 = irq_band_state; 0 = cycle complete
-    }
+    // ⭐⭐ ONE FIELD, and usually a fast path through it.  The loop, its bound and the
+    // record-reuse argument all live in Platform::fireIrq1vField (src/platform/bbc_hw.cpp) so
+    // that the host runs the identical code and `make determinism` / `mode7` / `tracks` are
+    // the oracle for it.  Measured: 96% of this row is machinery, 233 us a field is game work.
+    platform->fireIrq1vField();
 }
 
 void Revs::setFrontEnd(bool on)
