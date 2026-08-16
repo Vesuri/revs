@@ -134,6 +134,21 @@ family as the validation harness's fixture-or-fail rule (`docs/validation-harnes
 metric moves in the direction you want, check whether the thing being measured changed or only the
 measuring.**  Loosening a classifier is indistinguishable from progress if you only read the total.
 
+## An A/B control that is not the OLD CODE measures the test, not the change ⚑ Revs
+
+The dirty-region decode (2026-08-16) shipped with two honest numbers that disagree by 24 points.
+`make DIRTY=0` — the same new loop with the dirty test switched off — read **1.46 FPS**, so the test
+looked worth **+34%**. But the code it replaced read **1.77**: enabling the test meant restructuring
+the pass from line-major to cell-major (a display line is 40 sequential destination stores; a cell
+column is 8 strided by `kRowBytes`), and **the restructure cost ~18% on its own**. The change was
+worth **+10.7%**.
+
+Both figures are real and they answer different questions: the flag's control prices *the test*, and
+the previous commit prices *the change*. ⚠ **Only the second one is a baseline**, and quoting the
+first would have banked a win against a build that never existed. So whenever an optimisation needs
+an enabling restructure, measure **three** builds — old code, new code with the feature off, new
+code — and say which number is which. A single A/B flag silently prices only the last step.
+
 ## Instrument the state, not the event, when the event has already happened
 
 Counting executions of five menu call sites reported "none reached" while the engine was demonstrably
