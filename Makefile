@@ -33,9 +33,15 @@ else
   OPT := -O0
 endif
 
-CFLAGS   := -std=c11   -g $(OPT) -Wall -Wno-unused-label -fsigned-char \
+# ⭐ REVS_HW_TRACE — record every BBC hardware write so `make validate` can DIFF them.
+# mem[] is only half of what a 6502 routine produces; for a display or timer routine the
+# other half is all of it.  Twin #1 (irq1v_handler) survived two deliberate defects with a
+# byte-identical mem[], which is what put this here.  Host-only and unconditional: this
+# build exists for the differential, not for speed (src/platform/host/PlatformHost.h).
+# The Amiga build never defines it and the hook compiles to nothing there.
+CFLAGS   := -std=c11   -g $(OPT) -Wall -Wno-unused-label -fsigned-char -DREVS_HW_TRACE \
             -Isrc -Isrc/cpu -Isrc/platform -Isrc/gen
-CXXFLAGS := -std=c++11 -g $(OPT) -Wall -Wno-reorder -fsigned-char \
+CXXFLAGS := -std=c++11 -g $(OPT) -Wall -Wno-reorder -fsigned-char -DREVS_HW_TRACE \
             -Isrc -Isrc/cpu -Isrc/platform -Isrc/gen
 
 # `make STRAIGHT_TO_RACE=1` — ⚠ `make clean` when you toggle it; this Makefile tracks the

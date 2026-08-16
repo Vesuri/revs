@@ -192,14 +192,14 @@ void Platform::hwWrite(uint16_t addr, uint8_t val)
        by OSBYTE 154.  Phase 5 turns the per-band value into a copper BPLCON/palette
        change; for now record the latest. */
     case 0xFE20:
-        g_ulaControl = val;
+        bbc_ula_control_write(val);   /* the one definition — bbc_screen.h */
         break;
 
     /* Video ULA palette ($FE21): the high nibble is the logical colour, the low nibble
        the (inverted) physical colour.  Revs rewrites all 16 entries per band, which is
        precisely what makes this a copper job rather than a CPU one. */
     case 0xFE21:
-        g_ulaPalette[(val >> 4) & 0x0F] = val;
+        bbc_ula_palette_write(val);   /* the one definition — bbc_screen.h */
         break;
 
     /* User VIA T1 counter/latch — the raster schedule (see the extern above).

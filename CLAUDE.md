@@ -333,7 +333,17 @@ Amiga frame. `bus_write` to BBC hardware is largely ignored on Amiga.
 negotiable** — the game body is a VERTB-ISR interrupt, so 25 FPS means painting every other frame
 with the simulation still at full rate.
 
-⭐ **BASELINE: 0.87 FPS RENDERED** (2026-08-14; 0.78 before the two-level-RTS fix below, which
+⭐⭐ **BASELINE: 1.56 FPS RENDERED** (2026-08-16, `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` +
+`fps_series.gdb`) — **twin #1, `irq1v_handler` native, took it from 0.96 to 1.56 (+62%)**.  It
+was ~80 6502 instructions and ~400 ms of a 1038 ms frame, and the win is the *absence of the
+interpreter*, not better code: 48 of those instructions are `STA $FE21`, and written as C gcc
+folds a whole 16-entry palette loop into sixteen immediate stores.  ⚠⚠ It also found that
+`make validate` could not see hardware writes at ALL — four of nine sabotages passed — so
+`diff_run` now diffs the hardware-write SEQUENCE too (`docs/validation-harness.md` §a fifth), and
+**sabotage is a required step for every twin** (`docs/phases.md` §1a item 9).  ⚠ Re-profile before
+picking twin #2: the 51% body row has just been cut by two thirds and the share table is stale.
+
+⭐ *(superseded)* **0.87 FPS RENDERED** (2026-08-14; 0.78 before the two-level-RTS fix below, which
 stopped the road-span chains over-plotting) **/ 1.46 FPS unrendered** — ~29× short of the floor.
 Phase 5 draws now, and rendering roughly halves the frame: two thirds of that cost is display
 DMA against a program in chip RAM (structural on a stock A500), one third the frame-buffer

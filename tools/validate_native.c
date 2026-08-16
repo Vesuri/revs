@@ -124,6 +124,16 @@ void platform_test_init_headless(void);
 void platform_test_tick_clock(int on);
 void platform_test_clock_addr(uint16_t a);
 
+/* ⭐⭐ THE HARDWARE-WRITE TRACE (src/platform/platform_cbridge.cpp).  mem[] is only half of
+   what a 6502 routine can produce; the other half is $FC00-$FEFF, and for a display or
+   timer routine it is nearly ALL of the output.  Diffing it is not optional — see the
+   sabotage note over test_irq1v_handler(). */
+enum { HWLOG_MAX = 8192 };
+extern uint16_t g_hwLogAddr[HWLOG_MAX];
+extern uint8_t  g_hwLogVal[HWLOG_MAX];
+extern unsigned g_hwLogN;
+extern unsigned g_hwLogOverflow;
+
 static void fill_random(uint8_t* buf) {
     uint32_t* w = (uint32_t*)buf;
     for (int i = 0; i < 65536 / 4; i++) w[i] = xs();
@@ -140,14 +150,21 @@ static int diff_run(const char* name, const uint8_t* pre, Cpu6502 pre_cpu,
                     void (*native)(void), void (*t6502)(void), unsigned liveMask,
                     int t, int* printed)
 {
-    static uint8_t ref_mem[65536];
+    static uint8_t  ref_mem[65536];
+    static uint16_t ref_hw_addr[HWLOG_MAX];
+    static uint8_t  ref_hw_val[HWLOG_MAX];
 
     memcpy((void*)mem, pre, 65536); cpu = pre_cpu;
+    g_hwLogN = 0; g_hwLogOverflow = 0;
     t6502();
     memcpy(ref_mem, (void*)mem, sizeof ref_mem);
     Cpu6502 ref_cpu = cpu;
+    unsigned ref_hw_n = g_hwLogN, ref_hw_ovf = g_hwLogOverflow;
+    memcpy(ref_hw_addr, g_hwLogAddr, ref_hw_n * sizeof ref_hw_addr[0]);
+    memcpy(ref_hw_val,  g_hwLogVal,  ref_hw_n * sizeof ref_hw_val[0]);
 
     memcpy((void*)mem, pre, 65536); cpu = pre_cpu;
+    g_hwLogN = 0; g_hwLogOverflow = 0;
     native();
 
     for (int i = 0; i < g_ignore_n; i++) ref_mem[g_ignore[i]] = mem[g_ignore[i]];
@@ -160,6 +177,29 @@ static int diff_run(const char* name, const uint8_t* pre, Cpu6502 pre_cpu,
                 printf("[MEM DIFF] %s case %d  $%04X  ref=$%02X native=$%02X\n",
                        name, t, i, ref_mem[i], mem[i]);
                 (*printed)++;
+            }
+    }
+
+    /* The hardware trace, compared as a SEQUENCE.  Order is semantic: the last write to a
+       given ULA palette slot is the one that shows, and $FE66 is what closes a band record.
+       An overflow on either side is reported rather than truncated silently. */
+    if (g_hwLogN != ref_hw_n || g_hwLogOverflow != ref_hw_ovf) {
+        failed = 1;
+        if (*printed < 12) {
+            printf("[HW DIFF] %s case %d  write count ref=%u native=%u (overflow ref=%u native=%u)\n",
+                   name, t, ref_hw_n, g_hwLogN, ref_hw_ovf, g_hwLogOverflow);
+            (*printed)++;
+        }
+    } else {
+        for (unsigned i = 0; i < ref_hw_n; i++)
+            if (g_hwLogAddr[i] != ref_hw_addr[i] || g_hwLogVal[i] != ref_hw_val[i]) {
+                failed = 1;
+                if (*printed < 12) {
+                    printf("[HW DIFF] %s case %d  write %u  ref=$%04X<-$%02X native=$%04X<-$%02X\n",
+                           name, t, i, ref_hw_addr[i], ref_hw_val[i], g_hwLogAddr[i], g_hwLogVal[i]);
+                    (*printed)++;
+                }
+                break;
             }
     }
 
@@ -216,15 +256,106 @@ static int test_contract(const char* name, void (*native)(void), void (*t6502)(v
 /* ==========================================================================
    FIXTURES
    ==========================================================================
-   None yet — no twin exists.  Add one per twin, e.g.
-
-       fail += test_contract("divide_16x16", divide_16x16, divide_16x16__t6502,
-                             LIVE_NONE, 200000);
-
    ⚠ Registering the function in transpile.py's VALIDATE_FUNCS is only HALF the job:
    without a fixture here, check_coverage() now fails the run rather than letting a
    vacuous PASS through.  That is deliberate.
    ========================================================================== */
+
+void platform_test_t1_pending(int on);
+void irq1v_handler(void);
+void irq1v_handler__t6502(void);
+
+/* --------------------------------------------------------------------------
+   $4E5C irq1v_handler — the raster-band state machine (src/gen/revs_native.c).
+
+   Not test_contract(), for three reasons, each of which is the fixture's actual content:
+
+   1. THE GATING READ IS NOT IN mem[].  The handler's first act is `LDA $FE6D / AND #$40`,
+      and a clear bit sends it straight out to the MOS's handler.  fill_random() cannot
+      reach that bit — it is the platform's.  Both polarities are exercised here, and the
+      chain-out one gets its own small pass because its exit register contract is DIFFERENT
+      (it leaves through a JMP, so nothing restores A).
+
+   2. THE BAND COUNTER MUST BE STEERED.  $4F43 selects one of five arms plus two
+      do-nothing paths.  A uniformly random byte would spend 251/256 of its cases on
+      "negative and not $FF", i.e. on the arm that does nothing — 4000 cases of proving
+      that a `goto rti` is a `goto rti`.  Each path gets its own budget instead.
+
+   3. THE HORIZON SPLIT IS THE INTERESTING INPUT, and it is two bytes.  Band 1's arm
+      falls THROUGH into band 2 (and band 2 into band 3) when the split underflows, so
+      $4F1F/$4F20 decide the control flow.  Random 16-bit values put ~90% of cases on
+      one side of `$153C`, so the fixture also pins the boundary explicitly.
+
+   ⚠ WHAT IS AND IS NOT COVERED, stated rather than quietly skipped.  Band 4 calls
+   FUN_52a4 — the entire 50 Hz game body — and it really runs here, on randomised memory:
+   deleting the call fails 128 of 128 cases.  What the differential canNOT see is the
+   register hand-off INTO it: A, X and N/Z/C can each be falsified at the call site with
+   no observable effect, because the body reloads them.  That part of the twin is
+   faithful-by-construction, not proven, and the comment at the call site says so.
+
+   ⭐ SABOTAGE RECORD (2026-08-16), because a first-run PASS is not evidence.  Nine
+   deliberate defects: horizon remainder +1, X not restored, band counter not advanced,
+   the horizon boundary <= → <, band-3 latch +1, band-3 palette 3 entries instead of 4,
+   band-0 palette written in ascending order, the $FE69 poke dropped, FUN_52a4 not called.
+   All nine fail now.  ⚠⚠ FOUR OF THEM PASSED before diff_run grew a hardware trace: the
+   ULA and the T1 latch are not in mem[] and this routine leaves only four bytes there, so
+   a mem[]-only differential was validating almost none of its output.
+   -------------------------------------------------------------------------- */
+static int irq1v_case(const char* label, int state, int pending, int cases,
+                      int pinSplit, unsigned split, int* printed)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    int fail = 0, t;
+
+    platform_test_t1_pending(pending);
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        pre[0x4F43] = (uint8_t)state;
+        if (pinSplit) { pre[0x4F1F] = (uint8_t)split; pre[0x4F20] = (uint8_t)(split >> 8); }
+        /* A real IRQ arrives with the foreground's registers live and S well inside the
+           stack page (measured mid-race on a BBC: $F2).  Randomising them is what makes
+           "A, X and Y come back unchanged" a tested contract instead of 0 == 0. */
+        c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+        c.S = (uint8_t)(0xC0 + (xs() & 0x3F));
+        c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1;
+        c.C = xs() & 1; c.I = xs() & 1; c.D = xs() & 1;
+        fail += diff_run(label, pre, c, irq1v_handler, irq1v_handler__t6502,
+                         liveMask, t, printed);
+    }
+    platform_test_t1_pending(0);
+    return fail;
+}
+
+static int test_irq1v_handler(void)
+{
+    int fail = 0, printed = 0;
+    register_fixture("irq1v_handler");
+    if (!want("irq1v_handler")) return 0;
+
+    /* not our interrupt: chain on to the saved IRQ1V.  A is left 0 by the AND. */
+    fail += irq1v_case("irq1v:chain",  0x00, 0, 2000, 0, 0, &printed);
+
+    fail += irq1v_case("irq1v:band0",  0x00, 1, 4000, 0, 0, &printed);
+    /* band 1 both sides of the $153C horizon split, plus the two boundary values */
+    fail += irq1v_case("irq1v:band1",  0x01, 1, 4000, 0, 0,      &printed);
+    fail += irq1v_case("irq1v:band1<", 0x01, 1,  500, 1, 0x153B, &printed);
+    fail += irq1v_case("irq1v:band1=", 0x01, 1,  500, 1, 0x153C, &printed);
+    fail += irq1v_case("irq1v:band1>", 0x01, 1,  500, 1, 0x153D, &printed);
+    fail += irq1v_case("irq1v:band2",  0x02, 1, 4000, 0, 0, &printed);
+    fail += irq1v_case("irq1v:band3",  0x03, 1, 4000, 0, 0, &printed);
+    fail += irq1v_case("irq1v:wrap",   0xFF, 1, 2000, 0, 0, &printed);
+    fail += irq1v_case("irq1v:idle",   0x80, 1, 2000, 0, 0, &printed);
+    fail += irq1v_case("irq1v:idle2",  0xC3, 1, 2000, 0, 0, &printed);
+    /* every state above 3 takes band 4's arm; $04 and a high one both prove it */
+    fail += irq1v_case("irq1v:band4",  0x04, 1,   64, 0, 0, &printed);
+    fail += irq1v_case("irq1v:band4b", 0x7F, 1,   64, 0, 0, &printed);
+
+    printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXYS+flags\n",
+           "irq1v_handler", 25628, fail);
+    return fail;
+}
 
 int main(int argc, char** argv)
 {
@@ -236,7 +367,8 @@ int main(int argc, char** argv)
     int fail = 0;
 
     /* --- fixtures go here --- */
-    (void)test_contract;   /* remove once the first fixture is registered */
+    (void)test_contract;   /* the generic leaf fixture; twin #1 needs a steered one */
+    fail += test_irq1v_handler();
 
     fail += check_coverage();
 

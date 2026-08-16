@@ -279,6 +279,34 @@ subsystem (5+11 = 13.5%), then the decode.**  `FUN_52a4` — the band-4 arm, whi
 thing that draws display lines 120-143 — has never been profiled or split, and it is the single
 biggest item in the port.
 
+### ⭐⭐ TWIN #1 SHIPPED: `irq1v_handler` native, **0.96 → 1.56 FPS** (+62%, 2026-08-16)
+
+The first native twin the project has (`src/gen/revs_native.c`, `VALIDATE_FUNCS = {0x4E5C}`).
+
+| build | vblanks | painted | FPS | frame |
+|---|---|---|---|---|
+| transliterated (the flat-band-skip row above) | 11778 | 227 | **0.96** | 1038 ms |
+| `irq1v_handler` native                        | 11824 | **369** | **1.56** | 641 ms |
+
+Same flags (`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1`), same instrument (`fps_series.gdb`,
+22 rows, one 0.97 outlier and 21 rows within 1.56-1.66), nearly identical vblank counts.
+**~400 ms of a 1038 ms frame, and the routine is ~80 6502 instructions.**
+
+⭐ **WHERE IT WENT, AND THE GENERAL LESSON.**  Nothing algorithmic changed — the twin makes the
+same hardware writes in the same order.  What was paid for was *the transliteration itself*:
+48 of those 80 instructions are `STA $FE21` inside three 16-entry palette loops, and each one
+cost ~20 68000 instructions of N/Z bookkeeping against a struct in memory, plus a C-bridge call
+→ virtual dispatch → 12-case switch to reach a one-line model.  Written as C, gcc **constant-folds
+and fully unrolls band 1's whole loop into 16 `move.b #imm,abs.l`** — the sixteen palette entries
+are `3,$13..$F3`, a fact the 6502 spells as `ADC #$10 / BCC` and C spells as a compile-time
+constant.  ⭐⭐ **So a transliterated hot routine can be dominated by cost that has no counterpart in
+the original at all, and the twin's win is not "better code" but "the absence of an interpreter".**
+Expect the same shape wherever a tight 6502 loop touches hardware or drives a table.
+
+⚠ Two things this did NOT do, so the next measurement is not mis-set: the 51% row is a RATIO
+(the body still runs once per field, faithfully — it now just costs less each time), and
+`FUN_52a4` is untouched.  Re-profile before picking twin #2; the share table above is stale.
+
 ⚠ **And `$1A20` is not "the rasteriser" in the sense the notes claim.**  A snapshot-diff of the
 frame buffer around it (`make SHAPE=1`, `src/platform/shape.h`) says it changes **6-7 bytes per
 call, at display lines 26..55** — inside the sky band, i.e. engine variables that happen to live in

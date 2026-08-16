@@ -18,6 +18,33 @@ And the fourth, from the same finding: **auto-randomised inputs including the ga
 Fixtures randomise the whole 64 KB by default, so no branch stays untested because its gating
 byte happened to be zero in every hand-authored case.
 
+## ⭐⭐ …and a FIFTH, found by twin #1: `mem[]` is only half the output
+
+**`diff_run()` also compares the sequence of BBC hardware writes.**  This was not designed in —
+it was found by sabotaging the first twin (2026-08-16), and it is the one failure mode on this
+page that the Atari port could not have taught, because that machine's equivalent registers were
+mostly in `mem[]`.
+
+`irq1v_handler` ($4E5C) writes the Video ULA and the User VIA T1 latch about twenty times per
+call and leaves **four bytes** in `mem[]`.  Nine deliberate defects were injected into the twin;
+with a `mem[]`-only diff, **four of them passed 25 628 cases** — including the horizon-split
+comparison off by one and a wrong band's T1 latch, i.e. defects that would change what the screen
+shows on every field.  The ULA is not in `mem[]`, so nothing was looking.
+
+How it works: `HeadlessPlatform::hwWrite` appends `(addr, val)` to `g_hwLog*`, `diff_run()` runs
+the oracle, snapshots the log, runs the twin, and compares the two **as a sequence** — order is
+semantic (the last write to a palette slot wins; `$FE66` closes a band record).
+
+⚠ **The one trap, and it is the price of a fast path.**  A twin may reach the hardware model
+without going through `hwWrite` — twin #1 calls `bbc_ula_palette_write()` in `bbc_screen.h`
+directly, which is most of why it is 62% faster.  Such a path **must trace itself**, or the twin
+is validated on the writes it did not optimise.  So the trace hook lives in that shared inline
+(`BBC_HW_TRACE`, host-only via `-DREVS_HW_TRACE`), and `hwWrite` deliberately does *not* log
+`$FE20`/`$FE21` because it reaches them through the same inline.  Keep those two halves in step.
+
+⚠ It follows that **a twin must be sabotaged, not just run.**  A first-run PASS on a routine
+whose output the harness cannot see is indistinguishable from a first-run PASS on a correct twin.
+
 ## Using it
 
 ```

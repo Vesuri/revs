@@ -551,10 +551,18 @@ MANUAL_FUNCS = set()
 # the harness FAILS on a listed name with no fixture, because a fixture-less PASS runs
 # zero comparisons (docs/validation-harness.md).
 #
-# EMPTY until Phase 6 (docs/phases.md).  Phase 4 profiles the transliterated corpus on the
-# real A500 FIRST and lets the measurement pick the twins — the Atari port chose them by
-# reasoning and got the choice wrong (docs/perf-method.md).
-VALIDATE_FUNCS = set()
+# Phase 4 profiled the transliterated corpus on the real A500 FIRST and let the measurement
+# pick the twins — the Atari port chose them by reasoning and got the choice wrong
+# (docs/perf-method.md).
+VALIDATE_FUNCS = {
+    # ⭐⭐ TWIN #1, $4E5C irq1v_handler — the 50 Hz body's raster-band state machine.
+    # 51.1% of the frame lives in the band cycle and 10.8 ms of every 11.1 ms body tick is
+    # this function (docs/perf-method.md §Inside the 51%).  It is ~80 6502 instructions,
+    # 48 of which are `STA $FE21` inside three 16-entry palette loops — i.e. almost all of
+    # the cost is the transliteration's per-instruction flag bookkeeping and the per-write
+    # trip through platform_hw_write, not work the BBC did.
+    0x4E5C,
+}
 VALIDATE_SUFFIX = '__t6502'
 
 # ---------------------------------------------------------------------------

@@ -820,7 +820,18 @@ and the baseline is still ~0.87 FPS.
 
 ---
 
-## Phase 6 — Native twins, then asm ⬜
+## Phase 6 — Native twins, then asm 🔧
+
+> ⭐⭐ **TWIN #1 IS SHIPPED AND IT WAS WORTH 62%** (2026-08-16): `irq1v_handler` ($4E5C) native,
+> **0.96 → 1.56 FPS**, `make validate` 25 628 cases / 0 mismatch, nine sabotages caught.
+> `docs/perf-method.md` §Twin #1 has the table and the lesson (the win is the *absence of the
+> interpreter*, not better code — gcc constant-folds a 16-entry 6502 palette loop into sixteen
+> immediate stores).  ⚠⚠ It was also the item that found the harness could not see hardware
+> writes at all; `docs/validation-harness.md` §a fifth.
+>
+> ⚠ **The order below is the order as of the last profile, and twin #1 invalidated it.**
+> Re-run `phase4_prof.gdb` before picking twin #2 — the 51% row has just been cut by roughly
+> two thirds and something else is now the top of the table.
 
 ### ⭐⭐ 0. FIRST, THE REPRESENTATION: render DIRECT to bitplanes — `docs/direct-bitplane-plan.md`
 
@@ -957,8 +968,13 @@ experience transfers as more than method.  The lever is unchanged: control the r
 ⚠ **This list did not exist until the user asked for it** (2026-08-16).  Phase 6 named its targets
 and its levers and then said "the twins", leaving the actual per-routine work implicit — and two of
 the eight items below turn out to be *constrained* rather than free, which is exactly what an
-implicit list hides.  `VALIDATE_FUNCS` is still empty and `src/gen/revs_native.c` does not exist:
-the first routine through this list is the first twin the project has.
+implicit list hides.
+
+✅ **`irq1v_handler` ($4E5C) has been through it** — the first twin the project has, and the list
+survived contact with one addition: **item 9, sabotage the fixture before believing it.**  Items 5
+(`mem.h` names) and 0c (the naming batch) were *skipped* for it and that was the right call for
+this routine — it touches eleven `mem[]` cells, four of which are the ULA tables it indexes by
+address — but the argument for doing the batch before a twin with a wide `mem[]` surface stands.
 
 For each routine promoted out of `revs_gen.c`:
 
@@ -994,6 +1010,12 @@ For each routine promoted out of `revs_gen.c`:
    unchanged.  Item 0c is the concentrated batch *before* the twins; this is the trickle *during*
    them, and the trickle still gets batched through `symbols.csv`, never renamed piecemeal in
    generated files.
+9. ⭐⭐ **SABOTAGE THE FIXTURE BEFORE BELIEVING IT** — added 2026-08-16, by twin #1.  Inject a
+   handful of deliberate defects (an off-by-one in each branch condition, a dropped write, a
+   register not restored, the callee not called) and require each to FAIL.  Twin #1 passed on
+   its first run and *four* of its nine sabotages passed too: the differential could not see
+   hardware writes, which are almost the whole output of that routine.  A green first run on a
+   harness that is blind to the output looks exactly like a green first run on a correct twin.
 
 Then `make validate FN=<name>` must show **0 mem mismatch**, and the perf claim comes from the
 in-process differential (`make VERIFY=1 PROBES=1 FIXED_RNG=1`), never from a cross-run framerate.

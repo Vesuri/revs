@@ -140,6 +140,41 @@ extern volatile uint8_t mem[65536];   /* the 6502 RAM image (src/cpu/cpu.c) */
 static int g_headlessTickClock = 0;
 static uint16_t g_headlessClockAddr = 0x0292;   /* MOS TIME low byte — confirm */
 
+/* ⭐ The User VIA IFR ($FE6D bit 6), for the irq1v_handler fixture.  It is the FIRST thing
+   the handler reads and a clear bit means "not our interrupt", so the handler chains
+   straight out to the MOS and does nothing else.  Left at 0 the differential would run
+   thousands of cases against one three-instruction path and report a confident PASS —
+   the vacuous-green failure mode, wearing a plausible input.  Both the twin and its oracle
+   see the same answer because both go through this one platform. */
+static int g_headlessT1Pending = 0;
+
+/* ⭐⭐ THE HARDWARE-WRITE TRACE, and it is not an extra: without it the differential is
+   BLIND to the whole output of a routine whose job is writing hardware.
+   Found by sabotage, 2026-08-16: twin #1 is irq1v_handler, which writes the Video ULA and
+   the User VIA T1 latch and leaves only four bytes in mem[].  Two deliberate defects —
+   the horizon-split comparison off by one, and the wrong band's T1 latch — both produced
+   a byte-identical mem[] and a confident PASS over 25 628 cases.  A mem[]-only diff can
+   never see them: the ULA is not in mem[].
+   So every hardware write goes into this log, and diff_run compares the two runs' logs as
+   a SEQUENCE (order matters — the last write to a palette slot wins, and $FE66 closes a
+   band record). */
+enum { HWLOG_MAX = 8192 };
+extern "C" {
+uint16_t g_hwLogAddr[HWLOG_MAX];
+uint8_t  g_hwLogVal[HWLOG_MAX];
+unsigned g_hwLogN = 0;
+unsigned g_hwLogOverflow = 0;
+
+#ifdef REVS_HW_TRACE
+/* Called from bbc_screen.h's ULA inlines — the one path that reaches the hardware model
+   without going through hwWrite (a native twin's fast path).  See the comment there. */
+void bbc_hw_trace(unsigned short addr, unsigned char val) {
+    if (g_hwLogN < HWLOG_MAX) { g_hwLogAddr[g_hwLogN] = addr; g_hwLogVal[g_hwLogN] = val; g_hwLogN++; }
+    else g_hwLogOverflow++;
+}
+#endif
+}
+
 namespace {
 struct HeadlessPlatform : Platform {
     void    run() override {}
@@ -148,7 +183,19 @@ struct HeadlessPlatform : Platform {
     void    renderFrame() override {}
     void    tickVBI() override { if (g_headlessTickClock) mem[g_headlessClockAddr]++; }
     int     loadImage(const char*) override { return -1; }
-    uint8_t hwRead(uint16_t) override { return 0x00; }
+    uint8_t hwRead(uint16_t addr) override {
+        return (addr == 0xFE6D && g_headlessT1Pending) ? 0xC0 : 0x00;
+    }
+    void hwWrite(uint16_t addr, uint8_t val) override {
+        /* ⚠ NOT $FE20/$FE21: those reach the model through bbc_screen.h's inlines, which
+           trace themselves so a twin's fast path is covered too.  Logging here as well
+           would double every ULA write on the oracle's side only. */
+        if (addr != 0xFE20 && addr != 0xFE21) {
+            if (g_hwLogN < HWLOG_MAX) { g_hwLogAddr[g_hwLogN] = addr; g_hwLogVal[g_hwLogN] = val; g_hwLogN++; }
+            else g_hwLogOverflow++;
+        }
+        Platform::hwWrite(addr, val);      /* the real model still runs */
+    }
 };
 } /* namespace */
 
@@ -161,5 +208,8 @@ void platform_test_init_headless(void) {
 /* Enable/disable the clock-advancing tick for frame-wait twin validation. */
 void platform_test_tick_clock(int on) { g_headlessTickClock = on ? 1 : 0; }
 void platform_test_clock_addr(uint16_t a) { g_headlessClockAddr = a; }
+
+/* Raise/lower the User VIA T1 timeout flag the IRQ1V handler dispatches on. */
+void platform_test_t1_pending(int on) { g_headlessT1Pending = on ? 1 : 0; }
 
 } /* extern "C" */

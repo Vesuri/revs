@@ -162,6 +162,55 @@ void bbc_begin_band_cycle(void);
 }
 #endif
 
+/* ⭐ THE VIDEO ULA WRITE, AS ONE DEFINITION USED BY TWO CALLERS.
+ *
+ * Platform::hwWrite's $FE20/$FE21 arms are these two lines, and so is the native twin of
+ * irq1v_handler (src/gen/revs_native.c) — which issues 48 palette writes per field and is
+ * 51% of the frame, so it reaches the model directly instead of paying a C-bridge call, a
+ * virtual dispatch and a 12-case switch per byte.
+ *
+ * ⚠ It is an INLINE SHARED WITH hwWrite rather than a copy of it, deliberately: two
+ * hand-written statements of "what $FE21 means" is exactly how the model and the fast path
+ * drift, and nothing in `make validate` would see it (the differential diffs mem[], and the
+ * ULA is not in mem[]).  The band record's $FE66 arm, which snapshots g_ulaPalette, stays in
+ * hwWrite — it runs once per band, not 16 times.
+ * ⚠ It also bypasses the REVS_PROBE_HWTIME counters, which therefore under-count the palette
+ * writes in a twin build.  That instrument exists to price ONE access, not to total them. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* ⭐⭐ AND THE REASON THE FAST PATH STILL ANNOUNCES ITSELF.  `make validate` diffs the
+ * hardware writes a twin makes against the ones its 6502 oracle makes, as a sequence
+ * (tools/validate_native.c) — which is the only way a display routine's output is visible
+ * at all, since the ULA is not in mem[].  A fast path that skipped the trace would be a
+ * twin validated on the four bytes it happens to leave in RAM.  So the trace hook lives
+ * HERE, in the shared definition, and Platform::hwWrite's $FE20/$FE21 arms therefore do
+ * NOT trace (they reach the hardware through these two functions and would double-log) —
+ * every other register traces at the hwWrite override.  ⚠ Keep those two halves in step.
+ * Host-only: REVS_HW_TRACE is on for the whole host build (which exists for the
+ * differential, not for speed) and off on the Amiga, where this compiles to nothing. */
+#ifdef REVS_HW_TRACE
+void bbc_hw_trace(unsigned short addr, unsigned char val);
+#define BBC_HW_TRACE(a, v) bbc_hw_trace((unsigned short)(a), (unsigned char)(v))
+#else
+#define BBC_HW_TRACE(a, v) ((void)0)
+#endif
+
+/* $FE21: high nibble = logical colour, low nibble = the (inverted) physical colour. */
+static inline void bbc_ula_palette_write(unsigned char v) {
+    BBC_HW_TRACE(0xFE21, v);
+    g_ulaPalette[(v >> 4) & 0x0F] = v;
+}
+/* $FE20: screen mode, flash, cursor width. */
+static inline void bbc_ula_control_write(unsigned char v) {
+    BBC_HW_TRACE(0xFE20, v);
+    g_ulaControl = v;
+}
+#ifdef __cplusplus
+}
+#endif
+
 /* ── THE RASTER ANCHOR ───────────────────────────────────────────────────────────────
  * The chain is self-timed, so ONE absolute line fixes all five bands: band 0's interrupt,
  * which lands 26.4 lines BEFORE the first displayed line (inside the previous field's
