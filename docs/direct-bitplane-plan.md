@@ -415,6 +415,47 @@ column-major, per-column silhouette. The palette band called "the dashboard" sta
   per cell down a column is *already* the shape a direct plotter wants — the same walk, two plane
   bytes per source byte, `kRowBytes` apart.
 
+### ✅ 7e. THE LAYOUT DECISION (§3, finally taken) AND WHAT MAKES IT PAY
+
+Three measurements taken together settle it (`make fbwrites`, real BBC, driving):
+
+1. **The visible frame buffer is WRITE-ONLY.** Lines 80..207 are never read back except
+   `vdu_char_def`'s **148 reads/frame at lines 129..180** — the MOS character plot's
+   read-modify-write for the digits. Everything else that looked like a read was the 6502's dummy
+   read inside `STA (zp),Y` (1:1 with the store count, landing on the un-carried neighbour). ⭐ So
+   the port may stop maintaining `mem[]` for the sweep's region and plot straight to bitplanes; the
+   digits are the one carve-out and they are 148 bytes.
+2. **The sweep's store pattern is HORIZONTAL, and that is the whole argument.** A unit steps `d`
+   by **+8** — the next *cell of the same scan line* — and the outer loop advances the base by
+   **+1** (a scan line), with the `+$138` correction at a character-row crossing. So the BBC's
+   layout makes a run of cells **strided by 8** and a step downward contiguous; the Amiga's
+   interleaved 2-plane layout makes a run of cells **contiguous** and the step downward
+   `+kRowBytes`. The two are exactly transposed.
+3. **`A` carries between units**: a cell whose source byte is zero repeats whatever the cell to its
+   left drew. With ~83 non-zero sources per frame over ~77 scan lines, **a line is one to three
+   RUNS of identical bytes.**
+
+**The decision: keep today's layout exactly** — 320×208, two interleaved planes, `kRowBytes` 80,
+plane 1 at +0 and plane 2 at +40, same polarity, same copper, same palette. Nothing about the
+display changes; only who writes it. That keeps `decode()` usable as the oracle *unmodified* (§5),
+leaves the band list and MODE 7 untouched, and costs nothing — the freedom §3 talks about is real
+but there is no evidence any other encoding is cheaper for this access pattern.
+
+⭐⭐ **What pays for the change is (2)+(3), not the deleted decode.** A run of N identical cells is
+N identical *contiguous* plane bytes on the Amiga, so it is `N/4` longword stores per plane instead
+of N byte stores — and the 6502 could not do that at any price, because in its layout those bytes
+are 8 apart. The per-cell loop collapses into a per-run fill: **~2100 iterations become ~150.**
+⚠ And the two `$70`/`$72` bases (cells 0..31 and 32..39) collapse into ONE pointer, because
+`$6800 = $6700 + 256` is cell 32 of the same line — 40 contiguous bytes on the Amiga.
+
+⚠⚠ **Sizing, honestly, and it is a correction to §6.** Direct plotting no longer deletes 250 ms, or
+even 81: the dirty-region decode (§7c) already collapsed that row to **36 ms**, and it skips exactly
+the unchanged cells a plotter would also skip. A plotter that merely *mirrors* each store into
+bitplanes would be a LOSS — two plane stores plus an address map, to save a decode that is already
+nearly free on unchanged cells. **The win has to come from run-collapsing the 131 ms rasteriser**,
+with the decode saving as a side effect. Any implementation that does not collapse runs is not
+worth building.
+
 ## 8. ⭐⭐ HARDWARE SPRITES for the instruments — capability the BBC never had (user, 2026-08-16)
 
 **The observation.** The BBC has no sprites, so *every* moving thing on the Revs dashboard is drawn
