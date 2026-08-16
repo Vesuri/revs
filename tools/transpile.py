@@ -661,9 +661,28 @@ SPINWAIT_HOOKS = {
 # spin lands in whatever phase is open across the loop seam — phase 24 ($7BE2, the dashboard,
 # the biggest row in the table).  The engine's own frame wait at $1760 already re-opens phase
 # 0, but $1753 usually branches past it, so phase 0 was NOT catching this.
+#
+# ⭐ TWO MORE, added in Phase 6 (item 0 step 2): the shape probe around the MAIN-LOOP call to
+# the dashboard sweep, `JSR $7BE2` at $1748.  They bracket the call so the sweep's own
+# before/after difference over its column-source rectangle IS the number of stores it made —
+# see src/platform/shape.h, which is where the reasoning and the rectangle live.  Both compile
+# to nothing without `-DREVS_SHAPE`, and the $16E6 call (the once-per-session one at the top of
+# $16DC) is deliberately NOT hooked: it is not the per-frame cost being sized.
+#
+# ⭐ AND ONE PER DASHBOARD COLUMN UNIT (40 of them), also Phase 6 item 0 step 2.  The
+# before/after pair above counts the STORES the sweep made; these count the TESTS it had to
+# run to find them, which is the other half of the number and the one that decides whether
+# the dashboard's 36.1% is drawing or scanning.  The address is the unit's `LDY table,X` at
+# +$00 (docs/static-map.md item 10: 17-byte units, chain A at $7C00 and chain B at $7D56),
+# i.e. the dirty test itself — deliberately not +$05, which only a dirty column reaches.
+DASH_UNIT_ADDRS = [0x7C00 + 17 * k for k in range(16)] + [0x7D56 + 17 * k for k in range(24)]
+
 PRE_INSN_HOOKS = {
     0x1701: 'PROBE_PHASE(PROBE_PHASE_FRAMEWAIT); platform_render_frame();',
+    0x1748: 'PROBE_SHAPE_DASH_BEFORE();',
+    0x174B: 'PROBE_SHAPE_DASH_AFTER();',
 }
+PRE_INSN_HOOKS.update({a: 'PROBE_SHAPE_DASH_UNIT();' for a in DASH_UNIT_ADDRS})
 
 # ---------------------------------------------------------------------------
 # The 6502 stack-drop return: an RTS that unwinds TWO levels.
@@ -2577,6 +2596,7 @@ def main():
         '#include "mem.h"   /* MEM_<name> offsets + bare aliases for named RAM/state */',
         '#include "../platform/platform_c.h"',
         '#include "../platform/probe.h"   /* PROBE_PHASE(): main-loop phase brackets */',
+        '#include "../platform/shape.h"   /* PROBE_SHAPE_*(): input-distribution counters */',
         '',
     ]
     body = []

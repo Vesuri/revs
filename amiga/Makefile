@@ -57,6 +57,7 @@ CXX_SRCS := \
     $(REPO)/src/platform/Platform.cpp \
     $(REPO)/src/platform/mos.cpp \
     $(REPO)/src/platform/probe.cpp \
+    $(REPO)/src/platform/shape.cpp \
     $(REPO)/src/platform/bbc_hw.cpp \
     $(REPO)/src/platform/teletext.cpp \
     $(REPO)/src/platform/autorun.cpp \
@@ -188,6 +189,19 @@ endif
 # rendering or gameplay from a FIXED_RNG build).
 ifdef FIXED_RNG
 EXTRA_DEFINES += -DREVS_FIXED_RNG
+endif
+
+# ⭐ `make SHAPE=1` — the render path's INPUT-DISTRIBUTION counters (src/platform/shape.h),
+# read with amiga/dash_shape.gdb.  Phase 6 item 0 step 2.  ⚠ A DIAGNOSTIC build: the dashboard
+# sweep's rectangle is re-scanned twice per frame (2880 mem[] reads) and every column unit takes a
+# counter increment, so no framerate may be quoted from it.  Pair it with PROBES=1 — the point is
+# to put the shape numbers and the phase share in the SAME run.
+ifdef SHAPE
+EXTRA_DEFINES += -DREVS_SHAPE
+PROBE_SYMS_SHAPE = g_shapeDashCalls g_shapeDashDirty g_shapeDashLeft g_shapeDashCols \
+                   g_shapeDashColsLeft g_shapeDashLastDirty g_shapeDashLastLeft \
+                   g_shapeDashLastCols g_shapeDashColHist g_shapeDashPerCol \
+                   g_shapeDashPerRow g_shapeDashUnits g_shapeDashLastUnits
 endif
 
 # `make FLATSKIP=0` — decode EVERY display line, including the ones inside a palette band whose
@@ -337,6 +351,9 @@ PROBE_SYMS += $(PROBE_SYMS_ISRWATCH)
 endif
 ifdef FILLWATCH
 PROBE_SYMS += $(PROBE_SYMS_FILLWATCH)
+endif
+ifdef SHAPE
+PROBE_SYMS += $(PROBE_SYMS_SHAPE)
 endif
 
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \

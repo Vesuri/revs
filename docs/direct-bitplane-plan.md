@@ -242,6 +242,49 @@ overlay's unit prologue. Until it exists, "the dashboard is 36% and mostly stati
 and this project's own rule is that an assumption with a one-command measurement behind it is a
 to-do, not a tag.
 
+### ✅ 7a. MEASURED (2026-08-16) — the sweep is a SCAN, and the analogy does NOT transfer
+
+`src/platform/shape.h` + two hooks around the main-loop `JSR $7BE2` (`make SHAPE=1`;
+`amiga/dash_shape.gdb` on the target, `REVS_SHAPE_WATCH=N` on the host). The before/after difference
+over the sweep's own rectangle IS its store count, so nothing had to be instrumented inside the
+chain. Target, 175 loop frames of a driving Silverstone practice session:
+
+| | per sweep |
+|---|---|
+| column units that RAN (dirty tests) | **2093** |
+| of those, units that STORED a byte | **83** (host, moving car: 84-119) |
+| columns holding at least one dirty source | **37 of 40** |
+| sources left pending after the sweep | **0** |
+
+⭐⭐ **So 96% of the sweep is a dirty test that finds nothing, and the drawing is ~83 bytes a frame.**
+Three consequences, and they redirect two other sections of this plan:
+
+1. **RoF's dirty-flag win cannot be repeated here.** Its 23× came from *adding* per-instrument flags
+   where a 560-cell shadow scan had none. Revs already tests per cell — the game is dirty-limited in
+   its *stores* and scan-limited in its *cost*. Another layer of flags on top has nothing to remove.
+2. **The lever is to stop SCANNING, not to draw less.** The producers know which cells they wrote
+   (they write the column sources), so a dirty *list* — append on produce, walk on consume — replaces
+   2093 tests with ~83 visits. That is a representation change of exactly the kind §3-§5 are about,
+   and it is bigger than anything hand-asm can do to the test itself.
+3. ⚠ **It also shrinks §8 (sprites) as a *drawing* win** — 83 bytes/frame is already almost nothing —
+   **while leaving it intact as a way to delete the scan**: if the moving instruments become sprites,
+   nothing writes those column sources at all, and the sweep they drive can go with them.
+
+⚠ **The dirty columns are spread, not clustered:** 34 of the 40 columns are dirty in nearly every
+sweep, and per-row the dirt is confined to the first ~23 rows of the X range ($2C..$42), so the
+moving content is a horizontal band across the whole dashboard rather than a few instruments. Any
+"only redraw the instrument that moved" scheme has to answer that shape first.
+
+⚠⚠ **AND THE SHARE THIS SECTION QUOTES LOOKS STALE.** The same run reads phase 24 (`$7BE2`) at
+**15.9%, 173 ms/frame** — not 36.1% — with `$1A20` at 5.7% and `$24F6` at 7.1% against the published
+21.1% and 19.0%. That table is from 2026-08-13 and the port has changed underneath it (the 50 Hz body
+moved out of the ISR, the T2 clock became a clock, the flat-band skip landed). It is a PROBES+SHAPE
+build, so treat the numbers as provisional until `phase4_prof.gdb` is re-run clean — but do not plan
+against 36.1% in the meantime. ⚠ Also worth knowing for every unattended run: a straight-line
+autorun leaves the track after ~225 game frames and the car then stalls ($61=00 $3C=00 $63=00), so a
+long run measures a moving car and then a parked one. `dash_shape.gdb` now prints the engine state
+beside the shape for that reason.
+
 ## 8. ⭐⭐ HARDWARE SPRITES for the instruments — capability the BBC never had (user, 2026-08-16)
 
 **The observation.** The BBC has no sprites, so *every* moving thing on the Revs dashboard is drawn

@@ -89,6 +89,16 @@ CFLAGS   += -DREVS_STACK_TRAP -g -fno-omit-frame-pointer
 CXXFLAGS += -DREVS_STACK_TRAP -g -fno-omit-frame-pointer
 endif
 
+# ⭐ `make SHAPE=1` — the render path's INPUT-DISTRIBUTION counters (src/platform/shape.h),
+# read with REVS_SHAPE_WATCH=N.  Phase 6 item 0 step 2: the numbers that size the dirty-flag
+# and hardware-sprite items instead of assuming them.  The counters read only mem[], so the
+# host measures the same shape the target would, for free.  ⚠ `make clean` when toggling —
+# this Makefile tracks no build flags (docs/headless-fsuae.md).
+ifdef SHAPE
+CFLAGS   += -DREVS_SHAPE
+CXXFLAGS += -DREVS_SHAPE
+endif
+
 # C sources: the 6502 CPU model + the generated transliteration + native twins.
 # The generated files do not exist until `make gen`; wildcard so a fresh clone builds.
 C_SRCS := \
@@ -105,6 +115,7 @@ CXX_SRCS := \
     src/platform/Platform.cpp \
     src/platform/mos.cpp \
     src/platform/probe.cpp \
+    src/platform/shape.cpp \
     src/platform/bbc_hw.cpp \
     src/platform/teletext.cpp \
     src/platform/autorun.cpp \

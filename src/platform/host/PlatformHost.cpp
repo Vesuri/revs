@@ -4,6 +4,7 @@
 #include "../bbc_screen.h"
 #include "../platform_c.h"   /* g_irqClobberCount/Which — the interrupt register contract */
 #include "../track.h"       /* circuit selection — the model and the refusal contract */
+#include "../shape.h"       /* REVS_SHAPE: the render path's input-distribution counters */
 
 #include <cstdio>
 #include <cstdlib>
@@ -156,6 +157,39 @@ void PlatformHost::renderFrame()
                         mem[0x3f], mem[0x2d], mem[0x09], autoRun.stepIndex(),
                         (int)autoRun.done(), g_viaT2Reads, g_viaT2Last);
     }
+
+#ifdef REVS_SHAPE
+    /* ⭐ THE SHAPE OF THE DASHBOARD SWEEP — src/platform/shape.h has what it means.
+       REVS_SHAPE_WATCH=N prints every N frames.  ⚠ The MEAN is printed beside the LAST sweep
+       and the histogram on purpose: "18 of 40 columns dirty on average" is compatible with
+       "always 18" and with "clean most frames, all 40 occasionally", and those two size the
+       dirty-flag and sprite items completely differently. */
+    if (const char* sw = std::getenv("REVS_SHAPE_WATCH")) {
+        unsigned long every = std::strtoul(sw, 0, 0); if (!every) every = 50;
+        if (frames && frames % every == 0 && g_shapeDashCalls) {
+            const unsigned long n = g_shapeDashCalls;
+            std::printf("SHAPE frame %lu: sweeps=%lu  dirty/sweep=%lu.%02lu of 1440  "
+                        "consumed=%lu.%02lu  cols=%lu.%02lu of 40  tests/sweep=%lu  "
+                        "last(dirty=%u left=%u cols=%u tests=%u)\n",
+                        frames, n,
+                        g_shapeDashDirty / n, (g_shapeDashDirty * 100 / n) % 100,
+                        (g_shapeDashDirty - g_shapeDashLeft) / n,
+                        ((g_shapeDashDirty - g_shapeDashLeft) * 100 / n) % 100,
+                        g_shapeDashCols / n, (g_shapeDashCols * 100 / n) % 100,
+                        g_shapeDashUnits / n,
+                        g_shapeDashLastDirty, g_shapeDashLastLeft, g_shapeDashLastCols,
+                        g_shapeDashLastUnits);
+            std::printf("SHAPE   col-count histogram (buckets of 4):");
+            for (unsigned i = 0; i < 11; i++) std::printf(" %lu", g_shapeDashColHist[i]);
+            std::printf("\nSHAPE   per-column dirty sweeps:");
+            for (unsigned i = 0; i < 40; i++) std::printf(" %lu", g_shapeDashPerCol[i]);
+            std::printf("\nSHAPE   per-row ($2C..$4F) dirty sweeps:");
+            for (unsigned i = 0; i < 36; i++) std::printf(" %lu", g_shapeDashPerRow[i]);
+            std::printf("\n");
+            std::fflush(stdout);
+        }
+    }
+#endif
 
     if (dumpPath && frames >= dumpFrame && frames < dumpFrame + dumpCount) {
         char path[512];
