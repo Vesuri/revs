@@ -31,6 +31,7 @@
 #include "bbc_screen.h"
 #include "teletext.h"       /* tt_set_active — leaving MODE 7 is a CRTC write, see hwWrite */
 #include "platform_c.h"     /* g_irqClobberCount/Which — the interrupt register contract */
+#include "probe.h"          /* PROBE_IRQ_*(): what ONE band arm costs (probe.cpp) */
 #include "../cpu/cpu.h"
 
 extern "C" void irq1v_handler(void);   /* $4E5C, from the generated transliteration */
@@ -336,7 +337,9 @@ void Platform::fireIrq1v(void)
     const uint8_t unwind0 = cpu_unwind;
     if (unwind0) g_irqUnwindPending++;   /* preempted mid-drop: the window is real, count it */
 
+    PROBE_IRQ_BEGIN();
     irq1v_handler();
+    PROBE_IRQ_END();
 
     if (cpu_unwind != unwind0) { g_irqUnwindTouched++; cpu_unwind = unwind0; }
     if (cpu.S != s0) g_irqStackImbalance++;   /* the handler must leave the 6502 stack as it found it */

@@ -34,6 +34,24 @@ extern "C" {
    the whole frame instead of only to the instrumented part. */
 void probe_phase(int id);
 
+/* Cost-per-call timers for the two things a phase cannot separate — see probe.cpp. */
+void probe_isr_begin(void);
+void probe_isr_end(void);
+void probe_irq_begin(void);
+void probe_irq_end(void);
+#ifdef REVS_PROBE_HWTIME
+void probe_hw_begin(void);
+void probe_hw_end(void);
+extern volatile unsigned long g_probeHwTicks;
+extern volatile unsigned long g_probeHwWrites, g_probeHwReads;
+#endif
+extern volatile unsigned long g_probeIsrTicks, g_probeIsrCount;
+extern volatile unsigned long g_probeIrqTicks, g_probeIrqCount;
+#define PROBE_ISR_BEGIN() probe_isr_begin()
+#define PROBE_ISR_END()   probe_isr_end()
+#define PROBE_IRQ_BEGIN() probe_irq_begin()
+#define PROBE_IRQ_END()   probe_irq_end()
+
 /* Number of phases the table below can hold — one per top-level call in $1701-$1763,
    plus id 0, plus slack. */
 #define PROBE_PHASES 40
@@ -68,6 +86,13 @@ void probe_phase(int id);
  *               large here means the loop is waiting for the display rather than the reverse.
  *
  * Phase 25 keeps whatever is left (the call itself), so the old row is the sum of 25..28. */
+/* 29 splits the 50 Hz body itself: `FUN_52a4`, the band-4 arm, which is the only part of the
+ * IRQ1V band cycle that simulates and DRAWS (display lines 120-143).  Everything else in the
+ * cycle just reloads the timer and rewrites the palette.  Bracketed at its own JSR ($4EF5) with
+ * phase 26 reopened immediately after, so the split is exact and the enclosing drain keeps the
+ * remainder — see tools/transpile.py PRE_INSN_HOOKS. */
+#define PROBE_PHASE_BODYARM 29
+
 #define PROBE_PHASE_DRAIN  26
 #define PROBE_PHASE_DECODE 27
 #define PROBE_PHASE_SPIN   28
@@ -94,6 +119,10 @@ extern volatile unsigned long g_beamEpoch;
 #else
 #define PROBE_PHASE(id) ((void)0)
 #define PROBE_VBI()     ((void)0)
+#define PROBE_ISR_BEGIN() ((void)0)
+#define PROBE_ISR_END()   ((void)0)
+#define PROBE_IRQ_BEGIN() ((void)0)
+#define PROBE_IRQ_END()   ((void)0)
 /* ⚠ The phase IDs are plain numbers and must exist in EVERY build: `make SHAPE=1` without PROBES
    passes them to the shape probe (src/platform/shape.h §WHO ACTUALLY DRAWS), and inside the
    PROBE_PHASE macro they were only ever unevaluated macro arguments — so a non-PROBES build
@@ -103,4 +132,5 @@ extern volatile unsigned long g_beamEpoch;
 #define PROBE_PHASE_DRAIN     26
 #define PROBE_PHASE_DECODE    27
 #define PROBE_PHASE_SPIN      28
+#define PROBE_PHASE_BODYARM   29
 #endif

@@ -42,7 +42,7 @@ printf "=== vbi=%u loopFrames=%lu brk=%lu smc=%lu ===\n", \
 # bracket and landed on phase 24.
 set $i = 1
 set $tot = 0
-while $i < 29
+while $i < 30
   set $tot = $tot + g_phaseTicks[$i]
   set $i = $i + 1
 end
@@ -65,11 +65,23 @@ printf "phase 0 (boot + engine wait at $1760, excluded): ticks=%lu calls=%lu\n",
 printf "body: ticks=%lu drains=%lu dropped=%lu pending=%u   fields=%u  (ticks/field must be ~1)\n", \
   g_bodyTicks, g_bodyDrains, g_bodyTicksDropped, g_bodyPending, g_vbiCount
 if g_bodyTicks > 0
-  printf "   ONE BODY TICK = %lu us of its 20000 us budget  (phase 26 / body ticks)\n", \
-    (g_phaseTicks[26]/g_bodyTicks)*1000/4006
+  # ⚠ 26 + 29: phase 29 is the body's own arm ($52A4), split out of 26.  Summing them is the
+  # WHOLE body tick — reading 26 alone after the split would silently halve the headline number.
+  printf "   ONE BODY TICK = %lu us of its 20000 us budget  (phases 26+29 / body ticks)\n", \
+    ((g_phaseTicks[26]+g_phaseTicks[29])/g_bodyTicks)*1000/4006
+  printf "   of which the arm ($52A4, phase 29) = %lu us, the rest of the band cycle = %lu us\n", \
+    (g_phaseTicks[29]/g_bodyTicks)*1000/4006, (g_phaseTicks[26]/g_bodyTicks)*1000/4006
+end
+if g_probeIsrCount > 0
+  printf "VERTB ISR: %lu calls, %lu us each  (copper + present + audio; charged to whatever phase it preempted)\n", \
+    g_probeIsrCount, (g_probeIsrTicks/g_probeIsrCount)*1000/4006
+end
+if g_probeIrqCount > 0
+  printf "irq1v_handler: %lu calls (%lu per body tick), %lu us each\n", \
+    g_probeIrqCount, g_probeIrqCount/g_bodyTicks, (g_probeIrqTicks/g_probeIrqCount)*1000/4006
 end
 set $i = 1
-while $i < 29
+while $i < 30
   printf "phase %2d  ticks=%10lu  calls=%7lu  share=%2d.%01d%%  %4lu ms/frame\n", \
      $i, g_phaseTicks[$i], g_phaseCount[$i], \
      (g_phaseTicks[$i]/$per)/10, (g_phaseTicks[$i]/$per)%10, \

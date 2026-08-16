@@ -196,6 +196,13 @@ endif
 # sweep's rectangle is re-scanned twice per frame (2880 mem[] reads) and every column unit takes a
 # counter increment, so no framerate may be quoted from it.  Pair it with PROBES=1 — the point is
 # to put the shape numbers and the phase share in the SAME run.
+# `make HWTIME=1` (with PROBES) — count and time every BBC hardware access.  ⚠⚠ OBSERVER EFFECT
+# OVER 2x on the row it measures: the counters alone took the body tick from 10.5 to 12.3 ms and the
+# timing to 22.7 ms.  Use it to answer "how many, how expensive", never to read a share or a rate.
+ifdef HWTIME
+EXTRA_DEFINES += -DREVS_PROBE_HWTIME
+endif
+
 ifdef SHAPE
 EXTRA_DEFINES += -DREVS_SHAPE
 PROBE_SYMS_SHAPE = g_shapeDashCalls g_shapeDashDirty g_shapeDashLeft g_shapeDashCols \
@@ -339,7 +346,9 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
 # stays: a symbol a committed .gdb script reads must be listed in the configuration that
 # script is run against.  phase4_prof.gdb is a PROBES script.
 ifdef PROBES
-PROBE_SYMS += g_phaseTicks g_phaseCount g_phaseFrames g_beamEpoch
+PROBE_SYMS += g_phaseTicks g_phaseCount g_phaseFrames g_beamEpoch \
+             g_probeIsrTicks g_probeIsrCount g_probeIrqTicks g_probeIrqCount \
+
 endif
 # Same rule, same reason: the FPS series exists only in an FPSCOUNT build.
 ifdef FPSCOUNT
@@ -354,6 +363,9 @@ PROBE_SYMS += $(PROBE_SYMS_FILLWATCH)
 endif
 ifdef SHAPE
 PROBE_SYMS += $(PROBE_SYMS_SHAPE)
+endif
+ifdef HWTIME
+PROBE_SYMS += g_probeHwWrites g_probeHwReads g_probeHwTicks
 endif
 
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \

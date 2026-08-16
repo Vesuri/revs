@@ -5,14 +5,39 @@
 
 #include "platform.h"
 #include "platform_c.h"
+#include "probe.h"
 
 extern "C" {
 
+#ifdef REVS_PROBE_HWTIME
+/* ⭐ HOW MANY HARDWARE ACCESSES DOES A FIELD COST?  The 50 Hz body is 51% of the frame and
+   ~10.5 ms of every 20 ms tick (docs/perf-method.md), and its five band arms are mostly
+   `STA $FE21` — one 4-cycle instruction on a 6502, a virtual call plus a 40-case switch here.
+   Counting them turns "the handler is slow" into microseconds per access, which is the number
+   that says whether the fix is a faster seam or less work. */
+extern "C" {
+volatile unsigned long g_probeHwWrites = 0;
+volatile unsigned long g_probeHwReads  = 0;
+/* g_probeHwTicks — the per-access cost — is defined in probe.cpp beside the clock that fills it. */
+}
+#endif
+
 uint8_t platform_hw_read(uint16_t addr) {
+#ifdef REVS_PROBE_HWTIME
+    g_probeHwReads++;
+#endif
     return platform ? platform->hwRead(addr) : 0;
 }
 
+
 void platform_hw_write(uint16_t addr, uint8_t val) {
+#ifdef REVS_PROBE_HWTIME
+    g_probeHwWrites++;
+    probe_hw_begin();
+    if (platform) platform->hwWrite(addr, val);
+    probe_hw_end();
+    return;
+#endif
     if (platform) platform->hwWrite(addr, val);
 }
 

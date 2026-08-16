@@ -264,6 +264,16 @@ own rendering, it is *independent of the framerate*, and no rendering change can
 also explains a 2026-08-13 mystery: that table charged this work to nothing, because the body still
 ran inside the VERTB ISR then (`docs/amiga-arch.md`) where no bracket could see it.
 
+**Inside the 51%, measured (`amiga/phase4_prof.gdb`, same run):** one body tick = **11.1 ms** of its
+20 ms, of which the body's own arm `FUN_52a4` is only **277 µs** — the other **10.8 ms is
+`irq1v_handler` itself**, 5 calls per tick at **1983 µs each**.  The VERTB ISR (copper + present +
+audio) is **1011 µs** per field on top, charged to whichever phase it preempted.  An arm is ~60 6502
+instructions and ~72 BBC hardware accesses per tick go through `platform_hw_write` (counted with
+`make HWTIME=1` — ⚠ whose own observer effect is over 2×, so take the *count* and not its
+microseconds).  ⭐ **That makes `irq1v_handler` the obvious first native twin**: 51% of the frame, no
+drawing, pure `mem[]` + hardware writes, and its output (the band record) is already validated
+against a real BBC by `make mode7` and `make refloop`.
+
 ⚠⚠ **So the Phase 6 pecking order is now: the 50 Hz body, then the dashboard, then the road
 subsystem (5+11 = 13.5%), then the decode.**  `FUN_52a4` — the band-4 arm, which is also the only
 thing that draws display lines 120-143 — has never been profiled or split, and it is the single

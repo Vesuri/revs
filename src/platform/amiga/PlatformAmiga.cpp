@@ -141,9 +141,13 @@ static uint32_t vbiHandler()
     // a missed frame loses the delta, and a delta taken across the wrap is a fast flick
     // in the wrong direction.  Two register reads, above the game body so it cannot be
     // starved by an overrunning one.
+    /* ⭐ What does the ISR itself cost?  Its time is charged to whatever phase was open when it
+       preempted, so the phase table cannot answer it (probe.cpp §two sub-frame timers). */
+    PROBE_ISR_BEGIN();
     if (s_platform) s_platform->sampleMouse();
 
     if (s_scene) s_scene->vbi();
+    PROBE_ISR_END();
 
     return 0;
 }

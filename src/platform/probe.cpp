@@ -85,6 +85,53 @@ void probe_phase(int id)
     s_mark  = now;
 }
 
+/* ⭐⭐ TWO SUB-FRAME TIMERS THAT ARE NOT PHASES, added 2026-08-16 to explain the 51%.
+ *
+ * The phase table charges the 50 Hz body drain 526 ms per painted frame, i.e. ~10.5 ms of every
+ * 20 ms tick, and splitting the body's own arm ($52A4) off accounted for only 277 us of it.  So
+ * the cost is either inside `irq1v_handler` (the five band arms) or in the VERTB ISR that happens
+ * to run while the drain phase is open — and a PHASE cannot tell those apart, because the ISR
+ * preempts whatever phase is current and its time lands there.
+ *
+ * These are separate accumulators with their own counts, so each gives a COST PER CALL rather than
+ * a share, and neither disturbs the phase table.  Two beam reads per call.
+ */
+volatile unsigned long g_probeIsrTicks = 0;    /* the VERTB ISR, total  */
+volatile unsigned long g_probeIsrCount = 0;
+volatile unsigned long g_probeIrqTicks = 0;    /* irq1v_handler, one band arm per call */
+volatile unsigned long g_probeIrqCount = 0;
+
+static unsigned long s_isrMark = 0;
+static unsigned long s_irqMark = 0;
+
+void probe_isr_begin(void) { s_isrMark = beamTick(); }
+void probe_isr_end(void)
+{
+    long d = (long)beamTick() - (long)s_isrMark;
+    if (d >= 0) { g_probeIsrTicks += (unsigned long)d; g_probeIsrCount++; }
+}
+/* ⚠⚠ GATED BEHIND ITS OWN FLAG (`make HWTIME=1`), not plain PROBES, and the reason is a
+   measurement: the counter pair alone moved the body tick from 10.5 ms to 12.3 ms, and adding the
+   two beam reads per access took it to 22.7 ms — an observer effect of over 2x on the very row it
+   was measuring.  A default PROBES table has to stay comparable with the ones already published. */
+#ifdef REVS_PROBE_HWTIME
+volatile unsigned long g_probeHwTicks = 0;
+static unsigned long s_hwMark = 0;
+void probe_hw_begin(void) { s_hwMark = beamTick(); }
+void probe_hw_end(void)
+{
+    long d = (long)beamTick() - (long)s_hwMark;
+    if (d >= 0) g_probeHwTicks += (unsigned long)d;
+}
+#endif
+
+void probe_irq_begin(void) { s_irqMark = beamTick(); }
+void probe_irq_end(void)
+{
+    long d = (long)beamTick() - (long)s_irqMark;
+    if (d >= 0) { g_probeIrqTicks += (unsigned long)d; g_probeIrqCount++; }
+}
+
 } /* extern "C" */
 
 #endif /* REVS_PROBE */

@@ -687,6 +687,11 @@ PRE_INSN_HOOKS.update({a: 'PROBE_SHAPE_DASH_UNIT();' for a in DASH_UNIT_ADDRS})
 # ⭐ AND the road pass, `JSR $1A20` at $171F (phase 11): snapshot-and-diff the frame buffer around
 # it, so the measurement is "how many bytes of the picture does the road actually write" without
 # instrumenting a single span plotter.  src/platform/shape.h §THE ROAD PASS.
+# ⭐⭐ AND the 50 Hz body's own arm, `JSR $52A4` at $4EF5 — 51.1% of the frame lives in the band
+# cycle and this is the only arm of it that simulates and draws.  Phase 26 is reopened at $4EFA so
+# the rest of the cycle stays where it was.  ⚠ PROBE_PHASE, not a shape hook: it is a TIME split.
+PRE_INSN_HOOKS[0x4EF5] = 'PROBE_PHASE(PROBE_PHASE_BODYARM);'
+PRE_INSN_HOOKS[0x4EF8] = 'PROBE_PHASE(PROBE_PHASE_DRAIN);'   # the instruction after that JSR
 PRE_INSN_HOOKS[0x171F] = 'PROBE_SHAPE_ROAD_BEFORE();'
 PRE_INSN_HOOKS[0x1722] = 'PROBE_SHAPE_ROAD_AFTER();'
 
