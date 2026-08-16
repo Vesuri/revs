@@ -220,6 +220,11 @@ if (soundChip) {
 tm.loadDiscData(new Uint8Array(data));
 tm.startCapture();
 const rd = (a) => tm.processor.readmem(a);
+/* ⭐ The harness's OWN frame-buffer walks go through peekmem, which fires no debug hook.
+   With readmem they were charged to whatever instruction the CPU last executed — 1376
+   phantom 'reads per frame' at $1701, stepping by 8 like a cell scan, because that is
+   exactly what they were.  An instrument must not appear in its own measurement. */
+const fbPeek = (a) => tm.processor.peekmem(a);
 
 // ── decode a front-end message out of LIVE memory ─────────────────────────────────────────
 // Bytes: $FF ends; >=$C8 is a nested message ($C8+$36 is a special "clear" action, not text);
@@ -268,7 +273,7 @@ function scanZeros(lo, hi) {
         const row = (y / LINES) | 0, line = y % LINES;
         let run = 0;
         for (let c = 0; c < CELLS; c++) {
-            const b = rd(FB_BASE + row * BPR + c * LINES + line);
+            const b = fbPeek(FB_BASE + row * BPR + c * LINES + line);
             total++;
             if (b === 0) { zeros++; if (++run > longest) longest = run; } else run = 0;
         }
@@ -280,7 +285,7 @@ function checksum(lo, hi) {
     for (let y = lo; y < hi; y++) {
         const row = (y / LINES) | 0, line = y % LINES;
         for (let c = 0; c < CELLS; c++)
-            h = ((h ^ rd(FB_BASE + row * BPR + c * LINES + line)) * 16777619) >>> 0;
+            h = ((h ^ fbPeek(FB_BASE + row * BPR + c * LINES + line)) * 16777619) >>> 0;
     }
     return h;
 }
@@ -419,6 +424,29 @@ if (fillArg) {
         }
     }
     console.log(`fill attribution armed for display lines ${lo}..${hi}\n`);
+}
+
+// ⭐⭐ …AND WHO READS THEM BACK.  `--fill-reads` arms the same flags on the READ side, and it is
+// the fact a direct-to-bitplane plotter turns on: if a region of the BBC frame buffer is
+// WRITE-ONLY, the port can stop maintaining it in mem[] and plot straight into bitplanes; if
+// anything reads it back, that byte is state and the mem[] copy has to stay.  Reasoning about it
+// from the disassembly is exactly the assumption this project's rules say to measure instead.
+// ⚠ Opcode fetches come through readmem too, so read this only for line ranges that hold no code
+// (the engine's own code inside the frame buffer is display lines 24..55 — $5E40..$66FF).
+const fillReads = argv.includes("--fill-reads");
+const readPC = new Map();
+let fbReads = 0;
+if (fillReads) {
+    tm.processor.debugRead.add((addr) => {
+        if (frames < fillFrameLo || frames > fillFrameHi || !fillFlags[addr]) return;
+        const pc = tm.processor.getPrevPc(0);   // see the write hook: NOT processor.pc
+        let e = readPC.get(pc);
+        if (!e) readPC.set(pc, (e = { n: 0, lines: new Set(), sample: [] }));
+        e.n++;
+        if (e.sample.length < 6) e.sample.push(addr);
+        e.lines.add(fillLineOf[addr]);
+        fbReads++;
+    });
 }
 
 // ── the interrupt register contract, measured ─────────────────────────────────────────────
@@ -607,7 +635,12 @@ tm.processor.debugWrite.add((addr, b) => {
         // DECODE and wrong for pricing a direct PLOTTER, whose cost is stores.  A rasteriser that
         // re-plots an identical span costs full price and shows up as nothing.  debugWrite fires
         // BEFORE the store lands (src/6502.js writemem), so the byte still there is the old one.
-        const pc = tm.processor.pc;
+        // ⚠⚠ NOT `processor.pc` — jsbeeb advances it during the instruction, so the store at
+        // $7C64 gets reported as $7C66, which is the NEXT unit's `LDY $3300,X` and stores
+        // nothing.  An off-by-one-instruction attribution is a quiet wrong answer: it names a
+        // real, plausible, innocent instruction.  `getPrevPc(0)` is the PC recorded at this
+        // instruction's own start (6502.js executeInternal).
+        const pc = tm.processor.getPrevPc(0);
         let e = fillPC.get(pc);
         if (!e) fillPC.set(pc, (e = { n: 0, lines: new Set(), nonzero: 0, changed: 0,
                                       perLine: new Uint32Array(LINES * ROWS) }));
@@ -615,7 +648,10 @@ tm.processor.debugWrite.add((addr, b) => {
         e.lines.add(fillLineOf[addr]);
         e.perLine[fillLineOf[addr]]++;
         if (b !== 0) e.nonzero++;
-        if (tm.processor.readmem(addr) !== b) { e.changed++; fillChanged++; }
+        /* ⚠ peekmem, NOT readmem: readmem fires the READ hook, and this instrument would then
+           report its own comparison as the game reading the frame buffer back — measured, it
+           doubled every store site's read count exactly. */
+        if (tm.processor.peekmem(addr) !== b) { e.changed++; fillChanged++; }
         fillWrites++;
     }
     if (addr !== ULA_CTRL && addr !== ULA_PAL) return;
@@ -1098,6 +1134,34 @@ if (fillArg && fillWrites) {
        renderer's shape is in the distribution.  A routine that paints a 3D view puts most of its
        stores near the horizon and tails off; one that maintains a cockpit is flat.  This is the
        input §3's layout choice actually needs, and a lo..hi pair cannot carry it. */
+    if (fillReads) {
+        const byFnR = new Map();
+        for (const [pc, e] of readPC.entries()) {
+            const fn = nameOf(pc).split("+")[0];
+            let f = byFnR.get(fn);
+            if (!f) byFnR.set(fn, (f = { n: 0, lo: 999, hi: -1 }));
+            f.n += e.n;
+            for (const y of e.lines) { if (y < f.lo) f.lo = y; if (y > f.hi) f.hi = y; }
+        }
+        console.log(`\n⭐⭐ WHO READS THE FRAME BUFFER BACK — ${fbReads} reads ` +
+            `(${(fbReads / nWin).toFixed(0)}/frame) from ${readPC.size} PCs.  A WRITE-ONLY region ` +
+            `can be plotted straight to bitplanes; a region read back is STATE:`);
+        if (!byFnR.size) console.log("   (none — the flagged lines are write-only)");
+        /* ⚠ THE PC MATTERS MORE THAN THE COUNT HERE: the 6502's `STA (zp),Y` performs a DUMMY
+           READ of the un-carried address before it writes, and jsbeeb models it, so a store site
+           shows up as a reader.  Print the PCs so the opcode at each can be checked against the
+           listing instead of the totals being believed. */
+        for (const [pc, e] of [...readPC.entries()].sort((a, b) => b[1].n - a[1].n).slice(0, 12)) {
+            const ls = [...e.lines].sort((a, b) => a - b);
+            console.log(`     PC $${pc.toString(16).padStart(4, "0")} ${String(e.n).padStart(6)} reads` +
+                `  lines ${ls.length > 6 ? ls[0] + ".." + ls[ls.length - 1] : ls.join(",")}` +
+                `   ${nameOf(pc)}   first addrs ` +
+                e.sample.map((a) => "$" + a.toString(16)).join(","));
+        }
+        for (const [fn, f] of [...byFnR.entries()].sort((a, b) => b[1].n - a[1].n).slice(0, 12))
+            console.log(`   ${fn.padEnd(24)} ${String((f.n / nWin).toFixed(0)).padStart(6)} reads/frame` +
+                `   lines ${f.lo}..${f.hi}`);
+    }
     for (const [fn, f] of ranked.slice(0, 3)) {
         const parts = [];
         for (let y = 0; y < f.perLine.length; y += 8) {
