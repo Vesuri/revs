@@ -102,12 +102,19 @@ volatile unsigned long g_hwUnknownReads = 0;
 volatile uint16_t      g_hwUnknownAddr  = 0;
 }
 
-/* The coarse fallback: field granularity, right in RATE and wrong in RESOLUTION (five
-   distinct values per field at best).  Good enough that nothing is constant; a backend
-   that can read a beam position or a real timer should override this. */
+/* ⭐ THE DETERMINISTIC FALLBACK, for a backend with no fine clock and for `REVS_FIXED_RNG`.
+   ⚠ Field count ALONE is not usable and that is arithmetic, not taste: 20000 mod 256 = 32, so
+   the low five bits of the derived counter never change and `AND #7` (the idle jitter) is a
+   constant again — the very bug this file just fixed, wearing a clock's clothes.  So the
+   fallback also steps by 251 us per read: coprime with 256, hence all 256 low bytes, and
+   deterministic given a fixed sequence of reads.
+   ⚠ This one IS correlated with how often the game asks, which a real T2 is not.  That is
+   acceptable only where determinism is the explicit goal (a pinned perf run must drive the same
+   simulation in every build); it is not the faithful model, and a backend that can read a real
+   clock overrides it. */
 uint32_t Platform::hwMicros()
 {
-    return s_fieldMicros;
+    return s_fieldMicros + 251u * (uint32_t)g_viaT2Reads;
 }
 
 /* --------------------------------------------------------------------------- */
