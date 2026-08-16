@@ -208,7 +208,13 @@ EXTRA_DEFINES += -DREVS_SHAPE
 PROBE_SYMS_SHAPE = g_shapeDashCalls g_shapeDashDirty g_shapeDashLeft g_shapeDashCols \
                    g_shapeDashColsLeft g_shapeDashLastDirty g_shapeDashLastLeft \
                    g_shapeDashLastCols g_shapeDashColHist g_shapeDashPerCol \
-                   g_shapeDashPerRow g_shapeDashUnits g_shapeDashLastUnits
+                   g_shapeDashPerRow g_shapeDashUnits g_shapeDashLastUnits \
+                   g_shapeRoadCalls g_shapeRoadBytes g_shapeRoadLines \
+                   g_shapeRoadLastBytes g_shapeRoadLastLines \
+                   g_shapeRoadFirstLine g_shapeRoadLastLine \
+                   g_shapePhaseBytes g_shapePhaseFrames g_shapePhaseFirst g_shapePhaseLast \
+                   g_shapeFrameCalls g_shapeFrameBytes g_shapeFrameLast g_shapeFrameMax \
+                   g_shapeFrameFirstLine g_shapeFrameLastLine g_shapeFrameLines
 endif
 
 # `make FLATSKIP=0` — decode EVERY display line, including the ones inside a palette band whose

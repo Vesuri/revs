@@ -294,6 +294,52 @@ autorun leaves the track after ~225 game frames and the car then stalls ($61=00 
 long run measures a moving car and then a parked one. `dash_shape.gdb` now prints the engine state
 beside the shape for that reason.
 
+### ✅ 7b. MEASURED (2026-08-16) — **95% of the decode re-converts bytes that did not move**, and
+### the main loop draws almost NOTHING
+
+Step 2's other half, finally read out: `amiga/frame_shape.gdb` on a `SHAPE=1 PROBES=1
+STRAIGHT_TO_RACE=1 FPSCOUNT=1` target run with the car genuinely under power (`$61=FF`, gear `$1A`),
+41 loop frames / 45 paints.
+
+| | per painted frame |
+|---|---|
+| frame-buffer bytes the decode converts | 8320 |
+| **frame-buffer bytes that CHANGED since the previous paint** | **406 (4.9%)** — max 5046, one 207-byte paint spanning lines 24..172 |
+
+⭐⭐ **So `decode()`'s 81 ms is ~95% re-conversion of an unchanged picture.** That reprices the whole
+of §1-§6: the decode is not expensive because converting is expensive, it is expensive because it
+converts *everything*. A dirty-region decode captures most of that win without writing a single
+direct plotter — and it is strictly less work than the plotter rewrite it would defer.
+⚠ Two things it must get right, and both are already known: the Amiga is DOUBLE-buffered, so the
+shadow to compare against is *this buffer's* last paint (two frames back), not the last paint; and
+the comparison must be cheaper than the conversion it skips (a longword compare over the buffer is
+2080 reads against 8320 table lookups plus 16640 writes).
+
+⚠⚠ **AND THE SECOND HALF IS A CORRECTION TO THIS PLAN AND TO `docs/phases.md`.** The same run
+attributes every frame-buffer write to the main-loop phase that made it:
+
+| phase | bytes/frame | lines | what it really is |
+|---|---|---|---|
+| 24 `$7BE2` | 116 | 53..191 | the dashboard — **the only main-loop phase that writes real pixels** |
+| 5 `$24F6` | 89 | 24..53 | ⚠ inside the flat-blue sky band — engine VARIABLES, not pixels |
+| 10 | 80 | 24..39 | ⚠ variables |
+| 13 | 79 | 24..39 | ⚠ variables |
+| 15 | 7 | 24..55 | ⚠ variables |
+| 11 `$1A20` | **6** | 26..55 | ⚠ variables — 6 bytes, and none of them visible |
+| 25 | 9 | 50..140 | the paint bracket itself |
+
+**`$24F6` + `$1A20` are 19.6% of the frame and write six visible bytes between them.** This project
+has called them "the road subsystem, 40% of the frame, build-then-draw" since 2026-08-13; the build
+half is real, but **the draw is not there.** The pixels come from the 50 Hz body, which is not a
+main-loop phase and which no bracket in `phase4_prof.gdb` attributes — consistent with
+`docs/amiga-arch.md`'s "the body DRAWS", and it is where a direct renderer has to attach.
+
+⚠ **The host cannot measure any of this, by construction.** It runs the body ONCE per painted frame
+where the target drains ~30, so its picture is frozen: 2 of 8320 bytes changed between host frames
+400 and 410, cross-checked against two independent `REVS_SCREEN_DUMP`s. A host `SHAPE` run also
+needs `STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` or the car never leaves neutral and the stimulus is
+absent altogether — `frame_shape.gdb` prints `$61`/`$63` beside the shape for exactly that reason.
+
 ## 8. ⭐⭐ HARDWARE SPRITES for the instruments — capability the BBC never had (user, 2026-08-16)
 
 **The observation.** The BBC has no sprites, so *every* moving thing on the Revs dashboard is drawn
