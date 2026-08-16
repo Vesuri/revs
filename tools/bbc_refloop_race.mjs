@@ -145,6 +145,14 @@ const competition = argv.includes("--competition");
 // The dashboard is the reason it matters — a needle is a function of $3C, so the two machines
 // have to be at the same $3C before a pixel diff of the dial means anything.
 const park = argv.includes("--park");
+// --via-t2 : measure WHAT THE GAME ACTUALLY READS FROM $FE68, on real hardware.  The port
+// answered a constant $0 there, and $FE68 is Revs's ONLY entropy source (the starter's catch
+// delay, the idle-rev jitter, the gravel/skid trigger, the mirrors' shudder), so "what is the
+// right answer" is a question about a real 6522, not about the game.
+// ⚠ It samples the value the GAME got — a breakpoint one instruction after each `LDA/LDX $FE68`,
+// reading A/X — rather than calling readmem($FE68) itself: reading T2C-L on a 6522 CLEARS the T2
+// interrupt flag, so a probe that reads the register is perturbing the machine it is measuring.
+const viaT2 = argv.includes("--via-t2");
 
 // ── negative INKEY -> jsbeeb keyboard matrix ──────────────────────────────────────────────
 function inkeyToColRow(b) {
@@ -432,6 +440,53 @@ if (forceRevs !== null) {
         return false;
     });
     process.on("exit", () => console.log(`   --force-revs=$${v.toString(16)}: pinned at $51AC ${pinned}x`));
+}
+
+// ── $FE68, as the game sees it ────────────────────────────────────────────────────────────
+// Six `LDA $FE68` sites in the engine, keyed by the address of the instruction AFTER each one,
+// where A holds what the read returned.  The per-site record answers three separate questions:
+// is it constant (the port's model), is it uniform over 0-255, and does it move like a CLOCK —
+// i.e. do successive samples differ by roughly the 6502 cycles that elapsed between them,
+// negated (a 1 MHz DOWN counter), rather than like a PRNG.
+const T2_SITES = {
+    0x0e7f: "$0E7C gravel/skid trigger (CMP #$3F)",
+    0x2751: "$274E (AND #$1F)",
+    0x498f: "$498C starter catch delay (AND $09)",
+    0x49c0: "$49BD idle-rev jitter (AND #7)",
+    0x4c09: "$4C06 (mul8, AND #7)",
+    0x6362: "$635F (AND #$7F)",
+};
+const t2Stats = new Map();
+if (viaT2) {
+    for (const a of Object.keys(T2_SITES)) t2Stats.set(Number(a), { n: 0, vals: [], last: null, lastCyc: null, deltas: [] });
+    tm.processor.debugInstruction.add((addr) => {
+        const s = t2Stats.get(addr);
+        if (s) {
+            const v = tm.processor.a, cyc = tm.processor.cycleSeconds * CPS + tm.processor.currentCycles;
+            s.n++;
+            if (s.vals.length < 4096) s.vals.push(v);
+            if (s.last !== null) {
+                // A 1 MHz down-counter's low byte: v == (last - elapsed_us) mod 256.
+                const el = Math.round((cyc - s.lastCyc) / 2); // 2 MHz CPU, 1 MHz timer
+                s.deltas.push(((s.last - v - el) % 256 + 256) % 256);
+            }
+            s.last = v; s.lastCyc = cyc;
+        }
+        return false;
+    });
+    process.on("exit", () => {
+        console.log("\n$FE68 (User VIA T2 counter-low), as the GAME read it:");
+        for (const [addr, s] of t2Stats) {
+            if (!s.n) { console.log(`   ${T2_SITES[addr]}: never reached`); continue; }
+            const uniq = new Set(s.vals);
+            const lo = Math.min(...s.vals), hi = Math.max(...s.vals);
+            // How often the "down-counter at 1 MHz" prediction lands exactly, and within +-2.
+            const exact = s.deltas.filter((d) => d === 0).length;
+            const near = s.deltas.filter((d) => d <= 2 || d >= 254).length;
+            console.log(`   ${T2_SITES[addr]}: n=${s.n} distinct=${uniq.size} range=$${lo.toString(16)}..$${hi.toString(16)}` +
+                (s.deltas.length ? `  clock-prediction exact ${exact}/${s.deltas.length}, +-2 ${near}/${s.deltas.length}` : ""));
+        }
+    });
 }
 
 const irqStats = { taken: 0, engine: 0, aBad: 0, xBad: 0, yBad: 0, pBad: 0, samples: [] };

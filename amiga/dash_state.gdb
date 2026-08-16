@@ -14,6 +14,13 @@
 #   engine off, in the pits    $05F5=00  $61=00  $3C=00  $63=00  $40=01
 #   engine on, first gear      $05F5=00  $61=ff  $3C=2c  $63=00  $40=02
 #   throttle held              $05F5=00  $61=ff  $3C=2c  $63=04  $40=02   (then $3C/$63 climb)
+#   PARKED, nothing held       the engine STALLS: $61 -> 00 and $3C -> 00 within a second
+#
+# ⭐ $3E/$3F (the throttle/brake state $1681 writes: $3E = 1 throttle / 0 brake / $80 coasting,
+# $3F = the amount) are in the row because "the engine never stalls" and "something is holding the
+# throttle" produce the same $61/$3C/$63 and the pair separates them in one sample.  And the T2
+# counters, because a CONSTANT $FE68 is what used to make the idle sit at $28 instead of $2C —
+# a live counter and a dead one are indistinguishable from the dashboard alone.
 #
 # ⚠ $74/$75/$76 are NOT stable state and are deliberately not compared: the real-BBC run reads
 # $76 as $8d/$08/$80 — values outside the 0..3 the steering path stores — because they are working
@@ -26,8 +33,8 @@ set pagination off
 set confirm off
 
 define dashrow
-  printf "=== vbi=%-5u %s  $05F5=%02x  $61=%02x(engine)  $3C=%02x(revs)  $63=%02x(speed)  $40=%02x(gear)  $05F4=%02x\n", \
-    g_vbiCount, $arg0, mem[0x5f5], mem[0x61], mem[0x3c], mem[0x63], mem[0x40], mem[0x5f4]
+  printf "=== vbi=%-5u %s  $05F5=%02x  $61=%02x(engine)  $3C=%02x(revs)  $63=%02x(speed)  $40=%02x(gear)  $3E=%02x/$3F=%02x(throttle)  $2D=%02x $58=%02x  $05F4=%02x  T2 reads=%lu last=%02x\n", \
+    g_vbiCount, $arg0, mem[0x5f5], mem[0x61], mem[0x3c], mem[0x63], mem[0x40], mem[0x3e], mem[0x3f], mem[0x2d], mem[0x58], mem[0x5f4], g_viaT2Reads, g_viaT2Last
 end
 
 # ⭐ The menu owns the first ~275 fields (trackmenu.h), so every sample below is AFTER it — a

@@ -149,6 +149,17 @@ public:
     /* ------------------------------------------------------------------ */
     bool quit;
 
+    /* ⭐⭐ ELAPSED MICROSECONDS — the clock behind the User VIA's T2 counter ($FE68), which is
+       Revs's ONLY source of entropy (docs/bbc-hardware.md §The T2 counter).  It must be a
+       CLOCK, not a counter of calls: T2's whole value to the game is that it is decorrelated
+       from game code because it runs off the 1 MHz bus, so a value derived from how often the
+       game asked would reintroduce exactly the correlation the game is buying its way out of.
+       The unit is microseconds; only the low 8 bits of the derived counter are ever observed,
+       so wrapping is fine and the origin is arbitrary.
+       Default: a field-counted approximation, correct in rate but coarse — a backend with a
+       finer clock (a real timer, the beam position) should override it. */
+    virtual uint32_t hwMicros();
+
 protected:
     /* Has a display frame boundary passed since the last call?  Backs the System VIA
        vsync flag ($FE4D bit 1) that hw_init's alignment spin blocks on.  Default: yes

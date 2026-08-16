@@ -288,6 +288,7 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_mosUnknownCount g_mosUnknownEntry g_mosUnknownA \
              g_mosCharDefCount g_mosCharDefOutOfRange g_mosCharDefLastBad \
              g_hwUnknownReads g_hwUnknownAddr g_ulaControl g_userT1LatchLo g_userT1LatchHi \
+             g_viaT2Reads g_viaT2Last \
              g_badRegionCount g_badRegionEntry \
              g_screenFrontAddr g_screenCopperAddr g_screenBytes g_screenCopperWords \
              g_bandRejects \

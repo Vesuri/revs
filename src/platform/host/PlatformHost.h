@@ -49,6 +49,12 @@ public:
        codes in autorun.cpp were confirmed against the running game rather than guessed. */
     virtual bool    keyDown(uint8_t x) override;
 
+    /* ⭐ The 1 MHz clock behind the User VIA's T2 counter ($FE68, bbc_hw.cpp).  The host
+       has a real microsecond clock, so it uses it: the base class's field-counted
+       fallback would hand the game five distinct values per field, and `AND #7` on a
+       value that only moves in steps of 32 is a constant. */
+    virtual uint32_t hwMicros() override;
+
 private:
     void (*vbi)(void);
     unsigned long frames;

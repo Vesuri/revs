@@ -75,16 +75,39 @@ volatile uint8_t  g_bandControl[BBC_MAX_BANDS] = {0};    /* $FE20 during this ba
 volatile uint8_t  g_bandState[BBC_MAX_BANDS] = {0};      /* $4F43: which band this IS */
 volatile uint8_t  g_bandPalette[BBC_MAX_BANDS][16] = {{0}};
 
+/* ⭐⭐ THE 1 MHz CLOCK BEHIND $FE68 (User VIA T2), Revs's only entropy source.
+   Fields, counted here, are the one time base every backend already has: a band cycle is
+   one 20000 us field by construction (the five band durations sum to it — see the record
+   above).  A backend with something finer overrides Platform::hwMicros(). */
+static uint32_t s_fieldMicros = 0;
+
+extern "C" {
+/* Proof the model is live, for a probe: a constant $0 and a working counter are
+   indistinguishable from the picture, which is exactly how the old model survived. */
+unsigned long g_viaT2Reads = 0;
+uint8_t       g_viaT2Last  = 0;
+}
+
 /* Start of a band cycle: the backend calls this immediately before dispatching the five
    fireIrq1v() bands that make up one field, so the record describes ONE field and a
    half-written cycle can never be read as a whole one. */
 void bbc_begin_band_cycle(void)
 {
     g_bandCount = 0;
+    s_fieldMicros += 20000u;   /* one PAL field of 1 MHz timer ticks */
 }
+
 /* Reads of an I/O address the Phase 2 inventory does not list.  A finding, not noise. */
 volatile unsigned long g_hwUnknownReads = 0;
 volatile uint16_t      g_hwUnknownAddr  = 0;
+}
+
+/* The coarse fallback: field granularity, right in RATE and wrong in RESOLUTION (five
+   distinct values per field at best).  Good enough that nothing is constant; a backend
+   that can read a beam position or a real timer should override this. */
+uint32_t Platform::hwMicros()
+{
+    return s_fieldMicros;
 }
 
 /* --------------------------------------------------------------------------- */
@@ -115,11 +138,26 @@ uint8_t Platform::hwRead(uint16_t addr)
     case 0xFE4B:
         return 0x00;
 
-    /* User VIA port B ($FE68) — the BBC user port, read six times by FUN_635D.  Nothing
-       is wired to it here.  ⚠ Listed rather than left to the unknown counter because
-       "unknown" should mean "not in the Phase 2 inventory", and this is. */
-    case 0xFE68:
-        return 0x00;
+    /* ⭐⭐ User VIA T2 counter, low byte ($FE68 = User VIA base + 8 — the COUNTER, not port B;
+       an older comment here had the register wrong and answered a constant $0).
+       This is Revs's ONLY entropy source, read at six sites: the gravel/skid trigger
+       ($0E7C, CMP #$3F), $274E, the starter's catch delay ($498C, AND $09), the idle-rev
+       jitter ($49BD, AND #7), $4C06 and $635F — plus the mirrors' engine shudder in the
+       $7B00 overlay ($7FB6).  A constant 0 is not a harmless stub: the engine caught on the
+       FIRST crank poll instead of after a random delay, the idle sat at exactly $28 where a
+       real BBC reads $2C, and the gravel trigger fired on EVERY call.
+       ⭐ THE MODEL IS A CLOCK, NOT A PRNG, and that is measured, not assumed:
+       `make refloop --park --via-t2` samples what the real 6502 got at each site, and at
+       $635F (32 reads in one loop) 22 of 31 successive samples land EXACTLY on
+       "previous value minus the microseconds that elapsed", 24 of 31 within +-2.  T2 free-runs
+       down at 1 MHz and keeps counting past its timeout, so the low byte is the elapsed-time
+       low byte, negated.  The origin is arbitrary — only 8 bits are ever observed. */
+    case 0xFE68: {
+        const uint8_t v = (uint8_t)(0u - hwMicros());   /* virtual: the backend's finest clock */
+        g_viaT2Last = v;
+        g_viaT2Reads++;
+        return v;
+    }
 
     /* Read-back of the two IERs.  Revs writes them ($FE4E, $FE6E) but never reads them;
        answer 0 rather than fall into the unknown-read counter if that ever changes. */

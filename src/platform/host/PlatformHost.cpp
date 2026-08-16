@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 
 extern "C" {
 #include "../../gen/revs_decl.h"     /* the transpiled 6502 routines, incl. engine_main */
@@ -140,6 +141,22 @@ void PlatformHost::renderFrame()
         }
     }
 
+    /* ⭐ THE DASHBOARD STATE, on the same bytes `make refloop --park` prints and
+       amiga/dash_state.gdb reads — REVS_DASH_WATCH=N logs it every N frames.  The three
+       machines have to be comparable on the SAME addresses for a claim like "the port's
+       engine never stalls" to be checkable at all, and a single late sample cannot tell
+       "never started" from "started and stalled": that needs the series. */
+    if (const char* dw = std::getenv("REVS_DASH_WATCH")) {
+        unsigned long every = std::strtoul(dw, 0, 0); if (!every) every = 25;
+        if (frames % every == 0)
+            std::printf("DASH frame %lu: $61=%02X $3C=%02X $63=%02X $40=%02X $3E=%02X "
+                        "$3F=%02X $2D=%02X $09=%02X  script step %u done=%d "
+                        "(FE68 reads %lu, last $%02X)\n",
+                        frames, mem[0x61], mem[0x3c], mem[0x63], mem[0x40], mem[0x3e],
+                        mem[0x3f], mem[0x2d], mem[0x09], autoRun.stepIndex(),
+                        (int)autoRun.done(), g_viaT2Reads, g_viaT2Last);
+    }
+
     if (dumpPath && frames >= dumpFrame && frames < dumpFrame + dumpCount) {
         char path[512];
         if (dumpCount > 1) std::snprintf(path, sizeof path, "%s.%lu", dumpPath, frames);
@@ -252,6 +269,19 @@ void PlatformHost::tickVBI()
         if (mem[0x4F43] == 0) break;      // $4F43 = irq_band_state; 0 = cycle complete
     }
     if (dumpPath && frames >= dumpFrame && frames < dumpFrame + 3) dumpBands();
+}
+
+/* $FE68's clock (see PlatformHost.h).  steady_clock, not the frame counter: the value has
+   to move between two reads a few hundred cycles apart, which is exactly what the real T2
+   does and what the measurement at $635F showed (28 distinct values in 32 reads).
+   ⚠ Deliberately NOT deterministic.  Nothing in `make validate` reads $FE68 today (no
+   fixture does), and a host run is a discovery tool, not a pinned trajectory — the pinned
+   builds are the Amiga's, where REVS_FIXED_RNG substitutes the deterministic fallback. */
+uint32_t PlatformHost::hwMicros()
+{
+    using namespace std::chrono;
+    static const steady_clock::time_point t0 = steady_clock::now();
+    return (uint32_t)duration_cast<microseconds>(steady_clock::now() - t0).count();
 }
 
 bool PlatformHost::keyDown(uint8_t x)

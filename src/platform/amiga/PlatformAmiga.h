@@ -56,6 +56,15 @@ public:
     virtual void    setInterrupt(void (*fn)(void))      override;  // real VBI -> no-op
     virtual int     framesPerSecond()                   override;  // 50 (PAL)
 
+    // ⭐ The 1 MHz clock behind the User VIA's T2 counter ($FE68, bbc_hw.cpp) — the game's
+    // only entropy source.  On this machine the cheap equivalent of a free-running timer is
+    // the BEAM: VHPOSR advances every 280 ns and is as decorrelated from game code as T2 is
+    // from 6502 code, for the same reason (it is a clock, not a PRNG).
+    // ⚠ Under REVS_FIXED_RNG the base class's field-counted fallback is used instead, so a
+    // perf run stays pinned — that flag exists precisely so two builds drive the same
+    // simulation, and a beam-derived value would make the trajectory depend on frame timing.
+    virtual uint32_t hwMicros() override;
+
     // Called from the VERTB ISR: accumulate the mouse counter (see RevsInput::sampleMouse).
     void sampleMouse() { input.sampleMouse(); }
 

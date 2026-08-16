@@ -209,6 +209,23 @@ bool PlatformAmiga::vsyncElapsed()
     return true;
 }
 
+// ⭐⭐ $FE68's clock — see PlatformAmiga.h.  Field count for the coarse part (g_vbiCount is
+// the real VERTB's own counter) and the BEAM for the fine part: VHPOSR's low byte is the
+// horizontal position in 280 ns units, its high byte the line.  One `move.w` from a register
+// that is always moving, which is exactly the property T2 has on a BBC.
+// ⚠ Only the low 8 bits of the derived down-counter are ever observed by the game, so the
+// approximations here (256 lines per wrap, 4 beam units per microsecond) cost nothing real:
+// what matters is the RATE and that nothing correlates it with what the game is doing.
+uint32_t PlatformAmiga::hwMicros()
+{
+#ifdef REVS_FIXED_RNG
+    return Platform::hwMicros();     // pinned: a perf run must drive the same simulation
+#else
+    const uint16_t vh = *vhposrPointer;
+    return (uint32_t)g_vbiCount * 20000u + (uint32_t)(vh >> 8) * 64u + (uint32_t)(vh & 0xFFu) / 4u;
+#endif
+}
+
 bool PlatformAmiga::keyDown(uint8_t x)
 {
 #ifdef REVS_AUTORUN_BUILD   // autorun.h — one predicate, not four flags per site

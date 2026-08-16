@@ -90,6 +90,13 @@ extern uint8_t       g_irqClobberWhich;
    therefore interrupt-saved on real hardware) and the 6502 stack pointer.  Pending is expected to
    be non-zero — it only says interrupts do land inside the drop window; Touched and Imbalance must
    both stay 0. */
+/* $FE68 (User VIA T2 counter-low), the game's only entropy source — bbc_hw.cpp.  Exported
+   because a constant answer and a live clock produce the same picture, which is how the
+   constant-$0 model survived for months: the counter and the last value make the model
+   checkable from a probe (`amiga/dash_state.gdb`, REVS_DASH_WATCH on the host). */
+extern unsigned long g_viaT2Reads;
+extern uint8_t       g_viaT2Last;
+
 extern unsigned long g_irqUnwindPending;
 extern unsigned long g_irqUnwindTouched;
 extern unsigned long g_irqStackImbalance;

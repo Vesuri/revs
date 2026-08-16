@@ -1,6 +1,10 @@
 /* AutoRun — see autorun.h for why a scripted keyboard is a measurement prerequisite. */
 #include "autorun.h"
 
+/* The game's own state, for AutoStep::until — a scripted key that waits on a PROBABILISTIC
+   effect (the starter) can only be released by looking at what the game did with it. */
+extern "C" volatile uint8_t mem[65536];
+
 /* Negative-INKEY codes, in the raw 256-n form OSBYTE 129 wants in X.  Read out of the
    binary, not from a key-code table: menu_key_tbl ($39E0) holds exactly SPACE/1/2/3, and
    the driving keys are the LDX immediates feeding kbd_test_key ($0E50) at $1660/$166D/
@@ -28,11 +32,20 @@ enum : uint8_t {
               script take three frames instead of a thousand.
    Set both and `polls` is the escape hatch: a hit-counted step whose key the game stops
    asking for would otherwise wedge the script forever, which is a silent hang rather
-   than a visible one.  A release step must use `polls` — there is no key to count. */
+   than a visible one.  A release step must use `polls` — there is no key to count.
+     until  — ⭐ hold the key until the GAME'S OWN STATE says the job is done (mem[until]
+              non-zero), whatever the hit count.  This is the only limit that survives a
+              key whose effect is PROBABILISTIC, and the starter is exactly that: $498C
+              catches on `LDA $FE68 / AND $09`, so one hit starts the engine only about
+              one time in eight.  Counting hits worked solely because the port used to
+              answer a constant $0 at $FE68 — the moment that became a real 1 MHz counter
+              (bbc_hw.cpp), a one-hit starter step left the engine OFF for the whole run.
+              ⚠ `polls` still caps it, so a state that never arrives is a bounded failure. */
 struct AutoStep {
     uint8_t  key;
     uint16_t polls;
     uint16_t hits;
+    uint16_t until;      /* 0 = no state condition */
 };
 
 /* Does the script hold the throttle forever once it runs out, or hand the keyboard back?
@@ -93,7 +106,7 @@ static const AutoStep s_script[] = {
     /* ...name and wings answer themselves through rdch().  Then the pits page. */
     {KEY_SPACE, 900, 2},
     {KEY_NONE,  4,   0},
-    {KEY_T,     400, 1}, /* starter — one hit is the whole job ($4978 stops polling)     */
+    {KEY_T,     400, 0, 0x61}, /* starter — held until $61 says the engine CAUGHT (below) */
     {KEY_NONE,  2,   0},
     {KEY_Q,     400, 1}, /* first gear, or the "race" is a parked car                    */
     {KEY_NONE,  2,   0},
@@ -139,10 +152,15 @@ static const AutoStep s_script[] = {
        press ($34E0), which is exactly why every step here has a release after it. */
     {KEY_SPACE, 600, 2},
     {KEY_NONE,  4,   0},
-    /* Starter motor.  ONE hit is the whole job: $4978's hit sets $09=7 and $61=$FF, and
-       $49CE's `LDA $61 / BEQ $4978` then never polls -36 again — so a hit count above 1
-       can never be reached and would wedge the script (measured: it did). */
-    {KEY_T,     400, 1},
+    /* ⭐⭐ Starter motor, held until the ENGINE CATCHES ($61 = $FF), not for a fixed number
+       of hits.  A hit is not a catch: $498C is `LDA $FE68 / AND $09`, so with $09 = 7 the
+       crank succeeds about one poll in eight and the rest of the time the engine just makes
+       cranking noise.  A one-hit step was right only while the port answered a CONSTANT $0
+       at $FE68 — under the real 1 MHz T2 counter (bbc_hw.cpp) it left the engine off for the
+       entire run, and a straight-to-race build then handed the player a dead car.
+       ⚠ Once $61 is $FF, $49CE's `LDA $61 / BEQ $4978` stops polling -36 altogether, so the
+       state IS the completion signal and the 400-poll cap is only the failure bound. */
+    {KEY_T,     400, 0, 0x61},
     {KEY_NONE,  2,   0},
     /* ...and into first.  The engine idles at $3C = $28 ($49B9) but the car cannot move in
        neutral, so without this the "race" is still a parked car — the same trap the old
@@ -216,7 +234,8 @@ bool AutoRun::keyDown(uint8_t x)
 
     const AutoStep& s = s_script[m_step];
 
-    const bool expired = (s.hits  && m_hits >= s.hits)
+    const bool expired = (s.until && mem[s.until])
+                      || (s.hits  && m_hits >= s.hits)
                       || (s.polls && m_polls - m_stepAt >= s.polls);
     if (expired) {
         m_step++;
