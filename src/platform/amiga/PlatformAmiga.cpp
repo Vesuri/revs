@@ -269,6 +269,7 @@ void PlatformAmiga::renderFrame()
     // own counter), not WaitTOF(): once the VERTB vector is taken over, graphics.library's
     // VERTB server no longer runs, so WaitTOF() would never be signalled.
     if (s_scene) s_scene->render();
+    PROBE_PHASE(PROBE_PHASE_SPIN);
     uint16_t start = g_vbiCount;
     while (g_vbiCount == start) { /* spin */ }
 }

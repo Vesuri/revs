@@ -54,6 +54,24 @@ void probe_phase(int id);
  * `make gen` FAILS if the JSR count ever reaches it. */
 #define PROBE_PHASE_FRAMEWAIT 25
 
+/* ⭐⭐ AND ITS THREE PARTS, because at 60.9% of the frame (measured 2026-08-16) phase 25 is by far
+ * the biggest row in the table and "the paint plus the wait" is not an answer anyone can act on.
+ * The call it brackets does three things with completely different meanings:
+ *
+ *   26  DRAIN   the game's 50 Hz body, run from main-loop context at the engine's own frame hook
+ *               (docs/amiga-arch.md).  At ~1 FPS that is ~50 body ticks per painted frame, and the
+ *               body DRAWS — so this is real, faithful, non-negotiable engine work whose share
+ *               GROWS as the framerate falls.  Optimising it is not the same as removing it.
+ *   27  DECODE  RevsScreen::decode(), the BBC frame buffer -> bitplanes pass.  Pure port overhead
+ *               and the thing docs/direct-bitplane-plan.md is about.
+ *   28  SPIN    waiting for the next real vblank after the paint.  Should be ~0 at 1 FPS; anything
+ *               large here means the loop is waiting for the display rather than the reverse.
+ *
+ * Phase 25 keeps whatever is left (the call itself), so the old row is the sum of 25..28. */
+#define PROBE_PHASE_DRAIN  26
+#define PROBE_PHASE_DECODE 27
+#define PROBE_PHASE_SPIN   28
+
 /* ⭐ Beam ticks in one PAL display frame, in the units beamTick() composes
    (line * 256 + hpos, 313 lines).  The VERTB ISR adds this to g_beamEpoch once per
    frame, which is what makes the tick monotonic ACROSS frames.
@@ -76,4 +94,13 @@ extern volatile unsigned long g_beamEpoch;
 #else
 #define PROBE_PHASE(id) ((void)0)
 #define PROBE_VBI()     ((void)0)
+/* ⚠ The phase IDs are plain numbers and must exist in EVERY build: `make SHAPE=1` without PROBES
+   passes them to the shape probe (src/platform/shape.h §WHO ACTUALLY DRAWS), and inside the
+   PROBE_PHASE macro they were only ever unevaluated macro arguments — so a non-PROBES build
+   compiled for a year without needing them and then failed to compile the moment something else
+   used one.  Kept in sync with the definitions above by hand; `make gen` checks FRAMEWAIT. */
+#define PROBE_PHASE_FRAMEWAIT 25
+#define PROBE_PHASE_DRAIN     26
+#define PROBE_PHASE_DECODE    27
+#define PROBE_PHASE_SPIN      28
 #endif

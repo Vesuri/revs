@@ -4,6 +4,8 @@
 #include "framework/AmigaHardware.h"
 #include "framework/CopperList.h"
 #include "../bbc_screen.h"
+#include "../probe.h"       // PROBE_PHASE(): the three parts of the paint call (26/27/28)
+#include "../shape.h"       // PROBE_SHAPE_FRAME(): the per-paint frame-buffer delta
 #include "../teletext.h"      // tt_tick_flash — the SAA5050 flash phase is a per-FIELD counter
 #include "RevsAudio.h"        // the SN76489 the MOS drives, re-hosted on Paula
 
@@ -157,6 +159,7 @@ void Revs::render()
     // is finished and this iteration's has not started, so it is one of exactly two points where
     // running the game body cannot change the scene underneath either the rasteriser or the decode.
     // (The other is the frame-wait spin at $1760 — PlatformAmiga::tickVBI.)
+    PROBE_PHASE(PROBE_PHASE_DRAIN);
     drainTicks();
 
 #ifdef REVS_FPSCOUNT
@@ -167,6 +170,11 @@ void Revs::render()
 #endif
     // ⭐ The BBC frame buffer -> the back bitplane buffer.  Main-loop context: the
     // POINTER swap that presents it happens in vbi(), never here.
+    PROBE_PHASE(PROBE_PHASE_DECODE);
+    /* ⭐ SHAPE builds: how much of the picture actually moved since the last paint — the number
+       that prices a dirty-region decode.  Taken BEFORE decode() so it describes the bytes this
+       decode is about to convert (src/platform/shape.h). */
+    PROBE_SHAPE_FRAME();
     screen.decode();
 }
 

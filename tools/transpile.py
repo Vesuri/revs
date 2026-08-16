@@ -678,11 +678,17 @@ SPINWAIT_HOOKS = {
 DASH_UNIT_ADDRS = [0x7C00 + 17 * k for k in range(16)] + [0x7D56 + 17 * k for k in range(24)]
 
 PRE_INSN_HOOKS = {
-    0x1701: 'PROBE_PHASE(PROBE_PHASE_FRAMEWAIT); platform_render_frame();',
+    0x1701: 'PROBE_PHASE(PROBE_PHASE_FRAMEWAIT); PROBE_SHAPE_PHASE(PROBE_PHASE_FRAMEWAIT); '
+            'platform_render_frame();',
     0x1748: 'PROBE_SHAPE_DASH_BEFORE();',
     0x174B: 'PROBE_SHAPE_DASH_AFTER();',
 }
 PRE_INSN_HOOKS.update({a: 'PROBE_SHAPE_DASH_UNIT();' for a in DASH_UNIT_ADDRS})
+# ⭐ AND the road pass, `JSR $1A20` at $171F (phase 11): snapshot-and-diff the frame buffer around
+# it, so the measurement is "how many bytes of the picture does the road actually write" without
+# instrumenting a single span plotter.  src/platform/shape.h §THE ROAD PASS.
+PRE_INSN_HOOKS[0x171F] = 'PROBE_SHAPE_ROAD_BEFORE();'
+PRE_INSN_HOOKS[0x1722] = 'PROBE_SHAPE_ROAD_AFTER();'
 
 # ---------------------------------------------------------------------------
 # The 6502 stack-drop return: an RTS that unwinds TWO levels.
@@ -2155,6 +2161,9 @@ def translate_func(func, all_funcs_by_start, symbols,
         lo, hi = MAIN_LOOP_BRACKET
         if lo <= addr <= hi and insn['mnem'] == 'JSR':
             lines.append(f'    PROBE_PHASE({phase_ids[addr]});')
+            # ⭐ SHAPE builds also attribute frame-buffer writes to the phase that just closed
+            # (src/platform/shape.h §WHO ACTUALLY DRAWS).  Compiled out without -DREVS_SHAPE.
+            lines.append(f'    PROBE_SHAPE_PHASE({phase_ids[addr]});')
         stmt_lines = translate_insn(insn, func, all_funcs_by_start, symbols,
                                     local_targets, external_entries, wrapper_names,
                                     smc_dispatch_targets)

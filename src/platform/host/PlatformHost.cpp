@@ -95,6 +95,10 @@ void PlatformHost::renderFrame()
        ($1701), so `frames` is a game-frame counter and nothing else. */
     frames++;
 
+    /* ⭐ SHAPE builds: the per-paint frame-buffer delta, at the same point the Amiga takes it
+       (immediately before the decode it prices).  See src/platform/shape.h. */
+    PROBE_SHAPE_FRAME();
+
     /* ⭐ THE 50 Hz BODY MUST RUN EVEN WHEN THE MAIN LOOP DOES NOT WAIT FOR IT.
        The only host driver for the band cycle used to be the frame-wait hook at $1760 —
        but the main loop reaches $1760 only when $62F6 is non-zero ($1753: `LDA $62F6 /
@@ -183,7 +187,27 @@ void PlatformHost::renderFrame()
             for (unsigned i = 0; i < 11; i++) std::printf(" %lu", g_shapeDashColHist[i]);
             std::printf("\nSHAPE   per-column dirty sweeps:");
             for (unsigned i = 0; i < 40; i++) std::printf(" %lu", g_shapeDashPerCol[i]);
-            std::printf("\nSHAPE   per-row ($2C..$4F) dirty sweeps:");
+            if (g_shapeRoadCalls)
+                std::printf("SHAPE   road pass ($1A20): %lu calls, %lu of 8320 frame-buffer bytes "
+                            "per call over %lu lines  last(%u bytes, %u lines, %u..%u)\n",
+                            g_shapeRoadCalls, g_shapeRoadBytes / g_shapeRoadCalls,
+                            g_shapeRoadLines / g_shapeRoadCalls, g_shapeRoadLastBytes,
+                            g_shapeRoadLastLines, g_shapeRoadFirstLine, g_shapeRoadLastLine);
+            if (g_shapeFrameCalls)
+                std::printf("SHAPE   per-paint DELTA: %lu of 8320 bytes changed per painted frame "
+                            "(max %u, last %u over %u lines, %u..%u)\n",
+                            g_shapeFrameBytes / g_shapeFrameCalls, g_shapeFrameMax,
+                            g_shapeFrameLast, g_shapeFrameLines,
+                            g_shapeFrameFirstLine, g_shapeFrameLastLine);
+            std::printf("SHAPE   frame-buffer bytes WRITTEN per main-loop phase "
+                        "(phase: bytes/frame, lines):\n");
+            for (unsigned i = 0; i < 40; i++) {
+                if (!g_shapePhaseBytes[i]) continue;
+                std::printf("SHAPE     phase %2u: %6lu bytes/frame  lines %u..%u  (%lu frames)\n",
+                            i, g_shapePhaseBytes[i] / frames, g_shapePhaseFirst[i],
+                            g_shapePhaseLast[i], g_shapePhaseFrames[i]);
+            }
+            std::printf("SHAPE   per-row ($2C..$4F) dirty sweeps:");
             for (unsigned i = 0; i < 36; i++) std::printf(" %lu", g_shapeDashPerRow[i]);
             std::printf("\n");
             std::fflush(stdout);

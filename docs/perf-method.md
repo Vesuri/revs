@@ -59,8 +59,14 @@ same instrument on the same day, is:
 | + copper bands + 2-bitplane display DMA + double buffer (`NODECODE=1`) | **0.97** | 1031 ms | −35%, and it is DMA/contention, not code |
 | + the frame-buffer decode (shipping Phase 5 build) | **0.78** | 1282 ms | −19% more: the decode itself, ~250 ms |
 
+⚠⚠ **THE ~250 ms IN THE THIRD ROW IS WRONG — the decode is 83 ms, measured directly 2026-08-16**
+(phase 27, its own bracket; see §Where the time goes).  These three rows are three separate runs, so
+the difference between them is a sizing that also swallowed whatever else changed between builds, and
+the thing it swallowed turned out to be the 50 Hz body's 51%.  Keep the rows as the record of the
+DMA cost; take the decode figure from the bracket.
+
 ⭐⭐ **THE DECODE IS PORT OVERHEAD, AND DELETING IT IS A PHASE 6 ITEM IN ITS OWN RIGHT.**  Those
-~250 ms buy nothing the BBC did: they exist only because the engine plots into a BBC-shaped buffer
+83 ms buy nothing the BBC did: they exist only because the engine plots into a BBC-shaped buffer
 in `mem[]` and the display wants bitplanes.  Rendering direct to bitplanes removes the pass entirely
 and roughly halves the render path's memory traffic — sizing, layout choices, the constraint that
 5.5 KB of live engine code renders as the sky, and how the *existing* decode becomes the validated
@@ -227,6 +233,60 @@ The Atari port's "50 FPS is impossible without an algorithm change" was reached 
 and disproven by hand-asm.  1.4 is a starting line measured on the real machine, which is
 exactly what Phase 4 was for.
 
+### ⭐⭐ Where the time goes — RE-MEASURED 2026-08-16, and the answer changed again
+
+`make clean && make PROBES=1 STRAIGHT_TO_RACE=1 FIXED_RNG=1` +
+`GDBSCRIPT=phase4_prof.gdb ./diag_run.sh 200`.  **n = 189 painted frames**, 9779 display fields,
+780 137 069 loop beam ticks, **accounted 99.5% of elapsed**.  Shares within one run (Rule 2).
+
+⭐ **The paint call is now FOUR rows, and that is the whole story.**  Phase 25 used to be "the
+paint plus the frame wait" and read 2.5%; measured properly it was **60.9%**, so it is split into
+26 DRAIN / 27 DECODE / 28 SPIN (`src/platform/probe.h`).  The old phase-25 row is their sum.
+
+| Share | ms/frame | Phase | Callee | What it is |
+|---|---|---|---|---|
+| **51.1%** | **526** | **26** | **the 50 Hz game body** | `drainTicks()` — the IRQ1V band cycle and `FUN_52a4`, run from main-loop context at the engine's frame hook.  ⚠ **NOT one slow routine: ~50 ticks per painted frame.**  See the arithmetic below |
+| **14.6%** | 150 | 24 | **`$7BE2`** | the dashboard sweep in the `$7B00` overlay (plus the end of the loop body, `$174B-$1763`) |
+| **8.1%** | 83 | **27** | `RevsScreen::decode()` | frame buffer → bitplanes.  Pure port overhead — and **83 ms, not the ~250 ms `direct-bitplane-plan.md` §1 assumed** |
+| **7.4%** | 77 | 5 | **`build_road_edge_lists`** (`$24F6`) | the road-geometry projection pass |
+| **6.1%** | 63 | 11 | **`$1A20`** | the road pass ⚠ and it writes **6 bytes** of the frame buffer per call — see the note below |
+| 3.3% | 34 | 4 | `$46A1` | 16-bit math, the physics core |
+| 3.1% | 32 | 18 | `$1E15` | 3D geometry |
+| **2.6%** | 27 | **28** | *(the vblank spin)* | waiting for the next field after the paint |
+| 0.9% | 10 | 17 | `$2637` | opponent cars |
+| ≤0.5% | ≤5 | 25, and 1,2,3,6-10,12-16,19-23 | | phase 25 itself is now 0.0% |
+
+⭐⭐ **THE 51% ROW IS A RATIO, AND IT IS THE PORT'S REAL CEILING.**  The body runs once per display
+FIELD — faithfully, because a BBC's User VIA fires no matter how long the foreground takes — so at
+~0.95 painted FPS it runs ~52 times per painted frame.  Divide it out: **one body tick costs ~10 ms
+of the 20 ms a tick has.**  That is half the machine gone before a single pixel of the main loop's
+own rendering, it is *independent of the framerate*, and no rendering change can touch it.  ⭐ It
+also explains a 2026-08-13 mystery: that table charged this work to nothing, because the body still
+ran inside the VERTB ISR then (`docs/amiga-arch.md`) where no bracket could see it.
+
+⚠⚠ **So the Phase 6 pecking order is now: the 50 Hz body, then the dashboard, then the road
+subsystem (5+11 = 13.5%), then the decode.**  `FUN_52a4` — the band-4 arm, which is also the only
+thing that draws display lines 120-143 — has never been profiled or split, and it is the single
+biggest item in the port.
+
+⚠ **And `$1A20` is not "the rasteriser" in the sense the notes claim.**  A snapshot-diff of the
+frame buffer around it (`make SHAPE=1`, `src/platform/shape.h`) says it changes **6-7 bytes per
+call, at display lines 26..55** — inside the sky band, i.e. engine variables that happen to live in
+the frame buffer.  Whatever plots the road, it is not this call's own writes.  ⭐ Per-phase
+attribution on the host says the whole main loop changes only **~280 of 8320 frame-buffer bytes per
+painted frame** (max 5046 on a scene change), which is a strong argument for dirty-region drawing
+and a weak one for making the decode itself faster.
+
+**Superseded table (2026-08-13), kept because two of its conclusions propagated into
+`docs/phases.md` and `docs/direct-bitplane-plan.md`:** `$7BE2` 36.1%, `$1A20` 21.1%, `$24F6` 19.0%,
+`$1E15` 8.0%, `$46A1` 6.6%, the frame wait 2.5%.  It was taken before the 50 Hz body moved out of
+the ISR, so more than half the frame was invisible to it and every share was inflated ~2x.
+⚑ The standing lesson holds a third time: **re-measure, never quote.**
+
+<details>
+<summary>The 2026-08-13 write-up, in full (it is still the record of how the 2.5% frame-wait row and
+the road-subsystem naming were found)</summary>
+
 ### Where the time goes — main-loop phase shares  ⭐ re-measured 2026-08-13
 
 `make clean && make PROBES=1 FIXED_RNG=1` + `GDBSCRIPT=phase4_prof.gdb ./diag_run.sh 200`,
@@ -291,6 +351,8 @@ Read with these caveats:
 - **n = 272 frames**, one workload (Silverstone, `autorun.h`), one trajectory.
 - This is a PROBES build.  **No framerate may be quoted from it** — that 1.40 FPS is a
   cross-check of the *instrument*, not a measurement of the shipping build.
+
+</details>
 
 ### ⚰ What the old table looked like, and why it is kept
 

@@ -69,15 +69,79 @@ void shape_dash_before(void);
 void shape_dash_after(void);
 void shape_dash_unit(void);
 
+/* ── THE ROAD PASS ($1A20, phase 11) ────────────────────────────────────────────────────────
+ * The other half of step 2, and the number that prices direct plotting: how many BYTES of the
+ * 8320-byte frame buffer does the road rasteriser actually write per frame?  The decode converts
+ * all 8320 whatever happens; if the road writes a few hundred, then a direct plotter plus a
+ * dirty-region present is worth far more than making the decode itself faster.
+ *
+ * Measured by snapshot-and-diff around the call, so no plotter is instrumented and the span
+ * chains' self-modifying code is untouched.  ⚠ 8320 bytes of static storage and two passes over
+ * the frame buffer per frame: a SHAPE build only, never a perf build. */
+extern volatile unsigned long g_shapeRoadCalls;
+extern volatile unsigned long g_shapeRoadBytes;   /* frame-buffer bytes the pass changed  */
+extern volatile unsigned long g_shapeRoadLines;   /* display lines it touched             */
+extern volatile unsigned short g_shapeRoadLastBytes;
+extern volatile unsigned short g_shapeRoadLastLines;
+extern volatile unsigned char  g_shapeRoadFirstLine;  /* topmost line touched, last call  */
+extern volatile unsigned char  g_shapeRoadLastLine;   /* bottommost                       */
+void shape_road_before(void);
+void shape_road_after(void);
+
+/* ── WHO ACTUALLY DRAWS?  Frame-buffer writes attributed PER MAIN-LOOP PHASE ────────────────
+ * ⭐⭐ Because the first answer was wrong: `$1A20` is called "the road rasteriser" everywhere in
+ * this project's notes, and the snapshot-diff above says it changes SIX BYTES of the frame buffer
+ * per call, at display lines 26..55 — inside the sky band, i.e. engine VARIABLES that happen to
+ * live in the frame buffer, not road pixels.  So the plotting is somewhere else, and a plan that
+ * hand-writes asm for "the rasteriser" needs to know where before it starts.
+ *
+ * This is the same snapshot-and-diff, run at every phase boundary and charged to the phase that
+ * just closed — the `make refloop --fill` idea (attribute every write to the routine that made it)
+ * applied to the port's own main loop.  ⚠ 8320 compares per phase boundary, ~25 boundaries per
+ * frame: a HOST instrument.  Do not read a framerate, or a phase share, from a build with it on.
+ */
+extern volatile unsigned long g_shapePhaseBytes[40];   /* frame-buffer bytes written by phase n */
+extern volatile unsigned long g_shapePhaseFrames[40];  /* phase closures that wrote anything    */
+extern volatile unsigned char g_shapePhaseFirst[40];   /* topmost display line it ever wrote    */
+extern volatile unsigned char g_shapePhaseLast[40];    /* bottommost                            */
+void shape_phase_mark(int id);
+
+/* ── ⭐⭐ HOW MUCH OF THE PICTURE CHANGES PER PAINTED FRAME ───────────────────────────────────
+ * The number that prices dirty-region drawing, and it is cheap enough to run on the TARGET: one
+ * pass over the 8320-byte frame buffer per painted frame, comparing against the state at the
+ * previous paint.  `decode()` converts all 8320 bytes every time; if only a few hundred differ,
+ * then most of that pass is re-converting bytes that did not move — and a dirty-region decode
+ * captures much of what direct plotting would, for far less work.
+ *
+ * ⚠ The host and the target are DIFFERENT here and both are needed: the host runs the 50 Hz body
+ * once per game frame, the target drains ~50 ticks per painted frame and the body DRAWS (display
+ * lines 120-143).  So the target's delta is the honest one for the port as it ships. */
+extern volatile unsigned long g_shapeFrameCalls;
+extern volatile unsigned long g_shapeFrameBytes;   /* changed bytes, summed over paints  */
+extern volatile unsigned short g_shapeFrameLast;   /* ...on the most recent paint        */
+extern volatile unsigned short g_shapeFrameMax;
+extern volatile unsigned char  g_shapeFrameFirstLine;
+extern volatile unsigned char  g_shapeFrameLastLine;
+extern volatile unsigned short g_shapeFrameLines;  /* display lines changed, last paint  */
+void shape_frame_delta(void);
+
 #define PROBE_SHAPE_DASH_BEFORE()  shape_dash_before()
 #define PROBE_SHAPE_DASH_AFTER()   shape_dash_after()
 #define PROBE_SHAPE_DASH_UNIT()    shape_dash_unit()
+#define PROBE_SHAPE_ROAD_BEFORE()  shape_road_before()
+#define PROBE_SHAPE_ROAD_AFTER()   shape_road_after()
+#define PROBE_SHAPE_PHASE(n)       shape_phase_mark(n)
+#define PROBE_SHAPE_FRAME()        shape_frame_delta()
 
 #else
 
 #define PROBE_SHAPE_DASH_BEFORE()  ((void)0)
 #define PROBE_SHAPE_DASH_AFTER()   ((void)0)
 #define PROBE_SHAPE_DASH_UNIT()    ((void)0)
+#define PROBE_SHAPE_ROAD_BEFORE()  ((void)0)
+#define PROBE_SHAPE_ROAD_AFTER()   ((void)0)
+#define PROBE_SHAPE_PHASE(n)       ((void)0)
+#define PROBE_SHAPE_FRAME()        ((void)0)
 
 #endif /* REVS_SHAPE */
 

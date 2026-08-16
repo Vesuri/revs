@@ -1,5 +1,6 @@
 /* shape.cpp — the input-distribution counters described in shape.h. */
 #include "shape.h"
+#include "bbc_screen.h"
 
 #ifdef REVS_SHAPE
 
@@ -88,6 +89,148 @@ void shape_dash_after(void)
     g_shapeDashLeft     += bytes;
     g_shapeDashColsLeft += cols;
     g_shapeDashLastLeft  = (unsigned short)bytes;
+}
+
+
+/* ── the road pass ------------------------------------------------------------------------- */
+
+extern "C" {
+volatile unsigned long g_shapeRoadCalls = 0;
+volatile unsigned long g_shapeRoadBytes = 0;
+volatile unsigned long g_shapeRoadLines = 0;
+volatile unsigned short g_shapeRoadLastBytes = 0;
+volatile unsigned short g_shapeRoadLastLines = 0;
+volatile unsigned char  g_shapeRoadFirstLine = 0;
+volatile unsigned char  g_shapeRoadLastLine  = 0;
+}
+
+static unsigned char s_fbSnap[BBC_SCREEN_BYTES];
+
+void shape_road_before(void)
+{
+    for (unsigned i = 0; i < BBC_SCREEN_BYTES; i++)
+        s_fbSnap[i] = mem[BBC_SCREEN_BASE + i];
+}
+
+void shape_road_after(void)
+{
+    unsigned bytes = 0, lines = 0, first = 0xFFu, last = 0;
+    /* Walk by DISPLAY LINE, not by address, so "lines touched" is a picture fact rather than a
+       memory one — the BBC layout puts one character row's eight lines 320 bytes apart with a
+       stride of 8 (bbc_screen.h). */
+    for (unsigned row = 0; row < BBC_SCREEN_ROWS; row++) {
+        for (unsigned line = 0; line < BBC_SCREEN_LINES; line++) {
+            const unsigned off = row * BBC_SCREEN_BPR + line;
+            unsigned n = 0;
+            for (unsigned c = 0; c < BBC_SCREEN_CELLS; c++) {
+                const unsigned o = off + c * BBC_SCREEN_LINES;
+                if (mem[BBC_SCREEN_BASE + o] != s_fbSnap[o]) n++;
+            }
+            if (n) {
+                const unsigned y = row * BBC_SCREEN_LINES + line;
+                bytes += n;
+                lines++;
+                if (first == 0xFFu) first = y;
+                last = y;
+            }
+        }
+    }
+    g_shapeRoadCalls++;
+    g_shapeRoadBytes += bytes;
+    g_shapeRoadLines += lines;
+    g_shapeRoadLastBytes = (unsigned short)bytes;
+    g_shapeRoadLastLines = (unsigned short)lines;
+    g_shapeRoadFirstLine = (unsigned char)(first == 0xFFu ? 0 : first);
+    g_shapeRoadLastLine  = (unsigned char)last;
+}
+
+/* ── per-phase frame-buffer attribution --------------------------------------------------- */
+
+extern "C" {
+volatile unsigned long g_shapePhaseBytes[40]  = {0};
+volatile unsigned long g_shapePhaseFrames[40] = {0};
+volatile unsigned char g_shapePhaseFirst[40]  = {0};
+volatile unsigned char g_shapePhaseLast[40]   = {0};
+}
+
+static unsigned char s_phaseSnap[BBC_SCREEN_BYTES];
+static int s_phaseOpen = -1;
+
+void shape_phase_mark(int id)
+{
+    unsigned bytes = 0, first = 0xFFu, last = 0;
+    /* ONE pass: compare and re-baseline in the same walk, so a boundary costs 8320 reads and
+       only as many writes as there were changes. */
+    for (unsigned row = 0; row < BBC_SCREEN_ROWS; row++) {
+        for (unsigned line = 0; line < BBC_SCREEN_LINES; line++) {
+            const unsigned off = row * BBC_SCREEN_BPR + line;
+            unsigned n = 0;
+            for (unsigned c = 0; c < BBC_SCREEN_CELLS; c++) {
+                const unsigned o = off + c * BBC_SCREEN_LINES;
+                const unsigned char v = mem[BBC_SCREEN_BASE + o];
+                if (v != s_phaseSnap[o]) { s_phaseSnap[o] = v; n++; }
+            }
+            if (n) {
+                const unsigned y = row * BBC_SCREEN_LINES + line;
+                bytes += n;
+                if (first == 0xFFu) first = y;
+                last = y;
+            }
+        }
+    }
+    if (s_phaseOpen >= 0 && s_phaseOpen < 40 && bytes) {
+        g_shapePhaseBytes[s_phaseOpen] += bytes;
+        g_shapePhaseFrames[s_phaseOpen]++;
+        if (g_shapePhaseFirst[s_phaseOpen] == 0 ||
+            first < g_shapePhaseFirst[s_phaseOpen])
+            g_shapePhaseFirst[s_phaseOpen] = (unsigned char)first;
+        if (last > g_shapePhaseLast[s_phaseOpen])
+            g_shapePhaseLast[s_phaseOpen] = (unsigned char)last;
+    }
+    s_phaseOpen = id;
+}
+
+/* ── the per-paint delta ------------------------------------------------------------------- */
+
+extern "C" {
+volatile unsigned long g_shapeFrameCalls = 0;
+volatile unsigned long g_shapeFrameBytes = 0;
+volatile unsigned short g_shapeFrameLast = 0;
+volatile unsigned short g_shapeFrameMax  = 0;
+volatile unsigned char  g_shapeFrameFirstLine = 0;
+volatile unsigned char  g_shapeFrameLastLine  = 0;
+volatile unsigned short g_shapeFrameLines = 0;
+}
+
+static unsigned char s_paintSnap[BBC_SCREEN_BYTES];
+
+void shape_frame_delta(void)
+{
+    unsigned bytes = 0, lines = 0, first = 0xFFu, last = 0;
+    for (unsigned row = 0; row < BBC_SCREEN_ROWS; row++) {
+        for (unsigned line = 0; line < BBC_SCREEN_LINES; line++) {
+            const unsigned off = row * BBC_SCREEN_BPR + line;
+            unsigned n = 0;
+            for (unsigned c = 0; c < BBC_SCREEN_CELLS; c++) {
+                const unsigned o = off + c * BBC_SCREEN_LINES;
+                const unsigned char v = mem[BBC_SCREEN_BASE + o];
+                if (v != s_paintSnap[o]) { s_paintSnap[o] = v; n++; }
+            }
+            if (n) {
+                const unsigned y = row * BBC_SCREEN_LINES + line;
+                bytes += n; lines++;
+                if (first == 0xFFu) first = y;
+                last = y;
+            }
+        }
+    }
+    g_shapeFrameCalls++;
+    g_shapeFrameBytes += bytes;
+    g_shapeFrameLast = (unsigned short)bytes;
+    if (bytes > g_shapeFrameMax) g_shapeFrameMax = (unsigned short)bytes;
+    g_shapeFrameLines = (unsigned short)lines;
+    g_shapeFrameFirstLine = (unsigned char)(first == 0xFFu ? 0 : first);
+    g_shapeFrameLastLine  = (unsigned char)last;
 }
 
 #endif /* REVS_SHAPE */

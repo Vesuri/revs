@@ -905,6 +905,26 @@ Scope is the three item-1 targets and their subtrees — `$7BE2` (the `$7B00` ov
 concentrated pass over the whole image; it is that pass finished for the 40% of the frame Phase 6
 is about to rewrite by hand.
 
+### ⭐⭐ 0d. …AND THE PROFILE WAS RE-MEASURED FIRST, WHICH MOVED THE TARGETS (2026-08-16)
+
+⚠⚠ **Everything below this line was ordered by a share table that was missing half the frame.**
+The 2026-08-13 profile charged the port's paint call 2.5%; split properly it is **60.9%**, and inside
+it the **50 Hz game body is 51.1% of the frame on its own** (`docs/perf-method.md` §Where the time
+goes, re-measured with phases 26/27/28).  The body was invisible to the old table because it still
+ran inside the VERTB ISR then, where no main-loop bracket could see it.
+
+| | share | ms/frame | |
+|---|---|---|---|
+| the 50 Hz body (phase 26) | **51.1%** | 526 | ~52 ticks per painted frame, so **~10 ms of each tick's 20 ms budget** — half the machine, independent of the framerate, and faithful (a BBC's VIA fires regardless) |
+| `$7BE2` the dashboard (24) | 14.6% | 150 | and **2093 dirty tests for 83 stores** per sweep — §7a of the plan |
+| the decode (27) | 8.1% | 83 | port overhead; **not** the ~250 ms the plan assumed |
+| the road subsystem (5 + 11) | 13.5% | 140 | build then draw, still one subsystem |
+| the vblank spin (28) | 2.6% | 27 | |
+
+⭐ **So the first hand-optimisation target is `FUN_52a4`, the 50 Hz body's own arm** — never profiled,
+never split, and the only thing in the port that both simulates and draws (display lines 120-143).
+It is also the one row a faster renderer cannot help.
+
 ### 1. Then the twins and the asm
 
 `docs/faithfulness-seam.md` for which side of the line each routine lands on;

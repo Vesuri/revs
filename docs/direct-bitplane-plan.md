@@ -26,6 +26,15 @@ Measured (`docs/perf-method.md` §THE BASELINE, 2026-08-13):
 So **the decode is ~250 ms of a ~1282 ms frame, ~20%** — and every microsecond of it is work the BBC
 never did. It exists only because the port renders into one representation and displays another.
 
+⚠⚠ **CORRECTION, 2026-08-16: the decode is 83 ms, not ~250.**  It now has its own phase bracket
+(phase 27) and the direct measurement is 83 ms of a ~1040 ms frame, **8.1%** — after the flat-band
+skip took 43 ms off it, so ~126 ms before.  The three-row table above is three separate runs, and the
+difference it attributed to the decode also contained the 50 Hz body's **51.1%**, which no bracket
+could see until the body left the VERTB ISR.  ⭐ This does not retire the plan: 83 ms is still pure
+port overhead, the memory-traffic argument in §2 is unchanged, and §3-§5 are what unlock blitter fills
+and dirty-region drawing.  It does change the *sizing*: direct rendering is worth ~8%, while the body
+is worth 51% and the dashboard 15%.  Order the work accordingly (`docs/phases.md` item 0d).
+
 ⚠ The other ~350 ms of the rendering cost is what turning display DMA on costs a CPU whose program
 and `mem[]` are both in chip RAM. On a stock A500 that is structural, and this plan does **not**
 touch it.

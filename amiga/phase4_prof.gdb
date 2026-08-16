@@ -17,6 +17,12 @@
 #     the tick totals are real (~8e8 for a 200 s run) and prints shares summing to ~14%.
 #     Dividing by (tot/1000) keeps every intermediate small.
 #
+# ⭐⭐ PHASES 25-28 ARE THE PAINT CALL, SPLIT (2026-08-16).  Phase 25 measured 60.9% of the frame —
+# the biggest row by a factor of four — and "the paint plus the frame wait" is not actionable, so it
+# is now four rows: 25 the call itself, 26 the 50 Hz body DRAIN (real engine work, and its share
+# grows as the framerate falls), 27 the frame-buffer DECODE (pure port overhead), 28 the SPIN on the
+# next vblank.  The old phase-25 row is the sum of the four.  See src/platform/probe.h.
+#
 # ⭐ SANITY CHECK, read it every time: `bracketed` must be ~100% of `elapsed`.  If it is not,
 # the brackets are losing time and the shares are fiction — that was the state of this
 # harness until 2026-08-13, when it accounted for 4%.  docs/perf-method.md.
@@ -36,7 +42,7 @@ printf "=== vbi=%u loopFrames=%lu brk=%lu smc=%lu ===\n", \
 # bracket and landed on phase 24.
 set $i = 1
 set $tot = 0
-while $i < 26
+while $i < 29
   set $tot = $tot + g_phaseTicks[$i]
   set $i = $i + 1
 end
@@ -50,8 +56,20 @@ printf "loop ticks %lu of %lu elapsed  (accounted %d.%01d%% + phase 0 — MUST t
 # read as a one-off.
 printf "phase 0 (boot + engine wait at $1760, excluded): ticks=%lu calls=%lu\n", \
   g_phaseTicks[0], g_phaseCount[0]
+# ⭐⭐ PHASE 26 IS THE 50 Hz BODY, AND ITS SIZE IS A RATIO, NOT A ROUTINE.  It runs once per
+# DISPLAY FIELD, so at ~1 painted FPS it runs ~50 times per painted frame — which is faithful (a
+# BBC's User VIA fires regardless of how long the foreground takes) and is why it can dominate a
+# per-frame table without any one call being slow.  The number that matters is therefore the cost
+# of ONE tick against the 20 ms a tick has: print it, and check the port is not running more ticks
+# than there were fields.
+printf "body: ticks=%lu drains=%lu dropped=%lu pending=%u   fields=%u  (ticks/field must be ~1)\n", \
+  g_bodyTicks, g_bodyDrains, g_bodyTicksDropped, g_bodyPending, g_vbiCount
+if g_bodyTicks > 0
+  printf "   ONE BODY TICK = %lu us of its 20000 us budget  (phase 26 / body ticks)\n", \
+    (g_phaseTicks[26]/g_bodyTicks)*1000/4006
+end
 set $i = 1
-while $i < 25
+while $i < 29
   printf "phase %2d  ticks=%10lu  calls=%7lu  share=%2d.%01d%%  %4lu ms/frame\n", \
      $i, g_phaseTicks[$i], g_phaseCount[$i], \
      (g_phaseTicks[$i]/$per)/10, (g_phaseTicks[$i]/$per)%10, \
