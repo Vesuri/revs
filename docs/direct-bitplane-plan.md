@@ -109,9 +109,64 @@ buffer. Only the **drawing** moves out.
 ⭐ And the free win that section 4 was really carrying survives intact, available today with no
 architecture change: **the decode does not need to convert the sky band at all.** It renders flat
 blue whatever the bytes say, so those ~63 of 208 display lines (~30% of the pass, ~75 ms) can be
-skipped for a boundary check. ⚠ The band boundary can cut mid-character-row and it moves with the
-hills, so take it from `m_plan`/`m_lineMode` — which `decode()` already builds — and not from a
-literal.
+skipped for a boundary check. ⚠ The band boundary can cut mid-character-row, so take it from
+`m_plan`/`m_lineMode` — which `decode()` already builds — and not from a literal.
+
+### 4a. ⭐⭐ COLOUR-00-AND-A-COPPER-CHANGE: it buys the sky, and it CANNOT buy the terrain
+
+Asked by the user, 2026-08-16, before starting Phase 6: *does the BBC change the background colour
+dynamically at the horizon, or does that involve filling?* — with the proposal that the Amiga use
+`COLOR00` for **both** sky and terrain and have the copper change it at the horizon, since the view
+never tilts. Measured on a driving Silverstone practice session (host dumps, `REVS_SCREEN_DUMP`,
+frames 200-202 and 700-703, cross-read against the band record `f.bands`):
+
+**The BBC does BOTH, and the seam between them is at a FIXED display line — not at the horizon.**
+
+| lines | how the colour gets there | filled? |
+|---|---|---|
+| 0..17 (band 0, MODE 4) | palette: pen 0 blue, pen 1 yellow — the two text rows | the loader blanks rows 0-2 |
+| **18..80 (band 1)** | **palette ONLY: all sixteen entries → the same blue** | **NO. These bytes are the engine's code and variables (`$5E40-$66FF`) and are never touched by any plotter** |
+| 81..horizon (band 2) | palette pen 0 black / 1 blue / 2 white / 3 green | **YES — solid `$0F` (pen 1) across all 40 cells, every line** |
+| horizon..165 (band 3) | same, except **pen 1 → RED** | **YES** — pen 3 green grass, pen 0 black road, pen 1 red markings |
+| 166..207 (band 4) | pen 3 → cyan; then the game body runs | YES — the dashboard |
+
+- **Band 1's duration is FIXED at 4038 us = 63.1 lines** (the value the handler latches during band
+  0, identical in every frame sampled), so the flat-blue region is always lines 18..81.1. What moves
+  with the hills is **band 2's** length — `horizon_latch` read `$0558` (1368 us, 21.4 lines) in one
+  scene and `$04D8` (1240 us, 19.4 lines = `MoveHorizon`'s neutral value) in another. ⚠ The
+  paragraph above used to say the *sky* boundary moves with the hills; it does not, and that makes
+  the skip-the-sky win easier than §4 claimed, not harder.
+- **The horizon really is a straight, full-width, whole-scan-line boundary** — the strongest possible
+  support for the user's premise, because the original machine implements it as a *timer value*, and
+  the pixel data agrees: in frame 700 line 99 is 40 cells of `$0F` and line 100 is 40 cells of `$FF`,
+  dead straight. (The pixel flip is one line *above* the band 2→3 boundary, which is harmless
+  precisely because band 2's palette already carries green.)
+
+**So on the Amiga:**
+
+1. ✅ **Lines 18..81 — take the proposal in full.** `COLOR00` = the band-1 blue, both planes left at
+   zero and never written again after one clear. That is 2240 of the 8320 buffer bytes (27%) that
+   need neither a decode nor a fill, and it is the same win §4 describes, arrived at from the other
+   end.
+2. ⚠ **Lines 81..horizon — the sky there is real pixel data and the copper alone will not do it.**
+   Band 2 uses all four pens above the horizon: sampled frame 700 has a black (pen 0) object at cells
+   32-33 spanning lines 94..108 — a trackside structure straddling the horizon — which is exactly the
+   real machine's "min 0, max 18 zero bytes, longest run 3 cells" in `docs/bbc-reference-loop.md`
+   read as *content* rather than as noise. Make `COLOR00` blue there and that object disappears. The
+   strip can still be made write-free, but only by *permuting the pens* for that band (sky → colour
+   0, black → a spare register; red is unused above the horizon so there is room) — legal, because a
+   direct renderer owns both the encoding and the palette, and then the strip is one blitter clear
+   instead of ~21 lines of fill.
+3. ❌ **Below the horizon the trick inverts and loses.** Pen 0 there is the **ROAD**, not the grass —
+   i.e. the road is *already* the free colour, and the grass is genuine pixel data that has to
+   coexist with red markings and white cars. Setting `COLOR00` = green would require swapping road
+   and grass in the encoding, which converts a full-width grass *fill* into a full-width road
+   *clear* (double-buffered, so "already zero" is never true). No win; keep pen 0 black below the
+   horizon and let the ground be drawn.
+
+The net: the copper change at the horizon is the right mechanism, but it is **two** transitions, not
+one — a fixed one at line 81 that is pure profit, and the moving horizon one, which is where the
+blitter takes over from the CPU rather than where colour replaces pixels.
 
 ## 5. Validation — how this stays a faithful port
 
