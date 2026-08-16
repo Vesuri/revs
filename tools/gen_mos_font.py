@@ -114,7 +114,14 @@ GLYPHS = {
     0x2F: (".....#", "....#.", "...#..", "..#...", ".#....", "#.....", "......", "......"),  # /
 
     0x30: (".####.", "#....#", "#...##", "#.##.#", "##...#", "#....#", ".####.", "......"),  # 0
-    0x31: ("..#...", ".##...", "..#...", "..#...", "..#...", "..#...", ".###..", "......"),  # 1
+    # ⭐⭐ '1' IS THE DOUBLE-WIDTH GLYPH, and its stem is TWO columns for a geometric reason,
+    # not a stylistic one.  $50AE splits the cell on the NIBBLE boundary — bits 7..4 become the
+    # left cell, bits 3..0 the right — so a one-column stem lands entirely in one half and the
+    # gear indicator draws its '1' hard against the left edge of a two-cell field with the right
+    # cell nearly empty.  Measured against a real BBC parked in first gear (2026-08-16): 18 of the
+    # dial band's pixels differed, all of them here.  A stem on columns 2-3 straddles the split, so
+    # each cell gets one column and the character reads centred.  The 4-wide base (2|2) is ours.
+    0x31: ("..##..", ".###..", "..##..", "..##..", "..##..", "..##..", ".####.", "......"),  # 1
     0x32: (".####.", "#....#", ".....#", "...##.", "..#...", ".#....", "######", "......"),  # 2
     0x33: ("######", "....#.", "...#..", "..##..", ".....#", "#....#", ".####.", "......"),  # 3
     0x34: ("...##.", "..#.#.", ".#..#.", "#...#.", "######", "....#.", "....#.", "......"),  # 4
