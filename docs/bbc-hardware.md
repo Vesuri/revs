@@ -101,6 +101,25 @@ registers across 4 devices, agreed independently by `tools/sweep_entrypoints.py`
   - **The handler ends in `RTI`, emitted as `PLP(); return;`** — so the caller must push a P byte
     first, exactly as the 6502's IRQ sequence would.  Without it `cpu.S` walks back one byte per
     frame and page 1 is corrupted 256 frames after the code that caused it.
+- ⭐⭐ **User VIA T2 (`$FE68`) is the game's ONLY source of entropy, and it is a CLOCK.**  Revs has
+  no PRNG.  Every random-looking decision it makes reads the low byte of the User VIA's T2 counter
+  and masks it: the starter's catch delay (`$498C`, `AND $09` — so the crank succeeds about one
+  poll in eight, not on the first), the idle-rev jitter (`$49BD`, `AND #7`, which is why a real BBC
+  idles at `$2C` and not a round number), the gravel/skid trigger (`$0E7C`, `CMP #$3F`), `$274E`,
+  `$4C06`, `$635F`, and the mirrors' engine shudder in the `$7B00` overlay (`$7FB6`, where it is
+  ANDed with game code at `$2000,X` as a second decorrelator).
+  **[MEASURED]** with `make refloop --park --via-t2`, which samples what the real 6502 got at each
+  site — one instruction *after* each read, because reading T2C-L clears the T2 interrupt flag and a
+  probe that reads the register perturbs the machine it is measuring.  At `$635F` (32 reads in one
+  loop): 28 distinct values over `$18..$CC`, and **22 of 31 successive samples land exactly on
+  "previous value minus the microseconds that elapsed"**, 24 of 31 within ±2.  T2 free-runs *down*
+  at 1 MHz and keeps counting past its timeout, so the observable is the elapsed-time low byte,
+  negated — decorrelated from game code because it is a clock, not because it is random.
+  ✅ Modelled in `src/platform/bbc_hw.cpp` behind `Platform::hwMicros()`: `steady_clock` on the
+  host, `VHPOSR` + the field count on the Amiga (one `move.w`), and the deterministic field-counted
+  base under `REVS_FIXED_RNG` so a perf run stays pinned.  ⚠ The port answered a constant `$0`
+  here until 2026-08-16, which is not a harmless stub — it removed the crank delay, pinned the idle
+  at `$28`, and made the gravel trigger fire on every call.
 - **uPD7002 ADC** is the steering.  A racing sim reading an analogue axis is a *different* input
   problem from a digital joystick, and it is worth getting exactly right early: the feel of the
   game is in it.

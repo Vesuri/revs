@@ -754,31 +754,64 @@ SPACE accepted with no release, and a missing fixture file (a hard error, not a 
 sabotage round was **contaminated by a stale object file** and produced two coherent wrong answers
 — verify the patch took effect, *then* read the result.
 
-### 🐛 Known open defects, all found on 2026-08-16 while fixing the rev counter
+### ✅ The four defects the rev-counter measurement turned up — ALL FIXED (2026-08-16)
 
 The dial itself is **fixed and verified pixel-exact** against a real BBC at the same `$3C`
 (`make refloop --park --force-revs=40` vs `amiga/screen_dump.gdb`; the needle went from ~40 wrong
-pixels to zero).  Three things that measurement turned up and did **not** fix:
+pixels to zero).  The four things that measurement turned up beside it are now closed, and three
+of them were more interesting than the dial:
 
-1. ⚠⚠ **`$FE68` returns a constant `$0` on both backends, and it is the User VIA's T1 low-order
-   COUNTER, not port B** (`bbc_hw.cpp`'s comment is wrong about which register it is).  Revs uses
-   it as its only entropy source, in at least four places: the starter's catch delay
-   (`$498C`, `AND $09` — with 0 the engine catches on the FIRST poll instead of after a random
-   crank), the idle-rev jitter (`$49BD`, `AND #7` — which is exactly why the port idles at `$28`
-   where a real BBC reads `$2C`), the random gravel/skid trigger (`$0E7C`, `CMP #$3F` — with 0 it
-   fires EVERY call), and the mirrors' engine shudder (`$7FB6`).  ⭐ The faithful model is a
-   free-running 1 MHz down-counter derived from elapsed cycles — **not** a PRNG: T1 is decorrelated
-   from game code because it is a *clock*, and `bbc_hw.cpp` already tracks time for the band
-   schedule.  On the Amiga the cheap equivalent is one `move.w` from `VHPOSR`.
-2. ⚠ **The port's engine never STALLS.**  Parked in first gear with nothing held, a real BBC drops
-   `$61` to `$00` and `$3C` to `$00` within a second (`make refloop --park`); the target sits at
-   `$61=$FF`, `$3C=$28` indefinitely (`amiga/dash_state.gdb` at vbi 639/1235/2423).  Route not yet
-   identified — `$4A3F`'s `CMP #$03 / INC $61` is the stall, and what feeds it revs below 3 is the
-   `$4988` arm, which is only reachable while `$61` is already 0.
-3. ⚠ **The gear indicator differs by 18 pixels** at x274-285, y192-198 — the only dial-band
-   difference left after the needle fix.  Suspect the double-width `vdu_char_def` entry `$508C`.
-4. ⚠ **On the host, `REVS_QUIT_AFTER_DUMP=1` exits BEFORE the `REVS_MEM_DUMP` block runs**
-   (`PlatformHost.cpp`), so asking for both silently yields no memory dump.
+1. ✅ **`$FE68` answered a constant `$0`, and it is the User VIA's T2 COUNTER** (not port B — the
+   comment in `bbc_hw.cpp` was wrong; `docs/static-map.md` had it right).  It is Revs's only
+   entropy source, at six sites plus the mirrors' shudder in the `$7B00` overlay, and a constant
+   was not a harmless stub: the starter caught on the FIRST crank poll (`$498C`, `AND $09`), the
+   idle sat at exactly `$28` where a real BBC reads `$2C` (`$49BD`, `AND #7`), and the
+   gravel/skid trigger fired on EVERY call (`$0E7C`, `CMP #$3F`).
+   ⭐ **The model is a CLOCK, not a PRNG, and that is measured rather than argued.**  The new
+   `make refloop --park --via-t2` samples the value the real 6502 got at each site — from a
+   breakpoint one instruction *after* each read, because reading T2C-L clears the T2 flag and a
+   probe that reads the register perturbs what it measures.  At `$635F` (32 reads in one loop):
+   28 distinct values over `$18..$CC`, and **22 of 31 successive samples land exactly on
+   "previous value minus the microseconds elapsed"**, 24 of 31 within ±2.  So T2 free-runs down
+   at 1 MHz past its timeout and the low byte is the elapsed-time low byte, negated.
+   `Platform::hwMicros()` is the clock: `steady_clock` on the host, `VHPOSR` + the field count on
+   the Amiga (one `move.w`), and under `REVS_FIXED_RNG` the deterministic field-counted base so a
+   perf run stays pinned.  Verified: the host idles at `$3C = $2C`, the target jitters `$24..$2F`.
+   ⚠ **It broke the autorun script, and that is a lesson about probabilistic effects.**  The
+   starter step counted HITS, which was right only while `$FE68` was constant — a hit is not a
+   catch (the crank succeeds about one poll in eight), so the engine stayed off for a whole run.
+   `AutoStep::until` now holds the key until the GAME'S state says the job is done, with the poll
+   count demoted to a failure bound.
+2. ✅ **The port's engine never STALLED — and it was not the engine model at all.**  `$16BD`'s
+   `DEC $58` runs on any frame a GEAR key is held (`$58` is cleared every frame at `$157F`), and a
+   negative `$58` sends `$49D6` into the IDLE arm, which clamps the revs and never reaches the
+   gear-driven computation that falls below 3 and stalls at `$4A3F`.  The engine was being told a
+   gear key was down forever: `pressBbcKey()` WRITES the rawkey state, and the script's release
+   step can only clear the codes the game POLLS while it is in force — two polls, two codes, and
+   `'Q'` was not one of them.  Then `done()` stopped the script touching the input at all.
+   Fix: one `RevsInput::releaseAllKeys()` at the handover.  Measured on the target before/after:
+   `$61=ff $3C=2a $58=ff` at vbi 644/1238/2444 → `$61=00 $3C=00 $58=00` from vbi 641, which is a
+   real BBC's parked behaviour.  ⭐ **A stuck key is invisible in every counter this port has**:
+   `g_keyEvents` was 0 (no CIA traffic), the gear was stable, and nothing was dropped — only the
+   game's own `$58` said so.  `amiga/dash_state.gdb` now prints `$3E/$3F` and `$2D/$58` because
+   "the engine never stalls" and "something is holding a key" produce the same `$61/$3C/$63`.
+3. ✅ **The gear indicator's 18 pixels: a one-column `'1'` cannot survive the double-width split.**
+   `$508C` halves the glyph on the NIBBLE boundary, and the drawn `'1'` had its stem on bit 4
+   alone — all of it in the left cell, so the readout drew a thin character hard against the left
+   edge of a two-cell field.  A stem on art columns 2-3 straddles the split.  Measured (real BBC
+   parked frame buffer vs the host's, same state): **18 differing pixels → 2**, and those 2 are
+   the base serif, ours 4 columns where Acorn's ROM is 6 — the deliberate font divergence, so
+   that is where it stops.
+4. ✅ **`REVS_QUIT_AFTER_DUMP=1` exited before `REVS_MEM_DUMP` could write** — the quit sat
+   between the two dumps, so asking for both silently yielded no memory dump.  Moved to the end
+   of the block.
+
+⚠ Two process notes from this session, both already in the memory and both hit again anyway:
+**`make clean` before toggling a host build flag** (a mixed `STRAIGHT_TO_RACE` build sat in the
+front end at frame 60 and its frame buffer read as a wholly different scene — 2562 differing
+bytes, which looks like a catastrophic regression), and **two frame buffers can only be compared
+if they come from the same model** — a dump taken under the constant-`$FE68` build is a different
+simulation from one taken after the fix.
 
 **Exit criteria for Phase 5: ✅ met.**  The race view, input, sound, the MODE 7 front end, both
 fonts, COMPETITION mode with its field of cars, per-circuit code execution and now circuit

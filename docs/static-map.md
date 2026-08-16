@@ -198,7 +198,7 @@ counting the two `IRQ1V` cells.  `make sweep` and `disasm/hw-access.md` regenera
 | `$FE4E` | System VIA IER | W | `$4E26` |
 | `$FE64` `$FE65` | User VIA T1 counter | W | `$4E2B` `$4E30` |
 | `$FE66` `$FE67` | User VIA T1 latch | W | `$4E42` `$4F04` / `$4E4A` `$4F01` |
-| `$FE68` | User VIA T2 counter-low (read = timer value) | R | `$0E7C` `$274E` `$498C` `$49BD` `$4C06` `$635F` |
+| `$FE68` | User VIA T2 counter-low (read = timer value) — ⭐ **the game's only entropy source**, and [MEASURED] to be a 1 MHz free-running DOWN COUNTER, not a PRNG: `make refloop --park --via-t2` finds 22 of 31 successive samples exactly at "previous minus the elapsed microseconds" (`src/platform/bbc_hw.cpp`) | R | `$0E7C` `$274E` `$498C` `$49BD` `$4C06` `$635F` (+ `$7FB6` in the overlay) |
 | `$FE69` | User VIA T2 counter-high | W | `$4EFA` |
 | `$FE6B` | User VIA ACR | W | `$4E18` |
 | `$FE6D` | User VIA IFR | R+W | `$4E5C` `$4E63` |
@@ -698,7 +698,7 @@ value written during band n is band n+1's duration.
    - the image blocks bottom out on **exactly `$7768`**, which is a named boundary in the
      reference's memory map;
    - block 0 lands at `$7FCC-$7FFF` and decodes as the mirror plotter, engine-shudder idiom and
-     all — `LDX $FE68 / AND $2000,X / AND $61` (User VIA T1 low ∧ game code as a decorrelator ∧
+     all — `LDX $FE68 / AND $2000,X / AND $61` (User VIA T2 counter-low ∧ game code as a decorrelator ∧
      engine status), then `SBC #$38 / SBC #$01` to subtract `$138` when a span crosses a
      character row;
    - `$7B00` decodes as the mirror update — `LDA $03C8,X / LSR / LSR / LSR` (object size ÷ 8) and
