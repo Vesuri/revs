@@ -337,10 +337,12 @@ Amiga frame. `bus_write` to BBC hardware is largely ignored on Amiga.
 negotiable** — the game body is a VERTB-ISR interrupt, so 25 FPS means painting every other frame
 with the simulation still at full rate.
 
-⭐⭐ **BASELINE: 1.72 FPS RENDERED** (2026-08-16, `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` +
-`fps_series.gdb`) — **0.96 → 1.56 → 1.72 in one session, from two changes, and NEITHER was an
-algorithm.**  ⭐ Both are the same lesson: *the port's biggest costs are in the MACHINERY the
-transliteration is wrapped in, not in the game's algorithms* — look there before optimising a loop.
+⭐⭐ **BASELINE: 1.77 FPS RENDERED** (2026-08-16, `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` +
+`fps_series.gdb`) — **0.96 → 1.56 → 1.72 → 1.77 in one session, from three changes, and NONE was
+an algorithm.**  ⭐ The first two are the same lesson: *the port's biggest costs are in the
+MACHINERY the transliteration is wrapped in, not in the game's algorithms* — look there before
+optimising a loop.  ⚠ **The third is that lesson's limit**, and it is worth as much: where there
+is no machinery to delete, a faithful twin buys almost nothing (item 3).
 
 **2. `mem[]` was `volatile` and is not any more (+10%).** One qualifier on one array, and the
 array is the whole engine: it forbade gcc every optimisation over `mem[]`, and cost 5.7 KB of code
@@ -359,9 +361,21 @@ nine sabotages passed — so `diff_run` now diffs the hardware-write SEQUENCE to
 (`docs/validation-harness.md` §a fifth), and **sabotage is a required step for every twin**
 (`docs/phases.md` §1a item 9).
 
-⭐ **Re-profiled after both**: the 50 Hz body is now 27.4% (was 51.1%), and **`$7BE2` the dashboard
-at 21.8% / 151 ms is the biggest main-loop item** — the next target.  Then the decode 11.9%,
-`build_road_edge_lists` 11.3%, `$1A20` 8.7%.  Full table: `docs/perf-method.md`.
+**3. ⚠⚠ TWIN #2, `$7BE2 dashboard_sweep` native — 1.71 → 1.77 FPS, and +3.6% IS THE FINDING.**
+The biggest main-loop row (21.8% / 151 ms) is now a validated twin (700/700, 13 sabotages,
+`determinism` byte-identical) and phase 24 fell to **131 ms** — 20 ms of 151.  ⭐⭐ **Because 131 ms
+for 2093 units is ~420 cycles a unit against a ~27-instruction unit, this routine is
+INSTRUCTION-FETCH BOUND in chip RAM, not interpreter bound** — twin #1 deleted machinery the BBC
+never had, which is nearly free; here there is nothing to delete but iterations, and faithful C
+cannot remove those.  ⚠ The first cut was *slower* than the transliteration (1.59): an unrolled
+6502 chain bakes forty opcode-slot addresses in as constants, and rolling it into a loop pays to
+derive what unrolling had given away.  ⭐ **So the dashboard is a REPRESENTATION target, not a twin
+target** — `docs/direct-bitplane-plan.md` §7a from the other side: 2093 units run, ~83 bytes
+change, so the win is not scanning, not scanning faster.
+
+⭐ **Re-profiled after all three**: the 50 Hz body drain 26.2% / 159 ms (of which `irq1v_handler`
+is 125), **`$7BE2` 21.6% / 131 ms**, the decode 13.4%, `build_road_edge_lists` 10.0%, `$1A20`
+9.6%.  Full table: `docs/perf-method.md`.
 
 ⭐ *(superseded)* **0.87 FPS RENDERED** (2026-08-14; 0.78 before the two-level-RTS fix below, which
 stopped the road-span chains over-plotting) **/ 1.46 FPS unrendered** — ~29× short of the floor.

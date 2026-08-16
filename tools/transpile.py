@@ -562,6 +562,15 @@ VALIDATE_FUNCS = {
     # the cost is the transliteration's per-instruction flag bookkeeping and the per-write
     # trip through platform_hw_write, not work the BBC did.
     0x4E5C,
+    # ⭐⭐ TWIN #2, $7BE2 dashboard_sweep — the biggest MAIN-LOOP item, 21.8% / 151 ms
+    # (docs/perf-method.md, re-profiled after twin #1).  Its shape is already measured:
+    # 2093 column units run per sweep and only ~83 of them change a byte
+    # (docs/direct-bitplane-plan.md §7a), so 96% of the cost is a dirty test that finds
+    # nothing — and in the transliteration each of those tests is an LDY with N/Z
+    # bookkeeping plus a switch over a self-modified opcode slot.  The twin keeps every
+    # one of them (the scan is the GAME's algorithm; removing it is §7a's separate
+    # representation change) and drops only the interpreter around them.
+    0x7BE2,
 }
 VALIDATE_SUFFIX = '__t6502'
 

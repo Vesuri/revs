@@ -45,6 +45,28 @@ is validated on the writes it did not optimise.  So the trace hook lives in that
 ⚠ It follows that **a twin must be sabotaged, not just run.**  A first-run PASS on a routine
 whose output the harness cannot see is indistinguishable from a first-run PASS on a correct twin.
 
+## ⭐ …and a SEVENTH, found by twin #2: the SMC TRAP is an output channel too
+
+`diff_run()` also compares **how many times the routine trapped through
+`platform_smc_unhandled`, and on what site and value.**  Same argument as the hardware trace: an
+unhandled self-modified operand is a *reachable path* in a twin, not an error case — the twin has
+to trap where the transliteration traps and unwind the same way — and it produces no `mem[]` at
+all.  `dashboard_sweep` ($7BE2) has nine such sites, and one of its sabotages (a planted RTS
+ignored) moved the trap count from 196 to 314 while leaving plenty of `mem[]` agreement.
+
+⭐ **Which forced a second change: `Platform::smcUnhandled` can now COUNT instead of abort**, under
+`REVS_SMC_CONTINUE=1`.  Aborting on the first trap made the path untestable in-process. ⚠ The
+escape hatch is only sound because the harness then **asserts the count in both directions** — zero
+over the cases that are supposed to be legal (a pre-state that traps immediately compares almost
+nothing, which is the vacuous-green failure mode again) and non-zero over the cases that are
+supposed to be illegal. Never set it outside the harness.
+
+⚠⚠ **And a fixture for a self-modifying routine cannot be `fill_random` alone.**  Random bytes in
+an opcode slot or a patched operand are neither legal value, so both models trap on the first
+instruction and agree about nothing.  `test_dashboard_sweep` builds the pre-state instead: random
+everywhere, legal at each site *for the reason the operand encoding gives* — which is written out
+case by case above the fixture, because "I made these bytes legal" is worthless without why.
+
 ## ⭐⭐ …and a SIXTH: `make validate` cannot see a change that hits the ORACLE too
 
 A twin is compared against a transliteration **the same transpiler generated**.  So any change to

@@ -322,6 +322,63 @@ per call, exactly as predicted:
 | 4.6% | 32 | 18 | `$1E15` |
 | 3.5% | 24 | 28 | the vblank spin |
 
+**Re-profiled again after twin #2** (same command, n = 318 painted frames, ~608 ms/frame in the
+PROBES build, `bracketed` 99.0% of elapsed).  Only phase 24 was supposed to move, and only phase 24
+did — which is also the check that the twin changed nothing else:
+
+| share | ms/frame | phase | what |
+|---|---|---|---|
+| **26.2%** | 159 | 26 | the 50 Hz body drain (30.8 ticks per painted frame, 5452 µs each) |
+| **21.6%** | **131** | 24 | `$7BE2` the dashboard — **was 151**; see the twin-#2 entry below |
+| 13.4% | 81 | 27 | the decode (port overhead) |
+| 10.0% | 61 | 5 | `build_road_edge_lists` `$24F6` |
+| 9.6% | 58 | 11 | `$1A20`, the road pass |
+| 4.8% | 29 | 18 | `$1E15` |
+| 4.6% | 28 | 4 | `$46A1` |
+| 3.9% | 23 | 28 | the vblank spin |
+| 1.2% | 7 | 15 | `$1B93` |
+| 1.1% | 7 | 29 | `$52A4`, the body's arm |
+
+⚠ And two rows that are not phases but bound everything: the **VERTB ISR is 9783 calls at 911 µs**
+(charged to whichever phase it preempted, ~28 ms/frame spread pro-rata), and **`irq1v_handler` is
+49 134 calls at 810 µs** — 154 per painted frame, i.e. **125 of phase 26's 159 ms**.  The 50 Hz body
+is still mostly its own band cycle.
+
+### ⚠⚠ TWIN #2, `$7BE2 dashboard_sweep`: **1.71 → 1.77 FPS (+3.6%)**, and that is the FINDING
+
+The dashboard was the biggest main-loop row in the table above (21.8%, 151 ms) and it is now a
+native twin — validated 700/700 with thirteen sabotages, byte-identical over `make determinism`'s
+300 frames. **It bought 3.6%**, which is barely over this project's own noise floor. ⭐ The number
+that did not move is the point of the entry.
+
+| build | vbi | painted | FPS | phase 24 |
+|---|---|---|---|---|
+| control (HEAD), same command, same session | 9781 | 334 | **1.71** | 151 ms |
+| twin, first cut (address arithmetic per unit) | 9811 | 312 | **1.59** | — |
+| twin, running pointers + slot table | 9780 | 346 | **1.77** | **131 ms** |
+
+Three things this settles, and the third is the one that matters:
+
+1. ⚠ **The first cut was SLOWER than the transliteration.** The generated code spells each unit's
+   opcode slot as an *absolute address baked into that copy* — forty compile-time constants,
+   because the chain is unrolled. A twin that rolls the chain into a loop has to *derive* that
+   address, and deriving it costs more than the flag bookkeeping the loop removed. Rolling up an
+   unrolled 6502 chain is not free; the constants were the unrolling's payload.
+2. **Tightening it to running pointers** (source `+= $80`, destination `+= 8`, slot from a table,
+   the two destination bases hoisted out of the column) recovered that and 20 ms more.
+3. ⭐⭐ **But 131 ms for 2093 units is ~420 cycles a unit, and the unit is ~27 instructions — so
+   this routine is INSTRUCTION-FETCH BOUND in chip RAM, not interpreter bound.** That is why twin
+   #1 got 62% and this got 3.6%: `irq1v_handler`'s cost was machinery with no counterpart on the
+   BBC (a C bridge, a virtual dispatch, N/Z stores per palette write), and deleting machinery is
+   nearly free. The sweep's cost is *2093 iterations of a small loop*, and on an A500 the floor
+   for that is set by fetching the loop body over a contended bus. No amount of faithful C
+   removes iterations.
+
+⭐ **So the dashboard is a REPRESENTATION target, not a twin target**, exactly as
+`docs/direct-bitplane-plan.md` §7a concluded from the other direction: 2093 units run and ~83
+bytes change, so the win is in not scanning (a dirty list, or §8's sprites), not in scanning
+faster. This twin is the last useful thing to do to the sweep *as written*.
+
 ### ⭐⭐ `mem[]` WAS `volatile`, AND THAT COST 10% OF THE FRAME — **1.56 → 1.72 FPS** (2026-08-16)
 
 | build | vblanks | painted | FPS | `.text` |

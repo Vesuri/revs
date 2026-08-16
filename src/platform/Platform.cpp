@@ -85,6 +85,29 @@ void Platform::smcUnhandled(uint16_t site, uint16_t value) {
     g_smcValue = value;
     g_smcUnhandled++;
 #if !defined(REVS_PLATFORM_AMIGA)
+    /* ⭐ REVS_SMC_CONTINUE=1 — count and carry on instead of aborting.  The one caller that
+       wants this is `make validate`: an unhandled operand is a real, reachable path in a
+       native twin (the twin has to trap where the transliteration traps, and unwind the
+       same way), and an abort on the first one makes that path untestable in-process.
+       ⚠ It is NOT a discovery-run switch like REVS_BRK_CONTINUE: a run with this set has
+       executed code the transpiler could not model, so never quote behaviour from one
+       without saying so — and the harness that sets it must assert the trap COUNT, or a
+       fixture whose pre-state traps immediately passes vacuously. */
+    static int continueOnSmc = -1;
+    if (continueOnSmc < 0) {
+        const char* e = getenv("REVS_SMC_CONTINUE");
+        continueOnSmc = (e && e[0] && e[0] != '0') ? 1 : 0;
+    }
+    static unsigned long reported = 0;
+    if (continueOnSmc) {
+        if (reported < 4)
+            fprintf(stderr, "SMC UNHANDLED: site $%04X holds $%04X — COUNTED, NOT FATAL "
+                            "(REVS_SMC_CONTINUE=1).\n", site, value);
+        else if (reported == 4)
+            fprintf(stderr, "SMC: further reports suppressed; read g_smcUnhandled at exit.\n");
+        reported++;
+        return;
+    }
     fprintf(stderr, "\nSMC UNHANDLED: site $%04X holds $%04X — no emitted form covers it.\n"
                     "  tools/transpile.py SMC_SITES needs this value, with evidence for it\n"
                     "  (which writer stores it).  docs/transpile.md / docs/static-map.md.\n",

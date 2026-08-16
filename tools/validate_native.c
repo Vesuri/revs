@@ -46,6 +46,7 @@
  */
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include "../src/cpu/cpu.h"
 
@@ -129,6 +130,11 @@ void platform_test_clock_addr(uint16_t a);
    timer routine it is nearly ALL of the output.  Diffing it is not optional — see the
    sabotage note over test_irq1v_handler(). */
 enum { HWLOG_MAX = 8192 };
+/* The SMC trap channel (src/platform/Platform.cpp) — see the comparison in diff_run. */
+extern volatile unsigned long g_smcUnhandled;
+extern volatile uint16_t      g_smcSite;
+extern volatile uint16_t      g_smcValue;
+
 extern uint16_t g_hwLogAddr[HWLOG_MAX];
 extern uint8_t  g_hwLogVal[HWLOG_MAX];
 extern unsigned g_hwLogN;
@@ -154,6 +160,8 @@ static int diff_run(const char* name, const uint8_t* pre, Cpu6502 pre_cpu,
     static uint16_t ref_hw_addr[HWLOG_MAX];
     static uint8_t  ref_hw_val[HWLOG_MAX];
 
+    unsigned long smc_before = g_smcUnhandled;
+
     memcpy((void*)mem, pre, 65536); cpu = pre_cpu;
     g_hwLogN = 0; g_hwLogOverflow = 0;
     t6502();
@@ -162,7 +170,10 @@ static int diff_run(const char* name, const uint8_t* pre, Cpu6502 pre_cpu,
     unsigned ref_hw_n = g_hwLogN, ref_hw_ovf = g_hwLogOverflow;
     memcpy(ref_hw_addr, g_hwLogAddr, ref_hw_n * sizeof ref_hw_addr[0]);
     memcpy(ref_hw_val,  g_hwLogVal,  ref_hw_n * sizeof ref_hw_val[0]);
+    unsigned long ref_smc_n = g_smcUnhandled - smc_before;
+    uint16_t ref_smc_site = g_smcSite, ref_smc_value = g_smcValue;
 
+    smc_before = g_smcUnhandled;
     memcpy((void*)mem, pre, 65536); cpu = pre_cpu;
     g_hwLogN = 0; g_hwLogOverflow = 0;
     native();
@@ -201,6 +212,22 @@ static int diff_run(const char* name, const uint8_t* pre, Cpu6502 pre_cpu,
                 }
                 break;
             }
+    }
+
+    /* ⭐ THE SMC TRAP is a third output channel, and the same argument as the hardware
+       trace applies: a twin that traps at a different site, on a different value, or a
+       different number of times has diverged even when mem[] agrees.  Compared here so
+       no fixture has to remember to. */
+    if (g_smcUnhandled - smc_before != ref_smc_n ||
+        (ref_smc_n && (g_smcSite != ref_smc_site || g_smcValue != ref_smc_value))) {
+        failed = 1;
+        if (*printed < 12) {
+            printf("[SMC DIFF] %s case %d  traps ref=%lu native=%lu  last ref=$%04X<-$%04X "
+                   "native=$%04X<-$%04X\n", name, t, ref_smc_n,
+                   g_smcUnhandled - smc_before, ref_smc_site, ref_smc_value,
+                   g_smcSite, g_smcValue);
+            (*printed)++;
+        }
     }
 
     /* Declared-live registers are part of the contract — a diff is a failure. */
@@ -357,6 +384,184 @@ static int test_irq1v_handler(void)
     return fail;
 }
 
+void dashboard_sweep(void);
+void dashboard_sweep__t6502(void);
+
+/* --------------------------------------------------------------------------
+   $7BE2 dashboard_sweep — the 40-unit column chain (src/gen/revs_native.c).
+
+   ⚠⚠ fill_random() ALONE CANNOT TEST THIS ROUTINE, and the reason is the point of the
+   fixture.  The chain is self-modifying code: forty `STA (zp),Y` opcode slots that are
+   switched between $91 and $60, three `JSR` operands and three store operands that are
+   rewritten with a computed low byte, and one terminator at $7EEE that toggles $E0/$60.
+   A uniformly random byte in any of those is neither legal value, so the FIRST thing both
+   models do is trap through platform_smc_unhandled — agreeing with each other about
+   nothing.  So the pre-state is BUILT: random everywhere, legal where the operand
+   encoding says it must be.
+
+   WHERE EACH CONSTRAINT COMES FROM — every one is read off the code, none is a guess:
+
+     * the 29 reachable opcode slots start as `STA` ($91) and $7EEE as `CPX` ($E0),
+       because $7BBF restores exactly those on the way out of every real call;
+     * the fixed HIGH operand byte of each patched store/call is what pins it to one
+       page ($7C for chain A, $7E for chain B), so those bytes are set, not randomised;
+     * $3150,X names a chain-A opcode slot, so it is one of the fifteen $0F+$11k lows;
+     * $30D0,X names a chain-B ENTRY, so it is one of the twenty-eight unit / unit+$05
+       lows in page $7E;
+     * $3080,X names a chain-B opcode slot AND, through `$F1 - it`, chain A's entry —
+       and $F1 - ($0F+$11k) is exactly $11*(13-k)+5, so ONE value satisfies both.  That
+       identity is why the table can serve both purposes at all.
+
+   ⭐ AND THE MEMORY MAP FALLS OUT OF IT.  Each $80-spaced block holds $50 source bytes
+   (one per column, X = $03..$4F) and $30 spare; every control table above lives in a
+   spare — $3050/$3080/$30D0/$3150, $3350, $33D0, $38D0, $38FC, $3950.  The one
+   exception is $3080,X for phase 3's columns X = $03..$1B, which IS unit 1's source
+   range, and that is consistent rather than a clash: phase 3 enters chain A at unit
+   13-k, so units 0 and 1 are never drawn for those columns and their source bytes are
+   free.  It also bounds the fixture: k <= 11 keeps the entry at unit 2 or below, and a
+   larger k would have the chain zero $3080,X between its two reads.  Both models then
+   trap identically — the "illegal" case below proves that rather than assuming it.
+
+   ⭐ SABOTAGE RECORD (2026-08-16) — thirteen deliberate defects, all caught:
+   the dirty source not cleared (700/700), a planted RTS ignored (508 + the trap count
+   moved 196 → 314), the row offset off by one cell (700), chain B storing through $70
+   (700), the sweep terminator off by one (700), the restore dropping chain B's un-plant
+   (602), the carry into $73 lost in the advance (700) and again in phase 3 (656), the
+   forced entry taking the dirty test anyway (697), phase 2 not arming $7EEE (701), the
+   background byte from the wrong table (387), the unpatchable page-$7D slots dispatched
+   as if they were patchable (701), and — caught by NOTHING BUT THE FLAG COMPARISON — the
+   $7EF3 pointer advance written as plain C instead of the ADC macros (11 cases, V only).
+   ⚠ That last one is why the flags are declared live: V and C are the two the chain can
+   leak, and they only become visible when a trap cuts the driver short before its own
+   `SBC` overwrites them.  ⚠⚠ And sabotage #7 first reported #6's number because its patch
+   had failed to apply and `make` had nothing to rebuild — a stale object reading as a
+   result, for the second time on this project.  Every sabotage must change the source.
+
+   TWO INPUT SHAPES, because the real one is not the random one.  With random sources
+   ~255 of every 256 units are dirty; the measured sweep is 96% CLEAN (2093 units, ~83
+   stores — docs/direct-bitplane-plan.md §7a), and a clean unit is the path where A
+   carries down the column from the cell above.  The `sparse` cases put the sources back
+   at roughly that density so that path is the one under test.
+   -------------------------------------------------------------------------- */
+enum { DASH_SLOT_N = 15, DASH_ENTRYB_N = 28 };
+
+static void dash_pre(uint8_t* pre, int sparse, int illegal)
+{
+    /* the fifteen chain-A opcode-slot low bytes; chain B uses the first fourteen */
+    uint8_t slotLow[DASH_SLOT_N];
+    uint8_t entryB[DASH_ENTRYB_N];
+    int k, x;
+
+    for (k = 0; k < DASH_SLOT_N; k++)   slotLow[k] = (uint8_t)(0x0F + 0x11 * k);
+    for (k = 0; k < 14; k++) { entryB[2*k] = (uint8_t)(0x11 * k);
+                               entryB[2*k+1] = (uint8_t)(0x11 * k + 5); }
+
+    fill_random(pre);
+
+    /* the source blocks: dense by default, ~1 in 20 non-zero for the measured shape */
+    if (sparse)
+        for (k = 0; k < 40; k++)
+            for (x = 0; x < 0x50; x++)
+                if (xs() % 20) pre[0x3000 + 0x80 * k + x] = 0;
+
+    /* every reachable opcode slot unpatched, and the sweep's terminator armed */
+    for (k = 0; k < 15; k++) pre[0x7C0F + 0x11 * k] = 0x91;
+    for (k = 0; k < 14; k++) pre[0x7E0F + 0x11 * k] = 0x91;
+    pre[0x7EEE] = 0xE0;
+
+    /* the fixed high operand bytes — what pins each writer to one page */
+    pre[0x7BD5] = 0x7C; pre[0x7BD8] = 0x7C; pre[0x7BDB] = 0x7E;
+    pre[0x7D25] = 0x7C; pre[0x7D30] = 0x7C; pre[0x7D4E] = 0x7E;
+    pre[0x7F25] = 0x7C; pre[0x7F30] = 0x7C; pre[0x7F69] = 0x7C;
+    pre[0x7F7E] = 0x7E; pre[0x7F89] = 0x7E; pre[0x7F9C] = 0x7E;
+
+    /* the three "where did I last plant" records, and the chain-B call operand that is
+       reused verbatim when a column's plant is skipped */
+    pre[0x7D24] = slotLow[xs() % DASH_SLOT_N];
+    pre[0x7F24] = slotLow[xs() % DASH_SLOT_N];
+    pre[0x7F7D] = slotLow[xs() % 14];
+    pre[0x7D4D] = entryB[xs() % DASH_ENTRYB_N];
+
+    /* the per-column control tables */
+    for (x = 0x03; x <= 0x2B; x++) {
+        pre[0x3150 + x] = slotLow[xs() % DASH_SLOT_N];
+        pre[0x30D0 + x] = entryB[xs() % DASH_ENTRYB_N];
+    }
+    for (x = 0x03; x <= 0x1B; x++)
+        pre[0x3080 + x] = (uint8_t)(0x0F + 0x11 * (xs() % 12));
+
+    /* one column given a low byte that is not a unit boundary: both models must trap at
+       the same site with the same value and unwind the same way */
+    if (illegal) pre[0x30D0 + 0x03 + (xs() % 0x29)] = 0x08;
+}
+
+static int test_dashboard_sweep(void)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    unsigned long smcLegal, smcIllegal;
+    int fail = 0, printed = 0, t;
+    const int dense = 300, sparse = 300, illegal = 100;
+
+    register_fixture("dashboard_sweep");
+    if (!want("dashboard_sweep")) return 0;
+
+    /* The trap path is real code in BOTH models and has to unwind identically, so it gets
+       tested rather than avoided — which means Platform::smcUnhandled must count instead of
+       abort.  The counter is then asserted below, both directions: zero over the legal
+       cases (a pre-state that traps at once would compare nothing) and non-zero over the
+       illegal ones (or they are not testing what they claim). */
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+    g_smcUnhandled = 0;
+
+    for (t = 0; t < dense + sparse; t++) {
+        Cpu6502 c = zero_cpu();
+        dash_pre(pre, t >= dense, 0);
+        c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+        c.S = (uint8_t)(0xC0 + (xs() & 0x3F));
+        c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1; c.I = xs() & 1;
+        /* ⚠ D IS NOT RANDOMISED, and the reason is a real finding rather than convenience:
+           $7F51's `SEC / SBC $3080,X` is BCD in decimal mode, and $F1 - $97 then computes
+           $54 instead of $5A — a low byte that is not a unit boundary, so BOTH models trap
+           and the case tests the trap instead of the sweep.  The 6502 never runs this in
+           decimal mode (the MOS clears D on reset and every IRQ entry CLDs), and both
+           models go through the same SBC macro, so nothing is being papered over. */
+        c.D = 0;
+        fail += diff_run("dashboard_sweep", pre, c,
+                         dashboard_sweep, dashboard_sweep__t6502, liveMask, t, &printed);
+    }
+    smcLegal = g_smcUnhandled;
+
+    for (t = dense + sparse; t < dense + sparse + illegal; t++) {
+        Cpu6502 c = zero_cpu();
+        dash_pre(pre, t & 1, 1);
+        c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+        c.S = (uint8_t)(0xC0 + (xs() & 0x3F));
+        c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1; c.I = xs() & 1;
+        c.D = 0;
+        fail += diff_run("dashboard_sweep", pre, c,
+                         dashboard_sweep, dashboard_sweep__t6502, liveMask, t, &printed);
+    }
+    smcIllegal = g_smcUnhandled - smcLegal;
+    unsetenv("REVS_SMC_CONTINUE");
+
+    if (smcLegal != 0) {
+        printf("[VACUOUS] dashboard_sweep: %lu SMC traps over the %d LEGAL cases — the "
+               "pre-state is not a legal overlay state, so those cases compared little\n",
+               smcLegal, dense + sparse);
+        fail++;
+    }
+    if (smcIllegal == 0) {
+        printf("[VACUOUS] dashboard_sweep: 0 SMC traps over the %d ILLEGAL cases — the "
+               "trap path was never reached\n", illegal);
+        fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXYS+flags  "
+           "(%lu traps in %d illegal cases)\n",
+           "dashboard_sweep", dense + sparse + illegal, fail, smcIllegal, illegal);
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -369,6 +574,7 @@ int main(int argc, char** argv)
     /* --- fixtures go here --- */
     (void)test_contract;   /* the generic leaf fixture; twin #1 needs a steered one */
     fail += test_irq1v_handler();
+    fail += test_dashboard_sweep();
 
     fail += check_coverage();
 
