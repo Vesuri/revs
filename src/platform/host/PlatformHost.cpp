@@ -169,10 +169,6 @@ void PlatformHost::renderFrame()
         /* ⚠ exit(), not `quit = true`: `quit` is only read before run(), and the engine's main
            loop has no return path — it is 6502 code that never ends.  There is nothing to unwind
            to, so leaving is the only way out. */
-        if (frames + 1 >= dumpFrame + dumpCount && std::getenv("REVS_QUIT_AFTER_DUMP")) {
-            std::fflush(0);
-            std::exit(0);
-        }
         /* ⭐ The WHOLE 64 KB beside the frame buffer, when asked.  A frame-buffer-only dump
            can say the picture is wrong but never why: the fill chain in the $7B00 overlay
            reads its columns from $3000-$4400 and translates through $6000, and its span ends
@@ -189,6 +185,22 @@ void PlatformHost::renderFrame()
             }
         }
         std::fflush(stdout);
+        /* ⭐ REVS_QUIT_AFTER_DUMP=1 — stop once the last requested frame is written.
+           Without it the host races on forever after the dump, so a scripted check has to rely
+           on an external timeout to end each run, and then WAITS OUT that timeout for every
+           circuit even though the measurement finished in seconds.  (That is exactly how
+           `make track-run` first appeared to hang on circuit 1: it was still circuit 0, dumped
+           and running.)  Not the default — an interactive or perf run wants to keep going.
+           ⚠ LAST in this block, after the mem dump: it used to sit between the two dumps, so
+           asking for BOTH silently produced no memory dump — a missing file that reads exactly
+           like a feature that does not exist.
+           ⚠ exit(), not `quit = true`: `quit` is only read before run(), and the engine's main
+           loop has no return path — it is 6502 code that never ends.  There is nothing to unwind
+           to, so leaving is the only way out. */
+        if (frames + 1 >= dumpFrame + dumpCount && std::getenv("REVS_QUIT_AFTER_DUMP")) {
+            std::fflush(0);
+            std::exit(0);
+        }
     }
 }
 
