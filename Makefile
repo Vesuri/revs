@@ -138,7 +138,7 @@ TARGET   := build/revs
         mode7 mode7-fixture font mos-font refloop-charset refloop-comp track-patch \
         tracks tracks-gen track-fixtures track-smc track-smc-check track-run \
         trackmenu trackmenu-fixture titlescreen \
-        sound sound-fixture sound-fixture-race determinism determinism-record
+        sound sound-fixture sound-fixture-race determinism determinism-record fbwrites
 
 all: $(TARGET)
 
@@ -503,6 +503,20 @@ TRACK  ?= 5
 refloop:
 	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs \
 	    --frames=$(FRAMES) --track=$(TRACK) --wing=$(WING) --drive --dump=tmp/bbcref
+
+# ⭐⭐ THE STORE CENSUS — every frame-buffer write a REAL BBC makes, attributed to the routine that
+# made it, over the whole picture.  This is the measurement docs/direct-bitplane-plan.md §3's layout
+# choice was deferred behind: a direct plotter's cost is STORES, and the port's own shape counters
+# are snapshot diffs that can only see CHANGES (a re-plotted identical span costs full price and
+# shows up as nothing).  The report prints both, per routine.
+#   make fbwrites                    lines 0..207, frames 9..23 of a driving Silverstone practice
+#   make fbwrites FILL=80-165 FILLFRAMES=30-40    just the road band, a later window
+FILL ?= all
+FILLFRAMES ?= 9-23
+fbwrites:
+	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs \
+	    --frames=$(FRAMES) --track=$(TRACK) --wing=$(WING) --drive \
+	    --fill=$(FILL) --fill-frames=$(FILLFRAMES)
 
 # Is key injection working at all?  Verified at the BASIC prompt, where success is VISIBLE —
 # never through the game, where a silent no-op and a rejected value look identical.

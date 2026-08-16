@@ -88,3 +88,34 @@ by the octant `$0076`).  Names worth having, none of them in `symbols.csv` yet:
 
 ⚠ `$5204` has callers other than the needle — anything that draws a straight line goes through it,
 so the name should not say "needle".
+
+## ⭐⭐ `$7BE2 dashboard_sweep` IS THE 3D VIEW RASTERISER, not the dashboard (2026-08-16)
+
+Measured on a **real BBC** with a moving car (`make fbwrites` — every frame-buffer store attributed
+to the PC that made it, `tools/bbc_refloop_race.mjs --fill=all`). The routine this project has
+called "the dashboard sweep" since Phase 4, and which is its largest main-loop cost (131 ms, 24%),
+writes **display lines 80..157** — and its store distribution is not a dashboard's:
+
+| 8-line bucket (display line) | 80 | 88 | 96 | 104 | 112 | 120 | 128 | 136 | 144 | 152 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| stores/frame, both chains | 280 | **320** | **320** | **320** | 284 | 212 | 178 | 98 | 60 | 26 |
+
+320 is a **full bucket** — 8 lines × 40 cells. So lines 88..111 are repainted **edge to edge every
+frame**, and below that the count tapers as each column's chain stops at its own row. That is a
+horizon-down, column-major **scene rasteriser with a per-column silhouette**, and the taper is the
+cockpit's upper edge cutting the columns off at different heights. The palette band called "the
+dashboard" does not start until line 166, and **nothing writes lines 166..207 during driving at
+all** except `vdu_char_def` (the digits) and four bytes from `engine_main`.
+
+| Addr | Current | Actually | Suggested |
+|---|---|---|---|
+| `$7BE2` | `dashboard_sweep` | paints the 3D viewport, lines 80..157, 889 stores/frame | `view_paint_columns` |
+| `$7D13` | `dashboard_sweep_phase2` | the same for the columns whose chain stops early, 1209 stores/frame | `view_paint_columns_clipped` |
+| `$7F18` | `dashboard_sweep_phase3` | lines 133..157 only, 50 stores/frame — the bottom of the silhouette | `view_paint_columns_short` |
+| `$7BBF` | `dashboard_sweep_restore` | unchanged in meaning | `view_paint_restore` |
+
+⚠ **What the misnomer cost.** `docs/direct-bitplane-plan.md` §7a read this routine's shape as "a
+dashboard of mostly-static instruments redrawn wholesale" and sized the **hardware-sprite** item
+(§8) off it; §7b then concluded "the main loop barely draws". Both were reasoning about the wrong
+subject. The name most likely comes from the routine living in the `$7B00` overlay, which also
+carries the wing-mirror code — the *location* is dashboard-ish, the *job* is the view.

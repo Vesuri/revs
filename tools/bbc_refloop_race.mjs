@@ -115,7 +115,12 @@ const wing = String(opt("wing", "20")); // rear and front wing, 0-40 (the game h
 // --fill=lo-hi : attribute every frame-buffer write in those DISPLAY LINES to the routine
 // that made it.  This is how you find the fill loop the port is failing to run: the real BBC
 // writes these bytes, so whoever writes them is the code to compare against.
+// ⭐ `--fill=all` is the whole picture (display lines 0..207), which turns this from "who fills
+// the horizon" into THE STORE CENSUS the Phase 6 layout choice needs: every frame-buffer write a
+// real BBC makes, attributed to the routine that made it.
+// `--fill-frames=a-b` moves the sampling window off its old hard-coded 9..23.
 const fillArg = opt("fill", null);
+const fillFramesArg = opt("fill-frames", "9-23");
 // --irq-abi : measure, on real hardware, WHICH REGISTERS SURVIVE AN INTERRUPT.
 // The port's ISR shim has to reproduce this contract exactly.  It already got A wrong once
 // (irq1v_handler restores A from $FC, which only the MOS's entry ever writes), and the way to
@@ -256,7 +261,7 @@ function decodeMsg(x, depth = 0) {
 //     which legitimately widens toward the viewer.
 // Scanning 80..99 straddles all of this: line 80 belongs to the invisible sky band and by
 // itself contributes a 16-cell run of zeros, which reads as "the real BBC has stripes too".
-const FB_BASE = 0x5a80, CELLS = 40, LINES = 8, BPR = CELLS * LINES;
+const FB_BASE = 0x5a80, CELLS = 40, LINES = 8, BPR = CELLS * LINES, ROWS = 26;
 function scanZeros(lo, hi) {
     let zeros = 0, total = 0, longest = 0;
     for (let y = lo; y < hi; y++) {
@@ -401,9 +406,10 @@ tm.processor.debugInstruction.add((addr) => {
 const fillFlags = new Uint8Array(0x10000);
 const fillLineOf = new Int16Array(0x10000).fill(-1);
 const fillPC = new Map(); // pc -> {n, lines:Set}
-let fillWrites = 0;
+let fillWrites = 0, fillChanged = 0;
+const [fillFrameLo, fillFrameHi] = fillFramesArg.split("-").map(Number);
 if (fillArg) {
-    const [lo, hi] = fillArg.split("-").map(Number);
+    const [lo, hi] = fillArg === "all" ? [0, LINES * ROWS - 1] : fillArg.split("-").map(Number);
     for (let y = lo; y <= hi; y++) {
         const row = (y / LINES) | 0, line = y % LINES;
         for (let c = 0; c < CELLS; c++) {
@@ -592,15 +598,24 @@ const ULA_CTRL = 0xfe20, ULA_PAL = 0xfe21;
 const bandFrames = []; // one entry per captured field: the writes and the line they landed on
 let curBand = null;
 tm.processor.debugWrite.add((addr, b) => {
-    if (fillArg && frames > 8 && frames < 24 && fillFlags[addr]) {
-        // ⚠ Only a few frames' worth: this fires on every frame-buffer write in the window
-        // and the point is to name the routine, not to measure it.
+    if (fillArg && frames >= fillFrameLo && frames <= fillFrameHi && fillFlags[addr]) {
+        // ⚠ A window of frames only: this fires on every frame-buffer write in it.
+        //
+        // ⭐⭐ A STORE IS NOT A CHANGE, and the difference is the whole Phase 6 sizing.  The port's
+        // own shape counters (src/platform/shape.h) are SNAPSHOT DIFFS, so they measure bytes that
+        // ended up different and call them writes — which is right for pricing a dirty-region
+        // DECODE and wrong for pricing a direct PLOTTER, whose cost is stores.  A rasteriser that
+        // re-plots an identical span costs full price and shows up as nothing.  debugWrite fires
+        // BEFORE the store lands (src/6502.js writemem), so the byte still there is the old one.
         const pc = tm.processor.pc;
         let e = fillPC.get(pc);
-        if (!e) fillPC.set(pc, (e = { n: 0, lines: new Set(), nonzero: 0 }));
+        if (!e) fillPC.set(pc, (e = { n: 0, lines: new Set(), nonzero: 0, changed: 0,
+                                      perLine: new Uint32Array(LINES * ROWS) }));
         e.n++;
         e.lines.add(fillLineOf[addr]);
+        e.perLine[fillLineOf[addr]]++;
         if (b !== 0) e.nonzero++;
+        if (tm.processor.readmem(addr) !== b) { e.changed++; fillChanged++; }
         fillWrites++;
     }
     if (addr !== ULA_CTRL && addr !== ULA_PAL) return;
@@ -1046,13 +1061,52 @@ if (fillArg && fillWrites) {
         return best ? `${best[1]}${best[0] === pc ? "" : "+" + (pc - best[0])}` : "?";
     };
     const rows = [...fillPC.entries()].sort((a, b) => b[1].n - a[1].n);
-    console.log(`\n⭐ WHO FILLS DISPLAY LINES ${fillArg} ON A REAL BBC — ${fillWrites} writes ` +
-        `from ${rows.length} distinct PCs over frames 9..23:`);
-    for (const [pc, e] of rows.slice(0, 14)) {
+    const nWin = fillFrameHi - fillFrameLo + 1;
+    console.log(`\n⭐ WHO WRITES DISPLAY LINES ${fillArg} ON A REAL BBC — ${fillWrites} writes ` +
+        `(${fillChanged} of them CHANGED the byte) from ${rows.length} distinct PCs over ` +
+        `frames ${fillFrameLo}..${fillFrameHi}:`);
+    console.log(`   per frame: ${(fillWrites / nWin).toFixed(0)} stores, ` +
+        `${(fillChanged / nWin).toFixed(0)} changes ` +
+        `(${(100 * fillChanged / Math.max(1, fillWrites)).toFixed(1)}% of stores land a new value)`);
+    for (const [pc, e] of rows.slice(0, 20)) {
         const ls = [...e.lines].sort((a, b) => a - b);
         console.log(`   PC $${pc.toString(16).padStart(4, "0")}  ${String(e.n).padStart(6)} writes ` +
-            `(${e.nonzero} non-zero)  lines ${ls.length > 8 ? ls[0] + ".." + ls[ls.length - 1] : ls.join(",")}` +
+            `(${e.nonzero} non-zero, ${e.changed} changed)  lines ` +
+            `${ls.length > 8 ? ls[0] + ".." + ls[ls.length - 1] : ls.join(",")}` +
             `   ${nameOf(pc)}`);
+    }
+    /* ⭐ And the same totals rolled up per ROUTINE, because a plotter is an unrolled chain of
+       hundreds of distinct PCs and the per-PC table above hides it behind its own detail. */
+    const byFn = new Map();
+    for (const [pc, e] of fillPC.entries()) {
+        const fn = nameOf(pc).split("+")[0];
+        let f = byFn.get(fn);
+        if (!f) byFn.set(fn, (f = { n: 0, changed: 0, pcs: 0, lo: 999, hi: -1,
+                                    perLine: new Uint32Array(LINES * ROWS) }));
+        f.n += e.n; f.changed += e.changed; f.pcs++;
+        for (let y = 0; y < f.perLine.length; y++) f.perLine[y] += e.perLine[y];
+        for (const y of e.lines) { if (y < f.lo) f.lo = y; if (y > f.hi) f.hi = y; }
+    }
+    console.log(`\n⭐⭐ ROLLED UP PER ROUTINE (stores per frame over ${nWin} frames):`);
+    const ranked = [...byFn.entries()].sort((a, b) => b[1].n - a[1].n);
+    for (const [fn, f] of ranked.slice(0, 16)) {
+        console.log(`   ${fn.padEnd(24)} ${String((f.n / nWin).toFixed(0)).padStart(6)} stores/frame  ` +
+            `${String((f.changed / nWin).toFixed(0)).padStart(6)} changes/frame  ` +
+            `lines ${f.lo}..${f.hi}  (${f.pcs} PCs)`);
+    }
+    /* ⭐⭐ WHERE ON THE SCREEN, per display line — because "lines 81..157" is a RANGE, and a
+       renderer's shape is in the distribution.  A routine that paints a 3D view puts most of its
+       stores near the horizon and tails off; one that maintains a cockpit is flat.  This is the
+       input §3's layout choice actually needs, and a lo..hi pair cannot carry it. */
+    for (const [fn, f] of ranked.slice(0, 3)) {
+        const parts = [];
+        for (let y = 0; y < f.perLine.length; y += 8) {
+            let s = 0;
+            for (let k = 0; k < 8 && y + k < f.perLine.length; k++) s += f.perLine[y + k];
+            if (s) parts.push(`${y}:${(s / nWin).toFixed(0)}`);
+        }
+        console.log(`\n   ${fn} — stores per frame by display line (8-line buckets):\n     ` +
+            parts.join("  "));
     }
 }
 

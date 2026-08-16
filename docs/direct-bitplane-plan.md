@@ -378,6 +378,43 @@ implementation" idea, arrived at one step early and now standing machinery for t
 Measured **0 mismatches / 12 checks** with the car under power, and it catches both sabotages
 (test fails closed: 17015; mode change ignored: 1350). `amiga/dirty_decode.gdb` reads all of it.
 
+### ⛔ 7d. THE STORE CENSUS ON A REAL BBC — **§7a and §7b were both reasoning about the wrong routine**
+
+`make fbwrites` (new, 2026-08-16): `tools/bbc_refloop_race.mjs --fill=all` flags every byte of the
+frame buffer and records the **PC of whatever writes one**, on a real BBC driving Silverstone.
+15 frames, car under power. Two things it settles, and each one retires a conclusion above.
+
+**1. A STORE IS NOT A CHANGE, and every shape number in §7a/§7b measured changes.**
+
+| per frame, real BBC | |
+|---|---|
+| frame-buffer **stores** | **2991** |
+| of those, stores that **changed the byte** | **567 (19%)** |
+
+`src/platform/shape.h` is a snapshot differ, so it can only ever see the second column — right for
+pricing a dirty-region *decode* (which is why that shipped and worked), wrong for pricing a direct
+*plotter*, whose cost is stores. ⚠ A rasteriser that re-plots an identical span costs full price and
+shows up as **nothing**. That is why §7b concluded "the main loop barely draws": it does draw, and
+96% of what it draws was already there.
+
+**2. `$7BE2` IS THE 3D VIEW RASTERISER.** It writes display lines 80..157 — full width, all 40 cells,
+on lines 88..111 — then tapers as each column's chain stops at its own row. Horizon-down,
+column-major, per-column silhouette. The palette band called "the dashboard" starts at line 166 and
+**nothing writes 166..207 during driving** but the digits. Full evidence and the suggested names:
+`docs/rename.md`. Consequences here:
+
+- **§7a is void as written.** "A dashboard of mostly-static instruments redrawn wholesale" describes
+  nothing that exists; the 2093 units are the *viewport's* columns and the 83 changed bytes are the
+  scene actually moving. What survives is the arithmetic: ~420 cycles a unit, instruction-fetch
+  bound (`docs/perf-method.md` twin #2).
+- **§8 (sprites) is unsized again**, because it was sized off §7a. The instruments are not what
+  `$7BE2` spends its time on, so the sprite item can no longer claim any part of that 131 ms. What
+  it might still buy has to be re-derived from whatever actually draws the cockpit.
+- ⭐ **And the direct-render attach point is now known, which is what §3 was waiting for**: it is
+  `$7BE2`'s two column chains, not the 50 Hz body and not `$1A20`. A column chain writing one byte
+  per cell down a column is *already* the shape a direct plotter wants — the same walk, two plane
+  bytes per source byte, `kRowBytes` apart.
+
 ## 8. ⭐⭐ HARDWARE SPRITES for the instruments — capability the BBC never had (user, 2026-08-16)
 
 **The observation.** The BBC has no sprites, so *every* moving thing on the Revs dashboard is drawn
