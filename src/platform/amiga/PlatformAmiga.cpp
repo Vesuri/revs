@@ -245,6 +245,14 @@ bool PlatformAmiga::keyDown(uint8_t x)
     if (!autoRun.done()) {
         bool held = autoRun.keyDown(x);
         input.pressBbcKey(x, held);
+        // ⭐⭐ ...and when it finishes THIS poll, let go of everything.  A release step can only
+        // clear the codes the game asks about while it is in force (two polls = two codes), so
+        // the script used to hand the keyboard over with 'Q' still down: the engine then saw a
+        // gear key held on every frame, $16BD kept $58 negative, and $49D6 took the idle arm —
+        // which is why the port's engine never stalled where a real BBC parked in gear does.
+        // ⚠ Measurement builds never reach this (done() is false forever there), so it cannot
+        // disturb an FPS window; it fires exactly at the straight-to-race handover.
+        if (autoRun.done()) input.releaseAllKeys();
     }
     return input.keyDown(x);
 #else

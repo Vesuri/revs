@@ -227,6 +227,13 @@ bool RevsInput::pressBbcKey(uint8_t bbcCode, bool down)
     return mapped;
 }
 
+void RevsInput::releaseAllKeys()
+{
+    /* The whole rawkey array, not just the mapped codes: this is "nothing is held", and
+       leaving an unmapped rawkey set would be the same bug with a different key. */
+    for (unsigned i = 0; i < 128; i++) g_keyDown[i] = 0;
+}
+
 bool RevsInput::keyDown(uint8_t x) const
 {
     bool mapped = false;

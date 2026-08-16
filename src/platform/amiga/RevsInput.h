@@ -59,6 +59,17 @@ public:
        the code is not in the map. */
     bool pressBbcKey(uint8_t bbcCode, bool down);
 
+    /* ⭐⭐ Release EVERY key in the map at once.  The scripted auto-run presses keys through
+       pressBbcKey() and can only release the ones the game happens to ASK about while a
+       release step is in force — a two-poll release step clears two codes, and any key the
+       game did not poll in that window stays down forever once the script stops writing.
+       Measured (2026-08-16): 'Q' survived the last release step of the straight-to-race
+       script, so the engine saw a gear key held on every frame afterwards.  That kept $58
+       negative ($16BD `DEC $58`, cleared each frame at $157F), which routes $49D6 into the
+       IDLE arm — and THAT is why the port's engine could never stall while a real BBC
+       parked in gear stalls within a second. */
+    void releaseAllKeys();
+
     /* VBI context: accumulate the mouse counter.  Must be sampled every frame — the
        hardware counter is 8 bits and wraps, so a missed frame is a lost delta. */
     void sampleMouse();
