@@ -149,6 +149,34 @@ first would have banked a win against a build that never existed. So whenever an
 an enabling restructure, measure **three** builds — old code, new code with the feature off, new
 code — and say which number is which. A single A/B flag silently prices only the last step.
 
+## Before a representation change, ask what the cost is PROPORTIONAL TO ⚑ Revs
+
+Direct-to-bitplane plotting for the view rasteriser (2026-08-16) was designed, built, proven
+byte-exact against an oracle, measured — and was **9% slower**. The plan's own sentence contained
+the error: *"~2100 iterations become ~150"*. What collapsed into 150 was the **store count**. The
+2100 **iterations** were a scan — each unit reads its own source byte out of a strided block — and
+no layout on either side of the seam changes how many source bytes there are.
+
+So the routine's cost was proportional to *source reads*, and the change was aimed at *stores*.
+Removing one byte store from a thirty-instruction, instruction-fetch-bound unit, and adding run
+bookkeeping to it, is negative before anything is gained.
+
+Two habits come out of it:
+
+1. **Name the quantity first.** Write down "this routine costs N × (the thing it does per unit)"
+   and check that the change reduces N, not something correlated with it. A store count and an
+   iteration count look interchangeable in a profile and are not.
+2. **Check whether a cheaper change already took the prize.** The second half of the win was meant
+   to be the deleted decode — but the dirty-region decode had shipped three commits earlier and was
+   already skipping exactly those cells. Measured: the plot-only build reads *identically* with and
+   without the decode skip. Two optimisations can compete for one prize, and the second one to
+   arrive finds it spent.
+
+⭐ None of this was visible from reasoning, and all of it was cheap to measure: the whole experiment
+was three FPS runs against a build kept behind a flag. Build it behind the switch, measure it, and
+let the number decide — then keep the machinery if its oracle is reusable, and say plainly that it
+did not ship.
+
 ## Instrument the state, not the event, when the event has already happened
 
 Counting executions of five menu call sites reported "none reached" while the engine was demonstrably
