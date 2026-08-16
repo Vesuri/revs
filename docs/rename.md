@@ -119,3 +119,29 @@ dashboard of mostly-static instruments redrawn wholesale" and sized the **hardwa
 (§8) off it; §7b then concluded "the main loop barely draws". Both were reasoning about the wrong
 subject. The name most likely comes from the routine living in the `$7B00` overlay, which also
 carries the wing-mirror code — the *location* is dashboard-ish, the *job* is the view.
+
+## ⭐⭐ `$4E5C irq1v_handler` IS NOT "the 50 Hz game body" — and `$52A4` is (2026-08-17)
+
+`disasm/symbols.csv` describes `$4E5C` as *"the 50 Hz game body, claimed via IRQ1V"*, and the same
+phrase is repeated in `Revs.h`, `Revs.cpp`, `probe.h` and `docs/amiga-arch.md`. It sent a whole
+measurement session looking for a renderer inside an interrupt.
+
+**What it actually is: a raster-band state machine, and nothing else.** One PAL field is five
+interrupts; each arm repaints the Video ULA (mode + palette) for the horizontal band about to be
+scanned and reloads User VIA T1 with that band's duration. That is a raster split — the BBC does it
+on the CPU because it has no copper. The handler **draws nothing**.
+
+The only game work in the whole cycle is the `JSR $52A4` in band 4: ~30 instructions that EOR bytes
+at `$6E85/$6FBD/$6FB2/$6FC0/$70F8/$6E8A` (display lines 120-143) at a rate set by an accumulator
+(`$62FA += $30 + $63`, i.e. **proportional to road speed**), gated on `mem[$0000]`. An XOR
+draw/erase of a small speed-driven element. Measured cost: **206-233 us of a 6113 us field** — 4%.
+
+| Addr | Current | Actually | Suggested |
+|---|---|---|---|
+| `$4E5C` | `irq1v_handler` ("the 50 Hz game body") | the raster-band palette/mode schedule; draws nothing | `irq1v_band_schedule` — and fix the DESCRIPTION, which is the part that misled |
+| `$52A4` | *(unnamed)* | the field's only game work: a speed-rate XOR animation on display lines 120-143 | `body_tick_xor_anim` [INFERRED — the identity of the element is not confirmed; the rate, the region and the XOR are measured] |
+
+⚠ **What the misnomer cost.** It is why the row was carried as "real, faithful, non-negotiable
+engine work whose share GROWS as the framerate falls" (`probe.h` phase 26) — a description that
+argues against touching it. It is 96% machinery, and once that was measured the row fell from
+141 ms to 27 ms per painted frame with no faithfulness cost at all.

@@ -374,6 +374,82 @@ coarse 32-byte pre-test over four cells at a time, would likely halve it.  **Lef
 deliberately:** ~18 ms of a ~1000 ms shipping frame is under 2%, which this project's own rule says
 is unquotable, and the same hour spent on the dashboard's scan is worth ten times more.
 
+### ⭐⭐ THE RASTER-BAND RECORD REUSE: **2.05 → 2.63 FPS (+28%)** — the row was 96% MACHINERY (2026-08-17)
+
+The biggest row in the table (the 50 Hz body drain, 141 ms / 26%) carried a note saying its cost
+was *unexplained*: "`irq1v_handler` is ~810 us a call for ~16 palette stores plus a handful of VIA
+writes, and `make HWTIME=1` says it is not the hardware seam."
+
+**That 810 us was an average over five arms that do different jobs**, and averaging them is what
+made it unexplainable. `amiga/band_prof.gdb` brackets each band arm separately, attributing by the
+band the call ENTERED on (`mem[$4F43]` read before the handler steps it):
+
+| band | calls | us/call | what the arm does |
+|---|---|---|---|
+| 0 | 9453 | 792 | MODE 4 + 16 palette bytes |
+| 1 | 9454 | 735 | MODE 5 + 16 palette bytes + the horizon split |
+| 2 | 9454 | 838 | 16 palette bytes |
+| 3 | 9454 | **675** | **4 palette bytes** |
+| 4 | 9454 | 1128 | 4 palette bytes + `JSR $52A4` (233 of the 1128) |
+| — | — | ~1720 | the `fireIrq1v` shim, paid five times |
+
+⭐ **Band 3 writes FOUR bytes and costs 675 us against band 2's SIXTEEN at 838.** So the cost is
+per-CALL, not per-store, and twelve extra palette writes are worth only 163 us of the difference.
+⚠ And the instrument is not the story: an **empty bracket** on the same path at the same rate
+(slot 6, `probe_irq_null`) reads **33 us**. Add the control before theorising about the rows.
+
+**One field therefore costs 6113 us of its 20000 us budget, and 233 us of that — 4% — is the only
+game work in it.** 96% is machinery.
+
+⭐⭐ **AND THE BANDS DO NOT DRAW.** Each arm repaints the Video ULA for the band about to be scanned
+and reloads User VIA T1 with its duration — a raster split, which the BBC performs on the CPU
+because it has no copper. **This port already runs them on the copper**: `bbc_hw.cpp` records what
+the handler wrote and `RevsScreen` re-emits it as copper WAITs; no palette is ever switched from the
+CPU here. So the cycle's entire output is the RECORD, and the record is a pure function of five
+palette tables (`$3458/$3468/$3478/$347C`), the horizon (`$4F1F/$4F20`) and the entry state
+(`$4F43`). Everything else it leaves behind is idempotent — `$4F21/$4F22` is the horizon remainder,
+`$4F43` returns to 0, the 6502 stack balances. `MoveHorizon` (`$4F44`) is a **main-loop** routine, so
+at this framerate the inputs move about once every 25 fields.
+
+`Platform::fireIrq1vField()` compares the 43 input bytes and, when they have not moved, runs `$52A4`
+alone and re-asserts the record. Measured on the target: **235 real cycles, 9232 skipped — 97.5% of
+fields**. Drain **6113 → 1308 us per body tick**, **176 → 27 ms per painted frame**.
+
+| build | vblanks | painted | FPS (steady-state segments) |
+|---|---|---|---|
+| `BANDSKIP=0` — the control, and it IS the old code | 14094 | 563 | **2.05** |
+| default (record reuse) | 14297 | 718 | **2.63** |
+
+⚠⚠ **THE FIRST SABOTAGE PASSED.** Dropping the horizon from the digest — a defect that must put the
+wrong palette on screen — changed **nothing** in the host's 300-frame 64 KB differential, because a
+host run is ~36 **fields** and the horizon never moves in one. *A skip that is never wrong on static
+inputs proves nothing about the case the change exists for.* Hence `make BANDCHECK=1`
+(`amiga/band_check.gdb`): always run the real cycle, ask what the predicate would have decided, and
+require every predicted reuse to equal the record actually built. On the target, driving: **0
+mismatches in 14263 predictions** with the horizon moving 30 times — and the two sabotages then read
+**21** and **22**. `g_bandHorizonMoves` counts the stimulus **over the run**, because reading
+`$61/$63/$3C` at the end reports "parked" for a run that drove and then left the track.
+
+⚠ **A tidy-up that re-seeded the RNG.** Hoisting the IRQ1V gate above `bbc_begin_band_cycle()` looked
+free; that call also advances the 1 MHz field clock behind `$FE68`, the game's only entropy source,
+and `make determinism` diverged at `mem[$0004]`. ⚠ It was *also* already failing on pristine HEAD —
+a stale local reference (`tmp/` is gitignored) — which is why the control build's byte-identical
+reproduction of HEAD's failure was the evidence that the routing was clean.
+
+⭐ `BANDSKIP=0` differs from the default by **exactly 2 bytes**: dead 6502 stack scratch at
+`$01F7/$01F8`, below the entry `S` of `$F8`. Frame buffer and band record identical.
+
+⭐⭐ **FS-UAE `--warp_mode=1` is now the default way to run a probe** (`EXTRA_ARGS="--warp_mode=1"`):
+~4.9x more emulated time per wall second, 60 s of wall clock for what used to need 200+. It disturbs
+**nothing** measured here, and that is checked rather than assumed — every figure in this file is a
+ratio of EMULATED quantities (painted frames per vblank, beam ticks per phase), so host speed
+cancels. Verified by running one build with and without warp: identical per-segment FPS at matched
+vbi.
+
+⚠ **`$4E5C` is not "the 50 Hz game body"** — that description, in `symbols.csv` and repeated through
+`probe.h`/`Revs.cpp`/`amiga-arch.md`, is what made this row look like non-negotiable engine work.
+See `docs/rename.md`.
+
 ### ⭐⭐ THE DIRTY-REGION DECODE: **1.77 → 1.96 FPS (+10.7%)**, and the CONTROL IS THE INTERESTING ROW
 
 Phase 6 item 0 step 2's payoff. Only **406 of 8320** frame-buffer bytes change per painted frame

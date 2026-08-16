@@ -162,7 +162,15 @@ make STRAIGHT_TO_RACE=1   # ⭐ boot straight into the race — see below
 ./run.sh        # boot in FS-UAE (Kickstart 3.1; CTRL + left mouse button quits)
 ./debug.sh      # source-level debug via the FS-UAE GDB stub (prints its $DEBUG_PORT)
 ./diag_run.sh N # headless probe run for N seconds (needs a PROBES=1 build)
+EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=x.gdb ./diag_run.sh 60   # ⭐⭐ ~4.9x faster, same numbers
 ```
+
+⭐⭐ **Put `EXTRA_ARGS="--warp_mode=1"` on every probe run.** FS-UAE then runs the emulated machine
+~4.9× faster than real time, so 60 s of wall clock buys what used to need 200+.  It changes **no**
+measurement this project takes, and that is verified rather than assumed: FPS is
+`50 * g_fpsFrames / g_vbiCount` and the phase clock is beam ticks — both ratios of *emulated*
+quantities, so host wall-clock speed cancels.  Confirmed by running one build with and without warp
+(identical per-segment FPS at matched vbi).
 
 **Never `pkill fs-uae` / `pkill gdb`** in these scripts or by hand: several Amiga projects run
 their own emulator at the same time.  The run/debug/probe scripts source
@@ -337,9 +345,27 @@ Amiga frame. `bus_write` to BBC hardware is largely ignored on Amiga.
 negotiable** — the game body is a VERTB-ISR interrupt, so 25 FPS means painting every other frame
 with the simulation still at full rate.
 
-⭐⭐ **BASELINE: 1.96 FPS RENDERED** (2026-08-16, `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` +
-`fps_series.gdb`) — **0.96 → 1.56 → 1.72 → 1.77 → 1.96, from four changes, and NONE was an
+⭐⭐ **BASELINE: 2.63 FPS RENDERED** (2026-08-17, `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` +
+`fps_series.gdb`) — **0.96 → 1.56 → 1.72 → 1.77 → 1.96 → 2.63, from five changes, and NONE was an
 algorithm.**
+
+**5. ⭐⭐ THE RASTER-BAND RECORD REUSE (+28%, control 2.05 → 2.63).**  The biggest row (the 50 Hz
+body, 141 ms / 26%) was **96% machinery**: one field cost 6113 µs and only 233 µs of it (`$52A4`)
+was game work.  ⭐ The five band interrupts **do not draw** — each repaints the Video ULA for the
+band about to be scanned, which the BBC does on the CPU for want of a copper, and **this port
+already runs them on the copper**: the arms only produce a RECORD that `RevsScreen` turns into
+copper WAITs.  That record is a pure function of five palette tables plus the horizon, and
+`MoveHorizon` is a *main-loop* routine — so 97.5% of fields rebuild an identical answer.
+`Platform::fireIrq1vField()` compares 43 input bytes and, unchanged, runs `$52A4` alone.  Drain
+6113 → 1308 µs/tick, 176 → 27 ms/frame.  `make BANDSKIP=0` is the control.
+⚠⚠ **Its first sabotage PASSED** — the host's 64 KB differential is only ~36 *fields* and the
+horizon never moves in one, so a skip that is never wrong on static inputs looked correct.  Hence
+`make BANDCHECK=1` (0/14263 on the target, sabotages 21 and 22).  ⚠ Diagnosing the row at all
+needed a bracket **per band arm** plus an **empty-bracket control**: the published "~810 µs a call,
+unexplained" was an average over five arms that do different jobs.
+⭐⭐ **`EXTRA_ARGS="--warp_mode=1"` runs FS-UAE ~4.9× faster with no effect on any of these numbers**
+(they are all ratios of emulated quantities; verified against a non-warp run).  Use it for every
+probe — 60 s of wall clock replaces 200+.
 
 **4. ⭐⭐ THE DIRTY-REGION DECODE (+10.7%, 1.77 → 1.96).**  Only 406 of 8320 frame-buffer bytes
 change per painted frame, so `decode()` now compares each 8-byte **cell column** (two aligned
@@ -382,9 +408,13 @@ derive what unrolling had given away.  ⭐ **So the dashboard is a REPRESENTATIO
 target** — `docs/direct-bitplane-plan.md` §7a from the other side: 2093 units run, ~83 bytes
 change, so the win is not scanning, not scanning faster.
 
-⭐ **Re-profiled after all three**: the 50 Hz body drain 26.2% / 159 ms (of which `irq1v_handler`
-is 125), **`$7BE2` 21.6% / 131 ms**, the decode 13.4%, `build_road_edge_lists` 10.0%, `$1A20`
-9.6%.  Full table: `docs/perf-method.md`.
+⭐ **Re-profiled after the band reuse (2026-08-17)**: the 50 Hz body drain is no longer the top row
+— **27 ms/frame, down from 176**.  `$7BE2` is now the largest item, then `$24F6` + `$1A20` (one
+build-then-draw subsystem), then the decode at 6.6%.  Full table: `docs/perf-method.md`.
+⚠ **`$4E5C irq1v_handler` is NOT "the 50 Hz game body"** despite what `symbols.csv`, `probe.h`,
+`Revs.cpp` and `docs/amiga-arch.md` all say — it is the raster-band palette schedule and it draws
+nothing; `$52A4` (a speed-rate XOR animation on display lines 120-143) is the field's only game
+work.  That misnomer is why the row was carried as untouchable engine work.  → `docs/rename.md`.
 
 ⭐ *(superseded)* **0.87 FPS RENDERED** (2026-08-14; 0.78 before the two-level-RTS fix below, which
 stopped the road-span chains over-plotting) **/ 1.46 FPS unrendered** — ~29× short of the floor.
