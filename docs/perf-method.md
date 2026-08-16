@@ -344,6 +344,36 @@ did — which is also the check that the twin changed nothing else:
 49 134 calls at 810 µs** — 154 per painted frame, i.e. **125 of phase 26's 159 ms**.  The 50 Hz body
 is still mostly its own band cycle.
 
+**Re-profiled after the dirty-region decode** (same command, n = 357 painted frames, ~545 ms/frame
+in the PROBES build, accounted 99.0%).  Again only the row that was supposed to move, moved:
+
+| share | ms/frame | phase | what |
+|---|---|---|---|
+| **26.1%** | 141 | 26 | the 50 Hz body drain (27.5 ticks per painted frame, 5439 µs each) |
+| **24.2%** | 131 | 24 | `$7BE2` the dashboard — unchanged, and now the biggest row after the body |
+| 11.3% | 61 | 5 | `build_road_edge_lists` `$24F6` |
+| 10.8% | 59 | 11 | `$1A20`, the road pass |
+| **6.6%** | **36** | 27 | the decode — **was 81 ms**, and this is what the dirty region bought |
+| 5.4% | 29 | 18 | `$1E15` |
+| 5.2% | 28 | 4 | `$46A1` |
+| 3.9% | 21 | 28 | the vblank spin |
+| 1.4% | 8 | 15 | `$1B93` |
+| 1.1% | 6 | 29 | `$52A4`, the body's arm |
+
+⭐⭐ **AND THIS IS WHERE THE DECODE STOPS BEING WORTH OPTIMISING.**  36 ms of a ~545 ms PROBES frame
+is 6.6%; even deleting it outright — which is what a direct-to-bitplane plotter would do — is now
+worth less than the noise floor allows anyone to *quote* from an FPS run.  ⚠ Do not read that as
+"direct rendering is dead": §7b's other half says the DRAW is in the 50 Hz body, so direct plotting
+attaches to phase 26 (141 ms) and the decode was never the prize there.  The three things left
+above the decode are, in order: **the body (141 ms), the dashboard (131 ms, a representation problem
+per §7a), and `$24F6`+`$1A20` (120 ms, which write six visible bytes between them)**.
+
+⚠ A back-of-envelope on the 36 ms says the clean-cell path is still ~170 cycles a cell where four
+longword reads and a branch should be ~40 — running pointers instead of `rowBase + c * 8`, and a
+coarse 32-byte pre-test over four cells at a time, would likely halve it.  **Left undone
+deliberately:** ~18 ms of a ~1000 ms shipping frame is under 2%, which this project's own rule says
+is unquotable, and the same hour spent on the dashboard's scan is worth ten times more.
+
 ### ⭐⭐ THE DIRTY-REGION DECODE: **1.77 → 1.96 FPS (+10.7%)**, and the CONTROL IS THE INTERESTING ROW
 
 Phase 6 item 0 step 2's payoff. Only **406 of 8320** frame-buffer bytes change per painted frame
