@@ -129,6 +129,28 @@ static const uint8_t kLogicalForPen[4] = { 0, 2, 8, 10 };
    with the right colours reads exactly like a working one. */
 extern "C" { volatile unsigned long g_bandRejects = 0; }
 
+/* ⭐⭐ THE FLAT-BAND SKIP (Phase 6 item 0, step 1 — docs/direct-bitplane-plan.md §4/§4a).
+ *
+ * A band whose four Amiga colour registers all hold the SAME colour makes its bitplane content
+ * unobservable, so decoding those lines produces pixels nobody can see.  The BBC's band 1 is
+ * exactly that — sixteen palette entries, all the same blue — and it is 63 of the 208 display
+ * lines (18..81, a FIXED extent: band 1's duration is the fixed 4038 us latch, measured
+ * 2026-08-16; what moves with the hills is band 2's length).  Those lines are also where 5.5 KB
+ * of live engine code and variables sit inside the BBC frame buffer, so what is skipped is
+ * precisely the region whose byte content never meant anything as a picture.
+ *
+ * ⚠ FLATNESS IS DECIDED PER FRAME, from the same snapshot the copper list is built from, which
+ * is what makes leaving stale plane bytes safe: if a band stops being flat, or a line moves into
+ * a non-flat band, that line is decoded in the very frame the new palette applies.  Deciding it
+ * from a literal line range instead would break the moment a circuit hook moved a boundary.
+ *
+ * Counters, not faith (docs/method-lessons.md): g_decodeFlatLines must read 63 in a race, and 0
+ * says the skip never engaged.  `make FLATSKIP=0` is the A/B build. */
+extern "C" {
+volatile uint16_t g_decodeFlatLines  = 0;    /* lines skipped in the most recent decode */
+volatile uint16_t g_decodeFlatBands  = 0;    /* bands found flat in it                  */
+}
+
 /* ⭐ WHAT THE TARGET IS ACTUALLY DISPLAYING, addressable from gdb.  amiga/screen_dump.gdb
    dumps these two blocks out of a running FS-UAE and tools/amiga_ppm.py turns them into a
    picture — the same "look at it" instrument as the host-side dump, but taken on the real
@@ -670,6 +692,7 @@ void RevsScreen::buildLineModes()
        band n+1's, because the 6522 reloads T1 from the latch only at the NEXT timeout.
        So the interval that starts at band n is the one recorded against band n-1. */
     int startUs = (int)BBC_BAND0_ANCHOR_US;
+    uint16_t flatLines = 0, flatBands = 0;
 
     for (unsigned n = 0; n < 5; n++) {
         unsigned rec  = slot[n];
@@ -685,6 +708,23 @@ void RevsScreen::buildLineModes()
         int a = lineStart < 0 ? 0 : lineStart;
         int b = lineEnd > (int)kH ? (int)kH : lineEnd;
         unsigned mode = (s.control[rec] == BBC_ULA_MODE4) ? 4u : 5u;
+#ifndef REVS_NO_FLATSKIP
+        /* ⭐ Mode 0 = "do not decode these lines at all": all four colour registers of this
+           band hold the same colour, so no bitplane content is observable under it.  The
+           test is deliberately strict — all four pens, in both BBC modes — even though a
+           MODE 4 band can only ever show pens 0 and 2 (decode() writes plane 1 as zero).
+           Band 0 is 18 blanked lines, so the finer test would buy nothing and would make
+           this depend on the mode as well as the palette. */
+        {
+            const uint16_t c0 = bbcColour(s.palette[rec][kLogicalForPen[0]]);
+            if (c0 == bbcColour(s.palette[rec][kLogicalForPen[1]]) &&
+                c0 == bbcColour(s.palette[rec][kLogicalForPen[2]]) &&
+                c0 == bbcColour(s.palette[rec][kLogicalForPen[3]])) {
+                mode = 0u;
+                if (b > a) { flatBands++; flatLines = (uint16_t)(flatLines + (b - a)); }
+            }
+        }
+#endif
         for (int y = a; y < b; y++) m_lineMode[y] = (unsigned char)mode;
 
         m_plan.line[n] = (short)lineStart;
@@ -693,6 +733,8 @@ void RevsScreen::buildLineModes()
         startUs = nextUs;
     }
     m_plan.valid = 1;
+    g_decodeFlatLines = flatLines;
+    g_decodeFlatBands = flatBands;
 }
 
 void RevsScreen::buildBands()
@@ -967,6 +1009,24 @@ void RevsScreen::decode()
             /* One character row is 40 cells of 8 bytes, one byte per scan line, so a
                single display line is 40 bytes with a stride of 8. */
             const uint8_t* s  = rowBase + line;
+
+            /* ⭐ FLAT BAND: every pen is the same colour on this line, so whatever the two
+               planes already hold is displayed as that colour.  Write nothing.  (See the
+               g_decodeFlatLines comment: the flag comes from THIS frame's snapshot, which is
+               what makes leaving the previous frame's bytes there safe.) */
+            if (m_lineMode[y] == 0) {
+#ifdef REVS_FILLWATCH
+                /* The tear detector's checksum must still see these bytes, or the second pass
+                   reports every skipped row as torn — an instrument turned into noise by an
+                   optimisation is the failure mode docs/method-lessons.md warns about. */
+                for (unsigned i = 0; i < BBC_SCREEN_CELLS; i++) {
+                    sum = (uint16_t)(sum + *s + i);
+                    s += BBC_SCREEN_LINES;
+                }
+#endif
+                continue;
+            }
+
             uint8_t*       p1 = dst + revs_mulu16((uint16_t)y, kRowBytes);  /* plane 1 = bit 0 */
             uint8_t*       p2 = p1 + (kW / 8);          /* plane 2 = index bit 1 */
 

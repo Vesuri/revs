@@ -190,6 +190,15 @@ ifdef FIXED_RNG
 EXTRA_DEFINES += -DREVS_FIXED_RNG
 endif
 
+# `make FLATSKIP=0` — decode EVERY display line, including the ones inside a palette band whose
+# four colour registers are identical (the BBC's band 1: 63 lines of flat blue hiding live engine
+# code).  ON by default; this is the A/B build for pricing it, and the fallback if a band ever
+# turns out to be flat in the record but not on screen.  See RevsScreen.cpp g_decodeFlatLines and
+# docs/direct-bitplane-plan.md §4a.
+ifeq ($(FLATSKIP),0)
+EXTRA_DEFINES += -DREVS_NO_FLATSKIP
+endif
+
 # `make ISRWATCH=1` — does the 50 Hz body write the fill chain's inputs ($3000-$43FF column
 # sources, $7B00-$7FFF overlay code) while the main loop may be inside the chain?  ~11 KB of extra
 # reads per field, so a diagnostic build only.  Read with amiga/isr_watch.gdb; the reasoning is at
@@ -291,7 +300,7 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_viaT2Reads g_viaT2Last \
              g_badRegionCount g_badRegionEntry \
              g_screenFrontAddr g_screenCopperAddr g_screenBytes g_screenCopperWords \
-             g_bandRejects \
+             g_bandRejects g_decodeFlatLines g_decodeFlatBands \
              g_bandCount g_bandOverflow g_keyUnmapped g_keyUnmappedCode g_keyEvents g_keyDown \
              g_mouseBtnMask g_mouseBtnSeen \
              g_irqClobberCount g_irqClobberWhich \

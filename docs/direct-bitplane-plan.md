@@ -125,7 +125,7 @@ frames 200-202 and 700-703, cross-read against the band record `f.bands`):
 | lines | how the colour gets there | filled? |
 |---|---|---|
 | 0..17 (band 0, MODE 4) | palette: pen 0 blue, pen 1 yellow — the two text rows | the loader blanks rows 0-2 |
-| **18..80 (band 1)** | **palette ONLY: all sixteen entries → the same blue** | **NO. These bytes are the engine's code and variables (`$5E40-$66FF`) and are never touched by any plotter** |
+| **18..81 (band 1), 64 lines** | **palette ONLY: all sixteen entries → the same blue** | **NO. These bytes are the engine's code and variables (`$5E40-$66FF`) and are never touched by any plotter** |
 | 81..horizon (band 2) | palette pen 0 black / 1 blue / 2 white / 3 green | **YES — solid `$0F` (pen 1) across all 40 cells, every line** |
 | horizon..165 (band 3) | same, except **pen 1 → RED** | **YES** — pen 3 green grass, pen 0 black road, pen 1 red markings |
 | 166..207 (band 4) | pen 3 → cyan; then the game body runs | YES — the dashboard |
@@ -144,10 +144,10 @@ frames 200-202 and 700-703, cross-read against the band record `f.bands`):
 
 **So on the Amiga:**
 
-1. ✅ **Lines 18..81 — take the proposal in full.** `COLOR00` = the band-1 blue, both planes left at
-   zero and never written again after one clear. That is 2240 of the 8320 buffer bytes (27%) that
-   need neither a decode nor a fill, and it is the same win §4 describes, arrived at from the other
-   end.
+1. ✅ **Lines 18..81 (64 lines) — take the proposal in full.** `COLOR00` = the band-1 blue, both
+   planes left alone. That is 2560 of the 8320 buffer bytes (31%) that need neither a decode nor a
+   fill, and it is the same win §4 describes, arrived at from the other end. **Shipped 2026-08-16 as
+   the flat-band skip** — §6 step 1; `g_decodeFlatLines` measures 64 in exactly 1 band on the target.
 2. ⚠ **Lines 81..horizon — the sky there is real pixel data and the copper alone will not do it.**
    Band 2 uses all four pens above the horizon: sampled frame 700 has a black (pen 0) object at cells
    32-33 spanning lines 94..108 — a trackside structure straddling the horizon — which is exactly the

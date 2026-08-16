@@ -76,6 +76,30 @@ is worth ~250 ms, ±a trajectory.
 
 Goal 50, floor 25.  Rendered, the port is **~32× short of the floor**.
 
+### ⭐ FIRST PHASE 6 WIN: the flat-band skip, +4.1% (2026-08-16)
+
+`decode()` now skips every display line inside a palette band whose four colour registers hold the
+same colour — the BBC's band 1, **64 lines (18..81)** of flat blue over the 5.5 KB of live engine
+code that lives inside the frame buffer.  31% of the pass, and nothing in it is observable.
+
+| build | vblanks | painted | frame |
+|---|---|---|---|
+| `FLATSKIP=0` (decode all 208 lines) | 11778 | **218** | 1081 ms |
+| shipping (skip the flat band)       | 11778 | **227** | 1038 ms |
+
+**+4.1%, ~43 ms.**  Same flags (`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1`), same instrument
+(`fps_series.gdb`), and the two runs happen to cover the *identical* vblank count, which is what
+makes a 4% difference quotable at all when the standing noise floor is ~3%.
+
+⚠ **`docs/direct-bitplane-plan.md` predicted ~75 ms and got 43** — worth carrying, because it prices
+the rest of the plan.  Either the whole decode is nearer ~140 ms than the ~250 ms the NODECODE row
+above implies (two separate runs, a sizing not a differential), or the skipped rows still pay their
+loop and `m_lineMode` test.  Don't re-quote 250 ms as measured; the 43 ms is.
+
+Verified rather than assumed (`amiga/flatskip.gdb`): `g_decodeFlatLines` = **64** in exactly **1**
+band on the target, and the dumped picture is a single colour on every one of lines 18..81 with a
+positive control (lines 100-119, 20/20 non-uniform) proving the check can fail.
+
 ⚠⚠ **AND EVERY EARLIER FRAMERATE IN THIS PROJECT WAS MEASURED WITH A BIASED INSTRUMENT** — see
 §How to quote a framerate below.  `fps_seg.gdb` halts the machine at every call to
 `Revs::render` to evaluate a breakpoint condition; on the same binary it read 1.4 where a free
