@@ -138,12 +138,50 @@ TARGET   := build/revs
         mode7 mode7-fixture font mos-font refloop-charset refloop-comp track-patch \
         tracks tracks-gen track-fixtures track-smc track-smc-check track-run \
         trackmenu trackmenu-fixture titlescreen \
-        sound sound-fixture sound-fixture-race
+        sound sound-fixture sound-fixture-race determinism determinism-record
 
 all: $(TARGET)
 
 $(TARGET): $(OBJS) | build
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJS)
+
+# ⭐⭐ THE WHOLE-CORPUS DIFFERENTIAL.  `make validate` compares one twin against an oracle
+# the SAME transpiler generated, so it is blind by construction to a codegen change that
+# hits both — and the flag-liveness pass (tools/transpile.py FLAG_SUPPRESS) is exactly such
+# a change: it rewrites 2783 instructions across every routine in the image.
+#
+# So: drive the real engine into a race for N frames with the clock pinned
+# (REVS_FIXED_RNG=1) and dump all 64 KB.  A recorded reference image and a fresh run must be
+# byte-identical.  Any wrongly-dropped flag diverges the simulation and shows up here.
+#
+#   make determinism-record   # after a change you have already proven correct
+#   make determinism          # the check
+#
+# ⚠ The reference is git-ignored and machine-local by design: it is a witness that THIS tree
+# still computes what it computed, not a fixture with independent authority.  Ground truth
+# for behaviour is still the BBC (`make refloop`).
+DET_FRAME  ?= 300
+DET_REF    := tmp/determinism/ref.mem
+DET_RUN    := tmp/determinism/run
+
+determinism-record: $(TARGET)
+	@mkdir -p tmp/determinism
+	@rm -f $(DET_RUN)*
+	REVS_FIXED_RNG=1 REVS_SCREEN_DUMP=$(DET_RUN) REVS_SCREEN_FRAME=$(DET_FRAME) \
+	  REVS_MEM_DUMP=1 REVS_QUIT_AFTER_DUMP=1 ./$(TARGET) >/dev/null 2>&1
+	@cp $(DET_RUN).mem.$(DET_FRAME) $(DET_REF)
+	@echo "determinism: recorded frame $(DET_FRAME) -> $(DET_REF)"
+
+determinism: $(TARGET)
+	@test -f $(DET_REF) || { echo "no reference — run 'make determinism-record' first"; exit 1; }
+	@mkdir -p tmp/determinism
+	@rm -f $(DET_RUN)*
+	REVS_FIXED_RNG=1 REVS_SCREEN_DUMP=$(DET_RUN) REVS_SCREEN_FRAME=$(DET_FRAME) \
+	  REVS_MEM_DUMP=1 REVS_QUIT_AFTER_DUMP=1 ./$(TARGET) >/dev/null 2>&1
+	@cmp $(DET_REF) $(DET_RUN).mem.$(DET_FRAME) \
+	  && echo "determinism: 64K byte-identical at frame $(DET_FRAME) — PASS" \
+	  || { echo "determinism: FAIL — the engine's state diverged"; \
+	       cmp -l $(DET_REF) $(DET_RUN).mem.$(DET_FRAME) | head -20; exit 1; }
 
 # Native-twin validation harness.  Links the full object graph minus main.o (for the
 # symbol environment) plus the harness with its own main().

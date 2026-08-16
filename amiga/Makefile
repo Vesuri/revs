@@ -232,6 +232,15 @@ ifdef BODY_IN_ISR
 EXTRA_DEFINES += -DREVS_BODY_IN_ISR
 endif
 
+# ⭐ `make MEMVOL=1` — the CONTROL build for the mem[]-volatile measurement (src/cpu/mem_decl.h).
+# Dropping `volatile` from the 6502 address space is worth 10% of the frame (1.56 -> 1.72 FPS,
+# 2026-08-16) because it un-blocks every optimisation gcc can make over the array, and the whole
+# transliterated engine is mem[] accesses.  This flag restores the old qualifier so the
+# comparison can be re-measured instead of re-argued.  ⚠ `make clean` when you toggle it.
+ifdef MEMVOL
+EXTRA_DEFINES += -DREVS_MEM_VOLATILE
+endif
+
 # `make FILLWATCH=1` — the fill/tear/edge detectors inside decode() (amiga/fill_catch.gdb).
 # ⚠ NOT in a default build: they re-read the whole 8320-byte frame buffer to see which rows moved
 # under the decode, plus a 93-line bitplane verify — real milliseconds on a 7 MHz 68000, and a

@@ -11,7 +11,8 @@
 
 extern "C" volatile uint16_t g_vbiCount;
 extern "C" volatile unsigned long g_fpsFrames;
-extern "C" volatile uint8_t mem[65536];   // the 6502 RAM image (src/cpu/cpu.c)
+#include "../../cpu/mem_decl.h"
+extern "C" MEM_QUAL uint8_t mem[65536];   // the 6502 RAM image (src/cpu/cpu.c)
 extern "C" void engine_main(void);        // $63BD, the transpiled engine entry
 
 // ⭐⭐ DOES THE 50 Hz BODY WRITE THE FILL CHAIN'S INPUTS?  (`make ISRWATCH=1`)

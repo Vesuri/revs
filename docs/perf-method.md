@@ -307,6 +307,74 @@ Expect the same shape wherever a tight 6502 loop touches hardware or drives a ta
 (the body still runs once per field, faithfully — it now just costs less each time), and
 `FUN_52a4` is untouched.  Re-profile before picking twin #2; the share table above is stale.
 
+**Re-profiled after twin #1** (same command, n = 280 painted frames, ~700 ms/frame in the PROBES
+build).  The body tick fell from 11.1 ms to **5.5 ms** and `irq1v_handler` from 1983 µs to 814 µs
+per call, exactly as predicted:
+
+| share | ms/frame | phase | what |
+|---|---|---|---|
+| **27.4%** | 189 | 26+29 | the 50 Hz body — still the largest row, now by much less |
+| **21.8%** | 151 | 24 | **`$7BE2`, the dashboard** — now the biggest *main-loop* item |
+| 11.9% | 82 | 27 | the decode (port overhead — `docs/direct-bitplane-plan.md`) |
+| 11.3% | 78 | 5 | `build_road_edge_lists` `$24F6` |
+| 8.7% | 60 | 11 | `$1A20`, the road pass |
+| 4.8% | 33 | 4 | `$46A1` |
+| 4.6% | 32 | 18 | `$1E15` |
+| 3.5% | 24 | 28 | the vblank spin |
+
+### ⭐⭐ `mem[]` WAS `volatile`, AND THAT COST 10% OF THE FRAME — **1.56 → 1.72 FPS** (2026-08-16)
+
+| build | vblanks | painted | FPS | `.text` |
+|---|---|---|---|---|
+| `make MEMVOL=1` (the old qualifier) | 11824 | 369 | 1.56 | 246 984 |
+| shipping                             | 11775 | **405** | **1.72** | **241 254** |
+
+One qualifier, on one array, and the array is the whole engine: `volatile` forbids gcc every
+optimisation over `mem[]` — no CSE on an address, no keeping a byte in a register across two
+uses, no reordering — and every transliterated instruction touches it.  5.7 KB less code too,
+which on a machine whose program lives in chip RAM is not nothing.
+
+It was there because the declaration said *"shared between main thread and VBI audio thread"*, a
+comment inherited from the predecessor project, **which had one and this port does not.**  What
+this port has is the VERTB ISR, and in the shipping model that handler does copper work, the
+teletext flash counter, the audio scheduler and one `++` — none of them touch `mem[]`.  The 50 Hz
+body, the only thing that writes `mem[]` from anywhere, was moved out of the ISR in Phase 5 for
+unrelated reasons.  ⚠ Under `make BODY_IN_ISR=1` the qualifier comes back automatically
+(`src/cpu/mem_decl.h`), because there the old hazard is real again.
+
+Verified rather than assumed, control and test side by side with `fill_catch.gdb`: **identical**
+on every counter — BAD frames 0, tear frames 0, decode mismatch 0, irqClobber 0, stack imbalance
+0, body ticks dropped 0, and the same single pre-existing edge jump at line 124.  Plus the whole
+host sweep (`validate`, `determinism`, `mode7`, `tracks`, `sound`, `trackmenu`, `endian-lint`).
+
+⭐ **The general lesson, and it is the same one twin #1 taught in a different costume: the port's
+biggest costs are not in the game's algorithms, they are in the MACHINERY the transliteration is
+wrapped in.** A qualifier, a virtual dispatch, a flag store. Look there before optimising a loop.
+
+### ❌ NEGATIVE RESULT: dead-flag elimination in the transpiler is worth nothing (2026-08-16)
+
+Written down so it is not tried twice.  **Hypothesis:** a 6502 writes N/Z on nearly every
+instruction and reads them almost never; `UPD_NZ` is two absolute-long stores on the 68000; the
+transpiler already has a backward CFG liveness pass (used only for the load/store fold), so
+emitting `_NF` forms where the flags are provably dead should be a corpus-wide win.
+
+**Built it.  2783 of 4390 flag-writing instructions (63%) dropped their flag writes.  Result:
+`.text` 0.3% smaller and 369 → 376 painted frames — under the 3% noise floor.  Reverted.**
+
+Why: **gcc's dead-store elimination had already done it.**  `cpu` is a plain global struct, so
+within any stretch of straight-line code the later flag store kills the earlier one.  The only
+places gcc cannot are across an opaque call — and those are exactly the places the liveness pass
+also refuses (it treats `JSR` as reading everything).  Confirmed by relaxing that too: assuming
+no callee reads caller flags lifts coverage only 63% → 76%, so an interprocedural version has
+almost nothing left to win either.
+
+⭐ **The transferable part: before hand-writing an optimisation the compiler might already be
+doing, look at the emitted code for the case you care about.**  The evidence was in the
+disassembly all along — the flag stores that survive are the ones bracketing a `jsr`.
+
+That experiment did leave two things behind, both kept: `make determinism` (below) and
+`REVS_FIXED_RNG` on the host.
+
 ⚠ **And `$1A20` is not "the rasteriser" in the sense the notes claim.**  A snapshot-diff of the
 frame buffer around it (`make SHAPE=1`, `src/platform/shape.h`) says it changes **6-7 bytes per
 call, at display lines 26..55** — inside the sky band, i.e. engine variables that happen to live in

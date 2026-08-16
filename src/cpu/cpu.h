@@ -8,6 +8,7 @@
 #if !(defined(__cplusplus) && defined(REVS_PLATFORM_AMIGA))
 #include <stdint.h>
 #endif
+#include "mem_decl.h"
 
 /* 6502 register state.  Flags are stored unpacked (0/1 per flag) for
    readable branch conditions in the transliterated C.  PHP/PLP pack/
@@ -21,7 +22,10 @@ typedef struct {
 } Cpu6502;
 
 extern Cpu6502 cpu;
-extern volatile uint8_t mem[65536]; /* shared between main thread and VBI audio thread */
+/* The 6502 address space.  MEM_QUAL is `volatile` ONLY under BODY_IN_ISR — dropping it in the
+   shipping model is worth 10% of the frame, and mem_decl.h carries the argument for why that
+   is sound here. */
+extern MEM_QUAL uint8_t mem[65536];
 
 /* ---------- the 6502 stack-drop return ----------------------------------------
  * ⭐⭐ ONE routine in Revs returns TWO LEVELS UP, and C cannot express it.

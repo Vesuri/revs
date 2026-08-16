@@ -3,7 +3,8 @@
 
 /* The game's own state, for AutoStep::until — a scripted key that waits on a PROBABILISTIC
    effect (the starter) can only be released by looking at what the game did with it. */
-extern "C" volatile uint8_t mem[65536];
+#include "../cpu/mem_decl.h"
+extern "C" MEM_QUAL uint8_t mem[65536];
 
 /* Negative-INKEY codes, in the raw 256-n form OSBYTE 129 wants in X.  Read out of the
    binary, not from a key-code table: menu_key_tbl ($39E0) holds exactly SPACE/1/2/3, and

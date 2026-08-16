@@ -131,7 +131,8 @@ void platform_poll_events(void) {
    differential is comparing two different machines.  See
    docs/validation-harness.md.
    --------------------------------------------------------------------------- */
-extern volatile uint8_t mem[65536];   /* the 6502 RAM image (src/cpu/cpu.c) */
+#include "../cpu/mem_decl.h"
+extern MEM_QUAL uint8_t mem[65536];   /* the 6502 RAM image (src/cpu/cpu.c) */
 
 /* Opt-in for frame-wait fixtures: when nonzero, tickVBI advances the BBC's
    100 Hz system clock low byte so a frame-driven twin and its oracle both make

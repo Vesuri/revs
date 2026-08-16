@@ -107,6 +107,10 @@ faithful precedent; mouse replaces the uPD7002 analogue axis.
 make                       # build/revs — HEADLESS by design, no renderer (see below)
 make validate              # the native-twin byte-exact differential
 make validate FN="name"    # only matching tests — prefer this
+make determinism           # ⭐ the WHOLE-CORPUS differential: 300 frames of a pinned race,
+                           #   all 64 KB byte-compared.  The ONLY check that covers a change
+                           #   to the transpiler / cpu.h / the memory model, because those
+                           #   change `validate`'s oracle too.  `make determinism-record` first
 make endian-lint           # fail if mem[] is aliased as a wide pointer
 make gen                   # regenerate src/gen from listing.txt + dashcode.txt (DASHCODE=0 skips)
 make image                 # rebuild disasm/revs_mem.bin from revs.ssd
@@ -333,15 +337,31 @@ Amiga frame. `bus_write` to BBC hardware is largely ignored on Amiga.
 negotiable** — the game body is a VERTB-ISR interrupt, so 25 FPS means painting every other frame
 with the simulation still at full rate.
 
-⭐⭐ **BASELINE: 1.56 FPS RENDERED** (2026-08-16, `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` +
-`fps_series.gdb`) — **twin #1, `irq1v_handler` native, took it from 0.96 to 1.56 (+62%)**.  It
-was ~80 6502 instructions and ~400 ms of a 1038 ms frame, and the win is the *absence of the
-interpreter*, not better code: 48 of those instructions are `STA $FE21`, and written as C gcc
-folds a whole 16-entry palette loop into sixteen immediate stores.  ⚠⚠ It also found that
-`make validate` could not see hardware writes at ALL — four of nine sabotages passed — so
-`diff_run` now diffs the hardware-write SEQUENCE too (`docs/validation-harness.md` §a fifth), and
-**sabotage is a required step for every twin** (`docs/phases.md` §1a item 9).  ⚠ Re-profile before
-picking twin #2: the 51% body row has just been cut by two thirds and the share table is stale.
+⭐⭐ **BASELINE: 1.72 FPS RENDERED** (2026-08-16, `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` +
+`fps_series.gdb`) — **0.96 → 1.56 → 1.72 in one session, from two changes, and NEITHER was an
+algorithm.**  ⭐ Both are the same lesson: *the port's biggest costs are in the MACHINERY the
+transliteration is wrapped in, not in the game's algorithms* — look there before optimising a loop.
+
+**2. `mem[]` was `volatile` and is not any more (+10%).** One qualifier on one array, and the
+array is the whole engine: it forbade gcc every optimisation over `mem[]`, and cost 5.7 KB of code
+too.  It was there for a *"VBI audio thread"* the predecessor project had and this one does not —
+the VERTB ISR touches no `mem[]` since the 50 Hz body moved to main-loop context in Phase 5.
+`src/cpu/mem_decl.h` has the argument; `make MEMVOL=1` (and `BODY_IN_ISR=1`, automatically) is the
+control.  ❌ And the experiment that did NOT work, so it is not retried: dead-flag elimination in
+the transpiler removed 63% of the flag writes and bought **0.3% of code size and nothing
+measurable** — gcc's dead-store elimination was already doing it (`docs/perf-method.md`).
+
+**1. Twin #1, `irq1v_handler` native (+62%).**  ~80 6502 instructions and ~400 ms of a 1038 ms
+frame; the win is the *absence of the interpreter*, not better code: 48 of those instructions are
+`STA $FE21`, and written as C gcc folds a whole 16-entry palette loop into sixteen immediate
+stores.  ⚠⚠ It also found that `make validate` could not see hardware writes at ALL — four of
+nine sabotages passed — so `diff_run` now diffs the hardware-write SEQUENCE too
+(`docs/validation-harness.md` §a fifth), and **sabotage is a required step for every twin**
+(`docs/phases.md` §1a item 9).
+
+⭐ **Re-profiled after both**: the 50 Hz body is now 27.4% (was 51.1%), and **`$7BE2` the dashboard
+at 21.8% / 151 ms is the biggest main-loop item** — the next target.  Then the decode 11.9%,
+`build_road_edge_lists` 11.3%, `$1A20` 8.7%.  Full table: `docs/perf-method.md`.
 
 ⭐ *(superseded)* **0.87 FPS RENDERED** (2026-08-14; 0.78 before the two-level-RTS fix below, which
 stopped the road-span chains over-plotting) **/ 1.46 FPS unrendered** — ~29× short of the floor.

@@ -15,7 +15,8 @@
 #include "../teletext.h"           /* the MODE 7 model: the VDU driver's page + the SAA5050 */
 #include "../../cpu/m68k_math.h"   /* the 68000 has NO 32-bit mul/div (make muldiv-audit) */
 
-extern "C" volatile uint8_t mem[65536];
+#include "../../cpu/mem_decl.h"
+extern "C" MEM_QUAL uint8_t mem[65536];
 
 /* ---- display geometry ---------------------------------------------------------
    320x208, two bitplanes, interleaved.  kDisplayTop is the raster line the display
@@ -549,10 +550,13 @@ void RevsScreen::decodeTeletext()
     unsigned row = 0;
     while (row < TT_ROWS) {
         TtCell cells[TT_COLS];
-        /* mem[] is volatile; the decode wants a plain byte pointer.  Casting away volatile is
-           safe here (the page is only written from main-loop context and from the VDU driver,
-           both of which are this same thread) and it is NOT a widening cast — mem[] must never
-           be aliased as a 16- or 32-bit pointer, which make endian-lint enforces. */
+        /* The decode wants a plain byte pointer.  ⭐ This cast used to strip `volatile`, and the
+           argument written here for why that was safe — the page is written only from main-loop
+           context and from the VDU driver, both this same thread — is now the argument for
+           mem[] not being volatile AT ALL in the shipping model (src/cpu/mem_decl.h, worth 10%
+           of the frame).  Under BODY_IN_ISR the qualifier returns and the const_cast with it.
+           ⚠ Still NOT a widening cast — mem[] must never be aliased as a 16- or 32-bit pointer,
+           which make endian-lint enforces. */
         const unsigned char* src =
             (const unsigned char*)(const void*)(mem + TT_SCREEN_BASE + row * TT_COLS);
         const int dbl = tt_decode_row(src, cells, (int)phase);

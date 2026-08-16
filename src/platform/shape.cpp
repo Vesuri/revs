@@ -4,7 +4,8 @@
 
 #ifdef REVS_SHAPE
 
-extern "C" volatile unsigned char mem[65536];
+#include "../cpu/mem_decl.h"
+extern "C" MEM_QUAL unsigned char mem[65536];
 
 /* The dashboard sweep's own geometry, from docs/static-map.md item 10 — 40 column blocks
    $80 apart based at $3000, swept with X from $4F down to $2C ($7BE2 loads X = $4F, the

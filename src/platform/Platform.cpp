@@ -4,7 +4,8 @@
 #include <stdlib.h>
 #endif
 
-extern volatile uint8_t mem[65536];
+#include "../cpu/mem_decl.h"
+extern MEM_QUAL uint8_t mem[65536];
 
 Platform* platform = nullptr;
 

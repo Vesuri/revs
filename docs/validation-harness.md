@@ -45,11 +45,40 @@ is validated on the writes it did not optimise.  So the trace hook lives in that
 ⚠ It follows that **a twin must be sabotaged, not just run.**  A first-run PASS on a routine
 whose output the harness cannot see is indistinguishable from a first-run PASS on a correct twin.
 
+## ⭐⭐ …and a SIXTH: `make validate` cannot see a change that hits the ORACLE too
+
+A twin is compared against a transliteration **the same transpiler generated**.  So any change to
+the transpiler, to `cpu.h`, or to the memory model changes both sides identically and the
+differential stays green while the whole corpus rots.  That is not a hypothetical: the
+dead-flag-elimination experiment (`docs/perf-method.md`) rewrote 2783 instructions across every
+routine in the image, and `make validate` had exactly one function's worth of opinion about it.
+
+**`make determinism` is the answer, and it covers the whole corpus.**  Drive the real engine into
+a race for N frames with the clock pinned (`REVS_FIXED_RNG=1`, which substitutes the deterministic
+`hwMicros` fallback), dump all 64 KB, and require byte-equality against a recorded reference.
+
+```
+make determinism-record   # after a change you have already proven correct
+make determinism          # the check (DET_FRAME=300 by default)
+```
+
+Sabotage-tested three ways: an unpinned clock diverges; a deliberately wrong flag-liveness rule
+(dropping a LIVE `N`) does not merely diverge — it **hangs**, so the run never reaches the dump at
+all; and two different configurations / two different frame depths never compare equal to each
+other.  Its positive result on the flag experiment was byte-identity at frames 300 and 1500 in
+both PRACTICE and COMPETITION.
+
+⚠ The reference is git-ignored and machine-local **on purpose**.  It is a witness that this tree
+still computes what it computed an hour ago — it has no independent authority, and it must never
+be re-recorded to make a failing check pass.  Ground truth for behaviour is still the BBC
+(`make refloop`).
+
 ## Using it
 
 ```
 make validate                 # everything
 make validate FN=<substring>  # only matching tests — use this; a full run gets slow fast
+make determinism              # the WHOLE-CORPUS differential (see above)
 make endian-lint              # the wide-pointer-alias grep
 ```
 

@@ -27,7 +27,8 @@
 #include "../track.h"      /* circuit selection */
 #include "../trackmenu.h"  /* ...and the menu that makes it the PLAYER's */
 
-extern "C" volatile uint8_t mem[65536];      // the 6502 RAM image (src/cpu/cpu.c)
+#include "../../cpu/mem_decl.h"
+extern "C" MEM_QUAL uint8_t mem[65536];      // the 6502 RAM image (src/cpu/cpu.c)
 extern "C" volatile uint8_t g_keyDown[128];  // RevsInput's rawkey state, for the quit chord
 
 // GfxBase is opened in the constructor (GCCRuntime.cpp defines the global).
