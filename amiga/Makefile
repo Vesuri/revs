@@ -52,6 +52,7 @@ CXX_SRCS := \
     $(AMIGA_SRC)/PlatformAmiga.cpp \
     $(AMIGA_SRC)/Revs.cpp \
     $(AMIGA_SRC)/RevsScreen.cpp \
+    $(AMIGA_SRC)/RevsPlot.cpp \
     $(AMIGA_SRC)/RevsInput.cpp \
     $(AMIGA_SRC)/RevsAudio.cpp \
     $(REPO)/src/platform/Platform.cpp \
@@ -245,6 +246,41 @@ ifeq ($(DIRTYCHECK),1)
 EXTRA_DEFINES += -DREVS_DIRTYCHECK
 endif
 
+# ⭐⭐ `make DIRECTPLOT=1` — the 3D view rasteriser ($7BE2) plots RUNS straight into the bitplane
+# buffer as well as writing mem[] (src/platform/revs_plot.h, docs/direct-bitplane-plan.md §7e).
+# ⚠ In this first form it is REDUNDANT work, not a saving: the mem[] stores stay, so the picture
+# cannot break and the run plotter can be proven byte-exact before anything depends on it.
+ifeq ($(DIRECTPLOT),1)
+EXTRA_DEFINES += -DREVS_DIRECT_PLOT
+PROBE_SYMS_PLOT = g_plotRuns g_plotCells g_plotRunsLast g_plotCellsLast \
+                  g_plotLineLo g_plotLineHi g_plotNoTarget
+endif
+
+# `make DIRECTPLOT=1 DIRECTCHECK=1` — the ORACLE for it (§5).  Brackets the sweep: convert mem[]
+# with the shipping decode and seed the buffer, let the sweep plot over it, convert again and
+# require the WHOLE buffer to be identical.  g_plotMismatch must be 0 with g_plotChecks large.
+# Two full conversions per sweep — never quote a framerate from this build.
+# ⚠ `make PLOTONLY=1` — the END STATE, and a MEASUREMENT build until the digits are handled: the
+# view rasteriser stops writing mem[] for its own region and the decode stops converting those
+# lines, so the whole point (fewer stores, less decode) is in the number.  It loses vdu_char_def's
+# digits, which compose against mem[] — see §7e.  The car's trajectory is unaffected either way,
+# because the visible frame buffer is write-only (measured, `make fbwrites --fill-reads`), which is
+# what makes this a clean FPS comparison against a build that draws them.
+ifeq ($(PLOTONLY),1)
+EXTRA_DEFINES += -DREVS_DIRECT_PLOT -DREVS_PLOT_ONLY
+PROBE_SYMS_PLOT = g_plotRuns g_plotCells g_plotRunsLast g_plotCellsLast \
+                  g_plotLineLo g_plotLineHi g_plotNoTarget
+endif
+
+ifeq ($(DIRECTCHECK),1)
+EXTRA_DEFINES += -DREVS_DIRECT_PLOT -DREVS_DIRECT_CHECK
+# ⚠ Conditional, because probe-audit is right to fail otherwise: these three exist only in a
+# DIRECTCHECK build, and a symbol listed but absent is exactly what the audit is for.
+PROBE_SYMS_CHECK = g_plotChecks g_plotMismatch g_plotMismatchOff
+PROBE_SYMS_PLOT  = g_plotRuns g_plotCells g_plotRunsLast g_plotCellsLast \
+                   g_plotLineLo g_plotLineHi g_plotNoTarget
+endif
+
 # `make ISRWATCH=1` — does the 50 Hz body write the fill chain's inputs ($3000-$43FF column
 # sources, $7B00-$7FFF overlay code) while the main loop may be inside the chain?  ~11 KB of extra
 # reads per field, so a diagnostic build only.  Read with amiga/isr_watch.gdb; the reasoning is at
@@ -404,6 +440,7 @@ endif
 ifdef HWTIME
 PROBE_SYMS += g_probeHwWrites g_probeHwReads g_probeHwTicks
 endif
+PROBE_SYMS += $(PROBE_SYMS_CHECK) $(PROBE_SYMS_PLOT)
 
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \
             $(addprefix -Wl$(COMMA)--undefined=,$(PROBE_SYMS))

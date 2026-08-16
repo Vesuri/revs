@@ -404,6 +404,31 @@ test fails closed **17015** wrong bytes, mode-change dirtying removed **1350**. 
 worth remembering: `m_lineMode` can re-point a line at a different conversion while its source byte
 is unchanged, which no byte compare can see.
 
+### ❌ DIRECT-TO-BITPLANE PLOTTING: built, proven byte-exact, **9% SLOWER**, not shipped
+
+| build | vblanks | painted | FPS |
+|---|---|---|---|
+| shipping | 9782 | 383 | **1.96** |
+| plot runs *as well as* the `mem[]` stores (`DIRECTPLOT=1`) | 9777 | 325 | 1.66 |
+| plot runs *instead of* them, decode skips the region (`PLOTONLY=1`) | 9780 | 350 | **1.79** |
+
+The plotter is correct — `DIRECTCHECK=1` compares the whole 16640-byte buffer against the shipping
+decode around every sweep: 0 mismatches / 9 checks, and it catches a one-cell sabotage at 210. It
+collapses 2148 cells into 360 runs. It is still a loss, for two reasons worth carrying:
+
+1. **A run collapses the STORE, not the ITERATION.** Every unit still reads its own source byte out
+   of a `$80`-strided block; that scan *is* the loop. Removing one byte store from a
+   thirty-instruction, instruction-fetch-bound unit and adding run bookkeeping to it is negative
+   before anything is gained. ⚠ The plan had predicted "2100 iterations become ~150" — the number
+   that was actually going to fall was the store count, and nobody was paying for stores.
+2. **The prize was already banked.** `PLOTONLY` measured *identically* with and without the decode
+   skip, because the dirty-region decode was already skipping those cells. Two optimisations, one
+   prize, and the cheap one had taken it three commits earlier.
+
+⭐ The general lesson: **before building a representation change, ask which quantity the current
+cost is proportional to.** Here it is source reads per frame (2148), and no layout on either side of
+the seam changes that number. Full write-up: `docs/direct-bitplane-plan.md` §7f.
+
 ### ⚠⚠ TWIN #2, `$7BE2 dashboard_sweep`: **1.71 → 1.77 FPS (+3.6%)**, and that is the FINDING
 
 The dashboard was the biggest main-loop row in the table above (21.8%, 151 ms) and it is now a

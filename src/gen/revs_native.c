@@ -25,6 +25,7 @@
 #include "../platform/bbc_screen.h"   /* bbc_ula_palette_write / bbc_ula_control_write */
 #include "../platform/probe.h"        /* PROBE_PHASE(): the phase-29 body-arm split */
 #include "../platform/shape.h"        /* PROBE_SHAPE_DASH_UNIT(): the §7a unit counter */
+#include "../platform/revs_plot.h"    /* REVS_PLOT_*: the direct-to-bitplane run plotter */
 
 /* ===========================================================================
    $4E5C  irq1v_handler — THE RASTER-BAND STATE MACHINE, and the 50 Hz body's arm
@@ -322,9 +323,31 @@ static int dash_call(uint16_t site, uint16_t opnd, unsigned page)
      advance_first  entered at $7EF3 (the JSRs from $7BF1 and $7D37), so the screen
                     pointer moves and $7BF7's prologue runs before any unit
    A, X and Y are the 6502's; the flags in between are dead (see the header). */
+/* ⭐⭐ THE RUN ACCUMULATOR (Amiga only — revs_plot.h).  `A` carries between units, so consecutive
+   cells of a scan line usually hold the SAME byte; in the Amiga's bitplane layout those cells are
+   contiguous, so a run is one fill instead of N stores.  This does not change a single mem[] byte
+   or a single branch of the chain — it only notices, as the chain runs, that the byte it is about
+   to store is the byte it stored to the cell on the left.
+   ⚠ A run never spans a scan line: the unit loop ends at 40 and each line re-enters it. */
+#ifdef REVS_DIRECT_PLOT
+#define PLOT_DECL()   unsigned runAddr = 0, runVal = 0, runLen = 0
+#define PLOT_UNIT(dd, aa)  do {                                                     \
+        if (runLen && (unsigned)(uint8_t)(aa) == runVal) runLen++;                  \
+        else { if (runLen) REVS_PLOT_RUN(runAddr, runVal, runLen);                  \
+               runAddr = (dd); runVal = (unsigned)(uint8_t)(aa); runLen = 1; }      \
+    } while (0)
+#define PLOT_FLUSH()  do { if (runLen) { REVS_PLOT_RUN(runAddr, runVal, runLen); runLen = 0; } \
+                      } while (0)
+#else
+#define PLOT_DECL()   ((void)0)
+#define PLOT_UNIT(dd, aa) ((void)0)
+#define PLOT_FLUSH()  ((void)0)
+#endif
+
 static void dash_chain(int unit, int forced, int advance_first)
 {
     unsigned a = cpu.A, x = cpu.X, y = cpu.Y;
+    PLOT_DECL();
 
     for (;;) {
         int i;
@@ -398,15 +421,20 @@ static void dash_chain(int unit, int forced, int advance_first)
                     if (op != 0x91) {
                         y = ((unsigned)i << 3) & 0xFF;   /* $7C0D LDY #<row> ran first */
                         if (op != 0x60) platform_smc_unhandled(slot, op);
+                        PLOT_FLUSH();
                         goto done;
                     }
                 }
+                PLOT_UNIT(d, a);
+#ifndef REVS_PLOT_ONLY
                 bus_write((uint16_t)d, (uint8_t)a);
+#endif
                 p += 0x80;
                 d += 8;
                 if (i == 31) d = base1;             /* chain B's last eight use $72/$73 */
             }
             y = 0x38;                               /* unit 39's row, had the chain not stopped */
+            PLOT_FLUSH();
         }
 
         /* $7EEE — the sweep's own terminator, itself an opcode slot. */
@@ -423,6 +451,7 @@ static void dash_chain(int unit, int forced, int advance_first)
         advance_first = 1;
     }
 done:
+    PLOT_FLUSH();       /* belt and braces: a leaked run would paint the NEXT call's line */
     cpu.A = (uint8_t)a; cpu.X = (uint8_t)x; cpu.Y = (uint8_t)y;
 }
 
@@ -492,6 +521,7 @@ stepped:
         if (!dash_call(0x7F67, 0x7F68, 0x7C)) return;
         AND(mem[0x38D0 + cpu.X]);
         ORA(mem[0x3350 + cpu.X]);
+        REVS_PLOT_CELL(ZP_IND_Y(0x70), cpu.A);
         bus_write(ZP_IND_Y(0x70), cpu.A);
 
         LDY(mem[0x3080 + cpu.X]);                   /* $7F72 chain B's stop unit */
@@ -516,6 +546,7 @@ stepped:
         AND(mem[0x36F9 + cpu.Y]);
         ORA(mem[0x35F9 + cpu.Y]);
         LDY(math_hi);
+        REVS_PLOT_CELL(ZP_IND_Y(0x72), cpu.A);
         bus_write(ZP_IND_Y(0x72), cpu.A);
 
         CPX(0x03);
@@ -547,6 +578,7 @@ static void dash_phase2(void)
         dash_chain(0, 0, 1);                        /* $7D37 JSR $7EF3 */
         AND(mem[0x38D0 + cpu.X]);
         ORA(mem[0x3350 + cpu.X]);
+        REVS_PLOT_CELL(ZP_IND_Y(0x70), cpu.A);
         bus_write(ZP_IND_Y(0x70), cpu.A);
         LDA(mem[0x4400 + cpu.X]);
         AND(mem[0x3950 + cpu.X]);
@@ -561,6 +593,7 @@ static void dash_phase2(void)
 
 void dashboard_sweep(void)
 {
+    REVS_PLOT_CHECK_BEFORE();
     /* $7BE2 — $70/$71 at $6700 and $72/$73 at $6800, one screen page apart, then
        column $4F.  The `JSR $7EF3` steps to $6701 before the first unit runs. */
     LDA(0x00);
@@ -573,4 +606,5 @@ void dashboard_sweep(void)
     LDX(0x4F);
     dash_chain(0, 0, 1);
     dash_phase2();
+    REVS_PLOT_CHECK_AFTER();
 }

@@ -13,6 +13,10 @@
 #include "framework/Sprite.h"
 #include "../bbc_screen.h"
 #include "../teletext.h"           /* the MODE 7 model: the VDU driver's page + the SAA5050 */
+#include "../revs_plot.h"        /* the direct-to-bitplane plotter: this is where it is aimed */
+#ifdef REVS_PLOT_ONLY
+extern "C" volatile unsigned char g_plotLineLo, g_plotLineHi;
+#endif
 #include "../../cpu/m68k_math.h"   /* the 68000 has NO 32-bit mul/div (make muldiv-audit) */
 
 #include "../../cpu/mem_decl.h"
@@ -93,8 +97,12 @@ static const uint16_t kTtPalette[8] = {
    with no masking or shifting in the inner loop, which is the whole cost of this pass.
    ⚠ Built in initialize(), never lazily — a table built on first use inside a frame is
    the Atari port's 3.6-second freeze (docs/m68k-optimisation.md). */
-static uint8_t s_expandHi[256];
-static uint8_t s_expandLo[256];
+/* ⭐ NOT static any more: the direct-to-bitplane plotter (RevsPlot.cpp) expands the SAME MODE 5
+   bytes, and two definitions of one mapping is how a plotter and its own oracle come to agree on a
+   bug.  One definition, shared — the rule bbc_ula_palette_write is under too. */
+extern "C" { uint8_t g_bbcExpandHi[256]; uint8_t g_bbcExpandLo[256]; }
+#define s_expandHi g_bbcExpandHi
+#define s_expandLo g_bbcExpandLo
 
 static uint8_t expandNibble(unsigned n)
 {
@@ -978,6 +986,20 @@ unsigned RevsScreen::convertRace(uint8_t* dst, uint8_t* shadow, unsigned char* s
 
         if (!any) continue;   /* nothing to draw; the shadow BYTES deliberately stay stale */
 
+#ifdef REVS_PLOT_ONLY
+        /* ⭐ THE PLOTTER OWNS THESE LINES.  Under REVS_PLOT_ONLY the view rasteriser no longer
+           writes mem[] for its own region, so converting it would paint stale bytes over what the
+           plotter drew.  The range is what the last sweep actually PAINTED, not a literal — the
+           viewport's extent is data (docs/direct-bitplane-plan.md §7e).  Whole character rows only,
+           which is why it is tested here rather than per line; the sweep's region is 77 lines, so
+           the rounding costs at most one row at each end.
+           ⚠ MEASUREMENT BUILD: vdu_char_def's digits compose against mem[] and are lost with it.
+           This exists to PRICE the end state, not to be it. */
+        if ((unsigned)g_plotLineHi >= (unsigned)g_plotLineLo &&
+            y >= (unsigned)g_plotLineLo && y + BBC_SCREEN_LINES <= (unsigned)g_plotLineHi)
+            continue;
+#endif
+
         for (unsigned c = 0; c < BBC_SCREEN_CELLS; c++) {
             const uint8_t* const s = rowBase + c * BBC_SCREEN_LINES;
             if (shadowRow) {
@@ -1009,6 +1031,19 @@ unsigned RevsScreen::convertRace(uint8_t* dst, uint8_t* shadow, unsigned char* s
     return converted;
 }
 
+/* ⭐ THE ORACLE HANDLE (docs/direct-bitplane-plan.md §5).  The direct-to-bitplane plotter writes
+   no mem[], so `make validate` cannot check it; what CAN is the shipping decode, run over the same
+   mem[] state — so it is exposed as a plain C entry point rather than reimplemented anywhere.
+   ⚠ A file-static instance pointer, set by decode(): the object is a member of a function-local
+   static Revs, and this build has no way to name it otherwise.  Null before the first decode, which
+   is exactly when there is no picture to be a reference for. */
+static RevsScreen* s_lastDecoded = 0;
+
+extern "C" void revs_screen_convert_reference(uint8_t* dst)
+{
+    if (s_lastDecoded) s_lastDecoded->convertRace(dst, 0, 0);
+}
+
 /* ---------------------------------------------------------------------------
    Main loop: the BBC frame buffer -> the back buffer.
    --------------------------------------------------------------------------- */
@@ -1025,6 +1060,11 @@ void RevsScreen::decode()
 
     Bitmap* bm = m_bitmap[m_back];
     if (!bm) return;
+    s_lastDecoded = this;
+    /* ⭐ The 3D view rasteriser plots straight into the buffer this decode is filling (revs_plot.h).
+       Set per painted frame and only in the race configuration: MODE 7 has no race buffer, and a
+       plotter with a stale target would paint into a bitmap the copper is displaying. */
+    REVS_PLOT_TARGET((uint8_t*)bm->data);
 
     /* ⭐ FIRST, before a single pixel is decoded: capture the raster schedule that belongs to
        the frame buffer we are about to read.  See snapshotBands() — the pixels and the band

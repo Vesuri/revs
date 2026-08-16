@@ -456,6 +456,45 @@ nearly free on unchanged cells. **The win has to come from run-collapsing the 13
 with the decode saving as a side effect. Any implementation that does not collapse runs is not
 worth building.
 
+### ❌ 7f. BUILT, PROVEN CORRECT, AND **MEASURED A 9% LOSS** — direct plotting is DEAD for this routine
+
+The plotter §7e specified exists, works, and is byte-exact. It is also **slower**, and the reason
+is a mistake in §7e's own reasoning that only a measurement could have caught.
+
+| build (same scene, same instrument, `fps_series.gdb`) | vblanks | painted | FPS |
+|---|---|---|---|
+| shipping (dirty decode, no plotter) | 9782 | 383 | **1.96** |
+| `DIRECTPLOT=1` — plot runs *in addition to* the `mem[]` stores | 9777 | 325 | 1.66 |
+| `PLOTONLY=1` — plot runs *instead of* them, decode skips the region | 9780 | 350 | **1.79** |
+| `PLOTONLY=1` **without** the decode skip | 9778 | 350 | 1.79 |
+
+**Correctness was never the problem.** `DIRECTCHECK=1` brackets each sweep — convert `mem[]` with
+the shipping decode, seed the buffer, let the sweep plot over it, convert again, require the WHOLE
+16640-byte buffer to match — and it reads **0 mismatches / 9 checks** first try, with a one-cell
+sabotage of the flush caught at 210. The shape is real too: **360 runs for 2148 cells, 6.0 cells a
+run**, over exactly lines 81..157.
+
+⚠⚠ **THE ERROR: RUNS COLLAPSE THE STORES, NOT THE ITERATIONS.** §7e claimed "~2100 iterations
+become ~150". They do not, and they never could: every unit must still **read its own source byte**
+out of a `$80`-strided block and test it — that scan *is* the loop, and it is what the 2148
+iterations are. What a run collapses is the *store*, which is one instruction of about thirty. So
+the change removes a byte store from an **instruction-fetch-bound** loop (twin #2) and adds run
+bookkeeping to it, which is a straight loss before anything is gained.
+
+⚠⚠ **AND THE GAIN IT WAS BANKING ON WAS ALREADY SPENT.** The last two rows of the table are the
+same number: skipping the decode of the plotted region bought **nothing measurable**, because the
+dirty-region decode (§7c) was *already* skipping those cells — with the sweep no longer writing
+`mem[]` there, nothing changes there, so the dirty test skips it either way. ⭐ The two ideas were
+competing for one prize, and the cheaper one took it three commits earlier.
+
+**What this retires.** Direct-to-bitplane rendering as the port's next lever — the item that opened
+this document — is finished on measurement, not on argument. The machinery stays behind its flags
+(default off, `DIRECTPLOT` / `PLOTONLY` / `DIRECTCHECK`, and the shipping build re-measures at 1.96
+with it compiled out) because the oracle and the plot layer are exactly what a future attack on the
+*scan* would need. **What it does not retire** is §8's sprites, which never depended on this — and
+the real target it points at: the rasteriser's cost is **2148 source reads a frame**, so the only
+thing that can move it is producing fewer sources, i.e. changing what the *producers* write.
+
 ## 8. ⭐⭐ HARDWARE SPRITES for the instruments — capability the BBC never had (user, 2026-08-16)
 
 **The observation.** The BBC has no sprites, so *every* moving thing on the Revs dashboard is drawn
