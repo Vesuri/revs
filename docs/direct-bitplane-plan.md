@@ -340,6 +340,44 @@ where the target drains ~30, so its picture is frozen: 2 of 8320 bytes changed b
 needs `STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` or the car never leaves neutral and the stimulus is
 absent altogether — `frame_shape.gdb` prints `$61`/`$63` beside the shape for exactly that reason.
 
+### ✅ 7c. SHIPPED (2026-08-16) — the dirty-region decode, **1.77 → 1.96 FPS (+10.7%)**
+
+§7b's number acted on. `RevsScreen::convertRace()` compares each **8-byte cell column** against a
+shadow of the bytes that produced the buffer's current content and converts only what moved.
+
+| build | vblanks | painted | FPS | note |
+|---|---|---|---|---|
+| HEAD before this change (twin #2 baseline) | — | — | **1.77** | the standing baseline |
+| shipping (dirty) | 9783 | 383 | **1.96** | `g_decodeCells` mean **166 of 1040**, last 31 |
+| `make DIRTY=0` | 9781 | 286 | **1.46** | same loop, test disabled |
+
+⚠⚠ **THE CONTROL IS NOT THE OLD CODE, AND THE TWO COMPARISONS DISAGREE BY DESIGN.** `DIRTY=0` is
+the *new* cell-major loop with the test switched off, so the honest reading is two facts, not one:
+the dirty test is worth **+34%** against its own control, and the **cell-major restructure it
+needed costs ~18%** on its own (1.77 → 1.46) — a display line's 40 bytes are 40 sequential
+destination stores, a cell column's 8 lines are 8 stores strided by `kRowBytes`. Net **+10.7%**
+against the baseline, and quoting the +34% alone would be quoting a win against a build that never
+shipped. ⭐ It also means there is ~18% still on the table for a hybrid that takes the old
+line-major path when a whole row is dirty — unmeasured, and only worth it if the frame count of
+fully-dirty rows justifies it (`g_decodeFullFrames` reads 1, the first frame).
+
+**Three design points, each of which a differential caught rather than reasoning:**
+
+1. **TWO shadows, indexed by `m_back`** — the Amiga is double-buffered, so the comparison base is
+   what *this* buffer was decoded from, two decodes ago.
+2. **A line's MODE can change while its byte does not.** Diffing `m_lineMode` against a shadowed
+   copy and dirtying the whole character row on a change is **load-bearing**: removing it (sabotage
+   2) left **1350** wrong bytes in 12 frames.
+3. **No "shadow valid" flag is needed** and one should not be added — see the comment at
+   `s_shadow`: zero-initialised storage makes frame 1 a full convert, and MODE 7 draws into its own
+   bitmap so a race buffer still matches its shadow across a front-end round trip.
+
+**The oracle: `make DIRTYCHECK=1`** re-runs the conversion unconditionally into a copy of the
+buffer the dirty pass just wrote and requires byte equality — §5's "the decode is the reference
+implementation" idea, arrived at one step early and now standing machinery for the plotter work.
+Measured **0 mismatches / 12 checks** with the car under power, and it catches both sabotages
+(test fails closed: 17015; mode change ignored: 1350). `amiga/dirty_decode.gdb` reads all of it.
+
 ## 8. ⭐⭐ HARDWARE SPRITES for the instruments — capability the BBC never had (user, 2026-08-16)
 
 **The observation.** The BBC has no sprites, so *every* moving thing on the Revs dashboard is drawn

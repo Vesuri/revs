@@ -152,6 +152,60 @@ volatile uint16_t g_decodeFlatLines  = 0;    /* lines skipped in the most recent
 volatile uint16_t g_decodeFlatBands  = 0;    /* bands found flat in it                  */
 }
 
+/* ⭐⭐ THE DIRTY-REGION DECODE (Phase 6 item 0, step 2's payoff — docs/direct-bitplane-plan.md §7b).
+ *
+ * MEASURED, on the target, car under power: **406 of 8320 frame-buffer bytes change per painted
+ * frame (4.9%)**.  The pass converted all 8320 regardless, so ~95% of its 81 ms was re-converting
+ * a picture that had not moved.  This compares each 8-byte CELL COLUMN against a shadow of the
+ * bytes that produced what is already in the buffer, and converts only the ones that differ.
+ *
+ * ⚠ THREE THINGS IT HAS TO GET RIGHT, and all three are in the loop below:
+ *
+ *  1. **The Amiga is DOUBLE buffered, so there are TWO shadows.**  The buffer being written was
+ *     last painted TWO decodes ago, not one, and the bytes to compare against are the ones that
+ *     produced *its* content.  One shared shadow would leave every other frame a frame stale —
+ *     which at ~1 FPS is a second of game time, not a subtle artefact.  s_shadow is indexed by
+ *     m_back for exactly that reason.
+ *  2. **A line's MODE can change while its bytes do not.**  m_lineMode comes from the per-frame
+ *     band snapshot: a line that moves between MODE 5, MODE 4 and flat-and-skipped must be
+ *     re-converted even though the source byte is identical.  So the row's eight mode bytes are
+ *     diffed against the shadow's too, and a mode change dirties the whole character row.
+ *  3. **The compare must be cheaper than the conversion it skips.**  A cell is 8 CONTIGUOUS bytes
+ *     in the BBC layout (cell*8 + line), so a clean cell costs two longword loads a side — 2080
+ *     longword reads over the buffer, against 8320 byte reads + 16640 table lookups + 16640 byte
+ *     stores for the unconditional pass.
+ *
+ * Counters, not faith: g_decodeCells is cells converted out of 1040 and must read WELL under 1040
+ * in a race (a run that reads 1040 every frame has the dirty test failing open, which is exactly
+ * as fast as no feature at all and looks identical on screen).  `make DIRTY=0` is the A/B build
+ * and it PRINTS its state, because g_decodeCells then reads 1040 by construction.
+ * `make DIRTYCHECK=1` is the oracle: every frame, re-decode in full into a scratch copy of the
+ * buffer and require byte equality (g_decodeDirtyMismatch == 0). */
+extern "C" {
+volatile uint16_t g_decodeCells      = 0;    /* cell columns CONVERTED in the last decode (/1040) */
+volatile uint16_t g_decodeCellsMax   = 0;    /* the worst frame of the run                        */
+volatile unsigned long g_decodeCellsTotal = 0;/* running sum, so a mean is available             */
+volatile uint16_t g_decodeFullFrames = 0;    /* decodes that had to convert everything            */
+volatile uint16_t g_decodeModeDirty  = 0;    /* rows dirtied by a MODE change, not a byte change  */
+/* DIRTYCHECK only, but declared always so a .gdb script can read a zero rather than .text. */
+volatile unsigned long g_decodeDirtyChecks   = 0;
+volatile unsigned long g_decodeDirtyMismatch = 0;
+volatile uint16_t      g_decodeDirtyMismatchOff = 0xFFFFu;
+}
+
+/* The shadow of the frame-buffer bytes that produced each bitplane buffer's current content, in
+   the BBC's own layout (row*BPR + cell*8 + line) so a cell is contiguous.  ⚠ 4-byte aligned: the
+   compare reads longwords, and on a 68000 an odd address is an address error. */
+static uint32_t s_shadow[2][(BBC_SCREEN_BPR * BBC_SCREEN_ROWS) / 4];
+/* ⭐ NO "shadow valid" FLAG, and none is needed — which is worth stating so nobody adds one.
+   Static storage starts zeroed, so on the first decode every row's shadowed MODE differs from
+   the snapshot's and the row converts in full; a row whose mode is 0 throughout is the flat
+   band, whose plane bytes are unobservable anyway.  The same argument covers the MODE 7 round
+   trip: the front end draws into its own bitmap, so a race buffer's content still matches its
+   shadow when the race list comes back, and anything the engine changed in mem[] meanwhile is
+   caught by the byte compare like any other change. */
+static uint8_t  s_shadowMode[2][BBC_SCREEN_HEIGHT];
+
 /* ⭐ WHAT THE TARGET IS ACTUALLY DISPLAYING, addressable from gdb.  amiga/screen_dump.gdb
    dumps these two blocks out of a running FS-UAE and tools/amiga_ppm.py turns them into a
    picture — the same "look at it" instrument as the host-side dump, but taken on the real
@@ -871,6 +925,91 @@ void RevsScreen::vbiUpdate()
 }
 
 /* ---------------------------------------------------------------------------
+   THE CONVERSION ITSELF: BBC frame buffer -> one interleaved 2-plane buffer.
+
+   ⭐ CELL-MAJOR WITHIN A CHARACTER ROW, which is what makes the dirty test cheap.  The BBC
+   layout is row*320 + cell*8 + line, so a cell's EIGHT SCAN LINES are eight CONTIGUOUS bytes
+   — two longwords — while a display line is 40 bytes with a stride of 8.  Comparing per cell
+   therefore costs two aligned longword loads a side; comparing per line could only ever be 40
+   strided byte loads, which is the same read count as converting.  (mem[] is aligned(4) in
+   cpu.c and $5A80, 320 and 8 are all multiples of 4, so every cell address is aligned.)
+
+   `shadow`/`shadowMode` null ⇒ convert everything: that is the reference pass used by
+   REVS_DIRTYCHECK and by `make DIRTY=0`.
+
+   ⚠ NOT A WIDE-POINTER ALIAS OF mem[] IN THE SENSE make endian-lint IS ABOUT.  The longwords
+   here are never interpreted as a VALUE — they are compared against, and copied to, a shadow
+   in the identical byte layout, so any byte order gives the same answer.  Every byte that
+   becomes a pixel is read as a byte, and both stores are bytes.  ENDIAN-OK: comparison only.
+   --------------------------------------------------------------------------- */
+unsigned RevsScreen::convertRace(uint8_t* dst, uint8_t* shadow, unsigned char* shadowMode)
+{
+    const uint8_t* base = (const uint8_t*)mem + BBC_SCREEN_BASE;
+    unsigned converted = 0;
+    unsigned y = 0;
+
+    for (unsigned row = 0; row < BBC_SCREEN_ROWS; row++, y += BBC_SCREEN_LINES) {
+        const uint8_t* const rowBase = base + revs_mulu16((uint16_t)row, BBC_SCREEN_BPR);
+        uint8_t* const rowDst =
+            dst + revs_mulu16((uint16_t)row, (uint16_t)(BBC_SCREEN_LINES * kRowBytes));
+        const unsigned char* const mode = &m_lineMode[y];
+        uint8_t* const shadowRow = shadow ? shadow + revs_mulu16((uint16_t)row, BBC_SCREEN_BPR)
+                                          : (uint8_t*)0;
+
+        /* Is any line of this row displayed at all?  A character row wholly inside the flat
+           blue band is 40 cells nobody can see — and its bytes are engine variables. */
+        unsigned char any = 0;
+        for (unsigned l = 0; l < BBC_SCREEN_LINES; l++) any |= mode[l];
+
+        /* ⚠ A MODE CHANGE DIRTIES THE WHOLE ROW EVEN WHEN NO BYTE MOVED.  m_lineMode comes from
+           this frame's band snapshot, so a moved band boundary re-points a line at a different
+           conversion (MODE 5 / MODE 4 / skipped) while its source byte is untouched. */
+        int rowDirty = (shadowRow == 0);
+        if (shadowMode) {
+            for (unsigned l = 0; l < BBC_SCREEN_LINES; l++) {
+                if (shadowMode[y + l] != mode[l]) {
+                    rowDirty = 1;
+                    g_decodeModeDirty++;
+                    break;
+                }
+            }
+            for (unsigned l = 0; l < BBC_SCREEN_LINES; l++) shadowMode[y + l] = mode[l];
+        }
+
+        if (!any) continue;   /* nothing to draw; the shadow BYTES deliberately stay stale */
+
+        for (unsigned c = 0; c < BBC_SCREEN_CELLS; c++) {
+            const uint8_t* const s = rowBase + c * BBC_SCREEN_LINES;
+            if (shadowRow) {
+                uint32_t* const sh = (uint32_t*)(void*)(shadowRow + c * BBC_SCREEN_LINES);
+                const uint32_t* const src = (const uint32_t*)(const void*)s;
+                if (!rowDirty && sh[0] == src[0] && sh[1] == src[1]) continue;
+                sh[0] = src[0];
+                sh[1] = src[1];
+            }
+            converted++;
+
+            uint8_t* p = rowDst + c;                    /* plane 1 = index bit 0 */
+            for (unsigned l = 0; l < BBC_SCREEN_LINES; l++, p += kRowBytes) {
+                const unsigned char m = mode[l];
+                if (m == 0) continue;                   /* flat band: write nothing */
+                const uint8_t b = s[l];
+                if (m == 5) {
+                    p[0]         = s_expandLo[b];
+                    p[kW / 8]    = s_expandHi[b];       /* plane 2 = index bit 1 */
+                } else {
+                    /* MODE 4: eight 1-bit pixels, straight into plane 2 so the set pixels land
+                       on pen 2 = BBC logical colour 8, the ULA's index bit 3. */
+                    p[0]      = 0;
+                    p[kW / 8] = b;
+                }
+            }
+        }
+    }
+    return converted;
+}
+
+/* ---------------------------------------------------------------------------
    Main loop: the BBC frame buffer -> the back buffer.
    --------------------------------------------------------------------------- */
 void RevsScreen::decode()
@@ -988,79 +1127,62 @@ void RevsScreen::decode()
 
 #endif  /* REVS_FILLWATCH */
 
-    /* ⚠ NOT A WIDE-POINTER ALIAS OF mem[].  Every read below is a byte read; the two
-       stores are bytes into a bitplane the Amiga reads as bits, so there is no multi-byte
-       value whose order could differ between the host and the target (make endian-lint).
-
-       Cost, honestly: 8320 source bytes, two table lookups and two stores each — tens of
-       milliseconds on a 7 MHz 68000, i.e. several frames.  That is affordable ONLY because
-       the engine currently spends ~700 ms per frame (docs/perf-method.md), and it is the
-       obvious asm/dirty-region target the moment the engine stops dominating.  What it buys
-       today is a faithful picture from the game's own frame buffer with no changes to the
-       game's own code. */
     const uint8_t* base = (const uint8_t*)mem + BBC_SCREEN_BASE;
     uint8_t* dst = (uint8_t*)bm->data;
 
 #ifdef REVS_FILLWATCH
+    /* ⭐ The tear detector's FIRST pass, and it is its own loop rather than a hitch-hiker inside
+       the conversion: the dirty-region decode below reads only the cells that CHANGED, so a
+       checksum folded into it would stop covering the bytes the second pass re-reads and would
+       report every skipped cell as torn — an instrument turned into noise by an optimisation is
+       precisely the failure mode docs/method-lessons.md warns about. */
     uint16_t rowSum[BBC_SCREEN_ROWS];
-#endif
-
-    unsigned y = 0;
     for (unsigned row = 0; row < BBC_SCREEN_ROWS; row++) {
         const uint8_t* rowBase = base + revs_mulu16((uint16_t)row, BBC_SCREEN_BPR);
-        uint16_t sum = 0; (void)sum;
-        for (unsigned line = 0; line < BBC_SCREEN_LINES; line++, y++) {
-            /* One character row is 40 cells of 8 bytes, one byte per scan line, so a
-               single display line is 40 bytes with a stride of 8. */
-            const uint8_t* s  = rowBase + line;
-
-            /* ⭐ FLAT BAND: every pen is the same colour on this line, so whatever the two
-               planes already hold is displayed as that colour.  Write nothing.  (See the
-               g_decodeFlatLines comment: the flag comes from THIS frame's snapshot, which is
-               what makes leaving the previous frame's bytes there safe.) */
-            if (m_lineMode[y] == 0) {
-#ifdef REVS_FILLWATCH
-                /* The tear detector's checksum must still see these bytes, or the second pass
-                   reports every skipped row as torn — an instrument turned into noise by an
-                   optimisation is the failure mode docs/method-lessons.md warns about. */
-                for (unsigned i = 0; i < BBC_SCREEN_CELLS; i++) {
-                    sum = (uint16_t)(sum + *s + i);
-                    s += BBC_SCREEN_LINES;
-                }
-#endif
-                continue;
-            }
-
-            uint8_t*       p1 = dst + revs_mulu16((uint16_t)y, kRowBytes);  /* plane 1 = bit 0 */
-            uint8_t*       p2 = p1 + (kW / 8);          /* plane 2 = index bit 1 */
-
-            if (m_lineMode[y] == 5) {
-                for (unsigned i = 0; i < BBC_SCREEN_CELLS; i++) {
-                    uint8_t b = *s; s += BBC_SCREEN_LINES;
-#ifdef REVS_FILLWATCH
-                    sum = (uint16_t)(sum + b + i);   /* +i so a swap of two cells still differs */
-#endif
-                    *p1++ = s_expandLo[b];
-                    *p2++ = s_expandHi[b];
-                }
-            } else {
-                /* MODE 4: eight 1-bit pixels, straight into plane 2 so the set pixels
-                   land on pen 2 = BBC logical colour 8, which is what the ULA's index
-                   bit 3 selects. */
-                for (unsigned i = 0; i < BBC_SCREEN_CELLS; i++) {
-                    uint8_t b = *s; s += BBC_SCREEN_LINES;
-#ifdef REVS_FILLWATCH
-                    sum = (uint16_t)(sum + b + i);
-#endif
-                    *p1++ = 0;
-                    *p2++ = b;
-                }
+        uint16_t sum = 0;
+        for (unsigned line = 0; line < BBC_SCREEN_LINES; line++) {
+            const uint8_t* s = rowBase + line;
+            for (unsigned i = 0; i < BBC_SCREEN_CELLS; i++) {
+                sum = (uint16_t)(sum + *s + i);  /* +i so a swap of two cells still differs */
+                s += BBC_SCREEN_LINES;
             }
         }
-#ifdef REVS_FILLWATCH
         rowSum[row] = sum;
-#endif
     }
+#endif
+
+    /* ⭐⭐ THE CONVERSION, dirty-region by default (see g_decodeCells above).  s_shadow is
+       indexed by m_back because the Amiga is DOUBLE buffered: the bytes this buffer's pixels
+       came from are two decodes old, not one. */
+#ifdef REVS_NO_DIRTY
+    const unsigned cells = convertRace(dst, 0, 0);
+#else
+    const unsigned cells = convertRace(dst, (uint8_t*)s_shadow[m_back], s_shadowMode[m_back]);
+#endif
+    g_decodeCells       = (uint16_t)cells;
+    g_decodeCellsTotal += cells;
+    if (cells > g_decodeCellsMax) g_decodeCellsMax = (uint16_t)cells;
+    if (cells >= BBC_SCREEN_ROWS * BBC_SCREEN_CELLS) g_decodeFullFrames++;
+
+#ifdef REVS_DIRTYCHECK
+    /* ⭐⭐ THE ORACLE, and it is exact: an UNCONDITIONAL decode of the same frame must produce
+     * byte-identical bitplanes.  The scratch starts as a COPY of what the dirty pass produced,
+     * so the flat-band lines — which neither pass writes — are equal by construction and any
+     * difference is the dirty test wrongly skipping something.  ⚠ It runs the whole reference
+     * pass every frame, so this build is far slower than shipping: never quote FPS from it. */
+    {
+        static uint8_t scratch[BBC_SCREEN_HEIGHT * kRowBytes];
+        for (unsigned i = 0; i < sizeof scratch; i++) scratch[i] = dst[i];
+        convertRace(scratch, 0, 0);
+        g_decodeDirtyChecks++;
+        for (unsigned i = 0; i < sizeof scratch; i++) {
+            if (scratch[i] != dst[i]) {
+                g_decodeDirtyMismatch++;
+                if (g_decodeDirtyMismatchOff == 0xFFFFu) g_decodeDirtyMismatchOff = (uint16_t)i;
+            }
+        }
+    }
+#endif
 
 #ifdef REVS_FILLWATCH
     /* ⭐ Second pass: the same checksum over the same bytes.  Anything that differs was written

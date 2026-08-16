@@ -48,6 +48,15 @@ public:
     /* Main-loop context: BBC frame buffer -> the back buffer.  The expensive one. */
     void decode();
 
+    /* ⭐ The conversion, cell by cell, DIRTY-REGION by default: only cell columns whose eight
+       source bytes differ from `shadow` are converted, because only 4.9% of the frame buffer
+       changes per painted frame (measured — docs/direct-bitplane-plan.md §7b).  Pass
+       shadow/shadowMode null to convert everything; that reference pass is `make DIRTY=0` and
+       the REVS_DIRTYCHECK oracle.  Returns cell columns converted, of 1040. */
+    /* ⚠ `unsigned char*`, not `uint8_t*`: this header does not pull in <stdint.h> and Util.h
+       only defines the typedefs pre-C++11.  Same type on this target either way. */
+    unsigned convertRace(unsigned char* dst, unsigned char* shadow, unsigned char* shadowMode);
+
     /* VBI context only.  Turns the band record the game just wrote (bbc_hw.cpp) into the
        copper's palette bands and per-row mode table, then presents the finished back
        buffer by swapping the bitplane pointers. */

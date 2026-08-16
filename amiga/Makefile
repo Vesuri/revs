@@ -226,6 +226,25 @@ ifeq ($(FLATSKIP),0)
 EXTRA_DEFINES += -DREVS_NO_FLATSKIP
 endif
 
+# `make DIRTY=0` — convert EVERY cell of the frame buffer, instead of only the ones whose eight
+# source bytes changed since this buffer was last decoded.  ON by default; measured 4.9% of the
+# buffer changes per painted frame (docs/direct-bitplane-plan.md §7b), so this is the control build
+# for pricing it.  ⭐ The switch PRINTS its own state without needing a define of its own:
+# g_decodeCells reads 1040 of 1040 every frame here and well under it in the shipping build, which
+# is the lesson from the A/B whose control was silently rebuilt as the test (docs/method-lessons.md).
+ifeq ($(DIRTY),0)
+EXTRA_DEFINES += -DREVS_NO_DIRTY
+endif
+
+# `make DIRTYCHECK=1` — the dirty decode's ORACLE.  Every painted frame, re-run the conversion
+# UNCONDITIONALLY into a copy of the buffer the dirty pass just wrote and require byte equality:
+# g_decodeDirtyMismatch must be 0 over a run in which g_decodeDirtyChecks is large.  16 KB of extra
+# BSS and a whole second conversion per frame, so it is a diagnostic build — never quote FPS from
+# it.  Read with amiga/dirty_decode.gdb.
+ifeq ($(DIRTYCHECK),1)
+EXTRA_DEFINES += -DREVS_DIRTYCHECK
+endif
+
 # `make ISRWATCH=1` — does the 50 Hz body write the fill chain's inputs ($3000-$43FF column
 # sources, $7B00-$7FFF overlay code) while the main loop may be inside the chain?  ~11 KB of extra
 # reads per field, so a diagnostic build only.  Read with amiga/isr_watch.gdb; the reasoning is at
@@ -337,6 +356,9 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_badRegionCount g_badRegionEntry \
              g_screenFrontAddr g_screenCopperAddr g_screenBytes g_screenCopperWords \
              g_bandRejects g_decodeFlatLines g_decodeFlatBands \
+             g_decodeCells g_decodeCellsMax g_decodeCellsTotal g_decodeFullFrames \
+             g_decodeModeDirty g_decodeDirtyChecks g_decodeDirtyMismatch \
+             g_decodeDirtyMismatchOff \
              g_bandCount g_bandOverflow g_keyUnmapped g_keyUnmappedCode g_keyEvents g_keyDown \
              g_mouseBtnMask g_mouseBtnSeen \
              g_irqClobberCount g_irqClobberWhich \

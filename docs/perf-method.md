@@ -344,6 +344,36 @@ did — which is also the check that the twin changed nothing else:
 49 134 calls at 810 µs** — 154 per painted frame, i.e. **125 of phase 26's 159 ms**.  The 50 Hz body
 is still mostly its own band cycle.
 
+### ⭐⭐ THE DIRTY-REGION DECODE: **1.77 → 1.96 FPS (+10.7%)**, and the CONTROL IS THE INTERESTING ROW
+
+Phase 6 item 0 step 2's payoff. Only **406 of 8320** frame-buffer bytes change per painted frame
+(measured, `docs/direct-bitplane-plan.md` §7b), so `decode()` now compares each **8-byte cell
+column** — eight contiguous bytes in the BBC layout, two aligned longwords — against a shadow of
+the bytes that produced the buffer's current content, and converts only what moved.
+
+| build | vblanks | painted | FPS |
+|---|---|---|---|
+| HEAD before the change (the twin-#2 baseline) | 9780 | 346 | **1.77** |
+| shipping (dirty) | 9783 | **383** | **1.96** |
+| `make DIRTY=0` (same loop, test off) | 9781 | 286 | **1.46** |
+
+⚠⚠ **`DIRTY=0` IS NOT THE OLD CODE, so there are two numbers and both are true.** The dirty test is
+worth **+34%** against its own control; the **cell-major restructure it required costs ~18%**
+(1.77 → 1.46), because a display line's 40 bytes are 40 sequential destination stores while a cell
+column's 8 lines are 8 stores strided by `kRowBytes`. **Net +10.7%.** ⭐ The lesson generalises to
+every dirty-region scheme: the enabling restructure has its own price, and only the pair of
+measurements separates "the test is good" from "the change is good". Quoting the +34% would be
+quoting a win against a build that never shipped.
+
+`g_decodeCells` reads a mean of **166 of 1040** cell columns converted, last frame 31 — the counter
+that says the test engages at all, since one that fails open is exactly as fast as no feature and
+looks identical on screen. Verified by an exact oracle rather than by inspection: `make
+DIRTYCHECK=1` re-runs the conversion unconditionally into a copy of what the dirty pass produced
+and requires byte equality (**0 / 12 checks**, car under power), and it catches both sabotages —
+test fails closed **17015** wrong bytes, mode-change dirtying removed **1350**. That second one is
+worth remembering: `m_lineMode` can re-point a line at a different conversion while its source byte
+is unchanged, which no byte compare can see.
+
 ### ⚠⚠ TWIN #2, `$7BE2 dashboard_sweep`: **1.71 → 1.77 FPS (+3.6%)**, and that is the FINDING
 
 The dashboard was the biggest main-loop row in the table above (21.8%, 151 ms) and it is now a

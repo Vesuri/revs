@@ -337,9 +337,18 @@ Amiga frame. `bus_write` to BBC hardware is largely ignored on Amiga.
 negotiable** — the game body is a VERTB-ISR interrupt, so 25 FPS means painting every other frame
 with the simulation still at full rate.
 
-⭐⭐ **BASELINE: 1.77 FPS RENDERED** (2026-08-16, `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` +
-`fps_series.gdb`) — **0.96 → 1.56 → 1.72 → 1.77 in one session, from three changes, and NONE was
-an algorithm.**  ⭐ The first two are the same lesson: *the port's biggest costs are in the
+⭐⭐ **BASELINE: 1.96 FPS RENDERED** (2026-08-16, `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` +
+`fps_series.gdb`) — **0.96 → 1.56 → 1.72 → 1.77 → 1.96, from four changes, and NONE was an
+algorithm.**
+
+**4. ⭐⭐ THE DIRTY-REGION DECODE (+10.7%, 1.77 → 1.96).**  Only 406 of 8320 frame-buffer bytes
+change per painted frame, so `decode()` now compares each 8-byte **cell column** (two aligned
+longwords) against a per-buffer shadow and converts only what moved — a mean of **166 of 1040**
+columns.  Oracle: `make DIRTYCHECK=1` re-decodes unconditionally into a copy and demands byte
+equality (0/12, and it catches both sabotages).  ⚠⚠ **The control is the interesting row**:
+`make DIRTY=0` reads **1.46**, not the old 1.77, because the cell-major restructure the test needs
+costs ~18% on its own — the test is +34% against its own control and the *change* is +10.7%.  Two
+measurements, and only the pair is honest.  Details: `docs/direct-bitplane-plan.md` §7c.  ⭐ The first two are the same lesson: *the port's biggest costs are in the
 MACHINERY the transliteration is wrapped in, not in the game's algorithms* — look there before
 optimising a loop.  ⚠ **The third is that lesson's limit**, and it is worth as much: where there
 is no machinery to delete, a faithful twin buys almost nothing (item 3).
