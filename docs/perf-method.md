@@ -388,7 +388,7 @@ is a silent averaging error, in the same family as the per-band average below.
 
 | Share | ms/frame | Phase | Callee | What it is |
 |---|---|---|---|---|
-| **30.5%** | **131** | **24** | **`$7BE2`** | the 3D VIEW rasteriser (not the dashboard — `docs/rename.md`).  2093 units, ~83 change a byte |
+| **25.8%** | **102** | **24** | **`$7BE2`** | the 3D VIEW rasteriser (not the dashboard — `docs/rename.md`).  2093 units, ~83 change a byte.  **Was 131** before the unit-loop pointer pass below |
 | 14.1% | 61 | 5 | `build_road_edge_lists $24F6` | the road-geometry projection pass |
 | 13.5% | 58 | 11 | `$1A20` | writes **6 visible bytes**; its output is per-column data, not pixels |
 | 8.6% | 37 | 27 | the decode | `RevsScreen::decode()`, dirty-region.  Port overhead, and DONE |
@@ -541,6 +541,48 @@ collapses 2148 cells into 360 runs. It is still a loss, for two reasons worth ca
 cost is proportional to.** Here it is source reads per frame (2148), and no layout on either side of
 the seam changes that number. Full write-up: `docs/direct-bitplane-plan.md` §7f.
 
+### ⭐⭐ THE UNIT LOOP'S *BYTES*: **2.38 → 2.58 FPS (+8.2%)**, phase 24 **131 → 102 ms** (2026-08-17)
+
+Twin #2 (below) concluded that the sweep is **instruction-fetch bound in chip RAM** — 438 cycles for
+a unit whose nominal cost is ~278 — and that conclusion is right.  What was wrongly read *off* it is
+"so there is nothing left to do in C": if the loop is fetch bound then **its byte count is its cost**,
+and the body still had a third of its instructions doing bookkeeping rather than work.  Four changes,
+no change of representation, no asm:
+
+| # | what | why it cost anything |
+|---|---|---|
+| 1 | ⭐ **the bus's hardware-range test, hoisted out of the loop** (user, 2026-08-17) | the cell store is `STA ($70),Y`, so `bus_write` cannot know statically that it misses $FC00-$FEFF.  The *line's* whole span is known, so one check per scan line replaces 2093 — 6 instructions become 1 (`move.b d2,(a2)`) |
+| 2 | the opcode-slot table holds **pointers into `mem[]`**, not addresses | `&mem[$7C0F]` is a link-time constant, so the per-unit SMC check is `movea.l (a4),a0 / move.b (a0),d0` instead of a 32-bit `lea mem` plus a long-indexed load |
+| 3 | the source byte and the opcode byte are **`unsigned char`**, not `unsigned` | a zero-extended long needs a separate `tst.l` / `cmpi.l`; the byte load already sets the flags the branch wants |
+| 4 | the cell segment is a **pointer END**, not `i == 31` and `i < 40` | two compares and two branches per unit for a boundary crossed twice a line.  The stop path recovers the cell index as `(dp - segBase) & $FF`, which is `i * 8` in both segments |
+
+**The hot path of one unit: 31 → 14 instructions, 86 → 34 bytes, ~278 → ~124 cycles nominal.**
+⭐ Quote the static count as the win; the FPS pair is the progress figure, measured control-and-test
+in the same session with the same instrument (`fps_series.gdb`, 30 s warp, `STRAIGHT_TO_RACE=1
+FPSCOUNT=1 FIXED_RNG=1`): **339 painted / 7118 vblanks → 369 / 7160**, and both runs contain the
+same one dropped row where the car leaves the track, so they are comparable row by row (steady rows
+2.44-2.63 → 2.73-2.83).  Phase 24 fell **131 → 102 ms**, i.e. −29 ms of a ~410 ms frame.
+
+⚠ **The measured drop is −22% where the static count predicted −55%**, and the gap is the rest of
+phase 24: ~77 lines of driver work (the phase 2/3 boundary composition, `view_move_stop`,
+`step_scanline`) plus the VERTB ISR preempting this phase.  The unit loop is no longer the whole row.
+
+⭐⭐ **The general lesson, and it is the third costume of the same one:** `bus_read`/`bus_write` are
+for the *hardware* window, and paying their range test on a pure-RAM access is machinery, not the
+game's algorithm.  The transpiler already routes every *constant* non-hardware address straight to
+`mem[]` (`is_hw`), so the corpus is clean — what leaks is the **indirect modes**, `(zp),Y` and
+`(zp,X)`, whose address is only known at run time.  Those are exactly the plotters.  Wherever a twin
+runs an indirect store in a loop, the range test can be hoisted to wherever the *pointer* is known,
+and the arms are provably equivalent for a RAM address (inverting the flag passes all 700 fixture
+cases — the proof, not a gap).
+
+⚠ **`mem[]` may NOT be aliased as `uint16_t*`/`uint32_t*` to widen these accesses** — that is the
+endian rule (`make endian-lint`), and it would read correct on the host and byte-swapped on the
+target.  It would not help here anyway: the sweep's strides are 8 (screen cells) and $80 (source
+blocks), so there is no adjacent pair to widen.  A wide store is only endian-neutral when every byte
+in it is the SAME value, which is the run-collapsing idea `docs/direct-bitplane-plan.md` §7f measured
+as a 9% LOSS.
+
 ### ⚠⚠ TWIN #2, `$7BE2 view_paint_lines`: **1.71 → 1.77 FPS (+3.6%)**, and that is the FINDING
 
 The dashboard was the biggest main-loop row in the table above (21.8%, 151 ms) and it is now a
@@ -564,7 +606,9 @@ Three things this settles, and the third is the one that matters:
 2. **Tightening it to running pointers** (source `+= $80`, destination `+= 8`, slot from a table,
    the two destination bases hoisted out of the column) recovered that and 20 ms more.
 3. ⭐⭐ **But 131 ms for 2093 units is ~420 cycles a unit, and the unit is ~27 instructions — so
-   this routine is INSTRUCTION-FETCH BOUND in chip RAM, not interpreter bound.** That is why twin
+   this routine is INSTRUCTION-FETCH BOUND in chip RAM, not interpreter bound.**  ⚠ True, and it
+   does NOT imply the loop was finished: being fetch bound makes the body's BYTE COUNT the cost,
+   and shrinking it bought another 8% (the section above). That is why twin
    #1 got 62% and this got 3.6%: `irq1v_band_schedule`'s cost was machinery with no counterpart on the
    BBC (a C bridge, a virtual dispatch, N/Z stores per palette write), and deleting machinery is
    nearly free. The sweep's cost is *2093 iterations of a small loop*, and on an A500 the floor

@@ -363,17 +363,27 @@ void irq1v_band_schedule(void)
 #define VIEW_UNIT_ADDR(i)  ((uint16_t)((i) < 16 ? 0x7C00 + 0x11 * (i)          \
                                                 : 0x7D56 + 0x11 * ((i) - 16)))
 
-/* The opcode slot of each unit, or 0 for the eleven no writer can reach (page $7D).
+/* The opcode slot of each unit, as a POINTER INTO mem[], or NULL for the eleven no writer
+   can reach (page $7D).
    ⚠ A TABLE, not `VIEW_UNIT_ADDR(i) + $0F` recomputed: the oracle's slot address is a
    compile-time constant in every one of its forty copies, so a twin that derives it per
    unit hands back the arithmetic it saved.  Measured — the first version of this twin
-   computed it and came out SLOWER than the transliteration (docs/perf-method.md). */
-static const uint16_t g_viewSlot[40] = {
-    0x7C0F, 0x7C20, 0x7C31, 0x7C42, 0x7C53, 0x7C64, 0x7C75, 0x7C86,
-    0x7C97, 0x7CA8, 0x7CB9, 0x7CCA, 0x7CDB, 0x7CEC, 0x7CFD, 0,
-    0,      0,      0,      0,      0,      0,      0,      0,
-    0,      0,      0x7E0F, 0x7E20, 0x7E31, 0x7E42, 0x7E53, 0x7E64,
-    0x7E75, 0x7E86, 0x7E97, 0x7EA8, 0x7EB9, 0x7ECA, 0x7EDB, 0x7EEC
+   computed it and came out SLOWER than the transliteration (docs/perf-method.md).
+   ⭐ And a POINTER rather than the address: `mem[]` is a fixed global, so `&mem[$7C0F]` is a
+   link-time constant, and the unit loop's opcode fetch becomes `move.l (a3)+,a0 / move.b
+   (a0),d0` instead of a 32-bit `lea mem` plus a long-indexed load — per unit, 2093 times a
+   frame.  The address form is recovered where it is wanted (once per plant) by subtracting
+   `mem`, which costs nothing outside the loop. */
+static MEM_QUAL unsigned char* const g_viewSlotP[40] = {
+    mem + 0x7C0F, mem + 0x7C20, mem + 0x7C31, mem + 0x7C42,
+    mem + 0x7C53, mem + 0x7C64, mem + 0x7C75, mem + 0x7C86,
+    mem + 0x7C97, mem + 0x7CA8, mem + 0x7CB9, mem + 0x7CCA,
+    mem + 0x7CDB, mem + 0x7CEC, mem + 0x7CFD, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    mem + 0x7E0F, mem + 0x7E20, mem + 0x7E31, mem + 0x7E42,
+    mem + 0x7E53, mem + 0x7E64, mem + 0x7E75, mem + 0x7E86,
+    mem + 0x7E97, mem + 0x7EA8, mem + 0x7EB9, mem + 0x7ECA,
+    mem + 0x7EDB, mem + 0x7EEC
 };
 
 /* The three values the chain and its drivers thread through each other — the 6502's A, X
@@ -391,6 +401,13 @@ static void view_commit(const ViewState* v)
     cpu.A = (uint8_t)v->byte;
     cpu.X = (uint8_t)v->line;
     cpu.Y = (uint8_t)v->cell;
+}
+
+/* Can all forty cells off this base ($00..$138 from it) be stored without the bus?  True
+   for every base the frame buffer can hold, and the unit loop hoists it out of the scan. */
+static int view_span_is_ram(unsigned base)
+{
+    return (base + 40 * 8) <= BBC_IO_LO;
 }
 
 /* The screen address a boundary store lands on: one of the two pointers, plus the cell. */
@@ -416,7 +433,7 @@ static int view_is_slot(uint16_t dst, unsigned page)
     int i;
     if ((dst >> 8) != page) return 0;
     for (i = 0; i < 40; i++)
-        if (g_viewSlot[i] == dst) return 1;
+        if (g_viewSlotP[i] == mem + dst) return 1;
     return 0;
 }
 
@@ -536,8 +553,6 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
     PLOT_DECL();
 
     for (;;) {
-        int i;
-
         if (advance_first) {
             step_scanline((int*)0);
             /* the line's background byte: two bits of the per-line surface index */
@@ -556,44 +571,82 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
         {
             unsigned base0 = plot_ptr_lo  | ((unsigned)plot_ptr_hi  << 8);
             unsigned base1 = plot_ptr2_lo | ((unsigned)plot_ptr2_hi << 8);
-            unsigned src = VIEW_SRC_BLOCKS + ((unsigned)unit << 7) + line;
-            unsigned dst = (unit < 32) ? base0 + ((unsigned)unit << 3)
-                                       : base1 + (((unsigned)unit - 32) << 3);
-            const uint16_t* slotp = &g_viewSlot[unit];
+            MEM_QUAL unsigned char* srcp = mem + VIEW_SRC_BLOCKS
+                                               + ((unsigned)unit << 7) + line;
+            MEM_QUAL unsigned char* const dp1 = mem + base1;
+            MEM_QUAL unsigned char* const* slotp = &g_viewSlotP[unit];
+            /* ⭐ THE SEGMENT AS A POINTER END, not an `i == 31` test inside the loop.  Cells
+               0-31 come off plot_ptr and 32-39 off plot_ptr2 because 40 x 8 = 320 bytes does
+               not fit one page, and the old form asked `i == 31?` and `i < 40?` separately in
+               every one of the 2093 units — two compares and two branches for a boundary that
+               is crossed twice a line.  One `dp != segEnd` covers both, and the cell index the
+               stop path wants comes back out of the pointer: `(dp - segBase) & $FF` is `i * 8`
+               in BOTH segments, because segment 1 starts at cell 32, i.e. offset 256 = 0 mod
+               256.  ⚠ Segment 0 ends at base0 + 256, NOT at plot_ptr2: the 6502 switches
+               pointers on the cell INDEX, so a plot_ptr2 that is not plot_ptr + 256 must still
+               paint cells 0-31 off plot_ptr. */
+            MEM_QUAL unsigned char* segBase = (unit < 32) ? mem + base0 : dp1;
+            MEM_QUAL unsigned char* dp      = segBase + (((unsigned)unit & 31u) << 3);
+            MEM_QUAL unsigned char* segEnd  = (unit < 32) ? mem + base0 + 256 : dp1 + 64;
+            int lastSeg = (unit >= 32);
+            /* ⭐ THE BUS'S HARDWARE-RANGE TEST, HOISTED TO ONE CHECK PER SCAN LINE.  A cell
+               store is `STA ($70),Y`, so the transliteration cannot know statically that it
+               misses the $FC00-$FEFF I/O window and pays the test 2093 times a frame.  Here
+               the whole line's span IS known — 40 cells from base0/base1 — so one check
+               licenses plain `mem[]` stores for the line.  ⚠ NOT deleted: if a base ever did
+               reach the window the else arm still routes to the platform, which is the one
+               thing a "provably RAM" comment on its own could get silently wrong.
+               ⭐ Inverting this flag PASSES all 700 fixture cases, and that is the proof rather
+               than a fixture gap: with a RAM address the two arms do the same store, so they
+               can only differ for $FC00-$FEFF — which this routine's own seeding of $70-$73
+               cannot reach.  gcc specialises the unit loop on the flag, so the shipping path
+               carries no test at all. */
+            const int busSafe = view_span_is_ram(base0) && view_span_is_ram(base1);
 
-            for (i = unit; i < 40; i++) {
-                unsigned slot;
+            for (;;) {
+                while (dp != segEnd) {
+                    MEM_QUAL unsigned char* slot;
 
-                PROBE_SHAPE_DASH_UNIT();
-                if (forced) {                       /* only ever the FIRST unit of a call */
-                    forced = 0;
-                    mem[src] = 0;
-                    byte = mem[VIEW_CELL_BYTES + cell];
-                } else {
-                    unsigned source = mem[src];     /* the dirty test: zero = same as my left */
-                    if (source) {
-                        mem[src] = 0;
-                        byte = mem[VIEW_CELL_BYTES + source];
+                    PROBE_SHAPE_DASH_UNIT();
+                    if (forced) {                       /* only ever the FIRST unit of a call */
+                        forced = 0;
+                        *srcp = 0;
+                        byte = mem[VIEW_CELL_BYTES + cell];
+                    } else {
+                        /* the dirty test: zero = same as my left.  ⚠ `unsigned char`, not
+                           `unsigned`: the byte load then sets the flags the branch wants, where a
+                           zero-extended long costs an extra `tst.l` in the 2093-unit loop. */
+                        unsigned char source = *srcp;
+                        if (source) {
+                            *srcp = 0;
+                            byte = mem[VIEW_CELL_BYTES + source];
+                        }
                     }
-                }
 
-                slot = *slotp++;                    /* the store — or a planted RTS */
-                if (slot) {
-                    unsigned op = mem[slot];
-                    if (op != OP_STA_IND_Y) {
-                        cell = ((unsigned)i << 3) & 0xFF;      /* its `LDY #<cell*8>` ran */
-                        if (op != OP_RTS) platform_smc_unhandled(slot, op);
-                        PLOT_FLUSH();
-                        goto done;
+                    slot = *slotp++;                    /* the store — or a planted RTS */
+                    if (slot) {
+                        unsigned char op = *slot;       /* byte-wide: see the source load above */
+                        if (op != OP_STA_IND_Y) {
+                            cell = (unsigned)(dp - segBase) & 0xFF; /* its `LDY #<cell*8>` ran */
+                            if (op != OP_RTS)
+                                platform_smc_unhandled((uint16_t)(slot - mem), op);
+                            PLOT_FLUSH();
+                            goto done;
+                        }
                     }
-                }
-                PLOT_UNIT(dst, byte);
+                    PLOT_UNIT((unsigned)(dp - mem), byte);
 #ifndef REVS_PLOT_ONLY
-                bus_write((uint16_t)dst, (uint8_t)byte);
+                    if (busSafe) *dp = (unsigned char)byte;
+                    else         bus_write((uint16_t)(dp - mem), (uint8_t)byte);
 #endif
-                src += 0x80;
-                dst += 8;
-                if (i == 31) dst = base1;           /* cells 32-39 live in the next page */
+                    srcp += 0x80;
+                    dp += 8;
+                }
+                if (lastSeg) break;
+                segBase = dp1;                          /* cells 32-39 live in the next page */
+                dp      = dp1;
+                segEnd  = dp1 + 64;
+                lastSeg = 1;
             }
             cell = 0x38;                            /* unit 39's cell, had the chain not stopped */
             PLOT_FLUSH();
