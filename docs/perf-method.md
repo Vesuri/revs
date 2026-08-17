@@ -374,7 +374,64 @@ coarse 32-byte pre-test over four cells at a time, would likely halve it.  **Lef
 deliberately:** ~18 ms of a ~1000 ms shipping frame is under 2%, which this project's own rule says
 is unquotable, and the same hour spent on the dashboard's scan is worth ten times more.
 
-### ⭐⭐ Where the time goes — RE-MEASURED 2026-08-17, AFTER the band-record reuse
+### ⭐⭐ WHERE THE TIME GOES — CURRENT TABLE, re-measured 2026-08-17 after twins #6/#7/#8
+
+**This is the table to read; the one below it is the previous measurement, kept for the deltas.**
+
+`make clean && make -j4 PROBES=1 STRAIGHT_TO_RACE=1 FIXED_RNG=1` +
+`EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=phase4_prof.gdb ./diag_run.sh 30`.
+**vbi=7251, loopFrames=370, brk=0, smc=0, accounted 98.5% of elapsed** (the sanity check — if that
+is not ~100% the shares are fiction).  Shares within one run (Rule 2); **no framerate may be quoted
+from a PROBES build.**
+
+⭐ **The car was still DRIVING at the interrupt**, which is the precondition for the table meaning
+anything (`amiga/dash_state.gdb`, separate run): `vbi=7110 $61=ff(engine) $3C=a1(revs) $63=32(speed)
+$40=02(gear)`.  ⭐ And a free cross-check on this commit's naming: `$2D` — `drive_state` — read
+**00** in both the settled and the at-the-interrupt samples, which is what "0 = driving normally"
+predicts.
+
+| Share | ms/frame | Phase | Callee | Code | vs previous |
+|---|---|---|---|---|---|
+| 15.6% | **60** | 5 | `build_track_geometry` (`$24F6`) | native (driver) | 61 |
+| 15.2% | **58** | 11 | `draw_road` (`$1A20`) | native (driver) | 58 |
+| 10.9% | **42** | 34 | `view_paint_lines` painting phase 3 | native (twin #2) | 41 |
+| 10.2% | **39** | 27 | `RevsScreen::decode()` | port | 35 |
+| 7.7% | **30** | 18 | `fill_dash_edge_columns` (`$1E15`) | **native (driver)** — twin #8 | 29, `xlat` |
+| 7.4% | **28** | 4 | `apply_driving_model` (`$46A1`) | **native (driver)** — twin #6 | 28, `xlat` |
+| 7.0% | **27** | 26 | the 50 Hz drain (`irq1v_band_schedule`) | native (twin #1) | 26 |
+| 6.7% | **26** | 24 | `view_paint_lines` painting phase 1 | native (twin #2) | 25 |
+| 4.6% | **18** | 33 | `view_paint_lines` painting phase 2 | native (twin #2) | 17 |
+| 3.4% | **13** | 28 | the vblank spin | port | 19 |
+| 2.9% | **11** | 32 | `race_main_loop`'s tail | native (twin #3) | 11 |
+| 1.3% | **5** | 15 | `draw_track_object` (`$2AD1`) | **native (driver)** — twin #7 | 8, `xlat` |
+| 1.2% | **4** | 3 | `read_driving_controls` (`$1579`) | xlat | 4 |
+| 1.2% | **4** | 29 | `tick_wheel_spin` (`$52A4`) | xlat | 4 |
+| 0.6% | 2 | 14 | `build_road_sign` (`$4CA4`) | xlat | |
+| 0.6% | 2 | 7 | `advance_player_section` (`$24B9`) | xlat | |
+| 0.4% | 1 | 6 | `place_player_in_section` (`$4626`) | xlat | |
+| 0.4% | 1 | 10 | `clear_surface_buffers` (`$66B6`) | xlat | |
+| 0.3% | 1 | 13 | `fill_line_surface` (`$18BC`) | xlat | |
+| ≤0.1% | 0 | 1,2,8,9,12,16,17,19-23,25 | the rest of the 24-call body | xlat | |
+
+⭐⭐ **THE VIEW PIPELINE IS STILL THE LEVER, AND ITS SHARE IS UNCHANGED AT 54%:** the two producers
+`build_track_geometry` + `draw_road` = **118 ms / 30.8%**, the consumer `view_paint_lines`
+(brackets 24+33+34) = **86 ms / 22.2%**.  One subsystem over one shared data structure.
+
+⚠ **AND THE THREE ROWS THIS COMMIT TOUCHED DID NOT MOVE — 28, 30 and 5 ms against 28, 29 and 8.**
+`fill_dash_edge_columns` and `apply_driving_model` are identical to the millisecond, and
+`draw_track_object`'s 8 → 5 is a 3 ms row that per-iteration noise (±10%) cannot separate from a real
+win, so it is not claimed as one.  That is the third independent confirmation of
+`docs/faithfulness-seam.md` §8: **a driver twin does not collect the row it sits in.**  Nine of the
+eleven biggest rows now say `native`, and the frame is still 385 ms.
+
+⚠ Two port rows swapped ~6 ms between them (`decode` 35 → 39, the vblank spin 19 → 13).  They are
+two ends of the same handoff — the spin is whatever the frame has left after the decode — so read
+their SUM (54 → 52) and not either row alone.
+
+### Where the time goes — the PREVIOUS table (2026-08-17, after the band-record reuse)
+
+⚠ **Superseded by the table above.**  Kept because the `vs previous` column refers to it, and
+because its `Code` column is where three rows still read `xlat`.
 
 `make clean && make PROBES=1 STRAIGHT_TO_RACE=1 FIXED_RNG=1` +
 `EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=phase4_prof.gdb ./diag_run.sh 30`.  n = 321-328 painted
@@ -499,6 +556,10 @@ a ~100-byte driver over a transliterated subtree collects nothing, twins #4 and 
 that, and these three were written for the naming instead — the driving model's 16-bit state vector,
 the object plotter's argument block, the 24 per-slot object arrays (`docs/static-map.md`).  The
 lever is still the view pipeline's LEAVES: the `$2C00`-`$2FFF` span plotters and `project_point`.
+
+⭐ **The phase table was re-measured afterwards and says the same thing from the other side**
+(§WHERE THE TIME GOES — CURRENT TABLE): phases 4, 18 and 15 read **28, 30 and 5 ms** against the
+previous **28, 29 and 8**.  Three routines rewritten, three rows unmoved.
 
 ### ⭐⭐ THE RASTER-BAND RECORD REUSE: **2.05 → 2.63 FPS (+28%)** — the row was 96% MACHINERY (2026-08-17)
 
