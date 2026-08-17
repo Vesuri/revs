@@ -1285,6 +1285,123 @@ static int test_geometry_callees(void)
     return fail;
 }
 
+/* ==========================================================================
+   $0C47 div16by8 — THE ENGINE'S DIVIDE
+   --------------------------------------------------------------------------
+   A leaf, and the whole of project_point's and bearing_to_section's callee set.  Its inputs
+   are three bytes (A, math_lo, shared_temp_76) and its outputs are one byte plus A and the
+   flags, so unlike every fixture above the pre-state that matters is TINY — which is exactly
+   why it has to be STEERED rather than left uniform.  Four domains, and uniform bytes reach
+   only the first:
+
+     DIV_ENGINE    divisor with bit 7 set and a dividend high byte below it — the only shape
+                   the game ever produces, because both callers normalise the divisor left
+                   until it is >= $80 and branch to their degenerate arm on equal magnitudes.
+     DIV_OVERFLOW  dividend high byte >= divisor.  The 8-bit quotient overflows and the
+                   remainder invariant breaks, so the ninth-bit path ($0C4A `BCS`, which
+                   subtracts WITHOUT comparing) runs repeatedly — untested otherwise, because
+                   the engine's own shape reaches it at most once per call.
+     DIV_ZERO      divisor 0.  Every step "fits", nothing is subtracted, the quotient is $FF.
+                   ⚠ This is the case a `DIVU.W` implementation would TRAP on, so it is not a
+                   hypothetical: it is the reason the twin is a loop.
+     DIV_UNIFORM   fully random bytes, as the control.
+
+   ⭐ AND THE DECIMAL FLAG IS RANDOMISED HERE, which no other fixture in this file does.  The
+   subtract is an `SBC`, so in decimal mode the 6502 hands back a BCD-corrected byte that then
+   feeds the next shift — the divide computes something else entirely, and the twin has to
+   agree.  It can only do that by routing the subtract through the real SBC, which is the
+   property this arm exists to pin down.
+   ========================================================================== */
+void div16by8(void);
+void div16by8__t6502(void);
+
+enum { DIV_ENGINE = 0, DIV_OVERFLOW = 1, DIV_ZERO = 2, DIV_UNIFORM = 3 };
+
+static int test_div16by8(void)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    /* A leaf with no subtree — a case is microseconds, so this one is sized to sweep the
+       input space rather than to fit a time budget. */
+    const int divCases = 4000 * scale;
+    int shaped[4] = { 0, 0, 0, 0 };
+    int decimal = 0, restored = 0, unreduced = 0;
+
+    register_fixture("div16by8");
+
+    if (want("div16by8")) {
+        int subFail = 0;
+        for (t = 0; t < divCases; t++) {
+            Cpu6502 c = zero_cpu();
+            int shape = t % 4;
+            uint8_t divisor, hi;
+
+            fill_random(pre);
+            switch (shape) {
+            case DIV_ENGINE:
+                divisor = (uint8_t)(0x80u | (xs() & 0x7Fu));
+                hi      = (uint8_t)(xs() % divisor);          /* strictly below: no overflow */
+                break;
+            case DIV_OVERFLOW:
+                divisor = (uint8_t)(1u + (xs() % 0xFFu));     /* 1..$FF */
+                hi      = (uint8_t)(divisor + (xs() % (0x100u - divisor)));
+                break;
+            case DIV_ZERO:
+                divisor = 0x00;
+                hi      = (uint8_t)xs();
+                break;
+            default:
+                divisor = (uint8_t)xs();
+                hi      = (uint8_t)xs();
+                break;
+            }
+            shaped[shape]++;
+
+            pre[0x0076] = divisor;                            /* shared_temp_76 — the divisor */
+            pre[0x0074] = (uint8_t)xs();                      /* math_lo — the dividend's low half */
+            c.A = hi;                                         /* ...and its high half */
+            c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            /* ⭐ see the header: decimal mode changes the SBC's result byte, so it changes the
+               quotient.  A quarter of the cases run in it. */
+            c.D = (xs() % 4 == 0);
+            if (c.D) decimal++;
+
+            subFail += diff_run("div16by8", pre, c, div16by8, div16by8__t6502,
+                                liveMask, t, &printed);
+
+            /* Two behavioural counters, both about arms a byte diff alone would not name:
+               `restored` is a case where one of the first seven steps subtracted, i.e. where
+               the exit V flag has a source at all; `unreduced` is a case whose returned
+               remainder is >= the divisor, which is only possible because the eighth step
+               skips its restore. */
+            if (cpu.V != c.V) restored++;
+            if (divisor != 0 && cpu.A >= divisor) unreduced++;
+        }
+        fail += subFail;
+        if (shaped[DIV_ENGINE] == 0 || shaped[DIV_OVERFLOW] == 0 || shaped[DIV_ZERO] == 0 ||
+            decimal == 0 || restored == 0 || unreduced == 0) {
+            printf("[VACUOUS] div16by8: engine=%d overflow=%d zero=%d decimal=%d "
+                   "V-written=%d unreduced-remainder=%d — every one must be non-zero or an "
+                   "arm of the divide was never run\n",
+                   shaped[DIV_ENGINE], shaped[DIV_OVERFLOW], shaped[DIV_ZERO],
+                   decimal, restored, unreduced);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d engine, %d overflow, %d div-by-0, %d decimal; %d wrote V, "
+               "%d left an unreduced remainder)\n",
+               "div16by8", divCases, subFail, shaped[DIV_ENGINE], shaped[DIV_OVERFLOW],
+               shaped[DIV_ZERO], decimal, restored, unreduced);
+    }
+
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -1301,6 +1418,7 @@ int main(int argc, char** argv)
     fail += test_view_producers();
     fail += test_body_drivers();
     fail += test_geometry_callees();
+    fail += test_div16by8();
 
     fail += check_coverage();
     fail += report_unvalidated_natives();

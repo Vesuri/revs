@@ -1879,8 +1879,8 @@ static void road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
         unsigned quarter = ((delta >> 2) | ((delta & 0x8000u) ? 0xC000u : 0u)) & 0xFFFFu;
         unsigned mid     = (base + quarter) & 0xFFFFu;
 
-        math_lo     = (uint8_t)quarter;              /* $2425 — after the two RORs */
-        plot_octant = (uint8_t)(quarter >> 8);       /* $242B */
+        math_lo        = (uint8_t)quarter;           /* $2425 — after the two RORs */
+        shared_temp_76 = (uint8_t)(quarter >> 8);    /* $242B */
 
         mem[SECTION_LO_TBL + midSlot + i] = (uint8_t)mid;
         mem[SECTION_HI_TBL + midSlot + i] = (uint8_t)(mid >> 8);
@@ -2471,4 +2471,100 @@ static void fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightSta
 void fill_dash_edge_columns(void)
 {
     fill_dash_edge_columns_core(VIEW_LEFT_START_SRC, VIEW_RIGHT_START_SRC);
+}
+
+/* ===========================================================================
+   $0C47  div16by8 — THE ENGINE'S DIVIDE  (twin #13)
+   ---------------------------------------------------------------------------
+   mul8's opposite number, and the one function project_point and bearing_to_section call:
+   unsigned (A : math_lo) / shared_temp_76, quotient back in math_lo, remainder in A.  Every
+   edge point of every frame goes through it — bearing_to_section divides the smaller
+   camera-relative delta by the larger to index the arctan table, project_point divides the
+   point's distance by the normalised far clip — so it runs a few hundred times a frame off
+   three call sites and nothing else in the engine uses it.
+
+   Eight unrolled restoring steps.  Four things about its contract are worth stating because
+   three of them are what the twin has to reproduce and the fourth is why the callers are safe:
+
+     * C IS ALWAYS CLEAR ON EXIT.  The closing `ROL math_lo` ($0CA2) inserts the eighth
+       quotient bit and shifts out the ZERO the opening `ASL math_lo` put in — never a quotient
+       bit.  N and Z come from the finished quotient, from that same ROL.
+     * THE EIGHTH STEP DOES NOT RESTORE ($0C9E-$0CA2 computes the quotient bit with a bare CMP
+       and no SBC), so the remainder handed back is the true remainder PLUS the divisor whenever
+       the quotient is odd.  That is a deliberate cycle saving in the original, not a bug: no
+       caller reads the remainder.
+     * V is left by whichever of the first SEVEN steps subtracted last — which is the one place
+       this twin still needs the 6502, see below.
+     * A divisor of 0 makes every step "fit" and returns $FF; a dividend whose high byte is >=
+       the divisor overflows the 8-bit quotient silently.  Neither reaches here from the game:
+       both callers normalise the divisor left until bit 7 is set, and both branch to their own
+       degenerate arm when the two magnitudes come out equal.  The fixture feeds both anyway.
+
+   ⭐ WHAT THE TWIN CHANGES.  The 6502 shifts a byte pair — `ASL math_lo / ROL A` — because it
+   has no wider register; the 68000 shifts the whole 16-bit remainder:dividend word in one
+   `add.w`, and the quotient bits accumulate in the low half as the dividend bits leave the top.
+   That is the entire byte-at-a-time chain gone, and with it ~56 interpreted instructions worth
+   of per-instruction flag bookkeeping per call.  There are no hardware writes and no
+   $FC00-$FEFF access: the routine is four zero-page cells, so the transpiler was already
+   routing it straight to mem[] and what the twin removes is interpreter.
+
+   ⚠ WHY NOT `DIVU.W`, WHICH IS EXACTLY THIS OPERATION.  The exit V flag.  DIVU hands back the
+   quotient and the true remainder in one 140-cycle instruction, but V here belongs to the LAST
+   of the seven conditional subtracts, and recovering which step that was needs the quotient's
+   lowest set bit above bit 0 plus a SECOND divide to get that step's partial remainder — 2x
+   DIVU plus a bit scan, measurably no faster than the loop below, and only valid on the
+   `dividendHi < divisor` path.  ⭐ The unlock is upstream, not here: all four exit flags are
+   dead at all three call sites (bearing_to_section's `LDA #0` and project_point's `LDA math_lo
+   / CMP #$80` overwrite N, Z and C, and nothing reads V), so once project_point and
+   bearing_to_section are twins themselves the flags become internal and a single DIVU is
+   provably enough.  Worth ~1% of the frame, i.e. under the noise floor — docs/perf-method.md.
+   =========================================================================== */
+
+typedef struct { uint8_t quotient, remainder; } Div16By8;
+
+/* `dividendHi` arrives in A and is the top half of the 16-bit numerator; `dividendLo` is
+   math_lo, which the loop consumes bit by bit and hands back as the quotient. */
+static Div16By8 div16by8_core(uint8_t dividendHi, uint8_t dividendLo, uint8_t divisor)
+{
+    /* remainder in the high byte, dividend-becoming-quotient in the low byte — the pair the
+       6502 keeps in A and math_lo, here shifted as ONE word. */
+    uint16_t work = (uint16_t)(((uint16_t)dividendHi << 8) | dividendLo);
+    Div16By8 r;
+    int step;
+
+    for (step = 0; step < 8; step++) {
+        /* The bit leaving the top of the word is the remainder's ninth bit.  The 6502 keeps it
+           in C and takes it as "the divisor fits" without comparing at all ($0C4A `BCS`),
+           which is right: a nine-bit remainder always exceeds an eight-bit divisor. */
+        int ninthBit = (work & 0x8000u) != 0;
+        work = (uint16_t)(work << 1);
+
+        if (ninthBit || (work >> 8) >= divisor) {
+            /* Steps 1..7 restore; the eighth deliberately does not (see the header).  The
+               subtract goes through the 6502's own SBC because its V is the routine's exit V
+               and because decimal mode changes the result byte — the fixture randomises D. */
+            if (step < 7)
+                work = (uint16_t)((work & 0x00FFu) | ((unsigned)sub_from(work >> 8, divisor) << 8));
+            work |= 1u;              /* the quotient bit, carried up the low half by the next shift */
+        }
+    }
+
+    r.quotient  = (uint8_t)work;
+    r.remainder = (uint8_t)(work >> 8);
+    return r;
+}
+
+/* The 6502-ABI shim.  The dividend arrives split between A and math_lo and the divisor in
+   shared_temp_76 — all three are the callers' own scratch cells, so they are arguments here
+   and mem[] sees only the quotient. */
+void div16by8(void)
+{
+    Div16By8 r = div16by8_core(cpu.A, math_lo, shared_temp_76);
+
+    math_lo = r.quotient;
+    /* $0CA2 `ROL math_lo`, the routine's last instruction: N and Z from the finished quotient,
+       and C from the zero the opening ASL inserted — clear on every path through the loop. */
+    UPD_NZ(r.quotient);
+    cpu.C = 0;
+    cpu.A = r.remainder;
 }

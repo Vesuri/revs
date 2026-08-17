@@ -302,7 +302,9 @@ negotiable** — 25 FPS means painting every other frame with the simulation sti
 The A500 is a 7 MHz 68000 and a frame is 20 ms: spending 10 ms on *anything* is half the budget.
 Be conscious of absolute milliseconds always.
 
-**Baseline: 2.73 FPS rendered** (`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`).
+**Baseline: 2.92 FPS rendered** (`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`).
+⚠ One painted frame is 3.3% of a row, so this figure IS the noise floor — always re-run the control
+in the same session from a clean build rather than diffing against it (`docs/perf-method.md` §twin #13).
 ⭐⭐ **The lever is the VIEW PIPELINE: `build_track_geometry` → `draw_road` → `view_paint_lines` is 54% of the frame
 and it is ONE subsystem** — the first two *produce* source bytes into the forty `$80`-spaced blocks
 at `$3000..$4380`, the third is the single *consumer*. Current shares, every past change and its

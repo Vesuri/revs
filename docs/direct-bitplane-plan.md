@@ -220,7 +220,7 @@ column**, i.e. it is the perspective seam this plan has to preserve.  Three cons
   heading, which is why the near six points survive a frame — any rearrangement has to keep that
   incremental path, or the near road gets rebuilt from the section list every frame;
 * ⚠ `$5E50`/`$5EA0` is a SECOND angle list whose base overlaps the 2x40 arrays and can spill into
-  `$5EE0` — `docs/rename.md` item 11.  **Resolve that before moving anything**, since a layout change
+  `$5EE0` — `docs/rename.md`, "a second angle list whose extent contradicts the first".  **Resolve that before moving anything**, since a layout change
   built on the wrong extent will look correct on Silverstone and corrupt a neighbour array.
 
 ## 6. Sequencing, and an honest expectation

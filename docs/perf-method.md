@@ -530,6 +530,44 @@ producer → producer → consumer over one shared data structure, and that stru
 ms/frame**, charged to whichever phase it preempted so it appears in no row of its own.  It does the
 copper rebuild, the bitplane-pointer swap and the audio tick.  Unmeasured internally.
 
+### ✅ TWIN #13 `div16by8` — the pipeline's first LEAF, framerate UNCHANGED, and the CONTROL moved the baseline (2026-08-17)
+
+`$0C47 div16by8` (94 bytes) is real C: `make validate` 0 mismatch over 4000 randomised cases in four
+steered domains (0 still at `REVS_VALIDATE_CASES=4`, 16 000 cases), **8 sabotages injected and 8
+detected**, `make determinism` and `make determinism-drive` both 64K byte-identical against
+references recorded from the previous commit, `make tracks` 6/6, `make track-run` every circuit's
+hooks running, `muldiv-audit` and `probe-audit` clean.
+
+It is the FIRST twin in the view pipeline that is not a driver — no callees at all, every byte of it
+arithmetic, and it is the whole of `project_point`'s and `bearing_to_section`'s callee set (between
+them those two routines call exactly one function).  §8 of `docs/faithfulness-seam.md` says that is
+the shape that should pay.  **It did not.**
+
+⭐⭐ **AND THE REASON THE NULL RESULT IS TRUSTWORTHY IS THE CONTROL, WHICH IS ALSO THE FINDING.**
+Two 30 s warp runs of `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`, both from a
+`make clean`, differing only in this commit:
+
+| build | modal row | rows at it | the outlier |
+|---|---|---|---|
+| with twin #13 | **2.92** | 10 of 12 | 1.66 — the run leaving the track |
+| HEAD, control | **2.92** | 9 of 12 | 1.56 — same |
+
+So no win, and the number to carry forward is 2.92.  ⚠⚠ **The control also contradicts the 2.73-2.83
+this file recorded for that very commit one entry below** — same procedure, same script, same warp
+setting, nothing changed but the run.  Nobody's build was stale; the earlier figure was simply
+another sample.  That is rule 3 biting on a number this file wrote itself: **at ~30 painted frames
+per 512-vblank row a single frame is 3.3%, so the whole "under 3% is noise" floor is one frame of
+quantisation.**  Do not compare a new measurement against a recorded one — re-run the control, in
+the same session, from a clean build.  (The standing baseline in `CLAUDE.md` is updated to 2.92 on
+this basis, and it will move again for the same reason.)
+
+⚠ Where the estimate went wrong, because it is a reusable error: the pre-work guess was ~160 calls a
+frame at ~1400 interpreted cycles each ≈ 23 ms, i.e. ~6%.  The differential says under a frame.
+Either the call count is far lower than "three sites × the edge points" suggests, or the
+transliteration of 56 straight-line zero-page instructions is much cheaper than the ~25 cycles each
+the older twins were priced at.  **Neither was measured, and an unmeasured call count is not a
+budget** — shape-probe the leaf (rule 4) before predicting a leaf twin's win.
+
 ### ✅ TWINS #9-#12: build_track_geometry's OWN CALLEES, and the framerate is UNCHANGED (2026-08-17)
 
 `road_edge_start` (188 bytes), `road_edge_walk` (231), `road_edge_side` (27) and `abs8` (8) are real
@@ -556,7 +594,7 @@ around four transliterated calls is a driver no matter how long its body reads.
 ⭐ What these four bought is the naming the representation change needs, and it corrected a fact:
 **the edge arrays hold ANGLES, not screen columns** (`$2145` is an arctan, `$23C0` stores
 `bearing - car_heading`, `$0BA2` re-bases by the same delta the heading integrates).  That makes
-`player_pos_lo`/`_hi` a wrong name rather than a narrow one — `docs/rename.md` item 10 — and it is
+`player_pos_lo`/`_hi` a wrong name rather than a narrow one — `docs/rename.md`, "it is a HEADING, not a position" — and it is
 the first thing `docs/direct-bitplane-plan.md` §7a has to know about these buffers.
 ⭐ The lever is unchanged and is now unambiguous: **the view pipeline's LEAVES** — the `$2C00`-`$2FFF`
 span plotters, `project_point` and `bearing_to_section`, which are what the 18-per-side calls land in.

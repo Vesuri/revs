@@ -612,6 +612,15 @@ VALIDATE_FUNCS = {
     0x23D2,
     0x254A,
     0x3450,
+    # ⭐ TWIN #13 — $0C47 div16by8, the ONE function project_point and bearing_to_section call
+    # (they have no other callee between them).  mul8's opposite number: an unrolled 16/8
+    # restoring divide, and the arithmetic under every edge point's bearing and projection.
+    # It is a LEAF and it is real arithmetic, which is the shape §8 of docs/faithfulness-seam.md
+    # says to pick — the 6502 shifts a byte pair because it has no wider register, and the twin
+    # shifts the 16-bit word instead.  ⚠ Its exit V flag comes from the last of seven
+    # conditional subtracts, which is why a single `DIVU.W` is NOT what the twin emits; the
+    # reasoning and the way out are in the twin's own header.
+    0x0C47,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

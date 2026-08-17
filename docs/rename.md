@@ -5,9 +5,13 @@ from this file in the same commit that applies them; `disasm/symbols.csv` carrie
 evidence afterwards.  The conventions that govern this queue are in `CLAUDE.md` §Working
 conventions, not here.
 
+⚠ **Cite an entry by its SUBJECT, never by a number.**  The entries used to be numbered and every
+applied one renumbered the rest, so four references in `symbols.csv` and `docs/` were pointing at
+the wrong entry by the time anyone read them.  Headings are the anchors now.
+
 ---
 
-## 1. `$0164,X` / `$0178,X` — the two per-driver quantities `place_player_in_section` computes
+## `$0164,X` / `$0178,X` — the two per-driver quantities `place_player_in_section` computes
 
 Named-by-address only, and one of the two is the car's position *along* its track section and the
 other is *across* it — `[INFERRED]`, which of them is which is not settled.  The evidence to use:
@@ -19,21 +23,7 @@ like a discrete lane/segment index, which would make `$0178` the "across" one �
 first guess.  Cheap way to settle it: park the car and drive it straight, and watch which of the
 two moves.
 
-## 2. `$76` has TWO owners — `plot_octant` and `fill_line_attr`'s range flag
-
-`$0076` is named `plot_octant` after `dial_needle_angle`/`plot_line_octant`, which build
-`(quadrant << 1) | mirror` in it.  But `edge_x_offscreen` (`$1933`) also rolls "is this edge point
-within `$14` of the road centre" into its top bit, once per edge point, and `fill_line_attr` then
-tests it with `BIT $76` — nothing to do with an octant.  Both uses are live in the same frame.
-Settle which is the real owner (the dial runs from the body's own arm; the road walk runs from
-`draw_road`) and then either split the name by owner or give it a neutral one — but do not leave a
-twin reading `plot_octant` for a road flag.
-⚠ A THIRD owner, found while twinning `road_edge_walk`: its subdivision arm (`$242B`) parks the
-HIGH BYTE of the interpolated quarter-gap in the same cell, which is neither an octant nor a flag.
-`road_edge_walk_subdivide` in `revs_native.c` reads `plot_octant` for it today, which is exactly
-what this item says not to leave standing.
-
-## 3. `$8C` has THREE owners, and `surface_style_alt` only covers one
+## `$8C` has THREE owners, and `surface_style_alt` only covers one
 
 Named for what `draw_surface_spans` reads it as (the style index for spans nearer than
 `road_split_index`), which is right for the road pipeline.  It is also a pixel MASK at
@@ -44,7 +34,7 @@ so is the name.  Same question for `$8E` (`shared_temp_8e`), which is named for 
 than the meaning: `draw_road` zeroes it with no reader in its own pipeline, `$2012` loads it as a
 shape index, and `$4B61`-`$4B79` uses it as a signed temporary in the driving model.
 
-## 4. `$11` — `edge_nearest_hi`, and what `check_crash` reads it for
+## `$11` — `edge_nearest_hi`, and what `check_crash` reads it for
 
 `$10`/`$11` is the nearest projected distance `road_edge_walk` keeps, and the name says so.  But
 `check_crash` (`$111E`) reads `$11` after the frame's walk and does nothing at all while it is
@@ -53,7 +43,7 @@ the same quantity or an accident of ordering is not settled.  Settle it before a
 the name: the walk's writer is `$23E7`-`$23ED`, and `place_player_in_section` reads `$10` at
 `$4681`.
 
-## 5. `apply_driving_model`'s sub-model chain — eleven of fifteen callees are still `FUN_xxxx`
+## `apply_driving_model`'s sub-model chain — eleven of fifteen callees are still `FUN_xxxx`
 
 The physics driver is a twin now (`src/gen/revs_native.c`, twin #6) and reads as C, but eleven of
 the fifteen routines it calls have no name, so the twin's body is a list of addresses.  Only
@@ -78,7 +68,7 @@ What is already known about the rest, as the starting map:
 ⭐ `$47E5` is the one that should be named first — it is the model's generic 16-bit integrator
 (`model_state[X] += model_state[14]`) and naming it settles what element 14 is.
 
-## 6. `model_accum_lo`/`model_accum_hi` ($62D8/$62E8) — element 8 of what, physically?
+## `model_accum_lo`/`model_accum_hi` ($62D8/$62E8) — element 8 of what, physically?
 
 Named for its ROLE (the one element `apply_driving_model` integrates by hand) rather than its
 meaning, and the role is unusually visible: saved on entry, offset downward by `$4729` for the
@@ -88,7 +78,7 @@ integration of a position or a heading.  `$4A91` shifts it left 5 into `model_st
 and `$47A5` also adds element 14 into it.  Settle it the cheap way: park the car, drive straight,
 then steer, and watch whether it tracks the heading or the distance.
 
-## 7. `drive_state` ($002D) — three values written, and only the `>= 2` test is understood
+## `drive_state` ($002D) — three values written, and only the `>= 2` test is understood
 
 0 is normal driving and `>= 2` is "not under power" (elements 5..7 of `model_state` are zeroed and
 sound channel 3 is stopped), but the engine writes exactly three values — 0 and 1 from `$44EA`'s
@@ -97,7 +87,7 @@ and `$4DCB` INCs it.  So 1 is a state that behaves like normal driving and `$7F`
 from a crash.  Whether 1 means "stalled", "in the pits" or "engine cranking" is unsettled, and the
 name is deliberately vague until it is.  `$44EA`, `$49D2` and `$4C18` are the other readers.
 
-## 8. `saved_slot_index` ($0045) — one cell, six unrelated owners
+## `saved_slot_index` ($0045) — one cell, six unrelated owners
 
 A one-byte save slot for a caller's object/driver index, written and read back by six routines
 that have nothing to do with each other (`check_crash`, `$28F5`/`$29F9`/`$2A4D`, the `$2ACB` entry
@@ -109,7 +99,7 @@ the six uses are one quantity (in which case the name should say which index) or
 shared spill slot (in which case so should the name), and until that is settled nothing should
 rely on the value crossing that call.
 
-## 9. `car_flags_1` ($018C) — the name covers the flags and misses the shape
+## `car_flags_1` ($018C) — the name covers the flags and misses the shape
 
 Named for the bits `lap_complete` tests, which is right as far as it goes, but the low NIBBLE of
 the same byte is the object's SHAPE index: `draw_track_object` loads it, ANDs `#$0F` and hands it
@@ -118,7 +108,7 @@ to `plot_object` as `plot_shape`, and the slot writer at `$2AA1` ORs a new shape
 either split the name by nibble or widen it.  `$04DC` and `$01A4` are the neighbouring per-driver
 arrays `reset_driving_variables` seeds alongside it, and both are still unnamed.
 
-## 10. ⭐⭐ `player_pos_lo`/`player_pos_hi` ($000A/$000B) — it is a HEADING, not a position
+## ⭐⭐ `player_pos_lo`/`player_pos_hi` ($000A/$000B) — it is a HEADING, not a position
 
 The strongest item in this queue, because the name is wrong rather than narrow, and three
 independent pieces of evidence say so — all found while twinning `build_track_geometry`'s callees:
@@ -140,7 +130,7 @@ So `$000A`/`$000B` should be `car_heading_lo`/`car_heading_hi`, and the same que
 `draw_track_object` twin and `edge_x_lo`'s own note, so do it in one pass.  Cheap confirmation:
 park the car, turn the wheel without moving, and see whether `$0A/$0B` changes.
 
-## 11. `$5E50`/`$5EA0` — a second angle list whose extent contradicts the first
+## `$5E50`/`$5EA0` — a second angle list whose extent contradicts the first
 
 `emit_edge_width_offset` (`$2565`) is the only writer and `$1AB9`-`$1AC9` inside `draw_road` the
 only reader: it stores `edge_x ± (plot_width << shift)` at `edge_x_lo + $10` / `edge_x_hi + $10`
@@ -151,7 +141,7 @@ different array again.  So either the lists are sixteen entries and `$253B`'s st
 wrong, or something not yet found bounds `edge_cursor` below `$40`.  **Resolve before the
 representation change** — `docs/direct-bitplane-plan.md` §7a rearranges exactly these arrays.
 
-## 12. `$0CA5` — the distance blend, and what `$7E` gates it on
+## `$0CA5` — the distance blend, and what `$7E` gates it on
 
 Unnamed, and every edge point goes through it: `emit_edge_bearing` tail-calls it and it leaves the
 point's scaled distance in `point_dist_lo`/`point_dist_hi`.  Two arms, chosen on `$7E` against
@@ -160,7 +150,7 @@ point's scaled distance in `point_dist_lo`/`point_dist_hi`.  Two arms, chosen on
 on how oblique the point is, which is what a field-of-view term looks like.  The expansion circuits
 carry a `HookFieldOfView` (`docs/reference-sources.md`), which is the obvious place to check.
 
-## 13. Named-for-the-fact scratch: `shared_counter_42` ($0042), `point_dist_*` ($7C/$7D), `shared_temp_77`
+## Named-for-the-fact scratch: `shared_counter_42` ($0042), `point_dist_*` ($7C/$7D), `shared_temp_77`
 
 All three were named while twinning the road walk because a twin may not carry a bare hex address,
 and all three are named for the observation rather than the meaning:
@@ -173,7 +163,31 @@ and all three are named for the observation rather than the meaning:
   (`$1C2C` `$1CF4` `$1D1A` `$1D39` `$1D84` `$4874` `$48C9`) are unrelated.
 * `$0077` is scratch in the `$74`-`$79` window, shared with `emit_edge_width_offset` and `$134F`.
 
-## 14. `near_edge_first`/`near_edge_last`/`near_edge_shift` ($0005/$0006/$0007) are `[INFERRED]`
+## ⭐ `plot_width` ($002A) and the unnamed `$002B` — they are `project_point`'s SECOND output
+
+Found while twinning `div16by8`, which is what made the pair visible: `project_point` normalises the
+far clip, and *before* dividing it stores the `$6180,Y` table byte in `$2A` and the shift count `Y`
+in `$2B` (`$22D2`-`$22D8`) — **neither of which it reads again**.  The consumer is
+`emit_edge_width_offset` (`$2589`-`$25A9`): it subtracts a per-side constant from `$2B`, then shifts
+`$2A`/`math_hi` left or right by that many places.  So the two cells are a *mantissa and exponent*
+— the road's apparent WIDTH SCALE at the point just projected — handed from the projection to the
+width emitter across a routine boundary, and `$2A82`/`$2A88` reads the same pair for track objects.
+
+`plot_width` is therefore right for the object plotter (`draw_corner_markers` at `$1B6B`,
+`draw_track_object` at `$2B06`) and wrong here: the road pass never plots with it.  `$2B` has no
+name at all.  Either split the two owners or name the pair for the scale it carries — and note that
+`$1FE0`/`$1FF4`/`$1FF8` write BOTH cells too, so a third reading may be hiding.
+
+## The whole `$61xx` page is unnamed — the arctan table and `project_point`'s scale table
+
+`$6100` is the 128-entry ARCTAN `bearing_to_section` indexes with the ratio `div16by8` returns
+(`$21DC`, `$2254`), and its raw byte is what `$0CA5` gates the distance blend on.  `$6180` is the
+table `project_point` indexes with the *normalised divisor* to build the width scale above
+(`$22D5`).  Neither has a `symbols.csv` row, so every twin in the road pass will have to name them
+— they are the last two bare addresses in that pipeline.  Cheap to settle by dumping the bytes: an
+arctan ramp and a reciprocal/mantissa curve look nothing alike.
+
+## `near_edge_first`/`near_edge_last`/`near_edge_shift` ($0005/$0006/$0007) are `[INFERRED]`
 
 The reading is structural and consistent — slots 0..5 of each 40-point half are the near edge
 points, both walks start at 6, `shift_near_edge_points` slides exactly five entries, `6` is the

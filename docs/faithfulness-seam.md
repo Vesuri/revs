@@ -108,6 +108,12 @@ purely for this reason — same 0/700 differential, same framerate (465 vs 467 p
    routine versus inside its callees per invocation*, and a short loop around transliterated calls
    is a driver however long its body reads.  Which is also the constructive form of the rule: the
    twin worth writing next is the CALLEE, not the caller.
+   ⭐ Twin #13 (`div16by8`, `$0C47`) is what that constructive form points at, and it is the opposite
+   shape from every twin before it: 94 bytes, no callees at all, and **every byte of it is
+   arithmetic**.  It is also the whole of `project_point`'s and `bearing_to_section`'s callee set —
+   between them those two routines call exactly one function.  When looking for the next twin,
+   enumerate the callee set FIRST: a subsystem whose leaves are one shared math routine is a much
+   cheaper win than the size of its profile row suggests.
 9. **Sabotage before believing it.**  Four defects minimum, each must FAIL, and any sabotage that
    PASSES is a fixture gap to write down rather than a pass to enjoy (`view_paint_lines`' phase-3
    carry tail is unreachable and untested — recorded in the twin's own comment).
@@ -150,6 +156,36 @@ recognises those two and hands anything else to `platform_smc_unhandled`.  That 
 coverage limit, not a guess — and `make track-run` is what would catch a circuit that ever wrote a
 third value.  The fixture then has to plant one of the two, because a random third byte sends the
 two models to different addresses and measures the limit rather than the twin.
+
+### ⭐⭐ A MATH twin: use the wider register, but the 68000 instruction is not always the answer
+
+Twin #13 (`div16by8`) is the first twin whose whole body is arithmetic, and it splits the standing
+"use real 68000 maths, not a reimplementation of the 6502's byte chain" rule into two halves that
+point different ways:
+
+* **The WIDTH is free and always right.**  The 6502 writes `ASL math_lo / ROL A` because it has no
+  16-bit register; that pair is one 16-bit shift, and the twin shifts the remainder:dividend word as
+  a word.  GCC unrolled the eight steps into `add.w`/`lsr.w`/`cmp.w` with no software helper, and
+  the entire byte-at-a-time chain — plus its per-instruction flag bookkeeping — is gone.  Do this
+  every time.
+* **The INSTRUCTION can be blocked by a flag.**  `DIVU.W` *is* this routine, in one 140-cycle
+  instruction — and it cannot be used, because the exit `V` flag belongs to the last of the seven
+  conditional subtracts.  Recovering which step that was needs a bit scan plus a SECOND divide for
+  that step's partial remainder, which is no faster than the loop and only valid when the dividend's
+  high byte is below the divisor.  `DIVU` would also **trap** on the divisor-of-zero case the
+  fixture feeds it.
+  ⭐ The lesson is where the unlock lives: the flags are dead at all three call sites, so the
+  blocker is not this routine but the fact that its CALLERS are still transliterated.  A hardware
+  divide becomes provably legal the moment `project_point` and `bearing_to_section` are twins too.
+  **Ask which of a leaf's outputs are genuinely observed before deciding the leaf cannot be fast.**
+
+And the fixture gets easier, not harder, as a routine gets more arithmetic: `div16by8` has three
+input bytes, so the pre-state that matters is tiny — which is why it is STEERED into four named
+domains (the engine's own normalised shape, quotient overflow, divide-by-zero, uniform) rather than
+left random.  ⭐ It is also the only fixture in the harness that **randomises decimal mode**, and it
+can be: the subtract goes through the real `SBC`, so the twin agrees with the oracle even where
+`SED` turns the divide into something else entirely.  A twin that computed the subtract in plain C
+would pass 3000 binary-mode cases and fail the decimal ones — sabotage #5 confirms it does.
 
 ## What "validated" costs and buys
 
