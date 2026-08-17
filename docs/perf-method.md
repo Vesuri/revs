@@ -415,7 +415,7 @@ is a silent averaging error, in the same family as the per-band average below.
 
 | Share | ms/frame | Phase | Callee | What it is |
 |---|---|---|---|---|
-| **22.3%** | **84** | **24** | **`$7BE2`** | the 3D VIEW rasteriser (not the dashboard — `docs/rename.md`).  2093 units, ~83 change a byte.  **Was 131**: the two passes below took the unit loop and then the per-line drivers.  ⭐ Splits ~54 ms chain / ~30 ms driver (`make VIEWSPLIT=1`) |
+| **22.3%** | **84** | **24** | **`$7BE2`** | the 3D VIEW rasteriser (not the dashboard — `docs/rename.md`).  2093 units, ~83 change a byte.  **Was 131**: the two passes below took the unit loop and then the per-line drivers.  ⚠⚠ **11 ms of this row is the main-loop TAIL, not the sweep** — it is brackets 24+32+33+34 now, and the sweep splits 25/17/41 by painting phase (§11 ms of phase 24) |
 | 16.3% | 61 | 5 | `build_road_edge_lists $24F6` | the road-geometry projection pass |
 | 15.6% | 58 | 11 | `$1A20` | writes **6 visible bytes**; its output is per-column data, not pixels |
 | 9.5% | 35 | 27 | the decode | `RevsScreen::decode()`, dirty-region.  Port overhead, and DONE |
@@ -613,7 +613,84 @@ blocks), so there is no adjacent pair to widen.  A wide store is only endian-neu
 in it is the SAME value, which is the run-collapsing idea `docs/direct-bitplane-plan.md` §7f measured
 as a 9% LOSS.
 
+### ⭐⭐⭐ 11 ms OF PHASE 24 WAS NEVER $7BE2 AT ALL, and the row splits BY PAINTING PHASE (2026-08-17)
+
+**Everything below this section that says "phase 24 = the drivers" is measuring one bracket too
+wide.**  Phase 24 opened at `JSR $7BE2` ($1748) and the next bracket was the paint hook at $1701, so
+the whole main-loop TAIL after the sweep was charged to the sweep.  ⚠ The reason it hid for so long
+is that the tail's other exit *did* re-open phase 0: `$1753 BEQ $178F` skips the frame-wait spin
+whenever `$62F6` is zero, and that path — `JSR $0EE5`, `JSR $0E74`, `JSR $513A`, `JMP $1701` — never
+touched a bracket.  **`PROBE_PHASE_VIEWTAIL` (32) at $174B costs ONE transition a frame and makes
+phase 24 mean the routine: 11 ms of the 82 was the tail.**
+
+⭐⭐ **And then the split that "unit loop vs drivers" was reaching for, at TWO transitions a frame:
+the routine's three painting phases are three separate brackets** (`PROBE_PHASE_VIEWP2`/`P3`, 33 and
+34 — each runs once per sweep, so unlike VIEWSPLIT there is nothing to subtract).  Beside them,
+`PROBE_VIEW_*` counts the work each did — units, chain-run segments and driver lines — accumulated
+O(1) per run out of the pointer difference, never per unit:
+
+| bracket | what it is | ms/frame | units | segments | lines | µs/unit | µs/line |
+|---|---|---|---|---|---|---|---|
+| 24 | phase 1 ($7BE2), full-width lines, **no driver at all** | 28 | 1440 | 72 | 36 | 19 | 785 |
+| 33 | phase 2 ($7D13), one planted stop, two chain runs | 19 | 426 | 48 | 16 | 44 | 1187 |
+| 34 | phase 3 ($7F18), two planted stops, two computed entries | **42** | 282 | 66 | 25 | 150 | **1696** |
+
+⭐⭐ **Phase 3 is HALF the row while painting 13% of the cells** — 25 lines, eleven cells each, at
+1.7 ms a line.  That is the item, and "the per-line drivers" was never one thing.
+
+**Where phase 3's 42 ms is, from two instruments that agree.**  `make VIEWP3=1` brackets its four
+pieces per line with an empty bracket at the same rate as the control (read the control first: 25
+transitions a frame, 2 ms, ~80 µs each); `make VIEWP3=3` validates every computed chain entry and
+then does not RUN it, which prices the same thing with no bracket in the measurement at all:
+
+| piece | VIEWP3=1 | VIEWP3=3 | the difference prices |
+|---|---|---|---|
+| 36 chain A's entry + boundary cell | 14 ms | 5 ms | **9 ms** of chain run |
+| 38 chain B's entry + boundary cell | 26 ms | 15 ms | **11 ms** of chain run |
+| 35 / 37 the two planted stops | 5 / 4 ms | 5 / 4 ms | 0 — `view_move_stop` is not the cost |
+| 33 phase 2, for comparison | 19 ms | 11 ms | 8 ms of chain run |
+
+⭐ **So ~20 ms of phase 3 is the two `view_enter_chain` calls and ~9 ms is planting stops.**  50
+entries a frame for 282 cells is ~400 µs an entry against 721 µs for a full 40-cell line: the cost is
+the ENTRY, not the cells.
+
+⚠⚠ **AND A GAP THE WHOLE SESSION LEFT OPEN, recorded rather than papered over: measured time is ~6x
+what the generated code can account for.**  `make VIEWP3=2` empties phase 3's line body entirely and
+its 25 bare iterations still read 486 µs a line where two bracket transitions and a `CPX` are ~50
+instructions.  The same factor appears everywhere in this routine (phase 1's unit loop is 8
+instructions and measures ~120 cycles a unit).  Three candidates, none settled: the interrupt time
+that lands in whichever bracket is open (~23 ms a frame of VERTB ISR + `irq1v`, which is real but
+uniform and too small), the beam-tick bracket's own ~80 µs, and 68000 absolute-long memory operands
+costing far more than an instruction count suggests.  **Until it is settled, treat every µs/line
+figure here as an upper bound and price changes by COUNTS and by the whole row.**
+
+### ⭐ ONE SEGMENT PER LINE INSTEAD OF TWO: 186 → 118 chain-run set-ups a frame (2026-08-17)
+
+The unit loop switches base pointers at cell 32 because 40 x 8 = 320 bytes does not fit one page, and
+it did that by ENDING the run at cell 31 and going round the outer loop again — a second stop lookup
+and a second run set-up on every line.  But `plot_ptr2` is `plot_ptr + 256` for every line the routine
+itself steps, and then cell *i* lands on `base0 + i*8` across the whole line, so the run 0..39 is
+contiguous and one segment covers it.  The general two-segment path stays, because `paint_lines_short`
+steps the pointers itself and its odd carry tail can move one and not the other.
+
+**Chain-run segments 186 → 118 a frame** (phase 1's 72 → 36), and the three brackets read 89 → 83 ms.
+⚠ Quote the COUNT, not the milliseconds: that is a cross-run diff of per-iteration figures, which
+Rule 2 forbids.  **FPS 2.72 → 2.71, i.e. unchanged** — ~6 ms of a ~370 ms frame is under the noise
+floor, exactly as predicted, and it is recorded as a static win rather than a framerate one.
+Byte-exact: `make validate` 700/700 and `make determinism` identical over 300 frames.
+
+⚠ **A SABOTAGE THAT PASSED, and it is a fixture gap, not a proof:** forcing the one-segment path on
+unconditionally also passes 700/700, because the shim reseeds `plot_ptr`/`plot_ptr2` one page apart on
+every call and no fixture can make them differ.  The two-segment path is therefore unreachable from
+`make validate` — the equivalence argument above is by construction, and `docs/validation-harness.md`
+carries the gap.
+
 ### ⭐⭐ WHERE $7BE2's 82 ms ACTUALLY IS — the DRIVERS are 65% of it, and two negative results (2026-08-17)
+
+⚠ **Superseded in part by the section above**: the 82 ms this section splits included 11 ms of main
+loop tail, and "the ~77 lines of driver" is really three different jobs with phase 3 dominating.  The
+NOUNITS differentials themselves stand.
+
 
 **The bracket split above was wrong, and a differential build settled it.**  `make VIEWSPLIT=1` read
 54 ms of unit loop against 76 ms of driver; its own control read 12 ms over 118 brackets, i.e. ~100 µs

@@ -67,6 +67,22 @@ instruction and agree about nothing.  `test_view_paint_lines` builds the pre-sta
 everywhere, legal at each site *for the reason the operand encoding gives* — which is written out
 case by case above the fixture, because "I made these bytes legal" is worthless without why.
 
+## ⭐⭐ …and an EIGHTH: a state the SHIM RESEEDS is a state no fixture can vary
+
+`view_paint_lines`'s shim seeds `plot_ptr` and `plot_ptr2` exactly one page apart on every call
+(that is what `$6700`/`$6800` mean), so **`plot_ptr2 == plot_ptr + 256` is an invariant of every one
+of the 700 cases** and any code path conditioned on the two pointers differing is unreachable from
+the harness.  Found the honest way, by sabotage: forcing the "one contiguous segment" fast path on
+unconditionally — which is *wrong* whenever the pointers drift — passes 700/700 (2026-08-17,
+`docs/perf-method.md` §one segment per line).
+
+⚠ **Do not "fix" it by seeding the pointers in the fixture.**  The pre-state a fixture randomises is
+the state the 6502 routine is ENTERED with, and this routine overwrites both pointers in its
+prologue; a fixture that set them would be testing a call that cannot happen.  The gap is real and
+the consequence is a rule: **when a twin adds a fast path guarded by a condition the shim fixes,
+the equivalence has to be argued by construction and written next to the code**, because the green
+is not evidence.  `make determinism` is the check that has teeth there — it runs the real race.
+
 ## ⭐⭐ …and a SIXTH: `make validate` cannot see a change that hits the ORACLE too
 
 A twin is compared against a transliteration **the same transpiler generated**.  So any change to

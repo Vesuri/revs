@@ -600,6 +600,14 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first);
 static int view_enter_chain(ViewState* v, uint16_t site, uint16_t opnd, unsigned page)
 {
     uint16_t target = (uint16_t)(mem[opnd] | (mem[opnd + 1] << 8));
+#ifdef REVS_VIEWP3_NOCHAIN
+    /* ⭐ `make VIEWP3=3` — THE PICTURE IS WRONG BY CONSTRUCTION.  Every computed chain entry is
+       validated and then NOT RUN, so the difference against the shipping row prices the chain runs
+       the drivers of phases 2 and 3 make — the four-way split's biggest claim, re-measured with an
+       instrument that has no bracket in it at all. */
+    if ((target >> 8) == page && view_low_page(page)
+        && g_viewUnitOf[page - VIEW_LOW_PAGE][target & 0xFF]) return 1;
+#endif
     if ((target >> 8) == page && view_low_page(page)) {
         unsigned char u = g_viewUnitOf[page - VIEW_LOW_PAGE][target & 0xFF];
         if (u) {
@@ -669,6 +677,14 @@ static unsigned step_scanline(int* carry_out)
 #define VIEWSPLIT_UNITS_END()    ((void)0)
 #endif
 
+/* ⭐ `make VIEWP3=1 PROBES=1` — phase 3's driver, split into its four pieces plus a control at the
+   same rate.  See src/platform/probe.h §PROBE_PHASE_P3_*; a measurement build only. */
+#if defined(REVS_VIEWP3) && defined(REVS_PROBE)
+#define VIEWP3_PHASE(id)  PROBE_PHASE(id)
+#else
+#define VIEWP3_PHASE(id)  ((void)0)
+#endif
+
 /* One unit's SOURCE half: consume the byte and carry it on, with no store.  The chain does
    this BEFORE it looks at its opcode slot, so a planted `RTS` still consumes the source of the
    unit it stops on — which is why the stop tail needs the same three lines the loop runs.
@@ -711,6 +727,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
 
     for (;;) {
         if (advance_first) {
+            PROBE_VIEW_LINE();
             step_scanline((int*)0);
             /* the line's background byte: two bits of the per-line surface index */
             byte = mem[SURFACE_COLOURS_TBL + (mem[VIEW_LINE_SURFACE + line] & 3)];
@@ -731,7 +748,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
             MEM_QUAL unsigned char* srcp = mem + VIEW_SRC_BLOCKS
                                                + ((unsigned)unit << 7) + line;
             MEM_QUAL unsigned char* const dp1 = mem + base1;
-            int lastSeg = (unit >= 32);
+            int lastSeg;
             /* ⭐ THE SEGMENT AS A POINTER END, not an `i == 31` test inside the loop.  Cells
                0-31 come off plot_ptr and 32-39 off plot_ptr2 because 40 x 8 = 320 bytes does
                not fit one page, and the old form asked `i == 31?` and `i < 40?` separately in
@@ -742,11 +759,28 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                256.  ⚠ Segment 0 ends at base0 + 256, NOT at plot_ptr2: the 6502 switches
                pointers on the cell INDEX, so a plot_ptr2 that is not plot_ptr + 256 must still
                paint cells 0-31 off plot_ptr. */
-            MEM_QUAL unsigned char* segBase = (unit < 32) ? mem + base0 : dp1;
-            MEM_QUAL unsigned char* dp      = segBase + (((unsigned)unit & 31u) << 3);
-            MEM_QUAL unsigned char* segEnd  = (unit < 32) ? mem + base0 + 256 : dp1 + 64;
+            /* ⭐⭐ ...AND WHEN THE TWO POINTERS ARE ONE PAGE APART, ONE SEGMENT INSTEAD OF TWO.
+               plot_ptr2 is plot_ptr + 256 for every line the routine itself steps (the prologue
+               seeds it that way and view_next_scanline adds the same delta to both), so cell i
+               lands on base0 + i*8 across the WHOLE line and the run 0..39 is contiguous.  Then
+               the segment crossing — a second trip round the outer loop, a second stop lookup, a
+               second run set-up — is not needed at all.
+               ⭐ It is worth a branch because the per-RUN cost is what this routine is made of:
+               measured at ~280 us a run against ~5.5 us a unit (docs/perf-method.md), so the 36
+               crossings phase 1 makes per frame cost more than all 1440 of its units.
+               ⚠ The general path stays, and not defensively: `paint_lines_short` steps the two
+               pointers itself and its odd carry tail can store a low byte to plot_ptr only, so
+               the two CAN drift — and the 6502 switches on the cell INDEX, so cells 0-31 must
+               then still come off plot_ptr.  The condition is the whole difference. */
+            const int oneSeg = (base1 == base0 + 256u);
+            MEM_QUAL unsigned char* segBase = (unit < 32 || oneSeg) ? mem + base0 : dp1;
+            MEM_QUAL unsigned char* dp      = segBase + (((unsigned)unit & 31u) << 3)
+                                            + ((oneSeg && unit >= 32) ? 256u : 0u);
+            MEM_QUAL unsigned char* segEnd  = oneSeg    ? mem + base0 + 320
+                                            : (unit < 32) ? mem + base0 + 256 : dp1 + 64;
             int curUnit = unit;
-            int segLimit = (unit < 32) ? 32 : 40;
+            int segLimit = (unit < 32 && !oneSeg) ? 32 : 40;
+            lastSeg = (unit >= 32) || oneSeg;
             /* ⭐⭐ THE PLANTED STOP, LOOKED UP ONCE — see view_stop_from.  40 means "none in
                this chain run", which is every one of phase 1's lines. */
             const int stopUnit = view_stop_from(unit);
@@ -770,6 +804,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                 const int stopHere = (stopUnit >= curUnit && stopUnit < segLimit);
                 MEM_QUAL unsigned char* runEnd =
                     stopHere ? dp + ((unsigned)(stopUnit - curUnit) << 3) : segEnd;
+                PROBE_VIEW_RUN((unsigned)(runEnd - dp) >> 3);
 
 #ifdef REVS_NO_UNIT_LOOP
                 /* ⭐ `make NOUNITS=2` — the loop does not run AT ALL, so phase 24 is the
@@ -823,6 +858,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                     MEM_QUAL unsigned char* slot = g_viewSlotP[stopUnit];
                     unsigned char op;
                     PROBE_SHAPE_DASH_UNIT(line);
+                    PROBE_VIEW_UNITS(1);                      /* the stop's own unit: consumed */
                     byte = view_consume(srcp, byte, forced, cell);
                     cell = (unsigned)(dp - segBase) & 0xFF;   /* its `LDY #<cell*8>` ran */
                     op = *slot;
@@ -881,13 +917,32 @@ static void unplant_stops(ViewState* v)
    inline here rather than reached through the chain's own entry. */
 static void paint_lines_short(ViewState* v)
 {
+    PROBE_PHASE(PROBE_PHASE_VIEWP3);        /* one transition a sweep — src/platform/probe.h §33 */
+    PROBE_VIEW_PHASE(2);
     for (;;) {
         unsigned edge, entry, next;
         int carry_out;
 
+        PROBE_VIEW_LINE();
+        VIEWP3_PHASE(PROBE_PHASE_VIEWCTL);       /* the control: an empty bracket, opened and closed */
+        VIEWP3_PHASE(PROBE_PHASE_VIEWP3);
         v->line = (v->line - 1) & 0xFF;
 
+#ifdef REVS_VIEWP3_EMPTY
+        /* ⭐ `make VIEWP3=2` — THE PICTURE IS WRONG BY CONSTRUCTION.  Phase 3's line loop keeps its
+           25 iterations and loses its entire body, so `phase 34 with this on` is the loop and
+           nothing else.  It exists because the four-way split above prices the two chain entries at
+           1.4 ms a line and NOTHING in the generated code for them is 10 000 cycles — so the
+           question "is that time in this body at all, or is it interrupt time landing in whichever
+           bracket is open?" has to be answered before any of it is optimised. */
+        cpu.X = (uint8_t)v->line;
+        CPX(0x03);
+        if (cpu.Z) break;
+        continue;
+#endif
+
         /* chain A's stop */
+        VIEWP3_PHASE(PROBE_PHASE_P3_STOPA);
         v->cell = mem[VIEW_STOP_A + v->line];
         if (!view_move_stop(v, v->cell, VIEW_REC_A3, 0x7F23, 0x7F2E, 0x7F2F, 0x7C)) {
             view_commit(v);
@@ -900,11 +955,13 @@ static void paint_lines_short(ViewState* v)
            deleting it passes all 700 fixture cases (sabotage S2, 2026-08-17), because the
            high byte only carries out of $FF and the pointer lives at $67..$7A.  Kept because
            the 6502 has it; do not read the green as coverage. */
+        VIEWP3_PHASE(PROBE_PHASE_VIEWP3);
         next = step_scanline(&carry_out);
         if (!(next & 7) && carry_out) {
             plot_ptr_lo  = (unsigned char)next;
             plot_ptr2_lo = (unsigned char)next;
         }
+        VIEWP3_PHASE(PROBE_PHASE_P3_CHAINA);
 
         /* chain A: enter at $F1 - view_stop_b_tbl[line], with the boundary cell composed
            from the per-line source byte and the edge tables */
@@ -923,11 +980,13 @@ static void paint_lines_short(ViewState* v)
 
         /* chain B: the same again, one page down and with its own tables.  ⚠ the stop is
            re-read here — the chain may have zeroed it (see the header). */
+        VIEWP3_PHASE(PROBE_PHASE_P3_STOPB);
         v->cell = mem[VIEW_STOP_B + v->line];
         if (!view_move_stop(v, v->cell, VIEW_REC_B3, 0x7F7C, 0x7F87, 0x7F88, 0x7E)) {
             view_commit(v);
             return;
         }
+        VIEWP3_PHASE(PROBE_PHASE_P3_CHAINB);
         entry   = mem[VIEW_START_B + v->line];
         v->cell = entry;
         mem[0x7F9B] = (unsigned char)entry;
@@ -957,6 +1016,9 @@ static void paint_lines_short(ViewState* v)
    chain from "loop over every line" into "run once and return". */
 static void paint_lines_clipped(ViewState* v)
 {
+    PROBE_PHASE(PROBE_PHASE_VIEWP2);        /* one transition a sweep — src/platform/probe.h §33 */
+    PROBE_VIEW_PHASE(1);                    /* its lines are counted in paint_cells, which it enters
+                                               through view_next_scanline once per line */
     v->byte = load_a(OP_RTS);
     mem[VIEW_CHAIN_END] = (unsigned char)v->byte;
 
@@ -1006,6 +1068,7 @@ static void view_paint_lines_core(unsigned screenBase, unsigned firstLine)
 {
     ViewState v;
 
+    PROBE_VIEW_PHASE(0);
     if (!g_viewTablesBuilt) view_build_tables();
     view_stops_rescan();          /* what is REALLY in the page, before any plant of ours */
 

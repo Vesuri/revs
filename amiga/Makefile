@@ -129,6 +129,25 @@ ifdef VIEWSPLIT
 EXTRA_DEFINES += -DREVS_VIEWSPLIT
 endif
 
+# `make VIEWP3=1 PROBES=1` — split PHASE 3's per-line driver (phase 34) into its four pieces, with
+# an empty bracket at the same rate as the control (phase 31).  Five transitions per line over 25
+# lines, so read phase 31 BEFORE any of 35-38.  src/platform/probe.h §PROBE_PHASE_P3_*.
+ifdef VIEWP3
+EXTRA_DEFINES += -DREVS_VIEWP3
+endif
+# `make VIEWP3=2` — ⚠⚠ THE PICTURE IS WRONG BY CONSTRUCTION.  Phase 3's line loop keeps its 25
+# iterations and loses its body, so phase 34 is the bare loop: the differential that says whether
+# the four-way split's milliseconds are in that body at all.  Never quote a framerate from it.
+ifeq ($(VIEWP3),2)
+EXTRA_DEFINES += -DREVS_VIEWP3_EMPTY
+endif
+# `make VIEWP3=3` — ⚠⚠ same warning: every computed chain entry (phases 2 and 3) is validated and
+# then not run, so the difference against the shipping row prices those chain runs with no bracket
+# anywhere in the measurement.
+ifeq ($(VIEWP3),3)
+EXTRA_DEFINES += -DREVS_VIEWP3_NOCHAIN
+endif
+
 # `make NOUNITS=1` — ⚠⚠ THE PICTURE IS WRONG BY CONSTRUCTION.  The $7BE2 unit loop keeps its
 # iterations and loses its memory work, so `phase 24 with this on` is the per-line drivers plus
 # the bare loop.  A decomposition the VIEWSPLIT brackets cannot give honestly: bracketing 118
@@ -471,6 +490,7 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
 # script is run against.  phase4_prof.gdb is a PROBES script.
 ifdef PROBES
 PROBE_SYMS += g_phaseTicks g_phaseCount g_phaseFrames g_beamEpoch \
+             g_viewUnits g_viewRuns g_viewLines \
              g_probeIsrTicks g_probeIsrCount g_probeIrqTicks g_probeIrqCount \
              g_probeBandTicks g_probeBandCount \
 

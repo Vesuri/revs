@@ -119,6 +119,51 @@ extern volatile unsigned long g_probeBandTicks[PROBE_BANDS], g_probeBandCount[PR
 #define PROBE_PHASE_VIEWCTL   31
 int probe_phase_current(void);
 
+/* ⭐⭐ 32 — THE MAIN LOOP'S TAIL, WHICH PHASE 24 WAS SILENTLY CARRYING.  Phase 24 opens at
+ * `JSR $7BE2` ($1748) and the next bracket is the paint hook at $1701, so everything the body
+ * does AFTER the sweep was charged to the sweep: $174B-$1758, and then — whenever $62F6 is zero,
+ * which is the usual path — the whole $178F tail, `JSR $0EE5`, `JSR $0E74`, `JSR $513A`.  (The
+ * $1760 spin re-opens phase 0, so only the OTHER path leaked, which is why it was invisible.)
+ * This bracket costs ONE transition a frame against an 82 ms row, so unlike VIEWSPLIT it is
+ * quotable: with it, phase 24 IS view_paint_lines and nothing else. */
+#define PROBE_PHASE_VIEWTAIL 32
+
+/* ⭐⭐ 33/34 — THE VIEW SWEEP BY ITS THREE PAINTING PHASES, at TWO transitions a frame.
+ * $7BE2's three phases paint progressively less of the line and phases 2 and 3 carry the whole
+ * per-line DRIVER (the planted stop, the composed boundary cell, the second chain entry), so
+ * splitting there is the split "unit loop vs drivers" was reaching for — and unlike VIEWSPLIT's
+ * per-line brackets it costs nothing measurable, because each of the three runs ONCE per sweep:
+ *   24  phase 1, $7BE2 — 36 full-width lines, 1440 units, no driver at all
+ *   33  phase 2, $7D13 — 16 lines, two chain runs each, one planted stop
+ *   34  phase 3, $7F18 — 25 lines, two planted stops and two computed entries
+ * Each bracket includes its own chain runs, so these are subtree costs (as every phase row is). */
+#define PROBE_PHASE_VIEWP2 33
+#define PROBE_PHASE_VIEWP3 34
+
+/* ⭐⭐ ...AND THE WORK EACH OF THE THREE DID, COUNTED, because a millisecond figure alone cannot
+ * say whether phase 3 is expensive per LINE or simply painting more units.  Counted O(1) per
+ * chain run out of the pointer difference — never per unit, which would perturb the loop the
+ * table is about.  `units` is cells painted, `runs` chain-run segments, `lines` driver lines. */
+/* ⭐ `make VIEWP3=1` — phase 3's per-line DRIVER split into its four pieces, because 1.7 ms a line
+ * for eleven painted cells is not explained by anything in the C and "the drivers" is not a thing
+ * to optimise.  25 lines a frame, five transitions each:
+ *   35  chain A's planted stop (view_move_stop -> two view_plant)   36  chain A's entry + boundary cell
+ *   37  chain B's planted stop                                      38  chain B's entry + boundary cell
+ *   31  an EMPTY bracket at the same rate — THE CONTROL, and it is read first.  Phase 34 keeps the
+ *       remainder (the scan-line step and the loop).
+ * ⚠ A measurement build only, and its own rows are only quotable against phase 31. */
+#define PROBE_PHASE_P3_STOPA 35
+#define PROBE_PHASE_P3_CHAINA 36
+#define PROBE_PHASE_P3_STOPB 37
+#define PROBE_PHASE_P3_CHAINB 38
+
+extern volatile unsigned long g_viewUnits[3], g_viewRuns[3], g_viewLines[3];
+extern int g_viewPhaseIdx;
+#define PROBE_VIEW_PHASE(i)   (g_viewPhaseIdx = (i))
+#define PROBE_VIEW_UNITS(n)   (g_viewUnits[g_viewPhaseIdx] += (unsigned long)(n))
+#define PROBE_VIEW_RUN(n)     do { PROBE_VIEW_UNITS(n); g_viewRuns[g_viewPhaseIdx]++; } while (0)
+#define PROBE_VIEW_LINE()     (g_viewLines[g_viewPhaseIdx]++)
+
 #define PROBE_PHASE_DRAIN  26
 #define PROBE_PHASE_DECODE 27
 #define PROBE_PHASE_SPIN   28
@@ -158,6 +203,13 @@ extern volatile unsigned long g_beamEpoch;
 #define PROBE_PHASE_FRAMEWAIT 25
 #define PROBE_PHASE_VIEWUNITS 30
 #define PROBE_PHASE_VIEWCTL   31
+#define PROBE_PHASE_VIEWTAIL  32
+#define PROBE_PHASE_VIEWP2    33
+#define PROBE_PHASE_VIEWP3    34
+#define PROBE_VIEW_PHASE(i)   ((void)0)
+#define PROBE_VIEW_UNITS(n)   ((void)0)
+#define PROBE_VIEW_RUN(n)     ((void)0)
+#define PROBE_VIEW_LINE()     ((void)0)
 #define PROBE_PHASE_DRAIN     26
 #define PROBE_PHASE_DECODE    27
 #define PROBE_PHASE_SPIN      28

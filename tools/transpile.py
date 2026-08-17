@@ -698,7 +698,11 @@ PRE_INSN_HOOKS = {
     0x1701: 'PROBE_PHASE(PROBE_PHASE_FRAMEWAIT); PROBE_SHAPE_PHASE(PROBE_PHASE_FRAMEWAIT); '
             'platform_render_frame();',
     0x1748: 'PROBE_SHAPE_DASH_BEFORE();',
-    0x174B: 'PROBE_SHAPE_DASH_AFTER();',
+    # ⭐⭐ AND the phase bracket that makes phase 24 mean ONLY $7BE2.  Without it phase 24 stays
+    # open from $1748 all the way to the paint hook at $1701, so the body's whole tail — the
+    # $178F path with its three JSRs — was charged to the view rasteriser and read as "the
+    # per-line drivers".  One transition a frame; see src/platform/probe.h §32.
+    0x174B: 'PROBE_SHAPE_DASH_AFTER(); PROBE_PHASE(PROBE_PHASE_VIEWTAIL);',
 }
 PRE_INSN_HOOKS.update({a: 'PROBE_SHAPE_DASH_UNIT(cpu.X);' for a in DASH_UNIT_ADDRS})
 # ⭐ AND the road pass, `JSR $1A20` at $171F (phase 11): snapshot-and-diff the frame buffer around

@@ -63,3 +63,12 @@ Suggested: `engine_running` ($0061), `road_speed` ($0063), `gear_index` ($0040) 
 `$0040`'s upper end against `$16AC`'s shift-up path before committing to "index".
 ⚠ Until they are in `symbols.csv` an unnamed hex address sits in a hand-written source file
 (`src/platform/autorun.cpp`), which is the thing CLAUDE.md §Working conventions forbids.
+
+## 7. `$0EE5`, `$513A` and the rest of the main loop's TAIL have no names
+
+Bracket 32 (`PROBE_PHASE_VIEWTAIL`, added 2026-08-17) is 11 ms a frame — 3% of the frame, bigger
+than nine of the named phases — and it consists of `$174B-$1758` plus, on the usual path
+(`$1753 BEQ $178F`, taken whenever `$62F6` is zero), `JSR $0EE5` with Y=$0B, `JSR $0E74`
+(`sfx_trigger_random`, named) and `JSR $513A` (which is a `JSR $511E` wrapper).  Two of the three
+have no symbol at all, and until today all three were charged to `$7BE2` and invisible.
+Name them from their bodies before anything tries to optimise that row.

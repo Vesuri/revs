@@ -23,6 +23,11 @@
 # grows as the framerate falls), 27 the frame-buffer DECODE (pure port overhead), 28 the SPIN on the
 # next vblank.  The old phase-25 row is the sum of the four.  See src/platform/probe.h.
 #
+# ⭐⭐ PHASE 32 IS THE MAIN LOOP'S TAIL, split out of phase 24 (2026-08-17).  Phase 24 used to stay
+# open from `JSR $7BE2` right through to the paint hook, so the body's tail after the sweep — the
+# $178F path and its three JSRs — was charged to the view rasteriser.  With 32 in the table, phase
+# 24 IS view_paint_lines.  See src/platform/probe.h §32.
+#
 # ⭐ SANITY CHECK, read it every time: `bracketed` must be ~100% of `elapsed`.  If it is not,
 # the brackets are losing time and the shares are fiction — that was the state of this
 # harness until 2026-08-13, when it accounted for 4%.  docs/perf-method.md.
@@ -42,7 +47,7 @@ printf "=== vbi=%u loopFrames=%lu brk=%lu smc=%lu ===\n", \
 # bracket and landed on phase 24.
 set $i = 1
 set $tot = 0
-while $i < 32
+while $i < 39
   set $tot = $tot + g_phaseTicks[$i]
   set $i = $i + 1
 end
@@ -81,11 +86,35 @@ if g_probeIrqCount > 0
     g_probeIrqCount, g_probeIrqCount/g_bodyTicks, (g_probeIrqTicks/g_probeIrqCount)*1000/4006
 end
 set $i = 1
-while $i < 32
+while $i < 39
   printf "phase %2d  ticks=%10lu  calls=%7lu  share=%2d.%01d%%  %4lu ms/frame\n", \
      $i, g_phaseTicks[$i], g_phaseCount[$i], \
      (g_phaseTicks[$i]/$per)/10, (g_phaseTicks[$i]/$per)%10, \
      (g_phaseTicks[$i]/g_phaseFrames)/4006
+  set $i = $i + 1
+end
+# ⭐⭐ THE VIEW SWEEP'S THREE PAINTING PHASES, ms BESIDE THE WORK EACH DID (probe.h §PROBE_VIEW_*).
+# us/unit is only meaningful against the phase-1 row, which has no driver at all: the difference
+# between a phase's us/unit and phase 1's IS the per-line driver, and us/line prices it directly.
+set $i = 0
+while $i < 3
+  set $ph = 24
+  if $i == 1
+    set $ph = 33
+  end
+  if $i == 2
+    set $ph = 34
+  end
+  printf "view phase %d (bracket %d, %4lu ms/frame): units=%4lu/frame runs=%3lu/frame lines=%3lu/frame", \
+     $i + 1, $ph, (g_phaseTicks[$ph]/g_phaseFrames)/4006, \
+     g_viewUnits[$i]/g_phaseFrames, g_viewRuns[$i]/g_phaseFrames, g_viewLines[$i]/g_phaseFrames
+  if g_viewUnits[$i] > 0
+    printf "  %4lu us/unit", (g_phaseTicks[$ph]/g_viewUnits[$i])*1000/4006
+  end
+  if g_viewLines[$i] > 0
+    printf "  %5lu us/line", (g_phaseTicks[$ph]/g_viewLines[$i])*1000/4006
+  end
+  printf "\n"
   set $i = $i + 1
 end
 printf "phase 25  ticks=%10lu  calls=%7lu  share=%2d.%01d%%  %4lu ms/frame  <- FRAME WAIT (not engine work)\n", \

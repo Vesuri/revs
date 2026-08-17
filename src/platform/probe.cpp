@@ -113,6 +113,13 @@ volatile unsigned long g_probeIrqCount = 0;
 volatile unsigned long g_probeBandTicks[PROBE_BANDS] = {0};
 volatile unsigned long g_probeBandCount[PROBE_BANDS] = {0};
 
+/* The view sweep's own workload, per painting phase — probe.h §PROBE_VIEW_*.  These are COUNTS,
+   not times: they exist so the ms rows for phases 24/33/34 can be divided by the work each did. */
+volatile unsigned long g_viewUnits[3] = {0, 0, 0};
+volatile unsigned long g_viewRuns[3]  = {0, 0, 0};
+volatile unsigned long g_viewLines[3] = {0, 0, 0};
+int g_viewPhaseIdx = 0;
+
 static unsigned long s_isrMark = 0;
 static unsigned long s_irqMark = 0;
 
