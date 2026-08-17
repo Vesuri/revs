@@ -413,19 +413,31 @@ DILUTES the measurement with a static scene.  The 90 s version of this table rea
 and the drain at 20 ms; the 30 s version reads 131 and 30.  A run length past the interesting part
 is a silent averaging error, in the same family as the per-band average below.
 
-| Share | ms/frame | Phase | Callee | What it is |
-|---|---|---|---|---|
-| **22.3%** | **84** | **24** | **`view_paint_lines`** (`$7BE2`) | the 3D VIEW rasteriser (not the dashboard — `docs/rename.md`).  2093 units, ~83 change a byte.  **Was 131**: the two passes below took the unit loop and then the per-line drivers.  ⚠⚠ **11 ms of this row is the main-loop TAIL, not the sweep** — it is brackets 24+32+33+34 now, and the sweep splits 25/17/41 by painting phase (§11 ms of phase 24) |
-| 16.3% | 61 | 5 | `build_track_geometry` (`$24F6`) | the road-geometry projection pass |
-| 15.6% | 58 | 11 | `draw_road` (`$1A20`) | writes **6 visible bytes**; its output is per-column data, not pixels |
-| 9.5% | 35 | 27 | `RevsScreen::decode()` | dirty-region.  Port overhead, and DONE |
-| 7.8% | 29 | 18 | `fill_dash_edge_columns` (`$1E15`) | |
-| 7.5% | 28 | 4 | `apply_driving_model` (`$46A1`) | |
-| 7.1% | 26 | 26 | the 50 Hz drain (`irq1v_band_schedule`) | **was 176** before the record reuse |
-| 5.2% | 19 | 28 | the vblank spin | port overhead |
-| 2.1% | 8 | 15 | `draw_track_object` (`$2AD1`) | |
-| 1.2% | 4 | 3 | | |
-| 1.1% | 4 | 29 | `tick_wheel_spin` (`$52A4`) | the band cycle's only game work |
+⭐ The **Code** column is the standing answer to "is this row still an interpreter?" — `native` = a
+validated twin in `src/gen/revs_native.c`, `xlat` = generated transliteration in `src/gen/revs_gen.c`
+(so its cost still includes the per-instruction flag bookkeeping and the `bus_*` trip), `port` =
+port-authored C++ that has no 6502 original at all.  **Only three addresses are native**
+(`VALIDATE_FUNCS` + `NATIVE_FUNCS` in `tools/transpile.py`): `irq1v_band_schedule`,
+`view_paint_lines`, `race_main_loop`.  Every other row below is an interpreter first and an
+algorithm second, which is why §the standing conclusion says the machinery outweighs the game.
+
+| Share | ms/frame | Phase | Callee | Code | What it is |
+|---|---|---|---|---|---|
+| **22.3%** | **84** | **24** | **`view_paint_lines`** (`$7BE2`) | **native** (twin #2) | the 3D VIEW rasteriser (not the dashboard — `docs/rename.md`).  2093 units, ~83 change a byte.  **Was 131**: the two passes below took the unit loop and then the per-line drivers.  ⚠⚠ **11 ms of this row is the main-loop TAIL, not the sweep** — it is brackets 24+32+33+34 now, and the sweep splits 25/17/41 by painting phase (§11 ms of phase 24).  That tail is `race_main_loop`, also native |
+| 16.3% | 61 | 5 | `build_track_geometry` (`$24F6`) | xlat | the road-geometry projection pass |
+| 15.6% | 58 | 11 | `draw_road` (`$1A20`) | xlat | writes **6 visible bytes**; its output is per-column data, not pixels |
+| 9.5% | 35 | 27 | `RevsScreen::decode()` | port | dirty-region.  Port overhead, and DONE |
+| 7.8% | 29 | 18 | `fill_dash_edge_columns` (`$1E15`) | xlat | |
+| 7.5% | 28 | 4 | `apply_driving_model` (`$46A1`) | xlat | |
+| 7.1% | 26 | 26 | the 50 Hz drain (`irq1v_band_schedule`) | **native** (twin #1) | **was 176** before the record reuse |
+| 5.2% | 19 | 28 | the vblank spin | port | port overhead |
+| 2.1% | 8 | 15 | `draw_track_object` (`$2AD1`) | xlat | |
+| 1.2% | 4 | 3 | | xlat | |
+| 1.1% | 4 | 29 | `tick_wheel_spin` (`$52A4`) | xlat | the band cycle's only game work |
+
+⭐⭐ **The two biggest levers left are both `xlat`: `build_track_geometry` + `draw_road` = 119 ms /
+32%, and they are the view pipeline's two producers.**  Both twins so far paid ~+30-60% each, and
+neither of these has been touched.
 
 ⭐⭐ **THE VIEW PIPELINE IS 203 ms OF A ~376 ms FRAME — 54% — AND IT IS ONE SUBSYSTEM.**
 (It was 250 of 430 before the two `$7BE2` passes of 2026-08-17; the *share* barely moved because
