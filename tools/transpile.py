@@ -590,7 +590,7 @@ VALIDATE_FUNCS = {
     # quoted as the reason.  What they buy is the last of the body's per-frame data
     # structures getting names: the driving model's 16-bit state vector (model_state_lo/hi and
     # the hand-integrated model_accum), the object plotter's four-cell argument block
-    # (plot_row / plot_column / plot_width / plot_shape) and the 24 per-slot object arrays.
+    # (plot_x / plot_line / proj_width / plot_shape) and the 24 per-slot object arrays.
     0x46A1,
     0x2AD1,
     0x1E15,

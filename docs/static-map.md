@@ -634,12 +634,17 @@ and 18 got the second one when they became twins.  What came out:
 
 - ⭐⭐ **THE DRIVING MODEL IS A 15-ELEMENT 16-BIT VECTOR**, `model_state_lo` (`$62D0`) /
   `model_state_hi` (`$62E0`), element *i* being `+i` in each half.  Every access in the engine is
-  `base+offset,X` or `,Y`, and `$47E5` is the generic integrator — `model_state[X] += model_state[14]`
-  on both halves — called with X=8 and X=`$0A`.  Three elements are identified: **2** is what
-  `integrate_car_position` (`$48EF`) adds into `player_pos_lo/hi`, i.e. what actually moves the car;
-  **8** is `model_accum`, the one element `apply_driving_model` integrates by hand; **9** is
-  `car_speed_lo/hi`, signed, whose magnitude the routine splits into `road_speed` (integer) and
-  `road_speed_frac`.  Elements 5..7 are forced to zero once `drive_state` reaches 2.
+  `base+offset,X` or `,Y`, and `model_integrate_element` (`$47E5`) is the generic integrator —
+  `model_state[X] += model_state[14]` on both halves — called with X=8 and X=`$0A`.  What is
+  identified: **2** is the angular rate `integrate_car_position` (`$48EF`) adds into
+  `car_heading_lo/hi`; **3/4/5** are the rates of **0/1/2**, applied by `integrate_state_rates`
+  (`$4937`) through the extra fraction byte `model_state_frac`; **8** is `model_accum`, the one
+  element `apply_driving_model` integrates by hand, and `rotate_state_0_into_8` (`$48B9`) is what
+  resolves the pair **0/1** into **8/9**; **9** is `car_speed_lo/hi`, signed, whose magnitude the
+  routine splits into `road_speed` (integer) and `road_speed_frac`; **$0A..$0D** are what
+  `damp_and_derive_loads` (`$47F9`) halves twice a frame and `check_wheel_slip` (`$4A91`) writes.
+  Elements 5..7 are forced to zero once `drive_state` reaches 2.  ⚠ What those elements are
+  PHYSICALLY is still open — `docs/rename.md`.
   ⚠ `$62DF` (`loop_counter_hi`) and `$62EF` sit inside those address ranges and are **not** members
   — the vector stops at element 14, which is why it is 15 long and not 16.
 - **`model_accum`'s integration is a midpoint step, and it reads as a bug until you read it twice**:
@@ -647,20 +652,45 @@ and 18 got the second one when they became twins.  What came out:
   the next four sub-models run against the offset value, and only then is the entry value restored
   and `model_accum_delta_lo/hi` (1.5x what was removed) added.
 - **THE OBJECT PLOTTER HAS A FOUR-CELL ARGUMENT BLOCK**, and slots 15 and 16 are its only two
-  producers: `plot_row` (`$35`, always `4 * y + $50`), `plot_column` (`$36`), `plot_width` (`$2A`)
-  and `plot_shape` (`$37`).  ⚠ `$018C` `car_flags_1`'s low NIBBLE is the shape index — one byte
-  carrying two unrelated things, queued in `docs/rename.md`.
-- **THE 24 OBJECT SLOTS** are four parallel arrays: `object_pos_lo`/`object_pos_hi` (`$0380`/`$0398`,
-  a 16-bit track position), `object_col` (`$03B0`) and `object_width` (`$03C8`).  Slot `$17` is the
-  road sign; the rest are cars.  `player_pos_lo/hi` (`$0A`/`$0B`) is the player's own entry, copied
-  out at `$11FB` with the high byte EORed with the direction flag `$25`, and it is the origin every
-  projection in the frame subtracts.
+  producers: `plot_x` (`$35`, always `4 * an azimuth + $50`, in 2-pixel units), `plot_line` (`$36`,
+  a scan line), `proj_width` (`$2A`) and `plot_shape` (`$37`).  ⚠⚠ The first two were called
+  `plot_row`/`plot_column` until 2026-08-17 and **the axes were the wrong way round** — the
+  producers feed `$35` from an AZIMUTH and `$36` from `edge_y`, and `plot_object` clamps `$36`
+  against `#$50` = 80 lines, which no 40-cell column can be.  `$018C` `car_flags_shape`'s low
+  NIBBLE is the shape index — one byte carrying two unrelated things.
+- **THE 24 OBJECT SLOTS** are four parallel arrays: `object_bearing_lo`/`object_bearing_hi`
+  (`$0380`/`$0398`, the 16-bit BEARING from the camera, written straight out of
+  `bearing_to_section`), `object_line` (`$03B0`) and `object_width` (`$03C8`).  Slot `$17` is the
+  road sign; the rest are cars.  `car_heading_lo/hi` (`$0A`/`$0B`) is the player's own entry, copied
+  out at `$11FB` with the high byte EORed with the direction flag `$25`, and every bearing in the
+  frame is measured from it — ⚠ it was `player_pos_lo/hi` until 2026-08-17, and it is an ANGLE.
 - ⚠⚠ **`plot_object` (`$1FB4`) CAN LOOP FOREVER, and it is not a self-modifying site.**  Its outer
   loop `$2002`-`$2027` repeats while `$62F3` reads 9 and `mem[$0025]` is positive, and `$62F3` is
   re-stored from `plot_shape` at the top of every pass — so with `plot_shape == 9` every pass is
   identical and the only exit is `FUN_202a` returning carry set.  The real shape tables at
   `$3CD0`/`$3CDD`/`$3CDE` are what guarantee that; nothing structural does.  Anything that feeds
   this routine synthetic data has to know it (`docs/validation-harness.md` §ELEVENTH).
+
+### ⭐ The road pass's OWN data — the two tables and the array that shares bytes (2026-08-17)
+
+Settled while clearing the rename queue; all three were open questions in it.
+
+- **The whole `$6100` page is ONE 256-byte `arctan_table`**, entry *i* = `atan(i/256)` scaled so 45°
+  reads `$FF` (curve-fitted; `i=$40`→`$50`, `i=$80`→`$97`).  What read like a second table at `$6180`
+  is `LDA $6180,Y` with **Y already normalised to `$80..$FF`**, which addresses `$6200-$627F`:
+  `reciprocal_table`, entry = `$8000 / (i + $80)`.  So the engine has exactly two curves in ROM — an
+  angle from a ratio, and a reciprocal for the perspective width — and one restoring divide
+  (`div16by8`) for everything else.
+- **`point_distance_hypot` (`$0CA5`) is a two-segment alpha-max-plus-beta-min**, and the segment is
+  chosen on the ARCTAN byte (`shared_temp_7e` against `#$67` ≈ 19°), not on the magnitudes: near the
+  axis `larger + smaller/8`, off it `larger*7/8 + smaller/2`.  Every edge point and every object goes
+  through it, and the `HookFieldOfView` the expansion circuits carry does **not** patch it —
+  `disasm/track_smc.txt` has no extent in `$0C00-$0CFF`.
+- ⚠⚠ **`edge_opp_x_lo/hi` (`$5E50`/`$5EA0`) deliberately shares bytes with `edge_x_lo/hi`.**  Base is
+  `edge_x` + `$10`; the walk is capped at 18 points from cursor 6 / `$2E` (`$2498 CPY #$12`) and
+  `emit_edge_width_offset` skips the first three, so each half only ever fills its own 25..39 slack.
+  Highest byte written is `$5E8F`/`$5EDF` — nothing reaches `$5EE0`.  This is the one aliasing fact
+  a buffer rearrangement must carry forward (`docs/direct-bitplane-plan.md` §5a).
 
 ## ⭐ Phase 5 addition — the display is fully derived, and the sky hides live code
 
@@ -705,11 +735,17 @@ value written during band n is band n+1's duration.
    runtime.  **Driving to a real race is still open, and is now a different question than it
    looked:** the front end blocks on `BIT $05F4 / BVS` at `$6560`, waiting for bit 6 to be cleared
    by something other than the keyboard.  Find what clears it and the trace becomes strong.
-5. 🔧 **Extend the naming pass.**  **129 symbols**, applied to the Ghidra project.  That is 42 of
+5. 🔧 **Extend the naming pass.**  **365 rows in `disasm/symbols.csv`** as of 2026-08-17; the
+   figures below are from the original pass, when there were 129 and they were applied to the
+   Ghidra project.  That was 42 of
    222 call targets (19%) but **45% of all call sites** — the difference is the point: the pass
    worked down `--functions` by caller count, so the routines everything funnels through are named
    first.  13 symbols carry **[PROVISIONAL]** and say so.
-   Still unnamed: most of the physics, and the interior of the 3D pipeline.  ⚠ This does **not**
+   Still unnamed: the interior of the 3D pipeline below `project_point`, the front end's prompt
+   chain, and the other cars' AI.  ⭐ **The physics is no longer on that list** — `apply_driving_model`
+   and all fifteen of its sub-models have names as of 2026-08-17 (see §Three of those slots' DATA
+   STRUCTURES), though what the fifteen state ELEMENTS mean physically is still open in
+   `docs/rename.md`.  ⚠ This does **not**
    gate Phase 3: `disasm/symbols.csv` feeds the transpiler, so a name learned later propagates
    through the whole corpus on the next `make gen` — which is exactly why `docs/toolchain.md` says
    the cost of being only roughly right early is near zero.

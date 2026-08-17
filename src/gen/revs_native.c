@@ -1918,7 +1918,7 @@ static void road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
 
     for (;;) {
         /* $23D8 — this point's angle, and how far away it is.  A comes back as the high byte
-           of the scaled distance the $0CA5 blend left in point_dist_lo/hi. */
+           of the distance point_distance_hypot ($0CA5) left in point_dist_lo/hi. */
         cpu.X = (uint8_t)section;
         emit_edge_bearing_at_cursor();
         unsigned distHi = cpu.A;
@@ -2115,7 +2115,7 @@ void build_track_geometry(void)
        for each of the two road sides:            mark_line_surfaces — line -> surface class
 
    with three cells carrying the pass's identity into the callees: surface_style_base steps
-   $00 -> $08 -> $10 -> $1C (which of the four style records the span uses), surface_style_alt
+   $00 -> $08 -> $10 -> $1C (which of the four style records the span uses), shared_temp_8c
    is the style for everything nearer than the split, and road_split_index is where near
    becomes far.  ⚠ road_split_index is REREAD before every use below and that is deliberate:
    both fill_line_attr ($19A2) and draw_surface_spans ($19F1) write it, so a local copy would
@@ -2173,7 +2173,7 @@ static void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     surface_pass(0, road_split_index);
 
     surface_style_base = 0x08;
-    surface_style_alt  = 0x00;
+    shared_temp_8c  = 0x00;
     /* ⚠ Pass 1 does not go through surface_pass, and the difference is the ORDER: the 6502
        loads Y first and computes the base LAST, so it is the addition's flags — not a plain
        `LDA`'s — that reach the callee.  The base is also RECOMPUTED rather than farBase
@@ -2195,7 +2195,7 @@ static void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     arg_y(endCursorNear);
     fill_line_attr();
 
-    surface_style_alt  = 0x1C;
+    shared_temp_8c  = 0x1C;
     surface_style_base = 0x10;
     surface_pass(2, horizon_index);
 
@@ -2229,20 +2229,22 @@ void draw_road(void)
 
      2. THE HAND-INTEGRATED ACCUMULATOR.  model_accum_lo/hi is element 8 of the same vector,
         and it is the only element this routine integrates itself.  The sequence is deliberate
-        and looks wrong until you read it twice: the entry value is saved, $4729 subtracts a
+        and looks wrong until you read it twice: the entry value is saved, stage_accum_delta subtracts a
         scaled velocity from the accumulator, the next four sub-models therefore run against
         the OFFSET value, and only then is the entry value restored and the frame's real
-        increment (model_accum_delta_lo/hi, 1.5x what $4729 removed) added.
+        increment (model_accum_delta_lo/hi, 1.5x what stage_accum_delta removed) added.
 
      3. THE OFF-POWER GATE.  Once drive_state reaches 2 — crashed or spinning, the value
         check_crash writes — elements 5..7 of the state vector are forced to zero instead of
         being integrated.
 
-   ⚠ ELEVEN OF THE FIFTEEN SUB-MODELS ARE STILL `FUN_xxxx`, queued in docs/rename.md.  They
-   are named here only where the evidence is settled: compute_car_angles ($0D01) and
-   integrate_car_position ($48EF, which is what actually moves player_pos through the world).
-   $47A5 and $47C5 are both the generic integrator at $47E5 applied to elements 8 and $0A;
-   $4779 is the one that silences sound channel 3 while drive_state >= 2; the rest are open.
+   ⭐ ALL FIFTEEN SUB-MODELS NOW HAVE NAMES (2026-08-17, the queue's "eleven of fifteen callees
+   are still FUN_xxxx"), and read in order the chain is legible: the car's angles, a rotation of
+   the world-frame pair 0/1 into the car-frame pair 8/9, the accumulator offset, the grip
+   limits, the engine, the two axles' slip sound with two steering rotations between them, the
+   load terms, then — past the off-power gate — drag, a second rotation, the rate integrator,
+   the heading integrator and the camera.  ⚠ Every name is [INFERRED] from what the routine
+   COMPUTES; what the fifteen state elements MEAN physically is still open (docs/rename.md).
 
    No hardware writes and no $FC00-$FEFF access in the driver itself.
    =========================================================================== */
@@ -2251,7 +2253,7 @@ void draw_road(void)
 #define MODEL_STATE_HI   0x62E0u   /* ...and high bytes; element i is +i in each */
 
 /* ⚠ Every model cell below is read from mem[] at the point of use and never cached in a local:
-   any of the fifteen sub-models can write any of them, and $4729 in particular is *supposed* to
+   any of the fifteen sub-models can write any of them, and stage_accum_delta in particular is *supposed* to
    change model_accum under the four calls that follow it. */
 static void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
 {
@@ -2259,7 +2261,7 @@ static void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
     arg_a(posHi);
     arg_x(posLo);
     compute_car_angles();
-    FUN_48b9();
+    rotate_state_0_into_8();
 
     /* $46AE — the accumulator's entry value, for the restore at $46DF. */
     model_accum_entry_lo = model_accum_lo;
@@ -2267,7 +2269,7 @@ static void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
 
     /* $46B8-$46CD — the speed split.  abs16_math negates (math_lo, A) in place when A is
        negative, so math_lo has to be re-read after the call, not before.  Every register and
-       flag this block leaves is dead: $4729 opens with `LDA` and `LDY #$58`. */
+       flag this block leaves is dead: stage_accum_delta opens with `LDA` and `LDY #$58`. */
     math_lo = car_speed_lo;
     load_a(car_speed_hi);
     abs16_math();
@@ -2275,13 +2277,13 @@ static void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
     road_speed_frac = math_lo;
     wheel_spin_rate = road_speed ? road_speed : (uint8_t)(math_lo & 0xF0);
 
-    /* $46CF-$46DA — the four sub-models that run against the OFFSET accumulator.  $4729 is
+    /* $46CF-$46DA — the four sub-models that run against the OFFSET accumulator.  stage_accum_delta is
        what offsets it, and what leaves model_accum_delta_lo/hi behind. */
-    FUN_4729();
-    FUN_4bcf();
-    FUN_49ce();
+    stage_accum_delta();
+    update_grip_limits();
+    update_engine_revs();
     arg_x(0x01);
-    FUN_4779();
+    update_slip_sound();
 
     /* $46DF-$46F5 — restore, then apply the frame's real increment as one 16-bit add. */
     model_accum_lo = model_accum_entry_lo;
@@ -2289,16 +2291,16 @@ static void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
     model_accum_lo = (uint8_t)adc_step(model_accum_lo, model_accum_delta_lo, 0);
     model_accum_hi = (uint8_t)adc_step(model_accum_hi, model_accum_delta_hi, cpu.C);
 
-    /* $46F8-$4703 — and the sub-models that want the accumulator at its new value.  $47A5
-       integrates element 8 by element 14, $47C5 does the same for element $0A. */
-    FUN_47a5();
+    /* $46F8-$4703 — and the sub-models that want the accumulator at its new value.  Each of the
+       two rotations ends in model_integrate_element, on element 8 and on element $0A. */
+    rotate_accum_by_steer();
     arg_x(0x00);
-    FUN_4779();
-    FUN_47c5();
-    FUN_47f9();
+    update_slip_sound();
+    rotate_pair_a_by_steer();
+    damp_and_derive_loads();
 
     /* $4706-$4717 — off power: elements 5..7 are zeroed rather than integrated.  The loop's
-       exit registers (X = $FF, A = 0, N set) are dead — $4C65 opens with `LDA`. */
+       exit registers (X = $FF, A = 0, N set) are dead — apply_drag_terms opens with `LDA`. */
     if (cmp_ge(drive_state, 0x02)) {
         int element;
         for (element = 7; element >= 5; element--) {
@@ -2307,20 +2309,20 @@ static void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
         }
     }
 
-    /* $4719-$4725 — the tail.  integrate_car_position is what advances player_pos_lo/hi, so
+    /* $4719-$4725 — the tail.  integrate_car_position is what advances car_heading_lo/hi, so
        the car has not actually moved until the second-to-last call of the chain. */
-    FUN_4c65();
-    FUN_48c1();
-    FUN_4937();
+    apply_drag_terms();
+    rotate_state_6_into_3();
+    integrate_state_rates();
     integrate_car_position();
-    FUN_44ea();
+    update_camera_and_drive_state();
 }
 
 /* The 6502-ABI shim.  The player's own position is the routine's one input — it reaches the
-   6502 in A and X — and A, X, Y and the flags come back from FUN_44ea untouched. */
+   6502 in A and X — and A, X, Y and the flags come back from update_camera_and_drive_state untouched. */
 void apply_driving_model(void)
 {
-    apply_driving_model_core(player_pos_lo, player_pos_hi);
+    apply_driving_model_core(car_heading_lo, car_heading_hi);
 }
 
 /* ===========================================================================
@@ -2332,12 +2334,12 @@ void apply_driving_model(void)
 
    What it computes is the object plotter's four-cell argument block:
 
-       plot_shape    the low nibble of the slot's own car_flags_1 byte
-       plot_row      4 x (the object's distance ahead of the player), biased by $50
-       plot_column   object_col[slot]        — projected when the slot was filled
-       plot_width    object_width[slot]      — likewise
+       plot_shape    the low nibble of the slot's own car_flags_shape byte
+       plot_x      4 x (the object's distance ahead of the player), biased by $50
+       plot_line   object_line[slot]        — projected when the slot was filled
+       proj_width    object_width[slot]      — likewise
 
-   and then calls plot_object.  Two things stop it early: a NEGATIVE car_flags_1 byte, which
+   and then calls plot_object.  Two things stop it early: a NEGATIVE car_flags_shape byte, which
    is how an empty slot is spelled, and a distance whose high byte falls outside $E0..$1F —
    more than $2000 either side of the player is off the screen entirely.
 
@@ -2351,10 +2353,10 @@ void apply_driving_model(void)
    this routine's own accesses straight to mem[].
    =========================================================================== */
 
-#define CAR_FLAGS_1      0x018Cu   /* per slot: flags, with the object's shape in bits 0-3 */
-#define OBJECT_POS_LO    0x0380u   /* per slot: 16-bit track position, low byte */
-#define OBJECT_POS_HI    0x0398u   /* ...and high byte */
-#define OBJECT_COL       0x03B0u   /* per slot: screen cell column */
+#define CAR_FLAGS_SHAPE      0x018Cu   /* per slot: flags, with the object's shape in bits 0-3 */
+#define OBJECT_BEARING_LO    0x0380u   /* per slot: 16-bit track position, low byte */
+#define OBJECT_BEARING_HI    0x0398u   /* ...and high byte */
+#define OBJECT_LINE       0x03B0u   /* per slot: screen cell column */
 #define OBJECT_WIDTH     0x03C8u   /* per slot: screen width */
 
 /* (hi : math_lo) << 1, returning the new high byte — the 6502's `ASL math_lo / ROL A`.  Run
@@ -2370,7 +2372,7 @@ static unsigned shift_pair_left(unsigned hi)
 
 static void draw_track_object_core(uint8_t slot)
 {
-    uint8_t flags = mem[CAR_FLAGS_1 + slot];
+    uint8_t flags = mem[CAR_FLAGS_SHAPE + slot];
 
     if (flags & 0x80) {
         /* $2AD4 — an empty slot.  Nothing is drawn, but A is still the flag byte at the
@@ -2382,8 +2384,8 @@ static void draw_track_object_core(uint8_t slot)
         /* How far ahead of the player the object sits, as one 16-bit subtract.  The low
            byte's only reader is the x4 below, but it goes through math_lo because the
            plotter's setup shares that cell. */
-        math_lo = (uint8_t)sub_from(mem[OBJECT_POS_LO + slot], player_pos_lo);
-        unsigned deltaHi = sbc_step(mem[OBJECT_POS_HI + slot], player_pos_hi, cpu.C);
+        math_lo = (uint8_t)sub_from(mem[OBJECT_BEARING_LO + slot], car_heading_lo);
+        unsigned deltaHi = sbc_step(mem[OBJECT_BEARING_HI + slot], car_heading_hi, cpu.C);
 
         /* $2AE7-$2AF1 — the visibility window, and the two arms are not symmetric because
            the 6502 tests the sign first: behind the player it wants >= $E0, ahead of it
@@ -2392,11 +2394,11 @@ static void draw_track_object_core(uint8_t slot)
                                        : !cmp_ge(deltaHi, 0x20);
         if (visible) {
             unsigned row = shift_pair_left(shift_pair_left(deltaHi));
-            plot_row = (uint8_t)adc_step(row, 0x50, 0);
+            plot_x = (uint8_t)adc_step(row, 0x50, 0);
             /* The column's own `LDA` flags are dead — the width's LDA one instruction later
                rewrites N and Z, and nothing between them branches. */
-            plot_column = mem[OBJECT_COL + slot];
-            plot_width  = (uint8_t)load_a(mem[OBJECT_WIDTH + slot]);
+            plot_line = mem[OBJECT_LINE + slot];
+            proj_width  = (uint8_t)load_a(mem[OBJECT_WIDTH + slot]);
             plot_object();
         }
     }

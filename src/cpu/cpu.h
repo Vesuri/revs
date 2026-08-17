@@ -94,7 +94,7 @@ static inline void P_unpack(uint8_t p) {
 extern unsigned char g_stackLow;      /* lowest S ever seen (starts $FF) */
 extern unsigned char g_stackHigh;     /* HIGHEST S ever seen (starts $00) — see below */
 extern unsigned long g_stackTrespass; /* pushes that landed in the per-car arrays */
-#define STACK_FLOOR 0xA0              /* $019F is the top of car_flags_1 */
+#define STACK_FLOOR 0xA0              /* $019F is the top of car_flags_shape */
 /* ⭐ `make STACK_TRAP=1` (host) + REVS_STACK_TRAP=<hex S> prints ONE backtrace at the first push
    below that S — see cpu_stack_watermark() in cpu.c.  Compiles to nothing otherwise. */
 #if defined(REVS_STACK_TRAP)

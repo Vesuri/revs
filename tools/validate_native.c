@@ -779,9 +779,9 @@ void draw_track_object__t6502(void);
 void fill_dash_edge_columns(void);
 void fill_dash_edge_columns__t6502(void);
 
-#define PRE_CAR_FLAGS_1   0x018C
-#define PRE_OBJECT_POS_LO 0x0380
-#define PRE_OBJECT_POS_HI 0x0398
+#define PRE_CAR_FLAGS_SHAPE   0x018C
+#define PRE_OBJECT_BEARING_LO 0x0380
+#define PRE_OBJECT_BEARING_HI 0x0398
 
 static void plant_body_driver_smc(uint8_t* pre)
 {
@@ -801,26 +801,27 @@ static int speed_split_ran(const uint8_t* post)
 }
 
 /* The four cells the object plotter is driven through, recomputed from the PRE state — the
-   twin's whole output on the drawn path.  plot_object rewrites plot_width ($1FF4) and $2B but
-   never plot_row / plot_column / plot_shape, which is why only those three are checked. */
+   twin's whole output on the drawn path.  plot_object rewrites proj_width ($1FF4) and
+   proj_width_shift but never plot_x / plot_line / plot_shape, which is why only those three
+   are checked. */
 static int object_block_ran(const uint8_t* pre, const uint8_t* post, uint8_t slot)
 {
-    unsigned lo   = (pre[PRE_OBJECT_POS_LO + slot] - pre[0x000A]) & 0x1FF;
-    unsigned hi   = (pre[PRE_OBJECT_POS_HI + slot] - pre[0x000B] - (lo > 0xFF ? 1 : 0)) & 0xFF;
+    unsigned lo   = (pre[PRE_OBJECT_BEARING_LO + slot] - pre[0x000A]) & 0x1FF;
+    unsigned hi   = (pre[PRE_OBJECT_BEARING_HI + slot] - pre[0x000B] - (lo > 0xFF ? 1 : 0)) & 0xFF;
     unsigned row  = ((hi << 8) | (lo & 0xFF)) << 2;
-    return post[0x0037] == (pre[PRE_CAR_FLAGS_1 + slot] & 0x0F)
+    return post[0x0037] == (pre[PRE_CAR_FLAGS_SHAPE + slot] & 0x0F)
         && post[0x0035] == (uint8_t)(((row >> 8) & 0xFF) + 0x50)
         && post[0x0036] == pre[0x03B0 + slot];
 }
 
 /* Which of draw_track_object's three paths a case takes, decided from the PRE state: nothing
-   the routine calls writes car_flags_1, object_pos or player_pos before the test. */
+   the routine calls writes car_flags_shape, object_bearing or car_heading before the test. */
 enum { OBJ_EMPTY = 0, OBJ_OFFSCREEN = 1, OBJ_DRAWN = 2 };
 static int object_path(const uint8_t* pre, uint8_t slot)
 {
-    if (pre[PRE_CAR_FLAGS_1 + slot] & 0x80) return OBJ_EMPTY;
-    unsigned lo = (pre[PRE_OBJECT_POS_LO + slot] - pre[0x000A]) & 0x1FF;
-    unsigned hi = (pre[PRE_OBJECT_POS_HI + slot] - pre[0x000B] - (lo > 0xFF ? 1 : 0)) & 0xFF;
+    if (pre[PRE_CAR_FLAGS_SHAPE + slot] & 0x80) return OBJ_EMPTY;
+    unsigned lo = (pre[PRE_OBJECT_BEARING_LO + slot] - pre[0x000A]) & 0x1FF;
+    unsigned hi = (pre[PRE_OBJECT_BEARING_HI + slot] - pre[0x000B] - (lo > 0xFF ? 1 : 0)) & 0xFF;
     if (hi & 0x80) return hi >= 0xE0 ? OBJ_DRAWN : OBJ_OFFSCREEN;
     return hi < 0x20 ? OBJ_DRAWN : OBJ_OFFSCREEN;
 }
@@ -897,7 +898,7 @@ static int test_body_drivers(void)
             uint8_t slot = (uint8_t)(xs() % 24);   /* the 24 real object slots */
             /* Two thirds of the cases get an OCCUPIED slot: a uniform flag byte is empty
                half the time, and the empty path is three instructions long. */
-            if (xs() % 3) pre[PRE_CAR_FLAGS_1 + slot] &= 0x7F;
+            if (xs() % 3) pre[PRE_CAR_FLAGS_SHAPE + slot] &= 0x7F;
             /* ⭐⭐ AND SHAPE 9 IS EXCLUDED, WHICH IS NOT A CONVENIENCE.  plot_object's outer
                loop at $2002-$2027 repeats while $62F3 came back as 9 and mem[$0025] is
                positive, and $62F3 is re-stored from plot_shape at the top of every pass — so
@@ -907,8 +908,8 @@ static int test_body_drivers(void)
                (Found by sampling a 12-minute run, the same way the plotter chains were.)
                $0025 has exactly one writer in the engine and it is not in this subtree, so
                nothing inside the loop can break it. */
-            if ((pre[PRE_CAR_FLAGS_1 + slot] & 0x0F) == 0x09)
-                pre[PRE_CAR_FLAGS_1 + slot] ^= 0x01;
+            if ((pre[PRE_CAR_FLAGS_SHAPE + slot] & 0x0F) == 0x09)
+                pre[PRE_CAR_FLAGS_SHAPE + slot] ^= 0x01;
             int path = object_path(pre, slot);
             paths[path]++;
             c.A = (uint8_t)xs(); c.X = slot; c.Y = (uint8_t)xs();
@@ -932,7 +933,7 @@ static int test_body_drivers(void)
             printf("[BROKEN] draw_track_object: %d of %d drawn cases left the plotter's "
                    "argument block holding something other than what the pre-state says it "
                    "should — the twin and the oracle agree but both are wrong, or a callee "
-                   "writes plot_row/plot_column/plot_shape after all\n",
+                   "writes plot_x/plot_line/plot_shape after all\n",
                    paths[OBJ_DRAWN] - blockRan, paths[OBJ_DRAWN]);
             fail++;
         }

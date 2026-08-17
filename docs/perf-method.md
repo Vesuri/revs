@@ -594,7 +594,7 @@ around four transliterated calls is a driver no matter how long its body reads.
 ⭐ What these four bought is the naming the representation change needs, and it corrected a fact:
 **the edge arrays hold ANGLES, not screen columns** (`$2145` is an arctan, `$23C0` stores
 `bearing - car_heading`, `$0BA2` re-bases by the same delta the heading integrates).  That makes
-`player_pos_lo`/`_hi` a wrong name rather than a narrow one — `docs/rename.md`, "it is a HEADING, not a position" — and it is
+`player_pos_lo`/`_hi` a wrong name rather than a narrow one — they are `car_heading_lo`/`_hi` now — and it is
 the first thing `docs/direct-bitplane-plan.md` §7a has to know about these buffers.
 ⭐ The lever is unchanged and is now unambiguous: **the view pipeline's LEAVES** — the `$2C00`-`$2FFF`
 span plotters, `project_point` and `bearing_to_section`, which are what the 18-per-side calls land in.

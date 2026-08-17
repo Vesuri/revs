@@ -208,9 +208,9 @@ splits the routine instead of abandoning the oracle:
 
 Before rearranging these buffers, know what is in them, because the previous names said something
 false: **`edge_x_lo`/`edge_x_hi` are ANGLES, not screen columns.** `bearing_to_section` (`$2145`) is
-an arctan — it divides the smaller camera-relative section delta by the larger, indexes the table at
-`$6100` and adds a quadrant base of `$20`/`$60`/`$A0`/`$E0` — and `emit_edge_bearing` (`$23C0`)
-stores `bearing - car_heading` into the array.  So an entry is the point's azimuth relative to where
+an arctan — it divides the smaller camera-relative section delta by the larger, indexes `arctan_table`
+(`$6100`, 256 bytes) and adds a quadrant base of `$20`/`$60`/`$A0`/`$E0` — and `emit_edge_bearing`
+(`$23C0`) stores `bearing - car_heading` into the array.  So an entry is the point's azimuth relative to where
 the car is pointing, and **`interp_edge` (`$2B26`) is the routine that turns an azimuth into a
 column**, i.e. it is the perspective seam this plan has to preserve.  Three consequences:
 
@@ -219,9 +219,14 @@ column**, i.e. it is the perspective seam this plan has to preserve.  Three cons
 * `rebase_edge_point` (`$0BA2`) re-bases the near slots by the same delta that integrates the
   heading, which is why the near six points survive a frame — any rearrangement has to keep that
   incremental path, or the near road gets rebuilt from the section list every frame;
-* ⚠ `$5E50`/`$5EA0` is a SECOND angle list whose base overlaps the 2x40 arrays and can spill into
-  `$5EE0` — `docs/rename.md`, "a second angle list whose extent contradicts the first".  **Resolve that before moving anything**, since a layout change
-  built on the wrong extent will look correct on Silverstone and corrupt a neighbour array.
+* ⚠⚠ `edge_opp_x_lo`/`edge_opp_x_hi` (`$5E50`/`$5EA0`) — the OPPOSITE road boundary's azimuth per
+  point — **deliberately shares bytes with `edge_x_lo`/`edge_x_hi`**: the base is `edge_x` + `$10`,
+  and each 40-entry half only ever holds points 6..23, so index *i* lands in the 25..39 slack of the
+  same half (settled 2026-08-17; the highest byte written is `$5E8F`/`$5EDF`, and nothing reaches
+  `$5EE0`).  A layout change that spreads the two halves apart, widens an entry, or moves either
+  base **breaks the alias silently** — `emit_edge_width_offset` writes through one base and
+  `mark_line_surfaces` reads through the other, so make the two arrays explicit here rather than
+  inheriting the overlap by accident.
 
 ## 6. Sequencing, and an honest expectation
 
