@@ -586,6 +586,47 @@ blocks), so there is no adjacent pair to widen.  A wide store is only endian-neu
 in it is the SAME value, which is the run-collapsing idea `docs/direct-bitplane-plan.md` §7f measured
 as a 9% LOSS.
 
+### ⭐⭐ WHERE $7BE2's 82 ms ACTUALLY IS — the DRIVERS are 65% of it, and two negative results (2026-08-17)
+
+**The bracket split above was wrong, and a differential build settled it.**  `make VIEWSPLIT=1` read
+54 ms of unit loop against 76 ms of driver; its own control read 12 ms over 118 brackets, i.e. ~100 µs
+per bracket transition, which is impossible for a beam read and an accumulate.  The brackets cost more
+than the code inside them and mis-attributed the difference.  ⚠ Do not use VIEWSPLIT for a share.
+
+The honest instrument is a **differential build** — strip a stage, re-measure the whole row, and take
+the difference (`make NOUNITS=1|2|3`, picture wrong by construction, never quote a framerate):
+
+| build | phase 24 | what the difference prices |
+|---|---|---|
+| shipping | **82 ms** | |
+| `NOUNITS=3` — consume the sources, drop the STORE | 75 ms | the 2148 stores: **7 ms** |
+| `NOUNITS=1` — keep the iterations, drop all memory work | 55 ms | the source reads + consume: **~20 ms** |
+| `NOUNITS=2` — do not run the loop at all | 53 ms | the loop's own iteration overhead: **~2 ms** |
+
+⭐⭐ **So the 2093-unit chain is ~29 ms and the ~77 lines of per-line DRIVER are ~53 ms — 65% of the
+row.**  ⚠ `NOUNITS=1`/`2` also stop zeroing the sources, and the control tables overlap the source
+blocks ($3080 is column 1's), so the drivers' workload shifts a little in those two; `NOUNITS=3` has
+no such confound and is the one to trust.  ~53 ms over 77 lines is **~4400 cycles a line** for a
+handful of table reads, two composed bytes and two stores — the machinery pattern again, and the
+drivers still run on cpu.h macros (`view_compose` is `LDA`/`AND`/`ORA`, `stop_unchanged` a `CPY`,
+`step_scanline` three `ADC`s), each writing N/Z to memory.
+
+**❌ NEGATIVE RESULT, and it is what redirected the search: removing the per-unit SMC check bought
+nothing.**  The check was two loads and two compares per cell — 56 of the loop's 124 nominal cycles,
+45% — asking whether this unit's store had been overwritten with an `RTS`.  The answer only changes
+when a driver plants, and the twin does every plant, so it is now tracked (one scan of the forty slots
+per sweep, an update per plant) and the loop consults nothing: **14 → 8 instructions, 34 → 20 bytes,
+~124 → ~64 cycles.**  Result: phase 24 **84 → 82 ms**, FPS 2.73 → 2.73.  ⭐ Two of the four memory
+accesses per unit gone as well, for ~2 ms — which is only consistent with the loop being ~29 ms, and
+is the measurement that proves the split above was wrong.  The change stays (validated, byte-exact,
+and a simpler loop for the line-skip work to build on) but it is not a win.
+
+**What this retires:** "attack the unit loop harder".  At ~29 ms for 2148 units it is ~95 cycles a
+unit and there are 8 instructions in it; hand-asm's ceiling here is single-digit milliseconds.  ⭐ The
+two things left on `$7BE2` are the DRIVERS' machinery (~53 ms, and the same flags-are-dead argument
+that made twin #1 worth 62%) and the line skip §7g priced at ~33% of a 29 ms loop, i.e. ~10 ms.
+**The drivers are now five times the prize the scan is.**
+
 ### ⭐⭐ AND THEN ITS DRIVERS: **2.58 → 2.73 FPS (+6.2%)**, phase 24 **102 → 84 ms** (2026-08-17)
 
 ⭐ **First the SPLIT, because "84 ms" does not say what to attack.**  `make VIEWSPLIT=1 PROBES=1`

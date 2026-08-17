@@ -129,6 +129,21 @@ ifdef VIEWSPLIT
 EXTRA_DEFINES += -DREVS_VIEWSPLIT
 endif
 
+# `make NOUNITS=1` — ⚠⚠ THE PICTURE IS WRONG BY CONSTRUCTION.  The $7BE2 unit loop keeps its
+# iterations and loses its memory work, so `phase 24 with this on` is the per-line drivers plus
+# the bare loop.  A decomposition the VIEWSPLIT brackets cannot give honestly: bracketing 118
+# chain runs a frame costs more than the code inside them.  Never quote a framerate from it.
+ifdef NOUNITS
+ifeq ($(NOUNITS),3)
+EXTRA_DEFINES += -DREVS_NO_UNIT_STORE
+else
+EXTRA_DEFINES += -DREVS_NO_UNIT_WORK
+ifeq ($(NOUNITS),2)
+EXTRA_DEFINES += -DREVS_NO_UNIT_LOOP
+endif
+endif
+endif
+
 # `make FPSCOUNT=1` — the HONEST framerate build.  Adds exactly two things to an
 # otherwise shipping binary: the headless auto-run, and ONE increment per painted frame.
 # g_vbiCount is bumped by the real VERTB handler in every build, so

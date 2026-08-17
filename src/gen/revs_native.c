@@ -483,6 +483,74 @@ static int view_is_slot(uint16_t dst, unsigned page)
     return g_viewSlotOf[page - VIEW_LOW_PAGE][dst & 0xFF] != 0;
 }
 
+/* ⭐⭐ WHERE THE PLANTED STOPS ARE, TRACKED INSTEAD OF RE-READ PER UNIT.
+   45% of the unit loop was the SMC check — two loads and two compares per cell to ask whether
+   this unit's store had been overwritten with an `RTS`.  The answer changes only when a driver
+   PLANTS, and every plant in the sweep goes through view_plant below, so it is tracked: one
+   scan of the forty slots when the sweep starts, and an update at each plant.  The unit loop
+   then runs to a precomputed stop and tests nothing at all.
+   ⚠ THE SCAN IS NOT OPTIONAL and the tracking cannot replace it: a slot can hold garbage that
+   no plant of ours put there (`make validate`'s illegal cases poison the page between calls),
+   so each sweep starts from what is REALLY in the page.
+   ⚠ Sound only because the chain cannot modify its own page: it stores to $3000-$43CF and to
+   base + cell*8, and the sweep's pointers span $6700-$737D — below $7C00.  Same construction
+   argument as the hoisted destination bases, and the same one that lets the plant tracking
+   survive a whole sweep.
+   The list is unit indices, ascending, with a 40 sentinel — normally one entry (phases 2 and 3
+   plant one stop per chain) and none at all through phase 1's 1440 units. */
+static unsigned char g_viewStopList[41];
+static int g_viewStopN;
+
+/* This unit's slot no longer holds `STA (zp),Y`. */
+static void view_stop_note(int unit)
+{
+    int i, j;
+    for (i = 0; i < g_viewStopN; i++) {
+        if (g_viewStopList[i] == unit) return;             /* already known */
+        if (g_viewStopList[i] > unit) break;
+    }
+    for (j = g_viewStopN; j > i; j--) g_viewStopList[j] = g_viewStopList[j - 1];
+    g_viewStopList[i] = (unsigned char)unit;
+    g_viewStopList[++g_viewStopN] = 40;
+}
+
+/* ...and it does again. */
+static void view_stop_forget(int unit)
+{
+    int i, j;
+    for (i = 0; i < g_viewStopN; i++)
+        if (g_viewStopList[i] == unit) {
+            for (j = i; j < g_viewStopN - 1; j++) g_viewStopList[j] = g_viewStopList[j + 1];
+            g_viewStopList[--g_viewStopN] = 40;
+            return;
+        }
+}
+
+/* Rebuild the list from the page itself.  Once per sweep. */
+static void view_stops_rescan(void)
+{
+    int i;
+    g_viewStopN = 0;
+    g_viewStopList[0] = 40;
+    for (i = 0; i < 40; i++)
+        if (g_viewSlotP[i] && *g_viewSlotP[i] != OP_STA_IND_Y) view_stop_note(i);
+}
+
+/* The first unit at or after `unit` whose store has been overwritten, or 40 for none. */
+static int view_stop_from(int unit)
+{
+    int i;
+    for (i = 0; i < g_viewStopN; i++)
+        if (g_viewStopList[i] >= unit) return g_viewStopList[i];
+    return 40;
+}
+
+/* The unit an already-validated slot address belongs to. */
+static int view_unit_of_slot(uint16_t dst)
+{
+    return (int)g_viewSlotOf[(dst >> 8) - VIEW_LOW_PAGE][dst & 0xFF] - 1;
+}
+
 /* Plant `opcode` over the store of the unit named by the operand cell at `opnd`.  Returns
    0 (and traps) for a low byte that is not a slot boundary — planting mid-instruction would
    leave the real slot reading `STA` and diverge from the 6502 silently.
@@ -493,6 +561,9 @@ static int view_plant(ViewState* v, uint16_t site, uint16_t opnd, unsigned page,
     v->byte = load_a(opcode);
     if (!view_is_slot(dst, page)) { platform_smc_unhandled(site, dst); return 0; }
     bus_write(dst, (uint8_t)v->byte);
+    /* the only writer of an opcode slot during a sweep, so the stop list stays exact */
+    if (opcode == OP_STA_IND_Y) view_stop_forget(view_unit_of_slot(dst));
+    else                        view_stop_note(view_unit_of_slot(dst));
     return 1;
 }
 
@@ -598,6 +669,31 @@ static unsigned step_scanline(int* carry_out)
 #define VIEWSPLIT_UNITS_END()    ((void)0)
 #endif
 
+/* One unit's SOURCE half: consume the byte and carry it on, with no store.  The chain does
+   this BEFORE it looks at its opcode slot, so a planted `RTS` still consumes the source of the
+   unit it stops on — which is why the stop tail needs the same three lines the loop runs.
+     forced   the unit+$05 entry: no dirty test, and the carried byte comes from the caller's
+              cell index instead of the source byte */
+static unsigned view_consume(MEM_QUAL unsigned char* srcp, unsigned byte, int forced,
+                             unsigned cell)
+{
+    if (forced) {
+        *srcp = 0;
+        return mem[VIEW_CELL_BYTES + cell];
+    }
+    {
+        /* the dirty test: zero = same as my left.  ⚠ `unsigned char`, not `unsigned`: the byte
+           load then sets the flags the branch wants, where a zero-extended long costs an extra
+           `tst.l` in the 2093-unit loop. */
+        unsigned char source = *srcp;
+        if (source) {
+            *srcp = 0;
+            return mem[VIEW_CELL_BYTES + source];
+        }
+    }
+    return byte;
+}
+
 /* The chain itself, $7BF7-$7F16.  Runs units `unit`..39 of the current line, then the
    $7EEE tail, which either returns or steps to the next line and starts over at unit 0.
      forced         entered at unit+$05: no dirty test, v->cell is the glyph index
@@ -623,8 +719,8 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
 
         /* ⭐ THE 2093-UNIT LOOP, and everything in it is a running pointer.  The unit is
            the whole cost of the routine and the only reason it is worth a twin, so the
-           source address, the destination address and the opcode slot each step by a
-           constant instead of being derived from `i`.
+           source and destination addresses step by a constant instead of being derived from
+           the cell index, and the opcode slot is not consulted at all (view_stop_from).
            ⚠ Hoisting the two destination bases out of the loop is safe by CONSTRUCTION,
            not by luck: the chain writes only its own source blocks ($3000-$43CF) and
            `base + cell*8` inside the frame buffer, so nothing it does can reach plot_ptr
@@ -635,7 +731,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
             MEM_QUAL unsigned char* srcp = mem + VIEW_SRC_BLOCKS
                                                + ((unsigned)unit << 7) + line;
             MEM_QUAL unsigned char* const dp1 = mem + base1;
-            MEM_QUAL unsigned char* const* slotp = &g_viewSlotP[unit];
+            int lastSeg = (unit >= 32);
             /* ⭐ THE SEGMENT AS A POINTER END, not an `i == 31` test inside the loop.  Cells
                0-31 come off plot_ptr and 32-39 off plot_ptr2 because 40 x 8 = 320 bytes does
                not fit one page, and the old form asked `i == 31?` and `i < 40?` separately in
@@ -649,7 +745,11 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
             MEM_QUAL unsigned char* segBase = (unit < 32) ? mem + base0 : dp1;
             MEM_QUAL unsigned char* dp      = segBase + (((unsigned)unit & 31u) << 3);
             MEM_QUAL unsigned char* segEnd  = (unit < 32) ? mem + base0 + 256 : dp1 + 64;
-            int lastSeg = (unit >= 32);
+            int curUnit = unit;
+            int segLimit = (unit < 32) ? 32 : 40;
+            /* ⭐⭐ THE PLANTED STOP, LOOKED UP ONCE — see view_stop_from.  40 means "none in
+               this chain run", which is every one of phase 1's lines. */
+            const int stopUnit = view_stop_from(unit);
             /* ⭐ THE BUS'S HARDWARE-RANGE TEST, HOISTED TO ONE CHECK PER SCAN LINE.  A cell
                store is `STA ($70),Y`, so the transliteration cannot know statically that it
                misses the $FC00-$FEFF I/O window and pays the test 2093 times a frame.  Here
@@ -666,36 +766,45 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
 
             VIEWSPLIT_UNITS_BEGIN();
             for (;;) {
-                while (dp != segEnd) {
-                    MEM_QUAL unsigned char* slot;
+                /* the run ends at the segment's last cell, or on the planted stop */
+                const int stopHere = (stopUnit >= curUnit && stopUnit < segLimit);
+                MEM_QUAL unsigned char* runEnd =
+                    stopHere ? dp + ((unsigned)(stopUnit - curUnit) << 3) : segEnd;
 
+#ifdef REVS_NO_UNIT_LOOP
+                /* ⭐ `make NOUNITS=2` — the loop does not run AT ALL, so phase 24 is the
+                   per-line DRIVERS alone.  Picture wrong by construction, as above. */
+                {
+                    unsigned n = (unsigned)(runEnd - dp) >> 3;
+                    srcp += n << 7;
+                    dp = runEnd;
+                }
+#endif
+                while (dp != runEnd) {
                     PROBE_SHAPE_DASH_UNIT(line);
-                    if (forced) {                       /* only ever the FIRST unit of a call */
-                        forced = 0;
-                        *srcp = 0;
-                        byte = mem[VIEW_CELL_BYTES + cell];
-                    } else {
-                        /* the dirty test: zero = same as my left.  ⚠ `unsigned char`, not
-                           `unsigned`: the byte load then sets the flags the branch wants, where a
-                           zero-extended long costs an extra `tst.l` in the 2093-unit loop. */
-                        unsigned char source = *srcp;
-                        if (source) {
-                            *srcp = 0;
-                            byte = mem[VIEW_CELL_BYTES + source];
-                        }
-                    }
-
-                    slot = *slotp++;                    /* the store — or a planted RTS */
-                    if (slot) {
-                        unsigned char op = *slot;       /* byte-wide: see the source load above */
-                        if (op != OP_STA_IND_Y) {
-                            cell = (unsigned)(dp - segBase) & 0xFF; /* its `LDY #<cell*8>` ran */
-                            if (op != OP_RTS)
-                                platform_smc_unhandled((uint16_t)(slot - mem), op);
-                            PLOT_FLUSH();
-                            goto done;
-                        }
-                    }
+#ifdef REVS_NO_UNIT_WORK
+                    /* ⭐ `make NOUNITS=1` — the unit loop keeps its ITERATIONS and loses its
+                       memory work (no source read, no consume, no store).  The picture is wrong
+                       by construction; the point is a decomposition no bracket can give, because
+                       bracketing 118 chain runs a frame costs more than the thing it measures.
+                       phase 24 with this on = the drivers plus the bare loop.
+                       ⚠ It also stops ZEROING the sources, and the control tables overlap the
+                       source blocks ($3080 is column 1's), so the drivers' own workload shifts:
+                       treat 1 and 2 as indicative and `NOUNITS=3` — which keeps the consume and
+                       drops only the store — as the clean one. */
+                    srcp += 0x80;
+                    dp += 8;
+                    continue;
+#endif
+                    byte = view_consume(srcp, byte, forced, cell);
+                    forced = 0;
+#ifdef REVS_NO_UNIT_STORE
+                    /* ⭐ `make NOUNITS=3` — everything but the STORE, so the sources are still
+                       consumed and the drivers see the workload they really have. */
+                    srcp += 0x80;
+                    dp += 8;
+                    continue;
+#endif
                     PLOT_UNIT((unsigned)(dp - mem), byte);
 #ifndef REVS_PLOT_ONLY
                     PROBE_SHAPE_DASH_STORE((unsigned)(dp - mem), byte, line);
@@ -705,11 +814,29 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                     srcp += 0x80;
                     dp += 8;
                 }
+
+                if (stopHere) {
+                    /* the unit the stop sits on: its source is consumed, its store is not.
+                       ⚠ The slot byte is read AFTER the consume, in the 6502's order — the
+                       source blocks and the chain's own page cannot overlap, so the value is
+                       the same either way, but the order is not something to have to argue. */
+                    MEM_QUAL unsigned char* slot = g_viewSlotP[stopUnit];
+                    unsigned char op;
+                    PROBE_SHAPE_DASH_UNIT(line);
+                    byte = view_consume(srcp, byte, forced, cell);
+                    cell = (unsigned)(dp - segBase) & 0xFF;   /* its `LDY #<cell*8>` ran */
+                    op = *slot;
+                    if (op != OP_RTS) platform_smc_unhandled((uint16_t)(slot - mem), op);
+                    PLOT_FLUSH();
+                    goto done;
+                }
                 if (lastSeg) break;
-                segBase = dp1;                          /* cells 32-39 live in the next page */
-                dp      = dp1;
-                segEnd  = dp1 + 64;
-                lastSeg = 1;
+                segBase  = dp1;                         /* cells 32-39 live in the next page */
+                dp       = dp1;
+                segEnd   = dp1 + 64;
+                curUnit  = 32;
+                segLimit = 40;
+                lastSeg  = 1;
             }
             VIEWSPLIT_UNITS_END();
             cell = 0x38;                            /* unit 39's cell, had the chain not stopped */
@@ -880,6 +1007,7 @@ static void view_paint_lines_core(unsigned screenBase, unsigned firstLine)
     ViewState v;
 
     if (!g_viewTablesBuilt) view_build_tables();
+    view_stops_rescan();          /* what is REALLY in the page, before any plant of ours */
 
     plot_ptr_lo  = (unsigned char)screenBase;
     plot_ptr2_lo = (unsigned char)screenBase;
