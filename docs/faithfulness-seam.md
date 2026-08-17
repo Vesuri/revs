@@ -118,11 +118,29 @@ purely for this reason — same 0/700 differential, same framerate (465 vs 467 p
    enumeration cashed in, and they are the FIRST twins since #2 with no transliterated subtree
    underneath them at all: the callee set they share is `div16by8` alone, and #13 had already made
    it real C.  So the ordering rule has a corollary — **twin the leaf first, then its callers
-   become leaf-heavy too.**  Two twins that would each have been drivers in October are both
-   arithmetic now, and the same move is available anywhere a subsystem bottoms out in one routine.
+   become leaf-heavy too.**
    ⚠ Enumerating the callee set is also what *sized* the job: `grep -E "JSR|JMP"` over the two
    address ranges is ten seconds and it said "one callee, three call sites" before a line was
    written.  Do that before estimating any twin.
+   ⚠⚠ **AND THEY STILL DID NOT PAY — LEAF-HEAVY IS NECESSARY AND NOT SUFFICIENT.**  Measured: 371
+   painted frames against a 383 control, and 349 before the `always_inline` fix below, i.e. the
+   twin was 9% SLOWER than the transliteration it replaced.  The reason is the sharpest form of
+   this whole section: **the win is ALGORITHMIC COMPRESSION, not being real C.**  Twins #1 and #2
+   paid because most of what the interpreter did for them was bookkeeping around work that C does
+   differently (a palette loop, a dirty scan).  These two compress nothing — every 6502 instruction
+   is one C operation — **and all four exit flags are live at their call sites**, so the twin has to
+   compute the same N/V/Z/C the interpreter computed.  Once the flags are in the contract there is
+   no interpreter left to delete.
+   ⇒ The question to ask before an arithmetic twin is **"what does the C version do in FEWER
+   operations than the 6502 did?"**  A chain of `ADC`/`SBC` with live flags: nothing.  A byte-pair
+   shift loop the 68000 does in one word op: something.  If the answer is nothing, write the twin
+   for the NAMES and say so (as with #6-#8), or do not write it.
+   ⚠⚠ **A flag helper left OUT OF LINE can make an arithmetic twin slower on its own.**  `sub_from`
+   and friends are a few instructions each, but GCC keeps them out of line at -O3 (they write the
+   global `cpu` and have many callers) — a `jsr` plus a `movem.l` pair per subtract.  They now carry
+   `REVS_FLAG_OP` (`static inline __attribute__((always_inline))`).  **Grep the objdump for
+   `jsr <sub_from>` before believing any arithmetic twin is fast**; `docs/perf-method.md`
+   §twins #14/#15 has the four-way measurement.
 9. **Sabotage before believing it.**  Four defects minimum, each must FAIL, and any sabotage that
    PASSES is a fixture gap to write down rather than a pass to enjoy (`view_paint_lines`' phase-3
    carry tail is unreachable and untested — recorded in the twin's own comment).

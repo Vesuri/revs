@@ -46,11 +46,22 @@
 /* ===========================================================================
    The flag-carrying primitives.  These exist so that no other line in this file
    has to be written in 6502; see the header.
+
+   ⚠⚠ ALWAYS_INLINE IS LOAD-BEARING HERE, NOT A HINT.  Each of these is a few instructions
+   wrapping one cpu.h macro, and GCC leaves them OUT OF LINE at -O3 because they write the
+   global `cpu` and have many callers.  In a routine that is nearly all arithmetic that costs a
+   `jsr` plus a `movem.l d2-d7,-(sp)` pair PER SUBTRACT, and it is how twins #14/#15 first
+   measured 349 painted frames against a 383 control — a twin SLOWER than the transliteration
+   it replaced, because the transliteration expands the same macro inline at every site.
+   Inlining them recovered 349 -> 371 for those two twins and 383 -> 388 for the corpus that
+   was already here (docs/perf-method.md §twins #14/#15).
+   ⭐ So: read the objdump for `jsr <sub_from>` before believing any arithmetic twin is fast.
    =========================================================================== */
+#define REVS_FLAG_OP static inline __attribute__((always_inline))
 
 /* A = value, with N and Z from it.  Used where a value reaches A and an SMC trap can then
    exit the routine with both still live. */
-static unsigned load_a(uint8_t value)
+REVS_FLAG_OP unsigned load_a(uint8_t value)
 {
     LDA(value);
     return cpu.A;
@@ -59,7 +70,7 @@ static unsigned load_a(uint8_t value)
 /* a + addend + carry_in, setting C and V.  C chains (the 16-bit pointer step adds three
    times) and V is the one flag the cell chain can leak to its caller — nothing else in it
    writes V at all. */
-static unsigned adc_step(unsigned a, uint8_t addend, int carry_in)
+REVS_FLAG_OP unsigned adc_step(unsigned a, uint8_t addend, int carry_in)
 {
     cpu.A = (uint8_t)a;
     cpu.C = (uint8_t)(carry_in != 0);
@@ -68,7 +79,7 @@ static unsigned adc_step(unsigned a, uint8_t addend, int carry_in)
 }
 
 /* value - subtrahend with the borrow clear (SEC/SBC), setting C and V. */
-static unsigned sub_from(unsigned value, uint8_t subtrahend)
+REVS_FLAG_OP unsigned sub_from(unsigned value, uint8_t subtrahend)
 {
     cpu.A = (uint8_t)value;
     cpu.C = 1;
@@ -78,7 +89,7 @@ static unsigned sub_from(unsigned value, uint8_t subtrahend)
 
 /* value - subtrahend - !carry_in, setting C and V — the second half of a 16-bit subtract,
    where the borrow has to come from the low half's own SBC. */
-static unsigned sbc_step(unsigned value, uint8_t subtrahend, int carry_in)
+REVS_FLAG_OP unsigned sbc_step(unsigned value, uint8_t subtrahend, int carry_in)
 {
     cpu.A = (uint8_t)value;
     cpu.C = (uint8_t)(carry_in != 0);
@@ -1487,7 +1498,7 @@ void race_main_loop(void)
 
 /* value >> 1, with C from the bit shifted out.  The last operation in the routine, so its
    C/N/Z are the flags the caller sees. */
-static unsigned lsr_a(unsigned value)
+REVS_FLAG_OP unsigned lsr_a(unsigned value)
 {
     cpu.A = (uint8_t)value;
     LSR_A();
@@ -1498,7 +1509,7 @@ static unsigned lsr_a(unsigned value)
    behind.  ⚠ NOT decoration: every SMC site in these two routines is an EXIT, so a clamp
    test three lines earlier is the last thing that touched the flags on that path, and a
    plain C `>=` reads the same and validates differently. */
-static int cmp_ge(unsigned value, uint8_t limit)
+REVS_FLAG_OP int cmp_ge(unsigned value, uint8_t limit)
 {
     cpu.A = (uint8_t)value;
     CMP(limit);
@@ -1514,7 +1525,7 @@ static unsigned clamp_up_to(unsigned value, uint8_t floor)
 
 /* Y = value, then the 6502's CPY.  Used where the compare is the last thing to touch the
    flags before an exit, and Y is live across it too. */
-static int cpy_eq(uint8_t value, uint8_t limit)
+REVS_FLAG_OP int cpy_eq(uint8_t value, uint8_t limit)
 {
     cpu.Y = value;
     CPY(limit);
@@ -2693,7 +2704,7 @@ static uint8_t normalise_for_divide(uint8_t* largerLo, uint8_t largerHi,
    it before the RTS — so V is part of that arm's exit contract even though no caller reads it.
    The two octant arms use the same instruction and then ADC over the top of it, which is why
    this only matters here.  (645 fixture failures, all on the one arm, all V.) */
-static int sign_bit7(unsigned cell)
+REVS_FLAG_OP int sign_bit7(unsigned cell)
 {
     BIT(mem[cell]);
     return cpu.N;

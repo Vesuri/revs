@@ -530,6 +530,46 @@ producer → producer → consumer over one shared data structure, and that stru
 ms/frame**, charged to whichever phase it preempted so it appears in no row of its own.  It does the
 copper rebuild, the bitplane-pointer swap and the audio tick.  Unmeasured internally.
 
+### ⚠⚠ TWINS #14/#15: an ALL-ARITHMETIC LEAF TWIN THAT MADE IT SLOWER, and the one-line fix (2026-08-18)
+
+`bearing_to_section_from` (`$2147`) and `project_point_from` (`$2287`) are the road pass's two
+coordinate transforms, `div16by8`'s own callers, and the first twins since #2 with **no
+transliterated subtree underneath them at all**.  By §8's rule that is the shape that should pay.
+Four 30 s warp runs of `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`, every one from
+a `make clean`, all in one session:
+
+| build | painted in 30 s | modal row |
+|---|---|---|
+| control (the commit before) | 383 | 2.92 |
+| control + `always_inline` on the flag helpers | 388 | 2.92-3.02 |
+| **twins #14/#15 as first written** | **349** | **2.63** |
+| twins #14/#15 + `always_inline` | 371 | 2.83-2.92 |
+
+⭐⭐ **THE TWIN WAS SLOWER THAN THE TRANSLITERATION IT REPLACED — 349 against 383, a 9% LOSS, far
+outside the one-frame noise floor.**  The objdump said why in one grep: `jsr <sub_from>`.  The
+flag-carrying helpers (`sub_from` / `sbc_step` / `adc_step` / `cmp_ge` / `load_a`) are a few
+instructions each, but GCC left them **out of line at -O3** because they write the global `cpu` and
+have many callers — so every subtract in a routine that is *nothing but* subtracts paid a `jsr` plus
+a `movem.l d2-d7,-(sp)`/restore pair.  The transliteration expands the same `cpu.h` macro INLINE at
+every site and therefore never pays it.  `static inline __attribute__((always_inline))` (now
+`REVS_FLAG_OP`) took the 16 call sites in the binary to 0 and recovered 349 → 371.
+
+⭐⭐ **AND THE HONEST RESULT AFTER THE FIX IS STILL A SMALL LOSS: 371 against 383/388.**  ~3%, i.e. at
+the floor, but on the wrong side of it in every row.  So §8's rule needed narrowing, and this is the
+narrowing — **the win is ALGORITHMIC COMPRESSION, not "being real C".**  Twin #13 paid nothing but at
+least had a compression available (eight unrolled byte-pair shifts → one 16-bit word).  These two
+have none: every 6502 instruction maps to exactly one C operation, **and all four exit flags are
+live**, so the twin must compute the same N/V/Z/C the interpreter computed.  There is no interpreter
+overhead left to remove once the flags are part of the contract.
+⇒ Before twinning an arithmetic leaf, ask **what the C version does in FEWER operations than the
+6502 did.**  If the answer is "nothing, it just looks nicer", expect parity and write the twin for
+the names (§8) — which is what these two are kept for.
+⚠ Two procedural notes.  `always_inline` is worth ~1% to the twins that were already here (383 →
+388) and ~6% to these, so it is a fix for *arithmetic-dense* twins specifically, not a corpus-wide
+win — attribute it that way.  And the first measurement of these twins was taken from a `PROBES=1`
+build and read 2.53; probe brackets are not free, so **match the build to the control** before
+comparing anything.
+
 ### ✅ TWIN #13 `div16by8` — the pipeline's first LEAF, framerate UNCHANGED, and the CONTROL moved the baseline (2026-08-17)
 
 `$0C47 div16by8` (94 bytes) is real C: `make validate` 0 mismatch over 4000 randomised cases in four

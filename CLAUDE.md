@@ -328,6 +328,14 @@ Rules that must survive without opening `docs/perf-method.md`:
   cross-run; `make FIXED_RNG=1` for every perf run. A render-speed change shifts the sim's
   trajectory and otherwise measures a different workload.
 - **Every framerate figure in an older note or commit is wrong — re-measure, don't quote.**
+- ⚠⚠ **A TWIN CAN BE SLOWER THAN THE TRANSLITERATION, and an arithmetic one usually is.** The win
+  comes from ALGORITHMIC COMPRESSION (a byte-pair shift loop the 68000 does in one word op), never
+  from "being real C": a chain of `ADC`/`SBC` whose exit flags are live has no interpreter left to
+  delete. Twins #14/#15 measured **9% slower** until `REVS_FLAG_OP`
+  (`always_inline`) took `sub_from`/`sbc_step`/`adc_step` back inline — GCC leaves them out of line
+  at -O3, so every subtract was paying a `jsr` + `movem.l`. **Grep the objdump for
+  `jsr <sub_from>` before believing any arithmetic twin is fast**, and match the build to the
+  control (a `PROBES=1` build reads low). `docs/perf-method.md` §twins #14/#15.
 - **An A/B switch must PRINT its own state**, and any new instrument must be sabotaged before its
   output is believed.
 
