@@ -49,3 +49,17 @@ of the two readings is wrong.
 It is the nearest preceding symbol to much of the `$7B00` overlay, which is how the overlay's
 view-rasteriser code came to carry "dashboard" names.  Confirm `$7B9C` itself is the lap/best-time
 readout before hanging anything else off it.
+
+## 6. `$0061`, `$0063` and `$0040` have no names, and the whole harness reads them
+
+Every measurement this port takes now depends on these three: `amiga/dash_state.gdb`,
+`amiga/view_census.gdb`, `make refloop --park`, the host's `REVS_DASH_WATCH` and — since
+2026-08-17 — `AutoRun`'s crash recovery, which restarts the engine and selects a gear by testing
+`$0061` and `$0040` directly.  Behaviour is established and consistent across a real BBC and both
+backends: `$0061` is 0 with the engine stopped and `$FF` once it catches ($4978's starter poll
+stops when it is non-zero), `$0063` rises and falls with road speed and is 0 whenever the car is
+still, and `$0040` is 1 in the pits and 2 after one upshift, i.e. a gear INDEX rather than a ratio.
+Suggested: `engine_running` ($0061), `road_speed` ($0063), `gear_index` ($0040) — and check
+`$0040`'s upper end against `$16AC`'s shift-up path before committing to "index".
+⚠ Until they are in `symbols.csv` an unnamed hex address sits in a hand-written source file
+(`src/platform/autorun.cpp`), which is the thing CLAUDE.md §Working conventions forbids.

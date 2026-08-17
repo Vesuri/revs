@@ -56,6 +56,14 @@ tbreak Revs::render if g_vbiCount >= 2400
 continue
 dashrow "settled           "
 
+# ⭐⭐ AND THE STATE WHEN THE MEASUREMENT WINDOW CLOSES, which is a different question from any
+# sample above: a STRAIGHT_TO_RACE car eventually leaves the track and is reset to the pits, and a
+# profile whose tail is a parked car is diluted with a workload nobody asked about
+# (docs/perf-method.md §the 30-second rule).  `continue` runs until diag_run.sh SIGINTs us at the
+# delay, so this row is the last thing the run was doing — read it beside every share table.
+continue
+dashrow "AT THE INTERRUPT  "
+
 # ⭐ Did the key map answer anything at all?  A rev counter reading is only interesting once it is
 # known which side of the starter the sample is on, and g_keyEvents is the cheapest witness that
 # the input path is alive.  ⚠ AutoRun's own counters are NOT globals, so they are not readable

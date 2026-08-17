@@ -230,7 +230,24 @@ bool AutoRun::keyDown(uint8_t x)
            throttle and nothing else — the car under power on the circuit, with the same
            key set every build.  A straight-to-race build answers nothing, and its caller
            stops routing through here at all (done()), so the player owns the keyboard. */
-        return AUTORUN_HOLD_THROTTLE && x == KEY_S;
+        if (!AUTORUN_HOLD_THROTTLE) return false;
+        /* ⭐⭐ AND IT RESTARTS AFTER A CRASH, because otherwise the measurement window ends
+           on a PARKED CAR.  A straight-line autorun leaves the circuit after ~225 game
+           frames; the game resets it to the pits with the engine OFF, and a held throttle
+           cannot restart a stopped engine — so the tail of every run was a static scene
+           (measured: at the interrupt of a 30 s run, $61 = 00, revs 00, speed 00, i.e. ~36%
+           of the sample).  A share table averaged over that is diluted with a workload
+           nobody asked for, and a redundancy census over it reads 99% (docs/direct-bitplane-
+           plan.md §7g).  So the steady state is a three-state machine on the game's OWN
+           cells, in the same order and with the same keys the script used:
+             engine off      -> the starter, exactly as the KEY_T step does
+             neutral         -> one upshift, and $0040 reaching 2 is what stops it
+             otherwise       -> the throttle
+           ⚠ It presses nothing the script did not, so the key set is unchanged and the
+           workload stays comparable to a run that never crashed. */
+        if (mem[0x0061] == 0) return x == KEY_T;
+        if (mem[0x0040] < 2)  return x == KEY_Q;
+        return x == KEY_S;
     }
 
     const AutoStep& s = s_script[m_step];

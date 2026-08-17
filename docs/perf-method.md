@@ -380,6 +380,33 @@ is unquotable, and the same hour spent on the dashboard's scan is worth ten time
 `EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=phase4_prof.gdb ./diag_run.sh 30`.  n = 321-328 painted
 frames, ~7100 fields, **accounted 98.5% of elapsed**.  Shares within one run (Rule 2).
 
+### ⭐⭐ THE MEASUREMENT WINDOW ENDED ON A PARKED CAR, AND NOW IT DOES NOT (2026-08-17, user)
+
+A `STRAIGHT_TO_RACE` car drives straight, leaves the circuit after ~225 game frames and is reset to
+the pits **with the engine off** — and the autorun's script has run out by then, so a held throttle
+could not restart it.  Measured, once `amiga/dash_state.gdb` was given a row at the end of the
+window instead of only early samples:
+
+    vbi=2413  settled           $61=ff(engine)  $3C=a0(revs)  $63=31(speed)   <- driving
+    vbi=6950  AT THE INTERRUPT  $61=00          $3C=00        $63=00          <- parked, stalled
+
+**~36% of every 30 s run was a static scene.**  `AutoRun`'s steady state is now a three-state
+machine on the game's own cells — engine off → the starter, neutral → one upshift, otherwise the
+throttle — pressing nothing the script did not, so the key set is unchanged.  At the interrupt the
+car now reads `$61=ff $3C=a1 $63=32 $40=02`.
+
+⭐ **And it changed no published number, which is worth knowing rather than assuming:** FPS 2.73 →
+2.72 and the share table within a millisecond or two per row (phase 24: 82 → 83).  A parked car
+still has the whole viewport repainted every frame, so the *render* workload barely moves; what it
+does distort is anything about CONTENT — the redundancy census reads 99% on a parked scene against
+63% driving (`docs/direct-bitplane-plan.md` §7g).  ⭐⭐ It also means the **host** had never driven
+at all: its engine never caught under the old script, so every host-side workload figure was a
+parked car.  With `make HOLD_THROTTLE=1` it now drives, and its census (69% / 38%) independently
+agrees with the target's (63% / 33%).
+
+⚠ Read the `AT THE INTERRUPT` row beside every share table.  The car still leaves the track — one
+row of a 13-row FPS series is the reset — and only the recovery keeps the rest of the run honest.
+
 ⚠⚠ **THIRTY SECONDS, NOT NINETY, AND THAT IS NOT ABOUT PATIENCE.** A `STRAIGHT_TO_RACE` run leaves
 the track, gets reset, and then **nothing happens** — so a longer run does not gather more data, it
 DILUTES the measurement with a static scene.  The 90 s version of this table read `$7BE2` at 130 ms

@@ -522,13 +522,17 @@ being avoided.  So a producer-maintained dirty flag is worth **33% of the scan (
 ⚠ The dirt is a horizontal BAND, as §7a said from the other direction: lines $03-$21 and $39-$4F are
 redundant in 49 of 50 sweeps, while $27-$38 change in nearly every one.
 
-⚠⚠ **AND THE FIRST READING OF THIS CENSUS WAS 99%, MEASURED ON A PARKED CAR.**  The host build cannot
-produce the moving scene — its autorun never selects a gear ($63 stays 0 whatever the throttle does),
-so from frame 50 on the engine repaints the same picture and *every* line reads redundant.  The
-census printed 97%, 98%, 99% as the run got longer, which is exactly what a converging measurement
-looks like.  The engine state is now printed beside the numbers in both the host watcher and the gdb
-script, because a redundancy census on a static scene is not a weak measurement — it is a different
-question with a plausible answer.
+⚠⚠ **AND THE FIRST READING OF THIS CENSUS WAS 99%, MEASURED ON A PARKED CAR.**  The host's engine
+never caught under the autorun script of the day, so from frame 50 on it repainted the same picture
+and *every* line read redundant.  The census printed 97%, 98%, 99% as the run got longer, which is
+exactly what a converging measurement looks like.  The engine state is now printed beside the numbers
+in both the host watcher and the gdb script, because a redundancy census on a static scene is not a
+weak measurement — it is a different question with a plausible answer.
+
+✅ **And the host can produce the moving scene now** (`make SHAPE=1 HOLD_THROTTLE=1
+STRAIGHT_TO_RACE=1`): `AutoRun` restarts a stalled engine and selects a gear, so the host reads
+**69% redundant / 38% clean sources** against the target's 63% / 33% — two backends, independently,
+on the same question.  `docs/perf-method.md` §the measurement window.
 
 ## 8. ⭐⭐ HARDWARE SPRITES for the instruments — capability the BBC never had (user, 2026-08-16)
 

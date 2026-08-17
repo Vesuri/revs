@@ -23,8 +23,8 @@ set confirm off
 continue
 
 printf "=== vbi=%u  sweeps=%lu\n", g_vbiCount, g_shapeLineSweeps
-printf "=== engine: $3C(revs)=%02x $61=%02x $63(gear)=%02x $58(gear key)=%02x $2D=%02x\n", \
-  mem[0x3c], mem[0x61], mem[0x63], mem[0x58], mem[0x2d]
+printf "=== engine: $3C(revs)=%02x $61(engine)=%02x $63(speed)=%02x $40(gear)=%02x $58=%02x\n", \
+  mem[0x3c], mem[0x61], mem[0x63], mem[0x40], mem[0x58]
 set $n = g_shapeLineSweeps
 if $n > 0
   set $u = g_shapeLineUnits
