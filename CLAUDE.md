@@ -299,7 +299,7 @@ The A500 is a 7 MHz 68000 and a frame is 20 ms: spending 10 ms on *anything* is 
 Be conscious of absolute milliseconds always.
 
 **Baseline: 2.73 FPS rendered** (`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`).
-⭐⭐ **The lever is the VIEW PIPELINE: `$24F6` → `$1A20` → `view_paint_lines` is 54% of the frame
+⭐⭐ **The lever is the VIEW PIPELINE: `build_track_geometry` → `draw_road` → `view_paint_lines` is 54% of the frame
 and it is ONE subsystem** — the first two *produce* source bytes into the forty `$80`-spaced blocks
 at `$3000..$4380`, the third is the single *consumer*. Current shares, every past change and its
 lesson, and the standing conclusion that **the port's biggest costs are the MACHINERY the
