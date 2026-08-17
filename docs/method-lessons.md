@@ -397,6 +397,30 @@ and misleadingly: "`S` fell to `$00`", which reads as a runaway push depth.
   `g_stackLow` does and covers the half that was open.  The healthy window is now stated as a
   window (`$F3..$F8`), not a floor.
 
+## An unidentified drawing routine has an ADDRESS, and an address has a PLACE on the screen ⚑ Revs
+
+`$52A4` sat as `body_tick_xor_anim` with "[INFERRED] — the identity of the element drawn is not
+measured" for a month, and the missing step took ten minutes: run its six store addresses through
+`bbc_screen.h`'s `offset = charRow*320 + cell*8 + lineInRow`, notice they are three **symmetric
+left/right pairs** (cells 0/1 and 38/39, display lines 133-140), then crop exactly that region out
+of a real-BBC frame (`tmp/bbcref/ref_000211.png`) and look at it.  It is the dither at the top of
+each front-wheel arch, XORed at a rate proportional to `road_speed`: the wheels turning.
+
+- **Fixed store addresses are stronger evidence than any dynamic trace** — they need no run at all,
+  and `make fbwrites`' PC attribution cannot separate two callers of a shared plotter anyway.
+- **Symmetry is a semantic clue.**  Two mirrored address pairs mean a left/right pair of objects,
+  which rules out most of the candidate list before any picture is opened.
+- The visual ground truth is already on disk from an earlier `make refloop`; opening it is cheaper
+  than another measurement.
+
+### …and a rename is a re-read of the SENTENCES, not just of the identifier ⚑ Revs
+
+Renaming that one routine touched eight hand-written files including a twin and
+`tools/validate_native.c`.  A word-boundary substitution left three prose claims that the *old*
+misnomer had made read plausibly — "`tick_wheel_spin`, the 50 Hz simulation" — which are now
+obviously false and were false before.  A rename that fixes a wrong name will expose the sentences
+that were built on it: re-read each hit in context, and fix the claim, not the token.
+
 ## Record findings the moment you find them
 
 Two conventions that exist because deferring cost real time:
