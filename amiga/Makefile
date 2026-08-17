@@ -223,7 +223,12 @@ PROBE_SYMS_SHAPE = g_shapeDashCalls g_shapeDashDirty g_shapeDashLeft g_shapeDash
                    g_shapeRoadFirstLine g_shapeRoadLastLine \
                    g_shapePhaseBytes g_shapePhaseFrames g_shapePhaseFirst g_shapePhaseLast \
                    g_shapeFrameCalls g_shapeFrameBytes g_shapeFrameLast g_shapeFrameMax \
-                   g_shapeFrameFirstLine g_shapeFrameLastLine g_shapeFrameLines
+                   g_shapeFrameFirstLine g_shapeFrameLastLine g_shapeFrameLines \
+                   g_shapeLineSweeps g_shapeLineVisited g_shapeLineRedundant \
+                   g_shapeLineCleanSrc g_shapeLineUnits g_shapeLineUnitsRedundant \
+                   g_shapeLineUnitsCleanSrc g_shapeLineCleanButChanged \
+                   g_shapeLineDirtyNoChange g_shapeLinePerVisit g_shapeLinePerRedundant \
+                   g_shapeLinePerUnits
 endif
 
 # `make FLATSKIP=0` — decode EVERY display line, including the ones inside a palette band whose

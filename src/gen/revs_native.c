@@ -669,7 +669,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                 while (dp != segEnd) {
                     MEM_QUAL unsigned char* slot;
 
-                    PROBE_SHAPE_DASH_UNIT();
+                    PROBE_SHAPE_DASH_UNIT(line);
                     if (forced) {                       /* only ever the FIRST unit of a call */
                         forced = 0;
                         *srcp = 0;
@@ -698,6 +698,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                     }
                     PLOT_UNIT((unsigned)(dp - mem), byte);
 #ifndef REVS_PLOT_ONLY
+                    PROBE_SHAPE_DASH_STORE((unsigned)(dp - mem), byte, line);
                     if (busSafe) *dp = (unsigned char)byte;
                     else         bus_write((uint16_t)(dp - mem), (uint8_t)byte);
 #endif

@@ -498,6 +498,38 @@ with it compiled out) because the oracle and the plot layer are exactly what a f
 the real target it points at: the rasteriser's cost is **2148 source reads a frame**, so the only
 thing that can move it is producing fewer sources, i.e. changing what the *producers* write.
 
+### ✅ 7g. THE PER-LINE CENSUS (2026-08-17) — **63% of the scan is on lines that change NOTHING**, and a producer flag can only see half of that
+
+§7f left one lever: the rasteriser's cost is its 2148 source reads, so the only thing that moves it
+is running fewer units.  The unit of skipping is a **scan line** — with every source on a line zero,
+every cell takes the carried byte, so the line is one flat run of the background byte.  What that is
+worth is now measured rather than argued: `make SHAPE=1` + `amiga/view_census.gdb` counts, per line,
+the units it ran, its dirty sources at sweep entry, and — the number that matters — the stores that
+**changed the byte already there**.
+
+| per sweep, 50 sweeps of a DRIVING Silverstone practice session | |
+|---|---|
+| lines painted / units run | 77 / 2148 |
+| **REDUNDANT — lines where no store changed a byte** | **54 of 77 lines = 63% of the units** |
+| CLEAN SOURCES — lines with no dirty source at entry (what a PRODUCER-side dirty flag could see) | 17 of 77 = **33%** |
+| lines with a dirty source that still changed nothing | 1872 of 3850 line-visits |
+
+⭐ **The two predicates are not the same, and the gap is the finding.** Half the redundancy comes from
+lines whose sources ARE dirty and whose translated byte is the one already on screen — invisible to
+any flag the producers could set, and only detectable by a read-compare per cell, which is the cost
+being avoided.  So a producer-maintained dirty flag is worth **33% of the scan (~18 ms)**, not 63%.
+
+⚠ The dirt is a horizontal BAND, as §7a said from the other direction: lines $03-$21 and $39-$4F are
+redundant in 49 of 50 sweeps, while $27-$38 change in nearly every one.
+
+⚠⚠ **AND THE FIRST READING OF THIS CENSUS WAS 99%, MEASURED ON A PARKED CAR.**  The host build cannot
+produce the moving scene — its autorun never selects a gear ($63 stays 0 whatever the throttle does),
+so from frame 50 on the engine repaints the same picture and *every* line reads redundant.  The
+census printed 97%, 98%, 99% as the run got longer, which is exactly what a converging measurement
+looks like.  The engine state is now printed beside the numbers in both the host watcher and the gdb
+script, because a redundancy census on a static scene is not a weak measurement — it is a different
+question with a plausible answer.
+
 ## 8. ⭐⭐ HARDWARE SPRITES for the instruments — capability the BBC never had (user, 2026-08-16)
 
 **The observation.** The BBC has no sprites, so *every* moving thing on the Revs dashboard is drawn

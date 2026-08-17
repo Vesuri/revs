@@ -67,7 +67,40 @@ extern volatile unsigned short g_shapeDashLastUnits;
 
 void shape_dash_before(void);
 void shape_dash_after(void);
-void shape_dash_unit(void);
+void shape_dash_unit(unsigned line);
+
+/* ── ⭐⭐ THE PER-LINE CENSUS — what the sweep would be allowed to SKIP ──────────────────────
+ * §7a settled that the sweep's cost is the SCAN (2093 units for ~83 stores) and §7f that no
+ * layout change moves it, because every unit must read its own source byte.  The only lever
+ * left is running fewer units, and the unit of skipping is a SCAN LINE: with every source on a
+ * line zero, every cell of that line takes the carried byte, so the line is one flat run of the
+ * background byte — and if it was that same byte last sweep, painting it again changes nothing.
+ *
+ * Whether that is worth building depends on three counts this measures, per line:
+ *   dirty    sources non-zero at sweep entry — what a PRODUCER-maintained dirty flag would see
+ *   units    units the line actually ran (the cost)
+ *   changed  stores that changed the byte already there — the TRUE redundancy, measured rather
+ *            than argued, so the answer does not depend on my reading of the carry semantics
+ *
+ * ⭐ The pair to compare is `unitsRedundant` (units on lines that changed NOTHING) against
+ * `unitsCleanSrc` (units on lines with no dirty source): the first is the prize, the second is
+ * what a producer-side flag could actually detect.  If they differ, a dirty flag is not a
+ * sufficient predicate and the skip needs more than the producers know.
+ * ⚠ One extra mem[] read per unit — a SHAPE build only. */
+extern volatile unsigned long g_shapeLineSweeps;
+extern volatile unsigned long g_shapeLineVisited;        /* lines that ran >= 1 unit, summed  */
+extern volatile unsigned long g_shapeLineRedundant;      /* ...that changed no byte at all    */
+extern volatile unsigned long g_shapeLineCleanSrc;       /* ...that had no dirty source       */
+extern volatile unsigned long g_shapeLineUnits;          /* units run                         */
+extern volatile unsigned long g_shapeLineUnitsRedundant; /* ...on lines that changed nothing  */
+extern volatile unsigned long g_shapeLineUnitsCleanSrc;  /* ...on lines with no dirty source  */
+extern volatile unsigned long g_shapeLineCleanButChanged;/* clean sources, yet a byte moved    */
+extern volatile unsigned long g_shapeLineDirtyNoChange;  /* dirty sources, yet nothing moved   */
+/* Per line ($03..$4F), how many sweeps ran it / found it redundant, and the units it ran. */
+extern volatile unsigned long g_shapeLinePerVisit[128];
+extern volatile unsigned long g_shapeLinePerRedundant[128];
+extern volatile unsigned long g_shapeLinePerUnits[128];
+void shape_dash_store(unsigned dst, unsigned value, unsigned line);
 
 /* ── THE ROAD PASS ($1A20, phase 11) ────────────────────────────────────────────────────────
  * The other half of step 2, and the number that prices direct plotting: how many BYTES of the
@@ -127,7 +160,8 @@ void shape_frame_delta(void);
 
 #define PROBE_SHAPE_DASH_BEFORE()  shape_dash_before()
 #define PROBE_SHAPE_DASH_AFTER()   shape_dash_after()
-#define PROBE_SHAPE_DASH_UNIT()    shape_dash_unit()
+#define PROBE_SHAPE_DASH_UNIT(line) shape_dash_unit(line)
+#define PROBE_SHAPE_DASH_STORE(d, v, line) shape_dash_store((d), (v), (line))
 #define PROBE_SHAPE_ROAD_BEFORE()  shape_road_before()
 #define PROBE_SHAPE_ROAD_AFTER()   shape_road_after()
 #define PROBE_SHAPE_PHASE(n)       shape_phase_mark(n)
@@ -137,7 +171,8 @@ void shape_frame_delta(void);
 
 #define PROBE_SHAPE_DASH_BEFORE()  ((void)0)
 #define PROBE_SHAPE_DASH_AFTER()   ((void)0)
-#define PROBE_SHAPE_DASH_UNIT()    ((void)0)
+#define PROBE_SHAPE_DASH_UNIT(line) ((void)(line))
+#define PROBE_SHAPE_DASH_STORE(d, v, line) ((void)0)
 #define PROBE_SHAPE_ROAD_BEFORE()  ((void)0)
 #define PROBE_SHAPE_ROAD_AFTER()   ((void)0)
 #define PROBE_SHAPE_PHASE(n)       ((void)0)

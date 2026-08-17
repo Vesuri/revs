@@ -57,16 +57,89 @@ static void scan(unsigned* bytesOut, unsigned* colsOut, int credit)
     *colsOut  = cols;
 }
 
+/* Per-sweep working state: filled by the unit/store hooks, rolled up in shape_dash_after. */
+static unsigned short s_lineUnits[128];
+static unsigned short s_lineChanged[128];
+static unsigned short s_lineDirty[128];
+
 /* One dirty TEST — the `LDY table,X` at the head of any of the 40 column units.  Counted
    separately from the stores because a unit that finds its source zero still ran. */
-void shape_dash_unit(void)
+void shape_dash_unit(unsigned line)
 {
     g_shapeDashUnits++;
+    s_lineUnits[line & 0x7Fu]++;
+}
+
+/* One cell store, before it lands.  ⭐ Comparing against what is already there is the whole
+   point: it measures the sweep's REDUNDANCY directly instead of deriving it from the carry
+   semantics, so the census cannot be wrong in the same way my reasoning could be. */
+void shape_dash_store(unsigned dst, unsigned value, unsigned line)
+{
+    if (mem[dst] != (unsigned char)value) s_lineChanged[line & 0x7Fu]++;
+}
+
+/* ── the per-line census (shape.h) ---------------------------------------------------------- */
+
+extern "C" {
+volatile unsigned long g_shapeLineSweeps = 0;
+volatile unsigned long g_shapeLineVisited = 0;
+volatile unsigned long g_shapeLineRedundant = 0;
+volatile unsigned long g_shapeLineCleanSrc = 0;
+volatile unsigned long g_shapeLineUnits = 0;
+volatile unsigned long g_shapeLineUnitsRedundant = 0;
+volatile unsigned long g_shapeLineUnitsCleanSrc = 0;
+volatile unsigned long g_shapeLineCleanButChanged = 0;
+volatile unsigned long g_shapeLineDirtyNoChange = 0;
+volatile unsigned long g_shapeLinePerVisit[128] = {0};
+volatile unsigned long g_shapeLinePerRedundant[128] = {0};
+volatile unsigned long g_shapeLinePerUnits[128] = {0};
+}
+
+/* The sweep's whole X range is $03..$4F — phase 1 paints $4F..$2C, phases 2 and 3 the rest —
+   so the census covers all of it, not just DASH_X_LO..DASH_X_HI. */
+#define DASH_LINE_LO 0x03u
+#define DASH_LINE_HI 0x4Fu
+
+static void line_census_before(void)
+{
+    unsigned x, k;
+    for (x = 0; x < 128; x++) { s_lineUnits[x] = 0; s_lineChanged[x] = 0; s_lineDirty[x] = 0; }
+    for (k = 0; k < DASH_COLUMNS; k++) {
+        const unsigned base = DASH_BLOCK_BASE + k * DASH_BLOCK_STRIDE;
+        for (x = DASH_LINE_LO; x <= DASH_LINE_HI; x++)
+            if (mem[base + x]) s_lineDirty[x]++;
+    }
+}
+
+static void line_census_after(void)
+{
+    unsigned x;
+    g_shapeLineSweeps++;
+    for (x = DASH_LINE_LO; x <= DASH_LINE_HI; x++) {
+        if (!s_lineUnits[x]) continue;                  /* the sweep never reached this line */
+        g_shapeLineVisited++;
+        g_shapeLineUnits += s_lineUnits[x];
+        g_shapeLinePerVisit[x]++;
+        g_shapeLinePerUnits[x] += s_lineUnits[x];
+        if (!s_lineChanged[x]) {
+            g_shapeLineRedundant++;
+            g_shapeLineUnitsRedundant += s_lineUnits[x];
+            g_shapeLinePerRedundant[x]++;
+        }
+        if (!s_lineDirty[x]) {
+            g_shapeLineCleanSrc++;
+            g_shapeLineUnitsCleanSrc += s_lineUnits[x];
+            if (s_lineChanged[x]) g_shapeLineCleanButChanged++;
+        } else if (!s_lineChanged[x]) {
+            g_shapeLineDirtyNoChange++;
+        }
+    }
 }
 
 void shape_dash_before(void)
 {
     unsigned bytes, cols;
+    line_census_before();
     scan(&bytes, &cols, /*credit*/1);
     /* The unit count belongs to the sweep that just ENDED, so take its DELTA before this one
        runs — the cumulative total's low word would be a running sum, not a reading. */
@@ -86,6 +159,7 @@ void shape_dash_before(void)
 void shape_dash_after(void)
 {
     unsigned bytes, cols;
+    line_census_after();
     scan(&bytes, &cols, /*credit*/0);
     g_shapeDashLeft     += bytes;
     g_shapeDashColsLeft += cols;

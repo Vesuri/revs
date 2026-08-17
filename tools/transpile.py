@@ -700,7 +700,7 @@ PRE_INSN_HOOKS = {
     0x1748: 'PROBE_SHAPE_DASH_BEFORE();',
     0x174B: 'PROBE_SHAPE_DASH_AFTER();',
 }
-PRE_INSN_HOOKS.update({a: 'PROBE_SHAPE_DASH_UNIT();' for a in DASH_UNIT_ADDRS})
+PRE_INSN_HOOKS.update({a: 'PROBE_SHAPE_DASH_UNIT(cpu.X);' for a in DASH_UNIT_ADDRS})
 # ⭐ AND the road pass, `JSR $1A20` at $171F (phase 11): snapshot-and-diff the frame buffer around
 # it, so the measurement is "how many bytes of the picture does the road actually write" without
 # instrumenting a single span plotter.  src/platform/shape.h §THE ROAD PASS.

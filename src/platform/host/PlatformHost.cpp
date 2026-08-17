@@ -208,6 +208,34 @@ void PlatformHost::renderFrame()
                             i, g_shapePhaseBytes[i] / frames, g_shapePhaseFirst[i],
                             g_shapePhaseLast[i], g_shapePhaseFrames[i]);
             }
+            /* ⭐⭐ THE PER-LINE CENSUS (src/platform/shape.h) — the three counts that decide
+               whether a producer-maintained dirty flag can delete part of the scan. */
+            if (g_shapeLineSweeps) {
+                const unsigned long n = g_shapeLineSweeps, u = g_shapeLineUnits;
+                std::printf("SHAPE   PER-LINE CENSUS over %lu sweeps: %lu lines painted per "
+                            "sweep, %lu units\n"
+                            "SHAPE     REDUNDANT (changed no byte): %lu.%02lu lines/sweep, "
+                            "%lu of %lu units = %lu%% of the scan\n"
+                            "SHAPE     CLEAN SOURCES (a producer flag could see this): "
+                            "%lu.%02lu lines/sweep, %lu units = %lu%%\n"
+                            "SHAPE     disagreement: clean-but-changed %lu, "
+                            "dirty-but-unchanged %lu (lines, summed)\n",
+                            n, g_shapeLineVisited / n, u / n,
+                            g_shapeLineRedundant / n, (g_shapeLineRedundant * 100 / n) % 100,
+                            g_shapeLineUnitsRedundant, u,
+                            u ? g_shapeLineUnitsRedundant * 100 / u : 0,
+                            g_shapeLineCleanSrc / n, (g_shapeLineCleanSrc * 100 / n) % 100,
+                            g_shapeLineUnitsCleanSrc,
+                            u ? g_shapeLineUnitsCleanSrc * 100 / u : 0,
+                            g_shapeLineCleanButChanged, g_shapeLineDirtyNoChange);
+                std::printf("SHAPE     per line $03..$4F  visits/redundant/units-per-visit:\n");
+                for (unsigned x = 0x03; x <= 0x4F; x++) {
+                    if (!g_shapeLinePerVisit[x]) continue;
+                    std::printf("SHAPE       line $%02X  %5lu %5lu  %3lu\n", x,
+                                g_shapeLinePerVisit[x], g_shapeLinePerRedundant[x],
+                                g_shapeLinePerUnits[x] / g_shapeLinePerVisit[x]);
+                }
+            }
             std::printf("SHAPE   per-row ($2C..$4F) dirty sweeps:");
             for (unsigned i = 0; i < 36; i++) std::printf(" %lu", g_shapeDashPerRow[i]);
             std::printf("\n");
