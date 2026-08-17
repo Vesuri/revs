@@ -27,11 +27,17 @@ addr,name,type,is_hw,note
 0x63BD,engine_main,func,0,"THE engine entry — target of the unpack stub's closing JMP. Body is just JMP $3850."
 0x3850,engine_init,func,0,"what engine_main jumps to (a JMP target, never JSRed)"
 0x4DDD,hw_init,func,0,"the ONLY routine that programs the hardware: 6845 CRTC ($FE00/$FE01), Video ULA palette ($FE21), System VIA T1/ACR/IFR/IER, User VIA T1/ACR/IER. 54 instructions, one caller. This is the platform boundary."
-0x4E5C,irq1v_handler,func,0,"the 50 Hz game body, claimed via IRQ1V. Driven by a USER VIA T1 timeout (LDA $FE6D / AND #$40), NOT System VIA vsync. Dispatches on irq_band_state and rewrites the ULA mode + palette per raster band. Chains to saved_irq1v when the interrupt is not its own."
+0x4E5C,irq1v_band_schedule,func,0,"⭐ THE RASTER-BAND PALETTE/MODE SCHEDULE, claimed via IRQ1V — and it DRAWS NOTHING (measured 2026-08-17; it was called 'the 50 Hz game body' until then, and that misnomer is why the row was carried as untouchable engine work). Driven by a USER VIA T1 timeout (LDA $FE6D / AND #$40), NOT System VIA vsync. One PAL field is five interrupts; each arm repaints the ULA mode + palette for the band about to be scanned and reloads the T1 latch with that band's duration — the raster split a BBC has to do on the CPU for want of a copper. Dispatches on irq_band_state; chains to saved_irq1v when the interrupt is not its own. The only game work in the whole cycle is the JSR body_tick_xor_anim ($52A4) in band 4: 206-233 us of a 6113 us field, i.e. 4%."
 0x4F23,irq1v_release,func,0,"restores saved_irq1v and disables the User VIA interrupt ($FE6E)"
-0x4F1D,saved_irq1v,var,0,"the previous IRQ1V, saved so irq1v_handler can chain on via JMP ($4F1D)"
+0x4F1D,saved_irq1v,var,0,"the previous IRQ1V, saved so irq1v_band_schedule can chain on via JMP ($4F1D)"
+0x00FC,mos_irq_a,var,0,"⭐ where the MOS's own IRQ entry stashed the interrupted A — nothing in Revs writes it, and irq1v_band_schedule's `LDA $FC` before the RTI is the only reason A survives an interrupt. The port had to reproduce the MOS write to make that true (docs/bbc-reference-loop.md; the symptom was horizon stripes, not a crash)."
+0x4F1F,band1_duration_lo,var,0,"how long the SKY band lasts, in User VIA T1 microseconds — written by MoveHorizon ($4F44) from the main loop, so the sky/track split moves with the hills."
+0x4F20,band1_duration_hi,var,0,"high byte of band1_duration_lo"
+0x4F21,band2_duration_lo,var,0,"the HORIZON band's duration: $153C - band1_duration, computed by irq1v_band_schedule's band-1 arm and loaded by its band-2 arm. A borrow means band 2 has no height, and the arm then runs in the same interrupt."
+0x4F22,band2_duration_hi,var,0,"high byte of band2_duration_lo"
 0x4F43,irq_band_state,var,0,"raster-band counter the IRQ handler dispatches on: 0, 1, 2, 3, $FF. Each value selects a ULA mode + palette setup. At least four display bands."
-0x3468,band0_palette,table,0,"16 bytes, written to $FE21 one per entry by irq1v_handler's band 0. The other band computes its palette by stepping the high nibble instead."
+0x3468,band0_palette,table,0,"16 bytes, written to $FE21 one per entry by irq1v_band_schedule's band 0. The other band computes its palette by stepping the high nibble instead."
+0x52A4,body_tick_xor_anim,func,0,"[INFERRED — the rate, the region and the XOR are MEASURED; the identity of the element drawn is not] the ONLY game work in the whole IRQ1V band cycle, called from band 4. ~30 instructions that EOR bytes at $6E85/$6FBD/$6FB2/$6FC0/$70F8/$6E8A (display lines 120-143) at a rate set by an accumulator ($62FA += $30 + $63, i.e. proportional to road speed) and gated on mem[$0000] — an XOR draw/erase of a small speed-driven element. 206-233 us of a 6113 us field."
 
 ## ---- OS vector cells ---------------------------------------------------------------------
 0x0204,IRQ1V,var,1,"the only OS vector Revs claims"
@@ -55,6 +61,10 @@ addr,name,type,is_hw,note
 0x3450,abs8,func,0,"absolute value of A, 8-bit two's complement (BPL / EOR #$FF / ADC #1). 21 callers."
 0x0E40,abs16_math,func,0,"negate the 16-bit value in math_lo/math_hi if A is negative (i.e. |x| for a sign-magnitude pair). $0E42 is the unconditional-negate entry."
 0x0E42,neg16_math,func,0,"unconditional 16-bit negate of math_lo/math_hi; the fall-through half of abs16_math"
+0x0070,plot_ptr_lo,var,0,"THE screen write pointer every plotter in the engine stores through as ($70),Y — the road span plotters, plot_line_octant and view_paint_lines' cell chains all share it. view_paint_lines keeps it on the current SCAN LINE (+1 within a character row, +$139 across one)."
+0x0071,plot_ptr_hi,var,0,"high byte of plot_ptr_lo"
+0x0072,plot_ptr2_lo,var,0,"the SECOND screen write pointer, one page above plot_ptr_lo. view_paint_lines needs it because a scan line is 40 cells x 8 = 320 bytes and cannot be reached from one base: cells 0-31 go through plot_ptr, cells 32-39 through this one."
+0x0073,plot_ptr2_hi,var,0,"high byte of plot_ptr2_lo"
 0x0074,math_lo,var,0,"low byte of the 16-bit math accumulator (mul8 product, abs16_math operand). $74-$79 are the general scratch/arithmetic window and are reused everywhere."
 0x0075,math_hi,var,0,"high byte of the 16-bit math accumulator"
 
@@ -91,18 +101,23 @@ addr,name,type,is_hw,note
 0x6300,console_io,func,0,"OSBYTE 2 (select input stream) / OSBYTE 21 / OSRDCH / OSWRCH"
 
 ## ---- the road renderer -------------------------------------------------------------------
-## ⭐ The four addresses the span plotters patch into their own STA operands (row_base_lo/hi) are
-## per-COLUMN edge buffers, and $1E9E reads all four to decide which surface a column falls in.
-## That ties the two halves of the renderer together: the plotters WRITE these buffers, the
-## colour resolver READS them.
-0x0554,edge_buf_0,table,0,"per-column road edge/profile buffer 0. One of the four addresses patched into the span plotters' STA operands, and one of the four $1E9E compares against."
-0x05A4,edge_buf_1,table,0,"per-column road edge buffer 1"
-0x0600,edge_buf_2,table,0,"per-column road edge buffer 2"
-0x0650,edge_buf_3,table,0,"per-column road edge buffer 3"
-0x1E9E,column_surface_colour,func,0,"given a column Y and a height in $85, compares against all four edge buffers to decide which track surface the column falls in, and returns its pixel colour from surface_colours. The core of the road renderer's colour decision."
-0x38FC,surface_colours,table,0,"4 colours indexed by surface, returned by column_surface_colour ($38FC-$38FF)"
-0x0400,column_attr_0,table,0,"per-column value column_surface_colour reads when the height lands in edge_buf_1's band (masked with #$7F, then used to index $5EDF)"
-0x0450,column_attr_1,table,0,"per-column value used for edge_buf_2's band"
+## ⭐⭐ THE INDEX IS A SCAN LINE, NOT A COLUMN (corrected 2026-08-17; the family was called
+## "per-column" until then).  Four 80-entry, $50-stride buffers the span plotters patch into their
+## own STA operands, and surface_colour_at reads all four to decide which surface a position falls
+## in.  Proof: surface_colour_at's Y is compared against horizon_extent, which is a VERTICAL extent
+## (project_point's $8D carries the pitch term), and the same Y indexes view_line_surface -- the
+## table view_paint_lines reads with its scan line, an axis proven from screen arithmetic.
+## The plotters WRITE these buffers, the colour resolver READS them.
+## ⚠ Still open (docs/rename.md §1): these are NOT edge_x_lo/hi + edge_y, which are 2x40 POINT
+## lists, and the extent of edge_y ($5F20) overlaps view_line_surface ($5F60) -- unresolved.
+0x0554,surface_edge_0,table,0,"[DERIVED] per-SCAN-LINE road surface boundary position, buffer 0. One of the four addresses patched into the span plotters' STA operands, and one of the four surface_colour_at compares against."
+0x05A4,surface_edge_1,table,0,"per-scan-line surface boundary position, buffer 1"
+0x0600,surface_edge_2,table,0,"per-scan-line surface boundary position, buffer 2"
+0x0650,surface_edge_3,table,0,"per-scan-line surface boundary position, buffer 3"
+0x1E9E,surface_colour_at,func,0,"[DERIVED] given a SCAN LINE in Y and a position along it in $85, compares against all four surface_edge buffers to decide which track surface that point falls in and returns its pixel colour from surface_colours. Returns the off-road colour at once for a line past horizon_extent. The core of the road renderer's colour decision."
+0x38FC,surface_colours,table,0,"4 colours indexed by surface, returned by surface_colour_at ($38FC-$38FF)"
+0x0400,line_attr_0,table,0,"per-scan-line value surface_colour_at reads when the position lands in surface_edge_1's band (masked with #$7F, then used to index $5EDF)"
+0x0450,line_attr_1,table,0,"per-scan-line value used for surface_edge_2's band"
 
 ## ---- lap and race timing (BCD -- note the SED) --------------------------------------------
 ## ⚠ These are DECIMAL-mode 24-bit values: $4F77 and $0F64 both SED before arithmetic on them.
@@ -226,7 +241,7 @@ addr,name,type,is_hw,note
 0x23D2,road_edge_walk,func,0,"[PROVISIONAL] emits the remaining edge points for ONE road side, from cursor $12 (A on entry) upward. Walks the track section list with the step table at $3DD0 (18 entries, $2498 bounds Y at #$12), wrapping X mod $78 = 120 (the section arrays at $0900/$0A00), calling project_point to clip and project each and $23BB/$23C0 to store edge_x_lo/hi. $2450-$245D subdivides: when a step is too coarse it interpolates three midpoints into $09FA/$0AFA (index 250, the scratch tail) and re-projects. $13 caps the point count, $10/$11 is the far clip, $42 counts sections emitted."
 0x2285,project_point,func,0,"[DERIVED] THE PERSPECTIVE DIVIDE. Takes track section X, subtracts the camera position ($6281/$6284) from the 16-bit value at $0901,X/$0A01,X, takes the absolute value, >>3, and returns CARRY SET if it is beyond the far clip in $7C/$7D. Otherwise normalises the divisor (the $22C5 shift loop counts the exponent in Y), looks the reciprocal up in $6180,Y, multiplies via $0C47, and forms $8D = 60 +/- product - $0D (the pitch/scroll offset) -- the projected screen coordinate in the 0..79 space the edge buffers and column tables use. 3 callers, all inside the road pass."
 0x254A,road_edge_side,func,0,"[PROVISIONAL] selects which road side / traversal direction the next road_edge_walk emits. EOR A with the direction flag $25, so the two calls from build_road_edge_lists (A=0 and A=$80) take opposite branches whatever $25 holds: one sets X = $24 + $78 (wrapped) and the wrap limit $0E = $78 with C set, the other X = $24 and $0E = 0 with C clear. $49 = the resulting carry, read by $2565 as the side index into $306C/$306E/$3076."
-0x001F,horizon_extent,var,0,"[PROVISIONAL] how far up the road reaches this frame, in the 0..79 index space of the edge/column buffers. road_edge_start keeps it as a running MAXIMUM of project_point's $8D (also maxed in $0BA2 at $0BC3), build_road_edge_lists clamps it to <= $4E, and it is then the LOOP BOUND for the drawing side: $18BE and $1949 LDY $1F, $31D2 CPY $1F, $1FE9/$66B6 LDX $1F, and column_surface_colour ($1E9E) returns the off-road colour $38FD for anything past it."
+0x001F,horizon_extent,var,0,"[PROVISIONAL] how far up the road reaches this frame, in the 0..79 SCAN LINE space the surface_edge buffers, view_paint_lines and project_point all share. road_edge_start keeps it as a running MAXIMUM of project_point's $8D (also maxed in $0BA2 at $0BC3), build_road_edge_lists clamps it to <= $4E, and it is then the LOOP BOUND for the drawing side: $18BE and $1949 LDY $1F, $31D2 CPY $1F, $1FE9/$66B6 LDX $1F, and surface_colour_at ($1E9E) returns the off-road colour $38FD for anything past it."
 0x0051,horizon_index,var,0,"[PROVISIONAL] which edge-list entry (0-39) the horizon_extent maximum came from; set alongside $1F at $2398, wrapped mod $28 by build_road_edge_lists, copied to $52, and read as the base index by $18BC."
 0x0012,edge_cursor,var,0,"[PROVISIONAL] write cursor into edge_x_lo/hi and edge_y. build_road_edge_lists seeds it 6 for one road side and $2E (=6+40) for the other; road_edge_walk INCs it per point emitted."
 0x62FC,horizon_half_width,var,0,"[PROVISIONAL] half the apparent road width at the horizon: |edge_x_hi[horizon_index] - edge_x_hi[horizon_index+40]| >> 1, written by build_road_edge_lists ($2546) and compared at $1FE4. The only two references in the engine."
@@ -242,11 +257,44 @@ addr,name,type,is_hw,note
 ## disasm/dashcode.txt, which tools/transpile.py reads alongside listing.txt.
 0x7B00,mirrors_update,func,0,"[PROVISIONAL] wing-mirror update, called from the main loop at $1739. Reads object size $03C8,X, LSR x3 (÷8 = half the mirror block height), brackets it around the centre line at $B6, then walks the mirror segments calling mirror_draw_car."
 0x7B9C,lap_time_readout,func,0,"[PROVISIONAL] lap/best-time readout — $06A0/$06B8/$06D0 (the cells car_reset_best_lap $40EB initialises) through $37D6 and $5092. Called from $502A, $503B, $6612."
-0x7BE2,dashboard_sweep,func,0,"⭐ THE DASHBOARD SWEEP — the biggest main-loop item in the port (21.8% / 151 ms, docs/perf-method.md). Points $70/$71 at $6700 and $72/$73 at $6800, then walks the columns X=$4F..$03 in THREE phases, running a 40-unit chain per column: each unit is `LDY srcTable,X / BEQ / LDA #0 / STA srcTable,X / LDA $6000,Y / LDY #row / STA (zp),Y` over the $80-spaced source blocks $3000..$4380, i.e. one unit per dashboard/mirror cell down the column. Measured: 2093 units run per sweep for ~83 changed bytes (docs/direct-bitplane-plan.md §7a). Phase 1 ($7BE2, X=$4F..$2C) sweeps all 40 units; phases 2 ($7D13, X=$2B..$1C) and 3 ($7F18, X=$1B..$03) plant an RTS in the chain to stop it at a per-column row and then compose the boundary byte themselves. Self-modifying by construction — 42 patch sites, docs/static-map.md §Open items 10."
-0x7D13,dashboard_sweep_phase2,func,0,"dashboard_sweep phase 2 (X=$2B..$1C): plants the chain-A stop RTS from $3150,X and the chain-B start from $30D0,X, runs the chain, then composes the two boundary bytes itself. Reached only by falling out of $7BE2."
-0x7F18,dashboard_sweep_phase3,func,0,"dashboard_sweep phase 3 (X=$1B..$03): as phase 2 but plants BOTH chains' stop rows ($3080,X for chain B) and both start offsets, and advances the screen pointers itself instead of via $7EF3. Reached only from $7D13; exits through dashboard_sweep_restore."
-0x7BBF,dashboard_sweep_restore,func,0,"dashboard_sweep's exit: puts `STA` ($91) back over the three RTS opcodes the sweep planted (the slots recorded in $7D24/$7F24/$7F7D) and `CPX` ($E0) back at $7EEE, leaving the chain unpatched for the next call."
+0x7BE2,view_paint_lines,func,0,"⭐⭐ [DERIVED] THE 3D VIEWPORT RASTERISER — the biggest main-loop item in the port (30.5% / 131 ms, docs/perf-method.md). It paints ONE SCAN LINE PER CHAIN, top down: $70/$71 = $6700 and $72/$73 = $6800, and $6700 - BBC_SCREEN_BASE ($5A80) = 3200 = 10*320 exactly, i.e. character row 10 / cell 0 / line 0 = DISPLAY LINE 80, while $6800 = $6700+256 is cell 32 of the same row. So the 40 chain units are the 40 CELLS ACROSS a line (unit i writes base + 8*i, and cells 32-39 come off the second pointer because 40*8 = 320 > 256), and X = $4F..$03 is the line, stepped by $7EF3 (+1 within a character row, +$139 across one). Confirmed independently on a real BBC: stores cover display lines 80..157, buckets 88..111 full at 320 = 8 lines x 40 cells (`make fbwrites`). Each unit is `LDY srcTable,X / BEQ / LDA #0 / STA srcTable,X / LDA $6000,Y / LDY #cell*8 / STA (zp),Y` over the $80-spaced source blocks $3000..$4380 — one block per CELL COLUMN, indexed by line — and A carries left to right, so a zero source means 'same byte as the cell to my LEFT'. THREE phases by how much of the line is painted: phase 1 ($7BE2, X=$4F..$2C) all 40 cells; phases 2 ($7D13, X=$2B..$1C) and 3 ($7F18, X=$1B..$03) plant an RTS to stop the chain at a per-line cell and compose the boundary byte themselves — the silhouette of the cockpit opening. Measured: 2093 units run per sweep for ~83 changed bytes (docs/direct-bitplane-plan.md §7a). Self-modifying by construction — 42 patch sites, docs/static-map.md §Open items 10."
+0x7D13,view_paint_lines_clipped,func,0,"view_paint_lines phase 2 (X=$2B..$1C): plants the chain-A stop RTS from $3150,X and the chain-B start from $30D0,X, runs the chain, then composes the two boundary bytes itself. Reached only by falling out of $7BE2."
+0x7F18,view_paint_lines_short,func,0,"view_paint_lines phase 3 (X=$1B..$03): as phase 2 but plants BOTH chains' stop cells ($3150,X and $3080,X) and both start offsets, and steps the scan-line pointers itself instead of via $7EF3. Reached only from $7D13; exits through view_paint_restore."
+0x7BBF,view_paint_restore,func,0,"view_paint_lines' exit: puts `STA` ($91) back over the three RTS opcodes the sweep planted (the slots recorded in $7D24/$7F24/$7F7D) and `CPX` ($E0) back at $7EEE, leaving the chain unpatched for the next call."
+0x7C00,view_cell_chain_a,func,0,"[DERIVED] not a routine — the first of the two fully unrolled cell chains view_paint_lines runs, sixteen 17-byte units from $7C00 (cells 0-15 of the line), entered at a computed offset and terminated by a planted RTS. Its tail `JMP $7D56` makes chain B part of the same pass. Ghidra's function bracket here is an artefact of the computed JSR targets, not a body."
+0x7D56,view_cell_chain_b,func,0,"[DERIVED] the second unrolled cell chain, 24 units from $7D56 (cells 16-39, source blocks $3800..$4380). The last eight store through $72/$73 because the line's 320 bytes span two pages."
+0x7E00,view_cell_chain_b_mid,func,0,"unit 10 of view_cell_chain_b, not a function start — it is a JSR target only because the computed call's fixed high operand byte is $7E. ⚠ Also the page whose low-byte patches reach the chain-B opcode slots: chain B's first ten slots ($7D65..$7DFE) are in page $7D, which no writer addresses, so they are plain stores."
+0x7EF3,view_next_scanline,func,0,"[DERIVED] steps view_paint_lines' two destination pointers to the NEXT SCAN LINE — INC of $70/$72 inside a character row, +$139 (`CLC / ADC #$38` plus two `ADC #1`) to cross into the next one — then re-enters chain A at $7BF7, which loads the line's background byte from $38FC[$5F60,X and 3]. Never returns to its caller by falling out; only through a planted RTS in a chain."
+## view_paint_lines' control tables.  ALL of them are indexed by the SCAN LINE (X = $4F..$03),
+## which is the same 0..79 space project_point produces and the edge buffers use.  ⚠ Names are
+## [PROVISIONAL] and mechanical — they say what the table is USED for, not what it means.
+0x3000,view_src_blocks,table,0,"the 40 $80-spaced source blocks $3000..$4380 — one per CELL COLUMN of the viewport, each indexed by scan line. The producers ($24F6 -> $1A20) write here; view_paint_lines is the single consumer and ZEROES each byte it consumes. A zero source means 'same byte as the cell to my left'."
+0x6000,view_cell_bytes,table,0,"[PROVISIONAL] source byte -> screen byte, read as $6000,Y by every cell-chain unit. Inside the sky band, so it is one of the tables hiding on display (src/platform/bbc_screen.h)."
+0x3150,view_stop_a_tbl,table,0,"per scan line: which chain-A unit gets an RTS planted over its store, i.e. where the painted run ends. Read by phases 2 and 3."
+0x3080,view_stop_b_tbl,table,0,"per scan line: the same for chain B. Phase 3 also subtracts it from $F1 to get chain A's entry offset."
+0x30D0,view_start_b_tbl,table,0,"per scan line: which chain-B unit the driver JSRs into, i.e. where the second painted run begins."
+0x3050,view_edge_index_tbl,table,0,"per scan line: the index phases 2/3 use into the four boundary mask/fill tables below — the sub-cell position of the silhouette edge."
+0x3679,view_edge_mask_a,table,0,"indexed by view_edge_index_tbl: the AND mask that keeps the inside pixels of chain A's boundary cell."
+0x3579,view_edge_fill_a,table,0,"indexed by view_edge_index_tbl: the ORA value that fills the outside pixels of chain A's boundary cell."
+0x36F9,view_edge_mask_b,table,0,"chain B's AND mask, same index."
+0x35F9,view_edge_fill_b,table,0,"chain B's ORA value, same index."
+0x38D0,view_bnd_a_mask,table,0,"per scan line: a second AND mask applied to chain A's boundary byte after the chain returns."
+0x3350,view_bnd_a_fill,table,0,"per scan line: the ORA value paired with view_bnd_a_mask."
+0x3950,view_bnd_b_mask,table,0,"per scan line: chain B's second AND mask."
+0x33D0,view_bnd_b_fill,table,0,"per scan line: the ORA value paired with view_bnd_b_mask."
+0x4400,view_bnd_b_src,table,0,"per scan line: the source byte chain B's boundary cell is composed from."
+0x0504,view_bnd_a_src,table,0,"per scan line: the source byte chain A's boundary cell is composed from. ⚠ It sits in the per-line buffer family at $0400/$0450/$0554/$05A4/$0600/$0650 — see docs/rename.md, that family's 'per-column' naming is inverted."
+0x5F60,view_line_surface,table,0,"per scan line: two bits selecting the line's background colour out of surface_colours. Read at $7BF7, the cell chain's re-entry point, once per line."
 0x7FB6,mirror_draw_car,func,0,"[PROVISIONAL] draws one car reflection into one mirror segment, or clears it. Carries the engine-shudder idiom LDX $FE68 / AND $2000,X / AND $61 (User VIA T1 low, decorrelated against game code, gated on engine status) and subtracts $138 via SBC #$38 / SBC #$01 when a span crosses a character row. Spans dashData blocks 1 and 0; block 0's 52 bytes land at $7FCC."
 0x508C,vdu_char_wide,func,0,"⭐ THE DOUBLE-WIDTH ENTRY to vdu_char_def: stores the code at $62C3 then JMPs $509D, deliberately skipping $509B's `LDA #0 / STA $77` so the CALLER's $77 survives. $50AE then halves the glyph — bit 7 clear keeps its left four columns (AND #$F0), bit 7 set lifts its right four into place (ASL A x4) — and each half becomes one MODE 5 cell, so one glyph is drawn across two cells at double width. Measured on a real BBC: 4 entries at $509D from $508F, $77 in {$22,$FF}. Only caller: draw_gear_indicator."
 0x42D0,draw_gear_indicator,func,0,"the gearstick readout — the current gear ($40) through the character table at $3779 ('N', '1', '2', ...), plotted DOUBLE WIDTH at cells 34-35 of frame-buffer row 215 by calling vdu_char_wide twice, with $77 = $22 (left half) then $FF (right half)."
 0x3779,gear_char_tbl,data,0,"gear number -> character code for draw_gear_indicator. Indexed by $40; 'N' for neutral."
+
+## ---- the dials: the rev counter and the line plotter (found fixing the rev counter, 2026-08-16)
+0x51A8,dial_needle_angle,func,0,"turns the engine revs into a needle angle: reads engine_revs, clamps to $1E, revs * 0.75, rotates by $4C, then decomposes mod $98 into a quadrant ($/26) plus an offset folded about $13, and builds plot_octant at $51DB-$51E1."
+0x5204,plot_line_octant,func,0,"⚠ SELF-MODIFYING BY CONSTRUCTION. A Bresenham line whose major- and minor-axis STEP OPCODES are patched into itself from the two octant tables below ($3B86 -> $5220, $3B8E -> $529B) indexed by plot_octant, then plotted through ($70),Y. ⚠ It has callers other than the rev-counter needle — anything that draws a straight line goes through it, so the name must not say 'needle'."
+0x3B86,octant_major_step_tbl,table,0,"8 bytes INX DEY INY INX DEX INY DEY DEX — the major-axis step opcode plot_line_octant patches into $5220."
+0x3B8E,octant_minor_step_tbl,table,0,"8 bytes DEY INX INX INY INY DEX DEX DEY — the minor-axis step opcode plot_line_octant patches into $529B."
+0x0076,plot_octant,var,0,"(quadrant << 1) | mirror, built by dial_needle_angle at $51DB-$51E1 and used by plot_line_octant to index the two step-opcode tables."
+0x003C,engine_revs,var,0,"the rev counter — the DASH table in the reference loop names it too. Range from $00, idle $28-$2C, clamped max $AA; read by dial_needle_angle."
+0x005A,engine_revs_prev,var,0,"the over-rev limiter's decay source: $4A2C subtracts 2 per call while it is above $6C."

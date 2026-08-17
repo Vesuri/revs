@@ -49,7 +49,7 @@ extern volatile unsigned long g_probeHwWrites, g_probeHwReads;
 extern volatile unsigned long g_probeIsrTicks, g_probeIsrCount;
 extern volatile unsigned long g_probeIrqTicks, g_probeIrqCount;
 
-/* ⭐⭐ THE BRACKET INSIDE THE HANDLER (2026-08-17).  irq1v_handler is one row in the phase
+/* ⭐⭐ THE BRACKET INSIDE THE HANDLER (2026-08-17).  irq1v_band_schedule is one row in the phase
  * table and five completely different jobs: four band arms that write a palette and reload a
  * timer, and band 4, which also runs $52A4.  A per-CALL average over the five therefore prices
  * a palette write and the band-4 arm as if they were the same thing, and that average ("~810 us
@@ -101,7 +101,7 @@ extern volatile unsigned long g_probeBandTicks[PROBE_BANDS], g_probeBandCount[PR
  *               large here means the loop is waiting for the display rather than the reverse.
  *
  * Phase 25 keeps whatever is left (the call itself), so the old row is the sum of 25..28. */
-/* 29 splits the 50 Hz body itself: `FUN_52a4`, the band-4 arm, which is the only part of the
+/* 29 splits the 50 Hz body itself: `body_tick_xor_anim`, the band-4 arm, which is the only part of the
  * IRQ1V band cycle that simulates and DRAWS (display lines 120-143).  Everything else in the
  * cycle just reloads the timer and rewrites the palette.  Bracketed at its own JSR ($4EF5) with
  * phase 26 reopened immediately after, so the split is exact and the enclosing drain keeps the

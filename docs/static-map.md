@@ -522,7 +522,7 @@ by caller count instead of by address:
 
 - **The road renderer joins up.**  The four addresses the span plotters patch into their own `STA`
   operands are per-**column** edge buffers (`$0554`, `$05A4`, `$0600`, `$0650`), and
-  `column_surface_colour` (`$1E9E`) compares a height against all four to decide which track
+  `surface_colour_at` (`$1E9E`) compares a height against all four to decide which track
   surface a column falls in, returning a colour from a 4-entry table at `$38FC`.  The plotters
   write those buffers; the resolver reads them.  Two halves of one mechanism.
 - **Lap and race timing is packed BCD.**  `car_reset_best_lap`, `lap_complete`, `sort_cars_by_key`
@@ -548,7 +548,7 @@ a guess dressed as a fact, and it is the exact failure mode `docs/postmortem.md`
 register gives the pixel format (a pixel's two bits land in palette-index bits 3 and 1; bits 2 and
 0 hold the following pixels' bits and are don't-care — which is why every palette table in the
 game comes in groups of four), and the five raster bands are recorded live from what
-`irq1v_handler` writes rather than hard-coded, because band 2's duration is the horizon.
+`irq1v_band_schedule` writes rather than hard-coded, because band 2's duration is the horizon.
 
 ⭐⭐ **`$5E40-$66FF` — 5.5 KB of engine variables AND executable code — is inside the frame
 buffer, on display.**  It is invisible because all sixteen of band 1's palette entries are the

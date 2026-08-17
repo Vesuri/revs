@@ -245,7 +245,7 @@ paint plus the frame wait" and read 2.5%; measured properly it was **60.9%**, so
 
 | Share | ms/frame | Phase | Callee | What it is |
 |---|---|---|---|---|
-| **51.1%** | **526** | **26** | **the 50 Hz game body** | `drainTicks()` — the IRQ1V band cycle and `FUN_52a4`, run from main-loop context at the engine's frame hook.  ⚠ **NOT one slow routine: ~50 ticks per painted frame.**  See the arithmetic below |
+| **51.1%** | **526** | **26** | **the 50 Hz game body** | `drainTicks()` — the IRQ1V band cycle and `body_tick_xor_anim`, run from main-loop context at the engine's frame hook.  ⚠ **NOT one slow routine: ~50 ticks per painted frame.**  See the arithmetic below |
 | **14.6%** | 150 | 24 | **`$7BE2`** | the dashboard sweep in the `$7B00` overlay (plus the end of the loop body, `$174B-$1763`) |
 | **8.1%** | 83 | **27** | `RevsScreen::decode()` | frame buffer → bitplanes.  Pure port overhead — and **83 ms, not the ~250 ms `direct-bitplane-plan.md` §1 assumed** |
 | **7.4%** | 77 | 5 | **`build_road_edge_lists`** (`$24F6`) | the road-geometry projection pass |
@@ -265,28 +265,28 @@ also explains a 2026-08-13 mystery: that table charged this work to nothing, bec
 ran inside the VERTB ISR then (`docs/amiga-arch.md`) where no bracket could see it.
 
 **Inside the 51%, measured (`amiga/phase4_prof.gdb`, same run):** one body tick = **11.1 ms** of its
-20 ms, of which the body's own arm `FUN_52a4` is only **277 µs** — the other **10.8 ms is
-`irq1v_handler` itself**, 5 calls per tick at **1983 µs each**.  The VERTB ISR (copper + present +
+20 ms, of which the body's own arm `body_tick_xor_anim` is only **277 µs** — the other **10.8 ms is
+`irq1v_band_schedule` itself**, 5 calls per tick at **1983 µs each**.  The VERTB ISR (copper + present +
 audio) is **1011 µs** per field on top, charged to whichever phase it preempted.  An arm is ~60 6502
 instructions and ~72 BBC hardware accesses per tick go through `platform_hw_write` (counted with
 `make HWTIME=1` — ⚠ whose own observer effect is over 2×, so take the *count* and not its
-microseconds).  ⭐ **That makes `irq1v_handler` the obvious first native twin**: 51% of the frame, no
+microseconds).  ⭐ **That makes `irq1v_band_schedule` the obvious first native twin**: 51% of the frame, no
 drawing, pure `mem[]` + hardware writes, and its output (the band record) is already validated
 against a real BBC by `make mode7` and `make refloop`.
 
 ⚠⚠ **So the Phase 6 pecking order is now: the 50 Hz body, then the dashboard, then the road
-subsystem (5+11 = 13.5%), then the decode.**  `FUN_52a4` — the band-4 arm, which is also the only
+subsystem (5+11 = 13.5%), then the decode.**  `body_tick_xor_anim` — the band-4 arm, which is also the only
 thing that draws display lines 120-143 — has never been profiled or split, and it is the single
 biggest item in the port.
 
-### ⭐⭐ TWIN #1 SHIPPED: `irq1v_handler` native, **0.96 → 1.56 FPS** (+62%, 2026-08-16)
+### ⭐⭐ TWIN #1 SHIPPED: `irq1v_band_schedule` native, **0.96 → 1.56 FPS** (+62%, 2026-08-16)
 
 The first native twin the project has (`src/gen/revs_native.c`, `VALIDATE_FUNCS = {0x4E5C}`).
 
 | build | vblanks | painted | FPS | frame |
 |---|---|---|---|---|
 | transliterated (the flat-band-skip row above) | 11778 | 227 | **0.96** | 1038 ms |
-| `irq1v_handler` native                        | 11824 | **369** | **1.56** | 641 ms |
+| `irq1v_band_schedule` native                        | 11824 | **369** | **1.56** | 641 ms |
 
 Same flags (`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1`), same instrument (`fps_series.gdb`,
 22 rows, one 0.97 outlier and 21 rows within 1.56-1.66), nearly identical vblank counts.
@@ -305,10 +305,10 @@ Expect the same shape wherever a tight 6502 loop touches hardware or drives a ta
 
 ⚠ Two things this did NOT do, so the next measurement is not mis-set: the 51% row is a RATIO
 (the body still runs once per field, faithfully — it now just costs less each time), and
-`FUN_52a4` is untouched.  Re-profile before picking twin #2; the share table above is stale.
+`body_tick_xor_anim` is untouched.  Re-profile before picking twin #2; the share table above is stale.
 
 **Re-profiled after twin #1** (same command, n = 280 painted frames, ~700 ms/frame in the PROBES
-build).  The body tick fell from 11.1 ms to **5.5 ms** and `irq1v_handler` from 1983 µs to 814 µs
+build).  The body tick fell from 11.1 ms to **5.5 ms** and `irq1v_band_schedule` from 1983 µs to 814 µs
 per call, exactly as predicted:
 
 | share | ms/frame | phase | what |
@@ -340,7 +340,7 @@ did — which is also the check that the twin changed nothing else:
 | 1.1% | 7 | 29 | `$52A4`, the body's arm |
 
 ⚠ And two rows that are not phases but bound everything: the **VERTB ISR is 9783 calls at 911 µs**
-(charged to whichever phase it preempted, ~28 ms/frame spread pro-rata), and **`irq1v_handler` is
+(charged to whichever phase it preempted, ~28 ms/frame spread pro-rata), and **`irq1v_band_schedule` is
 49 134 calls at 810 µs** — 154 per painted frame, i.e. **125 of phase 26's 159 ms**.  The 50 Hz body
 is still mostly its own band cycle.
 
@@ -413,7 +413,7 @@ copper rebuild, the bitplane-pointer swap and the audio tick.  Unmeasured intern
 ### ⭐⭐ THE RASTER-BAND RECORD REUSE: **2.05 → 2.63 FPS (+28%)** — the row was 96% MACHINERY (2026-08-17)
 
 The biggest row in the table (the 50 Hz body drain, 141 ms / 26%) carried a note saying its cost
-was *unexplained*: "`irq1v_handler` is ~810 us a call for ~16 palette stores plus a handful of VIA
+was *unexplained*: "`irq1v_band_schedule` is ~810 us a call for ~16 palette stores plus a handful of VIA
 writes, and `make HWTIME=1` says it is not the hardware seam."
 
 **That 810 us was an average over five arms that do different jobs**, and averaging them is what
@@ -541,7 +541,7 @@ collapses 2148 cells into 360 runs. It is still a loss, for two reasons worth ca
 cost is proportional to.** Here it is source reads per frame (2148), and no layout on either side of
 the seam changes that number. Full write-up: `docs/direct-bitplane-plan.md` §7f.
 
-### ⚠⚠ TWIN #2, `$7BE2 dashboard_sweep`: **1.71 → 1.77 FPS (+3.6%)**, and that is the FINDING
+### ⚠⚠ TWIN #2, `$7BE2 view_paint_lines`: **1.71 → 1.77 FPS (+3.6%)**, and that is the FINDING
 
 The dashboard was the biggest main-loop row in the table above (21.8%, 151 ms) and it is now a
 native twin — validated 700/700 with thirteen sabotages, byte-identical over `make determinism`'s
@@ -565,7 +565,7 @@ Three things this settles, and the third is the one that matters:
    the two destination bases hoisted out of the column) recovered that and 20 ms more.
 3. ⭐⭐ **But 131 ms for 2093 units is ~420 cycles a unit, and the unit is ~27 instructions — so
    this routine is INSTRUCTION-FETCH BOUND in chip RAM, not interpreter bound.** That is why twin
-   #1 got 62% and this got 3.6%: `irq1v_handler`'s cost was machinery with no counterpart on the
+   #1 got 62% and this got 3.6%: `irq1v_band_schedule`'s cost was machinery with no counterpart on the
    BBC (a C bridge, a virtual dispatch, N/Z stores per palette write), and deleting machinery is
    nearly free. The sweep's cost is *2093 iterations of a small loop*, and on an A500 the floor
    for that is set by fetching the loop body over a contended bus. No amount of faithful C

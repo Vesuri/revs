@@ -45,7 +45,7 @@
  *
  * ── COLOUR IS A FUNCTION OF RASTER POSITION ─────────────────────────────────────────
  * There is one static screen mode and five palette/mode bands per field, written by
- * irq1v_handler ($4E5C).  Measured band cycle (durations are the User VIA T1 latch the
+ * irq1v_band_schedule ($4E5C).  Measured band cycle (durations are the User VIA T1 latch the
  * handler reloads, +2 for the 6522's reload, in microseconds = 1/64 line):
  *
  *   band 0  MODE 4, palette $3468 (all 16: 0-7 blue, 8-15 yellow)     4038 us  63.1 ln
@@ -176,7 +176,7 @@ void bbc_begin_band_cycle(void);
 /* ⭐ THE VIDEO ULA WRITE, AS ONE DEFINITION USED BY TWO CALLERS.
  *
  * Platform::hwWrite's $FE20/$FE21 arms are these two lines, and so is the native twin of
- * irq1v_handler (src/gen/revs_native.c) — which issues 48 palette writes per field and is
+ * irq1v_band_schedule (src/gen/revs_native.c) — which issues 48 palette writes per field and is
  * 51% of the frame, so it reaches the model directly instead of paying a C-bridge call, a
  * virtual dispatch and a 12-case switch per byte.
  *

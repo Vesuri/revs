@@ -130,7 +130,7 @@ SMC_SITES = {
     0x1DDD: {'kind': 'operand', 'bytes': {0x1DDE}, 'from': ['$1DA6']},
     # $2F4E  STA $7000,Y — BOTH operand bytes rewritten: lo $2F4F from $19C9, hi $2F50
     #        from $19C0, sourced from the table pair $2B22 (lo) / $2B1E (hi).  That table
-    #        holds the four per-column edge buffers $0554/$05A4/$0600/$0650, which is how
+    #        holds the four per-scan-line surface_edge buffers $0554/$05A4/$0600/$0650, which is how
     #        one span plotter serves four row buffers (docs/static-map.md).
     0x2F4E: {'kind': 'operand', 'bytes': {0x2F4F, 0x2F50}, 'from': ['$19C9', '$19C0']},
     # $2F90  STA $7000,Y — the second plotter, same mechanism ($2F91 from $19CC,
@@ -555,14 +555,14 @@ MANUAL_FUNCS = set()
 # pick the twins — the Atari port chose them by reasoning and got the choice wrong
 # (docs/perf-method.md).
 VALIDATE_FUNCS = {
-    # ⭐⭐ TWIN #1, $4E5C irq1v_handler — the 50 Hz body's raster-band state machine.
+    # ⭐⭐ TWIN #1, $4E5C irq1v_band_schedule — the 50 Hz body's raster-band state machine.
     # 51.1% of the frame lives in the band cycle and 10.8 ms of every 11.1 ms body tick is
     # this function (docs/perf-method.md §Inside the 51%).  It is ~80 6502 instructions,
     # 48 of which are `STA $FE21` inside three 16-entry palette loops — i.e. almost all of
     # the cost is the transliteration's per-instruction flag bookkeeping and the per-write
     # trip through platform_hw_write, not work the BBC did.
     0x4E5C,
-    # ⭐⭐ TWIN #2, $7BE2 dashboard_sweep — the biggest MAIN-LOOP item, 21.8% / 151 ms
+    # ⭐⭐ TWIN #2, $7BE2 view_paint_lines — the biggest MAIN-LOOP item, 21.8% / 151 ms
     # (docs/perf-method.md, re-profiled after twin #1).  Its shape is already measured:
     # 2093 column units run per sweep and only ~83 of them change a byte
     # (docs/direct-bitplane-plan.md §7a), so 96% of the cost is a dirty test that finds
@@ -623,7 +623,7 @@ ROM_BASE = 0x8000
 #
 # The other 39 are ordinary counted loops (DEX/BPL over a table) that the candidate
 # heuristic cannot tell apart from a wait, plus intra-frame palette writes inside
-# irq1v_handler itself — where a platform_tick_vbi() would be actively harmful.
+# irq1v_band_schedule itself — where a platform_tick_vbi() would be actively harmful.
 #
 # ⚠ platform_tick_vbi(), NOT platform_render_frame().  On the Amiga the 50 Hz body runs in
 # the real VERTB ISR and preempts this loop, so tickVBI is a no-op there and the wait ends
@@ -903,7 +903,7 @@ def func_lo(f):
 # DROPPED three runs from Revs, and one of them was `JMP ($4F1D)` at $4E59: the IRQ1V
 # chain-on that hands an interrupt that is not Revs's own back to the handler it
 # displaced.  It is a 3-byte orphan run ending in a terminator, sitting immediately
-# before irq1v_handler ($4E5C) and reached by `BEQ $4E59` at $4E61 from inside it.
+# before irq1v_band_schedule ($4E5C) and reached by `BEQ $4E59` at $4E61 from inside it.
 # Dropping it produced C where a foreign interrupt fell off the end of the handler
 # instead of chaining — a plausible-looking corpus with the interrupt structure quietly
 # wrong, which is postmortem finding #1.1 all over again.  The other two are the same

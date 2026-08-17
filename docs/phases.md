@@ -197,7 +197,7 @@ instrumentation is the whole reason this phase cost hours rather than days:
 3. **The BBC hardware model exists** (`src/platform/bbc_hw.cpp`) — two VIA flag bits, which is
    all Revs blocks on, plus the ULA/T1 registers recorded for Phase 5's copper work.
 4. ⭐ **The 50 Hz body is a RASTER-BAND STATE MACHINE, not a per-frame interrupt.**
-   `irq1v_handler` walks `irq_band_state` 0→4→0, repainting the ULA mode and palette per
+   `irq1v_band_schedule` walks `irq_band_state` 0→4→0, repainting the ULA mode and palette per
    horizontal band and reloading User VIA T1 for the next one; only the last band does the game
    work.  One Amiga VERTB therefore drives a whole band cycle — dispatch one band per interrupt
    and the simulation silently ticks at 10 Hz.  (`src/platform/amiga/Revs.cpp` `Revs::vbi()`.)
@@ -249,7 +249,7 @@ by the game's own User VIA timer interrupt, and it is all derived and written do
 lines, ending exactly where the `$7B00` overlay begins), pixel format from the ULA's shift
 register (a pixel's bits land in palette-index bits 3 and 1; bits 2 and 0 are the NEXT pixels' —
 which is why the game's palette tables come in groups of four), and the band schedule recorded
-live from what `irq1v_handler` writes.
+live from what `irq1v_band_schedule` writes.
 
 The mapping: 320×208, **two bitplanes**, interleaved, double-buffered with the pointer swap in
 the VBI.  MODE 5's high nibble IS plane 2's four pixels and its low nibble plane 1's, so a byte
@@ -822,7 +822,7 @@ and the baseline is still ~0.87 FPS.
 
 ## Phase 6 — Native twins, then asm 🔧
 
-> ⭐⭐ **TWIN #1 IS SHIPPED AND IT WAS WORTH 62%** (2026-08-16): `irq1v_handler` ($4E5C) native,
+> ⭐⭐ **TWIN #1 IS SHIPPED AND IT WAS WORTH 62%** (2026-08-16): `irq1v_band_schedule` ($4E5C) native,
 > **0.96 → 1.56 FPS**, `make validate` 25 628 cases / 0 mismatch, nine sabotages caught.
 > `docs/perf-method.md` §Twin #1 has the table and the lesson (the win is the *absence of the
 > interpreter*, not better code — gcc constant-folds a 16-entry 6502 palette loop into sixteen
@@ -932,7 +932,7 @@ ran inside the VERTB ISR then, where no main-loop bracket could see it.
 | the road subsystem (5 + 11) | 13.5% | 140 | build then draw, still one subsystem |
 | the vblank spin (28) | 2.6% | 27 | |
 
-⭐ **So the first hand-optimisation target is `FUN_52a4`, the 50 Hz body's own arm** — never profiled,
+⭐ **So the first hand-optimisation target is `body_tick_xor_anim`, the 50 Hz body's own arm** — never profiled,
 never split, and the only thing in the port that both simulates and draws (display lines 120-143).
 It is also the one row a faster renderer cannot help.
 
@@ -970,7 +970,7 @@ and its levers and then said "the twins", leaving the actual per-routine work im
 the eight items below turn out to be *constrained* rather than free, which is exactly what an
 implicit list hides.
 
-✅ **`irq1v_handler` ($4E5C) has been through it** — the first twin the project has, and the list
+✅ **`irq1v_band_schedule` ($4E5C) has been through it** — the first twin the project has, and the list
 survived contact with one addition: **item 9, sabotage the fixture before believing it.**  Items 5
 (`mem.h` names) and 0c (the naming batch) were *skipped* for it and that was the right call for
 this routine — it touches eleven `mem[]` cells, four of which are the ULA tables it indexes by

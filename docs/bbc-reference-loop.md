@@ -317,7 +317,7 @@ window to compare against is band 2, lines 81..100, moving-car frames only.
 ## ⭐⭐ What it found: the horizon stripes were an INTERRUPT-CONTRACT bug (2026-08-14)
 
 The loop's first real job, and it paid for itself. The port's black horizontal runs above the
-horizon were **`irq1v_handler` returning with A = 0**.
+horizon were **`irq1v_band_schedule` returning with A = 0**.
 
 **The fill loop.** `--fill=81-101` attributes every frame-buffer write in the horizon band to the
 routine that made it, and the answer is not in the engine at all — it is the unrolled chain in the
@@ -339,7 +339,7 @@ So **A is the live pixel value threaded through the whole line.** Corrupt A mid-
 later element whose source is zero stores the corrupt value — a run to the RIGHT EDGE of that
 display line, which is exactly the artefact's shape.
 
-**The corruption.** `irq1v_handler` ends `PLA / TAX / LDA $FC / RTI` (`$4F0A`): it saves only X
+**The corruption.** `irq1v_band_schedule` ends `PLA / TAX / LDA $FC / RTI` (`$4F0A`): it saves only X
 for itself and recovers the interrupted **A from `$FC`**, because on a real BBC the MOS's
 interrupt entry does `STA $FC` before `JMP (IRQ1V)`. The port's shim called the handler directly
 and **never wrote `$FC`**, which therefore held 0 forever — so every ISR return set A = 0.

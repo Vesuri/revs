@@ -65,9 +65,9 @@ public:
     virtual uint8_t hwRead(uint16_t addr);
     virtual void    hwWrite(uint16_t addr, uint8_t val);
 
-    /* Dispatch the game's own 50 Hz body (irq1v_handler, $4E5C) exactly as a 6502 IRQ
+    /* Dispatch the game's own 50 Hz body (irq1v_band_schedule, $4E5C) exactly as a 6502 IRQ
        would — raising the User VIA T1 flag it checks and pushing the P byte its closing
-       RTI pulls.  Call this from the backend's vblank, never irq1v_handler directly.
+       RTI pulls.  Call this from the backend's vblank, never irq1v_band_schedule directly.
        See bbc_hw.cpp for what goes wrong otherwise. */
     void fireIrq1v();
 
@@ -77,7 +77,7 @@ public:
        which the main loop moves about once every 25 fields at this framerate.  So when the
        inputs are unchanged the entire cycle is a no-op apart from $52A4, and this runs that
        alone.  Measured cost of the full cycle: 6.1 ms of a 20 ms field, 96% of it machinery.
-       Returns the number of irq1v_handler dispatches it actually made (0 on the fast path).
+       Returns the number of irq1v_band_schedule dispatches it actually made (0 on the fast path).
        `make BANDSKIP=0` is the control — see bbc_hw.cpp for the faithfulness argument. */
     unsigned fireIrq1vField();
 

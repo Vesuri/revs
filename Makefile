@@ -35,7 +35,7 @@ endif
 
 # ⭐ REVS_HW_TRACE — record every BBC hardware write so `make validate` can DIFF them.
 # mem[] is only half of what a 6502 routine produces; for a display or timer routine the
-# other half is all of it.  Twin #1 (irq1v_handler) survived two deliberate defects with a
+# other half is all of it.  Twin #1 (irq1v_band_schedule) survived two deliberate defects with a
 # byte-identical mem[], which is what put this here.  Host-only and unconditional: this
 # build exists for the differential, not for speed (src/platform/host/PlatformHost.h).
 # The Amiga build never defines it and the hook compiles to nothing there.

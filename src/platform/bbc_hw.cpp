@@ -18,7 +18,7 @@
  *   $FE4D  System VIA IFR — bit 1 is the vsync (CA1) flag.  hw_init ($4E11) spins
  *          `BIT $FE4D / BEQ` until it is set, to align the raster-band chain to the frame
  *          before claiming IRQ1V.  A model that never sets it never boots.
- *   $FE6D  User VIA IFR — bit 6 is the T1 timeout.  irq1v_handler ($4E5C) reads it FIRST
+ *   $FE6D  User VIA IFR — bit 6 is the T1 timeout.  irq1v_band_schedule ($4E5C) reads it FIRST
  *          and, if clear, chains straight on to the previous IRQ1V handler ($4E59 → an
  *          indirect JMP into MOS ROM that this port has nothing behind).  A model that
  *          never sets it means the game body never runs while everything else looks fine.
@@ -34,8 +34,8 @@
 #include "probe.h"          /* PROBE_IRQ_*(): what ONE band arm costs (probe.cpp) */
 #include "../cpu/cpu.h"
 
-extern "C" void irq1v_handler(void);   /* $4E5C, from the generated transliteration */
-extern "C" void FUN_52a4(void);        /* band 4's arm — the ONLY game work in the cycle */
+extern "C" void irq1v_band_schedule(void);   /* $4E5C, from the generated transliteration */
+extern "C" void body_tick_xor_anim(void);        /* band 4's arm — the ONLY game work in the cycle */
 
 /* ---------------------------------------------------------------------------
    Registers Phase 5 will need, recorded rather than dropped.  Keeping the last
@@ -45,7 +45,7 @@ extern "C" void FUN_52a4(void);        /* band 4's arm — the ONLY game work in
 extern "C" {
 volatile uint8_t  g_ulaControl = 0;        /* $FE20 — Video ULA control (mode/flash) */
 volatile uint8_t  g_ulaPalette[16] = {0};  /* $FE21 — 16 physical/logical colour pairs */
-/* $FE66/$FE67 — the User VIA T1 latch irq1v_handler reloads at the end of every band.
+/* $FE66/$FE67 — the User VIA T1 latch irq1v_band_schedule reloads at the end of every band.
    This IS the raster schedule: each value is how long until the next mode/palette
    change.  Phase 5 turns the sequence into copper WAITs, so capture it now. */
 volatile uint8_t  g_userT1LatchLo = 0;
@@ -55,7 +55,7 @@ volatile uint8_t  g_userT1LatchHi = 0;
  *
  * The 6845 gives the geometry (one static mode: 40x26 cells of 8 lines at $5A80) but the
  * game's *colours and pixel depth* are a function of raster position, rewritten by
- * irq1v_handler once per band: ULA control to $FE20, some subset of the 16 palette
+ * irq1v_band_schedule once per band: ULA control to $FE20, some subset of the 16 palette
  * entries to $FE21, then the User VIA T1 latch = how long until the next band.  A frame
  * is five bands whose durations sum to 20000 us (one 312.5-line interlace-sync field).
  *
@@ -189,7 +189,7 @@ void Platform::hwWrite(uint16_t addr, uint8_t val)
     switch (addr) {
 
     /* Video ULA control ($FE20): screen mode, flash, cursor width.  Written by
-       irq1v_handler once per raster band ($88 for the sky band, $C4 for the road) and
+       irq1v_band_schedule once per raster band ($88 for the sky band, $C4 for the road) and
        by OSBYTE 154.  Phase 5 turns the per-band value into a copper BPLCON/palette
        change; for now record the latest. */
     case 0xFE20:
@@ -236,7 +236,7 @@ void Platform::hwWrite(uint16_t addr, uint8_t val)
         g_userT1LatchHi = val;
         break;
 
-    /* User VIA IFR write = acknowledge the flagged interrupts.  irq1v_handler does
+    /* User VIA IFR write = acknowledge the flagged interrupts.  irq1v_band_schedule does
        `STA $FE6D` with A = $40 to clear its own T1 flag. */
     case 0xFE6D:
         if (val & 0x40) m_userT1Pending = false;
@@ -272,7 +272,7 @@ void Platform::hwWrite(uint16_t addr, uint8_t val)
 /* --------------------------------------------------------------------------
    The IRQ1V shim.
 
-   ⚠ irq1v_handler ends in RTI, which the transpiler emits as `PLP(); return;` — the C
+   ⚠ irq1v_band_schedule ends in RTI, which the transpiler emits as `PLP(); return;` — the C
    return supplies the PC, but the P byte still has to be on the 6502 stack, because a
    real IRQ pushed it.  Call the handler without pushing one and cpu.S walks backwards by
    one byte per frame: 256 frames later the stack wraps into page 1's live data and the
@@ -302,7 +302,7 @@ void Platform::fireIrq1v(void)
     PUSH(P_pack());              /* what the 6502's IRQ sequence would have pushed */
 
     /* ⭐⭐ AND WHAT THE MOS'S IRQ ENTRY WOULD HAVE DONE: `STA $FC`.
-       irq1v_handler ends `PLA / TAX / LDA $FC / RTI` ($4F0A) — it saves only X for itself
+       irq1v_band_schedule ends `PLA / TAX / LDA $FC / RTI` ($4F0A) — it saves only X for itself
        and gets the INTERRUPTED A back out of $FC, because on a real BBC the OS's interrupt
        entry stashes A there before `JMP (IRQ1V)`.  Nothing here used to write $FC, so it
        held 0 forever and every ISR return silently set A = 0.
@@ -343,7 +343,7 @@ void Platform::fireIrq1v(void)
 
     PROBE_IRQ_NULL();          /* the control: the same bracket around no work at all */
     PROBE_IRQ_BEGIN();
-    irq1v_handler();
+    irq1v_band_schedule();
     PROBE_IRQ_END(band);
 
     if (cpu_unwind != unwind0) { g_irqUnwindTouched++; cpu_unwind = unwind0; }
@@ -514,7 +514,7 @@ unsigned Platform::fireIrq1vField(void)
         const uint8_t a0 = cpu.A, x0 = cpu.X, y0 = cpu.Y;
         cpu.A = mem[0x347C]; cpu.X = 0xFF; cpu.N = 1; cpu.Z = 0; cpu.C = 1;
         PROBE_PHASE(PROBE_PHASE_BODYARM);
-        FUN_52a4();
+        body_tick_xor_anim();
         PROBE_PHASE(PROBE_PHASE_DRAIN);
         cpu.A = a0; cpu.X = x0; cpu.Y = y0;
 

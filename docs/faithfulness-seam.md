@@ -53,6 +53,42 @@ Ask, in order:
    No → `revs_native_amiga.cpp`, and say in a comment why the difference could not be an
    `#ifdef` — that sentence is what stops the same routine being re-litigated later.
 
+## Writing one — the twin style rules, and why each exists
+
+⚠⚠ **The deliverable is idiomatic C.  A transliteration with the macros left in is not a twin**,
+even when it is byte-exact: the *point* of a twin is that the interpreter is gone, and 6502 macro
+soup hides the structure the next optimisation has to see.  Twin #2 was rewritten on 2026-08-17
+purely for this reason — same 0/700 differential, same framerate (465 vs 467 painted frames over
+~9500 fields, a 0.4% difference), 573 lines that can now be read.
+
+1. **Named locals and ordinary control flow.**  `for`/`if`/`switch`; no `LDA`/`STA`/`TAY` chains,
+   no `goto` except a single cleanup label that writes threaded state back.
+2. **A typed `_core(...)` that takes its inputs as arguments**, plus the thin `void <name>(void)`
+   shim.  The core is the thing a future asm twin or representation change replaces.
+3. **`mem.h` names for every cell that has one; a `symbols.csv` row for every one that does not.**
+   An unnamed hex address left in a twin is a rename that was skipped — queue it in
+   `docs/rename.md` *before* writing the twin, because `make gen` cannot re-rename hand-written C.
+   Indexed tables get `table` rows plus a file-local `#define`, since only `var` rows become
+   `mem.h` aliases.
+4. **Comments say what it COMPUTES.**  `revs_gen.c` next door is the instruction-level record.
+5. **Hot loops thread state through locals, not a struct pointer.**  `v->byte` inside a
+   2093-iteration loop is a memory operand gcc cannot keep in a 68000 register.
+6. **Hardware writes stay, `#ifdef`-guarded.**  `make validate` diffs the hardware-write SEQUENCE,
+   so a dropped `$FE69` poke is a FAIL — and on the Amiga those writes become the copper's band
+   records, so they are not dead stores there either.
+7. ⭐ **The one place a 6502 macro survives: a live FLAG.**  C has no carry or overflow, and a
+   twin's exit contract can include the flags — both current twins declare AXY+flags live, and
+   every trap path is an exit.  Where a flag genuinely leaves the routine, wrap the operation in a
+   small named helper (`load_a`, `adc_step`, `sub_from`, `stop_unchanged`) with the cpu.h macro
+   *inside* it: the semantics stay the 6502's by construction, decimal mode included, and the
+   caller still reads as C.
+   ⚠ MEASURED, not theoretical: rewriting three `CPY`s and one `AND` as plain C comparisons kept
+   `mem[]` byte-exact and broke `C`/`N`/`Z` on 35 of 700 cases — all of them trap paths.  Only the
+   fixture's *illegal* cases caught it.
+8. **Sabotage before believing it.**  Four defects minimum, each must FAIL, and any sabotage that
+   PASSES is a fixture gap to write down rather than a pass to enjoy (`view_paint_lines`' phase-3
+   carry tail is unreachable and untested — recorded in the twin's own comment).
+
 ## What "validated" costs and buys
 
 Buys: a byte-exact differential over randomised inputs, re-run in seconds, forever.

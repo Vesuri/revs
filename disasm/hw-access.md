@@ -9,8 +9,8 @@ headless.  Sorted by address.  `R`=read, `W`=write.
 | `$0205` | IRQ1V+1          | R+W | OS vector      | W:FUN_4ddd(4E4F), W:FUN_4f23(4F2D), R:FUN_4ddd(4E09) |
 | `$FE00` | CRTC_ADDR        |   W | 6845 CRTC      | W:FUN_4ddd(4DE0) |
 | `$FE01` | CRTC_DATA        |   W | 6845 CRTC      | W:FUN_4ddd(4DE6) |
-| `$FE20` | ULA_CONTROL      |   W | Video ULA      | W:irq1v_handler(4E7E), W:irq1v_handler(4E9D) |
-| `$FE21` | ULA_PALETTE      |   W | Video ULA      | W:FUN_4ddd(4DFB), W:irq1v_handler(4E86), W:irq1v_handler(4EA3), W:irq1v_handler(4EC8), W:irq1v_handler(4EDB), W:irq1v_handler(4EEC) |
+| `$FE20` | ULA_CONTROL      |   W | Video ULA      | W:irq1v_band_schedule(4E7E), W:irq1v_band_schedule(4E9D) |
+| `$FE21` | ULA_PALETTE      |   W | Video ULA      | W:FUN_4ddd(4DFB), W:irq1v_band_schedule(4E86), W:irq1v_band_schedule(4EA3), W:irq1v_band_schedule(4EC8), W:irq1v_band_schedule(4EDB), W:irq1v_band_schedule(4EEC) |
 | `$FE45` | SYSVIA_T1CH      |   W | System VIA     | W:FUN_4ddd(4E3A) |
 | `$FE46` | SYSVIA_T1LL      |   W | System VIA     | W:FUN_4ddd(4E35), W:FUN_4ddd(4E3F) |
 | `$FE47` | SYSVIA_T1LH      |   W | System VIA     | W:FUN_4ddd(4E47) |
@@ -19,12 +19,12 @@ headless.  Sorted by address.  `R`=read, `W`=write.
 | `$FE4E` | SYSVIA_IER       |   W | System VIA     | W:FUN_4ddd(4E26) |
 | `$FE64` | USRVIA_T1CL      |   W | User VIA       | W:FUN_4ddd(4E2B) |
 | `$FE65` | USRVIA_T1CH      |   W | User VIA       | W:FUN_4ddd(4E30) |
-| `$FE66` | USRVIA_T1LL      |   W | User VIA       | W:FUN_4ddd(4E42), W:irq1v_handler(4F04) |
-| `$FE67` | USRVIA_T1LH      |   W | User VIA       | W:FUN_4ddd(4E4A), W:irq1v_handler(4F01) |
+| `$FE66` | USRVIA_T1LL      |   W | User VIA       | W:FUN_4ddd(4E42), W:irq1v_band_schedule(4F04) |
+| `$FE67` | USRVIA_T1LH      |   W | User VIA       | W:FUN_4ddd(4E4A), W:irq1v_band_schedule(4F01) |
 | `$FE68` | USRVIA_T2CL      |   R | User VIA       | R:FUN_0e74(0E7C), R:FUN_2692(274E), R:FUN_49ce(498C), R:FUN_49ce(49BD), R:FUN_4bcf(4C06), R:FUN_635d(635F) |
-| `$FE69` | USRVIA_T2CH      |   W | User VIA       | W:irq1v_handler(4EFA) |
+| `$FE69` | USRVIA_T2CH      |   W | User VIA       | W:irq1v_band_schedule(4EFA) |
 | `$FE6B` | USRVIA_ACR       |   W | User VIA       | W:FUN_4ddd(4E18) |
-| `$FE6D` | USRVIA_IFR       | R+W | User VIA       | W:irq1v_handler(4E63), R:irq1v_handler(4E5C) |
+| `$FE6D` | USRVIA_IFR       | R+W | User VIA       | W:irq1v_band_schedule(4E63), R:irq1v_band_schedule(4E5C) |
 | `$FE6E` | USRVIA_IER       |   W | User VIA       | W:FUN_4ddd(4E23), W:FUN_4f23(4F32) |
 
 ## Devices NOT touched

@@ -123,7 +123,7 @@ const fillArg = opt("fill", null);
 const fillFramesArg = opt("fill-frames", "9-23");
 // --irq-abi : measure, on real hardware, WHICH REGISTERS SURVIVE AN INTERRUPT.
 // The port's ISR shim has to reproduce this contract exactly.  It already got A wrong once
-// (irq1v_handler restores A from $FC, which only the MOS's entry ever writes), and the way to
+// (irq1v_band_schedule restores A from $FC, which only the MOS's entry ever writes), and the way to
 // find the rest is to measure the contract rather than read the handler and reason about it.
 const irqAbi = argv.includes("--irq-abi");
 // --charset : measure THE RACE VIEW'S BITMAP TEXT — which character codes the engine asks the
@@ -393,7 +393,7 @@ tm.processor.debugInstruction.add((addr) => {
 
 // ── the display-composition analyser: the REAL band schedule ──────────────────────────────
 // Colour in Revs is a function of raster position: one static screen mode, five palette/mode
-// bands per field written by irq1v_handler ($4E5C) and timed by the User VIA T1 latch.
+// bands per field written by irq1v_band_schedule ($4E5C) and timed by the User VIA T1 latch.
 // src/platform/bbc_screen.h DERIVES that schedule from the binary; this MEASURES it on the
 // real thing, which is the missing half.
 //

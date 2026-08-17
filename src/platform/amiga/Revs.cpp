@@ -180,10 +180,10 @@ void Revs::vbi()
 {
     // ⭐ THE GAME'S 50 Hz BODY.  On the BBC this is a USER VIA T1 interrupt, not vsync
     // (docs/static-map.md §The interrupt) — and it is not one interrupt per frame.
-    // irq1v_handler ($4E5C) is a RASTER-BAND STATE MACHINE: it walks irq_band_state
+    // irq1v_band_schedule ($4E5C) is a RASTER-BAND STATE MACHINE: it walks irq_band_state
     // 0→1→2→3→4→0, rewriting the Video ULA mode and palette for each horizontal band of
     // the screen and reloading T1 ($FE66/$FE67) with the delay to the next one.  Only the
-    // last band does the actual game work (FUN_52a4 at $4EF5).
+    // last band does the actual game work (body_tick_xor_anim at $4EF5).
     //
     // So one Amiga VERTB must drive a WHOLE band cycle, not one band: dispatch one band
     // per interrupt and the simulation would tick at 10 Hz while everything else looked
@@ -215,7 +215,7 @@ void Revs::vbi()
     //
     // "In the VERTB handler" and "in the vertical blank" are the same thing only while the
     // handler is shorter than the blank.  The game body below is not: the band cycle ends in
-    // FUN_52a4, the 50 Hz simulation, and it runs for MILLISECONDS.  With vbiUpdate() after
+    // body_tick_xor_anim, the 50 Hz simulation, and it runs for MILLISECONDS.  With vbiUpdate() after
     // it, every band rebuild and every bitplane-pointer swap landed at raster line 46..149 —
     // MEASURED, 49 of 49 presents inside the 44..251 display window (amiga/beam_watch.gdb).
     // The copper has already executed the words being rewritten by then, so a rebuilt WAIT

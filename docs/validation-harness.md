@@ -25,7 +25,7 @@ it was found by sabotaging the first twin (2026-08-16), and it is the one failur
 page that the Atari port could not have taught, because that machine's equivalent registers were
 mostly in `mem[]`.
 
-`irq1v_handler` ($4E5C) writes the Video ULA and the User VIA T1 latch about twenty times per
+`irq1v_band_schedule` ($4E5C) writes the Video ULA and the User VIA T1 latch about twenty times per
 call and leaves **four bytes** in `mem[]`.  Nine deliberate defects were injected into the twin;
 with a `mem[]`-only diff, **four of them passed 25 628 cases** — including the horizon-split
 comparison off by one and a wrong band's T1 latch, i.e. defects that would change what the screen
@@ -51,7 +51,7 @@ whose output the harness cannot see is indistinguishable from a first-run PASS o
 `platform_smc_unhandled`, and on what site and value.**  Same argument as the hardware trace: an
 unhandled self-modified operand is a *reachable path* in a twin, not an error case — the twin has
 to trap where the transliteration traps and unwind the same way — and it produces no `mem[]` at
-all.  `dashboard_sweep` ($7BE2) has nine such sites, and one of its sabotages (a planted RTS
+all.  `view_paint_lines` ($7BE2) has nine such sites, and one of its sabotages (a planted RTS
 ignored) moved the trap count from 196 to 314 while leaving plenty of `mem[]` agreement.
 
 ⭐ **Which forced a second change: `Platform::smcUnhandled` can now COUNT instead of abort**, under
@@ -63,7 +63,7 @@ supposed to be illegal. Never set it outside the harness.
 
 ⚠⚠ **And a fixture for a self-modifying routine cannot be `fill_random` alone.**  Random bytes in
 an opcode slot or a patched operand are neither legal value, so both models trap on the first
-instruction and agree about nothing.  `test_dashboard_sweep` builds the pre-state instead: random
+instruction and agree about nothing.  `test_view_paint_lines` builds the pre-state instead: random
 everywhere, legal at each site *for the reason the operand encoding gives* — which is written out
 case by case above the fixture, because "I made these bytes legal" is worthless without why.
 

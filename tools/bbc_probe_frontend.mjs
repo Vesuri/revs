@@ -30,7 +30,7 @@ const LANDMARKS = [
     [0x16dc, "FUN_16dc (race init)"],
     [0x16e6, "JSR $7BE2   <-- unmapped"],
     [0x4ddd, "hw_init"],
-    [0x4e5c, "irq1v_handler"],
+    [0x4e5c, "irq1v_band_schedule"],
     [0x1701, "THE MAIN LOOP"],
     [0x1704, "JSR $7B4A   <-- unmapped"],
     [0x1739, "JSR $7B00   <-- unmapped"],

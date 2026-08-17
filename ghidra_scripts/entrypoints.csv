@@ -21,7 +21,7 @@
 ## which disassembles the overlay separately.  docs/static-map.md §Open items 6.
 addr,name,note
 0x63BD,engine_main,"THE engine entry — the target of the unpack stub's closing JMP $63BD, read from $79AB. Not $1200: that is the loader stub, and it overwrites itself."
-0x4E5C,irq1v_handler,"Revs's own IRQ handler. Claimed by STA $0204/$0205 at $4E4F/$4E54 (LDA #$5C / LDA #$4E). The 50 Hz game body — reachable only because the MOS calls it, so a static walk never finds it. Chains to the previous handler via JMP ($4F1D) at $4E59."
+0x4E5C,irq1v_band_schedule,"Revs's own IRQ handler. Claimed by STA $0204/$0205 at $4E4F/$4E54 (LDA #$5C / LDA #$4E). The 50 Hz game body — reachable only because the MOS calls it, so a static walk never finds it. Chains to the previous handler via JMP ($4F1D) at $4E59."
 0x0E50,kbd_test_key,"OSBYTE 129 / Y=$FF negative-INKEY probe for the key code in X; returns Z set when held. Reached normally too, but it is the input primitive and worth a name from the start."
 ## --- COMMENTED OUT ON PURPOSE: only meaningful for disasm/revs_mem.bin ---
 ## In the runtime image $1200 holds relocated ENGINE code (it is inside the X=2 block move's

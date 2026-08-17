@@ -397,14 +397,17 @@ pricing a dirty-region *decode* (which is why that shipped and worked), wrong fo
 shows up as **nothing**. That is why §7b concluded "the main loop barely draws": it does draw, and
 96% of what it draws was already there.
 
-**2. `$7BE2` IS THE 3D VIEW RASTERISER.** It writes display lines 80..157 — full width, all 40 cells,
-on lines 88..111 — then tapers as each column's chain stops at its own row. Horizon-down,
-column-major, per-column silhouette. The palette band called "the dashboard" starts at line 166 and
-**nothing writes 166..207 during driving** but the digits. Full evidence and the suggested names:
-`docs/rename.md`. Consequences here:
+**2. `$7BE2` IS THE 3D VIEW RASTERISER — `view_paint_lines`, and it is LINE-major.** It writes
+display lines 80..157, full width (all 40 cells) on 88..111, then tapers as each line's chain stops
+at its own cell. ⚠ **Corrected 2026-08-17**: the first reading of this table said "column-major,
+per-column silhouette", and the address arithmetic says otherwise — one chain paints ONE SCAN LINE,
+forty cells across (`$70/$71` = `$6700` = character row 10 / cell 0 / line 0, `+1` per line, second
+pointer at `+256` = cell 32), so the taper is a per-line *horizontal* silhouette, i.e. the edges of
+the cockpit opening. The palette band called "the dashboard" starts at line 166 and **nothing writes
+166..207 during driving** but the digits. Names and evidence: `disasm/symbols.csv`. Consequences:
 
 - **§7a is void as written.** "A dashboard of mostly-static instruments redrawn wholesale" describes
-  nothing that exists; the 2093 units are the *viewport's* columns and the 83 changed bytes are the
+  nothing that exists; the 2093 units are the *viewport's* cells and the 83 changed bytes are the
   scene actually moving. What survives is the arithmetic: ~420 cycles a unit, instruction-fetch
   bound (`docs/perf-method.md` twin #2).
 - **§8 (sprites) is unsized again**, because it was sized off §7a. The instruments are not what

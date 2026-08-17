@@ -80,7 +80,7 @@ extern uint16_t      g_trackHookMissingAddr;
 extern unsigned long g_trackHookCalls;
 
 /* The interrupt register contract (see platform_cbridge.cpp): A, X and Y must come back out of
-   irq1v_handler unchanged, as they do on a real BBC.  Non-zero here means a foreground routine
+   irq1v_band_schedule unchanged, as they do on a real BBC.  Non-zero here means a foreground routine
    can be resumed with a corrupted register — which surfaces as a drawing artefact somewhere
    far away, not as a crash. */
 extern unsigned long g_irqClobberCount;

@@ -128,7 +128,7 @@ void platform_test_clock_addr(uint16_t a);
 /* ⭐⭐ THE HARDWARE-WRITE TRACE (src/platform/platform_cbridge.cpp).  mem[] is only half of
    what a 6502 routine can produce; the other half is $FC00-$FEFF, and for a display or
    timer routine it is nearly ALL of the output.  Diffing it is not optional — see the
-   sabotage note over test_irq1v_handler(). */
+   sabotage note over test_irq1v_band_schedule(). */
 enum { HWLOG_MAX = 8192 };
 /* The SMC trap channel (src/platform/Platform.cpp) — see the comparison in diff_run. */
 extern volatile unsigned long g_smcUnhandled;
@@ -289,11 +289,11 @@ static int test_contract(const char* name, void (*native)(void), void (*t6502)(v
    ========================================================================== */
 
 void platform_test_t1_pending(int on);
-void irq1v_handler(void);
-void irq1v_handler__t6502(void);
+void irq1v_band_schedule(void);
+void irq1v_band_schedule__t6502(void);
 
 /* --------------------------------------------------------------------------
-   $4E5C irq1v_handler — the raster-band state machine (src/gen/revs_native.c).
+   $4E5C irq1v_band_schedule — the raster-band state machine (src/gen/revs_native.c).
 
    Not test_contract(), for three reasons, each of which is the fixture's actual content:
 
@@ -314,7 +314,7 @@ void irq1v_handler__t6502(void);
       one side of `$153C`, so the fixture also pins the boundary explicitly.
 
    ⚠ WHAT IS AND IS NOT COVERED, stated rather than quietly skipped.  Band 4 calls
-   FUN_52a4 — the entire 50 Hz game body — and it really runs here, on randomised memory:
+   body_tick_xor_anim — the entire 50 Hz game body — and it really runs here, on randomised memory:
    deleting the call fails 128 of 128 cases.  What the differential canNOT see is the
    register hand-off INTO it: A, X and N/Z/C can each be falsified at the call site with
    no observable effect, because the body reloads them.  That part of the twin is
@@ -323,7 +323,7 @@ void irq1v_handler__t6502(void);
    ⭐ SABOTAGE RECORD (2026-08-16), because a first-run PASS is not evidence.  Nine
    deliberate defects: horizon remainder +1, X not restored, band counter not advanced,
    the horizon boundary <= → <, band-3 latch +1, band-3 palette 3 entries instead of 4,
-   band-0 palette written in ascending order, the $FE69 poke dropped, FUN_52a4 not called.
+   band-0 palette written in ascending order, the $FE69 poke dropped, body_tick_xor_anim not called.
    All nine fail now.  ⚠⚠ FOUR OF THEM PASSED before diff_run grew a hardware trace: the
    ULA and the T1 latch are not in mem[] and this routine leaves only four bytes there, so
    a mem[]-only differential was validating almost none of its output.
@@ -348,18 +348,18 @@ static int irq1v_case(const char* label, int state, int pending, int cases,
         c.S = (uint8_t)(0xC0 + (xs() & 0x3F));
         c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1;
         c.C = xs() & 1; c.I = xs() & 1; c.D = xs() & 1;
-        fail += diff_run(label, pre, c, irq1v_handler, irq1v_handler__t6502,
+        fail += diff_run(label, pre, c, irq1v_band_schedule, irq1v_band_schedule__t6502,
                          liveMask, t, printed);
     }
     platform_test_t1_pending(0);
     return fail;
 }
 
-static int test_irq1v_handler(void)
+static int test_irq1v_band_schedule(void)
 {
     int fail = 0, printed = 0;
-    register_fixture("irq1v_handler");
-    if (!want("irq1v_handler")) return 0;
+    register_fixture("irq1v_band_schedule");
+    if (!want("irq1v_band_schedule")) return 0;
 
     /* not our interrupt: chain on to the saved IRQ1V.  A is left 0 by the AND. */
     fail += irq1v_case("irq1v:chain",  0x00, 0, 2000, 0, 0, &printed);
@@ -380,15 +380,15 @@ static int test_irq1v_handler(void)
     fail += irq1v_case("irq1v:band4b", 0x7F, 1,   64, 0, 0, &printed);
 
     printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXYS+flags\n",
-           "irq1v_handler", 25628, fail);
+           "irq1v_band_schedule", 25628, fail);
     return fail;
 }
 
-void dashboard_sweep(void);
-void dashboard_sweep__t6502(void);
+void view_paint_lines(void);
+void view_paint_lines__t6502(void);
 
 /* --------------------------------------------------------------------------
-   $7BE2 dashboard_sweep — the 40-unit column chain (src/gen/revs_native.c).
+   $7BE2 view_paint_lines — the 40-unit column chain (src/gen/revs_native.c).
 
    ⚠⚠ fill_random() ALONE CANNOT TEST THIS ROUTINE, and the reason is the point of the
    fixture.  The chain is self-modifying code: forty `STA (zp),Y` opcode slots that are
@@ -482,7 +482,7 @@ static void dash_pre(uint8_t* pre, int sparse, int illegal)
     pre[0x7F7D] = slotLow[xs() % 14];
     pre[0x7D4D] = entryB[xs() % DASH_ENTRYB_N];
 
-    /* the per-column control tables */
+    /* the per-scan-line control tables */
     for (x = 0x03; x <= 0x2B; x++) {
         pre[0x3150 + x] = slotLow[xs() % DASH_SLOT_N];
         pre[0x30D0 + x] = entryB[xs() % DASH_ENTRYB_N];
@@ -495,7 +495,7 @@ static void dash_pre(uint8_t* pre, int sparse, int illegal)
     if (illegal) pre[0x30D0 + 0x03 + (xs() % 0x29)] = 0x08;
 }
 
-static int test_dashboard_sweep(void)
+static int test_view_paint_lines(void)
 {
     static uint8_t pre[65536];
     unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
@@ -503,8 +503,8 @@ static int test_dashboard_sweep(void)
     int fail = 0, printed = 0, t;
     const int dense = 300, sparse = 300, illegal = 100;
 
-    register_fixture("dashboard_sweep");
-    if (!want("dashboard_sweep")) return 0;
+    register_fixture("view_paint_lines");
+    if (!want("view_paint_lines")) return 0;
 
     /* The trap path is real code in BOTH models and has to unwind identically, so it gets
        tested rather than avoided — which means Platform::smcUnhandled must count instead of
@@ -527,8 +527,8 @@ static int test_dashboard_sweep(void)
            decimal mode (the MOS clears D on reset and every IRQ entry CLDs), and both
            models go through the same SBC macro, so nothing is being papered over. */
         c.D = 0;
-        fail += diff_run("dashboard_sweep", pre, c,
-                         dashboard_sweep, dashboard_sweep__t6502, liveMask, t, &printed);
+        fail += diff_run("view_paint_lines", pre, c,
+                         view_paint_lines, view_paint_lines__t6502, liveMask, t, &printed);
     }
     smcLegal = g_smcUnhandled;
 
@@ -539,26 +539,26 @@ static int test_dashboard_sweep(void)
         c.S = (uint8_t)(0xC0 + (xs() & 0x3F));
         c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1; c.I = xs() & 1;
         c.D = 0;
-        fail += diff_run("dashboard_sweep", pre, c,
-                         dashboard_sweep, dashboard_sweep__t6502, liveMask, t, &printed);
+        fail += diff_run("view_paint_lines", pre, c,
+                         view_paint_lines, view_paint_lines__t6502, liveMask, t, &printed);
     }
     smcIllegal = g_smcUnhandled - smcLegal;
     unsetenv("REVS_SMC_CONTINUE");
 
     if (smcLegal != 0) {
-        printf("[VACUOUS] dashboard_sweep: %lu SMC traps over the %d LEGAL cases — the "
+        printf("[VACUOUS] view_paint_lines: %lu SMC traps over the %d LEGAL cases — the "
                "pre-state is not a legal overlay state, so those cases compared little\n",
                smcLegal, dense + sparse);
         fail++;
     }
     if (smcIllegal == 0) {
-        printf("[VACUOUS] dashboard_sweep: 0 SMC traps over the %d ILLEGAL cases — the "
+        printf("[VACUOUS] view_paint_lines: 0 SMC traps over the %d ILLEGAL cases — the "
                "trap path was never reached\n", illegal);
         fail++;
     }
     printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXYS+flags  "
            "(%lu traps in %d illegal cases)\n",
-           "dashboard_sweep", dense + sparse + illegal, fail, smcIllegal, illegal);
+           "view_paint_lines", dense + sparse + illegal, fail, smcIllegal, illegal);
     return fail;
 }
 
@@ -573,8 +573,8 @@ int main(int argc, char** argv)
 
     /* --- fixtures go here --- */
     (void)test_contract;   /* the generic leaf fixture; twin #1 needs a steered one */
-    fail += test_irq1v_handler();
-    fail += test_dashboard_sweep();
+    fail += test_irq1v_band_schedule();
+    fail += test_view_paint_lines();
 
     fail += check_coverage();
 

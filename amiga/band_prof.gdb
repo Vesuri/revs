@@ -1,10 +1,10 @@
-# ⭐⭐ THE BRACKET INSIDE irq1v_handler — what each of the five band arms actually costs.
+# ⭐⭐ THE BRACKET INSIDE irq1v_band_schedule — what each of the five band arms actually costs.
 #
 # Build: cd amiga && make clean && make -j4 PROBES=1 STRAIGHT_TO_RACE=1 FIXED_RNG=1
 # Run:   . ./env.sh && GDBSCRIPT=band_prof.gdb ./diag_run.sh 200
 #
 # WHY THIS EXISTS.  The phase table charges the 50 Hz drain ~26% of the frame and
-# `phase4_prof.gdb` reports one number for irq1v_handler: ~810 us a CALL.  But the five calls
+# `phase4_prof.gdb` reports one number for irq1v_band_schedule: ~810 us a CALL.  But the five calls
 # in a field are five different jobs — four write a palette and reload a timer, one also runs
 # $52A4 — so that average prices sixteen inline byte stores and the band-4 arm as the same
 # thing, and it is why the cost reads as "unexplained".  Split it before optimising it.
@@ -22,7 +22,7 @@ continue
 printf "=== vbi=%u loopFrames=%lu  fields=%u  bodyTicks=%lu ===\n", \
   g_vbiCount, g_phaseFrames, g_vbiCount, g_bodyTicks
 if g_probeIrqCount > 0
-  printf "irq1v_handler TOTAL: %lu calls, %lu us each\n", \
+  printf "irq1v_band_schedule TOTAL: %lu calls, %lu us each\n", \
     g_probeIrqCount, (g_probeIrqTicks/g_probeIrqCount)*1000/4006
 end
 # 4006 beam ticks = 1000 us (80128 ticks per 20 ms field).

@@ -89,7 +89,7 @@ void probe_phase(int id)
  *
  * The phase table charges the 50 Hz body drain 526 ms per painted frame, i.e. ~10.5 ms of every
  * 20 ms tick, and splitting the body's own arm ($52A4) off accounted for only 277 us of it.  So
- * the cost is either inside `irq1v_handler` (the five band arms) or in the VERTB ISR that happens
+ * the cost is either inside `irq1v_band_schedule` (the five band arms) or in the VERTB ISR that happens
  * to run while the drain phase is open — and a PHASE cannot tell those apart, because the ISR
  * preempts whatever phase is current and its time lands there.
  *
@@ -98,7 +98,7 @@ void probe_phase(int id)
  */
 volatile unsigned long g_probeIsrTicks = 0;    /* the VERTB ISR, total  */
 volatile unsigned long g_probeIsrCount = 0;
-volatile unsigned long g_probeIrqTicks = 0;    /* irq1v_handler, one band arm per call */
+volatile unsigned long g_probeIrqTicks = 0;    /* irq1v_band_schedule, one band arm per call */
 volatile unsigned long g_probeIrqCount = 0;
 
 /* ...and the same total SPLIT BY BAND, because the five arms are not the same job (probe.h). */

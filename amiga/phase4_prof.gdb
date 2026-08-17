@@ -77,7 +77,7 @@ if g_probeIsrCount > 0
     g_probeIsrCount, (g_probeIsrTicks/g_probeIsrCount)*1000/4006
 end
 if g_probeIrqCount > 0
-  printf "irq1v_handler: %lu calls (%lu per body tick), %lu us each\n", \
+  printf "irq1v_band_schedule: %lu calls (%lu per body tick), %lu us each\n", \
     g_probeIrqCount, g_probeIrqCount/g_bodyTicks, (g_probeIrqTicks/g_probeIrqCount)*1000/4006
 end
 set $i = 1

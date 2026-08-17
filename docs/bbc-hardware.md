@@ -294,6 +294,12 @@ The Amiga side of the mapping (region splits, pointers-before-colours, band rule
 
 ## Sound — ⭐ MEASURED, and the model is validated tick-for-tick (2026-08-15)
 
+⚠ **THE ENGINE NOTE RAMPS ~50x TOO SLOWLY ON THE TARGET, AND THAT IS THE FRAMERATE, NOT AUDIO.**
+`sfx_trigger_random` is a MAIN-LOOP call, so the note-change rate is the painted-frame rate; at
+~2.6 FPS against 50 it crawls, and no amount of work in `sound.*` or `RevsAudio.*` will change it.
+Verify with `GDBSCRIPT=sound.gdb ./diag_run.sh 70` on a `STRAIGHT_TO_RACE` build — a run that never
+starts the engine measures silence.
+
 **Revs never addresses the SN76489.**  Every note is an `OSWORD 7` (SOUND) control block and one
 `OSWORD 8` (ENVELOPE) definition, through `sound_queue` (`$0B4A`), `sound_queue_default` (`$0B47`)
 and `sound_envelope` (`$0B65`) — one `JSR $FFF1` at `$0B70` serving two reason codes, which is

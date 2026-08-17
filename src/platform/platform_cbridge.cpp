@@ -86,7 +86,7 @@ void platform_bad_region_entry(uint16_t region, uint16_t entry) {
    the ENGINE was running, A, X and Y were preserved EVERY time.  (Interrupts taken during MOS
    code do clobber all three, which is why that measurement has to be filtered to the engine —
    unfiltered it reports "everything is clobbered" and is useless as a contract.)
-   The port broke that contract for A and it cost a visible artefact: irq1v_handler restores A
+   The port broke that contract for A and it cost a visible artefact: irq1v_band_schedule restores A
    from $FC, nothing wrote $FC, so every ISR return zeroed A — invisible on the host, where the
    ISR fires at a controlled point, and a black run to the right edge on the Amiga, where a
    real VERTB preempts the fill chain mid-line.  So the contract is now CHECKED rather than
@@ -141,7 +141,7 @@ extern MEM_QUAL uint8_t mem[65536];   /* the 6502 RAM image (src/cpu/cpu.c) */
 static int g_headlessTickClock = 0;
 static uint16_t g_headlessClockAddr = 0x0292;   /* MOS TIME low byte — confirm */
 
-/* ⭐ The User VIA IFR ($FE6D bit 6), for the irq1v_handler fixture.  It is the FIRST thing
+/* ⭐ The User VIA IFR ($FE6D bit 6), for the irq1v_band_schedule fixture.  It is the FIRST thing
    the handler reads and a clear bit means "not our interrupt", so the handler chains
    straight out to the MOS and does nothing else.  Left at 0 the differential would run
    thousands of cases against one three-instruction path and report a confident PASS —
@@ -151,7 +151,7 @@ static int g_headlessT1Pending = 0;
 
 /* ⭐⭐ THE HARDWARE-WRITE TRACE, and it is not an extra: without it the differential is
    BLIND to the whole output of a routine whose job is writing hardware.
-   Found by sabotage, 2026-08-16: twin #1 is irq1v_handler, which writes the Video ULA and
+   Found by sabotage, 2026-08-16: twin #1 is irq1v_band_schedule, which writes the Video ULA and
    the User VIA T1 latch and leaves only four bytes in mem[].  Two deliberate defects —
    the horizon-split comparison off by one, and the wrong band's T1 latch — both produced
    a byte-identical mem[] and a confident PASS over 25 628 cases.  A mem[]-only diff can

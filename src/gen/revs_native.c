@@ -5,13 +5,29 @@
  * both on the same randomised pre-state and diffs the whole of mem[] plus the registers the
  * fixture declares live; a twin with no fixture FAILS the run rather than passing vacuously.
  *
- * The rules this file lives by are docs/faithfulness-seam.md and docs/phases.md §1a:
- *   - a typed `_core(...)` doing the work, plus the `void <name>(void)` 6502-ABI shim;
+ * ⭐⭐ HOW A TWIN IS WRITTEN — the checklist is docs/faithfulness-seam.md §Writing one, and it
+ * is a REQUIREMENT, not a style preference:
+ *   - real C: named locals, `for`/`if`/`switch` instead of `goto`, no LDA/STA/TAY chains;
+ *   - a typed `_core(...)` that takes its inputs as arguments, plus the `void <name>(void)`
+ *     6502-ABI shim that marshals mem[]/cpu into it;
+ *   - mem.h names (`plot_ptr_lo`, `band1_duration_lo`, …) for every cell that has one, and a
+ *     symbols.csv row for every one that does not — an unnamed hex address in a twin is a
+ *     naming pass that was skipped, and docs/rename.md is where it gets queued;
+ *   - comments that say what the routine COMPUTES.  The instruction-by-instruction record
+ *     already exists next door in revs_gen.c and does not need re-narrating;
  *   - real locals only where the mem[] cell is PROVEN dead, with the proof written down;
  *   - BBC hardware writes are #ifdef-guarded, never deleted — the removed one is a hole in
- *     the differential, not a saved cycle;
- *   - say what the routine COMPUTES.  The instruction-by-instruction record already exists
- *     next door in revs_gen.c and does not need re-narrating.
+ *     the differential, not a saved cycle.  (`make validate` diffs the hardware-write
+ *     SEQUENCE, so a dropped $FE69 poke is a FAIL, and bbc_hw.cpp turns $FE20/$FE21/$FE66
+ *     into the copper's band records on the Amiga: they are not dead stores there either.)
+ *
+ * ⚠ THE ONE PLACE 6502 MACROS SURVIVE, AND WHY.  A twin's exit contract can include the
+ * FLAGS — both twins here declare AXY+flags live — and C has no carry or overflow.  Where a
+ * flag genuinely leaves the routine the arithmetic goes through a small named helper
+ * (`load_a`, `adc_step`, `sub_from`, `view_compose`) that wraps cpu.h's macro, so the
+ * semantics are the 6502's by construction, decimal mode included (the fixture randomises
+ * it).  The macro is INSIDE the helper; the caller reads as C.  Everywhere else the flags
+ * are dead and there are no macros at all.
  *
  * Linked into BOTH backends.  Anything genuinely Amiga-only belongs in
  * src/platform/amiga/revs_native_amiga.cpp instead.
@@ -28,43 +44,76 @@
 #include "../platform/revs_plot.h"    /* REVS_PLOT_*: the direct-to-bitplane run plotter */
 
 /* ===========================================================================
-   $4E5C  irq1v_handler — THE RASTER-BAND STATE MACHINE, and the 50 Hz body's arm
+   The flag-carrying primitives.  These exist so that no other line in this file
+   has to be written in 6502; see the header.
+   =========================================================================== */
+
+/* A = value, with N and Z from it.  Used where a value reaches A and an SMC trap can then
+   exit the routine with both still live. */
+static unsigned load_a(uint8_t value)
+{
+    LDA(value);
+    return cpu.A;
+}
+
+/* a + addend + carry_in, setting C and V.  C chains (the 16-bit pointer step adds three
+   times) and V is the one flag the cell chain can leak to its caller — nothing else in it
+   writes V at all. */
+static unsigned adc_step(unsigned a, uint8_t addend, int carry_in)
+{
+    cpu.A = (uint8_t)a;
+    cpu.C = (uint8_t)(carry_in != 0);
+    ADC(addend);
+    return cpu.A;
+}
+
+/* value - subtrahend with the borrow clear (SEC/SBC), setting C and V. */
+static unsigned sub_from(unsigned value, uint8_t subtrahend)
+{
+    cpu.A = (uint8_t)value;
+    cpu.C = 1;
+    SBC(subtrahend);
+    return cpu.A;
+}
+
+/* ===========================================================================
+   $4E5C  irq1v_band_schedule — THE RASTER-BAND PALETTE/MODE SCHEDULE
    ===========================================================================
 
    WHAT IT COMPUTES.  Revs owns IRQ1V and drives its own display from a User VIA T1
    timer.  One PAL field is FIVE interrupts; each one repaints the Video ULA for the
    band that is about to be scanned out and reloads T1 with how long that band lasts.
-   The counter at $4F43 says which band is next, and the last band's arm is also where
-   the whole 50 Hz game body runs (FUN_52a4 — physics, opponents, and display lines
-   120-143).  So this one function is both the display's colour schedule and the
-   simulation's clock, and it is 51% of the port's frame (docs/perf-method.md).
+   irq_band_state says which band is next.  ⭐ THE HANDLER DRAWS NOTHING — that is what
+   its 2026-08-17 rename settled (docs/rename.md): the only game work in the whole cycle
+   is the `body_tick_xor_anim` call in band 4, 4% of the field.  A BBC has to run a raster
+   split on the CPU for want of a copper; this port hands the same schedule to the copper
+   and reuses the record when nothing in it changed.
 
    THE BANDS, in the order the counter walks them:
 
      0   sky-top     MODE 4, all sixteen palette entries from $3468;  next latch $0FC4
      1   sky         MODE 5, the sixteen entries 3,$13..$F3 (one flat colour);  then the
-                     horizon split — band 1 runs for $4F1F/$4F20 microseconds and band 2
-                     gets the remainder of a fixed $153C, stashed in $4F21/$4F22.
+                     horizon split — band 1 runs for band1_duration and band 2 gets the
+                     remainder of a fixed $153C, stashed in band2_duration.
                      ⭐ A zero-height band 1 (the split underflows) FALLS THROUGH into
                      band 2's arm in the same interrupt, which is how the horizon can sit
                      at the very top of the screen.  Bands 2→3 fall through the same way.
      2   horizon     the four-colour palette at $3458;  latch = the remainder computed above
      3   track       four entries from $3478 (colour 1 → red);  next latch $1E00
-     4   dashboard   four entries from $347C (colour 3 → cyan), then FUN_52a4, then the
-                     User VIA ORB poke and the wrap back to band 0;  next latch $0B16
+     4   dashboard   four entries from $347C (colour 3 → cyan), then body_tick_xor_anim,
+                     then the User VIA ORB poke and the wrap back to band 0;  latch $0B16
      $FF             the arm is skipped; the counter just wraps to 0 and takes band 0's
                      latch.  Any OTHER negative counter does nothing at all.
 
-   WHAT IT LEAVES BEHIND.  In mem[]: the pushed X on the 6502 stack (and back), the
-   horizon remainder $4F21/$4F22, and the band counter $4F43.  Nothing else.  In the
-   hardware model: $FE6D (the interrupt acknowledge), $FE20/$FE21 (the ULA),
-   $FE66/$FE67 (the next band's duration — the write to $FE66 is what closes a band
-   record in bbc_hw.cpp) and $FE69 once per field.
+   WHAT IT LEAVES BEHIND.  In mem[]: the pushed X on the 6502 stack (and back),
+   band2_duration and irq_band_state.  Nothing else.  In the hardware model: $FE6D (the
+   interrupt acknowledge), $FE20/$FE21 (the ULA), $FE66/$FE67 (the next band's duration —
+   the write to $FE66 is what closes a band record in bbc_hw.cpp) and $FE69 once per field.
 
    EXIT CONTRACT.  A, X and Y all come back as the interrupted code left them — measured
    on a real BBC over 2858 engine-context interrupts (`make refloop --irq-abi`) and
-   asserted at the seam.  A arrives via $FC, which the MOS's own IRQ entry wrote; the
-   handler's `PLA/TAX` restores X; Y is never touched.  Flags and S come from the RTI.
+   asserted at the seam.  A arrives via mos_irq_a, which the MOS's own IRQ entry wrote;
+   the `PLA/TAX` restores X; Y is never touched.  Flags and S come from the RTI.
 
    ⭐ WHY THIS IS TWIN #1, AND WHERE THE TIME WAS.  ~80 6502 instructions, of which 48
    are `STA $FE21` in the three palette loops.  The transliteration spent its time on
@@ -84,191 +133,242 @@ static void ula_palette_table(unsigned table, int last)
         bbc_ula_palette_write(mem[table + x]);
 }
 
-void irq1v_handler(void)
+/* The interrupt is not ours: hand it to whoever owned IRQ1V before us.
+   ⚠ The register state on this path is live and is NOT the exit contract above — the exit
+   is a JMP, not an RTI, and the routine arrives here with A = 0 from the IFR test. */
+static void irq1v_chain_on(void)
 {
-    unsigned char state;
-    unsigned char latch_lo, latch_hi;   /* what $4F01 writes to $FE66/$FE67 */
+    cpu.A = 0; cpu.N = 0; cpu.Z = 1;
+    platform_indirect_jmp((unsigned short)(mem[MEM_saved_irq1v] |
+                                           ((unsigned short)mem[MEM_saved_irq1v + 1] << 8)));
+}
+
+/* PLA / TAX / LDA $FC / RTI — the exit contract, and the only place it is spelled out. */
+static void irq1v_return(void)
+{
     unsigned char pulled;
-
-    /* $4E5C — is this interrupt ours?  User VIA IFR bit 6 is the T1 timeout.  If it is
-       clear the MOS's previous IRQ1V handler gets the interrupt, and this one never
-       touches the machine.  ⚠ The register state on THAT path is live: the transliteration
-       leaves A = 0 from the AND, and the exit is a JMP, not an RTI, so nothing restores it. */
-    if ((bus_read(0xFE6D) & 0x40) == 0) {
-        cpu.A = 0; cpu.N = 0; cpu.Z = 1;
-        platform_indirect_jmp((unsigned short)(mem[MEM_saved_irq1v] |
-                                               ((unsigned short)mem[MEM_saved_irq1v + 1] << 8)));
-        return;
-    }
-    bus_write(0xFE6D, 0x40);      /* $4E63 acknowledge our own T1 flag */
-
-    PUSH(cpu.X);                  /* $4E66 TXA/PHA — X is the arms' loop counter */
-    cpu.D = 0;                    /* $4E68 CLD */
-
-    /* $4E69 — dispatch on the band counter. */
-    state = irq_band_state;
-    if (state & 0x80) {
-        /* $4E92.  Only $FF is a band; every other negative value leaves the machine
-           entirely alone, which is how a half-initialised counter fails safe. */
-        if (state != 0xFF) goto rti;
-        irq_band_state = 0;                    /* $4E96 INC, and $4F07 INCs it again */
-        goto band0_latch;                      /* $4E8C — band 0's timing, no palette */
-    }
-    switch (state) {
-    case 0:  goto band0;
-    case 1:  goto band1;
-    case 2:  goto band2;
-    case 3:  goto band3;
-    default: goto band4;                       /* $4E7A: anything above 3 */
-    }
-
-band0:  /* $4E7C — the two blanked text rows at the top, in MODE 4 */
-    bbc_ula_control_write(BBC_ULA_MODE4);
-    ula_palette_table(0x3468, 15);
-band0_latch:  /* $4E8C */
-    latch_lo = 0xC4; latch_hi = 0x0F;
-    goto latch;
-
-band1:  /* $4E9B — the sky: MODE 5 with all sixteen entries the same colour */
-    bbc_ula_control_write(BBC_ULA_MODE5);
-    {
-        unsigned char v = 0x03;
-        int i;
-        for (i = 0; i < 16; i++) { bbc_ula_palette_write(v); v = (unsigned char)(v + 0x10); }
-    }
-    /* $4EAA — the horizon split.  MoveHorizon ($4F44) puts band 1's duration in
-       $4F1F/$4F20; band 2 takes the remainder of a fixed $153C and it is kept in
-       $4F21/$4F22 for band 2's own arm to load.  A borrow (the sky is longer than the
-       whole split) means band 2 has no height at all, so its arm runs now. */
-    {
-        unsigned sky = (unsigned)mem[0x4F1F] | ((unsigned)mem[0x4F20] << 8);
-        unsigned rest = (0x153Cu - sky) & 0xFFFFu;
-        mem[0x4F21] = (unsigned char)rest;
-        mem[0x4F22] = (unsigned char)(rest >> 8);
-        latch_lo = mem[0x4F1F]; latch_hi = mem[0x4F20];
-        if (sky <= 0x153Cu) goto latch;        /* $4EC1 BCS: no borrow */
-    }
-    /* fall through — zero-height band 2 */
-
-band2:  /* $4EC3 — the horizon: black / blue / white / green */
-    ula_palette_table(0x3458, 15);
-    latch_lo = mem[0x4F21]; latch_hi = mem[0x4F22];
-    if (latch_hi != 0) goto latch;             /* $4ED4 BNE, on the LDX of $4F22 */
-    /* fall through — zero-height band 3 */
-
-band3:  /* $4ED6 — the track: colour 1 becomes red */
-    ula_palette_table(0x3478, 3);
-    latch_lo = 0x00; latch_hi = 0x1E;
-    goto latch;
-
-band4:  /* $4EE7 — the dashboard: colour 3 becomes cyan, and then the GAME RUNS */
-    ula_palette_table(0x347C, 3);
-    irq_band_state = 0xFF;                     /* $4EF2 STX, X == $FF; $4F07 wraps it to 0 */
-
-    /* FUN_52a4 is an ordinary JSR target, so it is entered with whatever the 6502 state
-       was: A = the last palette byte fetched, X = $FF from the DEX that ended the loop,
-       N/Z from that DEX, C = 1 from the CMP #3 that dispatched here, Y from the
-       interrupted foreground.  Reproduced explicitly because the twin does not otherwise
-       maintain the register file.
-       ⚑ MEASURED, not assumed: falsifying A, X, or N/Z/C here changes NOTHING in the
-       differential (`make validate FN=irq1v`, 128 randomised band-4 cases, with the same
-       harness catching a dropped `FUN_52a4()` call at once) — the body reloads all of
-       them before use.  Kept anyway: it costs five stores per FIELD, and "the callee does
-       not read it today" is a claim about a 400-routine subtree. */
-    cpu.A = mem[0x347C]; cpu.X = 0xFF;
-    cpu.N = 1; cpu.Z = 0; cpu.C = 1;
-
-    PROBE_PHASE(PROBE_PHASE_BODYARM);
-    FUN_52a4();
-    PROBE_PHASE(PROBE_PHASE_DRAIN);
-
-    bus_write(0xFE69, 0xFF);                   /* $4EFA User VIA ORB */
-    latch_lo = 0x16; latch_hi = 0x0B;
-
-latch:  /* $4F01 — how long until the next band.  $FE66 LAST: bbc_hw.cpp closes the band
-           record on it, and the record must already hold this band's mode and palette. */
-    bus_write(0xFE67, latch_hi);
-    bus_write(0xFE66, latch_lo);
-    irq_band_state++;
-
-rti:    /* $4F0A — PLA / TAX / LDA $FC / RTI */
     PULL(pulled);
     cpu.X = pulled;
-    cpu.A = mem[0x00FC];
+    cpu.A = mos_irq_a;
     PLP();
 }
 
+void irq1v_band_schedule(void)
+{
+    unsigned latch;               /* microseconds until the next band interrupt */
+    unsigned char state;
+
+    /* Is this interrupt ours?  User VIA IFR bit 6 is the T1 timeout. */
+    if ((bus_read(0xFE6D) & 0x40) == 0) {
+        irq1v_chain_on();
+        return;
+    }
+    bus_write(0xFE6D, 0x40);      /* acknowledge our own T1 flag */
+
+    PUSH(cpu.X);                  /* X is the arms' loop counter, restored before the RTI */
+    cpu.D = 0;                    /* CLD */
+
+    state = irq_band_state;
+    if (state >= 0x80) {
+        /* Only $FF is a band; every other negative value leaves the machine entirely
+           alone, which is how a half-initialised counter fails safe. */
+        if (state != 0xFF) {
+            irq1v_return();
+            return;
+        }
+        irq_band_state = 0;       /* and the tail INCs it again, so band 1 comes next */
+        latch = 0x0FC4;           /* band 0's timing without band 0's palette */
+    } else switch (state) {
+
+    case 0:     /* the two blanked text rows at the top, in MODE 4 */
+        bbc_ula_control_write(BBC_ULA_MODE4);
+        ula_palette_table(0x3468, 15);
+        latch = 0x0FC4;
+        break;
+
+    case 1: {   /* the sky: MODE 5 with all sixteen entries the same colour */
+        unsigned sky, rest;
+        unsigned char entry = 0x03;
+        int i;
+        bbc_ula_control_write(BBC_ULA_MODE5);
+        for (i = 0; i < 16; i++) { bbc_ula_palette_write(entry); entry = (unsigned char)(entry + 0x10); }
+
+        /* The horizon split.  MoveHorizon ($4F44) puts band 1's duration in
+           band1_duration from MAIN-LOOP context; band 2 takes the remainder of a fixed
+           $153C and it is kept in band2_duration for band 2's own arm to load.  A borrow
+           (the sky longer than the whole split) means band 2 has no height at all, so its
+           arm has to run in this same interrupt. */
+        sky  = band1_duration_lo | ((unsigned)band1_duration_hi << 8);
+        rest = (0x153Cu - sky) & 0xFFFFu;
+        band2_duration_lo = (unsigned char)rest;
+        band2_duration_hi = (unsigned char)(rest >> 8);
+        if (sky <= 0x153Cu) {
+            latch = sky;
+            break;
+        }
+    }   /* fall through — zero-height band 2 */
+
+    case 2:     /* the horizon: black / blue / white / green */
+        ula_palette_table(0x3458, 15);
+        latch = band2_duration_lo | ((unsigned)band2_duration_hi << 8);
+        if (band2_duration_hi != 0)
+            break;
+        /* fall through — zero-height band 3 */
+
+    case 3:     /* the track: colour 1 becomes red */
+        ula_palette_table(0x3478, 3);
+        latch = 0x1E00;
+        break;
+
+    default:    /* band 4 (and anything above 3): the dashboard, and then the GAME RUNS */
+        ula_palette_table(0x347C, 3);
+        irq_band_state = 0xFF;     /* the tail's INC wraps it to 0 */
+
+        /* body_tick_xor_anim is an ordinary JSR target, so it is entered with whatever the
+           6502 state was: A = the last palette byte fetched, X = $FF from the DEX that
+           ended the loop, N/Z from that DEX, C = 1 from the CMP #3 that dispatched here,
+           Y from the interrupted foreground.  Reproduced explicitly because the twin does
+           not otherwise maintain the register file.
+           ⚑ MEASURED, not assumed: falsifying A, X or N/Z/C here changes NOTHING in the
+           differential (`make validate FN=irq1v`, 128 randomised band-4 cases, with the
+           same harness catching a dropped call at once) — the body reloads all of them
+           before use.  Kept anyway: it costs five stores per FIELD, and "the callee does
+           not read it today" is a claim about a 400-routine subtree. */
+        cpu.A = mem[0x347C]; cpu.X = 0xFF;
+        cpu.N = 1; cpu.Z = 0; cpu.C = 1;
+
+        PROBE_PHASE(PROBE_PHASE_BODYARM);
+        body_tick_xor_anim();
+        PROBE_PHASE(PROBE_PHASE_DRAIN);
+
+        bus_write(0xFE69, 0xFF);   /* User VIA ORB, once per field */
+        latch = 0x0B16;
+        break;
+    }
+
+    /* How long until the next band.  $FE66 LAST: bbc_hw.cpp closes the band record on it,
+       and the record must already hold this band's mode and palette. */
+    bus_write(0xFE67, (uint8_t)(latch >> 8));
+    bus_write(0xFE66, (uint8_t)latch);
+    irq_band_state++;
+    irq1v_return();
+}
+
 /* ===========================================================================
-   $7BE2  dashboard_sweep — THE 40-UNIT COLUMN CHAIN, AND ITS 42 PATCH SITES
+   $7BE2  view_paint_lines — THE 3D VIEWPORT RASTERISER, ONE SCAN LINE PER CHAIN
    ===========================================================================
 
-   WHAT IT COMPUTES.  The dashboard and the wing mirrors are not drawn where they
-   are computed: every producer writes a *source byte* into one of forty $80-spaced
-   blocks at $3000..$4380, indexed by screen column, and this routine is the single
-   consumer that turns those into screen bytes.  One "unit" is one (column, cell)
-   pair — read the source, and if it is non-zero clear it and translate it through
-   the glyph table at $6000; either way store the byte that is now in A.  Forty
-   units per column, walking the column downwards, and A carries between them, so a
-   cell whose source is zero repeats whatever the cell above it drew.  That is the
-   whole drawing model, and it is why the chain has to run in order.
+   WHAT IT COMPUTES.  The viewport is not drawn where it is computed: the producers
+   ($24F6 → $1A20) write a *source byte* into one of forty $80-spaced blocks at
+   $3000..$4380 — one block per CELL COLUMN, each indexed by scan line — and this routine
+   is the single consumer that turns those into screen bytes.  It paints ONE SCAN LINE per
+   chain, top down, forty cells across:
 
-   THREE PHASES, and they differ only in how far down the column the chain runs:
+       plot_ptr  = $6700 = BBC_SCREEN_BASE + 10*320, i.e. character row 10 / cell 0 /
+                   line 0 = DISPLAY LINE 80, stepped +1 within a character row and +$139
+                   across one (view_next_scanline, $7EF3);
+       plot_ptr2 = $6800 = plot_ptr + 256 = cell 32 of the same line, because a line is
+                   40 cells x 8 = 320 bytes and cannot be reached from one base.
 
-     1  $7BE2, X = $4F..$2C — the full forty units, looping through $7EF3 (which
-        advances $70/$71 and $72/$73 to the next column) until X reaches $2C.
-     2  $7D13, X = $2B..$1C — the column is shorter here, so the driver plants an
-        RTS ($60) over the `STA (zp),Y` of unit `$3150,X`, runs the chain, and
-        composes the boundary byte itself out of $38D0/$3350.  It then enters chain
-        B at the unit named by `$30D0,X` for the lower half.
-     3  $7F18, X = $1B..$03 — as phase 2, but BOTH chains get a planted stop
-        ($3150,X and $3080,X) and both get a computed start, and the driver walks
-        the screen pointer itself rather than through $7EF3.
+   One "unit" is one cell: read the source, and if it is non-zero clear it and translate it
+   through view_cell_bytes ($6000); either way store the byte that is now carried.  The
+   carried byte flows LEFT TO RIGHT, so a cell whose source is zero repeats whatever the
+   cell to its left drew — which is also why one corrupt byte gives a run to the right edge
+   of a line (docs/bbc-reference-loop.md).  That is the whole drawing model, and it is why
+   the chain has to run in order.  Confirmed on a real BBC: stores cover display lines
+   80..157 and buckets 88..111 are full at 320 = 8 lines x 40 cells (`make fbwrites`).
 
-   $7BBF then puts `STA` back over the three planted RTSs and `CPX` back at $7EEE,
-   so the chain leaves no patch behind.  ⚠ It does NOT reset the $7D24/$7F24/$7F7D
-   *records* of where it planted, and the drivers' `CPY $7D24 / BEQ` skips the
-   re-plant when the row is unchanged — so the first column of a phase can legally
-   run with no stop planted at all.  Faithful, and reproduced.
+   THREE PHASES, differing only in how much of the line is painted:
 
-   ⭐ SHAPE, MEASURED (docs/direct-bitplane-plan.md §7a): 2093 units run per sweep
-   and about 83 of them change a byte, i.e. 96% of the work is a dirty test that
-   finds nothing.  That 96% is the GAME's algorithm and the twin keeps every bit of
-   it — deleting the scan is a representation change (a dirty list, or sprites) and
-   is tracked separately.  What the twin drops is the interpreter: the unrolled
-   chain became forty copies of `LDY` + N/Z bookkeeping + a `switch` over a
-   self-modified opcode byte + a region-dispatch prologue, none of which the 6502
-   paid for.  Here it is one indexed loop over a regular structure:
+     1  $7BE2, line $4F..$2C — the full forty cells, looping through view_next_scanline
+        until the line counter reaches $2C.
+     2  $7D13, line $2B..$1C — the painted run is shorter, so the driver plants an RTS
+        ($60) over the store of unit view_stop_a_tbl[line], runs the chain, and composes
+        the boundary cell itself out of view_bnd_a_mask/fill.  It then enters chain B at
+        view_start_b_tbl[line] for the second run.
+     3  $7F18, line $1B..$03 — as phase 2, but BOTH chains get a planted stop and a
+        computed start, and the driver steps the scan-line pointers itself.
+
+   view_paint_restore ($7BBF) then puts `STA` back over the three planted RTSs and `CPX`
+   back at $7EEE, so the chain leaves no patch behind.  ⚠ It does NOT reset the
+   $7D24/$7F24/$7F7D *records* of where it planted, and the drivers skip the re-plant when
+   the stop is unchanged — so the first line of a phase can legally run with no stop
+   planted at all.  Faithful, and reproduced.
+
+   ⚠ THE CONTROL TABLES OVERLAP THE SOURCE BLOCKS, and that is not a mistake to tidy up:
+   view_stop_b_tbl ($3080) is cell column 1's source area, so the chain can ZERO a byte the
+   driver is about to read.  Every table read therefore happens exactly where the 6502 did
+   it — hoisting one out of the loop changes behaviour.
+
+   ⭐ SHAPE, MEASURED (docs/direct-bitplane-plan.md §7a): 2093 units run per sweep and
+   about 83 of them change a byte, i.e. 96% of the work is a dirty test that finds nothing.
+   That 96% is the GAME's algorithm and the twin keeps every bit of it — deleting the scan
+   is a representation change (a producer-maintained dirty mask, or sprites) and is tracked
+   separately.  What the twin drops is the interpreter: the unrolled chain became forty
+   copies of `LDY` + N/Z bookkeeping + a `switch` over a self-modified opcode byte + a
+   region-dispatch prologue, none of which the 6502 paid for.  Here it is one indexed loop
+   over a regular structure:
 
        unit i:  source block $3000 + $80*i,  screen offset 8*i,
-                base pointer $70 for i < 32 and $72 for i >= 32,
-                opcode slot at unit_addr(i) + $0F.
+                base pointer plot_ptr for i < 32 and plot_ptr2 for i >= 32,
+                opcode slot g_viewSlot[i].
 
    ⚠ ONLY 29 OF THE 40 SLOTS ARE PATCHABLE, and that is a proof, not a choice: every
-   writer patches only the LOW byte of its store, so it can reach one page.  Chain
-   A's unit 15 slot ($7D0E) and chain B's first ten ($7D65..$7DFE) are in page $7D,
-   which no writer addresses — they are plain stores and the twin must not dispatch
-   on them (a randomised fixture puts garbage there, and the oracle stores anyway).
+   writer patches only the LOW byte of its store, so it can reach one page.  Chain A's unit
+   15 slot ($7D0E) and chain B's first ten ($7D65..$7DFE) are in page $7D, which no writer
+   addresses — they are plain stores and the twin must not dispatch on them (a randomised
+   fixture puts garbage there, and the oracle stores anyway).
 
-   EXIT CONTRACT.  A = $E0 and X = 3 from $7BBF/$7FAC; Y is the row phase 3 last
-   composed at; the flags are live too (C from `CPX #3`, V from phase 3's
-   `SEC / SBC $3080,X`), so the fixture declares AXY+flags and the twin computes
-   them.  The chain's own intermediate flags are dead — every one of the four call
-   sites sets N/Z with an `AND`/`CPX` before the next branch — which is why the unit
-   loop keeps no flags at all.
+   EXIT CONTRACT.  A = $E0 and the line counter = 3 from $7BBF/$7FAC; Y is the cell offset
+   the last chain stopped at; the flags are live too (C from `CPX #3`, V from phase 3's
+   `SEC / SBC`), so the fixture declares AXY+flags and the twin computes them.  The chain's
+   own intermediate flags are dead — every one of the four call sites sets N/Z with an
+   `AND`/`CPX` before the next branch — which is why the unit loop keeps no flags at all.
    =========================================================================== */
 
-/* The forty unit addresses, in the order the chain runs them.  Chain A is sixteen
-   17-byte units from $7C00; chain A's tail `JMP $7D56` makes chain B's twenty-four
-   the same sweep. */
-#define DASH_UNIT_ADDR(i)  ((uint16_t)((i) < 16 ? 0x7C00 + 0x11 * (i)          \
+/* The per-scan-line control tables (symbols.csv carries the same names).  Addresses rather
+   than mem.h aliases: they are indexed tables, so the twin adds the line itself. */
+#define VIEW_SRC_BLOCKS     0x3000u   /* forty $80-spaced source blocks, one per cell column */
+#define VIEW_CELL_BYTES     0x6000u   /* source byte -> screen byte */
+#define VIEW_STOP_A         0x3150u   /* chain A's stop unit for this line */
+#define VIEW_STOP_B         0x3080u   /* chain B's stop unit (and cell column 1's sources) */
+#define VIEW_START_B        0x30D0u   /* chain B's entry unit */
+#define VIEW_EDGE_INDEX     0x3050u   /* index into the four edge mask/fill tables */
+#define VIEW_EDGE_MASK_A    0x3679u
+#define VIEW_EDGE_FILL_A    0x3579u
+#define VIEW_EDGE_MASK_B    0x36F9u
+#define VIEW_EDGE_FILL_B    0x35F9u
+#define VIEW_BND_A_MASK     0x38D0u
+#define VIEW_BND_A_FILL     0x3350u
+#define VIEW_BND_B_MASK     0x3950u
+#define VIEW_BND_B_FILL     0x33D0u
+#define VIEW_BND_A_SRC      0x0504u   /* per-line source byte for chain A's boundary cell */
+#define VIEW_BND_B_SRC      0x4400u   /* ...and chain B's */
+#define VIEW_LINE_SURFACE   0x5F60u   /* per-line surface index, 2 bits, into surface_colours */
+#define SURFACE_COLOURS_TBL 0x38FCu
+
+/* The SMC records: where each driver last planted its RTS.  They outlive the call. */
+#define VIEW_REC_A2         0x7D24u   /* phase 2, chain A */
+#define VIEW_REC_A3         0x7F24u   /* phase 3, chain A */
+#define VIEW_REC_B3         0x7F7Du   /* phase 3, chain B */
+#define VIEW_CHAIN_END      0x7EEEu   /* the sweep's terminator, itself an opcode slot */
+
+#define OP_STA_IND_Y        0x91u
+#define OP_RTS              0x60u
+#define OP_CPX_IMM          0xE0u
+
+/* The forty unit addresses, in the order the chain runs them.  Chain A is sixteen 17-byte
+   units from $7C00 (cells 0-15); its tail `JMP $7D56` makes chain B's twenty-four (cells
+   16-39) part of the same pass. */
+#define VIEW_UNIT_ADDR(i)  ((uint16_t)((i) < 16 ? 0x7C00 + 0x11 * (i)          \
                                                 : 0x7D56 + 0x11 * ((i) - 16)))
 
 /* The opcode slot of each unit, or 0 for the eleven no writer can reach (page $7D).
-   ⚠ A TABLE, not `unit_addr(i) + $0F` recomputed: the oracle's slot address is a compile-
-   time constant in every one of its forty copies, so a twin that derives it per unit hands
-   back the arithmetic it saved.  Measured — the first version of this twin computed it and
-   came out SLOWER than the transliteration (docs/perf-method.md). */
-static const uint16_t g_dashSlot[40] = {
+   ⚠ A TABLE, not `VIEW_UNIT_ADDR(i) + $0F` recomputed: the oracle's slot address is a
+   compile-time constant in every one of its forty copies, so a twin that derives it per
+   unit hands back the arithmetic it saved.  Measured — the first version of this twin
+   computed it and came out SLOWER than the transliteration (docs/perf-method.md). */
+static const uint16_t g_viewSlot[40] = {
     0x7C0F, 0x7C20, 0x7C31, 0x7C42, 0x7C53, 0x7C64, 0x7C75, 0x7C86,
     0x7C97, 0x7CA8, 0x7CB9, 0x7CCA, 0x7CDB, 0x7CEC, 0x7CFD, 0,
     0,      0,      0,      0,      0,      0,      0,      0,
@@ -276,59 +376,136 @@ static const uint16_t g_dashSlot[40] = {
     0x7E75, 0x7E86, 0x7E97, 0x7EA8, 0x7EB9, 0x7ECA, 0x7EDB, 0x7EEC
 };
 
-/* Is `dst` a slot a writer pinned to `page` could name?  The generated oracle spells
-   this as an explicit case list; both come from the same operand-encoding argument. */
-static int dash_is_slot(uint16_t dst, unsigned page)
+/* The three values the chain and its drivers thread through each other — the 6502's A, X
+   and Y under the names of what they actually hold.  Everything else is a plain local. */
+typedef struct {
+    unsigned byte;   /* A: the pixel byte the chain carries left to right */
+    unsigned line;   /* X: the scan line being painted */
+    unsigned cell;   /* Y: the cell's byte offset within the line, or a glyph index */
+} ViewState;
+
+/* Publish the state as the 6502 register file.  EVERY exit from the routine goes through
+   here, including the SMC trap exits, because the fixture declares A, X and Y live. */
+static void view_commit(const ViewState* v)
+{
+    cpu.A = (uint8_t)v->byte;
+    cpu.X = (uint8_t)v->line;
+    cpu.Y = (uint8_t)v->cell;
+}
+
+/* The screen address a boundary store lands on: one of the two pointers, plus the cell. */
+static uint16_t view_screen_addr(unsigned zp, unsigned cell)
+{
+    return (uint16_t)((mem[zp] | (mem[zp + 1] << 8)) + cell);
+}
+
+/* (source AND mask) OR fill — one boundary cell.  Through the macros because N and Z from
+   the `ORA` are live if the JSR that follows traps. */
+static unsigned view_compose(unsigned source, unsigned mask, unsigned fill)
+{
+    LDA(source);
+    AND(mask);
+    ORA(fill);
+    return cpu.A;
+}
+
+/* Is `dst` a slot a writer pinned to `page` could name?  The generated oracle spells this
+   as an explicit case list; both come from the same operand-encoding argument. */
+static int view_is_slot(uint16_t dst, unsigned page)
 {
     int i;
     if ((dst >> 8) != page) return 0;
     for (i = 0; i < 40; i++)
-        if (g_dashSlot[i] == dst) return 1;
+        if (g_viewSlot[i] == dst) return 1;
     return 0;
 }
 
-/* A `STA $91` / `STA $60` whose own operand byte was patched.  Returns 0 (and traps)
-   for a low byte that is not a slot boundary — planting mid-instruction would leave
-   the real slot reading $91 and diverge from the 6502 silently. */
-static int dash_plant(uint16_t site, uint16_t opnd, unsigned page)
+/* Plant `opcode` over the store of the unit named by the operand cell at `opnd`.  Returns
+   0 (and traps) for a low byte that is not a slot boundary — planting mid-instruction would
+   leave the real slot reading `STA` and diverge from the 6502 silently.
+   ⚠ `opcode` lands in the carried byte, and N/Z with it: a trap exits right here. */
+static int view_plant(ViewState* v, uint16_t site, uint16_t opnd, unsigned page, uint8_t opcode)
 {
     uint16_t dst = (uint16_t)(mem[opnd] | (mem[opnd + 1] << 8));
-    if (!dash_is_slot(dst, page)) { platform_smc_unhandled(site, dst); return 0; }
-    bus_write(dst, cpu.A);
+    v->byte = load_a(opcode);
+    if (!view_is_slot(dst, page)) { platform_smc_unhandled(site, dst); return 0; }
+    bus_write(dst, (uint8_t)v->byte);
     return 1;
 }
 
-static void dash_chain(int unit, int forced, int advance_first);
-
-/* A `JSR` into the middle of a chain.  The two legal entry offsets are the unit start
-   and unit+$05 — the latter skips the dirty test and uses the Y the caller just set up
-   with a `TAY` (docs/static-map.md §Open items 10).  Returns 0 if it trapped. */
-static int dash_call(uint16_t site, uint16_t opnd, unsigned page)
+/* Is the planted stop already where we want it?  ⚠ The 6502 asks this with a `CPY`, which
+   writes C as well as Z — and C is live if the plant that follows traps out of the routine,
+   so the comparison has to be the 6502's rather than C's `==`.  (Found by sabotage: written
+   as `==` this passed the legal cases and failed 35 of the illegal ones.) */
+static int stop_unchanged(unsigned stop, unsigned recorded)
 {
-    uint16_t t = (uint16_t)(mem[opnd] | (mem[opnd + 1] << 8));
+    cpu.Y = (uint8_t)stop;
+    CPY(recorded);
+    return cpu.Z;
+}
+
+/* Move a chain's planted RTS to unit `stop`, unless the record says it is already there.
+   `rec` is that record, `restoreSite`/`plantSite` the two driver stores whose operands are
+   themselves patched.  Returns 0 if either plant trapped. */
+static int view_move_stop(ViewState* v, unsigned stop, uint16_t rec,
+                          uint16_t restoreSite, uint16_t plantSite, uint16_t plantOpnd,
+                          unsigned page)
+{
+    if (stop_unchanged(stop, mem[rec])) return 1;   /* nothing to re-plant */
+    if (!view_plant(v, restoreSite, rec, page, OP_STA_IND_Y)) return 0;
+    mem[plantOpnd] = (unsigned char)stop;
+    mem[rec]       = (unsigned char)stop;
+    return view_plant(v, plantSite, plantOpnd, page, OP_RTS);
+}
+
+static void paint_cells(ViewState* v, int unit, int forced, int advance_first);
+
+/* A `JSR` into the middle of a chain.  The two legal entry offsets are the unit start and
+   unit+$05 — the latter skips the dirty test and uses the cell index the caller just
+   computed (docs/static-map.md §Open items 10).  Returns 0 if it trapped. */
+static int view_enter_chain(ViewState* v, uint16_t site, uint16_t opnd, unsigned page)
+{
+    uint16_t target = (uint16_t)(mem[opnd] | (mem[opnd + 1] << 8));
     int i;
-    if ((t >> 8) == page)
+    if ((target >> 8) == page)
         for (i = 0; i < 40; i++) {
-            uint16_t u = DASH_UNIT_ADDR(i);
-            if (t == u)                { dash_chain(i, 0, 0); return 1; }
-            if (t == (uint16_t)(u + 5)) { dash_chain(i, 1, 0); return 1; }
+            uint16_t unit = VIEW_UNIT_ADDR(i);
+            if (target == unit)                 { paint_cells(v, i, 0, 0); return 1; }
+            if (target == (uint16_t)(unit + 5)) { paint_cells(v, i, 1, 0); return 1; }
         }
-    platform_smc_unhandled(site, t);
+    platform_smc_unhandled(site, target);
     return 0;
 }
 
-/* The chain itself, $7BF7-$7F16.  Runs units `unit`..39, then the $7EEE tail, which
-   either returns or steps to the next column and starts over at unit 0.
-     forced         entered at unit+$05: no dirty test, cpu.Y is the glyph index
-     advance_first  entered at $7EF3 (the JSRs from $7BF1 and $7D37), so the screen
-                    pointer moves and $7BF7's prologue runs before any unit
-   A, X and Y are the 6502's; the flags in between are dead (see the header). */
-/* ⭐⭐ THE RUN ACCUMULATOR (Amiga only — revs_plot.h).  `A` carries between units, so consecutive
-   cells of a scan line usually hold the SAME byte; in the Amiga's bitplane layout those cells are
-   contiguous, so a run is one fill instead of N stores.  This does not change a single mem[] byte
-   or a single branch of the chain — it only notices, as the chain runs, that the byte it is about
-   to store is the byte it stored to the cell on the left.
-   ⚠ A run never spans a scan line: the unit loop ends at 40 and each line re-enters it. */
+/* Step both screen pointers to the next scan line: +1 inside a character row, +$139 to
+   cross into the next one.  Returns the incremented low byte; `*carry_out` reports the
+   carry off the high byte, which is the odd tail phase 3 spells as a `BCC`.
+   ⚠ The adds go through adc_step because V and C are the two flags that can leave the
+   chain, and because the routine can be entered with decimal mode set. */
+static unsigned step_scanline(int* carry_out)
+{
+    unsigned next = (plot_ptr_lo + 1) & 0xFF;
+
+    UPD_NZ(next & 7);                            /* the `TYA / AND #7` — N/Z can outlive us */
+    if (carry_out) *carry_out = 0;
+    if (next & 7) {                              /* still inside this character row */
+        plot_ptr_lo  = (unsigned char)next;
+        plot_ptr2_lo = (unsigned char)next;
+        return next;
+    }
+    plot_ptr_lo  = (unsigned char)adc_step(next, 0x38, 0);
+    plot_ptr2_lo = plot_ptr_lo;
+    plot_ptr_hi  = (unsigned char)adc_step(plot_ptr_hi, 0x01, cpu.C);
+    plot_ptr2_hi = (unsigned char)adc_step(plot_ptr_hi, 0x01, cpu.C);
+    if (carry_out) *carry_out = cpu.C;
+    return next;
+}
+
+/* ⭐⭐ THE RUN ACCUMULATOR (Amiga only — revs_plot.h).  The carried byte usually repeats,
+   and in the Amiga's bitplane layout consecutive cells of a scan line are contiguous, so a
+   run is one fill instead of N stores.  This changes no mem[] byte and no branch — it only
+   notices, as the chain runs, that the byte it is about to store is the byte it stored to
+   the cell on its left.  ⚠ A run never spans a scan line: the unit loop ends at 40. */
 #ifdef REVS_DIRECT_PLOT
 #define PLOT_DECL()   unsigned runAddr = 0, runVal = 0, runLen = 0
 #define PLOT_UNIT(dd, aa)  do {                                                     \
@@ -344,63 +521,45 @@ static int dash_call(uint16_t site, uint16_t opnd, unsigned page)
 #define PLOT_FLUSH()  ((void)0)
 #endif
 
-static void dash_chain(int unit, int forced, int advance_first)
+/* The chain itself, $7BF7-$7F16.  Runs units `unit`..39 of the current line, then the
+   $7EEE tail, which either returns or steps to the next line and starts over at unit 0.
+     forced         entered at unit+$05: no dirty test, v->cell is the glyph index
+     advance_first  entered at view_next_scanline (the JSRs from $7BF1 and $7D37), so the
+                    pointers move and the line's background byte is loaded before any unit */
+static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
 {
-    unsigned a = cpu.A, x = cpu.X, y = cpu.Y;
+    /* ⚠ THE THREE THREADED VALUES BECOME LOCALS FOR THE DURATION, and that is a 68000
+       requirement, not tidiness: this is 30% of the port's frame, and `v->byte` inside the
+       2093-iteration loop is a memory operand gcc cannot keep in a register.  They are
+       written back at every exit — `done:` is the only label in this file. */
+    unsigned byte = v->byte, line = v->line, cell = v->cell;
     PLOT_DECL();
 
     for (;;) {
         int i;
 
         if (advance_first) {
-            /* $7EF3 — next column.  Every eighth step crosses a character row, which
-               costs $138: `CLC / ADC #$38` and two `ADC #1`s, carry and all.
-               ⚠ THE MACROS, NOT PLAIN C, and this is a measured correction rather than
-               caution: V and C are the two flags the chain can leak to its caller (every
-               call site's next instruction is an `AND`/`LDA`/`CPX`, which rewrites N and
-               Z but not V), and the ADCs here are the only thing in the whole chain that
-               writes V.  Written as plain arithmetic they diverged on exactly the paths
-               where a trap cut the driver short before its own `SBC` reset V.  Also
-               decimal mode, which plain C cannot express at all. */
-            LDY(mem[0x0070]);
-            INY();
-            TYA();
-            AND(0x07);
-            if (!cpu.Z) {                        /* $7EF9 BEQ $7F02 — inside a row */
-                mem[0x0070] = cpu.Y;
-                mem[0x0072] = cpu.Y;
-            } else {
-                TYA();
-                CLC();
-                ADC(0x38);
-                mem[0x0070] = cpu.A;
-                mem[0x0072] = cpu.A;
-                LDA(mem[0x0071]);
-                ADC(0x01);
-                mem[0x0071] = cpu.A;
-                ADC(0x01);
-                mem[0x0073] = cpu.A;
-            }
-            /* $7BF7 — the column's background byte, two bits of $5F60,X through $38FC. */
-            a = mem[0x38FC + (mem[0x5F60 + x] & 3)];
+            step_scanline((int*)0);
+            /* the line's background byte: two bits of the per-line surface index */
+            byte = mem[SURFACE_COLOURS_TBL + (mem[VIEW_LINE_SURFACE + line] & 3)];
             advance_first = 0; unit = 0; forced = 0;
         }
 
         /* ⭐ THE 2093-UNIT LOOP, and everything in it is a running pointer.  The unit is
-           the whole cost of the routine and the only thing that made it worth a twin, so
-           the source address, the destination address and the opcode slot all step by a
+           the whole cost of the routine and the only reason it is worth a twin, so the
+           source address, the destination address and the opcode slot each step by a
            constant instead of being derived from `i`.
            ⚠ Hoisting the two destination bases out of the loop is safe by CONSTRUCTION,
            not by luck: the chain writes only its own source blocks ($3000-$43CF) and
-           `base + row` with base walking up from $6700, so nothing it does can reach
-           $70-$73 and change the pointer under itself. */
+           `base + cell*8` inside the frame buffer, so nothing it does can reach plot_ptr
+           and move the pointer under itself. */
         {
-            unsigned base0 = mem[0x0070] | ((unsigned)mem[0x0071] << 8);
-            unsigned base1 = mem[0x0072] | ((unsigned)mem[0x0073] << 8);
-            unsigned p = 0x3000u + ((unsigned)unit << 7) + x;
-            unsigned d = (unit < 32) ? base0 + ((unsigned)unit << 3)
-                                     : base1 + (((unsigned)unit - 32) << 3);
-            const uint16_t* sp = &g_dashSlot[unit];
+            unsigned base0 = plot_ptr_lo  | ((unsigned)plot_ptr_hi  << 8);
+            unsigned base1 = plot_ptr2_lo | ((unsigned)plot_ptr2_hi << 8);
+            unsigned src = VIEW_SRC_BLOCKS + ((unsigned)unit << 7) + line;
+            unsigned dst = (unit < 32) ? base0 + ((unsigned)unit << 3)
+                                       : base1 + (((unsigned)unit - 32) << 3);
+            const uint16_t* slotp = &g_viewSlot[unit];
 
             for (i = unit; i < 40; i++) {
                 unsigned slot;
@@ -408,203 +567,220 @@ static void dash_chain(int unit, int forced, int advance_first)
                 PROBE_SHAPE_DASH_UNIT();
                 if (forced) {                       /* only ever the FIRST unit of a call */
                     forced = 0;
-                    mem[p] = 0;                     /* $7C05 LDA #0 / STA table,X */
-                    a = mem[0x6000 + y];
+                    mem[src] = 0;
+                    byte = mem[VIEW_CELL_BYTES + cell];
                 } else {
-                    unsigned src = mem[p];          /* $7C00 LDY table,X / BEQ */
-                    if (src) { mem[p] = 0; a = mem[0x6000 + src]; }
+                    unsigned source = mem[src];     /* the dirty test: zero = same as my left */
+                    if (source) {
+                        mem[src] = 0;
+                        byte = mem[VIEW_CELL_BYTES + source];
+                    }
                 }
 
-                slot = *sp++;                       /* $7C0F STA (zp),Y — or a planted RTS */
+                slot = *slotp++;                    /* the store — or a planted RTS */
                 if (slot) {
                     unsigned op = mem[slot];
-                    if (op != 0x91) {
-                        y = ((unsigned)i << 3) & 0xFF;   /* $7C0D LDY #<row> ran first */
-                        if (op != 0x60) platform_smc_unhandled(slot, op);
+                    if (op != OP_STA_IND_Y) {
+                        cell = ((unsigned)i << 3) & 0xFF;      /* its `LDY #<cell*8>` ran */
+                        if (op != OP_RTS) platform_smc_unhandled(slot, op);
                         PLOT_FLUSH();
                         goto done;
                     }
                 }
-                PLOT_UNIT(d, a);
+                PLOT_UNIT(dst, byte);
 #ifndef REVS_PLOT_ONLY
-                bus_write((uint16_t)d, (uint8_t)a);
+                bus_write((uint16_t)dst, (uint8_t)byte);
 #endif
-                p += 0x80;
-                d += 8;
-                if (i == 31) d = base1;             /* chain B's last eight use $72/$73 */
+                src += 0x80;
+                dst += 8;
+                if (i == 31) dst = base1;           /* cells 32-39 live in the next page */
             }
-            y = 0x38;                               /* unit 39's row, had the chain not stopped */
+            cell = 0x38;                            /* unit 39's cell, had the chain not stopped */
             PLOT_FLUSH();
         }
 
         /* $7EEE — the sweep's own terminator, itself an opcode slot. */
         {
-            unsigned op = mem[0x7EEE];
-            if (op == 0x60) goto done;
-            if (op != 0xE0) { platform_smc_unhandled(0x7EEE, op); goto done; }
+            unsigned op = mem[VIEW_CHAIN_END];
+            if (op == OP_RTS) goto done;
+            if (op != OP_CPX_IMM) { platform_smc_unhandled(VIEW_CHAIN_END, op); goto done; }
         }
-        cpu.X = (uint8_t)x;                         /* the `CPX #$2C` writes C, so it is */
-        CPX(0x2C);                                  /* the macro here too */
-        if (cpu.Z) goto done;                       /* $7EF0 BEQ $7F17 */
-        DEX();                                      /* $7EF2 */
-        x = cpu.X;
+        /* `CPX #$2C` — the last full-width line.  Its C is live. */
+        cpu.X = (uint8_t)line;
+        CPX(0x2C);
+        if (cpu.Z) goto done;
+        line = (line - 1) & 0xFF;
         advance_first = 1;
     }
 done:
-    PLOT_FLUSH();       /* belt and braces: a leaked run would paint the NEXT call's line */
-    cpu.A = (uint8_t)a; cpu.X = (uint8_t)x; cpu.Y = (uint8_t)y;
+    v->byte = byte;
+    v->line = line;
+    v->cell = cell;
 }
 
-/* $7BBF — un-plant everything the sweep planted.  The three recorded low bytes are
-   copied into the restoring stores' own operands first; that is why the records at
-   $7D24/$7F24/$7F7D survive the call. */
-static void dash_restore(void)
+/* $7BBF — un-plant everything the sweep planted.  The three recorded low bytes are copied
+   into the restoring stores' own operands first; that is why the records survive the call. */
+static void unplant_stops(ViewState* v)
 {
-    mem[0x7BD4] = mem[0x7D24];
-    mem[0x7BD7] = mem[0x7F24];
-    mem[0x7BDA] = mem[0x7F7D];
-    LDA(0x91);
-    if (!dash_plant(0x7BD3, 0x7BD4, 0x7C)) return;
-    if (!dash_plant(0x7BD6, 0x7BD7, 0x7C)) return;
-    if (!dash_plant(0x7BD9, 0x7BDA, 0x7E)) return;
-    LDA(0xE0);
-    mem[0x7EEE] = cpu.A;
+    mem[0x7BD4] = mem[VIEW_REC_A2];
+    mem[0x7BD7] = mem[VIEW_REC_A3];
+    mem[0x7BDA] = mem[VIEW_REC_B3];
+    if (!view_plant(v, 0x7BD3, 0x7BD4, 0x7C, OP_STA_IND_Y)) return;
+    if (!view_plant(v, 0x7BD6, 0x7BD7, 0x7C, OP_STA_IND_Y)) return;
+    if (!view_plant(v, 0x7BD9, 0x7BDA, 0x7E, OP_STA_IND_Y)) return;
+    v->byte = load_a(OP_CPX_IMM);
+    mem[VIEW_CHAIN_END] = (unsigned char)v->byte;
 }
 
-/* $7F18 — phase 3.  Both chains stop early and both start late, and the pointer walk
-   is inline here rather than in $7EF3. */
-static void dash_phase3(void)
+/* $7F18 — phase 3.  Both chains stop early and both start late, and the scan-line step is
+   inline here rather than reached through the chain's own entry. */
+static void paint_lines_short(ViewState* v)
 {
     for (;;) {
-        DEX();
-        LDY(mem[0x3150 + cpu.X]);
-        CPY(mem[0x7F24]);
-        if (!cpu.Z) {                               /* $7F1F BEQ $7F31 */
-            LDA(0x91);
-            if (!dash_plant(0x7F23, 0x7F24, 0x7C)) return;
-            mem[0x7F2F] = cpu.Y;
-            mem[0x7F24] = cpu.Y;
-            LDA(0x60);
-            if (!dash_plant(0x7F2E, 0x7F2F, 0x7C)) return;
-        }
-        /* $7F31 — the same column step as $7EF3, but the `BCC $7F51` means a carry out
-           of the high byte falls into the STY pair and re-writes $70/$72 with Y. */
-        LDY(mem[0x0070]);
-        INY();
-        TYA();
-        AND(0x07);
-        if (cpu.Z) {                                /* $7F37 BNE $7F4D — inside a row */
-            TYA();
-            CLC();
-            ADC(0x38);
-            mem[0x0070] = cpu.A;
-            mem[0x0072] = cpu.A;
-            LDA(mem[0x0071]);
-            ADC(0x01);
-            mem[0x0071] = cpu.A;
-            ADC(0x01);
-            mem[0x0073] = cpu.A;
-            if (!cpu.C) goto stepped;               /* $7F4B BCC $7F51 */
-        }
-        mem[0x0070] = cpu.Y;                        /* $7F4D */
-        mem[0x0072] = cpu.Y;
-stepped:
-        LDA(0xF1);                               /* $7F51 chain A's start unit */
-        SEC();
-        SBC(mem[0x3080 + cpu.X]);
-        mem[0x7F68] = cpu.A;
-        LDY(mem[0x3050 + cpu.X]);
-        LDA(mem[0x0504 + cpu.X]);
-        AND(mem[0x3679 + cpu.Y]);
-        ORA(mem[0x3579 + cpu.Y]);
-        TAY();
-        if (!dash_call(0x7F67, 0x7F68, 0x7C)) return;
-        AND(mem[0x38D0 + cpu.X]);
-        ORA(mem[0x3350 + cpu.X]);
-        REVS_PLOT_CELL(ZP_IND_Y(0x70), cpu.A);
-        bus_write(ZP_IND_Y(0x70), cpu.A);
+        unsigned edge, entry, next;
+        int carry_out;
 
-        LDY(mem[0x3080 + cpu.X]);                   /* $7F72 chain B's stop unit */
-        CPY(mem[0x7F7D]);
-        if (!cpu.Z) {
-            LDA(0x91);
-            if (!dash_plant(0x7F7C, 0x7F7D, 0x7E)) return;
-            mem[0x7F88] = cpu.Y;
-            mem[0x7F7D] = cpu.Y;
-            LDA(0x60);
-            if (!dash_plant(0x7F87, 0x7F88, 0x7E)) return;
-        }
-        LDY(mem[0x30D0 + cpu.X]);                   /* $7F8A chain B's start unit */
-        mem[0x7F9B] = cpu.Y;
-        LDA(mem[0x4400 + cpu.X]);
-        AND(mem[0x3950 + cpu.X]);
-        ORA(mem[0x33D0 + cpu.X]);
-        TAY();
-        if (!dash_call(0x7F9A, 0x7F9B, 0x7E)) return;
-        math_hi = cpu.Y;
-        LDY(mem[0x3050 + cpu.X]);
-        AND(mem[0x36F9 + cpu.Y]);
-        ORA(mem[0x35F9 + cpu.Y]);
-        LDY(math_hi);
-        REVS_PLOT_CELL(ZP_IND_Y(0x72), cpu.A);
-        bus_write(ZP_IND_Y(0x72), cpu.A);
+        v->line = (v->line - 1) & 0xFF;
 
+        /* chain A's stop */
+        v->cell = mem[VIEW_STOP_A + v->line];
+        if (!view_move_stop(v, v->cell, VIEW_REC_A3, 0x7F23, 0x7F2E, 0x7F2F, 0x7C)) {
+            view_commit(v);
+            return;
+        }
+
+        /* the scan-line step, with phase 3's tail: a carry off the high byte makes it store
+           the un-crossed low byte after all.
+           ⚠ THIS TAIL IS UNTESTED AND UNREACHABLE, and it is recorded rather than trusted:
+           deleting it passes all 700 fixture cases (sabotage S2, 2026-08-17), because the
+           high byte only carries out of $FF and the pointer lives at $67..$7A.  Kept because
+           the 6502 has it; do not read the green as coverage. */
+        next = step_scanline(&carry_out);
+        if (!(next & 7) && carry_out) {
+            plot_ptr_lo  = (unsigned char)next;
+            plot_ptr2_lo = (unsigned char)next;
+        }
+
+        /* chain A: enter at $F1 - view_stop_b_tbl[line], with the boundary cell composed
+           from the per-line source byte and the edge tables */
+        v->byte = sub_from(0xF1, mem[VIEW_STOP_B + v->line]);
+        mem[0x7F68] = (unsigned char)v->byte;
+        edge    = mem[VIEW_EDGE_INDEX + v->line];
+        v->byte = view_compose(mem[VIEW_BND_A_SRC + v->line],
+                               mem[VIEW_EDGE_MASK_A + edge],
+                               mem[VIEW_EDGE_FILL_A + edge]);
+        v->cell = v->byte;                          /* TAY: N/Z already match */
+        if (!view_enter_chain(v, 0x7F67, 0x7F68, 0x7C)) { view_commit(v); return; }
+        v->byte = view_compose(v->byte, mem[VIEW_BND_A_MASK + v->line],
+                                        mem[VIEW_BND_A_FILL + v->line]);
+        REVS_PLOT_CELL(view_screen_addr(MEM_plot_ptr_lo, v->cell), (uint8_t)v->byte);
+        bus_write(view_screen_addr(MEM_plot_ptr_lo, v->cell), (uint8_t)v->byte);
+
+        /* chain B: the same again, one page down and with its own tables.  ⚠ the stop is
+           re-read here — the chain may have zeroed it (see the header). */
+        v->cell = mem[VIEW_STOP_B + v->line];
+        if (!view_move_stop(v, v->cell, VIEW_REC_B3, 0x7F7C, 0x7F87, 0x7F88, 0x7E)) {
+            view_commit(v);
+            return;
+        }
+        entry   = mem[VIEW_START_B + v->line];
+        v->cell = entry;
+        mem[0x7F9B] = (unsigned char)entry;
+        v->byte = view_compose(mem[VIEW_BND_B_SRC + v->line],
+                               mem[VIEW_BND_B_MASK + v->line],
+                               mem[VIEW_BND_B_FILL + v->line]);
+        v->cell = v->byte;                          /* TAY */
+        if (!view_enter_chain(v, 0x7F9A, 0x7F9B, 0x7E)) { view_commit(v); return; }
+        math_hi = (unsigned char)v->cell;           /* the chain's cell, parked in scratch */
+        edge    = mem[VIEW_EDGE_INDEX + v->line];
+        v->byte = view_compose(v->byte, mem[VIEW_EDGE_MASK_B + edge],
+                                        mem[VIEW_EDGE_FILL_B + edge]);
+        v->cell = math_hi;
+        UPD_NZ(v->cell);                            /* the `LDY math_hi` that reloaded it */
+        REVS_PLOT_CELL(view_screen_addr(MEM_plot_ptr2_lo, v->cell), (uint8_t)v->byte);
+        bus_write(view_screen_addr(MEM_plot_ptr2_lo, v->cell), (uint8_t)v->byte);
+
+        /* `CPX #3` — the last line of the viewport.  Its C is part of the exit contract. */
+        cpu.X = (uint8_t)v->line;
         CPX(0x03);
-        if (cpu.Z) break;                           /* $7FAE BEQ $7FB3 */
+        if (cpu.Z) break;
     }
-    dash_restore();
+    unplant_stops(v);
 }
 
 /* $7D13 — phase 2.  Its first act is to plant an RTS at $7EEE, which is what turns the
-   chain from "loop over every column" into "run once and return". */
-static void dash_phase2(void)
+   chain from "loop over every line" into "run once and return". */
+static void paint_lines_clipped(ViewState* v)
 {
-    LDA(0x60);
-    mem[0x7EEE] = cpu.A;
+    v->byte = load_a(OP_RTS);
+    mem[VIEW_CHAIN_END] = (unsigned char)v->byte;
+
     for (;;) {
-        DEX();
-        LDY(mem[0x3150 + cpu.X]);
-        CPY(mem[0x7D24]);
-        if (!cpu.Z) {
-            LDA(0x91);
-            if (!dash_plant(0x7D23, 0x7D24, 0x7C)) return;
-            mem[0x7D2F] = cpu.Y;
-            mem[0x7D24] = cpu.Y;
-            LDA(0x60);
-            if (!dash_plant(0x7D2E, 0x7D2F, 0x7C)) return;
-            LDY(mem[0x30D0 + cpu.X]);
-            mem[0x7D4D] = cpu.Y;
+        v->line = (v->line - 1) & 0xFF;
+
+        v->cell = mem[VIEW_STOP_A + v->line];
+        if (!stop_unchanged(v->cell, mem[VIEW_REC_A2])) {
+            if (!view_plant(v, 0x7D23, VIEW_REC_A2, 0x7C, OP_STA_IND_Y)) {
+                view_commit(v);
+                return;
+            }
+            mem[0x7D2F]      = (unsigned char)v->cell;
+            mem[VIEW_REC_A2] = (unsigned char)v->cell;
+            if (!view_plant(v, 0x7D2E, 0x7D2F, 0x7C, OP_RTS)) {
+                view_commit(v);
+                return;
+            }
+            v->cell     = mem[VIEW_START_B + v->line];   /* chain B's entry, for the store */
+            UPD_NZ(v->cell);                             /* its `LDY` outlives the chain */
+            mem[0x7D4D] = (unsigned char)v->cell;
         }
-        dash_chain(0, 0, 1);                        /* $7D37 JSR $7EF3 */
-        AND(mem[0x38D0 + cpu.X]);
-        ORA(mem[0x3350 + cpu.X]);
-        REVS_PLOT_CELL(ZP_IND_Y(0x70), cpu.A);
-        bus_write(ZP_IND_Y(0x70), cpu.A);
-        LDA(mem[0x4400 + cpu.X]);
-        AND(mem[0x3950 + cpu.X]);
-        ORA(mem[0x33D0 + cpu.X]);
-        TAY();
-        if (!dash_call(0x7D4C, 0x7D4D, 0x7E)) return;
+
+        paint_cells(v, 0, 0, 1);                /* the JSR through view_next_scanline */
+
+        v->byte = view_compose(v->byte, mem[VIEW_BND_A_MASK + v->line],
+                                        mem[VIEW_BND_A_FILL + v->line]);
+        REVS_PLOT_CELL(view_screen_addr(MEM_plot_ptr_lo, v->cell), (uint8_t)v->byte);
+        bus_write(view_screen_addr(MEM_plot_ptr_lo, v->cell), (uint8_t)v->byte);
+
+        v->byte = view_compose(mem[VIEW_BND_B_SRC + v->line],
+                               mem[VIEW_BND_B_MASK + v->line],
+                               mem[VIEW_BND_B_FILL + v->line]);
+        v->cell = v->byte;                          /* TAY */
+        if (!view_enter_chain(v, 0x7D4C, 0x7D4D, 0x7E)) { view_commit(v); return; }
+
+        cpu.X = (uint8_t)v->line;
         CPX(0x1C);
-        if (cpu.Z) break;                           /* $7D51 BNE $7D18 */
+        if (cpu.Z) break;
     }
-    dash_phase3();
+    paint_lines_short(v);
 }
 
-void dashboard_sweep(void)
+/* The idiomatic core: paint the viewport from `firstLine` downwards, both pointers seeded
+   one page apart at `screenBase`.  Everything above is reachable only from here. */
+static void view_paint_lines_core(unsigned screenBase, unsigned firstLine)
+{
+    ViewState v;
+
+    plot_ptr_lo  = (unsigned char)screenBase;
+    plot_ptr2_lo = (unsigned char)screenBase;
+    plot_ptr_hi  = (unsigned char)(screenBase >> 8);
+    plot_ptr2_hi = (unsigned char)((screenBase >> 8) + 1);
+
+    v.byte = (unsigned char)screenBase;   /* the `LDA #0` that seeded both low bytes */
+    v.line = firstLine;
+    v.cell = cpu.Y;                       /* untouched until the first chain sets it */
+    UPD_NZ(firstLine);                    /* `LDX #$4F` is the prologue's last flag write */
+
+    paint_cells(&v, 0, 0, 1);
+    paint_lines_clipped(&v);
+    view_commit(&v);
+}
+
+/* The 6502-ABI shim.  $6700/$6800 is character row 10 of the frame buffer — display line
+   80 — and $4F is the first scan line painted. */
+void view_paint_lines(void)
 {
     REVS_PLOT_CHECK_BEFORE();
-    /* $7BE2 — $70/$71 at $6700 and $72/$73 at $6800, one screen page apart, then
-       column $4F.  The `JSR $7EF3` steps to $6701 before the first unit runs. */
-    LDA(0x00);
-    mem[0x0070] = cpu.A;
-    mem[0x0072] = cpu.A;
-    LDX(0x67);
-    mem[0x0071] = cpu.X;
-    INX();
-    mem[0x0073] = cpu.X;
-    LDX(0x4F);
-    dash_chain(0, 0, 1);
-    dash_phase2();
+    view_paint_lines_core(0x6700u, 0x4Fu);
     REVS_PLOT_CHECK_AFTER();
 }

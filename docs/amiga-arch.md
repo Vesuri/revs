@@ -43,7 +43,7 @@ bisecting an interrupt-delivery regression.
 ### ⭐⭐ …but the GAME BODY does NOT run in that handler (decided 2026-08-14, measured)
 
 The obvious shape — Amiga VERTB drives the game's own IRQ1V band cycle, whose last band is
-`FUN_52a4`, the 50 Hz simulation — is what this port shipped first, and it produced a visible
+`body_tick_xor_anim`, the 50 Hz simulation — is what this port shipped first, and it produced a visible
 artefact roughly once a minute: one or two display lines drawn with the road's left edge tens of
 pixels off, leaving grass green where the road belongs.
 
