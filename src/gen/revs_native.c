@@ -1105,3 +1105,309 @@ void view_paint_lines(void)
     view_paint_lines_core(0x6700u, 0x4Fu);
     REVS_PLOT_CHECK_AFTER();
 }
+
+/* ===========================================================================
+   $16DC  race_main_loop — THE RACE
+   ===========================================================================
+
+   WHAT IT COMPUTES.  Nothing itself: it is the driver.  One call runs a whole driving
+   session — practice, a qualifying lap or a race — and returns to the front end
+   (`wait_flag_05F4`, $6563) when that session is over or the player has asked for the pits.
+   Three nested things are going on, and the transliteration next door hides all three
+   behind sixteen labels and a `goto` out of the tail into the middle of the prologue:
+
+     1  ONCE PER SESSION ($16DC-$16E6).  Program the display hardware, put character output
+        on the race view's own plotter, build the $7B00 dashboard overlay out of the block
+        tails, and paint the viewport once so the first frame has something under it.
+     2  ONCE PER (RE)START ($16EE-$16FE).  Reset the session state, in three nested depths —
+        see RestartDepth below — then clear state_flags and scale the wing settings.
+     3  ONCE PER FRAME ($1701-$17B7).  The body: 24 calls that simulate and draw, in a flat
+        sequence (that flatness is what PROBE_PHASE 1..24 exploits).  Then the tail, which
+        is the session's state machine and the only interesting control flow in the routine.
+
+   ⭐ THE TAIL, WHICH IS THE POINT.  It answers one question per frame — does the race go on?
+   Four things can say no, and each has its own answer:
+
+     * A CRASH (crash_flag, set for one frame by the body's 23rd call).  The tail clears it,
+       holds the picture for 100 fields = 2 seconds, and then asks where to resume.  It
+       resumes for a practice lap, for qualifying, or for a NOVICE race, and ends the session
+       for an Amateur or Professional one — you are out of the race.
+     * SHIFT+f0, "return to pits" ($C0 in state_flags).  Honoured only when the wheels are
+       still (wheel_spin_rate); at speed the request is simply cleared and the race goes on.
+       Honoured, it exits with bit 6 still set, which is what makes wait_flag_05F4 re-enter
+       this routine after the wing-settings menu instead of returning to the front end.
+     * ANY OTHER shifted command that leaves state_flags positive — SHIFT+f4's quit — ends
+       the session.
+     * session_end_countdown reaching zero: the time or lap limit was passed N frames ago and
+       the car has been coasting to the line ever since.
+
+     Ending a session is not just leaving the loop: sound off, the "please wait" message, and
+     FUN_1163 races the remaining drivers to the finish so the results table is complete.
+
+   ⚠ THE TWO PORT SEAMS ARE IN HERE, and they are the reason this routine matters far beyond
+   its own cost.  Both were the transpiler's hooks (PRE_INSN_HOOKS / SPINWAIT_HOOKS) and are
+   now spelled out, because the oracle's copies are no longer the code that runs:
+
+     * platform_render_frame() at the TOP of the frame loop, not at the frame wait.  The wait
+       is CONDITIONAL — no crash means no wait — so a paint hooked to it would stop counting
+       frames on the ordinary path and the framerate would read as a rendering drop
+       (docs/perf-method.md §Rule 3).  One hook here means exactly one painted frame per game
+       frame, always.
+     * platform_tick_vbi() inside the field_countdown wait, and NOT render_frame: on the Amiga
+       the 50 Hz body runs in the real VERTB ISR and this loop is preempted, so tickVBI is a
+       no-op there and the wait ends on its own; on the headless host, which has no
+       preemption, tickVBI is the only thing that advances the interrupt.
+
+   NO HARDWARE WRITES.  Every $FCxx-$FExx access in the race belongs to hw_init and
+   irq1v_band_schedule; this routine reaches the machine only through those two calls, so
+   there is no #ifdef-guarded poke here and nothing was dropped for the Amiga.
+
+   EXIT CONTRACT: whatever irq1v_release ($4F23) leaves, since that is the last call before
+   the RTS.  The one caller does `BIT $05F4` next and consumes no register.
+
+   ⚠⚠ NO FIXTURE, AND `make determinism` IS THE GATE.  The oracle cannot be run against this
+   twin on randomised memory — the frame body always runs at least once and it is the whole
+   engine.  The full reasoning is beside NATIVE_FUNCS in tools/transpile.py; the practical
+   consequence is that every change in here must be followed by `make determinism`, which
+   drives 300 frames of exactly this loop and byte-compares all 64 KB.
+   =========================================================================== */
+
+/* How much of the session reset a restart re-runs.  The 6502 expresses this as three branch
+   targets INSIDE the prologue ($16EE, $16F3, $16F6) that the tail jumps back to, so the
+   depths are nested by construction: each entry point falls through into the next. */
+typedef enum {
+    RESTART_NONE = 0,   /* $16F9 — back from the pits: keep the session exactly as it was */
+    RESTART_LATE,       /* $16F6 — rebuild the player's car and the driver tables only */
+    RESTART_MID,        /* $16F3 — and zero $00-$68 plus $6280-$62FF: a fresh lap */
+    RESTART_FULL        /* $16EE — and reset the player's race clock: a fresh session */
+} RestartDepth;
+
+/* What the tail decided about this frame. */
+typedef enum {
+    LOOP_NEXT_FRAME,    /* $17B7 — round again */
+    LOOP_RESTART,       /* leave the frame loop and re-run the reset to `g_restartDepth` */
+    LOOP_FINISHED       /* $17BA — the session is over; leave the routine */
+} LoopVerdict;
+
+/* A JSR is handed the whole register file, and a callee may branch on the flags before it
+   reloads anything.  These three exist so that the argument passing is visibly the 6502's —
+   the macro is inside, the call site reads as C — and so that nothing else in this routine
+   has to mention a register at all. */
+static void arg_a(uint8_t v) { LDA(v); }
+static void arg_x(uint8_t v) { LDX(v); }
+static void arg_y(uint8_t v) { LDY(v); }
+
+/* $16E9's `BIT $05F4` — bit 6 of state_flags lands in V.  Through the macro rather than as a
+   plain mask because the test leaves N and V set across the calls that follow it, and "no
+   callee reads them" is a claim about a 400-routine subtree, not something to assume here. */
+static int state_flags_bit6(void)
+{
+    BIT(state_flags);
+    return cpu.V;
+}
+
+/* $1765-$1771 — WHERE DOES AN INTERRUPTED SESSION RESUME?  Asked after a crash, and again
+   after a quit, and the three answers are the three restart depths.  A practice lap and a
+   qualifying session simply begin again; so does a Novice race, which is how the beginner
+   class cannot be knocked out.  Anything else has really finished. */
+static LoopVerdict race_resume_point(RestartDepth* depth)
+{
+    if (load_a(qualify_minutes) & 0x80) {           /* practice: untimed, never over */
+        *depth = RESTART_FULL;
+        return LOOP_RESTART;
+    }
+    if (!(load_a(session_is_race) & 0x80)) {        /* qualifying, not the race proper */
+        *depth = RESTART_MID;
+        return LOOP_RESTART;
+    }
+    if (load_a(race_class) == 0) {                  /* Novice */
+        *depth = RESTART_LATE;
+        return LOOP_RESTART;
+    }
+    return LOOP_FINISHED;
+}
+
+/* $1773-$178D — THE SESSION IS OVER (unless it is a practice lap).  Reached three ways: a
+   crash in an Amateur or Professional race, a shifted quit key, and session_end_countdown
+   running out.  Silence the sound, then let the remaining twenty drivers finish the race so
+   the results are real, and leave a state_flags value the front end can read: $20 if the
+   session simply ended, whatever the key wrote if it was negative. */
+static LoopVerdict race_session_end(RestartDepth* depth)
+{
+    sound_stop_all();
+
+    /* $1776's `BMI $1765` re-asks the resume question — and the only test between here and
+       there is the one on qualify_minutes that is being repeated, which nothing since has
+       written (sound_stop_all touches sound state only).  So a practice lap resumes at
+       RESTART_FULL and the re-ask is that, spelled out. */
+    if (load_a(qualify_minutes) & 0x80) {
+        *depth = RESTART_FULL;
+        return LOOP_RESTART;
+    }
+
+    arg_x(0x30);                  /* the token for the "please wait" message */
+    FUN_17fc();
+    FUN_1163();                   /* race the remaining drivers to the finish */
+
+    if (!(load_a(state_flags) & 0x80)) {
+        arg_a(0x20);
+        state_flags = cpu.A;      /* $178D's BNE is unconditional: $20 is never zero */
+    }
+    return LOOP_FINISHED;
+}
+
+/* $174B-$17B7 — the frame's verdict.  Everything above is called from here. */
+static LoopVerdict race_frame_tail(RestartDepth* depth)
+{
+    /* Re-arm the raster band cycle if the field it was counting has finished.  A counter
+       still inside 0..3 means the frame overran its own field, and it is left alone. */
+    if (irq_band_state & 0x80)
+        irq_band_state++;
+
+    if (load_a(crash_flag) != 0) {
+        crash_flag++;                 /* straight back to zero: the crash is handled here */
+        /* 100 fields = two seconds of holding the picture.  ⚠ The `LDA #$9C` is kept rather
+           than folded into the store, because the value stays in A across the wait below and
+           the port's interrupt seam publishes A into mos_irq_a on every field — the oracle's
+           store-immediate peephole cannot see that reader. */
+        arg_a(0x9C);
+        field_countdown = cpu.A;
+        do {
+            /* ⭐ THE ENGINE'S ONE TRUE FRAME WAIT.  tick_wheel_spin INCs field_countdown
+               once per PAL field, so on the Amiga the VERTB ISR ends this on its own and
+               platform_tick_vbi() is a no-op; on the host it IS the interrupt. */
+            PROBE_PHASE(0);
+            platform_tick_vbi();
+            platform_poll_events();
+        } while (load_a(field_countdown) & 0x80);
+
+        {
+            LoopVerdict v = race_resume_point(depth);
+            if (v != LOOP_FINISHED) return v;
+        }
+        return race_session_end(depth);
+    }
+
+    /* The in-race command keys.  Y is the index of the last entry of shift_key_tbl. */
+    arg_y(0x0B);
+    shift_key_commands();
+
+    if (load_a(state_flags) != 0) {
+        if (!(cpu.A & 0x80))                       /* $1799: a positive request quits */
+            return race_session_end(depth);
+        AND(0x40);                                 /* $179B — and it writes A */
+        if (cpu.Z)
+            return LOOP_FINISHED;                  /* SHIFT+f0 alone: leave for the pits */
+        if (load_a(wheel_spin_rate) == 0)
+            return LOOP_FINISHED;                  /* stopped: the pit request is granted */
+        arg_a(0x00);
+        state_flags = 0;                           /* moving: refuse it and drive on */
+    }
+    /* Either way A is now 0 — from the cell that tested zero, or from the `LDA #0` above. */
+
+    /* The session's own countdown.  Non-zero means the limit was already passed and the car
+       is coasting; the frame it would reach zero is the frame the session ends. */
+    arg_x(session_end_countdown);
+    if (cpu.X != 0) {
+        DEX();
+        if (cpu.X == 0)
+            return race_session_end(depth);
+        session_end_countdown = cpu.X;
+    }
+
+    engine_sound_update();        /* the fourth and last note step of the frame */
+    draw_dash_needles();
+    return LOOP_NEXT_FRAME;
+}
+
+/* The idiomatic core.  `depth` is how much of the session state the FIRST pass resets, which
+   is the only thing the 6502 prologue decides before the loop starts. */
+static void race_main_loop_core(RestartDepth depth)
+{
+    for (;;) {
+        LoopVerdict verdict;
+
+        /* ---- the session reset, nested: FULL falls into MID falls into LATE ---- */
+        if (depth >= RESTART_FULL) {
+            arg_x(0x00);              /* driver 0 = the player */
+            clear_race_clock();
+        }
+        if (depth >= RESTART_MID)
+            FUN_1805();
+        if (depth >= RESTART_LATE)
+            FUN_11ce();
+
+        arg_a(0x00);
+        state_flags = 0;
+        FUN_0b77();                   /* scale the wing settings for the new session */
+
+        /* ---- one pass = one game frame ---- */
+        do {
+            /* ⭐ THE PORT'S PAINT HOOK — see the header for why it is here and not at the
+               frame wait.  Its own phase, because renderFrame() spins for the field and
+               that spin must not land in whatever phase was open across the loop seam. */
+            PROBE_PHASE(PROBE_PHASE_FRAMEWAIT);
+            PROBE_SHAPE_PHASE(PROBE_PHASE_FRAMEWAIT);
+            platform_render_frame();
+
+            PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  FUN_5052();               /* the clock */
+            PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  FUN_7b4a();               /* the lights */
+            PROBE_PHASE(3);  PROBE_SHAPE_PHASE(3);  FUN_1579();               /* the keys */
+            PROBE_PHASE(4);  PROBE_SHAPE_PHASE(4);  FUN_46a1();               /* the model */
+            PROBE_PHASE(5);  PROBE_SHAPE_PHASE(5);  build_road_edge_lists();
+            PROBE_PHASE(6);  PROBE_SHAPE_PHASE(6);  FUN_4626();
+            PROBE_PHASE(7);  PROBE_SHAPE_PHASE(7);  FUN_24b9();
+            PROBE_PHASE(8);  PROBE_SHAPE_PHASE(8);  FUN_0ffe();               /* lap timers */
+            PROBE_PHASE(9);  PROBE_SHAPE_PHASE(9);  engine_sound_update();
+            PROBE_PHASE(10); PROBE_SHAPE_PHASE(10); clear_surface_buffers();
+            PROBE_SHAPE_ROAD_BEFORE();
+            PROBE_PHASE(11); PROBE_SHAPE_PHASE(11); FUN_1a20();               /* the road */
+            PROBE_SHAPE_ROAD_AFTER();
+            PROBE_PHASE(12); PROBE_SHAPE_PHASE(12); engine_sound_update();
+            PROBE_PHASE(13); PROBE_SHAPE_PHASE(13); fill_line_surface();
+            PROBE_PHASE(14); PROBE_SHAPE_PHASE(14); FUN_4ca4();
+            arg_x(0x17);                                   /* $172B: the object slot count */
+            PROBE_PHASE(15); PROBE_SHAPE_PHASE(15); FUN_2ad1();
+            PROBE_PHASE(16); PROBE_SHAPE_PHASE(16); FUN_1b12();
+            PROBE_PHASE(17); PROBE_SHAPE_PHASE(17); FUN_2637();               /* the cars */
+            PROBE_PHASE(18); PROBE_SHAPE_PHASE(18); FUN_1e15();
+            PROBE_PHASE(19); PROBE_SHAPE_PHASE(19); mirrors_update();
+            PROBE_PHASE(20); PROBE_SHAPE_PHASE(20); engine_sound_update();
+            PROBE_PHASE(21); PROBE_SHAPE_PHASE(21); FUN_4f44();               /* the horizon */
+            PROBE_PHASE(22); PROBE_SHAPE_PHASE(22); FUN_1bb9();               /* contact */
+            PROBE_PHASE(23); PROBE_SHAPE_PHASE(23); FUN_111e();               /* the crash */
+            PROBE_SHAPE_DASH_BEFORE();
+            PROBE_PHASE(24); PROBE_SHAPE_PHASE(24); view_paint_lines();
+            PROBE_SHAPE_DASH_AFTER();
+            /* ⭐⭐ Phase 32 exists so that phase 24 means ONLY the view sweep.  Without it the
+               tail's three JSRs were charged to the rasteriser — 11 ms of its 82. */
+            PROBE_PHASE(PROBE_PHASE_VIEWTAIL);
+
+            verdict = race_frame_tail(&depth);
+        } while (verdict == LOOP_NEXT_FRAME);
+
+        if (verdict == LOOP_FINISHED)
+            break;
+    }
+
+    /* $17BA — out.  A = $80 tells copy_dash_data to stow the $7B00 overlay back into the
+       block tails it was assembled from, so the page can be MODE 7 screen memory again. */
+    arg_a(0x80);
+    copy_dash_data();
+    irq1v_release();
+}
+
+/* The 6502-ABI shim.  The only decision the prologue makes is how much to reset: bit 6 of
+   state_flags is set when wait_flag_05F4 is re-entering the race after the pit-lane
+   wing-settings menu, and then the session state must survive untouched. */
+void race_main_loop(void)
+{
+    hw_init();
+
+    arg_a(0x00);
+    text_out_via_mos = 0;         /* character output goes to the race view's own plotter */
+    copy_dash_data();             /* A = 0: BUILD the $7B00 overlay from the block tails */
+    view_paint_lines();
+
+    race_main_loop_core(state_flags_bit6() ? RESTART_NONE : RESTART_FULL);
+}

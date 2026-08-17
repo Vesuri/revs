@@ -162,7 +162,8 @@ TARGET   := build/revs
         mode7 mode7-fixture font mos-font refloop-charset refloop-comp track-patch \
         tracks tracks-gen track-fixtures track-smc track-smc-check track-run \
         trackmenu trackmenu-fixture titlescreen \
-        sound sound-fixture sound-fixture-race determinism determinism-record fbwrites
+        sound sound-fixture sound-fixture-race determinism determinism-record fbwrites \
+        determinism-drive determinism-drive-record
 
 all: $(TARGET)
 
@@ -206,6 +207,55 @@ determinism: $(TARGET)
 	  && echo "determinism: 64K byte-identical at frame $(DET_FRAME) — PASS" \
 	  || { echo "determinism: FAIL — the engine's state diverged"; \
 	       cmp -l $(DET_REF) $(DET_RUN).mem.$(DET_FRAME) | head -20; exit 1; }
+
+# ⭐⭐ …AND A SECOND TRAJECTORY, BECAUSE ONE IS NOT ENOUGH.  The default run above never puts
+# the car under power — `road_speed` reads 0 at frame 300 and at frame 1500 — so it drives the
+# simulation through its idle path only.  This one boots straight into the race and holds the
+# throttle, i.e. a MOVING car on the circuit.  MEASURED, not assumed: dropping the fourth
+# `engine_sound_update` call from race_main_loop's tail is byte-identical in the parked run at
+# BOTH depths and FAILS here at frame 300 (2026-08-17).  Run both after a change to any driver.
+#
+# ⚠ It cleans, builds, runs, then rebuilds the default configuration, and that is deliberate:
+# this Makefile tracks no build flag, so anything cheaper would eventually compare a DRIVE
+# reference against a stale default binary — the exact failure this project has hit twice.
+# Two full builds per invocation is the price of not inventing that trap again.
+DET_DRIVE_REF   := tmp/determinism/ref_drive.mem
+DET_DRIVE_RUN   := tmp/determinism/drive
+DET_DRIVE_FRAME ?= 300
+
+determinism-drive-record:
+	@$(MAKE) --no-print-directory clean >/dev/null
+	@$(MAKE) --no-print-directory STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 $(TARGET) >/dev/null
+	@mkdir -p tmp/determinism
+	@rm -f $(DET_DRIVE_RUN)*
+	REVS_FIXED_RNG=1 REVS_SCREEN_DUMP=$(DET_DRIVE_RUN) \
+	  REVS_SCREEN_FRAME=$(DET_DRIVE_FRAME) REVS_MEM_DUMP=1 REVS_QUIT_AFTER_DUMP=1 \
+	  ./$(TARGET) >/dev/null 2>&1
+	@cp $(DET_DRIVE_RUN).mem.$(DET_DRIVE_FRAME) $(DET_DRIVE_REF)
+	@$(MAKE) --no-print-directory clean >/dev/null
+	@$(MAKE) --no-print-directory $(TARGET) >/dev/null
+	@echo "determinism-drive: recorded frame $(DET_DRIVE_FRAME) -> $(DET_DRIVE_REF)"
+
+determinism-drive:
+	@test -f $(DET_DRIVE_REF) || \
+	  { echo "no reference — run 'make determinism-drive-record' first"; exit 1; }
+	@$(MAKE) --no-print-directory clean >/dev/null
+	@$(MAKE) --no-print-directory STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 $(TARGET) >/dev/null
+	@mkdir -p tmp/determinism
+	@rm -f $(DET_DRIVE_RUN)*
+	REVS_FIXED_RNG=1 REVS_SCREEN_DUMP=$(DET_DRIVE_RUN) \
+	  REVS_SCREEN_FRAME=$(DET_DRIVE_FRAME) REVS_MEM_DUMP=1 REVS_QUIT_AFTER_DUMP=1 \
+	  ./$(TARGET) >/dev/null 2>&1
+	@cmp $(DET_DRIVE_REF) $(DET_DRIVE_RUN).mem.$(DET_DRIVE_FRAME) \
+	  && r=PASS || r=FAIL; \
+	 $(MAKE) --no-print-directory clean >/dev/null; \
+	 $(MAKE) --no-print-directory $(TARGET) >/dev/null; \
+	 if [ "$$r" = PASS ]; then \
+	   echo "determinism-drive: 64K byte-identical at frame $(DET_DRIVE_FRAME), car MOVING — PASS"; \
+	 else \
+	   echo "determinism-drive: FAIL — the driving trajectory diverged"; \
+	   cmp -l $(DET_DRIVE_REF) $(DET_DRIVE_RUN).mem.$(DET_DRIVE_FRAME) | head -20; exit 1; \
+	 fi
 
 # Native-twin validation harness.  Links the full object graph minus main.o (for the
 # symbol environment) plus the harness with its own main().
@@ -361,6 +411,11 @@ tracks: track-fixtures $(TRACKS_OBJS) | build
 #   make track-run              every circuit in this build
 #   make track-run TRACKS="0 1" just those
 #   make track-run FRAME=40     dump later (slower: each frame costs seconds on the host)
+# ⚠⚠ IT LEAVES THE TREE IN THE DEFAULT CONFIGURATION, and that final rebuild is not tidiness:
+# this loop builds `STRAIGHT_TO_RACE=1 TRACK=n` six times, this Makefile tracks no build flag, and
+# without the restore the next `make determinism` runs a Nurburgring straight-to-race binary against
+# a Silverstone reference and reports a divergence that is entirely the build.  MEASURED — it cost
+# a debugging detour on 2026-08-17.
 track-run:
 	@set -e; \
 	frame=$(if $(FRAME),$(FRAME),15); \
@@ -388,6 +443,8 @@ track-run:
 	    echo "       window never reached the race (see the note above this target)"; fails=1; \
 	  fi; \
 	done; \
+	$(MAKE) --no-print-directory clean >/dev/null; \
+	$(MAKE) --no-print-directory $(TARGET) >/dev/null; \
 	[ $$fails = 0 ] || exit 1; \
 	echo "track-run: every circuit's own code executes"; \
 	python3 -c 'import itertools,sys,glob; \

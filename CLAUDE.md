@@ -105,6 +105,9 @@ make determinism           # ⭐ the WHOLE-CORPUS differential: 300 frames of a 
                            #   all 64 KB byte-compared.  The ONLY check that covers a change
                            #   to the transpiler / cpu.h / the memory model, because those
                            #   change `validate`'s oracle too.  `make determinism-record` first
+make determinism-drive     # ⭐ ...and the same 300 frames with the car MOVING — a DIFFERENT
+                           #   trajectory, and it catches defects the parked one cannot.
+                           #   RUN BOTH after a change to any driver routine
 make endian-lint           # fail if mem[] is aliased as a wide pointer
 make gen                   # regenerate src/gen from listing.txt + dashcode.txt (DASHCODE=0 skips)
 make image                 # rebuild disasm/revs_mem.bin from revs.ssd
@@ -264,6 +267,13 @@ rename that was skipped** → `docs/rename.md`); comments that say what it COMPU
 `#ifdef`-guarded, never deleted. ⭐ The one narrow exception: where a FLAG genuinely leaves the
 routine, wrap that operation in a small named helper with the cpu.h macro *inside* it — C has no
 carry. Full checklist, the reasoning and the measured traps: `docs/faithfulness-seam.md` §Writing one.
+
+⚠ **One narrow exception to step 4: `transpile.py`'s `NATIVE_FUNCS`** — a native DRIVER whose oracle
+cannot be run on randomised memory because its first act is to execute the rest of the engine
+(`race_main_loop` is the only member). It gets the same `__t6502` split and the same style rules, but
+`make validate` merely *prints* it and **`make determinism` + `make determinism-drive` are its
+gate** — which covers its per-frame path and provably not its rare arms
+(`docs/validation-harness.md` §a DRIVER with no fixture). Not for a fixture that is merely awkward.
 
 **Which side of the seam:** `revs_native.c` = FAITHFUL, validated, both backends;
 `revs_native_amiga.cpp` = genuinely Amiga-only. A faithful pure-`mem[]` routine that merely needs

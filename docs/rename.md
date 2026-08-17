@@ -40,8 +40,53 @@ short array, and `$4885` reads it back.  Suggested `steer_angle` / `steer_angle_
 against `adc_read`'s path (`$1646`) first — the alternative reading is a heading relative to the
 road, which is what the view pipeline would want.
 
-## 3. `$52A4 tick_wheel_spin` — the element is identified, the GATE is not
+## 3. ⭐⭐ `race_main_loop`'s BODY — 17 of the 24 per-frame calls have no name
 
-`mem[$0000]` gates the whole XOR (`$52B4 LDA $0000 / BEQ`), and `$0000` has no name.  Nothing else
-in the queue depends on it, but a zero-page cell that can switch off a visible animation should not
-stay anonymous.
+Twin #3 made the main loop idiomatic C and the calls now read as `FUN_5052()`, `FUN_7b4a()`,
+`FUN_1579()`, `FUN_46a1()`, `FUN_4626()`, `FUN_24b9()`, `FUN_0ffe()`, `FUN_1a20()`, `FUN_4ca4()`,
+`FUN_2ad1()`, `FUN_1b12()`, `FUN_2637()`, `FUN_1e15()`, `FUN_4f44()`, `FUN_1bb9()`, `FUN_111e()`
+— plus `FUN_1805()`, `FUN_11ce()`, `FUN_0b77()` in the session reset and `FUN_17fc()`, `FUN_1163()`
+in the session end.  **These are the engine's twenty top-level subsystems.**  Naming them is the
+single highest-value naming pass left on the project, and it is now cheap: the body is a FLAT
+sequence, so slot *n* of our list is subsystem *n* of anyone else's.
+
+What is already established, from behaviour and from the surrounding code:
+
+| slot | addr | evidence in hand |
+|---|---|---|
+| 1 | `$5052` | the race clock / time processing (`clear_race_clock` is `$5011` next door) |
+| 2 | `$7B4A` | in the `$7B00` overlay; the starting-light sequence |
+| 3 | `$1579` | reads the driving keys — `$163B` is its steering read, gated on `session_end_countdown` |
+| 4 | `$46A1` | the driving model; `$46CD` inside it is what writes `wheel_spin_rate` |
+| 5 | `$24F6` | ⚠ **currently named `build_road_edge_lists` and that may be one slot off** — see below |
+| 6 | `$4626` | moves the player along the track |
+| 7 | `$24B9` | moves the player between track segments |
+| 8 | `$0FFE` | the lap/session timers: `$106F` compares `qualify_minutes` and arms `session_end_countdown` |
+| 11 | `$1A20` | draws the road into the `$3000` source blocks (the producer half of the view pipeline) |
+| 14 | `$4CA4` | builds a road sign |
+| 15 | `$2AD1` | draws a car or a sign; entered with X = `$17` = 23, the object-slot count |
+| 16 | `$1B12` | draws the corner markers |
+| 17 | `$2637` | moves and draws the other cars — returns immediately on the practice branch |
+| 18 | `$1E15` | copies the tyre/dash edges |
+| 21 | `$4F44` | moves the horizon: it is what writes `band1_duration`, which `irq1v_band_schedule` splits |
+| 22 | `$1BB9` | contact/collision processing |
+| 23 | `$111E` | the crash check: `$1138` is the arm that sets `crash_flag` |
+|  — | `$1805` | zeroes `$00-$68` and `$6280-$62FF`: the per-lap reset |
+|  — | `$11CE` | rebuilds the player's car and the driver tables from `player_car` |
+|  — | `$0B77` | scales the wing settings from `$5F3D,X` |
+|  — | `$17FC` | prints one message through `$4D70`/`$4D74`; X selects the token |
+|  — | `$1163` | races the remaining drivers to the finish so the results table is complete |
+
+Do the pass in one sitting, deriving each name from its own body (the table above is where to
+start, not what to write), and cross-check the slot alignment against
+<https://revs.bbcelite.com/deep_dives/program_flow_of_the_main_game_loop.html>, whose account of
+the same 24-call body lines up one-for-one with ours — including all five slots we had already
+named independently (`engine_sound_update`, `clear_surface_buffers`, `fill_line_surface`,
+`mirrors_update`, `view_paint_lines`), which is what makes the alignment trustworthy.
+
+⚠ **And settle `$24F6` while you are there.**  Our `build_road_edge_lists` says "turns the track
+ahead into the two 40-point edge lists"; the reference has slot 5 getting the track section and the
+corner markers, with the drawing at slot 11 (`$1A20`).  Both readings fit `docs/perf-method.md`'s
+"the first two PRODUCE source bytes", so this is a name that may be describing slot 11's job while
+sitting on slot 5's address.  It is `[DERIVED]`, it is referenced from four docs, and a wrong name
+here propagates into every Phase 6 note.

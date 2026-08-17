@@ -60,6 +60,7 @@
 #endif
 #ifndef HAVE_VALIDATE_LIST
 static const char* const VALIDATE_NAMES[] = { 0 };
+static const char* const NATIVE_UNVALIDATED_NAMES[] = { 0 };
 #endif
 
 /* ENDIAN_NOTE: never alias mem[] as uint16_t* / uint32_t* for a general value.  The one
@@ -105,6 +106,22 @@ static int check_coverage(void) {
         }
     }
     return missing;
+}
+
+/* ⭐ THE OTHER HALF OF check_coverage: twins that have NO fixture BY DECLARATION.
+   transpile.py's NATIVE_FUNCS is for a native reimplementation whose oracle cannot be run
+   here at all — the one member is race_main_loop, whose first act on any pre-state is to
+   execute a whole frame of the engine.  Silence would be the vacuous-green failure mode
+   wearing a different hat, so the names are PRINTED on every run together with what does
+   gate them.  Returns 0: this is a report, not a failure. */
+static int report_unvalidated_natives(void)
+{
+    int i;
+    for (i = 0; NATIVE_UNVALIDATED_NAMES[i]; i++)
+        printf("%-32s NO FIXTURE BY DECLARATION (transpile.py NATIVE_FUNCS) — "
+               "gated by `make determinism`, not by this harness\n",
+               NATIVE_UNVALIDATED_NAMES[i]);
+    return 0;
 }
 
 /* ------------------------------------------------- live-exit-register contract */
@@ -588,6 +605,7 @@ int main(int argc, char** argv)
     fail += test_view_paint_lines();
 
     fail += check_coverage();
+    fail += report_unvalidated_natives();
 
     if (g_nregistered == 0 && VALIDATE_NAMES[0] == 0) {
         printf("no twins registered yet — harness builds and runs clean.\n"

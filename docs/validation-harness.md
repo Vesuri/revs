@@ -106,6 +106,72 @@ all; and two different configurations / two different frame depths never compare
 other.  Its positive result on the flag experiment was byte-identity at frames 300 and 1500 in
 both PRACTICE and COMPETITION.
 
+### ⭐⭐ TWO trajectories, because one is not a workload
+
+`make determinism` alone drives the engine's **idle** path: `road_speed` reads 0 at frame 300 *and*
+at frame 1500, because the autorun script hands the keyboard back and a headless run has no hand on
+the throttle.  `make determinism-drive` boots straight into the race and holds it — a moving car,
+and a genuinely different trajectory through the same code.
+
+```
+make determinism-drive-record   # after a change you have already proven correct
+make determinism-drive          # the check (DET_DRIVE_FRAME=300 by default)
+```
+
+**MEASURED, not assumed (2026-08-17):** dropping the fourth `engine_sound_update` call from
+`race_main_loop`'s tail is byte-identical in the parked run at *both* depths and **FAILS** the
+driving run at frame 300.  The parked car's engine note is saturated (`engine_note == its target` in
+every dump), so one missing ±1 step changes nothing there.
+
+⚠ The drive target `clean`s, builds, runs, and then rebuilds the default configuration — two full
+builds per invocation.  That is deliberate: this Makefile tracks no build flag, so anything cheaper
+would eventually compare a DRIVE reference against a stale default binary, which is the failure
+this project has already hit twice.
+
+## ⭐⭐ …and a NINTH: a DRIVER with no fixture, and what actually gates it
+
+`transpile.py` has a second split set beside `VALIDATE_FUNCS`: **`NATIVE_FUNCS`**, for a native twin
+whose oracle *cannot be run by this harness at all*.  Its one member is `race_main_loop` (`$16DC`),
+and the reason is structural rather than effort:
+
+- the frame body at `$1701` **always** runs at least once before any exit test, and that body is the
+  whole engine — 24 subsystem calls, the MOS, the self-modifying view rasteriser.  On `fill_random`
+  memory every one of them traps or diverges, so the two models would be compared on nothing;
+- the only meaningful pre-state is a live race, i.e. 64 KB derived from `revs.ssd`, which cannot be
+  committed;
+- and even from a live snapshot the two runs are not comparable: three body calls read `$FE68`,
+  whose clock advances monotonically **across** `diff_run`'s two runs.
+
+So the names are emitted into `revs_validate_list.h` as `NATIVE_UNVALIDATED_NAMES[]` and
+`tools/validate_native.c` **prints them on every run** with what does gate them.  Silence would be
+the vacuous-green failure mode wearing a different hat; a declared hole is not the same thing as a
+forgotten one.
+
+### ⚠⚠ What determinism gates for that twin, and what it provably does not
+
+Sabotage record, six deliberate defects in `race_main_loop`, against both trajectories:
+
+| defect | parked @300 / @1500 | driving @300 |
+|---|---|---|
+| the raster-band re-arm (`irq_band_state++`) dropped | **FAIL** | — |
+| `LDX #$17` before slot 15 changed to `$16` | **FAIL** | — |
+| the tail's `engine_sound_update` dropped | PASS | **FAIL** |
+| restart depth MID instead of FULL on entry | PASS | PASS |
+| `text_out_via_mos` not cleared | PASS | PASS |
+| `session_end_countdown` not written back | PASS | PASS |
+| the resume test on `session_is_race` inverted | — | PASS |
+| the crash pause (`field_countdown = $9C`) dropped | — | PASS (also at frame **6000**) |
+
+**The last five survive because the trajectory never enters those paths.**  The pinned run does not
+crash, does not end its session, does not return to the pits and prints no text — checked to frame
+6000, where the crash arm is *still* unreached.  No frame depth fixes that; only a different
+scenario would.  So, stated rather than implied:
+
+> `make determinism` + `make determinism-drive` gate the main loop's **per-frame path**.  The tail's
+> crash / session-end / restart / pit-return arms have **no automated gate at all** and are faithful
+> by construction only.  A change to one of them must be argued against `disasm/listing.txt` and
+> then seen to work — `make refloop` for the crash, a real session for the rest.
+
 ⚠ The reference is git-ignored and machine-local **on purpose**.  It is a witness that this tree
 still computes what it computed an hour ago — it has no independent authority, and it must never
 be re-recorded to make a failing check pass.  Ground truth for behaviour is still the BBC
@@ -117,6 +183,7 @@ be re-recorded to make a failing check pass.  Ground truth for behaviour is stil
 make validate                 # everything
 make validate FN=<substring>  # only matching tests — use this; a full run gets slow fast
 make determinism              # the WHOLE-CORPUS differential (see above)
+make determinism-drive        # ...and the same, with the car MOVING — run BOTH
 make endian-lint              # the wide-pointer-alias grep
 ```
 

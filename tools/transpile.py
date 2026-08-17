@@ -6,7 +6,7 @@ Reads  disasm/listing.txt        (⚠ the RUNTIME image — see below)
 Writes src/gen/revs_gen.c            one C function per 6502 routine
        src/gen/revs_decl.h           forward declarations
        src/gen/mem.h                 MEM_<name> offsets + opt-in lvalue aliases
-       src/gen/revs_validate_list.h  VALIDATE_FUNCS names, for fixture-or-fail
+       src/gen/revs_validate_list.h  VALIDATE_FUNCS names (fixture-or-fail) + NATIVE_FUNCS
 
 ⚠⚠ `listing.txt` must be a disassembly of `disasm/revs_runtime.bin` (`make runtime`),
 NOT `revs_mem.bin`.  REVS2 unpacks itself before running, so an address in the loaded
@@ -572,6 +572,35 @@ VALIDATE_FUNCS = {
     # representation change) and drops only the interpreter around them.
     0x7BE2,
 }
+
+# ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
+# because no randomised fixture can exist for them.  Kept as a separate set so that "there
+# is no differential here" is a declaration in the source rather than a silence.
+#
+# The one member is the race's main loop.  Its oracle cannot be run by
+# tools/validate_native.c and the reason is structural, not effort:
+#
+#   * it never returns from a randomised pre-state.  The frame body at $1701 ALWAYS runs at
+#     least once before any exit test, and that body is the whole engine — 24 subsystem calls,
+#     the MOS, the self-modifying view rasteriser.  On `fill_random` memory every one of them
+#     traps or diverges, so the two models would be compared on nothing;
+#   * the only pre-state that WOULD be meaningful is a live race, i.e. 64 KB derived from
+#     revs.ssd, which cannot be committed (.gitignore, and the reason is copyright);
+#   * and even from a live snapshot the two runs are not comparable: three of the body's calls
+#     read $FE68, whose clock advances monotonically ACROSS the two runs of diff_run.
+#
+# ⭐ WHAT GATES IT INSTEAD, and it has more teeth here than a fixture would: `make determinism`.
+# race_main_loop IS the 300 frames that check drives, so a divergence anywhere in its control
+# flow — one restart branch, one register hand-off, one dropped call — moves the 64 KB dump.
+# docs/validation-harness.md §a driver with no fixture.
+NATIVE_FUNCS = {
+    0x16DC,   # race_main_loop — see above
+}
+
+# Every address whose transliteration is emitted under the `__t6502` suffix, whether or not a
+# fixture exists for it.  This is the set that decides NAMING; VALIDATE_FUNCS alone decides
+# who must have a fixture.
+SPLIT_FUNCS = VALIDATE_FUNCS | NATIVE_FUNCS
 VALIDATE_SUFFIX = '__t6502'
 
 # ---------------------------------------------------------------------------
@@ -2096,10 +2125,10 @@ def translate_func(func, all_funcs_by_start, symbols,
         lines.append(f'/* {name} @ ${start:04X}: {note} */')
     # When validating a native reimplementation, define the transliterated body
     # under the `__t6502` reference name; the plain name is the native version.
-    def_name = name + VALIDATE_SUFFIX if start in VALIDATE_FUNCS else name
-    if start in VALIDATE_FUNCS:
+    def_name = name + VALIDATE_SUFFIX if start in SPLIT_FUNCS else name
+    if start in SPLIT_FUNCS:
         lines.append(f'/* faithful transliteration kept as the validation oracle; '
-                     f'native {name}() lives in revs_native.c (see VALIDATE_FUNCS) */')
+                     f'native {name}() lives in revs_native.c (see SPLIT_FUNCS) */')
     if dispatch_entries:
         lines.append(f'void {def_name}(uint16_t _entry) {{')
         lines.append('    switch (_entry) {')
@@ -2591,7 +2620,7 @@ def main():
         decl_lines.append(f'void {f["name"]}(void);')
         # Validated funcs: the plain name (declared above) is the native version
         # in revs_native.c; also declare the transliterated reference twin.
-        if f['start'] in VALIDATE_FUNCS:
+        if f['start'] in SPLIT_FUNCS:
             decl_lines.append(f'void {f["name"]}{VALIDATE_SUFFIX}(void);')
     # Region bodies: one C function per cyclic segment group, entered by 6502 address.
     if regions:
@@ -2607,7 +2636,7 @@ def main():
         # A validated mid-function entry: its split body is emitted under the
         # `__t6502` twin (translate_func, def_name) with the plain name native;
         # declare the twin too so the validation harness can reach it.
-        if addr in VALIDATE_FUNCS:
+        if addr in SPLIT_FUNCS:
             decl_lines.append(f'void {wname}{VALIDATE_SUFFIX}(void);')
     # Stubs for unlisted JSR targets.
     decl_lines.append('')
@@ -2654,7 +2683,7 @@ def main():
     for f in funcs:
         if f['start'] in region_of:
             r = region_of[f['start']]
-            nm = f['name'] + (VALIDATE_SUFFIX if f['start'] in VALIDATE_FUNCS else '')
+            nm = f['name'] + (VALIDATE_SUFFIX if f['start'] in SPLIT_FUNCS else '')
             body.append(f'void {nm}(void) {{ {r["name"]}(0x{f["start"]:04X}); }}')
             body.append('')
             continue
@@ -2686,7 +2715,7 @@ def main():
         # becomes a thin wrapper that enters the region at this address.
         if addr in region_of:
             r = region_of[addr]
-            nm = wname + (VALIDATE_SUFFIX if addr in VALIDATE_FUNCS else '')
+            nm = wname + (VALIDATE_SUFFIX if addr in SPLIT_FUNCS else '')
             body.append(f'void {nm}(void) {{ {r["name"]}(0x{addr:04X}); }}')
             body.append('')
             continue
@@ -2815,24 +2844,35 @@ def main():
     for addr, wname in sorted(wrapper_names.items()):
         if addr in VALIDATE_FUNCS:
             val_names.append(wname)
-    missing = sorted(set(VALIDATE_FUNCS) - {f['start'] for f in funcs} - set(wrapper_names))
+    nat_names = [f['name'] for f in funcs if f['start'] in NATIVE_FUNCS]
+    nat_names += [w for a, w in sorted(wrapper_names.items()) if a in NATIVE_FUNCS]
+    missing = sorted(set(SPLIT_FUNCS) - {f['start'] for f in funcs} - set(wrapper_names))
     if missing:
-        raise SystemExit('VALIDATE_FUNCS lists addresses that are not a function start '
-                         'or a mid-function entry in listing.txt: '
+        raise SystemExit('VALIDATE_FUNCS/NATIVE_FUNCS list addresses that are not a function '
+                         'start or a mid-function entry in listing.txt: '
                          + ', '.join(f'${a:04X}' for a in missing))
     val_lines = [
         '#pragma once',
-        '/* AUTO-GENERATED by tools/transpile.py from VALIDATE_FUNCS — do not edit.',
-        '   Every name here has a native twin in src/gen/revs_native.c and a __t6502',
-        '   transliteration oracle in src/gen/revs_gen.c.  tools/validate_native.c FAILS if',
-        '   a name here has no fixture: a fixture-less PASS runs zero comparisons.',
+        '/* AUTO-GENERATED by tools/transpile.py from VALIDATE_FUNCS / NATIVE_FUNCS — do not edit.',
+        '   Every name in either list has a native twin in src/gen/revs_native.c and a __t6502',
+        '   transliteration oracle in src/gen/revs_gen.c.',
+        '',
+        '   VALIDATE_NAMES: tools/validate_native.c FAILS if one of these has no fixture — a',
+        '   fixture-less PASS runs zero comparisons.',
+        '',
+        '   NATIVE_UNVALIDATED_NAMES: twins for which no fixture CAN exist (the reason is in',
+        '   transpile.py next to each address).  The harness prints them on every run so the',
+        '   hole stays visible; `make determinism` is what gates them.',
         '   docs/validation-harness.md */',
         'static const char* const VALIDATE_NAMES[] = {',
     ]
     val_lines += [f'    "{n}",' for n in sorted(val_names)]
+    val_lines += ['    0', '};', '', 'static const char* const NATIVE_UNVALIDATED_NAMES[] = {']
+    val_lines += [f'    "{n}",' for n in sorted(nat_names)]
     val_lines += ['    0', '};', '']
     OUT_VAL.write_text('\n'.join(val_lines) + '\n')
-    print(f'Wrote {OUT_VAL}  ({len(val_names)} validated names)')
+    print(f'Wrote {OUT_VAL}  ({len(val_names)} validated names, '
+          f'{len(nat_names)} native without a fixture)')
 
     # -----------------------------------------------------------------------
     # Manual implementations stub — only when something actually needs one.
