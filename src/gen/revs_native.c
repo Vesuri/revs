@@ -22,7 +22,7 @@
  *     into the copper's band records on the Amiga: they are not dead stores there either.)
  *
  * ⚠ THE ONE PLACE 6502 MACROS SURVIVE, AND WHY.  A twin's exit contract can include the
- * FLAGS — both twins here declare AXY+flags live — and C has no carry or overflow.  Where a
+ * FLAGS — every twin here declares AXY(+S)+flags live — and C has no carry or overflow.  Where a
  * flag genuinely leaves the routine the arithmetic goes through a small named helper
  * (`load_a`, `adc_step`, `sub_from`, `view_compose`) that wraps cpu.h's macro, so the
  * semantics are the 6502's by construction, decimal mode included (the fixture randomises
@@ -1436,4 +1436,273 @@ void race_main_loop(void)
     view_paint_lines();
 
     race_main_loop_core(state_flags_bit6() ? RESTART_NONE : RESTART_FULL);
+}
+
+/* ===========================================================================
+   $24F6  build_track_geometry — THE FRAME'S ROAD GEOMETRY  (twin #4)
+   ---------------------------------------------------------------------------
+   The view pipeline's FIRST producer, and the fifth call of the frame.  It turns the track
+   ahead into the two 40-point edge lists everything downstream reads: road_edge_start emits
+   the nearest point of each side, then one road_edge_walk per side climbs the section list
+   into the distance, and the three lines at the end record where the road's HORIZON came out
+   — its scan line (horizon_extent), which point it was (horizon_index), and how wide the road
+   still looks there (horizon_half_width).
+
+   ⭐ The routine itself is 84 bytes of driver: every edge point is projected by the walk, so
+   nothing here is arithmetic.  What it does own is the four SEEDS that decide the shape of
+   both walks — the "no nearest point yet" pair and the 13-section subdivision floor — and the
+   frame's horizon record.  There are no hardware writes and no $FC00-$FEFF access at all: the
+   whole routine lives in RAM, so the transpiler was already routing it straight to mem[]
+   and the twin removes interpreter, not bus calls.
+
+   ⚠ SELF-MODIFYING, twice, and both sites belong to the expansion circuits: $2538 and $2542
+   are rewritten by each circuit's ModifyGameCode, so the bytes below are Silverstone's and
+   the other four circuits take the hook arms.  docs/static-map.md §Open items.
+   =========================================================================== */
+
+#define EDGE_Y_TBL       0x5F20u   /* per edge point: the scan line it projects to */
+#define EDGE_X_HI_TBL    0x5E90u   /* ...and the high byte of its x */
+#define EDGE_HALF        0x0028u   /* 40 — the stride between the two road sides' halves */
+
+/* value >> 1, with C from the bit shifted out.  The last operation in the routine, so its
+   C/N/Z are the flags the caller sees. */
+static unsigned lsr_a(unsigned value)
+{
+    cpu.A = (uint8_t)value;
+    LSR_A();
+    return cpu.A;
+}
+
+/* `value >= limit`, spelled as the 6502's CMP so that the comparison's own C/N/Z are left
+   behind.  ⚠ NOT decoration: every SMC site in these two routines is an EXIT, so a clamp
+   test three lines earlier is the last thing that touched the flags on that path, and a
+   plain C `>=` reads the same and validates differently. */
+static int cmp_ge(unsigned value, uint8_t limit)
+{
+    cpu.A = (uint8_t)value;
+    CMP(limit);
+    return cpu.C;
+}
+
+/* max(value, floor), via the same CMP.  Used where the floor's own `LDA #imm` flags are
+   provably overwritten before anything reads them (draw_road's two clamps). */
+static unsigned clamp_up_to(unsigned value, uint8_t floor)
+{
+    return cmp_ge(value, floor) ? value : floor;
+}
+
+/* $2505-$250C and $2513-$251A — ONE ROAD SIDE.  road_edge_side picks which side and which
+   traversal direction the walk uses (A=0 and A=$80 are opposites whatever the car's
+   direction bit holds); the walk then emits that side's points from `firstPoint` upward. */
+static void road_side_walk(uint8_t sideSelect, uint8_t firstPoint)
+{
+    arg_a(sideSelect);
+    road_edge_side();
+    arg_a(firstPoint);
+    road_edge_walk();
+}
+
+/* $253B-$2549 — HOW WIDE IS THE ROAD AT THE HORIZON?  The two sides' x at the horizon point,
+   differenced and halved: half the apparent road width, which $1FE4 reads to decide how much
+   of the distance is worth drawing.  Entered with the horizon point in Y and returning with
+   the halved value in A, because both are part of the routine's exit contract.
+
+   ⚠ SMC $2542-$2545: an expansion circuit replaces the `JSR abs8 / LSR A` pair with a call of
+   its own plus a NOP, so on those circuits the width is NOT halved. */
+static void horizon_half_width_at(unsigned horizonPoint)
+{
+    sub_from(mem[EDGE_X_HI_TBL + horizonPoint],
+             mem[EDGE_X_HI_TBL + EDGE_HALF + horizonPoint]);
+
+    if (mem[0x2542] == 0x20 && mem[0x2545] == 0x4A) {           /* unpatched: Silverstone */
+        abs8();
+        horizon_half_width = (uint8_t)lsr_a(cpu.A);
+    } else if (mem[0x2542] == 0x20 && mem[0x2545] == 0xEA) {    /* a circuit's own call */
+        uint16_t target = (uint16_t)(mem[0x2543] | (mem[0x2544] << 8));
+        if (target == 0x3450)                       abs8();
+        else if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
+        else { platform_smc_unhandled(0x2542, target); return; }
+        NOP();
+        horizon_half_width = cpu.A;
+    } else {
+        platform_smc_unhandled(0x2542, mem[0x2542]);
+    }
+}
+
+/* `firstPoint` per side: the cursor each walk starts from.  They are 6 and $2E = 6 + 40 — the
+   same offset into each half of the 2x40 edge arrays, which is what makes the two lists
+   parallel and lets everything downstream address a side by adding 40. */
+static void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1)
+{
+    horizon_extent = 0;              /* $24F6: the road reaches nowhere until a walk says so */
+    road_edge_start();               /* the nearest point of each side, and last frame's clamp */
+
+    edge_nearest_hi = 0xFF;          /* no nearest point yet: the first one always wins */
+    edge_nearest_section = 0x0D;     /* ...and do not subdivide before section 13 */
+
+    road_side_walk(0x00, firstPointSide0);
+    edge_end_side0 = edge_cursor;    /* where side 0 stopped, for draw_road to pair up */
+    road_side_walk(0x80, firstPointSide1);
+
+    /* $251D-$2529 — WHICH POINT IS THE HORIZON?  The walks record it as an index into
+       whichever half they were writing, so fold it back into 0..39 and keep it for next
+       frame's road_edge_start, which clamps the horizon down when it climbed too far. */
+    unsigned horizonPoint = horizon_index;
+    if (cmp_ge(horizonPoint, 0x28)) {
+        horizonPoint = sub_from(horizonPoint, 0x28);
+        horizon_index = (uint8_t)horizonPoint;
+    }
+    /* The `TAY` at $2528 — and it has to happen HERE, not at the tail that reads it: both
+       SMC sites below are exits, and on the trap path Y is already the horizon point.  (The
+       first version set it after the dispatch and 99 of 400 fixture cases said so.) */
+    arg_y((uint8_t)horizonPoint);
+    horizon_index_prev = (uint8_t)horizonPoint;
+
+    /* $252B-$2533 — and the horizon can never be the top line of the 80-line space: $4E is
+       as far as the road is allowed to reach, because line $4F is the sky's. */
+    unsigned horizonLine = horizon_extent;
+    if (cmp_ge(horizonLine, 0x4F)) {
+        horizonLine = load_a(0x4E);
+        horizon_extent = 0x4E;
+    }
+
+    /* $2535-$253A — the horizon's line is written into BOTH sides' edge_y at the horizon
+       point, so a span walk that reaches it from either side stops on the same line.
+       ⚠ SMC $2538: on an expansion circuit the second store is a call to the circuit's own
+       code instead, which is why the bytes are dispatched rather than assumed. */
+    mem[EDGE_Y_TBL + horizonPoint] = (uint8_t)horizonLine;
+    if (mem[0x2538] == 0x99) {                                  /* unpatched: Silverstone */
+        mem[EDGE_Y_TBL + EDGE_HALF + horizonPoint] = (uint8_t)horizonLine;
+    } else if (mem[0x2538] == 0x20) {
+        uint16_t target = (uint16_t)(mem[0x2539] | (mem[0x253A] << 8));
+        if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
+        else { platform_smc_unhandled(0x2538, target); return; }
+    } else {
+        platform_smc_unhandled(0x2538, mem[0x2538]);
+        return;
+    }
+
+    horizon_half_width_at(horizonPoint);
+}
+
+/* The 6502-ABI shim.  Both walk cursors are constants in the 6502; they are arguments here
+   because they are the one thing that decides which half of the edge arrays each side owns. */
+void build_track_geometry(void)
+{
+    build_track_geometry_core(0x06, 0x2E);
+}
+
+/* ===========================================================================
+   $1A20  draw_road — THE ROAD RASTERISER  (twin #5)
+   ---------------------------------------------------------------------------
+   The view pipeline's SECOND producer, and the eleventh call of the frame: it consumes
+   build_track_geometry's two edge lists and produces the per-scan-line data view_paint_lines
+   turns into screen bytes.  ⭐ It writes SIX visible frame-buffer bytes in a whole frame
+   (measured, `make fbwrites`) — the name says rasteriser, and what it really fills are the
+   forty $80-spaced source blocks at $3000, the four surface_edge buffers, line_attr_0/1 and
+   view_line_surface.  Nothing here draws.
+
+   The body is four passes over the same two edge lists, and the four are one shape:
+
+       for each of the two road sides:            fill_line_attr    — line -> edge point
+       for each of the two sides, twice:          draw_surface_spans — the spans themselves
+       for each of the two road sides:            mark_line_surfaces — line -> surface class
+
+   with three cells carrying the pass's identity into the callees: surface_style_base steps
+   $00 -> $08 -> $10 -> $1C (which of the four style records the span uses), surface_style_alt
+   is the style for everything nearer than the split, and road_split_index is where near
+   becomes far.  ⚠ road_split_index is REREAD before every use below and that is deliberate:
+   both fill_line_attr ($19A2) and draw_surface_spans ($19F1) write it, so a local copy would
+   be a different program.  horizon_index is reread for the same reason — nothing in this
+   subtree writes it today, but that is a claim about a large subtree and the cell is one byte.
+
+   No hardware writes and no $FC00-$FEFF access: RAM only, like its sibling above.
+   =========================================================================== */
+
+/* $1A98 twice — the third stage, whose return value is the scan line at which that side's
+   line_attr buffer stops being valid.  surface_colour_at reads exactly that: at or past
+   the limit, the line is sky. */
+static uint8_t mark_side_surfaces(uint8_t surfaceClass)
+{
+    arg_a(road_split_index);
+    arg_x(surfaceClass);
+    mark_line_surfaces();
+    return cpu.Y;
+}
+
+/* $19AF x4 — one span pass.  `firstPoint` is where in the edge list the pass starts; the
+   pass number selects both the paired-index offset and which surface_edge buffer the spans
+   land in. */
+static void surface_pass(uint8_t pass, uint8_t firstPoint)
+{
+    arg_y(pass);
+    arg_a(firstPoint);
+    draw_surface_spans();
+}
+
+/* The two side cursors are arguments; horizon_index and road_split_index deliberately are NOT.
+   The cursors are written only by build_track_geometry and its walk, so they cannot change under
+   this routine — but road_split_index is written by two of the callees below and horizon_index is
+   read four separate times by the 6502, so both are read from mem[] at every use. */
+static void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
+{
+    plot_ptr_lo = 0x80;              /* $1A20: every span plotter stores through ($70),Y */
+
+    /* $1A24-$1A30 — the FAR half of the road.  The split is the horizon point in the 40..79
+       half, but never nearer than point $31: the four passes below all measure "near" and
+       "far" against it, and letting it come closer than that inverts them. */
+    unsigned farBase = adc_step(horizon_index, 0x28, 0);
+    road_split_index = (uint8_t)clamp_up_to(farBase, 0x31);
+
+    plot_ptr2_lo = 0;                /* the second screen pointer, for a span that crosses a page */
+    shared_temp_8e = 0;              /* ⚠ no reader in this pipeline — see symbols.csv */
+
+    /* Side 1 (the 40..79 half): its line map, then its two span passes. */
+    arg_a(0x00);                     /* the low byte of line_attr_0 — A patches the store */
+    arg_x((uint8_t)farBase);
+    arg_y(endCursorFar);
+    fill_line_attr();
+
+    surface_style_base = 0x00;
+    surface_pass(0, road_split_index);
+
+    surface_style_base = 0x08;
+    surface_style_alt  = 0x00;
+    /* ⚠ Pass 1 does not go through surface_pass, and the difference is the ORDER: the 6502
+       loads Y first and computes the base LAST, so it is the addition's flags — not a plain
+       `LDA`'s — that reach the callee.  The base is also RECOMPUTED rather than farBase
+       reused, because that is what the 6502 does. */
+    arg_y(1);
+    adc_step(horizon_index, 0x28, 0);
+    draw_surface_spans();
+
+    line_attr_0_limit = mark_side_surfaces(0x04);
+
+    /* $1A60-$1A69 — and the NEAR half, whose split is the horizon point itself, floored at
+       point 9 for the same reason.  (The 6502's `TAX` here is overwritten two instructions
+       later by `LDX $51` with nothing reading X in between, so it is not reproduced.) */
+    unsigned nearBase = horizon_index;
+    road_split_index = (uint8_t)clamp_up_to(nearBase, 0x09);
+
+    arg_a(0x50);                     /* ...and this is the low byte of line_attr_1 */
+    arg_x((uint8_t)nearBase);
+    arg_y(endCursorNear);
+    fill_line_attr();
+
+    surface_style_alt  = 0x1C;
+    surface_style_base = 0x10;
+    surface_pass(2, horizon_index);
+
+    surface_style_base = 0x1C;
+    surface_pass(3, road_split_index);
+
+    line_attr_1_limit = mark_side_surfaces(0x14);
+}
+
+/* The 6502-ABI shim.  draw_road takes no arguments — the frame's geometry reaches it entirely
+   through the edge lists and the three cursor cells — and leaves A, X and the flags wherever
+   its last callee left them, which is why the core does not touch them after the call. */
+void draw_road(void)
+{
+    draw_road_core(edge_cursor, edge_end_side0);
 }

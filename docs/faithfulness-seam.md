@@ -78,7 +78,7 @@ purely for this reason — same 0/700 differential, same framerate (465 vs 467 p
    so a dropped `$FE69` poke is a FAIL — and on the Amiga those writes become the copper's band
    records, so they are not dead stores there either.
 7. ⭐ **The one place a 6502 macro survives: a live FLAG.**  C has no carry or overflow, and a
-   twin's exit contract can include the flags — both current twins declare AXY+flags live, and
+   twin's exit contract can include the flags — every twin here declares AXY(+S)+flags live, and
    every trap path is an exit.  Where a flag genuinely leaves the routine, wrap the operation in a
    small named helper (`load_a`, `adc_step`, `sub_from`, `stop_unchanged`) with the cpu.h macro
    *inside* it: the semantics stay the 6502's by construction, decimal mode included, and the
@@ -86,7 +86,14 @@ purely for this reason — same 0/700 differential, same framerate (465 vs 467 p
    ⚠ MEASURED, not theoretical: rewriting three `CPY`s and one `AND` as plain C comparisons kept
    `mem[]` byte-exact and broke `C`/`N`/`Z` on 35 of 700 cases — all of them trap paths.  Only the
    fixture's *illegal* cases caught it.
-8. **Sabotage before believing it.**  Four defects minimum, each must FAIL, and any sabotage that
+8. ⭐⭐ **A DRIVER TWIN BUYS LEGIBILITY, NOT MILLISECONDS — check which before you write it.**
+   Twins #1 and #2 were leaf-heavy (the work and the interpreter in one routine) and paid +62% and
+   +28%.  Twins #4 and #5 are ~100-byte DRIVERS over transliterated subtrees, and the framerate did
+   not move at all (`docs/perf-method.md` §twins #4 and #5).  Both kinds are worth writing — a
+   driver twin is how a subsystem's shared data structure gets named and how the next twin becomes
+   possible — but quote the reason honestly when picking one, because "it is the biggest row in the
+   profile" is not the same claim as "the cost is in this routine".
+9. **Sabotage before believing it.**  Four defects minimum, each must FAIL, and any sabotage that
    PASSES is a fixture gap to write down rather than a pass to enjoy (`view_paint_lines`' phase-3
    carry tail is unreachable and untested — recorded in the twin's own comment).
 

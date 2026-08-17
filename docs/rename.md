@@ -7,16 +7,7 @@ conventions, not here.
 
 ---
 
-## 1. The per-line buffer family at `$0400`/`$0450`/`$0554`/`$05A4`/`$0600`/`$0650`
-
-`view_left_start_src` (`$0504`) turned out to be indexed by the SCAN LINE, and it sits in the
-middle of this family — whose members are named as if they were per-COLUMN.  Six buffers, all in
-page 4/5/6 at $50-byte spacing, so they are almost certainly one family with one index; if that
-index is the line, every one of those names is inverted.  Settle it from the writers (start with
-`$1DA6`, which fills `$0504` per line, and with whatever writes `$0450`) before renaming any of
-them, because they are read from the plotters and a wrong index in a name is worse than none.
-
-## 2. `$0164,X` / `$0178,X` — the two per-driver quantities `place_player_in_section` computes
+## 1. `$0164,X` / `$0178,X` — the two per-driver quantities `place_player_in_section` computes
 
 Named-by-address only, and one of the two is the car's position *along* its track section and the
 other is *across* it — `[INFERRED]`, which of them is which is not settled.  The evidence to use:
@@ -28,3 +19,32 @@ like a discrete lane/segment index, which would make `$0178` the "across" one �
 first guess.  Cheap way to settle it: park the car and drive it straight, and watch which of the
 two moves.
 
+## 2. `$76` has TWO owners — `plot_octant` and `fill_line_attr`'s range flag
+
+`$0076` is named `plot_octant` after `dial_needle_angle`/`plot_line_octant`, which build
+`(quadrant << 1) | mirror` in it.  But `edge_x_offscreen` (`$1933`) also rolls "is this edge point
+within `$14` of the road centre" into its top bit, once per edge point, and `fill_line_attr` then
+tests it with `BIT $76` — nothing to do with an octant.  Both uses are live in the same frame.
+Settle which is the real owner (the dial runs from the body's own arm; the road walk runs from
+`draw_road`) and then either split the name by owner or give it a neutral one — but do not leave a
+twin reading `plot_octant` for a road flag.
+
+## 3. `$8C` has THREE owners, and `surface_style_alt` only covers one
+
+Named for what `draw_surface_spans` reads it as (the style index for spans nearer than
+`road_split_index`), which is right for the road pipeline.  It is also a pixel MASK at
+`$1CEE`-`$1D48` in the skid/contact plotter (`LDA $8C / STA $7D / EOR #$FF / AND $7A`) and is
+zeroed at `$20A5` by the object plotter.  Either the three uses are genuinely one quantity — in
+which case the name is too narrow — or the cell is scratch shared between subsystems, in which case
+so is the name.  Same question for `$8E` (`shared_temp_8e`), which is named for the fact rather
+than the meaning: `draw_road` zeroes it with no reader in its own pipeline, `$2012` loads it as a
+shape index, and `$4B61`-`$4B79` uses it as a signed temporary in the driving model.
+
+## 4. `$11` — `edge_nearest_hi`, and what `check_crash` reads it for
+
+`$10`/`$11` is the nearest projected distance `road_edge_walk` keeps, and the name says so.  But
+`check_crash` (`$111E`) reads `$11` after the frame's walk and does nothing at all while it is
+under 2 — so the cell is doing double duty as "how close did the track come", and whether that is
+the same quantity or an accident of ordering is not settled.  Settle it before anything relies on
+the name: the walk's writer is `$23E7`-`$23ED`, and `place_player_in_section` reads `$10` at
+`$4681`.

@@ -571,6 +571,15 @@ VALIDATE_FUNCS = {
     # one of them (the scan is the GAME's algorithm; removing it is §7a's separate
     # representation change) and drops only the interpreter around them.
     0x7BE2,
+    # ⭐⭐ TWIN #4, $24F6 build_track_geometry and TWIN #5, $1A20 draw_road — the view
+    # pipeline's two PRODUCERS, 61 + 58 ms of a ~376 ms frame (docs/perf-method.md).  Both are
+    # short DRIVERS (84 and 120 bytes) over long transliterated subtrees, so the twin cannot
+    # make their callees faster; what it removes is the driver's own interpreter and, more to
+    # the point, it is what makes the pipeline's shared data structure — the forty $80-spaced
+    # source blocks and the per-scan-line buffers — readable before the representation change
+    # that docs/direct-bitplane-plan.md §7a is about.
+    0x24F6,
+    0x1A20,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

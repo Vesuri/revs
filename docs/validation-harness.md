@@ -177,6 +177,36 @@ still computes what it computed an hour ago — it has no independent authority,
 be re-recorded to make a failing check pass.  Ground truth for behaviour is still the BBC
 (`make refloop`).
 
+## ⭐⭐ …and a TENTH, found by twins #4 and #5: a RANDOM PRE-STATE CAN BE SYSTEMATICALLY DEGENERATE
+
+`fill_random` over the whole 64 KB is the harness's default and rule 4 of its own header — no
+branch stays untested because a gating byte happened to be zero.  For a routine that CALLS other
+transliterated code, that argument quietly stops holding, and it failed in three distinct ways
+inside one afternoon:
+
+1. **A random SMC byte in a callee is a HANG.**  The span plotters at `$2C00`-`$2FFF` load their
+   own backward branch offsets out of the tables at `$3E50`/`$40D0` (`LDA table,X / STA <branch
+   operand>`).  A random byte there can be a branch to itself: the ORACLE spins forever and the
+   harness never returns.  Found by `sample`ing a hung run — case 5 of the first attempt — not by
+   reading.  Fix: plant `$00` across both tables, i.e. "run the chain from the top", legal by
+   construction because every target is then forward.
+2. **A random SMC byte in a callee is an EXIT, and that starves the routine under test.**
+   `road_edge_start` dispatches on `$231A`; a random byte traps and returns, so `horizon_extent`
+   came back **0 in every one of 200 cases** and the whole horizon half of `build_track_geometry`
+   — the `$4F` clamp, the second `edge_y` store — was never executed.  Two sabotages PASSED
+   because of it.  Fix: plant the disassembly's own bytes at the callee subtree's sites.
+3. **Uniform bytes are not boundary coverage.**  With `horizon_index` uniform over 0..255, an
+   off-by-one in the `>= $28` wrap test is wrong in 1 case of 256 and PASSED 400 cases.  And
+   `road_edge_start` clamps the extent to 7 whenever `horizon_index_prev` exceeds 7, which a
+   uniform byte does 248 times in 256 — one cell holding the interesting paths hostage.  Fix:
+   draw the boundary values explicitly, and hold the gating cell in its interesting range in a
+   third of the cases.
+
+⭐ **The tell in all three was the same, and it was not the mismatch count — it was the sabotage
+pass.** 7 of 10 detected reads like a good fixture; the 3 that passed were the fixture reporting
+that its cases never reached the code.  A green run plus a probe of what the pre-state actually
+became (`extent=$00`, 200 times) is what turned it into a fix.
+
 ## Using it
 
 ```

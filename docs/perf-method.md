@@ -416,16 +416,18 @@ is a silent averaging error, in the same family as the per-band average below.
 ⭐ The **Code** column is the standing answer to "is this row still an interpreter?" — `native` = a
 validated twin in `src/gen/revs_native.c`, `xlat` = generated transliteration in `src/gen/revs_gen.c`
 (so its cost still includes the per-instruction flag bookkeeping and the `bus_*` trip), `port` =
-port-authored C++ that has no 6502 original at all.  **Only three addresses are native**
+port-authored C++ that has no 6502 original at all.  Five addresses are native
 (`VALIDATE_FUNCS` + `NATIVE_FUNCS` in `tools/transpile.py`): `irq1v_band_schedule`,
-`view_paint_lines`, `race_main_loop`.  Every other row below is an interpreter first and an
-algorithm second, which is why §the standing conclusion says the machinery outweighs the game.
+`view_paint_lines`, `race_main_loop`, and — since 2026-08-17 — `build_track_geometry` and
+`draw_road`.  ⚠ For the last two the column says `native (driver)`, which is a WEAKER claim than
+the other three: the driver is C but everything it calls is still transliterated, so the row's
+milliseconds barely move (see §the two producers below).
 
 | Share | ms/frame | Phase | Callee | Code | What it is |
 |---|---|---|---|---|---|
 | **22.3%** | **84** | **24** | **`view_paint_lines`** (`$7BE2`) | **native** (twin #2) | the 3D VIEW rasteriser (not the dashboard — `docs/rename.md`).  2093 units, ~83 change a byte.  **Was 131**: the two passes below took the unit loop and then the per-line drivers.  ⚠⚠ **11 ms of this row is the main-loop TAIL, not the sweep** — it is brackets 24+32+33+34 now, and the sweep splits 25/17/41 by painting phase (§11 ms of phase 24).  That tail is `race_main_loop`, also native |
-| 16.3% | 61 | 5 | `build_track_geometry` (`$24F6`) | xlat | the road-geometry projection pass |
-| 15.6% | 58 | 11 | `draw_road` (`$1A20`) | xlat | writes **6 visible bytes**; its output is per-column data, not pixels |
+| 16.3% | 61 | 5 | `build_track_geometry` (`$24F6`) | native (driver) | the road-geometry projection pass |
+| 15.6% | 58 | 11 | `draw_road` (`$1A20`) | native (driver) | writes **6 visible bytes**; its output is per-column data, not pixels |
 | 9.5% | 35 | 27 | `RevsScreen::decode()` | port | dirty-region.  Port overhead, and DONE |
 | 7.8% | 29 | 18 | `fill_dash_edge_columns` (`$1E15`) | xlat | |
 | 7.5% | 28 | 4 | `apply_driving_model` (`$46A1`) | xlat | |
@@ -435,9 +437,28 @@ algorithm second, which is why §the standing conclusion says the machinery outw
 | 1.2% | 4 | 3 | | xlat | |
 | 1.1% | 4 | 29 | `tick_wheel_spin` (`$52A4`) | xlat | the band cycle's only game work |
 
-⭐⭐ **The two biggest levers left are both `xlat`: `build_track_geometry` + `draw_road` = 119 ms /
-32%, and they are the view pipeline's two producers.**  Both twins so far paid ~+30-60% each, and
-neither of these has been touched.
+⭐⭐ **The two biggest levers left are the view pipeline's two producers: `build_track_geometry` +
+`draw_road` = 119 ms / 32%** — and see below for why making them native did not collect it.
+
+### ⚠⚠ TWINS #4 AND #5: the two producers are native, and the FRAMERATE DID NOT MOVE (2026-08-17)
+
+`build_track_geometry` (84 bytes) and `draw_road` (120 bytes) are now real C, `make validate`d at
+0 mismatch over 400 and 200 randomised cases, ten sabotages each failing.  **FPS 2.73 -> 2.71**,
+i.e. nothing: 356 painted frames over 6563 fields against the baseline's 2.72-2.73.
+
+⭐⭐ **AND THAT IS THE LESSON, NOT A DISAPPOINTMENT: A DRIVER TWIN COLLECTS NOTHING.**  Both routines
+are ~100 bytes of argument passing around subtrees of hundreds of transliterated instructions
+(`road_edge_start` / `road_edge_walk` / `project_point`, and `fill_line_attr` /
+`draw_surface_spans` / `mark_line_surfaces` / `interp_edge` / the `$2C00`-`$2FFF` span plotters).
+The interpreter that was deleted was never where the 119 ms was.  Contrast twins #1 and #2, which
+paid +62% and +28% — both were LEAF-heavy: the work and the interpreter were in the same routine.
+
+**So the rule for picking the next twin is not "which row is biggest" but "how much of that row is
+in the routine itself".**  For phases 5 and 11 the answer is: the span plotters and the projection,
+which is where the next twin goes — and the twins just written are what makes that legible, because
+the pipeline's shared data structure now has names (`view_src_blocks`, `line_attr_0/1` +
+their limits, `road_split_index`, `surface_style_base`/`_alt`) instead of nine bare zero-page
+addresses.  That was the actual deliverable; `docs/direct-bitplane-plan.md` §7a is the payoff.
 
 ⭐⭐ **THE VIEW PIPELINE IS 203 ms OF A ~376 ms FRAME — 54% — AND IT IS ONE SUBSYSTEM.**
 (It was 250 of 430 before the two `$7BE2` passes of 2026-08-17; the *share* barely moved because

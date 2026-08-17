@@ -590,6 +590,168 @@ static int test_view_paint_lines(void)
     return fail;
 }
 
+/* ==========================================================================
+   $24F6 build_track_geometry and $1A20 draw_road — THE VIEW PIPELINE'S PRODUCERS
+   --------------------------------------------------------------------------
+   Both are short DRIVERS over long transliterated subtrees (road_edge_start / road_edge_walk
+   / project_point, and fill_line_attr / draw_surface_spans / mark_line_surfaces /
+   interp_edge), so a randomised pre-state exercises far more code than the twin itself —
+   which is the point: the twin's whole job is to hand those callees the same registers, in
+   the same order, off the same cells.  A wrong argument shows up as a mem[] avalanche.
+
+   ⚠ build_track_geometry is SELF-MODIFYING at $2538 and $2542, and both sites are EXITS on
+   an unrecognised byte.  Random bytes there would trap in almost every case and compare
+   almost nothing, so the instruction shapes are planted: Silverstone's own bytes, an
+   expansion circuit's `JSR <hook>` rewrite, and — deliberately — garbage, so the trap path
+   is tested rather than avoided.
+   ========================================================================== */
+void build_track_geometry(void);
+void build_track_geometry__t6502(void);
+void draw_road(void);
+void draw_road__t6502(void);
+
+enum { GEO_SILVERSTONE = 0, GEO_HOOKED = 1, GEO_GARBAGE = 2 };
+
+/* ⭐⭐ AND THE SECOND THING: the geometry subtree is self-modifying too, and a random byte at
+   one of ITS sites is not a hang but an EXIT — road_edge_start traps at $231A and returns
+   without ever reaching the projection loop, so horizon_extent comes back 0 and the whole
+   horizon half of build_track_geometry is never exercised.  (Measured: extent was $00 in
+   every case of the first attempt, and two sabotages passed because of it.)  These are the
+   disassembly's own bytes for the sites road_edge_start / road_edge_walk dispatch on. */
+static void plant_geometry_smc(uint8_t* pre)
+{
+    pre[0x231A] = 0xF0; pre[0x231B] = 0x0F;                      /* BEQ $232B */
+    pre[0x248B] = 0xB0; pre[0x248C] = 0x2B;                      /* BCS $24B8 */
+    pre[0x248D] = 0x4C;                                          /* JMP $2403 */
+    pre[0x24DE] = 0x20; pre[0x24DF] = 0xF3; pre[0x24E0] = 0x12;  /* JSR $12F3 */
+    pre[0x24E9] = 0xC9; pre[0x24EA] = 0x0E;                      /* CMP #$0E  */
+    pre[0x24F2] = 0x20; pre[0x24F3] = 0x0B; pre[0x24F4] = 0x14;  /* JSR $140B */
+}
+
+/* ⭐ THE ONE THING A RANDOM PRE-STATE MUST NOT BE ALLOWED TO DO, and it is not about these
+   twins: the span plotters at $2C00-$2FFF are self-modifying CHAINS whose backward branch
+   offsets they load out of the tables at $3E50 and $40D0 ($2D17/$2D9A: `LDA table,X / STA
+   <branch operand>`).  A random byte there is a branch to ITSELF — the oracle spins forever
+   inside FUN_2d17 and the harness never returns.  (Found by sampling a hung run, not by
+   reading: case 5 of the first draw_road attempt.)  Both offset tables are therefore planted
+   with $00, i.e. "run the chain from the top", which is legal by construction: every target
+   is forward, so every chain terminates.  Everything else stays random — the plotters are
+   identical code in both models and are not what these fixtures compare. */
+static void plant_plotter_chains(uint8_t* pre)
+{
+    memset(pre + 0x3E50, 0x00, 0x100);
+    memset(pre + 0x40D0, 0x00, 0x100);
+}
+
+static void geometry_pre(uint8_t* pre, int shape)
+{
+    fill_random(pre);
+    plant_plotter_chains(pre);
+
+    plant_geometry_smc(pre);
+    /* ⭐ BOUNDARY STEERING, and both halves of it are load-bearing:
+
+       horizon_index reaches the twin's own arithmetic straight out of the pre-state, so its
+       two boundaries ($28, where the wrap fires, and $4F, where the extent is clamped) are
+       drawn explicitly rather than left to 1-in-256 luck.  A uniform byte let an off-by-one
+       wrap threshold PASS 400 cases.
+
+       horizon_index_prev is held to 0..8 in a third of the cases because road_edge_start
+       clamps the extent down to 7 whenever it is larger ($23B2) — with a uniform byte that
+       happens 248 times in 256 and the extent is 7 in every single case, which is what hid
+       the $4F clamp and the second edge_y store. */
+    { static const uint8_t edge[] = { 0x00, 0x27, 0x28, 0x29, 0x4E, 0x4F, 0x50, 0xFF };
+      pre[0x51] = edge[xs() % (sizeof edge)];
+      if (xs() % 3 == 0) pre[0x52] = (uint8_t)(xs() % 9); }
+    if (shape == GEO_SILVERSTONE) {
+        pre[0x2538] = 0x99; pre[0x2539] = 0x48; pre[0x253A] = 0x5F;  /* STA $5F48,Y */
+        pre[0x2542] = 0x20; pre[0x2543] = 0x50; pre[0x2544] = 0x34;  /* JSR abs8    */
+        pre[0x2545] = 0x4A;                                          /* LSR A       */
+    } else if (shape == GEO_HOOKED) {
+        /* what an expansion circuit's ModifyGameCode leaves behind: a call into its own
+           hook block in place of each site, and a NOP where the LSR was */
+        pre[0x2538] = 0x20; pre[0x2539] = 0x22; pre[0x253A] = 0x5A;  /* JSR $5A22 */
+        pre[0x2542] = 0x20; pre[0x2543] = 0x50; pre[0x2544] = 0x34;
+        pre[0x2545] = 0xEA;
+    }
+    /* GEO_GARBAGE: whatever fill_random left — the trap arms */
+}
+
+/* $253B-$2549 recomputed from the POST state, which is the only end-to-end proof that the
+   twin reached its tail: nothing but the tail writes horizon_half_width, and nothing writes
+   the edge arrays after it reads them. */
+static int geometry_tail_ran(const uint8_t* post)
+{
+    unsigned p    = post[0x0052];                       /* horizon_index_prev = the point */
+    unsigned diff = (post[0x5E90 + p] - post[0x5EB8 + p]) & 0xFF;
+    if (diff & 0x80) diff = (diff ^ 0xFF) + 1;          /* abs8 */
+    return post[0x62FC] == (uint8_t)((diff & 0xFF) >> 1);
+}
+
+static int test_view_producers(void)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    int fail = 0, printed = 0, t;
+    /* ⚠ The case counts are SMALL by the standards of the other fixtures (twin #2 runs 700)
+       and the reason is measured, not arbitrary: a randomised pre-state sends the span walks
+       into their worst case, so one case here costs milliseconds rather than microseconds.
+       $REVS_VALIDATE_CASES scales all four for a deeper soak. */
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    const int legal = 200 * scale, hooked = 100 * scale, garbage = 100 * scale,
+              road = 200 * scale;
+    int tailRan = 0;
+
+    register_fixture("build_track_geometry");
+    register_fixture("draw_road");
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+
+    if (want("build_track_geometry")) {
+        for (t = 0; t < legal + hooked + garbage; t++) {
+            int shape = t < legal ? GEO_SILVERSTONE
+                      : t < legal + hooked ? GEO_HOOKED : GEO_GARBAGE;
+            Cpu6502 c = zero_cpu();
+            geometry_pre(pre, shape);
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;   /* the 6502 never runs the engine in decimal mode — see twin #2 */
+            fail += diff_run("build_track_geometry", pre, c, build_track_geometry,
+                             build_track_geometry__t6502, liveMask, t, &printed);
+            if (shape == GEO_SILVERSTONE && geometry_tail_ran((const uint8_t*)mem)) tailRan++;
+        }
+        if (tailRan == 0) {
+            printf("[VACUOUS] build_track_geometry: not one of the %d Silverstone cases "
+                   "reached the horizon_half_width tail — the SMC arm exited first\n", legal);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d/%d reached the tail)\n", "build_track_geometry",
+               legal + hooked + garbage, fail, tailRan, legal);
+    }
+
+    if (want("draw_road")) {
+        int roadFail = 0;
+        for (t = 0; t < road; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            plant_plotter_chains(pre);
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;
+            roadFail += diff_run("draw_road", pre, c, draw_road, draw_road__t6502,
+                                 liveMask, t, &printed);
+        }
+        fail += roadFail;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags\n",
+               "draw_road", road, roadFail);
+    }
+
+    unsetenv("REVS_SMC_CONTINUE");
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -603,6 +765,7 @@ int main(int argc, char** argv)
     (void)test_contract;   /* the generic leaf fixture; twin #1 needs a steered one */
     fail += test_irq1v_band_schedule();
     fail += test_view_paint_lines();
+    fail += test_view_producers();
 
     fail += check_coverage();
     fail += report_unvalidated_natives();
