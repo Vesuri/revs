@@ -288,8 +288,8 @@ negotiable** — 25 FPS means painting every other frame with the simulation sti
 The A500 is a 7 MHz 68000 and a frame is 20 ms: spending 10 ms on *anything* is half the budget.
 Be conscious of absolute milliseconds always.
 
-**Baseline: 2.63 FPS rendered** (`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`).
-⭐⭐ **The lever is the VIEW PIPELINE: `$24F6` → `$1A20` → `view_paint_lines` is 58% of the frame
+**Baseline: 2.73 FPS rendered** (`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`).
+⭐⭐ **The lever is the VIEW PIPELINE: `$24F6` → `$1A20` → `view_paint_lines` is 54% of the frame
 and it is ONE subsystem** — the first two *produce* source bytes into the forty `$80`-spaced blocks
 at `$3000..$4380`, the third is the single *consumer*. Current shares, every past change and its
 lesson, and the standing conclusion that **the port's biggest costs are the MACHINERY the
@@ -319,6 +319,13 @@ Rules that must survive without opening `docs/perf-method.md`:
 
 - **Faithfulness first.** Byte-identical twins: `make validate FN=<name>` must show **0 mem
   mismatch**. Validate against the 6502 + a real BBC emulator, not the host backend.
+- ⭐ **`bus_read`/`bus_write` are for the HARDWARE window ($FC00-$FEFF), and a pure-RAM access
+  should not pay their range test.** The transpiler already routes every *constant* non-hardware
+  address straight to `mem[]`; what leaks is the **indirect modes** (`(zp),Y`, `(zp,X)`) — the
+  plotters. Measured on the host: **~10 600 bus calls a game frame, 144 of them real hardware.**
+  In a twin, hoist the test to wherever the *pointer* is known (one check per scan line, not per
+  cell) and keep the else arm. ⚠ Widening `mem[]` to `uint16_t*`/`uint32_t*` is NOT the fix — see
+  the endianness rule below; it is legal only when every byte of the wide value is the same.
 - **RAM is uniformly slow — there is no "fast RAM" on the target A500.** Optimise by reducing the
   NUMBER of reads/writes, never by moving data to a "cheaper" buffer. (`docs/m68k-optimisation.md`)
 - **NEVER emit a 32-bit software mul/div** (`__mulsi3`/`__divsi3`/`__udivsi3`/`__modsi3`/
