@@ -654,15 +654,41 @@ then does not RUN it, which prices the same thing with no bracket in the measure
 entries a frame for 282 cells is ~400 µs an entry against 721 µs for a full 40-cell line: the cost is
 the ENTRY, not the cells.
 
-⚠⚠ **AND A GAP THE WHOLE SESSION LEFT OPEN, recorded rather than papered over: measured time is ~6x
-what the generated code can account for.**  `make VIEWP3=2` empties phase 3's line body entirely and
-its 25 bare iterations still read 486 µs a line where two bracket transitions and a `CPX` are ~50
-instructions.  The same factor appears everywhere in this routine (phase 1's unit loop is 8
-instructions and measures ~120 cycles a unit).  Three candidates, none settled: the interrupt time
-that lands in whichever bracket is open (~23 ms a frame of VERTB ISR + `irq1v`, which is real but
-uniform and too small), the beam-tick bracket's own ~80 µs, and 68000 absolute-long memory operands
-costing far more than an instruction count suggests.  **Until it is settled, treat every µs/line
-figure here as an upper bound and price changes by COUNTS and by the whole row.**
+### ⭐⭐⭐ THE CALIBRATION — `make VIEWCAL=N`, and it says the brackets are HONEST (2026-08-17)
+
+Everything above looked ~6x more expensive than its instruction count, which is the kind of gap that
+makes every optimisation decision a guess.  So: **burn a KNOWN number of cycles inside a bracket at
+the same rate, in the same run, and read what it comes back as.**  `probe_burn_cycles()` is
+1000 x (`nop` 4 + `dbra` taken 10) = 14 000 cycles = 1975 µs at 7.09 MHz, and `VIEWCAL=N` runs it N
+times per phase-3 line inside bracket 39.  **The linearity in N is what verifies the instrument** —
+one point could not tell a slow CPU from a fixed overhead:
+
+| N | bracket 39, µs/call | minus N=0 | per 14 000 cycles |
+|---|---|---|---|
+| 0 | 1697 | — | — (this is ONE phase-3 line with no bracket inside it) |
+| 1 | 3795 | 2098 | **2098 µs** |
+| 2 | 6026 | 4329 | **2165 µs** |
+| 3 | 8001 | 6304 | **2101 µs** |
+
+⭐⭐ **14 000 cycles cost 2.10 ms ⇒ ~6.6 MHz effective, 94% of an A500's 7.09 MHz** — the missing 6%
+is the interrupt load, and the beam brackets are telling the truth.  **The 6x gap was arithmetic on
+my side, not an instrument fault**: the µs/line figures include the two chain runs and the whole
+driver, and a 68000 `move.b dn,abs.l` — which is what every `cpu.N`/`cpu.Z` write compiles to — is
+16-20 cycles, so a "handful of table reads" is thousands of cycles, not hundreds.
+
+⭐ **What that licenses, and it is the point of building it:** phase 3's line is **1697 µs = ~11 300
+cycles** measured with nothing inside it, and `VIEWP3=3` prices the two `paint_cells` calls in it at
+~800 µs, of which the eleven cells are ~1000 cycles — so **~4300 cycles a line is the two calls'
+FIXED SET-UP**, ~2150 cycles per call, 118 calls a frame, ~38 ms.  That is the biggest single item in
+the view rasteriser and it is machinery: the base pointers reassembled out of `mem[$70..$73]` a byte
+at a time, `view_stop_from` re-searched, the outer line loop's `advance_first`/`$7EEE`/`CPX` tail and
+an eleven-register `movem` — all of it per entry, for four cells of painting.
+
+⚠⚠ **TWO stale-build readings were produced on the way here and both looked like real data.**
+`VIEWCAL=0` and `VIEWCAL=2` first read 8019 and 8007 µs — the `VIEWCAL=3` value, to four digits,
+because the Makefile tracks no change to `EXTRA_DEFINES` and nothing in the sources had changed.
+`make clean` between calibration points, every time; a value that repeats a previous build's to the
+digit is the tell.
 
 ### ⭐ ONE SEGMENT PER LINE INSTEAD OF TWO: 186 → 118 chain-run set-ups a frame (2026-08-17)
 

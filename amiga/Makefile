@@ -147,6 +147,14 @@ endif
 ifeq ($(VIEWP3),3)
 EXTRA_DEFINES += -DREVS_VIEWP3_NOCHAIN
 endif
+# ⭐⭐ `make VIEWCAL=1 PROBES=1` — the CALIBRATION.  14 000 known 68000 cycles per phase-3 line in
+# their own bracket (phase 39), so the run reports how many microseconds a known cycle count reads
+# as.  Nothing else in this project converts a bracket into cycles.  src/platform/probe.h.
+# ⭐ `VIEWCAL=N` burns N x 14 000 cycles, which is how the instrument is VERIFIED: the row must
+# scale linearly in N, or the burn is not what is being measured.
+ifdef VIEWCAL
+EXTRA_DEFINES += -DREVS_VIEWCAL=$(VIEWCAL)
+endif
 
 # `make NOUNITS=1` — ⚠⚠ THE PICTURE IS WRONG BY CONSTRUCTION.  The $7BE2 unit loop keeps its
 # iterations and loses its memory work, so `phase 24 with this on` is the per-line drivers plus

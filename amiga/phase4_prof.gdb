@@ -47,7 +47,7 @@ printf "=== vbi=%u loopFrames=%lu brk=%lu smc=%lu ===\n", \
 # bracket and landed on phase 24.
 set $i = 1
 set $tot = 0
-while $i < 39
+while $i < 40
   set $tot = $tot + g_phaseTicks[$i]
   set $i = $i + 1
 end
@@ -86,7 +86,7 @@ if g_probeIrqCount > 0
     g_probeIrqCount, g_probeIrqCount/g_bodyTicks, (g_probeIrqTicks/g_probeIrqCount)*1000/4006
 end
 set $i = 1
-while $i < 39
+while $i < 40
   printf "phase %2d  ticks=%10lu  calls=%7lu  share=%2d.%01d%%  %4lu ms/frame\n", \
      $i, g_phaseTicks[$i], g_phaseCount[$i], \
      (g_phaseTicks[$i]/$per)/10, (g_phaseTicks[$i]/$per)%10, \
@@ -116,6 +116,12 @@ while $i < 3
   end
   printf "\n"
   set $i = $i + 1
+end
+# ⭐⭐ THE CALIBRATION (make VIEWCAL=1): 14 000 known cycles a call, i.e. 1975 us at 7.09 MHz.  What
+# this row reads instead IS the conversion factor for every other row in the view sweep.
+if g_phaseCount[39] > 0
+  printf "CALIBRATION: %lu calls of 14000 known cycles read %lu us each (1975 us = honest)\n", \
+    g_phaseCount[39], (g_phaseTicks[39]/g_phaseCount[39])*1000/4006
 end
 printf "phase 25  ticks=%10lu  calls=%7lu  share=%2d.%01d%%  %4lu ms/frame  <- FRAME WAIT (not engine work)\n", \
    g_phaseTicks[25], g_phaseCount[25], \

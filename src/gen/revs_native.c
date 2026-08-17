@@ -1004,6 +1004,16 @@ static void paint_lines_short(ViewState* v)
         REVS_PLOT_CELL(view_screen_addr(MEM_plot_ptr2_lo, v->cell), (uint8_t)v->byte);
         bus_write(view_screen_addr(MEM_plot_ptr2_lo, v->cell), (uint8_t)v->byte);
 
+#if defined(REVS_VIEWCAL) && defined(REVS_PROBE)
+        /* ⭐ `make VIEWCAL=1` — 14 000 known cycles in their own bracket, at this line's rate.  The
+           measuring stick for every other row in this routine; see src/platform/probe.h. */
+        PROBE_PHASE(PROBE_PHASE_CAL);
+        {   /* N x 14 000 cycles — the row must scale linearly in N (probe.h) */
+            int burns = REVS_VIEWCAL;
+            while (burns-- > 0) probe_burn_cycles();
+        }
+#endif
+
         /* `CPX #3` — the last line of the viewport.  Its C is part of the exit contract. */
         cpu.X = (uint8_t)v->line;
         CPX(0x03);

@@ -120,6 +120,19 @@ volatile unsigned long g_viewRuns[3]  = {0, 0, 0};
 volatile unsigned long g_viewLines[3] = {0, 0, 0};
 int g_viewPhaseIdx = 0;
 
+/* Exactly 14 000 68000 cycles: 1000 iterations of `nop` (4) + `dbra` taken (10).  See probe.h —
+   this is a measuring stick, and its whole value is that the count is known rather than estimated. */
+void probe_burn_cycles(void)
+{
+#if defined(REVS_PLATFORM_AMIGA)
+    __asm__ volatile ("move.w #999,%%d0\n"
+                      "0:\n\t"
+                      "nop\n\t"
+                      "dbra %%d0,0b\n"
+                      : : : "d0");
+#endif
+}
+
 static unsigned long s_isrMark = 0;
 static unsigned long s_irqMark = 0;
 

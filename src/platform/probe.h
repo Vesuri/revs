@@ -157,6 +157,15 @@ int probe_phase_current(void);
 #define PROBE_PHASE_P3_STOPB 37
 #define PROBE_PHASE_P3_CHAINB 38
 
+/* ⭐⭐ `make VIEWCAL=1` — THE CALIBRATION, and it is the only way to read any of the rows above as
+ * cycles.  Every µs figure this routine produces is ~6x what its generated code can account for, so
+ * either the beam brackets inflate or a 68000 instruction here costs far more than an instruction
+ * count suggests.  probe_burn_cycles() runs EXACTLY 1000 x (`nop` 4 + `dbra` 10) = 14 000 cycles =
+ * 1975 µs at 7.09 MHz, inside its own bracket at the same rate as the rest: phase 39 divided by its
+ * call count IS the conversion, measured in the same run as the thing it calibrates. */
+#define PROBE_PHASE_CAL 39
+void probe_burn_cycles(void);
+
 extern volatile unsigned long g_viewUnits[3], g_viewRuns[3], g_viewLines[3];
 extern int g_viewPhaseIdx;
 #define PROBE_VIEW_PHASE(i)   (g_viewPhaseIdx = (i))
