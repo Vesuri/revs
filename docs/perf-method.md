@@ -684,6 +684,26 @@ the view rasteriser and it is machinery: the base pointers reassembled out of `m
 at a time, `view_stop_from` re-searched, the outer line loop's `advance_first`/`$7EEE`/`CPX` tail and
 an eleven-register `movem` — all of it per entry, for four cells of painting.
 
+⭐⭐ **PHASE 3's LINE, IN CYCLES — the whole 11 300, and there is no hot spot in it:**
+
+| per line | cycles | what |
+|---|---|---|
+| the two `paint_cells` calls' fixed set-up | ~4300 | bases from `mem[$70..$73]`, the stop search, the outer loop's tail, `movem` — twice |
+| the boundary cells (brackets 36/38 less their chain runs) | ~4300 | four `view_compose`, the computed entry, `sub_from`, the edge tables, two `bus_write` |
+| the two planted stops (35/37) | ~1300 | `stop_unchanged` + `view_plant`, and only when the stop MOVED |
+| the eleven cells actually painted | ~1000 | the unit loop, i.e. **9% of the line** |
+| the scan-line step and the loop | ~400 | |
+
+⭐ **What that retires: there is nothing left here to delete, only machinery to restructure.**  Two
+thirds of the row is spent painting one third of the cells (phases 2+3: 59 ms for 708 cells against
+phase 1's 28 ms for 1440), and both halves of that two thirds are *diffuse* — ~100 instructions of
+generic entry, and flag/compose helpers whose N/Z go to memory because a following `JSR` could trap.
+The two candidates that remain are therefore structural, and both are bigger than a tuning pass: a
+**specialised driver entry** that takes the span the driver already knows instead of re-deriving it,
+and **deferred flags** — computing `cpu.N/Z/C/V` at the exits and trap sites only, which is the same
+argument that made twin #1 worth 62% and which `make validate`'s 196 traps over 100 illegal cases is
+sharp enough to police.
+
 ⚠⚠ **TWO stale-build readings were produced on the way here and both looked like real data.**
 `VIEWCAL=0` and `VIEWCAL=2` first read 8019 and 8007 µs — the `VIEWCAL=3` value, to four digits,
 because the Makefile tracks no change to `EXTRA_DEFINES` and nothing in the sources had changed.
