@@ -473,6 +473,33 @@ producer → producer → consumer over one shared data structure, and that stru
 ms/frame**, charged to whichever phase it preempted so it appears in no row of its own.  It does the
 copper rebuild, the bitplane-pointer swap and the audio tick.  Unmeasured internally.
 
+### ✅ TWINS #6, #7, #8: three more DRIVERS, and the framerate is UNCHANGED — as predicted (2026-08-17)
+
+`apply_driving_model` (136 bytes), `draw_track_object` (61) and `fill_dash_edge_columns` (35) are
+real C, `make validate`d at 0 mismatch over 200/300/600 randomised cases, **17 sabotages injected
+and 17 detected** (16 as `mem[]`/register mismatches, one — the byte-swapped boundary pointer, which
+aims the store into zero page and lets the walk overwrite its own loop bound — as a hang),
+`make determinism` and `make determinism-drive` both 64K byte-identical against a
+reference recorded from the previous commit.
+
+**FPS 2.92 → 2.92**, measured as a same-session A/B: two 30 s warp runs of
+`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`, one on this build and one on a
+stashed HEAD build, each reporting 2.92 in both of its two independent rows.
+
+⚠ **That 2.92 is NOT a new baseline and must not be quoted as one.**  It is a much shorter window
+than the 2.71-2.73 figures above (≈1800 fields against ≈6500), and this project's own rule 1 is why
+that matters: a `STRAIGHT_TO_RACE` run eventually leaves the track, so a short window is a
+*different scene*, not a cleaner measurement of the same one.  What the pair of runs is good for is
+exactly what it was run for — **the control and the test agree to three digits, so the change costs
+nothing** — and nothing more.
+
+⭐ **No performance claim was made for these three before they were written, and that is the point.**
+`docs/faithfulness-seam.md` §8's rule (pick a twin by how much of the row is *in* the routine) says
+a ~100-byte driver over a transliterated subtree collects nothing, twins #4 and #5 measured exactly
+that, and these three were written for the naming instead — the driving model's 16-bit state vector,
+the object plotter's argument block, the 24 per-slot object arrays (`docs/static-map.md`).  The
+lever is still the view pipeline's LEAVES: the `$2C00`-`$2FFF` span plotters and `project_point`.
+
 ### ⭐⭐ THE RASTER-BAND RECORD REUSE: **2.05 → 2.63 FPS (+28%)** — the row was 96% MACHINERY (2026-08-17)
 
 The biggest row in the table (the 50 Hz body drain, 141 ms / 26%) carried a note saying its cost

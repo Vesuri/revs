@@ -93,6 +93,14 @@ purely for this reason — same 0/700 differential, same framerate (465 vs 467 p
    driver twin is how a subsystem's shared data structure gets named and how the next twin becomes
    possible — but quote the reason honestly when picking one, because "it is the biggest row in the
    profile" is not the same claim as "the cost is in this routine".
+   ⭐ Twins #6, #7 and #8 (`apply_driving_model`, `draw_track_object`, `fill_dash_edge_columns` —
+   136, 61 and 35 bytes) were written on that basis with **no performance claim made at all**, and
+   what they bought is exactly what the rule predicts: the driving model's 16-bit state vector
+   (`model_state_lo`/`_hi` and the hand-integrated `model_accum`), the object plotter's four-cell
+   argument block (`plot_row` / `plot_column` / `plot_width` / `plot_shape`) and the 24 per-slot
+   object arrays now have names, and `docs/rename.md` gained five well-evidenced open items
+   instead of a shrug.  When a twin's honest reason is "this is how the subsystem gets named",
+   say that in the commit and skip the FPS sentence.
 9. **Sabotage before believing it.**  Four defects minimum, each must FAIL, and any sabotage that
    PASSES is a fixture gap to write down rather than a pass to enjoy (`view_paint_lines`' phase-3
    carry tail is unreachable and untested — recorded in the twin's own comment).

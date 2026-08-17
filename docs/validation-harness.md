@@ -207,6 +207,52 @@ pass.** 7 of 10 detected reads like a good fixture; the 3 that passed were the f
 that its cases never reached the code.  A green run plus a probe of what the pre-state actually
 became (`extent=$00`, 200 times) is what turned it into a fix.
 
+## ⭐⭐ …and an ELEVENTH, found by twins #6/#7/#8: THREE WAYS A SABOTAGE RUN LIES TO YOU
+
+The fixtures for `apply_driving_model`, `draw_track_object` and `fill_dash_edge_columns` were green
+on the first run.  Sabotaging them took four attempts to become trustworthy, and none of the four
+problems was in the twins.
+
+1. ⚠⚠ **THE BUILD.  `make build/validate_native` matched no rule at all** — the link lived inside
+   the `validate` recipe — so it printed "Nothing to be done" and left the previous binary in
+   place.  Fixed in the Makefile (the link is its own target now), and **that was still not
+   enough**: an automated loop that rewrites one source file and immediately runs `make` got a
+   stale object anyway on maybe a third of its iterations.  The fingerprint is unmistakable once
+   you look for it — **two different defects reporting byte-identical mismatch counts.**  Cases
+   1-3 all said "2 mismatch", 7-12 all said "0 mismatch (the control)", and the run's headline
+   claim was that six of seventeen sabotages could not be detected.  A sabotage loop must
+   `rm` the object file and the binary before every build.
+   ⭐ The same class then produced a *phantom defect*: a "clean" 600-case run reporting 8
+   mismatches, which was the previous sabotage's binary.  **Before believing either a green or a
+   red, prove the binary is the source you think it is.**
+2. **A CALLEE CAN LOOP FOREVER WITHOUT ANY SMC INVOLVED.**  The tenth lesson above says a random
+   SMC byte in a callee is a hang; this is the same symptom with a different cause and it needed
+   the same `sample` of a 12-minute run to find.  `plot_object`'s outer loop (`$2002`-`$2027`)
+   repeats while `$62F3` reads 9 and `mem[$0025]` is positive — and `$62F3` is re-stored from
+   `plot_shape` at the top of every pass, so with `plot_shape == 9` the pass is *identical* each
+   time round.  The only exit is `FUN_202a` returning carry set, which the real shape tables
+   guarantee and random bytes do not.  `$0025` has exactly one writer in the engine and it is not
+   in the subtree, so nothing inside can break the loop.  Fix: the fixture excludes shape 9, and
+   says why at the point of exclusion.
+3. ⭐⭐ **A SELF-HEALING OUTPUT MAKES A REAL DEFECT NEARLY INVISIBLE.**  `fill_dash_edge_columns`
+   runs eight column iterations that each write *one byte per scan line into the same boundary
+   table*, so only the last write to a line survives — and each walk's start line is the previous
+   iteration's leftover `Y`.  Sabotage the SECOND pass's start line by one and the two models
+   diverge for a moment and then **reconverge**, because the next iteration's walk wraps past 256
+   and overwrites the disagreement.  It survived 60 cases, needed 480 to die once, and only
+   became reliable when the pre-state stopped being uniform: `dash_block_starts` holds offsets
+   into an `$80`-byte block whose data ends at `$4F`, and a uniform byte there puts the stop
+   offset *above* the start line 83% of the time, which makes every walk cover the same complete
+   set of lines whatever line it began at.  Steering two thirds of the cases into `0..$4F` — the
+   real table's range — plus 600 cases is what made a one-line error detectable.
+4. **A SABOTAGE THAT CANNOT FAIL IS SOMETIMES A FACT ABOUT THE CALLEE.**  Reordering the three
+   register loads before `fill_edge_column_run` passes, and correctly: the callee stows A, X and Y
+   into `$42`/`$85`/`$7F` before touching any of them, and the first flag reader in the whole
+   subtree sits after an `LDA` that resets N and Z.  Swapping *which register carries which value*
+   fails, as it must.  Recorded in the twin's own comment rather than left as an open gap — the
+   distinction from lesson 10's three passing sabotages is that this one was *proved* unobservable
+   by reading the callee, not assumed.
+
 ## Using it
 
 ```

@@ -260,8 +260,13 @@ determinism-drive:
 # Native-twin validation harness.  Links the full object graph minus main.o (for the
 # symbol environment) plus the harness with its own main().
 VALIDATE_OBJS := $(filter-out src/main.o,$(OBJS)) tools/validate_native.o
-validate: $(VALIDATE_OBJS) | build
-	$(CXX) $(CXXFLAGS) -o build/validate_native $(VALIDATE_OBJS)
+# ⚠ The LINK is its own rule on purpose.  It used to live inside the `validate` recipe, which
+# meant `make build/validate_native` matched nothing and printed "Nothing to be done" over a
+# stale binary — so anything that builds the harness without running it (a sabotage loop, a
+# filtered rerun) silently tested the previous edit.
+build/validate_native: $(VALIDATE_OBJS) | build
+	$(CXX) $(CXXFLAGS) -o $@ $(VALIDATE_OBJS)
+validate: build/validate_native
 	./build/validate_native $(FN)
 
 # ⭐ MODE 7 validation — the port's VDU driver + SAA5050 against a REAL BBC, byte for byte.

@@ -627,6 +627,41 @@ two bytes after it are not a fifth and sixth key binding — `$39E4` is the star
 `$39E4` as a car array is what settled it.  The earlier reading ("six-entry, user-rebindable") was
 a guess dressed as a fact, and it is the exact failure mode `docs/postmortem.md` is about.
 
+### ⭐ Three of those slots' DATA STRUCTURES (named 2026-08-17 with twins #6/#7/#8)
+
+Naming a subsystem's routine and naming the cells it works on are two different passes; slots 4, 15
+and 18 got the second one when they became twins.  What came out:
+
+- ⭐⭐ **THE DRIVING MODEL IS A 15-ELEMENT 16-BIT VECTOR**, `model_state_lo` (`$62D0`) /
+  `model_state_hi` (`$62E0`), element *i* being `+i` in each half.  Every access in the engine is
+  `base+offset,X` or `,Y`, and `$47E5` is the generic integrator — `model_state[X] += model_state[14]`
+  on both halves — called with X=8 and X=`$0A`.  Three elements are identified: **2** is what
+  `integrate_car_position` (`$48EF`) adds into `player_pos_lo/hi`, i.e. what actually moves the car;
+  **8** is `model_accum`, the one element `apply_driving_model` integrates by hand; **9** is
+  `car_speed_lo/hi`, signed, whose magnitude the routine splits into `road_speed` (integer) and
+  `road_speed_frac`.  Elements 5..7 are forced to zero once `drive_state` reaches 2.
+  ⚠ `$62DF` (`loop_counter_hi`) and `$62EF` sit inside those address ranges and are **not** members
+  — the vector stops at element 14, which is why it is 15 long and not 16.
+- **`model_accum`'s integration is a midpoint step, and it reads as a bug until you read it twice**:
+  the entry value is saved into `model_accum_entry_lo/hi`, `$4729` *subtracts* a scaled velocity so
+  the next four sub-models run against the offset value, and only then is the entry value restored
+  and `model_accum_delta_lo/hi` (1.5x what was removed) added.
+- **THE OBJECT PLOTTER HAS A FOUR-CELL ARGUMENT BLOCK**, and slots 15 and 16 are its only two
+  producers: `plot_row` (`$35`, always `4 * y + $50`), `plot_column` (`$36`), `plot_width` (`$2A`)
+  and `plot_shape` (`$37`).  ⚠ `$018C` `car_flags_1`'s low NIBBLE is the shape index — one byte
+  carrying two unrelated things, queued in `docs/rename.md`.
+- **THE 24 OBJECT SLOTS** are four parallel arrays: `object_pos_lo`/`object_pos_hi` (`$0380`/`$0398`,
+  a 16-bit track position), `object_col` (`$03B0`) and `object_width` (`$03C8`).  Slot `$17` is the
+  road sign; the rest are cars.  `player_pos_lo/hi` (`$0A`/`$0B`) is the player's own entry, copied
+  out at `$11FB` with the high byte EORed with the direction flag `$25`, and it is the origin every
+  projection in the frame subtracts.
+- ⚠⚠ **`plot_object` (`$1FB4`) CAN LOOP FOREVER, and it is not a self-modifying site.**  Its outer
+  loop `$2002`-`$2027` repeats while `$62F3` reads 9 and `mem[$0025]` is positive, and `$62F3` is
+  re-stored from `plot_shape` at the top of every pass — so with `plot_shape == 9` every pass is
+  identical and the only exit is `FUN_202a` returning carry set.  The real shape tables at
+  `$3CD0`/`$3CDD`/`$3CDE` are what guarantee that; nothing structural does.  Anything that feeds
+  this routine synthetic data has to know it (`docs/validation-harness.md` §ELEVENTH).
+
 ## ⭐ Phase 5 addition — the display is fully derived, and the sky hides live code
 
 `src/platform/bbc_screen.h` is now the reference for the screen: the CRTC table at `$4F0F` gives

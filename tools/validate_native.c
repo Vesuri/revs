@@ -752,6 +752,242 @@ static int test_view_producers(void)
     return fail;
 }
 
+/* ==========================================================================
+   $46A1 apply_driving_model, $2AD1 draw_track_object, $1E15 fill_dash_edge_columns
+   --------------------------------------------------------------------------
+   The body's three remaining SHORT DRIVERS.  Like the view producers above, each one is a
+   handful of instructions over a long transliterated subtree, so a randomised pre-state
+   exercises far more code than the twin — and that is the point: the twin's job is to hand
+   its callees the same registers off the same cells in the same order.
+
+   ⭐ NONE OF THE THREE HAS A SELF-MODIFYING SITE OF ITS OWN, so there are no trap arms to
+   test here.  What the pre-state has to do instead is stop the CALLEES from trapping, because
+   an SMC trap is an early RETURN in both models and a returned-early pair compares almost
+   nothing.  Three sites are reachable and all three are planted with Silverstone's own bytes:
+   $1FE9 inside plot_object, and $44D5 / $45CB inside the last sub-model of the driving chain.
+   ========================================================================== */
+void apply_driving_model(void);
+void apply_driving_model__t6502(void);
+void draw_track_object(void);
+void draw_track_object__t6502(void);
+void fill_dash_edge_columns(void);
+void fill_dash_edge_columns__t6502(void);
+
+#define PRE_CAR_FLAGS_1   0x018C
+#define PRE_OBJECT_POS_LO 0x0380
+#define PRE_OBJECT_POS_HI 0x0398
+
+static void plant_body_driver_smc(uint8_t* pre)
+{
+    pre[0x1FE9] = 0xA6;                       /* LDX horizon_extent — plot_object   */
+    pre[0x44D5] = 0xB9;                       /* LDA abs,Y         — the $44EA tail */
+    pre[0x45CB] = 0x0A; pre[0x45CC] = 0x26;   /* ASL A / ROL $77   — likewise       */
+}
+
+/* $46B8-$46CD recomputed from the POST state: road_speed and road_speed_frac have exactly
+   ONE writer each in the whole engine ($46C0 and $46C4) and wheel_spin_rate's other two
+   writers are not in this subtree, so this relation holding is proof the routine reached
+   the speed split rather than exiting in a callee. */
+static int speed_split_ran(const uint8_t* post)
+{
+    unsigned want = post[0x0063] ? post[0x0063] : (unsigned)(post[0x002E] & 0xF0);
+    return post[0x0000] == want;
+}
+
+/* The four cells the object plotter is driven through, recomputed from the PRE state — the
+   twin's whole output on the drawn path.  plot_object rewrites plot_width ($1FF4) and $2B but
+   never plot_row / plot_column / plot_shape, which is why only those three are checked. */
+static int object_block_ran(const uint8_t* pre, const uint8_t* post, uint8_t slot)
+{
+    unsigned lo   = (pre[PRE_OBJECT_POS_LO + slot] - pre[0x000A]) & 0x1FF;
+    unsigned hi   = (pre[PRE_OBJECT_POS_HI + slot] - pre[0x000B] - (lo > 0xFF ? 1 : 0)) & 0xFF;
+    unsigned row  = ((hi << 8) | (lo & 0xFF)) << 2;
+    return post[0x0037] == (pre[PRE_CAR_FLAGS_1 + slot] & 0x0F)
+        && post[0x0035] == (uint8_t)(((row >> 8) & 0xFF) + 0x50)
+        && post[0x0036] == pre[0x03B0 + slot];
+}
+
+/* Which of draw_track_object's three paths a case takes, decided from the PRE state: nothing
+   the routine calls writes car_flags_1, object_pos or player_pos before the test. */
+enum { OBJ_EMPTY = 0, OBJ_OFFSCREEN = 1, OBJ_DRAWN = 2 };
+static int object_path(const uint8_t* pre, uint8_t slot)
+{
+    if (pre[PRE_CAR_FLAGS_1 + slot] & 0x80) return OBJ_EMPTY;
+    unsigned lo = (pre[PRE_OBJECT_POS_LO + slot] - pre[0x000A]) & 0x1FF;
+    unsigned hi = (pre[PRE_OBJECT_POS_HI + slot] - pre[0x000B] - (lo > 0xFF ? 1 : 0)) & 0xFF;
+    if (hi & 0x80) return hi >= 0xE0 ? OBJ_DRAWN : OBJ_OFFSCREEN;
+    return hi < 0x20 ? OBJ_DRAWN : OBJ_OFFSCREEN;
+}
+
+/* Both of fill_dash_edge_columns' passes ran to completion: plot_ptr2 still holds the SECOND
+   boundary table, and fill_edge_column_run's own two cells stopped where the second run's
+   arguments said they would ($42 is the limit it was handed, $85 the column it stopped at). */
+static int edge_columns_ran(const uint8_t* post)
+{
+    return post[0x0072] == 0x00 && post[0x0073] == 0x44
+        && post[0x0042] == 0x22 && post[0x0085] == 0x22;
+}
+
+static int test_body_drivers(void)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    const int model = 200 * scale, object = 300 * scale, edges = 600 * scale;
+
+    register_fixture("apply_driving_model");
+    register_fixture("draw_track_object");
+    register_fixture("fill_dash_edge_columns");
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+
+    if (want("apply_driving_model")) {
+        int subFail = 0, splitRan = 0, offPower = 0, onPower = 0;
+        for (t = 0; t < model; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            plant_plotter_chains(pre);
+            plant_body_driver_smc(pre);
+            /* ⭐ STEERED, and the reason is the twin's only branch: drive_state decides
+               whether model_state elements 5..7 are zeroed, and it is compared against 2.
+               A uniform byte takes the >= 2 arm 254 times in 256, so the ONE case that
+               matters — a car under power — would be luck.  The three values the engine
+               itself writes are 0, 1 and $7F. */
+            { static const uint8_t st[] = { 0x00, 0x01, 0x02, 0x7F };
+              pre[0x002D] = st[xs() % (sizeof st)]; }
+            if (pre[0x002D] >= 2) offPower++; else onPower++;
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;   /* the 6502 never runs the engine in decimal mode — see twin #2 */
+            subFail += diff_run("apply_driving_model", pre, c, apply_driving_model,
+                                apply_driving_model__t6502, liveMask, t, &printed);
+            if (speed_split_ran((const uint8_t*)mem)) splitRan++;
+        }
+        fail += subFail;
+        if (splitRan == 0) {
+            printf("[VACUOUS] apply_driving_model: not one of %d cases reached the speed "
+                   "split — a callee trapped out first\n", model);
+            fail++;
+        }
+        if (offPower == 0 || onPower == 0) {
+            printf("[VACUOUS] apply_driving_model: the drive_state branch went only one way "
+                   "(%d off power, %d on)\n", offPower, onPower);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d reached the speed split, %d/%d off power)\n", "apply_driving_model",
+               model, subFail, splitRan, offPower, model);
+    }
+
+    if (want("draw_track_object")) {
+        int subFail = 0, paths[3] = { 0, 0, 0 }, blockRan = 0;
+        for (t = 0; t < object; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            plant_plotter_chains(pre);
+            plant_body_driver_smc(pre);
+            uint8_t slot = (uint8_t)(xs() % 24);   /* the 24 real object slots */
+            /* Two thirds of the cases get an OCCUPIED slot: a uniform flag byte is empty
+               half the time, and the empty path is three instructions long. */
+            if (xs() % 3) pre[PRE_CAR_FLAGS_1 + slot] &= 0x7F;
+            /* ⭐⭐ AND SHAPE 9 IS EXCLUDED, WHICH IS NOT A CONVENIENCE.  plot_object's outer
+               loop at $2002-$2027 repeats while $62F3 came back as 9 and mem[$0025] is
+               positive, and $62F3 is re-stored from plot_shape at the top of every pass — so
+               with plot_shape == 9 the pass is IDENTICAL each time round and the only way out
+               is FUN_202a returning carry set.  On the real shape tables it does; on random
+               bytes it need not, and the ORACLE spins forever with the twin never reached.
+               (Found by sampling a 12-minute run, the same way the plotter chains were.)
+               $0025 has exactly one writer in the engine and it is not in this subtree, so
+               nothing inside the loop can break it. */
+            if ((pre[PRE_CAR_FLAGS_1 + slot] & 0x0F) == 0x09)
+                pre[PRE_CAR_FLAGS_1 + slot] ^= 0x01;
+            int path = object_path(pre, slot);
+            paths[path]++;
+            c.A = (uint8_t)xs(); c.X = slot; c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;
+            static uint8_t preCopy[65536];
+            memcpy(preCopy, pre, sizeof preCopy);
+            subFail += diff_run("draw_track_object", pre, c, draw_track_object,
+                                draw_track_object__t6502, liveMask, t, &printed);
+            if (path == OBJ_DRAWN && object_block_ran(preCopy, (const uint8_t*)mem, slot))
+                blockRan++;
+        }
+        fail += subFail;
+        if (paths[OBJ_EMPTY] == 0 || paths[OBJ_OFFSCREEN] == 0 || paths[OBJ_DRAWN] == 0) {
+            printf("[VACUOUS] draw_track_object: one of the three paths was never taken "
+                   "(%d empty, %d offscreen, %d drawn)\n",
+                   paths[OBJ_EMPTY], paths[OBJ_OFFSCREEN], paths[OBJ_DRAWN]);
+            fail++;
+        }
+        if (blockRan != paths[OBJ_DRAWN]) {
+            printf("[BROKEN] draw_track_object: %d of %d drawn cases left the plotter's "
+                   "argument block holding something other than what the pre-state says it "
+                   "should — the twin and the oracle agree but both are wrong, or a callee "
+                   "writes plot_row/plot_column/plot_shape after all\n",
+                   paths[OBJ_DRAWN] - blockRan, paths[OBJ_DRAWN]);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d empty / %d offscreen / %d drawn, %d block-checked)\n",
+               "draw_track_object", object, subFail,
+               paths[OBJ_EMPTY], paths[OBJ_OFFSCREEN], paths[OBJ_DRAWN], blockRan);
+    }
+
+    if (want("fill_dash_edge_columns")) {
+        int subFail = 0, ran = 0;
+        for (t = 0; t < edges; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            plant_plotter_chains(pre);
+            plant_body_driver_smc(pre);
+            /* ⭐⭐ STEERED, AND THIS ONE IS WORTH READING.  Each column's walk runs from the
+               scan line it is handed DOWN to dash_block_starts[column], and Y wraps: with a
+               uniform byte there the start offset is above the first line 83% of the time, the
+               walk goes all the way round 256, and it therefore covers the SAME SET of scan
+               lines whatever line it started from — one write per line, each to its own
+               address, so a WRONG START LINE produces byte-identical mem[].  A one-line
+               sabotage of the second pass' start survived 60 cases and needed 480 to die.
+               The real table is what fixes it, not more cases: dash_block_starts holds
+               offsets into an $80-byte block and the data always ends at offset $4F
+               (symbols.csv), so two thirds of the cases get a start in 0..$4F and the walk
+               stops where it does in a real frame.  The rest stay uniform, which is what
+               keeps the wrap path covered. */
+            if (xs() % 3)
+                for (int col = 0x03; col <= 0x22; col++)
+                    pre[0x3900 + col] = (uint8_t)(xs() % 0x50);
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;
+            subFail += diff_run("fill_dash_edge_columns", pre, c, fill_dash_edge_columns,
+                                fill_dash_edge_columns__t6502, liveMask, t, &printed);
+            if (edge_columns_ran((const uint8_t*)mem)) ran++;
+        }
+        fail += subFail;
+        /* ⚠ THE CASE COUNT IS A COMPROMISE IN BOTH DIRECTIONS.  Downward: each case walks up
+           to 256 source bytes per column, for seventeen columns, twice over, through
+           surface_colour_at.  Upward: this routine's output is SELF-HEALING.  Each of the
+           eight iterations of a run writes one byte per scan line into the SAME boundary
+           table, so only the last write to a line survives — and as soon as any later
+           iteration's walk wraps past a line an earlier iteration got wrong, the two models
+           reconverge.  The one-line start-of-run sabotage therefore shows up in ~3% of cases
+           even with the table steered, which is what 600 is sized for. */
+        if (ran != edges) {
+            printf("[VACUOUS] fill_dash_edge_columns: %d of %d cases did not run both "
+                   "passes to completion\n", edges - ran, edges);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d/%d ran both passes)\n",
+               "fill_dash_edge_columns", edges, subFail, ran, edges);
+    }
+
+    unsetenv("REVS_SMC_CONTINUE");
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -766,6 +1002,7 @@ int main(int argc, char** argv)
     fail += test_irq1v_band_schedule();
     fail += test_view_paint_lines();
     fail += test_view_producers();
+    fail += test_body_drivers();
 
     fail += check_coverage();
     fail += report_unvalidated_natives();

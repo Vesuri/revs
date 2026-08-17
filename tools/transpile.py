@@ -580,6 +580,20 @@ VALIDATE_FUNCS = {
     # that docs/direct-bitplane-plan.md §7a is about.
     0x24F6,
     0x1A20,
+    # ⭐ TWINS #6, #7 and #8 — the three remaining SHORT DRIVERS of the 50 Hz body, taken
+    # together because they are the same kind of routine and the same kind of win:
+    #   $46A1 apply_driving_model    (136 bytes) the body's 4th call, the player car's PHYSICS
+    #   $2AD1 draw_track_object      ( 61 bytes) the body's 15th call, one object slot -> screen
+    #   $1E15 fill_dash_edge_columns ( 35 bytes) the body's 18th call, the view/dash seam
+    # None of the three is a profile row worth attacking — the cost is in their callees
+    # (docs/faithfulness-seam.md §8), and that is stated up front so the framerate is not
+    # quoted as the reason.  What they buy is the last of the body's per-frame data
+    # structures getting names: the driving model's 16-bit state vector (model_state_lo/hi and
+    # the hand-integrated model_accum), the object plotter's four-cell argument block
+    # (plot_row / plot_column / plot_width / plot_shape) and the 24 per-slot object arrays.
+    0x46A1,
+    0x2AD1,
+    0x1E15,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

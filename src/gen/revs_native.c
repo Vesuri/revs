@@ -1706,3 +1706,273 @@ void draw_road(void)
 {
     draw_road_core(edge_cursor, edge_end_side0);
 }
+
+/* ===========================================================================
+   $46A1  apply_driving_model — THE PLAYER CAR'S PHYSICS  (twin #6)
+   ---------------------------------------------------------------------------
+   The body's 4th call, and nothing else in the frame writes the car's motion.  136 bytes of
+   DRIVER over fifteen sub-models, so — like twins #4 and #5 — what it buys is the naming, not
+   milliseconds (docs/faithfulness-seam.md §8).  What the routine itself owns is three things:
+
+     1. THE SPEED SPLIT.  car_speed_lo/hi is element 9 of the driving model's 16-bit state
+        vector and is SIGNED; the rest of the game only ever reads its magnitude, so this
+        routine takes abs16 of it once a frame and publishes road_speed (the integer part) and
+        road_speed_frac (the fraction).  wheel_spin_rate — the one cell that means "the car is
+        moving" — is road_speed, or the fraction's top nibble when the integer part came out
+        zero, so that a crawling car still turns its front wheels.
+
+     2. THE HAND-INTEGRATED ACCUMULATOR.  model_accum_lo/hi is element 8 of the same vector,
+        and it is the only element this routine integrates itself.  The sequence is deliberate
+        and looks wrong until you read it twice: the entry value is saved, $4729 subtracts a
+        scaled velocity from the accumulator, the next four sub-models therefore run against
+        the OFFSET value, and only then is the entry value restored and the frame's real
+        increment (model_accum_delta_lo/hi, 1.5x what $4729 removed) added.
+
+     3. THE OFF-POWER GATE.  Once drive_state reaches 2 — crashed or spinning, the value
+        check_crash writes — elements 5..7 of the state vector are forced to zero instead of
+        being integrated.
+
+   ⚠ ELEVEN OF THE FIFTEEN SUB-MODELS ARE STILL `FUN_xxxx`, queued in docs/rename.md.  They
+   are named here only where the evidence is settled: compute_car_angles ($0D01) and
+   integrate_car_position ($48EF, which is what actually moves player_pos through the world).
+   $47A5 and $47C5 are both the generic integrator at $47E5 applied to elements 8 and $0A;
+   $4779 is the one that silences sound channel 3 while drive_state >= 2; the rest are open.
+
+   No hardware writes and no $FC00-$FEFF access in the driver itself.
+   =========================================================================== */
+
+#define MODEL_STATE_LO   0x62D0u   /* the driving model's 16-bit state vector, low bytes */
+#define MODEL_STATE_HI   0x62E0u   /* ...and high bytes; element i is +i in each */
+
+/* ⚠ Every model cell below is read from mem[] at the point of use and never cached in a local:
+   any of the fifteen sub-models can write any of them, and $4729 in particular is *supposed* to
+   change model_accum under the four calls that follow it. */
+static void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
+{
+    /* $46A1 — the car's body angles, computed from where the car actually is. */
+    arg_a(posHi);
+    arg_x(posLo);
+    compute_car_angles();
+    FUN_48b9();
+
+    /* $46AE — the accumulator's entry value, for the restore at $46DF. */
+    model_accum_entry_lo = model_accum_lo;
+    model_accum_entry_hi = model_accum_hi;
+
+    /* $46B8-$46CD — the speed split.  abs16_math negates (math_lo, A) in place when A is
+       negative, so math_lo has to be re-read after the call, not before.  Every register and
+       flag this block leaves is dead: $4729 opens with `LDA` and `LDY #$58`. */
+    math_lo = car_speed_lo;
+    load_a(car_speed_hi);
+    abs16_math();
+    road_speed      = cpu.A;
+    road_speed_frac = math_lo;
+    wheel_spin_rate = road_speed ? road_speed : (uint8_t)(math_lo & 0xF0);
+
+    /* $46CF-$46DA — the four sub-models that run against the OFFSET accumulator.  $4729 is
+       what offsets it, and what leaves model_accum_delta_lo/hi behind. */
+    FUN_4729();
+    FUN_4bcf();
+    FUN_49ce();
+    arg_x(0x01);
+    FUN_4779();
+
+    /* $46DF-$46F5 — restore, then apply the frame's real increment as one 16-bit add. */
+    model_accum_lo = model_accum_entry_lo;
+    model_accum_hi = model_accum_entry_hi;
+    model_accum_lo = (uint8_t)adc_step(model_accum_lo, model_accum_delta_lo, 0);
+    model_accum_hi = (uint8_t)adc_step(model_accum_hi, model_accum_delta_hi, cpu.C);
+
+    /* $46F8-$4703 — and the sub-models that want the accumulator at its new value.  $47A5
+       integrates element 8 by element 14, $47C5 does the same for element $0A. */
+    FUN_47a5();
+    arg_x(0x00);
+    FUN_4779();
+    FUN_47c5();
+    FUN_47f9();
+
+    /* $4706-$4717 — off power: elements 5..7 are zeroed rather than integrated.  The loop's
+       exit registers (X = $FF, A = 0, N set) are dead — $4C65 opens with `LDA`. */
+    if (cmp_ge(drive_state, 0x02)) {
+        int element;
+        for (element = 7; element >= 5; element--) {
+            mem[MODEL_STATE_LO + element] = 0;
+            mem[MODEL_STATE_HI + element] = 0;
+        }
+    }
+
+    /* $4719-$4725 — the tail.  integrate_car_position is what advances player_pos_lo/hi, so
+       the car has not actually moved until the second-to-last call of the chain. */
+    FUN_4c65();
+    FUN_48c1();
+    FUN_4937();
+    integrate_car_position();
+    FUN_44ea();
+}
+
+/* The 6502-ABI shim.  The player's own position is the routine's one input — it reaches the
+   6502 in A and X — and A, X, Y and the flags come back from FUN_44ea untouched. */
+void apply_driving_model(void)
+{
+    apply_driving_model_core(player_pos_lo, player_pos_hi);
+}
+
+/* ===========================================================================
+   $2AD1  draw_track_object — ONE OBJECT SLOT ONTO THE SCREEN  (twin #7)
+   ---------------------------------------------------------------------------
+   The body's 15th call, entered with an object SLOT index in X.  There are 24 slots and they
+   hold both the other cars and the road signs, which is why the main loop can reuse this call
+   for slot $17 — the sign build_road_sign has just assembled.
+
+   What it computes is the object plotter's four-cell argument block:
+
+       plot_shape    the low nibble of the slot's own car_flags_1 byte
+       plot_row      4 x (the object's distance ahead of the player), biased by $50
+       plot_column   object_col[slot]        — projected when the slot was filled
+       plot_width    object_width[slot]      — likewise
+
+   and then calls plot_object.  Two things stop it early: a NEGATIVE car_flags_1 byte, which
+   is how an empty slot is spelled, and a distance whose high byte falls outside $E0..$1F —
+   more than $2000 either side of the player is off the screen entirely.
+
+   ⚠ THE EXIT CONTRACT IS `LDX saved_slot_index`, ON ALL THREE PATHS, and it is not the slot
+   just drawn.  Entered at $2ACB (the other entry, one instruction earlier) the routine writes
+   that cell itself; entered at $2AD1 the way the main loop does it, the cell still holds
+   whatever the previous owner left, so X on the way out is a value from another subsystem.
+   Six routines share the cell — docs/rename.md.
+
+   No hardware writes: the plotter's stores are RAM, and the transpiler was already routing
+   this routine's own accesses straight to mem[].
+   =========================================================================== */
+
+#define CAR_FLAGS_1      0x018Cu   /* per slot: flags, with the object's shape in bits 0-3 */
+#define OBJECT_POS_LO    0x0380u   /* per slot: 16-bit track position, low byte */
+#define OBJECT_POS_HI    0x0398u   /* ...and high byte */
+#define OBJECT_COL       0x03B0u   /* per slot: screen cell column */
+#define OBJECT_WIDTH     0x03C8u   /* per slot: screen width */
+
+/* value - subtrahend - !carry_in, setting C and V — the second half of a 16-bit subtract,
+   where the borrow has to come from the low half's own SBC. */
+static unsigned sbc_step(unsigned value, uint8_t subtrahend, int carry_in)
+{
+    cpu.A = (uint8_t)value;
+    cpu.C = (uint8_t)(carry_in != 0);
+    SBC(subtrahend);
+    return cpu.A;
+}
+
+/* (hi : math_lo) << 1, returning the new high byte — the 6502's `ASL math_lo / ROL A`.  Run
+   twice, it is the x4 that turns a distance into a scan line, and math_lo is left holding the
+   scaled low byte because the plotter has no use for it. */
+static unsigned shift_pair_left(unsigned hi)
+{
+    cpu.A = (uint8_t)hi;
+    ASL_M(MEM_math_lo);
+    ROL_A();
+    return cpu.A;
+}
+
+static void draw_track_object_core(uint8_t slot)
+{
+    uint8_t flags = mem[CAR_FLAGS_1 + slot];
+
+    if (flags & 0x80) {
+        /* $2AD4 — an empty slot.  Nothing is drawn, but A is still the flag byte at the
+           tail, so the 6502's `LDA` is reproduced even though its N/Z are overwritten. */
+        cpu.A = flags;
+    } else {
+        plot_shape = (uint8_t)(flags & 0x0F);
+
+        /* How far ahead of the player the object sits, as one 16-bit subtract.  The low
+           byte's only reader is the x4 below, but it goes through math_lo because the
+           plotter's setup shares that cell. */
+        math_lo = (uint8_t)sub_from(mem[OBJECT_POS_LO + slot], player_pos_lo);
+        unsigned deltaHi = sbc_step(mem[OBJECT_POS_HI + slot], player_pos_hi, cpu.C);
+
+        /* $2AE7-$2AF1 — the visibility window, and the two arms are not symmetric because
+           the 6502 tests the sign first: behind the player it wants >= $E0, ahead of it
+           < $20.  On the reject path A is the high byte and C is that CMP's own carry. */
+        int visible = (deltaHi & 0x80) ? cmp_ge(deltaHi, 0xE0)
+                                       : !cmp_ge(deltaHi, 0x20);
+        if (visible) {
+            unsigned row = shift_pair_left(shift_pair_left(deltaHi));
+            plot_row = (uint8_t)adc_step(row, 0x50, 0);
+            /* The column's own `LDA` flags are dead — the width's LDA one instruction later
+               rewrites N and Z, and nothing between them branches. */
+            plot_column = mem[OBJECT_COL + slot];
+            plot_width  = (uint8_t)load_a(mem[OBJECT_WIDTH + slot]);
+            plot_object();
+        }
+    }
+
+    arg_x(saved_slot_index);
+}
+
+/* The 6502-ABI shim.  The slot arrives in X; everything else the routine needs is in mem[]. */
+void draw_track_object(void)
+{
+    draw_track_object_core(cpu.X);
+}
+
+/* ===========================================================================
+   $1E15  fill_dash_edge_columns — THE VIEW/DASHBOARD SEAM  (twin #8)
+   ---------------------------------------------------------------------------
+   The body's 18th call, and the smallest driver in the frame: 35 bytes, two calls of
+   fill_edge_column_run.  What it makes happen is that the road view MEETS the front tyres and
+   the dashboard without a gap — the columns at the two ends of the viewport still have source
+   bytes left at zero after draw_road, and this pass fills each of them with the colour
+   surface_colour_at gives for that scan line.
+
+   The two passes are the two ends of the viewport:
+
+       columns 3..6    from scan line $1B, boundary table view_left_start_src  ($0504)
+       columns $1A..22 from scan line $2B, boundary table view_right_start_src ($4400)
+
+   ⭐ AND THAT SECOND ARGUMENT IS WHY THE CALL MATTERS DOWNSTREAM.  plot_ptr2 is what
+   fill_edge_column_run patches its store through on alternate passes, so each run writes the
+   run's FIRST cell into one of those two per-scan-line tables instead of into the column's own
+   $80-byte source block.  view_paint_lines then composes each row's leading edge cell out of
+   exactly those bytes: this call is their only producer.
+
+   No hardware writes; the whole subtree lives in RAM.
+
+   ⚠ ONE SABOTAGE HERE CANNOT FAIL, AND IT IS A PROPERTY OF THE CALLEE, NOT A FIXTURE GAP:
+   the ORDER of the three register loads below is not observable.  fill_edge_column_run stows
+   A, X and Y into $42, $85 and $7F before touching any of them, and the first thing that reads
+   a flag in the whole subtree ($1DB3) comes after $1DF5's own `LDA` has reset N and Z — so no
+   incoming flag survives to be wrong.  Swapping WHICH register carries which value does fail,
+   as it must; swapping the order does not.
+   =========================================================================== */
+
+#define VIEW_LEFT_START_SRC   0x0504u   /* per scan line: the LEFT run's first source byte */
+#define VIEW_RIGHT_START_SRC  0x4400u   /* ...and the RIGHT run's */
+
+/* One end of the viewport.  `stopColumn` is exclusive of the plot_ptr2 half of the run and
+   inclusive of the plot_ptr half — fill_edge_column_run walks two columns per iteration and
+   tests the second one against it. */
+static void edge_column_pass(uint16_t startSrc, uint8_t firstColumn, uint8_t stopColumn,
+                             uint8_t firstLine)
+{
+    plot_ptr2_hi = (uint8_t)(startSrc >> 8);
+    plot_ptr2_lo = (uint8_t)startSrc;
+    arg_y(firstLine);
+    arg_x(firstColumn);
+    arg_a(stopColumn);
+    fill_edge_column_run();
+}
+
+/* The two boundary tables are the arguments because they are the one thing a change of view
+   representation moves (docs/direct-bitplane-plan.md §7a); the column and line numbers are
+   the viewport's own geometry and stay immediates. */
+static void fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightStartSrc)
+{
+    edge_column_pass(leftStartSrc,  0x03, 0x06, 0x1B);
+    edge_column_pass(rightStartSrc, 0x1A, 0x22, 0x2B);
+}
+
+/* The 6502-ABI shim.  No inputs at all — every value is an immediate in the original — and
+   A, X, Y and the flags come back from the second fill_edge_column_run. */
+void fill_dash_edge_columns(void)
+{
+    fill_dash_edge_columns_core(VIEW_LEFT_START_SRC, VIEW_RIGHT_START_SRC);
+}

@@ -258,6 +258,10 @@ hand-rename in generated files).
 5. `make validate FN=<name>` runs both on the same inputs and diffs full `mem[]` state.
 6. **Sabotage it** — four deliberate defects minimum, each must FAIL, and a sabotage that PASSES
    is a fixture gap to write down (`docs/phases.md` §1a item 9).
+   ⚠⚠ **A scripted sabotage loop MUST `rm` the object file and the binary before every build.**
+   Left to `make`, a rewrite-then-rebuild loop reuses the previous iteration's object on some
+   iterations and reports that the defect is undetectable. **The tell is two different defects
+   printing byte-identical mismatch counts** (`docs/validation-harness.md` §ELEVENTH).
 
 ⚠⚠ **A TWIN IS REAL C, AND THAT IS A REQUIREMENT — a transliteration with the macros left in is
 NOT a twin.** The point is to delete the interpreter, and macro soup hides the structure the next
