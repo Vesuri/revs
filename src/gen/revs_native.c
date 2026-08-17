@@ -85,7 +85,7 @@ static unsigned sub_from(unsigned value, uint8_t subtrahend)
    band that is about to be scanned out and reloads T1 with how long that band lasts.
    irq_band_state says which band is next.  ⭐ THE HANDLER DRAWS NOTHING — that is what
    its 2026-08-17 rename settled (docs/rename.md): the only game work in the whole cycle
-   is the `body_tick_xor_anim` call in band 4, 4% of the field.  A BBC has to run a raster
+   is the `tick_wheel_spin` call in band 4, 4% of the field.  A BBC has to run a raster
    split on the CPU for want of a copper; this port hands the same schedule to the copper
    and reuses the record when nothing in it changed.
 
@@ -100,7 +100,7 @@ static unsigned sub_from(unsigned value, uint8_t subtrahend)
                      at the very top of the screen.  Bands 2→3 fall through the same way.
      2   horizon     the four-colour palette at $3458;  latch = the remainder computed above
      3   track       four entries from $3478 (colour 1 → red);  next latch $1E00
-     4   dashboard   four entries from $347C (colour 3 → cyan), then body_tick_xor_anim,
+     4   dashboard   four entries from $347C (colour 3 → cyan), then tick_wheel_spin,
                      then the User VIA ORB poke and the wrap back to band 0;  latch $0B16
      $FF             the arm is skipped; the counter just wraps to 0 and takes band 0's
                      latch.  Any OTHER negative counter does nothing at all.
@@ -224,7 +224,7 @@ void irq1v_band_schedule(void)
         ula_palette_table(0x347C, 3);
         irq_band_state = 0xFF;     /* the tail's INC wraps it to 0 */
 
-        /* body_tick_xor_anim is an ordinary JSR target, so it is entered with whatever the
+        /* tick_wheel_spin is an ordinary JSR target, so it is entered with whatever the
            6502 state was: A = the last palette byte fetched, X = $FF from the DEX that
            ended the loop, N/Z from that DEX, C = 1 from the CMP #3 that dispatched here,
            Y from the interrupted foreground.  Reproduced explicitly because the twin does
@@ -238,7 +238,7 @@ void irq1v_band_schedule(void)
         cpu.N = 1; cpu.Z = 0; cpu.C = 1;
 
         PROBE_PHASE(PROBE_PHASE_BODYARM);
-        body_tick_xor_anim();
+        tick_wheel_spin();
         PROBE_PHASE(PROBE_PHASE_DRAIN);
 
         bus_write(0xFE69, 0xFF);   /* User VIA ORB, once per field */

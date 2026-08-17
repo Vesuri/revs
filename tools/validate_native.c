@@ -314,7 +314,7 @@ void irq1v_band_schedule__t6502(void);
       one side of `$153C`, so the fixture also pins the boundary explicitly.
 
    ⚠ WHAT IS AND IS NOT COVERED, stated rather than quietly skipped.  Band 4 calls
-   body_tick_xor_anim — the entire 50 Hz game body — and it really runs here, on randomised memory:
+   tick_wheel_spin — the cycle's only game work — and it really runs here, on randomised memory:
    deleting the call fails 128 of 128 cases.  What the differential canNOT see is the
    register hand-off INTO it: A, X and N/Z/C can each be falsified at the call site with
    no observable effect, because the body reloads them.  That part of the twin is
@@ -323,7 +323,7 @@ void irq1v_band_schedule__t6502(void);
    ⭐ SABOTAGE RECORD (2026-08-16), because a first-run PASS is not evidence.  Nine
    deliberate defects: horizon remainder +1, X not restored, band counter not advanced,
    the horizon boundary <= → <, band-3 latch +1, band-3 palette 3 entries instead of 4,
-   band-0 palette written in ascending order, the $FE69 poke dropped, body_tick_xor_anim not called.
+   band-0 palette written in ascending order, the $FE69 poke dropped, tick_wheel_spin not called.
    All nine fail now.  ⚠⚠ FOUR OF THEM PASSED before diff_run grew a hardware trace: the
    ULA and the T1 latch are not in mem[] and this routine leaves only four bytes there, so
    a mem[]-only differential was validating almost none of its output.

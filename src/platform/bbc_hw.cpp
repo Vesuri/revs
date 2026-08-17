@@ -35,7 +35,7 @@
 #include "../cpu/cpu.h"
 
 extern "C" void irq1v_band_schedule(void);   /* $4E5C, from the generated transliteration */
-extern "C" void body_tick_xor_anim(void);        /* band 4's arm — the ONLY game work in the cycle */
+extern "C" void tick_wheel_spin(void);        /* band 4's arm — the ONLY game work in the cycle */
 
 /* ---------------------------------------------------------------------------
    Registers Phase 5 will need, recorded rather than dropped.  Keeping the last
@@ -514,7 +514,7 @@ unsigned Platform::fireIrq1vField(void)
         const uint8_t a0 = cpu.A, x0 = cpu.X, y0 = cpu.Y;
         cpu.A = mem[0x347C]; cpu.X = 0xFF; cpu.N = 1; cpu.Z = 0; cpu.C = 1;
         PROBE_PHASE(PROBE_PHASE_BODYARM);
-        body_tick_xor_anim();
+        tick_wheel_spin();
         PROBE_PHASE(PROBE_PHASE_DRAIN);
         cpu.A = a0; cpu.X = x0; cpu.Y = y0;
 

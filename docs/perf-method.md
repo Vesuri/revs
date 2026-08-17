@@ -207,7 +207,7 @@ frame is ~36% longer.  Rule 4 applies to the 2.2 figure now: **do not quote it.*
   re-measured share table below agrees and goes further: `$7BE2` (the dashboard) alone is the
   single largest phase at 34.7%.  `docs/static-map.md` §Open items 6 and 10.
 - ✅ **Two 6502 loops in this build were compiled as unbounded mutual recursion** — one of
-  them the per-pixel span store inside `project_geometry` (`$1DE5 ⇄ $1DE8`).  **Fixed**
+  them the per-pixel span store inside `plot_view_src_line` (`$1DE5 ⇄ $1DE8`).  **Fixed**
   (`tools/transpile.py build_regions`, `docs/static-map.md` §Open items 9), and
   **re-measured: 2.3-2.5 FPS, i.e. no change.**  Worth writing down because the guess was
   wrong: the defect was a real stack-growth hazard (300-1000 live frames on the overlay), but
@@ -245,7 +245,7 @@ paint plus the frame wait" and read 2.5%; measured properly it was **60.9%**, so
 
 | Share | ms/frame | Phase | Callee | What it is |
 |---|---|---|---|---|
-| **51.1%** | **526** | **26** | **the 50 Hz game body** | `drainTicks()` — the IRQ1V band cycle and `body_tick_xor_anim`, run from main-loop context at the engine's frame hook.  ⚠ **NOT one slow routine: ~50 ticks per painted frame.**  See the arithmetic below |
+| **51.1%** | **526** | **26** | **the 50 Hz game body** | `drainTicks()` — the IRQ1V band cycle and `tick_wheel_spin`, run from main-loop context at the engine's frame hook.  ⚠ **NOT one slow routine: ~50 ticks per painted frame.**  See the arithmetic below |
 | **14.6%** | 150 | 24 | **`$7BE2`** | the dashboard sweep in the `$7B00` overlay (plus the end of the loop body, `$174B-$1763`) |
 | **8.1%** | 83 | **27** | `RevsScreen::decode()` | frame buffer → bitplanes.  Pure port overhead — and **83 ms, not the ~250 ms `direct-bitplane-plan.md` §1 assumed** |
 | **7.4%** | 77 | 5 | **`build_road_edge_lists`** (`$24F6`) | the road-geometry projection pass |
@@ -265,7 +265,7 @@ also explains a 2026-08-13 mystery: that table charged this work to nothing, bec
 ran inside the VERTB ISR then (`docs/amiga-arch.md`) where no bracket could see it.
 
 **Inside the 51%, measured (`amiga/phase4_prof.gdb`, same run):** one body tick = **11.1 ms** of its
-20 ms, of which the body's own arm `body_tick_xor_anim` is only **277 µs** — the other **10.8 ms is
+20 ms, of which the body's own arm `tick_wheel_spin` is only **277 µs** — the other **10.8 ms is
 `irq1v_band_schedule` itself**, 5 calls per tick at **1983 µs each**.  The VERTB ISR (copper + present +
 audio) is **1011 µs** per field on top, charged to whichever phase it preempted.  An arm is ~60 6502
 instructions and ~72 BBC hardware accesses per tick go through `platform_hw_write` (counted with
@@ -275,7 +275,7 @@ drawing, pure `mem[]` + hardware writes, and its output (the band record) is alr
 against a real BBC by `make mode7` and `make refloop`.
 
 ⚠⚠ **So the Phase 6 pecking order is now: the 50 Hz body, then the dashboard, then the road
-subsystem (5+11 = 13.5%), then the decode.**  `body_tick_xor_anim` — the band-4 arm, which is also the only
+subsystem (5+11 = 13.5%), then the decode.**  `tick_wheel_spin` — the band-4 arm, which is also the only
 thing that draws display lines 120-143 — has never been profiled or split, and it is the single
 biggest item in the port.
 
@@ -305,7 +305,7 @@ Expect the same shape wherever a tight 6502 loop touches hardware or drives a ta
 
 ⚠ Two things this did NOT do, so the next measurement is not mis-set: the 51% row is a RATIO
 (the body still runs once per field, faithfully — it now just costs less each time), and
-`body_tick_xor_anim` is untouched.  Re-profile before picking twin #2; the share table above is stale.
+`tick_wheel_spin` is untouched.  Re-profile before picking twin #2; the share table above is stale.
 
 **Re-profiled after twin #1** (same command, n = 280 painted frames, ~700 ms/frame in the PROBES
 build).  The body tick fell from 11.1 ms to **5.5 ms** and `irq1v_band_schedule` from 1983 µs to 814 µs

@@ -103,7 +103,7 @@ Pointer pokes are not.
 ### ⭐⭐ "In the VBI ISR" is not the same as "in the vblank" — Revs, 2026-08-14
 The rule above says *where in the code*; what it means is *where the beam is*.  Those coincide
 only while the handler is **shorter than the blank**, and this port's VERTB handler is not: it
-runs the game's whole 50 Hz body (the IRQ1V band cycle ends in `body_tick_xor_anim`, the simulation) before
+runs the game's whole 50 Hz body (the IRQ1V band cycle, ending in `tick_wheel_spin`) before
 it got to the swap.  Measured with two `VPOSR`/`VHPOSR` reads at the swap itself: **49 of 49
 presents at raster line 46-149, every one inside the 44..251 display window** — while the handler
 was being *entered* at line 1 every time, 0 late.  The body costs only a few milliseconds, and a

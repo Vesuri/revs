@@ -167,7 +167,7 @@ That is exact for a **call**.  For a **loop** it is a trap: if control falls thr
 S1→S2→…→Sn and Sn jumps back to S1, the C form is *mutual recursion*, and GCC eliminates none of
 those tail calls on either target.  The stack then grows with the iteration count.  **Two such
 loops shipped in every build up to Phase 4**, one of them the per-pixel span store inside
-`project_geometry` — Ghidra's own boundaries never cut a loop in this binary, so it stayed latent
+`plot_view_src_line` — Ghidra's own boundaries never cut a loop in this binary, so it stayed latent
 until the runtime-built `$7B00` overlay hit it (300-1000 live frames, 0 painted frames on target).
 
 `build_regions()` finds every strongly-connected group of segments and emits it as **ONE** C

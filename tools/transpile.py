@@ -616,7 +616,7 @@ ROM_BASE = 0x8000
 #                       (src/platform/bbc_hw.cpp).  Hooking it here would have worked too
 #                       and been wrong — the exit condition belongs to the hardware model,
 #                       and a hook would have hidden that $FE4D was unmodelled.
-#   $1760  FUN_16dc     LDA $62F7 / BMI — ⭐ THE MAIN LOOP'S FRAME BOUNDARY.  $175D stores
+#   $1760  race_main_loop  LDA $62F7 / BMI — ⭐ THE MAIN LOOP'S FRAME BOUNDARY.  $175D stores
 #                       $9C into $62F7 and the 50 Hz interrupt body counts it down, so
 #                       under a single-threaded C port nothing ever clears it.  This is the
 #                       one true frame-wait in the engine.
@@ -752,7 +752,7 @@ PROBE_PHASE_FRAMEWAIT = 25
 # ⭐ Phase 4's "name the hot functions".  The engine's per-frame body is a FLAT sequence of
 # JSRs between these two addresses, which makes exact bracketing possible where PC sampling
 # would have to fight -O2 inlining for attribution (on the host, -O2 collapsed the entire
-# loop into one frame of FUN_16dc).  Generated rather than hand-written so it survives
+# loop into one frame of race_main_loop).  Generated rather than hand-written so it survives
 # `make gen`, and so a phase can never drift away from the call it is supposed to time.
 #
 # Every JSR whose address is in [lo, hi] gets `PROBE_PHASE(n)` emitted before it, numbered
@@ -2434,7 +2434,7 @@ def main():
             # A branch/JMP there is a plain local goto — but a JSR is NOT: it has to
             # return, so it needs a real C function even when the caller and callee sit
             # inside the same Ghidra function.  Revs has three such nested routines
-            # (Ghidra put FUN_1DA6/FUN_1DAF inside project_geometry and FUN_3273 inside
+            # (Ghidra put FUN_1DA6/FUN_1DAF inside plot_view_src_line and FUN_3273 inside
             # FUN_3261); skipping them here emitted a call to a function that was never
             # defined, which the C compiler caught — a reminder that the C type system is
             # part of this pipeline's error detection, not an obstacle to it.
@@ -3077,7 +3077,7 @@ def build_regions(funcs, external_entries, symbols):
     and ruinous for a LOOP: fall through S1..Sn, jump back to S1, and the C form is mutual
     recursion which GCC flattens on neither target — the stack grows with the iteration count
     and every iteration pays call overhead.  Two such loops shipped in every build up to
-    Phase 4, one of them the per-pixel span store in project_geometry.
+    Phase 4, one of them the per-pixel span store in plot_view_src_line.
 
     A region is emitted as ONE C function taking the 6502 entry address, with a `switch`
     prologue that `goto`s the right label.  Every transfer inside it is then a goto, so the

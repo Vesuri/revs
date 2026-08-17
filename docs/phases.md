@@ -442,7 +442,7 @@ state of the same shape a real BBC ends a drive in.  The write-up is `docs/bbc-h
 plus the two headers.
 
 Three things left here, none of them blocking:
-- **the pitch ramps ~50× too slowly**, because `sfx_trigger_random` is a MAIN-LOOP call and the main
+- **the pitch ramps ~50× too slowly**, because `engine_sound_update` is a MAIN-LOOP call and the main
   loop paints at ~1 FPS.  It is a framerate consequence, not an audio bug, and it fixes itself as
   Phase 6 lands.
 - **the by-ear pass has not happened** (audio cannot be verified headlessly).
@@ -901,9 +901,9 @@ cheap exactly up to the moment the first twin is written, and stops being cheap 
 Three things this batch has to produce, in this order:
 
 1. **Resolve the queued rename candidates**, `docs/rename.md`'s table plus its ⭐ next-up item
-   (`$1C1C`, currently `project_geometry`, suspected to be a pixel-pattern / column-shading pass —
-   two routines called "project…" doing different things is the precise tax that file exists to
-   prevent).  Anything in the three hot subtrees below is in scope; the rest of the backlog is not.
+   (`$1C1C` was the ⭐ one, and it is now `plot_view_src_line` — a line plotter into
+   `view_src_blocks`, never a projection).  Anything in the three hot subtrees below is in scope;
+   the rest of the backlog is not.
 2. ⚠ **Name the CELLS, not just the routines** — `src/gen/mem.h` currently carries **17** names,
    generated from `symbols.csv`'s var rows, and a hot-path twin touches far more `mem[]` cells than
    that.  Without this pass "use the `mem.h` name" degrades to `mem[0x62FC]` typed into hand-written
@@ -932,7 +932,7 @@ ran inside the VERTB ISR then, where no main-loop bracket could see it.
 | the road subsystem (5 + 11) | 13.5% | 140 | build then draw, still one subsystem |
 | the vblank spin (28) | 2.6% | 27 | |
 
-⭐ **So the first hand-optimisation target is `body_tick_xor_anim`, the 50 Hz body's own arm** — never profiled,
+⭐ **So the first hand-optimisation target is `tick_wheel_spin`, the 50 Hz body's own arm** — never profiled,
 never split, and the only thing in the port that both simulates and draws (display lines 120-143).
 It is also the one row a faster renderer cannot help.
 

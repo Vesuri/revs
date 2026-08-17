@@ -41,7 +41,7 @@ public:
     // ⭐⭐ THE GAME'S 50 Hz BODY, and WHERE IT IS ALLOWED TO RUN.
     //
     // One call to runBandCycle() is one field of the game's own IRQ1V chain — the five
-    // raster bands, the last of which is body_tick_xor_anim, the simulation.  vbi() only COUNTS the
+    // raster bands, the last of which calls tick_wheel_spin.  vbi() only COUNTS the
     // fields; drainTicks() runs them, from main-loop context, at points where the engine is
     // not drawing.  The reason is measured, not stylistic (docs/amiga-arch.md):
     //

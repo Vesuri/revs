@@ -5,6 +5,7 @@
 #include "../platform_c.h"   /* g_irqClobberCount/Which — the interrupt register contract */
 #include "../track.h"       /* circuit selection — the model and the refusal contract */
 #include "../shape.h"       /* REVS_SHAPE: the render path's input-distribution counters */
+#include "../../gen/mem.h"  /* MEM_<name> offsets, generated from disasm/symbols.csv */
 
 #include <cstdio>
 #include <cstdlib>
@@ -158,7 +159,8 @@ void PlatformHost::renderFrame()
             std::printf("DASH frame %lu: $61=%02X $3C=%02X $63=%02X $40=%02X $3E=%02X "
                         "$3F=%02X $2D=%02X $09=%02X  script step %u done=%d "
                         "(FE68 reads %lu, last $%02X)\n",
-                        frames, mem[0x61], mem[0x3c], mem[0x63], mem[0x40], mem[0x3e],
+                        frames, mem[MEM_engine_running], mem[MEM_engine_revs],
+                        mem[MEM_road_speed], mem[MEM_gear_index], mem[0x3e],
                         mem[0x3f], mem[0x2d], mem[0x09], autoRun.stepIndex(),
                         (int)autoRun.done(), g_viaT2Reads, g_viaT2Last);
     }

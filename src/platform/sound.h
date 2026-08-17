@@ -24,7 +24,7 @@
  *   BBC ch3 = envelope 1, the tyre squeal/scrape ($0E7C, gated on a random byte from $FE68)
  *
  * ⭐ The engine sound is ONE MECHANISM WITH TWO HALVES, and it is why channel 1 is often silent:
- * `sfx_trigger_random` ($0E74) plays the NOISE channel at low revs with channel 1 muted purely to
+ * `engine_sound_update` ($0E74) plays the NOISE channel at low revs with channel 1 muted purely to
  * supply its divider (noise pitch 3 = "use tone 1's frequency"), and above rev $5C it stops the
  * noise channel (`sound_stop_channel` $0E5A, an OSBYTE 21 buffer flush) and lets the two tones
  * sound.  A port that ignored the muted channel's pitch would play a fixed-pitch buzz.

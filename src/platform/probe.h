@@ -5,7 +5,7 @@
  * sequence of about twenty-five JSRs.  That shape is unusually kind to bracketing: each
  * call is a phase, the phases are disjoint, and the boundaries are exact rather than
  * statistical — no sampling bias, no symbol-attribution guesswork through -O2 inlining
- * (which on the host collapsed the entire loop into one frame of `FUN_16dc`).
+ * (which on the host collapsed the entire loop into one frame of `race_main_loop`).
  *
  * ⚠ WHAT THESE NUMBERS ARE, AND ARE NOT.  docs/perf-method.md is explicit and it was
  * learned the hard way:
@@ -101,7 +101,7 @@ extern volatile unsigned long g_probeBandTicks[PROBE_BANDS], g_probeBandCount[PR
  *               large here means the loop is waiting for the display rather than the reverse.
  *
  * Phase 25 keeps whatever is left (the call itself), so the old row is the sum of 25..28. */
-/* 29 splits the 50 Hz body itself: `body_tick_xor_anim`, the band-4 arm, which is the only part of the
+/* 29 splits the 50 Hz body itself: `tick_wheel_spin`, the band-4 arm, which is the only part of the
  * IRQ1V band cycle that simulates and DRAWS (display lines 120-143).  Everything else in the
  * cycle just reloads the timer and rewrites the palette.  Bracketed at its own JSR ($4EF5) with
  * phase 26 reopened immediately after, so the split is exact and the enclosing drain keeps the

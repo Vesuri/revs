@@ -4,6 +4,7 @@
 /* The game's own state, for AutoStep::until — a scripted key that waits on a PROBABILISTIC
    effect (the starter) can only be released by looking at what the game did with it. */
 #include "../cpu/mem_decl.h"
+#include "../gen/mem.h"   /* MEM_<name> offsets, generated from disasm/symbols.csv */
 extern "C" MEM_QUAL uint8_t mem[65536];
 
 /* Negative-INKEY codes, in the raw 256-n form OSBYTE 129 wants in X.  Read out of the
@@ -107,7 +108,7 @@ static const AutoStep s_script[] = {
     /* ...name and wings answer themselves through rdch().  Then the pits page. */
     {KEY_SPACE, 900, 2},
     {KEY_NONE,  4,   0},
-    {KEY_T,     400, 0, 0x61}, /* starter — held until $61 says the engine CAUGHT (below) */
+    {KEY_T,     400, 0, MEM_engine_running}, /* held until the engine CAUGHT (below) */
     {KEY_NONE,  2,   0},
     {KEY_Q,     400, 1}, /* first gear, or the "race" is a parked car                    */
     {KEY_NONE,  2,   0},
@@ -241,12 +242,12 @@ bool AutoRun::keyDown(uint8_t x)
            plan.md §7g).  So the steady state is a three-state machine on the game's OWN
            cells, in the same order and with the same keys the script used:
              engine off      -> the starter, exactly as the KEY_T step does
-             neutral         -> one upshift, and $0040 reaching 2 is what stops it
+             neutral         -> one upshift, and gear_index reaching 2 is what stops it
              otherwise       -> the throttle
            ⚠ It presses nothing the script did not, so the key set is unchanged and the
            workload stays comparable to a run that never crashed. */
-        if (mem[0x0061] == 0) return x == KEY_T;
-        if (mem[0x0040] < 2)  return x == KEY_Q;
+        if (mem[MEM_engine_running] == 0) return x == KEY_T;
+        if (mem[MEM_gear_index] < 2)      return x == KEY_Q;
         return x == KEY_S;
     }
 

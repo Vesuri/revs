@@ -535,6 +535,30 @@ by caller count instead of by address:
   live in the **track file** (`$5900-$5A25` after the swap), so those addresses hold different data
   per circuit.
 
+### The race loop's own anatomy (named 2026-08-17, clearing `docs/rename.md`)
+
+Asking "which C function is the main loop?" exposed that the loop had no name at all, and neither
+did three of the things it calls every frame:
+
+- **`race_main_loop` (`$16DC`)** is the function.  `$1701-$1748` is its 24-JSR body, `$174B-$17B7`
+  its tail, and it is a *label range*, not a callee.  It is JSRed from `wait_flag_05F4` and RTSes
+  back to the front end after stowing the `$7B00` overlay (`copy_dash_data` with A=`$80`).
+- **`shift_key_commands` (`$0EE5`)** is the whole in-race command set: SHIFT plus one of twelve
+  function keys, each writing a nibble into the `state_flags` block, which the same call then
+  services — the documented SHIFT+f0 return-to-pits, a real PAUSE that spins until key `$A6`, and
+  master volume, which is a scale on the *envelope's* attack level, not on the SOUND call.
+- **`engine_sound_update` (`$0E74`)** was `sfx_trigger_random`: the random noise pitch is its first
+  eight instructions, and the other ninety percent is the engine-note ramp.
+- **`draw_dash_needles` (`$513A`)** erases through an **undo list** — `plot_line_octant` saves every
+  byte it is about to modify (`$0780`/`$07A8`/`$07D0`), so `undraw_plot_lines` (`$511E`) restores
+  the exact background and nothing repaints the dial faces.
+- **`tick_wheel_spin` (`$52A4`)**, the band cycle's only game work, draws **the front wheels
+  turning**: three symmetric left/right byte runs at cells 0/1 and 38/39, display lines 133-140,
+  XORed at a rate proportional to `road_speed`.  Computing those six addresses into
+  (row, cell, line) and matching them against a real-BBC frame (`tmp/bbcref/ref_000211.png`) put
+  them exactly on the dither at the top of each front-wheel arch.  It had been carried as
+  `body_tick_xor_anim`, "identity of the element unknown", for a month.
+
 And a name that was wrong, corrected: **`menu_key_tbl` at `$39E0` has exactly four entries.**  The
 two bytes after it are not a fifth and sixth key binding — `$39E4` is the start of `car_lap_mid`, a
 20-entry per-car array, which is why they change at runtime.  Finding `sort_cars_by_key` using
@@ -618,8 +642,8 @@ value written during band n is band n+1's duration.
    **They are reached, and three of them are in the MAIN LOOP.**  Running the corpus (host and
    Amiga) trips the trap within seconds: `g_brkCount` climbs by ~3 per game frame and `g_brkPC`
    cycles through `$7B4A`, `$7B00`, `$7BE2`, with `$7B9C` on the init path.  The engine's
-   per-frame body is `$1701-$1763`, and `$1704`/`$1739`/`$1748` are three of its 24 top-level
-   calls.  Whatever lives in that page runs **fifty times a second**.  "Consistent with
+   per-frame body is `$1701-$1763` — label range inside **`race_main_loop` (`$16DC`)**, which is
+   the C function to look for; `$1704`/`$1739`/`$1748` are three of its 24 top-level calls.  Whatever lives in that page runs **fifty times a second**.  "Consistent with
    unreachable" is dead.
 
    **What is there is still unknown**, and the earlier "zero executions" measurements were never
@@ -795,7 +819,7 @@ value written during band n is band n+1's duration.
 
    | Cycle | What it is |
    |---|---|
-   | `$1DE8 → $1DE5 → $1DE8` | ⚠ the span store loop inside `project_geometry` — **one nested frame pair per pixel of every span**, in the hot path the profile points at |
+   | `$1DE8 → $1DE5 → $1DE8` | ⚠ the span store loop inside `plot_view_src_line` — **one nested frame pair per pixel of every span**, in the hot path the profile points at |
    | `$31D0 → $3D68 → $31D0` | the dashData block fill loop (the `$3900,X` start-offset table's other reader) |
    | `$7BF7 → $7C00 → $7D56 → $7E00 → $7EF3 → $7BF7` | the overlay's 41-block unrolled dashboard blit — overlay-only |
 

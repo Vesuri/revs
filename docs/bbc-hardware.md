@@ -295,7 +295,7 @@ The Amiga side of the mapping (region splits, pointers-before-colours, band rule
 ## Sound — ⭐ MEASURED, and the model is validated tick-for-tick (2026-08-15)
 
 ⚠ **THE ENGINE NOTE RAMPS ~50x TOO SLOWLY ON THE TARGET, AND THAT IS THE FRAMERATE, NOT AUDIO.**
-`sfx_trigger_random` is a MAIN-LOOP call, so the note-change rate is the painted-frame rate; at
+`engine_sound_update` is a MAIN-LOOP call, so the note-change rate is the painted-frame rate; at
 ~2.6 FPS against 50 it crawls, and no amount of work in `sound.*` or `RevsAudio.*` will change it.
 Verify with `GDBSCRIPT=sound.gdb ./diag_run.sh 70` on a `STRAIGHT_TO_RACE` build — a run that never
 starts the engine measures silence.
@@ -335,8 +335,9 @@ Five things the measurement settled that no amount of reading the game could:
    channel's pitch would play a fixed-pitch buzz.
 
 ⚠ **The engine note ramps ~50× too slowly, and that is the FRAMERATE, not the audio.**
-`sfx_trigger_random` (`$0E74`) steps the rev counter `$0060` by one toward `$005F` per call and is
-called from the main loop, which paints at ~1 FPS instead of 50 — so the pitch crawls to where a
+`engine_sound_update` (`$0E74`) steps `engine_note` (`$0060`) by one toward `engine_note_target`
+(`$005F`) per call and is called four times from `race_main_loop`'s body — so the ramp rate is the
+*painted-frame* rate, which is ~2.7 FPS instead of 50, and the pitch crawls to where a
 real BBC would arrive in a fifth of a second.  The 100 Hz scheduler tick itself is *not* affected:
 it runs off the VERTB, two per field (`RevsAudio.h`).
 

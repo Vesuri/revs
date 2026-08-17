@@ -246,7 +246,7 @@ volatile uint16_t g_ttAllocFailed = 0;      /* bit 0 = bitmap, bit 1 = copper li
  * never mid-frame.  vbiUpdate() IS called from the VERTB handler, which is why the rule looked
  * satisfied by construction — but "in the VERTB handler" and "in the vertical blank" are the
  * same thing only while the handler is SHORTER THAN A FRAME.  Here it is not: Revs::vbi() runs
- * the game's whole 50 Hz body (band 4 of the IRQ1V cycle is body_tick_xor_anim) before it gets to
+ * the game's whole 50 Hz body (band 4 of the IRQ1V cycle is tick_wheel_spin) before it gets to
  * vbiUpdate(), and the body takes hundreds of milliseconds at the current baseline.  So the
  * swap and the band rebuild can land ANYWHERE in a much later field, with the copper already
  * past the words being edited.
