@@ -408,9 +408,18 @@ derive what unrolling had given away.  ⭐ **So the dashboard is a REPRESENTATIO
 target** — `docs/direct-bitplane-plan.md` §7a from the other side: 2093 units run, ~83 bytes
 change, so the win is not scanning, not scanning faster.
 
-⭐ **Re-profiled after the band reuse (2026-08-17)**: the 50 Hz body drain is no longer the top row
-— **27 ms/frame, down from 176**.  `$7BE2` is now the largest item, then `$24F6` + `$1A20` (one
-build-then-draw subsystem), then the decode at 6.6%.  Full table: `docs/perf-method.md`.
+⭐ **Re-profiled after the band reuse (2026-08-17, 30 s warp run)**: `$7BE2` **131 ms / 30.5%**,
+`$24F6` 61, `$1A20` 58, the decode 37, the 50 Hz drain **30 (was 176)**, `$1E15` 29, `$46A1` 28,
+the vblank spin 23.  ⭐⭐ **The view pipeline — `$24F6` → `$1A20` → `$7BE2` — is 250 ms of a ~430 ms
+frame (58%) and it is ONE subsystem**: the first two are *producers* writing source bytes into the
+forty `$80`-spaced blocks at `$3000..$4380` (they write 95 frame-buffer bytes between them, all
+inside the flat sky band), and `$7BE2` is the single *consumer*.  That shared structure is the lever.
+⚠ The **VERTB ISR** is ~20 ms/frame (915 µs × ~22 calls) charged to whatever it preempts, so it
+appears in no row — copper rebuild + bitplane swap + audio, internally unmeasured.
+Full table: `docs/perf-method.md`.
+⚠⚠ **Use 30-second warp runs, not longer**: a `STRAIGHT_TO_RACE` run leaves the track, resets, and
+then nothing happens, so a longer run DILUTES the measurement with a static scene rather than adding
+data (the 90 s table read the drain at 20 ms against 30 ms measured properly).
 ⚠ **`$4E5C irq1v_handler` is NOT "the 50 Hz game body"** despite what `symbols.csv`, `probe.h`,
 `Revs.cpp` and `docs/amiga-arch.md` all say — it is the raster-band palette schedule and it draws
 nothing; `$52A4` (a speed-rate XOR animation on display lines 120-143) is the field's only game

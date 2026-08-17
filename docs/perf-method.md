@@ -374,6 +374,42 @@ coarse 32-byte pre-test over four cells at a time, would likely halve it.  **Lef
 deliberately:** ~18 ms of a ~1000 ms shipping frame is under 2%, which this project's own rule says
 is unquotable, and the same hour spent on the dashboard's scan is worth ten times more.
 
+### ⭐⭐ Where the time goes — RE-MEASURED 2026-08-17, AFTER the band-record reuse
+
+`make clean && make PROBES=1 STRAIGHT_TO_RACE=1 FIXED_RNG=1` +
+`EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=phase4_prof.gdb ./diag_run.sh 30`.  n = 321-328 painted
+frames, ~7100 fields, **accounted 98.5% of elapsed**.  Shares within one run (Rule 2).
+
+⚠⚠ **THIRTY SECONDS, NOT NINETY, AND THAT IS NOT ABOUT PATIENCE.** A `STRAIGHT_TO_RACE` run leaves
+the track, gets reset, and then **nothing happens** — so a longer run does not gather more data, it
+DILUTES the measurement with a static scene.  The 90 s version of this table read `$7BE2` at 130 ms
+and the drain at 20 ms; the 30 s version reads 131 and 30.  A run length past the interesting part
+is a silent averaging error, in the same family as the per-band average below.
+
+| Share | ms/frame | Phase | Callee | What it is |
+|---|---|---|---|---|
+| **30.5%** | **131** | **24** | **`$7BE2`** | the 3D VIEW rasteriser (not the dashboard — `docs/rename.md`).  2093 units, ~83 change a byte |
+| 14.1% | 61 | 5 | `build_road_edge_lists $24F6` | the road-geometry projection pass |
+| 13.5% | 58 | 11 | `$1A20` | writes **6 visible bytes**; its output is per-column data, not pixels |
+| 8.6% | 37 | 27 | the decode | `RevsScreen::decode()`, dirty-region.  Port overhead, and DONE |
+| 7.0% | 30 | 26 | the 50 Hz drain | **was 176** before the record reuse |
+| 6.8% | 29 | 18 | `$1E15` | |
+| 6.5% | 28 | 4 | `$46A1` | |
+| 5.3% | 23 | 28 | the vblank spin | port overhead |
+| 1.7% | 7 | 15 | `$2AD1` | |
+| 1.1% | 4 | 29 | `$52A4` | the band cycle's only game work |
+
+⭐⭐ **THE VIEW PIPELINE IS 250 ms OF A ~430 ms FRAME — 58% — AND IT IS ONE SUBSYSTEM.**
+`$24F6` and `$1A20` between them write **95 frame-buffer bytes, all inside the flat-blue sky band**
+(measured, `make fbwrites`): they are not drawing, they are **producers**, writing *source bytes*
+into the forty `$80`-spaced blocks at `$3000..$4380` indexed by screen column.  `$7BE2` is the single
+**consumer** that turns those into screen bytes.  So the three biggest rows in the table are
+producer → producer → consumer over one shared data structure, and that structure is the lever.
+
+⚠ **The VERTB ISR is now a row worth naming**: 915 us per call, ~22 calls per painted frame ≈ **20
+ms/frame**, charged to whichever phase it preempted so it appears in no row of its own.  It does the
+copper rebuild, the bitplane-pointer swap and the audio tick.  Unmeasured internally.
+
 ### ⭐⭐ THE RASTER-BAND RECORD REUSE: **2.05 → 2.63 FPS (+28%)** — the row was 96% MACHINERY (2026-08-17)
 
 The biggest row in the table (the 50 Hz body drain, 141 ms / 26%) carried a note saying its cost
