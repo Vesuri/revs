@@ -30,7 +30,7 @@
 //
 // So this counts zero bytes per frame in the VISIBLE SKY WINDOW and reports the
 // distribution, rather than dumping one frame and hoping it is representative — the
-// sky/track split moves with the hills every frame (MoveHorizon, $4F44), so a single frame
+// sky/track split moves with the hills every frame (update_horizon_band, $4F44), so a single frame
 // proves nothing either way.
 //
 //   cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_probe_sky.mjs [seconds]

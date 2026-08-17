@@ -248,7 +248,7 @@ paint plus the frame wait" and read 2.5%; measured properly it was **60.9%**, so
 | **51.1%** | **526** | **26** | **the 50 Hz game body** | `drainTicks()` — the IRQ1V band cycle and `tick_wheel_spin`, run from main-loop context at the engine's frame hook.  ⚠ **NOT one slow routine: ~50 ticks per painted frame.**  See the arithmetic below |
 | **14.6%** | 150 | 24 | **`$7BE2`** | the dashboard sweep in the `$7B00` overlay (plus the end of the loop body, `$174B-$1763`) |
 | **8.1%** | 83 | **27** | `RevsScreen::decode()` | frame buffer → bitplanes.  Pure port overhead — and **83 ms, not the ~250 ms `direct-bitplane-plan.md` §1 assumed** |
-| **7.4%** | 77 | 5 | **`build_road_edge_lists`** (`$24F6`) | the road-geometry projection pass |
+| **7.4%** | 77 | 5 | **`build_track_geometry`** (`$24F6`) | the road-geometry projection pass |
 | **6.1%** | 63 | 11 | **`$1A20`** | the road pass ⚠ and it writes **6 bytes** of the frame buffer per call — see the note below |
 | 3.3% | 34 | 4 | `$46A1` | 16-bit math, the physics core |
 | 3.1% | 32 | 18 | `$1E15` | 3D geometry |
@@ -316,7 +316,7 @@ per call, exactly as predicted:
 | **27.4%** | 189 | 26+29 | the 50 Hz body — still the largest row, now by much less |
 | **21.8%** | 151 | 24 | **`$7BE2`, the dashboard** — now the biggest *main-loop* item |
 | 11.9% | 82 | 27 | the decode (port overhead — `docs/direct-bitplane-plan.md`) |
-| 11.3% | 78 | 5 | `build_road_edge_lists` `$24F6` |
+| 11.3% | 78 | 5 | `build_track_geometry` `$24F6` |
 | 8.7% | 60 | 11 | `$1A20`, the road pass |
 | 4.8% | 33 | 4 | `$46A1` |
 | 4.6% | 32 | 18 | `$1E15` |
@@ -331,7 +331,7 @@ did — which is also the check that the twin changed nothing else:
 | **26.2%** | 159 | 26 | the 50 Hz body drain (30.8 ticks per painted frame, 5452 µs each) |
 | **21.6%** | **131** | 24 | `$7BE2` the dashboard — **was 151**; see the twin-#2 entry below |
 | 13.4% | 81 | 27 | the decode (port overhead) |
-| 10.0% | 61 | 5 | `build_road_edge_lists` `$24F6` |
+| 10.0% | 61 | 5 | `build_track_geometry` `$24F6` |
 | 9.6% | 58 | 11 | `$1A20`, the road pass |
 | 4.8% | 29 | 18 | `$1E15` |
 | 4.6% | 28 | 4 | `$46A1` |
@@ -351,7 +351,7 @@ in the PROBES build, accounted 99.0%).  Again only the row that was supposed to 
 |---|---|---|---|
 | **26.1%** | 141 | 26 | the 50 Hz body drain (27.5 ticks per painted frame, 5439 µs each) |
 | **24.2%** | 131 | 24 | `$7BE2` the dashboard — unchanged, and now the biggest row after the body |
-| 11.3% | 61 | 5 | `build_road_edge_lists` `$24F6` |
+| 11.3% | 61 | 5 | `build_track_geometry` `$24F6` |
 | 10.8% | 59 | 11 | `$1A20`, the road pass |
 | **6.6%** | **36** | 27 | the decode — **was 81 ms**, and this is what the dirty region bought |
 | 5.4% | 29 | 18 | `$1E15` |
@@ -416,7 +416,7 @@ is a silent averaging error, in the same family as the per-band average below.
 | Share | ms/frame | Phase | Callee | What it is |
 |---|---|---|---|---|
 | **22.3%** | **84** | **24** | **`$7BE2`** | the 3D VIEW rasteriser (not the dashboard — `docs/rename.md`).  2093 units, ~83 change a byte.  **Was 131**: the two passes below took the unit loop and then the per-line drivers.  ⚠⚠ **11 ms of this row is the main-loop TAIL, not the sweep** — it is brackets 24+32+33+34 now, and the sweep splits 25/17/41 by painting phase (§11 ms of phase 24) |
-| 16.3% | 61 | 5 | `build_road_edge_lists $24F6` | the road-geometry projection pass |
+| 16.3% | 61 | 5 | `build_track_geometry $24F6` | the road-geometry projection pass |
 | 15.6% | 58 | 11 | `$1A20` | writes **6 visible bytes**; its output is per-column data, not pixels |
 | 9.5% | 35 | 27 | the decode | `RevsScreen::decode()`, dirty-region.  Port overhead, and DONE |
 | 7.8% | 29 | 18 | `$1E15` | |
@@ -474,7 +474,7 @@ the handler wrote and `RevsScreen` re-emits it as copper WAITs; no palette is ev
 CPU here. So the cycle's entire output is the RECORD, and the record is a pure function of five
 palette tables (`$3458/$3468/$3478/$347C`), the horizon (`$4F1F/$4F20`) and the entry state
 (`$4F43`). Everything else it leaves behind is idempotent — `$4F21/$4F22` is the horizon remainder,
-`$4F43` returns to 0, the 6502 stack balances. `MoveHorizon` (`$4F44`) is a **main-loop** routine, so
+`$4F43` returns to 0, the 6502 stack balances. `update_horizon_band` (`$4F44`) is a **main-loop** routine, so
 at this framerate the inputs move about once every 25 fields.
 
 `Platform::fireIrq1vField()` compares the 43 input bytes and, when they have not moved, runs `$52A4`
@@ -945,7 +945,7 @@ those is fiction — see the ⚰ note below for what that looked like.
 |---|---|---|---|---|
 | **36.1%** | 254 | 24 | **`$7BE2`** | the **dashboard**, in the `$7B00` overlay.  Also contains the end of the loop body ($174B-$1763), but **no longer the frame wait** — that is phase 25 now |
 | **21.1%** | 148 | 11 | **`$1A20`** | the **road rasteriser** — calls `$193E` (the SMC'd `STA $0400,Y` screen-row store loop) and `$19AF` → `interp_edge` → the span plotters |
-| **19.0%** | 133 | 5 | **`build_road_edge_lists`** (`$24F6`) | the **road-geometry projection pass** — builds the two 40-point edge lists (`edge_x_lo/hi`, `edge_y`) that phase 11 then rasterises.  Named 2026-08-13; see below |
+| **19.0%** | 133 | 5 | **`build_track_geometry`** (`$24F6`) | the **road-geometry projection pass** — builds the two 40-point edge lists (`edge_x_lo/hi`, `edge_y`) that phase 11 then rasterises.  Named 2026-08-13; see below |
 | 8.0% | 56 | 18 | `$1E15` | `FUN_1DEF`×2 — 3D geometry |
 | 6.6% | 46 | 4 | `$46A1` | 16-bit math — the physics core |
 | **2.5%** | 18 | **25** | *(the frame wait)* | `platform_render_frame()` — the paint (a no-op today) plus the spin on the next real vblank.  **Port overhead, not engine work.** ~1 display frame per game frame, as expected |
@@ -960,7 +960,7 @@ phase 25 at 1.5%.  Treat the ordering and the rough magnitudes as the finding; d
 2-5pp difference as one.
 
 ⭐ **The road pipeline is 40% of the frame in two halves — build (phase 5) then draw (phase 11).**
-`build_road_edge_lists` is the producer of exactly the arrays `interp_edge` consumes, so these two
+`build_track_geometry` is the producer of exactly the arrays `interp_edge` consumes, so these two
 rows are one subsystem, and any change to the road's geometry representation moves both.  That is
 the most useful thing the naming pass revealed: the #3 cost was not an independent third target.
 

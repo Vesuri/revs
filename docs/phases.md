@@ -217,7 +217,7 @@ mirrors + dashboard turned out to be ~36% of the frame.
 at **57.4%** — `$46A1` (24.6%), `$1E15` (13.1%), `$1B12` (9.9%), `$4CA4` (9.8%) — i.e. "physics
 and geometry, not rasterisation", called out as *the* headline difference from the Atari port.
 Re-measured 2026-08-13 with a phase-bracket clock that does not wrap every display frame:
-**`$7BE2` 36.1% (the dashboard), `$1A20` 21.1% (the road rasteriser), `build_road_edge_lists`
+**`$7BE2` 36.1% (the dashboard), `$1A20` 21.1% (the road rasteriser), `build_track_geometry`
 `$24F6` 19.0% (the road-geometry pass that FEEDS `$1A20`)** — 76.2% between them, and `$46A1` is
 6.6% while `$1B12` is 0.0%.  **The hot path is rasterisation**, the
 Atari port's experience applies more directly than assumed, and Phase 6's premise below is
@@ -911,7 +911,7 @@ Three things this batch has to produce, in this order:
 3. **Then batch-rename via the transpiler** (`symbols.csv` → `make gen`), and only then start item 1.
 
 Scope is the three item-1 targets and their subtrees — `$7BE2` (the `$7B00` overlay), `$1A20` →
-`interp_edge` → the span plotters, and `build_road_edge_lists` `$24F6` → `road_edge_start` /
+`interp_edge` → the span plotters, and `build_track_geometry` `$24F6` → `road_edge_start` /
 `road_edge_walk` / `project_point` / `road_edge_side`.  This is not a re-run of Phase 2.4's
 concentrated pass over the whole image; it is that pass finished for the 40% of the frame Phase 6
 is about to rewrite by hand.
@@ -951,7 +951,7 @@ corrected profile the targets are, in order:
 |---|---|---|
 | `$7BE2` | 36.1% | the dashboard, in the `$7B00` overlay.  ✅ The vblank wait that used to be folded into this row is now its own phase 25 (2.5%), so the figure is clean |
 | `$1A20` | 21.1% | the road rasteriser — `$193E` and `$19AF` → `interp_edge` → the span plotters |
-| `build_road_edge_lists` `$24F6` | 19.0% | the road-geometry projection pass — it BUILDS the edge lists `$1A20` draws |
+| `build_track_geometry` `$24F6` | 19.0% | the road-geometry projection pass — it BUILDS the edge lists `$1A20` draws |
 
 ⭐ **Rows 2 and 3 are one subsystem, 40% of the frame: build the road's edge lists, then draw
 them.**  That reframes the choice.  It is not "optimise `$1A20` or `$24F6`" — a change to how the

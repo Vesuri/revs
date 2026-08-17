@@ -383,7 +383,7 @@ void Platform::fireIrq1v(void)
    to 0, and the 6502 stack balances.  Run it twice on unchanged inputs and the second run is
    observably a no-op — apart from $52A4, which is the game work and therefore always runs.
 
-   MoveHorizon ($4F44) is a MAIN-LOOP routine, so at this framerate the inputs change about
+   update_horizon_band ($4F44) is a MAIN-LOOP routine, so at this framerate the inputs change about
    once every 25 fields and the other 24 re-derive a record byte-for-byte identical to the one
    already sitting in g_band*.
 
@@ -402,7 +402,7 @@ volatile unsigned long g_bandRuns  = 0;   /* fields that ran the real cycle */
 volatile unsigned long g_bandCheckChecks   = 0;
 volatile unsigned long g_bandCheckMismatch = 0;
 /* ⭐⭐ THE STIMULUS, counted over the whole run instead of sampled at the end.  The horizon is
-   the one input that moves while driving ($4F44 MoveHorizon, a main-loop routine), so it is what
+   the one input that moves while driving ($4F44 update_horizon_band, a main-loop routine), so it is what
    makes a reuse test non-trivial — and a run with zero here has proved only that a static record
    stays static.  ⚠ It must be a COUNT, not a state read: the first attempt read $61/$63/$3C after
    the run and concluded the car was parked, when in fact those are the values a car has AFTER it

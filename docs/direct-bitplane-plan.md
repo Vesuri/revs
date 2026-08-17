@@ -142,7 +142,7 @@ frames 200-202 and 700-703, cross-read against the band record `f.bands`):
 - **Band 1's duration is FIXED at 4038 us = 63.1 lines** (the value the handler latches during band
   0, identical in every frame sampled), so the flat-blue region is always lines 18..81.1. What moves
   with the hills is **band 2's** length — `horizon_latch` read `$0558` (1368 us, 21.4 lines) in one
-  scene and `$04D8` (1240 us, 19.4 lines = `MoveHorizon`'s neutral value) in another. ⚠ The
+  scene and `$04D8` (1240 us, 19.4 lines = `update_horizon_band`'s neutral value) in another. ⚠ The
   paragraph above used to say the *sky* boundary moves with the hills; it does not, and that makes
   the skip-the-sky win easier than §4 claimed, not harder.
 - **The horizon really is a straight, full-width, whole-scan-line boundary** — the strongest possible

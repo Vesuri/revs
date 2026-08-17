@@ -95,7 +95,7 @@
  *      docs/reference-sources.md) gives the five band heights as 18/64/19/66/41 visible
  *      lines, which is the same table, and names the memory hidden in the sky.
  *
- * Band 2's duration is the HORIZON — `MoveHorizon` ($4F44, called from the main loop at
+ * Band 2's duration is the HORIZON — `update_horizon_band` ($4F44, called from the main loop at
  * $173F) computes it as $04D8 +/- 64*(a clamped function of the pitch variable $1F), i.e.
  * plus or minus whole scan lines, and band 3 takes the remainder of a fixed $153C.  So the
  * sky/track split MOVES WITH THE HILLS, which is exactly why this model records what the

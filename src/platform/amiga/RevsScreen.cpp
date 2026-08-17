@@ -857,7 +857,7 @@ void RevsScreen::present()
  * vbiUpdate(), so the copper's palette schedule was rebuilt ~50-100 times from ever-newer
  * records while the pixels on screen stayed from one much older frame.
  *
- * That is not a cosmetic mismatch, because band 2's boundary IS the horizon: `MoveHorizon`
+ * That is not a cosmetic mismatch, because band 2's boundary IS the horizon: `update_horizon_band`
  * ($4F44) recomputes band 2's duration every game frame as a function of pitch, so the
  * sky/track split MOVES WITH THE HILLS (bbc_screen.h).  Pair frame N's pixels with frame
  * N+k's boundary and the rows in between get the wrong band's palette — and band 2's pen 0 is

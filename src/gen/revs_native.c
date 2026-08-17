@@ -193,7 +193,7 @@ void irq1v_band_schedule(void)
         bbc_ula_control_write(BBC_ULA_MODE5);
         for (i = 0; i < 16; i++) { bbc_ula_palette_write(entry); entry = (unsigned char)(entry + 0x10); }
 
-        /* The horizon split.  MoveHorizon ($4F44) puts band 1's duration in
+        /* The horizon split.  update_horizon_band ($4F44) puts band 1's duration in
            band1_duration from MAIN-LOOP context; band 2 takes the remainder of a fixed
            $153C and it is kept in band2_duration for band 2's own arm to load.  A borrow
            (the sky longer than the whole split) means band 2 has no height at all, so its
@@ -283,9 +283,9 @@ void irq1v_band_schedule(void)
      1  $7BE2, line $4F..$2C — the full forty cells, looping through view_next_scanline
         until the line counter reaches $2C.
      2  $7D13, line $2B..$1C — the painted run is shorter, so the driver plants an RTS
-        ($60) over the store of unit view_stop_a_tbl[line], runs the chain, and composes
-        the boundary cell itself out of view_bnd_a_mask/fill.  It then enters chain B at
-        view_start_b_tbl[line] for the second run.
+        ($60) over the store of unit view_run_left_end[line], runs the chain, and composes
+        the boundary cell itself out of view_left_end_mask/fill.  It then enters chain B at
+        view_run_right_start[line] for the second run.
      3  $7F18, line $1B..$03 — as phase 2, but BOTH chains get a planted stop and a
         computed start, and the driver steps the scan-line pointers itself.
 
@@ -295,10 +295,15 @@ void irq1v_band_schedule(void)
    the stop is unchanged — so the first line of a phase can legally run with no stop
    planted at all.  Faithful, and reproduced.
 
-   ⚠ THE CONTROL TABLES OVERLAP THE SOURCE BLOCKS, and that is not a mistake to tidy up:
-   view_stop_b_tbl ($3080) is cell column 1's source area, so the chain can ZERO a byte the
-   driver is about to read.  Every table read therefore happens exactly where the 6502 did
-   it — hoisting one out of the loop changes behaviour.
+   ⚠ THE CONTROL TABLES LIVE INSIDE THE SOURCE BLOCKS, and that is not a mistake to tidy up.
+   A block's live source span is offsets dash_block_starts[col]..$4F, so the rest of each $80
+   is dead — the tails ($50-$7F) once copy_dash_data has moved them to $7B00, and the offsets
+   below the start.  Three of the four tables sit in tails; view_run_right_end ($3080) sits in
+   column 1's below-the-start region, and since column 1 starts at offset $1B while the driver
+   indexes that table only over phase 3's lines 3..$1B, the two readings collide in EXACTLY ONE
+   byte: $309B, at phase 3's topmost line.  That is why the chain can zero a byte the driver is
+   about to read, and why every table read has to happen exactly where the 6502 did it —
+   hoisting one out of the loop changes behaviour.
 
    ⭐ SHAPE, MEASURED (docs/direct-bitplane-plan.md §7a): 2093 units run per sweep and
    about 83 of them change a byte, i.e. 96% of the work is a dirty test that finds nothing.
@@ -326,24 +331,45 @@ void irq1v_band_schedule(void)
    `AND`/`CPX` before the next branch — which is why the unit loop keeps no flags at all.
    =========================================================================== */
 
-/* The per-scan-line control tables (symbols.csv carries the same names).  Addresses rather
-   than mem.h aliases: they are indexed tables, so the twin adds the line itself. */
+/* ⭐⭐ The per-scan-line control tables, and what they MEAN (symbols.csv carries the same names
+   and the full derivation).  Addresses rather than mem.h aliases: they are indexed tables, so
+   the twin adds the line itself.
+
+   Every line is painted as TWO RUNS of cells — the LEFT run in chain A's cells 0-15 and the
+   RIGHT run in chain B's cells 16-39 — and what splits them is the DASHBOARD, not the road.
+   That silhouette is fixed furniture, which is why every table here is static data in the
+   binary and nothing in the engine writes it.  At the bottom line (X=3) the left run is cells
+   5-6 and the right run cells 33-34: the two gaps between the tyres and the dash.
+
+   ⭐ THE TWO RUNS ARE EXACT MIRRORS about cell 19.5, and the code lives off it: the left run's
+   start is not tabulated at all — it is $F1 - VIEW_RUN_R_END (5+34 = 6+33 = 39) — and the four
+   mask/fill pairs come in the mirrored diagonal, left-START with right-END on the pixel-phase
+   tables and left-END with right-START on the per-line ones. */
 #define VIEW_SRC_BLOCKS     0x3000u   /* forty $80-spaced source blocks, one per cell column */
 #define VIEW_CELL_BYTES     0x6000u   /* source byte -> screen byte */
-#define VIEW_STOP_A         0x3150u   /* chain A's stop unit for this line */
-#define VIEW_STOP_B         0x3080u   /* chain B's stop unit (and cell column 1's sources) */
-#define VIEW_START_B        0x30D0u   /* chain B's entry unit */
-#define VIEW_EDGE_INDEX     0x3050u   /* index into the four edge mask/fill tables */
-#define VIEW_EDGE_MASK_A    0x3679u
-#define VIEW_EDGE_FILL_A    0x3579u
-#define VIEW_EDGE_MASK_B    0x36F9u
-#define VIEW_EDGE_FILL_B    0x35F9u
-#define VIEW_BND_A_MASK     0x38D0u
-#define VIEW_BND_A_FILL     0x3350u
-#define VIEW_BND_B_MASK     0x3950u
-#define VIEW_BND_B_FILL     0x33D0u
-#define VIEW_BND_A_SRC      0x0504u   /* per-line source byte for chain A's boundary cell */
-#define VIEW_BND_B_SRC      0x4400u   /* ...and chain B's */
+#define VIEW_RUN_L_END      0x3150u   /* where the LEFT run stops: a chain-A slot's low byte */
+#define VIEW_RUN_R_END      0x3080u   /* where the RIGHT run stops — and $F1 minus it is where
+                                         the LEFT run starts.  ⚠ Also cell column 1's source
+                                         area; the two readings share exactly one byte, $309B
+                                         at line $1B, because a block's live source span is
+                                         offsets dash_block_starts[col]..$4F and column 1's
+                                         start is $1B, while the driver indexes this table only
+                                         over phase 3's lines 3..$1B. */
+#define VIEW_RUN_R_START    0x30D0u   /* where the RIGHT run starts: a chain-B unit+$05 entry */
+#define VIEW_EDGE_PHASE     0x3050u   /* the dash edge's sub-byte PIXEL PHASE, 0-6; one value
+                                         serves both runs because they mirror */
+#define VIEW_L_START_MASK   0x3679u   /* by phase: the LEFT run's first cell */
+#define VIEW_L_START_FILL   0x3579u
+#define VIEW_R_END_MASK     0x36F9u   /* by phase: the RIGHT run's last cell (its mirror) */
+#define VIEW_R_END_FILL     0x35F9u
+#define VIEW_L_END_MASK     0x38D0u   /* by line: the LEFT run's last cell */
+#define VIEW_L_END_FILL     0x3350u
+#define VIEW_R_START_MASK   0x3950u   /* by line: the RIGHT run's first cell (its mirror) */
+#define VIEW_R_START_FILL   0x33D0u
+#define VIEW_L_START_SRC    0x0504u   /* the LEFT run's first cell's source byte, per line —
+                                         both of these are produced by the body's 18th call,
+                                         fill_dash_edge_columns */
+#define VIEW_R_START_SRC    0x4400u   /* ...and the RIGHT run's first cell's */
 #define VIEW_LINE_SURFACE   0x5F60u   /* per-line surface index, 2 bits, into surface_colours */
 #define SURFACE_COLOURS_TBL 0x38FCu
 
@@ -943,7 +969,7 @@ static void paint_lines_short(ViewState* v)
 
         /* chain A's stop */
         VIEWP3_PHASE(PROBE_PHASE_P3_STOPA);
-        v->cell = mem[VIEW_STOP_A + v->line];
+        v->cell = mem[VIEW_RUN_L_END + v->line];
         if (!view_move_stop(v, v->cell, VIEW_REC_A3, 0x7F23, 0x7F2E, 0x7F2F, 0x7C)) {
             view_commit(v);
             return;
@@ -963,42 +989,42 @@ static void paint_lines_short(ViewState* v)
         }
         VIEWP3_PHASE(PROBE_PHASE_P3_CHAINA);
 
-        /* chain A: enter at $F1 - view_stop_b_tbl[line], with the boundary cell composed
+        /* chain A: enter at $F1 - view_run_right_end[line], with the boundary cell composed
            from the per-line source byte and the edge tables */
-        v->byte = sub_from(0xF1, mem[VIEW_STOP_B + v->line]);
+        v->byte = sub_from(0xF1, mem[VIEW_RUN_R_END + v->line]);
         mem[0x7F68] = (unsigned char)v->byte;
-        edge    = mem[VIEW_EDGE_INDEX + v->line];
-        v->byte = view_compose(mem[VIEW_BND_A_SRC + v->line],
-                               mem[VIEW_EDGE_MASK_A + edge],
-                               mem[VIEW_EDGE_FILL_A + edge]);
+        edge    = mem[VIEW_EDGE_PHASE + v->line];
+        v->byte = view_compose(mem[VIEW_L_START_SRC + v->line],
+                               mem[VIEW_L_START_MASK + edge],
+                               mem[VIEW_L_START_FILL + edge]);
         v->cell = v->byte;                          /* TAY: N/Z already match */
         if (!view_enter_chain(v, 0x7F67, 0x7F68, 0x7C)) { view_commit(v); return; }
-        v->byte = view_compose(v->byte, mem[VIEW_BND_A_MASK + v->line],
-                                        mem[VIEW_BND_A_FILL + v->line]);
+        v->byte = view_compose(v->byte, mem[VIEW_L_END_MASK + v->line],
+                                        mem[VIEW_L_END_FILL + v->line]);
         REVS_PLOT_CELL(view_screen_addr(MEM_plot_ptr_lo, v->cell), (uint8_t)v->byte);
         bus_write(view_screen_addr(MEM_plot_ptr_lo, v->cell), (uint8_t)v->byte);
 
         /* chain B: the same again, one page down and with its own tables.  ⚠ the stop is
            re-read here — the chain may have zeroed it (see the header). */
         VIEWP3_PHASE(PROBE_PHASE_P3_STOPB);
-        v->cell = mem[VIEW_STOP_B + v->line];
+        v->cell = mem[VIEW_RUN_R_END + v->line];
         if (!view_move_stop(v, v->cell, VIEW_REC_B3, 0x7F7C, 0x7F87, 0x7F88, 0x7E)) {
             view_commit(v);
             return;
         }
         VIEWP3_PHASE(PROBE_PHASE_P3_CHAINB);
-        entry   = mem[VIEW_START_B + v->line];
+        entry   = mem[VIEW_RUN_R_START + v->line];
         v->cell = entry;
         mem[0x7F9B] = (unsigned char)entry;
-        v->byte = view_compose(mem[VIEW_BND_B_SRC + v->line],
-                               mem[VIEW_BND_B_MASK + v->line],
-                               mem[VIEW_BND_B_FILL + v->line]);
+        v->byte = view_compose(mem[VIEW_R_START_SRC + v->line],
+                               mem[VIEW_R_START_MASK + v->line],
+                               mem[VIEW_R_START_FILL + v->line]);
         v->cell = v->byte;                          /* TAY */
         if (!view_enter_chain(v, 0x7F9A, 0x7F9B, 0x7E)) { view_commit(v); return; }
         math_hi = (unsigned char)v->cell;           /* the chain's cell, parked in scratch */
-        edge    = mem[VIEW_EDGE_INDEX + v->line];
-        v->byte = view_compose(v->byte, mem[VIEW_EDGE_MASK_B + edge],
-                                        mem[VIEW_EDGE_FILL_B + edge]);
+        edge    = mem[VIEW_EDGE_PHASE + v->line];
+        v->byte = view_compose(v->byte, mem[VIEW_R_END_MASK + edge],
+                                        mem[VIEW_R_END_FILL + edge]);
         v->cell = math_hi;
         UPD_NZ(v->cell);                            /* the `LDY math_hi` that reloaded it */
         REVS_PLOT_CELL(view_screen_addr(MEM_plot_ptr2_lo, v->cell), (uint8_t)v->byte);
@@ -1035,7 +1061,7 @@ static void paint_lines_clipped(ViewState* v)
     for (;;) {
         v->line = (v->line - 1) & 0xFF;
 
-        v->cell = mem[VIEW_STOP_A + v->line];
+        v->cell = mem[VIEW_RUN_L_END + v->line];
         if (!stop_unchanged(v->cell, mem[VIEW_REC_A2])) {
             if (!view_plant(v, 0x7D23, VIEW_REC_A2, 0x7C, OP_STA_IND_Y)) {
                 view_commit(v);
@@ -1047,21 +1073,21 @@ static void paint_lines_clipped(ViewState* v)
                 view_commit(v);
                 return;
             }
-            v->cell     = mem[VIEW_START_B + v->line];   /* chain B's entry, for the store */
+            v->cell     = mem[VIEW_RUN_R_START + v->line];   /* chain B's entry, for the store */
             UPD_NZ(v->cell);                             /* its `LDY` outlives the chain */
             mem[0x7D4D] = (unsigned char)v->cell;
         }
 
         paint_cells(v, 0, 0, 1);                /* the JSR through view_next_scanline */
 
-        v->byte = view_compose(v->byte, mem[VIEW_BND_A_MASK + v->line],
-                                        mem[VIEW_BND_A_FILL + v->line]);
+        v->byte = view_compose(v->byte, mem[VIEW_L_END_MASK + v->line],
+                                        mem[VIEW_L_END_FILL + v->line]);
         REVS_PLOT_CELL(view_screen_addr(MEM_plot_ptr_lo, v->cell), (uint8_t)v->byte);
         bus_write(view_screen_addr(MEM_plot_ptr_lo, v->cell), (uint8_t)v->byte);
 
-        v->byte = view_compose(mem[VIEW_BND_B_SRC + v->line],
-                               mem[VIEW_BND_B_MASK + v->line],
-                               mem[VIEW_BND_B_FILL + v->line]);
+        v->byte = view_compose(mem[VIEW_R_START_SRC + v->line],
+                               mem[VIEW_R_START_MASK + v->line],
+                               mem[VIEW_R_START_FILL + v->line]);
         v->cell = v->byte;                          /* TAY */
         if (!view_enter_chain(v, 0x7D4C, 0x7D4D, 0x7E)) { view_commit(v); return; }
 
@@ -1142,7 +1168,7 @@ void view_paint_lines(void)
        the car has been coasting to the line ever since.
 
      Ending a session is not just leaving the loop: sound off, the "please wait" message, and
-     FUN_1163 races the remaining drivers to the finish so the results table is complete.
+     finish_race races the remaining drivers to the finish so the results table is complete.
 
    ⚠ THE TWO PORT SEAMS ARE IN HERE, and they are the reason this routine matters far beyond
    its own cost.  Both were the transpiler's hooks (PRE_INSN_HOOKS / SPINWAIT_HOOKS) and are
@@ -1246,8 +1272,8 @@ static LoopVerdict race_session_end(RestartDepth* depth)
     }
 
     arg_x(0x30);                  /* the token for the "please wait" message */
-    FUN_17fc();
-    FUN_1163();                   /* race the remaining drivers to the finish */
+    print_message_pair();
+    finish_race();                   /* race the remaining drivers to the finish */
 
     if (!(load_a(state_flags) & 0x80)) {
         arg_a(0x20);
@@ -1333,13 +1359,13 @@ static void race_main_loop_core(RestartDepth depth)
             clear_race_clock();
         }
         if (depth >= RESTART_MID)
-            FUN_1805();
+            reset_driving_variables();
         if (depth >= RESTART_LATE)
-            FUN_11ce();
+            build_player_car();
 
         arg_a(0x00);
         state_flags = 0;
-        FUN_0b77();                   /* scale the wing settings for the new session */
+        scale_wing_settings();                   /* scale the wing settings for the new session */
 
         /* ---- one pass = one game frame ---- */
         do {
@@ -1350,32 +1376,32 @@ static void race_main_loop_core(RestartDepth depth)
             PROBE_SHAPE_PHASE(PROBE_PHASE_FRAMEWAIT);
             platform_render_frame();
 
-            PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  FUN_5052();               /* the clock */
-            PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  FUN_7b4a();               /* the lights */
-            PROBE_PHASE(3);  PROBE_SHAPE_PHASE(3);  FUN_1579();               /* the keys */
-            PROBE_PHASE(4);  PROBE_SHAPE_PHASE(4);  FUN_46a1();               /* the model */
-            PROBE_PHASE(5);  PROBE_SHAPE_PHASE(5);  build_road_edge_lists();
-            PROBE_PHASE(6);  PROBE_SHAPE_PHASE(6);  FUN_4626();
-            PROBE_PHASE(7);  PROBE_SHAPE_PHASE(7);  FUN_24b9();
-            PROBE_PHASE(8);  PROBE_SHAPE_PHASE(8);  FUN_0ffe();               /* lap timers */
+            PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers();
+            PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  draw_starting_lights();
+            PROBE_PHASE(3);  PROBE_SHAPE_PHASE(3);  read_driving_controls();
+            PROBE_PHASE(4);  PROBE_SHAPE_PHASE(4);  apply_driving_model();
+            PROBE_PHASE(5);  PROBE_SHAPE_PHASE(5);  build_track_geometry();
+            PROBE_PHASE(6);  PROBE_SHAPE_PHASE(6);  place_player_in_section();
+            PROBE_PHASE(7);  PROBE_SHAPE_PHASE(7);  advance_player_section();
+            PROBE_PHASE(8);  PROBE_SHAPE_PHASE(8);  update_lap_timers();
             PROBE_PHASE(9);  PROBE_SHAPE_PHASE(9);  engine_sound_update();
             PROBE_PHASE(10); PROBE_SHAPE_PHASE(10); clear_surface_buffers();
             PROBE_SHAPE_ROAD_BEFORE();
-            PROBE_PHASE(11); PROBE_SHAPE_PHASE(11); FUN_1a20();               /* the road */
+            PROBE_PHASE(11); PROBE_SHAPE_PHASE(11); draw_road();
             PROBE_SHAPE_ROAD_AFTER();
             PROBE_PHASE(12); PROBE_SHAPE_PHASE(12); engine_sound_update();
             PROBE_PHASE(13); PROBE_SHAPE_PHASE(13); fill_line_surface();
-            PROBE_PHASE(14); PROBE_SHAPE_PHASE(14); FUN_4ca4();
+            PROBE_PHASE(14); PROBE_SHAPE_PHASE(14); build_road_sign();
             arg_x(0x17);                                   /* $172B: the object slot count */
-            PROBE_PHASE(15); PROBE_SHAPE_PHASE(15); FUN_2ad1();
-            PROBE_PHASE(16); PROBE_SHAPE_PHASE(16); FUN_1b12();
-            PROBE_PHASE(17); PROBE_SHAPE_PHASE(17); FUN_2637();               /* the cars */
-            PROBE_PHASE(18); PROBE_SHAPE_PHASE(18); FUN_1e15();
+            PROBE_PHASE(15); PROBE_SHAPE_PHASE(15); draw_track_object();
+            PROBE_PHASE(16); PROBE_SHAPE_PHASE(16); draw_corner_markers();
+            PROBE_PHASE(17); PROBE_SHAPE_PHASE(17); move_and_draw_cars();
+            PROBE_PHASE(18); PROBE_SHAPE_PHASE(18); fill_dash_edge_columns();
             PROBE_PHASE(19); PROBE_SHAPE_PHASE(19); mirrors_update();
             PROBE_PHASE(20); PROBE_SHAPE_PHASE(20); engine_sound_update();
-            PROBE_PHASE(21); PROBE_SHAPE_PHASE(21); FUN_4f44();               /* the horizon */
-            PROBE_PHASE(22); PROBE_SHAPE_PHASE(22); FUN_1bb9();               /* contact */
-            PROBE_PHASE(23); PROBE_SHAPE_PHASE(23); FUN_111e();               /* the crash */
+            PROBE_PHASE(21); PROBE_SHAPE_PHASE(21); update_horizon_band();
+            PROBE_PHASE(22); PROBE_SHAPE_PHASE(22); process_car_contact();
+            PROBE_PHASE(23); PROBE_SHAPE_PHASE(23); check_crash();
             PROBE_SHAPE_DASH_BEFORE();
             PROBE_PHASE(24); PROBE_SHAPE_PHASE(24); view_paint_lines();
             PROBE_SHAPE_DASH_AFTER();

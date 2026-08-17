@@ -258,6 +258,14 @@ would read.)
 | `$2F60` `$2FA2` | `INY` opcode slots | `$2C01` `$2CD0` / `$2C04` `$2CD3` |
 | `$2FC0` `$2FD7` | `CPX` opcode slots | `$2CAF` `$2CB9` / `$2CAC` `$2CB6` |
 
+⚠⚠ **A 25th site, found by reading `draw_corner_markers` and NOT by the sweep: `$38FE`.**
+`$1B12` writes `$0F` there before drawing a marker whose `marker_flags` has bit 5 set, and `$F0`
+back at `$1B74`.  The sweep cannot see it because `$38FE` is `surface_colours + 2` — a *data*
+byte, not a decoded instruction — but it is patched code state all the same: it is the background
+colour `view_next_scanline` loads for every line, so both values are legal and **no `mem[]`
+differential can ever see a frozen one.**  Same class as the rev-counter case in §Open items.
+It needs a `data` SMC declaration in `tools/transpile.py` before `$1B12` or `$7EF3` is twinned.
+
 The shape is clear: **`$2C00-$2FFF` is a self-modifying inner loop** — opcode slots switched
 between `NOP`/`INY`/`CPX` and store addresses rewritten from `$19C0-$19CC`.  That is a rasteriser
 or span-filler specialised at runtime, and it is the single most important region to get right.
@@ -558,6 +566,60 @@ did three of the things it calls every frame:
   (row, cell, line) and matching them against a real-BBC frame (`tmp/bbcref/ref_000211.png`) put
   them exactly on the dither at the top of each front-wheel arch.  It had been carried as
   `body_tick_xor_anim`, "identity of the element unknown", for a month.
+
+### ⭐⭐ The twenty subsystems (named 2026-08-17, closing `docs/rename.md`'s biggest item)
+
+The 24-call body is a **flat sequence**, so slot *n* of our list is subsystem *n* of anyone else's,
+and that made the whole pass one sitting.  Each name below is derived from the routine's own body;
+`disasm/symbols.csv` carries the evidence per address.  Slot alignment was cross-checked against
+`revs.bbcelite.com`'s account of the same body — one-for-one, including all five slots this project
+had already named independently, which is what makes the alignment trustworthy.
+
+| slot | addr | name | what it is |
+|---|---|---|---|
+| 1 | `$5052` | `tick_race_timers` | the clocks and the main-loop counter |
+| 2 | `$7B4A` | `draw_starting_lights` | in the `$7B00` overlay; paints column 37 |
+| 3 | `$1579` | `read_driving_controls` | steering (incl. the assist), throttle/brake, gears |
+| 4 | `$46A1` | `apply_driving_model` | the physics; writes `road_speed`, `wheel_spin_rate` |
+| 5 | `$24F6` | `build_track_geometry` | the edge lists **and** the corner-marker list |
+| 6 | `$4626` | `place_player_in_section` | position within the current section |
+| 7 | `$24B9` | `advance_player_section` | moves the section cursor `$24` |
+| 8 | `$0FFE` | `update_lap_timers` | lap/session limits, the top-of-screen messages |
+| 9,12,20 | `$0E74` | `engine_sound_update` | (already named) |
+| 10 | `$66B6` | `clear_surface_buffers` | (already named) |
+| 11 | `$1A20` | `draw_road` | the road rasteriser — into the source blocks |
+| 13 | `$18BC` | `fill_line_surface` | (already named) |
+| 14 | `$4CA4` | `build_road_sign` | assembles object slot `$17` |
+| 15 | `$2AD1` | `draw_track_object` | draws slot X — a car or a sign |
+| 16 | `$1B12` | `draw_corner_markers` | consumes slot 5's marker list |
+| 17 | `$2637` | `move_and_draw_cars` | the other cars; at most five drawn |
+| 18 | `$1E15` | `fill_dash_edge_columns` | the tyre/dash seam, and it PRODUCES `$0504`/`$4400` |
+| 19 | `$7FB6`… | `mirrors_update` | (already named) |
+| 21 | `$4F44` | `update_horizon_band` | writes `band1_duration` — the only "horizon" there is |
+| 22 | `$1BB9` | `process_car_contact` | collisions, and the skid-noise cells |
+| 23 | `$111E` | `check_crash` | the fence; sets `crash_flag` for one frame |
+| 24 | `$7BE2` | `view_paint_lines` | (already named) |
+| — | `$1805` | `reset_driving_variables` | the session reset (`RESTART_MID`) |
+| — | `$11CE` | `build_player_car` | `RESTART_LATE` |
+| — | `$0B77` | `scale_wing_settings` | every (re)start's last step |
+| — | `$17FC` | `print_message_pair` | two status rows, token X and token `$2D` |
+| — | `$1163` | `finish_race` | races the remaining drivers so the results are real |
+
+Two things the pass **corrected** rather than merely filled in:
+
+- **`$24F6` was `build_road_edge_lists`, and the name was too narrow** — not one slot off, which was
+  the worry.  The same track walk that emits the two 40-point edge lists also appends the frame's
+  corner markers (`$25D9`-`$25FB` → `marker_edge_index`/`marker_flags`/`marker_offset_lo/hi`, count
+  in `marker_count`), which slot 16 then consumes and zeroes.  One producer, two products.
+- **`$1E15` is a producer of `view_paint_lines`' control input, not just a cosmetic fill.**  Its two
+  passes point `plot_ptr2` at `$0504` and `$4400` — the per-line boundary source bytes the view
+  sweep composes the two runs' edge cells from.  That link was invisible while the tables were named
+  after their operator.
+
+And the clock the whole pass hangs off: **`add_frame_time` (`$17C3`) adds 9 BCD hundredths of a
+second per frame, and `$18` on one frame in 25** — an average of 9.36, i.e. the BBC's own ≈10.7
+frames a second, written into the game's own time base.  `time_tick_period` (`$5A19`) is per
+circuit, so the calibration is track data.
 
 And a name that was wrong, corrected: **`menu_key_tbl` at `$39E0` has exactly four entries.**  The
 two bytes after it are not a fifth and sixth key binding — `$39E4` is the start of `car_lap_mid`, a

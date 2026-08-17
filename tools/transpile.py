@@ -940,7 +940,7 @@ def func_lo(f):
 # Dropping it produced C where a foreign interrupt fell off the end of the handler
 # instead of chaining — a plausible-looking corpus with the interrupt structure quietly
 # wrong, which is postmortem finding #1.1 all over again.  The other two are the same
-# shape: $262D-$2636 (BMI from $263A in FUN_2637) and $4978-$49CB (BEQ from $49D0 in
+# shape: $262D-$2636 (BMI from $263A in move_and_draw_cars) and $4978-$49CB (BEQ from $49D0 in
 # FUN_49ce).  Ending in a terminator is not evidence of not belonging: a prefix loop
 # body can perfectly well RTS or JMP out.
 # ---------------------------------------------------------------------------

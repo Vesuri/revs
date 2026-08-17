@@ -10,7 +10,7 @@
 # ⚠⚠ IT HAS TO RUN ON THE TARGET, and that is a measured requirement, not caution.  The same
 # check on the host passes even when SABOTAGED, because a host run is ~36 fields and the horizon
 # never moves in one — a skip that is never wrong on static inputs says nothing about the case
-# the change exists for.  Only a driving run on the target moves MoveHorizon ($4F44).
+# the change exists for.  Only a driving run on the target moves update_horizon_band ($4F44).
 #
 # PASS = mismatch 0 AND checks large AND the run actually drove (gear/speed non-zero below).
 set pagination off

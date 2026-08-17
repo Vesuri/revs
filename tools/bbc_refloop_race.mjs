@@ -366,7 +366,7 @@ tm.processor.debugInstruction.add((addr) => {
         case FRAME:
             frames++;
             // Every 4th frame, because the sky/track split moves with the hills
-            // (MoveHorizon, $4F44) — one frame proves nothing either way.
+            // (update_horizon_band, $4F44) — one frame proves nothing either way.
             if (frames > 8 && frames % 4 === 0 && skySamples.length < 80)
                 skySamples.push({
                     frame: frames,
@@ -398,7 +398,7 @@ tm.processor.debugInstruction.add((addr) => {
 // real thing, which is the missing half.
 //
 // ⭐ It matters for the stripes specifically because band 2's boundary MOVES EVERY FRAME —
-// MoveHorizon ($4F44) shifts it with the hills — so "lines 81..100" is only ever an
+// update_horizon_band ($4F44) shifts it with the hills — so "lines 81..100" is only ever an
 // approximation of the horizon band, and a zero-byte count over a fixed window silently mixes
 // in lines that belong to the flat-blue sky band (where a zero is invisible) or to the track
 // band (where black is the road).  Comparing the port's stripes against the real machine needs
