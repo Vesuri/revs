@@ -626,6 +626,12 @@ static void plant_geometry_smc(uint8_t* pre)
     pre[0x24DE] = 0x20; pre[0x24DF] = 0xF3; pre[0x24E0] = 0x12;  /* JSR $12F3 */
     pre[0x24E9] = 0xC9; pre[0x24EA] = 0x0E;                      /* CMP #$0E  */
     pre[0x24F2] = 0x20; pre[0x24F3] = 0x0B; pre[0x24F4] = 0x14;  /* JSR $140B */
+    /* ⭐ ADDED with the road_edge_* fixtures below, and it is a coverage fix for THIS fixture
+       too: emit_edge_width_offset runs on to $261E, so its own SMC site is reachable from
+       every walk — and an unplanted one is a trap, i.e. an early return in both models with
+       nothing left to compare.  `STA $1F / STY $51`, the frame's horizon record. */
+    pre[0x261A] = 0x85; pre[0x261B] = 0x1F;                      /* STA horizon_extent */
+    pre[0x261C] = 0x84; pre[0x261D] = 0x51;                      /* STY horizon_index  */
 }
 
 /* ⭐ THE ONE THING A RANDOM PRE-STATE MUST NOT BE ALLOWED TO DO, and it is not about these
@@ -988,6 +994,297 @@ static int test_body_drivers(void)
     return fail;
 }
 
+/* ==========================================================================
+   $22FF road_edge_start, $23D2 road_edge_walk, $254A road_edge_side, $3450 abs8
+   --------------------------------------------------------------------------
+   build_track_geometry's OWN callees — the rest of the road-geometry producer.  Unlike the
+   drivers above, three of these four carry real arithmetic: the near-slot bookkeeping and the
+   horizon maximum (road_edge_start), the running nearest and the midpoint interpolation
+   (road_edge_walk), the side/direction seeds (road_edge_side).
+
+   ⚠ TWO SELF-MODIFYING SITES, and both are unlike the ones above: $231A is a BRANCH OFFSET,
+   not an opcode, so the transliteration dispatches it into a switch over ~200 in-function
+   targets while the twin recognises the only two bytes any circuit actually writes ($0F,
+   Silverstone's skip, and $00, which every expansion circuit rewrites it to — `make
+   track-patch`).  The offset is therefore PLANTED with one of those two in every case: a
+   random third byte would send the two models to different addresses, which is a difference
+   in the twin's declared coverage rather than in its behaviour.  The site's OPCODE is left
+   random in a share of cases, because that arm traps identically in both models and is worth
+   testing.  $248B is an ordinary extent and gets Silverstone's bytes, a circuit's `JMP
+   <hook>` rewrite, and garbage.
+
+   ⚠ AND THE PRE-STATE HAS TO BE STEERED, for the reason the view producers' note gives: the
+   near-slot cells are compared against 6 as a sentinel, so a uniform byte takes the
+   "nothing to do" arm 1 time in 256 and the re-base loop runs at most once in 249 of 256.
+   Both are drawn from small sets instead.
+   ========================================================================== */
+void road_edge_start(void);
+void road_edge_start__t6502(void);
+void road_edge_walk(void);
+void road_edge_walk__t6502(void);
+void road_edge_side(void);
+void road_edge_side__t6502(void);
+void abs8(void);
+void abs8__t6502(void);
+
+enum { EDGE_SILVERSTONE = 0, EDGE_HOOKED = 1, EDGE_GARBAGE = 2 };
+
+/* The near-slot cells: 0..5 are real slots, 6 is the "nothing to do" sentinel, and anything
+   above is what a random byte would have given. */
+static const uint8_t NEAR_SLOTS[] = { 0, 1, 2, 3, 4, 5, 6, 7, 0xFF };
+
+static void edge_pre(uint8_t* pre, int shape)
+{
+    fill_random(pre);
+    plant_plotter_chains(pre);
+    plant_geometry_smc(pre);
+
+    /* the $231A offset — see the header.  The opcode is left to the shape. */
+    pre[0x231B] = (xs() & 1) ? 0x0F : 0x00;
+    if (shape == EDGE_HOOKED) {
+        pre[0x248B] = 0x4C; pre[0x248C] = 0xBC; pre[0x248D] = 0x56;   /* JMP $56BC */
+    } else if (shape == EDGE_GARBAGE) {
+        pre[0x231A] = (uint8_t)xs();                                  /* not a BEQ: trap */
+        pre[0x248B] = (uint8_t)xs();
+    }
+
+    pre[0x0005] = NEAR_SLOTS[xs() % (sizeof NEAR_SLOTS)];   /* near_edge_first  */
+    pre[0x0006] = NEAR_SLOTS[xs() % (sizeof NEAR_SLOTS)];   /* near_edge_last   */
+    pre[0x0008] = NEAR_SLOTS[xs() % (sizeof NEAR_SLOTS)];   /* near_edge_cursor */
+    /* near_edge_scroll_pending is non-zero in 255 bytes of 256, so the un-scrolled path
+       needs drawing explicitly. */
+    if (xs() % 3 == 0) pre[0x62F5] = 0x00;
+    /* the $23B2 clamp compares horizon_index_prev against 7 — both sides of it, explicitly. */
+    { static const uint8_t prev[] = { 0x00, 0x06, 0x07, 0x08, 0x40, 0xFF };
+      pre[0x0052] = prev[xs() % (sizeof prev)]; }
+    /* road_side_index indexes $306C/$306E/$3076 inside emit_edge_width_offset: 0 and 1 are
+       the only values road_edge_side can produce, and a random byte reads unrelated bytes. */
+    pre[0x0049] = (uint8_t)(xs() & 1);
+    pre[0x0057] = (uint8_t)(xs() % 4);                      /* marker_count, 0..3 */
+    /* the two seeds build_track_geometry hands the walk, half the time. */
+    if (xs() % 2) pre[0x0011] = 0xFF;                       /* edge_nearest_hi      */
+    if (xs() % 2) pre[0x0013] = 0x0D;                       /* edge_nearest_section */
+    { static const uint8_t wrap[] = { 0x00, 0x78 };
+      if (xs() % 3) pre[0x000E] = wrap[xs() & 1]; }         /* section_wrap_limit   */
+}
+
+/* ⭐⭐ TWO OF THESE TWINS HAVE A BOUNDARY A RANDOM PRE-STATE CANNOT REACH, and both were found
+   by SABOTAGE passing, not by reading:
+
+     road_edge_start's horizon tie-break fires only when the new point's projected line EQUALS
+     horizon_extent and its slot EQUALS horizon_index.  ($238E BCC / $2390 BNE / $2392 CPX.)
+     A `point > horizon_index` defect passed 200 cases.
+
+     road_edge_walk's off-axis test compares |edge_x_hi[cursor]| against exactly $14, and that
+     value is COMPUTED — emit_edge_bearing writes `bearing - car_heading`.  A $14 -> $15 defect
+     passed 200 cases.
+
+   Both are steered the same way, and it is legitimate because the quantity is a LINEAR
+   function of one pre-state cell that nothing else in the subtree reads: run the ORACLE once
+   on the pre-state, see where the value came out, then shift that cell so the real comparison
+   runs with the boundary exactly on it.  (car_heading_hi appears only in emit_edge_bearing's
+   subtraction; projected_line has one writer in the whole engine.) */
+static void probe_oracle(const uint8_t* pre, Cpu6502 c, void (*t6502)(void))
+{
+    memcpy((void*)mem, pre, 65536);
+    cpu = c;
+    t6502();
+}
+
+static void steer_horizon_tie(uint8_t* pre, Cpu6502 c)
+{
+    pre[0x62F5] = 0x00;                             /* no scroll: the slot stays put */
+    /* ⚠ AND THE RE-BASE PASS HAS TO BE OFF TOO.  rebase_edge_point writes horizon_extent AND
+       horizon_index itself, so with it running the planted pair is gone by the time the
+       tie-break reads them — the first version of this steer left it on and the sabotage
+       still passed.  near_edge_last = 6 skips the pass; near_edge_first must then not be 6,
+       or the routine returns before the projection. */
+    pre[0x0006] = 0x06;
+    if (pre[0x0005] == 0x06) pre[0x0005] = 0x00;
+    if (pre[0x0008] > 0x05)  pre[0x0008] = (uint8_t)(xs() % 6);
+
+    probe_oracle(pre, c, road_edge_start__t6502);
+    pre[0x001F] = mem[0x008D];          /* horizon_extent = the line the new point projects to */
+    /* horizon_index EITHER exactly the slot the point projects at, or one either side.  Both
+       are needed: on the exact tie the store writes the values already in the cells and is
+       unobservable (which is why `>=` -> `>` is not a defect at all), so it takes an index the
+       tie-break must REJECT for the comparison's direction to show up in mem[]. */
+    { int d = (int)(xs() % 3) - 1;
+      pre[0x0051] = (uint8_t)(pre[0x0008] + d); }
+}
+
+static void steer_off_axis(uint8_t* pre, Cpu6502 c, uint8_t firstPoint, uint8_t want)
+{
+    probe_oracle(pre, c, road_edge_walk__t6502);
+    pre[0x000B] = (uint8_t)((int)pre[0x000B] + (int)mem[0x5E90 + firstPoint] - (int)want);
+}
+
+/* $23DB-$23E5 is a 16-bit compare and its LOW half only decides anything on an exact tie.
+   Same trick from the other end: seed the running nearest with $FF — build_track_geometry's own
+   value, so every point beats it — probe, and plant the minimum the walk actually found.  The
+   point that found it then ties both bytes exactly. */
+static void steer_nearest_tie(uint8_t* pre, Cpu6502 c)
+{
+    pre[0x0011] = 0xFF;
+    probe_oracle(pre, c, road_edge_walk__t6502);
+    pre[0x0010] = mem[0x0010];
+    pre[0x0011] = mem[0x0011];
+}
+
+/* $235C `STY $04` is the ONLY writer of near_segment_index in the whole engine, so a post
+   value that differs from the pre one proves the run got past both sentinels and the re-base
+   loop into the segment arithmetic.  Equal values are a 1-in-256 false negative, which is why
+   this is a counter and not a per-case assertion. */
+static int start_reached_segment(const uint8_t* pre, const uint8_t* post)
+{
+    return post[0x0004] != pre[0x0004];
+}
+
+/* $2490 `STX $14` is likewise the only writer of walk_prev_section: it proves the walk
+   emitted at least one point rather than subdividing or clipping out on the first. */
+static int walk_emitted(const uint8_t* pre, const uint8_t* post)
+{
+    return post[0x0014] != pre[0x0014];
+}
+
+static int test_geometry_callees(void)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    /* Sized like the view producers' for the same measured reason: a randomised pre-state
+       sends the projection subtree into its worst case, so a case costs milliseconds. */
+    const int startCases = 200 * scale, walkCases = 200 * scale,
+              sideCases  = 400 * scale, absCases  = 800 * scale;
+
+    register_fixture("road_edge_start");
+    register_fixture("road_edge_walk");
+    register_fixture("road_edge_side");
+    register_fixture("abs8");
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+
+    if (want("road_edge_start")) {
+        int subFail = 0, reached = 0;
+        for (t = 0; t < startCases; t++) {
+            Cpu6502 c = zero_cpu();
+            int shape = (t % 5 == 4) ? EDGE_GARBAGE : EDGE_SILVERSTONE;
+            edge_pre(pre, shape);
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;
+            if (shape == EDGE_SILVERSTONE && t % 2 == 0)
+                steer_horizon_tie(pre, c);                /* see the note above */
+            subFail += diff_run("road_edge_start", pre, c, road_edge_start,
+                                road_edge_start__t6502, liveMask, t, &printed);
+            if (start_reached_segment(pre, (const uint8_t*)mem)) reached++;
+        }
+        fail += subFail;
+        if (reached == 0) {
+            printf("[VACUOUS] road_edge_start: not one of the %d cases reached the segment "
+                   "arithmetic — every run took a sentinel or an SMC exit\n", startCases);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d/%d reached the new point)\n",
+               "road_edge_start", startCases, subFail, reached, startCases);
+    }
+
+    if (want("road_edge_walk")) {
+        int subFail = 0, emitted = 0;
+        /* the two cursors build_track_geometry really passes, plus a random one */
+        static const uint8_t FIRST[] = { 0x06, 0x2E };
+        for (t = 0; t < walkCases; t++) {
+            Cpu6502 c = zero_cpu();
+            int shape = (t % 5 == 3) ? EDGE_HOOKED : (t % 5 == 4) ? EDGE_GARBAGE
+                                                                  : EDGE_SILVERSTONE;
+            edge_pre(pre, shape);
+            c.A = (xs() % 3) ? FIRST[xs() & 1] : (uint8_t)xs();   /* the walk's firstPoint */
+            c.X = (uint8_t)(xs() % 0xF0);                         /* ...and its section    */
+            c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;
+            /* a quarter of the cases put the FIRST emitted point's angle exactly on the $14
+               off-axis boundary (the value the second point's test reads) and another quarter
+               put the running nearest exactly on a point's distance.  See the note above. */
+            if (shape == EDGE_SILVERSTONE && t % 4 == 0)
+                steer_off_axis(pre, c, c.A, (xs() & 1) ? 0x14 : 0xEB);
+            else if (shape == EDGE_SILVERSTONE && t % 4 == 2)
+                steer_nearest_tie(pre, c);
+            subFail += diff_run("road_edge_walk", pre, c, road_edge_walk,
+                                road_edge_walk__t6502, liveMask, t, &printed);
+            if (walk_emitted(pre, (const uint8_t*)mem)) emitted++;
+        }
+        fail += subFail;
+        if (emitted == 0) {
+            printf("[VACUOUS] road_edge_walk: not one of the %d cases emitted a point — "
+                   "every run clipped out or subdivided on its first\n", walkCases);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d/%d emitted a point)\n",
+               "road_edge_walk", walkCases, subFail, emitted, walkCases);
+    }
+
+    if (want("road_edge_side")) {
+        int subFail = 0, farSide = 0;
+        for (t = 0; t < sideCases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            /* the two values build_track_geometry passes are $00 and $80, and the arm taken is
+               (A ^ track_direction) bit 7 — so both must be drawn, not left to a random A. */
+            c.A = (xs() % 3) ? (uint8_t)((xs() & 1) ? 0x80 : 0x00) : (uint8_t)xs();
+            c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;
+            subFail += diff_run("road_edge_side", pre, c, road_edge_side,
+                                road_edge_side__t6502, liveMask, t, &printed);
+            if (mem[0x0049] != 0) farSide++;
+        }
+        fail += subFail;
+        if (farSide == 0 || farSide == sideCases) {
+            printf("[VACUOUS] road_edge_side: %d of %d cases took the far-side arm — one of "
+                   "the two arms was never run\n", farSide, sideCases);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d/%d far side)\n", "road_edge_side", sideCases, subFail, farSide, sideCases);
+    }
+
+    if (want("abs8")) {
+        int subFail = 0, negated = 0, disagreed = 0;
+        for (t = 0; t < absCases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            /* ⭐ THE WHOLE POINT: the `BPL` at $3450 tests the CALLER's N, not bit 7 of A.
+               A third of the cases DECORRELATE them, which is the only way that shows up. */
+            c.N = (xs() % 3) ? (uint8_t)(c.A >> 7) : (uint8_t)(xs() & 1);
+            c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;
+            if (c.N != (c.A >> 7)) disagreed++;
+            if (c.N) negated++;
+            subFail += diff_run("abs8", pre, c, abs8, abs8__t6502,
+                                liveMask, t, &printed);
+        }
+        fail += subFail;
+        if (negated == 0 || disagreed == 0) {
+            printf("[VACUOUS] abs8: %d of %d cases negated, %d had N disagree with bit 7 — "
+                   "both must be non-zero or the twin is untested\n",
+                   negated, absCases, disagreed);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d negated, %d with N vs bit 7 decorrelated)\n",
+               "abs8", absCases, subFail, negated, disagreed);
+    }
+
+    unsetenv("REVS_SMC_CONTINUE");
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -1003,6 +1300,7 @@ int main(int argc, char** argv)
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();
+    fail += test_geometry_callees();
 
     fail += check_coverage();
     fail += report_unvalidated_natives();

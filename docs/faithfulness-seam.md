@@ -101,9 +101,55 @@ purely for this reason — same 0/700 differential, same framerate (465 vs 467 p
    object arrays now have names, and `docs/rename.md` gained five well-evidenced open items
    instead of a shrug.  When a twin's honest reason is "this is how the subsystem gets named",
    say that in the commit and skip the FPS sentence.
+   ⚠⚠ **"Driver" is NOT a byte count** — twins #9-#12 sharpened this.  `road_edge_walk` is 231 bytes
+   and carries real arithmetic (the running nearest, a three-midpoint interpolation), and the
+   framerate still did not move, because per road side its own body runs once while it calls four
+   transliterated routines **up to 18 times each**.  The test is *instructions executed inside the
+   routine versus inside its callees per invocation*, and a short loop around transliterated calls
+   is a driver however long its body reads.  Which is also the constructive form of the rule: the
+   twin worth writing next is the CALLEE, not the caller.
 9. **Sabotage before believing it.**  Four defects minimum, each must FAIL, and any sabotage that
    PASSES is a fixture gap to write down rather than a pass to enjoy (`view_paint_lines`' phase-3
    carry tail is unreachable and untested — recorded in the twin's own comment).
+   ⚠ …**unless the sabotage is not a defect.**  `road_edge_start`'s horizon tie-break (`$2392 CPX
+   $51 / BCC`) differs between `>=` and `>` only when the index is EQUAL — and there the store
+   writes the values already in the cells, and neither `STA` nor `STX` sets a flag.  Provably
+   observationally identical, so the case was replaced with a reversed test that *is* observable.
+   Before steering a fixture harder to catch a sabotage, check that the sabotage changes anything.
+
+### ⚠ Four ways a twin looks right and is not, all four measured on twins #9-#12
+
+Each of these passed a reading of the listing and failed the differential.
+
+* **`PHP` leaves a byte on the 6502 stack, and the differential sees it.**  `road_edge_walk`'s
+  interpolation stashes the gap's sign across two `ROR`s (`$2423 PHP … $2427 PLP`).  The pair is
+  flag-neutral, so a twin that computes the shift in C and skips it is value-correct — and 32 of
+  200 cases differed at `$01FF` alone.  A `PHP(); PLP();` reproduces both the residue and the
+  flags; keep it wherever the oracle pushes.
+* **V escapes a routine that ends in `CMP`.**  `CMP`/`CPX`/`CPY` do not write V, so whatever the
+  last `ADC`/`SBC` left is what the caller gets.  Both `road_edge_side` (one `ADC #$78`) and
+  `road_edge_start` (five adds and subtracts on the exit path) failed on V alone, with `mem[]`
+  byte-exact.  Rule: **on any path that can reach the exit, arithmetic goes through `adc_step` /
+  `sub_from` / `sbc_step`** — plain C is only for a value whose flags are provably overwritten.
+* **An SMC opcode test is UNCONDITIONAL, even inside a conditional branch.**  `$231A` is a `BEQ`
+  whose offset is patched.  The transliteration tests the opcode whether the branch is taken or
+  not, because a byte that is not a `BEQ` is an instruction the model cannot execute — so it traps
+  on the first iteration regardless of the comparison.  Consulting it only on the equal path let
+  the twin re-base four edge points the oracle never reached.
+* **A branch on a flag is not a branch on the value.**  `abs8`'s `BPL` at `$3450` tests the
+  CALLER's `N`, not bit 7 of `A`.  Every real caller has just computed `A` so the two agree; a
+  randomised pre-state does not, and a twin written as `if (A & 0x80)` fails 117 of 800 cases.
+  The fixture has to DECORRELATE the two deliberately or it never asks the question.
+
+### ⭐ A patched SMC BRANCH OFFSET is a narrower obligation than it looks
+
+`$231A`'s offset can in principle name ~200 addresses inside `road_edge_start`, and the
+transliteration emits a switch over all of them.  A twin cannot, and does not have to: `make
+track-patch` says every circuit on this disc writes `$00` and Silverstone has `$0F`, so the twin
+recognises those two and hands anything else to `platform_smc_unhandled`.  That is a *declared*
+coverage limit, not a guess — and `make track-run` is what would catch a circuit that ever wrote a
+third value.  The fixture then has to plant one of the two, because a random third byte sends the
+two models to different addresses and measures the limit rather than the twin.
 
 ## What "validated" costs and buys
 

@@ -253,6 +253,41 @@ problems was in the twins.
    distinction from lesson 10's three passing sabotages is that this one was *proved* unobservable
    by reading the callee, not assumed.
 
+## ⭐⭐ …and a TWELFTH, found by twins #9-#12: an EQUALITY boundary a random pre-state cannot reach
+
+Lesson 10 was about a random pre-state being *degenerate* — every case taking the same arm.  This
+is the sharper version: the arm exists and is reached, but the branch that decides it turns on an
+exact equality between two values, **one of which the routine COMPUTES**.  Random bytes hit it
+about once in 256 cases and only when the run gets that far, so the sabotage that tests it passes:
+
+| twin | boundary | sabotage that passed 200 cases |
+|---|---|---|
+| `road_edge_walk` | `\|edge_x_hi[cursor]\| == $14`, the off-axis threshold | `$14` → `$15` |
+| `road_edge_walk` | `point_dist_lo == edge_nearest_lo`, the 16-bit compare's low half | `>=` → `>` |
+| `road_edge_start` | `projected_line == horizon_extent`, the horizon tie-break | reversed test |
+
+**The fix is to PROBE THE ORACLE, then plant what came out.**  Each of these quantities is a
+function of one pre-state cell that nothing else in the subtree reads, so: copy the pre-state into
+`mem[]`, run the `__t6502` oracle once, read the value it produced, adjust that cell, and hand the
+corrected pre-state to `diff_run` — which loads it fresh for both models anyway, so the probe costs
+nothing but time.  In `tools/validate_native.c`: `steer_off_axis` shifts `car_heading_hi` by the
+difference (the angle is `bearing - car_heading` and `car_heading_hi` appears nowhere else in the
+subtree, so the shift is exactly linear); `steer_nearest_tie` seeds the running nearest with `$FF`
+so every point beats it, then plants the minimum the walk actually found; `steer_horizon_tie` plants
+the line `projected_line` came out as.  All three sabotages then fail.
+
+⚠ **Two traps inside the fix, both hit on the way:**
+
+1. **A steer that plants a cell the run then OVERWRITES does nothing.**  `steer_horizon_tie`'s first
+   version planted `horizon_extent`/`horizon_index` and left the re-base pass on — and
+   `rebase_edge_point` writes both cells itself, so the plant was gone by the time the tie-break
+   read it.  Turning the pass off (`near_edge_last` = 6) was what made it bite.  Ask what else
+   writes the cell between the plant and the read.
+2. **Landing exactly ON the boundary can make the difference unobservable.**  Once the tie is
+   forced, the tie-break's store writes the values already in the cells, so `>=` and `>` become
+   identical (see `docs/faithfulness-seam.md` §9).  The steer therefore plants the index one either
+   side as well, so the comparison's *direction* shows up in `mem[]`.
+
 ## Using it
 
 ```

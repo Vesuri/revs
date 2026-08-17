@@ -204,6 +204,25 @@ splits the routine instead of abandoning the oracle:
    "all terrain, then all objects" changed what occludes what. If any restructuring here reorders
    drawing, that part cannot be mem-diffed at all and needs the reference machine.
 
+### ⭐⭐ 5a. WHAT THE PRODUCER BUFFERS ACTUALLY HOLD (2026-08-17, twins #9-#12)
+
+Before rearranging these buffers, know what is in them, because the previous names said something
+false: **`edge_x_lo`/`edge_x_hi` are ANGLES, not screen columns.** `bearing_to_section` (`$2145`) is
+an arctan — it divides the smaller camera-relative section delta by the larger, indexes the table at
+`$6100` and adds a quadrant base of `$20`/`$60`/`$A0`/`$E0` — and `emit_edge_bearing` (`$23C0`)
+stores `bearing - car_heading` into the array.  So an entry is the point's azimuth relative to where
+the car is pointing, and **`interp_edge` (`$2B26`) is the routine that turns an azimuth into a
+column**, i.e. it is the perspective seam this plan has to preserve.  Three consequences:
+
+* the geometry/plot split of §5 item 1 falls naturally at `interp_edge`, not further up: everything
+  above it is camera-space angles with a pure `mem[]` contract;
+* `rebase_edge_point` (`$0BA2`) re-bases the near slots by the same delta that integrates the
+  heading, which is why the near six points survive a frame — any rearrangement has to keep that
+  incremental path, or the near road gets rebuilt from the section list every frame;
+* ⚠ `$5E50`/`$5EA0` is a SECOND angle list whose base overlaps the 2x40 arrays and can spill into
+  `$5EE0` — `docs/rename.md` item 11.  **Resolve that before moving anything**, since a layout change
+  built on the wrong extent will look correct on Silverstone and corrupt a neighbour array.
+
 ## 6. Sequencing, and an honest expectation
 
 ⭐ This is a **representation** change, which is precisely what `docs/phases.md` Phase 6 already said

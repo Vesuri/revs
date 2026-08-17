@@ -28,6 +28,10 @@ tests it with `BIT $76` — nothing to do with an octant.  Both uses are live in
 Settle which is the real owner (the dial runs from the body's own arm; the road walk runs from
 `draw_road`) and then either split the name by owner or give it a neutral one — but do not leave a
 twin reading `plot_octant` for a road flag.
+⚠ A THIRD owner, found while twinning `road_edge_walk`: its subdivision arm (`$242B`) parks the
+HIGH BYTE of the interpolated quarter-gap in the same cell, which is neither an octant nor a flag.
+`road_edge_walk_subdivide` in `revs_native.c` reads `plot_octant` for it today, which is exactly
+what this item says not to leave standing.
 
 ## 3. `$8C` has THREE owners, and `surface_style_alt` only covers one
 
@@ -113,3 +117,66 @@ to `plot_object` as `plot_shape`, and the slot writer at `$2AA1` ORs a new shape
 `#$70` mask.  So one byte carries two unrelated things and the name only names one of them —
 either split the name by nibble or widen it.  `$04DC` and `$01A4` are the neighbouring per-driver
 arrays `reset_driving_variables` seeds alongside it, and both are still unnamed.
+
+## 10. ⭐⭐ `player_pos_lo`/`player_pos_hi` ($000A/$000B) — it is a HEADING, not a position
+
+The strongest item in this queue, because the name is wrong rather than narrow, and three
+independent pieces of evidence say so — all found while twinning `build_track_geometry`'s callees:
+
+* `bearing_to_section` (`$2145`) is an ARCTAN: it divides the smaller of two camera-relative
+  section deltas by the larger, indexes the table at `$6100`, and adds a quadrant base of
+  `$20`/`$60`/`$A0`/`$E0` (or `$40`/`$C0` on the degenerate arm).  Its output is unambiguously a
+  16-bit ANGLE, in `bearing_lo`/`bearing_hi`.
+* `emit_edge_bearing` (`$23C0`) stores `bearing - $0A/$0B` into `edge_x_lo`/`edge_x_hi`.  Subtracting
+  a track position from a bearing does not type-check; subtracting a heading does, and it makes
+  `edge_x` the point's AZIMUTH relative to where the car points.
+* `$4927` advances `$0A/$0B` by `model_state[2]` once a frame, and `rebase_edge_point` (`$0BA2`)
+  subtracts *the very same* `$62D2`/`$62E2` from every already-emitted `edge_x` — i.e. the cell and
+  the edge arrays are the same kind of quantity, and the delta is an angular RATE.
+
+So `$000A`/`$000B` should be `car_heading_lo`/`car_heading_hi`, and the same question falls on
+`object_pos_lo`/`object_pos_hi` (`$0380`/`$0398`), which `build_player_car` copies into it at
+`$11FB`-`$1205` while EORing the high byte with `track_direction`.  ⚠ Renaming these touches the
+`draw_track_object` twin and `edge_x_lo`'s own note, so do it in one pass.  Cheap confirmation:
+park the car, turn the wheel without moving, and see whether `$0A/$0B` changes.
+
+## 11. `$5E50`/`$5EA0` — a second angle list whose extent contradicts the first
+
+`emit_edge_width_offset` (`$2565`) is the only writer and `$1AB9`-`$1AC9` inside `draw_road` the
+only reader: it stores `edge_x ± (plot_width << shift)` at `edge_x_lo + $10` / `edge_x_hi + $10`
+indexed by `edge_cursor`, which reads as the point's OTHER road boundary.  ⚠ But the base overlaps
+the 2x40 edge arrays that `$253B` proves are contiguous (`$5E90,Y` differenced against `$5EB8,Y` =
+`$5E90 + $28` for Y = 0..39), and at `edge_cursor` = `$40` the write lands on `$5EE0`, which is a
+different array again.  So either the lists are sixteen entries and `$253B`'s stride reading is
+wrong, or something not yet found bounds `edge_cursor` below `$40`.  **Resolve before the
+representation change** — `docs/direct-bitplane-plan.md` §7a rearranges exactly these arrays.
+
+## 12. `$0CA5` — the distance blend, and what `$7E` gates it on
+
+Unnamed, and every edge point goes through it: `emit_edge_bearing` tail-calls it and it leaves the
+point's scaled distance in `point_dist_lo`/`point_dist_hi`.  Two arms, chosen on `$7E` against
+`$67`: `a + b/8`, or `b/2 + a - a/8`.  `$7E` is written only by `bearing_to_section` (`$21DF`,
+`$2257`, and `$FF` on the degenerate arm) as the RAW arctan table byte — so the blend is switching
+on how oblique the point is, which is what a field-of-view term looks like.  The expansion circuits
+carry a `HookFieldOfView` (`docs/reference-sources.md`), which is the obvious place to check.
+
+## 13. Named-for-the-fact scratch: `shared_counter_42` ($0042), `point_dist_*` ($7C/$7D), `shared_temp_77`
+
+All three were named while twinning the road walk because a twin may not carry a bare hex address,
+and all three are named for the observation rather than the meaning:
+
+* `$0042` has ten writers and no one meaning; in the road pass it is the walk's point counter.
+* `$7C`/`$7D` has two live readings AT ONCE — `$0CA5` writes the current point's distance,
+  `road_edge_walk` compares it against the running nearest, and `project_point` (`$22B0`) reads the
+  pair as its FAR CLIP, which means the clip a point is tested against is the PREVIOUS point's
+  distance.  That is either the algorithm or an accident; settle it.  Six further writers
+  (`$1C2C` `$1CF4` `$1D1A` `$1D39` `$1D84` `$4874` `$48C9`) are unrelated.
+* `$0077` is scratch in the `$74`-`$79` window, shared with `emit_edge_width_offset` and `$134F`.
+
+## 14. `near_edge_first`/`near_edge_last`/`near_edge_shift` ($0005/$0006/$0007) are `[INFERRED]`
+
+The reading is structural and consistent — slots 0..5 of each 40-point half are the near edge
+points, both walks start at 6, `shift_near_edge_points` slides exactly five entries, `6` is the
+"nothing to do" sentinel in both cells, and race init seeds both to 6 — but nothing has been
+MEASURED.  Cheap confirmation on the reference loop: drive at a steady speed and watch how often
+`$62F5` is set and what `$0007` reads when it is; it should equal the number of sections crossed.

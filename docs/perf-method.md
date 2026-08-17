@@ -530,6 +530,37 @@ producer → producer → consumer over one shared data structure, and that stru
 ms/frame**, charged to whichever phase it preempted so it appears in no row of its own.  It does the
 copper rebuild, the bitplane-pointer swap and the audio tick.  Unmeasured internally.
 
+### ✅ TWINS #9-#12: build_track_geometry's OWN CALLEES, and the framerate is UNCHANGED (2026-08-17)
+
+`road_edge_start` (188 bytes), `road_edge_walk` (231), `road_edge_side` (27) and `abs8` (8) are real
+C, `make validate`d at 0 mismatch over 200/200/400/800 randomised cases (still 0 at
+`REVS_VALIDATE_CASES=4`), **26 sabotages injected and 26 detected**, `make determinism` and
+`make determinism-drive` both 64K byte-identical against references recorded from the previous
+commit, `make tracks` 6/6 byte-exact and `make track-run` every circuit's hooks running.
+
+**FPS: unchanged.** A 30 s warp run of `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` +
+`fps_series.gdb` read **2.73-2.83 in twelve of its thirteen rows** (the thirteenth, 1.36, is the run
+leaving the track — rule 1's warning about long windows, visible in a single row here), against the
+standing 2.71 baseline.  That is inside the ±3% noise floor, so **no win is claimed**.
+
+⚠ **These are NOT ~100-byte drivers, and the null result is the more interesting for it.**  Unlike
+twins #4-#8 the two big ones carry real arithmetic — the near-slot bookkeeping and the horizon
+maximum, the running nearest and the three-midpoint interpolation.  It still collected nothing,
+and the reason is the SHAPE of the call tree rather than the size of the routine: per road side the
+walk runs its own ~40 instructions once and then calls `bearing_to_section`, `project_point`,
+`emit_edge_bearing` and `emit_edge_width_offset` **up to 18 times each**, all still transliterated.
+So §8's rule wants sharpening: *how much of the row is in the routine* is not a byte count, it is
+**instructions executed in the routine versus in its callees per invocation** — and a short loop
+around four transliterated calls is a driver no matter how long its body reads.
+
+⭐ What these four bought is the naming the representation change needs, and it corrected a fact:
+**the edge arrays hold ANGLES, not screen columns** (`$2145` is an arctan, `$23C0` stores
+`bearing - car_heading`, `$0BA2` re-bases by the same delta the heading integrates).  That makes
+`player_pos_lo`/`_hi` a wrong name rather than a narrow one — `docs/rename.md` item 10 — and it is
+the first thing `docs/direct-bitplane-plan.md` §7a has to know about these buffers.
+⭐ The lever is unchanged and is now unambiguous: **the view pipeline's LEAVES** — the `$2C00`-`$2FFF`
+span plotters, `project_point` and `bearing_to_section`, which are what the 18-per-side calls land in.
+
 ### ✅ TWINS #6, #7, #8: three more DRIVERS, and the framerate is UNCHANGED — as predicted (2026-08-17)
 
 `apply_driving_model` (136 bytes), `draw_track_object` (61) and `fill_dash_edge_columns` (35) are

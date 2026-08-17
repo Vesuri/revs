@@ -594,6 +594,24 @@ VALIDATE_FUNCS = {
     0x46A1,
     0x2AD1,
     0x1E15,
+    # ⭐⭐ TWINS #9-#12 — build_track_geometry's OWN CALLEES, i.e. the rest of the road-geometry
+    # producer, taken as one group because they only make sense together:
+    #   $22FF road_edge_start  (188 bytes) the NEAR points: scroll, rebase, re-project slot+40
+    #   $23D2 road_edge_walk   (231 bytes) ONE road side, from the cursor into the distance
+    #   $254A road_edge_side   ( 27 bytes) which side, and which way round the section list
+    #   $3450 abs8             (  8 bytes) |A| — 21 callers, and the only leaf in the group
+    # ⚠ road_edge_walk's body is a multi-entry REGION in the transliteration (`region_23d8`
+    # covers $23D8-$24B8, because $2490 is both a branch target and a container split), so the
+    # oracle for it is the 11-line stub plus that whole region — which is exactly the code the
+    # twin replaces.  `FUN_2490` is a dead entry the region generator emits; nothing calls it.
+    #
+    # These are NOT short drivers: the walk carries the subdivision arithmetic, road_edge_start
+    # carries the near-slot bookkeeping and the horizon maximum, and neither delegates the work
+    # (docs/faithfulness-seam.md §8 — pick a twin by how much of the row is IN the routine).
+    0x22FF,
+    0x23D2,
+    0x254A,
+    0x3450,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
