@@ -386,6 +386,7 @@ static int test_irq1v_band_schedule(void)
 
 void view_paint_lines(void);
 void view_paint_lines__t6502(void);
+extern unsigned long g_viewTableCollisions;   /* asserted below; see revs_native.c */
 
 /* --------------------------------------------------------------------------
    $7BE2 view_paint_lines — the 40-unit column chain (src/gen/revs_native.c).
@@ -554,6 +555,16 @@ static int test_view_paint_lines(void)
     if (smcIllegal == 0) {
         printf("[VACUOUS] view_paint_lines: 0 SMC traps over the %d ILLEGAL cases — the "
                "trap path was never reached\n", illegal);
+        fail++;
+    }
+    /* The twin answers "is this address a unit / a unit+$05 / an opcode slot" out of two
+       256-byte tables instead of the oracle's forty-entry search, which is only equivalent
+       while no address means two things.  The twin counts every clash as it builds them; a
+       counter nobody reads is not a safeguard, so the harness asserts it. */
+    if (g_viewTableCollisions != 0) {
+        printf("[BROKEN] view_paint_lines: %lu address-table collisions — a unit start and "
+               "another unit's +$05 (or slot) share an address, so the one-answer lookup is "
+               "not equivalent to the oracle's first-match search\n", g_viewTableCollisions);
         fail++;
     }
     printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXYS+flags  "

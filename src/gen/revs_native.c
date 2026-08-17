@@ -426,15 +426,61 @@ static unsigned view_compose(unsigned source, unsigned mask, unsigned fill)
     return cpu.A;
 }
 
+/* ⭐⭐ ADDRESS -> UNIT IN ONE LOAD, instead of a forty-entry search.
+   The drivers ask three questions about an address they computed: is it a unit START (a JSR
+   into the chain), is it unit+$05 (the entry that skips the dirty test and uses the caller's
+   cell index), and is it a unit's opcode SLOT (a plant target).  All three were linear
+   searches over the forty units, and between them they run ~190 times a frame — measured as
+   most of the per-line DRIVER half of phase 24 (docs/perf-method.md §the unit loop's bytes).
+   These two tables answer them in one indexed load, and they are BUILT FROM the same
+   VIEW_UNIT_ADDR and g_viewSlotP the rest of the file uses, so the layout has one source of
+   truth and there is no second copy to keep in step.
+   ⚠ The one-answer-per-address form is only equivalent to the oracle's first-match search
+   because no address is both a unit start and another unit's +$05: chain A's units sit at
+   offset 0 mod 17 from $7C00 and chain B's at 2 mod 17 (342 = 17*20 + 2), while a +$05 entry
+   is 5 or 7 mod 17.  The builder ASSERTS it rather than trusting the arithmetic. */
+#define VIEW_LOW_PAGE   0x7Cu                /* the chain occupies $7C, $7D and $7E */
+#define VIEW_LOW_PAGES  3
+static unsigned char g_viewUnitOf[VIEW_LOW_PAGES][256];  /* unit+1, +$80 = the unit+$05 entry */
+static unsigned char g_viewSlotOf[VIEW_LOW_PAGES][256];  /* unit+1 for an opcode slot */
+static int g_viewTablesBuilt;
+unsigned long g_viewTableCollisions;         /* must stay 0; see the assertion above */
+
+static void view_build_tables(void)
+{
+    int i;
+    for (i = 0; i < 40; i++) {
+        uint16_t start = VIEW_UNIT_ADDR(i);
+        unsigned char* cell;
+        int k;
+        for (k = 0; k < 2; k++) {                    /* the unit start, then unit+$05 */
+            uint16_t a = (uint16_t)(start + (k ? 5 : 0));
+            cell = &g_viewUnitOf[(a >> 8) - VIEW_LOW_PAGE][a & 0xFF];
+            if (*cell) g_viewTableCollisions++;
+            *cell = (unsigned char)(i + 1 + (k ? 0x80 : 0));
+        }
+        if (g_viewSlotP[i]) {
+            unsigned a = (unsigned)(g_viewSlotP[i] - mem);
+            cell = &g_viewSlotOf[(a >> 8) - VIEW_LOW_PAGE][a & 0xFF];
+            if (*cell) g_viewTableCollisions++;
+            *cell = (unsigned char)(i + 1);
+        }
+    }
+    g_viewTablesBuilt = 1;
+}
+
+/* Is `page` one of the three the chain lives in?  Anything else cannot name a unit at all. */
+static int view_low_page(unsigned page)
+{
+    return page >= VIEW_LOW_PAGE && page < VIEW_LOW_PAGE + VIEW_LOW_PAGES;
+}
+
 /* Is `dst` a slot a writer pinned to `page` could name?  The generated oracle spells this
    as an explicit case list; both come from the same operand-encoding argument. */
 static int view_is_slot(uint16_t dst, unsigned page)
 {
-    int i;
-    if ((dst >> 8) != page) return 0;
-    for (i = 0; i < 40; i++)
-        if (g_viewSlotP[i] == mem + dst) return 1;
-    return 0;
+    if ((dst >> 8) != page || !view_low_page(page)) return 0;
+    return g_viewSlotOf[page - VIEW_LOW_PAGE][dst & 0xFF] != 0;
 }
 
 /* Plant `opcode` over the store of the unit named by the operand cell at `opnd`.  Returns
@@ -483,13 +529,13 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first);
 static int view_enter_chain(ViewState* v, uint16_t site, uint16_t opnd, unsigned page)
 {
     uint16_t target = (uint16_t)(mem[opnd] | (mem[opnd + 1] << 8));
-    int i;
-    if ((target >> 8) == page)
-        for (i = 0; i < 40; i++) {
-            uint16_t unit = VIEW_UNIT_ADDR(i);
-            if (target == unit)                 { paint_cells(v, i, 0, 0); return 1; }
-            if (target == (uint16_t)(unit + 5)) { paint_cells(v, i, 1, 0); return 1; }
+    if ((target >> 8) == page && view_low_page(page)) {
+        unsigned char u = g_viewUnitOf[page - VIEW_LOW_PAGE][target & 0xFF];
+        if (u) {
+            paint_cells(v, (u & 0x7F) - 1, (u & 0x80) != 0, 0);
+            return 1;
         }
+    }
     platform_smc_unhandled(site, target);
     return 0;
 }
@@ -538,6 +584,20 @@ static unsigned step_scanline(int* carry_out)
 #define PLOT_FLUSH()  ((void)0)
 #endif
 
+/* ⭐ `make VIEWSPLIT=1 PROBES=1` — phase 24 split into the unit loop (30) and the per-line
+   drivers (whatever is left in 24), with an EMPTY bracket (31) at the same rate as the
+   instrument's own control.  See src/platform/probe.h; a measurement build only. */
+#if defined(REVS_VIEWSPLIT) && defined(REVS_PROBE)
+#define VIEWSPLIT_DECL()         const int viewPhase = probe_phase_current()
+#define VIEWSPLIT_UNITS_BEGIN()  do { PROBE_PHASE(PROBE_PHASE_VIEWCTL);                 \
+                                      PROBE_PHASE(PROBE_PHASE_VIEWUNITS); } while (0)
+#define VIEWSPLIT_UNITS_END()    PROBE_PHASE(viewPhase)
+#else
+#define VIEWSPLIT_DECL()         ((void)0)
+#define VIEWSPLIT_UNITS_BEGIN()  ((void)0)
+#define VIEWSPLIT_UNITS_END()    ((void)0)
+#endif
+
 /* The chain itself, $7BF7-$7F16.  Runs units `unit`..39 of the current line, then the
    $7EEE tail, which either returns or steps to the next line and starts over at unit 0.
      forced         entered at unit+$05: no dirty test, v->cell is the glyph index
@@ -551,6 +611,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
        written back at every exit — `done:` is the only label in this file. */
     unsigned byte = v->byte, line = v->line, cell = v->cell;
     PLOT_DECL();
+    VIEWSPLIT_DECL();
 
     for (;;) {
         if (advance_first) {
@@ -603,6 +664,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                carries no test at all. */
             const int busSafe = view_span_is_ram(base0) && view_span_is_ram(base1);
 
+            VIEWSPLIT_UNITS_BEGIN();
             for (;;) {
                 while (dp != segEnd) {
                     MEM_QUAL unsigned char* slot;
@@ -648,6 +710,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                 segEnd  = dp1 + 64;
                 lastSeg = 1;
             }
+            VIEWSPLIT_UNITS_END();
             cell = 0x38;                            /* unit 39's cell, had the chain not stopped */
             PLOT_FLUSH();
         }
@@ -666,6 +729,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
         advance_first = 1;
     }
 done:
+    VIEWSPLIT_UNITS_END();      /* the planted-RTS exit leaves the bracket open otherwise */
     v->byte = byte;
     v->line = line;
     v->cell = cell;
@@ -813,6 +877,8 @@ static void paint_lines_clipped(ViewState* v)
 static void view_paint_lines_core(unsigned screenBase, unsigned firstLine)
 {
     ViewState v;
+
+    if (!g_viewTablesBuilt) view_build_tables();
 
     plot_ptr_lo  = (unsigned char)screenBase;
     plot_ptr2_lo = (unsigned char)screenBase;

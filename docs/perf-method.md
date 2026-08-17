@@ -388,7 +388,7 @@ is a silent averaging error, in the same family as the per-band average below.
 
 | Share | ms/frame | Phase | Callee | What it is |
 |---|---|---|---|---|
-| **25.8%** | **102** | **24** | **`$7BE2`** | the 3D VIEW rasteriser (not the dashboard — `docs/rename.md`).  2093 units, ~83 change a byte.  **Was 131** before the unit-loop pointer pass below |
+| **22.5%** | **84** | **24** | **`$7BE2`** | the 3D VIEW rasteriser (not the dashboard — `docs/rename.md`).  2093 units, ~83 change a byte.  **Was 131**; the two passes below took the unit loop and then the per-line drivers |
 | 14.1% | 61 | 5 | `build_road_edge_lists $24F6` | the road-geometry projection pass |
 | 13.5% | 58 | 11 | `$1A20` | writes **6 visible bytes**; its output is per-column data, not pixels |
 | 8.6% | 37 | 27 | the decode | `RevsScreen::decode()`, dirty-region.  Port overhead, and DONE |
@@ -582,6 +582,48 @@ target.  It would not help here anyway: the sweep's strides are 8 (screen cells)
 blocks), so there is no adjacent pair to widen.  A wide store is only endian-neutral when every byte
 in it is the SAME value, which is the run-collapsing idea `docs/direct-bitplane-plan.md` §7f measured
 as a 9% LOSS.
+
+### ⭐⭐ AND THEN ITS DRIVERS: **2.58 → 2.73 FPS (+6.2%)**, phase 24 **102 → 84 ms** (2026-08-17)
+
+⭐ **First the SPLIT, because "84 ms" does not say what to attack.**  `make VIEWSPLIT=1 PROBES=1`
+brackets the unit loop per scan line (phase 30) and leaves the ~77 lines of per-line driver in phase
+24, with an EMPTY bracket at the same rate as the control (phase 31):
+
+| | ms/frame | calls/frame |
+|---|---|---|
+| phase 30, the 2093-unit chain | 54 | 118 chain runs |
+| phase 24, what is left: the per-line DRIVERS | 76 → **60** | 77 lines |
+| phase 31, the instrument's own cost | 12 | 118 |
+
+⚠ **Read the control first.**  The split build's three rows sum to ~142 ms where the unsplit row is
+102, so the brackets inflate what they measure by ~28% and only the *differences* between split runs
+are quotable.  What the split settles is the shape: after the byte pass above, **the drivers are the
+bigger half** — ~60 ms for 77 lines is ~4400 cycles a line, for what is a handful of table lookups
+and two composed bytes.
+
+**What was in there: two LINEAR SEARCHES OVER THE FORTY UNITS.**  The chain is unrolled, so the
+drivers work in *addresses* and keep asking which unit an address is — `view_enter_chain` (is this
+computed JSR target a unit start, or a unit+$05?) and `view_is_slot` (is this plant target an opcode
+slot?).  Between them that is ~190 forty-entry searches a frame, each iteration re-deriving
+`VIEW_UNIT_ADDR(i)`.  Replaced by two 256-byte tables indexed by the address's low byte — one load —
+**built from the same `VIEW_UNIT_ADDR`/`g_viewSlotP` the rest of the twin uses**, so there is no
+second copy of the layout.
+
+⚠ The tables give ONE answer per address where the oracle searched in order, which is only
+equivalent while no address is both a unit start and another unit's +$05.  It holds by arithmetic
+(chain A is 0 mod 17 from $7C00, chain B is 2, a +$05 entry is 5 or 7), and the twin **counts** every
+clash while building — with `make validate` asserting the count is zero, because a counter nobody
+reads is not a safeguard.  Forcing a collision makes the harness FAIL.
+
+| build (same instrument, same session) | vblanks | painted | FPS |
+|---|---|---|---|
+| HEAD before both passes | 7118 | 339 | **2.38** |
+| + the unit loop's bytes | 7160 | 369 | **2.58** |
+| + the drivers' address lookups | 7187 | 392 | **2.73** |
+
+**+14.5% over the two, and phase 24 is 131 → 84 ms.**  ⭐ The remaining row is ~54 ms of unit loop
+and ~30 ms of driver, so the 2093-unit scan is once again the thing to attack — and per §7a/§7f that
+means **producing fewer sources**, not scanning faster.
 
 ### ⚠⚠ TWIN #2, `$7BE2 view_paint_lines`: **1.71 → 1.77 FPS (+3.6%)**, and that is the FINDING
 

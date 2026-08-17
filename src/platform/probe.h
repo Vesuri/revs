@@ -108,6 +108,17 @@ extern volatile unsigned long g_probeBandTicks[PROBE_BANDS], g_probeBandCount[PR
  * remainder — see tools/transpile.py PRE_INSN_HOOKS. */
 #define PROBE_PHASE_BODYARM 29
 
+/* ⭐ `make VIEWSPLIT=1` — phase 24 ($7BE2) split into its two halves, because "102 ms" does not
+ * say whether to attack the 2093-unit chain or the ~77 lines of driver around it.
+ *   30  the unit loop itself, bracketed per scan line inside src/gen/revs_native.c
+ *   31  an EMPTY bracket at the same rate — the instrument's own cost, which must be read
+ *       before 30 is believed (the band-arm average taught this the hard way,
+ *       docs/perf-method.md).  Phase 24 keeps the remainder: the drivers.
+ * ⚠ A measurement build only: two bracket transitions per scan line. */
+#define PROBE_PHASE_VIEWUNITS 30
+#define PROBE_PHASE_VIEWCTL   31
+int probe_phase_current(void);
+
 #define PROBE_PHASE_DRAIN  26
 #define PROBE_PHASE_DECODE 27
 #define PROBE_PHASE_SPIN   28
@@ -145,6 +156,8 @@ extern volatile unsigned long g_beamEpoch;
    compiled for a year without needing them and then failed to compile the moment something else
    used one.  Kept in sync with the definitions above by hand; `make gen` checks FRAMEWAIT. */
 #define PROBE_PHASE_FRAMEWAIT 25
+#define PROBE_PHASE_VIEWUNITS 30
+#define PROBE_PHASE_VIEWCTL   31
 #define PROBE_PHASE_DRAIN     26
 #define PROBE_PHASE_DECODE    27
 #define PROBE_PHASE_SPIN      28

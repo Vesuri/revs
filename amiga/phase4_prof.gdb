@@ -42,7 +42,7 @@ printf "=== vbi=%u loopFrames=%lu brk=%lu smc=%lu ===\n", \
 # bracket and landed on phase 24.
 set $i = 1
 set $tot = 0
-while $i < 30
+while $i < 32
   set $tot = $tot + g_phaseTicks[$i]
   set $i = $i + 1
 end
@@ -81,7 +81,7 @@ if g_probeIrqCount > 0
     g_probeIrqCount, g_probeIrqCount/g_bodyTicks, (g_probeIrqTicks/g_probeIrqCount)*1000/4006
 end
 set $i = 1
-while $i < 30
+while $i < 32
   printf "phase %2d  ticks=%10lu  calls=%7lu  share=%2d.%01d%%  %4lu ms/frame\n", \
      $i, g_phaseTicks[$i], g_phaseCount[$i], \
      (g_phaseTicks[$i]/$per)/10, (g_phaseTicks[$i]/$per)%10, \

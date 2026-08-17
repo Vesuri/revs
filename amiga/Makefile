@@ -121,6 +121,14 @@ ifdef PROBES
 EXTRA_DEFINES += -DREVS_PROBE
 endif
 
+# `make VIEWSPLIT=1 PROBES=1` — split phase 24 ($7BE2) into the 2093-unit chain (phase 30) and
+# the ~77 lines of driver around it (whatever stays in 24), with an empty bracket at the same
+# rate as the control (phase 31).  src/platform/probe.h has the reasoning.  Measurement only:
+# two bracket transitions per scan line, so no framerate may be quoted from it.
+ifdef VIEWSPLIT
+EXTRA_DEFINES += -DREVS_VIEWSPLIT
+endif
+
 # `make FPSCOUNT=1` — the HONEST framerate build.  Adds exactly two things to an
 # otherwise shipping binary: the headless auto-run, and ONE increment per painted frame.
 # g_vbiCount is bumped by the real VERTB handler in every build, so

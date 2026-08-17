@@ -85,6 +85,14 @@ void probe_phase(int id)
     s_mark  = now;
 }
 
+/* Which phase is open right now.  A twin that wants to bracket one of its OWN inner loops
+   has to reopen whatever phase it interrupted, and only this file knows what that is
+   (src/gen/revs_native.c, the $7BE2 unit-loop split behind REVS_VIEWSPLIT). */
+int probe_phase_current(void)
+{
+    return s_phase;
+}
+
 /* ⭐⭐ TWO SUB-FRAME TIMERS THAT ARE NOT PHASES, added 2026-08-16 to explain the 51%.
  *
  * The phase table charges the 50 Hz body drain 526 ms per painted frame, i.e. ~10.5 ms of every
