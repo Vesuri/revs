@@ -1403,6 +1403,303 @@ static int test_div16by8(void)
     return fail;
 }
 
+
+/* ==========================================================================
+   $2147 bearing_to_section_from — THE BEARING   (twin #14)
+   $2287 project_point_from      — THE PERSPECTIVE DIVIDE   (twin #15)
+   --------------------------------------------------------------------------
+   The road pass's two coordinate transforms.  Their inputs are as small as div16by8's — two
+   registers and four table bytes each — so like that fixture these have to be STEERED, and
+   for the same reason: uniform random 16-bit coordinates put almost every case in one arm.
+
+   What has to be reached, and would not be by accident:
+
+     bearing_to_section_from
+       BEAR_A / BEAR_B    which of the two ground components is the larger, i.e. which OCTANT
+                          arm runs.  Uniform bytes do reach both, but not the boundary.
+       BEAR_EQUAL         |component 0| == |component 2| exactly — the 45-degree arm, which
+                          takes the PHP/PLP door at $21B8 and never divides at all.
+       BEAR_TIGHT         magnitudes within a few counts of each other, which is what makes
+                          the normalised dividend catch up with the divisor and take the OTHER
+                          door into the same arm ($21D1 / $2249).
+       BEAR_UNIFORM       fully random coordinates, as the control.
+
+     project_point_from
+       PROJ_NEAR          height well inside point_dist: the surviving path, the divide, and
+                          the reciprocal/exponent pair the width scale is made of.
+       PROJ_CLIP_HI       height's high byte above point_dist's — the far clip's first door.
+       PROJ_CLIP_LO       high bytes EQUAL and the low byte deciding — its second door, which
+                          a uniform fixture reaches about once in 256.
+       PROJ_ZERO_DIST     point_dist 0, which clips everything.  ⚠ It is also the case that
+                          would spin forever in the normalise loop if the clip ever let it
+                          through, so it is the fixture's proof that it cannot.
+       PROJ_UNIFORM       the control.
+
+   ⭐ BOTH RANDOMISE THE VIEW ORIGIN between the camera (Y = 0) and the road sign's displaced
+   viewpoint (Y = 6), because that offset is the whole difference between these entries and
+   the two-byte ones above them.
+
+   ⭐ AND BOTH RANDOMISE DECIMAL MODE, for twin #13's reason one level up: the abs, the negate
+   and the two closing adjustments are all ADC/SBC, so in decimal mode every one of them hands
+   back a different byte.  It is also where the exit V comes from, and V is compared here even
+   though no real call site reads it.
+   ========================================================================== */
+void bearing_to_section_from(void);
+void bearing_to_section_from__t6502(void);
+void project_point_from(void);
+void project_point_from__t6502(void);
+
+enum { BEAR_A = 0, BEAR_B = 1, BEAR_EQUAL = 2, BEAR_TIGHT = 3, BEAR_UNIFORM = 4, BEAR_SHAPES = 5 };
+enum { PROJ_NEAR = 0, PROJ_CLIP_HI = 1, PROJ_CLIP_LO = 2, PROJ_ZERO_DIST = 3,
+       PROJ_UNIFORM = 4, PROJ_SHAPES = 5 };
+
+/* A section byte index the engine could really produce: one of the 40 sections' three-byte
+   triples, or one of the two scratch slots past them. */
+static uint8_t random_section_byte(void)
+{
+    unsigned r = xs() % 10u;
+    if (r == 0) return 0xFAu;                    /* road_edge_walk's midpoint scratch */
+    if (r == 1) return 0xFDu;                    /* road_edge_start's near-point scratch */
+    return (uint8_t)(3u * (xs() % 40u));
+}
+
+/* Write one 16-bit section coordinate component, and the matching view-origin component, so
+   that the delta the routine computes is exactly `delta`. */
+static void stage_component(uint8_t* pre, uint8_t sectionByte, unsigned component,
+                            uint8_t origin, int delta)
+{
+    unsigned org = (unsigned)(xs() & 0xFFFFu);
+    unsigned sec = (unsigned)((int)org + delta) & 0xFFFFu;
+
+    pre[0x6280 + origin + component] = (uint8_t)org;
+    pre[0x6283 + origin + component] = (uint8_t)(org >> 8);
+    pre[0x0900 + sectionByte + component] = (uint8_t)sec;
+    pre[0x0A00 + sectionByte + component] = (uint8_t)(sec >> 8);
+}
+
+static int test_road_transforms(void)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+
+    register_fixture("bearing_to_section_from");
+    register_fixture("project_point_from");
+
+    if (want("bearing_to_section_from")) {
+        const int cases = 4000 * scale;
+        /* ⚠ THE ONE IGNORED CELL IN THIS FILE, and it is an idiom C does not have.  The
+           oracle's sort brackets its four stores in PHP/PLP to carry the deciding compare's
+           flags across them; the twin carries them in a variable, so the oracle leaves a
+           status byte at $01FF that the twin does not.  S is $FF on entry and $FF on exit, so
+           that byte is BELOW the stack pointer on return and provably dead — nothing reads it
+           before the next push.  S itself stays declared live, so a real stack leak still
+           fails, and the ignore is scoped to this fixture. */
+        static const uint16_t bearIgnore[] = { 0x01FFu };
+        int shaped[BEAR_SHAPES];
+        int decimal = 0, diagonal = 0, tightDoor = 0, armA = 0, armB = 0, sixth = 0;
+        int subFail = 0;
+        for (t = 0; t < BEAR_SHAPES; t++) shaped[t] = 0;
+        set_ignore(bearIgnore, 1);
+
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            int shape = t % BEAR_SHAPES;
+            uint8_t sectionByte, origin;
+            int d0, d2, mag;
+
+            fill_random(pre);
+            sectionByte = random_section_byte();
+            origin      = (xs() & 1) ? 0x06u : 0x00u;
+            if (xs() % 8u == 0) origin = (uint8_t)xs();   /* and a few off the two rows */
+            if (origin == 0x06u) sixth++;
+            shaped[shape]++;
+
+            switch (shape) {
+            case BEAR_A:                       /* |component 2| strictly the smaller */
+                mag = 1 + (int)(xs() % 0x4000u);
+                d0  = (xs() & 1) ? mag : -mag;
+                d2  = (int)(xs() % (unsigned)mag);
+                if (xs() & 1) d2 = -d2;
+                break;
+            case BEAR_B:                       /* |component 0| strictly the smaller */
+                mag = 1 + (int)(xs() % 0x4000u);
+                d2  = (xs() & 1) ? mag : -mag;
+                d0  = (int)(xs() % (unsigned)mag);
+                if (xs() & 1) d0 = -d0;
+                break;
+            case BEAR_EQUAL:                   /* the 45-degree arm, all four diagonals */
+                mag = (int)(xs() % 0x4000u);
+                d0  = (xs() & 1) ? mag : -mag;
+                d2  = (xs() & 1) ? mag : -mag;
+                break;
+            case BEAR_TIGHT:                   /* within a few counts — the other degenerate door */
+                mag = 0x40 + (int)(xs() % 0x3F00u);
+                d0  = mag;
+                d2  = mag - (int)(xs() % 5u);
+                if (xs() & 1) d0 = -d0;
+                if (xs() & 1) d2 = -d2;
+                break;
+            default:
+                d0 = (int)(short)(xs() & 0xFFFFu);
+                d2 = (int)(short)(xs() & 0xFFFFu);
+                break;
+            }
+
+            stage_component(pre, sectionByte, 0, origin, d0);
+            stage_component(pre, sectionByte, 2, origin, d2);
+
+            c.X = sectionByte;
+            c.Y = origin;
+            c.A = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = (xs() % 4 == 0);
+            if (c.D) decimal++;
+
+            subFail += diff_run("bearing_to_section_from", pre, c, bearing_to_section_from,
+                                bearing_to_section_from__t6502, liveMask, t, &printed);
+
+            /* The census.  Which OCTANT arm ran is a property of the inputs — whichever ground
+               magnitude is the larger becomes the divisor — so it is counted from the staged
+               deltas rather than from the angle: the quadrant base would have separated the two
+               arms only until the negate pushes an angle past $80.
+               Whether the 45-degree arm ran is a property of the OUTPUT, because it has two
+               doors: equal magnitudes, or a normalised dividend that caught the divisor.  The
+               second is the one BEAR_TIGHT exists for, and `tightDoor` is the count that proves
+               that door was actually opened. */
+            {
+                unsigned m0 = (unsigned)(d0 < 0 ? -d0 : d0);
+                unsigned m2 = (unsigned)(d2 < 0 ? -d2 : d2);
+                if (m2 < m0) armA++; else if (m2 > m0) armB++;
+                if (mem[0x007E] == 0xFFu) {
+                    diagonal++;
+                    if (m0 != m2) tightDoor++;
+                }
+            }
+        }
+        set_ignore(0, 0);
+        fail += subFail;
+        if (shaped[BEAR_EQUAL] == 0 || diagonal == 0 || tightDoor == 0 || armA == 0 ||
+            armB == 0 || decimal == 0 || sixth == 0) {
+            printf("[VACUOUS] bearing_to_section_from: diagonal=%d (of which %d by the "
+                   "dividend-caught-divisor door) armA=%d armB=%d decimal=%d origin6=%d — "
+                   "every one must be non-zero or an arm never ran\n",
+                   diagonal, tightDoor, armA, armB, decimal, sixth);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d octant-A, %d octant-B, %d 45-degree of which %d not by equal magnitudes, "
+               "%d decimal, %d off the sign origin)\n",
+               "bearing_to_section_from", cases, subFail, armA, armB, diagonal, tightDoor,
+               decimal, sixth);
+    }
+
+    if (want("project_point_from")) {
+        const int cases = 4000 * scale;
+        int shaped[PROJ_SHAPES];
+        int decimal = 0, clipped = 0, survived = 0, overflowed = 0, below = 0, sixth = 0;
+        int doorHi = 0, doorLo = 0;
+        int subFail = 0;
+        for (t = 0; t < PROJ_SHAPES; t++) shaped[t] = 0;
+
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            int shape = t % PROJ_SHAPES;
+            uint8_t sectionByte, origin;
+            unsigned dist, height;
+            int d1;
+
+            fill_random(pre);
+            sectionByte = random_section_byte();
+            origin      = (xs() & 1) ? 0x06u : 0x00u;
+            if (xs() % 8u == 0) origin = (uint8_t)xs();
+            if (origin == 0x06u) sixth++;
+            shaped[shape]++;
+
+            /* The height is compared and divided AFTER a >> 3, so the fixture picks the
+               post-shift magnitude it wants and scales back up by 8. */
+            /* ⚠ EVERY ARM STAYS UNDER $2000, because the delta staged below is height * 8 and
+               has to fit in 16 bits.  Clamping AFTERWARDS instead — which is what this fixture
+               did first — silently unpicks the relationship each arm was built to create, and
+               the census read 25% clipped where the shapes asked for 60%. */
+            switch (shape) {
+            case PROJ_NEAR:
+                dist   = 0x0100u + (xs() % 0x1F00u);
+                height = xs() % dist;                        /* strictly inside: survives */
+                break;
+            case PROJ_CLIP_HI:                               /* high byte alone decides */
+                dist   = 1u + (xs() % 0x1E00u);
+                height = (dist & 0xFF00u) + 0x100u + (xs() % 0x100u);
+                break;
+            case PROJ_CLIP_LO:                               /* high bytes EQUAL, low decides */
+                dist   = 0x0100u + (xs() % 0x1F00u);
+                height = (dist & 0xFF00u) | ((dist & 0xFFu)
+                                             + (xs() % (0x100u - (dist & 0xFFu))));
+                break;
+            case PROJ_ZERO_DIST:
+                dist   = 0u;
+                height = xs() % 0x2000u;
+                break;
+            default:
+                dist   = xs() % 0x2000u;
+                height = xs() % 0x2000u;
+                break;
+            }
+
+            d1 = (int)(height * 8u + (xs() % 8u));
+            if (xs() & 1) { d1 = -d1; below++; }
+            stage_component(pre, sectionByte, 1, origin, d1);
+            pre[0x007C] = (uint8_t)dist;                      /* point_dist_lo */
+            pre[0x007D] = (uint8_t)(dist >> 8);               /* point_dist_hi */
+
+            c.X = sectionByte;
+            c.Y = origin;
+            c.A = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = (xs() % 4 == 0);
+            if (c.D) decimal++;
+
+            subFail += diff_run("project_point_from", pre, c, project_point_from,
+                                project_point_from__t6502, liveMask, t, &printed);
+
+            /* The exit carry IS the routine's answer, so the census reads it directly.  An
+               overflow exit is a carry-set case that still got as far as writing proj_width. */
+            if (cpu.C) {
+                clipped++;
+                /* proj_width is only written past the clip, so a carry-set case that moved it
+                   was rejected by the QUOTIENT rather than by the far clip. */
+                if (mem[0x002A] != pre[0x002A]) overflowed++;
+                /* Which far-clip door — countable only for the binary-mode cases, because in
+                   decimal mode the staged delta is not the delta the routine computes. */
+                else if (!c.D) {
+                    if ((height >> 8) == (dist >> 8)) doorLo++; else doorHi++;
+                }
+            } else {
+                survived++;
+            }
+        }
+        fail += subFail;
+        if (clipped == 0 || survived == 0 || overflowed == 0 || below == 0 ||
+            decimal == 0 || sixth == 0 || doorHi == 0 || doorLo == 0) {
+            printf("[VACUOUS] project_point_from: clipped=%d (%d by the high byte, %d by the "
+                   "low) survived=%d quotient-overflow=%d below-eye-level=%d decimal=%d "
+                   "origin6=%d — every one must be non-zero\n",
+                   clipped, doorHi, doorLo, survived, overflowed, below, decimal, sixth);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d survived, %d clipped: %d on the high byte, %d on the low, %d on the "
+               "quotient; %d below eye level, %d decimal, %d off the sign origin)\n",
+               "project_point_from", cases, subFail, survived, clipped, doorHi, doorLo,
+               overflowed, below, decimal, sixth);
+    }
+
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -1420,6 +1717,7 @@ int main(int argc, char** argv)
     fail += test_body_drivers();
     fail += test_geometry_callees();
     fail += test_div16by8();
+    fail += test_road_transforms();
 
     fail += check_coverage();
     fail += report_unvalidated_natives();

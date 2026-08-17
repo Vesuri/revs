@@ -2570,3 +2570,366 @@ void div16by8(void)
     cpu.C = 0;
     cpu.A = r.remainder;
 }
+
+/* ===========================================================================
+   TWIN #14, $2145/$2147 bearing_to_section — THE BEARING
+   TWIN #15, $2285/$2287 project_point      — THE PERSPECTIVE DIVIDE
+   ---------------------------------------------------------------------------
+   The road pass's two coordinate transforms, and every edge point in the frame goes through
+   both: bearing_to_section turns a track section's position into an ANGLE measured from the
+   view origin, project_point turns the same section's height into a SCAN LINE.  They are
+   taken together because they are very nearly one routine twice over — the same opening
+   subtract, the same normalise-and-divide, the same pair of entry points — and because
+   between them they call exactly ONE function, div16by8, which is already real C (twin #13).
+
+   ⭐ THAT CALLEE SET IS WHY THESE ARE WORTH TWINNING AT ALL.  Twins #4-#12 were DRIVERS: short
+   bodies over long transliterated subtrees, and deleting their interpreter collected nothing
+   because the interpreter was never where their time was (docs/faithfulness-seam.md §8).
+   These two have no transliterated subtree left underneath them, so every instruction the
+   interpreter was running for them is an instruction this file now owns.
+
+   ⭐ TWO ENTRY POINTS EACH, AND THE SECOND ONE IS AN ORIGIN.  $2145 and $2285 are two bytes
+   long — `LDY #0` — and fall into $2147 / $2287, which subtract view_origin[Y].  Y is a byte
+   offset into a STRIDE-SIX array of three-component positions, so Y = 0 is the camera and
+   Y = 6 is the road sign's own displaced viewpoint (build_road_sign is the only caller that
+   passes it, at $4CED and $4D1A; build_sign_origin is what fills that second row).  Ghidra
+   split each pair into two functions and the transliteration kept them that way.
+
+   ⭐ ONE DELTA VECTOR, THREE PARALLEL ARRAYS.  Both routines' opening is the same three
+   instructions per component, and the cells line up: low bytes at $80-$82, the magnitude's
+   high bytes at $83-$85, the RAW signed high bytes at $86-$88, all indexed by component 0..2.
+   bearing_to_section fills components 0 and 2 — the ground plane, whose ratio is the bearing —
+   and project_point fills component 1, the height.  Those are point_delta_lo / _hi / _sign
+   now; before this twin they were nine bare zero-page addresses, one of which ($0088) carried
+   a name belonging to an unrelated owner.
+
+   ⚠ THE ARCTAN SCALE IS THE SAME IN BOTH ARMS, and symbols.csv used to say it was not.  Both
+   have exactly three LSR/ROR pairs, so both scale the table byte by 32 and 45 degrees is
+   $1FE0 either way.  What differs is the octant: the quadrant base, and which way the negate
+   goes.  Counted out of the listing — the prose had been read many times and was still wrong.
+
+   ⚠ DECIMAL MODE REACHES EVERY ONE OF THESE SUBTRACTS, so the abs, the negate and both
+   closing adjustments go through the 6502's own ADC/SBC.  The fixtures randomise D for the
+   same reason twin #13's does, and that is also where the exit V comes from.
+
+   ⭐ WHAT THIS UNLOCKS AND DELIBERATELY DOES NOT TAKE.  div16by8's header records that its
+   exit V is dead at all three of its call sites; those three sites are now both in this file,
+   so the DIVU.W replacement it describes is provably legal.  It is NOT taken here — it is a
+   separate and separately-measurable change, and these fixtures still compare V, so taking it
+   means relaxing them in the same commit.
+   =========================================================================== */
+
+#define POINT_DELTA_LO    0x0080u  /* point_delta_lo[0..2]   — camera-relative delta, low byte */
+#define POINT_DELTA_HI    0x0083u  /* point_delta_hi[0..2]   — ...its magnitude's high byte */
+#define POINT_DELTA_SIGN  0x0086u  /* point_delta_sign[0..2] — ...and the raw high byte, the sign */
+#define VIEW_ORIGIN_LO    0x6280u  /* view_origin_lo — 3 components, STRIDE 6, two origins */
+#define VIEW_ORIGIN_HI    0x6283u  /* view_origin_hi */
+#define ARCTAN_TABLE      0x6100u  /* arctan_table — atan(i/256) with 45 degrees at $FF */
+#define RECIP_TABLE_BIAS  0x6180u  /* reciprocal_table reached biased: entry i = $8000/(i+$80) */
+
+typedef struct {
+    uint16_t mag;     /* |section coordinate - view origin| for this component */
+    uint8_t  rawHi;   /* the subtraction's high byte BEFORE the absolute value — the sign */
+} ViewDelta;
+
+/* One component of the camera-relative delta.  ⚠ The 6502 has the component baked into the
+   address (`LDA $0902,X`), so unlike section_word's index this one does NOT wrap at 8 bits —
+   the scratch slot $FD plus component 2 is $09FF, still inside the table. */
+static ViewDelta view_delta(uint8_t sectionByte, unsigned component, uint8_t origin)
+{
+    unsigned lo = sub_from(mem[SECTION_LO_TBL + sectionByte + component],
+                           mem[VIEW_ORIGIN_LO + origin + component]);
+    unsigned hi = sbc_step(mem[SECTION_HI_TBL + sectionByte + component],
+                           mem[VIEW_ORIGIN_HI + origin + component], cpu.C);
+    ViewDelta d;
+    /* ⚠⚠ THE BRANCH TESTS N, NOT BIT 7 OF THE BYTE, and in DECIMAL MODE those are two
+       different things: the 6502 sets N and Z from the SBC's BINARY result while A receives
+       the BCD-corrected one, so `sign = stored & $80` picks the wrong arm on a quarter of the
+       cases and only there.  Cost an hour and 76 fixture failures to find; the fixture's D
+       arm is what found it. */
+    int negative = cpu.N;
+
+    d.rawHi = (uint8_t)hi;
+    if (negative) {                      /* $2158 / $2178 / $2298 BPL — a 16-bit negate */
+        lo = sub_from(0, (uint8_t)lo);
+        hi = sbc_step(0, (uint8_t)hi, cpu.C);
+    }
+    d.mag = (uint16_t)(((unsigned)(uint8_t)hi << 8) | (uint8_t)lo);
+    return d;
+}
+
+/* Shift the larger magnitude left until the bit leaving its high byte is a 1, taking the
+   smaller one with it ONE PLACE FEWER — that spare place is the headroom the 8-bit quotient
+   needs — and hand back the high byte with the bit rotated back in: the divisor div16by8
+   wants, normalised so bit 7 is set.  The larger's high byte never goes back to memory (the
+   6502 keeps it in A for the whole loop); its low byte and both of the smaller's do.
+   $21BD-$21C6, $2235-$223E and $22C5-$22CF are all this same idiom.
+
+   ⚠ A larger of 0 would spin here exactly as the 6502 does.  It cannot happen: a zero larger
+   means both ground magnitudes are zero, which is the equal case and never reaches an arm,
+   and project_point's far clip rejects every point when point_dist is 0. */
+static uint8_t normalise_for_divide(uint8_t* largerLo, uint8_t largerHi,
+                                    uint16_t* smaller, unsigned* shifts)
+{
+    unsigned hi = largerHi;
+    unsigned lo = *largerLo;
+
+    *shifts = 0;
+    for (;;) {
+        unsigned out = (hi >> 7) & 1u;                    /* ASL lo / ROL hi */
+        hi = ((hi << 1) | ((lo >> 7) & 1u)) & 0xFFu;
+        lo = (lo << 1) & 0xFFu;
+        if (out)
+            break;
+        *smaller = (uint16_t)(*smaller << 1);
+        (*shifts)++;
+    }
+    *largerLo = (uint8_t)lo;
+    return (uint8_t)((hi >> 1) | 0x80u);                  /* ROR A, with the 1 that fell out */
+}
+
+/* bit 7 of a sign byte, through the 6502's own BIT so that the V it leaves behind is real.
+   ⚠⚠ BIT SETS V FROM BIT 6 OF ITS OPERAND, and on the 45-degree arm below nothing overwrites
+   it before the RTS — so V is part of that arm's exit contract even though no caller reads it.
+   The two octant arms use the same instruction and then ADC over the top of it, which is why
+   this only matters here.  (645 fixture failures, all on the one arm, all V.) */
+static int sign_bit7(unsigned cell)
+{
+    BIT(mem[cell]);
+    return cpu.N;
+}
+
+/* $220D-$2234 — the four 45-degree diagonals, on the two sign bits.  Reached three ways
+   (equal magnitudes, or either arm's dividend catching up with its divisor) and never after a
+   divide, which is what keeps div16by8's flags off this exit.  shared_temp_7e = $FF says
+   "maximally oblique" to the point_distance_hypot that runs next.
+   ⚠ Both paths test component 2 SECOND, so the V that leaves is always bit 6 of $0088. */
+static void bearing_diagonal(void)
+{
+    static const uint8_t diagonal[4] = { 0x20u, 0x60u, 0xE0u, 0xA0u };
+    unsigned quadrant;
+
+    shared_temp_7e = 0xFFu;                         /* $220D */
+    bearing_lo     = 0x00u;                         /* $2211 */
+
+    quadrant  = sign_bit7(POINT_DELTA_SIGN + 0) ? 2u : 0u;
+    quadrant |= sign_bit7(POINT_DELTA_SIGN + 2) ? 1u : 0u;
+
+    bearing_hi = (uint8_t)load_a(diagonal[quadrant]);
+}
+
+/* $21C1-$220C and $2239-$2284 — the two arms, which differ in three things and nothing else:
+   which component is the divisor, which sign byte picks the quadrant base, and which way the
+   negate goes.  Arm A measures off component 0 (base $40/$C0, negate when the two signs
+   AGREE); arm B measures off component 2 (base $00/$80, negate when they DIFFER).  Together
+   they are an octant decomposition of a full turn. */
+static void bearing_arm(unsigned largerComponent, unsigned smallerComponent,
+                        uint8_t quadrantBase, int negateWhenSignsAgree)
+{
+    uint8_t  largerLo = mem[POINT_DELTA_LO + largerComponent];
+    uint16_t smaller  = (uint16_t)(((unsigned)mem[POINT_DELTA_HI + smallerComponent] << 8)
+                                   | mem[POINT_DELTA_LO + smallerComponent]);
+    unsigned shifts, angleLo, angleHi;
+    uint8_t  divisor, rawArctan, base;
+    int      i, signsDiffer, negate;
+
+    divisor = normalise_for_divide(&largerLo, mem[POINT_DELTA_HI + largerComponent],
+                                  &smaller, &shifts);
+    mem[POINT_DELTA_LO + largerComponent]  = largerLo;
+    mem[POINT_DELTA_LO + smallerComponent] = (uint8_t)smaller;
+    mem[POINT_DELTA_HI + smallerComponent] = (uint8_t)(smaller >> 8);
+
+    shared_temp_76 = divisor;                       /* $21C7 / $223F */
+    math_lo        = (uint8_t)smaller;              /* $21C9 / $2241 */
+
+    /* $21CD / $2245 — a dividend half that has caught up with the divisor would overflow the
+       8-bit quotient, and is the 45-degree case by another road.  The compare runs on both
+       paths because it is also what leaves A holding the dividend's high byte for the divide. */
+    cmp_ge((unsigned)(uint8_t)(smaller >> 8), divisor);
+    if (cpu.Z) {
+        bearing_diagonal();
+        return;
+    }
+
+    {
+        Div16By8 q = div16by8_core((uint8_t)(smaller >> 8), (uint8_t)smaller, divisor);
+        math_lo = q.quotient;
+        cpu.A   = q.remainder;
+    }
+
+    arg_y(math_lo);                                 /* $21DA / $2252 — Y is live at exit */
+    rawArctan      = mem[ARCTAN_TABLE + cpu.Y];
+    shared_temp_7e = rawArctan;                     /* how oblique — the hypot's segment split */
+
+    /* $21E1-$21EA / $2259-$2262 — the table byte scaled by 32 into a 16-bit angle: three
+       LSR/ROR pairs, and it really is three in BOTH arms. */
+    angleLo = 0;
+    angleHi = rawArctan;
+    for (i = 0; i < 3; i++) {
+        angleLo = (unsigned)(((angleHi & 1u) << 7) | (angleLo >> 1));
+        angleHi >>= 1;
+    }
+
+    /* $21EC / $2264 — the negate that puts the angle on the right side of its axis.  The two
+       arms sweep opposite ways round, which is why the test is inverted between them. */
+    signsDiffer = ((mem[POINT_DELTA_SIGN + 0] ^ mem[POINT_DELTA_SIGN + 2]) & 0x80u) != 0;
+    negate      = negateWhenSignsAgree ? !signsDiffer : signsDiffer;
+    if (negate) {
+        angleLo = sub_from(0, (uint8_t)angleLo);
+        angleHi = sbc_step(0, (uint8_t)angleHi, cpu.C);
+    }
+
+    /* $21FF / $2277 — and the quadrant the octant sits in, from the LARGER component's sign.
+       Through the same BIT as the arm above; here the ADC below overwrites the V it leaves. */
+    base    = sign_bit7(POINT_DELTA_SIGN + largerComponent)
+                ? (uint8_t)(quadrantBase + 0x80u) : quadrantBase;
+    angleHi = adc_step(base, (uint8_t)angleHi, 0);
+
+    bearing_lo = (uint8_t)angleLo;
+    bearing_hi = (uint8_t)angleHi;                  /* ...and A, which is live at exit */
+}
+
+static void bearing_to_section_core(uint8_t sectionByte, uint8_t origin)
+{
+    /* $2147-$2185 — components 0 and 2 of the delta: the ground plane. */
+    ViewDelta d0 = view_delta(sectionByte, 0, origin);
+    ViewDelta d2 = view_delta(sectionByte, 2, origin);
+
+    mem[POINT_DELTA_LO   + 0] = (uint8_t)d0.mag;
+    mem[POINT_DELTA_HI   + 0] = (uint8_t)(d0.mag >> 8);
+    mem[POINT_DELTA_SIGN + 0] = d0.rawHi;
+    mem[POINT_DELTA_LO   + 2] = (uint8_t)d2.mag;
+    mem[POINT_DELTA_HI   + 2] = (uint8_t)(d2.mag >> 8);
+    mem[POINT_DELTA_SIGN + 2] = d2.rawHi;
+
+    /* $2187-$2191 THE SORT.  The divide wants a proper fraction, so the smaller magnitude
+       becomes the dividend and the larger the divisor.  point_distance_hypot reads the same
+       two pairs afterwards as its min and max, UNSHIFTED — the normalise below only touches
+       the point_delta cells, never these.
+
+       ⚠ The compares run for their FLAGS as much as their answer.  The 6502 brackets the four
+       stores below in PHP/PLP, which looks like it is only carrying Z to the `BEQ` — but PLP
+       restores C and V as well, and the 45-degree arm it branches to touches neither, so the
+       deciding compare's C and V are LIVE on that exit.  Doing the comparison in C and
+       branching on a bool leaves them stale, which is a diff on every equal-magnitude case. */
+    {
+        int d2Smaller, equal;
+
+        if (!cmp_ge((unsigned)(uint8_t)(d2.mag >> 8), (uint8_t)(d0.mag >> 8)))
+            d2Smaller = 1;                          /* $2189 BCC — component 2 is the smaller */
+        else if (!cpu.Z)
+            d2Smaller = 0;                          /* $218B BNE — component 0 is */
+        else
+            d2Smaller = !cmp_ge((unsigned)(uint8_t)d2.mag, (uint8_t)d0.mag);  /* $2191 BCS */
+        equal = cpu.Z;                              /* ...the Z the PHP/PLP pair preserves */
+
+        if (d2Smaller) {
+            hypot_min_hi = (uint8_t)(d2.mag >> 8);
+            hypot_min_lo = (uint8_t)d2.mag;
+            hypot_max_lo = (uint8_t)d0.mag;
+            hypot_max_hi = (uint8_t)(d0.mag >> 8);
+            bearing_arm(0, 2, 0x40u, 1);            /* $21C1 — measured off component 0 */
+        } else {
+            hypot_min_hi = (uint8_t)(d0.mag >> 8);
+            hypot_min_lo = (uint8_t)d0.mag;
+            hypot_max_lo = (uint8_t)d2.mag;
+            hypot_max_hi = (uint8_t)(d2.mag >> 8);
+            if (equal)
+                bearing_diagonal();                 /* $21B8 — the two are the same length */
+            else
+                bearing_arm(2, 0, 0x00u, 0);        /* $2239 — measured off component 2 */
+        }
+    }
+}
+
+static void project_point_core(uint8_t sectionByte, uint8_t origin)
+{
+    /* $2287-$22AE — component 1 of the delta, the HEIGHT, and the only component that is
+       scaled on the way in: >> 3 as a 16-bit pair before anything looks at it. */
+    ViewDelta d      = view_delta(sectionByte, 1, origin);
+    uint16_t  height = (uint16_t)(d.mag >> 3);
+    unsigned  shifts, line;
+    uint8_t   divisor, distLo;
+    int       clipped;
+
+    mem[POINT_DELTA_SIGN + 1] = d.rawHi;
+    mem[POINT_DELTA_LO   + 1] = (uint8_t)height;
+    mem[POINT_DELTA_HI   + 1] = (uint8_t)(height >> 8);
+
+    /* $22B0-$22BD THE FAR CLIP — the scaled height against point_dist, which
+       point_distance_hypot filled in for THIS point a moment ago, so it is a vertical
+       field-of-view test and not a comparison with a stale distance. */
+    if (!cmp_ge((unsigned)(height >> 8), point_dist_hi))
+        clipped = 0;                                                    /* $22B2 */
+    else if ((uint8_t)(height >> 8) != point_dist_hi)
+        clipped = 1;                                                    /* $22B4 */
+    else
+        clipped = cmp_ge((unsigned)(uint8_t)height, point_dist_lo);      /* $22BA */
+
+    if (clipped) {
+        cpu.C = 1;                                  /* $22BC SEC — "drop this point" */
+        return;
+    }
+
+    /* $22BE-$22D8 — normalise the DISTANCE until its top bit falls out, taking the height
+       with it one place fewer, and record the pair the road's apparent width is made of:
+       reciprocal_table's entry for the normalised distance (a MANTISSA) in proj_width and the
+       shift count (its EXPONENT) in proj_width_shift.  Neither is read again here — both are
+       for emit_edge_width_offset and the object slot writer.
+       ⚠ point_dist_lo is shifted IN PLACE and does not survive; point_dist_hi does, because
+       the 6502 keeps it in A for the whole loop. */
+    distLo  = point_dist_lo;
+    divisor = normalise_for_divide(&distLo, point_dist_hi, &height, &shifts);
+    point_dist_lo = distLo;
+
+    mem[POINT_DELTA_LO + 1] = (uint8_t)height;
+    mem[POINT_DELTA_HI + 1] = (uint8_t)(height >> 8);
+
+    shared_temp_76   = divisor;
+    proj_width_shift = (uint8_t)shifts;
+    cpu.Y            = divisor;                     /* $22D4 TAY — and Y is live at exit */
+    proj_width       = mem[RECIP_TABLE_BIAS + divisor];
+
+    /* $22DA-$22E1 — the perspective divide itself: the shifted height over the normalised
+       distance.  A DIVIDE, not a multiply — the reciprocal above is for the width. */
+    math_lo = (uint8_t)height;
+    {
+        Div16By8 q = div16by8_core((uint8_t)(height >> 8), (uint8_t)height, divisor);
+        math_lo = q.quotient;
+        cpu.A   = q.remainder;
+    }
+
+    /* $22E3-$22E7 — a quotient past $80 is off the top of the 0..79 scan-line space, and
+       leaves by the same carry-set door as the far clip. */
+    if (cmp_ge(math_lo, 0x80u))
+        return;
+
+    /* $22E9-$22FD — 60 either side of the camera's eye level, less the frame's smoothed
+       pitch, and that is the scan line. */
+    if (sign_bit7(POINT_DELTA_SIGN + 1))            /* $22E9 BIT — see sign_bit7 on the V */
+        line = sub_from(0x3Cu, math_lo);            /* $22ED — below: 60 - quotient */
+    else
+        line = adc_step(math_lo, 0x3Cu, 0);         /* $22F5 — above: quotient + 60 */
+
+    line           = sub_from(line, view_pitch_offset);
+    projected_line = (uint8_t)line;
+    cpu.C          = 0;                             /* $22FD CLC — the point survived */
+}
+
+/* The 6502-ABI shims.  ⚠ Only the BODIES are twinned: $2145 and $2285 stay transliterated,
+   because each is a single `LDY #0` that falls into the body, so a twin of them would run the
+   same core the oracle does and the fixture would compare native against native — a fixture
+   that passes vacuously (docs/validation-harness.md).  Two generated LDY macros is the right
+   price for keeping both oracles real.
+
+   X is the section's byte index into section_coord_lo/hi; Y is the view origin's byte offset,
+   0 for the camera and 6 for the road sign's viewpoint. */
+void bearing_to_section_from(void)
+{
+    bearing_to_section_core(cpu.X, cpu.Y);
+}
+
+void project_point_from(void)
+{
+    project_point_core(cpu.X, cpu.Y);
+}

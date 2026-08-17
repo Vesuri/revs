@@ -114,6 +114,15 @@ purely for this reason — same 0/700 differential, same framerate (465 vs 467 p
    between them those two routines call exactly one function.  When looking for the next twin,
    enumerate the callee set FIRST: a subsystem whose leaves are one shared math routine is a much
    cheaper win than the size of its profile row suggests.
+   ⭐⭐ Twins #14/#15 (`bearing_to_section_from` `$2147`, `project_point_from` `$2287`) are that
+   enumeration cashed in, and they are the FIRST twins since #2 with no transliterated subtree
+   underneath them at all: the callee set they share is `div16by8` alone, and #13 had already made
+   it real C.  So the ordering rule has a corollary — **twin the leaf first, then its callers
+   become leaf-heavy too.**  Two twins that would each have been drivers in October are both
+   arithmetic now, and the same move is available anywhere a subsystem bottoms out in one routine.
+   ⚠ Enumerating the callee set is also what *sized* the job: `grep -E "JSR|JMP"` over the two
+   address ranges is ten seconds and it said "one callee, three call sites" before a line was
+   written.  Do that before estimating any twin.
 9. **Sabotage before believing it.**  Four defects minimum, each must FAIL, and any sabotage that
    PASSES is a fixture gap to write down rather than a pass to enjoy (`view_paint_lines`' phase-3
    carry tail is unreachable and untested — recorded in the twin's own comment).
@@ -146,6 +155,21 @@ Each of these passed a reading of the listing and failed the differential.
   CALLER's `N`, not bit 7 of `A`.  Every real caller has just computed `A` so the two agree; a
   randomised pre-state does not, and a twin written as `if (A & 0x80)` fails 117 of 800 cases.
   The fixture has to DECORRELATE the two deliberately or it never asks the question.
+  ⚠⚠ **And "freshly computed" is not enough either — DECIMAL MODE decorrelates them on its own.**
+  Twins #14/#15 opened with `SBC` / `SBC` / `BPL`, the standard 16-bit-negate test, so N *is* the
+  sign of the value just computed… in binary mode.  `cpu.h`'s `SBC` follows the NMOS part: in
+  decimal mode `A` receives the BCD-corrected byte while **N and Z come from the binary result**,
+  so `if (stored & 0x80)` picks the other arm on a quarter of the cases and nowhere else.  76 of
+  800 failures, all with `D` set.  Rule: **if the 6502 branched on a flag, the twin reads
+  `cpu.N`** — never bit 7 of the byte, however obviously the two "must" agree.
+* **`BIT` SETS V, from bit 6 of its operand.**  It is easy to read `BIT $86 / BPL` as "test bit 7"
+  and write `mem[cell] & 0x80` — which is right about N and silently drops V.  In twins #14/#15
+  the two octant arms `ADC` over the top of it and never notice; the 45-degree arm ends in
+  `LDA #imm / STA / RTS`, so **V survives to the caller** and 645 of 4000 cases differed on V with
+  `mem[]` byte-exact.  Same rule as the `CMP` bullet above, one instruction further out: a 6502
+  instruction's flag side effects are part of it, so put it behind a named helper (`sign_bit7`)
+  rather than paraphrasing it.  ⚠ Note both halves of the trap are needed to find it: without the
+  fixture declaring flags live, this is invisible.
 
 ### ⭐ A patched SMC BRANCH OFFSET is a narrower obligation than it looks
 

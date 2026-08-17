@@ -621,6 +621,17 @@ VALIDATE_FUNCS = {
     # conditional subtracts, which is why a single `DIVU.W` is NOT what the twin emits; the
     # reasoning and the way out are in the twin's own header.
     0x0C47,
+    # ⭐⭐ TWINS #14 and #15 — $2147 bearing_to_section_from and $2287 project_point_from, the
+    # road pass's two coordinate transforms and div16by8's own callers.  Taken together because
+    # they share their whole shape (the same opening subtract into the three point_delta arrays,
+    # the same normalise-and-divide, the same pair of entry points) and because between them
+    # they call EXACTLY ONE function, which is now real C — so unlike twins #4-#12 there is no
+    # transliterated subtree left under them to swallow the win.
+    # ⚠ The BODIES only.  $2145 and $2285 are one `LDY #0` each and fall through into these, so
+    # twinning them too would give a fixture whose oracle calls the native body — vacuous.  They
+    # stay transliterated on purpose; the twins' header says so.
+    0x2147,
+    0x2287,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

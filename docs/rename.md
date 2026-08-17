@@ -35,6 +35,23 @@ or a who-is-ahead test.  **Settle it on the reference loop, not in the listing**
 drive it dead straight, and watch which of the two moves; then steer without moving and watch
 again.  Whichever changes when the car translates is the ALONG one.
 
+⭐ **Twins #14/#15 narrowed this, and the question as posed may be malformed.**  Two things are now
+`[DERIVED]`: (a) `view_origin` component 1 is the VERTICAL axis — `project_point` divides it by the
+point's distance and the quotient is a scan ROW, while components 0 and 2 go to
+`bearing_to_section` and become an azimuth, i.e. a column; (b) the `$45D5`-`$45ED` write is
+`view_origin_lo[1] = section_coord[cursor + 1] + (car_state_1 scaled) + $AC + a term`, so
+`car_state_1` reaches the camera's ELEVATION, not its ground position.
+⇒ `[INFERRED]` the scale is what makes this ACROSS rather than along: `$4610` multiplies
+`car_state_1` by `mem[$5500 + Y]` (a per-section byte, sign EORed with `track_direction`) through
+`mul8`, and *offset × a per-section coefficient = a height change* is exactly CAMBER.  An
+across-track offset on a banked section raises you; an along-track one does not.  That also makes
+sense of `$27A4` differencing it between cars (side-by-side) and of the `$AC` constant reading as
+nominal eye height.
+⚠ Still not measured, and the reference-loop test above is still the decider — but it now has a
+prediction to falsify: **`car_state_1` should change when the car is steered across a CAMBERED
+section and barely at all on a flat straight.**  See also the `$5400`/`$5500`/`$5600` entry below,
+because the coefficient's own name currently says something else entirely.
+
 ## `model_accum_lo`/`model_accum_hi` (`$62D8`/`$62E8`) — element 8 of what, physically?
 
 Named for its ROLE (the one element `apply_driving_model` integrates by hand) rather than its
@@ -69,12 +86,29 @@ points, both walks start at 6, `shift_near_edge_points` slides exactly five entr
 MEASURED.  Cheap confirmation on the reference loop: drive at a steady speed and watch how often
 `$62F5` is set and what `$0007` reads when it is; it should equal the number of sections crossed.
 
-## `shared_counter_42` (`$0042`) and `shared_temp_77` (`$0077`) are named for the FACT
+## `patch_target_lo` (`$5400`) / `patch_byte_0` (`$5500`) / `$5600` — named for the INSTALLER, read as PER-SECTION TRACK DATA
 
-Both were named while twinning the road walk because a twin may not carry a bare hex address, and
-both are named for the observation rather than the meaning: `$0042` has ten writers and no one
-meaning (in the road pass it is the walk's point counter and the cap `$2498` tests), and `$0077` is
-scratch in the `$74`-`$79` window shared between `road_edge_walk`'s subdivision arm,
-`emit_edge_width_offset` and `$134F`.  This is only worth reopening if a future twin finds a single
-meaning that covers every owner — otherwise the fact-shaped name is the honest one, as it is for
-`shared_temp_76`, `shared_temp_7e`, `shared_temp_8c` and `shared_temp_8e`.
+`$5400` and `$5500` are named for what `ModifyGameCode` does with them at circuit-install time
+(patch target addresses and the bytes to write).  But **six sites in the running engine read them as
+a parallel triple of per-section tables**, indexed by a section index in Y and none of them inside
+the installer:
+
+| site | reads |
+|---|---|
+| `$144A`-`$145C` | all three, `$5400,Y` / `$5500,Y` / `$5600,Y` in one breath |
+| `$2949`-`$2953` | all three again |
+| `$4536`-`$4549` | `$5400,Y`, `$5600,Y` — `update_camera_and_drive_state`'s angular relation |
+| `$4612`-`$4618` | `$5500,Y` twice — the coefficient `car_state_1` is multiplied by |
+
+Both readings can be true at once, and that is the likely answer: the track file lands at `$70DB`
+and the unpack's checksum-verified swap moves it to `$5300` (`docs/static-map.md`), so this is
+CIRCUIT DATA that the installer reads a patch list out of and the engine then reads geometry out
+of.  If so the names are not wrong, they are one tenant of two, and the engine's tenant is the one
+every twin in the road pass and the driving model will meet.
+**The cheap decider is a DUMP, not more reading** — the lesson from the `$61xx` entry: print
+`$5400`-`$56FF` after a circuit installs and again mid-race for two different circuits, and see
+whether the bytes the six sites read are patch-list entries (short, structured, one per patch) or
+one value per section (256 entries, smoothly varying).  Sizes settle it: `ModifyGameCode` applies
+`n+1` patches with `n` around 54-60 per circuit, so a patch list occupies ~60 bytes and a
+per-section table occupies ~40 or 120.  ⚠ Suspect a THIRD name is needed for the region as a whole
+rather than renaming either tenant.

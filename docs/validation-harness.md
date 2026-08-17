@@ -288,6 +288,46 @@ the line `projected_line` came out as.  All three sabotages then fail.
    identical (see `docs/faithfulness-seam.md` §9).  The steer therefore plants the index one either
    side as well, so the comparison's *direction* shows up in `mem[]`.
 
+## ⭐⭐ …and a THIRTEENTH, found by twins #14/#15: the FIRST use of the ignore list, and what earns it
+
+`set_ignore` has sat in `tools/validate_native.c` unused since the harness was built (`(void)`d in
+`main`) precisely so that its first use would have to be argued for.  Twin #14 is it, and the
+argument is worth keeping because it is the shape any future one has to match.
+
+`bearing_to_section_from`'s sort brackets four stores in `PHP` … `PLP`.  Lesson 9's rule in
+`docs/faithfulness-seam.md` — "keep the `PHP(); PLP();` wherever the oracle pushes" — is what
+`road_edge_walk` did, and it works when the pair is *flag-neutral scratch*.  Here it is not: the
+`PLP` is load-bearing, restoring the deciding compare's `Z` to a `BEQ` and its `C` and `V` to the
+45-degree arm's exit.  The twin has to model that as data (a `d2Smaller` / `equal` pair captured
+before the stores), and once it does, there is no push left to reproduce — so the oracle leaves a
+status byte at `$01FF` that the twin does not.
+
+**Three things make ignoring it legitimate rather than convenient:**
+
+1. **The cell is provably dead.**  `S` is `$FF` on entry and `$FF` on exit, so `$01FF` is *below*
+   the stack pointer when the routine returns — nothing reads it before the next push.
+2. **`S` stays declared live.**  A twin that actually leaked the stack pointer still fails, so the
+   ignore relaxes the residue and not the invariant.
+3. **It is scoped.**  `set_ignore(bearIgnore, 1)` before the loop, `set_ignore(0, 0)` after, so it
+   cannot loosen another twin's contract — which is the whole reason the mechanism is scoped.
+
+⚠ The order in which those two rules apply matters: **reproduce the push first, and only reach for
+the ignore list when the twin has had to model the flags as data.**  Reversed, the ignore list
+becomes a way to skip lesson 9 rather than to finish it.
+
+### ⚠ A sabotage that is not a defect, second instance — and this one was arithmetic
+
+`docs/faithfulness-seam.md` §9 already records one (`road_edge_start`'s horizon tie-break).  Twin
+#15's was less obvious: `mem[$6180 + divisor]` was "sabotaged" to `mem[$6200 + (divisor & $7F)]`,
+and it passed 4000 cases.  It passed because **the divisor always has bit 7 set** — that is what the
+normalise loop is for — so `$6180 + divisor` and `$6200 + (divisor & $7F)` are the same address for
+every value the routine can produce.  The two forms are the biased and unbiased readings of
+`reciprocal_table`, i.e. the sabotage restated the code.  Replaced with an off-by-one-entry index,
+which fails 2223 cases.
+⭐ The general check is one line of Python over the input domain, and it is cheaper than steering a
+fixture at a defect that is not there: **before believing a fixture gap, evaluate the two
+expressions over the range the routine can actually reach.**
+
 ## Using it
 
 ```
