@@ -179,7 +179,12 @@ static int diff_run(const char* name, const uint8_t* pre, Cpu6502 pre_cpu,
 
     unsigned long smc_before = g_smcUnhandled;
 
-    memcpy((void*)mem, pre, 65536); cpu = pre_cpu;
+    /* ⚠⚠ cpu_unwind IS PART OF THE PRE-STATE.  It is the flag $2F7E sets when a span plotter
+       drops its caller's frame, and a fixture that calls a plotter DIRECTLY leaves it set —
+       nobody consumes it.  The next fixture's ORACLE then reads that stale flag and returns
+       one plot early, while the twin (running second, with the flag now cleared) does not:
+       a twin that looked wrong in the full run and right on its own.  Reset it with cpu. */
+    memcpy((void*)mem, pre, 65536); cpu = pre_cpu; cpu_unwind = 0;
     g_hwLogN = 0; g_hwLogOverflow = 0;
     t6502();
     memcpy(ref_mem, (void*)mem, sizeof ref_mem);
@@ -191,7 +196,7 @@ static int diff_run(const char* name, const uint8_t* pre, Cpu6502 pre_cpu,
     uint16_t ref_smc_site = g_smcSite, ref_smc_value = g_smcValue;
 
     smc_before = g_smcUnhandled;
-    memcpy((void*)mem, pre, 65536); cpu = pre_cpu;
+    memcpy((void*)mem, pre, 65536); cpu = pre_cpu; cpu_unwind = 0;
     g_hwLogN = 0; g_hwLogOverflow = 0;
     native();
 
@@ -2425,6 +2430,257 @@ static int test_span_arms(void)
     return fail;
 }
 
+
+/* ==========================================================================
+   $2B26 interp_edge, $1933 edge_x_offscreen, $193E fill_line_attr,
+   $19AF draw_surface_spans, $1A98 mark_line_surfaces — THE REST OF THE ROAD PASS
+   --------------------------------------------------------------------------
+   interp_edge is the span rasteriser's setup and the three others are draw_road's stages.
+   All but edge_x_offscreen drive the whole subtree below them, so a randomised pre-state
+   exercises far more code than the twin — which is the point, and also why the pre-state has
+   to be steered into a shape that TERMINATES.  `plant_span_world` is that shape: the four
+   entry tables as the image holds them, both plotters' destinations at a real surface_edge
+   buffer, page-aligned screen pointers, and the per-circuit sites at Silverstone's own bytes
+   or a hook.  Everything the routines themselves compute is left random.
+   ========================================================================== */
+void interp_edge(void);
+void interp_edge__t6502(void);
+void edge_x_offscreen(void);
+void edge_x_offscreen__t6502(void);
+void fill_line_attr(void);
+void fill_line_attr__t6502(void);
+void draw_surface_spans(void);
+void draw_surface_spans__t6502(void);
+void mark_line_surfaces(void);
+void mark_line_surfaces__t6502(void);
+
+static void plant_span_world(uint8_t* pre)
+{
+    memcpy(pre + 0x3E50, ARM_OFF_SHALLOW_FWD, 8);
+    memcpy(pre + 0x40D0, ARM_OFF_SHALLOW_REV, 8);
+    memcpy(pre + 0x3ED0, ARM_OFF_STEEP_FWD,   8);
+    memcpy(pre + 0x3ED8, ARM_OFF_STEEP_REV,   8);
+    pre[0x2F4F] = pre[0x2F91] = 0x54;          /* surface_edge_0 — a real destination */
+    pre[0x2F50] = pre[0x2F92] = 0x05;
+    pre[0x0070] = pre[0x0072] = pre[0x008E] = 0x00;
+    pre[0x0071] = pre[0x0073] = 0x40;
+    pre[0x008F] = 0x41;
+    pre[0x2F47] = pre[0x2F60] = pre[0x2F89] = pre[0x2FA2] = 0xC8;
+    pre[0x2FC0] = pre[0x2FD7] = 0xE0;
+    pre[0x1971] = 0x04;                        /* line_attr's fixed page */
+    plant_cap_smc(pre);
+}
+
+/* $1946 — fill_line_attr's per-circuit site: Silverstone's own call, a circuit hook, or
+   garbage so the trap arm is tested. */
+static void plant_line_attr_smc(uint8_t* pre)
+{
+    unsigned shape = xs() % 10;
+    if (shape < 7)      { pre[0x1946] = 0x20; pre[0x1947] = 0x33; pre[0x1948] = 0x19; }
+    else if (shape < 9) { pre[0x1946] = 0x20; pre[0x1947] = 0x22; pre[0x1948] = 0x5A; }
+    else                  pre[0x1946] = (uint8_t)xs();
+}
+
+static int test_road_pass(void)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    const int offCases = 2000 * scale, interpCases = 600 * scale,
+              attrCases = 800 * scale, spanCases = 300 * scale, markCases = 800 * scale;
+
+    register_fixture("edge_x_offscreen");
+    register_fixture("interp_edge");
+    register_fixture("fill_line_attr");
+    register_fixture("draw_surface_spans");
+    register_fixture("mark_line_surfaces");
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+
+    if (want("edge_x_offscreen")) {
+        int subFail = 0, off = 0;
+        for (t = 0; t < offCases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = (uint8_t)(xs() % 4 == 0);
+            if ((uint8_t)(pre[0x5E90 + c.X] + 0x14) >= 0x28) off++;
+            subFail += diff_run("edge_x_offscreen", pre, c, edge_x_offscreen,
+                                edge_x_offscreen__t6502, liveMask, t, &printed);
+        }
+        fail += subFail;
+        if (off == 0 || off == offCases) {
+            printf("[VACUOUS] edge_x_offscreen: %d of %d off axis — both answers must occur\n",
+                   off, offCases);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  (%d off axis)\n",
+               "edge_x_offscreen", offCases, subFail, off);
+    }
+
+    if (want("interp_edge")) {
+        int subFail = 0, drew = 0, published = 0, swapped = 0, solid = 0;
+        for (t = 0; t < interpCases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            plant_span_world(pre);
+            /* The endpoint's x decides whether a span is drawn at all: the block index it
+               yields has to stay under $28, which is x in $30..$CF.  Two thirds of the cases
+               are inside that window and the rest test the "off the side" exit. */
+            if (xs() % 3) pre[0x007E] = (uint8_t)(0x30 + xs() % 0xA0);
+            pre[0x0083] = (uint8_t)(0x20 + xs() % 0xC0);
+            pre[0x0084] = (uint8_t)(0x20 + xs() % 0xC0);
+            pre[0x0027] = (uint8_t)(xs() % 4);          /* the pass number */
+            pre[0x004B] = (uint8_t)(xs() % 0x50);       /* the side's end cursor */
+            pre[0x004F] = (uint8_t)(xs() % 0x50);
+            pre[0x007F] = (uint8_t)(xs() % 0x50);       /* the span's start line */
+            c.A = (uint8_t)(xs() % 0x20);               /* the style record index */
+            /* ⭐ A style whose first byte is $00 is the "all four columns" case: the routine
+               substitutes $55 and WRITES IT BACK into the record.  With a random byte that
+               happens twice in 600 and the sabotage that drops the substitution PASSED. */
+            if (xs() % 8 == 0) { pre[0x5FD0 + c.A] = 0x00; solid++; }
+            c.X = (uint8_t)(xs() % 0x50);
+            c.Y = (uint8_t)(xs() % 0x50);
+            pre[0x5F20 + c.Y] = (uint8_t)(xs() % 0x60);
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1;
+            c.C = (uint8_t)(xs() % 4 == 0);             /* the publish-only argument */
+            c.D = 0;
+            if (c.C) published++;
+            subFail += diff_run("interp_edge", pre, c, interp_edge, interp_edge__t6502,
+                                liveMask, t, &printed);
+            if (mem[0x0085] < 0x28 && !c.C) drew++;
+            if (mem[0x001E] & 0x80) swapped++;
+        }
+        fail += subFail;
+        if (drew == 0 || published == 0 || swapped == 0 || solid == 0) {
+            printf("[VACUOUS] interp_edge: %d drew, %d publish-only, %d swapped, %d solid of "
+                   "%d — all four must be non-zero\n",
+                   drew, published, swapped, solid, interpCases);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d reached a span walk, %d publish-only, %d swapped the endpoints, "
+               "%d solid patterns)\n",
+               "interp_edge", interpCases, subFail, drew, published, swapped, solid);
+    }
+
+    if (want("fill_line_attr")) {
+        int subFail = 0, clamped = 0, marked = 0;
+        for (t = 0; t < attrCases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            plant_span_world(pre);
+            plant_line_attr_smc(pre);
+            { int i; for (i = 0; i < 0x50; i++) pre[0x5F20 + i] = (uint8_t)(xs() % 0x60); }
+            pre[0x001F] = (uint8_t)(xs() % 0x50);       /* horizon_extent — the start line */
+            pre[0x0050] = (uint8_t)(xs() % 0x50);       /* road_split_index */
+            c.A = (xs() & 1) ? 0x00 : 0x50;             /* which line_attr buffer */
+            c.Y = (uint8_t)(xs() % 0x50);               /* the side's end cursor */
+            c.X = (uint8_t)(xs() % 0x50);               /* the first edge point */
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;
+            subFail += diff_run("fill_line_attr", pre, c, fill_line_attr,
+                                fill_line_attr__t6502, liveMask, t, &printed);
+            if (mem[0x007F] == 0) clamped++;
+            { int i, m = 0;
+              for (i = 0; i < 0x50; i++) if (mem[0x5EE0 + i] & 0x80) m++;
+              if (m) marked++; }
+        }
+        fail += subFail;
+        if (clamped == 0 || marked == 0) {
+            printf("[VACUOUS] fill_line_attr: %d clamped, %d marked a point of %d\n",
+                   clamped, marked, attrCases);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d filled to line 0, %d marked at least one point)\n",
+               "fill_line_attr", attrCases, subFail, clamped, marked);
+    }
+
+    if (want("draw_surface_spans")) {
+        int subFail = 0, ran = 0, movedSplit = 0;
+        for (t = 0; t < spanCases; t++) {
+            Cpu6502 c = zero_cpu();
+            uint8_t splitBefore;
+            fill_random(pre);
+            plant_span_world(pre);
+            { int i; for (i = 0; i < 0x50; i++) pre[0x5F20 + i] = (uint8_t)(xs() % 0x60); }
+            pre[0x004B] = (uint8_t)(4 + xs() % 0x14);   /* a short walk, or it is minutes */
+            /* ⭐ Half the cases put road_split_index exactly where the walk will arrive:
+               the "at the split" arm is a single index out of the whole walk, and with a
+               uniform value it ran 6 times in 300. */
+            pre[0x0050] = (uint8_t)(xs() % 0x18);
+            pre[0x0032] = (uint8_t)(xs() % 0x20);
+            pre[0x008C] = (uint8_t)(xs() % 0x20);
+            pre[0x007E] = (uint8_t)(0x30 + xs() % 0xA0);
+            pre[0x007F] = (uint8_t)(xs() % 0x50);
+            pre[0x0083] = (uint8_t)(0x20 + xs() % 0xC0);
+            pre[0x0084] = (uint8_t)(0x20 + xs() % 0xC0);
+
+            c.Y = (uint8_t)(xs() % 4);                  /* the pass */
+            c.A = (uint8_t)(xs() % 0x10);               /* the first edge index */
+            if (xs() & 1) pre[0x0050] = (uint8_t)(c.A + xs() % 6);
+            c.X = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;
+            splitBefore = pre[0x0050];
+            subFail += diff_run("draw_surface_spans", pre, c, draw_surface_spans,
+                                draw_surface_spans__t6502, liveMask, t, &printed);
+            if (c.A < pre[0x004B]) ran++;
+            if (mem[0x0050] != splitBefore) movedSplit++;
+        }
+        fail += subFail;
+        if (ran == 0 || movedSplit == 0) {
+            printf("[VACUOUS] draw_surface_spans: %d walked, %d moved the split of %d\n",
+                   ran, movedSplit, spanCases);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d ran the walk, %d moved road_split_index)\n",
+               "draw_surface_spans", spanCases, subFail, ran, movedSplit);
+    }
+
+    if (want("mark_line_surfaces")) {
+        int subFail = 0, walked = 0, stamped = 0;
+        for (t = 0; t < markCases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            { int i; for (i = 0; i < 0x60; i++) pre[0x5F20 + i] = (uint8_t)(xs() % 0x60); }
+            /* Past $28 the routine does nothing but compute its return value, and that arm
+               is one case in four rather than 216 in 256. */
+            pre[0x62F2] = (xs() % 4) ? (uint8_t)(xs() % 0x28) : (uint8_t)(0x28 + xs() % 0xD8);
+            pre[0x004B] = (uint8_t)(1 + xs() % 0x30);
+            pre[0x0050] = (uint8_t)(xs() % 0x50);
+            c.X = (xs() & 1) ? 0x04 : 0x14;             /* the surface class */
+            c.A = (uint8_t)(xs() % 0x28);               /* the first edge point */
+            c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;
+            if (pre[0x62F2] < 0x28) walked++;
+            subFail += diff_run("mark_line_surfaces", pre, c, mark_line_surfaces,
+                                mark_line_surfaces__t6502, liveMask, t, &printed);
+            { int i, n = 0;
+              for (i = 0; i < 0x50; i++) if (mem[0x5F60 + i]) n++;
+              if (n) stamped++; }
+        }
+        fail += subFail;
+        if (walked == 0 || walked == markCases || stamped == 0) {
+            printf("[VACUOUS] mark_line_surfaces: %d walked, %d stamped of %d — the skip arm "
+                   "and the walk must both run\n", walked, stamped, markCases);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d below 45 degrees, %d left a class behind)\n",
+               "mark_line_surfaces", markCases, subFail, walked, stamped);
+    }
+
+    unsetenv("REVS_SMC_CONTINUE");
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -2446,6 +2702,7 @@ int main(int argc, char** argv)
     fail += test_geometry_leaves();
     fail += test_span_leaves();
     fail += test_span_arms();
+    fail += test_road_pass();
 
     fail += check_coverage();
     fail += report_unvalidated_natives();

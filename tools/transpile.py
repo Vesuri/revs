@@ -686,6 +686,18 @@ VALIDATE_FUNCS = {
     0x2D9A,
     0x2E20,
     0x2E99,
+    #   $2B26 interp_edge         (487 B) the setup: the deltas, the pixels, all seven patches
+    #   $1933 edge_x_offscreen    ( 11 B) "is this point off axis?", into a two-deep history
+    #   $193E fill_line_attr      (113 B) draw_road stage 1 — scan line -> edge point
+    #   $19AF draw_surface_spans  (113 B) draw_road stage 2 — the paired walk, one style a span
+    #   $1A98 mark_line_surfaces  (122 B) draw_road stage 3 — edge point -> scan line's class
+    # With these the whole view pipeline, from build_track_geometry through draw_road to
+    # view_paint_lines, is real C: the corpus has no transliterated road code left in it.
+    0x2B26,
+    0x1933,
+    0x193E,
+    0x19AF,
+    0x1A98,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
