@@ -7,6 +7,52 @@ whole point is that the discovery and validation infrastructure comes first, not
 
 ---
 
+
+## ⭐ THE TWIN CAMPAIGN — where it stands, and what is left (2026-08-18)
+
+The standing instruction (user, 2026-08-18) is to make **every transliterated routine in the call
+trees of `view_paint_lines`, `fill_dash_edge_columns` and `apply_driving_model`** a native twin, to
+the style rules in `docs/faithfulness-seam.md` §Writing one — and the reason is UNDERSTANDING, not
+milliseconds: "the benefits are not only related to performance but actually understanding the
+code."  So a group whose framerate does not move is still the deliverable, and the naming pass that
+comes with it (`docs/rename.md`, `disasm/symbols.csv`) is part of the work, not a follow-up.
+
+| Tree | State |
+|---|---|
+| `view_paint_lines` | ✅ **already complete** — twin #2 covers all three painting phases; the transliterated `region_7bf7` and `view_paint_lines_clipped` are reachable only from its own oracle |
+| `fill_dash_edge_columns` | ✅ **complete** — twins #40-#43 |
+| `apply_driving_model` | 🔶 **26 routines left** of 43; twins #44-#57 took the multiply and the whole 16-bit arithmetic layer |
+
+**The remaining 26, grouped the way they should be written** (each group is one commit: twins,
+fixtures, ≥4 sabotages each, `make validate` + both determinism runs):
+
+1. **The rotations and integrations (8)** — `$4729 stage_accum_delta`, `$47A5 rotate_accum_by_steer`,
+   `$47C5 rotate_pair_a_by_steer`, `$47F9 damp_and_derive_loads`, `$48B9 rotate_state_0_into_8`,
+   `$48C1 rotate_state_6_into_3`, `$48EF integrate_car_position`, `$4937 integrate_state_rates`.
+   All of them drive the twins that already exist (`apply_angle_term`, `scale16_by_y`,
+   `model_integrate_element`), so none has a transliterated leaf left underneath it — the
+   ordering rule's happy case.  ⚠ `$47F9` has a nested `ROR` loop over `model_state`, and `$48B9`
+   /`$48C1` are four `apply_angle_term_at` calls with `$7C`/`$7F` stepped between them.
+2. **The slip/sound cluster (10)** — `$4A91 check_wheel_slip`, `$4AF7`, `$4B42`, `$4B47`, `$4B61`,
+   `$4B88`, `$4779 update_slip_sound`, `$0B4A sound_queue`, `$0E5A sound_stop_channel`,
+   `$0B47 sound_queue_default`.  ⚠ Six of these are unnamed (`docs/rename.md`), `$0B4A` is
+   self-modifying (`STX $0B46`), and the two sound routines reach the MOS — so `make sound` is a
+   second gate for this group, not just `make validate`.
+3. **The sub-models (8)** — `$0D01 compute_car_angles`, `$44EA update_camera_and_drive_state`
+   (+`$4610`, `$4DCB`, `$4DC9`), `$49CE update_engine_revs`, `$4BCF update_grip_limits`,
+   `$4C65 apply_drag_terms`.  ⚠⚠ The two big ones read HARDWARE (`$FE68`, the User VIA timer, for
+   the starter poll and the grip disturbance) and `$44EA` nests three `PHP`/`PLP` pairs — the stack
+   residue is part of the differential, so reproduce the pushes.
+4. `$FFF1`/`$FFF4` are MOS vectors, not code on this disc: they stay as `platform_mos_call`.
+
+⭐⭐ **AND THE THING TO DO ALONGSIDE, from the same conversation:** a twin that keeps the 6502's flag
+contract at every seam pays for flags nobody reads — `mul8`'s exit V costs a second multiply and a
+bit scan.  `mul8_product()` is the pattern (one `MULU.W`, no flags) and `mul16_signed` is its first
+caller.  **As each group above is written, convert its call sites to the value-only entries** where
+the flags are provably dead at that site; that is what turns "the interpreter is gone" into "the
+68000 is used".  The rewrite of the callers is where the milliseconds are, and it only becomes
+possible once the callers themselves are C.
+
 ## Phase 0 — Scaffolding ✅
 
 Repo structure, gitignores, the reusable machinery carried over from the Atari port (6502 CPU
