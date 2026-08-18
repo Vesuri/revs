@@ -11,7 +11,8 @@ whole point is that the discovery and validation infrastructure comes first, not
 ## ⭐ THE TWIN CAMPAIGN — where it stands, and what is left (2026-08-18)
 
 The standing instruction (user, 2026-08-18) is to make **every transliterated routine in the call
-trees of `view_paint_lines`, `fill_dash_edge_columns` and `apply_driving_model`** a native twin, to
+trees of `view_paint_lines`, `fill_dash_edge_columns` and `apply_driving_model` — and then of
+`draw_track_object`, `read_driving_controls` and `build_road_sign`** — a native twin, to
 the style rules in `docs/faithfulness-seam.md` §Writing one — and the reason is UNDERSTANDING, not
 milliseconds: "the benefits are not only related to performance but actually understanding the
 code."  So a group whose framerate does not move is still the deliverable, and the naming pass that
@@ -19,49 +20,95 @@ comes with it (`docs/rename.md`, `disasm/symbols.csv`) is part of the work, not 
 
 | Tree | State |
 |---|---|
-| `view_paint_lines` | ✅ **already complete** — twin #2 covers all three painting phases; the transliterated `region_7bf7` and `view_paint_lines_clipped` are reachable only from its own oracle |
+| `view_paint_lines` | ✅ **complete** — twin #2 covers all three painting phases; the transliterated `region_7bf7` and `view_paint_lines_clipped` are reachable only from its own oracle |
 | `fill_dash_edge_columns` | ✅ **complete** — twins #40-#43 |
-| `apply_driving_model` | 🔶 **8 routines left** of 43; twins #44-#57 took the multiply and the 16-bit arithmetic layer, #58-#66 the rotations and the integrations, #67-#78 the slip/sound cluster |
+| `apply_driving_model` | ✅ **COMPLETE — 43 of 43 routines**, twins #44-#86 |
+| `draw_track_object` | ⬜ next group (user, 2026-08-18) |
+| `read_driving_controls` | ⬜ next group |
+| `build_road_sign` | ⬜ next group |
 
-✅ **The rotations and the integrations are DONE** — twins #58-#66, nine of them (the eight
-planned plus `$48C7 rotate_state_pair`, the shared body of the two rotation entries, which had to
-be named before either could be written).  16 of 16 sabotages detected.  What the differential
-caught that reading could not: `damp_and_derive_loads`' **exit C is the `ROL A` of its last
-doubling** — mem[] was byte-exact and the flags alone disagreed, in 1821 of 3000 cases.
+✅ **THE DRIVING MODEL IS DONE.**  Twins #79-#86 took the last eight — the SUB-MODELS, i.e. the
+parts of the tree that talk to the rest of the engine rather than to the arithmetic layer:
+`compute_car_angles`, `scale_by_track_gradient`, `update_engine_revs`, `update_grip_limits`,
+`apply_drag_terms`, `begin_spin`, `begin_spin_from_a` and `update_camera_and_drive_state` (294
+bytes, the biggest single routine in the tree).  41 deliberate sabotages, 38 detected; the three
+survivors are provable non-defects, each argued below.  `make validate` clean, `make determinism`
+and `make determinism-drive` both 64 KB byte-identical, `make tracks` 6/6 and `make track-run`
+every circuit's hooks running.
 
-✅ **The slip/sound cluster is DONE** — twins #67-#78, twelve of them (the ten planned plus
-`$4B51 store_slip_signed` and `$0B6E sound_osword`, both shared tails that had to be named first).
-Six routines got their first name.  Two things the reading had wrong: `$0B46` is a **spare byte
-where X is parked across the OSWORD**, not self-modifying code, and `derive_slip_reference`'s two
-arms were recorded the wrong way round.  What the twins made legible: a **saturated shift counts as
-a slip on its own** (`$4AAE`-`$4AB2`, a second slip test hiding inside the first), equal to the
-grip limit is **not** over, and the squeal answers to the last *two* frames.
+⭐⭐ **What the group made legible** — five things, in the order they surprised:
 
-⭐⭐ **This group also bought a HARNESS CHANNEL.** A sabotage survived — deleting
-`sound_stop_channel`'s already-idle guard makes it flush a MOS buffer the game meant to leave
-alone, with `mem[]` and every register byte-identical over 1000 cases.  `diff_run` now compares the
-**MOS-CALL SEQUENCE** `(entry, A, X, Y)` the way it already compared hardware writes, and the
-fixture **forces** the already-idle arm (with the trace but without the steering, detection was 3
-of 1000).  27 of 30 sabotages detected; the three survivors are provable non-defects, each argued
-at the code.  `docs/validation-harness.md` §FOURTEENTH.
+1. **`compute_car_angles` is a SINE AND A COSINE**, computed as ONE polynomial run twice.  The
+   heading is multiplied by pi (`$C9`/256 = pi/4, shifted twice), a cubic term is subtracted for
+   small angles and a quadratic used for large ones, and the second pass runs on `$C900 - h` —
+   the reflection that turns sin into cos.  Bit 6 of the heading's high byte picks which element
+   each pass writes; the two sign bits `OR`ed into bit 0 of each low byte are `bit7(h)` and
+   `bit7(h) XOR bit6(h)`, i.e. the quadrant in two instructions.
+2. ⚠⚠ **`update_engine_revs` CONSUMES THE CALLER'S CARRY.**  The coast arm's `ADC #7` at `$49A6`
+   is reached through six instructions that write no carry at all, so what it adds is 7 plus
+   whatever `C` `apply_driving_model` left behind.  A randomised differential catches that; no
+   amount of reading does.
+3. **The front/rear grip split is ONE `,X`.**  `update_grip_limits` puts the shifted load term in
+   `$79` and its NEGATIVE in `$78`, and `$4C52`'s `ADC $78,X` picks between them by axle — so the
+   load shifts grip onto one axle and off the other.  That is weight transfer, spelled in one
+   addressing mode.
+4. ⚠⚠ **THE CHANGED-SURFACE ARM IS DEAD ON THIS RELEASE.**  `surface_change_0`/`_1` (`$713D`,
+   `$7205`) read `$00` in `disasm/revs_runtime.bin` and mid-race on both Silverstone and Brands,
+   nothing in the image writes them, and no circuit patches the operands — so `grip_disturbance`
+   is always 0, `grip_limit_base_alt_tbl` is never read and the unprompted `begin_spin` never
+   fires.  Both addresses sit inside the dashboard bitmap the second unpack drops at
+   `$70DB-$7813`.  The twin keeps all of it and the fixture FORCES the arm.  ⚠ Worth one
+   reference-loop check before calling it dead for good.
+5. ⚠⚠ **Y IS NOT WHAT THE READING SAYS ON ONE PATH.**  `update_camera_and_drive_state`'s second
+   `scale_by_track_gradient` call indexes by whatever `Y` holds — and the spin arm above it
+   reaches `begin_spin_from_a`, which queues a MOS SOUND, and `sound_osword` leaves the MOS's own
+   `Y` behind.  A twin that "knew" the index was still the section's differed in one case in six.
+   **A call through the MOS clobbers registers the 6502 listing gives no hint about.**
 
-**The remaining 8, one group** (twins, fixtures, ≥4 sabotages each, `make validate` + both
-determinism runs):
+⭐⭐ **AND THE GROUP BOUGHT TWO HARNESS HOOKS**, both from surviving sabotages:
+`platform_test_via_t2` and `platform_test_key_down`.  The test backend answered a constant `$00`
+for `$FE68` and "no key is ever down" for OSBYTE 129 — deterministic, which is what `diff_run`
+needs, but it pinned `VIA & starter_random_mask` to 0 and made the starter's whole key-held arm
+UNREACHABLE.  The sabotage "the luck mask is always 7" survived 4000 cases before the hooks and
+is caught after them.  **A default-answering test backend is a coverage hole that looks like a
+passing fixture** (`docs/validation-harness.md` §FIFTEENTH).
 
-1. **The sub-models (8)** — `$0D01 compute_car_angles`, `$44EA update_camera_and_drive_state`
-   (+`$4610`, `$4DCB`, `$4DC9`), `$49CE update_engine_revs`, `$4BCF update_grip_limits`,
-   `$4C65 apply_drag_terms`.  ⚠⚠ The two big ones read HARDWARE (`$FE68`, the User VIA timer, for
-   the starter poll and the grip disturbance) and `$44EA` nests three `PHP`/`PLP` pairs — the stack
-   residue is part of the differential, so reproduce the pushes.
-2. `$FFF1`/`$FFF4` are MOS vectors, not code on this disc: they stay as `platform_mos_call`.
+⭐ **The three surviving sabotages, each a non-defect with an argument:**
 
-⭐⭐ **AND THE THING TO DO ALONGSIDE, from the same conversation:** a twin that keeps the 6502's flag
-contract at every seam pays for flags nobody reads — `mul8`'s exit V costs a second multiply and a
-bit scan.  `mul8_product()` is the pattern (one `MULU.W`, no flags) and `mul16_signed` is its first
-caller.  **As each group above is written, convert its call sites to the value-only entries** where
-the flags are provably dead at that site; that is what turns "the interpreter is gone" into "the
-68000 is used".  The rewrite of the callers is where the milliseconds are, and it only becomes
-possible once the callers themselves are C.
+* `AND #$FE` → `AND #$FF` in **both** arms of `compute_car_angles`.  The masked value comes
+  straight out of an `ASL` (small arm, `$0D3F`) or out of `0 - (an ASL result)` (large arm,
+  `$0D61`), so bit 0 is provably 0 either way and the mask is defensive.  Checked on the SIBLING
+  case as well as the one that survived, which is the discipline: one surviving mask could be a
+  coverage hole, two agreeing masks are the routine's shape.
+* Moving the power curve's second breakpoint by one.  **The four segments are CONTINUOUS at all
+  three breakpoints** — at `$11` both arms give `$BA`, at `$15` both give `$B6`, at `$1A` both
+  give `$A2` — so a one-off breakpoint is arithmetically invisible.  Verified by hand for all
+  three, and the curve is covered instead by four sabotages that move a segment's OFFSET or
+  SLOPE, all of which fail as they should.
+
+**Still open on this tree** (both in `docs/rename.md`, both naming DECISIONS rather than missing
+facts): the second tenants of the arithmetic window `$78`/`$79`/`$8E`/`$8F`, and what the fifteen
+state-vector ELEMENTS mean physically.
+
+---
+
+## ⭐ THE TWIN CAMPAIGN — WHAT IS NEXT
+
+**Three more trees** (user, 2026-08-18): `draw_track_object`, `read_driving_controls` and
+`build_road_sign`.  The stated reason is the same as before and it is not framerate — *"then we
+should have a great understanding of what's what in the main loop and can make informed decisions
+about the future direction."*  So the deliverable is the understanding plus the naming pass, and a
+group whose FPS does not move still counts.
+
+`docs/rename.md`'s "Twelve unnamed routines in three NAMED call trees" is the inventory, and it is
+an inventory only — nothing in it has been read yet, which is why it suggests no names.  Two
+things to expect from it:
+
+* `read_driving_controls`' cluster is chained by **tail `JMP`s across four separate regions**
+  (`$15xx` → `$1EE9` → `$15F4` → `$1EFA` → `$1612`), so naming it is one pass over the whole
+  chain rather than six independent decisions.
+* `draw_track_object`'s tree is the one that reads `$5700`/`$5800`, the last two unnamed pages of
+  the track-data region — so the "third name for the region" decision belongs to that group.
 
 ## Phase 0 — Scaffolding ✅
 

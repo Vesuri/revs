@@ -264,6 +264,23 @@ Each of these passed a reading of the listing and failed the differential.
   rather than paraphrasing it.  ⚠ Note both halves of the trap are needed to find it: without the
   fixture declaring flags live, this is invisible.
 
+### ⚠⚠ A CALL THROUGH THE MOS CLOBBERS REGISTERS THE LISTING GIVES NO HINT ABOUT
+
+Measured on twin #86.  `update_camera_and_drive_state` sets `Y` once, at `$452F`, and reads a
+track table through it at `$457F` and again at `$45D8`.  Nothing between those points contains an
+`LDY`, so "Y is still the section's direction index" reads as obviously true — and it is false on
+one path: the arm at `$45B3` reaches `begin_spin_from_a`, which queues a MOS SOUND, and
+`sound_osword` leaves the MOS's own `Y` behind.  A twin that cached the index in a local differed
+in one case in six.
+
+⭐ **The rule: when writing a twin, treat every `platform_mos_call` in the subtree as clobbering
+A, X and Y unless the OS entry's contract says otherwise.**  It is the opposite of the interrupt
+contract (where a real BBC preserves all three across an engine-context IRQ, `CLAUDE.md`) and it
+is invisible in the 6502 listing, because the clobber happens two or three `JSR`s down.  Read a
+register out of `cpu` at the point of use, not into a local at the point it was set — and if you
+do cache it, the thing that catches you is the differential, so never cache it without a fixture
+that reaches the MOS path.
+
 ### ⭐ A patched SMC BRANCH OFFSET is a narrower obligation than it looks
 
 `$231A`'s offset can in principle name ~200 addresses inside `road_edge_start`, and the

@@ -377,6 +377,56 @@ structural claim about the 6502 code.  ⚠ Distinguishing them from a coverage h
 about REACHABILITY, and the way to check the argument is to sabotage the sibling case — which is
 how #25 was separated from #26.
 
+## ⭐⭐ …and a FIFTEENTH, found by twins #79-#86: a DEFAULT-ANSWERING TEST BACKEND is a coverage hole
+
+The harness runs against `HeadlessPlatform` (`src/platform/platform_cbridge.cpp`), whose whole
+point is that it answers deterministically — `diff_run` runs the two models back to back, so
+anything that MOVES between the two runs is a false failure.  Two of its answers were constants:
+
+* `$FE68`, the User VIA T2 counter, read `$00`;
+* `keyDown`, behind OSBYTE 129, was always false.
+
+Both are deterministic and both were **wrong as a fixture input**, because the engine's two luck
+tests read them: `update_engine_revs`' starter does `LDA $FE68 / AND starter_random_mask / BNE`
+and its idle jitter does `AND #7`, and the whole starter arm is behind
+`JSR kbd_test_key / BEQ`.  With the constants, `AND` always yields 0 (so the starter always
+caught, and the jitter always added nothing) and the key was never held (so **the arm containing
+the luck test was unreachable at all**).
+
+⚠⚠ **THE TELL WAS A SURVIVING SABOTAGE, not a suspicious number.**  "the starter's luck mask is
+always 7" — replacing `starter_random_mask` with the constant 7 — passed 4000 cases, and then
+48000.  Nothing in the output said "this arm never ran"; the fixture reported healthy counts for
+every input it was steering, because it was not steering these two.  Adding
+`platform_test_via_t2` and `platform_test_key_down` and toggling both per case catches it
+immediately.
+
+⭐ **The general rule: for every branch a twin has, ask what the TEST BACKEND answers, not just
+what the fixture randomises.**  A pre-state generator can only vary `mem[]` and `cpu`; anything
+the routine learns through a `Platform` virtual is fixed by the backend, and a fixed answer to a
+question the code asks is a whole arm that never runs.  Both hooks are test-only — the shipping
+backends override `hwRead`/`keyDown` with the real models — and both default to the old constants,
+so no existing fixture changed.
+
+### ⚠ Three more sabotages that were not defects — and one of them is a property of the CURVE
+
+* `AND #$FE` → `AND #$FF` in **both** arms of `compute_car_angles` (`$0D47`, `$0D6A`).  The masked
+  value comes straight out of an `ASL` in one arm and out of `0 - (an ASL result)` in the other, so
+  bit 0 is provably 0 and the mask is defensive.  ⭐ The discipline that settled it is the sibling
+  check: ONE surviving mask could be a coverage hole; TWO masks that survive for the same
+  structural reason are the routine's shape.
+* Moving `update_engine_revs`' power-curve breakpoint at `$4A5B` by one.  **The four segments are
+  CONTINUOUS at all three breakpoints** — both arms give `$BA` at the first, `$B6` at the second
+  and `$A2` at the third — so a one-off breakpoint is arithmetically invisible, in the model and on
+  a 6502 alike.  ⚠ This one is worth its own line because the sabotage was BADLY CHOSEN rather
+  than the fixture weak: the right probes for a piecewise curve move a segment's OFFSET or SLOPE,
+  and four such sabotages all fail as they should.
+
+⭐ **So the taxonomy of a survivor now has three entries, not two**: a coverage hole (fix the
+fixture), an unreachable-by-construction defect (argue it at the code), and a **defect that is not
+a change at all** because the code is continuous or the bit is provably already clear.  The first
+is the only one that costs anything; telling them apart is an argument, and the argument has to be
+written down where the next reader will meet it.
+
 ## Using it
 
 ```

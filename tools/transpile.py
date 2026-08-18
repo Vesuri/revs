@@ -802,6 +802,42 @@ VALIDATE_FUNCS = {
     0x0B47,
     0x0B6E,
     0x0E5A,
+    # ⭐⭐ TWINS #79-#86 — THE EIGHT SUB-MODELS, apply_driving_model's LAST group.  With these
+    # the whole tree is native: 43 of 43 routines.  These are the ones that talk to the rest of
+    # the engine rather than to the arithmetic layer, which is why they came last and why they
+    # are the ones that needed the naming pass most — three had no name, and nine of the cells
+    # they read had none either (docs/rename.md's "DRIVING MODEL's unnamed callees" entry).
+    #
+    #   $0D01 compute_car_angles   (178 B) heading -> the sin/cos pair every rotation resolves
+    #                                      through, as two polynomials with a pi/2 reflection
+    #   $44EA update_camera_and_drive_state (294 B) the biggest single routine in the tree:
+    #                                      the drive-state machine, the section yaw, and the camera
+    #   $4610 scale_by_track_gradient ( 22 B) ...and the per-position gradient both its camera
+    #                                      terms go through
+    #   $49CE update_engine_revs   (195 B) the engine: the starter poll, the rev model, a
+    #                                      four-segment power curve and the stall
+    #   $4BCF update_grip_limits   (146 B) the two per-axle grip thresholds
+    #   $4C65 apply_drag_terms     ( 63 B) two speed-dependent terms into elements 6 and 7
+    #   $4DC9 begin_spin / $4DCB begin_spin_from_a (20 B) the car loses control
+    #
+    # ⚠⚠ THREE THINGS IN THIS GROUP THAT NO OTHER GROUP HAD:
+    #   1. HARDWARE READS.  $49CE and $4BCF both read $FE68 (the User VIA T1 counter) — the
+    #      starter's luck and the grip disturbance.  diff_run's clock is pinned, so they are
+    #      comparable; a twin that dropped the read would not be.
+    #   2. FIVE PHP/PLP PAIRS in $44EA and one in $4610 and $4BCF, and the residue on the 6502
+    #      stack is part of the differential — so the pushes are reproduced, not optimised away.
+    #      $44EA's three are pulled in REVERSE order and two of the three feed an abs8 that
+    #      branches on the CALLER's N.
+    #   3. AN SMC SITE, $45CB, where every expansion circuit replaces $44EA's first
+    #      `ASL A / ROL shared_temp_77` pair with a JSR into its own hook.
+    0x0D01,
+    0x44EA,
+    0x4610,
+    0x49CE,
+    0x4BCF,
+    0x4C65,
+    0x4DC9,
+    0x4DCB,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

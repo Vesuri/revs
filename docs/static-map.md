@@ -317,6 +317,37 @@ sites in every one:
 runtime-specialised is *also* per-track patched, for some tracks.  That is the hardest single spot
 in the binary and it should be treated as such.
 
+### ⭐⭐ The track-data region, MEASURED — `$5300`-`$5A25` is at least six tenants deep
+
+Settled 2026-08-18 by dumping all 64 KB mid-race on Silverstone (frame 300) and Brands (frame 120)
+and reading the two side by side, which is what `docs/rename.md` had been asking for:
+
+| range | at race time | notes |
+|---|---|---|
+| `$5300`-`$53BF` | `track_segment_hi` | 8 bytes per segment; `$53C0` repeats `$5300`, so ~24 segments |
+| `$5400` | `track_dir_0` | the track's forward DIRECTION at each track position, component 0 |
+| `$5500` | `track_dir_1` | ...component 1, the small signed **GRADIENT** |
+| `$5600` | `track_dir_2` | ...component 2.  `\|(c0,c2)\| = $78 = 120` entry by entry |
+| `$5700` / `$5800` | the across-track NORMAL, components 0 and 2 [INFERRED] | `$5700` is also `ModifyGameCode`'s entry; the region still needs its own name (`docs/rename.md`) |
+| `$5900`-`$59BF` | `track_segment_lo` | the low half of the segment records |
+| `$5907`-`$5A14` | `segment_len_tbl` / `segment_count_x8` / `track_scale` | |
+
+Each segment record's **field 5** is the index into the four direction/normal pages
+(`segment_dir_index`, `$0002`), and `$13D0` stamps it into `section_dir_index` (`$0700`) for the
+live section — which is how `update_camera_and_drive_state` gets from a section cursor to a
+direction vector in two instructions.
+
+⚠⚠ **AND THE PAGES ARE GENERATED AT RUNTIME ON THE EXPANSION CIRCUITS.**  Silverstone, being
+passive, ships all 256 entries of each page as data — its dump is smooth for all 256 and wraps
+continuously.  Brands' dump is smooth for entries `0..$26` and **6502 code** after that: the
+generator sits at `$54C0` and writes `$5400,Y` / `$5500,Y` / `$5600,Y` / `$5700,Y` / `$5800,Y`
+from `$76`/`$77`, using `$57BB` (`EOR track_direction / JSR abs8`) for the signs.  So the same
+bytes are the installer's patch list, then the generator's code, then the geometry — which is why
+the old names `patch_target_lo`/`patch_byte_0` were not wrong, just one tenant of several.
+
+⚠ Correction from the same pass: `update_camera_and_drive_state`'s symbols row used to claim two
+SMC sites, `$44D5` and `$45CB`.  `$44D5` is inside **`compute_segment_scale`** (`$44C6`-`$44E9`).
+
 ### Code hooks vs data rebinding — do not conflate them
 
 Two thirds of the patch bytes are **not** entry points.  A 2-byte patch rewrites an absolute

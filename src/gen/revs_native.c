@@ -6246,3 +6246,817 @@ void sound_queue(void)          { sound_queue_core(cpu.A, cpu.Y); }
 void sound_queue_default(void)  { sound_queue_core(cpu.A, sound_volume); }
 void sound_stop_channel(void)   { sound_stop_channel_core(cpu.X); }
 void update_slip_sound(void)    { update_slip_sound_core(); }
+
+/* ===========================================================================
+   TWINS #79-#86 — THE EIGHT SUB-MODELS, and with them the whole of
+   apply_driving_model's tree
+   ---------------------------------------------------------------------------
+   The four groups before this one were the tree's PLUMBING — the multiply, the 16-bit
+   arithmetic, the rotations and integrations, the slip/sound cluster.  These eight are the
+   parts that talk to the rest of the engine, which is why they came last and why the naming
+   pass mattered most here: three of the eight had no name, and nine of the cells they read
+   had none either (all of docs/rename.md's "DRIVING MODEL's unnamed callees" entry).
+
+     $0D01 compute_car_angles     the heading -> the sin/cos pair every rotation resolves
+                                  through: TWO polynomial evaluations of one pi-scaled angle,
+                                  the second on its reflection about pi/2
+     $4610 scale_by_track_gradient  a caller's byte x the track's gradient at position Y
+     $49CE update_engine_revs     the starter poll, the rev model, a four-segment power curve
+                                  and the stall
+     $4BCF update_grip_limits     the two per-axle grip thresholds
+     $4C65 apply_drag_terms       two speed-dependent terms into state elements 6 and 7
+     $4DC9 begin_spin
+     $4DCB begin_spin_from_a      the car loses control
+     $44EA update_camera_and_drive_state  the biggest routine in the tree, four jobs in one
+
+   ⭐⭐ WHAT THE GROUP MADE LEGIBLE, in the order it surprised:
+
+   1. `compute_car_angles` IS A SINE AND A COSINE, computed as ONE polynomial run twice.  The
+      heading is multiplied by pi ($C9/256 = pi/4, shifted twice), then a cubic-ish term
+      ($AB x h^3) is subtracted for the small-angle arm and a quadratic used for the large one,
+      and the second pass runs on $C900 - h — the reflection that turns sin into cos.  Bit 6 of
+      the heading's high byte decides WHICH element each pass writes, and the two sign bits the
+      tail ORs into bit 0 are bit7(h) and bit7(h) XOR bit6(h): the quadrant, spelled in two
+      instructions.
+   2. ⚠ `compute_car_angles` HAS FIVE BYTES OF DEAD CODE, $0D21-$0D25: `BCC $0D27` at $0D1D and
+      `BCS $0D4F` at $0D1F are together unconditional, so the low-byte tie-break under them can
+      never run.  Reproduced anyway (it costs nothing and the differential would not see it
+      either way), but named here so nobody re-derives it.
+   3. ⚠⚠ `update_engine_revs` CONSUMES THE CALLER'S CARRY.  The coast arm's `ADC #7` at $49A6
+      is reached through six instructions that write no carry at all, so what it adds is
+      7 + whatever C apply_driving_model left in `stage_accum_delta`'s wake.  That is not a
+      readable design and it is exactly what a randomised differential catches.
+   4. `update_grip_limits` GIVES THE TWO AXLES OPPOSITE SIGNS of the load term: $4C52's
+      `ADC $78,X` reaches hypot_min_lo for axle 0 and hypot_min_hi for axle 1, and those two
+      cells hold -(load) and +(load) from $4BE1-$4BE8.  One `,X` on a zero-page address is the
+      whole of the front/rear split.
+   5. ⚠⚠ AND THE CHANGED-SURFACE ARM IS DEAD ON THIS RELEASE.  `surface_change_0`/`_1` are
+      $00 in disasm/revs_runtime.bin and mid-race on both Silverstone and Brands, nothing in
+      the image writes them, and no circuit patches the operands — so `grip_disturbance` is
+      always 0, `grip_limit_base_alt_tbl` is never read and the unprompted `begin_spin` never
+      fires.  The twin keeps all of it and the FIXTURE FORCES the arm, because randomised
+      memory reaches $FF in both bytes once in 65536.  (MEASURED 2026-08-18; the addresses sit
+      inside the dashboard bitmap the second unpack drops at $70DB-$7813, which is worth one
+      reference-loop check before calling it dead for good.)
+   6. ⚠ TWO THINGS HERE CANNOT BE SABOTAGED, and both are properties of the code rather than
+      holes in the fixture (docs/validation-harness.md §FIFTEENTH):
+        * the `AND #$FE` in BOTH of `compute_car_angles`' arms is defensive — the value comes
+          out of an `ASL` in one and out of `0 - (an ASL result)` in the other, so bit 0 is
+          already 0.  Checked on both, which is what separates it from a coverage hole;
+        * `update_engine_revs`' power curve is CONTINUOUS at all three breakpoints ($BA at the
+          first, $B6 at the second, $A2 at the third), so moving one by one changes nothing.
+          The curve is covered by sabotages that move a segment's OFFSET or SLOPE instead.
+   =========================================================================== */
+
+#define CAR_ANGLE_LO   0x62A0u   /* three 16-bit car angles, low bytes; bit 0 is the SIGN */
+#define CAR_ANGLE_HI   0x62A3u   /* ...and their high bytes */
+#define TRACK_DIR_0    0x5400u   /* the track's forward direction at each position: */
+#define TRACK_DIR_1    0x5500u   /*   component 0, the GRADIENT (component 1), */
+#define TRACK_DIR_2    0x5600u   /*   and component 2 — see disasm/symbols.csv */
+#define SECTION_DIR_IX 0x0700u   /* per live section, its index into the three pages above */
+#define SECTION_CRD_LO 0x0900u   /* section_coord_lo / _hi — the live section geometry */
+#define SECTION_CRD_HI 0x0A00u
+#define CAR_STATE_1    0x0164u   /* per-driver; the camera adds a gradient-scaled copy */
+#define CAR_SPEED_SCL  0x0150u   /* per-driver speed in the AI's units */
+#define GEAR_REV_RATIO 0x5A06u   /* TRACK FILE: revs per unit road speed, by gear_index */
+#define GEAR_TORQUE    0x5A0Du   /* TRACK FILE: the per-gear torque multiplier */
+#define WING_GRIP      0x62A8u   /* the two per-wing downforce coefficients */
+#define GRIP_LIMIT     0x62AAu   /* the two per-axle thresholds check_wheel_slip compares to */
+#define GRIP_LIMIT_ALT 0x62ACu   /* ...and the second threshold beside them */
+#define GRIP_BASE      0x4C61u   /* the constant in each axle's threshold, $35/$35 */
+#define GRIP_BASE_ALT  0x4C63u   /* ...and its changed-surface replacement, $19/$1A */
+#define VIA_T1_LOW     0xFE68u   /* User VIA T1 counter low — the engine's randomness */
+
+/* ---------------------------------------------------------------------------
+   $0D01  compute_car_angles — THE SIN/COS PAIR  (twin #79)
+   ---------------------------------------------------------------------------
+   Takes the player's heading in A (high) and X (low) and leaves car_angle elements 0 and 1 —
+   the pair every `apply_angle_term` in the tree multiplies a state element by.  One angle
+   evaluation, run twice: first on h = heading x pi, then on its reflection $C900 - h, with bit
+   6 of the heading's high byte choosing which element gets which.  The tail ORs the quadrant's
+   two sign bits into bit 0 of each low byte, which is where the sign lives for this pair.
+
+   ⚠ Its exit A/N/Z are the tail's, and the tail has two arms — see the group header, item 2,
+   for the five dead bytes at $0D21.
+   --------------------------------------------------------------------------- */
+static void compute_car_angles_core(uint8_t headingHi, uint8_t headingLo)
+{
+    hypot_max_hi = headingHi;               /* $0D01 — kept for the two sign tests at the end */
+    math_lo      = headingLo;               /* $0D03 */
+    mul16_by_pi_core(headingHi);            /* $0D05 */
+    hypot_min_lo = cpu.A;                   /* $0D08 — h = heading x pi, low byte */
+    hypot_min_hi = math_hi;                 /* $0D0A-$0D0C — ...and high */
+
+    /* $0D0E-$0D19 — which element this first pass writes; shared_counter_42 keeps the other. */
+    shared_counter_42 = 0x01u;
+    LDX(0x00u);
+    BIT(hypot_max_hi);                      /* V = bit 6 of the heading's high byte */
+    if (cpu.V) { INX(); DEC_M(MEM_shared_counter_42); }
+
+    for (;;) {
+        LDA(hypot_min_hi);                  /* $0D0A / $0D92 both leave this in A at $0D1B */
+        CMP(0x7Au);
+        if (!cpu.C) {
+            /* $0D27-$0D4C — the SMALL-ANGLE arm: h - ($AB/256) h^3, doubled.  Three
+               multiplies by h's high byte, the last of them 16x8. */
+            mul8_core(0xABu);               /* $0D27-$0D29 */
+            mul8_core(cpu.A);               /* $0D2C */
+            shared_temp_76 = cpu.A;         /* $0D2F */
+            mul8_accum_core();              /* $0D31 */
+
+            math_lo = (uint8_t)sub_from(hypot_min_lo, math_lo);          /* $0D34-$0D39 */
+            cpu.A   = (uint8_t)sbc_step(hypot_min_hi, math_hi, cpu.C);   /* $0D3B-$0D3D */
+            ASL_M(MEM_math_lo);                                          /* $0D3F */
+            ROL_A();                                                     /* $0D41 */
+            mem[CAR_ANGLE_HI + cpu.X] = cpu.A;                           /* $0D42 */
+            LDA(math_lo);
+            AND(0xFEu);                     /* bit 0 belongs to the sign the tail ORs in */
+            mem[CAR_ANGLE_LO + cpu.X] = cpu.A;                           /* $0D49 */
+        } else {
+            /* $0D4F-$0D7C — the LARGE-ANGLE arm: d = $C900 - h, then -2 x d x d_hi, with a
+               SATURATION to ($FE, $FF) when the closing negate does not borrow. */
+            math_lo        = (uint8_t)sub_from(0x00u, hypot_min_lo);          /* $0D4F-$0D54 */
+            cpu.A          = (uint8_t)sbc_step(0xC9u, hypot_min_hi, cpu.C);   /* $0D56-$0D58 */
+            math_hi        = cpu.A;
+            shared_temp_76 = cpu.A;                                           /* $0D5C */
+            mul8_accum_core();                                                /* $0D5E */
+            ASL_M(MEM_math_lo);                                               /* $0D61 */
+            ROL_M(MEM_math_hi);                                               /* $0D63 */
+
+            cpu.A = (uint8_t)sub_from(0x00u, math_lo);                        /* $0D65-$0D6A */
+            AND(0xFEu);
+            mem[CAR_ANGLE_LO + cpu.X] = cpu.A;                                /* $0D6C */
+            cpu.A = (uint8_t)sbc_step(0x00u, math_hi, cpu.C);                 /* $0D6F-$0D71 */
+            if (cpu.C) {                                                      /* $0D73 BCC */
+                mem[CAR_ANGLE_LO + cpu.X] = 0xFEu;                            /* $0D75-$0D77 */
+                LDA(0xFFu);
+            }
+            mem[CAR_ANGLE_HI + cpu.X] = cpu.A;                                /* $0D7C */
+        }
+
+        /* $0D7F-$0D94 — the second pass, on the angle reflected about pi/2. */
+        CPX(shared_counter_42);
+        if (cpu.Z) break;
+        LDX(shared_counter_42);
+        hypot_min_lo = (uint8_t)sub_from(0x00u, hypot_min_lo);                /* $0D85-$0D8A */
+        hypot_min_hi = (uint8_t)sbc_step(0xC9u, hypot_min_hi, cpu.C);         /* $0D8C-$0D90 */
+        math_hi      = hypot_min_hi;                                          /* $0D92 */
+    }
+
+    /* $0D97-$0DB2 — the quadrant, as two sign bits: bit 7 of the heading's high byte for
+       element 0, bit 7 XOR bit 6 for element 1. */
+    LDA(hypot_max_hi);
+    if (cpu.N) {
+        LDA(0x01u);
+        ORA(mem[CAR_ANGLE_LO]);
+        mem[CAR_ANGLE_LO] = cpu.A;
+    }
+    LDA(hypot_max_hi);
+    ASL_A();
+    EOR(hypot_max_hi);
+    if (cpu.N) {
+        LDA(0x01u);
+        ORA(mem[CAR_ANGLE_LO + 1]);
+        mem[CAR_ANGLE_LO + 1] = cpu.A;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   $4610  scale_by_track_gradient — A x THE TRACK'S GRADIENT  (twin #80)
+   ---------------------------------------------------------------------------
+   A x |track_dir_1[Y]| / 256, re-signed by track_dir_1[Y] EOR track_direction.  Both of
+   update_camera_and_drive_state's camera terms go through it: the yaw-derived one and the
+   player's own car_state_1, which is what makes an across-track offset raise the camera on a
+   banked section (the CAMBER reading in docs/rename.md).
+
+   ⚠ THE SIGN TRAVELS ON THE 6502 STACK.  abs8 branches on the CALLER's N, so the EOR's N is
+   PHPed at $4617 and PLPed back at $4621 across both the abs8 and the multiply — and the
+   pushed byte is part of the differential, which is why the PHP is reproduced and not folded
+   into a local.
+   --------------------------------------------------------------------------- */
+static void scale_by_track_gradient_core(uint8_t value, uint8_t index)
+{
+    math_hi = value;                                                    /* $4610 */
+    LDA((uint8_t)(mem[TRACK_DIR_1 + index] ^ track_direction));         /* $4612-$4615 */
+    PHP();                                                              /* $4617 */
+    LDA(mem[TRACK_DIR_1 + index]);                                      /* $4618 */
+    abs8();                                                             /* $461B */
+    mul8_core(cpu.A);                                                   /* $461E */
+    PLP();                                                              /* $4621 */
+    abs8();                                                             /* $4622 */
+}
+
+/* ---------------------------------------------------------------------------
+   $4DC9 / $4DCB  begin_spin — THE CAR LOSES CONTROL  (twins #81, #82)
+   ---------------------------------------------------------------------------
+   Seeds the two decaying counters from a severity (road_speed at the $4DC9 entry), nudges the
+   frame's heading increment by $80 and halves it, marks drive_state as not-under-power and
+   queues sound slot 4 — the same slot check_crash's crash arm queues.  It is the milder
+   sibling of that arm: nothing here stops the engine or clears the model.
+   --------------------------------------------------------------------------- */
+static void begin_spin_from_a_core(uint8_t severity)
+{
+    LDA(severity);
+    LSR_A(); spin_countdown = cpu.A;            /* $4DCB-$4DCC — severity / 2 */
+    LSR_A(); spin_shake     = cpu.A;            /* $4DCE-$4DCF — ...and / 4 */
+    inc_mem(MEM_drive_state);                   /* $4DD1 */
+    SEC();
+    ROR_M(MEM_heading_step_lo);                 /* $4DD4 — +$80, and the step halved */
+    sound_queue_core(0x04u, sound_volume);      /* $4DD7-$4DD9 */
+}
+
+/* ---------------------------------------------------------------------------
+   $4C65  apply_drag_terms — TWO SPEED-DEPENDENT TERMS  (twin #83)
+   ---------------------------------------------------------------------------
+   The first sub-model past the off-power gate.  Term one: |model_accum_entry_hi| floored at
+   road_speed (and DOUBLED while grip_disturbance is non-zero), squared against the same
+   magnitude, added into state element 6.  Term two: (road_speed x wing_drag_coeff + 8) times
+   term one's pre-square magnitude, added into element 7.  Both grow with speed, both take
+   their SIGN from a cell rather than from themselves — element 6's from the accumulator's
+   entry value, element 7's from car_speed_hi — because add_signed_into_element branches on the
+   caller's N.
+
+   ⚠ It reads the accumulator as it was on ENTRY to apply_driving_model, not as this frame's
+   sub-models left it.
+   --------------------------------------------------------------------------- */
+static void apply_drag_terms_core(void)
+{
+    LDA(model_accum_entry_hi);                  /* $4C65 */
+    abs8();                                     /* $4C67 */
+    math_hi = cpu.A;                            /* $4C6A */
+    CMP(road_speed);
+    if (!cpu.C) LDA(road_speed);                /* $4C6E BCS — floored at the road speed */
+    LDY(grip_disturbance);
+    if (!cpu.Z) ASL_A();                        /* $4C74 BEQ — doubled on a disturbed surface */
+    shared_temp_77 = cpu.A;                     /* $4C77 — kept for term two */
+    mul8_core(cpu.A);                           /* $4C79 */
+    math_hi = cpu.A;                            /* $4C7C */
+
+    LDY(0x06u);
+    LDA(model_accum_entry_hi);                  /* $4C80 — the SIGN, not the value */
+    add_signed_into_element_core(cpu.Y);        /* $4C82 */
+
+    math_hi = road_speed;                       /* $4C85-$4C87 */
+    mul8_core(wing_drag_coeff);                 /* $4C89-$4C8C */
+    cpu.A = (uint8_t)adc_step(cpu.A, 0x08u, 0); /* $4C8F-$4C90 */
+    shared_temp_76 = cpu.A;                     /* $4C92 */
+    math_hi = shared_temp_77;                   /* $4C94-$4C96 */
+    mul8_accum_core();                          /* $4C98 */
+
+    LDY(0x07u);
+    LDA(car_speed_hi);                          /* $4C9D — element 7's sign */
+    add_signed_into_element_core(cpu.Y);        /* $4CA0 */
+}
+
+/* ---------------------------------------------------------------------------
+   $4BCF  update_grip_limits — THE TWO PER-AXLE THRESHOLDS  (twin #84)
+   ---------------------------------------------------------------------------
+   Rebuilt every frame from three things: the load term damp_and_derive_loads left in
+   wheel_load (only while the BRAKE is down — on the throttle or coasting the term is 0), the
+   road speed through wing_grip_coeff, and the two surface bytes.
+
+   ⭐ THE FRONT/REAR SPLIT IS ONE `,X`.  $4BE1-$4BE8 stores the shifted load term in
+   hypot_min_hi and its NEGATIVE in hypot_min_lo, and $4C52's `ADC $78,X` picks between them by
+   axle — so the load shifts grip onto one axle and off the other, which is what weight
+   transfer looks like.
+
+   ⚠⚠ The changed-surface arm ($4C06-$4C21) is dead on this release; see the group header.
+   Kept whole, hardware read included, and the fixture forces it.
+   --------------------------------------------------------------------------- */
+static void update_grip_limits_core(void)
+{
+    int axle;
+
+    /* $4BCF-$4BE8 — the load term, and its negative for the other axle. */
+    LDA(0x00u);
+    LDY(pedal_mode);
+    if (cpu.Z) {                                /* $4BD3 BNE — 0 = the brake */
+        LDA(wheel_load);
+        PHP();                                  /* $4BD8 — the term's own sign */
+        LSR_A(); LSR_A(); LSR_A();              /* $4BD9-$4BDB */
+        PLP();
+        if (cpu.N) ORA(0xE0u);                  /* $4BDD BPL — sign-extend the shift */
+    }
+    hypot_min_hi = cpu.A;                                               /* $4BE1 */
+    EOR(0xFFu);
+    hypot_min_lo = (uint8_t)adc_step(cpu.A, 0x01u, 0);                  /* $4BE3-$4BE8 */
+
+    math_hi = road_speed;                                               /* $4BEA-$4BEC */
+    LDX(0x00u);
+
+    /* $4BF0-$4C24 — has the surface changed?  shared_temp_77 keeps both bytes ANDed, for the
+       grip-base swap further down; $FF in EITHER opens this arm. */
+    LDA(surface_change_0);
+    AND(surface_change_1);
+    shared_temp_77 = cpu.A;                                             /* $4BF6 */
+    LDA(surface_change_0);
+    CMP(0xFFu);
+    if (!cpu.Z) { LDA(surface_change_1); CMP(0xFFu); }
+    if (cpu.Z) {
+        LDA(bus_read(VIA_T1_LOW));                                      /* $4C06 */
+        mul8_core(cpu.A);                                               /* $4C09 */
+        AND(0x07u);
+        TAX();                                                          /* $4C0E */
+        if (cpu.Z) INX();                                               /* $4C0F BNE — never 0 */
+        LDA(grip_disturbance);
+        if (cpu.Z) {                            /* $4C14 BNE — not already disturbed */
+            LDA(grip_disturbance);
+            ORA(drive_state);
+            if (cpu.Z) {                        /* $4C1A BNE — and driving normally */
+                BIT(section_jump_history);
+                if (cpu.N) begin_spin_from_a_core(road_speed);          /* $4C21 */
+            }
+        }
+    }
+    grip_disturbance = cpu.X;                                           /* $4C24 */
+
+    /* $4C26-$4C5E — axle 1 then axle 0. */
+    LDX(0x01u);
+    for (axle = 1; axle >= 0; axle--) {
+        LDA(road_speed);
+        CMP(0x35u);
+        if (cpu.C) LDA(0x35u);                  /* $4C2C BCC — the speed term saturates */
+        math_hi = cpu.A;                                                /* $4C30 */
+        mul8_core(mem[WING_GRIP + cpu.X]);                              /* $4C32-$4C35 */
+        BIT(car_speed_hi);                      /* $4C38 — the sign abs8 will follow */
+        abs8();                                                         /* $4C3B */
+        cpu.A = (uint8_t)adc_step(cpu.A, mem[GRIP_BASE + cpu.X], 0);    /* $4C3E-$4C3F */
+
+        LDY(0xF3u);
+        math_hi = cpu.Y;                                                /* $4C42-$4C44 */
+        LDY(shared_temp_77);
+        CPY(0xFFu);
+        if (cpu.Z) {                            /* $4C4A BNE — BOTH surface bytes $FF */
+            LDA(mem[GRIP_BASE_ALT + cpu.X]);                            /* $4C4C */
+            LDY(0xFFu);
+        }
+        cpu.A = (uint8_t)adc_step(cpu.A, mem[(uint8_t)(0x78u + cpu.X)], 0); /* $4C51-$4C52 */
+        mem[GRIP_LIMIT + cpu.X] = cpu.A;                                /* $4C54 */
+        mul8_core(cpu.A);                                               /* $4C57 */
+        mem[GRIP_LIMIT_ALT + cpu.X] = cpu.A;                            /* $4C5A */
+        DEX();                                                          /* $4C5D */
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   $49CE  update_engine_revs — THE ENGINE  (twin #85)
+   ---------------------------------------------------------------------------
+   Four things in one routine, and which one runs is decided in the first eight bytes:
+
+     the STARTER POLL ($4978) with the engine stopped — the T key, and a 1-in-8 chance a frame
+       from the User VIA timer (1-in-32 after a crash: check_crash raises starter_random_mask);
+     the COAST ARM ($499F) whenever the car is not under power, in the pits, or the gears were
+       shifted this frame — revs creep up by 7 toward pedal_amount on the throttle, or fall by
+       $0C to an idle floor of $28, plus 0..7 of timer jitter;
+     the REV MODEL ($49DF) — road speed scaled by gear_rev_ratio_tbl, x2 or x4 depending on
+       whether the first doubling overflowed (the PHP at $49E8 is what remembers that), with
+       the gear-change rev drop layered on top through engine_revs_prev;
+     the TAIL ($4A48) — a FOUR-SEGMENT piecewise power curve in the clamped revs, times
+       gear_torque_tbl, into engine_torque; and engine_note_target = revs + $19.
+
+   ⚠ THE STALL: below 3 revs the routine INCs engine_running from $FF to 0 and jumps into the
+   coast arm's tail, so the next frame takes the starter poll instead.
+   ⚠⚠ `ADC #7` at $49A6 adds the CALLER'S CARRY — see the group header, item 3.
+   ⚠ $4A37 stores the UNCLAMPED revs and clamps only the copy the power curve reads, so
+   engine_revs can exceed $AA even though the curve never sees more than that.
+   --------------------------------------------------------------------------- */
+
+/* $4A87-$4A90 — the tail EVERY arm reaches, with A carrying the torque to store.
+   ⚠ The off-power arms jump to $4A87, not to $4A7F: they store a zero torque and never touch
+   math_lo/math_hi at all.  Getting that boundary wrong is a twin that zeroes the arithmetic
+   window on seven paths out of eight, which is exactly what the differential said. */
+static void engine_note_only(uint8_t torque)
+{
+    engine_torque = torque;                             /* $4A87 */
+    LDA(engine_revs);
+    engine_note_target = (uint8_t)adc_step(cpu.A, 0x19u, 0);        /* $4A89-$4A8E */
+}
+
+/* $4A7F-$4A90 — the curve's output through the gear's torque multiplier, then that tail.
+   Reached only from the power curve. */
+static void engine_torque_and_note(uint8_t curve, uint8_t gear)
+{
+    math_hi = curve;                                    /* $4A7F */
+    mul8_core(mem[GEAR_TORQUE + gear]);                 /* $4A81-$4A84 */
+    engine_note_only(cpu.A);
+}
+
+/* $49BB-$49C7 — the revs land as `base` plus 0..7 of User VIA jitter.  Three arms reach it. */
+static void engine_revs_from(uint8_t base)
+{
+    math_lo = base;                                                 /* $49BB */
+    LDA((uint8_t)(bus_read(VIA_T1_LOW) & 0x07u));                   /* $49BD-$49C0 */
+    cpu.A = (uint8_t)adc_step(cpu.A, math_lo, 0);                   /* $49C2-$49C3 */
+    engine_revs      = cpu.A;                                       /* $49C5 */
+    engine_revs_prev = cpu.A;                                       /* $49C7 */
+}
+
+/* $499F-$49B9 — the COAST ARM: revs creep up by 7 toward pedal_amount on the throttle, or fall
+   by $0C to an idle floor of $28.  ⚠⚠ `ADC #7` adds the CALLER'S CARRY — nothing between the
+   entry and it writes C.  See the group header, item 3. */
+static void engine_coast_arm(void)
+{
+    LDA(engine_revs);                                               /* $499F */
+    LDX(pedal_mode);
+    DEX();
+    if (cpu.Z) {                                                    /* $49A4 BNE */
+        ADC(0x07u);                                                 /* $49A6 */
+        CMP(pedal_amount);
+        if (!cpu.C) {                                               /* $49AA BCS */
+            CMP(0x8Cu);
+            if (!cpu.C) {                                           /* $49AE BCC → $49C5 */
+                engine_revs      = cpu.A;
+                engine_revs_prev = cpu.A;
+                return;
+            }
+        }
+    }
+    CMP(0x2Au);
+    if (cpu.C) cpu.A = (uint8_t)sub_from(cpu.A, 0x0Cu);             /* $49B4-$49B5 */
+    else       LDA(0x28u);                                          /* $49B9 */
+    engine_revs_from(cpu.A);
+}
+
+/* $4993-$499B — the engine catches: the luck mask back to 7, engine_running to $FF.  A is
+   untouched, which is what the arm below hands to engine_revs_from. */
+static void engine_catches(void)
+{
+    LDX(0x07u); starter_random_mask = cpu.X;                        /* $4993-$4995 */
+    LDX(0xFFu); engine_running      = cpu.X;                        /* $4997-$4999 */
+}
+
+/* $4978-$499B — the STARTER POLL, which is where the whole routine goes while the engine is
+   stopped.  The T key alone is not enough: without it a car in gear and rolling push-starts,
+   and with it the engine catches only on a frame the User VIA timer allows
+   (1-in-8 normally, 1-in-32 after a crash — check_crash raises starter_random_mask). */
+static void engine_starter_poll(void)
+{
+    arg_x(0xDCu);                                                   /* $4978 — the T key */
+    kbd_test_key();
+    if (!cpu.Z) {                                                   /* $497D BEQ */
+        LDY(gear_index);
+        DEY();
+        if (!cpu.Z) {                                               /* $4982 BEQ — not the pits */
+            LDA(road_speed);
+            if (!cpu.Z) {                                           /* $4986 BNE — a push start */
+                engine_catches();
+                engine_revs_from(cpu.A);
+                return;
+            }
+        }
+        LDA(0x00u);                                                 /* $4988-$498A → $49C5 */
+        engine_revs      = cpu.A;
+        engine_revs_prev = cpu.A;
+        return;
+    }
+    LDA((uint8_t)(bus_read(VIA_T1_LOW) & starter_random_mask));      /* $498C-$498F */
+    if (cpu.Z) engine_catches();                                    /* $4991 BNE — no luck */
+    engine_revs_from(cpu.A);
+}
+
+static void update_engine_revs_core(void)
+{
+    uint8_t gear;
+    int segment0;
+
+    LDA(engine_running);
+    if (cpu.Z) {                                                    /* $49D0 BEQ → $4978 */
+        engine_starter_poll();
+        engine_note_only(0x00u);                                    /* $49C9-$49CB */
+        return;
+    }
+    LDA(drive_state);
+    if (!cpu.Z) {                                                   /* $49D4 BNE → $499F */
+        engine_coast_arm();
+        engine_note_only(0x00u);
+        return;
+    }
+    LDA(gear_change_flag);
+    if (cpu.N) {                                                    /* $49D8 BMI → $499D */
+        gear_change_rev_drop = cpu.A;                               /* $499D */
+        engine_coast_arm();
+        engine_note_only(0x00u);
+        return;
+    }
+    LDY(gear_index);
+    DEY();
+    if (cpu.Z) {                                                    /* $49DD BEQ — gear 1 */
+        engine_coast_arm();
+        engine_note_only(0x00u);
+        return;
+    }
+
+    /* $49DF-$4A00 — the rev model.  The PHP at $49E8 remembers whether the first doubling
+       pushed the value negative; the shift it guards is applied once before the gear ratio and
+       once after, which is what makes the scaling x2 or x4. */
+    math_lo = road_speed_frac;                                      /* $49DF-$49E1 */
+    LDA(road_speed);
+    ASL_M(MEM_math_lo); ROL_A();                                    /* $49E5-$49E7 */
+    PHP();                                                          /* $49E8 */
+    if (!cpu.N) { ASL_M(MEM_math_lo); ROL_A(); }                    /* $49E9 BMI */
+    math_hi = cpu.A;                                                /* $49EE */
+    LDX(gear_index);
+    mul8_core(mem[GEAR_REV_RATIO + cpu.X]);                         /* $49F2-$49F5 */
+    ASL_M(MEM_math_lo); ROL_A();                                    /* $49F8-$49FA */
+    PLP();
+    if (cpu.N) { ASL_M(MEM_math_lo); ROL_A(); }                     /* $49FC BPL */
+
+    /* $4A01-$4A35 — the gear-change rev drop, if a shift armed it: only on the throttle, only
+       nearly stopped, and only once the starting lights are done (or on one $3F-frame phase of
+       them).  When it applies, the revs come from engine_revs_prev decaying by 2 a frame. */
+    BIT(gear_change_rev_drop);
+    if (cpu.N) {                                                    /* $4A03 BPL */
+        int disarm = 1;
+        LDY(pedal_mode);
+        DEY();
+        if (cpu.Z) {                                                /* $4A08 BNE */
+            LDY(road_speed);
+            CPY(0x16u);
+            if (!cpu.C) {                                           /* $4A0E BCS */
+                int compare = 0;
+                LDY(start_light_state);
+                if (!cpu.N) compare = 1;                            /* $4A12 BPL */
+                else {
+                    CPY(0xA0u);
+                    if (cpu.Z) {                                    /* $4A16 BNE */
+                        PHA();                                      /* $4A18 */
+                        LDA((uint8_t)(loop_counter & 0x3Fu));
+                        CMP(0x35u);
+                        PLA();                                      /* $4A1F */
+                        if (cpu.C) compare = 1;                     /* $4A20 BCC */
+                    }
+                }
+                if (compare) {
+                    CMP(engine_revs_prev);                          /* $4A22 */
+                    if (!cpu.C) {                                   /* $4A24 BCC → $4A2C */
+                        LDA(engine_revs_prev);
+                        CMP(0x6Cu);
+                        if (cpu.C) {                                /* $4A30 BCC */
+                            cpu.A = (uint8_t)sub_from(cpu.A, 0x02u);
+                            engine_revs_prev = cpu.A;               /* $4A32-$4A35 */
+                        }
+                        disarm = 0;
+                    }
+                }
+            }
+        }
+        if (disarm) { LDY(0x00u); gear_change_rev_drop = cpu.Y; }    /* $4A26-$4A28 */
+    }
+
+    /* $4A37-$4A45 — the revs land, then the CURVE'S input is clamped and the stall tested.
+       ⚠ engine_revs itself keeps the UNCLAMPED value: only the copy A carries is held to $AA. */
+    engine_revs = cpu.A;                                            /* $4A37 */
+    CMP(0xAAu);
+    if (cpu.C) LDA(0xAAu);                                          /* $4A3B BCC */
+    gear = cpu.X;
+    CMP(0x03u);
+    if (!cpu.C) {                                                   /* $4A41 BCS */
+        inc_mem(MEM_engine_running);                                /* $4A43 — $FF -> 0: STALL */
+        engine_note_only(0x00u);                                     /* $4A45 JMP $49C9 */
+        return;
+    }
+
+    /* $4A48-$4A7D — the power curve: four straight segments in (revs - $42), breaking at
+       $11, $15 and $1A above it, each one a shift and an add. */
+    cpu.A = (uint8_t)sub_from(cpu.A, 0x42u);                        /* $4A48-$4A49 */
+    if (cpu.N) segment0 = 1;                                        /* $4A4B BMI */
+    else { CMP(0x11u); segment0 = !cpu.C; }                         /* $4A4D-$4A4F */
+    if (segment0) {
+        ASL_A();
+        cpu.A = (uint8_t)adc_step(cpu.A, 0x98u, 0);                 /* $4A51-$4A53 */
+    } else {
+        cpu.A = (uint8_t)sub_from(cpu.A, 0x11u);                    /* $4A58-$4A59 */
+        CMP(0x04u);
+        if (!cpu.C) {                                               /* $4A5D BCS */
+            cpu.A = (uint8_t)adc_step((uint8_t)(cpu.A ^ 0xFFu), 0xBBu, 0);   /* $4A5F-$4A62 */
+        } else {
+            cpu.A = (uint8_t)sub_from(cpu.A, 0x04u);                /* $4A66-$4A67 */
+            CMP(0x05u);
+            if (!cpu.C) {                                           /* $4A6B BCS */
+                ASL_A(); ASL_A();
+                cpu.A = (uint8_t)adc_step((uint8_t)(cpu.A ^ 0xFFu), 0xB7u, 0);  /* $4A6D-$4A72 */
+            } else {
+                cpu.A = (uint8_t)sub_from(cpu.A, 0x05u);            /* $4A76-$4A77 */
+                ASL_A();
+                cpu.A = (uint8_t)adc_step((uint8_t)(cpu.A ^ 0xFFu), 0xA3u, 0);  /* $4A79-$4A7D */
+            }
+        }
+    }
+    engine_torque_and_note(cpu.A, gear);
+}
+
+/* ---------------------------------------------------------------------------
+   $44EA  update_camera_and_drive_state — THE LAST SUB-MODEL  (twin #86)
+   ---------------------------------------------------------------------------
+   294 bytes and four jobs, in this order:
+
+     (a) with drive_state non-zero it does nothing but DEC spin_shake twice and jump to (c);
+     (b) camera_pitch_bias, a signed $FB..3 counter: +1 a frame under power, -1 braking, and
+         settling toward 0 in neutral or coasting;
+     (c) THE SECTION YAW.  A cheap atan2 over the section's own direction vector — the
+         smaller-magnitude component scaled by 0.375 and folded through three saved flags —
+         minus car_heading_hi, giving section_yaw and its folded magnitude view_yaw_offset;
+         then the frame's view_pitch_offset as a first-order low pass over the yaw term,
+         grip_disturbance, camera_pitch_bias and spin_shake, and view_pitch_delta from it;
+     (d) DRIVE_STATE ITSELF, from spin_countdown stepped -4 a frame with a saturating jump to
+         $C8; and finally the camera, which is the section's own coordinate 1 plus a
+         gradient-scaled car_state_1 plus $AC (nominal eye height), and car_speed_scaled.
+
+   ⚠⚠ THE THREE PHPs at $453C/$4540/$4546 ARE PULLED IN REVERSE, and two of the three exist
+   only to steer an abs8 that branches on the caller's N.  The pushed bytes are part of the
+   differential; so are $45E5/$45E9's, which carry two carries past an intervening add.
+   ⚠ SMC $45CB: every expansion circuit replaces the first `ASL A / ROL shared_temp_77` pair
+   with a JSR into its own hook, so on those circuits the camera's high byte is built by the
+   circuit's code instead.
+   --------------------------------------------------------------------------- */
+static void update_camera_and_drive_state_core(void)
+{
+    uint8_t dirIndex;
+
+    LDA(drive_state);
+    if (!cpu.Z) {                                       /* $44EC BEQ */
+        DEC_M(MEM_spin_shake);                          /* $44EE */
+        DEC_M(MEM_spin_shake);                          /* $44F0 */
+    } else {
+        spin_shake     = cpu.A;                         /* $44F5 — both zeroed */
+        spin_countdown = cpu.A;
+
+        /* $44F9-$452A — camera_pitch_bias. */
+        LDY(camera_pitch_bias);
+        for (;;) {
+            int up = 0, down = 0, settle = 0;
+            LDA(gear_index);
+            if (cpu.Z) settle = 1;                      /* $44FE BEQ */
+            else {
+                LDA(pedal_mode);
+                if (cpu.N) settle = 1;                  /* $4502 BMI — coasting */
+                else if (cpu.Z) {                       /* $4504 BEQ — the brake */
+                    LDA(road_speed);
+                    if (!cpu.Z) down = 1;               /* $450E BNE */
+                    else settle = 1;
+                } else {
+                    LDA(engine_torque);
+                    if (!cpu.Z) up = 1;                 /* $4508 BNE — pulling */
+                    else settle = 1;
+                }
+            }
+            if (settle) {                               /* $4510-$4513 */
+                TYA();
+                if (cpu.Z) goto yaw;                    /* already centred: nothing to store */
+                if (!cpu.N) down = 1;
+                else { INY(); up = 1; }                 /* $4515 — negative: +2 */
+            }
+            if (up) {                                   /* $4516-$451F */
+                INY();
+                if (!cpu.N) {
+                    CPY(0x04u);
+                    if (cpu.C) LDY(0x03u);              /* clamped to +3 */
+                }
+            } else if (down) {                          /* $4521-$4528 */
+                DEY();
+                if (cpu.N) {
+                    CPY(0xFBu);
+                    if (!cpu.C) LDY(0xFBu);             /* ...and to -5 */
+                }
+            }
+            camera_pitch_bias = cpu.Y;                  /* $452A */
+            break;
+        }
+    }
+
+yaw:
+    /* $452D-$4568 — the section yaw.  The two ground-plane components make the angle; the
+       gradient component reaches the pitch through scale_by_track_gradient below. */
+    LDX(car_section_cursor);
+    LDY(mem[SECTION_DIR_IX + cpu.X]);                   /* $452F */
+    dirIndex = cpu.Y;
+    LDA(view_pitch_offset);
+    shared_temp_76 = cpu.A;                             /* $4534 — last frame's pitch */
+
+    LDA((uint8_t)(mem[TRACK_DIR_0 + dirIndex] ^ mem[TRACK_DIR_2 + dirIndex]));
+    PHP();                                              /* $453C — (1) the octant's sign */
+    LDA(mem[TRACK_DIR_2 + dirIndex]);
+    PHP();                                              /* $4540 — (2) component 2's sign */
+    abs8();                                             /* $4541 */
+    CMP(0x3Cu);
+    PHP();                                              /* $4546 — (3) near the diagonal? */
+    if (cpu.C) {                                        /* $4547 BCC — |c2| < $3C keeps it */
+        LDA(mem[TRACK_DIR_0 + dirIndex]);               /* $4549 — near the diagonal, use c0 */
+        abs8();
+    }
+    math_lo = cpu.A;                                    /* $454F */
+    LSR_A();
+    cpu.A = (uint8_t)adc_step(cpu.A, math_lo, 0);       /* $4552-$4553 — 1.5x */
+    LSR_A(); LSR_A();                                   /* $4555-$4556 — ...so 0.375x */
+    PLP();                                              /* (3) */
+    if (!cpu.C) EOR(0x3Fu);                             /* $4558 BCS — complement in the octant */
+    PLP();                                              /* (2) */
+    if (cpu.N) EOR(0x80u);                              /* $455D BPL — the half turn */
+    PLP();                                              /* (1) */
+    abs8();                                             /* $4562 */
+    cpu.A      = (uint8_t)sub_from(cpu.A, car_heading_hi);   /* $4565-$4566 */
+    section_yaw = cpu.A;                                /* $4568 */
+
+    /* $456A-$4574 — folded to 0..$3F about $40. */
+    if (cpu.N) EOR(0xFFu);                              /* $456A BPL */
+    CMP(0x40u);
+    if (cpu.C) EOR(0x7Fu);                              /* $4570 BCC */
+    view_yaw_offset = cpu.A;                            /* $4574 */
+
+    /* $4577-$4599 — the frame's pitch: 1.5 x the yaw's complement through the track gradient,
+       plus four terms, halved with its sign preserved. */
+    EOR(0x3Fu);
+    math_lo = cpu.A;                                    /* $4579 */
+    LSR_A();
+    cpu.A = (uint8_t)adc_step(cpu.A, math_lo, 0);       /* $457C-$457D */
+    scale_by_track_gradient_core(cpu.A, cpu.Y);         /* $457F — Y is still dirIndex */
+    cpu.A = (uint8_t)adc_step(cpu.A, grip_disturbance,  0);   /* $4582-$4583 */
+    cpu.A = (uint8_t)adc_step(cpu.A, camera_pitch_bias, 0);   /* $4585-$4586 */
+    cpu.A = (uint8_t)adc_step(cpu.A, spin_shake,        0);   /* $4589-$458A */
+    cpu.A = (uint8_t)adc_step(cpu.A, view_pitch_offset, 0);   /* $458C-$458D */
+    cpu.C = cpu.N;                                      /* $458F CLC / $4590 BPL / $4592 SEC */
+    ROR_A();                                            /* $4593 — signed halving */
+    view_pitch_offset = cpu.A;                          /* $4594 */
+    view_pitch_delta  = (uint8_t)sub_from(cpu.A, shared_temp_76);   /* $4596-$4599 */
+
+    /* $459B-$45C9 — drive_state.  spin_countdown steps -4 a frame and SATURATES to $C8; the
+       sum with drive_state picks between the three values it can take. */
+    LDA(0x00u);
+    shared_temp_77 = cpu.A;                             /* $459D */
+    LDA(spin_countdown);
+    cpu.A = (uint8_t)sub_from(cpu.A, 0x04u);
+    if (cpu.V) LDA(0xC8u);                              /* $45A4 BVC */
+    spin_countdown = cpu.A;                             /* $45A8 */
+    cpu.A = (uint8_t)adc_step(cpu.A, drive_state, 0);   /* $45AA-$45AB */
+    /* ⚠ $45B1's `BPL` is what keeps the sum; a NEGATIVE sum falls THROUGH to the arm below,
+       so the countdown arm is reached two ways, not one. */
+    if (cpu.Z || (!cpu.V && cpu.N)) {                   /* $45AD BEQ, or $45B1 BPL not taken */
+        LDA(spin_countdown);
+        abs8();                                         /* $45B5 */
+        CMP(0x05u);
+        if (cpu.C) { begin_spin_from_a_core(cpu.A); LDA(0x01u); }   /* $45BC-$45BF */
+        else         LDA(0x00u);                                    /* $45C3 */
+    } else if (cpu.V) {
+        LDA(0x7Fu);                                     /* $45AF BVS → $45C7 */
+    }
+    drive_state = cpu.A;                                /* $45C9 */
+
+    /* $45CB-$45D1 — A x4 into shared_temp_76 with the overflow in shared_temp_77, i.e. the
+       camera term's high byte.  The first ASL/ROL pair is the per-circuit hook site. */
+    if (mem[0x45CB] == 0x0A && mem[0x45CC] == 0x26) {   /* unpatched: Silverstone */
+        ASL_A();
+        ROL_M(MEM_shared_temp_77);
+    } else if (mem[0x45CB] == 0x20) {
+        uint16_t target = (uint16_t)(mem[0x45CC] | (mem[0x45CD] << 8));
+        if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
+        else { platform_smc_unhandled(0x45CB, target); return; }
+    } else {
+        platform_smc_unhandled(0x45CB, mem[0x45CB]); return;
+    }
+    ASL_A();
+    ROL_M(MEM_shared_temp_77);
+    shared_temp_76 = cpu.A;                             /* $45D1 */
+
+    /* $45D3-$45FB — the camera: the section's coordinate 1, the player's gradient-scaled
+       car_state_1, and $AC of nominal eye height, as one 16-bit add with two carries saved
+       past the term in between. */
+    LDX(player_car);
+    LDA(mem[CAR_STATE_1 + cpu.X]);                      /* $45D5 */
+    /* ⚠⚠ Y IS NOT dirIndex ANY MORE ON ONE PATH.  The spin arm above reaches begin_spin_from_a,
+       which queues a MOS SOUND — and sound_osword leaves the MOS's own Y behind.  So this call
+       scales by whatever table entry Y now points at, and a twin that "knew" the index was
+       still the section's differed in one case in six. */
+    scale_by_track_gradient_core(cpu.A, cpu.Y);         /* $45D8 */
+    if (cpu.N) DEC_M(MEM_shared_temp_77);               /* $45DB BPL — sign-extend it */
+    LDY(car_section_cursor);
+    cpu.A = (uint8_t)adc_step(cpu.A, mem[SECTION_CRD_LO + 1 + cpu.Y], 0);   /* $45E1-$45E2 */
+    PHP();                                              /* $45E5 — (a) */
+    cpu.A = (uint8_t)adc_step(cpu.A, 0xACu, 0);         /* $45E6-$45E7 */
+    PHP();                                              /* $45E9 — (b) */
+    cpu.A = (uint8_t)adc_step(cpu.A, shared_temp_76, 0);           /* $45EA-$45EB */
+    mem[VIEW_ORIGIN_LO + 1] = cpu.A;                          /* $45ED */
+    LDA(mem[SECTION_CRD_HI + 1 + cpu.Y]);
+    cpu.A = (uint8_t)adc_step(cpu.A, shared_temp_77, cpu.C);       /* $45F3 */
+    PLP();                                              /* (b) */
+    cpu.A = (uint8_t)adc_step(cpu.A, 0x00u, cpu.C);               /* $45F6 */
+    PLP();                                              /* (a) */
+    cpu.A = (uint8_t)adc_step(cpu.A, 0x00u, cpu.C);               /* $45F9 */
+    mem[VIEW_ORIGIN_HI + 1] = cpu.A;                          /* $45FB */
+
+    /* $45FE-$460C — car_speed_scaled = road_speed x ($21/256 + 2). */
+    math_hi = road_speed;                               /* $45FE-$4600 */
+    mul8_core(0x21u);                                   /* $4602-$4604 */
+    ASL_M(MEM_math_hi);                                 /* $4607 */
+    cpu.A = (uint8_t)adc_step(cpu.A, math_hi, 0);       /* $4609-$460A */
+    mem[CAR_SPEED_SCL + cpu.X] = cpu.A;                 /* $460C */
+}
+
+/* The 6502-ABI shims. */
+void compute_car_angles(void)            { compute_car_angles_core(cpu.A, cpu.X); }
+void scale_by_track_gradient(void)       { scale_by_track_gradient_core(cpu.A, cpu.Y); }
+void begin_spin(void)                    { begin_spin_from_a_core(road_speed); }
+void begin_spin_from_a(void)             { begin_spin_from_a_core(cpu.A); }
+void apply_drag_terms(void)              { apply_drag_terms_core(); }
+void update_grip_limits(void)            { update_grip_limits_core(); }
+void update_engine_revs(void)            { update_engine_revs_core(); }
+void update_camera_and_drive_state(void) { update_camera_and_drive_state_core(); }

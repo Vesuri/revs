@@ -3420,6 +3420,201 @@ static int test_slip_and_sound(void)
     return fail;
 }
 
+
+/* ==========================================================================
+   TWINS #79-#86 — THE EIGHT SUB-MODELS
+   --------------------------------------------------------------------------
+   $0D01 compute_car_angles, $4610 scale_by_track_gradient, $49CE update_engine_revs,
+   $4BCF update_grip_limits, $4C65 apply_drag_terms, $4DC9 begin_spin,
+   $4DCB begin_spin_from_a, $44EA update_camera_and_drive_state.
+
+   ⚠⚠ SEVEN STEERED INPUTS, and without them most of this group is unreachable:
+
+     gear_index   ($40)  the real gears are 2..6 and gear 1 is the pits; a uniform byte would
+                         index gear_rev_ratio_tbl and gear_torque_tbl hundreds of bytes past
+                         their seven entries, identically in both models, and prove nothing.
+                         Drawn from 0..7 so the neutral, pits and in-gear arms all run.
+     pedal_mode   ($3E)  1 is the throttle, 0 the brake, $80 coasting.  update_grip_limits'
+                         whole load term and update_camera_and_drive_state's pitch bias fork
+                         on it, and update_engine_revs' coast arm does too.
+     engine_running ($61) 0 sends update_engine_revs to the STARTER POLL and $FF to the rev
+                         model; a random byte takes the model 255 times in 256.
+     drive_state  ($2D)  0 is "under power"; both big twins fork on it first.
+     $FE68        THE USER VIA TIMER, pinned per case through platform_test_via_t2.  The
+                         headless backend answered a constant 0 — deterministic, but it pins
+                         `VIA & starter_random_mask` to 0 (the starter ALWAYS catches) and
+                         `VIA & 7` to 0 (no idle jitter).  Half the cases now use a non-zero
+                         value, which is what reaches update_engine_revs' no-luck arm at all.
+     surface_change_0/_1 FORCED to $FF in a sixth of the cases each, and to $FF in BOTH in a
+                         twelfth.  They are $00 on the real disc (see disasm/symbols.csv), so
+                         update_grip_limits' whole changed-surface arm — the User VIA read, the
+                         unprompted begin_spin and grip_limit_base_alt_tbl — is code no
+                         randomised fixture would ever enter: $FF in a random byte is 1 in 256
+                         for the first test and 1 in 65536 for the second.
+     player_car / car_section_cursor  ($6F, $22) both index page-1 and page-9 arrays.
+                         Steered to 0..19 and 0..$77, the ranges the engine keeps them in.
+
+   ⚠ THE SMC SITE $45CB.  update_camera_and_drive_state's first `ASL A / ROL shared_temp_77`
+   pair is where every expansion circuit plants a `JSR` into its own hook.  Nine cases in ten
+   force the unpatched Silverstone bytes, because a random pair traps instead of running the
+   routine's tail — and the tenth is left random on purpose, since diff_run compares the SMC
+   trap as its own channel and a twin that trapped differently would otherwise pass.
+   ========================================================================== */
+void compute_car_angles(void);            void compute_car_angles__t6502(void);
+void scale_by_track_gradient(void);       void scale_by_track_gradient__t6502(void);
+void update_engine_revs(void);            void update_engine_revs__t6502(void);
+void update_grip_limits(void);            void update_grip_limits__t6502(void);
+void apply_drag_terms(void);              void apply_drag_terms__t6502(void);
+void begin_spin(void);                    void begin_spin__t6502(void);
+void begin_spin_from_a(void);             void begin_spin_from_a__t6502(void);
+void update_camera_and_drive_state(void); void update_camera_and_drive_state__t6502(void);
+
+void platform_test_via_t2(unsigned char v);
+void platform_test_key_down(int on);
+
+#define PRE_GEAR_INDEX     0x0040
+#define PRE_ENGINE_RUNNING 0x0061
+#define PRE_PLAYER_CAR     0x006F
+#define PRE_SECTION_CURSOR 0x0022
+#define PRE_SURFACE_A      0x713D
+#define PRE_SURFACE_B      0x7205
+
+static int test_sub_models(void)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    int fail = 0, printed = 0, t, i;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+
+    struct { const char* name; void (*nat)(void); void (*ref)(void); int cases; }
+      list[8] = {
+        { "compute_car_angles",     compute_car_angles,     compute_car_angles__t6502,     3000 },
+        { "scale_by_track_gradient", scale_by_track_gradient,
+          scale_by_track_gradient__t6502, 2000 },
+        { "begin_spin",             begin_spin,             begin_spin__t6502,             1000 },
+        { "begin_spin_from_a",      begin_spin_from_a,      begin_spin_from_a__t6502,      1000 },
+        { "apply_drag_terms",       apply_drag_terms,       apply_drag_terms__t6502,       3000 },
+        { "update_grip_limits",     update_grip_limits,     update_grip_limits__t6502,     3000 },
+        { "update_engine_revs",     update_engine_revs,     update_engine_revs__t6502,     4000 },
+        { "update_camera_and_drive_state", update_camera_and_drive_state,
+          update_camera_and_drive_state__t6502, 4000 },
+      };
+    static const uint8_t PEDALS[3] = { 1, 0, 0x80 };
+    unsigned long smcTraps;
+    for (i = 0; i < 8; i++) register_fixture(list[i].name);
+
+    /* $45CB's trap is real code in BOTH models and diff_run compares it as its own channel, so
+       it is tested rather than avoided — which means Platform::smcUnhandled has to count
+       instead of abort.  The count is asserted below: it must be NON-ZERO, or the tenth-case
+       random shape never happened and the dispatch is untested. */
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+    g_smcUnhandled = 0;
+
+    for (i = 0; i < 8; i++) {
+        int subFail = 0, decimal = 0, throttle = 0, ingear = 0, powered = 0;
+        int cranking = 0, changed = 0, bothChanged = 0, entropy = 0, patched = 0;
+        int keyheld = 0, revmodel = 0;
+        int cases = list[i].cases * scale;
+        if (!want(list[i].name)) continue;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.A = (uint8_t)xs();
+            c.X = (uint8_t)xs();
+            c.Y = (uint8_t)xs();
+            pre[PRE_PEDAL_MODE]     = PEDALS[xs() % 3];
+            pre[PRE_DRIVE_STATE]    = (uint8_t)((xs() & 1) ? 0 : (1 + xs() % 4));
+            pre[PRE_GEAR_INDEX]     = (uint8_t)(xs() % 8);
+            pre[PRE_ENGINE_RUNNING] = (uint8_t)((xs() & 1) ? 0xFF : 0x00);
+            pre[PRE_PLAYER_CAR]     = (uint8_t)(xs() % 20);
+            pre[PRE_SECTION_CURSOR] = (uint8_t)(xs() % 0x78);
+            if (pre[PRE_PEDAL_MODE] == 1)   throttle++;
+            if (pre[PRE_GEAR_INDEX] >= 2)   ingear++;
+            if (pre[PRE_DRIVE_STATE] == 0)  powered++;
+            if (pre[PRE_ENGINE_RUNNING] == 0) cranking++;
+
+            /* The two surface bytes: $FF in one, and in a twelfth of cases BOTH. */
+            { unsigned pick = xs() % 12;
+              if (pick < 2)      { pre[PRE_SURFACE_A] = 0xFF; changed++; }
+              else if (pick < 4) { pre[PRE_SURFACE_B] = 0xFF; changed++; }
+              else if (pick == 4) { pre[PRE_SURFACE_A] = pre[PRE_SURFACE_B] = 0xFF;
+                                    changed++; bothChanged++; } }
+
+            /* $FE68 — see the header.  A non-zero value is what makes the starter FAIL. */
+            { unsigned char t2 = (unsigned char)((xs() & 1) ? (1 + xs() % 255) : 0);
+              if (t2) entropy++;
+              platform_test_via_t2(t2); }
+
+            /* ⭐⭐ THE T KEY.  Without this the starter's whole `key held` arm — the luck test
+               against starter_random_mask and the catch — is UNREACHABLE: the test platform
+               answers "no key is ever down", so kbd_test_key always reports not-pressed and
+               $497D never branches.  MEASURED as a hole: the sabotage "the luck mask is always
+               7" survived 4000 cases before this line and is caught after it. */
+            { int held = (xs() & 1); if (held) keyheld++; platform_test_key_down(held); }
+
+            /* ⭐ …AND THE POWER CURVE NEEDS DRIVING AT.  The rev model is reached only with the
+               engine running, under power, no shift this frame and a real gear — about one case
+               in eleven left to chance, and the curve's four segments then need particular
+               values of (revs - $42).  A quarter of the cases force the path and sweep the
+               speed and the gear ratio, which is what catches a moved breakpoint: the sabotage
+               "the second breakpoint is 5" differs for ONE input value and survived without
+               this. */
+            if ((xs() & 3) == 0) {
+                pre[PRE_ENGINE_RUNNING] = 0xFF;
+                pre[PRE_DRIVE_STATE]    = 0;
+                pre[0x0058]             = 0;          /* gear_change_flag: no shift */
+                pre[0x0059]             = 0;          /* gear_change_rev_drop: not armed */
+                pre[PRE_GEAR_INDEX]     = (uint8_t)(2 + xs() % 5);
+                pre[0x0063]             = (uint8_t)xs();       /* road_speed */
+                pre[0x002E]             = (uint8_t)xs();       /* road_speed_frac */
+                pre[0x5A06 + pre[PRE_GEAR_INDEX]] = (uint8_t)xs();
+                revmodel++;
+            }
+
+            /* The SMC site: nine in ten unpatched, the tenth left random. */
+            if (xs() % 10) { pre[0x45CB] = 0x0A; pre[0x45CC] = 0x26; pre[0x45CD] = 0x77; }
+            else patched++;
+
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = (uint8_t)(xs() % 4 == 0);
+            if (c.D) decimal++;
+            subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
+                                liveMask, t, &printed);
+        }
+        fail += subFail;
+        if (!decimal || !throttle || !ingear || !powered || !cranking ||
+            !changed || !bothChanged || !entropy || !patched || !keyheld || !revmodel) {
+            printf("[VACUOUS] %s: %d decimal, %d throttle, %d in gear, %d powered, "
+                   "%d cranking, %d changed surface (%d both), %d entropy, %d SMC-random, "
+                   "%d key held, %d forced rev model\n",
+                   list[i].name, decimal, throttle, ingear, powered, cranking,
+                   changed, bothChanged, entropy, patched, keyheld, revmodel);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d decimal, %d throttle, %d in gear, %d powered, %d cranking, "
+               "%d changed surface, %d entropy, %d key held, %d forced rev model)\n",
+               list[i].name, cases, subFail, decimal, throttle, ingear, powered,
+               cranking, changed, entropy, keyheld, revmodel);
+    }
+    platform_test_via_t2(0);
+    platform_test_key_down(0);
+    smcTraps = g_smcUnhandled;
+    unsetenv("REVS_SMC_CONTINUE");
+    if (want("update_camera_and_drive_state")) {
+        if (smcTraps == 0) {
+            printf("[VACUOUS] update_camera_and_drive_state: no SMC trap over the whole run — "
+                   "the $45CB dispatch was never exercised on an unknown shape\n");
+            fail++;
+        }
+        printf("%-32s %7lu SMC traps at $45CB (must be > 0)  the per-circuit hook site\n",
+               "sub-models", smcTraps);
+    }
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -3447,6 +3642,7 @@ int main(int argc, char** argv)
     fail += test_model_arithmetic();
     fail += test_model_rotations();
     fail += test_slip_and_sound();
+    fail += test_sub_models();
 
     fail += check_coverage();
     fail += report_unvalidated_natives();

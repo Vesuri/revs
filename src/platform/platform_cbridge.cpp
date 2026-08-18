@@ -148,6 +148,18 @@ static uint16_t g_headlessClockAddr = 0x0292;   /* MOS TIME low byte — confirm
    the vacuous-green failure mode, wearing a plausible input.  Both the twin and its oracle
    see the same answer because both go through this one platform. */
 static int g_headlessT1Pending = 0;
+/* ⭐ $FE68 (User VIA T2 counter low) under the TEST platform.  Revs's only entropy source, and
+   the headless backend answered a constant 0 — which is deterministic (so diff_run works) but
+   pins the engine's two luck tests to one arm each: `VIA & starter_random_mask` is always 0, so
+   the starter always catches, and `VIA & 7` always adds nothing.  Twins #85/#84 read this
+   register, so the fixture sets it per case and BOTH arms get exercised.  Real runs never touch
+   this hook (the shipping backends override hwRead with the clock model in bbc_hw.cpp). */
+static unsigned char g_headlessViaT2 = 0;
+/* ⭐ …and whether OSBYTE 129 answers "held" under the TEST platform.  Same argument: the
+   default is "no key is ever down", which makes update_engine_revs' STARTER arm — everything
+   past `JSR kbd_test_key / BEQ` — unreachable from any fixture.  Twin #85's fixture toggles it,
+   and the sabotage that ignores starter_random_mask is what proved the hole was real. */
+static int g_headlessKeyDown = 0;
 
 /* ⭐⭐ THE HARDWARE-WRITE TRACE, and it is not an extra: without it the differential is
    BLIND to the whole output of a routine whose job is writing hardware.
@@ -184,8 +196,11 @@ struct HeadlessPlatform : Platform {
     void    renderFrame() override {}
     void    tickVBI() override { if (g_headlessTickClock) mem[g_headlessClockAddr]++; }
     int     loadImage(const char*) override { return -1; }
+    bool keyDown(uint8_t) override { return g_headlessKeyDown != 0; }
     uint8_t hwRead(uint16_t addr) override {
-        return (addr == 0xFE6D && g_headlessT1Pending) ? 0xC0 : 0x00;
+        if (addr == 0xFE6D && g_headlessT1Pending) return 0xC0;
+        if (addr == 0xFE68) return g_headlessViaT2;
+        return 0x00;
     }
     void hwWrite(uint16_t addr, uint8_t val) override {
         /* ⚠ NOT $FE20/$FE21: those reach the model through bbc_screen.h's inlines, which
@@ -212,5 +227,11 @@ void platform_test_clock_addr(uint16_t a) { g_headlessClockAddr = a; }
 
 /* Raise/lower the User VIA T1 timeout flag the IRQ1V handler dispatches on. */
 void platform_test_t1_pending(int on) { g_headlessT1Pending = on ? 1 : 0; }
+
+/* What $FE68 answers under the test platform — see g_headlessViaT2. */
+void platform_test_via_t2(unsigned char v) { g_headlessViaT2 = v; }
+
+/* Whether OSBYTE 129 reports the key held — see g_headlessKeyDown. */
+void platform_test_key_down(int on) { g_headlessKeyDown = on ? 1 : 0; }
 
 } /* extern "C" */

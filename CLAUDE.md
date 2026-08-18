@@ -256,8 +256,13 @@ hand-rename in generated files).
    harness *fails* a validated name with no fixture, because a fixture-less PASS runs zero
    comparisons (`docs/validation-harness.md`).
 5. `make validate FN=<name>` runs both on the same inputs and diffs full `mem[]` state.
-6. **Sabotage it** — four deliberate defects minimum, each must FAIL, and a sabotage that PASSES
-   is a fixture gap to write down (`docs/phases.md` §1a item 9).
+6. **Sabotage it** — four deliberate defects minimum, each must FAIL. A sabotage that PASSES is
+   one of THREE things and only the first costs anything: a fixture gap; a defect unreachable by
+   construction; or **no change at all** (a bit provably already clear, a piecewise curve that is
+   continuous at the breakpoint you moved). Decide by argument, then check the SIBLING case, and
+   write the argument at the code (`docs/validation-harness.md` §FIFTEENTH).
+   ⭐ Ask what the TEST BACKEND answers, not just what the fixture randomises — a `Platform`
+   virtual with a constant answer is a whole arm that never runs.
    ⚠⚠ **A scripted sabotage loop MUST `rm` the object file and the binary before every build.**
    Left to `make`, a rewrite-then-rebuild loop reuses the previous iteration's object on some
    iterations and reports that the defect is undetectable. **The tell is two different defects

@@ -17,37 +17,35 @@ row that says what is unsettled is worth more than a confident wrong name.  (The
 
 ---
 
-## The DRIVING MODEL's unnamed callees — two routines and six cells, all reached from `apply_driving_model`
+## The ARITHMETIC WINDOW's second tenants — `$0078`/`$0079`/`$008E`/`$008F`
 
-Opened 2026-08-18 while twinning that tree (twins #44-#78 took the multiply, the 16-bit
-arithmetic, the rotations and the slip/sound cluster; only the sub-models are still
-transliterated).  ⚠⚠ **Five of this table's original seven rows were applied by that cluster's
-twins, and TWO of the five descriptions were wrong in their own premise** — `$4B88`'s two arms
-were written down the wrong way round, and `$4AF7`'s evidence was `$4B88`'s.  A one-minute check
-of `pedal_mode`'s own row settled both.  That is the third time a prose entry in this file has
-survived weeks of re-reading and then failed the first mechanical check: **decide, don't re-read.**
-Each of these is about to be referenced by a hand-written twin, which is the last moment renaming
-is cheap.  ⚠ Everything here is a READING OF THE LISTING, not a measurement — the note beside each
-one says what would settle it.
+What is left of the driving-model entry that twins #44-#86 emptied.  **Every routine and every
+plain cell it listed now has a name in `disasm/symbols.csv`** — `$4610` is
+`scale_by_track_gradient`, `$4DC9`/`$4DCB` are `begin_spin`/`begin_spin_from_a`, and `$0009`
+`$0022` `$0026` `$0028` `$003D` `$62F0` `$62FB` are `starter_random_mask`,
+`car_section_cursor`, `spin_countdown`, `spin_shake`, `engine_torque`, `camera_pitch_bias` and
+`section_jump_history`.  ⚠⚠ **The score for that entry's prose was 4 wrong premises out of 13
+rows** — two arms recorded backwards, one routine's evidence belonging to another, and `$44D5`
+attributed to `update_camera_and_drive_state` when it is inside `compute_segment_scale`.  Every
+one of the four was settled in a minute by a hex dump or a loop-bound count.  **Decide, don't
+re-read.**
 
-**Routines** (all still `FUN_*`, so the C twin cannot be written without deciding):
+What genuinely remains is the SECOND-TENANT question, which is a naming DECISION and not a
+missing fact:
 
-| Address | What it does | Suggested | How to settle |
-|---|---|---|---|
-| `$4610` | `$75 = A`; `EOR $25` on `patch_byte_0[Y]` for a sign, `abs8`, `mul8`, then `abs8` again under the saved sign | `scale_section_byte` | it multiplies a PER-SECTION track byte by A — the same `$5400`/`$5500`/`$5600` question the entry below already has open |
-| `$4DC9` / `$4DCB` | halve `road_speed` into `$26` and `$28`, `INC drive_state`, `SEC ROR heading_step_lo`, then `sound_queue_default(4)` | `enter_spin_from_speed` / `enter_spin` | watch `drive_state` and the audio on the reference loop while provoking a spin: sound 4 should be the tyre squeal |
+* ⚠ **`$008E`/`$008F` are `plot_ptr3_lo`/`_hi`**, and `slip_magnitude`/`store_slip_clamped` are a
+  second tenant.  The windows do not overlap (the road pass and the driving model run in
+  different halves of the frame), but a twin that says `plot_ptr3_lo` while computing a slip
+  magnitude is a lie; the twins use a file-local name and this is the note that says why.
+* ⚠ **`$0078`** is `hypot_min_lo` to the road pass, the OUTPUT ELEMENT INDEX to
+  `damp_and_derive_loads`' second loop, and the NEGATED LOAD TERM to `update_grip_limits` —
+  where `$4C52`'s `ADC $78,X` reaches it for axle 0 and `$0079` for axle 1.  Three tenants.
+* ⚠ **`$0079`** is `hypot_min_hi` to the road pass, the SIGN/MODE byte to `mul16_signed` and
+  `apply_angle_term` (bit 7 = negate the product, bit 6 = accumulate instead of store), and that
+  same load term to `update_grip_limits`.
 
-**Cells** the same twins have to name:
-
-* **`$0026` / `$0028`** — written together by `update_camera_and_drive_state` (`$44F5`-`$44F7`, both zeroed while driving normally) and by `enter_spin` (`road_speed/2` and `/4`); `$28` is added into the camera term at `$458A` and `$26` read at `$459F`/`$45B3`.  A spin's decaying camera shake is the obvious reading, and `$44EE`'s `DEC $28` twice per frame fits it.  ⇒ `spin_shake_a` / `spin_shake_b` [INFERRED] — settle by provoking a spin on the reference loop and watching which one drives the view.
-* **`$0009`** — `AND`ed with the User VIA timer in `update_engine_revs`' starter poll (`$498F`) and set to 7 beside `engine_running` at `$4995`; also written at `$1160` and `$187D`.  A randomness MASK, not a value.  ⇒ `starter_random_mask` [INFERRED].
-* **`$0022`** — an index: `LDX $22` then `LDY $0700,X` at `$452D`, and read the same way at `$11D4`/`$1F4E`/`$45DF`.  Whatever `$0700` is indexed BY (a car slot? a section?) is the question, and `$0700` has no row either.
-* **`$003D`** — written by `update_engine_revs`' tail (`$4A87`) beside `engine_note_target`, read by `update_camera_and_drive_state` (`$4506`) and `derive_slip_reference` (`$4BBA`).  ⇒ a second rev-derived term; name it once the engine model is a twin.  Its twin carries it as a file-local `SLIP_REV_TERM` in the meantime.
-* **`$62F0`** — `update_camera_and_drive_state` steps it by ±1 or ±2 and clamps it to `$FB..3` (`$44F9`-`$452A`), i.e. a small signed counter with hysteresis, driven by the pedals and the speed.  ⇒ `camera_pitch_bias` [INFERRED] — the reference loop settles it in one run: brake hard and watch the horizon.
-* **`$62FB`** — `BIT $62FB` (bit 7) gates the unprompted grip loss at `$4C1C`.  ⇒ a per-session "surfaces can change" flag; find its writer first.
-* ⚠ **`$008E`/`$008F` are `plot_ptr3_lo`/`_hi`, and `slip_magnitude`/`store_slip_clamped` are a SECOND TENANT** — the same shape as the `point_delta` entry below.  The windows do not overlap (the road pass and the driving model run in different halves of the frame), but a twin that says `plot_ptr3_lo` while computing a slip magnitude is a lie; the twins use a file-local name and this is the note that says why.
-* ⚠ **`$0078`** is `hypot_min_lo` to the road pass and the OUTPUT ELEMENT INDEX (1 then 0) to `damp_and_derive_loads`' second loop — the same second-tenant problem as `$0079` below, the same treatment, and it belongs in whatever decision settles the arithmetic window.
-* ⚠ **`$0079`** is `hypot_min_hi` to the road pass and the SIGN/MODE byte to `mul16_signed` and `apply_angle_term` (bit 7 = negate the product, bit 6 = accumulate instead of store).  Same second-tenant problem, same treatment.
+⇒ The decision to make once, for this window and for the `point_delta` window below: a second
+set of names SCOPED to each pass, or notes that record every tenancy.  Not a per-cell call.
 
 
 ## Twelve unnamed routines in three NAMED call trees — `draw_track_object`, `read_driving_controls`, `build_road_sign`
@@ -114,8 +112,10 @@ sense of `$27A4` differencing it between cars (side-by-side) and of the `$AC` co
 nominal eye height.
 ⚠ Still not measured, and the reference-loop test above is still the decider — but it now has a
 prediction to falsify: **`car_state_1` should change when the car is steered across a CAMBERED
-section and barely at all on a flat straight.**  See also the `$5400`/`$5500`/`$5600` entry below,
-because the coefficient's own name currently says something else entirely.
+section and barely at all on a flat straight.**  ⭐ The coefficient's own name is now settled and it STRENGTHENS the camber reading:
+`mem[$5500 + Y]` is `track_dir_1`, MEASURED as the track's GRADIENT component — small and signed
+where the two ground-plane components are ±$78 — so `$4610` (now `scale_by_track_gradient`) is
+literally "an offset times the local slope".  The prediction to falsify is unchanged.
 
 ## `model_accum_lo`/`model_accum_hi` (`$62D8`/`$62E8`) — element 8 of what, physically?
 
@@ -151,41 +151,35 @@ points, both walks start at 6, `shift_near_edge_points` slides exactly five entr
 MEASURED.  Cheap confirmation on the reference loop: drive at a steady speed and watch how often
 `$62F5` is set and what `$0007` reads when it is; it should equal the number of sections crossed.
 
-## `patch_target_lo` (`$5400`) / `patch_byte_0` (`$5500`) / `$5600` — named for the INSTALLER, read as PER-SECTION TRACK DATA
+## `$5700` / `$5800` — the LAST unnamed pages of the track-data region
 
-`$5400` and `$5500` are named for what `ModifyGameCode` does with them at circuit-install time
-(patch target addresses and the bytes to write).  But **six sites in the running engine read them as
-a parallel triple of per-section tables**, indexed by a section index in Y and none of them inside
-the installer:
+⭐⭐ **The `$5400`/`$5500`/`$5600` question is SETTLED, and by the dump this entry asked for.**
+`make gen` + a 64 KB `REVS_MEM_DUMP` mid-race on Silverstone (frame 300) and on Brands
+(frame 120) says it in one look: the three pages are **the track's forward DIRECTION VECTOR at
+each track position**, 256 entries each, and they are now `track_dir_0` / `track_dir_1` /
+`track_dir_2` in `disasm/symbols.csv`.  Components 0 and 2 are the ground-plane pair, scaled so
+`|(c0,c2)| = $78 = 120` entry by entry; component 1 is the small signed gradient.  Both the
+installer reading and the geometry reading were true at once, exactly as this entry guessed —
+`ModifyGameCode` reads the first ~20 entries of the first two pages as its patch list, and the
+circuit's own hook then GENERATES the tables (BRANDS' generator is at `$54C0`, writing
+`$5400,Y`/`$5500,Y`/`$5600,Y`/`$5700,Y`/`$5800,Y`).  Silverstone, being passive, ships all 256
+entries as data — which is why its pages are smooth for all 256 and Brands' are smooth for 39
+and 6502 code after that.
 
-| site | reads |
-|---|---|
-| `$144A`-`$145C` | all three, `$5400,Y` / `$5500,Y` / `$5600,Y` in one breath |
-| `$2949`-`$2953` | all three again |
-| `$4536`-`$4549` | `$5400,Y`, `$5600,Y` — `update_camera_and_drive_state`'s angular relation |
-| `$4612`-`$4618` | `$5500,Y` twice — the coefficient `car_state_1` is multiplied by |
+**What is still open is the other two pages**, and only `draw_track_object`'s tree reads them:
 
-Both readings can be true at once, and that is the likely answer: the track file lands at `$70DB`
-and the unpack's checksum-verified swap moves it to `$5300` (`docs/static-map.md`), so this is
-CIRCUIT DATA that the installer reads a patch list out of and the engine then reads geometry out
-of.  If so the names are not wrong, they are one tenant of two, and the engine's tenant is the one
-every twin in the road pass and the driving model will meet.
-**The cheap decider is a DUMP, not more reading** — the lesson from the `$61xx` entry: print
-`$5400`-`$56FF` after a circuit installs and again mid-race for two different circuits, and see
-whether the bytes the six sites read are patch-list entries (short, structured, one per patch) or
-one value per section (256 entries, smoothly varying).  Sizes settle it: `ModifyGameCode` applies
-`n+1` patches with `n` around 54-60 per circuit, so a patch list occupies ~60 bytes and a
-per-section table occupies ~40 or 120.  ⚠ Suspect a THIRD name is needed for the region as a whole
-rather than renaming either tenant.
+| site | reads | as |
+|---|---|---|
+| `$299D`-`$29A5` | `$5700,Y`, `$5800,Y` | `point_delta_sign` components 0 and 2 |
+| `$1391` | `$5700,Y` | (not yet read out) |
 
-⭐ **Twins #16-#24 put two firm boundaries on the region, which narrows the dump to run.**
-`load_section_triple` ($1208) reads the track file as an 8-byte-per-segment record array in TWO
-parallel halves — `track_segment_lo` at `$5900` and `track_segment_hi` at `$5300` — indexed by the
-same byte index `segment_count_x8` wraps, so each half is about 250 bytes and the high half ends
-around `$53FA`.  `$5400`/`$5500`/`$5600` therefore sit AFTER it, not inside it, and the region is at
-least four tenants deep: segment records, whatever these three are, the patch list, and
-`segment_len_tbl`/`segment_data`/`track_scale` up at `$5907`-`$5A14`.  The dump above should print
-`$5300`-`$5A25` whole and be read as a MAP, not as three tables.
+BRANDS' generator gives the shape away: `$5800,Y` is component 0 re-signed by
+`track_direction` and `$5700,Y` is component 2 re-signed AND negated — a 90-degree rotation of
+the forward vector, i.e. the **across-track NORMAL**.  ⇒ `track_normal_0` / `track_normal_2`
+[INFERRED from the generator].  ⚠ `$5700` cannot simply take that name: it is also
+`ModifyGameCode`'s ENTRY POINT, and one address gets one row.  **The region needs a third name
+for itself, not a rename of either tenant** — decide it while twinning `draw_track_object`,
+which is the tree that reads these two pages.
 
 ## `math_lo`/`math_hi` (`$0074`/`$0075`) — `point_distance_hypot` fills them BACK TO FRONT
 
