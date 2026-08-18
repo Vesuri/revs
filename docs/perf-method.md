@@ -530,6 +530,40 @@ producer → producer → consumer over one shared data structure, and that stru
 ms/frame**, charged to whichever phase it preempted so it appears in no row of its own.  It does the
 copper rebuild, the bitplane-pointer swap and the audio tick.  Unmeasured internally.
 
+### ⚖ TWINS #16-#24: the road-geometry pass has no interpreter left, and the framerate DID NOT MOVE (2026-08-18)
+
+The other nine routines under `build_track_geometry` — the near-slot bookkeeping, the four per-point
+primitives, `point_distance_hypot` and `emit_edge_width_offset`.  With them the whole call tree from
+`$24F6` is real C: 19 routines, 776 6502 instructions, no transliteration anywhere in it.  Two of
+the nine genuinely compress (nine `LSR hi / ROR A` pairs → three 68000 word shifts; a variable
+shift the 6502 runs as a loop of up to 255 iterations → one `lsl.w` and a range test).
+
+Two 30 s warp runs, `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`, both from a
+`make clean`, both in the same session, compared as ROW VECTORS:
+
+| build | rows | 11-row mean |
+|---|---|---|
+| control (HEAD~1, the same pass with nine transliterated leaves) | ten 2.92, one 2.83, one outlier 1.46 | **2.9118** |
+| twins #16-#24 | ten 2.92, one 2.83, one outlier 1.56 | **2.9118** |
+
+**Identical, row for row.**  Not "within noise" — the same integer painted-frame count in eleven of
+twelve rows, which is as tight as this instrument reads (one painted frame is 3.3% of a row).
+
+⇒ **What that says, and it is the useful part.**  The nine leaves together are a real share of the
+pass's instruction count, and removing their interpreter bought nothing measurable — so the road
+pass's cost is NOT the interpreter any more.  Twins #1 and #2 paid because the transliteration was
+doing bookkeeping around work C does differently; by twin #24 that surplus is spent.  What is left
+in this subtree is the algorithm itself plus `mem[]` traffic: every edge point still walks the
+section arrays, the three `point_delta` arrays, the two edge arrays and `edge_style` a byte at a
+time through a 64 KB `unsigned char[]`, and no amount of further twinning changes the number of
+those accesses.  **The next win in this pass has to REMOVE ACCESSES OR POINTS, not instructions** —
+which is the same conclusion `docs/direct-bitplane-plan.md` reaches for the consumer end, one
+subsystem earlier.
+
+⚠ Do not read this as "the twins were not worth writing".  They are what makes the above
+measurable at all, and §8's non-performance reasons applied to seven of the nine before a run
+was made.  Quote them for the names and the leaf-freedom, never for FPS.
+
 ### ⚠⚠ TWINS #14/#15: an ALL-ARITHMETIC LEAF TWIN THAT MADE IT SLOWER, and the one-line fix (2026-08-18)
 
 `bearing_to_section_from` (`$2147`) and `project_point_from` (`$2287`) are the road pass's two
