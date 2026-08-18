@@ -305,6 +305,9 @@ Be conscious of absolute milliseconds always.
 **Baseline: 2.92 FPS rendered** (`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`).
 ⚠ One painted frame is 3.3% of a row, so this figure IS the noise floor — always re-run the control
 in the same session from a clean build rather than diffing against it (`docs/perf-method.md` §twin #13).
+⚠ The whole view pipeline is now real C — `build_track_geometry`'s tree and `draw_road`'s tree both
+have **no transliteration left in them** — and neither pass's twins moved the framerate. Removing
+the interpreter from this subsystem is DONE; the next win must remove accesses or points.
 ⭐⭐ **The lever is the VIEW PIPELINE: `build_track_geometry` → `draw_road` → `view_paint_lines` is 54% of the frame
 and it is ONE subsystem** — the first two *produce* source bytes into the forty `$80`-spaced blocks
 at `$3000..$4380`, the third is the single *consumer*. Current shares, every past change and its
@@ -340,6 +343,10 @@ Rules that must survive without opening `docs/perf-method.md`:
   at -O3, so every subtract was paying a `jsr` + `movem.l`. **Grep the objdump for
   `jsr <sub_from>` before believing any arithmetic twin is fast**, and match the build to the
   control (a `PROBES=1` build reads low). `docs/perf-method.md` §twins #14/#15.
+  ⭐⭐ **The general form: a parameter that is a COMPILE-TIME CONSTANT at every call site must be
+  `always_inline`d, or it is a memory operand in the inner loop.** A `const SpanPlotter*`
+  descriptor in the span rasteriser's leaf cost 2.6% of the frame on its own
+  (`docs/perf-method.md` §twins #25-#39).
 - ⭐⭐ **A 6502 macro writes FIVE cpu fields; a routine usually reads one.** `SBC` stores A/N/V/Z/C
   (~16-20 cycles each on a 68000) and computes V through mask chains, so a subtract chain pays it
   over and over for flags that are dead at the exit. Use `sbc_value` for the chain and replay the
