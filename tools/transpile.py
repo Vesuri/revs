@@ -660,6 +660,21 @@ VALIDATE_FUNCS = {
     0x0CA5,
     0x23BB,
     0x2565,
+    # ⭐⭐ TWINS #25-#39 — THE SPAN RASTERISER, i.e. everything draw_road reaches below its
+    # three stages.  With these the whole view pipeline from build_track_geometry to
+    # view_paint_lines is real C and the corpus has no transliterated road code left.
+    #   $0E40 abs16_math          (  2 B) |math_lo:A|, and it branches on the CALLER's N
+    #   $2FEE road_span_advance   ( 18 B) the block-boundary predicate, carry out
+    #   $2F45 road_span_plot      ( 66 B) ONE column of one span into one buffer cell
+    #   $2F87 road_span_plot_2    ( 57 B) ...the same against the other pointer pair
+    #   $2FC0 span_end_marker_p1  ( 23 B) the $FF run terminator — and an OPCODE SLOT
+    #   $2FD7 span_end_marker_p2  ( 23 B) ...the same for the other buffer
+    0x0E40,
+    0x2FEE,
+    0x2F45,
+    0x2F87,
+    0x2FC0,
+    0x2FD7,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

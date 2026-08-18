@@ -2009,6 +2009,270 @@ static int test_geometry_leaves(void)
     return fail;
 }
 
+
+/* ==========================================================================
+   $0E40 abs16_math, $2FEE road_span_advance, $2F45/$2F87 the span plotters,
+   $2FC0/$2FD7 the two end markers — THE SPAN RASTERISER'S LEAVES
+   --------------------------------------------------------------------------
+   These are the bottom of the view pipeline: the four routines that actually touch a buffer
+   cell, plus the predicate they share and the 16-bit absolute value interp_edge calls.
+
+   ⚠⚠ FOUR OF THE SIX ARE SELF-MODIFYING AND EVERY SITE IS AN EXIT ON AN UNRECOGNISED BYTE,
+   so a uniform pre-state compares almost nothing: both models trap on the first instruction
+   and return.  The opcode slots are therefore PLANTED with one of the legal values, and a
+   tenth of the cases plant garbage on purpose so the trap path is tested rather than avoided.
+
+   ⚠ And the interesting arms are all rare under uniform bytes, so four things are steered:
+     * the buffer cell is forced to $00 (empty), to $55 (the "all four columns" value) or
+       left random, a third each — otherwise the empty-cell arm runs 1 case in 256;
+     * mem[$82] is forced to the stepped Y in a fifth of the cases, which is the ONLY way to
+       reach the abandon path (`TSX/INX/INX/TXS`, the two-level return) and the surface cap
+       behind it;
+     * Y is held below $2C in half the cases, because at or above it road_span_advance is
+       never called at all;
+     * X is forced to $80 in a third of the marker cases — the value that decides whether a
+       terminator gets written.
+   ========================================================================== */
+void abs16_math(void);
+void abs16_math__t6502(void);
+void road_span_advance(void);
+void road_span_advance__t6502(void);
+void road_span_plot(void);
+void road_span_plot__t6502(void);
+void road_span_plot_2(void);
+void road_span_plot_2__t6502(void);
+void span_end_marker_p1(void);
+void span_end_marker_p1__t6502(void);
+void span_end_marker_p2(void);
+void span_end_marker_p2__t6502(void);
+
+/* The three opcodes a Y-step slot may legally hold, and the two an end-marker slot may. */
+static const uint8_t STEP_OPCODES[3]   = { 0xC8, 0x88, 0xEA };   /* INY / DEY / NOP */
+static const uint8_t MARKER_OPCODES[2] = { 0xE0, 0x60 };         /* CPX #$80 / RTS  */
+
+/* How far a planted step slot moves Y, for working out which cell the call will touch. */
+static int step_delta(uint8_t opcode)
+{
+    return opcode == 0xC8 ? 1 : opcode == 0x88 ? -1 : 0;
+}
+
+/* Plant one Y-step slot; one case in ten gets a byte the model cannot execute. */
+static uint8_t plant_step(uint8_t* pre, unsigned slot)
+{
+    uint8_t op = (xs() % 10 == 0) ? (uint8_t)xs() : STEP_OPCODES[xs() % 3];
+    pre[slot] = op;
+    return op;
+}
+
+/* $2F19's per-circuit site, reached from the abandon path.  Silverstone's own bytes, an
+   expansion circuit's hook, or garbage — the same three shapes build_track_geometry uses. */
+static void plant_cap_smc(uint8_t* pre)
+{
+    unsigned shape = xs() % 10;
+    if (shape < 6)      { pre[0x2F23] = 0xB9; pre[0x2F24] = 0x60; pre[0x2F25] = 0x5F; }
+    else if (shape < 9) { pre[0x2F23] = 0x20; pre[0x2F24] = 0x22; pre[0x2F25] = 0x5A; }
+    /* else: whatever fill_random left — the trap arm */
+}
+
+/* ⭐⭐ KEEP EVERY PLOTTER POINTER OUT OF THE I/O WINDOW, and this is a correctness fix, not
+   tidiness: a random high byte puts the cell READ at $FC00-$FEFF once in about eighty cases,
+   `platform_hw_read` is not a pure function of mem[], and diff_run runs the oracle first —
+   so the two models legitimately read different bytes and the twin looks wrong.  (Measured:
+   82 of 2000 cases, all with A or a flag differing and mem[] byte-exact.)  The engine's own
+   pointers are always RAM, so holding the three high bytes below $80 measures the twin
+   rather than the clock. */
+static void plant_ram_pointers(uint8_t* pre)
+{
+    pre[0x0071] &= 0x7F;   /* plot_ptr_hi  */
+    pre[0x0073] &= 0x7F;   /* plot_ptr2_hi */
+    pre[0x008F] &= 0x7F;   /* plot_ptr3_hi */
+    pre[0x2F50] &= 0x7F;   /* the patched destination operands, both plotters */
+    pre[0x2F92] &= 0x7F;
+}
+
+/* Steer the cell the plotter is about to touch, and (sometimes) the end line it compares
+   against.  `ptrCell` is the zero-page pointer the colour cell is read through. */
+static void steer_plot_case(uint8_t* pre, Cpu6502* c, unsigned ptrCell, uint8_t stepIn,
+                            int* emptyCell, int* abandoned)
+{
+    unsigned yAfter = (unsigned)((c->Y + step_delta(stepIn)) & 0xFF);
+    unsigned addr   = ((unsigned)(pre[ptrCell] | (pre[(uint8_t)(ptrCell + 1)] << 8)) + yAfter)
+                      & 0xFFFF;
+
+    if (xs() % 5 == 0) { pre[0x0082] = (uint8_t)yAfter; *abandoned = 1; }   /* the abort path */
+    else if (pre[0x0082] == (uint8_t)yAfter) *abandoned = 1;
+
+    if (addr < 0xFC00 || addr >= 0xFF00) {           /* never plant into the I/O window */
+        unsigned pick = xs() % 3;
+        if (pick == 0) { pre[addr] = 0x00; *emptyCell = 1; }
+        else if (pick == 1) pre[addr] = 0x55;
+    }
+}
+
+static int test_span_leaves(void)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    const int absCases = 2000 * scale, advCases = 1000 * scale,
+              plotCases = 2000 * scale, markCases = 1000 * scale;
+
+    register_fixture("abs16_math");
+    register_fixture("road_span_advance");
+    register_fixture("road_span_plot");
+    register_fixture("road_span_plot_2");
+    register_fixture("span_end_marker_p1");
+    register_fixture("span_end_marker_p2");
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+
+    if (want("abs16_math")) {
+        int subFail = 0, negated = 0, disagreed = 0, decimal = 0;
+        for (t = 0; t < absCases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            /* Same trap as abs8: the `BPL` reads the CALLER's N, so a third of the cases
+               decorrelate it from bit 7 of A deliberately. */
+            c.N = (xs() % 3) ? (uint8_t)(c.A >> 7) : (uint8_t)(xs() & 1);
+            c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = (uint8_t)(xs() % 4 == 0);   /* decimal changes the RESULT BYTE, not just flags */
+            if (c.N != (c.A >> 7)) disagreed++;
+            if (c.N) negated++;
+            if (c.D) decimal++;
+            subFail += diff_run("abs16_math", pre, c, abs16_math, abs16_math__t6502,
+                                liveMask, t, &printed);
+        }
+        fail += subFail;
+        if (negated == 0 || disagreed == 0 || decimal == 0) {
+            printf("[VACUOUS] abs16_math: %d negated, %d decorrelated, %d decimal of %d — "
+                   "all three must be non-zero\n", negated, disagreed, decimal, absCases);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d negated, %d with N vs bit 7 decorrelated, %d decimal)\n",
+               "abs16_math", absCases, subFail, negated, disagreed, decimal);
+    }
+
+    if (want("road_span_advance")) {
+        int subFail = 0, atStart = 0;
+        for (t = 0; t < advCases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            pre[0x0085] = (uint8_t)xs();
+            /* The whole routine is one compare, so its EQUAL case has to be planted or it
+               happens once in 256 and the CLC is never exercised. */
+            if (xs() % 3 == 0) pre[0x3900 + pre[0x0085]] = c.Y;
+            if (pre[0x3900 + pre[0x0085]] == c.Y) atStart++;
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;
+            subFail += diff_run("road_span_advance", pre, c, road_span_advance,
+                                road_span_advance__t6502, liveMask, t, &printed);
+        }
+        fail += subFail;
+        if (atStart == 0) {
+            printf("[VACUOUS] road_span_advance: no case reached the block's first line\n");
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d on the block boundary)\n",
+               "road_span_advance", advCases, subFail, atStart);
+    }
+
+    {
+        struct { const char* name; void (*nat)(void); void (*ref)(void);
+                 unsigned ptrCell, stepIn, stepOut; } plotters[2] = {
+            { "road_span_plot",   road_span_plot,   road_span_plot__t6502,
+              0x0072, 0x2F47, 0x2F60 },
+            { "road_span_plot_2", road_span_plot_2, road_span_plot_2__t6502,
+              0x0070, 0x2F89, 0x2FA2 },
+        };
+        int p;
+        for (p = 0; p < 2; p++) {
+            int subFail = 0, empty = 0, abandoned = 0, nearTop = 0;
+            if (!want(plotters[p].name)) continue;
+            for (t = 0; t < plotCases; t++) {
+                Cpu6502 c = zero_cpu();
+                uint8_t stepIn;
+                int isEmpty = 0, isAbandon = 0;
+                fill_random(pre);
+                c.A = (uint8_t)xs(); c.X = (uint8_t)(xs() % 4); c.Y = (uint8_t)xs();
+                if (xs() % 2) { c.Y = (uint8_t)(xs() % 0x2C); nearTop++; }
+                plant_ram_pointers(pre);
+                stepIn = plant_step(pre, plotters[p].stepIn);
+                plant_step(pre, plotters[p].stepOut);
+                plant_cap_smc(pre);
+                steer_plot_case(pre, &c, plotters[p].ptrCell, stepIn, &isEmpty, &isAbandon);
+                empty += isEmpty; abandoned += isAbandon;
+                c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+                c.D = 0;
+                subFail += diff_run(plotters[p].name, pre, c, plotters[p].nat,
+                                    plotters[p].ref, liveMask, t, &printed);
+            }
+            fail += subFail;
+            if (empty == 0 || abandoned == 0 || nearTop == 0) {
+                printf("[VACUOUS] %s: %d empty cells, %d abandons, %d near the top of %d — "
+                       "all three arms must be reached\n",
+                       plotters[p].name, empty, abandoned, nearTop, plotCases);
+                fail++;
+            }
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+                   "(%d empty cell, %d abandoned the chain, %d below line $2C)\n",
+                   plotters[p].name, plotCases, subFail, empty, abandoned, nearTop);
+        }
+    }
+
+    {
+        struct { const char* name; void (*nat)(void); void (*ref)(void);
+                 unsigned slot, ptrCell; } markers[2] = {
+            { "span_end_marker_p1", span_end_marker_p1, span_end_marker_p1__t6502,
+              0x2FC0, 0x0070 },
+            { "span_end_marker_p2", span_end_marker_p2, span_end_marker_p2__t6502,
+              0x2FD7, 0x0072 },
+        };
+        int m;
+        for (m = 0; m < 2; m++) {
+            int subFail = 0, live = 0, wrote = 0;
+            if (!want(markers[m].name)) continue;
+            for (t = 0; t < markCases; t++) {
+                Cpu6502 c = zero_cpu();
+                uint8_t op = (xs() % 10 == 0) ? (uint8_t)xs() : MARKER_OPCODES[xs() % 2];
+                fill_random(pre);
+                plant_ram_pointers(pre);
+                pre[markers[m].slot] = op;
+                c.A = (uint8_t)xs(); c.Y = (uint8_t)xs();
+                if (xs() % 2) c.Y = (uint8_t)(xs() % 0x2C);
+                /* X == $80 is "this column never plotted", the only value that writes a
+                   terminator — a uniform byte reaches it once in 256. */
+                c.X = (xs() % 3) ? 0x80 : (uint8_t)xs();
+                pre[0x0085] = (uint8_t)xs();
+                if (op == 0xE0) live++;
+                if (op == 0xE0 && c.X == 0x80) wrote++;
+                c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+                c.D = 0;
+                subFail += diff_run(markers[m].name, pre, c, markers[m].nat,
+                                    markers[m].ref, liveMask, t, &printed);
+            }
+            fail += subFail;
+            if (live == 0 || wrote == 0 || live == markCases) {
+                printf("[VACUOUS] %s: %d live of %d cases, %d reached the terminator — "
+                       "both opcode shapes and both X arms must run\n",
+                       markers[m].name, live, markCases, wrote);
+                fail++;
+            }
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+                   "(%d switched on, %d reached the terminator)\n",
+                   markers[m].name, markCases, subFail, live, wrote);
+        }
+    }
+
+    unsetenv("REVS_SMC_CONTINUE");
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -2028,6 +2292,7 @@ int main(int argc, char** argv)
     fail += test_div16by8();
     fail += test_road_transforms();
     fail += test_geometry_leaves();
+    fail += test_span_leaves();
 
     fail += check_coverage();
     fail += report_unvalidated_natives();
