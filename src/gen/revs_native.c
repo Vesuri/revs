@@ -5136,6 +5136,24 @@ static void mul8_noinit_core(void)
     cpu.C   = 0;                /* provably 0 for every operand pair */
 }
 
+/* ⭐⭐ THE VALUE-ONLY ENTRY, and the point of it is the CALLERS (user, 2026-08-18).  Everything
+   above the `if (multiplier)` in mul8_noinit_core is one `MULU.W`; the replay under it is a
+   second multiply plus a bit scan, paid for a V that NO caller reads — there is no `BVC`/`BVS`
+   after any of the 28 `JSR mul8` sites.  A native caller that has proved the flags dead at its
+   own call site calls this instead, exactly as the road pass calls `sbc_value` rather than
+   paying cpu.h's `SBC`.  The 6502-ABI shim keeps the flags for the transliterated callers that
+   are still out there.
+   ⚠ Decimal mode still has to be honoured, because D changes the product itself. */
+REVS_FLAG_OP unsigned mul8_product(uint8_t multiplier, uint8_t addend)
+{
+    if (cpu.D) {
+        math_lo = multiplier; math_hi = addend;
+        mul8_shift_add();
+        return (unsigned)((cpu.A << 8) | math_lo);
+    }
+    return revs_mulu16(multiplier, addend);
+}
+
 static void mul8_core(uint8_t multiplicand)
 {
     math_lo = multiplicand;     /* $0C00 — a store, so no flags */
@@ -5212,3 +5230,269 @@ void mul8_accum(void)        { mul8_accum_core(); }
 void mul16_by_pi(void)       { mul16_by_pi_core(cpu.A); }
 void neg16_math(void)        { neg16_math_core(cpu.A); }
 void neg16_math_noinit(void) { neg16_math_noinit_core(); }
+
+/* ===========================================================================
+   TWINS #50-#57 — THE DRIVING MODEL'S 16-BIT ARITHMETIC
+   ---------------------------------------------------------------------------
+   The layer between the multiply and the sub-models: everything that reads or writes the
+   model's 16-bit state vector as a NUMBER rather than as physics.
+
+     $0DD7  mul16_signed             16x16 -> 16 with the sign carried in a byte
+     $4753  scale16_by_y             |x| * Y >> 8, sign restored — the model's scale operation
+     $4765  mul16_by_1_5             x * 1.5, arithmetic (a shift and an add)
+     $47E5  model_integrate_element   element X += element 14
+     $48A0  add_signed_into_element   element Y += ±(math_hi:math_lo)
+     $4874  apply_angle_term          element x car angle -> element, storing or accumulating
+     $486D  apply_angle_term_at       ...the same with the source element taken from $7F
+     $0E50  kbd_test_key              OSBYTE 129 on one negative INKEY code
+
+   ⭐ mul16_signed IS THE SECOND REAL COMPRESSION IN THIS TREE.  The 6502 spells a 16x16
+   multiply as three 8x8 products accumulated by hand across five scratch cells; what it
+   computes, derived from that accumulation and checked against it, is exactly
+
+       result = p2 + ((p1 + p3 + $80) >> 8),   p1 = hi*angleLo, p2 = hi*angleHi, p3 = lo*angleHi
+
+   i.e. the true product MINUS its lowest cross term (lo*angleLo, which the routine never
+   forms) plus a half-count of rounding.  Three `MULU.W`s and two adds here.
+   ⚠ The five scratch cells are part of the contract, not workspace: shared_temp_76/77,
+   hypot_min_lo, math_lo and math_hi all keep values the differential compares, so the twin
+   writes what the 6502 left there even where its own arithmetic did not need it.
+   =========================================================================== */
+
+#define ANGLE_SRC_LO   0x0080u   /* point_delta_lo[0]  — the source element, copied in */
+#define ANGLE_SRC_HI   0x0081u   /* point_delta_lo[1] */
+#define ANGLE_TERM_LO  0x0082u   /* point_delta_lo[2]  — the car angle; bit 0 is its SIGN */
+#define ANGLE_TERM_HI  0x0083u   /* point_delta_hi[0] */
+#define ANGLE_SIGN     0x0079u   /* hypot_min_hi — here the sign (bit 7) and mode (bit 6) byte */
+#define MODEL_TERM     0x007Cu   /* point_dist_hi — the destination element index */
+#define MODEL_SRC_SLOT 0x007Fu   /* span_line_cursor — apply_angle_term_at's source element */
+#define MODEL_STATE_LO 0x62D0u   /* model_state_lo[0..14] */
+#define MODEL_STATE_HI 0x62E0u   /* model_state_hi[0..14] */
+#define CAR_ANGLE_LO   0x62A0u   /* car_angle_lo[0..2] */
+#define CAR_ANGLE_HI   0x62A3u   /* car_angle_hi[0..2] */
+
+/* ---------------------------------------------------------------------------
+   $0DD7  mul16_signed — THE SIGNED 16x16 MULTIPLY  (twin #50)
+   ---------------------------------------------------------------------------
+   Multiplies the source (ANGLE_SRC_HI:LO) by the car angle (ANGLE_TERM_HI:LO), keeping the
+   top 16 bits, and carries the sign in ANGLE_SIGN's bit 7 rather than in the value: the source
+   is made positive up front (flipping that bit), and bit 0 of the angle's LOW byte — which is
+   where car_angle keeps its sign — flips it again.  The tail falls into abs16_math, so the
+   sign is applied to the result on the way out.
+
+   ⚠ Its exit flags are `BIT ANGLE_SIGN`'s, not the arithmetic's: N = bit 7, V = bit 6, Z from
+   A AND ANGLE_SIGN — and then the negate's own flags on the negative path.  C is the last
+   ADC's and survives the BIT.
+   --------------------------------------------------------------------------- */
+static void mul16_signed_core(void)
+{
+    unsigned p1, p2, p3, mid, low, result;
+    uint8_t  angleLo = mem[ANGLE_TERM_LO], angleHi = mem[ANGLE_TERM_HI];
+    uint8_t  sourceLo, sourceHi;
+    int      carry;
+
+    /* $0DD7-$0DEC — |source|, with the sign recorded. */
+    if (mem[ANGLE_SRC_HI] & 0x80u) {
+        mem[ANGLE_SRC_LO] = (uint8_t)sub_from(0x00u, mem[ANGLE_SRC_LO]);
+        mem[ANGLE_SRC_HI] = (uint8_t)sbc_step(0x00u, mem[ANGLE_SRC_HI], cpu.C);
+        mem[ANGLE_SIGN]  ^= 0x80u;
+    }
+    /* $0DEE-$0DF8 — and the angle's own sign, which lives in bit 0 of its low byte. */
+    if (angleLo & 1u) mem[ANGLE_SIGN] ^= 0x80u;
+
+    sourceLo = mem[ANGLE_SRC_LO];
+    sourceHi = mem[ANGLE_SRC_HI];
+
+    /* $0DFA-$0E36 — three 8x8 products, accumulated.  The flags of the multiplies themselves
+       are all overwritten by the closing adds, so these go through the value-only entry. */
+    p1 = mul8_product(angleLo, sourceHi);
+    p2 = mul8_product(angleHi, sourceHi);
+    p3 = mul8_product(angleHi, sourceLo);
+
+    /* $0E05-$0E20 — the accumulation.  These adds' own flags are all overwritten before
+       anything reads them, so they go through adc_value; ⚠ but it is adc_value and not plain
+       C arithmetic, because decimal mode changes the RESULT byte of every one of them. */
+    { Adc r1 = adc_value((uint8_t)p1, 0x80u, 0);                       /* $0E05-$0E0A */
+      Adc r2 = adc_value((uint8_t)p2, (uint8_t)((p1 >> 8) + r1.carry), 0);  /* $0E17-$0E1C */
+      Adc r3;
+      low = r1.val;
+      mid = r2.val;
+      hypot_min_lo   = (uint8_t)((p2 >> 8) + r2.carry);   /* $78 — $0E15 then $0E1E's INC */
+      shared_temp_76 = (uint8_t)low;                      /* $0E0A */
+      shared_temp_77 = (uint8_t)mid;                      /* $0E1C */
+      math_hi        = (uint8_t)(p3 >> 8);                /* $0E2B */
+
+      /* $0E2D-$0E3A — the two closing adds.  Their C is the only flag of theirs that escapes,
+         and it is what decides whether $78 is INCed. */
+      r3      = adc_value((uint8_t)p3, (uint8_t)low, 0);
+      carry   = r3.carry;
+      math_lo = (uint8_t)adc_step((unsigned)math_hi, (uint8_t)mid, carry);
+      if (cpu.C) hypot_min_lo++;
+      result  = hypot_min_lo;
+      cpu.A   = (uint8_t)result; }
+
+    /* $0E3C-$0E3E — and the sign byte decides the exit flags AND whether to negate. */
+    BIT(mem[ANGLE_SIGN]);
+    abs16_math();
+}
+
+/* ---------------------------------------------------------------------------
+   $4753  scale16_by_y — |x| * Y >> 8, SIGN RESTORED  (twin #51)
+   ---------------------------------------------------------------------------
+   The model's scale operation: take the caller's 16-bit value in (A : math_lo), scale it by
+   the unsigned byte in Y, and give it its sign back.
+
+   ⚠ PHP/PLP, and both halves matter.  The sign is the CALLER's N — the same contract abs16_math
+   has — so it has to survive the multiply, and the 6502 parks it on the stack.  The push leaves
+   a byte in the stack page that the differential compares, so the pair is reproduced rather
+   than replaced by a saved C variable.
+   --------------------------------------------------------------------------- */
+static void scale16_by_y_core(uint8_t high, uint8_t scale)
+{
+    cpu.A = high;
+    PHP();                          /* $4753 — the caller's N, which is the value's sign */
+    abs16_math();                   /* $4754 */
+    shared_temp_76 = cpu.A;         /* $4757 */
+    math_hi        = scale;         /* $4759 */
+    mul8_accum_core();              /* $475B */
+    cpu.A = math_hi;                /* $475E — a value only: the LDA's own N/Z are dead here,
+                                       because the PLP on the next line overwrites them.  Proved
+                                       by sabotage: swapping these two lines passes 3000 cases,
+                                       while KEEPING the load's flags across the PLP fails. */
+    PLP();                          /* $4760 */
+    abs16_math();                   /* $4761 */
+}
+
+/* ---------------------------------------------------------------------------
+   $4765  mul16_by_1_5 — x + x/2, ARITHMETIC  (twin #52)
+   ---------------------------------------------------------------------------
+   (A : math_lo) = (math_hi : math_lo) * 1.5, with the halving SIGNED — the 6502 seeds the
+   rotate's carry from the value's own bit 7 instead of clearing it, which is a one-instruction
+   arithmetic shift right.  ⚠ PHA/PLA, so there is a stack residue here too.
+   --------------------------------------------------------------------------- */
+static void mul16_by_1_5_core(void)
+{
+    cpu.A = math_hi;                            /* $4765 */
+    cpu.C = (uint8_t)((cpu.A & 0x80u) != 0);    /* $4767-$476A — CLC, or SEC if negative */
+    ROR_A();                                    /* $476B */
+    PHA();                                      /* $476C */
+    /* $476D-$4773 — x/2 + x, and the ADD takes the ORIGINAL low byte, not the halved one. */
+    { uint8_t orig = math_lo;
+      cpu.A   = (uint8_t)ror_a(orig);
+      math_lo = (uint8_t)adc_step(cpu.A, orig, 0); }
+    PLA();                                            /* $4775 */
+    cpu.A = (uint8_t)adc_step(cpu.A, math_hi, cpu.C); /* $4776 */
+}
+
+/* ---------------------------------------------------------------------------
+   $47E5  model_integrate_element — ELEMENT X += ELEMENT 14  (twin #53)
+   ---------------------------------------------------------------------------
+   One 16-bit add over the state vector.  Element 14 is the per-frame delta the sub-models
+   above have been accumulating into, so this is the model's integration step; the two
+   rotations ($47A5/$47C5) each end with one.
+   --------------------------------------------------------------------------- */
+static void model_integrate_element_core(uint8_t slot)
+{
+    unsigned lo = adc_step(mem[MODEL_STATE_LO + slot], mem[MODEL_STATE_LO + 14], 0);
+    mem[MODEL_STATE_LO + slot] = (uint8_t)lo;
+    cpu.A = (uint8_t)adc_step(mem[MODEL_STATE_HI + slot], mem[MODEL_STATE_HI + 14], cpu.C);
+    mem[MODEL_STATE_HI + slot] = cpu.A;
+}
+
+/* ---------------------------------------------------------------------------
+   $48A0  add_signed_into_element — ELEMENT Y += ±(math_hi : math_lo)  (twin #54)
+   ---------------------------------------------------------------------------
+   ⚠⚠ IT BRANCHES ON THE CALLER'S N, like abs8 and abs16_math: a set N means "subtract this
+   instead", spelled as a negate followed by the same add.  A twin that tests bit 7 of anything
+   it can see is wrong, and a fixture that leaves N correlated with the value cannot tell.
+   --------------------------------------------------------------------------- */
+static void add_signed_into_element_core(uint8_t slot)
+{
+    unsigned lo;
+
+    if (!cpu.N) {                            /* $48A0 BMI — skip the negate */
+        neg16_math_noinit_core();            /* $48A2 */
+        math_hi = cpu.A;                     /* $48A5 */
+    }
+    lo = adc_step(mem[MODEL_STATE_LO + slot], math_lo, 0);      /* $48A7-$48AD */
+    mem[MODEL_STATE_LO + slot] = (uint8_t)lo;
+    cpu.A = (uint8_t)adc_step(mem[MODEL_STATE_HI + slot], math_hi, cpu.C);
+    mem[MODEL_STATE_HI + slot] = cpu.A;                        /* $48B0-$48B5 */
+}
+
+/* ---------------------------------------------------------------------------
+   $4874 / $486D  apply_angle_term — ONE STATE ELEMENT THROUGH ONE CAR ANGLE  (twins #55, #56)
+   ---------------------------------------------------------------------------
+   The model's rotation primitive: multiply state element `source` by car angle `angle` and
+   either STORE the product into element `dest` or ADD it there — bit 6 of ANGLE_SIGN, which
+   the caller sets along with the sign, is what chooses, and the add path is literally
+   add_signed_into_element's tail.
+
+   $486D is the same routine entered with the source element in MODEL_SRC_SLOT and A carrying
+   the sign/mode byte, which is what the two four-call rotations ($48B9, $48C1) use so they can
+   step source and destination independently.
+   --------------------------------------------------------------------------- */
+static void apply_angle_term_body(uint8_t angle, uint8_t source)
+{
+    mem[ANGLE_SRC_LO]  = mem[MODEL_STATE_LO + source];      /* $4876-$487E */
+    mem[ANGLE_SRC_HI]  = mem[MODEL_STATE_HI + source];
+    mem[ANGLE_TERM_LO] = mem[CAR_ANGLE_LO + angle];         /* $4880-$4888 */
+    mem[ANGLE_TERM_HI] = mem[CAR_ANGLE_HI + angle];
+
+    mul16_signed_core();                                    /* $488A */
+    math_hi = cpu.A;                                        /* $488D */
+
+    cpu.Y = mem[MODEL_TERM];                                /* $488F */
+    BIT(mem[ANGLE_SIGN]);                                   /* $4891 */
+    if (cpu.V) {                                            /* $4893 BVS — accumulate */
+        unsigned lo = adc_step(mem[MODEL_STATE_LO + cpu.Y], math_lo, 0);
+        mem[MODEL_STATE_LO + cpu.Y] = (uint8_t)lo;
+        cpu.A = (uint8_t)adc_step(mem[MODEL_STATE_HI + cpu.Y], math_hi, cpu.C);
+        mem[MODEL_STATE_HI + cpu.Y] = cpu.A;
+        return;
+    }
+    /* $4895-$489E — or replace it outright. */
+    cpu.A = (uint8_t)load_a(math_lo);
+    mem[MODEL_STATE_LO + cpu.Y] = cpu.A;
+    cpu.A = (uint8_t)load_a(math_hi);
+    mem[MODEL_STATE_HI + cpu.Y] = cpu.A;
+}
+
+static void apply_angle_term_core(uint8_t dest, uint8_t angle, uint8_t source)
+{
+    mem[MODEL_TERM] = dest;                     /* $4874 */
+    apply_angle_term_body(angle, source);
+}
+
+static void apply_angle_term_at_core(uint8_t mode, uint8_t angle)
+{
+    cpu.Y = mem[MODEL_SRC_SLOT];                /* $486D */
+    mem[ANGLE_SIGN] = mode;                     /* $486F */
+    apply_angle_term_body(angle, cpu.Y);        /* $4871 JMP $4876 */
+}
+
+/* ---------------------------------------------------------------------------
+   $0E50  kbd_test_key — IS THIS KEY DOWN?  (twin #57)
+   ---------------------------------------------------------------------------
+   OSBYTE 129 with a negative INKEY code in X and $FF in Y: the MOS answers in X, and the
+   routine's whole output is the CPX's Z — set when the key is not pressed.  Kept as a twin
+   because the driving model's starter poll goes through it, and because the MOS call has to
+   stay a MOS call.
+   --------------------------------------------------------------------------- */
+static void kbd_test_key_core(void)
+{
+    load_a(0x81u);                  /* $0E50 — OSBYTE 129, read a key with a time limit */
+    LDY(0xFFu);                     /* $0E52 */
+    platform_mos_call(0xFFF4);      /* $0E54 */
+    CPX(0xFFu);                     /* $0E57 — Z means "not pressed" */
+}
+
+/* The 6502-ABI shims. */
+void mul16_signed(void)          { mul16_signed_core(); }
+void scale16_by_y(void)          { scale16_by_y_core(cpu.A, cpu.Y); }
+void mul16_by_1_5(void)          { mul16_by_1_5_core(); }
+void model_integrate_element(void) { model_integrate_element_core(cpu.X); }
+void add_signed_into_element(void) { add_signed_into_element_core(cpu.Y); }
+void apply_angle_term(void)      { apply_angle_term_core(cpu.A, cpu.X, cpu.Y); }
+void apply_angle_term_at(void)   { apply_angle_term_at_core(cpu.A, cpu.X); }
+void kbd_test_key(void)          { kbd_test_key_core(); }

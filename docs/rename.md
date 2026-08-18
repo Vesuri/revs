@@ -17,6 +17,39 @@ row that says what is unsettled is worth more than a confident wrong name.  (The
 
 ---
 
+## The DRIVING MODEL's unnamed callees — six routines and six cells, all reached from `apply_driving_model`
+
+Opened 2026-08-18 while twinning that tree (twins #44-#57 took the multiply and the 16-bit
+arithmetic; the rotations, the sub-models and the slip/sound cluster are still transliterated).
+Each of these is about to be referenced by a hand-written twin, which is the last moment renaming
+is cheap.  ⚠ Everything here is a READING OF THE LISTING, not a measurement — the note beside each
+one says what would settle it.
+
+**Routines** (all still `FUN_*`, so the C twin cannot be written without deciding):
+
+| Address | What it does | Suggested | How to settle |
+|---|---|---|---|
+| `$4610` | `$75 = A`; `EOR $25` on `patch_byte_0[Y]` for a sign, `abs8`, `mul8`, then `abs8` again under the saved sign | `scale_section_byte` | it multiplies a PER-SECTION track byte by A — the same `$5400`/`$5500`/`$5600` question the entry below already has open |
+| `$4DC9` / `$4DCB` | halve `road_speed` into `$26` and `$28`, `INC drive_state`, `SEC ROR heading_step_lo`, then `sound_queue_default(4)` | `enter_spin_from_speed` / `enter_spin` | watch `drive_state` and the audio on the reference loop while provoking a spin: sound 4 should be the tyre squeal |
+| `$4B61` | `\|state[Y]\|` shifted left 5 with a `$7F` clamp, into `$8E`/`$8F` | `slip_magnitude` | it is check_wheel_slip's input; the clamp is the giveaway that it is a magnitude, not a coordinate |
+| `$4B47` | clamp `(math_hi:math_lo)` against `$8E`/`$8F`, re-sign it through `abs16_math`, store into `state[Y]+$0A`/`+$1A` | `store_slip_clamped` | — |
+| `$4B42` | `LDY pedal_mode; DEY; BEQ` → skip, else fall into `$4B47` | `store_slip_clamped_off_throttle` | the name only needs the polarity confirmed: `pedal_mode == 1` is the throttle |
+| `$4B88` | `X + 2` into `$78`, then either the slip magnitude of element 9 scaled by `grip_limit`, or (off the throttle) `gear_index - 1` and `$3D`; returns a carry | `derive_slip_reference` | its carry is what `check_wheel_slip` branches on — bracket it and see which arm a spin takes |
+| `$4AF7` | zeroes two elements, takes `$4B61`'s magnitude of element 8, flips the sign of `car_speed_hi`, then clamps through `$4B47`/`$4B88` | `settle_slip_state` | — |
+
+**Cells** the same twins have to name:
+
+* **`$0026` / `$0028`** — written together by `update_camera_and_drive_state` (`$44F5`-`$44F7`, both zeroed while driving normally) and by `enter_spin` (`road_speed/2` and `/4`); `$28` is added into the camera term at `$458A` and `$26` read at `$459F`/`$45B3`.  A spin's decaying camera shake is the obvious reading, and `$44EE`'s `DEC $28` twice per frame fits it.  ⇒ `spin_shake_a` / `spin_shake_b` [INFERRED] — settle by provoking a spin on the reference loop and watching which one drives the view.
+* **`$0009`** — `AND`ed with the User VIA timer in `update_engine_revs`' starter poll (`$498F`) and set to 7 beside `engine_running` at `$4995`; also written at `$1160` and `$187D`.  A randomness MASK, not a value.  ⇒ `starter_random_mask` [INFERRED].
+* **`$0022`** — an index: `LDX $22` then `LDY $0700,X` at `$452D`, and read the same way at `$11D4`/`$1F4E`/`$45DF`.  Whatever `$0700` is indexed BY (a car slot? a section?) is the question, and `$0700` has no row either.
+* **`$003D`** — written by `update_engine_revs`' tail (`$4A87`) beside `engine_note_target`, read by `update_camera_and_drive_state` (`$4506`) and `$4B88` (`$4BBA`).  ⇒ a second rev-derived term; name it once the engine model is a twin.
+* **`$62F0`** — `update_camera_and_drive_state` steps it by ±1 or ±2 and clamps it to `$FB..3` (`$44F9`-`$452A`), i.e. a small signed counter with hysteresis, driven by the pedals and the speed.  ⇒ `camera_pitch_bias` [INFERRED] — the reference loop settles it in one run: brake hard and watch the horizon.
+* **`$62FF`** — `damp_and_derive_loads` leaves `model_state_hi[7]` here (`$4866`-`$4869`) and `update_grip_limits` reads it as its load term (`$4BD5`).  ⇒ `wheel_load` [DERIVED from both ends].
+* **`$62FB`** — `BIT $62FB` (bit 7) gates the unprompted grip loss at `$4C1C`.  ⇒ a per-session "surfaces can change" flag; find its writer first.
+* ⚠ **`$008E`/`$008F` are `plot_ptr3_lo`/`_hi`, and `$4B61`/`$4B47` are a SECOND TENANT** — the same shape as the `point_delta` entry below.  The windows do not overlap (the road pass and the driving model run in different halves of the frame), but a twin that says `plot_ptr3_lo` while computing a slip magnitude is a lie; the twins use a file-local name and this is the note that says why.
+* ⚠ **`$0079`** is `hypot_min_hi` to the road pass and the SIGN/MODE byte to `mul16_signed` and `apply_angle_term` (bit 7 = negate the product, bit 6 = accumulate instead of store).  Same second-tenant problem, same treatment.
+
+
 ## `car_state_1` (`$0164,X`) / `car_state_2` (`$0178,X`) — which is ALONG and which is ACROSS
 
 The two per-driver quantities `place_player_in_section` computes, still named by address only, and

@@ -3045,6 +3045,107 @@ static int test_multiply(void)
     return fail;
 }
 
+/* ==========================================================================
+   TWINS #50-#57 — THE DRIVING MODEL'S 16-BIT ARITHMETIC
+   --------------------------------------------------------------------------
+   $0DD7 mul16_signed, $4753 scale16_by_y, $4765 mul16_by_1_5,
+   $47E5 model_integrate_element, $48A0 add_signed_into_element,
+   $4874 apply_angle_term, $486D apply_angle_term_at, $0E50 kbd_test_key.
+
+   ⚠⚠ TWO OF THESE BRANCH ON THE CALLER'S N, not on anything in mem[]: scale16_by_y (via
+   abs16_math, and it carries that N across the multiply on the STACK) and
+   add_signed_into_element, where a set N means "subtract".  Every case here therefore
+   randomises N INDEPENDENTLY of the value — a third of them deliberately decorrelated — which
+   is the trap abs8 and abs16_math already taught this harness.
+
+   ⚠ apply_angle_term's two paths are chosen by BIT 6 of the sign byte, and its element indices
+   are used as offsets into the 15-element state vector, so both are steered: a uniform byte
+   would index far outside the vector and compare two identical out-of-range walks.
+
+   ⭐ kbd_test_key reaches the MOS, so what it proves is that the twin makes the SAME call with
+   the same registers — the answer comes back from platform_mos_call in both models.
+   ========================================================================== */
+void mul16_signed(void);            void mul16_signed__t6502(void);
+void scale16_by_y(void);            void scale16_by_y__t6502(void);
+void mul16_by_1_5(void);            void mul16_by_1_5__t6502(void);
+void model_integrate_element(void);  void model_integrate_element__t6502(void);
+void add_signed_into_element(void);  void add_signed_into_element__t6502(void);
+void apply_angle_term(void);        void apply_angle_term__t6502(void);
+void apply_angle_term_at(void);     void apply_angle_term_at__t6502(void);
+void kbd_test_key(void);            void kbd_test_key__t6502(void);
+
+#define PRE_ANGLE_SRC_LO  0x0080
+#define PRE_ANGLE_TERM_LO 0x0082
+#define PRE_ANGLE_SIGN    0x0079
+#define PRE_MODEL_TERM    0x007C
+#define PRE_MODEL_SRC     0x007F
+
+static int test_model_arithmetic(void)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    int fail = 0, printed = 0, t, i;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+
+    struct { const char* name; void (*nat)(void); void (*ref)(void); int cases; }
+      list[8] = {
+        { "mul16_signed",           mul16_signed,           mul16_signed__t6502,           4000 },
+        { "scale16_by_y",           scale16_by_y,           scale16_by_y__t6502,           3000 },
+        { "mul16_by_1_5",           mul16_by_1_5,           mul16_by_1_5__t6502,           2000 },
+        { "model_integrate_element", model_integrate_element, model_integrate_element__t6502, 1000 },
+        { "add_signed_into_element", add_signed_into_element, add_signed_into_element__t6502, 2000 },
+        { "apply_angle_term",       apply_angle_term,       apply_angle_term__t6502,       2000 },
+        { "apply_angle_term_at",    apply_angle_term_at,    apply_angle_term_at__t6502,    2000 },
+        { "kbd_test_key",           kbd_test_key,           kbd_test_key__t6502,            500 },
+      };
+    for (i = 0; i < 8; i++) register_fixture(list[i].name);
+
+    for (i = 0; i < 8; i++) {
+        int subFail = 0, decimal = 0, decorrelated = 0, negative = 0, accumulate = 0;
+        int cases = list[i].cases * scale;
+        if (!want(list[i].name)) continue;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            /* Element indices, into a 15-element vector; the angle index picks one of three. */
+            c.X = (uint8_t)(xs() % 3);
+            c.Y = (uint8_t)(xs() % 15);
+            c.A = (uint8_t)(xs() % 15);
+            pre[PRE_MODEL_TERM] = (uint8_t)(xs() % 15);
+            pre[PRE_MODEL_SRC]  = (uint8_t)(xs() % 15);
+            /* Bit 7 is the sign, bit 6 chooses store-vs-accumulate: both worth splitting. */
+            pre[PRE_ANGLE_SIGN] = (uint8_t)(xs() & 0xC0);
+            if (pre[PRE_ANGLE_SIGN] & 0x40) accumulate++;
+            /* ⚠ N is randomised INDEPENDENTLY of the value a third of the time — the two
+               routines that branch on the caller's N are the whole reason for this fixture. */
+            c.N = (xs() % 3) ? (uint8_t)(pre[0x0075] >> 7) : (uint8_t)(xs() & 1);
+            if (c.N != (pre[0x0075] >> 7)) decorrelated++;
+            if (c.N) negative++;
+            c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = (uint8_t)(xs() % 4 == 0);
+            if (c.D) decimal++;
+            /* scale16_by_y and mul16_by_1_5 want A and Y as the value/scale, not indices. */
+            if (i == 1 || i == 2) { c.A = (uint8_t)xs(); c.Y = (uint8_t)xs(); }
+            if (i == 7) { c.X = (uint8_t)(0x80 | (xs() & 0x7F)); c.D = 0; }
+            subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
+                                liveMask, t, &printed);
+        }
+        fail += subFail;
+        if (!decimal || !decorrelated || !negative) {
+            printf("[VACUOUS] %s: %d decimal, %d decorrelated N, %d negative\n",
+                   list[i].name, decimal, decorrelated, negative);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d decimal, %d N decorrelated, %d negative, %d accumulate)\n",
+               list[i].name, cases, subFail, decimal, decorrelated, negative, accumulate);
+    }
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -3069,6 +3170,7 @@ int main(int argc, char** argv)
     fail += test_road_pass();
     fail += test_seam_callees();
     fail += test_multiply();
+    fail += test_model_arithmetic();
 
     fail += check_coverage();
     fail += report_unvalidated_natives();

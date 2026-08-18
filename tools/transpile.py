@@ -731,6 +731,25 @@ VALIDATE_FUNCS = {
     0x0DB3,
     0x0E42,
     0x0E44,
+    # ⭐⭐ TWINS #50-#57 — the driving model's 16-BIT ARITHMETIC layer, everything between the
+    # multiply and the sub-models.
+    #   $0DD7 mul16_signed           (105 B) 16x16 -> 16, sign carried in a byte.  THREE `MULU.W`s
+    #   $4753 scale16_by_y           ( 18 B) |x| * Y >> 8, sign restored — PHP/PLP
+    #   $4765 mul16_by_1_5           ( 20 B) x * 1.5, signed halving — PHA/PLA
+    #   $47E5 model_integrate_element(  8 B) element X += element 14
+    #   $48A0 add_signed_into_element( 25 B) element Y += ±the accumulator (branches on the
+    #                                        CALLER's N, like abs8/abs16_math)
+    #   $4874 apply_angle_term       ( 44 B) element x car angle -> element, store or accumulate
+    #   $486D apply_angle_term_at    (  7 B) ...with the source element taken from $7F
+    #   $0E50 kbd_test_key           ( 10 B) OSBYTE 129 on one negative INKEY code
+    0x0DD7,
+    0x4753,
+    0x4765,
+    0x47E5,
+    0x48A0,
+    0x4874,
+    0x486D,
+    0x0E50,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
