@@ -3615,6 +3615,232 @@ static int test_sub_models(void)
     return fail;
 }
 
+
+/* ==========================================================================
+   TWINS #87-#92 — THE ROAD SIGN AND THE OBJECT SLOT WRITER
+   --------------------------------------------------------------------------
+   $4CA4 build_road_sign, $4D21 build_sign_origin, $2A76 write_object_slot,
+   $2AA6 reject_object_slot, $2AAD store_object_flags, $2AB3 note_object_contact.
+
+   ⚠⚠ FIVE PER-CIRCUIT SMC SITES, and they are the whole reason this fixture is steered.
+   build_road_sign's five table loads ($4CC0 $4CC8 $4CD0 $4CD6 $4CE0) are `LDA abs,X` whose
+   OPERANDS every circuit rewrites, so a random pre-state traps at the first one 255 times in 256
+   and the routine's whole body — three build_sign_origin calls, the bearing, the projection and
+   the slot write — is never reached.  Nine cases in ten therefore force Silverstone's own bytes;
+   the tenth is left random on purpose, because diff_run compares the SMC trap as its own channel
+   and a twin that trapped at a different site would otherwise pass.
+
+   ⭐ AND FOUR MORE STEERED INPUTS, each of which gates an arm:
+
+     player_car ($6F)      0..19, so car_segment and the page-1 arrays are indexed in range.
+     sign_last_index ($62F9)  forced EQUAL to the segment's own sign nibble in half the cases.
+                           That is $4CB5's `BNE` — the arm where an unchanged segment shows the
+                           NEXT sign — and a random byte reaches it one time in sixteen.
+     shared_temp_77 ($77)  0..2 for build_sign_origin standalone: it is the component cursor,
+                           and a random byte would index view_origin hundreds of bytes past its
+                           three components (identically in both models, proving nothing).
+     proj_width_shift ($2B)  $05..$12 in half the cases.  write_object_slot shifts by
+                           proj_width_shift - $0A, so this is what makes BOTH directions of the
+                           exponent correction run; outside that window every case shifts to 0.
+
+   The counters below assert each of those actually happened.
+   ========================================================================== */
+void build_road_sign(void);       void build_road_sign__t6502(void);
+void build_sign_origin(void);     void build_sign_origin__t6502(void);
+void write_object_slot(void);     void write_object_slot__t6502(void);
+void reject_object_slot(void);    void reject_object_slot__t6502(void);
+void store_object_flags(void);    void store_object_flags__t6502(void);
+void note_object_contact(void);   void note_object_contact__t6502(void);
+
+#define PRE_SIGN_LAST      0x62F9
+#define PRE_SHARED_77      0x0077
+#define PRE_PROJ_W_SHIFT   0x002B
+#define PRE_SLOT_COUNTER   0x0042
+#define PRE_CAR_SEGMENT    0x06E8
+#define PRE_TRACK_SEG_HI   0x5300
+
+/* Silverstone's own bytes at the five per-circuit sites — the unpatched shape. */
+static void force_sign_smc(uint8_t* pre)
+{
+    static const struct { uint16_t site; uint8_t lo, hi; } SITES[5] = {
+        { 0x4CC0, 0xE0, 0x53 },   /* sign_offset_2 */
+        { 0x4CC8, 0xF0, 0x53 },   /* sign_offset_1 */
+        { 0x4CD0, 0xD0, 0x53 },   /* sign_offset_0 */
+        { 0x4CD6, 0xEA, 0x59 },   /* sign_shape_segment — the shape nibble */
+        { 0x4CE0, 0xEA, 0x59 },   /* ...and the segment field */
+    };
+    int i;
+    for (i = 0; i < 5; i++) {
+        pre[SITES[i].site]     = 0xBD;
+        pre[SITES[i].site + 1] = SITES[i].lo;
+        pre[SITES[i].site + 2] = SITES[i].hi;
+    }
+}
+
+/* ⭐⭐ A SIGN THAT IS ACTUALLY CLOSE, and without it build_road_sign's CONTACT THRESHOLD is
+   dead code.  On a random pre-state the sign's distance is more than $FF away in essentially
+   every case, so note_object_contact returns at its first test and neither $25 nor $50 is ever
+   compared with anything — the sabotage "the wide threshold is $25 as well" survived 4000 cases.
+   This forces a distance of exactly $30, which is over $25 and under $50, so the two arms
+   DISAGREE:
+     * the sign's three offsets are 0, which makes view origin 6 the camera itself;
+     * its table byte is $08 — segment byte 8, shape 0;
+     * that segment's coordinate triple is the camera's own, plus $30 on component 0 and
+       nothing on component 2, so point_distance_hypot's near arm returns 0 + $30.
+   Both candidate sign numbers are prepared, because $4CB5 picks between them.
+   ⚠ Only valid on a case whose five SMC sites hold Silverstone's bases (force_sign_smc). */
+static void force_near_sign(uint8_t* pre)
+{
+    uint8_t  pc  = pre[PRE_PLAYER_CAR];
+    uint8_t  seg = pre[PRE_CAR_SEGMENT + pc];
+    uint8_t  n0  = (uint8_t)(pre[PRE_TRACK_SEG_HI + seg] >> 4);
+    unsigned cam0, cam2, pt0;
+    int k;
+
+    for (k = 0; k < 2; k++) {
+        uint8_t idx = (uint8_t)((n0 + k) & 0x0F);
+        pre[0x53D0 + idx] = 0;          /* sign_offset_0 */
+        pre[0x53E0 + idx] = 0;          /* sign_offset_2 */
+        pre[0x53F0 + idx] = 0;          /* sign_offset_1 */
+        pre[0x59EA + idx] = 0x08;       /* sign_shape_segment: segment byte 8, shape 0 */
+    }
+    cam0 = (unsigned)pre[0x6280] | ((unsigned)pre[0x6283] << 8);
+    cam2 = (unsigned)pre[0x6282] | ((unsigned)pre[0x6285] << 8);
+    pt0  = (cam0 + 0x30u) & 0xFFFFu;
+    pre[0x5909] = (uint8_t)pt0;         pre[0x5309] = (uint8_t)(pt0 >> 8);
+    pre[0x590A] = pre[0x6281];          pre[0x530A] = pre[0x6284];
+    pre[0x590B] = (uint8_t)cam2;        pre[0x530B] = (uint8_t)(cam2 >> 8);
+}
+
+static int test_road_sign(void)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    int fail = 0, printed = 0, t, i;
+    int scale = 1;
+    unsigned long smcTraps;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+
+    struct { const char* name; void (*nat)(void); void (*ref)(void); int cases; }
+      list[6] = {
+        { "store_object_flags",  store_object_flags,  store_object_flags__t6502,   1000 },
+        { "reject_object_slot",  reject_object_slot,  reject_object_slot__t6502,   1000 },
+        { "note_object_contact", note_object_contact, note_object_contact__t6502,  3000 },
+        { "build_sign_origin",   build_sign_origin,   build_sign_origin__t6502,    3000 },
+        { "write_object_slot",   write_object_slot,   write_object_slot__t6502,    4000 },
+        { "build_road_sign",     build_road_sign,     build_road_sign__t6502,      4000 },
+      };
+    for (i = 0; i < 6; i++) register_fixture(list[i].name);
+
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+    g_smcUnhandled = 0;
+
+    for (i = 0; i < 6; i++) {
+        int subFail = 0, decimal = 0, patched = 0, sameSign = 0, shiftBoth = 0;
+        int rejectC = 0, rejectLine = 0, accepted = 0, contact = 0, wideThresh = 0;
+        int cases = list[i].cases * scale;
+        if (!want(list[i].name)) continue;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.A = (uint8_t)xs();
+            c.X = (uint8_t)xs();
+            c.Y = (uint8_t)xs();
+            pre[PRE_PLAYER_CAR]   = (uint8_t)(xs() % 20);
+            pre[PRE_SLOT_COUNTER] = (uint8_t)(xs() % 24);   /* a real object slot */
+
+            /* The five SMC sites: nine in ten unpatched, the tenth left random. */
+            if (xs() % 10) force_sign_smc(pre);
+            else           patched++;
+
+            /* $4CB5's equal arm — the sign that has not changed since last frame. */
+            if (xs() & 1) {
+                uint8_t seg = pre[PRE_CAR_SEGMENT + pre[PRE_PLAYER_CAR]];
+                pre[PRE_SIGN_LAST] = (uint8_t)(pre[PRE_TRACK_SEG_HI + seg] >> 4);
+                sameSign++;
+            }
+
+            /* build_sign_origin's component cursor, and its shift in Y. */
+            pre[PRE_SHARED_77] = (uint8_t)(xs() % 3);
+            if (i == 3) {
+                unsigned pick = xs() % 4;
+                c.Y = (uint8_t)(pick == 0 ? 2 : pick == 1 ? 4 : pick == 2 ? 0 : (xs() & 7));
+            }
+
+            /* write_object_slot's exponent window, and its two reject arms. */
+            if (xs() & 1) { pre[PRE_PROJ_W_SHIFT] = (uint8_t)(0x05 + xs() % 14); shiftBoth++; }
+            if (i == 4) {
+                unsigned pick = xs() % 4;
+                if (pick == 0)      { c.C = 1; rejectC++; }
+                else if (pick == 1) { c.C = 0; c.A = 0;   rejectLine++; }
+                else                { c.C = 0; c.A = (uint8_t)(1 + xs() % 255); accepted++; }
+            }
+
+            /* note_object_contact: a threshold that the distance can actually be under.  The
+               two magnitudes are random, so most cases are far away; a sixth are forced close. */
+            if (i == 2) {
+                c.Y = (uint8_t)xs();
+                if (xs() % 6 == 0) {
+                    pre[0x0078] = (uint8_t)xs(); pre[0x0079] = 0;   /* hypot_min */
+                    pre[0x007A] = (uint8_t)(xs() & 0x1F); pre[0x007B] = 0;  /* hypot_max */
+                    contact++;
+                }
+            }
+            /* build_road_sign: half the cases get a sign $30 away — see force_near_sign. */
+            if (i == 5 && pre[0x4CC0] == 0xBD && (xs() & 1)) {
+                force_near_sign(pre);
+                pre[0x000B] = (uint8_t)xs();   /* car_heading_hi picks which threshold applies */
+                wideThresh++;
+            }
+
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = (i == 4) ? c.C : (xs() & 1);
+            c.D = (uint8_t)(xs() % 4 == 0);
+            if (c.D) decimal++;
+            subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
+                                liveMask, t, &printed);
+        }
+        fail += subFail;
+        if (!decimal || !patched || !sameSign || !shiftBoth) {
+            printf("[VACUOUS] %s: %d decimal, %d SMC-random, %d same sign, %d shift window\n",
+                   list[i].name, decimal, patched, sameSign, shiftBoth);
+            fail++;
+        }
+        if (i == 4 && (!rejectC || !rejectLine || !accepted)) {
+            printf("[VACUOUS] write_object_slot: %d carry rejects, %d line rejects, %d accepted\n",
+                   rejectC, rejectLine, accepted);
+            fail++;
+        }
+        if (i == 2 && !contact) {
+            printf("[VACUOUS] note_object_contact: no forced-close case\n");
+            fail++;
+        }
+        if (i == 5 && !wideThresh) {
+            printf("[VACUOUS] build_road_sign: no near-sign case — the contact threshold "
+                   "was never compared with anything\n");
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d decimal, %d SMC-random, %d same sign, %d shift window%s)\n",
+               list[i].name, cases, subFail, decimal, patched, sameSign, shiftBoth,
+               i == 4 ? ", both reject arms" : (i == 2 ? ", close cases forced" :
+               (i == 5 ? ", near signs forced" : "")));
+    }
+
+    smcTraps = g_smcUnhandled;
+    unsetenv("REVS_SMC_CONTINUE");
+    if (want("build_road_sign")) {
+        if (smcTraps == 0) {
+            printf("[VACUOUS] build_road_sign: no SMC trap over the whole run — the five "
+                   "per-circuit table sites were never exercised on an unknown shape\n");
+            fail++;
+        }
+        printf("%-32s %7lu SMC traps at the five sign-table sites (must be > 0)\n",
+               "road sign", smcTraps);
+    }
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -3643,6 +3869,7 @@ int main(int argc, char** argv)
     fail += test_model_rotations();
     fail += test_slip_and_sound();
     fail += test_sub_models();
+    fail += test_road_sign();
 
     fail += check_coverage();
     fail += report_unvalidated_natives();

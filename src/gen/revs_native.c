@@ -7060,3 +7060,348 @@ void apply_drag_terms(void)              { apply_drag_terms_core(); }
 void update_grip_limits(void)            { update_grip_limits_core(); }
 void update_engine_revs(void)            { update_engine_revs_core(); }
 void update_camera_and_drive_state(void) { update_camera_and_drive_state_core(); }
+
+/* ===========================================================================
+   TWINS #87-#92 — THE ROAD SIGN, and the OBJECT SLOT WRITER underneath it
+   ---------------------------------------------------------------------------
+   The first of the three trees the campaign has left, and the smallest: six C functions,
+   252 bytes of 6502, with every arithmetic leaf underneath them already a twin (#11-#24).
+
+     $4CA4 build_road_sign       the body's 14th call — one sign into object slot $17
+     $4D21 build_sign_origin     one component of the sign's own view origin
+     $2A76 write_object_slot     THE object-slot writer, shared with the car projector
+     $2AA6 reject_object_slot    ...and its reject arm, which marks the slot empty
+     $2AAD store_object_flags    the one store both arms end on
+     $2AB3 note_object_contact   "is this object close enough to be a collision candidate?"
+
+   ⭐⭐ WHAT THE GROUP MADE LEGIBLE — four things, in the order they surprised:
+
+   1. A ROAD SIGN IS PROJECTED FROM ITS OWN VIEWPOINT, NOT THE CAMERA'S.  view_origin has a
+      stride of six because there are two origins, and build_sign_origin is the only writer of
+      the second: for each of the three components it takes the sign's own signed offset byte,
+      scales it up (x64 for the two ground-plane components, x16 for the height) and SUBTRACTS
+      it from the camera's component.  bearing_to_section and project_point then run with Y = 6,
+      and every other caller in the engine uses Y = 0 — which is what the two entry points of
+      each of those routines are FOR.
+   2. THE SIGN TABLES ARE FOUR ROWS OF SIXTEEN, and they sit in the gaps of the two track
+      pages.  sign_offset_0/_1/_2 are $53D0/$53F0/$53E0 — the tail of track_segment_hi, past
+      the last segment record — and sign_shape_segment is $59EA, which lands exactly between
+      segment_data and segment_count_x8.  Silverstone's own bytes prove the layout: the sixteen
+      $59EA entries are ASCENDING segment indices ($03 $10 $19 $2C … $B8) once the low three
+      bits are masked off, and sign_offset_1 is $08 in nine of sixteen entries — the signs are
+      all at about the same height.
+   3. ⚠⚠ ALL FIVE OF THOSE LOADS ARE PER-CIRCUIT SMC ($4CC0 $4CC8 $4CD0 $4CD6 $4CE0, one
+      extent each in `make track-smc`).  The opcode stays `LDA abs,X`; each circuit's
+      ModifyGameCode rewrites the two operand bytes, so the twin reads the table base out of
+      mem[] every time and cannot bake $53D0 in.  What it CAN do is hoist the hardware-window
+      test to the base instead of paying it per byte — the transliteration routes all five
+      through bus_read.
+   4. THE SIGN ADVANCES BY WALKING OFF THE SIDE OF THE VIEW.  The sign to show is the high
+      nibble of the player's own segment record, and $4CB2 compares it with the one shown last
+      frame: on a match the number is INCREMENTED (`ADC #0` with the CMP's carry, then masked to
+      a nibble), so an unchanged segment shows the NEXT sign.  Which one sticks is decided at
+      the other end of the routine — sign_last_index is only updated once the sign's bearing is
+      more than $40 away from where the car is pointing, i.e. once it has left the view.
+
+   ⭐ AND ONE THING THE GROUP CORRECTED.  object_width's symbols.csv row said "shifted by
+   proj_width_shift - $09 places"; the `DEX` at $2A8A makes it - $0A, and the sign of that
+   difference is the direction.  Fixed in the same commit.
+
+   No hardware writes anywhere in the group: signs live entirely in RAM.
+   =========================================================================== */
+
+#define VIEW_ORIGIN_STRIDE   0x06u     /* view_origin_lo/_hi: origin 0 = camera, 6 = the sign */
+#define SIGN_OFFSET_2_SITE   0x4CC0u   /* the `LDA sign_offset_2,X` whose operand a circuit */
+#define SIGN_OFFSET_1_SITE   0x4CC8u   /* ...rewrites.  ⚠ The engine loads component 2 first, */
+#define SIGN_OFFSET_0_SITE   0x4CD0u   /* ...then 1, then 0 — the order the sites are in. */
+#define SIGN_SHAPE_SITE      0x4CD6u   /* `LDA sign_shape_segment,X` for the SHAPE nibble */
+#define SIGN_SEGMENT_SITE    0x4CE0u   /* ...and again for the SEGMENT the sign is anchored to */
+#define SIGN_SLOT            0x17u     /* the object slot every sign is built into */
+#define SIGN_SCRATCH_SECTION 0xFDu     /* the live-section slot its coordinate triple goes to */
+
+/* One of the five per-circuit table loads.  The opcode is `LDA abs,X` on every circuit
+   (`make track-smc`: `sig:0,BD@1,2`), so only the base varies — and the hardware-window test
+   goes on the BASE, once, instead of on every byte the way bus_read does.  Sets *trapped when
+   the byte at the site is not that opcode at all, which is the same hard trap the
+   transliteration takes, and the caller must then return without touching A. */
+static uint8_t sign_table_byte(uint16_t site, uint8_t index, int* trapped)
+{
+    uint16_t base;
+
+    if (mem[site] != 0xBDu) {                  /* not `LDA abs,X` — a shape we cannot execute */
+        platform_smc_unhandled(site, mem[site]);
+        *trapped = 1;
+        return 0;
+    }
+    base = (uint16_t)(mem[site + 1] | ((unsigned)mem[site + 2] << 8));
+    return seam_read((unsigned)(uint16_t)(base + index), pointer_is_ram(base));
+}
+
+/* ---------------------------------------------------------------------------
+   $4D21  build_sign_origin — ONE COMPONENT OF THE SIGN'S VIEWPOINT  (twin #88)
+   ---------------------------------------------------------------------------
+   view_origin[6 + c] = view_origin[c] - (signed `offset` << (8 - shift)).
+
+   The 6502 spells that as a 24-bit logical shift: the sign extension in shared_temp_76, the
+   value in A and a zero low byte in math_lo, shifted right `shift` times by LSR/ROR/ROR.  For
+   any shift under 9 — and the three call sites pass 2, 4 and 2 — the middle and low bytes are
+   exactly the signed 16-bit `offset x 256` shifted arithmetically, which is what the routine is
+   computing; the top byte only supplies the sign bits.  ⭐ THE TWIN DOES IT IN ONE SHIFT, which
+   is this group's only algorithmic compression.
+
+   ⚠ `shift` ARRIVING AS 0 MEANS 256, not "no shift": the DEY is at the BOTTOM of the loop.
+   Reproduced (the result is then 0) rather than special-cased away.
+
+   The component index is shared_temp_77, which the caller seeds and this routine DECs — so
+   three calls walk components 2, 1, 0.  math_lo, math_hi and shared_temp_76 are left as
+   scratch, and the second subtract's flags are the routine's exit flags.
+   --------------------------------------------------------------------------- */
+static void build_sign_origin_core(uint8_t offset, uint8_t shift)
+{
+    uint32_t staged;
+    unsigned places;
+    uint8_t  component;
+
+    /* $4D21-$4D2B — (sign : value : 0), the sign taken from the PLA's own N.  ⚠ THE PUSH IS
+       REAL OUTPUT: the byte PHA leaves at $0100+S survives the PLA and a mem[] differential
+       sees it, so the twin stages A across the two zeroing stores the same way rather than
+       keeping it in a local. */
+    cpu.A = offset;
+    PHA();
+    math_lo        = 0x00u;
+    shared_temp_76 = 0x00u;
+    PLA();
+    staged = ((uint32_t)cpu.A << 8);
+    if (cpu.N) { staged |= 0xFF0000u; shared_temp_76 = 0xFFu; }
+
+    /* $4D2D-$4D33 — LSR / ROR / ROR, `shift` times, feeding zeros in at the top. */
+    places = shift ? shift : 256u;
+    staged = (places >= 24u) ? 0u : (staged >> places);
+    shared_temp_76 = (uint8_t)(staged >> 16);             /* the loop shifts it too */
+    math_lo        = (uint8_t)staged;
+    math_hi        = (uint8_t)(staged >> 8);              /* $4D35 */
+
+    /* $4D37-$4D4C — subtract it from the camera's own component, into origin 6. */
+    component = shared_temp_77;
+    LDY(component);
+    DEC_M(MEM_shared_temp_77);
+    LDA(mem[VIEW_ORIGIN_LO + component]);
+    cpu.A = (uint8_t)sub_from(cpu.A, math_lo);
+    mem[VIEW_ORIGIN_LO + VIEW_ORIGIN_STRIDE + component] = cpu.A;
+    LDA(mem[VIEW_ORIGIN_HI + component]);
+    cpu.A = (uint8_t)sbc_step(cpu.A, math_hi, cpu.C);
+    mem[VIEW_ORIGIN_HI + VIEW_ORIGIN_STRIDE + component] = cpu.A;
+}
+
+/* ---------------------------------------------------------------------------
+   $2AB3  note_object_contact — IS THIS OBJECT A COLLISION CANDIDATE?  (twin #92)
+   ---------------------------------------------------------------------------
+   Runs point_distance_hypot for the point just transformed and, if the distance fits in a byte
+   AND is at or under the caller's threshold in Y, records the object as THE frame's contact
+   candidate: contact_pending goes non-zero, contact_distance takes the distance and
+   contact_slot the slot number.  process_car_contact is the consumer — it clears the flag,
+   scales the impact as ($25 - contact_distance) x 2 and takes the car from contact_slot.
+
+   ⭐ ONE CANDIDATE PER FRAME, LAST WRITER WINS, and the threshold is the caller's business:
+   the car projector enters at $2AB1 with a fixed $25, while build_road_sign picks $25 or $50 on
+   how far off-heading the sign is.  ⚠ contact_pending is DECremented, not set — so a frame in
+   which two objects qualify leaves it at $FE, and process_car_contact's test is `non-zero`.
+
+   object_dist_hi is written unconditionally, before either test, and $29FB is its only reader.
+   --------------------------------------------------------------------------- */
+static void note_object_contact_core(uint8_t threshold)
+{
+    point_distance_hypot_apply();                        /* $2AB3 */
+
+    cpu.Y = threshold;                                   /* Y is the caller's, not reloaded */
+    object_dist_hi = (uint8_t)load_a(point_dist_hi);     /* $2AB6-$2AB8 */
+    if (!cpu.Z) return;                                  /* further away than $FF */
+
+    CPY(point_dist_lo);                                  /* $2ABC */
+    if (!cpu.C) return;                                  /* ...or further than the threshold */
+
+    DEC_M(MEM_contact_pending);                          /* $2AC0 */
+    contact_distance = point_dist_lo;                    /* $2AC2-$2AC4 */
+    contact_slot     = (uint8_t)load_a(shared_counter_42);      /* $2AC6-$2AC8 */
+}
+
+/* ---------------------------------------------------------------------------
+   $2A76  write_object_slot — THE PROJECTION'S RESULT INTO AN OBJECT SLOT  (twin #89)
+   $2AA6  reject_object_slot                                               (twin #90)
+   $2AAD  store_object_flags                                               (twin #91)
+   ---------------------------------------------------------------------------
+   Entered straight off project_point with the projected scan line in A and its carry in C, and
+   the slot number in shared_counter_42.  Three fields land: object_line (the line, less one),
+   object_width (the apparent width, rescaled) and the low nibble of car_flags_shape (the
+   shape).  Bit 7 of car_flags_shape is the SLOT-EMPTY mark, and the reject arm is the only
+   thing that sets it — draw_track_object reads exactly that bit to skip a slot.
+
+   ⭐ THE WIDTH RESCALE IS AN EXPONENT CORRECTION.  project_point leaves a mantissa in
+   proj_width and the number of places it had to shift to normalise in proj_width_shift; the
+   slot wants the value at a fixed scale, so this shifts it by proj_width_shift - $0A places,
+   LEFT when that is positive and RIGHT when it is negative.  ⚠ Both loops test X at the BOTTOM,
+   so an exponent outside +-8 walks up to 255 places and lands on 0 — reproduced, not clamped.
+
+   ⚠ Two rejects, and they are NOT the same test: C set out of project_point (the point is
+   behind the near clip) rejects, and so does a projected line of 0, because the `SBC #1` then
+   goes negative.  Everything else is drawn.
+   --------------------------------------------------------------------------- */
+static void store_object_flags_core(void)
+{
+    mem[CAR_FLAGS_SHAPE + cpu.Y] = cpu.A;                /* $2AAD */
+}
+
+static void reject_object_slot_core(void)
+{
+    LDY(shared_counter_42);                              /* $2AA6 */
+    LDA(mem[CAR_FLAGS_SHAPE + cpu.Y]);
+    ORA(0x80u);                                          /* the slot-empty mark */
+    store_object_flags_core();
+}
+
+static void write_object_slot_core(uint8_t projectedLine, int behindNearClip)
+{
+    unsigned width;
+    int      places;
+
+    LDY(shared_counter_42);                              /* $2A76 */
+    if (behindNearClip) { reject_object_slot_core(); return; }      /* $2A78 BCS */
+
+    cpu.A = (uint8_t)sub_from(projectedLine, 0x01u);     /* $2A7A-$2A7B */
+    if (cpu.N) { reject_object_slot_core(); return; }    /* $2A7D BMI */
+    mem[OBJECT_LINE + cpu.Y] = cpu.A;                    /* $2A7F */
+
+    /* $2A82-$2A99 — the exponent correction.  X carries the count and its own sign picks the
+       direction, which is why the twin keeps it in a signed int; both loops end with X at 0. */
+    cpu.A  = (uint8_t)sub_from(proj_width_shift, 0x09u);
+    TAX();
+    width  = load_a(proj_width);                         /* $2A88 — its N/Z die at the DEX */
+    DEX();
+    places = (int)(int8_t)cpu.X;
+    /* ⚠ EACH LOOP'S LAST SHIFT LEAVES ITS BIT IN C, AND THAT C IS THE ROUTINE'S EXIT C —
+       nothing between here and the RTS writes it.  The twin replays that one bit from the
+       count instead of running the shift a bit at a time, which is where 698 of 4000 cases
+       failed the first time round. */
+    if (places < 0) {                                    /* $2A8F — LSR A / INX */
+        unsigned n = (unsigned)(uint8_t)(-places);
+        cpu.C = (uint8_t)((n <= 8u) ? ((width >> (n - 1u)) & 1u) : 0u);
+        width = (n >= 8u) ? 0u : (width >> n);
+        cpu.X = 0;
+    } else if (places > 0) {                             /* $2A95 — ASL A / DEX */
+        unsigned n = (unsigned)places;
+        cpu.C = (uint8_t)((n <= 8u) ? ((width >> (8u - n)) & 1u) : 0u);
+        width = (n >= 8u) ? 0u : (uint8_t)(width << n);
+        cpu.X = 0;
+    }
+    cpu.A = (uint8_t)width;
+    mem[OBJECT_WIDTH + cpu.Y] = cpu.A;                   /* $2A99 */
+
+    LDA(mem[CAR_FLAGS_SHAPE + cpu.Y]);                   /* $2A9C */
+    AND(0x70u);                                          /* the flag bits that survive */
+    ORA(plot_shape);
+    store_object_flags_core();                           /* $2AA3 JMP */
+}
+
+/* ---------------------------------------------------------------------------
+   $4CA4  build_road_sign — ONE SIGN INTO OBJECT SLOT $17  (twin #87)
+   ---------------------------------------------------------------------------
+   The body's 14th call, and the body's 15th (draw_track_object) draws what it leaves.  In
+   order: pick the sign, build its viewpoint, take its shape and its anchor segment, bear and
+   project it from that viewpoint, and write the slot.
+   --------------------------------------------------------------------------- */
+static void build_road_sign_core(void)
+{
+    int     trapped = 0;
+    uint8_t signIndex, tableByte, threshold;
+
+    /* $4CA4-$4CBB — which sign.  The player's segment record carries it in its high nibble;
+       an unchanged segment shows the NEXT sign (see the group header, item 4). */
+    LDX(player_car);
+    LDY(mem[CAR_SEGMENT_TBL + cpu.X]);
+    LDA(mem[TRACK_SEGMENT_HI + cpu.Y]);
+    LSR_A(); LSR_A(); LSR_A(); LSR_A();
+    saved_slot_index = cpu.A;
+    CMP(sign_last_index);
+    if (cpu.Z) {                                         /* $4CB5 BNE — the same sign again */
+        ADC(0x00u);                                      /* C is the equal CMP's own carry */
+        AND(0x0Fu);
+    }
+    TAX();
+    signIndex = cpu.X;
+
+    /* $4CBC-$4CD5 — the sign's own view origin, components 2, 1, 0.  shared_temp_77 is the
+       component cursor build_sign_origin walks down, so the ORDER of these three carries the
+       meaning, and the shifts differ: x64 across the ground plane, x16 up. */
+    LDY(0x02u);
+    shared_temp_77 = cpu.Y;
+    tableByte = sign_table_byte(SIGN_OFFSET_2_SITE, signIndex, &trapped);
+    if (trapped) return;
+    LDA(tableByte);
+    build_sign_origin_core(cpu.A, 0x02u);
+    LDY(0x04u);
+    tableByte = sign_table_byte(SIGN_OFFSET_1_SITE, signIndex, &trapped);
+    if (trapped) return;
+    LDA(tableByte);
+    build_sign_origin_core(cpu.A, 0x04u);
+    LDY(0x02u);
+    tableByte = sign_table_byte(SIGN_OFFSET_0_SITE, signIndex, &trapped);
+    if (trapped) return;
+    LDA(tableByte);
+    build_sign_origin_core(cpu.A, 0x02u);
+
+    /* $4CD6-$4CDE — the shape: the low three bits of the sign's table byte, plus 7.  The
+       object plotter's shapes 7..14 are the signs. */
+    tableByte = sign_table_byte(SIGN_SHAPE_SITE, signIndex, &trapped);
+    if (trapped) return;
+    LDA(tableByte);
+    AND(0x07u);
+    plot_shape = (uint8_t)adc_step(cpu.A, 0x07u, 0);
+
+    /* $4CE0-$4CEA — ...and the SEGMENT it is anchored to, in the same byte's top five bits (a
+       multiple of 8, which is what a segment index is), into a scratch live section. */
+    tableByte = sign_table_byte(SIGN_SEGMENT_SITE, signIndex, &trapped);
+    if (trapped) return;
+    LDA(tableByte);
+    AND(0xF8u);
+    TAY();
+    LDX(SIGN_SCRATCH_SECTION);
+    load_section_triple_core(cpu.X, cpu.Y);
+
+    /* $4CEB-$4CF9 — the bearing, FROM THE SIGN'S OWN ORIGIN, into slot $17. */
+    LDY(VIEW_ORIGIN_STRIDE);
+    bearing_to_section_core(cpu.X, cpu.Y);
+    mem[OBJECT_BEARING_LO + SIGN_SLOT] = bearing_lo;
+    LDA(bearing_hi);
+    mem[OBJECT_BEARING_HI + SIGN_SLOT] = cpu.A;
+
+    /* $4CFA-$4D08 — how far off the car's heading the sign is.  Past $40 it has left the view,
+       and THAT is what commits the sign number for the next frame. */
+    cpu.A = (uint8_t)sub_from(cpu.A, car_heading_hi);
+    abs8();
+    CMP(0x40u);
+    if (cpu.C) {
+        LDY(saved_slot_index);
+        sign_last_index = cpu.Y;
+    }
+
+    /* $4D09-$4D1F — the contact threshold widens for a sign well off to the side, then the
+       projection and the slot write. */
+    LDY(0x25u);
+    CMP(0x6Eu);                                          /* still the off-heading distance */
+    if (cpu.C) LDY(0x50u);
+    threshold = cpu.Y;
+    LDA(SIGN_SLOT);
+    shared_counter_42 = cpu.A;
+    note_object_contact_core(threshold);
+    LDY(VIEW_ORIGIN_STRIDE);
+    project_point_core(cpu.X, cpu.Y);
+    write_object_slot_core(cpu.A, cpu.C);
+}
+
+/* The 6502-ABI shims. */
+void build_road_sign(void)      { build_road_sign_core(); }
+void build_sign_origin(void)    { build_sign_origin_core(cpu.A, cpu.Y); }
+void write_object_slot(void)    { write_object_slot_core(cpu.A, cpu.C); }
+void reject_object_slot(void)   { reject_object_slot_core(); }
+void store_object_flags(void)   { store_object_flags_core(); }
+void note_object_contact(void)  { note_object_contact_core(cpu.Y); }

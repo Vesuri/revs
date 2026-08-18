@@ -838,6 +838,20 @@ VALIDATE_FUNCS = {
     0x4C65,
     0x4DC9,
     0x4DCB,
+    # ⭐ TWINS #87-#92 — THE ROAD SIGN and the OBJECT SLOT WRITER, the first of the last three
+    # trees (docs/phases.md §the twin campaign).  Six C functions, 252 bytes, and every
+    # arithmetic leaf beneath them is already a twin:
+    #   $4CA4 build_road_sign      $4D21 build_sign_origin
+    #   $2A76 write_object_slot    $2AA6 reject_object_slot   $2AAD store_object_flags
+    #   $2AB3 note_object_contact
+    # ⚠ Five of build_road_sign's loads are PER-CIRCUIT SMC extents ($4CC0 $4CC8 $4CD0 $4CD6
+    # $4CE0), so the twin reads each table base out of mem[] — it cannot bake Silverstone's.
+    0x4CA4,
+    0x4D21,
+    0x2A76,
+    0x2AA6,
+    0x2AAD,
+    0x2AB3,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

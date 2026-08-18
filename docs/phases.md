@@ -23,9 +23,9 @@ comes with it (`docs/rename.md`, `disasm/symbols.csv`) is part of the work, not 
 | `view_paint_lines` | ✅ **complete** — twin #2 covers all three painting phases; the transliterated `region_7bf7` and `view_paint_lines_clipped` are reachable only from its own oracle |
 | `fill_dash_edge_columns` | ✅ **complete** — twins #40-#43 |
 | `apply_driving_model` | ✅ **COMPLETE — 43 of 43 routines**, twins #44-#86 |
+| `build_road_sign` | ✅ **complete** — twins #87-#92 |
 | `draw_track_object` | ⬜ next group (user, 2026-08-18) |
 | `read_driving_controls` | ⬜ next group |
-| `build_road_sign` | ⬜ next group |
 
 ✅ **THE DRIVING MODEL IS DONE.**  Twins #79-#86 took the last eight — the SUB-MODELS, i.e. the
 parts of the tree that talk to the rest of the engine rather than to the arithmetic layer:
@@ -92,15 +92,61 @@ state-vector ELEMENTS mean physically.
 
 ---
 
+### ✅ `build_road_sign`'s tree — twins #87-#92 (six routines, all six)
+
+`build_road_sign`, `build_sign_origin`, `write_object_slot`, `reject_object_slot`,
+`store_object_flags`, `note_object_contact` — 252 bytes, every arithmetic leaf underneath them
+already a twin.  15 deliberate sabotages, **15 detected, no survivors**.  `make validate` clean,
+`make determinism` and `make determinism-drive` both 64 KB byte-identical, `make tracks` 6/6 and
+`make track-run` every circuit's hooks running.
+
+⭐⭐ **What the group made legible** — four things, in the order they surprised:
+
+1. **A ROAD SIGN IS PROJECTED FROM ITS OWN VIEWPOINT.**  `view_origin`'s stride of six finally
+   has its second writer: `build_sign_origin` takes each of the sign's three signed offset bytes,
+   scales it (x64 across the ground plane, x16 up) and SUBTRACTS it from the camera's component
+   into origin 6.  `bearing_to_section` and `project_point` then run with `Y = 6` — and every
+   other caller in the engine uses `Y = 0`, which is what those routines' two entry points are
+   FOR.
+2. **THE SIGN TABLES ARE FOUR ROWS OF SIXTEEN, in the gaps of the two track pages.**
+   `sign_offset_0`/`_1`/`_2` are `$53D0`/`$53F0`/`$53E0` — the tail of `track_segment_hi`, past
+   the last segment record — and `sign_shape_segment` is `$59EA`, landing exactly between
+   `segment_data` and `segment_count_x8`.  Silverstone's own bytes settled the layout in one
+   dump: the sixteen `$59EA` entries are ASCENDING segment indices once the low three bits are
+   masked off, and `sign_offset_1` is `$08` in nine of sixteen — the signs are all at one height.
+3. ⚠⚠ **ALL FIVE OF THOSE LOADS ARE PER-CIRCUIT SMC** (`$4CC0 $4CC8 $4CD0 $4CD6 $4CE0`, one
+   extent each).  The opcode stays `LDA abs,X` and only the operands move, so the twin reads each
+   base out of `mem[]` and hoists the hardware-window test onto the base — the transliteration
+   routes all five through `bus_read`.
+4. **THE SIGN ADVANCES BY WALKING OFF THE SIDE OF THE VIEW.**  `$4CB2` compares the segment's
+   own sign nibble with `sign_last_index` and INCREMENTS on a match, so an unchanged segment shows
+   the NEXT sign — and `sign_last_index` is only committed once the sign's bearing is more than
+   `$40` off the car's heading.  A sign sticks until it leaves the view.
+
+⭐⭐ **AND THE GROUP BOUGHT ONE MORE COVERAGE FIX, from a surviving sabotage.**  "the wide
+contact threshold is `$25` as well" survived 4000 cases: on a random pre-state the sign is more
+than `$FF` away every time, so `note_object_contact` returns at its first test and NEITHER
+threshold is ever compared with anything.  `force_near_sign` now builds a sign exactly `$30`
+away — zero offsets so origin 6 is the camera, segment byte 8, and that segment's triple set to
+the camera's own plus `$30` on component 0 — which is over `$25` and under `$50`, so the two arms
+disagree.  Caught after it.  **Same lesson as the sub-models' test backend: ask what the
+PRE-STATE can reach, not just what it randomises.**
+
+⭐ **One thing the group CORRECTED.**  `object_width`'s row said "shifted by
+`proj_width_shift - $09` places"; the `DEX` at `$2A8A` is part of the count, so it is **`- $0A`**,
+and the sign of that difference is the direction.  Fixed in `disasm/symbols.csv`.
+
+---
+
 ## ⭐ THE TWIN CAMPAIGN — WHAT IS NEXT
 
-**Three more trees** (user, 2026-08-18): `draw_track_object`, `read_driving_controls` and
-`build_road_sign`.  The stated reason is the same as before and it is not framerate — *"then we
+**Two more trees** (user, 2026-08-18): `draw_track_object` and `read_driving_controls`.
+The stated reason is the same as before and it is not framerate — *"then we
 should have a great understanding of what's what in the main loop and can make informed decisions
 about the future direction."*  So the deliverable is the understanding plus the naming pass, and a
 group whose FPS does not move still counts.
 
-`docs/rename.md`'s "Twelve unnamed routines in three NAMED call trees" is the inventory, and it is
+`docs/rename.md`'s "Eight unnamed routines in two NAMED call trees" is the inventory, and it is
 an inventory only — nothing in it has been read yet, which is why it suggests no names.  Two
 things to expect from it:
 

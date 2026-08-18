@@ -48,17 +48,16 @@ missing fact:
 set of names SCOPED to each pass, or notes that record every tenancy.  Not a per-cell call.
 
 
-## Twelve unnamed routines in three NAMED call trees — `draw_track_object`, `read_driving_controls`, `build_road_sign`
+## Eight unnamed routines in two NAMED call trees — `draw_track_object`, `read_driving_controls`
 
-Enumerated 2026-08-18 while walking those three trees; **this is an inventory, not a set of
-readings** — nothing here has been looked at yet, so no name is suggested and none should be
-invented from the address alone.
+Enumerated 2026-08-18 while walking those trees; **this is an inventory, not a set of readings** —
+nothing here has been looked at yet, so no name is suggested and none should be invented from the
+address alone.
 
 | Tree | Still `FUN_*` |
 |---|---|
 | `draw_track_object` ($2AD1) | `$202A`, `$209A`, `$1E38` |
 | `read_driving_controls` ($1579) | `$15F4` (+ its `$160D` entry), `$1612` (+ `$162D`), `$1EE9`, `$1EFA`, `$1F9B`, `$63C5` |
-| `build_road_sign` ($4CA4) | `$2A76`, `$2AA6` (+ `$2AAD`), `$2AB3` |
 
 ⭐ `read_driving_controls`' cluster is chained by **tail `JMP`s across four separate regions**
 ($15xx → $1EE9 → $15F4 → $1EFA → $1612), which is why its tree is deep and its routines have no
