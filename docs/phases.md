@@ -21,7 +21,7 @@ comes with it (`docs/rename.md`, `disasm/symbols.csv`) is part of the work, not 
 |---|---|
 | `view_paint_lines` | ✅ **already complete** — twin #2 covers all three painting phases; the transliterated `region_7bf7` and `view_paint_lines_clipped` are reachable only from its own oracle |
 | `fill_dash_edge_columns` | ✅ **complete** — twins #40-#43 |
-| `apply_driving_model` | 🔶 **18 routines left** of 43; twins #44-#57 took the multiply and the 16-bit arithmetic layer, #58-#66 the rotations and the integrations |
+| `apply_driving_model` | 🔶 **8 routines left** of 43; twins #44-#57 took the multiply and the 16-bit arithmetic layer, #58-#66 the rotations and the integrations, #67-#78 the slip/sound cluster |
 
 ✅ **The rotations and the integrations are DONE** — twins #58-#66, nine of them (the eight
 planned plus `$48C7 rotate_state_pair`, the shared body of the two rotation entries, which had to
@@ -29,20 +29,31 @@ be named before either could be written).  16 of 16 sabotages detected.  What th
 caught that reading could not: `damp_and_derive_loads`' **exit C is the `ROL A` of its last
 doubling** — mem[] was byte-exact and the flags alone disagreed, in 1821 of 3000 cases.
 
-**The remaining 18, grouped the way they should be written** (each group is one commit: twins,
-fixtures, ≥4 sabotages each, `make validate` + both determinism runs):
+✅ **The slip/sound cluster is DONE** — twins #67-#78, twelve of them (the ten planned plus
+`$4B51 store_slip_signed` and `$0B6E sound_osword`, both shared tails that had to be named first).
+Six routines got their first name.  Two things the reading had wrong: `$0B46` is a **spare byte
+where X is parked across the OSWORD**, not self-modifying code, and `derive_slip_reference`'s two
+arms were recorded the wrong way round.  What the twins made legible: a **saturated shift counts as
+a slip on its own** (`$4AAE`-`$4AB2`, a second slip test hiding inside the first), equal to the
+grip limit is **not** over, and the squeal answers to the last *two* frames.
 
-1. **The slip/sound cluster (10)** — `$4A91 check_wheel_slip`, `$4AF7`, `$4B42`, `$4B47`, `$4B61`,
-   `$4B88`, `$4779 update_slip_sound`, `$0B4A sound_queue`, `$0E5A sound_stop_channel`,
-   `$0B47 sound_queue_default`.  ⚠ Six of these are unnamed (`docs/rename.md`), `$0B4A` is
-   self-modifying (`STX $0B46`), and the two sound routines reach the MOS — so `make sound` is a
-   second gate for this group, not just `make validate`.
-2. **The sub-models (8)** — `$0D01 compute_car_angles`, `$44EA update_camera_and_drive_state`
+⭐⭐ **This group also bought a HARNESS CHANNEL.** A sabotage survived — deleting
+`sound_stop_channel`'s already-idle guard makes it flush a MOS buffer the game meant to leave
+alone, with `mem[]` and every register byte-identical over 1000 cases.  `diff_run` now compares the
+**MOS-CALL SEQUENCE** `(entry, A, X, Y)` the way it already compared hardware writes, and the
+fixture **forces** the already-idle arm (with the trace but without the steering, detection was 3
+of 1000).  27 of 30 sabotages detected; the three survivors are provable non-defects, each argued
+at the code.  `docs/validation-harness.md` §FOURTEENTH.
+
+**The remaining 8, one group** (twins, fixtures, ≥4 sabotages each, `make validate` + both
+determinism runs):
+
+1. **The sub-models (8)** — `$0D01 compute_car_angles`, `$44EA update_camera_and_drive_state`
    (+`$4610`, `$4DCB`, `$4DC9`), `$49CE update_engine_revs`, `$4BCF update_grip_limits`,
    `$4C65 apply_drag_terms`.  ⚠⚠ The two big ones read HARDWARE (`$FE68`, the User VIA timer, for
    the starter poll and the grip disturbance) and `$44EA` nests three `PHP`/`PLP` pairs — the stack
    residue is part of the differential, so reproduce the pushes.
-3. `$FFF1`/`$FFF4` are MOS vectors, not code on this disc: they stay as `platform_mos_call`.
+2. `$FFF1`/`$FFF4` are MOS vectors, not code on this disc: they stay as `platform_mos_call`.
 
 ⭐⭐ **AND THE THING TO DO ALONGSIDE, from the same conversation:** a twin that keeps the 6502's flag
 contract at every seam pays for flags nobody reads — `mul8`'s exit V costs a second multiply and a

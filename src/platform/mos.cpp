@@ -28,6 +28,8 @@
 #include "mos_font.h"
 #include "../cpu/cpu.h"
 
+enum { MOSLOG_MAX = 4096 };   /* ⚠ duplicated in tools/validate_native.c */
+
 /* ⚠ Counters, not silence.  Listed in amiga/Makefile PROBE_SYMS so --gc-sections cannot
    drop them and leave gdb printing instruction bytes as a value (docs/method-lessons.md). */
 extern "C" {
@@ -43,6 +45,19 @@ volatile uint16_t      g_mosUnknownA     = 0;   /* ...and its reason code (A) */
 volatile unsigned long g_mosCharDefCount = 0;   /* OSWORD 10 calls served */
 volatile unsigned long g_mosCharDefOutOfRange = 0; /* ...of those, codes with no drawn glyph */
 volatile uint16_t      g_mosCharDefLastBad = 0;    /* ...the last such code */
+
+/* ⭐ THE MOS-CALL TRACE's storage — see Platform::mosCall for why it exists.
+   ⚠ REVS_HW_TRACE-ONLY, and deliberately: at MOSLOG_MAX = 4096 these four arrays are 16 KB
+   of BSS, which is real memory on a 512 KB A500 for something only the host differential
+   ever reads.
+   ⚠ MOSLOG_MAX is duplicated in tools/validate_native.c, the same arrangement HWLOG_MAX
+   already has; the consumer clamps to its own copy rather than trusting them to match. */
+#ifdef REVS_HW_TRACE
+uint16_t g_mosLogEntry[MOSLOG_MAX];
+uint8_t  g_mosLogA[MOSLOG_MAX], g_mosLogX[MOSLOG_MAX], g_mosLogY[MOSLOG_MAX];
+unsigned g_mosLogN = 0;
+unsigned g_mosLogOverflow = 0;
+#endif
 }
 
 /* --------------------------------------------------------------------------
@@ -232,6 +247,26 @@ static void osword(void)
    -------------------------------------------------------------------------- */
 void Platform::mosCall(uint16_t entry)
 {
+#ifdef REVS_HW_TRACE
+    /* ⭐⭐ THE MOS-CALL TRACE, and it exists for the same reason bbc_hw's write trace does:
+       a routine whose whole output is an OS CALL is invisible to a mem[] diff.
+       Found by sabotage, 2026-08-18, on twin #77 sound_stop_channel — delete its already-idle
+       guard and it issues an OSBYTE 21 on EVERY call instead of only when the channel is
+       playing, silencing a channel the game meant to leave alone.  mem[] is byte-identical
+       (the guarded store writes 0 over 0), the registers are identical (PLA restores A and
+       OSBYTE 21 preserves X), and 1000 cases PASSED.
+       ⚠ What is logged is the ENTRY and A/X/Y AS HANDED OVER, because that is the whole of
+       what the 6502 gives the OS; whether the MOS then does the right thing with them is
+       `make sound` / `make mode7`'s question, not this trace's. */
+    if (g_mosLogN < MOSLOG_MAX) {
+        g_mosLogEntry[g_mosLogN] = entry;
+        g_mosLogA[g_mosLogN] = cpu.A;
+        g_mosLogX[g_mosLogN] = cpu.X;
+        g_mosLogY[g_mosLogN] = cpu.Y;
+        g_mosLogN++;
+    } else g_mosLogOverflow++;
+#endif
+
     switch (entry) {
 
     case 0xFFF4:   /* OSBYTE */

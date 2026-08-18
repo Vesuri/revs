@@ -157,6 +157,18 @@ extern uint8_t  g_hwLogVal[HWLOG_MAX];
 extern unsigned g_hwLogN;
 extern unsigned g_hwLogOverflow;
 
+/* ⭐⭐ AND THE MOS-CALL TRACE, for the same reason: a twin whose whole output is an OS CALL
+   is invisible to a mem[] diff.  Added 2026-08-18 because a sabotage SURVIVED — deleting
+   sound_stop_channel's already-idle guard makes it flush a MOS buffer that was meant to be
+   left alone, and mem[] and every register were byte-identical over 1000 cases.
+   ⚠ MOSLOG_MAX is duplicated from src/platform/mos.cpp (the same arrangement HWLOG_MAX has);
+   the copy below is CLAMPED to this file's value rather than trusting the two to match. */
+enum { MOSLOG_MAX = 4096 };
+extern uint16_t g_mosLogEntry[MOSLOG_MAX];
+extern uint8_t  g_mosLogA[MOSLOG_MAX], g_mosLogX[MOSLOG_MAX], g_mosLogY[MOSLOG_MAX];
+extern unsigned g_mosLogN;
+extern unsigned g_mosLogOverflow;
+
 static void fill_random(uint8_t* buf) {
     uint32_t* w = (uint32_t*)buf;
     for (int i = 0; i < 65536 / 4; i++) w[i] = xs();
@@ -176,6 +188,8 @@ static int diff_run(const char* name, const uint8_t* pre, Cpu6502 pre_cpu,
     static uint8_t  ref_mem[65536];
     static uint16_t ref_hw_addr[HWLOG_MAX];
     static uint8_t  ref_hw_val[HWLOG_MAX];
+    static uint16_t ref_mos_entry[MOSLOG_MAX];
+    static uint8_t  ref_mos_a[MOSLOG_MAX], ref_mos_x[MOSLOG_MAX], ref_mos_y[MOSLOG_MAX];
 
     unsigned long smc_before = g_smcUnhandled;
 
@@ -186,18 +200,26 @@ static int diff_run(const char* name, const uint8_t* pre, Cpu6502 pre_cpu,
        a twin that looked wrong in the full run and right on its own.  Reset it with cpu. */
     memcpy((void*)mem, pre, 65536); cpu = pre_cpu; cpu_unwind = 0;
     g_hwLogN = 0; g_hwLogOverflow = 0;
+    g_mosLogN = 0; g_mosLogOverflow = 0;
     t6502();
     memcpy(ref_mem, (void*)mem, sizeof ref_mem);
     Cpu6502 ref_cpu = cpu;
     unsigned ref_hw_n = g_hwLogN, ref_hw_ovf = g_hwLogOverflow;
     memcpy(ref_hw_addr, g_hwLogAddr, ref_hw_n * sizeof ref_hw_addr[0]);
     memcpy(ref_hw_val,  g_hwLogVal,  ref_hw_n * sizeof ref_hw_val[0]);
+    unsigned ref_mos_n = g_mosLogN, ref_mos_ovf = g_mosLogOverflow;
+    if (ref_mos_n > MOSLOG_MAX) ref_mos_n = MOSLOG_MAX;
+    memcpy(ref_mos_entry, g_mosLogEntry, ref_mos_n * sizeof ref_mos_entry[0]);
+    memcpy(ref_mos_a, g_mosLogA, ref_mos_n);
+    memcpy(ref_mos_x, g_mosLogX, ref_mos_n);
+    memcpy(ref_mos_y, g_mosLogY, ref_mos_n);
     unsigned long ref_smc_n = g_smcUnhandled - smc_before;
     uint16_t ref_smc_site = g_smcSite, ref_smc_value = g_smcValue;
 
     smc_before = g_smcUnhandled;
     memcpy((void*)mem, pre, 65536); cpu = pre_cpu; cpu_unwind = 0;
     g_hwLogN = 0; g_hwLogOverflow = 0;
+    g_mosLogN = 0; g_mosLogOverflow = 0;
     native();
 
     for (int i = 0; i < g_ignore_n; i++) ref_mem[g_ignore[i]] = mem[g_ignore[i]];
@@ -230,6 +252,32 @@ static int diff_run(const char* name, const uint8_t* pre, Cpu6502 pre_cpu,
                 if (*printed < 12) {
                     printf("[HW DIFF] %s case %d  write %u  ref=$%04X<-$%02X native=$%04X<-$%02X\n",
                            name, t, i, ref_hw_addr[i], ref_hw_val[i], g_hwLogAddr[i], g_hwLogVal[i]);
+                    (*printed)++;
+                }
+                break;
+            }
+    }
+
+    /* ⭐⭐ THE MOS CALLS, compared as a SEQUENCE for the same reason as the hardware writes.
+       An extra, missing or differently-argued OS call is a real divergence — sound_stop_channel
+       silences a channel through OSBYTE 21 and NOTHING about that reaches mem[]. */
+    if (g_mosLogN != ref_mos_n || g_mosLogOverflow != ref_mos_ovf) {
+        failed = 1;
+        if (*printed < 12) {
+            printf("[MOS DIFF] %s case %d  call count ref=%u native=%u (overflow ref=%u native=%u)\n",
+                   name, t, ref_mos_n, g_mosLogN, ref_mos_ovf, g_mosLogOverflow);
+            (*printed)++;
+        }
+    } else {
+        for (unsigned i = 0; i < ref_mos_n; i++)
+            if (g_mosLogEntry[i] != ref_mos_entry[i] || g_mosLogA[i] != ref_mos_a[i] ||
+                g_mosLogX[i] != ref_mos_x[i] || g_mosLogY[i] != ref_mos_y[i]) {
+                failed = 1;
+                if (*printed < 12) {
+                    printf("[MOS DIFF] %s case %d  call %u  ref=$%04X A=$%02X X=$%02X Y=$%02X"
+                           "  native=$%04X A=$%02X X=$%02X Y=$%02X\n",
+                           name, t, i, ref_mos_entry[i], ref_mos_a[i], ref_mos_x[i], ref_mos_y[i],
+                           g_mosLogEntry[i], g_mosLogA[i], g_mosLogX[i], g_mosLogY[i]);
                     (*printed)++;
                 }
                 break;
@@ -3244,6 +3292,134 @@ static int test_model_rotations(void)
     return fail;
 }
 
+/* ==========================================================================
+   TWINS #67-#78 — THE SLIP/SOUND CLUSTER
+   --------------------------------------------------------------------------
+   $4B61 slip_magnitude, $4B51 store_slip_signed, $4B47 store_slip_clamped,
+   $4B42 store_slip_clamped_off_throttle, $4B88 derive_slip_reference,
+   $4A91 check_wheel_slip, $4AF7 clamp_slip_to_grip, $0B6E sound_osword,
+   $0B4A sound_queue, $0B47 sound_queue_default, $0E5A sound_stop_channel,
+   $4779 update_slip_sound.
+
+   ⚠⚠ FOUR STEERED INPUTS, and without them most of this cluster is unreachable:
+
+     pedal_mode   ($3E)  1 is the throttle and every routine here forks on it.  A uniform byte
+                         would take the off-throttle arm 255 times out of 256, so it is drawn
+                         from {0, 1, $80} — and derive_slip_reference's `SEC`-and-decline arm
+                         needs pedal_mode == 1 AND X != 1 together.
+     X            the AXLE, 0 or 1, and it indexes two-byte tables; a uniform byte would walk
+                         off grip_limit into unrelated cells identically in both models, which
+                         proves nothing.
+     Y            slip_magnitude's element, 0..14 into the state vector.
+     drive_state  ($2D) update_slip_sound's first fork is `>= 2`, so half the cases are forced
+                         under it and half over.
+
+   ⭐ THREE OF THESE REACH THE MOS (OSWORD 7 for SOUND, OSBYTE 21 to flush a buffer), and what
+   the differential proves there is that the twin makes the SAME CALL with the same registers —
+   the answer comes back through platform_mos_call in both models, exactly as for kbd_test_key.
+   ========================================================================== */
+void slip_magnitude(void);          void slip_magnitude__t6502(void);
+void store_slip_signed(void);       void store_slip_signed__t6502(void);
+void store_slip_clamped(void);      void store_slip_clamped__t6502(void);
+void store_slip_clamped_off_throttle(void);
+void store_slip_clamped_off_throttle__t6502(void);
+void derive_slip_reference(void);   void derive_slip_reference__t6502(void);
+void check_wheel_slip(void);        void check_wheel_slip__t6502(void);
+void clamp_slip_to_grip(void);      void clamp_slip_to_grip__t6502(void);
+void sound_osword(void);            void sound_osword__t6502(void);
+void sound_queue(void);             void sound_queue__t6502(void);
+void sound_queue_default(void);     void sound_queue_default__t6502(void);
+void sound_stop_channel(void);      void sound_stop_channel__t6502(void);
+void update_slip_sound(void);       void update_slip_sound__t6502(void);
+
+#define PRE_PEDAL_MODE  0x003E
+#define PRE_DRIVE_STATE 0x002D
+
+static int test_slip_and_sound(void)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    int fail = 0, printed = 0, t, i;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+
+    struct { const char* name; void (*nat)(void); void (*ref)(void); int cases; }
+      list[12] = {
+        { "slip_magnitude",        slip_magnitude,        slip_magnitude__t6502,        3000 },
+        { "store_slip_signed",     store_slip_signed,     store_slip_signed__t6502,     2000 },
+        { "store_slip_clamped",    store_slip_clamped,    store_slip_clamped__t6502,    2000 },
+        { "store_slip_clamped_off_throttle", store_slip_clamped_off_throttle,
+          store_slip_clamped_off_throttle__t6502, 2000 },
+        { "derive_slip_reference", derive_slip_reference, derive_slip_reference__t6502, 3000 },
+        { "check_wheel_slip",      check_wheel_slip,      check_wheel_slip__t6502,      3000 },
+        { "clamp_slip_to_grip",    clamp_slip_to_grip,    clamp_slip_to_grip__t6502,    3000 },
+        { "sound_osword",          sound_osword,          sound_osword__t6502,           500 },
+        { "sound_queue",           sound_queue,           sound_queue__t6502,           1500 },
+        { "sound_queue_default",   sound_queue_default,   sound_queue_default__t6502,   1000 },
+        { "sound_stop_channel",    sound_stop_channel,    sound_stop_channel__t6502,    1000 },
+        { "update_slip_sound",     update_slip_sound,     update_slip_sound__t6502,     3000 },
+      };
+    static const uint8_t PEDALS[3] = { 1, 0, 0x80 };
+    for (i = 0; i < 12; i++) register_fixture(list[i].name);
+
+    for (i = 0; i < 12; i++) {
+        int subFail = 0, decimal = 0, throttle = 0, driven = 0, powered = 0, idle = 0;
+        int cases = list[i].cases * scale;
+        if (!want(list[i].name)) continue;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.X = (uint8_t)(xs() & 1);                    /* the axle */
+            c.Y = (uint8_t)(xs() % 15);                   /* a state element */
+            c.A = (uint8_t)xs();
+            pre[PRE_PEDAL_MODE]  = PEDALS[xs() % 3];
+            pre[PRE_DRIVE_STATE] = (uint8_t)((xs() & 1) ? (xs() % 2) : (2 + xs() % 4));
+            if (pre[PRE_PEDAL_MODE] == 1) throttle++;
+            if (c.X == 1) driven++;
+            if (pre[PRE_DRIVE_STATE] < 2) powered++;
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = (uint8_t)(xs() % 4 == 0);
+            /* ⚠ The four sound routines run with D CLEAR: the engine only ever calls them from
+               binary-mode code, and sound_queue's block index is an ADC, so a decimal case
+               would compare two models agreeing on a block the game can never ask for.  The
+               decimal counter is taken AFTER this, or the vacuity check counts cases that
+               were overridden away (it went negative the first time). */
+            if (i >= 7 && i <= 10) c.D = 0;
+            if (c.D) decimal++;
+            /* sound_queue / sound_queue_default take the SLOT in A. */
+            if (i == 8 || i == 9) c.A = (uint8_t)(xs() % 8);
+            /* sound_osword takes the block's low byte in X; sound_stop_channel a channel. */
+            if (i == 7)  c.X = (uint8_t)(xs() % 0x40);
+            if (i == 10) {
+                c.X = (uint8_t)(xs() & 3);
+                /* ⚠⚠ THE ALREADY-IDLE CASE HAS TO BE FORCED.  sound_stop_channel's whole
+                   guard is `is this channel marked playing?`, and a random byte is zero once
+                   in 256 — the sabotage that deletes the guard was caught in 3 of 1000 cases
+                   before this line, which is a coverage hole dressed up as a pass.  Half the
+                   cases now take each arm. */
+                if (xs() & 1) { pre[0x62BD + c.X] = 0; idle++; }
+                else if (!pre[0x62BD + c.X]) pre[0x62BD + c.X] = 0x07;
+            }
+            if (i == 11) c.X = (uint8_t)(xs() & 1);
+            subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
+                                liveMask, t, &printed);
+        }
+        fail += subFail;
+        if (!throttle || !driven || !powered) {
+            printf("[VACUOUS] %s: %d throttle, %d driven axle, %d under power\n",
+                   list[i].name, throttle, driven, powered);
+            fail++;
+        }
+        if (i == 10 && !idle) { printf("[VACUOUS] %s: no already-idle case\n", list[i].name); fail++; }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d decimal, %d throttle, %d driven axle, %d under power%s)\n",
+               list[i].name, cases, subFail, decimal, throttle, driven, powered,
+               i == 10 ? ", channel idle forced" : "");
+    }
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -3270,6 +3446,7 @@ int main(int argc, char** argv)
     fail += test_multiply();
     fail += test_model_arithmetic();
     fail += test_model_rotations();
+    fail += test_slip_and_sound();
 
     fail += check_coverage();
     fail += report_unvalidated_natives();

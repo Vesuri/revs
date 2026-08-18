@@ -5821,3 +5821,428 @@ void rotate_state_0_into_8(void)  { rotate_state_pair_core(8u, 0u, 0xC0u); }
 void rotate_state_6_into_3(void)  { rotate_state_pair_core(3u, 6u, 0x40u); }
 void integrate_car_position(void) { integrate_car_position_core(); }
 void integrate_state_rates(void)  { integrate_state_rates_core(); }
+
+/* ===========================================================================
+   TWINS #67-#78 — THE SLIP/SOUND CLUSTER
+   ---------------------------------------------------------------------------
+   apply_driving_model's fourth group: how the engine decides a wheel is sliding, what it does
+   to the model when it is, and the tyre squeal that comes out of it.  ⭐ It is the only group
+   in this tree that reaches the MOS, so `make sound` is a second gate for it — what the twins
+   have to preserve is not a number but the SEQUENCE of OS calls.
+
+     $4779 update_slip_sound   the whole decision, run once per axle (X = 1 then 0)
+     $4A91 check_wheel_slip    the magnitude, the limit, and one bit of history
+     $4AF7 clamp_slip_to_grip  ...and what is done to the model once it HAS been slipping
+     $4B42 store_slip_clamped_off_throttle
+     $4B47 store_slip_clamped   three entries of one store: clamp-unless-throttle, clamp,
+     $4B51 store_slip_signed    and the re-sign-and-store tail they share
+     $4B61 slip_magnitude      |element Y| << 5, clamped to $7F
+     $4B88 derive_slip_reference  the reference term, and the carry that DECLINES
+     $0B4A sound_queue         an 8-byte MOS SOUND control block, then OSWORD 7
+     $0B47 sound_queue_default ...with the amplitude taken from sound_volume
+     $0B6E sound_osword        the OSWORD tail both sound entries share
+     $0E5A sound_stop_channel  OSBYTE 21 on buffer X|4 — buffers 4..7 ARE the sound channels
+
+   ⭐ WHAT THE CLUSTER COMPUTES, now that it reads as C.  Per axle: negate the accumulator,
+   shift it left five into element 10, and compare a cheap hypotenuse of elements 10 and 12
+   (max + min/2, the same alpha-max-plus-beta-min the road pass uses) against grip_limit.  One
+   bit of the answer is `ROR`ed into slip_flags, so the squeal answers to the last TWO frames
+   rather than to this one — and if the shift SATURATED, that alone counts as a slip whatever
+   the limit says ($4AAE-$4AB2, which is the sign-comparison nobody would guess from the name).
+
+   ⚠ SIX OF THESE HAD NO NAME.  The reading behind each is in disasm/symbols.csv; two things
+   the rename queue had recorded wrongly and this pass corrected are worth repeating here:
+   $0B46 is a SPARE BYTE where X is parked across the OSWORD, not self-modifying code, and
+   derive_slip_reference's two arms were written down the wrong way round (pedal_mode == 1 is
+   the throttle, so `LDY pedal_mode / DEY / BEQ` takes the THROTTLE to the gear-based arm).
+   =========================================================================== */
+
+#define SLIP_MAG_LO      0x008Eu  /* plot_ptr3_lo — here slip_magnitude's low byte  */
+#define SLIP_MAG_HI      0x008Fu  /* plot_ptr3_hi — ...and its high byte (docs/rename.md) */
+#define SLIP_SIGN        0x0079u  /* hypot_min_hi — here the sign byte abs16_math branches on */
+#define SLIP_OUT_INDEX   0x0078u  /* hypot_min_lo — here WHICH element the store lands in */
+#define SLIP_REV_TERM    0x003Du  /* still unnamed: update_engine_revs' second rev-derived
+                                     term, which only a twin of that routine can settle
+                                     (docs/rename.md) */
+#define SOUND_CHAN_STATE 0x62BDu  /* sound_chan_state[0..3], one byte per MOS sound channel */
+
+/* ---------------------------------------------------------------------------
+   $4B61  slip_magnitude — |ELEMENT Y| << 5, CLAMPED  (twin #67)
+   ---------------------------------------------------------------------------
+   ⚠ THE CLAMP LEAVES STATE BEHIND.  When the high byte goes negative the routine bails out
+   with $7F, and both Y (wherever the loop stopped) and SLIP_MAG_LO (part-shifted) keep the
+   values that moment left — so a twin that computes the saturated result in one step and
+   tidies up afterwards is wrong, and the differential says so.
+   --------------------------------------------------------------------------- */
+static void slip_magnitude_core(uint8_t slot)
+{
+    mem[SLIP_MAG_LO] = mem[MODEL_STATE_LO + slot];              /* $4B61-$4B64 */
+    LDA(mem[MODEL_STATE_HI + slot]);                            /* $4B66 */
+    if (cpu.N) {                                                /* $4B69 BPL — |x| */
+        mem[SLIP_MAG_LO] = (uint8_t)sub_from(0x00u, mem[SLIP_MAG_LO]);        /* $4B6B-$4B70 */
+        cpu.A = (uint8_t)sbc_step(0x00u, mem[MODEL_STATE_HI + slot], cpu.C);  /* $4B72-$4B74 */
+    }
+
+    /* $4B77-$4B86 — five doublings, or as many as fit before the high byte goes negative. */
+    LDY(0x05u);
+    for (;;) {
+        uint8_t low = mem[SLIP_MAG_LO];
+        cpu.C = (uint8_t)(low >> 7);            /* $4B79 ASL, whose carry feeds the ROL */
+        mem[SLIP_MAG_LO] = (uint8_t)(low << 1);
+        ROL_A();                                /* $4B7B — and ITS N is the clamp test */
+        if (cpu.N) { LDA(0x7Fu); break; }       /* $4B7C BMI → $4B84 */
+        DEY();                                  /* $4B7E */
+        if (cpu.Z) break;                       /* $4B7F BNE */
+    }
+    mem[SLIP_MAG_HI] = cpu.A;                                   /* $4B81 */
+}
+
+/* ---------------------------------------------------------------------------
+   $4B51 / $4B47 / $4B42  the three entries of ONE STORE  (twins #68, #69, #70)
+   ---------------------------------------------------------------------------
+   store_slip_signed re-signs (A : math_lo) on bit 7 of the sign byte and puts it in model_state
+   element 10 + slip_out_index.  store_slip_clamped is that with the value first held down to
+   slip_magnitude's, and the third entry skips the clamp while the throttle is down — i.e. ON
+   the throttle the caller's value goes through unclamped, which is what lets wheelspin exceed
+   what the grip limit would otherwise allow.
+   --------------------------------------------------------------------------- */
+static void store_slip_signed_core(void)
+{
+    BIT(mem[SLIP_SIGN]);                            /* $4B51 — bit 7 means "negative" */
+    abs16_math();                                   /* $4B53 — which negates on that N */
+    cpu.Y = mem[SLIP_OUT_INDEX];                    /* $4B56 */
+    mem[MODEL_STATE_HI + 10 + cpu.Y] = cpu.A;       /* $4B58 */
+    cpu.A = (uint8_t)load_a(math_lo);               /* $4B5B */
+    mem[MODEL_STATE_LO + 10 + cpu.Y] = cpu.A;       /* $4B5D */
+}
+
+static void store_slip_clamped_core(void)
+{
+    CMP(mem[SLIP_MAG_HI]);                          /* $4B47 */
+    if (cpu.C) {                                    /* $4B49 BCC — under it, keep A */
+        math_lo = mem[SLIP_MAG_LO];                 /* $4B4B-$4B4D */
+        LDA(mem[SLIP_MAG_HI]);                      /* $4B4F */
+    }
+    store_slip_signed_core();
+}
+
+static void store_slip_clamped_off_throttle_core(void)
+{
+    LDY(pedal_mode);                                /* $4B42 */
+    DEY();                                          /* $4B44 */
+    if (cpu.Z) { store_slip_signed_core(); return; } /* $4B45 — the throttle skips the clamp */
+    store_slip_clamped_core();
+}
+
+/* ---------------------------------------------------------------------------
+   $4B88  derive_slip_reference — THE REFERENCE TERM, AND THE CARRY  (twin #71)
+   ---------------------------------------------------------------------------
+   Sets up everything the store above needs — which element (slip_out_index = X + 2), what sign
+   (SLIP_SIGN), and the value (A : math_lo) — and answers with a CARRY: set means it declined,
+   which is the one bit both its callers branch on.
+
+   Two arms, and which is which is the thing to get right: pedal_mode == 1 is the throttle, so
+   `LDY pedal_mode / DEY / BEQ` sends the THROTTLE to the gear-based arm at $4BAF (where only
+   the driven axle, X == 1, is answered at all — the other gets a bare `SEC`), while OFF the
+   throttle the reference is the car's own speed, |element 9| << 5, against grip_limit[X],
+   three-quartered for the axle that is not X == 1.  Either way the term is multiplied by
+   pedal_amount and, on the throttle, halved.
+   --------------------------------------------------------------------------- */
+static void derive_slip_reference_core(void)
+{
+    /* $4B88-$4B8C — the element store_slip_signed will write. */
+    cpu.A = (uint8_t)adc_step(cpu.X, 0x02u, 0);
+    mem[SLIP_OUT_INDEX] = cpu.A;
+
+    LDY(pedal_mode); DEY();                                     /* $4B8E-$4B90 */
+    if (cpu.Z) {
+        /* ON THE THROTTLE — $4BAF-$4BBA. */
+        CPX(0x01u);
+        if (!cpu.Z) { SEC(); return; }                           /* $4BB1 → $4BCD: declined */
+        cpu.A = (uint8_t)sub_from(gear_index, 0x01u);            /* $4BB3-$4BB6 */
+        mem[SLIP_SIGN] = cpu.A;
+        LDA(mem[SLIP_REV_TERM]);                                 /* $4BBA */
+    } else {
+        /* OFF THE THROTTLE — $4B93-$4BAC. */
+        slip_magnitude_core(9);                                  /* |car_speed| << 5 */
+        LDA((uint8_t)(car_speed_hi ^ 0x80u));                    /* $4B98-$4B9B */
+        mem[SLIP_SIGN] = cpu.A;
+        LDA(mem[MEM_grip_limit + cpu.X]);                        /* $4B9F */
+        CPX(0x01u);                                              /* $4BA2 */
+        if (!cpu.Z) {                                            /* $4BA4 BEQ */
+            /* $4BA6-$4BAB — three-quarters of the limit: (g/2 + g)/2. */
+            LSR_A();
+            cpu.A = (uint8_t)adc_step(cpu.A, mem[MEM_grip_limit + cpu.X], 0);
+            LSR_A();
+        }
+    }
+
+    math_hi = cpu.A;                                             /* $4BBC */
+    LDA(pedal_amount);                                           /* $4BBE */
+    mul8();                                                      /* $4BC0 */
+    LDY(pedal_mode); DEY();                                      /* $4BC3-$4BC5 */
+    if (cpu.Z) {                                                 /* $4BC6 BNE */
+        LSR_A();                                                 /* $4BC8 — on the throttle, */
+        ROR_M(MEM_math_lo);                                      /* $4BC9   halved; its N/Z are
+                                                                    the exit flags */
+    }
+    CLC();                                                       /* $4BCB — accepted */
+}
+
+/* ---------------------------------------------------------------------------
+   $4A91  check_wheel_slip — IS THIS AXLE SLIDING?  (twin #72)
+   ---------------------------------------------------------------------------
+   ⚠⚠ TWO NON-OBVIOUS THINGS, both of which a plain reading of the name would miss.
+
+   (a) THE PHP/PLP CARRIES ONE BIT ACROSS THE ARITHMETIC.  `ORA` answers "is the accumulator
+   zero at all", and that answer has to survive a negate and five shifts, so the 6502 parks it
+   on the stack.  The push leaves a byte the differential compares, so the pair is reproduced.
+
+   (b) A SATURATED SHIFT IS A SLIP.  If the shifted high byte has the SAME sign as the original
+   (they should differ — the value was negated first), the shift overflowed, and $4AB2 goes
+   straight to the `ROR` with C already set.  That is the whole of $4AAE-$4AB2 and it is a
+   second, independent slip test hiding inside the first.
+
+   Otherwise: the two magnitudes are combined as max + min/2 — alpha-max-plus-beta-min, the
+   same cheap hypotenuse the road pass uses — and compared against grip_limit.  ⚠ EQUAL is not
+   over: `BNE` past the `CLC` means only a strictly greater magnitude sets the bit.
+   --------------------------------------------------------------------------- */
+static void check_wheel_slip_core(uint8_t axle)
+{
+    /* $4A91-$4A99 — "is the accumulator zero?", parked on the stack. */
+    math_lo = model_accum_lo;
+    cpu.A   = model_accum_lo;
+    ORA(model_accum_hi);
+    PHP();
+
+    /* $4A9A-$4AA8 — -model_accum << 5 into element 10 + axle's high byte. */
+    LDA(model_accum_hi);
+    neg16_math();                           /* $4A9D — the UNCONDITIONAL negate entry */
+    LDY(0x05u);
+    for (;;) {
+        uint8_t low = math_lo;
+        cpu.C  = (uint8_t)(low >> 7);       /* $4AA2 ASL, whose carry feeds the ROL */
+        math_lo = (uint8_t)(low << 1);
+        ROL_A();                            /* $4AA4 */
+        DEY();                              /* $4AA5 */
+        if (cpu.Z) break;                   /* $4AA6 BNE */
+    }
+    mem[MODEL_STATE_HI + 10 + axle] = cpu.A;
+
+    PLP();                                  /* $4AAB */
+    if (!cpu.Z) {                           /* $4AAC BEQ — a zero accumulator skips the test */
+        EOR(model_accum_hi);                /* $4AAE */
+        SEC();                              /* $4AB1 */
+        if (!cpu.N) {                       /* $4AB2 BPL — the shift saturated: it IS a slip */
+            ROR_M(MEM_slip_flags + axle);
+            return;
+        }
+    }
+
+    cpu.A = (uint8_t)load_a(math_lo);               /* $4AB4 */
+    mem[MODEL_STATE_LO + axle + 10] = cpu.A;        /* $4AB6 */
+
+    derive_slip_reference_core();                   /* $4AB9 */
+    if (cpu.C) {
+        /* $4ABE-$4ACC — it declined (on the throttle, undriven axle), so element 12 is cleared
+           and the reference is element 10's own magnitude.  ⚠ BOTH indices are ZERO here, not
+           `axle`: these three are absolute operands where every other access is `,X`.
+           ⭐ AND IT MAKES NO DIFFERENCE, provably: this arm is reached only when
+           derive_slip_reference set C, which needs pedal_mode == 1 AND X != 1 — and X is 0 or 1,
+           so X is 0 here and `+ 12` IS `+ 12 + axle`.  A sabotage that indexes these three by
+           the axle therefore SURVIVES the differential, and that is correct rather than a
+           coverage hole (the absolute operands are the 6502 saving three bytes). */
+        LDA(0x00u);
+        mem[MODEL_STATE_LO + 12] = cpu.A;
+        mem[MODEL_STATE_HI + 12] = cpu.A;
+        LDA(mem[MODEL_STATE_HI + 10]);
+        abs8();
+    } else {
+        store_slip_clamped_off_throttle_core();     /* $4ACF */
+        /* $4AD2-$4AEB — max + min/2 over the two elements' magnitudes. */
+        LDA(mem[MODEL_STATE_HI + 12 + axle]);
+        abs8();
+        math_lo = cpu.A;
+        LDA(mem[MODEL_STATE_HI + 10 + axle]);
+        abs8();
+        CMP(math_lo);
+        if (cpu.C) LSR_M(MEM_math_lo);              /* $4AE4 — A is the larger: halve the other */
+        else       LSR_A();                         /* $4AE9 — ...or halve A */
+        cpu.A = (uint8_t)adc_step(cpu.A, math_lo, 0);   /* $4AEA-$4AEB */
+    }
+
+    /* $4AED-$4AF3 — over the limit?  One bit of the answer, rolled into two frames of history. */
+    CMP(mem[MEM_grip_limit + axle]);
+    if (cpu.Z) CLC();                               /* $4AF0 BNE past the CLC: equal is NOT over */
+    ROR_M(MEM_slip_flags + axle);
+}
+
+/* ---------------------------------------------------------------------------
+   $4AF7  clamp_slip_to_grip — WHAT SLIPPING DOES TO THE MODEL  (twin #73)
+   ---------------------------------------------------------------------------
+   Run once update_slip_sound has seen slip in either of the last two frames: element 12 + X is
+   zeroed, element 10 + X is held at grip_limit_alt[X] (twice, by two different routes — first
+   unconditionally through store_slip_clamped, then again against derive_slip_reference's own
+   term), and on the throttle the driven axle's element 10 is zeroed outright.  So the grip
+   limit is not advisory: this is where the model is forced back inside it.
+   --------------------------------------------------------------------------- */
+static void clamp_slip_to_grip_core(void)
+{
+    LDA(0x00u);                                                 /* $4AF7 */
+    mem[MODEL_STATE_HI + 12 + cpu.X] = cpu.A;                   /* $4AF9 */
+    mem[MODEL_STATE_LO + 12 + cpu.X] = cpu.A;                   /* $4AFC */
+
+    slip_magnitude_core(8);                                     /* $4AFF-$4B01 — |model_accum| */
+    LDA((uint8_t)(model_accum_hi ^ 0x80u));                     /* $4B04-$4B07 */
+    mem[SLIP_SIGN] = cpu.A;                                     /* $4B09 */
+    math_lo = 0x00u;                                            /* $4B0B-$4B0D */
+    LDA(mem[MEM_grip_limit_alt + cpu.X]);                       /* $4B0F */
+    mem[SLIP_OUT_INDEX] = cpu.X;                                /* $4B12 */
+    store_slip_clamped_core();                                  /* $4B14 */
+
+    derive_slip_reference_core();                               /* $4B17 */
+    if (cpu.C) return;                                          /* $4B1A BCS — it declined */
+
+    CMP(mem[MEM_grip_limit_alt + cpu.X]);                       /* $4B1C */
+    if (!cpu.C) { store_slip_clamped_off_throttle_core(); return; }  /* $4B1F BCC → $4B3E */
+
+    /* $4B21-$4B3C — over the second threshold. */
+    math_lo = 0x00u;
+    LDA(mem[MEM_grip_limit_alt + cpu.X]);
+    store_slip_clamped_off_throttle_core();                     /* $4B28 */
+    LDY(pedal_mode); DEY();                                     /* $4B2B-$4B2D */
+    if (!cpu.Z) return;                                         /* $4B2E BNE — off throttle */
+    /* $4B30-$4B32 — ⭐ DEAD AS A DECISION, and worth knowing.  Reaching here needs
+       derive_slip_reference to have ACCEPTED (C clear) with pedal_mode == 1, and its throttle
+       arm only accepts for X == 1 — so `CPX #0` can never be equal and this branch never
+       taken.  Kept because it is what the 6502 does; a sabotage that deletes it survives the
+       differential, which is the evidence for the claim rather than a gap in the fixture. */
+    CPX(0x00u);
+    if (cpu.Z) return;
+    LDA(0x00u);                                     /* $4B34 — and ITS Z is the exit flag */
+    mem[MODEL_STATE_HI + 10 + cpu.X] = cpu.A;                   /* $4B36 */
+    mem[MODEL_STATE_LO + 10 + cpu.X] = cpu.A;                   /* $4B39 */
+}
+
+/* ---------------------------------------------------------------------------
+   $0B6E / $0B4A / $0B47  the MOS SOUND path  (twins #74, #75, #76)
+   ---------------------------------------------------------------------------
+   sound_queue fills in one field of one 8-byte MOS SOUND control block and hands the block to
+   OSWORD 7.  The slot the caller names picks the block TWO on from the base (`A << 3` then
+   `+ $10`), Y is the amplitude, and the CHANNEL is read back out of the block's own first byte
+   so sound_chan_state can be marked busy — the block, not the caller, is what says which
+   channel this is.  ⭐ X is the low byte of the OSWORD block address and `LDY #$0B` its high
+   byte, which is why $0B00 is where these blocks have to live.
+
+   ⚠ The caller's X is parked in sound_saved_x across the call and restored by sound_osword.
+   That byte is a spare, NOT a self-modified operand — no instruction covers $0B46.
+   ⚠ sound_queue's `ADC #$10` leaves C and V live all the way to the exit: nothing below it
+   writes either flag.
+   --------------------------------------------------------------------------- */
+static void sound_osword_core(void)
+{
+    LDY(0x0Bu);                         /* $0B6E — the block is at $0B00 + X */
+    platform_mos_call(0xFFF1);          /* $0B70 — OSWORD, number already in A */
+    LDX(sound_saved_x);                 /* $0B73 — and the caller's X comes back */
+}
+
+static void sound_queue_core(uint8_t slot, uint8_t amplitude)
+{
+    unsigned block;
+
+    sound_saved_x = cpu.X;                                      /* $0B4A */
+
+    /* $0B4D-$0B53 — the slot picks a control block; this add's C and V are still live at the
+       exit, which is why it goes through adc_step rather than plain arithmetic. */
+    cpu.A = (uint8_t)adc_step((uint8_t)(slot << 3), 0x10u, 0);
+    cpu.X = cpu.A;                                              /* $0B53 TAX */
+    block = 0x0B00u + cpu.X;
+
+    cpu.A = amplitude;                                          /* $0B54 TYA */
+    mem[block + 2] = cpu.A;                                     /* $0B55 — the AMPLITUDE field */
+
+    cpu.Y = (uint8_t)(mem[block] & 3u);                         /* $0B58-$0B5D — the CHANNEL */
+    LDA(0x07u);                                                 /* $0B5E — and OSWORD 7 */
+    mem[SOUND_CHAN_STATE + cpu.Y] = cpu.A;                      /* $0B60 */
+    sound_osword_core();                        /* $0B63 BNE — unconditional: A is 7 */
+}
+
+/* ---------------------------------------------------------------------------
+   $0E5A  sound_stop_channel — SILENCE ONE CHANNEL  (twin #77)
+   ---------------------------------------------------------------------------
+   Clears sound_chan_state[X] and flushes the MOS buffer X|4, because buffers 4..7 ARE the four
+   sound channels.  Does nothing at all if the channel was already marked idle, which is what
+   keeps update_slip_sound from issuing an OSBYTE every frame the car is not sliding.
+   ⚠ X after the OSBYTE is whatever the MOS left, and the `AND #$FB` is applied to THAT.
+   --------------------------------------------------------------------------- */
+static void sound_stop_channel_core(uint8_t chan)
+{
+    PHA();                                              /* $0E5A */
+    LDA(mem[SOUND_CHAN_STATE + chan]);                  /* $0E5B */
+    if (!cpu.Z) {                                       /* $0E5E BEQ */
+        mem[SOUND_CHAN_STATE + chan] = 0u;              /* $0E60-$0E62 */
+        cpu.X = (uint8_t)(chan | 4u);                   /* $0E65-$0E68 */
+        LDA(0x15u);                                     /* $0E69 — OSBYTE 21, flush a buffer */
+        platform_mos_call(0xFFF4);                      /* $0E6B */
+        /* $0E6E-$0E71 — the buffer bit taken back off.  ⚠ It reads the MOS's X, not the
+           saved channel, and the distinction is invisible to the differential BECAUSE
+           OSBYTE 21 preserves X in both the model and the real MOS: a sabotage that masks
+           `chan | 4` instead survives.  Written this way anyway, because which register the
+           6502 reads is the faithful thing and the MOS contract is not ours to assume. */
+        cpu.X = (uint8_t)(cpu.X & 0xFBu);
+    }
+    PLA();                                              /* $0E72 */
+}
+
+/* ---------------------------------------------------------------------------
+   $4779  update_slip_sound — THE TYRE SQUEAL  (twin #78)
+   ---------------------------------------------------------------------------
+   Called twice per frame, X = 1 then X = 0 — once per axle.  Three outcomes:
+
+     drive_state >= 2 (not under power)   silence channel 3 and do nothing else
+     slip in either of the last 2 frames  clamp_slip_to_grip, and START the squeal if
+                                          channel 3 is not already playing
+     no slip                              silence channel 3, but only on the frames where
+                                          bit 1 of loop_counter is clear — a two-frame
+                                          hysteresis that stops the squeal chattering
+
+   ⭐ The squeal is queued at amplitude 1 on sound slot 3, and the guard is
+   sound_chan_state[3]: the MOS is asked once, not once per frame.
+   --------------------------------------------------------------------------- */
+static void update_slip_sound_core(void)
+{
+    LDA(drive_state);                               /* $4779 */
+    CMP(0x02u);                                     /* $477B */
+    if (!cpu.C) {                                   /* $477D BCS → the silence arm */
+        check_wheel_slip_core(cpu.X);               /* $477F */
+        LDA(mem[MEM_slip_flags + cpu.X]);           /* $4782 */
+        AND(0xC0u);                                 /* $4785 — the last TWO frames */
+        if (!cpu.Z) {                               /* $4787 BNE → the squeal arm, $4795 */
+            clamp_slip_to_grip_core();
+            LDA(mem[SOUND_CHAN_STATE + 3]);         /* $4798 */
+            if (cpu.Z) {                            /* $479B BNE — already playing? */
+                sound_queue_core(0x03u, 0x01u);     /* $479D-$47A1 — slot 3, amplitude 1 */
+            }
+            return;
+        }
+        LDA(loop_counter);                          /* $4789 */
+        AND(0x02u);                                 /* $478B */
+        if (!cpu.Z) return;                         /* $478D BNE */
+    }
+    LDX(0x03u);                                     /* $478F */
+    sound_stop_channel_core(3u);                    /* $4791 */
+}
+
+/* The 6502-ABI shims. */
+void slip_magnitude(void)       { slip_magnitude_core(cpu.Y); }
+void store_slip_signed(void)    { store_slip_signed_core(); }
+void store_slip_clamped(void)   { store_slip_clamped_core(); }
+void store_slip_clamped_off_throttle(void) { store_slip_clamped_off_throttle_core(); }
+void derive_slip_reference(void) { derive_slip_reference_core(); }
+void check_wheel_slip(void)     { check_wheel_slip_core(cpu.X); }
+void clamp_slip_to_grip(void)   { clamp_slip_to_grip_core(); }
+void sound_osword(void)         { sound_osword_core(); }
+void sound_queue(void)          { sound_queue_core(cpu.A, cpu.Y); }
+void sound_queue_default(void)  { sound_queue_core(cpu.A, sound_volume); }
+void sound_stop_channel(void)   { sound_stop_channel_core(cpu.X); }
+void update_slip_sound(void)    { update_slip_sound_core(); }

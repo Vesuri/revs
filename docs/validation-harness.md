@@ -328,6 +328,55 @@ which fails 2223 cases.
 fixture at a defect that is not there: **before believing a fixture gap, evaluate the two
 expressions over the range the routine can actually reach.**
 
+## ⭐⭐ …and a FOURTEENTH, found by twin #77: the MOS CALL is an output channel too
+
+`mem[]` was half the output (the fifth lesson above), the hardware trace covered the other half
+for anything that writes the ULA, and the SMC trap covered a third channel.  **The slip/sound
+cluster added a fourth: an OS CALL.**
+
+`sound_stop_channel` (`$0E5A`) silences a MOS sound channel by flushing its buffer — `OSBYTE 21`
+on buffer `X|4`.  Delete its already-idle guard so it flushes on *every* call, and it silences a
+channel the game meant to leave playing.  That defect:
+
+* writes the same `mem[]` — the guarded store puts `0` over a `0` that was already there;
+* leaves the same registers — `PLA` restores A, and `OSBYTE 21` preserves X;
+* **passed 1000 cases.**
+
+So `diff_run` now records every `platform_mos_call` as `(entry, A, X, Y) AT THE CALL` and compares
+the two runs' logs **as a sequence**, exactly as it already did for hardware writes.  Storage lives
+in `src/platform/mos.cpp` under `REVS_HW_TRACE` — ⚠ 16 KB of BSS, which is why it is not in the
+Amiga build.  It is the ENTRY AND ARGUMENTS that are compared, not what the MOS did with them:
+that is `make sound`'s and `make mode7`'s question.
+
+⚠⚠ **And the instrument alone was not enough.** With the trace in place the same sabotage was
+caught in **3 of 1000 cases** — because the guard tests a byte that a random pre-state makes zero
+once in 256.  A three-case margin is a coverage hole wearing a pass; the fixture now forces the
+already-idle arm in half its cases (and a `[VACUOUS]` line fails if it ever stops doing so), which
+took the detection to 473 of 1000.  ⭐ **The pattern: a new output channel needs a new instrument
+AND a steered input.  The instrument tells you the defect is visible; only the steering makes it
+LIKELY.**
+
+⚠ Every MOS-calling twin written before this was untested in the same way — `kbd_test_key` (#57)
+among them.  They pass with the trace on, but that is now a measurement rather than an assumption.
+
+### ⚠ Three sabotages that were not defects, and the arguments that settled them
+
+The same cluster produced three survivors, all of them provably harmless, and each argument is
+written at the code rather than here (`src/gen/revs_native.c`, twins #67-#78):
+
+* `check_wheel_slip`'s declined arm uses **absolute** operands for element 12 where every other
+  access is `,X`.  That arm is reachable only with X = 0, so indexing them by the axle is the
+  same code.  The 6502 was saving three bytes.
+* `clamp_slip_to_grip`'s `CPX #0` at `$4B30` is **dead as a decision**: reaching it requires
+  `derive_slip_reference` to have accepted with the throttle down, which only happens for X = 1.
+* `sound_stop_channel`'s closing `AND #$FB` reads the **MOS's** X rather than the saved channel,
+  and OSBYTE 21 preserves X — so the two are equal in the model and on a real BBC alike.
+
+⭐ All three are the good kind of survivor: the differential's silence is the *evidence* for a
+structural claim about the 6502 code.  ⚠ Distinguishing them from a coverage hole is an argument
+about REACHABILITY, and the way to check the argument is to sabotage the sibling case — which is
+how #25 was separated from #26.
+
 ## Using it
 
 ```

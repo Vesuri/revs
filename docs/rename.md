@@ -17,10 +17,15 @@ row that says what is unsettled is worth more than a confident wrong name.  (The
 
 ---
 
-## The DRIVING MODEL's unnamed callees — six routines and six cells, all reached from `apply_driving_model`
+## The DRIVING MODEL's unnamed callees — two routines and six cells, all reached from `apply_driving_model`
 
-Opened 2026-08-18 while twinning that tree (twins #44-#66 took the multiply, the 16-bit
-arithmetic and the rotations; the sub-models and the slip/sound cluster are still transliterated).
+Opened 2026-08-18 while twinning that tree (twins #44-#78 took the multiply, the 16-bit
+arithmetic, the rotations and the slip/sound cluster; only the sub-models are still
+transliterated).  ⚠⚠ **Five of this table's original seven rows were applied by that cluster's
+twins, and TWO of the five descriptions were wrong in their own premise** — `$4B88`'s two arms
+were written down the wrong way round, and `$4AF7`'s evidence was `$4B88`'s.  A one-minute check
+of `pedal_mode`'s own row settled both.  That is the third time a prose entry in this file has
+survived weeks of re-reading and then failed the first mechanical check: **decide, don't re-read.**
 Each of these is about to be referenced by a hand-written twin, which is the last moment renaming
 is cheap.  ⚠ Everything here is a READING OF THE LISTING, not a measurement — the note beside each
 one says what would settle it.
@@ -31,24 +36,50 @@ one says what would settle it.
 |---|---|---|---|
 | `$4610` | `$75 = A`; `EOR $25` on `patch_byte_0[Y]` for a sign, `abs8`, `mul8`, then `abs8` again under the saved sign | `scale_section_byte` | it multiplies a PER-SECTION track byte by A — the same `$5400`/`$5500`/`$5600` question the entry below already has open |
 | `$4DC9` / `$4DCB` | halve `road_speed` into `$26` and `$28`, `INC drive_state`, `SEC ROR heading_step_lo`, then `sound_queue_default(4)` | `enter_spin_from_speed` / `enter_spin` | watch `drive_state` and the audio on the reference loop while provoking a spin: sound 4 should be the tyre squeal |
-| `$4B61` | `\|state[Y]\|` shifted left 5 with a `$7F` clamp, into `$8E`/`$8F` | `slip_magnitude` | it is check_wheel_slip's input; the clamp is the giveaway that it is a magnitude, not a coordinate |
-| `$4B47` | clamp `(math_hi:math_lo)` against `$8E`/`$8F`, re-sign it through `abs16_math`, store into `state[Y]+$0A`/`+$1A` | `store_slip_clamped` | — |
-| `$4B42` | `LDY pedal_mode; DEY; BEQ` → skip, else fall into `$4B47` | `store_slip_clamped_off_throttle` | the name only needs the polarity confirmed: `pedal_mode == 1` is the throttle |
-| `$4B88` | `X + 2` into `$78`, then either the slip magnitude of element 9 scaled by `grip_limit`, or (off the throttle) `gear_index - 1` and `$3D`; returns a carry | `derive_slip_reference` | its carry is what `check_wheel_slip` branches on — bracket it and see which arm a spin takes |
-| `$4AF7` | zeroes two elements, takes `$4B61`'s magnitude of element 8, flips the sign of `car_speed_hi`, then clamps through `$4B47`/`$4B88` | `settle_slip_state` | — |
 
 **Cells** the same twins have to name:
 
 * **`$0026` / `$0028`** — written together by `update_camera_and_drive_state` (`$44F5`-`$44F7`, both zeroed while driving normally) and by `enter_spin` (`road_speed/2` and `/4`); `$28` is added into the camera term at `$458A` and `$26` read at `$459F`/`$45B3`.  A spin's decaying camera shake is the obvious reading, and `$44EE`'s `DEC $28` twice per frame fits it.  ⇒ `spin_shake_a` / `spin_shake_b` [INFERRED] — settle by provoking a spin on the reference loop and watching which one drives the view.
 * **`$0009`** — `AND`ed with the User VIA timer in `update_engine_revs`' starter poll (`$498F`) and set to 7 beside `engine_running` at `$4995`; also written at `$1160` and `$187D`.  A randomness MASK, not a value.  ⇒ `starter_random_mask` [INFERRED].
 * **`$0022`** — an index: `LDX $22` then `LDY $0700,X` at `$452D`, and read the same way at `$11D4`/`$1F4E`/`$45DF`.  Whatever `$0700` is indexed BY (a car slot? a section?) is the question, and `$0700` has no row either.
-* **`$003D`** — written by `update_engine_revs`' tail (`$4A87`) beside `engine_note_target`, read by `update_camera_and_drive_state` (`$4506`) and `$4B88` (`$4BBA`).  ⇒ a second rev-derived term; name it once the engine model is a twin.
+* **`$003D`** — written by `update_engine_revs`' tail (`$4A87`) beside `engine_note_target`, read by `update_camera_and_drive_state` (`$4506`) and `derive_slip_reference` (`$4BBA`).  ⇒ a second rev-derived term; name it once the engine model is a twin.  Its twin carries it as a file-local `SLIP_REV_TERM` in the meantime.
 * **`$62F0`** — `update_camera_and_drive_state` steps it by ±1 or ±2 and clamps it to `$FB..3` (`$44F9`-`$452A`), i.e. a small signed counter with hysteresis, driven by the pedals and the speed.  ⇒ `camera_pitch_bias` [INFERRED] — the reference loop settles it in one run: brake hard and watch the horizon.
 * **`$62FB`** — `BIT $62FB` (bit 7) gates the unprompted grip loss at `$4C1C`.  ⇒ a per-session "surfaces can change" flag; find its writer first.
-* ⚠ **`$008E`/`$008F` are `plot_ptr3_lo`/`_hi`, and `$4B61`/`$4B47` are a SECOND TENANT** — the same shape as the `point_delta` entry below.  The windows do not overlap (the road pass and the driving model run in different halves of the frame), but a twin that says `plot_ptr3_lo` while computing a slip magnitude is a lie; the twins use a file-local name and this is the note that says why.
+* ⚠ **`$008E`/`$008F` are `plot_ptr3_lo`/`_hi`, and `slip_magnitude`/`store_slip_clamped` are a SECOND TENANT** — the same shape as the `point_delta` entry below.  The windows do not overlap (the road pass and the driving model run in different halves of the frame), but a twin that says `plot_ptr3_lo` while computing a slip magnitude is a lie; the twins use a file-local name and this is the note that says why.
 * ⚠ **`$0078`** is `hypot_min_lo` to the road pass and the OUTPUT ELEMENT INDEX (1 then 0) to `damp_and_derive_loads`' second loop — the same second-tenant problem as `$0079` below, the same treatment, and it belongs in whatever decision settles the arithmetic window.
 * ⚠ **`$0079`** is `hypot_min_hi` to the road pass and the SIGN/MODE byte to `mul16_signed` and `apply_angle_term` (bit 7 = negate the product, bit 6 = accumulate instead of store).  Same second-tenant problem, same treatment.
 
+
+## Twelve unnamed routines in three NAMED call trees — `draw_track_object`, `read_driving_controls`, `build_road_sign`
+
+Enumerated 2026-08-18 while walking those three trees; **this is an inventory, not a set of
+readings** — nothing here has been looked at yet, so no name is suggested and none should be
+invented from the address alone.
+
+| Tree | Still `FUN_*` |
+|---|---|
+| `draw_track_object` ($2AD1) | `$202A`, `$209A`, `$1E38` |
+| `read_driving_controls` ($1579) | `$15F4` (+ its `$160D` entry), `$1612` (+ `$162D`), `$1EE9`, `$1EFA`, `$1F9B`, `$63C5` |
+| `build_road_sign` ($4CA4) | `$2A76`, `$2AA6` (+ `$2AAD`), `$2AB3` |
+
+⭐ `read_driving_controls`' cluster is chained by **tail `JMP`s across four separate regions**
+($15xx → $1EE9 → $15F4 → $1EFA → $1612), which is why its tree is deep and its routines have no
+obvious boundaries: naming them is one pass over that whole chain, not six independent decisions.
+
+⚠⚠ **AND A WARNING ABOUT CALL TREES ON THIS CORPUS.** Two ways of computing them disagree, and
+both are right about different things:
+
+* the **6502 static graph** (`JSR` + tail `JMP` out of the region) is the game's call structure;
+* the **generated C** has strictly more edges, from two causes — the transpiler splits a routine
+  at every mid-function entry (so an internal fall-through becomes a call), and an **SMC branch
+  target becomes a `switch` over every reachable label**, which turns into a call whenever one of
+  those labels lives in another region.
+
+Measured example: the C shows `column_gap_walk → $1DE5`, which makes `draw_track_object` look as
+though it reaches `draw_gear_indicator` and the ADC.  It does not — `$1DE4` is an `RTS`; the edge
+is the self-modified branch offset at `$1DD5` enumerating `$1DE5` as one of its 30-odd possible
+targets.  **Quote the 6502 graph for "what calls what", and the C graph only for "what could the
+port execute".**
 
 ## `car_state_1` (`$0164,X`) / `car_state_2` (`$0178,X`) — which is ALONG and which is ACROSS
 

@@ -774,6 +774,34 @@ VALIDATE_FUNCS = {
     0x48C1,
     0x48EF,
     0x4937,
+    # ⭐⭐ TWINS #67-#78 — THE SLIP/SOUND CLUSTER, apply_driving_model's fourth group and the
+    # only one that reaches the MOS, so `make sound` is a second gate for it.
+    #   $4779 update_slip_sound   ( 44 B) the tyre squeal's whole decision, once per axle
+    #   $4A91 check_wheel_slip    (102 B) the magnitude, the limit, and one bit of history
+    #   $4AF7 clamp_slip_to_grip  ( 75 B) ...and what happens once it HAS been slipping
+    #   $4B42 store_slip_clamped_off_throttle (  5 B)
+    #   $4B47 store_slip_clamped  ( 10 B) three entries of one store
+    #   $4B51 store_slip_signed   ( 16 B)
+    #   $4B61 slip_magnitude      ( 39 B) |element Y| << 5, clamped to $7F
+    #   $4B88 derive_slip_reference (70 B) the reference term, and the C that declines
+    #   $0B4A sound_queue         ( 27 B) an 8-byte MOS SOUND block, then OSWORD 7
+    #   $0B47 sound_queue_default (  3 B) ...with the amplitude from sound_volume
+    #   $0B6E sound_osword        (  9 B) the shared OSWORD tail, restoring X
+    #   $0E5A sound_stop_channel  ( 26 B) OSBYTE 21 on buffer X|4
+    # ⚠ $0B4A is NOT self-modifying: `STX $0B46` writes sound_saved_x, a spare byte, and
+    # $0B73 reads it back.  Six of these routines had no name before this group.
+    0x4779,
+    0x4A91,
+    0x4AF7,
+    0x4B42,
+    0x4B47,
+    0x4B51,
+    0x4B61,
+    0x4B88,
+    0x0B4A,
+    0x0B47,
+    0x0B6E,
+    0x0E5A,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
