@@ -141,3 +141,34 @@ visible at once.  Until then twin #22's comment carries the warning at the point
 
 ⚠ Not a defect: the transliteration and the twin agree byte for byte (`make validate
 FN=point_distance_hypot`, and sabotage "the far arm forgets the -max/8 term" catches a swap).
+
+## `FUN_2D17` / `FUN_2D9A` / `FUN_2E20` / `FUN_2E99` / `FUN_2FC0` / `FUN_2FD7` — the span rasteriser's six unnamed arms
+
+Every routine `draw_road` reaches has a name except these six, and they are 553 of the subtree's
+1180 bytes — the whole span-plotting core under `interp_edge`.  What is `[DERIVED]` from the
+listing:
+
+* The four big ones are **arm variants of one unrolled span walk**, selected two ways at
+  `$2CDF`-`$2CF9`: an earlier branch picks the PAIR (`$2CE3`/`$2CE9` vs `$2CF3`/`$2CF9`), and the
+  sign of `$86` picks the member.  Each runs `road_span_plot` four times and `road_span_plot_2`
+  four times; the sign of `$86` swaps which half goes FIRST (`$2D17` and `$2E20` plot-then-plot_2,
+  `$2D9A` and `$2E99` the reverse), so `$86` is a direction and the arms are the same walk mirrored.
+* They differ in the per-column table their patched `BCC` offset comes from: `$3E50,X` (`$2D17`),
+  `$40D0,X` (`$2D9A`), `$3ED0,X` (`$2E20`), `$3ED8,X` (`$2E99`) — see `SMC_SITES` in
+  `tools/transpile.py`.
+* Only the first pair calls `$2FC0`/`$2FD7`, and those two are **whole routines switched between
+  "compare and continue" and "return immediately"** by `interp_edge` at `$2CAA`-`$2CB9` (opcode
+  slot `$E0`/`$60`).  They are not span plotters in their own right: each is a `CPX #$80` guard
+  plus `road_span_advance`.  A name has to say that they are the CONDITIONAL continuation of the
+  unrolled chain, not a fifth arm.
+* `$2D9A` ends `JMP $2F12` — a tail jump into the MIDDLE of `$2E99`, which is why the transpiler
+  emits `FUN_2F12` as a separate entry into the same region.  Any naming must keep that entry
+  visible or the region loses its second door.
+
+⇒ `[INFERRED]` naming shape, not yet applied because the direction/pair semantics are read off
+control flow only: `span_walk_fwd` / `span_walk_rev` for one pair and the same with the other
+pair's distinguishing role once it is known, plus `span_advance_guard_a` / `span_advance_guard_b`
+for `$2FC0`/`$2FD7`.  **What would settle the pair question cheaply:** the two call sites are
+reached from different branches at `$2CEF`; bracket each with a counter under
+`STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` and print which one runs for near vs far spans, rather than
+inventing a name for the split.
