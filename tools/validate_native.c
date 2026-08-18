@@ -2273,6 +2273,158 @@ static int test_span_leaves(void)
     return fail;
 }
 
+
+/* ==========================================================================
+   $2D17 / $2D9A / $2E20 / $2E99 — THE FOUR SPAN-WALK ARMS
+   --------------------------------------------------------------------------
+   Each is an eight-column chain, unrolled once and entered partway through by a computed
+   jump, looping one scan line at a time until plot_ptr2_hi reaches its bound.
+
+   ⚠⚠ A RANDOM PRE-STATE DOES NOT TERMINATE HERE, and that is the fixture's main job:
+     * the entry offset is a branch target.  A random byte is a branch to the middle of an
+       instruction — which the oracle traps on too, so it is a legal case and one in eight is
+       planted deliberately — but a byte that lands BACKWARD inside the chain makes the oracle
+       spin forever.  The eight legal offsets come out of the image's own tables.
+     * the two Y-step slots must be the SAME direction.  Opposite ones make Y oscillate, so
+       the abandon test (Y == the span's end line) is never reached.
+     * plot_ptr2_hi starts within a few lines of the bound, or the walk runs 256 scan lines of
+       eight plots each.
+     * the STEEP arms repeat a column until the DDA carries, so their delta is held above $20:
+       with a random small one that inner loop runs 256 times per column per line.
+   None of this weakens the comparison — it is what makes there BE one.
+   ========================================================================== */
+void draw_span_shallow_fwd(void);
+void draw_span_shallow_fwd__t6502(void);
+void draw_span_shallow_rev(void);
+void draw_span_shallow_rev__t6502(void);
+void draw_span_steep_fwd(void);
+void draw_span_steep_fwd__t6502(void);
+void draw_span_steep_rev(void);
+void draw_span_steep_rev__t6502(void);
+
+/* The image's own entry-offset tables — the eight values each arm's phase index can produce. */
+static const uint8_t ARM_OFF_SHALLOW_FWD[8] = { 0x08,0x13,0x1E,0x29,0x39,0x44,0x4F,0x5A };
+static const uint8_t ARM_OFF_SHALLOW_REV[8] = { 0x5A,0x4F,0x44,0x39,0x29,0x1E,0x13,0x08 };
+static const uint8_t ARM_OFF_STEEP_FWD[8]   = { 0x00,0x0B,0x16,0x21,0x2E,0x39,0x44,0x4F };
+static const uint8_t ARM_OFF_STEEP_REV[8]   = { 0x4F,0x44,0x39,0x2E,0x21,0x16,0x0B,0x00 };
+
+static int test_span_arms(void)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    int fail = 0, printed = 0, t, a;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    const int armCases = 400 * scale;
+
+    struct Arm {
+        const char* name; void (*nat)(void); void (*ref)(void);
+        unsigned table; const uint8_t* offsets; int rev, steep; uint8_t bound;
+    } arms[4] = {
+        { "draw_span_shallow_fwd", draw_span_shallow_fwd, draw_span_shallow_fwd__t6502,
+          0x3E50, ARM_OFF_SHALLOW_FWD, 0, 0, 0x44 },
+        { "draw_span_shallow_rev", draw_span_shallow_rev, draw_span_shallow_rev__t6502,
+          0x40D0, ARM_OFF_SHALLOW_REV, 1, 0, 0x2F },
+        { "draw_span_steep_fwd",   draw_span_steep_fwd,   draw_span_steep_fwd__t6502,
+          0x3ED0, ARM_OFF_STEEP_FWD,   0, 1, 0x44 },
+        { "draw_span_steep_rev",   draw_span_steep_rev,   draw_span_steep_rev__t6502,
+          0x3ED8, ARM_OFF_STEEP_REV,   1, 1, 0x2F },
+    };
+
+    for (a = 0; a < 4; a++) register_fixture(arms[a].name);
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+
+    for (a = 0; a < 4; a++) {
+        int subFail = 0, midChain = 0, trapped = 0, multiLine = 0, markerTrap = 0,
+            carryIn = 0;
+        if (!want(arms[a].name)) continue;
+        for (t = 0; t < armCases; t++) {
+            Cpu6502 c = zero_cpu();
+            uint8_t step = (xs() & 1) ? 0xC8 : 0x88;      /* INY or DEY, the SAME both ends */
+            unsigned phase = xs() % 8;
+            int lines = 1 + (int)(xs() % 4);
+            fill_random(pre);
+            plant_ram_pointers(pre);
+            plant_cap_smc(pre);
+
+            pre[0x2F47] = pre[0x2F60] = pre[0x2F89] = pre[0x2FA2] = step;
+            /* ⭐ One case in six plants a marker opcode the model cannot execute.  Without it
+               three sabotages SURVIVED: on the steep arms an end marker is a NO-OP by
+               construction (X is always a column 0-3 there, never the $80 that writes a
+               terminator, and its `LDX #$80 / CLC` tail is overwritten by the loop test), so
+               only the TRAP distinguishes an arm that calls one from an arm that does not. */
+            { int trapMarker = (xs() % 6 == 0);
+              uint8_t mop = trapMarker ? 0x12 : ((xs() & 1) ? 0xE0 : 0x60);
+              pre[0x2FC0] = pre[0x2FD7] = mop;
+              if (trapMarker) markerTrap++; }
+
+            /* The three screen pointers as interp_edge would leave them: page-aligned inside
+               the view's source blocks, with plot_ptr3 one page up.  ⚠ Random ones let a
+               plotter store land on plot_ptr2_hi itself, and the walk then runs 256 scan
+               lines instead of the four this case is trying to measure. */
+            pre[0x0070] = pre[0x0072] = pre[0x008E] = 0x00;
+            /* ...and both plotters' patched destinations at a real surface_edge buffer, for
+               the same reason. */
+            pre[0x2F4F] = pre[0x2F91] = 0x54;
+            pre[0x2F50] = pre[0x2F92] = 0x05;
+
+            /* One case in eight plants an offset that is not an instruction boundary, so the
+               trap arm is tested rather than avoided; both models must take it. */
+            if (xs() % 8 == 0) { pre[arms[a].table + phase] = 0xFF; trapped++; }
+            else               { pre[arms[a].table + phase] = arms[a].offsets[phase];
+                                 if (arms[a].offsets[phase] != arms[a].offsets[0]) midChain++; }
+
+            /* ⭐ One ASCENDING case in twelve starts ABOVE its bound, and it is the only way
+               the DDA's carry-in is ever 1: the loop test is `CPX #bound`, and its carry
+               reaches the first `ADC` of the next line.  Below the bound — which is the only
+               shape the game itself produces, since interp_edge derives plot_ptr_hi from a
+               block index under $28 — that carry is always 0, and a twin that hard-codes it
+               PASSES.  The walk then runs the long way round to the bound, which is why it is
+               one case in twelve and not one in two. */
+            if (!arms[a].rev && xs() % 12 == 0) {
+                pre[0x0073] = (uint8_t)(arms[a].bound + 1 + (xs() % 3));
+                carryIn++;
+            } else {
+                pre[0x0073] = (uint8_t)(arms[a].rev ? arms[a].bound + lines
+                                                    : arms[a].bound - lines);
+            }
+            pre[0x0071] = pre[0x0073];
+            pre[0x008F] = (uint8_t)(pre[0x0073] + 1);
+            if (lines > 1) multiLine++;
+            pre[0x0083] = (uint8_t)(0x20 + xs() % 0xC0);   /* both deltas well away from 0 */
+            pre[0x0084] = (uint8_t)(0x20 + xs() % 0xC0);
+            pre[0x0085] = (uint8_t)(xs() % 0x2C);          /* the source block */
+
+            c.A = (uint8_t)xs(); c.X = (uint8_t)phase; c.Y = (uint8_t)(xs() % 0x50);
+            /* Half the cases guarantee the abandon path: the end line is an even number of
+               single steps away, and both slots step the same way. */
+            if (xs() & 1)
+                pre[0x0082] = (uint8_t)(c.Y + (step == 0xC8 ? 2 : -2) * (1 + (int)(xs() % 6)));
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;
+            subFail += diff_run(arms[a].name, pre, c, arms[a].nat, arms[a].ref,
+                                liveMask, t, &printed);
+        }
+        fail += subFail;
+        if (midChain == 0 || trapped == 0 || multiLine == 0 || markerTrap == 0
+            || (!arms[a].rev && carryIn == 0)) {
+            printf("[VACUOUS] %s: %d mid-chain entries, %d trap offsets, %d multi-line, "
+                   "%d marker traps, %d carry-in of %d — all must be non-zero\n",
+                   arms[a].name, midChain, trapped, multiLine, markerTrap, carryIn, armCases);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d entered mid-chain, %d trap offsets, %d ran >1 scan line, "
+               "%d unexecutable markers, %d with a carry into the DDA)\n",
+               arms[a].name, armCases, subFail, midChain, trapped, multiLine, markerTrap,
+               carryIn);
+    }
+
+    unsetenv("REVS_SMC_CONTINUE");
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -2293,6 +2445,7 @@ int main(int argc, char** argv)
     fail += test_road_transforms();
     fail += test_geometry_leaves();
     fail += test_span_leaves();
+    fail += test_span_arms();
 
     fail += check_coverage();
     fail += report_unvalidated_natives();

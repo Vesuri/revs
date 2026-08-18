@@ -675,6 +675,17 @@ VALIDATE_FUNCS = {
     0x2F87,
     0x2FC0,
     0x2FD7,
+    #   $2D17 draw_span_shallow_fwd (131 B) the X-major walk, and its three mirrors
+    #   $2D9A draw_span_shallow_rev (134 B)
+    #   $2E20 draw_span_steep_fwd   (121 B)
+    #   $2E99 draw_span_steep_rev   (172 B)
+    # ⚠ All four are entered by a COMPUTED JUMP into the middle of an unrolled chain, so each
+    # twin carries a declared coverage limit — the sixteen (shallow) or eight (steep) slot
+    # offsets its table in the image holds, and platform_smc_unhandled for anything else.
+    0x2D17,
+    0x2D9A,
+    0x2E20,
+    0x2E99,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

@@ -3936,3 +3936,184 @@ static void span_end_marker(unsigned slot, unsigned ptr)
 
 void span_end_marker_p1(void) { span_end_marker(SLOT_MARKER_P1, MEM_plot_ptr_lo); }
 void span_end_marker_p2(void) { span_end_marker(SLOT_MARKER_P2, MEM_plot_ptr2_lo); }
+
+/* ---------------------------------------------------------------------------
+   $2D17 draw_span_shallow_fwd  (twin #31)   $2D9A draw_span_shallow_rev  (#32)
+   $2E20 draw_span_steep_fwd    (twin #33)   $2E99 draw_span_steep_rev    (#34)
+   ---------------------------------------------------------------------------
+   THE SPAN WALK ITSELF, and the four are one algorithm with two independent choices:
+
+     X-MAJOR ("shallow", dx >= dy)   one pixel per column; the DDA adds dy and a carry is
+                                     what moves the pixel to the next scan line
+     Y-MAJOR ("steep",   dx <  dy)   the column REPEATS until the DDA carries, which is how
+                                     a steep span paints several lines of the same column
+     ASCENDING / DESCENDING          columns 0..3 or 3..0, the three screen pointers and the
+                                     source-block index stepped up or down, and the bound
+                                     plot_ptr2_hi == $44 or == $2F
+
+   One iteration of the loop is EIGHT columns: four through road_span_plot into one buffer,
+   then the source block steps, then four through road_span_plot_2 into the other.  The
+   shallow arms close each half with its end marker; the steep arms have none.  The two
+   descending arms fall into the surface cap at $2F12 when the walk finishes.
+
+   ⭐⭐ THE ENTRY IS A COMPUTED JUMP INTO THE MIDDLE OF THE UNROLLED CHAIN.  The sub-column
+   phase (math_hi & 7) indexes the arm's entry-offset table, the byte is written over the
+   chain's own `BCC` operand, and the `CLC` in front of that branch makes it unconditional:
+   "start at sub-column k".  It is the standard way to run a partial unrolled loop without a
+   counter, and it applies to the FIRST iteration only — every later one starts at the top.
+
+   ⚠ DECLARED COVERAGE LIMIT, and it is derived rather than assumed: the twin recognises the
+   chain top and the sixteen (shallow) or eight (steep) slot offsets, which is exactly the set
+   the four tables in the image hold.  Those tables are static — `LDA table,X` at $2D17 /
+   $2D9A / $2E20 / $2E99 are the only references to them in the whole listing, and although
+   they sit inside the $80-spaced source blocks they sit in the blocks' TAILS (offset $50 and
+   $58), above the $50 scan lines the span plotters can reach through ($70),Y.  Anything else
+   goes to platform_smc_unhandled, exactly as an unrecognised opcode slot does.
+   --------------------------------------------------------------------------- */
+
+/* Where an entry offset may land, relative to the chain's own base.  Both shallow arms share
+   one pair of tables and both steep arms share one: the two mirrors have identical layouts. */
+static const uint8_t SHALLOW_DDA_OFF[8] = { 0x02, 0x0D, 0x18, 0x23, 0x33, 0x3E, 0x49, 0x54 };
+static const uint8_t SHALLOW_COL_OFF[8] = { 0x08, 0x13, 0x1E, 0x29, 0x39, 0x44, 0x4F, 0x5A };
+static const uint8_t STEEP_COL_OFF[8]   = { 0x00, 0x0B, 0x16, 0x21, 0x2E, 0x39, 0x44, 0x4F };
+
+typedef struct {
+    unsigned table;        /* the arm's entry-offset table, indexed by the sub-column phase */
+    unsigned operand;      /* the branch operand byte the offset is written over */
+    unsigned base;         /* the address that offset is relative to (the branch's own next) */
+    unsigned addend;       /* what the DDA accumulates */
+    unsigned subtrahend;   /* ...and what it takes back off when it carries */
+    int      rev;          /* descending */
+    int      steep;        /* Y-major */
+    uint8_t  bound;        /* the plot_ptr2_hi value at which the walk stops */
+} SpanArm;
+
+static const SpanArm ARM_SHALLOW_FWD = { 0x3E50u, 0x2D28u, 0x2D29u, SPAN_DY, SPAN_DX, 0, 0, 0x44u };
+static const SpanArm ARM_SHALLOW_REV = { 0x40D0u, 0x2DABu, 0x2DACu, SPAN_DY, SPAN_DX, 1, 0, 0x2Fu };
+static const SpanArm ARM_STEEP_FWD   = { 0x3ED0u, 0x2E2Fu, 0x2E30u, SPAN_DX, SPAN_DY, 0, 1, 0x44u };
+static const SpanArm ARM_STEEP_REV   = { 0x3ED8u, 0x2EA8u, 0x2EA9u, SPAN_DX, SPAN_DY, 1, 1, 0x2Fu };
+
+/* Decode a patched entry offset into "start at column c", plus whether the DDA test for that
+   first column is skipped (the offset named its `LDX #k` slot) and whether the chain's own
+   top runs first.  Returns 0 for an offset the chain cannot mean. */
+static int span_entry_decode(const SpanArm* arm, uint8_t offset,
+                             int* column, int* forced, int* runTop)
+{
+    int i;
+
+    *column = 0; *forced = 0; *runTop = 0;
+
+    if (arm->steep) {
+        for (i = 0; i < 8; i++)
+            if (offset == STEEP_COL_OFF[i]) { *column = i; *forced = 1; return 1; }
+    } else {
+        if (offset == 0x00) { *runTop = 1; return 1; }     /* the `LDX #$80` at the top */
+        for (i = 0; i < 8; i++) {
+            if (offset == SHALLOW_COL_OFF[i]) { *column = i; *forced = 1; return 1; }
+            if (offset == SHALLOW_DDA_OFF[i]) { *column = i; return 1; }
+        }
+    }
+    /* ⚠ The trap reports the computed TARGET, not the offset byte — that is what the
+       transliteration's switch has in hand at the same point, and the harness diffs it. */
+    platform_smc_unhandled(arm->operand - 1, (uint16_t)(arm->base + (int8_t)offset));
+    return 0;
+}
+
+/* $2F12-$2F18 — the two descending arms' shared exit: replay the plotters' Y step once more
+   (the opcode is copied out of road_span_plot's own entry slot) and cap the run's last line. */
+static void span_walk_cap(void)
+{
+    LDA(mem[SLOT_STEP_P1_IN]);
+    mem[SLOT_STEP_CAP] = cpu.A;
+    if (!span_step_y(SLOT_STEP_CAP)) return;
+    span_cap_line();
+}
+
+static void span_walk(const SpanArm* arm)
+{
+    int col, forced, runTop, first = 1;
+
+    /* Read this sub-column phase's entry offset and write it over the chain's branch operand.
+       ⚠ That store is a real mem[] write and the differential sees it, so it stays even
+       though the twin then decodes the offset rather than executing it. */
+    LDA(mem[arm->table + cpu.X]);
+    mem[arm->operand] = cpu.A;
+
+    if (!arm->steep) LDX(0x80u);        /* "this column has plotted nothing yet" */
+
+    /* The accumulator starts at MINUS the delta the DDA gives back, so the first carry is
+       what lands the first pixel. */
+    LDA(mem[arm->subtrahend]);
+    EOR(0xFFu);
+    cpu.A = (uint8_t)adc_step(cpu.A, 0x01u, 0);
+    cpu.C = 0;
+
+    if (!span_entry_decode(arm, mem[arm->operand], &col, &forced, &runTop)) return;
+
+    for (;;) {
+        int startCol = first ? col : 0;
+        int i;
+
+        /* ⚠ The shallow arms only.  A steep arm reaches its own top with X holding the last
+           column it plotted, and nothing reads X before the next `LDX #k` — so planting $80
+           there would be observationally identical, and the sabotage that does it PASSES.
+           The shallow arms are different because their end markers test X against $80.  */
+        if (!arm->steep && (!first || runTop)) LDX(0x80u);
+
+        for (i = startCol; i < 8; i++) {
+            int column   = arm->rev ? 3 - (i & 3) : (i & 3);
+            int usePlot2 = arm->rev ? (i < 4) : (i >= 4);
+
+            /* The half boundary: close the first buffer's run and step the source block.
+               Skipped when the entry landed past it, which is the whole point of the
+               computed entry. */
+            if (i == 4 && startCol < 4) {
+                if (!arm->steep) { if (arm->rev) span_end_marker_p1(); else span_end_marker_p2(); }
+                mem[SPAN_BLOCK] = (uint8_t)(mem[SPAN_BLOCK] + (arm->rev ? -1 : 1));
+            }
+
+            if (arm->steep) {
+                /* Y-major: the same column, again and again, until the DDA carries. */
+                for (;;) {
+                    LDX((uint8_t)column);
+                    if (usePlot2) road_span_plot_2(); else road_span_plot();
+                    if (span_chain_abandoned()) return;
+                    cpu.A = (uint8_t)adc_step(cpu.A, mem[arm->addend], cpu.C);
+                    if (cpu.C) break;
+                }
+                cpu.A = (uint8_t)sbc_step(cpu.A, mem[arm->subtrahend], cpu.C);
+            } else {
+                /* X-major: one column per step, and only a carry lands a pixel.  The very
+                   first column of a computed entry is plotted unconditionally. */
+                if (!(first && i == startCol && forced)) {
+                    cpu.A = (uint8_t)adc_step(cpu.A, mem[arm->addend], cpu.C);
+                    if (!cpu.C) continue;
+                    cpu.A = (uint8_t)sbc_step(cpu.A, mem[arm->subtrahend], cpu.C);
+                }
+                LDX((uint8_t)column);
+                if (usePlot2) road_span_plot_2(); else road_span_plot();
+                if (span_chain_abandoned()) return;
+            }
+        }
+
+        if (!arm->steep) { if (arm->rev) span_end_marker_p2(); else span_end_marker_p1(); }
+
+        /* One scan line down (or up): the three screen pointers and the source block move
+           together, and plot_ptr2_hi is the one the bound is measured on. */
+        if (arm->rev) { plot_ptr2_hi--; plot_ptr_hi--; plot_ptr3_hi--; mem[SPAN_BLOCK]--; }
+        else          { plot_ptr2_hi++; plot_ptr_hi++; plot_ptr3_hi++; mem[SPAN_BLOCK]++; }
+
+        LDX(plot_ptr2_hi);
+        CPX(arm->bound);
+        if (arm->rev) cpu.C = 0;        /* $2E1A / $2F0F — the descending arms clear it */
+        if (cpu.Z) break;
+        first = 0;
+    }
+
+    if (arm->rev) span_walk_cap();      /* $2D9A's `JMP $2F12`, and $2E99's fall-through */
+}
+
+void draw_span_shallow_fwd(void) { span_walk(&ARM_SHALLOW_FWD); }
+void draw_span_shallow_rev(void) { span_walk(&ARM_SHALLOW_REV); }
+void draw_span_steep_fwd(void)   { span_walk(&ARM_STEEP_FWD);   }
+void draw_span_steep_rev(void)   { span_walk(&ARM_STEEP_REV);   }
