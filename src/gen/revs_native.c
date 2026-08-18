@@ -5264,7 +5264,7 @@ void neg16_math_noinit(void) { neg16_math_noinit_core(); }
 #define ANGLE_TERM_LO  0x0082u   /* point_delta_lo[2]  — the car angle; bit 0 is its SIGN */
 #define ANGLE_TERM_HI  0x0083u   /* point_delta_hi[0] */
 #define ANGLE_SIGN     0x0079u   /* hypot_min_hi — here the sign (bit 7) and mode (bit 6) byte */
-#define MODEL_TERM     0x007Cu   /* point_dist_hi — the destination element index */
+#define MODEL_TERM     0x007Cu   /* point_dist_lo — the destination element index */
 #define MODEL_SRC_SLOT 0x007Fu   /* span_line_cursor — apply_angle_term_at's source element */
 #define MODEL_STATE_LO 0x62D0u   /* model_state_lo[0..14] */
 #define MODEL_STATE_HI 0x62E0u   /* model_state_hi[0..14] */
@@ -5496,3 +5496,328 @@ void add_signed_into_element(void) { add_signed_into_element_core(cpu.Y); }
 void apply_angle_term(void)      { apply_angle_term_core(cpu.A, cpu.X, cpu.Y); }
 void apply_angle_term_at(void)   { apply_angle_term_at_core(cpu.A, cpu.X); }
 void kbd_test_key(void)          { kbd_test_key_core(); }
+
+/* ===========================================================================
+   TWINS #58-#66 — THE DRIVING MODEL'S ROTATIONS AND INTEGRATIONS
+   ---------------------------------------------------------------------------
+   apply_driving_model's third group, and the one that finally says what the model DOES: the
+   layer above the 16-bit arithmetic, where the state vector is treated as vectors and rates
+   rather than as numbers.
+
+     $4729 stage_accum_delta      the midpoint offset — accumulator -= v, delta = 1.5v
+     $47A5 rotate_accum_by_steer  the (8, 9) pair turned by the steering angle
+     $47C5 rotate_pair_a_by_steer ...and the (10, 12) pair, with the opposite pair of modes
+     $47F9 damp_and_derive_loads  elements 10..13 decayed by 4, then loads 6 and 7 rebuilt
+     $48C7 rotate_state_pair      THE 2x2 ROTATION — four apply_angle_term_at calls
+     $48B9 rotate_state_0_into_8  ...entered for (source 0, dest 8, mode $C0)
+     $48C1 rotate_state_6_into_3  ...and for (source 6, dest 3, mode $40)
+     $48EF integrate_car_position the camera triple, at 24-bit precision, plus the heading
+     $4937 integrate_state_rates  elements 3/4/5 integrated into 0/1/2, also at 24 bits
+
+   ⭐ EVERY LEAF UNDERNEATH THESE WAS ALREADY A TWIN (#50-#57), so there is no interpreter
+   left below this line and the compression here is structural rather than arithmetic: two
+   nested `ROR` loops over four state elements become one shift, a hand-unrolled 24-bit
+   doubling becomes `wide <<= n`, and the four-call rotation becomes four named calls whose
+   arguments are visible instead of three registers stepped between them.
+
+   ⚠⚠ $48EF's FIRST ADD HAS NO `CLC` — its carry comes from the `ROL` immediately above it, so
+   the doubling and the add are one 24-bit operation.  A twin that starts the add with a clear
+   carry is wrong exactly half the time, and nothing but a differential would say so.
+   ⚠ THE LOOP EXIT REGISTERS ARE PART OF THE CONTRACT.  Four of these routines end by falling
+   out of a `DEX`/`DEY` loop, so X and Y leave holding the value that failed the test ($FF,
+   $FE) and the differential compares them; the twins set them explicitly where the C loop has
+   no equivalent, with the instruction that wrote them named.
+   =========================================================================== */
+
+#define VIEW_ORIGIN_FRAC 0x62B1u  /* view_origin_frac[0..2] — the camera's sub-byte remainder */
+#define VIEW_ORIGIN_LO   0x6280u  /* view_origin_lo[0..2] */
+#define VIEW_ORIGIN_HI   0x6283u  /* view_origin_hi[0..2] */
+#define MODEL_STATE_FRAC 0x62AEu  /* model_state_frac[0..2] — elements 0..2 at 24 bits */
+#define MODEL_OUT_INDEX  0x0078u  /* hypot_min_lo — here damp_and_derive_loads' OUTPUT index */
+#define MODEL_ROT_MODE   0x0088u  /* point_delta_sign[2] — here the rotation's sign/mode byte */
+#define STEER_ANGLE      2u       /* car_angle[2], the one the frame's steering wrote */
+
+/* ---------------------------------------------------------------------------
+   $4729  stage_accum_delta — THE MIDPOINT OFFSET  (twin #58)
+   ---------------------------------------------------------------------------
+   Scales element 2 (the heading step) by $58/$100, SUBTRACTS that from the accumulator, and
+   parks 1.5x it in model_accum_delta.  The four sub-models that run next therefore see the
+   accumulator at x - v while apply_driving_model restores x and adds +1.5v afterwards — the
+   shape of a midpoint integration, and the reason this routine looks like it corrupts state.
+
+   ⚠ scale16_by_y takes the value's SIGN from the caller's N, which here is the `LDA $62E2`
+   that loaded its high byte — so the load's flags are live across the call.
+   --------------------------------------------------------------------------- */
+static void stage_accum_delta_core(void)
+{
+    math_lo = heading_step_lo;                          /* $4729-$472C */
+    cpu.Y   = 0x58u;                                    /* $472E — the scale */
+    cpu.A   = (uint8_t)load_a(heading_step_hi);         /* $4730 — its N is the value's sign */
+    scale16_by_y_core(cpu.A, 0x58u);                    /* $4733 */
+    math_hi = cpu.A;                                    /* $4736 */
+
+    /* $4738-$4746 — the accumulator loses the scaled term for the next four sub-models. */
+    model_accum_lo = (uint8_t)sub_from(model_accum_lo, math_lo);
+    model_accum_hi = (uint8_t)sbc_step(model_accum_hi, math_hi, cpu.C);
+
+    mul16_by_1_5_core();                                /* $4749 — 1.5x what was removed */
+    model_accum_delta_hi = cpu.A;                       /* $474C */
+    cpu.A = (uint8_t)load_a(math_lo);                   /* $474E */
+    model_accum_delta_lo = cpu.A;                       /* $4750 */
+}
+
+/* ---------------------------------------------------------------------------
+   $47A5 / $47C5  the two INCREMENTAL ROTATIONS BY THE STEERING ANGLE  (twins #59, #60)
+   ---------------------------------------------------------------------------
+   Both are the same three steps over a different pair of elements: element 14 takes one
+   component times the steering angle, the OTHER component accumulates the second product, and
+   model_integrate_element then advances the first component by element 14.  That is a rotation
+   applied one frame at a time — the small-angle form, where sin(theta) ~ theta and the cosine
+   term is left as 1.
+
+   The mode bytes are the whole difference: $80/$40 for the (8, 9) pair and $00/$C0 for the
+   (10, 12) one, i.e. the two products swap signs between the two rotations, which is what
+   makes one turn the opposite way from the other.
+   --------------------------------------------------------------------------- */
+static void rotate_accum_by_steer_core(void)
+{
+    /* $47A5-$47AF — element 14 = -(element 9 * steer):  bit 7 negates, bit 6 clear stores. */
+    mem[ANGLE_SIGN] = 0x80u;
+    apply_angle_term_core(14, STEER_ANGLE, 9);
+    /* $47B2-$47BC — element 9 += element 8 * steer:  bit 6 set accumulates instead. */
+    mem[ANGLE_SIGN] = 0x40u;
+    apply_angle_term_core(9, STEER_ANGLE, 8);
+    /* $47BF-$47C1 — and element 8 advances by the delta just built. */
+    cpu.X = 8u;                                 /* $47BF — X is live at the exit */
+    model_integrate_element_core(8);
+}
+
+static void rotate_pair_a_by_steer_core(void)
+{
+    /* $47C5-$47CF — element 14 = +(element 12 * steer), stored. */
+    mem[ANGLE_SIGN] = 0x00u;
+    apply_angle_term_core(14, STEER_ANGLE, 12);
+    /* $47D2-$47DC — element 12 -= element 10 * steer. */
+    mem[ANGLE_SIGN] = 0xC0u;
+    apply_angle_term_core(12, STEER_ANGLE, 10);
+    /* $47DF-$47E1 */
+    cpu.X = 10u;                                /* $47DF — X is live at the exit */
+    model_integrate_element_core(10);
+}
+
+/* ---------------------------------------------------------------------------
+   $47F9  damp_and_derive_loads — THE SUSPENSION DECAY AND THE TWO LOADS  (twin #61)
+   ---------------------------------------------------------------------------
+   Three things, in order:
+
+     1. element 5 = (element 10 - element 11) * $4E/$100 — the DIFFERENCE of the two damped
+        quantities, which is the only place a difference of them is taken.
+     2. elements 10..13 halved TWICE, arithmetically (the `ROR`'s carry is seeded from each
+        value's own sign, which is a one-instruction signed shift on a 6502).  A per-frame
+        decay of four: these are the model's transient terms and this is their damping.
+     3. elements 6 and 7 rebuilt from the damped pairs, each as
+        ((1.5 * element 11+X) + element 10+X) * $CD/$100, doubled.  X steps 2 then 0, so
+        element 7 comes from the (12, 13) pair and element 6 from the (10, 11) one.
+
+   Finally the high byte of element 7 is copied to wheel_load, which is the one value
+   update_grip_limits reads out of this routine.
+
+   ⚠ A SECOND TENANT of hypot_min_lo ($78): here it is the OUTPUT ELEMENT INDEX, 1 then 0, and
+   has nothing to do with the road pass's sorted magnitudes (docs/rename.md).
+   --------------------------------------------------------------------------- */
+static void damp_and_derive_loads_core(void)
+{
+    uint8_t slot, pass;
+
+    /* 1. $47F9-$4812 — element 5 = (element 10 - element 11) scaled.  The high subtract's N
+       is the sign scale16_by_y carries across its multiply on the stack. */
+    cpu.Y   = 0x4Eu;                                            /* $47F9 — the scale */
+    math_lo = (uint8_t)sub_from(mem[MODEL_STATE_LO + 10], mem[MODEL_STATE_LO + 11]);
+    cpu.A   = (uint8_t)sbc_step(mem[MODEL_STATE_HI + 10], mem[MODEL_STATE_HI + 11], cpu.C);
+    scale16_by_y_core(cpu.A, 0x4Eu);                            /* $480A */
+    mem[MODEL_STATE_HI + 5] = cpu.A;                            /* $480D */
+    mem[MODEL_STATE_LO + 5] = math_lo;                          /* $4810-$4812 */
+
+    /* 2. $4815-$482A — elements 13 down to 10, halved, twice.  The second ROR's carry out is
+       dead: the next pass reseeds it from the sign and the code below CLCs before its add. */
+    for (pass = 0; pass < 2; pass++) {                          /* $4815, $4829-$482A */
+        for (slot = 13; slot != 9; slot--) {                    /* $4817, $4826-$4827 */
+            uint8_t hi = mem[MODEL_STATE_HI + slot];
+            uint8_t lo = mem[MODEL_STATE_LO + slot];
+            mem[MODEL_STATE_HI + slot] = (uint8_t)((hi >> 1) | (hi & 0x80u));
+            mem[MODEL_STATE_LO + slot] = (uint8_t)((lo >> 1) | ((hi & 1u) << 7));
+        }
+    }
+
+    /* 3. $482C-$4864 — the two loads. */
+    mem[MODEL_OUT_INDEX] = 1u;                                  /* $482E-$4830 */
+    for (slot = 2; slot != 0xFEu; slot = (uint8_t)(slot - 2)) {  /* $482C, $4862-$4864 */
+        math_lo = mem[MODEL_STATE_LO + 11 + slot];              /* $4832-$4835 */
+        math_hi = mem[MODEL_STATE_HI + 11 + slot];              /* $4837-$483A */
+        mul16_by_1_5_core();                                    /* $483C */
+        math_hi = cpu.A;                                        /* $483F */
+
+        /* $4841-$484D — + the other element of the pair, and the sum's N is again the sign
+           scale16_by_y wants. */
+        math_lo = (uint8_t)adc_step(math_lo, mem[MODEL_STATE_LO + 10 + slot], 0);
+        cpu.Y   = 0xCDu;                                        /* $4849 — the scale */
+        cpu.A   = (uint8_t)adc_step(math_hi, mem[MODEL_STATE_HI + 10 + slot], cpu.C);
+        scale16_by_y_core(cpu.A, 0xCDu);                        /* $4850 */
+
+        /* $4853-$4855 — and the 16-bit product doubled.  ⚠ The `ROL A`'s carry OUT is this
+           routine's exit C: nothing between here and the RTS writes C again, so the doubling
+           of the LAST load is what the caller sees.  Found by the differential, which
+           reported the flags alone with mem[] byte-exact. */
+        { uint8_t low = math_lo, high = cpu.A;
+          math_lo = (uint8_t)(low << 1);
+          cpu.A   = (uint8_t)((high << 1) | (low >> 7));
+          cpu.C   = (uint8_t)(high >> 7); }
+
+        cpu.Y = mem[MODEL_OUT_INDEX];                           /* $4856 */
+        mem[MODEL_STATE_HI + 6 + cpu.Y] = cpu.A;                /* $4858 */
+        mem[MODEL_STATE_LO + 6 + cpu.Y] = math_lo;              /* $485D */
+        mem[MODEL_OUT_INDEX]--;                                 /* $4860 */
+    }
+    cpu.X = 0xFEu;                     /* $4862/$4863's two DEXs — X is live at the exit */
+
+    /* $4866-$4869 — the one value update_grip_limits reads out of here. */
+    cpu.A = (uint8_t)load_a(mem[MODEL_STATE_HI + 7]);
+    wheel_load = cpu.A;
+}
+
+/* ---------------------------------------------------------------------------
+   $48C7  rotate_state_pair — THE 2x2 ROTATION  (twins #62, #63, #64)
+   ---------------------------------------------------------------------------
+   Four apply_angle_term_at calls that turn the (source, source + 1) pair through car angles 1
+   and 0 into the (dest, dest + 1) pair:
+
+       dest     =  source * angle1  +/- (source + 1) * angle0
+       dest + 1 =  (source + 1) * angle1  -/+ source * angle0
+
+   The two entries above it are the arguments: $48B9 rotates elements 0/1 into 8/9 with mode
+   $C0 and $48C1 rotates 6/7 into 3/4 with mode $40 — mode bit 6 makes the second and fourth
+   calls ACCUMULATE onto the first and third, and the `EOR #$80` on the fourth is the sign flip
+   that makes the four products a rotation rather than four independent scalings.
+
+   ⚠ A FOURTH TENANT of $0088, which is point_delta_sign[2] to build_track_geometry, a clip
+   history to the span rasteriser and a surface class to mark_line_surfaces (docs/rename.md).
+   Here it is where the mode byte lives across the four calls, because A is needed for it.
+   --------------------------------------------------------------------------- */
+static void rotate_state_pair_core(uint8_t dest, uint8_t source, uint8_t mode)
+{
+    mem[MODEL_SRC_SLOT]  = source;              /* $48C7 */
+    mem[MODEL_TERM]      = dest;                /* $48C9 */
+    mem[MODEL_ROT_MODE]  = mode;                /* $48CB */
+
+    /* $48CD-$48D1 — dest = source * angle 1, stored positive. */
+    apply_angle_term_at_core(0x00u, 1u);
+    /* $48D4-$48D9 — dest += (source + 1) * angle 0, signed by the mode byte. */
+    mem[MODEL_SRC_SLOT]++;
+    apply_angle_term_at_core(mem[MODEL_ROT_MODE], 0u);
+    /* $48DC-$48E1 — dest + 1 = (source + 1) * angle 1, stored positive. */
+    mem[MODEL_TERM]++;
+    apply_angle_term_at_core(0x00u, 1u);
+    /* $48E4-$48EB — dest + 1 += source * angle 0 with the OPPOSITE sign. */
+    mem[MODEL_SRC_SLOT]--;
+    apply_angle_term_at_core((uint8_t)(mem[MODEL_ROT_MODE] ^ 0x80u), 0u);
+
+    cpu.X = 0u;                                 /* $48E4's DEX — X is live at the exit */
+}
+
+/* ---------------------------------------------------------------------------
+   $48EF  integrate_car_position — THE CAMERA, AT 24 BITS  (twin #65)
+   ---------------------------------------------------------------------------
+   Element 1 is added (doubled) into view_origin component 2 and element 0 into component 0,
+   each as a 24-bit add through view_origin_frac — the camera moves by fractions of a unit per
+   frame, so the remainder has to be carried or a slow car never moves at all.  Then the
+   heading advances by element 2.
+
+   ⚠⚠ THE FIRST ADD HAS NO `CLC`: $490D's carry is the one the `ROL shared_temp_76` above it
+   left, i.e. the doubling's own carry out.  The doubling and the add are ONE 24-bit operation.
+   ⚠ The name's second half is a misnomer worth keeping in mind — what $4927 advances is the
+   HEADING, not a position (disasm/symbols.csv).
+   --------------------------------------------------------------------------- */
+static void integrate_car_position_core(void)
+{
+    uint8_t slot;
+
+    /* $48EF-$4925 — element 1 into component 2, then element 0 into component 0. */
+    for (slot = 1; slot != 0xFFu; slot--) {
+        unsigned comp = (unsigned)slot * 2u;            /* Y = 2 then 0, stepped by two */
+        uint8_t  lo   = mem[MODEL_STATE_LO + slot];     /* $48F7-$48FA */
+        uint8_t  hi   = mem[MODEL_STATE_HI + slot];     /* $48FC */
+        uint8_t  ext  = (uint8_t)((hi & 0x80u) ? 0xFFu : 0x00u);  /* $48FF-$4901 sign extend */
+        unsigned carry;
+        Adc      r;
+
+        /* $4903-$4908 — one 24-bit doubling, whose carry OUT feeds the add below. */
+        math_lo        = (uint8_t)(lo << 1);
+        math_hi        = (uint8_t)((hi << 1) | (lo >> 7));
+        shared_temp_76 = (uint8_t)((ext << 1) | (hi >> 7));
+        carry          = (unsigned)(ext >> 7);
+        cpu.A          = math_hi;
+
+        r = adc_value(mem[VIEW_ORIGIN_FRAC + comp], math_lo, carry);   /* $490A-$490F */
+        mem[VIEW_ORIGIN_FRAC + comp] = r.val;
+        r = adc_value(mem[VIEW_ORIGIN_LO + comp], math_hi, r.carry);   /* $4912-$4917 */
+        mem[VIEW_ORIGIN_LO + comp] = r.val;
+        cpu.A = (uint8_t)adc_step(mem[VIEW_ORIGIN_HI + comp], shared_temp_76, r.carry);
+        mem[VIEW_ORIGIN_HI + comp] = cpu.A;                            /* $491A-$491F */
+    }
+    cpu.Y = 0xFEu;                     /* $4922/$4923's two DEYs — both leave holding the */
+    cpu.X = 0xFFu;                     /* $4924's DEX          — value that failed the test */
+
+    /* $4927-$4934 — and the heading advances by element 2, the frame's heading step. */
+    car_heading_lo = (uint8_t)adc_step(car_heading_lo, heading_step_lo, 0);
+    cpu.A          = (uint8_t)adc_step(car_heading_hi, heading_step_hi, cpu.C);
+    car_heading_hi = cpu.A;
+}
+
+/* ---------------------------------------------------------------------------
+   $4937  integrate_state_rates — ELEMENTS 3/4/5 ARE THE RATES OF 0/1/2  (twin #66)
+   ---------------------------------------------------------------------------
+   For X = 2, 1, 0: element 3+X is shifted left three places (FIVE for X = 2) into a 24-bit
+   value and added into element X, with the sub-byte remainder carried in model_state_frac.
+   So elements 3/4/5 are the rates of 0/1/2 and this is the integrator that applies them — and
+   the odd shift on X = 2 is a per-axis scale factor, four times the other two.
+
+   The shift's own carry out is discarded: $495E clears it before the add.
+   --------------------------------------------------------------------------- */
+static void integrate_state_rates_core(void)
+{
+    uint8_t slot;
+
+    for (slot = 2; slot != 0xFFu; slot--) {
+        uint8_t  lo    = mem[MODEL_STATE_LO + 3 + slot];        /* $493D-$4940 */
+        uint8_t  hi    = mem[MODEL_STATE_HI + 3 + slot];        /* $4942 */
+        uint8_t  ext   = (uint8_t)((hi & 0x80u) ? 0xFFu : 0x00u);  /* $4945-$4947 */
+        unsigned shift = (slot == 2u) ? 5u : 3u;                /* $4949-$494F */
+        unsigned wide  = (((unsigned)ext << 16) | ((unsigned)hi << 8) | lo) << shift;
+        Adc      r;
+
+        math_lo        = (uint8_t)wide;                         /* $4951-$4959 */
+        math_hi        = (uint8_t)(wide >> 8);
+        shared_temp_76 = (uint8_t)(wide >> 16);
+        cpu.A          = math_hi;
+
+        r = adc_value(mem[MODEL_STATE_FRAC + slot], math_lo, 0);         /* $495B-$4961 */
+        mem[MODEL_STATE_FRAC + slot] = r.val;
+        r = adc_value(mem[MODEL_STATE_LO + slot], math_hi, r.carry);     /* $4964-$4969 */
+        mem[MODEL_STATE_LO + slot] = r.val;
+        cpu.A = (uint8_t)adc_step(mem[MODEL_STATE_HI + slot], shared_temp_76, r.carry);
+        mem[MODEL_STATE_HI + slot] = cpu.A;                             /* $496C-$4971 */
+    }
+    cpu.Y = 0u;                        /* $4956's DEY ran until Z — Y leaves at zero */
+    LDX(0xFFu);                        /* $4974's DEX — and ITS N/Z are the exit flags */
+}
+
+/* The 6502-ABI shims. */
+void stage_accum_delta(void)      { stage_accum_delta_core(); }
+void rotate_accum_by_steer(void)  { rotate_accum_by_steer_core(); }
+void rotate_pair_a_by_steer(void) { rotate_pair_a_by_steer_core(); }
+void damp_and_derive_loads(void)  { damp_and_derive_loads_core(); }
+void rotate_state_pair(void)      { rotate_state_pair_core(cpu.A, cpu.Y, cpu.X); }
+void rotate_state_0_into_8(void)  { rotate_state_pair_core(8u, 0u, 0xC0u); }
+void rotate_state_6_into_3(void)  { rotate_state_pair_core(3u, 6u, 0x40u); }
+void integrate_car_position(void) { integrate_car_position_core(); }
+void integrate_state_rates(void)  { integrate_state_rates_core(); }

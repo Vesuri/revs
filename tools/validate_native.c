@@ -3146,6 +3146,104 @@ static int test_model_arithmetic(void)
     return fail;
 }
 
+/* ==========================================================================
+   TWINS #58-#66 — THE DRIVING MODEL'S ROTATIONS AND INTEGRATIONS
+   --------------------------------------------------------------------------
+   $4729 stage_accum_delta, $47A5 rotate_accum_by_steer, $47C5 rotate_pair_a_by_steer,
+   $47F9 damp_and_derive_loads, $48C7 rotate_state_pair, $48B9 rotate_state_0_into_8,
+   $48C1 rotate_state_6_into_3, $48EF integrate_car_position, $4937 integrate_state_rates.
+
+   ⚠⚠ WHAT THIS FIXTURE IS REALLY FOR IS THE EXIT REGISTERS.  Four of these routines end by
+   falling out of a `DEX`/`DEY` loop, so X and Y leave holding $FF/$FE/$FE and the twins have
+   to set them by hand — a class of defect that changes not one byte of mem[] and is invisible
+   to anything but an AXY comparison.  liveMask therefore keeps A, X, Y, S and the flags, and
+   the sabotage list below includes one deleted register write for exactly this reason.
+
+   ⚠ TWO OF THEM READ THE CALLER'S N through scale16_by_y: stage_accum_delta hands it the
+   `LDA $62E2` that loaded the value's high byte, and damp_and_derive_loads hands it a
+   subtract's and an add's.  Those are computed INSIDE the routine, so unlike twins #50-#57
+   the incoming N does not matter here — but it is randomised anyway, because a twin that
+   forwarded the caller's N instead of its own would otherwise pass.
+
+   ⚠ $48C7's three arguments arrive in A (dest), Y (source) and X (the sign/mode byte), and
+   dest/source index the 15-element state vector — so both are steered to 0..13 rather than
+   left uniform, or every case would compare two identical out-of-range walks.  Its two named
+   entries take no arguments at all, which is what makes them worth their own two cases: what
+   they prove is the constant triple, and nothing else.
+   ========================================================================== */
+void stage_accum_delta(void);       void stage_accum_delta__t6502(void);
+void rotate_accum_by_steer(void);   void rotate_accum_by_steer__t6502(void);
+void rotate_pair_a_by_steer(void);  void rotate_pair_a_by_steer__t6502(void);
+void damp_and_derive_loads(void);   void damp_and_derive_loads__t6502(void);
+void rotate_state_pair(void);       void rotate_state_pair__t6502(void);
+void rotate_state_0_into_8(void);   void rotate_state_0_into_8__t6502(void);
+void rotate_state_6_into_3(void);   void rotate_state_6_into_3__t6502(void);
+void integrate_car_position(void);  void integrate_car_position__t6502(void);
+void integrate_state_rates(void);   void integrate_state_rates__t6502(void);
+
+static int test_model_rotations(void)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    int fail = 0, printed = 0, t, i;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+
+    struct { const char* name; void (*nat)(void); void (*ref)(void); int cases; }
+      list[9] = {
+        { "stage_accum_delta",      stage_accum_delta,      stage_accum_delta__t6502,      2000 },
+        { "rotate_accum_by_steer",  rotate_accum_by_steer,  rotate_accum_by_steer__t6502,  2000 },
+        { "rotate_pair_a_by_steer", rotate_pair_a_by_steer, rotate_pair_a_by_steer__t6502, 2000 },
+        { "damp_and_derive_loads",  damp_and_derive_loads,  damp_and_derive_loads__t6502,  3000 },
+        { "rotate_state_pair",      rotate_state_pair,      rotate_state_pair__t6502,      3000 },
+        { "rotate_state_0_into_8",  rotate_state_0_into_8,  rotate_state_0_into_8__t6502,  1000 },
+        { "rotate_state_6_into_3",  rotate_state_6_into_3,  rotate_state_6_into_3__t6502,  1000 },
+        { "integrate_car_position", integrate_car_position, integrate_car_position__t6502, 2000 },
+        { "integrate_state_rates",  integrate_state_rates,  integrate_state_rates__t6502,  2000 },
+      };
+    for (i = 0; i < 9; i++) register_fixture(list[i].name);
+
+    for (i = 0; i < 9; i++) {
+        int subFail = 0, decimal = 0, negative = 0, accumulate = 0, carried = 0;
+        int cases = list[i].cases * scale;
+        if (!want(list[i].name)) continue;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            /* $48C7's arguments: A = destination element, Y = source, X = the mode byte. */
+            c.A = (uint8_t)(xs() % 14);
+            c.Y = (uint8_t)(xs() % 14);
+            c.X = (uint8_t)(xs() & 0xC0);
+            if (c.X & 0x40) accumulate++;
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            if (c.N) negative++;
+            c.D = (uint8_t)(xs() % 4 == 0);
+            if (c.D) decimal++;
+            /* ⚠ integrate_car_position's 24-bit add is the one place a CARRY OUT of the
+               fractional byte reaches the next byte, and $490D takes that carry from the
+               DOUBLING above it rather than from a CLC.  A sixth of the cases force the
+               doubling to carry, so the case is not left to chance in a random byte. */
+            if (i == 7 && (xs() % 6) == 0) {
+                pre[0x62E0 + (xs() % 2)] |= 0x80;
+                carried++;
+            }
+            subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
+                                liveMask, t, &printed);
+        }
+        fail += subFail;
+        if (!decimal || !negative || !accumulate) {
+            printf("[VACUOUS] %s: %d decimal, %d negative N, %d accumulate\n",
+                   list[i].name, decimal, negative, accumulate);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d decimal, %d negative, %d accumulate, %d forced carry)\n",
+               list[i].name, cases, subFail, decimal, negative, accumulate, carried);
+    }
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -3171,6 +3269,7 @@ int main(int argc, char** argv)
     fail += test_seam_callees();
     fail += test_multiply();
     fail += test_model_arithmetic();
+    fail += test_model_rotations();
 
     fail += check_coverage();
     fail += report_unvalidated_natives();

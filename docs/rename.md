@@ -19,8 +19,8 @@ row that says what is unsettled is worth more than a confident wrong name.  (The
 
 ## The DRIVING MODEL's unnamed callees — six routines and six cells, all reached from `apply_driving_model`
 
-Opened 2026-08-18 while twinning that tree (twins #44-#57 took the multiply and the 16-bit
-arithmetic; the rotations, the sub-models and the slip/sound cluster are still transliterated).
+Opened 2026-08-18 while twinning that tree (twins #44-#66 took the multiply, the 16-bit
+arithmetic and the rotations; the sub-models and the slip/sound cluster are still transliterated).
 Each of these is about to be referenced by a hand-written twin, which is the last moment renaming
 is cheap.  ⚠ Everything here is a READING OF THE LISTING, not a measurement — the note beside each
 one says what would settle it.
@@ -44,9 +44,9 @@ one says what would settle it.
 * **`$0022`** — an index: `LDX $22` then `LDY $0700,X` at `$452D`, and read the same way at `$11D4`/`$1F4E`/`$45DF`.  Whatever `$0700` is indexed BY (a car slot? a section?) is the question, and `$0700` has no row either.
 * **`$003D`** — written by `update_engine_revs`' tail (`$4A87`) beside `engine_note_target`, read by `update_camera_and_drive_state` (`$4506`) and `$4B88` (`$4BBA`).  ⇒ a second rev-derived term; name it once the engine model is a twin.
 * **`$62F0`** — `update_camera_and_drive_state` steps it by ±1 or ±2 and clamps it to `$FB..3` (`$44F9`-`$452A`), i.e. a small signed counter with hysteresis, driven by the pedals and the speed.  ⇒ `camera_pitch_bias` [INFERRED] — the reference loop settles it in one run: brake hard and watch the horizon.
-* **`$62FF`** — `damp_and_derive_loads` leaves `model_state_hi[7]` here (`$4866`-`$4869`) and `update_grip_limits` reads it as its load term (`$4BD5`).  ⇒ `wheel_load` [DERIVED from both ends].
 * **`$62FB`** — `BIT $62FB` (bit 7) gates the unprompted grip loss at `$4C1C`.  ⇒ a per-session "surfaces can change" flag; find its writer first.
 * ⚠ **`$008E`/`$008F` are `plot_ptr3_lo`/`_hi`, and `$4B61`/`$4B47` are a SECOND TENANT** — the same shape as the `point_delta` entry below.  The windows do not overlap (the road pass and the driving model run in different halves of the frame), but a twin that says `plot_ptr3_lo` while computing a slip magnitude is a lie; the twins use a file-local name and this is the note that says why.
+* ⚠ **`$0078`** is `hypot_min_lo` to the road pass and the OUTPUT ELEMENT INDEX (1 then 0) to `damp_and_derive_loads`' second loop — the same second-tenant problem as `$0079` below, the same treatment, and it belongs in whatever decision settles the arithmetic window.
 * ⚠ **`$0079`** is `hypot_min_hi` to the road pass and the SIGN/MODE byte to `mul16_signed` and `apply_angle_term` (bit 7 = negate the product, bit 6 = accumulate instead of store).  Same second-tenant problem, same treatment.
 
 
@@ -194,7 +194,10 @@ nine bytes for something with no relation to it at all, and the notes do not say
 The windows do not overlap — `build_track_geometry` finishes before `draw_road` starts — so this
 is the same safe arrangement as `shared_temp_8c`, and the twins carry file-local `SPAN_*` defines
 so the code reads as what it computes.  ⚠ `$0088` has a THIRD owner: `mark_line_surfaces` parks
-its surface class there for the whole of its walk (`$1A98`).
+its surface class there for the whole of its walk (`$1A98`) — and a FOURTH, found while writing
+twins #58-#66: `rotate_state_pair` (`$48CB`) keeps the rotation's sign/mode byte there across its
+four `apply_angle_term_at` calls, because A is needed for the mode itself.  Four owners on one
+zero-page byte is the strongest argument in this file for scoped names.
 
 ⇒ The open decision is whether the nine cells get a second set of names scoped to the span pass
 (as `docs/rename.md`'s `math_lo`/`math_hi` entry proposes for the arithmetic window) or whether

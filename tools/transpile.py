@@ -750,6 +750,30 @@ VALIDATE_FUNCS = {
     0x4874,
     0x486D,
     0x0E50,
+    # ⭐⭐ TWINS #58-#66 — THE ROTATIONS AND THE INTEGRATIONS, apply_driving_model's third
+    # group.  Every leaf underneath these was already a twin (#50-#57), so this is the ordering
+    # rule's happy case: nine drivers over an arithmetic layer that is already real C.
+    #   $4729 stage_accum_delta      ( 42 B) the midpoint offset: accumulator -= v, delta = 1.5v
+    #   $47A5 rotate_accum_by_steer  ( 32 B) the (8, 9) pair rotated by the steering angle
+    #   $47C5 rotate_pair_a_by_steer ( 32 B) ...and the same for the (10, 12) pair
+    #   $47F9 damp_and_derive_loads  (116 B) elements 10..13 decayed by 4, then loads 6 and 7
+    #   $48C7 rotate_state_pair      ( 40 B) THE 2x2 ROTATION — four apply_angle_term_at calls
+    #   $48B9 rotate_state_0_into_8  (  6 B) ...entered for (source 0, dest 8, mode $C0)
+    #   $48C1 rotate_state_6_into_3  (  6 B) ...and for (source 6, dest 3, mode $40)
+    #   $48EF integrate_car_position ( 72 B) the camera triple at 24-bit precision + the heading
+    #   $4937 integrate_state_rates  ( 65 B) elements 3/4/5 integrated into 0/1/2, 24-bit
+    # ⚠ $48EF's first ADC has no CLC: its carry comes from the `ROL` above it, so the
+    # doubling and the add are ONE 24-bit operation and a twin that clears the carry is wrong.
+    # ⚠ $47F9 is a SECOND TENANT of hypot_min_lo ($78), where it is the output element index.
+    0x4729,
+    0x47A5,
+    0x47C5,
+    0x47F9,
+    0x48C7,
+    0x48B9,
+    0x48C1,
+    0x48EF,
+    0x4937,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
