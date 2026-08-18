@@ -374,9 +374,75 @@ coarse 32-byte pre-test over four cells at a time, would likely halve it.  **Lef
 deliberately:** ~18 ms of a ~1000 ms shipping frame is under 2%, which this project's own rule says
 is unquotable, and the same hour spent on the dashboard's scan is worth ten times more.
 
-### ⭐⭐ WHERE THE TIME GOES — CURRENT TABLE, re-measured 2026-08-17 after twins #6/#7/#8
+### ⭐⭐ WHERE THE TIME GOES — CURRENT TABLE, re-measured 2026-08-18 after twins #25-#39
 
-**This is the table to read; the one below it is the previous measurement, kept for the deltas.**
+**This is the table to read; the ones below it are the previous measurements, kept for the deltas.**
+
+`make gen` + `cd amiga && make clean && make -j4 PROBES=1 STRAIGHT_TO_RACE=1 FIXED_RNG=1` +
+`EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=phase4_prof.gdb ./diag_run.sh 30`.
+**vbi=7223, loopFrames=364, brk=0, smc=0, accounted 98.5% of elapsed** (the sanity check — if that
+is not ~100% the shares are fiction).  Shares within one run (Rule 2); **no framerate may be quoted
+from a PROBES build.**  One loop iteration = **391 ms** of bracketed work in a 397 ms elapsed frame.
+
+⭐ **The car was still DRIVING at the interrupt** (`amiga/dash_state.gdb`, separate run):
+`vbi=6990 $61=ff(engine) $3C=a0(revs) $63=32(speed) $40=02(gear) $2D=00(drive_state)` — the
+precondition for the table meaning anything, and the road pass is 8x while driving.
+
+⚠ Every row is now `native` down to its leaves except phases 18, 4, 3, 29 and the small tail; the
+whole VIEW PIPELINE (5, 11, 24, 33, 34) has **no transliteration left in it at all**.
+
+| Share | ms/frame | Phase | Callee | Code | vs 2026-08-17 |
+|---|---|---|---|---|---|
+| 16.3% | **64** | 11 | `draw_road` (`$1A20`) | **native, WHOLE TREE** (twins #25-#39) | 58 |
+| 16.1% | **63** | 5 | `build_track_geometry` (`$24F6`) | **native, WHOLE TREE** (twins #16-#24) | 60 |
+| 10.4% | **40** | 34 | `view_paint_lines` painting phase 3 | native (twin #2) | 42 |
+| 10.1% | **39** | 27 | `RevsScreen::decode()` | port | 39 |
+| 7.5% | **29** | 18 | `fill_dash_edge_columns` (`$1E15`) | native (driver) | 30 |
+| 7.4% | **29** | 4 | `apply_driving_model` (`$46A1`) | native (driver) | 28 |
+| 7.1% | **27** | 26 | the 50 Hz drain (`irq1v_band_schedule`) | native (twin #1) | 27 |
+| 6.5% | **25** | 24 | `view_paint_lines` painting phase 1 | native (twin #2) | 26 |
+| 4.5% | **17** | 33 | `view_paint_lines` painting phase 2 | native (twin #2) | 18 |
+| 3.0% | **11** | 28 | the vblank spin | port | 13 |
+| 2.9% | **11** | 32 | `race_main_loop`'s tail | native (twin #3) | 11 |
+| 1.4% | 5 | 15 | `draw_track_object` (`$2AD1`) | native (driver) | 5 |
+| 1.2% | 4 | 3 | `read_driving_controls` (`$1579`) | xlat | 4 |
+| 1.2% | 4 | 29 | `tick_wheel_spin` (`$52A4`) | xlat | 4 |
+| 0.7% | 2 | 14 | `build_road_sign` (`$4CA4`) | xlat | 2 |
+| 0.5% | 2 | 6 | `place_player_in_section` (`$4626`) | xlat | 1 |
+| 0.5% | 1 | 7 | `advance_player_section` (`$24B9`) | xlat | 2 |
+| 0.4% | 1 | 10 | `clear_surface_buffers` (`$66B6`) | xlat | 1 |
+| 0.2% | 1 | 13 | `fill_line_surface` (`$18BC`) | xlat | 1 |
+| ≤0.1% | 0 | 1,2,8,9,12,16,17,19-23,25 | the rest of the 24-call body | xlat | |
+
+⚠ **Do not read the `vs` column as movement.** Per-iteration phase numbers carry ~±10% trajectory
+noise and must never be diffed across builds; every row here is inside that band, and the two rows
+that look like the biggest change (28: 13 → 11, and the producers: 118 → 127) are the same handoff
+and the same noise.  What the column is for is confirming the SHAPE did not change — and it did not.
+
+⭐⭐ **THE VIEW PIPELINE IS 209 ms OF A 391 ms FRAME — 53.8%, unchanged for four measurements
+running**, and now with zero interpreter in it:
+- the two producers `build_track_geometry` + `draw_road` = **127 ms / 32.4%**
+- the consumer `view_paint_lines` (brackets 24+33+34) = **82 ms / 21.4%**
+
+⭐ Two rows that are not phases and bound everything:
+- the **VERTB ISR**: 7223 calls at **1079 µs** each ≈ **21 ms per painted frame**, charged pro-rata
+  to whichever phase it preempted, so it appears in no row of its own.
+- **one 50 Hz body tick = 1659 µs** of its 20 000 µs budget (251 µs of that is the `$52A4` arm).
+  Faithful, and only a per-painted-frame table makes it look large.
+
+⭐⭐ **The three ordinary levers are exhausted and the table says so.**  Nineteen of twenty rows are
+native; the biggest two rows are one subsystem whose entire call tree is real C; and the frame is
+still 391 ms.  What is left is not "another twin" — it is the three items below:
+1. **the REPRESENTATION** (`docs/direct-bitplane-plan.md`): phase 27's 39 ms is pure port overhead,
+   and it also constrains the 82 ms consumer, which paints into a BBC-shaped buffer.
+2. **fewer POINTS / fewer ACCESSES in the producers** — 127 ms for routines that write 95
+   frame-buffer bytes is an algorithmic question, not a transliteration one.
+3. **asm, last**, and only against the post-representation arrangement.
+
+### WHERE THE TIME GOES — the 2026-08-17 table, after twins #6/#7/#8
+
+⚠ **Superseded by the table above** (twins #25-#39 were measured after it).  Kept for its deltas and
+because its notes on the driver twins are still the reasoning.
 
 `make clean && make -j4 PROBES=1 STRAIGHT_TO_RACE=1 FIXED_RNG=1` +
 `EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=phase4_prof.gdb ./diag_run.sh 30`.
