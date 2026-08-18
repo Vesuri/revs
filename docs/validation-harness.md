@@ -427,6 +427,42 @@ a change at all** because the code is continuous or the bit is provably already 
 is the only one that costs anything; telling them apart is an argument, and the argument has to be
 written down where the next reader will meet it.
 
+## ⭐⭐ …and a SIXTEENTH, found by twins #98-#114: the DEFAULT ANSWER problem has a SHAPE
+
+Twins #79-#86 found one default-answering backend hole (§FIFTEENTH).  The driving-controls group
+found three more in one afternoon, and together they make the pattern nameable:
+
+**A test backend that answers ONE value for a whole INPUT CLASS collapses every arm that
+distinguishes members of that class.**
+
+| The default | What it collapsed | The sabotage that survived |
+|---|---|---|
+| `keyDown()` returns the same for every key code | the fixture can produce "none down" or "ALL down", never "one down" | "the key direction is not compared with the current sign" — 5000 cases |
+| `adcAxis()` returns dead centre | `adc_read`'s magnitude is pinned to 0, so its dead-zone compare and the joystick's pedal arm never run | "the dead zone is `$0B`" and "the x1.5 drops the ASL carry" |
+| `$FE68` returns 0 (§FIFTEENTH) | `VIA & mask` is pinned to 0, so the starter always catches | "the luck mask is always 7" — 4000 cases |
+
+⇒ **The test to apply to a new fixture is not "what does it randomise" but "what can the BACKEND
+say".**  Every `Platform` virtual with a constant answer is an arm of the game that never runs, and
+it looks exactly like a passing fixture.  `platform_test_key_only` and `platform_test_adc` exist
+for that reason; both are in `src/platform/platform_cbridge.cpp` beside `platform_test_via_t2`.
+
+⚠ **AND ITS CHEAP COUSIN: a pre-state byte that GATES a whole body.**  `gear_key_latch` has to be
+0 for a gear shift to be accepted at all, and a random byte is 0 once in 256 — so the shift body
+ran in 20 of 5000 cases and both of its wrap arms survived.  That is not a backend problem, just
+arithmetic: **when a body is behind an equality test on a random byte, force the value.**
+
+## ⚠⚠ A PLATFORM LAYER'S OWN STATE IS PRE-STATE TOO — the MOS VDU cursor (twins #98-#114)
+
+`vdu_char_def`'s OSWRCH arm failed 820 of 2000 cases with the MOS-call trace byte-identical and the
+screen bytes off by **exactly one character**.  The cause is the same as `cpu_unwind`'s (below) with
+a different owner: **the MOS VDU driver's cursor, pending-command buffer and flash phase live in
+`src/platform/teletext.cpp`, not in `mem[]`.**  The oracle ran first, advanced the cursor, and the
+twin — running second on the same `mem[]` — wrote one cell along.  Both models were right.
+
+`diff_run` now calls `tt_reset_state()` beside `cpu_unwind = 0`.  ⭐ The general rule, and it is
+now two instances: **every piece of state a shared layer owns between the two runs must be reset,
+and the tell is a diff that is a consistent OFFSET rather than a wrong value.**
+
 ## Using it
 
 ```

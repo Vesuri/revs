@@ -8,9 +8,9 @@ whole point is that the discovery and validation infrastructure comes first, not
 ---
 
 
-## ⭐ THE TWIN CAMPAIGN — where it stands, and what is left (2026-08-18)
+## ✅ THE TWIN CAMPAIGN — COMPLETE (2026-08-18), twins #1-#114
 
-The standing instruction (user, 2026-08-18) is to make **every transliterated routine in the call
+The standing instruction (user, 2026-08-18) was to make **every transliterated routine in the call
 trees of `view_paint_lines`, `fill_dash_edge_columns` and `apply_driving_model` — and then of
 `draw_track_object`, `read_driving_controls` and `build_road_sign`** — a native twin, to
 the style rules in `docs/faithfulness-seam.md` §Writing one — and the reason is UNDERSTANDING, not
@@ -25,7 +25,7 @@ comes with it (`docs/rename.md`, `disasm/symbols.csv`) is part of the work, not 
 | `apply_driving_model` | ✅ **COMPLETE — 43 of 43 routines**, twins #44-#86 |
 | `build_road_sign` | ✅ **complete** — twins #87-#92 |
 | `draw_track_object` | ✅ **complete** — twins #93-#97 |
-| `read_driving_controls` | ⬜ next group |
+| `read_driving_controls` | ✅ **complete** — twins #98-#114 |
 
 ✅ **THE DRIVING MODEL IS DONE.**  Twins #79-#86 took the last eight — the SUB-MODELS, i.e. the
 parts of the tree that talk to the rest of the engine rather than to the arithmetic layer:
@@ -213,25 +213,90 @@ edge cursor past entry 47.  ⚠ **The last one only ever appeared in the UNFILTE
 own loop after two rounds of reasoning failed.  **When both models hang, the fixture is describing
 a state the game cannot be in; find the constraint, do not widen the timeout.**
 
+### ✅ `read_driving_controls`' tree — twins #98-#114 (seventeen routines, the campaign's last)
+
+~700 bytes, seventeen C functions, **38 deliberate sabotages and 38 detected** — five of them only
+after the harness grew (below).  `make validate` clean, `make determinism` and
+`make determinism-drive` both 64 KB byte-identical, `make tracks` 6/6, `make track-run`,
+`make mode7`, `make trackmenu` and `make sound` all clean.
+
+⭐⭐ **What the group made legible** — seven things:
+
+1. **THE JOYSTICK'S STEERING IS SQUARED.**  `$1591-$1593` stores the centred reading in `math_hi`
+   and then calls `mul8` with the same value still in A, so the demand is `reading x reading` —
+   the non-linear response an analogue stick needs, for one instruction.
+2. **COMPUTER ASSISTED STEERING IS TWO DIFFERENT ASSISTS, chosen by how hard you are asking.**  A
+   demand under 5 goes to `steer_demand_from_slip`, which cancels the car's own slip
+   (`model_state` element `$0A`, quartered, and never more than the lock already applied); a
+   bigger one goes to `apply_steering_assist`, which reads a TRACK EDGE ahead and steers toward
+   it.  ⭐ Which edge IS the look-ahead: `edge_x` slot `$32` or slot `$0A`, on the demand's sign.
+3. **THE ASSIST'S GAIN FALLS WITH SPEED AND IS CAPPED BY THE CORNER** — `$3C - road_speed`
+   doubled plus `$20`, capped by the live section's own curvature (`section_curve & $7F`, clamped
+   to 2..7, shifted up four).  Most help at low speed, deliberately weak through a tight corner.
+4. ⚠⚠ **`poll_steering_assist` PRESERVES A ACROSS ITSELF, and both callers depend on it.**  So the
+   `CMP #5` at `$1EF3` compares the CALLER's demand, not the assist setting — read the other way,
+   the whole dispatch looks like nonsense.
+5. **THE ASSIST LAMP IS FOUR SCREEN BYTES written by that same routine** (`$77DB`/`$77DC`/`$77E3`/
+   `$77E4`, bottom-right of the MODE 5 display).  "Read the setting" and "draw the setting" are
+   one call.
+6. **THE GEAR DIGIT IS ONE CHARACTER DRAWN TWICE** — `vdu_char_wide` with `shared_temp_77 = $22`
+   then `$FF`, taking the MOS character's left four pixels and then its right four, with
+   `vdu_char_column` INCing itself between.  That is where the dashboard's double-width text
+   comes from, and why an 8-pixel MOS glyph needs two MODE 5 bytes.
+7. ⚠⚠ **`char_row_addr_lo`'s ENTRIES 8..15 ARE `pixel_keep_others_tbl`** — the two tables overlap
+   at `$3FE8`, so `mode5_addr` can only legally be asked for character rows 0..7 and 16..31.
+   [INFERRED] the overlap records which rows the text path owns.
+
+⭐⭐ **AND THE GROUP BOUGHT THREE MORE COVERAGE FIXES, all three the sub-models' shape again — a
+test backend answering ONE DEFAULT for a whole input class:**
+
+* **`platform_test_key_only`.**  The backend answered the same thing for every key code, so the
+  fixture could produce only "no key down" or "**all seven** down" — and every interesting arm
+  here is a ONE-KEY arm (steer left or right, throttle or brake, gear up or down).  "the key
+  direction is not compared with the current sign" survived 5000 cases because `STEER_KEYS` was
+  only ever 0 or 3.
+* **`platform_test_adc`.**  `Platform::adcAxis` answers dead centre, pinning `adc_read`'s
+  magnitude to 0; its dead-zone compare and the joystick's whole x1.5 pedal arm were unreachable.
+* **`gear_key_latch` forced to 0.**  A random byte is 0 once in 256, so the gear-shift body ran in
+  20 of 5000 cases and both of its wrap arms survived.
+
+⭐⭐ **AND A HARNESS DEFECT OF THE `cpu_unwind` CLASS.**  `vdu_char_def`'s OSWRCH arm failed 820 of
+2000 cases with the MOS-call trace byte-identical and the screen bytes off by exactly one
+character: **the MOS VDU driver's own cursor is pre-state and it does not live in `mem[]`.**  The
+oracle ran first and advanced it, so the twin wrote one cell along.  `tt_reset_state()` is now
+called from `diff_run` beside `cpu_unwind = 0`.  **Every piece of state a platform layer owns is
+pre-state for a differential.**
+
+⭐ **And one real defect the differential caught twice in one group:** `ADC` with no `CLC`.  `$1F5A`
+and `$1650` both add to an `ASL`'s carry, and the twin had passed 0 for `carry_in` at both.  86 of
+3000 and 20 of 3000 cases.
+
 ---
 
 ## ⭐ THE TWIN CAMPAIGN — WHAT IS NEXT
 
-**One tree left** (user, 2026-08-18): `read_driving_controls`.  The stated reason is the same as before and it is not framerate — *"then we
-should have a great understanding of what's what in the main loop and can make informed decisions
-about the future direction."*  So the deliverable is the understanding plus the naming pass, and a
-group whose FPS does not move still counts.
+✅ **ALL SIX TREES THE USER NAMED ARE DONE** — `view_paint_lines`, `fill_dash_edge_columns`,
+`apply_driving_model`, `build_road_sign`, `draw_track_object` and `read_driving_controls`, twins
+#1-#114.  The stated purpose was understanding rather than framerate — *"then we should have a
+great understanding of what's what in the main loop and can make informed decisions about the
+future direction"* — so **the next step is the user's call**, not another tree.
 
-`docs/rename.md`'s "Six unnamed routines in ONE NAMED call tree" is the inventory, and it is
-an inventory only — nothing in it has been read yet, which is why it suggests no names.  One
-thing to expect from it: `read_driving_controls`' cluster is chained by **tail `JMP`s across four
-separate regions** (`$15xx` → `$1EE9` → `$15F4` → `$1EFA` → `$1612`), so naming it is one pass over
-the whole chain rather than six independent decisions.
+What the campaign leaves on the table, if it is wanted:
 
-⚠ **CORRECTED:** this section used to say `draw_track_object`'s tree is what reads `$5700`/`$5800`.
-It is not — `$299D` is in the OTHER-CAR projector ($2937), which is not in any of the three trees,
-and `$1391` is in `$12F7`.  The "third name for the track-normal region" decision therefore does
-not belong to this group and is still open in `docs/rename.md`.
+* the main loop's remaining calls that are in NONE of the six trees — the other-car AI ($2937
+  and its projector), `process_car_contact`, `check_crash`, `sort_cars_by_key`, the lap and
+  session bookkeeping;
+* `docs/rename.md` is down to open items that need a MEASUREMENT rather than more reading, and
+  three of them now name the exact reference-loop run that settles them (`section_curve`,
+  `car_state_1`/`car_state_2`, the fifteen state-vector elements);
+* Phase 6's representation change (`docs/direct-bitplane-plan.md`), which is where the framerate
+  actually is — and the campaign's standing conclusion is unchanged: **the port's biggest costs
+  are the machinery the transliteration is wrapped in, not the game's algorithms.**
+
+⚠ **CORRECTED along the way:** this section used to say `draw_track_object`'s tree is what reads
+`$5700`/`$5800`.  It is not — `$299D` is in the OTHER-CAR projector ($2937), which is in none of
+the six trees, and `$1391` is in `$12F7`.  The "third name for the track-normal region" decision
+therefore has no group to ride along with and is still open in `docs/rename.md`.
 
 ## Phase 0 — Scaffolding ✅
 

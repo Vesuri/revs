@@ -103,6 +103,9 @@ void tt_vdu(unsigned char c);
    the dashboard code overlay.  Set by VDU 22,7; cleared when hw_init programs the 6845. */
 int  tt_active(void);
 void tt_set_active(int on);
+/* Reset the VDU driver's own state (cursor, pending command, flash phase).  Needed by
+ * `make validate`: it is pre-state for a differential and it does not live in mem[]. */
+void tt_reset_state(void);
 /* Cursor, for a backend that wants to draw one (the engine turns it off, so nothing does). */
 unsigned tt_cursor_x(void);
 unsigned tt_cursor_y(void);

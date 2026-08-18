@@ -864,6 +864,31 @@ VALIDATE_FUNCS = {
     # region), $1E38 fill_object_gap the columns between two edges.
     0x1C1C,
     0x1E38,
+    # ⭐ TWINS #98-#114 — THE DRIVING CONTROLS, the campaign's last tree.  Seventeen C functions
+    # spliced together by tail jumps across four regions, which is why they are one group:
+    #   $1579 read_driving_controls  $15F4 steer_demand_from_slip  $160D steer_demand_store
+    #   $1612 apply_steer_demand     $162D clamp_and_store_steer_angle
+    #   $1EE9 steer_assist_dispatch  $1EFA steer_apply_with_assist  $1F08 apply_steering_assist
+    #   $1F9B limit_steer_demand     $63C5 poll_steering_assist     $503F adc_read
+    #   $42D0 draw_gear_indicator    $508C vdu_char_wide            $5092 vdu_char_def
+    #   $509D vdu_char_emit          $50FA mode5_addr_for_cell      $50FC mode5_addr
+    0x1579,
+    0x15F4,
+    0x160D,
+    0x1612,
+    0x162D,
+    0x1EE9,
+    0x1EFA,
+    0x1F08,
+    0x1F9B,
+    0x63C5,
+    0x42D0,
+    0x503F,
+    0x508C,
+    0x5092,
+    0x509D,
+    0x50FA,
+    0x50FC,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

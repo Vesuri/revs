@@ -8184,3 +8184,662 @@ close_gap:
 /* The 6502-ABI shims. */
 void plot_view_src_line(void) { plot_view_src_line_core(cpu.Y, cpu.A); }
 void fill_object_gap(void)    { fill_object_gap_core(cpu.X); }
+
+/* ===========================================================================
+   TWINS #98-#114 — THE DRIVING CONTROLS, and with them the last of the campaign's trees
+   ---------------------------------------------------------------------------
+   Seventeen C functions, ~700 bytes: everything `read_driving_controls` reaches.  It is one
+   cluster rather than seventeen decisions because the chain is spliced together by TAIL JUMPS
+   across four regions —
+
+     $1579 read_driving_controls → $1EE9 steer_assist_dispatch → $15F4 steer_demand_from_slip
+        → $160D steer_demand_store → $1EFA steer_apply_with_assist → $1F08 apply_steering_assist
+        → $1612 apply_steer_demand → $162D clamp_and_store_steer_angle → the throttle and gears
+
+   — so the "routine" the listing splits into eight is really ONE pass with eight entry points.
+   Under it: $1F9B limit_steer_demand, $63C5 poll_steering_assist, $503F adc_read, and the text
+   path $42D0 draw_gear_indicator → $508C vdu_char_wide / $5092 vdu_char_def → $509D
+   vdu_char_emit → $50FA mode5_addr_for_cell → $50FC mode5_addr.
+
+   ⭐⭐ WHAT THE GROUP MADE LEGIBLE — seven things, in the order they surprised:
+
+   1. **THE JOYSTICK'S STEERING IS SQUARED.**  $1591-$1593 stores the centred reading in math_hi
+      and then calls `mul8` with the SAME value still in A, so the demand is `reading x reading`.
+      That is the non-linear response an analogue stick needs and it costs one instruction.
+   2. **COMPUTER ASSISTED STEERING IS TWO DIFFERENT ASSISTS, chosen by how hard you are asking.**
+      A demand under 5 goes to `steer_demand_from_slip`, which just cancels the car's own slip
+      (model_state element $0A, quartered, and never more than the lock already applied); a
+      bigger one goes to `apply_steering_assist`, which reads a TRACK EDGE ahead of the car and
+      steers toward it.  ⭐ Which edge is the whole of the look-ahead: slot `$32` or slot `$0A` of
+      edge_x, picked on the demand's direction.
+   3. **THE ASSIST'S GAIN FALLS WITH SPEED AND IS CAPPED BY THE CORNER.**  `$3C - road_speed`
+      doubled plus `$20` is the gain, floored at `$20`; the live section's own curvature
+      (`section_flags & $7F`, clamped to 2..7, shifted up four) caps it.  So the assist helps
+      most at low speed and is deliberately weak through a tight corner.
+   4. ⚠⚠ **`poll_steering_assist` PRESERVES A ACROSS ITSELF, and both callers depend on it.**  It
+      is `PHA … PLA`, and the `CMP #5` at $1EF3 is therefore comparing the CALLER'S demand, not
+      the assist setting.  Reading it the other way makes the whole dispatch look like nonsense.
+   5. **THE ASSIST LAMP IS FOUR SCREEN BYTES, written by that same routine** — $77DB, $77DC,
+      $77E3 and $77E4 take `steering_assist_flag` shifted right 0..3 places, which is dark at 0
+      and four lit pixels at $80.  So "read the setting" and "draw the setting" are one call.
+   6. **THE GEAR DIGIT IS ONE CHARACTER DRAWN TWICE.**  `draw_gear_indicator` calls
+      `vdu_char_wide` with shared_temp_77 = $22 and then = $FF; the first cell takes the
+      character's left four pixels, the second its right four, and `vdu_char_column` INCs itself
+      between them.  A MODE 5 byte is four 2-bit pixels, so an 8-pixel MOS character has to
+      become two bytes — and this is where the dashboard's double-width text comes from.
+   7. ⚠⚠ **`char_row_addr_lo`'s ENTRIES 8..15 ARE `pixel_keep_others_tbl`.**  The two tables
+      overlap at $3FE8, so `mode5_addr` returns a wrong low byte for character rows 8..15 and can
+      only legally be asked for rows 0..7 and 16..31.  [INFERRED] the overlap is deliberate and
+      records which rows the text path owns; the road view owns the middle of the screen.
+
+   ⚠⚠ **AND ONE PER-CIRCUIT SMC SITE THAT IS THE SQUARING ITSELF**, $1593: Silverstone's
+   `JSR mul8` is what an expansion circuit replaces with its own hook, so the twin dispatches on
+   the operands instead of baking the call.  MEASURED as a real difference, not a precaution — a
+   randomised pre-state traps 255 times in 256, and the fixture reported exactly the joystick
+   arm's 2448 of 5000 cases wrong until this arm existed.
+
+   ⚠ Four MOS calls in the group and every one of them can clobber A, X and Y with no hint in
+   the listing (docs/bbc-reference-loop.md): OSBYTE $80 in `adc_read` and in the joystick
+   gear-change poll, OSWORD 10 in `vdu_char_emit`, OSWRCH in `vdu_char_def`'s text arm.
+
+   ⚠⚠ **THE GROUP BOUGHT THREE MORE HARNESS HOOKS, all three from surviving sabotages, and all
+   three the same shape as the sub-models' `platform_test_key_down`** — a test backend answering
+   one DEFAULT for a whole input class (docs/validation-harness.md §FIFTEENTH):
+
+     * `platform_test_key_only` — the backend answered the same thing for every key code, so the
+       fixture could only produce "no key down" or "ALL SEVEN down".  Every interesting arm here
+       is a ONE-KEY arm (steer left or right, throttle or brake, gear up or down), and "the key
+       direction is not compared with the current sign" survived 5000 cases because
+       `STEER_KEYS` was only ever 0 or 3.
+     * `platform_test_adc` — `Platform::adcAxis` answers dead centre, which pins `adc_read`'s
+       magnitude to 0.  Its dead-zone compare and the joystick's whole x1.5 pedal arm were
+       unreachable; two sabotages survived, one of them a dropped ASL carry that is a REAL defect
+       class this group already had twice.
+     * and `gear_key_latch` forced to 0 — not a hook but the same lesson: a random byte is 0 once
+       in 256, so the gear-shift body ran in 20 of 5000 cases and both of its wrap arms survived.
+   ⚠⚠ The steering chain is a SECOND TENANT of math_lo/math_hi/shared_temp_76 — the `STEER_*`
+   defines below are its own names for them (docs/rename.md).
+   =========================================================================== */
+
+#define STEER_SIGN     0x0074u   /* math_lo        — the demand's sign byte; bit 0 = negative */
+#define STEER_DEMAND   0x0075u   /* math_hi        — ...and its magnitude */
+#define STEER_KEYS     0x0076u   /* shared_temp_76 — 0 none, 1 or 2 one way, 3 both keys down */
+#define ASSIST_LAMP_0  0x77DBu   /* the four dashboard screen bytes poll_steering_assist lights */
+#define ASSIST_LAMP_1  0x77DCu
+#define ASSIST_LAMP_2  0x77E3u
+#define ASSIST_LAMP_3  0x77E4u
+#define OPTION_FLAGS   0x05F5u   /* state_flags + 1: bit 7 selects the JOYSTICK input path */
+#define EDGE_X_LO_TBL  0x5E40u   /* edge_x_lo / edge_x_hi — the track edges the assist reads */
+#define EDGE_X_HI_TBL  0x5E90u
+#define SECTION_CURVE  0x0701u   /* section_curve — field 1 of the per-section record */
+#define SLIP_MAG_LO_10 0x62DAu   /* slip_magnitude_lo / _hi — model_state element $0A */
+#define SLIP_MAG_HI_10 0x62EAu
+#define GEAR_CHAR_TBL  0x3779u   /* gear_char_tbl — 'R' 'N' '1'..'5' 'P' */
+#define VDU_CHAR_BLOCK 0x62C3u   /* vdu_char_block — the OSWORD 10 block */
+#define CHAR_ROW_LO    0x3FE0u   /* char_row_addr_lo — ⚠ entries 8..15 are pixel_keep_others_tbl */
+#define CHAR_ROW_HI    0x3B06u   /* char_row_addr_hi */
+
+static void steer_apply_with_assist_core(void);
+static void apply_steer_demand_core(uint8_t signByte);
+static void clamp_and_store_steer_angle_core(void);
+static void vdu_char_emit_core(void);
+
+/* ---------------------------------------------------------------------------
+   $50FC  mode5_addr — THE SCREEN ADDRESS OF A CHARACTER CELL  (twins #113, #114)
+   ---------------------------------------------------------------------------
+   plot_ptr = char_row_addr[Y >> 3] + A x 2, and Y comes back as the scan line within that
+   character row.  $50FA is the entry that multiplies a character COLUMN by four first, so the
+   pair together computes `column x 8` — one MODE 5 cell.
+   --------------------------------------------------------------------------- */
+static void mode5_addr_core(uint8_t quarterOffset)
+{
+    unsigned row;
+
+    plot_ptr_lo = quarterOffset;                       /* $50FC */
+    LDA(0x00u);
+    ASL_M(MEM_plot_ptr_lo);                            /* $5100 — x2, so x8 from a column */
+    ROL_A();
+    plot_ptr_hi = cpu.A;
+
+    TYA();                                             /* $5105 */
+    LSR_A(); LSR_A(); LSR_A();
+    TAX();
+    row = cpu.X;
+    LDA(mem[CHAR_ROW_LO + row]);                       /* $510A */
+    plot_ptr_lo = (uint8_t)adc_step(cpu.A, plot_ptr_lo, 0);
+    LDA(mem[CHAR_ROW_HI + row]);
+    plot_ptr_hi = (uint8_t)adc_step(cpu.A, plot_ptr_hi, cpu.C);
+
+    TYA();                                             /* $5119 — the line within the row */
+    AND(0x07u);
+    TAY();
+}
+
+static void mode5_addr_for_cell_core(uint8_t column)
+{
+    LDA(column);
+    ASL_A(); ASL_A();                                  /* $50FA */
+    mode5_addr_core(cpu.A);
+}
+
+/* ---------------------------------------------------------------------------
+   $509D  vdu_char_emit — ONE CHARACTER INTO THE DASHBOARD  (twin #112)
+   $508C  vdu_char_wide                                     (twin #110)
+   $5092  vdu_char_def                                      (twin #111)
+   ---------------------------------------------------------------------------
+   OSWORD 10 hands back the character's 8x8 bitmap; shared_temp_77 then says which HALF of it
+   this cell carries ($00 = no expansion, bit 7 clear = the left four pixels, set = the right
+   four shifted up), and the eight bytes go into the screen BOTTOM-UP.
+   --------------------------------------------------------------------------- */
+static void vdu_char_wide_core(uint8_t ch)
+{
+    mem[VDU_CHAR_BLOCK] = ch;                          /* $508C — shared_temp_77 is the caller's */
+    vdu_char_emit_core();
+}
+
+static void vdu_char_def_core(uint8_t ch)
+{
+    BIT(text_out_via_mos);                             /* $5092 */
+    if (cpu.N) { platform_mos_call(0xFFEE); return; }  /* $50F6 — straight out through OSWRCH */
+    mem[VDU_CHAR_BLOCK] = ch;                          /* $5096 */
+    shared_temp_77      = 0x00u;                       /* ...and no half-width expansion */
+    vdu_char_emit_core();
+}
+
+static void vdu_char_emit_core(void)
+{
+    TXA(); PHA();                                      /* $509D-$50A0 */
+    TYA(); PHA();
+
+    LDY(0x62u);                                        /* $50A1 — OSWORD 10, block at $62C3 */
+    LDX(0xC3u);
+    LDA(0x0Au);
+    platform_mos_call(0xFFF1);
+
+    /* $50AA-$50C5 — half-width: keep the top nibble, or bring the bottom one up. */
+    LDA(shared_temp_77);
+    if (!cpu.Z) {
+        LDX(0x08u);
+        do {
+            LDA(mem[VDU_CHAR_BLOCK + cpu.X]);
+            BIT(shared_temp_77);
+            if (cpu.N) { ASL_A(); ASL_A(); ASL_A(); ASL_A(); }
+            else         AND(0xF0u);
+            mem[VDU_CHAR_BLOCK + cpu.X] = cpu.A;
+            DEX();
+        } while (!cpu.Z);
+    }
+
+    /* $50C6-$50EA — the eight rows, bottom-up, stepping back a character row at the top. */
+    LDY(mem[0x62CDu]);                                 /* vdu_char_row */
+    mode5_addr_for_cell_core(mem[0x62CCu]);            /* vdu_char_column */
+    LDX(0x08u);
+    do {
+        unsigned base = zp_pointer(MEM_plot_ptr_lo);
+        LDA(mem[VDU_CHAR_BLOCK + cpu.X]);
+        seam_write((base + cpu.Y) & 0xFFFFu, pointer_is_ram(base), cpu.A);
+        DEY();
+        if (cpu.N) {                                   /* $50D7 BPL — off the top of the row */
+            plot_ptr_lo = (uint8_t)sub_from(plot_ptr_lo, 0x40u);
+            plot_ptr_hi = (uint8_t)sbc_step(plot_ptr_hi, 0x01u, cpu.C);
+            LDY(0x07u);
+        }
+        DEX();
+    } while (!cpu.Z);
+
+    INC_M(0x62CCu);                                    /* $50EB — the next cell along */
+    PLA(); TAY();
+    PLA(); TAX();
+    LDA(mem[VDU_CHAR_BLOCK]);                          /* $50F2 — live: the character */
+}
+
+/* ---------------------------------------------------------------------------
+   $42D0  draw_gear_indicator — THE GEAR, DOUBLE WIDTH  (twin #109)
+   --------------------------------------------------------------------------- */
+static void draw_gear_indicator_core(void)
+{
+    LDA(0x22u);                                        /* $42D0 — column $22 */
+    mem[0x62CCu]   = cpu.A;
+    shared_temp_77 = cpu.A;                            /* bit 7 clear: the LEFT four pixels */
+    LDA(0xD7u);
+    mem[0x62CDu]   = cpu.A;                            /* scan line $D7 = character row 26 */
+    LDX(gear_index);
+    LDA(mem[GEAR_CHAR_TBL + cpu.X]);
+    vdu_char_wide_core(cpu.A);
+    LDX(0xFFu);                                        /* $42E4 — bit 7 set: the RIGHT four */
+    shared_temp_77 = cpu.X;
+    vdu_char_wide_core(cpu.A);                         /* A is still the character */
+}
+
+/* ---------------------------------------------------------------------------
+   $503F  adc_read — ONE ANALOGUE AXIS, CENTRED  (twin #108)
+   ---------------------------------------------------------------------------
+   OSBYTE $80 (ADVAL) with the channel in X.  Returns the DISTANCE from centre in A, the
+   direction in X (1 positive, 0 negative) and C set when that distance is at least $0A — the
+   dead zone both callers test.
+   --------------------------------------------------------------------------- */
+static void adc_read_core(void)
+{
+    LDA(0x80u);                                        /* $503F */
+    platform_mos_call(0xFFF4);
+    TYA();                                             /* $5044 — the reading's high byte */
+    LDX(0x01u);
+    cpu.A = (uint8_t)adc_step(cpu.A, 0x80u, 0);        /* $5047 — centre it */
+    if (cpu.N) { EOR(0xFFu); DEX(); }                  /* $504A BPL — and take its magnitude */
+    CMP(0x0Au);                                        /* $504F — the dead zone */
+}
+
+/* ---------------------------------------------------------------------------
+   $63C5  poll_steering_assist — THE LAMP AND THE SETTING  (twin #107)
+   ---------------------------------------------------------------------------
+   See the group header, items 4 and 5: A is preserved, X comes back as the flag (with its Z)
+   and C as bit 7 of track_direction.
+   --------------------------------------------------------------------------- */
+static void poll_steering_assist_core(void)
+{
+    PHA();                                             /* $63C5 — A belongs to the caller */
+    LDA(steering_assist_flag);
+    mem[ASSIST_LAMP_2] = cpu.A;                        /* $77E3 */
+    LSR_A();
+    mem[ASSIST_LAMP_3] = cpu.A;                        /* $77E4 */
+    LSR_A();
+    mem[ASSIST_LAMP_1] = cpu.A;                        /* $77DC */
+    LSR_A();
+    mem[ASSIST_LAMP_0] = cpu.A;                        /* $77DB */
+    LDA(track_direction);                              /* $63D8 */
+    ROL_A();                                           /* C = which way round the circuit */
+    PLA();
+    LDX(steering_assist_flag);                         /* live: the flag, and its Z */
+}
+
+/* ---------------------------------------------------------------------------
+   $1F9B  limit_steer_demand — NEVER MORE LOCK THAN THE DRIVER ASKED FOR  (twin #106)
+   --------------------------------------------------------------------------- */
+static void limit_steer_demand_core(void)
+{
+    if (!cpu.C) return;                                /* $1F9B BCC — keep what was computed */
+    LDA(steer_angle_lo);
+    AND(0xFEu);
+    mem[STEER_SIGN] = cpu.A;
+    LDA(steer_angle_hi);
+}
+
+/* ---------------------------------------------------------------------------
+   $15F4  steer_demand_from_slip — CANCEL THE SLIP  (twin #99)
+   $160D  steer_demand_store                          (twin #100)
+   --------------------------------------------------------------------------- */
+static void steer_demand_store_core(void)
+{
+    mem[STEER_DEMAND] = cpu.A;                         /* $160D */
+    steer_apply_with_assist_core();
+}
+
+static void steer_demand_from_slip_core(void)
+{
+    LDA(mem[SLIP_MAG_LO_10]);                          /* $15F4 */
+    AND(0xF0u);
+    mem[STEER_SIGN] = cpu.A;
+    LDA(mem[SLIP_MAG_HI_10]);
+    abs16_math();                                      /* ⚠ branches on the LDA's own N */
+    LSR_A(); ROR_M(STEER_SIGN);                        /* $1601 — quarter it, 16-bit */
+    LSR_A(); ROR_M(STEER_SIGN);
+    CMP(steer_angle_hi);                               /* $1607 */
+    limit_steer_demand_core();
+    steer_demand_store_core();
+}
+
+/* ---------------------------------------------------------------------------
+   $1F08  apply_steering_assist — COMPUTER ASSISTED STEERING  (twin #105)
+   ---------------------------------------------------------------------------
+   The group header's items 2 and 3 are what this computes.  Entered two ways: at $1F08 from
+   steer_assist_dispatch, which derives the look-ahead selector from the demand's own direction,
+   and at $1F11 from steer_apply_with_assist, which already has it in A.
+   --------------------------------------------------------------------------- */
+static void assist_from_selector(void);
+
+static void apply_steering_assist_core(void)
+{
+    LDA(mem[STEER_SIGN]);                              /* $1F08 */
+    EOR(0x01u);
+    LSR_A();
+    LDA(0x03u);
+    cpu.A = (uint8_t)sbc_step(cpu.A, 0x00u, cpu.C);    /* 3 or 2, on the demand's sign */
+    assist_from_selector();
+}
+
+static void assist_from_selector(void)
+{
+    unsigned edgeSlot;
+
+    /* $1F11-$1F18 — which track edge to steer at: $32 is far ahead, $0A close. */
+    LDX(0x32u);
+    CMP(0x02u);
+    if (!cpu.Z) LDX(0x0Au);
+    edgeSlot = cpu.X;
+
+    /* $1F19-$1F38 — the steering angle as a signed 16-bit value, plus one.  ⚠ The far slot
+       takes two off it as well, which is the look-ahead's own offset. */
+    LDA(steer_angle_lo);
+    mem[STEER_KEYS] = cpu.A;
+    LSR_A();
+    LDA(steer_angle_hi);
+    if (!cpu.C) {                                      /* $1F22 BCC — already positive */
+        /* nothing */
+    } else {
+        mem[STEER_KEYS] = (uint8_t)sub_from(0x00u, mem[STEER_KEYS]);   /* $1F24-$1F29 */
+        cpu.A = (uint8_t)sbc_step(0x00u, steer_angle_hi, cpu.C);       /* $1F2B-$1F2F */
+    }
+    cpu.A = (uint8_t)adc_step(cpu.A, 0x01u, 0);        /* $1F30 */
+    CPX(0x32u);
+    if (cpu.Z) cpu.A = (uint8_t)sbc_step(cpu.A, 0x02u, cpu.C);
+    shared_temp_77 = cpu.A;
+
+    /* $1F3B-$1F4D — the track edge, less that angle, as a magnitude.  ⚠ PHP: the subtract's own
+       sign is what re-signs the result at the very end. */
+    mem[STEER_SIGN] = (uint8_t)sub_from(mem[EDGE_X_LO_TBL + edgeSlot], mem[STEER_KEYS]);
+    LDA(mem[EDGE_X_HI_TBL + edgeSlot]);
+    cpu.A = (uint8_t)sbc_step(cpu.A, shared_temp_77, cpu.C);
+    PHP();                                             /* $1F48 */
+    abs16_math();
+    mem[STEER_KEYS] = cpu.A;
+
+    /* $1F4E-$1F78 — the GAIN: falls with road_speed, floored at $20, then capped by the live
+       section's curvature. */
+    LDY(car_section_cursor);
+    cpu.A = (uint8_t)sub_from(0x3Cu, road_speed);
+    if (cpu.N) LDA(0x00u);
+    ASL_A();
+    /* ⚠ `ADC #$20` with NO `CLC` — the ASL's own carry is part of the sum. */
+    mem[STEER_DEMAND] = (uint8_t)adc_step(cpu.A, 0x20u, cpu.C);
+    LDA(mem[SECTION_CURVE + cpu.Y]);
+    AND(0x7Fu);
+    CMP(0x40u);
+    if (cpu.C) LDA(0x02u);
+    CMP(0x08u);
+    if (cpu.C) LDA(0x07u);
+    ASL_A(); ASL_A(); ASL_A(); ASL_A();
+    CMP(mem[STEER_DEMAND]);
+    if (cpu.C) mem[STEER_DEMAND] = cpu.A;
+
+    /* $1F79-$1F94 — (edge difference) x gain, re-signed by the PHP above and then by the
+       steering's own sign byte. */
+    mul8_accum_core();
+    LDA(mem[STEER_DEMAND]);
+    PLP();
+    abs16_math();
+    mem[STEER_DEMAND] = cpu.A;
+    LDA(mem[STEER_SIGN]);
+    AND(0xFEu);
+    mem[STEER_SIGN] = cpu.A;
+    LDA(steer_angle_lo);
+    LSR_A();
+    if (!cpu.C) {
+        neg16_math_noinit_core();                      /* $1F90 */
+        mem[STEER_DEMAND] = cpu.A;
+    }
+    LDA(steer_angle_lo);                               /* $1F95 */
+    apply_steer_demand_core(cpu.A);
+}
+
+/* ---------------------------------------------------------------------------
+   $1EE9  steer_assist_dispatch      (twin #103)  — the JOYSTICK path's fork
+   $1EFA  steer_apply_with_assist    (twin #104)  — the KEYBOARD path's
+   --------------------------------------------------------------------------- */
+static void steer_assist_dispatch_core(void)
+{
+    poll_steering_assist_core();                       /* $1EE9 — A survives it */
+    if (cpu.Z)  { clamp_and_store_steer_angle_core(); return; }   /* no assist at all */
+    if (cpu.C)  { clamp_and_store_steer_angle_core(); return; }   /* the other direction */
+    CMP(0x05u);                                        /* $1EF3 — the CALLER's demand */
+    if (cpu.C) { apply_steering_assist_core(); return; }
+    steer_demand_from_slip_core();
+}
+
+static void steer_apply_with_assist_core(void)
+{
+    poll_steering_assist_core();                       /* $1EFA */
+    if (!cpu.Z && !cpu.C && mem[STEER_KEYS] != 0) {
+        LDA(mem[STEER_KEYS]);
+        assist_from_selector();
+        return;
+    }
+    LDA(steer_angle_lo);                               /* $1F95 */
+    apply_steer_demand_core(cpu.A);
+}
+
+/* ---------------------------------------------------------------------------
+   $1612  apply_steer_demand            (twin #101)
+   $162D  clamp_and_store_steer_angle   (twin #102)
+   ---------------------------------------------------------------------------
+   ⚠ $162D falls straight into the THROTTLE and GEAR halves of read_driving_controls, so both of
+   these end by running that code — the listing's split at $1612 is an artefact of $1F95 and
+   $1EEE jumping into the middle of one routine.
+   --------------------------------------------------------------------------- */
+static void read_pedals_and_gears(void);
+
+static void apply_steer_demand_core(uint8_t signByte)
+{
+    LDA(signByte);                                     /* $1612 — the sign byte, in A */
+    mem[STEER_SIGN] = (uint8_t)sub_from(cpu.A, mem[STEER_SIGN]);
+    LDA(steer_angle_hi);
+    cpu.A = (uint8_t)sbc_step(cpu.A, mem[STEER_DEMAND], cpu.C);
+    CMP(0xC8u);                                        /* $161C — past the half turn */
+    if (cpu.C) {
+        neg16_math_core(cpu.A);                        /* $1620 */
+        mem[STEER_DEMAND] = cpu.A;
+        LDA(mem[STEER_SIGN]);
+        EOR(0x01u);
+        mem[STEER_SIGN] = cpu.A;
+        LDA(mem[STEER_DEMAND]);
+    }
+    clamp_and_store_steer_angle_core();
+}
+
+static void clamp_and_store_steer_angle_core(void)
+{
+    CMP(0x91u);                                        /* $162D — the lock stop */
+    if (cpu.C) LDA(0x91u);
+    steer_angle_hi = cpu.A;
+    LDA(mem[STEER_SIGN]);
+    steer_angle_lo = cpu.A;
+    read_pedals_and_gears();
+}
+
+/* $163B-$16DB — the rest of read_driving_controls, reached only by falling out of the steering.
+   Not a 6502 routine of its own; kept as a function so the two entries above can share it. */
+static void read_pedals_and_gears(void)
+{
+    /* $163B-$1684 — THROTTLE and BRAKE into pedal_mode / pedal_amount.  Once the session is
+       over ($000F non-zero) the car drives itself: mode $80, amount revs/4 + 5. */
+    LDA(session_end_countdown);
+    if (cpu.Z) {
+        BIT(mem[OPTION_FLAGS]);
+        if (cpu.N) {
+            LDX(0x02u);                                /* $1644 — joystick channel 2 */
+            adc_read_core();
+            if (cpu.C) {
+                mem[STEER_SIGN] = cpu.A;               /* $164B — x1.5 */
+                LSR_M(STEER_SIGN);
+                ASL_A();
+                /* ⚠ `ADC $74` with no `CLC` either — same trap, same routine. */
+                cpu.A = (uint8_t)adc_step(cpu.A, mem[STEER_SIGN], cpu.C);
+                if (!cpu.C) {
+                    CMP(0xFAu);
+                    if (!cpu.C) goto have_pedal;       /* $1656 */
+                }
+                CPX(0x00u);                            /* $1658 */
+                if (cpu.Z) { LDA(0xFAu); goto have_pedal; }   /* $1674 — full brake */
+                LDX(0x01u);                            /* $1665 via $165C */
+                LDA(0xFFu);
+                goto have_pedal;
+            }
+        } else {
+            LDX(0xAEu);                                /* $165E — the throttle key */
+            kbd_test_key_core();
+            if (cpu.Z) { LDX(0x01u); LDA(0xFFu); goto have_pedal; }
+            LDX(0xBEu);                                /* $166B — the brake key */
+            kbd_test_key_core();
+            if (cpu.Z) { LDX(0x00u); LDA(0xFAu); goto have_pedal; }
+        }
+    }
+    LDX(0x80u);                                        /* $1678 — nobody is driving */
+    LDA(engine_revs);
+    LSR_A(); LSR_A();
+    cpu.A = (uint8_t)adc_step(cpu.A, 0x05u, 0);
+
+have_pedal:
+    pedal_mode   = cpu.X;                              /* $1681 */
+    pedal_amount = cpu.A;
+
+    /* $1685-$16DB — the GEARS.  One shift per key press, latched in gear_key_latch. */
+    BIT(mem[OPTION_FLAGS]);
+    if (cpu.N) {
+        LDX(0x00u);                                    /* $168A — ADVAL 0, the stick buttons */
+        LDA(0x80u);
+        platform_mos_call(0xFFF4);
+        TXA();
+        AND(0x01u);
+        if (cpu.Z) goto no_key;
+        LDY(pedal_mode);                               /* $1696 */
+        DEY();
+        if (!cpu.Z) goto shift_up;
+        LDA(pedal_amount);
+        CMP(0xC8u);
+        if (cpu.C) goto shift_down;
+        goto shift_up;
+    }
+    LDX(0x9Fu);                                        /* $16A3 — gear up */
+    kbd_test_key_core();
+    if (cpu.Z) goto shift_up;
+    LDX(0xEFu);                                        /* $16AA — gear down */
+    kbd_test_key_core();
+    if (cpu.Z) goto shift_down;
+
+no_key:
+    LDA(0x00u);                                        /* $16B1 — release the latch */
+    gear_key_latch = cpu.A;
+    return;
+
+shift_up:
+    LDA(0xFFu);                                        /* $16B7 */
+    goto shift;
+shift_down:
+    LDA(0x01u);                                        /* $16BB */
+shift:
+    DEC_M(MEM_gear_change_flag);                       /* $16BD */
+    LDX(gear_key_latch);
+    if (!cpu.Z) return;                                /* still held from last frame */
+    gear_key_latch = cpu.A;
+    cpu.A = (uint8_t)adc_step(cpu.A, gear_index, 0);   /* $16C5 */
+    CMP(0xFFu);
+    if (cpu.Z) LDA(0x00u);                             /* below reverse: stay in reverse */
+    else {
+        CMP(0x07u);
+        if (cpu.Z) LDA(0x06u);                         /* above top: stay in top */
+    }
+    gear_index = cpu.A;                                /* $16D6 */
+    draw_gear_indicator_core();
+}
+
+/* ---------------------------------------------------------------------------
+   $1579  read_driving_controls — STEERING, THROTTLE, BRAKE, GEARS  (twin #98)
+   ---------------------------------------------------------------------------
+   The body's 3rd call.  Steering first, through whichever of the two input paths $05F5 selects,
+   and the group header's item 1 is the joystick one's whole non-linearity.
+   --------------------------------------------------------------------------- */
+static void read_driving_controls_core(void)
+{
+    LDA(0x00u);                                        /* $1579 */
+    mem[STEER_KEYS]   = cpu.A;
+    mem[STEER_SIGN]   = cpu.A;
+    gear_change_flag  = cpu.A;
+
+    LDX(0x9Du);                                        /* $1581 — the steering-amplify key */
+    kbd_test_key_core();
+    PHP();
+
+    BIT(mem[OPTION_FLAGS]);
+    if (cpu.N) {
+        /* $158C-$15B2 — THE JOYSTICK.  The reading is SQUARED (header item 1), then quartered
+           into a 16-bit demand unless the amplify key is down, and X carries the sign. */
+        LDX(0x01u);
+        adc_read_core();
+        mem[STEER_DEMAND] = cpu.A;
+        /* ⚠⚠ $1593 IS A PER-CIRCUIT SMC EXTENT, and it is the squaring itself: Silverstone's
+           `JSR mul8` is what an expansion circuit replaces with its own hook.  The twin has to
+           dispatch on the operands rather than bake the call — a randomised pre-state took the
+           trap 255 times in 256 and returned, which is exactly the 2448-of-5000 the fixture
+           reported before this arm existed. */
+        if (mem[0x1593] != 0x20u) { platform_smc_unhandled(0x1593, mem[0x1593]); return; }
+        {
+            uint16_t target = (uint16_t)(mem[0x1594] | ((unsigned)mem[0x1595] << 8));
+            if (target == 0x0C00u)                            mul8_core(cpu.A);
+            else if (target >= 0x5300u && target <= 0x5A25u)   revs_track_hook(target);
+            else { platform_smc_unhandled(0x1593, target); return; }
+        }
+        PLP();
+        if (!cpu.Z) {
+            LSR_A(); ROR_M(STEER_SIGN);
+            LSR_A(); ROR_M(STEER_SIGN);
+        }
+        mem[STEER_DEMAND] = cpu.A;
+        LDA(mem[STEER_SIGN]);
+        AND(0xFEu);
+        mem[STEER_SIGN] = cpu.A;
+        TXA();
+        ORA(mem[STEER_SIGN]);
+        mem[STEER_SIGN] = cpu.A;
+        LDA(mem[STEER_DEMAND]);
+        steer_assist_dispatch_core();
+        return;
+    }
+
+    /* $15B3-$15F3 — THE KEYBOARD.  Two keys into STEER_KEYS (1, 2 or 3), a fixed demand of 3,
+       and the amplify key replaces it with 1 or 0 plus a sign byte of $80. */
+    LDX(0xA9u);
+    kbd_test_key_core();
+    if (cpu.Z) mem[STEER_KEYS] = 0x02u;
+    LDX(0xA8u);
+    kbd_test_key_core();
+    if (cpu.Z) INC_M(STEER_KEYS);
+    LDA(0x03u);
+    mem[STEER_DEMAND] = cpu.A;
+    PLP();
+    if (!cpu.Z) {
+        LDA(0x00u);                                    /* $15CE */
+        LDX(0x02u);
+        if (cpx_ge(cpu.X, steer_angle_hi)) LDA(0x01u);
+        mem[STEER_DEMAND] = cpu.A;
+        LDA(0x80u);
+        mem[STEER_SIGN] = cpu.A;
+    }
+
+    LDA(mem[STEER_KEYS]);                              /* $15DF */
+    if (cpu.Z) { steer_demand_from_slip_core(); return; }
+    CMP(0x03u);
+    if (cpu.Z) { read_pedals_and_gears(); return; }    /* both keys: no steering at all */
+    EOR(steer_angle_lo);
+    AND(0x01u);
+    if (cpu.Z) { steer_apply_with_assist_core(); return; }   /* $15EC — already this way */
+    neg16_math_noinit_core();                          /* $15EE */
+    steer_demand_store_core();
+}
+
+/* The 6502-ABI shims. */
+void read_driving_controls(void)        { read_driving_controls_core(); }
+void steer_demand_from_slip(void)       { steer_demand_from_slip_core(); }
+void steer_demand_store(void)           { steer_demand_store_core(); }
+void apply_steer_demand(void)           { apply_steer_demand_core(cpu.A); }
+void clamp_and_store_steer_angle(void)  { clamp_and_store_steer_angle_core(); }
+void steer_assist_dispatch(void)        { steer_assist_dispatch_core(); }
+void steer_apply_with_assist(void)      { steer_apply_with_assist_core(); }
+void apply_steering_assist(void)        { apply_steering_assist_core(); }
+void limit_steer_demand(void)           { limit_steer_demand_core(); }
+void poll_steering_assist(void)         { poll_steering_assist_core(); }
+void draw_gear_indicator(void)          { draw_gear_indicator_core(); }
+void adc_read(void)                     { adc_read_core(); }
+void vdu_char_wide(void)                { vdu_char_wide_core(cpu.A); }
+void vdu_char_def(void)                 { vdu_char_def_core(cpu.A); }
+void vdu_char_emit(void)                { vdu_char_emit_core(); }
+void mode5_addr_for_cell(void)          { mode5_addr_for_cell_core(cpu.A); }
+void mode5_addr(void)                   { mode5_addr_core(cpu.A); }

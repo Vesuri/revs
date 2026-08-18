@@ -277,3 +277,18 @@ int tt_decode_row(const unsigned char* row, TtCell out[TT_COLS], int flashOn)
 }
 
 } /* extern "C" */
+
+/* ⚠⚠ THE VDU DRIVER'S OWN STATE IS PRE-STATE FOR A DIFFERENTIAL, and it is not in mem[].
+   `make validate` runs the transliteration and the twin on the same mem[] and cpu; the cursor,
+   the pending-command buffer and the flash phase live HERE, so a fixture that reaches OSWRCH
+   left them advanced and the twin (running second) wrote one cell further along.  Symptom:
+   vdu_char_def's screen bytes differed by exactly one character, in 820 of 2000 cases, with
+   the MOS-call trace byte-identical.  Same class as `cpu_unwind`
+   (docs/validation-harness.md).  Reset it and the two models see the same driver. */
+void tt_reset_state(void)
+{
+    s_cx = 0; s_cy = 0; s_active = 1;
+    s_pendCmd = 0; s_pendLeft = 0; s_pendGot = 0;
+    for (unsigned i = 0; i < sizeof s_param; i++) s_param[i] = 0;
+    s_flashCount = 0; g_ttFlashPhase = 0;
+}

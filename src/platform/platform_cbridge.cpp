@@ -160,6 +160,19 @@ static unsigned char g_headlessViaT2 = 0;
    past `JSR kbd_test_key / BEQ` — unreachable from any fixture.  Twin #85's fixture toggles it,
    and the sabotage that ignores starter_random_mask is what proved the hole was real. */
 static int g_headlessKeyDown = 0;
+/* ⚠⚠ A SINGLE all-or-nothing ANSWER IS A COVERAGE HOLE, and `make validate` found it twice.
+   read_driving_controls tests SIX different key codes and its interesting arms are the ones
+   where exactly ONE of them is down — steering left OR right, throttle OR brake, gear up OR
+   down.  With one global answer the fixture could only ever produce "none" or "all", so the
+   both-keys arm ran and the one-key arms never did: the sabotage "the key direction is not
+   compared with the current sign" survived 5000 cases.  Mode 2 answers for one code only. */
+static int g_headlessKeyMode = 0;      /* 0 none, 1 every key, 2 only g_headlessKeyCode */
+static unsigned char g_headlessKeyCode = 0;
+/* ...and the same for the analogue axes: Platform's default answers dead centre, which pins
+   adc_read's magnitude to 0 and makes its dead-zone compare and the joystick's whole pedal arm
+   unreachable (two more surviving sabotages). */
+static unsigned short g_headlessAdcAxis    = 0x8000;
+static unsigned char  g_headlessAdcButtons = 0x00;
 
 /* ⭐⭐ THE HARDWARE-WRITE TRACE, and it is not an extra: without it the differential is
    BLIND to the whole output of a routine whose job is writing hardware.
@@ -196,7 +209,12 @@ struct HeadlessPlatform : Platform {
     void    renderFrame() override {}
     void    tickVBI() override { if (g_headlessTickClock) mem[g_headlessClockAddr]++; }
     int     loadImage(const char*) override { return -1; }
-    bool keyDown(uint8_t) override { return g_headlessKeyDown != 0; }
+    bool keyDown(uint8_t x) override {
+        if (g_headlessKeyMode == 2) return x == g_headlessKeyCode;
+        return g_headlessKeyDown != 0;
+    }
+    uint8_t  adcButtons() override { return g_headlessAdcButtons; }
+    uint16_t adcAxis(uint8_t) override { return g_headlessAdcAxis; }
     uint8_t hwRead(uint16_t addr) override {
         if (addr == 0xFE6D && g_headlessT1Pending) return 0xC0;
         if (addr == 0xFE68) return g_headlessViaT2;
@@ -232,6 +250,23 @@ void platform_test_t1_pending(int on) { g_headlessT1Pending = on ? 1 : 0; }
 void platform_test_via_t2(unsigned char v) { g_headlessViaT2 = v; }
 
 /* Whether OSBYTE 129 reports the key held — see g_headlessKeyDown. */
-void platform_test_key_down(int on) { g_headlessKeyDown = on ? 1 : 0; }
+void platform_test_key_down(int on) {
+    g_headlessKeyDown = on ? 1 : 0;
+    g_headlessKeyMode = on ? 1 : 0;
+}
+
+/* ...and the one-key mode: ONLY this internal key number answers held.  See g_headlessKeyMode. */
+void platform_test_key_only(unsigned char code) {
+    g_headlessKeyMode = 2;
+    g_headlessKeyCode = code;
+    g_headlessKeyDown = 1;
+}
+
+/* What ADVAL answers under the test platform: the 16-bit axis (only its high byte is used by
+   adc_read) and the fire-button word. */
+void platform_test_adc(unsigned short axis, unsigned char buttons) {
+    g_headlessAdcAxis    = axis;
+    g_headlessAdcButtons = buttons;
+}
 
 } /* extern "C" */

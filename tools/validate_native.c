@@ -138,6 +138,7 @@ static const uint16_t* g_ignore   = 0;
 static int             g_ignore_n = 0;
 static void set_ignore(const uint16_t* addrs, int n) { g_ignore = addrs; g_ignore_n = n; }
 
+void tt_reset_state(void);
 void platform_test_init_headless(void);
 void platform_test_tick_clock(int on);
 void platform_test_clock_addr(uint16_t a);
@@ -199,6 +200,7 @@ static int diff_run(const char* name, const uint8_t* pre, Cpu6502 pre_cpu,
        one plot early, while the twin (running second, with the flag now cleared) does not:
        a twin that looked wrong in the full run and right on its own.  Reset it with cpu. */
     memcpy((void*)mem, pre, 65536); cpu = pre_cpu; cpu_unwind = 0;
+    tt_reset_state();
     g_hwLogN = 0; g_hwLogOverflow = 0;
     g_mosLogN = 0; g_mosLogOverflow = 0;
     t6502();
@@ -218,6 +220,7 @@ static int diff_run(const char* name, const uint8_t* pre, Cpu6502 pre_cpu,
 
     smc_before = g_smcUnhandled;
     memcpy((void*)mem, pre, 65536); cpu = pre_cpu; cpu_unwind = 0;
+    tt_reset_state();
     g_hwLogN = 0; g_hwLogOverflow = 0;
     g_mosLogN = 0; g_mosLogOverflow = 0;
     native();
@@ -3471,6 +3474,8 @@ void update_camera_and_drive_state(void); void update_camera_and_drive_state__t6
 
 void platform_test_via_t2(unsigned char v);
 void platform_test_key_down(int on);
+void platform_test_key_only(unsigned char code);
+void platform_test_adc(unsigned short axis, unsigned char buttons);
 
 #define PRE_GEAR_INDEX     0x0040
 #define PRE_ENGINE_RUNNING 0x0061
@@ -4161,6 +4166,191 @@ static int test_object_lines(void)
     return fail;
 }
 
+
+/* ==========================================================================
+   TWINS #98-#114 — THE DRIVING CONTROLS
+   --------------------------------------------------------------------------
+   $1579 read_driving_controls and the sixteen functions the listing splits it into, plus
+   $63C5 poll_steering_assist, $503F adc_read and the text path ($42D0, $508C, $5092, $509D,
+   $50FA, $50FC).
+
+   ⚠⚠ FIVE STEERED INPUTS, and four of them are what makes the group reachable at all:
+
+     $05F5 bit 7        selects the JOYSTICK path over the KEYBOARD one.  Half the cases each;
+                        a random byte would take one arm half the time anyway, but it is drawn
+                        explicitly so the counters can prove both ran.
+     THE KEYBOARD       platform_test_key_down.  Without it kbd_test_key reports "not pressed"
+                        for every key the test backend is asked about, which makes the amplify
+                        key, both steering keys, both pedals and both gear keys unreachable —
+                        the same coverage hole the sub-models found (docs/validation-harness.md
+                        §FIFTEENTH).  Half the cases hold a key.
+     steering_assist_flag ($05F8)  0 or $80, which is the only pair the game can produce
+                        (shift_key_commands' table), and 0 skips the whole assist.
+     gear_index ($40)   0..7: gear_char_tbl has eight entries and a uniform byte would index it
+                        far past them, identically in both models.
+     section_cursor ($22) a MULTIPLE OF 3 under $78, because the $0700 page is a 3-byte record
+                        per section and the assist indexes section_curve with it.
+
+   ⚠ vdu_char_row ($62CD) and vdu_char_column ($62CC) are also drawn, because mode5_addr's
+   char_row_addr_lo has only 8 valid entries out of 32 (rows 8..15 are pixel_keep_others_tbl) —
+   a random row is a legal input, it just computes a nonsense address in BOTH models.  Rows
+   0..7 and 16..31 are drawn so the arms that matter run.
+   ========================================================================== */
+void read_driving_controls(void);       void read_driving_controls__t6502(void);
+void steer_demand_from_slip(void);      void steer_demand_from_slip__t6502(void);
+void steer_demand_store(void);          void steer_demand_store__t6502(void);
+void apply_steer_demand(void);          void apply_steer_demand__t6502(void);
+void clamp_and_store_steer_angle(void); void clamp_and_store_steer_angle__t6502(void);
+void steer_assist_dispatch(void);       void steer_assist_dispatch__t6502(void);
+void steer_apply_with_assist(void);     void steer_apply_with_assist__t6502(void);
+void apply_steering_assist(void);       void apply_steering_assist__t6502(void);
+void limit_steer_demand(void);          void limit_steer_demand__t6502(void);
+void poll_steering_assist(void);        void poll_steering_assist__t6502(void);
+void draw_gear_indicator(void);         void draw_gear_indicator__t6502(void);
+void adc_read(void);                    void adc_read__t6502(void);
+void vdu_char_wide(void);               void vdu_char_wide__t6502(void);
+void vdu_char_def(void);                void vdu_char_def__t6502(void);
+void vdu_char_emit(void);               void vdu_char_emit__t6502(void);
+void mode5_addr_for_cell(void);         void mode5_addr_for_cell__t6502(void);
+void mode5_addr(void);                  void mode5_addr__t6502(void);
+
+#define PRE_OPTION_FLAGS   0x05F5
+#define PRE_ASSIST_FLAG    0x05F8
+#define PRE_VDU_COLUMN     0x62CC
+#define PRE_VDU_ROW        0x62CD
+#define PRE_TEXT_VIA_MOS   0x0064
+#define PRE_SESSION_END    0x000F
+
+static int test_driving_controls(void)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    int fail = 0, printed = 0, t, i;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+
+    struct { const char* name; void (*nat)(void); void (*ref)(void); int cases; }
+      list[17] = {
+        { "mode5_addr",                  mode5_addr,                  mode5_addr__t6502,        2000 },
+        { "mode5_addr_for_cell",         mode5_addr_for_cell,         mode5_addr_for_cell__t6502, 2000 },
+        { "adc_read",                    adc_read,                    adc_read__t6502,          2000 },
+        { "poll_steering_assist",        poll_steering_assist,        poll_steering_assist__t6502, 2000 },
+        { "limit_steer_demand",          limit_steer_demand,          limit_steer_demand__t6502, 2000 },
+        { "vdu_char_emit",               vdu_char_emit,               vdu_char_emit__t6502,     2000 },
+        { "vdu_char_wide",               vdu_char_wide,               vdu_char_wide__t6502,     2000 },
+        { "vdu_char_def",                vdu_char_def,                vdu_char_def__t6502,      2000 },
+        { "draw_gear_indicator",         draw_gear_indicator,         draw_gear_indicator__t6502, 2000 },
+        { "clamp_and_store_steer_angle", clamp_and_store_steer_angle, clamp_and_store_steer_angle__t6502, 2000 },
+        { "apply_steer_demand",          apply_steer_demand,          apply_steer_demand__t6502, 2000 },
+        { "apply_steering_assist",       apply_steering_assist,       apply_steering_assist__t6502, 3000 },
+        { "steer_apply_with_assist",     steer_apply_with_assist,     steer_apply_with_assist__t6502, 3000 },
+        { "steer_assist_dispatch",       steer_assist_dispatch,       steer_assist_dispatch__t6502, 3000 },
+        { "steer_demand_store",          steer_demand_store,          steer_demand_store__t6502, 3000 },
+        { "steer_demand_from_slip",      steer_demand_from_slip,      steer_demand_from_slip__t6502, 3000 },
+        { "read_driving_controls",       read_driving_controls,       read_driving_controls__t6502, 5000 },
+      };
+    for (i = 0; i < 17; i++) register_fixture(list[i].name);
+
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+
+    for (i = 0; i < 17; i++) {
+        int subFail = 0, decimal = 0, joystick = 0, keyheld = 0, assist = 0;
+        int textRow = 0, sessionOver = 0, patched = 0;
+        int oneKey = 0, onEdge = 0, latchClear = 0;
+        int cases = list[i].cases * scale;
+        if (!want(list[i].name)) continue;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.A = (uint8_t)xs();
+            c.X = (uint8_t)xs();
+            c.Y = (uint8_t)xs();
+
+            /* Which input path, and whether a key is down at all. */
+            if (xs() & 1) { pre[PRE_OPTION_FLAGS] |= 0x80; joystick++; }
+            else            pre[PRE_OPTION_FLAGS] &= 0x7F;
+            /* ⚠⚠ THREE key modes, not two.  The cluster's interesting arms are the ONE-KEY
+               ones — steer left or right, throttle or brake, gear up or down — and a single
+               all-or-nothing answer can only produce "none" or "all".  A third of the cases
+               therefore hold exactly one of the seven codes the cluster asks about. */
+            { unsigned mode = xs() % 3;
+              if (mode == 0)      platform_test_key_down(0);
+              else if (mode == 1) { platform_test_key_down(1); keyheld++; }
+              else {
+                  static const unsigned char CODES[7] =
+                      { 0x9D, 0xA9, 0xA8, 0xAE, 0xBE, 0x9F, 0xEF };
+                  platform_test_key_only(CODES[xs() % 7]);
+                  keyheld++; oneKey++;
+              } }
+
+            /* ⚠ ...and the ANALOGUE AXIS, for the same reason: Platform's default is dead
+               centre, which pins adc_read's magnitude to 0 and leaves its dead-zone compare and
+               the joystick's whole x1.5 pedal arm unreachable.  The high byte is swept, and one
+               case in eight sits exactly ON the dead zone ($8A or $76 -> magnitude $0A). */
+            { unsigned hi;
+              if (xs() % 8 == 0) { hi = (xs() & 1) ? 0x8Au : 0x76u; onEdge++; }
+              else                 hi = (unsigned)(xs() & 0xFF);
+              platform_test_adc((unsigned short)((hi << 8) | (xs() & 0xFF)),
+                                (unsigned char)(xs() & 3)); }
+
+            /* ⚠ gear_key_latch must be 0 for a shift to be accepted at all, and a random byte
+               is 0 once in 256 — so the gear body ran in 20 of 5000 cases and both of its wrap
+               arms survived sabotage.  Half the cases release the latch. */
+            if (xs() & 1) { pre[0x0019] = 0x00; latchClear++; }
+
+            /* The assist setting is 0 or $80 and nothing else. */
+            if (xs() & 1) { pre[PRE_ASSIST_FLAG] = 0x80; assist++; }
+            else            pre[PRE_ASSIST_FLAG] = 0x00;
+
+            pre[PRE_GEAR_INDEX]     = (uint8_t)(xs() % 8);
+            pre[PRE_SECTION_CURSOR] = (uint8_t)(3 * (xs() % 40));
+            pre[0x0063]             = (uint8_t)xs();          /* road_speed */
+            pre[0x003C]             = (uint8_t)xs();          /* engine_revs */
+            pre[PRE_SESSION_END]    = (uint8_t)((xs() & 1) ? 0 : (1 + xs() % 255));
+            if (pre[PRE_SESSION_END]) sessionOver++;
+
+            /* The text path's cursors: a legal character row (see the header). */
+            { unsigned row = xs() % 24;
+              pre[PRE_VDU_ROW] = (uint8_t)(((row < 8 ? row : row + 8) << 3) | (xs() & 7));
+              if (pre[PRE_VDU_ROW] < 0x40) textRow++; }
+            pre[PRE_VDU_COLUMN] = (uint8_t)(xs() % 0x28);
+            /* vdu_char_def forks on text_out_via_mos' sign — both arms wanted. */
+            pre[PRE_TEXT_VIA_MOS] = (uint8_t)((xs() & 1) ? 0x80 : 0x00);
+
+            /* ⚠⚠ $1593 IS A PER-CIRCUIT SMC EXTENT — `JSR mul8`, the joystick's squaring — and
+               without forcing it the whole joystick arm traps and returns instead of running:
+               a random operand pair is Silverstone's 1 time in 65536.  Nine cases in ten get the
+               real bytes; the tenth is left random so the trap channel is compared too. */
+            if (xs() % 10) { pre[0x1593] = 0x20; pre[0x1594] = 0x00; pre[0x1595] = 0x0C; }
+            else patched++;
+
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = (uint8_t)(xs() % 4 == 0);
+            if (c.D) decimal++;
+            subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
+                                liveMask, t, &printed);
+        }
+        fail += subFail;
+        if (!decimal || !joystick || !keyheld || !assist || !textRow || !sessionOver ||
+            !patched || !oneKey || !onEdge || !latchClear) {
+            printf("[VACUOUS] %s: %d decimal, %d joystick, %d key held (%d single), "
+                   "%d assist on, %d low text row, %d session over, %d SMC-random, "
+                   "%d on the dead zone, %d latch clear\n", list[i].name, decimal, joystick,
+                   keyheld, oneKey, assist, textRow, sessionOver, patched, onEdge, latchClear);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d decimal, %d joystick, %d held/%d single, %d assist on, %d SMC-random, "
+               "%d dead-zone edge, %d latch clear)\n",
+               list[i].name, cases, subFail, decimal, joystick, keyheld, oneKey, assist,
+               patched, onEdge, latchClear);
+    }
+    platform_test_key_down(0);
+    unsetenv("REVS_SMC_CONTINUE");
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -4192,6 +4382,7 @@ int main(int argc, char** argv)
     fail += test_road_sign();
     fail += test_object_shape();
     fail += test_object_lines();
+    fail += test_driving_controls();
 
     fail += check_coverage();
     fail += report_unvalidated_natives();

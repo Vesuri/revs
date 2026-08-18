@@ -48,35 +48,25 @@ missing fact:
 set of names SCOPED to each pass, or notes that record every tenancy.  Not a per-cell call.
 
 
-## Six unnamed routines in ONE NAMED call tree — `read_driving_controls`
+## `section_curve` (`$0701`) — the CURVATURE reading and the `car_flags_0` one
 
-Enumerated 2026-08-18 while walking the campaign's trees; **this is an inventory, not a set of
-readings** — nothing here has been looked at yet, so no name is suggested and none should be
-invented from the address alone.  `draw_track_object`'s and `build_road_sign`'s rows are gone
-because twins #87-#97 named them.
+Field 1 of the 3-byte per-section record at `$0700-$0777`, named 2026-08-18 with twins #98-#114
+and `[INFERRED]` because its two readers disagree:
 
-| Tree | Still `FUN_*` |
-|---|---|
-| `read_driving_controls` ($1579) | `$15F4` (+ its `$160D` entry), `$1612` (+ `$162D`), `$1EE9`, `$1EFA`, `$1F9B`, `$63C5` |
+* `apply_steering_assist` (`$1F5E`) takes its **low seven bits as the section's curvature** —
+  clamped to 2..7, shifted up four, and used as the CEILING on the assist's gain, so a bigger
+  value means a tighter corner and a weaker assist.  That is the reading the name records.
+* `$2931` copies **the whole byte into `car_flags_0`** for any car whose `car_speed_scaled` is at
+  least `$32`.  A curvature is not a flag byte, and nothing explains why a fast car should take one.
 
-⭐ `read_driving_controls`' cluster is chained by **tail `JMP`s across four separate regions**
-($15xx → $1EE9 → $15F4 → $1EFA → $1612), which is why its tree is deep and its routines have no
-obvious boundaries: naming them is one pass over that whole chain, not six independent decisions.
+The single writer (`$1575`) stores either an accumulated value or `$0016` with bit 7 optionally
+flipped, so bit 7 is a sign or a direction and the low seven bits are the quantity.
 
-⚠⚠ **AND A WARNING ABOUT CALL TREES ON THIS CORPUS.** Two ways of computing them disagree, and
-both are right about different things:
+⇒ **Cheap settlement: `make refloop`.**  Drive one lap and dump `$0700-$0777` at a known section;
+the field should track the circuit's corners if the curvature reading is right.  Then read
+`car_flags_0` for an overtaking car and see whether the byte that lands there behaves like a flag
+set or like a number.  Until then the name is `[INFERRED]` and this entry says why.
 
-* the **6502 static graph** (`JSR` + tail `JMP` out of the region) is the game's call structure;
-* the **generated C** has strictly more edges, from two causes — the transpiler splits a routine
-  at every mid-function entry (so an internal fall-through becomes a call), and an **SMC branch
-  target becomes a `switch` over every reachable label**, which turns into a call whenever one of
-  those labels lives in another region.
-
-Measured example: the C shows `column_gap_walk → $1DE5`, which makes `draw_track_object` look as
-though it reaches `draw_gear_indicator` and the ADC.  It does not — `$1DE4` is an `RTS`; the edge
-is the self-modified branch offset at `$1DD5` enumerating `$1DE5` as one of its 30-odd possible
-targets.  **Quote the 6502 graph for "what calls what", and the C graph only for "what could the
-port execute".**
 
 ## `car_state_1` (`$0164,X`) / `car_state_2` (`$0178,X`) — which is ALONG and which is ACROSS
 
