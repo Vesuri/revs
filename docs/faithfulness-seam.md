@@ -135,6 +135,20 @@ purely for this reason — same 0/700 differential, same framerate (465 vs 467 p
    operations than the 6502 did?"**  A chain of `ADC`/`SBC` with live flags: nothing.  A byte-pair
    shift loop the 68000 does in one word op: something.  If the answer is nothing, write the twin
    for the NAMES and say so (as with #6-#8), or do not write it.
+   ⭐⭐ **AND THE WAY BACK TO PARITY WAS FLAGS, NOT ARITHMETIC.**  A `cpu.h` macro writes FIVE cpu
+   fields and a routine usually reads one: `SBC` stores A/N/V/Z/C at ~16-20 cycles a store and
+   computes V through mask chains, so a subtract CHAIN pays it over and over for flags that are dead
+   at the exit.  `div16by8` was doing that seven times a call, 60 calls a frame.  `sbc_value` (the
+   same subtract, decimal mode included, without the bookkeeping) plus a one-shot `sbc_overflow`
+   replay of the single V that escapes brought twins #14/#15 from -2.4% to **exact parity** with the
+   transliteration.
+   ⇒ The general rule: **write the chain with values, and replay the ONE escaping flag from its
+   operands.**  Work out WHICH flag escapes rather than assuming — `view_delta`'s V is observable
+   only through `project_point`'s clip exit, because `bearing_to_section`'s 45-degree arm overwrites
+   V with `BIT` and its octant arms with the closing `ADC`.
+   ⚠ And a sabotage aimed at a fixture that cannot SEE the flag it breaks proves nothing: three of
+   thirteen "survived" until they were pointed at `project_point_from` instead of
+   `bearing_to_section_from`.
    ⚠⚠ **A flag helper left OUT OF LINE can make an arithmetic twin slower on its own.**  `sub_from`
    and friends are a few instructions each, but GCC keeps them out of line at -O3 (they write the
    global `cpu` and have many callers) — a `jsr` plus a `movem.l` pair per subtract.  They now carry

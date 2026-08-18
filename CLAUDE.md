@@ -318,6 +318,10 @@ written against the current arrangement has to be rewritten after it.
 Rules that must survive without opening `docs/perf-method.md`:
 - **Quote a framerate ONLY from `GDBSCRIPT=fps_series.gdb`** (in-program sampling, no gdb stop
   inside the window). Conditional-breakpoint scripts have read 0.02 where the truth was 0.78.
+  ⭐⭐ **Compare its ROW VECTOR, never its `total painted` line, and average the non-outlier rows.**
+  Under `FIXED_RNG=1` + warp the series is DETERMINISTIC row for row, so the limit is one row's
+  RESOLUTION (one frame = 3.3%), not variance — eleven rows give ~0.3% and make a 2.5% change
+  quotable. The `total` spans a partial trailing row and varies 3% between identical builds.
 - **Use 30-second warp runs, not longer**: a `STRAIGHT_TO_RACE` run eventually leaves the track and
   resets, so a longer run DILUTES the measurement with a static scene instead of adding data.
 - **FPS over-reads wins — under ~3% is noise.** Quote a static cycle count or a differential ratio
@@ -336,6 +340,15 @@ Rules that must survive without opening `docs/perf-method.md`:
   at -O3, so every subtract was paying a `jsr` + `movem.l`. **Grep the objdump for
   `jsr <sub_from>` before believing any arithmetic twin is fast**, and match the build to the
   control (a `PROBES=1` build reads low). `docs/perf-method.md` §twins #14/#15.
+- ⭐⭐ **A 6502 macro writes FIVE cpu fields; a routine usually reads one.** `SBC` stores A/N/V/Z/C
+  (~16-20 cycles each on a 68000) and computes V through mask chains, so a subtract chain pays it
+  over and over for flags that are dead at the exit. Use `sbc_value` for the chain and replay the
+  ONE escaping flag from its operands (`sbc_overflow`) — worth +2.5% in the road pass. ⚠ Decimal
+  mode must still be honoured: D changes the RESULT BYTE, not just the flags.
+- ⚠⚠ **SIZE A ROAD-PASS ROUTINE WHILE DRIVING, NOT PARKED — it is 8x.** `div16by8` runs 7.8 times a
+  frame parked and **60.5 driving** (`STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`), because
+  `road_edge_start` reuses last frame's edge points. A parked call count next to a driving
+  framerate is two different workloads.
 - **An A/B switch must PRINT its own state**, and any new instrument must be sabotaged before its
   output is believed.
 

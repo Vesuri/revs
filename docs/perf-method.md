@@ -538,12 +538,25 @@ transliterated subtree underneath them at all**.  By §8's rule that is the shap
 Four 30 s warp runs of `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`, every one from
 a `make clean`, all in one session:
 
-| build | painted in 30 s | modal row |
+| build | 11-row mean (painted per 512 vblanks) | vs the transliteration |
 |---|---|---|
-| control (the commit before) | 383 | 2.92 |
-| control + `always_inline` on the flag helpers | 388 | 2.92-3.02 |
-| **twins #14/#15 as first written** | **349** | **2.63** |
-| twins #14/#15 + `always_inline` | 371 | 2.83-2.92 |
+| the transliteration these replaced | 29.91 | — |
+| **twins #14/#15 as first written** | **27.20** | **-9.1%** |
+| twins #14/#15 + `always_inline` on the flag helpers | 29.18 | -2.4% |
+| twins #14/#15 + flag-free subtracts (below) | **29.91** | **+0.0%** |
+
+⭐⭐ **AND THE INSTRUMENT IS BETTER THAN THIS FILE THOUGHT.  `fps_series` under `FIXED_RNG=1` +
+warp is DETERMINISTIC ROW FOR ROW** — two runs of the same build return identical vectors, checked
+on both builds.  So the "one painted frame is 3.3% of a row, therefore 3% is noise" rule was
+describing the wrong thing: the limit is not run-to-run VARIANCE, it is the RESOLUTION of a single
+row.  Two consequences, both of which make small changes measurable:
+
+* **Compare ROW VECTORS, never the `total painted` line.**  The total spans a partial trailing row
+  and the run length in vblanks varies (6813 vs 7147 on two runs of one build), so totals differ by
+  3% for two runs of identical code.  That is what first made this section quote 383 / 371 / 349.
+* **Average the non-outlier rows.**  Eleven rows at one-frame resolution give ~0.3%, which is how
+  the +2.5% below is quotable at all.  Drop the row where the car leaves the track — it is the one
+  row that is a different scene, and it is obvious (14-20 against 28-31).
 
 ⭐⭐ **THE TWIN WAS SLOWER THAN THE TRANSLITERATION IT REPLACED — 349 against 383, a 9% LOSS, far
 outside the one-frame noise floor.**  The objdump said why in one grep: `jsr <sub_from>`.  The
@@ -564,6 +577,37 @@ overhead left to remove once the flags are part of the contract.
 ⇒ Before twinning an arithmetic leaf, ask **what the C version does in FEWER operations than the
 6502 did.**  If the answer is "nothing, it just looks nicer", expect parity and write the twin for
 the names (§8) — which is what these two are kept for.
+
+### ⭐⭐ …and where the FEWER OPERATIONS actually were: FLAGS NOBODY READS
+
+The answer to that question turned out not to be the arithmetic at all.  `cpu.h`'s `SBC` writes
+**cpu.A, N, V, Z and C** — five `move.b dn,abs.l` stores at ~16-20 cycles each on a 68000, per the
+calibration in `docs/headless-fsuae.md` — and computes V through a chain of masks.  A restoring
+divide reads none of that: only the VALUE feeds the next step, and **only the last subtract's V ever
+leaves the routine.**  `div16by8` was paying all five, seven times a call.
+
+⚠ First the routine had to be SIZED, and the parked baseline would have said don't bother:
+
+| workload | `div16by8` | `bearing_to_section_from` | `project_point_from` |
+|---|---|---|---|
+| parked (`STRAIGHT_TO_RACE=1`) | 7.8 /frame | 4.0 | 3.8 |
+| **driving (`+ HOLD_THROTTLE=1`)** | **60.5 /frame** | **30.8** | **29.8** |
+
+**Eightfold, because `road_edge_start` reuses last frame's edge points and a parked car re-derives
+almost nothing.**  Stable to 1% over 300 and 1200 frames.  Any future sizing of the road pass must
+be taken while DRIVING — and note the FPS runs already are (`FPSCOUNT=1` holds the throttle), so a
+parked call count and a driving framerate do not describe the same workload.
+
+The fix is `sbc_value` / `sbc_overflow` in `src/gen/revs_native.c`: the same subtract with the
+bookkeeping removed, decimal mode included (D changes the RESULT BYTE, so this is not plain C
+arithmetic), plus a one-shot replay of the single V that escapes.  Applied to `div16by8_core`'s seven
+restoring subtracts, `view_delta`'s four, and `bearing_arm`'s negate.  **+2.5%, and it closes the
+gap to the transliteration exactly.**
+⭐ Where a flag is live is worth working out rather than assuming: `view_delta`'s V is observable
+**only** through `project_point`'s clip exit, because `bearing_to_section`'s 45-degree arm overwrites
+V with `BIT` and its octant arms with the closing `ADC`.  Three sabotages "survived" until they were
+aimed at the right fixture — a sabotage pointed at a fixture that cannot see the flag it breaks
+proves nothing.
 ⚠ Two procedural notes.  `always_inline` is worth ~1% to the twins that were already here (383 →
 388) and ~6% to these, so it is a fix for *arithmetic-dense* twins specifically, not a corpus-wide
 win — attribute it that way.  And the first measurement of these twins was taken from a `PROBES=1`

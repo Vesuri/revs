@@ -78,6 +78,53 @@ REVS_FLAG_OP unsigned adc_step(unsigned a, uint8_t addend, int carry_in)
     return cpu.A;
 }
 
+/* ===========================================================================
+   ⭐⭐ …AND THE SAME SUBTRACT WITHOUT ITS FLAGS, which is a different instrument.
+
+   cpu.h's `SBC` writes cpu.A, N, V, Z and C — five `move.b dn,abs.l` stores at ~16-20 cycles
+   each on a 68000 — and computes V through a chain of masks.  In a RESTORING DIVIDE only the
+   value feeds the next step, and only the LAST subtract's V ever leaves the routine, so
+   `div16by8` was paying for all five, seven times per call.  Measured cost of getting that
+   wrong: 60.5 calls a frame while DRIVING (`STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`, stable over
+   300 and 1200 frames) against 7.8 parked — so the parked figure understates this subsystem
+   EIGHTFOLD and must not be used to size it.
+
+   ⚠ Decimal mode still has to be honoured here: D changes the RESULT BYTE, not just the flags,
+   so this is not "plain C arithmetic" — it is the same algorithm with the bookkeeping removed.
+   ⚠ `bin` is the BINARY result, which is what N and Z come from even in decimal mode (see the
+   note on `view_delta`); `val` is the byte that actually lands in A.
+   =========================================================================== */
+typedef struct { uint8_t val, bin, carry; } Sbc;
+
+REVS_FLAG_OP Sbc sbc_value(uint8_t a, uint8_t m, unsigned carryIn)
+{
+    unsigned t = (unsigned)a + (uint8_t)~m + (carryIn ? 1u : 0u);
+    Sbc r;
+
+    r.bin   = (uint8_t)t;
+    r.carry = (uint8_t)(t > 0xFFu);
+    if (cpu.D) {
+        int al = (int)(a & 0x0Fu) - (int)(m & 0x0Fu) + (carryIn ? 1 : 0) - 1;
+        int ar;
+        if (al < 0) al = ((al - 6) & 0x0F) - 0x10;
+        ar = (int)(a & 0xF0u) - (int)(m & 0xF0u) + al;
+        if (ar < 0) ar -= 0x60;
+        r.val = (uint8_t)ar;
+    } else {
+        r.val = r.bin;
+    }
+    return r;
+}
+
+/* V for ONE subtract, replayed from its operands — for the one whose V is a routine's exit V.
+   Called once where the loop above would have computed it on every pass. */
+REVS_FLAG_OP uint8_t sbc_overflow(uint8_t a, uint8_t m, unsigned carryIn)
+{
+    uint8_t   nv = (uint8_t)~m;
+    unsigned  t  = (unsigned)a + nv + (carryIn ? 1u : 0u);
+    return (uint8_t)(((~(a ^ nv) & (a ^ (uint8_t)t)) >> 7) & 1u);
+}
+
 /* value - subtrahend with the borrow clear (SEC/SBC), setting C and V. */
 REVS_FLAG_OP unsigned sub_from(unsigned value, uint8_t subtrahend)
 {
@@ -2545,6 +2592,14 @@ static Div16By8 div16by8_core(uint8_t dividendHi, uint8_t dividendLo, uint8_t di
     Div16By8 r;
     int step;
 
+    /* ⭐ Only the LAST restoring subtract's V leaves this routine, so the loop computes VALUES
+       only and the one flag is replayed from its operands afterwards.  That is the whole
+       difference between ~900 instructions a call and this: seven times five cpu-struct stores
+       plus seven V computations, for flags the algorithm never reads.  `lastMinuend` is what the
+       replay needs (the divisor and the borrow are the same on every pass). */
+    int     didSubtract = 0;
+    uint8_t lastMinuend = 0;
+
     for (step = 0; step < 8; step++) {
         /* The bit leaving the top of the word is the remainder's ninth bit.  The 6502 keeps it
            in C and takes it as "the divisor fits" without comparing at all ($0C4A `BCS`),
@@ -2554,13 +2609,24 @@ static Div16By8 div16by8_core(uint8_t dividendHi, uint8_t dividendLo, uint8_t di
 
         if (ninthBit || (work >> 8) >= divisor) {
             /* Steps 1..7 restore; the eighth deliberately does not (see the header).  The
-               subtract goes through the 6502's own SBC because its V is the routine's exit V
-               and because decimal mode changes the result byte — the fixture randomises D. */
-            if (step < 7)
-                work = (uint16_t)((work & 0x00FFu) | ((unsigned)sub_from(work >> 8, divisor) << 8));
+               subtract still runs through the 6502's own arithmetic INCLUDING DECIMAL MODE,
+               which changes the result byte and therefore the quotient — the fixture
+               randomises D and sabotage #5 proves it load-bearing. */
+            if (step < 7) {
+                Sbc sb;
+                lastMinuend = (uint8_t)(work >> 8);
+                didSubtract = 1;
+                sb   = sbc_value(lastMinuend, divisor, 1);
+                work = (uint16_t)((work & 0x00FFu) | ((unsigned)sb.val << 8));
+            }
             work |= 1u;              /* the quotient bit, carried up the low half by the next shift */
         }
     }
+
+    /* $0C47's exit V, and the reason it is a `DIVU.W` blocker: it belongs to whichever of the
+       seven subtracts ran last.  If none ran, the 6502 left V alone and so does this. */
+    if (didSubtract)
+        cpu.V = sbc_overflow(lastMinuend, divisor, 1);
 
     r.quotient  = (uint8_t)work;
     r.remainder = (uint8_t)(work >> 8);
@@ -2648,24 +2714,34 @@ typedef struct {
    the scratch slot $FD plus component 2 is $09FF, still inside the table. */
 static ViewDelta view_delta(uint8_t sectionByte, unsigned component, uint8_t origin)
 {
-    unsigned lo = sub_from(mem[SECTION_LO_TBL + sectionByte + component],
-                           mem[VIEW_ORIGIN_LO + origin + component]);
-    unsigned hi = sbc_step(mem[SECTION_HI_TBL + sectionByte + component],
-                           mem[VIEW_ORIGIN_HI + origin + component], cpu.C);
+    /* Four subtracts at most, and only the LAST one's V leaves this routine — it survives the
+       sort's compares (which do not write V) and the 45-degree arm (which does not either), so
+       it reaches the caller.  Values only in the chain, then that one flag once; same trade as
+       div16by8_core above, and it is three calls per edge point. */
+    Sbc lo = sbc_value(mem[SECTION_LO_TBL + sectionByte + component],
+                       mem[VIEW_ORIGIN_LO + origin + component], 1);
+    Sbc hi = sbc_value(mem[SECTION_HI_TBL + sectionByte + component],
+                       mem[VIEW_ORIGIN_HI + origin + component], lo.carry);
     ViewDelta d;
-    /* ⚠⚠ THE BRANCH TESTS N, NOT BIT 7 OF THE BYTE, and in DECIMAL MODE those are two
-       different things: the 6502 sets N and Z from the SBC's BINARY result while A receives
-       the BCD-corrected one, so `sign = stored & $80` picks the wrong arm on a quarter of the
-       cases and only there.  Cost an hour and 76 fixture failures to find; the fixture's D
-       arm is what found it. */
-    int negative = cpu.N;
+    uint8_t lastA = mem[SECTION_HI_TBL + sectionByte + component];
+    uint8_t lastM = mem[VIEW_ORIGIN_HI + origin + component];
+    unsigned lastC = lo.carry;
+    /* ⚠⚠ THE BRANCH TESTS N, NOT BIT 7 OF THE STORED BYTE, and in DECIMAL MODE those are two
+       different things: the 6502 sets N and Z from the SBC's BINARY result while A receives the
+       BCD-corrected one, so `sign = stored & $80` picks the wrong arm on a quarter of the cases
+       and only there.  Cost 76 fixture failures to find; the fixture's D arm is what found it. */
+    int negative = (hi.bin >> 7) & 1;
 
-    d.rawHi = (uint8_t)hi;
+    d.rawHi = hi.val;
     if (negative) {                      /* $2158 / $2178 / $2298 BPL — a 16-bit negate */
-        lo = sub_from(0, (uint8_t)lo);
-        hi = sbc_step(0, (uint8_t)hi, cpu.C);
+        Sbc nlo = sbc_value(0, lo.val, 1);
+        Sbc nhi = sbc_value(0, hi.val, nlo.carry);
+        lastA = 0; lastM = hi.val; lastC = nlo.carry;
+        lo = nlo;
+        hi = nhi;
     }
-    d.mag = (uint16_t)(((unsigned)(uint8_t)hi << 8) | (uint8_t)lo);
+    cpu.V = sbc_overflow(lastA, lastM, lastC);
+    d.mag = (uint16_t)(((unsigned)hi.val << 8) | lo.val);
     return d;
 }
 
@@ -2786,8 +2862,12 @@ static void bearing_arm(unsigned largerComponent, unsigned smallerComponent,
     signsDiffer = ((mem[POINT_DELTA_SIGN + 0] ^ mem[POINT_DELTA_SIGN + 2]) & 0x80u) != 0;
     negate      = negateWhenSignsAgree ? !signsDiffer : signsDiffer;
     if (negate) {
-        angleLo = sub_from(0, (uint8_t)angleLo);
-        angleHi = sbc_step(0, (uint8_t)angleHi, cpu.C);
+        /* Values only: the closing ADC below overwrites this pair's V, and its C and N/Z go
+           with it.  (The negate in view_delta is NOT free the same way — see there.) */
+        Sbc nlo = sbc_value(0, (uint8_t)angleLo, 1);
+        Sbc nhi = sbc_value(0, (uint8_t)angleHi, nlo.carry);
+        angleLo = nlo.val;
+        angleHi = nhi.val;
     }
 
     /* $21FF / $2277 — and the quadrant the octant sits in, from the LARGER component's sign.
