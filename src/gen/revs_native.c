@@ -2781,7 +2781,7 @@ static void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     road_split_index = (uint8_t)clamp_up_to(farBase, 0x31);
 
     plot_ptr2_lo = 0;                /* the second screen pointer, for a span that crosses a page */
-    shared_temp_8e = 0;              /* ⚠ no reader in this pipeline — see symbols.csv */
+    plot_ptr3_lo   = 0;              /* the third screen pointer's low byte — road_span_plot_2 stores through it */
 
     /* Side 1 (the 40..79 half): its line map, then its two span passes. */
     arg_a(0x00);                     /* the low byte of line_attr_0 — A patches the store */

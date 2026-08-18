@@ -142,33 +142,43 @@ visible at once.  Until then twin #22's comment carries the warning at the point
 ⚠ Not a defect: the transliteration and the twin agree byte for byte (`make validate
 FN=point_distance_hypot`, and sabotage "the far arm forgets the -max/8 term" catches a swap).
 
-## `FUN_2D17` / `FUN_2D9A` / `FUN_2E20` / `FUN_2E99` / `FUN_2FC0` / `FUN_2FD7` — the span rasteriser's six unnamed arms
+## `point_delta_lo` / `point_delta_hi` / `point_delta_sign` (`$0080`-`$0088`) — the span rasteriser is a SECOND tenant of all nine bytes
 
-Every routine `draw_road` reaches has a name except these six, and they are 553 of the subtree's
-1180 bytes — the whole span-plotting core under `interp_edge`.  What is `[DERIVED]` from the
-listing:
+The three arrays are named for what `build_track_geometry` puts in them: a camera-relative
+delta vector, three components each.  `interp_edge` and the four span arms then reuse the same
+nine bytes for something with no relation to it at all, and the notes do not say so:
 
-* The four big ones are **arm variants of one unrolled span walk**, selected two ways at
-  `$2CDF`-`$2CF9`: an earlier branch picks the PAIR (`$2CE3`/`$2CE9` vs `$2CF3`/`$2CF9`), and the
-  sign of `$86` picks the member.  Each runs `road_span_plot` four times and `road_span_plot_2`
-  four times; the sign of `$86` swaps which half goes FIRST (`$2D17` and `$2E20` plot-then-plot_2,
-  `$2D9A` and `$2E99` the reverse), so `$86` is a direction and the arms are the same walk mirrored.
-* They differ in the per-column table their patched `BCC` offset comes from: `$3E50,X` (`$2D17`),
-  `$40D0,X` (`$2D9A`), `$3ED0,X` (`$2E20`), `$3ED8,X` (`$2E99`) — see `SMC_SITES` in
-  `tools/transpile.py`.
-* Only the first pair calls `$2FC0`/`$2FD7`, and those two are **whole routines switched between
-  "compare and continue" and "return immediately"** by `interp_edge` at `$2CAA`-`$2CB9` (opcode
-  slot `$E0`/`$60`).  They are not span plotters in their own right: each is a `CPX #$80` guard
-  plus `road_span_advance`.  A name has to say that they are the CONDITIONAL continuation of the
-  unrolled chain, not a fifth arm.
-* `$2D9A` ends `JMP $2F12` — a tail jump into the MIDDLE of `$2E99`, which is why the transpiler
-  emits `FUN_2F12` as a separate entry into the same region.  Any naming must keep that entry
-  visible or the region loses its second door.
+| cell | as the delta vector | as the span rasteriser uses it |
+|---|---|---|
+| `$0082` | `point_delta_lo[2]` | the span's END scan line |
+| `$0083` | `point_delta_hi[0]` | the DDA's major delta (dx) |
+| `$0084` | `point_delta_hi[1]` | the minor delta (dy) |
+| `$0085` | `point_delta_hi[2]` | the source-block index, 0..$2C, into `dash_block_starts` |
+| `$0086` | `point_delta_sign[0]` | which of the four arms — its bit 7 picks forward or reverse |
+| `$0087` | `point_delta_sign[1]` | the plotters' Y step, which becomes the `INY`/`DEY` opcode |
+| `$0088` | `point_delta_sign[2]` | a two-bit rolling clip history, one bit `ROR`ed in per call |
 
-⇒ `[INFERRED]` naming shape, not yet applied because the direction/pair semantics are read off
-control flow only: `span_walk_fwd` / `span_walk_rev` for one pair and the same with the other
-pair's distinguishing role once it is known, plus `span_advance_guard_a` / `span_advance_guard_b`
-for `$2FC0`/`$2FD7`.  **What would settle the pair question cheaply:** the two call sites are
-reached from different branches at `$2CEF`; bracket each with a counter under
-`STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` and print which one runs for near vs far spans, rather than
-inventing a name for the split.
+The windows do not overlap — `build_track_geometry` finishes before `draw_road` starts — so this
+is the same safe arrangement as `shared_temp_8c`, and the twins carry file-local `SPAN_*` defines
+so the code reads as what it computes.  ⚠ `$0088` has a THIRD owner: `mark_line_surfaces` parks
+its surface class there for the whole of its walk (`$1A98`).
+
+⇒ The open decision is whether the nine cells get a second set of names scoped to the span pass
+(as `docs/rename.md`'s `math_lo`/`math_hi` entry proposes for the arithmetic window) or whether
+the notes simply record both tenancies.  Worth deciding ONCE, for both windows, rather than
+twice — and the same commit should settle it for `$0074`/`$0075`.
+
+## `span_cap_surface_a` (`$0034`) / `span_cap_surface_b` (`$0033`) — what distinguishes them, beyond which one gets used
+
+Both are per-scan-line surface codes `interp_edge` composes for the span it is about to walk, and
+the pass number sits in bits 3-5 of each.  `$2F19` picks between them on `span_swapped`, i.e. on
+whether the walk was reversed.  What is NOT derived is why the two are built so differently:
+`span_cap_surface_a` takes bits 3-4 of `colour_pattern_tbl[0]` and ORs `$40`;
+`span_cap_surface_b` takes two scattered bits of `colour_pattern_tbl[3]` and ORs `$80`.  Bit 7 vs
+bit 6 of a `view_line_surface` entry is a real distinction — `view_paint_lines` reads that array
+for the line's background — so the two codes mean two different kinds of line.
+
+⚠ **What would settle it cheaply, and it is a rendered-thing diff, not more reading**: park the
+car (`make refloop --park`) and dump `view_line_surface` on a frame where the road runs uphill and
+one where it runs downhill.  The `a`/`b` split is the only thing in the pass that keys off walk
+direction, so whichever visual feature swaps between those two frames is what bit 6 vs bit 7 names.
