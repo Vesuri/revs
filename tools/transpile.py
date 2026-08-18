@@ -698,6 +698,22 @@ VALIDATE_FUNCS = {
     0x193E,
     0x19AF,
     0x1A98,
+    # ⭐⭐ TWINS #40-#43 — THE VIEW/DASHBOARD SEAM'S CALLEES, i.e. everything
+    # fill_dash_edge_columns (twin #8) reaches.  With these the seam has no transliteration
+    # left in it either, and the reason to write them is the same as for twins #16-#24: the
+    # driver was twinned first and collected nothing, because the work is in the callees.
+    #   $1E9E surface_colour_at    ( 75 B) which surface is at (line, position), as a colour
+    #   $1DAF column_gap_walk      ( 50 B) fill ONE column's empty source bytes
+    #   $1DA6 fill_column_gaps     (  9 B) ...the three-register PATCH in front of that walk
+    #   $1DEF fill_edge_column_run ( 38 B) a RUN of end columns, two passes each
+    # ⚠ $1DAF is twinned separately from $1DA6 because it has a SECOND caller ($1D77, the
+    # other column filler) that enters the walk without patching, so the three patch bytes are
+    # state the walk decodes rather than arguments it is handed.  $1DA6's own fixture therefore
+    # covers the register-to-patch-byte MAPPING and nothing else, which its header says.
+    0x1E9E,
+    0x1DAF,
+    0x1DA6,
+    0x1DEF,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

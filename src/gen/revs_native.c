@@ -4725,3 +4725,327 @@ void mark_line_surfaces(void)
 {
     mark_line_surfaces_core(cpu.X, cpu.A);
 }
+
+/* ===========================================================================
+   TWINS #40-#43 — THE VIEW/DASHBOARD SEAM'S OWN CALLEES
+   ---------------------------------------------------------------------------
+   With these four, the call tree under fill_dash_edge_columns (twin #8) has no
+   transliteration left in it:
+
+     $1DEF  fill_edge_column_run   walk a RUN of view source columns, two passes per column
+     $1DA6  fill_column_gaps       ...the three-register PATCH, then the walk
+     $1DAF  column_gap_walk        ...the walk itself: fill this column's empty source bytes
+     $1E9E  surface_colour_at      which track surface is at (line, position), as a colour
+
+   WHAT THE SUBSYSTEM COMPUTES.  draw_road leaves a source byte at ZERO wherever no span
+   covered it, and view_paint_lines reads a zero as "same byte as the cell to my left".  At
+   the two ends of the viewport — beside the front tyres and up against the dashboard — that
+   is wrong: there is no cell to the left, so the gap has to be filled with the colour of
+   whatever surface the road actually has at that point.  This pass walks each end column from
+   its block's first scan line down to the cursor and substitutes surface_colour_at's answer
+   for every zero it finds.
+
+   ⭐ AND EACH COLUMN IS WALKED TWICE, THROUGH TWO DIFFERENT POINTERS, which is the whole
+   reason fill_column_gaps is self-modifying rather than parameterised:
+
+     pass B (plot_ptr2, offset $EF, fallback $00)  writes the per-scan-line boundary table
+            view_left_start_src / view_right_start_src, and maps a $55 source byte to 0
+     pass A (plot_ptr,  offset $09, fallback $55)  writes the column's own $80-byte source
+            block at $3000 + column*$80, and leaves a non-zero byte alone
+
+   The three registers ARE the patch: X is the store's zero-page pointer NUMBER ($1DDE), Y a
+   BRANCH OFFSET that picks which arm a non-zero source byte takes ($1DD5), and A the fallback
+   colour immediate ($1DDC).  All three sites are declared in transpile.py.
+
+   ⚠ $1DAF has a second caller outside this tree ($1D77, the other column filler), which
+   enters the walk WITHOUT patching — i.e. it runs on whatever the last fill_column_gaps left
+   behind.  That is why the walk decodes the three bytes out of mem[] instead of taking them as
+   arguments, and why it is a twin of its own rather than fill_column_gaps' loop body.
+   =========================================================================== */
+
+#define EDGE_RUN_LIMIT     0x0042u   /* shared_counter_42 — the column the run stops at */
+#define EDGE_COLUMN        0x0085u   /* point_delta_hi[2] as this pass's column cursor */
+#define EDGE_BLOCK_START   0x0082u   /* point_delta_lo[2] — dash_block_starts[column] */
+#define SURFACE_EDGE_0     0x0554u   /* the four per-scan-line surface boundary buffers */
+#define SURFACE_EDGE_1     0x05A4u
+#define SURFACE_EDGE_2     0x0600u
+#define SURFACE_EDGE_3     0x0650u
+#define LINE_ATTR_0        0x0400u   /* per scan line: which edge point covers it, side 0 */
+#define LINE_ATTR_1        0x0450u   /* ...and side 1 */
+#define EDGE_STYLE_PREV    0x5EDFu   /* edge_style - 1: a line_attr entry is an index PLUS ONE */
+
+#define GAP_PTR_OPERAND    0x1DDEu   /* the store's zero-page pointer number */
+#define GAP_BRANCH_OPERAND 0x1DD5u   /* the non-zero-source arm's branch offset */
+#define GAP_FALLBACK       0x1DDCu   /* the colour substituted for a zero surface_colour_at */
+
+/* `value >= limit` through the 6502's CPY, which also leaves Y = value — surface_colour_at's
+   two line_attr arms end on one of these and the carry is part of their exit contract. */
+REVS_FLAG_OP int cpy_ge(uint8_t value, uint8_t limit)
+{
+    cpu.Y = value;
+    CPY(limit);
+    return cpu.C;
+}
+
+/* `value == limit` through the 6502's CPX, leaving X = value: fill_edge_column_run's loop
+   test, and the last thing to touch the flags before it returns. */
+REVS_FLAG_OP int cpx_eq(uint8_t value, uint8_t limit)
+{
+    cpu.X = value;
+    CPX(limit);
+    return cpu.Z;
+}
+
+/* value >> 1 into the carry, then the carry back into a fresh byte — the 6502's way of
+   spelling "multiply by $80 into a byte pair", and the flags of both halves are live here
+   because the walk can exit on the CPY that follows. */
+REVS_FLAG_OP unsigned ror_a(unsigned value)
+{
+    cpu.A = (uint8_t)value;
+    ROR_A();
+    return cpu.A;
+}
+
+/* ⭐ ONE range test per column instead of one per cell (CLAUDE.md §bus_read/bus_write).  The
+   walk touches at most $80 bytes above a pointer it reads once, so the hardware window can be
+   ruled out for the whole column — but the else arm stays, because under a randomised fixture
+   a pointer really can land in SHEILA. */
+static int pointer_is_ram(unsigned base)
+{
+    return base < 0xFB01u;
+}
+
+/* The 16-bit pointer a zero-page PAIR holds — the address an `STA (zp),Y` resolves through,
+   before Y is added. */
+REVS_FLAG_OP unsigned zp_pointer(unsigned zp)
+{
+    return (unsigned)mem[zp & 0xFFu] | ((unsigned)mem[(uint8_t)(zp + 1)] << 8);
+}
+
+REVS_FLAG_OP uint8_t seam_read(unsigned addr, int ram)
+{
+    return ram ? mem[addr] : (uint8_t)bus_read((uint16_t)addr);
+}
+
+REVS_FLAG_OP void seam_write(unsigned addr, int ram, uint8_t value)
+{
+    if (ram) mem[addr] = value; else bus_write((uint16_t)addr, value);
+}
+
+/* ===========================================================================
+   $1E9E  surface_colour_at — WHICH SURFACE IS AT (LINE, POSITION)?  (twin #40)
+   ---------------------------------------------------------------------------
+   The road renderer's colour decision, and the only routine that reads all four
+   surface_edge buffers together.  Given a scan line in Y and a position along it in
+   EDGE_COLUMN, it walks the boundaries outward and returns the surface's colour byte:
+
+     line past horizon_extent        → surface_colours[1], the off-road colour
+     position at or past edge 0      → surface_colours[3]
+     ...past edge 2                  → the second road side's line_attr, or [3] past its limit
+     ...past edge 3                  → surface_colours[0]
+     ...past edge 1                  → the first road side's line_attr, ditto
+     inside every boundary           → view_line_surface[line], the line's background
+
+   The two line_attr arms end the same way: the attribute byte is an edge-point index PLUS
+   ONE (hence EDGE_STYLE_PREV), its style's low two bits pick the colour, and X is left
+   holding that style — which is why X is part of the exit contract and not scratch.
+
+   ⚠ EVERY EXIT'S CARRY IS THE LAST COMPARE'S, and the caller's next instruction is a store,
+   not a branch — so the carry is only observable through the differential.  It is 1 on every
+   arm reached by a taken BCS and 0 on the two that fall through, which is what the compares
+   below reproduce rather than compute.
+   =========================================================================== */
+
+static uint8_t surface_colour_at_core(uint8_t line, uint8_t position)
+{
+    unsigned attr;
+
+    /* $1E9E — nothing above the horizon has a surface; that is sky. */
+    cpu.Y = line;
+    CPY(horizon_extent);
+    if (cpu.C && !cpu.Z) return (uint8_t)load_a(mem[SURFACE_COLOURS_TBL + 1]);
+
+    /* $1EA8-$1EBC — the four boundaries, outermost first. */
+    if (cmp_ge(position, mem[SURFACE_EDGE_0 + line]))
+        return (uint8_t)load_a(mem[SURFACE_COLOURS_TBL + 3]);
+
+    if (cmp_ge(position, mem[SURFACE_EDGE_2 + line])) {
+        if (cpy_ge(line, line_attr_1_limit))
+            return (uint8_t)load_a(mem[SURFACE_COLOURS_TBL + 3]);
+        attr = mem[LINE_ATTR_1 + line];
+    } else if (cmp_ge(position, mem[SURFACE_EDGE_3 + line])) {
+        return (uint8_t)load_a(mem[SURFACE_COLOURS_TBL + 0]);
+    } else if (cmp_ge(position, mem[SURFACE_EDGE_1 + line])) {
+        if (cpy_ge(line, line_attr_0_limit))
+            return (uint8_t)load_a(mem[SURFACE_COLOURS_TBL + 3]);
+        attr = mem[LINE_ATTR_0 + line];
+    } else {
+        /* $1EBE — inside everything: the line's own background class. */
+        attr = mem[VIEW_LINE_SURFACE + line];
+        cpu.X = (uint8_t)(attr & 3u);
+        return (uint8_t)load_a(mem[SURFACE_COLOURS_TBL + (attr & 3u)]);
+    }
+
+    /* $1EDC — the attribute is an edge-point index + 1; its style's low bits are the colour.
+       ⚠ The 6502's first `TAX` (the masked index) is NOT reproduced: the second one below
+       always overwrites X before anything can read it, so that intermediate value is dead.
+       Verified by sabotage — dropping the mask HERE passes 2000 cases, while dropping it on
+       the table index one line down fails, which is the pair that proves which one matters. */
+    attr  = mem[EDGE_STYLE_PREV + (attr & 0x7Fu)];
+    cpu.X = (uint8_t)(attr & 3u);
+    return (uint8_t)load_a(mem[SURFACE_COLOURS_TBL + (attr & 3u)]);
+}
+
+/* The 6502-ABI shim.  Y is the scan line and EDGE_COLUMN the position; A comes back as the
+   colour, X as the surface class on the two arms that compute one. */
+void surface_colour_at(void)
+{
+    surface_colour_at_core(cpu.Y, mem[EDGE_COLUMN]);
+}
+
+/* ===========================================================================
+   $1DAF  column_gap_walk — FILL ONE COLUMN'S EMPTY SOURCE BYTES  (twin #41)
+   ---------------------------------------------------------------------------
+   Walks EDGE_COLUMN's source block from span_line_cursor down to (not including)
+   dash_block_starts[column], replacing every ZERO byte with surface_colour_at's answer for
+   that scan line.  Which pointer it stores through, what a NON-ZERO byte does and what a zero
+   colour becomes are all read out of the three patch bytes — see the header above.
+
+   ⚠ The block address is computed, not tabulated: plot_ptr = $3000 + column*$80, spelled by
+   the 6502 as (column + $60) >> 1 with the shifted-out bit rotated back into the low byte.
+   The ADC that does it is the last thing to write V, and V is live at every exit.
+   =========================================================================== */
+
+static void column_gap_walk_core(void)
+{
+    unsigned column = mem[EDGE_COLUMN];
+    unsigned storePtr;
+    uint8_t fallback, offset;
+
+    /* $1DAF-$1DB3 — there are only $28 source columns; above that there is nothing to fill. */
+    if (cmp_ge(column, 0x28u)) return;
+
+    /* $1DB5-$1DBE — plot_ptr = view_src_blocks + column * $80. */
+    plot_ptr_hi = (uint8_t)lsr_a(adc_step(column, 0x60u, 0));
+    plot_ptr_lo = (uint8_t)ror_a(load_a(0x00u));
+
+    /* ⚠⚠ NOTHING IN THIS LOOP IS HOISTED, AND THAT IS MEASURED RATHER THAN CAUTIOUS.  The
+       walk's own stores can land on the cells that drive it: a boundary-table pointer of
+       $005D (a real randomised case, 2 of 1200) makes the run cover $0082 and $0085, i.e. the
+       loop's end line and the column it is filling, and the 6502 re-reads both every pass.
+       The three patch bytes at $1DD5/$1DDC/$1DDE are reachable the same way.  What IS hoisted
+       is the hardware-window test, which collapses to one comparison per store instead of a
+       bus_read/bus_write dispatch (CLAUDE.md §bus_read/bus_write). */
+    cpu.Y = span_line_cursor;
+    while (!cpy_eq(cpu.Y, mem[EDGE_BLOCK_START])) {
+        unsigned srcBase = zp_pointer(MEM_plot_ptr_lo);
+        uint8_t  line    = cpu.Y;
+        uint8_t  src;
+
+        offset   = mem[GAP_BRANCH_OPERAND];
+        fallback = mem[GAP_FALLBACK];
+        storePtr = mem[GAP_PTR_OPERAND];
+
+        src = (uint8_t)load_a(seam_read((srcBase + line) & 0xFFFFu,
+                                        pointer_is_ram(srcBase)));
+
+        if (src != 0) {
+            /* $1DD4 — the patched branch: skip the cell, or map it into the table. */
+            if (offset == 0x09u) { cpu.Y = (uint8_t)(line - 1); continue; }   /* $1DDF */
+            /* ⚠ THE TRAP BELONGS HERE, not at the top: the branch is only reached once a
+               non-zero source byte is found, so a column of zeroes never executes it and an
+               unmodelled offset must leave A, Y and the flags as this LDA left them. */
+            if (offset != 0xEFu) {
+                platform_smc_unhandled(0x1DD4, (uint16_t)(0x1DD6 + (int8_t)offset));
+                return;
+            }
+            /* $1DC5 — the boundary-table pass: "all four columns" reads as empty. */
+            CMP(0x55u);
+            { unsigned altBase = zp_pointer(MEM_plot_ptr2_lo);
+              seam_write((altBase + line) & 0xFFFFu, pointer_is_ram(altBase),
+                         cpu.Z ? (uint8_t)load_a(0x00u) : src); }
+            cpu.Y = (uint8_t)(line - 1);
+            continue;
+        }
+
+        /* $1DD6 — an empty cell takes the surface's colour, or the fallback if it has none. */
+        if (surface_colour_at_core(line, mem[EDGE_COLUMN]) == 0)
+            load_a(fallback);
+        { unsigned storeBase = zp_pointer(storePtr);
+          seam_write((storeBase + line) & 0xFFFFu, pointer_is_ram(storeBase), cpu.A); }
+        cpu.Y = (uint8_t)(line - 1);
+    }
+}
+
+void column_gap_walk(void)
+{
+    column_gap_walk_core();
+}
+
+/* ===========================================================================
+   $1DA6  fill_column_gaps — THE PATCH, THEN THE WALK  (twin #42)
+   ---------------------------------------------------------------------------
+   Three stores and a fall-through.  It exists because the walk is one routine serving two
+   passes: this entry is what turns the registers into the walk's configuration.
+
+   ⚠ THE FIXTURE FOR THIS ONE COVERS THE MAPPING, NOT THE WALK ($1DAF has its own): what can
+   be wrong here is which register lands in which patch byte, and swapping any two of them
+   fails at once.  The ORDER of the three stores is NOT observable — see twin #8's header.
+   =========================================================================== */
+
+static void fill_column_gaps_core(uint8_t pointer, uint8_t branchOffset, uint8_t fallback)
+{
+    mem[GAP_PTR_OPERAND]    = pointer;        /* $1DA6 — STA (zp),Y's own zero-page number */
+    mem[GAP_BRANCH_OPERAND] = branchOffset;   /* $1DA9 — which arm a non-zero byte takes */
+    mem[GAP_FALLBACK]       = fallback;       /* $1DAC — the colour a zero surface becomes */
+    column_gap_walk_core();
+}
+
+void fill_column_gaps(void)
+{
+    fill_column_gaps_core(cpu.X, cpu.Y, cpu.A);
+}
+
+/* ===========================================================================
+   $1DEF  fill_edge_column_run — ONE RUN OF END COLUMNS  (twin #43)
+   ---------------------------------------------------------------------------
+   Entered with X = the first column, A = the column to stop at and Y = the scan line the
+   first column's walk starts from.  Per iteration it walks column N through plot_ptr2 (into
+   the per-line boundary table) and column N+1 through plot_ptr (into the column's own source
+   block), so a run of K iterations touches columns X..X+K-1 one way and X+1..X+K the other.
+
+   ⭐ THE START LINE IS NOT RE-SUPPLIED PER COLUMN, and that is the loop's real subtlety: Y
+   comes back from the walk holding the line it stopped at, and the next iteration stores THAT
+   as the next column's start line.  So each column's walk begins where its neighbour's ended,
+   which is what makes the filled region follow the dashboard's diagonal edge.
+   =========================================================================== */
+
+static void fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn, uint8_t firstLine)
+{
+    unsigned column = firstColumn;
+
+    mem[EDGE_RUN_LIMIT] = stopColumn;         /* $1DEF */
+    cpu.Y = firstLine;
+
+    do {
+        mem[EDGE_COLUMN]      = (uint8_t)column;                       /* $1DF1 */
+        span_line_cursor      = cpu.Y;                                 /* $1DF3 */
+        mem[EDGE_BLOCK_START] = mem[DASH_BLOCK_STARTS + column];       /* $1DF5-$1DF8 */
+
+        /* $1DFA — this column into the per-line boundary table, $55 mapped to empty. */
+        fill_column_gaps_core(MEM_plot_ptr2_lo, 0xEFu, 0x00u);
+
+        /* $1E03 — and the NEXT column into its own source block, non-zero bytes kept. */
+        mem[EDGE_COLUMN] = (uint8_t)(column + 1);
+        fill_column_gaps_core(MEM_plot_ptr_lo, 0x09u, 0x55u);
+
+        column = mem[EDGE_COLUMN];
+    } while (!cpx_eq(column, mem[EDGE_RUN_LIMIT]));                     /* $1E0E-$1E12 */
+}
+
+/* The 6502-ABI shim.  X is the first column, A the stop column, Y the first start line; X
+   comes back as the column the run stopped at and Y as the last walk's end line. */
+void fill_edge_column_run(void)
+{
+    fill_edge_column_run_core(cpu.X, cpu.A, cpu.Y);
+}

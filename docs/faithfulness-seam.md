@@ -194,6 +194,28 @@ purely for this reason — same 0/700 differential, same framerate (465 vs 467 p
      sabotage changes anything before steering the fixture, and check the sibling case before
      concluding it does not.
 
+   ⭐⭐ TWINS #40-#43 close the VIEW/DASHBOARD SEAM — everything `fill_dash_edge_columns`
+   reaches (`surface_colour_at`, `column_gap_walk`, `fill_column_gaps`, `fill_edge_column_run`)
+   is real C.  Three things they add:
+   * ⚠⚠ **HOISTING A POINTER OUT OF A LOOP IS A CORRECTNESS QUESTION FIRST.**  CLAUDE.md says to
+     lift the `bus_*` range test to where the pointer is known, and that is right — but the 6502
+     re-reads the zero-page PAIR at every `STA (zp),Y`, and `column_gap_walk`'s own stores can
+     land on the cells that drive it: a randomised boundary-table pointer of `$005D` makes the
+     run cover `$0082` and `$0085`, i.e. the loop's end line and the column being filled (2 cases
+     of 1200, and they read as a value diff a hundred bytes away from the cause).  What is safe
+     to hoist is the **range test**, not the pointer: one comparison per store instead of a
+     `bus_read`/`bus_write` dispatch, with the pointer still read from `mem[]` each pass.
+   * ⚠ **AN SMC TRAP MUST FIRE WHERE THE OPCODE IS, not where the byte is read.**  The walk's
+     patched branch is only reached once a non-zero source byte turns up, so a column of zeroes
+     never executes it: validating the offset at the top of the routine trapped 138 cases of 1200
+     early, with A, Y and the flags all wrong.  Decode the byte where you like; trap at the site.
+   * ⚠ **A FIXTURE'S ILLEGAL VALUES MUST LEAVE THE REGION, not merely the arms.**  A random branch
+     offset is a legal branch to some other instruction boundary in the same code, and anything at
+     or above `$1DC0` reloads Y from `span_line_cursor` — an infinite loop in the ORACLE, which
+     hung the harness rather than failing it.  Pick illegal values that land outside the switch,
+     and remember the same trap when SABOTAGING a loop: "advance the cursor by 0" made the twin
+     itself non-terminating, so the defect had to be reshaped into one that still exits.
+
 9. **Sabotage before believing it.**  Four defects minimum, each must FAIL, and any sabotage that
    PASSES is a fixture gap to write down rather than a pass to enjoy (`view_paint_lines`' phase-3
    carry tail is unreachable and untested — recorded in the twin's own comment).

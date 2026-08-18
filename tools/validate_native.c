@@ -2681,6 +2681,244 @@ static int test_road_pass(void)
     return fail;
 }
 
+/* ==========================================================================
+   TWINS #40-#43 — THE VIEW/DASHBOARD SEAM'S CALLEES
+   --------------------------------------------------------------------------
+   $1E9E surface_colour_at, $1DAF column_gap_walk, $1DA6 fill_column_gaps and
+   $1DEF fill_edge_column_run.  Three things have to be steered or the cases land on
+   nothing:
+
+   1. surface_colour_at IS SIX ARMS AND A UNIFORM BYTE PICKS ONE.  The horizon test alone
+      sends half the cases straight out, and the four boundary compares are nested, so the
+      innermost arm (the line's own background) needs all four to fall through — about one
+      case in sixteen by luck.  The fixture pins the line below the horizon in most cases and
+      COUNTS which arm each case took, so a zero is a failure and not a silent gap.
+
+   2. column_gap_walk'S BRANCH OFFSET IS AN OPCODE-LEVEL INPUT.  $1DD5 is a branch offset the
+      caller plants; only $09 and $EF are arms the engine ever uses, and the twin traps on
+      anything else.  Both arms and the trap are exercised, and the trap has to trap in BOTH
+      models (the oracle's switch has a `default:` for exactly this).
+
+   3. THE POINTER IT STORES THROUGH CAN BE ANYTHING under fill_random, including page zero and
+      the hardware window — and the oracle re-reads that pointer at every store, so a hoisted
+      base is only correct while the walk cannot reach it.  Both cases are planted on purpose:
+      the game's own pointers ($70/$72) and a random zero-page number.
+   ========================================================================== */
+void surface_colour_at(void);
+void surface_colour_at__t6502(void);
+void column_gap_walk(void);
+void column_gap_walk__t6502(void);
+void fill_column_gaps(void);
+void fill_column_gaps__t6502(void);
+void fill_edge_column_run(void);
+void fill_edge_column_run__t6502(void);
+
+#define PRE_HORIZON_EXTENT 0x001F
+#define PRE_EDGE_COLUMN    0x0085
+#define PRE_BLOCK_START    0x0082
+#define PRE_LINE_CURSOR    0x007F
+#define PRE_GAP_BRANCH     0x1DD5
+#define PRE_GAP_FALLBACK   0x1DDC
+#define PRE_GAP_POINTER    0x1DDE
+
+/* Which of surface_colour_at's six arms a case takes, decided from the PRE state — nothing
+   the routine calls writes any of these cells. */
+enum { SC_SKY = 0, SC_EDGE0, SC_ATTR1, SC_EDGE3, SC_ATTR0, SC_INSIDE, SC_ARMS };
+static int surface_arm(const uint8_t* pre, uint8_t line)
+{
+    unsigned pos = pre[PRE_EDGE_COLUMN];
+    if (line > pre[PRE_HORIZON_EXTENT])       return SC_SKY;
+    if (pos >= pre[0x0554 + line])            return SC_EDGE0;
+    if (pos >= pre[0x0600 + line])            return SC_ATTR1;
+    if (pos >= pre[0x0650 + line])            return SC_EDGE3;
+    if (pos >= pre[0x05A4 + line])            return SC_ATTR0;
+    return SC_INSIDE;
+}
+
+static int test_seam_callees(void)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    const int colourCases = 2000 * scale, walkCases = 1200 * scale,
+              patchCases = 600 * scale, runCases = 400 * scale;
+
+    register_fixture("surface_colour_at");
+    register_fixture("column_gap_walk");
+    register_fixture("fill_column_gaps");
+    register_fixture("fill_edge_column_run");
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+
+    if (want("surface_colour_at")) {
+        int subFail = 0, arms[SC_ARMS] = {0}, i;
+        for (t = 0; t < colourCases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs();
+            /* The line: below the horizon in three cases of four, so the five arms under it
+               get exercised; the position is what the four boundary compares see. */
+            pre[PRE_HORIZON_EXTENT] = (uint8_t)(xs() % 0x50);
+            c.Y = (xs() % 4) ? (uint8_t)(xs() % (pre[PRE_HORIZON_EXTENT] + 1u))
+                             : (uint8_t)xs();
+            /* Pull the boundaries and the position into the same narrow range, or the four
+               nested compares are decided by the first one nearly every time. */
+            pre[PRE_EDGE_COLUMN] = (uint8_t)(xs() % 0x2A);
+            pre[0x0554 + c.Y] = (uint8_t)(xs() % 0x2A);
+            pre[0x0600 + c.Y] = (uint8_t)(xs() % 0x2A);
+            pre[0x0650 + c.Y] = (uint8_t)(xs() % 0x2A);
+            pre[0x05A4 + c.Y] = (uint8_t)(xs() % 0x2A);
+            /* Both line_attr limits straddle the line, so each arm's "past its limit" exit
+               and its table read both happen. */
+            pre[0x002C] = (uint8_t)(c.Y + (xs() % 3) - 1);
+            pre[0x0029] = (uint8_t)(c.Y + (xs() % 3) - 1);
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;
+            arms[surface_arm(pre, c.Y)]++;
+            subFail += diff_run("surface_colour_at", pre, c, surface_colour_at,
+                                surface_colour_at__t6502, liveMask, t, &printed);
+        }
+        fail += subFail;
+        for (i = 0; i < SC_ARMS; i++)
+            if (arms[i] == 0) {
+                printf("[VACUOUS] surface_colour_at: arm %d never taken\n", i);
+                fail++;
+            }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(arms sky/e0/attr1/e3/attr0/inside = %d/%d/%d/%d/%d/%d)\n",
+               "surface_colour_at", colourCases, subFail, arms[0], arms[1], arms[2],
+               arms[3], arms[4], arms[5]);
+    }
+
+    if (want("column_gap_walk")) {
+        int subFail = 0, walked = 0, skipped = 0, trapped = 0, offPage = 0, zpPtr = 0;
+        for (t = 0; t < walkCases; t++) {
+            Cpu6502 c = zero_cpu();
+            unsigned pick;
+            fill_random(pre);
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            /* A column past $27 has no source block and the walk returns at once, so most
+               cases get a real one. */
+            pre[PRE_EDGE_COLUMN] = (xs() % 8) ? (uint8_t)(xs() % 0x28) : (uint8_t)xs();
+            /* The walk is Y down to mem[$82]: keep it a few dozen lines, not a few hundred. */
+            pre[PRE_LINE_CURSOR] = (uint8_t)(0x10 + xs() % 0x40);
+            pre[PRE_BLOCK_START] = (uint8_t)(pre[PRE_LINE_CURSOR] - 1 - xs() % 0x20);
+            pre[PRE_HORIZON_EXTENT] = (uint8_t)(xs() % 0x50);
+            pre[PRE_GAP_FALLBACK] = (xs() & 1) ? 0x55 : (uint8_t)xs();
+            /* The branch offset: both real arms, and an illegal one that must trap in BOTH
+               models rather than run some third path. */
+            /* ⚠⚠ THE ILLEGAL OFFSET MUST LAND OUTSIDE THE REGION, not merely off the two
+               arms.  A random offset is a legal branch to some other instruction boundary in
+               the same code, and several of those (anything at or above $1DC0, which reloads
+               Y from span_line_cursor) make the ORACLE loop forever — the first version of
+               this fixture hung the harness.  These four all leave the switch, so both models
+               trap. */
+            { static const uint8_t offRegion[4] = { 0x40, 0x60, 0x7F, 0x81 };
+              pick = xs() % 16;
+              pre[PRE_GAP_BRANCH] = pick < 7 ? 0x09
+                                  : (pick < 14 ? 0xEF : offRegion[xs() % 4]); }
+            if (pre[PRE_GAP_BRANCH] == 0x09) skipped++;
+            else if (pre[PRE_GAP_BRANCH] == 0xEF) walked++;
+            else trapped++;
+            /* The store pointer: the engine's own two, or a random zero-page pair — which is
+               what makes "the store can land on its own pointer" a tested case. */
+            pick = xs() % 8;
+            pre[PRE_GAP_POINTER] = pick < 4 ? 0x70 : (pick < 7 ? 0x72 : (uint8_t)xs());
+            if (pre[PRE_GAP_POINTER] != 0x70 && pre[PRE_GAP_POINTER] != 0x72) zpPtr++;
+            /* ...and one case in eight aims plot_ptr2 into the hardware window. */
+            if (xs() % 8 == 0) { pre[0x0072] = (uint8_t)xs(); pre[0x0073] = 0xFE; offPage++; }
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;
+            { int before = subFail;
+              subFail += diff_run("column_gap_walk", pre, c, column_gap_walk,
+                                column_gap_walk__t6502, liveMask, t, &printed);
+              if (subFail != before && getenv("REVS_DEBUG_WALK"))
+                printf("  case %d: col=$%02X cur=$%02X end=$%02X off=$%02X fb=$%02X ptr=$%02X "
+                       "p70=$%02X%02X p72=$%02X%02X hz=$%02X\n", t,
+                       pre[PRE_EDGE_COLUMN], pre[PRE_LINE_CURSOR], pre[PRE_BLOCK_START],
+                       pre[PRE_GAP_BRANCH], pre[PRE_GAP_FALLBACK], pre[PRE_GAP_POINTER],
+                       pre[0x0071], pre[0x0070], pre[0x0073], pre[0x0072],
+                       pre[PRE_HORIZON_EXTENT]); }
+        }
+        fail += subFail;
+        if (!walked || !skipped || !trapped || !offPage || !zpPtr) {
+            printf("[VACUOUS] column_gap_walk: %d table-pass, %d block-pass, %d trap, "
+                   "%d into SHEILA, %d random zp pointer — all must be non-zero\n",
+                   walked, skipped, trapped, offPage, zpPtr);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d table-pass, %d block-pass, %d trap, %d SHEILA, %d random zp)\n",
+               "column_gap_walk", walkCases, subFail, walked, skipped, trapped,
+               offPage, zpPtr);
+    }
+
+    if (want("fill_column_gaps")) {
+        int subFail = 0;
+        for (t = 0; t < patchCases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            /* The three registers ARE the patch, so they are the input: the two real
+               configurations most of the time, a random triple the rest. */
+            if (xs() & 1) { c.X = 0x72; c.Y = 0xEF; c.A = 0x00; }
+            else if (xs() & 1) { c.X = 0x70; c.Y = 0x09; c.A = 0x55; }
+            else { c.X = (uint8_t)xs(); c.Y = (xs() & 1) ? 0x09 : 0xEF; c.A = (uint8_t)xs(); }
+            pre[PRE_EDGE_COLUMN] = (xs() % 8) ? (uint8_t)(xs() % 0x28) : (uint8_t)xs();
+            pre[PRE_LINE_CURSOR] = (uint8_t)(0x10 + xs() % 0x40);
+            pre[PRE_BLOCK_START] = (uint8_t)(pre[PRE_LINE_CURSOR] - 1 - xs() % 0x20);
+            pre[PRE_HORIZON_EXTENT] = (uint8_t)(xs() % 0x50);
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;
+            subFail += diff_run("fill_column_gaps", pre, c, fill_column_gaps,
+                                fill_column_gaps__t6502, liveMask, t, &printed);
+        }
+        fail += subFail;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(the register-to-patch-byte mapping; the walk is column_gap_walk's fixture)\n",
+               "fill_column_gaps", patchCases, subFail);
+    }
+
+    if (want("fill_edge_column_run")) {
+        int subFail = 0, oneColumn = 0, multi = 0;
+        for (t = 0; t < runCases; t++) {
+            Cpu6502 c = zero_cpu();
+            unsigned length;
+            fill_random(pre);
+            /* X = the first column, A = the column to stop at.  The loop tests EQUALITY, so
+               an unreachable stop column runs 128 iterations of two walks each: pick the
+               run's LENGTH and derive the stop, keeping the engine's own shape (columns 3-6
+               and $1A-$22, i.e. runs of three and eight). */
+            length = 1 + xs() % 8;
+            c.X = (uint8_t)(xs() % 0x20);
+            c.A = (uint8_t)(c.X + length);
+            c.Y = (uint8_t)(0x10 + xs() % 0x40);
+            if (length == 1) oneColumn++; else multi++;
+            pre[PRE_HORIZON_EXTENT] = (uint8_t)(xs() % 0x50);
+            /* Both passes' pointers, so the run writes where the engine's would. */
+            pre[0x0072] = (xs() & 1) ? 0x04 : 0x00;
+            pre[0x0073] = pre[0x0072] == 0x04 ? 0x05 : 0x44;
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;
+            subFail += diff_run("fill_edge_column_run", pre, c, fill_edge_column_run,
+                                fill_edge_column_run__t6502, liveMask, t, &printed);
+        }
+        fail += subFail;
+        if (!oneColumn || !multi) {
+            printf("[VACUOUS] fill_edge_column_run: %d single-column, %d multi-column runs\n",
+                   oneColumn, multi);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d one-column runs, %d longer)\n",
+               "fill_edge_column_run", runCases, subFail, oneColumn, multi);
+    }
+
+    unsetenv("REVS_SMC_CONTINUE");
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -2703,6 +2941,7 @@ int main(int argc, char** argv)
     fail += test_span_leaves();
     fail += test_span_arms();
     fail += test_road_pass();
+    fail += test_seam_callees();
 
     fail += check_coverage();
     fail += report_unvalidated_natives();
