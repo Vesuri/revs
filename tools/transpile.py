@@ -632,6 +632,34 @@ VALIDATE_FUNCS = {
     # stay transliterated on purpose; the twins' header says so.
     0x2147,
     0x2287,
+    # ⭐⭐ TWINS #16-#24 — EVERYTHING ELSE build_track_geometry REACHES.  With these nine the
+    # road-geometry pass has no transliterated code left in it at all: the full call tree from
+    # $24F6 is 19 routines and the other ten were twins #4/#5/#9-#15.
+    #   $12A0 shift_near_edge_points  (40 B) slide the near slots up a section step
+    #   $12C8 clamp_near_edge_window  (20 B) ...and re-clamp the [first,last] window
+    #   $12DC clamp_near_edge_cursor  (23 B) the window clamp on its own, called with a slot in X
+    #   $0BA2 rebase_edge_point       (42 B) one surviving point onto this frame's camera
+    #   $1208 load_section_triple     (37 B) track-file segment -> a live section slot
+    #   $23C0 emit_edge_bearing       (18 B) bearing - car_heading -> edge_x, then the distance
+    #   $0CA5 point_distance_hypot    (77 B) the octagonal |a|+|b| distance, TWO approximations
+    #   $23BB emit_edge_bearing_at_cursor (5 B) the same at edge_cursor, bearing taken first
+    #   $2565 emit_edge_width_offset (186 B) the opposite boundary, the style byte, the markers
+    # ⚠ Sizing note (docs/faithfulness-seam.md §8): the two that carry real per-point arithmetic
+    # are point_distance_hypot and emit_edge_width_offset, and both compress — a byte-pair shift
+    # chain and a variable 16-bit shift the 68000 does in one instruction.  The other seven are
+    # small and are twinned so the pass has no interpreter left, not for milliseconds.
+    # ⚠ $2145 and $2285 STILL stay out, for the reason above: one `LDY #0` each.  What changed is
+    # that nothing in this subtree calls them any more — every caller is a twin now and calls
+    # bearing_to_section_core / project_point_core with the origin as an argument.
+    0x12A0,
+    0x12C8,
+    0x12DC,
+    0x0BA2,
+    0x1208,
+    0x23C0,
+    0x0CA5,
+    0x23BB,
+    0x2565,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

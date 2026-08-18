@@ -9,10 +9,11 @@ conventions, not here.
 applied one renumbered the rest, so four references in `symbols.csv` and `docs/` were pointing at
 the wrong entry by the time anyone read them.  Headings are the anchors now.
 
-⚠⚠ **Everything left in this file needs a MEASUREMENT, not more reading.**  The static evidence
-has been taken as far as it goes on all five: each one names the cheap run that settles it.  Do not
-add a fact-shaped name to any of these cells in the meantime — an `[INFERRED]` row that says what
-is unsettled is worth more than a confident wrong name.
+⚠⚠ **Almost everything left in this file needs a MEASUREMENT, not more reading.**  The static
+evidence has been taken as far as it goes on the first five: each one names the cheap run that
+settles it.  Do not add a fact-shaped name to any of those cells in the meantime — an `[INFERRED]`
+row that says what is unsettled is worth more than a confident wrong name.  (The last entry, the
+`math_lo`/`math_hi` ordering, is the exception: it is settled fact and an open naming DECISION.)
 
 ---
 
@@ -112,3 +113,31 @@ one value per section (256 entries, smoothly varying).  Sizes settle it: `Modify
 `n+1` patches with `n` around 54-60 per circuit, so a patch list occupies ~60 bytes and a
 per-section table occupies ~40 or 120.  ⚠ Suspect a THIRD name is needed for the region as a whole
 rather than renaming either tenant.
+
+⭐ **Twins #16-#24 put two firm boundaries on the region, which narrows the dump to run.**
+`load_section_triple` ($1208) reads the track file as an 8-byte-per-segment record array in TWO
+parallel halves — `track_segment_lo` at `$5900` and `track_segment_hi` at `$5300` — indexed by the
+same byte index `segment_count_x8` wraps, so each half is about 250 bytes and the high half ends
+around `$53FA`.  `$5400`/`$5500`/`$5600` therefore sit AFTER it, not inside it, and the region is at
+least four tenants deep: segment records, whatever these three are, the patch list, and
+`segment_len_tbl`/`segment_data`/`track_scale` up at `$5907`-`$5A14`.  The dump above should print
+`$5300`-`$5A25` whole and be read as a MAP, not as three tables.
+
+## `math_lo`/`math_hi` (`$0074`/`$0075`) — `point_distance_hypot` fills them BACK TO FRONT
+
+Both rows say what the names say: `$74` is the low byte of the 16-bit math accumulator and `$75`
+the high byte, and that is how `mul8`, `abs16_math` and `div16by8` use them.  `point_distance_hypot`
+does not.  Its far arm ($0CC6-$0CD5) stages an eighth of the larger component with **the HIGH byte
+in `math_lo` and the LOW byte in `math_hi`**, and then subtracts the pair back off in that order
+($0CE7 `SBC math_hi` for the low half, $0CED `SBC math_lo` for the high) — it is consistent, and it
+is the opposite of the names.  `emit_edge_width_offset` uses the same two cells the ordinary way
+round for the width offset, so within one road pass the pair means both things.
+
+This is a naming question with no cheap measurement behind it, which is why it is a queue entry and
+not a rename: the honest fix is probably a THIRD pair of names scoped to the road pass rather than
+re-tagging the general accumulator, and that decision is worth making once — when `mul8`,
+`abs16_math` and the `$2C00`-`$2FFF` span plotters are twinned and every user of the pair is
+visible at once.  Until then twin #22's comment carries the warning at the point of use.
+
+⚠ Not a defect: the transliteration and the twin agree byte for byte (`make validate
+FN=point_distance_hypot`, and sabotage "the far arm forgets the -max/8 term" catches a swap).

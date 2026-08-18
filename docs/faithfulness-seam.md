@@ -142,6 +142,19 @@ purely for this reason — same 0/700 differential, same framerate (465 vs 467 p
    same subtract, decimal mode included, without the bookkeeping) plus a one-shot `sbc_overflow`
    replay of the single V that escapes brought twins #14/#15 from -2.4% to **exact parity** with the
    transliteration.
+   ⭐⭐ TWINS #16-#24 close the road-geometry pass — everything build_track_geometry reaches is now
+   real C (19 routines, 776 6502 instructions), and they are the cleanest confirmation of the
+   ordering rule so far: two of the nine COMPRESS (`point_distance_hypot`'s nine `LSR hi / ROR A`
+   pairs are three 68000 word shifts; `emit_edge_width_offset`'s variable shift is a LOOP on the
+   6502, up to 255 iterations, and one `lsl.w` plus a range test here) and the other seven were
+   written because leaving one transliterated leaf inside a per-point loop is exactly what made
+   twins #4/#5/#9/#10 driver-shaped.  ⚠ THE SAME FLAG TRAP CAUGHT BOTH OF THE ARITHMETIC ONES, in
+   both directions: `emit_edge_width_offset` ends on `CMP`/`CPY`, so the V of the ADC eleven
+   instructions earlier is its exit V (565 of 2000 cases, `mem[]` byte-exact); and
+   `point_distance_hypot`'s two arms write DIFFERENT AMOUNTS of `hypot_min` — the near arm keeps
+   the low byte in A the whole way and never stores it (829 of 2000).  Neither is visible in a
+   reading of the listing that asks what the routine COMPUTES; both fell out of the differential
+   in one run.
    ⇒ The general rule: **write the chain with values, and replay the ONE escaping flag from its
    operands.**  Work out WHICH flag escapes rather than assuming — `view_delta`'s V is observable
    only through `project_point`'s clip exit, because `bearing_to_section`'s 45-degree arm overwrites

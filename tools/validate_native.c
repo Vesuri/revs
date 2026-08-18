@@ -1700,6 +1700,315 @@ static int test_road_transforms(void)
     return fail;
 }
 
+
+/* ==========================================================================
+   $12A0 shift_near_edge_points, $12C8 clamp_near_edge_window,
+   $12DC clamp_near_edge_cursor, $0BA2 rebase_edge_point, $1208 load_section_triple,
+   $0CA5 point_distance_hypot, $23C0 emit_edge_bearing,
+   $23BB emit_edge_bearing_at_cursor, $2565 emit_edge_width_offset
+   --------------------------------------------------------------------------
+   THE REST OF THE ROAD-GEOMETRY PASS (twins #16-#24).  Nine leaves, and their fixtures are
+   cheap for the reason div16by8's is: the input that matters is a handful of zero-page cells,
+   so the pre-state can be steered onto every boundary instead of hoping a random 64 KB lands
+   on one.  What each one needs steering for:
+
+     * THE NEAR-SLOT CELLS are compared against the sentinel 6 and clamped into [first, 5], so
+       a uniform byte takes the interesting arm about once in 256.  Drawn from NEAR_SLOTS.
+     * point_distance_hypot picks between two whole approximations on shared_temp_7e against
+       $67.  A uniform byte takes the far arm 152 times in 256 and the near arm 104 — usable,
+       but the boundary itself never comes up, so it is drawn explicitly.
+     * emit_edge_width_offset needs FOUR things at once: shared_counter_42 on both sides of 3
+       (under it the routine does almost nothing), road_side_index in {0,1} (a random byte
+       indexes unrelated bytes of block 0's tail), marker_count in 0..3, and its OWN SMC site
+       at $261A planted — an unplanted one traps, which is an early return in both models with
+       the horizon record never written.
+     * ...and its shift count, which is what the twin actually changes: the 6502 loops one
+       place per iteration and the twin does a range test plus one 68000 shift, so the
+       fixture draws proj_width_shift so that the count lands on 0, on 1, inside 1..15, on 16
+       (the first count that shifts everything out) and past it, in both directions.
+   ========================================================================== */
+void shift_near_edge_points(void);
+void shift_near_edge_points__t6502(void);
+void clamp_near_edge_window(void);
+void clamp_near_edge_window__t6502(void);
+void clamp_near_edge_cursor(void);
+void clamp_near_edge_cursor__t6502(void);
+void rebase_edge_point(void);
+void rebase_edge_point__t6502(void);
+void load_section_triple(void);
+void load_section_triple__t6502(void);
+void point_distance_hypot(void);
+void point_distance_hypot__t6502(void);
+void emit_edge_bearing(void);
+void emit_edge_bearing__t6502(void);
+void emit_edge_bearing_at_cursor(void);
+void emit_edge_bearing_at_cursor__t6502(void);
+void emit_edge_width_offset(void);
+void emit_edge_width_offset__t6502(void);
+
+/* A pre-state for the three near-slot routines: the window cells drawn from the small set
+   that actually decides their branches, everything else random. */
+static void near_slot_pre(uint8_t* pre)
+{
+    fill_random(pre);
+    pre[0x0005] = NEAR_SLOTS[xs() % (sizeof NEAR_SLOTS)];   /* near_edge_first  */
+    pre[0x0006] = NEAR_SLOTS[xs() % (sizeof NEAR_SLOTS)];   /* near_edge_last   */
+    pre[0x0008] = NEAR_SLOTS[xs() % (sizeof NEAR_SLOTS)];   /* near_edge_cursor */
+    /* near_edge_shift is how many sections the car crossed: 0..7 in the engine (the value is
+       ANDed with 7 at $128E), and 6 - it is what near_edge_first becomes. */
+    pre[0x0007] = (xs() % 4) ? (uint8_t)(xs() % 8) : (uint8_t)xs();
+}
+
+/* emit_edge_width_offset's own pre-state.  ⚠ The SMC site is planted in every case except the
+   deliberate garbage shape — see plant_geometry_smc's note: an unplanted $261A is a trap on
+   the FIRST case that would have written the horizon, i.e. a fixture that compares nothing. */
+static void width_pre(uint8_t* pre, int shape)
+{
+    fill_random(pre);
+    plant_geometry_smc(pre);
+    if (shape == EDGE_HOOKED) {
+        pre[0x261A] = 0x4C; pre[0x261B] = 0xAF; pre[0x261C] = 0x56;   /* JMP $56AF — all four
+                                                                         expansion circuits */
+    } else if (shape == EDGE_GARBAGE) {
+        pre[0x261A] = (uint8_t)xs();
+    }
+    pre[0x0049] = (uint8_t)(xs() & 1);                      /* road_side_index */
+    pre[0x0057] = (uint8_t)(xs() % 4);                      /* marker_count 0..3, 3 = full */
+    /* shared_counter_42 against the CMP #3 gate, both sides drawn. */
+    { static const uint8_t n[] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x11, 0xFF };
+      pre[0x0042] = n[xs() % (sizeof n)]; }
+    pre[0x0012] = (uint8_t)(xs() % 0x50);                   /* edge_cursor, a real slot */
+    /* THE SHIFT COUNT.  It is proj_width_shift - edge_width_shift_tbl[feature] - 1, and the
+       table entry is whatever the block-0 tail holds, so the count is steered by picking
+       proj_width_shift relative to the entry the masked flags will select.  Cheaper and more
+       honest than solving for the flags: draw the whole set of interesting counts against a
+       RANDOM table entry, which covers each one about an eighth of the time. */
+    { static const int8_t want[] = { 0, 1, 2, 8, 15, 16, 17, -1, -2, -15, -16, -17 };
+      unsigned feature = (unsigned)(xs() & 7);
+      int      steps   = want[xs() % (sizeof want)];
+      pre[0x002B] = (uint8_t)(pre[0x3076 + feature] + steps + 1); }
+    pre[0x002A] = (uint8_t)xs();                            /* proj_width, the mantissa */
+    pre[0x008D] = (uint8_t)(xs() % 0x60);                   /* projected_line around the $50 top */
+    if (xs() % 3 == 0) pre[0x001F] = pre[0x008D];           /* ...exactly on the horizon */
+}
+
+static int test_geometry_leaves(void)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+
+    register_fixture("shift_near_edge_points");
+    register_fixture("clamp_near_edge_window");
+    register_fixture("clamp_near_edge_cursor");
+    register_fixture("rebase_edge_point");
+    register_fixture("load_section_triple");
+    register_fixture("point_distance_hypot");
+    register_fixture("emit_edge_bearing");
+    register_fixture("emit_edge_bearing_at_cursor");
+    register_fixture("emit_edge_width_offset");
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+
+    /* ---- the three near-slot routines ------------------------------------------------ */
+    {
+        struct { const char* name; void (*n)(void); void (*o)(void); } W[] = {
+            { "shift_near_edge_points", shift_near_edge_points, shift_near_edge_points__t6502 },
+            { "clamp_near_edge_window", clamp_near_edge_window, clamp_near_edge_window__t6502 },
+            { "clamp_near_edge_cursor", clamp_near_edge_cursor, clamp_near_edge_cursor__t6502 },
+        };
+        int i;
+        const int cases = 1000 * scale;
+        for (i = 0; i < 3; i++) {
+            int subFail = 0, moved = 0;
+            if (!want(W[i].name)) continue;
+            for (t = 0; t < cases; t++) {
+                Cpu6502 c = zero_cpu();
+                near_slot_pre(pre);
+                c.A = (uint8_t)xs();
+                /* clamp_near_edge_cursor is ENTERED with the candidate slot in X, and
+                   road_edge_start's own call passes near_edge_cursor - 1. */
+                c.X = (xs() % 3) ? NEAR_SLOTS[xs() % (sizeof NEAR_SLOTS)] : (uint8_t)xs();
+                c.Y = (uint8_t)xs();
+                c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+                c.D = (i == 0) ? (uint8_t)(xs() & 1) : 0;   /* the SBC at $12C0 is decimal-mode
+                                                               sensitive; the clamps are CPX */
+                subFail += diff_run(W[i].name, pre, c, W[i].n, W[i].o, liveMask, t, &printed);
+                if (mem[0x0008] != pre[0x0008] || mem[0x0006] != pre[0x0006]) moved++;
+            }
+            fail += subFail;
+            if (moved == 0) {
+                printf("[VACUOUS] %s: the window never moved in %d cases\n", W[i].name, cases);
+                fail++;
+            }
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+                   "(%d/%d moved the window)\n", W[i].name, cases, subFail, moved, cases);
+        }
+    }
+
+    /* ---- rebase_edge_point: one surviving point, slot in Y ---------------------------- */
+    if (want("rebase_edge_point")) {
+        int subFail = 0, tookHorizon = 0;
+        const int cases = 1000 * scale;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            /* the slot: the six near slots of either half are the only ones road_edge_start
+               ever passes, and the horizon test is against horizon_extent, drawn onto the
+               post value a third of the time so the >= boundary is really exercised. */
+            c.Y = (xs() % 4) ? (uint8_t)((xs() % 6) + ((xs() & 1) ? 0x28 : 0)) : (uint8_t)xs();
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = (uint8_t)(xs() & 1);      /* both subtracts go through the real SBC */
+            if (xs() % 3 == 0)
+                pre[0x001F] = (uint8_t)(pre[0x5F20 + c.Y] - pre[0x004E]);   /* exactly on it */
+            subFail += diff_run("rebase_edge_point", pre, c, rebase_edge_point,
+                                rebase_edge_point__t6502, liveMask, t, &printed);
+            if (mem[0x0051] != pre[0x0051] || mem[0x001F] != pre[0x001F]) tookHorizon++;
+        }
+        fail += subFail;
+        if (tookHorizon == 0) {
+            printf("[VACUOUS] rebase_edge_point: the horizon never moved in %d cases\n", cases);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d/%d beat the horizon)\n",
+               "rebase_edge_point", cases, subFail, tookHorizon, cases);
+    }
+
+    /* ---- load_section_triple: track file -> a live section slot ----------------------- */
+    if (want("load_section_triple")) {
+        int subFail = 0;
+        const int cases = 1000 * scale;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            /* X is a byte index into the 120-byte live list plus its two scratch slots ($FA
+               and $FD); Y is a segment's 8-byte record.  Both are drawn from what the engine
+               passes AND from anywhere, because neither index wraps. */
+            { static const uint8_t dst[] = { 0x00, 0x03, 0x75, 0x78, 0xFA, 0xFD };
+              c.X = (xs() % 3) ? dst[xs() % (sizeof dst)] : (uint8_t)xs(); }
+            c.Y = (xs() % 3) ? (uint8_t)((xs() % 0x20) * 8) : (uint8_t)xs();
+            c.A = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            subFail += diff_run("load_section_triple", pre, c, load_section_triple,
+                                load_section_triple__t6502, liveMask, t, &printed);
+        }
+        fail += subFail;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags\n",
+               "load_section_triple", cases, subFail);
+    }
+
+    /* ---- point_distance_hypot: the two approximations --------------------------------- */
+    if (want("point_distance_hypot")) {
+        int subFail = 0, nearArm = 0, farArm = 0;
+        const int cases = 2000 * scale;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            /* the arm selector, drawn ON the boundary as well as either side of it */
+            { static const uint8_t a[] = { 0x00, 0x40, 0x66, 0x67, 0x68, 0xC0, 0xFF };
+              pre[0x007E] = (xs() % 3) ? a[xs() % (sizeof a)] : (uint8_t)xs(); }
+            /* bearing_to_section always hands this routine min <= max; a random pre-state
+               does not, so half the cases are sorted and half are left as they fell. */
+            if (xs() & 1) {
+                unsigned lo = (unsigned)pre[0x0078] | ((unsigned)pre[0x0079] << 8);
+                unsigned hi = (unsigned)pre[0x007A] | ((unsigned)pre[0x007B] << 8);
+                if (lo > hi) { unsigned s = lo; lo = hi; hi = s; }
+                pre[0x0078] = (uint8_t)lo; pre[0x0079] = (uint8_t)(lo >> 8);
+                pre[0x007A] = (uint8_t)hi; pre[0x007B] = (uint8_t)(hi >> 8);
+            }
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = (uint8_t)(xs() & 1);      /* the adds and the subtract are real 6502 ones */
+            if (pre[0x007E] < 0x67) nearArm++; else farArm++;
+            subFail += diff_run("point_distance_hypot", pre, c, point_distance_hypot,
+                                point_distance_hypot__t6502, liveMask, t, &printed);
+        }
+        fail += subFail;
+        if (nearArm == 0 || farArm == 0) {
+            printf("[VACUOUS] point_distance_hypot: only one approximation ran "
+                   "(near=%d far=%d)\n", nearArm, farArm);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d near arm, %d far arm)\n",
+               "point_distance_hypot", cases, subFail, nearArm, farArm);
+    }
+
+    /* ---- emit_edge_bearing, and the five-byte entry that takes the bearing first ------- */
+    {
+        struct { const char* name; void (*n)(void); void (*o)(void); } E[] = {
+            { "emit_edge_bearing", emit_edge_bearing, emit_edge_bearing__t6502 },
+            { "emit_edge_bearing_at_cursor", emit_edge_bearing_at_cursor,
+              emit_edge_bearing_at_cursor__t6502 },
+        };
+        int i;
+        const int cases = 1000 * scale;
+        for (i = 0; i < 2; i++) {
+            int subFail = 0;
+            if (!want(E[i].name)) continue;
+            for (t = 0; t < cases; t++) {
+                Cpu6502 c = zero_cpu();
+                fill_random(pre);
+                { static const uint8_t a[] = { 0x00, 0x40, 0x66, 0x67, 0x68, 0xC0, 0xFF };
+                  pre[0x007E] = (xs() % 3) ? a[xs() % (sizeof a)] : (uint8_t)xs(); }
+                /* the slot: emit_edge_bearing is entered with it in Y, the cursor entry reads
+                   it out of edge_cursor and is entered with the SECTION byte in X instead. */
+                c.Y = (xs() % 3) ? (uint8_t)(xs() % 0x50) : (uint8_t)xs();
+                pre[0x0012] = (uint8_t)(xs() % 0x50);
+                c.X = (uint8_t)(xs() % 0xF0);
+                c.A = (uint8_t)xs();
+                c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+                c.D = (uint8_t)(xs() & 1);
+                subFail += diff_run(E[i].name, pre, c, E[i].n, E[i].o, liveMask, t, &printed);
+            }
+            fail += subFail;
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags\n",
+                   E[i].name, cases, subFail);
+        }
+    }
+
+    /* ---- emit_edge_width_offset ------------------------------------------------------- */
+    if (want("emit_edge_width_offset")) {
+        int subFail = 0, scored = 0, marked = 0, horizon = 0;
+        const int cases = 2000 * scale;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            int shape = (t % 6 == 4) ? EDGE_HOOKED : (t % 6 == 5) ? EDGE_GARBAGE
+                                                                  : EDGE_SILVERSTONE;
+            width_pre(pre, shape);
+            /* X is the section byte index, and $78 is where the routine switches from
+               section_flags to its wrapped alias — both sides drawn. */
+            { static const uint8_t s[] = { 0x00, 0x03, 0x77, 0x78, 0x79, 0xEF, 0xFF };
+              c.X = (xs() % 3) ? s[xs() % (sizeof s)] : (uint8_t)xs(); }
+            c.A = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = (uint8_t)(xs() & 1);      /* the shift count, the negate and the two adds */
+            subFail += diff_run("emit_edge_width_offset", pre, c, emit_edge_width_offset,
+                                emit_edge_width_offset__t6502, liveMask, t, &printed);
+            if (mem[0x5E50 + pre[0x0012]] != pre[0x5E50 + pre[0x0012]] ||
+                mem[0x0074] != pre[0x0074]) scored++;
+            if (mem[0x0057] != pre[0x0057]) marked++;
+            if (mem[0x001F] != pre[0x001F]) horizon++;
+        }
+        fail += subFail;
+        if (scored == 0 || marked == 0 || horizon == 0) {
+            printf("[VACUOUS] emit_edge_width_offset: width=%d markers=%d horizon=%d — "
+                   "one of the three outputs was never produced in %d cases\n",
+                   scored, marked, horizon, cases);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d computed a width, %d appended a marker, %d moved the horizon)\n",
+               "emit_edge_width_offset", cases, subFail, scored, marked, horizon);
+    }
+
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -1718,6 +2027,7 @@ int main(int argc, char** argv)
     fail += test_geometry_callees();
     fail += test_div16by8();
     fail += test_road_transforms();
+    fail += test_geometry_leaves();
 
     fail += check_coverage();
     fail += report_unvalidated_natives();

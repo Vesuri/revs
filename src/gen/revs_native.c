@@ -78,6 +78,32 @@ REVS_FLAG_OP unsigned adc_step(unsigned a, uint8_t addend, int carry_in)
     return cpu.A;
 }
 
+/* a + addend + carry_in as a VALUE ONLY — the ADC counterpart of sbc_value below, and it
+   exists for the same reason: a 16-bit add's low half feeds nothing but the high half's
+   carry, so paying cpu.h's five flag stores for it is paying for nothing.  ⚠ Decimal mode is
+   honoured, because D changes the RESULT BYTE and not merely the flags. */
+typedef struct { uint8_t val, carry; } Adc;
+
+REVS_FLAG_OP Adc adc_value(uint8_t a, uint8_t m, unsigned carryIn)
+{
+    unsigned c = carryIn ? 1u : 0u;
+    unsigned t = (unsigned)a + m + c;
+    Adc r;
+
+    if (cpu.D) {
+        unsigned al = (unsigned)(a & 0x0Fu) + (m & 0x0Fu) + c;
+        unsigned ah = (unsigned)(a >> 4) + (m >> 4);
+        if (al > 9) { al += 6; ah += 1; }
+        if (ah > 9) ah += 6;
+        r.carry = (uint8_t)(ah > 0x0Fu);
+        r.val   = (uint8_t)(((ah << 4) | (al & 0x0Fu)) & 0xFFu);
+    } else {
+        r.carry = (uint8_t)(t > 0xFFu);
+        r.val   = (uint8_t)t;
+    }
+    return r;
+}
+
 /* ===========================================================================
    ⭐⭐ …AND THE SAME SUBTRACT WITHOUT ITS FLAGS, which is a different instrument.
 
@@ -1534,6 +1560,21 @@ void race_main_loop(void)
    pointing and interp_edge is what turns one into a screen column. */
 #define EDGE_Y_TBL       0x5F20u   /* edge_y      — per edge point: the scan line it projects to */
 #define EDGE_X_HI_TBL    0x5E90u   /* edge_x_hi   — ...and the high byte of its angle */
+#define EDGE_X_LO_TBL    0x5E40u   /* edge_x_lo   — ...and the low byte */
+#define EDGE_OPP_X_LO    0x5E50u   /* edge_opp_x_lo — the OPPOSITE boundary's angle at that point */
+#define EDGE_OPP_X_HI    0x5EA0u   /* edge_opp_x_hi */
+#define EDGE_STYLE_TBL   0x5EE0u   /* edge_style  — which surface style the span there uses */
+#define SECTION_FLAGS    0x0702u   /* section_flags — per section byte: its feature bits */
+#define SECTION_FLAGS_W  0x068Au   /*   ...the same table at -$78, for a byte index past 120 */
+#define EDGE_SIDE_MASK   0x306Cu   /* edge_side_flag_mask  — 2, by road side */
+#define EDGE_STYLE_SEL   0x306Eu   /* edge_style_tbl       — 8, by the feature bits */
+#define EDGE_WIDTH_SHIFT 0x3076u   /* edge_width_shift_tbl — 8, likewise */
+#define MARKER_EDGE_IDX  0x62B4u   /* marker_edge_index  — 3 corner markers, per frame */
+#define MARKER_FLAGS_TBL 0x6299u   /* marker_flags */
+#define MARKER_OFF_LO    0x62B7u   /* marker_offset_lo */
+#define MARKER_OFF_HI    0x62BAu   /* marker_offset_hi */
+#define TRACK_SEGMENT_LO 0x5900u   /* track_segment_lo — the TRACK FILE's 8-byte segment records */
+#define TRACK_SEGMENT_HI 0x5300u   /* track_segment_hi */
 #define EDGE_HALF        0x0028u   /* 40 — the stride between the two road sides' halves */
 #define SECTION_LO_TBL   0x0900u   /* section_coord_lo — 40 sections x 3 bytes, + two scratch slots */
 #define SECTION_HI_TBL   0x0A00u   /* section_coord_hi */
@@ -1594,6 +1635,524 @@ static unsigned section_word(unsigned byteIndex)
 {
     unsigned i = byteIndex & 0xFFu;
     return (unsigned)mem[SECTION_LO_TBL + i] | ((unsigned)mem[SECTION_HI_TBL + i] << 8);
+}
+
+/* ===========================================================================
+   TWINS #16-#24 — THE REST OF THE ROAD-GEOMETRY PASS
+   ---------------------------------------------------------------------------
+   With these nine, the whole call tree under build_track_geometry is real C: 19 routines,
+   776 6502 instructions, no transliteration left anywhere in it.  They divide into three
+   groups, and only the last two carry arithmetic worth compressing:
+
+     THE NEAR-SLOT BOOKKEEPING — shift_near_edge_points, clamp_near_edge_window and
+     clamp_near_edge_cursor.  Slots 0..5 of each 40-point half are the edge points beside and
+     behind the car; these three slide them along when the car crosses a section and keep the
+     [near_edge_first, near_edge_last] window and near_edge_cursor consistent afterwards.
+     Run at most once a frame.
+
+     THE PER-POINT PRIMITIVES — rebase_edge_point, load_section_triple, emit_edge_bearing and
+     emit_edge_bearing_at_cursor.  Small, and twinned because leaving one transliterated leaf
+     inside a loop is what made twins #9/#10 driver-shaped in the first place.
+
+     THE TWO THAT COMPUTE — point_distance_hypot and emit_edge_width_offset.  Both are byte
+     chains standing in for 16-bit operations the 68000 has: a shift-and-add distance
+     approximation, and a variable-count 16-bit shift the 6502 has to spell as a loop.
+
+   ⭐ $2145 and $2285 are deliberately NOT twinned (see transpile.py) — each is one `LDY #0`
+   falling into a body that already is one, so their oracles would call the native code and
+   the fixtures would be vacuous.  What changed instead is that nothing here calls them: every
+   caller in this subtree is a twin now and passes the view origin as an ARGUMENT.
+   =========================================================================== */
+
+/* The two coordinate transforms (twins #14/#15), defined further down the file.  Everything
+   in this pass reaches them through the cores, never through the 6502-ABI shims. */
+static void bearing_to_section_core(uint8_t sectionByte, uint8_t origin);
+static void project_point_core(uint8_t sectionByte, uint8_t origin);
+
+/* `value >= limit` through the 6502's CPX, which also leaves X = value.  The near-slot clamps
+   below end on one of these, so the compare's own C/N/Z are their exit flags. */
+REVS_FLAG_OP int cpx_ge(unsigned value, uint8_t limit)
+{
+    cpu.X = (uint8_t)value;
+    CPX(limit);
+    return cpu.C;
+}
+
+/* ===========================================================================
+   $12DC  clamp_near_edge_cursor — WHICH NEAR SLOT DOES THE NEXT FRAME REBUILD?  (twin #18)
+   ---------------------------------------------------------------------------
+   Handed a candidate slot, which it steps up by one first.  Two independent clamps:
+
+     * the window's TOP.  If candidate+1 is below near_edge_last, the window shrinks to it —
+       there is no point promising to rebuild slots that no longer need it.
+     * the CURSOR itself.  The candidate must land in [near_edge_first, 5], and both ways out
+       of that range snap to 5, not to the boundary that was crossed.
+
+   ⚠ The exit flags are the second clamp's `CPX #6`, and on the path that fires it the `LDX #5`
+   AFTER the compare overwrites N and Z while leaving C — which is why both steps go through
+   cpx_ge/arg_x rather than a C conditional.
+   =========================================================================== */
+static void clamp_near_edge_cursor_core(uint8_t candidate)
+{
+    unsigned slot = (candidate + 1u) & 0xFFu;         /* $12DC INX */
+
+    if (!cpx_ge(slot, near_edge_last))                /* $12DD-$12E1 */
+        near_edge_last = (uint8_t)slot;
+
+    slot = (slot - 1u) & 0xFFu;                       /* $12E3 DEX */
+    if (!cpx_ge(slot, near_edge_first)) {             /* $12E4-$12E8 — below the window */
+        slot = 5;
+        arg_x(5);
+    }
+    if (cpx_ge(slot, 6)) {                            /* $12EA-$12EE — past the last near slot */
+        slot = 5;
+        arg_x(5);
+    }
+    near_edge_cursor = (uint8_t)slot;                 /* $12F0 STX */
+}
+
+void clamp_near_edge_cursor(void)
+{
+    clamp_near_edge_cursor_core(cpu.X);
+}
+
+/* ===========================================================================
+   $12C8  clamp_near_edge_window — RE-OPEN THE WINDOW BY ONE SLOT  (twin #17)
+   ---------------------------------------------------------------------------
+   The other half of a section step: near_edge_last moves up one, held inside
+   [near_edge_first, 6], and then the cursor clamp above runs on near_edge_cursor + 1.  (The
+   6502 spells that as `LDX near_edge_cursor / INX` falling into clamp_near_edge_cursor's own
+   `INX`, so the cursor really is stepped TWICE before the first compare.)
+   =========================================================================== */
+static void clamp_near_edge_window_core(uint8_t nearSlots)   /* 6 — one past the last near slot */
+{
+    unsigned last = (near_edge_last + 1u) & 0xFFu;    /* $12C8-$12CA */
+
+    if (cpx_ge(last, nearSlots)) {                    /* $12CB-$12CF */
+        last = nearSlots;
+        arg_x(nearSlots);
+    }
+    if (!cpx_ge(last, near_edge_first)) {             /* $12D1-$12D5 */
+        last = near_edge_first;
+        arg_x(near_edge_first);
+    }
+    near_edge_last = (uint8_t)last;                   /* $12D7 */
+
+    clamp_near_edge_cursor_core((uint8_t)(near_edge_cursor + 1u));   /* $12D9-$12DB */
+}
+
+void clamp_near_edge_window(void)
+{
+    clamp_near_edge_window_core(0x06);
+}
+
+/* ===========================================================================
+   $12A0  shift_near_edge_points — THE CAR CROSSED A SECTION  (twin #16)
+   ---------------------------------------------------------------------------
+   Slides the near slots of BOTH 40-point halves up by one — entry i becomes entry i+1 for
+   i = 4..0 and i = $2C..$28 — which frees slot 0 and slot $28 for the point road_edge_start
+   is about to build, and keeps the two halves in step.  All three per-point arrays move
+   together: the azimuth's two bytes and the scan line.
+
+   Then the window is re-opened: near_edge_first becomes 6 - near_edge_shift, i.e. as many
+   slots as the car has just stepped over, and the clamps above tidy up the rest.
+
+   ⚠ The `SEC / SBC near_edge_shift` is the last thing in the routine to write V — the clamps
+   that follow it are all CPX, which does not — so that subtract's overflow is what the caller
+   sees, and A stays the computed near_edge_first across both calls.
+   =========================================================================== */
+static void shift_near_edge_points_core(uint8_t topSlot,    /* $2C — slot 4 of the far half */
+                                        uint8_t wrapSlot,   /* $28 — where the far half starts */
+                                        uint8_t lowTop,     /* 5  — ...and the near half's top */
+                                        uint8_t nearSlots)  /* 6 */
+{
+    unsigned slot = topSlot;
+
+    for (;;) {                                        /* $12A2-$12BB */
+        mem[EDGE_X_LO_TBL + slot + 1] = mem[EDGE_X_LO_TBL + slot];
+        mem[EDGE_X_HI_TBL + slot + 1] = mem[EDGE_X_HI_TBL + slot];
+        mem[EDGE_Y_TBL    + slot + 1] = mem[EDGE_Y_TBL    + slot];
+
+        if (slot == wrapSlot)                         /* the far half is done — cross over */
+            slot = lowTop;
+        if (slot == 0)                                /* $12BA DEX / $12BB BPL */
+            break;
+        slot--;
+    }
+
+    near_edge_first = (uint8_t)sub_from(nearSlots, near_edge_shift);   /* $12BD-$12C2 */
+    clamp_near_edge_window_core(nearSlots);                            /* $12C4 */
+}
+
+void shift_near_edge_points(void)
+{
+    shift_near_edge_points_core(0x2C, (uint8_t)EDGE_HALF, 0x05, 0x06);
+}
+
+/* ===========================================================================
+   $0BA2  rebase_edge_point — ONE SURVIVING POINT ONTO THIS FRAME'S CAMERA  (twin #19)
+   ---------------------------------------------------------------------------
+   An edge point is stored relative to the camera — its azimuth is measured from where the car
+   points, its scan line from where the camera looks — so a point kept from last frame is
+   wrong by exactly one frame of camera motion.  This corrects both halves of that in one go:
+   the azimuth by the frame's heading step (the same 16-bit value integrate_heading adds to
+   car_heading), the scan line by view_pitch_delta.  The point's style byte is cleared, since
+   nothing has claimed the span yet, and the re-based scan line is offered to the frame's
+   horizon in passing.
+
+   ⚠ V escapes: the routine ends on `CMP horizon_extent`, which does not write V, so the
+   overflow of the scan-line subtract is what the caller gets.  Both subtracts go through the
+   6502's own arithmetic for that reason.
+   =========================================================================== */
+static void rebase_edge_point_core(uint8_t slot)
+{
+    unsigned angleLo, angleHi, line;
+
+    mem[EDGE_STYLE_TBL + slot] = 0;                                     /* $0BA2-$0BA4 */
+
+    angleLo = sub_from(mem[EDGE_X_LO_TBL + slot], heading_step_lo);     /* $0BA7-$0BAE */
+    mem[EDGE_X_LO_TBL + slot] = (uint8_t)angleLo;
+    angleHi = sbc_step(mem[EDGE_X_HI_TBL + slot], heading_step_hi, cpu.C);
+    mem[EDGE_X_HI_TBL + slot] = (uint8_t)angleHi;
+
+    line = sub_from(mem[EDGE_Y_TBL + slot], view_pitch_delta);          /* $0BBA-$0BC0 */
+    mem[EDGE_Y_TBL + slot] = (uint8_t)line;
+
+    if (cmp_ge(line, horizon_extent)) {                                 /* $0BC3-$0BC9 */
+        horizon_extent = (uint8_t)line;
+        horizon_index  = slot;
+    }
+}
+
+void rebase_edge_point(void)
+{
+    rebase_edge_point_core(cpu.Y);
+}
+
+/* ===========================================================================
+   $1208  load_section_triple — TRACK FILE -> A LIVE SECTION SLOT  (twin #20)
+   ---------------------------------------------------------------------------
+   A track-file segment is an 8-byte record (which is why the wrap point is segment_count_x8),
+   and fields 1..3 of it are the segment's three 16-bit coordinates.  This copies that triple
+   into one of the 40+2 live section slots, whose two arrays road_edge_start, road_edge_walk,
+   bearing_to_section and project_point all read.
+
+   ⚠ Neither index wraps: the 6502 addresses these as absolute,X and absolute,Y, so a byte
+   index of $FE really does reach three bytes past the end of the array rather than back to
+   the start.  The two halves are copied in the 6502's order (all three low bytes, then all
+   three high), which matters only if source and destination overlap — and the near-point
+   scratch slot at $FD is close enough to the end of the live array that they can.
+   =========================================================================== */
+static void load_section_triple_core(uint8_t destSection, uint8_t segmentByte)
+{
+    int i;
+
+    for (i = 0; i < 3; i++)                                     /* $1208-$1219 */
+        mem[SECTION_LO_TBL + destSection + i] = mem[TRACK_SEGMENT_LO + segmentByte + 1 + i];
+    for (i = 0; i < 3; i++)                                     /* $121A-$122B */
+        mem[SECTION_HI_TBL + destSection + i] = mem[TRACK_SEGMENT_HI + segmentByte + 1 + i];
+
+    /* $1226's LDA is the last thing to touch A and the flags. */
+    load_a(mem[TRACK_SEGMENT_HI + segmentByte + 3]);
+}
+
+void load_section_triple(void)
+{
+    load_section_triple_core(cpu.X, cpu.Y);
+}
+
+/* ===========================================================================
+   $0CA5  point_distance_hypot — HOW FAR AWAY IS THIS POINT?  (twin #22)
+   ---------------------------------------------------------------------------
+   The distance from the camera to the point bearing_to_section has just transformed, from the
+   two ground-plane magnitudes that routine sorted into hypot_min and hypot_max.  It is an
+   octagonal approximation to sqrt(min^2 + max^2) — and it is TWO of them, picked on the raw
+   arctan byte the bearing left in shared_temp_7e, i.e. on the ANGLE between the components:
+
+     under $67   the components are far apart -> max + min/8      (error under 3% there)
+     $67 and up  they are comparable          -> max*7/8 + min/2  (which is the 45-degree case)
+
+   ⭐ WHAT THE TWIN CHANGES.  Every one of those terms is a 16-bit shift the 6502 has to spell
+   as `LSR hi / ROR A` pairs — nine of them in the far arm — and the 68000 does each in one
+   `lsr.w`.  The whole byte-at-a-time chain and its per-instruction flag bookkeeping go; what
+   is left is three shifts, an add and a subtract.
+
+   ⚠ hypot_min is shifted IN PLACE and does not survive the call.  That is not a scratch
+   detail to tidy away — it is output, and the differential compares it.  ⚠⚠ And the two arms
+   write DIFFERENT AMOUNTS of it: the near arm's >>3 keeps the low byte in A the whole way and
+   only ever stores the high one, so hypot_min_lo comes back UNCHANGED there, where the far
+   arm's >>1 is a read-modify-write of both.  Storing both on both arms is byte-exact
+   arithmetic and a differential failure — 829 of 2000 cases, all on the near arm.
+   =========================================================================== */
+typedef struct {
+    uint16_t dist;        /* -> point_dist_lo/hi */
+    uint16_t min;         /* -> hypot_min_hi, and hypot_min_lo too on the far arm only */
+    uint16_t maxEighth;   /* -> math_hi:math_lo (LOW byte in math_hi) — the far arm only */
+    int      farArm;
+} PointDist;
+
+static PointDist point_distance_hypot_core(uint8_t angle, uint16_t minMag, uint16_t maxMag)
+{
+    PointDist r;
+    Adc       lo;
+    unsigned  hi;
+
+    r.maxEighth = 0;
+
+    if (!cmp_ge(angle, 0x67)) {                       /* $0CA5-$0CA9 — the components diverge */
+        r.farArm = 0;
+        r.min    = (uint16_t)(minMag >> 3);           /* $0CAB-$0CB5 */
+
+        lo = adc_value((uint8_t)r.min, (uint8_t)maxMag, 0);                   /* $0CB6-$0CB9 */
+        hi = adc_step((unsigned)(uint8_t)(r.min >> 8), (uint8_t)(maxMag >> 8), lo.carry);
+        r.dist = (uint16_t)(((unsigned)(uint8_t)hi << 8) | lo.val);
+        return r;
+    }
+
+    r.farArm    = 1;
+    r.min       = (uint16_t)(minMag >> 1);            /* $0CC2-$0CC4 */
+    r.maxEighth = (uint16_t)(maxMag >> 3);            /* $0CC6-$0CD5 */
+
+    lo = adc_value((uint8_t)r.min, (uint8_t)maxMag, 0);                       /* $0CD7-$0CE2 */
+    hi = (unsigned)adc_value((uint8_t)(r.min >> 8), (uint8_t)(maxMag >> 8), lo.carry).val;
+
+    {   /* $0CE4-$0CF0 — ...less an eighth of the larger component.  Only this subtract's
+           flags leave the routine, so only it goes through the full 6502 SBC. */
+        Sbc      d  = sbc_value(lo.val, (uint8_t)r.maxEighth, 1);
+        unsigned dh = sbc_step(hi, (uint8_t)(r.maxEighth >> 8), d.carry);
+        r.dist = (uint16_t)(((unsigned)(uint8_t)dh << 8) | d.val);
+    }
+    return r;
+}
+
+/* The 6502-ABI shim: the two magnitudes and the angle are bearing_to_section's own cells, and
+   the distance plus the shifted minimum are what the rest of the pass reads. */
+static void point_distance_hypot_apply(void)
+{
+    PointDist d = point_distance_hypot_core(
+                      shared_temp_7e,
+                      (uint16_t)(hypot_min_lo | ((unsigned)hypot_min_hi << 8)),
+                      (uint16_t)(hypot_max_lo | ((unsigned)hypot_max_hi << 8)));
+
+    hypot_min_hi = (uint8_t)(d.min >> 8);
+    if (d.farArm) {
+        hypot_min_lo = (uint8_t)d.min;                /* $0CC4 ROR — the near arm has no store */
+        math_lo = (uint8_t)(d.maxEighth >> 8);        /* ⚠ the HIGH byte, in math_lo */
+        math_hi = (uint8_t)d.maxEighth;
+    }
+    point_dist_lo = (uint8_t)d.dist;
+    point_dist_hi = (uint8_t)(d.dist >> 8);
+    cpu.A         = (uint8_t)(d.dist >> 8);           /* live: road_edge_walk's running nearest */
+}
+
+void point_distance_hypot(void)
+{
+    point_distance_hypot_apply();
+}
+
+/* ===========================================================================
+   $23C0  emit_edge_bearing — THE POINT'S ANGLE, RELATIVE TO THE CAR  (twin #21)
+   ---------------------------------------------------------------------------
+   bearing_to_section leaves an absolute bearing; an edge point stores the angle FROM WHERE
+   THE CAR IS POINTING, so this is the one subtraction between them, written into both bytes
+   of edge_x at the given slot.  It then falls into point_distance_hypot, which is why every
+   caller gets the point's distance as well as its angle out of one call.
+
+   The subtract's own flags are all dead — the hypot's opening `LDA / CMP` overwrites N, Z and
+   C and both of its exits overwrite V — so it is a value chain, not a flag chain.
+   =========================================================================== */
+static void emit_edge_bearing_core(uint8_t slot)
+{
+    Sbc lo = sbc_value(bearing_lo, car_heading_lo, 1);          /* $23C0-$23C5 */
+    Sbc hi = sbc_value(bearing_hi, car_heading_hi, lo.carry);   /* $23C8-$23CC */
+
+    mem[EDGE_X_LO_TBL + slot] = lo.val;
+    mem[EDGE_X_HI_TBL + slot] = hi.val;
+
+    point_distance_hypot_apply();                               /* $23CF JMP */
+}
+
+void emit_edge_bearing(void)
+{
+    emit_edge_bearing_core(cpu.Y);
+}
+
+/* ===========================================================================
+   $23BB  emit_edge_bearing_at_cursor — ...FOR THE POINT THE WALK IS ON  (twin #23)
+   ---------------------------------------------------------------------------
+   Five bytes: take the section's bearing from the camera, then emit it at edge_cursor.  It
+   exists because road_edge_walk always wants both together, where road_edge_start picks the
+   slot itself and calls the two halves separately.
+   =========================================================================== */
+static void emit_edge_bearing_at_cursor_core(uint8_t sectionByte)
+{
+    bearing_to_section_core(sectionByte, 0);        /* $23BB -> $2145: origin 0 = the camera */
+    arg_y(edge_cursor);                             /* $23BE, and Y is live into the callee */
+    emit_edge_bearing_core(cpu.Y);
+}
+
+void emit_edge_bearing_at_cursor(void)
+{
+    emit_edge_bearing_at_cursor_core(cpu.X);
+}
+
+/* ===========================================================================
+   $2565  emit_edge_width_offset — THE OTHER SIDE OF THE ROAD, AND THE MARKERS  (twin #24)
+   ---------------------------------------------------------------------------
+   The last thing road_edge_walk does with a point it has decided to keep, and it produces
+   three separate things out of one lookup:
+
+     1. THE OPPOSITE BOUNDARY.  The point's section byte carries feature bits; masked by the
+        bits that belong to this road side, their low three select a width EXPONENT, and
+        proj_width (the reciprocal-table mantissa project_point just left) shifted by the
+        difference is how wide the road looks HERE.  Added to — or subtracted from, depending
+        on which side and which way round the circuit — the point's own azimuth, that is
+        edge_opp_x, the angle of the far kerb.
+     2. THE STYLE.  edge_style_tbl's entry for the same feature bits, or a flat 2 on an odd
+        section byte, becomes the point's edge_style: which surface draw_road paints there.
+     3. A CORNER MARKER, when the masked bits include either of the $18 pair and the frame has
+        fewer than three already.  Bit 0 halves the marker's offset from its edge point.
+
+   ⭐ WHAT THE TWIN CHANGES.  The width shift is a VARIABLE 16-bit shift, and the 6502 has to
+   run it as a loop of `ASL A / ROL math_hi` (or `LSR / ROR`) one place per iteration, up to
+   255 times.  The 68000 shifts a word by a register in one instruction, so the loop becomes a
+   shift and a range test — the one place in this pass where the twin does asymptotically less
+   work than the 6502 rather than the same work with less bookkeeping.
+
+   ⚠ The first THREE points of a side get no width offset at all ($2580 CMP #3): they are the
+   ones beside the car, where the perspective divide has nothing useful to say.
+   ⚠ SELF-MODIFYING at $261A: all four expansion circuits replace the horizon store pair with
+   `JMP $56AF` (`make track-patch`), so the bytes are dispatched rather than assumed.
+   =========================================================================== */
+
+/* $2596-$25A7 — proj_width shifted by `steps`, as a 16-bit value.  The 6502's loop shifts one
+   place per iteration and the count is a signed byte, so a count of 16 or more shifts every
+   bit out; that is a range test here, not 240 iterations. */
+static unsigned width_shifted(uint8_t mantissa, uint8_t steps)
+{
+    if (steps == 0)                       return mantissa;              /* $2597 BEQ */
+    if (steps < 0x80u)                                                  /* $2599 BPL — left */
+        return steps >= 16 ? 0u : (((unsigned)mantissa << steps) & 0xFFFFu);
+    {   /* the right arm counts UP to zero, so 256 - steps places */
+        unsigned places = 0x100u - steps;
+        return places >= 16 ? 0u : ((unsigned)mantissa >> places);
+    }
+}
+
+/* $25D9-$25FB — append this point to the frame's corner-marker list, which draw_corner_markers
+   consumes and zeroes.  At most three, and a midpoint never gets one (road_edge_walk saves and
+   restores marker_count around the call that could). */
+static void append_corner_marker(uint8_t flags, unsigned offset)
+{
+    unsigned slot = marker_count;
+
+    cpu.Y = (uint8_t)slot;
+    CPY(0x03);                                        /* $25DB, and the branch is on its C */
+    if (cpu.C)
+        return;
+
+    mem[MARKER_EDGE_IDX  + slot] = edge_cursor;
+    mem[MARKER_FLAGS_TBL + slot] = flags;
+
+    if (flags & 0x01u) {                              /* $25E9-$25EF — a half-width marker */
+        offset  >>= 1;                                /* ...halved in math_lo/hi themselves */
+        math_hi   = (uint8_t)(offset >> 8);
+        math_lo   = (uint8_t)offset;
+    }
+
+    mem[MARKER_OFF_LO + slot] = (uint8_t)offset;
+    mem[MARKER_OFF_HI + slot] = (uint8_t)(offset >> 8);
+    inc_mem(MEM_marker_count);
+}
+
+static void emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringPoint)
+{
+    unsigned feature, offset = 0, line;
+    uint8_t  flags, style;
+
+    /* $2565-$257E — the point's feature bits, masked down to this road side's, and the two
+       table entries they select.  The section-flags array is addressed twice over: $0702 for a
+       byte index inside the 120-byte list and $068A (the same table, less 120) past it. */
+    flags = (uint8_t)(mem[cpx_ge(sectionByte, 0x78) ? SECTION_FLAGS_W + sectionByte
+                                                    : SECTION_FLAGS   + sectionByte]
+                      & mem[EDGE_SIDE_MASK + road_side_index]);
+    shared_temp_77 = flags;
+    feature        = flags & 0x07u;
+    style          = mem[EDGE_STYLE_SEL + feature];
+    shared_temp_76 = style;
+
+    /* $2580-$2586 — nothing but the style for the first three points of the side. */
+    if (cmp_ge(shared_counter_42, firstScoringPoint)) {
+        int negate;
+
+        /* $2589-$25A9 — the apparent half-width here: project_point's mantissa, shifted by
+           its exponent less this feature's own. */
+        uint8_t steps = (uint8_t)(sbc_value(proj_width_shift,
+                                            mem[EDGE_WIDTH_SHIFT + feature], 1).val - 1u);
+
+        offset  = width_shifted(proj_width, steps);
+        math_hi = (uint8_t)(offset >> 8);
+        math_lo = (uint8_t)offset;
+
+        /* $25AB-$25BE — and which way it points.  Road side 0 or 1 becomes a sign bit, EORed
+           with the direction the car is going round the circuit, so the two boundaries stay on
+           opposite sides of the road however the walk is traversing the section list. */
+        negate = (uint8_t)((road_side_index ? 0x80u : 0x00u) ^ track_direction) >= 0x80u;
+        if (negate) {                                 /* $25B3-$25BE */
+            Sbc nlo = sbc_value(0, (uint8_t)offset, 1);
+            Sbc nhi = sbc_value(0, (uint8_t)(offset >> 8), nlo.carry);
+            offset  = (unsigned)nlo.val | ((unsigned)nhi.val << 8);
+            math_lo = nlo.val;
+            math_hi = nhi.val;
+        }
+
+        /* $25C0-$25D2 — the far kerb's azimuth: this point's angle plus that offset. */
+        {
+            /* ⚠ The HIGH half's ADC is the last thing in the routine to write V — everything
+               after it is CMP/CPY, which do not — so its overflow is the caller's.  (565 of
+               2000 cases differed on V alone with mem[] byte-exact until it went through the
+               6502's own add.) */
+            unsigned slot = edge_cursor;
+            Adc      lo   = adc_value(mem[EDGE_X_LO_TBL + slot], (uint8_t)offset, 0);
+            mem[EDGE_OPP_X_LO + slot] = lo.val;
+            mem[EDGE_OPP_X_HI + slot] = (uint8_t)adc_step(mem[EDGE_X_HI_TBL + slot],
+                                                          (uint8_t)(offset >> 8), lo.carry);
+        }
+
+        /* $25D3-$25FB — and a corner marker, if the point carries one. */
+        if (flags & 0x18u)
+            append_corner_marker(flags, offset);
+    }
+
+    /* $25FD-$260B — THE STYLE.  An odd section byte is always style 2; an even one takes the
+       feature's own.  (The `TXA / AND #1` is the only use of the section index down here.) */
+    cpu.Y = edge_cursor;
+    mem[EDGE_STYLE_TBL + edge_cursor] = (sectionByte & 1u) ? 0x02u : style;
+
+    /* $260D-$261D — the point's scan line, and the frame's horizon if it reaches further than
+       anything before it.  $50 is the top of the 80-line space: a point at or past it is sky. */
+    line = load_a(projected_line);
+    mem[EDGE_Y_TBL + edge_cursor] = (uint8_t)line;
+    if (cmp_ge(line, 0x50))
+        return;
+    if (!cmp_ge(line, horizon_extent))
+        return;
+
+    if (mem[0x261A] == 0x85 && mem[0x261C] == 0x84) {           /* unpatched: Silverstone */
+        horizon_extent = (uint8_t)line;
+        horizon_index  = cpu.Y;
+    } else if (mem[0x261A] == 0x4C) {                           /* a circuit's own JMP */
+        uint16_t target = (uint16_t)(mem[0x261B] | (mem[0x261C] << 8));
+        if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
+        else                                      platform_smc_unhandled(0x261A, target);
+    } else {
+        platform_smc_unhandled(0x261A, mem[0x261A]);
+    }
+}
+
+void emit_edge_width_offset(void)
+{
+    emit_edge_width_offset_core(cpu.X, 0x03);
 }
 
 /* ===========================================================================
@@ -1743,7 +2302,7 @@ static void road_edge_start_core(uint8_t nearSlotCount,   /* 6 — also the "not
        arms (either the flag WAS 0, or the explicit store made it so), which matters because
        the SMC trap below exits with A live. */
     if (near_edge_scroll_pending != 0) {
-        shift_near_edge_points();
+        shift_near_edge_points_core(0x2C, halfStride, 0x05, nearSlotCount);
         near_edge_scroll_pending = 0;
     }
     cpu.A = 0;
@@ -1769,9 +2328,9 @@ static void road_edge_start_core(uint8_t nearSlotCount,   /* 6 — also the "not
             if (!skip) {
                 math_lo = (uint8_t)slot;             /* $231C STY $74 */
                 cpu.Y   = (uint8_t)(slot + halfStride);
-                rebase_edge_point();
+                rebase_edge_point_core(cpu.Y);
                 cpu.Y   = math_lo;
-                rebase_edge_point();
+                rebase_edge_point_core(cpu.Y);
             }
 
             slot = (slot + 1) & 0xFFu;               /* $232B-$232E INY / CPY #6 / BCC */
@@ -1814,16 +2373,17 @@ static void road_edge_start_core(uint8_t nearSlotCount,   /* 6 — also the "not
 
         cpu.X = scratchSection;
         cpu.Y = (uint8_t)segByte;
-        load_section_triple();                       /* track file -> the scratch section slot */
-        bearing_to_section();                        /* ...and its bearing from the camera */
+        load_section_triple_core(scratchSection, (uint8_t)segByte);  /* track file -> scratch */
+        bearing_to_section_core(scratchSection, 0);  /* ...and its bearing from the camera */
 
         /* $236C-$2376 — going the other way round, the point belongs to the OTHER half. */
         cpu.Y = (uint8_t)(track_direction & 0x80u ? (point ^ halfStride) : point);
-        emit_edge_bearing();                         /* edge_x[Y] = bearing - car_heading */
+        emit_edge_bearing_core(cpu.Y);               /* edge_x[Y] = bearing - car_heading */
 
         if (point < halfStride) {                    /* $2379 CPX #$28 */
             cpu.X = scratchSection;
-            project_point();
+            arg_y(0);                                /* $2285: the camera is origin 0 */
+            project_point_core(scratchSection, 0);
             unsigned line = projected_line;
             mem[EDGE_Y_TBL + point]              = (uint8_t)line;
             mem[EDGE_Y_TBL + halfStride + point] = (uint8_t)line;
@@ -1848,7 +2408,7 @@ static void road_edge_start_core(uint8_t nearSlotCount,   /* 6 — also the "not
     /* $23AC-$23B8 — hand the next frame the slot below this one, then make sure a stale
        horizon_index_prev cannot leave the road reaching further up than line 7. */
     cpu.X = (uint8_t)((near_edge_cursor - 1) & 0xFFu);
-    clamp_near_edge_cursor();
+    clamp_near_edge_cursor_core(cpu.X);
 
     /* ⭐ The CMP is the routine's LAST flag-setting operation and A = 7 is its exit value, so
        this one has to be spelled as the 6502's compare. */
@@ -1952,14 +2512,15 @@ static void road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
     /* $2450-$2467 — the midpoint's own angle and projection.  Past the clip it contributes
        nothing; otherwise it gets its width offset with the marker list frozen. */
     cpu.X = midSlot;
-    emit_edge_bearing_at_cursor();
-    project_point();
+    emit_edge_bearing_at_cursor_core(midSlot);
+    arg_y(0);
+    project_point_core(midSlot, 0);
     if (cpu.C)
         return;
 
     cpu.X              = walk_prev_section;
     marker_count_saved = marker_count;               /* $245C — no corner marker for a midpoint */
-    emit_edge_width_offset();
+    emit_edge_width_offset_core(walk_prev_section, 0x03);
     marker_count       = (uint8_t)load_a(marker_count_saved);
     inc_mem(MEM_edge_cursor);                        /* $2467, and its N/Z are the exit flags */
 }
@@ -1978,7 +2539,7 @@ static void road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
         /* $23D8 — this point's angle, and how far away it is.  A comes back as the high byte
            of the distance point_distance_hypot ($0CA5) left in point_dist_lo/hi. */
         cpu.X = (uint8_t)section;
-        emit_edge_bearing_at_cursor();
+        emit_edge_bearing_at_cursor_core((uint8_t)section);
         unsigned distHi = cpu.A;
 
         /* $23DB-$23FA — the RUNNING NEAREST, which is also project_point's far clip and the
@@ -1994,14 +2555,15 @@ static void road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
 
         /* $23FC-$2401 — project it.  Carry = past the far clip, N = behind the camera. */
         cpu.X = (uint8_t)section;
-        project_point();
+        arg_y(0);
+        project_point_core((uint8_t)section, 0);
         if (cpu.C || cpu.N) {
             road_edge_walk_subdivide(section, midSlot);
             return;
         }
 
         /* $246A — EMIT: the point's second angle, and any corner marker it carries. */
-        emit_edge_width_offset();
+        emit_edge_width_offset_core((uint8_t)section, 0x03);
 
         /* $246D-$248F — past the subdivision floor, has the road swung more than $14 off the
            view axis in this one step?  If so, subdivide — unless the point BEFORE it was
