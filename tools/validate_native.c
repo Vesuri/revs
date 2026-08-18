@@ -4052,6 +4052,115 @@ static int test_object_shape(void)
     return fail;
 }
 
+
+/* ==========================================================================
+   TWINS #96-#97 — THE OBJECT PLOTTER'S LINE SIDE
+   --------------------------------------------------------------------------
+   $1C1C plot_view_src_line, $1E38 fill_object_gap.
+
+   Same table constraints as twins #93-#95 (force_shape_tables), because both routines write into
+   the view source blocks whose tails hold those tables, plus five inputs of their own:
+
+     mode (Y)          0, 1, 2 — and 3 as well, because the dispatch is `CPY #1 / BCS` and
+                       anything over 1 is mode 2.  A quarter of the cases get each.
+     span_line_cursor  the run's bottom line, drawn from 0..$4F: it is the pointer bias in
+                       fill_object_gap and the walk's start in both, and a value over $4F puts
+                       writes into the block tails.
+     span_top_line     0..$4F for the same reason; the routine raises it to
+                       dash_block_starts[column] itself, and a no-height run is a real arm.
+     EDGE_COLUMN /     0..$3F, which is wider than the $28 columns that exist — the
+     PVS_PREV_COL      off-the-viewport arm at $1D94 is one of the three exits and needs it.
+     span_defer_pending / shared_temp_8c   half the cases arm the deferred byte, because mode 0's
+                       merge arm ($1CEE) is otherwise reached only when a previous mode-1 call in
+                       the same case left it set — and a fixture calling one mode at a time never
+                       does that.
+   ========================================================================== */
+void plot_view_src_line(void);   void plot_view_src_line__t6502(void);
+void fill_object_gap(void);      void fill_object_gap__t6502(void);
+
+#define PRE_SPAN_CURSOR    0x007F
+#define PRE_SPAN_TOP       0x0047
+#define PRE_EDGE_COLUMN    0x0085
+#define PRE_PREV_COLUMN    0x007C
+#define PRE_DEFER_PENDING  0x0048
+#define PRE_DEFER_BYTE     0x008C
+#define PRE_EDGE_STYLE     0x0084
+
+static int test_object_lines(void)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    int fail = 0, printed = 0, t, i;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+
+    struct { const char* name; void (*nat)(void); void (*ref)(void); int cases; }
+      list[2] = {
+        { "fill_object_gap",    fill_object_gap,    fill_object_gap__t6502,    4000 },
+        { "plot_view_src_line", plot_view_src_line, plot_view_src_line__t6502, 6000 },
+      };
+    for (i = 0; i < 2; i++) register_fixture(list[i].name);
+
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+
+    for (i = 0; i < 2; i++) {
+        int subFail = 0, decimal = 0, deferred = 0, offView = 0, noHeight = 0;
+        int modes[4] = { 0, 0, 0, 0 };
+        int cases = list[i].cases * scale;
+        if (!want(list[i].name)) continue;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            unsigned mode = xs() % 4;
+            fill_random(pre);
+            force_shape_tables(pre);
+            c.A = (uint8_t)xs();
+            c.X = (uint8_t)(xs() % 0x29);           /* fill_object_gap's width */
+            c.Y = (uint8_t)mode;
+            modes[mode]++;
+
+            pre[PRE_SPAN_CURSOR]  = (uint8_t)(xs() % 0x50);
+            pre[PRE_SPAN_TOP]     = (uint8_t)(xs() % 0x50);
+            pre[PRE_EDGE_COLUMN]  = (uint8_t)(xs() % 0x40);
+            pre[PRE_PREV_COLUMN]  = (uint8_t)(xs() % 0x40);
+            pre[0x008D]           = (uint8_t)(xs() % 0x40);   /* the other endpoint's column */
+            pre[PRE_PLOT_X]       = (uint8_t)xs();
+            pre[PRE_EDGE_STYLE]   = (uint8_t)xs();
+            if (pre[PRE_EDGE_COLUMN] >= 0x28) offView++;
+            if (pre[PRE_SPAN_TOP] >= pre[PRE_SPAN_CURSOR]) noHeight++;
+
+            /* The deferred pair — see the header. */
+            if (xs() & 1) {
+                pre[PRE_DEFER_PENDING] = (uint8_t)(1 + xs() % 255);
+                pre[PRE_DEFER_BYTE]    = (uint8_t)xs();
+                deferred++;
+            } else {
+                pre[PRE_DEFER_PENDING] = 0;
+            }
+
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = (uint8_t)(xs() % 4 == 0);
+            if (c.D) decimal++;
+            subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
+                                liveMask, t, &printed);
+        }
+        fail += subFail;
+        if (!decimal || !deferred || !offView || !noHeight ||
+            !modes[0] || !modes[1] || !modes[2] || !modes[3]) {
+            printf("[VACUOUS] %s: %d decimal, %d deferred, %d off view, %d no height, "
+                   "modes %d/%d/%d/%d\n", list[i].name, decimal, deferred, offView, noHeight,
+                   modes[0], modes[1], modes[2], modes[3]);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d decimal, %d deferred, %d off view, %d no height, modes %d/%d/%d/%d)\n",
+               list[i].name, cases, subFail, decimal, deferred, offView, noHeight,
+               modes[0], modes[1], modes[2], modes[3]);
+    }
+    unsetenv("REVS_SMC_CONTINUE");
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -4082,6 +4191,7 @@ int main(int argc, char** argv)
     fail += test_sub_models();
     fail += test_road_sign();
     fail += test_object_shape();
+    fail += test_object_lines();
 
     fail += check_coverage();
     fail += report_unvalidated_natives();

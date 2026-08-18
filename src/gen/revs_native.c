@@ -7752,3 +7752,435 @@ static void plot_object_core(uint8_t slot)
 void plot_object(void)          { plot_object_core(cpu.X); }
 void scale_shape_vectors(void)  { scale_shape_vectors_core(); }
 void plot_shape_edges(void)     { plot_shape_edges_core(); }
+
+/* ===========================================================================
+   TWINS #96-#97 — THE OBJECT PLOTTER'S LINE SIDE, and with it the whole of
+   draw_track_object's tree
+   ---------------------------------------------------------------------------
+     $1C1C plot_view_src_line   THE line plotter: one edge of a shape into the view source
+     $1E38 fill_object_gap      ...and the columns BETWEEN two edges, filled solid
+
+   These are what plot_shape_edges (twin #95) calls three times per edge, and they are the only
+   part of the object pipeline that touches the frame buffer's source blocks.  ⚠ Ghidra called
+   $1C1C `project_geometry`; nothing here projects, and the name was corrected before this twin.
+
+   ⭐⭐ WHAT THE GROUP MADE LEGIBLE — six things, in the order they surprised:
+
+   1. **A SHAPE EDGE IS DRAWN AS A COLUMN, NOT AS A LINE.**  Each call paints ONE column of the
+      view source — `plot_ptr` is `$3000 + column x $80` and the walk is `DEY` from
+      span_line_cursor down to the run's top — and the "line" between two edges is made by
+      fill_object_gap filling every column in between with a single byte.  There is no Bresenham
+      in the object plotter at all: the slope lives in the two endpoints' columns and the gap
+      fill closes the difference.
+   2. ⭐ **THE THREE MODES ARE AN OPEN/CLOSE PAIR WITH A DEFERRED BYTE BETWEEN THEM.**  Mode 1
+      derives its own endpoint from shared_temp_7e, composes the column's byte, and — when the
+      two endpoints land in the SAME column — stows the byte's keep-mask in shared_temp_8c,
+      arms span_defer_pending and returns without painting.  Mode 2 then ORs
+      pixel_after_mask_tbl into that mask, so the two ends of a one-column span are merged into
+      one write instead of fighting over it.  Mode 0 is the closing arm's, and consumes the same
+      pair from the other side.
+   3. **THE COLOUR IS PER-PIXEL, AND THE MODE 5 BYTE IS ASSEMBLED FROM THREE MASK TABLES.**
+      pixel_keep_others_tbl clears the one pixel being written, colour_pattern_and_tbl keeps the
+      byte's other pixels and colour_pattern_keep_tbl selects what this pixel contributes.  The
+      pixel index is the low two bits of the endpoint's x — i.e. the sub-byte part of the
+      coordinate IS the pixel number, with no shifting.
+   4. ⚠⚠ **AN UNTOUCHED SOURCE BYTE IS FILLED FROM THE ROAD, NOT LEFT ALONE.**  $1D5D calls
+      surface_colour_at for any cell reading $00, so an object drawn over unpainted road paints
+      the road's own surface colour first and then its own pixel over it.  And $55 is the
+      "written but empty" sentinel both ways: a cell holding $55 is treated as blank, and a
+      composed byte of 0 is stored AS $55 so the next pass does not mistake it for untouched.
+   5. ⚠ **`$1D86` IS `CLC / SBC`, NOT `SEC / SBC`** — the gap width is
+      `column - previous column - 1`, one less than it looks.  A width of 0 or negative skips the
+      gap fill entirely, which is what makes a one-column edge cost one write.
+   6. ⚠ **fill_object_gap WALKS TWO COLUMNS AT A TIME, BACKWARDS.**  Its `DEX / DEX` steps the
+      count by two and `DEC plot_ptr_hi` steps the pointer by $100 — which is exactly two of the
+      $80-spaced blocks — so each iteration writes a PAIR through plot_ptr and plot_ptr2, and an
+      odd width finishes with the single-column tail at $1E98.  The pointer is biased by
+      `$7F - span_line_cursor` so that a Y of $7F is the run's bottom line; every write therefore
+      lands inside `[span_top_line, span_line_cursor]` and never in the block's tail — which is
+      the only reason the shape tables that live in those tails survive (twin #95, item 7).
+
+   ⚠ ONE THING HERE CANNOT BE SABOTAGED, and it is a property of the code: $1C1E's `LDX` is not
+   observable.  It reads PVS_COLOUR only to store it in PVS_COLOUR_P, and both X and the LDX's
+   N/Z are dead three instructions later (`AND #3 / TAX` rewrites X, the `LDA` before it rewrites
+   the flags) — so writing the same byte without going through X changes nothing.  What DOES fail,
+   as it must, is capturing PVS_COLOUR_P *after* the new colour has been chosen: 5982 of 6000
+   cases.  (docs/validation-harness.md §FIFTEENTH — a surviving sabotage that is no change at all.)
+
+   No hardware writes: the whole pass is RAM.
+   ⚠⚠ Like twins #93-#95 this is a SECOND TENANT of the point_delta window; the `PVS_*` defines
+   name the cells for this pass and say whose they are the rest of the time (docs/rename.md).
+   =========================================================================== */
+
+#define PIXEL_KEEP_OTHERS   0x3FE8u   /* pixel_keep_others_tbl */
+#define PIXEL_AFTER_MASK    0x39D0u   /* pixel_after_mask_tbl */
+#define COLOUR_PATTERN_AND  0x337Cu   /* colour_pattern_and_tbl */
+#define COLOUR_PATTERN_KEEP 0x33FCu   /* colour_pattern_keep_tbl */
+#define DASH_BLOCK_STARTS   0x3900u   /* dash_block_starts */
+#define GAP_TOP_TBL         0x3F4Fu   /* object_gap_top_tbl */
+#define VIEW_SRC_PAGE       0x30u     /* the forty $80-spaced source blocks start at $3000 */
+#define SRC_CELL_BLANK      0x55u     /* the "written but empty" sentinel */
+
+#define PVS_MODE      0x007Bu   /* hypot_max_hi   — the entry mode, 0, 1 or 2 */
+#define PVS_BYTE      0x007Au   /* hypot_max_lo   — the composed MODE 5 byte */
+#define PVS_KEEP      0x007Du   /* point_dist_hi  — ...and the mask that keeps the rest of a cell */
+#define PVS_PREV_COL  0x007Cu   /* point_dist_lo  — the column the PREVIOUS call painted */
+#define PVS_COLOUR    0x0079u   /* hypot_min_hi   — this call's colour byte */
+#define PVS_COLOUR_P  0x0078u   /* hypot_min_lo   — ...and the previous call's */
+#define PVS_HALF      0x0074u   /* math_lo        — bit 0: is the column past the screen's middle */
+#define PVS_OTHER_COL 0x008Du   /* projected_line — the OTHER endpoint's column */
+#define PVS_OTHER_X   0x008Fu   /* plot_ptr3_hi   — ...and its x, at 6.2 fixed point */
+#define PVS_GAP_COL   0x0075u   /* math_hi        — fill_object_gap's own column cursor */
+#define PVS_GAP_FLOOR 0x0086u   /* point_delta_sign[0] — ...and its safe write cursor */
+
+/* Halve a signed 6.2 coordinate the way $1C42/$1C66 do: arithmetically, and ROUNDED — the
+   negative arm is `SEC / ROR / ADC #0`, which is a divide by two that rounds toward zero. */
+static unsigned halve_signed_rounded(uint8_t value)
+{
+    LDA(value);
+    if (cpu.N) {
+        SEC();
+        ROR_A();
+        return adc_step(cpu.A, 0x00u, cpu.C);
+    }
+    LSR_A();
+    return cpu.A;
+}
+
+/* $1C4E / $1C72 — ...then bias it by plot_x and split it into a column (>> 2) and the x itself. */
+static void derive_endpoint(uint8_t halved, uint16_t xCell, uint16_t colCell)
+{
+    cpu.A       = (uint8_t)adc_step(halved, plot_x, 0);
+    mem[xCell]  = cpu.A;
+    LSR_A(); LSR_A();
+    mem[colCell] = cpu.A;
+}
+
+/* ---------------------------------------------------------------------------
+   $1E38  fill_object_gap — THE COLUMNS BETWEEN TWO EDGES  (twin #97)
+   ---------------------------------------------------------------------------
+   Fills `width` columns to the LEFT of the column in EDGE_COLUMN with one byte — the previous
+   call's colour, or the blank sentinel if that was 0 — over the run's own line range.  See the
+   group header, item 6, for the pair walk and the pointer bias.
+   --------------------------------------------------------------------------- */
+static void fill_object_gap_core(uint8_t width)
+{
+    unsigned bias;
+
+    /* $1E38-$1E3F — the fill byte. */
+    LDA(mem[PVS_COLOUR_P]);
+    if (cpu.Z) LDA(SRC_CELL_BLANK);
+    shared_temp_76 = cpu.A;
+
+    /* $1E40-$1E4A — the pointer bias, and the floor a column falls back to. */
+    cpu.A          = (uint8_t)sub_from(0x7Fu, span_line_cursor);
+    mem[PVS_HALF]  = cpu.A;                       /* ⚠ math_lo, reused: here the BIAS */
+    bias           = cpu.A;
+    cpu.A          = (uint8_t)adc_step(cpu.A, span_top_line, cpu.C);
+    mem[PVS_GAP_FLOOR] = cpu.A;
+
+    /* $1E4B-$1E66 — the two pointers, one block apart, both biased down by `bias`. */
+    LDA(mem[EDGE_COLUMN]);
+    mem[PVS_GAP_COL] = cpu.A;
+    cpu.A = (uint8_t)adc_step(cpu.A, 0x5Fu, 0);
+    LSR_A();
+    plot_ptr_hi  = cpu.A;
+    plot_ptr2_hi = cpu.A;
+    {
+        unsigned lowBase = cpu.C ? 0x80u : 0x00u;      /* $1E57's `LDA #0 / ROR A` */
+        int      carry;
+        cpu.A = (uint8_t)sub_from(lowBase, (uint8_t)bias);
+        carry = cpu.C;
+        plot_ptr_lo = cpu.A;
+        EOR(0x80u);
+        plot_ptr2_lo = cpu.A;
+        if (cpu.N) DEC_M(MEM_plot_ptr2_hi);            /* $1E63 BPL */
+        if (!carry) { DEC_M(MEM_plot_ptr_hi); DEC_M(MEM_plot_ptr2_hi); }   /* $1E67 BCS */
+    }
+
+    LDX(width);
+    for (;;) {
+        /* $1E6D-$1E85 — this column pair's top line: the table's entry when it is at or below
+           span_top_line, else the safe floor.  ⚠ The cursor steps back TWO columns. */
+        LDY(mem[PVS_GAP_COL]);
+        LDA(mem[GAP_TOP_TBL + cpu.Y]);
+        DEY(); DEY();
+        mem[PVS_GAP_COL] = cpu.Y;
+        CMP(span_top_line);
+        if (cpu.C) {
+            cpu.A = (uint8_t)adc_step(cpu.A, mem[PVS_HALF], cpu.C);
+            TAY();
+            if (cpu.N) {                               /* $1E7D BPL — off the run entirely */
+                CPX(0x02u);
+                if (!cpu.C) return;                    /* $1E83 */
+                goto step;                             /* $1E93 */
+            }
+        } else {
+            LDY(mem[PVS_GAP_FLOOR]);                   /* $1E84 */
+        }
+
+        /* $1E86-$1E9D — the writes: a PAIR of columns while two are left, the single tail when
+           only one is. */
+        LDA(shared_temp_76);
+        CPX(0x02u);
+        {
+            unsigned base  = zp_pointer(MEM_plot_ptr_lo);
+            unsigned base2 = zp_pointer(MEM_plot_ptr2_lo);
+            int      ram   = pointer_is_ram(base), ram2 = pointer_is_ram(base2);
+            if (!cpu.C) {
+                do { seam_write((base + cpu.Y) & 0xFFFFu, ram, cpu.A); INY(); }
+                while (!cpu.N);
+                return;                                /* $1E9D */
+            }
+            do {
+                seam_write((base  + cpu.Y) & 0xFFFFu, ram,  cpu.A);
+                seam_write((base2 + cpu.Y) & 0xFFFFu, ram2, cpu.A);
+                INY();
+            } while (!cpu.N);
+        }
+
+    step:
+        DEX(); DEX();                                  /* $1E93 */
+        if (cpu.Z) return;
+        DEC_M(MEM_plot_ptr_hi);                        /* $1E69 — back two columns */
+        DEC_M(MEM_plot_ptr2_hi);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   $1C1C  plot_view_src_line — ONE COLUMN OF ONE SHAPE EDGE  (twin #96)
+   ---------------------------------------------------------------------------
+   `mode` arrives in Y (0, 1 or 2 — see the group header, item 2) and the colour selector in A.
+   --------------------------------------------------------------------------- */
+static void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
+{
+    unsigned pixel;
+
+    /* $1C1C-$1C3D — the entry state.  The colour this call chooses becomes the NEXT call's
+       "previous", which is how a span's two ends agree on a byte. */
+    mem[PVS_MODE] = mode;
+    cpu.Y        = mode;
+    LDX(mem[PVS_COLOUR]);                          /* $1C1E-$1C21 — LDX/STX, not LDA/STA */
+    mem[PVS_COLOUR_P] = cpu.X;
+    LDA(colourSelect);
+    AND(0x03u);
+    TAX();
+    mem[PVS_COLOUR]   = mem[COLOUR_PATTERN_TBL + cpu.X];
+    mem[PVS_PREV_COL] = (uint8_t)load_a(mem[EDGE_COLUMN]);
+    LDA(mem[OBJ_EDGE_STYLE]);
+    AND(0x0Cu);
+    LSR_A(); LSR_A();
+    TAX();
+    shared_temp_76 = mem[COLOUR_PATTERN_TBL + cpu.X];
+    plot_ptr_lo    = 0x00u;
+
+    /* $1C3E-$1C7A — the endpoints.  Mode 1 derives its OWN from shared_temp_7e and then the
+       other; mode 0 takes the saved pair and re-derives the other over it; mode 2 takes the
+       saved pair and derives nothing. */
+    if (mode == 1) {
+        derive_endpoint((uint8_t)halve_signed_rounded(shared_temp_7e),
+                        MEM_shared_temp_7e, EDGE_COLUMN);
+        derive_endpoint((uint8_t)halve_signed_rounded(mem[OBJ_EDGE_X]),
+                        PVS_OTHER_X, PVS_OTHER_COL);
+    } else {
+        mem[EDGE_COLUMN] = mem[PVS_OTHER_COL];
+        shared_temp_7e   = mem[PVS_OTHER_X];
+        if (mode == 0)
+            derive_endpoint((uint8_t)halve_signed_rounded(mem[OBJ_EDGE_X]),
+                            PVS_OTHER_X, PVS_OTHER_COL);
+    }
+
+    /* $1C7B-$1C88 — the target pointer, $3000 + column x $80, and the screen-half bit. */
+    LDA(mem[EDGE_COLUMN]);
+    CMP(0x14u);
+    ROL_M(PVS_HALF);
+    LSR_A();
+    ROR_M(MEM_plot_ptr_lo);
+    plot_ptr_hi = (uint8_t)adc_step(cpu.A, VIEW_SRC_PAGE, 0);
+
+    /* $1C89-$1C9D — off the right of the viewport, or the run's top line. */
+    LDX(mem[EDGE_COLUMN]);
+    if (cpx_ge(cpu.X, 0x28u)) {
+        /* $1D94-$1DA5 — mode 1 gives up; the others clamp the column to $28 and still close
+           the gap behind them. */
+        LDY(mem[PVS_MODE]);                        /* $1D94 */
+        CPY(0x01u);
+        if (cpu.Z) return;
+        LDA(mem[PVS_PREV_COL]);
+        CMP(0x28u);
+        if (cpu.C) return;
+        LDA(0x28u);
+        mem[EDGE_COLUMN] = cpu.A;
+        goto close_gap;
+    }
+    LDA(span_top_line);
+    if (!cmp_ge(cpu.A, mem[DASH_BLOCK_STARTS + cpu.X]))
+        LDA(mem[DASH_BLOCK_STARTS + cpu.X]);
+    mem[EDGE_BLOCK_START] = cpu.A;
+
+    /* $1C9E-$1CA9 — a run with no height. */
+    CMP(span_line_cursor);
+    if (cpu.C) {
+        CPY(0x01u);
+        if (cpu.Z) return;
+        goto prev_col;
+    }
+
+    /* $1CAA-$1CC2 — the style's bit 4 re-picks the colour, but only on a closing pass whose
+       parity disagrees with the screen half.  ⚠ `TYA / BEQ` is what keeps mode 0 out. */
+    LDA(mem[OBJ_EDGE_STYLE]);
+    AND(0x10u);
+    if (!cpu.Z) {
+        TYA();
+        if (!cpu.Z) {
+            EOR(mem[PVS_HALF]);
+            AND(0x01u);
+            if (!cpu.Z) {
+                LDA(mem[OBJ_EDGE_STYLE]);
+                AND(0x03u);
+                TAX();
+                shared_temp_76 = mem[COLOUR_PATTERN_TBL + cpu.X];
+            }
+        }
+    }
+
+    /* $1CC3-$1CD0 — the PIXEL is the low two bits of the endpoint's x, and the edge colour is
+       cut down to that pixel's own bits. */
+    LDA(shared_temp_7e);
+    AND(0x03u);
+    TAX();
+    pixel = cpu.X;
+    LDA(mem[PIXEL_KEEP_OTHERS + pixel]);
+    EOR(0xFFu);
+    AND(shared_temp_76);
+    shared_temp_76 = cpu.A;
+
+    /* $1CD1-$1D43 — compose the cell, per mode. */
+    CPY(0x01u);
+    if (!cpu.C) {
+        /* ---- mode 0: the closing arm's own pass ---- */
+        LDA(mem[COLOUR_PATTERN_AND + pixel]);
+        AND(mem[PVS_COLOUR_P]);
+        mem[PVS_HALF] = cpu.A;                    /* ⚠ math_lo again, here a partial byte */
+        LDA(mem[PVS_COLOUR]);
+        AND(mem[COLOUR_PATTERN_KEEP + pixel]);
+        ORA(mem[PVS_HALF]);
+        AND(mem[PIXEL_KEEP_OTHERS + pixel]);
+        ORA(shared_temp_76);
+        mem[PVS_BYTE] = cpu.A;
+
+        LDA(span_defer_pending);
+        if (!cpu.Z) {
+            /* $1CEE — mode 1 left a byte for us: merge it and take the shared tail. */
+            span_defer_pending = 0x00u;
+            mem[PVS_KEEP] = (uint8_t)load_a(shared_temp_8c);
+            EOR(0xFFu);
+            AND(mem[PVS_BYTE]);
+            goto same_column_test;
+        }
+        LDX(mem[EDGE_COLUMN]);                    /* $1CFD */
+        if (cpx_eq(cpu.X, mem[PVS_OTHER_COL])) {
+            /* both ends in one column: hand the byte on and paint nothing */
+            mem[PVS_COLOUR] = (uint8_t)load_a(mem[PVS_BYTE]);
+            goto prev_col;
+        }
+        LDA(mem[PVS_BYTE]);                       /* $1D0A */
+        if (cpu.Z) LDA(SRC_CELL_BLANK);
+        LDY(span_line_cursor);
+        /* $1DE5-$1DEE — the PLAIN fill: no read, no surface colour, just the byte.  The
+           hardware-window test is hoisted onto the POINTER, one per run. */
+        {
+            unsigned base = zp_pointer(MEM_plot_ptr_lo);
+            int      ram  = pointer_is_ram(base);
+            while (!cpy_eq(cpu.Y, mem[EDGE_BLOCK_START])) {
+                seam_write((base + cpu.Y) & 0xFFFFu, ram, cpu.A);
+                DEY();
+            }
+        }
+        goto prev_col;
+    }
+    if (cpu.Z) {
+        /* ---- mode 1: open the span ---- */
+        LDA(mem[COLOUR_PATTERN_AND + pixel]);     /* $1D17 */
+        mem[PVS_KEEP] = cpu.A;
+        EOR(0xFFu);
+        AND(mem[PVS_COLOUR]);
+        AND(mem[PIXEL_KEEP_OTHERS + pixel]);
+        ORA(shared_temp_76);
+    same_column_test:
+        LDX(mem[EDGE_COLUMN]);                    /* $1D25 */
+        if (cpx_eq(cpu.X, mem[PVS_OTHER_COL])) {
+            /* $1D2B — one column for both ends: DEFER, and remember the carry in bit 7. */
+            mem[PVS_COLOUR] = cpu.A;
+            shared_temp_8c  = (uint8_t)load_a(mem[PVS_KEEP]);
+            ROR_M(MEM_span_defer_pending);
+            return;
+        }
+    } else {
+        /* ---- mode 2: close the span, merging mode 1's deferred mask ---- */
+        LDA(shared_temp_8c);                      /* $1D34 */
+        ORA(mem[PIXEL_AFTER_MASK + pixel]);
+        mem[PVS_KEEP] = cpu.A;
+        EOR(0xFFu);
+        AND(mem[PVS_COLOUR_P]);
+        AND(mem[PIXEL_KEEP_OTHERS + pixel]);
+        ORA(shared_temp_76);
+    }
+
+    /* $1D44-$1D6E — the READ-MODIFY-WRITE fill, which is the one that consults the road. */
+    mem[PVS_BYTE]  = cpu.A;
+    shared_temp_8c = 0x00u;
+    LDY(span_line_cursor);
+    while (!cpy_eq(cpu.Y, mem[EDGE_BLOCK_START])) {
+        /* ⚠ NOT HOISTED, for column_gap_walk's reason: the run can cover the cells that drive
+           it ($0082 is the end line and $0085 the column), so the 6502 re-reads the pointer
+           every pass and so does this. */
+        unsigned base = zp_pointer(MEM_plot_ptr_lo);
+        int      ram  = pointer_is_ram(base);
+        unsigned cell = (base + cpu.Y) & 0xFFFFu;
+        LDA(seam_read(cell, ram));
+        if (cpu.Z) {
+            surface_colour_at_core(cpu.Y, mem[EDGE_COLUMN]);   /* $1D5D — an untouched cell */
+            goto merge;
+        }
+        CMP(SRC_CELL_BLANK);
+        if (cpu.Z) {
+            LDA(mem[PVS_BYTE]);                   /* $1D57 — the blank sentinel */
+            if (cpu.Z) LDA(SRC_CELL_BLANK);
+            goto store;
+        }
+    merge:
+        AND(mem[PVS_KEEP]);                       /* $1D60 */
+        ORA(mem[PVS_BYTE]);
+        if (cpu.Z) LDA(SRC_CELL_BLANK);
+    store:
+        seam_write(cell, ram, cpu.A);
+        DEY();
+    }
+
+    /* $1D6F-$1D7B — every mode but 1 also closes the column's own gaps. */
+    LDX(mem[PVS_MODE]);
+    if (cpx_eq(cpu.X, 0x01u)) return;
+    INC_M(EDGE_COLUMN);
+    column_gap_walk_core();
+    DEC_M(EDGE_COLUMN);
+
+prev_col:
+    /* $1D7C-$1D85 — a previous column off the viewport is treated as "no gap at all". */
+    LDA(mem[PVS_PREV_COL]);
+    CMP(0x28u);
+    if (cpu.C) mem[PVS_PREV_COL] = 0xFFu;
+
+close_gap:
+    LDA(mem[EDGE_COLUMN]);
+    /* $1D86-$1D93 — ⚠ CLC/SBC: the gap is `column - previous - 1`.  Zero or negative, no fill. */
+    CLC();
+    cpu.A = (uint8_t)sbc_step(cpu.A, mem[PVS_PREV_COL], cpu.C);
+    if (cpu.Z || cpu.N) return;
+    TAX();
+    fill_object_gap_core(cpu.X);
+}
+
+/* The 6502-ABI shims. */
+void plot_view_src_line(void) { plot_view_src_line_core(cpu.Y, cpu.A); }
+void fill_object_gap(void)    { fill_object_gap_core(cpu.X); }

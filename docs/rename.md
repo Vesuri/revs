@@ -48,15 +48,15 @@ missing fact:
 set of names SCOPED to each pass, or notes that record every tenancy.  Not a per-cell call.
 
 
-## Seven unnamed routines in two NAMED call trees — `draw_track_object`, `read_driving_controls`
+## Six unnamed routines in ONE NAMED call tree — `read_driving_controls`
 
-Enumerated 2026-08-18 while walking those trees; **this is an inventory, not a set of readings** —
-nothing here has been looked at yet, so no name is suggested and none should be invented from the
-address alone.
+Enumerated 2026-08-18 while walking the campaign's trees; **this is an inventory, not a set of
+readings** — nothing here has been looked at yet, so no name is suggested and none should be
+invented from the address alone.  `draw_track_object`'s and `build_road_sign`'s rows are gone
+because twins #87-#97 named them.
 
 | Tree | Still `FUN_*` |
 |---|---|
-| `draw_track_object` ($2AD1) | `$1E38` |
 | `read_driving_controls` ($1579) | `$15F4` (+ its `$160D` entry), `$1612` (+ `$162D`), `$1EE9`, `$1EFA`, `$1F9B`, `$63C5` |
 
 ⭐ `read_driving_controls`' cluster is chained by **tail `JMP`s across four separate regions**

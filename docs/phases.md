@@ -24,7 +24,7 @@ comes with it (`docs/rename.md`, `disasm/symbols.csv`) is part of the work, not 
 | `fill_dash_edge_columns` | ✅ **complete** — twins #40-#43 |
 | `apply_driving_model` | ✅ **COMPLETE — 43 of 43 routines**, twins #44-#86 |
 | `build_road_sign` | ✅ **complete** — twins #87-#92 |
-| `draw_track_object` | 🔧 **the SHAPE side done** — twins #93-#95; `plot_view_src_line` and `fill_object_gap` remain |
+| `draw_track_object` | ✅ **complete** — twins #93-#97 |
 | `read_driving_controls` | ⬜ next group |
 
 ✅ **THE DRIVING MODEL IS DONE.**  Twins #79-#86 took the last eight — the SUB-MODELS, i.e. the
@@ -136,13 +136,13 @@ PRE-STATE can reach, not just what it randomises.**
 `proj_width_shift - $09` places"; the `DEX` at `$2A8A` is part of the count, so it is **`- $0A`**,
 and the sign of that difference is the direction.  Fixed in `disasm/symbols.csv`.
 
-### 🔧 `draw_track_object`'s tree — twins #93-#95 (the shape side; two routines left)
+### ✅ `draw_track_object`'s tree — twins #93-#97 (all five routines)
 
-`plot_object`, `scale_shape_vectors` and `plot_shape_edges` — 401 bytes.  17 deliberate sabotages,
-**17 detected, no survivors.**  `make validate` clean, `make determinism` and
+`plot_object`, `scale_shape_vectors`, `plot_shape_edges` (the SHAPE side, 401 bytes, twins
+#93-#95) and `plot_view_src_line`, `fill_object_gap` (the LINE side, ~570 bytes, twins #96-#97).
+**40 deliberate sabotages, 40 detected** across the two groups — with one designed-wrong survivor
+that turned out to be no change at all (see below).  `make validate` clean, `make determinism` and
 `make determinism-drive` both 64 KB byte-identical, `make tracks` 6/6, `make track-run` clean.
-Still transliterated in this tree: `plot_view_src_line` ($1C1C, the line plotter itself) and
-`fill_object_gap` ($1E38).
 
 ⭐⭐ **What the group made legible** — the whole object pipeline, in seven points:
 
@@ -171,6 +171,38 @@ Still transliterated in this tree: `plot_view_src_line` ($1C1C, the line plotter
    ends at `$4F`.  So each edge column has exactly 48 entries and index 48 is the next block's
    data, which `plot_view_src_line` paints over.
 
+⭐⭐ **…AND THE LINE SIDE (twins #96-#97) ADDED SIX MORE:**
+
+8. **A SHAPE EDGE IS DRAWN AS A COLUMN, NOT AS A LINE.**  Each `plot_view_src_line` call paints
+   ONE column of the view source (`plot_ptr = $3000 + column x $80`, walked with `DEY` from
+   `span_line_cursor` down to the run's top), and the "line" between two edges is
+   `fill_object_gap` filling every column in between with a single byte.  **There is no Bresenham
+   in the object plotter at all** — the slope is in the two endpoints' columns and the gap fill
+   closes the difference.
+9. ⭐ **THE THREE MODES ARE AN OPEN/CLOSE PAIR WITH A DEFERRED BYTE BETWEEN THEM.**  Mode 1
+   composes its column's byte and, when both endpoints land in the SAME column, stows the
+   keep-mask in `shared_temp_8c`, arms `span_defer_pending` and returns **without painting**;
+   mode 2 then ORs `pixel_after_mask_tbl` into it, so a one-column span's two ends merge into one
+   write instead of overwriting each other.  Mode 0 is the closing arm's and consumes the same
+   pair from the other side.
+10. **THE COLOUR IS PER-PIXEL AND THE MODE 5 BYTE IS ASSEMBLED FROM THREE MASK TABLES** —
+   `pixel_keep_others_tbl` clears the pixel being written, `colour_pattern_and_tbl` keeps the
+   cell's other pixels, `colour_pattern_keep_tbl` selects what this pixel contributes.  ⭐ The
+   pixel index is the **low two bits of the endpoint's x** — the sub-byte part of the coordinate
+   IS the pixel number, with no shifting.
+11. ⚠⚠ **AN UNTOUCHED SOURCE BYTE IS FILLED FROM THE ROAD, NOT LEFT ALONE.**  `$1D5D` calls
+   `surface_colour_at` for any cell reading `$00`, so an object over unpainted road paints the
+   road's own surface colour first and its own pixel over it.  `$55` is the "written but empty"
+   sentinel both ways: a cell holding it is treated as blank, and a composed byte of 0 is stored
+   AS `$55` so the next pass does not mistake it for untouched.
+12. ⚠ **`$1D86` IS `CLC / SBC`, NOT `SEC / SBC`** — the gap width is `column - previous - 1`, one
+   less than it looks, and a width of 0 or negative skips the fill.
+13. ⚠ **`fill_object_gap` WALKS TWO COLUMNS AT A TIME, BACKWARDS**: `DEX / DEX` on the count and
+   `DEC plot_ptr_hi` on the pointer, and `$100` is exactly two `$80`-spaced blocks — so each
+   iteration writes a PAIR and an odd width finishes with a single-column tail.  Its pointer is
+   biased by `$7F - span_line_cursor`, which is **the only reason the shape tables in the block
+   tails survive** (item 7).
+
 ⭐⭐ **AND THE FIXTURE COST THREE ROUNDS, EACH ONE A HANG RATHER THAN A FAILURE.**  Every one was a
 pre-state the 6502 itself does not terminate on, so both models hung and the run just stopped:
 shape 9; `dash_block_starts` over `$4F` (which makes the plotter's `DEY / CPY` walk wrap through
@@ -185,22 +217,17 @@ a state the game cannot be in; find the constraint, do not widen the timeout.**
 
 ## ⭐ THE TWIN CAMPAIGN — WHAT IS NEXT
 
-**Two more trees** (user, 2026-08-18): `draw_track_object` and `read_driving_controls`.
-The stated reason is the same as before and it is not framerate — *"then we
+**One tree left** (user, 2026-08-18): `read_driving_controls`.  The stated reason is the same as before and it is not framerate — *"then we
 should have a great understanding of what's what in the main loop and can make informed decisions
 about the future direction."*  So the deliverable is the understanding plus the naming pass, and a
 group whose FPS does not move still counts.
 
-`docs/rename.md`'s "Eight unnamed routines in two NAMED call trees" is the inventory, and it is
-an inventory only — nothing in it has been read yet, which is why it suggests no names.  Two
-things to expect from it:
+`docs/rename.md`'s "Six unnamed routines in ONE NAMED call tree" is the inventory, and it is
+an inventory only — nothing in it has been read yet, which is why it suggests no names.  One
+thing to expect from it: `read_driving_controls`' cluster is chained by **tail `JMP`s across four
+separate regions** (`$15xx` → `$1EE9` → `$15F4` → `$1EFA` → `$1612`), so naming it is one pass over
+the whole chain rather than six independent decisions.
 
-* `read_driving_controls`' cluster is chained by **tail `JMP`s across four separate regions**
-  (`$15xx` → `$1EE9` → `$15F4` → `$1EFA` → `$1612`), so naming it is one pass over the whole
-  chain rather than six independent decisions.
-* `draw_track_object`'s tree has `plot_view_src_line` ($1C1C) and `fill_object_gap` ($1E38) left —
-  the LINE PLOTTER itself, three entry modes and the deferred-byte pair (`span_defer_pending` /
-  `shared_temp_8c`) between them.
 ⚠ **CORRECTED:** this section used to say `draw_track_object`'s tree is what reads `$5700`/`$5800`.
 It is not — `$299D` is in the OTHER-CAR projector ($2937), which is not in any of the three trees,
 and `$1391` is in `$12F7`.  The "third name for the track-normal region" decision therefore does

@@ -859,6 +859,11 @@ VALIDATE_FUNCS = {
     0x1FB4,
     0x202A,
     0x209A,
+    # ⭐ TWINS #96-#97 — THE OBJECT PLOTTER'S LINE SIDE, and with it all of draw_track_object's
+    # tree.  $1C1C plot_view_src_line is ONE C function spanning $1C1C-$1DEE (a multi-entry
+    # region), $1E38 fill_object_gap the columns between two edges.
+    0x1C1C,
+    0x1E38,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
