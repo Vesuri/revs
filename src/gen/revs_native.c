@@ -7405,3 +7405,350 @@ void write_object_slot(void)    { write_object_slot_core(cpu.A, cpu.C); }
 void reject_object_slot(void)   { reject_object_slot_core(); }
 void store_object_flags(void)   { store_object_flags_core(); }
 void note_object_contact(void)  { note_object_contact_core(cpu.Y); }
+
+/* ===========================================================================
+   TWINS #93-#95 — THE OBJECT PLOTTER'S SHAPE SIDE
+   ---------------------------------------------------------------------------
+   draw_track_object (twin #7) does nothing but decide WHERE an object goes; these three are
+   what draws it, and together they are a small vector-shape rasteriser:
+
+     $1FB4 plot_object           the driver: colours, the width's scale, the shape's tables
+     $202A scale_shape_vectors   the shape's vertex offsets, scaled to this object's WIDTH
+     $209A plot_shape_edges      ...walked as EDGES, each one a filled vertical span
+
+   ⭐⭐ WHAT THE GROUP MADE LEGIBLE — five things, in the order they surprised:
+
+   1. **AN OBJECT IS A VECTOR SHAPE, NOT A SPRITE.**  There are ten of them (indices 0..9, plus
+      a two-part case below), each a run of `shape_vector_tbl` bytes and a run of five parallel
+      `shape_edge_*` columns.  Nothing in the binary holds an object BITMAP: every car, sign and
+      marker is drawn from these two lists at whatever size the perspective divide asked for.
+   2. **A VERTEX BYTE IS A SUM OF POWERS OF TWO OF THE OBJECT'S WIDTH.**  `scale_shape_vectors`
+      fills `shape_scale_tbl[2..7]` with the width halved five times, and then each vector byte
+      picks entries out of it: a byte under $80 is one entry, a byte over $80 is TWO (bits 0-2
+      and bits 3-5) plus a third half-width when bit 6 is set.  So the shape is stored as
+      FRACTIONS of its own size and there is no multiply anywhere in the pass.
+   3. **`shape_vertex` IS SIXTEEN ENTRIES THAT LOOK LIKE EIGHT.**  The routine writes the scaled
+      value at index 0..7 and its NEGATION at index 8..15 — `$5EF8` and `$5F00` are one array,
+      which is why nothing in the engine appears to read `$5F00`.  The edge columns then index
+      0..15, i.e. they name a vertex offset AND its sign in one byte.
+   4. ⚠ **THE PASS REJECTS ITSELF WHEN A VERTEX WOULD NOT FIT IN SEVEN BITS** ($2085's
+      `EOR #$FF / BPL`), and plot_object's `BCS` right after the call is what abandons the whole
+      object.  An object too close to the camera is simply not drawn.
+   5. ⭐ **SHAPE 9 IS DRAWN TWICE, AND THE SECOND PASS USES THE UNCLAMPED INDEX.**  $1FFC clamps
+      the shape to 9, but the loop at $2027 re-enters BELOW the clamp with the raw `plot_shape`
+      in X — so a shape of $0A draws shape 9 and then shape $0A, gated on `track_direction`
+      being positive.  `shape_vector_start` has eleven entries for exactly that reason.
+
+   6. ⚠⚠ **SHAPE 9 IS A MARKER, NOT A SHAPE — and `plot_shape` = 9 HANGS THE 6502.**  Item 5's
+      loop re-enters below the clamp, so a shape of exactly 9 writes 9 into
+      `object_shape_clamped` on every pass and $2021's `CMP #$09` never stops agreeing:
+      with `track_direction` positive the routine never returns.  It is unreachable in the game
+      — cars take shapes 0/1/2/4 ($2A32/$2A3B/$2A46/$29F6), corner markers 6 ($1B6F), and a
+      sign's `(size & 7) + 7` misses 9 on every circuit (Silverstone's sixteen give 7/8/10/11/12)
+      — so 9 means "the stand-in has been drawn", never a shape.  MEASURED 2026-08-18: the twin
+      and the transliteration hang identically on it, which is how the fixture found it.
+   7. ⚠⚠ **THE SHAPE TABLES LIVE IN THE UNUSED TAILS OF THE VIEW SOURCE BLOCKS.**  $3550, $35D0,
+      $3650, $36D0 and $3750 are offset $50 inside blocks 10..14 of the forty $80-spaced blocks
+      at $3000, and `dash_block_starts` says a block's data always ENDS at offset $4F — so each
+      column has exactly 48 table entries and index 48 is the next block's data, which
+      plot_view_src_line paints over.  That is a real constraint on the walk, not a curiosity:
+      it is why every entry's control bits matter and why the fixture has to bound the tables.
+
+   ⚠ ONE PER-CIRCUIT SMC SITE, $1FE9: Silverstone reads `horizon_extent` into X and an
+   expansion circuit plants `LDX #imm` in its place (`make track-smc`).  Both arms are kept.
+   ⚠ AND ONE SIDE EFFECT WORTH NAMING: $1FC3 writes $F0 into `surface_colours[2]` — the ROAD's
+   own colour table — after copying it, so the copy and the original differ from here on.
+   draw_corner_markers does the same thing at $1B26 and $1B76.
+
+   ⚠⚠ THE WHOLE PASS IS A SECOND TENANT OF THE point_delta WINDOW ($0080-$008F) — see
+   docs/rename.md.  The `OBJ_*` defines below are the pass's own names for those cells and the
+   comment on each says whose they are the rest of the time.
+   =========================================================================== */
+
+#define SURFACE_COLOURS_TBL 0x38FCu   /* surface_colours — four MODE 5 colour bytes */
+#define COLOUR_PATTERN_TBL  0x628Fu   /* colour_pattern_tbl — plot_view_src_line's four */
+#define CAR_ORDER_TBL       0x013Cu   /* car_order */
+#define SHAPE_VECTOR_TBL    0x4480u   /* shape_vector_tbl */
+#define SHAPE_SCALE_TBL     0x5FF8u   /* shape_scale_tbl[2..7] = the width halved five times */
+#define SHAPE_VERTEX        0x5EF8u   /* shape_vertex[0..7], and their negations at [8..15] */
+#define SHAPE_VECTOR_START  0x3CDDu   /* shape_vector_start[n], and [n+1] is n's end */
+#define SHAPE_EDGE_START    0x3CD0u   /* shape_edge_start[n] */
+#define SHAPE_EDGE_LINE_0   0x3550u   /* the five per-edge columns: two vertex indices for the */
+#define SHAPE_EDGE_LINE_1   0x35D0u   /* ...span's two scan lines, two for its two x offsets, */
+#define SHAPE_EDGE_X_0      0x3650u   /* ...and a style byte.  ⚠ The closing arm at $2117 reads */
+#define SHAPE_EDGE_X_1      0x36D0u   /* ...X_1 as a STYLE and LINE_0 as an X — see the note on */
+#define SHAPE_EDGE_STYLE    0x3750u   /* ...shape_edge_x_1 in disasm/symbols.csv. */
+
+/* The object pass's own names for the point_delta window it borrows (docs/rename.md). */
+#define OBJ_VECTOR_CURSOR   0x0081u   /* point_delta_lo[1] — the shape's vector cursor */
+#define OBJ_VECTOR_END      0x008Au   /* bearing_lo        — one past its last vector */
+#define OBJ_EDGE_X          0x0083u   /* point_delta_hi[0] — the edge's x, into the plotter */
+#define OBJ_EDGE_STYLE      0x0084u   /* point_delta_hi[1] — ...and its style byte */
+
+/* ---------------------------------------------------------------------------
+   $202A  scale_shape_vectors — THE SHAPE AT THIS OBJECT'S SIZE  (twin #94)
+   ---------------------------------------------------------------------------
+   Fills shape_vertex[0..7] with the shape's vertex offsets scaled to proj_width, and
+   [8..15] with their negations.  Returns with C SET when one of them would not fit in seven
+   bits, which is plot_object's signal to abandon the object.
+
+   ⚠ proj_width_shift's extra halving is `LSR / DEX / BNE` and the closing `ADC #0` ROUNDS off
+   the last bit shifted out — so the twin keeps the carry, not just the value.
+   --------------------------------------------------------------------------- */
+static void scale_shape_vectors_core(void)
+{
+    int i;
+
+    /* $202A-$2042 — the width, then five halvings. */
+    LDA(proj_width);
+    mem[SHAPE_SCALE_TBL + 2] = cpu.A;
+    for (i = 3; i <= 7; i++) { LSR_A(); mem[SHAPE_SCALE_TBL + i] = cpu.A; }
+
+    LDY(mem[OBJ_VECTOR_CURSOR]);                     /* $2043 */
+    LDX(0x00);
+    shared_temp_77 = cpu.X;                          /* the output cursor */
+
+    for (;;) {
+        LDA(mem[SHAPE_VECTOR_TBL + cpu.Y]);          /* $2049 */
+        if (cpu.N) {
+            /* $204E-$2071 — a TWO-TERM vector: scale[bits 0-2] + scale[bits 3-5], and a third
+               half-width when bit 6 is set. */
+            uint8_t raw;
+            AND(0x07);
+            TAX();
+            math_lo = mem[SHAPE_SCALE_TBL + cpu.X];
+            raw     = mem[SHAPE_VECTOR_TBL + cpu.Y];
+            LDA(raw);
+            math_hi = cpu.A;
+            LSR_A(); LSR_A(); LSR_A();
+            AND(0x07);
+            TAX();
+            LDA(mem[SHAPE_SCALE_TBL + cpu.X]);
+            cpu.A = (uint8_t)adc_step(cpu.A, math_lo, 0);
+            BIT(math_hi);
+            if (cpu.V)
+                cpu.A = (uint8_t)adc_step(cpu.A, mem[SHAPE_SCALE_TBL + 3], 0);
+        } else {
+            TAX();                                   /* $2072 — one term */
+            LDA(mem[SHAPE_SCALE_TBL + cpu.X]);
+        }
+
+        /* $2076-$207F — plot_object's extra halving, rounded by the closing `ADC #0`. */
+        LDX(proj_width_shift);
+        if (!cpu.Z) {
+            do { LSR_A(); DEX(); } while (!cpu.Z);
+            cpu.A = (uint8_t)adc_step(cpu.A, 0x00u, cpu.C);
+        }
+
+        LDX(shared_temp_77);                         /* $2080 */
+        mem[SHAPE_VERTEX + cpu.X] = cpu.A;
+        EOR(0xFFu);
+        if (!cpu.N) { SEC(); return; }               /* $2087 — over $7F, abandon the object */
+        cpu.A = (uint8_t)adc_step(cpu.A, 0x01u, 0);  /* $2089 — ...and its negation */
+        mem[SHAPE_VERTEX + 8 + cpu.X] = cpu.A;
+        INC_M(MEM_shared_temp_77);
+        INY();
+        CPY(mem[OBJ_VECTOR_END]);
+        if (cpu.Z) { CLC(); return; }                /* $2096 — every vertex fitted */
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   $209A  plot_shape_edges — THE SHAPE'S EDGES, AS FILLED SPANS  (twin #95)
+   ---------------------------------------------------------------------------
+   Walks the shape's edge list from shape_edge_start.  Each edge is a vertical span: two vertex
+   offsets give its two scan lines (clamped below at $4F and above at object_line_ceiling, i.e.
+   the horizon), two more give the x offsets at its ends, and the style byte carries both the
+   colour and the walk's own control bits.  plot_view_src_line draws it, in up to three modes:
+
+     Y = 1   open the span — it derives and remembers this end's column
+     Y = 2   close it
+     Y = 0   the closing arm at $2117, which takes its endpoints from the NEXT edge
+
+   ⭐ THE STYLE BYTE'S TOP TWO BITS ARE THE WALK'S CONTROL FLOW, and they mean different things
+   on the two paths.  On a REJECTED edge (either scan line off the top, or the top line at or
+   past the bottom) bit 7 says "keep skipping" and bit 6 says "the shape ends here".  On a drawn
+   edge bit 7 sends it to the closing arm and bit 6, tested after the close, ends the shape.
+   --------------------------------------------------------------------------- */
+static void plot_shape_edges_core(void)
+{
+    LDY(plot_ptr3_lo);                                    /* $209A — the shape's first edge */
+
+    for (;;) {
+        int rejected = 0;
+
+        /* $209C-$20A6 — per-edge state: the running colour and the deferred-byte pair. */
+        LDA(mem[SURFACE_COLOURS_TBL]);
+        hypot_min_hi        = cpu.A;
+        span_defer_pending  = 0x00;
+        shared_temp_8c      = 0x00;
+
+        /* $20A7-$20B8 — the span's BOTTOM line, clamped to $4F. */
+        LDX(mem[SHAPE_EDGE_LINE_0 + cpu.Y]);
+        LDA(mem[SHAPE_VERTEX + cpu.X]);
+        cpu.A = (uint8_t)adc_step(cpu.A, plot_line, 0);
+        if (cpu.N) rejected = 1;
+        if (!rejected) {
+            CMP(0x50u);
+            if (cpu.C) LDA(0x4Fu);
+            span_line_cursor = cpu.A;
+
+            /* $20BA-$20D4 — ...and its TOP line, floored at the horizon. */
+            LDX(mem[SHAPE_EDGE_LINE_1 + cpu.Y]);
+            LDA(mem[SHAPE_VERTEX + cpu.X]);
+            cpu.A = (uint8_t)adc_step(cpu.A, plot_line, 0);
+            if (cpu.N || !cmp_ge(cpu.A, object_line_ceiling))
+                LDA(object_line_ceiling);
+            CMP(span_line_cursor);
+            if (cpu.C) rejected = 1;                      /* the span has no height */
+            else       span_top_line = cpu.A;
+        }
+
+        if (rejected) {
+            /* $210C-$2115 — walk past this edge, and past every edge whose bit 7 says the
+               skip continues.  Bit 6 ends the shape on either path. */
+            for (;;) {
+                int keepSkipping;
+                LDA(mem[SHAPE_EDGE_STYLE + cpu.Y]);
+                keepSkipping = cpu.N;
+                AND(0x40u);
+                if (!cpu.Z) return;
+                INY();
+                if (!keepSkipping) break;
+            }
+            continue;
+        }
+
+        /* $20D5-$20F0 — the edge's two x offsets and its style, then open the span. */
+        LDX(mem[SHAPE_EDGE_X_0 + cpu.Y]);
+        shared_temp_7e = mem[SHAPE_VERTEX + cpu.X];
+        LDX(mem[SHAPE_EDGE_X_1 + cpu.Y]);
+        mem[OBJ_EDGE_X] = mem[SHAPE_VERTEX + cpu.X];
+        LDA(mem[SHAPE_EDGE_STYLE + cpu.Y]);
+        mem[OBJ_EDGE_STYLE] = cpu.A;
+        span_saved_index = cpu.Y;
+        LDY(0x01u);
+        plot_view_src_line();
+
+        for (;;) {
+            BIT(mem[OBJ_EDGE_STYLE]);                     /* $20F1 */
+            if (cpu.N) {
+                /* $2117-$2142 — THE CLOSING ARM.  The span is closed against the NEXT edge's
+                   columns, which is why this arm reads shape_edge_x_1 as a style and
+                   shape_edge_line_0 as an x offset. */
+                LDY(span_saved_index);
+                INY();
+                span_saved_index = cpu.Y;
+                LDX(mem[SHAPE_EDGE_X_0 + cpu.Y]);
+                mem[OBJ_EDGE_X] = mem[SHAPE_VERTEX + cpu.X];
+                LDA(mem[SHAPE_EDGE_X_1 + cpu.Y]);
+                mem[OBJ_EDGE_STYLE] = cpu.A;
+                LDY(0x00u);
+                plot_view_src_line();
+                LDY(span_saved_index);
+                LDX(mem[SHAPE_EDGE_LINE_0 + cpu.Y]);
+                mem[OBJ_EDGE_X] = mem[SHAPE_VERTEX + cpu.X];
+                LDA(mem[SHAPE_EDGE_STYLE + cpu.Y]);
+                mem[OBJ_EDGE_STYLE] = cpu.A;
+                LDY(0x00u);
+                plot_view_src_line();
+                continue;
+            }
+            LDA(0x00u);                                   /* $20F5 — close it */
+            LDY(0x02u);
+            plot_view_src_line();
+            BIT(mem[OBJ_EDGE_STYLE]);
+            if (cpu.V) return;                            /* bit 6: the shape ends here */
+            LDY(span_saved_index);
+            break;
+        }
+        INY();                                            /* $2102 — the next edge */
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   $1FB4  plot_object — THE OBJECT PLOTTER  (twin #93)
+   ---------------------------------------------------------------------------
+   Entered with the object's SLOT in X and its four-cell argument block already set by
+   draw_track_object: plot_x, plot_line, proj_width and plot_shape.
+   --------------------------------------------------------------------------- */
+static void plot_object_core(uint8_t slot)
+{
+    int i;
+
+    /* $1FB4-$1FC5 — this object's four MODE 5 colour patterns, taken from the ROAD's own
+       surface colours; the source's entry 2 is then forced to $F0 (see the group header). */
+    math_lo = slot;
+    for (i = 3; i >= 0; i--)
+        mem[COLOUR_PATTERN_TBL + i] = mem[SURFACE_COLOURS_TBL + i];
+    cpu.X = 0xFFu;                                   /* the DEX/BPL that ended the loop */
+    mem[SURFACE_COLOURS_TBL + 2] = 0xF0u;
+
+    /* $1FC6-$1FDD — pattern 1 is the object's OWN colour: a car takes it from its slot number,
+       slots $14..$16 from the car behind's position in the order, and the road sign ($17)
+       keeps the road's.  ⚠ The `LDA $38FC,X` here is fused into its store: A and its flags
+       are dead, because $1FDE's `LDX #0` rewrites N and Z and $1FE2 rewrites A. */
+    LDA(math_lo);
+    CMP(0x17u);
+    if (!cpu.Z) {
+        CMP(0x14u);
+        if (cpu.C) { LDX(car_behind); LDA(mem[CAR_ORDER_TBL + cpu.X]); }
+        AND(0x03u);
+        TAX();
+        mem[COLOUR_PATTERN_TBL + 1] = mem[SURFACE_COLOURS_TBL + cpu.X];
+    }
+
+    /* $1FDE-$1FF9 — the width's scale, and the ceiling the spans may not rise above.  A wide
+       (near) object gets the whole viewport; a narrow one is stopped at the horizon.  Under
+       $40 the width is quadrupled and the extra two places handed to scale_shape_vectors. */
+    LDX(0x00u);
+    proj_width_shift = cpu.X;
+    LDA(proj_width);
+    CMP(horizon_half_width);
+    if (!cpu.C) {
+        if (mem[0x1FE9] == 0xA6u) {                  /* unpatched: LDX horizon_extent */
+            LDX(horizon_extent);
+        } else if (mem[0x1FE9] == 0xA2u) {           /* a circuit's own `LDX #imm` */
+            LDX(mem[0x1FEA]);
+        } else {
+            platform_smc_unhandled(0x1FE9, mem[0x1FE9]);
+            return;
+        }
+    }
+    object_line_ceiling = cpu.X;
+    CMP(0x40u);
+    if (!cpu.C) {
+        ASL_A(); ASL_A();
+        proj_width       = cpu.A;
+        proj_width_shift = 0x02u;
+    }
+
+    /* $1FFA-$2000 — the shape, clamped to 9. */
+    LDX(plot_shape);
+    CPX(0x0Au);
+    if (cpu.C) LDX(0x09u);
+
+    /* $2002-$2028 — and draw it.  ⭐ The loop re-enters HERE, below the clamp, so a shape over
+       9 draws shape 9 and then its own index (group header, item 5). */
+    for (;;) {
+        object_shape_clamped = cpu.X;
+        mem[OBJ_VECTOR_CURSOR] = mem[SHAPE_VECTOR_START + cpu.X];
+        mem[OBJ_VECTOR_END]    = mem[SHAPE_VECTOR_START + 1 + cpu.X];
+        LDA(mem[SHAPE_EDGE_START + cpu.X]);
+        plot_ptr3_lo = cpu.A;
+        scale_shape_vectors_core();
+        if (cpu.C) return;                           /* a vertex did not fit */
+        plot_shape_edges_core();
+        LDX(plot_shape);
+        LDA(object_shape_clamped);
+        CMP(0x09u);
+        if (!cpu.Z) return;
+        LDA(track_direction);
+        if (cpu.N) return;
+    }
+}
+
+/* The 6502-ABI shims. */
+void plot_object(void)          { plot_object_core(cpu.X); }
+void scale_shape_vectors(void)  { scale_shape_vectors_core(); }
+void plot_shape_edges(void)     { plot_shape_edges_core(); }

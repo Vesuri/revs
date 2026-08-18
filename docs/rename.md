@@ -48,7 +48,7 @@ missing fact:
 set of names SCOPED to each pass, or notes that record every tenancy.  Not a per-cell call.
 
 
-## Eight unnamed routines in two NAMED call trees — `draw_track_object`, `read_driving_controls`
+## Seven unnamed routines in two NAMED call trees — `draw_track_object`, `read_driving_controls`
 
 Enumerated 2026-08-18 while walking those trees; **this is an inventory, not a set of readings** —
 nothing here has been looked at yet, so no name is suggested and none should be invented from the
@@ -56,7 +56,7 @@ address alone.
 
 | Tree | Still `FUN_*` |
 |---|---|
-| `draw_track_object` ($2AD1) | `$202A`, `$209A`, `$1E38` |
+| `draw_track_object` ($2AD1) | `$1E38` |
 | `read_driving_controls` ($1579) | `$15F4` (+ its `$160D` entry), `$1612` (+ `$162D`), `$1EE9`, `$1EFA`, `$1F9B`, `$63C5` |
 
 ⭐ `read_driving_controls`' cluster is chained by **tail `JMP`s across four separate regions**
@@ -165,7 +165,10 @@ circuit's own hook then GENERATES the tables (BRANDS' generator is at `$54C0`, w
 entries as data — which is why its pages are smooth for all 256 and Brands' are smooth for 39
 and 6502 code after that.
 
-**What is still open is the other two pages**, and only `draw_track_object`'s tree reads them:
+**What is still open is the other two pages.**  ⚠ CORRECTED 2026-08-18: this entry used to say
+only `draw_track_object`'s tree reads them.  Neither reader is in any of the campaign's trees —
+`$299D` is inside the OTHER-CAR projector (`$2937`) and `$1391` inside `$12F7` — so the decision
+has no group to ride along with and has to be made on its own.
 
 | site | reads | as |
 |---|---|---|

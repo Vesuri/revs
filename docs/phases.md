@@ -24,7 +24,7 @@ comes with it (`docs/rename.md`, `disasm/symbols.csv`) is part of the work, not 
 | `fill_dash_edge_columns` | ✅ **complete** — twins #40-#43 |
 | `apply_driving_model` | ✅ **COMPLETE — 43 of 43 routines**, twins #44-#86 |
 | `build_road_sign` | ✅ **complete** — twins #87-#92 |
-| `draw_track_object` | ⬜ next group (user, 2026-08-18) |
+| `draw_track_object` | 🔧 **the SHAPE side done** — twins #93-#95; `plot_view_src_line` and `fill_object_gap` remain |
 | `read_driving_controls` | ⬜ next group |
 
 ✅ **THE DRIVING MODEL IS DONE.**  Twins #79-#86 took the last eight — the SUB-MODELS, i.e. the
@@ -136,6 +136,51 @@ PRE-STATE can reach, not just what it randomises.**
 `proj_width_shift - $09` places"; the `DEX` at `$2A8A` is part of the count, so it is **`- $0A`**,
 and the sign of that difference is the direction.  Fixed in `disasm/symbols.csv`.
 
+### 🔧 `draw_track_object`'s tree — twins #93-#95 (the shape side; two routines left)
+
+`plot_object`, `scale_shape_vectors` and `plot_shape_edges` — 401 bytes.  17 deliberate sabotages,
+**17 detected, no survivors.**  `make validate` clean, `make determinism` and
+`make determinism-drive` both 64 KB byte-identical, `make tracks` 6/6, `make track-run` clean.
+Still transliterated in this tree: `plot_view_src_line` ($1C1C, the line plotter itself) and
+`fill_object_gap` ($1E38).
+
+⭐⭐ **What the group made legible** — the whole object pipeline, in seven points:
+
+1. **AN OBJECT IS A VECTOR SHAPE, NOT A SPRITE.**  Ten shapes, each a run of `shape_vector_tbl`
+   bytes and a run of five parallel `shape_edge_*` columns.  Nothing in the binary holds an object
+   bitmap: every car, sign and corner marker is drawn from those two lists at whatever size the
+   perspective divide asked for.
+2. **A VERTEX BYTE IS A SUM OF POWERS OF TWO OF THE OBJECT'S OWN WIDTH.**  `shape_scale_tbl[2..7]`
+   is the width halved five times; a vector byte under `$80` names one entry, one over `$80` names
+   two (bits 0-2 and bits 3-5) plus a third half-width when bit 6 is set.  **There is no multiply
+   anywhere in the pass.**
+3. **`shape_vertex` IS SIXTEEN ENTRIES THAT LOOK LIKE EIGHT** — the scaled value at 0..7 and its
+   negation at 8..15, i.e. `$5EF8` and `$5F00` are one array, which is why nothing appeared to
+   read `$5F00`.  An edge column byte therefore names an offset AND its sign at once.
+4. ⚠ **THE PASS REJECTS ITSELF** when a scaled vertex will not fit in seven bits, and
+   `plot_object`'s `BCS` abandons the whole object.  An object too close is simply not drawn.
+5. ⭐ **SHAPE 9 IS DRAWN TWICE AND THE SECOND PASS USES THE UNCLAMPED INDEX**, which is what makes
+   a shape over 9 a two-part object — `shape_vector_start` has eleven entries for exactly that.
+6. ⚠⚠ **…AND `plot_shape` = 9 DOES NOT TERMINATE.**  The re-entry is below the clamp, so 9 writes
+   9 into `object_shape_clamped` forever and `$2021`'s `CMP #$09` never stops agreeing.  It is
+   unreachable in the game — cars use shapes 0/1/2/4, corner markers 6, and a sign's
+   `(size & 7) + 7` misses 9 on every circuit — so **9 means "the stand-in has been drawn", never
+   a shape.**  Both models hang identically on it; the fixture found it by timing out.
+7. ⚠⚠ **THE SHAPE TABLES LIVE IN THE UNUSED TAILS OF THE VIEW SOURCE BLOCKS** — offset `$50`
+   inside blocks 10..14 of the forty `$80`-spaced blocks at `$3000`, where a block's data always
+   ends at `$4F`.  So each edge column has exactly 48 entries and index 48 is the next block's
+   data, which `plot_view_src_line` paints over.
+
+⭐⭐ **AND THE FIXTURE COST THREE ROUNDS, EACH ONE A HANG RATHER THAN A FAILURE.**  Every one was a
+pre-state the 6502 itself does not terminate on, so both models hung and the run just stopped:
+shape 9; `dash_block_starts` over `$4F` (which makes the plotter's `DEY / CPY` walk wrap through
+256 lines and overwrite the edge tables beneath it); `object_gap_top_tbl` over `$4F` (same effect
+through `fill_object_gap`'s write cursor); and eight consecutive bit-7 style bytes walking the
+edge cursor past entry 47.  ⚠ **The last one only ever appeared in the UNFILTERED run** — a
+`FN=`-filtered run draws a different random stream — and it was found by instrumenting the twin's
+own loop after two rounds of reasoning failed.  **When both models hang, the fixture is describing
+a state the game cannot be in; find the constraint, do not widen the timeout.**
+
 ---
 
 ## ⭐ THE TWIN CAMPAIGN — WHAT IS NEXT
@@ -153,8 +198,13 @@ things to expect from it:
 * `read_driving_controls`' cluster is chained by **tail `JMP`s across four separate regions**
   (`$15xx` → `$1EE9` → `$15F4` → `$1EFA` → `$1612`), so naming it is one pass over the whole
   chain rather than six independent decisions.
-* `draw_track_object`'s tree is the one that reads `$5700`/`$5800`, the last two unnamed pages of
-  the track-data region — so the "third name for the region" decision belongs to that group.
+* `draw_track_object`'s tree has `plot_view_src_line` ($1C1C) and `fill_object_gap` ($1E38) left —
+  the LINE PLOTTER itself, three entry modes and the deferred-byte pair (`span_defer_pending` /
+  `shared_temp_8c`) between them.
+⚠ **CORRECTED:** this section used to say `draw_track_object`'s tree is what reads `$5700`/`$5800`.
+It is not — `$299D` is in the OTHER-CAR projector ($2937), which is not in any of the three trees,
+and `$1391` is in `$12F7`.  The "third name for the track-normal region" decision therefore does
+not belong to this group and is still open in `docs/rename.md`.
 
 ## Phase 0 — Scaffolding ✅
 

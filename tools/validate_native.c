@@ -3841,6 +3841,217 @@ static int test_road_sign(void)
     return fail;
 }
 
+
+/* ==========================================================================
+   TWINS #93-#95 — THE OBJECT PLOTTER'S SHAPE SIDE
+   --------------------------------------------------------------------------
+   $1FB4 plot_object, $202A scale_shape_vectors, $209A plot_shape_edges.
+
+   ⚠⚠ THE SHAPE TABLES HAVE TO BE MADE LEGAL, not left random.  Six of them drive this pass —
+   shape_vector_start, shape_edge_start and the five per-edge columns — and a uniform byte in any
+   of them indexes shape_vertex (16 entries) or shape_vector_tbl hundreds of bytes past its end.
+   Both models would do it identically, so the run would be green while covering nothing: no
+   vertex would be a real fraction of the width, and the edge walk would terminate on the first
+   random bit-6 byte instead of drawing a shape.  This fixture therefore constrains them to their
+   real SHAPES (ascending starts, vertex indices in 0..15, a style byte whose control bits are
+   drawn deliberately) while leaving the values themselves random — the game's own bytes are not
+   reproduced here, only their ranges.
+
+   ⚠ AND THE STYLE BYTE'S CONTROL BITS ARE DRAWN, NOT LEFT TO CHANCE.  Bit 7 is the closing arm
+   and bit 6 ends the shape, and on the reject path they mean different things again; a uniform
+   byte gives each combination a quarter of the time but ends the walk after one or two edges.
+   A third of the cases here get bit 7 set and a fifth bit 6, per edge.
+
+   ⚠ $1FE9 is a PER-CIRCUIT SMC extent (Silverstone `LDX horizon_extent`, an expansion circuit
+   `LDX #imm`).  Both arms are forced, and a tenth of the cases are left random so the trap
+   channel is exercised too.
+   ========================================================================== */
+void plot_object(void);          void plot_object__t6502(void);
+void scale_shape_vectors(void);  void scale_shape_vectors__t6502(void);
+void plot_shape_edges(void);     void plot_shape_edges__t6502(void);
+
+#define PRE_PLOT_SHAPE     0x0037
+#define PRE_PROJ_WIDTH     0x002A
+#define PRE_PROJ_W_SHIFT2  0x002B
+#define PRE_PLOT_X         0x0035
+#define PRE_PLOT_LINE      0x0036
+#define PRE_HORIZ_HALF     0x62FC
+#define PRE_HORIZ_EXTENT   0x001F
+#define PRE_LINE_CEILING   0x62FD
+#define PRE_EDGE_CURSOR    0x008E
+#define PRE_VEC_CURSOR     0x0081
+#define PRE_VEC_END        0x008A
+
+/* ⚠⚠ LEGAL SHAPE TABLES, AND "LEGAL" IS NARROWER THAN IT LOOKS.  The five per-edge columns live
+   in the UNUSED TAILS ($50-$7F) of the view source blocks — $3550 is block 10 + $50, $3750 is
+   block 14 + $50 — so each column has room for exactly 48 entries and index 48 is the next
+   block's DATA, which plot_view_src_line itself overwrites.  A walk that runs past 47 therefore
+   reads whatever the plotter has just painted, and if bit 6 never comes up the edge walk never
+   ends: both models hang identically, which is how this fixture failed twice before the last
+   eight entries were given a guaranteed terminator.
+   Returns non-zero when some edge selected the closing arm. */
+static int force_shape_tables(uint8_t* pre)
+{
+    enum { EDGES = 48 };
+    int closing = 0, i;
+    unsigned v = 0, e = 0;
+
+    for (i = 0; i <= 10; i++) {                 /* shape_vector_start / shape_edge_start */
+        pre[0x3CDD + i] = (uint8_t)v;  v += 1 + xs() % 6;
+        pre[0x3CD0 + i] = (uint8_t)e;  e += 1 + xs() % 3;
+    }
+    for (i = 0; i < EDGES; i++) {               /* the five per-edge columns */
+        uint8_t style = (uint8_t)(xs() & 0x3F);
+        pre[0x3550 + i] = (uint8_t)(xs() % 16);
+        pre[0x35D0 + i] = (uint8_t)(xs() % 16);
+        pre[0x3650 + i] = (uint8_t)(xs() % 16);
+        pre[0x36D0 + i] = (uint8_t)(xs() % 16);
+        if (xs() % 3 == 0) { style |= 0x80; closing++; }   /* the closing arm */
+        if (xs() % 4 == 0) style |= 0x40;                  /* ...and the shape's end */
+        /* ⚠ THE LAST EIGHT ENTRIES ARE A HARD TERMINATOR, bit 6 SET and bit 7 CLEAR.  Bit 6
+           alone is not enough: bit 7 sends the walk to the closing arm, which advances the
+           cursor and never looks at bit 6, so eight consecutive bit-7 entries (1 in 6561) walk
+           past index 47 into the block data the plotter has just painted and the loop never
+           ends.  That is what still hung after the tables were first bounded, and only in the
+           UNFILTERED run — a `FN=`-filtered one draws a different random stream. */
+        if (i >= EDGES - 8) style = (uint8_t)((style | 0x40) & 0x7F);
+        pre[0x3750 + i] = style;
+    }
+
+    /* ⚠⚠ AND dash_block_starts HAS TO BE LEGAL TOO, for the same reason: each entry is where
+       block X's data STARTS and the data always ends at offset $4F, so a random byte over $4F
+       makes plot_view_src_line's `DEY / CPY $82` walk wrap through 256 lines and overwrite the
+       edge list in the tails underneath it. */
+    for (i = 0; i <= 40; i++) pre[0x3900 + i] = (uint8_t)(xs() % 0x50);
+
+    /* ⚠⚠ …AND SO DOES object_gap_top_tbl, which is the one that actually bit.  fill_object_gap
+       reads it per column and, when the entry is at or above span_top_line, uses `entry + ($7F -
+       span_line_cursor)` as its write cursor — so an entry over $4F puts the cursor BELOW the
+       run's floor and the `INY / BPL` fill walks up through the block's tail, over the edge
+       tables.  Silverstone's own entries are all $02..$44.  Found by instrumenting the twin's
+       edge loop after two rounds of guessing: the spinning walk was reading $3D out of a style
+       table that had been painted over. */
+    for (i = 0; i <= 40; i++) pre[0x3F4F + i] = (uint8_t)(xs() % 0x50);
+    return closing;
+}
+
+static int test_object_shape(void)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    int fail = 0, printed = 0, t, i;
+    int scale = 1;
+    unsigned long smcTraps;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+
+    struct { const char* name; void (*nat)(void); void (*ref)(void); int cases; }
+      list[3] = {
+        { "scale_shape_vectors", scale_shape_vectors, scale_shape_vectors__t6502, 4000 },
+        { "plot_shape_edges",    plot_shape_edges,    plot_shape_edges__t6502,    2000 },
+        { "plot_object",         plot_object,         plot_object__t6502,         2000 },
+      };
+    for (i = 0; i < 3; i++) register_fixture(list[i].name);
+
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+    g_smcUnhandled = 0;
+
+    for (i = 0; i < 3; i++) {
+        int subFail = 0, decimal = 0, patched = 0, closing = 0, wide = 0;
+        int twoPart = 0, sign = 0, extraShift = 0;
+        int cases = list[i].cases * scale;
+        if (!want(list[i].name)) continue;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.A = (uint8_t)xs();
+            c.Y = (uint8_t)xs();
+
+            closing += force_shape_tables(pre) ? 1 : 0;
+
+            /* The four-cell argument block draw_track_object leaves. */
+            pre[PRE_PLOT_X]     = (uint8_t)xs();
+            pre[PRE_PLOT_LINE]  = (uint8_t)(xs() % 0x50);
+            pre[PRE_PROJ_WIDTH] = (uint8_t)(xs() % 0x80);
+            pre[PRE_HORIZ_HALF] = (uint8_t)(xs() % 0x80);
+            pre[PRE_HORIZ_EXTENT] = (uint8_t)(xs() % 0x50);
+            if (pre[PRE_PROJ_WIDTH] >= pre[PRE_HORIZ_HALF]) wide++;
+
+            /* plot_object's SLOT: the twenty cars, the three specials, and the sign at $17. */
+            c.X = (uint8_t)(xs() % 0x18);
+            /* ...and the shape.  $0A and up is the TWO-PART case (group header, item 5).
+               ⚠⚠ SHAPE 9 IS EXCLUDED, AND NOT BECAUSE IT IS AWKWARD: it makes the 6502 LOOP
+               FOREVER.  $2002 re-enters below the clamp, so a plot_shape of exactly 9 writes 9
+               into object_shape_clamped on every pass and $2021's `CMP #$09` never stops
+               agreeing.  It is unreachable in the game — cars use shapes 0/1/2/4, corner
+               markers 6, and a sign's (size + 7) never lands on 9 on any circuit — so 9 is the
+               marker for "the stand-in has been drawn", never a shape.  Both models hang
+               identically on it, which is why the first run of this fixture timed out. */
+            { unsigned pick = xs() % 11;
+              pre[PRE_PLOT_SHAPE] = (uint8_t)(pick < 9 ? pick : pick + 1); }
+            if (pre[PRE_PLOT_SHAPE] >= 0x0A) twoPart++;
+            pre[0x0025] = (uint8_t)((xs() & 1) ? 0x00 : 0x80);   /* track_direction */
+            if (!(pre[0x0025] & 0x80)) sign++;
+
+            /* The two callees run standalone too, so they need their own cursors in range. */
+            if (i != 2) {
+                pre[PRE_PROJ_W_SHIFT2] = (uint8_t)((xs() & 1) ? 0 : (1 + xs() % 3));
+                if (pre[PRE_PROJ_W_SHIFT2]) extraShift++;
+                pre[PRE_VEC_CURSOR]  = (uint8_t)(xs() % 0x38);
+                pre[PRE_VEC_END]     = (uint8_t)(pre[PRE_VEC_CURSOR] + 1 + xs() % 8);
+                pre[PRE_EDGE_CURSOR] = (uint8_t)(xs() % 0x18);
+                pre[PRE_LINE_CEILING] = (uint8_t)(xs() % 0x50);
+            }
+
+            /* $1FE9 — nine in ten a real arm, and half of those the circuit's `LDX #imm`. */
+            if (xs() % 10) {
+                if (xs() & 1) pre[0x1FE9] = 0xA6;
+                else        { pre[0x1FE9] = 0xA2; pre[0x1FEA] = (uint8_t)(xs() % 0x50); }
+            } else patched++;
+
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = (uint8_t)(xs() % 4 == 0);
+            if (c.D) decimal++;
+            subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
+                                liveMask, t, &printed);
+        }
+        fail += subFail;
+        if (!decimal || !patched || !closing || !wide) {
+            printf("[VACUOUS] %s: %d decimal, %d SMC-random, %d closing arms, %d wide\n",
+                   list[i].name, decimal, patched, closing, wide);
+            fail++;
+        }
+        if (i == 2 && (!twoPart || !sign)) {
+            printf("[VACUOUS] plot_object: %d two-part shapes, %d positive track_direction\n",
+                   twoPart, sign);
+            fail++;
+        }
+        if (i != 2 && !extraShift) {
+            printf("[VACUOUS] %s: no extra proj_width_shift case\n", list[i].name);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d decimal, %d SMC-random, %d wide%s)\n",
+               list[i].name, cases, subFail, decimal, patched, wide,
+               i == 2 ? ", two-part shapes forced" : ", extra shift forced");
+    }
+
+    smcTraps = g_smcUnhandled;
+    unsetenv("REVS_SMC_CONTINUE");
+    if (want("plot_object")) {
+        if (smcTraps == 0) {
+            printf("[VACUOUS] plot_object: no SMC trap at $1FE9 over the whole run\n");
+            fail++;
+        }
+        /* ⚠ The count is not only $1FE9: plot_view_src_line's self-modified branch at $1DD4
+           traps too, and often, because its offset byte is random here.  Both are compared by
+           diff_run as their own channel, which is what this asserts is non-empty. */
+        printf("%-32s %7lu SMC traps ($1FE9 and plot_view_src_line's $1DD4; must be > 0)\n",
+               "object plotter", smcTraps);
+    }
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -3870,6 +4081,7 @@ int main(int argc, char** argv)
     fail += test_slip_and_sound();
     fail += test_sub_models();
     fail += test_road_sign();
+    fail += test_object_shape();
 
     fail += check_coverage();
     fail += report_unvalidated_natives();

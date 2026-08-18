@@ -852,6 +852,13 @@ VALIDATE_FUNCS = {
     0x2AA6,
     0x2AAD,
     0x2AB3,
+    # ⭐ TWINS #93-#95 — THE OBJECT PLOTTER'S SHAPE SIDE.  draw_track_object (twin #7) only
+    # decides WHERE an object goes; these three draw it, as a small vector-shape rasteriser:
+    #   $1FB4 plot_object   $202A scale_shape_vectors   $209A plot_shape_edges
+    # ⚠ $1FE9 is a per-circuit SMC extent (LDX horizon_extent vs LDX #imm) and both arms are kept.
+    0x1FB4,
+    0x202A,
+    0x209A,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
