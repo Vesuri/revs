@@ -2919,6 +2919,132 @@ static int test_seam_callees(void)
     return fail;
 }
 
+/* ==========================================================================
+   TWINS #44-#49 — THE ENGINE'S MULTIPLY, AND THE NEGATE BESIDE IT
+   --------------------------------------------------------------------------
+   $0C00 mul8, $0C02 mul8_noinit, $0DBF mul8_accum, $0DB3 mul16_by_pi, $0E42 neg16_math and
+   $0E44 neg16_math_noinit.  These are pure arithmetic on four zero-page cells, so the
+   fixtures are cheap and can afford to be EXHAUSTIVE where it counts:
+
+   ⭐ mul8_noinit RUNS ALL 65536 OPERAND PAIRS.  The twin replaces eight unrolled add/shift
+      steps with one 16-bit multiply plus a replay of the last add's V, and "0 mismatch over
+      every input" is the only evidence that turns that from a plausible identity into a
+      proven one.  The zero multiplier (no add runs, so the CALLER's V survives) and the
+      $FF x $FF corner are inside the sweep by construction.
+   ⚠ DECIMAL MODE IS A SEPARATE PASS, not a percentage of a random one.  D changes the result
+      byte of every ADC, so with D set the routine is not a multiply at all and the twin falls
+      back to a bit-for-bit replay; that path needs its own cases or the exhaustive sweep above
+      (which must run with D clear to mean anything) would hide it entirely.
+   ========================================================================== */
+void mul8(void);              void mul8__t6502(void);
+void mul8_noinit(void);       void mul8_noinit__t6502(void);
+void mul8_accum(void);        void mul8_accum__t6502(void);
+void mul16_by_pi(void);       void mul16_by_pi__t6502(void);
+void neg16_math(void);        void neg16_math__t6502(void);
+void neg16_math_noinit(void); void neg16_math_noinit__t6502(void);
+
+#define PRE_MATH_LO 0x0074
+#define PRE_MATH_HI 0x0075
+#define PRE_TEMP_76 0x0076
+
+static int test_multiply(void)
+{
+    static uint8_t pre[65536];
+    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+
+    register_fixture("mul8_noinit");
+    register_fixture("mul8");
+    register_fixture("mul8_accum");
+    register_fixture("mul16_by_pi");
+    register_fixture("neg16_math");
+    register_fixture("neg16_math_noinit");
+
+    if (want("mul8_noinit")) {
+        int subFail = 0, lo, hi, decimalCases = 400 * scale;
+        /* One random background, reused: the routine touches four cells and nothing else, so
+           a fresh fill_random per case would cost 65536 x 64 KB for no extra coverage. */
+        fill_random(pre);
+        for (lo = 0; lo < 256 && subFail < 12; lo++)
+            for (hi = 0; hi < 256; hi++) {
+                Cpu6502 c = zero_cpu();
+                pre[PRE_MATH_LO] = (uint8_t)lo;
+                pre[PRE_MATH_HI] = (uint8_t)hi;
+                c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+                c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+                c.D = 0;
+                subFail += diff_run("mul8_noinit", pre, c, mul8_noinit, mul8_noinit__t6502,
+                                    liveMask, lo * 256 + hi, &printed);
+            }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(EXHAUSTIVE: every operand pair, D clear)\n",
+               "mul8_noinit", 65536, subFail);
+        fail += subFail;
+        /* ...and decimal mode, where the twin runs the 6502's own shift-and-add instead. */
+        { int decFail = 0;
+          for (t = 0; t < decimalCases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 1;
+            decFail += diff_run("mul8_noinit (decimal)", pre, c, mul8_noinit,
+                                mul8_noinit__t6502, liveMask, t, &printed);
+          }
+          fail += decFail;
+          printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+                 "(the shift-and-add replay — D set)\n",
+                 "mul8_noinit (decimal)", decimalCases, decFail);
+        }
+    }
+
+    /* The other five share a shape: randomised background, randomised registers, a quarter of
+       the cases in decimal mode, and the arithmetic cells pinned only where a uniform byte
+       would miss something (mul8_accum's carry, mul16_by_pi's shift out of the top). */
+    { struct { const char* name; void (*nat)(void); void (*ref)(void); int cases; }
+        list[5] = {
+          { "mul8",              mul8,              mul8__t6502,              4000 },
+          { "mul8_accum",        mul8_accum,        mul8_accum__t6502,        4000 },
+          { "mul16_by_pi",       mul16_by_pi,       mul16_by_pi__t6502,       4000 },
+          { "neg16_math",        neg16_math,        neg16_math__t6502,        2000 },
+          { "neg16_math_noinit", neg16_math_noinit, neg16_math_noinit__t6502, 2000 },
+        };
+      int i;
+      for (i = 0; i < 5; i++) {
+        int subFail = 0, decimal = 0, zeroOperand = 0, cases = list[i].cases * scale;
+        if (!want(list[i].name)) continue;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            /* A zero operand is the one case with no ADC in it at all, so the caller's V has
+               to survive — one case in 256 by luck, one in eight here. */
+            if (xs() % 8 == 0) { pre[PRE_MATH_LO] = 0; zeroOperand++; }
+            if (xs() % 8 == 0) { pre[PRE_MATH_HI] = 0; }
+            if (xs() % 8 == 0) { pre[PRE_TEMP_76] = 0; }
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = (uint8_t)(xs() % 4 == 0);
+            if (c.D) decimal++;
+            subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
+                                liveMask, t, &printed);
+        }
+        fail += subFail;
+        if (!decimal || !zeroOperand) {
+            printf("[VACUOUS] %s: %d decimal, %d zero-operand cases\n",
+                   list[i].name, decimal, zeroOperand);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+               "(%d decimal, %d with a zero operand)\n",
+               list[i].name, cases, subFail, decimal, zeroOperand);
+      }
+    }
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -2942,6 +3068,7 @@ int main(int argc, char** argv)
     fail += test_span_arms();
     fail += test_road_pass();
     fail += test_seam_callees();
+    fail += test_multiply();
 
     fail += check_coverage();
     fail += report_unvalidated_natives();

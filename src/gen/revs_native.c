@@ -34,6 +34,7 @@
  */
 #include "../cpu/cpu.h"
 #include "../cpu/bus.h"
+#include "../cpu/m68k_math.h"   /* revs_mulu16: MULU.W, the 68000 op mul8 stands in for */
 #include "revs_decl.h"
 #define REVS_MEM_ALIASES
 #include "mem.h"
@@ -149,6 +150,15 @@ REVS_FLAG_OP uint8_t sbc_overflow(uint8_t a, uint8_t m, unsigned carryIn)
     uint8_t   nv = (uint8_t)~m;
     unsigned  t  = (unsigned)a + nv + (carryIn ? 1u : 0u);
     return (uint8_t)(((~(a ^ nv) & (a ^ (uint8_t)t)) >> 7) & 1u);
+}
+
+/* V for ONE add, replayed from its operands — the ADC counterpart of sbc_overflow, and it
+   exists for the same reason: mul8's exit V is the V of the LAST add in an eight-step chain,
+   so the twin computes that one add's overflow instead of the seven dead ones. */
+REVS_FLAG_OP uint8_t adc_overflow(uint8_t a, uint8_t m, unsigned carryIn)
+{
+    unsigned t = (unsigned)a + m + (carryIn ? 1u : 0u);
+    return (uint8_t)(((~(a ^ m) & (a ^ (uint8_t)t)) >> 7) & 1u);
 }
 
 /* value - subtrahend with the borrow clear (SEC/SBC), setting C and V. */
@@ -1668,6 +1678,9 @@ static unsigned section_word(unsigned byteIndex)
    in this pass reaches them through the cores, never through the 6502-ABI shims. */
 static void bearing_to_section_core(uint8_t sectionByte, uint8_t origin);
 static void project_point_core(uint8_t sectionByte, uint8_t origin);
+
+/* The 16-bit negate abs16_math falls into (twin #48), also defined further down. */
+static void neg16_math_core(uint8_t high);
 
 /* `value >= limit` through the 6502's CPX, which also leaves X = value.  The near-slot clamps
    below end on one of these, so the compare's own C/N/Z are their exit flags. */
@@ -3681,16 +3694,16 @@ static int span_step_y(unsigned slot)
    caller has just computed A, so the two agree there and nowhere else; `if (A & 0x80)` fails
    a randomised pre-state, and decimal mode decorrelates them even for a freshly computed
    value (docs/faithfulness-seam.md).
-   ⚠ The negation is neg16_math's code, reached by falling through.  It is reproduced here
-   rather than called because neg16_math keeps its own transliteration for its other callers.
+   ⚠ It BRANCHES ON THE CALLER'S N and then falls into neg16_math (twin #48), which is the
+   function this now calls — nothing is duplicated.
    --------------------------------------------------------------------------- */
 void abs16_math(void)
 {
     if (!cpu.N) return;             /* $0E40 BPL — already positive, A untouched */
 
-    math_hi = cpu.A;                /* $0E42 — park the high byte where the subtract can see it */
-    math_lo = (uint8_t)sub_from(0x00u, math_lo);
-    cpu.A   = (uint8_t)sbc_step(0x00u, math_hi, cpu.C);   /* the high half, borrow chained */
+    /* ⭐ The negation IS neg16_math, reached by falling through, and since twin #48 that is
+       one function rather than two copies of it. */
+    neg16_math_core(cpu.A);
 }
 
 /* ---------------------------------------------------------------------------
@@ -5049,3 +5062,153 @@ void fill_edge_column_run(void)
 {
     fill_edge_column_run_core(cpu.X, cpu.A, cpu.Y);
 }
+
+/* ===========================================================================
+   TWINS #44-#49 — THE ENGINE'S MULTIPLY, AND THE NEGATE BESIDE IT
+   ---------------------------------------------------------------------------
+   The first group of apply_driving_model's callee tree, and the one place in this project
+   where the 68000 replaces an algorithm rather than an interpreter:
+
+     $0C02  mul8_noinit    the 8x8 shift-and-add itself — ONE `mulu.w` here
+     $0C00  mul8           ...with the multiplicand taken from A
+     $0DBF  mul8_accum     (shared_temp_76:math_lo) x math_hi >> 8 — a 16x8 fixed-point step
+     $0DB3  mul16_by_pi    x4, then x $C9/256 — i.e. multiply a 16-bit angle by pi
+     $0E42  neg16_math     negate (math_hi:math_lo), the high byte leaving in A
+     $0E44  neg16_math_noinit  ...the same without parking A in math_hi first
+
+   ⭐⭐ WHY THIS ONE IS DIFFERENT.  Every twin since #14 has confirmed that being real C buys
+   nothing on its own — the win is ALGORITHMIC COMPRESSION.  `mul8` is the case the rule was
+   waiting for: **28 call sites, the most-called routine in the engine**, and its body is eight
+   unrolled iterations of `BCC` / `CLC` / `ADC` / `ROR A` / `ROR math_lo` — about 40 6502
+   instructions, each of which the transliteration wraps in flag bookkeeping, standing in for
+   one `MULU.W`.  Nothing here is a driver.
+
+   ⚠⚠ AND THE EXIT CONTRACT IS NOT "THE PRODUCT", which is what makes the compression legal
+   rather than approximate.  Checked over all 65536 operand pairs (the twin's own arithmetic
+   against a replay of the 6502):
+     * A = the product's HIGH byte, math_lo = its LOW byte — but N and Z come from the closing
+       `ROR math_lo`, i.e. from the LOW byte, not from A;
+     * C is 0 on EVERY input.  The eight `ROR math_lo`s shift the multiplier out completely, so
+       the last carry-out is a bit that has already been consumed;
+     * V is the V of the LAST `ADC`, which happens at the multiplier's top set bit, where the
+       accumulator holds (addend x (multiplier mod 2^k)) >> k.  `adc_overflow` replays exactly
+       that one add.  With a zero multiplier no add runs at all and the caller's V survives.
+   ⚠ Decimal mode is not "a flag detail" here: D changes the RESULT BYTE of every `ADC`, so the
+   routine stops being a multiply.  The bit-for-bit replay below is kept for it.  The engine
+   never sets D; a randomised fixture does.
+   =========================================================================== */
+
+/* The 6502's own shift-and-add, replayed instruction for instruction — the decimal-mode path
+   only.  This is what the twin above is a compression OF. */
+static void mul8_shift_add(void)
+{
+    int i;
+
+    LDA(0x00u);
+    LSR_M(MEM_math_lo);                 /* $0C04 — the first multiplier bit into C */
+    for (i = 0; i < 8; i++) {
+        if (cpu.C) { cpu.C = 0; ADC(math_hi); }   /* $0C06-$0C09 */
+        ROR_A();                                  /* $0C0B */
+        ROR_M(MEM_math_lo);                       /* $0C0C — and the next multiplier bit out */
+    }
+}
+
+static void mul8_noinit_core(void)
+{
+    unsigned multiplier = math_lo, addend = math_hi, product;
+
+    if (cpu.D) { mul8_shift_add(); return; }
+
+    product = revs_mulu16((uint16_t)multiplier, (uint16_t)addend);
+
+    /* The one flag that escapes: the last add's V (see the header). */
+    if (multiplier) {
+        unsigned k = 7;
+        unsigned acc;
+        while (!(multiplier & (1u << k))) k--;
+        acc   = revs_mulu16((uint16_t)addend, (uint16_t)(multiplier & ((1u << k) - 1u))) >> k;
+        cpu.V = adc_overflow((uint8_t)acc, (uint8_t)addend, 0);
+    }
+
+    math_lo = (uint8_t)product;
+    cpu.A   = (uint8_t)(product >> 8);
+    UPD_NZ(math_lo);            /* the closing ROR is on math_lo — NOT on A */
+    cpu.C   = 0;                /* provably 0 for every operand pair */
+}
+
+static void mul8_core(uint8_t multiplicand)
+{
+    math_lo = multiplicand;     /* $0C00 — a store, so no flags */
+    mul8_noinit_core();
+}
+
+/* ---------------------------------------------------------------------------
+   $0DBF  mul8_accum — THE 16x8 FIXED-POINT STEP  (twin #46)
+   ---------------------------------------------------------------------------
+   Multiplies the 16-bit value (shared_temp_76 : math_lo) by math_hi and keeps the top 16 bits
+   of the 24-bit result: the low product's HIGH byte is added into the high product, which is
+   the ordinary way to spell a x.8 fixed-point multiply on a machine with an 8x8 multiplier.
+
+   ⚠ Its exit flags are the closing ADD's, or the `INC math_hi`'s on the carry path — so N and
+   Z describe math_lo on one path and math_hi on the other.
+   --------------------------------------------------------------------------- */
+static void mul8_accum_core(void)
+{
+    uint8_t lowHigh;
+
+    mul8_noinit_core();                 /* $0DBF — math_lo x math_hi, the LOW half */
+    lowHigh = cpu.A;
+    shared_temp_77 = lowHigh;           /* $0DC2 */
+
+    mul8_core(shared_temp_76);          /* $0DC4-$0DC6 — shared_temp_76 x math_hi, the HIGH half */
+    math_hi = cpu.A;                    /* $0DC9 */
+
+    math_lo = (uint8_t)adc_step(lowHigh, math_lo, 0);   /* $0DCB-$0DD0 */
+    if (cpu.C) inc_mem(MEM_math_hi);                    /* $0DD4 — N/Z from math_hi now */
+}
+
+/* ---------------------------------------------------------------------------
+   $0DB3  mul16_by_pi — A 16-BIT ANGLE TIMES PI  (twin #47)
+   ---------------------------------------------------------------------------
+   Shifts (A : math_lo) left twice, parks the high byte where mul8_accum wants it, seeds the
+   multiplier with $C9 and falls into mul8_accum.  ⭐ $C9/256 = 0.785 = pi/4 to three figures,
+   and 4 x pi/4 = pi — so what compute_car_angles gets back is its angle multiplied by pi
+   [INFERRED from the constant; the x4 and the multiply are [DERIVED]].
+   --------------------------------------------------------------------------- */
+static void mul16_by_pi_core(uint8_t high)
+{
+    unsigned scaled = ((((unsigned)high << 8) | math_lo) << 2) & 0xFFFFu;
+
+    math_lo        = (uint8_t)scaled;           /* $0DB3-$0DB8, two ASL/ROL pairs */
+    shared_temp_76 = (uint8_t)(scaled >> 8);    /* $0DB9 */
+    math_hi        = 0xC9u;                     /* $0DBB-$0DBD — pi/4 in .8 fixed point */
+    mul8_accum_core();
+}
+
+/* ---------------------------------------------------------------------------
+   $0E42 / $0E44  neg16_math — NEGATE (math_hi : math_lo)  (twins #48, #49)
+   ---------------------------------------------------------------------------
+   Two's-complement negate of the 16-bit accumulator.  ⚠ The high byte comes back in A and is
+   NOT written to math_hi — the caller decides whether to keep it — and the second subtract's
+   N/V/Z/C are the exit flags.  $0E42 parks A in math_hi first (so it negates the value the
+   caller is holding); $0E44 negates what is already in the pair.  abs16_math falls into $0E42.
+   --------------------------------------------------------------------------- */
+static void neg16_math_noinit_core(void)
+{
+    math_lo = (uint8_t)sub_from(0x00u, math_lo);            /* $0E44-$0E49 */
+    cpu.A   = (uint8_t)sbc_step(0x00u, math_hi, cpu.C);     /* $0E4B-$0E4E */
+}
+
+static void neg16_math_core(uint8_t high)
+{
+    math_hi = high;                     /* $0E42 */
+    neg16_math_noinit_core();
+}
+
+/* The 6502-ABI shims.  A is the multiplicand / the high byte; everything else is in mem[]. */
+void mul8(void)              { mul8_core(cpu.A); }
+void mul8_noinit(void)       { mul8_noinit_core(); }
+void mul8_accum(void)        { mul8_accum_core(); }
+void mul16_by_pi(void)       { mul16_by_pi_core(cpu.A); }
+void neg16_math(void)        { neg16_math_core(cpu.A); }
+void neg16_math_noinit(void) { neg16_math_noinit_core(); }

@@ -714,6 +714,23 @@ VALIDATE_FUNCS = {
     0x1DAF,
     0x1DA6,
     0x1DEF,
+    # ⭐⭐ TWINS #44-#49 — THE ENGINE'S MULTIPLY, the first group of apply_driving_model's tree.
+    #   $0C02 mul8_noinit   (69 B) the 8x8 shift-and-add — ONE `mulu.w` in the twin
+    #   $0C00 mul8          ( 2 B) ...with the multiplicand taken from A
+    #   $0DBF mul8_accum    (24 B) a 16x8 fixed-point step
+    #   $0DB3 mul16_by_pi   (12 B) x4 then x $C9/256, i.e. x pi
+    #   $0E42 neg16_math    ( 2 B) negate the accumulator, the high byte leaving in A
+    #   $0E44 neg16_math_noinit (12 B) ...without parking A in math_hi first
+    # ⚠ mul8 has 28 call sites — the most-called routine in the engine — so this is the first
+    # twin since #2 whose reason is milliseconds rather than legibility, and the exit contract
+    # is what makes it legal: N/Z come from the product's LOW byte, C is provably 0, and V is
+    # the LAST add's, replayed from its operands (src/gen/revs_native.c §twins #44-#49).
+    0x0C02,
+    0x0C00,
+    0x0DBF,
+    0x0DB3,
+    0x0E42,
+    0x0E44,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
