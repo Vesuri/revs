@@ -3841,7 +3841,13 @@ static const SpanPlotter SPAN_PLOT_2 = {
     MEM_plot_ptr_lo, MEM_plot_ptr3_lo
 };
 
-static void span_plot_core(const SpanPlotter* p, uint8_t accumulator, uint8_t column)
+/* ⭐⭐ ALWAYS_INLINE, and it is worth 4% of the frame.  The descriptor is a compile-time
+   constant at both call sites, so inlining turns every `p->slot` from a memory operand into
+   an immediate and the whole struct disappears; left out of line GCC passes a pointer and
+   re-loads five fields per call, in the routine that runs eight times per scan line.
+   Same rule as REVS_FLAG_OP above — measured, not assumed (docs/perf-method.md). */
+static inline __attribute__((always_inline))
+void span_plot_core(const SpanPlotter* p, uint8_t accumulator, uint8_t column)
 {
     unsigned cellAddr, cell;
 
@@ -4029,7 +4035,11 @@ static void span_walk_cap(void)
     span_cap_line();
 }
 
-static void span_walk(const SpanArm* arm)
+/* Inlined for the same reason, and it buys more: `arm->rev` and `arm->steep` become
+   constants, so the four specialisations lose the direction tests from their inner loops
+   entirely rather than re-evaluating them per column. */
+static inline __attribute__((always_inline))
+void span_walk(const SpanArm* arm)
 {
     int col, forced, runTop, first = 1;
 
@@ -4051,7 +4061,9 @@ static void span_walk(const SpanArm* arm)
     if (!span_entry_decode(arm, mem[arm->operand], &col, &forced, &runTop)) return;
 
     for (;;) {
-        int startCol = first ? col : 0;
+        int startCol   = first ? col : 0;
+        int force      = first && forced;   /* a computed entry plots its first column whole */
+        int midAllowed = (startCol < 4);    /* ...and skips the half boundary if it is past it */
         int i;
 
         /* ⚠ The shallow arms only.  A steep arm reaches its own top with X holding the last
@@ -4067,7 +4079,7 @@ static void span_walk(const SpanArm* arm)
             /* The half boundary: close the first buffer's run and step the source block.
                Skipped when the entry landed past it, which is the whole point of the
                computed entry. */
-            if (i == 4 && startCol < 4) {
+            if (i == 4 && midAllowed) {
                 if (!arm->steep) { if (arm->rev) span_end_marker_p1(); else span_end_marker_p2(); }
                 mem[SPAN_BLOCK] = (uint8_t)(mem[SPAN_BLOCK] + (arm->rev ? -1 : 1));
             }
@@ -4085,7 +4097,8 @@ static void span_walk(const SpanArm* arm)
             } else {
                 /* X-major: one column per step, and only a carry lands a pixel.  The very
                    first column of a computed entry is plotted unconditionally. */
-                if (!(first && i == startCol && forced)) {
+                if (force) force = 0;
+                else {
                     cpu.A = (uint8_t)adc_step(cpu.A, mem[arm->addend], cpu.C);
                     if (!cpu.C) continue;
                     cpu.A = (uint8_t)sbc_step(cpu.A, mem[arm->subtrahend], cpu.C);
