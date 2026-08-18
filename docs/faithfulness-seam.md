@@ -168,6 +168,32 @@ purely for this reason — same 0/700 differential, same framerate (465 vs 467 p
    `REVS_FLAG_OP` (`static inline __attribute__((always_inline))`).  **Grep the objdump for
    `jsr <sub_from>` before believing any arithmetic twin is fast**; `docs/perf-method.md`
    §twins #14/#15 has the four-way measurement.
+   ⭐⭐ TWINS #25-#39 close the SPAN RASTERISER — everything `draw_road` reaches is real C, so the
+   whole view pipeline from `build_track_geometry` to `view_paint_lines` has no transliteration in
+   it.  Three things they added to this section:
+   * **A DESCRIPTOR STRUCT IS AS EXPENSIVE AS AN OUT-OF-LINE FLAG HELPER.**  The two plotters are
+     one routine taking a `const SpanPlotter*` and the four arms one taking a `const SpanArm*` —
+     the right shape, because they really are one algorithm with constants swapped, and 4.2%
+     slower than the transliteration until both carried `always_inline`.  Out of line GCC re-loads
+     five fields per call in a routine that runs eight times a scan line.  Generalised: *a
+     parameter that is a compile-time constant at every call site must be inlined, or it is a
+     memory operand in the inner loop* (`docs/perf-method.md` §twins #25-#39).
+   * **A COMPUTED JUMP INTO AN UNROLLED CHAIN is a declared coverage limit, like a patched branch
+     offset.**  The four arms are entered partway through by a patched `BCC`, and the transpiler
+     emits a switch over every instruction boundary in the chain (60 labels for one arm).  A twin
+     enumerates the offsets the arm's TABLE holds — eight or sixteen — and traps on anything else.
+     What makes that derived rather than a guess: those tables are static in the image, and
+     although they live inside the $80-spaced source blocks they live in the blocks' TAILS (offset
+     $50 and $58), above the $50 scan lines a plotter can reach through `($70),Y`.
+   * ⚠ **THREE SABOTAGES THAT PASSED WERE NOT DEFECTS, AND ONE WAS.**  Planting `LDX #$80` at the
+     top of a STEEP arm's loop, or calling an end marker there, changes nothing: X is always a
+     column 0-3 in a steep arm, never the $80 that writes a terminator, and every path reloads it.
+     The SHALLOW analogue *is* observable, because those arms' end markers test X — and the
+     fixture only caught it after the marker opcode slots were given an unexecutable byte one case
+     in six, which is what makes "this arm called a marker" visible at all.  Check whether a
+     sabotage changes anything before steering the fixture, and check the sibling case before
+     concluding it does not.
+
 9. **Sabotage before believing it.**  Four defects minimum, each must FAIL, and any sabotage that
    PASSES is a fixture gap to write down rather than a pass to enjoy (`view_paint_lines`' phase-3
    carry tail is unreachable and untested — recorded in the twin's own comment).

@@ -372,3 +372,21 @@ Fixed-seed xorshift PRNG, no wall clock, no `rand()`.  A green run is reproducib
 regression is bisectable.  Anything the harness's headless platform emulates (a MOS call a twin
 makes, a timer a twin polls) must be modelled identically for the twin *and* its oracle, or the
 differential is comparing two different machines.
+
+## ⚠⚠ `cpu_unwind` IS PART OF THE PRE-STATE — a stale flag made a good twin fail (2026-08-18)
+
+`cpu_unwind` (`src/cpu/cpu.h`) is the flag `$2F7E` sets when a span plotter drops its caller's
+frame: the plotter's `TSX/INX/INX/TXS` returns TWO levels up, and since this model keeps return
+addresses on the C stack the drop has to be a flag the caller consults (`UNWIND_TAKEN()`).
+
+A fixture that calls a plotter DIRECTLY — `road_span_plot`'s own, 383 abandons in 2000 cases —
+leaves that flag SET, because there is no arm above it to consume it.  `diff_run` reset `mem[]`
+and `cpu` between models but not this, so the NEXT fixture's oracle read the stale flag, returned
+one plot early, and the twin (running second, with the flag now cleared) did not.
+
+**The tell was that the twin passed on its own and failed in the full run** — 1 case in 400, and
+only when the plotter fixture had run first.  A `FN=`-filtered run also draws a different random
+stream, which is what makes "passes alone, fails together" easy to misread as flakiness.
+
+⇒ `diff_run` now clears `cpu_unwind` alongside `cpu` for both models.  The general rule: **every
+global the CPU model owns is pre-state.**  If a new one appears, it belongs in that reset.

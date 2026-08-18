@@ -564,6 +564,47 @@ subsystem earlier.
 measurable at all, and §8's non-performance reasons applied to seven of the nine before a run
 was made.  Quote them for the names and the leaf-freedom, never for FPS.
 
+### ⚠⚠ TWINS #25-#39, THE SPAN RASTERISER: a 4.2% LOSS, and a STRUCT POINTER in the leaf was most of it (2026-08-18)
+
+Everything `draw_road` reaches — its three stages, `interp_edge`, the four span-walk arms, the two
+plotters, the two end markers, `road_span_advance` and `abs16_math`.  With these the whole view
+pipeline from `build_track_geometry` through `draw_road` to `view_paint_lines` is real C: 16
+routines in `draw_road`'s tree, none transliterated.
+
+Four 30 s warp runs, `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`, every one from
+a `make clean`, all in one session, compared as ROW VECTORS:
+
+| build | non-outlier row mean | vs the transliteration |
+|---|---|---|
+| control (the same pass transliterated below `draw_road`) | **29.91** | — |
+| **twins #25-#39 as first written** | **28.64** | **-4.2%** |
+| + `always_inline` on `span_plot_core` and `span_walk` | 29.42 | -1.6% |
+| + the per-column tests hoisted out of the arm loop | **29.64** | **-0.9%** |
+
+⭐⭐ **THE FIRST LESSON IS §8's, IN A NEW FORM: A DESCRIPTOR STRUCT IS AS EXPENSIVE AS AN
+OUT-OF-LINE FLAG HELPER.**  The two plotters and the four arms are each one routine parameterised
+by a `const SpanPlotter*` / `const SpanArm*` — which is the right way to write them, because the
+six really are one algorithm with a handful of constants swapped.  Left out of line GCC passes a
+pointer and re-loads five or eight fields per call, in a routine that runs eight times per scan
+line.  `always_inline` makes every field an immediate at each of the six call sites and the struct
+disappears entirely; it also turns `arm->rev` and `arm->steep` into constants, so the four
+specialisations lose their direction tests.  **2.6 of the 4.2 points.**  This is the same rule as
+`REVS_FLAG_OP` and it generalises: *in this corpus, a parameter that is a compile-time constant at
+every call site must be inlined or it is a memory operand in the inner loop.*
+
+⭐ **THE SECOND IS THAT A LOOP IS NOT FREE WHERE THE 6502 UNROLLED.**  The arms are eight-column
+chains the original wrote out in full, 11 bytes a column; the twin walks them with `for (i = ...)`.
+Hoisting the two loop-invariant tests out (`first && i == startCol && forced` → a `force` flag
+cleared after the first column; `startCol < 4` → a `midAllowed` local) recovered another 0.7
+points.  The remaining 0.9% is the loop overhead itself, and re-unrolling to chase it would trade
+the legibility the twin exists for.
+
+⇒ **Standing conclusion, unchanged and now confirmed at the consumer end too:** twinning the road
+pass buys names and leaf-freedom, not milliseconds.  The pass's cost is `mem[]` traffic and the
+number of points, not its interpreter — the same conclusion as twins #16-#24 above and as
+`docs/direct-bitplane-plan.md` reaches for the rasteriser.  **Grep the objdump before believing any
+of it**: `jsr <sub_from>` and friends read 0 call sites in the final build.
+
 ### ⚠⚠ TWINS #14/#15: an ALL-ARITHMETIC LEAF TWIN THAT MADE IT SLOWER, and the one-line fix (2026-08-18)
 
 `bearing_to_section_from` (`$2147`) and `project_point_from` (`$2287`) are the road pass's two
