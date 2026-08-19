@@ -69,7 +69,11 @@ extern "C" {
 
 /* The five options the real page has.  `make trackmenu` diffs this configuration. */
 #define TM_OPTIONS_FAITHFUL  5u
-/* The most this page can hold: option 6 lands on row 22 and row 23 is the SPACE prompt. */
+/* The most this page can hold.  ⚠ When the sixth option (Nürburgring) is present the PRESS line
+   and the circuits below it are lifted two rows (trackmenu.c s_rowShift; the rules and REVS logo
+   stay put) so option 6 lands on row 20 with rows 21-22 blank before the row-23 SPACE prompt — the
+   same spacing the faithful five-option page has, which `make trackmenu` records.  The faithful
+   page is not lifted. */
 #define TM_OPTIONS_MAX       6u
 
 /* ⭐ MEASURED, not chosen: 10900001 cycles at 2 MHz between the title page appearing and the menu

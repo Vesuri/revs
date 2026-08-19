@@ -51,6 +51,14 @@ volatile unsigned short g_tmRefusals  = 0;
 volatile unsigned long  g_tmFields    = 0;
 
 static unsigned s_options   = TM_OPTIONS_FAITHFUL;
+/* Rows to lift the menu by, from the PRESS line down (the rules and the REVS logo above it stay
+   put).  0 for the faithful five-option page — which is what `make trackmenu` diffs byte-for-byte
+   against the real BBC, so it MUST stay put.  The port's sixth option (Nürburgring) would
+   otherwise land on row 22, jammed against the row-23 SPACE prompt; dropping the two line feeds
+   before PRESS lifts it and every circuit two rows, restoring the two blank rows the five-option
+   page has between its last circuit and the prompt.  ⚠ The prompt itself is NOT lifted — it stays
+   at row 23, and those two blank rows are the gap this creates. */
+static unsigned s_rowShift  = 0;
 static unsigned s_dwell     = 0;   /* fields the title page has been up for */
 static unsigned s_spaceSeenUp = 0; /* SPACE has been observed released since the digit landed */
 
@@ -102,7 +110,7 @@ static void logo(unsigned row)
    yellow on black.  `hot` recolours the field red — REVSMEN 240, `VDU129,157,131`. */
 static void option_row(unsigned n, int hot)
 {
-    tab(0, 10u + 2u * n);
+    tab(0, (10u + 2u * n) - s_rowShift);
     spaces(5);
     vdu(hot ? 129u : 132u);   /* alpha red when chosen, else alpha blue */
     vdu(157);                 /* new background = that colour           */
@@ -123,7 +131,7 @@ static void paint_menu(void)
     logo(3);                                  /* REVSMEN 90-120, twice                   */
     logo(4);
     rule(5);                                  /* REVSMEN 130                             */
-    tab(0, 10);                               /* REVSMEN 150                             */
+    tab(0, 10u - s_rowShift);                 /* REVSMEN 150                             */
     vdu(134); vdu(136);                       /*   alpha cyan, FLASH                     */
     text("    PRESS");
     for (n = 1; n <= s_options; n++) option_row(n, 0);
@@ -184,6 +192,9 @@ void tm_begin(unsigned options)
     if (options > REVS_TRACK_AVAILABLE) options = REVS_TRACK_AVAILABLE;
     if (options < 1) options = 1;
     s_options = options;
+    /* Lift the block only once it is taller than the faithful page (the sixth option).  The
+       five-option page stays exactly where `make trackmenu` recorded it. */
+    s_rowShift = (s_options > TM_OPTIONS_FAITHFUL) ? 2u : 0u;
     cross_check();
 
     g_tmPhase  = TM_TITLE;
