@@ -2047,7 +2047,8 @@ static int test_geometry_leaves(void)
             c.Y = (xs() % 4) ? (uint8_t)((xs() % 6) + ((xs() & 1) ? 0x28 : 0)) : (uint8_t)xs();
             c.A = (uint8_t)xs(); c.X = (uint8_t)xs();
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
-            c.D = (uint8_t)(xs() & 1);      /* both subtracts go through the real SBC */
+            c.D = 0;   /* render path is binary — the two subtracts are native 16-bit now
+                          (docs/static-map.md §Decimal mode) */
             if (xs() % 3 == 0)
                 pre[0x001F] = (uint8_t)(pre[0x5F20 + c.Y] - pre[0x004E]);   /* exactly on it */
             /* RESULTS, NOT DEAD EXIT FLAGS.  rebase_edge_point answers entirely in mem[] — the

@@ -1859,28 +1859,27 @@ void shift_near_edge_points(void)
    nothing has claimed the span yet, and the re-based scan line is offered to the frame's
    horizon in passing.
 
-   ⚠ V escapes: the routine ends on `CMP horizon_extent`, which does not write V, so the
-   overflow of the scan-line subtract is what the caller gets.  Both subtracts go through the
-   6502's own arithmetic for that reason.
+   The routine answers entirely in mem[] (the two edge cells, the scan line and the horizon
+   pair); its sole caller — road_edge_start's re-base loop — reads no exit register or flag, so
+   the subtracts' flags are dead (fixture: live=S) and they are plain 16-bit binary on the render
+   path (docs/static-map.md §Decimal mode).
    =========================================================================== */
 static void rebase_edge_point_core(uint8_t slot)
 {
     mem[EDGE_STYLE_TBL + slot] = 0;                                     /* $0BA2-$0BA4 */
 
-    /* $0BA7-$0BB6 — the point's stored azimuth, less this frame's heading step, as one 16-bit
-       subtract with the borrow carried from low to high.  sbc_value honours decimal mode (D can
-       be set on entry), which is the only reason the byte result differs from a plain subtract. */
-    Sbc lo = sbc_value(mem[EDGE_X_LO_TBL + slot], heading_step_lo, 1);
-    Sbc hi = sbc_value(mem[EDGE_X_HI_TBL + slot], heading_step_hi, lo.carry);
-    mem[EDGE_X_LO_TBL + slot] = lo.val;
-    mem[EDGE_X_HI_TBL + slot] = hi.val;
+    /* $0BA7-$0BB6 — the point's stored azimuth, less this frame's heading step (16-bit). */
+    uint16_t az = (uint16_t)(((unsigned)mem[EDGE_X_LO_TBL + slot] | ((unsigned)mem[EDGE_X_HI_TBL + slot] << 8))
+                           -  ((unsigned)heading_step_lo | ((unsigned)heading_step_hi << 8)));
+    mem[EDGE_X_LO_TBL + slot] = (uint8_t)az;
+    mem[EDGE_X_HI_TBL + slot] = (uint8_t)(az >> 8);
 
     /* $0BBA-$0BC0 — and its scan line, less the frame's pitch delta. */
-    Sbc line = sbc_value(mem[EDGE_Y_TBL + slot], view_pitch_delta, 1);
-    mem[EDGE_Y_TBL + slot] = line.val;
+    uint8_t line = (uint8_t)(mem[EDGE_Y_TBL + slot] - view_pitch_delta);
+    mem[EDGE_Y_TBL + slot] = line;
 
-    if (line.val >= horizon_extent) {                                  /* $0BC3-$0BC9 CMP (D-blind) */
-        horizon_extent = line.val;
+    if (line >= horizon_extent) {                                      /* $0BC3-$0BC9 CMP (D-blind) */
+        horizon_extent = line;
         horizon_index  = slot;
     }
 }
@@ -2021,11 +2020,12 @@ static uint8_t emit_edge_bearing_core(uint8_t slot)
 {
     cpu.Y = slot;         /* entered with Y = slot (the LDY at the call) and Y is unchanged to
                              exit — the walk reads it back, so it is a live output */
-    Sbc lo = sbc_value(bearing_lo, car_heading_lo, 1);          /* $23C0-$23C5 */
-    Sbc hi = sbc_value(bearing_hi, car_heading_hi, lo.carry);   /* $23C8-$23CC */
-
-    mem[EDGE_X_LO_TBL + slot] = lo.val;
-    mem[EDGE_X_HI_TBL + slot] = hi.val;
+    /* $23C0-$23CC — the point's angle FROM WHERE THE CAR POINTS: bearing - car_heading, one
+       16-bit subtract (binary on the render path — docs/static-map.md §Decimal mode). */
+    uint16_t rel = (uint16_t)(((unsigned)bearing_lo | ((unsigned)bearing_hi << 8))
+                            -  ((unsigned)car_heading_lo | ((unsigned)car_heading_hi << 8)));
+    mem[EDGE_X_LO_TBL + slot] = (uint8_t)rel;
+    mem[EDGE_X_HI_TBL + slot] = (uint8_t)(rel >> 8);
 
     return point_distance_hypot_apply();     /* $23CF JMP — the point's distance high byte in A */
 }
