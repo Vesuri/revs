@@ -68,8 +68,9 @@ extern volatile unsigned long g_probeBandTicks[PROBE_BANDS], g_probeBandCount[PR
 #define PROBE_IRQ_NULL()  probe_irq_null()
 
 /* Number of phases the table below can hold — one per top-level call in $1701-$1763,
-   plus id 0, plus slack. */
-#define PROBE_PHASES 40
+   plus id 0, plus slack.  ⚠ 40-43 are GEOSPLIT's sub-phases of build_track_geometry (see the
+   bottom of this file), so the table must be sized past them. */
+#define PROBE_PHASES 48
 
 /* ⭐ The DISPLAY-frame wait, bracketed on its own.
  *
@@ -224,3 +225,62 @@ extern volatile unsigned long g_beamEpoch;
 #define PROBE_PHASE_SPIN      28
 #define PROBE_PHASE_BODYARM   29
 #endif
+
+/* ===========================================================================
+ * ⭐⭐ `make GEOSPLIT=1 PROBES=1` — WHY IS build_track_geometry (phase 5) ~16% OF THE FRAME?
+ * ---------------------------------------------------------------------------
+ * Phase 5's whole call tree is native C already, so the ordinary levers are spent
+ * (docs/perf-method.md) and the standing conclusion is "fewer POINTS / fewer ACCESSES in the
+ * producers" — an ALGORITHMIC question a single phase-5 row cannot answer.  This instrument
+ * decomposes that row two ways in one run:
+ *
+ *   TIME  — four beam brackets carve phase 5 into its sub-phases (ids 40-43), so the ms land
+ *           where the work is: the near-point reuse pass vs the two distance walks vs the
+ *           horizon tail.  FOUR transitions a frame, so — like the VIEWTAIL/VIEWP2/P3 splits
+ *           (probe.h §32/§33) and unlike the per-line VIEWSPLIT — it costs nothing measurable
+ *           and phase 5 keeps only the driver remainder.
+ *   COUNTS — how many edge points each side visits, and how many times the two coordinate
+ *           transforms (bearing_to_section, project_point), the engine's divide (div16by8) and
+ *           the distance approximation (point_distance_hypot) run per frame.  This is the "why":
+ *           the pass is (points) x (per-point transform cost), and each point costs up to three
+ *           div16by8 (two in the bearing, one in the projection) of eight restoring steps each.
+ *           Platform-independent — reads nothing but its own counters — so `make GEOSPLIT=1` on
+ *           the HOST counts too (no beam there; the TIME split is Amiga-only).
+ *
+ * ⚠ A measurement build only.  Ids 40-43 sit above every real phase (PROBE_PHASES was bumped to
+ * hold them); a plain phase4_prof.gdb loop that stops at 40 will under-count the accounted% on a
+ * GEOSPLIT build — read it with amiga/geosplit.gdb, which sums through 43. */
+#define GEO_PHASE_START 40   /* road_edge_start — the near-point reuse pass          */
+#define GEO_PHASE_WALK0 41   /* road_side_walk(0) — one distance walk                */
+#define GEO_PHASE_WALK1 42   /* road_side_walk(0x80) — the other                     */
+#define GEO_PHASE_TAIL  43   /* the horizon record (index/extent/half-width)         */
+
+#ifdef REVS_GEOSPLIT
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern volatile unsigned long g_geoFrames;      /* build_track_geometry calls (= main loop) */
+extern volatile unsigned long g_geoPoints[2];    /* edge points visited, per road side       */
+extern volatile unsigned long g_geoSubdiv;       /* road_edge_walk_subdivide calls           */
+extern volatile unsigned long g_geoBearing;      /* bearing_to_section_core calls            */
+extern volatile unsigned long g_geoProject;      /* project_point_core calls                 */
+extern volatile unsigned long g_geoDiv;          /* div16by8_core calls — the engine's divide */
+extern volatile unsigned long g_geoHypot;        /* point_distance_hypot calls               */
+extern int g_geoSide;                            /* which side the current walk is emitting  */
+#ifdef __cplusplus
+}
+#endif
+#define GEO_COUNT(c)     (++(c))
+#define GEO_SIDE_SET(s)  (g_geoSide = (s))
+#define GEO_POINT()      (++g_geoPoints[g_geoSide & 1])
+#ifdef REVS_PROBE
+#define GEO_PHASE(id)    probe_phase(id)
+#else
+#define GEO_PHASE(id)    ((void)0)
+#endif
+#else
+#define GEO_COUNT(c)     ((void)0)
+#define GEO_SIDE_SET(s)  ((void)0)
+#define GEO_POINT()      ((void)0)
+#define GEO_PHASE(id)    ((void)0)
+#endif /* REVS_GEOSPLIT */

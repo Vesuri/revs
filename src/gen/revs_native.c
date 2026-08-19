@@ -1986,6 +1986,7 @@ static PointDist point_distance_hypot_core(uint8_t angle, uint16_t minMag, uint1
    the distance plus the shifted minimum are what the rest of the pass reads. */
 static uint8_t point_distance_hypot_apply(void)
 {
+    GEO_COUNT(g_geoHypot);
     PointDist d = point_distance_hypot_core(
                       shared_temp_7e,
                       (uint16_t)(hypot_min_lo | ((unsigned)hypot_min_hi << 8)),
@@ -2524,6 +2525,7 @@ static int angle_off_axis(unsigned addr, uint8_t threshold)
    this was the side's very first point — the road starts behind the camera. */
 static void road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
 {
+    GEO_COUNT(g_geoSubdiv);
     if (load_a(shared_counter_42) == 0)              /* $2403-$2407 */
         return;
 
@@ -2592,6 +2594,7 @@ static void road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
     shared_counter_42 = 0;                           /* $23D6 — points emitted so far */
 
     for (;;) {
+        GEO_POINT();   /* one edge point visited on this side */
         /* $23D8 — this point's angle, and how far away it is.  A comes back as the high byte
            of the distance point_distance_hypot ($0CA5) left in point_dist_lo/hi. */
         cpu.X = (uint8_t)section;
@@ -2678,6 +2681,7 @@ void road_edge_walk(void)
    direction bit holds); the walk then emits that side's points from `firstPoint` upward. */
 static void road_side_walk(uint8_t sideSelect, uint8_t firstPoint)
 {
+    GEO_SIDE_SET(sideSelect ? 1 : 0);
     RoadSide side = road_edge_side_apply(sideSelect);
     road_edge_walk_core(firstPoint, side.sectionIndex, (uint8_t)SECTION_MID, 0x12, 0x14);
 }
@@ -2714,16 +2718,21 @@ static void horizon_half_width_at(unsigned horizonPoint)
    parallel and lets everything downstream address a side by adding 40. */
 static void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1)
 {
+    GEO_COUNT(g_geoFrames);
     horizon_extent = 0;              /* $24F6: the road reaches nowhere until a walk says so */
     /* the nearest point of each side, and last frame's clamp */
+    GEO_PHASE(GEO_PHASE_START);
     road_edge_start_core(0x06, (uint8_t)EDGE_HALF, (uint8_t)SECTION_NEAR, 0x3C, 0x07);
 
     edge_nearest_hi = 0xFF;          /* no nearest point yet: the first one always wins */
     edge_nearest_section = 0x0D;     /* ...and do not subdivide before section 13 */
 
+    GEO_PHASE(GEO_PHASE_WALK0);
     road_side_walk(0x00, firstPointSide0);
     edge_end_side0 = edge_cursor;    /* where side 0 stopped, for draw_road to pair up */
+    GEO_PHASE(GEO_PHASE_WALK1);
     road_side_walk(0x80, firstPointSide1);
+    GEO_PHASE(GEO_PHASE_TAIL);
 
     /* $251D-$2529 — WHICH POINT IS THE HORIZON?  The walks record it as an index into
        whichever half they were writing, so fold it back into 0..39 and keep it for next
@@ -2764,6 +2773,7 @@ static void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPoin
     }
 
     horizon_half_width_at(horizonPoint);
+    GEO_PHASE(5);   /* reopen the enclosing phase: its remainder is the driver + the return */
 }
 
 /* The 6502-ABI shim.  Both walk cursors are constants in the 6502; they are arguments here
@@ -3279,6 +3289,7 @@ typedef struct { uint8_t quotient, remainder; } Div16By8;
    math_lo, which the loop consumes bit by bit and hands back as the quotient. */
 static Div16By8 div16by8_core(uint8_t dividendHi, uint8_t dividendLo, uint8_t divisor)
 {
+    GEO_COUNT(g_geoDiv);
     /* remainder in the high byte, dividend-becoming-quotient in the low byte — the pair the
        6502 keeps in A and math_lo, here shifted as ONE word. */
     uint16_t work = (uint16_t)(((uint16_t)dividendHi << 8) | dividendLo);
@@ -3575,6 +3586,7 @@ static void bearing_arm(unsigned largerComponent, unsigned smallerComponent,
 
 static void bearing_to_section_core(uint8_t sectionByte, uint8_t origin)
 {
+    GEO_COUNT(g_geoBearing);
     /* $2147-$2185 — components 0 and 2 of the delta: the ground plane. */
     ViewDelta d0 = view_delta(sectionByte, 0, origin);
     ViewDelta d2 = view_delta(sectionByte, 2, origin);
@@ -3628,6 +3640,7 @@ static void bearing_to_section_core(uint8_t sectionByte, uint8_t origin)
 
 static ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
 {
+    GEO_COUNT(g_geoProject);
     cpu.Y = origin;       /* origin arrives in Y (the LDY at the call); on the clip path Y is
                              unchanged to exit, so this is the exit value there */
 

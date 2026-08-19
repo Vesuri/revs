@@ -187,3 +187,19 @@ void probe_irq_end(int state)
 } /* extern "C" */
 
 #endif /* REVS_PROBE */
+
+/* ⭐⭐ GEOSPLIT counters — the "why phase 5 is 16%" call tallies (probe.h §GEOSPLIT).  Defined
+   independently of REVS_PROBE so `make GEOSPLIT=1` on the HOST counts without the beam machinery;
+   the beam TIME split reuses probe_phase and so needs REVS_PROBE (i.e. PROBES=1) on the Amiga. */
+#ifdef REVS_GEOSPLIT
+extern "C" {
+volatile unsigned long g_geoFrames = 0;
+volatile unsigned long g_geoPoints[2] = {0, 0};
+volatile unsigned long g_geoSubdiv = 0;
+volatile unsigned long g_geoBearing = 0;
+volatile unsigned long g_geoProject = 0;
+volatile unsigned long g_geoDiv = 0;
+volatile unsigned long g_geoHypot = 0;
+int g_geoSide = 0;
+}
+#endif

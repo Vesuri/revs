@@ -127,6 +127,45 @@ left is not "another twin":
    transliteration one
 3. **asm, last**, and only against the post-representation arrangement
 
+### ⭐⭐ Inside `build_track_geometry` (phase 5) — where its ~16% goes, and why
+
+Decomposed with `make GEOSPLIT=1 PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1` +
+`EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=geosplit.gdb ./diag_run.sh 30` (probe.h §GEOSPLIT — four
+beam brackets carve phase 5, and platform-independent call counters explain it). Silverstone
+practice, car driving, 348 frames. **A PROBES/warp share table — never diff it across builds.**
+
+**WHERE (time split of the ~64 ms/frame the pass costs in this build):**
+
+| Sub-phase | ms/frame | share of the pass |
+|---|---|---|
+| `road_edge_start` (near-point reuse) | 3 | 5% |
+| `road_side_walk(0)` — one distance walk | 29 | 46% |
+| `road_side_walk(0x80)` — the other | 30 | 48% |
+| horizon tail + driver remainder | ~0 | <1% |
+
+**The pass IS the two distance walks — 94% of it, and near-symmetric between the sides.** The
+reuse pass `road_edge_start` is cheap *because* it reuses last frame's nearest points; the horizon
+record and the routine's own driver are free. So an optimisation that does not touch the walk is
+optimising the 6%.
+
+**WHY (per-frame call counts, same run):**
+- **27 edge points visited** (13 per side), **0 subdivisions** on this near-straight section. Each
+  point runs the full transform chain: `bearing_to_section` → `point_distance_hypot` →
+  `project_point` → emit. So the walk cost is ~**2.2 ms per edge point**, and the pass scales with
+  the point count — which climbs on corners (each subdivision midpoint is another full chain).
+- **60 `div16by8` per frame** — the engine's 8-restoring-step divide, ~2.2 per point.
+- ⚠ **But not 3 divides per point.** `bearing_to_section` (30 calls, up to 2 divides each) +
+  `project_point` (29 calls, 1 each) would be ~89 divides; only **60** ran. The no-divide arms
+  fire often — bearing's 45° diagonal (equal magnitudes / dividend catching the divisor) and
+  project's far-clip early exit — so it averages ~1 divide per transform call, not the worst case.
+  A divide-elimination win is therefore bounded by the ~60 that actually run, not by the point count.
+
+**The lever this points at:** fewer points (the walk emits 13/side even straight; is that floor
+necessary?) and/or a cheaper per-point chain (the divide is central but not the whole 2.2 ms —
+arctan lookup, the hypot approximation and the emit machinery share it). This is the "fewer POINTS
+/ fewer ACCESSES" item above, now sized. Re-run `geosplit.gdb` **on a corner** (more subdivisions)
+before committing — this table is a near-straight section and undercounts the subdivision arm.
+
 ## Lessons — measurement
 
 - **Compare FPS row vectors, never the `total painted` line.** The total spans a partial

@@ -129,6 +129,14 @@ CFLAGS   += -DREVS_SHAPE
 CXXFLAGS += -DREVS_SHAPE
 endif
 
+# ⭐ `make GEOSPLIT=1` — build_track_geometry's per-frame call tallies (points, transforms,
+# divides), platform-independent so the host counts them for free (src/platform/probe.h §GEOSPLIT).
+# The beam TIME split is Amiga-only; here it is the COUNTS half.
+ifdef GEOSPLIT
+CFLAGS   += -DREVS_GEOSPLIT
+CXXFLAGS += -DREVS_GEOSPLIT
+endif
+
 # C sources: the 6502 CPU model + the generated transliteration + native twins.
 # The generated files do not exist until `make gen`; wildcard so a fresh clone builds.
 C_SRCS := \

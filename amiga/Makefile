@@ -156,6 +156,15 @@ ifdef VIEWCAL
 EXTRA_DEFINES += -DREVS_VIEWCAL=$(VIEWCAL)
 endif
 
+# ⭐⭐ `make GEOSPLIT=1 PROBES=1` — split build_track_geometry (phase 5) into its sub-phases
+# (ids 40-43: the near-point reuse, the two distance walks, the horizon tail) AND count the tree's
+# transforms/divides per frame.  The "why is phase 5 ~16%" instrument — src/platform/probe.h
+# §GEOSPLIT.  Four bracket transitions a frame, so quotable.  Read with amiga/geosplit.gdb.
+ifdef GEOSPLIT
+EXTRA_DEFINES += -DREVS_GEOSPLIT
+PROBE_SYMS_GEO = g_geoFrames g_geoPoints g_geoSubdiv g_geoBearing g_geoProject g_geoDiv g_geoHypot
+endif
+
 # `make NOUNITS=1` — ⚠⚠ THE PICTURE IS WRONG BY CONSTRUCTION.  The $7BE2 unit loop keeps its
 # iterations and loses its memory work, so `phase 24 with this on` is the per-line drivers plus
 # the bare loop.  A decomposition the VIEWSPLIT brackets cannot give honestly: bracketing 118
@@ -516,6 +525,9 @@ PROBE_SYMS += $(PROBE_SYMS_FILLWATCH)
 endif
 ifdef SHAPE
 PROBE_SYMS += $(PROBE_SYMS_SHAPE)
+endif
+ifdef GEOSPLIT
+PROBE_SYMS += $(PROBE_SYMS_GEO)
 endif
 ifdef HWTIME
 PROBE_SYMS += g_probeHwWrites g_probeHwReads g_probeHwTicks
