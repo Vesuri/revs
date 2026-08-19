@@ -1984,7 +1984,7 @@ static PointDist point_distance_hypot_core(uint8_t angle, uint16_t minMag, uint1
 
 /* The 6502-ABI shim: the two magnitudes and the angle are bearing_to_section's own cells, and
    the distance plus the shifted minimum are what the rest of the pass reads. */
-static void point_distance_hypot_apply(void)
+static uint8_t point_distance_hypot_apply(void)
 {
     PointDist d = point_distance_hypot_core(
                       shared_temp_7e,
@@ -2000,6 +2000,7 @@ static void point_distance_hypot_apply(void)
     point_dist_lo = (uint8_t)d.dist;
     point_dist_hi = (uint8_t)(d.dist >> 8);
     cpu.A         = (uint8_t)(d.dist >> 8);           /* live: road_edge_walk's running nearest */
+    return cpu.A;
 }
 
 void point_distance_hypot(void)
@@ -2018,7 +2019,7 @@ void point_distance_hypot(void)
    The subtract's own flags are all dead — the hypot's opening `LDA / CMP` overwrites N, Z and
    C and both of its exits overwrite V — so it is a value chain, not a flag chain.
    =========================================================================== */
-static void emit_edge_bearing_core(uint8_t slot)
+static uint8_t emit_edge_bearing_core(uint8_t slot)
 {
     cpu.Y = slot;         /* entered with Y = slot (the LDY at the call) and Y is unchanged to
                              exit — the walk reads it back, so it is a live output */
@@ -2028,7 +2029,7 @@ static void emit_edge_bearing_core(uint8_t slot)
     mem[EDGE_X_LO_TBL + slot] = lo.val;
     mem[EDGE_X_HI_TBL + slot] = hi.val;
 
-    point_distance_hypot_apply();                               /* $23CF JMP */
+    return point_distance_hypot_apply();     /* $23CF JMP — the point's distance high byte in A */
 }
 
 void emit_edge_bearing(void)
@@ -2043,10 +2044,10 @@ void emit_edge_bearing(void)
    exists because road_edge_walk always wants both together, where road_edge_start picks the
    slot itself and calls the two halves separately.
    =========================================================================== */
-static void emit_edge_bearing_at_cursor_core(uint8_t sectionByte)
+static uint8_t emit_edge_bearing_at_cursor_core(uint8_t sectionByte)
 {
     bearing_to_section_core(sectionByte, 0);        /* $23BB -> $2145: origin 0 = the camera */
-    emit_edge_bearing_core(edge_cursor);            /* $23BE — at the cursor point */
+    return emit_edge_bearing_core(edge_cursor);     /* $23BE — at the cursor point; A = its distance */
 }
 
 void emit_edge_bearing_at_cursor(void)
@@ -2594,8 +2595,7 @@ static void road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
         /* $23D8 — this point's angle, and how far away it is.  A comes back as the high byte
            of the distance point_distance_hypot ($0CA5) left in point_dist_lo/hi. */
         cpu.X = (uint8_t)section;
-        emit_edge_bearing_at_cursor_core((uint8_t)section);
-        unsigned distHi = cpu.A;
+        unsigned distHi = emit_edge_bearing_at_cursor_core((uint8_t)section);
 
         /* $23DB-$23FA — the RUNNING NEAREST, which is also project_point's far clip and the
            floor below which the walk refuses to subdivide. */
