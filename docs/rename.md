@@ -9,44 +9,20 @@ conventions, not here.
 applied one renumbered the rest, so four references in `symbols.csv` and `docs/` were pointing at
 the wrong entry by the time anyone read them.  Headings are the anchors now.
 
-⚠⚠ **Almost everything left in this file needs a MEASUREMENT, not more reading.**  The static
-evidence has been taken as far as it goes on the first five: each one names the cheap run that
-settles it.  Do not add a fact-shaped name to any of those cells in the meantime — an `[INFERRED]`
-row that says what is unsettled is worth more than a confident wrong name.  (The last entry, the
-`math_lo`/`math_hi` ordering, is the exception: it is settled fact and an open naming DECISION.)
+⚠⚠ **Everything left in this file needs a MEASUREMENT, not more reading.**  The static evidence has
+been taken as far as it goes: every remaining cell already carries an `[INFERRED]` name in
+`symbols.csv`, and each entry below names the cheap run that would settle it.  Do NOT add a
+fact-shaped name to any of these in the meantime — an `[INFERRED]` row that says what is unsettled
+is worth more than a confident wrong name.
+
+ℹ **The scoped-name decisions are SETTLED and gone** (arithmetic window `$0078`/`$0079`/`$008E`/
+`$008F`, `math_lo`/`math_hi`, and the `point_delta` window).  There is only ever one global symbol
+per address, so a "second set of scoped names" was never on the table: each cell keeps its primary
+name, `symbols.csv` records every tenancy in the note, and the twins carry file-local defines
+(`SPAN_*`, `SLIP_MAG_LO`, the `point_distance_hypot` back-to-front comment) so the code reads as
+what it computes.  Nothing to do there.
 
 ---
-
-## The ARITHMETIC WINDOW's second tenants — `$0078`/`$0079`/`$008E`/`$008F`
-
-What is left of the driving-model entry that twins #44-#86 emptied.  **Every routine and every
-plain cell it listed now has a name in `disasm/symbols.csv`** — `$4610` is
-`scale_by_track_gradient`, `$4DC9`/`$4DCB` are `begin_spin`/`begin_spin_from_a`, and `$0009`
-`$0022` `$0026` `$0028` `$003D` `$62F0` `$62FB` are `starter_random_mask`,
-`car_section_cursor`, `spin_countdown`, `spin_shake`, `engine_torque`, `camera_pitch_bias` and
-`section_jump_history`.  ⚠⚠ **The score for that entry's prose was 4 wrong premises out of 13
-rows** — two arms recorded backwards, one routine's evidence belonging to another, and `$44D5`
-attributed to `update_camera_and_drive_state` when it is inside `compute_segment_scale`.  Every
-one of the four was settled in a minute by a hex dump or a loop-bound count.  **Decide, don't
-re-read.**
-
-What genuinely remains is the SECOND-TENANT question, which is a naming DECISION and not a
-missing fact:
-
-* ⚠ **`$008E`/`$008F` are `plot_ptr3_lo`/`_hi`**, and `slip_magnitude`/`store_slip_clamped` are a
-  second tenant.  The windows do not overlap (the road pass and the driving model run in
-  different halves of the frame), but a twin that says `plot_ptr3_lo` while computing a slip
-  magnitude is a lie; the twins use a file-local name and this is the note that says why.
-* ⚠ **`$0078`** is `hypot_min_lo` to the road pass, the OUTPUT ELEMENT INDEX to
-  `damp_and_derive_loads`' second loop, and the NEGATED LOAD TERM to `update_grip_limits` —
-  where `$4C52`'s `ADC $78,X` reaches it for axle 0 and `$0079` for axle 1.  Three tenants.
-* ⚠ **`$0079`** is `hypot_min_hi` to the road pass, the SIGN/MODE byte to `mul16_signed` and
-  `apply_angle_term` (bit 7 = negate the product, bit 6 = accumulate instead of store), and that
-  same load term to `update_grip_limits`.
-
-⇒ The decision to make once, for this window and for the `point_delta` window below: a second
-set of names SCOPED to each pass, or notes that record every tenancy.  Not a per-cell call.
-
 
 ## `section_curve` (`$0701`) — the CURVATURE reading and the `car_flags_0` one
 
@@ -140,86 +116,27 @@ points, both walks start at 6, `shift_near_edge_points` slides exactly five entr
 MEASURED.  Cheap confirmation on the reference loop: drive at a steady speed and watch how often
 `$62F5` is set and what `$0007` reads when it is; it should equal the number of sections crossed.
 
-## `$5700` / `$5800` — the LAST unnamed pages of the track-data region
+## `$5700` / `$5800` — confirm the ACROSS-TRACK NORMAL reading with a dump
 
-⭐⭐ **The `$5400`/`$5500`/`$5600` question is SETTLED, and by the dump this entry asked for.**
-`make gen` + a 64 KB `REVS_MEM_DUMP` mid-race on Silverstone (frame 300) and on Brands
-(frame 120) says it in one look: the three pages are **the track's forward DIRECTION VECTOR at
-each track position**, 256 entries each, and they are now `track_dir_0` / `track_dir_1` /
-`track_dir_2` in `disasm/symbols.csv`.  Components 0 and 2 are the ground-plane pair, scaled so
-`|(c0,c2)| = $78 = 120` entry by entry; component 1 is the small signed gradient.  Both the
-installer reading and the geometry reading were true at once, exactly as this entry guessed —
-`ModifyGameCode` reads the first ~20 entries of the first two pages as its patch list, and the
-circuit's own hook then GENERATES the tables (BRANDS' generator is at `$54C0`, writing
-`$5400,Y`/`$5500,Y`/`$5600,Y`/`$5700,Y`/`$5800,Y`).  Silverstone, being passive, ships all 256
-entries as data — which is why its pages are smooth for all 256 and Brands' are smooth for 39
-and 6502 code after that.
+⭐⭐ **The `$5400`/`$5500`/`$5600` question is SETTLED and gone** — a 64 KB `REVS_MEM_DUMP` mid-race
+on Silverstone (frame 300) and Brands (frame 120) proved the three pages are the track's forward
+DIRECTION VECTOR per position, now `track_dir_0`/`track_dir_1`/`track_dir_2`.
 
-**What is still open is the other two pages.**  ⚠ CORRECTED 2026-08-18: this entry used to say
-only `draw_track_object`'s tree reads them.  Neither reader is in any of the campaign's trees —
-`$299D` is inside the OTHER-CAR projector (`$2937`) and `$1391` inside `$12F7` — so the decision
-has no group to ride along with and has to be made on its own.
+The two remaining pages are `[INFERRED]` from the generator, not yet measured.  BRANDS' generator
+(`$54C0`) writes `$5800,Y` as component 0 re-signed by `track_direction` and `$5700,Y` as
+component 2 re-signed AND negated — a 90-degree rotation of the forward vector, i.e. the
+**across-track NORMAL**.  Their readers are `$299D`-`$29A5` (into `point_delta_sign` components 0
+and 2, inside the other-car projector `$2937`) and `$1391` (inside `$12F7`).
 
-| site | reads | as |
-|---|---|---|
-| `$299D`-`$29A5` | `$5700,Y`, `$5800,Y` | `point_delta_sign` components 0 and 2 |
-| `$1391` | `$5700,Y` | (not yet read out) |
+The naming DECISION is closed the same way `track_dir` closed it: one global symbol per address, so
+`$5700` keeps `ModifyGameCode` (it is a code entry point) and its note records the runtime
+across-track-normal tenancy; `$5800` has no row of its own — it sits inside that function region —
+so the tenancy is noted on `$5700`.  There is nothing to rename.
 
-BRANDS' generator gives the shape away: `$5800,Y` is component 0 re-signed by
-`track_direction` and `$5700,Y` is component 2 re-signed AND negated — a 90-degree rotation of
-the forward vector, i.e. the **across-track NORMAL**.  ⇒ `track_normal_0` / `track_normal_2`
-[INFERRED from the generator].  ⚠ `$5700` cannot simply take that name: it is also
-`ModifyGameCode`'s ENTRY POINT, and one address gets one row.  **The region needs a third name
-for itself, not a rename of either tenant** — decide it while twinning `draw_track_object`,
-which is the tree that reads these two pages.
-
-## `math_lo`/`math_hi` (`$0074`/`$0075`) — `point_distance_hypot` fills them BACK TO FRONT
-
-Both rows say what the names say: `$74` is the low byte of the 16-bit math accumulator and `$75`
-the high byte, and that is how `mul8`, `abs16_math` and `div16by8` use them.  `point_distance_hypot`
-does not.  Its far arm ($0CC6-$0CD5) stages an eighth of the larger component with **the HIGH byte
-in `math_lo` and the LOW byte in `math_hi`**, and then subtracts the pair back off in that order
-($0CE7 `SBC math_hi` for the low half, $0CED `SBC math_lo` for the high) — it is consistent, and it
-is the opposite of the names.  `emit_edge_width_offset` uses the same two cells the ordinary way
-round for the width offset, so within one road pass the pair means both things.
-
-This is a naming question with no cheap measurement behind it, which is why it is a queue entry and
-not a rename: the honest fix is probably a THIRD pair of names scoped to the road pass rather than
-re-tagging the general accumulator, and that decision is worth making once — when `mul8`,
-`abs16_math` and the `$2C00`-`$2FFF` span plotters are twinned and every user of the pair is
-visible at once.  Until then twin #22's comment carries the warning at the point of use.
-
-⚠ Not a defect: the transliteration and the twin agree byte for byte (`make validate
-FN=point_distance_hypot`, and sabotage "the far arm forgets the -max/8 term" catches a swap).
-
-## `point_delta_lo` / `point_delta_hi` / `point_delta_sign` (`$0080`-`$0088`) — the span rasteriser is a SECOND tenant of all nine bytes
-
-The three arrays are named for what `build_track_geometry` puts in them: a camera-relative
-delta vector, three components each.  `interp_edge` and the four span arms then reuse the same
-nine bytes for something with no relation to it at all, and the notes do not say so:
-
-| cell | as the delta vector | as the span rasteriser uses it |
-|---|---|---|
-| `$0082` | `point_delta_lo[2]` | the span's END scan line |
-| `$0083` | `point_delta_hi[0]` | the DDA's major delta (dx) |
-| `$0084` | `point_delta_hi[1]` | the minor delta (dy) |
-| `$0085` | `point_delta_hi[2]` | the source-block index, 0..$2C, into `dash_block_starts` |
-| `$0086` | `point_delta_sign[0]` | which of the four arms — its bit 7 picks forward or reverse |
-| `$0087` | `point_delta_sign[1]` | the plotters' Y step, which becomes the `INY`/`DEY` opcode |
-| `$0088` | `point_delta_sign[2]` | a two-bit rolling clip history, one bit `ROR`ed in per call |
-
-The windows do not overlap — `build_track_geometry` finishes before `draw_road` starts — so this
-is the same safe arrangement as `shared_temp_8c`, and the twins carry file-local `SPAN_*` defines
-so the code reads as what it computes.  ⚠ `$0088` has a THIRD owner: `mark_line_surfaces` parks
-its surface class there for the whole of its walk (`$1A98`) — and a FOURTH, found while writing
-twins #58-#66: `rotate_state_pair` (`$48CB`) keeps the rotation's sign/mode byte there across its
-four `apply_angle_term_at` calls, because A is needed for the mode itself.  Four owners on one
-zero-page byte is the strongest argument in this file for scoped names.
-
-⇒ The open decision is whether the nine cells get a second set of names scoped to the span pass
-(as `docs/rename.md`'s `math_lo`/`math_hi` entry proposes for the arithmetic window) or whether
-the notes simply record both tenancies.  Worth deciding ONCE, for both windows, rather than
-twice — and the same commit should settle it for `$0074`/`$0075`.
+⇒ What is left is only the same class as the other entries: **confirm the normal reading with the
+same mid-race dump `track_dir` used** — dump `$5700-$58FF` on a moving Silverstone frame and check
+`(c0, c2)` there is the 90-degree rotation of `track_dir`'s ground-plane pair.  Until then the
+note stays `[INFERRED from the generator]`.
 
 ## `span_cap_surface_a` (`$0034`) / `span_cap_surface_b` (`$0033`) — what distinguishes them, beyond which one gets used
 
