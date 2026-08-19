@@ -2044,8 +2044,13 @@ static int test_geometry_leaves(void)
             c.D = (uint8_t)(xs() & 1);      /* both subtracts go through the real SBC */
             if (xs() % 3 == 0)
                 pre[0x001F] = (uint8_t)(pre[0x5F20 + c.Y] - pre[0x004E]);   /* exactly on it */
+            /* RESULTS, NOT DEAD EXIT FLAGS.  rebase_edge_point answers entirely in mem[] — the
+               two edge cells and the horizon pair; its sole caller (road_edge_start's re-base
+               loop) reads no exit register or flag before looping.  The clean core builds its
+               16-bit subtract from sbc_value (decimal-honouring) and leaves cpu untouched, so
+               A/N/V/Z/C on return are not its answer.  Keep S live for the stack-balance check. */
             subFail += diff_run("rebase_edge_point", pre, c, rebase_edge_point,
-                                rebase_edge_point__t6502, liveMask, t, &printed);
+                                rebase_edge_point__t6502, resultMask, t, &printed);
             if (mem[0x0051] != pre[0x0051] || mem[0x001F] != pre[0x001F]) tookHorizon++;
         }
         fail += subFail;
@@ -2053,7 +2058,7 @@ static int test_geometry_leaves(void)
             printf("[VACUOUS] rebase_edge_point: the horizon never moved in %d cases\n", cases);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=S (mem-only result)  "
                "(%d/%d beat the horizon)\n",
                "rebase_edge_point", cases, subFail, tookHorizon, cases);
     }

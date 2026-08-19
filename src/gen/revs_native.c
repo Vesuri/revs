@@ -1865,20 +1865,22 @@ void shift_near_edge_points(void)
    =========================================================================== */
 static void rebase_edge_point_core(uint8_t slot)
 {
-    unsigned angleLo, angleHi, line;
-
     mem[EDGE_STYLE_TBL + slot] = 0;                                     /* $0BA2-$0BA4 */
 
-    angleLo = sub_from(mem[EDGE_X_LO_TBL + slot], heading_step_lo);     /* $0BA7-$0BAE */
-    mem[EDGE_X_LO_TBL + slot] = (uint8_t)angleLo;
-    angleHi = sbc_step(mem[EDGE_X_HI_TBL + slot], heading_step_hi, cpu.C);
-    mem[EDGE_X_HI_TBL + slot] = (uint8_t)angleHi;
+    /* $0BA7-$0BB6 — the point's stored azimuth, less this frame's heading step, as one 16-bit
+       subtract with the borrow carried from low to high.  sbc_value honours decimal mode (D can
+       be set on entry), which is the only reason the byte result differs from a plain subtract. */
+    Sbc lo = sbc_value(mem[EDGE_X_LO_TBL + slot], heading_step_lo, 1);
+    Sbc hi = sbc_value(mem[EDGE_X_HI_TBL + slot], heading_step_hi, lo.carry);
+    mem[EDGE_X_LO_TBL + slot] = lo.val;
+    mem[EDGE_X_HI_TBL + slot] = hi.val;
 
-    line = sub_from(mem[EDGE_Y_TBL + slot], view_pitch_delta);          /* $0BBA-$0BC0 */
-    mem[EDGE_Y_TBL + slot] = (uint8_t)line;
+    /* $0BBA-$0BC0 — and its scan line, less the frame's pitch delta. */
+    Sbc line = sbc_value(mem[EDGE_Y_TBL + slot], view_pitch_delta, 1);
+    mem[EDGE_Y_TBL + slot] = line.val;
 
-    if (cmp_ge(line, horizon_extent)) {                                 /* $0BC3-$0BC9 */
-        horizon_extent = (uint8_t)line;
+    if (line.val >= horizon_extent) {                                  /* $0BC3-$0BC9 CMP (D-blind) */
+        horizon_extent = line.val;
         horizon_index  = slot;
     }
 }
