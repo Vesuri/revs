@@ -271,6 +271,38 @@ between `NOP`/`INY`/`CPX` and store addresses rewritten from `$19C0-$19CC`.  Tha
 or span-filler specialised at runtime, and it is the single most important region to get right.
 Everything in the table above is destined for `src/gen/revs_manual.c` (`docs/faithfulness-seam.md`).
 
+## ⭐ Decimal mode — the complete inventory (settled 2026-08-20, never re-derive)
+
+The 6502's D flag changes the RESULT BYTE of `ADC`/`SBC`, not just the flags, so every native
+twin that replaces an `adc_value`/`sbc_value` byte chain with plain 16-bit C arithmetic is only
+faithful where **D is provably 0**.  This is the once-and-for-all map: the runtime image has
+**exactly 8 `SED` sites**, each in a subsystem listed below, and **not one is on the per-frame
+race render/geometry pipeline**.
+
+| `SED` | routine | what it computes in BCD |
+|---|---|---|
+| `$0F66` | `sort_cars_by_key` | standings/classification sort — 3-byte lap-time compares (front end, 7 call sites) |
+| `$17C3` | `add_frame_time` | the race clock — adds one frame of elapsed time to a 3-byte BCD clock, every frame |
+| `$1B88` | `draw_corner_markers` | the marker **draw** (body's 16th call, *after* geometry); `SED`…`CLD` bracketed at `$1B8E` |
+| `$26DD` | `check_car_pair` | overtaking / position-change BCD counter at `$2F` |
+| `$4FB7` | `lap_complete` | best-lap BCD comparison against the lap-start stamp when a lap wraps |
+| `$5A61` | front-end/menu area | `SED` then `JSR menu_wait_key`; front-end control flow, not arithmetic on the race path |
+| `$65CE` | `menu_wait_key` | front-end menu selector; `SED`…`CLD`/`RTS` bracketed at `$65D1` |
+| `$6698` | `menu_wait_key` | as above, bracketed at `$66B4` |
+
+So decimal mode lives ENTIRELY in **race statistics** (clock, laps, standings, positions), the
+**corner-marker draw**, and the **front-end menu**.  The view/geometry pipeline —
+`build_track_geometry` → `road_edge_walk` → `bearing_to_section` → `point_distance_hypot` →
+`emit_edge_bearing` → `emit_edge_width_offset` → `project_point` → `draw_road` — contains **no
+`SED`** (verified: no `SED` in `$0CA5-$0CF1` or `$23C0-$2620`) and is only ever entered with D=0
+(the MOS clears D on reset and every IRQ entry `CLD`s; the BCD routines above all `SED`…`CLD`
+locally).  ⭐ **Consequence:** in any render/geometry twin, an `adc_value`/`sbc_value` chain is a
+plain binary 16-bit `+`/`-` and MUST be written as native C.  The differential still randomises D,
+so those fixtures pin `c.D = 0` with a one-line reference to this table (the render path's real
+precondition), and `make determinism-drive` (real race, real D state, 64 KB compared) is the
+empirical backstop that D=0 actually holds there.  Decimal-mode honouring stays ONLY in twins of
+the eight routines above, where BCD must be reproduced exactly.
+
 ## The per-track engine patches — the hook inventory
 
 `tools/track_hooks.py`.  `docs/entrypoint-sweep.md` called this "the known, named case"; here it

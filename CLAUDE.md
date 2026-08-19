@@ -354,9 +354,15 @@ Rules that must survive without opening `docs/perf-method.md`:
   (`docs/perf-method.md` §twins #25-#39).
 - ⭐⭐ **A 6502 macro writes FIVE cpu fields; a routine usually reads one.** `SBC` stores A/N/V/Z/C
   (~16-20 cycles each on a 68000) and computes V through mask chains, so a subtract chain pays it
-  over and over for flags that are dead at the exit. Use `sbc_value` for the chain and replay the
-  ONE escaping flag from its operands (`sbc_overflow`) — worth +2.5% in the road pass. ⚠ Decimal
-  mode must still be honoured: D changes the RESULT BYTE, not just the flags.
+  over and over for flags that are dead at the exit. Where a flag genuinely escapes, use `sbc_value`
+  for the chain and replay the ONE escaping flag from its operands (`sbc_overflow`).
+- ⭐⭐ **On the render/geometry path an `adc_value`/`sbc_value` byte chain is just a binary 16-bit
+  `+`/`-` — write it as native C.** Decimal mode is inventoried once and for all in
+  `docs/static-map.md` §Decimal mode: all 8 `SED` sites are race-stats / marker-draw / front-end
+  menu, NONE on `build_track_geometry`→`draw_road`, which is only ever entered with D=0. So the
+  byte-pair carry idiom there computes nothing a `uint16_t` add doesn't; keep `adc_value`/`sbc_value`
+  ONLY in twins of those 8 BCD routines. Render fixtures pin `c.D = 0` citing that table, and
+  `make determinism-drive` is the backstop that D=0 truly holds on the path.
 - ⚠⚠ **SIZE A ROAD-PASS ROUTINE WHILE DRIVING, NOT PARKED — it is 8x.** `div16by8` runs 7.8 times a
   frame parked and **60.5 driving** (`STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`), because
   `road_edge_start` reuses last frame's edge points. A parked call count next to a driving

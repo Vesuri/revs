@@ -1958,35 +1958,24 @@ typedef struct {
 static PointDist point_distance_hypot_core(uint8_t angle, uint16_t minMag, uint16_t maxMag)
 {
     PointDist r;
-    Adc       lo, hi;
 
     r.maxEighth = 0;
 
-    if (!cmp_ge(angle, 0x67)) {                       /* $0CA5-$0CA9 — the components diverge */
+    /* The 6502 spells every term as `LSR hi / ROR A` byte pairs and adds them with ADC/SBC
+       chains; on the render path D is always 0 (docs/static-map.md §Decimal mode), so each is
+       a plain binary 16-bit shift/add/subtract, wrapping mod 2^16 exactly as the byte chain did. */
+    if (angle < 0x67) {                               /* $0CA5-$0CA9 — the components diverge */
         r.farArm = 0;
         r.min    = (uint16_t)(minMag >> 3);           /* $0CAB-$0CB5 */
-
-        lo = adc_value((uint8_t)r.min, (uint8_t)maxMag, 0);                   /* $0CB6-$0CB9 */
-        hi = adc_value((uint8_t)(r.min >> 8), (uint8_t)(maxMag >> 8), lo.carry);
-        r.dist = (uint16_t)(((unsigned)hi.val << 8) | lo.val);
+        r.dist   = (uint16_t)(r.min + maxMag);        /* $0CB6-$0CB9 — max + min/8 */
         return r;
     }
 
+    /* $0CC2-$0CF0 — components comparable: max*7/8 + min/2, computed as (min/2 + max) - max/8. */
     r.farArm    = 1;
     r.min       = (uint16_t)(minMag >> 1);            /* $0CC2-$0CC4 */
     r.maxEighth = (uint16_t)(maxMag >> 3);            /* $0CC6-$0CD5 */
-
-    lo = adc_value((uint8_t)r.min, (uint8_t)maxMag, 0);                       /* $0CD7-$0CE2 */
-    hi = adc_value((uint8_t)(r.min >> 8), (uint8_t)(maxMag >> 8), lo.carry);
-
-    {   /* $0CE4-$0CF0 — ...less an eighth of the larger component.  Every add and this subtract
-           is value-only: the exit flags are dead at all four call sites (proven statically —
-           the road pass has no BVS/BVC, so even the lingering V is never read), so the whole
-           chain drops the 6502 flag bookkeeping.  Decimal mode is still honoured per byte. */
-        Sbc d  = sbc_value(lo.val, (uint8_t)r.maxEighth, 1);
-        Sbc dh = sbc_value(hi.val, (uint8_t)(r.maxEighth >> 8), d.carry);
-        r.dist = (uint16_t)(((unsigned)dh.val << 8) | d.val);
-    }
+    r.dist      = (uint16_t)(r.min + maxMag - r.maxEighth);
     return r;
 }
 

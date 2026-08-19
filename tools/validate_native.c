@@ -2113,7 +2113,9 @@ static int test_geometry_leaves(void)
             }
             c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
-            c.D = (uint8_t)(xs() & 1);      /* the adds and the subtract are real 6502 ones */
+            c.D = 0;   /* the render path is always binary (docs/static-map.md §Decimal mode:
+                          no SED reaches build_track_geometry), so the twin's 16-bit +/- IS the
+                          6502's here; determinism-drive is the backstop that D=0 truly holds. */
             if (pre[0x007E] < 0x67) nearArm++; else farArm++;
             subFail += diff_run("point_distance_hypot", pre, c, point_distance_hypot,
                                 point_distance_hypot__t6502, distMask, t, &printed);
@@ -2153,7 +2155,8 @@ static int test_geometry_leaves(void)
                 c.X = (uint8_t)(xs() % 0xF0);
                 c.A = (uint8_t)xs();
                 c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
-                c.D = (uint8_t)(xs() & 1);
+                c.D = 0;   /* render path is binary; and the tail-called point_distance_hypot is
+                              now native 16-bit (docs/static-map.md §Decimal mode) */
                 subFail += diff_run(E[i].name, pre, c, E[i].n, E[i].o, distMask, t, &printed);
             }
             fail += subFail;
