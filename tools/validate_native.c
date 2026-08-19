@@ -1051,6 +1051,63 @@ static int test_body_drivers(void)
     return fail;
 }
 
+void copy_dash_data(void);
+void copy_dash_data__t6502(void);
+
+/* ==========================================================================
+   $18EA copy_dash_data — THE SECOND UNPACK / STOW  (twin #115)
+   --------------------------------------------------------------------------
+   No callees and no self-modifying site: it just swaps the tails of the 41 $80-spaced source
+   blocks at $3000 with the $7768-$7FFF overlay page, forward to ASSEMBLE and (A bit7 set) in
+   reverse to STOW BACK.  So the fixture randomises the BYTES being moved (all of $3000-$7FFF
+   is left as fill_random left it), the per-block run lengths, and the direction; the whole
+   output is mem[].
+
+   ⭐ STEERED, and the reason is the address range, not a branch.  The two pointers are seeded
+   from dash_ptr_init ($192F); a random seed would send the walk anywhere, including the
+   $FC00-$FEFF hardware window, where the oracle's bus_write is logged on the hardware trace and
+   the twin's direct mem[] store is not — a divergence that measures the seed, not the copy.  The
+   real seed is fixed data (src $3000 / dst $7FB0) and dash_block_starts is static data always
+   below $4F (symbols.csv), so both are planted with legal values and the copy provably stays in
+   RAM.  A start offset >= $4F wraps the 6502's Y register through 256 offsets — reproduced
+   faithfully by the twin's uint8_t counter — but is not a state real data can reach, so it is a
+   DECLARED coverage limit rather than a case fed here.
+
+   ⭐ SABOTAGE RECORD: direction not flipped (assemble writes the block, not the overlay);
+   `dst -= bytes` -> `+=`; `src += $80` -> `+= $7F`; loop bound off by one (wrong byte count +
+   wrong shared_temp_76); seed pointers not read; exit X left at $28.  Each must FAIL.
+   ========================================================================== */
+static int test_copy_dash_data(void)
+{
+    static uint8_t pre[65536];
+    /* mem[] is the whole output; A/X/Y and flags are dead at both call sites (race_main_loop
+       overwrites them immediately) but reproduced and checked anyway. */
+    const unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_FLAGS;
+    const int cases = 800;
+    int fail = 0, printed = 0;
+
+    register_fixture("copy_dash_data");
+    if (!want("copy_dash_data")) return 0;
+
+    for (int t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        /* the engine's own seed: src $3000, dst base $7FB0 (block 0's last byte -> $7FFF) */
+        pre[0x192F] = 0x00; pre[0x1930] = 0x30;
+        pre[0x1931] = 0xB0; pre[0x1932] = 0x7F;
+        /* legal per-block start offsets 0..$4E, so every run stays inside $3000-$7FFF */
+        for (int b = 0; b < 0x29; b++) pre[0x3900 + b] = (uint8_t)(xs() % 0x4F);
+        /* both directions each ~half the cases; low 7 bits random to prove only bit 7 matters */
+        c.A = (uint8_t)((xs() & 0x7F) | ((t & 1) << 7));
+        c.D = 0;
+        fail += diff_run("copy_dash_data", pre, c, copy_dash_data,
+                         copy_dash_data__t6502, liveMask, t, &printed);
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags\n",
+           "copy_dash_data", cases, fail);
+    return fail;
+}
+
 /* ==========================================================================
    $22FF road_edge_start, $23D2 road_edge_walk, $254A road_edge_side, $3450 abs8
    --------------------------------------------------------------------------
@@ -4366,6 +4423,7 @@ int main(int argc, char** argv)
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();
+    fail += test_copy_dash_data();
     fail += test_geometry_callees();
     fail += test_div16by8();
     fail += test_road_transforms();

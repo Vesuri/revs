@@ -889,6 +889,11 @@ VALIDATE_FUNCS = {
     0x509D,
     0x50FA,
     0x50FC,
+    # ⭐ TWIN #115 — $18EA copy_dash_data, THE SECOND UNPACK / STOW.  Called twice per race
+    # (assemble the $7B00 dash/mirror/rasteriser overlay from the $80-spaced source blocks at
+    # setup; stow it back before MODE 7 at exit), so not hot — the twin buys legibility and a
+    # named model of the swap, not FPS.  Whole call tree is this one routine: no JSR, pure RAM.
+    0x18EA,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

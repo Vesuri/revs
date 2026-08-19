@@ -3132,6 +3132,101 @@ void fill_dash_edge_columns(void)
 }
 
 /* ===========================================================================
+   $18EA  copy_dash_data — THE SECOND UNPACK / STOW  (twin #115)
+   ---------------------------------------------------------------------------
+   The whole call tree is this one routine — it has no JSR of its own; it just moves bytes.
+   race_main_loop calls it twice per race:
+
+       A = $00  ASSEMBLE the $7B00-$7FFF overlay (the view rasteriser, the wing mirrors and
+                the dashboard bitmap) out of the live TAILS of the 41 $80-spaced source
+                blocks at $3000, which is why that page is $00 in every static image;
+       A = $80  STOW the (by now heavily self-modified) overlay back into those same tails
+                before the page goes back to being MODE 7 screen memory.
+
+   Both directions are the same block walk; only the copy direction flips, so it is one loop
+   with the store gated on bit 7 of A.  The two zero-page pointers are seeded from
+   dash_ptr_init ($192F): $70/$71 walks UP the source blocks (+$80 per block) and $72/$73
+   descends through the overlay page ($7FB0 down to $7768).
+
+   ⚠ TWO 6502 idioms are load-bearing and kept faithfully:
+     * Y and the per-block byte count are 8-bit and the loop tests Y AFTER decrementing it,
+       so the block's start offset is a sentinel that is NOT itself copied, and an out-of-range
+       start would wrap Y through all 256 offsets.  A `do { } while (y != start)` over uint8_t
+       reproduces both exactly.
+     * The forward copy in the original writes src->dst and then reads that byte straight back
+       to store dst->src — a provably identical value into the cell it just came from, so the
+       twin drops the redundant readback (it cannot change mem[]: src and dst never alias, the
+       block ranges being $3000-$444F and $7768-$7FFF).
+
+   No hardware writes and no callees — the whole thing is RAM.  Addresses are masked to 16 bits
+   so the faithful Y-wrap can never index past mem[]; with real data (block starts all < $4F)
+   the copy provably stays inside $3000-$7FFF and never reaches the hardware window.
+   =========================================================================== */
+
+#define DASH_PTR_INIT     0x192Fu   /* 4-byte seed: src lo/hi ($3000) then dst lo/hi ($7FB0) */
+#define DASH_BLOCK_STARTS 0x3900u   /* per block: the offset its live data begins at (< $4F) */
+#define DASH_BLOCK_COUNT  0x29u     /* 41 blocks */
+#define DASH_BLOCK_TOP    0x4Fu     /* a block's live data always ENDS at offset $4F */
+
+static void copy_dash_data_core(uint8_t dirFlag)
+{
+    /* Direction decided ONCE, not per byte: assemble reads a source block and writes the
+       overlay; stow does the reverse.  The block-side pointer walks UP the $80-spaced blocks
+       and the page-side pointer descends; only their read/write roles depend on the flag. */
+    const int stow = (dirFlag & 0x80) != 0;
+
+    uint16_t block = (uint16_t)(mem[DASH_PTR_INIT + 0] | (mem[DASH_PTR_INIT + 1] << 8));
+    uint16_t page  = (uint16_t)(mem[DASH_PTR_INIT + 2] | (mem[DASH_PTR_INIT + 3] << 8));
+
+    uint8_t bytes = 0;
+    for (uint8_t b = 0; b < DASH_BLOCK_COUNT; b++) {
+        const uint8_t *from = &mem[stow ? page  : block];
+        uint8_t       *to   = &mem[stow ? block : page];
+
+        /* Copy offsets $4F down to the block's start offset + 1 (the 6502 tests Y after
+           decrementing, so the start is a sentinel and is not itself copied).  ⚠ The sentinel
+           is RE-READ from mem[] each pass, not cached: block 18's source is $3900 — the
+           dash_block_starts table itself — so in stow mode this very copy overwrites the table,
+           including its own sentinel cell mid-descent, exactly as `CMP $3900,X` sees it.  Y and
+           the byte count are 8-bit and wrap as the 6502 register does. */
+        bytes = 0;
+        uint8_t y = DASH_BLOCK_TOP;
+        do {
+            to[y] = from[y];
+            bytes++;
+            y--;
+        } while (y != mem[DASH_BLOCK_STARTS + b]);
+
+        page  -= bytes;      /* page descended past the bytes just moved (16-bit) */
+        block += 0x80u;      /* next $80-spaced source block                       */
+    }
+
+    /* Leave the zero-page scratch exactly as the 6502 did.  Nothing outside the routine reads
+       these, but the differential compares all of mem[]. */
+    plot_ptr_lo     = (uint8_t)block;
+    plot_ptr_hi     = (uint8_t)(block >> 8);
+    plot_ptr2_lo    = (uint8_t)page;
+    plot_ptr2_hi    = (uint8_t)(page >> 8);
+    shared_temp_76  = bytes;
+}
+
+/* The 6502-ABI shim.  A carries the direction in on entry (and is stashed into math_lo ($74),
+   the routine's direction flag).  On exit A/X/Y and the flags carry the tail arithmetic:
+   `LDA $70 / ADC #$80` leaves A = final src low byte with the add's V; the block loop closes on
+   `CPX #$29` (X = $29, N=0 Z=1 C=1); Y is the last block's start offset the inner loop stopped on. */
+void copy_dash_data(void)
+{
+    uint8_t dirFlag = cpu.A;
+    math_lo = dirFlag;                                   /* $18EA STA $74 */
+    copy_dash_data_core(dirFlag);
+
+    cpu.A = (uint8_t)adc_step((uint8_t)(plot_ptr_lo - 0x80), 0x80u, 0);  /* A + V of `ADC #$80` */
+    cpu.X = DASH_BLOCK_COUNT;                            /* $29 */
+    cpu.Y = mem[DASH_BLOCK_STARTS + (DASH_BLOCK_COUNT - 1)];
+    cpu.N = 0; cpu.Z = 1; cpu.C = 1;                     /* CPX #$29 with X == $29 */
+}
+
+/* ===========================================================================
    $0C47  div16by8 — THE ENGINE'S DIVIDE  (twin #13)
    ---------------------------------------------------------------------------
    mul8's opposite number, and the one function project_point and bearing_to_section call:
