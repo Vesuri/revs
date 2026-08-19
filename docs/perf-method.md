@@ -6,6 +6,55 @@
 > no baseline yet, and inventing one would repeat the exact mistake this document describes".  Companion: `docs/m68k-optimisation.md` (what to do once you know where the time
 > goes), `docs/headless-fsuae.md` (how to drive the target).
 
+## ⭐⭐ THE PHASE-SHARE PROFILE — the exact recipe, so you never re-derive it
+
+**Question it answers:** where does one painted frame's time go, function by function.  SHARES within
+one run only — never diff a row across builds (Rule 2).  This is a copy-paste recipe; do NOT reverse-
+engineer the wiring each time.
+
+```
+cd amiga && . ./env.sh
+make clean && make -j4 PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1
+EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=phase4_prof.gdb ./diag_run.sh 30
+cat .run/gdb-out.log          # ⭐ READ THIS FILE, not the terminal output
+```
+
+Four things that are already handled — do not go looking for them again:
+
+1. **The car is MOVING.**  `PROBES=1` *already implies* hold-the-throttle (`REVS_PROBE` →
+   `AUTORUN_HOLD_THROTTLE`, `src/platform/autorun.cpp`).  You do NOT need `FPSCOUNT=1` (it disables
+   the probes) or `HOLD_THROTTLE=1` (redundant).  `STRAIGHT_TO_RACE=1` is what boots into the race;
+   without it the run profiles the menu.
+2. **`make clean` is mandatory before any PROBES build** (CLAUDE.md) — the Amiga Makefile tracks
+   neither defines nor the PROBES toggle, so a partial rebuild links a working-but-wrong binary.
+3. **Read `amiga/.run/gdb-out.log`, never the terminal.**  `diag_run.sh` ends with `tail -40`, which
+   silently drops the header — the accounted-% sanity line, phase 0, `body ticks/field`, and phases
+   1–4.  The full gdb output is redirected to `.run/gdb-out.log`; `cat` that.  (The clipped stdout
+   starting at "phase 5" is not a bug, it is the tail.)
+4. **`--warp_mode=1` changes no number** (all figures are ratios of emulated quantities) and runs
+   ~4.9× faster.  Always use it.
+
+**Read these two sanity lines EVERY time, before trusting a single share:**
+- `accounted NN.N%` **must be ~100** — below that the brackets are losing time and the table is
+  fiction (it was 4% before 2026-08-13).
+- `body ticks/field` **must be ~1** — the 50 Hz body must run once per display field, or the port is
+  running the sim at the wrong rate.
+
+**The phase→function map is DERIVED, not fixed** — the transpiler numbers the main-loop JSRs in
+address order (`$1701–$1763`), so it shifts if the loop changes.  Regenerate it with
+`grep -nE 'PROBE_PHASE\([0-9]+\)' src/gen/revs_gen.c` and read the call on the next line.  As of
+2026-08-19 (24 phases): 1 `tick_race_timers`, 2 `draw_starting_lights`, 3 `read_driving_controls`,
+4 `apply_driving_model`, **5 `build_track_geometry`**, 6 `place_player_in_section`,
+7 `advance_player_section`, 8 `update_lap_timers`, 9 `engine_sound_update`, 10 `clear_surface_buffers`,
+**11 `draw_road`**, 12 `engine_sound_update`, 13 `fill_line_surface`, 14 `build_road_sign`,
+15 `draw_track_object`, 16 `draw_corner_markers`, 17 `move_and_draw_cars`,
+**18 `fill_dash_edge_columns`**, 19 `mirrors_update`, 20 `engine_sound_update`,
+21 `update_horizon_band`, 22 `process_car_contact`, 23 `check_crash`, **24 `view_paint_lines`**.
+The synthetic rows keep fixed ids (`src/platform/probe.h`): 25 the paint call, **26 DRAIN** (50 Hz
+body), **27 DECODE** (BBC-buffer → bitplanes, pure port overhead), 28 SPIN, 29 the body arm, 32 the
+view-sweep tail, 33/34 `view_paint_lines` painting phases 2/3.  ⚠ `view_paint_lines`'s true cost is
+**24 + 32 + 33 + 34**, not phase 24 alone.
+
 ## The target machine
 
 **A500, 7 MHz 68000, PAL.**  A frame is 20 ms.  Spending 10 ms on *anything* is half the budget.
