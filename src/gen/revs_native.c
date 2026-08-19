@@ -8320,26 +8320,26 @@ static void vdu_char_emit_core(void);
    --------------------------------------------------------------------------- */
 static void mode5_addr_core(uint8_t quarterOffset)
 {
-    unsigned row;
+    /* $50FC-$5104 — the quarter offset doubled, spread across the pointer pair (the 6502
+       does it as ASL plot_ptr_lo / ROL A, i.e. a 9-bit x2). */
+    unsigned doubled = (unsigned)quarterOffset << 1;
+    plot_ptr_lo = (uint8_t)doubled;
+    plot_ptr_hi = (uint8_t)(doubled >> 8);
 
-    plot_ptr_lo = quarterOffset;                       /* $50FC */
-    LDA(0x00u);
-    ASL_M(MEM_plot_ptr_lo);                            /* $5100 — x2, so x8 from a column */
-    ROL_A();
-    plot_ptr_hi = cpu.A;
+    /* $5105-$5118 — add the character row's screen base; the high byte carries.  C and V
+       escape (they are the second add's), so the two adds keep going through adc_step. */
+    unsigned row = cpu.Y >> 3;
+    plot_ptr_lo = (uint8_t)adc_step(mem[CHAR_ROW_LO + row], plot_ptr_lo, 0);
+    plot_ptr_hi = (uint8_t)adc_step(mem[CHAR_ROW_HI + row], plot_ptr_hi, cpu.C);
 
-    TYA();                                             /* $5105 */
-    LSR_A(); LSR_A(); LSR_A();
-    TAX();
-    row = cpu.X;
-    LDA(mem[CHAR_ROW_LO + row]);                       /* $510A */
-    plot_ptr_lo = (uint8_t)adc_step(cpu.A, plot_ptr_lo, 0);
-    LDA(mem[CHAR_ROW_HI + row]);
-    plot_ptr_hi = (uint8_t)adc_step(cpu.A, plot_ptr_hi, cpu.C);
-
-    TYA();                                             /* $5119 — the line within the row */
-    AND(0x07u);
-    TAY();
+    /* $5119-$511F — the line within the row is the low three bits, and it leaves in both
+       A and Y with N/Z from it (N is always clear: the value is < 8). */
+    uint8_t line = cpu.Y & 0x07u;
+    cpu.X = (uint8_t)row;
+    cpu.A = line;
+    cpu.Y = line;
+    cpu.N = 0;
+    cpu.Z = (line == 0);
 }
 
 static void mode5_addr_for_cell_core(uint8_t column)
