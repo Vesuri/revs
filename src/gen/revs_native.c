@@ -1689,7 +1689,14 @@ static unsigned section_word(unsigned byteIndex)
 /* The two coordinate transforms (twins #14/#15), defined further down the file.  Everything
    in this pass reaches them through the cores, never through the 6502-ABI shims. */
 static void bearing_to_section_core(uint8_t sectionByte, uint8_t origin);
-static void project_point_core(uint8_t sectionByte, uint8_t origin);
+
+/* project_point's two register outputs, made explicit so a sibling core can take them as a
+   value instead of reading cpu.A / cpu.C back out: `line` is the projected scan line (the 6502
+   left it in A) and `clip` is the drop flag (C set = the point is behind the near plane or off
+   the top).  The mantissa/exponent it also produces stay in proj_width / proj_width_shift,
+   which is shared state the same way a mem[] cell is. */
+typedef struct { uint8_t line; int clip; } ProjPoint;
+static ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin);
 
 /* The 16-bit negate abs16_math falls into (twin #48), also defined further down. */
 static void neg16_math_core(uint8_t high);
@@ -3525,7 +3532,7 @@ static void bearing_to_section_core(uint8_t sectionByte, uint8_t origin)
     }
 }
 
-static void project_point_core(uint8_t sectionByte, uint8_t origin)
+static ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
 {
     cpu.Y = origin;       /* origin arrives in Y (the LDY at the call); on the clip path Y is
                              unchanged to exit, so this is the exit value there */
@@ -3554,7 +3561,7 @@ static void project_point_core(uint8_t sectionByte, uint8_t origin)
 
     if (clipped) {
         cpu.C = 1;                                  /* $22BC SEC — "drop this point" */
-        return;
+        return (ProjPoint){ cpu.A, cpu.C };
     }
 
     /* $22BE-$22D8 — normalise the DISTANCE until its top bit falls out, taking the height
@@ -3588,7 +3595,7 @@ static void project_point_core(uint8_t sectionByte, uint8_t origin)
     /* $22E3-$22E7 — a quotient past $80 is off the top of the 0..79 scan-line space, and
        leaves by the same carry-set door as the far clip. */
     if (cmp_ge(math_lo, 0x80u))
-        return;
+        return (ProjPoint){ cpu.A, cpu.C };         /* C set by the CMP — the same drop door */
 
     /* $22E9-$22FD — 60 either side of the camera's eye level, less the frame's smoothed
        pitch, and that is the scan line. */
@@ -3600,6 +3607,7 @@ static void project_point_core(uint8_t sectionByte, uint8_t origin)
     line           = sub_from(line, view_pitch_offset);
     projected_line = (uint8_t)line;
     cpu.C          = 0;                             /* $22FD CLC — the point survived */
+    return (ProjPoint){ cpu.A, cpu.C };             /* A holds the line (sub_from left it there) */
 }
 
 /* The 6502-ABI shims.  ⚠ Only the BODIES are twinned: $2145 and $2285 stay transliterated,
@@ -7417,8 +7425,8 @@ static void build_road_sign_core(void)
     shared_counter_42 = cpu.A;
     note_object_contact_core(threshold);
     LDY(VIEW_ORIGIN_STRIDE);
-    project_point_core(cpu.X, cpu.Y);
-    write_object_slot_core(cpu.A, cpu.C);
+    { ProjPoint p = project_point_core(cpu.X, cpu.Y);   /* $4D1B */
+      write_object_slot_core(p.line, p.clip); }          /* $4D1E — the projected line and its drop flag */
 }
 
 /* The 6502-ABI shims. */
