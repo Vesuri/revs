@@ -44,6 +44,18 @@
 #include "../platform/shape.h"        /* PROBE_SHAPE_DASH_UNIT(): the §7a unit counter */
 #include "../platform/revs_plot.h"    /* REVS_PLOT_*: the direct-to-bitplane run plotter */
 
+/* The object plotter (twin #94), defined far below but called from race_main_loop_core with
+   the object slot count.  The main loop reaches it through the core, not the 6502-ABI shim. */
+static void draw_track_object_core(uint8_t slot);
+
+/* The rest of the frame body's steps, all defined far below.  race_main_loop_core reaches each
+   through its core so the whole hot path is core-to-core with no 6502-ABI shim hops. */
+static void read_driving_controls_core(void);
+static void apply_driving_model_core(uint8_t posLo, uint8_t posHi);
+static void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1);
+static void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);
+static void build_road_sign_core(void);
+
 /* ===========================================================================
    The flag-carrying primitives.  These exist so that no other line in this file
    has to be written in 6502; see the header.
@@ -1482,22 +1494,22 @@ static void race_main_loop_core(RestartDepth depth)
 
             PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers();
             PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  draw_starting_lights();
-            PROBE_PHASE(3);  PROBE_SHAPE_PHASE(3);  read_driving_controls();
-            PROBE_PHASE(4);  PROBE_SHAPE_PHASE(4);  apply_driving_model();
-            PROBE_PHASE(5);  PROBE_SHAPE_PHASE(5);  build_track_geometry();
+            PROBE_PHASE(3);  PROBE_SHAPE_PHASE(3);  read_driving_controls_core();
+            PROBE_PHASE(4);  PROBE_SHAPE_PHASE(4);  apply_driving_model_core(car_heading_lo, car_heading_hi);
+            PROBE_PHASE(5);  PROBE_SHAPE_PHASE(5);  build_track_geometry_core(0x06, 0x2E);
             PROBE_PHASE(6);  PROBE_SHAPE_PHASE(6);  place_player_in_section();
             PROBE_PHASE(7);  PROBE_SHAPE_PHASE(7);  advance_player_section();
             PROBE_PHASE(8);  PROBE_SHAPE_PHASE(8);  update_lap_timers();
             PROBE_PHASE(9);  PROBE_SHAPE_PHASE(9);  engine_sound_update();
             PROBE_PHASE(10); PROBE_SHAPE_PHASE(10); clear_surface_buffers();
             PROBE_SHAPE_ROAD_BEFORE();
-            PROBE_PHASE(11); PROBE_SHAPE_PHASE(11); draw_road();
+            PROBE_PHASE(11); PROBE_SHAPE_PHASE(11); draw_road_core(edge_cursor, edge_end_side0);
             PROBE_SHAPE_ROAD_AFTER();
             PROBE_PHASE(12); PROBE_SHAPE_PHASE(12); engine_sound_update();
             PROBE_PHASE(13); PROBE_SHAPE_PHASE(13); fill_line_surface();
-            PROBE_PHASE(14); PROBE_SHAPE_PHASE(14); build_road_sign();
-            arg_x(0x17);                                   /* $172B: the object slot count */
-            PROBE_PHASE(15); PROBE_SHAPE_PHASE(15); draw_track_object();
+            PROBE_PHASE(14); PROBE_SHAPE_PHASE(14); build_road_sign_core();
+            /* $172B: the object slot count is the starting slot */
+            PROBE_PHASE(15); PROBE_SHAPE_PHASE(15); draw_track_object_core(0x17);
             PROBE_PHASE(16); PROBE_SHAPE_PHASE(16); draw_corner_markers();
             PROBE_PHASE(17); PROBE_SHAPE_PHASE(17); move_and_draw_cars();
             PROBE_PHASE(18); PROBE_SHAPE_PHASE(18); fill_dash_edge_columns();
@@ -1681,6 +1693,31 @@ static void project_point_core(uint8_t sectionByte, uint8_t origin);
 
 /* The 16-bit negate abs16_math falls into (twin #48), also defined further down. */
 static void neg16_math_core(uint8_t high);
+
+/* draw_road's three producers (twins #26/#28/#29), defined much further down — the road pass
+   reaches them through the cores, not the 6502-ABI shims. */
+static void mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint);
+static void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint);
+static void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint);
+static void fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn, uint8_t firstLine);
+static void plot_object_core(uint8_t slot);
+static void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect);
+
+/* apply_driving_model's sub-models (twins #58-#86), all defined further down.  It reaches
+   every one through its core so the whole chain is one native call sequence, not shim hops. */
+static void compute_car_angles_core(uint8_t headingHi, uint8_t headingLo);
+static void rotate_state_pair_core(uint8_t dest, uint8_t source, uint8_t mode);
+static void stage_accum_delta_core(void);
+static void update_grip_limits_core(void);
+static void update_engine_revs_core(void);
+static void update_slip_sound_core(uint8_t axle);
+static void rotate_accum_by_steer_core(void);
+static void rotate_pair_a_by_steer_core(void);
+static void damp_and_derive_loads_core(void);
+static void apply_drag_terms_core(void);
+static void integrate_state_rates_core(void);
+static void integrate_car_position_core(void);
+static void update_camera_and_drive_state_core(void);
 
 /* `value >= limit` through the 6502's CPX, which also leaves X = value.  The near-slot clamps
    below end on one of these, so the compare's own C/N/Z are their exit flags. */
@@ -1976,6 +2013,8 @@ void point_distance_hypot(void)
    =========================================================================== */
 static void emit_edge_bearing_core(uint8_t slot)
 {
+    cpu.Y = slot;         /* entered with Y = slot (the LDY at the call) and Y is unchanged to
+                             exit — the walk reads it back, so it is a live output */
     Sbc lo = sbc_value(bearing_lo, car_heading_lo, 1);          /* $23C0-$23C5 */
     Sbc hi = sbc_value(bearing_hi, car_heading_hi, lo.carry);   /* $23C8-$23CC */
 
@@ -2000,8 +2039,7 @@ void emit_edge_bearing(void)
 static void emit_edge_bearing_at_cursor_core(uint8_t sectionByte)
 {
     bearing_to_section_core(sectionByte, 0);        /* $23BB -> $2145: origin 0 = the camera */
-    arg_y(edge_cursor);                             /* $23BE, and Y is live into the callee */
-    emit_edge_bearing_core(cpu.Y);
+    emit_edge_bearing_core(edge_cursor);            /* $23BE — at the cursor point */
 }
 
 void emit_edge_bearing_at_cursor(void)
@@ -2394,9 +2432,7 @@ static void road_edge_start_core(uint8_t nearSlotCount,   /* 6 — also the "not
         emit_edge_bearing_core(cpu.Y);               /* edge_x[Y] = bearing - car_heading */
 
         if (point < halfStride) {                    /* $2379 CPX #$28 */
-            cpu.X = scratchSection;
-            arg_y(0);                                /* $2285: the camera is origin 0 */
-            project_point_core(scratchSection, 0);
+            project_point_core(scratchSection, 0);    /* origin 0 = the camera */
             unsigned line = projected_line;
             mem[EDGE_Y_TBL + point]              = (uint8_t)line;
             mem[EDGE_Y_TBL + halfStride + point] = (uint8_t)line;
@@ -2526,7 +2562,6 @@ static void road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
        nothing; otherwise it gets its width offset with the marker list frozen. */
     cpu.X = midSlot;
     emit_edge_bearing_at_cursor_core(midSlot);
-    arg_y(0);
     project_point_core(midSlot, 0);
     if (cpu.C)
         return;
@@ -2568,7 +2603,6 @@ static void road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
 
         /* $23FC-$2401 — project it.  Carry = past the far clip, N = behind the camera. */
         cpu.X = (uint8_t)section;
-        arg_y(0);
         project_point_core((uint8_t)section, 0);
         if (cpu.C || cpu.N) {
             road_edge_walk_subdivide(section, midSlot);
@@ -2674,7 +2708,8 @@ static void horizon_half_width_at(unsigned horizonPoint)
 static void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1)
 {
     horizon_extent = 0;              /* $24F6: the road reaches nowhere until a walk says so */
-    road_edge_start();               /* the nearest point of each side, and last frame's clamp */
+    /* the nearest point of each side, and last frame's clamp */
+    road_edge_start_core(0x06, (uint8_t)EDGE_HALF, (uint8_t)SECTION_NEAR, 0x3C, 0x07);
 
     edge_nearest_hi = 0xFF;          /* no nearest point yet: the first one always wins */
     edge_nearest_section = 0x0D;     /* ...and do not subdivide before section 13 */
@@ -2763,9 +2798,7 @@ void build_track_geometry(void)
    the limit, the line is sky. */
 static uint8_t mark_side_surfaces(uint8_t surfaceClass)
 {
-    arg_a(road_split_index);
-    arg_x(surfaceClass);
-    mark_line_surfaces();
+    mark_line_surfaces_core(surfaceClass, road_split_index);
     return cpu.Y;
 }
 
@@ -2774,9 +2807,7 @@ static uint8_t mark_side_surfaces(uint8_t surfaceClass)
    land in. */
 static void surface_pass(uint8_t pass, uint8_t firstPoint)
 {
-    arg_y(pass);
-    arg_a(firstPoint);
-    draw_surface_spans();
+    draw_surface_spans_core(pass, firstPoint);
 }
 
 /* The two side cursors are arguments; horizon_index and road_split_index deliberately are NOT.
@@ -2796,24 +2827,19 @@ static void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     plot_ptr2_lo = 0;                /* the second screen pointer, for a span that crosses a page */
     plot_ptr3_lo   = 0;              /* the third screen pointer's low byte — road_span_plot_2 stores through it */
 
-    /* Side 1 (the 40..79 half): its line map, then its two span passes. */
-    arg_a(0x00);                     /* the low byte of line_attr_0 — A patches the store */
-    arg_x((uint8_t)farBase);
-    arg_y(endCursorFar);
-    fill_line_attr();
+    /* Side 1 (the 40..79 half): its line map, then its two span passes.  $00 is the low byte
+       of line_attr_0 (it patches the store), endCursorFar the stop cursor, farBase the start. */
+    fill_line_attr_core(0x00, endCursorFar, (uint8_t)farBase);
 
     surface_style_base = 0x00;
     surface_pass(0, road_split_index);
 
     surface_style_base = 0x08;
     shared_temp_8c  = 0x00;
-    /* ⚠ Pass 1 does not go through surface_pass, and the difference is the ORDER: the 6502
-       loads Y first and computes the base LAST, so it is the addition's flags — not a plain
-       `LDA`'s — that reach the callee.  The base is also RECOMPUTED rather than farBase
-       reused, because that is what the 6502 does. */
-    arg_y(1);
-    adc_step(horizon_index, 0x28, 0);
-    draw_surface_spans();
+    /* ⚠ Pass 1 does not go through surface_pass: its base is RECOMPUTED rather than farBase
+       reused, because that is what the 6502 does (draw_surface_spans recomputes its own start
+       flags from firstPoint, so only the value matters). */
+    draw_surface_spans_core(1, (uint8_t)adc_step(horizon_index, 0x28, 0));
 
     line_attr_0_limit = mark_side_surfaces(0x04);
 
@@ -2823,10 +2849,8 @@ static void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     unsigned nearBase = horizon_index;
     road_split_index = (uint8_t)clamp_up_to(nearBase, 0x09);
 
-    arg_a(0x50);                     /* ...and this is the low byte of line_attr_1 */
-    arg_x((uint8_t)nearBase);
-    arg_y(endCursorNear);
-    fill_line_attr();
+    /* ...and $50 is the low byte of line_attr_1, endCursorNear the stop, nearBase the start. */
+    fill_line_attr_core(0x50, endCursorNear, (uint8_t)nearBase);
 
     shared_temp_8c  = 0x1C;
     surface_style_base = 0x10;
@@ -2891,10 +2915,8 @@ void draw_road(void)
 static void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
 {
     /* $46A1 — the car's body angles, computed from where the car actually is. */
-    arg_a(posHi);
-    arg_x(posLo);
-    compute_car_angles();
-    rotate_state_0_into_8();
+    compute_car_angles_core(posHi, posLo);
+    rotate_state_pair_core(8u, 0u, 0xC0u);   /* rotate_state_0_into_8 */
 
     /* $46AE — the accumulator's entry value, for the restore at $46DF. */
     model_accum_entry_lo = model_accum_lo;
@@ -2912,11 +2934,10 @@ static void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
 
     /* $46CF-$46DA — the four sub-models that run against the OFFSET accumulator.  stage_accum_delta is
        what offsets it, and what leaves model_accum_delta_lo/hi behind. */
-    stage_accum_delta();
-    update_grip_limits();
-    update_engine_revs();
-    arg_x(0x01);
-    update_slip_sound();
+    stage_accum_delta_core();
+    update_grip_limits_core();
+    update_engine_revs_core();
+    update_slip_sound_core(0x01);
 
     /* $46DF-$46F5 — restore, then apply the frame's real increment as one 16-bit add. */
     model_accum_lo = model_accum_entry_lo;
@@ -2926,11 +2947,10 @@ static void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
 
     /* $46F8-$4703 — and the sub-models that want the accumulator at its new value.  Each of the
        two rotations ends in model_integrate_element, on element 8 and on element $0A. */
-    rotate_accum_by_steer();
-    arg_x(0x00);
-    update_slip_sound();
-    rotate_pair_a_by_steer();
-    damp_and_derive_loads();
+    rotate_accum_by_steer_core();
+    update_slip_sound_core(0x00);
+    rotate_pair_a_by_steer_core();
+    damp_and_derive_loads_core();
 
     /* $4706-$4717 — off power: elements 5..7 are zeroed rather than integrated.  The loop's
        exit registers (X = $FF, A = 0, N set) are dead — apply_drag_terms opens with `LDA`. */
@@ -2944,11 +2964,11 @@ static void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
 
     /* $4719-$4725 — the tail.  integrate_car_position is what advances car_heading_lo/hi, so
        the car has not actually moved until the second-to-last call of the chain. */
-    apply_drag_terms();
-    rotate_state_6_into_3();
-    integrate_state_rates();
-    integrate_car_position();
-    update_camera_and_drive_state();
+    apply_drag_terms_core();
+    rotate_state_pair_core(3u, 6u, 0x40u);   /* rotate_state_6_into_3 */
+    integrate_state_rates_core();
+    integrate_car_position_core();
+    update_camera_and_drive_state_core();
 }
 
 /* The 6502-ABI shim.  The player's own position is the routine's one input — it reaches the
@@ -3032,7 +3052,7 @@ static void draw_track_object_core(uint8_t slot)
                rewrites N and Z, and nothing between them branches. */
             plot_line = mem[OBJECT_LINE + slot];
             proj_width  = (uint8_t)load_a(mem[OBJECT_WIDTH + slot]);
-            plot_object();
+            plot_object_core(slot);
         }
     }
 
@@ -3086,10 +3106,7 @@ static void edge_column_pass(uint16_t startSrc, uint8_t firstColumn, uint8_t sto
 {
     plot_ptr2_hi = (uint8_t)(startSrc >> 8);
     plot_ptr2_lo = (uint8_t)startSrc;
-    arg_y(firstLine);
-    arg_x(firstColumn);
-    arg_a(stopColumn);
-    fill_edge_column_run();
+    fill_edge_column_run_core(firstColumn, stopColumn, firstLine);
 }
 
 /* The two boundary tables are the arguments because they are the one thing a change of view
@@ -3510,6 +3527,9 @@ static void bearing_to_section_core(uint8_t sectionByte, uint8_t origin)
 
 static void project_point_core(uint8_t sectionByte, uint8_t origin)
 {
+    cpu.Y = origin;       /* origin arrives in Y (the LDY at the call); on the clip path Y is
+                             unchanged to exit, so this is the exit value there */
+
     /* $2287-$22AE — component 1 of the delta, the HEIGHT, and the only component that is
        scaled on the way in: >> 3 as a 16-bit pair before anything looks at it. */
     ViewDelta d      = view_delta(sectionByte, 1, origin);
@@ -4574,6 +4594,9 @@ static void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint)
     mem[OPERAND_DEST_P1_LO] = cpu.A;
     mem[OPERAND_DEST_P2_LO] = cpu.A;
 
+    /* ⚠ The LDX/LDY are not just X/Y setup: LDY sets the N flag from span_index_near, and
+       interp_edge's PHP pushes it to the stack, where the differential sees it ($01FF).  So
+       this call KEEPS the 6502 register+flag setup — it is not a plain arg-plumbing site. */
     LDX(span_index_far);
     LDY(span_index_near);
     cpu.C = 1;                                /* the first point is published, not drawn */
@@ -5978,8 +6001,7 @@ static void derive_slip_reference_core(void)
     }
 
     math_hi = cpu.A;                                             /* $4BBC */
-    LDA(pedal_amount);                                           /* $4BBE */
-    mul8();                                                      /* $4BC0 */
+    mul8_core(pedal_amount);                                     /* $4BBE-$4BC0 */
     LDY(pedal_mode); DEY();                                      /* $4BC3-$4BC5 */
     if (cpu.Z) {                                                 /* $4BC6 BNE */
         LSR_A();                                                 /* $4BC8 — on the throttle, */
@@ -6016,8 +6038,7 @@ static void check_wheel_slip_core(uint8_t axle)
     PHP();
 
     /* $4A9A-$4AA8 — -model_accum << 5 into element 10 + axle's high byte. */
-    LDA(model_accum_hi);
-    neg16_math();                           /* $4A9D — the UNCONDITIONAL negate entry */
+    neg16_math_core(model_accum_hi);        /* $4A9A-$4A9D — the UNCONDITIONAL negate entry */
     LDY(0x05u);
     for (;;) {
         uint8_t low = math_lo;
@@ -6209,12 +6230,14 @@ static void sound_stop_channel_core(uint8_t chan)
    ⭐ The squeal is queued at amplitude 1 on sound slot 3, and the guard is
    sound_chan_state[3]: the MOS is asked once, not once per frame.
    --------------------------------------------------------------------------- */
-static void update_slip_sound_core(void)
+static void update_slip_sound_core(uint8_t axle)
 {
+    cpu.X = axle;                                   /* the axle arrives in X on the 6502 */
+
     LDA(drive_state);                               /* $4779 */
     CMP(0x02u);                                     /* $477B */
     if (!cpu.C) {                                   /* $477D BCS → the silence arm */
-        check_wheel_slip_core(cpu.X);               /* $477F */
+        check_wheel_slip_core(cpu.X);               /* $477F — preserves X */
         LDA(mem[MEM_slip_flags + cpu.X]);           /* $4782 */
         AND(0xC0u);                                 /* $4785 — the last TWO frames */
         if (!cpu.Z) {                               /* $4787 BNE → the squeal arm, $4795 */
@@ -6245,7 +6268,7 @@ void sound_osword(void)         { sound_osword_core(); }
 void sound_queue(void)          { sound_queue_core(cpu.A, cpu.Y); }
 void sound_queue_default(void)  { sound_queue_core(cpu.A, sound_volume); }
 void sound_stop_channel(void)   { sound_stop_channel_core(cpu.X); }
-void update_slip_sound(void)    { update_slip_sound_core(); }
+void update_slip_sound(void)    { update_slip_sound_core(cpu.X); }
 
 /* ===========================================================================
    TWINS #79-#86 — THE EIGHT SUB-MODELS, and with them the whole of
@@ -7627,8 +7650,7 @@ static void plot_shape_edges_core(void)
         LDA(mem[SHAPE_EDGE_STYLE + cpu.Y]);
         mem[OBJ_EDGE_STYLE] = cpu.A;
         span_saved_index = cpu.Y;
-        LDY(0x01u);
-        plot_view_src_line();
+        plot_view_src_line_core(0x01u, cpu.A);
 
         for (;;) {
             BIT(mem[OBJ_EDGE_STYLE]);                     /* $20F1 */
@@ -7643,20 +7665,16 @@ static void plot_shape_edges_core(void)
                 mem[OBJ_EDGE_X] = mem[SHAPE_VERTEX + cpu.X];
                 LDA(mem[SHAPE_EDGE_X_1 + cpu.Y]);
                 mem[OBJ_EDGE_STYLE] = cpu.A;
-                LDY(0x00u);
-                plot_view_src_line();
+                plot_view_src_line_core(0x00u, cpu.A);
                 LDY(span_saved_index);
                 LDX(mem[SHAPE_EDGE_LINE_0 + cpu.Y]);
                 mem[OBJ_EDGE_X] = mem[SHAPE_VERTEX + cpu.X];
                 LDA(mem[SHAPE_EDGE_STYLE + cpu.Y]);
                 mem[OBJ_EDGE_STYLE] = cpu.A;
-                LDY(0x00u);
-                plot_view_src_line();
+                plot_view_src_line_core(0x00u, cpu.A);
                 continue;
             }
-            LDA(0x00u);                                   /* $20F5 — close it */
-            LDY(0x02u);
-            plot_view_src_line();
+            plot_view_src_line_core(0x02u, 0x00u);        /* $20F5 — close it */
             BIT(mem[OBJ_EDGE_STYLE]);
             if (cpu.V) return;                            /* bit 6: the shape ends here */
             LDY(span_saved_index);
