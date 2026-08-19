@@ -7142,15 +7142,14 @@ static void build_sign_origin_core(uint8_t offset, uint8_t shift)
     math_lo        = (uint8_t)staged;
     math_hi        = (uint8_t)(staged >> 8);              /* $4D35 */
 
-    /* $4D37-$4D4C — subtract it from the camera's own component, into origin 6. */
+    /* $4D37-$4D4C — subtract it from the camera's own component, into origin 6.  Y is left as
+       the component index and the second subtract's flags are the routine's exit flags. */
     component = shared_temp_77;
-    LDY(component);
-    DEC_M(MEM_shared_temp_77);
-    LDA(mem[VIEW_ORIGIN_LO + component]);
-    cpu.A = (uint8_t)sub_from(cpu.A, math_lo);
-    mem[VIEW_ORIGIN_LO + VIEW_ORIGIN_STRIDE + component] = cpu.A;
-    LDA(mem[VIEW_ORIGIN_HI + component]);
-    cpu.A = (uint8_t)sbc_step(cpu.A, math_hi, cpu.C);
+    cpu.Y = component;
+    shared_temp_77 = (uint8_t)(component - 1u);
+    mem[VIEW_ORIGIN_LO + VIEW_ORIGIN_STRIDE + component] =
+        (uint8_t)sub_from(mem[VIEW_ORIGIN_LO + component], math_lo);
+    cpu.A = (uint8_t)sbc_step(mem[VIEW_ORIGIN_HI + component], math_hi, cpu.C);
     mem[VIEW_ORIGIN_HI + VIEW_ORIGIN_STRIDE + component] = cpu.A;
 }
 
@@ -7224,20 +7223,19 @@ static void write_object_slot_core(uint8_t projectedLine, int behindNearClip)
 {
     unsigned width;
     int      places;
+    uint8_t  slot = shared_counter_42;                   /* $2A76 */
 
-    LDY(shared_counter_42);                              /* $2A76 */
+    cpu.Y = slot;
     if (behindNearClip) { reject_object_slot_core(); return; }      /* $2A78 BCS */
 
     cpu.A = (uint8_t)sub_from(projectedLine, 0x01u);     /* $2A7A-$2A7B */
     if (cpu.N) { reject_object_slot_core(); return; }    /* $2A7D BMI */
-    mem[OBJECT_LINE + cpu.Y] = cpu.A;                    /* $2A7F */
+    mem[OBJECT_LINE + slot] = cpu.A;                     /* $2A7F */
 
     /* $2A82-$2A99 — the exponent correction.  X carries the count and its own sign picks the
        direction, which is why the twin keeps it in a signed int; both loops end with X at 0. */
-    cpu.A  = (uint8_t)sub_from(proj_width_shift, 0x09u);
-    TAX();
-    width  = load_a(proj_width);                         /* $2A88 — its N/Z die at the DEX */
-    DEX();
+    cpu.X  = (uint8_t)((uint8_t)sub_from(proj_width_shift, 0x09u) - 1u);   /* TAX / DEX */
+    width  = proj_width;                                 /* $2A88 — its N/Z die at the DEX */
     places = (int)(int8_t)cpu.X;
     /* ⚠ EACH LOOP'S LAST SHIFT LEAVES ITS BIT IN C, AND THAT C IS THE ROUTINE'S EXIT C —
        nothing between here and the RTS writes it.  The twin replays that one bit from the
@@ -7255,11 +7253,14 @@ static void write_object_slot_core(uint8_t projectedLine, int behindNearClip)
         cpu.X = 0;
     }
     cpu.A = (uint8_t)width;
-    mem[OBJECT_WIDTH + cpu.Y] = cpu.A;                   /* $2A99 */
+    mem[OBJECT_WIDTH + slot] = cpu.A;                    /* $2A99 */
 
-    LDA(mem[CAR_FLAGS_SHAPE + cpu.Y]);                   /* $2A9C */
-    AND(0x70u);                                          /* the flag bits that survive */
-    ORA(plot_shape);
+    /* $2A9C-$2AA3 — keep the surviving flag bits, drop this shape in the low nibble, store.
+       The ORA's N/Z are the routine's exit flags. */
+    cpu.A = (uint8_t)((mem[CAR_FLAGS_SHAPE + slot] & 0x70u) | plot_shape);
+    cpu.N = (cpu.A >> 7) & 1u;
+    cpu.Z = (cpu.A == 0);
+    cpu.Y = slot;
     store_object_flags_core();                           /* $2AA3 JMP */
 }
 
@@ -7276,85 +7277,80 @@ static void build_road_sign_core(void)
     uint8_t signIndex, tableByte, threshold;
 
     /* $4CA4-$4CBB — which sign.  The player's segment record carries it in its high nibble;
-       an unchanged segment shows the NEXT sign (see the group header, item 4). */
-    LDX(player_car);
-    LDY(mem[CAR_SEGMENT_TBL + cpu.X]);
-    LDA(mem[TRACK_SEGMENT_HI + cpu.Y]);
-    LSR_A(); LSR_A(); LSR_A(); LSR_A();
-    saved_slot_index = cpu.A;
-    CMP(sign_last_index);
-    if (cpu.Z) {                                         /* $4CB5 BNE — the same sign again */
-        ADC(0x00u);                                      /* C is the equal CMP's own carry */
-        AND(0x0Fu);
+       an unchanged segment shows the NEXT sign (see the group header, item 4).  A and X both
+       carry the index out of this block (LDA/…/TAX), which is the state a table-load trap
+       reports. */
+    {
+        uint8_t seg    = mem[CAR_SEGMENT_TBL + player_car];
+        uint8_t nibble = (uint8_t)(mem[TRACK_SEGMENT_HI + seg] >> 4);   /* LSR A x4 */
+        saved_slot_index = nibble;
+        cpu.C = cmp_ge(nibble, sign_last_index);         /* CMP: A=nibble, N/Z/C (not V) */
+        if (cpu.Z) {                                     /* $4CB5 — the same sign again */
+            cpu.A  = (uint8_t)adc_step(nibble, 0x00u, cpu.C);   /* ADC #0, C set by the equal CMP */
+            cpu.A  = (uint8_t)(cpu.A & 0x0Fu);           /* AND #$0F -> N/Z */
+            cpu.N  = (cpu.A >> 7) & 1u;
+            cpu.Z  = (cpu.A == 0u);
+            nibble = cpu.A;
+        }
+        cpu.A = nibble;                                  /* TAX: X<-A, N/Z from the value */
+        cpu.X = nibble;
+        cpu.N = (nibble >> 7) & 1u;
+        cpu.Z = (nibble == 0u);
+        signIndex = nibble;
     }
-    TAX();
-    signIndex = cpu.X;
 
     /* $4CBC-$4CD5 — the sign's own view origin, components 2, 1, 0.  shared_temp_77 is the
        component cursor build_sign_origin walks down, so the ORDER of these three carries the
-       meaning, and the shifts differ: x64 across the ground plane, x16 up. */
-    LDY(0x02u);
-    shared_temp_77 = cpu.Y;
+       meaning, and the shifts differ: x64 across the ground plane, x16 up.  Y holds the shift
+       at each load, so a trap reports it. */
+    cpu.Y = 0x02u; cpu.N = 0; cpu.Z = 0;                 /* LDY #$02 */
+    shared_temp_77 = cpu.Y;                              /* the component cursor: 2, then 1, then 0 */
     tableByte = sign_table_byte(SIGN_OFFSET_2_SITE, signIndex, &trapped);
     if (trapped) return;
-    LDA(tableByte);
-    build_sign_origin_core(cpu.A, 0x02u);
-    LDY(0x04u);
+    build_sign_origin_core(tableByte, 0x02u);            /* x64 across the ground plane */
+    cpu.Y = 0x04u; cpu.N = 0; cpu.Z = 0;                 /* LDY #$04 */
     tableByte = sign_table_byte(SIGN_OFFSET_1_SITE, signIndex, &trapped);
     if (trapped) return;
-    LDA(tableByte);
-    build_sign_origin_core(cpu.A, 0x04u);
-    LDY(0x02u);
+    build_sign_origin_core(tableByte, 0x04u);            /* x16 up */
+    cpu.Y = 0x02u; cpu.N = 0; cpu.Z = 0;                 /* LDY #$02 */
     tableByte = sign_table_byte(SIGN_OFFSET_0_SITE, signIndex, &trapped);
     if (trapped) return;
-    LDA(tableByte);
-    build_sign_origin_core(cpu.A, 0x02u);
+    build_sign_origin_core(tableByte, 0x02u);
 
     /* $4CD6-$4CDE — the shape: the low three bits of the sign's table byte, plus 7.  The
        object plotter's shapes 7..14 are the signs. */
     tableByte = sign_table_byte(SIGN_SHAPE_SITE, signIndex, &trapped);
     if (trapped) return;
-    LDA(tableByte);
-    AND(0x07u);
-    plot_shape = (uint8_t)adc_step(cpu.A, 0x07u, 0);
+    plot_shape = (uint8_t)adc_step((uint8_t)(tableByte & 0x07u), 0x07u, 0);
 
     /* $4CE0-$4CEA — ...and the SEGMENT it is anchored to, in the same byte's top five bits (a
        multiple of 8, which is what a segment index is), into a scratch live section. */
     tableByte = sign_table_byte(SIGN_SEGMENT_SITE, signIndex, &trapped);
     if (trapped) return;
-    LDA(tableByte);
-    AND(0xF8u);
-    TAY();
-    LDX(SIGN_SCRATCH_SECTION);
+    cpu.Y = (uint8_t)(tableByte & 0xF8u);                /* the segment index (a multiple of 8) */
+    cpu.X = SIGN_SCRATCH_SECTION;
     load_section_triple_core(cpu.X, cpu.Y);
 
     /* $4CEB-$4CF9 — the bearing, FROM THE SIGN'S OWN ORIGIN, into slot $17. */
-    LDY(VIEW_ORIGIN_STRIDE);
+    cpu.Y = VIEW_ORIGIN_STRIDE;
     bearing_to_section_core(cpu.X, cpu.Y);
     mem[OBJECT_BEARING_LO + SIGN_SLOT] = bearing_lo;
-    LDA(bearing_hi);
+    cpu.A = bearing_hi;
     mem[OBJECT_BEARING_HI + SIGN_SLOT] = cpu.A;
 
     /* $4CFA-$4D08 — how far off the car's heading the sign is.  Past $40 it has left the view,
        and THAT is what commits the sign number for the next frame. */
     cpu.A = (uint8_t)sub_from(cpu.A, car_heading_hi);
     abs8();
-    CMP(0x40u);
-    if (cpu.C) {
-        LDY(saved_slot_index);
-        sign_last_index = cpu.Y;
-    }
+    if (cmp_ge(cpu.A, 0x40u))                            /* the sign has left the view */
+        sign_last_index = saved_slot_index;
 
     /* $4D09-$4D1F — the contact threshold widens for a sign well off to the side, then the
-       projection and the slot write. */
-    LDY(0x25u);
-    CMP(0x6Eu);                                          /* still the off-heading distance */
-    if (cpu.C) LDY(0x50u);
-    threshold = cpu.Y;
-    LDA(SIGN_SLOT);
-    shared_counter_42 = cpu.A;
+       projection and the slot write.  The CMP is still the off-heading distance in A. */
+    threshold = cmp_ge(cpu.A, 0x6Eu) ? 0x50u : 0x25u;
+    shared_counter_42 = SIGN_SLOT;
     note_object_contact_core(threshold);
-    LDY(VIEW_ORIGIN_STRIDE);
+    cpu.Y = VIEW_ORIGIN_STRIDE;
     { ProjPoint p = project_point_core(cpu.X, cpu.Y);   /* $4D1B */
       write_object_slot_core(p.line, p.clip); }          /* $4D1E — the projected line and its drop flag */
 }
@@ -7458,59 +7454,66 @@ void note_object_contact(void)  { note_object_contact_core(cpu.Y); }
    --------------------------------------------------------------------------- */
 static void scale_shape_vectors_core(void)
 {
-    int i;
+    int      i;
+    unsigned a;
+    uint8_t  y = mem[OBJ_VECTOR_CURSOR];             /* $2043 — the shape's vector cursor */
 
-    /* $202A-$2042 — the width, then five halvings. */
-    LDA(proj_width);
-    mem[SHAPE_SCALE_TBL + 2] = cpu.A;
-    for (i = 3; i <= 7; i++) { LSR_A(); mem[SHAPE_SCALE_TBL + i] = cpu.A; }
+    /* $202A-$2042 — the width, then five halvings into shape_scale_tbl[2..7]. */
+    a = proj_width;
+    mem[SHAPE_SCALE_TBL + 2] = (uint8_t)a;
+    for (i = 3; i <= 7; i++) { a >>= 1; mem[SHAPE_SCALE_TBL + i] = (uint8_t)a; }
 
-    LDY(mem[OBJ_VECTOR_CURSOR]);                     /* $2043 */
-    LDX(0x00);
-    shared_temp_77 = cpu.X;                          /* the output cursor */
+    shared_temp_77 = 0x00u;                          /* the output cursor */
 
     for (;;) {
-        LDA(mem[SHAPE_VECTOR_TBL + cpu.Y]);          /* $2049 */
-        if (cpu.N) {
+        uint8_t vec = mem[SHAPE_VECTOR_TBL + y];     /* $2049 */
+        uint8_t x;
+
+        if (vec & 0x80u) {
             /* $204E-$2071 — a TWO-TERM vector: scale[bits 0-2] + scale[bits 3-5], and a third
-               half-width when bit 6 is set. */
-            uint8_t raw;
-            AND(0x07);
-            TAX();
-            math_lo = mem[SHAPE_SCALE_TBL + cpu.X];
-            raw     = mem[SHAPE_VECTOR_TBL + cpu.Y];
-            LDA(raw);
-            math_hi = cpu.A;
-            LSR_A(); LSR_A(); LSR_A();
-            AND(0x07);
-            TAX();
-            LDA(mem[SHAPE_SCALE_TBL + cpu.X]);
-            cpu.A = (uint8_t)adc_step(cpu.A, math_lo, 0);
-            BIT(math_hi);
+               half-width when bit 6 is set.  math_lo/math_hi are left as scratch. */
+            math_lo = mem[SHAPE_SCALE_TBL + (vec & 0x07u)];
+            math_hi = vec;
+            a = adc_step(mem[SHAPE_SCALE_TBL + ((vec >> 3) & 0x07u)], (uint8_t)math_lo, 0);
+            cpu.V = (math_hi >> 6) & 1u;             /* BIT math_hi — only its V survives */
             if (cpu.V)
-                cpu.A = (uint8_t)adc_step(cpu.A, mem[SHAPE_SCALE_TBL + 3], 0);
+                a = adc_step((uint8_t)a, mem[SHAPE_SCALE_TBL + 3], 0);
         } else {
-            TAX();                                   /* $2072 — one term */
-            LDA(mem[SHAPE_SCALE_TBL + cpu.X]);
+            a = mem[SHAPE_SCALE_TBL + vec];          /* $2072 — one term */
         }
 
         /* $2076-$207F — plot_object's extra halving, rounded by the closing `ADC #0`. */
-        LDX(proj_width_shift);
-        if (!cpu.Z) {
-            do { LSR_A(); DEX(); } while (!cpu.Z);
-            cpu.A = (uint8_t)adc_step(cpu.A, 0x00u, cpu.C);
+        if (proj_width_shift != 0u) {
+            unsigned n     = proj_width_shift;
+            uint8_t  carry = 0;
+            do { carry = (uint8_t)(a & 1u); a >>= 1; } while (--n != 0u);
+            a = adc_step((uint8_t)a, 0x00u, carry);
         }
 
-        LDX(shared_temp_77);                         /* $2080 */
-        mem[SHAPE_VERTEX + cpu.X] = cpu.A;
-        EOR(0xFFu);
-        if (!cpu.N) { SEC(); return; }               /* $2087 — over $7F, abandon the object */
+        /* $2080-$2096 — store the scaled offset and its negation; reject if it needs eight bits. */
+        x = shared_temp_77;
+        mem[SHAPE_VERTEX + x] = (uint8_t)a;
+        cpu.A = (uint8_t)(a ^ 0xFFu);                /* EOR #$FF */
+        cpu.N = 0;
+        cpu.Z = (cpu.A == 0);
+        if (a & 0x80u) {                             /* $2087 — over $7F, abandon the object */
+            cpu.X = x;
+            cpu.Y = y;
+            cpu.C = 1;                               /* SEC */
+            return;
+        }
         cpu.A = (uint8_t)adc_step(cpu.A, 0x01u, 0);  /* $2089 — ...and its negation */
-        mem[SHAPE_VERTEX + 8 + cpu.X] = cpu.A;
-        INC_M(MEM_shared_temp_77);
-        INY();
-        CPY(mem[OBJ_VECTOR_END]);
-        if (cpu.Z) { CLC(); return; }                /* $2096 — every vertex fitted */
+        mem[SHAPE_VERTEX + 8 + x] = cpu.A;
+        shared_temp_77 = (uint8_t)(x + 1u);          /* INC shared_temp_77 */
+        y = (uint8_t)(y + 1u);                       /* INY */
+        if (y == mem[OBJ_VECTOR_END]) {              /* $2094 CPY OBJ_VECTOR_END */
+            cpu.X = x;
+            cpu.Y = y;
+            cpu.N = 0;                               /* CPY equal: Y-END == 0 */
+            cpu.Z = 1;
+            cpu.C = 0;                               /* CLC — every vertex fitted */
+            return;
+        }
     }
 }
 
@@ -7533,62 +7536,57 @@ static void scale_shape_vectors_core(void)
    --------------------------------------------------------------------------- */
 static void plot_shape_edges_core(void)
 {
-    LDY(plot_ptr3_lo);                                    /* $209A — the shape's first edge */
+    cpu.Y = plot_ptr3_lo;                                 /* $209A — the shape's first edge */
 
     for (;;) {
         int rejected = 0;
 
         /* $209C-$20A6 — per-edge state: the running colour and the deferred-byte pair. */
-        LDA(mem[SURFACE_COLOURS_TBL]);
-        hypot_min_hi        = cpu.A;
+        hypot_min_hi        = mem[SURFACE_COLOURS_TBL];
         span_defer_pending  = 0x00;
         shared_temp_8c      = 0x00;
 
         /* $20A7-$20B8 — the span's BOTTOM line, clamped to $4F. */
-        LDX(mem[SHAPE_EDGE_LINE_0 + cpu.Y]);
-        LDA(mem[SHAPE_VERTEX + cpu.X]);
-        cpu.A = (uint8_t)adc_step(cpu.A, plot_line, 0);
+        cpu.X = mem[SHAPE_EDGE_LINE_0 + cpu.Y];
+        cpu.A = (uint8_t)adc_step(mem[SHAPE_VERTEX + cpu.X], plot_line, 0);
         if (cpu.N) rejected = 1;
         if (!rejected) {
-            CMP(0x50u);
-            if (cpu.C) LDA(0x4Fu);
+            if (cmp_ge(cpu.A, 0x50u)) cpu.A = 0x4Fu;      /* CMP #$50; BCS clamps to $4F */
             span_line_cursor = cpu.A;
 
             /* $20BA-$20D4 — ...and its TOP line, floored at the horizon. */
-            LDX(mem[SHAPE_EDGE_LINE_1 + cpu.Y]);
-            LDA(mem[SHAPE_VERTEX + cpu.X]);
-            cpu.A = (uint8_t)adc_step(cpu.A, plot_line, 0);
+            cpu.X = mem[SHAPE_EDGE_LINE_1 + cpu.Y];
+            cpu.A = (uint8_t)adc_step(mem[SHAPE_VERTEX + cpu.X], plot_line, 0);
             if (cpu.N || !cmp_ge(cpu.A, object_line_ceiling))
-                LDA(object_line_ceiling);
-            CMP(span_line_cursor);
-            if (cpu.C) rejected = 1;                      /* the span has no height */
-            else       span_top_line = cpu.A;
+                cpu.A = object_line_ceiling;
+            if (cmp_ge(cpu.A, span_line_cursor)) rejected = 1;   /* the span has no height */
+            else                                 span_top_line = cpu.A;
         }
 
         if (rejected) {
             /* $210C-$2115 — walk past this edge, and past every edge whose bit 7 says the
                skip continues.  Bit 6 ends the shape on either path. */
             for (;;) {
-                int keepSkipping;
-                LDA(mem[SHAPE_EDGE_STYLE + cpu.Y]);
-                keepSkipping = cpu.N;
-                AND(0x40u);
-                if (!cpu.Z) return;
-                INY();
+                uint8_t style        = mem[SHAPE_EDGE_STYLE + cpu.Y];
+                int     keepSkipping = (style >> 7) & 1u;         /* the LDA's own N */
+                cpu.A = (uint8_t)(style & 0x40u);                 /* AND #$40 */
+                cpu.N = 0;
+                cpu.Z = (cpu.A == 0);
+                if (!cpu.Z) return;                               /* bit 6 set — the shape ends */
+                cpu.Y = (uint8_t)(cpu.Y + 1u);                    /* INY */
                 if (!keepSkipping) break;
             }
             continue;
         }
 
         /* $20D5-$20F0 — the edge's two x offsets and its style, then open the span. */
-        LDX(mem[SHAPE_EDGE_X_0 + cpu.Y]);
+        cpu.X = mem[SHAPE_EDGE_X_0 + cpu.Y];
         shared_temp_7e = mem[SHAPE_VERTEX + cpu.X];
-        LDX(mem[SHAPE_EDGE_X_1 + cpu.Y]);
+        cpu.X = mem[SHAPE_EDGE_X_1 + cpu.Y];
         mem[OBJ_EDGE_X] = mem[SHAPE_VERTEX + cpu.X];
-        LDA(mem[SHAPE_EDGE_STYLE + cpu.Y]);
-        mem[OBJ_EDGE_STYLE] = cpu.A;
+        mem[OBJ_EDGE_STYLE] = mem[SHAPE_EDGE_STYLE + cpu.Y];
         span_saved_index = cpu.Y;
-        plot_view_src_line_core(0x01u, cpu.A);
+        plot_view_src_line_core(0x01u, mem[OBJ_EDGE_STYLE]);  /* mode 1 — open, with the edge's own style */
 
         for (;;) {
             BIT(mem[OBJ_EDGE_STYLE]);                     /* $20F1 */
@@ -7596,29 +7594,26 @@ static void plot_shape_edges_core(void)
                 /* $2117-$2142 — THE CLOSING ARM.  The span is closed against the NEXT edge's
                    columns, which is why this arm reads shape_edge_x_1 as a style and
                    shape_edge_line_0 as an x offset. */
-                LDY(span_saved_index);
-                INY();
+                cpu.Y = (uint8_t)(span_saved_index + 1u);
                 span_saved_index = cpu.Y;
-                LDX(mem[SHAPE_EDGE_X_0 + cpu.Y]);
+                cpu.X = mem[SHAPE_EDGE_X_0 + cpu.Y];
                 mem[OBJ_EDGE_X] = mem[SHAPE_VERTEX + cpu.X];
-                LDA(mem[SHAPE_EDGE_X_1 + cpu.Y]);
-                mem[OBJ_EDGE_STYLE] = cpu.A;
-                plot_view_src_line_core(0x00u, cpu.A);
-                LDY(span_saved_index);
-                LDX(mem[SHAPE_EDGE_LINE_0 + cpu.Y]);
+                mem[OBJ_EDGE_STYLE] = mem[SHAPE_EDGE_X_1 + cpu.Y];
+                plot_view_src_line_core(0x00u, mem[OBJ_EDGE_STYLE]);
+                cpu.Y = span_saved_index;
+                cpu.X = mem[SHAPE_EDGE_LINE_0 + cpu.Y];
                 mem[OBJ_EDGE_X] = mem[SHAPE_VERTEX + cpu.X];
-                LDA(mem[SHAPE_EDGE_STYLE + cpu.Y]);
-                mem[OBJ_EDGE_STYLE] = cpu.A;
-                plot_view_src_line_core(0x00u, cpu.A);
+                mem[OBJ_EDGE_STYLE] = mem[SHAPE_EDGE_STYLE + cpu.Y];
+                plot_view_src_line_core(0x00u, mem[OBJ_EDGE_STYLE]);
                 continue;
             }
             plot_view_src_line_core(0x02u, 0x00u);        /* $20F5 — close it */
             BIT(mem[OBJ_EDGE_STYLE]);
             if (cpu.V) return;                            /* bit 6: the shape ends here */
-            LDY(span_saved_index);
+            cpu.Y = span_saved_index;
             break;
         }
-        INY();                                            /* $2102 — the next edge */
+        cpu.Y = (uint8_t)(cpu.Y + 1u);                    /* $2102 — the next edge */
     }
 }
 
@@ -7644,45 +7639,30 @@ static void plot_object_core(uint8_t slot)
        slots $14..$16 from the car behind's position in the order, and the road sign ($17)
        keeps the road's.  ⚠ The `LDA $38FC,X` here is fused into its store: A and its flags
        are dead, because $1FDE's `LDX #0` rewrites N and Z and $1FE2 rewrites A. */
-    LDA(math_lo);
-    CMP(0x17u);
-    if (!cpu.Z) {
-        CMP(0x14u);
-        if (cpu.C) { LDX(car_behind); LDA(mem[CAR_ORDER_TBL + cpu.X]); }
-        AND(0x03u);
-        TAX();
-        mem[COLOUR_PATTERN_TBL + 1] = mem[SURFACE_COLOURS_TBL + cpu.X];
+    if (slot != 0x17u) {
+        uint8_t sel = (slot >= 0x14u) ? mem[CAR_ORDER_TBL + car_behind] : slot;
+        mem[COLOUR_PATTERN_TBL + 1] = mem[SURFACE_COLOURS_TBL + (sel & 0x03u)];
     }
 
     /* $1FDE-$1FF9 — the width's scale, and the ceiling the spans may not rise above.  A wide
        (near) object gets the whole viewport; a narrow one is stopped at the horizon.  Under
        $40 the width is quadrupled and the extra two places handed to scale_shape_vectors. */
-    LDX(0x00u);
-    proj_width_shift = cpu.X;
-    LDA(proj_width);
-    CMP(horizon_half_width);
-    if (!cpu.C) {
-        if (mem[0x1FE9] == 0xA6u) {                  /* unpatched: LDX horizon_extent */
-            LDX(horizon_extent);
-        } else if (mem[0x1FE9] == 0xA2u) {           /* a circuit's own `LDX #imm` */
-            LDX(mem[0x1FEA]);
-        } else {
-            platform_smc_unhandled(0x1FE9, mem[0x1FE9]);
-            return;
-        }
+    proj_width_shift = 0x00u;
+    cpu.X = 0x00u;                                   /* the default ceiling */
+    if (!cmp_ge(proj_width, horizon_half_width)) {   /* CMP; BCS skips the narrow-object arm */
+        uint8_t op = mem[0x1FE9];
+        if (op == 0xA6u)      cpu.X = horizon_extent;      /* unpatched: LDX horizon_extent */
+        else if (op == 0xA2u) cpu.X = mem[0x1FEA];         /* a circuit's own `LDX #imm` */
+        else { platform_smc_unhandled(0x1FE9, op); return; }
     }
     object_line_ceiling = cpu.X;
-    CMP(0x40u);
-    if (!cpu.C) {
-        ASL_A(); ASL_A();
-        proj_width       = cpu.A;
+    if (!cmp_ge(proj_width, 0x40u)) {                /* under $40: quadruple it, two extra places */
+        proj_width       = (uint8_t)(proj_width << 2);
         proj_width_shift = 0x02u;
     }
 
     /* $1FFA-$2000 — the shape, clamped to 9. */
-    LDX(plot_shape);
-    CPX(0x0Au);
-    if (cpu.C) LDX(0x09u);
+    cpu.X = (plot_shape >= 0x0Au) ? 0x09u : plot_shape;
 
     /* $2002-$2028 — and draw it.  ⭐ The loop re-enters HERE, below the clamp, so a shape over
        9 draws shape 9 and then its own index (group header, item 5). */
@@ -7690,17 +7670,15 @@ static void plot_object_core(uint8_t slot)
         object_shape_clamped = cpu.X;
         mem[OBJ_VECTOR_CURSOR] = mem[SHAPE_VECTOR_START + cpu.X];
         mem[OBJ_VECTOR_END]    = mem[SHAPE_VECTOR_START + 1 + cpu.X];
-        LDA(mem[SHAPE_EDGE_START + cpu.X]);
-        plot_ptr3_lo = cpu.A;
+        plot_ptr3_lo = mem[SHAPE_EDGE_START + cpu.X];
         scale_shape_vectors_core();
         if (cpu.C) return;                           /* a vertex did not fit */
         plot_shape_edges_core();
-        LDX(plot_shape);
-        LDA(object_shape_clamped);
-        CMP(0x09u);
-        if (!cpu.Z) return;
-        LDA(track_direction);
-        if (cpu.N) return;
+        cpu.X = plot_shape;                          /* the UNCLAMPED shape index */
+        cmp_ge(object_shape_clamped, 0x09u);         /* LDA object_shape_clamped; CMP #9 */
+        if (!cpu.Z) return;                          /* not shape 9 — the object is done */
+        cpu.A = (uint8_t)load_a(track_direction);
+        if (cpu.N) return;                           /* $2027 — track_direction negative: stop */
     }
 }
 
@@ -7793,14 +7771,12 @@ void plot_shape_edges(void)     { plot_shape_edges_core(); }
    negative arm is `SEC / ROR / ADC #0`, which is a divide by two that rounds toward zero. */
 static unsigned halve_signed_rounded(uint8_t value)
 {
-    LDA(value);
-    if (cpu.N) {
-        SEC();
-        ROR_A();
-        return adc_step(cpu.A, 0x00u, cpu.C);
+    if (value & 0x80u) {
+        /* $1C42 negative arm: SEC / ROR A / ADC #0 — a >>1 that rounds toward zero. */
+        uint8_t rotated = (uint8_t)(0x80u | (value >> 1));   /* carry-in was 1 */
+        return adc_step(rotated, 0x00u, value & 1u);         /* + the bit ROR shifted out */
     }
-    LSR_A();
-    return cpu.A;
+    return value >> 1u;                                      /* $1C48 positive arm: LSR A */
 }
 
 /* $1C4E / $1C72 — ...then bias it by plot_x and split it into a column (>> 2) and the x itself. */
@@ -7823,10 +7799,10 @@ static void fill_object_gap_core(uint8_t width)
 {
     unsigned bias;
 
-    /* $1E38-$1E3F — the fill byte. */
-    LDA(mem[PVS_COLOUR_P]);
-    if (cpu.Z) LDA(SRC_CELL_BLANK);
-    shared_temp_76 = cpu.A;
+    /* $1E38-$1E3F — the fill byte: the previous call's colour, or the blank sentinel if it was 0. */
+    uint8_t fillByte = mem[PVS_COLOUR_P];
+    if (fillByte == 0u) fillByte = SRC_CELL_BLANK;
+    shared_temp_76 = fillByte;
 
     /* $1E40-$1E4A — the pointer bias, and the floor a column falls back to. */
     cpu.A          = (uint8_t)sub_from(0x7Fu, span_line_cursor);
@@ -7836,70 +7812,91 @@ static void fill_object_gap_core(uint8_t width)
     mem[PVS_GAP_FLOOR] = cpu.A;
 
     /* $1E4B-$1E66 — the two pointers, one block apart, both biased down by `bias`. */
-    LDA(mem[EDGE_COLUMN]);
-    mem[PVS_GAP_COL] = cpu.A;
-    cpu.A = (uint8_t)adc_step(cpu.A, 0x5Fu, 0);
-    LSR_A();
-    plot_ptr_hi  = cpu.A;
-    plot_ptr2_hi = cpu.A;
+    mem[PVS_GAP_COL] = mem[EDGE_COLUMN];
     {
-        unsigned lowBase = cpu.C ? 0x80u : 0x00u;      /* $1E57's `LDA #0 / ROR A` */
+        uint8_t  sum      = (uint8_t)adc_step(mem[EDGE_COLUMN], 0x5Fu, 0);   /* column + $5F */
+        uint8_t  lsrCarry = (uint8_t)(sum & 1u);                            /* LSR A -> C */
+        uint8_t  ptrHi    = (uint8_t)(sum >> 1u);                           /* LSR A */
+        unsigned lowBase  = lsrCarry ? 0x80u : 0x00u;                       /* LDA #0 / ROR A */
         int      carry;
-        cpu.A = (uint8_t)sub_from(lowBase, (uint8_t)bias);
+        plot_ptr_hi  = ptrHi;
+        plot_ptr2_hi = ptrHi;
+        cpu.A = (uint8_t)sub_from((uint8_t)lowBase, (uint8_t)bias);
         carry = cpu.C;
-        plot_ptr_lo = cpu.A;
-        EOR(0x80u);
-        plot_ptr2_lo = cpu.A;
-        if (cpu.N) DEC_M(MEM_plot_ptr2_hi);            /* $1E63 BPL */
-        if (!carry) { DEC_M(MEM_plot_ptr_hi); DEC_M(MEM_plot_ptr2_hi); }   /* $1E67 BCS */
+        plot_ptr_lo  = cpu.A;
+        plot_ptr2_lo = (uint8_t)(cpu.A ^ 0x80u);                            /* EOR #$80 */
+        if (plot_ptr2_lo & 0x80u)                                           /* $1E63 BPL */
+            plot_ptr2_hi = (uint8_t)(plot_ptr2_hi - 1u);
+        if (!carry) {                                                       /* $1E67 BCS */
+            plot_ptr_hi  = (uint8_t)(plot_ptr_hi  - 1u);
+            plot_ptr2_hi = (uint8_t)(plot_ptr2_hi - 1u);
+        }
     }
 
-    LDX(width);
+    cpu.X = width;
     for (;;) {
         /* $1E6D-$1E85 — this column pair's top line: the table's entry when it is at or below
            span_top_line, else the safe floor.  ⚠ The cursor steps back TWO columns. */
-        LDY(mem[PVS_GAP_COL]);
-        LDA(mem[GAP_TOP_TBL + cpu.Y]);
-        DEY(); DEY();
+        cpu.Y = mem[PVS_GAP_COL];
+        cpu.A = mem[GAP_TOP_TBL + cpu.Y];
+        cpu.Y = (uint8_t)(cpu.Y - 2u);                /* DEY; DEY */
         mem[PVS_GAP_COL] = cpu.Y;
-        CMP(span_top_line);
+        cpu.C = cmp_ge(cpu.A, span_top_line);         /* CMP: N/Z/C, leaves A */
         if (cpu.C) {
             cpu.A = (uint8_t)adc_step(cpu.A, mem[PVS_HALF], cpu.C);
-            TAY();
-            if (cpu.N) {                               /* $1E7D BPL — off the run entirely */
-                CPX(0x02u);
-                if (!cpu.C) return;                    /* $1E83 */
-                goto step;                             /* $1E93 */
+            cpu.Y = cpu.A;                            /* TAY */
+            cpu.N = (cpu.A >> 7) & 1u;
+            cpu.Z = (cpu.A == 0u);
+            if (cpu.N) {                              /* $1E7D BPL — off the run entirely */
+                uint8_t t = (uint8_t)(cpu.X - 0x02u); /* CPX #$02 */
+                cpu.C = (cpu.X >= 0x02u);
+                cpu.N = (t >> 7) & 1u;
+                cpu.Z = (t == 0u);
+                if (!cpu.C) return;                   /* $1E83 */
+                goto step;                            /* $1E93 */
             }
         } else {
-            LDY(mem[PVS_GAP_FLOOR]);                   /* $1E84 */
+            cpu.Y = mem[PVS_GAP_FLOOR];               /* $1E84 (its N/Z are dead) */
         }
 
         /* $1E86-$1E9D — the writes: a PAIR of columns while two are left, the single tail when
            only one is. */
-        LDA(shared_temp_76);
-        CPX(0x02u);
+        cpu.A = shared_temp_76;
+        {
+            uint8_t t = (uint8_t)(cpu.X - 0x02u);     /* CPX #$02 */
+            cpu.C = (cpu.X >= 0x02u);
+            cpu.N = (t >> 7) & 1u;
+            cpu.Z = (t == 0u);
+        }
         {
             unsigned base  = zp_pointer(MEM_plot_ptr_lo);
             unsigned base2 = zp_pointer(MEM_plot_ptr2_lo);
             int      ram   = pointer_is_ram(base), ram2 = pointer_is_ram(base2);
             if (!cpu.C) {
-                do { seam_write((base + cpu.Y) & 0xFFFFu, ram, cpu.A); INY(); }
-                while (!cpu.N);
-                return;                                /* $1E9D */
+                do {
+                    seam_write((base + cpu.Y) & 0xFFFFu, ram, cpu.A);
+                    cpu.Y = (uint8_t)(cpu.Y + 1u);    /* INY */
+                    cpu.N = (cpu.Y >> 7) & 1u;
+                    cpu.Z = (cpu.Y == 0u);
+                } while (!cpu.N);
+                return;                               /* $1E9D */
             }
             do {
                 seam_write((base  + cpu.Y) & 0xFFFFu, ram,  cpu.A);
                 seam_write((base2 + cpu.Y) & 0xFFFFu, ram2, cpu.A);
-                INY();
+                cpu.Y = (uint8_t)(cpu.Y + 1u);        /* INY */
+                cpu.N = (cpu.Y >> 7) & 1u;
+                cpu.Z = (cpu.Y == 0u);
             } while (!cpu.N);
         }
 
     step:
-        DEX(); DEX();                                  /* $1E93 */
-        if (cpu.Z) return;
-        DEC_M(MEM_plot_ptr_hi);                        /* $1E69 — back two columns */
-        DEC_M(MEM_plot_ptr2_hi);
+        cpu.X = (uint8_t)(cpu.X - 2u);                /* DEX; DEX — Z is from the second */
+        cpu.N = (cpu.X >> 7) & 1u;
+        cpu.Z = (cpu.X == 0u);
+        if (cpu.Z) return;                            /* $1E93 */
+        plot_ptr_hi  = (uint8_t)(plot_ptr_hi  - 1u);  /* $1E69 — back two columns */
+        plot_ptr2_hi = (uint8_t)(plot_ptr2_hi - 1u);
     }
 }
 
