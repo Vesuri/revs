@@ -6082,10 +6082,9 @@ static void check_wheel_slip_core(uint8_t axle)
            so X is 0 here and `+ 12` IS `+ 12 + axle`.  A sabotage that indexes these three by
            the axle therefore SURVIVES the differential, and that is correct rather than a
            coverage hole (the absolute operands are the 6502 saving three bytes). */
-        LDA(0x00u);
-        mem[MODEL_STATE_LO + 12] = cpu.A;
-        mem[MODEL_STATE_HI + 12] = cpu.A;
-        LDA(mem[MODEL_STATE_HI + 10]);
+        mem[MODEL_STATE_LO + 12] = 0u;
+        mem[MODEL_STATE_HI + 12] = 0u;
+        LDA(mem[MODEL_STATE_HI + 10]);          /* sets the N that abs8 negates on */
         abs8();
     } else {
         store_slip_clamped_off_throttle_core();     /* $4ACF */
@@ -6118,9 +6117,8 @@ static void check_wheel_slip_core(uint8_t axle)
    --------------------------------------------------------------------------- */
 static void clamp_slip_to_grip_core(void)
 {
-    LDA(0x00u);                                                 /* $4AF7 */
-    mem[MODEL_STATE_HI + 12 + cpu.X] = cpu.A;                   /* $4AF9 */
-    mem[MODEL_STATE_LO + 12 + cpu.X] = cpu.A;                   /* $4AFC */
+    mem[MODEL_STATE_HI + 12 + cpu.X] = 0u;                      /* $4AF7-$4AF9 */
+    mem[MODEL_STATE_LO + 12 + cpu.X] = 0u;                      /* $4AFC */
 
     slip_magnitude_core(8);                                     /* $4AFF-$4B01 — |model_accum| */
     LDA((uint8_t)(model_accum_hi ^ 0x80u));                     /* $4B04-$4B07 */
@@ -6171,9 +6169,9 @@ static void clamp_slip_to_grip_core(void)
    --------------------------------------------------------------------------- */
 static void sound_osword_core(void)
 {
-    LDY(0x0Bu);                         /* $0B6E — the block is at $0B00 + X */
+    cpu.Y = 0x0Bu;                      /* $0B6E — the block is at $0B00 + X */
     platform_mos_call(0xFFF1);          /* $0B70 — OSWORD, number already in A */
-    LDX(sound_saved_x);                 /* $0B73 — and the caller's X comes back */
+    LDX(sound_saved_x);                 /* $0B73 — and the caller's X comes back (its N/Z exit) */
 }
 
 static void sound_queue_core(uint8_t slot, uint8_t amplitude)
@@ -6192,7 +6190,7 @@ static void sound_queue_core(uint8_t slot, uint8_t amplitude)
     mem[block + 2] = cpu.A;                                     /* $0B55 — the AMPLITUDE field */
 
     cpu.Y = (uint8_t)(mem[block] & 3u);                         /* $0B58-$0B5D — the CHANNEL */
-    LDA(0x07u);                                                 /* $0B5E — and OSWORD 7 */
+    cpu.A = 0x07u;                                              /* $0B5E — and OSWORD 7 */
     mem[SOUND_CHAN_STATE + cpu.Y] = cpu.A;                      /* $0B60 */
     sound_osword_core();                        /* $0B63 BNE — unconditional: A is 7 */
 }
@@ -6207,12 +6205,11 @@ static void sound_queue_core(uint8_t slot, uint8_t amplitude)
    --------------------------------------------------------------------------- */
 static void sound_stop_channel_core(uint8_t chan)
 {
-    PHA();                                              /* $0E5A */
-    LDA(mem[SOUND_CHAN_STATE + chan]);                  /* $0E5B */
-    if (!cpu.Z) {                                       /* $0E5E BEQ */
+    PHA();                                              /* $0E5A — the caller's A comes back below */
+    if (mem[SOUND_CHAN_STATE + chan] != 0u) {           /* $0E5B-$0E5E — already idle? do nothing */
         mem[SOUND_CHAN_STATE + chan] = 0u;              /* $0E60-$0E62 */
         cpu.X = (uint8_t)(chan | 4u);                   /* $0E65-$0E68 */
-        LDA(0x15u);                                     /* $0E69 — OSBYTE 21, flush a buffer */
+        cpu.A = 0x15u;                                  /* $0E69 — OSBYTE 21, flush a buffer */
         platform_mos_call(0xFFF4);                      /* $0E6B */
         /* $0E6E-$0E71 — the buffer bit taken back off.  ⚠ It reads the MOS's X, not the
            saved channel, and the distinction is invisible to the differential BECAUSE
@@ -6246,10 +6243,8 @@ static void update_slip_sound_core(uint8_t axle)
     LDA(drive_state);                               /* $4779 */
     CMP(0x02u);                                     /* $477B */
     if (!cpu.C) {                                   /* $477D BCS → the silence arm */
-        check_wheel_slip_core(cpu.X);               /* $477F — preserves X */
-        LDA(mem[MEM_slip_flags + cpu.X]);           /* $4782 */
-        AND(0xC0u);                                 /* $4785 — the last TWO frames */
-        if (!cpu.Z) {                               /* $4787 BNE → the squeal arm, $4795 */
+        check_wheel_slip_core(cpu.X);               /* $477F */
+        if (mem[MEM_slip_flags + cpu.X] & 0xC0u) {  /* $4782-$4787 — slip in the last TWO frames */
             clamp_slip_to_grip_core();
             LDA(mem[SOUND_CHAN_STATE + 3]);         /* $4798 */
             if (cpu.Z) {                            /* $479B BNE — already playing? */
@@ -6488,8 +6483,8 @@ static void scale_by_track_gradient_core(uint8_t value, uint8_t index)
    --------------------------------------------------------------------------- */
 static void begin_spin_from_a_core(uint8_t severity)
 {
-    LDA(severity);
-    LSR_A(); spin_countdown = cpu.A;            /* $4DCB-$4DCC — severity / 2 */
+    cpu.A = severity;                           /* $4DCB */
+    LSR_A(); spin_countdown = cpu.A;            /* $4DCC — severity / 2 */
     LSR_A(); spin_shake     = cpu.A;            /* $4DCE-$4DCF — ...and / 4 */
     inc_mem(MEM_drive_state);                   /* $4DD1 */
     SEC();
@@ -6513,18 +6508,17 @@ static void begin_spin_from_a_core(uint8_t severity)
    --------------------------------------------------------------------------- */
 static void apply_drag_terms_core(void)
 {
-    LDA(model_accum_entry_hi);                  /* $4C65 */
+    LDA(model_accum_entry_hi);                  /* $4C65 — sets the N abs8 negates on */
     abs8();                                     /* $4C67 */
-    math_hi = cpu.A;                            /* $4C6A */
-    CMP(road_speed);
-    if (!cpu.C) LDA(road_speed);                /* $4C6E BCS — floored at the road speed */
-    LDY(grip_disturbance);
-    if (!cpu.Z) ASL_A();                        /* $4C74 BEQ — doubled on a disturbed surface */
+    math_hi = cpu.A;                            /* $4C6A — the magnitude, before the floor */
+    if (cpu.A < road_speed) cpu.A = road_speed; /* $4C6B-$4C6E — floored at the road speed */
+    cpu.Y = grip_disturbance;                   /* $4C71 */
+    if (cpu.Y != 0u) ASL_A();                   /* $4C74 — doubled on a disturbed surface */
     shared_temp_77 = cpu.A;                     /* $4C77 — kept for term two */
     mul8_core(cpu.A);                           /* $4C79 */
     math_hi = cpu.A;                            /* $4C7C */
 
-    LDY(0x06u);
+    cpu.Y = 0x06u;                              /* $4C7E */
     LDA(model_accum_entry_hi);                  /* $4C80 — the SIGN, not the value */
     add_signed_into_element_core(cpu.Y);        /* $4C82 */
 
@@ -6535,7 +6529,7 @@ static void apply_drag_terms_core(void)
     math_hi = shared_temp_77;                   /* $4C94-$4C96 */
     mul8_accum_core();                          /* $4C98 */
 
-    LDY(0x07u);
+    cpu.Y = 0x07u;                              /* $4C9B */
     LDA(car_speed_hi);                          /* $4C9D — element 7's sign */
     add_signed_into_element_core(cpu.Y);        /* $4CA0 */
 }
