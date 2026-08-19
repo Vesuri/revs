@@ -3568,6 +3568,11 @@ static void bearing_to_section_core(uint8_t sectionByte, uint8_t origin)
 
 static ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
 {
+    /* The 6502 dropped a point by returning with carry SET (the far clip's $22BC SEC, or the
+       >$80 quotient); both exits are this same "clipped" answer.  behind is 0 on a drop — the
+       caller's BPL is behind a taken BCS, so it is never read here. */
+    static const ProjPoint PROJ_CLIPPED = { 0, 1, 0 };
+
     GEO_COUNT(g_geoProject);
 
     /* $2287-$22AE — component 1 of the delta, the HEIGHT, and the only component that is
@@ -3586,7 +3591,7 @@ static ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
        field-of-view test and not a comparison with a stale distance.  Height at or beyond the
        distance drops the point. */
     if (height >= (uint16_t)(((unsigned)point_dist_hi << 8) | point_dist_lo))
-        return (ProjPoint){ 0, 1, 0 };              /* $22BC SEC — "drop this point" */
+        return PROJ_CLIPPED;                        /* $22BC SEC — "drop this point" */
 
     /* $22BE-$22D8 — normalise the DISTANCE until its top bit falls out, taking the height
        with it one place fewer, and record the pair the road's apparent width is made of:
@@ -3618,7 +3623,7 @@ static ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
        value, so the >= $80 test must see it too — the low byte alone could wrap below $80 and
        fail to drop an off-screen point. */
     if (q >= 0x80u)
-        return (ProjPoint){ 0, 1, 0 };
+        return PROJ_CLIPPED;
     quotient = (uint8_t)q;
 
     /* $22E9-$22FD — 60 either side of the camera's eye level, less the frame's smoothed pitch,
