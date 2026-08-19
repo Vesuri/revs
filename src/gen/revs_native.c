@@ -1703,7 +1703,7 @@ static void neg16_math_core(uint8_t high);
 
 /* draw_road's three producers (twins #26/#28/#29), defined much further down — the road pass
    reaches them through the cores, not the 6502-ABI shims. */
-static void mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint);
+static uint8_t mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint);
 static void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint);
 static void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint);
 static void fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn, uint8_t firstLine);
@@ -2805,8 +2805,7 @@ void build_track_geometry(void)
    the limit, the line is sky. */
 static uint8_t mark_side_surfaces(uint8_t surfaceClass)
 {
-    mark_line_surfaces_core(surfaceClass, road_split_index);
-    return cpu.Y;
+    return mark_line_surfaces_core(surfaceClass, road_split_index);
 }
 
 /* $19AF x4 — one span pass.  `firstPoint` is where in the edge list the pass starts; the
@@ -4687,7 +4686,7 @@ void draw_surface_spans(void)
    --------------------------------------------------------------------------- */
 #define EDGE_OPP_X_HI_TBL 0x5EA0u   /* edge_opp_x_hi — the point's other boundary */
 
-static void mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint)
+static uint8_t mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint)
 {
     mem[SPAN_CLIP] = surfaceClass;            /* ⚠ a THIRD tenant of $88 — docs/rename.md */
     math_hi        = firstPoint;              /* the walk index, and the loop's own cursor */
@@ -4757,10 +4756,12 @@ static void mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint)
         math_hi++;                            /* $1B03 */
     }
 
-    /* $1B0B — the limit, and the routine's real return value. */
+    /* $1B0B — the limit, and the routine's real return value.  A and X stay live at the exit
+       (the shim's fixture pins them), but Y — the scan-line limit — is the value siblings want. */
     LDX(road_split_index);
     LDY(mem[EDGE_Y_TBL + cpu.X]);
     INY();
+    return cpu.Y;
 }
 
 /* The 6502-ABI shim.  X is the surface class to OR in, A the first edge index; Y comes back
