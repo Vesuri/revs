@@ -3806,8 +3806,8 @@ static void span_cap_line(void)
     CPY(0x50u);                          /* $2F2A — off the bottom of the view */
     if (cpu.C) return;
 
-    LDX(view_yaw_offset);                /* ⚠ clobbers X, and the caller's X is live */
-    CPX(0x28u);
+    cpu.X = view_yaw_offset;             /* ⚠ clobbers X, and the caller's X is live */
+    CPX(0x28u);                          /* ...whose carry then picks the flatten arm */
     code = cpu.A;
     if (cpu.C) {
         /* $2F35-$2F3F — keep a class of 3, flatten anything else to a multiple of 4. */
@@ -3898,9 +3898,9 @@ void span_plot_core(const SpanPlotter* p, uint8_t accumulator, uint8_t column)
     CPY(mem[SPAN_LINE_END]);
     if (cpu.Z) { span_abandon_chain(); return; }
 
-    /* Which source block feeds this scan line, into the pass's surface_edge buffer. */
-    LDA(mem[SPAN_BLOCK]);
-    bus_write((uint16_t)((mem[p->destLo] | (mem[p->destHi] << 8)) + cpu.Y), cpu.A);
+    /* Which source block feeds this scan line, into the pass's surface_edge buffer.  (A and
+       its N/Z are dead here — both the empty and occupied arms below reassign A first.) */
+    bus_write((uint16_t)((mem[p->destLo] | (mem[p->destHi] << 8)) + cpu.Y), mem[SPAN_BLOCK]);
 
     cellAddr = (unsigned)(mem[p->cellPtr] | (mem[(uint8_t)(p->cellPtr + 1)] << 8)) + cpu.Y;
     cell     = bus_read((uint16_t)cellAddr);
@@ -4086,16 +4086,13 @@ void span_walk(const SpanArm* arm)
     /* Read this sub-column phase's entry offset and write it over the chain's branch operand.
        ⚠ That store is a real mem[] write and the differential sees it, so it stays even
        though the twin then decodes the offset rather than executing it. */
-    LDA(mem[arm->table + cpu.X]);
-    mem[arm->operand] = cpu.A;
+    mem[arm->operand] = mem[arm->table + cpu.X];
 
-    if (!arm->steep) LDX(0x80u);        /* "this column has plotted nothing yet" */
+    if (!arm->steep) cpu.X = 0x80u;     /* "this column has plotted nothing yet" */
 
     /* The accumulator starts at MINUS the delta the DDA gives back, so the first carry is
        what lands the first pixel. */
-    LDA(mem[arm->subtrahend]);
-    EOR(0xFFu);
-    cpu.A = (uint8_t)adc_step(cpu.A, 0x01u, 0);
+    cpu.A = (uint8_t)adc_step((uint8_t)~mem[arm->subtrahend], 0x01u, 0);
     cpu.C = 0;
 
     if (!span_entry_decode(arm, mem[arm->operand], &col, &forced, &runTop)) return;
@@ -4244,13 +4241,16 @@ static void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     span_swapped        = 0;
 
     /* 1 — the clip bit.  C is the answer either way: set by the line test when the point is
-       off the bottom, otherwise by the angle test. */
-    cpu.A = (uint8_t)sub_from(mem[EDGE_Y_TBL + nearPoint], 0x01u);
-    CMP(0x4Eu);
-    if (!cpu.C) {
-        LDA(mem[EDGE_X_HI_TBL + farPoint]);
-        if (cpu.N) EOR(0xFFu);              /* |angle|, near enough for a clip test */
-        CMP(0x14u);
+       off the bottom, otherwise by the angle test.  That carry is CONSUMED by the ROR below. */
+    {
+        uint8_t line = (uint8_t)sub_from(mem[EDGE_Y_TBL + nearPoint], 0x01u);
+        if (line >= 0x4Eu) {
+            cpu.C = 1;
+        } else {
+            uint8_t angle = mem[EDGE_X_HI_TBL + farPoint];
+            if (angle & 0x80u) angle ^= 0xFFu;      /* |angle|, near enough for a clip test */
+            cpu.C = (angle >= 0x14u);
+        }
     }
     ROR_M(SPAN_CLIP);
 
@@ -4282,9 +4282,7 @@ static void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     if (cpu.N) cpu.A = (uint8_t)sub_from(0x00u, mem[SPAN_YSTEP]);
     mem[SPAN_DY] = cpu.A;
 
-    LDA(mem[SPAN_CLIP]);
-    AND(0xC0u);
-    if (!cpu.Z) {
+    if (mem[SPAN_CLIP] & 0xC0u) {
         /* Both ends on screen: dx is the angle difference, normalised left until its top
            byte is below $40, with span_dy shifted down by as much. */
         /* ⚠ The 6502 loads these two indices into Y and X ($2B91).  Both registers are
@@ -4299,43 +4297,36 @@ static void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
 
         /* Normalise: shift the pair left until the high byte is in range, and give span_dy
            the same number of shifts back so the two stay in proportion. */
+        /* ASL_M/ROL_A are a 16-bit shift-left through carry and stay macros; only the
+           range tests that pick the shift count become plain comparisons. */
         { int giveBack = 2;
-          CMP(0x40u);
-          if (!cpu.C) {
+          if (cpu.A < 0x40u) {
               ASL_M(MEM_math_lo); ROL_A();
-              CMP(0x40u);
-              if (cpu.C) giveBack = 1;
+              if (cpu.A >= 0x40u) giveBack = 1;
               else {
                   ASL_M(MEM_math_lo); ROL_A();
-                  giveBack = cpu.N ? 2 : 0;
+                  giveBack = (cpu.A & 0x80u) ? 2 : 0;
               }
           }
           while (giveBack--) LSR_M(SPAN_DY); }
 
         mem[SPAN_DX]  = cpu.A;
         mem[SPAN_ARM] = (uint8_t)(mem[SPAN_ARM] ^ span_swapped);
-        LDA(mem[SPAN_DX]);
     } else {
         /* One end clipped: dx is just how far the x moved, and the subtract's carry becomes
-           the arm-select bit. */
+           the arm-select bit.  ROR_M consumes the subtract's carry, so it stays a macro. */
         cpu.A = (uint8_t)sub_from(shared_temp_7e, shared_temp_77);
         ROR_M(SPAN_ARM);
-        if (!cpu.N) {
-            EOR(0xFFu);
-            cpu.A = (uint8_t)adc_step(cpu.A, 0x01u, 0);
-        }
+        if (!cpu.N) cpu.A = (uint8_t)adc_step((uint8_t)~cpu.A, 0x01u, 0);
     }
     mem[SPAN_DX] = cpu.A;
-    if (cpu.A == 0) {
-        ORA(mem[SPAN_DY]);
-        if (cpu.Z) { interp_edge_publish(); return; }    /* a span with no extent */
-    }
+    if (cpu.A == 0 && mem[SPAN_DY] == 0) { interp_edge_publish(); return; }  /* no extent */
 
     /* Does the abandon path stamp a surface code?  Only when both ends were usable. */
-    LDA(mem[SPAN_CLIP]);
-    AND(0xC0u);
-    if (!cpu.Z) { LDA(mem[SPAN_ARM]); AND(0x80u); }
-    span_cap_pending = cpu.A;
+    if (mem[SPAN_CLIP] & 0xC0u)
+        span_cap_pending = (uint8_t)(mem[SPAN_ARM] & 0x80u);
+    else
+        span_cap_pending = (uint8_t)(mem[SPAN_CLIP] & 0xC0u);
 
     /* A zero line delta borrows its direction from the swap flag. */
     if (mem[SPAN_YSTEP] == 0)
@@ -4358,9 +4349,8 @@ static void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     math_lo = (uint8_t)(surface_pass_index << 3);        /* the pass, in bits 3-5 */
     span_cap_surface_a = (uint8_t)(((mem[COLOUR_PATTERN] >> 3) & 3) | math_lo | 0x40u);
 
-    LDA(mem[COLOUR_PATTERN]);
-    if (cpu.Z) { LDA(0x55u); mem[COLOUR_PATTERN] = 0x55u; }
-    bearing_hi = cpu.A;
+    if (mem[COLOUR_PATTERN] == 0) mem[COLOUR_PATTERN] = 0x55u;
+    bearing_hi = mem[COLOUR_PATTERN];
 
     { uint8_t p3 = mem[COLOUR_PATTERN + 3];
       uint8_t code = (uint8_t)((p3 >> 1) & 1u);
@@ -4376,10 +4366,9 @@ static void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     math_hi = (uint8_t)sub_from(shared_temp_7e, 0x30u);
     LSR_A(); LSR_A();
     mem[SPAN_BLOCK] = cpu.A;
-    /* ⚠ CMP, not `>=`: on the off-the-side exit nothing else writes C, so this compare's
-       carry is what draw_surface_spans gets back. */
-    CMP(0x28u);
-    if (cpu.C) { interp_edge_publish(); return; }
+    /* ⚠ On the off-the-side exit nothing else writes C, so this compare's carry is what
+       draw_surface_spans gets back — set it explicitly before publishing. */
+    if (cpu.A >= 0x28u) { cpu.C = 1; interp_edge_publish(); return; }
     LSR_A();
     cpu.A        = (uint8_t)adc_step(cpu.A, 0x30u, 0);
     plot_ptr_hi  = cpu.A;
@@ -4390,9 +4379,7 @@ static void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     LDX((uint8_t)(math_hi & 7u));            /* the sub-column phase, into the entry tables */
     LDY(span_line_cursor);
 
-    LDA(mem[SPAN_DX]);
-    CMP(mem[SPAN_DY]);
-    if (cpu.C) {
+    if (mem[SPAN_DX] >= mem[SPAN_DY]) {
         /* X-MAJOR.  A solid run needs no terminator, so the two end markers are switched off
            by planting RTS over their first byte. */
         int wantMarkers = (mem[COLOUR_PATTERN] == 0xFFu)
@@ -4511,30 +4498,27 @@ static void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t fi
                 if (cpu.N) {
                     /* the previous point was off axis: a point on the SAME line adds nothing */
                     CMP(mem[EDGE_Y_TBL + cpu.X + 1]);
-                    if (cpu.Z) { LDA(0x80u); ORA(mem[EDGE_STYLE_TBL + cpu.X]);
-                                 mem[EDGE_STYLE_TBL + cpu.X] = cpu.A; continue; }
+                    if (cpu.Z) { mem[EDGE_STYLE_TBL + cpu.X] |= 0x80u; continue; }
                 }
                 CMP(span_line_cursor);
-                if (cpu.C) { LDA(0x80u); ORA(mem[EDGE_STYLE_TBL + cpu.X]);
-                             mem[EDGE_STYLE_TBL + cpu.X] = cpu.A; continue; }
+                if (cpu.C) { mem[EDGE_STYLE_TBL + cpu.X] |= 0x80u; continue; }
             }
         }
 
         if (clamped) {
             /* $1980 — pull the point's line back to the cursor, mark the index, and fill
-               everything that is left down to line 0. */
-            LDA(mem[EDGE_Y_TBL + cpu.X]);
-            if (!cpu.N) {
-                CMP(span_line_cursor);
-                if (cpu.C) mem[EDGE_Y_TBL + cpu.X] = span_line_cursor;
-            }
-            TXA(); ORA(0x80u); TAX();
-            LDA(0x00u);
+               everything that is left down to line 0.  (The inner fill loop's CPY rewrites
+               every flag these plain ops touch, so no macro is needed here.) */
+            uint8_t ey = mem[EDGE_Y_TBL + cpu.X];
+            if (!(ey & 0x80u) && ey >= span_line_cursor)
+                mem[EDGE_Y_TBL + cpu.X] = span_line_cursor;
+            cpu.X |= 0x80u;                        /* mark the index; bit 7 ends the walk */
+            cpu.A = 0x00u;
         }
 
         /* $1969 — every line from the cursor down to this point's own names this point. */
         mem[SPAN_LINE_END] = cpu.A;
-        TXA();
+        cpu.A = cpu.X;
         for (;;) {
             CPY(mem[SPAN_LINE_END]);
             if (cpu.Z) break;
@@ -4591,20 +4575,16 @@ static void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint)
 
     span_index_far = (uint8_t)adc_step(firstPoint, mem[SPAN_PAIR_OFFSET + pass], 0);
 
-    /* This pass's surface_edge buffer, into both plotters' store operands.  ⚠ The low byte
-       stays in A and becomes interp_edge's style argument on the publish-only call below —
-       the 6502 never reloads it, and the callee ignores it on that path. */
-    LDA(mem[ROW_BASE_HI + pass]);
-    mem[OPERAND_DEST_P1_HI] = cpu.A;
-    mem[OPERAND_DEST_P2_HI] = cpu.A;
-    LDA(mem[ROW_BASE_LO + pass]);
-    mem[OPERAND_DEST_P1_LO] = cpu.A;
-    mem[OPERAND_DEST_P2_LO] = cpu.A;
+    /* This pass's surface_edge buffer, into both plotters' store operands. */
+    mem[OPERAND_DEST_P1_HI] = mem[OPERAND_DEST_P2_HI] = mem[ROW_BASE_HI + pass];
+    /* ⚠ The low byte stays in A and becomes interp_edge's style argument on the publish-only
+       call below — the 6502 never reloads it, and the callee ignores it on that path. */
+    cpu.A = mem[ROW_BASE_LO + pass];
+    mem[OPERAND_DEST_P1_LO] = mem[OPERAND_DEST_P2_LO] = cpu.A;
 
-    /* ⚠ The LDX/LDY are not just X/Y setup: LDY sets the N flag from span_index_near, and
-       interp_edge's PHP pushes it to the stack, where the differential sees it ($01FF).  So
-       this call KEEPS the 6502 register+flag setup — it is not a plain arg-plumbing site. */
-    LDX(span_index_far);
+    /* ⚠ LDX's flags are dead (LDY overwrites N/Z below); but LDY's N is live — interp_edge's
+       PHP pushes Y's N/Z to the 6502 stack, where the differential sees it ($01FF) — keep it. */
+    cpu.X = span_index_far;
     LDY(span_index_near);
     cpu.C = 1;                                /* the first point is published, not drawn */
     interp_edge();
@@ -4619,6 +4599,10 @@ static void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint)
         LDA(mem[EDGE_STYLE_TBL + cpu.Y]);
         if (cpu.N) continue;                  /* fill_line_attr marked this point */
 
+        /* Pick this span's style, and the carry that tells interp_edge draw-vs-publish.
+           ⚠ interp_edge does PHP, so the N/Z these compares leave are pushed to the 6502
+           stack and the differential sees them — every CMP here is load-bearing, not a
+           branch test that could become a plain comparison. */
         LDA(span_index_near);
         CMP(road_split_index);
         if (!cpu.C) {
@@ -4699,54 +4683,58 @@ static uint8_t mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint)
            never from the class the caller passed in.
            ⚠ A is LIVE at the exit and every arm below leaves a different byte in it, so the
            loads are real loads here rather than plain reads. */
-        LDX(math_hi);
-        CPX(span_end_index);
+        cpu.X = math_hi;
+        CPX(span_end_index);              /* ⚠ its carry is the loop's only exit and escapes */
         if (cpu.C) break;
 
-        LDY(mem[EDGE_Y_TBL + cpu.X]);
-        CPY(0x50u);
-        if (!cpu.C) {
+        cpu.Y = mem[EDGE_Y_TBL + cpu.X];
+        if (cpu.Y < 0x50u) {
+            /* ⚠ A is live at the routine's exit, and the marked-point skip path leaves this
+               style byte in it, so this stays a flag-setting load. */
             LDA(mem[EDGE_STYLE_TBL + cpu.X]);
             if (!cpu.N) {
             /* The two boundaries, in the order this side wants them. */
-            LDA(mem[SPAN_CLIP]);
-            CMP(0x14u);
-            if (cpu.Z) {
+            if (mem[SPAN_CLIP] == 0x14u) {
                 shared_temp_77 = mem[EDGE_X_HI_TBL + cpu.X];
-                LDA(mem[EDGE_OPP_X_HI_TBL + cpu.X]);
+                cpu.A = mem[EDGE_OPP_X_HI_TBL + cpu.X];
             } else {
                 shared_temp_77 = mem[EDGE_OPP_X_HI_TBL + cpu.X];
-                LDA(mem[EDGE_X_HI_TBL + cpu.X]);
+                cpu.A = mem[EDGE_X_HI_TBL + cpu.X];
             }
             cpu.A = (uint8_t)adc_step(cpu.A, 0x14u, 0);
             if (!cpu.N) {
                 cpu.A = (uint8_t)adc_step(shared_temp_77, 0x14u, 0);
                 if (cpu.N) {
-                    /* $1AD8 — skip a whole run of points fill_line_attr marked. */
-                    for (;;) {
-                        LDA(mem[EDGE_STYLE_TBL + cpu.X + 1]);
-                        if (!cpu.N) break;
-                        INX();
-                        math_hi++;
-                        CPX(span_end_index);
-                        if (cpu.C) break;
-                    }
-                    /* An entry already on this line wins, unless it belongs to another
-                       class and the sign test says this point is the nearer one. */
                     int stamp;
-                    math_lo = mem[VIEW_LINE_SURFACE + cpu.Y];
-                    LDA(mem[VIEW_LINE_SURFACE + cpu.Y]);
-                    if (cpu.Z) stamp = 1;
-                    else {
-                        AND(0x1Cu);
-                        CMP(mem[SPAN_CLIP]);
-                        if (cpu.Z) stamp = 1;
-                        else { ROR_A(); EOR(math_lo); stamp = !cpu.N; }
+                    uint8_t entry;
+
+                    /* $1AD8 — skip a whole run of points fill_line_attr marked. */
+                    while (mem[EDGE_STYLE_TBL + cpu.X + 1] & 0x80u) {
+                        cpu.X++;
+                        math_hi++;
+                        if (cpu.X >= span_end_index) break;
+                    }
+
+                    /* An entry already on this line wins, unless it belongs to another
+                       class and the sign test says this point is the nearer one.  ⚠ A is
+                       live at the routine's exit: the not-stamped path has to leave the same
+                       byte the 6502's carry-in ROR then EOR would. */
+                    entry   = mem[VIEW_LINE_SURFACE + cpu.Y];
+                    math_lo = entry;                  /* a real mem[] store the differential sees */
+                    if (entry == 0) {
+                        stamp = 1;
+                    } else {
+                        uint8_t masked = (uint8_t)(entry & 0x1Cu);
+                        if (masked == mem[SPAN_CLIP]) {
+                            stamp = 1;
+                        } else {
+                            uint8_t carryIn = (masked >= mem[SPAN_CLIP]) ? 0x80u : 0x00u;
+                            cpu.A = (uint8_t)((uint8_t)(carryIn | (masked >> 1)) ^ entry);
+                            stamp = !(cpu.A & 0x80u);
+                        }
                     }
                     if (stamp) {
-                        LDA(mem[EDGE_STYLE_TBL + cpu.X]);
-                        AND(0x03u);
-                        ORA(mem[SPAN_CLIP]);
+                        cpu.A = (uint8_t)((mem[EDGE_STYLE_TBL + cpu.X] & 0x03u) | mem[SPAN_CLIP]);
                         mem[VIEW_LINE_SURFACE + cpu.Y] = cpu.A;
                     }
                 }
