@@ -1236,6 +1236,22 @@ static void steer_horizon_tie(uint8_t* pre, Cpu6502 c)
       pre[0x0051] = (uint8_t)(pre[0x0008] + d); }
 }
 
+/* The backward-direction ($2338) segment wrap adds segment_count_x8 back only when the
+   subtraction borrows — i.e. exactly when (player_seg + 8) < span.  A `<` -> `<=` defect
+   differs solely on the (player_seg + 8) == span boundary, which a random player_seg lands on
+   once in 256 and the fixed stream never does.  Steer it there: force the backward branch, skip
+   the re-base loop, and plant player_seg so base == span exactly, with a non-zero track length
+   so the erroneous add is observable in near_segment_index. */
+static void steer_segment_wrap(uint8_t* pre)
+{
+    pre[0x0025] |= 0x80u;                              /* track_direction: running backwards   */
+    pre[0x0006]  = 0x06;                               /* near_edge_last = 6: skip the re-base  */
+    if (pre[0x0005] == 0x06) pre[0x0005] = 0x00;       /* near_edge_first != 6: do not bail out */
+    if (pre[0x59FA] == 0x00) pre[0x59FA] = 0x50;       /* segment_count_x8 != 0: the add shows  */
+    unsigned span = (((6u - pre[0x0008]) & 0xFFu) << 3) & 0xFFu;
+    pre[0x06FF]  = (uint8_t)((span - 8u) & 0xFFu);     /* (player_seg + 8) == span exactly      */
+}
+
 static void steer_off_axis(uint8_t* pre, Cpu6502 c, uint8_t firstPoint, uint8_t want)
 {
     probe_oracle(pre, c, road_edge_walk__t6502);
@@ -1309,6 +1325,8 @@ static int test_geometry_callees(void)
             c.D = 0;
             if (shape == EDGE_SILVERSTONE && t % 2 == 0)
                 steer_horizon_tie(pre, c);                /* see the note above */
+            else if (shape == EDGE_SILVERSTONE)
+                steer_segment_wrap(pre);                  /* the backward-wrap boundary */
             subFail += diff_run("road_edge_start", pre, c, road_edge_start,
                                 road_edge_start__t6502, resultMask, t, &printed);
             if (start_reached_segment(pre, (const uint8_t*)mem)) reached++;
@@ -1953,6 +1971,11 @@ static int test_geometry_leaves(void)
 {
     static uint8_t pre[65536];
     unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    /* load_section_triple answers entirely in mem[] — the six coordinate bytes of the scratch
+       section triple.  All three callers overwrite the registers immediately ($1230 LDA, $2367
+       JSR, $4CEB LDY) and read no exit flag, so its A/N/Z are dead; the clean core no longer
+       spends a load_a to reproduce them.  Keep S live for the stack-balance check. */
+    const unsigned resultMask = LIVE_S;
     int fail = 0, printed = 0, t;
     int scale = 1;
     { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
@@ -2051,10 +2074,10 @@ static int test_geometry_leaves(void)
             c.A = (uint8_t)xs();
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
             subFail += diff_run("load_section_triple", pre, c, load_section_triple,
-                                load_section_triple__t6502, liveMask, t, &printed);
+                                load_section_triple__t6502, resultMask, t, &printed);
         }
         fail += subFail;
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags\n",
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=S (mem-only result)\n",
                "load_section_triple", cases, subFail);
     }
 

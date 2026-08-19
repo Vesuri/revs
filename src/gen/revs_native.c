@@ -1904,15 +1904,18 @@ void rebase_edge_point(void)
    =========================================================================== */
 static void load_section_triple_core(uint8_t destSection, uint8_t segmentByte)
 {
-    int i;
+    /* $1208-$122B — copy the three 16-bit coordinates of the segment (skipping its first byte,
+       the length) into the scratch section triple.  The 6502 reads the segment high byte one
+       past the triple at $1226, but that only set flags the callers do not read, so it is gone. */
+    uint8_t*       dstLo = &mem[SECTION_LO_TBL + destSection];
+    uint8_t*       dstHi = &mem[SECTION_HI_TBL + destSection];
+    const uint8_t* srcLo = &mem[TRACK_SEGMENT_LO + segmentByte + 1];
+    const uint8_t* srcHi = &mem[TRACK_SEGMENT_HI + segmentByte + 1];
 
-    for (i = 0; i < 3; i++)                                     /* $1208-$1219 */
-        mem[SECTION_LO_TBL + destSection + i] = mem[TRACK_SEGMENT_LO + segmentByte + 1 + i];
-    for (i = 0; i < 3; i++)                                     /* $121A-$122B */
-        mem[SECTION_HI_TBL + destSection + i] = mem[TRACK_SEGMENT_HI + segmentByte + 1 + i];
-
-    /* $1226's LDA is the last thing to touch A and the flags. */
-    load_a(mem[TRACK_SEGMENT_HI + segmentByte + 3]);
+    for (int i = 0; i < 3; i++) {
+        dstLo[i] = srcLo[i];
+        dstHi[i] = srcHi[i];
+    }
 }
 
 void load_section_triple(void)
@@ -2360,67 +2363,56 @@ static void road_edge_start_core(uint8_t nearSlotCount,   /* 6 — also the "not
                                  uint8_t pointLimit,      /* $3C = 60, one past slot 5 + 40 */
                                  uint8_t staleHorizonCap) /* 7 */
 {
-    /* $22FF-$2309 — the section step has not been accounted for yet.  A comes back 0 on both
-       arms (either the flag WAS 0, or the explicit store made it so), which matters because
-       the SMC trap below exits with A live. */
+    /* $22FF-$2309 — fold in a pending scroll of the near edge points before anything reads them. */
     if (near_edge_scroll_pending != 0) {
         shift_near_edge_points_core(0x2C, halfStride, 0x05, nearSlotCount);
         near_edge_scroll_pending = 0;
     }
-    cpu.A = 0;
 
     /* $230C-$2316 — the two sentinels.  near_edge_first == 6 means nothing survived and
        nothing is owed; near_edge_last == 6 means there is a new point but nothing to re-base. */
-    if (cpy_eq(near_edge_first, nearSlotCount))
+    if (near_edge_first == nearSlotCount)
         return;
 
-    if (!cpy_eq(near_edge_last, nearSlotCount)) {
+    if (near_edge_last != nearSlotCount) {
         /* $2318-$232E — RE-BASE the surviving slots, each as a pair 40 apart so the two
-           halves of the edge arrays stay in step. */
+           halves of the edge arrays stay in step.  POST-tested (INY / CPY #6 / BCC): the body
+           runs once before the count is checked, so a near_edge_last past the count still
+           re-bases that one wild slot and then wraps 8-bit up through slot 5. */
         unsigned slot = near_edge_last;
-        for (;;) {
-            int trapped = 0, skip;
-
-            cpu.Y = (uint8_t)slot;
-            CPY(near_edge_cursor);                   /* $2318, and the SMC branch's own flags */
-            skip = rebase_takes_branch(cpu.Z, &trapped);
+        do {
+            int trapped = 0;
+            int skip = rebase_takes_branch(slot == near_edge_cursor, &trapped);  /* $2318 SMC BEQ */
             if (trapped)
                 return;
 
             if (!skip) {
-                math_lo = (uint8_t)slot;             /* $231C STY $74 */
-                cpu.Y   = (uint8_t)(slot + halfStride);
-                rebase_edge_point_core(cpu.Y);
-                cpu.Y   = math_lo;
-                rebase_edge_point_core(cpu.Y);
+                math_lo = (uint8_t)slot;                        /* $231C STY $74 — observable */
+                rebase_edge_point_core((uint8_t)(slot + halfStride));
+                rebase_edge_point_core((uint8_t)slot);
             }
-
-            slot = (slot + 1) & 0xFFu;               /* $232B-$232E INY / CPY #6 / BCC */
-            if (slot >= nearSlotCount)
-                break;
-        }
+            slot = (slot + 1) & 0xFFu;                          /* $232B-$232E INY / CPY #6 / BCC */
+        } while (slot < nearSlotCount);
     }
 
     /* $2330-$235C — WHICH TRACK-FILE SEGMENT does the new near point come from?  As many
        segments back from the player's own as there are near slots left to fill, eight bytes
-       to a segment, wrapped on the circuit's length in whichever direction the car is going. */
+       to a segment, wrapped on the circuit's length in whichever direction the car is going.
+       (The road pass runs with D=0, so these are ordinary 8-bit wrapping adds.) */
     unsigned span      = (((nearSlotCount - near_edge_cursor) & 0xFFu) << 3) & 0xFFu;
     unsigned playerSeg = mem[CAR_SEGMENT_TBL + PLAYER_CAR];
     unsigned segIndex;
 
-    /* ⚠ EVERY add and subtract from here on goes through the 6502's own, because V escapes:
-       the routine's last flag-setting operation is a CMP, which does not write V, so whatever
-       the final ADC/SBC left is what the caller sees.  (The first version used plain C here
-       and failed on V alone.) */
     if (track_direction & 0x80u) {                   /* $2338-$234C, running the other way */
-        math_lo  = (uint8_t)span;                    /* $233C, and the store is observable */
-        segIndex = sub_from(adc_step(playerSeg, 0x08, 0), math_lo);
-        if (!cpu.C)                                  /* wrapped back past segment zero */
-            segIndex = adc_step(segIndex, segment_count_x8, 0);
+        math_lo = (uint8_t)span;                     /* $233C, and the store is observable */
+        unsigned base = (playerSeg + 0x08u) & 0xFFu;
+        segIndex = (base - span) & 0xFFu;
+        if (base < span)                             /* wrapped back past segment zero */
+            segIndex = (segIndex + segment_count_x8) & 0xFFu;
     } else {                                         /* $234F-$2358 */
-        segIndex = adc_step(span, playerSeg, 0);
-        if (cmp_ge(segIndex, segment_count_x8))
-            segIndex = sub_from(segIndex, segment_count_x8);
+        segIndex = (span + playerSeg) & 0xFFu;
+        if (segIndex >= (unsigned)segment_count_x8)
+            segIndex = (segIndex - segment_count_x8) & 0xFFu;
     }
     near_segment_index = (uint8_t)segIndex;
 
@@ -2433,14 +2425,12 @@ static void road_edge_start_core(uint8_t nearSlotCount,   /* 6 — also the "not
     for (;;) {
         shared_counter_42 = (uint8_t)point;
 
-        cpu.X = scratchSection;
-        cpu.Y = (uint8_t)segByte;
         load_section_triple_core(scratchSection, (uint8_t)segByte);  /* track file -> scratch */
         bearing_to_section_core(scratchSection, 0);  /* ...and its bearing from the camera */
 
         /* $236C-$2376 — going the other way round, the point belongs to the OTHER half. */
-        cpu.Y = (uint8_t)(track_direction & 0x80u ? (point ^ halfStride) : point);
-        emit_edge_bearing_core(cpu.Y);               /* edge_x[Y] = bearing - car_heading */
+        unsigned edgeSlot = (track_direction & 0x80u) ? (point ^ halfStride) : point;
+        emit_edge_bearing_core((uint8_t)edgeSlot);   /* edge_x[Y] = bearing - car_heading */
 
         if (point < halfStride) {                    /* $2379 CPX #$28 */
             project_point_core(scratchSection, 0);    /* origin 0 = the camera */
@@ -2456,23 +2446,19 @@ static void road_edge_start_core(uint8_t nearSlotCount,   /* 6 — also the "not
                 horizon_index  = (uint8_t)point;
             }
         }
-        cpu.X = (uint8_t)point;                      /* $2377 / $2382 LDX $42 */
 
-        unsigned next = adc_step(point, halfStride, 0);   /* $239B, and its V reaches the exit */
+        unsigned next = (point + halfStride) & 0xFFu;     /* $239B */
         if (next >= pointLimit)                      /* $239E CMP #$3C */
             break;
         point   = next;
-        segByte = adc_step(near_segment_index, 0x03, 0);  /* $23A3 — the segment's 2nd triple */
+        segByte = (near_segment_index + 0x03u) & 0xFFu;   /* $23A3 — the segment's 2nd triple */
     }
 
     /* $23AC-$23B8 — hand the next frame the slot below this one, then make sure a stale
        horizon_index_prev cannot leave the road reaching further up than line 7. */
-    cpu.X = (uint8_t)((near_edge_cursor - 1) & 0xFFu);
-    clamp_near_edge_cursor_core(cpu.X);
+    clamp_near_edge_cursor_core((uint8_t)((near_edge_cursor - 1) & 0xFFu));
 
-    /* ⭐ The CMP is the routine's LAST flag-setting operation and A = 7 is its exit value, so
-       this one has to be spelled as the 6502's compare. */
-    if (!cmp_ge(staleHorizonCap, horizon_index_prev))
+    if (staleHorizonCap < horizon_index_prev)        /* $23B4 CMP; A = 7 caps the horizon */
         horizon_extent = staleHorizonCap;
 }
 
