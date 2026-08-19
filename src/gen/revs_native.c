@@ -1690,12 +1690,14 @@ static unsigned section_word(unsigned byteIndex)
    in this pass reaches them through the cores, never through the 6502-ABI shims. */
 static void bearing_to_section_core(uint8_t sectionByte, uint8_t origin);
 
-/* project_point's two register outputs, made explicit so a sibling core can take them as a
-   value instead of reading cpu.A / cpu.C back out: `line` is the projected scan line (the 6502
-   left it in A) and `clip` is the drop flag (C set = the point is behind the near plane or off
-   the top).  The mantissa/exponent it also produces stay in proj_width / proj_width_shift,
-   which is shared state the same way a mem[] cell is. */
-typedef struct { uint8_t line; int clip; } ProjPoint;
+/* project_point's outputs, made explicit so a sibling core takes them as values instead of
+   reading the 6502's exit flags back out: `line` is the projected scan line (the 6502 left it
+   in A), `clip` is the drop flag (the far clip or the >$80 quotient — C set on the 6502) and
+   `behind` is bit 7 of the surviving line (N on the 6502), which the road-edge walk folds into
+   a subdivide.  `behind` is meaningful only when !clip; it is 0 on a clipped return.  The
+   mantissa/exponent project_point also produces stay in proj_width / proj_width_shift, shared
+   state the same way a mem[] cell is. */
+typedef struct { uint8_t line; int clip; int behind; } ProjPoint;
 static ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin);
 
 /* The 16-bit negate abs16_math falls into (twin #48), also defined further down. */
@@ -2572,8 +2574,7 @@ static void road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
        nothing; otherwise it gets its width offset with the marker list frozen. */
     cpu.X = midSlot;
     emit_edge_bearing_at_cursor_core(midSlot);
-    project_point_core(midSlot, 0);
-    if (cpu.C)
+    if (project_point_core(midSlot, 0).clip)
         return;
 
     cpu.X              = walk_prev_section;
@@ -2611,12 +2612,14 @@ static void road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
             nearest_edge_bearing_hi = mem[EDGE_X_HI_TBL + edge_cursor];
         }
 
-        /* $23FC-$2401 — project it.  Carry = past the far clip, N = behind the camera. */
+        /* $23FC-$2401 — project it.  clip = past the far clip, behind = below the camera. */
         cpu.X = (uint8_t)section;
-        project_point_core((uint8_t)section, 0);
-        if (cpu.C || cpu.N) {
-            road_edge_walk_subdivide(section, midSlot);
-            return;
+        {
+            ProjPoint p = project_point_core((uint8_t)section, 0);
+            if (p.clip || p.behind) {
+                road_edge_walk_subdivide(section, midSlot);
+                return;
+            }
         }
 
         /* $246A — EMIT: the point's second angle, and any corner marker it carries. */
@@ -3413,39 +3416,23 @@ typedef struct {
     uint8_t  rawHi;   /* the subtraction's high byte BEFORE the absolute value — the sign */
 } ViewDelta;
 
-/* One component of the camera-relative delta.  ⚠ The 6502 has the component baked into the
-   address (`LDA $0902,X`), so unlike section_word's index this one does NOT wrap at 8 bits —
-   the scratch slot $FD plus component 2 is $09FF, still inside the table. */
+/* One component of the camera-relative delta: the section coordinate minus the view origin,
+   split into its sign (the high byte of the signed difference) and its magnitude (the absolute
+   value of that difference).  ⚠ The 6502 has the component baked into the address (`LDA
+   $0902,X`), so unlike section_word's index this one does NOT wrap at 8 bits — the scratch slot
+   $FD plus component 2 is $09FF, still inside the table.  The game runs this in binary mode, so
+   the sign is bit 7 of the true two's-complement high byte. */
 static ViewDelta view_delta(uint8_t sectionByte, unsigned component, uint8_t origin)
 {
-    /* Four subtracts at most, and only the LAST one's V leaves this routine — it survives the
-       sort's compares (which do not write V) and the 45-degree arm (which does not either), so
-       it reaches the caller.  Values only in the chain, then that one flag once; same trade as
-       div16by8_core above, and it is three calls per edge point. */
-    Sbc lo = sbc_value(mem[SECTION_LO_TBL + sectionByte + component],
-                       mem[VIEW_ORIGIN_LO + origin + component], 1);
-    Sbc hi = sbc_value(mem[SECTION_HI_TBL + sectionByte + component],
-                       mem[VIEW_ORIGIN_HI + origin + component], lo.carry);
+    int section = (int)mem[SECTION_LO_TBL + sectionByte + component]
+                | ((int)mem[SECTION_HI_TBL + sectionByte + component] << 8);
+    int viewpt  = (int)mem[VIEW_ORIGIN_LO + origin + component]
+                | ((int)mem[VIEW_ORIGIN_HI + origin + component] << 8);
+    uint16_t  diff = (uint16_t)(section - viewpt);
     ViewDelta d;
-    uint8_t lastA = mem[SECTION_HI_TBL + sectionByte + component];
-    uint8_t lastM = mem[VIEW_ORIGIN_HI + origin + component];
-    unsigned lastC = lo.carry;
-    /* ⚠⚠ THE BRANCH TESTS N, NOT BIT 7 OF THE STORED BYTE, and in DECIMAL MODE those are two
-       different things: the 6502 sets N and Z from the SBC's BINARY result while A receives the
-       BCD-corrected one, so `sign = stored & $80` picks the wrong arm on a quarter of the cases
-       and only there.  Cost 76 fixture failures to find; the fixture's D arm is what found it. */
-    int negative = (hi.bin >> 7) & 1;
 
-    d.rawHi = hi.val;
-    if (negative) {                      /* $2158 / $2178 / $2298 BPL — a 16-bit negate */
-        Sbc nlo = sbc_value(0, lo.val, 1);
-        Sbc nhi = sbc_value(0, hi.val, nlo.carry);
-        lastA = 0; lastM = hi.val; lastC = nlo.carry;
-        lo = nlo;
-        hi = nhi;
-    }
-    cpu.V = sbc_overflow(lastA, lastM, lastC);
-    d.mag = (uint16_t)(((unsigned)hi.val << 8) | lo.val);
+    d.rawHi = (uint8_t)(diff >> 8);
+    d.mag   = (diff & 0x8000u) ? (uint16_t)(-(int)diff) : diff;   /* |section - viewpoint| */
     return d;
 }
 
@@ -3479,34 +3466,19 @@ static uint8_t normalise_for_divide(uint8_t* largerLo, uint8_t largerHi,
     return (uint8_t)((hi >> 1) | 0x80u);                  /* ROR A, with the 1 that fell out */
 }
 
-/* bit 7 of a sign byte, through the 6502's own BIT so that the V it leaves behind is real.
-   ⚠⚠ BIT SETS V FROM BIT 6 OF ITS OPERAND, and on the 45-degree arm below nothing overwrites
-   it before the RTS — so V is part of that arm's exit contract even though no caller reads it.
-   The two octant arms use the same instruction and then ADC over the top of it, which is why
-   this only matters here.  (645 fixture failures, all on the one arm, all V.) */
-REVS_FLAG_OP int sign_bit7(unsigned cell)
-{
-    BIT(mem[cell]);
-    return cpu.N;
-}
-
 /* $220D-$2234 — the four 45-degree diagonals, on the two sign bits.  Reached three ways
-   (equal magnitudes, or either arm's dividend catching up with its divisor) and never after a
-   divide, which is what keeps div16by8's flags off this exit.  shared_temp_7e = $FF says
-   "maximally oblique" to the point_distance_hypot that runs next.
-   ⚠ Both paths test component 2 SECOND, so the V that leaves is always bit 6 of $0088. */
+   (equal magnitudes, or either arm's dividend catching up with its divisor).  shared_temp_7e =
+   $FF says "maximally oblique" to the point_distance_hypot that runs next.  The quadrant is the
+   two ground-plane sign bits: component 0 -> bit 1, component 2 -> bit 0. */
 static void bearing_diagonal(void)
 {
     static const uint8_t diagonal[4] = { 0x20u, 0x60u, 0xE0u, 0xA0u };
-    unsigned quadrant;
+    unsigned quadrant = ((mem[POINT_DELTA_SIGN + 0] & 0x80u) ? 2u : 0u)
+                      | ((mem[POINT_DELTA_SIGN + 2] & 0x80u) ? 1u : 0u);
 
     shared_temp_7e = 0xFFu;                         /* $220D */
     bearing_lo     = 0x00u;                         /* $2211 */
-
-    quadrant  = sign_bit7(POINT_DELTA_SIGN + 0) ? 2u : 0u;
-    quadrant |= sign_bit7(POINT_DELTA_SIGN + 2) ? 1u : 0u;
-
-    bearing_hi = (uint8_t)load_a(diagonal[quadrant]);
+    bearing_hi     = diagonal[quadrant];
 }
 
 /* $21C1-$220C and $2239-$2284 — the two arms, which differ in three things and nothing else:
@@ -3520,9 +3492,8 @@ static void bearing_arm(unsigned largerComponent, unsigned smallerComponent,
     uint8_t  largerLo = mem[POINT_DELTA_LO + largerComponent];
     uint16_t smaller  = (uint16_t)(((unsigned)mem[POINT_DELTA_HI + smallerComponent] << 8)
                                    | mem[POINT_DELTA_LO + smallerComponent]);
-    unsigned shifts, angleLo, angleHi;
-    uint8_t  divisor, rawArctan, base;
-    int      i, signsDiffer, negate;
+    unsigned shifts;
+    uint8_t  divisor;
 
     divisor = normalise_for_divide(&largerLo, mem[POINT_DELTA_HI + largerComponent],
                                   &smaller, &shifts);
@@ -3533,55 +3504,37 @@ static void bearing_arm(unsigned largerComponent, unsigned smallerComponent,
     shared_temp_76 = divisor;                       /* $21C7 / $223F */
     math_lo        = (uint8_t)smaller;              /* $21C9 / $2241 */
 
-    /* $21CD / $2245 — a dividend half that has caught up with the divisor would overflow the
-       8-bit quotient, and is the 45-degree case by another road.  The compare runs on both
-       paths because it is also what leaves A holding the dividend's high byte for the divide. */
-    cmp_ge((unsigned)(uint8_t)(smaller >> 8), divisor);
-    if (cpu.Z) {
+    /* $21CD / $2245 — a dividend half that has caught the divisor would overflow the 8-bit
+       quotient, and is the 45-degree case by another road.  After the sort the dividend high
+       byte is <= the divisor, so this is the only way it reaches it. */
+    if ((uint8_t)(smaller >> 8) == divisor) {
         bearing_diagonal();
         return;
     }
 
-    {
-        Div16By8 q = div16by8_core((uint8_t)(smaller >> 8), (uint8_t)smaller, divisor);
-        math_lo = q.quotient;
-        cpu.A   = q.remainder;
-    }
+    /* $22DA — the divide, a proper fraction (dividend hi < divisor) so an 8-bit quotient: one
+       DIVU.W where the 6502 spent a seven-step restoring loop. */
+    uint8_t quotient  = (uint8_t)revs_divu16(smaller, divisor);
+    math_lo           = quotient;
+    uint8_t rawArctan = mem[ARCTAN_TABLE + quotient];
+    shared_temp_7e    = rawArctan;                  /* how oblique — the hypot's segment split */
 
-    arg_y(math_lo);                                 /* $21DA / $2252 — Y is live at exit */
-    rawArctan      = mem[ARCTAN_TABLE + cpu.Y];
-    shared_temp_7e = rawArctan;                     /* how oblique — the hypot's segment split */
-
-    /* $21E1-$21EA / $2259-$2262 — the table byte scaled by 32 into a 16-bit angle: three
-       LSR/ROR pairs, and it really is three in BOTH arms. */
-    angleLo = 0;
-    angleHi = rawArctan;
-    for (i = 0; i < 3; i++) {
-        angleLo = (unsigned)(((angleHi & 1u) << 7) | (angleLo >> 1));
-        angleHi >>= 1;
-    }
+    /* $21E1-$21EA / $2259-$2262 — the table byte * 32 into a 16-bit angle (the 6502 does it as
+       three LSR/ROR pairs of {rawArctan:0}, i.e. a 16-bit >> 3). */
+    unsigned angle = (unsigned)rawArctan * 32u;
 
     /* $21EC / $2264 — the negate that puts the angle on the right side of its axis.  The two
        arms sweep opposite ways round, which is why the test is inverted between them. */
-    signsDiffer = ((mem[POINT_DELTA_SIGN + 0] ^ mem[POINT_DELTA_SIGN + 2]) & 0x80u) != 0;
-    negate      = negateWhenSignsAgree ? !signsDiffer : signsDiffer;
-    if (negate) {
-        /* Values only: the closing ADC below overwrites this pair's V, and its C and N/Z go
-           with it.  (The negate in view_delta is NOT free the same way — see there.) */
-        Sbc nlo = sbc_value(0, (uint8_t)angleLo, 1);
-        Sbc nhi = sbc_value(0, (uint8_t)angleHi, nlo.carry);
-        angleLo = nlo.val;
-        angleHi = nhi.val;
-    }
+    int signsDiffer = ((mem[POINT_DELTA_SIGN + 0] ^ mem[POINT_DELTA_SIGN + 2]) & 0x80u) != 0;
+    if (negateWhenSignsAgree ? !signsDiffer : signsDiffer)
+        angle = (unsigned)(-(int)angle) & 0xFFFFu;
 
-    /* $21FF / $2277 — and the quadrant the octant sits in, from the LARGER component's sign.
-       Through the same BIT as the arm above; here the ADC below overwrites the V it leaves. */
-    base    = sign_bit7(POINT_DELTA_SIGN + largerComponent)
-                ? (uint8_t)(quadrantBase + 0x80u) : quadrantBase;
-    angleHi = adc_step(base, (uint8_t)angleHi, 0);
-
-    bearing_lo = (uint8_t)angleLo;
-    bearing_hi = (uint8_t)angleHi;                  /* ...and A, which is live at exit */
+    /* $21FF / $2277 — and the quadrant the octant sits in, from the LARGER component's sign,
+       added into the angle's high byte. */
+    uint8_t base = (mem[POINT_DELTA_SIGN + largerComponent] & 0x80u)
+                     ? (uint8_t)(quadrantBase + 0x80u) : quadrantBase;
+    bearing_lo = (uint8_t)angle;
+    bearing_hi = (uint8_t)((angle >> 8) + base);
 }
 
 static void bearing_to_section_core(uint8_t sectionByte, uint8_t origin)
@@ -3601,23 +3554,10 @@ static void bearing_to_section_core(uint8_t sectionByte, uint8_t origin)
     /* $2187-$2191 THE SORT.  The divide wants a proper fraction, so the smaller magnitude
        becomes the dividend and the larger the divisor.  point_distance_hypot reads the same
        two pairs afterwards as its min and max, UNSHIFTED — the normalise below only touches
-       the point_delta cells, never these.
-
-       ⚠ The compares run for their FLAGS as much as their answer.  The 6502 brackets the four
-       stores below in PHP/PLP, which looks like it is only carrying Z to the `BEQ` — but PLP
-       restores C and V as well, and the 45-degree arm it branches to touches neither, so the
-       deciding compare's C and V are LIVE on that exit.  Doing the comparison in C and
-       branching on a bool leaves them stale, which is a diff on every equal-magnitude case. */
+       the point_delta cells, never these. */
     {
-        int d2Smaller, equal;
-
-        if (!cmp_ge((unsigned)(uint8_t)(d2.mag >> 8), (uint8_t)(d0.mag >> 8)))
-            d2Smaller = 1;                          /* $2189 BCC — component 2 is the smaller */
-        else if (!cpu.Z)
-            d2Smaller = 0;                          /* $218B BNE — component 0 is */
-        else
-            d2Smaller = !cmp_ge((unsigned)(uint8_t)d2.mag, (uint8_t)d0.mag);  /* $2191 BCS */
-        equal = cpu.Z;                              /* ...the Z the PHP/PLP pair preserves */
+        int d2Smaller = d2.mag <  d0.mag;
+        int equal     = d2.mag == d0.mag;
 
         if (d2Smaller) {
             hypot_min_hi = (uint8_t)(d2.mag >> 8);
@@ -3641,16 +3581,13 @@ static void bearing_to_section_core(uint8_t sectionByte, uint8_t origin)
 static ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
 {
     GEO_COUNT(g_geoProject);
-    cpu.Y = origin;       /* origin arrives in Y (the LDY at the call); on the clip path Y is
-                             unchanged to exit, so this is the exit value there */
 
     /* $2287-$22AE — component 1 of the delta, the HEIGHT, and the only component that is
        scaled on the way in: >> 3 as a 16-bit pair before anything looks at it. */
     ViewDelta d      = view_delta(sectionByte, 1, origin);
     uint16_t  height = (uint16_t)(d.mag >> 3);
-    unsigned  shifts, line;
-    uint8_t   divisor, distLo;
-    int       clipped;
+    unsigned  shifts;
+    uint8_t   divisor, distLo, quotient, lineByte;
 
     mem[POINT_DELTA_SIGN + 1] = d.rawHi;
     mem[POINT_DELTA_LO   + 1] = (uint8_t)height;
@@ -3658,18 +3595,10 @@ static ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
 
     /* $22B0-$22BD THE FAR CLIP — the scaled height against point_dist, which
        point_distance_hypot filled in for THIS point a moment ago, so it is a vertical
-       field-of-view test and not a comparison with a stale distance. */
-    if (!cmp_ge((unsigned)(height >> 8), point_dist_hi))
-        clipped = 0;                                                    /* $22B2 */
-    else if ((uint8_t)(height >> 8) != point_dist_hi)
-        clipped = 1;                                                    /* $22B4 */
-    else
-        clipped = cmp_ge((unsigned)(uint8_t)height, point_dist_lo);      /* $22BA */
-
-    if (clipped) {
-        cpu.C = 1;                                  /* $22BC SEC — "drop this point" */
-        return (ProjPoint){ cpu.A, cpu.C };
-    }
+       field-of-view test and not a comparison with a stale distance.  Height at or beyond the
+       distance drops the point. */
+    if (height >= (uint16_t)(((unsigned)point_dist_hi << 8) | point_dist_lo))
+        return (ProjPoint){ 0, 1, 0 };              /* $22BC SEC — "drop this point" */
 
     /* $22BE-$22D8 — normalise the DISTANCE until its top bit falls out, taking the height
        with it one place fewer, and record the pair the road's apparent width is made of:
@@ -3687,34 +3616,35 @@ static ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
 
     shared_temp_76   = divisor;
     proj_width_shift = (uint8_t)shifts;
-    cpu.Y            = divisor;                     /* $22D4 TAY — and Y is live at exit */
     proj_width       = mem[RECIP_TABLE_BIAS + divisor];
 
     /* $22DA-$22E1 — the perspective divide itself: the shifted height over the normalised
-       distance.  A DIVIDE, not a multiply — the reciprocal above is for the width. */
-    math_lo = (uint8_t)height;
-    {
-        Div16By8 q = div16by8_core((uint8_t)(height >> 8), (uint8_t)height, divisor);
-        math_lo = q.quotient;
-        cpu.A   = q.remainder;
-    }
+       distance, one DIVU.W.  A DIVIDE, not a multiply — the reciprocal above is for the width. */
+    unsigned q = revs_divu16(height, divisor);
+    math_lo    = (uint8_t)q;
 
-    /* $22E3-$22E7 — a quotient past $80 is off the top of the 0..79 scan-line space, and
-       leaves by the same carry-set door as the far clip. */
-    if (cmp_ge(math_lo, 0x80u))
-        return (ProjPoint){ cpu.A, cpu.C };         /* C set by the CMP — the same drop door */
+    /* $22E3-$22E7 — a quotient past $80 is off the top of the 0..79 scan-line space, and leaves
+       by the same drop door as the far clip.  ⚠ Tested on the FULL quotient, not its low byte:
+       a point right at the far-clip boundary divides to 256+ (line 128+, off screen), which the
+       6502's restoring divide saturated to a byte >= $80 before comparing.  DIVU keeps the true
+       value, so the >= $80 test must see it too — the low byte alone could wrap below $80 and
+       fail to drop an off-screen point. */
+    if (q >= 0x80u)
+        return (ProjPoint){ 0, 1, 0 };
+    quotient = (uint8_t)q;
 
-    /* $22E9-$22FD — 60 either side of the camera's eye level, less the frame's smoothed
-       pitch, and that is the scan line. */
-    if (sign_bit7(POINT_DELTA_SIGN + 1))            /* $22E9 BIT — see sign_bit7 on the V */
-        line = sub_from(0x3Cu, math_lo);            /* $22ED — below: 60 - quotient */
+    /* $22E9-$22FD — 60 either side of the camera's eye level, less the frame's smoothed pitch,
+       and that is the scan line.  bit 7 of the height sign chooses above/below. */
+    if (mem[POINT_DELTA_SIGN + 1] & 0x80u)
+        lineByte = (uint8_t)(0x3Cu - quotient);     /* $22ED — below: 60 - quotient */
     else
-        line = adc_step(math_lo, 0x3Cu, 0);         /* $22F5 — above: quotient + 60 */
+        lineByte = (uint8_t)(quotient + 0x3Cu);     /* $22F5 — above: quotient + 60 */
 
-    line           = sub_from(line, view_pitch_offset);
-    projected_line = (uint8_t)line;
-    cpu.C          = 0;                             /* $22FD CLC — the point survived */
-    return (ProjPoint){ cpu.A, cpu.C };             /* A holds the line (sub_from left it there) */
+    lineByte       = (uint8_t)(lineByte - view_pitch_offset);
+    projected_line = lineByte;
+    /* The point survived the clip; "behind the camera" is bit 7 of the final line, which the
+       6502 left in N and the caller reads to fold back to a subdivide. */
+    return (ProjPoint){ lineByte, 0, (lineByte & 0x80u) != 0 };
 }
 
 /* The 6502-ABI shims.  ⚠ Only the BODIES are twinned: $2145 and $2285 stay transliterated,
@@ -3732,7 +3662,17 @@ void bearing_to_section_from(void)
 
 void project_point_from(void)
 {
-    project_point_core(cpu.X, cpu.Y);
+    /* The 6502 returned TWO answers in flags, and the transliterated callers read both: carry is
+       the clip decision ($23ff BCS), and N is "behind the camera" — bit 7 of the surviving line,
+       which the exit SBC left in N ($2401 BPL, reached only when carry is clear).  A caller that
+       is itself a native twin takes these from the ProjPoint struct; a caller still transliterated
+       reaches for cpu.C/cpu.N, so the shim must restore the OS-exit flag state the clean core no
+       longer produces as a side effect.  On the clip path N is dead (the caller's BPL is behind a
+       taken BCS), so behind==0 there is harmless. */
+    ProjPoint p = project_point_core(cpu.X, cpu.Y);
+    cpu.A = p.line;   /* $22FB leaves the line in A; write_object_slot reads it as the slot line */
+    cpu.C = p.clip;
+    cpu.N = p.behind;
 }
 
 /* ===========================================================================
