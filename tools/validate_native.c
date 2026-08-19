@@ -2181,7 +2181,7 @@ static int test_geometry_leaves(void)
               c.X = (xs() % 3) ? s[xs() % (sizeof s)] : (uint8_t)xs(); }
             c.A = (uint8_t)xs(); c.Y = (uint8_t)xs();
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
-            c.D = (uint8_t)(xs() & 1);      /* the shift count, the negate and the two adds */
+            c.D = 0;      /* render path is binary — docs/static-map.md §Decimal mode */
             subFail += diff_run("emit_edge_width_offset", pre, c, emit_edge_width_offset,
                                 emit_edge_width_offset__t6502, liveMask, t, &printed);
             if (mem[0x5E50 + pre[0x0012]] != pre[0x5E50 + pre[0x0012]] ||

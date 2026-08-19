@@ -2130,22 +2130,23 @@ static void emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScorin
     /* $2565-$257E — the point's feature bits, masked down to this road side's, and the two
        table entries they select.  The section-flags array is addressed twice over: $0702 for a
        byte index inside the 120-byte list and $068A (the same table, less 120) past it. */
-    flags = (uint8_t)(mem[cpx_ge(sectionByte, 0x78) ? SECTION_FLAGS_W + sectionByte
-                                                    : SECTION_FLAGS   + sectionByte]
+    flags = (uint8_t)(mem[(sectionByte >= 0x78) ? SECTION_FLAGS_W + sectionByte
+                                                : SECTION_FLAGS   + sectionByte]
                       & mem[EDGE_SIDE_MASK + road_side_index]);
     shared_temp_77 = flags;
     feature        = flags & 0x07u;
     style          = mem[EDGE_STYLE_SEL + feature];
     shared_temp_76 = style;
 
-    /* $2580-$2586 — nothing but the style for the first three points of the side. */
-    if (cmp_ge(shared_counter_42, firstScoringPoint)) {
+    /* $2580-$2586 — nothing but the style for the first three points of the side.  (The `CMP`
+       here is a mid-routine branch; its flags are overwritten before any exit, so a plain >=.) */
+    if (shared_counter_42 >= firstScoringPoint) {
         int negate;
 
-        /* $2589-$25A9 — the apparent half-width here: project_point's mantissa, shifted by
-           its exponent less this feature's own. */
-        uint8_t steps = (uint8_t)(sbc_value(proj_width_shift,
-                                            mem[EDGE_WIDTH_SHIFT + feature], 1).val - 1u);
+        /* $2589-$25A9 — the apparent half-width here: project_point's mantissa, shifted by its
+           exponent less this feature's own.  Binary render path (docs/static-map.md §Decimal
+           mode), so the shift count is a plain subtract. */
+        uint8_t steps = (uint8_t)(proj_width_shift - mem[EDGE_WIDTH_SHIFT + feature] - 1u);
 
         offset  = width_shifted(proj_width, steps);
         math_hi = (uint8_t)(offset >> 8);
@@ -2155,25 +2156,25 @@ static void emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScorin
            with the direction the car is going round the circuit, so the two boundaries stay on
            opposite sides of the road however the walk is traversing the section list. */
         negate = (uint8_t)((road_side_index ? 0x80u : 0x00u) ^ track_direction) >= 0x80u;
-        if (negate) {                                 /* $25B3-$25BE */
-            Sbc nlo = sbc_value(0, (uint8_t)offset, 1);
-            Sbc nhi = sbc_value(0, (uint8_t)(offset >> 8), nlo.carry);
-            offset  = (unsigned)nlo.val | ((unsigned)nhi.val << 8);
-            math_lo = nlo.val;
-            math_hi = nhi.val;
+        if (negate) {                                 /* $25B3-$25BE — 16-bit two's-complement negate */
+            offset  = (unsigned)(uint16_t)(0u - offset);
+            math_lo = (uint8_t)offset;
+            math_hi = (uint8_t)(offset >> 8);
         }
 
-        /* $25C0-$25D2 — the far kerb's azimuth: this point's angle plus that offset. */
+        /* $25C0-$25D2 — the far kerb's azimuth: this point's angle plus that offset (16-bit add). */
         {
-            /* ⚠ The HIGH half's ADC is the last thing in the routine to write V — everything
-               after it is CMP/CPY, which do not — so its overflow is the caller's.  (565 of
-               2000 cases differed on V alone with mem[] byte-exact until it went through the
-               6502's own add.) */
             unsigned slot = edge_cursor;
-            Adc      lo   = adc_value(mem[EDGE_X_LO_TBL + slot], (uint8_t)offset, 0);
-            mem[EDGE_OPP_X_LO + slot] = lo.val;
-            mem[EDGE_OPP_X_HI + slot] = (uint8_t)adc_step(mem[EDGE_X_HI_TBL + slot],
-                                                          (uint8_t)(offset >> 8), lo.carry);
+            unsigned base = (unsigned)mem[EDGE_X_LO_TBL + slot]
+                          | ((unsigned)mem[EDGE_X_HI_TBL + slot] << 8);
+            unsigned res  = (base + offset) & 0xFFFFu;
+            mem[EDGE_OPP_X_LO + slot] = (uint8_t)res;
+            mem[EDGE_OPP_X_HI + slot] = (uint8_t)(res >> 8);
+            /* ⚠ V escapes: the HIGH half's ADC is the last thing in the routine to write V —
+               everything after it is CMP/CPY, which do not — so the caller gets its overflow.
+               Replayed from the operands (565 of 2000 cases differ on V alone otherwise). */
+            unsigned carryLo = (mem[EDGE_X_LO_TBL + slot] + (offset & 0xFFu)) > 0xFFu;
+            cpu.V = adc_overflow(mem[EDGE_X_HI_TBL + slot], (uint8_t)(offset >> 8), carryLo);
         }
 
         /* $25D3-$25FB — and a corner marker, if the point carries one. */
