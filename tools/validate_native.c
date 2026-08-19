@@ -128,7 +128,11 @@ static int report_unvalidated_natives(void)
 enum {
     LIVE_NONE = 0,
     LIVE_A = 1 << 0, LIVE_X = 1 << 1, LIVE_Y = 1 << 2, LIVE_S = 1 << 3,
-    LIVE_FLAGS = 1 << 4          /* N/V/Z/C */
+    /* per-flag bits: declare live ONLY the flags a routine's caller actually reads.
+       A dead flag (computed as a side effect but never consumed) is an implementation
+       detail, not a result — leaving it out of the mask validates the RESULT. */
+    LIVE_N = 1 << 4, LIVE_V = 1 << 5, LIVE_Z = 1 << 6, LIVE_C = 1 << 7,
+    LIVE_FLAGS = LIVE_N | LIVE_V | LIVE_Z | LIVE_C
 };
 
 /* Per-test contract mask: addresses excluded from the mem[] diff.  Use ONLY for cells
@@ -317,16 +321,19 @@ static int diff_run(const char* name, const uint8_t* pre, Cpu6502 pre_cpu,
     CHECK_REG(LIVE_Y, Y, "Y")
     CHECK_REG(LIVE_S, S, "S")
 #undef CHECK_REG
-    if ((liveMask & LIVE_FLAGS) &&
-        (cpu.N != ref_cpu.N || cpu.V != ref_cpu.V || cpu.Z != ref_cpu.Z || cpu.C != ref_cpu.C)) {
-        failed = 1;
-        if (*printed < 12) {
-            printf("[REG DIFF] %s case %d  flags NVZC ref=%d%d%d%d native=%d%d%d%d (declared live)\n",
-                   name, t, ref_cpu.N, ref_cpu.V, ref_cpu.Z, ref_cpu.C,
-                   cpu.N, cpu.V, cpu.Z, cpu.C);
-            (*printed)++;
-        }
+#define CHECK_FLAG(bit, field, ch)                                               \
+    if ((liveMask & bit) && cpu.field != ref_cpu.field) {                        \
+        failed = 1;                                                              \
+        if (*printed < 12) {                                                     \
+            printf("[REG DIFF] %s case %d  flag %c ref=%d native=%d (declared live)\n", \
+                   name, t, ch, ref_cpu.field, cpu.field); (*printed)++;         \
+        }                                                                        \
     }
+    CHECK_FLAG(LIVE_N, N, 'N')
+    CHECK_FLAG(LIVE_V, V, 'V')
+    CHECK_FLAG(LIVE_Z, Z, 'Z')
+    CHECK_FLAG(LIVE_C, C, 'C')
+#undef CHECK_FLAG
     return failed;
 }
 
@@ -345,11 +352,13 @@ static int test_contract(const char* name, void (*native)(void), void (*t6502)(v
         fill_random(pre);
         fail += diff_run(name, pre, zero_cpu(), native, t6502, liveMask, t, &printed);
     }
-    printf("%-32s %7d cases, %d mismatch (must be 0)  live=%s%s%s%s%s\n",
+    printf("%-32s %7d cases, %d mismatch (must be 0)  live=%s%s%s%s%s%s%s%s%s\n",
            name, cases, fail,
            (liveMask & LIVE_A) ? "A" : "", (liveMask & LIVE_X) ? "X" : "",
            (liveMask & LIVE_Y) ? "Y" : "", (liveMask & LIVE_S) ? "S" : "",
-           (liveMask == LIVE_NONE) ? "none" : ((liveMask & LIVE_FLAGS) ? "+flags" : ""));
+           (liveMask & LIVE_N) ? "N" : "", (liveMask & LIVE_V) ? "V" : "",
+           (liveMask & LIVE_Z) ? "Z" : "", (liveMask & LIVE_C) ? "C" : "",
+           (liveMask == LIVE_NONE) ? "none" : "");
     return fail;
 }
 
