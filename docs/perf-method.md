@@ -679,6 +679,41 @@ subsystem earlier.
 measurable at all, and §8's non-performance reasons applied to seven of the nine before a run
 was made.  Quote them for the names and the leaf-freedom, never for FPS.
 
+### ❌ NEGATIVE RESULT: de-macroing the WHOLE twin corpus to idiomatic C is worth nothing for FPS (2026-08-19)
+
+**What was done, and why it is here not in a style note:** the whole native-twin corpus in
+`src/gen/revs_native.c` was rewritten from leftover `cpu.h`-macro transliteration (`LDA`/`STA`/`AND`/
+`CMP`/`ADC` through `cpu.A`) into idiomatic C — named locals, ordinary control flow, the `sub_from`/
+`sbc_step`/`adc_step` flag helpers for the arithmetic chains.  Macros now survive ONLY where a flag or
+the 6502 stack genuinely ESCAPES the routine (the sanctioned exception in `docs/faithfulness-seam.md`):
+live N/Z/C into an SMC dispatch or a sibling, a PHP/PLP-carried sign that is part of the differential,
+a shift/rotate carry chain.  This is a readability/faithfulness pass, not an algorithmic one — no
+function moved across the twin seam, they were already twins.
+
+**Measured, and it is a clean zero.**  Byte-exact behaviour first (`make validate` 0 mismatch on every
+fixture; `make determinism` + `make determinism-drive` 64K byte-identical at frame 300), so a
+`FIXED_RNG` + warp FPS run is directly comparable pre/post — same trajectory by construction.  Control
+(pre-pass `revs_native.c` at `0c1e57a`) and HEAD (`3ceeec8`) built and run **in the same session**,
+`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1`, `fps_series.gdb`, warp, 30 s:
+
+| build | fps_series rows (non-outlier) | totals |
+|---|---|---|
+| control `0c1e57a` (macros) | 3.02 2.92 3.02 3.02 2.92 2.92 · 3.02 2.92 3.02 3.02 2.92 | vbi 7247 / painted 403 |
+| HEAD `3ceeec8` (idiomatic C) | 3.02 2.92 3.02 3.02 2.92 2.92 · 3.02 2.92 3.02 3.02 2.92 | vbi 7268 / painted 404 |
+
+**The row vectors are IDENTICAL frame-for-frame** — including the two reset-dip outlier rows (2.53,
+1.95) both runs share — and the totals differ by one painted frame (quantisation).  The framerate did
+not move at all.
+
+⭐ **Why, and it is the same reason as the 2026-08-16 transpiler dead-flag result below:** GCC's
+dead-store elimination already dropped the flag writes the macros spell out, because `cpu` is a plain
+global struct and the later store kills the earlier within any straight-line stretch.  Removing the
+`UPD_NZ` *by hand* removes source, not object code that was still there.  The win in this subsystem was
+never the interpreter (twins #16-#24, #25-#39 below say the same): it is ACCESSES and POINTS.
+**Quote this pass for readability and for the leaf-freedom the next optimisation needs — never for FPS.**
+This also supersedes the "the drivers still run on cpu.h macros" aside further down (`view_compose`,
+`stop_unchanged`, `step_scanline`): those are idiomatic C now too, bar their live-flag exits.
+
 ### ⚠⚠ TWINS #25-#39, THE SPAN RASTERISER: a 4.2% LOSS, and a STRUCT POINTER in the leaf was most of it (2026-08-18)
 
 Everything `draw_road` reaches — its three stages, `interp_edge`, the four span-walk arms, the two
