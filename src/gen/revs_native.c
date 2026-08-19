@@ -7929,24 +7929,18 @@ static void fill_object_gap_core(uint8_t width)
 static void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
 {
     unsigned pixel;
+    uint8_t  edgeCol, blockStart, acc = 0;
 
     /* $1C1C-$1C3D — the entry state.  The colour this call chooses becomes the NEXT call's
-       "previous", which is how a span's two ends agree on a byte. */
-    mem[PVS_MODE] = mode;
-    cpu.Y        = mode;
-    LDX(mem[PVS_COLOUR]);                          /* $1C1E-$1C21 — LDX/STX, not LDA/STA */
-    mem[PVS_COLOUR_P] = cpu.X;
-    LDA(colourSelect);
-    AND(0x03u);
-    TAX();
-    mem[PVS_COLOUR]   = mem[COLOUR_PATTERN_TBL + cpu.X];
-    mem[PVS_PREV_COL] = (uint8_t)load_a(mem[EDGE_COLUMN]);
-    LDA(mem[OBJ_EDGE_STYLE]);
-    AND(0x0Cu);
-    LSR_A(); LSR_A();
-    TAX();
-    shared_temp_76 = mem[COLOUR_PATTERN_TBL + cpu.X];
-    plot_ptr_lo    = 0x00u;
+       "previous", which is how a span's two ends agree on a byte.  Y carries `mode` from here
+       down to the mode dispatch; nothing below reassigns it until then. */
+    mem[PVS_MODE]     = mode;
+    cpu.Y             = mode;
+    mem[PVS_COLOUR_P] = mem[PVS_COLOUR];                             /* $1C1E-$1C21 */
+    mem[PVS_COLOUR]   = mem[COLOUR_PATTERN_TBL + (colourSelect & 0x03u)];
+    mem[PVS_PREV_COL] = mem[EDGE_COLUMN];
+    shared_temp_76    = mem[COLOUR_PATTERN_TBL + ((mem[OBJ_EDGE_STYLE] & 0x0Cu) >> 2)];
+    plot_ptr_lo       = 0x00u;
 
     /* $1C3E-$1C7A — the endpoints.  Mode 1 derives its OWN from shared_temp_7e and then the
        other; mode 0 takes the saved pair and re-derives the other over it; mode 2 takes the
@@ -7964,194 +7958,166 @@ static void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
                             PVS_OTHER_X, PVS_OTHER_COL);
     }
 
-    /* $1C7B-$1C88 — the target pointer, $3000 + column x $80, and the screen-half bit. */
-    LDA(mem[EDGE_COLUMN]);
-    CMP(0x14u);
-    ROL_M(PVS_HALF);
-    LSR_A();
-    ROR_M(MEM_plot_ptr_lo);
-    plot_ptr_hi = (uint8_t)adc_step(cpu.A, VIEW_SRC_PAGE, 0);
+    /* $1C7B-$1C88 — the target pointer, $3000 + column x $80, and the screen-half bit.  The
+       column is unmodified from here until the gap walk, so read it once.  ⚠ the ADC is kept
+       (it is the last thing to write V, which is live at every exit below). */
+    edgeCol       = mem[EDGE_COLUMN];
+    mem[PVS_HALF] = (uint8_t)((mem[PVS_HALF] << 1) | (edgeCol >= 0x14u ? 1u : 0u));
+    plot_ptr_lo   = (uint8_t)((edgeCol & 1u) << 7);
+    plot_ptr_hi   = (uint8_t)adc_step((uint8_t)(edgeCol >> 1), VIEW_SRC_PAGE, 0);
 
     /* $1C89-$1C9D — off the right of the viewport, or the run's top line. */
-    LDX(mem[EDGE_COLUMN]);
-    if (cpx_ge(cpu.X, 0x28u)) {
+    if (cpx_ge(edgeCol, 0x28u)) {
         /* $1D94-$1DA5 — mode 1 gives up; the others clamp the column to $28 and still close
-           the gap behind them. */
-        LDY(mem[PVS_MODE]);                        /* $1D94 */
-        CPY(0x01u);
-        if (cpu.Z) return;
-        LDA(mem[PVS_PREV_COL]);
-        CMP(0x28u);
-        if (cpu.C) return;
-        LDA(0x28u);
-        mem[EDGE_COLUMN] = cpu.A;
+           the gap behind them.  cpx_ge left X = edgeCol and A = plot_ptr_hi, both live at exit. */
+        if (cpy_eq(mode, 0x01u)) return;
+        if (cmp_ge(mem[PVS_PREV_COL], 0x28u)) return;
+        mem[EDGE_COLUMN] = 0x28u;
         goto close_gap;
     }
-    LDA(span_top_line);
-    if (!cmp_ge(cpu.A, mem[DASH_BLOCK_STARTS + cpu.X]))
-        LDA(mem[DASH_BLOCK_STARTS + cpu.X]);
-    mem[EDGE_BLOCK_START] = cpu.A;
+    blockStart = span_top_line;
+    if (!cmp_ge(blockStart, mem[DASH_BLOCK_STARTS + edgeCol]))       /* clamp to the block top */
+        blockStart = mem[DASH_BLOCK_STARTS + edgeCol];
+    mem[EDGE_BLOCK_START] = blockStart;
 
     /* $1C9E-$1CA9 — a run with no height. */
-    CMP(span_line_cursor);
-    if (cpu.C) {
-        CPY(0x01u);
-        if (cpu.Z) return;
+    if (cmp_ge(blockStart, span_line_cursor)) {
+        if (cpy_eq(mode, 0x01u)) return;
         goto prev_col;
     }
 
     /* $1CAA-$1CC2 — the style's bit 4 re-picks the colour, but only on a closing pass whose
-       parity disagrees with the screen half.  ⚠ `TYA / BEQ` is what keeps mode 0 out. */
-    LDA(mem[OBJ_EDGE_STYLE]);
-    AND(0x10u);
-    if (!cpu.Z) {
-        TYA();
-        if (!cpu.Z) {
-            EOR(mem[PVS_HALF]);
-            AND(0x01u);
-            if (!cpu.Z) {
-                LDA(mem[OBJ_EDGE_STYLE]);
-                AND(0x03u);
-                TAX();
-                shared_temp_76 = mem[COLOUR_PATTERN_TBL + cpu.X];
-            }
-        }
-    }
+       parity disagrees with the screen half.  ⚠ mode 0 (Y == 0) is kept out by the TYA/BEQ. */
+    if ((mem[OBJ_EDGE_STYLE] & 0x10u) != 0 &&
+        mode != 0 &&
+        ((mode ^ mem[PVS_HALF]) & 0x01u) != 0)
+        shared_temp_76 = mem[COLOUR_PATTERN_TBL + (mem[OBJ_EDGE_STYLE] & 0x03u)];
 
     /* $1CC3-$1CD0 — the PIXEL is the low two bits of the endpoint's x, and the edge colour is
        cut down to that pixel's own bits. */
-    LDA(shared_temp_7e);
-    AND(0x03u);
-    TAX();
-    pixel = cpu.X;
-    LDA(mem[PIXEL_KEEP_OTHERS + pixel]);
-    EOR(0xFFu);
-    AND(shared_temp_76);
-    shared_temp_76 = cpu.A;
+    pixel          = shared_temp_7e & 0x03u;
+    shared_temp_76 = (uint8_t)(shared_temp_76 & (uint8_t)~mem[PIXEL_KEEP_OTHERS + pixel]);
 
-    /* $1CD1-$1D43 — compose the cell, per mode. */
-    CPY(0x01u);
-    if (!cpu.C) {
+    /* $1CD1-$1D43 — compose the cell, per mode.  `acc` is the composed byte (the 6502's A) as
+       it flows across the shared same-column / read-modify-write tails. */
+    if (mode == 0) {
         /* ---- mode 0: the closing arm's own pass ---- */
-        LDA(mem[COLOUR_PATTERN_AND + pixel]);
-        AND(mem[PVS_COLOUR_P]);
-        mem[PVS_HALF] = cpu.A;                    /* ⚠ math_lo again, here a partial byte */
-        LDA(mem[PVS_COLOUR]);
-        AND(mem[COLOUR_PATTERN_KEEP + pixel]);
-        ORA(mem[PVS_HALF]);
-        AND(mem[PIXEL_KEEP_OTHERS + pixel]);
-        ORA(shared_temp_76);
-        mem[PVS_BYTE] = cpu.A;
+        uint8_t half0 = (uint8_t)(mem[COLOUR_PATTERN_AND + pixel] & mem[PVS_COLOUR_P]);
+        mem[PVS_HALF] = half0;                    /* ⚠ math_lo again, here a partial byte */
+        acc = (uint8_t)(((mem[PVS_COLOUR] & mem[COLOUR_PATTERN_KEEP + pixel]) | half0)
+                        & mem[PIXEL_KEEP_OTHERS + pixel]) | shared_temp_76;
+        mem[PVS_BYTE] = acc;
 
-        LDA(span_defer_pending);
-        if (!cpu.Z) {
+        if (span_defer_pending != 0) {
             /* $1CEE — mode 1 left a byte for us: merge it and take the shared tail. */
             span_defer_pending = 0x00u;
-            mem[PVS_KEEP] = (uint8_t)load_a(shared_temp_8c);
-            EOR(0xFFu);
-            AND(mem[PVS_BYTE]);
+            mem[PVS_KEEP]      = shared_temp_8c;
+            acc                = (uint8_t)(~shared_temp_8c & acc);
             goto same_column_test;
         }
-        LDX(mem[EDGE_COLUMN]);                    /* $1CFD */
-        if (cpx_eq(cpu.X, mem[PVS_OTHER_COL])) {
+        if (cpx_eq(edgeCol, mem[PVS_OTHER_COL])) {           /* $1CFD */
             /* both ends in one column: hand the byte on and paint nothing */
             mem[PVS_COLOUR] = (uint8_t)load_a(mem[PVS_BYTE]);
             goto prev_col;
         }
-        LDA(mem[PVS_BYTE]);                       /* $1D0A */
-        if (cpu.Z) LDA(SRC_CELL_BLANK);
-        LDY(span_line_cursor);
+        acc = acc ? acc : SRC_CELL_BLANK;                    /* $1D0A */
         /* $1DE5-$1DEE — the PLAIN fill: no read, no surface colour, just the byte.  The
            hardware-window test is hoisted onto the POINTER, one per run. */
         {
             unsigned base = zp_pointer(MEM_plot_ptr_lo);
             int      ram  = pointer_is_ram(base);
-            while (!cpy_eq(cpu.Y, mem[EDGE_BLOCK_START])) {
-                seam_write((base + cpu.Y) & 0xFFFFu, ram, cpu.A);
-                DEY();
+            uint8_t  line = span_line_cursor;
+            while (line != mem[EDGE_BLOCK_START]) {
+                seam_write((base + line) & 0xFFFFu, ram, acc);
+                line--;
             }
+            cpu.Y = mem[EDGE_BLOCK_START];        /* the fill leaves Y at the stop line */
         }
         goto prev_col;
     }
-    if (cpu.Z) {
+    if (mode == 1) {
         /* ---- mode 1: open the span ---- */
-        LDA(mem[COLOUR_PATTERN_AND + pixel]);     /* $1D17 */
-        mem[PVS_KEEP] = cpu.A;
-        EOR(0xFFu);
-        AND(mem[PVS_COLOUR]);
-        AND(mem[PIXEL_KEEP_OTHERS + pixel]);
-        ORA(shared_temp_76);
+        {
+            uint8_t pat = mem[COLOUR_PATTERN_AND + pixel];   /* $1D17 */
+            mem[PVS_KEEP] = pat;
+            acc = (uint8_t)(((uint8_t)~pat & mem[PVS_COLOUR] & mem[PIXEL_KEEP_OTHERS + pixel])
+                            | shared_temp_76);
+        }
     same_column_test:
-        LDX(mem[EDGE_COLUMN]);                    /* $1D25 */
-        if (cpx_eq(cpu.X, mem[PVS_OTHER_COL])) {
-            /* $1D2B — one column for both ends: DEFER, and remember the carry in bit 7. */
-            mem[PVS_COLOUR] = cpu.A;
-            shared_temp_8c  = (uint8_t)load_a(mem[PVS_KEEP]);
-            ROR_M(MEM_span_defer_pending);
+        if (cpx_eq(edgeCol, mem[PVS_OTHER_COL])) {           /* $1D25 */
+            /* $1D2B — one column for both ends: DEFER, and remember the carry in bit 7.  The
+               ROR carries in the compare's C and its result's flags are live at the exit. */
+            uint8_t carryIn = cpu.C;
+            uint8_t prev, res;
+            mem[PVS_COLOUR] = acc;
+            shared_temp_8c  = (uint8_t)load_a(mem[PVS_KEEP]);  /* leaves A = PVS_KEEP (exit A) */
+            prev = span_defer_pending;
+            res  = (uint8_t)((prev >> 1) | (carryIn << 7));
+            span_defer_pending = res;
+            cpu.C = (uint8_t)(prev & 1u);
+            cpu.N = (uint8_t)(res >> 7);
+            cpu.Z = (uint8_t)(res == 0);
             return;
         }
+        /* not the same column: fall through to the read-modify-write fill */
     } else {
         /* ---- mode 2: close the span, merging mode 1's deferred mask ---- */
-        LDA(shared_temp_8c);                      /* $1D34 */
-        ORA(mem[PIXEL_AFTER_MASK + pixel]);
-        mem[PVS_KEEP] = cpu.A;
-        EOR(0xFFu);
-        AND(mem[PVS_COLOUR_P]);
-        AND(mem[PIXEL_KEEP_OTHERS + pixel]);
-        ORA(shared_temp_76);
+        uint8_t keep = (uint8_t)(shared_temp_8c | mem[PIXEL_AFTER_MASK + pixel]);  /* $1D34 */
+        mem[PVS_KEEP] = keep;
+        acc = (uint8_t)(((uint8_t)~keep & mem[PVS_COLOUR_P] & mem[PIXEL_KEEP_OTHERS + pixel])
+                        | shared_temp_76);
     }
 
-    /* $1D44-$1D6E — the READ-MODIFY-WRITE fill, which is the one that consults the road. */
-    mem[PVS_BYTE]  = cpu.A;
+    /* $1D44-$1D6E — the READ-MODIFY-WRITE fill, which is the one that consults the road.  `acc`
+       is the composed byte on entry and the last cell written on exit (mode 1's return needs
+       that in A). */
+    mem[PVS_BYTE]  = acc;
     shared_temp_8c = 0x00u;
-    LDY(span_line_cursor);
-    while (!cpy_eq(cpu.Y, mem[EDGE_BLOCK_START])) {
-        /* ⚠ NOT HOISTED, for column_gap_walk's reason: the run can cover the cells that drive
-           it ($0082 is the end line and $0085 the column), so the 6502 re-reads the pointer
-           every pass and so does this. */
-        unsigned base = zp_pointer(MEM_plot_ptr_lo);
-        int      ram  = pointer_is_ram(base);
-        unsigned cell = (base + cpu.Y) & 0xFFFFu;
-        LDA(seam_read(cell, ram));
-        if (cpu.Z) {
-            surface_colour_at_core(cpu.Y, mem[EDGE_COLUMN]);   /* $1D5D — an untouched cell */
-            goto merge;
+    {
+        uint8_t line = span_line_cursor;
+        while (line != mem[EDGE_BLOCK_START]) {
+            /* ⚠ NOT HOISTED, for column_gap_walk's reason: the run can cover the cells that
+               drive it ($0082 is the end line and $0085 the column), so the pointer, the end
+               line and the column are all re-read every pass. */
+            unsigned base = zp_pointer(MEM_plot_ptr_lo);
+            int      ram  = pointer_is_ram(base);
+            unsigned cell = (base + line) & 0xFFFFu;
+            uint8_t  src  = seam_read(cell, ram);
+            if (src == 0) {
+                /* $1D5D — an untouched cell takes the surface's colour, then merges. */
+                acc = surface_colour_at_core(line, mem[EDGE_COLUMN]);
+                acc = (uint8_t)((acc & mem[PVS_KEEP]) | mem[PVS_BYTE]);   /* $1D60 */
+                if (acc == 0) acc = SRC_CELL_BLANK;
+            } else if (src == SRC_CELL_BLANK) {
+                acc = mem[PVS_BYTE] ? mem[PVS_BYTE] : SRC_CELL_BLANK;     /* $1D57 */
+            } else {
+                acc = (uint8_t)((src & mem[PVS_KEEP]) | mem[PVS_BYTE]);   /* $1D60 */
+                if (acc == 0) acc = SRC_CELL_BLANK;
+            }
+            seam_write(cell, ram, acc);
+            line--;
         }
-        CMP(SRC_CELL_BLANK);
-        if (cpu.Z) {
-            LDA(mem[PVS_BYTE]);                   /* $1D57 — the blank sentinel */
-            if (cpu.Z) LDA(SRC_CELL_BLANK);
-            goto store;
-        }
-    merge:
-        AND(mem[PVS_KEEP]);                       /* $1D60 */
-        ORA(mem[PVS_BYTE]);
-        if (cpu.Z) LDA(SRC_CELL_BLANK);
-    store:
-        seam_write(cell, ram, cpu.A);
-        DEY();
+        cpu.Y = mem[EDGE_BLOCK_START];
+        cpu.A = acc;                              /* the last cell written — mode 1 returns it */
     }
 
     /* $1D6F-$1D7B — every mode but 1 also closes the column's own gaps. */
-    LDX(mem[PVS_MODE]);
-    if (cpx_eq(cpu.X, 0x01u)) return;
-    INC_M(EDGE_COLUMN);
+    if (cpx_eq(mem[PVS_MODE], 0x01u)) return;
+    mem[EDGE_COLUMN] = (uint8_t)(mem[EDGE_COLUMN] + 1u);
     column_gap_walk_core();
-    DEC_M(EDGE_COLUMN);
+    mem[EDGE_COLUMN] = (uint8_t)(mem[EDGE_COLUMN] - 1u);
 
 prev_col:
     /* $1D7C-$1D85 — a previous column off the viewport is treated as "no gap at all". */
-    LDA(mem[PVS_PREV_COL]);
-    CMP(0x28u);
-    if (cpu.C) mem[PVS_PREV_COL] = 0xFFu;
+    if (mem[PVS_PREV_COL] >= 0x28u) mem[PVS_PREV_COL] = 0xFFu;
 
 close_gap:
-    LDA(mem[EDGE_COLUMN]);
-    /* $1D86-$1D93 — ⚠ CLC/SBC: the gap is `column - previous - 1`.  Zero or negative, no fill. */
-    CLC();
-    cpu.A = (uint8_t)sbc_step(cpu.A, mem[PVS_PREV_COL], cpu.C);
+    /* $1D86-$1D93 — ⚠ CLC/SBC: the gap is `column - previous - 1`.  Zero or negative, no fill.
+       sbc_step is kept: it writes N/V/Z/C, all live here.  X is set only AFTER the exit test,
+       so the return leaves whatever X the path already held. */
+    cpu.A = (uint8_t)sbc_step(mem[EDGE_COLUMN], mem[PVS_PREV_COL], 0);
     if (cpu.Z || cpu.N) return;
-    TAX();
+    cpu.X = cpu.A;
     fill_object_gap_core(cpu.X);
 }
 
