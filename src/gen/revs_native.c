@@ -8288,49 +8288,50 @@ static void vdu_char_def_core(uint8_t ch)
 
 static void vdu_char_emit_core(void)
 {
-    TXA(); PHA();                                      /* $509D-$50A0 */
-    TYA(); PHA();
+    /* $509D-$50A0 — X and Y belong to the caller; stash them on the 6502 stack. */
+    PUSH(cpu.X);
+    PUSH(cpu.Y);
 
-    LDY(0x62u);                                        /* $50A1 — OSWORD 10, block at $62C3 */
-    LDX(0xC3u);
-    LDA(0x0Au);
+    /* $50A1-$50A9 — OSWORD 10 fills the 8-row bitmap into the block at $62C3. */
+    cpu.Y = 0x62u; cpu.X = 0xC3u; cpu.A = 0x0Au;
     platform_mos_call(0xFFF1);
 
-    /* $50AA-$50C5 — half-width: keep the top nibble, or bring the bottom one up. */
-    LDA(shared_temp_77);
-    if (!cpu.Z) {
-        LDX(0x08u);
-        do {
-            LDA(mem[VDU_CHAR_BLOCK + cpu.X]);
-            BIT(shared_temp_77);
-            if (cpu.N) { ASL_A(); ASL_A(); ASL_A(); ASL_A(); }
-            else         AND(0xF0u);
-            mem[VDU_CHAR_BLOCK + cpu.X] = cpu.A;
-            DEX();
-        } while (!cpu.Z);
+    /* $50AA-$50C5 — half-width expansion (rows 1..8): shared_temp_77 zero leaves the glyph
+       whole; bit 7 set brings the bottom nibble up, clear keeps only the top nibble. */
+    if (shared_temp_77 != 0) {
+        int leftHalf = (shared_temp_77 & 0x80u) == 0;
+        int i;
+        for (i = 8; i >= 1; i--) {
+            uint8_t row = mem[VDU_CHAR_BLOCK + i];
+            mem[VDU_CHAR_BLOCK + i] = leftHalf ? (uint8_t)(row & 0xF0u)
+                                               : (uint8_t)(row << 4);
+        }
     }
 
-    /* $50C6-$50EA — the eight rows, bottom-up, stepping back a character row at the top. */
-    LDY(mem[0x62CDu]);                                 /* vdu_char_row */
+    /* $50C6-$50EA — blit the eight rows bottom-up; stepping off the top of a character row
+       backs the pointer up one row ($40 bytes) and resets the line index to 7. */
+    cpu.Y = mem[0x62CDu];                              /* vdu_char_row */
     mode5_addr_for_cell_core(mem[0x62CCu]);            /* vdu_char_column */
-    LDX(0x08u);
-    do {
-        unsigned base = zp_pointer(MEM_plot_ptr_lo);
-        LDA(mem[VDU_CHAR_BLOCK + cpu.X]);
-        seam_write((base + cpu.Y) & 0xFFFFu, pointer_is_ram(base), cpu.A);
-        DEY();
-        if (cpu.N) {                                   /* $50D7 BPL — off the top of the row */
-            plot_ptr_lo = (uint8_t)sub_from(plot_ptr_lo, 0x40u);
-            plot_ptr_hi = (uint8_t)sbc_step(plot_ptr_hi, 0x01u, cpu.C);
-            LDY(0x07u);
+    {
+        int i;
+        for (i = 8; i >= 1; i--) {
+            unsigned base = zp_pointer(MEM_plot_ptr_lo);
+            seam_write((base + cpu.Y) & 0xFFFFu, pointer_is_ram(base),
+                       mem[VDU_CHAR_BLOCK + i]);
+            cpu.Y = (uint8_t)(cpu.Y - 1);              /* DEY */
+            if (cpu.Y & 0x80u) {                       /* $50D7 BPL — off the top of the row */
+                plot_ptr_lo = (uint8_t)sub_from(plot_ptr_lo, 0x40u);
+                plot_ptr_hi = (uint8_t)sbc_step(plot_ptr_hi, 0x01u, cpu.C);
+                cpu.Y = 0x07u;
+            }
         }
-        DEX();
-    } while (!cpu.Z);
+    }
 
-    INC_M(0x62CCu);                                    /* $50EB — the next cell along */
-    PLA(); TAY();
-    PLA(); TAX();
-    LDA(mem[VDU_CHAR_BLOCK]);                          /* $50F2 — live: the character */
+    mem[0x62CCu] = (uint8_t)(mem[0x62CCu] + 1);        /* $50EB — the next cell along */
+    PULL(cpu.Y);                                       /* $50EF-$50F1 — restore caller's Y, X */
+    PULL(cpu.X);
+    cpu.A = mem[VDU_CHAR_BLOCK];                        /* $50F2 — the character comes back live */
+    cpu.N = cpu.A >> 7; cpu.Z = (cpu.A == 0);
 }
 
 /* ---------------------------------------------------------------------------
@@ -8338,17 +8339,16 @@ static void vdu_char_emit_core(void)
    --------------------------------------------------------------------------- */
 static void draw_gear_indicator_core(void)
 {
-    LDA(0x22u);                                        /* $42D0 — column $22 */
-    mem[0x62CCu]   = cpu.A;
-    shared_temp_77 = cpu.A;                            /* bit 7 clear: the LEFT four pixels */
-    LDA(0xD7u);
-    mem[0x62CDu]   = cpu.A;                            /* scan line $D7 = character row 26 */
-    LDX(gear_index);
-    LDA(mem[GEAR_CHAR_TBL + cpu.X]);
+    mem[0x62CCu]   = 0x22u;                             /* $42D0 — column $22 */
+    shared_temp_77 = 0x22u;                             /* bit 7 clear: the LEFT four pixels */
+    mem[0x62CDu]   = 0xD7u;                             /* scan line $D7 = character row 26 */
+    cpu.X = gear_index;                                 /* $42DC LDX */
+    cpu.A = mem[GEAR_CHAR_TBL + cpu.X];                 /* $42DE — the gear's glyph */
+    vdu_char_wide_core(cpu.A);                          /* left half; emit returns the block byte in A */
+    cpu.X = 0xFFu;                                      /* $42E4 */
+    shared_temp_77 = cpu.X;                             /* bit 7 set: the RIGHT four pixels */
+    /* ⚠ the RIGHT half re-emits whatever A the first emit left ($62C3, live), NOT the glyph. */
     vdu_char_wide_core(cpu.A);
-    LDX(0xFFu);                                        /* $42E4 — bit 7 set: the RIGHT four */
-    shared_temp_77 = cpu.X;
-    vdu_char_wide_core(cpu.A);                         /* A is still the character */
 }
 
 /* ---------------------------------------------------------------------------
@@ -8360,13 +8360,16 @@ static void draw_gear_indicator_core(void)
    --------------------------------------------------------------------------- */
 static void adc_read_core(void)
 {
-    LDA(0x80u);                                        /* $503F */
+    cpu.A = 0x80u;                                     /* $503F — OSBYTE $80 (ADVAL), channel in X */
     platform_mos_call(0xFFF4);
-    TYA();                                             /* $5044 — the reading's high byte */
-    LDX(0x01u);
-    cpu.A = (uint8_t)adc_step(cpu.A, 0x80u, 0);        /* $5047 — centre it */
-    if (cpu.N) { EOR(0xFFu); DEX(); }                  /* $504A BPL — and take its magnitude */
-    CMP(0x0Au);                                        /* $504F — the dead zone */
+    uint8_t reading = cpu.Y;                           /* $5044 — the reading's high byte */
+    cpu.X = 0x01u;                                     /* direction: 1 = positive */
+    cpu.A = (uint8_t)adc_step(reading, 0x80u, 0);      /* $5047 — recentre on $80 */
+    if (cpu.N) {                                       /* $504A BPL — negative side: magnitude */
+        cpu.A = (uint8_t)(cpu.A ^ 0xFFu);
+        cpu.X = 0x00u;                                 /* direction: 0 = negative */
+    }
+    CMP(0x0Au);                                        /* $504F — C set once outside the dead zone */
 }
 
 /* ---------------------------------------------------------------------------
@@ -8378,18 +8381,15 @@ static void adc_read_core(void)
 static void poll_steering_assist_core(void)
 {
     PHA();                                             /* $63C5 — A belongs to the caller */
-    LDA(steering_assist_flag);
-    mem[ASSIST_LAMP_2] = cpu.A;                        /* $77E3 */
-    LSR_A();
-    mem[ASSIST_LAMP_3] = cpu.A;                        /* $77E4 */
-    LSR_A();
-    mem[ASSIST_LAMP_1] = cpu.A;                        /* $77DC */
-    LSR_A();
-    mem[ASSIST_LAMP_0] = cpu.A;                        /* $77DB */
-    LDA(track_direction);                              /* $63D8 */
-    ROL_A();                                           /* C = which way round the circuit */
-    PLA();
-    LDX(steering_assist_flag);                         /* live: the flag, and its Z */
+    uint8_t flag = steering_assist_flag;
+    mem[ASSIST_LAMP_2] = flag;                         /* $77E3 */
+    mem[ASSIST_LAMP_3] = (uint8_t)(flag >> 1);         /* $77E4 */
+    mem[ASSIST_LAMP_1] = (uint8_t)(flag >> 2);         /* $77DC */
+    mem[ASSIST_LAMP_0] = (uint8_t)(flag >> 3);         /* $77DB */
+    cpu.C = track_direction >> 7;                      /* $63D8 ROL — which way round the circuit */
+    PLA();                                             /* restore the caller's A */
+    cpu.X = steering_assist_flag;                      /* live: the flag, and its Z/N */
+    cpu.N = cpu.X >> 7; cpu.Z = (cpu.X == 0);
 }
 
 /* ---------------------------------------------------------------------------
@@ -8416,14 +8416,16 @@ static void steer_demand_store_core(void)
 
 static void steer_demand_from_slip_core(void)
 {
-    LDA(mem[SLIP_MAG_LO_10]);                          /* $15F4 */
-    AND(0xF0u);
-    mem[STEER_SIGN] = cpu.A;
-    LDA(mem[SLIP_MAG_HI_10]);
-    abs16_math();                                      /* ⚠ branches on the LDA's own N */
-    LSR_A(); ROR_M(STEER_SIGN);                        /* $1601 — quarter it, 16-bit */
-    LSR_A(); ROR_M(STEER_SIGN);
-    CMP(steer_angle_hi);                               /* $1607 */
+    mem[STEER_SIGN] = mem[SLIP_MAG_LO_10] & 0xF0u;     /* $15F4 — the 16-bit value's low byte */
+    cpu.A = mem[SLIP_MAG_HI_10];                        /* $15FB — high byte, in A */
+    cpu.N = cpu.A >> 7; cpu.Z = (cpu.A == 0);          /* abs16 branches on THIS N */
+    abs16_math();
+    /* $1601-$1606 — quarter the 16-bit magnitude (A : STEER_SIGN). */
+    unsigned mag = ((unsigned)cpu.A << 8) | mem[STEER_SIGN];
+    mag >>= 2;
+    cpu.A = (uint8_t)(mag >> 8);
+    mem[STEER_SIGN] = (uint8_t)mag;
+    CMP(steer_angle_hi);                               /* $1607 — C feeds limit_steer_demand */
     limit_steer_demand_core();
     steer_demand_store_core();
 }
@@ -8439,86 +8441,66 @@ static void assist_from_selector(void);
 
 static void apply_steering_assist_core(void)
 {
-    LDA(mem[STEER_SIGN]);                              /* $1F08 */
-    EOR(0x01u);
-    LSR_A();
-    LDA(0x03u);
-    cpu.A = (uint8_t)sbc_step(cpu.A, 0x00u, cpu.C);    /* 3 or 2, on the demand's sign */
+    /* $1F08-$1F10 — the look-ahead selector: 3 when the demand's sign byte is even, 2 when odd. */
+    cpu.A = (mem[STEER_SIGN] & 0x01u) ? 0x02u : 0x03u;
     assist_from_selector();
 }
 
 static void assist_from_selector(void)
 {
-    unsigned edgeSlot;
+    /* $1F11-$1F18 — which track edge to steer at: selector 2 → the far slot $32, else close $0A. */
+    unsigned edgeSlot = (cpu.A == 0x02u) ? 0x32u : 0x0Au;
+    cpu.X = (uint8_t)edgeSlot;
 
-    /* $1F11-$1F18 — which track edge to steer at: $32 is far ahead, $0A close. */
-    LDX(0x32u);
-    CMP(0x02u);
-    if (!cpu.Z) LDX(0x0Au);
-    edgeSlot = cpu.X;
-
-    /* $1F19-$1F38 — the steering angle as a signed 16-bit value, plus one.  ⚠ The far slot
-       takes two off it as well, which is the look-ahead's own offset. */
-    LDA(steer_angle_lo);
-    mem[STEER_KEYS] = cpu.A;
-    LSR_A();
-    LDA(steer_angle_hi);
-    if (!cpu.C) {                                      /* $1F22 BCC — already positive */
-        /* nothing */
-    } else {
+    /* $1F19-$1F38 — the steering angle as a signed 16-bit value, +1; bit 0 of the lo byte is
+       the sign.  The far slot takes a further 2 off (its own look-ahead offset). */
+    mem[STEER_KEYS] = steer_angle_lo;
+    int negative = steer_angle_lo & 0x01u;
+    cpu.A = steer_angle_hi;
+    if (negative) {                                    /* $1F22 — flip to positive, 16-bit */
         mem[STEER_KEYS] = (uint8_t)sub_from(0x00u, mem[STEER_KEYS]);   /* $1F24-$1F29 */
         cpu.A = (uint8_t)sbc_step(0x00u, steer_angle_hi, cpu.C);       /* $1F2B-$1F2F */
     }
     cpu.A = (uint8_t)adc_step(cpu.A, 0x01u, 0);        /* $1F30 */
-    CPX(0x32u);
-    if (cpu.Z) cpu.A = (uint8_t)sbc_step(cpu.A, 0x02u, cpu.C);
+    if (edgeSlot == 0x32u)                             /* $1F32 CPX/BNE — far slot only */
+        cpu.A = (uint8_t)sbc_step(cpu.A, 0x02u, 1);    /* CPX #$32 leaves C set here */
     shared_temp_77 = cpu.A;
 
     /* $1F3B-$1F4D — the track edge, less that angle, as a magnitude.  ⚠ PHP: the subtract's own
        sign is what re-signs the result at the very end. */
     mem[STEER_SIGN] = (uint8_t)sub_from(mem[EDGE_X_LO_TBL + edgeSlot], mem[STEER_KEYS]);
-    LDA(mem[EDGE_X_HI_TBL + edgeSlot]);
-    cpu.A = (uint8_t)sbc_step(cpu.A, shared_temp_77, cpu.C);
-    PHP();                                             /* $1F48 */
+    cpu.A = (uint8_t)sbc_step(mem[EDGE_X_HI_TBL + edgeSlot], shared_temp_77, cpu.C);
+    PHP();                                             /* $1F48 — remember that sign */
     abs16_math();
     mem[STEER_KEYS] = cpu.A;
 
     /* $1F4E-$1F78 — the GAIN: falls with road_speed, floored at $20, then capped by the live
        section's curvature. */
-    LDY(car_section_cursor);
-    cpu.A = (uint8_t)sub_from(0x3Cu, road_speed);
-    if (cpu.N) LDA(0x00u);
-    ASL_A();
-    /* ⚠ `ADC #$20` with NO `CLC` — the ASL's own carry is part of the sum. */
-    mem[STEER_DEMAND] = (uint8_t)adc_step(cpu.A, 0x20u, cpu.C);
-    LDA(mem[SECTION_CURVE + cpu.Y]);
-    AND(0x7Fu);
-    CMP(0x40u);
-    if (cpu.C) LDA(0x02u);
-    CMP(0x08u);
-    if (cpu.C) LDA(0x07u);
-    ASL_A(); ASL_A(); ASL_A(); ASL_A();
-    CMP(mem[STEER_DEMAND]);
-    if (cpu.C) mem[STEER_DEMAND] = cpu.A;
+    cpu.Y = car_section_cursor;
+    uint8_t gain = (uint8_t)sub_from(0x3Cu, road_speed);
+    if (cpu.N) gain = 0x00u;                            /* floor at zero */
+    /* ⚠ `ADC #$20` with NO `CLC` — the doubling's own carry is part of the sum. */
+    mem[STEER_DEMAND] = (uint8_t)adc_step((uint8_t)(gain << 1), 0x20u, gain >> 7);
+    uint8_t curve = mem[SECTION_CURVE + cpu.Y] & 0x7Fu;
+    if (curve >= 0x40u) curve = 0x02u;                  /* $1F63 */
+    if (curve >= 0x08u) curve = 0x07u;                  /* $1F69 */
+    curve = (uint8_t)(curve << 4);                      /* ×16 */
+    if (curve >= mem[STEER_DEMAND]) mem[STEER_DEMAND] = curve;   /* cap the gain */
+    cpu.A = curve;                                      /* what mul8_accum multiplies against */
 
-    /* $1F79-$1F94 — (edge difference) x gain, re-signed by the PHP above and then by the
+    /* $1F79-$1F94 — (edge difference) × gain, re-signed by the PHP above and then by the
        steering's own sign byte. */
     mul8_accum_core();
-    LDA(mem[STEER_DEMAND]);
-    PLP();
+    cpu.A = mem[STEER_DEMAND];
+    PLP();                                             /* restore the $1F48 sign */
     abs16_math();
     mem[STEER_DEMAND] = cpu.A;
-    LDA(mem[STEER_SIGN]);
-    AND(0xFEu);
-    mem[STEER_SIGN] = cpu.A;
-    LDA(steer_angle_lo);
-    LSR_A();
-    if (!cpu.C) {
-        neg16_math_noinit_core();                      /* $1F90 */
+    mem[STEER_SIGN] &= 0xFEu;
+    if ((steer_angle_lo & 0x01u) == 0) {               /* $1F8C LSR/BCS — sign says negate */
+        neg16_math_noinit_core();                      /* $1F90 — operates on math_lo:math_hi */
         mem[STEER_DEMAND] = cpu.A;
     }
-    LDA(steer_angle_lo);                               /* $1F95 */
-    apply_steer_demand_core(cpu.A);
+    apply_steer_demand_core(steer_angle_lo);           /* $1F95 */
 }
 
 /* ---------------------------------------------------------------------------
@@ -8559,18 +8541,13 @@ static void read_pedals_and_gears(void);
 
 static void apply_steer_demand_core(uint8_t signByte)
 {
-    LDA(signByte);                                     /* $1612 — the sign byte, in A */
-    mem[STEER_SIGN] = (uint8_t)sub_from(cpu.A, mem[STEER_SIGN]);
-    LDA(steer_angle_hi);
-    cpu.A = (uint8_t)sbc_step(cpu.A, mem[STEER_DEMAND], cpu.C);
-    CMP(0xC8u);                                        /* $161C — past the half turn */
-    if (cpu.C) {
+    mem[STEER_SIGN] = (uint8_t)sub_from(signByte, mem[STEER_SIGN]);   /* $1612 */
+    cpu.A = (uint8_t)sbc_step(steer_angle_hi, mem[STEER_DEMAND], cpu.C);
+    if (cpu.A >= 0xC8u) {                              /* $161C CMP/BCS — past the half turn */
         neg16_math_core(cpu.A);                        /* $1620 */
         mem[STEER_DEMAND] = cpu.A;
-        LDA(mem[STEER_SIGN]);
-        EOR(0x01u);
-        mem[STEER_SIGN] = cpu.A;
-        LDA(mem[STEER_DEMAND]);
+        mem[STEER_SIGN] ^= 0x01u;                       /* flip which way it points */
+        cpu.A = mem[STEER_DEMAND];                       /* clamp reads the magnitude */
     }
     clamp_and_store_steer_angle_core();
 }
@@ -8590,93 +8567,84 @@ static void clamp_and_store_steer_angle_core(void)
 static void read_pedals_and_gears(void)
 {
     /* $163B-$1684 — THROTTLE and BRAKE into pedal_mode / pedal_amount.  Once the session is
-       over ($000F non-zero) the car drives itself: mode $80, amount revs/4 + 5. */
-    LDA(session_end_countdown);
-    if (cpu.Z) {
-        BIT(mem[OPTION_FLAGS]);
-        if (cpu.N) {
-            LDX(0x02u);                                /* $1644 — joystick channel 2 */
+       over ($000F non-zero) the car drives itself: mode $80, amount revs/4 + 5.
+       ⚠ The flags left in the pedal section are all overwritten before any exit — only the X
+       (mode) and A (amount) values landing at have_pedal matter here. */
+    if (session_end_countdown == 0) {                  /* $163B — session still running */
+        if (mem[OPTION_FLAGS] & 0x80u) {               /* $163F BIT/BMI — joystick */
+            cpu.X = 0x02u;                             /* $1644 — channel 2 */
             adc_read_core();
-            if (cpu.C) {
-                mem[STEER_SIGN] = cpu.A;               /* $164B — x1.5 */
-                LSR_M(STEER_SIGN);
-                ASL_A();
-                /* ⚠ `ADC $74` with no `CLC` either — same trap, same routine. */
-                cpu.A = (uint8_t)adc_step(cpu.A, mem[STEER_SIGN], cpu.C);
-                if (!cpu.C) {
-                    CMP(0xFAu);
-                    if (!cpu.C) goto have_pedal;       /* $1656 */
+            if (cpu.C) {                               /* $1649 — outside the dead zone */
+                uint8_t mag = cpu.A;                   /* $164B — scale the reading up x1.5 */
+                mem[STEER_SIGN] = (uint8_t)(mag >> 1);
+                /* ⚠ `ADC $74` with no `CLC` — the doubling's own carry ($164F ASL) is in the sum. */
+                cpu.A = (uint8_t)adc_step((uint8_t)(mag << 1), mem[STEER_SIGN], mag >> 7);
+                if (!cpu.C) {                          /* $1652 — the sum didn't overflow */
+                    CMP(0xFAu);                        /* $1654 */
+                    if (!cpu.C) goto have_pedal;       /* $1656 — in range */
                 }
-                CPX(0x00u);                            /* $1658 */
-                if (cpu.Z) { LDA(0xFAu); goto have_pedal; }   /* $1674 — full brake */
-                LDX(0x01u);                            /* $1665 via $165C */
-                LDA(0xFFu);
-                goto have_pedal;
+                /* $1658 CPX #0 — X is unsigned so its C is ALWAYS set, and that carry is the
+                   routine's LIVE exit flag (it leaks through the gear tail to no_key). */
+                CPX(0x00u);
+                if (cpu.X == 0x00u) { cpu.A = 0xFAu; goto have_pedal; }   /* $1674 full brake */
+                cpu.X = 0x01u; cpu.A = 0xFFu; goto have_pedal;            /* $1665 full throttle */
             }
         } else {
-            LDX(0xAEu);                                /* $165E — the throttle key */
-            kbd_test_key_core();
-            if (cpu.Z) { LDX(0x01u); LDA(0xFFu); goto have_pedal; }
-            LDX(0xBEu);                                /* $166B — the brake key */
-            kbd_test_key_core();
-            if (cpu.Z) { LDX(0x00u); LDA(0xFAu); goto have_pedal; }
+            cpu.X = 0xAEu; kbd_test_key_core();        /* $165E — the throttle key */
+            if (cpu.Z) { cpu.X = 0x01u; cpu.A = 0xFFu; goto have_pedal; }
+            cpu.X = 0xBEu; kbd_test_key_core();        /* $166B — the brake key */
+            if (cpu.Z) { cpu.X = 0x00u; cpu.A = 0xFAu; goto have_pedal; }
         }
     }
-    LDX(0x80u);                                        /* $1678 — nobody is driving */
-    LDA(engine_revs);
-    LSR_A(); LSR_A();
-    cpu.A = (uint8_t)adc_step(cpu.A, 0x05u, 0);
+    cpu.X = 0x80u;                                     /* $1678 — nobody is driving */
+    cpu.A = (uint8_t)adc_step((uint8_t)(engine_revs >> 2), 0x05u, 0);
 
 have_pedal:
     pedal_mode   = cpu.X;                              /* $1681 */
     pedal_amount = cpu.A;
 
-    /* $1685-$16DB — the GEARS.  One shift per key press, latched in gear_key_latch. */
+    /* $1685-$16DB — the GEARS.  One shift per key press, latched in gear_key_latch.
+       ⚠ BIT's V (bit 6 of OPTION_FLAGS) is a LIVE EXIT flag: the no_key and latch-held returns
+       set no V of their own, so it leaks out of the routine — keep the macro. */
     BIT(mem[OPTION_FLAGS]);
-    if (cpu.N) {
-        LDX(0x00u);                                    /* $168A — ADVAL 0, the stick buttons */
-        LDA(0x80u);
+    if (cpu.N) {                                       /* $1685 BMI — joystick */
+        cpu.X = 0x00u; cpu.A = 0x80u;                  /* $168A — ADVAL 0, the stick buttons */
         platform_mos_call(0xFFF4);
-        TXA();
-        AND(0x01u);
-        if (cpu.Z) goto no_key;
-        LDY(pedal_mode);                               /* $1696 */
-        DEY();
-        if (!cpu.Z) goto shift_up;
-        LDA(pedal_amount);
-        CMP(0xC8u);
-        if (cpu.C) goto shift_down;
+        if ((cpu.X & 0x01u) == 0) goto no_key;         /* $1691 — no fire button */
+        cpu.Y = (uint8_t)(pedal_mode - 1);             /* $1696 LDY/DEY */
+        if (pedal_mode != 0x01u) goto shift_up;        /* not braking: shift up */
+        cpu.A = pedal_amount;                          /* $169B */
+        /* ⚠ CMP's C (pedal_amount >= $C8) is a LIVE exit flag — it leaks through the shift path
+           to the latch-held return, which sets no carry of its own. */
+        CMP(0xC8u);                                    /* $169D */
+        if (cpu.C) goto shift_down;                    /* $169F — hard brake: shift down */
         goto shift_up;
     }
-    LDX(0x9Fu);                                        /* $16A3 — gear up */
-    kbd_test_key_core();
+    cpu.X = 0x9Fu; kbd_test_key_core();                /* $16A3 — gear up */
     if (cpu.Z) goto shift_up;
-    LDX(0xEFu);                                        /* $16AA — gear down */
-    kbd_test_key_core();
+    cpu.X = 0xEFu; kbd_test_key_core();                /* $16AA — gear down */
     if (cpu.Z) goto shift_down;
 
 no_key:
-    LDA(0x00u);                                        /* $16B1 — release the latch */
+    cpu.A = 0x00u;                                     /* $16B1 — release the latch */
+    cpu.N = 0; cpu.Z = 1;
     gear_key_latch = cpu.A;
     return;
 
 shift_up:
-    LDA(0xFFu);                                        /* $16B7 */
+    cpu.A = 0xFFu;                                     /* $16B7 — one gear up (adds -1) */
     goto shift;
 shift_down:
-    LDA(0x01u);                                        /* $16BB */
+    cpu.A = 0x01u;                                     /* $16BB — one gear down (adds +1) */
 shift:
-    DEC_M(MEM_gear_change_flag);                       /* $16BD */
-    LDX(gear_key_latch);
+    gear_change_flag = (uint8_t)(gear_change_flag - 1);   /* $16BD — N/Z dead (LDX resets) */
+    cpu.X = gear_key_latch;                            /* $16C1 */
+    cpu.N = cpu.X >> 7; cpu.Z = (cpu.X == 0);
     if (!cpu.Z) return;                                /* still held from last frame */
     gear_key_latch = cpu.A;
     cpu.A = (uint8_t)adc_step(cpu.A, gear_index, 0);   /* $16C5 */
-    CMP(0xFFu);
-    if (cpu.Z) LDA(0x00u);                             /* below reverse: stay in reverse */
-    else {
-        CMP(0x07u);
-        if (cpu.Z) LDA(0x06u);                         /* above top: stay in top */
-    }
+    if (cpu.A == 0xFFu)      cpu.A = 0x00u;            /* below reverse: stay in reverse */
+    else if (cpu.A == 0x07u) cpu.A = 0x06u;           /* above top: stay in top */
     gear_index = cpu.A;                                /* $16D6 */
     draw_gear_indicator_core();
 }
@@ -8689,20 +8657,18 @@ shift:
    --------------------------------------------------------------------------- */
 static void read_driving_controls_core(void)
 {
-    LDA(0x00u);                                        /* $1579 */
-    mem[STEER_KEYS]   = cpu.A;
-    mem[STEER_SIGN]   = cpu.A;
-    gear_change_flag  = cpu.A;
+    mem[STEER_KEYS]   = 0x00u;                          /* $1579 */
+    mem[STEER_SIGN]   = 0x00u;
+    gear_change_flag  = 0x00u;
 
-    LDX(0x9Du);                                        /* $1581 — the steering-amplify key */
+    cpu.X = 0x9Du;                                     /* $1581 — the steering-amplify key */
     kbd_test_key_core();
-    PHP();
+    PHP();                                             /* remember whether it's pressed (Z) */
 
-    BIT(mem[OPTION_FLAGS]);
-    if (cpu.N) {
+    if (mem[OPTION_FLAGS] & 0x80u) {                   /* $1589 BIT/BMI — joystick */
         /* $158C-$15B2 — THE JOYSTICK.  The reading is SQUARED (header item 1), then quartered
            into a 16-bit demand unless the amplify key is down, and X carries the sign. */
-        LDX(0x01u);
+        cpu.X = 0x01u;
         adc_read_core();
         mem[STEER_DEMAND] = cpu.A;
         /* ⚠⚠ $1593 IS A PER-CIRCUIT SMC EXTENT, and it is the squaring itself: Silverstone's
@@ -8717,51 +8683,43 @@ static void read_driving_controls_core(void)
             else if (target >= 0x5300u && target <= 0x5A25u)   revs_track_hook(target);
             else { platform_smc_unhandled(0x1593, target); return; }
         }
-        PLP();
-        if (!cpu.Z) {
-            LSR_A(); ROR_M(STEER_SIGN);
-            LSR_A(); ROR_M(STEER_SIGN);
+        PLP();                                         /* restore the amplify-key Z */
+        if (!cpu.Z) {                                  /* amplify NOT down: quarter the demand */
+            unsigned demand = ((unsigned)cpu.A << 8) | mem[STEER_SIGN];
+            demand >>= 2;
+            cpu.A = (uint8_t)(demand >> 8);
+            mem[STEER_SIGN] = (uint8_t)demand;
         }
         mem[STEER_DEMAND] = cpu.A;
-        LDA(mem[STEER_SIGN]);
-        AND(0xFEu);
-        mem[STEER_SIGN] = cpu.A;
-        TXA();
-        ORA(mem[STEER_SIGN]);
-        mem[STEER_SIGN] = cpu.A;
-        LDA(mem[STEER_DEMAND]);
+        mem[STEER_SIGN] &= 0xFEu;
+        mem[STEER_SIGN] |= cpu.X;                       /* X carries the sign into bit 0 */
+        cpu.A = mem[STEER_DEMAND];
         steer_assist_dispatch_core();
         return;
     }
 
     /* $15B3-$15F3 — THE KEYBOARD.  Two keys into STEER_KEYS (1, 2 or 3), a fixed demand of 3,
        and the amplify key replaces it with 1 or 0 plus a sign byte of $80. */
-    LDX(0xA9u);
-    kbd_test_key_core();
+    cpu.X = 0xA9u; kbd_test_key_core();
     if (cpu.Z) mem[STEER_KEYS] = 0x02u;
-    LDX(0xA8u);
-    kbd_test_key_core();
-    if (cpu.Z) INC_M(STEER_KEYS);
-    LDA(0x03u);
-    mem[STEER_DEMAND] = cpu.A;
-    PLP();
-    if (!cpu.Z) {
-        LDA(0x00u);                                    /* $15CE */
-        LDX(0x02u);
-        if (cpx_ge(cpu.X, steer_angle_hi)) LDA(0x01u);
+    cpu.X = 0xA8u; kbd_test_key_core();
+    if (cpu.Z) mem[STEER_KEYS] = (uint8_t)(mem[STEER_KEYS] + 1);   /* INC */
+    mem[STEER_DEMAND] = 0x03u;
+    PLP();                                             /* restore the amplify-key Z */
+    if (!cpu.Z) {                                      /* amplify down */
+        cpu.A = 0x00u;                                 /* $15CE */
+        cpu.X = 0x02u;
+        if (cpx_ge(cpu.X, steer_angle_hi)) cpu.A = 0x01u;
         mem[STEER_DEMAND] = cpu.A;
-        LDA(0x80u);
-        mem[STEER_SIGN] = cpu.A;
+        mem[STEER_SIGN]   = 0x80u;
     }
 
-    LDA(mem[STEER_KEYS]);                              /* $15DF */
-    if (cpu.Z) { steer_demand_from_slip_core(); return; }
-    CMP(0x03u);
-    if (cpu.Z) { read_pedals_and_gears(); return; }    /* both keys: no steering at all */
-    EOR(steer_angle_lo);
-    AND(0x01u);
-    if (cpu.Z) { steer_apply_with_assist_core(); return; }   /* $15EC — already this way */
-    neg16_math_noinit_core();                          /* $15EE */
+    cpu.A = mem[STEER_KEYS];                           /* $15DF */
+    if (cpu.A == 0x00u) { steer_demand_from_slip_core(); return; }
+    if (cpu.A == 0x03u) { read_pedals_and_gears(); return; }   /* both keys: no steering */
+    cpu.A = (uint8_t)((cpu.A ^ steer_angle_lo) & 0x01u);        /* $15E8 */
+    if (cpu.A == 0x00u) { steer_apply_with_assist_core(); return; }  /* already this way */
+    neg16_math_noinit_core();                          /* $15EE — flips it, result in A */
     steer_demand_store_core();
 }
 
