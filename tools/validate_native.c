@@ -1602,11 +1602,21 @@ static void stage_component(uint8_t* pre, uint8_t sectionByte, unsigned componen
 static int test_road_transforms(void)
 {
     static uint8_t pre[65536];
-    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
     int fail = 0, printed = 0, t;
     int scale = 1;
     { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
     if (scale < 1) scale = 1;
+
+    /* ⭐ RESULTS, NOT IMPLEMENTATION DETAILS.  Both routines are observed purely through the
+       mem[] cells they fill (bearing_lo/hi, hypot_min/max, proj_width, projected_line, …); the
+       6502 flags they leave behind are dead at every production call site (each core is called
+       core-to-core, void or via a typed struct).  So neither declares N/V/Z/A/X/Y live — those
+       are the interpreter's bookkeeping, not the routine's answer, and validating them would
+       pin the twin to the transliteration's shape instead of its result.
+         bearing_to_section: answer entirely in mem[] -> nothing but the stack-balance check.
+         project_point:      answer in mem[] PLUS the clip decision the caller reads as carry. */
+    const unsigned bearMask = LIVE_S;
+    const unsigned projMask = LIVE_S | LIVE_C;
 
     register_fixture("bearing_to_section_from");
     register_fixture("project_point_from");
@@ -1682,7 +1692,7 @@ static int test_road_transforms(void)
             if (c.D) decimal++;
 
             subFail += diff_run("bearing_to_section_from", pre, c, bearing_to_section_from,
-                                bearing_to_section_from__t6502, liveMask, t, &printed);
+                                bearing_to_section_from__t6502, bearMask, t, &printed);
 
             /* The census.  Which OCTANT arm ran is a property of the inputs — whichever ground
                magnitude is the larger becomes the divisor — so it is counted from the staged
@@ -1712,7 +1722,7 @@ static int test_road_transforms(void)
                    diagonal, tightDoor, armA, armB, decimal, sixth);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=S (mem-only result)  "
                "(%d octant-A, %d octant-B, %d 45-degree of which %d not by equal magnitudes, "
                "%d decimal, %d off the sign origin)\n",
                "bearing_to_section_from", cases, subFail, armA, armB, diagonal, tightDoor,
@@ -1785,7 +1795,7 @@ static int test_road_transforms(void)
             if (c.D) decimal++;
 
             subFail += diff_run("project_point_from", pre, c, project_point_from,
-                                project_point_from__t6502, liveMask, t, &printed);
+                                project_point_from__t6502, projMask, t, &printed);
 
             /* The exit carry IS the routine's answer, so the census reads it directly.  An
                overflow exit is a carry-set case that still got as far as writing proj_width. */
@@ -1812,7 +1822,7 @@ static int test_road_transforms(void)
                    clipped, doorHi, doorLo, survived, overflowed, below, decimal, sixth);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=S+C (mem + clip carry)  "
                "(%d survived, %d clipped: %d on the high byte, %d on the low, %d on the "
                "quotient; %d below eye level, %d decimal, %d off the sign origin)\n",
                "project_point_from", cases, subFail, survived, clipped, doorHi, doorLo,
