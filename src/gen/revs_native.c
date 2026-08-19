@@ -6574,59 +6574,45 @@ static void update_grip_limits_core(void)
     hypot_min_lo = (uint8_t)adc_step(cpu.A, 0x01u, 0);                  /* $4BE3-$4BE8 */
 
     math_hi = road_speed;                                               /* $4BEA-$4BEC */
-    LDX(0x00u);
 
     /* $4BF0-$4C24 — has the surface changed?  shared_temp_77 keeps both bytes ANDed, for the
-       grip-base swap further down; $FF in EITHER opens this arm. */
-    LDA(surface_change_0);
-    AND(surface_change_1);
-    shared_temp_77 = cpu.A;                                             /* $4BF6 */
-    LDA(surface_change_0);
-    CMP(0xFFu);
-    if (!cpu.Z) { LDA(surface_change_1); CMP(0xFFu); }
-    if (cpu.Z) {
-        LDA(bus_read(VIA_T1_LOW));                                      /* $4C06 */
-        mul8_core(cpu.A);                                               /* $4C09 */
-        AND(0x07u);
-        TAX();                                                          /* $4C0E */
-        if (cpu.Z) INX();                                               /* $4C0F BNE — never 0 */
-        LDA(grip_disturbance);
-        if (cpu.Z) {                            /* $4C14 BNE — not already disturbed */
-            LDA(grip_disturbance);
-            ORA(drive_state);
-            if (cpu.Z) {                        /* $4C1A BNE — and driving normally */
-                BIT(section_jump_history);
-                if (cpu.N) begin_spin_from_a_core(road_speed);          /* $4C21 */
-            }
-        }
+       grip-base swap further down; $FF in EITHER opens this arm.  grip_disturbance ends in X,
+       which is 0 when the arm is skipped (the $4BEE LDX #0). */
+    shared_temp_77 = (uint8_t)(surface_change_0 & surface_change_1);    /* $4BF0-$4BF6 */
+    cpu.X = 0x00u;                                                      /* $4BEE */
+    if (surface_change_0 == 0xFFu || surface_change_1 == 0xFFu) {
+        mul8_core(bus_read(VIA_T1_LOW));                                /* $4C06-$4C0C */
+        cpu.X = (uint8_t)(cpu.A & 0x07u);                              /* $4C0B-$4C0E */
+        if (cpu.X == 0) cpu.X = 1;                                      /* $4C0F — never 0 */
+        if (grip_disturbance == 0 && drive_state == 0                   /* $4C11-$4C1A */
+            && (section_jump_history & 0x80u))                          /* $4C1E BIT/BPL */
+            begin_spin_from_a_core(road_speed);                         /* $4C21 */
     }
     grip_disturbance = cpu.X;                                           /* $4C24 */
 
-    /* $4C26-$4C5E — axle 1 then axle 0. */
-    LDX(0x01u);
+    /* $4C26-$4C5E — axle 1 then axle 0.  X carries the axle index; the closing DEX leaves
+       X=$FF, which is the routine's exit X. */
     for (axle = 1; axle >= 0; axle--) {
-        LDA(road_speed);
-        CMP(0x35u);
-        if (cpu.C) LDA(0x35u);                  /* $4C2C BCC — the speed term saturates */
-        math_hi = cpu.A;                                                /* $4C30 */
+        cpu.X = (uint8_t)axle;
+        uint8_t speed = road_speed;                                     /* $4C26-$4C2E */
+        if (speed >= 0x35u) speed = 0x35u;      /* the speed term saturates */
+        math_hi = speed;                                                /* $4C30 */
         mul8_core(mem[WING_GRIP + cpu.X]);                              /* $4C32-$4C35 */
         BIT(car_speed_hi);                      /* $4C38 — the sign abs8 will follow */
         abs8();                                                         /* $4C3B */
         cpu.A = (uint8_t)adc_step(cpu.A, mem[GRIP_BASE + cpu.X], 0);    /* $4C3E-$4C3F */
 
-        LDY(0xF3u);
-        math_hi = cpu.Y;                                                /* $4C42-$4C44 */
-        LDY(shared_temp_77);
-        CPY(0xFFu);
-        if (cpu.Z) {                            /* $4C4A BNE — BOTH surface bytes $FF */
-            LDA(mem[GRIP_BASE_ALT + cpu.X]);                            /* $4C4C */
-            LDY(0xFFu);
+        math_hi = 0xF3u;                                                /* $4C42-$4C44 */
+        cpu.Y   = shared_temp_77;                                       /* $4C46 */
+        if (shared_temp_77 == 0xFFu) {          /* $4C4A — BOTH surface bytes $FF */
+            cpu.A = mem[GRIP_BASE_ALT + cpu.X];                         /* $4C4C */
+            cpu.Y = 0xFFu;
         }
         cpu.A = (uint8_t)adc_step(cpu.A, mem[(uint8_t)(0x78u + cpu.X)], 0); /* $4C51-$4C52 */
         mem[GRIP_LIMIT + cpu.X] = cpu.A;                                /* $4C54 */
         mul8_core(cpu.A);                                               /* $4C57 */
         mem[GRIP_LIMIT_ALT + cpu.X] = cpu.A;                            /* $4C5A */
-        DEX();                                                          /* $4C5D */
+        DEX();                                                          /* $4C5D — leaves X=$FF */
     }
 }
 
@@ -6660,8 +6646,7 @@ static void update_grip_limits_core(void)
 static void engine_note_only(uint8_t torque)
 {
     engine_torque = torque;                             /* $4A87 */
-    LDA(engine_revs);
-    engine_note_target = (uint8_t)adc_step(cpu.A, 0x19u, 0);        /* $4A89-$4A8E */
+    engine_note_target = (uint8_t)adc_step(engine_revs, 0x19u, 0);  /* $4A89-$4A8E */
 }
 
 /* $4A7F-$4A90 — the curve's output through the gear's torque multiplier, then that tail.
@@ -6677,8 +6662,8 @@ static void engine_torque_and_note(uint8_t curve, uint8_t gear)
 static void engine_revs_from(uint8_t base)
 {
     math_lo = base;                                                 /* $49BB */
-    LDA((uint8_t)(bus_read(VIA_T1_LOW) & 0x07u));                   /* $49BD-$49C0 */
-    cpu.A = (uint8_t)adc_step(cpu.A, math_lo, 0);                   /* $49C2-$49C3 */
+    cpu.A = (uint8_t)adc_step((uint8_t)(bus_read(VIA_T1_LOW) & 0x07u),   /* $49BD-$49C3 */
+                              math_lo, 0);
     engine_revs      = cpu.A;                                       /* $49C5 */
     engine_revs_prev = cpu.A;                                       /* $49C7 */
 }
@@ -6688,25 +6673,19 @@ static void engine_revs_from(uint8_t base)
    entry and it writes C.  See the group header, item 3. */
 static void engine_coast_arm(void)
 {
-    LDA(engine_revs);                                               /* $499F */
-    LDX(pedal_mode);
-    DEX();
-    if (cpu.Z) {                                                    /* $49A4 BNE */
-        ADC(0x07u);                                                 /* $49A6 */
-        CMP(pedal_amount);
-        if (!cpu.C) {                                               /* $49AA BCS */
-            CMP(0x8Cu);
-            if (!cpu.C) {                                           /* $49AE BCC → $49C5 */
-                engine_revs      = cpu.A;
-                engine_revs_prev = cpu.A;
-                return;
-            }
+    uint8_t a = engine_revs;                                        /* $499F */
+    cpu.X = (uint8_t)(pedal_mode - 1);           /* $49A1-$49A3 — LDX pedal_mode; DEX (X escapes) */
+    if (cpu.X == 0) {                            /* $49A4 — pedal_mode == 1: on the throttle */
+        a = (uint8_t)adc_step(a, 0x07u, cpu.C);  /* $49A6 — ADC adds the CALLER'S carry */
+        if (a < pedal_amount && a < 0x8Cu) {     /* $49A8-$49AE — creeping up, still in range */
+            engine_revs      = a;                /* $49C5 */
+            engine_revs_prev = a;
+            return;
         }
     }
-    CMP(0x2Au);
-    if (cpu.C) cpu.A = (uint8_t)sub_from(cpu.A, 0x0Cu);             /* $49B4-$49B5 */
-    else       LDA(0x28u);                                          /* $49B9 */
-    engine_revs_from(cpu.A);
+    if (a >= 0x2Au) a = (uint8_t)sub_from(a, 0x0Cu);   /* $49B2-$49B5 — fall $0C toward idle */
+    else            a = 0x28u;                          /* $49B9 — ...or sit on the floor */
+    engine_revs_from(a);
 }
 
 /* $4993-$499B — the engine catches: the luck mask back to 7, engine_running to $FF.  A is
@@ -6725,25 +6704,20 @@ static void engine_starter_poll(void)
 {
     arg_x(0xDCu);                                                   /* $4978 — the T key */
     kbd_test_key();
-    if (!cpu.Z) {                                                   /* $497D BEQ */
-        LDY(gear_index);
-        DEY();
-        if (!cpu.Z) {                                               /* $4982 BEQ — not the pits */
-            LDA(road_speed);
-            if (!cpu.Z) {                                           /* $4986 BNE — a push start */
-                engine_catches();
-                engine_revs_from(cpu.A);
-                return;
-            }
+    if (!cpu.Z) {                                                   /* $497D */
+        cpu.Y = (uint8_t)(gear_index - 1);       /* $497F-$4980 — LDY gear_index; DEY (Y escapes) */
+        if (cpu.Y != 0 && road_speed != 0) {     /* $4982-$4986 — in gear and rolling */
+            engine_catches();
+            engine_revs_from(road_speed);           /* A is still road_speed past catches */
+            return;
         }
-        LDA(0x00u);                                                 /* $4988-$498A → $49C5 */
-        engine_revs      = cpu.A;
-        engine_revs_prev = cpu.A;
+        engine_revs      = 0x00u;                                  /* $4988-$498A */
+        engine_revs_prev = 0x00u;
         return;
     }
-    LDA((uint8_t)(bus_read(VIA_T1_LOW) & starter_random_mask));      /* $498C-$498F */
-    if (cpu.Z) engine_catches();                                    /* $4991 BNE — no luck */
-    engine_revs_from(cpu.A);
+    uint8_t luck = (uint8_t)(bus_read(VIA_T1_LOW) & starter_random_mask);  /* $498C-$498F */
+    if (luck == 0) engine_catches();                               /* $4991 — no luck this frame */
+    engine_revs_from(luck);
 }
 
 static void update_engine_revs_core(void)
@@ -6751,28 +6725,24 @@ static void update_engine_revs_core(void)
     uint8_t gear;
     int segment0;
 
-    LDA(engine_running);
-    if (cpu.Z) {                                                    /* $49D0 BEQ → $4978 */
+    if (engine_running == 0) {                                     /* $49CE-$49D0 → $4978 */
         engine_starter_poll();
         engine_note_only(0x00u);                                    /* $49C9-$49CB */
         return;
     }
-    LDA(drive_state);
-    if (!cpu.Z) {                                                   /* $49D4 BNE → $499F */
+    if (drive_state != 0) {                                         /* $49D2-$49D4 → $499F */
         engine_coast_arm();
         engine_note_only(0x00u);
         return;
     }
-    LDA(gear_change_flag);
-    if (cpu.N) {                                                    /* $49D8 BMI → $499D */
-        gear_change_rev_drop = cpu.A;                               /* $499D */
+    if (gear_change_flag & 0x80u) {                                 /* $49D6-$49D8 → $499D */
+        gear_change_rev_drop = gear_change_flag;                    /* $499D */
         engine_coast_arm();
         engine_note_only(0x00u);
         return;
     }
-    LDY(gear_index);
-    DEY();
-    if (cpu.Z) {                                                    /* $49DD BEQ — gear 1 */
+    cpu.Y = (uint8_t)(gear_index - 1);          /* $49DB-$49DC — LDY gear_index; DEY (Y escapes) */
+    if (cpu.Y == 0) {                                              /* $49DD — gear 1: the pits */
         engine_coast_arm();
         engine_note_only(0x00u);
         return;
@@ -6782,12 +6752,12 @@ static void update_engine_revs_core(void)
        pushed the value negative; the shift it guards is applied once before the gear ratio and
        once after, which is what makes the scaling x2 or x4. */
     math_lo = road_speed_frac;                                      /* $49DF-$49E1 */
-    LDA(road_speed);
+    cpu.A = road_speed;                                             /* $49E3 */
     ASL_M(MEM_math_lo); ROL_A();                                    /* $49E5-$49E7 */
     PHP();                                                          /* $49E8 */
     if (!cpu.N) { ASL_M(MEM_math_lo); ROL_A(); }                    /* $49E9 BMI */
     math_hi = cpu.A;                                                /* $49EE */
-    LDX(gear_index);
+    cpu.X = gear_index;                                             /* $49EF */
     mul8_core(mem[GEAR_REV_RATIO + cpu.X]);                         /* $49F2-$49F5 */
     ASL_M(MEM_math_lo); ROL_A();                                    /* $49F8-$49FA */
     PLP();
@@ -6796,53 +6766,40 @@ static void update_engine_revs_core(void)
     /* $4A01-$4A35 — the gear-change rev drop, if a shift armed it: only on the throttle, only
        nearly stopped, and only once the starting lights are done (or on one $3F-frame phase of
        them).  When it applies, the revs come from engine_revs_prev decaying by 2 a frame. */
-    BIT(gear_change_rev_drop);
-    if (cpu.N) {                                                    /* $4A03 BPL */
+    if (gear_change_rev_drop & 0x80u) {                            /* $4A01-$4A03 BIT/BPL */
         int disarm = 1;
-        LDY(pedal_mode);
-        DEY();
-        if (cpu.Z) {                                                /* $4A08 BNE */
-            LDY(road_speed);
-            CPY(0x16u);
-            if (!cpu.C) {                                           /* $4A0E BCS */
+        cpu.Y = (uint8_t)(pedal_mode - 1);                         /* $4A05-$4A06 */
+        if (cpu.Y == 0) {                                          /* $4A08 — on the throttle */
+            cpu.Y = road_speed;                                    /* $4A0A */
+            if (road_speed < 0x16u) {                              /* $4A0C-$4A0E — nearly stopped */
                 int compare = 0;
-                LDY(start_light_state);
-                if (!cpu.N) compare = 1;                            /* $4A12 BPL */
-                else {
-                    CPY(0xA0u);
-                    if (cpu.Z) {                                    /* $4A16 BNE */
-                        PHA();                                      /* $4A18 */
-                        LDA((uint8_t)(loop_counter & 0x3Fu));
-                        CMP(0x35u);
-                        PLA();                                      /* $4A1F */
-                        if (cpu.C) compare = 1;                     /* $4A20 BCC */
-                    }
+                cpu.Y = start_light_state;                         /* $4A10 */
+                if (!(start_light_state & 0x80u)) compare = 1;     /* $4A12 — lights are done */
+                else if (start_light_state == 0xA0u) {             /* $4A14-$4A16 */
+                    PHA();                                         /* $4A18 — save revs across the test */
+                    if ((uint8_t)(loop_counter & 0x3Fu) >= 0x35u)  /* $4A1A-$4A20 */
+                        compare = 1;
+                    PLA();                                         /* $4A1F */
                 }
-                if (compare) {
-                    CMP(engine_revs_prev);                          /* $4A22 */
-                    if (!cpu.C) {                                   /* $4A24 BCC → $4A2C */
-                        LDA(engine_revs_prev);
-                        CMP(0x6Cu);
-                        if (cpu.C) {                                /* $4A30 BCC */
-                            cpu.A = (uint8_t)sub_from(cpu.A, 0x02u);
-                            engine_revs_prev = cpu.A;               /* $4A32-$4A35 */
-                        }
-                        disarm = 0;
+                if (compare && cpu.A < engine_revs_prev) {         /* $4A22-$4A24 */
+                    cpu.A = engine_revs_prev;                      /* $4A2C — revs decay from prev */
+                    if (engine_revs_prev >= 0x6Cu) {               /* $4A2E-$4A30 */
+                        cpu.A = (uint8_t)sub_from(engine_revs_prev, 0x02u); /* $4A32 */
+                        engine_revs_prev = cpu.A;                  /* $4A35 */
                     }
+                    disarm = 0;
                 }
             }
         }
-        if (disarm) { LDY(0x00u); gear_change_rev_drop = cpu.Y; }    /* $4A26-$4A28 */
+        if (disarm) { cpu.Y = 0x00u; gear_change_rev_drop = cpu.Y; } /* $4A26-$4A28 */
     }
 
     /* $4A37-$4A45 — the revs land, then the CURVE'S input is clamped and the stall tested.
        ⚠ engine_revs itself keeps the UNCLAMPED value: only the copy A carries is held to $AA. */
-    engine_revs = cpu.A;                                            /* $4A37 */
-    CMP(0xAAu);
-    if (cpu.C) LDA(0xAAu);                                          /* $4A3B BCC */
-    gear = cpu.X;
-    CMP(0x03u);
-    if (!cpu.C) {                                                   /* $4A41 BCS */
+    engine_revs = cpu.A;                                            /* $4A37 — the UNCLAMPED value */
+    if (cpu.A >= 0xAAu) cpu.A = 0xAAu;                              /* $4A39-$4A3B — the curve's input clamps */
+    gear = cpu.X;                                                  /* $4A3D */
+    if (cpu.A < 0x03u) {                                           /* $4A3F-$4A41 */
         inc_mem(MEM_engine_running);                                /* $4A43 — $FF -> 0: STALL */
         engine_note_only(0x00u);                                     /* $4A45 JMP $49C9 */
         return;
@@ -6852,19 +6809,17 @@ static void update_engine_revs_core(void)
        $11, $15 and $1A above it, each one a shift and an add. */
     cpu.A = (uint8_t)sub_from(cpu.A, 0x42u);                        /* $4A48-$4A49 */
     if (cpu.N) segment0 = 1;                                        /* $4A4B BMI */
-    else { CMP(0x11u); segment0 = !cpu.C; }                         /* $4A4D-$4A4F */
+    else segment0 = (cpu.A < 0x11u);                               /* $4A4D-$4A4F */
     if (segment0) {
         ASL_A();
         cpu.A = (uint8_t)adc_step(cpu.A, 0x98u, 0);                 /* $4A51-$4A53 */
     } else {
         cpu.A = (uint8_t)sub_from(cpu.A, 0x11u);                    /* $4A58-$4A59 */
-        CMP(0x04u);
-        if (!cpu.C) {                                               /* $4A5D BCS */
+        if (cpu.A < 0x04u) {                                       /* $4A5B-$4A5D */
             cpu.A = (uint8_t)adc_step((uint8_t)(cpu.A ^ 0xFFu), 0xBBu, 0);   /* $4A5F-$4A62 */
         } else {
             cpu.A = (uint8_t)sub_from(cpu.A, 0x04u);                /* $4A66-$4A67 */
-            CMP(0x05u);
-            if (!cpu.C) {                                           /* $4A6B BCS */
+            if (cpu.A < 0x05u) {                                   /* $4A69-$4A6B */
                 ASL_A(); ASL_A();
                 cpu.A = (uint8_t)adc_step((uint8_t)(cpu.A ^ 0xFFu), 0xB7u, 0);  /* $4A6D-$4A72 */
             } else {
@@ -6905,67 +6860,57 @@ static void update_camera_and_drive_state_core(void)
 {
     uint8_t dirIndex;
 
-    LDA(drive_state);
-    if (!cpu.Z) {                                       /* $44EC BEQ */
+    if (drive_state != 0) {                             /* $44EA-$44EC */
         DEC_M(MEM_spin_shake);                          /* $44EE */
         DEC_M(MEM_spin_shake);                          /* $44F0 */
     } else {
-        spin_shake     = cpu.A;                         /* $44F5 — both zeroed */
-        spin_countdown = cpu.A;
+        spin_shake     = 0x00u;                         /* $44F5 — both zeroed (drive_state==0) */
+        spin_countdown = 0x00u;
 
-        /* $44F9-$452A — camera_pitch_bias. */
-        LDY(camera_pitch_bias);
-        for (;;) {
-            int up = 0, down = 0, settle = 0;
-            LDA(gear_index);
-            if (cpu.Z) settle = 1;                      /* $44FE BEQ */
-            else {
-                LDA(pedal_mode);
-                if (cpu.N) settle = 1;                  /* $4502 BMI — coasting */
-                else if (cpu.Z) {                       /* $4504 BEQ — the brake */
-                    LDA(road_speed);
-                    if (!cpu.Z) down = 1;               /* $450E BNE */
-                    else settle = 1;
-                } else {
-                    LDA(engine_torque);
-                    if (!cpu.Z) up = 1;                 /* $4508 BNE — pulling */
-                    else settle = 1;
-                }
-            }
-            if (settle) {                               /* $4510-$4513 */
-                TYA();
-                if (cpu.Z) goto yaw;                    /* already centred: nothing to store */
-                if (!cpu.N) down = 1;
-                else { INY(); up = 1; }                 /* $4515 — negative: +2 */
-            }
-            if (up) {                                   /* $4516-$451F */
-                INY();
-                if (!cpu.N) {
-                    CPY(0x04u);
-                    if (cpu.C) LDY(0x03u);              /* clamped to +3 */
-                }
-            } else if (down) {                          /* $4521-$4528 */
-                DEY();
-                if (cpu.N) {
-                    CPY(0xFBu);
-                    if (!cpu.C) LDY(0xFBu);             /* ...and to -5 */
-                }
-            }
-            camera_pitch_bias = cpu.Y;                  /* $452A */
-            break;
+        /* $44F9-$452A — camera_pitch_bias, a signed $FB..3 counter: +1 a frame under power,
+           -1 braking, and settling toward 0 in neutral or coasting.  Every register here is
+           dead by the yaw: merge below (A/X/Y are all reloaded), so it is plain byte math. */
+        uint8_t bias = camera_pitch_bias;               /* $44FB */
+        int up = 0, down = 0, settle = 0;
+        if (gear_index == 0) settle = 1;                /* $44FC-$44FE */
+        else if (pedal_mode & 0x80u) settle = 1;        /* $4500-$4502 — coasting */
+        else if (pedal_mode == 0) {                     /* $4504 — the brake */
+            if (road_speed != 0) down = 1;              /* $450C-$450E */
+            else settle = 1;
+        } else {                                        /* on the throttle */
+            if (engine_torque != 0) up = 1;             /* $4506-$4508 — pulling */
+            else settle = 1;
         }
+        if (settle) {                                   /* $4510-$4515 — drift back to centre */
+            if (bias == 0) goto yaw;                    /* already centred: nothing to store */
+            if (!(bias & 0x80u)) down = 1;              /* positive: step down */
+            else { bias++; up = 1; }                    /* $4515 — negative: +2 */
+        }
+        if (up) {                                       /* $4516-$451F */
+            bias++;
+            if (!(bias & 0x80u)) {                      /* positive: CPY #$04 sets C, escapes via PHP */
+                cpu.C = (bias >= 0x04u);                /* $4519 CPY — carry is pushed in the yaw below */
+                if (cpu.C) bias = 0x03u;                /* clamped to +3 */
+            }
+        } else if (down) {                              /* $4521-$4528 */
+            bias--;
+            if (bias & 0x80u) {                         /* negative: CPY #$FB sets C, escapes via PHP */
+                cpu.C = (bias >= 0xFBu);                /* $4524 CPY */
+                if (!cpu.C) bias = 0xFBu;               /* ...and to -5 */
+            }
+        }
+        camera_pitch_bias = bias;                       /* $452A */
     }
 
 yaw:
     /* $452D-$4568 — the section yaw.  The two ground-plane components make the angle; the
        gradient component reaches the pitch through scale_by_track_gradient below. */
-    LDX(car_section_cursor);
-    LDY(mem[SECTION_DIR_IX + cpu.X]);                   /* $452F */
+    cpu.X = car_section_cursor;                         /* $452D */
+    cpu.Y = mem[SECTION_DIR_IX + cpu.X];                /* $452F — Y stays dirIndex to $457F */
     dirIndex = cpu.Y;
-    LDA(view_pitch_offset);
-    shared_temp_76 = cpu.A;                             /* $4534 — last frame's pitch */
+    shared_temp_76 = view_pitch_offset;                 /* $4531-$4534 — last frame's pitch */
 
-    LDA((uint8_t)(mem[TRACK_DIR_0 + dirIndex] ^ mem[TRACK_DIR_2 + dirIndex]));
+    LDA((uint8_t)(mem[TRACK_DIR_0 + dirIndex] ^ mem[TRACK_DIR_2 + dirIndex]));  /* sets N for PHP */
     PHP();                                              /* $453C — (1) the octant's sign */
     LDA(mem[TRACK_DIR_2 + dirIndex]);
     PHP();                                              /* $4540 — (2) component 2's sign */
@@ -7013,20 +6958,22 @@ yaw:
 
     /* $459B-$45C9 — drive_state.  spin_countdown steps -4 a frame and SATURATES to $C8; the
        sum with drive_state picks between the three values it can take. */
-    LDA(0x00u);
-    shared_temp_77 = cpu.A;                             /* $459D */
-    LDA(spin_countdown);
-    cpu.A = (uint8_t)sub_from(cpu.A, 0x04u);
-    if (cpu.V) LDA(0xC8u);                              /* $45A4 BVC */
+    shared_temp_77 = 0x00u;                             /* $459B-$459D */
+    cpu.A = (uint8_t)sub_from(spin_countdown, 0x04u);   /* $459F-$45A3 */
+    if (cpu.V) cpu.A = 0xC8u;                            /* $45A4 — the step overflowed: saturate */
     spin_countdown = cpu.A;                             /* $45A8 */
     cpu.A = (uint8_t)adc_step(cpu.A, drive_state, 0);   /* $45AA-$45AB */
     /* ⚠ $45B1's `BPL` is what keeps the sum; a NEGATIVE sum falls THROUGH to the arm below,
        so the countdown arm is reached two ways, not one. */
+    /* ⚠ The three constant loads and the CMP below keep their 6502 form ON PURPOSE: the
+       $45CB SMC dispatch just past drive_state RETURNS on an unrecognised opcode, and on that
+       exit the routine's declared-live N/Z/C are exactly what this block last set — so the
+       CMP's carry (also live into begin_spin) and each LDA's N/Z genuinely escape the routine. */
     if (cpu.Z || (!cpu.V && cpu.N)) {                   /* $45AD BEQ, or $45B1 BPL not taken */
-        LDA(spin_countdown);
+        LDA(spin_countdown);                            /* $45B3 — sets N for the abs8 */
         abs8();                                         /* $45B5 */
-        CMP(0x05u);
-        if (cpu.C) { begin_spin_from_a_core(cpu.A); LDA(0x01u); }   /* $45BC-$45BF */
+        CMP(0x05u);                                     /* $45B7 */
+        if (cpu.C) { begin_spin_from_a_core(cpu.A); LDA(0x01u); }   /* $45B9-$45BF */
         else         LDA(0x00u);                                    /* $45C3 */
     } else if (cpu.V) {
         LDA(0x7Fu);                                     /* $45AF BVS → $45C7 */
@@ -7052,23 +6999,23 @@ yaw:
     /* $45D3-$45FB — the camera: the section's coordinate 1, the player's gradient-scaled
        car_state_1, and $AC of nominal eye height, as one 16-bit add with two carries saved
        past the term in between. */
-    LDX(player_car);
-    LDA(mem[CAR_STATE_1 + cpu.X]);                      /* $45D5 */
+    cpu.X = player_car;                                 /* $45D3 — X stays player_car to $460C */
+    cpu.A = mem[CAR_STATE_1 + cpu.X];                   /* $45D5 */
     /* ⚠⚠ Y IS NOT dirIndex ANY MORE ON ONE PATH.  The spin arm above reaches begin_spin_from_a,
        which queues a MOS SOUND — and sound_osword leaves the MOS's own Y behind.  So this call
        scales by whatever table entry Y now points at, and a twin that "knew" the index was
        still the section's differed in one case in six. */
     scale_by_track_gradient_core(cpu.A, cpu.Y);         /* $45D8 */
     if (cpu.N) DEC_M(MEM_shared_temp_77);               /* $45DB BPL — sign-extend it */
-    LDY(car_section_cursor);
+    cpu.Y = car_section_cursor;                         /* $45DF — Y for the section coords + exit */
     cpu.A = (uint8_t)adc_step(cpu.A, mem[SECTION_CRD_LO + 1 + cpu.Y], 0);   /* $45E1-$45E2 */
     PHP();                                              /* $45E5 — (a) */
     cpu.A = (uint8_t)adc_step(cpu.A, 0xACu, 0);         /* $45E6-$45E7 */
     PHP();                                              /* $45E9 — (b) */
     cpu.A = (uint8_t)adc_step(cpu.A, shared_temp_76, 0);           /* $45EA-$45EB */
     mem[VIEW_ORIGIN_LO + 1] = cpu.A;                          /* $45ED */
-    LDA(mem[SECTION_CRD_HI + 1 + cpu.Y]);
-    cpu.A = (uint8_t)adc_step(cpu.A, shared_temp_77, cpu.C);       /* $45F3 */
+    cpu.A = (uint8_t)adc_step(mem[SECTION_CRD_HI + 1 + cpu.Y], /* $45EF-$45F3 (carry preserved) */
+                              shared_temp_77, cpu.C);
     PLP();                                              /* (b) */
     cpu.A = (uint8_t)adc_step(cpu.A, 0x00u, cpu.C);               /* $45F6 */
     PLP();                                              /* (a) */
