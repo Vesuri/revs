@@ -1958,8 +1958,7 @@ typedef struct {
 static PointDist point_distance_hypot_core(uint8_t angle, uint16_t minMag, uint16_t maxMag)
 {
     PointDist r;
-    Adc       lo;
-    unsigned  hi;
+    Adc       lo, hi;
 
     r.maxEighth = 0;
 
@@ -1968,8 +1967,8 @@ static PointDist point_distance_hypot_core(uint8_t angle, uint16_t minMag, uint1
         r.min    = (uint16_t)(minMag >> 3);           /* $0CAB-$0CB5 */
 
         lo = adc_value((uint8_t)r.min, (uint8_t)maxMag, 0);                   /* $0CB6-$0CB9 */
-        hi = adc_step((unsigned)(uint8_t)(r.min >> 8), (uint8_t)(maxMag >> 8), lo.carry);
-        r.dist = (uint16_t)(((unsigned)(uint8_t)hi << 8) | lo.val);
+        hi = adc_value((uint8_t)(r.min >> 8), (uint8_t)(maxMag >> 8), lo.carry);
+        r.dist = (uint16_t)(((unsigned)hi.val << 8) | lo.val);
         return r;
     }
 
@@ -1978,13 +1977,15 @@ static PointDist point_distance_hypot_core(uint8_t angle, uint16_t minMag, uint1
     r.maxEighth = (uint16_t)(maxMag >> 3);            /* $0CC6-$0CD5 */
 
     lo = adc_value((uint8_t)r.min, (uint8_t)maxMag, 0);                       /* $0CD7-$0CE2 */
-    hi = (unsigned)adc_value((uint8_t)(r.min >> 8), (uint8_t)(maxMag >> 8), lo.carry).val;
+    hi = adc_value((uint8_t)(r.min >> 8), (uint8_t)(maxMag >> 8), lo.carry);
 
-    {   /* $0CE4-$0CF0 — ...less an eighth of the larger component.  Only this subtract's
-           flags leave the routine, so only it goes through the full 6502 SBC. */
-        Sbc      d  = sbc_value(lo.val, (uint8_t)r.maxEighth, 1);
-        unsigned dh = sbc_step(hi, (uint8_t)(r.maxEighth >> 8), d.carry);
-        r.dist = (uint16_t)(((unsigned)(uint8_t)dh << 8) | d.val);
+    {   /* $0CE4-$0CF0 — ...less an eighth of the larger component.  Every add and this subtract
+           is value-only: the exit flags are dead at all four call sites (proven statically —
+           the road pass has no BVS/BVC, so even the lingering V is never read), so the whole
+           chain drops the 6502 flag bookkeeping.  Decimal mode is still honoured per byte. */
+        Sbc d  = sbc_value(lo.val, (uint8_t)r.maxEighth, 1);
+        Sbc dh = sbc_value(hi.val, (uint8_t)(r.maxEighth >> 8), d.carry);
+        r.dist = (uint16_t)(((unsigned)dh.val << 8) | d.val);
     }
     return r;
 }

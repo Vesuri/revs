@@ -1971,6 +1971,12 @@ static int test_geometry_leaves(void)
 {
     static uint8_t pre[65536];
     unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    /* point_distance_hypot and the two emit_edge_bearing entries that tail-call it leave DEAD
+       N/V/Z/C: proven statically at all four call sites ($2374/$23d8/$2452/$2ab3) — N and Z are
+       clobbered by the first instruction, C by an intervening CPX/CPY/CMP before the first
+       BCS/BCC, and V is never read (the whole road pass $2145-$2b62 has no BVS/BVC).  So their
+       twins keep only A live and no longer reproduce the exit flags. */
+    const unsigned distMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S;
     /* load_section_triple answers entirely in mem[] — the six coordinate bytes of the scratch
        section triple.  All three callers overwrite the registers immediately ($1230 LDA, $2367
        JSR, $4CEB LDY) and read no exit flag, so its A/N/Z are dead; the clean core no longer
@@ -2110,7 +2116,7 @@ static int test_geometry_leaves(void)
             c.D = (uint8_t)(xs() & 1);      /* the adds and the subtract are real 6502 ones */
             if (pre[0x007E] < 0x67) nearArm++; else farArm++;
             subFail += diff_run("point_distance_hypot", pre, c, point_distance_hypot,
-                                point_distance_hypot__t6502, liveMask, t, &printed);
+                                point_distance_hypot__t6502, distMask, t, &printed);
         }
         fail += subFail;
         if (nearArm == 0 || farArm == 0) {
@@ -2118,7 +2124,7 @@ static int test_geometry_leaves(void)
                    "(near=%d far=%d)\n", nearArm, farArm);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY (flags proven dead)  "
                "(%d near arm, %d far arm)\n",
                "point_distance_hypot", cases, subFail, nearArm, farArm);
     }
@@ -2148,10 +2154,10 @@ static int test_geometry_leaves(void)
                 c.A = (uint8_t)xs();
                 c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
                 c.D = (uint8_t)(xs() & 1);
-                subFail += diff_run(E[i].name, pre, c, E[i].n, E[i].o, liveMask, t, &printed);
+                subFail += diff_run(E[i].name, pre, c, E[i].n, E[i].o, distMask, t, &printed);
             }
             fail += subFail;
-            printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags\n",
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY (flags proven dead)\n",
                    E[i].name, cases, subFail);
         }
     }
