@@ -2820,6 +2820,9 @@ static void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     /* $1A24-$1A30 — the FAR half of the road.  The split is the horizon point in the 40..79
        half, but never nearer than point $31: the four passes below all measure "near" and
        "far" against it, and letting it come closer than that inverts them. */
+    /* ⚠ STAYS adc_step: on the fixture's SMC-early-return path fill_line_attr never reaches
+       edge_x_offscreen and the mark walk is skipped, so this add's V is draw_road's exit V and
+       the differential compares it (28/200 when it was a plain `+`). */
     unsigned farBase = adc_step(horizon_index, 0x28, 0);
     road_split_index = (uint8_t)clamp_up_to(farBase, 0x31);
 
@@ -4361,6 +4364,9 @@ static void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
            the arm-select bit.  ROR_M consumes the subtract's carry, so it stays a macro. */
         cpu.A = (uint8_t)sub_from(shared_temp_7e, shared_temp_77);
         ROR_M(SPAN_ARM);
+        /* ⚠ STAYS adc_step: on the clipped + no-extent-publish path the plotters never run, so
+           this negate's V is interp_edge's exit V and the differential compares it (draw_road
+           subtree, 28/200 when it was a plain negate). */
         if (!cpu.N) cpu.A = (uint8_t)adc_step((uint8_t)~cpu.A, 0x01u, 0);
     }
     mem[SPAN_DX] = cpu.A;
@@ -4414,10 +4420,13 @@ static void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
        draw_surface_spans gets back — set it explicitly before publishing. */
     if (cpu.A >= 0x28u) { cpu.C = 1; interp_edge_publish(); return; }
     LSR_A();
-    cpu.A        = (uint8_t)adc_step(cpu.A, 0x30u, 0);
+    /* The three screen pages, from the endpoint's block.  Plain binary adds: every span reaching
+       here goes on to a plotter, whose own first ADC ($2F.. span_walk) overwrites these flags
+       before interp_edge returns, so nothing downstream reads the N/V/C an ADC would set. */
+    cpu.A        = (uint8_t)(cpu.A + 0x30u);   /* page = (block >> 3) + $30 */
     plot_ptr_hi  = cpu.A;
     plot_ptr2_hi = cpu.A;
-    cpu.A        = (uint8_t)adc_step(cpu.A, 0x01u, 0);
+    cpu.A        = (uint8_t)(cpu.A + 0x01u);    /* plot_ptr3 addresses the page above */
     plot_ptr3_hi = cpu.A;
 
     LDX((uint8_t)(math_hi & 7u));            /* the sub-column phase, into the entry tables */
@@ -4747,6 +4756,9 @@ static uint8_t mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint)
                 shared_temp_77 = mem[EDGE_OPP_X_HI_TBL + cpu.X];
                 cpu.A = mem[EDGE_X_HI_TBL + cpu.X];
             }
+            /* ⚠ These two adds STAY adc_step: the last one's V is not overwritten before the
+               routine returns (INY/CPX/LDX leave V alone), so it is this routine's exit V and
+               the differential compares it.  A plain `+` drops it — measured, 162/800. */
             cpu.A = (uint8_t)adc_step(cpu.A, 0x14u, 0);
             if (!cpu.N) {
                 cpu.A = (uint8_t)adc_step(shared_temp_77, 0x14u, 0);
