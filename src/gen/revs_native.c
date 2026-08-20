@@ -4496,25 +4496,58 @@ void interp_edge(void)
    $00 or $50 in A and the routine writes it into the instruction.
    --------------------------------------------------------------------------- */
 
-/* $1933 — "is this edge point more than $14 off axis?", rotated into shared_temp_76's top bit
-   so the caller can also see the PREVIOUS point's answer in bit 6.  ⚠ The add's V survives
-   the ROR (which does not write V) and reaches the caller. */
+/* $1933 — "is edge point X more than $14 off the road centre?"  Computes
+   (edge_x_hi[X] + $14) >= $28 and rolls that answer into shared_temp_76's top bit; the cell's
+   previous top bit slides down to bit 6, which fill_line_attr reads back as the PREVIOUS
+   point's answer.
+   ⚠ This is a FLAG PRODUCER, not a value producer — two of its results leave through the CPU
+   flags and are compared by the differential, so the add and the roll KEEP their cpu.h helpers
+   (the documented flag-escape exception).  The add's signed overflow (V) is draw_road's exit V
+   on the path that runs the mark walk; the roll's C/N/Z are the routine's real output. */
+static void edge_x_offscreen_core(uint8_t pointX)
+{
+    uint8_t edgeHi = mem[EDGE_X_HI_TBL + pointX];
+    cpu.A = (uint8_t)adc_step(edgeHi, 0x14u, 0);   /* + $14, leaving V for the caller */
+    CMP(0x28u);                                     /* carry := (sum >= $28) */
+    ROR_M(MEM_shared_temp_76);                      /* roll carry into bit 7; sets C/N/Z */
+}
+
+/* The 6502-ABI shim: the edge point index arrives in X. */
 void edge_x_offscreen(void)
 {
-    cpu.A = (uint8_t)adc_step(mem[EDGE_X_HI_TBL + cpu.X], 0x14u, 0);
-    CMP(0x28u);
-    ROR_M(MEM_shared_temp_76);
+    edge_x_offscreen_core(cpu.X);
 }
 
 #define LINE_ATTR_OPERAND 0x1970u   /* the patched low byte of `STA line_attr,Y` */
 
+/* Idiomatic C: the walk runs on local variables and plain math.  The routine's flags DO leave
+   it (the differential checks A/X/Y and every flag), but they are all recovered at the end from
+   the walk's final state — no cpu.h operation drives the body.  The two genuine flag PRODUCERS
+   it leans on stay as helpers: edge_x_offscreen_core (its V escapes) and the roll it performs.
+
+   Two escaping flags need explaining:
+     · V — set only by edge_x_offscreen_core and by the "previous point off axis?" BIT test, both
+       reads of shared_temp_76's bit 6/7.  We mirror BIT's V by hand and take the ADD's V from
+       the helper, tracking the last one in `vFlag`.
+     · C — the tail leaves it set (its CPX) unless it returns on the very first LDA, in which case
+       C is whatever the WALK left.  Every completed iteration ends on a fill or a skip, and both
+       leave carry set, so the walk's exit carry is 1 whenever any iteration ran; only a walk that
+       breaks on its first step (a start index already at/over $80, which draw_road never passes)
+       carries the SMC helper's carry through.  `completedAny` distinguishes the two. */
 static void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint)
 {
     mem[LINE_ATTR_OPERAND] = bufferLow;      /* $0400 or $0450 — the store's own operand */
     span_end_index = endCursor;
-    LDY((uint8_t)(endCursor - 1));            /* DEY — and its N/Z reach the trap arm below */
-    math_hi = cpu.Y;                          /* one past the last point of this half */
-    cpu.X   = firstPoint;                     /* ⚠ already in X on the 6502: no LDX, no flags */
+
+    uint8_t onePastLast = (uint8_t)(endCursor - 1);   /* $1943 DEY — one past this half's last point */
+    math_hi = onePastLast;
+
+    /* Exit ABI for the SMC-trap early return below: the $1943 DEY leaves Y and its N/Z, X keeps
+       the start index, A/C/V are untouched.  Reconstruct exactly that here. */
+    cpu.Y = onePastLast;
+    cpu.N = (onePastLast >> 7) & 1u;
+    cpu.Z = (onePastLast == 0);
+    cpu.X = firstPoint;                       /* the $1946 hook / edge_x_offscreen reads X */
 
     /* $1946 — Silverstone's own `JSR edge_x_offscreen`, or a circuit's hook in its place. */
     if (mem[0x1946] == 0x20) {
@@ -4527,73 +4560,108 @@ static void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t fi
         return;
     }
 
-    LDY(horizon_extent);
-    span_line_cursor = cpu.Y;                 /* $1977 on the way in */
+    uint8_t x = cpu.X;                        /* a circuit hook may have moved the start index */
+    uint8_t y = horizon_extent;              /* $1949/$1977 — the first scan line to fill from */
+    span_line_cursor = y;
+
+    int vFlag = cpu.V;                        /* last V produced by the SMC helper (edge_x_offscreen) */
+    int smcCarry = cpu.C;                     /* ...and its carry, the walk's exit carry if nothing runs */
+    int completedAny = 0;
 
     for (;;) {
         int clamped;
+        uint8_t fillDownTo = 0, storeVal;
 
-        INX();                                /* $1979 — the next edge point */
-        if (cpu.N) break;                     /* a marked index: the side is finished */
-        CPX(math_hi);
-        clamped = cpu.C;                      /* walked off the end of the half */
+        x = (uint8_t)(x + 1);                /* $1979 — the next edge point */
+        if (x & 0x80u) break;                /* a marked index (bit 7): the side is finished */
+        clamped = (x >= onePastLast);        /* $197C CPX — walked off the end of the half */
 
         if (!clamped) {
             /* $194E — re-test this point's angle only when the last one was off axis. */
-            LDA(shared_temp_76);
-            if (cpu.N) edge_x_offscreen();
+            if (shared_temp_76 & 0x80u) { edge_x_offscreen_core(x); vFlag = cpu.V; }
 
-            LDA(mem[EDGE_Y_TBL + cpu.X]);
-            CMP(0x50u);
-            if (cpu.C) clamped = 1;
-            else {
-                BIT(shared_temp_76);
-                if (cpu.N) {
-                    /* the previous point was off axis: a point on the SAME line adds nothing */
-                    CMP(mem[EDGE_Y_TBL + cpu.X + 1]);
-                    if (cpu.Z) { mem[EDGE_STYLE_TBL + cpu.X] |= 0x80u; continue; }
+            uint8_t ptLine = mem[EDGE_Y_TBL + x];     /* the scan line this point projects to */
+            if (ptLine >= 0x50u) {
+                clamped = 1;                          /* $195A — off the bottom of the screen */
+            } else {
+                /* $195C BIT — its V escapes, so mirror it; bit 7 = "previous point off axis". */
+                int prevOffAxis = (shared_temp_76 & 0x80u) != 0;
+                vFlag = (shared_temp_76 >> 6) & 1u;
+                if (prevOffAxis && ptLine == mem[EDGE_Y_TBL + x + 1]) {
+                    /* previous point off axis + this one on the SAME line ⇒ nothing to add */
+                    mem[EDGE_STYLE_TBL + x] |= 0x80u; completedAny = 1; continue;
                 }
-                CMP(span_line_cursor);
-                if (cpu.C) { mem[EDGE_STYLE_TBL + cpu.X] |= 0x80u; continue; }
+                if (ptLine >= span_line_cursor) {
+                    /* a point that would fill UPWARD from the cursor adds nothing either */
+                    mem[EDGE_STYLE_TBL + x] |= 0x80u; completedAny = 1; continue;
+                }
+                fillDownTo = ptLine;                  /* $1969 — fill down to this point's line */
             }
         }
 
         if (clamped) {
             /* $1980 — pull the point's line back to the cursor, mark the index, and fill
-               everything that is left down to line 0.  (The inner fill loop's CPY rewrites
-               every flag these plain ops touch, so no macro is needed here.) */
-            uint8_t ey = mem[EDGE_Y_TBL + cpu.X];
+               everything that is left down to line 0. */
+            uint8_t ey = mem[EDGE_Y_TBL + x];
             if (!(ey & 0x80u) && ey >= span_line_cursor)
-                mem[EDGE_Y_TBL + cpu.X] = span_line_cursor;
-            cpu.X |= 0x80u;                        /* mark the index; bit 7 ends the walk */
-            cpu.A = 0x00u;
+                mem[EDGE_Y_TBL + x] = span_line_cursor;
+            x |= 0x80u;                        /* mark the index; bit 7 ends the walk */
+            fillDownTo = 0x00u;
         }
 
-        /* $1969 — every line from the cursor down to this point's own names this point. */
-        mem[SPAN_LINE_END] = cpu.A;
-        cpu.A = cpu.X;
-        for (;;) {
-            CPY(mem[SPAN_LINE_END]);
-            if (cpu.Z) break;
-            ROAD_COUNT(g_roadFillLines);       /* one scan line named in the line->point map */
-            /* ⚠ the base is re-read every pass: the store can land on its own operand */
-            bus_write((uint16_t)((mem[LINE_ATTR_OPERAND] | (mem[LINE_ATTR_OPERAND + 1] << 8))
-                                 + cpu.Y), cpu.A);
-            DEY();
+        /* $1969 — every line from the cursor down to fillDownTo names this point (index x). */
+        storeVal = x;
+        mem[SPAN_LINE_END] = fillDownTo;
+        {
+            /* The store operand cannot move under us: line_attr is $04xx and the operand $1970,
+               so compute the base once. */
+            uint16_t base = (uint16_t)(mem[LINE_ATTR_OPERAND]
+                                       | (mem[LINE_ATTR_OPERAND + 1] << 8));
+            while (y != fillDownTo) {
+                ROAD_COUNT(g_roadFillLines);   /* one scan line named in the line->point map */
+                bus_write((uint16_t)(base + y), storeVal);
+                y = (uint8_t)(y - 1);
+            }
         }
-        span_line_cursor = cpu.Y;
+        span_line_cursor = y;
+        completedAny = 1;
     }
+
+    int walkCarry = completedAny ? 1 : smcCarry;   /* the walk's exit carry (see the header) */
 
     /* $1996 — leave road_split_index past any point the walk had to mark. */
-    LDX(road_split_index);
+    uint8_t sx = road_split_index;
+    uint8_t tailStyle;
+    int exitViaCpx = 0;
+    int tailLooped = 0;                             /* a CPX left carry clear and we continued */
     for (;;) {
-        LDA(mem[EDGE_STYLE_TBL + cpu.X]);
-        if (!cpu.N) break;
-        INX();
-        CPX(math_hi);
-        if (cpu.C) break;
+        tailStyle = mem[EDGE_STYLE_TBL + sx];       /* $1998 LDA */
+        if (!(tailStyle & 0x80u)) { exitViaCpx = 0; break; }
+        sx = (uint8_t)(sx + 1);                     /* $199D INX */
+        if (sx >= (uint8_t)math_hi) { exitViaCpx = 1; break; }   /* $199E CPX, carry set */
+        tailLooped = 1;                             /* $19A0 BCC — that CPX's carry (0) is now live */
     }
-    road_split_index = cpu.X;
+    road_split_index = sx;
+
+    /* Exit ABI — the differential compares A/X/Y and every flag, so hand back exactly what the
+       6502 leaves at $19A4: X and A from the tail, Y from the walk's final cursor, V carried
+       from the last BIT / edge_x_offscreen, and N/Z/C from whichever tail op ended it. */
+    cpu.A = tailStyle;
+    cpu.X = sx;
+    cpu.Y = y;
+    cpu.V = vFlag;
+    if (exitViaCpx) {
+        uint8_t diff = (uint8_t)(sx - (uint8_t)math_hi);
+        cpu.N = (diff >> 7) & 1u;
+        cpu.Z = (sx == (uint8_t)math_hi);
+        cpu.C = 1;                                   /* CPX carry set (sx >= math_hi) */
+    } else {
+        cpu.N = 0;                                   /* the tail exits with bit 7 of A clear */
+        cpu.Z = (tailStyle == 0);
+        /* the tail's LDA leaves carry untouched: it is the last CPX's (0) if the loop ran,
+           else the carry the walk itself left. */
+        cpu.C = tailLooped ? 0 : walkCarry;
+    }
 }
 
 /* The 6502-ABI shim.  A is the target buffer's low byte, Y the side's end cursor, X the point
