@@ -203,3 +203,17 @@ volatile unsigned long g_geoHypot = 0;
 int g_geoSide = 0;
 }
 #endif
+
+/* ⭐⭐ ROADSPLIT counters — the "why phase 11 is 16%" tallies (probe.h §ROADSPLIT).  Defined
+   independently of REVS_PROBE so `make ROADSPLIT=1` on the HOST counts without the beam
+   machinery; the beam TIME split reuses probe_phase and so needs REVS_PROBE (PROBES=1). */
+#ifdef REVS_ROADSPLIT
+extern "C" {
+volatile unsigned long g_roadFrames = 0;
+volatile unsigned long g_roadSpans = 0;
+volatile unsigned long g_roadSpanLines = 0;
+volatile unsigned long g_roadCols = 0;
+volatile unsigned long g_roadFillLines = 0;
+volatile unsigned long g_roadMarkPts = 0;
+}
+#endif

@@ -2814,6 +2814,7 @@ static void surface_pass(uint8_t pass, uint8_t firstPoint)
    read four separate times by the 6502, so both are read from mem[] at every use. */
 static void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
 {
+    ROAD_COUNT(g_roadFrames);
     plot_ptr_lo = 0x80;              /* $1A20: every span plotter stores through ($70),Y */
 
     /* $1A24-$1A30 — the FAR half of the road.  The split is the horizon point in the 40..79
@@ -2827,8 +2828,10 @@ static void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
 
     /* Side 1 (the 40..79 half): its line map, then its two span passes.  $00 is the low byte
        of line_attr_0 (it patches the store), endCursorFar the stop cursor, farBase the start. */
+    ROAD_PHASE(ROAD_PHASE_FILL);
     fill_line_attr_core(0x00, endCursorFar, (uint8_t)farBase);
 
+    ROAD_PHASE(ROAD_PHASE_SPANS);
     surface_style_base = 0x00;
     surface_pass(0, road_split_index);
 
@@ -2839,17 +2842,21 @@ static void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
        flags from firstPoint, so only the value matters). */
     draw_surface_spans_core(1, (uint8_t)adc_step(horizon_index, 0x28, 0));
 
+    ROAD_PHASE(ROAD_PHASE_MARK);
     line_attr_0_limit = mark_side_surfaces(0x04);
 
     /* $1A60-$1A69 — and the NEAR half, whose split is the horizon point itself, floored at
        point 9 for the same reason.  (The 6502's `TAX` here is overwritten two instructions
        later by `LDX $51` with nothing reading X in between, so it is not reproduced.) */
+    ROAD_PHASE(11);                  /* the near-half clamp: enclosing-phase remainder */
     unsigned nearBase = horizon_index;
     road_split_index = (uint8_t)clamp_up_to(nearBase, 0x09);
 
     /* ...and $50 is the low byte of line_attr_1, endCursorNear the stop, nearBase the start. */
+    ROAD_PHASE(ROAD_PHASE_FILL);
     fill_line_attr_core(0x50, endCursorNear, (uint8_t)nearBase);
 
+    ROAD_PHASE(ROAD_PHASE_SPANS);
     shared_temp_8c  = 0x1C;
     surface_style_base = 0x10;
     surface_pass(2, horizon_index);
@@ -2857,7 +2864,9 @@ static void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     surface_style_base = 0x1C;
     surface_pass(3, road_split_index);
 
+    ROAD_PHASE(ROAD_PHASE_MARK);
     line_attr_1_limit = mark_side_surfaces(0x14);
+    ROAD_PHASE(11);                  /* reopen the enclosing phase: its remainder is the return */
 }
 
 /* The 6502-ABI shim.  draw_road takes no arguments — the frame's geometry reaches it entirely
@@ -3923,6 +3932,7 @@ void span_plot_core(const SpanPlotter* p, uint8_t accumulator, uint8_t column)
 {
     unsigned cellAddr, cell;
 
+    ROAD_COUNT(g_roadCols);               /* one column of one span — the view pipeline's leaf */
     bearing_lo = accumulator;             /* the DDA accumulator, parked across the call */
     if (!span_step_y(p->stepIn)) return;
     /* ⚠ CPY, not a comparison: on the abandon path below nothing else writes C, so this
@@ -4130,6 +4140,7 @@ void span_walk(const SpanArm* arm)
     if (!span_entry_decode(arm, mem[arm->operand], &col, &forced, &runTop)) return;
 
     for (;;) {
+        ROAD_COUNT(g_roadSpanLines);        /* one DDA scan line of this span */
         int startCol   = first ? col : 0;
         int force      = first && forced;   /* a computed entry plots its first column whole */
         int midAllowed = (startCol < 4);    /* ...and skips the half boundary if it is past it */
@@ -4268,6 +4279,7 @@ static void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     unsigned x;
     int i;
 
+    ROAD_COUNT(g_roadSpans);                /* one span pair handed to the rasteriser */
     PHP();                                  /* the caller's carry is an argument */
     surface_style_index = styleIndex;
     span_swapped        = 0;
@@ -4554,6 +4566,7 @@ static void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t fi
         for (;;) {
             CPY(mem[SPAN_LINE_END]);
             if (cpu.Z) break;
+            ROAD_COUNT(g_roadFillLines);       /* one scan line named in the line->point map */
             /* ⚠ the base is re-read every pass: the store can land on its own operand */
             bus_write((uint16_t)((mem[LINE_ATTR_OPERAND] | (mem[LINE_ATTR_OPERAND + 1] << 8))
                                  + cpu.Y), cpu.A);
@@ -4719,6 +4732,7 @@ static uint8_t mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint)
         CPX(span_end_index);              /* ⚠ its carry is the loop's only exit and escapes */
         if (cpu.C) break;
 
+        ROAD_COUNT(g_roadMarkPts);        /* one edge point examined for its surface class */
         cpu.Y = mem[EDGE_Y_TBL + cpu.X];
         if (cpu.Y < 0x50u) {
             /* ⚠ A is live at the routine's exit, and the marked-point skip path leaves this

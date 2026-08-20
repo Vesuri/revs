@@ -165,6 +165,15 @@ EXTRA_DEFINES += -DREVS_GEOSPLIT
 PROBE_SYMS_GEO = g_geoFrames g_geoPoints g_geoSubdiv g_geoBearing g_geoProject g_geoDiv g_geoHypot
 endif
 
+# ⭐⭐ `make ROADSPLIT=1 PROBES=1` — split draw_road (phase 11) into its three stage types
+# (ids 44-46: fill_line_attr / draw_surface_spans / mark_line_surfaces) AND count the tree's
+# leaf work per frame.  The "why is phase 11 ~16%" instrument — src/platform/probe.h §ROADSPLIT.
+# Six bracket transitions a frame, so quotable.  Read with amiga/roadsplit.gdb.
+ifdef ROADSPLIT
+EXTRA_DEFINES += -DREVS_ROADSPLIT
+PROBE_SYMS_ROAD = g_roadFrames g_roadSpans g_roadSpanLines g_roadCols g_roadFillLines g_roadMarkPts
+endif
+
 # `make NOUNITS=1` — ⚠⚠ THE PICTURE IS WRONG BY CONSTRUCTION.  The $7BE2 unit loop keeps its
 # iterations and loses its memory work, so `phase 24 with this on` is the per-line drivers plus
 # the bare loop.  A decomposition the VIEWSPLIT brackets cannot give honestly: bracketing 118
@@ -529,6 +538,9 @@ PROBE_SYMS += $(PROBE_SYMS_SHAPE)
 endif
 ifdef GEOSPLIT
 PROBE_SYMS += $(PROBE_SYMS_GEO)
+endif
+ifdef ROADSPLIT
+PROBE_SYMS += $(PROBE_SYMS_ROAD)
 endif
 ifdef HWTIME
 PROBE_SYMS += g_probeHwWrites g_probeHwReads g_probeHwTicks

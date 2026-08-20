@@ -284,3 +284,53 @@ extern int g_geoSide;                            /* which side the current walk 
 #define GEO_POINT()      ((void)0)
 #define GEO_PHASE(id)    ((void)0)
 #endif /* REVS_GEOSPLIT */
+
+/* ===========================================================================
+ * ⭐⭐ `make ROADSPLIT=1 PROBES=1` — WHY IS draw_road (phase 11) ~16% OF THE FRAME?
+ * ---------------------------------------------------------------------------
+ * The exact sibling of GEOSPLIT, for the view pipeline's SECOND producer.  draw_road's whole
+ * call tree is native C already, so — as with build_track_geometry — the row is not "another
+ * twin" and a single phase-11 figure cannot say WHERE the ~16% is.  Two decompositions in one
+ * run:
+ *
+ *   TIME  — three beam brackets carve phase 11 into its three stage types (ids 44-46), summed
+ *           across both road sides, so the ms land on the stage that owns them: the per-line
+ *           map (fill_line_attr) vs the span rasteriser (draw_surface_spans -> interp_edge ->
+ *           the DDA arms -> road_span_plot) vs the surface-class stamp (mark_line_surfaces).
+ *           SIX transitions a frame (three stages x two sides), so — like GEOSPLIT — it costs
+ *           nothing measurable and phase 11 keeps only the clamp/driver remainder.
+ *   COUNTS — the leaf tallies that explain the shares.  The rasteriser is (spans) x (scan
+ *           lines per span) x (columns per line), and the column is where road_span_plot does
+ *           its three bus accesses; the map is (lines filled); the stamp is (points).  This is
+ *           the "why", the way GEOSPLIT's point/divide counts were.  Platform-independent, so
+ *           `make ROADSPLIT=1` on the HOST counts too (no beam there; TIME is Amiga-only).
+ *
+ * ⚠ A measurement build only.  Ids 44-46 sit above every real phase (PROBE_PHASES holds them);
+ * read the TIME split with amiga/roadsplit.gdb, which sums 11 + 44 + 45 + 46. */
+#define ROAD_PHASE_FILL  44   /* fill_line_attr    — line -> edge point map (both sides) */
+#define ROAD_PHASE_SPANS 45   /* draw_surface_spans — the span rasteriser (all four passes) */
+#define ROAD_PHASE_MARK  46   /* mark_line_surfaces — line -> surface class (both sides)  */
+
+#ifdef REVS_ROADSPLIT
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern volatile unsigned long g_roadFrames;     /* draw_road calls (= main loop)            */
+extern volatile unsigned long g_roadSpans;       /* interp_edge calls — spans handed to raster */
+extern volatile unsigned long g_roadSpanLines;   /* span_walk outer iterations — DDA scan lines */
+extern volatile unsigned long g_roadCols;        /* road_span_plot(_2) calls — the leaf column  */
+extern volatile unsigned long g_roadFillLines;   /* fill_line_attr inner-loop line writes       */
+extern volatile unsigned long g_roadMarkPts;     /* mark_line_surfaces points stamped           */
+#ifdef __cplusplus
+}
+#endif
+#define ROAD_COUNT(c)    (++(c))
+#ifdef REVS_PROBE
+#define ROAD_PHASE(id)   probe_phase(id)
+#else
+#define ROAD_PHASE(id)   ((void)0)
+#endif
+#else
+#define ROAD_COUNT(c)    ((void)0)
+#define ROAD_PHASE(id)   ((void)0)
+#endif /* REVS_ROADSPLIT */

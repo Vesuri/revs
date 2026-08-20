@@ -98,33 +98,45 @@ STRAIGHT_TO_RACE=1 FIXED_RNG=1` + `EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=phase4_p
 loop iteration runs to a few hundred ms of bracketed work; **no framerate may ever be quoted from
 a PROBES build** — read `accounted NN.N%` first, it must be ~100 or the shares are fiction.
 
-| Share | Phase | Callee | Code |
-|---|---|---|---|
-| ~16% | 11 | `draw_road` (`$1A20`) | native, whole tree |
-| ~16% | 5 | `build_track_geometry` (`$24F6`) | native, whole tree |
-| ~10% | 34 | `view_paint_lines` painting phase 3 | native |
-| ~10% | 27 | `RevsScreen::decode()` | port |
-| ~7-8% each | 18, 4, 26, 24 | `fill_dash_edge_columns`, `apply_driving_model`, the 50 Hz drain (`irq1v_band_schedule`), `view_paint_lines` phase 1 | native |
-| ~4-5% | 33 | `view_paint_lines` painting phase 2 | native |
-| ~3% each | 28, 32 | the vblank spin, `race_main_loop`'s tail | port / native |
-| ≤2% each | 15, 3, 29, 14, and the rest of the 24-call body | remaining drivers and leaves | mixed |
+| Share | ms/frame | Phase(s) | Callee | Code |
+|---|---|---|---|---|
+| ~27% | 95 | 24+33+34+32 | **`view_paint_lines`** (the CONSUMER) | native, whole tree |
+| ~19% | 68 | 11+44-46 | **`draw_road`** (`$1A20`) | native, whole tree |
+| ~10% | 34 | 5 | **`build_track_geometry`** (`$24F6`) | native, whole tree |
+| ~10% | — | 27 | `RevsScreen::decode()` | port |
+| ~7-8% each | — | 18, 4, 26 | `fill_dash_edge_columns`, `apply_driving_model`, the 50 Hz drain (`irq1v_band_schedule`) | native |
+| ~3% each | — | 28 | the vblank spin | port |
+| ≤2% each | — | 15, 3, 29, 14, and the rest of the 24-call body | remaining drivers and leaves | mixed |
+
+Measured in ONE run (`ROADSPLIT=1 PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1`, warp, 30 s, driving),
+`accounted ≈ 100%` at ~2.9 FPS: **351 ms/frame total**, of which the three pipeline rows are
+`95 + 68 + 34 = 197 ms ≈ 56%`. ⚠ These are same-run shares — the three pipeline percentages are
+directly comparable to each other; the other rows are carried from an earlier `phase4_prof` run
+and are only ballpark against them (Rule 2 — never diff a share across builds).
 
 Two rows that are not phases and bound everything:
-- the **VERTB ISR**: ~1 ms per call, charged pro-rata to whichever phase it preempted, so it
-  appears in no row of its own.
+- the **VERTB ISR**: ~1.1 ms per call, ~17 fires per painted frame at ~2.9 FPS ≈ **19 ms/frame
+  (~5%)**, charged pro-rata to whichever phase it preempted, so it appears in no row of its own.
+  It is proportional to the open phase, so it does not distort the splits.
 - **one 50 Hz body tick ≈ 1.6-1.7 ms** of its 20 ms budget — faithful, and only a per-painted-frame
   table makes it look large (it runs once per DISPLAY FIELD, not once per painted frame; at low
   FPS one painted frame charges it many times over).
 
-⭐⭐ **The view pipeline (`build_track_geometry` → `draw_road` → `view_paint_lines`) is ~54% of
+⭐⭐ **The view pipeline (`build_track_geometry` → `draw_road` → `view_paint_lines`) is ~56% of
 the frame, and its whole call tree has no transliteration left in it.** The three ordinary
 levers — delete the interpreter, inline the flag helpers, de-macro to idiomatic C — are
-exhausted on this subsystem and none of them moved the table further (see Lessons below). What's
-left is not "another twin":
-1. **the REPRESENTATION** (`docs/direct-bitplane-plan.md`) — the decode's port overhead, and the
+exhausted on this subsystem and none of them moved the table further (see Lessons below).
+
+⭐⭐ **The fat is PER-ITEM SETUP, not bulk throughput — measured at every stage** (subsections
+below). Each stage costs what it does because of the machinery it runs *per point / per span /
+per line*, not because of the pixels it ultimately writes: `draw_road` spends 84% of itself in
+per-span rasteriser setup over just **43 spans / 60 columns** a frame; `view_paint_lines`' most
+expensive phase costs **142 µs/unit on 282 units** while its cheapest costs 17 µs/unit on 1443.
+The counts are tiny; the per-item constant is not. So what's left is not "another twin":
+1. **fewer POINTS / SPANS / LINES in the producers, or a cheaper per-item constant** — an
+   algorithmic question, not a transliteration one, and the biggest single lever now
+2. **the REPRESENTATION** (`docs/direct-bitplane-plan.md`) — the decode's port overhead, and the
    BBC-shaped buffer the consumer paints into which constrains it
-2. **fewer POINTS / fewer ACCESSES in the producers** — an algorithmic question, not a
-   transliteration one
 3. **asm, last**, and only against the post-representation arrangement
 
 ### ⭐⭐ Inside `build_track_geometry` (phase 5) — where its ~16% goes, and why
@@ -165,6 +177,55 @@ necessary?) and/or a cheaper per-point chain (the divide is central but not the 
 arctan lookup, the hypot approximation and the emit machinery share it). This is the "fewer POINTS
 / fewer ACCESSES" item above, now sized. Re-run `geosplit.gdb` **on a corner** (more subdivisions)
 before committing — this table is a near-straight section and undercounts the subdivision arm.
+
+### ⭐⭐ Inside `draw_road` (phase 11) — where its ~19% goes, and why
+
+Decomposed with `make ROADSPLIT=1 PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1` +
+`EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=roadsplit.gdb ./diag_run.sh 30` (probe.h §ROADSPLIT +
+`amiga/roadsplit.gdb` — three beam brackets 44/45/46 carve the phase, platform-independent leaf
+counters explain it). Silverstone practice, car driving. **A PROBES/warp share — never diff across builds.**
+
+**WHERE (time split of the ~68 ms/frame the pass costs):**
+
+| Stage (both road sides) | ms/frame | share of the pass |
+|---|---|---|
+| `fill_line_attr` (44) — line→point map | 8 | 13% |
+| **`draw_surface_spans` (45) — the span rasteriser** | **57** | **84%** |
+| `mark_line_surfaces` (46) — line→class | 1-2 | 2% |
+| clamp + return remainder (11) | ~0 | <1% |
+
+**The pass IS the span rasteriser — 84% of it.**
+
+**WHY (per-frame leaf counts, same run):**
+- **43 spans** handed to `interp_edge`, **49 DDA scan lines**, **60 columns** merged
+  (`road_span_plot`, 3 bus accesses each). **115 fill lines** in the line→point map, **15 mark points**.
+- ⚠⚠ **The inputs are tiny — 60 columns is ~180 bus accesses — so the cost is NOT the pixels and
+  NOT the bus-access count.** 57 ms over 60 columns is ~950 µs "per column", but that is a lie of
+  averaging: the columns are near-free and the money is the **per-span setup** — `interp_edge`'s
+  edge-interpolation arithmetic, run 43 times to place ~1.2 columns each. The lever here is the
+  per-span constant (fewer spans, or cheaper `interp_edge`), exactly as with the geometry walk's
+  per-point chain — not the DDA leaf, which the tiny column count proves is already cheap.
+
+### ⭐⭐ Inside `view_paint_lines` (phases 24/33/34/32) — where its ~27% goes, and why
+
+The CONSUMER — the single reader of the forty `$80`-spaced source blocks the two producers fill.
+Same run; the painting is split into three phases (probe.h §PROBE_VIEW_* carries UNITS = cells
+touched, RUNS = colour runs, LINES = scan lines painted, per phase).
+
+| Painting phase | ms/frame | units | runs | lines | µs per unit |
+|---|---|---|---|---|---|
+| phase 1 (24) | 25 | 1443 | 36 | 36 | **17** |
+| phase 2 (33) | 17 | 426 | 32 | 16 | 40 |
+| **phase 3 (34)** | **40** | **282** | **50** | **25** | **142** |
+| tail (32) | 11 | — | — | — | — |
+| **total** | **95** | 2151 | 118 | 77 | 44 avg |
+
+⚠⚠ **Phase 3 is the single most expensive view phase — 40 ms — on the FEWEST units (282).** It
+costs 8× per unit what phase 1 does (142 µs vs 17). With 282 units over 25 lines and 50 runs, its
+cost is the **per-line / per-run driver**, not the per-unit inner loop: ~1.6 ms per painted line.
+The lever is that driver (fewer lines, cheaper per-run setup), not the cell loop — the same
+per-item-setup shape as the other two stages. Phase 1, by contrast, is the honest throughput
+phase (1443 units at a flat 17 µs) and is already near its floor.
 
 ## Lessons — measurement
 

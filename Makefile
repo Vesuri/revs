@@ -137,6 +137,14 @@ CFLAGS   += -DREVS_GEOSPLIT
 CXXFLAGS += -DREVS_GEOSPLIT
 endif
 
+# ⭐ `make ROADSPLIT=1` — draw_road's per-frame leaf tallies (spans, DDA scan lines, columns,
+# fill lines, mark points), platform-independent so the host counts them for free
+# (src/platform/probe.h §ROADSPLIT).  The beam TIME split is Amiga-only; here it is the COUNTS half.
+ifdef ROADSPLIT
+CFLAGS   += -DREVS_ROADSPLIT
+CXXFLAGS += -DREVS_ROADSPLIT
+endif
+
 # C sources: the 6502 CPU model + the generated transliteration + native twins.
 # The generated files do not exist until `make gen`; wildcard so a fresh clone builds.
 C_SRCS := \
