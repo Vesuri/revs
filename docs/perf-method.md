@@ -85,9 +85,17 @@ reachable remains to be seen".
 
 **FPS baseline** (rendered, moving car): `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` +
 `fps_series.gdb`, warp, 30 s. Under `FIXED_RNG`+warp the row vector is deterministic frame for
-frame; the modal non-outlier rows read **2.92-3.02** (one reset-dip row per run, where the car
-leaves the track and re-parks — discard it). Never quote a number from a different build without
-re-running this exact control in the same session (Rule 3).
+frame; the modal non-outlier rows read **~3.5** (36 painted / 512 vbi at HEAD; one reset-dip row
+per run, where the car leaves the track and re-parks — discard it). ⚠ The ABSOLUTE drifts as the
+port changes (this note read 2.92-3.02 in an earlier session) — the number is only meaningful
+against an in-session control, so never quote a delta without re-running this exact control from a
+clean build in the same session (Rule 3).
+
+⭐ **The span-rasteriser cpu-removal (`interp_edge`+`draw_surface_spans`, HEAD `004a672`) is the
+first twin pass to MOVE this row: 34→36 painted (+5.9%), deterministic, two runs each side.** Why
+it broke the "de-macroing buys nothing" streak: it deleted `PHP`/`PLP` — real `mem[]` stack writes
+GCC cannot dead-store-eliminate — from a routine run ~43×/frame, not just dead flag-field stores.
+See Lessons — implementation.
 
 Goal 50, floor 25: **rendered, the port is roughly an order of magnitude short of the floor.**
 
@@ -123,9 +131,13 @@ Two rows that are not phases and bound everything:
   FPS one painted frame charges it many times over).
 
 ⭐⭐ **The view pipeline (`build_track_geometry` → `draw_road` → `view_paint_lines`) is ~56% of
-the frame, and its whole call tree has no transliteration left in it.** The three ordinary
-levers — delete the interpreter, inline the flag helpers, de-macro to idiomatic C — are
-exhausted on this subsystem and none of them moved the table further (see Lessons below).
+the frame, and its whole call tree has no transliteration left in it.** Of the ordinary levers,
+delete-the-interpreter, inline-the-flag-helpers and de-macro-to-idiomatic-C moved the table
+nothing — but a FOURTH did: **removing the 6502 stack ops (`PHP`/`PLP`) the idiom forced into the
+hot span setup cut real `mem[]` writes and bought ~+6% on `draw_road`'s row** (`interp_edge`, HEAD
+`004a672`). The distinction that matters: a flag-field write GCC already elides; a `mem[]` write it
+cannot. What remains is the same class — fewer per-item `mem[]` accesses — plus the representation
+(see Lessons below).
 
 ⭐⭐ **The fat is PER-ITEM SETUP, not bulk throughput — measured at every stage** (subsections
 below). Each stage costs what it does because of the machinery it runs *per point / per span /
@@ -318,6 +330,16 @@ phase (1443 units at a flat 17 µs) and is already near its floor.
   code.** A transpiler pass or a hand de-macroing pass aimed at the same target buys nothing
   measurable — the only place a flag write survives is bracketing an opaque call, which is exactly
   where a liveness-based pass also has to assume the callee reads everything.
+- ⭐⭐ **But a `PHP`/`PLP` is a `mem[]` write, and GCC canNOT eliminate it — so removing the 6502
+  STACK OPS an idiom forced into a hot routine is a real win where de-macroing was not.** The
+  span-rasteriser setup (`interp_edge`) took the caller's carry via `PHP`/`PLP` around its
+  publish-vs-draw decision; turning that carry into an explicit `publishOnly` argument deleted a
+  stack write + read on every one of ~43 calls/frame and moved the `draw_road` FPS row 34→36
+  (+5.9%, deterministic, two runs each side; HEAD `004a672`). The rule: **de-macroing dead FLAGS is
+  cosmetic (buys 0), but deleting the `mem[]` traffic the 6502 idiom forced — `PHP`/`PLP`, a
+  scratch-cell round-trip, an indirect that could be a local — is the access-reduction lever and it
+  pays.** Tell them apart by asking whether the store lands in the `cpu` struct (elided) or in
+  `mem[]` (not). Measured with an in-session fps_series A/B (Rule 1), not a PROBES share.
 
 ## Rule 1 — the ONLY way to quote a framerate
 
