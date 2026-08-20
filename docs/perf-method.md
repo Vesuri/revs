@@ -97,6 +97,15 @@ it broke the "de-macroing buys nothing" streak: it deleted `PHP`/`PLP` — real 
 GCC cannot dead-store-eliminate — from a routine run ~43×/frame, not just dead flag-field stores.
 See Lessons — implementation.
 
+⭐ **The follow-up leaf pass (`span_plot_core`/`span_end_marker`/`road_span_advance` + the four
+statics cpu-free, HEAD `f969843`) added a further +2.5%: 35.7→36.6 painted/512vbi (3.49→3.57 FPS),
+deterministic and repeatable, two clean-build runs each side in one session.** Right at the quotable
+edge — one painted frame is ~2.7% of a row, but 10-11 non-outlier rows resolve to ~0.3% and the row
+vectors separate cleanly (control rows cluster 35-36, HEAD 36-37). Same mechanism as `004a672`: the
+gain is fewer `mem[]` accesses in the per-cell inner leaf (`span_plot_core` is `always_inline`, run
+per column per scan line), NOT the flag-de-macroing, which GCC already elided. The two span-rasteriser
+passes together moved this row 34→36.6 (~+7.6%).
+
 Goal 50, floor 25: **rendered, the port is roughly an order of magnitude short of the floor.**
 
 **Where the time goes** — `make gen` + `cd amiga && make clean && make -j4 PROBES=1
