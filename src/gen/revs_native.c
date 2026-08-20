@@ -3743,13 +3743,13 @@ void project_point_from(void)
 
 /* One Y-step slot.  Three opcodes are legal and anything else is a byte the model cannot
    execute, so it traps exactly where the transliteration does — which is an EXIT, and the
-   caller has to take it as one.  Returns 0 on the trap. */
-static int span_step_y(unsigned slot)
+   caller has to take it as one.  Steps *y (INY/DEY/NOP); returns 0 on the trap, *y untouched. */
+static int span_step_y(unsigned slot, uint8_t *y)
 {
     switch (mem[slot]) {
-    case OP_DEY: DEY(); return 1;
-    case OP_INY: INY(); return 1;
-    case OP_NOP: NOP(); return 1;
+    case OP_DEY: (*y)--; return 1;
+    case OP_INY: (*y)++; return 1;
+    case OP_NOP:         return 1;
     default:     platform_smc_unhandled(slot, mem[slot]); return 0;
     }
 }
@@ -3786,21 +3786,23 @@ void abs16_math(void)
    carry there ends the column.
 
    ⚠ Its exit N/Z come from reloading X, not from the compare — the compare's own N/Z are
-   dead by then.  A and X are preserved (that is the whole reason for the math_lo/math_hi
-   round trip), so the routine is a pure predicate on Y.
+   dead by then, and no caller reads them (both plotters and both markers consult only the
+   CARRY).  A and X are preserved — the whole point of the 6502's math_lo/math_hi round trip,
+   which the pure-C core simply does not need — so the routine is a pure predicate on Y.
    --------------------------------------------------------------------------- */
+static int road_span_advance_core(uint8_t y)
+{
+    /* CMP then a CLC on equal: carry SET while the scan line is still past the block's first
+       line, CLEAR the moment it reaches (or precedes) it.  C = (Y > dash_block_starts[block]). */
+    return y > mem[DASH_BLOCK_STARTS + mem[SPAN_BLOCK]];
+}
+
 void road_span_advance(void)
 {
-    math_lo = cpu.A;
-    math_hi = cpu.X;
-
-    cpu.X = mem[SPAN_BLOCK];
-    cpu.A = cpu.Y;                                  /* TYA: N/Z here are overwritten below */
-    CMP(mem[DASH_BLOCK_STARTS + cpu.X]);
-    if (cpu.Z) cpu.C = 0;                           /* exactly ON the block's first line */
-
-    LDA(math_lo);
-    LDX(math_hi);
+    /* 6502-ABI shim: only the carry escapes; A/X/Y are preserved (the core never touches them)
+       and the exit N/Z/V are dead.  math_lo/math_hi are NOT written — they were the 6502's
+       register spill, an implementation detail the validate fixture ignores. */
+    cpu.C = road_span_advance_core(cpu.Y);
 }
 
 /* ---------------------------------------------------------------------------
@@ -3819,49 +3821,53 @@ void road_span_advance(void)
    ⚠ X is CLOBBERED here — $2F2E loads view_yaw_offset into it — and Y by the descending
    arm's step.  Both are live at the plotters' exit, so both are part of the contract.
    --------------------------------------------------------------------------- */
-static void span_cap_line(void)
+/* $2F23's per-circuit "is this scan line already classified?" test — the one operation in the
+   surface cap whose answer genuinely leaves an external routine.  Silverstone reads
+   view_line_surface directly ($2F23 == LDA abs,Y); an expansion circuit runs its own hook,
+   whose Z flag is the answer.  This is the sanctioned flag-escape seam: the cpu.h read is
+   isolated in a named helper right at the external call.  Returns 1 when Z is set (the line is
+   still empty — go on and stamp it), 0 when clear (already classified — leave it), -1 on a trap. */
+static int span_cap_line_slot_z(uint8_t y)
+{
+    if (mem[0x2F23] == 0xB9) {                       /* unpatched: Silverstone, LDA $5F60,Y */
+        return mem[VIEW_LINE_SURFACE + y] == 0;      /* Z set iff the entry is still zero */
+    }
+    if (mem[0x2F23] == 0x20) {                        /* an expansion circuit's own hook (JSR) */
+        uint16_t hook = (uint16_t)(mem[0x2F24] | (mem[0x2F25] << 8));
+        if (hook >= 0x5300 && hook <= 0x5A25) {
+            /* Reproduce the 6502 register context $2F19-$2F22 hands the hook: A = span_swapped
+               (from the LDA the BMI branched on), Y = this scan line (after the DEY), N/Z from
+               that DEY.  The hook is circuit code that reads them and answers through Z. */
+            cpu.A = span_swapped; cpu.Y = y;
+            cpu.N = (y >> 7) & 1; cpu.Z = (y == 0);
+            revs_track_hook(hook);
+            return cpu.Z ? 1 : 0;
+        }
+        platform_smc_unhandled(0x2F23, hook); return -1;
+    }
+    platform_smc_unhandled(0x2F23, mem[0x2F23]); return -1;
+}
+
+static void span_cap_line(uint8_t y)
 {
     unsigned code;
 
-    /* ⚠ `LDA span_swapped` and not a bit test: A really is live out of the two trap arms
-       below, so the loaded byte is what the caller gets back on either of them. */
-    LDA(span_swapped);
-    if (cpu.N) {                         /* $2F19-$2F1B: the walk ran the other way */
-        DEY();
-        /* ⚠ Per-circuit SMC: Silverstone reads view_line_surface here, an expansion circuit
-           calls its own hook instead.  Unconditional — a byte that is neither is not an
-           instruction, so it traps whatever the comparison would have said. */
-        if (mem[0x2F23] == 0xB9) {
-            LDA(mem[VIEW_LINE_SURFACE + cpu.Y]);
-        } else if (mem[0x2F23] == 0x20) {
-            uint16_t hook = (uint16_t)(mem[0x2F24] | (mem[0x2F25] << 8));
-            if (hook >= 0x5300 && hook <= 0x5A25) revs_track_hook(hook);
-            else { platform_smc_unhandled(0x2F23, hook); return; }
-        } else {
-            platform_smc_unhandled(0x2F23, mem[0x2F23]);
-            return;
-        }
-        if (!cpu.Z) return;              /* the line already has a class — leave it */
-        LDA(span_cap_surface_b);
+    if (span_swapped & 0x80u) {          /* $2F19-$2F1B: the walk ran the other way (BMI) */
+        y--;
+        int z = span_cap_line_slot_z(y);
+        if (z <= 0) return;              /* trapped, or the line already has a class — leave it */
+        code = span_cap_surface_b;
     } else {
-        LDA(span_cap_surface_a);
+        code = span_cap_surface_a;
     }
 
-    CPY(0x50u);                          /* $2F2A — off the bottom of the view */
-    if (cpu.C) return;
+    if (y >= 0x50u) return;              /* $2F2A CPY #$50 — off the bottom of the view */
 
-    cpu.X = view_yaw_offset;             /* ⚠ clobbers X, and the caller's X is live */
-    CPX(0x28u);                          /* ...whose carry then picks the flatten arm */
-    code = cpu.A;
-    if (cpu.C) {
+    if (view_yaw_offset >= 0x28u) {      /* $2F31 CPX #$28 with X = view_yaw_offset */
         /* $2F35-$2F3F — keep a class of 3, flatten anything else to a multiple of 4. */
-        math_lo = (uint8_t)code;
-        AND(0x03u);
-        CMP(0x03u);
-        LDA(math_lo);
-        if (!cpu.C) AND(0xFCu);
+        if ((code & 0x03u) != 0x03u) code &= 0xFCu;
     }
-    mem[VIEW_LINE_SURFACE + cpu.Y] = cpu.A;
+    mem[VIEW_LINE_SURFACE + y] = (uint8_t)code;
 }
 
 /* $2F7E — the plotter has reached the span's end line.  `TSX/INX/INX/TXS` drops the ARM's
@@ -3869,12 +3875,10 @@ static void span_cap_line(void)
    whole eight-column chain is abandoned.  The model keeps return addresses on the C stack,
    so the drop is a flag (cpu.h's UNWIND) that every caller in the chain consults.
    ⚠ X really is clobbered by the idiom — it comes back as S+2 — and the differential sees it. */
-static void span_abandon_chain(void)
+static void span_abandon_chain(uint8_t y)
 {
-    TSX(); INX(); INX();
-    UNWIND_SET();
-    LDA(span_cap_pending);
-    if (!cpu.Z) span_cap_line();
+    UNWIND_SET();                        /* the TSX/INX/INX/TXS two-level return, modelled */
+    if (span_cap_pending != 0) span_cap_line(y);
 }
 
 /* Did the leaf just abandon the chain?  The arms consume the flag exactly as the generated
@@ -3929,61 +3933,68 @@ static const SpanPlotter SPAN_PLOT_2 = {
    constant at both call sites, so inlining turns every `p->slot` from a memory operand into
    an immediate and the whole struct disappears; left out of line GCC passes a pointer and
    re-loads five fields per call, in the routine that runs eight times per scan line.
-   Same rule as REVS_FLAG_OP above — measured, not assumed (docs/perf-method.md). */
+   Same rule as REVS_FLAG_OP above — measured, not assumed (docs/perf-method.md).
+
+   Pure C: no cpu struct.  The DDA accumulator is the `accumulator` parameter (it is only ever
+   handed straight back to the caller — the 6502 parked it in bearing_lo across the call, but
+   nothing here reads it, so the spill is gone).  `*y` is the scan-line counter, stepped in
+   place; `*carry` is the DDA carry threaded column-to-column (in, and out); `*abandoned` tells
+   the caller this span hit its predecessor and the chain has been unwound.
+
+   Carry out: 0 on a normal exit; on either Y-step SMC-trap the pre-step compare's carry stands
+   (that is what the 6502's CPY/CMP left in C when the trapping slot never ran); unchanged on
+   the entry-step trap.  On the abandon path the carry, y and accumulator are all dead. */
 static inline __attribute__((always_inline))
-void span_plot_core(const SpanPlotter* p, uint8_t accumulator, uint8_t column)
+void span_plot_core(const SpanPlotter* p, uint8_t accumulator, uint8_t column,
+                    uint8_t *y, unsigned *carry, int *abandoned)
 {
-    unsigned cellAddr, cell;
+    unsigned cellAddr, cell, a, preC;
 
     ROAD_COUNT(g_roadCols);               /* one column of one span — the view pipeline's leaf */
-    bearing_lo = accumulator;             /* the DDA accumulator, parked across the call */
-    if (!span_step_y(p->stepIn)) return;
-    /* ⚠ CPY, not a comparison: on the abandon path below nothing else writes C, so this
-       compare's carry is what the caller gets back. */
-    CPY(mem[SPAN_LINE_END]);
-    if (cpu.Z) { span_abandon_chain(); return; }
+    (void)accumulator;
+    *abandoned = 0;
+    if (!span_step_y(p->stepIn, y)) return;        /* entry slot trapped: carry_in stands */
+    if (*y == mem[SPAN_LINE_END]) { span_abandon_chain(*y); *abandoned = 1; return; }
 
-    /* Which source block feeds this scan line, into the pass's surface_edge buffer.  (A and
-       its N/Z are dead here — both the empty and occupied arms below reassign A first.) */
-    bus_write((uint16_t)((mem[p->destLo] | (mem[p->destHi] << 8)) + cpu.Y), mem[SPAN_BLOCK]);
+    /* Which source block feeds this scan line, into the pass's surface_edge buffer. */
+    mem[(uint16_t)((mem[p->destLo] | (mem[p->destHi] << 8)) + *y)] = mem[SPAN_BLOCK];
 
-    cellAddr = (unsigned)(mem[p->cellPtr] | (mem[(uint8_t)(p->cellPtr + 1)] << 8)) + cpu.Y;
-    cell     = bus_read((uint16_t)cellAddr);
+    cellAddr = (unsigned)(mem[p->cellPtr] | (mem[(uint8_t)(p->cellPtr + 1)] << 8)) + *y;
+    cell     = mem[(uint16_t)cellAddr];
 
     if (cell == 0) {
-        cpu.A = mem[COLOUR_PATTERN + column];       /* an empty cell takes the pattern whole */
+        a    = mem[COLOUR_PATTERN + column];        /* an empty cell takes the pattern whole */
+        preC = (*y >= mem[SPAN_LINE_END]);          /* CPY(SPAN_LINE_END): y != end here, so y > end */
     } else {
-        cpu.A = (uint8_t)cell;
-        /* ⚠ CPY again, not a comparison: if the exit Y-step slot then traps, this compare's
-           carry is the routine's exit C. */
-        CPY(0x2Cu);
-        if (!cpu.C) {
-            road_span_advance();
-            if (!cpu.C) {                            /* reached the block's first line */
-                LDA(bearing_lo);
-                if (span_step_y(p->stepOut)) cpu.C = 0;
-                return;
-            }
+        if (*y < 0x2Cu && !road_span_advance_core(*y)) {   /* reached the block's first line */
+            span_step_y(p->stepOut, y);      /* road_span_advance left C=0, and a trap here keeps it */
+            *carry = 0u;
+            return;
         }
-        /* ⚠ CMP, not `==`: it writes C, and on the exit slot's trap path that C is what the
-           caller gets.  AND/ORA below touch only N/Z, which the closing LDA overwrites. */
-        CMP(0x55u);
-        if (cpu.Z) cpu.A = 0;                        /* "all four columns" reads as empty */
-        cpu.A = (uint8_t)((cpu.A & mem[COLOUR_PATTERN_AND + column])
-                          | mem[COLOUR_PATTERN_OR + column]);
-        if (cpu.A == 0) cpu.A = 0x55u;               /* ...and is substituted back */
+        preC = (cell >= 0x55u);                     /* CMP(0x55): carry survives to the exit trap */
+        a    = (cell == 0x55u) ? 0u : cell;         /* "all four columns" reads as empty */
+        a    = (a & mem[COLOUR_PATTERN_AND + column]) | mem[COLOUR_PATTERN_OR + column];
+        if (a == 0) a = 0x55u;                      /* ...and is substituted back */
     }
 
-    bus_write((uint16_t)cellAddr, cpu.A);
-    bus_write((uint16_t)((mem[p->linePtr] | (mem[(uint8_t)(p->linePtr + 1)] << 8)) + cpu.Y),
-              bearing_hi);
+    mem[(uint16_t)cellAddr] = (uint8_t)a;
+    mem[(uint16_t)((mem[p->linePtr] | (mem[(uint8_t)(p->linePtr + 1)] << 8)) + *y)] = bearing_hi;
 
-    LDA(bearing_lo);
-    if (span_step_y(p->stepOut)) cpu.C = 0;
+    *carry = span_step_y(p->stepOut, y) ? 0u : preC;
 }
 
-void road_span_plot(void)   { span_plot_core(&SPAN_PLOT_1, cpu.A, cpu.X); }
-void road_span_plot_2(void) { span_plot_core(&SPAN_PLOT_2, cpu.A, cpu.X); }
+void road_span_plot(void)
+{
+    uint8_t y = cpu.Y; unsigned carry = cpu.C; int ab;
+    span_plot_core(&SPAN_PLOT_1, cpu.A, cpu.X, &y, &carry, &ab);
+    cpu.Y = y; cpu.C = carry ? 1 : 0;               /* A echoes the accumulator unchanged */
+}
+void road_span_plot_2(void)
+{
+    uint8_t y = cpu.Y; unsigned carry = cpu.C; int ab;
+    span_plot_core(&SPAN_PLOT_2, cpu.A, cpu.X, &y, &carry, &ab);
+    cpu.Y = y; cpu.C = carry ? 1 : 0;
+}
 
 /* ---------------------------------------------------------------------------
    $2FC0  span_end_marker_p1  (twin #29)  and  $2FD7  span_end_marker_p2  (twin #30)
@@ -4001,32 +4012,37 @@ void road_span_plot_2(void) { span_plot_core(&SPAN_PLOT_2, cpu.A, cpu.X); }
    plot and only the untouched $80 gets a terminator.  A is preserved across the store by the
    TAX/TXA pair, which is also what makes X's exit value $80 rather than the pattern byte.
    --------------------------------------------------------------------------- */
-static void span_end_marker(unsigned slot, unsigned ptr)
+static void span_end_marker(unsigned slot, unsigned ptr, uint8_t y,
+                            uint8_t *colMark, unsigned *carry)
 {
     switch (mem[slot]) {
-    case OP_RTS:      return;                    /* switched off for this span */
-    case OP_CPX_IMM:  CPX(0x80u); break;
+    case OP_RTS:      return;                    /* switched off: colMark, A, carry untouched */
+    case OP_CPX_IMM:  break;
     default:          platform_smc_unhandled(slot, mem[slot]); return;
     }
 
-    if (cpu.Z) {                                 /* the column never plotted anything */
+    if (*colMark == 0x80u) {                     /* the column never plotted anything */
         int atEnd = 1;
-        if (cpu.Y < 0x2Cu) {
-            road_span_advance();
-            atEnd = cpu.C;                       /* still past the block's first line */
-        }
-        if (atEnd) {
-            TAX();                               /* park A — the store needs a constant */
-            bus_write((uint16_t)((mem[ptr] | (mem[(uint8_t)(ptr + 1)] << 8)) + cpu.Y), 0xFFu);
-            TXA();
-        }
+        if (y < 0x2Cu) atEnd = road_span_advance_core(y);   /* still past the first line */
+        if (atEnd)
+            mem[(uint16_t)((mem[ptr] | (mem[(uint8_t)(ptr + 1)] << 8)) + y)] = 0xFFu;
     }
-    LDX(0x80u);
-    cpu.C = 0;
+    *colMark = 0x80u;
+    *carry   = 0u;
 }
 
-void span_end_marker_p1(void) { span_end_marker(SLOT_MARKER_P1, MEM_plot_ptr_lo); }
-void span_end_marker_p2(void) { span_end_marker(SLOT_MARKER_P2, MEM_plot_ptr2_lo); }
+void span_end_marker_p1(void)
+{
+    uint8_t colMark = cpu.X; unsigned carry = cpu.C;
+    span_end_marker(SLOT_MARKER_P1, MEM_plot_ptr_lo, cpu.Y, &colMark, &carry);
+    cpu.X = colMark; cpu.C = carry ? 1 : 0;
+}
+void span_end_marker_p2(void)
+{
+    uint8_t colMark = cpu.X; unsigned carry = cpu.C;
+    span_end_marker(SLOT_MARKER_P2, MEM_plot_ptr2_lo, cpu.Y, &colMark, &carry);
+    cpu.X = colMark; cpu.C = carry ? 1 : 0;
+}
 
 /* ---------------------------------------------------------------------------
    $2D17 draw_span_shallow_fwd  (twin #31)   $2D9A draw_span_shallow_rev  (#32)
@@ -4112,33 +4128,69 @@ static int span_entry_decode(const SpanArm* arm, uint8_t offset,
 
 /* $2F12-$2F18 — the two descending arms' shared exit: replay the plotters' Y step once more
    (the opcode is copied out of road_span_plot's own entry slot) and cap the run's last line. */
-static void span_walk_cap(void)
+static void span_walk_cap(uint8_t y)
 {
-    LDA(mem[SLOT_STEP_P1_IN]);
-    mem[SLOT_STEP_CAP] = cpu.A;
-    if (!span_step_y(SLOT_STEP_CAP)) return;
-    span_cap_line();
+    mem[SLOT_STEP_CAP] = mem[SLOT_STEP_P1_IN];   /* copy the plotter's own Y-step opcode */
+    if (!span_step_y(SLOT_STEP_CAP, &y)) return;
+    span_cap_line(y);
 }
 
-/* Inlined for the same reason, and it buys more: `arm->rev` and `arm->steep` become
-   constants, so the four specialisations lose the direction tests from their inner loops
-   entirely rather than re-evaluating them per column. */
+/* ⭐ THE LEAVES OF THE SPAN WALK, all pure C now — no cpu register or flag carries state across
+   a statement here or in span_walk below.  These three adapters just pick the plotter/marker
+   descriptor from the arm's direction and relay span_walk's own locals by pointer; the leaf
+   cores (span_plot_core / span_end_marker / span_walk_cap) own the actual work.  Their 6502-ABI
+   shims (road_span_plot, span_end_marker_p1, …) still exist for the draw_span_*__t6502 oracles
+   to call, so this seam changes no drawn byte.
+   What span_walk needs BACK from a plot is three facts: the scan line the plotter stepped to
+   (y), whether the chain abandoned, and the plotter's EXIT CARRY — which is 0 on the ordinary
+   path but not on the block-first-line / trapped-step exits, and the DDA feeds it straight into
+   the next add (the 6502 did `ADC` right after the plot with the plotter's C still live). */
+static void sw_plot(int usePlot2, uint8_t acc, uint8_t column,
+                    uint8_t *y, int *abandoned, unsigned *carry)
+{
+    span_plot_core(usePlot2 ? &SPAN_PLOT_2 : &SPAN_PLOT_1, acc, column, y, carry, abandoned);
+    /* The abandon path set the two-level-return flag (so the draw_span oracle sees it too);
+       clear it here, once per plot, exactly as the oracle's `if (UNWIND_TAKEN()) return` does. */
+    if (*abandoned) (void)span_chain_abandoned();
+}
+
+/* The half/end markers test colMark against $80 ("this column plotted nothing") and reset it,
+   so colMark is in/out; the marker's exit carry is the carry-in to the next column's DDA add
+   (0 when it did work, unchanged when its slot is RTS), so it is threaded too. */
+static void sw_marker(int p2, uint8_t *colMark, uint8_t y, unsigned *carry)
+{
+    span_end_marker(p2 ? SLOT_MARKER_P2 : SLOT_MARKER_P1,
+                    p2 ? MEM_plot_ptr2_lo : MEM_plot_ptr_lo, y, colMark, carry);
+}
+
+/* The descending arms' shared exit: cap the last line at the scan line y left off on. */
+static void sw_walk_cap(uint8_t y) { span_walk_cap(y); }
+
+/* Inlined so `arm->rev` and `arm->steep` become constants and the four specialisations lose
+   the direction tests from their inner loops.  The DDA is a plain binary fixed-point walk:
+   `acc` is the fractional accumulator (a byte), `carry` its carry between columns, both pure
+   C.  ⭐ This is legal because the render path is only ever entered with D=0 (docs/static-map
+   §Decimal mode: no SED on build_track_geometry→draw_road), so the 6502 byte adc/sbc here
+   computed nothing a binary add/subtract does not. */
 static inline __attribute__((always_inline))
-void span_walk(const SpanArm* arm)
+void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine)
 {
     int col, forced, runTop, first = 1;
+    uint8_t y = startLine;              /* the scan line the plotters step through Y */
+    uint8_t colMark = 0x80u;            /* "this column has plotted nothing yet" (shallow) */
+    uint8_t acc;
+    unsigned carry;
+    int abandoned;
 
     /* Read this sub-column phase's entry offset and write it over the chain's branch operand.
        ⚠ That store is a real mem[] write and the differential sees it, so it stays even
        though the twin then decodes the offset rather than executing it. */
-    mem[arm->operand] = mem[arm->table + cpu.X];
-
-    if (!arm->steep) cpu.X = 0x80u;     /* "this column has plotted nothing yet" */
+    mem[arm->operand] = mem[arm->table + phase];
 
     /* The accumulator starts at MINUS the delta the DDA gives back, so the first carry is
-       what lands the first pixel. */
-    cpu.A = (uint8_t)adc_step((uint8_t)~mem[arm->subtrahend], 0x01u, 0);
-    cpu.C = 0;
+       what lands the first pixel:  ~sub + 1 == -sub. */
+    acc   = (uint8_t)(0u - (unsigned)mem[arm->subtrahend]);
+    carry = 0;
 
     if (!span_entry_decode(arm, mem[arm->operand], &col, &forced, &runTop)) return;
 
@@ -4149,11 +4201,11 @@ void span_walk(const SpanArm* arm)
         int midAllowed = (startCol < 4);    /* ...and skips the half boundary if it is past it */
         int i;
 
-        /* ⚠ The shallow arms only.  A steep arm reaches its own top with X holding the last
-           column it plotted, and nothing reads X before the next `LDX #k` — so planting $80
-           there would be observationally identical, and the sabotage that does it PASSES.
-           The shallow arms are different because their end markers test X against $80.  */
-        if (!arm->steep && (!first || runTop)) LDX(0x80u);
+        /* ⚠ The shallow arms only.  A steep arm reaches its own top with the column mark
+           holding the last column it plotted, and nothing reads it before the next set — so
+           resetting it there would be observationally identical, and the sabotage that does
+           it PASSES.  The shallow arms are different because their end markers test it. */
+        if (!arm->steep && (!first || runTop)) colMark = 0x80u;
 
         for (i = startCol; i < 8; i++) {
             int column   = arm->rev ? 3 - (i & 3) : (i & 3);
@@ -4163,56 +4215,61 @@ void span_walk(const SpanArm* arm)
                Skipped when the entry landed past it, which is the whole point of the
                computed entry. */
             if (i == 4 && midAllowed) {
-                if (!arm->steep) { if (arm->rev) span_end_marker_p1(); else span_end_marker_p2(); }
+                if (!arm->steep) sw_marker(arm->rev ? 0 : 1, &colMark, y, &carry);
                 mem[SPAN_BLOCK] = (uint8_t)(mem[SPAN_BLOCK] + (arm->rev ? -1 : 1));
             }
 
             if (arm->steep) {
-                /* Y-major: the same column, again and again, until the DDA carries. */
+                /* Y-major: the same column, again and again, until the DDA carries.  The plot
+                   comes first, and its exit carry (normally 0) is the carry-in to the adc — so
+                   the line's CPX carry-in is overwritten before it is used, as on the 6502. */
                 for (;;) {
-                    LDX((uint8_t)column);
-                    if (usePlot2) road_span_plot_2(); else road_span_plot();
-                    if (span_chain_abandoned()) return;
-                    cpu.A = (uint8_t)adc_step(cpu.A, mem[arm->addend], cpu.C);
-                    if (cpu.C) break;
+                    sw_plot(usePlot2, acc, (uint8_t)column, &y, &abandoned, &carry);
+                    if (abandoned) return;
+                    { unsigned s = (unsigned)acc + mem[arm->addend] + carry;
+                      acc = (uint8_t)s; carry = s >> 8; }
+                    if (carry) break;
                 }
-                cpu.A = (uint8_t)sbc_step(cpu.A, mem[arm->subtrahend], cpu.C);
+                { int d = (int)acc - mem[arm->subtrahend] - (int)(1u - carry);
+                  acc = (uint8_t)d; carry = (d >= 0); }
             } else {
                 /* X-major: one column per step, and only a carry lands a pixel.  The very
                    first column of a computed entry is plotted unconditionally. */
                 if (force) force = 0;
                 else {
-                    cpu.A = (uint8_t)adc_step(cpu.A, mem[arm->addend], cpu.C);
-                    if (!cpu.C) continue;
-                    cpu.A = (uint8_t)sbc_step(cpu.A, mem[arm->subtrahend], cpu.C);
+                    { unsigned s = (unsigned)acc + mem[arm->addend] + carry;
+                      acc = (uint8_t)s; carry = s >> 8; }
+                    if (!carry) continue;
+                    { int d = (int)acc - mem[arm->subtrahend] - (int)(1u - carry);
+                      acc = (uint8_t)d; carry = (d >= 0); }
                 }
-                LDX((uint8_t)column);
-                if (usePlot2) road_span_plot_2(); else road_span_plot();
-                if (span_chain_abandoned()) return;
+                colMark = (uint8_t)column;
+                sw_plot(usePlot2, acc, (uint8_t)column, &y, &abandoned, &carry);
+                if (abandoned) return;
+                /* carry is now the plotter's exit carry, the carry-in to the next column's adc */
             }
         }
 
-        if (!arm->steep) { if (arm->rev) span_end_marker_p2(); else span_end_marker_p1(); }
+        if (!arm->steep) sw_marker(arm->rev ? 1 : 0, &colMark, y, &carry);
 
         /* One scan line down (or up): the three screen pointers and the source block move
            together, and plot_ptr2_hi is the one the bound is measured on. */
         if (arm->rev) { plot_ptr2_hi--; plot_ptr_hi--; plot_ptr3_hi--; mem[SPAN_BLOCK]--; }
         else          { plot_ptr2_hi++; plot_ptr_hi++; plot_ptr3_hi++; mem[SPAN_BLOCK]++; }
 
-        LDX(plot_ptr2_hi);
-        CPX(arm->bound);
-        if (arm->rev) cpu.C = 0;        /* $2E1A / $2F0F — the descending arms clear it */
-        if (cpu.Z) break;
+        if (plot_ptr2_hi == arm->bound) break;                  /* CPX #bound, on Z */
+        carry = arm->rev ? 0u : (plot_ptr2_hi >= arm->bound);   /* the CPX carry into next line
+                                                                   ($2E1A/$2F0F clear it for rev) */
         first = 0;
     }
 
-    if (arm->rev) span_walk_cap();      /* $2D9A's `JMP $2F12`, and $2E99's fall-through */
+    if (arm->rev) sw_walk_cap(y);       /* $2D9A's `JMP $2F12`, and $2E99's fall-through */
 }
 
-void draw_span_shallow_fwd(void) { span_walk(&ARM_SHALLOW_FWD); }
-void draw_span_shallow_rev(void) { span_walk(&ARM_SHALLOW_REV); }
-void draw_span_steep_fwd(void)   { span_walk(&ARM_STEEP_FWD);   }
-void draw_span_steep_rev(void)   { span_walk(&ARM_STEEP_REV);   }
+void draw_span_shallow_fwd(void) { span_walk(&ARM_SHALLOW_FWD, cpu.X, cpu.Y); }
+void draw_span_shallow_rev(void) { span_walk(&ARM_SHALLOW_REV, cpu.X, cpu.Y); }
+void draw_span_steep_fwd(void)   { span_walk(&ARM_STEEP_FWD,   cpu.X, cpu.Y); }
+void draw_span_steep_rev(void)   { span_walk(&ARM_STEEP_REV,   cpu.X, cpu.Y); }
 
 /* ---------------------------------------------------------------------------
    $2B26  interp_edge  (twin #35)
@@ -4267,25 +4324,30 @@ void draw_span_steep_rev(void)   { span_walk(&ARM_STEEP_REV);   }
    have written is one 6502-stack byte the oracle still writes; the fixture ignores it.
    --------------------------------------------------------------------------- */
 
-/* $2B26's three exits all run the same tail: publish this endpoint for the next span unless
-   the endpoints were swapped.  The closing LDA (which reloaded A for a caller that never reads
-   it) is gone, but the LDX/LDY are NOT a return value — they restore the caller's OWN input
-   indices (X = far point, Y = near point) that the 6502 convention leaves in place so the
-   caller can step them.  The native caller (draw_surface_spans_core) tracks x/y in locals and
-   ignores them, but the transliterated validation oracle (draw_surface_spans__t6502) does
-   INX/INY on them, so — like the plotter handoff — the restore stays as a 6502-ABI concession. */
-static void interp_edge_publish(void)
+/* The far/near endpoint indices interp_edge hands back to its caller.  The 6502 left them in
+   X and Y ($2D05/$2D08) — not a computed result but the caller's OWN input indices, which the
+   convention keeps in place so the caller can step them.  The native caller
+   (draw_surface_spans_core) tracks x/y in its own locals and IGNORES this return; only the
+   transliterated oracle (draw_surface_spans__t6502) does INX/INY on them, so the interp_edge
+   SHIM marshals these two fields back into cpu.X/cpu.Y for that oracle's benefit. */
+typedef struct { uint8_t farIdx, nearIdx; } EdgeIndices;
+
+/* $2B26's three exits all run the same tail: publish this endpoint for the next span unless the
+   endpoints were swapped, then report the two indices. */
+static EdgeIndices interp_edge_publish(void)
 {
+    EdgeIndices r;
     if (!(span_swapped & 0x80u)) {          /* $2CFC — not swapped: carry the endpoint forward */
         shared_temp_7e   = shared_temp_77;
         span_line_cursor = mem[SPAN_LINE_END];
     }
-    cpu.X = saved_slot_index;               /* $2D05 — restore the caller's far index */
-    cpu.Y = span_saved_index;               /* $2D08 — ...and the near one, for its INX/INY */
+    r.farIdx  = saved_slot_index;           /* $2D05 — the caller's far index */
+    r.nearIdx = span_saved_index;           /* $2D08 — ...and the near one, for its INX/INY */
+    return r;
 }
 
-static void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint,
-                             int publishOnly)
+static EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint,
+                                    int publishOnly)
 {
     unsigned x;
     int i;
@@ -4315,12 +4377,12 @@ static void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     mem[SPAN_LINE_END] = mem[EDGE_Y_TBL + nearPoint];
     saved_slot_index   = farPoint;
     span_saved_index   = nearPoint;
-    if (publishOnly) { interp_edge_publish(); return; }
+    if (publishOnly) return interp_edge_publish();
 
     /* Both ends have to be usable.  Bit 6 clear means the PREVIOUS point was on screen and
        this one starts a span; bit 6 set with bit 7 set means neither is. */
     if (mem[SPAN_CLIP] & 0x40u) {
-        if (mem[SPAN_CLIP] & 0x80u) { interp_edge_publish(); return; }
+        if (mem[SPAN_CLIP] & 0x80u) return interp_edge_publish();
         /* $2B69 — walk from the previous endpoint to this one instead. */
         { uint8_t px = shared_temp_7e, pl = span_line_cursor;
           shared_temp_7e     = shared_temp_77;
@@ -4372,7 +4434,7 @@ static void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
         if (!carry) dxv = (uint8_t)(0u - dxv);
         mem[SPAN_DX]  = dxv;
     }
-    if (mem[SPAN_DX] == 0 && mem[SPAN_DY] == 0) { interp_edge_publish(); return; }  /* no extent */
+    if (mem[SPAN_DX] == 0 && mem[SPAN_DY] == 0) return interp_edge_publish();  /* no extent */
 
     /* Does the abandon path stamp a surface code?  Only when both ends were usable. */
     if (mem[SPAN_CLIP] & 0xC0u)
@@ -4418,7 +4480,7 @@ static void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     math_hi = (uint8_t)(shared_temp_7e - 0x30u);
     { uint8_t block = (uint8_t)(math_hi >> 2);
       mem[SPAN_BLOCK] = block;
-      if (block >= 0x28u) { interp_edge_publish(); return; }   /* off the side */
+      if (block >= 0x28u) return interp_edge_publish();   /* off the side */
       /* The three screen pages, from the endpoint's block: (block >> 1) + $30, and plot_ptr3
          one page above. */
       { uint8_t page = (uint8_t)((block >> 1) + 0x30u);
@@ -4426,11 +4488,9 @@ static void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
         plot_ptr2_hi = page;
         plot_ptr3_hi = (uint8_t)(page + 1u); } }
 
-    /* ⭐ THE ONE IRREDUCIBLE cpu USE: the span plotters (draw_span_*) are separate 6502-ABI
-       twins that read the entry sub-column phase in X and the start line in Y.  Everything
-       else in this routine is plain C. */
-    cpu.X = (uint8_t)(math_hi & 7u);         /* the sub-column phase, into the entry tables */
-    cpu.Y = span_line_cursor;
+    /* The span walk takes the entry sub-column phase and the start line as plain C arguments. */
+    uint8_t phase     = (uint8_t)(math_hi & 7u);   /* the sub-column phase, into the entry tables */
+    uint8_t startLine = span_line_cursor;
 
     if (mem[SPAN_DX] >= mem[SPAN_DY]) {
         /* X-MAJOR.  A solid run needs no terminator, so the two end markers are switched off
@@ -4455,22 +4515,28 @@ static void interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
                 mem[SLOT_STEP_P2_IN]  = step;
                 mem[SLOT_STEP_P1_OUT] = OP_NOP;
                 mem[SLOT_STEP_P2_OUT] = OP_NOP;
-                if (mem[SPAN_YSTEP] & 0x80u) cpu.Y++; else cpu.Y--;
+                if (mem[SPAN_YSTEP] & 0x80u) startLine++; else startLine--;
             }
         }
-        if (mem[SPAN_ARM] & 0x80u) draw_span_shallow_rev(); else draw_span_shallow_fwd();
+        if (mem[SPAN_ARM] & 0x80u) span_walk(&ARM_SHALLOW_REV, phase, startLine);
+        else                       span_walk(&ARM_SHALLOW_FWD, phase, startLine);
     } else {
-        if (mem[SPAN_ARM] & 0x80u) draw_span_steep_rev(); else draw_span_steep_fwd();
+        if (mem[SPAN_ARM] & 0x80u) span_walk(&ARM_STEEP_REV, phase, startLine);
+        else                       span_walk(&ARM_STEEP_FWD, phase, startLine);
     }
 
-    interp_edge_publish();
+    return interp_edge_publish();
 }
 
 /* The 6502-ABI shim.  A is the style record's index, X the endpoint in one edge half, Y the
-   endpoint in the other, and the CARRY is "publish this endpoint without drawing a span". */
+   endpoint in the other, and the CARRY is "publish this endpoint without drawing a span".  On
+   exit the 6502 leaves the far/near indices in X/Y (the oracle's INX/INY read them), so marshal
+   the returned pair back there. */
 void interp_edge(void)
 {
-    interp_edge_core(cpu.A, cpu.X, cpu.Y, cpu.C);
+    EdgeIndices r = interp_edge_core(cpu.A, cpu.X, cpu.Y, cpu.C);
+    cpu.X = r.farIdx;
+    cpu.Y = r.nearIdx;
 }
 
 /* ---------------------------------------------------------------------------

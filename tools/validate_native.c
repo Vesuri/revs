@@ -2353,6 +2353,12 @@ static int test_span_leaves(void)
 
     if (want("road_span_advance")) {
         int subFail = 0, atStart = 0;
+        /* The pure-C core sets only C; the transliteration also spills A/X into math_lo/math_hi
+           and leaves N/Z from the restored A.  Both are 6502 implementation detail — the one
+           computed fact is the carry — so drop N/V/Z and ignore the two scratch cells. */
+        static const uint16_t ig[] = { 0x0074, 0x0075 };
+        unsigned mask = LIVE_A | LIVE_X | LIVE_Y | LIVE_C;
+        set_ignore(ig, 2);
         for (t = 0; t < advCases; t++) {
             Cpu6502 c = zero_cpu();
             fill_random(pre);
@@ -2365,14 +2371,15 @@ static int test_span_leaves(void)
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
             c.D = 0;
             subFail += diff_run("road_span_advance", pre, c, road_span_advance,
-                                road_span_advance__t6502, liveMask, t, &printed);
+                                road_span_advance__t6502, mask, t, &printed);
         }
+        set_ignore(0, 0);
         fail += subFail;
         if (atStart == 0) {
             printf("[VACUOUS] road_span_advance: no case reached the block's first line\n");
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+C  "
                "(%d on the block boundary)\n",
                "road_span_advance", advCases, subFail, atStart);
     }
@@ -2386,13 +2393,19 @@ static int test_span_leaves(void)
               0x0070, 0x2F89, 0x2FA2 },
         };
         int p;
+        /* bearing_lo ($8A) is the DDA accumulator's 6502 parking slot, written every call by the
+           transliteration and never by the pure-C core; math_lo ($74) is the abandon-cap's flatten
+           spill (FUN_2f19).  Both are implementation detail — ignore them. */
+        static const uint16_t ig[] = { 0x008A, 0x0074 };
         for (p = 0; p < 2; p++) {
             int subFail = 0, empty = 0, abandoned = 0, nearTop = 0;
             if (!want(plotters[p].name)) continue;
+            set_ignore(ig, 2);
             for (t = 0; t < plotCases; t++) {
                 Cpu6502 c = zero_cpu();
                 uint8_t stepIn;
                 int isEmpty = 0, isAbandon = 0;
+                unsigned mask;
                 fill_random(pre);
                 c.A = (uint8_t)xs(); c.X = (uint8_t)(xs() % 4); c.Y = (uint8_t)xs();
                 if (xs() % 2) { c.Y = (uint8_t)(xs() % 0x2C); nearTop++; }
@@ -2404,9 +2417,14 @@ static int test_span_leaves(void)
                 empty += isEmpty; abandoned += isAbandon;
                 c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
                 c.D = 0;
+                /* On abandon the plotter's caller unwinds immediately, so A/X/Y/C are all dead
+                   (the transliteration's TSX/INX clobbers X and DEY changes Y).  On every other
+                   path A=accumulator, X=column, Y=stepped, C=carry all stand — N/V/Z do not. */
+                mask = isAbandon ? LIVE_NONE : (LIVE_A | LIVE_X | LIVE_Y | LIVE_C);
                 subFail += diff_run(plotters[p].name, pre, c, plotters[p].nat,
-                                    plotters[p].ref, liveMask, t, &printed);
+                                    plotters[p].ref, mask, t, &printed);
             }
+            set_ignore(0, 0);
             fail += subFail;
             if (empty == 0 || abandoned == 0 || nearTop == 0) {
                 printf("[VACUOUS] %s: %d empty cells, %d abandons, %d near the top of %d — "
@@ -2414,7 +2432,7 @@ static int test_span_leaves(void)
                        plotters[p].name, empty, abandoned, nearTop, plotCases);
                 fail++;
             }
-            printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXYC (none on abandon)  "
                    "(%d empty cell, %d abandoned the chain, %d below line $2C)\n",
                    plotters[p].name, plotCases, subFail, empty, abandoned, nearTop);
         }
@@ -2429,6 +2447,9 @@ static int test_span_leaves(void)
               0x2FD7, 0x0072 },
         };
         int m;
+        /* The pure-C marker sets colMark ($80) and carry (0) on the work path and touches
+           nothing on RTS; A is preserved and Y only read.  N/V/Z are CPX detail, so drop them. */
+        unsigned mask = LIVE_A | LIVE_X | LIVE_Y | LIVE_C;
         for (m = 0; m < 2; m++) {
             int subFail = 0, live = 0, wrote = 0;
             if (!want(markers[m].name)) continue;
@@ -2449,7 +2470,7 @@ static int test_span_leaves(void)
                 c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
                 c.D = 0;
                 subFail += diff_run(markers[m].name, pre, c, markers[m].nat,
-                                    markers[m].ref, liveMask, t, &printed);
+                                    markers[m].ref, mask, t, &printed);
             }
             fail += subFail;
             if (live == 0 || wrote == 0 || live == markCases) {
@@ -2458,7 +2479,7 @@ static int test_span_leaves(void)
                        markers[m].name, live, markCases, wrote);
                 fail++;
             }
-            printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXYC  "
                    "(%d switched on, %d reached the terminator)\n",
                    markers[m].name, markCases, subFail, live, wrote);
         }
@@ -2506,7 +2527,13 @@ static const uint8_t ARM_OFF_STEEP_REV[8]   = { 0x4F,0x44,0x39,0x2E,0x21,0x16,0x
 static int test_span_arms(void)
 {
     static uint8_t pre[65536];
-    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    /* ⭐ LIVE_NONE — validate the DRAWN RESULT (mem[]), not the exit ABI.  span_walk is now
+       pure C: it takes the phase and start line as arguments and returns nothing, and its exit
+       A/X/Y/S/flags are dead at every real call site.  interp_edge__t6502 (the sole caller of
+       the draw_span_* oracles) overwrites A with `LDA span_swapped` and reloads X/Y from the
+       saved point indices the instant each arm returns, so no register these arms leave is ever
+       read.  Comparing them would validate an implementation detail; the pixels are what count. */
+    unsigned liveMask = LIVE_NONE;
     int fail = 0, printed = 0, t, a;
     int scale = 1;
     { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
@@ -2529,6 +2556,13 @@ static int test_span_arms(void)
 
     for (a = 0; a < 4; a++) register_fixture(arms[a].name);
     setenv("REVS_SMC_CONTINUE", "1", 1);
+
+    /* The descending arms' cap is the transliterated FUN_2f12→FUN_2f19 in the oracle, which
+       spills through math_lo ($74) on its off-axis flatten; the pure-C span_walk_cap does not.
+       That one scratch cell is the only mem[] divergence — ignore it (harmless on the fwd arms,
+       which never reach the cap). */
+    static const uint16_t ig[] = { 0x0074 };
+    set_ignore(ig, 1);
 
     for (a = 0; a < 4; a++) {
         int subFail = 0, midChain = 0, trapped = 0, multiLine = 0, markerTrap = 0,
@@ -2609,13 +2643,14 @@ static int test_span_arms(void)
                    arms[a].name, midChain, trapped, multiLine, markerTrap, carryIn, armCases);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=none  "
                "(%d entered mid-chain, %d trap offsets, %d ran >1 scan line, "
                "%d unexecutable markers, %d with a carry into the DDA)\n",
                arms[a].name, armCases, subFail, midChain, trapped, multiLine, markerTrap,
                carryIn);
     }
 
+    set_ignore(0, 0);
     unsetenv("REVS_SMC_CONTINUE");
     return fail;
 }
