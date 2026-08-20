@@ -160,6 +160,10 @@ volatile uint16_t g_decodeFlatLines  = 0;    /* lines skipped in the most recent
 volatile uint16_t g_decodeFlatBands  = 0;    /* bands found flat in it                  */
 }
 
+/* MODE 7 rows converted in the last decodeTeletext() (out of TT_ROWS): 0 on an idle frame, a
+   handful on a keypress, all 25 on a flash flip or a full repaint.  In PROBE_SYMS. */
+extern "C" { volatile uint16_t g_ttRowsDrawn = 0; }
+
 /* ⭐⭐ THE DIRTY-REGION DECODE (Phase 6 item 0, step 2's payoff — docs/direct-bitplane-plan.md §7b).
  *
  * MEASURED, on the target, car under power: **406 of 8320 frame-buffer bytes change per painted
@@ -583,56 +587,59 @@ void RevsScreen::buildTeletextCopper()
         d[IDX_TT_PAL + c] = copperMove(color00 + (c << 1), kTtPalette[c]);
 }
 
-/* ⭐ THE PAGE -> THREE BITPLANES.  Main-loop context, and REDRAWN ONLY WHEN IT CHANGES.
+/* ⭐ THE PAGE -> THREE BITPLANES.  Main-loop context, ROW BY ROW, only where the page changed.
  *
- * A full redraw is 1000 cells x 10 rows x 3 planes = 30000 byte stores, which at ~8 cycles a
- * store is ~34 ms — over a frame, so doing it unconditionally would put the front end below
- * 25 FPS to re-draw a page that is identical to the last one.  A teletext page changes only on
- * a keypress or a flash phase, so the check is a 1 KB checksum (~1.4 ms) and the redraw is the
- * exception.  ⚠ The checksum has to include the FLASH PHASE: without it the flashing "PRESS"
- * prompt would be drawn once and then never change, which looks like a decode bug rather than
- * a missing dependency.
+ * A full 25-row redraw is 1000 cells x 10 lines x 3 planes = 30000 byte stores, so redrawing
+ * unconditionally would drag the front end down re-drawing a page that has not moved.  Every
+ * writer of the page marks its row in g_ttRowDirty (teletext.h) instead, and this converts only
+ * the marked rows — an unchanged frame does no work and reads no screen RAM.  A flash-phase flip
+ * re-dirties the whole page: a static front end can afford the occasional full redraw, and it
+ * keeps the flashing "PRESS" prompt correct with no per-row flash bookkeeping.
  *
- * ⚠ `(sig << 5) - sig` is sig*31 — a shift and a subtract.  A literal `* 31u` on a 32-bit value
- * emits __mulsi3, which does not exist on this target (make muldiv-audit fails the link). */
+ * ⭐ The row and half base addresses are walked with a running pointer (rowTop += kRowStride), so
+ * there is no per-row / per-scanline multiply in the addressing.
+ * ⚠ NOT a widening cast on mem[] — it must never be aliased as a 16- or 32-bit pointer
+ * (make endian-lint). */
 void RevsScreen::decodeTeletext()
 {
     if (!m_ttBitmap) return;
 
-    unsigned long sig = 0;
-    for (unsigned i = 0; i < TT_SCREEN_SIZE; i++)
-        sig = ((sig << 5) - sig) + mem[TT_SCREEN_BASE + i];
-
     const unsigned char phase = (unsigned char)tt_flash_phase();
-    if (sig == m_ttSignature && phase == m_ttFlashSeen) return;
-    m_ttSignature = sig;
-    m_ttFlashSeen = phase;
+    unsigned long dirty = g_ttRowDirty;
+    if (phase != m_ttFlashSeen) { dirty = (1UL << TT_ROWS) - 1UL; m_ttFlashSeen = phase; }
+    g_ttRowDirty = 0;
+    if (!dirty) { g_ttRowsDrawn = 0; return; }
 
-    uint8_t* const base = (uint8_t*)m_ttBitmap->data;
-    unsigned row = 0;
+    uint8_t* const base  = (uint8_t*)m_ttBitmap->data;
+    uint8_t* const limit = base + revs_mulu16(kTtH, kTtRowBytes);
+    const unsigned kRowStride = TT_CELL_H * kTtRowBytes;   /* bytes one cell row occupies */
+
+    unsigned long dblRows = m_ttRowDbl;
+    uint16_t drawn = 0;
+
+    unsigned  row    = 0;
+    uint8_t*  rowTop = base;              /* == base + row*kRowStride, kept additively */
     while (row < TT_ROWS) {
-        TtCell cells[TT_COLS];
-        /* The decode wants a plain byte pointer.  ⭐ This cast used to strip `volatile`, and the
-           argument written here for why that was safe — the page is written only from main-loop
-           context and from the VDU driver, both this same thread — is now the argument for
-           mem[] not being volatile AT ALL in the shipping model (src/cpu/mem_decl.h, worth 10%
-           of the frame).  Under BODY_IN_ISR the qualifier returns and the const_cast with it.
-           ⚠ Still NOT a widening cast — mem[] must never be aliased as a 16- or 32-bit pointer,
-           which make endian-lint enforces. */
+        const unsigned long bit = 1UL << row;
+        if (!(dirty & bit)) { rowTop += kRowStride; row++; continue; }
+
         const unsigned char* src =
             (const unsigned char*)(const void*)(mem + TT_SCREEN_BASE + row * TT_COLS);
+        TtCell cells[TT_COLS];
         const int dbl = tt_decode_row(src, cells, (int)phase);
 
-        /* A double-height row draws the TOP halves here and the BOTTOM halves on the next row,
-           and that next row's own content is not displayed — the chip's rule.  Revs writes the
-           same text on both rows for its REVS logo, so either reading would look right here;
-           this is the one that is also right for a page that does not. */
-        const unsigned halves = dbl ? 2u : 1u;
-        for (unsigned half = 0; half < halves; half++) {
-            const unsigned dy = (row + half) * TT_CELL_H;
-            if (dy + TT_CELL_H > kTtH) break;
-            uint8_t* const rowBase = base + revs_mulu16((uint16_t)dy, kTtRowBytes);
+        /* A row that just LOST double-height must repaint the row below it: that display row was
+           this row's bottom half and the row below may not be dirty on its own account.  A row
+           that just GAINED it overwrites that display row with its own bottom half here. */
+        if ((dblRows & bit) && !dbl) dirty |= (bit << 1);
+        if (dbl) dblRows |= bit; else dblRows &= ~bit;
 
+        /* A double-height row draws the TOP halves on this display row and the BOTTOM halves on
+           the next; the source row below is then not displayed — the chip's rule. */
+        const unsigned halves = dbl ? 2u : 1u;
+        uint8_t* halfBase = rowTop;
+        for (unsigned half = 0; half < halves; half++, halfBase += kRowStride) {
+            if (halfBase + kRowStride > limit) break;
             for (unsigned col = 0; col < TT_COLS; col++) {
                 const TtCell* c = &cells[col];
                 const uint8_t* g = &g_ttFont[((unsigned)c->set * 128u + c->code)
@@ -648,7 +655,7 @@ void RevsScreen::decodeTeletext()
                 const uint8_t b1 = (c->bg & 2u) ? 0xFFu : 0x00u;
                 const uint8_t b2 = (c->bg & 4u) ? 0xFFu : 0x00u;
 
-                uint8_t* dst = rowBase + col;
+                uint8_t* dst = halfBase + col;
                 for (unsigned y = 0; y < TT_CELL_H; y++) {
                     /* Double height stretches each source row over two display lines: the top
                        half of the glyph on the first row, the bottom half on the second. */
@@ -661,9 +668,19 @@ void RevsScreen::decodeTeletext()
                 }
             }
         }
-        if (dbl) row++;      /* the bottom-half row is consumed, not decoded again */
+        drawn++;
+
+        if (dbl) {
+            dblRows &= ~(bit << 1);   /* the consumed bottom-half row is not itself double */
+            rowTop  += kRowStride;
+            row++;
+        }
+        rowTop += kRowStride;
         row++;
     }
+
+    m_ttRowDbl    = dblRows;
+    g_ttRowsDrawn = drawn;
 }
 
 /* ⭐ HAND THE DISPLAY TO WHICHEVER MODE THE MACHINE IS IN.  VBI context.
@@ -693,9 +710,9 @@ int RevsScreen::applyMode()
 
     setDisplayWindow(want ? kTtH : kH);
     if (want) {
-        /* Force a redraw: the page has to be re-blitted into a buffer that may hold the last
-           front end, and the signature would otherwise say "unchanged". */
-        m_ttSignature = 0;
+        /* Force a full redraw: the page has to be re-blitted into a buffer that may hold the
+           last front end, and the dirty set would otherwise say "unchanged". */
+        tt_mark_all_dirty();
         m_ttFlashSeen = 0xFFu;
         g_screenCopperAddr  = (uint32_t)m_ttCopper->data();
         g_screenCopperWords = TT_LIST_LENGTH;

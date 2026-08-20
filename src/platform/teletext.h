@@ -95,6 +95,16 @@ extern volatile unsigned long g_ttModeSwitches; /* VDU 22 calls */
 extern volatile unsigned long g_ttModeDisagree;
 extern volatile unsigned char g_ttFlashPhase;   /* the SAA5050 flash phase, advanced per FIELD */
 extern volatile unsigned long g_ttFlashToggles; /* ...and how many times it has flipped */
+/* ⭐ THE DIRTY-ROW SET: one bit per screen row (bit y = row y), set by every writer of the page
+   (tt_poke/tt_cls/tt_scroll here, and the *LOAD bulk copy in trackmenu.c via tt_mark_all_dirty).
+   The backend's decode reads it, redraws only the marked rows, and clears it — so an unchanged
+   page costs nothing and there is no per-frame scan of screen RAM.  ⚠ Written ONLY from main-loop
+   context (the VDU stream and the menu paint both run there, never in the VBI), which is what
+   makes the plain read-then-clear in decode race-free.  In PROBE_SYMS. */
+extern volatile unsigned long g_ttRowDirty;
+/* Mark every row dirty — for a whole-page write that bypasses tt_vdu (the *LOAD of 5TRSCRN) and
+   for the mode switch, where the target bitmap may hold a stale front end. */
+void tt_mark_all_dirty(void);
 
 /* ── the MOS VDU driver ─────────────────────────────────────────────────────────────────── */
 /* Feed it one OSWRCH byte.  Writes screen RAM through mem[] exactly where the MOS would. */

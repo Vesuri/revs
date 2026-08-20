@@ -14,6 +14,11 @@ volatile unsigned long g_ttVduBytes     = 0;
 volatile unsigned long g_ttModeSwitches = 0;
 volatile unsigned long g_ttModeDisagree = 0;
 
+/* ⭐ The dirty-row set (teletext.h).  All rows dirty at boot so the first decode draws the whole
+   page; thereafter only the writers below add bits, and the backend's decode clears them. */
+volatile unsigned long g_ttRowDirty = (1UL << TT_ROWS) - 1UL;
+void tt_mark_all_dirty(void) { g_ttRowDirty = (1UL << TT_ROWS) - 1UL; }
+
 /* ═══════════════════════════════════════════════════════════════════════════════════════════
    THE MOS VDU DRIVER
    ═══════════════════════════════════════════════════════════════════════════════════════════ */
@@ -37,13 +42,17 @@ static unsigned char s_pendGot  = 0;
 
 static inline void tt_poke(unsigned x, unsigned y, unsigned char c)
 {
-    if (x < TT_COLS && y < TT_ROWS) mem[TT_SCREEN_BASE + y * TT_COLS + x] = c;
+    if (x < TT_COLS && y < TT_ROWS) {
+        mem[TT_SCREEN_BASE + y * TT_COLS + x] = c;
+        g_ttRowDirty |= (1UL << y);
+    }
 }
 
 static void tt_cls(void)
 {
     for (unsigned i = 0; i < TT_SCREEN_SIZE; i++) mem[TT_SCREEN_BASE + i] = 0x20;
     s_cx = s_cy = 0;
+    tt_mark_all_dirty();
 }
 
 /* Scroll the whole page up one row and blank the last — what the MOS does when text advances
@@ -55,6 +64,7 @@ static void tt_scroll(void)
         mem[TT_SCREEN_BASE + i] = mem[TT_SCREEN_BASE + i + TT_COLS];
     for (unsigned i = 0; i < TT_COLS; i++)
         mem[TT_SCREEN_BASE + (TT_ROWS - 1) * TT_COLS + i] = 0x20;
+    tt_mark_all_dirty();   /* every row's content moved up one */
 }
 
 static void tt_newline(void)

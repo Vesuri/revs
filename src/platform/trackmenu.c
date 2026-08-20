@@ -183,8 +183,6 @@ static void cross_check(void)
 
 void tm_begin(unsigned options)
 {
-    unsigned i;
-
     if (options > TM_OPTIONS_MAX)  options = TM_OPTIONS_MAX;
     /* One option per circuit this build actually has.  ⚠ Not `options` as asked for: a checkout
        without the Nürburgring disc has five circuits and offering a sixth would let the player
@@ -209,8 +207,15 @@ void tm_begin(unsigned options)
        tt_vdu(): `*LOAD` is not a VDU stream, and routing it through the driver would interpret
        teletext codes as commands.  The cursor is left wherever it was; nothing reads it until
        paint_menu()'s VDU 12. */
-    for (i = 0; i < REVS_TITLESCREEN_LEN; i++)
-        mem[REVS_TITLESCREEN_LO + i] = revs_titlescreen[i];
+    {
+        unsigned char* dst = &mem[REVS_TITLESCREEN_LO];
+        const unsigned char* s = revs_titlescreen;
+        const unsigned char* end = s + REVS_TITLESCREEN_LEN;
+        while (s < end) *dst++ = *s++;
+    }
+    /* The copy went straight to mem[], not through tt_vdu(), so no per-row dirty bit was set —
+       tell the decode the whole page is new (teletext.h). */
+    tt_mark_all_dirty();
 }
 
 void tm_tick(unsigned keys, unsigned fields)

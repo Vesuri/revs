@@ -127,15 +127,20 @@ private:
     Bitmap*     m_bitmap[2];
     CopperList* m_copper;
     /* MODE 7's own pair.  ⚠ SINGLE-buffered, deliberately: the page is static between
-       keypresses, so it is redrawn only when it CHANGES (m_ttSignature below), and a real BBC
-       tears here too — the MOS writes screen RAM while the beam is scanning it.  A second
-       250-line 3-plane buffer would cost 30 KB of chip RAM to hide an artefact the original
-       hardware shows. */
+       keypresses, so it is redrawn ROW BY ROW only where it CHANGES (g_ttRowDirty, teletext.h),
+       and a real BBC tears here too — the MOS writes screen RAM while the beam is scanning it.  A
+       second 250-line 3-plane buffer would cost 30 KB of chip RAM to hide an artefact the
+       original hardware shows. */
     Bitmap*     m_ttBitmap;
     CopperList* m_ttCopper;
     unsigned char m_ttOnScreen;      /* which configuration the display is set up for */
     unsigned char m_ttFlashSeen;     /* the flash phase the current picture was drawn in */
-    unsigned long m_ttSignature;     /* checksum of the page: redraw only on a change */
+    /* ⭐ Which rows decodeTeletext() last drew double-height (bit y = row y).  The one piece of
+       cross-row state the row-by-row decode needs: a row that STOPS being double-height hands its
+       lower display row back to the row below, which may not itself be dirty, so it must be
+       forced.  A row that STARTS double overwrites that display row with its own bottom half and
+       needs nothing extra. */
+    unsigned long m_ttRowDbl;
     /* One 8-byte all-zero sprite (VSTART == VSTOP == 0), pointed to by all eight channels
        so sprite DMA has somewhere harmless to go.  See initialize(). */
     Sprite*     m_nullSprite;

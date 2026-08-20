@@ -496,6 +496,7 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_bodyTicksDropped g_bodyDrains g_bodyTicks g_bodyPending \
              g_ttUnknownVdu g_ttLastUnknown g_ttVduBytes g_ttModeSwitches \
              g_ttModeDisagree g_screenPlanes g_screenHeight g_screenMode7 g_ttAllocFailed g_ttFlashPhase g_ttFlashToggles \
+             g_ttRowDirty g_ttRowsDrawn \
              g_sndCommands g_sndEnvelopes g_sndFlushes g_sndTicks g_sndChipWrites \
              g_sndSyncRequests g_sndHoldRequests g_sndQueued g_sndQueueDrops g_sndBadEnvelope \
              g_audioAllocFailed g_audioRestarts g_audioUpdates g_audioTicks g_audioWaitLines \
