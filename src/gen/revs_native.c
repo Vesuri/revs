@@ -4691,78 +4691,108 @@ static void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint)
 {
     surface_pass_index = pass;
     span_index_near    = firstPoint;
-    cpu.A = firstPoint;
-    CMP(span_end_index);
-    if (cpu.C) return;                        /* the pass starts past its own end */
 
-    span_index_far = (uint8_t)adc_step(firstPoint, mem[SPAN_PAIR_OFFSET + pass], 0);
+    /* $19B3 — a pass that starts at or past its own last point draws nothing. */
+    if (firstPoint >= span_end_index) {
+        uint8_t d = (uint8_t)(firstPoint - span_end_index);
+        cpu.A = firstPoint;
+        cpu.C = 1; cpu.N = (d >> 7) & 1u; cpu.Z = (d == 0);
+        return;                          /* X/Y/V unchanged — the CMP's exit ABI */
+    }
 
-    /* This pass's surface_edge buffer, into both plotters' store operands. */
+    /* $19B8 — the far endpoint is the near one plus this pass's paired offset.  This ADD's
+       signed overflow is the ONLY flag that reaches interp_edge's PHP on the first (publish)
+       call, so replay it; nothing else it computes leaves the routine. */
+    uint8_t offset  = mem[SPAN_PAIR_OFFSET + pass];
+    span_index_far  = (uint8_t)(firstPoint + offset);
+    uint8_t firstV  = adc_overflow(firstPoint, offset, 0);
+
+    /* $19BD..$19CE — patch both span plotters' store operands with this pass's edge buffer. */
     mem[OPERAND_DEST_P1_HI] = mem[OPERAND_DEST_P2_HI] = mem[ROW_BASE_HI + pass];
-    /* ⚠ The low byte stays in A and becomes interp_edge's style argument on the publish-only
-       call below — the 6502 never reloads it, and the callee ignores it on that path. */
-    cpu.A = mem[ROW_BASE_LO + pass];
-    mem[OPERAND_DEST_P1_LO] = mem[OPERAND_DEST_P2_LO] = cpu.A;
+    uint8_t styleLo = mem[ROW_BASE_LO + pass];
+    mem[OPERAND_DEST_P1_LO] = mem[OPERAND_DEST_P2_LO] = styleLo;
 
-    /* ⚠ LDX's flags are dead (LDY overwrites N/Z below); but LDY's N is live — interp_edge's
-       PHP pushes Y's N/Z to the 6502 stack, where the differential sees it ($01FF) — keep it. */
-    cpu.X = span_index_far;
-    LDY(span_index_near);
-    cpu.C = 1;                                /* the first point is published, not drawn */
-    interp_edge();
+    /* x/y mirror the 6502's X/Y across the walk: interp_edge restores both from its arguments,
+       so after each call cpu.X == x and cpu.Y == y again. */
+    uint8_t x = span_index_far;
+    uint8_t y = span_index_near;
+
+    /* $19D4 — publish the first endpoint (carry set = "record it, draw nothing").  interp_edge
+       does PHP, so it captures C=1, the near index's N/Z (the $19D1 LDY), and the far-add's V. */
+    cpu.C = 1; cpu.N = (y >> 7) & 1u; cpu.Z = (y == 0); cpu.V = firstV;
+    interp_edge_core(styleLo, x, y);
 
     for (;;) {
-        INX();
-        INY();
-        CPY(span_end_index);
-        if (cpu.C) return;
-        /* ⚠ A real load: on the skip path this byte stays in A, and if the NEXT pass exits
-           on the cursor test it is what the caller gets back. */
-        LDA(mem[EDGE_STYLE_TBL + cpu.Y]);
-        if (cpu.N) continue;                  /* fill_line_attr marked this point */
+        x = (uint8_t)(x + 1);            /* $19D7 INX */
+        y = (uint8_t)(y + 1);            /* $19D8 INY */
 
-        /* Pick this span's style, and the carry that tells interp_edge draw-vs-publish.
-           ⚠ interp_edge does PHP, so the N/Z these compares leave are pushed to the 6502
-           stack and the differential sees them — every CMP here is load-bearing, not a
-           branch test that could become a plain comparison. */
-        LDA(span_index_near);
-        CMP(road_split_index);
-        if (!cpu.C) {
-            LDA(shared_temp_8c);              /* nearer than the split: one style, whole */
-            cpu.C = 0;
-        } else if (cpu.Z) {
-            /* exactly at the split */
-            LDA(mem[EDGE_STYLE_TBL + cpu.Y - 1]);
-            AND(0x03u);
-            if (cpu.Z) {
-                road_split_index = cpu.Y;     /* the split moves to here */
-                cpu.C = 1;
-                LDA(surface_pass_index);
-                if (!cpu.Z) { LDA(shared_temp_8c); cpu.C = 0; }
+        /* $19D9 CPY — the walk stops when it reaches this half's end index. */
+        if (y >= span_end_index) {
+            uint8_t d = (uint8_t)(y - span_end_index);
+            cpu.X = x; cpu.Y = y;
+            cpu.C = 1; cpu.N = (d >> 7) & 1u; cpu.Z = (d == 0);
+            return;                       /* A and V from the last interp_edge call stay live */
+        }
+
+        /* $19DD/$19E0 — fill_line_attr marks (bit 7) the points the walk must skip.  The 6502
+           has this byte in A when it skips, so if the next step exits it is the caller's A. */
+        uint8_t style = mem[EDGE_STYLE_TBL + y];
+        if (style & 0x80u) { cpu.A = style; continue; }
+
+        /* Pick this span's style byte and the carry interp_edge reads as draw-vs-publish.
+           ⚠ interp_edge does PHP, so the N/Z/C each arm leaves are pushed to the 6502 stack
+           and the differential compares them — every arm reproduces the flags the 6502 had at
+           its JSR.  V carries from the previous call except on the two arms whose style comes
+           from an ADD, which set their own V. */
+        uint8_t near = span_index_near;   /* $19E2 — the previous span's near index */
+        uint8_t styleArg;
+
+        if (near < road_split_index) {                /* $19E4/$19E6 — nearer than the split */
+            styleArg = shared_temp_8c;                /* one shared style, whole */
+            cpu.C = 0; cpu.N = (styleArg >> 7) & 1u; cpu.Z = (styleArg == 0);
+        } else if (near == road_split_index) {        /* $19E8 — exactly at the split */
+            uint8_t klass = (uint8_t)(mem[EDGE_STYLE_TBL + y - 1] & 0x03u);
+            if (klass != 0) {                         /* $19EF — a real class: 4*class + base */
+                uint8_t a = (uint8_t)(klass << 2);
+                unsigned sum = (unsigned)a + surface_style_base;
+                styleArg = (uint8_t)sum;
+                cpu.V = adc_overflow(a, surface_style_base, 0);
+                cpu.C = (sum > 0xFFu); cpu.N = (styleArg >> 7) & 1u; cpu.Z = (styleArg == 0);
             } else {
-                cpu.A = (uint8_t)adc_step((uint8_t)(cpu.A << 2), surface_style_base, 0);
-            }
-        } else {
-            LDA(mem[EDGE_STYLE_TBL + cpu.Y - 1]);
-            AND(0x03u);
-            if (cpu.Z) {
-                LDA(surface_pass_index);
-                CMP(0x01u);
-                if (!cpu.Z) {
-                    CMP(0x02u);
-                    if (!cpu.Z) {
-                        LDA(0x00u);
-                        cpu.A = (uint8_t)adc_step(0x00u, surface_style_base, 0);
-                    }
+                road_split_index = y;                 /* $19F1 — the split moves to here */
+                if (surface_pass_index == 0) {        /* $19F4/$19F6 — pass 0 publishes style 0 */
+                    styleArg = 0;
+                    cpu.C = 1; cpu.N = 0; cpu.Z = 1;
+                } else {                              /* other passes take the shared style */
+                    styleArg = shared_temp_8c;
+                    cpu.C = 0; cpu.N = (styleArg >> 7) & 1u; cpu.Z = (styleArg == 0);
                 }
-            } else {
-                cpu.A = (uint8_t)adc_step((uint8_t)(cpu.A << 2), surface_style_base, 0);
+            }
+        } else {                                      /* $19E8 BNE — beyond the split */
+            uint8_t klass = (uint8_t)(mem[EDGE_STYLE_TBL + y - 1] & 0x03u);
+            if (klass != 0) {                         /* $1A02 — 4*class + base */
+                uint8_t a = (uint8_t)(klass << 2);
+                unsigned sum = (unsigned)a + surface_style_base;
+                styleArg = (uint8_t)sum;
+                cpu.V = adc_overflow(a, surface_style_base, 0);
+                cpu.C = (sum > 0xFFu); cpu.N = (styleArg >> 7) & 1u; cpu.Z = (styleArg == 0);
+            } else if (surface_pass_index == 1 || surface_pass_index == 2) {
+                /* $1A06/$1A0A — passes 1 and 2 publish the pass number itself. */
+                styleArg = surface_pass_index;
+                cpu.C = 1; cpu.N = 0; cpu.Z = 1;      /* CMP #pass ⇒ pass == pass */
+            } else {                                  /* $1A0E — passes 0 and 3: base (4*0 + base) */
+                unsigned sum = (unsigned)surface_style_base;
+                styleArg = (uint8_t)sum;
+                cpu.V = adc_overflow(0, surface_style_base, 0);
+                cpu.C = (sum > 0xFFu); cpu.N = (styleArg >> 7) & 1u; cpu.Z = (styleArg == 0);
             }
         }
 
-        interp_edge();
-        span_index_near = cpu.Y;
-        span_index_far  = cpu.X;
+        /* $1A15 — interp_edge reads span_index_far (the PREVIOUS far, not x) internally, so the
+           two cells are only advanced AFTER the call. */
+        interp_edge_core(styleArg, x, y);
+        span_index_near = y;             /* $1A18 */
+        span_index_far  = x;             /* $1A1A */
     }
 }
 
