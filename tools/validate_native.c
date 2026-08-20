@@ -2674,7 +2674,17 @@ static void plant_line_attr_smc(uint8_t* pre)
 static int test_road_pass(void)
 {
     static uint8_t pre[65536];
+    /* edge_x_offscreen / fill_line_attr / mark_line_surfaces return a real value to draw_road
+       in a register or a flag — their caller reads it, so the exit ABI is validated. */
     unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    /* ⭐ interp_edge's CARRY is now an explicit argument and its exit A and flags are dead, so
+       what remains live is only X and Y — and those are not a computed result: they are the
+       caller's own far/near indices, restored so the transliterated caller can step them.  A
+       is validated as dead, the flags too; the RESULT is mem[] + the hw/mos traces. */
+    const unsigned liveEdge = LIVE_X | LIVE_Y;
+    /* ⭐ draw_surface_spans returns NOTHING: its caller (draw_road) never reads its exit
+       A/X/Y/flags, so the whole exit register state is an implementation detail. */
+    const unsigned liveNone = LIVE_NONE;
     int fail = 0, printed = 0, t;
     int scale = 1;
     { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
@@ -2721,6 +2731,11 @@ static int test_road_pass(void)
                yields has to stay under $28, which is x in $30..$CF.  Two thirds of the cases
                are inside that window and the rest test the "off the side" exit. */
             if (xs() % 3) pre[0x007E] = (uint8_t)(0x30 + xs() % 0xA0);
+            /* ⭐ Steer a handful of cases onto the block==$28 boundary ($7E in $D0..$D3), the
+               tightest off-side value.  The 6502 test is CMP #$28 / BCS (>= $28); the fixed PRNG
+               stream never rolls this exact window on its own, so the sabotage that weakens the
+               test to > $28 would otherwise survive as a pure coverage gap. */
+            if (t % 40 == 0) pre[0x007E] = (uint8_t)(0xD0 + (xs() & 3));
             pre[0x0083] = (uint8_t)(0x20 + xs() % 0xC0);
             pre[0x0084] = (uint8_t)(0x20 + xs() % 0xC0);
             pre[0x0027] = (uint8_t)(xs() % 4);          /* the pass number */
@@ -2739,8 +2754,14 @@ static int test_road_pass(void)
             c.C = (uint8_t)(xs() % 4 == 0);             /* the publish-only argument */
             c.D = 0;
             if (c.C) published++;
+            /* ⚠ The oracle (interp_edge__t6502) still does PHP on entry to capture the caller's
+               carry; the twin takes it as a parameter and never touches the stack.  The only
+               mem[] that PHP writes is the one 6502-stack byte at $01FF, which nothing reads —
+               ignore it so the RESULT is compared, not a dead push. */
+            { static const uint16_t ig[] = { 0x01FF }; set_ignore(ig, 1); }
             subFail += diff_run("interp_edge", pre, c, interp_edge, interp_edge__t6502,
-                                liveMask, t, &printed);
+                                liveEdge, t, &printed);
+            set_ignore(0, 0);
             if (mem[0x0085] < 0x28 && !c.C) drew++;
             if (mem[0x001E] & 0x80) swapped++;
         }
@@ -2751,7 +2772,7 @@ static int test_road_pass(void)
                    drew, published, swapped, solid, interpCases);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=XY ($01FF ignored)  "
                "(%d reached a span walk, %d publish-only, %d swapped the endpoints, "
                "%d solid patterns)\n",
                "interp_edge", interpCases, subFail, drew, published, swapped, solid);
@@ -2818,7 +2839,7 @@ static int test_road_pass(void)
             c.D = 0;
             splitBefore = pre[0x0050];
             subFail += diff_run("draw_surface_spans", pre, c, draw_surface_spans,
-                                draw_surface_spans__t6502, liveMask, t, &printed);
+                                draw_surface_spans__t6502, liveNone, t, &printed);
             if (c.A < pre[0x004B]) ran++;
             if (mem[0x0050] != splitBefore) movedSplit++;
         }
@@ -2828,7 +2849,7 @@ static int test_road_pass(void)
                    ran, movedSplit, spanCases);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=none  "
                "(%d ran the walk, %d moved road_split_index)\n",
                "draw_surface_spans", spanCases, subFail, ran, movedSplit);
     }
