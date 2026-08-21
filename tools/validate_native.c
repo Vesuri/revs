@@ -3390,6 +3390,10 @@ static int test_model_arithmetic(void)
         int subFail = 0, decimal = 0, decorrelated = 0, negative = 0, accumulate = 0;
         int cases = list[i].cases * scale;
         int resultOnly = (i >= 4 && i <= 6);
+        /* mul16_signed (i == 0) forms its three cross products with binary revs_mulu16, so it is
+           faithful only at D = 0 — its real caller (apply_angle_term) is on the driving-model path
+           where D = 0 (docs/static-map.md §Decimal mode).  It still compares registers/flags. */
+        int pinD0 = resultOnly || (i == 0);
         unsigned mask = resultOnly ? LIVE_NONE : liveMask;
         if (!want(list[i].name)) continue;
         if (i == 4)      set_ignore(addIgnore, 2);
@@ -3414,7 +3418,7 @@ static int test_model_arithmetic(void)
             if (c.N != (pre[0x0075] >> 7)) decorrelated++;
             if (c.N) negative++;
             c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
-            c.D = resultOnly ? 0 : (uint8_t)(xs() % 4 == 0);
+            c.D = pinD0 ? 0 : (uint8_t)(xs() % 4 == 0);
             if (c.D) decimal++;
             /* scale16_by_y and mul16_by_1_5 want A and Y as the value/scale, not indices. */
             if (i == 1 || i == 2) { c.A = (uint8_t)xs(); c.Y = (uint8_t)xs(); }
@@ -3423,7 +3427,7 @@ static int test_model_arithmetic(void)
                                 mask, t, &printed);
         }
         fail += subFail;
-        if ((!resultOnly && !decimal) || !decorrelated || !negative) {
+        if ((!pinD0 && !decimal) || !decorrelated || !negative) {
             printf("[VACUOUS] %s: %d decimal, %d decorrelated N, %d negative\n",
                    list[i].name, decimal, decorrelated, negative);
             fail++;

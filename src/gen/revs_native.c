@@ -1700,9 +1700,6 @@ static void bearing_to_section_core(uint8_t sectionByte, uint8_t origin);
 typedef struct { uint8_t line; int clip; int behind; } ProjPoint;
 static ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin);
 
-/* The 16-bit negate abs16_math falls into (twin #48), also defined further down. */
-static void neg16_math_core(uint8_t high);
-
 /* The driving model's two pure-binary scale helpers (defined with damp_and_derive_loads),
    used by stage_accum_delta above them in the file. */
 static uint16_t model_scale16(uint16_t value, uint8_t scale);
@@ -5329,26 +5326,26 @@ void fill_edge_column_run(void)
    never sets D; a randomised fixture does.
    =========================================================================== */
 
-/* The 6502's own shift-and-add, replayed instruction for instruction — the decimal-mode path
-   only.  This is what the twin above is a compression OF. */
-static void mul8_shift_add(void)
-{
-    int i;
-
-    LDA(0x00u);
-    LSR_M(MEM_math_lo);                 /* $0C04 — the first multiplier bit into C */
-    for (i = 0; i < 8; i++) {
-        if (cpu.C) { cpu.C = 0; ADC(math_hi); }   /* $0C06-$0C09 */
-        ROR_A();                                  /* $0C0B */
-        ROR_M(MEM_math_lo);                       /* $0C0C — and the next multiplier bit out */
-    }
-}
-
-static void mul8_noinit_core(void)
+/* $0C02  mul8_noinit — the 8x8 multiply, math_lo x math_hi.  The binary path is one MULU.W (see
+   the header); decimal mode still runs the 6502's own shift-and-add, because D changes the RESULT
+   byte of every ADC.  Exit: A = product high, math_lo = product low; N/Z from math_lo, C = 0,
+   V = the last ADD's.  This is a KEPT shim — generated code and the mul8_accum family call it. */
+void mul8_noinit(void)
 {
     unsigned multiplier = math_lo, addend = math_hi, product;
 
-    if (cpu.D) { mul8_shift_add(); return; }
+    if (cpu.D) {
+        /* The 6502's own shift-and-add, replayed instruction for instruction (decimal only). */
+        int i;
+        LDA(0x00u);
+        LSR_M(MEM_math_lo);                 /* $0C04 — the first multiplier bit into C */
+        for (i = 0; i < 8; i++) {
+            if (cpu.C) { cpu.C = 0; ADC(math_hi); }   /* $0C06-$0C09 */
+            ROR_A();                                  /* $0C0B */
+            ROR_M(MEM_math_lo);                       /* $0C0C — and the next multiplier bit out */
+        }
+        return;
+    }
 
     product = revs_mulu16((uint16_t)multiplier, (uint16_t)addend);
 
@@ -5367,29 +5364,8 @@ static void mul8_noinit_core(void)
     cpu.C   = 0;                /* provably 0 for every operand pair */
 }
 
-/* ⭐⭐ THE VALUE-ONLY ENTRY, and the point of it is the CALLERS (user, 2026-08-18).  Everything
-   above the `if (multiplier)` in mul8_noinit_core is one `MULU.W`; the replay under it is a
-   second multiply plus a bit scan, paid for a V that NO caller reads — there is no `BVC`/`BVS`
-   after any of the 28 `JSR mul8` sites.  A native caller that has proved the flags dead at its
-   own call site calls this instead, exactly as the road pass calls `sbc_value` rather than
-   paying cpu.h's `SBC`.  The 6502-ABI shim keeps the flags for the transliterated callers that
-   are still out there.
-   ⚠ Decimal mode still has to be honoured, because D changes the product itself. */
-REVS_FLAG_OP unsigned mul8_product(uint8_t multiplier, uint8_t addend)
-{
-    if (cpu.D) {
-        math_lo = multiplier; math_hi = addend;
-        mul8_shift_add();
-        return (unsigned)((cpu.A << 8) | math_lo);
-    }
-    return revs_mulu16(multiplier, addend);
-}
-
-static void mul8_core(uint8_t multiplicand)
-{
-    math_lo = multiplicand;     /* $0C00 — a store, so no flags */
-    mul8_noinit_core();
-}
+/* $0C00  mul8 — mul8_noinit with the multiplicand taken from A (a store, so no flags). */
+void mul8(void) { math_lo = cpu.A; mul8_noinit(); }
 
 /* ---------------------------------------------------------------------------
    $0DBF  mul8_accum — THE 16x8 FIXED-POINT STEP  (twin #46)
@@ -5399,17 +5375,17 @@ static void mul8_core(uint8_t multiplicand)
    the ordinary way to spell a x.8 fixed-point multiply on a machine with an 8x8 multiplier.
 
    ⚠ Its exit flags are the closing ADD's, or the `INC math_hi`'s on the carry path — so N and
-   Z describe math_lo on one path and math_hi on the other.
-   --------------------------------------------------------------------------- */
-static void mul8_accum_core(void)
+   Z describe math_lo on one path and math_hi on the other.  A KEPT shim (generated code and the
+   mul16_by_pi / scale16_by_y twins call it); D is honoured through mul8_noinit. */
+void mul8_accum(void)
 {
-    uint8_t lowHigh;
+    uint8_t lowHigh, hiOperand = shared_temp_76;
 
-    mul8_noinit_core();                 /* $0DBF — math_lo x math_hi, the LOW half */
+    mul8_noinit();                      /* $0DBF — math_lo x math_hi, the LOW half */
     lowHigh = cpu.A;
     shared_temp_77 = lowHigh;           /* $0DC2 */
 
-    mul8_core(shared_temp_76);          /* $0DC4-$0DC6 — shared_temp_76 x math_hi, the HIGH half */
+    math_lo = hiOperand; mul8_noinit(); /* $0DC4-$0DC6 — shared_temp_76 x math_hi, the HIGH half */
     math_hi = cpu.A;                    /* $0DC9 */
 
     math_lo = (uint8_t)adc_step(lowHigh, math_lo, 0);   /* $0DCB-$0DD0 */
@@ -5422,16 +5398,15 @@ static void mul8_accum_core(void)
    Shifts (A : math_lo) left twice, parks the high byte where mul8_accum wants it, seeds the
    multiplier with $C9 and falls into mul8_accum.  ⭐ $C9/256 = 0.785 = pi/4 to three figures,
    and 4 x pi/4 = pi — so what compute_car_angles gets back is its angle multiplied by pi
-   [INFERRED from the constant; the x4 and the multiply are [DERIVED]].
-   --------------------------------------------------------------------------- */
-static void mul16_by_pi_core(uint8_t high)
+   [INFERRED from the constant; the x4 and the multiply are [DERIVED]].  A KEPT shim; A is high. */
+void mul16_by_pi(void)
 {
-    unsigned scaled = ((((unsigned)high << 8) | math_lo) << 2) & 0xFFFFu;
+    unsigned scaled = ((((unsigned)cpu.A << 8) | math_lo) << 2) & 0xFFFFu;
 
     math_lo        = (uint8_t)scaled;           /* $0DB3-$0DB8, two ASL/ROL pairs */
     shared_temp_76 = (uint8_t)(scaled >> 8);    /* $0DB9 */
     math_hi        = 0xC9u;                     /* $0DBB-$0DBD — pi/4 in .8 fixed point */
-    mul8_accum_core();
+    mul8_accum();
 }
 
 /* ---------------------------------------------------------------------------
@@ -5441,30 +5416,20 @@ static void mul16_by_pi_core(uint8_t high)
    NOT written to math_hi — the caller decides whether to keep it — and the second subtract's
    N/V/Z/C are the exit flags.  $0E42 parks A in math_hi first (so it negates the value the
    caller is holding); $0E44 negates what is already in the pair.  abs16_math falls into $0E42.
-   --------------------------------------------------------------------------- */
-static void neg16_math_noinit_core(void)
+   D is always 0 on every path that reaches here (driving-model / steering / render callers —
+   docs/static-map.md §Decimal mode), so these are plain 16-bit negates.  Both are KEPT shims. */
+void neg16_math_noinit(void)
 {
-    /* Two's-complement negate of the 16-bit (math_hi : math_lo).  D is always 0 on every path
-       that reaches here (all driving-model / steering / render callers — docs/static-map.md
-       §Decimal mode), so this is a plain 16-bit negate. */
     uint16_t v = (uint16_t)(0u - (uint16_t)(((uint16_t)math_hi << 8) | math_lo));
     math_lo = (uint8_t)v;               /* $0E44-$0E49 — low byte written back */
     cpu.A   = (uint8_t)(v >> 8);        /* $0E4B-$0E4E — high byte escapes in A, math_hi kept */
 }
 
-static void neg16_math_core(uint8_t high)
+void neg16_math(void)
 {
-    math_hi = high;                     /* $0E42 */
-    neg16_math_noinit_core();
+    math_hi = cpu.A;                    /* $0E42 */
+    neg16_math_noinit();
 }
-
-/* The 6502-ABI shims.  A is the multiplicand / the high byte; everything else is in mem[]. */
-void mul8(void)              { mul8_core(cpu.A); }
-void mul8_noinit(void)       { mul8_noinit_core(); }
-void mul8_accum(void)        { mul8_accum_core(); }
-void mul16_by_pi(void)       { mul16_by_pi_core(cpu.A); }
-void neg16_math(void)        { neg16_math_core(cpu.A); }
-void neg16_math_noinit(void) { neg16_math_noinit_core(); }
 
 /* ===========================================================================
    TWINS #50-#57 — THE DRIVING MODEL'S 16-BIT ARITHMETIC
@@ -5525,9 +5490,10 @@ void neg16_math_noinit(void) { neg16_math_noinit_core(); }
 
    NOTE: this is the faithful $0DD7 twin, kept as the validation oracle's counterpart and for
    any 6502-ABI caller.  apply_angle_term (its only real caller) no longer routes through it —
-   see apply_angle_term_body, which folds the same arithmetic into plain 16-bit C.
-   --------------------------------------------------------------------------- */
-static void mul16_signed_core(void)
+   see apply_angle_term_body, which folds the same arithmetic into plain 16-bit C.  The three
+   cross products are plain 16-bit multiplies (revs_mulu16); D = 0 on every path that reaches the
+   real caller (docs/static-map.md §Decimal mode), and the fixture pins it. */
+void mul16_signed(void)
 {
     unsigned p1, p2, p3, mid, low, result;
     uint8_t  angleLo = mem[MUL_TERM_LO], angleHi = mem[MUL_TERM_HI];
@@ -5548,9 +5514,9 @@ static void mul16_signed_core(void)
 
     /* $0DFA-$0E36 — three 8x8 products, accumulated.  The flags of the multiplies themselves
        are all overwritten by the closing adds, so these go through the value-only entry. */
-    p1 = mul8_product(angleLo, sourceHi);
-    p2 = mul8_product(angleHi, sourceHi);
-    p3 = mul8_product(angleHi, sourceLo);
+    p1 = revs_mulu16(angleLo, sourceHi);
+    p2 = revs_mulu16(angleHi, sourceHi);
+    p3 = revs_mulu16(angleHi, sourceLo);
 
     /* $0E05-$0E20 — the accumulation.  These adds' own flags are all overwritten before
        anything reads them, so they go through adc_value; ⚠ but it is adc_value and not plain
@@ -5590,14 +5556,15 @@ static void mul16_signed_core(void)
    a byte in the stack page that the differential compares, so the pair is reproduced rather
    than replaced by a saved C variable.
    --------------------------------------------------------------------------- */
-static void scale16_by_y_core(uint8_t high, uint8_t scale)
+void scale16_by_y(void)
 {
-    cpu.A = high;
+    uint8_t scale = cpu.Y;          /* the multiplier byte */
+    /* cpu.A holds the value's high byte on entry ($4753). */
     PHP();                          /* $4753 — the caller's N, which is the value's sign */
     abs16_math();                   /* $4754 */
     shared_temp_76 = cpu.A;         /* $4757 */
     math_hi        = scale;         /* $4759 */
-    mul8_accum_core();              /* $475B */
+    mul8_accum();                   /* $475B */
     cpu.A = math_hi;                /* $475E — a value only: the LDA's own N/Z are dead here,
                                        because the PLP on the next line overwrites them.  Proved
                                        by sabotage: swapping these two lines passes 3000 cases,
@@ -5613,7 +5580,7 @@ static void scale16_by_y_core(uint8_t high, uint8_t scale)
    rotate's carry from the value's own bit 7 instead of clearing it, which is a one-instruction
    arithmetic shift right.  ⚠ PHA/PLA, so there is a stack residue here too.
    --------------------------------------------------------------------------- */
-static void mul16_by_1_5_core(void)
+void mul16_by_1_5(void)
 {
     cpu.A = math_hi;                            /* $4765 */
     cpu.C = (uint8_t)((cpu.A & 0x80u) != 0);    /* $4767-$476A — CLC, or SEC if negative */
@@ -5760,9 +5727,6 @@ static void kbd_test_key_core(void)
 }
 
 /* The 6502-ABI shims. */
-void mul16_signed(void)          { mul16_signed_core(); }
-void scale16_by_y(void)          { scale16_by_y_core(cpu.A, cpu.Y); }
-void mul16_by_1_5(void)          { mul16_by_1_5_core(); }
 void model_integrate_element(void) { model_integrate_element_core(cpu.X); }
 void add_signed_into_element(void) { add_signed_into_element_core(cpu.Y, cpu.N ? 0x80u : 0x00u); }
 void apply_angle_term(void)      { apply_angle_term_core(cpu.A, cpu.X, cpu.Y); }
@@ -6260,7 +6224,8 @@ static void derive_slip_reference_core(void)
     }
 
     math_hi = cpu.A;                                             /* $4BBC */
-    mul8_core(pedal_amount);                                     /* $4BBE-$4BC0 */
+    math_lo = pedal_amount; mul8_noinit();                       /* $4BBE-$4BC0 — reference x pedal;
+                                                                    full flags/decimal (V escapes) */
     LDY(pedal_mode); DEY();                                      /* $4BC3-$4BC5 */
     if (cpu.Z) {                                                 /* $4BC6 BNE */
         LSR_A();                                                 /* $4BC8 — on the throttle, */
@@ -8733,14 +8698,14 @@ static void assist_from_selector(void)
     /* $1F79-$1F94 — (edge difference) × gain, re-signed by the PHP sign, then by the steering's
        own sign byte. */
     cpu.A = curve;                                      /* what mul8_accum multiplies against */
-    mul8_accum_core();                                  /* $1F79 — product: low in math_lo, high in A */
+    mul8_accum();                                       /* $1F79 — product: low in math_lo, high in A */
     cpu.A = mem[STEER_DEMAND];                           /* $1F7C — the product's high byte */
     cpu.N = (uint8_t)diffNegative;                       /* $1F7E PLP — restore the $1F48 sign */
     abs16_math();                                        /* $1F7F */
     mem[STEER_DEMAND] = cpu.A;                            /* $1F82 */
     mem[STEER_SIGN] &= 0xFEu;                             /* $1F84-$1F88 clear bit 0 */
     if ((steer_angle_lo & 0x01u) == 0) {                 /* $1F8A LSR/BCS — sign says negate */
-        neg16_math_noinit_core();                        /* $1F90 — negates STEER_DEMAND : STEER_SIGN */
+        neg16_math_noinit();                             /* $1F90 — negates STEER_DEMAND : STEER_SIGN */
         mem[STEER_DEMAND] = cpu.A;                        /* $1F93 */
     }
     apply_steer_demand_core(steer_angle_lo);             /* $1F95 */
@@ -8929,7 +8894,7 @@ static void read_driving_controls_core(void)
         if (mem[0x1593] != 0x20u) { platform_smc_unhandled(0x1593, mem[0x1593]); return; }
         {
             uint16_t target = (uint16_t)(mem[0x1594] | ((unsigned)mem[0x1595] << 8));
-            if (target == 0x0C00u)                            mul8_core(cpu.A);
+            if (target == 0x0C00u)                            mul8();
             else if (target >= 0x5300u && target <= 0x5A25u)   revs_track_hook(target);
             else { platform_smc_unhandled(0x1593, target); return; }
         }
@@ -8966,7 +8931,7 @@ static void read_driving_controls_core(void)
     if (cpu.A == 0x03u) { read_pedals_and_gears(); return; }   /* both keys: no steering */
     cpu.A = (uint8_t)((cpu.A ^ steer_angle_lo) & 0x01u);        /* $15E8 */
     if (cpu.A == 0x00u) { steer_apply_with_assist_core(); return; }  /* already this way */
-    neg16_math_noinit_core();                          /* $15EE — flips it, result in A */
+    neg16_math_noinit();                               /* $15EE — flips it, result in A */
     steer_demand_store_core();
 }
 
