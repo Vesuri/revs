@@ -6680,7 +6680,11 @@ static void scale_by_track_gradient_core(uint8_t value, uint8_t index)
     PHP();                                                              /* $4617 */
     LDA(mem[TRACK_DIR_1 + index]);                                      /* $4618 */
     abs8();                                                             /* $461B */
-    mul8_core(cpu.A);                                                   /* $461E */
+    /* $461E — |gradient| x value >> 8.  The multiply's flags are dead here: the PLP below
+       restores the EOR's status, and the camera path is always D=0 (docs/static-map.md
+       §Decimal mode), so this is a plain 16-bit multiply. */
+    { unsigned p = revs_mulu16(cpu.A, math_hi);
+      math_lo = (uint8_t)p; cpu.A = (uint8_t)(p >> 8); }
     PLP();                                                              /* $4621 */
     abs8();                                                             /* $4622 */
 }

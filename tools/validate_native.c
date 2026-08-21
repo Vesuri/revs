@@ -3830,6 +3830,10 @@ static int test_sub_models(void)
         int keyheld = 0, revmodel = 0;
         int cases = list[i].cases * scale;
         int resultOnly = (i == 0 || i == 4 || i == 5);
+        /* i==1 scale_by_track_gradient keeps its live exit A/flags (the final abs8's), but its
+           interior multiply is now binary C, so D is pinned 0 — the camera path never runs
+           decimal (docs/static-map.md §Decimal mode). */
+        int pinD0 = resultOnly || (i == 1);
         unsigned mask = resultOnly ? LIVE_NONE : liveMask;
         if (!want(list[i].name)) continue;
         set_ignore(i == 0 ? angleIgnore : i == 5 ? gripIgnore : 0,
@@ -3894,14 +3898,14 @@ static int test_sub_models(void)
             else patched++;
 
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
-            c.D = resultOnly ? 0 : (uint8_t)(xs() % 4 == 0);
+            c.D = pinD0 ? 0 : (uint8_t)(xs() % 4 == 0);
             if (c.D) decimal++;
             subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
                                 mask, t, &printed);
         }
         set_ignore(0, 0);
         fail += subFail;
-        if ((!resultOnly && !decimal) || !throttle || !ingear || !powered || !cranking ||
+        if ((!pinD0 && !decimal) || !throttle || !ingear || !powered || !cranking ||
             !changed || !bothChanged || !entropy || !patched || !keyheld || !revmodel) {
             printf("[VACUOUS] %s: %d decimal, %d throttle, %d in gear, %d powered, "
                    "%d cranking, %d changed surface (%d both), %d entropy, %d SMC-random, "
