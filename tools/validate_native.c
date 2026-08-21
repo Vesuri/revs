@@ -276,9 +276,15 @@ static int diff_run(const char* name, const uint8_t* pre, Cpu6502 pre_cpu,
             (*printed)++;
         }
     } else {
-        for (unsigned i = 0; i < ref_mos_n; i++)
+        for (unsigned i = 0; i < ref_mos_n; i++) {
+            /* ⚠ OSBYTE &80 (ADVAL / read-ADC-channel, entry $FFF4 A=$80) takes its channel in X
+               and IGNORES Y on entry — the reading comes BACK in Y (see adc_read_core).  A twin
+               that leaves a different value in Y makes the identical call; comparing entry-Y there
+               would fail an idiomatic twin over a register the real MOS never reads. */
+            int compareY = !(ref_mos_entry[i] == 0xFFF4 && ref_mos_a[i] == 0x80);
             if (g_mosLogEntry[i] != ref_mos_entry[i] || g_mosLogA[i] != ref_mos_a[i] ||
-                g_mosLogX[i] != ref_mos_x[i] || g_mosLogY[i] != ref_mos_y[i]) {
+                g_mosLogX[i] != ref_mos_x[i] ||
+                (compareY && g_mosLogY[i] != ref_mos_y[i])) {
                 failed = 1;
                 if (*printed < 12) {
                     printf("[MOS DIFF] %s case %d  call %u  ref=$%04X A=$%02X X=$%02X Y=$%02X"
@@ -289,6 +295,7 @@ static int diff_run(const char* name, const uint8_t* pre, Cpu6502 pre_cpu,
                 }
                 break;
             }
+        }
     }
 
     /* ⭐ THE SMC TRAP is a third output channel, and the same argument as the hardware
@@ -2324,7 +2331,7 @@ static int test_span_leaves(void)
     setenv("REVS_SMC_CONTINUE", "1", 1);
 
     if (want("abs16_math")) {
-        int subFail = 0, negated = 0, disagreed = 0, decimal = 0;
+        int subFail = 0, negated = 0, disagreed = 0;
         for (t = 0; t < absCases; t++) {
             Cpu6502 c = zero_cpu();
             fill_random(pre);
@@ -2333,22 +2340,26 @@ static int test_span_leaves(void)
                decorrelate it from bit 7 of A deliberately. */
             c.N = (xs() % 3) ? (uint8_t)(c.A >> 7) : (uint8_t)(xs() & 1);
             c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
-            c.D = (uint8_t)(xs() % 4 == 0);   /* decimal changes the RESULT BYTE, not just flags */
+            /* ⭐ D IS PINNED TO 0: the idiomatic core is a plain binary 16-bit negate, and
+               abs16_math's callers are all on the per-frame driving-model / steering path.  Decimal
+               mode lives ENTIRELY in race-stats / marker-draw / front-end menu, each SED…CLD
+               bracketed locally (docs/static-map.md §Decimal mode, settled — the per-frame sim is
+               D=0).  make determinism-drive is the empirical backstop. */
+            c.D = 0;
             if (c.N != (c.A >> 7)) disagreed++;
             if (c.N) negated++;
-            if (c.D) decimal++;
             subFail += diff_run("abs16_math", pre, c, abs16_math, abs16_math__t6502,
                                 liveMask, t, &printed);
         }
         fail += subFail;
-        if (negated == 0 || disagreed == 0 || decimal == 0) {
-            printf("[VACUOUS] abs16_math: %d negated, %d decorrelated, %d decimal of %d — "
-                   "all three must be non-zero\n", negated, disagreed, decimal, absCases);
+        if (negated == 0 || disagreed == 0) {
+            printf("[VACUOUS] abs16_math: %d negated, %d decorrelated of %d — "
+                   "both must be non-zero\n", negated, disagreed, absCases);
             fail++;
         }
         printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
-               "(%d negated, %d with N vs bit 7 decorrelated, %d decimal)\n",
-               "abs16_math", absCases, subFail, negated, disagreed, decimal);
+               "(%d negated, %d with N vs bit 7 decorrelated, D=0 pinned)\n",
+               "abs16_math", absCases, subFail, negated, disagreed);
     }
 
     if (want("road_span_advance")) {
@@ -3261,6 +3272,17 @@ static int test_multiply(void)
       int i;
       for (i = 0; i < 5; i++) {
         int subFail = 0, decimal = 0, zeroOperand = 0, cases = list[i].cases * scale;
+        /* ⭐ neg16_math (i == 3) and neg16_math_noinit (i == 4) are idiomatic binary 16-bit
+           negates; their callers are all on the per-frame driving-model / steering path, which is
+           D = 0 (docs/static-map.md §Decimal mode, settled).  The three multiplies keep the D
+           sweep — their twins reproduce BCD faithfully.  make determinism-drive is the backstop.
+           ⭐ The two negates are verified on their RESULT (math_lo, math_hi, A), not their exit
+           flags: the 6502 routines leave the second subtract's N/V/Z/C behind, but EVERY caller
+           overwrites them before a branch — LDA/LDY at the four transliteration sites, and
+           poll_steering_assist at the $15EE→steer_apply_with_assist one — so the flags are dead
+           scratch, not a result.  A (the negated high byte) IS a documented output and stays checked. */
+        int binaryNeg = (i == 3 || i == 4);
+        unsigned negMask = binaryNeg ? (LIVE_A | LIVE_X | LIVE_Y) : liveMask;
         if (!want(list[i].name)) continue;
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
@@ -3272,20 +3294,21 @@ static int test_multiply(void)
             if (xs() % 8 == 0) { pre[PRE_TEMP_76] = 0; }
             c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
-            c.D = (uint8_t)(xs() % 4 == 0);
+            c.D = binaryNeg ? 0 : (uint8_t)(xs() % 4 == 0);
             if (c.D) decimal++;
             subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
-                                liveMask, t, &printed);
+                                negMask, t, &printed);
         }
         fail += subFail;
-        if (!decimal || !zeroOperand) {
+        if ((!binaryNeg && !decimal) || !zeroOperand) {
             printf("[VACUOUS] %s: %d decimal, %d zero-operand cases\n",
                    list[i].name, decimal, zeroOperand);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  %s  "
                "(%d decimal, %d with a zero operand)\n",
-               list[i].name, cases, subFail, decimal, zeroOperand);
+               list[i].name, cases, subFail,
+               binaryNeg ? "live=AXY (flags dead)" : "live=AXY+flags", decimal, zeroOperand);
       }
     }
     return fail;
@@ -3348,10 +3371,21 @@ static int test_model_arithmetic(void)
       };
     for (i = 0; i < 8; i++) register_fixture(list[i].name);
 
+    /* ⭐ add_signed_into_element (i == 4) and apply_angle_term[_at] (i == 5, 6) are verified
+       RESULT-ONLY: their native twins are plain 16-bit binary C leaving nothing in the cpu, so
+       the fixture pins D = 0 (the driving model's precondition — docs/static-map.md §Decimal
+       mode), drops the register/flag comparison, and ignores the oracle's arithmetic scratch.
+       add_signed's negate arm spills the math accumulator $74/$75; apply_angle_term's product
+       flows through mul16_signed for BOTH models, so its scratch matches with none to ignore. */
+    static const uint16_t addIgnore[] = { 0x0074, 0x0075 };
+
     for (i = 0; i < 8; i++) {
         int subFail = 0, decimal = 0, decorrelated = 0, negative = 0, accumulate = 0;
         int cases = list[i].cases * scale;
+        int resultOnly = (i >= 4 && i <= 6);
+        unsigned mask = resultOnly ? LIVE_NONE : liveMask;
         if (!want(list[i].name)) continue;
+        set_ignore(i == 4 ? addIgnore : 0, i == 4 ? 2 : 0);
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
             fill_random(pre);
@@ -3371,24 +3405,26 @@ static int test_model_arithmetic(void)
             if (c.N != (pre[0x0075] >> 7)) decorrelated++;
             if (c.N) negative++;
             c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
-            c.D = (uint8_t)(xs() % 4 == 0);
+            c.D = resultOnly ? 0 : (uint8_t)(xs() % 4 == 0);
             if (c.D) decimal++;
             /* scale16_by_y and mul16_by_1_5 want A and Y as the value/scale, not indices. */
             if (i == 1 || i == 2) { c.A = (uint8_t)xs(); c.Y = (uint8_t)xs(); }
             if (i == 7) { c.X = (uint8_t)(0x80 | (xs() & 0x7F)); c.D = 0; }
             subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
-                                liveMask, t, &printed);
+                                mask, t, &printed);
         }
         fail += subFail;
-        if (!decimal || !decorrelated || !negative) {
+        if ((!resultOnly && !decimal) || !decorrelated || !negative) {
             printf("[VACUOUS] %s: %d decimal, %d decorrelated N, %d negative\n",
                    list[i].name, decimal, decorrelated, negative);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=%s  "
                "(%d decimal, %d N decorrelated, %d negative, %d accumulate)\n",
-               list[i].name, cases, subFail, decimal, decorrelated, negative, accumulate);
+               list[i].name, cases, subFail, resultOnly ? "result-only" : "AXY+flags",
+               decimal, decorrelated, negative, accumulate);
     }
+    set_ignore(0, 0);
     return fail;
 }
 
@@ -3464,6 +3500,11 @@ static int test_model_rotations(void)
         int subFail = 0, decimal = 0, negative = 0, accumulate = 0, carried = 0;
         int cases = list[i].cases * scale;
         int resultOnly = (i == 0 || i == 3);
+        /* rotate_accum_by_steer (i == 1) and rotate_pair_a_by_steer (i == 2) reach the idiomatic
+           binary neg16_math_noinit; like the result-only pair they run only with D = 0 (the driving
+           model's precondition — docs/static-map.md §Decimal mode), so they pin D = 0 while keeping
+           the full register/flag comparison. */
+        int pinD0 = resultOnly || i == 1 || i == 2;
         unsigned mask = resultOnly ? LIVE_NONE : liveMask;
         if (!want(list[i].name)) continue;
         set_ignore(i == 0 ? stageIgnore : i == 3 ? dampIgnore : 0,
@@ -3478,7 +3519,7 @@ static int test_model_rotations(void)
             if (c.X & 0x40) accumulate++;
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
             if (c.N) negative++;
-            c.D = resultOnly ? 0 : (uint8_t)(xs() % 4 == 0);
+            c.D = pinD0 ? 0 : (uint8_t)(xs() % 4 == 0);
             if (c.D) decimal++;
             /* ⚠ integrate_car_position's 24-bit add is the one place a CARRY OUT of the
                fractional byte reaches the next byte, and $490D takes that carry from the
@@ -3493,8 +3534,8 @@ static int test_model_rotations(void)
         }
         set_ignore(0, 0);
         fail += subFail;
-        /* the result-only twins pin D = 0 by design, so they are exempt from the decimal check. */
-        if ((!resultOnly && !decimal) || !negative || !accumulate) {
+        /* the D = 0 twins are exempt from the decimal-coverage check by design. */
+        if ((!pinD0 && !decimal) || !negative || !accumulate) {
             printf("[VACUOUS] %s: %d decimal, %d negative N, %d accumulate\n",
                    list[i].name, decimal, negative, accumulate);
             fail++;
@@ -3578,10 +3619,21 @@ static int test_slip_and_sound(void)
     static const uint8_t PEDALS[3] = { 1, 0, 0x80 };
     for (i = 0; i < 12; i++) register_fixture(list[i].name);
 
+    /* ⭐ check_wheel_slip (i == 5) is verified RESULT-ONLY: its native twin is idiomatic C whose
+       whole product is mem[] (the slip flags and the state vector), leaving nothing meaningful in
+       the cpu — no caller reads its exit registers.  D is pinned to 0 (the driving model's
+       precondition) and the register/flag comparison is dropped. */
     for (i = 0; i < 12; i++) {
         int subFail = 0, decimal = 0, throttle = 0, driven = 0, powered = 0, idle = 0;
         int cases = list[i].cases * scale;
+        int resultOnly = (i == 5);
+        unsigned mask = resultOnly ? LIVE_NONE : liveMask;
         if (!want(list[i].name)) continue;
+        /* check_wheel_slip's idiomatic core keeps the 6502's math accumulator ($74/$75) and its
+           sign-decision (a PHP on the stack) in C locals; the oracle spills them.  None is read
+           by any caller before the next writer — pure scratch. */
+        { static const uint16_t slipIgnore[] = { 0x0074, 0x0075, 0x01FF };
+          set_ignore(i == 5 ? slipIgnore : 0, i == 5 ? 3 : 0); }
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
             fill_random(pre);
@@ -3594,7 +3646,7 @@ static int test_slip_and_sound(void)
             if (c.X == 1) driven++;
             if (pre[PRE_DRIVE_STATE] < 2) powered++;
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
-            c.D = (uint8_t)(xs() % 4 == 0);
+            c.D = resultOnly ? 0 : (uint8_t)(xs() % 4 == 0);
             /* ⚠ The four sound routines run with D CLEAR: the engine only ever calls them from
                binary-mode code, and sound_queue's block index is an ADC, so a decimal case
                would compare two models agreeing on a block the game can never ask for.  The
@@ -3618,7 +3670,7 @@ static int test_slip_and_sound(void)
             }
             if (i == 11) c.X = (uint8_t)(xs() & 1);
             subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
-                                liveMask, t, &printed);
+                                mask, t, &printed);
         }
         fail += subFail;
         if (!throttle || !driven || !powered) {
@@ -3627,11 +3679,13 @@ static int test_slip_and_sound(void)
             fail++;
         }
         if (i == 10 && !idle) { printf("[VACUOUS] %s: no already-idle case\n", list[i].name); fail++; }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  %s  "
                "(%d decimal, %d throttle, %d driven axle, %d under power%s)\n",
-               list[i].name, cases, subFail, decimal, throttle, driven, powered,
+               list[i].name, cases, subFail, resultOnly ? "result-only" : "live=AXY+flags",
+               decimal, throttle, driven, powered,
                i == 10 ? ", channel idle forced" : "");
     }
+    set_ignore(0, 0);
     return fail;
 }
 
@@ -3729,13 +3783,18 @@ static int test_sub_models(void)
     setenv("REVS_SMC_CONTINUE", "1", 1);
     g_smcUnhandled = 0;
 
-    /* ⭐ compute_car_angles (i == 0) and update_grip_limits (i == 5) are verified RESULT-ONLY:
-       their native twins are plain 16-bit binary C that leaves nothing in the cpu, so the fixture
-       pins D = 0 (the driving model's precondition — docs/static-map.md §Decimal mode), drops the
-       register/flag comparison, and ignores the oracle's arithmetic scratch.  Neither uses the
-       6502 stack.  compute_car_angles spills the sin/cos temporaries $42, $74-$79, $7B;
-       update_grip_limits spills $74-$79 (the $F3 multiply and the load term in hypot_min) plus
-       the stack residue $01FF from the PHP/PLP that carries the load term's sign ($4BD8). */
+    /* ⭐ compute_car_angles (i == 0), apply_drag_terms (i == 4) and update_grip_limits (i == 5)
+       are verified RESULT-ONLY: their native twins end in idiomatic 16-bit binary C (the tail of
+       apply_drag_terms is add_signed_into_element, itself now binary) that leaves nothing
+       deterministic in the cpu, so the fixture pins D = 0 (the driving model's precondition —
+       docs/static-map.md §Decimal mode), drops the register/flag comparison, and ignores the
+       oracle's arithmetic scratch.  None of the three uses the 6502 stack.  compute_car_angles
+       spills the sin/cos temporaries $42, $74-$79, $7B; update_grip_limits spills $74-$79 (the
+       $F3 multiply and the load term in hypot_min) plus the stack residue $01FF from the PHP/PLP
+       that carries the load term's sign ($4BD8).  apply_drag_terms spills no mem[] the twin does
+       not also write (its result is model state elements 6 and 7); only its dead exit A/Y/N —
+       the last add_signed_into_element's index and sum high byte — differ, and the sole caller
+       (apply_driving_model, whose next step rotate_state_pair takes explicit args) reads none. */
     static const uint16_t angleIgnore[] =
         { 0x0042, 0x0074, 0x0075, 0x0076, 0x0077, 0x0078, 0x0079, 0x007B };
     static const uint16_t gripIgnore[]  =
@@ -3746,7 +3805,7 @@ static int test_sub_models(void)
         int cranking = 0, changed = 0, bothChanged = 0, entropy = 0, patched = 0;
         int keyheld = 0, revmodel = 0;
         int cases = list[i].cases * scale;
-        int resultOnly = (i == 0 || i == 5);
+        int resultOnly = (i == 0 || i == 4 || i == 5);
         unsigned mask = resultOnly ? LIVE_NONE : liveMask;
         if (!want(list[i].name)) continue;
         set_ignore(i == 0 ? angleIgnore : i == 5 ? gripIgnore : 0,
@@ -4492,12 +4551,36 @@ static int test_driving_controls(void)
 
     setenv("REVS_SMC_CONTINUE", "1", 1);
 
+    /* ⭐ apply_steer_demand (i == 10), apply_steering_assist (i == 11) and read_driving_controls
+       (i == 16) are verified RESULT-ONLY: their native twins are idiomatic C whose product is
+       mem[] (the steering demand/angle cells and the control state), leaving nothing meaningful in
+       the cpu — no caller reads their exit registers.  The register/flag comparison is dropped.
+
+       ⭐⭐ D IS PINNED TO 0 FOR THE WHOLE STEERING/DRIVING CLUSTER (i >= 10).  These twins —
+       apply_steer_demand, apply_steering_assist and its callers (steer_apply_with_assist,
+       steer_assist_dispatch, steer_demand_store, steer_demand_from_slip) and read_driving_controls
+       — are idiomatic 16-bit C that computes in plain binary, because the steering path is only
+       ever entered with D = 0 (docs/static-map.md §Decimal mode: all 8 SED sites are
+       race-stats / marker-draw / front-end menu, none on this path).  Sweeping D here would test
+       an unreachable state and diverge from the decimal-honouring oracle for no faithful reason;
+       make determinism-drive is the backstop that D = 0 truly holds while driving. */
     for (i = 0; i < 17; i++) {
         int subFail = 0, decimal = 0, joystick = 0, keyheld = 0, assist = 0;
         int textRow = 0, sessionOver = 0, patched = 0;
         int oneKey = 0, onEdge = 0, latchClear = 0;
         int cases = list[i].cases * scale;
+        int resultOnly = (i == 10 || i == 11 || i == 16);
+        int binaryPath = (i >= 10);
+        unsigned mask = resultOnly ? LIVE_NONE : liveMask;
         if (!want(list[i].name)) continue;
+        /* apply_steering_assist (i == 11), steer_apply_with_assist (i == 12) and
+           read_driving_controls (i == 16) spill the 6502's sign-decisions onto the stack (PHP/PLP
+           inside assist_from_selector), which the idiomatic cores carry in locals; the pushed
+           byte is read back by the routine's own PLP but is dead once it returns.  apply_steer_demand
+           (i == 10) touches neither, so no ignore. */
+        { static const uint16_t stackIgnore[] = { 0x01FF };
+          int wantStack = (i == 11 || i == 12 || i == 16);
+          set_ignore(wantStack ? stackIgnore : 0, wantStack ? 1 : 0); }
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
             fill_random(pre);
@@ -4563,14 +4646,33 @@ static int test_driving_controls(void)
             if (xs() % 10) { pre[0x1593] = 0x20; pre[0x1594] = 0x00; pre[0x1595] = 0x0C; }
             else patched++;
 
+            /* ⚠ The gear OVER-TOP wrap ($16D2: adc_step result $07 → $06) needs a SHIFT-DOWN with
+               gear_index already at the top — a conjunction (keyboard mode, the $EF key alone, the
+               latch clear, gear_index == 6).  In read_driving_controls (i == 16) it is UNREACHABLE
+               against a transliterated oracle: the only non-cancelling route to the gear tail is the
+               both-keys arm ($15E5 → FUN_163b), which the one-key test backend can reach only via
+               mode-1 (ALL keys held) — and that mode always shifts UP ($9F is polled before $EF), so
+               the shift-down wrap never runs there.  clamp_and_store_steer_angle (i == 9) instead
+               reaches read_pedals_and_gears with the transliterated FUN_163b as its own oracle, no
+               steering front and so no key conflict — that is where the wrap is validated.  Steer
+               one case in 29 straight onto it, deterministically off t so the shared xs() stream is
+               untouched and every other fixture's cases are unchanged. */
+            if ((i == 9 || i == 16) && (t % 29) == 0) {
+                pre[PRE_OPTION_FLAGS] &= 0x7F;             /* keyboard, so the $EF key is polled */
+                platform_test_key_only(0xEF);             /* gear down, and nothing else held */
+                pre[0x0019]         = 0x00;               /* gear_key_latch released */
+                pre[PRE_GEAR_INDEX] = 0x06;               /* at the top: one down would be $07 */
+                pre[PRE_SESSION_END] = 0x00;              /* session running */
+            }
+
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
-            c.D = (uint8_t)(xs() % 4 == 0);
+            c.D = binaryPath ? 0 : (uint8_t)(xs() % 4 == 0);
             if (c.D) decimal++;
             subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
-                                liveMask, t, &printed);
+                                mask, t, &printed);
         }
         fail += subFail;
-        if (!decimal || !joystick || !keyheld || !assist || !textRow || !sessionOver ||
+        if ((!binaryPath && !decimal) || !joystick || !keyheld || !assist || !textRow || !sessionOver ||
             !patched || !oneKey || !onEdge || !latchClear) {
             printf("[VACUOUS] %s: %d decimal, %d joystick, %d key held (%d single), "
                    "%d assist on, %d low text row, %d session over, %d SMC-random, "
@@ -4578,14 +4680,16 @@ static int test_driving_controls(void)
                    keyheld, oneKey, assist, textRow, sessionOver, patched, onEdge, latchClear);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  %s  "
                "(%d decimal, %d joystick, %d held/%d single, %d assist on, %d SMC-random, "
                "%d dead-zone edge, %d latch clear)\n",
-               list[i].name, cases, subFail, decimal, joystick, keyheld, oneKey, assist,
+               list[i].name, cases, subFail, resultOnly ? "result-only" : "live=AXY+flags",
+               decimal, joystick, keyheld, oneKey, assist,
                patched, onEdge, latchClear);
     }
     platform_test_key_down(0);
     unsetenv("REVS_SMC_CONTINUE");
+    set_ignore(0, 0);
     return fail;
 }
 
