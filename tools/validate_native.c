@@ -3450,19 +3450,24 @@ static int test_model_rotations(void)
       };
     for (i = 0; i < 9; i++) register_fixture(list[i].name);
 
-    /* ⭐ damp_and_derive_loads (i == 3) is verified RESULT-ONLY: its native twin is plain 16-bit
-       binary C that leaves nothing in the cpu, so the fixture pins D = 0 (the driving model's
-       real precondition — docs/static-map.md §Decimal mode), drops the register/flag comparison,
-       and ignores the oracle's arithmetic scratch ($74-$78) and stack residue ($01FF), which are
-       the 6502's register spill and dead the moment the routine returns. */
-    static const uint16_t dampIgnore[] = { 0x0074, 0x0075, 0x0076, 0x0077, 0x0078, 0x01FF };
+    /* ⭐ stage_accum_delta (i == 0) and damp_and_derive_loads (i == 3) are verified RESULT-ONLY:
+       their native twins are plain 16-bit binary C that leaves nothing in the cpu, so the fixture
+       pins D = 0 (the driving model's real precondition — docs/static-map.md §Decimal mode),
+       drops the register/flag comparison, and ignores the oracle's arithmetic scratch ($74-$78)
+       and stack residue ($01FF), which are the 6502's register spill and dead the moment the
+       routine returns.  stage_accum_delta scales through scale16_by_y (PHP/PLP) and mul16_by_1_5
+       (PHA/PLA), so its residue is $74-$77 + $01FF; damp also spills $78. */
+    static const uint16_t stageIgnore[] = { 0x0074, 0x0075, 0x0076, 0x0077, 0x01FF };
+    static const uint16_t dampIgnore[]  = { 0x0074, 0x0075, 0x0076, 0x0077, 0x0078, 0x01FF };
 
     for (i = 0; i < 9; i++) {
         int subFail = 0, decimal = 0, negative = 0, accumulate = 0, carried = 0;
         int cases = list[i].cases * scale;
-        unsigned mask = (i == 3) ? LIVE_NONE : liveMask;
+        int resultOnly = (i == 0 || i == 3);
+        unsigned mask = resultOnly ? LIVE_NONE : liveMask;
         if (!want(list[i].name)) continue;
-        set_ignore(i == 3 ? dampIgnore : 0, i == 3 ? 6 : 0);
+        set_ignore(i == 0 ? stageIgnore : i == 3 ? dampIgnore : 0,
+                   i == 0 ? 5 : i == 3 ? 6 : 0);
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
             fill_random(pre);
@@ -3473,7 +3478,7 @@ static int test_model_rotations(void)
             if (c.X & 0x40) accumulate++;
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
             if (c.N) negative++;
-            c.D = (i == 3) ? 0 : (uint8_t)(xs() % 4 == 0);
+            c.D = resultOnly ? 0 : (uint8_t)(xs() % 4 == 0);
             if (c.D) decimal++;
             /* ⚠ integrate_car_position's 24-bit add is the one place a CARRY OUT of the
                fractional byte reaches the next byte, and $490D takes that carry from the
@@ -3488,15 +3493,15 @@ static int test_model_rotations(void)
         }
         set_ignore(0, 0);
         fail += subFail;
-        /* damp_and_derive_loads pins D = 0 by design, so it is exempt from the decimal check. */
-        if ((i != 3 && !decimal) || !negative || !accumulate) {
+        /* the result-only twins pin D = 0 by design, so they are exempt from the decimal check. */
+        if ((!resultOnly && !decimal) || !negative || !accumulate) {
             printf("[VACUOUS] %s: %d decimal, %d negative N, %d accumulate\n",
                    list[i].name, decimal, negative, accumulate);
             fail++;
         }
         printf("%-32s %7d cases, %d mismatch (must be 0)  %s  "
                "(%d decimal, %d negative, %d accumulate, %d forced carry)\n",
-               list[i].name, cases, subFail, (i == 3) ? "result-only" : "live=AXY+flags",
+               list[i].name, cases, subFail, resultOnly ? "result-only" : "live=AXY+flags",
                decimal, negative, accumulate, carried);
     }
     return fail;
@@ -3724,12 +3729,28 @@ static int test_sub_models(void)
     setenv("REVS_SMC_CONTINUE", "1", 1);
     g_smcUnhandled = 0;
 
+    /* ⭐ compute_car_angles (i == 0) and update_grip_limits (i == 5) are verified RESULT-ONLY:
+       their native twins are plain 16-bit binary C that leaves nothing in the cpu, so the fixture
+       pins D = 0 (the driving model's precondition — docs/static-map.md §Decimal mode), drops the
+       register/flag comparison, and ignores the oracle's arithmetic scratch.  Neither uses the
+       6502 stack.  compute_car_angles spills the sin/cos temporaries $42, $74-$79, $7B;
+       update_grip_limits spills $74-$79 (the $F3 multiply and the load term in hypot_min) plus
+       the stack residue $01FF from the PHP/PLP that carries the load term's sign ($4BD8). */
+    static const uint16_t angleIgnore[] =
+        { 0x0042, 0x0074, 0x0075, 0x0076, 0x0077, 0x0078, 0x0079, 0x007B };
+    static const uint16_t gripIgnore[]  =
+        { 0x0074, 0x0075, 0x0076, 0x0077, 0x0078, 0x0079, 0x01FF };
+
     for (i = 0; i < 8; i++) {
         int subFail = 0, decimal = 0, throttle = 0, ingear = 0, powered = 0;
         int cranking = 0, changed = 0, bothChanged = 0, entropy = 0, patched = 0;
         int keyheld = 0, revmodel = 0;
         int cases = list[i].cases * scale;
+        int resultOnly = (i == 0 || i == 5);
+        unsigned mask = resultOnly ? LIVE_NONE : liveMask;
         if (!want(list[i].name)) continue;
+        set_ignore(i == 0 ? angleIgnore : i == 5 ? gripIgnore : 0,
+                   i == 0 ? 8 : i == 5 ? 7 : 0);
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
             fill_random(pre);
@@ -3790,13 +3811,14 @@ static int test_sub_models(void)
             else patched++;
 
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
-            c.D = (uint8_t)(xs() % 4 == 0);
+            c.D = resultOnly ? 0 : (uint8_t)(xs() % 4 == 0);
             if (c.D) decimal++;
             subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
-                                liveMask, t, &printed);
+                                mask, t, &printed);
         }
+        set_ignore(0, 0);
         fail += subFail;
-        if (!decimal || !throttle || !ingear || !powered || !cranking ||
+        if ((!resultOnly && !decimal) || !throttle || !ingear || !powered || !cranking ||
             !changed || !bothChanged || !entropy || !patched || !keyheld || !revmodel) {
             printf("[VACUOUS] %s: %d decimal, %d throttle, %d in gear, %d powered, "
                    "%d cranking, %d changed surface (%d both), %d entropy, %d SMC-random, "
@@ -3805,10 +3827,11 @@ static int test_sub_models(void)
                    changed, bothChanged, entropy, patched, keyheld, revmodel);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  %s  "
                "(%d decimal, %d throttle, %d in gear, %d powered, %d cranking, "
                "%d changed surface, %d entropy, %d key held, %d forced rev model)\n",
-               list[i].name, cases, subFail, decimal, throttle, ingear, powered,
+               list[i].name, cases, subFail, resultOnly ? "result-only" : "live=AXY+flags",
+               decimal, throttle, ingear, powered,
                cranking, changed, entropy, keyheld, revmodel);
     }
     platform_test_via_t2(0);

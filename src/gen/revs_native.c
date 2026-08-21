@@ -1703,6 +1703,11 @@ static ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin);
 /* The 16-bit negate abs16_math falls into (twin #48), also defined further down. */
 static void neg16_math_core(uint8_t high);
 
+/* The driving model's two pure-binary scale helpers (defined with damp_and_derive_loads),
+   used by stage_accum_delta above them in the file. */
+static uint16_t model_scale16(uint16_t value, uint8_t scale);
+static uint16_t model_mul_1_5(uint16_t value);
+
 /* draw_road's three producers (twins #26/#28/#29), defined much further down — the road pass
    reaches them through the cores, not the 6502-ABI shims. */
 static uint8_t mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint);
@@ -5763,25 +5768,29 @@ void kbd_test_key(void)          { kbd_test_key_core(); }
    accumulator at x - v while apply_driving_model restores x and adds +1.5v afterwards — the
    shape of a midpoint integration, and the reason this routine looks like it corrupts state.
 
-   ⚠ scale16_by_y takes the value's SIGN from the caller's N, which here is the `LDA $62E2`
-   that loaded its high byte — so the load's flags are live across the call.
+   ⭐ WRITTEN AS PLAIN 16-BIT SIGNED C.  The 6502 scaled through scale16_by_y (a PHP/PLP sign
+   dance) and took 1.5x through mul16_by_1_5 (a PHA/PLA one); with D = 0 — the driving model's
+   real precondition (docs/static-map.md §Decimal mode) — both are just model_scale16 and
+   model_mul_1_5 on 16-bit words, so this twin is arithmetic on locals.  Its exit registers,
+   arithmetic scratch ($74-$77) and stack residue ($01FF) are all dead: apply_driving_model's
+   next act is `update_grip_limits`, which opens with `LDA #0`.  The fixture verifies the four
+   output cells (model_accum and model_accum_delta) only.
    --------------------------------------------------------------------------- */
 static void stage_accum_delta_core(void)
 {
-    math_lo = heading_step_lo;                          /* $4729-$472C */
-    cpu.Y   = 0x58u;                                    /* $472E — the scale */
-    cpu.A   = (uint8_t)load_a(heading_step_hi);         /* $4730 — its N is the value's sign */
-    scale16_by_y_core(cpu.A, 0x58u);                    /* $4733 */
-    math_hi = cpu.A;                                    /* $4736 */
+    /* $4729-$4736 — scale the heading step (state element 2) by $58/256, keeping its sign. */
+    uint16_t step   = (uint16_t)(heading_step_lo | (heading_step_hi << 8));
+    uint16_t scaled = model_scale16(step, 0x58u);
 
     /* $4738-$4746 — the accumulator loses the scaled term for the next four sub-models. */
-    model_accum_lo = (uint8_t)sub_from(model_accum_lo, math_lo);
-    model_accum_hi = (uint8_t)sbc_step(model_accum_hi, math_hi, cpu.C);
+    uint16_t accum  = (uint16_t)((model_accum_lo | (model_accum_hi << 8)) - scaled);
+    model_accum_lo = (uint8_t)accum;
+    model_accum_hi = (uint8_t)(accum >> 8);
 
-    mul16_by_1_5_core();                                /* $4749 — 1.5x what was removed */
-    model_accum_delta_hi = cpu.A;                       /* $474C */
-    cpu.A = (uint8_t)load_a(math_lo);                   /* $474E */
-    model_accum_delta_lo = cpu.A;                       /* $4750 */
+    /* $4749-$4750 — and 1.5x what was removed is parked as the midpoint delta. */
+    uint16_t delta = model_mul_1_5(scaled);
+    model_accum_delta_lo = (uint8_t)delta;
+    model_accum_delta_hi = (uint8_t)(delta >> 8);
 }
 
 /* ---------------------------------------------------------------------------
@@ -6554,89 +6563,61 @@ void update_slip_sound(void)    { update_slip_sound_core(cpu.X); }
    6 of the heading's high byte choosing which element gets which.  The tail ORs the quadrant's
    two sign bits into bit 0 of each low byte, which is where the sign lives for this pair.
 
-   ⚠ Its exit A/N/Z are the tail's, and the tail has two arms — see the group header, item 2,
-   for the five dead bytes at $0D21.
+   ⭐ WRITTEN AS PLAIN 16-BIT C.  Every ADC/SBC/ROR byte-pair chain here is ordinary binary
+   arithmetic with D = 0 (the driving model's precondition — docs/static-map.md §Decimal mode),
+   the three `mul8` steps are `(a * b) >> 8`, and the two loop passes become an explicit
+   two-iteration loop over the reflected angle.  The five dead bytes at $0D21 (group header,
+   item 2) simply do not appear.  The routine leaves only car_angle[0]/[1]; its exit registers
+   and its arithmetic scratch ($42, $74-$79, $7B) are dead — apply_driving_model's next call,
+   rotate_state_0_into_8, opens by reloading X, Y and A — so the fixture verifies the four
+   output bytes only.
    --------------------------------------------------------------------------- */
 static void compute_car_angles_core(uint8_t headingHi, uint8_t headingLo)
 {
-    hypot_max_hi = headingHi;               /* $0D01 — kept for the two sign tests at the end */
-    math_lo      = headingLo;               /* $0D03 */
-    mul16_by_pi_core(headingHi);            /* $0D05 */
-    hypot_min_lo = cpu.A;                   /* $0D08 — h = heading x pi, low byte */
-    hypot_min_hi = math_hi;                 /* $0D0A-$0D0C — ...and high */
+    /* $0D01-$0D0C — h = heading x pi, as a 16-bit value ($C9/256 x 4 = pi to three figures). */
+    uint16_t scaled = (uint16_t)(((headingHi << 8) | headingLo) << 2);
+    uint16_t h      = (uint16_t)(((uint32_t)scaled * 0xC9u) >> 8);
 
-    /* $0D0E-$0D19 — which element this first pass writes; shared_counter_42 keeps the other. */
-    shared_counter_42 = 0x01u;
-    LDX(0x00u);
-    BIT(hypot_max_hi);                      /* V = bit 6 of the heading's high byte */
-    if (cpu.V) { INX(); DEC_M(MEM_shared_counter_42); }
+    /* $0D0E-$0D19 — bit 6 of the heading's high byte decides which element the first pass
+       writes; the second pass takes the other. */
+    int elem[2];
+    elem[0] = (headingHi & 0x40u) ? 1 : 0;
+    elem[1] = elem[0] ^ 1;
 
-    for (;;) {
-        LDA(hypot_min_hi);                  /* $0D0A / $0D92 both leave this in A at $0D1B */
-        CMP(0x7Au);
-        if (!cpu.C) {
-            /* $0D27-$0D4C — the SMALL-ANGLE arm: h - ($AB/256) h^3, doubled.  Three
-               multiplies by h's high byte, the last of them 16x8. */
-            mul8_core(0xABu);               /* $0D27-$0D29 */
-            mul8_core(cpu.A);               /* $0D2C */
-            shared_temp_76 = cpu.A;         /* $0D2F */
-            mul8_accum_core();              /* $0D31 */
-
-            math_lo = (uint8_t)sub_from(hypot_min_lo, math_lo);          /* $0D34-$0D39 */
-            cpu.A   = (uint8_t)sbc_step(hypot_min_hi, math_hi, cpu.C);   /* $0D3B-$0D3D */
-            ASL_M(MEM_math_lo);                                          /* $0D3F */
-            ROL_A();                                                     /* $0D41 */
-            mem[CAR_ANGLE_HI + cpu.X] = cpu.A;                           /* $0D42 */
-            LDA(math_lo);
-            AND(0xFEu);                     /* bit 0 belongs to the sign the tail ORs in */
-            mem[CAR_ANGLE_LO + cpu.X] = cpu.A;                           /* $0D49 */
+    for (int pass = 0; pass < 2; pass++) {
+        uint8_t lo, hi;
+        if ((uint8_t)(h >> 8) < 0x7Au) {
+            /* $0D27-$0D4C — the SMALL-ANGLE arm: (h - ($AB/256) h^3) doubled.  Three
+               multiplies by h's high byte, the last of them a 16x8 fixed-point step. */
+            uint8_t  hh   = (uint8_t)(h >> 8);
+            uint16_t cube = (uint16_t)(0xABu * hh);              /* $AB * h_hi */
+            cube = (uint16_t)((cube >> 8) * hh);                 /* x h_hi */
+            cube = (uint16_t)(((uint32_t)cube * hh) >> 8);       /* x h_hi, >> 8 */
+            uint16_t res = (uint16_t)((h - cube) << 1);          /* the sine, doubled */
+            lo = (uint8_t)(res & 0xFEu);   /* bit 0 belongs to the sign the tail ORs in */
+            hi = (uint8_t)(res >> 8);
         } else {
-            /* $0D4F-$0D7C — the LARGE-ANGLE arm: d = $C900 - h, then -2 x d x d_hi, with a
-               SATURATION to ($FE, $FF) when the closing negate does not borrow. */
-            math_lo        = (uint8_t)sub_from(0x00u, hypot_min_lo);          /* $0D4F-$0D54 */
-            cpu.A          = (uint8_t)sbc_step(0xC9u, hypot_min_hi, cpu.C);   /* $0D56-$0D58 */
-            math_hi        = cpu.A;
-            shared_temp_76 = cpu.A;                                           /* $0D5C */
-            mul8_accum_core();                                                /* $0D5E */
-            ASL_M(MEM_math_lo);                                               /* $0D61 */
-            ROL_M(MEM_math_hi);                                               /* $0D63 */
-
-            cpu.A = (uint8_t)sub_from(0x00u, math_lo);                        /* $0D65-$0D6A */
-            AND(0xFEu);
-            mem[CAR_ANGLE_LO + cpu.X] = cpu.A;                                /* $0D6C */
-            cpu.A = (uint8_t)sbc_step(0x00u, math_hi, cpu.C);                 /* $0D6F-$0D71 */
-            if (cpu.C) {                                                      /* $0D73 BCC */
-                mem[CAR_ANGLE_LO + cpu.X] = 0xFEu;                            /* $0D75-$0D77 */
-                LDA(0xFFu);
-            }
-            mem[CAR_ANGLE_HI + cpu.X] = cpu.A;                                /* $0D7C */
+            /* $0D4F-$0D7C — the LARGE-ANGLE arm: d = $C900 - h, then -(2 x d x d_hi >> 8),
+               SATURATED to -2 ($FFFE) when that doubled term is zero (the negate does not
+               borrow). */
+            uint16_t d  = (uint16_t)(0xC900u - h);               /* the reflection */
+            uint16_t dd = (uint16_t)(((uint32_t)d * (uint8_t)(d >> 8)) >> 8);
+            uint16_t d2 = (uint16_t)(dd << 1);
+            uint16_t res = (uint16_t)(0u - d2);                  /* negate */
+            lo = (uint8_t)(res & 0xFEu);
+            hi = (uint8_t)(res >> 8);
+            if (d2 == 0u) { lo = 0xFEu; hi = 0xFFu; }            /* the saturation */
         }
+        mem[CAR_ANGLE_LO + elem[pass]] = lo;
+        mem[CAR_ANGLE_HI + elem[pass]] = hi;
 
-        /* $0D7F-$0D94 — the second pass, on the angle reflected about pi/2. */
-        CPX(shared_counter_42);
-        if (cpu.Z) break;
-        LDX(shared_counter_42);
-        hypot_min_lo = (uint8_t)sub_from(0x00u, hypot_min_lo);                /* $0D85-$0D8A */
-        hypot_min_hi = (uint8_t)sbc_step(0xC9u, hypot_min_hi, cpu.C);         /* $0D8C-$0D90 */
-        math_hi      = hypot_min_hi;                                          /* $0D92 */
+        h = (uint16_t)(0xC900u - h);   /* $0D85-$0D90 — reflect about pi/2 for the second pass */
     }
 
     /* $0D97-$0DB2 — the quadrant, as two sign bits: bit 7 of the heading's high byte for
        element 0, bit 7 XOR bit 6 for element 1. */
-    LDA(hypot_max_hi);
-    if (cpu.N) {
-        LDA(0x01u);
-        ORA(mem[CAR_ANGLE_LO]);
-        mem[CAR_ANGLE_LO] = cpu.A;
-    }
-    LDA(hypot_max_hi);
-    ASL_A();
-    EOR(hypot_max_hi);
-    if (cpu.N) {
-        LDA(0x01u);
-        ORA(mem[CAR_ANGLE_LO + 1]);
-        mem[CAR_ANGLE_LO + 1] = cpu.A;
-    }
+    if (headingHi & 0x80u)                    mem[CAR_ANGLE_LO + 0] |= 0x01u;
+    if (((headingHi << 1) ^ headingHi) & 0x80u) mem[CAR_ANGLE_LO + 1] |= 0x01u;
 }
 
 /* ---------------------------------------------------------------------------
@@ -6739,66 +6720,74 @@ static void apply_drag_terms_core(void)
 
    ⚠⚠ The changed-surface arm ($4C06-$4C21) is dead on this release; see the group header.
    Kept whole, hardware read included, and the fixture forces it.
-   --------------------------------------------------------------------------- */
+
+   ⭐ WRITTEN AS PLAIN 8/16-BIT C.  With D = 0 (docs/static-map.md §Decimal mode) the byte-pair
+   arithmetic is ordinary binary: the load-term shift is an arithmetic `>> 3`, `mul8` is
+   `(a * b) >> 8`, and abs8 is a sign test on car_speed_hi.  The load term lives in two locals
+   rather than in hypot_min_lo/hi, and the surface-AND in one rather than shared_temp_77 — all
+   of which are dead scratch here (update_engine_revs, the next call, opens with `LDA
+   engine_running`).  The outputs are grip_disturbance, grip_limit[0..1] and grip_limit_alt[0..1]
+   plus whatever begin_spin writes; the fixture verifies those. */
 static void update_grip_limits_core(void)
 {
     int axle;
 
-    /* $4BCF-$4BE8 — the load term, and its negative for the other axle. */
-    LDA(0x00u);
-    LDY(pedal_mode);
-    if (cpu.Z) {                                /* $4BD3 BNE — 0 = the brake */
-        LDA(wheel_load);
-        PHP();                                  /* $4BD8 — the term's own sign */
-        LSR_A(); LSR_A(); LSR_A();              /* $4BD9-$4BDB */
-        PLP();
-        if (cpu.N) ORA(0xE0u);                  /* $4BDD BPL — sign-extend the shift */
-    }
-    hypot_min_hi = cpu.A;                                               /* $4BE1 */
-    EOR(0xFFu);
-    hypot_min_lo = (uint8_t)adc_step(cpu.A, 0x01u, 0);                  /* $4BE3-$4BE8 */
+    /* $4BD1 — LDY pedal_mode.  The C below tests pedal_mode directly, but the Y REGISTER this
+       loads is live until the axle loop's own LDY ($4C46) overwrites it, so it rides into
+       begin_spin ($4C21) as that sound call's Y.  Reconstruct it (mul8 preserves Y). */
+    cpu.Y = pedal_mode;
 
-    math_hi = road_speed;                                               /* $4BEA-$4BEC */
+    /* $4BCF-$4BE8 — the load term (only while braking), and its negative for the other axle.
+       The three LSRs sign-extend wheel_load, i.e. an arithmetic `>> 3`. */
+    int8_t load = 0;
+    if (pedal_mode == 0u)                                  /* 0 = the brake */
+        load = (int8_t)((int8_t)wheel_load >> 3);
+    uint8_t loadForAxle[2];
+    loadForAxle[0] = (uint8_t)(-(int)load);               /* axle 0 gets -(load)... */
+    loadForAxle[1] = (uint8_t)load;                       /* ...axle 1 gets +(load) */
 
-    /* $4BF0-$4C24 — has the surface changed?  shared_temp_77 keeps both bytes ANDed, for the
-       grip-base swap further down; $FF in EITHER opens this arm.  grip_disturbance ends in X,
-       which is 0 when the arm is skipped (the $4BEE LDX #0). */
-    shared_temp_77 = (uint8_t)(surface_change_0 & surface_change_1);    /* $4BF0-$4BF6 */
-    cpu.X = 0x00u;                                                      /* $4BEE */
+    /* $4BEE-$4C24 — has the surface changed?  $FF in EITHER surface byte opens the (dead-on-
+       this-release) disturbance arm; $FF in BOTH also swaps in the alternate grip base below.
+       The begin_spin test reads grip_disturbance as it was BEFORE this frame's write. */
+    uint8_t surfaceBoth = (uint8_t)(surface_change_0 & surface_change_1);   /* $4BF0-$4BF6 */
+    uint8_t oldDisturb  = grip_disturbance;
+    uint8_t newDisturb  = 0u;
     if (surface_change_0 == 0xFFu || surface_change_1 == 0xFFu) {
-        mul8_core(bus_read(VIA_T1_LOW));                                /* $4C06-$4C0C */
-        cpu.X = (uint8_t)(cpu.A & 0x07u);                              /* $4C0B-$4C0E */
-        if (cpu.X == 0) cpu.X = 1;                                      /* $4C0F — never 0 */
-        if (grip_disturbance == 0 && drive_state == 0                   /* $4C11-$4C1A */
-            && (section_jump_history & 0x80u))                          /* $4C1E BIT/BPL */
-            begin_spin_from_a_core(road_speed);                         /* $4C21 */
-    }
-    grip_disturbance = cpu.X;                                           /* $4C24 */
-
-    /* $4C26-$4C5E — axle 1 then axle 0.  X carries the axle index; the closing DEX leaves
-       X=$FF, which is the routine's exit X. */
-    for (axle = 1; axle >= 0; axle--) {
-        cpu.X = (uint8_t)axle;
-        uint8_t speed = road_speed;                                     /* $4C26-$4C2E */
-        if (speed >= 0x35u) speed = 0x35u;      /* the speed term saturates */
-        math_hi = speed;                                                /* $4C30 */
-        mul8_core(mem[WING_GRIP + cpu.X]);                              /* $4C32-$4C35 */
-        BIT(car_speed_hi);                      /* $4C38 — the sign abs8 will follow */
-        abs8();                                                         /* $4C3B */
-        cpu.A = (uint8_t)adc_step(cpu.A, mem[GRIP_BASE + cpu.X], 0);    /* $4C3E-$4C3F */
-
-        math_hi = 0xF3u;                                                /* $4C42-$4C44 */
-        cpu.Y   = shared_temp_77;                                       /* $4C46 */
-        if (shared_temp_77 == 0xFFu) {          /* $4C4A — BOTH surface bytes $FF */
-            cpu.A = mem[GRIP_BASE_ALT + cpu.X];                         /* $4C4C */
-            cpu.Y = 0xFFu;
+        newDisturb = (uint8_t)((((unsigned)bus_read(VIA_T1_LOW) * road_speed) >> 8) & 0x07u);
+        if (newDisturb == 0u) newDisturb = 1u;            /* $4C0F — never 0 once the arm runs */
+        if (oldDisturb == 0u && drive_state == 0u && (section_jump_history & 0x80u)) {
+            /* begin_spin ($4DC9) is reached with X still holding the disturbance value (its
+               sound_queue parks that X in sound_saved_x, $0B46); Y still holds pedal_mode from the
+               LDY at the top.  Reconstruct the X input this 6502 hook path reads before the call. */
+            cpu.X = newDisturb;
+            begin_spin_from_a_core(road_speed);           /* $4C21 */
         }
-        cpu.A = (uint8_t)adc_step(cpu.A, mem[(uint8_t)(0x78u + cpu.X)], 0); /* $4C51-$4C52 */
-        mem[GRIP_LIMIT + cpu.X] = cpu.A;                                /* $4C54 */
-        mul8_core(cpu.A);                                               /* $4C57 */
-        mem[GRIP_LIMIT_ALT + cpu.X] = cpu.A;                            /* $4C5A */
-        DEX();                                                          /* $4C5D — leaves X=$FF */
     }
+    grip_disturbance = newDisturb;                         /* $4C24 */
+
+    /* $4C26-$4C5E — axle 1 then axle 0.  Each threshold is a saturated speed term through the
+       wing's downforce, re-signed by the car's direction, plus a base and this axle's load. */
+    for (axle = 1; axle >= 0; axle--) {
+        uint8_t speed = road_speed;
+        if (speed >= 0x35u) speed = 0x35u;                /* the speed term saturates */
+        uint8_t term = (uint8_t)(((unsigned)mem[WING_GRIP + axle] * speed) >> 8);
+        if (car_speed_hi & 0x80u)                         /* abs8: sign from car_speed_hi */
+            term = (uint8_t)(-(int)term);
+
+        uint8_t base = (surfaceBoth == 0xFFu)             /* $4C4A — BOTH surface bytes $FF */
+                       ? mem[GRIP_BASE_ALT + axle]
+                       : (uint8_t)(term + mem[GRIP_BASE + axle]);
+        uint8_t limit = (uint8_t)(base + loadForAxle[axle]);
+        mem[GRIP_LIMIT + axle]     = limit;               /* $4C54 */
+        mem[GRIP_LIMIT_ALT + axle] = (uint8_t)(((unsigned)limit * 0xF3u) >> 8);  /* $4C57-$4C5A */
+    }
+
+    /* $4C46 — each axle iteration reloads Y from the ANDed surface bytes (0xFF in the both-$FF
+       arm, which is the same value), and mul8 preserves it, so the loop's last pass (axle 0)
+       leaves Y = surfaceBoth as the routine's exit Y.  That Y survives update_engine_revs and is
+       what update_slip_sound's OSBYTE 21 logs — the one escaping register, reconstructed here.
+       (Verified against HEAD's pre-idiomatic core, whose $4C46 LDY this reproduces.) */
+    cpu.Y = surfaceBoth;
 }
 
 /* ---------------------------------------------------------------------------
