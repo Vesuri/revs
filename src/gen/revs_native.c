@@ -8641,23 +8641,25 @@ static void steer_demand_from_slip_core(void)
    steer_assist_dispatch, which derives the look-ahead selector from the demand's own direction,
    and at $1F11 from steer_apply_with_assist, which already has it in A.
    --------------------------------------------------------------------------- */
-static void assist_from_selector(void);
+static void assist_from_selector(uint8_t selector);
 
 static void apply_steering_assist_core(void)
 {
     /* $1F08-$1F10 — the look-ahead selector: 3 when the demand's sign byte is even, 2 when odd. */
-    cpu.A = (mem[STEER_SIGN] & 0x01u) ? 0x02u : 0x03u;
-    assist_from_selector();
+    assist_from_selector((mem[STEER_SIGN] & 0x01u) ? 0x02u : 0x03u);
 }
 
-static void assist_from_selector(void)
+/* `selector` arrives in A on the 6502 (2 or 3); only "== 2" is tested.  Pure C throughout — the
+   whole steering path runs with D = 0 (docs/static-map.md §Decimal mode), so every 6502 math
+   helper this used to call (abs16_math, mul8_accum, neg16_math_noinit) is just plain binary
+   16-bit arithmetic.  The scratch cells $74-$77 are written to the SAME final values the
+   transliterated oracle leaves, so make validate's full-mem[] diff still holds. */
+static void assist_from_selector(uint8_t selector)
 {
     /* $1F11-$1F18 — which track edge to steer at: selector 2 → the far slot $32, else close $0A. */
-    uint8_t edgeSlot = (cpu.A == 0x02u) ? 0x32u : 0x0Au;
+    uint8_t edgeSlot = (selector == 0x02u) ? 0x32u : 0x0Au;
 
-    /* $1F19-$1F39 — |steering angle| as a 16-bit value (sign in bit 0 of the low byte), then +1
-       in the high byte, less 2 for the far slot's own look-ahead.  D = 0 on the whole steering
-       path (docs/static-map.md §Decimal mode), so plain 16-bit arithmetic throughout. */
+    /* $1F19-$1F2E — |steering angle| as a 16-bit value (sign in bit 0 of the low byte). */
     uint8_t angLo = steer_angle_lo;
     uint8_t angHi = steer_angle_hi;
     if (angLo & 0x01u) {                               /* $1F1E LSR / $1F22 BCC — negative: flip */
@@ -8665,50 +8667,58 @@ static void assist_from_selector(void)
         angLo = (uint8_t)neg;
         angHi = (uint8_t)(neg >> 8);
     }
-    mem[STEER_KEYS] = angLo;                            /* $1F1C/$1F29 — |angle| low */
-    uint8_t biasHi = (uint8_t)(angHi + 1u);            /* $1F30-$1F31 — +1 in the high byte */
-    if (edgeSlot == 0x32u) biasHi = (uint8_t)(biasHi - 2u);   /* $1F33-$1F37 far slot only */
-    shared_temp_77 = biasHi;                           /* $1F39 */
+    mem[STEER_KEYS] = angLo;                            /* $1F1C/$1F29 — |angle| low, read as bias low */
 
-    /* $1F3B-$1F4D — the track edge less that value, as a magnitude.  The subtract's own sign
-       re-signs the result at the very end (the 6502 parks it with PHP; a local carries it). */
+    /* $1F30-$1F39 — +1 in the high byte, less 2 for the far slot's own look-ahead. */
+    uint8_t biasHi = (uint8_t)(angHi + 1u);            /* $1F30-$1F31 */
+    if (edgeSlot == 0x32u) biasHi = (uint8_t)(biasHi - 2u);   /* $1F33-$1F37 far slot only */
+    shared_temp_77 = biasHi;                           /* $1F39 — bias high (overwritten below) */
+
+    /* $1F3B-$1F49 — the track edge less that bias, as a 16-bit magnitude; its sign is kept to
+       re-sign the result at the very end (the 6502 parks it with PHP; a local carries it). */
     uint16_t edge = (uint16_t)(((uint16_t)mem[EDGE_X_HI_TBL + edgeSlot] << 8) | mem[EDGE_X_LO_TBL + edgeSlot]);
     uint16_t bias = (uint16_t)(((uint16_t)biasHi << 8) | mem[STEER_KEYS]);
     uint16_t diff = (uint16_t)(edge - bias);
     int diffNegative = (diff & 0x8000u) != 0u;         /* $1F48 PHP — the subtract's sign */
-    mem[STEER_SIGN] = (uint8_t)diff;                   /* $1F41 — low into math_lo (= STEER_SIGN) */
-    cpu.A = (uint8_t)(diff >> 8);                      /* high into A for abs16_math */
-    cpu.N = (uint8_t)diffNegative;                     /* abs16 branches on the subtract's N */
-    abs16_math();                                      /* $1F49 */
-    mem[STEER_KEYS] = cpu.A;                            /* $1F4C — |edge diff| high (unused past here) */
+    uint16_t absDiff = diffNegative ? (uint16_t)(0u - diff) : diff;  /* $1F49 abs16 */
+    mem[STEER_SIGN] = (uint8_t)absDiff;                /* math_lo — |edge diff| low */
+    mem[STEER_KEYS] = (uint8_t)(absDiff >> 8);         /* $1F4C — |edge diff| high (unused past here) */
 
     /* $1F4E-$1F77 — the GAIN: falls with road_speed, floored at zero, doubled, +$20, then capped
        by the live section's curvature. */
-    uint8_t sec   = car_section_cursor;                /* $1F4E LDY $22 */
+    uint8_t sec    = car_section_cursor;               /* $1F4E LDY $22 */
     uint8_t diff3c = (uint8_t)(0x3Cu - road_speed);    /* $1F50-$1F53 */
-    uint8_t gain  = (diff3c & 0x80u) ? 0u : diff3c;    /* $1F55 BPL — floor at zero */
-    /* ⚠ `ADC #$20` with NO `CLC` — the doubling's own carry is part of the sum. */
-    mem[STEER_DEMAND] = (uint8_t)((uint8_t)(gain << 1) + 0x20u + (gain >> 7));   /* $1F59-$1F5C */
-    uint8_t curve = mem[SECTION_CURVE + sec] & 0x7Fu;
-    if (curve >= 0x40u) curve = 0x02u;                  /* $1F63 */
-    if (curve >= 0x08u) curve = 0x07u;                  /* $1F69 */
-    curve = (uint8_t)(curve << 4);                      /* ×16 */
-    if (curve >= mem[STEER_DEMAND]) mem[STEER_DEMAND] = curve;   /* $1F73-$1F77 cap the gain */
+    uint8_t gain   = (diff3c & 0x80u) ? 0u : diff3c;   /* $1F55 BPL — floor at zero */
+    /* ⚠ `ADC #$20` with NO `CLC` — the doubling's own carry (bit 7 of gain) is part of the sum. */
+    uint8_t gainVal = (uint8_t)((uint8_t)(gain << 1) + 0x20u + (gain >> 7));   /* $1F59-$1F5C */
+    uint8_t curve  = mem[SECTION_CURVE + sec] & 0x7Fu;
+    if (curve >= 0x40u) curve = 0x02u;                 /* $1F63 */
+    if (curve >= 0x08u) curve = 0x07u;                 /* $1F69 */
+    curve = (uint8_t)(curve << 4);                     /* ×16 */
+    if (curve >= gainVal) gainVal = curve;             /* $1F73-$1F77 cap the gain */
+    mem[STEER_DEMAND] = gainVal;
 
-    /* $1F79-$1F94 — (edge difference) × gain, re-signed by the PHP sign, then by the steering's
-       own sign byte. */
-    cpu.A = curve;                                      /* what mul8_accum multiplies against */
-    mul8_accum();                                       /* $1F79 — product: low in math_lo, high in A */
-    cpu.A = mem[STEER_DEMAND];                           /* $1F7C — the product's high byte */
-    cpu.N = (uint8_t)diffNegative;                       /* $1F7E PLP — restore the $1F48 sign */
-    abs16_math();                                        /* $1F7F */
-    mem[STEER_DEMAND] = cpu.A;                            /* $1F82 */
-    mem[STEER_SIGN] &= 0xFEu;                             /* $1F84-$1F88 clear bit 0 */
-    if ((steer_angle_lo & 0x01u) == 0) {                 /* $1F8A LSR/BCS — sign says negate */
-        neg16_math_noinit();                             /* $1F90 — negates STEER_DEMAND : STEER_SIGN */
-        mem[STEER_DEMAND] = cpu.A;                        /* $1F93 */
+    /* $1F79 — (|edge diff| × gain) >> 8, a 16×8 fixed-point step (the old mul8_accum: keep the top
+       16 bits of the 24-bit product).  Its low sub-product's high byte is the residue the routine
+       leaves in shared_temp_77. */
+    shared_temp_77 = (uint8_t)(revs_mulu16((uint8_t)absDiff, gainVal) >> 8);   /* mul8_accum's $0DC2 */
+    uint16_t prod = (uint16_t)(revs_mulu16(absDiff, gainVal) >> 8);
+
+    /* $1F7C-$1F88 — re-sign the product by the $1F48 subtract's sign, then clear bit 0. */
+    uint16_t signedProd = diffNegative ? (uint16_t)(0u - prod) : prod;   /* $1F7E PLP / $1F7F abs16 */
+    uint8_t lo = (uint8_t)signedProd & 0xFEu;          /* $1F84-$1F88 */
+    uint8_t hi = (uint8_t)(signedProd >> 8);           /* $1F82 */
+
+    /* $1F8A-$1F93 — and by the steering's own sign: negate unless bit 0 of steer_angle_lo is set. */
+    if ((steer_angle_lo & 0x01u) == 0u) {              /* $1F8A LSR / $1F8E BCS */
+        uint16_t neg = (uint16_t)(0u - (uint16_t)(((uint16_t)hi << 8) | lo));   /* $1F90 neg16 */
+        lo = (uint8_t)neg;
+        hi = (uint8_t)(neg >> 8);
     }
-    apply_steer_demand_core(steer_angle_lo);             /* $1F95 */
+    mem[STEER_SIGN]   = lo;
+    mem[STEER_DEMAND] = hi;
+
+    apply_steer_demand_core(steer_angle_lo);           /* $1F95 */
 }
 
 /* ---------------------------------------------------------------------------
@@ -8729,8 +8739,7 @@ static void steer_apply_with_assist_core(void)
 {
     poll_steering_assist_core();                       /* $1EFA */
     if (!cpu.Z && !cpu.C && mem[STEER_KEYS] != 0) {
-        LDA(mem[STEER_KEYS]);
-        assist_from_selector();
+        assist_from_selector(mem[STEER_KEYS]);         /* $1F03 → $1F11, selector in A */
         return;
     }
     LDA(steer_angle_lo);                               /* $1F95 */
