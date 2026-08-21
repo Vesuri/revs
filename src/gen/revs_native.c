@@ -5674,32 +5674,60 @@ static void add_signed_into_element_core(uint8_t slot, uint8_t signByte)
    $486D is the same routine entered with the source element in MODEL_SRC_SLOT and A carrying
    the sign/mode byte, which is what the two four-call rotations ($48B9, $48C1) use so they can
    step source and destination independently.
+
+   ⭐ apply_angle_term is the ONLY caller of the $0DD7 signed multiply, so the multiply is folded
+   in here as plain 16-bit C rather than going through the mul16_signed twin's 6502 register
+   round-trip.  The one thing that must stay byte-exact is what that multiply COMPUTES, and it is
+   not a full 16x16: it keeps the top 16 bits of only the three HIGH cross products and drops the
+   lowest (srcLo*termLo), rounding with +$0080 — i.e. product = termHi*srcHi + ((termLo*srcHi +
+   termHi*srcLo + $80) >> 8), taken mod 65536.  The operands are signed asymmetrically: the
+   multiplicand (model element) is two's-complement; the multiplier (car angle) is sign-MAGNITUDE
+   with its sign in bit 0 of the low byte — that bit stays in the magnitude, exactly as the 6502
+   multiply used the whole byte.  D = 0 throughout the model path (docs/static-map.md §Decimal
+   mode), so every add here is plain binary.
    --------------------------------------------------------------------------- */
+/* The pure-C body: multiply element `source` by car angle `angle` and store or accumulate into
+   element `dest` (= mem[MODEL_TERM]).  Plain 16-bit C on mem[] — touches no cpu state at all.
+   Its exit registers/flags are DEAD in the real program (its only callers are the driving-model
+   rotations, whose own exit registers are overwritten the instant apply_driving_model returns to
+   them), so the twin does not reconstruct them and every fixture below verifies the RESULT. */
 static void apply_angle_term_body(uint8_t angle, uint8_t source)
 {
-    mem[MUL_SRC_LO]  = mem[MODEL_STATE_LO + source];      /* $4876-$487E */
-    mem[MUL_SRC_HI]  = mem[MODEL_STATE_HI + source];
-    mem[MUL_TERM_LO] = mem[CAR_ANGLE_LO + angle];         /* $4880-$4888 */
-    mem[MUL_TERM_HI] = mem[CAR_ANGLE_HI + angle];
+    /* $4876-$4888 — the two operands.  MUL_SIGN was seeded by the caller with the mode byte:
+       bit 7 the starting sign, bit 6 the store/accumulate select. */
+    int16_t  src16 = (int16_t)(uint16_t)((mem[MODEL_STATE_HI + source] << 8)
+                                         | mem[MODEL_STATE_LO + source]);
+    uint8_t  termLo = mem[CAR_ANGLE_LO + angle];
+    uint8_t  termHi = mem[CAR_ANGLE_HI + angle];
+    uint8_t  mode   = mem[MUL_SIGN];
 
-    mul16_signed_core();                                    /* $488A — product: low in math_lo, high in A */
-    uint8_t prodLo = math_lo;
-    uint8_t prodHi = cpu.A;
-    math_hi = prodHi;                                       /* $488D */
+    /* $0DD7-$0DF8 — the sign accumulates: a negative multiplicand flips it, and the multiplier's
+       bit-0 sign flips it again.  The multiplicand is taken to its magnitude for the product. */
+    int      negative = (mode >> 7) & 1;
+    uint16_t srcMag;
+    if (src16 < 0) { srcMag = (uint16_t)(-src16); negative ^= 1; }
+    else             srcMag = (uint16_t)src16;
+    if (termLo & 1u) negative ^= 1;
 
-    uint8_t dest = mem[MODEL_TERM];                         /* $488F */
-    if (mem[MUL_SIGN] & 0x40u) {                          /* $4891 BIT / $4893 BVS — accumulate */
-        /* D = 0 on the model's rotation path, so a plain 16-bit add. */
-        uint16_t sum = (uint16_t)((((uint16_t)mem[MODEL_STATE_HI + dest] << 8)
-                                   | mem[MODEL_STATE_LO + dest])
-                                  + (((uint16_t)prodHi << 8) | prodLo));
-        mem[MODEL_STATE_LO + dest] = (uint8_t)sum;
-        mem[MODEL_STATE_HI + dest] = (uint8_t)(sum >> 8);
-        return;
+    /* $0DFA-$0E3A — the three high cross products, dropping srcLo*termLo, rounded with +$80. */
+    uint8_t  srcLo = (uint8_t)srcMag, srcHi = (uint8_t)(srcMag >> 8);
+    unsigned p1 = (unsigned)termLo * srcHi;
+    unsigned p2 = (unsigned)termHi * srcHi;
+    unsigned p3 = (unsigned)termHi * srcLo;
+    uint16_t mag = (uint16_t)(p2 + ((p1 + p3 + 0x80u) >> 8));
+
+    /* $0E3C-$0E4E — apply the banked sign to the 16-bit magnitude. */
+    uint16_t product = negative ? (uint16_t)(0u - mag) : mag;
+
+    /* $488F-$489E — store the product into element `dest`, or accumulate into it. */
+    uint8_t  dest  = mem[MODEL_TERM];
+    uint16_t value = product;
+    if (mode & 0x40u) {
+        value = (uint16_t)(value + (uint16_t)((mem[MODEL_STATE_HI + dest] << 8)
+                                              | mem[MODEL_STATE_LO + dest]));
     }
-    /* $4895-$489E — or replace it outright. */
-    mem[MODEL_STATE_LO + dest] = prodLo;
-    mem[MODEL_STATE_HI + dest] = prodHi;
+    mem[MODEL_STATE_LO + dest] = (uint8_t)value;
+    mem[MODEL_STATE_HI + dest] = (uint8_t)(value >> 8);
 }
 
 static void apply_angle_term_core(uint8_t dest, uint8_t angle, uint8_t source)

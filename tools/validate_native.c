@@ -3375,9 +3375,16 @@ static int test_model_arithmetic(void)
        RESULT-ONLY: their native twins are plain 16-bit binary C leaving nothing in the cpu, so
        the fixture pins D = 0 (the driving model's precondition — docs/static-map.md §Decimal
        mode), drops the register/flag comparison, and ignores the oracle's arithmetic scratch.
-       add_signed's negate arm spills the math accumulator $74/$75; apply_angle_term's product
-       flows through mul16_signed for BOTH models, so its scratch matches with none to ignore. */
+       add_signed's negate arm spills the math accumulator $74/$75.
+       ⭐ apply_angle_term folds the $0DD7 signed multiply into plain 16-bit C (it is that
+       multiply's only caller), so it no longer spills mul16_signed's 6502 marshalling: the
+       operand copies $80-$83, the accumulator round-trip $74-$78, and the sign/mode accumulator
+       $79 (which the multiply flips bit 7 of, while the twin leaves it at the caller's seed).
+       Those are pure implementation detail of the transliterated multiply the oracle still runs —
+       ignore them so the compared state is the RESULT (model element `dest`). */
     static const uint16_t addIgnore[] = { 0x0074, 0x0075 };
+    static const uint16_t mulIgnore[] = { 0x0074, 0x0075, 0x0076, 0x0077, 0x0078, 0x0079,
+                                          0x0080, 0x0081, 0x0082, 0x0083 };
 
     for (i = 0; i < 8; i++) {
         int subFail = 0, decimal = 0, decorrelated = 0, negative = 0, accumulate = 0;
@@ -3385,7 +3392,9 @@ static int test_model_arithmetic(void)
         int resultOnly = (i >= 4 && i <= 6);
         unsigned mask = resultOnly ? LIVE_NONE : liveMask;
         if (!want(list[i].name)) continue;
-        set_ignore(i == 4 ? addIgnore : 0, i == 4 ? 2 : 0);
+        if (i == 4)      set_ignore(addIgnore, 2);
+        else if (i >= 5) set_ignore(mulIgnore, 10);
+        else             set_ignore(0, 0);
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
             fill_random(pre);
@@ -3496,15 +3505,30 @@ static int test_model_rotations(void)
     static const uint16_t stageIgnore[] = { 0x0074, 0x0075, 0x0076, 0x0077, 0x01FF };
     static const uint16_t dampIgnore[]  = { 0x0074, 0x0075, 0x0076, 0x0077, 0x0078, 0x01FF };
 
+    /* ⭐ rotate_state_pair (i == 4) and its two entry aliases rotate_state_0_into_8 (5) /
+       rotate_state_6_into_3 (6) are verified RESULT-ONLY, for two independent reasons that both
+       have to hold:  (a) the exit registers are DEAD — the only real-program callers are $46A8 and
+       $471C inside apply_driving_model, and each overwrites A/N/Z immediately ($46AB LDA $62D8 then
+       a pure LDA/STA copy that never reads C/V or indexes X/Y; $471F JSR integrate_state_rates,
+       which opens LDX #2 / LDA #0), while $48C7 itself is never JSR'd at all;  (b) even a live
+       comparison could not see a defect INSIDE the rotation — the oracle rotate_state_pair__t6502
+       calls the NATIVE apply_angle_term_at (it is a validated split), so the multiply body is
+       shared by both models and cancels.  What the RESULT verifies is the rotation's own logic —
+       the four calls' argument setup and the mode EOR — which lands in mem[] and is compared in
+       full.  apply_angle_term folds its multiply into plain C that spills no scratch, so unlike
+       the stage/damp pair these need no ignore list. */
     for (i = 0; i < 9; i++) {
         int subFail = 0, decimal = 0, negative = 0, accumulate = 0, carried = 0;
         int cases = list[i].cases * scale;
-        int resultOnly = (i == 0 || i == 3);
+        int resultOnly = (i == 0 || i == 3 || i == 4 || i == 5 || i == 6);
         /* rotate_accum_by_steer (i == 1) and rotate_pair_a_by_steer (i == 2) reach the idiomatic
            binary neg16_math_noinit; like the result-only pair they run only with D = 0 (the driving
            model's precondition — docs/static-map.md §Decimal mode), so they pin D = 0 while keeping
            the full register/flag comparison. */
-        int pinD0 = resultOnly || i == 1 || i == 2;
+        /* i == 0/1/2/3 pin D = 0 (their twins reach binary helpers that assume the driving model's
+           D = 0 precondition); the rotate_state_* trio (4/5/6) leave D random on purpose — their
+           pure-C multiply is decimal-independent, so a random D proves it. */
+        int pinD0 = i == 0 || i == 1 || i == 2 || i == 3;
         unsigned mask = resultOnly ? LIVE_NONE : liveMask;
         if (!want(list[i].name)) continue;
         set_ignore(i == 0 ? stageIgnore : i == 3 ? dampIgnore : 0,
