@@ -5494,49 +5494,57 @@ void neg16_math_noinit(void) { neg16_math_noinit_core(); }
    writes what the 6502 left there even where its own arithmetic did not need it.
    =========================================================================== */
 
-#define ANGLE_SRC_LO   0x0080u   /* point_delta_lo[0]  — the source element, copied in */
-#define ANGLE_SRC_HI   0x0081u   /* point_delta_lo[1] */
-#define ANGLE_TERM_LO  0x0082u   /* point_delta_lo[2]  — the car angle; bit 0 is its SIGN */
-#define ANGLE_TERM_HI  0x0083u   /* point_delta_hi[0] */
-#define ANGLE_SIGN     0x0079u   /* hypot_min_hi — here the sign (bit 7) and mode (bit 6) byte */
+/* mul16_signed's two operands sit in the point_delta scratch window with ASYMMETRIC sign
+   conventions (see the routine note): the MULTIPLICAND is a plain two's-complement value,
+   the MULTIPLIER is a car-angle coefficient whose sign is packed in bit 0 of its low byte. */
+#define MUL_SRC_LO     0x0080u   /* point_delta_lo[0] — multiplicand low  (two's complement) */
+#define MUL_SRC_HI     0x0081u   /* point_delta_lo[1] — multiplicand high; bit 7 is its sign */
+#define MUL_TERM_LO    0x0082u   /* point_delta_lo[2] — multiplier low; the car angle, bit 0 = SIGN */
+#define MUL_TERM_HI    0x0083u   /* point_delta_hi[0] — multiplier high (heading_sin/heading_cos) */
+#define MUL_SIGN       0x0079u   /* hypot_min_hi — product-sign accumulator (bit 7) + apply_angle_term's store/accumulate mode (bit 6) */
 #define MODEL_TERM     0x007Cu   /* point_dist_lo — the destination element index */
 #define MODEL_SRC_SLOT 0x007Fu   /* span_line_cursor — apply_angle_term_at's source element */
 #define MODEL_STATE_LO 0x62D0u   /* model_state_lo[0..14] */
 #define MODEL_STATE_HI 0x62E0u   /* model_state_hi[0..14] */
-#define CAR_ANGLE_LO   0x62A0u   /* car_angle_lo[0..2] */
-#define CAR_ANGLE_HI   0x62A3u   /* car_angle_hi[0..2] */
+#define CAR_ANGLE_LO   0x62A0u   /* the car-angle array: heading_sin_lo / heading_cos_lo / steer_angle_lo */
+#define CAR_ANGLE_HI   0x62A3u   /* ...high bytes: heading_sin_hi / heading_cos_hi / steer_angle_hi */
 
 /* ---------------------------------------------------------------------------
    $0DD7  mul16_signed — THE SIGNED 16x16 MULTIPLY  (twin #50)
    ---------------------------------------------------------------------------
-   Multiplies the source (ANGLE_SRC_HI:LO) by the car angle (ANGLE_TERM_HI:LO), keeping the
-   top 16 bits, and carries the sign in ANGLE_SIGN's bit 7 rather than in the value: the source
-   is made positive up front (flipping that bit), and bit 0 of the angle's LOW byte — which is
-   where car_angle keeps its sign — flips it again.  The tail falls into abs16_math, so the
-   sign is applied to the result on the way out.
+   ⚠ ASYMMETRIC sign conventions on the two operands.  The MULTIPLICAND (MUL_SRC_HI:LO) is a
+   plain two's-complement value — made positive up front, its sign flipped into MUL_SIGN bit 7.
+   The MULTIPLIER (MUL_TERM_HI:LO) is a car-angle coefficient (heading_sin/heading_cos) whose
+   sign lives in BIT 0 of its LOW byte, which flips MUL_SIGN again.  It keeps the top 16 bits of
+   the three cross products (dropping the lowest, lo*lo), and the tail falls into abs16_math, so
+   the banked sign is applied to the result on the way out.
 
-   ⚠ Its exit flags are `BIT ANGLE_SIGN`'s, not the arithmetic's: N = bit 7, V = bit 6, Z from
-   A AND ANGLE_SIGN — and then the negate's own flags on the negative path.  C is the last
+   ⚠ Its exit flags are `BIT MUL_SIGN`'s, not the arithmetic's: N = bit 7, V = bit 6, Z from
+   A AND MUL_SIGN — and then the negate's own flags on the negative path.  C is the last
    ADC's and survives the BIT.
+
+   NOTE: this is the faithful $0DD7 twin, kept as the validation oracle's counterpart and for
+   any 6502-ABI caller.  apply_angle_term (its only real caller) no longer routes through it —
+   see apply_angle_term_body, which folds the same arithmetic into plain 16-bit C.
    --------------------------------------------------------------------------- */
 static void mul16_signed_core(void)
 {
     unsigned p1, p2, p3, mid, low, result;
-    uint8_t  angleLo = mem[ANGLE_TERM_LO], angleHi = mem[ANGLE_TERM_HI];
+    uint8_t  angleLo = mem[MUL_TERM_LO], angleHi = mem[MUL_TERM_HI];
     uint8_t  sourceLo, sourceHi;
     int      carry;
 
     /* $0DD7-$0DEC — |source|, with the sign recorded. */
-    if (mem[ANGLE_SRC_HI] & 0x80u) {
-        mem[ANGLE_SRC_LO] = (uint8_t)sub_from(0x00u, mem[ANGLE_SRC_LO]);
-        mem[ANGLE_SRC_HI] = (uint8_t)sbc_step(0x00u, mem[ANGLE_SRC_HI], cpu.C);
-        mem[ANGLE_SIGN]  ^= 0x80u;
+    if (mem[MUL_SRC_HI] & 0x80u) {
+        mem[MUL_SRC_LO] = (uint8_t)sub_from(0x00u, mem[MUL_SRC_LO]);
+        mem[MUL_SRC_HI] = (uint8_t)sbc_step(0x00u, mem[MUL_SRC_HI], cpu.C);
+        mem[MUL_SIGN]  ^= 0x80u;
     }
-    /* $0DEE-$0DF8 — and the angle's own sign, which lives in bit 0 of its low byte. */
-    if (angleLo & 1u) mem[ANGLE_SIGN] ^= 0x80u;
+    /* $0DEE-$0DF8 — and the multiplier's own sign, which lives in bit 0 of its low byte. */
+    if (angleLo & 1u) mem[MUL_SIGN] ^= 0x80u;
 
-    sourceLo = mem[ANGLE_SRC_LO];
-    sourceHi = mem[ANGLE_SRC_HI];
+    sourceLo = mem[MUL_SRC_LO];
+    sourceHi = mem[MUL_SRC_HI];
 
     /* $0DFA-$0E36 — three 8x8 products, accumulated.  The flags of the multiplies themselves
        are all overwritten by the closing adds, so these go through the value-only entry. */
@@ -5567,7 +5575,7 @@ static void mul16_signed_core(void)
       cpu.A   = (uint8_t)result; }
 
     /* $0E3C-$0E3E — and the sign byte decides the exit flags AND whether to negate. */
-    BIT(mem[ANGLE_SIGN]);
+    BIT(mem[MUL_SIGN]);
     abs16_math();
 }
 
@@ -5659,7 +5667,7 @@ static void add_signed_into_element_core(uint8_t slot, uint8_t signByte)
    $4874 / $486D  apply_angle_term — ONE STATE ELEMENT THROUGH ONE CAR ANGLE  (twins #55, #56)
    ---------------------------------------------------------------------------
    The model's rotation primitive: multiply state element `source` by car angle `angle` and
-   either STORE the product into element `dest` or ADD it there — bit 6 of ANGLE_SIGN, which
+   either STORE the product into element `dest` or ADD it there — bit 6 of MUL_SIGN, which
    the caller sets along with the sign, is what chooses, and the add path is literally
    add_signed_into_element's tail.
 
@@ -5669,10 +5677,10 @@ static void add_signed_into_element_core(uint8_t slot, uint8_t signByte)
    --------------------------------------------------------------------------- */
 static void apply_angle_term_body(uint8_t angle, uint8_t source)
 {
-    mem[ANGLE_SRC_LO]  = mem[MODEL_STATE_LO + source];      /* $4876-$487E */
-    mem[ANGLE_SRC_HI]  = mem[MODEL_STATE_HI + source];
-    mem[ANGLE_TERM_LO] = mem[CAR_ANGLE_LO + angle];         /* $4880-$4888 */
-    mem[ANGLE_TERM_HI] = mem[CAR_ANGLE_HI + angle];
+    mem[MUL_SRC_LO]  = mem[MODEL_STATE_LO + source];      /* $4876-$487E */
+    mem[MUL_SRC_HI]  = mem[MODEL_STATE_HI + source];
+    mem[MUL_TERM_LO] = mem[CAR_ANGLE_LO + angle];         /* $4880-$4888 */
+    mem[MUL_TERM_HI] = mem[CAR_ANGLE_HI + angle];
 
     mul16_signed_core();                                    /* $488A — product: low in math_lo, high in A */
     uint8_t prodLo = math_lo;
@@ -5680,7 +5688,7 @@ static void apply_angle_term_body(uint8_t angle, uint8_t source)
     math_hi = prodHi;                                       /* $488D */
 
     uint8_t dest = mem[MODEL_TERM];                         /* $488F */
-    if (mem[ANGLE_SIGN] & 0x40u) {                          /* $4891 BIT / $4893 BVS — accumulate */
+    if (mem[MUL_SIGN] & 0x40u) {                          /* $4891 BIT / $4893 BVS — accumulate */
         /* D = 0 on the model's rotation path, so a plain 16-bit add. */
         uint16_t sum = (uint16_t)((((uint16_t)mem[MODEL_STATE_HI + dest] << 8)
                                    | mem[MODEL_STATE_LO + dest])
@@ -5703,7 +5711,7 @@ static void apply_angle_term_core(uint8_t dest, uint8_t angle, uint8_t source)
 static void apply_angle_term_at_core(uint8_t mode, uint8_t angle)
 {
     cpu.Y = mem[MODEL_SRC_SLOT];                /* $486D */
-    mem[ANGLE_SIGN] = mode;                     /* $486F */
+    mem[MUL_SIGN] = mode;                     /* $486F */
     apply_angle_term_body(angle, cpu.Y);        /* $4871 JMP $4876 */
 }
 
@@ -5770,7 +5778,7 @@ void kbd_test_key(void)          { kbd_test_key_core(); }
 #define VIEW_ORIGIN_HI   0x6283u  /* view_origin_hi[0..2] */
 #define MODEL_STATE_FRAC 0x62AEu  /* model_state_frac[0..2] — elements 0..2 at 24 bits */
 #define MODEL_ROT_MODE   0x0088u  /* point_delta_sign[2] — here the rotation's sign/mode byte */
-#define STEER_ANGLE      2u       /* car_angle[2], the one the frame's steering wrote */
+#define STEER_ANGLE      2u       /* element 2 (steer_angle) of the heading_sin/heading_cos/steer array */
 
 /* ---------------------------------------------------------------------------
    $4729  stage_accum_delta — THE MIDPOINT OFFSET  (twin #58)
@@ -5821,10 +5829,10 @@ static void stage_accum_delta_core(void)
 static void rotate_accum_by_steer_core(void)
 {
     /* $47A5-$47AF — element 14 = -(element 9 * steer):  bit 7 negates, bit 6 clear stores. */
-    mem[ANGLE_SIGN] = 0x80u;
+    mem[MUL_SIGN] = 0x80u;
     apply_angle_term_core(14, STEER_ANGLE, 9);
     /* $47B2-$47BC — element 9 += element 8 * steer:  bit 6 set accumulates instead. */
-    mem[ANGLE_SIGN] = 0x40u;
+    mem[MUL_SIGN] = 0x40u;
     apply_angle_term_core(9, STEER_ANGLE, 8);
     /* $47BF-$47C1 — and element 8 advances by the delta just built. */
     cpu.Y = 8u;                                 /* last apply_angle_term left Y = its source (8) */
@@ -5835,10 +5843,10 @@ static void rotate_accum_by_steer_core(void)
 static void rotate_pair_a_by_steer_core(void)
 {
     /* $47C5-$47CF — element 14 = +(element 12 * steer), stored. */
-    mem[ANGLE_SIGN] = 0x00u;
+    mem[MUL_SIGN] = 0x00u;
     apply_angle_term_core(14, STEER_ANGLE, 12);
     /* $47D2-$47DC — element 12 -= element 10 * steer. */
-    mem[ANGLE_SIGN] = 0xC0u;
+    mem[MUL_SIGN] = 0xC0u;
     apply_angle_term_core(12, STEER_ANGLE, 10);
     /* $47DF-$47E1 */
     cpu.Y = 10u;                                /* last apply_angle_term left Y = its source (10) */
@@ -6539,7 +6547,7 @@ void update_slip_sound(void)    { update_slip_sound_core(cpu.X); }
           The curve is covered by sabotages that move a segment's OFFSET or SLOPE instead.
    =========================================================================== */
 
-#define CAR_ANGLE_LO   0x62A0u   /* three 16-bit car angles, low bytes; bit 0 is the SIGN */
+#define CAR_ANGLE_LO   0x62A0u   /* heading_sin / heading_cos / steer_angle, low bytes; bit 0 is the SIGN */
 #define CAR_ANGLE_HI   0x62A3u   /* ...and their high bytes */
 #define TRACK_DIR_0    0x5400u   /* the track's forward direction at each position: */
 #define TRACK_DIR_1    0x5500u   /*   component 0, the GRADIENT (component 1), */
