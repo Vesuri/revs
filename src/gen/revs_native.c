@@ -8996,7 +8996,7 @@ void scale_wing_settings(void)
     /* X walks 1 then 0: front wing (index 1) then rear wing (index 0). */
     for (int i = 1; i >= 0; i--) {
         uint8_t  setting4 = (uint8_t)(mem[MEM_wing_setting_front + i] << 2);   /* setting * 4 */
-        unsigned prod     = mul8_product(mem[WING_GRIP_BASE_TBL + i], setting4);
+        unsigned prod     = revs_mulu16(mem[WING_GRIP_BASE_TBL + i], setting4);
         mem[MEM_wing_grip_coeff + i] = (uint8_t)((prod >> 8) + 0x5A);
     }
 
@@ -9035,7 +9035,7 @@ void compute_segment_scale(void)
         uint8_t  shifted = (uint8_t)(datum >> 2);           /* two LSRs */
         uint8_t  a = ((datum >> 1) & 1)                     /* bit 1 set: pass through halved */
                      ? shifted
-                     : (uint8_t)(mul8_product(shifted, scale) >> 8);   /* else rounded x.8 */
+                     : (uint8_t)(revs_mulu16(shifted, scale) >> 8);   /* else rounded x.8 */
         mem[SEGMENT_SCALE + y] = (uint8_t)((round << 7) | (a & 0x7F));  /* ASL; PLP; ROR: bit7<-bit0 */
     }
 }
@@ -9063,8 +9063,8 @@ void section_angle_curve(void) { cpu.A = section_angle_curve_core(cpu.A); }
 static uint8_t scale_angle_in_section_core(uint8_t a, uint8_t y)
 {
     uint8_t curve = section_angle_curve_core(a);
-    uint8_t p1    = (uint8_t)(mul8_product(y, curve) >> 8);
-    return (uint8_t)(mul8_product(edge_nearest_lo, p1) >> 8);
+    uint8_t p1    = (uint8_t)(revs_mulu16(y, curve) >> 8);
+    return (uint8_t)(revs_mulu16(edge_nearest_lo, p1) >> 8);
 }
 void scale_angle_in_section(void) { cpu.A = scale_angle_in_section_core(cpu.A, cpu.Y); }
 
@@ -9250,7 +9250,7 @@ void process_car_contact(void)
     }
 
     /* impact * speed, clamped to $10, negated by the heading sign -> heading kick. */
-    unsigned prod = mul8_product(M, impact2);
+    unsigned prod = revs_mulu16(M, impact2);
     math_lo = (uint8_t)prod;                                /* the low byte abs16_math negates */
     uint8_t a = (uint8_t)(prod >> 8);
     if (a >= 0x10) a = 0x10;                                 /* CMP #$10; clamp */
