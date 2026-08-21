@@ -6720,25 +6720,42 @@ static void begin_spin_from_a_core(uint8_t severity)
    --------------------------------------------------------------------------- */
 static void apply_drag_terms_core(void)
 {
-    LDA(model_accum_entry_hi);                  /* $4C65 — sets the N abs8 negates on */
-    abs8();                                     /* $4C67 */
-    math_hi = cpu.A;                            /* $4C6A — the magnitude, before the floor */
-    if (cpu.A < road_speed) cpu.A = road_speed; /* $4C6B-$4C6E — floored at the road speed */
-    cpu.Y = grip_disturbance;                   /* $4C71 */
-    if (cpu.Y != 0u) ASL_A();                   /* $4C74 — doubled on a disturbed surface */
-    shared_temp_77 = cpu.A;                     /* $4C77 — kept for term two */
-    mul8_core(cpu.A);                           /* $4C79 */
-    math_hi = cpu.A;                            /* $4C7C */
+    /* $4C65-$4C6A — |model_accum_entry_hi|.  abs8 branches on the CALLER's N, so seed it from
+       the value's bit 7; result-only, so the exit flags/registers are scratch. */
+    uint8_t entry = model_accum_entry_hi;
+    cpu.A = entry; cpu.N = (uint8_t)(entry >> 7);
+    abs8();
+    uint8_t magnitude = cpu.A;                   /* $4C6A — the magnitude, before the floor */
+    math_hi = magnitude;
+
+    /* $4C6B-$4C77 — floored at the road speed, doubled on a disturbed surface. */
+    uint8_t term1 = magnitude;
+    if (term1 < road_speed)     term1 = road_speed;
+    if (grip_disturbance != 0u) term1 = (uint8_t)(term1 << 1);
+    shared_temp_77 = term1;                      /* $4C77 — kept for term two */
+
+    /* $4C79-$4C7C — term1 squared against the pre-floor magnitude. */
+    { unsigned p = revs_mulu16(term1, magnitude);
+      math_lo = (uint8_t)p;
+      math_hi = (uint8_t)(p >> 8); }
 
     /* $4C7E-$4C82 — into element 6, with model_accum_entry_hi's bit 7 as the sign. */
     add_signed_into_element_core(6u, model_accum_entry_hi);
 
-    math_hi = road_speed;                       /* $4C85-$4C87 */
-    mul8_core(wing_drag_coeff);                 /* $4C89-$4C8C */
-    cpu.A = (uint8_t)adc_step(cpu.A, 0x08u, 0); /* $4C8F-$4C90 */
-    shared_temp_76 = cpu.A;                     /* $4C92 */
-    math_hi = shared_temp_77;                   /* $4C94-$4C96 */
-    mul8_accum_core();                          /* $4C98 */
+    /* $4C85-$4C92 — (road_speed x wing_drag_coeff) + 8, high byte held for the fixed-point step. */
+    { unsigned p = revs_mulu16(wing_drag_coeff, road_speed);
+      math_lo        = (uint8_t)p;
+      shared_temp_76 = (uint8_t)((p >> 8) + 0x08u);   /* ADC #$08 (its carry-out is dropped) */
+    }
+
+    /* $4C94-$4C98 — (shared_temp_76 : math_lo) x term1 >> 8 (x.8 fixed point). */
+    { uint8_t  m       = term1;
+      unsigned lowProd = revs_mulu16(math_lo, m);
+      uint8_t  lowHigh = (uint8_t)(lowProd >> 8);
+      unsigned result  = revs_mulu16(shared_temp_76, m) + lowHigh;
+      shared_temp_77 = lowHigh;                  /* mul8_accum's scratch residue */
+      math_hi = (uint8_t)(result >> 8);
+      math_lo = (uint8_t)result; }
 
     /* $4C9B-$4CA0 — into element 7, with car_speed_hi's bit 7 as the sign. */
     add_signed_into_element_core(7u, car_speed_hi);
