@@ -6887,7 +6887,10 @@ static void engine_note_only(uint8_t torque)
 static void engine_torque_and_note(uint8_t curve, uint8_t gear)
 {
     math_hi = curve;                                    /* $4A7F */
-    mul8_core(mem[GEAR_TORQUE + gear]);                 /* $4A81-$4A84 */
+    /* $4A81-$4A84 — curve x gear torque >> 8; only the high byte is used (engine_note_only reads
+       A), the multiply's flags are dead, and the rev model is always D=0. */
+    { unsigned p = revs_mulu16(mem[GEAR_TORQUE + gear], math_hi);
+      math_lo = (uint8_t)p; cpu.A = (uint8_t)(p >> 8); }
     engine_note_only(cpu.A);
 }
 
@@ -6991,7 +6994,10 @@ static void update_engine_revs_core(void)
     if (!cpu.N) { ASL_M(MEM_math_lo); ROL_A(); }                    /* $49E9 BMI */
     math_hi = cpu.A;                                                /* $49EE */
     cpu.X = gear_index;                                             /* $49EF */
-    mul8_core(mem[GEAR_REV_RATIO + cpu.X]);                         /* $49F2-$49F5 */
+    /* $49F2-$49F5 — road speed x the gear's rev ratio.  The PLP below restores the $49E8 status,
+       so the multiply's flags are dead; the rev model is always D=0. */
+    { unsigned p = revs_mulu16(mem[GEAR_REV_RATIO + cpu.X], math_hi);
+      math_lo = (uint8_t)p; cpu.A = (uint8_t)(p >> 8); }
     ASL_M(MEM_math_lo); ROL_A();                                    /* $49F8-$49FA */
     PLP();
     if (cpu.N) { ASL_M(MEM_math_lo); ROL_A(); }                     /* $49FC BPL */
@@ -7257,7 +7263,10 @@ yaw:
 
     /* $45FE-$460C — car_speed_scaled = road_speed x ($21/256 + 2). */
     math_hi = road_speed;                               /* $45FE-$4600 */
-    mul8_core(0x21u);                                   /* $4602-$4604 */
+    /* $4602-$4604 — high byte of $21 x road_speed; the multiply's flags are dead (the ASL/ADC
+       below overwrite them) and this path is always D=0. */
+    { unsigned p = revs_mulu16(0x21u, math_hi);
+      math_lo = (uint8_t)p; cpu.A = (uint8_t)(p >> 8); }
     ASL_M(MEM_math_hi);                                 /* $4607 */
     cpu.A = (uint8_t)adc_step(cpu.A, math_hi, 0);       /* $4609-$460A */
     mem[CAR_SPEED_SCL + cpu.X] = cpu.A;                 /* $460C */

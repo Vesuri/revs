@@ -3830,10 +3830,11 @@ static int test_sub_models(void)
         int keyheld = 0, revmodel = 0;
         int cases = list[i].cases * scale;
         int resultOnly = (i == 0 || i == 4 || i == 5);
-        /* i==1 scale_by_track_gradient keeps its live exit A/flags (the final abs8's), but its
-           interior multiply is now binary C, so D is pinned 0 — the camera path never runs
+        /* i==1 scale_by_track_gradient, i==6 update_engine_revs and i==7
+           update_camera_and_drive_state keep their live exit A/flags, but their interior
+           multiplies are now binary C, so D is pinned 0 — the driving/camera path never runs
            decimal (docs/static-map.md §Decimal mode). */
-        int pinD0 = resultOnly || (i == 1);
+        int pinD0 = resultOnly || (i == 1) || (i == 6) || (i == 7);
         unsigned mask = resultOnly ? LIVE_NONE : liveMask;
         if (!want(list[i].name)) continue;
         set_ignore(i == 0 ? angleIgnore : i == 5 ? gripIgnore : 0,
