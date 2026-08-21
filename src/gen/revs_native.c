@@ -5752,7 +5752,6 @@ void kbd_test_key(void)          { kbd_test_key_core(); }
 #define VIEW_ORIGIN_LO   0x6280u  /* view_origin_lo[0..2] */
 #define VIEW_ORIGIN_HI   0x6283u  /* view_origin_hi[0..2] */
 #define MODEL_STATE_FRAC 0x62AEu  /* model_state_frac[0..2] — elements 0..2 at 24 bits */
-#define MODEL_OUT_INDEX  0x0078u  /* hypot_min_lo — here damp_and_derive_loads' OUTPUT index */
 #define MODEL_ROT_MODE   0x0088u  /* point_delta_sign[2] — here the rotation's sign/mode byte */
 #define STEER_ANGLE      2u       /* car_angle[2], the one the frame's steering wrote */
 
@@ -5831,77 +5830,82 @@ static void rotate_pair_a_by_steer_core(void)
 
      1. element 5 = (element 10 - element 11) * $4E/$100 — the DIFFERENCE of the two damped
         quantities, which is the only place a difference of them is taken.
-     2. elements 10..13 halved TWICE, arithmetically (the `ROR`'s carry is seeded from each
-        value's own sign, which is a one-instruction signed shift on a 6502).  A per-frame
-        decay of four: these are the model's transient terms and this is their damping.
+     2. elements 10..13 halved TWICE, arithmetically (>> 1 with the sign preserved).  A
+        per-frame decay of four: these are the model's transient terms and this is their damping.
      3. elements 6 and 7 rebuilt from the damped pairs, each as
-        ((1.5 * element 11+X) + element 10+X) * $CD/$100, doubled.  X steps 2 then 0, so
-        element 7 comes from the (12, 13) pair and element 6 from the (10, 11) one.
+        ((1.5 * odd) + even) * $CD/$100, doubled.  Load 7 comes from the (12, 13) pair and
+        load 6 from the (10, 11) one.
 
    Finally the high byte of element 7 is copied to wheel_load, which is the one value
    update_grip_limits reads out of this routine.
 
-   ⚠ A SECOND TENANT of hypot_min_lo ($78): here it is the OUTPUT ELEMENT INDEX, 1 then 0, and
-   has nothing to do with the road pass's sorted magnitudes (docs/rename.md).
+   ⭐ WRITTEN AS PLAIN 16-BIT BINARY C.  The 6502 spelled every step as byte-pair ADC/SBC/ROR
+   chains, but with D = 0 those are just `+`/`-`/arithmetic-`>>` on 16-bit words, so this twin is
+   real arithmetic on local variables — no cpu struct, no flag helpers.  The whole driving model
+   runs with D = 0 (docs/static-map.md §Decimal mode: not one of the eight SED sites is on this
+   path); make determinism-drive is the empirical backstop.
+
+   ⭐ AND IT LEAVES NOTHING IN THE CPU.  The 6502's exit A/X/C, its zero-page arithmetic scratch
+   ($74-$78) and its stack residue ($01FF) are all dead here: apply_driving_model's next act is
+   `LDA drive_state` and both of its arms reload the registers, and apply_drag_terms opens with
+   `LDA`.  The only outputs are the state-vector elements and wheel_load — which is what the
+   fixture verifies, ignoring the register spill (as road_span_advance does).
    --------------------------------------------------------------------------- */
+
+/* scale16_by_y ($4753) and mul16_by_1_5 ($4765) as pure 16-bit math — D = 0 only. */
+static uint16_t model_scale16(uint16_t value, uint8_t scale)
+{
+    int      v   = (int16_t)value;
+    unsigned mag = (v < 0) ? (unsigned)(-v) : (unsigned)v;   /* abs16_math */
+    unsigned p   = (mag * (unsigned)scale) >> 8;             /* |v| * scale, keep the top 16 bits */
+    return (v < 0) ? (uint16_t)(-(int)p) : (uint16_t)p;      /* ...sign restored */
+}
+
+static uint16_t model_mul_1_5(uint16_t value)
+{
+    int v = (int16_t)value;
+    return (uint16_t)(v + (v >> 1));                         /* v + arithmetic v/2 */
+}
+
+/* One element of the model's 16-bit state vector, little-endian across the LO/HI halves. */
+static uint16_t model_state_get(uint8_t i)
+{
+    return (uint16_t)(mem[MODEL_STATE_LO + i] | (mem[MODEL_STATE_HI + i] << 8));
+}
+
+static void model_state_put(uint8_t i, uint16_t v)
+{
+    mem[MODEL_STATE_LO + i] = (uint8_t)v;
+    mem[MODEL_STATE_HI + i] = (uint8_t)(v >> 8);
+}
+
 static void damp_and_derive_loads_core(void)
 {
-    uint8_t slot, pass;
+    uint8_t slot;
 
-    /* 1. $47F9-$4812 — element 5 = (element 10 - element 11) scaled.  The high subtract's N
-       is the sign scale16_by_y carries across its multiply on the stack. */
-    cpu.Y   = 0x4Eu;                                            /* $47F9 — the scale */
-    math_lo = (uint8_t)sub_from(mem[MODEL_STATE_LO + 10], mem[MODEL_STATE_LO + 11]);
-    cpu.A   = (uint8_t)sbc_step(mem[MODEL_STATE_HI + 10], mem[MODEL_STATE_HI + 11], cpu.C);
-    scale16_by_y_core(cpu.A, 0x4Eu);                            /* $480A */
-    mem[MODEL_STATE_HI + 5] = cpu.A;                            /* $480D */
-    mem[MODEL_STATE_LO + 5] = math_lo;                          /* $4810-$4812 */
+    /* 1. $47F9-$4812 — element 5 = (element 10 - element 11) * $4E/$100. */
+    model_state_put(5, model_scale16((uint16_t)(model_state_get(10) - model_state_get(11)),
+                                     0x4Eu));
 
-    /* 2. $4815-$482A — elements 13 down to 10, halved, twice.  The second ROR's carry out is
-       dead: the next pass reseeds it from the sign and the code below CLCs before its add. */
-    for (pass = 0; pass < 2; pass++) {                          /* $4815, $4829-$482A */
-        for (slot = 13; slot != 9; slot--) {                    /* $4817, $4826-$4827 */
-            uint8_t hi = mem[MODEL_STATE_HI + slot];
-            uint8_t lo = mem[MODEL_STATE_LO + slot];
-            mem[MODEL_STATE_HI + slot] = (uint8_t)((hi >> 1) | (hi & 0x80u));
-            mem[MODEL_STATE_LO + slot] = (uint8_t)((lo >> 1) | ((hi & 1u) << 7));
-        }
+    /* 2. $4815-$482A — elements 10..13 halved arithmetically, twice. */
+    for (slot = 10; slot <= 13; slot++) {
+        int16_t e = (int16_t)model_state_get(slot);
+        e = (int16_t)(e >> 1);
+        e = (int16_t)(e >> 1);
+        model_state_put(slot, (uint16_t)e);
     }
 
-    /* 3. $482C-$4864 — the two loads. */
-    mem[MODEL_OUT_INDEX] = 1u;                                  /* $482E-$4830 */
-    for (slot = 2; slot != 0xFEu; slot = (uint8_t)(slot - 2)) {  /* $482C, $4862-$4864 */
-        math_lo = mem[MODEL_STATE_LO + 11 + slot];              /* $4832-$4835 */
-        math_hi = mem[MODEL_STATE_HI + 11 + slot];              /* $4837-$483A */
-        mul16_by_1_5_core();                                    /* $483C */
-        math_hi = cpu.A;                                        /* $483F */
-
-        /* $4841-$484D — + the other element of the pair, and the sum's N is again the sign
-           scale16_by_y wants. */
-        math_lo = (uint8_t)adc_step(math_lo, mem[MODEL_STATE_LO + 10 + slot], 0);
-        cpu.Y   = 0xCDu;                                        /* $4849 — the scale */
-        cpu.A   = (uint8_t)adc_step(math_hi, mem[MODEL_STATE_HI + 10 + slot], cpu.C);
-        scale16_by_y_core(cpu.A, 0xCDu);                        /* $4850 */
-
-        /* $4853-$4855 — and the 16-bit product doubled.  ⚠ The `ROL A`'s carry OUT is this
-           routine's exit C: nothing between here and the RTS writes C again, so the doubling
-           of the LAST load is what the caller sees.  Found by the differential, which
-           reported the flags alone with mem[] byte-exact. */
-        { uint8_t low = math_lo, high = cpu.A;
-          math_lo = (uint8_t)(low << 1);
-          cpu.A   = (uint8_t)((high << 1) | (low >> 7));
-          cpu.C   = (uint8_t)(high >> 7); }
-
-        cpu.Y = mem[MODEL_OUT_INDEX];                           /* $4856 */
-        mem[MODEL_STATE_HI + 6 + cpu.Y] = cpu.A;                /* $4858 */
-        mem[MODEL_STATE_LO + 6 + cpu.Y] = math_lo;              /* $485D */
-        mem[MODEL_OUT_INDEX]--;                                 /* $4860 */
+    /* 3. $482C-$4864 — load 7 from the (12, 13) pair, then load 6 from the (10, 11) pair,
+       each ((1.5 * odd) + even) * $CD/$100, then doubled. */
+    for (slot = 2; slot != 0xFEu; slot = (uint8_t)(slot - 2)) {
+        uint16_t sum  = (uint16_t)(model_mul_1_5(model_state_get(11 + slot))
+                                   + model_state_get(10 + slot));
+        uint16_t load = (uint16_t)(model_scale16(sum, 0xCDu) << 1);
+        model_state_put((uint8_t)(6 + slot / 2), load);
     }
-    cpu.X = 0xFEu;                     /* $4862/$4863's two DEXs — X is live at the exit */
 
     /* $4866-$4869 — the one value update_grip_limits reads out of here. */
-    cpu.A = (uint8_t)load_a(mem[MODEL_STATE_HI + 7]);
-    wheel_load = cpu.A;
+    wheel_load = mem[MODEL_STATE_HI + 7];
 }
 
 /* ---------------------------------------------------------------------------

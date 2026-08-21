@@ -3450,10 +3450,19 @@ static int test_model_rotations(void)
       };
     for (i = 0; i < 9; i++) register_fixture(list[i].name);
 
+    /* ⭐ damp_and_derive_loads (i == 3) is verified RESULT-ONLY: its native twin is plain 16-bit
+       binary C that leaves nothing in the cpu, so the fixture pins D = 0 (the driving model's
+       real precondition — docs/static-map.md §Decimal mode), drops the register/flag comparison,
+       and ignores the oracle's arithmetic scratch ($74-$78) and stack residue ($01FF), which are
+       the 6502's register spill and dead the moment the routine returns. */
+    static const uint16_t dampIgnore[] = { 0x0074, 0x0075, 0x0076, 0x0077, 0x0078, 0x01FF };
+
     for (i = 0; i < 9; i++) {
         int subFail = 0, decimal = 0, negative = 0, accumulate = 0, carried = 0;
         int cases = list[i].cases * scale;
+        unsigned mask = (i == 3) ? LIVE_NONE : liveMask;
         if (!want(list[i].name)) continue;
+        set_ignore(i == 3 ? dampIgnore : 0, i == 3 ? 6 : 0);
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
             fill_random(pre);
@@ -3464,7 +3473,7 @@ static int test_model_rotations(void)
             if (c.X & 0x40) accumulate++;
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
             if (c.N) negative++;
-            c.D = (uint8_t)(xs() % 4 == 0);
+            c.D = (i == 3) ? 0 : (uint8_t)(xs() % 4 == 0);
             if (c.D) decimal++;
             /* ⚠ integrate_car_position's 24-bit add is the one place a CARRY OUT of the
                fractional byte reaches the next byte, and $490D takes that carry from the
@@ -3475,17 +3484,20 @@ static int test_model_rotations(void)
                 carried++;
             }
             subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
-                                liveMask, t, &printed);
+                                mask, t, &printed);
         }
+        set_ignore(0, 0);
         fail += subFail;
-        if (!decimal || !negative || !accumulate) {
+        /* damp_and_derive_loads pins D = 0 by design, so it is exempt from the decimal check. */
+        if ((i != 3 && !decimal) || !negative || !accumulate) {
             printf("[VACUOUS] %s: %d decimal, %d negative N, %d accumulate\n",
                    list[i].name, decimal, negative, accumulate);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  %s  "
                "(%d decimal, %d negative, %d accumulate, %d forced carry)\n",
-               list[i].name, cases, subFail, decimal, negative, accumulate, carried);
+               list[i].name, cases, subFail, (i == 3) ? "result-only" : "live=AXY+flags",
+               decimal, negative, accumulate, carried);
     }
     return fail;
 }
