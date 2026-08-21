@@ -8958,3 +8958,320 @@ void vdu_char_def(void)                 { vdu_char_def_core(cpu.A); }
 void vdu_char_emit(void)                { vdu_char_emit_core(); }
 void mode5_addr_for_cell(void)          { mode5_addr_for_cell_core(cpu.A); }
 void mode5_addr(void)                   { mode5_addr_core(cpu.A); }
+/* ===========================================================================
+   THE LATE MISC TREES  (twins #116-#125, user 2026-08-21)
+   ---------------------------------------------------------------------------
+   Everything still transliterated in the call trees of scale_wing_settings,
+   compute_segment_scale, place_player_in_section, process_car_contact and
+   tick_wheel_spin.  Every arithmetic LEAF they reach (mul8, abs8, abs16_math,
+   sound_queue_default) is already a twin, so these are the drivers and the small
+   helpers around them.  D = 0 on every one of these paths (docs/static-map.md
+   §Decimal mode: none of the eight SED sites is here), so the ADC/SBC byte
+   arithmetic is plain binary and the twins spell it as such.  Where a value
+   crosses into a shared transliterated tail (FUN_27ab, FUN_1c0b, FUN_11be) or a
+   native leaf with a live-flag input (abs8, abs16_math), the seam reconstructs
+   exactly the cpu inputs that leaf reads — nothing more.
+   =========================================================================== */
+
+#define CAR_STATE_2        0x0178u   /* per-car; the other of place_player's two outputs */
+#define CAR_FLAGS_0        0x0114u   /* per-car flag byte; spin_car_out marks it */
+#define CAR_SEG_OFFSET     0x0880u   /* per-car offset within the current segment */
+#define TRACK_SCALE        0x5A14u   /* TRACK FILE: per-track scale factor */
+#define SEGMENT_SCALE      0x5FB0u   /* per-segment scaled output */
+#define WING_GRIP_BASE_TBL 0x0BA0u   /* per-wing base downforce, 0 = rear, 1 = front */
+#define WHEEL_SPIN_XOR_A   0x52F6u   /* the two XOR masks the wheel-spin flicker rolls in */
+#define WHEEL_SPIN_XOR_B   0x52FBu
+
+/* ---------------------------------------------------------------------------
+   $0B77  scale_wing_settings  (twin #116)
+   ---------------------------------------------------------------------------
+   Turns the two pit-menu wing settings into the downforce/drag coefficients the
+   driving model reads.  Per wing: grip = ((base * (setting*4)) >> 8) + $5A.  Drag
+   folds both wings: ((3*rear + front) / 2) + $3C — accumulated as the 6502 does it,
+   where the ASL feeds its own carry (bit 7 of rear) into the first ADD, a faithful
+   8-bit quirk with no 16-bit equivalent.
+   --------------------------------------------------------------------------- */
+void scale_wing_settings(void)
+{
+    /* X walks 1 then 0: front wing (index 1) then rear wing (index 0). */
+    for (int i = 1; i >= 0; i--) {
+        uint8_t  setting4 = (uint8_t)(mem[MEM_wing_setting_front + i] << 2);   /* setting * 4 */
+        unsigned prod     = mul8_product(mem[WING_GRIP_BASE_TBL + i], setting4);
+        mem[MEM_wing_grip_coeff + i] = (uint8_t)((prod >> 8) + 0x5A);
+    }
+
+    uint8_t  rear  = wing_setting_rear;
+    uint8_t  front = wing_setting_front;
+    unsigned c     = (unsigned)(rear >> 7);                          /* ASL A: carry = bit 7 */
+    unsigned acc   = (unsigned)(uint8_t)(rear << 1) + rear + c;      /* ADC rear  */
+    acc = ((acc & 0xFF) + front + (acc >> 8)) & 0xFF;               /* ADC front (carry dropped) */
+    c   = acc & 1;                                                   /* LSR A: carry = bit 0 */
+    acc = ((acc >> 1) + 0x3C + c) & 0xFF;                           /* ADC #$3C */
+    wing_drag_coeff = (uint8_t)acc;
+}
+
+/* ---------------------------------------------------------------------------
+   $44C6  compute_segment_scale  (twin #117)
+   ---------------------------------------------------------------------------
+   Scales every segment's raw datum by the track scale.  X selects the track's scale
+   byte.  Per segment (top down): drop the datum's low two bits; when the datum's bit 1
+   is clear, take the rounded x.8 product with the scale, otherwise pass the shifted
+   datum through; the datum's bit 0 is rotated back into bit 7 as the rounding bit.
+   ⚠ SMC $44D5-$44D7: the segment-data base address is patched per circuit by
+   ModifyGameCode; the guard reproduces the oracle's opcode check and trap.
+   --------------------------------------------------------------------------- */
+void compute_segment_scale(void)
+{
+    uint8_t scale = mem[TRACK_SCALE + cpu.X];
+    mem[MEM_track_scale_saved] = scale;         /* held for reuse; read back at $6396 */
+    math_hi = scale;
+
+    if (mem[0x44D5] != 0xB9) { platform_smc_unhandled(0x44D5, mem[0x44D5]); return; }
+    uint16_t base = (uint16_t)(mem[0x44D6] | (mem[0x44D7] << 8));
+
+    for (int y = segment_count_x8 >> 3; y >= 0; y--) {
+        uint8_t  datum   = mem[(uint16_t)(base + y)];
+        unsigned round   = datum & 1;                       /* bit 0: PHP'd rounding bit */
+        uint8_t  shifted = (uint8_t)(datum >> 2);           /* two LSRs */
+        uint8_t  a = ((datum >> 1) & 1)                     /* bit 1 set: pass through halved */
+                     ? shifted
+                     : (uint8_t)(mul8_product(shifted, scale) >> 8);   /* else rounded x.8 */
+        mem[SEGMENT_SCALE + y] = (uint8_t)((round << 7) | (a & 0x7F));  /* ASL; PLP; ROR: bit7<-bit0 */
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   $4687  section_angle_curve  (twin #118)  — returns A
+   ---------------------------------------------------------------------------
+   A piecewise remap of a section angle into a steering-feel curve: shallow angles are
+   amplified 6x, mid angles 4x with an offset, steep angles flatten to a linear tail.
+   --------------------------------------------------------------------------- */
+static uint8_t section_angle_curve_core(uint8_t a)
+{
+    if (a >= 0x2E) return (uint8_t)(a + 0xBE);       /* steep: shallow linear tail */
+    if (a >= 0x1A) return (uint8_t)(a * 4 + 0x34);   /* mid: 4x + offset */
+    return (uint8_t)(a * 6);                          /* shallow: 6x */
+}
+void section_angle_curve(void) { cpu.A = section_angle_curve_core(cpu.A); }
+
+/* ---------------------------------------------------------------------------
+   $4676  scale_angle_in_section  (twin #119)  — returns A
+   ---------------------------------------------------------------------------
+   Curves the angle, then folds Y and edge_nearest_lo through it as two x.8 multiplies:
+   A = ((edge_nearest_lo * ((Y * curve(A)) >> 8)) >> 8).
+   --------------------------------------------------------------------------- */
+static uint8_t scale_angle_in_section_core(uint8_t a, uint8_t y)
+{
+    uint8_t curve = section_angle_curve_core(a);
+    uint8_t p1    = (uint8_t)(mul8_product(y, curve) >> 8);
+    return (uint8_t)(mul8_product(edge_nearest_lo, p1) >> 8);
+}
+void scale_angle_in_section(void) { cpu.A = scale_angle_in_section_core(cpu.A, cpu.Y); }
+
+/* ---------------------------------------------------------------------------
+   $1FA8  record_section_jump  (twin #120)
+   ---------------------------------------------------------------------------
+   Rolls one bit into a per-frame history: a 1 iff the caller's carry is set AND this
+   car's offset within its segment has reached 3.  Carry in, and the bit rotated OUT
+   of the history byte comes back out in carry.
+   --------------------------------------------------------------------------- */
+static int record_section_jump_core(int carry_in, uint8_t x)
+{
+    int     bit_in = carry_in ? (mem[CAR_SEG_OFFSET + x] >= 3) : 0;   /* BCC / CMP #3 */
+    uint8_t old    = section_jump_history;
+    section_jump_history = (uint8_t)((old >> 1) | (bit_in << 7));      /* ROR */
+    return old & 1;                                                    /* carry out */
+}
+void record_section_jump(void) { cpu.C = record_section_jump_core(cpu.C, cpu.X); }
+
+/* ---------------------------------------------------------------------------
+   $4626  place_player_in_section  (twin #121)
+   ---------------------------------------------------------------------------
+   Derives the two per-car placement bytes (car_state_1/car_state_2) from the nearest
+   road-edge bearing relative to the current section's yaw.  It folds that relative
+   angle through scale_angle_in_section twice — once with weight $BA into car_state_1,
+   once with weight $88 into car_state_2 — flipping sign by track direction and by a
+   quadrant flag ($0043), and feeds record_section_jump the change since last frame.
+
+   The abs8 and the SMC hook are native leaves with live-flag INPUTS, so the seam sets
+   exactly the cpu registers each reads (A and its sign N; abs8's threaded carry).
+   ⚠ SMC $462B-$462D: Silverstone calls abs8; an expansion circuit runs its own hook.
+   --------------------------------------------------------------------------- */
+void place_player_in_section(void)
+{
+    /* Relative angle of the nearest edge bearing to the section's yaw, left in cpu.A/cpu.N
+       for the abs8 hook below (a native leaf that reads A and its sign N — the flag escapes). */
+    sub_from(nearest_edge_bearing_hi, section_yaw);   /* SEC; SBC; sets A and N */
+
+    if (mem[0x462B] != 0x20) { platform_smc_unhandled(0x462B, mem[0x462B]); return; }
+    {
+        uint16_t hook = (uint16_t)(mem[0x462C] | (mem[0x462D] << 8));
+        if (hook == 0x3450)                          abs8();       /* |rel|, sign = current N */
+        else if (hook >= 0x5300 && hook <= 0x5A25)   revs_track_hook(hook);
+        else { platform_smc_unhandled(0x462B, hook); return; }
+    }
+    uint8_t mag = cpu.A;                              /* |rel| */
+
+    /* Quadrant flag: bit 7 of $0043 records whether |rel| reached a quarter turn ($40). */
+    int quad_c = (mag >= 0x40);                       /* CMP #$40 */
+    mem[0x0043] = (uint8_t)((quad_c << 7) | (mem[0x0043] >> 1));   /* ROR $0043; N = quad_c */
+    if (quad_c) mag = (uint8_t)((mag ^ 0x7F) + 1);   /* BMI arm: reflect past the quarter turn */
+
+    /* $4639 PHA: the routine parks this magnitude on the 6502 stack across the two
+       sub-calls, then pulls it back for the second fold.  The value is genuinely written
+       to page 1 and lives there below SP until the next frame overwrites it, so the twin
+       uses the real stack — determinism is byte-exact over $0100-$01FF. */
+    cpu.A = mag; PHA();                               /* push V1 (folded magnitude) */
+
+    /* First fold: weight $BA, then flip if the nearest edge is far enough along ($28). */
+    uint8_t a = scale_angle_in_section_core(mag, 0xBA);
+    if (nearest_edge_cursor >= 0x28) a ^= 0xFF;       /* CPX #$28; BCC skip; EOR #$FF */
+
+    /* |a| with sign taken from track_direction bit 7; abs8's threaded carry is the CPX above. */
+    uint8_t x = player_car;
+    cpu.A = a;
+    cpu.N = (track_direction & 0x80) != 0;            /* BIT track_direction sets N */
+    cpu.C = (nearest_edge_cursor >= 0x28);            /* the carry abs8 threads into the SBC */
+    abs8();
+    PHA();                                            /* $464E push V2 (placed) */
+    uint8_t placed = cpu.A;
+
+    /* Change since last frame -> record_section_jump's carry. */
+    unsigned diff = (unsigned)placed - mem[CAR_STATE_2 + x] - (cpu.C ? 0u : 1u);   /* SBC */
+    uint8_t d = (uint8_t)diff;
+    if (diff & 0x100) d ^= 0xFF;                       /* BCC (borrow): EOR #$FF -> |diff| */
+    record_section_jump_core(d >= 0x16, x);           /* CMP #$16 */
+
+    PLA();                                            /* $465B pull V2 */
+    mem[CAR_STATE_2 + x] = cpu.A;                      /* car_state_2[X] = placed */
+
+    PLA();                                            /* $465F pull V1 back into A */
+    uint8_t folded = cpu.A;
+    /* Second fold: weight $88, sign from the quadrant flag. */
+    uint8_t b = scale_angle_in_section_core((uint8_t)((folded ^ 0xFF) + 0x41), 0x88);  /* EOR;ADC #$41 */
+    b = (uint8_t)(b << 2);                             /* ASL; ASL */
+    if (!(mem[0x0043] & 0x80)) b ^= 0xFF;             /* BIT $0043; BPL: EOR #$FF */
+    mem[CAR_STATE_1 + x] = b;
+}
+
+/* ---------------------------------------------------------------------------
+   $52A4  tick_wheel_spin  (twin #122)
+   ---------------------------------------------------------------------------
+   One PAL field of the wheel-spin flicker.  Advances a field counter and a rate
+   accumulator (road_speed + $30); on the accumulator's carry, and only while
+   wheel_spin_rate is non-zero, it XORs the wheel graphics in the dashboard overlay.
+   Every $6Exx/$6Fxx/$70xx store is a frame-buffer write.
+   --------------------------------------------------------------------------- */
+void tick_wheel_spin(void)
+{
+    field_countdown++;
+
+    unsigned s1  = (unsigned)road_speed + 0x30;                      /* CLC; ADC #$30 */
+    unsigned acc = (s1 & 0xFF) + wheel_spin_accum + (s1 >> 8);       /* ADC accum, carry threaded */
+    wheel_spin_accum = (uint8_t)acc;
+    if (!(acc & 0x100)) return;              /* no carry this field */
+    if (wheel_spin_rate == 0) return;        /* spin disabled */
+
+    for (int x = 4; x >= 0; x--) {
+        mem[0x6FC0 + x] ^= mem[WHEEL_SPIN_XOR_A + x];
+        mem[0x70F8 + x] ^= mem[WHEEL_SPIN_XOR_B + x];
+        if (x < 3) {                                     /* CPX #3; BCS skips this pair */
+            mem[0x6E85 + x] ^= 0xF0;
+            uint8_t r = (uint8_t)(mem[0x6FBD + x] ^= 0xF0);
+            if (r != 0) continue;                        /* BNE: skip the lower pair */
+        }
+        mem[0x6E8A + x] ^= 0xC0;
+        mem[0x6FB2 + x] ^= 0x30;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   $11AB  spin_car_out  (twin #123)
+   ---------------------------------------------------------------------------
+   Flags car X as spun out.  For a real car slot (X < $14) it folds the low seven bits
+   of car_state_2 into car_flags_0 with the spin marker $45, stamps $91 into the page-1
+   status array, then runs the shared crash tail (FUN_11be).  Scenery slots do nothing.
+   --------------------------------------------------------------------------- */
+void spin_car_out(void)
+{
+    uint8_t x = cpu.X;
+    if (x >= 0x14) { FUN_11cd(); return; }        /* not a car slot: shared no-op tail */
+    mem[CAR_FLAGS_0 + x] = (uint8_t)((mem[CAR_STATE_2 + x] & 0x7F) | 0x45);
+    mem[0x0100 + x]      = 0x91;
+    FUN_11be();                                   /* shared crash tail, indexed by X */
+}
+
+/* ---------------------------------------------------------------------------
+   $1BB9  process_car_contact  (twin #124)
+   ---------------------------------------------------------------------------
+   Resolves the frame's car-vs-car (or car-vs-scenery) contact.  From the closing
+   distance it builds an impact magnitude (floored at 5, doubled); a hard hit in a race
+   spins the other car out; the slower of the two cars is credited some speed; and the
+   shared crash tail (FUN_1c0b) gets a signed heading kick plus a queued crash sound.
+   The PHP/PLP saving the heading-difference sign across the speed logic becomes one
+   local carried into abs16_math's N.
+   --------------------------------------------------------------------------- */
+void process_car_contact(void)
+{
+    if (contact_pending == 0) { FUN_1c1b(); return; }        /* no contact this frame */
+    contact_pending = 0x00;
+    shared_temp_76 = (uint8_t)((shared_temp_76 >> 1) | 0x80);   /* SEC; ROR $76 */
+
+    /* Impact from closing distance: $25 - distance, floored at 5, doubled. */
+    unsigned d      = 0x25u - contact_distance;              /* SEC; SBC */
+    uint8_t  impact = (d & 0x100) ? 0x05 : (uint8_t)d;       /* BCC: floor at 5 */
+    uint8_t  impact2 = (uint8_t)(impact << 1);
+
+    uint8_t x = contact_slot;
+    uint8_t y = player_car;
+    cpu.X = x;   /* $1BD0 LDX contact_slot — X survives to FUN_1c0b's sound save ($0B46) */
+
+    /* Hard hit during the race: spin the other car out. */
+    if (impact2 >= 0x28 && (session_is_race & 0x80)) { cpu.X = x; spin_car_out(); }
+
+    /* Heading difference between the two objects, x4; its sign steers abs16_math below. */
+    uint8_t  hd4     = (uint8_t)(((unsigned)mem[OBJECT_BEARING_HI + x] - car_heading_hi) << 2);
+    int      hd_sign = (hd4 & 0x80) != 0;                    /* PHP: N of the <<2 result */
+
+    /* Speed credit: the slower car gets a nudge; scenery slots (X >= $14) are skipped. */
+    uint8_t speedY = mem[CAR_SPEED_SCL + y];
+    uint8_t M      = speedY;                                 /* the mul8 multiplicand */
+    if (x < 0x14) {
+        uint8_t speedX = mem[CAR_SPEED_SCL + x];
+        if (speedY >= speedX) {                              /* BCS: credit from speed[Y] */
+            M = (uint8_t)(speedY + 0x0C);                    /* ADC #$0B with carry(1) */
+            mem[CAR_SPEED_SCL + x] = M;
+        } else if (speedX != 0) {                            /* BNE: use speed[X] as is */
+            M = speedX;
+        } else {                                             /* speed[X] == 0: seed it to $0B */
+            M = 0x0B;                                         /* 0 + $0B + carry(0) */
+            mem[CAR_SPEED_SCL + x] = M;
+        }
+    }
+
+    /* impact * speed, clamped to $10, negated by the heading sign -> heading kick. */
+    unsigned prod = mul8_product(M, impact2);
+    math_lo = (uint8_t)prod;                                /* the low byte abs16_math negates */
+    uint8_t a = (uint8_t)(prod >> 8);
+    if (a >= 0x10) a = 0x10;                                 /* CMP #$10; clamp */
+    cpu.A = a;
+    cpu.N = hd_sign;                                         /* PLP: the saved sign */
+    abs16_math();                                           /* negate (A:math_lo) per N; A -> tail */
+    FUN_1c0b();                                             /* heading_step_hi = A; slip flags; sound */
+}
+
+/* ---------------------------------------------------------------------------
+   $27A4  car_gap  (twin #125)
+   ---------------------------------------------------------------------------
+   Byte 0 of the 24-bit separation between cars Y and X.  Only this subtract's BORROW
+   survives into the shared three-byte tail (FUN_27ab) — the low difference itself is
+   discarded there — so the twin's whole job is to hand that tail the right carry.
+   --------------------------------------------------------------------------- */
+static unsigned car_gap_lo_core(uint8_t a, uint8_t b) { return (unsigned)a - b; }
+void car_gap(void)
+{
+    unsigned d = car_gap_lo_core(mem[CAR_STATE_1 + cpu.Y], mem[CAR_STATE_1 + cpu.X]);
+    cpu.A = (uint8_t)d;
+    cpu.C = !(d & 0x100);                          /* SEC/SBC: C clear = borrow */
+    FUN_27ab();
+}

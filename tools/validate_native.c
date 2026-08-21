@@ -3935,6 +3935,170 @@ static int test_sub_models(void)
 
 
 /* ==========================================================================
+   TWINS #116-#125 — THE LATE MISC TREES
+   --------------------------------------------------------------------------
+   scale_wing_settings, compute_segment_scale, section_angle_curve,
+   scale_angle_in_section, record_section_jump, place_player_in_section,
+   tick_wheel_spin, spin_car_out, process_car_contact, car_gap.
+
+   Each is verified on its OWN result: the drivers (place_player, process_car_contact,
+   car_gap) reach native leaves whose bodies cancel between the two models, so only the
+   driver's own arithmetic is under test, and only its declared outputs are compared —
+   result-only for the mem[]-only ones, live A (and C/N for car_gap) where a value or a
+   flag genuinely leaves the routine.  D = 0 is pinned on every path that does binary
+   ADC/SBC or a multiply (docs/static-map.md §Decimal mode); it is left random on the two
+   that touch neither (record_section_jump, spin_car_out) to prove they are D-independent.
+
+   TWO SMC sites are steered exactly as the sub-models' $45CB is: nine cases in ten force
+   Silverstone's own bytes (compute_segment_scale's $44D5 base load, place_player's $462B
+   abs8 hook), the tenth forces the else-arm so the platform_smc_unhandled trap channel is
+   exercised in both models.  The base for compute_segment_scale is pinned to $3000 so its
+   random per-segment source data never overlaps the $5FB0 output.
+   ========================================================================== */
+void scale_wing_settings(void);     void scale_wing_settings__t6502(void);
+void compute_segment_scale(void);   void compute_segment_scale__t6502(void);
+void section_angle_curve(void);     void section_angle_curve__t6502(void);
+void scale_angle_in_section(void);  void scale_angle_in_section__t6502(void);
+void record_section_jump(void);     void record_section_jump__t6502(void);
+void place_player_in_section(void); void place_player_in_section__t6502(void);
+void tick_wheel_spin(void);         void tick_wheel_spin__t6502(void);
+void spin_car_out(void);            void spin_car_out__t6502(void);
+void process_car_contact(void);     void process_car_contact__t6502(void);
+void car_gap(void);                 void car_gap__t6502(void);
+
+static int test_late_misc_trees(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t, i;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+
+    struct { const char* name; void (*nat)(void); void (*ref)(void); unsigned mask; int cases; }
+      list[10] = {
+        { "scale_wing_settings",     scale_wing_settings,     scale_wing_settings__t6502,     LIVE_NONE, 2000 },
+        { "compute_segment_scale",   compute_segment_scale,   compute_segment_scale__t6502,   LIVE_NONE, 3000 },
+        { "section_angle_curve",     section_angle_curve,     section_angle_curve__t6502,     LIVE_A,    2000 },
+        { "scale_angle_in_section",  scale_angle_in_section,  scale_angle_in_section__t6502,  LIVE_A,    3000 },
+        { "record_section_jump",     record_section_jump,     record_section_jump__t6502,     LIVE_NONE, 2000 },
+        { "place_player_in_section", place_player_in_section, place_player_in_section__t6502, LIVE_NONE, 5000 },
+        { "tick_wheel_spin",         tick_wheel_spin,         tick_wheel_spin__t6502,         LIVE_NONE, 3000 },
+        { "spin_car_out",            spin_car_out,            spin_car_out__t6502,            LIVE_NONE, 2000 },
+        { "process_car_contact",     process_car_contact,     process_car_contact__t6502,     LIVE_NONE, 5000 },
+        { "car_gap",                 car_gap,                 car_gap__t6502,                 LIVE_A | LIVE_C | LIVE_N, 3000 },
+      };
+    static const uint16_t mathIgnore[] = { 0x0074, 0x0075 };   /* mul8/abs16 scratch */
+    static const uint16_t segIgnore[]  = { 0x0074, 0x0075, 0x01FF };  /* + the oracle's PHP stack byte */
+    /* place_player pushes its two saved bytes to the real stack (byte-faithful over page 1),
+       so only the mul8 scratch needs ignoring — the PHA slots are compared. */
+    static const uint16_t contIgnore[]  = { 0x0074, 0x0075, 0x01FF };  /* + the oracle's PHP stack byte */
+
+    for (i = 0; i < 10; i++) register_fixture(list[i].name);
+
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+    unsigned long smcBefore = g_smcUnhandled;
+
+    for (i = 0; i < 10; i++) {
+        int cases   = list[i].cases * scale;
+        int contact = 0, spun = 0, floored = 0, credited = 0, carried = 0;
+        int smcArm = 0, bodyArm = 0, decimal = 0, diffArm = 0;
+        int useIgnore = (i == 0 || i == 1 || i == 3 || i == 5 || i == 8);
+        int pinD0     = !(i == 4 || i == 7);   /* all but record_section_jump / spin_car_out */
+        if (!want(list[i].name)) continue;
+        if (i == 1)        set_ignore(segIgnore, 3);    /* mul8 scratch + PHP stack byte */
+        else if (i == 2)   set_ignore(mathIgnore, 1);   /* shallow arm's math_lo scratch */
+        else if (i == 5)   set_ignore(mathIgnore, 2);   /* mul8 scratch; PHA slots are compared */
+        else if (i == 8)   set_ignore(contIgnore, 3);   /* mul8 scratch + PHP stack byte */
+        else               set_ignore(useIgnore ? mathIgnore : 0, useIgnore ? 2 : 0);
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.A = (uint8_t)xs();
+            c.X = (uint8_t)xs();
+            c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = pinD0 ? 0 : (uint8_t)(xs() % 4 == 0);
+            if (c.D) decimal++;
+
+            switch (i) {
+            case 1: /* compute_segment_scale: X = track 0..4, base pinned to $3000 */
+                c.X = (uint8_t)(xs() % 5);
+                pre[0x44D6] = 0x00; pre[0x44D7] = 0x30;
+                pre[0x59FA] = (uint8_t)xs();            /* segment_count_x8 -> y up to 31 */
+                if (xs() % 10) pre[0x44D5] = 0xB9;      /* unpatched arm */
+                else { pre[0x44D5] = 0x00; smcArm++; }  /* else-arm: platform_smc_unhandled */
+                break;
+            case 3: /* scale_angle_in_section: A, Y, edge_nearest_lo all random (already) */
+                break;
+            case 4: /* record_section_jump: X in car range, carry is c.C (random) */
+                c.X = (uint8_t)(xs() % 20);
+                break;
+            case 5: /* place_player_in_section */
+                pre[0x006F] = (uint8_t)(xs() % 20);     /* player_car */
+                if (xs() % 10) { pre[0x462B] = 0x20; pre[0x462C] = 0x50; pre[0x462D] = 0x34; }
+                else { pre[0x462B] = 0x00; smcArm++; }  /* else-arm trap */
+                break;
+            case 7: /* spin_car_out: X across car + scenery slots */
+                c.X = (uint8_t)(xs() % 0x20);
+                if (c.X < 0x14) bodyArm++;
+                break;
+            case 8: /* process_car_contact */
+                pre[0x0067] = (uint8_t)(xs() % 0x20);   /* contact_slot */
+                pre[0x006F] = (uint8_t)(xs() % 20);     /* player_car */
+                pre[0x0068] = (uint8_t)((xs() & 3) ? (1 + xs() % 255) : 0);  /* contact_pending */
+                pre[0x0041] = (uint8_t)(xs() & 0x3F);   /* contact_distance: sweep the floor */
+                pre[0x006C] = (uint8_t)((xs() & 1) ? 0x80 : 0x28);  /* session_is_race sign */
+                if (pre[0x0068]) contact++;
+                if (pre[0x0041] > 0x25) floored++;
+                break;
+            case 9: /* car_gap: X, Y in car range */
+                c.X = (uint8_t)(xs() % 20);
+                c.Y = (uint8_t)(xs() % 20);
+                break;
+            default: break;
+            }
+
+            /* pre-count the spin arm for process_car_contact (impact*2 >= $28 && race) */
+            if (i == 8 && pre[0x0068]) {
+                unsigned dd = 0x25u - pre[0x0041];
+                uint8_t im = (dd & 0x100) ? 0x05 : (uint8_t)dd;
+                if ((uint8_t)(im << 1) >= 0x28 && (pre[0x006C] & 0x80)) spun++;
+                bodyArm++;
+            }
+
+            fail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
+                             list[i].mask, t, &printed);
+        }
+        set_ignore(0, 0);
+
+        /* Per-function vacuity guards: each steered arm must have been reached. */
+        int vac = 0;
+        if ((i == 1 || i == 5) && !smcArm)   vac = 1;   /* both SMC arms exercised */
+        if (i == 7 && !bodyArm)              vac = 1;   /* real-car slot reached */
+        if (i == 8 && (!contact || !spun || !floored)) vac = 1;
+        if ((i == 4 || i == 7) && !decimal)  vac = 1;   /* D really varied */
+        if (vac) { printf("[VACUOUS] %s\n", list[i].name); fail++; }
+
+        printf("%-24s %7d cases, mismatch above must be 0  %s%s\n",
+               list[i].name, cases,
+               list[i].mask == LIVE_NONE ? "result-only" :
+               list[i].mask == LIVE_A ? "live=A" : "live=A/C/N",
+               pinD0 ? "  D=0" : "  D-random");
+        (void)credited; (void)carried; (void)diffArm;
+    }
+
+    unsetenv("REVS_SMC_CONTINUE");
+    if ((want("compute_segment_scale") || want("place_player_in_section"))
+        && g_smcUnhandled == smcBefore) {
+        printf("[VACUOUS] late-misc: no SMC trap over the whole run — the guard else-arm "
+               "was never exercised\n");
+        fail++;
+    }
+    return fail;
+}
+
+
+/* ==========================================================================
    TWINS #87-#92 — THE ROAD SIGN AND THE OBJECT SLOT WRITER
    --------------------------------------------------------------------------
    $4CA4 build_road_sign, $4D21 build_sign_origin, $2A76 write_object_slot,
@@ -4746,6 +4910,7 @@ int main(int argc, char** argv)
     fail += test_model_rotations();
     fail += test_slip_and_sound();
     fail += test_sub_models();
+    fail += test_late_misc_trees();
     fail += test_road_sign();
     fail += test_object_shape();
     fail += test_object_lines();

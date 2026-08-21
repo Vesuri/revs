@@ -138,6 +138,30 @@ same mid-race dump `track_dir` used** — dump `$5700-$58FF` on a moving Silvers
 `(c0, c2)` there is the 90-degree rotation of `track_dir`'s ground-plane pair.  Until then the
 note stays `[INFERRED from the generator]`.
 
+## `$0043` / `$0100` — two unnamed cells the place-player / spin-car twins touch
+
+Surfaced making `place_player_in_section` and `spin_car_out` native (twins in the
+`car_gap`…`tick_wheel_spin` group).  Both are still `[unnamed]` in `symbols.csv`; the twins
+carry file-local defines so the code reads, but each needs a run before a global name is earned.
+(A third cell in this group, `$5F40`, was settled statically and named `track_scale_saved` —
+`compute_segment_scale` just holds the active track scale there for the restart path at `$6396`.)
+
+* **`$0043`** — a one-bit sign/quadrant flag.  `place_player_in_section` `ROR`s the carry of
+  `CMP #$40` into it (`$4630`, i.e. "did the section-relative angle fold past a quarter turn?")
+  and later reads bit 7 with `BIT $43 / BMI` (`$466C`) to pick the sign of `car_state_1`.
+  `build_track_geometry` also reads it (`BIT $43` at `$24E1`).  Two independent readers, so it is
+  real shared state, not a local.  ⇒ **Settle on `make refloop`**: steer across a section and dump
+  `$43`; if bit 7 tracks which side of straight-ahead the section runs, it is a direction sign and
+  the name is `player_section_sign` (or similar); if it tracks a quadrant it is `..._quadrant`.
+
+* **`$0100`** — a per-car byte array in the low part of page 1 (safe: the stack lives at
+  `$01F3-$01F8`).  `spin_car_out` writes `$91` to `$0100,X` when a car is spun out; `$0F6B` writes
+  the un-indexed `$0100`.  No `LDA $0100,X` reader found statically.  ⇒ **Settle by dumping
+  `$0100-$0113` mid-race after a collision** (`make refloop`): watch which cars carry `$91` and for
+  how long — it looks like a spin/penalty timer or state, but nothing reads it in the static map,
+  so confirm there IS a reader before naming (it may be write-only per-car scratch).
+
+
 ## `span_cap_surface_a` (`$0034`) / `span_cap_surface_b` (`$0033`) — what distinguishes them, beyond which one gets used
 
 Both are per-scan-line surface codes `interp_edge` composes for the span it is about to walk, and

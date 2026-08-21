@@ -894,6 +894,37 @@ VALIDATE_FUNCS = {
     # setup; stow it back before MODE 7 at exit), so not hot — the twin buys legibility and a
     # named model of the swap, not FPS.  Whole call tree is this one routine: no JSR, pure RAM.
     0x18EA,
+    # ⭐ TWINS #116-#125 — the LATE MISC TREES (user, 2026-08-21): everything still transliterated
+    # in the call trees of car_gap, compute_segment_scale, place_player_in_section,
+    # process_car_contact, scale_wing_settings and tick_wheel_spin.  Every arithmetic leaf they
+    # reach (mul8, abs8, abs16_math, sound_queue_default) is already a twin, so these are the
+    # drivers and the small helpers around them.
+    #   $0B77 scale_wing_settings    the wing coefficients derived at every (re)start
+    #   $44C6 compute_segment_scale  segment_data x track_scale -> segment_scale, per segment
+    #   $4687 section_angle_curve     the 3-segment piecewise angle curve
+    #   $4676 scale_angle_in_section  ...folded through it, x bearing x section distance
+    #   $1FA8 record_section_jump     one bit of lateral-jump history into section_jump_history
+    #   $4626 place_player_in_section where the player sits within the current section
+    #   $52A4 tick_wheel_spin         the front-wheel dither, the only game work in the band cycle
+    #   $11AB spin_car_out            spin the struck car out (falls into FUN_11be, kept translit)
+    #   $1BB9 process_car_contact     the frame's car-to-car contact
+    #   $27A4 car_gap                 byte 0 of the 24-bit car separation, into the shared tail
+    # ⚠ car_gap is the 7-byte HEAD of a 24-bit signed car-separation subtract that falls through
+    # into FUN_27ab (no RTS of its own).  FUN_27ab is a SHARED tail — it is also JSR'd standalone
+    # from $10E1 and $28FD (entered with byte 0 already done) — so it stays transliterated and
+    # car_gap's twin computes byte 0, leaves the borrow in C for FUN_27ab's next SBC to chain on,
+    # and tail-calls it.  The twin's result (and its live exit flags, from FUN_27ab) is validated
+    # by the difference the byte-0 subtract makes to FUN_27ab's output.
+    0x0B77,
+    0x44C6,
+    0x4687,
+    0x4676,
+    0x1FA8,
+    0x4626,
+    0x52A4,
+    0x11AB,
+    0x1BB9,
+    0x27A4,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
