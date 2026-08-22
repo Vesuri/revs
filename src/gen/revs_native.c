@@ -9296,3 +9296,251 @@ void car_gap(void)
     cpu.C = !(d & 0x100);                          /* SEC/SBC: C clear = borrow */
     FUN_27ab();
 }
+
+/* ---------------------------------------------------------------------------
+   $2937  place_car_world_coords  (twin #126)
+   ---------------------------------------------------------------------------
+   Projects one object's within-section offsets — car_state_1 ("along" the section) and
+   car_state_2 ("across" it) — through the section's direction basis into the 3-value world
+   coordinate at object_coord_lo:object_coord_hi.
+
+   The section byte cursor Y indexes the section ORIGIN (section_coord_lo/hi); the byte it
+   points at, section_dir_index, indexes the five direction bytes (track_dir_0/1/2 and the two
+   at $5700/$5800).  First loop, three world axes:
+
+       coord[axis] = section_origin[axis] + signextend( (along * dir[axis]) >> 8 )
+
+   as a signed 16-bit add.  Second loop, two axes (0 and 2), folds the "across" offset in at 4x.
+   Then coordinate 1 is nudged by $90.  The two products were the 6502's mul8 (an 8x8 shift-add);
+   here they are revs_mulu16 (one MULU.W), the sign handled in C.
+
+   ⭐ THE PRODUCT'S SIGN.  mul8 gives an unsigned 16-bit product; the 6502 keeps only its HIGH
+   byte and, on a negative direction byte, negates that byte alone (8-bit two's complement) and
+   sign-extends into shared_temp_76.  So the value added is signextend8( |dir|*along >> 8 ) with
+   the sign of dir — which is exactly `(dir<0 ? -mph : mph)` as a 16-bit signed, mph being that
+   high byte (0..254, so no 16-bit overflow either here or after the <<2 in the second loop).
+
+   ⚠ SMC at $298D-$298E: the middle axis's origin HIGH byte is ANDed with a per-circuit mask
+   (Silverstone's operand lives at $298E; the carry from the low-byte add is preserved across the
+   mask, the 6502's PHP/PLP).  All circuits keep the AND opcode, so a different opcode is the
+   unhandled case, faithfully reproduced.
+
+   The tail (from $29F4) is the object queue: FUN_2a5d dispatches on object_dist_hi, and for a
+   near car ahead of car_behind the AI branch runs FUN_1442 / FUN_2b0e / FUN_0bcc / FUN_2a5f.
+   Those are the real generated routines, called with the registers the transliteration set, so
+   they cancel in the differential — the twin's job is the two loops and the coordinate adds.
+   --------------------------------------------------------------------------- */
+#define OBJECT_COORD_LO   0x09FDu   /* 3-byte per-object world coordinate, low bytes  */
+#define OBJECT_COORD_HI   0x0AFDu   /*                                    high bytes */
+#define SECTION_COORD_LO  0x0900u   /* section origin, low  (section_coord_lo) */
+#define SECTION_COORD_HI  0x0A00u   /* section origin, high (section_coord_hi) */
+#define TRACK_DIR_0       0x5400u
+#define TRACK_DIR_1       0x5500u
+#define TRACK_DIR_2       0x5600u
+#define TRACK_DIR_3       0x5700u   /* ⚠ shares ModifyGameCode's address; read as DATA here */
+#define TRACK_DIR_4       0x5800u
+#define SECTION_DIR_INDEX 0x0700u
+#define SMC_MASK_OPCODE   0x298Du   /* per-circuit; unpatched = $29 (AND zp) */
+#define SMC_MASK_OPERAND  0x298Eu
+
+/* signextend8( |dir| * factor >> 8 ) with the sign of dir — the signed contribution of one axis,
+   optionally <<2 (the second loop's ASL/ROL pair).  ⚠ Also reproduces the mul8 residue the
+   object-queue tail reads back: math_lo ($74) = the product's low byte (mul8 never shifts it),
+   math_hi ($75) = the preserved multiplicand, shared_temp_76 ($76) = the term's high byte (which
+   the coord-high ADC also consumes).  Written on every call so the residue is faithful at the
+   SMC-trap exit inside loop 1 too. */
+static int16_t place_car_axis_term(uint8_t dir, uint8_t factor, int shl2)
+{
+    uint8_t mag   = (dir & 0x80u) ? (uint8_t)(0u - dir) : dir;   /* EOR #$FF; ADC #1 on the neg arm */
+    unsigned prod = revs_mulu16(mag, factor);                    /* mul8 */
+    int16_t term  = (dir & 0x80u) ? (int16_t)(-(int)(prod >> 8)) : (int16_t)(prod >> 8);
+    if (shl2) term = (int16_t)(term << 2);
+
+    mem[0x0074] = (uint8_t)prod;                    /* math_lo: product low byte */
+    mem[0x0075] = factor;                           /* math_hi: preserved multiplicand */
+    mem[0x0076] = (uint8_t)((uint16_t)term >> 8);   /* shared_temp_76: the (shifted) sign extension */
+    return term;
+}
+
+void place_car_world_coords(void)
+{
+    uint8_t x0  = cpu.X;                              /* object/car slot */
+    uint8_t y0  = cpu.Y;                              /* section byte cursor */
+    uint8_t soi = mem[SECTION_DIR_INDEX + y0];        /* indexes the direction tables */
+    uint8_t along  = mem[CAR_STATE_1 + x0];
+    uint8_t across = mem[CAR_STATE_2 + x0];
+
+    /* ⚠ The oracle parks its inputs in the zero-page arithmetic window ($0C soi, $84 along,
+       $85 across, $86..$88 dir bytes) and the object-queue tail reads them back through those
+       cells.  Reproduce those writes exactly so the shared tail routines see identical memory;
+       only the mul8 product residue ($74/$75/$76) and the PHP stack byte then differ. */
+    mem[0x000C] = soi;
+    mem[0x0084] = along;             /* the oracle's STA $84 from car_state_1[X] */
+    mem[0x0085] = across;            /* STA $85 from car_state_2[X] */
+
+    uint8_t dir1[3];
+    dir1[0] = mem[TRACK_DIR_0 + soi];
+    dir1[1] = mem[TRACK_DIR_1 + soi];
+    dir1[2] = mem[TRACK_DIR_2 + soi];
+    mem[0x0086] = dir1[0];
+    mem[0x0087] = dir1[1];
+    mem[0x0088] = dir1[2];
+
+    /* First loop: origin + (along * dir) >> 8, per world axis.  ⚠ The section index is the 6502's
+       8-bit Y (LDY y0 then INY per axis), so it WRAPS at 256 — y0+axis must be masked to a byte. */
+    for (int axis = 0; axis < 3; axis++) {
+        uint8_t sy = (uint8_t)(y0 + axis);
+        int16_t sp = place_car_axis_term(dir1[axis], along, 0);
+
+        unsigned lo = (unsigned)(uint8_t)sp + mem[SECTION_COORD_LO + sy];          /* CLC; ADC */
+        unsigned carry = lo >> 8;
+        mem[OBJECT_COORD_LO + axis] = (uint8_t)lo;
+
+        uint8_t hiOrigin = mem[SECTION_COORD_HI + sy];
+        if (axis == 1) {                              /* the SMC site */
+            if (mem[SMC_MASK_OPCODE] == 0x29) hiOrigin &= mem[SMC_MASK_OPERAND];
+            else { cpu.X = 1; platform_smc_unhandled(SMC_MASK_OPCODE, mem[SMC_MASK_OPCODE]); return; }
+        }
+        mem[OBJECT_COORD_HI + axis] =
+            (uint8_t)(hiOrigin + (uint8_t)((uint16_t)sp >> 8) + carry);           /* ADC shared_temp_76 */
+    }
+
+    /* Second loop: fold the "across" offset in at 4x, axes 0 and 2 only. */
+    uint8_t dir2[3];
+    dir2[0] = mem[TRACK_DIR_3 + soi];                 /* $86 reloaded */
+    dir2[2] = mem[TRACK_DIR_4 + soi];                 /* $88 reloaded */
+    mem[0x0086] = dir2[0];
+    mem[0x0088] = dir2[2];
+    for (int axis = 0; axis < 4; axis += 2) {
+        int16_t sp = place_car_axis_term(dir2[axis], across, 1);                  /* ASL/ROL x2 */
+
+        unsigned lo = (unsigned)(uint8_t)sp + mem[OBJECT_COORD_LO + axis];        /* CLC; ADC */
+        unsigned carry = lo >> 8;
+        mem[OBJECT_COORD_LO + axis] = (uint8_t)lo;
+        mem[OBJECT_COORD_HI + axis] =
+            (uint8_t)(mem[OBJECT_COORD_HI + axis] + (uint8_t)((uint16_t)sp >> 8) + carry);
+    }
+
+    /* Nudge coordinate 1 by $90.  The ADC's carry-out is left in C and FUN_2a5d reads it. */
+    uint8_t nudge_carry;
+    {
+        unsigned t = (unsigned)mem[OBJECT_COORD_LO + 1] + 0x90u;                  /* CLC; ADC #$90 */
+        mem[OBJECT_COORD_LO + 1] = (uint8_t)t;
+        nudge_carry = (t & 0x100u) ? 1 : 0;
+        if (nudge_carry) mem[OBJECT_COORD_HI + 1]++;                              /* INC on carry */
+    }
+
+    /* ---- The object-queue tail ($29F4).  Real generated routines; registers as set below.
+       Y entering the tail is section_dir_index (the loop-2 LDY $0C), which the tail's projections
+       read; the oracle parks it in $0C, this twin carries it in `soi`.  Entering FUN_2a5d the 6502
+       has X=4 (loop-2 leftover CPX #4), A=4 with N=Z=0 (LDA #4), and C from the $90 nudge. ---- */
+    cpu.Y = soi;
+    cpu.X = 0x04;
+    cpu.C = nudge_carry; cpu.N = 0; cpu.Z = 0;
+    cpu.A = 0x04; FUN_2a5d();
+    cpu.X = saved_slot_index;
+    if (object_dist_hi >= 0x03) {
+        if (object_dist_hi >= 0x05 &&                            /* CMP #5; BCC L_2a4d */
+            !(mem[CAR_FLAGS_SHAPE + cpu.X] & 0x80))              /* BMI L_2a4d */
+            mem[CAR_FLAGS_SHAPE + cpu.X]++;                      /* INC */
+        cpu.X = saved_slot_index;                               /* L_2a4d */
+        return;
+    }
+    if (mem[0x001D] != car_behind) { cpu.X = saved_slot_index; return; }   /* $1D: queued in rename.md */
+    cpu.A = mem[CAR_FLAGS_SHAPE + cpu.X];                        /* $2A07 LDA $018C,X — FUN_1442 reads A */
+    if (!(cpu.A & 0x80))                                         /* BPL: not yet flagged */
+        mem[CAR_FLAGS_SHAPE + cpu.X]--;                          /* DEC */
+
+    /* FUN_1442 also reads the flags the tail leaves: C from the $1D==car_behind CMP (equal ⇒ set),
+       N/Z from the LDY soi immediately before it. */
+    cpu.C = 1;
+    cpu.Y = soi;                                                 /* $2A0F LDY $0C */
+    cpu.N = (soi & 0x80) != 0; cpu.Z = (soi == 0);
+    FUN_1442();
+    FUN_2b0e();
+    cpu.Y = 0xFD; cpu.X = 0xFA; FUN_0bcc();
+    FUN_2b0e();
+    cpu.X = 0xF4; FUN_0bcc();
+    FUN_2b0e();
+    cpu.X = 0xFD; FUN_0bcc();
+    shared_counter_42 = 0x14; cpu.A = 0x02; FUN_2a5d();
+    shared_counter_42 = 0x15; cpu.A = 0x01; cpu.X = 0xF4; FUN_2a5f();
+    shared_counter_42 = 0x16; cpu.A = 0x00; cpu.X = 0xFA; FUN_2a5f();
+    cpu.X = saved_slot_index;                                    /* L_2a4d */
+}
+
+/* ---------------------------------------------------------------------------
+   $5A25  tally_bcd_column  (twin #127)
+   ---------------------------------------------------------------------------
+   Front-end grid/standings BCD tally for one column X.  Zeroes the per-column 16-bit BCD
+   accumulator standings_bcd_lo:standings_bcd_hi, derives a repeat count, then BCD-accumulates
+   standings_increment into the pair that many times before folding the pair into the 24-bit
+   BCD car-lap total via FUN_6698.
+
+   The repeat count comes from standings_mode ($5F38):
+     * mode 1                     -> count = 1               (accumulate once)
+     * the column's car is the player, OR the doubled (mode-1) is zero
+                                  -> count = $5F38 * (that A) — the one product, was mul8
+     * car past the cutoff $5F39  -> count = $5F38
+     * otherwise                  -> count = (mode-1) * 2
+   The count is a 16-bit down-counter (low byte, then high byte, exactly as the 6502 walks it).
+
+   ⚠ One of the eight SED sites (docs/static-map.md §Decimal mode): the accumulate stays BCD, so
+   the two adds go through adc_value with D set — that is sanctioned here and nowhere on the render
+   path.  Only the pre-SED product at $5A52 was a shim (mul8); it is now revs_mulu16.
+   --------------------------------------------------------------------------- */
+#define STANDINGS_BCD_LO    0x3878u
+#define STANDINGS_BCD_HI    0x39F8u
+#define STANDINGS_INCREMENT 0x3DF7u
+#define STANDINGS_MODE      0x5F38u   /* $5F38, semantics queued in rename.md */
+#define STANDINGS_CUTOFF    0x5F39u   /* $5F39, queued in rename.md */
+
+void tally_bcd_column(void)
+{
+    uint8_t x = cpu.X;
+    uint8_t s = mem[STANDINGS_MODE];
+    uint8_t y = (x == 0x06) ? mem[CAR_ORDER_TBL] : mem[CAR_ORDER_TBL + x];   /* the column's car */
+
+    mem[STANDINGS_BCD_LO + x] = 0x00;
+    mem[STANDINGS_BCD_HI + x] = 0x00;
+
+    uint8_t ctr_lo, ctr_hi = 0x00;
+
+    if (s == 0x01) {
+        ctr_lo = s;                                       /* L_5a5a: count = $5F38 (=1) */
+    } else {
+        uint8_t am1 = (uint8_t)(s - 1);                   /* SEC; SBC #1 */
+        int use_product;
+        uint8_t aEntry = 0;
+
+        if (y == player_car)            { use_product = 1; aEntry = am1; }   /* BEQ L_5a4d */
+        else if (y >= mem[STANDINGS_CUTOFF]) { use_product = 0; ctr_lo = s; }/* BCS L_5a5a */
+        else {
+            uint8_t sh = (uint8_t)(am1 << 1);             /* ASL A */
+            if (sh != 0) { use_product = 0; ctr_lo = sh; }/* BNE L_5a5f */
+            else         { use_product = 1; aEntry = 0; } /* -> L_5a4d */
+        }
+
+        if (use_product) {                                /* L_5a4d: $5F38 * aEntry, was mul8 */
+            unsigned p = revs_mulu16(s, aEntry);
+            ctr_lo = (uint8_t)p;
+            ctr_hi = (uint8_t)(p >> 8);
+        }
+    }
+
+    /* SED; the 16-bit BCD accumulate loop. */
+    cpu.D = 1;
+    do {
+        Adc lo = adc_value(mem[STANDINGS_BCD_LO + x], mem[STANDINGS_INCREMENT + x], 0);   /* CLC; ADC */
+        mem[STANDINGS_BCD_LO + x] = lo.val;
+        Adc hi = adc_value(mem[STANDINGS_BCD_HI + x], 0x00, lo.carry);                    /* ADC #0 */
+        mem[STANDINGS_BCD_HI + x] = hi.val;
+
+        if (--ctr_lo != 0) continue;                      /* DEC math_lo; BNE */
+        if (!((--ctr_hi) & 0x80)) continue;               /* DEC math_hi; BPL */
+        break;
+    } while (1);
+
+    cpu.Y = y;                                            /* FUN_6698 indexes the lap total by Y */
+    FUN_6698();                                           /* folds the pair into the lap total; CLD */
+}

@@ -176,3 +176,23 @@ for the line's background — so the two codes mean two different kinds of line.
 car (`make refloop --park`) and dump `view_line_surface` on a frame where the road runs uphill and
 one where it runs downhill.  The `a`/`b` split is the only thing in the pass that keys off walk
 direction, so whichever visual feature swaps between those two frames is what bit 6 vs bit 7 names.
+
+
+## `$5F38` / `$5F39` / `$001D` — the front-end standings-tally control cells
+
+Named cells `tally_bcd_column` (`$5A25`, twin #127) reads but whose meaning is not settled from the
+static map:
+
+* `$5F38` is loaded, `SEC; SBC #1`, and branched on: `==1` takes the low path (accumulate count =
+  `$5F38`), otherwise it is used as a multiplier (`mul8` against the car index) or ASL'd.  It reads
+  like a **standings mode / round selector** (1 = one lap? qualifying vs race?) but the three
+  branches are not distinguished statically.
+* `$5F39` is `CPY`'d against the car index `Y` (`BCS` = skip when `Y >= $5F39`) — a **car-count or
+  cutoff** for which cars contribute to the tally.
+* `$001D` (in `place_car_world_coords`'s tail, `$2A03`) is compared with `car_behind` (`$004D`) to
+  gate the other-car AI branch — an **object/car index**, tenant of a zero-page scratch cell.
+
+⚠ **Settle by dumping `$5F38`/`$5F39` on the standings screen** (`make trackmenu`, or a mid-front-end
+dump) across a qualifying vs a race session and a 1-lap vs multi-lap setup: whichever setup toggles
+`$5F38` names its mode, and `$5F39` should equal the number of cars shown.  `$001D`: dump it at
+`$2A01` during a race with a car close behind.

@@ -925,6 +925,15 @@ VALIDATE_FUNCS = {
     0x11AB,
     0x1BB9,
     0x27A4,
+    # ⭐ TWINS #126-#127 — the LAST shim callers in the SHIPPING product (user, 2026-08-22).  The
+    # nine 6502 math shims (mul8, neg16_math, ...) were to have no shipping caller; three hand
+    # sites in read_driving_controls/derive_slip_reference already went to revs_mulu16, and these
+    # two GENERATED drivers were the only ones left.  Twinning them moves the mul8 out; the oracle
+    # and the four expansion track hooks keep mul8 (faithful reference / 6502 circuit code).
+    #   $2937 place_car_world_coords  the car-projection driver (two 8x8 magnitude products)
+    #   $5A25 tally_bcd_column        the front-end standings BCD tally (one pre-SED 8x8 product)
+    0x2937,
+    0x5A25,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

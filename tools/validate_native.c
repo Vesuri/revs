@@ -4117,6 +4117,145 @@ static int test_late_misc_trees(void)
 
 
 /* ==========================================================================
+   TWINS #126-#127 — THE LAST SHIM CALLERS IN THE SHIPPING PRODUCT
+   --------------------------------------------------------------------------
+   $2937 place_car_world_coords and $5A25 tally_bcd_column were the only two shipping routines
+   still calling a 6502 math shim (mul8).  Both are DRIVERS whose native leaves cancel between
+   the two models — place_car's object-queue tail is the real FUN_2a5d/FUN_1442/FUN_2b0e/FUN_0bcc,
+   tally's fold is the real FUN_6698 — so each is verified on the DIFFERENCE its own arithmetic
+   makes: the world coordinates for place_car, the BCD tally for tally_bcd_column.
+
+   place_car_world_coords:
+     * X = the object slot, Y = the section cursor; section_dir_index ($0700,Y) then indexes the
+       five direction tables.  Random pre-state is fine for those — they are plain RAM.
+     * ⚠ SMC $298D/$298E: nine cases in ten force Silverstone's AND opcode ($29); the tenth forces
+       the else-arm so the platform_smc_unhandled channel runs in both models.
+     * The tail dispatches on object_dist_hi vs 3 and 5; object_dist_hi is swept 0..7 and the
+       equality mem[$1D]==car_behind is forced half the time, so the AI branch and both early
+       returns are all reached.  X escapes as saved_slot_index (build_player_car reads it back).
+     * The twin reproduces the oracle's zero-page scratch writes ($0C/$84/$85/$86..$88) so the
+       shared tail routines see identical memory; only the mul8 product residue ($74/$75/$76) and
+       the PHP stack byte ($01FF) then differ, and those are transient arithmetic scratch.
+
+   tally_bcd_column:
+     * X = the column 0..6; standings_mode ($5F38) is kept small (0..5) so the BCD repeat count —
+       up to $5F38*($5F38-1) — stays cheap; every mode arm (==1, the player product, the cutoff,
+       the doubled) is reached by varying the column's car against player_car and $5F39.
+     * ⚠ SED site: the accumulate is BCD, so this case runs with random (often invalid-BCD) bytes
+       in the accumulator and increment on purpose — that is what proves adc_value matches the
+       oracle's decimal ADC byte for byte.  Result-only but for X (the caller's DEX loop counter);
+       ignore the counter scratch $74/$75.
+   ========================================================================== */
+void place_car_world_coords(void);  void place_car_world_coords__t6502(void);
+void tally_bcd_column(void);        void tally_bcd_column__t6502(void);
+
+static int test_last_shim_callers(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+
+    register_fixture("place_car_world_coords");
+    register_fixture("tally_bcd_column");
+
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+    unsigned long smcBefore = g_smcUnhandled;
+
+    /* ---- place_car_world_coords ---- */
+    if (want("place_car_world_coords")) {
+        static const uint16_t ig[] = { 0x01FF };  /* mul8 residue + PHP byte */
+        int cases = 4000 * scale;
+        int smcArm = 0, aiArm = 0, incArm = 0;
+        set_ignore(ig, (int)(sizeof(ig) / sizeof(ig[0])));
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.X = (uint8_t)xs();
+            c.Y = (uint8_t)xs();
+            c.D = 0;                                    /* render/placement path is D=0 */
+            pre[0x0045] = (uint8_t)(xs() % 0x20);       /* saved_slot_index: car+scenery slots */
+            pre[0x0055] = (uint8_t)(xs() % 8);          /* object_dist_hi: sweep the 3/5 splits */
+            pre[0x004D] = (uint8_t)(xs() % 0x20);       /* car_behind */
+            pre[0x001D] = (xs() & 1) ? pre[0x004D] : (uint8_t)(xs() % 0x20);  /* force == half */
+            if (xs() % 10) pre[0x298D] = 0x29;          /* Silverstone AND opcode */
+            else { pre[0x298D] = (uint8_t)(0x2A + (xs() & 3)); smcArm++; }    /* else-arm trap */
+            pre[0x298E] = (uint8_t)xs();                /* the mask */
+
+            if (pre[0x0055] >= 5) incArm++;
+            else if (pre[0x0055] < 3 && pre[0x001D] == pre[0x004D]) aiArm++;
+
+            fail += diff_run("place_car_world_coords", pre, c,
+                             place_car_world_coords, place_car_world_coords__t6502,
+                             LIVE_X, t, &printed);
+        }
+        set_ignore(0, 0);
+        if (!smcArm || !aiArm || !incArm) {
+            printf("[VACUOUS] place_car_world_coords: smc=%d ai=%d inc=%d\n", smcArm, aiArm, incArm);
+            fail++;
+        }
+        printf("%-24s %7d cases, mismatch above must be 0  live=X  D=0\n",
+               "place_car_world_coords", cases);
+    }
+
+    /* ---- tally_bcd_column ---- */
+    if (want("tally_bcd_column")) {
+        static const uint16_t ig[] = { 0x0074, 0x0075 };   /* the BCD counter scratch */
+        int cases = 4000 * scale;
+        int oneArm = 0, prodArm = 0, cutArm = 0, dblArm = 0;
+        set_ignore(ig, 2);
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.X = (uint8_t)(xs() % 7);                   /* column 0..6 */
+            c.D = 0;                                     /* the routine sets D itself */
+            pre[0x5F38] = (uint8_t)(xs() % 6);           /* standings_mode: keep the count cheap */
+            pre[0x006F] = (uint8_t)(xs() % 20);          /* player_car */
+            pre[0x5F39] = (uint8_t)(xs() % 20);          /* the cutoff */
+            /* Force the column's car (car_order[X], or [0] for X==6) onto the branch we want. */
+            {
+                uint16_t oidx = (c.X == 6) ? 0x013C : (uint16_t)(0x013C + c.X);
+                uint8_t pick = (uint8_t)(xs() & 3);
+                if (pick == 0) pre[oidx] = pre[0x006F];                  /* == player_car */
+                else if (pick == 1) pre[oidx] = (uint8_t)(pre[0x5F39] + (xs() % 20)); /* >= cutoff */
+                else pre[oidx] = (uint8_t)(xs() % 20);                   /* below both -> ASL arm */
+            }
+            /* tally counters (which arm the count came from) */
+            {
+                uint8_t s = pre[0x5F38];
+                uint16_t oidx = (c.X == 6) ? 0x013C : (uint16_t)(0x013C + c.X);
+                uint8_t y = pre[oidx];
+                if (s == 1) oneArm++;
+                else if (y == pre[0x006F]) prodArm++;
+                else if (y >= pre[0x5F39]) cutArm++;
+                else if ((uint8_t)((s - 1) << 1) != 0) dblArm++;
+                else prodArm++;
+            }
+            fail += diff_run("tally_bcd_column", pre, c,
+                             tally_bcd_column, tally_bcd_column__t6502,
+                             LIVE_X, t, &printed);
+        }
+        set_ignore(0, 0);
+        if (!oneArm || !prodArm || !cutArm || !dblArm) {
+            printf("[VACUOUS] tally_bcd_column: one=%d prod=%d cut=%d dbl=%d\n",
+                   oneArm, prodArm, cutArm, dblArm);
+            fail++;
+        }
+        printf("%-24s %7d cases, mismatch above must be 0  live=X  BCD\n",
+               "tally_bcd_column", cases);
+    }
+
+    unsetenv("REVS_SMC_CONTINUE");
+    if (want("place_car_world_coords") && g_smcUnhandled == smcBefore) {
+        printf("[VACUOUS] place_car_world_coords: no SMC trap over the whole run\n");
+        fail++;
+    }
+    return fail;
+}
+
+
+/* ==========================================================================
    TWINS #87-#92 — THE ROAD SIGN AND THE OBJECT SLOT WRITER
    --------------------------------------------------------------------------
    $4CA4 build_road_sign, $4D21 build_sign_origin, $2A76 write_object_slot,
@@ -4929,6 +5068,7 @@ int main(int argc, char** argv)
     fail += test_slip_and_sound();
     fail += test_sub_models();
     fail += test_late_misc_trees();
+    fail += test_last_shim_callers();
     fail += test_road_sign();
     fail += test_object_shape();
     fail += test_object_lines();
