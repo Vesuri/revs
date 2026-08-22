@@ -6871,8 +6871,16 @@ static void update_grip_limits_core(void)
    window on seven paths out of eight, which is exactly what the differential said. */
 static void engine_note_only(uint8_t torque)
 {
+    /* $4A89-$4A8E — engine_revs + $19.  This is the RTS tail on every arm, so the ADD's
+       N/V/Z/C are the routine's exit flags and A is its exit value: replay them (D=0). */
+    unsigned sum = (unsigned)engine_revs + 0x19u;
     engine_torque = torque;                             /* $4A87 */
-    engine_note_target = (uint8_t)adc_step(engine_revs, 0x19u, 0);  /* $4A89-$4A8E */
+    cpu.A = (uint8_t)sum;
+    engine_note_target = cpu.A;
+    cpu.C = (uint8_t)(sum > 0xFFu);
+    cpu.V = (uint8_t)(((~(engine_revs ^ 0x19u) & (engine_revs ^ (uint8_t)sum)) >> 7) & 1u);
+    cpu.N = (uint8_t)((cpu.A >> 7) & 1u);
+    cpu.Z = (uint8_t)(cpu.A == 0);
 }
 
 /* $4A7F-$4A90 — the curve's output through the gear's torque multiplier, then that tail.
@@ -6890,11 +6898,17 @@ static void engine_torque_and_note(uint8_t curve, uint8_t gear)
 /* $49BB-$49C7 — the revs land as `base` plus 0..7 of User VIA jitter.  Three arms reach it. */
 static void engine_revs_from(uint8_t base)
 {
+    uint8_t jitter = (uint8_t)(bus_read(VIA_T1_LOW) & 0x07u);       /* $49BD-$49C1 */
+    unsigned sum   = (unsigned)jitter + base;                       /* $49C3 — ADC (D=0) */
     math_lo = base;                                                 /* $49BB */
-    cpu.A = (uint8_t)adc_step((uint8_t)(bus_read(VIA_T1_LOW) & 0x07u),   /* $49BD-$49C3 */
-                              math_lo, 0);
+    /* This is the RTS tail on every arm that reaches it, so the ADD's exit A/N/V/Z/C escape. */
+    cpu.A = (uint8_t)sum;
     engine_revs      = cpu.A;                                       /* $49C5 */
     engine_revs_prev = cpu.A;                                       /* $49C7 */
+    cpu.C = (uint8_t)(sum > 0xFFu);
+    cpu.V = (uint8_t)(((~(jitter ^ base) & (jitter ^ (uint8_t)sum)) >> 7) & 1u);
+    cpu.N = (uint8_t)((cpu.A >> 7) & 1u);
+    cpu.Z = (uint8_t)(cpu.A == 0);
 }
 
 /* $499F-$49B9 — the COAST ARM: revs creep up by 7 toward pedal_amount on the throttle, or fall
@@ -6905,14 +6919,15 @@ static void engine_coast_arm(void)
     uint8_t a = engine_revs;                                        /* $499F */
     cpu.X = (uint8_t)(pedal_mode - 1);           /* $49A1-$49A3 — LDX pedal_mode; DEX (X escapes) */
     if (cpu.X == 0) {                            /* $49A4 — pedal_mode == 1: on the throttle */
-        a = (uint8_t)adc_step(a, 0x07u, cpu.C);  /* $49A6 — ADC adds the CALLER'S carry */
+        a = (uint8_t)(a + 0x07u + (cpu.C ? 1u : 0u));  /* $49A6 — ADC adds the CALLER'S carry (D=0) */
         if (a < pedal_amount && a < 0x8Cu) {     /* $49A8-$49AE — creeping up, still in range */
-            engine_revs      = a;                /* $49C5 */
+            engine_revs      = a;                /* $49C5 — an arm that reaches engine_note_only next,
+                                                    so the CMP flags here are dead */
             engine_revs_prev = a;
             return;
         }
     }
-    if (a >= 0x2Au) a = (uint8_t)sub_from(a, 0x0Cu);   /* $49B2-$49B5 — fall $0C toward idle */
+    if (a >= 0x2Au) a = (uint8_t)(a - 0x0Cu);   /* $49B2-$49B5 — fall $0C toward idle (flags dead) */
     else            a = 0x28u;                          /* $49B9 — ...or sit on the floor */
     engine_revs_from(a);
 }
@@ -6977,23 +6992,25 @@ static void update_engine_revs_core(void)
         return;
     }
 
-    /* $49DF-$4A00 — the rev model.  The PHP at $49E8 remembers whether the first doubling
-       pushed the value negative; the shift it guards is applied once before the gear ratio and
-       once after, which is what makes the scaling x2 or x4. */
-    math_lo = road_speed_frac;                                      /* $49DF-$49E1 */
-    cpu.A = road_speed;                                             /* $49E3 */
-    ASL_M(MEM_math_lo); ROL_A();                                    /* $49E5-$49E7 */
-    PHP();                                                          /* $49E8 */
-    if (!cpu.N) { ASL_M(MEM_math_lo); ROL_A(); }                    /* $49E9 BMI */
-    math_hi = cpu.A;                                                /* $49EE */
-    cpu.X = gear_index;                                             /* $49EF */
-    /* $49F2-$49F5 — road speed x the gear's rev ratio.  The PLP below restores the $49E8 status,
-       so the multiply's flags are dead; the rev model is always D=0. */
-    { unsigned p = revs_mulu16(mem[GEAR_REV_RATIO + cpu.X], math_hi);
-      math_lo = (uint8_t)p; cpu.A = (uint8_t)(p >> 8); }
-    ASL_M(MEM_math_lo); ROL_A();                                    /* $49F8-$49FA */
-    PLP();
-    if (cpu.N) { ASL_M(MEM_math_lo); ROL_A(); }                     /* $49FC BPL */
+    /* $49DF-$4A00 — the rev model.  A 16-bit (road_speed:frac) is shifted left once, then again
+       only if it stayed non-negative; the PHP at $49E8 remembers that "stayed non-negative", and
+       the guarded shift is applied ONCE MORE after the gear ratio — so the scaling is x2 or x4. */
+    {
+        uint16_t v = (uint16_t)((((uint16_t)road_speed << 8) | road_speed_frac) << 1); /* $49E5-$49E7 */
+        int stayedPos = (v & 0x8000u) == 0;                         /* $49E8 PHP — ROL A's N */
+        uint16_t p, w;
+        if (stayedPos) v = (uint16_t)(v << 1);                      /* $49E9 BMI */
+        math_hi = (uint8_t)(v >> 8);                                /* $49EE */
+        cpu.X = gear_index;                                         /* $49EF */
+        /* $49F2-$49F5 — that high byte x the gear's rev ratio (D=0, multiply flags dead). */
+        p = (uint16_t)revs_mulu16(mem[GEAR_REV_RATIO + cpu.X], math_hi);
+        w = (uint16_t)(p << 1);                                     /* $49F8-$49FA */
+        if (!stayedPos) w = (uint16_t)(w << 1);                     /* $49FC BPL — the OPPOSITE guard:
+                                                    the two guarded shifts straddle the multiply,
+                                                    exactly one fires (the PLP restores $49E8's N) */
+        math_lo = (uint8_t)w;
+        cpu.A   = (uint8_t)(w >> 8);
+    }
 
     /* $4A01-$4A35 — the gear-change rev drop, if a shift armed it: only on the throttle, only
        nearly stopped, and only once the starting lights are done (or on one $3F-frame phase of
@@ -7016,7 +7033,7 @@ static void update_engine_revs_core(void)
                 if (compare && cpu.A < engine_revs_prev) {         /* $4A22-$4A24 */
                     cpu.A = engine_revs_prev;                      /* $4A2C — revs decay from prev */
                     if (engine_revs_prev >= 0x6Cu) {               /* $4A2E-$4A30 */
-                        cpu.A = (uint8_t)sub_from(engine_revs_prev, 0x02u); /* $4A32 */
+                        cpu.A = (uint8_t)(engine_revs_prev - 0x02u);  /* $4A32 (flags dead) */
                         engine_revs_prev = cpu.A;                  /* $4A35 */
                     }
                     disarm = 0;
@@ -7038,26 +7055,26 @@ static void update_engine_revs_core(void)
     }
 
     /* $4A48-$4A7D — the power curve: four straight segments in (revs - $42), breaking at
-       $11, $15 and $1A above it, each one a shift and an add. */
-    cpu.A = (uint8_t)sub_from(cpu.A, 0x42u);                        /* $4A48-$4A49 */
-    if (cpu.N) segment0 = 1;                                        /* $4A4B BMI */
-    else segment0 = (cpu.A < 0x11u);                               /* $4A4D-$4A4F */
-    if (segment0) {
-        ASL_A();
-        cpu.A = (uint8_t)adc_step(cpu.A, 0x98u, 0);                 /* $4A51-$4A53 */
-    } else {
-        cpu.A = (uint8_t)sub_from(cpu.A, 0x11u);                    /* $4A58-$4A59 */
-        if (cpu.A < 0x04u) {                                       /* $4A5B-$4A5D */
-            cpu.A = (uint8_t)adc_step((uint8_t)(cpu.A ^ 0xFFu), 0xBBu, 0);   /* $4A5F-$4A62 */
+       $11, $15 and $1A above it, each one a shift and an add.  A carries the result on to
+       engine_torque_and_note, which reloads the flags — so only the VALUE matters (D=0). */
+    {
+        uint8_t x = (uint8_t)(cpu.A - 0x42u);                      /* $4A48-$4A49 */
+        if (x & 0x80u) segment0 = 1;                               /* $4A4B BMI — below $42 */
+        else segment0 = (x < 0x11u);                               /* $4A4D-$4A4F */
+        if (segment0) {
+            cpu.A = (uint8_t)((uint8_t)(x << 1) + 0x98u);          /* $4A51-$4A53 */
         } else {
-            cpu.A = (uint8_t)sub_from(cpu.A, 0x04u);                /* $4A66-$4A67 */
-            if (cpu.A < 0x05u) {                                   /* $4A69-$4A6B */
-                ASL_A(); ASL_A();
-                cpu.A = (uint8_t)adc_step((uint8_t)(cpu.A ^ 0xFFu), 0xB7u, 0);  /* $4A6D-$4A72 */
+            x = (uint8_t)(x - 0x11u);                              /* $4A58-$4A59 */
+            if (x < 0x04u) {                                       /* $4A5B-$4A5D */
+                cpu.A = (uint8_t)((uint8_t)(x ^ 0xFFu) + 0xBBu);   /* $4A5F-$4A62 */
             } else {
-                cpu.A = (uint8_t)sub_from(cpu.A, 0x05u);            /* $4A76-$4A77 */
-                ASL_A();
-                cpu.A = (uint8_t)adc_step((uint8_t)(cpu.A ^ 0xFFu), 0xA3u, 0);  /* $4A79-$4A7D */
+                x = (uint8_t)(x - 0x04u);                          /* $4A66-$4A67 */
+                if (x < 0x05u) {                                   /* $4A69-$4A6B */
+                    cpu.A = (uint8_t)((uint8_t)((uint8_t)(x << 2) ^ 0xFFu) + 0xB7u);  /* $4A6D-$4A72 */
+                } else {
+                    x = (uint8_t)(x - 0x05u);                      /* $4A76-$4A77 */
+                    cpu.A = (uint8_t)((uint8_t)((uint8_t)(x << 1) ^ 0xFFu) + 0xA3u);  /* $4A79-$4A7D */
+                }
             }
         }
     }
@@ -7135,80 +7152,100 @@ static void update_camera_and_drive_state_core(void)
     }
 
 yaw:
-    /* $452D-$4568 — the section yaw.  The two ground-plane components make the angle; the
-       gradient component reaches the pitch through scale_by_track_gradient below. */
+    /* $452D-$4568 — the section yaw.  A cheap atan2 over the section's direction vector: the
+       smaller-magnitude ground-plane component, scaled by 0.375 and folded through three saved
+       signs, minus car_heading_hi.  The three 6502 PHPs each carry ONE flag past the scaling —
+       here they are plain C: n1 the octant's sign, n2 component 2's sign, c3 "near the diagonal".
+       Every intermediate flag is dead (the folds below overwrite them), so the scaling is binary. */
     cpu.X = car_section_cursor;                         /* $452D */
     cpu.Y = mem[SECTION_DIR_IX + cpu.X];                /* $452F — Y stays dirIndex to $457F */
     dirIndex = cpu.Y;
     shared_temp_76 = view_pitch_offset;                 /* $4531-$4534 — last frame's pitch */
+    {
+        uint8_t dir0 = mem[TRACK_DIR_0 + dirIndex];
+        uint8_t dir2 = mem[TRACK_DIR_2 + dirIndex];
+        int n1 = ((dir0 ^ dir2) & 0x80u) != 0;         /* $453C PHP (1) — the octant's sign */
+        int n2 = (dir2 & 0x80u) != 0;                  /* $4540 PHP (2) — component 2's sign */
+        uint8_t comp = (dir2 & 0x80u) ? (uint8_t)(0u - dir2) : dir2;  /* $4541 abs |c2| */
+        int c3 = (comp >= 0x3Cu);                      /* $4546 PHP (3) — CMP #$3C */
+        uint8_t a, sy, fold;
+        if (comp >= 0x3Cu)                             /* $4547 BCC — off the diagonal: use |c0| */
+            comp = (dir0 & 0x80u) ? (uint8_t)(0u - dir0) : dir0;
+        math_lo = comp;                                /* $454F */
+        a = (uint8_t)((uint8_t)(comp >> 1) + comp);    /* $4552-$4553 — 1.5x */
+        a = (uint8_t)(a >> 2);                          /* $4555-$4556 — ...so 0.375x */
+        if (!c3) a ^= 0x3Fu;                            /* $4558 BCS — complement in the octant */
+        if (n2)  a ^= 0x80u;                            /* $455D BPL — the half turn */
+        if (n1)  a = (uint8_t)(0u - a);                 /* $4562 abs8 driven by (1)'s sign */
+        sy = (uint8_t)(a - car_heading_hi);            /* $4565-$4566 */
+        section_yaw = sy;                              /* $4568 */
 
-    LDA((uint8_t)(mem[TRACK_DIR_0 + dirIndex] ^ mem[TRACK_DIR_2 + dirIndex]));  /* sets N for PHP */
-    PHP();                                              /* $453C — (1) the octant's sign */
-    LDA(mem[TRACK_DIR_2 + dirIndex]);
-    PHP();                                              /* $4540 — (2) component 2's sign */
-    abs8();                                             /* $4541 */
-    CMP(0x3Cu);
-    PHP();                                              /* $4546 — (3) near the diagonal? */
-    if (cpu.C) {                                        /* $4547 BCC — |c2| < $3C keeps it */
-        LDA(mem[TRACK_DIR_0 + dirIndex]);               /* $4549 — near the diagonal, use c0 */
-        abs8();
+        /* $456A-$4574 — folded to 0..$3F about $40 (the subtract's N is the first test). */
+        fold = sy;
+        if (sy & 0x80u) fold ^= 0xFFu;                 /* $456A BPL — N from the subtract */
+        if (fold >= 0x40u) fold ^= 0x7Fu;              /* $4570 BCC */
+        view_yaw_offset = fold;                        /* $4574 */
     }
-    math_lo = cpu.A;                                    /* $454F */
-    LSR_A();
-    cpu.A = (uint8_t)adc_step(cpu.A, math_lo, 0);       /* $4552-$4553 — 1.5x */
-    LSR_A(); LSR_A();                                   /* $4555-$4556 — ...so 0.375x */
-    PLP();                                              /* (3) */
-    if (!cpu.C) EOR(0x3Fu);                             /* $4558 BCS — complement in the octant */
-    PLP();                                              /* (2) */
-    if (cpu.N) EOR(0x80u);                              /* $455D BPL — the half turn */
-    PLP();                                              /* (1) */
-    abs8();                                             /* $4562 */
-    cpu.A      = (uint8_t)sub_from(cpu.A, car_heading_hi);   /* $4565-$4566 */
-    section_yaw = cpu.A;                                /* $4568 */
-
-    /* $456A-$4574 — folded to 0..$3F about $40. */
-    if (cpu.N) EOR(0xFFu);                              /* $456A BPL */
-    CMP(0x40u);
-    if (cpu.C) EOR(0x7Fu);                              /* $4570 BCC */
-    view_yaw_offset = cpu.A;                            /* $4574 */
 
     /* $4577-$4599 — the frame's pitch: 1.5 x the yaw's complement through the track gradient,
-       plus four terms, halved with its sign preserved. */
-    EOR(0x3Fu);
-    math_lo = cpu.A;                                    /* $4579 */
-    LSR_A();
-    cpu.A = (uint8_t)adc_step(cpu.A, math_lo, 0);       /* $457C-$457D */
-    scale_by_track_gradient_core(cpu.A, cpu.Y);         /* $457F — Y is still dirIndex */
-    cpu.A = (uint8_t)adc_step(cpu.A, grip_disturbance,  0);   /* $4582-$4583 */
-    cpu.A = (uint8_t)adc_step(cpu.A, camera_pitch_bias, 0);   /* $4585-$4586 */
-    cpu.A = (uint8_t)adc_step(cpu.A, spin_shake,        0);   /* $4589-$458A */
-    cpu.A = (uint8_t)adc_step(cpu.A, view_pitch_offset, 0);   /* $458C-$458D */
-    cpu.C = cpu.N;                                      /* $458F CLC / $4590 BPL / $4592 SEC */
-    ROR_A();                                            /* $4593 — signed halving */
-    view_pitch_offset = cpu.A;                          /* $4594 */
-    view_pitch_delta  = (uint8_t)sub_from(cpu.A, shared_temp_76);   /* $4596-$4599 */
+       plus four terms, then halved with its sign preserved.  Every add's flags are dead until
+       the last, whose sign steers the signed halving. */
+    {
+        uint8_t base = (uint8_t)(view_yaw_offset ^ 0x3Fu);  /* $4577 */
+        uint8_t a;
+        int neg;
+        math_lo = base;                                /* $4579 */
+        a = (uint8_t)((uint8_t)(base >> 1) + base);    /* $457C-$457D — 1.5x */
+        scale_by_track_gradient_core(a, cpu.Y);        /* $457F — Y is still dirIndex */
+        a = cpu.A;
+        a = (uint8_t)(a + grip_disturbance);           /* $4582-$4583 */
+        a = (uint8_t)(a + camera_pitch_bias);          /* $4585-$4586 */
+        a = (uint8_t)(a + spin_shake);                 /* $4589-$458A */
+        a = (uint8_t)(a + view_pitch_offset);          /* $458C-$458D */
+        neg = (a & 0x80u) != 0;                         /* $458F-$4592 — C = sign(A) */
+        a = (uint8_t)((a >> 1) | (neg ? 0x80u : 0u));  /* $4593 ROR — signed halving */
+        view_pitch_offset = a;                         /* $4594 */
+        view_pitch_delta  = (uint8_t)(a - shared_temp_76);  /* $4596-$4599 */
+    }
 
     /* $459B-$45C9 — drive_state.  spin_countdown steps -4 a frame and SATURATES to $C8; the
-       sum with drive_state picks between the three values it can take. */
+       sum with drive_state picks between the three values it can take.
+       ⚠⚠ The $45CB SMC dispatch just past this block RETURNS on an unrecognised opcode, and on
+       that exit the routine's declared-live A/N/Z/C/V are exactly what this block last set.  So
+       every escaping flag is replayed: vSub steers the saturate; the sum's N/Z/V pick the arm;
+       and on the 0x7F and keep-sum arms C/V come from the add.  The countdown arm keeps its
+       6502 form (LDA/abs8/CMP/begin_spin) — its flags escape THROUGH begin_spin_from_a, which
+       queues a MOS sound, so only the real macros get them right. */
     shared_temp_77 = 0x00u;                             /* $459B-$459D */
-    cpu.A = (uint8_t)sub_from(spin_countdown, 0x04u);   /* $459F-$45A3 */
-    if (cpu.V) cpu.A = 0xC8u;                            /* $45A4 — the step overflowed: saturate */
-    spin_countdown = cpu.A;                             /* $45A8 */
-    cpu.A = (uint8_t)adc_step(cpu.A, drive_state, 0);   /* $45AA-$45AB */
-    /* ⚠ $45B1's `BPL` is what keeps the sum; a NEGATIVE sum falls THROUGH to the arm below,
-       so the countdown arm is reached two ways, not one. */
-    /* ⚠ The three constant loads and the CMP below keep their 6502 form ON PURPOSE: the
-       $45CB SMC dispatch just past drive_state RETURNS on an unrecognised opcode, and on that
-       exit the routine's declared-live N/Z/C are exactly what this block last set — so the
-       CMP's carry (also live into begin_spin) and each LDA's N/Z genuinely escape the routine. */
-    if (cpu.Z || (!cpu.V && cpu.N)) {                   /* $45AD BEQ, or $45B1 BPL not taken */
-        LDA(spin_countdown);                            /* $45B3 — sets N for the abs8 */
-        abs8();                                         /* $45B5 */
-        CMP(0x05u);                                     /* $45B7 */
-        if (cpu.C) { begin_spin_from_a_core(cpu.A); LDA(0x01u); }   /* $45B9-$45BF */
-        else         LDA(0x00u);                                    /* $45C3 */
-    } else if (cpu.V) {
-        LDA(0x7Fu);                                     /* $45AF BVS → $45C7 */
+    {
+        uint8_t sub  = (uint8_t)(spin_countdown - 0x04u);   /* $459F-$45A3 SBC (D=0) */
+        uint8_t vSub = (uint8_t)((((spin_countdown ^ 0x04u) &
+                                   (spin_countdown ^ sub)) >> 7) & 1u);
+        uint8_t a    = vSub ? 0xC8u : sub;              /* $45A4 — the step overflowed: saturate */
+        unsigned s;
+        uint8_t r, cAdd, vAdd, nAdd, zAdd;
+        spin_countdown = a;                             /* $45A8 */
+        s    = (unsigned)a + drive_state;               /* $45AA-$45AB ADC (D=0) */
+        r    = (uint8_t)s;
+        cAdd = (uint8_t)(s > 0xFFu);
+        vAdd = (uint8_t)((((~(a ^ drive_state)) & (a ^ r)) >> 7) & 1u);
+        nAdd = (uint8_t)((r >> 7) & 1u);
+        zAdd = (uint8_t)(r == 0);
+        /* ⚠ $45B1's `BPL` keeps the sum; a NEGATIVE sum falls THROUGH to the countdown arm,
+           so it is reached two ways, not one. */
+        if (zAdd || (!vAdd && nAdd)) {                  /* $45AD BEQ, or $45B1 BPL not taken */
+            LDA(spin_countdown);                        /* $45B3 — sets N for the abs8 */
+            abs8();                                     /* $45B5 */
+            CMP(0x05u);                                 /* $45B7 */
+            if (cpu.C) { begin_spin_from_a_core(cpu.A); LDA(0x01u); }   /* $45B9-$45BF */
+            else         LDA(0x00u);                                    /* $45C3 */
+        } else if (vAdd) {
+            LDA(0x7Fu);                                 /* $45AF BVS → $45C7 */
+            cpu.C = cAdd; cpu.V = vAdd;                 /* C/V survive the LDA — from the add */
+        } else {
+            cpu.A = r;                                  /* keep the sum */
+            cpu.C = cAdd; cpu.V = vAdd; cpu.N = nAdd; cpu.Z = zAdd;
+        }
     }
     drive_state = cpu.A;                                /* $45C9 */
 
@@ -7238,31 +7275,43 @@ yaw:
        scales by whatever table entry Y now points at, and a twin that "knew" the index was
        still the section's differed in one case in six. */
     scale_by_track_gradient_core(cpu.A, cpu.Y);         /* $45D8 */
-    if (cpu.N) DEC_M(MEM_shared_temp_77);               /* $45DB BPL — sign-extend it */
+    if (cpu.N) shared_temp_77 = (uint8_t)(shared_temp_77 - 1u);  /* $45DB DEC_M — sign-extend it */
     cpu.Y = car_section_cursor;                         /* $45DF — Y for the section coords + exit */
-    cpu.A = (uint8_t)adc_step(cpu.A, mem[SECTION_CRD_LO + 1 + cpu.Y], 0);   /* $45E1-$45E2 */
-    PHP();                                              /* $45E5 — (a) */
-    cpu.A = (uint8_t)adc_step(cpu.A, 0xACu, 0);         /* $45E6-$45E7 */
-    PHP();                                              /* $45E9 — (b) */
-    cpu.A = (uint8_t)adc_step(cpu.A, shared_temp_76, 0);           /* $45EA-$45EB */
-    mem[VIEW_ORIGIN_LO + 1] = cpu.A;                          /* $45ED */
-    cpu.A = (uint8_t)adc_step(mem[SECTION_CRD_HI + 1 + cpu.Y], /* $45EF-$45F3 (carry preserved) */
-                              shared_temp_77, cpu.C);
-    PLP();                                              /* (b) */
-    cpu.A = (uint8_t)adc_step(cpu.A, 0x00u, cpu.C);               /* $45F6 */
-    PLP();                                              /* (a) */
-    cpu.A = (uint8_t)adc_step(cpu.A, 0x00u, cpu.C);               /* $45F9 */
-    mem[VIEW_ORIGIN_HI + 1] = cpu.A;                          /* $45FB */
+    {
+        uint8_t scaledLow = cpu.A;                     /* the gradient-scaled car_state_1 low byte */
+        uint8_t secLo = mem[SECTION_CRD_LO + 1 + cpu.Y];
+        uint8_t secHi = mem[SECTION_CRD_HI + 1 + cpu.Y];
+        unsigned t1 = (unsigned)scaledLow + secLo;     /* $45E1-$45E2 */
+        uint8_t  carryA = (uint8_t)(t1 > 0xFFu);       /* $45E5 PHP (a) */
+        unsigned t2 = (unsigned)(uint8_t)t1 + 0xACu;   /* $45E6-$45E7 — nominal eye height */
+        uint8_t  carryB = (uint8_t)(t2 > 0xFFu);       /* $45E9 PHP (b) */
+        unsigned t3 = (unsigned)(uint8_t)t2 + shared_temp_76;   /* $45EA-$45EB */
+        uint8_t  carry76 = (uint8_t)(t3 > 0xFFu);
+        mem[VIEW_ORIGIN_LO + 1] = (uint8_t)t3;         /* $45ED */
+        /* $45EF-$45FB — the high byte: secHi + shared_temp_77 + the three saved low-byte
+           carries.  $45EF's and $45F6's own carry-outs are discarded by the PLPs (they are
+           bits past the 16-bit result), so the whole high byte is one truncating sum. */
+        mem[VIEW_ORIGIN_HI + 1] =
+            (uint8_t)(secHi + shared_temp_77 + carry76 + carryB + carryA);  /* $45FB */
+    }
 
-    /* $45FE-$460C — car_speed_scaled = road_speed x ($21/256 + 2). */
+    /* $45FE-$460C — car_speed_scaled = road_speed x ($21/256 + 2).  The final add's A/N/V/Z/C
+       are the routine's exit register/flags (X is still player_car), so they are replayed (D=0). */
     math_hi = road_speed;                               /* $45FE-$4600 */
-    /* $4602-$4604 — high byte of $21 x road_speed; the multiply's flags are dead (the ASL/ADC
-       below overwrite them) and this path is always D=0. */
-    { unsigned p = revs_mulu16(0x21u, math_hi);
-      math_lo = (uint8_t)p; cpu.A = (uint8_t)(p >> 8); }
-    ASL_M(MEM_math_hi);                                 /* $4607 */
-    cpu.A = (uint8_t)adc_step(cpu.A, math_hi, 0);       /* $4609-$460A */
-    mem[CAR_SPEED_SCL + cpu.X] = cpu.A;                 /* $460C */
+    {
+        uint16_t p   = (uint16_t)revs_mulu16(0x21u, math_hi);   /* $4602-$4604 — $21 x road_speed */
+        uint8_t  phi = (uint8_t)(p >> 8);              /* only the high byte is used */
+        unsigned sum;
+        math_lo = (uint8_t)p;
+        math_hi = (uint8_t)(math_hi << 1);             /* $4607 ASL_M — road_speed x 2 */
+        sum = (unsigned)phi + math_hi;                 /* $4609-$460A */
+        cpu.A = (uint8_t)sum;
+        mem[CAR_SPEED_SCL + cpu.X] = cpu.A;            /* $460C */
+        cpu.C = (uint8_t)(sum > 0xFFu);
+        cpu.V = (uint8_t)(((~(phi ^ math_hi) & (phi ^ (uint8_t)sum)) >> 7) & 1u);
+        cpu.N = (uint8_t)((cpu.A >> 7) & 1u);
+        cpu.Z = (uint8_t)(cpu.A == 0);
+    }
 }
 
 /* The 6502-ABI shims. */

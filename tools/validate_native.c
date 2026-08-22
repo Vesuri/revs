@@ -3840,6 +3840,15 @@ static int test_sub_models(void)
         { 0x0042, 0x0074, 0x0075, 0x0076, 0x0077, 0x0078, 0x0079, 0x007B };
     static const uint16_t gripIgnore[]  =
         { 0x0074, 0x0075, 0x0076, 0x0077, 0x0078, 0x0079, 0x01FF };
+    /* update_engine_revs (i==6): the PHP/PLP pair at $49E8/$49FB that carries the first
+       doubling's sign is now a C bool, so the twin never writes the pushed status byte the
+       oracle leaves at $01FF (net-neutral to the stack, dead scratch — nothing reads it). */
+    static const uint16_t engineIgnore[] = { 0x01FF };
+    /* update_camera_and_drive_state (i==7): the five PHP/PLP pairs — three in the yaw fold
+       ($453C/$4540/$4546) and two in the camera add ($45E5/$45E9) — that carry octant signs and
+       add carries are now C bools/ints, so the twin never writes the pushed status bytes the
+       oracle leaves on the stack at $01FD/$01FE/$01FF (net-neutral pulls, dead scratch). */
+    static const uint16_t cameraIgnore[] = { 0x01FD, 0x01FE, 0x01FF };
 
     for (i = 0; i < 8; i++) {
         int subFail = 0, decimal = 0, throttle = 0, ingear = 0, powered = 0;
@@ -3854,8 +3863,9 @@ static int test_sub_models(void)
         int pinD0 = resultOnly || (i == 1) || (i == 6) || (i == 7);
         unsigned mask = resultOnly ? LIVE_NONE : liveMask;
         if (!want(list[i].name)) continue;
-        set_ignore(i == 0 ? angleIgnore : i == 5 ? gripIgnore : 0,
-                   i == 0 ? 8 : i == 5 ? 7 : 0);
+        set_ignore(i == 0 ? angleIgnore : i == 5 ? gripIgnore :
+                   i == 6 ? engineIgnore : i == 7 ? cameraIgnore : 0,
+                   i == 0 ? 8 : i == 5 ? 7 : i == 6 ? 1 : i == 7 ? 3 : 0);
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
             fill_random(pre);
