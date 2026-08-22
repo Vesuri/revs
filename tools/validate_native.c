@@ -4149,6 +4149,22 @@ static int test_late_misc_trees(void)
 void place_car_world_coords(void);  void place_car_world_coords__t6502(void);
 void tally_bcd_column(void);        void tally_bcd_column__t6502(void);
 
+/* ---- paint_fence_backdrop ($3D5C, twin #128, region_31d0's tree) ------------------------
+   The crash "show the fence" fill: a pure function of memory (horizon_extent, the two dither
+   tables and the dash_block_starts sentinels) that paints the 40 view source columns plus the
+   left/right start-source line buffers.  No register inputs, no callee, no SMC, and check_crash
+   ignores every register on return, so the generic result-only contract is exactly right.
+   Random memory exercises both dither bands, the zero-fence_pattern_hi fallback and both the
+   wrapping (sentinel > $46) and non-wrapping column paths. */
+void paint_fence_backdrop(void);  void paint_fence_backdrop__t6502(void);
+
+static int test_crash_fence(void)
+{
+    return test_contract("paint_fence_backdrop",
+                         paint_fence_backdrop, paint_fence_backdrop__t6502,
+                         LIVE_NONE, 3000);
+}
+
 static int test_last_shim_callers(void)
 {
     static uint8_t pre[65536];
@@ -5069,6 +5085,7 @@ int main(int argc, char** argv)
     fail += test_sub_models();
     fail += test_late_misc_trees();
     fail += test_last_shim_callers();
+    fail += test_crash_fence();
     fail += test_road_sign();
     fail += test_object_shape();
     fail += test_object_lines();

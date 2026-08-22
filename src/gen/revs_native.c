@@ -9544,3 +9544,94 @@ void tally_bcd_column(void)
     cpu.Y = y;                                            /* FUN_6698 indexes the lap total by Y */
     FUN_6698();                                           /* folds the pair into the lap total; CLD */
 }
+
+/* ===========================================================================
+   $3D5C  paint_fence_backdrop — the crash "show the fence" fill  (twin #128)
+   ---------------------------------------------------------------------------
+   check_crash's crash arm JSRs this (its ONLY caller) once the car has hit the fence, right
+   after INCing horizon_extent.  It paints the whole 3D view SOURCE buffer to a static
+   two-band dither so the next frame shows the crash barrier instead of the road.
+
+   The work is one column loop over all 40 view columns.  Column `col` lives in the $80-spaced
+   source block at $3000 + col*$80 and fills from row $46 DOWNWARD to its own bottom sentinel
+   dash_block_starts[col] (exclusive).  Every filled row also lands in the two per-line
+   start-source buffers (view_left_start_src $504, view_right_start_src $4400) at the same row
+   index.  The fill byte is a 4-entry dither that repeats every four rows (a per-column counter
+   that starts at 3 and cycles 3,2,1,0) and is chosen by the horizon: rows at/above
+   horizon_extent take fence_pattern_hi, rows below take fence_pattern_lo — with a zero
+   fence_pattern_hi byte falling back to the lo table (dead in the shipping tables, kept
+   faithfully).  It also clears wheel_spin_rate: after a crash the car is stopped.
+
+   ⚠ ONE 6502 idiom is load-bearing and kept exactly: the row loop tests Y AFTER decrementing,
+   so the bottom sentinel is never itself written, and a sentinel > $46 wraps Y through all 256
+   rows.  A `do { } while (y != bottom)` over uint8_t reproduces both.  All addresses are masked
+   to 16 bits so the wrap can never index past mem[]; the destinations stay within $3000-$44FF
+   and never reach the hardware window, so there are no guarded writes.
+
+   No callees and no register inputs (the body opens by storing constants).  check_crash ignores
+   every register on return (its next act is JSR sound_stop_all), so nothing is declared live;
+   the shim still reconstructs the true exit ABI for faithfulness.
+   =========================================================================== */
+
+#define FENCE_COL_COUNT        0x28u    /* 40 view columns                                    */
+#define FENCE_TOP_ROW          0x46u    /* every column fills from row $46 downward            */
+#define FENCE_PATTERN_LO       0x3D78u  /* fence_pattern_lo — 4-byte dither, rows below horizon */
+#define FENCE_PATTERN_HI       0x3D7Cu  /* fence_pattern_hi — 4-byte dither, rows at/above it   */
+#define VIEW_BLOCK_BASE        0x3000u  /* the forty $80-spaced view source blocks             */
+#define VIEW_BLOCK_STRIDE      0x80u
+#define VIEW_LEFT_START_SRC    0x0504u  /* view_left_start_src  — per-line left run source byte */
+#define VIEW_RIGHT_START_SRC   0x4400u  /* view_right_start_src — per-line right run source byte */
+
+static uint8_t paint_fence_backdrop_core(uint8_t horizon)
+{
+    /* After the crash the car has stopped rolling. */
+    wheel_spin_rate = 0x00;
+
+    uint8_t  last = 0;                          /* the final byte written (for the exit A) */
+    uint16_t block = VIEW_BLOCK_BASE;
+
+    for (uint8_t col = 0; col < FENCE_COL_COUNT; col++) {
+        const uint8_t bottom = mem[DASH_BLOCK_STARTS + col];   /* $3900,col — this column's floor */
+
+        uint8_t pat = 3;                        /* dither index resets to 3 at the top of each column */
+        uint8_t y   = FENCE_TOP_ROW;
+        do {
+            uint8_t b = mem[FENCE_PATTERN_LO + pat];
+            if (y >= horizon) {                 /* CPY horizon_extent / BCC uses lo */
+                uint8_t hi = mem[FENCE_PATTERN_HI + pat];
+                if (hi) b = hi;                 /* LDA hi / BNE — zero falls back to lo */
+            }
+            mem[(uint16_t)(block + y)]                 = b;   /* the column's own source block */
+            mem[(uint16_t)(VIEW_LEFT_START_SRC  + y)]  = b;
+            mem[(uint16_t)(VIEW_RIGHT_START_SRC + y)]  = b;
+            last = b;
+
+            pat = (uint8_t)((pat - 1) & 3);     /* 3,2,1,0,3,... (DEX / BPL / LDX #3) */
+            y--;                                /* DEY, then test — sentinel not written */
+        } while (y != bottom);
+
+        block += VIEW_BLOCK_STRIDE;             /* next $80-spaced column ($70/$71 EOR $80 / INC) */
+    }
+
+    /* Leave the zero-page scratch exactly as the 6502 did — the differential compares all of
+       mem[].  math_lo counted the columns up to the $28 terminator; math_hi holds the last
+       column's bottom; plot_ptr walked to $3000 + 40*$80 = $4400. */
+    math_lo     = FENCE_COL_COUNT;
+    math_hi     = mem[DASH_BLOCK_STARTS + (FENCE_COL_COUNT - 1)];
+    plot_ptr_lo = (uint8_t)block;
+    plot_ptr_hi = (uint8_t)(block >> 8);
+    return last;
+}
+
+void paint_fence_backdrop(void)
+{
+    uint8_t last = paint_fence_backdrop_core(horizon_extent);
+
+    /* Exit ABI (not consumed by check_crash, reconstructed for faithfulness): the column loop
+       ends on `LDX math_lo / CPX #$28` with X = $28, so N=0 Z=1 C=1; Y is the last column's
+       bottom the inner loop stopped on; A is the last byte written. */
+    cpu.X = FENCE_COL_COUNT;
+    cpu.N = 0; cpu.Z = 1; cpu.C = 1;
+    cpu.Y = math_hi;
+    cpu.A = last;
+}

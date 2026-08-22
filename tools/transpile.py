@@ -934,6 +934,13 @@ VALIDATE_FUNCS = {
     #   $5A25 tally_bcd_column        the front-end standings BCD tally (one pre-SED 8x8 product)
     0x2937,
     0x5A25,
+    # ⭐ TWIN #128 — the crash "show the fence" fill (user, 2026-08-22, region_31d0's tree).  The
+    # tree is one routine entered at $3D5C (JSR'd only from check_crash's crash arm): it drives the
+    # cyclic region_31d0 ($31D0/$3D68) that fills all 40 view source columns with a horizon-split
+    # dither.  Only the $3D5C ENTRY is twinned; region_31d0 stays transliterated as the oracle
+    # (car_gap-style: the twin subsumes the loop, the shared body remains the reference).
+    #   $3D5C paint_fence_backdrop   clear wheel_spin_rate + fill the view backdrop
+    0x3D5C,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
