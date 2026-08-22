@@ -6224,8 +6224,14 @@ static void derive_slip_reference_core(void)
     }
 
     math_hi = cpu.A;                                             /* $4BBC */
-    math_lo = pedal_amount; mul8_noinit();                       /* $4BBE-$4BC0 — reference x pedal;
-                                                                    full flags/decimal (V escapes) */
+    /* $4BBE-$4BC0 — reference x pedal_amount, a plain 8x8 product (D = 0 on the slip path).
+       A = product high, math_lo = product low.  The exit N/Z/V are dead: both callers read only
+       the carry and then consume A : math_lo as a value, never a flag of this routine. */
+    {
+        unsigned product = revs_mulu16(math_hi, pedal_amount);
+        math_lo = (uint8_t)product;
+        cpu.A   = (uint8_t)(product >> 8);
+    }
     LDY(pedal_mode); DEY();                                      /* $4BC3-$4BC5 */
     if (cpu.Z) {                                                 /* $4BC6 BNE */
         LSR_A();                                                 /* $4BC8 — on the throttle, */
@@ -8903,7 +8909,13 @@ static void read_driving_controls_core(void)
         if (mem[0x1593] != 0x20u) { platform_smc_unhandled(0x1593, mem[0x1593]); return; }
         {
             uint16_t target = (uint16_t)(mem[0x1594] | ((unsigned)mem[0x1595] << 8));
-            if (target == 0x0C00u)                            mul8();
+            if (target == 0x0C00u) {
+                /* $0C00 mul8 — the joystick reading squared, a plain 8x8 product (D = 0 on
+                   the steering path).  A = product high, math_lo = product low. */
+                unsigned product = revs_mulu16(cpu.A, math_hi);
+                math_lo = (uint8_t)product;
+                cpu.A   = (uint8_t)(product >> 8);
+            }
             else if (target >= 0x5300u && target <= 0x5A25u)   revs_track_hook(target);
             else { platform_smc_unhandled(0x1593, target); return; }
         }
@@ -8940,7 +8952,12 @@ static void read_driving_controls_core(void)
     if (cpu.A == 0x03u) { read_pedals_and_gears(); return; }   /* both keys: no steering */
     cpu.A = (uint8_t)((cpu.A ^ steer_angle_lo) & 0x01u);        /* $15E8 */
     if (cpu.A == 0x00u) { steer_apply_with_assist_core(); return; }  /* already this way */
-    neg16_math_noinit();                               /* $15EE — flips it, result in A */
+    /* $15EE — flip (math_hi:math_lo); high byte leaves in A (D = 0 on the steering path). */
+    {
+        uint16_t v = (uint16_t)(0u - (uint16_t)(((uint16_t)math_hi << 8) | math_lo));
+        math_lo = (uint8_t)v;
+        cpu.A   = (uint8_t)(v >> 8);
+    }
     steer_demand_store_core();
 }
 

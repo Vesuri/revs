@@ -3655,7 +3655,15 @@ static int test_slip_and_sound(void)
         int subFail = 0, decimal = 0, throttle = 0, driven = 0, powered = 0, idle = 0;
         int cases = list[i].cases * scale;
         int resultOnly = (i == 5);
-        unsigned mask = resultOnly ? LIVE_NONE : liveMask;
+        /* ⭐ derive_slip_reference (i == 4) verifies only its genuine outputs: the carry (both
+           callers branch on "declined") and A (the product high, consumed as a value); its
+           product low lands in math_lo and is compared through mem[].  Its exit N/Z/V are dead —
+           no caller reads a flag of it — so the multiply is plain C (revs_mulu16) with no V
+           replay.  D is pinned to 0: it is on the slip/driving path (its caller check_wheel_slip,
+           i == 5, is already D = 0), so a decimal case would test an unreachable state. */
+        int derivRef = (i == 4);
+        unsigned mask = resultOnly ? LIVE_NONE
+                      : (derivRef ? (LIVE_A | LIVE_C) : liveMask);
         if (!want(list[i].name)) continue;
         /* check_wheel_slip's idiomatic core keeps the 6502's math accumulator ($74/$75) and its
            sign-decision (a PHP on the stack) in C locals; the oracle spills them.  None is read
@@ -3674,7 +3682,7 @@ static int test_slip_and_sound(void)
             if (c.X == 1) driven++;
             if (pre[PRE_DRIVE_STATE] < 2) powered++;
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
-            c.D = resultOnly ? 0 : (uint8_t)(xs() % 4 == 0);
+            c.D = (resultOnly || derivRef) ? 0 : (uint8_t)(xs() % 4 == 0);
             /* ⚠ The four sound routines run with D CLEAR: the engine only ever calls them from
                binary-mode code, and sound_queue's block index is an ADC, so a decimal case
                would compare two models agreeing on a block the game can never ask for.  The
@@ -3709,7 +3717,8 @@ static int test_slip_and_sound(void)
         if (i == 10 && !idle) { printf("[VACUOUS] %s: no already-idle case\n", list[i].name); fail++; }
         printf("%-32s %7d cases, %d mismatch (must be 0)  %s  "
                "(%d decimal, %d throttle, %d driven axle, %d under power%s)\n",
-               list[i].name, cases, subFail, resultOnly ? "result-only" : "live=AXY+flags",
+               list[i].name, cases, subFail,
+               resultOnly ? "result-only" : derivRef ? "live=A+C" : "live=AXY+flags",
                decimal, throttle, driven, powered,
                i == 10 ? ", channel idle forced" : "");
     }
