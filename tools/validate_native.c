@@ -3523,10 +3523,11 @@ static int test_model_rotations(void)
            binary neg16_math_noinit; like the result-only pair they run only with D = 0 (the driving
            model's precondition — docs/static-map.md §Decimal mode), so they pin D = 0 while keeping
            the full register/flag comparison. */
-        /* i == 0/1/2/3 pin D = 0 (their twins reach binary helpers that assume the driving model's
-           D = 0 precondition); the rotate_state_* trio (4/5/6) leave D random on purpose — their
-           pure-C multiply is decimal-independent, so a random D proves it. */
-        int pinD0 = i == 0 || i == 1 || i == 2 || i == 3;
+        /* i == 0/1/2/3 and the two integrators (7/8) pin D = 0 — their twins are plain binary C
+           that assumes the driving model's D = 0 precondition (docs/static-map.md §Decimal mode);
+           the rotate_state_* trio (4/5/6) leave D random on purpose — their pure-C multiply is
+           decimal-independent, so a random D proves it. */
+        int pinD0 = i == 0 || i == 1 || i == 2 || i == 3 || i == 7 || i == 8;
         unsigned mask = resultOnly ? LIVE_NONE : liveMask;
         if (!want(list[i].name)) continue;
         set_ignore(i == 0 ? stageIgnore : i == 3 ? dampIgnore : 0,
@@ -3541,7 +3542,11 @@ static int test_model_rotations(void)
             if (c.X & 0x40) accumulate++;
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
             if (c.N) negative++;
-            c.D = pinD0 ? 0 : (uint8_t)(xs() % 4 == 0);
+            /* i 0..3 never drew a D byte; 4..8 do — draw it unconditionally so pinning the
+               integrators (7/8) to D = 0 does not shift the shared PRNG stream for any later
+               fixture (the road_span_plot_2 stream-alignment lesson). */
+            { uint8_t dRand = (i >= 4) ? (uint8_t)(xs() % 4 == 0) : 0;
+              c.D = pinD0 ? 0 : dRand; }
             if (c.D) decimal++;
             /* ⚠ integrate_car_position's 24-bit add is the one place a CARRY OUT of the
                fractional byte reaches the next byte, and $490D takes that carry from the

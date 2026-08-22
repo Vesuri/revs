@@ -5988,36 +5988,46 @@ static void integrate_car_position_core(void)
 {
     uint8_t slot;
 
-    /* $48EF-$4925 — element 1 into component 2, then element 0 into component 0. */
+    /* $48EF-$4925 — element 1 into component 2, then element 0 into component 0.  All binary
+       24-bit adds: D = 0 on the driving-model path (docs/static-map.md §Decimal mode).  The
+       loop's own A / flags are dead — overwritten next pass, and by the heading add at exit. */
     for (slot = 1; slot != 0xFFu; slot--) {
         unsigned comp = (unsigned)slot * 2u;            /* Y = 2 then 0, stepped by two */
         uint8_t  lo   = mem[MODEL_STATE_LO + slot];     /* $48F7-$48FA */
         uint8_t  hi   = mem[MODEL_STATE_HI + slot];     /* $48FC */
         uint8_t  ext  = (uint8_t)((hi & 0x80u) ? 0xFFu : 0x00u);  /* $48FF-$4901 sign extend */
-        unsigned carry;
-        Adc      r;
+        unsigned carry, s0, s1, s2;
 
         /* $4903-$4908 — one 24-bit doubling, whose carry OUT feeds the add below. */
         math_lo        = (uint8_t)(lo << 1);
         math_hi        = (uint8_t)((hi << 1) | (lo >> 7));
         shared_temp_76 = (uint8_t)((ext << 1) | (hi >> 7));
         carry          = (unsigned)(ext >> 7);
-        cpu.A          = math_hi;
 
-        r = adc_value(mem[VIEW_ORIGIN_FRAC + comp], math_lo, carry);   /* $490A-$490F */
-        mem[VIEW_ORIGIN_FRAC + comp] = r.val;
-        r = adc_value(mem[VIEW_ORIGIN_LO + comp], math_hi, r.carry);   /* $4912-$4917 */
-        mem[VIEW_ORIGIN_LO + comp] = r.val;
-        cpu.A = (uint8_t)adc_step(mem[VIEW_ORIGIN_HI + comp], shared_temp_76, r.carry);
-        mem[VIEW_ORIGIN_HI + comp] = cpu.A;                            /* $491A-$491F */
+        s0 = (unsigned)mem[VIEW_ORIGIN_FRAC + comp] + math_lo + carry;       /* $490A-$490F */
+        mem[VIEW_ORIGIN_FRAC + comp] = (uint8_t)s0;
+        s1 = (unsigned)mem[VIEW_ORIGIN_LO + comp] + math_hi + (s0 > 0xFFu);  /* $4912-$4917 */
+        mem[VIEW_ORIGIN_LO + comp] = (uint8_t)s1;
+        s2 = (unsigned)mem[VIEW_ORIGIN_HI + comp] + shared_temp_76 + (s1 > 0xFFu);
+        mem[VIEW_ORIGIN_HI + comp] = (uint8_t)s2;                            /* $491A-$491F */
     }
     cpu.Y = 0xFEu;                     /* $4922/$4923's two DEYs — both leave holding the */
     cpu.X = 0xFFu;                     /* $4924's DEX          — value that failed the test */
 
-    /* $4927-$4934 — and the heading advances by element 2, the frame's heading step. */
-    car_heading_lo = (uint8_t)adc_step(car_heading_lo, heading_step_lo, 0);
-    cpu.A          = (uint8_t)adc_step(car_heading_hi, heading_step_hi, cpu.C);
-    car_heading_hi = cpu.A;
+    /* $4927-$4934 — and the heading advances by element 2, the frame's heading step.  The high
+       add's A / N / V / Z / C are this routine's exit flags. */
+    { unsigned h0 = (unsigned)car_heading_lo + heading_step_lo;
+      uint8_t  hc = car_heading_hi, hm = heading_step_hi;
+      unsigned h1 = (unsigned)hc + hm + (h0 > 0xFFu);
+      uint8_t  hr = (uint8_t)h1;
+      car_heading_lo = (uint8_t)h0;
+      car_heading_hi = hr;
+      cpu.A = hr;
+      cpu.C = (uint8_t)(h1 > 0xFFu);
+      cpu.V = (uint8_t)(((~(hc ^ hm) & (hc ^ hr)) >> 7) & 1u);
+      cpu.N = (uint8_t)((hr >> 7) & 1u);
+      cpu.Z = (uint8_t)(hr == 0);
+    }
 }
 
 /* ---------------------------------------------------------------------------
@@ -6034,28 +6044,37 @@ static void integrate_state_rates_core(void)
 {
     uint8_t slot;
 
+    /* All binary 24-bit adds: D = 0 on the driving-model path (docs/static-map.md §Decimal
+       mode).  The LAST pass (slot 0) leaves A / C / V live; the DEX below rewrites N / Z. */
     for (slot = 2; slot != 0xFFu; slot--) {
         uint8_t  lo    = mem[MODEL_STATE_LO + 3 + slot];        /* $493D-$4940 */
         uint8_t  hi    = mem[MODEL_STATE_HI + 3 + slot];        /* $4942 */
         uint8_t  ext   = (uint8_t)((hi & 0x80u) ? 0xFFu : 0x00u);  /* $4945-$4947 */
         unsigned shift = (slot == 2u) ? 5u : 3u;                /* $4949-$494F */
         unsigned wide  = (((unsigned)ext << 16) | ((unsigned)hi << 8) | lo) << shift;
-        Adc      r;
+        unsigned s0, s1, s2;
+        uint8_t  a, m, hr;
 
         math_lo        = (uint8_t)wide;                         /* $4951-$4959 */
         math_hi        = (uint8_t)(wide >> 8);
         shared_temp_76 = (uint8_t)(wide >> 16);
-        cpu.A          = math_hi;
 
-        r = adc_value(mem[MODEL_STATE_FRAC + slot], math_lo, 0);         /* $495B-$4961 */
-        mem[MODEL_STATE_FRAC + slot] = r.val;
-        r = adc_value(mem[MODEL_STATE_LO + slot], math_hi, r.carry);     /* $4964-$4969 */
-        mem[MODEL_STATE_LO + slot] = r.val;
-        cpu.A = (uint8_t)adc_step(mem[MODEL_STATE_HI + slot], shared_temp_76, r.carry);
-        mem[MODEL_STATE_HI + slot] = cpu.A;                             /* $496C-$4971 */
+        s0 = (unsigned)mem[MODEL_STATE_FRAC + slot] + math_lo;              /* $495B-$4961 */
+        mem[MODEL_STATE_FRAC + slot] = (uint8_t)s0;
+        s1 = (unsigned)mem[MODEL_STATE_LO + slot] + math_hi + (s0 > 0xFFu); /* $4964-$4969 */
+        mem[MODEL_STATE_LO + slot] = (uint8_t)s1;
+        a  = mem[MODEL_STATE_HI + slot];  m = shared_temp_76;               /* $496C-$4971 */
+        s2 = (unsigned)a + m + (s1 > 0xFFu);
+        hr = (uint8_t)s2;
+        mem[MODEL_STATE_HI + slot] = hr;
+        cpu.A = hr;
+        cpu.C = (uint8_t)(s2 > 0xFFu);
+        cpu.V = (uint8_t)(((~(a ^ m) & (a ^ hr)) >> 7) & 1u);
     }
     cpu.Y = 0u;                        /* $4956's DEY ran until Z — Y leaves at zero */
-    LDX(0xFFu);                        /* $4974's DEX — and ITS N/Z are the exit flags */
+    cpu.X = 0xFFu;                     /* $4974's DEX (X: 0 -> $FF) — and ITS N/Z are the */
+    cpu.N = 1u;                        /* exit flags: $FF has bit 7 set, and is non-zero */
+    cpu.Z = 0u;
 }
 
 /* The 6502-ABI shims. */
