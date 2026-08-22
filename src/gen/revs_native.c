@@ -117,54 +117,7 @@ REVS_FLAG_OP Adc adc_value(uint8_t a, uint8_t m, unsigned carryIn)
     return r;
 }
 
-/* ===========================================================================
-   ⭐⭐ …AND THE SAME SUBTRACT WITHOUT ITS FLAGS, which is a different instrument.
-
-   cpu.h's `SBC` writes cpu.A, N, V, Z and C — five `move.b dn,abs.l` stores at ~16-20 cycles
-   each on a 68000 — and computes V through a chain of masks.  In a RESTORING DIVIDE only the
-   value feeds the next step, and only the LAST subtract's V ever leaves the routine, so
-   `div16by8` was paying for all five, seven times per call.  Measured cost of getting that
-   wrong: 60.5 calls a frame while DRIVING (`STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`, stable over
-   300 and 1200 frames) against 7.8 parked — so the parked figure understates this subsystem
-   EIGHTFOLD and must not be used to size it.
-
-   ⚠ Decimal mode still has to be honoured here: D changes the RESULT BYTE, not just the flags,
-   so this is not "plain C arithmetic" — it is the same algorithm with the bookkeeping removed.
-   ⚠ `bin` is the BINARY result, which is what N and Z come from even in decimal mode (see the
-   note on `view_delta`); `val` is the byte that actually lands in A.
-   =========================================================================== */
-typedef struct { uint8_t val, bin, carry; } Sbc;
-
-REVS_FLAG_OP Sbc sbc_value(uint8_t a, uint8_t m, unsigned carryIn)
-{
-    unsigned t = (unsigned)a + (uint8_t)~m + (carryIn ? 1u : 0u);
-    Sbc r;
-
-    r.bin   = (uint8_t)t;
-    r.carry = (uint8_t)(t > 0xFFu);
-    if (cpu.D) {
-        int al = (int)(a & 0x0Fu) - (int)(m & 0x0Fu) + (carryIn ? 1 : 0) - 1;
-        int ar;
-        if (al < 0) al = ((al - 6) & 0x0F) - 0x10;
-        ar = (int)(a & 0xF0u) - (int)(m & 0xF0u) + al;
-        if (ar < 0) ar -= 0x60;
-        r.val = (uint8_t)ar;
-    } else {
-        r.val = r.bin;
-    }
-    return r;
-}
-
-/* V for ONE subtract, replayed from its operands — for the one whose V is a routine's exit V.
-   Called once where the loop above would have computed it on every pass. */
-REVS_FLAG_OP uint8_t sbc_overflow(uint8_t a, uint8_t m, unsigned carryIn)
-{
-    uint8_t   nv = (uint8_t)~m;
-    unsigned  t  = (unsigned)a + nv + (carryIn ? 1u : 0u);
-    return (uint8_t)(((~(a ^ nv) & (a ^ (uint8_t)t)) >> 7) & 1u);
-}
-
-/* V for ONE add, replayed from its operands — the ADC counterpart of sbc_overflow, and it
+/* V for ONE add, replayed from its operands — the ADC counterpart of the SBC overflow replay, and it
    exists for the same reason: mul8's exit V is the V of the LAST add in an eight-step chain,
    so the twin computes that one add's overflow instead of the seven dead ones. */
 REVS_FLAG_OP uint8_t adc_overflow(uint8_t a, uint8_t m, unsigned carryIn)
@@ -2226,10 +2179,17 @@ void abs8(void)
 {
     if (!cpu.N)
         return;
-    /* $3452-$3455 EOR #$FF / CLC / ADC #1.  Its C, V, N and Z are the routine's exit flags —
-       C set means the value was 0, V set means it was $80 — so the negate goes through the
-       6502 add rather than a unary minus. */
-    adc_step((unsigned)(cpu.A ^ 0xFFu), 0x01, 0);
+    /* $3452-$3455 EOR #$FF / CLC / ADC #1 — negate as (~A)+1, computing the add's own exit
+       flags directly: C set iff the value was 0 (~A+1 carries only from $FF), V set iff it was
+       $80 (~A == $7F is the one operand whose +1 signed-overflows), N/Z from the result. */
+    uint8_t  inverted = (uint8_t)(cpu.A ^ 0xFFu);
+    unsigned sum      = (unsigned)inverted + 1u;
+    uint8_t  result   = (uint8_t)sum;
+    cpu.A = result;
+    cpu.C = (sum > 0xFFu);
+    cpu.V = (inverted == 0x7Fu);
+    cpu.N = (result >> 7) & 1u;
+    cpu.Z = (result == 0);
 }
 
 /* ===========================================================================
@@ -3308,25 +3268,27 @@ static Div16By8 div16by8_core(uint8_t dividendHi, uint8_t dividendLo, uint8_t di
         work = (uint16_t)(work << 1);
 
         if (ninthBit || (work >> 8) >= divisor) {
-            /* Steps 1..7 restore; the eighth deliberately does not (see the header).  The
-               subtract still runs through the 6502's own arithmetic INCLUDING DECIMAL MODE,
-               which changes the result byte and therefore the quotient — the fixture
-               randomises D and sabotage #5 proves it load-bearing. */
+            /* Steps 1..7 restore; the eighth deliberately does not (see the header).  This is a
+               plain binary subtract: D = 0 on the render/geometry path (docs/static-map.md
+               §Decimal mode), so restoring division is just `remainder -= divisor`. */
             if (step < 7) {
-                Sbc sb;
+                uint8_t result;
                 lastMinuend = (uint8_t)(work >> 8);
                 didSubtract = 1;
-                sb   = sbc_value(lastMinuend, divisor, 1);
-                work = (uint16_t)((work & 0x00FFu) | ((unsigned)sb.val << 8));
+                result = (uint8_t)(lastMinuend - divisor);
+                work   = (uint16_t)((work & 0x00FFu) | ((unsigned)result << 8));
             }
             work |= 1u;              /* the quotient bit, carried up the low half by the next shift */
         }
     }
 
     /* $0C47's exit V, and the reason it is a `DIVU.W` blocker: it belongs to whichever of the
-       seven subtracts ran last.  If none ran, the 6502 left V alone and so does this. */
-    if (didSubtract)
-        cpu.V = sbc_overflow(lastMinuend, divisor, 1);
+       seven subtracts ran last.  If none ran, the 6502 left V alone and so does this.  SBC
+       overflow: V = ((a ^ m) & (a ^ (a-m))) bit 7, with carry set (no borrow-in). */
+    if (didSubtract) {
+        uint8_t res = (uint8_t)(lastMinuend - divisor);
+        cpu.V = (uint8_t)((((lastMinuend ^ divisor) & (lastMinuend ^ res)) >> 7) & 1u);
+    }
 
     r.quotient  = (uint8_t)work;
     r.remainder = (uint8_t)(work >> 8);
@@ -5332,36 +5294,32 @@ void fill_edge_column_run(void)
    V = the last ADD's.  This is a KEPT shim — generated code and the mul8_accum family call it. */
 void mul8_noinit(void)
 {
-    unsigned multiplier = math_lo, addend = math_hi, product;
+    /* $0C02 math_lo x math_hi -> A:math_lo.  The engine only ever multiplies in BINARY — none
+       of the 8 SED sites reach here (docs/static-map.md §Decimal mode) — so this is one 16-bit
+       product.  Exit: A = product high, math_lo = product low; N/Z from math_lo, C = 0, V = the
+       final shift-and-add's. */
+    uint8_t  multiplier = math_lo, addend = math_hi;
+    unsigned product    = revs_mulu16((uint16_t)multiplier, (uint16_t)addend);
 
-    if (cpu.D) {
-        /* The 6502's own shift-and-add, replayed instruction for instruction (decimal only). */
-        int i;
-        LDA(0x00u);
-        LSR_M(MEM_math_lo);                 /* $0C04 — the first multiplier bit into C */
-        for (i = 0; i < 8; i++) {
-            if (cpu.C) { cpu.C = 0; ADC(math_hi); }   /* $0C06-$0C09 */
-            ROR_A();                                  /* $0C0B */
-            ROR_M(MEM_math_lo);                       /* $0C0C — and the next multiplier bit out */
-        }
-        return;
-    }
-
-    product = revs_mulu16((uint16_t)multiplier, (uint16_t)addend);
-
-    /* The one flag that escapes: the last add's V (see the header). */
+    /* The one flag that escapes: the V of the LAST add in the 6502's shift-and-add, which lands
+       at the multiplier's top set bit with the accumulator holding
+       (addend x (multiplier mod 2^k)) >> k.  Replayed from those two operands as an 8-bit signed
+       add's overflow; with a zero multiplier no add runs and the caller's V survives. */
     if (multiplier) {
         unsigned k = 7;
-        unsigned acc;
+        uint8_t  acc, sum;
         while (!(multiplier & (1u << k))) k--;
-        acc   = revs_mulu16((uint16_t)addend, (uint16_t)(multiplier & ((1u << k) - 1u))) >> k;
-        cpu.V = adc_overflow((uint8_t)acc, (uint8_t)addend, 0);
+        acc = (uint8_t)(revs_mulu16((uint16_t)addend,
+                                    (uint16_t)(multiplier & ((1u << k) - 1u))) >> k);
+        sum = (uint8_t)(acc + addend);
+        cpu.V = (uint8_t)(((~(acc ^ addend) & (acc ^ sum)) >> 7) & 1u);
     }
 
     math_lo = (uint8_t)product;
-    cpu.A   = (uint8_t)(product >> 8);
-    UPD_NZ(math_lo);            /* the closing ROR is on math_lo — NOT on A */
-    cpu.C   = 0;                /* provably 0 for every operand pair */
+    cpu.A   = (uint8_t)(product >> 8);   /* the closing ROR is on math_lo — NOT on A */
+    cpu.N   = (uint8_t)((math_lo >> 7) & 1u);
+    cpu.Z   = (uint8_t)(math_lo == 0);
+    cpu.C   = 0;                          /* provably 0 for every operand pair */
 }
 
 /* $0C00  mul8 — mul8_noinit with the multiplicand taken from A (a store, so no flags). */
@@ -5388,8 +5346,18 @@ void mul8_accum(void)
     math_lo = hiOperand; mul8_noinit(); /* $0DC4-$0DC6 — shared_temp_76 x math_hi, the HIGH half */
     math_hi = cpu.A;                    /* $0DC9 */
 
-    math_lo = (uint8_t)adc_step(lowHigh, math_lo, 0);   /* $0DCB-$0DD0 */
-    if (cpu.C) inc_mem(MEM_math_hi);                    /* $0DD4 — N/Z from math_hi now */
+    /* $0DCB-$0DD0 CLC/ADC — the low product's high byte into the high product's low byte. */
+    { uint8_t  a = lowHigh, m = math_lo;
+      unsigned sum = (unsigned)a + m;
+      uint8_t  res = (uint8_t)sum;
+      math_lo = res;
+      cpu.A   = res;
+      cpu.C   = (uint8_t)(sum > 0xFFu);
+      cpu.V   = (uint8_t)(((~(a ^ m) & (a ^ res)) >> 7) & 1u);
+      cpu.N   = (uint8_t)((res >> 7) & 1u);
+      cpu.Z   = (uint8_t)(res == 0);
+      if (sum > 0xFFu) inc_mem(MEM_math_hi);   /* $0DD4 — carry: INC, and N/Z from math_hi now */
+    }
 }
 
 /* ---------------------------------------------------------------------------
@@ -5498,12 +5466,14 @@ void mul16_signed(void)
     unsigned p1, p2, p3, mid, low, result;
     uint8_t  angleLo = mem[MUL_TERM_LO], angleHi = mem[MUL_TERM_HI];
     uint8_t  sourceLo, sourceHi;
-    int      carry;
 
-    /* $0DD7-$0DEC — |source|, with the sign recorded. */
+    /* $0DD7-$0DEC — |source|, with the sign recorded.  Plain 16-bit two's-complement negate
+       (D = 0 on every path that reaches the real caller, docs/static-map.md §Decimal mode). */
     if (mem[MUL_SRC_HI] & 0x80u) {
-        mem[MUL_SRC_LO] = (uint8_t)sub_from(0x00u, mem[MUL_SRC_LO]);
-        mem[MUL_SRC_HI] = (uint8_t)sbc_step(0x00u, mem[MUL_SRC_HI], cpu.C);
+        unsigned neg = (0x10000u - (((unsigned)mem[MUL_SRC_HI] << 8) | mem[MUL_SRC_LO]))
+                       & 0xFFFFu;
+        mem[MUL_SRC_LO] = (uint8_t)neg;
+        mem[MUL_SRC_HI] = (uint8_t)(neg >> 8);
         mem[MUL_SIGN]  ^= 0x80u;
     }
     /* $0DEE-$0DF8 — and the multiplier's own sign, which lives in bit 0 of its low byte. */
@@ -5518,25 +5488,29 @@ void mul16_signed(void)
     p2 = revs_mulu16(angleHi, sourceHi);
     p3 = revs_mulu16(angleHi, sourceLo);
 
-    /* $0E05-$0E20 — the accumulation.  These adds' own flags are all overwritten before
-       anything reads them, so they go through adc_value; ⚠ but it is adc_value and not plain
-       C arithmetic, because decimal mode changes the RESULT byte of every one of them. */
-    { Adc r1 = adc_value((uint8_t)p1, 0x80u, 0);                       /* $0E05-$0E0A */
-      Adc r2 = adc_value((uint8_t)p2, (uint8_t)((p1 >> 8) + r1.carry), 0);  /* $0E17-$0E1C */
-      Adc r3;
-      low = r1.val;
-      mid = r2.val;
-      hypot_min_lo   = (uint8_t)((p2 >> 8) + r2.carry);   /* $78 — $0E15 then $0E1E's INC */
+    /* $0E05-$0E20 — the accumulation.  Plain binary 16-bit adds (D = 0 on the real caller's
+       path, docs/static-map.md §Decimal mode); the byte truncations of the carried-up high
+       halves are kept exactly as the 6502 does them. */
+    { unsigned s1, s2, s3, s4;
+      uint8_t  c1, c2, c3, c4;
+
+      s1  = (unsigned)(uint8_t)p1 + 0x80u;                /* $0E05-$0E0A */
+      low = (uint8_t)s1;  c1 = (uint8_t)(s1 > 0xFFu);
+      s2  = (unsigned)(uint8_t)p2 + (uint8_t)((p1 >> 8) + c1);  /* $0E17-$0E1C */
+      mid = (uint8_t)s2;  c2 = (uint8_t)(s2 > 0xFFu);
+      hypot_min_lo   = (uint8_t)((p2 >> 8) + c2);         /* $78 — $0E15 then $0E1E's INC */
       shared_temp_76 = (uint8_t)low;                      /* $0E0A */
       shared_temp_77 = (uint8_t)mid;                      /* $0E1C */
       math_hi        = (uint8_t)(p3 >> 8);                /* $0E2B */
 
       /* $0E2D-$0E3A — the two closing adds.  Their C is the only flag of theirs that escapes,
          and it is what decides whether $78 is INCed. */
-      r3      = adc_value((uint8_t)p3, (uint8_t)low, 0);
-      carry   = r3.carry;
-      math_lo = (uint8_t)adc_step((unsigned)math_hi, (uint8_t)mid, carry);
-      if (cpu.C) hypot_min_lo++;
+      s3      = (unsigned)(uint8_t)p3 + (uint8_t)low;
+      c3      = (uint8_t)(s3 > 0xFFu);
+      s4      = (unsigned)math_hi + (uint8_t)mid + c3;
+      math_lo = (uint8_t)s4;  c4 = (uint8_t)(s4 > 0xFFu);
+      cpu.C   = c4;                                       /* survives the BIT below */
+      if (c4) hypot_min_lo++;
       result  = hypot_min_lo;
       cpu.A   = (uint8_t)result; }
 
@@ -5582,16 +5556,33 @@ void scale16_by_y(void)
    --------------------------------------------------------------------------- */
 void mul16_by_1_5(void)
 {
-    cpu.A = math_hi;                            /* $4765 */
-    cpu.C = (uint8_t)((cpu.A & 0x80u) != 0);    /* $4767-$476A — CLC, or SEC if negative */
-    ROR_A();                                    /* $476B */
-    PHA();                                      /* $476C */
-    /* $476D-$4773 — x/2 + x, and the ADD takes the ORIGINAL low byte, not the halved one. */
-    { uint8_t orig = math_lo;
-      cpu.A   = (uint8_t)ror_a(orig);
-      math_lo = (uint8_t)adc_step(cpu.A, orig, 0); }
-    PLA();                                            /* $4775 */
-    cpu.A = (uint8_t)adc_step(cpu.A, math_hi, cpu.C); /* $4776 */
+    /* (A:math_lo) = (math_hi:math_lo) * 1.5 = x + x/2, the halving SIGNED (the 6502 seeds the
+       rotate from bit 7 instead of clearing it — an arithmetic shift right).  PHA/PLA leave the
+       x/2 high byte in the stack page, which the differential compares, so it is written back. */
+    uint8_t hiIn = math_hi, loIn = math_lo;
+
+    /* $4765-$476B — x/2 high byte: arithmetic shift right of math_hi, and the bit0 it rotates
+       down into the low half. */
+    uint8_t hiHalf   = (uint8_t)((hiIn >> 1) | (hiIn & 0x80u));
+    int     midCarry = hiIn & 1u;
+
+    mem[0x0100u + cpu.S] = hiHalf;                      /* $476C PHA — the stack residue */
+
+    /* $476D-$4773 — x/2 low (loIn rotated right through midCarry) + x low, carry-in clear. */
+    { uint8_t  loHalf = (uint8_t)(((unsigned)midCarry << 7) | (loIn >> 1));
+      unsigned sum    = (unsigned)loHalf + loIn;
+      math_lo = (uint8_t)sum;
+      cpu.C   = (uint8_t)(sum > 0xFFu);
+      /* $4775 PLA (hiHalf back into A), $4776 ADC — x/2 high + x high + carry; its flags exit. */
+      { unsigned hs = (unsigned)hiHalf + hiIn + cpu.C;
+        uint8_t  hr = (uint8_t)hs;
+        cpu.A = hr;
+        cpu.V = (uint8_t)(((~(hiHalf ^ hiIn) & (hiHalf ^ hr)) >> 7) & 1u);
+        cpu.C = (uint8_t)(hs > 0xFFu);
+        cpu.N = (uint8_t)((hr >> 7) & 1u);
+        cpu.Z = (uint8_t)(hr == 0);
+      }
+    }
 }
 
 /* ---------------------------------------------------------------------------
@@ -5603,10 +5594,20 @@ void mul16_by_1_5(void)
    --------------------------------------------------------------------------- */
 static void model_integrate_element_core(uint8_t slot)
 {
-    unsigned lo = adc_step(mem[MODEL_STATE_LO + slot], mem[MODEL_STATE_LO + 14], 0);
+    /* $47E5 — element[slot] += element[14], one 16-bit binary add (D=0 on the driving-model
+       path, docs/static-map.md §Decimal mode); the high add's flags are the exit flags. */
+    unsigned lo = (unsigned)mem[MODEL_STATE_LO + slot] + mem[MODEL_STATE_LO + 14];
     mem[MODEL_STATE_LO + slot] = (uint8_t)lo;
-    cpu.A = (uint8_t)adc_step(mem[MODEL_STATE_HI + slot], mem[MODEL_STATE_HI + 14], cpu.C);
-    mem[MODEL_STATE_HI + slot] = cpu.A;
+    { uint8_t  a = mem[MODEL_STATE_HI + slot], m = mem[MODEL_STATE_HI + 14];
+      unsigned hi = (unsigned)a + m + (lo > 0xFFu);
+      uint8_t  hr = (uint8_t)hi;
+      mem[MODEL_STATE_HI + slot] = hr;
+      cpu.A = hr;
+      cpu.C = (uint8_t)(hi > 0xFFu);
+      cpu.V = (uint8_t)(((~(a ^ m) & (a ^ hr)) >> 7) & 1u);
+      cpu.N = (uint8_t)((hr >> 7) & 1u);
+      cpu.Z = (uint8_t)(hr == 0);
+    }
 }
 
 /* ---------------------------------------------------------------------------

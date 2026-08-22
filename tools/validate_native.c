@@ -1523,10 +1523,14 @@ static int test_div16by8(void)
             c.A = hi;                                         /* ...and its high half */
             c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
-            /* ⭐ see the header: decimal mode changes the SBC's result byte, so it changes the
-               quotient.  A quarter of the cases run in it. */
-            c.D = (xs() % 4 == 0);
-            if (c.D) decimal++;
+            /* D = 0 always: div16by8 is on the render/geometry path, entered only with D clear
+               (docs/static-map.md §Decimal mode), and its twin is now plain binary C.  The RNG
+               draw that used to pick D is kept (result discarded) so pinning it does not shift
+               the shared xs() stream for the stream-position-sensitive span fixtures that run
+               after this group (road_span_plot_2). */
+            (void)(xs() % 4);
+            c.D = 0;
+            (void)decimal;
 
             subFail += diff_run("div16by8", pre, c, div16by8, div16by8__t6502,
                                 liveMask, t, &printed);
@@ -1541,19 +1545,19 @@ static int test_div16by8(void)
         }
         fail += subFail;
         if (shaped[DIV_ENGINE] == 0 || shaped[DIV_OVERFLOW] == 0 || shaped[DIV_ZERO] == 0 ||
-            decimal == 0 || restored == 0 || unreduced == 0) {
-            printf("[VACUOUS] div16by8: engine=%d overflow=%d zero=%d decimal=%d "
+            restored == 0 || unreduced == 0) {
+            printf("[VACUOUS] div16by8: engine=%d overflow=%d zero=%d "
                    "V-written=%d unreduced-remainder=%d — every one must be non-zero or an "
                    "arm of the divide was never run\n",
                    shaped[DIV_ENGINE], shaped[DIV_OVERFLOW], shaped[DIV_ZERO],
-                   decimal, restored, unreduced);
+                   restored, unreduced);
             fail++;
         }
         printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
-               "(%d engine, %d overflow, %d div-by-0, %d decimal; %d wrote V, "
+               "(%d engine, %d overflow, %d div-by-0; %d wrote V, "
                "%d left an unreduced remainder)\n",
                "div16by8", divCases, subFail, shaped[DIV_ENGINE], shaped[DIV_OVERFLOW],
-               shaped[DIV_ZERO], decimal, restored, unreduced);
+               shaped[DIV_ZERO], restored, unreduced);
     }
 
     return fail;
@@ -3240,22 +3244,10 @@ static int test_multiply(void)
                "(EXHAUSTIVE: every operand pair, D clear)\n",
                "mul8_noinit", 65536, subFail);
         fail += subFail;
-        /* ...and decimal mode, where the twin runs the 6502's own shift-and-add instead. */
-        { int decFail = 0;
-          for (t = 0; t < decimalCases; t++) {
-            Cpu6502 c = zero_cpu();
-            fill_random(pre);
-            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
-            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
-            c.D = 1;
-            decFail += diff_run("mul8_noinit (decimal)", pre, c, mul8_noinit,
-                                mul8_noinit__t6502, liveMask, t, &printed);
-          }
-          fail += decFail;
-          printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
-                 "(the shift-and-add replay — D set)\n",
-                 "mul8_noinit (decimal)", decimalCases, decFail);
-        }
+        (void)decimalCases;
+        /* No decimal arm: mul8_noinit is a math primitive, never entered with D set
+           (docs/static-map.md §Decimal mode — the 8 SED sites are elsewhere), and its twin is
+           now plain binary C. */
     }
 
     /* The other five share a shape: randomised background, randomised registers, a quarter of
@@ -3271,16 +3263,17 @@ static int test_multiply(void)
         };
       int i;
       for (i = 0; i < 5; i++) {
-        int subFail = 0, decimal = 0, zeroOperand = 0, cases = list[i].cases * scale;
-        /* ⭐ neg16_math (i == 3) and neg16_math_noinit (i == 4) are idiomatic binary 16-bit
-           negates; their callers are all on the per-frame driving-model / steering path, which is
-           D = 0 (docs/static-map.md §Decimal mode, settled).  The three multiplies keep the D
-           sweep — their twins reproduce BCD faithfully.  make determinism-drive is the backstop.
-           ⭐ The two negates are verified on their RESULT (math_lo, math_hi, A), not their exit
-           flags: the 6502 routines leave the second subtract's N/V/Z/C behind, but EVERY caller
-           overwrites them before a branch — LDA/LDY at the four transliteration sites, and
-           poll_steering_assist at the $15EE→steer_apply_with_assist one — so the flags are dead
-           scratch, not a result.  A (the negated high byte) IS a documented output and stays checked. */
+        int subFail = 0, zeroOperand = 0, cases = list[i].cases * scale;
+        /* ⭐ All five are now plain binary C, pinned D = 0.  The three multiplies (mul8,
+           mul8_accum, mul16_by_pi) route through mul8_noinit, and neg16_math / neg16_math_noinit
+           are idiomatic 16-bit negates; every caller of all five is on the geometry / driving /
+           steering path, which is D = 0 (docs/static-map.md §Decimal mode, settled), and
+           make determinism-drive is the backstop.
+           ⭐ The two negates (i == 3, i == 4) are verified on their RESULT (math_lo, math_hi, A),
+           not their exit flags: the 6502 routines leave the second subtract's N/V/Z/C behind, but
+           EVERY caller overwrites them before a branch — LDA/LDY at the four transliteration
+           sites, and poll_steering_assist at the $15EE→steer_apply_with_assist one — so the flags
+           are dead scratch, not a result.  A (the negated high byte) IS a documented output. */
         int binaryNeg = (i == 3 || i == 4);
         unsigned negMask = binaryNeg ? (LIVE_A | LIVE_X | LIVE_Y) : liveMask;
         if (!want(list[i].name)) continue;
@@ -3294,21 +3287,19 @@ static int test_multiply(void)
             if (xs() % 8 == 0) { pre[PRE_TEMP_76] = 0; }
             c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
-            c.D = binaryNeg ? 0 : (uint8_t)(xs() % 4 == 0);
-            if (c.D) decimal++;
+            c.D = 0;
             subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
                                 negMask, t, &printed);
         }
         fail += subFail;
-        if ((!binaryNeg && !decimal) || !zeroOperand) {
-            printf("[VACUOUS] %s: %d decimal, %d zero-operand cases\n",
-                   list[i].name, decimal, zeroOperand);
+        if (!zeroOperand) {
+            printf("[VACUOUS] %s: %d zero-operand cases\n", list[i].name, zeroOperand);
             fail++;
         }
         printf("%-32s %7d cases, %d mismatch (must be 0)  %s  "
-               "(%d decimal, %d with a zero operand)\n",
+               "(D clear, %d with a zero operand)\n",
                list[i].name, cases, subFail,
-               binaryNeg ? "live=AXY (flags dead)" : "live=AXY+flags", decimal, zeroOperand);
+               binaryNeg ? "live=AXY (flags dead)" : "live=AXY+flags", zeroOperand);
       }
     }
     return fail;
@@ -3390,10 +3381,13 @@ static int test_model_arithmetic(void)
         int subFail = 0, decimal = 0, decorrelated = 0, negative = 0, accumulate = 0;
         int cases = list[i].cases * scale;
         int resultOnly = (i >= 4 && i <= 6);
-        /* mul16_signed (i == 0) forms its three cross products with binary revs_mulu16, so it is
-           faithful only at D = 0 — its real caller (apply_angle_term) is on the driving-model path
-           where D = 0 (docs/static-map.md §Decimal mode).  It still compares registers/flags. */
-        int pinD0 = resultOnly || (i == 0);
+        /* i == 0..3 (mul16_signed, scale16_by_y, mul16_by_1_5, model_integrate_element) are now
+           plain binary C — mul16_signed forms its cross products with revs_mulu16, scale16_by_y
+           and mul16_by_1_5 route through mul8_noinit, model_integrate_element is a binary 16-bit
+           add.  All are on the driving-model path where D = 0 (docs/static-map.md §Decimal mode),
+           so the fixture pins D = 0; they still compare registers/flags.  make determinism-drive
+           is the backstop. */
+        int pinD0 = resultOnly || (i <= 3);
         unsigned mask = resultOnly ? LIVE_NONE : liveMask;
         if (!want(list[i].name)) continue;
         if (i == 4)      set_ignore(addIgnore, 2);
