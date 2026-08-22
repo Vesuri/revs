@@ -606,3 +606,51 @@ and sprite work written against the current arrangement gets rewritten. It is al
 measurement — if the overlay's existing per-column dirty tests already make the static cockpit nearly
 free, then the win here is only the moving instruments, which is a much smaller number than 36.1%.
 **Measure §7 first; it is one counter and it sizes this whole item.**
+
+## 9. ⭐⭐ VECTOR / TRAPEZOID FILL from the edge lists — RELOCATE the seam, don't break it (user, 2026-08-21) — FUTURE, NOT YET MEASURED
+
+**Why this is the prize, in one number.** §7f/§7g settle that the rasteriser is bound by its **2148
+source reads a frame** — an instruction-fetch-bound *scan*, not the stores. §7g then splits the
+redundancy: a producer-side dirty-line flag can see **33%** of it (lines whose sources are clean at
+entry), but the other **~30%** is lines whose sources ARE dirty and whose translated byte is the one
+already on screen — invisible to any flag, detectable only by the per-cell read-compare that *is* the
+cost. **The only thing that retires that 30% is to stop scanning cells at all** — i.e. render the road
+from its geometry instead of from the forty source blocks. Every seam-clean lever tops out below it.
+
+**The idea.** `draw_road` already computes, faithfully, the left/right road-edge x-position per scan
+line (the geometry/plot split point §5a identified at `interp_edge`). Tap *that* and paint the scene
+as filled regions — sky, grass, road, kerbs — instead of `view_paint_lines`' cell scan:
+
+- **Blitter LINE mode for the SLOPED edges** (line mode's actual strength — §"line mode is the
+  blitter's slowest mode" applies only to *horizontal* runs), then **AREA-FILL between them** per
+  bitplane. The ~2148-read scan is gone; you iterate a few dozen edge segments.
+- **Lower-risk first flavour:** keep per-line spans but **emit them straight from the edge x-coords**
+  (~77 lines × a few spans, computed, not scanned). This still deletes the scan while keeping the
+  existing mixed edge bytes, so it dodges the sub-pixel-edge problem below.
+
+**⭐ This RELOCATES the seam rather than abandoning validation.** `build_track_geometry` →
+`project_point` → `draw_road`'s edge computation stay faithful and `make validate`-able; only the
+pixel emission is replaced. The new seam sits at the edge lists — a cleaner, higher intermediate than
+the source blocks — and `make refloop` is the backstop for the pixels (§5 item 3). Contrast §7f's
+direct-plot, which stayed *below* the seam (byte-exact to the framebuffer) and therefore could only
+ever collapse stores, never the scan.
+
+**The honest risks (all reasons to scout before committing):**
+- Revs' road **curves and has hills**, so it is not one convex trapezoid — kerbs are thin edge bands
+  and a crest can split the road into more fillable regions than a clean quad. How many is a
+  measurement of the edge lists, not a guess.
+- **Sub-pixel edge x** currently comes from the mixed edge bytes (`colour_pattern_tbl`, 4-px
+  granularity). A vector fill snaps to a cell or needs a dithered edge column; the span-emit flavour
+  keeps the edge bytes and sidesteps this.
+- **Objects/cars/signs** are composited into the same viewport (`plot_view_src_line`,
+  `draw_track_object`). They stack naturally on §2's BOB/sprite idea, but the draw order is a
+  behavioural delta (§5 item 5) that has to be reproduced.
+
+**De-risking first step (cheap, read-only):** scout `draw_road` / `interp_edge` output — confirm the
+edge lists give a clean per-line left/right x and count how many regions the road actually decomposes
+into while driving. That measurement decides whether #1 is a trapezoid fill or a messier region
+problem, and it costs nothing but a read.
+
+**Sequencing.** After the seam-clean dirty-line skip (§7g) is taken — that is the measured near-term
+win and it does not foreclose this. This is the larger, later structural change and the natural home
+for the blitter once it earns its place.
