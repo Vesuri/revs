@@ -208,6 +208,7 @@ Hard-won detail lives in `docs/`, not here. **Read the relevant one BEFORE worki
 | `docs/transpiler.md` | Working on `tools/transpile.py`, or when generated-code shape surprises you |
 | `docs/validation-harness.md` | Writing or trusting a `make validate` fixture |
 | `docs/faithfulness-seam.md` | Where a routine lives (validated twin vs Amiga-only), and **how to write a twin** |
+| `docs/helper-elimination-audit.md` | The math-helper campaign's per-site KEEP/CONVERT ledger — which `revs_native.c` sites keep a 6502 flag-helper (a flag escapes) and which convert to plain C |
 | `docs/perf-method.md` ⚑ | Quoting, sizing or judging ANY performance number; where the time goes |
 | **`docs/direct-bitplane-plan.md`** ⭐ | **Before touching any plotter or any Phase 6 asm.** Rendering direct to bitplanes, the layout choices, the decode as ORACLE, §8 the SPRITE lever |
 | `docs/m68k-optimisation.md` ⚑ | Optimising a hot function or writing an asm twin (68000 rules) |
