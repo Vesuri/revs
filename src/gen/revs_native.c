@@ -5595,19 +5595,19 @@ void mul16_by_1_5(void)
 static void model_integrate_element_core(uint8_t slot)
 {
     /* $47E5 — element[slot] += element[14], one 16-bit binary add (D=0 on the driving-model
-       path, docs/static-map.md §Decimal mode); the high add's flags are the exit flags. */
-    unsigned lo = (unsigned)mem[MODEL_STATE_LO + slot] + mem[MODEL_STATE_LO + 14];
-    mem[MODEL_STATE_LO + slot] = (uint8_t)lo;
-    { uint8_t  a = mem[MODEL_STATE_HI + slot], m = mem[MODEL_STATE_HI + 14];
-      unsigned hi = (unsigned)a + m + (lo > 0xFFu);
-      uint8_t  hr = (uint8_t)hi;
-      mem[MODEL_STATE_HI + slot] = hr;
-      cpu.A = hr;
-      cpu.C = (uint8_t)(hi > 0xFFu);
-      cpu.V = (uint8_t)(((~(a ^ m) & (a ^ hr)) >> 7) & 1u);
-      cpu.N = (uint8_t)((hr >> 7) & 1u);
-      cpu.Z = (uint8_t)(hr == 0);
-    }
+       path, docs/static-map.md §Decimal mode); the HIGH add's flags are the exit flags, so they
+       are replayed from the two high bytes. */
+    uint8_t  ah = mem[MODEL_STATE_HI + slot], mh = mem[MODEL_STATE_HI + 14];
+    unsigned sum = (unsigned)(((uint16_t)ah << 8) | mem[MODEL_STATE_LO + slot])
+                 + (unsigned)(((uint16_t)mh << 8) | mem[MODEL_STATE_LO + 14]);
+    uint8_t  hr  = (uint8_t)(sum >> 8);
+    mem[MODEL_STATE_LO + slot] = (uint8_t)sum;
+    mem[MODEL_STATE_HI + slot] = hr;
+    cpu.A = hr;
+    cpu.C = (uint8_t)(sum > 0xFFFFu);
+    cpu.V = (uint8_t)(((~(ah ^ mh) & (ah ^ hr)) >> 7) & 1u);
+    cpu.N = (uint8_t)((hr >> 7) & 1u);
+    cpu.Z = (uint8_t)(hr == 0);
 }
 
 /* ---------------------------------------------------------------------------
@@ -5996,34 +5996,38 @@ static void integrate_car_position_core(void)
         uint8_t  lo   = mem[MODEL_STATE_LO + slot];     /* $48F7-$48FA */
         uint8_t  hi   = mem[MODEL_STATE_HI + slot];     /* $48FC */
         uint8_t  ext  = (uint8_t)((hi & 0x80u) ? 0xFFu : 0x00u);  /* $48FF-$4901 sign extend */
-        unsigned carry, s0, s1, s2;
+        uint32_t doubled, sum;
 
-        /* $4903-$4908 — one 24-bit doubling, whose carry OUT feeds the add below. */
+        /* $4903-$4908 — element[slot] sign-extended to 24 bits and doubled; its three bytes stay
+           live in mem, and the carry OUT of the top bit (ext>>7) feeds bit 0 of the add. */
         math_lo        = (uint8_t)(lo << 1);
         math_hi        = (uint8_t)((hi << 1) | (lo >> 7));
         shared_temp_76 = (uint8_t)((ext << 1) | (hi >> 7));
-        carry          = (unsigned)(ext >> 7);
+        doubled = ((uint32_t)shared_temp_76 << 16) | ((uint32_t)math_hi << 8) | math_lo;
 
-        s0 = (unsigned)mem[VIEW_ORIGIN_FRAC + comp] + math_lo + carry;       /* $490A-$490F */
-        mem[VIEW_ORIGIN_FRAC + comp] = (uint8_t)s0;
-        s1 = (unsigned)mem[VIEW_ORIGIN_LO + comp] + math_hi + (s0 > 0xFFu);  /* $4912-$4917 */
-        mem[VIEW_ORIGIN_LO + comp] = (uint8_t)s1;
-        s2 = (unsigned)mem[VIEW_ORIGIN_HI + comp] + shared_temp_76 + (s1 > 0xFFu);
-        mem[VIEW_ORIGIN_HI + comp] = (uint8_t)s2;                            /* $491A-$491F */
+        /* $490A-$491F — add it into the 24-bit view component (FRAC:LO:HI); the top carry-out is
+           dead (the loop's exit flags are overwritten by the heading add below). */
+        sum = (((uint32_t)mem[VIEW_ORIGIN_HI + comp] << 16)
+             | ((uint32_t)mem[VIEW_ORIGIN_LO + comp] << 8)
+             |  mem[VIEW_ORIGIN_FRAC + comp])
+            + doubled + (ext >> 7);
+        mem[VIEW_ORIGIN_FRAC + comp] = (uint8_t)sum;
+        mem[VIEW_ORIGIN_LO + comp]   = (uint8_t)(sum >> 8);
+        mem[VIEW_ORIGIN_HI + comp]   = (uint8_t)(sum >> 16);
     }
     cpu.Y = 0xFEu;                     /* $4922/$4923's two DEYs — both leave holding the */
     cpu.X = 0xFFu;                     /* $4924's DEX          — value that failed the test */
 
-    /* $4927-$4934 — and the heading advances by element 2, the frame's heading step.  The high
+    /* $4927-$4934 — and the heading advances by element 2, the frame's heading step.  The HIGH
        add's A / N / V / Z / C are this routine's exit flags. */
-    { unsigned h0 = (unsigned)car_heading_lo + heading_step_lo;
-      uint8_t  hc = car_heading_hi, hm = heading_step_hi;
-      unsigned h1 = (unsigned)hc + hm + (h0 > 0xFFu);
-      uint8_t  hr = (uint8_t)h1;
-      car_heading_lo = (uint8_t)h0;
+    { uint8_t  hc = car_heading_hi, hm = heading_step_hi;
+      unsigned h  = (unsigned)(((uint16_t)hc << 8) | car_heading_lo)
+                  + (unsigned)(((uint16_t)hm << 8) | heading_step_lo);
+      uint8_t  hr = (uint8_t)(h >> 8);
+      car_heading_lo = (uint8_t)h;
       car_heading_hi = hr;
       cpu.A = hr;
-      cpu.C = (uint8_t)(h1 > 0xFFu);
+      cpu.C = (uint8_t)(h > 0xFFFFu);
       cpu.V = (uint8_t)(((~(hc ^ hm) & (hc ^ hr)) >> 7) & 1u);
       cpu.N = (uint8_t)((hr >> 7) & 1u);
       cpu.Z = (uint8_t)(hr == 0);
@@ -6052,24 +6056,28 @@ static void integrate_state_rates_core(void)
         uint8_t  ext   = (uint8_t)((hi & 0x80u) ? 0xFFu : 0x00u);  /* $4945-$4947 */
         unsigned shift = (slot == 2u) ? 5u : 3u;                /* $4949-$494F */
         unsigned wide  = (((unsigned)ext << 16) | ((unsigned)hi << 8) | lo) << shift;
-        unsigned s0, s1, s2;
-        uint8_t  a, m, hr;
+        uint8_t  ah = mem[MODEL_STATE_HI + slot], mh, hr;
+        uint32_t sum;
 
-        math_lo        = (uint8_t)wide;                         /* $4951-$4959 */
+        math_lo        = (uint8_t)wide;                         /* $4951-$4959 (live in mem) */
         math_hi        = (uint8_t)(wide >> 8);
         shared_temp_76 = (uint8_t)(wide >> 16);
+        mh = shared_temp_76;
 
-        s0 = (unsigned)mem[MODEL_STATE_FRAC + slot] + math_lo;              /* $495B-$4961 */
-        mem[MODEL_STATE_FRAC + slot] = (uint8_t)s0;
-        s1 = (unsigned)mem[MODEL_STATE_LO + slot] + math_hi + (s0 > 0xFFu); /* $4964-$4969 */
-        mem[MODEL_STATE_LO + slot] = (uint8_t)s1;
-        a  = mem[MODEL_STATE_HI + slot];  m = shared_temp_76;               /* $496C-$4971 */
-        s2 = (unsigned)a + m + (s1 > 0xFFu);
-        hr = (uint8_t)s2;
-        mem[MODEL_STATE_HI + slot] = hr;
+        /* $495B-$4971 — add the low 24 bits of the shifted rate into element X (FRAC:LO:HI); the
+           shift's own carry out was cleared ($495E CLC), so carry-in is 0. */
+        sum = (((uint32_t)ah << 16)
+             | ((uint32_t)mem[MODEL_STATE_LO + slot] << 8)
+             |  mem[MODEL_STATE_FRAC + slot])
+            + (wide & 0xFFFFFFu);
+        hr = (uint8_t)(sum >> 16);
+        mem[MODEL_STATE_FRAC + slot] = (uint8_t)sum;
+        mem[MODEL_STATE_LO + slot]   = (uint8_t)(sum >> 8);
+        mem[MODEL_STATE_HI + slot]   = hr;
+        /* the HIGH byte add's A / C / V — live only from the last pass (slot 0). */
         cpu.A = hr;
-        cpu.C = (uint8_t)(s2 > 0xFFu);
-        cpu.V = (uint8_t)(((~(a ^ m) & (a ^ hr)) >> 7) & 1u);
+        cpu.C = (uint8_t)(sum > 0xFFFFFFu);
+        cpu.V = (uint8_t)(((~(ah ^ mh) & (ah ^ hr)) >> 7) & 1u);
     }
     cpu.Y = 0u;                        /* $4956's DEY ran until Z — Y leaves at zero */
     cpu.X = 0xFFu;                     /* $4974's DEX (X: 0 -> $FF) — and ITS N/Z are the */
