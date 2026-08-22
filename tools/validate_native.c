@@ -3646,14 +3646,15 @@ static int test_slip_and_sound(void)
     static const uint8_t PEDALS[3] = { 1, 0, 0x80 };
     for (i = 0; i < 12; i++) register_fixture(list[i].name);
 
-    /* ⭐ check_wheel_slip (i == 5) is verified RESULT-ONLY: its native twin is idiomatic C whose
-       whole product is mem[] (the slip flags and the state vector), leaving nothing meaningful in
-       the cpu — no caller reads its exit registers.  D is pinned to 0 (the driving model's
-       precondition) and the register/flag comparison is dropped. */
+    /* ⭐ slip_magnitude (i == 0) and check_wheel_slip (i == 5) are verified RESULT-ONLY: their
+       native twins are idiomatic C whose whole product is mem[] (slip_magnitude's SLIP_MAG_LO/HI,
+       check_wheel_slip's slip flags and state vector), leaving nothing meaningful in the cpu — no
+       caller reads their exit registers (each caller overwrites A immediately).  D is pinned to 0
+       (the driving model's precondition) and the register/flag comparison is dropped. */
     for (i = 0; i < 12; i++) {
         int subFail = 0, decimal = 0, throttle = 0, driven = 0, powered = 0, idle = 0;
         int cases = list[i].cases * scale;
-        int resultOnly = (i == 5);
+        int resultOnly = (i == 0 || i == 5);
         /* ⭐ derive_slip_reference (i == 4) verifies only its genuine outputs: the carry (both
            callers branch on "declined") and A (the product high, consumed as a value); its
            product low lands in math_lo and is compared through mem[].  Its exit N/Z/V are dead —
@@ -3681,7 +3682,11 @@ static int test_slip_and_sound(void)
             if (c.X == 1) driven++;
             if (pre[PRE_DRIVE_STATE] < 2) powered++;
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
-            c.D = (resultOnly || derivRef) ? 0 : (uint8_t)(xs() % 4 == 0);
+            /* ⚠ draw the D byte for every case EXCEPT the two that never drew it (i == 4/5), so
+               pinning slip_magnitude (i == 0) to D = 0 does not shift the shared PRNG stream for
+               any later fixture (the road_span_plot_2 stream-alignment lesson). */
+            { uint8_t dRand = (i == 4 || i == 5) ? 0 : (uint8_t)(xs() % 4 == 0);
+              c.D = (resultOnly || derivRef) ? 0 : dRand; }
             /* ⚠ The four sound routines run with D CLEAR: the engine only ever calls them from
                binary-mode code, and sound_queue's block index is an ADC, so a decimal case
                would compare two models agreeing on a block the game can never ask for.  The

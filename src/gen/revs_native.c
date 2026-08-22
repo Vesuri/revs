@@ -6142,25 +6142,28 @@ void integrate_state_rates(void)  { integrate_state_rates_core(); }
    --------------------------------------------------------------------------- */
 static void slip_magnitude_core(uint8_t slot)
 {
-    mem[SLIP_MAG_LO] = mem[MODEL_STATE_LO + slot];              /* $4B61-$4B64 */
-    LDA(mem[MODEL_STATE_HI + slot]);                            /* $4B66 */
-    if (cpu.N) {                                                /* $4B69 BPL — |x| */
-        mem[SLIP_MAG_LO] = (uint8_t)sub_from(0x00u, mem[SLIP_MAG_LO]);        /* $4B6B-$4B70 */
-        cpu.A = (uint8_t)sbc_step(0x00u, mem[MODEL_STATE_HI + slot], cpu.C);  /* $4B72-$4B74 */
-    }
+    /* $4B61 — |element[slot]| << 5, saturated to $7F.  D = 0 on the driving path
+       (docs/static-map.md §Decimal mode); exit registers/flags are dead (both callers overwrite
+       A immediately), so the whole product is mem[]: SLIP_MAG_HI, and SLIP_MAG_LO left where the
+       loop stopped.  ⚠ the clamp leaves state behind — on overflow the routine bails with $7F and
+       SLIP_MAG_LO keeps its part-shifted value — so the shift loop is reproduced step for step. */
+    uint16_t v = (uint16_t)(((uint16_t)mem[MODEL_STATE_HI + slot] << 8)  /* $4B61-$4B66 */
+                            | mem[MODEL_STATE_LO + slot]);
+    uint8_t  count;
 
-    /* $4B77-$4B86 — five doublings, or as many as fit before the high byte goes negative. */
-    LDY(0x05u);
-    for (;;) {
-        uint8_t low = mem[SLIP_MAG_LO];
-        cpu.C = (uint8_t)(low >> 7);            /* $4B79 ASL, whose carry feeds the ROL */
-        mem[SLIP_MAG_LO] = (uint8_t)(low << 1);
-        ROL_A();                                /* $4B7B — and ITS N is the clamp test */
-        if (cpu.N) { LDA(0x7Fu); break; }       /* $4B7C BMI → $4B84 */
-        DEY();                                  /* $4B7E */
-        if (cpu.Z) break;                       /* $4B7F BNE */
+    if (v & 0x8000u) v = (uint16_t)(0x10000u - v);              /* $4B69-$4B74 — |x| */
+
+    /* $4B77-$4B86 — five doublings, or as many as fit before the high byte goes negative.  Only
+       the FINAL SLIP_MAG_LO/HI are observed, so the value shifts in one uint16_t and is stored
+       once: on overflow SLIP_MAG_LO keeps its part-shifted low byte, exactly as the 6502's
+       per-iteration ASL of the memory cell leaves it. */
+    for (count = 5u; ; count--) {
+        v = (uint16_t)(v << 1);                 /* ASL SLIP_MAG_LO / ROL A */
+        if (v & 0x8000u) break;                 /* $4B7C BMI → $4B84 (ROL bit 7 = clamp) */
+        if (count == 1u) break;                 /* $4B7E DEY / $4B7F BNE */
     }
-    mem[SLIP_MAG_HI] = cpu.A;                                   /* $4B81 */
+    mem[SLIP_MAG_LO] = (uint8_t)v;                              /* $4B79/$4B81 */
+    mem[SLIP_MAG_HI] = (v & 0x8000u) ? 0x7Fu : (uint8_t)(v >> 8);  /* $4B81, clamp = $7F */
 }
 
 /* ---------------------------------------------------------------------------
@@ -6216,49 +6219,40 @@ static void store_slip_clamped_off_throttle_core(void)
    --------------------------------------------------------------------------- */
 static void derive_slip_reference_core(void)
 {
-    /* $4B88-$4B8C — the element store_slip_signed will write. */
-    cpu.A = (uint8_t)adc_step(cpu.X, 0x02u, 0);
+    /* $4B88-$4B8C — the element store_slip_signed will write.  A holds X + 2 from here (it stays
+       the exit A on the throttle's declined arm below). */
+    cpu.A = (uint8_t)(cpu.X + 2u);
     mem[SLIP_OUT_INDEX] = cpu.A;
 
-    LDY(pedal_mode); DEY();                                     /* $4B8E-$4B90 */
-    if (cpu.Z) {
+    if (pedal_mode == 1u) {                                     /* $4B8E-$4B90 DEY/BEQ */
         /* ON THE THROTTLE — $4BAF-$4BBA. */
-        CPX(0x01u);
-        if (!cpu.Z) { SEC(); return; }                           /* $4BB1 → $4BCD: declined */
-        cpu.A = (uint8_t)sub_from(gear_index, 0x01u);            /* $4BB3-$4BB6 */
-        mem[SLIP_SIGN] = cpu.A;
-        LDA(mem[SLIP_REV_TERM]);                                 /* $4BBA */
+        if (cpu.X != 1u) { cpu.C = 1u; return; }                 /* $4BB1 → $4BCD: declined */
+        mem[SLIP_SIGN] = (uint8_t)(gear_index - 1u);             /* $4BB3-$4BB6 */
+        cpu.A = mem[SLIP_REV_TERM];                              /* $4BBA */
     } else {
         /* OFF THE THROTTLE — $4B93-$4BAC. */
         slip_magnitude_core(9);                                  /* |car_speed| << 5 */
-        LDA((uint8_t)(car_speed_hi ^ 0x80u));                    /* $4B98-$4B9B */
-        mem[SLIP_SIGN] = cpu.A;
-        LDA(mem[MEM_grip_limit + cpu.X]);                        /* $4B9F */
-        CPX(0x01u);                                              /* $4BA2 */
-        if (!cpu.Z) {                                            /* $4BA4 BEQ */
-            /* $4BA6-$4BAB — three-quarters of the limit: (g/2 + g)/2. */
-            LSR_A();
-            cpu.A = (uint8_t)adc_step(cpu.A, mem[MEM_grip_limit + cpu.X], 0);
-            LSR_A();
+        mem[SLIP_SIGN] = (uint8_t)(car_speed_hi ^ 0x80u);        /* $4B98-$4B9B */
+        cpu.A = mem[MEM_grip_limit + cpu.X];                     /* $4B9F */
+        if (cpu.X != 1u) {                                       /* $4BA2-$4BA4 CPX #1/BEQ */
+            /* $4BA6-$4BAB — three-quarters of the limit: (g/2 + g)/2, each add truncated to 8
+               bits exactly as the 6502's LSR/ADC/LSR does (the ADC carry-out is dropped by LSR). */
+            uint8_t g = mem[MEM_grip_limit + cpu.X];
+            cpu.A = (uint8_t)(((uint8_t)((g >> 1) + g)) >> 1);
         }
     }
 
-    math_hi = cpu.A;                                             /* $4BBC */
-    /* $4BBE-$4BC0 — reference x pedal_amount, a plain 8x8 product (D = 0 on the slip path).
-       A = product high, math_lo = product low.  The exit N/Z/V are dead: both callers read only
-       the carry and then consume A : math_lo as a value, never a flag of this routine. */
+    /* $4BBC-$4BC0 — reference x pedal_amount, a plain 8x8 product (D = 0 on the slip path), and on
+       the throttle it is halved.  A = product high, math_lo = product low.  The exit N/Z/V are
+       dead: both callers read only the carry and then consume A : math_lo as a value. */
+    math_hi = cpu.A;                                            /* $4BBC */
     {
-        unsigned product = revs_mulu16(math_hi, pedal_amount);
+        uint16_t product = (uint16_t)revs_mulu16(math_hi, pedal_amount);  /* $4BBE-$4BC0 */
+        if (pedal_mode == 1u) product >>= 1;                             /* $4BC3-$4BC9 throttle */
         math_lo = (uint8_t)product;
         cpu.A   = (uint8_t)(product >> 8);
     }
-    LDY(pedal_mode); DEY();                                      /* $4BC3-$4BC5 */
-    if (cpu.Z) {                                                 /* $4BC6 BNE */
-        LSR_A();                                                 /* $4BC8 — on the throttle, */
-        ROR_M(MEM_math_lo);                                      /* $4BC9   halved; its N/Z are
-                                                                    the exit flags */
-    }
-    CLC();                                                       /* $4BCB — accepted */
+    cpu.C = 0u;                                                  /* $4BCB CLC — accepted */
 }
 
 /* ---------------------------------------------------------------------------
