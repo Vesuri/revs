@@ -41,23 +41,33 @@ audits. **Do not convert them** — the argument is written at each site in the 
 Delete each row in the commit that converts it (this is a queue, like `rename.md`). Group by the
 suggested batch order (safest first).
 
-### Batch A — objects/signs (13 sites; all dead-flag/local except the one †)
+### Batch A — objects/signs — ✅ APPLIED (HEAD after this commit)
 
-| function | line(s) | idiom |
-|---|---|---|
-| `scale_shape_vectors_core` | 7779 | carry-in 0; V overwritten by the `BIT` next line — value only |
-| `scale_shape_vectors_core` | 7782 | carry-in 0 → `a`; flags dead into the halving block |
-| `scale_shape_vectors_core` | 7792 | `a + carry` rounding add; flags dead (store follows) |
-| `scale_shape_vectors_core` | 7807 | negation `A+1`; flags dead (INC/INY follow). NB the two return arms already set C/N/Z explicitly — leave those |
-| `draw_track_object_core` | 3012+3013 | fold to one `uint16_t` bearing subtract; sign = `deltaHi&0x80`; keep the `math_lo=` scratch write |
-| `draw_track_object_core` | 3022 | carry-in 0; column's own LDA flags dead |
-| `build_road_sign_core` | 7591 | `nibble + C` (C from the equal cmp, an input); output flags overwritten by `AND #$0F` |
-| `build_road_sign_core` | 7626 | carry-in 0; `(tableByte&7)+7` → plot_shape value; flags dead |
-| `build_road_sign_core` | 7645 | feeds `abs8`; inline abs-after-subtract `(d&0x80)?(uint8_t)(0u-d):d` (N = bit7) |
-| `build_sign_origin_core` † | 7453+7454 | fold to one `uint16_t` origin subtract — ⚠ verify fixture liveMask is result-only (comment claims exit flags; the twin caller discards them) |
-| `write_object_slot_core` | 7533 | `projectedLine-1`, N consumed locally by the BMI at 7534 (bit7) |
-| `write_object_slot_core` | 7539 | `proj_width_shift-9` then DEX; N/Z die at the DEX; the exit-C replay lower down is already plain C |
-| `plot_shape_edges_core` | 7853, 7861 | carry-in 0; N read locally (bit7), value clamped after |
+All 13 sites converted. `make validate` 0-mismatch, 10 sabotages caught, `make determinism` +
+`make determinism-drive` byte-identical against the pre-change golden (parked and driving).
+
+⚠⚠ **THE AUDIT UNDER-COUNTED V ESCAPES — READ BEFORE AUDITING BATCH B/C.** Five of these sites
+were marked "flags dead" and were NOT: their converted `ADC`/`SBC`'s **V** (and, once, **C**)
+reaches an exit. **On the 6502 only `ADC`/`SBC`/`BIT`/`PLP`/`CLV` write V** — `CMP`/`AND`/`ORA`/
+`LSR`/`ASL`/`INC`/`DEC`/`TAX`/`INY` do NOT. So the usual "the next CMP recomputes the flags"
+argument kills N/Z/C but LEAVES V live. A converted arithmetic op whose N/Z/C are overwritten
+before the exit can still leak its V. The corrected sites and their replays (all using the
+sanctioned single-flag helpers `adc_overflow`/`sbc_overflow`, cpu untouched):
+
+- `draw_track_object` $2AE1 subtract → exit V on the not-visible arm; $2AF1 `ADC #$50` → exit V
+  on the drawn arm (plot_object leaves V alone). Both replayed.
+- `write_object_slot` $2A7A `SBC #1` → exit **V and C** on the reject-line arm; $2A82 `SBC #9` →
+  exit V on the drawn arm. Both replayed.
+- `scale_shape_vectors` $206C/$207E/$208A ADCs → V kept live to both exits (abandon + loop-end).
+- `plot_shape_edges` $20AE bottom-line ADC → exit **V and C** on the BMI reject; $20C1 top-line
+  ADC → exit V on the no-height reject. Replayed.
+
+**The general rule for B/C: when a converted `ADC`/`SBC` is followed only by `CMP`/`AND`/`ORA`/
+shifts/`INC`/`DEC`/transfers before an exit, its V still escapes — replay it, or KEEP the helper.**
+
+Also: the three † caveat sites were resolved by PINNING `c.D=0` in the two fixtures
+(`test_road_sign` i≥3, `test_object_shape` all) citing `static-map.md §Decimal mode`, since the
+object/sign path is always binary — NOT by relaxing liveMask. `determinism-drive` is the backstop.
 
 ### Batch B — IO/text (9 sites; two clean uint16 folds, one †)
 

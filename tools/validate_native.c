@@ -4464,7 +4464,12 @@ static int test_road_sign(void)
             }
 
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = (i == 4) ? c.C : (xs() & 1);
-            c.D = (uint8_t)(xs() % 4 == 0);
+            /* i>=3 (build_sign_origin, write_object_slot, build_road_sign) are the object/sign
+               GEOMETRY path — always binary (docs/static-map.md §Decimal mode), and their twins
+               fold the SBC chains to native 16-bit subtracts.  Pin D=0; determinism-drive is the
+               backstop that D=0 truly holds on that path.  i<3 keep D random (no arithmetic that
+               D changes, but the coverage is harmless). */
+            c.D = (i >= 3) ? 0 : (uint8_t)(xs() % 4 == 0);
             if (c.D) decimal++;
             /* ⭐ build_road_sign (i==5) answers entirely in mem[] — the object arrays for slot
                $17, sign_last_index — and its one caller ($1728) does LDX #$17 next and reads no
@@ -4477,7 +4482,7 @@ static int test_road_sign(void)
                                 caseMask, t, &printed);
         }
         fail += subFail;
-        if (!decimal || !patched || !sameSign || !shiftBoth) {
+        if ((i < 3 && !decimal) || !patched || !sameSign || !shiftBoth) {
             printf("[VACUOUS] %s: %d decimal, %d SMC-random, %d same sign, %d shift window\n",
                    list[i].name, decimal, patched, sameSign, shiftBoth);
             fail++;
@@ -4687,13 +4692,16 @@ static int test_object_shape(void)
             } else patched++;
 
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
-            c.D = (uint8_t)(xs() % 4 == 0);
-            if (c.D) decimal++;
+            /* The object plotter is the render path — always binary (docs/static-map.md §Decimal
+               mode: none of the 8 SED sites are here), and scale_shape_vectors/plot_shape_edges
+               now fold their ADC chains to native adds.  Pin D=0; determinism-drive is the
+               backstop that the object path never runs in decimal. */
+            c.D = 0;
             subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
                                 liveMask, t, &printed);
         }
         fail += subFail;
-        if (!decimal || !patched || !closing || !wide) {
+        if (!patched || !closing || !wide) {
             printf("[VACUOUS] %s: %d decimal, %d SMC-random, %d closing arms, %d wide\n",
                    list[i].name, decimal, patched, closing, wide);
             fail++;

@@ -126,6 +126,16 @@ REVS_FLAG_OP uint8_t adc_overflow(uint8_t a, uint8_t m, unsigned carryIn)
     return (uint8_t)(((~(a ^ m) & (a ^ (uint8_t)t)) >> 7) & 1u);
 }
 
+/* V for ONE subtract, replayed from its operands — the SBC counterpart of adc_overflow.
+   SBC computes A + ~M + C, so its overflow is ((A^M) & (A^result))>>7 (the two operands
+   differ in sign and the result took the sign of M).  Used where a converted subtract's V is
+   the only flag that escapes the routine. */
+REVS_FLAG_OP uint8_t sbc_overflow(uint8_t a, uint8_t m, unsigned carryIn)
+{
+    uint8_t r = (uint8_t)(a - m - (carryIn ? 0u : 1u));
+    return (uint8_t)((((a ^ m) & (a ^ r)) >> 7) & 1u);
+}
+
 /* value - subtrahend with the borrow clear (SEC/SBC), setting C and V. */
 REVS_FLAG_OP unsigned sub_from(unsigned value, uint8_t subtrahend)
 {
@@ -3008,9 +3018,17 @@ static void draw_track_object_core(uint8_t slot)
 
         /* How far ahead of the player the object sits, as one 16-bit subtract.  The low
            byte's only reader is the x4 below, but it goes through math_lo because the
-           plotter's setup shares that cell. */
-        math_lo = (uint8_t)sub_from(mem[OBJECT_BEARING_LO + slot], car_heading_lo);
-        unsigned deltaHi = sbc_step(mem[OBJECT_BEARING_HI + slot], car_heading_hi, cpu.C);
+           plotter's setup shares that cell.  The high SBC's N/Z/C are dead (the visibility
+           CMP recomputes them), but its V ESCAPES: CMP leaves V alone, so on the not-visible
+           path the subtract's V is the routine's exit V.  Replay it from the high byte. */
+        uint16_t bearing = (uint16_t)(((uint16_t)mem[OBJECT_BEARING_HI + slot] << 8) |
+                                      mem[OBJECT_BEARING_LO + slot]);
+        uint16_t heading = (uint16_t)(((uint16_t)car_heading_hi << 8) | car_heading_lo);
+        uint16_t delta   = (uint16_t)(bearing - heading);
+        math_lo = (uint8_t)delta;                       /* the plotter's setup shares this cell */
+        unsigned deltaHi = (uint8_t)(delta >> 8);
+        { uint8_t hiM = (uint8_t)(bearing >> 8), hiS = (uint8_t)(heading >> 8);
+          cpu.V = (uint8_t)((((hiM ^ hiS) & (hiM ^ (uint8_t)deltaHi)) >> 7) & 1u); }
 
         /* $2AE7-$2AF1 — the visibility window, and the two arms are not symmetric because
            the 6502 tests the sign first: behind the player it wants >= $E0, ahead of it
@@ -3019,7 +3037,11 @@ static void draw_track_object_core(uint8_t slot)
                                        : !cmp_ge(deltaHi, 0x20);
         if (visible) {
             unsigned row = shift_pair_left(shift_pair_left(deltaHi));
-            plot_x = (uint8_t)adc_step(row, 0x50, 0);
+            plot_x = (uint8_t)(row + 0x50);             /* carry-in 0 */
+            /* N/Z/C are dead (the LDAs below rewrite N/Z, nothing reads C), but V ESCAPES on
+               the drawn path: plot_object_core below leaves V untouched, so this ADC's V is
+               the routine's exit V.  Replay it, matching the not-visible arm above. */
+            cpu.V = adc_overflow((uint8_t)row, 0x50, 0);
             /* The column's own `LDA` flags are dead — the width's LDA one instruction later
                rewrites N and Z, and nothing between them branches. */
             plot_line = mem[OBJECT_LINE + slot];
@@ -7444,15 +7466,26 @@ static void build_sign_origin_core(uint8_t offset, uint8_t shift)
     math_lo        = (uint8_t)staged;
     math_hi        = (uint8_t)(staged >> 8);              /* $4D35 */
 
-    /* $4D37-$4D4C — subtract it from the camera's own component, into origin 6.  Y is left as
-       the component index and the second subtract's flags are the routine's exit flags. */
+    /* $4D37-$4D4C — subtract it from the camera's own component, into origin 6, as ONE 16-bit
+       subtract.  Y is left as the component index; the high SBC's flags are the routine's exit
+       flags, replayed from the high byte (6502 Z is the high byte alone, not the word). */
     component = shared_temp_77;
     cpu.Y = component;
     shared_temp_77 = (uint8_t)(component - 1u);
-    mem[VIEW_ORIGIN_LO + VIEW_ORIGIN_STRIDE + component] =
-        (uint8_t)sub_from(mem[VIEW_ORIGIN_LO + component], math_lo);
-    cpu.A = (uint8_t)sbc_step(mem[VIEW_ORIGIN_HI + component], math_hi, cpu.C);
+
+    uint16_t wm   = (uint16_t)(((uint16_t)mem[VIEW_ORIGIN_HI + component] << 8) |
+                               mem[VIEW_ORIGIN_LO + component]);
+    uint16_t ws   = (uint16_t)(((uint16_t)math_hi << 8) | math_lo);
+    uint16_t diff = (uint16_t)(wm - ws);
+    mem[VIEW_ORIGIN_LO + VIEW_ORIGIN_STRIDE + component] = (uint8_t)diff;
+    cpu.A = (uint8_t)(diff >> 8);
     mem[VIEW_ORIGIN_HI + VIEW_ORIGIN_STRIDE + component] = cpu.A;
+
+    uint8_t hiM = (uint8_t)(wm >> 8);
+    cpu.C = (wm >= ws) ? 1u : 0u;                        /* no borrow out of the word */
+    cpu.V = (uint8_t)((((hiM ^ math_hi) & (hiM ^ cpu.A)) >> 7) & 1u);
+    cpu.N = (cpu.A >> 7) & 1u;
+    cpu.Z = (cpu.A == 0u);
 }
 
 /* ---------------------------------------------------------------------------
@@ -7530,13 +7563,19 @@ static void write_object_slot_core(uint8_t projectedLine, int behindNearClip)
     cpu.Y = slot;
     if (behindNearClip) { reject_object_slot_core(); return; }      /* $2A78 BCS */
 
-    cpu.A = (uint8_t)sub_from(projectedLine, 0x01u);     /* $2A7A-$2A7B */
+    cpu.A = (uint8_t)(projectedLine - 0x01u);            /* $2A7A-$2A7B  SEC/SBC #1 */
+    cpu.N = (cpu.A >> 7) & 1u;                            /* N consumed by the BMI next line */
+    cpu.V = sbc_overflow(projectedLine, 0x01u, 1);        /* SBC's V and C — the exit flags on the */
+    cpu.C = (projectedLine >= 0x01u) ? 1u : 0u;           /* reject-line arm (ORA below writes neither) */
     if (cpu.N) { reject_object_slot_core(); return; }    /* $2A7D BMI */
     mem[OBJECT_LINE + slot] = cpu.A;                     /* $2A7F */
 
     /* $2A82-$2A99 — the exponent correction.  X carries the count and its own sign picks the
-       direction, which is why the twin keeps it in a signed int; both loops end with X at 0. */
-    cpu.X  = (uint8_t)((uint8_t)sub_from(proj_width_shift, 0x09u) - 1u);   /* TAX / DEX */
+       direction, which is why the twin keeps it in a signed int; both loops end with X at 0.
+       The subtract's own N/Z die at the DEX. */
+    cpu.X  = (uint8_t)((uint8_t)(proj_width_shift - 0x09u) - 1u);   /* SBC / TAX / DEX */
+    cpu.C  = (proj_width_shift >= 0x09u) ? 1u : 0u;      /* the SBC's C — the exit C when places==0 */
+    cpu.V  = sbc_overflow(proj_width_shift, 0x09u, 1);   /* the SBC's V — exit V on the drawn path */
     width  = proj_width;                                 /* $2A88 — its N/Z die at the DEX */
     places = (int)(int8_t)cpu.X;
     /* ⚠ EACH LOOP'S LAST SHIFT LEAVES ITS BIT IN C, AND THAT C IS THE ROUTINE'S EXIT C —
@@ -7588,7 +7627,7 @@ static void build_road_sign_core(void)
         saved_slot_index = nibble;
         cpu.C = cmp_ge(nibble, sign_last_index);         /* CMP: A=nibble, N/Z/C (not V) */
         if (cpu.Z) {                                     /* $4CB5 — the same sign again */
-            cpu.A  = (uint8_t)adc_step(nibble, 0x00u, cpu.C);   /* ADC #0, C set by the equal CMP */
+            cpu.A  = (uint8_t)(nibble + cpu.C);          /* ADC #0, C set by the equal CMP; flags dead */
             cpu.A  = (uint8_t)(cpu.A & 0x0Fu);           /* AND #$0F -> N/Z */
             cpu.N  = (cpu.A >> 7) & 1u;
             cpu.Z  = (cpu.A == 0u);
@@ -7623,7 +7662,7 @@ static void build_road_sign_core(void)
        object plotter's shapes 7..14 are the signs. */
     tableByte = sign_table_byte(SIGN_SHAPE_SITE, signIndex, &trapped);
     if (trapped) return;
-    plot_shape = (uint8_t)adc_step((uint8_t)(tableByte & 0x07u), 0x07u, 0);
+    plot_shape = (uint8_t)((tableByte & 0x07u) + 0x07u);   /* carry-in 0; flags dead */
 
     /* $4CE0-$4CEA — ...and the SEGMENT it is anchored to, in the same byte's top five bits (a
        multiple of 8, which is what a segment index is), into a scratch live section. */
@@ -7642,7 +7681,8 @@ static void build_road_sign_core(void)
 
     /* $4CFA-$4D08 — how far off the car's heading the sign is.  Past $40 it has left the view,
        and THAT is what commits the sign number for the next frame. */
-    cpu.A = (uint8_t)sub_from(cpu.A, car_heading_hi);
+    cpu.A = (uint8_t)(cpu.A - car_heading_hi);
+    cpu.N = (cpu.A >> 7) & 1u;                            /* abs8 branches on the caller's N */
     abs8();
     if (cmp_ge(cpu.A, 0x40u))                            /* the sign has left the view */
         sign_last_index = saved_slot_index;
@@ -7776,10 +7816,13 @@ static void scale_shape_vectors_core(void)
                half-width when bit 6 is set.  math_lo/math_hi are left as scratch. */
             math_lo = mem[SHAPE_SCALE_TBL + (vec & 0x07u)];
             math_hi = vec;
-            a = adc_step(mem[SHAPE_SCALE_TBL + ((vec >> 3) & 0x07u)], (uint8_t)math_lo, 0);
+            a = (uint8_t)(mem[SHAPE_SCALE_TBL + ((vec >> 3) & 0x07u)] + math_lo);   /* flags dead */
             cpu.V = (math_hi >> 6) & 1u;             /* BIT math_hi — only its V survives */
-            if (cpu.V)
-                a = adc_step((uint8_t)a, mem[SHAPE_SCALE_TBL + 3], 0);
+            if (cpu.V) {
+                uint8_t m = mem[SHAPE_SCALE_TBL + 3];
+                cpu.V = adc_overflow((uint8_t)a, m, 0);   /* $206C ADC — its V stays live to the exits */
+                a = (uint8_t)(a + m);
+            }
         } else {
             a = mem[SHAPE_SCALE_TBL + vec];          /* $2072 — one term */
         }
@@ -7789,7 +7832,8 @@ static void scale_shape_vectors_core(void)
             unsigned n     = proj_width_shift;
             uint8_t  carry = 0;
             do { carry = (uint8_t)(a & 1u); a >>= 1; } while (--n != 0u);
-            a = adc_step((uint8_t)a, 0x00u, carry);
+            cpu.V = adc_overflow((uint8_t)a, 0x00u, carry);   /* $207E ADC #0 — V live to the exits */
+            a = (uint8_t)(a + carry);                /* rounds off the last bit shifted out */
         }
 
         /* $2080-$2096 — store the scaled offset and its negation; reject if it needs eight bits. */
@@ -7804,7 +7848,8 @@ static void scale_shape_vectors_core(void)
             cpu.C = 1;                               /* SEC */
             return;
         }
-        cpu.A = (uint8_t)adc_step(cpu.A, 0x01u, 0);  /* $2089 — ...and its negation */
+        cpu.V = adc_overflow(cpu.A, 0x01u, 0);       /* $208A ADC #1 — V is the loop-end exit V */
+        cpu.A = (uint8_t)(cpu.A + 0x01u);            /* $2089-$208A — the negation, (a^$FF)+1 */
         mem[SHAPE_VERTEX + 8 + x] = cpu.A;
         shared_temp_77 = (uint8_t)(x + 1u);          /* INC shared_temp_77 */
         y = (uint8_t)(y + 1u);                       /* INY */
@@ -7850,7 +7895,14 @@ static void plot_shape_edges_core(void)
 
         /* $20A7-$20B8 — the span's BOTTOM line, clamped to $4F. */
         cpu.X = mem[SHAPE_EDGE_LINE_0 + cpu.Y];
-        cpu.A = (uint8_t)adc_step(mem[SHAPE_VERTEX + cpu.X], plot_line, 0);
+        { uint8_t v = mem[SHAPE_VERTEX + cpu.X];          /* $20AE CLC/ADC plot_line */
+          unsigned s = (unsigned)v + plot_line;
+          cpu.A = (uint8_t)s;
+          cpu.N = (cpu.A >> 7) & 1u;                      /* N consumed locally next line */
+          /* On the BMI reject path ($20B0) this ADC's V AND C are the routine's exit flags —
+             the skip loop below writes neither. */
+          cpu.V = adc_overflow(v, plot_line, 0);
+          cpu.C = (uint8_t)(s > 0xFFu); }
         if (cpu.N) rejected = 1;
         if (!rejected) {
             if (cmp_ge(cpu.A, 0x50u)) cpu.A = 0x4Fu;      /* CMP #$50; BCS clamps to $4F */
@@ -7858,7 +7910,12 @@ static void plot_shape_edges_core(void)
 
             /* $20BA-$20D4 — ...and its TOP line, floored at the horizon. */
             cpu.X = mem[SHAPE_EDGE_LINE_1 + cpu.Y];
-            cpu.A = (uint8_t)adc_step(mem[SHAPE_VERTEX + cpu.X], plot_line, 0);
+            { uint8_t v = mem[SHAPE_VERTEX + cpu.X];      /* $20C1 CLC/ADC plot_line */
+              cpu.A = (uint8_t)(v + plot_line);
+              cpu.N = (cpu.A >> 7) & 1u;                  /* N consumed locally next line */
+              /* V escapes on the no-height reject path ($20D1 BCS); C there comes from the
+                 $20CF CMP below, so only V needs replaying, but keep it live like the ADC. */
+              cpu.V = adc_overflow(v, plot_line, 0); }
             if (cpu.N || !cmp_ge(cpu.A, object_line_ceiling))
                 cpu.A = object_line_ceiling;
             if (cmp_ge(cpu.A, span_line_cursor)) rejected = 1;   /* the span has no height */
