@@ -64,7 +64,7 @@ caller and written at the code (V-escape rule + PHP-residue rule from the prior 
 | # | Cluster | cores | status |
 |---|---|---|---|
 | 1 | Steering / CAS (`steer_*`, `apply_steering_assist`, `poll_steering_assist`, `limit_steer_demand`, `clamp_and_store_steer_angle`, `apply_steer_demand`, `assist_from_selector`) | 10 | ✅ |
-| 2 | Pedals / gears / driving-controls driver (`read_pedals_and_gears`, `read_driving_controls`) | 2 | ☐ |
+| 2 | Pedals / gears / driving-controls driver (`read_pedals_and_gears`, `read_driving_controls`) | 2 | ✅ |
 | 3 | Text / screen-address (`mode5_addr`, `mode5_addr_for_cell`, `vdu_char_emit`/`_wide`/`_def`, `draw_gear_indicator`, `adc_read`) | 7 | ✅ |
 | 4 | Slip / sound (`clamp_slip_to_grip`, `derive_slip_reference`, `check_wheel_slip`, `store_slip_*`, `update_slip_sound`, `sound_queue`, `sound_stop_channel`, `sound_osword`, `begin_spin_from_a`) | ~11 | ☐ |
 | 5 | Sub-models / physics (`update_camera_and_drive_state`, `update_engine_revs`, `apply_driving_model`, `compute_car_angles`, `integrate_*`, `apply_drag_terms`, `update_grip_limits`, `rotate_*`, `stage_accum_delta`, `model_integrate_element`, `scale_by_track_gradient`, `apply_angle_term_at`, `rotate_state_pair`) | ~16 | ☐ |
@@ -107,6 +107,14 @@ byte** — `$01F6`, a free slot of the hardware stack — because the old push l
 new path leaves an older `0x22`. It is provably dead (the 6502's own PULL pops it before any read),
 but a 64K `cmp` sees it. Byte-identity is **infeasible** to restore: it needs `cpu.S/X/Y` back inside
 the core (defeats the campaign) *and* the historical X/Y value, which the pure-C cores no longer track.
+
+**Cluster-2 confirmed the recurrence.** The driver's steering-amplify decision was carried on the
+6502 stack (`PHP`/`PLP` around the `$1581-$15C7` sign work); the cpu-free core holds it in the
+`amplifyPressed` local instead, so the same stack-tail residue shift appeared — `make validate`
+byte-exact, `make determinism`/`-drive` diverging only inside `$01B8..$01FF` and passing under the
+skip. Nothing new to decide: the cluster-3 resolution below covers it verbatim. The five logic
+sabotages (kbd polarity, pedal `$C8` threshold, dead-zone `$0A` carry, `STEER_SIGN` dir bit,
+self-drive `revs/4+5` bias) each FAILED with distinct mismatch counts (500 / 1 / 31 / 1913 / 1375).
 
 Resolution (user decision, 2026-08-23): **the determinism compare skips the hardware-stack scratch**
 and byte-compares everything else. Page 1 is per-car data arrays up to `car_target_speed` ($01A4..

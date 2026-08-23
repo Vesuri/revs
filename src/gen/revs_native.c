@@ -5759,17 +5759,21 @@ static void apply_angle_term_at_core(uint8_t mode, uint8_t angle)
 /* ---------------------------------------------------------------------------
    $0E50  kbd_test_key — IS THIS KEY DOWN?  (twin #57)
    ---------------------------------------------------------------------------
-   OSBYTE 129 with a negative INKEY code in X and $FF in Y: the MOS answers in X, and the
-   routine's whole output is the CPX's Z — set when the key is not pressed.  Kept as a twin
-   because the driving model's starter poll goes through it, and because the MOS call has to
-   stay a MOS call.
+   OSBYTE 129 with a negative INKEY code in X and $FF in Y: the MOS answers X = $FF when that
+   key is being held.  The routine's whole output is the CPX #$FF result — Z set means the key
+   IS down (the callers read it as "pressed": throttle key down -> full throttle).  Returns 1
+   when the key is down.  Kept as a twin because the driving model's starter poll goes through
+   it, and because the MOS call has to stay a MOS call.
    --------------------------------------------------------------------------- */
-static void kbd_test_key_core(void)
+static int kbd_test_key_core(uint8_t keyCode)
 {
-    load_a(0x81u);                  /* $0E50 — OSBYTE 129, read a key with a time limit */
-    LDY(0xFFu);                     /* $0E52 */
+    /* MOS ABI — documented cpu exception.  OSBYTE 129 (INKEY) takes the OSBYTE number in A, the
+       negative key code in X and a $FF time-limit in Y; the MOS answers X = $FF when down. */
+    cpu.A = 0x81u;                  /* $0E50 — OSBYTE 129, read a key with a time limit */
+    cpu.X = keyCode;
+    cpu.Y = 0xFFu;                  /* $0E52 */
     platform_mos_call(0xFFF4);      /* $0E54 */
-    CPX(0xFFu);                     /* $0E57 — Z means "not pressed" */
+    return cpu.X == 0xFFu;          /* $0E57 CPX #$FF — Z set (key down) is the output */
 }
 
 /* The 6502-ABI shims. */
@@ -5777,7 +5781,15 @@ void model_integrate_element(void) { model_integrate_element_core(cpu.X); }
 void add_signed_into_element(void) { add_signed_into_element_core(cpu.Y, cpu.N ? 0x80u : 0x00u); }
 void apply_angle_term(void)      { apply_angle_term_core(cpu.A, cpu.X, cpu.Y); }
 void apply_angle_term_at(void)   { apply_angle_term_at_core(cpu.A, cpu.X); }
-void kbd_test_key(void)          { kbd_test_key_core(); }
+void kbd_test_key(void)
+{
+    int down = kbd_test_key_core(cpu.X);   /* core sets A/X/Y from the MOS answer */
+    /* $0E57 CPX #$FF: Z/C set when the key is down (X came back $FF); N = bit 7 of (X-$FF).
+       V is untouched by CPX, so it keeps the caller's value. */
+    cpu.Z = down;
+    cpu.C = down;
+    cpu.N = ((uint8_t)(cpu.X - 0xFFu)) >> 7;
+}
 
 /* ===========================================================================
    TWINS #58-#66 — THE DRIVING MODEL'S ROTATIONS AND INTEGRATIONS
@@ -8991,97 +9003,103 @@ static void clamp_and_store_steer_angle_core(uint8_t a)
    Not a 6502 routine of its own; kept as a function so the two entries above can share it. */
 static void read_pedals_and_gears(void)
 {
+    uint8_t mode, amount, delta;
+
     /* $163B-$1684 — THROTTLE and BRAKE into pedal_mode / pedal_amount.  Once the session is
-       over ($000F non-zero) the car drives itself: mode $80, amount revs/4 + 5.
-       ⚠ The flags left in the pedal section are all overwritten before any exit — only the X
-       (mode) and A (amount) values landing at have_pedal matter here. */
+       over ($000F non-zero) the car drives itself: mode $80, amount revs/4 + 5.  Only the mode
+       and amount VALUES landing at have_pedal matter from this section; the pedal carry is the
+       one flag it leaves — mirrored so it leaks faithfully to no_key on the joystick gear path
+       (nothing there overwrites it, which is why clamp's own CMP #$91 carry can survive to the
+       exit on the session-over path).  The clamp fixture drops V and C, but determinism reads the
+       live path, so the escaping carry is kept at the real 6502 value by argument. */
     if (session_end_countdown == 0) {                  /* $163B — session still running */
         if (mem[OPTION_FLAGS] & 0x80u) {               /* $163F BIT/BMI — joystick */
-            cpu.X = 0x02u;                             /* $1644 — channel 2 */
-            adc_read();                                /* cluster-2 driver, still 6502-ABI */
-            if (cpu.C) {                               /* $1649 — outside the dead zone */
-                uint8_t mag = cpu.A;                   /* $164B — scale the reading up x1.5 */
+            AdcRead a = adc_read_core(0x02u);          /* $1644 — channel 2 */
+            int outside = (a.mag >= 0x0Au);            /* $504F dead-zone carry (leaks to no_key) */
+            cpu.C = outside;
+            if (outside) {                             /* $1649 — outside the dead zone */
+                uint8_t mag = a.mag;                    /* $164B — scale the reading up x1.5 */
                 mem[STEER_SIGN] = (uint8_t)(mag >> 1);
                 /* ⚠ `ADC $74` with no `CLC` — the doubling's own carry ($164F ASL) is in the
                    sum: (mag<<1) + (mag>>1) + bit7(mag).  bit7(mag) is provably 0 here (adc_read
                    folds both sides of centre to a magnitude in 0..$7F), so the ASL never carries;
                    the term is kept as the faithful idiom.  Only this add's OWN carry is read (the
-                   `if(!C)` just below) — and the doubled sum CAN exceed $FF (mag=$7F → $13D);
-                   its N/Z/V are overwritten before any exit (CMP/CPX, then the gears' BIT). */
+                   in-range test just below) — and the doubled sum CAN exceed $FF (mag=$7F → $13D). */
                 unsigned sum = (unsigned)(uint8_t)(mag << 1) + mem[STEER_SIGN] + (mag >> 7);
-                cpu.A = (uint8_t)sum;
                 if (sum <= 0xFFu) {                     /* $1652 — the sum didn't overflow */
-                    CMP(0xFAu);                        /* $1654 */
-                    if (!cpu.C) goto have_pedal;       /* $1656 — in range */
+                    uint8_t hi = ((uint8_t)sum >= 0xFAu);   /* $1654 CMP #$FA (carry leaks to no_key) */
+                    cpu.C = hi;
+                    if (!hi) { mode = a.dir; amount = (uint8_t)sum; goto have_pedal; }  /* in range */
                 }
-                /* $1658 CPX #0 — X is unsigned so its C is ALWAYS set, and that carry is the
-                   routine's LIVE exit flag (it leaks through the gear tail to no_key). */
-                CPX(0x00u);
-                if (cpu.X == 0x00u) { cpu.A = 0xFAu; goto have_pedal; }   /* $1674 full brake */
-                cpu.X = 0x01u; cpu.A = 0xFFu; goto have_pedal;            /* $1665 full throttle */
+                /* $1658 CPX #0 — the sign is unsigned so this carry is ALWAYS set, and it is the
+                   routine's LIVE exit carry (it leaks through the gear tail to no_key). */
+                cpu.C = 1;
+                if (a.dir == 0x00u) { mode = 0x00u; amount = 0xFAu; goto have_pedal; }  /* $1674 full brake */
+                mode = 0x01u; amount = 0xFFu; goto have_pedal;                          /* $1665 full throttle */
             }
         } else {
-            cpu.X = 0xAEu; kbd_test_key_core();        /* $165E — the throttle key */
-            if (cpu.Z) { cpu.X = 0x01u; cpu.A = 0xFFu; goto have_pedal; }
-            cpu.X = 0xBEu; kbd_test_key_core();        /* $166B — the brake key */
-            if (cpu.Z) { cpu.X = 0x00u; cpu.A = 0xFAu; goto have_pedal; }
+            if (kbd_test_key_core(0xAEu)) { mode = 0x01u; amount = 0xFFu; goto have_pedal; }  /* $165E throttle */
+            if (kbd_test_key_core(0xBEu)) { mode = 0x00u; amount = 0xFAu; goto have_pedal; }  /* $166B brake */
         }
     }
-    cpu.X = 0x80u;                                     /* $1678 — nobody is driving */
-    /* self-drive amount = revs/4 + 5; the add's flags are all dead (the gears' BIT below
-       overwrites them before any exit). */
-    cpu.A = (uint8_t)((uint8_t)(engine_revs >> 2) + 0x05u);
+    mode = 0x80u;                                      /* $1678 — nobody is driving */
+    amount = (uint8_t)((uint8_t)(engine_revs >> 2) + 0x05u);   /* self-drive: revs/4 + 5 */
 
 have_pedal:
-    pedal_mode   = cpu.X;                              /* $1681 */
-    pedal_amount = cpu.A;
+    pedal_mode   = mode;                               /* $1681 */
+    pedal_amount = amount;
 
     /* $1685-$16DB — the GEARS.  One shift per key press, latched in gear_key_latch.
        ⚠ BIT's V (bit 6 of OPTION_FLAGS) is a LIVE EXIT flag: the no_key and latch-held returns
-       set no V of their own, so it leaks out of the routine — keep the macro. */
-    BIT(mem[OPTION_FLAGS]);
-    if (cpu.N) {                                       /* $1685 BMI — joystick */
-        cpu.X = 0x00u; cpu.A = 0x80u;                  /* $168A — ADVAL 0, the stick buttons */
+       set no V of their own, so it leaks out of the routine. */
+    cpu.V = (uint8_t)((mem[OPTION_FLAGS] >> 6) & 1u);  /* $1685 BIT — V escapes */
+    if (mem[OPTION_FLAGS] & 0x80u) {                   /* $1685 BMI — joystick */
+        uint8_t buttons;
+        /* $168A — ADVAL 0, the stick buttons.  MOS ABI — documented cpu exception. */
+        cpu.X = 0x00u; cpu.A = 0x80u;
         platform_mos_call(0xFFF4);
-        if ((cpu.X & 0x01u) == 0) goto no_key;         /* $1691 — no fire button */
-        cpu.Y = (uint8_t)(pedal_mode - 1);             /* $1696 LDY/DEY */
+        buttons = cpu.X;
+        if ((buttons & 0x01u) == 0) goto no_key;       /* $1691 — no fire button (carry leaks in) */
+        cpu.Y = (uint8_t)(pedal_mode - 1);             /* $1696 LDY/DEY — Y escapes to the held return */
         if (pedal_mode != 0x01u) goto shift_up;        /* not braking: shift up */
-        cpu.A = pedal_amount;                          /* $169B */
         /* ⚠ CMP's C (pedal_amount >= $C8) is a LIVE exit flag — it leaks through the shift path
            to the latch-held return, which sets no carry of its own. */
-        CMP(0xC8u);                                    /* $169D */
-        if (cpu.C) goto shift_down;                    /* $169F — hard brake: shift down */
+        { uint8_t hard = (pedal_amount >= 0xC8u);      /* $169D CMP #$C8 */
+          cpu.C = hard;
+          if (hard) goto shift_down; }                 /* $169F — hard brake: shift down */
         goto shift_up;
     }
-    cpu.X = 0x9Fu; kbd_test_key_core();                /* $16A3 — gear up */
-    if (cpu.Z) goto shift_up;
-    cpu.X = 0xEFu; kbd_test_key_core();                /* $16AA — gear down */
-    if (cpu.Z) goto shift_down;
+    { int up = kbd_test_key_core(0x9Fu); cpu.C = up;   /* $16A3 — gear up (carry leaks) */
+      if (up) goto shift_up; }
+    { int dn = kbd_test_key_core(0xEFu); cpu.C = dn;   /* $16AA — gear down (carry leaks) */
+      if (dn) goto shift_down; }
 
 no_key:
-    cpu.A = 0x00u;                                     /* $16B1 — release the latch */
-    cpu.N = 0; cpu.Z = 1;
-    gear_key_latch = cpu.A;
+    gear_key_latch = 0x00u;                            /* $16B1 — release the latch */
+    cpu.A = 0x00u; cpu.N = 0; cpu.Z = 1;               /* exit A/N/Z (compared through the clamp tail);
+                                                          X and Y here came from a shared MOS call. */
     return;
 
 shift_up:
-    cpu.A = 0xFFu;                                     /* $16B7 — one gear up (adds -1) */
+    delta = 0xFFu;                                     /* $16B7 — one gear up (adds -1) */
     goto shift;
 shift_down:
-    cpu.A = 0x01u;                                     /* $16BB — one gear down (adds +1) */
+    delta = 0x01u;                                     /* $16BB — one gear down (adds +1) */
 shift:
-    gear_change_flag = (uint8_t)(gear_change_flag - 1);   /* $16BD — N/Z dead (LDX resets) */
-    cpu.X = gear_key_latch;                            /* $16C1 */
-    cpu.N = cpu.X >> 7; cpu.Z = (cpu.X == 0);
-    if (!cpu.Z) return;                                /* still held from last frame */
-    gear_key_latch = cpu.A;
-    /* $16C5 — apply the gear delta ($FF down-one / $01 up-one) to gear_index.  The add's
-       flags are dead: the $FF/$07 clamps below are value tests and draw_gear_indicator (the
-       tail) overwrites the flags; no caller reads this routine's exit V/C. */
-    cpu.A = (uint8_t)(cpu.A + gear_index);             /* carry-in 0 */
-    if (cpu.A == 0xFFu)      cpu.A = 0x00u;            /* below reverse: stay in reverse */
-    else if (cpu.A == 0x07u) cpu.A = 0x06u;           /* above top: stay in top */
-    gear_index = cpu.A;                                /* $16D6 */
+    gear_change_flag = (uint8_t)(gear_change_flag - 1);  /* $16BD */
+    /* $16C1 — latch still held from last frame?  X = the latch and N/Z from it escape on the held
+       return, as does A = the delta.  On the continue path draw_gear_indicator overwrites them. */
+    cpu.X = gear_key_latch;
+    cpu.N = (uint8_t)(gear_key_latch >> 7); cpu.Z = (gear_key_latch == 0);
+    cpu.A = delta;
+    if (gear_key_latch != 0) return;                   /* still held from last frame */
+    gear_key_latch = delta;
+    /* $16C5 — apply the gear delta ($FF down-one / $01 up-one) to gear_index.  The clamps below
+       are value tests; draw_gear_indicator (the tail) overwrites the flags. */
+    { uint8_t g = (uint8_t)(delta + gear_index);       /* carry-in 0 */
+      if (g == 0xFFu)      g = 0x00u;                  /* below reverse: stay in reverse */
+      else if (g == 0x07u) g = 0x06u;                 /* above top: stay in top */
+      gear_index = g; }                                /* $16D6 */
     draw_gear_indicator();                             /* cluster-2 driver, still 6502-ABI */
 }
 
@@ -9097,16 +9115,16 @@ static void read_driving_controls_core(void)
     mem[STEER_SIGN]   = 0x00u;
     gear_change_flag  = 0x00u;
 
-    cpu.X = 0x9Du;                                     /* $1581 — the steering-amplify key */
-    kbd_test_key_core();
-    int amplifyPressed = cpu.Z;                        /* $1584 PHP — remember it (Z), a local */
+    int amplifyPressed = kbd_test_key_core(0x9Du);     /* $1581-$1584 — the steering-amplify key */
 
     if (mem[OPTION_FLAGS] & 0x80u) {                   /* $1589 BIT/BMI — joystick */
         /* $158C-$15B2 — THE JOYSTICK.  The reading is SQUARED (header item 1), then quartered
-           into a 16-bit demand unless the amplify key is down, and X carries the sign. */
-        cpu.X = 0x01u;
-        adc_read();                                   /* cluster-2 driver, still 6502-ABI */
-        mem[STEER_DEMAND] = cpu.A;
+           into a 16-bit demand unless the amplify key is down, and the axis sign carries into
+           STEER_SIGN bit 0. */
+        AdcRead a = adc_read_core(0x01u);              /* magnitude and its direction bit */
+        uint8_t dir      = a.dir;
+        uint8_t demandHi = a.mag;
+        mem[STEER_DEMAND] = demandHi;
         /* ⚠⚠ $1593 IS A PER-CIRCUIT SMC EXTENT, and it is the squaring itself: Silverstone's
            `JSR mul8` is what an expansion circuit replaces with its own hook.  The twin has to
            dispatch on the operands rather than bake the call — a randomised pre-state took the
@@ -9117,34 +9135,36 @@ static void read_driving_controls_core(void)
             uint16_t target = (uint16_t)(mem[0x1594] | ((unsigned)mem[0x1595] << 8));
             if (target == 0x0C00u) {
                 /* $0C00 mul8 — the joystick reading squared, a plain 8x8 product (D = 0 on
-                   the steering path).  A = product high, math_lo = product low. */
-                unsigned product = revs_mulu16(cpu.A, math_hi);
-                math_lo = (uint8_t)product;
-                cpu.A   = (uint8_t)(product >> 8);
+                   the steering path).  demandHi = product high, math_lo = product low. */
+                unsigned product = revs_mulu16(demandHi, math_hi);
+                math_lo  = (uint8_t)product;
+                demandHi = (uint8_t)(product >> 8);
             }
-            else if (target >= 0x5300u && target <= 0x5A25u)   revs_track_hook(target);
+            else if (target >= 0x5300u && target <= 0x5A25u) {
+                /* the circuit's own hook squares the reading; it works through the 6502 ABI, so
+                   hand it A and take the result back — a documented track-hook cpu boundary. */
+                cpu.A = demandHi;
+                revs_track_hook(target);
+                demandHi = cpu.A;
+            }
             else { platform_smc_unhandled(0x1593, target); return; }
         }
         if (!amplifyPressed) {                         /* $15A9 PLP — amplify NOT down: quarter */
-            unsigned demand = ((unsigned)cpu.A << 8) | mem[STEER_SIGN];
+            unsigned demand = ((unsigned)demandHi << 8) | mem[STEER_SIGN];
             demand >>= 2;
-            cpu.A = (uint8_t)(demand >> 8);
+            demandHi = (uint8_t)(demand >> 8);
             mem[STEER_SIGN] = (uint8_t)demand;
         }
-        mem[STEER_DEMAND] = cpu.A;
-        mem[STEER_SIGN] &= 0xFEu;
-        mem[STEER_SIGN] |= cpu.X;                       /* X carries the sign into bit 0 */
-        cpu.A = mem[STEER_DEMAND];
-        steer_assist_dispatch_core(cpu.A);
+        mem[STEER_DEMAND] = demandHi;
+        mem[STEER_SIGN] = (uint8_t)((mem[STEER_SIGN] & 0xFEu) | dir);   /* sign into bit 0 */
+        steer_assist_dispatch_core(demandHi);
         return;
     }
 
     /* $15B3-$15F3 — THE KEYBOARD.  Two keys into STEER_KEYS (1, 2 or 3), a fixed demand of 3,
        and the amplify key replaces it with 1 or 0 plus a sign byte of $80. */
-    cpu.X = 0xA9u; kbd_test_key_core();
-    if (cpu.Z) mem[STEER_KEYS] = 0x02u;
-    cpu.X = 0xA8u; kbd_test_key_core();
-    if (cpu.Z) mem[STEER_KEYS] = (uint8_t)(mem[STEER_KEYS] + 1);   /* INC */
+    if (kbd_test_key_core(0xA9u)) mem[STEER_KEYS] = 0x02u;
+    if (kbd_test_key_core(0xA8u)) mem[STEER_KEYS] = (uint8_t)(mem[STEER_KEYS] + 1);   /* INC */
     mem[STEER_DEMAND] = 0x03u;
     if (!amplifyPressed) {                             /* $15C7 PLP — amplify NOT down */
         /* $15CE-$15DA — demand is 1 when the wheel is barely off centre (steer_angle_hi <= 2),
@@ -9153,18 +9173,20 @@ static void read_driving_controls_core(void)
         mem[STEER_SIGN]   = 0x80u;
     }
 
-    cpu.A = mem[STEER_KEYS];                           /* $15DF */
-    if (cpu.A == 0x00u) { steer_demand_from_slip_core(); return; }
-    if (cpu.A == 0x03u) { read_pedals_and_gears(); return; }   /* both keys: no steering */
-    cpu.A = (uint8_t)((cpu.A ^ steer_angle_lo) & 0x01u);        /* $15E8 */
-    if (cpu.A == 0x00u) { steer_apply_with_assist_core(); return; }  /* already this way */
-    /* $15EE — flip (math_hi:math_lo); high byte leaves in A (D = 0 on the steering path). */
+    {
+        uint8_t keys = mem[STEER_KEYS];                /* $15DF */
+        if (keys == 0x00u) { steer_demand_from_slip_core(); return; }
+        if (keys == 0x03u) { read_pedals_and_gears(); return; }   /* both keys: no steering */
+        if (((keys ^ steer_angle_lo) & 0x01u) == 0x00u) {         /* $15E8 — already this way */
+            steer_apply_with_assist_core(); return;
+        }
+    }
+    /* $15EE — flip (math_hi:math_lo); high byte becomes the stored demand (D = 0 here). */
     {
         uint16_t v = (uint16_t)(0u - (uint16_t)(((uint16_t)math_hi << 8) | math_lo));
         math_lo = (uint8_t)v;
-        cpu.A   = (uint8_t)(v >> 8);
+        steer_demand_store_core((uint8_t)(v >> 8));
     }
-    steer_demand_store_core(cpu.A);
 }
 
 /* The 6502-ABI shims. */
