@@ -2492,16 +2492,26 @@ static void road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
         unsigned there   = (prev + i) & 0xFFu;
         unsigned base    = section_word(there);
 
-        /* $2410-$241C — the 16-bit gap, and its high byte's sign is what the shifts need. */
-        math_lo = (uint8_t)sub_from(mem[SECTION_LO_TBL + here], mem[SECTION_LO_TBL + there]);
-        unsigned deltaHi = sbc_step(mem[SECTION_HI_TBL + here],
-                                    mem[SECTION_HI_TBL + there], cpu.C);
-        unsigned delta   = ((deltaHi << 8) | math_lo) & 0xFFFFu;
+        /* $2410-$241C — the 16-bit gap as one signed subtract (D=0 on the road pass —
+           static-map.md §Decimal mode).  Its high byte's sign is what the shifts need. */
+        uint16_t here16  = (uint16_t)(((uint16_t)mem[SECTION_HI_TBL + here]  << 8)
+                                      | mem[SECTION_LO_TBL + here]);
+        uint16_t there16 = (uint16_t)(((uint16_t)mem[SECTION_HI_TBL + there] << 8)
+                                      | mem[SECTION_LO_TBL + there]);
+        unsigned delta   = (uint16_t)(here16 - there16);
+        uint8_t  deltaHi = (uint8_t)(delta >> 8);
+        math_lo = (uint8_t)delta;                    /* $2410 — the low byte, parked */
 
         /* $241F-$242A — two ARITHMETIC shifts right, i.e. a quarter of the signed gap.  The
            sign has to be rotated in twice, so the 6502 stashes it on the STACK across the
            first pair of RORs — and the byte that push leaves at $01xx is state the
-           differential compares, which is the only reason it is spelled out here. */
+           differential compares, which is the only reason it is spelled out here.  That P byte
+           captures the HIGH subtract's flags, so replay them from the high byte: N/Z from the
+           result, V from the signed subtract (carry-in = the low subtract's no-borrow). */
+        cpu.N = (deltaHi >> 7) & 1u;
+        cpu.Z = (deltaHi == 0u);
+        cpu.V = sbc_overflow(mem[SECTION_HI_TBL + here], mem[SECTION_HI_TBL + there],
+                             (mem[SECTION_LO_TBL + here] >= mem[SECTION_LO_TBL + there]) ? 1u : 0u);
         cpu.C = cpu.N;
         PHP();
         PLP();

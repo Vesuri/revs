@@ -129,9 +129,18 @@ its sole caller road_edge_start reads near_edge_first with an immediate CMP — 
 fixture mask (A kept live; D=0 pinned since the SBC is now binary). `make validate` 0-mismatch, 9
 sabotages caught, determinism byte-identical parked + driving.
 
-| function | line(s) | idiom |
-|---|---|---|
-| `road_edge_walk_subdivide` | 2487+2488 | fold to one `uint16_t` gap subtract — ⚠ N feeds `cpu.C=cpu.N` then a **`PHP` whose stack byte is in the differential**; replay `N=(delta&0x8000)!=0`, keep the PHP faithful |
+⚠ Sub-commit 4 (`road_edge_walk_subdivide`) APPLIED — **the LAST CONVERT site of the campaign.** The
+`$2410-$241C` gap is folded to one `uint16_t` signed subtract (D=0 — static-map §Decimal mode); the
+high byte's sign is what the two arithmetic shifts need. ⚠ N feeds `cpu.C=cpu.N` and then a **`PHP`
+whose pushed P byte survives as stack residue at `$01FF` and IS in the differential** (empirically:
+the drop-N sabotage's mismatch landed there) — so all four of N/Z/V/C are replayed from the HIGH-byte
+op before the PHP (`N=(deltaHi>>7)`, `Z=(deltaHi==0)`, `V=sbc_overflow(hi,hi,lo-no-borrow)`,
+`C=N`), keeping the PHP/PLP faithful. `make validate` 0-mismatch, 5 sabotages caught + 3 provable
+non-defects (drop-`math_lo`: the parked low byte is overwritten by `math_lo=(uint8_t)quarter` before
+any read; drop-Z: Z is clobbered by `bearing_to_section`'s opening load downstream — loads kill N/Z
+not V; V carry-in `>=`→`>`: `>=` is the exact SEC/SBC no-borrow, and the `>` corner needs equal low
+bytes the fixture never reaches), determinism byte-identical parked + driving. **This completes all 44
+CONVERT sites; the 16 KEEP sites (Part 1) remain permanent.**
 
 ### The remaining † liveMask-caveat sites
 
