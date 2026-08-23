@@ -8143,9 +8143,11 @@ void plot_shape_edges(void)     { plot_shape_edges_core(); }
 static unsigned halve_signed_rounded(uint8_t value)
 {
     if (value & 0x80u) {
-        /* $1C42 negative arm: SEC / ROR A / ADC #0 — a >>1 that rounds toward zero. */
+        /* $1C42 negative arm: SEC / ROR A / ADC #0 — a >>1 that rounds toward zero.  D=0 on the
+           object path (static-map §Decimal mode), so the ADC is a plain +.  Return value only:
+           the caller (derive_endpoint) overwrites A and every flag before reading anything. */
         uint8_t rotated = (uint8_t)(0x80u | (value >> 1));   /* carry-in was 1 */
-        return adc_step(rotated, 0x00u, value & 1u);         /* + the bit ROR shifted out */
+        return (uint8_t)(rotated + (value & 1u));            /* + the bit ROR shifted out */
     }
     return value >> 1u;                                      /* $1C48 positive arm: LSR A */
 }
@@ -8153,9 +8155,11 @@ static unsigned halve_signed_rounded(uint8_t value)
 /* $1C4E / $1C72 — ...then bias it by plot_x and split it into a column (>> 2) and the x itself. */
 static void derive_endpoint(uint8_t halved, uint16_t xCell, uint16_t colCell)
 {
-    cpu.A       = (uint8_t)adc_step(halved, plot_x, 0);
-    mem[xCell]  = cpu.A;
-    LSR_A(); LSR_A();
+    /* halved + plot_x (carry-in 0, D=0) is the endpoint's x; the two LSRs give its column.
+       The adds/shifts leave dead flags — the caller reads mem[EDGE_COLUMN] and A next. */
+    cpu.A        = (uint8_t)(halved + plot_x);
+    mem[xCell]   = cpu.A;
+    cpu.A        = (uint8_t)(cpu.A >> 2);            /* LSR A; LSR A */
     mem[colCell] = cpu.A;
 }
 
@@ -8175,25 +8179,30 @@ static void fill_object_gap_core(uint8_t width)
     if (fillByte == 0u) fillByte = SRC_CELL_BLANK;
     shared_temp_76 = fillByte;
 
-    /* $1E40-$1E4A — the pointer bias, and the floor a column falls back to. */
-    cpu.A          = (uint8_t)sub_from(0x7Fu, span_line_cursor);
+    /* $1E40-$1E4A — the pointer bias, and the floor a column falls back to.  D=0 on the object
+       path (static-map §Decimal mode): plain 8-bit -/+.  The SEC/SBC's borrow feeds the ADC. */
+    unsigned biasCarry = (0x7Fu >= span_line_cursor) ? 1u : 0u;   /* SEC/SBC: C = no borrow */
+    cpu.A          = (uint8_t)(0x7Fu - span_line_cursor);
     mem[PVS_HALF]  = cpu.A;                       /* ⚠ math_lo, reused: here the BIAS */
     bias           = cpu.A;
-    cpu.A          = (uint8_t)adc_step(cpu.A, span_top_line, cpu.C);
+    cpu.A          = (uint8_t)(bias + span_top_line + biasCarry);
     mem[PVS_GAP_FLOOR] = cpu.A;
 
     /* $1E4B-$1E66 — the two pointers, one block apart, both biased down by `bias`. */
     mem[PVS_GAP_COL] = mem[EDGE_COLUMN];
     {
-        uint8_t  sum      = (uint8_t)adc_step(mem[EDGE_COLUMN], 0x5Fu, 0);   /* column + $5F */
+        uint8_t  sum      = (uint8_t)(mem[EDGE_COLUMN] + 0x5Fu);            /* column + $5F (D=0) */
         uint8_t  lsrCarry = (uint8_t)(sum & 1u);                            /* LSR A -> C */
         uint8_t  ptrHi    = (uint8_t)(sum >> 1u);                           /* LSR A */
         unsigned lowBase  = lsrCarry ? 0x80u : 0x00u;                       /* LDA #0 / ROR A */
         int      carry;
         plot_ptr_hi  = ptrHi;
         plot_ptr2_hi = ptrHi;
-        cpu.A = (uint8_t)sub_from((uint8_t)lowBase, (uint8_t)bias);
-        carry = cpu.C;
+        /* SEC/SBC: C = no borrow.  (`>=` vs `>` can only differ at lowBase==bias, which never
+           happens: lowBase is 0 or $80 and bias = $7F - line with line a view scan line ≤ $4F,
+           so bias ∈ [$30,$7F] — the equality is unreachable by construction.) */
+        carry = (lowBase >= (unsigned)bias) ? 1 : 0;
+        cpu.A = (uint8_t)(lowBase - (unsigned)bias);
         plot_ptr_lo  = cpu.A;
         plot_ptr2_lo = (uint8_t)(cpu.A ^ 0x80u);                            /* EOR #$80 */
         if (plot_ptr2_lo & 0x80u)                                           /* $1E63 BPL */
@@ -8214,7 +8223,7 @@ static void fill_object_gap_core(uint8_t width)
         mem[PVS_GAP_COL] = cpu.Y;
         cpu.C = cmp_ge(cpu.A, span_top_line);         /* CMP: N/Z/C, leaves A */
         if (cpu.C) {
-            cpu.A = (uint8_t)adc_step(cpu.A, mem[PVS_HALF], cpu.C);
+            cpu.A = (uint8_t)(cpu.A + mem[PVS_HALF] + cpu.C);  /* + bias + carry (=1 here), D=0 */
             cpu.Y = cpu.A;                            /* TAY */
             cpu.N = (cpu.A >> 7) & 1u;
             cpu.Z = (cpu.A == 0u);
@@ -8462,10 +8471,17 @@ prev_col:
     if (mem[PVS_PREV_COL] >= 0x28u) mem[PVS_PREV_COL] = 0xFFu;
 
 close_gap:
-    /* $1D86-$1D93 — ⚠ CLC/SBC: the gap is `column - previous - 1`.  Zero or negative, no fill.
-       sbc_step is kept: it writes N/V/Z/C, all live here.  X is set only AFTER the exit test,
-       so the return leaves whatever X the path already held. */
-    cpu.A = (uint8_t)sbc_step(mem[EDGE_COLUMN], mem[PVS_PREV_COL], 0);
+    /* $1D86-$1D93 — CLC/SBC: the gap is `column - previous - 1` (D=0 on the object path).  Zero
+       or negative, no fill.  Only N and Z are read (the branch just below); the subtract's V and
+       C reach the routine's exit UNREAD — every caller ($20F1/$20F5) opens BIT before touching a
+       flag — so they are dropped from the fixture mask, not reproduced.  X is set only AFTER the
+       exit test, so the return leaves whatever X the path already held. */
+    {
+        uint8_t gap = (uint8_t)(mem[EDGE_COLUMN] - mem[PVS_PREV_COL] - 1u);
+        cpu.A = gap;
+        cpu.N = (gap >> 7) & 1u;
+        cpu.Z = (gap == 0u);
+    }
     if (cpu.Z || cpu.N) return;
     cpu.X = cpu.A;
     fill_object_gap_core(cpu.X);

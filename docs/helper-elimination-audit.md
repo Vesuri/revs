@@ -109,28 +109,28 @@ reproduced. The subtract feeds `abs8` so `|a-b|==|b-a|`: the table-SWAP sabotage
 non-defect (the "no change" class), but a table-OFFSET (magnitude) error is caught — that is the
 sibling. `make validate` 0-mismatch, determinism byte-identical parked + driving.
 
+⚠ Sub-commit 2 (object-line group) APPLIED: `halve_signed_rounded`, `derive_endpoint`,
+`fill_object_gap_core` (5 helper calls), and `plot_view_src_line_core`'s gap subtract. Both
+fixtures now pin `c.D=0` (static-map §Decimal mode — the object plotter is never decimal) and drop
+V/C: MEASURED that all four callers of plot_view_src_line ($20F1/$20F5) open `BIT` before reading a
+flag and never read exit C, so its (and fill_object_gap's) exit V/C are byproducts — N/Z stay
+compared. Resolves the `plot_view_src_line_core` † caveat below. `make validate` 0-mismatch, 7
+sabotages caught + 1 provable non-defect (`fill_object_gap`'s low-pointer carry `>=` vs `>` is
+unreachable: lowBase∈{0,$80}, bias∈[$30,$7F]), determinism byte-identical parked + driving.
+
 | function | line(s) | idiom |
 |---|---|---|
 | `paint_lines_short` | 1063 | `(uint8_t)(0xF1 - mem[...])`; value recomputed at 1066, no flag read |
 | `shift_near_edge_points_core` | 1797 | value → near_edge_first; ⚠ verify `clamp_near_edge_window_core` ignores entry flags first |
 | `apply_driving_model_core` | 2917+2918 | fold to one `uint16_t` accumulator restore `acc = entry + delta`; exit flags dead (next call opens with LDA) |
-| `halve_signed_rounded` | 8079 | `(uint8_t)(rotated + (value&1))`; return value only, flags dead |
-| `derive_endpoint` | 8087 | carry-in 0; LSR twice overwrites flags → `halved + plot_x` |
-| `fill_object_gap_core` | 8110→8113 | local carry chain (not escape): `bias = 0x7F-cursor; carry=(0x7F>=cursor); floor = bias+top+carry` |
-| `fill_object_gap_core` | 8119 | carry-in 0; the following LSR consumes the value |
-| `fill_object_gap_core` | 8126→8132 | local carry: `carry = (lowBase >= bias)` |
-| `fill_object_gap_core` | 8148 | value + carry-in from the preceding `cmp_ge`; N/Z recomputed at 8150-51 |
 | `column_gap_walk_core` | 5132+5133 | the ASL/ROR pair builds `plot_ptr = 0x3000 + column*0x80` — write as one `uint16_t` |
 | `road_edge_walk_subdivide` | 2487+2488 | fold to one `uint16_t` gap subtract — ⚠ N feeds `cpu.C=cpu.N` then a **`PHP` whose stack byte is in the differential**; replay `N=(delta&0x8000)!=0`, keep the PHP faithful |
-| `plot_view_src_line_core` † | 8399 | `column - previous - 1`; Z/N consumed locally by `if(cpu.Z||cpu.N)return`; ⚠ V/C claimed live by comment but caller discards — verify liveMask, then convert with local Z/N replay |
 
-### The three † liveMask-caveat sites
+### The remaining † liveMask-caveat sites
 
-`build_sign_origin_core` 7454, `mode5_addr_core` 8527, `plot_view_src_line_core` 8399 each carry a
-comment asserting their SBC/ADC exit flags escape, **but the twin caller discards them** (an
-`LDY`/loop follows without reading C/V). This is the oracle-calls-native trap (`revs_decisions`
-campaign log): the faithful move is value + relax the fixture's `liveMask` to result-only — but
-**confirm the fixture isn't currently asserting those flags before dropping them.**
+`build_sign_origin_core` 7454 and `mode5_addr_core` 8527 were resolved in Batches A and B
+respectively (D=0 pin / V-C drop). `plot_view_src_line_core`'s gap subtract was resolved in
+sub-commit 2 above (V/C measured dead at every caller — they open `BIT`).
 
 ---
 
