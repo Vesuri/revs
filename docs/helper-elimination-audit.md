@@ -100,14 +100,17 @@ dropped-ASL-carry sabotage on the x1.5 doubling SURVIVED — `bit7(mag)` is prov
 is kept as the faithful idiom and annotated; the SIBLING (the `sum>$FF` overflow test) IS reachable
 (mag=$7F → $13D) and its sabotage was caught.
 
-### Batch C — small render leaves + accumulator (22 sites)
+### Batch C — small render leaves + accumulator (remaining sites)
+
+⚠ Sub-commit 1 (geometry group) APPLIED: `build_track_geometry_core` wrap, `horizon_half_width_at`
+(subtract→abs8→LSR), `draw_road_core` pass-1 base. `build_track_geometry`'s exit N/V/Z/C are
+byproducts (caller at $1710 opens LDA/SEC/SBC), so they were DROPPED from the fixture mask, not
+reproduced. The subtract feeds `abs8` so `|a-b|==|b-a|`: the table-SWAP sabotage is a provable
+non-defect (the "no change" class), but a table-OFFSET (magnitude) error is caught — that is the
+sibling. `make validate` 0-mismatch, determinism byte-identical parked + driving.
 
 | function | line(s) | idiom |
 |---|---|---|
-| `draw_road_core` | 2808 | `(uint8_t)(horizon_index+0x28)`; spans overwrites flags immediately |
-| `build_track_geometry_core` | 2686 | guarded by `cmp_ge(horizonPoint,0x28)` → no borrow; flags dead. `horizonPoint - 0x28` |
-| `horizon_half_width_at` | 2642 | subtract feeds `abs8`; replay `cpu.N=(d>>7)&1` then keep `abs8` callee |
-| `horizon_half_width_at` | 2647 | `cpu.A >> 1`; C not in the exit contract (contract = A + Y) |
 | `paint_lines_short` | 1063 | `(uint8_t)(0xF1 - mem[...])`; value recomputed at 1066, no flag read |
 | `shift_near_edge_points_core` | 1797 | value → near_edge_first; ⚠ verify `clamp_near_edge_window_core` ignores entry flags first |
 | `apply_driving_model_core` | 2917+2918 | fold to one `uint16_t` accumulator restore `acc = entry + delta`; exit flags dead (next call opens with LDA) |

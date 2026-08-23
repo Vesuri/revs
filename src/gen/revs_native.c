@@ -2649,12 +2649,20 @@ static void road_side_walk(uint8_t sideSelect, uint8_t firstPoint)
    its own plus a NOP, so on those circuits the width is NOT halved. */
 static void horizon_half_width_at(unsigned horizonPoint)
 {
-    sub_from(mem[EDGE_X_HI_TBL + horizonPoint],
-             mem[EDGE_X_HI_TBL + EDGE_HALF + horizonPoint]);
+    /* $253B — the two sides' x at the horizon point, differenced.  D=0 on the geometry path
+       (static-map §Decimal mode), so this is a plain 8-bit subtract; abs8 reads the sign (N)
+       and the value (A).  The subtract's C/V/Z are dead: abs8 overwrites them when it negates,
+       and on its no-negate path they reach build_track_geometry's exit UNREAD (the caller at
+       $1710 opens LDA/SEC/SBC).  Dropped from the fixture mask, not reproduced. */
+    uint8_t diff = (uint8_t)(mem[EDGE_X_HI_TBL + horizonPoint] -
+                             mem[EDGE_X_HI_TBL + EDGE_HALF + horizonPoint]);
+    cpu.A = diff;
+    cpu.N = (diff >> 7) & 1u;
 
     if (mem[0x2542] == 0x20 && mem[0x2545] == 0x4A) {           /* unpatched: Silverstone */
         abs8();
-        horizon_half_width = (uint8_t)lsr_a(cpu.A);
+        cpu.A = (uint8_t)(cpu.A >> 1);          /* $2549 LSR A — half the width; A is live */
+        horizon_half_width = cpu.A;
     } else if (mem[0x2542] == 0x20 && mem[0x2545] == 0xEA) {    /* a circuit's own call */
         uint16_t target = (uint16_t)(mem[0x2543] | (mem[0x2544] << 8));
         if (target == 0x3450)                       abs8();
@@ -2693,7 +2701,10 @@ static void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPoin
        frame's road_edge_start, which clamps the horizon down when it climbed too far. */
     unsigned horizonPoint = horizon_index;
     if (cmp_ge(horizonPoint, 0x28)) {
-        horizonPoint = sub_from(horizonPoint, 0x28);
+        /* $251D: guarded by cmp_ge above, so the subtract never borrows — a plain 8-bit
+           fold back into 0..39 (D=0 on the geometry path).  Its flags are dead: overwritten
+           by the cmp_ge at $252B and by horizon_half_width_at below. */
+        horizonPoint = (unsigned)(uint8_t)(horizonPoint - 0x28);
         horizon_index = (uint8_t)horizonPoint;
     }
     /* The `TAY` at $2528 — and it has to happen HERE, not at the tail that reads it: both
@@ -2815,7 +2826,8 @@ static void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     /* ⚠ Pass 1 does not go through surface_pass: its base is RECOMPUTED rather than farBase
        reused, because that is what the 6502 does (draw_surface_spans recomputes its own start
        flags from firstPoint, so only the value matters). */
-    draw_surface_spans_core(1, (uint8_t)adc_step(horizon_index, 0x28, 0));
+    draw_surface_spans_core(1, (uint8_t)(horizon_index + 0x28));   /* base only; the spans walk
+                                                                      overwrites this add's flags */
 
     ROAD_PHASE(ROAD_PHASE_MARK);
     line_attr_0_limit = mark_side_surfaces(0x04);

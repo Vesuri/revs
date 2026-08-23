@@ -795,8 +795,12 @@ static int test_view_producers(void)
             c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
             c.D = 0;   /* the 6502 never runs the engine in decimal mode — see twin #2 */
+            /* build_track_geometry's exit N/V/Z/C are byproducts, not results: the last thing it
+               does is horizon_half_width_at, whose subtract/LSR leave them, and the caller at
+               $1710 opens LDA/SEC/SBC reading none.  The real outputs are all in mem[] (the edge
+               arrays, horizon_extent/index, horizon_half_width) plus A/X/Y — those stay compared. */
             fail += diff_run("build_track_geometry", pre, c, build_track_geometry,
-                             build_track_geometry__t6502, liveMask, t, &printed);
+                             build_track_geometry__t6502, liveMask & ~LIVE_FLAGS, t, &printed);
             if (shape == GEO_SILVERSTONE && geometry_tail_ran((const uint8_t*)mem)) tailRan++;
         }
         if (tailRan == 0) {
@@ -804,7 +808,7 @@ static int test_view_producers(void)
                    "reached the horizon_half_width tail — the SMC arm exited first\n", legal);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY (flags=byproduct)  "
                "(%d/%d reached the tail)\n", "build_track_geometry",
                legal + hooked + garbage, fail, tailRan, legal);
     }
