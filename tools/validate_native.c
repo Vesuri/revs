@@ -4939,22 +4939,36 @@ static int test_driving_controls(void)
        mem[] (the steering demand/angle cells and the control state), leaving nothing meaningful in
        the cpu — no caller reads their exit registers.  The register/flag comparison is dropped.
 
-       ⭐⭐ D IS PINNED TO 0 FOR THE WHOLE STEERING/DRIVING CLUSTER (i >= 10).  These twins —
-       apply_steer_demand, apply_steering_assist and its callers (steer_apply_with_assist,
-       steer_assist_dispatch, steer_demand_store, steer_demand_from_slip) and read_driving_controls
-       — are idiomatic 16-bit C that computes in plain binary, because the steering path is only
-       ever entered with D = 0 (docs/static-map.md §Decimal mode: all 8 SED sites are
-       race-stats / marker-draw / front-end menu, none on this path).  Sweeping D here would test
-       an unreachable state and diverge from the decimal-honouring oracle for no faithful reason;
-       make determinism-drive is the backstop that D = 0 truly holds while driving. */
+       ⭐⭐ D IS PINNED TO 0 FOR THE WHOLE CLUSTER.  Every routine here is race-time input/UI
+       (steering, pedals, gears, the analogue axis, the dashboard text and its screen-address
+       arithmetic) — none is among the 8 SED sites (docs/static-map.md §Decimal mode: all
+       race-stats / marker-draw / front-end menu).  The idiomatic 16-bit C computes in plain
+       binary; sweeping D would test an unreachable state and diverge from the decimal-honouring
+       oracle for no faithful reason.  make determinism-drive is the backstop that D = 0 truly
+       holds while driving.
+
+       ⭐⭐ V (and C, where an address carry) ARE DROPPED for the text/screen-address sub-cluster
+       (mode5_addr, mode5_addr_for_cell, vdu_char_emit/_wide/_def, draw_gear_indicator, and
+       clamp_and_store which runs the gear tail).  mode5_addr's second add produces a carry and
+       overflow that NOTHING writes over before return, so they propagate as these routines'
+       exit C/V — but the game reads only plot_ptr / A / X / Y / N / Z (a screen-address carry is
+       not a result), so comparing them would be asserting an implementation detail the
+       converted binary no longer reproduces.  adc_read drops only V (its recentre add's V is
+       dead; its C — the dead-zone flag — is a real output and stays). */
     for (i = 0; i < 17; i++) {
         int subFail = 0, decimal = 0, joystick = 0, keyheld = 0, assist = 0;
         int textRow = 0, sessionOver = 0, patched = 0;
         int oneKey = 0, onEdge = 0, latchClear = 0;
         int cases = list[i].cases * scale;
         int resultOnly = (i == 10 || i == 11 || i == 16);
-        int binaryPath = (i >= 10);
-        unsigned mask = resultOnly ? LIVE_NONE : liveMask;
+        int binaryPath = 1;                 /* whole cluster runs at D = 0 (see above) */
+        /* Dead flags the converted binary no longer reproduces (dead at every caller). */
+        unsigned drop = 0;
+        if (i == 0 || i == 1 || i == 5 || i == 6 || i == 7 || i == 8 || i == 9)
+            drop = LIVE_V | LIVE_C;         /* mode5_addr's address carry/overflow, propagated */
+        else if (i == 2)
+            drop = LIVE_V;                  /* adc_read's recentre-add V (C is the real output) */
+        unsigned mask = resultOnly ? LIVE_NONE : (liveMask & ~drop);
         if (!want(list[i].name)) continue;
         /* apply_steering_assist (i == 11), steer_apply_with_assist (i == 12) and
            read_driving_controls (i == 16) spill the 6502's sign-decisions onto the stack (PHP/PLP

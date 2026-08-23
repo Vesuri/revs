@@ -69,16 +69,36 @@ Also: the three † caveat sites were resolved by PINNING `c.D=0` in the two fix
 (`test_road_sign` i≥3, `test_object_shape` all) citing `static-map.md §Decimal mode`, since the
 object/sign path is always binary — NOT by relaxing liveMask. `determinism-drive` is the backstop.
 
-### Batch B — IO/text (9 sites; two clean uint16 folds, one †)
+### Batch B — IO/text — ✅ APPLIED (HEAD after this commit)
 
-| function | line(s) | idiom |
-|---|---|---|
-| `read_pedals_and_gears` | 8882 | ADC-no-CLC doubling; C consumed by the next `if(!cpu.C)` — replay from `sum>0xFF` |
-| `read_pedals_and_gears` | 8901 | carry-in 0; section flags all overwritten before exit → `(engine_revs>>2)+5` |
-| `read_pedals_and_gears` | 8946 | carry-in 0; following $FF/$07 compares recompute flags → `cpu.A+gear_index` |
-| `mode5_addr_core` † | 8526+8527 | fold to one `uint16_t` screen address (char-row base + doubled) — ⚠ verify the #113/#114 fixture isn't asserting C/V, then relax liveMask |
-| `vdu_char_emit_core` | 8604+8605 | fold to one `uint16_t` screen pointer `− $40`; exit N/Z come from `mem[VDU_CHAR_BLOCK]` (A returns live), subtract flags dead |
-| `adc_read_core` | 8648 | carry-in 0; N consumed locally by `if(cpu.N)`, exit C recomputed by CMP($0A); `+$80 ≡ ^$80` (bit7), replay N via `(a&0x80)` |
+All 9 sites converted. `make validate` 0-mismatch, 9 sabotages caught + 1 provable non-defect,
+`make determinism` + `make determinism-drive` byte-identical against the pre-change golden.
+
+- `read_pedals_and_gears` ×3: the x1.5 pedal doubling `(mag<<1)+(mag>>1)+bit7(mag)` (C consumed
+  locally by `if(sum<=0xFF)`), the self-drive amount `(engine_revs>>2)+5`, and the gear shift
+  `gear_index+delta` — all with dead exit flags (the gears' `BIT`, then value-test `CMP`s and
+  `draw_gear_indicator`, overwrite them; no caller reads the exit V/C).
+- `mode5_addr_core` (the †): folded to one `uint16_t` `char_row_base + (offset<<1)`. Its second
+  add's **C and V are dead at every caller** (nothing writes either after it returns), so they
+  propagate as the whole text path's exit C/V; the game reads only plot_ptr / A / X / Y / N / Z.
+  Resolved by DROPPING V and C from the fixture mask for the text/screen-address sub-cluster
+  (mode5_addr, mode5_addr_for_cell, vdu_char_emit/_wide/_def, draw_gear_indicator, clamp_and_store)
+  — NOT by keeping the helper. The misleading "C and V escape" comment was corrected in place.
+- `vdu_char_emit_core`: folded the row-step to `plot_ptr − $0140` (SEC/SBC #$40 then SBC #$01 —
+  **one MODE-5 character row, not $40**; the old comment was wrong). Subtract flags dead.
+- `adc_read_core`: `reading + $80 ≡ ^$80`; only N is read locally (BPL), exit N/Z/C recomputed by
+  `CMP #$0A`, and its **V is dead** (dropped from adc_read's mask; its C — the dead-zone flag — is
+  a real output and stays).
+
+⭐ THE WHOLE CLUSTER RUNS AT D=0 (fixture now pins `binaryPath=1` for all 17): every routine here
+is race-time input/UI (steering, pedals, gears, analogue axis, dashboard text) — none is among the
+8 SED sites (`static-map.md §Decimal mode`).
+
+⚠ NON-DEFECT confirmed (the "no change at all" class, `validation-harness.md §FIFTEENTH): the
+dropped-ASL-carry sabotage on the x1.5 doubling SURVIVED — `bit7(mag)` is provably 0 because
+`adc_read` folds both sides of centre to a magnitude in 0..$7F, so the ASL never carries. The term
+is kept as the faithful idiom and annotated; the SIBLING (the `sum>$FF` overflow test) IS reachable
+(mag=$7F → $13D) and its sabotage was caught.
 
 ### Batch C — small render leaves + accumulator (22 sites)
 

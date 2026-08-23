@@ -8571,17 +8571,18 @@ static void vdu_char_emit_core(void);
    --------------------------------------------------------------------------- */
 static void mode5_addr_core(uint8_t quarterOffset)
 {
-    /* $50FC-$5104 — the quarter offset doubled, spread across the pointer pair (the 6502
-       does it as ASL plot_ptr_lo / ROL A, i.e. a 9-bit x2). */
-    unsigned doubled = (unsigned)quarterOffset << 1;
-    plot_ptr_lo = (uint8_t)doubled;
-    plot_ptr_hi = (uint8_t)(doubled >> 8);
-
-    /* $5105-$5118 — add the character row's screen base; the high byte carries.  C and V
-       escape (they are the second add's), so the two adds keep going through adc_step. */
+    /* $50FC-$5118 — plot_ptr = char_row_base + (quarterOffset x 2).  The 6502 does it as
+       ASL plot_ptr_lo / ROL A to spread the doubled offset over the pair, then a two-byte
+       ADC of the row base; D = 0 on the dashboard-text path (docs/static-map.md §Decimal
+       mode: a screen address is never computed in BCD), so this is a plain 16-bit add.
+       The second add's C and V are dead at every caller — nothing writes either flag after
+       mode5_addr returns, so they propagate as the whole text path's exit C/V, but the game
+       reads only plot_ptr / X / A / Y; the fixture drops V and C for this cluster. */
     unsigned row = cpu.Y >> 3;
-    plot_ptr_lo = (uint8_t)adc_step(mem[CHAR_ROW_LO + row], plot_ptr_lo, 0);
-    plot_ptr_hi = (uint8_t)adc_step(mem[CHAR_ROW_HI + row], plot_ptr_hi, cpu.C);
+    uint16_t base = (uint16_t)(((uint16_t)mem[CHAR_ROW_HI + row] << 8) | mem[CHAR_ROW_LO + row]);
+    uint16_t addr = (uint16_t)(base + ((unsigned)quarterOffset << 1));
+    plot_ptr_lo = (uint8_t)addr;
+    plot_ptr_hi = (uint8_t)(addr >> 8);
 
     /* $5119-$511F — the line within the row is the low three bits, and it leaves in both
        A and Y with N/Z from it (N is always clear: the value is < 8). */
@@ -8647,7 +8648,8 @@ static void vdu_char_emit_core(void)
     }
 
     /* $50C6-$50EA — blit the eight rows bottom-up; stepping off the top of a character row
-       backs the pointer up one row ($40 bytes) and resets the line index to 7. */
+       backs the pointer up one MODE-5 character row ($0140 bytes) and resets the line index
+       to 7. */
     cpu.Y = mem[0x62CDu];                              /* vdu_char_row */
     mode5_addr_for_cell_core(mem[0x62CCu]);            /* vdu_char_column */
     {
@@ -8658,8 +8660,12 @@ static void vdu_char_emit_core(void)
                        mem[VDU_CHAR_BLOCK + i]);
             cpu.Y = (uint8_t)(cpu.Y - 1);              /* DEY */
             if (cpu.Y & 0x80u) {                       /* $50D7 BPL — off the top of the row */
-                plot_ptr_lo = (uint8_t)sub_from(plot_ptr_lo, 0x40u);
-                plot_ptr_hi = (uint8_t)sbc_step(plot_ptr_hi, 0x01u, cpu.C);
+                /* $50D9-$50E4 — plot_ptr -= $0140 (SEC/SBC #$40 then SBC #$01).  The
+                   subtract's flags are dead: cpu.Y is reset just below and the loop's exit
+                   A/N/Z come from mem[VDU_CHAR_BLOCK] (see the tail). */
+                uint16_t p = (uint16_t)((((uint16_t)plot_ptr_hi << 8) | plot_ptr_lo) - 0x0140u);
+                plot_ptr_lo = (uint8_t)p;
+                plot_ptr_hi = (uint8_t)(p >> 8);
                 cpu.Y = 0x07u;
             }
         }
@@ -8702,7 +8708,11 @@ static void adc_read_core(void)
     platform_mos_call(0xFFF4);
     uint8_t reading = cpu.Y;                           /* $5044 — the reading's high byte */
     cpu.X = 0x01u;                                     /* direction: 1 = positive */
-    cpu.A = (uint8_t)adc_step(reading, 0x80u, 0);      /* $5047 — recentre on $80 */
+    /* $5047 — recentre on $80 (adding $80 with no carry-in just flips bit 7, i.e. ^ $80).
+       Only the result's N is read (by the BPL just below); the ADC's C/V/Z are dead —
+       CMP #$0A at the tail recomputes N/Z/C and no caller reads V. */
+    cpu.A = (uint8_t)(reading + 0x80u);
+    cpu.N = (cpu.A >> 7) & 1u;
     if (cpu.N) {                                       /* $504A BPL — negative side: magnitude */
         cpu.A = (uint8_t)(cpu.A ^ 0xFFu);
         cpu.X = 0x00u;                                 /* direction: 0 = negative */
@@ -8935,9 +8945,15 @@ static void read_pedals_and_gears(void)
             if (cpu.C) {                               /* $1649 — outside the dead zone */
                 uint8_t mag = cpu.A;                   /* $164B — scale the reading up x1.5 */
                 mem[STEER_SIGN] = (uint8_t)(mag >> 1);
-                /* ⚠ `ADC $74` with no `CLC` — the doubling's own carry ($164F ASL) is in the sum. */
-                cpu.A = (uint8_t)adc_step((uint8_t)(mag << 1), mem[STEER_SIGN], mag >> 7);
-                if (!cpu.C) {                          /* $1652 — the sum didn't overflow */
+                /* ⚠ `ADC $74` with no `CLC` — the doubling's own carry ($164F ASL) is in the
+                   sum: (mag<<1) + (mag>>1) + bit7(mag).  bit7(mag) is provably 0 here (adc_read
+                   folds both sides of centre to a magnitude in 0..$7F), so the ASL never carries;
+                   the term is kept as the faithful idiom.  Only this add's OWN carry is read (the
+                   `if(!C)` just below) — and the doubled sum CAN exceed $FF (mag=$7F → $13D);
+                   its N/Z/V are overwritten before any exit (CMP/CPX, then the gears' BIT). */
+                unsigned sum = (unsigned)(uint8_t)(mag << 1) + mem[STEER_SIGN] + (mag >> 7);
+                cpu.A = (uint8_t)sum;
+                if (sum <= 0xFFu) {                     /* $1652 — the sum didn't overflow */
                     CMP(0xFAu);                        /* $1654 */
                     if (!cpu.C) goto have_pedal;       /* $1656 — in range */
                 }
@@ -8955,7 +8971,9 @@ static void read_pedals_and_gears(void)
         }
     }
     cpu.X = 0x80u;                                     /* $1678 — nobody is driving */
-    cpu.A = (uint8_t)adc_step((uint8_t)(engine_revs >> 2), 0x05u, 0);
+    /* self-drive amount = revs/4 + 5; the add's flags are all dead (the gears' BIT below
+       overwrites them before any exit). */
+    cpu.A = (uint8_t)((uint8_t)(engine_revs >> 2) + 0x05u);
 
 have_pedal:
     pedal_mode   = cpu.X;                              /* $1681 */
@@ -9000,7 +9018,10 @@ shift:
     cpu.N = cpu.X >> 7; cpu.Z = (cpu.X == 0);
     if (!cpu.Z) return;                                /* still held from last frame */
     gear_key_latch = cpu.A;
-    cpu.A = (uint8_t)adc_step(cpu.A, gear_index, 0);   /* $16C5 */
+    /* $16C5 — apply the gear delta ($FF down-one / $01 up-one) to gear_index.  The add's
+       flags are dead: the $FF/$07 clamps below are value tests and draw_gear_indicator (the
+       tail) overwrites the flags; no caller reads this routine's exit V/C. */
+    cpu.A = (uint8_t)(cpu.A + gear_index);             /* carry-in 0 */
     if (cpu.A == 0xFFu)      cpu.A = 0x00u;            /* below reverse: stay in reverse */
     else if (cpu.A == 0x07u) cpu.A = 0x06u;           /* above top: stay in top */
     gear_index = cpu.A;                                /* $16D6 */
