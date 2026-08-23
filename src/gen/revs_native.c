@@ -8599,7 +8599,13 @@ void fill_object_gap(void)    { fill_object_gap_core(cpu.X); }
 static void steer_apply_with_assist_core(void);
 static void apply_steer_demand_core(uint8_t signByte);
 static void clamp_and_store_steer_angle_core(uint8_t a);
-static void vdu_char_emit_core(void);
+
+/* Typed results for the text/screen-address cluster's cpu-free cores. */
+typedef struct { uint8_t row; uint8_t line; } Mode5Addr;  /* plot_ptr side-effect; row=X, line=A/Y */
+typedef struct { uint8_t ch; int usedMos; } VduDef;       /* def took the OSWRCH path? */
+static uint8_t vdu_char_emit_core(void);                  /* returns the block char left in A */
+void adc_read(void);   /* the 6502-ABI shim; the two driver callers below still enter it that way */
+void draw_gear_indicator(void);   /* likewise: read_pedals_and_gears enters it via the shim */
 
 /* ---------------------------------------------------------------------------
    $50FC  mode5_addr — THE SCREEN ADDRESS OF A CHARACTER CELL  (twins #113, #114)
@@ -8608,7 +8614,7 @@ static void vdu_char_emit_core(void);
    character row.  $50FA is the entry that multiplies a character COLUMN by four first, so the
    pair together computes `column x 8` — one MODE 5 cell.
    --------------------------------------------------------------------------- */
-static void mode5_addr_core(uint8_t quarterOffset)
+static Mode5Addr mode5_addr_core(uint8_t quarterOffset, uint8_t y)
 {
     /* $50FC-$5118 — plot_ptr = char_row_base + (quarterOffset x 2).  The 6502 does it as
        ASL plot_ptr_lo / ROL A to spread the doubled offset over the pair, then a two-byte
@@ -8617,27 +8623,24 @@ static void mode5_addr_core(uint8_t quarterOffset)
        The second add's C and V are dead at every caller — nothing writes either flag after
        mode5_addr returns, so they propagate as the whole text path's exit C/V, but the game
        reads only plot_ptr / X / A / Y; the fixture drops V and C for this cluster. */
-    unsigned row = cpu.Y >> 3;
+    unsigned row = y >> 3;                              /* Y selects the character row */
     uint16_t base = (uint16_t)(((uint16_t)mem[CHAR_ROW_HI + row] << 8) | mem[CHAR_ROW_LO + row]);
     uint16_t addr = (uint16_t)(base + ((unsigned)quarterOffset << 1));
     plot_ptr_lo = (uint8_t)addr;
     plot_ptr_hi = (uint8_t)(addr >> 8);
 
-    /* $5119-$511F — the line within the row is the low three bits, and it leaves in both
-       A and Y with N/Z from it (N is always clear: the value is < 8). */
-    uint8_t line = cpu.Y & 0x07u;
-    cpu.X = (uint8_t)row;
-    cpu.A = line;
-    cpu.Y = line;
-    cpu.N = 0;
-    cpu.Z = (line == 0);
+    /* $5119-$511F — the line within the row is the low three bits; it leaves in both A and Y
+       with N always clear (the value is < 8).  row leaves in X. */
+    Mode5Addr r;
+    r.row  = (uint8_t)row;
+    r.line = (uint8_t)(y & 0x07u);
+    return r;
 }
 
-static void mode5_addr_for_cell_core(uint8_t column)
+static Mode5Addr mode5_addr_for_cell_core(uint8_t column, uint8_t y)
 {
-    LDA(column);
-    ASL_A(); ASL_A();                                  /* $50FA */
-    mode5_addr_core(cpu.A);
+    /* $50FA — a character COLUMN is four quarter-cells wide (ASL A / ASL A), then mode5_addr. */
+    return mode5_addr_core((uint8_t)(column << 2), y);
 }
 
 /* ---------------------------------------------------------------------------
@@ -8649,33 +8652,33 @@ static void mode5_addr_for_cell_core(uint8_t column)
    this cell carries ($00 = no expansion, bit 7 clear = the left four pixels, set = the right
    four shifted up), and the eight bytes go into the screen BOTTOM-UP.
    --------------------------------------------------------------------------- */
-static void vdu_char_wide_core(uint8_t ch)
+static uint8_t vdu_char_wide_core(uint8_t ch)
 {
     mem[VDU_CHAR_BLOCK] = ch;                          /* $508C — shared_temp_77 is the caller's */
-    vdu_char_emit_core();
+    return vdu_char_emit_core();                       /* the block byte comes back live */
 }
 
-static void vdu_char_def_core(uint8_t ch)
+/* $5092 vdu_char_def — the OSWRCH-path branch and its BIT flags live in the SHIM (they are
+   6502-ABI reconstruction, not computation); the core is only the bitmap-emit arm. */
+static uint8_t vdu_char_def_core(uint8_t ch)
 {
-    BIT(text_out_via_mos);                             /* $5092 */
-    if (cpu.N) { platform_mos_call(0xFFEE); return; }  /* $50F6 — straight out through OSWRCH */
     mem[VDU_CHAR_BLOCK] = ch;                          /* $5096 */
     shared_temp_77      = 0x00u;                       /* ...and no half-width expansion */
-    vdu_char_emit_core();
+    return vdu_char_emit_core();
 }
 
-static void vdu_char_emit_core(void)
+static uint8_t vdu_char_emit_core(void)
 {
-    /* $509D-$50A0 — X and Y belong to the caller; stash them on the 6502 stack. */
-    PUSH(cpu.X);
-    PUSH(cpu.Y);
-
-    /* $50A1-$50A9 — OSWORD 10 fills the 8-row bitmap into the block at $62C3. */
+    /* $50A1-$50A9 — OSWORD 10 fills the 8-row bitmap into the block at $62C3.
+       MOS ABI — documented cpu exception: OSWORD wants the parameter-block pointer in X/Y and
+       the reason code in A, and clobbers X/Y.  The routine's $509D/$50EF PUSH/PULL of the
+       caller's X/Y is reconstructed by each shim (and the i=5 fixture ignores the two stack
+       residue bytes the transliterated oracle leaves at $01FE/$01FF). */
     cpu.Y = 0x62u; cpu.X = 0xC3u; cpu.A = 0x0Au;
     platform_mos_call(0xFFF1);
 
     /* $50AA-$50C5 — half-width expansion (rows 1..8): shared_temp_77 zero leaves the glyph
-       whole; bit 7 set brings the bottom nibble up, clear keeps only the top nibble. */
+       whole; bit 7 clear keeps only the top nibble, set brings the bottom nibble up. */
     if (shared_temp_77 != 0) {
         int leftHalf = (shared_temp_77 & 0x80u) == 0;
         int i;
@@ -8686,52 +8689,45 @@ static void vdu_char_emit_core(void)
         }
     }
 
-    /* $50C6-$50EA — blit the eight rows bottom-up; stepping off the top of a character row
-       backs the pointer up one MODE-5 character row ($0140 bytes) and resets the line index
-       to 7. */
-    cpu.Y = mem[0x62CDu];                              /* vdu_char_row */
-    mode5_addr_for_cell_core(mem[0x62CCu]);            /* vdu_char_column */
+    /* $50C6-$50EA — blit the eight rows BOTTOM-UP; stepping off the top of a character row
+       backs plot_ptr up one MODE-5 character row ($0140 bytes) and resets the line to 7. */
+    Mode5Addr m = mode5_addr_for_cell_core(mem[0x62CCu], mem[0x62CDu]);  /* column, row */
+    uint8_t line = m.line;
     {
         int i;
         for (i = 8; i >= 1; i--) {
             unsigned base = zp_pointer(MEM_plot_ptr_lo);
-            seam_write((base + cpu.Y) & 0xFFFFu, pointer_is_ram(base),
+            seam_write((base + line) & 0xFFFFu, pointer_is_ram(base),
                        mem[VDU_CHAR_BLOCK + i]);
-            cpu.Y = (uint8_t)(cpu.Y - 1);              /* DEY */
-            if (cpu.Y & 0x80u) {                       /* $50D7 BPL — off the top of the row */
-                /* $50D9-$50E4 — plot_ptr -= $0140 (SEC/SBC #$40 then SBC #$01).  The
-                   subtract's flags are dead: cpu.Y is reset just below and the loop's exit
-                   A/N/Z come from mem[VDU_CHAR_BLOCK] (see the tail). */
+            line = (uint8_t)(line - 1);                /* DEY */
+            if (line & 0x80u) {                        /* $50D7 BPL — off the top of the row */
+                /* $50D9-$50E4 — plot_ptr -= $0140 (a plain 16-bit subtract; its flags are
+                   dead — line is reset just below and the exit A/N/Z come from the block). */
                 uint16_t p = (uint16_t)((((uint16_t)plot_ptr_hi << 8) | plot_ptr_lo) - 0x0140u);
                 plot_ptr_lo = (uint8_t)p;
                 plot_ptr_hi = (uint8_t)(p >> 8);
-                cpu.Y = 0x07u;
+                line = 0x07u;
             }
         }
     }
 
     mem[0x62CCu] = (uint8_t)(mem[0x62CCu] + 1);        /* $50EB — the next cell along */
-    PULL(cpu.Y);                                       /* $50EF-$50F1 — restore caller's Y, X */
-    PULL(cpu.X);
-    cpu.A = mem[VDU_CHAR_BLOCK];                        /* $50F2 — the character comes back live */
-    cpu.N = cpu.A >> 7; cpu.Z = (cpu.A == 0);
+    return mem[VDU_CHAR_BLOCK];                         /* $50F2 — the character comes back live */
 }
 
 /* ---------------------------------------------------------------------------
    $42D0  draw_gear_indicator — THE GEAR, DOUBLE WIDTH  (twin #109)
    --------------------------------------------------------------------------- */
-static void draw_gear_indicator_core(void)
+static uint8_t draw_gear_indicator_core(void)
 {
     mem[0x62CCu]   = 0x22u;                             /* $42D0 — column $22 */
     shared_temp_77 = 0x22u;                             /* bit 7 clear: the LEFT four pixels */
     mem[0x62CDu]   = 0xD7u;                             /* scan line $D7 = character row 26 */
-    cpu.X = gear_index;                                 /* $42DC LDX */
-    cpu.A = mem[GEAR_CHAR_TBL + cpu.X];                 /* $42DE — the gear's glyph */
-    vdu_char_wide_core(cpu.A);                          /* left half; emit returns the block byte in A */
-    cpu.X = 0xFFu;                                      /* $42E4 */
-    shared_temp_77 = cpu.X;                             /* bit 7 set: the RIGHT four pixels */
-    /* ⚠ the RIGHT half re-emits whatever A the first emit left ($62C3, live), NOT the glyph. */
-    vdu_char_wide_core(cpu.A);
+    uint8_t glyph  = mem[GEAR_CHAR_TBL + gear_index];  /* $42DC/$42DE — the gear's glyph */
+    uint8_t block  = vdu_char_wide_core(glyph);        /* left half; returns the block byte */
+    shared_temp_77 = 0xFFu;                            /* $42E4 bit 7 set: the RIGHT four pixels */
+    /* ⚠ the RIGHT half re-emits the block byte the first emit left ($62C3, live), NOT the glyph. */
+    return vdu_char_wide_core(block);                  /* exit A/N/Z come from this second emit */
 }
 
 /* ---------------------------------------------------------------------------
@@ -8741,22 +8737,28 @@ static void draw_gear_indicator_core(void)
    direction in X (1 positive, 0 negative) and C set when that distance is at least $0A — the
    dead zone both callers test.
    --------------------------------------------------------------------------- */
-static void adc_read_core(void)
+typedef struct { uint8_t mag; uint8_t dir; } AdcRead;   /* distance from centre, and its sign */
+static AdcRead adc_read_core(uint8_t channel)
 {
-    cpu.A = 0x80u;                                     /* $503F — OSBYTE $80 (ADVAL), channel in X */
+    /* $503F — OSBYTE $80 (ADVAL) with the channel in X; the reading's high byte comes back in Y.
+       MOS ABI — documented cpu exception. */
+    cpu.A = 0x80u; cpu.X = channel;
     platform_mos_call(0xFFF4);
-    uint8_t reading = cpu.Y;                           /* $5044 — the reading's high byte */
-    cpu.X = 0x01u;                                     /* direction: 1 = positive */
-    /* $5047 — recentre on $80 (adding $80 with no carry-in just flips bit 7, i.e. ^ $80).
-       Only the result's N is read (by the BPL just below); the ADC's C/V/Z are dead —
-       CMP #$0A at the tail recomputes N/Z/C and no caller reads V. */
-    cpu.A = (uint8_t)(reading + 0x80u);
-    cpu.N = (cpu.A >> 7) & 1u;
-    if (cpu.N) {                                       /* $504A BPL — negative side: magnitude */
-        cpu.A = (uint8_t)(cpu.A ^ 0xFFu);
-        cpu.X = 0x00u;                                 /* direction: 0 = negative */
+    uint8_t reading = cpu.Y;                           /* $5044 */
+
+    /* $5047 — recentre on $80 (adding $80 with no carry-in just flips bit 7, i.e. ^ $80), then
+       fold to a magnitude and a direction bit.  The recentre's C/V/Z are dead; only bit 7 (the
+       sign) is read.  The dead-zone CMP #$0A at $504F rebuilds N/Z/C in the shim. */
+    uint8_t centred = (uint8_t)(reading + 0x80u);
+    AdcRead r;
+    if (centred & 0x80u) {                             /* $504A BPL fails — negative side */
+        r.mag = (uint8_t)(centred ^ 0xFFu);
+        r.dir = 0x00u;                                 /* direction: 0 = negative */
+    } else {
+        r.mag = centred;
+        r.dir = 0x01u;                                 /* direction: 1 = positive */
     }
-    CMP(0x0Au);                                        /* $504F — C set once outside the dead zone */
+    return r;
 }
 
 /* ---------------------------------------------------------------------------
@@ -8996,7 +8998,7 @@ static void read_pedals_and_gears(void)
     if (session_end_countdown == 0) {                  /* $163B — session still running */
         if (mem[OPTION_FLAGS] & 0x80u) {               /* $163F BIT/BMI — joystick */
             cpu.X = 0x02u;                             /* $1644 — channel 2 */
-            adc_read_core();
+            adc_read();                                /* cluster-2 driver, still 6502-ABI */
             if (cpu.C) {                               /* $1649 — outside the dead zone */
                 uint8_t mag = cpu.A;                   /* $164B — scale the reading up x1.5 */
                 mem[STEER_SIGN] = (uint8_t)(mag >> 1);
@@ -9080,7 +9082,7 @@ shift:
     if (cpu.A == 0xFFu)      cpu.A = 0x00u;            /* below reverse: stay in reverse */
     else if (cpu.A == 0x07u) cpu.A = 0x06u;           /* above top: stay in top */
     gear_index = cpu.A;                                /* $16D6 */
-    draw_gear_indicator_core();
+    draw_gear_indicator();                             /* cluster-2 driver, still 6502-ABI */
 }
 
 /* ---------------------------------------------------------------------------
@@ -9103,7 +9105,7 @@ static void read_driving_controls_core(void)
         /* $158C-$15B2 — THE JOYSTICK.  The reading is SQUARED (header item 1), then quartered
            into a 16-bit demand unless the amplify key is down, and X carries the sign. */
         cpu.X = 0x01u;
-        adc_read_core();
+        adc_read();                                   /* cluster-2 driver, still 6502-ABI */
         mem[STEER_DEMAND] = cpu.A;
         /* ⚠⚠ $1593 IS A PER-CIRCUIT SMC EXTENT, and it is the squaring itself: Silverstone's
            `JSR mul8` is what an expansion circuit replaces with its own hook.  The twin has to
@@ -9192,13 +9194,81 @@ void poll_steering_assist(void)
     cpu.C = track_direction >> 7;
     cpu.X = flag; cpu.N = (flag >> 7) & 1u; cpu.Z = (flag == 0);
 }
-void draw_gear_indicator(void)          { draw_gear_indicator_core(); }
-void adc_read(void)                     { adc_read_core(); }
-void vdu_char_wide(void)                { vdu_char_wide_core(cpu.A); }
-void vdu_char_def(void)                 { vdu_char_def_core(cpu.A); }
-void vdu_char_emit(void)                { vdu_char_emit_core(); }
-void mode5_addr_for_cell(void)          { mode5_addr_for_cell_core(cpu.A); }
-void mode5_addr(void)                   { mode5_addr_core(cpu.A); }
+/* $50FC mode5_addr / $50FA mode5_addr_for_cell — plot_ptr is the side effect; the scan line
+   within the row comes back in A and Y (N clear, the value is < 8) and the row in X.  The
+   fixture drops V and C for this cluster (the second add's flags are dead at every caller). */
+void mode5_addr(void)
+{
+    Mode5Addr m = mode5_addr_core(cpu.A, cpu.Y);         /* A = quarter-offset, Y = row */
+    cpu.X = m.row; cpu.A = m.line; cpu.Y = m.line;
+    cpu.N = 0; cpu.Z = (m.line == 0);
+}
+void mode5_addr_for_cell(void)
+{
+    Mode5Addr m = mode5_addr_for_cell_core(cpu.A, cpu.Y);/* A = column, Y = row */
+    cpu.X = m.row; cpu.A = m.line; cpu.Y = m.line;
+    cpu.N = 0; cpu.Z = (m.line == 0);
+}
+
+/* $509D vdu_char_emit / $508C vdu_char_wide — OSWORD (inside the core) clobbers X/Y, but the
+   6502 preserves the caller's X/Y across these routines ($509D/$50EF PUSH/PULL), so each shim
+   saves and restores them.  Exit A/N/Z come from the block byte the emit leaves live at $62C3.
+   (The i=5 fixture ignores $01FE/$01FF, where the transliterated emit oracle's PUSH/PULL of
+   X/Y leaves residue this shim does not write.) */
+void vdu_char_emit(void)
+{
+    uint8_t x = cpu.X, y = cpu.Y;
+    uint8_t ch = vdu_char_emit_core();
+    cpu.X = x; cpu.Y = y;
+    cpu.A = ch; cpu.N = (ch >> 7) & 1u; cpu.Z = (ch == 0);
+}
+void vdu_char_wide(void)
+{
+    uint8_t x = cpu.X, y = cpu.Y;
+    uint8_t ch = vdu_char_wide_core(cpu.A);
+    cpu.X = x; cpu.Y = y;
+    cpu.A = ch; cpu.N = (ch >> 7) & 1u; cpu.Z = (ch == 0);
+}
+
+/* $5092 vdu_char_def — the OSWRCH-path branch is 6502-ABI reconstruction, so it lives here. */
+void vdu_char_def(void)
+{
+    uint8_t ch = cpu.A;
+    if (text_out_via_mos & 0x80u) {                      /* $5092 BIT + $5094 BMI — OSWRCH path */
+        /* MOS ABI — documented cpu exception.  BIT set N from bit 7 of the flag byte (set on
+           this arm) and Z from (A & flag); OSWRCH ($FFEE) leaves both untouched and preserves
+           A (= ch) and X/Y.  V is dropped by the fixture mask. */
+        cpu.N = 1;
+        cpu.Z = ((ch & text_out_via_mos) == 0);
+        platform_mos_call(0xFFEE);                       /* $50F6 — A already = ch */
+        return;
+    }
+    uint8_t x = cpu.X, y = cpu.Y;
+    uint8_t rch = vdu_char_def_core(ch);
+    cpu.X = x; cpu.Y = y;
+    cpu.A = rch; cpu.N = (rch >> 7) & 1u; cpu.Z = (rch == 0);
+}
+
+/* $42D0 draw_gear_indicator — exit A/N/Z from the second emit, X forced to $FF ($42E4, then
+   emit-preserved), Y preserved from entry (both emits preserve it). */
+void draw_gear_indicator(void)
+{
+    uint8_t y = cpu.Y;
+    uint8_t block = draw_gear_indicator_core();
+    cpu.X = 0xFFu; cpu.Y = y;
+    cpu.A = block; cpu.N = (block >> 7) & 1u; cpu.Z = (block == 0);
+}
+
+/* $503F adc_read — magnitude in A, sign in X, the dead-zone carry rebuilt from CMP #$0A
+   ($504F).  Y is left as the OSBYTE reading the core's MOS call returned; V is dropped. */
+void adc_read(void)
+{
+    AdcRead r = adc_read_core(cpu.X);
+    cpu.A = r.mag; cpu.X = r.dir;
+    cpu.C = (r.mag >= 0x0Au);
+    cpu.Z = (r.mag == 0x0Au);
+    cpu.N = ((uint8_t)(r.mag - 0x0Au) >> 7) & 1u;
+}
 /* ===========================================================================
    THE LATE MISC TREES  (twins #116-#125, user 2026-08-21)
    ---------------------------------------------------------------------------

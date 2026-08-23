@@ -4992,12 +4992,19 @@ static int test_driving_controls(void)
            inside assist_from_selector), which the idiomatic cores carry in locals; the pushed
            byte is read back by the routine's own PLP but is dead once it returns.  apply_steer_demand
            (i == 10) touches neither, so no ignore. */
-        { static const uint16_t stackIgnore[] = { 0x01FF };
+        { static const uint16_t stackIgnore[]     = { 0x01FF };
+          static const uint16_t emitStackIgnore[] = { 0x01FE, 0x01FF };
           /* poll_steering_assist (i == 3) saves the caller's A round its lamp writes with PHA/PLA;
              the pushed byte at $01FF (S = $FF here) is read back by its own PLA and dead after —
              the same dead-stack spill the sign-decision routines below leave. */
           int wantStack = (i == 3 || i == 11 || i == 12 || i == 16);
-          set_ignore(wantStack ? stackIgnore : 0, wantStack ? 1 : 0); }
+          /* vdu_char_emit (i == 5) is the one whose TRANSLITERATED oracle PUSHes and PULLs the
+             caller's X and Y ($509D/$50EF); the native shim preserves them in locals instead, so
+             the two residue bytes at $01FE (Y) / $01FF (X) — dead after the oracle's own PULLs —
+             differ.  vdu_char_wide/def/draw_gear (i == 6/7/8) reach that same native emit through
+             the plain name, so their oracles leave no residue and need no ignore. */
+          if (i == 5)      set_ignore(emitStackIgnore, 2);
+          else             set_ignore(wantStack ? stackIgnore : 0, wantStack ? 1 : 0); }
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
             fill_random(pre);
@@ -5055,6 +5062,21 @@ static int test_driving_controls(void)
             pre[PRE_VDU_COLUMN] = (uint8_t)(xs() % 0x28);
             /* vdu_char_def forks on text_out_via_mos' sign — both arms wanted. */
             pre[PRE_TEXT_VIA_MOS] = (uint8_t)((xs() & 1) ? 0x80 : 0x00);
+
+            /* ⚠ The char-row address table (char_row_addr_lo $3FE0 / _hi $3B06) must hold REAL
+               MODE-5 screen addresses.  A random entry points plot_ptr into page 1, where the
+               emit blit overwrites the caller's X/Y that vdu_char_emit's TRANSLITERATED oracle
+               pushed onto the stack ($01FF/$01FE) — the oracle's PULL then restores garbage while
+               the native shim restores clean locals, a divergence the real game (whose table is
+               always $5800+) never reaches.  Seed every row the cluster can select, including
+               $D7 >> 3 = 26, the fixed row draw_gear_indicator writes.  Entries 8..15 are a
+               different table (pixel_keep_others_tbl) the row generator never selects. */
+            for (unsigned r = 0; r < 32; r++) {
+                if (r >= 8 && r < 16) continue;
+                unsigned addr = 0x5800u + r * 0x140u;
+                pre[0x3FE0 + r] = (uint8_t)addr;
+                pre[0x3B06 + r] = (uint8_t)(addr >> 8);
+            }
 
             /* ⚠⚠ $1593 IS A PER-CIRCUIT SMC EXTENT — `JSR mul8`, the joystick's squaring — and
                without forcing it the whole joystick arm traps and returns instead of running:

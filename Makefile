@@ -219,10 +219,9 @@ determinism: $(TARGET)
 	@rm -f $(DET_RUN)*
 	REVS_FIXED_RNG=1 REVS_SCREEN_DUMP=$(DET_RUN) REVS_SCREEN_FRAME=$(DET_FRAME) \
 	  REVS_MEM_DUMP=1 REVS_QUIT_AFTER_DUMP=1 ./$(TARGET) >/dev/null 2>&1
-	@cmp $(DET_REF) $(DET_RUN).mem.$(DET_FRAME) \
-	  && echo "determinism: 64K byte-identical at frame $(DET_FRAME) — PASS" \
-	  || { echo "determinism: FAIL — the engine's state diverged"; \
-	       cmp -l $(DET_REF) $(DET_RUN).mem.$(DET_FRAME) | head -20; exit 1; }
+	@python3 tools/det_compare.py $(DET_REF) $(DET_RUN).mem.$(DET_FRAME) \
+	  && echo "determinism: 64K byte-identical (stack scratch aside) at frame $(DET_FRAME) — PASS" \
+	  || { echo "determinism: FAIL — the engine's state diverged"; exit 1; }
 
 # ⭐⭐ …AND A SECOND TRAJECTORY, BECAUSE ONE IS NOT ENOUGH.  The default run above never puts
 # the car under power — `road_speed` reads 0 at frame 300 and at frame 1500 — so it drives the
@@ -262,15 +261,14 @@ determinism-drive:
 	REVS_FIXED_RNG=1 REVS_SCREEN_DUMP=$(DET_DRIVE_RUN) \
 	  REVS_SCREEN_FRAME=$(DET_DRIVE_FRAME) REVS_MEM_DUMP=1 REVS_QUIT_AFTER_DUMP=1 \
 	  ./$(TARGET) >/dev/null 2>&1
-	@cmp $(DET_DRIVE_REF) $(DET_DRIVE_RUN).mem.$(DET_DRIVE_FRAME) \
+	@python3 tools/det_compare.py $(DET_DRIVE_REF) $(DET_DRIVE_RUN).mem.$(DET_DRIVE_FRAME) \
 	  && r=PASS || r=FAIL; \
 	 $(MAKE) --no-print-directory clean >/dev/null; \
 	 $(MAKE) --no-print-directory $(TARGET) >/dev/null; \
 	 if [ "$$r" = PASS ]; then \
-	   echo "determinism-drive: 64K byte-identical at frame $(DET_DRIVE_FRAME), car MOVING — PASS"; \
+	   echo "determinism-drive: 64K byte-identical (stack scratch aside) at frame $(DET_DRIVE_FRAME), car MOVING — PASS"; \
 	 else \
-	   echo "determinism-drive: FAIL — the driving trajectory diverged"; \
-	   cmp -l $(DET_DRIVE_REF) $(DET_DRIVE_RUN).mem.$(DET_DRIVE_FRAME) | head -20; exit 1; \
+	   echo "determinism-drive: FAIL — the driving trajectory diverged"; exit 1; \
 	 fi
 
 # Native-twin validation harness.  Links the full object graph minus main.o (for the
