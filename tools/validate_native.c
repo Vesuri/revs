@@ -2034,9 +2034,13 @@ static int test_geometry_leaves(void)
                 c.X = (xs() % 3) ? NEAR_SLOTS[xs() % (sizeof NEAR_SLOTS)] : (uint8_t)xs();
                 c.Y = (uint8_t)xs();
                 c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
-                c.D = (i == 0) ? (uint8_t)(xs() & 1) : 0;   /* the SBC at $12C0 is decimal-mode
-                                                               sensitive; the clamps are CPX */
-                subFail += diff_run(W[i].name, pre, c, W[i].n, W[i].o, liveMask, t, &printed);
+                c.D = 0;   /* the road pass is never decimal (static-map.md §Decimal mode); the
+                              $12C0 subtract is now a plain binary 6 - near_edge_shift and the
+                              clamps are CPX */
+                /* shift_near_edge_points' subtract V is a dead byproduct — its only caller reads
+                   near_edge_first with an immediate CMP before touching V — so drop it (i==0). */
+                unsigned m = (i == 0) ? (liveMask & ~LIVE_V) : liveMask;
+                subFail += diff_run(W[i].name, pre, c, W[i].n, W[i].o, m, t, &printed);
                 if (mem[0x0008] != pre[0x0008] || mem[0x0006] != pre[0x0006]) moved++;
             }
             fail += subFail;
@@ -2044,8 +2048,9 @@ static int test_geometry_leaves(void)
                 printf("[VACUOUS] %s: the window never moved in %d cases\n", W[i].name, cases);
                 fail++;
             }
-            printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
-                   "(%d/%d moved the window)\n", W[i].name, cases, subFail, moved, cases);
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+%s  "
+                   "(%d/%d moved the window)\n", W[i].name, cases, subFail,
+                   (i == 0) ? "NZC (V byproduct, D=0)" : "flags", moved, cases);
         }
     }
 

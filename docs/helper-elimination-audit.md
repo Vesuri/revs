@@ -118,12 +118,19 @@ compared. Resolves the `plot_view_src_line_core` † caveat below. `make validat
 sabotages caught + 1 provable non-defect (`fill_object_gap`'s low-pointer carry `>=` vs `>` is
 unreachable: lowBase∈{0,$80}, bias∈[$30,$7F]), determinism byte-identical parked + driving.
 
+⚠ Sub-commit 3 (render leaves + accumulator) APPLIED: `paint_lines_short`, `shift_near_edge_points_core`,
+`apply_driving_model_core` (16-bit accumulator fold), `column_gap_walk_core` (ASL/ROR → `plot_ptr =
+0x3000 + column*0x80`), and — now dead — the `lsr_a`/`ror_a` helper definitions were deleted. **The
+V-escape trap struck twice more:** `paint_lines_short`'s `SEC/SBC $F1` V reaches `view_paint_lines`'
+exit on 61/700 cases (replayed via `sbc_overflow`), and `column_gap_walk`'s `ADC #$60` is the last op
+to write V before the loop (all LDA/CMP) so its V escapes too (replayed via `adc_overflow`, and
+symbols.csv already documented it). `shift_near_edge_points`' subtract V is a genuine DEAD byproduct —
+its sole caller road_edge_start reads near_edge_first with an immediate CMP — so it was DROPPED from the
+fixture mask (A kept live; D=0 pinned since the SBC is now binary). `make validate` 0-mismatch, 9
+sabotages caught, determinism byte-identical parked + driving.
+
 | function | line(s) | idiom |
 |---|---|---|
-| `paint_lines_short` | 1063 | `(uint8_t)(0xF1 - mem[...])`; value recomputed at 1066, no flag read |
-| `shift_near_edge_points_core` | 1797 | value → near_edge_first; ⚠ verify `clamp_near_edge_window_core` ignores entry flags first |
-| `apply_driving_model_core` | 2917+2918 | fold to one `uint16_t` accumulator restore `acc = entry + delta`; exit flags dead (next call opens with LDA) |
-| `column_gap_walk_core` | 5132+5133 | the ASL/ROR pair builds `plot_ptr = 0x3000 + column*0x80` — write as one `uint16_t` |
 | `road_edge_walk_subdivide` | 2487+2488 | fold to one `uint16_t` gap subtract — ⚠ N feeds `cpu.C=cpu.N` then a **`PHP` whose stack byte is in the differential**; replay `N=(delta&0x8000)!=0`, keep the PHP faithful |
 
 ### The remaining † liveMask-caveat sites

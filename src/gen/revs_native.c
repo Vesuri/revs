@@ -1070,7 +1070,11 @@ static void paint_lines_short(ViewState* v)
 
         /* chain A: enter at $F1 - view_run_right_end[line], with the boundary cell composed
            from the per-line source byte and the edge tables */
-        v->byte = sub_from(0xF1, mem[VIEW_RUN_R_END + v->line]);
+        /* chain A enters at $F1 - view_run_right_end[line] (SEC/SBC).  N/Z/C are recomputed
+           downstream, but this subtract's V reaches view_paint_lines' exit on paths where
+           nothing below rewrites it — replay just that flag (cpu otherwise untouched). */
+        v->byte = (uint8_t)(0xF1 - mem[VIEW_RUN_R_END + v->line]);
+        cpu.V = sbc_overflow(0xF1, mem[VIEW_RUN_R_END + v->line], 1);
         mem[0x7F68] = (unsigned char)v->byte;
         edge    = mem[VIEW_EDGE_PHASE + v->line];
         v->byte = view_compose(mem[VIEW_L_START_SRC + v->line],
@@ -1569,15 +1573,6 @@ void race_main_loop(void)
 #define CAR_SEGMENT_TBL  0x06E8u   /* car_segment */
 #define PLAYER_CAR       0x17u     /* slot 23 — the player's own car */
 
-/* value >> 1, with C from the bit shifted out.  The last operation in the routine, so its
-   C/N/Z are the flags the caller sees. */
-REVS_FLAG_OP unsigned lsr_a(unsigned value)
-{
-    cpu.A = (uint8_t)value;
-    LSR_A();
-    return cpu.A;
-}
-
 /* `value >= limit`, spelled as the 6502's CMP so that the comparison's own C/N/Z are left
    behind.  ⚠ NOT decoration: every SMC site in these two routines is an EXIT, so a clamp
    test three lines earlier is the last thing that touched the flags on that path, and a
@@ -1782,8 +1777,11 @@ void clamp_near_edge_window(void)
    slots as the car has just stepped over, and the clamps above tidy up the rest.
 
    ⚠ The `SEC / SBC near_edge_shift` is the last thing in the routine to write V — the clamps
-   that follow it are all CPX, which does not — so that subtract's overflow is what the caller
-   sees, and A stays the computed near_edge_first across both calls.
+   that follow it are all CPX, which does not — but the ONLY caller (road_edge_start $2309) reads
+   near_edge_first with an immediate CMP #6 before touching V, so that overflow is a DEAD byproduct
+   (dropped from the fixture mask, not reproduced).  A does stay the computed near_edge_first across
+   both clamps (they work in X), so it is kept live.  The subtract runs D=0 (the road pass is never
+   decimal — static-map.md §Decimal mode), so it is a plain binary `6 - near_edge_shift`.
    =========================================================================== */
 static void shift_near_edge_points_core(uint8_t topSlot,    /* $2C — slot 4 of the far half */
                                         uint8_t wrapSlot,   /* $28 — where the far half starts */
@@ -1804,7 +1802,8 @@ static void shift_near_edge_points_core(uint8_t topSlot,    /* $2C — slot 4 of
         slot--;
     }
 
-    near_edge_first = (uint8_t)sub_from(nearSlots, near_edge_shift);   /* $12BD-$12C2 */
+    near_edge_first = (uint8_t)(nearSlots - near_edge_shift);          /* $12BD-$12C2 SEC/SBC, D=0 */
+    cpu.A = near_edge_first;                                           /* A stays near_edge_first across the clamps */
     clamp_near_edge_window_core(nearSlots);                            /* $12C4 */
 }
 
@@ -2933,11 +2932,15 @@ static void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
     update_engine_revs_core();
     update_slip_sound_core(0x01);
 
-    /* $46DF-$46F5 — restore, then apply the frame's real increment as one 16-bit add. */
-    model_accum_lo = model_accum_entry_lo;
-    model_accum_hi = model_accum_entry_hi;
-    model_accum_lo = (uint8_t)adc_step(model_accum_lo, model_accum_delta_lo, 0);
-    model_accum_hi = (uint8_t)adc_step(model_accum_hi, model_accum_delta_hi, cpu.C);
+    /* $46DF-$46F5 — restore the entry accumulator, then apply the frame's real increment as one
+       16-bit add (D=0 on the driving path — static-map.md §Decimal mode).  The add's exit flags
+       are dead: rotate_accum_by_steer_core opens with LDA. */
+    {
+        uint16_t accum = (uint16_t)(((uint16_t)model_accum_entry_hi << 8) | model_accum_entry_lo)
+                       + (uint16_t)(((uint16_t)model_accum_delta_hi  << 8) | model_accum_delta_lo);
+        model_accum_lo = (uint8_t)accum;
+        model_accum_hi = (uint8_t)(accum >> 8);
+    }
 
     /* $46F8-$4703 — and the sub-models that want the accumulator at its new value.  Each of the
        two rotations ends in model_integrate_element, on element 8 and on element $0A. */
@@ -5033,15 +5036,6 @@ REVS_FLAG_OP int cpx_eq(uint8_t value, uint8_t limit)
     return cpu.Z;
 }
 
-/* value >> 1 into the carry, then the carry back into a fresh byte — the 6502's way of
-   spelling "multiply by $80 into a byte pair", and the flags of both halves are live here
-   because the walk can exit on the CPY that follows. */
-REVS_FLAG_OP unsigned ror_a(unsigned value)
-{
-    cpu.A = (uint8_t)value;
-    ROR_A();
-    return cpu.A;
-}
 
 /* ⭐ ONE range test per column instead of one per cell (CLAUDE.md §bus_read/bus_write).  The
    walk touches at most $80 bytes above a pointer it reads once, so the hardware window can be
@@ -5162,9 +5156,16 @@ static void column_gap_walk_core(void)
     /* $1DAF-$1DB3 — there are only $28 source columns; above that there is nothing to fill. */
     if (cmp_ge(column, 0x28u)) return;
 
-    /* $1DB5-$1DBE — plot_ptr = view_src_blocks + column * $80. */
-    plot_ptr_hi = (uint8_t)lsr_a(adc_step(column, 0x60u, 0));
-    plot_ptr_lo = (uint8_t)ror_a(load_a(0x00u));
+    /* $1DB5-$1DBE — plot_ptr = view_src_blocks + column * $80.  The 6502 spells this as
+       (column + $60) then LSR/ROR to spread one bit into the low byte's top; the whole thing is
+       just $3000 + column*$80 as a 16-bit value.  The LSR/ROR flags and A are dead (the loop
+       below reloads Y then A), BUT the `ADC #$60` is the last op in the routine to write V and
+       nothing below it does (the loop is all LDA/CMP), so its overflow reaches the exit — replay
+       just that one flag (adc_overflow leaves cpu otherwise untouched). */
+    { uint16_t plot_ptr = (uint16_t)(0x3000u + column * 0x80u);
+      plot_ptr_hi = (uint8_t)(plot_ptr >> 8);
+      plot_ptr_lo = (uint8_t)plot_ptr; }
+    cpu.V = adc_overflow(column, 0x60u, 0);
 
     /* ⚠⚠ NOTHING IN THIS LOOP IS HOISTED, AND THAT IS MEASURED RATHER THAN CAUTIOUS.  The
        walk's own stores can land on the cells that drive it: a boundary-table pointer of
