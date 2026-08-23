@@ -4993,7 +4993,10 @@ static int test_driving_controls(void)
            byte is read back by the routine's own PLP but is dead once it returns.  apply_steer_demand
            (i == 10) touches neither, so no ignore. */
         { static const uint16_t stackIgnore[] = { 0x01FF };
-          int wantStack = (i == 11 || i == 12 || i == 16);
+          /* poll_steering_assist (i == 3) saves the caller's A round its lamp writes with PHA/PLA;
+             the pushed byte at $01FF (S = $FF here) is read back by its own PLA and dead after —
+             the same dead-stack spill the sign-decision routines below leave. */
+          int wantStack = (i == 3 || i == 11 || i == 12 || i == 16);
           set_ignore(wantStack ? stackIgnore : 0, wantStack ? 1 : 0); }
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();

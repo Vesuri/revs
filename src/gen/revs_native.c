@@ -8598,7 +8598,7 @@ void fill_object_gap(void)    { fill_object_gap_core(cpu.X); }
 
 static void steer_apply_with_assist_core(void);
 static void apply_steer_demand_core(uint8_t signByte);
-static void clamp_and_store_steer_angle_core(void);
+static void clamp_and_store_steer_angle_core(uint8_t a);
 static void vdu_char_emit_core(void);
 
 /* ---------------------------------------------------------------------------
@@ -8767,54 +8767,64 @@ static void adc_read_core(void)
    --------------------------------------------------------------------------- */
 static void poll_steering_assist_core(void)
 {
-    PHA();                                             /* $63C5 — A belongs to the caller */
+    /* $63C5-$63D7 — light the four assist lamps from the flag.  A is the caller's (the 6502 saves
+       it round this with PHA/PLA); the exit ABI (A preserved, X = flag with its N/Z, C = bit 7 of
+       track_direction) is a leaf output the callers read directly, so the shim reconstructs it. */
     uint8_t flag = steering_assist_flag;
     mem[ASSIST_LAMP_2] = flag;                         /* $77E3 */
     mem[ASSIST_LAMP_3] = (uint8_t)(flag >> 1);         /* $77E4 */
     mem[ASSIST_LAMP_1] = (uint8_t)(flag >> 2);         /* $77DC */
     mem[ASSIST_LAMP_0] = (uint8_t)(flag >> 3);         /* $77DB */
-    cpu.C = track_direction >> 7;                      /* $63D8 ROL — which way round the circuit */
-    PLA();                                             /* restore the caller's A */
-    cpu.X = steering_assist_flag;                      /* live: the flag, and its Z/N */
-    cpu.N = cpu.X >> 7; cpu.Z = (cpu.X == 0);
 }
 
 /* ---------------------------------------------------------------------------
    $1F9B  limit_steer_demand — NEVER MORE LOCK THAN THE DRIVER ASKED FOR  (twin #106)
    --------------------------------------------------------------------------- */
-static void limit_steer_demand_core(void)
+static uint8_t limit_steer_demand_core(uint8_t a, int carryIn)
 {
-    if (!cpu.C) return;                                /* $1F9B BCC — keep what was computed */
-    LDA(steer_angle_lo);
-    AND(0xFEu);
-    mem[STEER_SIGN] = cpu.A;
-    LDA(steer_angle_hi);
+    /* $1F9B — when the computed demand overshot the driver's own lock (carry in), pin it back to
+       the driver's angle: park |steer_angle_lo| (bit 0 cleared) as the sign byte and return
+       steer_angle_hi as the demand.  Otherwise keep what was computed. */
+    if (!carryIn) return a;                            /* $1F9B BCC */
+    mem[STEER_SIGN] = (uint8_t)(steer_angle_lo & 0xFEu);
+    return steer_angle_hi;
 }
 
 /* ---------------------------------------------------------------------------
    $15F4  steer_demand_from_slip — CANCEL THE SLIP  (twin #99)
    $160D  steer_demand_store                          (twin #100)
    --------------------------------------------------------------------------- */
-static void steer_demand_store_core(void)
+static void steer_demand_store_core(uint8_t a)
 {
-    mem[STEER_DEMAND] = cpu.A;                         /* $160D */
+    mem[STEER_DEMAND] = a;                             /* $160D */
     steer_apply_with_assist_core();
 }
 
 static void steer_demand_from_slip_core(void)
 {
-    mem[STEER_SIGN] = mem[SLIP_MAG_LO_10] & 0xF0u;     /* $15F4 — the 16-bit value's low byte */
-    cpu.A = mem[SLIP_MAG_HI_10];                        /* $15FB — high byte, in A */
-    cpu.N = cpu.A >> 7; cpu.Z = (cpu.A == 0);          /* abs16 branches on THIS N */
-    abs16_math();
-    /* $1601-$1606 — quarter the 16-bit magnitude (A : STEER_SIGN). */
-    unsigned mag = ((unsigned)cpu.A << 8) | mem[STEER_SIGN];
-    mag >>= 2;
-    cpu.A = (uint8_t)(mag >> 8);
+    /* $15F4-$1600 — take |slip_magnitude| (element $0A) as a 16-bit value, its low nibble-masked
+       low byte parked in STEER_SIGN.  D = 0 on the steering path (docs/static-map.md §Decimal
+       mode), so the old abs16_math is a plain two's-complement negate. */
+    uint8_t lo = (uint8_t)(mem[SLIP_MAG_LO_10] & 0xF0u);
+    uint8_t hi = mem[SLIP_MAG_HI_10];
+    mem[STEER_SIGN] = lo;                              /* $15F4 */
+    if (hi & 0x80u) {                                  /* $15FE BPL — negative: |value| */
+        /* abs16_math parks the pre-negate high byte in math_hi (= STEER_DEMAND); that write is
+           dead — steer_demand_store overwrites STEER_DEMAND before any exit — but replay it so the
+           full-mem[] oracle diff holds at every intermediate the harness could sample. */
+        mem[STEER_DEMAND] = hi;
+        uint16_t neg = (uint16_t)(0u - (uint16_t)(((uint16_t)hi << 8) | lo));
+        lo = (uint8_t)neg;
+        hi = (uint8_t)(neg >> 8);
+        mem[STEER_SIGN] = lo;
+    }
+    /* $1601-$1606 — quarter the 16-bit magnitude (hi : STEER_SIGN). */
+    unsigned mag = (((unsigned)hi << 8) | lo) >> 2;
+    uint8_t a = (uint8_t)(mag >> 8);
     mem[STEER_SIGN] = (uint8_t)mag;
-    CMP(steer_angle_hi);                               /* $1607 — C feeds limit_steer_demand */
-    limit_steer_demand_core();
-    steer_demand_store_core();
+    /* $1607 CMP — carry (demand >= driver's own angle) feeds the limiter. */
+    a = limit_steer_demand_core(a, a >= steer_angle_hi);
+    steer_demand_store_core(a);
 }
 
 /* ---------------------------------------------------------------------------
@@ -8908,25 +8918,23 @@ static void assist_from_selector(uint8_t selector)
    $1EE9  steer_assist_dispatch      (twin #103)  — the JOYSTICK path's fork
    $1EFA  steer_apply_with_assist    (twin #104)  — the KEYBOARD path's
    --------------------------------------------------------------------------- */
-static void steer_assist_dispatch_core(void)
+static void steer_assist_dispatch_core(uint8_t demand)
 {
-    poll_steering_assist_core();                       /* $1EE9 — A survives it */
-    if (cpu.Z)  { clamp_and_store_steer_angle_core(); return; }   /* no assist at all */
-    if (cpu.C)  { clamp_and_store_steer_angle_core(); return; }   /* the other direction */
-    CMP(0x05u);                                        /* $1EF3 — the CALLER's demand */
-    if (cpu.C) { apply_steering_assist_core(); return; }
+    poll_steering_assist_core();                       /* $1EE9 — lamps; A (= demand) survives it */
+    if (steering_assist_flag == 0) { clamp_and_store_steer_angle_core(demand); return; }  /* no assist */
+    if ((track_direction >> 7) & 1u) { clamp_and_store_steer_angle_core(demand); return; }  /* other way */
+    if (demand >= 0x05u) { apply_steering_assist_core(); return; }   /* $1EF3 CMP — enough demand */
     steer_demand_from_slip_core();
 }
 
 static void steer_apply_with_assist_core(void)
 {
-    poll_steering_assist_core();                       /* $1EFA */
-    if (!cpu.Z && !cpu.C && mem[STEER_KEYS] != 0) {
+    poll_steering_assist_core();                       /* $1EFA — lamps */
+    if (steering_assist_flag != 0 && ((track_direction >> 7) & 1u) == 0u && mem[STEER_KEYS] != 0) {
         assist_from_selector(mem[STEER_KEYS]);         /* $1F03 → $1F11, selector in A */
         return;
     }
-    LDA(steer_angle_lo);                               /* $1F95 */
-    apply_steer_demand_core(cpu.A);
+    apply_steer_demand_core(steer_angle_lo);           /* $1F95 */
 }
 
 /* ---------------------------------------------------------------------------
@@ -8955,18 +8963,26 @@ static void apply_steer_demand_core(uint8_t signByte)
         mem[STEER_SIGN]   = (uint8_t)((uint8_t)neg ^ 0x01u);   /* $1625-$1629 flip which way */
         hi = mem[STEER_DEMAND];                        /* $162B — clamp reads the magnitude */
     }
-    cpu.A = hi;                                        /* into clamp_and_store's A input */
-    clamp_and_store_steer_angle_core();
+    clamp_and_store_steer_angle_core(hi);
 }
 
-static void clamp_and_store_steer_angle_core(void)
+static void clamp_and_store_steer_angle_core(uint8_t a)
 {
-    CMP(0x91u);                                        /* $162D — the lock stop */
-    if (cpu.C) LDA(0x91u);
-    steer_angle_hi = cpu.A;
-    LDA(mem[STEER_SIGN]);
-    steer_angle_lo = cpu.A;
-    read_pedals_and_gears();
+    /* $162D CMP #$91 — the lock stop.  Its carry ESCAPES: nothing on the keyboard-and-no-input
+       path through read_pedals_and_gears writes C again, so it leaks out through that routine's
+       no_key exit and IS the chain's exit C at every caller (steer_demand_from_slip,
+       steer_assist_dispatch, steer_apply_with_assist compare it; clamp's own fixture drops it).
+       ⚠ This write is LOAD-BEARING but its VALUE is not harness-distinguishable: removing the line
+       fails ~260 cases (the cpu-free core prefix leaves C undefined where the transliterated ORACLE
+       prefix set it via CMP, so the leaked exit C diverges), yet ANY value here passes — once an
+       oracle enters a native shim the whole downstream (this core included) IS native, so the C it
+       writes is applied identically to both models and cancels.  The faithful value is the real
+       6502's CMP #$91 result, `(a >= 0x91u)`; the harness cannot police it, so keep it correct here. */
+    cpu.C = (a >= 0x91u);
+    if (a >= 0x91u) a = 0x91u;
+    steer_angle_hi = a;
+    steer_angle_lo = mem[STEER_SIGN];
+    read_pedals_and_gears();                           /* $162D falls into the pedals/gears tail */
 }
 
 /* $163B-$16DB — the rest of read_driving_controls, reached only by falling out of the steering.
@@ -9117,7 +9133,7 @@ static void read_driving_controls_core(void)
         mem[STEER_SIGN] &= 0xFEu;
         mem[STEER_SIGN] |= cpu.X;                       /* X carries the sign into bit 0 */
         cpu.A = mem[STEER_DEMAND];
-        steer_assist_dispatch_core();
+        steer_assist_dispatch_core(cpu.A);
         return;
     }
 
@@ -9146,20 +9162,36 @@ static void read_driving_controls_core(void)
         math_lo = (uint8_t)v;
         cpu.A   = (uint8_t)(v >> 8);
     }
-    steer_demand_store_core();
+    steer_demand_store_core(cpu.A);
 }
 
 /* The 6502-ABI shims. */
 void read_driving_controls(void)        { read_driving_controls_core(); }
 void steer_demand_from_slip(void)       { steer_demand_from_slip_core(); }
-void steer_demand_store(void)           { steer_demand_store_core(); }
+void steer_demand_store(void)           { steer_demand_store_core(cpu.A); }
 void apply_steer_demand(void)           { apply_steer_demand_core(cpu.A); }
-void clamp_and_store_steer_angle(void)  { clamp_and_store_steer_angle_core(); }
-void steer_assist_dispatch(void)        { steer_assist_dispatch_core(); }
+void clamp_and_store_steer_angle(void)  { clamp_and_store_steer_angle_core(cpu.A); }
+void steer_assist_dispatch(void)        { steer_assist_dispatch_core(cpu.A); }
 void steer_apply_with_assist(void)      { steer_apply_with_assist_core(); }
 void apply_steering_assist(void)        { apply_steering_assist_core(); }
-void limit_steer_demand(void)           { limit_steer_demand_core(); }
-void poll_steering_assist(void)         { poll_steering_assist_core(); }
+/* limit is a leaf: on the carry path it returns steer_angle_hi with that value's N/Z, C and V
+   unchanged from entry; on the no-carry path A and every flag are the caller's. */
+void limit_steer_demand(void)
+{
+    if (cpu.C) {
+        uint8_t r = limit_steer_demand_core(cpu.A, 1);
+        cpu.A = r; cpu.N = (r >> 7) & 1u; cpu.Z = (r == 0);
+    }
+}
+/* poll is a leaf: A is preserved, X comes back as the flag (with its N/Z), C as bit 7 of
+   track_direction; V is untouched. */
+void poll_steering_assist(void)
+{
+    poll_steering_assist_core();
+    uint8_t flag = steering_assist_flag;
+    cpu.C = track_direction >> 7;
+    cpu.X = flag; cpu.N = (flag >> 7) & 1u; cpu.Z = (flag == 0);
+}
 void draw_gear_indicator(void)          { draw_gear_indicator_core(); }
 void adc_read(void)                     { adc_read_core(); }
 void vdu_char_wide(void)                { vdu_char_wide_core(cpu.A); }
