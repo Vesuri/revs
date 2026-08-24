@@ -1677,7 +1677,8 @@ static uint16_t model_mul_1_5(uint16_t value);
 static uint8_t mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint);
 static void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint);
 static void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint);
-static void fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn, uint8_t firstLine);
+static SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
+                                          uint8_t firstLine, uint8_t entryV);
 static SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV);   /* SlotExit: top of file */
 static void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect);
 
@@ -3189,28 +3190,32 @@ void draw_track_object(void)
 /* One end of the viewport.  `stopColumn` is exclusive of the plot_ptr2 half of the run and
    inclusive of the plot_ptr half — fill_edge_column_run walks two columns per iteration and
    tests the second one against it. */
-static void edge_column_pass(uint16_t startSrc, uint8_t firstColumn, uint8_t stopColumn,
-                             uint8_t firstLine)
+static SlotExit edge_column_pass(uint16_t startSrc, uint8_t firstColumn, uint8_t stopColumn,
+                                 uint8_t firstLine)
 {
     plot_ptr2_hi = (uint8_t)(startSrc >> 8);
     plot_ptr2_lo = (uint8_t)startSrc;
-    fill_edge_column_run_core(firstColumn, stopColumn, firstLine);
+    /* entry V is dead on this path (fill_edge_column_run's own note): pass 0. */
+    return fill_edge_column_run_core(firstColumn, stopColumn, firstLine, 0u);
 }
 
 /* The two boundary tables are the arguments because they are the one thing a change of view
    representation moves (docs/direct-bitplane-plan.md §7a); the column and line numbers are
    the viewport's own geometry and stay immediates. */
-static void fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightStartSrc)
+static SlotExit fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightStartSrc)
 {
     edge_column_pass(leftStartSrc,  0x03, 0x06, 0x1B);
-    edge_column_pass(rightStartSrc, 0x1A, 0x22, 0x2B);
+    /* the second pass's exit is the routine's — the first's is overwritten by it. */
+    return edge_column_pass(rightStartSrc, 0x1A, 0x22, 0x2B);
 }
 
 /* The 6502-ABI shim.  No inputs at all — every value is an immediate in the original — and
    A, X, Y and the flags come back from the second fill_edge_column_run. */
 void fill_dash_edge_columns(void)
 {
-    fill_dash_edge_columns_core(VIEW_LEFT_START_SRC, VIEW_RIGHT_START_SRC);
+    SlotExit e = fill_dash_edge_columns_core(VIEW_LEFT_START_SRC, VIEW_RIGHT_START_SRC);
+    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
 }
 
 /* ===========================================================================
@@ -5369,19 +5374,23 @@ void column_gap_walk(void)
    fails at once.  The ORDER of the three stores is NOT observable — see twin #8's header.
    =========================================================================== */
 
-static void fill_column_gaps_core(uint8_t pointer, uint8_t branchOffset, uint8_t fallback)
+static SlotExit fill_column_gaps_core(uint8_t pointer, uint8_t branchOffset,
+                                      uint8_t fallback, uint8_t entryV)
 {
     mem[GAP_PTR_OPERAND]    = pointer;        /* $1DA6 — STA (zp),Y's own zero-page number */
     mem[GAP_BRANCH_OPERAND] = branchOffset;   /* $1DA9 — which arm a non-zero byte takes */
     mem[GAP_FALLBACK]       = fallback;       /* $1DAC — the colour a zero surface becomes */
-    /* $1DAF — falls straight through into the walk; the shim marshals cpu in and out, which is
-       exactly the fall-through the oracle sees (documented boundary until this caller converts). */
-    column_gap_walk();
+    /* $1DAF — falls straight through into the walk, and the fall-through leaves the registers
+       exactly as they entered: X = pointer, Y = branchOffset, V unchanged.  So the walk's own
+       three inputs are those, spelled here as values rather than read back from cpu. */
+    return column_gap_walk_core(pointer, branchOffset, entryV);
 }
 
 void fill_column_gaps(void)
 {
-    fill_column_gaps_core(cpu.X, cpu.Y, cpu.A);
+    SlotExit e = fill_column_gaps_core(cpu.X, cpu.Y, cpu.A, cpu.V);
+    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
 }
 
 /* ===========================================================================
@@ -5398,34 +5407,51 @@ void fill_column_gaps(void)
    which is what makes the filled region follow the dashboard's diagonal edge.
    =========================================================================== */
 
-static void fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn, uint8_t firstLine)
+static SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
+                                          uint8_t firstLine, uint8_t entryV)
 {
     unsigned column = firstColumn;
+    uint8_t  y      = firstLine;   /* the scan-line cursor, threaded from each walk's exit */
+    uint8_t  v      = entryV;      /* the walk's entry V — DEAD here (see below), carried anyway */
+    SlotExit e2 = { 0u, 0u, 0u, 0u, 0u, 0u, 0u };  /* the run's last walk = the routine's exit */
 
     mem[EDGE_RUN_LIMIT] = stopColumn;         /* $1DEF */
-    cpu.Y = firstLine;
 
+    /* ⭐ THE WALK'S ENTRY V NEVER SURFACES on this path: every column here is < $28, so the walk
+       always takes its normal arm — which recomputes V from `column + $60` — and its early-return
+       arm (the only exit that would pass entry V through) is unreachable. */
     do {
         mem[EDGE_COLUMN]      = (uint8_t)column;                       /* $1DF1 */
-        span_line_cursor      = cpu.Y;                                 /* $1DF3 */
+        span_line_cursor      = y;                                     /* $1DF3 */
         mem[EDGE_BLOCK_START] = mem[DASH_BLOCK_STARTS + column];       /* $1DF5-$1DF8 */
 
-        /* $1DFA — this column into the per-line boundary table, $55 mapped to empty. */
-        fill_column_gaps_core(MEM_plot_ptr2_lo, 0xEFu, 0x00u);
+        /* $1DFA — this column into the per-line boundary table, $55 mapped to empty.  Its exit
+           line is discarded: both walks in an iteration start from the SAME span_line_cursor. */
+        { SlotExit e1 = fill_column_gaps_core(MEM_plot_ptr2_lo, 0xEFu, 0x00u, v);
+          v = e1.v; }
 
-        /* $1E03 — and the NEXT column into its own source block, non-zero bytes kept. */
+        /* $1E03 — and the NEXT column into its own source block, non-zero bytes kept.  THIS
+           walk's exit line is what the next column's walk starts from ($1DF3 next iteration). */
         mem[EDGE_COLUMN] = (uint8_t)(column + 1);
-        fill_column_gaps_core(MEM_plot_ptr_lo, 0x09u, 0x55u);
+        e2 = fill_column_gaps_core(MEM_plot_ptr_lo, 0x09u, 0x55u, v);
+        y  = e2.y;
+        v  = e2.v;
 
         column = mem[EDGE_COLUMN];
-    } while (!cpx_eq(column, mem[EDGE_RUN_LIMIT]));                     /* $1E0E-$1E12 */
+    } while (column != mem[EDGE_RUN_LIMIT]);                           /* $1E0E-$1E12 */
+
+    /* $1E0E LDX EDGE_COLUMN; CPX EDGE_RUN_LIMIT — X = column (now == stopColumn), and the equal
+       compare leaves N=0, Z=1, C=1.  A, Y and V are the second walk's, untouched by the CPX. */
+    { SlotExit e = { e2.a, (uint8_t)column, y, 0u, 1u, e2.v, 1u }; return e; }
 }
 
 /* The 6502-ABI shim.  X is the first column, A the stop column, Y the first start line; X
    comes back as the column the run stopped at and Y as the last walk's end line. */
 void fill_edge_column_run(void)
 {
-    fill_edge_column_run_core(cpu.X, cpu.A, cpu.Y);
+    SlotExit e = fill_edge_column_run_core(cpu.X, cpu.A, cpu.Y, cpu.V);
+    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
 }
 
 /* ===========================================================================
