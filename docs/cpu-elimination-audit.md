@@ -67,7 +67,7 @@ caller and written at the code (V-escape rule + PHP-residue rule from the prior 
 | 2 | Pedals / gears / driving-controls driver (`read_pedals_and_gears`, `read_driving_controls`) | 2 | ✅ |
 | 3 | Text / screen-address (`mode5_addr`, `mode5_addr_for_cell`, `vdu_char_emit`/`_wide`/`_def`, `draw_gear_indicator`, `adc_read`) | 7 | ✅ |
 | 4 | Slip / sound (`clamp_slip_to_grip`, `derive_slip_reference`, `check_wheel_slip`, `store_slip_*`, `update_slip_sound`, `sound_queue`, `sound_stop_channel`, `sound_osword`) | 11 | ✅ |
-| 5 | Sub-models / physics (`begin_spin_from_a`, `update_camera_and_drive_state`, `update_engine_revs`, `apply_driving_model`, `compute_car_angles`, `integrate_*`, `apply_drag_terms`, `update_grip_limits`, `rotate_*`, `stage_accum_delta`, `model_integrate_element`, `scale_by_track_gradient`, `apply_angle_term_at`, `rotate_state_pair`) | ~17 | ☐ |
+| 5 | Sub-models / physics (`begin_spin_from_a`, `update_camera_and_drive_state`, `update_engine_revs`, `apply_driving_model`, `compute_car_angles`, `integrate_*`, `apply_drag_terms`, `update_grip_limits`, `rotate_*`, `stage_accum_delta`, `model_integrate_element`, `scale_by_track_gradient`, `apply_angle_term_at`, `rotate_state_pair`) | 16 | ✅ |
 | 6 | Objects / signs (`build_road_sign`, `write_object_slot`, `scale_shape_vectors`, `build_sign_origin`, `note_object_contact`, `store_object_flags`, `reject_object_slot`, `draw_track_object`, `plot_object`) | ~9 | ☐ |
 | 7 | View pipeline (`fill_object_gap`, `plot_shape_edges`, `plot_view_src_line`, `mark_line_surfaces`, `fill_line_attr`, `fill_edge_column_run`, `column_gap_walk`, `surface_colour_at`, `view_paint_lines`, `edge_x_offscreen`, `shift_near_edge_points`, `emit_edge_width_offset`, `emit_edge_bearing`, `road_edge_walk`) | ~14 | ☐ |
 | 8 | Computational helpers still on `cpu` (`abs8`, `abs16_math`, `mul8_*`, `mul16_by_1_5`, `scale16_by_y`, `div16by8`, `horizon_half_width_at`, `road_edge_side`, `derive_endpoint`, `place_car_world_coords`, `place_player_in_section`, `road_edge_walk_subdivide`, `paint_lines_short`, …) | ~20 | ☐ |
@@ -168,3 +168,52 @@ at the $01B7 boundary must FAIL; a diff inside $01B8..$01FF must be ignored). **
 future cluster that eliminates a `PHA`/`PLA`/`PUSH`/`PULL` whose residue survives to the dump frame.**
 ⚠ Do NOT reach for the skip on a determinism failure until you have PROVEN the sole diff is inside
 $01B8..$01FF — a diff at or below $01B7 is a real regression in live car-table / game state.
+
+## Cluster-5 lessons — an SMC-TRAP is a compared path, exit registers by value, dead scratch survivors
+
+The physics sub-models. All 16 cores are cpu-free; the only residual `cpu.` in the cluster is
+`update_camera_and_drive_state_core`'s two documented seams (the `$45CB` per-circuit hook and
+`begin_spin_from_a`'s MOS OSWORD), which stay by design.
+
+- **A self-modifying-dispatch TRAP is a REAL compared channel, not an abort.** In
+  `update_camera_and_drive_state` the `$45CB` site is an `ASL`/`ROL` pair that expansion circuits
+  overwrite; when the fixture randomises those opcode bytes (1 case in 10) the port calls
+  `platform_smc_unhandled` and **RETURNS with registers still live** — the harness compares A/X/Y/flags
+  on that path too. My first core returned a zeroed exit struct on the trap → 378 mismatch. Fix: build
+  a provisional `CameraExit preSmc` from the drive_state block's live registers (A = driveNew, X =
+  car_section_cursor, Y = yScale, N/Z derived from driveNew, C/V per arm) and `return preSmc` on both
+  trap paths. **Before treating any early-return as "abort," check whether the harness still compares
+  it.**
+
+- **Return the escaping registers BY VALUE; the shim replays them into `cpu`.** The camera core exits
+  through a final `car_speed_scaled` add whose A/C/V/N/Z plus X (=player_car) and Y (=section cursor)
+  are all live to the caller. Rather than write `cpu` inside the core, it returns
+  `CameraExit {AddFlags acc; uint8_t x, y;}` and the thin shim does the five `cpu.*=` marshalls. Same
+  pattern as cluster-4's `EngineExit`; it keeps the core a pure function and confines the ABI to the seam.
+
+- **N/Z of a result are derivable; C/V of an ADC are not — reconstruct them per arm.** The provisional
+  exit's N (`(driveNew>>7)&1`) and Z (`driveNew==0`) come straight from the byte the block produces, in
+  every arm, cpu-free. C and V do not — they belong to whichever operation set them: the spin arm reads
+  `begin_spin_from_a`'s exit C/V (its MOS boundary), the countdown arm carries `abs8`'s V (its CMP #5
+  kills C on both arms, so C is a constant 0 there), the others carry the drive add's own C/V. Each arm
+  sets `cArm`/`vArm` explicitly.
+
+- **`abs16_math` on the render/physics path is a plain 16-bit negate (D=0).** `apply_driving_model`'s
+  speed split becomes `if (hi & 0x80) { v = -(hi:lo); ... }` — one `uint16_t`. Its scratch write
+  `math_hi = original_hi` is **faithful but provably dead**: `stage_accum_delta` (the next call) opens
+  with `LDA` and overwrites `math_hi` before any read, so a sabotage of THAT byte alone is unobservable
+  (0 mismatch — a "no change at all" survivor, kept per the scratch-write rule). The LIVE outputs of the
+  same arm — `road_speed` (the negated high byte) and `math_lo` — ARE caught (99 mismatch each). When a
+  scratch-write sabotage survives, prove it is overwritten-before-read and keep the faithful write; do
+  not mistake it for a fixture gap.
+
+- **Identical mismatch counts across two sabotages can be legitimate — read the INTERLEAVE.** The 5h
+  gate's noabs and rshi both read 99 (both corrupt only the negative-speed arm, of which there are
+  exactly 99 cases in the stream). That is the classic stale-object tell, but the five-run sequence
+  **99 / 0 / 99 / 50 / 1** proves freshness on its own: a reused object repeats one number, whereas the
+  interleaved 0/50/1 can only come from real rebuilds between each. The `rm .o + binary` guard did its
+  job; the coincidence is in the game logic, not the harness.
+
+Gate (all sub-commits): full `make validate` 0-mismatch; ≥4 logic sabotages FAIL with distinct-behaviour
+counts; `make determinism` + `make determinism-drive` byte-identical (the stack-scratch skip was not
+exercised — no `PHA`/`PLA` removed this cluster).
