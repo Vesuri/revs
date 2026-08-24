@@ -6838,25 +6838,27 @@ static void compute_car_angles_core(uint8_t headingHi, uint8_t headingLo)
    player's own car_state_1, which is what makes an across-track offset raise the camera on a
    banked section (the CAMBER reading in docs/rename.md).
 
-   ⚠ THE SIGN TRAVELS ON THE 6502 STACK.  abs8 branches on the CALLER's N, so the EOR's N is
-   PHPed at $4617 and PLPed back at $4621 across both the abs8 and the multiply — and the
-   pushed byte is part of the differential, which is why the PHP is reproduced and not folded
-   into a local.
-   --------------------------------------------------------------------------- */
-static void scale_by_track_gradient_core(uint8_t value, uint8_t index)
+   ⭐ WRITTEN AS PLAIN C.  The 6502 carried the EOR's sign across the abs8+multiply on the stack
+   (PHP $4617 / PLP $4621) only because abs8 branches on the CALLER's N; in C the two signs are
+   just two bytes.  |grad| ≤ 0x80 and value ≤ 0xFF, so the product's high byte is ≤ 0x7F — bit 7
+   is always clear — which is why the re-signed high byte's bit 7 IS the exit N in both sign arms
+   (the negative arm sets N from -(high); the positive arm's restored EOR status has N = eor.7 = 0
+   = high.7).  Returns that re-signed high byte; math_lo/math_hi are set as the oracle does.  The
+   full exit flag ABI (N/Z/C/V, with C/V passing through the caller's in the positive arm) is
+   replayed in the shim; the two native callers here consume the returned byte directly. */
+static uint8_t scale_by_track_gradient_core(uint8_t value, uint8_t index)
 {
-    math_hi = value;                                                    /* $4610 */
-    LDA((uint8_t)(mem[TRACK_DIR_1 + index] ^ track_direction));         /* $4612-$4615 */
-    PHP();                                                              /* $4617 */
-    LDA(mem[TRACK_DIR_1 + index]);                                      /* $4618 */
-    abs8();                                                             /* $461B */
-    /* $461E — |gradient| x value >> 8.  The multiply's flags are dead here: the PLP below
-       restores the EOR's status, and the camera path is always D=0 (docs/static-map.md
-       §Decimal mode), so this is a plain 16-bit multiply. */
-    { unsigned p = revs_mulu16(cpu.A, math_hi);
-      math_lo = (uint8_t)p; cpu.A = (uint8_t)(p >> 8); }
-    PLP();                                                              /* $4621 */
-    abs8();                                                             /* $4622 */
+    uint8_t gradByte = mem[TRACK_DIR_1 + index];                        /* $4612/$4618 */
+    uint8_t eor      = (uint8_t)(gradByte ^ track_direction);           /* $4614 — the re-sign */
+    uint8_t mag      = (gradByte & 0x80u)                               /* $461B abs8: |grad| */
+                       ? (uint8_t)(-(int)gradByte) : gradByte;
+    math_hi = value;                                                    /* $4610 (scratch) */
+    /* $461E — |gradient| x value >> 8.  D = 0 on the camera path (docs/static-map.md
+       §Decimal mode), so a plain 16-bit multiply; mag·value ≤ 0x7F80 fits. */
+    unsigned p = revs_mulu16(mag, value);
+    math_lo = (uint8_t)p;                                               /* low byte, never re-signed */
+    uint8_t high = (uint8_t)(p >> 8);                                   /* ≤ 0x7F */
+    return (eor & 0x80u) ? (uint8_t)(-(int)high) : high;                /* $4622 abs8: re-sign high */
 }
 
 /* ---------------------------------------------------------------------------
@@ -7375,8 +7377,7 @@ yaw:
         int neg;
         math_lo = base;                                /* $4579 */
         a = (uint8_t)((uint8_t)(base >> 1) + base);    /* $457C-$457D — 1.5x */
-        scale_by_track_gradient_core(a, cpu.Y);        /* $457F — Y is still dirIndex */
-        a = cpu.A;
+        a = scale_by_track_gradient_core(a, cpu.Y);    /* $457F — Y is still dirIndex */
         a = (uint8_t)(a + grip_disturbance);           /* $4582-$4583 */
         a = (uint8_t)(a + camera_pitch_bias);          /* $4585-$4586 */
         a = (uint8_t)(a + spin_shake);                 /* $4589-$458A */
@@ -7453,11 +7454,11 @@ yaw:
        which queues a MOS SOUND — and sound_osword leaves the MOS's own Y behind.  So this call
        scales by whatever table entry Y now points at, and a twin that "knew" the index was
        still the section's differed in one case in six. */
-    scale_by_track_gradient_core(cpu.A, cpu.Y);         /* $45D8 */
-    if (cpu.N) shared_temp_77 = (uint8_t)(shared_temp_77 - 1u);  /* $45DB DEC_M — sign-extend it */
+    uint8_t scaled = scale_by_track_gradient_core(cpu.A, cpu.Y);  /* $45D8 */
+    if (scaled & 0x80u) shared_temp_77 = (uint8_t)(shared_temp_77 - 1u);  /* $45DB DEC_M — sign-extend it (exit N = scaled.7) */
     cpu.Y = car_section_cursor;                         /* $45DF — Y for the section coords + exit */
     {
-        uint8_t scaledLow = cpu.A;                     /* the gradient-scaled car_state_1 low byte */
+        uint8_t scaledLow = scaled;                    /* the gradient-scaled car_state_1 low byte */
         uint8_t secLo = mem[SECTION_CRD_LO + 1 + cpu.Y];
         uint8_t secHi = mem[SECTION_CRD_HI + 1 + cpu.Y];
         unsigned t1 = (unsigned)scaledLow + secLo;     /* $45E1-$45E2 */
@@ -7495,7 +7496,28 @@ yaw:
 
 /* The 6502-ABI shims. */
 void compute_car_angles(void)            { compute_car_angles_core(cpu.A, cpu.X); }
-void scale_by_track_gradient(void)       { scale_by_track_gradient_core(cpu.A, cpu.Y); }
+void scale_by_track_gradient(void)
+{
+    /* Replay the $4610 exit ABI.  Positive arm ($4622 abs8 not taken): flags are the restored
+       EOR status — N = 0, Z = (eor == 0), C/V PASS THROUGH the caller's (the EOR touches neither,
+       the PHP/PLP carried them intact).  Negative arm: flags from abs8 negating the high byte —
+       N/Z from -(high), C = (high == 0) = Z, V = 0 (high ≤ 0x7F is never $80). */
+    uint8_t callerC = cpu.C, callerV = cpu.V;
+    uint8_t eor = (uint8_t)(mem[TRACK_DIR_1 + cpu.Y] ^ track_direction);
+    uint8_t a = scale_by_track_gradient_core(cpu.A, cpu.Y);
+    cpu.A = a;
+    if (eor & 0x80u) {
+        cpu.N = (uint8_t)((a >> 7) & 1u);
+        cpu.Z = (uint8_t)(a == 0);
+        cpu.C = (uint8_t)(a == 0);
+        cpu.V = 0u;
+    } else {
+        cpu.N = 0u;
+        cpu.Z = (uint8_t)(eor == 0);
+        cpu.C = callerC;
+        cpu.V = callerV;
+    }
+}
 void begin_spin(void)                    { begin_spin_from_a_core(road_speed, cpu.X); }
 void begin_spin_from_a(void)             { begin_spin_from_a_core(cpu.A, cpu.X); }
 void apply_drag_terms(void)              { apply_drag_terms_core(); }

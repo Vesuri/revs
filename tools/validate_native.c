@@ -3873,6 +3873,10 @@ static int test_sub_models(void)
        add carries are now C bools/ints, so the twin never writes the pushed status bytes the
        oracle leaves on the stack at $01FD/$01FE/$01FF (net-neutral pulls, dead scratch). */
     static const uint16_t cameraIgnore[] = { 0x01FD, 0x01FE, 0x01FF };
+    /* scale_by_track_gradient (i==1): the PHP/PLP pair at $4617/$4621 that carried the EOR's sign
+       across the abs8+multiply is now two C bytes, so the twin never writes the pushed status byte
+       the oracle leaves at $01FF (net-neutral pull, dead scratch). */
+    static const uint16_t scaleIgnore[] = { 0x01FF };
 
     for (i = 0; i < 8; i++) {
         int subFail = 0, decimal = 0, throttle = 0, ingear = 0, powered = 0;
@@ -3887,9 +3891,9 @@ static int test_sub_models(void)
         int pinD0 = resultOnly || (i == 1) || (i == 6) || (i == 7);
         unsigned mask = resultOnly ? LIVE_NONE : liveMask;
         if (!want(list[i].name)) continue;
-        set_ignore(i == 0 ? angleIgnore : i == 5 ? gripIgnore :
+        set_ignore(i == 0 ? angleIgnore : i == 1 ? scaleIgnore : i == 5 ? gripIgnore :
                    i == 6 ? engineIgnore : i == 7 ? cameraIgnore : 0,
-                   i == 0 ? 8 : i == 5 ? 7 : i == 6 ? 1 : i == 7 ? 3 : 0);
+                   i == 0 ? 8 : i == 1 ? 1 : i == 5 ? 7 : i == 6 ? 1 : i == 7 ? 3 : 0);
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
             fill_random(pre);
