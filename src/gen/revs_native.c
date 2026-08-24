@@ -7947,35 +7947,23 @@ static void build_road_sign_core(void)
         uint8_t seg    = mem[CAR_SEGMENT_TBL + player_car];
         uint8_t nibble = (uint8_t)(mem[TRACK_SEGMENT_HI + seg] >> 4);   /* LSR A x4 */
         saved_slot_index = nibble;
-        cpu.C = cmp_ge(nibble, sign_last_index);         /* CMP: A=nibble, N/Z/C (not V) */
-        if (cpu.Z) {                                     /* $4CB5 — the same sign again */
-            cpu.A  = (uint8_t)(nibble + cpu.C);          /* ADC #0, C set by the equal CMP; flags dead */
-            cpu.A  = (uint8_t)(cpu.A & 0x0Fu);           /* AND #$0F -> N/Z */
-            cpu.N  = (cpu.A >> 7) & 1u;
-            cpu.Z  = (cpu.A == 0u);
-            nibble = cpu.A;
-        }
-        cpu.A = nibble;                                  /* TAX: X<-A, N/Z from the value */
-        cpu.X = nibble;
-        cpu.N = (nibble >> 7) & 1u;
-        cpu.Z = (nibble == 0u);
-        signIndex = nibble;
+        if (nibble == sign_last_index)                   /* $4CB5 — the same sign again */
+            nibble = (uint8_t)((nibble + 1u) & 0x0Fu);   /* ADC #0 (C=1 from the equal CMP), AND #$0F */
+        signIndex = nibble;                              /* TAX leaves it in X too; X is dead on exit */
     }
 
     /* $4CBC-$4CD5 — the sign's own view origin, components 2, 1, 0.  shared_temp_77 is the
        component cursor build_sign_origin walks down, so the ORDER of these three carries the
-       meaning, and the shifts differ: x64 across the ground plane, x16 up.  Y holds the shift
-       at each load, so a trap reports it. */
-    cpu.Y = 0x02u; cpu.N = 0; cpu.Z = 0;                 /* LDY #$02 */
-    shared_temp_77 = cpu.Y;                              /* the component cursor: 2, then 1, then 0 */
+       meaning, and the shifts differ: x64 across the ground plane, x16 up.  (The 6502 kept the
+       shift in Y so a table-load trap could report it; the shift is now an explicit argument and
+       a trap records only mem[], which build_road_sign is compared on.) */
+    shared_temp_77 = 0x02u;                              /* the component cursor: 2, then 1, then 0 */
     tableByte = sign_table_byte(SIGN_OFFSET_2_SITE, signIndex, &trapped);
     if (trapped) return;
     build_sign_origin_core(tableByte, 0x02u);            /* x64 across the ground plane */
-    cpu.Y = 0x04u; cpu.N = 0; cpu.Z = 0;                 /* LDY #$04 */
     tableByte = sign_table_byte(SIGN_OFFSET_1_SITE, signIndex, &trapped);
     if (trapped) return;
     build_sign_origin_core(tableByte, 0x04u);            /* x16 up */
-    cpu.Y = 0x02u; cpu.N = 0; cpu.Z = 0;                 /* LDY #$02 */
     tableByte = sign_table_byte(SIGN_OFFSET_0_SITE, signIndex, &trapped);
     if (trapped) return;
     build_sign_origin_core(tableByte, 0x02u);
@@ -7990,33 +7978,31 @@ static void build_road_sign_core(void)
        multiple of 8, which is what a segment index is), into a scratch live section. */
     tableByte = sign_table_byte(SIGN_SEGMENT_SITE, signIndex, &trapped);
     if (trapped) return;
-    cpu.Y = (uint8_t)(tableByte & 0xF8u);                /* the segment index (a multiple of 8) */
-    cpu.X = SIGN_SCRATCH_SECTION;
-    load_section_triple_core(cpu.X, cpu.Y);
+    uint8_t segByte  = (uint8_t)(tableByte & 0xF8u);     /* the segment index (a multiple of 8) */
+    uint8_t scratchX = SIGN_SCRATCH_SECTION;             /* X carries the section index to the slot write */
+    load_section_triple_core(scratchX, segByte);
 
     /* $4CEB-$4CF9 — the bearing, FROM THE SIGN'S OWN ORIGIN, into slot $17. */
-    cpu.Y = VIEW_ORIGIN_STRIDE;
-    bearing_to_section_core(cpu.X, cpu.Y);
+    bearing_to_section_core(scratchX, VIEW_ORIGIN_STRIDE);
     mem[OBJECT_BEARING_LO + SIGN_SLOT] = bearing_lo;
-    cpu.A = bearing_hi;
-    mem[OBJECT_BEARING_HI + SIGN_SLOT] = cpu.A;
+    mem[OBJECT_BEARING_HI + SIGN_SLOT] = bearing_hi;
 
     /* $4CFA-$4D08 — how far off the car's heading the sign is.  Past $40 it has left the view,
-       and THAT is what commits the sign number for the next frame. */
-    cpu.A = (uint8_t)(cpu.A - car_heading_hi);
-    cpu.N = (cpu.A >> 7) & 1u;                            /* abs8 branches on the caller's N */
-    abs8();
-    if (cmp_ge(cpu.A, 0x40u))                            /* the sign has left the view */
+       and THAT is what commits the sign number for the next frame.  abs8 here branches on bit 7
+       of (bearing_hi - car_heading_hi) — the caller's N equals bit 7 — and $80 negates to $80. */
+    uint8_t off    = (uint8_t)(bearing_hi - car_heading_hi);
+    uint8_t absOff = (off & 0x80u) ? (uint8_t)(-off) : off;
+    if (cmp_ge(absOff, 0x40u))                           /* the sign has left the view */
         sign_last_index = saved_slot_index;
 
     /* $4D09-$4D1F — the contact threshold widens for a sign well off to the side, then the
-       projection and the slot write.  The CMP is still the off-heading distance in A. */
-    threshold = cmp_ge(cpu.A, 0x6Eu) ? 0x50u : 0x25u;
+       projection and the slot write.  The CMP #$6E's carry is note_object_contact's entry C. */
+    uint8_t offHeadingC = cmp_ge(absOff, 0x6Eu) ? 1u : 0u;
+    threshold = offHeadingC ? 0x50u : 0x25u;
     shared_counter_42 = SIGN_SLOT;
-    note_object_contact_core(threshold, cpu.C);          /* exit dead here (build_road_sign is mem-only) */
-    cpu.Y = VIEW_ORIGIN_STRIDE;
-    { ProjPoint p = project_point_core(cpu.X, cpu.Y);   /* $4D1B */
-      write_object_slot_core(p.line, cpu.X, cpu.V, p.clip); }   /* $4D1E — line + its drop flag; exit dead here */
+    note_object_contact_core(threshold, offHeadingC);    /* exit dead here (build_road_sign is mem-only) */
+    { ProjPoint p = project_point_core(scratchX, VIEW_ORIGIN_STRIDE);   /* $4D1B */
+      write_object_slot_core(p.line, scratchX, /*V dead here*/ 0u, p.clip); }   /* $4D1E — exit dead */
 }
 
 /* The 6502-ABI shims. */
