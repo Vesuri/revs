@@ -44,9 +44,13 @@
 #include "../platform/shape.h"        /* PROBE_SHAPE_DASH_UNIT(): the §7a unit counter */
 #include "../platform/revs_plot.h"    /* REVS_PLOT_*: the direct-to-bitplane run plotter */
 
+/* The object/slot-writer chain's exit ABI — A/X/Y + N/Z/V/C returned by value so a core stays
+   cpu-free; the thin shim (or a caller whose own exit ABI is this) replays it onto cpu. */
+typedef struct { uint8_t a, x, y, n, z, v, c; } SlotExit;
+
 /* The object plotter (twin #94), defined far below but called from race_main_loop_core with
    the object slot count.  The main loop reaches it through the core, not the 6502-ABI shim. */
-static void draw_track_object_core(uint8_t slot);
+static SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, uint8_t entryC);
 
 /* The rest of the frame body's steps, all defined far below.  race_main_loop_core reaches each
    through its core so the whole hot path is core-to-core with no 6502-ABI shim hops. */
@@ -1476,7 +1480,12 @@ static void race_main_loop_core(RestartDepth depth)
             PROBE_PHASE(13); PROBE_SHAPE_PHASE(13); fill_line_surface();
             PROBE_PHASE(14); PROBE_SHAPE_PHASE(14); build_road_sign_core();
             /* $172B: the object slot count is the starting slot */
-            PROBE_PHASE(15); PROBE_SHAPE_PHASE(15); draw_track_object_core(0x17);
+            PROBE_PHASE(15); PROBE_SHAPE_PHASE(15);
+            {   /* race_main_loop_core is cpu (NATIVE_FUNCS driver) — marshal the typed exit */
+                SlotExit e = draw_track_object_core(0x17, cpu.Y, cpu.V, cpu.C);
+                cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
+                cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
+            }
             PROBE_PHASE(16); PROBE_SHAPE_PHASE(16); draw_corner_markers();
             PROBE_PHASE(17); PROBE_SHAPE_PHASE(17); move_and_draw_cars();
             PROBE_PHASE(18); PROBE_SHAPE_PHASE(18); fill_dash_edge_columns();
@@ -1669,10 +1678,7 @@ static uint8_t mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint)
 static void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint);
 static void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint);
 static void fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn, uint8_t firstLine);
-/* The object/slot-writer chain's exit ABI — A/X/Y + N/Z/V/C returned by value (defined here
-   early because plot_object_core's forward declaration needs it; see the slot-writer group). */
-typedef struct { uint8_t a, x, y, n, z, v, c; } SlotExit;
-static SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV);
+static SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV);   /* SlotExit: top of file */
 static void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect);
 
 /* The exit flags of a 16-bit binary add, returned by value so a core stays cpu-free; a shim
@@ -3080,14 +3086,19 @@ static unsigned shift_pair_left(unsigned hi)
     return cpu.A;
 }
 
-static void draw_track_object_core(uint8_t slot)
+/* Exit ABI is the full register+flag set (SlotExit).  A, V and C differ per path; X, N and Z
+   are the closing `arg_x` (LDX saved_slot_index).  Entry Y passes through every path (nothing
+   writes it before arg_x), and entry V/C pass through the empty-slot path — so all three are
+   inputs. */
+static SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, uint8_t entryC)
 {
     uint8_t flags = mem[CAR_FLAGS_SHAPE + slot];
+    uint8_t a, v = entryV, c = entryC;          /* y passes through untouched (= entryY) */
 
     if (flags & 0x80) {
         /* $2AD4 — an empty slot.  Nothing is drawn, but A is still the flag byte at the
            tail, so the 6502's `LDA` is reproduced even though its N/Z are overwritten. */
-        cpu.A = flags;
+        a = flags;
     } else {
         plot_shape = (uint8_t)(flags & 0x0F);
 
@@ -3101,41 +3112,45 @@ static void draw_track_object_core(uint8_t slot)
         uint16_t heading = (uint16_t)(((uint16_t)car_heading_hi << 8) | car_heading_lo);
         uint16_t delta   = (uint16_t)(bearing - heading);
         math_lo = (uint8_t)delta;                       /* the plotter's setup shares this cell */
-        unsigned deltaHi = (uint8_t)(delta >> 8);
+        uint8_t  deltaHi = (uint8_t)(delta >> 8);
         { uint8_t hiM = (uint8_t)(bearing >> 8), hiS = (uint8_t)(heading >> 8);
-          cpu.V = (uint8_t)((((hiM ^ hiS) & (hiM ^ (uint8_t)deltaHi)) >> 7) & 1u); }
+          v = (uint8_t)((((hiM ^ hiS) & (hiM ^ deltaHi)) >> 7) & 1u); }
 
         /* $2AE7-$2AF1 — the visibility window, and the two arms are not symmetric because
            the 6502 tests the sign first: behind the player it wants >= $E0, ahead of it
            < $20.  On the reject path A is the high byte and C is that CMP's own carry. */
-        int visible = (deltaHi & 0x80) ? cmp_ge(deltaHi, 0xE0)
-                                       : !cmp_ge(deltaHi, 0x20);
+        uint8_t limit = (deltaHi & 0x80u) ? 0xE0u : 0x20u;
+        a = deltaHi;                                    /* CMP leaves A = the high byte */
+        c = (uint8_t)(deltaHi >= limit);                /* ...and C = its own carry */
+        int visible = (deltaHi & 0x80u) ? (deltaHi >= 0xE0u) : (deltaHi < 0x20u);
         if (visible) {
             unsigned row = shift_pair_left(shift_pair_left(deltaHi));
             plot_x = (uint8_t)(row + 0x50);             /* carry-in 0 */
             /* N/Z/C are dead (the LDAs below rewrite N/Z, nothing reads C), but V ESCAPES on
-               the drawn path: plot_object_core below leaves V untouched, so this ADC's V is
-               the routine's exit V.  Replay it, matching the not-visible arm above. */
-            cpu.V = adc_overflow((uint8_t)row, 0x50, 0);
+               the drawn path: this ADC's V is the routine's exit V unless plot_object writes
+               it.  Feed it in as plot_object's entry V and take plot_object's exit back. */
+            v = adc_overflow((uint8_t)row, 0x50, 0);
             /* The column's own `LDA` flags are dead — the width's LDA one instruction later
                rewrites N and Z, and nothing between them branches. */
-            plot_line = mem[OBJECT_LINE + slot];
-            proj_width  = (uint8_t)load_a(mem[OBJECT_WIDTH + slot]);
-            {   /* draw_track_object_core still uses cpu (cluster 6g) — marshal the typed exit */
-                SlotExit po = plot_object_core(slot, cpu.Y, cpu.V);
-                cpu.A = po.a; cpu.X = po.x; cpu.Y = po.y;
-                cpu.N = po.n; cpu.Z = po.z; cpu.V = po.v; cpu.C = po.c;
-            }
+            plot_line   = mem[OBJECT_LINE + slot];
+            proj_width  = mem[OBJECT_WIDTH + slot];
+            SlotExit po = plot_object_core(slot, entryY, v);
+            a = po.a; entryY = po.y; v = po.v; c = po.c;   /* X/N/Z are the arg_x below */
         }
     }
 
-    arg_x(saved_slot_index);
+    /* $2B0A — arg_x(saved_slot_index): LDX sets X and its N/Z. */
+    uint8_t ssi = saved_slot_index;
+    SlotExit e = { a, ssi, entryY, (uint8_t)((ssi >> 7) & 1u), (uint8_t)(ssi == 0u), v, c };
+    return e;
 }
 
 /* The 6502-ABI shim.  The slot arrives in X; everything else the routine needs is in mem[]. */
 void draw_track_object(void)
 {
-    draw_track_object_core(cpu.X);
+    SlotExit e = draw_track_object_core(cpu.X, cpu.Y, cpu.V, cpu.C);
+    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
 }
 
 /* ===========================================================================
