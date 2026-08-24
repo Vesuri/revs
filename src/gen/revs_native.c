@@ -6863,19 +6863,19 @@ static void scale_by_track_gradient_core(uint8_t value, uint8_t index)
    queues sound slot 4 — the same slot check_crash's crash arm queues.  It is the milder
    sibling of that arm: nothing here stops the engine or clears the model.
    --------------------------------------------------------------------------- */
-static void begin_spin_from_a_core(uint8_t severity)
+static void begin_spin_from_a_core(uint8_t severity, uint8_t savedX)
 {
-    cpu.A = severity;                           /* $4DCB */
-    LSR_A(); spin_countdown = cpu.A;            /* $4DCC — severity / 2 */
-    LSR_A(); spin_shake     = cpu.A;            /* $4DCE-$4DCF — ...and / 4 */
-    inc_mem(MEM_drive_state);                   /* $4DD1 */
-    SEC();
-    ROR_M(MEM_heading_step_lo);                 /* $4DD4 — +$80, and the step halved */
-    /* $4DD7-$4DD9 LDA #4 / JSR sound_queue_default — slot 4 at sound_volume.  This is the last
-       thing begin_spin does, so its exit ABI IS sound_queue_default's; X is untouched here, so it
-       is what sound_queue parks in sound_saved_x.  (begin_spin_from_a itself converts cpu-free with
-       the sub-models cluster, where its fixture lives — this reproduces the shim's exit for now.) */
-    sound_queue_core(0x04u, sound_volume, cpu.X);
+    spin_countdown = (uint8_t)(severity >> 1);  /* $4DCC — severity / 2 */
+    spin_shake     = (uint8_t)(severity >> 2);  /* $4DCE-$4DCF — ...and / 4 */
+    drive_state    = (uint8_t)(drive_state + 1u);  /* $4DD1 — mark not-under-power */
+    /* $4DD4 SEC / ROR heading_step_lo — nudge the heading increment by $80 and halve it (C in = 1
+       sets bit 7; the ROR's own carry-out is dead, overwritten by the sound tail below). */
+    heading_step_lo = (uint8_t)((heading_step_lo >> 1) | 0x80u);
+    /* $4DD7-$4DD9 LDA #4 / JSR sound_queue_default — slot 4 at sound_volume.  This is the last thing
+       begin_spin does, so its exit ABI IS sound_queue_default's; the caller's X (untouched here) is
+       what sound_queue parks in sound_saved_x.  sound_queue is a cluster-4 leaf whose exit ABI moved
+       to its shim, so this native caller replays it. */
+    sound_queue_core(0x04u, sound_volume, savedX);
     sound_queue_exit_abi(0x04u);
 }
 
@@ -6990,7 +6990,7 @@ static void update_grip_limits_core(void)
                sound_queue parks that X in sound_saved_x, $0B46); Y still holds pedal_mode from the
                LDY at the top.  Reconstruct the X input this 6502 hook path reads before the call. */
             cpu.X = newDisturb;
-            begin_spin_from_a_core(road_speed);           /* $4C21 */
+            begin_spin_from_a_core(road_speed, cpu.X);    /* $4C21 */
         }
     }
     grip_disturbance = newDisturb;                         /* $4C24 */
@@ -7415,7 +7415,7 @@ yaw:
             LDA(spin_countdown);                        /* $45B3 — sets N for the abs8 */
             abs8();                                     /* $45B5 */
             CMP(0x05u);                                 /* $45B7 */
-            if (cpu.C) { begin_spin_from_a_core(cpu.A); LDA(0x01u); }   /* $45B9-$45BF */
+            if (cpu.C) { begin_spin_from_a_core(cpu.A, cpu.X); LDA(0x01u); }   /* $45B9-$45BF */
             else         LDA(0x00u);                                    /* $45C3 */
         } else if (vAdd) {
             LDA(0x7Fu);                                 /* $45AF BVS → $45C7 */
@@ -7495,8 +7495,8 @@ yaw:
 /* The 6502-ABI shims. */
 void compute_car_angles(void)            { compute_car_angles_core(cpu.A, cpu.X); }
 void scale_by_track_gradient(void)       { scale_by_track_gradient_core(cpu.A, cpu.Y); }
-void begin_spin(void)                    { begin_spin_from_a_core(road_speed); }
-void begin_spin_from_a(void)             { begin_spin_from_a_core(cpu.A); }
+void begin_spin(void)                    { begin_spin_from_a_core(road_speed, cpu.X); }
+void begin_spin_from_a(void)             { begin_spin_from_a_core(cpu.A, cpu.X); }
 void apply_drag_terms(void)              { apply_drag_terms_core(); }
 void update_grip_limits(void)            { update_grip_limits_core(); }
 void update_engine_revs(void)            { update_engine_revs_core(); }
