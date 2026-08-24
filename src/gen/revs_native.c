@@ -6901,12 +6901,10 @@ static void begin_spin_from_a_core(uint8_t severity, uint8_t savedX)
    --------------------------------------------------------------------------- */
 static void apply_drag_terms_core(void)
 {
-    /* $4C65-$4C6A — |model_accum_entry_hi|.  abs8 branches on the CALLER's N, so seed it from
-       the value's bit 7; result-only, so the exit flags/registers are scratch. */
+    /* $4C65-$4C6A — |model_accum_entry_hi| (abs8 on its own bit 7; $80 stays $80). */
     uint8_t entry = model_accum_entry_hi;
-    cpu.A = entry; cpu.N = (uint8_t)(entry >> 7);
-    abs8();
-    uint8_t magnitude = cpu.A;                   /* $4C6A — the magnitude, before the floor */
+    uint8_t magnitude = (entry & 0x80u)          /* $4C6A — the magnitude, before the floor */
+                        ? (uint8_t)(-(int)entry) : entry;
     math_hi = magnitude;
 
     /* $4C6B-$4C77 — floored at the road speed, doubled on a disturbed surface. */
