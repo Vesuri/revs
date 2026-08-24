@@ -1669,7 +1669,10 @@ static uint8_t mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint)
 static void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint);
 static void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint);
 static void fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn, uint8_t firstLine);
-static void plot_object_core(uint8_t slot);
+/* The object/slot-writer chain's exit ABI — A/X/Y + N/Z/V/C returned by value (defined here
+   early because plot_object_core's forward declaration needs it; see the slot-writer group). */
+typedef struct { uint8_t a, x, y, n, z, v, c; } SlotExit;
+static SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV);
 static void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect);
 
 /* The exit flags of a 16-bit binary add, returned by value so a core stays cpu-free; a shim
@@ -3118,7 +3121,11 @@ static void draw_track_object_core(uint8_t slot)
                rewrites N and Z, and nothing between them branches. */
             plot_line = mem[OBJECT_LINE + slot];
             proj_width  = (uint8_t)load_a(mem[OBJECT_WIDTH + slot]);
-            plot_object_core(slot);
+            {   /* draw_track_object_core still uses cpu (cluster 6g) — marshal the typed exit */
+                SlotExit po = plot_object_core(slot, cpu.Y, cpu.V);
+                cpu.A = po.a; cpu.X = po.x; cpu.Y = po.y;
+                cpu.N = po.n; cpu.Z = po.z; cpu.V = po.v; cpu.C = po.c;
+            }
         }
     }
 
@@ -7850,7 +7857,7 @@ static ContactExit note_object_contact_core(uint8_t threshold, uint8_t entryC)
    returns every escaping value and the thin shim replays it into cpu; pass-through registers
    (entry X/V/C on the reject arms) travel in as args and back out unchanged. */
 typedef struct { uint8_t a, y; } RejectExit;                   /* N/Z derive from a (bit7 set) */
-typedef struct { uint8_t a, x, y, n, z, v, c; } SlotExit;
+/* SlotExit is declared up by plot_object_core's forward declaration. */
 
 static void store_object_flags_core(uint8_t y, uint8_t a)
 {
@@ -8304,16 +8311,20 @@ static void plot_shape_edges_core(void)
    Entered with the object's SLOT in X and its four-cell argument block already set by
    draw_track_object: plot_x, plot_line, proj_width and plot_shape.
    --------------------------------------------------------------------------- */
-static void plot_object_core(uint8_t slot)
+/* Exit ABI is the full register+flag set (SlotExit).  Entry Y and V flow through the SMC-trap
+   exit (which writes neither); the normal exits carry plot_shape_edges' exit Y/V — that routine
+   is cluster-7 and still cpu-ABI, so its Y/V are captured at the call boundary below. */
+static SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV)
 {
-    int i;
+    int     i;
+    uint8_t v = entryV;
 
     /* $1FB4-$1FC5 — this object's four MODE 5 colour patterns, taken from the ROAD's own
-       surface colours; the source's entry 2 is then forced to $F0 (see the group header). */
+       surface colours; the source's entry 2 is then forced to $F0 (see the group header).
+       ⚠ The DEX/BPL's final X ($FF) is dead — $1FE0's `LDX #0` rewrites it before any read. */
     math_lo = slot;
     for (i = 3; i >= 0; i--)
         mem[COLOUR_PATTERN_TBL + i] = mem[SURFACE_COLOURS_TBL + i];
-    cpu.X = 0xFFu;                                   /* the DEX/BPL that ended the loop */
     mem[SURFACE_COLOURS_TBL + 2] = 0xF0u;
 
     /* $1FC6-$1FDD — pattern 1 is the object's OWN colour: a car takes it from its slot number,
@@ -8329,46 +8340,70 @@ static void plot_object_core(uint8_t slot)
        (near) object gets the whole viewport; a narrow one is stopped at the horizon.  Under
        $40 the width is quadrupled and the extra two places handed to scale_shape_vectors. */
     proj_width_shift = 0x00u;
-    cpu.X = 0x00u;                                   /* the default ceiling */
-    if (!cmp_ge(proj_width, horizon_half_width)) {   /* CMP; BCS skips the narrow-object arm */
-        uint8_t op = mem[0x1FE9];
-        if (op == 0xA6u)      cpu.X = horizon_extent;      /* unpatched: LDX horizon_extent */
-        else if (op == 0xA2u) cpu.X = mem[0x1FEA];         /* a circuit's own `LDX #imm` */
-        else { platform_smc_unhandled(0x1FE9, op); return; }
+    uint8_t ceiling  = 0x00u;                        /* LDX #0 — the default ceiling */
+    {
+        uint8_t pw = proj_width, hw = horizon_half_width;
+        if (pw < hw) {                               /* CMP; BCS skips the narrow-object arm */
+            uint8_t op = mem[0x1FE9];
+            if (op == 0xA6u)      ceiling = horizon_extent;   /* unpatched: LDX horizon_extent */
+            else if (op == 0xA2u) ceiling = mem[0x1FEA];      /* a circuit's own `LDX #imm` */
+            else {
+                /* SMC trap — a COMPARED return.  A and its N/Z come from the CMP just made,
+                   C=0 (pw < hw), X=0, and entry Y/V pass through untouched. */
+                platform_smc_unhandled(0x1FE9, op);
+                uint8_t d = (uint8_t)(pw - hw);
+                SlotExit e = { pw, 0x00u, entryY,
+                               (uint8_t)((d >> 7) & 1u), (uint8_t)(pw == hw), v, 0u };
+                return e;
+            }
+        }
     }
-    object_line_ceiling = cpu.X;
-    if (!cmp_ge(proj_width, 0x40u)) {                /* under $40: quadruple it, two extra places */
+    object_line_ceiling = ceiling;
+    if (proj_width < 0x40u) {                         /* under $40: quadruple it, two extra places */
         proj_width       = (uint8_t)(proj_width << 2);
         proj_width_shift = 0x02u;
     }
 
     /* $1FFA-$2000 — the shape, clamped to 9. */
-    cpu.X = (plot_shape >= 0x0Au) ? 0x09u : plot_shape;
+    uint8_t shapeIdx = (plot_shape >= 0x0Au) ? 0x09u : plot_shape;
 
     /* $2002-$2028 — and draw it.  ⭐ The loop re-enters HERE, below the clamp, so a shape over
-       9 draws shape 9 and then its own index (group header, item 5). */
+       9 draws shape 9 and then its own (unclamped) index (group header, item 5). */
     for (;;) {
-        object_shape_clamped = cpu.X;
-        mem[OBJ_VECTOR_CURSOR] = mem[SHAPE_VECTOR_START + cpu.X];
-        mem[OBJ_VECTOR_END]    = mem[SHAPE_VECTOR_START + 1 + cpu.X];
-        plot_ptr3_lo = mem[SHAPE_EDGE_START + cpu.X];
-        {   /* plot_object_core still uses cpu — marshal the typed exit back (cleaned in 6f) */
-            SlotExit sv = scale_shape_vectors_core(cpu.V);
-            cpu.A = sv.a; cpu.X = sv.x; cpu.Y = sv.y;
-            cpu.N = sv.n; cpu.Z = sv.z; cpu.V = sv.v; cpu.C = sv.c;
+        object_shape_clamped   = shapeIdx;
+        mem[OBJ_VECTOR_CURSOR]  = mem[SHAPE_VECTOR_START + shapeIdx];
+        mem[OBJ_VECTOR_END]     = mem[SHAPE_VECTOR_START + 1 + shapeIdx];
+        plot_ptr3_lo            = mem[SHAPE_EDGE_START + shapeIdx];
+
+        SlotExit sv = scale_shape_vectors_core(v);
+        if (sv.c) return sv;                          /* a vertex did not fit — its exit is ours */
+
+        plot_shape_edges_core();                      /* cluster-7, still cpu-ABI — */
+        uint8_t peY = cpu.Y;                          /* its exit Y and V escape this routine */
+        v = cpu.V;
+
+        /* $201E-$2028 — LDA object_shape_clamped; CMP #9.  Shape 9 loops to draw the unclamped
+           index too; otherwise the object is done. */
+        uint8_t osc  = object_shape_clamped;          /* CMP #9 sets A=osc, N/Z/C */
+        uint8_t oscN = (uint8_t)(((uint8_t)(osc - 0x09u) >> 7) & 1u);
+        uint8_t oscC = (uint8_t)(osc >= 0x09u);
+        if (osc != 0x09u) {                           /* not shape 9 — the object is done */
+            SlotExit e = { osc, plot_shape, peY, oscN, 0u, v, oscC };
+            return e;
         }
-        if (cpu.C) return;                           /* a vertex did not fit */
-        plot_shape_edges_core();
-        cpu.X = plot_shape;                          /* the UNCLAMPED shape index */
-        cmp_ge(object_shape_clamped, 0x09u);         /* LDA object_shape_clamped; CMP #9 */
-        if (!cpu.Z) return;                          /* not shape 9 — the object is done */
-        cpu.A = (uint8_t)load_a(track_direction);
-        if (cpu.N) return;                           /* $2027 — track_direction negative: stop */
+        uint8_t td = track_direction;                 /* LDA track_direction — N/Z */
+        if (td & 0x80u) {                             /* $2027 — negative: stop */
+            SlotExit e = { td, plot_shape, peY, 1u, (uint8_t)(td == 0u), v, oscC };
+            return e;
+        }
+        shapeIdx = plot_shape;                         /* re-enter with the UNCLAMPED index */
     }
 }
 
 /* The 6502-ABI shims. */
-void plot_object(void)          { plot_object_core(cpu.X); }
+void plot_object(void)          { SlotExit e = plot_object_core(cpu.X, cpu.Y, cpu.V);
+                                  cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
+                                  cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c; }
 void scale_shape_vectors(void)  { SlotExit e = scale_shape_vectors_core(cpu.V);
                                   cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
                                   cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c; }
