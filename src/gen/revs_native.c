@@ -5097,15 +5097,6 @@ void mark_line_surfaces(void)
 #define GAP_BRANCH_OPERAND 0x1DD5u   /* the non-zero-source arm's branch offset */
 #define GAP_FALLBACK       0x1DDCu   /* the colour substituted for a zero surface_colour_at */
 
-/* `value >= limit` through the 6502's CPY, which also leaves Y = value — surface_colour_at's
-   two line_attr arms end on one of these and the carry is part of their exit contract. */
-REVS_FLAG_OP int cpy_ge(uint8_t value, uint8_t limit)
-{
-    cpu.Y = value;
-    CPY(limit);
-    return cpu.C;
-}
-
 /* `value == limit` through the 6502's CPX, leaving X = value: fill_edge_column_run's loop
    test, and the last thing to touch the flags before it returns. */
 REVS_FLAG_OP int cpx_eq(uint8_t value, uint8_t limit)
@@ -5254,25 +5245,36 @@ void surface_colour_at(void)
    The ADC that does it is the last thing to write V, and V is live at every exit.
    =========================================================================== */
 
-static void column_gap_walk_core(void)
+static SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
 {
     unsigned column = mem[EDGE_COLUMN];
     unsigned storePtr;
     uint8_t fallback, offset;
+    uint8_t x = entryX;          /* surface_colour_at's escaping class, threaded across the walk */
+    uint8_t v;                   /* the entry ADC #$60 overflow, live at every exit below */
+    uint8_t a;                   /* the 6502's A: the last cell handled, or the dead LSR result */
+    uint8_t y;                   /* the scan-line cursor */
 
-    /* $1DAF-$1DB3 — there are only $28 source columns; above that there is nothing to fill. */
-    if (cmp_ge(column, 0x28u)) return;
+    /* $1DAF-$1DB3 — there are only $28 source columns; above that there is nothing to fill.
+       cmp_ge left A = column and the CMP #$28 flags; C = 1 on the taken (>=) arm. */
+    if (column >= 0x28u) {
+        uint8_t d = (uint8_t)(column - 0x28u);
+        SlotExit e = { (uint8_t)column, entryX, entryY, (uint8_t)((d >> 7) & 1u),
+                       (uint8_t)(column == 0x28u), entryV, 1u };
+        return e;
+    }
 
     /* $1DB5-$1DBE — plot_ptr = view_src_blocks + column * $80.  The 6502 spells this as
        (column + $60) then LSR/ROR to spread one bit into the low byte's top; the whole thing is
-       just $3000 + column*$80 as a 16-bit value.  The LSR/ROR flags and A are dead (the loop
-       below reloads Y then A), BUT the `ADC #$60` is the last op in the routine to write V and
-       nothing below it does (the loop is all LDA/CMP), so its overflow reaches the exit — replay
-       just that one flag (adc_overflow leaves cpu otherwise untouched). */
+       just $3000 + column*$80 as a 16-bit value.  The LSR leaves A = (column+$60)>>1 = plot_ptr's
+       high byte, which is the routine's exit A on the (fixture-unreachable) no-iteration path.
+       The `ADC #$60` is the last op to write V and nothing below it does (the loop is all
+       LDA/CMP), so its overflow reaches every exit. */
     { uint16_t plot_ptr = (uint16_t)(0x3000u + column * 0x80u);
       plot_ptr_hi = (uint8_t)(plot_ptr >> 8);
-      plot_ptr_lo = (uint8_t)plot_ptr; }
-    cpu.V = adc_overflow(column, 0x60u, 0);
+      plot_ptr_lo = (uint8_t)plot_ptr;
+      a = plot_ptr_hi; }
+    v = adc_overflow((uint8_t)column, 0x60u, 0);
 
     /* ⚠⚠ NOTHING IN THIS LOOP IS HOISTED, AND THAT IS MEASURED RATHER THAN CAUTIOUS.  The
        walk's own stores can land on the cells that drive it: a boundary-table pointer of
@@ -5281,51 +5283,66 @@ static void column_gap_walk_core(void)
        The three patch bytes at $1DD5/$1DDC/$1DDE are reachable the same way.  What IS hoisted
        is the hardware-window test, which collapses to one comparison per store instead of a
        bus_read/bus_write dispatch (CLAUDE.md §bus_read/bus_write). */
-    cpu.Y = span_line_cursor;
-    while (!cpy_eq(cpu.Y, mem[EDGE_BLOCK_START])) {
+    y = span_line_cursor;
+    for (;;) {
+        /* CPY #EDGE_BLOCK_START — the loop test.  On the equal exit its N/Z/C (0/1/1) are the
+           routine's exit flags; its carry (y >= end) is the trap path's exit C otherwise. */
+        uint8_t end   = mem[EDGE_BLOCK_START];
+        uint8_t loopC = (uint8_t)(y >= end);
+        if (y == end) {
+            SlotExit e = { a, x, y, 0u, 1u, v, 1u };
+            return e;
+        }
+
         unsigned srcBase = zp_pointer(MEM_plot_ptr_lo);
-        uint8_t  line    = cpu.Y;
+        uint8_t  line    = y;
         uint8_t  src;
 
         offset   = mem[GAP_BRANCH_OPERAND];
         fallback = mem[GAP_FALLBACK];
         storePtr = mem[GAP_PTR_OPERAND];
 
-        src = (uint8_t)load_a(seam_read((srcBase + line) & 0xFFFFu,
-                                        pointer_is_ram(srcBase)));
+        src = seam_read((srcBase + line) & 0xFFFFu, pointer_is_ram(srcBase));
+        a   = src;                                    /* LDA (plot_ptr),Y */
 
         if (src != 0) {
             /* $1DD4 — the patched branch: skip the cell, or map it into the table. */
-            if (offset == 0x09u) { cpu.Y = (uint8_t)(line - 1); continue; }   /* $1DDF */
+            if (offset == 0x09u) { y = (uint8_t)(line - 1); continue; }   /* $1DDF */
             /* ⚠ THE TRAP BELONGS HERE, not at the top: the branch is only reached once a
                non-zero source byte is found, so a column of zeroes never executes it and an
                unmodelled offset must leave A, Y and the flags as this LDA left them. */
             if (offset != 0xEFu) {
                 platform_smc_unhandled(0x1DD4, (uint16_t)(0x1DD6 + (int8_t)offset));
-                return;
+                SlotExit e = { src, x, line, (uint8_t)((src >> 7) & 1u),
+                               0u /* src != 0 */, v, loopC };
+                return e;
             }
             /* $1DC5 — the boundary-table pass: "all four columns" reads as empty. */
-            CMP(0x55u);
+            uint8_t stored;
+            if (src == 0x55u) { a = 0u; stored = 0u; }    /* CMP #$55 Z: LDA #0 */
+            else              { stored = src; }
             { unsigned altBase = zp_pointer(MEM_plot_ptr2_lo);
-              seam_write((altBase + line) & 0xFFFFu, pointer_is_ram(altBase),
-                         cpu.Z ? (uint8_t)load_a(0x00u) : src); }
-            cpu.Y = (uint8_t)(line - 1);
+              seam_write((altBase + line) & 0xFFFFu, pointer_is_ram(altBase), stored); }
+            y = (uint8_t)(line - 1);
             continue;
         }
 
         /* $1DD6 — an empty cell takes the surface's colour, or the fallback if it has none.
-           surface_colour_apply leaves the same cpu state the oracle gets through the shim. */
-        if (surface_colour_apply(line) == 0)
-            load_a(fallback);
+           surface_colour_at's class escapes in X; its colour byte is A. */
+        { SlotExit sc = surface_colour_at_core(line, mem[EDGE_COLUMN], x, v);
+          x = sc.x;
+          a = sc.a ? sc.a : fallback; }               /* colour, or load_a(fallback) if 0 */
         { unsigned storeBase = zp_pointer(storePtr);
-          seam_write((storeBase + line) & 0xFFFFu, pointer_is_ram(storeBase), cpu.A); }
-        cpu.Y = (uint8_t)(line - 1);
+          seam_write((storeBase + line) & 0xFFFFu, pointer_is_ram(storeBase), a); }
+        y = (uint8_t)(line - 1);
     }
 }
 
 void column_gap_walk(void)
 {
-    column_gap_walk_core();
+    SlotExit e = column_gap_walk_core(cpu.X, cpu.Y, cpu.V);
+    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
 }
 
 /* ===========================================================================
@@ -5344,7 +5361,9 @@ static void fill_column_gaps_core(uint8_t pointer, uint8_t branchOffset, uint8_t
     mem[GAP_PTR_OPERAND]    = pointer;        /* $1DA6 — STA (zp),Y's own zero-page number */
     mem[GAP_BRANCH_OPERAND] = branchOffset;   /* $1DA9 — which arm a non-zero byte takes */
     mem[GAP_FALLBACK]       = fallback;       /* $1DAC — the colour a zero surface becomes */
-    column_gap_walk_core();
+    /* $1DAF — falls straight through into the walk; the shim marshals cpu in and out, which is
+       exactly the fall-through the oracle sees (documented boundary until this caller converts). */
+    column_gap_walk();
 }
 
 void fill_column_gaps(void)
@@ -8860,7 +8879,7 @@ static void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
     /* $1D6F-$1D7B — every mode but 1 also closes the column's own gaps. */
     if (cpx_eq(mem[PVS_MODE], 0x01u)) return;
     mem[EDGE_COLUMN] = (uint8_t)(mem[EDGE_COLUMN] + 1u);
-    column_gap_walk_core();
+    column_gap_walk();                            /* still-cpu caller: shim marshals cpu in/out */
     mem[EDGE_COLUMN] = (uint8_t)(mem[EDGE_COLUMN] - 1u);
 
 prev_col:

@@ -3063,15 +3063,19 @@ static int test_seam_callees(void)
     }
 
     if (want("column_gap_walk")) {
-        int subFail = 0, walked = 0, skipped = 0, trapped = 0, offPage = 0, zpPtr = 0;
+        int subFail = 0, walked = 0, skipped = 0, trapped = 0, offPage = 0, zpPtr = 0, emptied = 0;
         for (t = 0; t < walkCases; t++) {
             Cpu6502 c = zero_cpu();
             unsigned pick;
             fill_random(pre);
             c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
             /* A column past $27 has no source block and the walk returns at once, so most
-               cases get a real one. */
-            pre[PRE_EDGE_COLUMN] = (xs() % 8) ? (uint8_t)(xs() % 0x28) : (uint8_t)xs();
+               cases get a real one — but the early-return arm must see the boundary VALUE $28
+               itself (`>= $28`, not `> $28`), which a uniform random byte hits ~1/256, so pin it. */
+            { unsigned r = xs() % 8;
+              pre[PRE_EDGE_COLUMN] = r < 6 ? (uint8_t)(xs() % 0x28)            /* in range */
+                                   : (r == 6 ? 0x28u                            /* the boundary */
+                                             : (uint8_t)(0x29u + xs() % 0xD7)); /* above it */ }
             /* The walk is Y down to mem[$82]: keep it a few dozen lines, not a few hundred. */
             pre[PRE_LINE_CURSOR] = (uint8_t)(0x10 + xs() % 0x40);
             pre[PRE_BLOCK_START] = (uint8_t)(pre[PRE_LINE_CURSOR] - 1 - xs() % 0x20);
@@ -3099,6 +3103,16 @@ static int test_seam_callees(void)
             if (pre[PRE_GAP_POINTER] != 0x70 && pre[PRE_GAP_POINTER] != 0x72) zpPtr++;
             /* ...and one case in eight aims plot_ptr2 into the hardware window. */
             if (xs() % 8 == 0) { pre[0x0072] = (uint8_t)xs(); pre[0x0073] = 0xFE; offPage++; }
+            /* One case in four with a real column zeroes the whole source-block region
+               ($3000-$4400, which contains surface_colours at $38FC): every cell then reads
+               empty AND surface_colour_at returns colour 0, so the walk takes the fallback
+               substitution ("a zero surface becomes GAP_FALLBACK") on every line — the one path
+               that a random, mostly-non-zero source almost never reaches. */
+            if (pre[PRE_EDGE_COLUMN] < 0x28 && xs() % 4 == 0) {
+                memset(&pre[0x3000], 0, 0x1400);
+                pre[PRE_GAP_FALLBACK] = 0x99;   /* non-zero, so dropping the substitution shows */
+                emptied++;
+            }
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
             c.D = 0;
             { int before = subFail;
@@ -3113,16 +3127,16 @@ static int test_seam_callees(void)
                        pre[PRE_HORIZON_EXTENT]); }
         }
         fail += subFail;
-        if (!walked || !skipped || !trapped || !offPage || !zpPtr) {
+        if (!walked || !skipped || !trapped || !offPage || !zpPtr || !emptied) {
             printf("[VACUOUS] column_gap_walk: %d table-pass, %d block-pass, %d trap, "
-                   "%d into SHEILA, %d random zp pointer — all must be non-zero\n",
-                   walked, skipped, trapped, offPage, zpPtr);
+                   "%d into SHEILA, %d random zp pointer, %d empty-source — all must be non-zero\n",
+                   walked, skipped, trapped, offPage, zpPtr, emptied);
             fail++;
         }
         printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
-               "(%d table-pass, %d block-pass, %d trap, %d SHEILA, %d random zp)\n",
+               "(%d table-pass, %d block-pass, %d trap, %d SHEILA, %d random zp, %d empty-src)\n",
                "column_gap_walk", walkCases, subFail, walked, skipped, trapped,
-               offPage, zpPtr);
+               offPage, zpPtr, emptied);
     }
 
     if (want("fill_column_gaps")) {
