@@ -2943,6 +2943,10 @@ static void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
        what offsets it, and what leaves model_accum_delta_lo/hi behind. */
     stage_accum_delta_core();
     update_grip_limits_core();
+    /* MOS-seam replay: update_grip_limits leaves Y = the ANDed surface bytes ($4C46), which
+       update_engine_revs preserves and update_slip_sound's OSBYTE 21 (sound_stop_channel) then
+       passes to the MOS.  The cpu-free grip core no longer leaves it in cpu, so reconstruct it here. */
+    cpu.Y = (uint8_t)(surface_change_0 & surface_change_1);
     update_engine_revs_core();
     update_slip_sound_core(0x01);
 
@@ -6962,10 +6966,9 @@ static void update_grip_limits_core(void)
 {
     int axle;
 
-    /* $4BD1 — LDY pedal_mode.  The C below tests pedal_mode directly, but the Y REGISTER this
-       loads is live until the axle loop's own LDY ($4C46) overwrites it, so it rides into
-       begin_spin ($4C21) as that sound call's Y.  Reconstruct it (mul8 preserves Y). */
-    cpu.Y = pedal_mode;
+    /* $4BD1 — LDY pedal_mode.  Dead: the only thing that could read it before the axle loop's own
+       LDY ($4C46) is begin_spin's sound call, but that reaches OSWORD 7 which loads its own Y (the
+       control-block pointer) before any read — so nothing observes this Y. */
 
     /* $4BCF-$4BE8 — the load term (only while braking), and its negative for the other axle.
        The three LSRs sign-extend wheel_load, i.e. an arithmetic `>> 3`. */
@@ -6986,11 +6989,9 @@ static void update_grip_limits_core(void)
         newDisturb = (uint8_t)((((unsigned)bus_read(VIA_T1_LOW) * road_speed) >> 8) & 0x07u);
         if (newDisturb == 0u) newDisturb = 1u;            /* $4C0F — never 0 once the arm runs */
         if (oldDisturb == 0u && drive_state == 0u && (section_jump_history & 0x80u)) {
-            /* begin_spin ($4DC9) is reached with X still holding the disturbance value (its
-               sound_queue parks that X in sound_saved_x, $0B46); Y still holds pedal_mode from the
-               LDY at the top.  Reconstruct the X input this 6502 hook path reads before the call. */
-            cpu.X = newDisturb;
-            begin_spin_from_a_core(road_speed, cpu.X);    /* $4C21 */
+            /* begin_spin ($4DC9) is reached with X still holding the disturbance value, which its
+               sound_queue parks in sound_saved_x ($0B46) — passed explicitly as begin_spin's savedX. */
+            begin_spin_from_a_core(road_speed, newDisturb);    /* $4C21 */
         }
     }
     grip_disturbance = newDisturb;                         /* $4C24 */
@@ -7012,12 +7013,12 @@ static void update_grip_limits_core(void)
         mem[GRIP_LIMIT_ALT + axle] = (uint8_t)(((unsigned)limit * 0xF3u) >> 8);  /* $4C57-$4C5A */
     }
 
-    /* $4C46 — each axle iteration reloads Y from the ANDed surface bytes (0xFF in the both-$FF
-       arm, which is the same value), and mul8 preserves it, so the loop's last pass (axle 0)
-       leaves Y = surfaceBoth as the routine's exit Y.  That Y survives update_engine_revs and is
-       what update_slip_sound's OSBYTE 21 logs — the one escaping register, reconstructed here.
-       (Verified against HEAD's pre-idiomatic core, whose $4C46 LDY this reproduces.) */
-    cpu.Y = surfaceBoth;
+    /* $4C46 — each axle iteration reloads Y from the ANDed surface bytes (0xFF in the both-$FF arm,
+       which is the same value), and mul8 preserves it, so the loop's last pass (axle 0) leaves
+       Y = surfaceBoth as the routine's exit Y.  That Y survives update_engine_revs and is what
+       update_slip_sound's OSBYTE 21 logs — the one escaping register.  It is NOT part of this
+       result-only fixture, so it is reconstructed by the caller that consumes it (the shim, and
+       apply_driving_model_core at the update_slip_sound seam) rather than written here. */
 }
 
 /* ---------------------------------------------------------------------------
@@ -7498,7 +7499,12 @@ void scale_by_track_gradient(void)       { scale_by_track_gradient_core(cpu.A, c
 void begin_spin(void)                    { begin_spin_from_a_core(road_speed, cpu.X); }
 void begin_spin_from_a(void)             { begin_spin_from_a_core(cpu.A, cpu.X); }
 void apply_drag_terms(void)              { apply_drag_terms_core(); }
-void update_grip_limits(void)            { update_grip_limits_core(); }
+void update_grip_limits(void)
+{
+    update_grip_limits_core();
+    /* $4C46 exit Y = the ANDed surface bytes — the one escaping register (see the core). */
+    cpu.Y = (uint8_t)(surface_change_0 & surface_change_1);
+}
 void update_engine_revs(void)            { update_engine_revs_core(); }
 void update_camera_and_drive_state(void) { update_camera_and_drive_state_core(); }
 
