@@ -1985,13 +1985,12 @@ static uint8_t point_distance_hypot_apply(void)
     }
     point_dist_lo = (uint8_t)d.dist;
     point_dist_hi = (uint8_t)(d.dist >> 8);
-    cpu.A         = (uint8_t)(d.dist >> 8);           /* live: road_edge_walk's running nearest */
-    return cpu.A;
+    return (uint8_t)(d.dist >> 8);       /* the distance high byte — the callers' live output */
 }
 
 void point_distance_hypot(void)
 {
-    point_distance_hypot_apply();
+    cpu.A = point_distance_hypot_apply();
 }
 
 /* ===========================================================================
@@ -2007,8 +2006,6 @@ void point_distance_hypot(void)
    =========================================================================== */
 static uint8_t emit_edge_bearing_core(uint8_t slot)
 {
-    cpu.Y = slot;         /* entered with Y = slot (the LDY at the call) and Y is unchanged to
-                             exit — the walk reads it back, so it is a live output */
     /* $23C0-$23CC — the point's angle FROM WHERE THE CAR POINTS: bearing - car_heading, one
        16-bit subtract (binary on the render path — docs/static-map.md §Decimal mode). */
     uint16_t rel = (uint16_t)(((unsigned)bearing_lo | ((unsigned)bearing_hi << 8))
@@ -2021,7 +2018,9 @@ static uint8_t emit_edge_bearing_core(uint8_t slot)
 
 void emit_edge_bearing(void)
 {
-    emit_edge_bearing_core(cpu.Y);
+    /* Y is unchanged to exit — entered with the slot in Y, the core never touches it, so the
+       walk still reads the same slot back; A comes out as the point's distance high byte. */
+    cpu.A = emit_edge_bearing_core(cpu.Y);
 }
 
 /* ===========================================================================
@@ -2039,7 +2038,10 @@ static uint8_t emit_edge_bearing_at_cursor_core(uint8_t sectionByte)
 
 void emit_edge_bearing_at_cursor(void)
 {
-    emit_edge_bearing_at_cursor_core(cpu.X);
+    /* the fallen-into emit_edge_bearing emits at edge_cursor, so Y exits = edge_cursor; A is the
+       point's distance high byte. */
+    cpu.A = emit_edge_bearing_at_cursor_core(cpu.X);
+    cpu.Y = edge_cursor;
 }
 
 /* ===========================================================================
