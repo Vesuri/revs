@@ -2939,13 +2939,23 @@ static void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
     model_accum_entry_lo = model_accum_lo;
     model_accum_entry_hi = model_accum_hi;
 
-    /* $46B8-$46CD — the speed split.  abs16_math negates (math_lo, A) in place when A is
-       negative, so math_lo has to be re-read after the call, not before.  Every register and
-       flag this block leaves is dead: stage_accum_delta opens with `LDA` and `LDY #$58`. */
+    /* $46B8-$46CD — the speed split.  |car_speed| as a 16-bit sign-magnitude value: abs16_math
+       negates the (hi:lo) pair in place when hi is negative (D=0), and is a no-op otherwise.
+       road_speed = |hi|, road_speed_frac = |lo|.  Every register and flag this block leaves is
+       dead: stage_accum_delta opens with `LDA` and `LDY #$58`. */
     math_lo = car_speed_lo;
-    load_a(car_speed_hi);
-    abs16_math();
-    road_speed      = cpu.A;
+    if (car_speed_hi & 0x80u) {                         /* negative: neg16_math */
+        uint16_t v = (uint16_t)(0u - (uint16_t)(((uint16_t)car_speed_hi << 8) | car_speed_lo));
+        math_hi         = car_speed_hi;                 /* neg16_math writes math_hi = the original hi.
+                                                           Faithful but dead scratch: stage_accum_delta
+                                                           overwrites math_hi before any read, so a sabotage
+                                                           of THIS byte alone is unobservable (kept per the
+                                                           scratch-write rule; road_speed/math_lo below ARE live). */
+        math_lo         = (uint8_t)v;                   /* the negated low byte */
+        road_speed      = (uint8_t)(v >> 8);            /* the negated high byte */
+    } else {                                            /* non-negative: abs16_math is a no-op */
+        road_speed      = car_speed_hi;                 /* math_lo/math_hi untouched */
+    }
     road_speed_frac = math_lo;
     wheel_spin_rate = road_speed ? road_speed : (uint8_t)(math_lo & 0xF0);
 
@@ -2991,7 +3001,7 @@ static void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
 
     /* $4706-$4717 — off power: elements 5..7 are zeroed rather than integrated.  The loop's
        exit registers (X = $FF, A = 0, N set) are dead — apply_drag_terms opens with `LDA`. */
-    if (cmp_ge(drive_state, 0x02)) {
+    if (drive_state >= 0x02u) {                         /* $4706 CMP #2 (unsigned; flags dead) */
         int element;
         for (element = 7; element >= 5; element--) {
             mem[MODEL_STATE_LO + element] = 0;
