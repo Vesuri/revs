@@ -68,7 +68,7 @@ caller and written at the code (V-escape rule + PHP-residue rule from the prior 
 | 3 | Text / screen-address (`mode5_addr`, `mode5_addr_for_cell`, `vdu_char_emit`/`_wide`/`_def`, `draw_gear_indicator`, `adc_read`) | 7 | ✅ |
 | 4 | Slip / sound (`clamp_slip_to_grip`, `derive_slip_reference`, `check_wheel_slip`, `store_slip_*`, `update_slip_sound`, `sound_queue`, `sound_stop_channel`, `sound_osword`) | 11 | ✅ |
 | 5 | Sub-models / physics (`begin_spin_from_a`, `update_camera_and_drive_state`, `update_engine_revs`, `apply_driving_model`, `compute_car_angles`, `integrate_*`, `apply_drag_terms`, `update_grip_limits`, `rotate_*`, `stage_accum_delta`, `model_integrate_element`, `scale_by_track_gradient`, `apply_angle_term_at`, `rotate_state_pair`) | 16 | ✅ |
-| 6 | Objects / signs (`build_road_sign`, `write_object_slot`, `scale_shape_vectors`, `build_sign_origin`, `note_object_contact`, `store_object_flags`, `reject_object_slot`, `draw_track_object`, `plot_object`) | ~9 | ☐ |
+| 6 | Objects / signs (`build_road_sign`, `write_object_slot`, `scale_shape_vectors`, `build_sign_origin`, `note_object_contact`, `store_object_flags`, `reject_object_slot`, `draw_track_object`, `plot_object`) | 9 | ✅ |
 | 7 | View pipeline (`fill_object_gap`, `plot_shape_edges`, `plot_view_src_line`, `mark_line_surfaces`, `fill_line_attr`, `fill_edge_column_run`, `column_gap_walk`, `surface_colour_at`, `view_paint_lines`, `edge_x_offscreen`, `shift_near_edge_points`, `emit_edge_width_offset`, `emit_edge_bearing`, `road_edge_walk`) | ~14 | ☐ |
 | 8 | Computational helpers still on `cpu` (`abs8`, `abs16_math`, `mul8_*`, `mul16_by_1_5`, `scale16_by_y`, `div16by8`, `horizon_half_width_at`, `road_edge_side`, `derive_endpoint`, `place_car_world_coords`, `place_player_in_section`, `road_edge_walk_subdivide`, `paint_lines_short`, …) | ~20 | ☐ |
 | 9 | **Seam relocation** — thin shims → `revs_native_seam.c`; shared header; Makefiles; seam doc | — | ☐ |
@@ -217,3 +217,48 @@ The physics sub-models. All 16 cores are cpu-free; the only residual `cpu.` in t
 Gate (all sub-commits): full `make validate` 0-mismatch; ≥4 logic sabotages FAIL with distinct-behaviour
 counts; `make determinism` + `make determinism-drive` byte-identical (the stack-scratch skip was not
 exercised — no `PHA`/`PLA` removed this cluster).
+
+## Cluster-6 lessons — a cross-cluster callee is a temporary cpu boundary, and the dependency DAG ≠ the cluster order
+
+The object/sign chain (`store_object_flags`, `reject_object_slot`, `write_object_slot`,
+`build_road_sign`, `note_object_contact`, `build_sign_origin`, `scale_shape_vectors`, `plot_object`,
+`draw_track_object`) is now cpu-free typed C. All nine return their escaping state by value
+(`SlotExit{a,x,y,n,z,v,c}`, `ContactExit`, `SignOriginExit`, `RejectExit`); the thin shims and every
+not-yet-converted caller marshal cpu↔struct.
+
+- **A callee in a LATER cluster is a documented cpu boundary you read at the call site, not a blocker.**
+  `plot_object_core`'s two normal exits carry `plot_shape_edges`' exit Y and V, and that routine is
+  **cluster 7** — still a cpu-writing `void`. So `plot_object_core` calls it and immediately captures
+  `cpu.Y`/`cpu.V` at the boundary (`peY`, `v = cpu.V`), exactly as the MOS sites keep a small cpu block.
+  The core is otherwise cpu-free; when cluster 7 gives `plot_shape_edges` a struct return, the boundary
+  read is replaced, not rewritten. Don't reorder the whole campaign to chase a leaf — read the leaf's
+  cpu exit where it is called and move on.
+
+- **The dependency DAG (leaves→roots) is NOT the cluster numbering.** `plot_object` (cluster 6) depends
+  on `plot_shape_edges` (cluster 7). Converting a root before its leaf just means the root keeps ONE
+  boundary read until the leaf lands — acceptable and expected in an incremental campaign. What you must
+  NOT do is assume the leaf is already a struct: grep the callee's signature before marshalling.
+
+- **Entry registers that PASS THROUGH must become inputs.** `draw_track_object`'s empty-slot exit leaves
+  entry V and C untouched (only A and the closing `arg_x` X/N/Z are written), and every path leaves entry
+  Y untouched until `arg_x`. So the core takes `entryY, entryV, entryC` as args and threads them to the
+  exit. The SMC-trap exit in `plot_object` is the same: `X=0`, A/N/Z from the CMP just made, C=0, and
+  entry Y/V pass straight through — a COMPARED return (the SMC-random fixtures reach it), so its register
+  set must be exact, not left to chance.
+
+- **A hang is not a usable sabotage.** `plot_object`'s shape-9 re-entry sabotage (`shapeIdx = 9` instead
+  of the unclamped `plot_shape`) makes the outer loop spin forever on a shape-9 case rather than diffing
+  — it proves the path is reached but produces no mismatch line. Drop it; the other five logic sabotages
+  (colour byte, CMP threshold, clamp bound, scale threshold, exit-C polarity) each FAIL distinct. The
+  fixture excludes shape 9 for the SAME reason (the oracle spins on random shape tables) — a sabotage
+  that reintroduces the spin defeats its own measurement.
+
+- **`shift_pair_left` is a keeper.** The `ASL math_lo / ROL A` x4 idiom stays a small named helper with
+  the macros inside it: it writes `math_lo` (a real scratch effect the oracle makes and the plotter
+  shares) and its cpu.A/flags are dead at every draw_track_object exit. Calling it from a cpu-free core
+  is the sanctioned narrow exception, like `adc_overflow`/`load_a`.
+
+Gate (all sub-commits): full `make validate` 0-mismatch; ≥4 (here 5–6) logic sabotages FAIL with
+distinct-behaviour counts (`rm .o + binary` before every build); `make determinism` +
+`make determinism-drive` byte-identical (no `PHA`/`PLA` removed — the stack-scratch skip was not
+exercised).
