@@ -1672,6 +1672,10 @@ static void fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn, u
 static void plot_object_core(uint8_t slot);
 static void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect);
 
+/* The exit flags of a 16-bit binary add, returned by value so a core stays cpu-free; a shim
+   (or a caller whose own exit ABI is this add's) replays them onto the cpu. */
+typedef struct { uint8_t hi, carry, overflow, neg, zero; } AddFlags;
+
 /* apply_driving_model's sub-models (twins #58-#86), all defined further down.  It reaches
    every one through its core so the whole chain is one native call sequence, not shim hops. */
 static void compute_car_angles_core(uint8_t headingHi, uint8_t headingLo);
@@ -1680,12 +1684,12 @@ static void stage_accum_delta_core(void);
 static void update_grip_limits_core(void);
 static void update_engine_revs_core(void);
 static void update_slip_sound_core(uint8_t axle);
-static void rotate_accum_by_steer_core(void);
-static void rotate_pair_a_by_steer_core(void);
+static AddFlags rotate_accum_by_steer_core(void);
+static AddFlags rotate_pair_a_by_steer_core(void);
 static void damp_and_derive_loads_core(void);
 static void apply_drag_terms_core(void);
-static void integrate_state_rates_core(void);
-static void integrate_car_position_core(void);
+static AddFlags integrate_state_rates_core(void);
+static AddFlags integrate_car_position_core(void);
 static void update_camera_and_drive_state_core(void);
 
 /* `value >= limit` through the 6502's CPX, which also leaves X = value.  The near-slot clamps
@@ -2955,6 +2959,11 @@ static void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
     /* $46F8-$4703 — and the sub-models that want the accumulator at its new value.  Each of the
        two rotations ends in model_integrate_element, on element 8 and on element $0A. */
     rotate_accum_by_steer_core();
+    /* MOS-seam replay: rotate_accum_by_steer ends in model_integrate_element on element 8, leaving
+       Y = 8 (its last apply_angle_term source index).  update_slip_sound's silence arm reaches
+       OSBYTE 21 (sound_stop_channel) with Y still holding it — a dead input the MOS ignores, but
+       the real 6502 passes it, so it is reconstructed here now the core no longer leaves it in cpu. */
+    cpu.Y = 8u;
     update_slip_sound_core(0x00);
     rotate_pair_a_by_steer_core();
     damp_and_derive_loads_core();
@@ -5637,22 +5646,29 @@ void mul16_by_1_5(void)
    above have been accumulating into, so this is the model's integration step; the two
    rotations ($47A5/$47C5) each end with one.
    --------------------------------------------------------------------------- */
-static void model_integrate_element_core(uint8_t slot)
+static AddFlags add16_flags(uint8_t ah, uint8_t mh, unsigned sum)
+{
+    uint8_t  hr = (uint8_t)(sum >> 8);
+    AddFlags f;
+    f.hi       = hr;
+    f.carry    = (uint8_t)(sum > 0xFFFFu);
+    f.overflow = (uint8_t)(((~(ah ^ mh) & (ah ^ hr)) >> 7) & 1u);
+    f.neg      = (uint8_t)((hr >> 7) & 1u);
+    f.zero     = (uint8_t)(hr == 0);
+    return f;
+}
+
+static AddFlags model_integrate_element_core(uint8_t slot)
 {
     /* $47E5 — element[slot] += element[14], one 16-bit binary add (D=0 on the driving-model
-       path, docs/static-map.md §Decimal mode); the HIGH add's flags are the exit flags, so they
-       are replayed from the two high bytes. */
+       path, docs/static-map.md §Decimal mode); the HIGH add's flags are the exit flags, returned
+       for the shim / caller to replay. */
     uint8_t  ah = mem[MODEL_STATE_HI + slot], mh = mem[MODEL_STATE_HI + 14];
     unsigned sum = (unsigned)(((uint16_t)ah << 8) | mem[MODEL_STATE_LO + slot])
                  + (unsigned)(((uint16_t)mh << 8) | mem[MODEL_STATE_LO + 14]);
-    uint8_t  hr  = (uint8_t)(sum >> 8);
     mem[MODEL_STATE_LO + slot] = (uint8_t)sum;
-    mem[MODEL_STATE_HI + slot] = hr;
-    cpu.A = hr;
-    cpu.C = (uint8_t)(sum > 0xFFFFu);
-    cpu.V = (uint8_t)(((~(ah ^ mh) & (ah ^ hr)) >> 7) & 1u);
-    cpu.N = (uint8_t)((hr >> 7) & 1u);
-    cpu.Z = (uint8_t)(hr == 0);
+    mem[MODEL_STATE_HI + slot] = (uint8_t)(sum >> 8);
+    return add16_flags(ah, mh, sum);
 }
 
 /* ---------------------------------------------------------------------------
@@ -5751,9 +5767,9 @@ static void apply_angle_term_core(uint8_t dest, uint8_t angle, uint8_t source)
 
 static void apply_angle_term_at_core(uint8_t mode, uint8_t angle)
 {
-    cpu.Y = mem[MODEL_SRC_SLOT];                /* $486D */
+    uint8_t source = mem[MODEL_SRC_SLOT];       /* $486D LDY — a local; exit Y is dead here */
     mem[MUL_SIGN] = mode;                     /* $486F */
-    apply_angle_term_body(angle, cpu.Y);        /* $4871 JMP $4876 */
+    apply_angle_term_body(angle, source);       /* $4871 JMP $4876 */
 }
 
 /* ---------------------------------------------------------------------------
@@ -5777,7 +5793,11 @@ static int kbd_test_key_core(uint8_t keyCode)
 }
 
 /* The 6502-ABI shims. */
-void model_integrate_element(void) { model_integrate_element_core(cpu.X); }
+void model_integrate_element(void)
+{
+    AddFlags f = model_integrate_element_core(cpu.X);   /* X = slot; X/Y unchanged at exit */
+    cpu.A = f.hi; cpu.C = f.carry; cpu.V = f.overflow; cpu.N = f.neg; cpu.Z = f.zero;
+}
 void add_signed_into_element(void) { add_signed_into_element_core(cpu.Y, cpu.N ? 0x80u : 0x00u); }
 void apply_angle_term(void)      { apply_angle_term_core(cpu.A, cpu.X, cpu.Y); }
 void apply_angle_term_at(void)   { apply_angle_term_at_core(cpu.A, cpu.X); }
@@ -5876,7 +5896,7 @@ static void stage_accum_delta_core(void)
    (10, 12) one, i.e. the two products swap signs between the two rotations, which is what
    makes one turn the opposite way from the other.
    --------------------------------------------------------------------------- */
-static void rotate_accum_by_steer_core(void)
+static AddFlags rotate_accum_by_steer_core(void)
 {
     /* $47A5-$47AF — element 14 = -(element 9 * steer):  bit 7 negates, bit 6 clear stores. */
     mem[MUL_SIGN] = 0x80u;
@@ -5884,13 +5904,12 @@ static void rotate_accum_by_steer_core(void)
     /* $47B2-$47BC — element 9 += element 8 * steer:  bit 6 set accumulates instead. */
     mem[MUL_SIGN] = 0x40u;
     apply_angle_term_core(9, STEER_ANGLE, 8);
-    /* $47BF-$47C1 — and element 8 advances by the delta just built. */
-    cpu.Y = 8u;                                 /* last apply_angle_term left Y = its source (8) */
-    cpu.X = 8u;                                 /* $47BF — X is live at the exit */
-    model_integrate_element_core(8);
+    /* $47BF-$47C1 — and element 8 advances by the delta just built; its add's flags are the
+       exit flags (element/index 8 in X, last source 8 in Y — replayed at the shim). */
+    return model_integrate_element_core(8);
 }
 
-static void rotate_pair_a_by_steer_core(void)
+static AddFlags rotate_pair_a_by_steer_core(void)
 {
     /* $47C5-$47CF — element 14 = +(element 12 * steer), stored. */
     mem[MUL_SIGN] = 0x00u;
@@ -5898,10 +5917,9 @@ static void rotate_pair_a_by_steer_core(void)
     /* $47D2-$47DC — element 12 -= element 10 * steer. */
     mem[MUL_SIGN] = 0xC0u;
     apply_angle_term_core(12, STEER_ANGLE, 10);
-    /* $47DF-$47E1 */
-    cpu.Y = 10u;                                /* last apply_angle_term left Y = its source (10) */
-    cpu.X = 10u;                                /* $47DF — X is live at the exit */
-    model_integrate_element_core(10);
+    /* $47DF-$47E1 — element 10 advances; its add's flags are the exit flags (index 10 in X,
+       last source 10 in Y — replayed at the shim). */
+    return model_integrate_element_core(10);
 }
 
 /* ---------------------------------------------------------------------------
@@ -6024,8 +6042,9 @@ static void rotate_state_pair_core(uint8_t dest, uint8_t source, uint8_t mode)
     /* $48E4-$48EB — dest + 1 += source * angle 0 with the OPPOSITE sign. */
     mem[MODEL_SRC_SLOT]--;
     apply_angle_term_at_core((uint8_t)(mem[MODEL_ROT_MODE] ^ 0x80u), 0u);
-
-    cpu.X = 0u;                                 /* $48E4's DEX — X is live at the exit */
+    /* $48E4's DEX leaves X = 0, but the exit registers are DEAD (the only callers, $46A8/$471C in
+       apply_driving_model, overwrite A/N/Z and reload X/Y before any read; $48C7 is never JSR'd)
+       and every fixture here is result-only — so nothing to replay. */
 }
 
 /* ---------------------------------------------------------------------------
@@ -6041,7 +6060,7 @@ static void rotate_state_pair_core(uint8_t dest, uint8_t source, uint8_t mode)
    ⚠ The name's second half is a misnomer worth keeping in mind — what $4927 advances is the
    HEADING, not a position (disasm/symbols.csv).
    --------------------------------------------------------------------------- */
-static void integrate_car_position_core(void)
+static AddFlags integrate_car_position_core(void)
 {
     uint8_t slot;
 
@@ -6072,22 +6091,16 @@ static void integrate_car_position_core(void)
         mem[VIEW_ORIGIN_LO + comp]   = (uint8_t)(sum >> 8);
         mem[VIEW_ORIGIN_HI + comp]   = (uint8_t)(sum >> 16);
     }
-    cpu.Y = 0xFEu;                     /* $4922/$4923's two DEYs — both leave holding the */
-    cpu.X = 0xFFu;                     /* $4924's DEX          — value that failed the test */
+    /* $4922/$4923's two DEYs leave Y = $FE and $4924's DEX leaves X = $FF (replayed at the shim). */
 
     /* $4927-$4934 — and the heading advances by element 2, the frame's heading step.  The HIGH
-       add's A / N / V / Z / C are this routine's exit flags. */
+       add's A / N / V / Z / C are this routine's exit flags, returned for the shim to replay. */
     { uint8_t  hc = car_heading_hi, hm = heading_step_hi;
       unsigned h  = (unsigned)(((uint16_t)hc << 8) | car_heading_lo)
                   + (unsigned)(((uint16_t)hm << 8) | heading_step_lo);
-      uint8_t  hr = (uint8_t)(h >> 8);
       car_heading_lo = (uint8_t)h;
-      car_heading_hi = hr;
-      cpu.A = hr;
-      cpu.C = (uint8_t)(h > 0xFFFFu);
-      cpu.V = (uint8_t)(((~(hc ^ hm) & (hc ^ hr)) >> 7) & 1u);
-      cpu.N = (uint8_t)((hr >> 7) & 1u);
-      cpu.Z = (uint8_t)(hr == 0);
+      car_heading_hi = (uint8_t)(h >> 8);
+      return add16_flags(hc, hm, h);
     }
 }
 
@@ -6101,9 +6114,10 @@ static void integrate_car_position_core(void)
 
    The shift's own carry out is discarded: $495E clears it before the add.
    --------------------------------------------------------------------------- */
-static void integrate_state_rates_core(void)
+static AddFlags integrate_state_rates_core(void)
 {
     uint8_t slot;
+    AddFlags f = { 0, 0, 0, 0, 0 };
 
     /* All binary 24-bit adds: D = 0 on the driving-model path (docs/static-map.md §Decimal
        mode).  The LAST pass (slot 0) leaves A / C / V live; the DEX below rewrites N / Z. */
@@ -6132,26 +6146,45 @@ static void integrate_state_rates_core(void)
         mem[MODEL_STATE_LO + slot]   = (uint8_t)(sum >> 8);
         mem[MODEL_STATE_HI + slot]   = hr;
         /* the HIGH byte add's A / C / V — live only from the last pass (slot 0). */
-        cpu.A = hr;
-        cpu.C = (uint8_t)(sum > 0xFFFFFFu);
-        cpu.V = (uint8_t)(((~(ah ^ mh) & (ah ^ hr)) >> 7) & 1u);
+        f.hi       = hr;
+        f.carry    = (uint8_t)(sum > 0xFFFFFFu);
+        f.overflow = (uint8_t)(((~(ah ^ mh) & (ah ^ hr)) >> 7) & 1u);
     }
-    cpu.Y = 0u;                        /* $4956's DEY ran until Z — Y leaves at zero */
-    cpu.X = 0xFFu;                     /* $4974's DEX (X: 0 -> $FF) — and ITS N/Z are the */
-    cpu.N = 1u;                        /* exit flags: $FF has bit 7 set, and is non-zero */
-    cpu.Z = 0u;
+    /* N / Z are NOT the add's — the shim replays $4974's DEX (X: 0 -> $FF). */
+    return f;
 }
 
 /* The 6502-ABI shims. */
 void stage_accum_delta(void)      { stage_accum_delta_core(); }
-void rotate_accum_by_steer(void)  { rotate_accum_by_steer_core(); }
-void rotate_pair_a_by_steer(void) { rotate_pair_a_by_steer_core(); }
+void rotate_accum_by_steer(void)
+{
+    AddFlags f = rotate_accum_by_steer_core();  /* ends in model_integrate_element on element 8 */
+    cpu.X = 8u; cpu.Y = 8u;                      /* X live at exit; Y = last apply_angle_term src */
+    cpu.A = f.hi; cpu.C = f.carry; cpu.V = f.overflow; cpu.N = f.neg; cpu.Z = f.zero;
+}
+void rotate_pair_a_by_steer(void)
+{
+    AddFlags f = rotate_pair_a_by_steer_core(); /* ends in model_integrate_element on element 10 */
+    cpu.X = 10u; cpu.Y = 10u;                    /* X live at exit; Y = last apply_angle_term src */
+    cpu.A = f.hi; cpu.C = f.carry; cpu.V = f.overflow; cpu.N = f.neg; cpu.Z = f.zero;
+}
 void damp_and_derive_loads(void)  { damp_and_derive_loads_core(); }
 void rotate_state_pair(void)      { rotate_state_pair_core(cpu.A, cpu.Y, cpu.X); }
 void rotate_state_0_into_8(void)  { rotate_state_pair_core(8u, 0u, 0xC0u); }
 void rotate_state_6_into_3(void)  { rotate_state_pair_core(3u, 6u, 0x40u); }
-void integrate_car_position(void) { integrate_car_position_core(); }
-void integrate_state_rates(void)  { integrate_state_rates_core(); }
+void integrate_car_position(void)
+{
+    AddFlags f = integrate_car_position_core();  /* ends in the heading add (car_heading += step) */
+    cpu.Y = 0xFEu; cpu.X = 0xFFu;                /* $4922/$4923 two DEYs -> $FE; $4924 DEX -> $FF */
+    cpu.A = f.hi; cpu.C = f.carry; cpu.V = f.overflow; cpu.N = f.neg; cpu.Z = f.zero;
+}
+void integrate_state_rates(void)
+{
+    AddFlags f = integrate_state_rates_core();   /* last pass leaves A / C / V of the high add live */
+    cpu.A = f.hi; cpu.C = f.carry; cpu.V = f.overflow;
+    cpu.Y = 0u;                                  /* $4956's DEY ran until Z — Y leaves at zero */
+    cpu.X = 0xFFu; cpu.N = 1u; cpu.Z = 0u;       /* $4974's DEX (0 -> $FF); ITS N/Z are the exit flags */
+}
 
 /* ===========================================================================
    TWINS #67-#78 — THE SLIP/SOUND CLUSTER
