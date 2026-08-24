@@ -5166,51 +5166,79 @@ REVS_FLAG_OP void seam_write(unsigned addr, int ram, uint8_t value)
    below reproduce rather than compute.
    =========================================================================== */
 
-static uint8_t surface_colour_at_core(uint8_t line, uint8_t position)
+/* Build surface_colour_at's exit: A = colour with N/Z from it, Y = the scan line, V unchanged
+   from entry, X and C are per-arm.  (Nothing in the routine writes V, and CPY/CPX/CMP never do,
+   so V is always the caller's.) */
+static SlotExit surf_exit(uint8_t colour, uint8_t x, uint8_t line, uint8_t entryV, uint8_t c)
+{
+    SlotExit e = { colour, x, line, (uint8_t)((colour >> 7) & 1u),
+                   (uint8_t)(colour == 0u), entryV, c };
+    return e;
+}
+
+static SlotExit surface_colour_at_core(uint8_t line, uint8_t position,
+                                       uint8_t entryX, uint8_t entryV)
 {
     unsigned attr;
+    uint8_t  c;
 
-    /* $1E9E — nothing above the horizon has a surface; that is sky. */
-    cpu.Y = line;
-    CPY(horizon_extent);
-    if (cpu.C && !cpu.Z) return (uint8_t)load_a(mem[SURFACE_COLOURS_TBL + 1]);
+    /* $1E9E — nothing above the horizon has a surface; that is sky.  CPY leaves C = line >=
+       horizon_extent; the taken (BCS+BNE) arm needs line > it, and its exit C is 1. */
+    if (line > horizon_extent)
+        return surf_exit(mem[SURFACE_COLOURS_TBL + 1], entryX, line, entryV, 1u);
 
-    /* $1EA8-$1EBC — the four boundaries, outermost first. */
-    if (cmp_ge(position, mem[SURFACE_EDGE_0 + line]))
-        return (uint8_t)load_a(mem[SURFACE_COLOURS_TBL + 3]);
+    /* $1EA8-$1EBC — the four boundaries, outermost first.  A taken BCS exits with C = 1. */
+    if (position >= mem[SURFACE_EDGE_0 + line])
+        return surf_exit(mem[SURFACE_COLOURS_TBL + 3], entryX, line, entryV, 1u);
 
-    if (cmp_ge(position, mem[SURFACE_EDGE_2 + line])) {
-        if (cpy_ge(line, line_attr_1_limit))
-            return (uint8_t)load_a(mem[SURFACE_COLOURS_TBL + 3]);
+    if (position >= mem[SURFACE_EDGE_2 + line]) {
+        if (line >= line_attr_1_limit)                     /* cpy_ge taken: C = 1 */
+            return surf_exit(mem[SURFACE_COLOURS_TBL + 3], entryX, line, entryV, 1u);
         attr = mem[LINE_ATTR_1 + line];
-    } else if (cmp_ge(position, mem[SURFACE_EDGE_3 + line])) {
-        return (uint8_t)load_a(mem[SURFACE_COLOURS_TBL + 0]);
-    } else if (cmp_ge(position, mem[SURFACE_EDGE_1 + line])) {
-        if (cpy_ge(line, line_attr_0_limit))
-            return (uint8_t)load_a(mem[SURFACE_COLOURS_TBL + 3]);
+        c    = 0u;                                         /* the cpy_ge fell through: C = 0 */
+    } else if (position >= mem[SURFACE_EDGE_3 + line]) {
+        return surf_exit(mem[SURFACE_COLOURS_TBL + 0], entryX, line, entryV, 1u);
+    } else if (position >= mem[SURFACE_EDGE_1 + line]) {
+        if (line >= line_attr_0_limit)
+            return surf_exit(mem[SURFACE_COLOURS_TBL + 3], entryX, line, entryV, 1u);
         attr = mem[LINE_ATTR_0 + line];
+        c    = 0u;
     } else {
-        /* $1EBE — inside everything: the line's own background class. */
+        /* $1EBE — inside everything: the line's own background class.  The last CMP (edge 1)
+           fell through, so exit C = 0; X = the surface class. */
         attr = mem[VIEW_LINE_SURFACE + line];
-        cpu.X = (uint8_t)(attr & 3u);
-        return (uint8_t)load_a(mem[SURFACE_COLOURS_TBL + (attr & 3u)]);
+        return surf_exit(mem[SURFACE_COLOURS_TBL + (attr & 3u)], (uint8_t)(attr & 3u),
+                         line, entryV, 0u);
     }
 
     /* $1EDC — the attribute is an edge-point index + 1; its style's low bits are the colour.
        ⚠ The 6502's first `TAX` (the masked index) is NOT reproduced: the second one below
        always overwrites X before anything can read it, so that intermediate value is dead.
        Verified by sabotage — dropping the mask HERE passes 2000 cases, while dropping it on
-       the table index one line down fails, which is the pair that proves which one matters. */
-    attr  = mem[EDGE_STYLE_PREV + (attr & 0x7Fu)];
-    cpu.X = (uint8_t)(attr & 3u);
-    return (uint8_t)load_a(mem[SURFACE_COLOURS_TBL + (attr & 3u)]);
+       the table index one line down fails, which is the pair that proves which one matters.
+       X = the surface class; C = 0, carried from the cpy_ge that fell through above. */
+    attr = mem[EDGE_STYLE_PREV + (attr & 0x7Fu)];
+    return surf_exit(mem[SURFACE_COLOURS_TBL + (attr & 3u)], (uint8_t)(attr & 3u),
+                     line, entryV, c);
+}
+
+/* Apply surface_colour_at's full exit ABI to the cpu — the shim body, parametrised by the scan
+   line.  The two still-cpu-based callers (column_gap_walk, plot_view_src_line) route through it
+   so the native path leaves exactly the cpu state the ORACLE gets via the shim; returns the
+   colour byte for their own use.  (A documented cross-call boundary until they too convert.) */
+static uint8_t surface_colour_apply(uint8_t line)
+{
+    SlotExit e = surface_colour_at_core(line, mem[EDGE_COLUMN], cpu.X, cpu.V);
+    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
+    return e.a;
 }
 
 /* The 6502-ABI shim.  Y is the scan line and EDGE_COLUMN the position; A comes back as the
    colour, X as the surface class on the two arms that compute one. */
 void surface_colour_at(void)
 {
-    surface_colour_at_core(cpu.Y, mem[EDGE_COLUMN]);
+    surface_colour_apply(cpu.Y);
 }
 
 /* ===========================================================================
@@ -5285,8 +5313,9 @@ static void column_gap_walk_core(void)
             continue;
         }
 
-        /* $1DD6 — an empty cell takes the surface's colour, or the fallback if it has none. */
-        if (surface_colour_at_core(line, mem[EDGE_COLUMN]) == 0)
+        /* $1DD6 — an empty cell takes the surface's colour, or the fallback if it has none.
+           surface_colour_apply leaves the same cpu state the oracle gets through the shim. */
+        if (surface_colour_apply(line) == 0)
             load_a(fallback);
         { unsigned storeBase = zp_pointer(storePtr);
           seam_write((storeBase + line) & 0xFFFFu, pointer_is_ram(storeBase), cpu.A); }
@@ -8809,8 +8838,10 @@ static void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
             unsigned cell = (base + line) & 0xFFFFu;
             uint8_t  src  = seam_read(cell, ram);
             if (src == 0) {
-                /* $1D5D — an untouched cell takes the surface's colour, then merges. */
-                acc = surface_colour_at_core(line, mem[EDGE_COLUMN]);
+                /* $1D5D — an untouched cell takes the surface's colour, then merges.
+                   surface_colour_apply reproduces the shim's cpu side effects (X = surface
+                   class) that the oracle sees, so both models agree. */
+                acc = surface_colour_apply(line);
                 acc = (uint8_t)((acc & mem[PVS_KEEP]) | mem[PVS_BYTE]);   /* $1D60 */
                 if (acc == 0) acc = SRC_CELL_BLANK;
             } else if (src == SRC_CELL_BLANK) {
