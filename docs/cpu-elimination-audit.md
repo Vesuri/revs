@@ -66,8 +66,8 @@ caller and written at the code (V-escape rule + PHP-residue rule from the prior 
 | 1 | Steering / CAS (`steer_*`, `apply_steering_assist`, `poll_steering_assist`, `limit_steer_demand`, `clamp_and_store_steer_angle`, `apply_steer_demand`, `assist_from_selector`) | 10 | ✅ |
 | 2 | Pedals / gears / driving-controls driver (`read_pedals_and_gears`, `read_driving_controls`) | 2 | ✅ |
 | 3 | Text / screen-address (`mode5_addr`, `mode5_addr_for_cell`, `vdu_char_emit`/`_wide`/`_def`, `draw_gear_indicator`, `adc_read`) | 7 | ✅ |
-| 4 | Slip / sound (`clamp_slip_to_grip`, `derive_slip_reference`, `check_wheel_slip`, `store_slip_*`, `update_slip_sound`, `sound_queue`, `sound_stop_channel`, `sound_osword`, `begin_spin_from_a`) | ~11 | ☐ |
-| 5 | Sub-models / physics (`update_camera_and_drive_state`, `update_engine_revs`, `apply_driving_model`, `compute_car_angles`, `integrate_*`, `apply_drag_terms`, `update_grip_limits`, `rotate_*`, `stage_accum_delta`, `model_integrate_element`, `scale_by_track_gradient`, `apply_angle_term_at`, `rotate_state_pair`) | ~16 | ☐ |
+| 4 | Slip / sound (`clamp_slip_to_grip`, `derive_slip_reference`, `check_wheel_slip`, `store_slip_*`, `update_slip_sound`, `sound_queue`, `sound_stop_channel`, `sound_osword`) | 11 | ✅ |
+| 5 | Sub-models / physics (`begin_spin_from_a`, `update_camera_and_drive_state`, `update_engine_revs`, `apply_driving_model`, `compute_car_angles`, `integrate_*`, `apply_drag_terms`, `update_grip_limits`, `rotate_*`, `stage_accum_delta`, `model_integrate_element`, `scale_by_track_gradient`, `apply_angle_term_at`, `rotate_state_pair`) | ~17 | ☐ |
 | 6 | Objects / signs (`build_road_sign`, `write_object_slot`, `scale_shape_vectors`, `build_sign_origin`, `note_object_contact`, `store_object_flags`, `reject_object_slot`, `draw_track_object`, `plot_object`) | ~9 | ☐ |
 | 7 | View pipeline (`fill_object_gap`, `plot_shape_edges`, `plot_view_src_line`, `mark_line_surfaces`, `fill_line_attr`, `fill_edge_column_run`, `column_gap_walk`, `surface_colour_at`, `view_paint_lines`, `edge_x_offscreen`, `shift_near_edge_points`, `emit_edge_width_offset`, `emit_edge_bearing`, `road_edge_walk`) | ~14 | ☐ |
 | 8 | Computational helpers still on `cpu` (`abs8`, `abs16_math`, `mul8_*`, `mul16_by_1_5`, `scale16_by_y`, `div16by8`, `horizon_half_width_at`, `road_edge_side`, `derive_endpoint`, `place_car_world_coords`, `place_player_in_section`, `road_edge_walk_subdivide`, `paint_lines_short`, …) | ~20 | ☐ |
@@ -115,6 +115,46 @@ byte-exact, `make determinism`/`-drive` diverging only inside `$01B8..$01FF` and
 skip. Nothing new to decide: the cluster-3 resolution below covers it verbatim. The five logic
 sabotages (kbd polarity, pedal `$C8` threshold, dead-zone `$0A` carry, `STEER_SIGN` dir bit,
 self-drive `revs/4+5` bias) each FAILED with distinct mismatch counts (500 / 1 / 31 / 1913 / 1375).
+
+## Cluster-4 lessons — inverted hysteresis, a refactor breaking unconverted callers, a per-shim exit ABI
+
+Three catches, each found by reading the generated `__t6502` oracle and reasoning, not by guessing:
+
+- **An inverted branch polarity passes nothing and fails cleanly.** `update_slip_sound`'s two-frame
+  hysteresis is `LDA loop_counter; AND #$02; BEQ` — the C is `if ((loop_counter & 0x02u) != 0u)
+  return;` (return when the bit is SET). I first wrote `== 0u`; it diverged at `sound_chan_state[3]`
+  ($62C0) and in the MOS trace. The tell was a *symmetric* branch flip (sound-stop vs early-return),
+  which is exactly what an AND/BEQ pair chooses between. Sabotaged deliberately (245 mismatch).
+
+- **Refactoring a leaf's ABI silently breaks the NATIVE callers that reach it directly.** Moving
+  `LDX sound_saved_x` (and the block-index ADC's C/V) out of `sound_osword_core`/`sound_queue_core`
+  into the shims was correct for the shim path, but `begin_spin_from_a_core` (cluster 5, not yet
+  converted) calls `sound_queue_core` DIRECTLY, so its native X stuck at the blockLow ($30) and its
+  exit C/V went stale — 1000 mismatch on `begin_spin_from_a`, 2 on `update_grip_limits` above it.
+  Fix: the unconverted native caller replays the shim's exit itself (`sound_queue_exit_abi(0x04u)`
+  right after the direct `sound_queue_core` call). ⚠ **When a cluster's refactor narrows a leaf's
+  ABI, grep for every OTHER (unconverted) caller of that leaf before believing validate is clean.**
+
+- **Result-only relaxation proved by tracing the caller.** `clamp_slip_to_grip` and
+  `update_slip_sound` are RESULT-ONLY (their whole product is mem[]): clamp's caller
+  (`update_slip_sound` at $4795) does `LDA sound_chan_state[3]` next; update's callers ($46DA/$46FD)
+  restore the model accumulator and reload registers before any read. `derive_slip_reference` keeps
+  only `live=A+C` (the product high as a value, the declined carry both callers branch on); its N/Z/V
+  are dead so the multiply is plain `revs_mulu16` with no V replay.
+
+- **The PHP-residue recurrence now lands INSIDE a fixture, not just determinism.** `sound_stop_channel`
+  (i==10) removes the caller-A PHA into a shim C local, but its ORACLE is the direct transliteration
+  still executing the real PHA at $0E5A → writes $01FF (S rests at $FF). Handled with a targeted
+  `stackIgnore = {0x01FF}` on that one fixture; every other oracle in the cluster enters native shims,
+  so no other slot diverges. Determinism itself was byte-identical everywhere this cluster (the residue
+  was overwritten before the frame-300 dump), so the $01B8..$01FF skip was not even exercised.
+
+- **Sabotage-harness trap: an `FN=` filter that doesn't match the fixture reads as a SURVIVED defect.**
+  A `sound_queue` block-index sabotage "survived" under `FN=slip` — because `FN=slip` never runs
+  `sound_queue` (name has no "slip"). It failed with 1500 mismatch under `FN=sound`. The five caught
+  defects (hysteresis polarity, negate sign-bit, derive throttle-decline, sound block index, store
+  exit-V bit) print distinct counts 245 / 1006 / 1000 / 1500 / 999. **A surviving sabotage's FIRST
+  suspect is that its fixture ran at all.**
 
 Resolution (user decision, 2026-08-23): **the determinism compare skips the hardware-stack scratch**
 and byte-compares everything else. Page 1 is per-car data arrays up to `car_target_speed` ($01A4..

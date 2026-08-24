@@ -6240,32 +6240,45 @@ static void slip_magnitude_core(uint8_t slot)
    the throttle the caller's value goes through unclamped, which is what lets wheelspin exceed
    what the grip limit would otherwise allow.
    --------------------------------------------------------------------------- */
-static void store_slip_signed_core(void)
+/* The store takes a 16-bit value as (valueHi : math_lo) — the 6502's own split, and math_lo is an
+   observed output — and writes it, re-signed, into model_state element 10 + slip_out_index.  The
+   exit ABI (A = the stored low byte, Y = the element index, N/Z from that byte, V = bit 6 of the
+   sign byte, C per the entry/clamp compare) is reconstructed in the shims, not here. */
+static void store_slip_signed_core(uint8_t valueHi)
 {
-    BIT(mem[SLIP_SIGN]);                            /* $4B51 — bit 7 means "negative" */
-    abs16_math();                                   /* $4B53 — which negates on that N */
-    cpu.Y = mem[SLIP_OUT_INDEX];                    /* $4B56 */
-    mem[MODEL_STATE_HI + 10 + cpu.Y] = cpu.A;       /* $4B58 */
-    cpu.A = (uint8_t)load_a(math_lo);               /* $4B5B */
-    mem[MODEL_STATE_LO + 10 + cpu.Y] = cpu.A;       /* $4B5D */
-}
-
-static void store_slip_clamped_core(void)
-{
-    CMP(mem[SLIP_MAG_HI]);                          /* $4B47 */
-    if (cpu.C) {                                    /* $4B49 BCC — under it, keep A */
-        math_lo = mem[SLIP_MAG_LO];                 /* $4B4B-$4B4D */
-        LDA(mem[SLIP_MAG_HI]);                      /* $4B4F */
+    uint8_t lo = math_lo;
+    uint8_t hi = valueHi;
+    if (mem[SLIP_SIGN] & 0x80u) {                   /* $4B51 BIT N — bit 7 means "negative" */
+        /* $4B53 abs16_math negates (hi : math_lo); neg16_math first parks the pre-negate high byte
+           in math_hi, and the negate leaves it there.  D = 0 on the slip path — a plain negate. */
+        uint16_t v = (uint16_t)(0u - (uint16_t)(((uint16_t)hi << 8) | lo));
+        math_hi = hi;
+        lo = (uint8_t)v;
+        hi = (uint8_t)(v >> 8);
+        math_lo = lo;
     }
-    store_slip_signed_core();
+    uint8_t y = mem[SLIP_OUT_INDEX];                /* $4B56 */
+    mem[MODEL_STATE_HI + 10 + y] = hi;              /* $4B58 */
+    mem[MODEL_STATE_LO + 10 + y] = lo;             /* $4B5B-$4B5D — A = math_lo, then stored */
 }
 
-static void store_slip_clamped_off_throttle_core(void)
+static void store_slip_clamped_core(uint8_t valueHi)
 {
-    LDY(pedal_mode);                                /* $4B42 */
-    DEY();                                          /* $4B44 */
-    if (cpu.Z) { store_slip_signed_core(); return; } /* $4B45 — the throttle skips the clamp */
-    store_slip_clamped_core();
+    uint8_t hi = valueHi;
+    if (hi >= mem[SLIP_MAG_HI]) {                   /* $4B47 CMP / $4B49 BCC — at/over it: clamp */
+        math_lo = mem[SLIP_MAG_LO];                 /* $4B4B-$4B4D */
+        hi = mem[SLIP_MAG_HI];                      /* $4B4F */
+    }
+    store_slip_signed_core(hi);
+}
+
+static void store_slip_clamped_off_throttle_core(uint8_t valueHi)
+{
+    if (pedal_mode == 1u) {                         /* $4B42 LDY/DEY/BEQ — the throttle skips clamp */
+        store_slip_signed_core(valueHi);
+        return;
+    }
+    store_slip_clamped_core(valueHi);
 }
 
 /* ---------------------------------------------------------------------------
@@ -6282,42 +6295,44 @@ static void store_slip_clamped_off_throttle_core(void)
    three-quartered for the axle that is not X == 1.  Either way the term is multiplied by
    pedal_amount and, on the throttle, halved.
    --------------------------------------------------------------------------- */
-static void derive_slip_reference_core(void)
-{
-    /* $4B88-$4B8C — the element store_slip_signed will write.  A holds X + 2 from here (it stays
-       the exit A on the throttle's declined arm below). */
-    cpu.A = (uint8_t)(cpu.X + 2u);
-    mem[SLIP_OUT_INDEX] = cpu.A;
+/* derive_slip_reference answers with a small pair: the reference term's high byte (its low byte is
+   left in math_lo, the 6502's own split) and whether it DECLINED — the carry the 6502 returned. */
+typedef struct { uint8_t hi; int declined; } SlipRef;
 
+static SlipRef derive_slip_reference_core(uint8_t axle)
+{
+    /* $4B88-$4B8C — the element store_slip_signed will write.  On the throttle's declined arm the
+       result high byte is axle + 2 (it was the 6502's exit A there). */
+    uint8_t element = (uint8_t)(axle + 2u);
+    mem[SLIP_OUT_INDEX] = element;
+
+    uint8_t ref;
     if (pedal_mode == 1u) {                                     /* $4B8E-$4B90 DEY/BEQ */
         /* ON THE THROTTLE — $4BAF-$4BBA. */
-        if (cpu.X != 1u) { cpu.C = 1u; return; }                 /* $4BB1 → $4BCD: declined */
+        if (axle != 1u) { SlipRef r = { element, 1 }; return r; } /* $4BB1 → $4BCD: declined */
         mem[SLIP_SIGN] = (uint8_t)(gear_index - 1u);             /* $4BB3-$4BB6 */
-        cpu.A = mem[SLIP_REV_TERM];                              /* $4BBA */
+        ref = mem[SLIP_REV_TERM];                                /* $4BBA */
     } else {
         /* OFF THE THROTTLE — $4B93-$4BAC. */
         slip_magnitude_core(9);                                  /* |car_speed| << 5 */
         mem[SLIP_SIGN] = (uint8_t)(car_speed_hi ^ 0x80u);        /* $4B98-$4B9B */
-        cpu.A = mem[MEM_grip_limit + cpu.X];                     /* $4B9F */
-        if (cpu.X != 1u) {                                       /* $4BA2-$4BA4 CPX #1/BEQ */
+        ref = mem[MEM_grip_limit + axle];                       /* $4B9F */
+        if (axle != 1u) {                                        /* $4BA2-$4BA4 CPX #1/BEQ */
             /* $4BA6-$4BAB — three-quarters of the limit: (g/2 + g)/2, each add truncated to 8
                bits exactly as the 6502's LSR/ADC/LSR does (the ADC carry-out is dropped by LSR). */
-            uint8_t g = mem[MEM_grip_limit + cpu.X];
-            cpu.A = (uint8_t)(((uint8_t)((g >> 1) + g)) >> 1);
+            uint8_t g = mem[MEM_grip_limit + axle];
+            ref = (uint8_t)(((uint8_t)((g >> 1) + g)) >> 1);
         }
     }
 
     /* $4BBC-$4BC0 — reference x pedal_amount, a plain 8x8 product (D = 0 on the slip path), and on
-       the throttle it is halved.  A = product high, math_lo = product low.  The exit N/Z/V are
-       dead: both callers read only the carry and then consume A : math_lo as a value. */
-    math_hi = cpu.A;                                            /* $4BBC */
-    {
-        uint16_t product = (uint16_t)revs_mulu16(math_hi, pedal_amount);  /* $4BBE-$4BC0 */
-        if (pedal_mode == 1u) product >>= 1;                             /* $4BC3-$4BC9 throttle */
-        math_lo = (uint8_t)product;
-        cpu.A   = (uint8_t)(product >> 8);
-    }
-    cpu.C = 0u;                                                  /* $4BCB CLC — accepted */
+       the throttle it is halved.  hi = product high, math_lo = product low; declined = 0 (CLC). */
+    math_hi = ref;                                              /* $4BBC */
+    uint16_t product = (uint16_t)revs_mulu16(ref, pedal_amount);  /* $4BBE-$4BC0 */
+    if (pedal_mode == 1u) product >>= 1;                         /* $4BC3-$4BC9 throttle */
+    math_lo = (uint8_t)product;
+    SlipRef r = { (uint8_t)(product >> 8), 0 };                  /* $4BCB CLC — accepted */
+    return r;
 }
 
 /* ---------------------------------------------------------------------------
@@ -6362,15 +6377,13 @@ static void check_wheel_slip_core(uint8_t axle)
 
     mem[MODEL_STATE_LO + axle + 10] = shiftedLo;    /* $4AB4-$4AB6 */
 
-    /* $4AB9 — derive_slip_reference sets SLIP_SIGN / SLIP_OUT_INDEX / (A : math_lo) and answers
-       with a carry: set means it declined.  It reads the axle from X and its A : math_lo feed the
-       store below, so neither is disturbed between the two calls. */
-    cpu.X = axle;
-    derive_slip_reference_core();
-    int declined = cpu.C;
+    /* $4AB9 — derive_slip_reference sets SLIP_SIGN / SLIP_OUT_INDEX / (hi : math_lo) and answers
+       whether it declined.  Its hi : math_lo feed the store below, so they are not disturbed
+       between the two calls. */
+    SlipRef sr = derive_slip_reference_core(axle);
 
     uint8_t ref;
-    if (declined) {
+    if (sr.declined) {
         /* $4ABE-$4ACC — it declined, so element 12 is cleared and the reference is element 10's
            own magnitude.  ⚠ BOTH indices are absolute 12 here, not 12 + axle — and it provably
            makes no difference: this arm needs pedal_mode == 1 AND X != 1, and X is 0 or 1, so X
@@ -6380,7 +6393,7 @@ static void check_wheel_slip_core(uint8_t axle)
         uint8_t hi10 = mem[MODEL_STATE_HI + 10];
         ref = (uint8_t)((hi10 & 0x80u) ? (0u - hi10) : hi10);   /* |element 10 high| */
     } else {
-        store_slip_clamped_off_throttle_core();     /* $4ACF — consumes derive's A : math_lo */
+        store_slip_clamped_off_throttle_core(sr.hi); /* $4ACF — consumes derive's hi : math_lo */
         /* $4AD2-$4AEB — max + min/2 over the two elements' magnitudes (the cheap hypotenuse). */
         uint8_t m12 = mem[MODEL_STATE_HI + 12 + axle];
         m12 = (uint8_t)((m12 & 0x80u) ? (0u - m12) : m12);
@@ -6405,41 +6418,37 @@ static void check_wheel_slip_core(uint8_t axle)
    term), and on the throttle the driven axle's element 10 is zeroed outright.  So the grip
    limit is not advisory: this is where the model is forced back inside it.
    --------------------------------------------------------------------------- */
-static void clamp_slip_to_grip_core(void)
+static void clamp_slip_to_grip_core(uint8_t axle)
 {
-    mem[MODEL_STATE_HI + 12 + cpu.X] = 0u;                      /* $4AF7-$4AF9 */
-    mem[MODEL_STATE_LO + 12 + cpu.X] = 0u;                      /* $4AFC */
+    mem[MODEL_STATE_HI + 12 + axle] = 0u;                       /* $4AF7-$4AF9 */
+    mem[MODEL_STATE_LO + 12 + axle] = 0u;                       /* $4AFC */
 
     slip_magnitude_core(8);                                     /* $4AFF-$4B01 — |model_accum| */
-    LDA((uint8_t)(model_accum_hi ^ 0x80u));                     /* $4B04-$4B07 */
-    mem[SLIP_SIGN] = cpu.A;                                     /* $4B09 */
+    mem[SLIP_SIGN] = (uint8_t)(model_accum_hi ^ 0x80u);         /* $4B04-$4B09 */
     math_lo = 0x00u;                                            /* $4B0B-$4B0D */
-    LDA(mem[MEM_grip_limit_alt + cpu.X]);                       /* $4B0F */
-    mem[SLIP_OUT_INDEX] = cpu.X;                                /* $4B12 */
-    store_slip_clamped_core();                                  /* $4B14 */
+    mem[SLIP_OUT_INDEX] = axle;                                 /* $4B12 */
+    store_slip_clamped_core(mem[MEM_grip_limit_alt + axle]);    /* $4B0F/$4B14 */
 
-    derive_slip_reference_core();                               /* $4B17 */
-    if (cpu.C) return;                                          /* $4B1A BCS — it declined */
+    SlipRef sr = derive_slip_reference_core(axle);              /* $4B17 */
+    if (sr.declined) return;                                    /* $4B1A BCS — it declined */
 
-    CMP(mem[MEM_grip_limit_alt + cpu.X]);                       /* $4B1C */
-    if (!cpu.C) { store_slip_clamped_off_throttle_core(); return; }  /* $4B1F BCC → $4B3E */
+    if (sr.hi < mem[MEM_grip_limit_alt + axle]) {              /* $4B1C CMP / $4B1F BCC → $4B3E */
+        store_slip_clamped_off_throttle_core(sr.hi);
+        return;
+    }
 
     /* $4B21-$4B3C — over the second threshold. */
     math_lo = 0x00u;
-    LDA(mem[MEM_grip_limit_alt + cpu.X]);
-    store_slip_clamped_off_throttle_core();                     /* $4B28 */
-    LDY(pedal_mode); DEY();                                     /* $4B2B-$4B2D */
-    if (!cpu.Z) return;                                         /* $4B2E BNE — off throttle */
+    store_slip_clamped_off_throttle_core(mem[MEM_grip_limit_alt + axle]);  /* $4B24/$4B28 */
+    if (pedal_mode != 1u) return;                              /* $4B2B-$4B2E BNE — off throttle */
     /* $4B30-$4B32 — ⭐ DEAD AS A DECISION, and worth knowing.  Reaching here needs
-       derive_slip_reference to have ACCEPTED (C clear) with pedal_mode == 1, and its throttle
-       arm only accepts for X == 1 — so `CPX #0` can never be equal and this branch never
+       derive_slip_reference to have ACCEPTED (declined 0) with pedal_mode == 1, and its throttle
+       arm only accepts for axle == 1 — so `CPX #0` can never be equal and this branch never
        taken.  Kept because it is what the 6502 does; a sabotage that deletes it survives the
        differential, which is the evidence for the claim rather than a gap in the fixture. */
-    CPX(0x00u);
-    if (cpu.Z) return;
-    LDA(0x00u);                                     /* $4B34 — and ITS Z is the exit flag */
-    mem[MODEL_STATE_HI + 10 + cpu.X] = cpu.A;                   /* $4B36 */
-    mem[MODEL_STATE_LO + 10 + cpu.X] = cpu.A;                   /* $4B39 */
+    if (axle == 0u) return;
+    mem[MODEL_STATE_HI + 10 + axle] = 0u;                      /* $4B34-$4B36 */
+    mem[MODEL_STATE_LO + 10 + axle] = 0u;                      /* $4B39 */
 }
 
 /* ---------------------------------------------------------------------------
@@ -6457,32 +6466,31 @@ static void clamp_slip_to_grip_core(void)
    ⚠ sound_queue's `ADC #$10` leaves C and V live all the way to the exit: nothing below it
    writes either flag.
    --------------------------------------------------------------------------- */
-static void sound_osword_core(void)
+static void sound_osword_core(uint8_t oswordNum, uint8_t blockLow)
 {
-    cpu.Y = 0x0Bu;                      /* $0B6E — the block is at $0B00 + X */
-    platform_mos_call(0xFFF1);          /* $0B70 — OSWORD, number already in A */
-    LDX(sound_saved_x);                 /* $0B73 — and the caller's X comes back (its N/Z exit) */
+    /* MOS ABI — documented cpu exception.  OSWORD `oswordNum` on the block at $0B00 + blockLow;
+       Y ($0B) is that address's high byte.  $0B70-$0B73.  The caller's X (in sound_saved_x) is
+       restored by the shim, not here — that is exit ABI, not the MOS call. */
+    cpu.A = oswordNum;
+    cpu.X = blockLow;
+    cpu.Y = 0x0Bu;
+    platform_mos_call(0xFFF1);
 }
 
-static void sound_queue_core(uint8_t slot, uint8_t amplitude)
+static void sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX)
 {
-    unsigned block;
+    sound_saved_x = savedX;                                     /* $0B4A STX */
 
-    sound_saved_x = cpu.X;                                      /* $0B4A */
+    /* $0B4D-$0B53 — the slot picks a control block ((slot << 3) + $10).  The add's C and V leak to
+       the exit (reconstructed in the shim); D = 0 here so it is a plain binary add. */
+    uint8_t blockLow = (uint8_t)((uint8_t)(slot << 3) + 0x10u);
+    unsigned block = 0x0B00u + blockLow;
 
-    /* $0B4D-$0B53 — the slot picks a control block; this add's C and V are still live at the
-       exit, which is why it goes through adc_step rather than plain arithmetic. */
-    cpu.A = (uint8_t)adc_step((uint8_t)(slot << 3), 0x10u, 0);
-    cpu.X = cpu.A;                                              /* $0B53 TAX */
-    block = 0x0B00u + cpu.X;
+    mem[block + 2] = amplitude;                                 /* $0B54-$0B55 — the AMPLITUDE field */
 
-    cpu.A = amplitude;                                          /* $0B54 TYA */
-    mem[block + 2] = cpu.A;                                     /* $0B55 — the AMPLITUDE field */
-
-    cpu.Y = (uint8_t)(mem[block] & 3u);                         /* $0B58-$0B5D — the CHANNEL */
-    cpu.A = 0x07u;                                              /* $0B5E — and OSWORD 7 */
-    mem[SOUND_CHAN_STATE + cpu.Y] = cpu.A;                      /* $0B60 */
-    sound_osword_core();                        /* $0B63 BNE — unconditional: A is 7 */
+    uint8_t chan = (uint8_t)(mem[block] & 3u);                  /* $0B58-$0B5D — the CHANNEL */
+    mem[SOUND_CHAN_STATE + chan] = 0x07u;                       /* $0B5E-$0B60 — the OSWORD 7 marker */
+    sound_osword_core(0x07u, blockLow);                         /* $0B63 — OSWORD 7 (SOUND) */
 }
 
 /* ---------------------------------------------------------------------------
@@ -6495,20 +6503,18 @@ static void sound_queue_core(uint8_t slot, uint8_t amplitude)
    --------------------------------------------------------------------------- */
 static void sound_stop_channel_core(uint8_t chan)
 {
-    PHA();                                              /* $0E5A — the caller's A comes back below */
+    /* The caller's A is preserved (PHA/PLA) in the shim, not here — that is exit ABI. */
     if (mem[SOUND_CHAN_STATE + chan] != 0u) {           /* $0E5B-$0E5E — already idle? do nothing */
         mem[SOUND_CHAN_STATE + chan] = 0u;              /* $0E60-$0E62 */
+        /* MOS ABI — documented cpu exception.  OSBYTE 21 flushes buffer chan|4 (buffers 4..7 ARE
+           the four sound channels); X returns preserved and the buffer bit is taken back off.
+           ⚠ It reads the MOS's X, not the saved channel: invisible to the differential because
+           OSBYTE 21 preserves X in both the model and the real MOS, but written faithfully. */
         cpu.X = (uint8_t)(chan | 4u);                   /* $0E65-$0E68 */
-        cpu.A = 0x15u;                                  /* $0E69 — OSBYTE 21, flush a buffer */
+        cpu.A = 0x15u;                                  /* $0E69 — OSBYTE 21 */
         platform_mos_call(0xFFF4);                      /* $0E6B */
-        /* $0E6E-$0E71 — the buffer bit taken back off.  ⚠ It reads the MOS's X, not the
-           saved channel, and the distinction is invisible to the differential BECAUSE
-           OSBYTE 21 preserves X in both the model and the real MOS: a sabotage that masks
-           `chan | 4` instead survives.  Written this way anyway, because which register the
-           6502 reads is the faithful thing and the MOS contract is not ours to assume. */
-        cpu.X = (uint8_t)(cpu.X & 0xFBu);
+        cpu.X = (uint8_t)(cpu.X & 0xFBu);               /* $0E6E-$0E71 */
     }
-    PLA();                                              /* $0E72 */
 }
 
 /* ---------------------------------------------------------------------------
@@ -6528,41 +6534,118 @@ static void sound_stop_channel_core(uint8_t chan)
    --------------------------------------------------------------------------- */
 static void update_slip_sound_core(uint8_t axle)
 {
-    cpu.X = axle;                                   /* the axle arrives in X on the 6502 */
-
-    LDA(drive_state);                               /* $4779 */
-    CMP(0x02u);                                     /* $477B */
-    if (!cpu.C) {                                   /* $477D BCS → the silence arm */
-        check_wheel_slip_core(cpu.X);               /* $477F */
-        if (mem[MEM_slip_flags + cpu.X] & 0xC0u) {  /* $4782-$4787 — slip in the last TWO frames */
-            clamp_slip_to_grip_core();
-            LDA(mem[SOUND_CHAN_STATE + 3]);         /* $4798 */
-            if (cpu.Z) {                            /* $479B BNE — already playing? */
-                sound_queue_core(0x03u, 0x01u);     /* $479D-$47A1 — slot 3, amplitude 1 */
+    if (drive_state < 0x02u) {                       /* $4779-$477D CMP #2 / BCS → the silence arm */
+        check_wheel_slip_core(axle);                 /* $477F */
+        if (mem[MEM_slip_flags + axle] & 0xC0u) {    /* $4782-$4787 — slip in the last TWO frames */
+            clamp_slip_to_grip_core(axle);
+            if (mem[SOUND_CHAN_STATE + 3] == 0u) {   /* $4798-$479B — already playing? */
+                /* $479D-$47A1 — slot 3, amplitude 1.  The 6502 still holds the axle in X here,
+                   so that is what sound_queue parks in sound_saved_x. */
+                sound_queue_core(0x03u, 0x01u, axle);
             }
             return;
         }
-        LDA(loop_counter);                          /* $4789 */
-        AND(0x02u);                                 /* $478B */
-        if (!cpu.Z) return;                         /* $478D BNE */
+        if ((loop_counter & 0x02u) != 0u) return;    /* $4789-$478D — the two-frame hysteresis */
     }
-    LDX(0x03u);                                     /* $478F */
-    sound_stop_channel_core(3u);                    /* $4791 */
+    sound_stop_channel_core(3u);                     /* $478F-$4791 */
 }
 
-/* The 6502-ABI shims. */
+/* The 6502-ABI shims — they reconstruct each routine's exit registers/flags from the cpu-free
+   core's typed outputs and the mem[] state, and hold the MOS-boundary marshalling.  The stores
+   share an exit: A = the stored low byte (LDA math_lo), Y = the element (LDY SLIP_OUT_INDEX),
+   N/Z from that low byte, V = bit 6 of SLIP_SIGN (BIT), C is the entry-value clamp compare. */
 void slip_magnitude(void)       { slip_magnitude_core(cpu.Y); }
-void store_slip_signed(void)    { store_slip_signed_core(); }
-void store_slip_clamped(void)   { store_slip_clamped_core(); }
-void store_slip_clamped_off_throttle(void) { store_slip_clamped_off_throttle_core(); }
-void derive_slip_reference(void) { derive_slip_reference_core(); }
-void check_wheel_slip(void)     { check_wheel_slip_core(cpu.X); }
-void clamp_slip_to_grip(void)   { clamp_slip_to_grip_core(); }
-void sound_osword(void)         { sound_osword_core(); }
-void sound_queue(void)          { sound_queue_core(cpu.A, cpu.Y); }
-void sound_queue_default(void)  { sound_queue_core(cpu.A, sound_volume); }
-void sound_stop_channel(void)   { sound_stop_channel_core(cpu.X); }
-void update_slip_sound(void)    { update_slip_sound_core(cpu.X); }
+
+static void store_slip_exit_abi(uint8_t sign)
+{
+    cpu.A = math_lo;                                 /* $4B5B LDA math_lo — the stored low byte */
+    cpu.Y = mem[SLIP_OUT_INDEX];                     /* $4B56 LDY SLIP_OUT_INDEX */
+    cpu.N = (uint8_t)(math_lo >> 7);                 /* LDA math_lo sets N/Z */
+    cpu.Z = (uint8_t)(math_lo == 0u);
+    cpu.V = (uint8_t)((sign >> 6) & 1u);             /* $4B51 BIT SLIP_SIGN sets V = bit 6 */
+}
+
+void store_slip_signed(void)
+{
+    uint8_t sign = mem[SLIP_SIGN];                   /* BIT operand, before the core runs */
+    store_slip_signed_core(cpu.A);
+    store_slip_exit_abi(sign);                       /* C, X, S untouched by this routine */
+}
+
+void store_slip_clamped(void)
+{
+    uint8_t valueHi = cpu.A, sign = mem[SLIP_SIGN];
+    uint8_t clampC = (uint8_t)(valueHi >= mem[SLIP_MAG_HI]);   /* $4B47 CMP SLIP_MAG_HI */
+    store_slip_clamped_core(valueHi);
+    store_slip_exit_abi(sign);
+    cpu.C = clampC;                                  /* the compare's carry survives to the exit */
+}
+
+void store_slip_clamped_off_throttle(void)
+{
+    uint8_t valueHi = cpu.A, sign = mem[SLIP_SIGN], entryC = cpu.C;
+    int throttle = (pedal_mode == 1u);              /* $4B42 LDY/DEY/BEQ — throttle skips the CMP */
+    uint8_t clampC = (uint8_t)(valueHi >= mem[SLIP_MAG_HI]);
+    store_slip_clamped_off_throttle_core(valueHi);
+    store_slip_exit_abi(sign);
+    cpu.C = throttle ? entryC : clampC;             /* throttle path never runs the CMP */
+}
+
+void derive_slip_reference(void)
+{
+    SlipRef r = derive_slip_reference_core(cpu.X);
+    cpu.A = r.hi;                                    /* product high, or element on the declined arm */
+    cpu.C = (uint8_t)r.declined;                     /* SEC on decline / CLC on accept */
+}
+
+void check_wheel_slip(void)     { check_wheel_slip_core(cpu.X); }   /* result-only */
+void clamp_slip_to_grip(void)   { clamp_slip_to_grip_core(cpu.X); } /* result-only */
+
+/* Reconstruct sound_queue / sound_queue_default's exit: A/Y left by OSWORD, X restored from
+   sound_saved_x (its N/Z the exit), and the block-index ADD's C and V ($0B4D ADC #$10). */
+static void sound_queue_exit_abi(uint8_t slot)
+{
+    unsigned s   = (uint8_t)(slot << 3);
+    unsigned sum = s + 0x10u;
+    cpu.C = (uint8_t)(sum > 0xFFu);
+    cpu.V = (uint8_t)(((~(s ^ 0x10u)) & (s ^ sum) & 0x80u) ? 1u : 0u);
+    cpu.X = sound_saved_x;                           /* $0B73 LDX sound_saved_x (inside sound_osword) */
+    cpu.N = (uint8_t)(sound_saved_x >> 7);
+    cpu.Z = (uint8_t)(sound_saved_x == 0u);
+}
+
+void sound_osword(void)
+{
+    sound_osword_core(cpu.A, cpu.X);                 /* number in A, block low in X */
+    cpu.X = sound_saved_x;                           /* $0B73 LDX sound_saved_x — its N/Z the exit */
+    cpu.N = (uint8_t)(sound_saved_x >> 7);
+    cpu.Z = (uint8_t)(sound_saved_x == 0u);
+}
+
+void sound_queue(void)
+{
+    uint8_t slot = cpu.A;
+    sound_queue_core(slot, cpu.Y, cpu.X);
+    sound_queue_exit_abi(slot);
+}
+
+void sound_queue_default(void)
+{
+    uint8_t slot = cpu.A;
+    sound_queue_core(slot, sound_volume, cpu.X);
+    sound_queue_exit_abi(slot);
+}
+
+void sound_stop_channel(void)
+{
+    uint8_t entryA = cpu.A;                          /* $0E5A PHA */
+    sound_stop_channel_core(cpu.X);
+    cpu.A = entryA;                                  /* $0E72 PLA — its N/Z the exit */
+    cpu.N = (uint8_t)(entryA >> 7);
+    cpu.Z = (uint8_t)(entryA == 0u);
+}
+
+void update_slip_sound(void)    { update_slip_sound_core(cpu.X); } /* result-only */
 
 /* ===========================================================================
    TWINS #79-#86 — THE EIGHT SUB-MODELS, and with them the whole of
@@ -6755,7 +6838,12 @@ static void begin_spin_from_a_core(uint8_t severity)
     inc_mem(MEM_drive_state);                   /* $4DD1 */
     SEC();
     ROR_M(MEM_heading_step_lo);                 /* $4DD4 — +$80, and the step halved */
-    sound_queue_core(0x04u, sound_volume);      /* $4DD7-$4DD9 */
+    /* $4DD7-$4DD9 LDA #4 / JSR sound_queue_default — slot 4 at sound_volume.  This is the last
+       thing begin_spin does, so its exit ABI IS sound_queue_default's; X is untouched here, so it
+       is what sound_queue parks in sound_saved_x.  (begin_spin_from_a itself converts cpu-free with
+       the sub-models cluster, where its fixture lives — this reproduces the shim's exit for now.) */
+    sound_queue_core(0x04u, sound_volume, cpu.X);
+    sound_queue_exit_abi(0x04u);
 }
 
 /* ---------------------------------------------------------------------------

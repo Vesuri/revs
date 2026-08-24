@@ -3663,7 +3663,14 @@ static int test_slip_and_sound(void)
     for (i = 0; i < 12; i++) {
         int subFail = 0, decimal = 0, throttle = 0, driven = 0, powered = 0, idle = 0;
         int cases = list[i].cases * scale;
-        int resultOnly = (i == 0 || i == 5);
+        /* ⭐ clamp_slip_to_grip (i == 6) and update_slip_sound (i == 11) are RESULT-ONLY too: their
+           cpu-free cores' whole product is mem[] (the clamped state vector, the sound blocks /
+           channel state), and every caller reads a flag/register of neither — clamp_slip_to_grip's
+           caller (update_slip_sound at $4795) does `LDA sound_chan_state[3]` next, overwriting A/N/Z
+           and reading nothing else; update_slip_sound's callers ($46DA/$46FD in revs_gen.c) restore
+           the model accumulator and reload registers before any read.  So their exit registers/flags
+           are dead and the comparison is dropped. */
+        int resultOnly = (i == 0 || i == 5 || i == 6 || i == 11);
         /* ⭐ derive_slip_reference (i == 4) verifies only its genuine outputs: the carry (both
            callers branch on "declined") and A (the product high, consumed as a value); its
            product low lands in math_lo and is compared through mem[].  Its exit N/Z/V are dead —
@@ -3677,8 +3684,16 @@ static int test_slip_and_sound(void)
         /* check_wheel_slip's idiomatic core keeps the 6502's math accumulator ($74/$75) and its
            sign-decision (a PHP on the stack) in C locals; the oracle spills them.  None is read
            by any caller before the next writer — pure scratch. */
-        { static const uint16_t slipIgnore[] = { 0x0074, 0x0075, 0x01FF };
-          set_ignore(i == 5 ? slipIgnore : 0, i == 5 ? 3 : 0); }
+        { static const uint16_t slipIgnore[]  = { 0x0074, 0x0075, 0x01FF };
+          /* sound_stop_channel (i == 10) preserves the caller's A in a C local in its shim; the
+             ORACLE (its transliteration) still executes the real PHA at $0E5A, writing $01FF (the
+             stack rests at S = $FF).  That one dead stack slot — popped back by PLA before any read
+             — is the PHP-residue recurrence inside a fixture; the differential ignores it.  Every
+             other oracle in this cluster enters native shims, so no other slot diverges. */
+          static const uint16_t stackIgnore[] = { 0x01FF };
+          if (i == 5)       set_ignore(slipIgnore, 3);
+          else if (i == 10) set_ignore(stackIgnore, 1);
+          else              set_ignore(0, 0); }
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
             fill_random(pre);
