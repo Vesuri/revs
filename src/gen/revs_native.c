@@ -8597,9 +8597,14 @@ static void derive_endpoint(uint8_t halved, uint16_t xCell, uint16_t colCell)
    call's colour, or the blank sentinel if that was 0 — over the run's own line range.  See the
    group header, item 6, for the pair walk and the pointer bias.
    --------------------------------------------------------------------------- */
-static void fill_object_gap_core(uint8_t width)
+void fill_object_gap(void);   /* the shim — plot_view_src_line's close_gap arm calls it below */
+
+/* ⚠ V and C reach the exit UNREAD (see plot_view_src_line's close_gap header), so the fixture
+   drops them and this returns only the live A/X/Y/N/Z (v/c filled for completeness, uncompared). */
+static SlotExit fill_object_gap_core(uint8_t width)
 {
     unsigned bias;
+    uint8_t a, x, y, n = 0, z = 0;
 
     /* $1E38-$1E3F — the fill byte: the previous call's colour, or the blank sentinel if it was 0. */
     uint8_t fillByte = mem[PVS_COLOUR_P];
@@ -8609,11 +8614,11 @@ static void fill_object_gap_core(uint8_t width)
     /* $1E40-$1E4A — the pointer bias, and the floor a column falls back to.  D=0 on the object
        path (static-map §Decimal mode): plain 8-bit -/+.  The SEC/SBC's borrow feeds the ADC. */
     unsigned biasCarry = (0x7Fu >= span_line_cursor) ? 1u : 0u;   /* SEC/SBC: C = no borrow */
-    cpu.A          = (uint8_t)(0x7Fu - span_line_cursor);
-    mem[PVS_HALF]  = cpu.A;                       /* ⚠ math_lo, reused: here the BIAS */
-    bias           = cpu.A;
-    cpu.A          = (uint8_t)(bias + span_top_line + biasCarry);
-    mem[PVS_GAP_FLOOR] = cpu.A;
+    a              = (uint8_t)(0x7Fu - span_line_cursor);
+    mem[PVS_HALF]  = a;                           /* ⚠ math_lo, reused: here the BIAS */
+    bias           = a;
+    a              = (uint8_t)(bias + span_top_line + biasCarry);
+    mem[PVS_GAP_FLOOR] = a;
 
     /* $1E4B-$1E66 — the two pointers, one block apart, both biased down by `bias`. */
     mem[PVS_GAP_COL] = mem[EDGE_COLUMN];
@@ -8629,79 +8634,74 @@ static void fill_object_gap_core(uint8_t width)
            happens: lowBase is 0 or $80 and bias = $7F - line with line a view scan line ≤ $4F,
            so bias ∈ [$30,$7F] — the equality is unreachable by construction.) */
         carry = (lowBase >= (unsigned)bias) ? 1 : 0;
-        cpu.A = (uint8_t)(lowBase - (unsigned)bias);
-        plot_ptr_lo  = cpu.A;
-        plot_ptr2_lo = (uint8_t)(cpu.A ^ 0x80u);                            /* EOR #$80 */
-        if (plot_ptr2_lo & 0x80u)                                           /* $1E63 BPL */
+        a = (uint8_t)(lowBase - (unsigned)bias);
+        plot_ptr_lo  = a;
+        plot_ptr2_lo = (uint8_t)(a ^ 0x80u);                               /* EOR #$80 */
+        if (plot_ptr2_lo & 0x80u)                                          /* $1E63 BPL */
             plot_ptr2_hi = (uint8_t)(plot_ptr2_hi - 1u);
-        if (!carry) {                                                       /* $1E67 BCS */
+        if (!carry) {                                                      /* $1E67 BCS */
             plot_ptr_hi  = (uint8_t)(plot_ptr_hi  - 1u);
             plot_ptr2_hi = (uint8_t)(plot_ptr2_hi - 1u);
         }
     }
 
-    cpu.X = width;
+    x = width;
     for (;;) {
+        uint8_t c;
         /* $1E6D-$1E85 — this column pair's top line: the table's entry when it is at or below
            span_top_line, else the safe floor.  ⚠ The cursor steps back TWO columns. */
-        cpu.Y = mem[PVS_GAP_COL];
-        cpu.A = mem[GAP_TOP_TBL + cpu.Y];
-        cpu.Y = (uint8_t)(cpu.Y - 2u);                /* DEY; DEY */
-        mem[PVS_GAP_COL] = cpu.Y;
-        cpu.C = cmp_ge(cpu.A, span_top_line);         /* CMP: N/Z/C, leaves A */
-        if (cpu.C) {
-            cpu.A = (uint8_t)(cpu.A + mem[PVS_HALF] + cpu.C);  /* + bias + carry (=1 here), D=0 */
-            cpu.Y = cpu.A;                            /* TAY */
-            cpu.N = (cpu.A >> 7) & 1u;
-            cpu.Z = (cpu.A == 0u);
-            if (cpu.N) {                              /* $1E7D BPL — off the run entirely */
-                uint8_t t = (uint8_t)(cpu.X - 0x02u); /* CPX #$02 */
-                cpu.C = (cpu.X >= 0x02u);
-                cpu.N = (t >> 7) & 1u;
-                cpu.Z = (t == 0u);
-                if (!cpu.C) return;                   /* $1E83 */
+        y = mem[PVS_GAP_COL];
+        a = mem[GAP_TOP_TBL + y];
+        y = (uint8_t)(y - 2u);                        /* DEY; DEY */
+        mem[PVS_GAP_COL] = y;
+        c = (uint8_t)(a >= span_top_line);            /* CMP: leaves A; only C is read here */
+        if (c) {
+            a = (uint8_t)(a + mem[PVS_HALF] + 1u);    /* + bias + carry (=1 here), D=0 */
+            y = a;                                    /* TAY */
+            n = (uint8_t)((a >> 7) & 1u);
+            if (n) {                                  /* $1E7D BPL — off the run entirely */
+                uint8_t t = (uint8_t)(x - 0x02u);     /* CPX #$02 */
+                c = (uint8_t)(x >= 0x02u);
+                n = (uint8_t)((t >> 7) & 1u);
+                z = (uint8_t)(t == 0u);
+                if (!c) { SlotExit e = { a, x, y, n, z, 0u, c }; return e; }   /* $1E83 */
                 goto step;                            /* $1E93 */
             }
         } else {
-            cpu.Y = mem[PVS_GAP_FLOOR];               /* $1E84 (its N/Z are dead) */
+            y = mem[PVS_GAP_FLOOR];                   /* $1E84 (its N/Z are dead) */
         }
 
         /* $1E86-$1E9D — the writes: a PAIR of columns while two are left, the single tail when
            only one is. */
-        cpu.A = shared_temp_76;
-        {
-            uint8_t t = (uint8_t)(cpu.X - 0x02u);     /* CPX #$02 */
-            cpu.C = (cpu.X >= 0x02u);
-            cpu.N = (t >> 7) & 1u;
-            cpu.Z = (t == 0u);
-        }
+        a = shared_temp_76;
+        c = (uint8_t)(x >= 0x02u);                    /* CPX #$02 (its N/Z here are dead) */
         {
             unsigned base  = zp_pointer(MEM_plot_ptr_lo);
             unsigned base2 = zp_pointer(MEM_plot_ptr2_lo);
             int      ram   = pointer_is_ram(base), ram2 = pointer_is_ram(base2);
-            if (!cpu.C) {
+            if (!c) {
                 do {
-                    seam_write((base + cpu.Y) & 0xFFFFu, ram, cpu.A);
-                    cpu.Y = (uint8_t)(cpu.Y + 1u);    /* INY */
-                    cpu.N = (cpu.Y >> 7) & 1u;
-                    cpu.Z = (cpu.Y == 0u);
-                } while (!cpu.N);
-                return;                               /* $1E9D */
+                    seam_write((base + y) & 0xFFFFu, ram, a);
+                    y = (uint8_t)(y + 1u);            /* INY */
+                    n = (uint8_t)((y >> 7) & 1u);
+                    z = (uint8_t)(y == 0u);
+                } while (!n);
+                { SlotExit e = { a, x, y, n, z, 0u, c }; return e; }        /* $1E9D */
             }
             do {
-                seam_write((base  + cpu.Y) & 0xFFFFu, ram,  cpu.A);
-                seam_write((base2 + cpu.Y) & 0xFFFFu, ram2, cpu.A);
-                cpu.Y = (uint8_t)(cpu.Y + 1u);        /* INY */
-                cpu.N = (cpu.Y >> 7) & 1u;
-                cpu.Z = (cpu.Y == 0u);
-            } while (!cpu.N);
+                seam_write((base  + y) & 0xFFFFu, ram,  a);
+                seam_write((base2 + y) & 0xFFFFu, ram2, a);
+                y = (uint8_t)(y + 1u);                /* INY */
+                n = (uint8_t)((y >> 7) & 1u);
+                z = (uint8_t)(y == 0u);
+            } while (!n);
         }
 
     step:
-        cpu.X = (uint8_t)(cpu.X - 2u);                /* DEX; DEX — Z is from the second */
-        cpu.N = (cpu.X >> 7) & 1u;
-        cpu.Z = (cpu.X == 0u);
-        if (cpu.Z) return;                            /* $1E93 */
+        x = (uint8_t)(x - 2u);                        /* DEX; DEX — Z is from the second */
+        n = (uint8_t)((x >> 7) & 1u);
+        z = (uint8_t)(x == 0u);
+        if (z) { SlotExit e = { a, x, y, n, z, 0u, 0u }; return e; }        /* $1E93 */
         plot_ptr_hi  = (uint8_t)(plot_ptr_hi  - 1u);  /* $1E69 — back two columns */
         plot_ptr2_hi = (uint8_t)(plot_ptr2_hi - 1u);
     }
@@ -8913,12 +8913,18 @@ close_gap:
     }
     if (cpu.Z || cpu.N) return;
     cpu.X = cpu.A;
-    fill_object_gap_core(cpu.X);
+    /* still-cpu caller: the shim marshals X in and the exit A/X/Y/N/Z out (V/C unread here). */
+    fill_object_gap();
 }
 
 /* The 6502-ABI shims. */
 void plot_view_src_line(void) { plot_view_src_line_core(cpu.Y, cpu.A); }
-void fill_object_gap(void)    { fill_object_gap_core(cpu.X); }
+void fill_object_gap(void)
+{
+    SlotExit e = fill_object_gap_core(cpu.X);
+    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y; cpu.N = e.n; cpu.Z = e.z;
+    /* V and C are dropped from this routine's fixture mask (unread by every caller) */
+}
 
 /* ===========================================================================
    TWINS #98-#114 — THE DRIVING CONTROLS, and with them the last of the campaign's trees
