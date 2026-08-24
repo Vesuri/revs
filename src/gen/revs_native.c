@@ -1807,10 +1807,10 @@ void clamp_near_edge_window(void)
    both clamps (they work in X), so it is kept live.  The subtract runs D=0 (the road pass is never
    decimal — static-map.md §Decimal mode), so it is a plain binary `6 - near_edge_shift`.
    =========================================================================== */
-static void shift_near_edge_points_core(uint8_t topSlot,    /* $2C — slot 4 of the far half */
-                                        uint8_t wrapSlot,   /* $28 — where the far half starts */
-                                        uint8_t lowTop,     /* 5  — ...and the near half's top */
-                                        uint8_t nearSlots)  /* 6 */
+static uint8_t shift_near_edge_points_core(uint8_t topSlot,    /* $2C — slot 4 of the far half */
+                                           uint8_t wrapSlot,   /* $28 — where the far half starts */
+                                           uint8_t lowTop,     /* 5  — ...and the near half's top */
+                                           uint8_t nearSlots)  /* 6 */
 {
     unsigned slot = topSlot;
 
@@ -1827,13 +1827,14 @@ static void shift_near_edge_points_core(uint8_t topSlot,    /* $2C — slot 4 of
     }
 
     near_edge_first = (uint8_t)(nearSlots - near_edge_shift);          /* $12BD-$12C2 SEC/SBC, D=0 */
-    cpu.A = near_edge_first;                                           /* A stays near_edge_first across the clamps */
-    clamp_near_edge_window_core(nearSlots);                            /* $12C4 */
+    clamp_near_edge_window_core(nearSlots);                            /* $12C4 — works in X, leaves A */
+    return near_edge_first;   /* A stays near_edge_first across the clamps: the routine's exit A */
 }
 
 void shift_near_edge_points(void)
 {
-    shift_near_edge_points_core(0x2C, (uint8_t)EDGE_HALF, 0x05, 0x06);
+    /* the clamp inside the core sets X, Y and the flags; A is set last so it survives. */
+    cpu.A = shift_near_edge_points_core(0x2C, (uint8_t)EDGE_HALF, 0x05, 0x06);
 }
 
 /* ===========================================================================
