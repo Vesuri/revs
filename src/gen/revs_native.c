@@ -8120,11 +8120,15 @@ void note_object_contact(void)
    ⚠ proj_width_shift's extra halving is `LSR / DEX / BNE` and the closing `ADC #0` ROUNDS off
    the last bit shifted out — so the twin keeps the carry, not just the value.
    --------------------------------------------------------------------------- */
-static void scale_shape_vectors_core(void)
+/* Exit ABI is the full register+flag set (SlotExit).  ⚠ V can carry the ENTRY V all the way to
+   the abandon exit — a one-term vector with no extra shift never writes V before the reject — so
+   the caller's V is an input. */
+static SlotExit scale_shape_vectors_core(uint8_t entryV)
 {
     int      i;
     unsigned a;
     uint8_t  y = mem[OBJ_VECTOR_CURSOR];             /* $2043 — the shape's vector cursor */
+    uint8_t  v = entryV;
 
     /* $202A-$2042 — the width, then five halvings into shape_scale_tbl[2..7]. */
     a = proj_width;
@@ -8143,10 +8147,10 @@ static void scale_shape_vectors_core(void)
             math_lo = mem[SHAPE_SCALE_TBL + (vec & 0x07u)];
             math_hi = vec;
             a = (uint8_t)(mem[SHAPE_SCALE_TBL + ((vec >> 3) & 0x07u)] + math_lo);   /* flags dead */
-            cpu.V = (math_hi >> 6) & 1u;             /* BIT math_hi — only its V survives */
-            if (cpu.V) {
+            v = (math_hi >> 6) & 1u;                 /* BIT math_hi — only its V survives */
+            if (v) {
                 uint8_t m = mem[SHAPE_SCALE_TBL + 3];
-                cpu.V = adc_overflow((uint8_t)a, m, 0);   /* $206C ADC — its V stays live to the exits */
+                v = adc_overflow((uint8_t)a, m, 0);  /* $206C ADC — its V stays live to the exits */
                 a = (uint8_t)(a + m);
             }
         } else {
@@ -8158,34 +8162,26 @@ static void scale_shape_vectors_core(void)
             unsigned n     = proj_width_shift;
             uint8_t  carry = 0;
             do { carry = (uint8_t)(a & 1u); a >>= 1; } while (--n != 0u);
-            cpu.V = adc_overflow((uint8_t)a, 0x00u, carry);   /* $207E ADC #0 — V live to the exits */
+            v = adc_overflow((uint8_t)a, 0x00u, carry);   /* $207E ADC #0 — V live to the exits */
             a = (uint8_t)(a + carry);                /* rounds off the last bit shifted out */
         }
 
         /* $2080-$2096 — store the scaled offset and its negation; reject if it needs eight bits. */
         x = shared_temp_77;
         mem[SHAPE_VERTEX + x] = (uint8_t)a;
-        cpu.A = (uint8_t)(a ^ 0xFFu);                /* EOR #$FF */
-        cpu.N = 0;
-        cpu.Z = (cpu.A == 0);
+        uint8_t eor = (uint8_t)(a ^ 0xFFu);          /* EOR #$FF -> N=0, Z=(eor==0) */
         if (a & 0x80u) {                             /* $2087 — over $7F, abandon the object */
-            cpu.X = x;
-            cpu.Y = y;
-            cpu.C = 1;                               /* SEC */
-            return;
+            SlotExit e = { eor, x, y, 0u, (uint8_t)(eor == 0u), v, 1u };   /* SEC */
+            return e;
         }
-        cpu.V = adc_overflow(cpu.A, 0x01u, 0);       /* $208A ADC #1 — V is the loop-end exit V */
-        cpu.A = (uint8_t)(cpu.A + 0x01u);            /* $2089-$208A — the negation, (a^$FF)+1 */
-        mem[SHAPE_VERTEX + 8 + x] = cpu.A;
+        v = adc_overflow(eor, 0x01u, 0);             /* $208A ADC #1 — V is the loop-end exit V */
+        uint8_t neg = (uint8_t)(eor + 0x01u);        /* $2089-$208A — the negation, (a^$FF)+1 */
+        mem[SHAPE_VERTEX + 8 + x] = neg;
         shared_temp_77 = (uint8_t)(x + 1u);          /* INC shared_temp_77 */
         y = (uint8_t)(y + 1u);                       /* INY */
         if (y == mem[OBJ_VECTOR_END]) {              /* $2094 CPY OBJ_VECTOR_END */
-            cpu.X = x;
-            cpu.Y = y;
-            cpu.N = 0;                               /* CPY equal: Y-END == 0 */
-            cpu.Z = 1;
-            cpu.C = 0;                               /* CLC — every vertex fitted */
-            return;
+            SlotExit e = { neg, x, y, 0u, 1u, v, 0u };   /* CPY equal: N=0 Z=1; CLC every vertex fitted */
+            return e;
         }
     }
 }
@@ -8356,7 +8352,11 @@ static void plot_object_core(uint8_t slot)
         mem[OBJ_VECTOR_CURSOR] = mem[SHAPE_VECTOR_START + cpu.X];
         mem[OBJ_VECTOR_END]    = mem[SHAPE_VECTOR_START + 1 + cpu.X];
         plot_ptr3_lo = mem[SHAPE_EDGE_START + cpu.X];
-        scale_shape_vectors_core();
+        {   /* plot_object_core still uses cpu — marshal the typed exit back (cleaned in 6f) */
+            SlotExit sv = scale_shape_vectors_core(cpu.V);
+            cpu.A = sv.a; cpu.X = sv.x; cpu.Y = sv.y;
+            cpu.N = sv.n; cpu.Z = sv.z; cpu.V = sv.v; cpu.C = sv.c;
+        }
         if (cpu.C) return;                           /* a vertex did not fit */
         plot_shape_edges_core();
         cpu.X = plot_shape;                          /* the UNCLAMPED shape index */
@@ -8369,7 +8369,9 @@ static void plot_object_core(uint8_t slot)
 
 /* The 6502-ABI shims. */
 void plot_object(void)          { plot_object_core(cpu.X); }
-void scale_shape_vectors(void)  { scale_shape_vectors_core(); }
+void scale_shape_vectors(void)  { SlotExit e = scale_shape_vectors_core(cpu.V);
+                                  cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
+                                  cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c; }
 void plot_shape_edges(void)     { plot_shape_edges_core(); }
 
 /* ===========================================================================
