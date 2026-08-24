@@ -2094,10 +2094,8 @@ static void append_corner_marker(uint8_t flags, unsigned offset)
 {
     unsigned slot = marker_count;
 
-    cpu.Y = (uint8_t)slot;
-    CPY(0x03);                                        /* $25DB, and the branch is on its C */
-    if (cpu.C)
-        return;
+    if (slot >= 0x03u)                                /* $25DB CPY #3 / BCS — at most three */
+        return;                                       /* (Y and its C are dead: the caller reloads Y) */
 
     mem[MARKER_EDGE_IDX  + slot] = edge_cursor;
     mem[MARKER_FLAGS_TBL + slot] = flags;
@@ -2113,10 +2111,17 @@ static void append_corner_marker(uint8_t flags, unsigned offset)
     inc_mem(MEM_marker_count);
 }
 
-static void emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringPoint)
+/* Exit ABI of emit_edge_width_offset.  X passes through the caller's; A = the point's scan line
+   (the CMP at each exit sets A to it); Y = edge_cursor; V is the width ADC's overflow when the
+   scoring branch ran, else the entry V; N/Z/C are the last CMP's on that exit path. */
+typedef struct { uint8_t a, y, n, z, v, c; } WidthExit;
+
+static WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringPoint,
+                                             uint8_t entryV)
 {
     unsigned feature, offset = 0, line;
     uint8_t  flags, style;
+    uint8_t  vOut = entryV;              /* V survives from entry unless the width ADC rewrites it */
 
     /* $2565-$257E — the point's feature bits, masked down to this road side's, and the two
        table entries they select.  The section-flags array is addressed twice over: $0702 for a
@@ -2165,7 +2170,7 @@ static void emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScorin
                everything after it is CMP/CPY, which do not — so the caller gets its overflow.
                Replayed from the operands (565 of 2000 cases differ on V alone otherwise). */
             unsigned carryLo = (mem[EDGE_X_LO_TBL + slot] + (offset & 0xFFu)) > 0xFFu;
-            cpu.V = adc_overflow(mem[EDGE_X_HI_TBL + slot], (uint8_t)(offset >> 8), carryLo);
+            vOut = adc_overflow(mem[EDGE_X_HI_TBL + slot], (uint8_t)(offset >> 8), carryLo);
         }
 
         /* $25D3-$25FB — and a corner marker, if the point carries one. */
@@ -2174,34 +2179,66 @@ static void emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScorin
     }
 
     /* $25FD-$260B — THE STYLE.  An odd section byte is always style 2; an even one takes the
-       feature's own.  (The `TXA / AND #1` is the only use of the section index down here.) */
-    cpu.Y = edge_cursor;
+       feature's own.  (The `TXA / AND #1` is the only use of the section index down here.)
+       Y exits = edge_cursor from here on (the $2603 LDY), so horizon_index below uses it. */
     mem[EDGE_STYLE_TBL + edge_cursor] = (sectionByte & 1u) ? 0x02u : style;
 
     /* $260D-$261D — the point's scan line, and the frame's horizon if it reaches further than
-       anything before it.  $50 is the top of the 80-line space: a point at or past it is sky. */
-    line = load_a(projected_line);
+       anything before it.  $50 is the top of the 80-line space: a point at or past it is sky.
+       Each exit is a CMP, so A = line and N/Z/C are that CMP's (V untouched — still vOut). */
+    line = projected_line;
     mem[EDGE_Y_TBL + edge_cursor] = (uint8_t)line;
-    if (cmp_ge(line, 0x50))
-        return;
-    if (!cmp_ge(line, horizon_extent))
-        return;
-
-    if (mem[0x261A] == 0x85 && mem[0x261C] == 0x84) {           /* unpatched: Silverstone */
-        horizon_extent = (uint8_t)line;
-        horizon_index  = cpu.Y;
-    } else if (mem[0x261A] == 0x4C) {                           /* a circuit's own JMP */
-        uint16_t target = (uint16_t)(mem[0x261B] | (mem[0x261C] << 8));
-        if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
-        else                                      platform_smc_unhandled(0x261A, target);
-    } else {
-        platform_smc_unhandled(0x261A, mem[0x261A]);
+    {
+        uint8_t d = (uint8_t)(line - 0x50u);          /* CMP #$50 */
+        if (line >= 0x50u) {
+            WidthExit e = { (uint8_t)line, edge_cursor,
+                            (uint8_t)((d >> 7) & 1u), (uint8_t)(line == 0x50u), vOut, 1u };
+            return e;
+        }
+    }
+    {
+        uint8_t d = (uint8_t)(line - horizon_extent); /* CMP horizon_extent */
+        if (line < horizon_extent) {
+            WidthExit e = { (uint8_t)line, edge_cursor,
+                            (uint8_t)((d >> 7) & 1u), 0u, vOut, 0u };
+            return e;
+        }
+        /* line >= horizon_extent: this point IS the new horizon (or a circuit hook owns it). */
+        if (mem[0x261A] == 0x85 && mem[0x261C] == 0x84) {       /* unpatched: Silverstone */
+            uint8_t z = (uint8_t)(d == 0u);           /* the CMP's Z, before the store moves it */
+            horizon_extent = (uint8_t)line;
+            horizon_index  = edge_cursor;
+            {   WidthExit e = { (uint8_t)line, edge_cursor,
+                                (uint8_t)((d >> 7) & 1u), z, vOut, 1u };
+                return e;
+            }
+        }
+        /* ⚠ SMC/hook seam: the JMP transfers to the circuit's own code, which the 6502 reaches
+           with A = line and the CMP horizon_extent flags live (C=1 here), so re-establish that
+           entry ABI before dispatching.  The hook runs to its own RTS and owns the EXIT state —
+           hand cpu back verbatim (documented cpu exception, like cluster 5's per-circuit hooks). */
+        cpu.Y = edge_cursor;                          /* $2603 LDY $12, live into the JMP */
+        cpu.A = (uint8_t)line;
+        cpu.N = (uint8_t)((d >> 7) & 1u);
+        cpu.Z = (uint8_t)(d == 0u);
+        cpu.C = 1u;
+        cpu.V = vOut;
+        if (mem[0x261A] == 0x4C) {                              /* a circuit's own JMP */
+            uint16_t target = (uint16_t)(mem[0x261B] | (mem[0x261C] << 8));
+            if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
+            else                                      platform_smc_unhandled(0x261A, target);
+        } else {
+            platform_smc_unhandled(0x261A, mem[0x261A]);
+        }
+        { WidthExit e = { cpu.A, cpu.Y, cpu.N, cpu.Z, cpu.V, cpu.C }; return e; }
     }
 }
 
 void emit_edge_width_offset(void)
 {
-    emit_edge_width_offset_core(cpu.X, 0x03);
+    WidthExit e = emit_edge_width_offset_core(cpu.X, 0x03, cpu.V);
+    cpu.A = e.a; cpu.Y = e.y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;   /* X passes through */
 }
 
 /* ===========================================================================
@@ -2566,7 +2603,7 @@ static void road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
 
     cpu.X              = walk_prev_section;
     marker_count_saved = marker_count;               /* $245C — no corner marker for a midpoint */
-    emit_edge_width_offset_core(walk_prev_section, 0x03);
+    emit_edge_width_offset_core(walk_prev_section, 0x03, 0u);   /* mem-only here; exit V is dead */
     marker_count       = (uint8_t)load_a(marker_count_saved);
     inc_mem(MEM_edge_cursor);                        /* $2467, and its N/Z are the exit flags */
 }
@@ -2610,7 +2647,7 @@ static void road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
         }
 
         /* $246A — EMIT: the point's second angle, and any corner marker it carries. */
-        emit_edge_width_offset_core((uint8_t)section, 0x03);
+        emit_edge_width_offset_core((uint8_t)section, 0x03, 0u);   /* mem-only here; exit V dead */
 
         /* $246D-$248F — past the subdivision floor, has the road swung more than $14 off the
            view axis in this one step?  If so, subdivide — unless the point BEFORE it was
