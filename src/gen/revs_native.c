@@ -4653,22 +4653,35 @@ void interp_edge(void)
    (edge_x_hi[X] + $14) >= $28 and rolls that answer into shared_temp_76's top bit; the cell's
    previous top bit slides down to bit 6, which fill_line_attr reads back as the PREVIOUS
    point's answer.
-   ⚠ This is a FLAG PRODUCER, not a value producer — two of its results leave through the CPU
-   flags and are compared by the differential, so the add and the roll KEEP their cpu.h helpers
-   (the documented flag-escape exception).  The add's signed overflow (V) is draw_road's exit V
-   on the path that runs the mark walk; the roll's C/N/Z are the routine's real output. */
-static void edge_x_offscreen_core(uint8_t pointX)
+   ⚠ This is a FLAG PRODUCER — its whole output is a mem write plus four escaping flags, so it
+   returns them BY VALUE (the caller replays them; the shim marshals them into cpu).  The add's
+   value/overflow come from the pure adc_value/adc_overflow helpers, which honour decimal mode
+   exactly as the ADC macro does (the fixture randomises D); the CMP is always binary and the ROR
+   is spelled out by hand.  Escapes: A = the add's sum (draw_road never reads it, but the
+   standalone fixture compares it); V = the add's signed overflow (draw_road's exit V on the mark
+   path); C = the byte rolled OUT (old bit 0); N = the rolled-in answer; Z = "cell now zero". */
+typedef struct { uint8_t a, v, c, n, z; } EdgeOffFlags;
+
+static EdgeOffFlags edge_x_offscreen_core(uint8_t pointX)
 {
     uint8_t edgeHi = mem[EDGE_X_HI_TBL + pointX];
-    cpu.A = (uint8_t)adc_step(edgeHi, 0x14u, 0);   /* + $14, leaving V for the caller */
-    CMP(0x28u);                                     /* carry := (sum >= $28) */
-    ROR_M(MEM_shared_temp_76);                      /* roll carry into bit 7; sets C/N/Z */
+    uint8_t sum    = adc_value(edgeHi, 0x14u, 0).val;    /* + $14 (decimal-aware value) */
+    uint8_t v      = adc_overflow(edgeHi, 0x14u, 0);     /* ...its overflow, replayed pure */
+    uint8_t carry  = (uint8_t)(sum >= 0x28u);            /* CMP #$28 — always binary */
+
+    uint8_t old  = shared_temp_76;                       /* ROR shared_temp_76 */
+    uint8_t newv = (uint8_t)((carry << 7) | (old >> 1));
+    shared_temp_76 = newv;
+
+    EdgeOffFlags e = { sum, v, (uint8_t)(old & 1u), carry, (uint8_t)(newv == 0) };
+    return e;
 }
 
-/* The 6502-ABI shim: the edge point index arrives in X. */
+/* The 6502-ABI shim: the edge point index arrives in X (unchanged to exit). */
 void edge_x_offscreen(void)
 {
-    edge_x_offscreen_core(cpu.X);
+    EdgeOffFlags e = edge_x_offscreen_core(cpu.X);
+    cpu.A = e.a; cpu.V = e.v; cpu.C = e.c; cpu.N = e.n; cpu.Z = e.z;
 }
 
 #define LINE_ATTR_OPERAND 0x1970u   /* the patched low byte of `STA line_attr,Y` */
@@ -4731,7 +4744,7 @@ static void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t fi
 
         if (!clamped) {
             /* $194E — re-test this point's angle only when the last one was off axis. */
-            if (shared_temp_76 & 0x80u) { edge_x_offscreen_core(x); vFlag = cpu.V; }
+            if (shared_temp_76 & 0x80u) { vFlag = edge_x_offscreen_core(x).v; }
 
             uint8_t ptLine = mem[EDGE_Y_TBL + x];     /* the scan line this point projects to */
             if (ptLine >= 0x50u) {
