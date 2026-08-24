@@ -7728,23 +7728,23 @@ static uint8_t sign_table_byte(uint16_t site, uint8_t index, int* trapped)
    three calls walk components 2, 1, 0.  math_lo, math_hi and shared_temp_76 are left as
    scratch, and the second subtract's flags are the routine's exit flags.
    --------------------------------------------------------------------------- */
-static void build_sign_origin_core(uint8_t offset, uint8_t shift)
+typedef struct { uint8_t a, y, n, z, v, c; } SignOriginExit;   /* X passes through the caller's */
+
+static SignOriginExit build_sign_origin_core(uint8_t offset, uint8_t shift)
 {
     uint32_t staged;
     unsigned places;
     uint8_t  component;
 
-    /* $4D21-$4D2B — (sign : value : 0), the sign taken from the PLA's own N.  ⚠ THE PUSH IS
-       REAL OUTPUT: the byte PHA leaves at $0100+S survives the PLA and a mem[] differential
-       sees it, so the twin stages A across the two zeroing stores the same way rather than
-       keeping it in a local. */
-    cpu.A = offset;
-    PHA();
+    /* $4D21-$4D2B — (sign : value : 0), the sign taken from bit 7 of `offset`.  The 6502 staged
+       it through PHA/PLA only to test its sign across the two zeroing stores; the pushed byte at
+       $0100+S is dead stack residue (nothing reads it back), so the twin stages it in a local and
+       reads bit 7 directly.  det_compare skips $01B8..$01FF and the fixture ignores $01FF for the
+       residue the oracle still leaves there. */
     math_lo        = 0x00u;
     shared_temp_76 = 0x00u;
-    PLA();
-    staged = ((uint32_t)cpu.A << 8);
-    if (cpu.N) { staged |= 0xFF0000u; shared_temp_76 = 0xFFu; }
+    staged = ((uint32_t)offset << 8);
+    if (offset & 0x80u) { staged |= 0xFF0000u; shared_temp_76 = 0xFFu; }
 
     /* $4D2D-$4D33 — LSR / ROR / ROR, `shift` times, feeding zeros in at the top. */
     places = shift ? shift : 256u;
@@ -7757,7 +7757,6 @@ static void build_sign_origin_core(uint8_t offset, uint8_t shift)
        subtract.  Y is left as the component index; the high SBC's flags are the routine's exit
        flags, replayed from the high byte (6502 Z is the high byte alone, not the word). */
     component = shared_temp_77;
-    cpu.Y = component;
     shared_temp_77 = (uint8_t)(component - 1u);
 
     uint16_t wm   = (uint16_t)(((uint16_t)mem[VIEW_ORIGIN_HI + component] << 8) |
@@ -7765,14 +7764,18 @@ static void build_sign_origin_core(uint8_t offset, uint8_t shift)
     uint16_t ws   = (uint16_t)(((uint16_t)math_hi << 8) | math_lo);
     uint16_t diff = (uint16_t)(wm - ws);
     mem[VIEW_ORIGIN_LO + VIEW_ORIGIN_STRIDE + component] = (uint8_t)diff;
-    cpu.A = (uint8_t)(diff >> 8);
-    mem[VIEW_ORIGIN_HI + VIEW_ORIGIN_STRIDE + component] = cpu.A;
+    uint8_t hiR = (uint8_t)(diff >> 8);
+    mem[VIEW_ORIGIN_HI + VIEW_ORIGIN_STRIDE + component] = hiR;
 
     uint8_t hiM = (uint8_t)(wm >> 8);
-    cpu.C = (wm >= ws) ? 1u : 0u;                        /* no borrow out of the word */
-    cpu.V = (uint8_t)((((hiM ^ math_hi) & (hiM ^ cpu.A)) >> 7) & 1u);
-    cpu.N = (cpu.A >> 7) & 1u;
-    cpu.Z = (cpu.A == 0u);
+    SignOriginExit e;
+    e.a = hiR;
+    e.y = component;
+    e.c = (wm >= ws) ? 1u : 0u;                          /* no borrow out of the word */
+    e.v = (uint8_t)((((hiM ^ math_hi) & (hiM ^ hiR)) >> 7) & 1u);
+    e.n = (hiR >> 7) & 1u;
+    e.z = (hiR == 0u);
+    return e;
 }
 
 /* ---------------------------------------------------------------------------
@@ -7791,20 +7794,35 @@ static void build_sign_origin_core(uint8_t offset, uint8_t shift)
 
    object_dist_hi is written unconditionally, before either test, and $29FB is its only reader.
    --------------------------------------------------------------------------- */
-static void note_object_contact_core(uint8_t threshold)
+typedef struct { uint8_t a, y, n, z, c; } ContactExit;    /* X and V pass through the caller's */
+
+static ContactExit note_object_contact_core(uint8_t threshold, uint8_t entryC)
 {
+    ContactExit e;
     point_distance_hypot_apply();                        /* $2AB3 */
 
-    cpu.Y = threshold;                                   /* Y is the caller's, not reloaded */
-    object_dist_hi = (uint8_t)load_a(point_dist_hi);     /* $2AB6-$2AB8 */
-    if (!cpu.Z) return;                                  /* further away than $FF */
+    uint8_t distHi = point_dist_hi;                      /* $2AB6-$2AB8 — LDA sets A/N/Z */
+    object_dist_hi = distHi;
+    e.y = threshold;                                     /* Y is the caller's, not reloaded */
+    if (distHi != 0u) {                                  /* further away than $FF */
+        e.a = distHi; e.n = (distHi >> 7) & 1u; e.z = 0u; e.c = entryC;
+        return e;
+    }
 
-    CPY(point_dist_lo);                                  /* $2ABC */
-    if (!cpu.C) return;                                  /* ...or further than the threshold */
+    uint8_t distLo = point_dist_lo;                      /* CPY $2ABC — Y(threshold) - point_dist_lo */
+    uint8_t cmp    = (uint8_t)(threshold - distLo);
+    if (threshold < distLo) {                            /* ...or further than the threshold */
+        e.a = distHi;                                    /* A is still 0 from the LDA above */
+        e.n = (cmp >> 7) & 1u; e.z = (cmp == 0u); e.c = 0u;
+        return e;
+    }
 
-    DEC_M(MEM_contact_pending);                          /* $2AC0 */
-    contact_distance = point_dist_lo;                    /* $2AC2-$2AC4 */
-    contact_slot     = (uint8_t)load_a(shared_counter_42);      /* $2AC6-$2AC8 */
+    contact_pending  = (uint8_t)(contact_pending - 1u);  /* DEC $2AC0 (N/Z here are dead) */
+    contact_distance = distLo;                            /* $2AC2-$2AC4 */
+    uint8_t slot     = shared_counter_42;                 /* $2AC6-$2AC8 — LDA sets A/N/Z */
+    contact_slot     = slot;
+    e.a = slot; e.n = (slot >> 7) & 1u; e.z = (slot == 0u); e.c = 1u;   /* passed the C test */
+    return e;
 }
 
 /* ---------------------------------------------------------------------------
@@ -7995,7 +8013,7 @@ static void build_road_sign_core(void)
        projection and the slot write.  The CMP is still the off-heading distance in A. */
     threshold = cmp_ge(cpu.A, 0x6Eu) ? 0x50u : 0x25u;
     shared_counter_42 = SIGN_SLOT;
-    note_object_contact_core(threshold);
+    note_object_contact_core(threshold, cpu.C);          /* exit dead here (build_road_sign is mem-only) */
     cpu.Y = VIEW_ORIGIN_STRIDE;
     { ProjPoint p = project_point_core(cpu.X, cpu.Y);   /* $4D1B */
       write_object_slot_core(p.line, cpu.X, cpu.V, p.clip); }   /* $4D1E — line + its drop flag; exit dead here */
@@ -8003,7 +8021,12 @@ static void build_road_sign_core(void)
 
 /* The 6502-ABI shims. */
 void build_road_sign(void)      { build_road_sign_core(); }
-void build_sign_origin(void)    { build_sign_origin_core(cpu.A, cpu.Y); }
+void build_sign_origin(void)
+{
+    SignOriginExit e = build_sign_origin_core(cpu.A, cpu.Y);
+    cpu.A = e.a; cpu.Y = e.y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
+}
 void write_object_slot(void)
 {
     SlotExit e = write_object_slot_core(cpu.A, cpu.X, cpu.V, cpu.C);
@@ -8016,7 +8039,11 @@ void reject_object_slot(void)
     cpu.A = r.a; cpu.Y = r.y; cpu.N = (r.a >> 7) & 1u; cpu.Z = (r.a == 0u);
 }
 void store_object_flags(void)   { store_object_flags_core(cpu.Y, cpu.A); }
-void note_object_contact(void)  { note_object_contact_core(cpu.Y); }
+void note_object_contact(void)
+{
+    ContactExit e = note_object_contact_core(cpu.Y, cpu.C);
+    cpu.A = e.a; cpu.Y = e.y; cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;
+}
 
 /* ===========================================================================
    TWINS #93-#95 — THE OBJECT PLOTTER'S SHAPE SIDE

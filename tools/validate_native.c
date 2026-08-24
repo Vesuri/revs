@@ -4438,6 +4438,12 @@ static int test_road_sign(void)
         int rejectC = 0, rejectLine = 0, accepted = 0, contact = 0, wideThresh = 0;
         int cases = list[i].cases * scale;
         if (!want(list[i].name)) continue;
+        /* build_sign_origin (i==3): the 6502 PHA/PLA-staged its argument; the twin reads bit 7
+           of a local instead, so the oracle still writes the pushed byte to $0100+S (S=$FF here)
+           and the clean core does not.  Ignore that one dead residue byte; determinism's own
+           $01B8..$01FF skip covers it in the whole-corpus path. */
+        static const uint16_t signOriginIgnore[1] = { 0x01FF };
+        set_ignore(i == 3 ? signOriginIgnore : 0, i == 3 ? 1 : 0);
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
             fill_random(pre);
@@ -4537,6 +4543,7 @@ static int test_road_sign(void)
                (i == 5 ? ", near signs forced" : "")));
     }
 
+    set_ignore(0, 0);
     smcTraps = g_smcUnhandled;
     unsetenv("REVS_SMC_CONTINUE");
     if (want("build_road_sign")) {
