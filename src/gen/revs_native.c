@@ -7828,68 +7828,85 @@ static void note_object_contact_core(uint8_t threshold)
    behind the near clip) rejects, and so does a projected line of 0, because the `SBC #1` then
    goes negative.  Everything else is drawn.
    --------------------------------------------------------------------------- */
-static void store_object_flags_core(void)
+/* The slot-writer chain's exit ABI.  All three fixtures compare A/X/Y + N/Z/V/C, so the core
+   returns every escaping value and the thin shim replays it into cpu; pass-through registers
+   (entry X/V/C on the reject arms) travel in as args and back out unchanged. */
+typedef struct { uint8_t a, y; } RejectExit;                   /* N/Z derive from a (bit7 set) */
+typedef struct { uint8_t a, x, y, n, z, v, c; } SlotExit;
+
+static void store_object_flags_core(uint8_t y, uint8_t a)
 {
-    mem[CAR_FLAGS_SHAPE + cpu.Y] = cpu.A;                /* $2AAD */
+    mem[CAR_FLAGS_SHAPE + y] = a;                        /* $2AAD — STA touches no flag/register */
 }
 
-static void reject_object_slot_core(void)
+static RejectExit reject_object_slot_core(void)
 {
-    LDY(shared_counter_42);                              /* $2AA6 */
-    LDA(mem[CAR_FLAGS_SHAPE + cpu.Y]);
-    ORA(0x80u);                                          /* the slot-empty mark */
-    store_object_flags_core();
+    uint8_t y = shared_counter_42;                       /* $2AA6 */
+    uint8_t a = (uint8_t)(mem[CAR_FLAGS_SHAPE + y] | 0x80u);   /* ORA #$80 — the slot-empty mark */
+    store_object_flags_core(y, a);
+    RejectExit r = { a, y };                             /* exit: A=a, Y=y, N=1, Z=0 (bit7 set) */
+    return r;
 }
 
-static void write_object_slot_core(uint8_t projectedLine, int behindNearClip)
+static SlotExit write_object_slot_core(uint8_t projectedLine, uint8_t entryX,
+                                       uint8_t entryV, uint8_t entryC)
 {
     unsigned width;
     int      places;
     uint8_t  slot = shared_counter_42;                   /* $2A76 */
+    SlotExit e;
+    e.x = entryX; e.v = entryV; e.c = entryC; e.y = slot;
 
-    cpu.Y = slot;
-    if (behindNearClip) { reject_object_slot_core(); return; }      /* $2A78 BCS */
+    if (entryC) {                                        /* $2A78 BCS — behind the near clip */
+        RejectExit r = reject_object_slot_core();
+        e.a = r.a; e.y = r.y; e.n = (r.a >> 7) & 1u; e.z = (r.a == 0u);
+        return e;                                        /* X/V/C pass through unchanged */
+    }
 
-    cpu.A = (uint8_t)(projectedLine - 0x01u);            /* $2A7A-$2A7B  SEC/SBC #1 */
-    cpu.N = (cpu.A >> 7) & 1u;                            /* N consumed by the BMI next line */
-    cpu.V = sbc_overflow(projectedLine, 0x01u, 1);        /* SBC's V and C — the exit flags on the */
-    cpu.C = (projectedLine >= 0x01u) ? 1u : 0u;           /* reject-line arm (ORA below writes neither) */
-    if (cpu.N) { reject_object_slot_core(); return; }    /* $2A7D BMI */
-    mem[OBJECT_LINE + slot] = cpu.A;                     /* $2A7F */
+    uint8_t line = (uint8_t)(projectedLine - 0x01u);     /* $2A7A-$2A7B  SEC/SBC #1 */
+    uint8_t sbcV = sbc_overflow(projectedLine, 0x01u, 1);/* SBC's V/C — exit flags on the */
+    uint8_t sbcC = (projectedLine >= 0x01u) ? 1u : 0u;   /* reject-line arm (ORA writes neither) */
+    if (line & 0x80u) {                                  /* $2A7D BMI — a projected line of 0 */
+        RejectExit r = reject_object_slot_core();
+        e.a = r.a; e.y = r.y; e.n = (r.a >> 7) & 1u; e.z = (r.a == 0u);
+        e.v = sbcV; e.c = sbcC;                          /* the SBC's V/C survive to this exit */
+        return e;                                        /* X passes through unchanged */
+    }
+    mem[OBJECT_LINE + slot] = line;                      /* $2A7F */
 
     /* $2A82-$2A99 — the exponent correction.  X carries the count and its own sign picks the
-       direction, which is why the twin keeps it in a signed int; both loops end with X at 0.
-       The subtract's own N/Z die at the DEX. */
-    cpu.X  = (uint8_t)((uint8_t)(proj_width_shift - 0x09u) - 1u);   /* SBC / TAX / DEX */
-    cpu.C  = (proj_width_shift >= 0x09u) ? 1u : 0u;      /* the SBC's C — the exit C when places==0 */
-    cpu.V  = sbc_overflow(proj_width_shift, 0x09u, 1);   /* the SBC's V — exit V on the drawn path */
-    width  = proj_width;                                 /* $2A88 — its N/Z die at the DEX */
-    places = (int)(int8_t)cpu.X;
+       direction (kept in a signed int); both loops end with X at 0, and so does places==0.  The
+       subtract's own N/Z die at the DEX, but its V is the drawn path's exit V. */
+    uint8_t  xc     = (uint8_t)((uint8_t)(proj_width_shift - 0x09u) - 1u);   /* SBC / TAX / DEX */
+    uint8_t  exitC  = (proj_width_shift >= 0x09u) ? 1u : 0u;   /* the SBC's C — exit C when places==0 */
+    uint8_t  shiftV = sbc_overflow(proj_width_shift, 0x09u, 1);
+    uint8_t  exitX  = xc;
+    width  = proj_width;                                 /* $2A88 */
+    places = (int)(int8_t)xc;
     /* ⚠ EACH LOOP'S LAST SHIFT LEAVES ITS BIT IN C, AND THAT C IS THE ROUTINE'S EXIT C —
        nothing between here and the RTS writes it.  The twin replays that one bit from the
-       count instead of running the shift a bit at a time, which is where 698 of 4000 cases
-       failed the first time round. */
+       count instead of running the shift a bit at a time (698/4000 failed the first time). */
     if (places < 0) {                                    /* $2A8F — LSR A / INX */
         unsigned n = (unsigned)(uint8_t)(-places);
-        cpu.C = (uint8_t)((n <= 8u) ? ((width >> (n - 1u)) & 1u) : 0u);
+        exitC = (uint8_t)((n <= 8u) ? ((width >> (n - 1u)) & 1u) : 0u);
         width = (n >= 8u) ? 0u : (width >> n);
-        cpu.X = 0;
+        exitX = 0;
     } else if (places > 0) {                             /* $2A95 — ASL A / DEX */
         unsigned n = (unsigned)places;
-        cpu.C = (uint8_t)((n <= 8u) ? ((width >> (8u - n)) & 1u) : 0u);
+        exitC = (uint8_t)((n <= 8u) ? ((width >> (8u - n)) & 1u) : 0u);
         width = (n >= 8u) ? 0u : (uint8_t)(width << n);
-        cpu.X = 0;
+        exitX = 0;
     }
-    cpu.A = (uint8_t)width;
-    mem[OBJECT_WIDTH + slot] = cpu.A;                    /* $2A99 */
+    mem[OBJECT_WIDTH + slot] = (uint8_t)width;           /* $2A99 */
 
     /* $2A9C-$2AA3 — keep the surviving flag bits, drop this shape in the low nibble, store.
        The ORA's N/Z are the routine's exit flags. */
-    cpu.A = (uint8_t)((mem[CAR_FLAGS_SHAPE + slot] & 0x70u) | plot_shape);
-    cpu.N = (cpu.A >> 7) & 1u;
-    cpu.Z = (cpu.A == 0);
-    cpu.Y = slot;
-    store_object_flags_core();                           /* $2AA3 JMP */
+    uint8_t flagsA = (uint8_t)((mem[CAR_FLAGS_SHAPE + slot] & 0x70u) | plot_shape);
+    store_object_flags_core(slot, flagsA);               /* $2AA3 JMP */
+    e.a = flagsA; e.x = exitX; e.y = slot;
+    e.n = (flagsA >> 7) & 1u; e.z = (flagsA == 0u);
+    e.v = shiftV; e.c = exitC;
+    return e;
 }
 
 /* ---------------------------------------------------------------------------
@@ -7981,15 +7998,24 @@ static void build_road_sign_core(void)
     note_object_contact_core(threshold);
     cpu.Y = VIEW_ORIGIN_STRIDE;
     { ProjPoint p = project_point_core(cpu.X, cpu.Y);   /* $4D1B */
-      write_object_slot_core(p.line, p.clip); }          /* $4D1E — the projected line and its drop flag */
+      write_object_slot_core(p.line, cpu.X, cpu.V, p.clip); }   /* $4D1E — line + its drop flag; exit dead here */
 }
 
 /* The 6502-ABI shims. */
 void build_road_sign(void)      { build_road_sign_core(); }
 void build_sign_origin(void)    { build_sign_origin_core(cpu.A, cpu.Y); }
-void write_object_slot(void)    { write_object_slot_core(cpu.A, cpu.C); }
-void reject_object_slot(void)   { reject_object_slot_core(); }
-void store_object_flags(void)   { store_object_flags_core(); }
+void write_object_slot(void)
+{
+    SlotExit e = write_object_slot_core(cpu.A, cpu.X, cpu.V, cpu.C);
+    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
+}
+void reject_object_slot(void)
+{
+    RejectExit r = reject_object_slot_core();
+    cpu.A = r.a; cpu.Y = r.y; cpu.N = (r.a >> 7) & 1u; cpu.Z = (r.a == 0u);
+}
+void store_object_flags(void)   { store_object_flags_core(cpu.Y, cpu.A); }
 void note_object_contact(void)  { note_object_contact_core(cpu.Y); }
 
 /* ===========================================================================
