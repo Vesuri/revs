@@ -1682,6 +1682,10 @@ typedef struct { uint8_t hi, carry, overflow, neg, zero; } AddFlags;
 typedef struct { AddFlags tail; uint8_t x, y; } EngineExit;
 typedef struct { uint8_t x, y; } EngineRegs;
 
+/* update_camera_and_drive_state's escaping registers: the final car_speed_scaled add's exit
+   A/flags, plus X (= player_car) and Y (= car_section_cursor).  Returned by value; shim replays. */
+typedef struct { AddFlags acc; uint8_t x, y; } CameraExit;
+
 /* apply_driving_model's sub-models (twins #58-#86), all defined further down.  It reaches
    every one through its core so the whole chain is one native call sequence, not shim hops. */
 static void compute_car_angles_core(uint8_t headingHi, uint8_t headingLo);
@@ -1696,7 +1700,7 @@ static void damp_and_derive_loads_core(void);
 static void apply_drag_terms_core(void);
 static AddFlags integrate_state_rates_core(void);
 static AddFlags integrate_car_position_core(void);
-static void update_camera_and_drive_state_core(void);
+static CameraExit update_camera_and_drive_state_core(void);
 
 /* `value >= limit` through the 6502's CPX, which also leaves X = value.  The near-slot clamps
    below end on one of these, so the compare's own C/N/Z are their exit flags. */
@@ -3001,7 +3005,14 @@ static void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
     rotate_state_pair_core(3u, 6u, 0x40u);   /* rotate_state_6_into_3 */
     integrate_state_rates_core();
     integrate_car_position_core();
-    update_camera_and_drive_state_core();
+    /* apply_driving_model's exit A/X/Y/flags ARE update_camera_and_drive_state's (its last call);
+       replay them into cpu so the shim returns them untouched. */
+    {
+        CameraExit ce = update_camera_and_drive_state_core();
+        cpu.A = ce.acc.hi; cpu.C = ce.acc.carry; cpu.V = ce.acc.overflow;
+        cpu.N = ce.acc.neg; cpu.Z = ce.acc.zero;
+        cpu.X = ce.x; cpu.Y = ce.y;
+    }
 }
 
 /* The 6502-ABI shim.  The player's own position is the routine's one input — it reaches the
@@ -7318,13 +7329,15 @@ static EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY)
    with a JSR into its own hook, so on those circuits the camera's high byte is built by the
    circuit's code instead.
    --------------------------------------------------------------------------- */
-static void update_camera_and_drive_state_core(void)
+static CameraExit update_camera_and_drive_state_core(void)
 {
+    CameraExit e = {{0,0,0,0,0},0,0};
     uint8_t dirIndex;
+    uint8_t yScale;         /* Y carried $452F→$45D8; a spin's MOS sound may overwrite it (see below) */
 
     if (drive_state != 0) {                             /* $44EA-$44EC */
-        DEC_M(MEM_spin_shake);                          /* $44EE */
-        DEC_M(MEM_spin_shake);                          /* $44F0 */
+        spin_shake = (uint8_t)(spin_shake - 1u);        /* $44EE — DEC, flags dead (yaw reloads) */
+        spin_shake = (uint8_t)(spin_shake - 1u);        /* $44F0 */
     } else {
         spin_shake     = 0x00u;                         /* $44F5 — both zeroed (drive_state==0) */
         spin_countdown = 0x00u;
@@ -7350,15 +7363,13 @@ static void update_camera_and_drive_state_core(void)
         }
         if (up) {                                       /* $4516-$451F */
             bias++;
-            if (!(bias & 0x80u)) {                      /* positive: CPY #$04 sets C, escapes via PHP */
-                cpu.C = (bias >= 0x04u);                /* $4519 CPY — carry is pushed in the yaw below */
-                if (cpu.C) bias = 0x03u;                /* clamped to +3 */
+            if (!(bias & 0x80u)) {                      /* positive: CPY #$04 (carry dead here) */
+                if (bias >= 0x04u) bias = 0x03u;        /* clamped to +3 */
             }
         } else if (down) {                              /* $4521-$4528 */
             bias--;
-            if (bias & 0x80u) {                         /* negative: CPY #$FB sets C, escapes via PHP */
-                cpu.C = (bias >= 0xFBu);                /* $4524 CPY */
-                if (!cpu.C) bias = 0xFBu;               /* ...and to -5 */
+            if (bias & 0x80u) {                         /* negative: CPY #$FB (carry dead here) */
+                if (!(bias >= 0xFBu)) bias = 0xFBu;     /* ...and to -5 */
             }
         }
         camera_pitch_bias = bias;                       /* $452A */
@@ -7370,9 +7381,8 @@ yaw:
        signs, minus car_heading_hi.  The three 6502 PHPs each carry ONE flag past the scaling —
        here they are plain C: n1 the octant's sign, n2 component 2's sign, c3 "near the diagonal".
        Every intermediate flag is dead (the folds below overwrite them), so the scaling is binary. */
-    cpu.X = car_section_cursor;                         /* $452D */
-    cpu.Y = mem[SECTION_DIR_IX + cpu.X];                /* $452F — Y stays dirIndex to $457F */
-    dirIndex = cpu.Y;
+    dirIndex = mem[SECTION_DIR_IX + car_section_cursor];  /* $452D-$452F — Y stays dirIndex to $457F */
+    yScale   = dirIndex;                                /* the scale index at $45D8, unless a spin overwrites it */
     shared_temp_76 = view_pitch_offset;                 /* $4531-$4534 — last frame's pitch */
     {
         uint8_t dir0 = mem[TRACK_DIR_0 + dirIndex];
@@ -7409,7 +7419,7 @@ yaw:
         int neg;
         math_lo = base;                                /* $4579 */
         a = (uint8_t)((uint8_t)(base >> 1) + base);    /* $457C-$457D — 1.5x */
-        a = scale_by_track_gradient_core(a, cpu.Y);    /* $457F — Y is still dirIndex */
+        a = scale_by_track_gradient_core(a, dirIndex); /* $457F — Y is still dirIndex */
         a = (uint8_t)(a + grip_disturbance);           /* $4582-$4583 */
         a = (uint8_t)(a + camera_pitch_bias);          /* $4585-$4586 */
         a = (uint8_t)(a + spin_shake);                 /* $4589-$458A */
@@ -7423,12 +7433,14 @@ yaw:
     /* $459B-$45C9 — drive_state.  spin_countdown steps -4 a frame and SATURATES to $C8; the
        sum with drive_state picks between the three values it can take.
        ⚠⚠ The $45CB SMC dispatch just past this block RETURNS on an unrecognised opcode, and on
-       that exit the routine's declared-live A/N/Z/C/V are exactly what this block last set.  So
-       every escaping flag is replayed: vSub steers the saturate; the sum's N/Z/V pick the arm;
-       and on the 0x7F and keep-sum arms C/V come from the add.  The countdown arm keeps its
-       6502 form (LDA/abs8/CMP/begin_spin) — its flags escape THROUGH begin_spin_from_a, which
-       queues a MOS sound, so only the real macros get them right. */
+       that exit (a real, compared path — 1 fixture case in 10 randomises the SMC bytes) the
+       routine's live A/X/Y/N/Z/C/V are exactly what this block leaves.  So the block builds a
+       provisional exit `preSmc`: A = driveNew, X = car_section_cursor (untouched to $45D3),
+       Y = yScale (dirIndex, or the spin's MOS Y), N/Z from driveNew, and C/V per arm.  The
+       countdown arm's spin queues a MOS sound (begin_spin_from_a) that leaves the MOS's own Y —
+       captured in yScale — and its own C/V, read back as a documented MOS boundary. */
     shared_temp_77 = 0x00u;                             /* $459B-$459D */
+    uint8_t driveNew, cArm, vArm;
     {
         uint8_t sub  = (uint8_t)(spin_countdown - 0x04u);   /* $459F-$45A3 SBC (D=0) */
         uint8_t vSub = (uint8_t)((((spin_countdown ^ 0x04u) &
@@ -7446,53 +7458,84 @@ yaw:
         /* ⚠ $45B1's `BPL` keeps the sum; a NEGATIVE sum falls THROUGH to the countdown arm,
            so it is reached two ways, not one. */
         if (zAdd || (!vAdd && nAdd)) {                  /* $45AD BEQ, or $45B1 BPL not taken */
-            LDA(spin_countdown);                        /* $45B3 — sets N for the abs8 */
-            abs8();                                     /* $45B5 */
-            CMP(0x05u);                                 /* $45B7 */
-            if (cpu.C) { begin_spin_from_a_core(cpu.A, cpu.X); LDA(0x01u); }   /* $45B9-$45BF */
-            else         LDA(0x00u);                                    /* $45C3 */
+            uint8_t absSpin;                            /* $45B3-$45B5 LDA/abs8 |spin_countdown| */
+            uint8_t absV;                               /* abs8's V (its ADC #1 when it negates); C is dead (CMP overwrites) */
+            if (a & 0x80u) {                            /* abs8 ran: EOR #$FF / CLC / ADC #1 */
+                uint8_t  inv = (uint8_t)(a ^ 0xFFu);
+                unsigned as  = (unsigned)inv + 1u;
+                absSpin = (uint8_t)as;
+                absV = (uint8_t)((((~(inv ^ 0x01u)) & (inv ^ (uint8_t)as)) >> 7) & 1u);
+            } else {                                    /* abs8 no-op: V survives from the ADC */
+                absSpin = a;
+                absV = vAdd;
+            }
+            if (absSpin >= 0x05u) {                     /* $45B7 CMP #5 → C=1 */
+                begin_spin_from_a_core(absSpin, car_section_cursor);  /* $45B9 (X = car_section_cursor) */
+                yScale = cpu.Y;                          /* MOS ABI — the spin's sound OSWORD left the MOS's Y */
+                cArm = cpu.C; vArm = cpu.V;              /* MOS ABI — begin_spin's exit C/V (LDA #1 leaves them) */
+                driveNew = 0x01u;                        /* $45BD */
+            } else {                                     /* $45B7 CMP #5 → C=0 */
+                driveNew = 0x00u;                        /* $45C3 */
+                cArm = 0u;                               /* CMP set C=0 (absSpin < 5) */
+                vArm = absV;                             /* V survives LDA #0 */
+            }
         } else if (vAdd) {
-            LDA(0x7Fu);                                 /* $45AF BVS → $45C7 */
-            cpu.C = cAdd; cpu.V = vAdd;                 /* C/V survive the LDA — from the add */
+            driveNew = 0x7Fu;                            /* $45AF BVS → $45C7 */
+            cArm = cAdd; vArm = vAdd;                     /* C/V from the ADD survive LDA #$7F */
         } else {
-            cpu.A = r;                                  /* keep the sum */
-            cpu.C = cAdd; cpu.V = vAdd; cpu.N = nAdd; cpu.Z = zAdd;
+            driveNew = r;                                /* keep the sum */
+            cArm = cAdd; vArm = vAdd;
         }
     }
-    drive_state = cpu.A;                                /* $45C9 */
+    drive_state = driveNew;                             /* $45C9 */
+    CameraExit preSmc;                                  /* the exit the $45CB SMC trap returns */
+    preSmc.acc.hi       = driveNew;
+    preSmc.acc.carry    = cArm;
+    preSmc.acc.overflow = vArm;
+    preSmc.acc.neg      = (uint8_t)((driveNew >> 7) & 1u);
+    preSmc.acc.zero     = (uint8_t)(driveNew == 0u);
+    preSmc.x            = car_section_cursor;           /* X unchanged since $452D */
+    preSmc.y            = yScale;                       /* Y = dirIndex, or the spin's MOS Y */
 
-    /* $45CB-$45D1 — A x4 into shared_temp_76 with the overflow in shared_temp_77, i.e. the
+    /* $45CB-$45D1 — driveNew x4 into shared_temp_76 with the overflow in shared_temp_77, i.e. the
        camera term's high byte.  The first ASL/ROL pair is the per-circuit hook site. */
-    if (mem[0x45CB] == 0x0A && mem[0x45CC] == 0x26) {   /* unpatched: Silverstone */
-        ASL_A();
-        ROL_M(MEM_shared_temp_77);
-    } else if (mem[0x45CB] == 0x20) {
-        uint16_t target = (uint16_t)(mem[0x45CC] | (mem[0x45CD] << 8));
-        if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
-        else { platform_smc_unhandled(0x45CB, target); return; }
-    } else {
-        platform_smc_unhandled(0x45CB, mem[0x45CB]); return;
+    {
+        uint8_t camA = driveNew, carry;
+        if (mem[0x45CB] == 0x0A && mem[0x45CC] == 0x26) {   /* unpatched: Silverstone — inline ASL/ROL */
+            carry = (uint8_t)(camA >> 7);
+            camA  = (uint8_t)(camA << 1);
+            shared_temp_77 = (uint8_t)((shared_temp_77 << 1) | carry);
+        } else if (mem[0x45CB] == 0x20) {
+            uint16_t target = (uint16_t)(mem[0x45CC] | (mem[0x45CD] << 8));
+            if (target >= 0x5300 && target <= 0x5A25) {
+                cpu.A = camA;                            /* SMC/hook boundary — the circuit code runs on cpu.A */
+                revs_track_hook(target);
+                camA = cpu.A;
+            } else { platform_smc_unhandled(0x45CB, target); return preSmc; }
+        } else {
+            platform_smc_unhandled(0x45CB, mem[0x45CB]); return preSmc;
+        }
+        carry = (uint8_t)(camA >> 7);                    /* $45CF-$45D0 — second ASL/ROL (always) */
+        camA  = (uint8_t)(camA << 1);
+        shared_temp_77 = (uint8_t)((shared_temp_77 << 1) | carry);
+        shared_temp_76 = camA;                           /* $45D1 */
     }
-    ASL_A();
-    ROL_M(MEM_shared_temp_77);
-    shared_temp_76 = cpu.A;                             /* $45D1 */
 
     /* $45D3-$45FB — the camera: the section's coordinate 1, the player's gradient-scaled
        car_state_1, and $AC of nominal eye height, as one 16-bit add with two carries saved
        past the term in between. */
-    cpu.X = player_car;                                 /* $45D3 — X stays player_car to $460C */
-    cpu.A = mem[CAR_STATE_1 + cpu.X];                   /* $45D5 */
-    /* ⚠⚠ Y IS NOT dirIndex ANY MORE ON ONE PATH.  The spin arm above reaches begin_spin_from_a,
+    uint8_t playerCar = player_car;                    /* $45D3 — exit X */
+    /* ⚠⚠ yScale IS NOT dirIndex ANY MORE ON ONE PATH.  The spin arm above reaches begin_spin_from_a,
        which queues a MOS SOUND — and sound_osword leaves the MOS's own Y behind.  So this call
        scales by whatever table entry Y now points at, and a twin that "knew" the index was
        still the section's differed in one case in six. */
-    uint8_t scaled = scale_by_track_gradient_core(cpu.A, cpu.Y);  /* $45D8 */
-    if (scaled & 0x80u) shared_temp_77 = (uint8_t)(shared_temp_77 - 1u);  /* $45DB DEC_M — sign-extend it (exit N = scaled.7) */
-    cpu.Y = car_section_cursor;                         /* $45DF — Y for the section coords + exit */
+    uint8_t scaled = scale_by_track_gradient_core(mem[CAR_STATE_1 + playerCar], yScale);  /* $45D5-$45D8 */
+    if (scaled & 0x80u) shared_temp_77 = (uint8_t)(shared_temp_77 - 1u);  /* $45DB DEC_M — sign-extend it */
+    uint8_t secCursor = car_section_cursor;             /* $45DF — Y for the section coords + exit */
     {
         uint8_t scaledLow = scaled;                    /* the gradient-scaled car_state_1 low byte */
-        uint8_t secLo = mem[SECTION_CRD_LO + 1 + cpu.Y];
-        uint8_t secHi = mem[SECTION_CRD_HI + 1 + cpu.Y];
+        uint8_t secLo = mem[SECTION_CRD_LO + 1 + secCursor];
+        uint8_t secHi = mem[SECTION_CRD_HI + 1 + secCursor];
         unsigned t1 = (unsigned)scaledLow + secLo;     /* $45E1-$45E2 */
         uint8_t  carryA = (uint8_t)(t1 > 0xFFu);       /* $45E5 PHP (a) */
         unsigned t2 = (unsigned)(uint8_t)t1 + 0xACu;   /* $45E6-$45E7 — nominal eye height */
@@ -7514,16 +7557,21 @@ yaw:
         uint16_t p   = (uint16_t)revs_mulu16(0x21u, math_hi);   /* $4602-$4604 — $21 x road_speed */
         uint8_t  phi = (uint8_t)(p >> 8);              /* only the high byte is used */
         unsigned sum;
+        uint8_t  res;
         math_lo = (uint8_t)p;
         math_hi = (uint8_t)(math_hi << 1);             /* $4607 ASL_M — road_speed x 2 */
         sum = (unsigned)phi + math_hi;                 /* $4609-$460A */
-        cpu.A = (uint8_t)sum;
-        mem[CAR_SPEED_SCL + cpu.X] = cpu.A;            /* $460C */
-        cpu.C = (uint8_t)(sum > 0xFFu);
-        cpu.V = (uint8_t)(((~(phi ^ math_hi) & (phi ^ (uint8_t)sum)) >> 7) & 1u);
-        cpu.N = (uint8_t)((cpu.A >> 7) & 1u);
-        cpu.Z = (uint8_t)(cpu.A == 0);
+        res = (uint8_t)sum;
+        mem[CAR_SPEED_SCL + playerCar] = res;          /* $460C */
+        e.acc.hi       = res;
+        e.acc.carry    = (uint8_t)(sum > 0xFFu);
+        e.acc.overflow = (uint8_t)(((~(phi ^ math_hi) & (phi ^ res)) >> 7) & 1u);
+        e.acc.neg      = (uint8_t)((res >> 7) & 1u);
+        e.acc.zero     = (uint8_t)(res == 0);
+        e.x = playerCar;
+        e.y = secCursor;
     }
+    return e;
 }
 
 /* The 6502-ABI shims. */
@@ -7567,7 +7615,13 @@ void update_engine_revs(void)
     cpu.N = e.tail.neg; cpu.Z = e.tail.zero;
     cpu.X = e.x; cpu.Y = e.y;
 }
-void update_camera_and_drive_state(void) { update_camera_and_drive_state_core(); }
+void update_camera_and_drive_state(void)
+{
+    CameraExit e = update_camera_and_drive_state_core();
+    cpu.A = e.acc.hi; cpu.C = e.acc.carry; cpu.V = e.acc.overflow;
+    cpu.N = e.acc.neg; cpu.Z = e.acc.zero;
+    cpu.X = e.x; cpu.Y = e.y;
+}
 
 /* ===========================================================================
    TWINS #87-#92 — THE ROAD SIGN, and the OBJECT SLOT WRITER underneath it
