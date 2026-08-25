@@ -10576,3 +10576,93 @@ void paint_fence_backdrop(void)
     cpu.Y = math_hi;
     cpu.A = last;
 }
+
+/* ===========================================================================
+   THE CAR-ORDER INDEX CLUSTER  (twins #129-#133)
+   ===========================================================================
+   The mod-20 running-order index helpers, the car_order swap, and the two
+   routines built on them.  All of it is index bookkeeping over the 20-entry
+   car_order table — no arithmetic the 68000 lacks — so the twin's only job is
+   to delete the per-instruction interpreter around a walk that runs every frame.
+   car_order holds the field in running order; each entry is a car index 0-19.
+   =========================================================================== */
+
+#define RACE_CLOCK_LO   0x06B4u   /* race_clock_lo — per-car 3-byte BCD race clock */
+#define RACE_CLOCK_MID  0x06CCu   /* race_clock_mid */
+#define RACE_CLOCK_HI   0x06E4u   /* race_clock_hi */
+#define FPN_PLAYER_SLOT 0x0003u   /* zp_scratch_index ($0003); in THIS routine = the player's slot in car_order */
+
+/* $507E car_index_dec — step a car_order index back one, wrapping 0 -> 19.
+   Faithful to `DEX / BPL / LDX #$13` for ANY input byte: a result with bit 7 set
+   (only x==0 among valid indices) wraps to 19. */
+static uint8_t car_index_dec_core(uint8_t x)
+{
+    uint8_t d = (uint8_t)(x - 1);
+    return (d & 0x80u) ? 0x13u : d;
+}
+
+/* $5084 car_index_inc — step a car_order index forward one, wrapping 19 -> 0.
+   Faithful to `INX / CPX #$14 / BCC / LDX #0`: any value that reaches 20 wraps to 0. */
+static uint8_t car_index_inc_core(uint8_t x)
+{
+    uint8_t i = (uint8_t)(x + 1);
+    return (i >= 0x14u) ? 0x00u : i;
+}
+
+void car_index_dec(void) { cpu.X = car_index_dec_core(cpu.X); }   /* exit ABI: X only */
+void car_index_inc(void) { cpu.X = car_index_inc_core(cpu.X); }
+
+/* $267F car_order_swap — exchange car_order[xi] and car_order[yi].  On exit the 6502
+   leaves X = the value now at [xi] (old [yi]) and Y = the value now at [yi] (old [xi]),
+   and parks old [xi] in the math_lo scratch. */
+static void car_order_swap_core(uint8_t xi, uint8_t yi, uint8_t* outX, uint8_t* outY)
+{
+    uint8_t oldX = mem[CAR_ORDER_TBL + xi];
+    uint8_t oldY = mem[CAR_ORDER_TBL + yi];
+    math_lo = oldX;                              /* $2682 — the scratch the oracle writes */
+    mem[CAR_ORDER_TBL + xi] = oldY;
+    mem[CAR_ORDER_TBL + yi] = oldX;
+    *outX = oldY;
+    *outY = oldX;
+}
+
+void car_order_swap(void)
+{
+    uint8_t x, y;
+    car_order_swap_core(cpu.X, cpu.Y, &x, &y);
+    cpu.X = x;                                   /* exit ABI: X and Y hold the swapped values */
+    cpu.Y = y;
+}
+
+/* $63A2 find_player_neighbours — locate the player's own car in the running order and
+   record the cars immediately ahead and behind.  Scans car_order from slot 19 down; a
+   miss leaves the slot at $FF (the 6502's DEX-past-0), which the mod-20 helpers then
+   wrap exactly as the original did. */
+static void find_player_neighbours_core(void)
+{
+    uint8_t p = player_car;
+    int i = 0x13;
+    while (i >= 0 && mem[CAR_ORDER_TBL + i] != p) i--;
+    uint8_t slot = (uint8_t)i;                   /* i == -1 -> 0xFF, matching DEX past 0 */
+
+    mem[FPN_PLAYER_SLOT] = slot;
+    car_ahead  = car_index_inc_core(slot);
+    car_behind = car_index_dec_core(slot);
+    cpu.X = car_behind;                          /* exit ABI: X = the last index computed */
+}
+
+void find_player_neighbours(void) { find_player_neighbours_core(); }
+
+/* $5011 clear_race_clock — zero the 3-byte BCD race clock for car X. */
+static void clear_race_clock_core(uint8_t x)
+{
+    mem[RACE_CLOCK_LO  + x] = 0x00u;
+    mem[RACE_CLOCK_MID + x] = 0x00u;
+    mem[RACE_CLOCK_HI  + x] = 0x00u;
+}
+
+void clear_race_clock(void)
+{
+    clear_race_clock_core(cpu.X);
+    cpu.A = 0x00u;                               /* LDA #0 residue (dead, reproduced for the diff) */
+}

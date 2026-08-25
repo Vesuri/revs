@@ -941,6 +941,21 @@ VALIDATE_FUNCS = {
     # (car_gap-style: the twin subsumes the loop, the shared body remains the reference).
     #   $3D5C paint_fence_backdrop   clear wheel_spin_rate + fill the view backdrop
     0x3D5C,
+    # ⭐ TWINS #129-#133 — the car-order INDEX cluster (user, 2026-08-25).  The freeze the
+    # crash-reset caused (docs/perf-method.md §crash reset) is FUN_109b's placement loop, whose
+    # whole subtree is still transliterated; this is the first, self-contained slice of it — the
+    # mod-20 running-order index helpers and the two routines that use them.  None does arithmetic
+    # the 68000 wouldn't; the win is deleting the interpreter around a per-frame index walk.
+    #   $507E car_index_dec           X-1 mod 20
+    #   $5084 car_index_inc           X+1 mod 20
+    #   $267F car_order_swap          swap car_order[X] <-> car_order[Y] (was FUN_267f)
+    #   $63A2 find_player_neighbours  player's slot -> car_ahead / car_behind
+    #   $5011 clear_race_clock        zero the 3-byte BCD race clock for car X
+    0x507E,
+    0x5084,
+    0x267F,
+    0x63A2,
+    0x5011,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

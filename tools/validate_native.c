@@ -4227,6 +4227,81 @@ static int test_crash_fence(void)
                          LIVE_NONE, 3000);
 }
 
+/* --------------------------------------------------------------------------
+   TWINS #129-#133 — the car-order INDEX cluster (src/gen/revs_native.c).
+   All observed through registers + the 20-entry car_order table on random memory.
+   The mod-20 helpers sweep the FULL input byte because the wrap boundary is the
+   only place a bug lives; car_order_swap pins its two indices to 0-19 (real slots);
+   find_player_neighbours forces a hit in half the cases so the found-slot path runs
+   as well as the $FF miss.
+   -------------------------------------------------------------------------- */
+void car_index_dec(void);           void car_index_dec__t6502(void);
+void car_index_inc(void);           void car_index_inc__t6502(void);
+void car_order_swap(void);          void car_order_swap__t6502(void);
+void find_player_neighbours(void);  void find_player_neighbours__t6502(void);
+void clear_race_clock(void);        void clear_race_clock__t6502(void);
+
+static int test_car_order_cluster(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    const int cases = 4000;
+
+    register_fixture("car_index_dec");
+    if (want("car_index_dec")) {
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu(); fill_random(pre); c.X = (uint8_t)xs();
+            fail += diff_run("car_index_dec", pre, c,
+                             car_index_dec, car_index_dec__t6502, LIVE_X, t, &printed);
+        }
+        printf("%-32s %7d cases  live=X\n", "car_index_dec", cases);
+    }
+
+    register_fixture("car_index_inc");
+    if (want("car_index_inc")) {
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu(); fill_random(pre); c.X = (uint8_t)xs();
+            fail += diff_run("car_index_inc", pre, c,
+                             car_index_inc, car_index_inc__t6502, LIVE_X, t, &printed);
+        }
+        printf("%-32s %7d cases  live=X\n", "car_index_inc", cases);
+    }
+
+    register_fixture("car_order_swap");
+    if (want("car_order_swap")) {
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu(); fill_random(pre);
+            c.X = (uint8_t)(xs() % 20); c.Y = (uint8_t)(xs() % 20);
+            fail += diff_run("car_order_swap", pre, c,
+                             car_order_swap, car_order_swap__t6502, LIVE_X | LIVE_Y, t, &printed);
+        }
+        printf("%-32s %7d cases  live=XY\n", "car_order_swap", cases);
+    }
+
+    register_fixture("find_player_neighbours");
+    if (want("find_player_neighbours")) {
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu(); fill_random(pre);
+            if (t & 1) pre[0x013C + (xs() % 20)] = pre[0x006F];   /* plant player_car into car_order */
+            fail += diff_run("find_player_neighbours", pre, c,
+                             find_player_neighbours, find_player_neighbours__t6502, LIVE_X, t, &printed);
+        }
+        printf("%-32s %7d cases  live=X\n", "find_player_neighbours", cases);
+    }
+
+    register_fixture("clear_race_clock");
+    if (want("clear_race_clock")) {
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu(); fill_random(pre); c.X = (uint8_t)xs();
+            fail += diff_run("clear_race_clock", pre, c,
+                             clear_race_clock, clear_race_clock__t6502, LIVE_A, t, &printed);
+        }
+        printf("%-32s %7d cases  live=A\n", "clear_race_clock", cases);
+    }
+
+    return fail;
+}
+
 static int test_last_shim_callers(void)
 {
     static uint8_t pre[65536];
@@ -5210,6 +5285,7 @@ int main(int argc, char** argv)
     fail += test_late_misc_trees();
     fail += test_last_shim_callers();
     fail += test_crash_fence();
+    fail += test_car_order_cluster();
     fail += test_road_sign();
     fail += test_object_shape();
     fail += test_object_lines();
