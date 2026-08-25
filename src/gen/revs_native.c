@@ -1187,7 +1187,7 @@ static void paint_lines_clipped(ViewState* v)
 
 /* The idiomatic core: paint the viewport from `firstLine` downwards, both pointers seeded
    one page apart at `screenBase`.  Everything above is reachable only from here. */
-static void view_paint_lines_core(unsigned screenBase, unsigned firstLine)
+static void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entryCell)
 {
     ViewState v;
 
@@ -1202,7 +1202,10 @@ static void view_paint_lines_core(unsigned screenBase, unsigned firstLine)
 
     v.byte = (unsigned char)screenBase;   /* the `LDA #0` that seeded both low bytes */
     v.line = firstLine;
-    v.cell = cpu.Y;                       /* untouched until the first chain sets it */
+    v.cell = entryCell;                   /* the 6502's entry Y — but the first chain overwrites
+                                             it before any read, so it is a dead seed (a fixture
+                                             sabotage forcing it to 0 changes nothing over 700
+                                             cases); threaded in only to mirror the entry ABI */
     UPD_NZ(firstLine);                    /* `LDX #$4F` is the prologue's last flag write */
 
     paint_cells(&v, 0, 0, 1);
@@ -1215,7 +1218,7 @@ static void view_paint_lines_core(unsigned screenBase, unsigned firstLine)
 void view_paint_lines(void)
 {
     REVS_PLOT_CHECK_BEFORE();
-    view_paint_lines_core(0x6700u, 0x4Fu);
+    view_paint_lines_core(0x6700u, 0x4Fu, cpu.Y);
     REVS_PLOT_CHECK_AFTER();
 }
 
