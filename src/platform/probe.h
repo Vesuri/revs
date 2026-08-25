@@ -120,6 +120,10 @@ extern volatile unsigned long g_probeBandTicks[PROBE_BANDS], g_probeBandCount[PR
 #define PROBE_PHASE_VIEWCTL   31
 int probe_phase_current(void);
 
+/* The epoch-corrected beam clock (probe.cpp), for timing a single event that may straddle a
+   frame wrap.  Used by the crash-hold field-cost probe (REVS_CRASHPROBE + PROBES). */
+unsigned long probe_beam_tick(void);
+
 /* ⭐⭐ 32 — THE MAIN LOOP'S TAIL, WHICH PHASE 24 WAS SILENTLY CARRYING.  Phase 24 opens at
  * `JSR $7BE2` ($1748) and the next bracket is the paint hook at $1701, so everything the body
  * does AFTER the sweep was charged to the sweep: $174B-$1758, and then — whenever $62F6 is zero,

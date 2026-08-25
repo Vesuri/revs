@@ -270,6 +270,23 @@ uint16_t PlatformAmiga::adcAxis(uint8_t channel) { return input.axis(channel); }
 
 void PlatformAmiga::renderFrame()
 {
+#ifdef REVS_CRASHPROBE
+    // ⭐ Locate the freeze: how many PAL fields since the previous present?  A crash hold that
+    // runs with no render (the bug the fence symptom points to) shows up as one large gap.
+    {
+        extern volatile unsigned long g_renderGapMax, g_renderGapMaxAt, g_renderStalls;
+        static uint16_t s_lastPresent = 0;
+        static bool     s_havePresent = false;
+        uint16_t nowv = g_vbiCount;
+        if (s_havePresent) {
+            unsigned gap = (unsigned)((uint16_t)(nowv - s_lastPresent));
+            if (gap > g_renderGapMax) { g_renderGapMax = gap; g_renderGapMaxAt = nowv; }
+            if (gap >= 25) g_renderStalls++;         // >= ~0.5 s: a visible stall
+        }
+        s_lastPresent = nowv;
+        s_havePresent = true;
+    }
+#endif
     // Present, then wait for the next real vblank.  The wait is on g_vbiCount (the ISR's
     // own counter), not WaitTOF(): once the VERTB vector is taken over, graphics.library's
     // VERTB server no longer runs, so WaitTOF() would never be signalled.

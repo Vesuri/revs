@@ -93,6 +93,15 @@ int probe_phase_current(void)
     return s_phase;
 }
 
+/* ⭐ The MONOTONIC beam clock, exposed for one-off timing outside the phase table — the
+   crash-hold field-cost probe (Revs::runBandCycle) reads it to price ONE field cycle, which
+   can straddle a frame wrap when a field is slow, so the epoch-corrected value is required.
+   Only meaningful in a PROBES build, where the VERTB ISR advances g_beamEpoch (PROBE_VBI). */
+unsigned long probe_beam_tick(void)
+{
+    return beamTick();
+}
+
 /* ⭐⭐ TWO SUB-FRAME TIMERS THAT ARE NOT PHASES, added 2026-08-16 to explain the 51%.
  *
  * The phase table charges the 50 Hz body drain 526 ms per painted frame, i.e. ~10.5 ms of every

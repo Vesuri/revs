@@ -174,6 +174,15 @@ EXTRA_DEFINES += -DREVS_ROADSPLIT
 PROBE_SYMS_ROAD = g_roadFrames g_roadSpans g_roadSpanLines g_roadCols g_roadFillLines g_roadMarkPts
 endif
 
+# ⭐ `make CRASHPROBE=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` — measure the ~5s crash-freeze.
+# Cheap counters (a few adds per field / per crash) so it rides a near-shipping build for a
+# faithful timing; add PROBES for the direct per-field beam cost (g_fieldBeam*).  The counters
+# themselves are defined unconditionally in Revs.cpp, so they are in the BASE PROBE_SYMS list
+# and need no conditional entry here.  Read with amiga/crashprobe.gdb.  src/platform/probe.h.
+ifdef CRASHPROBE
+EXTRA_DEFINES += -DREVS_CRASHPROBE
+endif
+
 # `make NOUNITS=1` — ⚠⚠ THE PICTURE IS WRONG BY CONSTRUCTION.  The $7BE2 unit loop keeps its
 # iterations and loses its memory work, so `phase 24 with this on` is the per-line drivers plus
 # the bare loop.  A decomposition the VIEWSPLIT brackets cannot give honestly: bracketing 118
@@ -503,6 +512,10 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_beamPresentLine g_beamPresentMin g_beamPresentMax \
              g_beamPresents g_beamPresentsLate g_beamEntryLine g_beamEntries g_beamEntriesLate \
              g_bodyTicksDropped g_bodyDrains g_bodyTicks g_bodyPending \
+             g_fieldCycles g_fieldBeamTicks g_fieldBeamMax \
+             g_crashHolds g_crashHoldVbi g_crashHoldVbiMax g_crashHoldTicks g_crashHoldDrops \
+             g_renderGapMax g_renderGapMaxAt g_renderStalls \
+             g_crashBodyFieldsMax g_resetFieldsMax g_resetFieldsLast g_resetCount g_resetSplit \
              g_ttUnknownVdu g_ttLastUnknown g_ttVduBytes g_ttModeSwitches \
              g_ttModeDisagree g_screenPlanes g_screenHeight g_screenMode7 g_ttAllocFailed g_ttFlashPhase g_ttFlashToggles \
              g_ttRowDirty g_ttRowsDrawn \

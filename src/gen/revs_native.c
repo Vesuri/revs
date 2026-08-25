@@ -1372,6 +1372,14 @@ static LoopVerdict race_session_end(RestartDepth* depth)
     return LOOP_FINISHED;
 }
 
+#if defined(REVS_CRASHPROBE) && defined(REVS_PLATFORM_AMIGA)
+/* ⭐ Attribute the ~5s crash freeze across race_frame_tail (the hold + body) and
+   race_main_loop_core (the reset).  s_crashBodyStartVbi is stamped after each present. */
+extern volatile uint16_t      g_vbiCount;
+extern volatile unsigned long g_resetFieldsMax, g_resetFieldsLast, g_resetCount;
+static unsigned s_crashBodyStartVbi;   /* g_vbiCount right after the last present */
+#endif
+
 /* $174B-$17B7 — the frame's verdict.  Everything above is called from here. */
 static LoopVerdict race_frame_tail(RestartDepth* depth)
 {
@@ -1388,6 +1396,21 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
            store-immediate peephole cannot see that reader. */
         arg_a(0x9C);
         field_countdown = cpu.A;
+#if defined(REVS_CRASHPROBE) && defined(REVS_PLATFORM_AMIGA)
+        /* ⭐ THE ~5s CRASH-FREEZE MEASUREMENT.  The hold is meant to last 100 field-countdown
+           INCs = 2 s.  Snapshot the wall clock (g_vbiCount, one per real PAL field), the fields
+           actually DRAINED (g_bodyTicks, = the INCs), and the fields DROPPED (g_bodyTicksDropped)
+           across the hold.  Faithful: vbi delta ~100, ticks ~100, drops ~0.  Drain-starved:
+           vbi delta >> 100 with drops > 0 — the theorem that a field cycle costs > 20 ms. */
+        {
+            extern volatile unsigned long g_bodyTicks, g_bodyTicksDropped;
+            extern volatile unsigned long g_crashHolds, g_crashHoldVbi, g_crashHoldVbiMax,
+                                          g_crashHoldTicks, g_crashHoldDrops, g_crashBodyFieldsMax;
+            unsigned vbi0   = g_vbiCount;
+            unsigned long tk0 = g_bodyTicks, dr0 = g_bodyTicksDropped;
+            unsigned bodyD  = (unsigned)(uint16_t)(vbi0 - s_crashBodyStartVbi);
+            if (bodyD > g_crashBodyFieldsMax) g_crashBodyFieldsMax = bodyD;
+#endif
         do {
             /* ⭐ THE ENGINE'S ONE TRUE FRAME WAIT.  tick_wheel_spin INCs field_countdown
                once per PAL field, so on the Amiga the VERTB ISR ends this on its own and
@@ -1396,6 +1419,15 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
             platform_tick_vbi();
             platform_poll_events();
         } while (load_a(field_countdown) & 0x80);
+#if defined(REVS_CRASHPROBE) && defined(REVS_PLATFORM_AMIGA)
+            unsigned vbiD = (unsigned)((g_vbiCount - vbi0) & 0xFFFFu);
+            g_crashHolds++;
+            g_crashHoldVbi   += vbiD;
+            if (vbiD > g_crashHoldVbiMax) g_crashHoldVbiMax = vbiD;
+            g_crashHoldTicks += g_bodyTicks        - tk0;
+            g_crashHoldDrops += g_bodyTicksDropped - dr0;
+        }
+#endif
 
         {
             LoopVerdict v = race_resume_point(depth);
@@ -1443,20 +1475,41 @@ static void race_main_loop_core(RestartDepth depth)
     for (;;) {
         LoopVerdict verdict;
 
+#if defined(REVS_CRASHPROBE) && defined(REVS_PLATFORM_AMIGA)
+        unsigned resetStartVbi = g_vbiCount;
+        extern volatile unsigned long g_resetSplit[4];
+        unsigned rs = g_vbiCount;
+#define RESET_SPLIT(i) do { unsigned n = g_vbiCount; g_resetSplit[i] = (unsigned)(uint16_t)(n - rs); rs = n; } while (0)
+#else
+#define RESET_SPLIT(i) ((void)0)
+#endif
         /* ---- the session reset, nested: FULL falls into MID falls into LATE ---- */
         if (depth >= RESTART_FULL) {
             arg_x(0x00);              /* driver 0 = the player */
             clear_race_clock();
         }
+        RESET_SPLIT(0);
         if (depth >= RESTART_MID)
             reset_driving_variables();
+        RESET_SPLIT(1);
         if (depth >= RESTART_LATE)
             build_player_car();
+        RESET_SPLIT(2);
 
         arg_a(0x00);
         state_flags = 0;
         scale_wing_settings();                   /* scale the wing settings for the new session */
+        RESET_SPLIT(3);
+#undef RESET_SPLIT
 
+#if defined(REVS_CRASHPROBE) && defined(REVS_PLATFORM_AMIGA)
+        if (depth >= RESTART_LATE) {             /* a real reset ran, not RESTART_NONE */
+            unsigned d = (unsigned)(uint16_t)(g_vbiCount - resetStartVbi);
+            g_resetFieldsLast = d;
+            g_resetCount++;
+            if (d > g_resetFieldsMax) g_resetFieldsMax = d;
+        }
+#endif
         /* ---- one pass = one game frame ---- */
         do {
             /* ⭐ THE PORT'S PAINT HOOK — see the header for why it is here and not at the
@@ -1465,6 +1518,9 @@ static void race_main_loop_core(RestartDepth depth)
             PROBE_PHASE(PROBE_PHASE_FRAMEWAIT);
             PROBE_SHAPE_PHASE(PROBE_PHASE_FRAMEWAIT);
             platform_render_frame();
+#if defined(REVS_CRASHPROBE) && defined(REVS_PLATFORM_AMIGA)
+            s_crashBodyStartVbi = g_vbiCount;    /* fields from here to the hold = the body cost */
+#endif
 
             PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers();
             PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  draw_starting_lights();

@@ -97,6 +97,37 @@ volatile unsigned long g_bodyTicksDropped = 0;  // the cap hit: game time slowed
 volatile unsigned long g_bodyDrains       = 0;  // drain calls that ran at least one tick
 volatile unsigned long g_bodyTicks        = 0;  // ticks run in total
 volatile uint8_t       g_bodyPending      = 0;  // ...and what is queued right now
+
+// ⭐ THE ~5s CRASH-FREEZE PROBE (`make CRASHPROBE=1`, cross-checked under `+PROBES`).
+// race_frame_tail holds the picture for 100 field-countdown INCs after a crash; those INCs
+// come from tick_wheel_spin, which runs once per DRAINED field cycle here.  If a field cycle
+// costs > 20 ms the VERTB ISR generates fields faster than we drain them, they hit the cap and
+// are dropped (never INCing field_countdown), and the 2 s hold stretches.  These say whether
+// that is what happens.  Counting is cheap (a few adds per field / per crash) so it rides a
+// near-shipping build; the direct beam TIMING below needs PROBES (g_beamEpoch).
+volatile unsigned long g_fieldCycles    = 0;    // runBandCycle calls (field cycles run, all frames)
+volatile unsigned long g_fieldBeamTicks = 0;    // beam ticks spent in runBandCycle (PROBES only)
+volatile unsigned long g_fieldBeamMax   = 0;    // worst single field cycle, beam ticks (PROBES only)
+volatile unsigned long g_crashHolds     = 0;    // crash-hold loops entered
+volatile unsigned long g_crashHoldVbi   = 0;    // wall fields elapsed across holds (x20ms = seconds)
+volatile unsigned long g_crashHoldVbiMax= 0;    // the longest single hold, in wall fields
+volatile unsigned long g_crashHoldTicks = 0;    // field cycles drained across holds (= the 100 INCs)
+volatile unsigned long g_crashHoldDrops = 0;    // ISR fields dropped during holds (cap hit)
+
+// ⭐ THE FREEZE LOCATOR.  A ~5s freeze is one renderFrame->renderFrame gap of ~250 PAL fields:
+// the screen only repaints at the frame hook, so any unpaced compute stretch between two paints
+// (a crash hold, a session restart, a heavy single frame) shows up here regardless of its cause.
+// Measured in EMULATED fields (g_vbiCount), so warp does not change it.
+volatile unsigned long g_renderGapMax   = 0;    // worst present->present gap, in PAL fields
+volatile unsigned long g_renderGapMaxAt = 0;    // g_vbiCount when that worst gap ended
+volatile unsigned long g_renderStalls   = 0;    // gaps >= 25 fields (~0.5s): a visible stall
+
+// ⭐ Split the frozen crash interval into its three parts (all in PAL fields):
+volatile unsigned long g_crashBodyFieldsMax = 0; // the crashing frame's body (incl. fence draw)
+volatile unsigned long g_resetFieldsMax     = 0; // worst session-reset block (RESTART_LATE+)
+volatile unsigned long g_resetFieldsLast    = 0; // the most recent reset block
+volatile unsigned long g_resetCount         = 0; // reset blocks that actually ran
+volatile unsigned long g_resetSplit[4]      = {0,0,0,0}; // per-call fields: clear/driving/car/wing
 }
 
 void Revs::runBandCycle()
@@ -105,7 +136,22 @@ void Revs::runBandCycle()
     // record-reuse argument all live in Platform::fireIrq1vField (src/platform/bbc_hw.cpp) so
     // that the host runs the identical code and `make determinism` / `mode7` / `tracks` are
     // the oracle for it.  Measured: 96% of this row is machinery, 233 us a field is game work.
+#ifdef REVS_CRASHPROBE
+    g_fieldCycles++;
+#if defined(REVS_PROBE)
+    unsigned long t0 = probe_beam_tick();       // epoch-corrected: a slow field straddles a wrap
     platform->fireIrq1vField();
+    unsigned long d = probe_beam_tick() - t0;
+    g_fieldBeamTicks += d;
+    if (d > g_fieldBeamMax) g_fieldBeamMax = d;
+    return;
+#else
+    platform->fireIrq1vField();
+    return;
+#endif
+#else
+    platform->fireIrq1vField();
+#endif
 }
 
 void Revs::setFrontEnd(bool on)
