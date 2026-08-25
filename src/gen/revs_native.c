@@ -1677,7 +1677,7 @@ static uint16_t model_mul_1_5(uint16_t value);
 
 /* draw_road's three producers (twins #26/#28/#29), defined much further down — the road pass
    reaches them through the cores, not the 6502-ABI shims. */
-static uint8_t mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint);
+static SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int entryV);
 static void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint);
 static SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint,
                                     int entryC, int entryV);
@@ -2853,9 +2853,9 @@ void build_track_geometry(void)
 /* $1A98 twice — the third stage, whose return value is the scan line at which that side's
    line_attr buffer stops being valid.  surface_colour_at reads exactly that: at or past
    the limit, the line is sky. */
-static uint8_t mark_side_surfaces(uint8_t surfaceClass)
+static SlotExit mark_side_surfaces(uint8_t surfaceClass, int entryV)
 {
-    return mark_line_surfaces_core(surfaceClass, road_split_index);
+    return mark_line_surfaces_core(surfaceClass, road_split_index, entryV);
 }
 
 /* $19AF x4 — one span pass.  `firstPoint` is where in the edge list the pass starts; the
@@ -2910,8 +2910,17 @@ static void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     draw_surface_spans_core(1, (uint8_t)(horizon_index + 0x28));   /* base only; the spans walk
                                                                       overwrites this add's flags */
 
+    /* ⚠ SEAM (like the two fill_line_attr calls above): mark_line_surfaces_core is cpu-free, so
+       draw_road threads the 6502 flag chain by hand.  The far mark's entry V is the live cpu.V
+       here (the near fill below reads cpu.C/cpu.V, exactly as the 6502 left them after this
+       walk), and its full exit state is marshalled back into cpu so that read sees HEAD's bytes. */
     ROAD_PHASE(ROAD_PHASE_MARK);
-    line_attr_0_limit = mark_side_surfaces(0x04);
+    {
+        SlotExit m = mark_side_surfaces(0x04, cpu.V);
+        line_attr_0_limit = m.y;
+        cpu.A = m.a; cpu.X = m.x; cpu.Y = m.y;
+        cpu.N = m.n; cpu.Z = m.z; cpu.V = m.v; cpu.C = m.c;
+    }
 
     /* $1A60-$1A69 — and the NEAR half, whose split is the horizon point itself, floored at
        point 9 for the same reason.  (The 6502's `TAX` here is overwritten two instructions
@@ -2933,14 +2942,23 @@ static void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     surface_style_base = 0x1C;
     surface_pass(3, road_split_index);
 
+    /* The near mark's exit IS draw_road's exit (nothing after it touches A/X/Y/flags), so its
+       SlotExit is marshalled into cpu here and the shim leaves cpu alone.  Its entry V is the
+       live cpu.V — the near fill's exit V threaded through the V-transparent span passes. */
     ROAD_PHASE(ROAD_PHASE_MARK);
-    line_attr_1_limit = mark_side_surfaces(0x14);
+    {
+        SlotExit m = mark_side_surfaces(0x14, cpu.V);
+        line_attr_1_limit = m.y;
+        cpu.A = m.a; cpu.X = m.x; cpu.Y = m.y;
+        cpu.N = m.n; cpu.Z = m.z; cpu.V = m.v; cpu.C = m.c;
+    }
     ROAD_PHASE(11);                  /* reopen the enclosing phase: its remainder is the return */
 }
 
 /* The 6502-ABI shim.  draw_road takes no arguments — the frame's geometry reaches it entirely
    through the edge lists and the three cursor cells — and leaves A, X and the flags wherever
-   its last callee left them, which is why the core does not touch them after the call. */
+   its last callee left them, which the core sets by marshalling the near mark's SlotExit into
+   cpu at that call site (see above); the shim itself adds nothing. */
 void draw_road(void)
 {
     draw_road_core(edge_cursor, edge_end_side0);
@@ -5026,97 +5044,116 @@ void draw_surface_spans(void)
    --------------------------------------------------------------------------- */
 #define EDGE_OPP_X_HI_TBL 0x5EA0u   /* edge_opp_x_hi — the point's other boundary */
 
-static uint8_t mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint)
+static SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int entryV)
 {
+    /* Live A: every arm leaves a different byte in it, so it is threaded and returned.  The
+       pre-loop LDA seeds it, so a walk that never runs a body leaves view_yaw_offset in A. */
+    uint8_t a = view_yaw_offset;
+    /* Live V: the LAST +$14 the walk performs owns the exit V (INY/CPX/LDX/LDY leave V alone);
+       a walk that runs no add leaves the caller's entry V untouched. */
+    int v = entryV;
+
     mem[SPAN_CLIP] = surfaceClass;            /* ⚠ a THIRD tenant of $88 — docs/rename.md */
     math_hi        = firstPoint;              /* the walk index, and the loop's own cursor */
     span_end_index--;
 
-    LDA(view_yaw_offset);
-    CMP(0x28u);
-    if (!cpu.C) for (;;) {
-        /* $1B05 — the loop is entered at its own bottom test, so X comes from math_hi and
-           never from the class the caller passed in.
-           ⚠ A is LIVE at the exit and every arm below leaves a different byte in it, so the
-           loads are real loads here rather than plain reads. */
-        cpu.X = math_hi;
-        CPX(span_end_index);              /* ⚠ its carry is the loop's only exit and escapes */
-        if (cpu.C) break;
+    /* $1B00 CMP #$28 — the whole walk is skipped once view_yaw_offset is >= 45 deg off axis. */
+    if (view_yaw_offset < 0x28u) for (;;) {
+        /* $1B05 — the loop is entered at its own bottom test; X comes from math_hi, never from
+           the class the caller passed in.  Its CPX carry is the loop's only exit. */
+        uint8_t x = math_hi;
+        if (x >= span_end_index) break;
 
         ROAD_COUNT(g_roadMarkPts);        /* one edge point examined for its surface class */
-        cpu.Y = mem[EDGE_Y_TBL + cpu.X];
-        if (cpu.Y < 0x50u) {
-            /* ⚠ A is live at the routine's exit, and the marked-point skip path leaves this
-               style byte in it, so this stays a flag-setting load. */
-            LDA(mem[EDGE_STYLE_TBL + cpu.X]);
-            if (!cpu.N) {
-            /* The two boundaries, in the order this side wants them. */
-            if (mem[SPAN_CLIP] == 0x14u) {
-                shared_temp_77 = mem[EDGE_X_HI_TBL + cpu.X];
-                cpu.A = mem[EDGE_OPP_X_HI_TBL + cpu.X];
-            } else {
-                shared_temp_77 = mem[EDGE_OPP_X_HI_TBL + cpu.X];
-                cpu.A = mem[EDGE_X_HI_TBL + cpu.X];
-            }
-            /* ⚠ These two adds STAY adc_step: the last one's V is not overwritten before the
-               routine returns (INY/CPX/LDX leave V alone), so it is this routine's exit V and
-               the differential compares it.  A plain `+` drops it — measured, 162/800. */
-            cpu.A = (uint8_t)adc_step(cpu.A, 0x14u, 0);
-            if (!cpu.N) {
-                cpu.A = (uint8_t)adc_step(shared_temp_77, 0x14u, 0);
-                if (cpu.N) {
-                    int stamp;
-                    uint8_t entry;
-
-                    /* $1AD8 — skip a whole run of points fill_line_attr marked. */
-                    while (mem[EDGE_STYLE_TBL + cpu.X + 1] & 0x80u) {
-                        cpu.X++;
-                        math_hi++;
-                        if (cpu.X >= span_end_index) break;
-                    }
-
-                    /* An entry already on this line wins, unless it belongs to another
-                       class and the sign test says this point is the nearer one.  ⚠ A is
-                       live at the routine's exit: the not-stamped path has to leave the same
-                       byte the 6502's carry-in ROR then EOR would. */
-                    entry   = mem[VIEW_LINE_SURFACE + cpu.Y];
-                    math_lo = entry;                  /* a real mem[] store the differential sees */
-                    if (entry == 0) {
-                        stamp = 1;
+        {
+            uint8_t y = mem[EDGE_Y_TBL + x];
+            if (y < 0x50u) {
+                /* A holds the style byte; bit 7 set means fill_line_attr already marked it. */
+                a = mem[EDGE_STYLE_TBL + x];
+                if (!(a & 0x80u)) {
+                    uint8_t other;                /* the point's OTHER boundary, order per side */
+                    if (mem[SPAN_CLIP] == 0x14u) {
+                        other = mem[EDGE_X_HI_TBL + x];
+                        a     = mem[EDGE_OPP_X_HI_TBL + x];
                     } else {
-                        uint8_t masked = (uint8_t)(entry & 0x1Cu);
-                        if (masked == mem[SPAN_CLIP]) {
-                            stamp = 1;
-                        } else {
-                            uint8_t carryIn = (masked >= mem[SPAN_CLIP]) ? 0x80u : 0x00u;
-                            cpu.A = (uint8_t)((uint8_t)(carryIn | (masked >> 1)) ^ entry);
-                            stamp = !(cpu.A & 0x80u);
+                        other = mem[EDGE_OPP_X_HI_TBL + x];
+                        a     = mem[EDGE_X_HI_TBL + x];
+                    }
+                    shared_temp_77 = other;       /* a real mem[] store the differential sees */
+                    /* Both +$14 are plain binary adds: D=0 on the road pass (docs/static-map.md
+                       §Decimal mode — no SED site is on draw_road), so a uint8_t add is exact.
+                       Only the escaping V is replayed, via adc_overflow. */
+                    v = adc_overflow(a, 0x14u, 0);
+                    a = (uint8_t)(a + 0x14u);
+                    if (!(a & 0x80u)) {
+                        v = adc_overflow(other, 0x14u, 0);
+                        a = (uint8_t)(other + 0x14u);
+                        if (a & 0x80u) {
+                            int stamp;
+                            uint8_t entry;
+
+                            /* $1AD8 — skip a whole run of points fill_line_attr marked; X and
+                               math_hi advance together, but y (this point's line) is unchanged. */
+                            while (mem[EDGE_STYLE_TBL + x + 1] & 0x80u) {
+                                x++;
+                                math_hi++;
+                                if (x >= span_end_index) break;
+                            }
+
+                            /* An entry already on this line wins, unless it belongs to another
+                               class and the sign test says this point is the nearer one.  In the
+                               not-stamped arm A holds the same byte the 6502's ROR/EOR left. */
+                            entry   = mem[VIEW_LINE_SURFACE + y];
+                            math_lo = entry;      /* a real mem[] store the differential sees */
+                            if (entry == 0) {
+                                stamp = 1;
+                            } else {
+                                uint8_t masked = (uint8_t)(entry & 0x1Cu);
+                                if (masked == mem[SPAN_CLIP]) {
+                                    stamp = 1;
+                                } else {
+                                    uint8_t carryIn = (masked >= mem[SPAN_CLIP]) ? 0x80u : 0x00u;
+                                    a = (uint8_t)((uint8_t)(carryIn | (masked >> 1)) ^ entry);
+                                    stamp = !(a & 0x80u);
+                                }
+                            }
+                            if (stamp) {
+                                a = (uint8_t)((mem[EDGE_STYLE_TBL + x] & 0x03u) | mem[SPAN_CLIP]);
+                                mem[VIEW_LINE_SURFACE + y] = a;
+                            }
                         }
                     }
-                    if (stamp) {
-                        cpu.A = (uint8_t)((mem[EDGE_STYLE_TBL + cpu.X] & 0x03u) | mem[SPAN_CLIP]);
-                        mem[VIEW_LINE_SURFACE + cpu.Y] = cpu.A;
-                    }
                 }
-            }
             }
         }
         math_hi++;                            /* $1B03 */
     }
 
-    /* $1B0B — the limit, and the routine's real return value.  A and X stay live at the exit
-       (the shim's fixture pins them), but Y — the scan-line limit — is the value siblings want. */
-    LDX(road_split_index);
-    LDY(mem[EDGE_Y_TBL + cpu.X]);
-    INY();
-    return cpu.Y;
+    /* $1B0B — the limit, and the routine's real return value.  A stays live (last byte above),
+       X ends at road_split_index, and Y — the scan-line limit — is what siblings want.  C is
+       set on every exit (the CPX/CMP that got us here); INY sets N/Z from the incremented Y. */
+    {
+        uint8_t x = road_split_index;
+        uint8_t y = (uint8_t)(mem[EDGE_Y_TBL + x] + 1u);
+        SlotExit e;
+        e.a = a;
+        e.x = x;
+        e.y = y;
+        e.n = (uint8_t)((y >> 7) & 1u);
+        e.z = (uint8_t)(y == 0);
+        e.v = (uint8_t)(v & 1);
+        e.c = 1;
+        return e;
+    }
 }
 
 /* The 6502-ABI shim.  X is the surface class to OR in, A the first edge index; Y comes back
    as the scan line at which this side's line_attr buffer stops being valid. */
 void mark_line_surfaces(void)
 {
-    mark_line_surfaces_core(cpu.X, cpu.A);
+    SlotExit e = mark_line_surfaces_core(cpu.X, cpu.A, cpu.V);
+    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
 }
 
 /* ===========================================================================
