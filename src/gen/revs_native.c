@@ -1603,15 +1603,6 @@ static unsigned clamp_up_to(unsigned value, uint8_t floor)
     return cmp_ge(value, floor) ? value : floor;
 }
 
-/* Y = value, then the 6502's CPY.  Used where the compare is the last thing to touch the
-   flags before an exit, and Y is live across it too. */
-REVS_FLAG_OP int cpy_eq(uint8_t value, uint8_t limit)
-{
-    cpu.Y = value;
-    CPY(limit);
-    return cpu.Z;
-}
-
 /* ++mem[cell], leaving N and Z from the result.  Pure RAM by construction here, so unlike
    the transliteration's INC_M it does not pay a bus_write range test. */
 static void inc_mem(unsigned cell)
@@ -1684,7 +1675,7 @@ static SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_
 static SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
                                           uint8_t firstLine, uint8_t entryV);
 static SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV);   /* SlotExit: top of file */
-static void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect);
+static SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect);
 
 /* The exit flags of a 16-bit binary add, returned by value so a core stays cpu-free; a shim
    (or a caller whose own exit ABI is this add's) replays them onto the cpu. */
@@ -5208,16 +5199,6 @@ void mark_line_surfaces(void)
 #define GAP_BRANCH_OPERAND 0x1DD5u   /* the non-zero-source arm's branch offset */
 #define GAP_FALLBACK       0x1DDCu   /* the colour substituted for a zero surface_colour_at */
 
-/* `value == limit` through the 6502's CPX, leaving X = value: fill_edge_column_run's loop
-   test, and the last thing to touch the flags before it returns. */
-REVS_FLAG_OP int cpx_eq(uint8_t value, uint8_t limit)
-{
-    cpu.X = value;
-    CPX(limit);
-    return cpu.Z;
-}
-
-
 /* ⭐ ONE range test per column instead of one per cell (CLAUDE.md §bus_read/bus_write).  The
    walk touches at most $80 bytes above a pointer it reads once, so the hardware window can be
    ruled out for the whole column — but the else arm stays, because under a randomised fixture
@@ -8469,7 +8450,11 @@ static void plot_shape_edges_core(void)
         mem[OBJ_EDGE_X] = mem[SHAPE_VERTEX + cpu.X];
         mem[OBJ_EDGE_STYLE] = mem[SHAPE_EDGE_STYLE + cpu.Y];
         span_saved_index = cpu.Y;
-        plot_view_src_line_core(0x01u, mem[OBJ_EDGE_STYLE]);  /* mode 1 — open, with the edge's own style */
+        /* mode 1 — open, with the edge's own style.  plot_shape_edges is still cpu-ABI (its
+           oracle calls the plot_view_src_line SHIM), so marshal the core's SlotExit onto the
+           cpu exactly as the shim does — A/X/Y/N/Z (V/C unread). */
+        { SlotExit e = plot_view_src_line_core(0x01u, mem[OBJ_EDGE_STYLE]);
+          cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y; cpu.N = e.n; cpu.Z = e.z; }
 
         for (;;) {
             BIT(mem[OBJ_EDGE_STYLE]);                     /* $20F1 */
@@ -8482,15 +8467,18 @@ static void plot_shape_edges_core(void)
                 cpu.X = mem[SHAPE_EDGE_X_0 + cpu.Y];
                 mem[OBJ_EDGE_X] = mem[SHAPE_VERTEX + cpu.X];
                 mem[OBJ_EDGE_STYLE] = mem[SHAPE_EDGE_X_1 + cpu.Y];
-                plot_view_src_line_core(0x00u, mem[OBJ_EDGE_STYLE]);
+                { SlotExit e = plot_view_src_line_core(0x00u, mem[OBJ_EDGE_STYLE]);
+                  cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y; cpu.N = e.n; cpu.Z = e.z; }
                 cpu.Y = span_saved_index;
                 cpu.X = mem[SHAPE_EDGE_LINE_0 + cpu.Y];
                 mem[OBJ_EDGE_X] = mem[SHAPE_VERTEX + cpu.X];
                 mem[OBJ_EDGE_STYLE] = mem[SHAPE_EDGE_STYLE + cpu.Y];
-                plot_view_src_line_core(0x00u, mem[OBJ_EDGE_STYLE]);
+                { SlotExit e = plot_view_src_line_core(0x00u, mem[OBJ_EDGE_STYLE]);
+                  cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y; cpu.N = e.n; cpu.Z = e.z; }
                 continue;
             }
-            plot_view_src_line_core(0x02u, 0x00u);        /* $20F5 — close it */
+            { SlotExit e = plot_view_src_line_core(0x02u, 0x00u);   /* $20F5 — close it */
+              cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y; cpu.N = e.n; cpu.Z = e.z; }
             BIT(mem[OBJ_EDGE_STYLE]);
             if (cpu.V) return;                            /* bit 6: the shape ends here */
             cpu.Y = span_saved_index;
@@ -8702,11 +8690,11 @@ static unsigned halve_signed_rounded(uint8_t value)
 static void derive_endpoint(uint8_t halved, uint16_t xCell, uint16_t colCell)
 {
     /* halved + plot_x (carry-in 0, D=0) is the endpoint's x; the two LSRs give its column.
-       The adds/shifts leave dead flags — the caller reads mem[EDGE_COLUMN] and A next. */
-    cpu.A        = (uint8_t)(halved + plot_x);
-    mem[xCell]   = cpu.A;
-    cpu.A        = (uint8_t)(cpu.A >> 2);            /* LSR A; LSR A */
-    mem[colCell] = cpu.A;
+       The 6502 leaves this in A with dead flags — the caller reads mem[EDGE_COLUMN] next and
+       overwrites A before anything reads it, so nothing here escapes but the two mem cells. */
+    uint8_t px   = (uint8_t)(halved + plot_x);
+    mem[xCell]   = px;
+    mem[colCell] = (uint8_t)(px >> 2);               /* LSR A; LSR A */
 }
 
 /* ---------------------------------------------------------------------------
@@ -8831,16 +8819,20 @@ static SlotExit fill_object_gap_core(uint8_t width)
    ---------------------------------------------------------------------------
    `mode` arrives in Y (0, 1 or 2 — see the group header, item 2) and the colour selector in A.
    --------------------------------------------------------------------------- */
-static void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
+static SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
 {
     unsigned pixel;
     uint8_t  edgeCol, blockStart, acc = 0;
+    /* The escaping registers, tracked as locals so the body is cpu-free.  A is `acc` (the 6502's
+       working byte); x/y are the exit X/Y; n/z the exit N/Z.  V and C reach every exit UNREAD
+       (see the close_gap header) and are dropped from the fixture mask, so they are not tracked. */
+    uint8_t  x = 0, y, n = 0, z = 0;
 
     /* $1C1C-$1C3D — the entry state.  The colour this call chooses becomes the NEXT call's
        "previous", which is how a span's two ends agree on a byte.  Y carries `mode` from here
        down to the mode dispatch; nothing below reassigns it until then. */
+    y                 = mode;
     mem[PVS_MODE]     = mode;
-    cpu.Y             = mode;
     mem[PVS_COLOUR_P] = mem[PVS_COLOUR];                             /* $1C1E-$1C21 */
     mem[PVS_COLOUR]   = mem[COLOUR_PATTERN_TBL + (colourSelect & 0x03u)];
     mem[PVS_PREV_COL] = mem[EDGE_COLUMN];
@@ -8864,30 +8856,49 @@ static void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
     }
 
     /* $1C7B-$1C88 — the target pointer, $3000 + column x $80, and the screen-half bit.  The
-       column is unmodified from here until the gap walk, so read it once.  ⚠ the ADC is kept
-       (it is the last thing to write V, which is live at every exit below). */
+       column is unmodified from here until the gap walk, so read it once.  ⚠ the ADC's own V/C
+       reach the exit unread (dropped from the mask); only its SUM matters — plot_ptr_hi and the
+       A the 6502 leaves in it, which IS the exit A of the two off-view arms below. */
     edgeCol       = mem[EDGE_COLUMN];
     mem[PVS_HALF] = (uint8_t)((mem[PVS_HALF] << 1) | (edgeCol >= 0x14u ? 1u : 0u));
     plot_ptr_lo   = (uint8_t)((edgeCol & 1u) << 7);
-    plot_ptr_hi   = (uint8_t)adc_step((uint8_t)(edgeCol >> 1), VIEW_SRC_PAGE, 0);
+    plot_ptr_hi   = (uint8_t)((edgeCol >> 1) + VIEW_SRC_PAGE);
+    acc           = plot_ptr_hi;                    /* A = plot_ptr_hi, live at the exits below */
 
     /* $1C89-$1C9D — off the right of the viewport, or the run's top line. */
-    if (cpx_ge(edgeCol, 0x28u)) {
+    if (edgeCol >= 0x28u) {
         /* $1D94-$1DA5 — mode 1 gives up; the others clamp the column to $28 and still close
-           the gap behind them.  cpx_ge left X = edgeCol and A = plot_ptr_hi, both live at exit. */
-        if (cpy_eq(mode, 0x01u)) return;
-        if (cmp_ge(mem[PVS_PREV_COL], 0x28u)) return;
+           the gap behind them.  CPX left X = edgeCol; A is still plot_ptr_hi. */
+        x = edgeCol;
+        if (mode == 1) {                            /* CPY #1: mode==1 -> result 0 */
+            n = 0; z = 1;
+            { SlotExit e = { acc, x, y, n, z, 0, 0 }; return e; }
+        }
+        {
+            uint8_t prevCol = mem[PVS_PREV_COL];
+            if (prevCol >= 0x28u) {                 /* CMP #$28 taken (>=): C=1 */
+                uint8_t r = (uint8_t)(prevCol - 0x28u);
+                acc = prevCol;                      /* CMP left A = PVS_PREV_COL */
+                n = (uint8_t)((r >> 7) & 1u); z = (uint8_t)(r == 0u);
+                { SlotExit e = { acc, x, y, n, z, 0, 0 }; return e; }
+            }
+        }
         mem[EDGE_COLUMN] = 0x28u;
         goto close_gap;
     }
+    x = edgeCol;                                    /* the fall-through CPX also left X = edgeCol */
     blockStart = span_top_line;
-    if (!cmp_ge(blockStart, mem[DASH_BLOCK_STARTS + edgeCol]))       /* clamp to the block top */
+    if (blockStart < mem[DASH_BLOCK_STARTS + edgeCol])              /* clamp to the block top */
         blockStart = mem[DASH_BLOCK_STARTS + edgeCol];
     mem[EDGE_BLOCK_START] = blockStart;
 
     /* $1C9E-$1CA9 — a run with no height. */
-    if (cmp_ge(blockStart, span_line_cursor)) {
-        if (cpy_eq(mode, 0x01u)) return;
+    if (blockStart >= span_line_cursor) {
+        acc = blockStart;                           /* CMP left A = blockStart */
+        if (mode == 1) {                            /* CPY #1: mode==1 -> result 0 */
+            n = 0; z = 1;
+            { SlotExit e = { acc, x, y, n, z, 0, 0 }; return e; }
+        }
         goto prev_col;
     }
 
@@ -8920,9 +8931,11 @@ static void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
             acc                = (uint8_t)(~shared_temp_8c & acc);
             goto same_column_test;
         }
-        if (cpx_eq(edgeCol, mem[PVS_OTHER_COL])) {           /* $1CFD */
-            /* both ends in one column: hand the byte on and paint nothing */
-            mem[PVS_COLOUR] = (uint8_t)load_a(mem[PVS_BYTE]);
+        x = edgeCol;                                         /* CPX left X = edgeCol */
+        if (edgeCol == mem[PVS_OTHER_COL]) {                 /* $1CFD */
+            /* both ends in one column: hand the byte on and paint nothing.  load_a's A/N/Z
+               die at close_gap, so only the store survives. */
+            mem[PVS_COLOUR] = mem[PVS_BYTE];
             goto prev_col;
         }
         acc = acc ? acc : SRC_CELL_BLANK;                    /* $1D0A */
@@ -8936,7 +8949,7 @@ static void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
                 seam_write((base + line) & 0xFFFFu, ram, acc);
                 line--;
             }
-            cpu.Y = mem[EDGE_BLOCK_START];        /* the fill leaves Y at the stop line */
+            y = mem[EDGE_BLOCK_START];            /* the fill leaves Y at the stop line */
         }
         goto prev_col;
     }
@@ -8949,20 +8962,20 @@ static void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
                             | shared_temp_76);
         }
     same_column_test:
-        if (cpx_eq(edgeCol, mem[PVS_OTHER_COL])) {           /* $1D25 */
+        x = edgeCol;                                         /* CPX left X = edgeCol */
+        if (edgeCol == mem[PVS_OTHER_COL]) {                 /* $1D25 */
             /* $1D2B — one column for both ends: DEFER, and remember the carry in bit 7.  The
-               ROR carries in the compare's C and its result's flags are live at the exit. */
-            uint8_t carryIn = cpu.C;
-            uint8_t prev, res;
+               ROR carries in the compare's C, which is 1 on the equal (>=) arm; the exit A is
+               PVS_KEEP (load_a) and N/Z come from the ROR result. */
+            uint8_t prev = span_defer_pending;
+            uint8_t res  = (uint8_t)((prev >> 1) | 0x80u);   /* carry-in = 1 -> bit 7 set */
             mem[PVS_COLOUR] = acc;
-            shared_temp_8c  = (uint8_t)load_a(mem[PVS_KEEP]);  /* leaves A = PVS_KEEP (exit A) */
-            prev = span_defer_pending;
-            res  = (uint8_t)((prev >> 1) | (carryIn << 7));
+            shared_temp_8c  = mem[PVS_KEEP];
+            acc             = mem[PVS_KEEP];                 /* load_a left A = PVS_KEEP */
             span_defer_pending = res;
-            cpu.C = (uint8_t)(prev & 1u);
-            cpu.N = (uint8_t)(res >> 7);
-            cpu.Z = (uint8_t)(res == 0);
-            return;
+            n = (uint8_t)(res >> 7);                         /* = 1 */
+            z = (uint8_t)(res == 0);                         /* = 0 */
+            { SlotExit e = { acc, x, y, n, z, 0, 0 }; return e; }
         }
         /* not the same column: fall through to the read-modify-write fill */
     } else {
@@ -8989,10 +9002,11 @@ static void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
             unsigned cell = (base + line) & 0xFFFFu;
             uint8_t  src  = seam_read(cell, ram);
             if (src == 0) {
-                /* $1D5D — an untouched cell takes the surface's colour, then merges.
-                   surface_colour_apply reproduces the shim's cpu side effects (X = surface
-                   class) that the oracle sees, so both models agree. */
-                acc = surface_colour_apply(line);
+                /* $1D5D — an untouched cell takes the surface's colour, then merges.  Only the
+                   colour it returns is used; surface_colour_at's own exit X/V do not survive
+                   (the CPX at $1D6F overwrites X, V/C are dropped), and its colour never depends
+                   on the entry X/V, so passing the current x is harmless. */
+                acc = surface_colour_at_core(line, mem[EDGE_COLUMN], x, 0u).a;
                 acc = (uint8_t)((acc & mem[PVS_KEEP]) | mem[PVS_BYTE]);   /* $1D60 */
                 if (acc == 0) acc = SRC_CELL_BLANK;
             } else if (src == SRC_CELL_BLANK) {
@@ -9004,14 +9018,23 @@ static void plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
             seam_write(cell, ram, acc);
             line--;
         }
-        cpu.Y = mem[EDGE_BLOCK_START];
-        cpu.A = acc;                              /* the last cell written — mode 1 returns it */
+        y = mem[EDGE_BLOCK_START];
+        /* acc holds the last cell written — mode 1 returns it in A */
     }
 
     /* $1D6F-$1D7B — every mode but 1 also closes the column's own gaps. */
-    if (cpx_eq(mem[PVS_MODE], 0x01u)) return;
+    x = mem[PVS_MODE];                            /* CPX left X = PVS_MODE on both arms */
+    if (mem[PVS_MODE] == 0x01u) {                 /* CPX #1: equal -> return */
+        n = 0; z = 1;
+        { SlotExit e = { acc, x, y, n, z, 0, 0 }; return e; }
+    }
     mem[EDGE_COLUMN] = (uint8_t)(mem[EDGE_COLUMN] + 1u);
-    column_gap_walk();                            /* still-cpu caller: shim marshals cpu in/out */
+    {
+        /* column_gap_walk's exit X/Y survive to close_gap (which sets only A/N/Z), so marshal
+           them into the tracked registers.  V in is a byproduct (dropped). */
+        SlotExit cg = column_gap_walk_core(x, y, 0u);
+        x = cg.x; y = cg.y;
+    }
     mem[EDGE_COLUMN] = (uint8_t)(mem[EDGE_COLUMN] - 1u);
 
 prev_col:
@@ -9026,18 +9049,22 @@ close_gap:
        exit test, so the return leaves whatever X the path already held. */
     {
         uint8_t gap = (uint8_t)(mem[EDGE_COLUMN] - mem[PVS_PREV_COL] - 1u);
-        cpu.A = gap;
-        cpu.N = (gap >> 7) & 1u;
-        cpu.Z = (gap == 0u);
+        acc = gap;
+        n   = (uint8_t)((gap >> 7) & 1u);
+        z   = (uint8_t)(gap == 0u);
     }
-    if (cpu.Z || cpu.N) return;
-    cpu.X = cpu.A;
-    /* still-cpu caller: the shim marshals X in and the exit A/X/Y/N/Z out (V/C unread here). */
-    fill_object_gap();
+    if (z || n) { SlotExit e = { acc, x, y, n, z, 0, 0 }; return e; }
+    x = acc;                                      /* TAX before fill_object_gap */
+    /* fill_object_gap's own exit A/X/Y/N/Z are the routine's (V/C unread here). */
+    return fill_object_gap_core(x);
 }
 
 /* The 6502-ABI shims. */
-void plot_view_src_line(void) { plot_view_src_line_core(cpu.Y, cpu.A); }
+void plot_view_src_line(void)
+{
+    SlotExit e = plot_view_src_line_core(cpu.Y, cpu.A);
+    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y; cpu.N = e.n; cpu.Z = e.z;   /* V/C unread */
+}
 void fill_object_gap(void)
 {
     SlotExit e = fill_object_gap_core(cpu.X);
