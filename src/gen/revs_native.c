@@ -1679,7 +1679,8 @@ static uint16_t model_mul_1_5(uint16_t value);
    reaches them through the cores, not the 6502-ABI shims. */
 static uint8_t mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint);
 static void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint);
-static void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint);
+static SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint,
+                                    int entryC, int entryV);
 static SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
                                           uint8_t firstLine, uint8_t entryV);
 static SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV);   /* SlotExit: top of file */
@@ -2889,7 +2890,13 @@ static void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     /* Side 1 (the 40..79 half): its line map, then its two span passes.  $00 is the low byte
        of line_attr_0 (it patches the store), endCursorFar the stop cursor, farBase the start. */
     ROAD_PHASE(ROAD_PHASE_FILL);
-    fill_line_attr_core(0x00, endCursorFar, (uint8_t)farBase);
+    /* draw_road discards fill_line_attr's returned A/X/Y — it consumes road_split_index (a mem
+       cell) via surface_pass/mark below.  But on the SMC-early-return path fill_line_attr leaves
+       C and V UNTOUCHED (only the $1943 DEY runs, touching N/Z/Y), so its exit V/C are the ones
+       it was called with — here farBase's ADC flags, which are draw_road's own exit V/C when the
+       walk is skipped (see the farBase comment above).  Pass them live so the trap path echoes
+       them back faithfully. */
+    (void)fill_line_attr_core(0x00, endCursorFar, (uint8_t)farBase, cpu.C, cpu.V);
 
     ROAD_PHASE(ROAD_PHASE_SPANS);
     surface_style_base = 0x00;
@@ -2913,9 +2920,10 @@ static void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     unsigned nearBase = horizon_index;
     road_split_index = (uint8_t)clamp_up_to(nearBase, 0x09);
 
-    /* ...and $50 is the low byte of line_attr_1, endCursorNear the stop, nearBase the start. */
+    /* ...and $50 is the low byte of line_attr_1, endCursorNear the stop, nearBase the start.
+       C/V passed live for the same trap-path reason as the far half above. */
     ROAD_PHASE(ROAD_PHASE_FILL);
-    fill_line_attr_core(0x50, endCursorNear, (uint8_t)nearBase);
+    (void)fill_line_attr_core(0x50, endCursorNear, (uint8_t)nearBase, cpu.C, cpu.V);
 
     ROAD_PHASE(ROAD_PHASE_SPANS);
     shared_temp_8c  = 0x1C;
@@ -4746,7 +4754,8 @@ void edge_x_offscreen(void)
        leave carry set, so the walk's exit carry is 1 whenever any iteration ran; only a walk that
        breaks on its first step (a start index already at/over $80, which draw_road never passes)
        carries the SMC helper's carry through.  `completedAny` distinguishes the two. */
-static void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint)
+static SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint,
+                                    int entryC, int entryV)
 {
     mem[LINE_ATTR_OPERAND] = bufferLow;      /* $0400 or $0450 — the store's own operand */
     span_end_index = endCursor;
@@ -4755,21 +4764,23 @@ static void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t fi
     math_hi = onePastLast;
 
     /* Exit ABI for the SMC-trap early return below: the $1943 DEY leaves Y and its N/Z, X keeps
-       the start index, A/C/V are untouched.  Reconstruct exactly that here. */
-    cpu.Y = onePastLast;
-    cpu.N = (onePastLast >> 7) & 1u;
-    cpu.Z = (onePastLast == 0);
-    cpu.X = firstPoint;                       /* the $1946 hook / edge_x_offscreen reads X */
+       the start index, and A/C/V are untouched (A = the entry buffer-low, C/V the caller's). */
+    SlotExit trapExit = { bufferLow, firstPoint, onePastLast,
+                          (uint8_t)((onePastLast >> 7) & 1u), (uint8_t)(onePastLast == 0),
+                          (uint8_t)entryV, (uint8_t)entryC };
 
-    /* $1946 — Silverstone's own `JSR edge_x_offscreen`, or a circuit's hook in its place. */
+    /* $1946 — Silverstone's own `JSR edge_x_offscreen`, or a circuit's hook in its place.  Both
+       are 6502-ABI shims that read the start index in X, so seed it — the one genuine hook-seam
+       cpu access left in this routine. */
+    cpu.X = firstPoint;
     if (mem[0x1946] == 0x20) {
         uint16_t target = (uint16_t)(mem[0x1947] | (mem[0x1948] << 8));
         if (target == 0x1933) edge_x_offscreen();
         else if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
-        else { platform_smc_unhandled(0x1946, target); return; }
+        else { platform_smc_unhandled(0x1946, target); return trapExit; }
     } else {
         platform_smc_unhandled(0x1946, mem[0x1946]);
-        return;
+        return trapExit;
     }
 
     uint8_t x = cpu.X;                        /* a circuit hook may have moved the start index */
@@ -4858,29 +4869,33 @@ static void fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t fi
     /* Exit ABI — the differential compares A/X/Y and every flag, so hand back exactly what the
        6502 leaves at $19A4: X and A from the tail, Y from the walk's final cursor, V carried
        from the last BIT / edge_x_offscreen, and N/Z/C from whichever tail op ended it. */
-    cpu.A = tailStyle;
-    cpu.X = sx;
-    cpu.Y = y;
-    cpu.V = vFlag;
+    SlotExit e;
+    e.a = tailStyle;
+    e.x = sx;
+    e.y = y;
+    e.v = (uint8_t)vFlag;
     if (exitViaCpx) {
         uint8_t diff = (uint8_t)(sx - (uint8_t)math_hi);
-        cpu.N = (diff >> 7) & 1u;
-        cpu.Z = (sx == (uint8_t)math_hi);
-        cpu.C = 1;                                   /* CPX carry set (sx >= math_hi) */
+        e.n = (uint8_t)((diff >> 7) & 1u);
+        e.z = (uint8_t)(sx == (uint8_t)math_hi);
+        e.c = 1;                                     /* CPX carry set (sx >= math_hi) */
     } else {
-        cpu.N = 0;                                   /* the tail exits with bit 7 of A clear */
-        cpu.Z = (tailStyle == 0);
+        e.n = 0;                                     /* the tail exits with bit 7 of A clear */
+        e.z = (uint8_t)(tailStyle == 0);
         /* the tail's LDA leaves carry untouched: it is the last CPX's (0) if the loop ran,
            else the carry the walk itself left. */
-        cpu.C = tailLooped ? 0 : walkCarry;
+        e.c = (uint8_t)(tailLooped ? 0 : walkCarry);
     }
+    return e;
 }
 
 /* The 6502-ABI shim.  A is the target buffer's low byte, Y the side's end cursor, X the point
-   the walk starts from. */
+   the walk starts from; entry C/V are echoed on the SMC-trap path. */
 void fill_line_attr(void)
 {
-    fill_line_attr_core(cpu.A, cpu.Y, cpu.X);
+    SlotExit e = fill_line_attr_core(cpu.A, cpu.Y, cpu.X, cpu.C, cpu.V);
+    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
 }
 
 /* ---------------------------------------------------------------------------
