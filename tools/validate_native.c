@@ -1355,6 +1355,11 @@ static int test_geometry_callees(void)
 
     if (want("road_edge_walk")) {
         int subFail = 0, emitted = 0;
+        /* road_edge_walk_subdivide's PHP/PLP (the arithmetic-shift sign stash) leaves a dead P
+           byte at $01FF that its own PLP immediately discards; the clean core no longer performs
+           the push, so ignore that residue as dead stack — same as the bearing leaves below. */
+        static const uint16_t walkIgnore[] = { 0x01FFu };
+        set_ignore(walkIgnore, 1);
         /* the two cursors build_track_geometry really passes, plus a random one */
         static const uint8_t FIRST[] = { 0x06, 0x2E };
         for (t = 0; t < walkCases; t++) {
@@ -1384,6 +1389,7 @@ static int test_geometry_callees(void)
                    "every run clipped out or subdivided on its first\n", walkCases);
             fail++;
         }
+        set_ignore(0, 0);
         printf("%-32s %7d cases, %d mismatch (must be 0)  live=S (mem-only result)  "
                "(%d/%d emitted a point)\n",
                "road_edge_walk", walkCases, subFail, emitted, walkCases);

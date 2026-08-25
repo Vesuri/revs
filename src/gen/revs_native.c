@@ -2539,11 +2539,15 @@ static int angle_off_axis(unsigned addr, uint8_t threshold)
    the section point the walk came from and this one, stage them in the scratch triple, and
    emit THAT point instead; then the side is finished either way.  Emits nothing at all when
    this was the side's very first point — the road starts behind the camera. */
-static void road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
+/* Returns the section byte the 6502 leaves in X at each exit — road_edge_walk's exit-ABI
+   register, which build_track_geometry ($24F6) reads back as its own exit X (live=AXY).
+   Early return = the caller's section ($2407 RTS, X untouched); the midpoint-clip exit = the
+   midpoint slot ($2450 LDX #$FA); the normal exit = walk_prev_section ($245A LDX). */
+static uint8_t road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
 {
     GEO_COUNT(g_geoSubdiv);
     if (load_a(shared_counter_42) == 0)              /* $2403-$2407 */
-        return;
+        return (uint8_t)section;
 
     unsigned prev = walk_prev_section;
     int i;
@@ -2563,22 +2567,13 @@ static void road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
         uint16_t there16 = (uint16_t)(((uint16_t)mem[SECTION_HI_TBL + there] << 8)
                                       | mem[SECTION_LO_TBL + there]);
         unsigned delta   = (uint16_t)(here16 - there16);
-        uint8_t  deltaHi = (uint8_t)(delta >> 8);
         math_lo = (uint8_t)delta;                    /* $2410 — the low byte, parked */
 
-        /* $241F-$242A — two ARITHMETIC shifts right, i.e. a quarter of the signed gap.  The
-           sign has to be rotated in twice, so the 6502 stashes it on the STACK across the
-           first pair of RORs — and the byte that push leaves at $01xx is state the
-           differential compares, which is the only reason it is spelled out here.  That P byte
-           captures the HIGH subtract's flags, so replay them from the high byte: N/Z from the
-           result, V from the signed subtract (carry-in = the low subtract's no-borrow). */
-        cpu.N = (deltaHi >> 7) & 1u;
-        cpu.Z = (deltaHi == 0u);
-        cpu.V = sbc_overflow(mem[SECTION_HI_TBL + here], mem[SECTION_HI_TBL + there],
-                             (mem[SECTION_LO_TBL + here] >= mem[SECTION_LO_TBL + there]) ? 1u : 0u);
-        cpu.C = cpu.N;
-        PHP();
-        PLP();
+        /* $241F-$242A — a quarter of the signed gap: an arithmetic shift right by two.  The
+           6502 stashes the high byte's sign on the stack across the first RORs, but that PHP
+           byte is dead the instant its own PLP pops it (nothing reads the restored flags), so
+           the push/pop computes nothing — its only trace is the $01FF residue the fixture
+           ignores as dead stack (same as the bearing leaves). */
         unsigned quarter = ((delta >> 2) | ((delta & 0x8000u) ? 0xC000u : 0u)) & 0xFFFFu;
         unsigned mid     = (base + quarter) & 0xFFFFu;
 
@@ -2596,19 +2591,21 @@ static void road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
 
     /* $2450-$2467 — the midpoint's own angle and projection.  Past the clip it contributes
        nothing; otherwise it gets its width offset with the marker list frozen. */
-    cpu.X = midSlot;
     emit_edge_bearing_at_cursor_core(midSlot);
     if (project_point_core(midSlot, 0).clip)
-        return;
+        return midSlot;                              /* $2450 LDX #$FA left the midpoint slot in X */
 
-    cpu.X              = walk_prev_section;
     marker_count_saved = marker_count;               /* $245C — no corner marker for a midpoint */
     emit_edge_width_offset_core(walk_prev_section, 0x03, 0u);   /* mem-only here; exit V is dead */
     marker_count       = (uint8_t)load_a(marker_count_saved);
     inc_mem(MEM_edge_cursor);                        /* $2467, and its N/Z are the exit flags */
+    return (uint8_t)walk_prev_section;               /* $245A LDX $0014 */
 }
 
-static void road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
+/* Returns the section byte the 6502 leaves in X ($24F6 reads it back as build_track_geometry's
+   exit X; live=AXY).  The cap/off-axis/hook exits leave `section` in X ($24B4 TAX and the
+   $2475-$248F arm carry it); the two subdivide exits inherit subdivide's exit X. */
+static uint8_t road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
                                 uint8_t midSlot,      /* $FA */
                                 uint8_t pointCap,     /* $12 = 18 points */
                                 uint8_t offAxis)      /* $14 */
@@ -2622,7 +2619,6 @@ static void road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
         GEO_POINT();   /* one edge point visited on this side */
         /* $23D8 — this point's angle, and how far away it is.  A comes back as the high byte
            of the distance point_distance_hypot ($0CA5) left in point_dist_lo/hi. */
-        cpu.X = (uint8_t)section;
         unsigned distHi = emit_edge_bearing_at_cursor_core((uint8_t)section);
 
         /* $23DB-$23FA — the RUNNING NEAREST, which is also project_point's far clip and the
@@ -2637,13 +2633,10 @@ static void road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
         }
 
         /* $23FC-$2401 — project it.  clip = past the far clip, behind = below the camera. */
-        cpu.X = (uint8_t)section;
         {
             ProjPoint p = project_point_core((uint8_t)section, 0);
-            if (p.clip || p.behind) {
-                road_edge_walk_subdivide(section, midSlot);
-                return;
-            }
+            if (p.clip || p.behind)
+                return road_edge_walk_subdivide(section, midSlot);
         }
 
         /* $246A — EMIT: the point's second angle, and any corner marker it carries. */
@@ -2652,27 +2645,31 @@ static void road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
         /* $246D-$248F — past the subdivision floor, has the road swung more than $14 off the
            view axis in this one step?  If so, subdivide — unless the point BEFORE it was
            already out there, in which case the side is done. */
-        if (cmp_ge(shared_counter_42, edge_nearest_section) && !cpu.Z) {
-            unsigned here = edge_cursor;
-            cpu.Y = (uint8_t)here;                                   /* $2475 LDY $12 */
+        if (shared_counter_42 > edge_nearest_section) {              /* $2471 BEQ/$2473 BCC */
+            unsigned here = edge_cursor;                             /* $2475 LDY $12 */
             if (angle_off_axis(EDGE_X_HI_TBL + here, offAxis)) {
                 int prevFar = angle_off_axis((EDGE_X_HI_TBL - 1) + here, offAxis);
 
-                /* ⚠ SMC $248B-$248F — see the header.  Both arms are EXITS, so A and the
-                   compare's flags from angle_off_axis are what the caller sees. */
+                /* ⚠ SMC $248B-$248F — see the header.  The unpatched arm just exits in mem[];
+                   a circuit's own JMP is real 6502 code that READS the registers, so before
+                   dispatching to it re-establish the entry ABI: A + N/Z/C are angle_off_axis's
+                   CMP #$14 result (left in cpu by the helper), Y = edge_cursor (the $2475 LDY),
+                   X = section.  After the hook runs it owns the exit. */
                 if (mem[0x248B] == 0xB0 && mem[0x248D] == 0x4C) {    /* unpatched: Silverstone */
                     if (!prevFar)
-                        road_edge_walk_subdivide(section, midSlot);
-                    return;
+                        return road_edge_walk_subdivide(section, midSlot);
+                    return (uint8_t)section;                         /* $248B BCS $24B8, X=section */
                 }
+                cpu.Y = (uint8_t)here;
+                cpu.X = (uint8_t)section;
                 if (mem[0x248B] == 0x4C) {                           /* a circuit's own JMP */
                     uint16_t target = (uint16_t)(mem[0x248C] | (mem[0x248D] << 8));
                     if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
                     else                                      platform_smc_unhandled(0x248B, target);
-                    return;
+                    return cpu.X;                                    /* the hook owns the exit X */
                 }
                 platform_smc_unhandled(0x248B, mem[0x248B]);
-                return;
+                return cpu.X;
             }
         }
 
@@ -2683,16 +2680,14 @@ static void road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
         shared_counter_42++;
 
         unsigned emitted = shared_counter_42;
-        cpu.Y = (uint8_t)emitted;
-        CPY(pointCap);                               /* $2498, and its flags reach the exit */
-        if (cpu.C)
-            return;
+        if (emitted >= pointCap)                     /* $2498 CPY #$12 — 18 points is the cap */
+            return (uint8_t)section;                 /* $24B4 TAX left the section byte in X */
 
         unsigned step = mem[WALK_STEP_TBL + emitted];
         math_lo = (uint8_t)step;                     /* $249F — observable */
 
         unsigned from = section;
-        if (!cmp_ge((section - section_wrap_limit) & 0xFFu, (uint8_t)step))
+        if (((section - section_wrap_limit) & 0xFFu) < (uint8_t)step)
             from = (section + 0x78) & 0xFFu;         /* $24A9 — round the 120-byte list */
         section = (from - step) & 0xFFu;
     }
@@ -2700,17 +2695,17 @@ static void road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
 
 void road_edge_walk(void)
 {
-    road_edge_walk_core(cpu.A, cpu.X, (uint8_t)SECTION_MID, 0x12, 0x14);
+    cpu.X = road_edge_walk_core(cpu.A, cpu.X, (uint8_t)SECTION_MID, 0x12, 0x14);
 }
 
 /* $2505-$250C and $2513-$251A — ONE ROAD SIDE.  road_edge_side picks which side and which
    traversal direction the walk uses (A=0 and A=$80 are opposites whatever the car's
    direction bit holds); the walk then emits that side's points from `firstPoint` upward. */
-static void road_side_walk(uint8_t sideSelect, uint8_t firstPoint)
+static uint8_t road_side_walk(uint8_t sideSelect, uint8_t firstPoint)
 {
     GEO_SIDE_SET(sideSelect ? 1 : 0);
     RoadSide side = road_edge_side_apply(sideSelect);
-    road_edge_walk_core(firstPoint, side.sectionIndex, (uint8_t)SECTION_MID, 0x12, 0x14);
+    return road_edge_walk_core(firstPoint, side.sectionIndex, (uint8_t)SECTION_MID, 0x12, 0x14);
 }
 
 /* $253B-$2549 — HOW WIDE IS THE ROAD AT THE HORIZON?  The two sides' x at the horizon point,
@@ -2766,7 +2761,10 @@ static void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPoin
     road_side_walk(0x00, firstPointSide0);
     edge_end_side0 = edge_cursor;    /* where side 0 stopped, for draw_road to pair up */
     GEO_PHASE(GEO_PHASE_WALK1);
-    road_side_walk(0x80, firstPointSide1);
+    /* road_edge_walk leaves the last section byte in X ($24B4 TAX / the off-axis arm), and it
+       sits in the register untouched through the horizon-fold tail below to become this
+       routine's own exit X ($24F6, live=AXY).  Model that by parking it now. */
+    cpu.X = road_side_walk(0x80, firstPointSide1);
     GEO_PHASE(GEO_PHASE_TAIL);
 
     /* $251D-$2529 — WHICH POINT IS THE HORIZON?  The walks record it as an index into
