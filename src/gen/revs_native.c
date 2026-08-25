@@ -8386,9 +8386,13 @@ static SlotExit scale_shape_vectors_core(uint8_t entryV)
    past the bottom) bit 7 says "keep skipping" and bit 6 says "the shape ends here".  On a drawn
    edge bit 7 sends it to the closing arm and bit 6, tested after the close, ends the shape.
    --------------------------------------------------------------------------- */
-static void plot_shape_edges_core(void)
+/* Exit ABI is the full register+flag set (SlotExit): both callers (its own fixture, and
+   plot_object which reads exit Y and V) compare it all.  No entry register is read — Y is
+   seeded from plot_ptr3_lo, A/X are written before use — so the core takes no arguments. */
+static SlotExit plot_shape_edges_core(void)
 {
-    cpu.Y = plot_ptr3_lo;                                 /* $209A — the shape's first edge */
+    uint8_t a = 0, x = 0, n = 0, z = 0, v = 0, c = 0;
+    uint8_t y = plot_ptr3_lo;                             /* $209A — the shape's first edge */
 
     for (;;) {
         int rejected = 0;
@@ -8399,92 +8403,101 @@ static void plot_shape_edges_core(void)
         shared_temp_8c      = 0x00;
 
         /* $20A7-$20B8 — the span's BOTTOM line, clamped to $4F. */
-        cpu.X = mem[SHAPE_EDGE_LINE_0 + cpu.Y];
-        { uint8_t v = mem[SHAPE_VERTEX + cpu.X];          /* $20AE CLC/ADC plot_line */
-          unsigned s = (unsigned)v + plot_line;
-          cpu.A = (uint8_t)s;
-          cpu.N = (cpu.A >> 7) & 1u;                      /* N consumed locally next line */
+        x = mem[SHAPE_EDGE_LINE_0 + y];
+        { uint8_t vtx = mem[SHAPE_VERTEX + x];            /* $20AE CLC/ADC plot_line */
+          unsigned s = (unsigned)vtx + plot_line;
+          a = (uint8_t)s;
+          n = (uint8_t)((a >> 7) & 1u);
           /* On the BMI reject path ($20B0) this ADC's V AND C are the routine's exit flags —
-             the skip loop below writes neither. */
-          cpu.V = adc_overflow(v, plot_line, 0);
-          cpu.C = (uint8_t)(s > 0xFFu); }
-        if (cpu.N) rejected = 1;
+             the skip loop below writes neither, so keep them live in v/c. */
+          v = adc_overflow(vtx, plot_line, 0);
+          c = (uint8_t)(s > 0xFFu); }
+        if (n) rejected = 1;
         if (!rejected) {
-            if (cmp_ge(cpu.A, 0x50u)) cpu.A = 0x4Fu;      /* CMP #$50; BCS clamps to $4F */
-            span_line_cursor = cpu.A;
+            if (a >= 0x50u) a = 0x4Fu;                    /* CMP #$50; BCS clamps to $4F */
+            span_line_cursor = a;
 
             /* $20BA-$20D4 — ...and its TOP line, floored at the horizon. */
-            cpu.X = mem[SHAPE_EDGE_LINE_1 + cpu.Y];
-            { uint8_t v = mem[SHAPE_VERTEX + cpu.X];      /* $20C1 CLC/ADC plot_line */
-              cpu.A = (uint8_t)(v + plot_line);
-              cpu.N = (cpu.A >> 7) & 1u;                  /* N consumed locally next line */
+            x = mem[SHAPE_EDGE_LINE_1 + y];
+            { uint8_t vtx = mem[SHAPE_VERTEX + x];        /* $20C1 CLC/ADC plot_line */
+              a = (uint8_t)(vtx + plot_line);
+              n = (uint8_t)((a >> 7) & 1u);
               /* V escapes on the no-height reject path ($20D1 BCS); C there comes from the
-                 $20CF CMP below, so only V needs replaying, but keep it live like the ADC. */
-              cpu.V = adc_overflow(v, plot_line, 0); }
-            if (cpu.N || !cmp_ge(cpu.A, object_line_ceiling))
-                cpu.A = object_line_ceiling;
-            if (cmp_ge(cpu.A, span_line_cursor)) rejected = 1;   /* the span has no height */
-            else                                 span_top_line = cpu.A;
+                 $20CF CMP below, so only V needs replaying (the ADC's own C is dead). */
+              v = adc_overflow(vtx, plot_line, 0); }
+            if (n || !(a >= object_line_ceiling))
+                a = object_line_ceiling;
+            /* $20CF CMP span_line_cursor — its carry is the exit C on the no-height path. */
+            c = (uint8_t)(a >= span_line_cursor);
+            if (c) rejected = 1;                          /* the span has no height */
+            else   span_top_line = a;
         }
 
         if (rejected) {
             /* $210C-$2115 — walk past this edge, and past every edge whose bit 7 says the
-               skip continues.  Bit 6 ends the shape on either path. */
+               skip continues.  Bit 6 ends the shape on either path.  X and V/C are the
+               reject point's; the skip loop leaves all three untouched, so they exit as-is. */
             for (;;) {
-                uint8_t style        = mem[SHAPE_EDGE_STYLE + cpu.Y];
+                uint8_t style        = mem[SHAPE_EDGE_STYLE + y];
                 int     keepSkipping = (style >> 7) & 1u;         /* the LDA's own N */
-                cpu.A = (uint8_t)(style & 0x40u);                 /* AND #$40 */
-                cpu.N = 0;
-                cpu.Z = (cpu.A == 0);
-                if (!cpu.Z) return;                               /* bit 6 set — the shape ends */
-                cpu.Y = (uint8_t)(cpu.Y + 1u);                    /* INY */
+                a = (uint8_t)(style & 0x40u);                     /* AND #$40 */
+                n = 0;
+                z = (uint8_t)(a == 0);
+                if (!z) { SlotExit e = { a, x, y, n, z, v, c }; return e; }  /* bit 6 — end */
+                y = (uint8_t)(y + 1u);                            /* INY */
                 if (!keepSkipping) break;
             }
             continue;
         }
 
         /* $20D5-$20F0 — the edge's two x offsets and its style, then open the span. */
-        cpu.X = mem[SHAPE_EDGE_X_0 + cpu.Y];
-        shared_temp_7e = mem[SHAPE_VERTEX + cpu.X];
-        cpu.X = mem[SHAPE_EDGE_X_1 + cpu.Y];
-        mem[OBJ_EDGE_X] = mem[SHAPE_VERTEX + cpu.X];
-        mem[OBJ_EDGE_STYLE] = mem[SHAPE_EDGE_STYLE + cpu.Y];
-        span_saved_index = cpu.Y;
-        /* mode 1 — open, with the edge's own style.  plot_shape_edges is still cpu-ABI (its
-           oracle calls the plot_view_src_line SHIM), so marshal the core's SlotExit onto the
-           cpu exactly as the shim does — A/X/Y/N/Z (V/C unread). */
+        x = mem[SHAPE_EDGE_X_0 + y];
+        shared_temp_7e = mem[SHAPE_VERTEX + x];
+        x = mem[SHAPE_EDGE_X_1 + y];
+        mem[OBJ_EDGE_X] = mem[SHAPE_VERTEX + x];
+        mem[OBJ_EDGE_STYLE] = mem[SHAPE_EDGE_STYLE + y];
+        span_saved_index = y;
+        /* mode 1 — open, with the edge's own style.  plot_view_src_line is cpu-free; take its
+           A/X/Y/N/Z into our locals (its V/C are dropped, exactly as its shim leaves cpu.V/C). */
         { SlotExit e = plot_view_src_line_core(0x01u, mem[OBJ_EDGE_STYLE]);
-          cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y; cpu.N = e.n; cpu.Z = e.z; }
+          a = e.a; x = e.x; y = e.y; n = e.n; z = e.z; }
 
         for (;;) {
-            BIT(mem[OBJ_EDGE_STYLE]);                     /* $20F1 */
-            if (cpu.N) {
+            /* $20F1 BIT obj_edge_style — N from bit 7, V from bit 6, Z from A & style. */
+            n = (uint8_t)(mem[OBJ_EDGE_STYLE] >> 7);
+            v = (uint8_t)((mem[OBJ_EDGE_STYLE] >> 6) & 1u);
+            z = (uint8_t)((a & mem[OBJ_EDGE_STYLE]) == 0);
+            if (n) {
                 /* $2117-$2142 — THE CLOSING ARM.  The span is closed against the NEXT edge's
                    columns, which is why this arm reads shape_edge_x_1 as a style and
                    shape_edge_line_0 as an x offset. */
-                cpu.Y = (uint8_t)(span_saved_index + 1u);
-                span_saved_index = cpu.Y;
-                cpu.X = mem[SHAPE_EDGE_X_0 + cpu.Y];
-                mem[OBJ_EDGE_X] = mem[SHAPE_VERTEX + cpu.X];
-                mem[OBJ_EDGE_STYLE] = mem[SHAPE_EDGE_X_1 + cpu.Y];
+                y = (uint8_t)(span_saved_index + 1u);
+                span_saved_index = y;
+                x = mem[SHAPE_EDGE_X_0 + y];
+                mem[OBJ_EDGE_X] = mem[SHAPE_VERTEX + x];
+                mem[OBJ_EDGE_STYLE] = mem[SHAPE_EDGE_X_1 + y];
                 { SlotExit e = plot_view_src_line_core(0x00u, mem[OBJ_EDGE_STYLE]);
-                  cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y; cpu.N = e.n; cpu.Z = e.z; }
-                cpu.Y = span_saved_index;
-                cpu.X = mem[SHAPE_EDGE_LINE_0 + cpu.Y];
-                mem[OBJ_EDGE_X] = mem[SHAPE_VERTEX + cpu.X];
-                mem[OBJ_EDGE_STYLE] = mem[SHAPE_EDGE_STYLE + cpu.Y];
+                  a = e.a; x = e.x; y = e.y; n = e.n; z = e.z; }
+                y = span_saved_index;
+                x = mem[SHAPE_EDGE_LINE_0 + y];
+                mem[OBJ_EDGE_X] = mem[SHAPE_VERTEX + x];
+                mem[OBJ_EDGE_STYLE] = mem[SHAPE_EDGE_STYLE + y];
                 { SlotExit e = plot_view_src_line_core(0x00u, mem[OBJ_EDGE_STYLE]);
-                  cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y; cpu.N = e.n; cpu.Z = e.z; }
+                  a = e.a; x = e.x; y = e.y; n = e.n; z = e.z; }
                 continue;
             }
             { SlotExit e = plot_view_src_line_core(0x02u, 0x00u);   /* $20F5 — close it */
-              cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y; cpu.N = e.n; cpu.Z = e.z; }
-            BIT(mem[OBJ_EDGE_STYLE]);
-            if (cpu.V) return;                            /* bit 6: the shape ends here */
-            cpu.Y = span_saved_index;
+              a = e.a; x = e.x; y = e.y; n = e.n; z = e.z; }
+            /* $20FB BIT obj_edge_style again — bit 6 (V) ends the shape.  C is still the
+               no-height CMP's 0, untouched since (the plots drop it). */
+            n = (uint8_t)(mem[OBJ_EDGE_STYLE] >> 7);
+            v = (uint8_t)((mem[OBJ_EDGE_STYLE] >> 6) & 1u);
+            z = (uint8_t)((a & mem[OBJ_EDGE_STYLE]) == 0);
+            if (v) { SlotExit e = { a, x, y, n, z, v, c }; return e; }  /* bit 6: shape ends */
+            y = span_saved_index;
             break;
         }
-        cpu.Y = (uint8_t)(cpu.Y + 1u);                    /* $2102 — the next edge */
+        y = (uint8_t)(y + 1u);                            /* $2102 — the next edge */
     }
 }
 
@@ -8495,8 +8508,8 @@ static void plot_shape_edges_core(void)
    draw_track_object: plot_x, plot_line, proj_width and plot_shape.
    --------------------------------------------------------------------------- */
 /* Exit ABI is the full register+flag set (SlotExit).  Entry Y and V flow through the SMC-trap
-   exit (which writes neither); the normal exits carry plot_shape_edges' exit Y/V — that routine
-   is cluster-7 and still cpu-ABI, so its Y/V are captured at the call boundary below. */
+   exit (which writes neither); the normal exits carry plot_shape_edges' exit Y/V, which that
+   routine now returns by value. */
 static SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV)
 {
     int     i;
@@ -8561,9 +8574,9 @@ static SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV)
         SlotExit sv = scale_shape_vectors_core(v);
         if (sv.c) return sv;                          /* a vertex did not fit — its exit is ours */
 
-        plot_shape_edges_core();                      /* cluster-7, still cpu-ABI — */
-        uint8_t peY = cpu.Y;                          /* its exit Y and V escape this routine */
-        v = cpu.V;
+        SlotExit pse = plot_shape_edges_core();       /* its exit Y and V escape this routine */
+        uint8_t peY = pse.y;
+        v = pse.v;
 
         /* $201E-$2028 — LDA object_shape_clamped; CMP #9.  Shape 9 loops to draw the unclamped
            index too; otherwise the object is done. */
@@ -8590,7 +8603,9 @@ void plot_object(void)          { SlotExit e = plot_object_core(cpu.X, cpu.Y, cp
 void scale_shape_vectors(void)  { SlotExit e = scale_shape_vectors_core(cpu.V);
                                   cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
                                   cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c; }
-void plot_shape_edges(void)     { plot_shape_edges_core(); }
+void plot_shape_edges(void)     { SlotExit e = plot_shape_edges_core();
+                                  cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
+                                  cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c; }
 
 /* ===========================================================================
    TWINS #96-#97 — THE OBJECT PLOTTER'S LINE SIDE, and with it the whole of
