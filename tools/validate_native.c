@@ -4053,6 +4053,7 @@ void build_section_step_delta(void); void build_section_step_delta__t6502(void);
 void step_segment_dir_index(void); void step_segment_dir_index__t6502(void);
 void advance_dir_on_segment_flag(void); void advance_dir_on_segment_flag__t6502(void);
 void step_section_curve(void);      void step_section_curve__t6502(void);
+void load_section_from_segment(void); void load_section_from_segment__t6502(void);
 
 static int test_late_misc_trees(void)
 {
@@ -4063,7 +4064,7 @@ static int test_late_misc_trees(void)
     if (scale < 1) scale = 1;
 
     struct { const char* name; void (*nat)(void); void (*ref)(void); unsigned mask; int cases; }
-      list[18] = {
+      list[19] = {
         { "scale_wing_settings",     scale_wing_settings,     scale_wing_settings__t6502,     LIVE_NONE, 2000 },
         { "compute_segment_scale",   compute_segment_scale,   compute_segment_scale__t6502,   LIVE_NONE, 3000 },
         { "section_angle_curve",     section_angle_curve,     section_angle_curve__t6502,     LIVE_A,    2000 },
@@ -4082,6 +4083,7 @@ static int test_late_misc_trees(void)
         { "step_segment_dir_index",      step_segment_dir_index,      step_segment_dir_index__t6502, LIVE_NONE, 4000 },
         { "advance_dir_on_segment_flag", advance_dir_on_segment_flag, advance_dir_on_segment_flag__t6502, LIVE_NONE, 4000 },
         { "step_section_curve",          step_section_curve,          step_section_curve__t6502,      LIVE_NONE, 5000 },
+        { "load_section_from_segment",   load_section_from_segment,   load_section_from_segment__t6502, LIVE_NONE, 5000 },
       };
     static const uint16_t mathIgnore[] = { 0x0074, 0x0075 };   /* mul8/abs16 scratch */
     static const uint16_t gapIgnore[]  = { 0x01FF };           /* car_gap_tail's PHP/PLP stack byte */
@@ -4090,12 +4092,12 @@ static int test_late_misc_trees(void)
        so only the mul8 scratch needs ignoring — the PHA slots are compared. */
     static const uint16_t contIgnore[]  = { 0x0074, 0x0075, 0x01FF };  /* + the oracle's PHP stack byte */
 
-    for (i = 0; i < 18; i++) register_fixture(list[i].name);
+    for (i = 0; i < 19; i++) register_fixture(list[i].name);
 
     setenv("REVS_SMC_CONTINUE", "1", 1);
     unsigned long smcBefore = g_smcUnhandled;
 
-    for (i = 0; i < 18; i++) {
+    for (i = 0; i < 19; i++) {
         int cases   = list[i].cases * scale;
         int contact = 0, spun = 0, floored = 0, credited = 0, carried = 0;
         int smcArm = 0, bodyArm = 0, decimal = 0, diffArm = 0;
@@ -4269,6 +4271,14 @@ static int test_late_misc_trees(void)
                     }
                 }
                 break;
+            case 18: /* load_section_from_segment ($122D): X = dest section byte cursor, Y = segment
+                        byte index.  fill_random supplies the track-file coordinate bytes and both
+                        section tables; SMC $1248 dispatches the field-5 dir-index read. */
+                c.X = (uint8_t)(xs() % 0x78);           /* section byte cursor (side 0) */
+                c.Y = (uint8_t)xs();                    /* segment byte index */
+                if (xs() % 10) pre[0x1248] = 0xB9;      /* unpatched: LDA $5905,Y */
+                else { pre[0x1248] = 0x00; smcArm++; }  /* else-arm: platform_smc_unhandled trap */
+                break;
             default: break;
             }
 
@@ -4295,6 +4305,7 @@ static int test_late_misc_trees(void)
         if (i == 15 && (!bodyArm || !smcArm)) vac = 1;  /* both direction arms reached */
         if (i == 16 && (!bodyArm || !smcArm)) vac = 1;  /* both dispatch arms reached */
         if (i == 17 && (!smcArm || !contact || !spun || !floored)) vac = 1;  /* scan + all 3 ramp outcomes */
+        if (i == 18 && !smcArm)              vac = 1;   /* SMC else-arm trap reached */
         if (vac) { printf("[VACUOUS] %s\n", list[i].name); fail++; }
 
         printf("%-24s %7d cases, mismatch above must be 0  %s%s\n",

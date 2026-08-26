@@ -10503,6 +10503,50 @@ void derive_car_section_cursor(void)
 }
 
 /* ---------------------------------------------------------------------------
+   $122D  load_section_from_segment  (twin #145)   — was FUN_122d
+   ---------------------------------------------------------------------------
+   Builds one live section's world geometry from its track-file segment record.  A track segment
+   is an 8-byte record whose fields 1..6 are three-plus-three 16-bit coordinates (low byte in the
+   $5900 bank, high byte in the $5300 bank); this lays them into the two parallel road-edge lists.
+
+     X = the destination section byte cursor (side 0);  Y = the segment byte index.
+
+   load_section_triple copies fields 1,2,3 into side 0's triple (components 0,1,2).  Then fields 4
+   and 6 become side 1's components 0 and 2 — the OPPOSITE road edge — and copy_section_height_to_side1
+   shares side 0's height (component 1) across.  segment_dir_index is field 5's low byte.
+
+   ⚠ SMC $1248 (per-circuit, ModifyGameCode): unpatched Silverstone is `LDA $5905,Y`; an expansion
+   circuit rewrites it to a hook JSR whose result A becomes segment_dir_index.  Reproduced exactly.
+   No flags or registers escape (both callers overwrite A next, and X/Y are left as the entry
+   values the caller still needs) — bare void shim. */
+void load_section_from_segment(void)
+{
+    uint8_t x = cpu.X;          /* dest section byte cursor (side 0) */
+    uint8_t y = cpu.Y;          /* track-file segment byte index */
+
+    load_section_triple_core(x, y);                         /* fields 1..3 -> side-0 triple */
+
+    /* fields 4 and 6 -> side-1 components 0 and 2 (the opposite road edge) */
+    mem[SECTION_LO_TBL + SECTION_SIDE1 + x]     = mem[TRACK_SEGMENT_LO + 4 + y];   /* $0978 <- $5904 */
+    mem[SECTION_LO_TBL + SECTION_SIDE1 + x + 2] = mem[TRACK_SEGMENT_LO + 6 + y];   /* $097A <- $5906 */
+    mem[SECTION_HI_TBL + SECTION_SIDE1 + x]     = mem[TRACK_SEGMENT_HI + 4 + y];   /* $0A78 <- $5304 */
+    mem[SECTION_HI_TBL + SECTION_SIDE1 + x + 2] = mem[TRACK_SEGMENT_HI + 6 + y];   /* $0A7A <- $5306 */
+
+    /* segment_dir_index from field-5 low byte (SMC $1248) */
+    if (mem[0x1248] == 0xB9) {                              /* unpatched: LDA $5905,Y */
+        segment_dir_index = mem[TRACK_SEGMENT_LO + 5 + y];
+    } else if (mem[0x1248] == 0x20) {                       /* per-circuit hook JSR */
+        uint16_t t = (uint16_t)(mem[0x1249] | (mem[0x124A] << 8));
+        if (t >= 0x5300 && t <= 0x5A25) { revs_track_hook(t); segment_dir_index = cpu.A; }
+        else { platform_smc_unhandled(0x1248, t); return; }
+    } else {
+        platform_smc_unhandled(0x1248, mem[0x1248]); return;
+    }
+
+    copy_section_height_to_side1();                         /* side-0 height -> side-1 (reads cpu.X) */
+}
+
+/* ---------------------------------------------------------------------------
    $150E  step_section_curve  (twin #144)   — was FUN_150e
    ---------------------------------------------------------------------------
    The section-CURVE stepper, a leaf of the FUN_12f7 road-builder cluster.  It writes one byte,

@@ -1011,6 +1011,11 @@ VALIDATE_FUNCS = {
     # a per-segment marker state machine (4 private zp cells) that writes section_curve[cursor];
     # scans the segment list for the next curve marker, then ramps toward it.  Calls nothing.
     0x150E,
+    # ⭐ TWIN #145 — load_section_from_segment ($122D, was FUN_122d).  Builds one live section's
+    # world geometry from its 8-byte track-file segment record: load_section_triple fills side-0's
+    # triple (fields 1..3), then fields 4,6 -> side-1 comps 0,2, field-5 low -> segment_dir_index
+    # (SMC $1248), and copy_section_height_to_side1 shares the height.  X/Y preserved.
+    0x122D,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
