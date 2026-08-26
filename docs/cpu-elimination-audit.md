@@ -70,7 +70,7 @@ caller and written at the code (V-escape rule + PHP-residue rule from the prior 
 | 5 | Sub-models / physics (`begin_spin_from_a`, `update_camera_and_drive_state`, `update_engine_revs`, `apply_driving_model`, `compute_car_angles`, `integrate_*`, `apply_drag_terms`, `update_grip_limits`, `rotate_*`, `stage_accum_delta`, `model_integrate_element`, `scale_by_track_gradient`, `apply_angle_term_at`, `rotate_state_pair`) | 16 | ✅ |
 | 6 | Objects / signs (`build_road_sign`, `write_object_slot`, `scale_shape_vectors`, `build_sign_origin`, `note_object_contact`, `store_object_flags`, `reject_object_slot`, `draw_track_object`, `plot_object`) | 9 | ✅ |
 | 7 | View pipeline (`fill_object_gap`, `plot_shape_edges`, `plot_view_src_line`, `mark_line_surfaces`, `fill_line_attr`, `fill_edge_column_run`, `column_gap_walk`, `surface_colour_at`, `view_paint_lines`, `edge_x_offscreen`, `shift_near_edge_points`, `emit_edge_width_offset`, `emit_edge_bearing`, `road_edge_walk`) | ~14 | ✅ |
-| 8 | Computational helpers still on `cpu` (`abs8`, `abs16_math`, `mul8_*`, `mul16_by_1_5`, `scale16_by_y`, `div16by8`, `horizon_half_width_at`, `road_edge_side`, `derive_endpoint`, `place_car_world_coords`, `place_player_in_section`, `road_edge_walk_subdivide`, `paint_lines_short`, …) | ~20 | ☐ |
+| 8 | Computational helpers still on `cpu` (`abs8`, `abs16_math`, `mul8_*`, `mul16_by_1_5`, `scale16_by_y`, `div16by8`, `horizon_half_width_at`, `road_edge_side`, `derive_endpoint`, `place_car_world_coords`, `place_player_in_section`, `road_edge_walk_subdivide`, `paint_lines_short`, …) | ~20 | ✅ |
 | 9 | **Seam relocation** — thin shims → `revs_native_seam.c`; shared header; Makefiles; seam doc | — | ☐ |
 
 ⚠ These groupings track the `validate_native.c` fixture groups; sub-commits split a group when it is
@@ -290,3 +290,24 @@ reconstructed in the shim); the shims relocate in cluster 9. Three catches:
   leaves A = the cell it `LDA`'d while the cpu-free core leaves entry A; the fixture declares A live on
   every non-abandon path, so it is masked only by the pinned stream. Whether A is truly dead there
   (caller reloads) is an open per-path-liveness question for the span fixture, independent of cluster 8.
+
+- **⚠⚠ A closed-form for an escaping flag is a trap — SIMULATE the loop instead.** `mul8_noinit`'s V
+  was first reconstructed with a closed form: `acc = (addend·(multiplier mod 2^k))>>8` at the top set
+  bit `k`, `V = overflow(acc + addend)`. It reproduced the PRODUCT for all 65536 pairs but the V bit
+  for only 65408 — the committed form even collapsed to `(acc^sum)>>7` (a bit-7-CHANGE test, not the
+  ADC overflow), reading V=1 for e.g. multiplier=1, addend=`$80` where the real last-add overflow is 0
+  (128 pairs). The exhaustive fixture caught it; the earlier "green" was a fixture that had not yet
+  gone exhaustive. **Fix: simulate the `$0C02-$0C46` 8-iteration shift-and-add byte for byte** (A, m,
+  C, and V updated exactly as the 6502 does) — the final ADC's V and the product both fall out, no
+  closed form to get subtly wrong. A math primitive's escaping flag is worth an exhaustive fixture AND
+  a faithful simulation, not an algebraic shortcut. Determinism stayed byte-identical: the driven race
+  path never reads this V (mul8_accum recomputes its own; the scale twins use the product only).
+
+**Cluster-8 status — the residual `cpu.` in these routines are all documented KEEPERS, not misses:**
+`scale16_by_y` (PHP/PLP parks the caller's sign on the stack, and the pushed byte is compared),
+`mul16_by_1_5` (PHA/PLA stack residue), `paint_lines_short` (cluster-7 flag-escape seams: the exit-C
+`CPX #3`, the `sbc_overflow` V, the `LDY math_hi` N/Z reload), `place_car_world_coords` (the
+object-queue tail calls transliterated generated routines — `FUN_2a5d`/`build_section_step_delta`/
+`FUN_2b0e` — with the register ABI they read), `abs16_math`/`neg16_math` (already-minimal ABI shims).
+`road_edge_side`/`derive_endpoint`/`road_edge_walk_subdivide` cores are cpu-free; their shims relocate
+in cluster 9. No computational core remains on `cpu`.
