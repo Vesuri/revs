@@ -996,6 +996,10 @@ VALIDATE_FUNCS = {
     # section_cursor to the car's cursor: section_cursor - $60, wrapped by +$78 if it went negative,
     # into the 0..$77 section ring.  Binary (D=0); the caller discards the exit flags.
     0x125A,
+    # ⭐ TWIN #141 — build_section_step_delta ($1442, was FUN_1442).  Sign-extends track_dir_0/1/2[Y]
+    # into three signed 16-bit deltas (lo in math_lo/math_hi/shared_temp_76, hi in point_delta_hi),
+    # negating each when track_direction is set.  Binary (D=0); callers discard the exit regs/flags.
+    0x1442,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

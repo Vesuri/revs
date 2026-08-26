@@ -10372,7 +10372,7 @@ void car_gap_tail(void)
 
    The source section is the byte cursor in Y, the destination the byte cursor in X (both index
    section_coord_lo/hi, 40 sections x 3 bytes, plus the two scratch slots at $FA/$FD).  The step
-   delta[i] is the signed 16-bit value FUN_1442 built for this section: its low bytes are the
+   delta[i] is the signed 16-bit value build_section_step_delta built for this section: its low bytes are the
    shared math window (math_lo, math_hi, shared_temp_76 at $74/$75/$76) and its high bytes are
    point_delta_hi[0..2] ($83/$84/$85).
 
@@ -10414,6 +10414,36 @@ void copy_section_height_to_side1(void)
     mem[SECTION_LO_TBL + SECTION_SIDE1 + x + 1] = mem[SECTION_LO_TBL + x + 1];
     cpu.A = mem[SECTION_HI_TBL + x + 1];                 /* $1253 LDA — dead at both callers */
     mem[SECTION_HI_TBL + SECTION_SIDE1 + x + 1] = cpu.A;
+}
+
+/* ---------------------------------------------------------------------------
+   $1442  build_section_step_delta  (twin #141)   — was FUN_1442
+   ---------------------------------------------------------------------------
+   Builds the signed 16-bit 3-component step delta that section_coord_add_delta then
+   integrates into a section's coordinate.  Sign-extends the track's three direction bytes
+   track_dir_0/1/2[Y] (ground plane c0/c2 scaled to |.|=$78, c1 the small gradient)
+   into 16-bit values, storing the low bytes in math_lo/math_hi/shared_temp_76 and
+   the high bytes in point_delta_hi[0..2].  When track_direction is set (running the
+   track backwards) each 16-bit component is two's-complement negated.  D=0 on this
+   path; the callers ($1335, $2A11) discard the exit registers/flags. */
+#define TRACK_DIR_0   0x5400u   /* track_dir_0[Y] — direction component 0 (ground plane) */
+#define TRACK_DIR_1   0x5500u   /* track_dir_1[Y] — component 1 (gradient) */
+#define TRACK_DIR_2   0x5600u   /* track_dir_2[Y] — component 2 (ground plane) */
+void build_section_step_delta(void)
+{
+    uint8_t y = cpu.Y;
+    int16_t d[3];
+    d[0] = (int16_t)(int8_t)mem[TRACK_DIR_0 + y];
+    d[1] = (int16_t)(int8_t)mem[TRACK_DIR_1 + y];
+    d[2] = (int16_t)(int8_t)mem[TRACK_DIR_2 + y];
+    if (track_direction != 0) {                 /* backwards: negate every component */
+        d[0] = (int16_t)-d[0];
+        d[1] = (int16_t)-d[1];
+        d[2] = (int16_t)-d[2];
+    }
+    math_lo               = (uint8_t)d[0];  mem[POINT_DELTA_HI + 0] = (uint8_t)(d[0] >> 8);
+    math_hi               = (uint8_t)d[1];  mem[POINT_DELTA_HI + 1] = (uint8_t)(d[1] >> 8);
+    shared_temp_76        = (uint8_t)d[2];  mem[POINT_DELTA_HI + 2] = (uint8_t)(d[2] >> 8);
 }
 
 /* ---------------------------------------------------------------------------
@@ -10463,7 +10493,7 @@ void derive_car_section_cursor(void)
    unhandled case, faithfully reproduced.
 
    The tail (from $29F4) is the object queue: FUN_2a5d dispatches on object_dist_hi, and for a
-   near car ahead of car_behind the AI branch runs FUN_1442 / FUN_2b0e / section_coord_add_delta / FUN_2a5f.
+   near car ahead of car_behind the AI branch runs build_section_step_delta / FUN_2b0e / section_coord_add_delta / FUN_2a5f.
    Those are the real generated routines, called with the registers the transliteration set, so
    they cancel in the differential — the twin's job is the two loops and the coordinate adds.
    --------------------------------------------------------------------------- */
@@ -10584,16 +10614,16 @@ void place_car_world_coords(void)
         return;
     }
     if (mem[0x001D] != car_behind) { cpu.X = saved_slot_index; return; }   /* $1D: queued in rename.md */
-    cpu.A = mem[CAR_FLAGS_SHAPE + cpu.X];                        /* $2A07 LDA $018C,X — FUN_1442 reads A */
+    cpu.A = mem[CAR_FLAGS_SHAPE + cpu.X];                        /* $2A07 LDA $018C,X */
     if (!(cpu.A & 0x80))                                         /* BPL: not yet flagged */
         mem[CAR_FLAGS_SHAPE + cpu.X]--;                          /* DEC */
 
-    /* FUN_1442 also reads the flags the tail leaves: C from the $1D==car_behind CMP (equal ⇒ set),
-       N/Z from the LDY soi immediately before it. */
+    /* build_section_step_delta ($1442) reads only Y (the segment index); the C/N/Z the tail
+       leaves are set here for the calls that follow it down this branch. */
     cpu.C = 1;
     cpu.Y = soi;                                                 /* $2A0F LDY $0C */
     cpu.N = (soi & 0x80) != 0; cpu.Z = (soi == 0);
-    FUN_1442();
+    build_section_step_delta();
     FUN_2b0e();
     cpu.Y = 0xFD; cpu.X = 0xFA; section_coord_add_delta();
     FUN_2b0e();

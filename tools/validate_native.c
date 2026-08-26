@@ -4049,6 +4049,7 @@ void car_gap_tail(void);                 void car_gap_tail__t6502(void);
 void section_coord_add_delta(void);      void section_coord_add_delta__t6502(void);
 void copy_section_height_to_side1(void); void copy_section_height_to_side1__t6502(void);
 void derive_car_section_cursor(void); void derive_car_section_cursor__t6502(void);
+void build_section_step_delta(void); void build_section_step_delta__t6502(void);
 
 static int test_late_misc_trees(void)
 {
@@ -4059,7 +4060,7 @@ static int test_late_misc_trees(void)
     if (scale < 1) scale = 1;
 
     struct { const char* name; void (*nat)(void); void (*ref)(void); unsigned mask; int cases; }
-      list[14] = {
+      list[15] = {
         { "scale_wing_settings",     scale_wing_settings,     scale_wing_settings__t6502,     LIVE_NONE, 2000 },
         { "compute_segment_scale",   compute_segment_scale,   compute_segment_scale__t6502,   LIVE_NONE, 3000 },
         { "section_angle_curve",     section_angle_curve,     section_angle_curve__t6502,     LIVE_A,    2000 },
@@ -4074,6 +4075,7 @@ static int test_late_misc_trees(void)
         { "section_coord_add_delta",     section_coord_add_delta,     section_coord_add_delta__t6502, LIVE_NONE, 5000 },
         { "copy_section_height_to_side1", copy_section_height_to_side1, copy_section_height_to_side1__t6502, LIVE_NONE, 3000 },
         { "derive_car_section_cursor",   derive_car_section_cursor,   derive_car_section_cursor__t6502, LIVE_NONE, 3000 },
+        { "build_section_step_delta",    build_section_step_delta,    build_section_step_delta__t6502, LIVE_NONE, 4000 },
       };
     static const uint16_t mathIgnore[] = { 0x0074, 0x0075 };   /* mul8/abs16 scratch */
     static const uint16_t gapIgnore[]  = { 0x01FF };           /* car_gap_tail's PHP/PLP stack byte */
@@ -4082,12 +4084,12 @@ static int test_late_misc_trees(void)
        so only the mul8 scratch needs ignoring — the PHA slots are compared. */
     static const uint16_t contIgnore[]  = { 0x0074, 0x0075, 0x01FF };  /* + the oracle's PHP stack byte */
 
-    for (i = 0; i < 14; i++) register_fixture(list[i].name);
+    for (i = 0; i < 15; i++) register_fixture(list[i].name);
 
     setenv("REVS_SMC_CONTINUE", "1", 1);
     unsigned long smcBefore = g_smcUnhandled;
 
-    for (i = 0; i < 14; i++) {
+    for (i = 0; i < 15; i++) {
         int cases   = list[i].cases * scale;
         int contact = 0, spun = 0, floored = 0, credited = 0, carried = 0;
         int smcArm = 0, bodyArm = 0, decimal = 0, diffArm = 0;
@@ -4183,6 +4185,12 @@ static int test_late_misc_trees(void)
                         Full 0..$FF range exercises both the wrap and no-wrap arms. */
                 pre[0x0024] = (uint8_t)xs();
                 break;
+            case 14: /* build_section_step_delta ($1442): Y indexes track_dir_0/1/2 (fill_random
+                        supplies the bytes); track_direction picks the negate vs no-negate arm. */
+                c.Y = (uint8_t)xs();
+                pre[0x0025] = (uint8_t)((xs() & 1) ? (1 + xs() % 255) : 0);  /* track_direction */
+                if (pre[0x0025]) diffArm++;
+                break;
             default: break;
             }
 
@@ -4205,6 +4213,7 @@ static int test_late_misc_trees(void)
         if (i == 7 && !bodyArm)              vac = 1;   /* real-car slot reached */
         if (i == 8 && (!contact || !spun || !floored)) vac = 1;
         if ((i == 4 || i == 7) && !decimal)  vac = 1;   /* D really varied */
+        if (i == 14 && !diffArm)             vac = 1;   /* the negate arm was reached */
         if (vac) { printf("[VACUOUS] %s\n", list[i].name); fail++; }
 
         printf("%-24s %7d cases, mismatch above must be 0  %s%s\n",
