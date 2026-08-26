@@ -4055,6 +4055,7 @@ void advance_dir_on_segment_flag(void); void advance_dir_on_segment_flag__t6502(
 void step_section_curve(void);      void step_section_curve__t6502(void);
 void load_section_from_segment(void); void load_section_from_segment__t6502(void);
 void cross_section_boundary(void);  void cross_section_boundary__t6502(void);
+void build_road_section(void);      void build_road_section__t6502(void);
 
 static int test_late_misc_trees(void)
 {
@@ -4065,7 +4066,7 @@ static int test_late_misc_trees(void)
     if (scale < 1) scale = 1;
 
     struct { const char* name; void (*nat)(void); void (*ref)(void); unsigned mask; int cases; }
-      list[20] = {
+      list[21] = {
         { "scale_wing_settings",     scale_wing_settings,     scale_wing_settings__t6502,     LIVE_NONE, 2000 },
         { "compute_segment_scale",   compute_segment_scale,   compute_segment_scale__t6502,   LIVE_NONE, 3000 },
         { "section_angle_curve",     section_angle_curve,     section_angle_curve__t6502,     LIVE_A,    2000 },
@@ -4086,6 +4087,7 @@ static int test_late_misc_trees(void)
         { "step_section_curve",          step_section_curve,          step_section_curve__t6502,      LIVE_NONE, 5000 },
         { "load_section_from_segment",   load_section_from_segment,   load_section_from_segment__t6502, LIVE_NONE, 5000 },
         { "cross_section_boundary",      cross_section_boundary,      cross_section_boundary__t6502,   LIVE_NONE, 5000 },
+        { "build_road_section",          build_road_section,          build_road_section__t6502,       LIVE_NONE, 8000 },
       };
     static const uint16_t mathIgnore[] = { 0x0074, 0x0075 };   /* mul8/abs16 scratch */
     static const uint16_t gapIgnore[]  = { 0x01FF };           /* car_gap_tail's PHP/PLP stack byte */
@@ -4094,12 +4096,12 @@ static int test_late_misc_trees(void)
        so only the mul8 scratch needs ignoring — the PHA slots are compared. */
     static const uint16_t contIgnore[]  = { 0x0074, 0x0075, 0x01FF };  /* + the oracle's PHP stack byte */
 
-    for (i = 0; i < 20; i++) register_fixture(list[i].name);
+    for (i = 0; i < 21; i++) register_fixture(list[i].name);
 
     setenv("REVS_SMC_CONTINUE", "1", 1);
     unsigned long smcBefore = g_smcUnhandled;
 
-    for (i = 0; i < 20; i++) {
+    for (i = 0; i < 21; i++) {
         int cases   = list[i].cases * scale;
         int contact = 0, spun = 0, floored = 0, credited = 0, carried = 0;
         int smcArm = 0, bodyArm = 0, decimal = 0, diffArm = 0;
@@ -4111,6 +4113,7 @@ static int test_late_misc_trees(void)
         else if (i == 5)   set_ignore(mathIgnore, 2);   /* mul8 scratch; PHA slots are compared */
         else if (i == 8)   set_ignore(contIgnore, 3);   /* mul8 scratch + PHP stack byte */
         else if (i == 10)  set_ignore(gapIgnore, 1);    /* PHP/PLP stack byte only ($74/$75 are OUTPUTS) */
+        else if (i == 20)  set_ignore(gapIgnore, 1);    /* build_road_section's PHP/PLP byte at $01FF */
         else               set_ignore(useIgnore ? mathIgnore : 0, useIgnore ? 2 : 0);
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
@@ -4310,6 +4313,53 @@ static int test_late_misc_trees(void)
                     contact++;
                 }
                 break;
+            case 20: /* build_road_section ($12F7): the road builder.  Steer the four control paths
+                        (fwd+boundary skips the build block; fwd/bwd + no-boundary run it) plus the
+                        SMC $13C9 else-arm trap.  A boundary is a track_pos_advance/retreat carry:
+                        forward crosses when seg_offset+1 >= segment_len; backward when offset == 0. */
+                {
+                    uint8_t cnt8 = (uint8_t)((1 + xs() % 31) * 8);  /* segment_count_x8 (mult of 8) */
+                    pre[0x59FA] = cnt8;
+                    pre[0x59FB] = (uint8_t)(1 + xs() % 40);         /* track_dir_count */
+                    pre[0x59FC] = (uint8_t)xs();                    /* lap_length lo/hi (nonzero) */
+                    pre[0x59FD] = (uint8_t)(1 + xs() % 0x7F);
+                    uint8_t seg = (uint8_t)((xs() % (cnt8 / 8)) * 8);
+                    pre[0x06FF] = seg;                              /* player_car_segment */
+                    pre[0x0024] = (uint8_t)(xs() % 0x75);           /* section_cursor (pre +3 wrap) */
+                    pre[0x0001] = (uint8_t)xs();                    /* cur_segment_flags */
+                    pre[0x0002] = (uint8_t)(xs() % pre[0x59FB]);    /* segment_dir_index */
+                    pre[0x006F] = (uint8_t)(xs() % 20);             /* player_car */
+                    /* SMC sites, all unpatched (Silverstone) by default */
+                    pre[0x12FB] = 0x18; pre[0x12FC] = 0x69;         /* cursor advance: CLC; ADC #3 */
+                    pre[0x1310] = 0x29;                             /* lap marker: AND #$F8 */
+                    pre[0x1248] = 0xB9;                             /* load_section: LDA $5905,Y */
+                    pre[0x1289] = 0x20; pre[0x128A]=0xE0; pre[0x128B]=0x13; /* cross bwd: step dir */
+                    pre[0x13C9] = 0x20; pre[0x13CA]=0xDA; pre[0x13CB]=0x13; /* dir hook: $13DA */
+
+                    int mode = (int)(xs() % 4);
+                    if (mode == 0) {            /* forward + boundary (skips the build block) */
+                        pre[0x0025] = (uint8_t)(xs() & 0x7F);       /* fwd */
+                        pre[0x5907 + seg] = 1;                      /* segment_len = 1 -> always cross */
+                        pre[0x0897] = (uint8_t)xs();
+                        floored++;
+                    } else if (mode == 1) {     /* forward + no boundary (runs the block) */
+                        pre[0x0025] = (uint8_t)(xs() & 0x7F);       /* fwd */
+                        pre[0x5907 + seg] = 0xFF;                   /* long segment */
+                        pre[0x0897] = (uint8_t)(xs() % 0x40);       /* small offset */
+                        contact++;
+                    } else if (mode == 2) {     /* backward + boundary */
+                        pre[0x0025] = (uint8_t)(0x80 | (xs() & 0x7F));
+                        pre[0x0897] = 0;                            /* offset 0 -> cross */
+                        spun++;
+                    } else {                    /* backward + no boundary */
+                        pre[0x0025] = (uint8_t)(0x80 | (xs() & 0x7F));
+                        pre[0x0897] = (uint8_t)(1 + xs() % 0x40);
+                        spun++;
+                    }
+                    /* SMC $13C9 else-arm trap on a slice of the block-running modes */
+                    if (mode != 0 && (xs() % 12) == 0) { pre[0x13C9] = 0x00; smcArm++; }
+                }
+                break;
             default: break;
             }
 
@@ -4338,6 +4388,7 @@ static int test_late_misc_trees(void)
         if (i == 17 && (!smcArm || !contact || !spun || !floored)) vac = 1;  /* scan + all 3 ramp outcomes */
         if (i == 18 && !smcArm)              vac = 1;   /* SMC else-arm trap reached */
         if (i == 19 && (!contact || !spun || !smcArm)) vac = 1;  /* fwd + bwd + SMC trap arms */
+        if (i == 20 && (!contact || !spun || !floored || !smcArm)) vac = 1;  /* all 4 paths + trap */
         if (vac) { printf("[VACUOUS] %s\n", list[i].name); fail++; }
 
         printf("%-24s %7d cases, mismatch above must be 0  %s%s\n",

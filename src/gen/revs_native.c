@@ -10503,6 +10503,145 @@ void derive_car_section_cursor(void)
 }
 
 /* ---------------------------------------------------------------------------
+   $12F7  build_road_section  (twin #147)   — was FUN_12f7
+   ---------------------------------------------------------------------------
+   THE ROAD BUILDER.  Builds one live road section per call; build_road_section's callers loop it
+   over shared_counter_42 to (re)generate the whole track walk, which is the bulk of the off-track
+   freeze.  Each call:
+
+     1. advance the walk cursor by three bytes (section_cursor += 3, wrap at $78), remembering the
+        previous cursor in section_cursor_prev;
+     2. move the player's car one segment.  Forward (track_direction bit7 clear) also arms the
+        finish-line lap credit when the car reaches the lap marker; backward latches the segment
+        being left into retreat_segment first.  Either move can report a crossed section boundary
+        (carry), which cross_section_boundary commits — and a FORWARD boundary skips the build
+        block entirely (it was already built by the crossing);
+     3. build this section's flag byte from cur_segment_flags gated by player_seg_offset and the
+        segment's field-7 marker byte;
+     4. integrate the direction step into the section's own coordinates (section_coord_add_delta),
+        share the height across to side 1, then add the scaled across-track normal ($5700/$5800
+        indexed by segment_dir_index, x4) to build side 1's components 0 and 2;
+     5. run the per-circuit direction-index hook (SMC $13C9), store section_dir_index[cursor], and
+        derive the car's cursor + the section curve.
+
+   ⚠ $5700 / $5800 are ModifyGameCode's addresses but, at RACE time, their second tenant is the
+   across-track normal pair (docs/rename.md); referenced here by that race-time meaning.
+   No flags/registers escape (LIVE_NONE).  The oracle's PHP/PLP byte at $01FF is ignored. */
+#define TRACK_NORMAL_X  0x5700u   /* $5700,dir — across-track normal, X component (race-time tenant) */
+#define TRACK_NORMAL_Y  0x5800u   /* $5800,dir — across-track normal, Y component (race-time tenant) */
+
+void build_road_section(void)
+{
+    /* --- 1. advance the walk cursor by one section (three bytes), wrap at $78 --- */
+    section_cursor_prev = section_cursor;
+    uint8_t nextCursor;
+    if (mem[0x12FB] == 0x18 && mem[0x12FC] == 0x69) {       /* unpatched: CLC; ADC #3 */
+        nextCursor = (uint8_t)(section_cursor + 3);
+    } else if (mem[0x12FB] == 0x20) {                       /* per-circuit hook */
+        uint16_t t = (uint16_t)(mem[0x12FC] | (mem[0x12FD] << 8));
+        if (t >= 0x5300 && t <= 0x5A25) { revs_track_hook(t); nextCursor = cpu.A; }
+        else { platform_smc_unhandled(0x12FB, t); return; }
+    } else { platform_smc_unhandled(0x12FB, mem[0x12FB]); return; }
+    if (nextCursor >= 0x78) nextCursor = 0;
+    section_cursor = nextCursor;
+
+    /* --- 2. step the car one segment; commit a crossed boundary --- */
+    int forwardBoundary = 0;
+    cpu.X = 0x17;                                           /* the player's car slot */
+    if (!(track_direction & 0x80)) {
+        /* forward: arm the lap credit if this section is the finish marker */
+        uint8_t marker = (uint8_t)(segment_count_x8 >> 1);
+        if (mem[0x1310] == 0x29)      marker &= 0xF8;       /* unpatched: AND #$F8 */
+        else if (mem[0x1310] == 0xA9) marker = mem[0x1311];/* patched: LDA #imm */
+        else { platform_smc_unhandled(0x1310, mem[0x1310]); return; }
+        if (marker == player_car_segment) lap_credit_armed = 1;
+
+        cpu.X = 0x17;
+        track_pos_advance();
+        if (cpu.C) { cross_section_boundary(); forwardBoundary = 1; }
+    } else {
+        /* backward: remember the segment being left, then retreat */
+        retreat_segment = player_car_segment;
+        cpu.X = 0x17;
+        track_pos_retreat();
+        if (cpu.C) cross_section_boundary();
+    }
+
+    if (!forwardBoundary) {
+        /* --- 3. build this section's flag byte --- */
+        cpu.Y = segment_dir_index;
+        build_section_step_delta();
+
+        uint8_t x  = section_cursor;
+        uint8_t cf = cur_segment_flags;
+        int bit0   = cf & 0x01;
+
+        uint8_t base = cf;
+        if (!bit0) {                                        /* bit0 clear: maybe clear bits 1,2 */
+            uint8_t off = player_seg_offset;
+            if (off == 0 || off >= 0x0A) base &= 0xF9;      /* off outside 1..9 */
+        }
+        shared_temp_77 = base;
+
+        uint8_t fieldLo7 = mem[TRACK_SEGMENT_LO + 7 + player_car_segment];  /* field-7 low byte */
+        int clr34 = 0, clr5 = 0;                            /* which extra bits to clear */
+        if (bit0) {
+            uint8_t y2 = (uint8_t)(fieldLo7 >> 1);
+            if (y2 != player_seg_offset) { clr34 = 1; clr5 = 1; }
+        } else {
+            uint8_t y2 = (uint8_t)(fieldLo7 - player_seg_offset);
+            if (y2 == 0x07)                        { /* keep */ }
+            else if (y2 == 0x0E || y2 == 0x15)     { clr5 = 1; }
+            else                                   { clr34 = 1; clr5 = 1; }
+        }
+        uint8_t r = base;
+        if (clr34) r &= 0xE7;                               /* clear bits 3,4 */
+        if (clr5)  r &= 0xDF;                               /* clear bit 5 */
+        r &= cf;
+        mem[SECTION_FLAGS + x] = r;
+
+        /* --- 4. integrate the step and build side-1's ground-plane pair --- */
+        cpu.X = section_cursor;
+        cpu.Y = section_cursor_prev;
+        section_coord_add_delta();                          /* section N's point from N-1 + step */
+        cpu.X = section_cursor;
+        copy_section_height_to_side1();                     /* share the height across */
+
+        uint8_t dir = segment_dir_index;
+        x = section_cursor;
+
+        /* side-1 comp 0 = side-0 comp 0 + across-track normal X, scaled x4 (sign-extended) */
+        uint16_t nx = (uint16_t)((int16_t)(int8_t)mem[TRACK_NORMAL_X + dir] << 2);
+        mem[POINT_DELTA_HI + 0] = (uint8_t)(nx >> 8);       /* faithful scratch residue */
+        uint16_t c0 = (uint16_t)(mem[SECTION_LO_TBL + x] | (mem[SECTION_HI_TBL + x] << 8));
+        uint16_t s0 = (uint16_t)(c0 + nx);
+        mem[SECTION_LO_TBL + SECTION_SIDE1 + x] = (uint8_t)s0;
+        mem[SECTION_HI_TBL + SECTION_SIDE1 + x] = (uint8_t)(s0 >> 8);
+
+        /* side-1 comp 2 = side-0 comp 2 + across-track normal Y, scaled x4 */
+        uint16_t ny = (uint16_t)((int16_t)(int8_t)mem[TRACK_NORMAL_Y + dir] << 2);
+        mem[POINT_DELTA_HI + 2] = (uint8_t)(ny >> 8);       /* faithful scratch residue */
+        uint16_t c2 = (uint16_t)(mem[SECTION_LO_TBL + 2 + x] | (mem[SECTION_HI_TBL + 2 + x] << 8));
+        uint16_t s2 = (uint16_t)(c2 + ny);
+        mem[SECTION_LO_TBL + SECTION_SIDE1 + 2 + x] = (uint8_t)s2;
+        mem[SECTION_HI_TBL + SECTION_SIDE1 + 2 + x] = (uint8_t)(s2 >> 8);
+
+        /* --- 5a. per-circuit direction-index hook (SMC $13C9) --- */
+        if (mem[0x13C9] == 0x20) {
+            uint16_t t = (uint16_t)(mem[0x13CA] | (mem[0x13CB] << 8));
+            if (t == 0x13DA) { advance_dir_on_segment_flag(); }
+            else if (t >= 0x5300 && t <= 0x5A25) { revs_track_hook(t); }
+            else { platform_smc_unhandled(0x13C9, t); return; }
+        } else { platform_smc_unhandled(0x13C9, mem[0x13C9]); return; }
+    }
+
+    /* --- 5b. store the direction index and derive the car cursor + section curve --- */
+    mem[SECTION_DIR_IX + section_cursor] = segment_dir_index;
+    derive_car_section_cursor();
+    step_section_curve();
+}
+
+/* ---------------------------------------------------------------------------
    $1267  cross_section_boundary  (twin #146)   — was FUN_1267
    ---------------------------------------------------------------------------
    Commits the road walk crossing into a new section (called by FUN_12f7 after track_pos_advance /

@@ -1021,6 +1021,12 @@ VALIDATE_FUNCS = {
     # (forward Y=player_car_segment; backward Y=retreat_segment + SMC $1289 dir-index step), sets
     # near_edge_shift, copies cur_segment_flags, zeroes section_flags[cursor].
     0x1267,
+    # ⭐ TWIN #147 — build_road_section ($12F7, was FUN_12f7).  THE ROAD BUILDER, and the root of
+    # the freeze subtree's inner loop: advances the walk cursor, moves the car one segment
+    # (track_pos_advance/retreat, commit via cross_section_boundary), builds the section flag byte,
+    # integrates coordinates, adds the scaled across-track normal, runs the SMC $13C9 dir-index
+    # hook, stores section_dir_index and derives the car cursor + section curve.  All callees native.
+    0x12F7,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
