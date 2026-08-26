@@ -1659,6 +1659,8 @@ void race_main_loop(void)
 #define EDGE_HALF        0x0028u   /* 40 — the stride between the two road sides' halves */
 #define SECTION_LO_TBL   0x0900u   /* section_coord_lo — 40 sections x 3 bytes, + two scratch slots */
 #define SECTION_HI_TBL   0x0A00u   /* section_coord_hi */
+#define SECTION_SIDE1    0x0078u   /* +$78: the OPPOSITE road edge's parallel section list
+                                      (section byte cursor 0..$77 for side 0, +$78 for side 1) */
 #define SECTION_MID      0x00FAu   /*   ...the triple road_edge_walk interpolates midpoints into */
 #define SECTION_NEAR     0x00FDu   /*   ...and the one road_edge_start stages the near point in */
 #define WALK_STEP_TBL    0x3DD0u   /* edge_walk_step_tbl — 18 entries, one per emitted point */
@@ -10397,6 +10399,21 @@ void section_coord_add_delta(void)
     const uint8_t dhi[3] = { mem[POINT_DELTA_HI + 0], mem[POINT_DELTA_HI + 1],
                              mem[POINT_DELTA_HI + 2] };
     section_coord_add_delta_core(cpu.X, cpu.Y, dlo, dhi);
+}
+
+/* ---------------------------------------------------------------------------
+   $124D  copy_section_height_to_side1  (twin #139)   — was FUN_124d
+   ---------------------------------------------------------------------------
+   The road builder keeps two coordinate lists per section: side 0 at the section byte cursor X,
+   side 1 (the opposite road edge) at cursor + SECTION_SIDE1.  FUN_12f7 / FUN_122d build side 1's
+   ground-plane pair (components 0 and 2) as side 0 plus the across-track normal, but the two
+   edges sit at the same HEIGHT, so component 1 is just copied across here (both bytes). */
+void copy_section_height_to_side1(void)
+{
+    uint8_t x = cpu.X;
+    mem[SECTION_LO_TBL + SECTION_SIDE1 + x + 1] = mem[SECTION_LO_TBL + x + 1];
+    cpu.A = mem[SECTION_HI_TBL + x + 1];                 /* $1253 LDA — dead at both callers */
+    mem[SECTION_HI_TBL + SECTION_SIDE1 + x + 1] = cpu.A;
 }
 
 /* ---------------------------------------------------------------------------

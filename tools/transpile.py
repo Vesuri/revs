@@ -987,6 +987,11 @@ VALIDATE_FUNCS = {
     # coordinate (dest[X] = src[Y] + delta).  Byte-pair carry chains -> plain uint16_t adds; no
     # escaping flags (both callers overwrite A/flags immediately).  No BCD (D=0 on this path).
     0x0BCC,
+    # ⭐ TWIN #139 — copy_section_height_to_side1 ($124D, was FUN_124d).  The road builder keeps
+    # two coordinate lists per section — side 0 at the section byte cursor, side 1 (the opposite
+    # edge) at cursor+$78.  This copies component 1 (the shared HEIGHT) from side 0 to side 1; the
+    # ground-plane pair is built elsewhere.  A two-byte copy, no escaping flags.
+    0x124D,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

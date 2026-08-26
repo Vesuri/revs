@@ -4047,6 +4047,7 @@ void process_car_contact(void);     void process_car_contact__t6502(void);
 void car_gap(void);                 void car_gap__t6502(void);
 void car_gap_tail(void);                 void car_gap_tail__t6502(void);
 void section_coord_add_delta(void);      void section_coord_add_delta__t6502(void);
+void copy_section_height_to_side1(void); void copy_section_height_to_side1__t6502(void);
 
 static int test_late_misc_trees(void)
 {
@@ -4057,7 +4058,7 @@ static int test_late_misc_trees(void)
     if (scale < 1) scale = 1;
 
     struct { const char* name; void (*nat)(void); void (*ref)(void); unsigned mask; int cases; }
-      list[12] = {
+      list[13] = {
         { "scale_wing_settings",     scale_wing_settings,     scale_wing_settings__t6502,     LIVE_NONE, 2000 },
         { "compute_segment_scale",   compute_segment_scale,   compute_segment_scale__t6502,   LIVE_NONE, 3000 },
         { "section_angle_curve",     section_angle_curve,     section_angle_curve__t6502,     LIVE_A,    2000 },
@@ -4070,6 +4071,7 @@ static int test_late_misc_trees(void)
         { "car_gap",                 car_gap,                 car_gap__t6502,                 LIVE_A | LIVE_C | LIVE_N, 3000 },
         { "car_gap_tail",                car_gap_tail,                car_gap_tail__t6502,            LIVE_A | LIVE_C | LIVE_N, 5000 },
         { "section_coord_add_delta",     section_coord_add_delta,     section_coord_add_delta__t6502, LIVE_NONE, 5000 },
+        { "copy_section_height_to_side1", copy_section_height_to_side1, copy_section_height_to_side1__t6502, LIVE_NONE, 3000 },
       };
     static const uint16_t mathIgnore[] = { 0x0074, 0x0075 };   /* mul8/abs16 scratch */
     static const uint16_t gapIgnore[]  = { 0x01FF };           /* car_gap_tail's PHP/PLP stack byte */
@@ -4078,12 +4080,12 @@ static int test_late_misc_trees(void)
        so only the mul8 scratch needs ignoring — the PHA slots are compared. */
     static const uint16_t contIgnore[]  = { 0x0074, 0x0075, 0x01FF };  /* + the oracle's PHP stack byte */
 
-    for (i = 0; i < 12; i++) register_fixture(list[i].name);
+    for (i = 0; i < 13; i++) register_fixture(list[i].name);
 
     setenv("REVS_SMC_CONTINUE", "1", 1);
     unsigned long smcBefore = g_smcUnhandled;
 
-    for (i = 0; i < 12; i++) {
+    for (i = 0; i < 13; i++) {
         int cases   = list[i].cases * scale;
         int contact = 0, spun = 0, floored = 0, credited = 0, carried = 0;
         int smcArm = 0, bodyArm = 0, decimal = 0, diffArm = 0;
@@ -4169,6 +4171,11 @@ static int test_late_misc_trees(void)
                     c.X = slot[xs() % 3];
                     c.Y = 0xFD;
                 }
+                break;
+            case 12: /* copy_section_height_to_side1 ($124D): X is a section byte cursor.
+                        Copies the shared HEIGHT component (comp 1) from side 0 to side 1.
+                        Full-random section tables via fill_random exercise every byte value. */
+                c.X = (uint8_t)(xs() % 0x78);
                 break;
             default: break;
             }
