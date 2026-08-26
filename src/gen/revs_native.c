@@ -10417,6 +10417,29 @@ void copy_section_height_to_side1(void)
 }
 
 /* ---------------------------------------------------------------------------
+   $13E0  step_segment_dir_index  (twin #142)   — was FUN_13e0
+   ---------------------------------------------------------------------------
+   Advances segment_dir_index one track position along the direction tables,
+   wrapping at track_dir_count, in whichever sense track_direction's bit 7 gives:
+   forward is idx+1 rolling to 0 at the count, backward is idx-1 rolling 0 to
+   count-1.  Tail-calls FUN_13fa (a Silverstone RTS no-op the expansion circuits
+   patch).  Preserves X; the callers discard the exit flags. */
+void step_segment_dir_index(void)
+{
+    uint8_t count = track_dir_count;
+    uint8_t idx   = segment_dir_index;
+    if (track_direction & 0x80) {           /* backwards */
+        if (idx == 0) idx = count;          /* wrap 0 -> count, then... */
+        idx--;                              /* ...count-1 (or plain idx-1) */
+    } else {                                /* forwards */
+        idx++;
+        if (idx == count) idx = 0;          /* wrap count -> 0 */
+    }
+    segment_dir_index = idx;
+    FUN_13fa();                             /* per-circuit hook; RTS on Silverstone */
+}
+
+/* ---------------------------------------------------------------------------
    $1442  build_section_step_delta  (twin #141)   — was FUN_1442
    ---------------------------------------------------------------------------
    Builds the signed 16-bit 3-component step delta that section_coord_add_delta then

@@ -1000,6 +1000,10 @@ VALIDATE_FUNCS = {
     # into three signed 16-bit deltas (lo in math_lo/math_hi/shared_temp_76, hi in point_delta_hi),
     # negating each when track_direction is set.  Binary (D=0); callers discard the exit regs/flags.
     0x1442,
+    # ⭐ TWIN #142 — step_segment_dir_index ($13E0, was FUN_13e0).  Advances segment_dir_index one
+    # track position, wrapping at track_dir_count, direction by track_direction bit 7.  Pure index
+    # arithmetic; tail-calls the FUN_13fa per-circuit hook (RTS on Silverstone).
+    0x13E0,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
