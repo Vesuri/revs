@@ -1051,6 +1051,20 @@ VALIDATE_FUNCS = {
 # docs/validation-harness.md §a driver with no fixture.
 NATIVE_FUNCS = {
     0x16DC,   # race_main_loop — see above
+    # ⭐ STAGE 5 (user, 2026-08-26) — full_track_scan_rebuild ($109B, was FUN_109b), the root of
+    # the crash-freeze subtree: on a crash/session reset it walks the WHOLE circuit, stepping all
+    # 20 cars around the ring (track_pos_advance/retreat), re-anchoring car $17, then rebuilds
+    # every section's geometry via build_road_section.  A DRIVER, not a leaf: its loops terminate
+    # on natural game-state boundaries — the field advanced until car 0's distance wraps to 0, and
+    # car $17 advanced until car_gap_tail returns exactly $20 — not on bounded inputs, so no
+    # randomised validate fixture can drive it to a defined exit.  Its callees are all native now,
+    # so a fixture would only test IT, but it cannot be bounded from random memory.
+    # ⭐ WHAT GATES IT: `make determinism-crash` — a STRAIGHT_TO_RACE + HOLD_THROTTLE run that
+    # actually leaves the track and crashes, so this routine runs SEVEN times before the frame-1500
+    # dump (parked/drive-300 exercise it 0/2×).  The gate was sabotage-proven: a one-byte change to
+    # this routine's per-car write diverges the 64 KB dump (2026-08-26).  It covers the per-crash
+    # path and provably not any arm a HOLD_THROTTLE crash never reaches.
+    0x109B,
 }
 
 # Every address whose transliteration is emitted under the `__t6502` suffix, whether or not a

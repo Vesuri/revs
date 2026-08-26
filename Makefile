@@ -179,7 +179,8 @@ TARGET   := build/revs
         tracks tracks-gen track-fixtures track-smc track-smc-check track-run \
         trackmenu trackmenu-fixture titlescreen \
         sound sound-fixture sound-fixture-race determinism determinism-record fbwrites \
-        determinism-drive determinism-drive-record
+        determinism-drive determinism-drive-record \
+        determinism-crash determinism-crash-record
 
 all: $(TARGET)
 
@@ -269,6 +270,54 @@ determinism-drive:
 	   echo "determinism-drive: 64K byte-identical (stack scratch aside) at frame $(DET_DRIVE_FRAME), car MOVING — PASS"; \
 	 else \
 	   echo "determinism-drive: FAIL — the driving trajectory diverged"; exit 1; \
+	 fi
+
+# ⭐⭐ …AND A THIRD TRAJECTORY, THROUGH THE CRASH.  determinism-drive above dumps at frame 300 —
+# the car is still ON the track there.  This one holds the throttle straight until the car leaves
+# the circuit, CRASHES, and the off-line full-track scan/redraw driver (FUN_109b, the freeze
+# subtree) runs, resets the car, and it crashes AGAIN: by frame 1500 FUN_109b has executed SEVEN
+# times (MEASURED 2026-08-26; parked/drive-300 exercise it 0/2× only).  This is the gate for the
+# freeze-subtree conversion, because FUN_109b is a NATIVE_FUNCS driver (transpile.py) with no
+# randomised validate fixture — its oracle's first act is to run the rest of the engine — so a
+# 64K byte-diff of a trajectory that actually crashes is the only thing that covers its arms.
+# Same build as determinism-drive (STRAIGHT_TO_RACE + HOLD_THROTTLE); only the frame differs.
+# ⚠ Like determinism-drive it cleans/builds/runs then rebuilds the default, for the same
+# no-build-flag-tracking reason; two full builds is the price of not comparing against a stale one.
+DET_CRASH_REF   := tmp/determinism/ref_crash.mem
+DET_CRASH_RUN   := tmp/determinism/crash
+DET_CRASH_FRAME ?= 1500
+
+determinism-crash-record:
+	@$(MAKE) --no-print-directory clean >/dev/null
+	@$(MAKE) --no-print-directory STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 $(TARGET) >/dev/null
+	@mkdir -p tmp/determinism
+	@rm -f $(DET_CRASH_RUN)*
+	REVS_FIXED_RNG=1 REVS_SCREEN_DUMP=$(DET_CRASH_RUN) \
+	  REVS_SCREEN_FRAME=$(DET_CRASH_FRAME) REVS_MEM_DUMP=1 REVS_QUIT_AFTER_DUMP=1 \
+	  ./$(TARGET) >/dev/null 2>&1
+	@cp $(DET_CRASH_RUN).mem.$(DET_CRASH_FRAME) $(DET_CRASH_REF)
+	@$(MAKE) --no-print-directory clean >/dev/null
+	@$(MAKE) --no-print-directory $(TARGET) >/dev/null
+	@echo "determinism-crash: recorded frame $(DET_CRASH_FRAME) -> $(DET_CRASH_REF)"
+
+determinism-crash:
+	@test -f $(DET_CRASH_REF) || \
+	  { echo "no reference — run 'make determinism-crash-record' first"; exit 1; }
+	@$(MAKE) --no-print-directory clean >/dev/null
+	@$(MAKE) --no-print-directory STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 $(TARGET) >/dev/null
+	@mkdir -p tmp/determinism
+	@rm -f $(DET_CRASH_RUN)*
+	REVS_FIXED_RNG=1 REVS_SCREEN_DUMP=$(DET_CRASH_RUN) \
+	  REVS_SCREEN_FRAME=$(DET_CRASH_FRAME) REVS_MEM_DUMP=1 REVS_QUIT_AFTER_DUMP=1 \
+	  ./$(TARGET) >/dev/null 2>&1
+	@python3 tools/det_compare.py $(DET_CRASH_REF) $(DET_CRASH_RUN).mem.$(DET_CRASH_FRAME) \
+	  && r=PASS || r=FAIL; \
+	 $(MAKE) --no-print-directory clean >/dev/null; \
+	 $(MAKE) --no-print-directory $(TARGET) >/dev/null; \
+	 if [ "$$r" = PASS ]; then \
+	   echo "determinism-crash: 64K byte-identical (stack scratch aside) at frame $(DET_CRASH_FRAME), car CRASHED (FUN_109b ran 7×) — PASS"; \
+	 else \
+	   echo "determinism-crash: FAIL — the crash/scan trajectory diverged"; exit 1; \
 	 fi
 
 # Native-twin validation harness.  Links the full object graph minus main.o (for the

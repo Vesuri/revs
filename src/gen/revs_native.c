@@ -11346,6 +11346,114 @@ static uint8_t track_pos_retreat_core(uint8_t x)
 void track_pos_retreat(void) { cpu.C = track_pos_retreat_core(cpu.X); }   /* exit ABI: C only */
 
 /* ------------------------------------------------------------------------------------------------
+ * $109B  full_track_scan_rebuild  —  NATIVE DRIVER (STAGE 5), the root of the crash-freeze subtree.
+ * Was FUN_109b.
+ *
+ * reset_driving_variables calls this on a crash / session reset.  With the off-line-scan flag
+ * (track_scan_active bit 7) raised — so lap_complete ignores the artificial track motion — it
+ * re-lays the whole field and rebuilds the geometry around it:
+ *
+ *   1. advance all 20 cars round the ring until car 0's distance counter wraps to 0 (re-anchor the
+ *      field to the start line);
+ *   2. a triangular retreat grid — for each outer index 0..$13, retreat cars [outer..$13] in
+ *      sorted order, each (entry A + 1) times — fanning the field out behind the leader;
+ *   3. re-anchor the pace car ($17): advance it until its gap to the player is exactly $20 the
+ *      near way round;
+ *   4. back the pace car up $31 units, then on to the previous segment boundary, counting the
+ *      sections spanned into shared_counter_42;
+ *   5. seed every car's car_state_2 with an alternating $AF/$50 pattern in sorted order;
+ *   6. rebuild that many track sections from the walk origin (build_road_section).
+ *
+ * A DRIVER, not a leaf: every loop ends on a game-state boundary (the field's distance wrap; the
+ * $20 pace gap; a segment-boundary carry), never on a bounded input, so no randomised validate
+ * fixture can drive it to a defined exit.  It is a NATIVE_FUNCS member (transpile.py), gated by
+ * `make determinism-crash` — a HOLD_THROTTLE run that actually crashes off-track and runs this
+ * routine seven times before the frame-1500 dump.  Its callees are all native twins already, so
+ * this reproduces only its OWN mem[] writes and drives the callees in order with the same register
+ * inputs.  Exit regs/flags are dead (reset_driving_variables reloads X and A immediately after).
+ *
+ * The shared-scratch cells the transliteration writes are reproduced faithfully — shared_temp_76/77
+ * (the retreat counters), hypot_min_lo (the grid's outer index), shared_counter_42 (the section
+ * count) — because the 64K determinism compare sees them.
+ * ------------------------------------------------------------------------------------------------ */
+void full_track_scan_rebuild(void)
+{
+    uint8_t entry_a = cpu.A;                  /* the per-cell retreat depth (see step 2) */
+    shared_temp_76 = entry_a;
+
+    /* raise the off-line-scan flag.  SEC/ROR at $109E is byte-exact: the rotate shifts the old
+       byte down under the new bit 7, and the matching LSR at exit shifts it back — reproduced so
+       the flag cell matches, not simplified to a plain bit set/clear. */
+    track_scan_active = (uint8_t)(0x80u | (track_scan_active >> 1));
+
+    /* 1. advance the whole field until car 0 sits on the start line (distance == 0) */
+    do {
+        for (uint8_t x = 0x13u; x != 0xFFu; x--) {
+            cpu.X = x;
+            track_pos_advance();
+        }
+    } while ((mem[CAR_DISTANCE_LO + 0] | mem[CAR_DISTANCE_HI + 0]) != 0u);
+
+    /* 2. triangular retreat grid.  hypot_min_lo is the outer index cell ($FF then pre-incremented
+       to 0..$13); the inner sweep starts at the outer index and runs to $13. */
+    hypot_min_lo = 0xFFu;
+    for (;;) {
+        hypot_min_lo++;
+        if (hypot_min_lo >= 0x14u) break;
+        for (uint8_t x = hypot_min_lo; x < 0x14u; x++) {
+            shared_temp_77 = shared_temp_76;                 /* reset the per-car retreat counter */
+            do {
+                cpu.X = mem[CAR_ORDER_TBL + x];              /* the car at this sorted position */
+                track_pos_retreat();
+            } while ((int8_t)(--shared_temp_77) >= 0);       /* runs entry_a + 1 times */
+        }
+    }
+
+    /* 3. re-anchor the pace car ($17): advance it until its gap to the player is exactly $20 the
+       near way (car_gap_tail: C set = far side, so keep going; A == $20 = the target gap) */
+    do {
+        cpu.X = 0x17u;
+        track_pos_advance();
+        cpu.Y = 0x17u;
+        cpu.X = player_car;
+        cpu.C = 1;                                            /* entry borrow-in for the subtract */
+        car_gap_tail();
+    } while (cpu.C || cpu.A != 0x20u);
+
+    /* 4. back the pace car up $31 units, then on to the previous segment boundary, counting every
+       section it spans (from $31) into shared_counter_42 for step 6 */
+    cpu.X = 0x17u;
+    shared_temp_76 = 0x31u;
+    shared_counter_42 = 0x31u;
+    do {
+        track_pos_retreat();
+    } while (--shared_temp_76 != 0u);
+    do {
+        shared_counter_42++;
+        track_pos_retreat();
+    } while (cpu.C == 0);                                     /* until a segment boundary is crossed */
+
+    /* 5. seed car_state_2 for all 20 cars in sorted order with an alternating $AF/$50 pattern
+       (A starts $50 and is EOR #$FF'd before each store, so it toggles each car) */
+    {
+        uint8_t a = 0x50u;
+        for (uint8_t y = 0x13u; y != 0xFFu; y--) {
+            a ^= 0xFFu;
+            mem[CAR_STATE_2 + mem[CAR_ORDER_TBL + y]] = a;
+        }
+    }
+
+    /* 6. rebuild shared_counter_42 track sections from the walk origin */
+    section_cursor = 0u;
+    do {
+        build_road_section();
+    } while (--shared_counter_42 != 0u);
+
+    /* lower the off-line-scan flag (LSR at $111A) */
+    track_scan_active = (uint8_t)(track_scan_active >> 1);
+}
+
+/* ------------------------------------------------------------------------------------------------
  * $4F77 lap_complete — TWIN #136.  track_pos_advance calls this when a car's distance counter wraps
  * a lap.  It books the completed lap and, when the mode calls for it, records the lap TIME:
  * race_clock - car_lap_start as a 3-byte BCD value (centiseconds / seconds base-60 / minutes), and
