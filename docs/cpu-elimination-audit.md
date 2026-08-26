@@ -71,7 +71,7 @@ caller and written at the code (V-escape rule + PHP-residue rule from the prior 
 | 6 | Objects / signs (`build_road_sign`, `write_object_slot`, `scale_shape_vectors`, `build_sign_origin`, `note_object_contact`, `store_object_flags`, `reject_object_slot`, `draw_track_object`, `plot_object`) | 9 | ✅ |
 | 7 | View pipeline (`fill_object_gap`, `plot_shape_edges`, `plot_view_src_line`, `mark_line_surfaces`, `fill_line_attr`, `fill_edge_column_run`, `column_gap_walk`, `surface_colour_at`, `view_paint_lines`, `edge_x_offscreen`, `shift_near_edge_points`, `emit_edge_width_offset`, `emit_edge_bearing`, `road_edge_walk`) | ~14 | ✅ |
 | 8 | Computational helpers still on `cpu` (`abs8`, `abs16_math`, `mul8_*`, `mul16_by_1_5`, `scale16_by_y`, `div16by8`, `horizon_half_width_at`, `road_edge_side`, `derive_endpoint`, `place_car_world_coords`, `place_player_in_section`, `road_edge_walk_subdivide`, `paint_lines_short`, …) | ~20 | ✅ |
-| 9 | **Seam relocation** — thin shims → `revs_native_seam.c`; shared header; Makefiles; seam doc | — | ☐ |
+| 9 | **Seam relocation** — 72 thin shims → `revs_native_seam.c`; shared header; both Makefiles; validate | 72 | ✅ |
 
 ⚠ These groupings track the `validate_native.c` fixture groups; sub-commits split a group when it is
 too large for one logical change. The counts are the survey's; they will drift as work lands.
@@ -311,3 +311,40 @@ object-queue tail calls transliterated generated routines — `FUN_2a5d`/`build_
 `FUN_2b0e` — with the register ABI they read), `abs16_math`/`neg16_math` (already-minimal ABI shims).
 `road_edge_side`/`derive_endpoint`/`road_edge_walk_subdivide` cores are cpu-free; their shims relocate
 in cluster 9. No computational core remains on `cpu`.
+
+## Cluster-9 — the seam split, and why "grep cpu = 0" is not the goal
+
+The thin 6502-ABI shims (read `cpu`/`mem[]`, call the typed core, marshal the exit ABI back) now live
+in their own translation unit, `src/gen/revs_native_seam.c`, sharing a header
+(`src/gen/revs_native_seam.h`) with `revs_native.c`. The header carries the shared vocabulary the two
+files need in common: the includes (with `REVS_MEM_ALIASES` so `mem[]` cell names resolve), the address
+`#define`s the shims reference, the 29 exit-struct typedefs, the 13 `REVS_FLAG_OP` (`always_inline`)
+flag helpers, `extern` span-descriptor decls, and prototypes for the 75 now-non-static cores the shims
+call. A pure code move — gated by full `make validate` (0 mismatch) + all three determinism runs
+byte-identical + both backends linking clean (muldiv/probe audits clean). No new logic, so no sabotage
+pass: sabotage proves a *fixture* catches defects, and no fixture changed.
+
+**72 shims moved; the residual `cpu.` in `revs_native.c` (≈325) is all cores + keeper-seams, which
+STAY by the user's cluster-9 scope.** "grep cpu → 0" was never reachable and is not the goal: the
+keepers (MOS-ABI blocks, flag/stack/SMC/circuit-hook escapes, and the 17 full-logic twins) are cpu by
+construction. What moved out was 164 cpu refs — the pure marshalling.
+
+**The entanglement keeper: a shim over a `static inline` core stays.** `road_span_plot` /
+`road_span_plot_2` are thin, but they call `span_plot_core` — a `static inline` core pulling a large
+static family (`span_walk`, `sw_plot`, `span_entry_decode`, …). Relocating those two shims would mean
+exposing that whole family; not worth it. A shim moves only when everything it references is shareable
+(header vocabulary, `mem[]` alias, platform macro, or a *non-inline* core that can be prototyped). Flag
+helpers are shareable because `static inline` in a header gives each TU its own inlined copy; a big
+inline *family* is not, so its callers stay next to it. `draw_span_*` never matched the move filter for
+the same reason (they call `span_walk`).
+
+**Mechanical traps the transform (`tools/split_seam.py`) hit, all silent-until-compiled:**
+- **A one-line typedef with a trailing `/* comment */` fails a naive `endswith(';')`** and gets read as
+  a multi-line block — swallowing the *following function* into the header. Strip comments before the
+  structural test (blank `/* */`, `//`, and string/char literals to spaces first).
+- **A `{`/`}` inside a comment desyncs a raw brace-counter**, so a function after one is never seen as
+  a top-level def → its prototype is missing (`fill_object_gap_core`). Count braces on the
+  comment-stripped view, and zero out preprocessor lines (a multi-line `#define` body has braces too).
+- **Duplicated address `#define`s are safe to centralise only because every name maps to one value**
+  (verified: no name has two values). Object-like macro redefinition with an *identical* token list is
+  benign in C — no warning — so the header can define them while `revs_native.c` keeps its own copies.

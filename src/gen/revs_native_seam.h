@@ -1,0 +1,298 @@
+/* revs_native_seam.h — cluster-9 seam.  Shared vocabulary between revs_native.c
+ * (the cpu-free typed cores) and revs_native_seam.c (the thin 6502-ABI shims).
+ * Generated once by tools/split_seam.py; hand-maintained thereafter. */
+#ifndef REVS_NATIVE_SEAM_H
+#define REVS_NATIVE_SEAM_H
+#include <stdint.h>
+#ifndef REVS_MEM_ALIASES
+#define REVS_MEM_ALIASES
+#endif
+#include "../cpu/cpu.h"
+#include "../cpu/bus.h"
+#include "../cpu/m68k_math.h"
+#include "revs_decl.h"
+#include "mem.h"
+#include "../platform/platform_c.h"
+#include "../platform/bbc_screen.h"
+#include "../platform/probe.h"
+#include "../platform/shape.h"
+#include "../platform/revs_plot.h"
+
+/* ---- address constants the shims use (copied from revs_native.c; identical) ---- */
+#define EDGE_HALF        0x0028u   /* 40 — the stride between the two road sides' halves */
+#define SECTION_MID      0x00FAu   /*   ...the triple road_edge_walk interpolates midpoints into */
+#define SECTION_NEAR     0x00FDu   /*   ...and the one road_edge_start stages the near point in */
+#define VIEW_LEFT_START_SRC   0x0504u   /* per scan line: the LEFT run's first source byte */
+#define VIEW_RIGHT_START_SRC  0x4400u   /* ...and the RIGHT run's */
+#define DASH_BLOCK_STARTS 0x3900u   /* per block: the offset its live data begins at (< $4F) */
+#define DASH_BLOCK_COUNT  0x29u     /* 41 blocks */
+#define POINT_DELTA_HI    0x0083u  /* point_delta_hi[0..2]   — ...its magnitude's high byte */
+#define SLIP_MAG_HI      0x008Fu  /* plot_ptr3_hi — ...and its high byte (docs/rename.md) */
+#define SLIP_SIGN        0x0079u  /* hypot_min_hi — here the sign byte abs16_math branches on */
+#define CAR_STATE_1    0x0164u   /* per-driver; the camera adds a gradient-scaled copy */
+#define FENCE_COL_COUNT        0x28u    /* 40 view columns                                    */
+
+/* ---- exit-struct typedefs (moved out of revs_native.c) ---- */
+typedef struct { uint8_t a, x, y, n, z, v, c; } SlotExit;
+typedef struct { uint8_t val, carry; } Adc;
+typedef struct {
+    unsigned byte;   /* A: the pixel byte the chain carries left to right */
+    unsigned line;   /* X: the scan line being painted */
+    unsigned cell;   /* Y: the cell's byte offset within the line, or a glyph index */
+} ViewState;
+typedef enum {
+    RESTART_NONE = 0,   /* $16F9 — back from the pits: keep the session exactly as it was */
+    RESTART_LATE,       /* $16F6 — rebuild the player's car and the driver tables only */
+    RESTART_MID,        /* $16F3 — and zero $00-$68 plus $6280-$62FF: a fresh lap */
+    RESTART_FULL        /* $16EE — and reset the player's race clock: a fresh session */
+} RestartDepth;
+typedef enum {
+    LOOP_NEXT_FRAME,    /* $17B7 — round again */
+    LOOP_RESTART,       /* leave the frame loop and re-run the reset to `g_restartDepth` */
+    LOOP_FINISHED       /* $17BA — the session is over; leave the routine */
+} LoopVerdict;
+typedef struct { uint8_t line; int clip; int behind; } ProjPoint;
+typedef struct { uint8_t hi, carry, overflow, neg, zero; } AddFlags;
+typedef struct { AddFlags tail; uint8_t x, y; } EngineExit;
+typedef struct { uint8_t x, y; } EngineRegs;
+typedef struct { AddFlags acc; uint8_t x, y; } CameraExit;
+typedef struct {
+    uint16_t dist;        /* -> point_dist_lo/hi */
+    uint16_t min;         /* -> hypot_min_hi, and hypot_min_lo too on the far arm only */
+    uint16_t maxEighth;   /* -> math_hi:math_lo (LOW byte in math_hi) — the far arm only */
+    int      farArm;
+} PointDist;
+typedef struct { uint8_t a, y, n, z, v, c; } WidthExit;
+typedef struct {
+    uint8_t sectionIndex;   /* the walk's starting byte index into section_coord_lo/hi */
+    uint8_t wrapLimit;      /* -> section_wrap_limit */
+    uint8_t side;           /* -> road_side_index */
+} RoadSide;
+typedef struct { uint8_t quotient, remainder, overflow, setV; } Div16By8;
+typedef struct {
+    uint16_t mag;     /* |section coordinate - view origin| for this component */
+    uint8_t  rawHi;   /* the subtraction's high byte BEFORE the absolute value — the sign */
+} ViewDelta;
+typedef struct {
+    unsigned stepIn, stepOut;   /* the two Y-step opcode slots */
+    unsigned destLo, destHi;    /* the patched operand pair: this pass's surface_edge buffer */
+    unsigned cellPtr;           /* zero-page pointer the colour cell is read and written through */
+    unsigned linePtr;           /* ...and the one bearing_hi's copy goes through */
+} SpanPlotter;
+typedef struct {
+    unsigned table;        /* the arm's entry-offset table, indexed by the sub-column phase */
+    unsigned operand;      /* the branch operand byte the offset is written over */
+    unsigned base;         /* the address that offset is relative to (the branch's own next) */
+    unsigned addend;       /* what the DDA accumulates */
+    unsigned subtrahend;   /* ...and what it takes back off when it carries */
+    int      rev;          /* descending */
+    int      steep;        /* Y-major */
+    uint8_t  bound;        /* the plot_ptr2_hi value at which the walk stops */
+} SpanArm;
+typedef struct { uint8_t farIdx, nearIdx; } EdgeIndices;
+typedef struct { uint8_t a, v, c, n, z; } EdgeOffFlags;
+typedef struct { uint16_t product; uint8_t v, setV; } Mul8;
+typedef struct { uint8_t a, n, z, c, v; } Mul8AccumExit;
+typedef struct { uint8_t hi; int declined; } SlipRef;
+typedef struct { uint8_t a, y, n, z, v, c; } SignOriginExit;   /* X passes through the caller's */
+typedef struct { uint8_t a, y, n, z, c; } ContactExit;    /* X and V pass through the caller's */
+typedef struct { uint8_t a, y; } RejectExit;                   /* N/Z derive from a (bit7 set) */
+typedef struct { uint8_t row; uint8_t line; } Mode5Addr;  /* plot_ptr side-effect; row=X, line=A/Y */
+typedef struct { uint8_t ch; int usedMos; } VduDef;       /* def took the OSWRCH path? */
+typedef struct { uint8_t mag; uint8_t dir; } AdcRead;   /* distance from centre, and its sign */
+typedef struct { uint8_t a, n, c; } GapTail;
+
+/* ---- always_inline 6502 flag helpers (moved out of revs_native.c) ---- */
+#define REVS_FLAG_OP static inline __attribute__((always_inline))
+REVS_FLAG_OP unsigned load_a(uint8_t value)
+{
+    LDA(value);
+    return cpu.A;
+}
+
+REVS_FLAG_OP unsigned adc_step(unsigned a, uint8_t addend, int carry_in)
+{
+    cpu.A = (uint8_t)a;
+    cpu.C = (uint8_t)(carry_in != 0);
+    ADC(addend);
+    return cpu.A;
+}
+
+REVS_FLAG_OP Adc adc_value(uint8_t a, uint8_t m, unsigned carryIn)
+{
+    unsigned c = carryIn ? 1u : 0u;
+    unsigned t = (unsigned)a + m + c;
+    Adc r;
+
+    if (cpu.D) {
+        unsigned al = (unsigned)(a & 0x0Fu) + (m & 0x0Fu) + c;
+        unsigned ah = (unsigned)(a >> 4) + (m >> 4);
+        if (al > 9) { al += 6; ah += 1; }
+        if (ah > 9) ah += 6;
+        r.carry = (uint8_t)(ah > 0x0Fu);
+        r.val   = (uint8_t)(((ah << 4) | (al & 0x0Fu)) & 0xFFu);
+    } else {
+        r.carry = (uint8_t)(t > 0xFFu);
+        r.val   = (uint8_t)t;
+    }
+    return r;
+}
+
+REVS_FLAG_OP Adc sbc_value(uint8_t a, uint8_t m, unsigned carryIn)
+{
+    int borrow = carryIn ? 0 : 1;
+    int t = (int)a - (int)m - borrow;               /* binary result -> the carry/borrow */
+    Adc r;
+    r.carry = (uint8_t)(t >= 0);                     /* 1 = no borrow, exactly like binary SBC */
+
+    if (cpu.D) {
+        int lo = (a & 0x0F) - (m & 0x0F) - borrow;
+        int hi = (a >> 4)   - (m >> 4);
+        if (lo < 0) { lo += 10; hi -= 1; }           /* borrow from the high nibble */
+        if (hi < 0) { hi += 10; }                    /* borrow out of the byte */
+        r.val = (uint8_t)(((hi << 4) | (lo & 0x0F)) & 0xFF);
+    } else {
+        r.val = (uint8_t)t;
+    }
+    return r;
+}
+
+REVS_FLAG_OP uint8_t adc_overflow(uint8_t a, uint8_t m, unsigned carryIn)
+{
+    unsigned t = (unsigned)a + m + (carryIn ? 1u : 0u);
+    return (uint8_t)(((~(a ^ m) & (a ^ (uint8_t)t)) >> 7) & 1u);
+}
+
+REVS_FLAG_OP uint8_t sbc_overflow(uint8_t a, uint8_t m, unsigned carryIn)
+{
+    uint8_t r = (uint8_t)(a - m - (carryIn ? 0u : 1u));
+    return (uint8_t)((((a ^ m) & (a ^ r)) >> 7) & 1u);
+}
+
+REVS_FLAG_OP unsigned sub_from(unsigned value, uint8_t subtrahend)
+{
+    cpu.A = (uint8_t)value;
+    cpu.C = 1;
+    SBC(subtrahend);
+    return cpu.A;
+}
+
+REVS_FLAG_OP unsigned sbc_step(unsigned value, uint8_t subtrahend, int carry_in)
+{
+    cpu.A = (uint8_t)value;
+    cpu.C = (uint8_t)(carry_in != 0);
+    SBC(subtrahend);
+    return cpu.A;
+}
+
+REVS_FLAG_OP int cmp_ge(unsigned value, uint8_t limit)
+{
+    cpu.A = (uint8_t)value;
+    CMP(limit);
+    return cpu.C;
+}
+
+REVS_FLAG_OP int cpx_ge(unsigned value, uint8_t limit)
+{
+    cpu.X = (uint8_t)value;
+    CPX(limit);
+    return cpu.C;
+}
+
+REVS_FLAG_OP unsigned zp_pointer(unsigned zp)
+{
+    return (unsigned)mem[zp & 0xFFu] | ((unsigned)mem[(uint8_t)(zp + 1)] << 8);
+}
+
+REVS_FLAG_OP uint8_t seam_read(unsigned addr, int ram)
+{
+    return ram ? mem[addr] : (uint8_t)bus_read((uint16_t)addr);
+}
+
+REVS_FLAG_OP void seam_write(unsigned addr, int ram, uint8_t value)
+{
+    if (ram) mem[addr] = value; else bus_write((uint16_t)addr, value);
+}
+
+/* ---- span-plotter descriptors (defined in revs_native.c) ---- */
+extern const SpanPlotter SPAN_PLOT_1;
+extern const SpanPlotter SPAN_PLOT_2;
+
+/* ---- cpu-free cores the shims call (defined in revs_native.c) ---- */
+AdcRead adc_read_core(uint8_t channel);
+void apply_driving_model_core(uint8_t posLo, uint8_t posHi);
+void arg_a(uint8_t v);
+void bearing_to_section_core(uint8_t sectionByte, uint8_t origin);
+SignOriginExit build_sign_origin_core(uint8_t offset, uint8_t shift);
+void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1);
+unsigned car_gap_lo_core(uint8_t a, uint8_t b);
+GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn);
+void car_order_swap_core(uint8_t xi, uint8_t yi, uint8_t* outX, uint8_t* outY);
+void clamp_near_edge_cursor_core(uint8_t candidate);
+void clamp_near_edge_window_core(uint8_t nearSlots);
+void clear_race_clock_core(uint8_t x);
+SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV);
+void copy_dash_data_core(uint8_t dirFlag);
+uint8_t derive_car_section_cursor_core(uint8_t cursor);
+SlipRef derive_slip_reference_core(uint8_t axle);
+uint8_t draw_gear_indicator_core(void);
+void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);
+void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint);
+SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, uint8_t entryC);
+EdgeOffFlags edge_x_offscreen_core(uint8_t pointX);
+uint8_t emit_edge_bearing_at_cursor_core(uint8_t sectionByte);
+uint8_t emit_edge_bearing_core(uint8_t slot);
+WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringPoint, uint8_t entryV);
+SlotExit fill_column_gaps_core(uint8_t pointer, uint8_t branchOffset, uint8_t fallback, uint8_t entryV);
+SlotExit fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightStartSrc);
+SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn, uint8_t firstLine, uint8_t entryV);
+SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint, int entryC, int entryV);
+SlotExit fill_object_gap_core(uint8_t width);
+AddFlags integrate_car_position_core(void);
+AddFlags integrate_state_rates_core(void);
+EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint, int publishOnly);
+int kbd_test_key_core(uint8_t keyCode);
+uint8_t limit_steer_demand_core(uint8_t a, int carryIn);
+void load_section_triple_core(uint8_t destSection, uint8_t segmentByte);
+SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int entryV);
+Mode5Addr mode5_addr_core(uint8_t quarterOffset, uint8_t y);
+Mode5Addr mode5_addr_for_cell_core(uint8_t column, uint8_t y);
+AddFlags model_integrate_element_core(uint8_t slot);
+Mul8AccumExit mul8_accum_core(void);
+ContactExit note_object_contact_core(uint8_t threshold, uint8_t entryC);
+uint8_t paint_fence_backdrop_core(uint8_t horizon);
+SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect);
+uint8_t point_distance_hypot_apply(void);
+void poll_steering_assist_core(void);
+ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin);
+void race_main_loop_core(RestartDepth depth);
+void rebase_edge_point_core(uint8_t slot);
+RejectExit reject_object_slot_core(void);
+RoadSide road_edge_side_apply(uint8_t sideSelect);
+void road_edge_start_core(uint8_t nearSlotCount, uint8_t halfStride, uint8_t scratchSection, uint8_t pointLimit, uint8_t staleHorizonCap);
+uint8_t road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex, uint8_t midSlot, uint8_t pointCap, uint8_t offAxis);
+int road_span_advance_core(uint8_t y);
+AddFlags rotate_accum_by_steer_core(void);
+AddFlags rotate_pair_a_by_steer_core(void);
+void section_coord_add_delta_core(uint8_t dst, uint8_t src, const uint8_t dlo[3], const uint8_t dhi[3]);
+uint8_t shift_near_edge_points_core(uint8_t topSlot, uint8_t wrapSlot, uint8_t lowTop, uint8_t nearSlots);
+void sound_osword_core(uint8_t oswordNum, uint8_t blockLow);
+void sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX);
+void sound_queue_exit_abi(uint8_t slot);
+void sound_stop_channel_core(uint8_t chan);
+int state_flags_bit6(void);
+void store_slip_clamped_core(uint8_t valueHi);
+void store_slip_clamped_off_throttle_core(uint8_t valueHi);
+void store_slip_exit_abi(uint8_t sign);
+void store_slip_signed_core(uint8_t valueHi);
+uint8_t surface_colour_apply(uint8_t line);
+CameraExit update_camera_and_drive_state_core(void);
+EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY);
+void update_grip_limits_core(void);
+uint8_t vdu_char_def_core(uint8_t ch);
+uint8_t vdu_char_emit_core(void);
+uint8_t vdu_char_wide_core(uint8_t ch);
+void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entryCell);
+SlotExit write_object_slot_core(uint8_t projectedLine, uint8_t entryX, uint8_t entryV, uint8_t entryC);
+
+#endif /* REVS_NATIVE_SEAM_H */

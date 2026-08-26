@@ -155,7 +155,8 @@ C_SRCS := \
     $(wildcard src/gen/revs_gen.c) \
     $(wildcard src/gen/revs_track_hooks.c) \
     $(wildcard src/gen/revs_manual.c) \
-    $(wildcard src/gen/revs_native.c)
+    $(wildcard src/gen/revs_native.c) \
+    $(wildcard src/gen/revs_native_seam.c)
 
 CXX_SRCS := \
     src/platform/Platform.cpp \
