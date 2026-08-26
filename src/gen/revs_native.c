@@ -3515,7 +3515,7 @@ void copy_dash_data(void)
    provably enough.  Worth ~1% of the frame, i.e. under the noise floor — docs/perf-method.md.
    =========================================================================== */
 
-typedef struct { uint8_t quotient, remainder; } Div16By8;
+typedef struct { uint8_t quotient, remainder, overflow, setV; } Div16By8;
 
 /* `dividendHi` arrives in A and is the top half of the 16-bit numerator; `dividendLo` is
    math_lo, which the loop consumes bit by bit and hands back as the quotient. */
@@ -3535,6 +3535,9 @@ static Div16By8 div16by8_core(uint8_t dividendHi, uint8_t dividendLo, uint8_t di
        replay needs (the divisor and the borrow are the same on every pass). */
     int     didSubtract = 0;
     uint8_t lastMinuend = 0;
+
+    r.overflow = 0;
+    r.setV     = 0;                  /* no subtract ran -> the 6502 leaves V alone (shim honours) */
 
     for (step = 0; step < 8; step++) {
         /* The bit leaving the top of the word is the remainder's ninth bit.  The 6502 keeps it
@@ -3559,11 +3562,13 @@ static Div16By8 div16by8_core(uint8_t dividendHi, uint8_t dividendLo, uint8_t di
     }
 
     /* $0C47's exit V, and the reason it is a `DIVU.W` blocker: it belongs to whichever of the
-       seven subtracts ran last.  If none ran, the 6502 left V alone and so does this.  SBC
-       overflow: V = ((a ^ m) & (a ^ (a-m))) bit 7, with carry set (no borrow-in). */
+       seven subtracts ran last.  If none ran, the 6502 left V alone and so does this (setV=0).
+       SBC overflow: V = ((a ^ m) & (a ^ (a-m))) bit 7, with carry set (no borrow-in).  Returned
+       by value — the one escaping flag — so the core touches no cpu; the shim replays it. */
     if (didSubtract) {
         uint8_t res = (uint8_t)(lastMinuend - divisor);
-        cpu.V = (uint8_t)((((lastMinuend ^ divisor) & (lastMinuend ^ res)) >> 7) & 1u);
+        r.overflow = (uint8_t)((((lastMinuend ^ divisor) & (lastMinuend ^ res)) >> 7) & 1u);
+        r.setV     = 1;
     }
 
     r.quotient  = (uint8_t)work;
@@ -3584,6 +3589,7 @@ void div16by8(void)
     UPD_NZ(r.quotient);
     cpu.C = 0;
     cpu.A = r.remainder;
+    if (r.setV) cpu.V = r.overflow;     /* the last subtract's V; untouched when none ran */
 }
 
 /* ===========================================================================
