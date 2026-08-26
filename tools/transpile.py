@@ -992,6 +992,10 @@ VALIDATE_FUNCS = {
     # edge) at cursor+$78.  This copies component 1 (the shared HEIGHT) from side 0 to side 1; the
     # ground-plane pair is built elsewhere.  A two-byte copy, no escaping flags.
     0x124D,
+    # ⭐ TWIN #140 — derive_car_section_cursor ($125A, was FUN_125a).  Maps the walk-origin
+    # section_cursor to the car's cursor: section_cursor - $60, wrapped by +$78 if it went negative,
+    # into the 0..$77 section ring.  Binary (D=0); the caller discards the exit flags.
+    0x125A,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

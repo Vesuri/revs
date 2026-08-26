@@ -10417,6 +10417,24 @@ void copy_section_height_to_side1(void)
 }
 
 /* ---------------------------------------------------------------------------
+   $125A  derive_car_section_cursor  (twin #140)   — was FUN_125a
+   ---------------------------------------------------------------------------
+   Maps the walk-origin section cursor to the CAR's section cursor: subtract $60
+   and, if that went negative, wrap by the $78-wide section ring (40 sections x
+   3 bytes).  D=0 on this path, so the subtract/add is plain binary.  No escaping
+   flags — the caller ($13D3) discards N/Z/C. */
+static uint8_t derive_car_section_cursor_core(uint8_t cursor)
+{
+    uint8_t t = (uint8_t)(cursor - 0x60);
+    if (t & 0x80) t = (uint8_t)(t + 0x78);   /* rolled below 0 -> back into 0..$77 */
+    return t;
+}
+void derive_car_section_cursor(void)
+{
+    car_section_cursor = derive_car_section_cursor_core(section_cursor);
+}
+
+/* ---------------------------------------------------------------------------
    $2937  place_car_world_coords  (twin #126)
    ---------------------------------------------------------------------------
    Projects one object's within-section offsets — car_state_1 ("along" the section) and
