@@ -10666,3 +10666,90 @@ void clear_race_clock(void)
     clear_race_clock_core(cpu.X);
     cpu.A = 0x00u;                               /* LDA #0 residue (dead, reproduced for the diff) */
 }
+
+/* ===========================================================================
+   TWINS #134-#135 — the track-position STEPPERS (user, 2026-08-26, Stage 2).
+
+   Each moves car X one offset-unit along (advance) or back (retreat) the track.
+   The track is a ring of segments; a car sits at car_segment[X] (an index in
+   units of 8 into segment_len_tbl) plus car_seg_offset[X] within it, and a
+   separate 16-bit car_distance[X] counts distance round the lap.  Stepping off
+   the current segment moves to the neighbour and wraps the ring at
+   segment_count_x8; the distance counter wraps at lap_length and, going
+   backward, un-books a lap for the PLAYER only.
+
+   Escaping flag: CARRY = "crossed a segment boundary this step" (the ONLY flag
+   any caller consumes — all three branch on !C; see the call sites).  No BCD:
+   this is the geometry path, always entered with D=0 (docs/static-map.md
+   §Decimal mode), so the distance counter is a plain binary uint16_t.
+   =========================================================================== */
+#define SEGMENT_LEN_TBL   0x5907u   /* segment_len_tbl: length of each track segment */
+#define CAR_DISTANCE_LO   0x08D0u   /* car_distance_lo: distance-round-the-lap, low byte */
+#define CAR_DISTANCE_HI   0x08E8u   /* car_distance_hi: ...high byte */
+#define CAR_LAP_COUNT     0x04B4u   /* car_lap_count: completed laps per car */
+
+/* $147C track_pos_advance — step car x one offset-unit forward. */
+static uint8_t track_pos_advance_core(uint8_t x)
+{
+    uint8_t seg  = mem[CAR_SEGMENT_TBL + x];
+    uint8_t off  = (uint8_t)(mem[CAR_SEG_OFFSET + x] + 1);
+    uint8_t crossed = (off >= mem[SEGMENT_LEN_TBL + seg]);   /* escaping carry */
+
+    if (crossed) {                          /* stepped past this segment's end */
+        seg = (uint8_t)(seg + 8);
+        if (seg >= segment_count_x8) seg = 0;               /* wrap round the ring */
+        mem[CAR_SEGMENT_TBL + x] = seg;
+        off = 0;                            /* restart the offset in the new segment */
+    }
+    mem[CAR_SEG_OFFSET + x] = off;
+
+    /* one unit further round the lap; a completed lap zeroes the counter and books it */
+    uint16_t dist = (uint16_t)(mem[CAR_DISTANCE_LO + x] | (mem[CAR_DISTANCE_HI + x] << 8));
+    uint16_t lap  = (uint16_t)(lap_length_lo | (lap_length_hi << 8));
+    if (++dist == lap) {
+        mem[CAR_DISTANCE_LO + x] = 0x00u;
+        mem[CAR_DISTANCE_HI + x] = 0x00u;
+        lap_complete();                     /* X still == x; lap_complete reads it */
+    } else {
+        mem[CAR_DISTANCE_LO + x] = (uint8_t)dist;
+        mem[CAR_DISTANCE_HI + x] = (uint8_t)(dist >> 8);
+    }
+    return crossed;
+}
+
+void track_pos_advance(void) { cpu.C = track_pos_advance_core(cpu.X); }   /* exit ABI: C only */
+
+/* $14C3 track_pos_retreat — step car x one offset-unit backward (the reverse of advance). */
+static uint8_t track_pos_retreat_core(uint8_t x)
+{
+    uint8_t seg = mem[CAR_SEGMENT_TBL + x];
+    uint8_t off = mem[CAR_SEG_OFFSET + x];
+    uint8_t crossed = (off == 0);           /* escaping carry: stepping off the segment start */
+
+    if (crossed) {                          /* move back into the previous segment */
+        if (seg == 0) seg = segment_count_x8;               /* wrap at the ring start */
+        seg = (uint8_t)(seg - 8);
+        mem[CAR_SEGMENT_TBL + x] = seg;
+        off = mem[SEGMENT_LEN_TBL + seg];   /* resume at that segment's far end */
+    }
+    mem[CAR_SEG_OFFSET + x] = (uint8_t)(off - 1);
+
+    /* one unit back round the lap; underflowing past 0 wraps to a full lap and, for the
+       PLAYER only, un-books a completed lap */
+    uint8_t lo = mem[CAR_DISTANCE_LO + x];
+    uint8_t hi = mem[CAR_DISTANCE_HI + x];
+    for (;;) {
+        if (lo != 0) break;                 /* low byte still has room -> just decrement it */
+        hi = (uint8_t)(hi - 1);
+        if ((hi & 0x80u) == 0) break;       /* no borrow: distance was >= 0x100 */
+        lo = lap_length_lo;                 /* distance was 0 -> wrap to a full lap */
+        hi = lap_length_hi;
+        if (x == player_car && mem[CAR_LAP_COUNT + x] != 0)
+            mem[CAR_LAP_COUNT + x]--;
+    }
+    mem[CAR_DISTANCE_LO + x] = (uint8_t)(lo - 1);
+    mem[CAR_DISTANCE_HI + x] = hi;
+    return crossed;
+}
+
+void track_pos_retreat(void) { cpu.C = track_pos_retreat_core(cpu.X); }   /* exit ABI: C only */

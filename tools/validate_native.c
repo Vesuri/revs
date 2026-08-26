@@ -4240,6 +4240,8 @@ void car_index_inc(void);           void car_index_inc__t6502(void);
 void car_order_swap(void);          void car_order_swap__t6502(void);
 void find_player_neighbours(void);  void find_player_neighbours__t6502(void);
 void clear_race_clock(void);        void clear_race_clock__t6502(void);
+void track_pos_advance(void);       void track_pos_advance__t6502(void);
+void track_pos_retreat(void);       void track_pos_retreat__t6502(void);
 
 static int test_car_order_cluster(void)
 {
@@ -4299,6 +4301,55 @@ static int test_car_order_cluster(void)
         printf("%-32s %7d cases  live=A\n", "clear_race_clock", cases);
     }
 
+    /* --- the track-position steppers (Stage 2).  live=C is the only escaping flag.
+       Each arm forces the interesting paths on top of fill_random: t%4==1 plants a
+       distance one short of a full lap (advance's lap-wrap + lap_complete call);
+       t%4==2 zeroes the distance (retreat's wrap-to-lap-length + player-lap-count
+       path); and every 3rd case pins X to player_car so the player-only lap-count
+       decrement is exercised.  lap_complete runs identically on both models, so the
+       BCD it does on random memory needs no constraining. */
+    /* lap_length ($59FC/D) is a track-file constant and is ALWAYS non-zero in reality; a
+       zero would make BOTH the twin and the 6502 oracle spin forever on a lap wrap (the ring
+       has no length to wrap to).  Pin it to a random non-zero value so the fixture exercises
+       the wrap on legal inputs only. */
+    /* Both steppers save/restore the escaping carry with PHP/PLP, which leaves the pushed
+       status byte on the stack page.  It is popped straight back (dead stack), so ignore
+       $01FF exactly as road_edge_walk and bearing_to_section_from do. */
+    static const uint16_t stepIgnore[] = { 0x01FFu };
+    set_ignore(stepIgnore, 1);
+
+    register_fixture("track_pos_advance");
+    if (want("track_pos_advance")) {
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu(); fill_random(pre);
+            uint16_t lap = (uint16_t)(xs() | 1u);                 /* non-zero lap length */
+            pre[0x59FC] = (uint8_t)lap; pre[0x59FD] = (uint8_t)(lap >> 8);
+            c.X = (t % 3) ? (uint8_t)(xs() % 20) : pre[0x006F];   /* sometimes the player */
+            if (t % 4 == 1) {                                     /* one short of a full lap */
+                pre[0x08D0 + c.X] = (uint8_t)(lap - 1); pre[0x08E8 + c.X] = (uint8_t)((lap - 1) >> 8);
+            }
+            fail += diff_run("track_pos_advance", pre, c,
+                             track_pos_advance, track_pos_advance__t6502, LIVE_C, t, &printed);
+        }
+        printf("%-32s %7d cases  live=C\n", "track_pos_advance", cases);
+    }
+
+    register_fixture("track_pos_retreat");
+    if (want("track_pos_retreat")) {
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu(); fill_random(pre);
+            uint16_t lap = (uint16_t)(xs() | 1u);                 /* non-zero lap length */
+            pre[0x59FC] = (uint8_t)lap; pre[0x59FD] = (uint8_t)(lap >> 8);
+            c.X = (t % 3) ? (uint8_t)(xs() % 20) : pre[0x006F];   /* sometimes the player */
+            if (t % 4 == 2) { pre[0x08D0 + c.X] = 0; pre[0x08E8 + c.X] = 0; }  /* wrap a lap back */
+            if (t % 2) pre[0x0880 + c.X] = 0;                    /* force the segment-boundary case */
+            fail += diff_run("track_pos_retreat", pre, c,
+                             track_pos_retreat, track_pos_retreat__t6502, LIVE_C, t, &printed);
+        }
+        printf("%-32s %7d cases  live=C\n", "track_pos_retreat", cases);
+    }
+
+    set_ignore(0, 0);
     return fail;
 }
 

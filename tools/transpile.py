@@ -956,6 +956,16 @@ VALIDATE_FUNCS = {
     0x267F,
     0x63A2,
     0x5011,
+    # ⭐ TWINS #134-#135 — the two track-position STEPPERS (user, 2026-08-26).  FUN_109b's grid
+    # loop steps each of the 20 cars along the track with these; they are the interpreter body the
+    # ~3 s crash-reset freeze spends its time in.  Each advances/retreats a car by one segment-
+    # offset unit: a plain 16-bit distance inc/dec with a lap wrap, and an escaping carry that
+    # means "crossed a segment boundary".  No BCD (D=0 on this path).  lap_complete (called on a
+    # lap wrap) is Stage 2's third twin and stays shared by name.
+    #   $147C track_pos_advance   step car X forward one offset unit
+    #   $14C3 track_pos_retreat   step car X back one offset unit
+    0x147C,
+    0x14C3,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
