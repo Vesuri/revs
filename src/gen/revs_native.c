@@ -5695,19 +5695,19 @@ void fill_edge_column_run(void)
    the header); decimal mode still runs the 6502's own shift-and-add, because D changes the RESULT
    byte of every ADC.  Exit: A = product high, math_lo = product low; N/Z from math_lo, C = 0,
    V = the last ADD's.  This is a KEPT shim — generated code and the mul8_accum family call it. */
-void mul8_noinit(void)
-{
-    /* $0C02 math_lo x math_hi -> A:math_lo.  The engine only ever multiplies in BINARY — none
-       of the 8 SED sites reach here (docs/static-map.md §Decimal mode) — so this is one 16-bit
-       product.  Exit: A = product high, math_lo = product low; N/Z from math_lo, C = 0, V = the
-       final shift-and-add's. */
-    uint8_t  multiplier = math_lo, addend = math_hi;
-    unsigned product    = revs_mulu16((uint16_t)multiplier, (uint16_t)addend);
+/* The 8x8 product plus the ONE escaping flag: the V of the last shift-and-add.  `setV` is 0 for a
+   zero multiplier (no ADC ran, so the 6502 leaves the caller's V — the shim must not overwrite it). */
+typedef struct { uint16_t product; uint8_t v, setV; } Mul8;
 
-    /* The one flag that escapes: the V of the LAST add in the 6502's shift-and-add, which lands
-       at the multiplier's top set bit with the accumulator holding
-       (addend x (multiplier mod 2^k)) >> k.  Replayed from those two operands as an 8-bit signed
-       add's overflow; with a zero multiplier no add runs and the caller's V survives. */
+static Mul8 mul8_noinit_core(uint8_t multiplier, uint8_t addend)
+{
+    Mul8 r;
+    r.product = revs_mulu16((uint16_t)multiplier, (uint16_t)addend);
+    r.v = 0; r.setV = 0;
+
+    /* The V of the LAST add in the 6502's shift-and-add, which lands at the multiplier's top set
+       bit with the accumulator holding (addend x (multiplier mod 2^k)) >> k — replayed from those
+       two operands as an 8-bit signed add's overflow.  Zero multiplier: no add, V untouched. */
     if (multiplier) {
         unsigned k = 7;
         uint8_t  acc, sum;
@@ -5715,14 +5715,26 @@ void mul8_noinit(void)
         acc = (uint8_t)(revs_mulu16((uint16_t)addend,
                                     (uint16_t)(multiplier & ((1u << k) - 1u))) >> k);
         sum = (uint8_t)(acc + addend);
-        cpu.V = (uint8_t)(((~(acc ^ addend) & (acc ^ sum)) >> 7) & 1u);
+        r.v = (uint8_t)(((acc ^ sum) >> 7) & 1u);
+        r.setV = 1;
     }
+    return r;
+}
 
-    math_lo = (uint8_t)product;
-    cpu.A   = (uint8_t)(product >> 8);   /* the closing ROR is on math_lo — NOT on A */
+void mul8_noinit(void)
+{
+    /* $0C02 math_lo x math_hi -> A:math_lo.  The engine only ever multiplies in BINARY — none
+       of the 8 SED sites reach here (docs/static-map.md §Decimal mode) — so this is one 16-bit
+       product.  Exit: A = product high, math_lo = product low; N/Z from math_lo, C = 0, V = the
+       final shift-and-add's. */
+    Mul8 r = mul8_noinit_core(math_lo, math_hi);
+
+    math_lo = (uint8_t)r.product;
+    cpu.A   = (uint8_t)(r.product >> 8);   /* the closing ROR is on math_lo — NOT on A */
     cpu.N   = (uint8_t)((math_lo >> 7) & 1u);
     cpu.Z   = (uint8_t)(math_lo == 0);
     cpu.C   = 0;                          /* provably 0 for every operand pair */
+    if (r.setV) cpu.V = r.v;              /* escaping V; caller's V survives a zero multiplier */
 }
 
 /* $0C00  mul8 — mul8_noinit with the multiplicand taken from A (a store, so no flags). */
@@ -5738,29 +5750,49 @@ void mul8(void) { math_lo = cpu.A; mul8_noinit(); }
    ⚠ Its exit flags are the closing ADD's, or the `INC math_hi`'s on the carry path — so N and
    Z describe math_lo on one path and math_hi on the other.  A KEPT shim (generated code and the
    mul16_by_pi / scale16_by_y twins call it); D is honoured through mul8_noinit. */
-void mul8_accum(void)
+/* mul8_accum's exit ABI: A + N/Z/C/V.  N/Z come from math_lo on the no-carry path and from the
+   INCremented math_hi on the carry path — reconstructed in the shim from this typed result. */
+typedef struct { uint8_t a, n, z, c, v; } Mul8AccumExit;
+
+static Mul8AccumExit mul8_accum_core(void)
 {
-    uint8_t lowHigh, hiOperand = shared_temp_76;
+    uint8_t hiOperand = shared_temp_76, mathHi = math_hi;
 
-    mul8_noinit();                      /* $0DBF — math_lo x math_hi, the LOW half */
-    lowHigh = cpu.A;
-    shared_temp_77 = lowHigh;           /* $0DC2 */
+    /* $0DBF — math_lo x math_hi, the LOW half.  Only its product-high byte is used. */
+    Mul8   r1      = mul8_noinit_core(math_lo, mathHi);
+    uint8_t lowHigh = (uint8_t)(r1.product >> 8);
+    shared_temp_77  = lowHigh;                       /* $0DC2 */
 
-    math_lo = hiOperand; mul8_noinit(); /* $0DC4-$0DC6 — shared_temp_76 x math_hi, the HIGH half */
-    math_hi = cpu.A;                    /* $0DC9 */
+    /* $0DC4-$0DC6 — shared_temp_76 x math_hi, the HIGH half. */
+    Mul8   r2   = mul8_noinit_core(hiOperand, mathHi);
+    math_lo     = (uint8_t)r2.product;              /* the second product's low byte */
+    math_hi     = (uint8_t)(r2.product >> 8);       /* $0DC9 */
 
     /* $0DCB-$0DD0 CLC/ADC — the low product's high byte into the high product's low byte. */
-    { uint8_t  a = lowHigh, m = math_lo;
-      unsigned sum = (unsigned)a + m;
-      uint8_t  res = (uint8_t)sum;
-      math_lo = res;
-      cpu.A   = res;
-      cpu.C   = (uint8_t)(sum > 0xFFu);
-      cpu.V   = (uint8_t)(((~(a ^ m) & (a ^ res)) >> 7) & 1u);
-      cpu.N   = (uint8_t)((res >> 7) & 1u);
-      cpu.Z   = (uint8_t)(res == 0);
-      if (sum > 0xFFu) inc_mem(MEM_math_hi);   /* $0DD4 — carry: INC, and N/Z from math_hi now */
+    uint8_t  a = lowHigh, m = math_lo;
+    unsigned sum = (unsigned)a + m;
+    uint8_t  res = (uint8_t)sum;
+    math_lo = res;
+
+    Mul8AccumExit e;
+    e.a = res;
+    e.c = (uint8_t)(sum > 0xFFu);
+    e.v = (uint8_t)(((~(a ^ m) & (a ^ res)) >> 7) & 1u);
+    if (sum > 0xFFu) {
+        math_hi = (uint8_t)(math_hi + 1u);          /* $0DD4 INC math_hi — carry path */
+        e.n = (uint8_t)((math_hi >> 7) & 1u);       /* N/Z now describe math_hi */
+        e.z = (uint8_t)(math_hi == 0);
+    } else {
+        e.n = (uint8_t)((res >> 7) & 1u);           /* N/Z describe math_lo */
+        e.z = (uint8_t)(res == 0);
     }
+    return e;
+}
+
+void mul8_accum(void)
+{
+    Mul8AccumExit e = mul8_accum_core();
+    cpu.A = e.a; cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c; cpu.V = e.v;
 }
 
 /* ---------------------------------------------------------------------------
@@ -5777,7 +5809,8 @@ void mul16_by_pi(void)
     math_lo        = (uint8_t)scaled;           /* $0DB3-$0DB8, two ASL/ROL pairs */
     shared_temp_76 = (uint8_t)(scaled >> 8);    /* $0DB9 */
     math_hi        = 0xC9u;                     /* $0DBB-$0DBD — pi/4 in .8 fixed point */
-    mul8_accum();
+    { Mul8AccumExit e = mul8_accum_core();      /* falls into mul8_accum; its exit is this routine's */
+      cpu.A = e.a; cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c; cpu.V = e.v; }
 }
 
 /* ---------------------------------------------------------------------------
