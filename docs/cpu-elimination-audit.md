@@ -262,3 +262,31 @@ Gate (all sub-commits): full `make validate` 0-mismatch; ≥4 (here 5–6) logic
 distinct-behaviour counts (`rm .o + binary` before every build); `make determinism` +
 `make determinism-drive` byte-identical (no `PHA`/`PLA` removed — the stack-scratch skip was not
 exercised).
+
+## Cluster-8 lessons — escaping flags by value, and the shared-PRNG stream is load-bearing
+
+The computational helpers that still held `cpu`. Each converts in place (core cpu-free, exit ABI
+reconstructed in the shim); the shims relocate in cluster 9. Three catches:
+
+- **An escaping flag that a zero-operand path leaves UNTOUCHED needs a `setV`/`setFlag` companion.**
+  `div16by8` writes V only when a subtract ran; `mul8_noinit` writes V only for a non-zero multiplier
+  (no ADC → the 6502 leaves the caller's V). A cpu-free core cannot "leave the caller's flag," so it
+  returns `{value, v, setV}` and the shim does `if (setV) cpu.V = v;`. Same shape as the crash-freeze
+  `Div16By8.setV`. Sabotage from BOTH directions (write-when-shouldn't AND wrong-value-when-should).
+
+- **N/Z can describe DIFFERENT cells on different exit arms — reconstruct per arm, don't hoist.**
+  `mul8_accum`'s closing `ADC` sets N/Z from `math_lo`, but the carry path's `INC math_hi` overwrites
+  them with `math_hi`'s. The core returns the exit `{a,n,z,c,v}` computed per arm; a sabotage that
+  takes N/Z from `res` on the carry path fails distinctly (175) from the value defects (128/670/2982).
+
+- **⚠⚠ The `validate_native.c` xs() stream is GLOBAL and some fixtures are position-sensitive.** The
+  span fixtures (`road_span_plot`/`_2`) pass or fail depending on *which* random cases they draw, which
+  depends on how much `xs()` every earlier fixture consumed — `div16by8` already keeps a discarded
+  `(void)(xs()%4)` to hold the position. A new fixture that adds `fill_random` (16384 draws each!) or
+  per-case `xs()` reshuffles everything downstream. When strengthening a fixture that runs BEFORE the
+  span group, **consume zero net `xs()`** (fixed registers, reuse the standing `pre[]`) — an added
+  boundary sweep in `abs8` surfaced a latent `road_span_plot` exit-A divergence purely by shifting the
+  stream. ⚠ That divergence is real but pre-existing: on the occupied-ends-column early return the 6502
+  leaves A = the cell it `LDA`'d while the cpu-free core leaves entry A; the fixture declares A live on
+  every non-abandon path, so it is masked only by the pinned stream. Whether A is truly dead there
+  (caller reloads) is an open per-path-liveness question for the span fixture, independent of cluster 8.
