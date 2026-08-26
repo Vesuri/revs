@@ -5701,23 +5701,31 @@ typedef struct { uint16_t product; uint8_t v, setV; } Mul8;
 
 static Mul8 mul8_noinit_core(uint8_t multiplier, uint8_t addend)
 {
+    /* The 8x8 shift-and-add, simulated exactly as $0C02-$0C46 so the escaping V is the real V of
+       the LAST ADC — a closed form for the accumulator before that add is too fragile to trust
+       (it must reproduce the 6502's ADC overflow bit for all 65536 pairs, not merely the product).
+       math_lo (multiplier) is shifted out a bit at a time; on each set bit math_hi (addend) is
+       added, and the {A:math_lo} pair rotates right.  Product high ends in A, low in m. */
     Mul8 r;
-    r.product = revs_mulu16((uint16_t)multiplier, (uint16_t)addend);
+    uint8_t A = 0, m = multiplier, C = 0;
     r.v = 0; r.setV = 0;
 
-    /* The V of the LAST add in the 6502's shift-and-add, which lands at the multiplier's top set
-       bit with the accumulator holding (addend x (multiplier mod 2^k)) >> k — replayed from those
-       two operands as an 8-bit signed add's overflow.  Zero multiplier: no add, V untouched. */
-    if (multiplier) {
-        unsigned k = 7;
-        uint8_t  acc, sum;
-        while (!(multiplier & (1u << k))) k--;
-        acc = (uint8_t)(revs_mulu16((uint16_t)addend,
-                                    (uint16_t)(multiplier & ((1u << k) - 1u))) >> k);
-        sum = (uint8_t)(acc + addend);
-        r.v = (uint8_t)(((acc ^ sum) >> 7) & 1u);
-        r.setV = 1;
+    for (int i = 0; i < 8; i++) {
+        if (i == 0) { C = m & 1u; m >>= 1; }        /* $0C04 LSR math_lo (seeds the first bit) */
+        /* iters 1..7 reuse the C left by the previous ROR math_lo */
+        if (C) {                                     /* BCC skips the add when the bit is clear */
+            unsigned s   = (unsigned)A + addend;     /* $0C08-$0C09 CLC; ADC math_hi (carry-in 0) */
+            uint8_t  res = (uint8_t)s;
+            r.v   = (uint8_t)((~(A ^ addend) & (A ^ res)) >> 7) & 1u;
+            r.setV = 1;
+            C = (uint8_t)(s > 0xFFu);
+            A = res;
+        }
+        { uint8_t cin = C; C = A & 1u; A = (uint8_t)((cin << 7) | (A >> 1)); }  /* ROR A */
+        { uint8_t cin = C; C = m & 1u; m = (uint8_t)((cin << 7) | (m >> 1)); }  /* ROR math_lo */
     }
+
+    r.product = (uint16_t)((A << 8) | m);
     return r;
 }
 
