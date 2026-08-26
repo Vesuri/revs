@@ -972,6 +972,13 @@ VALIDATE_FUNCS = {
     # per-car best.  cpu.D=1 bracket + sbc_value/adc_value (§8 SED sites), plain 24-bit compare to
     # order the best-lap check (BCD bytes sort like their value).
     0x4F77,
+    # ⭐ TWIN #137 — car_gap_tail ($27AB), the shared fall-through tail of car_gap ($27A4) and its
+    # two other callers ($10E1, $28FD).  Forms the signed ring separation dist[Y]-dist[X], takes
+    # |D|, reduces it around the lap_length ring, and rotates a per-call sign bit into hypot_min_hi.
+    # Flag/stack-heavy (two PHP/PLP with the EOR #$80 sign-flip, a ROR shift register, escaping C/N/A)
+    # so it keeps the faithful seam: the arithmetic is plain C but the exit ABI is reconstructed in
+    # the shim.  Entry C is a genuine input.  No BCD (D=0 on this path).
+    0x27AB,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

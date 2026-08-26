@@ -9954,7 +9954,7 @@ void adc_read(void)
    helpers around them.  D = 0 on every one of these paths (docs/static-map.md
    §Decimal mode: none of the eight SED sites is here), so the ADC/SBC byte
    arithmetic is plain binary and the twins spell it as such.  Where a value
-   crosses into a shared transliterated tail (FUN_27ab, FUN_1c0b, FUN_11be) or a
+   crosses into a shared tail (car_gap_tail — now native twin #137 — FUN_1c0b, FUN_11be) or a
    native leaf with a live-flag input (abs8, abs16_math), the seam reconstructs
    exactly the cpu inputs that leaf reads — nothing more.
    =========================================================================== */
@@ -10246,11 +10246,14 @@ void process_car_contact(void)
     FUN_1c0b();                                             /* heading_step_hi = A; slip flags; sound */
 }
 
+#define CAR_DISTANCE_LO   0x08D0u   /* car_distance_lo: distance-round-the-lap, low byte */
+#define CAR_DISTANCE_HI   0x08E8u   /* car_distance_hi: ...high byte */
+
 /* ---------------------------------------------------------------------------
    $27A4  car_gap  (twin #125)
    ---------------------------------------------------------------------------
    Byte 0 of the 24-bit separation between cars Y and X.  Only this subtract's BORROW
-   survives into the shared three-byte tail (FUN_27ab) — the low difference itself is
+   survives into the shared three-byte tail (car_gap_tail) — the low difference itself is
    discarded there — so the twin's whole job is to hand that tail the right carry.
    --------------------------------------------------------------------------- */
 static unsigned car_gap_lo_core(uint8_t a, uint8_t b) { return (unsigned)a - b; }
@@ -10259,7 +10262,102 @@ void car_gap(void)
     unsigned d = car_gap_lo_core(mem[CAR_STATE_1 + cpu.Y], mem[CAR_STATE_1 + cpu.X]);
     cpu.A = (uint8_t)d;
     cpu.C = !(d & 0x100);                          /* SEC/SBC: C clear = borrow */
-    FUN_27ab();
+    car_gap_tail();
+}
+
+/* ---------------------------------------------------------------------------
+   $27AB  car_gap_tail — SIGNED GAP AROUND THE RING  (twin #137)
+   ---------------------------------------------------------------------------
+   The shared three-byte tail every car_gap ($27A4) and its two other callers ($10E1, $28FD)
+   fall into.  Forms the signed 16-bit separation  D = car_distance[Y] - car_distance[X]  (the
+   borrow is chained from the entry carry — car_gap's byte-0 subtract, or a plain SEC), takes
+   |D|, then reduces it around a circular track of circumference lap_length:
+
+       * D's high byte is zero      -> the gap IS |D|            (near pair, "direct" branch)
+       * otherwise                  -> the shorter way is  lap_length - |D|   ("wrapped" branch)
+
+   Products written to memory:
+       math_lo       = the reduced gap's low byte
+       math_hi       = |D|'s high byte
+       hypot_min_hi  = a per-call sign bit rotated into this shift register: a 1 on the direct
+                       branch, a 0 on the wrapped branch (bit 6 of hypot_min_hi later selects
+                       negate-vs-accumulate for the caller's sort).
+
+   The original saves D's sign (PHP), and on the wrapped branch FLIPS it (PLA/EOR #$80/PHP) so
+   the final abs8 re-signs the complement the opposite way round.  Both are modelled here as
+   plain booleans; abs8/abs16_math are inlined as the binary negates they are (D = 0 always —
+   race logic, not a BCD site).
+
+   Exit ABI — the three registers/flags callers actually read ($10E1 and $28FD test C then use
+   A; check_car_pair tests C, then N, then compares A):
+       C = 1 on the three "far" exits (SEC at $27EB), 0 on the two in-range exits (CLC $27E8)
+       N = the sign of the returned A          A = the reduced gap byte the caller compares
+   V and Z are dead at every caller.  The PHP/PLP stack byte ($01FF) is the oracle's only
+   residue the twin does not reproduce; the fixture ignores it.
+   --------------------------------------------------------------------------- */
+typedef struct { uint8_t a, n, c; } GapTail;
+
+static GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn)
+{
+    /* D = dist[Y] - dist[X], 16-bit, borrow chained from the entry carry. */
+    int lo = (int)mem[CAR_DISTANCE_LO + y] - mem[CAR_DISTANCE_LO + x] - (carryIn ? 0 : 1);
+    uint8_t maglo = (uint8_t)lo;
+    unsigned c1   = (lo >= 0);
+    int hi = (int)mem[CAR_DISTANCE_HI + y] - mem[CAR_DISTANCE_HI + x] - (c1 ? 0 : 1);
+    uint8_t  dhi  = (uint8_t)hi;                    /* raw high byte of D (its sign, saved by PHP) */
+    unsigned n1   = (dhi >> 7) & 1u;               /* D negative? */
+    unsigned z1   = (dhi == 0);                    /* D's high byte zero? -> near pair */
+
+    uint8_t maghi = dhi;
+    if (n1) {                                      /* |D| via abs16_math: negate (dhi:maglo) */
+        uint16_t mag = (uint16_t)(0u - (uint16_t)(((uint16_t)dhi << 8) | maglo));
+        maglo = (uint8_t)mag;
+        maghi = (uint8_t)(mag >> 8);
+    }
+    math_lo = maglo;
+    math_hi = maghi;
+
+    GapTail r;
+    if (z1) {
+        /* DIRECT: rotate a 1 into the sign register (C = 1 from the SEC at $27C1). */
+        hypot_min_hi = (uint8_t)((hypot_min_hi >> 1) | 0x80u);
+        if (maglo >= 0x80u) {                       /* $27DE BCS -> far exit (PLP/SEC) */
+            r.a = maglo; r.n = (uint8_t)n1; r.c = 1;/* n1 == 0 here (high byte is zero) */
+            return r;
+        }
+        /* abs8 with N = n1 = 0: no negate; CLC. */
+        r.a = maglo; r.n = (uint8_t)((maglo >> 7) & 1u); r.c = 0;
+        return r;
+    }
+
+    /* WRAPPED: complement = lap_length - |D|, with the saved sign flipped for the re-sign. */
+    unsigned flipped = n1 ^ 1u;                     /* P2's N (the PLA/EOR #$80 flip) */
+    int clo = (int)lap_length_lo - maglo;
+    uint8_t  comp_lo = (uint8_t)clo;
+    unsigned c3 = (clo >= 0);
+    math_lo = comp_lo;
+    int chi = (int)lap_length_hi - maghi - (c3 ? 0 : 1);
+    if ((uint8_t)chi != 0) {                        /* $27D5 BNE -> far exit (PLP/SEC) */
+        r.a = (uint8_t)chi; r.n = (uint8_t)flipped; r.c = 1;
+        return r;
+    }
+    /* complement fits in a byte: rotate a 0 into the sign register (CLC at $27D7). */
+    hypot_min_hi = (uint8_t)(hypot_min_hi >> 1);
+    if (comp_lo >= 0x80u) {                         /* $27DE BCS -> far exit (PLP/SEC) */
+        r.a = comp_lo; r.n = (uint8_t)flipped; r.c = 1;
+        return r;
+    }
+    /* abs8 with N = flipped: negate the complement iff D was positive; CLC. */
+    uint8_t a = flipped ? (uint8_t)(0u - comp_lo) : comp_lo;
+    math_lo = a;
+    r.a = a; r.n = (uint8_t)((a >> 7) & 1u); r.c = 0;
+    return r;
+}
+
+void car_gap_tail(void)
+{
+    GapTail e = car_gap_tail_core(cpu.X, cpu.Y, cpu.C);   /* entry C is a genuine input */
+    cpu.A = e.a; cpu.N = e.n; cpu.C = e.c;                /* V, Z dead at every caller */
 }
 
 /* ---------------------------------------------------------------------------
@@ -10708,9 +10806,8 @@ void clear_race_clock(void)
    §Decimal mode), so the distance counter is a plain binary uint16_t.
    =========================================================================== */
 #define SEGMENT_LEN_TBL   0x5907u   /* segment_len_tbl: length of each track segment */
-#define CAR_DISTANCE_LO   0x08D0u   /* car_distance_lo: distance-round-the-lap, low byte */
-#define CAR_DISTANCE_HI   0x08E8u   /* car_distance_hi: ...high byte */
 #define CAR_LAP_COUNT     0x04B4u   /* car_lap_count: completed laps per car */
+/* CAR_DISTANCE_LO / CAR_DISTANCE_HI defined above, before the car_gap twin. */
 
 /* $147C track_pos_advance — step car x one offset-unit forward. */
 static uint8_t track_pos_advance_core(uint8_t x)

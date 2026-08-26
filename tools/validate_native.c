@@ -4045,6 +4045,7 @@ void tick_wheel_spin(void);         void tick_wheel_spin__t6502(void);
 void spin_car_out(void);            void spin_car_out__t6502(void);
 void process_car_contact(void);     void process_car_contact__t6502(void);
 void car_gap(void);                 void car_gap__t6502(void);
+void car_gap_tail(void);                 void car_gap_tail__t6502(void);
 
 static int test_late_misc_trees(void)
 {
@@ -4055,7 +4056,7 @@ static int test_late_misc_trees(void)
     if (scale < 1) scale = 1;
 
     struct { const char* name; void (*nat)(void); void (*ref)(void); unsigned mask; int cases; }
-      list[10] = {
+      list[11] = {
         { "scale_wing_settings",     scale_wing_settings,     scale_wing_settings__t6502,     LIVE_NONE, 2000 },
         { "compute_segment_scale",   compute_segment_scale,   compute_segment_scale__t6502,   LIVE_NONE, 3000 },
         { "section_angle_curve",     section_angle_curve,     section_angle_curve__t6502,     LIVE_A,    2000 },
@@ -4066,19 +4067,21 @@ static int test_late_misc_trees(void)
         { "spin_car_out",            spin_car_out,            spin_car_out__t6502,            LIVE_NONE, 2000 },
         { "process_car_contact",     process_car_contact,     process_car_contact__t6502,     LIVE_NONE, 5000 },
         { "car_gap",                 car_gap,                 car_gap__t6502,                 LIVE_A | LIVE_C | LIVE_N, 3000 },
+        { "car_gap_tail",                car_gap_tail,                car_gap_tail__t6502,            LIVE_A | LIVE_C | LIVE_N, 5000 },
       };
     static const uint16_t mathIgnore[] = { 0x0074, 0x0075 };   /* mul8/abs16 scratch */
+    static const uint16_t gapIgnore[]  = { 0x01FF };           /* car_gap_tail's PHP/PLP stack byte */
     static const uint16_t segIgnore[]  = { 0x0074, 0x0075, 0x01FF };  /* + the oracle's PHP stack byte */
     /* place_player pushes its two saved bytes to the real stack (byte-faithful over page 1),
        so only the mul8 scratch needs ignoring — the PHA slots are compared. */
     static const uint16_t contIgnore[]  = { 0x0074, 0x0075, 0x01FF };  /* + the oracle's PHP stack byte */
 
-    for (i = 0; i < 10; i++) register_fixture(list[i].name);
+    for (i = 0; i < 11; i++) register_fixture(list[i].name);
 
     setenv("REVS_SMC_CONTINUE", "1", 1);
     unsigned long smcBefore = g_smcUnhandled;
 
-    for (i = 0; i < 10; i++) {
+    for (i = 0; i < 11; i++) {
         int cases   = list[i].cases * scale;
         int contact = 0, spun = 0, floored = 0, credited = 0, carried = 0;
         int smcArm = 0, bodyArm = 0, decimal = 0, diffArm = 0;
@@ -4089,6 +4092,7 @@ static int test_late_misc_trees(void)
         else if (i == 2)   set_ignore(mathIgnore, 1);   /* shallow arm's math_lo scratch */
         else if (i == 5)   set_ignore(mathIgnore, 2);   /* mul8 scratch; PHA slots are compared */
         else if (i == 8)   set_ignore(contIgnore, 3);   /* mul8 scratch + PHP stack byte */
+        else if (i == 10)  set_ignore(gapIgnore, 1);    /* PHP/PLP stack byte only ($74/$75 are OUTPUTS) */
         else               set_ignore(useIgnore ? mathIgnore : 0, useIgnore ? 2 : 0);
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
@@ -4134,6 +4138,23 @@ static int test_late_misc_trees(void)
             case 9: /* car_gap: X, Y in car range */
                 c.X = (uint8_t)(xs() % 20);
                 c.Y = (uint8_t)(xs() % 20);
+                break;
+            case 10: /* car_gap_tail ($27AB): X, Y in car range; entry carry is a genuine input */
+                c.X = (uint8_t)(xs() % 20);
+                c.Y = (uint8_t)(xs() % 20);
+                /* lap_length: a plausible ring circumference (hi 1..$7F) so the wrapped
+                   complement lap_length - |D| lands both above and below a byte. */
+                pre[0x59FC] = (uint8_t)xs();
+                pre[0x59FD] = (uint8_t)(1 + xs() % 0x7F);
+                if (t % 3 == 0) {
+                    /* near pair: equal distance high bytes so D's high byte is zero (direct
+                       branch) whenever the low subtract does not borrow, and 0xFF (negative,
+                       abs16 path) when it does — both reached from this one arm. */
+                    uint8_t base = (uint8_t)xs();
+                    pre[0x08E8 + c.X] = base; pre[0x08E8 + c.Y] = base;
+                    pre[0x08D0 + c.X] = (uint8_t)xs();
+                    pre[0x08D0 + c.Y] = (uint8_t)xs();
+                }
                 break;
             default: break;
             }
