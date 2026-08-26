@@ -4054,6 +4054,7 @@ void step_segment_dir_index(void); void step_segment_dir_index__t6502(void);
 void advance_dir_on_segment_flag(void); void advance_dir_on_segment_flag__t6502(void);
 void step_section_curve(void);      void step_section_curve__t6502(void);
 void load_section_from_segment(void); void load_section_from_segment__t6502(void);
+void cross_section_boundary(void);  void cross_section_boundary__t6502(void);
 
 static int test_late_misc_trees(void)
 {
@@ -4064,7 +4065,7 @@ static int test_late_misc_trees(void)
     if (scale < 1) scale = 1;
 
     struct { const char* name; void (*nat)(void); void (*ref)(void); unsigned mask; int cases; }
-      list[19] = {
+      list[20] = {
         { "scale_wing_settings",     scale_wing_settings,     scale_wing_settings__t6502,     LIVE_NONE, 2000 },
         { "compute_segment_scale",   compute_segment_scale,   compute_segment_scale__t6502,   LIVE_NONE, 3000 },
         { "section_angle_curve",     section_angle_curve,     section_angle_curve__t6502,     LIVE_A,    2000 },
@@ -4084,6 +4085,7 @@ static int test_late_misc_trees(void)
         { "advance_dir_on_segment_flag", advance_dir_on_segment_flag, advance_dir_on_segment_flag__t6502, LIVE_NONE, 4000 },
         { "step_section_curve",          step_section_curve,          step_section_curve__t6502,      LIVE_NONE, 5000 },
         { "load_section_from_segment",   load_section_from_segment,   load_section_from_segment__t6502, LIVE_NONE, 5000 },
+        { "cross_section_boundary",      cross_section_boundary,      cross_section_boundary__t6502,   LIVE_NONE, 5000 },
       };
     static const uint16_t mathIgnore[] = { 0x0074, 0x0075 };   /* mul8/abs16 scratch */
     static const uint16_t gapIgnore[]  = { 0x01FF };           /* car_gap_tail's PHP/PLP stack byte */
@@ -4092,12 +4094,12 @@ static int test_late_misc_trees(void)
        so only the mul8 scratch needs ignoring — the PHA slots are compared. */
     static const uint16_t contIgnore[]  = { 0x0074, 0x0075, 0x01FF };  /* + the oracle's PHP stack byte */
 
-    for (i = 0; i < 19; i++) register_fixture(list[i].name);
+    for (i = 0; i < 20; i++) register_fixture(list[i].name);
 
     setenv("REVS_SMC_CONTINUE", "1", 1);
     unsigned long smcBefore = g_smcUnhandled;
 
-    for (i = 0; i < 19; i++) {
+    for (i = 0; i < 20; i++) {
         int cases   = list[i].cases * scale;
         int contact = 0, spun = 0, floored = 0, credited = 0, carried = 0;
         int smcArm = 0, bodyArm = 0, decimal = 0, diffArm = 0;
@@ -4279,6 +4281,35 @@ static int test_late_misc_trees(void)
                 if (xs() % 10) pre[0x1248] = 0xB9;      /* unpatched: LDA $5905,Y */
                 else { pre[0x1248] = 0x00; smcArm++; }  /* else-arm: platform_smc_unhandled trap */
                 break;
+            case 19: /* cross_section_boundary ($1267): track_direction bit7 picks forward/backward.
+                        section_cursor = X target; player_car_segment / retreat_segment = segment
+                        byte index (fill_random supplies the track tables).  The nested
+                        load_section_from_segment SMC $1248 is forced unpatched (tested at case 18);
+                        the backward path's SMC $1289 -> step_segment_dir_index (with an else-arm
+                        trap slice).  step_segment_dir_index inputs primed for both cases. */
+                pre[0x0024] = (uint8_t)(xs() % 0x78);   /* section_cursor (X) */
+                pre[0x06FF] = (uint8_t)xs();            /* player_car_segment (fwd Y / flags) */
+                pre[0x0021] = (uint8_t)xs();            /* retreat_segment (bwd Y) */
+                pre[0x0062] = (uint8_t)((xs() & 1) ? (1 + xs() % 255) : 0);  /* far_edge_rebuild */
+                pre[0x1248] = 0xB9;                     /* load_section_from_segment: unpatched */
+                {
+                    uint8_t cnt = (uint8_t)(1 + xs() % 40);
+                    pre[0x59FB] = cnt;                  /* track_dir_count (step_segment_dir_index) */
+                    pre[0x0002] = (uint8_t)(xs() % cnt);/* segment_dir_index */
+                }
+                if (xs() & 1) {
+                    pre[0x0025] = (uint8_t)(0x80 | (xs() & 0x7F));   /* backward */
+                    spun++;
+                    if (xs() % 8) {                     /* SMC $1289 -> step_segment_dir_index */
+                        pre[0x1289] = 0x20; pre[0x128A] = 0xE0; pre[0x128B] = 0x13;
+                    } else {                            /* else-arm: platform_smc_unhandled trap */
+                        pre[0x1289] = 0x00; smcArm++;
+                    }
+                } else {
+                    pre[0x0025] = (uint8_t)(xs() & 0x7F);            /* forward */
+                    contact++;
+                }
+                break;
             default: break;
             }
 
@@ -4306,6 +4337,7 @@ static int test_late_misc_trees(void)
         if (i == 16 && (!bodyArm || !smcArm)) vac = 1;  /* both dispatch arms reached */
         if (i == 17 && (!smcArm || !contact || !spun || !floored)) vac = 1;  /* scan + all 3 ramp outcomes */
         if (i == 18 && !smcArm)              vac = 1;   /* SMC else-arm trap reached */
+        if (i == 19 && (!contact || !spun || !smcArm)) vac = 1;  /* fwd + bwd + SMC trap arms */
         if (vac) { printf("[VACUOUS] %s\n", list[i].name); fail++; }
 
         printf("%-24s %7d cases, mismatch above must be 0  %s%s\n",

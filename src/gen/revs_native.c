@@ -10503,6 +10503,58 @@ void derive_car_section_cursor(void)
 }
 
 /* ---------------------------------------------------------------------------
+   $1267  cross_section_boundary  (twin #146)   — was FUN_1267
+   ---------------------------------------------------------------------------
+   Commits the road walk crossing into a new section (called by FUN_12f7 after track_pos_advance /
+   track_pos_retreat reports a section boundary was crossed).  It marks the near edge points to be
+   scrolled next frame, loads the new section's world geometry, and clears the section's flag byte.
+
+     - near_edge_scroll_pending = 6  (and near_edge_last = 6 when a far-edge rebuild is in flight,
+       so nothing is treated as reusable);
+     - forward (track_direction bit7 clear): load the segment the car is now in
+       (Y = player_car_segment); near_edge_shift comes from that segment's field-0 high byte;
+     - backward (bit7 set): load the segment being left (Y = retreat_segment), step the direction
+       index (SMC $1289), and use a fixed shift of 2;
+     - cur_segment_flags <- the new segment's field-0 low byte; section_flags[cursor] <- 0.
+
+   No flags or registers escape (LIVE_NONE; both callers reload Y at L_1333). */
+void cross_section_boundary(void)
+{
+    uint8_t x = section_cursor;             /* the walk's section byte cursor */
+    uint8_t shiftSrc;
+
+    near_edge_scroll_pending = 6;
+    if (far_edge_rebuild != 0)
+        near_edge_last = 6;
+
+    cpu.X = x;                              /* load_section_from_segment reads cpu.X / cpu.Y */
+    if (!(track_direction & 0x80)) {
+        /* forward: the segment the car has just entered */
+        cpu.Y = player_car_segment;
+        load_section_from_segment();
+        shiftSrc = mem[TRACK_SEGMENT_HI + player_car_segment];   /* field-0 high byte */
+    } else {
+        /* backward: the segment being left */
+        cpu.Y = retreat_segment;
+        load_section_from_segment();
+        /* SMC $1289: unpatched steps segment_dir_index; a circuit may hook it */
+        if (mem[0x1289] == 0x20) {
+            uint16_t t = (uint16_t)(mem[0x128A] | (mem[0x128B] << 8));
+            if (t == 0x13E0) { step_segment_dir_index(); }
+            else if (t >= 0x5300 && t <= 0x5A25) { revs_track_hook(t); }
+            else { platform_smc_unhandled(0x1289, t); return; }
+        } else {
+            platform_smc_unhandled(0x1289, mem[0x1289]); return;
+        }
+        shiftSrc = 0x02;
+    }
+
+    near_edge_shift = (uint8_t)(shiftSrc & 0x07);
+    cur_segment_flags = mem[TRACK_SEGMENT_LO + player_car_segment];   /* field-0 low byte */
+    mem[SECTION_FLAGS + x] = 0x00;          /* clear this section's feature flags */
+}
+
+/* ---------------------------------------------------------------------------
    $122D  load_section_from_segment  (twin #145)   — was FUN_122d
    ---------------------------------------------------------------------------
    Builds one live section's world geometry from its track-file segment record.  A track segment

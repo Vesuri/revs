@@ -1016,6 +1016,11 @@ VALIDATE_FUNCS = {
     # triple (fields 1..3), then fields 4,6 -> side-1 comps 0,2, field-5 low -> segment_dir_index
     # (SMC $1248), and copy_section_height_to_side1 shares the height.  X/Y preserved.
     0x122D,
+    # ⭐ TWIN #146 — cross_section_boundary ($1267, was FUN_1267).  Commits the road walk crossing
+    # into a new section: marks the near edge for scrolling, loads the new section's geometry
+    # (forward Y=player_car_segment; backward Y=retreat_segment + SMC $1289 dir-index step), sets
+    # near_edge_shift, copies cur_segment_flags, zeroes section_flags[cursor].
+    0x1267,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
