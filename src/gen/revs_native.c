@@ -121,6 +121,30 @@ REVS_FLAG_OP Adc adc_value(uint8_t a, uint8_t m, unsigned carryIn)
     return r;
 }
 
+/* a - m - !carry_in as a VALUE + borrow-out — the SBC counterpart of adc_value, for the same
+   reason (a multi-byte subtract's low halves feed only the next half's borrow).  ⚠ Decimal mode
+   is honoured because D changes the RESULT BYTE.  On the 6502 the CARRY out of an SBC is the
+   BINARY borrow even in decimal mode (only the accumulator digits are corrected), so .carry is
+   computed from the plain subtraction in both branches. */
+REVS_FLAG_OP Adc sbc_value(uint8_t a, uint8_t m, unsigned carryIn)
+{
+    int borrow = carryIn ? 0 : 1;
+    int t = (int)a - (int)m - borrow;               /* binary result -> the carry/borrow */
+    Adc r;
+    r.carry = (uint8_t)(t >= 0);                     /* 1 = no borrow, exactly like binary SBC */
+
+    if (cpu.D) {
+        int lo = (a & 0x0F) - (m & 0x0F) - borrow;
+        int hi = (a >> 4)   - (m >> 4);
+        if (lo < 0) { lo += 10; hi -= 1; }           /* borrow from the high nibble */
+        if (hi < 0) { hi += 10; }                    /* borrow out of the byte */
+        r.val = (uint8_t)(((hi << 4) | (lo & 0x0F)) & 0xFF);
+    } else {
+        r.val = (uint8_t)t;
+    }
+    return r;
+}
+
 /* V for ONE add, replayed from its operands — the ADC counterpart of the SBC overflow replay, and it
    exists for the same reason: mul8's exit V is the V of the LAST add in an eight-step chain,
    so the twin computes that one add's overflow instead of the seven dead ones. */
@@ -10753,3 +10777,101 @@ static uint8_t track_pos_retreat_core(uint8_t x)
 }
 
 void track_pos_retreat(void) { cpu.C = track_pos_retreat_core(cpu.X); }   /* exit ABI: C only */
+
+/* ------------------------------------------------------------------------------------------------
+ * $4F77 lap_complete — TWIN #136.  track_pos_advance calls this when a car's distance counter wraps
+ * a lap.  It books the completed lap and, when the mode calls for it, records the lap TIME:
+ * race_clock - car_lap_start as a 3-byte BCD value (centiseconds / seconds base-60 / minutes), and
+ * keeps the per-car best.  The player's finish is credited once per approach (a one-shot debounce)
+ * and, on the final lap, arms the end-of-session countdown.
+ *
+ * BCD is real here — it is one of the eight sanctioned SED sites (docs/static-map.md §Decimal
+ * mode) — so the time subtract goes through sbc_value/adc_value inside a cpu.D=1 bracket, exactly
+ * mirroring the routine's SED..CLD.  The best-lap check is a plain 24-bit magnitude compare: valid
+ * BCD bytes order like their decimal value, so no decimal arithmetic is needed merely to sort them.
+ * No register or flag escapes (the sole caller discards A/flags), so the shim marshals nothing back.
+ * ------------------------------------------------------------------------------------------------ */
+#define CAR_FLAGS_SHAPE   0x018Cu   /* car_flags_shape: bit6 = projection rejected this car */
+#define CAR_LAP_START_LO  0x0898u   /* car_lap_start_lo: per-car lap-start BCD timestamp, low  */
+#define CAR_LAP_START_MID 0x08ACu   /* car_lap_start_mid:                               middle */
+#define CAR_LAP_START_HI  0x04DCu   /* car_lap_start_hi:                                 high  */
+#define CAR_BEST_LAP_LO   0x06A0u   /* car_best_lap_lo: per-car best lap time, low byte  */
+#define CAR_BEST_LAP_MID  0x06B8u   /* car_best_lap_mid */
+#define CAR_BEST_LAP_HI   0x06D0u   /* car_best_lap_hi  */
+
+static void lap_complete_core(uint8_t x)
+{
+    /* an off-line full-track scan fakes position advances — don't count them as finishes */
+    if (track_scan_active & 0x80u) return;
+    /* only the 20 real cars carry lap stats */
+    if (x >= 0x14u) return;
+    /* a car the projection rejected (flags bit 6) is skipped */
+    if (mem[CAR_FLAGS_SHAPE + x] & 0x40u) return;
+
+    /* the player's lap is credited only once per approach: a self-restoring one-shot debounce that
+       fires exactly when lap_credit_armed == 1 (armed), leaving it disarmed */
+    if (x == player_car) {
+        if (lap_credit_armed != 1u) return;
+        lap_credit_armed = 0u;
+        lap_completed_flag = 0x80u;         /* ask update_lap_timers to refresh laps-remaining */
+    }
+
+    /* book the completed lap (a count already >= $80 is a sentinel and left alone).  laps holds the
+       PRE-increment value — that is what the race-mode gate below compares. */
+    uint8_t laps = mem[CAR_LAP_COUNT + x];
+    if (!(laps & 0x80u)) mem[CAR_LAP_COUNT + x] = (uint8_t)(laps + 1u);
+
+    /* decide whether this lap's TIME gets recorded, by session mode */
+    int record;
+    if (session_is_race & 0x80u) {                      /* RACE: gate on the session lap total */
+        if (laps < race_lap_total) {
+            record = 1;                                 /* still within the race distance */
+        } else if (laps == race_lap_total) {
+            record = 1;                                 /* the final lap is recorded... */
+            if (x == player_car)
+                session_end_countdown = 0x50;           /* ...and the player's finish ends the race */
+        } else {
+            record = 0;                                 /* past the finish */
+        }
+    } else {                                            /* practice / qualifying: gate on slot order */
+        record = (x <= player_car);                     /* player, or a car ahead of it in car_order */
+    }
+    if (!record) return;
+
+    /* lap time = race_clock - car_lap_start, a 3-byte BCD value whose MIDDLE byte is seconds in
+       base 60: a borrow there adds $60 and forces a borrow into the minutes byte. */
+    cpu.D = 1;                                          /* SED — sanctioned BCD site */
+    Adc t_lo = sbc_value(mem[RACE_CLOCK_LO], mem[CAR_LAP_START_LO + x], 1);   /* SEC first */
+    math_lo = t_lo.val;
+
+    Adc t_mid = sbc_value(mem[RACE_CLOCK_MID], mem[CAR_LAP_START_MID + x], t_lo.carry);
+    unsigned hi_carry_in = t_mid.carry;                 /* 1 = no borrow out of the seconds byte */
+    if (!t_mid.carry) {                                 /* seconds underflowed: base-60 fixup */
+        t_mid = adc_value(t_mid.val, 0x60, 0);          /* ADC #$60 (C clear) */
+        hi_carry_in = 0;                                /* CLC — force the borrow into minutes */
+    }
+    math_hi = t_mid.val;
+
+    Adc t_hi = sbc_value(mem[RACE_CLOCK_HI], mem[CAR_LAP_START_HI + x], hi_carry_in);
+    hypot_min_hi = t_hi.val;
+
+    /* only a non-negative lap time (no borrow out of the whole subtract) can be a best lap */
+    if (t_hi.carry) {
+        uint32_t lap  = ((uint32_t)hypot_min_hi << 16) | ((uint32_t)math_hi << 8) | math_lo;
+        uint32_t best = ((uint32_t)mem[CAR_BEST_LAP_HI + x] << 16)
+                      | ((uint32_t)mem[CAR_BEST_LAP_MID + x] << 8) | mem[CAR_BEST_LAP_LO + x];
+        if (lap < best) {                               /* a new best for this car */
+            mem[CAR_BEST_LAP_LO + x]  = (uint8_t)(math_lo & 0xF0u);   /* drop the centisecond units */
+            mem[CAR_BEST_LAP_MID + x] = math_hi;
+            mem[CAR_BEST_LAP_HI + x]  = hypot_min_hi;
+        }
+    }
+
+    /* start the next lap's clock from now */
+    mem[CAR_LAP_START_LO + x]  = mem[RACE_CLOCK_LO];
+    mem[CAR_LAP_START_MID + x] = mem[RACE_CLOCK_MID];
+    mem[CAR_LAP_START_HI + x]  = mem[RACE_CLOCK_HI];
+    cpu.D = 0;                                          /* CLD */
+}
+
+void lap_complete(void) { lap_complete_core(cpu.X); }   /* X = car index; nothing escapes */

@@ -966,6 +966,12 @@ VALIDATE_FUNCS = {
     #   $14C3 track_pos_retreat   step car X back one offset unit
     0x147C,
     0x14C3,
+    # ⭐ TWIN #136 — lap_complete (Stage 2's third twin), called by track_pos_advance when a car's
+    # distance counter wraps a lap.  The one BCD member of the freeze subtree: it books the lap and
+    # records a base-60 lap time (race_clock - car_lap_start) as a 3-byte BCD value, keeping the
+    # per-car best.  cpu.D=1 bracket + sbc_value/adc_value (§8 SED sites), plain 24-bit compare to
+    # order the best-lap check (BCD bytes sort like their value).
+    0x4F77,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

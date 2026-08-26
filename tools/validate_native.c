@@ -4242,6 +4242,7 @@ void find_player_neighbours(void);  void find_player_neighbours__t6502(void);
 void clear_race_clock(void);        void clear_race_clock__t6502(void);
 void track_pos_advance(void);       void track_pos_advance__t6502(void);
 void track_pos_retreat(void);       void track_pos_retreat__t6502(void);
+void lap_complete(void);            void lap_complete__t6502(void);
 
 static int test_car_order_cluster(void)
 {
@@ -4349,7 +4350,68 @@ static int test_car_order_cluster(void)
         printf("%-32s %7d cases  live=C\n", "track_pos_retreat", cases);
     }
 
-    set_ignore(0, 0);
+    set_ignore(0, 0);   /* end the steppers' PHP/PLP $01FF ignore (lap_complete leaves no residue) */
+
+    /* --- lap_complete (Stage 2's third twin), called on a lap wrap.  Nothing escapes (the caller
+       discards A and flags) → LIVE_NONE.  Entry decimal is always clear on this path (the SED/CLD
+       is internal), so pin c.D = 0.  race_clock / car_lap_start / car_best_lap are ALWAYS valid
+       packed BCD in reality, and the 6502's decimal SBC and this twin's sbc_value agree only on
+       valid BCD, so plant valid BCD there (seconds byte 0-59).  The control gates — session mode,
+       the player one-shot debounce, the lap-total comparison and the flags-bit-6 skip — ride on
+       fill_random with a few arms forced to hit the interesting branches. */
+    register_fixture("lap_complete");
+    if (want("lap_complete")) {
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu(); fill_random(pre); c.D = 0;
+            uint8_t px = (uint8_t)(xs() % 20);
+            uint8_t x  = (t % 3) ? (uint8_t)(xs() % 20) : px;  /* sometimes the player */
+            /* targeted arm A: X exactly at the pseudo-car boundary ($14), where >= and > diverge.
+               Only reachable here, and the body must WRITE for the sabotage to show, so clear the
+               lap-count sentinel bit so its INC always fires. */
+            if (t % 11 == 0) { x = 0x14; px = (uint8_t)(xs() % 20); pre[0x04B4 + x] &= (uint8_t)0x7F; }
+            /* targeted arm B: a non-player car recorded in practice, with car_lap_start zeroed and
+               car_best_lap set equal to the resulting lap time — the only way lap == best, where
+               the best-lap test's < and <= diverge. */
+            if (t % 13 == 1) { px = 19; x = (uint8_t)(xs() % 19); }
+            c.X = x;
+            pre[0x006F] = px;                                 /* player_car: a real slot 0-19 */
+            pre[0x62F8] = (t % 7 == 0) ? 0x80 : 0x00;         /* mostly let the body run */
+            if (t % 2) pre[0x018C + x] &= (uint8_t)~0x40;     /* clear the projection-reject skip */
+            if (x == px) pre[0x0030] = (t % 2) ? 1 : (uint8_t)xs();        /* arm / disarm the credit */
+            if (t % 5 == 0) pre[0x006C] |= 0x80;              /* race mode */
+            else if (t % 5 == 1) pre[0x006C] &= (uint8_t)0x7F; /* practice / qualifying */
+            if (t % 4 == 0) pre[0x04B4 + x] = pre[0x006E];    /* car_lap_count == race_lap_total arm */
+            /* valid packed BCD clocks (centi 0-99, sec 0-59, min 0-99); force a non-zero centi low
+               nibble so the best-lap store's &$F0 is observable */
+            pre[0x06B4] = (uint8_t)(((xs() % 10) << 4) | ((xs() % 9) + 1)); /* race_clock_lo  (centi) */
+            pre[0x06CC] = (uint8_t)(((xs() % 6)  << 4) | (xs() % 10));      /* race_clock_mid (sec)   */
+            pre[0x06E4] = (uint8_t)(((xs() % 10) << 4) | (xs() % 10));      /* race_clock_hi  (min)   */
+            pre[0x0898 + x] = (uint8_t)(((xs() % 10) << 4) | (xs() % 10));  /* car_lap_start_lo  */
+            pre[0x08AC + x] = (uint8_t)(((xs() % 6)  << 4) | (xs() % 10));  /* car_lap_start_mid */
+            pre[0x04DC + x] = (uint8_t)(((xs() % 10) << 4) | (xs() % 10));  /* car_lap_start_hi  */
+            if (t % 3 == 0) {                                 /* force a new best (best = max) */
+                pre[0x06A0 + x] = 0x99; pre[0x06B8 + x] = 0x99; pre[0x06D0 + x] = 0x99;
+            } else {
+                pre[0x06A0 + x] = (uint8_t)(((xs() % 10) << 4) | (xs() % 10));
+                pre[0x06B8 + x] = (uint8_t)(((xs() % 6)  << 4) | (xs() % 10));
+                pre[0x06D0 + x] = (uint8_t)(((xs() % 10) << 4) | (xs() % 10));
+            }
+            if (t % 11 == 0) pre[0x018C + x] &= (uint8_t)~0x40;   /* boundary arm: body must run */
+            if (t % 13 == 1) {                                    /* equality arm: lap == best */
+                pre[0x62F8] = 0x00;                               /* scan not active            */
+                pre[0x018C + x] &= (uint8_t)~0x40;                /* not projection-rejected    */
+                pre[0x006C] &= (uint8_t)0x7F;                     /* practice -> x <= px records */
+                pre[0x0898 + x] = 0; pre[0x08AC + x] = 0; pre[0x04DC + x] = 0;   /* start = 0 -> lap == clock */
+                pre[0x06A0 + x] = pre[0x06B4];                    /* best := the exact lap time  */
+                pre[0x06B8 + x] = pre[0x06CC];
+                pre[0x06D0 + x] = pre[0x06E4];
+            }
+            fail += diff_run("lap_complete", pre, c,
+                             lap_complete, lap_complete__t6502, LIVE_NONE, t, &printed);
+        }
+        printf("%-32s %7d cases  live=NONE\n", "lap_complete", cases);
+    }
+
     return fail;
 }
 
