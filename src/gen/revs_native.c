@@ -1413,6 +1413,21 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
         irq_band_state++;
 
     if (load_a(crash_flag) != 0) {
+        /* ⭐ SHOW THE FENCE BEFORE THE HOLD.  check_crash() drew the fence into the view source
+           and view_paint_lines() has already painted it into the frame buffer this frame — but
+           the next present is not until the top of the frame loop, AFTER the 2 s hold below AND
+           the session reset.  On the BBC the framebuffer IS the screen, so the fence is visible
+           the instant it is drawn and stays up for the whole hold; here the decode-to-bitplanes
+           step needs a present to reproduce that.  Without this one call the crash graphic never
+           appears: the user sees the pre-crash frame frozen for the whole ~3 s sequence.  This
+           touches no game state (host renderFrame() is a no-op), so the determinism gates stay
+           byte-identical; it only makes the already-painted fence visible during the hold.
+           ⚠ Amiga-only: on the host renderFrame() fires tickVBI() (bbc_hw.cpp), which advances
+           the sim clock — an extra present there would move the trajectory the determinism gates
+           pin.  The present is a display concern and the host is headless, so it belongs here. */
+#if defined(REVS_PLATFORM_AMIGA)
+        platform_render_frame();
+#endif
         crash_flag++;                 /* straight back to zero: the crash is handled here */
         /* 100 fields = two seconds of holding the picture.  ⚠ The `LDA #$9C` is kept rather
            than folded into the store, because the value stays in A across the wait below and
