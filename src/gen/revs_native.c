@@ -10417,6 +10417,21 @@ void copy_section_height_to_side1(void)
 }
 
 /* ---------------------------------------------------------------------------
+   $13DA  advance_dir_on_segment_flag  (twin #143)   — was FUN_13da
+   ---------------------------------------------------------------------------
+   If bit 0 of the current segment's flags is set, advance segment_dir_index;
+   otherwise fall through to the FUN_13fa per-circuit hook (RTS on Silverstone).
+   Reached via the per-circuit SMC dispatch at $13C9/$1426.  Preserves X; the
+   callers discard the exit flags. */
+void advance_dir_on_segment_flag(void)
+{
+    if (cur_segment_flags & 0x01)
+        step_segment_dir_index();
+    else
+        FUN_13fa();
+}
+
+/* ---------------------------------------------------------------------------
    $13E0  step_segment_dir_index  (twin #142)   — was FUN_13e0
    ---------------------------------------------------------------------------
    Advances segment_dir_index one track position along the direction tables,

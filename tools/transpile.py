@@ -1004,6 +1004,9 @@ VALIDATE_FUNCS = {
     # track position, wrapping at track_dir_count, direction by track_direction bit 7.  Pure index
     # arithmetic; tail-calls the FUN_13fa per-circuit hook (RTS on Silverstone).
     0x13E0,
+    # ⭐ TWIN #143 — advance_dir_on_segment_flag ($13DA, was FUN_13da).  If cur_segment_flags bit 0
+    # is set, calls step_segment_dir_index; else the FUN_13fa per-circuit hook.  Pure branch.
+    0x13DA,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

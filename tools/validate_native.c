@@ -4051,6 +4051,7 @@ void copy_section_height_to_side1(void); void copy_section_height_to_side1__t650
 void derive_car_section_cursor(void); void derive_car_section_cursor__t6502(void);
 void build_section_step_delta(void); void build_section_step_delta__t6502(void);
 void step_segment_dir_index(void); void step_segment_dir_index__t6502(void);
+void advance_dir_on_segment_flag(void); void advance_dir_on_segment_flag__t6502(void);
 
 static int test_late_misc_trees(void)
 {
@@ -4061,7 +4062,7 @@ static int test_late_misc_trees(void)
     if (scale < 1) scale = 1;
 
     struct { const char* name; void (*nat)(void); void (*ref)(void); unsigned mask; int cases; }
-      list[16] = {
+      list[17] = {
         { "scale_wing_settings",     scale_wing_settings,     scale_wing_settings__t6502,     LIVE_NONE, 2000 },
         { "compute_segment_scale",   compute_segment_scale,   compute_segment_scale__t6502,   LIVE_NONE, 3000 },
         { "section_angle_curve",     section_angle_curve,     section_angle_curve__t6502,     LIVE_A,    2000 },
@@ -4078,6 +4079,7 @@ static int test_late_misc_trees(void)
         { "derive_car_section_cursor",   derive_car_section_cursor,   derive_car_section_cursor__t6502, LIVE_NONE, 3000 },
         { "build_section_step_delta",    build_section_step_delta,    build_section_step_delta__t6502, LIVE_NONE, 4000 },
         { "step_segment_dir_index",      step_segment_dir_index,      step_segment_dir_index__t6502, LIVE_NONE, 4000 },
+        { "advance_dir_on_segment_flag", advance_dir_on_segment_flag, advance_dir_on_segment_flag__t6502, LIVE_NONE, 4000 },
       };
     static const uint16_t mathIgnore[] = { 0x0074, 0x0075 };   /* mul8/abs16 scratch */
     static const uint16_t gapIgnore[]  = { 0x01FF };           /* car_gap_tail's PHP/PLP stack byte */
@@ -4086,12 +4088,12 @@ static int test_late_misc_trees(void)
        so only the mul8 scratch needs ignoring — the PHA slots are compared. */
     static const uint16_t contIgnore[]  = { 0x0074, 0x0075, 0x01FF };  /* + the oracle's PHP stack byte */
 
-    for (i = 0; i < 16; i++) register_fixture(list[i].name);
+    for (i = 0; i < 17; i++) register_fixture(list[i].name);
 
     setenv("REVS_SMC_CONTINUE", "1", 1);
     unsigned long smcBefore = g_smcUnhandled;
 
-    for (i = 0; i < 16; i++) {
+    for (i = 0; i < 17; i++) {
         int cases   = list[i].cases * scale;
         int contact = 0, spun = 0, floored = 0, credited = 0, carried = 0;
         int smcArm = 0, bodyArm = 0, decimal = 0, diffArm = 0;
@@ -4208,6 +4210,18 @@ static int test_late_misc_trees(void)
                     else                    smcArm++;    /* forward arm reached */
                 }
                 break;
+            case 16: /* advance_dir_on_segment_flag ($13DA): cur_segment_flags bit 0 picks the arm.
+                        Set up the step_segment_dir_index inputs so the set-bit arm is well-formed. */
+                {
+                    pre[0x0001] = (uint8_t)((xs() & 1) ? (xs() | 0x01) : (xs() & 0xFE));
+                    uint8_t cnt = (uint8_t)(1 + xs() % 40);
+                    pre[0x59FB] = cnt;
+                    pre[0x0002] = (uint8_t)(xs() % cnt);
+                    pre[0x0025] = (uint8_t)((xs() & 2) ? 0x80 : 0x00);
+                    if (pre[0x0001] & 0x01) smcArm++;    /* step arm reached */
+                    else                    bodyArm++;   /* no-op arm reached */
+                }
+                break;
             default: break;
             }
 
@@ -4232,6 +4246,7 @@ static int test_late_misc_trees(void)
         if ((i == 4 || i == 7) && !decimal)  vac = 1;   /* D really varied */
         if (i == 14 && !diffArm)             vac = 1;   /* the negate arm was reached */
         if (i == 15 && (!bodyArm || !smcArm)) vac = 1;  /* both direction arms reached */
+        if (i == 16 && (!bodyArm || !smcArm)) vac = 1;  /* both dispatch arms reached */
         if (vac) { printf("[VACUOUS] %s\n", list[i].name); fail++; }
 
         printf("%-24s %7d cases, mismatch above must be 0  %s%s\n",
