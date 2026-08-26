@@ -10361,6 +10361,45 @@ void car_gap_tail(void)
 }
 
 /* ---------------------------------------------------------------------------
+   $0BCC  section_coord_add_delta  (twin #138)   — was FUN_0bcc
+   ---------------------------------------------------------------------------
+   Integrates one signed direction step into a section's 3-component world coordinate:
+
+       for each component i = 0..2:
+           dest_coord[i] = src_coord[i] + delta[i]        (16-bit, wraps)
+
+   The source section is the byte cursor in Y, the destination the byte cursor in X (both index
+   section_coord_lo/hi, 40 sections x 3 bytes, plus the two scratch slots at $FA/$FD).  The step
+   delta[i] is the signed 16-bit value FUN_1442 built for this section: its low bytes are the
+   shared math window (math_lo, math_hi, shared_temp_76 at $74/$75/$76) and its high bytes are
+   point_delta_hi[0..2] ($83/$84/$85).
+
+   The 6502 does this as three ADC lo / ADC hi byte-pair chains (CLC before each low add); on the
+   D=0 road/placement path that is exactly a binary uint16_t add, so it is written as one here.
+   No flag escapes: FUN_12f7 does LDX straight after, and place_car_world_coords' AI branch
+   likewise — A/N/V/Z/C are all dead at both call sites. */
+static void section_coord_add_delta_core(uint8_t dst, uint8_t src,
+                                         const uint8_t dlo[3], const uint8_t dhi[3])
+{
+    for (int i = 0; i < 3; i++) {
+        uint16_t s = (uint16_t)(mem[SECTION_LO_TBL + src + i]
+                                | (mem[SECTION_HI_TBL + src + i] << 8));
+        uint16_t d = (uint16_t)(dlo[i] | (dhi[i] << 8));
+        uint16_t r = (uint16_t)(s + d);
+        mem[SECTION_LO_TBL + dst + i] = (uint8_t)r;
+        mem[SECTION_HI_TBL + dst + i] = (uint8_t)(r >> 8);
+    }
+}
+
+void section_coord_add_delta(void)
+{
+    const uint8_t dlo[3] = { math_lo, math_hi, shared_temp_76 };
+    const uint8_t dhi[3] = { mem[POINT_DELTA_HI + 0], mem[POINT_DELTA_HI + 1],
+                             mem[POINT_DELTA_HI + 2] };
+    section_coord_add_delta_core(cpu.X, cpu.Y, dlo, dhi);
+}
+
+/* ---------------------------------------------------------------------------
    $2937  place_car_world_coords  (twin #126)
    ---------------------------------------------------------------------------
    Projects one object's within-section offsets — car_state_1 ("along" the section) and
@@ -10389,7 +10428,7 @@ void car_gap_tail(void)
    unhandled case, faithfully reproduced.
 
    The tail (from $29F4) is the object queue: FUN_2a5d dispatches on object_dist_hi, and for a
-   near car ahead of car_behind the AI branch runs FUN_1442 / FUN_2b0e / FUN_0bcc / FUN_2a5f.
+   near car ahead of car_behind the AI branch runs FUN_1442 / FUN_2b0e / section_coord_add_delta / FUN_2a5f.
    Those are the real generated routines, called with the registers the transliteration set, so
    they cancel in the differential — the twin's job is the two loops and the coordinate adds.
    --------------------------------------------------------------------------- */
@@ -10521,11 +10560,11 @@ void place_car_world_coords(void)
     cpu.N = (soi & 0x80) != 0; cpu.Z = (soi == 0);
     FUN_1442();
     FUN_2b0e();
-    cpu.Y = 0xFD; cpu.X = 0xFA; FUN_0bcc();
+    cpu.Y = 0xFD; cpu.X = 0xFA; section_coord_add_delta();
     FUN_2b0e();
-    cpu.X = 0xF4; FUN_0bcc();
+    cpu.X = 0xF4; section_coord_add_delta();
     FUN_2b0e();
-    cpu.X = 0xFD; FUN_0bcc();
+    cpu.X = 0xFD; section_coord_add_delta();
     shared_counter_42 = 0x14; cpu.A = 0x02; FUN_2a5d();
     shared_counter_42 = 0x15; cpu.A = 0x01; cpu.X = 0xF4; FUN_2a5f();
     shared_counter_42 = 0x16; cpu.A = 0x00; cpu.X = 0xFA; FUN_2a5f();

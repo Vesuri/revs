@@ -4046,6 +4046,7 @@ void spin_car_out(void);            void spin_car_out__t6502(void);
 void process_car_contact(void);     void process_car_contact__t6502(void);
 void car_gap(void);                 void car_gap__t6502(void);
 void car_gap_tail(void);                 void car_gap_tail__t6502(void);
+void section_coord_add_delta(void);      void section_coord_add_delta__t6502(void);
 
 static int test_late_misc_trees(void)
 {
@@ -4056,7 +4057,7 @@ static int test_late_misc_trees(void)
     if (scale < 1) scale = 1;
 
     struct { const char* name; void (*nat)(void); void (*ref)(void); unsigned mask; int cases; }
-      list[11] = {
+      list[12] = {
         { "scale_wing_settings",     scale_wing_settings,     scale_wing_settings__t6502,     LIVE_NONE, 2000 },
         { "compute_segment_scale",   compute_segment_scale,   compute_segment_scale__t6502,   LIVE_NONE, 3000 },
         { "section_angle_curve",     section_angle_curve,     section_angle_curve__t6502,     LIVE_A,    2000 },
@@ -4068,6 +4069,7 @@ static int test_late_misc_trees(void)
         { "process_car_contact",     process_car_contact,     process_car_contact__t6502,     LIVE_NONE, 5000 },
         { "car_gap",                 car_gap,                 car_gap__t6502,                 LIVE_A | LIVE_C | LIVE_N, 3000 },
         { "car_gap_tail",                car_gap_tail,                car_gap_tail__t6502,            LIVE_A | LIVE_C | LIVE_N, 5000 },
+        { "section_coord_add_delta",     section_coord_add_delta,     section_coord_add_delta__t6502, LIVE_NONE, 5000 },
       };
     static const uint16_t mathIgnore[] = { 0x0074, 0x0075 };   /* mul8/abs16 scratch */
     static const uint16_t gapIgnore[]  = { 0x01FF };           /* car_gap_tail's PHP/PLP stack byte */
@@ -4076,12 +4078,12 @@ static int test_late_misc_trees(void)
        so only the mul8 scratch needs ignoring — the PHA slots are compared. */
     static const uint16_t contIgnore[]  = { 0x0074, 0x0075, 0x01FF };  /* + the oracle's PHP stack byte */
 
-    for (i = 0; i < 11; i++) register_fixture(list[i].name);
+    for (i = 0; i < 12; i++) register_fixture(list[i].name);
 
     setenv("REVS_SMC_CONTINUE", "1", 1);
     unsigned long smcBefore = g_smcUnhandled;
 
-    for (i = 0; i < 11; i++) {
+    for (i = 0; i < 12; i++) {
         int cases   = list[i].cases * scale;
         int contact = 0, spun = 0, floored = 0, credited = 0, carried = 0;
         int smcArm = 0, bodyArm = 0, decimal = 0, diffArm = 0;
@@ -4156,6 +4158,18 @@ static int test_late_misc_trees(void)
                     pre[0x08D0 + c.Y] = (uint8_t)xs();
                 }
                 break;
+            case 11: /* section_coord_add_delta ($0BCC): X dest / Y src are section byte cursors.
+                        The delta window ($74/$75/$76 lo, $83/$84/$85 hi) is full-random via
+                        fill_random, so both signs and every carry pattern are exercised. */
+                c.X = (uint8_t)(xs() % 0x78);   /* section range 0..$77 (X<=$FD avoids the lo/hi
+                                                   page overlap that only X>=$FE could reach) */
+                c.Y = (uint8_t)(xs() % 0x78);
+                if (t % 4 == 0) {               /* the place_car AI-branch scratch slots */
+                    static const uint8_t slot[3] = { 0xF4, 0xFA, 0xFD };
+                    c.X = slot[xs() % 3];
+                    c.Y = 0xFD;
+                }
+                break;
             default: break;
             }
 
@@ -4204,7 +4218,7 @@ static int test_late_misc_trees(void)
    --------------------------------------------------------------------------
    $2937 place_car_world_coords and $5A25 tally_bcd_column were the only two shipping routines
    still calling a 6502 math shim (mul8).  Both are DRIVERS whose native leaves cancel between
-   the two models — place_car's object-queue tail is the real FUN_2a5d/FUN_1442/FUN_2b0e/FUN_0bcc,
+   the two models — place_car's object-queue tail is the real FUN_2a5d/FUN_1442/FUN_2b0e/section_coord_add_delta,
    tally's fold is the real FUN_6698 — so each is verified on the DIFFERENCE its own arithmetic
    makes: the world coordinates for place_car, the BCD tally for tally_bcd_column.
 

@@ -979,6 +979,14 @@ VALIDATE_FUNCS = {
     # so it keeps the faithful seam: the arithmetic is plain C but the exit ABI is reconstructed in
     # the shim.  Entry C is a genuine input.  No BCD (D=0 on this path).
     0x27AB,
+    # ⭐ STAGE 4 — the FUN_12f7 road-builder cluster (user, 2026-08-26).  FUN_109b's grid loop
+    # calls FUN_12f7 to (re)build a section's geometry as it places the field; the whole cluster is
+    # still transliterated inside the freeze subtree.  Converted bottom-up, leaves first.
+    # ⭐ TWIN #138 — section_coord_add_delta ($0BCC, was FUN_0bcc), the cluster's cleanest leaf:
+    # three independent signed 16-bit adds integrating one direction step into a section's
+    # coordinate (dest[X] = src[Y] + delta).  Byte-pair carry chains -> plain uint16_t adds; no
+    # escaping flags (both callers overwrite A/flags immediately).  No BCD (D=0 on this path).
+    0x0BCC,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
