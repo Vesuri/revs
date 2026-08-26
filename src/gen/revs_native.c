@@ -10503,6 +10503,99 @@ void derive_car_section_cursor(void)
 }
 
 /* ---------------------------------------------------------------------------
+   $150E  step_section_curve  (twin #144)   — was FUN_150e
+   ---------------------------------------------------------------------------
+   The section-CURVE stepper, a leaf of the FUN_12f7 road-builder cluster.  It writes one byte,
+   section_curve[section_cursor], describing the curvature the road should show at the section the
+   walk is filling, and it carries a small marker state machine between calls in four zero-page
+   cells (near_curve_scale/_marker_countdown/_ramp_width/_curve_signed).
+
+   Indexing is off the player's own position: Y = player_car_segment (the segment number x 8, an
+   index into the per-segment track_segment_lo/hi records) and X = Y >> 3 (the plain segment number,
+   an index into segment_scale).
+
+   Two modes:
+
+   (a) near_marker_countdown == 0 — SCAN for the next curve marker.  Depending on cur_segment_flags
+       bit0 and near_curve_signed bit7, optionally step Y on by one segment record (+8) and X by one,
+       then inspect that record:
+         * track_segment_lo field-0 bit0 clear, or its countdown (track_segment_hi+5) zero
+           -> no marker here: emit segment_scale[X] | $40 and leave the countdown at 0;
+         * otherwise LATCH the marker — countdown = track_segment_hi+5, near_curve_signed =
+           track_segment_hi+7 (bit7 = direction), near_ramp_width = that & $7F, near_curve_scale =
+           segment_scale[X] — and emit near_curve_scale.
+       The pre-advance shortcut (player_seg_offset < track_segment_hi+5 with cur_segment_flags bit0
+       clear) also emits segment_scale[X] | $40 without touching state.
+
+   (b) near_marker_countdown != 0 — RAMP toward the latched marker.  Decrement the countdown to v
+       and emit a curve that ramps with distance:
+         * v >= near_ramp_width               -> near_curve_scale        (full curve, near marker)
+         * v + (v>>3) >= near_ramp_width       -> 0                        (transition band)
+         * otherwise                           -> near_curve_scale ^ $80   (sign-flipped, past band)
+       The band boundary is the 6502's SBC-then-ADC-for-carry idiom at $1567: after the borrow, the
+       add of (v>>3) sets carry exactly when v + (v>>3) >= near_ramp_width, choosing store-0 vs
+       store-flipped.
+
+   D=0 on this path (render/geometry); every arithmetic step is plain binary.  No flags or registers
+   escape — the sole caller (the $13CC region inside FUN_12f7) returns immediately after — so the
+   shim is a bare void wrapper. */
+void step_section_curve(void)
+{
+    uint8_t y = player_car_segment;          /* segment number x 8: track_segment_* index */
+    uint8_t x = (uint8_t)(y >> 3);           /* plain segment number: segment_scale index */
+    uint8_t out;
+
+    if (near_marker_countdown != 0) {
+        /* --- (b) ramp toward the latched marker --- */
+        uint8_t v = (uint8_t)(near_marker_countdown - 1);
+        near_marker_countdown = v;
+        math_lo = (uint8_t)(v >> 3);             /* $155E scratch — reproduced so 0x74 stays faithful */
+        if (v >= near_ramp_width) {
+            out = near_curve_scale;                              /* full curve near the marker */
+        } else {
+            uint8_t diff = (uint8_t)(v - near_ramp_width);      /* the borrowed byte */
+            unsigned sum = (unsigned)diff + (v >> 3);           /* ADC (v>>3), carry-in 0 */
+            out = (sum & 0x100) ? 0x00                          /* transition band */
+                                : (uint8_t)(near_curve_scale ^ 0x80);  /* past the band */
+        }
+    } else {
+        /* --- (a) scan the segment list for the next curve marker --- */
+        int advance;
+        if (cur_segment_flags & 0x01) {
+            advance = !(near_curve_signed & 0x80);              /* bit7 set -> inspect here */
+        } else if (player_seg_offset >= mem[TRACK_SEGMENT_HI + 5 + y]) {
+            advance = 1;                                        /* offset past this record */
+        } else {
+            advance = -1;                                      /* shortcut: no marker yet */
+        }
+
+        if (advance == -1) {
+            out = (uint8_t)(mem[SEGMENT_SCALE + x] | 0x40);
+        } else {
+            if (advance) { y = (uint8_t)(y + 8); x = (uint8_t)(x + 1); }  /* next segment record */
+
+            if ((mem[TRACK_SEGMENT_LO + y] & 0x01) == 0) {
+                out = (uint8_t)(mem[SEGMENT_SCALE + x] | 0x40); /* field-0 bit0 clear: no marker */
+            } else {
+                uint8_t cd = mem[TRACK_SEGMENT_HI + 5 + y];
+                near_marker_countdown = cd;
+                if (cd == 0) {
+                    out = (uint8_t)(mem[SEGMENT_SCALE + x] | 0x40);   /* zero-length marker */
+                } else {
+                    uint8_t raw = mem[TRACK_SEGMENT_HI + 7 + y];
+                    near_curve_signed = raw;                    /* bit7 = curve direction */
+                    near_ramp_width   = (uint8_t)(raw & 0x7F);
+                    near_curve_scale  = mem[SEGMENT_SCALE + x];
+                    out = near_curve_scale;
+                }
+            }
+        }
+    }
+
+    mem[SECTION_CURVE + section_cursor] = out;
+}
+
+/* ---------------------------------------------------------------------------
    $2937  place_car_world_coords  (twin #126)
    ---------------------------------------------------------------------------
    Projects one object's within-section offsets — car_state_1 ("along" the section) and

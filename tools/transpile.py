@@ -1007,6 +1007,10 @@ VALIDATE_FUNCS = {
     # ⭐ TWIN #143 — advance_dir_on_segment_flag ($13DA, was FUN_13da).  If cur_segment_flags bit 0
     # is set, calls step_segment_dir_index; else the FUN_13fa per-circuit hook.  Pure branch.
     0x13DA,
+    # ⭐ TWIN #144 — step_section_curve ($150E, was FUN_150e).  The cluster's section-CURVE leaf:
+    # a per-segment marker state machine (4 private zp cells) that writes section_curve[cursor];
+    # scans the segment list for the next curve marker, then ramps toward it.  Calls nothing.
+    0x150E,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

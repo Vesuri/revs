@@ -4052,6 +4052,7 @@ void derive_car_section_cursor(void); void derive_car_section_cursor__t6502(void
 void build_section_step_delta(void); void build_section_step_delta__t6502(void);
 void step_segment_dir_index(void); void step_segment_dir_index__t6502(void);
 void advance_dir_on_segment_flag(void); void advance_dir_on_segment_flag__t6502(void);
+void step_section_curve(void);      void step_section_curve__t6502(void);
 
 static int test_late_misc_trees(void)
 {
@@ -4062,7 +4063,7 @@ static int test_late_misc_trees(void)
     if (scale < 1) scale = 1;
 
     struct { const char* name; void (*nat)(void); void (*ref)(void); unsigned mask; int cases; }
-      list[17] = {
+      list[18] = {
         { "scale_wing_settings",     scale_wing_settings,     scale_wing_settings__t6502,     LIVE_NONE, 2000 },
         { "compute_segment_scale",   compute_segment_scale,   compute_segment_scale__t6502,   LIVE_NONE, 3000 },
         { "section_angle_curve",     section_angle_curve,     section_angle_curve__t6502,     LIVE_A,    2000 },
@@ -4080,6 +4081,7 @@ static int test_late_misc_trees(void)
         { "build_section_step_delta",    build_section_step_delta,    build_section_step_delta__t6502, LIVE_NONE, 4000 },
         { "step_segment_dir_index",      step_segment_dir_index,      step_segment_dir_index__t6502, LIVE_NONE, 4000 },
         { "advance_dir_on_segment_flag", advance_dir_on_segment_flag, advance_dir_on_segment_flag__t6502, LIVE_NONE, 4000 },
+        { "step_section_curve",          step_section_curve,          step_section_curve__t6502,      LIVE_NONE, 5000 },
       };
     static const uint16_t mathIgnore[] = { 0x0074, 0x0075 };   /* mul8/abs16 scratch */
     static const uint16_t gapIgnore[]  = { 0x01FF };           /* car_gap_tail's PHP/PLP stack byte */
@@ -4088,12 +4090,12 @@ static int test_late_misc_trees(void)
        so only the mul8 scratch needs ignoring — the PHA slots are compared. */
     static const uint16_t contIgnore[]  = { 0x0074, 0x0075, 0x01FF };  /* + the oracle's PHP stack byte */
 
-    for (i = 0; i < 17; i++) register_fixture(list[i].name);
+    for (i = 0; i < 18; i++) register_fixture(list[i].name);
 
     setenv("REVS_SMC_CONTINUE", "1", 1);
     unsigned long smcBefore = g_smcUnhandled;
 
-    for (i = 0; i < 17; i++) {
+    for (i = 0; i < 18; i++) {
         int cases   = list[i].cases * scale;
         int contact = 0, spun = 0, floored = 0, credited = 0, carried = 0;
         int smcArm = 0, bodyArm = 0, decimal = 0, diffArm = 0;
@@ -4222,6 +4224,51 @@ static int test_late_misc_trees(void)
                     else                    bodyArm++;   /* no-op arm reached */
                 }
                 break;
+            case 17: /* step_section_curve ($150E): near_marker_countdown 0 -> scan the segment list,
+                        nonzero -> ramp toward the marker.  Y = player_car_segment indexes the
+                        (fill_random) track tables; steer the ramp boundaries so the v>=width and the
+                        band/flipped carry edges are hit exactly, not just spanned.  Reused counters:
+                        smcArm=scan, contact=full, spun=band, floored=flipped. */
+                {
+                    pre[0x06FF] = (uint8_t)xs();                 /* player_car_segment (Y) */
+                    pre[0x0024] = (uint8_t)(xs() % 0x78);        /* section_cursor (store target) */
+                    pre[0x0001] = (uint8_t)xs();                 /* cur_segment_flags (bit0) */
+                    pre[0x0020] = (uint8_t)xs();                 /* near_curve_signed (bit7) */
+                    pre[0x0016] = (uint8_t)xs();                 /* near_curve_scale */
+                    pre[0x0897] = (uint8_t)xs();                 /* player_seg_offset */
+
+                    int r = (int)(xs() % 6);
+                    if (r == 0) {
+                        pre[0x0017] = 0;                         /* scan mode */
+                        smcArm++;
+                    } else if (r == 1) {                         /* v == width (full/band edge) */
+                        uint8_t w = (uint8_t)(xs() % 0x60);
+                        pre[0x0018] = w;
+                        pre[0x0017] = (uint8_t)(w + 1);
+                    } else if (r == 2) {                         /* v+(v>>3) == width (band edge) */
+                        uint8_t v = (uint8_t)(8 + xs() % 0x60);
+                        pre[0x0018] = (uint8_t)(v + (v >> 3));
+                        pre[0x0017] = (uint8_t)(v + 1);
+                    } else if (r == 3) {                         /* v+(v>>3) == width-1 (flip side) */
+                        uint8_t v = (uint8_t)(8 + xs() % 0x60);
+                        pre[0x0018] = (uint8_t)(v + (v >> 3) + 1);
+                        pre[0x0017] = (uint8_t)(v + 1);
+                    } else {                                     /* fully random ramp */
+                        pre[0x0017] = (uint8_t)(1 + xs() % 255);
+                        pre[0x0018] = (uint8_t)xs();
+                    }
+                    /* classify the ramp outcome actually produced (for the vacuity guard) */
+                    if (pre[0x0017] != 0) {
+                        uint8_t v = (uint8_t)(pre[0x0017] - 1);
+                        uint8_t w = pre[0x0018];
+                        if (v >= w) contact++;
+                        else {
+                            unsigned sum = (unsigned)(uint8_t)(v - w) + (v >> 3);
+                            if (sum & 0x100) spun++; else floored++;
+                        }
+                    }
+                }
+                break;
             default: break;
             }
 
@@ -4247,6 +4294,7 @@ static int test_late_misc_trees(void)
         if (i == 14 && !diffArm)             vac = 1;   /* the negate arm was reached */
         if (i == 15 && (!bodyArm || !smcArm)) vac = 1;  /* both direction arms reached */
         if (i == 16 && (!bodyArm || !smcArm)) vac = 1;  /* both dispatch arms reached */
+        if (i == 17 && (!smcArm || !contact || !spun || !floored)) vac = 1;  /* scan + all 3 ramp outcomes */
         if (vac) { printf("[VACUOUS] %s\n", list[i].name); fail++; }
 
         printf("%-24s %7d cases, mismatch above must be 0  %s%s\n",
