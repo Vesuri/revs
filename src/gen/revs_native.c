@@ -2340,21 +2340,38 @@ void emit_edge_width_offset(void)
    N flag, not bit 7 of A.  Real callers have just computed A so the two agree; a randomised
    pre-state decorrelates them, and the 6502 follows N.  $80 negates to itself.
    =========================================================================== */
+/* $3452-$3455 EOR #$FF / CLC / ADC #1 — negate `a` as (~a)+1, computing the add's own exit
+   flags directly: C set iff the value was 0 (~a+1 carries only from $FF), V set iff it was
+   $80 (~a == $7F is the one operand whose +1 signed-overflows), N/Z from the result.  cpu-free:
+   the whole result-plus-flags is returned by value, so a native caller that has already decided
+   the value is negative calls this directly instead of routing A and its sign N through cpu. */
+static AddFlags negate8(uint8_t a)
+{
+    uint8_t  inverted = (uint8_t)(a ^ 0xFFu);
+    unsigned sum      = (unsigned)inverted + 1u;
+    uint8_t  result   = (uint8_t)sum;
+    AddFlags f;
+    f.hi       = result;
+    f.carry    = (sum > 0xFFu);
+    f.overflow = (inverted == 0x7Fu);
+    f.neg      = (result >> 7) & 1u;
+    f.zero     = (result == 0);
+    return f;
+}
+
+/* 6502-ABI shim: the value is in A and its SIGN is the caller's N (the $3450 `BPL` tests N, not
+   bit 7 of A — a third of the fixture's cases decorrelate them).  Positive: RTS, A and every
+   flag left alone.  Negative: negate, leaving A and the negate's full N/Z/V/C. */
 void abs8(void)
 {
     if (!cpu.N)
         return;
-    /* $3452-$3455 EOR #$FF / CLC / ADC #1 — negate as (~A)+1, computing the add's own exit
-       flags directly: C set iff the value was 0 (~A+1 carries only from $FF), V set iff it was
-       $80 (~A == $7F is the one operand whose +1 signed-overflows), N/Z from the result. */
-    uint8_t  inverted = (uint8_t)(cpu.A ^ 0xFFu);
-    unsigned sum      = (unsigned)inverted + 1u;
-    uint8_t  result   = (uint8_t)sum;
-    cpu.A = result;
-    cpu.C = (sum > 0xFFu);
-    cpu.V = (inverted == 0x7Fu);
-    cpu.N = (result >> 7) & 1u;
-    cpu.Z = (result == 0);
+    AddFlags f = negate8(cpu.A);
+    cpu.A = f.hi;
+    cpu.C = f.carry;
+    cpu.V = f.overflow;
+    cpu.N = f.neg;
+    cpu.Z = f.zero;
 }
 
 /* ===========================================================================
@@ -2810,27 +2827,35 @@ static uint8_t road_side_walk(uint8_t sideSelect, uint8_t firstPoint)
 static void horizon_half_width_at(unsigned horizonPoint)
 {
     /* $253B — the two sides' x at the horizon point, differenced.  D=0 on the geometry path
-       (static-map §Decimal mode), so this is a plain 8-bit subtract; abs8 reads the sign (N)
-       and the value (A).  The subtract's C/V/Z are dead: abs8 overwrites them when it negates,
-       and on its no-negate path they reach build_track_geometry's exit UNREAD (the caller at
-       $1710 opens LDA/SEC/SBC).  Dropped from the fixture mask, not reproduced. */
+       (static-map §Decimal mode), so this is a plain 8-bit subtract, and its own sign (bit 7)
+       is what abs8 negated on.  The subtract's C/V/Z are dead (abs8 overwrote them when it
+       negated, and on the keep path they reach build_track_geometry's exit UNREAD); cpu.A is
+       not read after this routine either — horizon_half_width_at is the last call in the core. */
     uint8_t diff = (uint8_t)(mem[EDGE_X_HI_TBL + horizonPoint] -
                              mem[EDGE_X_HI_TBL + EDGE_HALF + horizonPoint]);
-    cpu.A = diff;
-    cpu.N = (diff >> 7) & 1u;
+    uint8_t mag  = (diff & 0x80u) ? negate8(diff).hi : diff;    /* |diff| — cpu-free abs8 */
 
+    /* ⚠ Exit cpu.A IS part of build_track_geometry's ABI (its fixture compares A): it is the
+       half-width on both compute arms, diff on the trap fall-through, the hook's own A on the
+       circuit arm.  The abs8 cpu round-trip is gone; only that one exit-register write remains. */
     if (mem[0x2542] == 0x20 && mem[0x2545] == 0x4A) {           /* unpatched: Silverstone */
-        abs8();
-        cpu.A = (uint8_t)(cpu.A >> 1);          /* $2549 LSR A — half the width; A is live */
-        horizon_half_width = cpu.A;
-    } else if (mem[0x2542] == 0x20 && mem[0x2545] == 0xEA) {    /* a circuit's own call */
+        horizon_half_width = (uint8_t)(mag >> 1);               /* $2549 LSR A — half the width */
+        cpu.A = horizon_half_width;
+    } else if (mem[0x2542] == 0x20 && mem[0x2545] == 0xEA) {    /* a circuit's own call + NOP */
         uint16_t target = (uint16_t)(mem[0x2543] | (mem[0x2544] << 8));
-        if (target == 0x3450)                       abs8();
-        else if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
-        else { platform_smc_unhandled(0x2542, target); return; }
-        NOP();
-        horizon_half_width = cpu.A;
+        if (target == 0x3450) {
+            horizon_half_width = mag;               /* the abs8 hook, then NOP (no halving) */
+            cpu.A = horizon_half_width;
+        } else if (target >= 0x5300 && target <= 0x5A25) {
+            /* Circuit-hook seam: the hook READS A and its sign N, so re-establish the 6502
+               entry ABI before dispatching, then hand its own exit A back verbatim. */
+            cpu.A = diff;
+            cpu.N = (diff >> 7) & 1u;
+            revs_track_hook(target);
+            horizon_half_width = cpu.A;
+        } else { cpu.A = diff; platform_smc_unhandled(0x2542, target); return; }
     } else {
+        cpu.A = diff;
         platform_smc_unhandled(0x2542, mem[0x2542]);
     }
 }
@@ -10108,18 +10133,23 @@ void record_section_jump(void) { cpu.C = record_section_jump_core(cpu.C, cpu.X);
    --------------------------------------------------------------------------- */
 void place_player_in_section(void)
 {
-    /* Relative angle of the nearest edge bearing to the section's yaw, left in cpu.A/cpu.N
-       for the abs8 hook below (a native leaf that reads A and its sign N — the flag escapes). */
-    sub_from(nearest_edge_bearing_hi, section_yaw);   /* SEC; SBC; sets A and N */
+    /* Relative angle of the nearest edge bearing to the section's yaw.  D=0, so a plain 8-bit
+       subtract whose bit 7 is the sign abs8 negates on; a circuit hook instead READS the value
+       and its sign N via cpu, so that seam re-establishes them. */
+    uint8_t rel = (uint8_t)(nearest_edge_bearing_hi - section_yaw);   /* SEC; SBC */
 
     if (mem[0x462B] != 0x20) { platform_smc_unhandled(0x462B, mem[0x462B]); return; }
+    uint8_t mag;
     {
         uint16_t hook = (uint16_t)(mem[0x462C] | (mem[0x462D] << 8));
-        if (hook == 0x3450)                          abs8();       /* |rel|, sign = current N */
-        else if (hook >= 0x5300 && hook <= 0x5A25)   revs_track_hook(hook);
+        if (hook == 0x3450)                          mag = (rel & 0x80u) ? negate8(rel).hi : rel;
+        else if (hook >= 0x5300 && hook <= 0x5A25) {
+            cpu.A = rel; cpu.N = (rel >> 7) & 1u;    /* the circuit hook reads A and its sign */
+            revs_track_hook(hook);
+            mag = cpu.A;
+        }
         else { platform_smc_unhandled(0x462B, hook); return; }
     }
-    uint8_t mag = cpu.A;                              /* |rel| */
 
     /* Quadrant flag: bit 7 of $0043 records whether |rel| reached a quarter turn ($40). */
     int quad_c = (mag >= 0x40);                       /* CMP #$40 */
@@ -10136,17 +10166,19 @@ void place_player_in_section(void)
     uint8_t a = scale_angle_in_section_core(mag, 0xBA);
     if (nearest_edge_cursor >= 0x28) a ^= 0xFF;       /* CPX #$28; BCC skip; EOR #$FF */
 
-    /* |a| with sign taken from track_direction bit 7; abs8's threaded carry is the CPX above. */
+    /* |a| with sign taken from track_direction bit 7.  On the keep arm abs8 leaves C untouched,
+       so the SBC below sees the CPX #$28 carry; on the negate arm it sees the negate's own C. */
     uint8_t x = player_car;
-    cpu.A = a;
-    cpu.N = (track_direction & 0x80) != 0;            /* BIT track_direction sets N */
-    cpu.C = (nearest_edge_cursor >= 0x28);            /* the carry abs8 threads into the SBC */
-    abs8();
-    PHA();                                            /* $464E push V2 (placed) */
-    uint8_t placed = cpu.A;
+    int     neg = (track_direction & 0x80) != 0;      /* BIT track_direction — the value's sign */
+    uint8_t placed;
+    int     placedC;
+    if (neg) { AddFlags f = negate8(a); placed = f.hi; placedC = f.carry; }
+    else     { placed = a; placedC = (nearest_edge_cursor >= 0x28); }
 
-    /* Change since last frame -> record_section_jump's carry. */
-    unsigned diff = (unsigned)placed - mem[CAR_STATE_2 + x] - (cpu.C ? 0u : 1u);   /* SBC */
+    cpu.A = placed; PHA();                            /* $464E push V2 (placed) — stack residue */
+
+    /* Change since last frame -> record_section_jump's carry (SBC borrow = !C). */
+    unsigned diff = (unsigned)placed - mem[CAR_STATE_2 + x] - (placedC ? 0u : 1u);   /* SBC */
     uint8_t d = (uint8_t)diff;
     if (diff & 0x100) d ^= 0xFF;                       /* BCC (borrow): EOR #$FF -> |diff| */
     record_section_jump_core(d >= 0x16, x);           /* CMP #$16 */
