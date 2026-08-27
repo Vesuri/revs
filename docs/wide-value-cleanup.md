@@ -69,7 +69,17 @@ carry chain through the body to carry a flag that is dead at the exit.
   high bytes, $3–$600 apart. There is no contiguous 16-bit cell to `add.w` even ignoring
   endianness. SoA arrays get the single-instruction win ONLY through relocation to `value_16[N]`.
 
-## Step 0 — consolidate the SoA base `#define`s (pure code-motion, do first)
+## Step 0 — consolidate the SoA base `#define`s (pure code-motion, do first) — ✅ DONE (HEAD after 646d506)
+
+18 duplicated base/table constants (`MODEL_STATE_LO/HI`, `CAR_ANGLE_LO/HI`, `VIEW_ORIGIN_LO/HI`,
+`EDGE_X_LO/HI_TBL`, `TRACK_DIR_0/1/2`, `SURFACE_COLOURS_TBL`, `COLOUR_PATTERN_AND/KEEP`,
+`CAR_FLAGS_SHAPE`, plus the already-in-header `VIEW_LEFT/RIGHT_START_SRC`, `DASH_BLOCK_STARTS`)
+now have one home in `revs_native_seam.h`; 40 local copies deleted from `revs_native.c`. Pure
+code-motion — validate + all 3 determinism byte-identical, both backends clean. (Role-specific
+zero-page aliases like `MUL_SRC`/`SPAN_*`/`EDGE_COLUMN` over `POINT_DELTA` stay local by design;
+they dedupe at their own conversion, per the aliasing note above.)
+
+### (original plan, retained for reference)
 
 The array-base constants (`MODEL_STATE_LO` = $62D0, base of a 15-element vector, indexed `+i`)
 are **not** in `mem.h` — `mem.h` is auto-generated from `symbols.csv` per named *cell* and has no
@@ -194,8 +204,53 @@ The 68000 has single-instruction `add.l`/`sub.l`/`move.l`/`cmp.l`, so a binary 2
    full `value_16[N]` relocation (B) follows each array's readers going native.
 4. **Tier 2** — as the adjacent persistent cells' readers convert.
 
+## ⚠ FINDING (2026-08-27, on starting execution): mechanism (A) is largely ALREADY DONE
+
+Surveying `revs_native.c` after Step 0: the prior **helper-elimination** and **cpu-elimination**
+campaigns already rewrote nearly all the render/geometry/physics byte-lane arithmetic as wide C.
+`MODEL_STATE`/`CAR_ANGLE`/`math_lo/hi`/etc. are read as `((hi<<8)|lo)`, computed in a `uint16_t`
+local, and written back once — i.e. the mechanism-(A) hoist. The only byte-lane carry-chains that
+remain in the cores are:
+
+- **Documented flag-escapes that must stay** (a genuinely escaping V/C): `plot_ptr`'s `adc_step`
+  chain (revs_native.c ~L690), `fill_line_attr`'s `farBase = adc_step(horizon_index,0x28,0)` on the
+  SMC-early-return path, `bearing_to_section`'s `+0x78`. These are the sanctioned exception, not TODO.
+- **The excluded BCD routines** (`lap_complete`, `tally_bcd_column` → `STANDINGS_BCD`,
+  `RACE_CLOCK`/`CAR_LAP_START`) — `adc_value`/`sbc_value` under `cpu.D=1`, correctly kept.
+
+**Consequence:** the near-term instruction-count win the campaign promises now lives almost
+entirely in **mechanism (B)** — relocating a `lo_8[N]`/`hi_8[N]` pair to a real `value_16[N]`
+array (or a scratch pair to a real `uint16_t` var), which turns each access into one
+`move.w`/`add.w` and drops the `mem[]` byte traffic GCC can't elide. **(B) is blocked everywhere
+by transliterated readers in `revs_gen.c`** (and, for zero-page scratch, by heavy address
+aliasing). So the campaign is now gated on **de-transliteration** — nativizing the reader
+functions below — before any single cell can be relocated.
+
+### Nativization worklist — `math_lo/hi` ($74/$75) readers (unblocks its relocation)
+
+The "410" in the plan was raw line-hits. At the function level, **90 functions** in `revs_gen.c`
+reference `math_lo/hi`; **63 are `__t6502` oracles** of already-native routines (they stay — the
+oracle is the validation twin). The **27 genuine plain transliterated readers** that pin the cell
+in `mem[]`, and must go native before `math_lo/hi` can become a real `uint16_t` (mechanism B):
+
+```
+region_23d8  region_31d0  shift_key_commands  sort_cars_by_key  draw_corner_markers
+check_car_pair  FUN_27ed  FUN_28f2  FUN_32d0  FUN_3a50  FUN_3ceb  print_spaces
+text_script_interp  update_horizon_band  draw_dash_needles  dial_needle_angle
+plot_line_octant  FUN_635d  menu_wait_key  mirrors_update  draw_starting_lights
+FUN_163b  FUN_1f11  FUN_2f19  FUN_4876  FUN_48a7  view_paint_lines_short
+```
+
+⚠ `math_lo/hi` is *shared* scratch, so its 27 readers span unrelated subsystems (menu, dash,
+mirrors, starting lights, text, sorting) — a wide blast radius. A cell used by ONE subsystem is a
+cheaper first relocation than `math_lo/hi`; consider relocating a narrowly-scoped internal
+accumulator before the shared one, even though `math_lo/hi` has the highest raw ref count.
+(Method to regenerate this list / do it for another cell: the enclosing-function scan in the
+2026-08-27 session — parse top-level defs, exclude `__t6502`.)
+
 ## Coordination
 
-- The MOS-dispatcher session touches shared files; `math`/`plot_ptr` are broadly referenced. Do
-  not start until it has landed (avoid a mid-flight merge collision).
+- The MOS-dispatcher session has LANDED (HEAD `ba5e7da`); the merge-collision risk is cleared.
 - Commit one cell/base per commit; gate each as above; keep this ledger's Status column current.
+- Nativizing a reader function is itself a faithful-seam twin (per CLAUDE.md) with its own
+  validate fixture + sabotage gate — record each on the cpu-elimination / this ledger as it lands.
