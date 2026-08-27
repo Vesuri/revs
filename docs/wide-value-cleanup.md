@@ -284,15 +284,25 @@ functions below — before any single cell can be relocated.
 The "410" in the plan was raw line-hits. At the function level, **90 functions** in `revs_gen.c`
 reference `math_lo/hi`; **63 are `__t6502` oracles** of already-native routines (they stay — the
 oracle is the validation twin). The **27 genuine plain transliterated readers** that pin the cell
-in `mem[]`, and must go native before `math_lo/hi` can become a real `uint16_t` (mechanism B):
+in `mem[]`, and must go native before `math_lo/hi` can become a real `uint16_t` (mechanism B).
+**Done: `print_spaces` ($3D50, twin #148).** The remaining **26**:
 
 ```
 region_23d8  region_31d0  shift_key_commands  sort_cars_by_key  draw_corner_markers
-check_car_pair  FUN_27ed  FUN_28f2  FUN_32d0  FUN_3a50  FUN_3ceb  print_spaces
+check_car_pair  FUN_27ed  FUN_28f2  FUN_32d0  FUN_3a50  FUN_3ceb
 text_script_interp  update_horizon_band  draw_dash_needles  dial_needle_angle
 plot_line_octant  FUN_635d  menu_wait_key  mirrors_update  draw_starting_lights
 FUN_163b  FUN_1f11  FUN_2f19  FUN_4876  FUN_48a7  view_paint_lines_short
 ```
+
+⭐ **Reader-nativization pattern (from #148):** the counter/scratch becomes a C local, but the
+twin still writes the cell's 6502 exit value so the routine stays byte-exact (validate compares
+$74, no `set_ignore`) — the cell is only physically lifted in the final relocation step, once all
+26 remaining readers are native. ⚠ Fixture trap: `print_spaces` with `count=0` runs 256 chars
+through the bitmap emitter, whose per-char writes follow a `mem[]` cursor; a fully-random
+char-row base (`char_row_addr_hi` $3B06) can point that at zero page and clobber `math_lo` — the
+*oracle's own* loop counter — so the transliteration never terminates. The fixture pins a valid
+screen char-row base ($58xx), which is the only state the real routine ever runs in.
 
 ⚠ `math_lo/hi` is *shared* scratch, so its 27 readers span unrelated subsystems (menu, dash,
 mirrors, starting lights, text, sorting) — a wide blast radius. A cell used by ONE subsystem is a

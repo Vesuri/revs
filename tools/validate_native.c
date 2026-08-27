@@ -496,6 +496,58 @@ static int test_irq1v_band_schedule(void)
     return fail;
 }
 
+/* ⭐ TWIN #148 — print_spaces ($3D50), first of the wide-value de-transliteration worklist.
+   It printed A spaces using math_lo ($74) as the loop counter; the native core uses a local, so
+   the __t6502 oracle still writes $74 (0 at exit) but the twin does not — ignore that cell.  Both
+   plotter arms are exercised (text_out_via_mos bit 7 = OSWRCH vs the bitmap emitter). */
+void print_spaces(void);                void print_spaces__t6502(void);
+
+static int test_print_spaces(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("print_spaces");
+    if (!want("print_spaces")) return 0;
+
+    /* math_lo ($74) is NOT ignored: the twin writes its 6502 exit value (0) like the oracle,
+       so the whole cluster stays byte-exact and the relocation step can lift the cell later.
+       A/X/Y/N/Z are compared (three callers branch on the exit Z, which is always 1 — the final
+       DEC math_lo -> 0).  V and C are dropped: like the rest of the text sub-cluster they
+       propagate untouched from the emitter and are not a result the game reads. */
+    unsigned mask = LIVE_A | LIVE_X | LIVE_Y | LIVE_N | LIVE_Z;
+
+    int cases = 2000 * scale;
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.A = (uint8_t)((xs() % 7) + 1);          /* 1..7 spaces most cases */
+        if (t % 64 == 0) c.A = 0;                 /* ...and count 0 exercises the 256-count wrap */
+        c.X = (uint8_t)xs();
+        c.Y = (uint8_t)xs();
+        c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+        c.D = 0;                                  /* text path, not a SED site (static-map §Decimal mode) */
+        if (xs() & 1) pre[0x0064] |= 0x80;        /* text_out_via_mos bit 7: pick the plotter arm */
+        else          pre[0x0064] &= 0x7F;
+        /* The bitmap emitter walks the MODE-5 cursor across cells (vdu_char_column++ per char);
+           give it a real screen char-row base so plot_ptr stays in screen RAM.  A fully-random
+           char_row_addr_hi entry can point plot_ptr at zero page — and a count of 0 makes 256
+           chars, so the eight per-char bitmap writes would clobber $0074, which is the oracle's
+           OWN loop counter (math_lo) -> the transliteration never terminates.  The real routine
+           is only ever entered with a live dashboard cursor, so this is a fixture artefact, not
+           a behaviour the twin must reproduce. */
+        { int r; for (r = 0; r < 8; r++) pre[0x3B06 + r] = 0x58; }  /* char_row_addr_hi -> screen page */
+        pre[0x62CD] &= 0x3Fu;                       /* vdu_char_row: keep row index 0..7 (valid table) */
+        fail += diff_run("print_spaces", pre, c, print_spaces, print_spaces__t6502,
+                         mask, t, &printed);
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+NZ (V/C dropped)\n",
+           "print_spaces", cases, fail);
+    return fail;
+}
+
 void view_paint_lines(void);
 void view_paint_lines__t6502(void);
 extern unsigned long g_viewTableCollisions;   /* asserted below; see revs_native.c */
@@ -5652,6 +5704,7 @@ int main(int argc, char** argv)
     /* --- fixtures go here --- */
     (void)test_contract;   /* the generic leaf fixture; twin #1 needs a steered one */
     fail += test_irq1v_band_schedule();
+    fail += test_print_spaces();
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();

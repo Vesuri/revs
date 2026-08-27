@@ -477,6 +477,16 @@ void vdu_char_def(void)
     cpu.A = rch; cpu.N = (rch >> 7) & 1u; cpu.Z = (rch == 0);
 }
 
+void print_spaces(void)
+{
+    /* $3D50 — A is the count, X/Y are the ambient OSWRCH registers.  The loop leaves them
+       unchanged; exit A = the space char, and N/Z come from the final DEC math_lo -> 0. */
+    uint8_t rch = print_spaces_core(cpu.A, cpu.X, cpu.Y);
+    cpu.A = rch;
+    cpu.N = 0; cpu.Z = 1;
+    /* C/V propagate from the last vdu_char_def (untouched here); X/Y ambient. */
+}
+
 void draw_gear_indicator(void)
 {
     uint8_t y = cpu.Y;

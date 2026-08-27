@@ -1027,6 +1027,13 @@ VALIDATE_FUNCS = {
     # integrates coordinates, adds the scaled across-track normal, runs the SMC $13C9 dir-index
     # hook, stores section_dir_index and derives the car cursor + section curve.  All callees native.
     0x12F7,
+    # ⭐ WIDE-VALUE CLEANUP — de-transliteration worklist (docs/wide-value-cleanup.md).  Each of
+    # math_lo/hi's 27 plain transliterated readers must go native before $74/$75 can relocate to a
+    # real uint16_t (mechanism B).  Nativizing a reader is itself a faithful-seam twin.
+    # ⭐ TWIN #148 — print_spaces ($3D50).  Prints A space characters through the VDU char path
+    # (vdu_char_def), a do-while so A=0 prints 256.  Used math_lo purely as the loop counter; the
+    # native core uses a local, so it no longer pins $74.
+    0x3D50,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

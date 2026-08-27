@@ -328,6 +328,7 @@ uint8_t surface_colour_apply(uint8_t line);
 CameraExit update_camera_and_drive_state_core(void);
 EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY);
 void update_grip_limits_core(void);
+uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y);
 uint8_t vdu_char_def_core(uint8_t ch);
 uint8_t vdu_char_emit_core(void);
 uint8_t vdu_char_wide_core(uint8_t ch);

@@ -8973,6 +8973,33 @@ uint8_t vdu_char_emit_core(void)
 }
 
 /* ---------------------------------------------------------------------------
+   $3D50  print_spaces — `count` SPACES THROUGH THE VDU CHAR PATH  (twin #148)
+   Each space goes through the same dispatch vdu_char_def uses: OSWRCH when
+   text_out_via_mos bit 7 is set (X/Y ambient), otherwise the bitmap emitter.
+   The 6502 counts down and tests AFTER the decrement, so a count of 0 prints
+   256 — a do-while.  The loop counter was math_lo ($74); it is a local now (the
+   reader-nativization step of the wide-value cleanup), with the cell's exit value
+   (0) still written so the routine stays byte-exact until math_lo is relocated.
+   Exit A = the space byte ($20); the caller's exit N/Z come from the final
+   DEC to zero (N=0, Z=1) — three callers branch on that Z.
+   --------------------------------------------------------------------------- */
+uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y)
+{
+    uint8_t c = count;
+    do {
+        if (text_out_via_mos & 0x80u)          /* $5092 BIT/BMI — OSWRCH path */
+            mos_oswrch(0x20u, x, y);
+        else
+            vdu_char_def_core(0x20u);          /* the MODE-5 bitmap emitter */
+    } while (--c != 0);                         /* $3D59 DEC math_lo / BNE — post-tested */
+    /* The 6502 counted down in math_lo ($74), so it exits holding 0; the counter is a local
+       now, but keep that scratch residue until math_lo is relocated wholesale (the reader
+       campaign nativizes readers first, then removes the cell) — keeps the byte-exact match. */
+    math_lo = 0x00u;
+    return 0x20u;                               /* both paths return the character in A */
+}
+
+/* ---------------------------------------------------------------------------
    $42D0  draw_gear_indicator — THE GEAR, DOUBLE WIDTH  (twin #109)
    --------------------------------------------------------------------------- */
 uint8_t draw_gear_indicator_core(void)
