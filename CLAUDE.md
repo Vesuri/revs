@@ -209,6 +209,7 @@ Hard-won detail lives in `docs/`, not here. **Read the relevant one BEFORE worki
 | `docs/validation-harness.md` | Writing or trusting a `make validate` fixture |
 | `docs/faithfulness-seam.md` | Where a routine lives (validated twin vs Amiga-only), and **how to write a twin** |
 | `docs/helper-elimination-audit.md` | The math-helper campaign's per-site KEEP/CONVERT ledger — which `revs_native.c` sites keep a 6502 flag-helper (a flag escapes) and which convert to plain C |
+| **`docs/wide-value-cleanup.md`** | The byte-lane→wide-value campaign ledger: replacing 6502 `_lo`/`_hi`/carry handling of 16/24-bit values with plain-C `uintNN_t` math (a real instruction-count win). Tiers, per-base status, the two mechanisms, the SoA `value_16[N]` relocation |
 | `docs/perf-method.md` ⚑ | Quoting, sizing or judging ANY performance number; where the time goes |
 | **`docs/direct-bitplane-plan.md`** ⭐ | **Before touching any plotter or any Phase 6 asm.** Rendering direct to bitplanes, the layout choices, the decode as ORACLE, §8 the SPRITE lever |
 | `docs/m68k-optimisation.md` ⚑ | Optimising a hot function or writing an asm twin (68000 rules) |
