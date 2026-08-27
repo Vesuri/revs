@@ -101,7 +101,8 @@ typedef struct { uint8_t row; uint8_t line; } Mode5Addr;  /* plot_ptr side-effec
 typedef struct { uint8_t ch; int usedMos; } VduDef;       /* def took the OSWRCH path? */
 typedef struct { uint8_t mag; uint8_t dir; } AdcRead;   /* distance from centre, and its sign */
 typedef struct { uint8_t a, n, c; } GapTail;
-typedef struct { uint8_t a, x, y, c; } MosRegs;  /* an MOS call's exit A/X/Y and carry */
+/* MosRegs (an MOS call's A/X/Y + carry) is declared in platform_c.h, the header
+   that also declares platform_mos_call_typed the wrappers below funnel through. */
 typedef struct { uint8_t y, c, v; } SpinExit;    /* begin_spin's residue: OSWORD Y + block ADC C/V */
 
 /* ---- always_inline 6502 flag helpers (moved out of revs_native.c) ---- */

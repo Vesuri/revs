@@ -63,9 +63,9 @@ unsigned g_mosLogOverflow = 0;
 /* --------------------------------------------------------------------------
    OSBYTE ($FFF4) — A = reason code, X/Y = parameters, X/Y = results.
    -------------------------------------------------------------------------- */
-static void osbyte(void)
+static MosRegs osbyte(MosRegs r)
 {
-    switch (cpu.A) {
+    switch (r.a) {
 
     /* 0 — read the OS version.  ⭐ NOT IN THE PHASE 2 INVENTORY, and finding it is the
        point of the unknown-call counter: the inventory's reason codes were recovered by a
@@ -76,19 +76,19 @@ static void osbyte(void)
        Revs cannot want the error path from a running engine, so answer as MOS 1.20 — the
        ROM the reference loop boots (docs/bbc-reference-loop.md). */
     case 0x00:
-        cpu.X = 0x01;          /* OS 1.20 */
+        r.x = 0x01;          /* OS 1.20 */
         break;
 
     /* 2 — select input stream.  Site $630A (X=0, keyboard).  Returns X = previous
        setting.  Nothing in Revs reads it back; keep the register write faithful anyway. */
     case 0x02:
-        cpu.X = 0x00;
+        r.x = 0x00;
         break;
 
     /* 4 — cursor/copy key behaviour.  Site $3856 (X=1: cursor keys act as normal keys,
        which is exactly why the game can INKEY them).  Returns X = previous. */
     case 0x04:
-        cpu.X = 0x00;
+        r.x = 0x00;
         break;
 
     /* 21 — flush buffer X.  Sites $0E6B (sound channel buffers 4-7) and $6311 (keyboard
@@ -98,14 +98,14 @@ static void osbyte(void)
        is the ONLY way Revs ever stops a sound — every one of them has duration 255 = play
        forever.  Treat this as a no-op and the engine noise never goes quiet. */
     case 0x15:
-        if ((cpu.X & 0xFC) == 0x04) snd_flush_channel((uint8_t)(cpu.X & 3));
+        if ((r.x & 0xFC) == 0x04) snd_flush_channel((uint8_t)(r.x & 3));
         break;
 
     /* 126 — acknowledge ESCAPE.  Site $6349, inside console_io's line editor.  Returns
        X = $FF if an ESCAPE condition was cleared, 0 if there was none.  The port never
        raises ESCAPE, so: none. */
     case 0x7E:
-        cpu.X = 0x00;
+        r.x = 0x00;
         break;
 
     /* 128 (ADVAL) — ⭐ THE STEERING INPUT.  Sites $168E (X=0) and $5041 (X=channel).
@@ -114,13 +114,13 @@ static void osbyte(void)
          X=1..4 → X,Y = the 16-bit conversion for that channel.  $503F does TYA:ADC #$80,
                 i.e. it uses ONLY the high byte, biased so $80 is centre. */
     case 0x80: {
-        if (cpu.X == 0x00) {
-            cpu.X = platform ? platform->adcButtons() : 0x00;
-            cpu.Y = 0x00;
+        if (r.x == 0x00) {
+            r.x = platform ? platform->adcButtons() : 0x00;
+            r.y = 0x00;
         } else {
-            uint16_t v = platform ? platform->adcAxis(cpu.X) : 0x8000;
-            cpu.X = (uint8_t)(v & 0xFF);
-            cpu.Y = (uint8_t)(v >> 8);
+            uint16_t v = platform ? platform->adcAxis(r.x) : 0x8000;
+            r.x = (uint8_t)(v & 0xFF);
+            r.y = (uint8_t)(v >> 8);
         }
         break;
     }
@@ -132,17 +132,17 @@ static void osbyte(void)
          Y=$7F → machine-type check.  Revs never issues it; answer as a BBC B (0) rather
                  than fall through to the unknown-call counter if it ever appears. */
     case 0x81:
-        if (cpu.Y == 0xFF) {
-            bool held = platform ? platform->keyDown(cpu.X) : false;
-            cpu.X = held ? 0xFF : 0x00;
-            cpu.Y = held ? 0xFF : 0x00;
-        } else if (cpu.Y == 0x7F) {
-            cpu.X = 0x00;              /* BBC B */
-            cpu.Y = 0x00;
+        if (r.y == 0xFF) {
+            bool held = platform ? platform->keyDown(r.x) : false;
+            r.x = held ? 0xFF : 0x00;
+            r.y = held ? 0xFF : 0x00;
+        } else if (r.y == 0x7F) {
+            r.x = 0x00;              /* BBC B */
+            r.y = 0x00;
         } else {
             /* Timed read of a character.  Not a site Revs has; report rather than guess. */
             g_mosUnknownEntry = 0xFFF4; g_mosUnknownA = 0x81; g_mosUnknownCount++;
-            cpu.X = 0x00; cpu.Y = 0xFF;   /* "timed out, no character" */
+            r.x = 0x00; r.y = 0xFF;   /* "timed out, no character" */
         }
         break;
 
@@ -152,35 +152,36 @@ static void osbyte(void)
        (bus_write routes $FE20 to Platform::hwWrite, which is where the copper list will
        eventually pick the mode/palette up — Phase 5.) */
     case 0x9A:
-        mem[0x0248] = cpu.X;
-        if (platform) platform->hwWrite(0xFE20, cpu.X);
+        mem[0x0248] = r.x;
+        if (platform) platform->hwWrite(0xFE20, r.x);
         break;
 
     /* 190 — read/write the uPD7002 conversion type (resolution).  Site $3879 with X=$20.
        Returns X = previous value.  Purely a property of the ADC we are substituting a
        mouse for, so there is nothing behind it to change. */
     case 0xBE:
-        cpu.X = 0x00;
+        r.x = 0x00;
         break;
 
     default:
         /* ⚠ Not in the Phase 2 inventory.  Either the inventory is incomplete or a
            self-modified site produced a new reason code — both are findings. */
         g_mosUnknownEntry = 0xFFF4;
-        g_mosUnknownA     = cpu.A;
+        g_mosUnknownA     = r.a;
         g_mosUnknownCount++;
         break;
     }
+    return r;
 }
 
 /* --------------------------------------------------------------------------
    OSWORD ($FFF1) — A = reason code, (X,Y) = a control block in mem[].
    -------------------------------------------------------------------------- */
-static void osword(void)
+static MosRegs osword(MosRegs r)
 {
-    uint16_t blk = (uint16_t)cpu.X | ((uint16_t)cpu.Y << 8);
+    uint16_t blk = (uint16_t)r.x | ((uint16_t)r.y << 8);
 
-    switch (cpu.A) {
+    switch (r.a) {
 
     /* ⭐ 7 — SOUND, and 8 — define an ENVELOPE.  Sites $0B70 (both: `sound_queue` $0B4A reaches
        it with A=7, `sound_envelope` $0B65 with A=8) — one JSR, two reason codes, which is exactly
@@ -236,16 +237,17 @@ static void osword(void)
 
     default:
         g_mosUnknownEntry = 0xFFF1;
-        g_mosUnknownA     = cpu.A;
+        g_mosUnknownA     = r.a;
         g_mosUnknownCount++;
         break;
     }
+    return r;
 }
 
 /* --------------------------------------------------------------------------
    The dispatcher.
    -------------------------------------------------------------------------- */
-void Platform::mosCall(uint16_t entry)
+MosRegs Platform::mosCall(uint16_t entry, MosRegs in)
 {
 #ifdef REVS_HW_TRACE
     /* ⭐⭐ THE MOS-CALL TRACE, and it exists for the same reason bbc_hw's write trace does:
@@ -260,9 +262,9 @@ void Platform::mosCall(uint16_t entry)
        `make sound` / `make mode7`'s question, not this trace's. */
     if (g_mosLogN < MOSLOG_MAX) {
         g_mosLogEntry[g_mosLogN] = entry;
-        g_mosLogA[g_mosLogN] = cpu.A;
-        g_mosLogX[g_mosLogN] = cpu.X;
-        g_mosLogY[g_mosLogN] = cpu.Y;
+        g_mosLogA[g_mosLogN] = in.a;
+        g_mosLogX[g_mosLogN] = in.x;
+        g_mosLogY[g_mosLogN] = in.y;
         g_mosLogN++;
     } else g_mosLogOverflow++;
 #endif
@@ -270,12 +272,10 @@ void Platform::mosCall(uint16_t entry)
     switch (entry) {
 
     case 0xFFF4:   /* OSBYTE */
-        osbyte();
-        break;
+        return osbyte(in);
 
     case 0xFFF1:   /* OSWORD */
-        osword();
-        break;
+        return osword(in);
 
     /* OSWRCH — VDU output.  Four sites: VDU 127 (delete, $3EF3), VDU 7 (bell, $633F),
        VDU 156 ($6651) and one from a variable ($50F6).  All of them belong to the MODE 7
@@ -287,9 +287,9 @@ void Platform::mosCall(uint16_t entry)
        (docs/faithfulness-seam.md).  `make mode7` validates it byte-for-byte against a real
        BBC.  The backend still gets the byte, for anything display-side it wants to notice. */
     case 0xFFEE:
-        tt_vdu(cpu.A);
-        if (platform) platform->wrch(cpu.A);
-        break;
+        tt_vdu(in.a);
+        if (platform) platform->wrch(in.a);
+        return in;
 
     /* OSRDCH — read a character, blocking.  One site: $6316, console_io's line editor
        (entering a driver name).  Returns A = the character, C = 0; C = 1 signals an
@@ -298,15 +298,15 @@ void Platform::mosCall(uint16_t entry)
        ESCAPE and jumps straight back to the read.  The backend's rdch() therefore must
        always return a real character; the default (CR) ends the line immediately. */
     case 0xFFE0:
-        cpu.A = platform ? platform->rdch() : 0x0D;
-        cpu.C = 0;
-        break;
+        in.a = platform ? platform->rdch() : 0x0D;
+        in.c = 0;
+        return in;
 
     default:
         g_mosUnknownEntry = entry;
-        g_mosUnknownA     = cpu.A;
+        g_mosUnknownA     = in.a;
         g_mosUnknownCount++;
-        break;
+        return in;
     }
 }
 

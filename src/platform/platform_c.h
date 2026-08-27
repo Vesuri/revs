@@ -26,10 +26,24 @@ void platform_register_vbi(uint16_t addr, void (*fn)(void));
    addr in the handler table and calls the match; a 0/unknown addr is a no-op. */
 void platform_indirect_jmp(uint16_t addr);
 
+/* An MOS call's register file: the A/X/Y the 6502 hands the OS and gets back,
+   plus carry.  ⭐ This is the WHOLE of what the dispatcher reads or writes — it
+   never touches N/Z/V — so threading this struct through the boundary lets
+   mos.cpp be entirely free of the global cpu struct.  See docs/bbc-hardware.md
+   §MOS calls and docs/cpu-elimination-audit.md §the MOS boundary. */
+typedef struct { uint8_t a, x, y, c; } MosRegs;
+
 /* Service an intercepted MOS entry ($FFCE-$FFF7): OSBYTE, OSWORD, OSRDCH, …
-   A/X/Y are passed and returned through the global cpu struct.
+   Two ways in, ONE dispatcher (Platform::mosCall):
+     - platform_mos_call marshals the global cpu struct in and out.  This is the
+       form the GENERATED corpus uses (the transpiler emits `platform_mos_call(entry)`
+       for every JSR into the MOS block), so its signature must not change.
+     - platform_mos_call_typed passes the register file explicitly and returns the
+       exit file.  This is the form the native twins' typed wrappers use, so a twin
+       need not touch cpu to make an OS call.
    See docs/bbc-hardware.md §MOS calls. */
-void platform_mos_call(uint16_t entry);
+void    platform_mos_call(uint16_t entry);
+MosRegs platform_mos_call_typed(uint16_t entry, MosRegs in);
 
 /* A BRK was executed at `pc`.  On the BBC this is a software interrupt, not a no-op: it
    vectors through BRKV ($0202) into the MOS error handler and does NOT return to the

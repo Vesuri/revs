@@ -6,6 +6,8 @@
                         integer types from the force-included framework/SASCCompat.h. */
 #endif
 
+#include "platform_c.h"   /* MosRegs, and the C bridge the transliteration reaches us through */
+
 /* Abstract platform base — one concrete subclass per target (SDL host, Amiga).
    The global singleton pointer is used by the C bridge layer so that the
    C-compiled 6502 transliteration can reach hardware emulation.
@@ -120,8 +122,14 @@ public:
        whole closed surface (4 entries / 17 sites / 8 OSBYTE reason codes, enumerated
        in Phase 2) once, so the host and the target can never disagree about the OS
        itself.  A backend supplies only the five genuinely platform-specific answers
-       below.  See docs/bbc-hardware.md §MOS calls. */
-    virtual void mosCall(uint16_t entry);
+       below.  See docs/bbc-hardware.md §MOS calls.
+
+       ⭐ CPU-FREE BOUNDARY.  The register file crosses as a MosRegs value (in and
+       out), never through the global cpu struct — the two bridge functions in
+       platform_c.h marshal cpu at the edge for the generated corpus.  This lets a
+       native twin's typed wrapper (revs_native_seam.h) issue an OS call without
+       touching cpu. */
+    virtual MosRegs mosCall(uint16_t entry, MosRegs in);
 
     /* --- what a backend must answer for the MOS layer --------------------- */
 

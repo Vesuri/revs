@@ -6,6 +6,7 @@
 #include "platform.h"
 #include "platform_c.h"
 #include "probe.h"
+#include "../cpu/cpu.h"   /* the global cpu struct — this file marshals it across the MOS seam */
 
 extern "C" {
 
@@ -57,8 +58,23 @@ void platform_indirect_jmp(uint16_t addr) {
     if (platform) platform->indirectJmp(addr);
 }
 
+/* The cpu-marshalling bridge the GENERATED corpus uses.  The transpiler emits
+   `platform_mos_call(entry)` for every JSR into the MOS block, in both the oracle
+   and the transliteration, so this signature is fixed: it reads the register file
+   out of the global cpu struct, runs the (cpu-free) dispatcher, and writes the exit
+   file back.  The dispatcher touches A/X/Y and C only, so nothing else in cpu moves. */
 void platform_mos_call(uint16_t entry) {
-    if (platform) platform->mosCall(entry);
+    if (!platform) return;
+    MosRegs in = { cpu.A, cpu.X, cpu.Y, cpu.C };
+    MosRegs out = platform->mosCall(entry, in);
+    cpu.A = out.a; cpu.X = out.x; cpu.Y = out.y; cpu.C = out.c;
+}
+
+/* The typed bridge the native twins' wrappers use — no cpu on either side, so a
+   twin can issue an OS call without deciding what the register file's flags are. */
+MosRegs platform_mos_call_typed(uint16_t entry, MosRegs in) {
+    if (!platform) return in;
+    return platform->mosCall(entry, in);
 }
 
 void platform_brk(uint16_t pc) {
