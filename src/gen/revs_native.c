@@ -5813,15 +5813,17 @@ static void apply_angle_term_at_core(uint8_t mode, uint8_t angle)
    when the key is down.  Kept as a twin because the driving model's starter poll goes through
    it, and because the MOS call has to stay a MOS call.
    --------------------------------------------------------------------------- */
+/* OSBYTE 129 (INKEY): the OSBYTE number in A, the negative key code in X and a $FF time-limit in
+   Y; the MOS answers X = Y = $FF when that key is held.  engine_starter_poll reads the raw exit
+   registers, so this returns them typed; kbd_test_key_core keeps the boolean the other callers want. */
+static MosRegs kbd_test_key_regs(uint8_t keyCode)
+{
+    return mos_osbyte(0x81u, keyCode, 0xFFu);   /* $0E50-$0E54 */
+}
+
 int kbd_test_key_core(uint8_t keyCode)
 {
-    /* MOS ABI — documented cpu exception.  OSBYTE 129 (INKEY) takes the OSBYTE number in A, the
-       negative key code in X and a $FF time-limit in Y; the MOS answers X = $FF when down. */
-    cpu.A = 0x81u;                  /* $0E50 — OSBYTE 129, read a key with a time limit */
-    cpu.X = keyCode;
-    cpu.Y = 0xFFu;                  /* $0E52 */
-    platform_mos_call(0xFFF4);      /* $0E54 */
-    return cpu.X == 0xFFu;          /* $0E57 CPX #$FF — Z set (key down) is the output */
+    return kbd_test_key_regs(keyCode).x == 0xFFu;   /* $0E57 CPX #$FF — Z set (key down) is the output */
 }
 
 /* The 6502-ABI shims. */
@@ -7060,9 +7062,10 @@ static void engine_catches(void)
 static EngineRegs engine_starter_poll(void)
 {
     EngineRegs r;
-    /* $4978-$497D — is the T key held?  kbd_test_key_core does OSBYTE 129 (documented MOS
-       exception) and leaves the MOS's answer in cpu.A/X/Y; it returns 1 when the key is down. */
-    int keyDown = kbd_test_key_core(0xDCu);
+    /* $4978-$497D — is the T key held?  kbd_test_key_regs does OSBYTE 129 (documented MOS
+       exception) and hands back the MOS's answer registers; X = $FF when the key is down. */
+    MosRegs kr = kbd_test_key_regs(0xDCu);
+    int keyDown = (kr.x == 0xFFu);
     if (!keyDown) {                              /* $497D BNE — T NOT held: the push-start path */
         uint8_t y = (uint8_t)(gear_index - 1);   /* $497F-$4980 — LDY gear_index; DEY (Y escapes) */
         if (y != 0 && road_speed != 0) {         /* $4982-$4986 — in gear and rolling */
@@ -7073,14 +7076,14 @@ static EngineRegs engine_starter_poll(void)
         }
         engine_revs      = 0x00u;                                  /* $4988-$498A */
         engine_revs_prev = 0x00u;
-        r.x = cpu.X;                             /* MOS ABI — X as OSBYTE 129 left it */
+        r.x = kr.x;                              /* MOS ABI — X as OSBYTE 129 left it */
         r.y = y;
         return r;
     }
     {
         uint8_t luck = (uint8_t)(bus_read(VIA_T1_LOW) & starter_random_mask);  /* $498C-$498F */
-        r.x = cpu.X;                             /* MOS ABI — X as OSBYTE 129 left it */
-        r.y = cpu.Y;                             /* MOS ABI — Y untouched in this arm */
+        r.x = kr.x;                              /* MOS ABI — X as OSBYTE 129 left it */
+        r.y = kr.y;                              /* MOS ABI — Y untouched in this arm */
         if (luck == 0) { engine_catches(); r.x = 0xFFu; }          /* $4991 — no luck this frame */
         engine_revs_from(luck);
         return r;
