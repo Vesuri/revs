@@ -101,6 +101,7 @@ typedef struct { uint8_t row; uint8_t line; } Mode5Addr;  /* plot_ptr side-effec
 typedef struct { uint8_t ch; int usedMos; } VduDef;       /* def took the OSWRCH path? */
 typedef struct { uint8_t mag; uint8_t dir; } AdcRead;   /* distance from centre, and its sign */
 typedef struct { uint8_t a, n, c; } GapTail;
+typedef struct { uint8_t a, x, y, c; } MosRegs;  /* an MOS call's exit A/X/Y and carry */
 
 /* ---- always_inline 6502 flag helpers (moved out of revs_native.c) ---- */
 #define REVS_FLAG_OP static inline __attribute__((always_inline))
@@ -213,6 +214,30 @@ REVS_FLAG_OP void seam_write(unsigned addr, int ram, uint8_t value)
 {
     if (ram) mem[addr] = value; else bus_write((uint16_t)addr, value);
 }
+
+/* ---- the MOS boundary: a typed wrapper over platform_mos_call ----
+ * The differential (validate_native.c) logs each MOS call from cpu.A/X/Y at call
+ * time, so the wrapper must deposit the input registers exactly the interpreter's
+ * LDA/LDX/LDY would.  It also LEAVES cpu mutated on exit (does not restore) — that
+ * mirrors the transliterated oracle, so a residue-reader that still peeks cpu keeps
+ * working, and the returned MosRegs is what lets a core read the answer cpu-free.
+ * mos_call deposits all three registers; mos_call_ax leaves Y flowing through, which
+ * OSBYTE 21 (sound_stop_channel) relies on and the differential compares. */
+REVS_FLAG_OP MosRegs mos_call(uint16_t entry, uint8_t a, uint8_t x, uint8_t y)
+{
+    cpu.A = a; cpu.X = x; cpu.Y = y;
+    platform_mos_call(entry);
+    { MosRegs r = { cpu.A, cpu.X, cpu.Y, cpu.C }; return r; }
+}
+REVS_FLAG_OP MosRegs mos_call_ax(uint16_t entry, uint8_t a, uint8_t x)
+{
+    cpu.A = a; cpu.X = x;                 /* Y flows through — some OSBYTEs compare entry-Y */
+    platform_mos_call(entry);
+    { MosRegs r = { cpu.A, cpu.X, cpu.Y, cpu.C }; return r; }
+}
+REVS_FLAG_OP MosRegs mos_osbyte(uint8_t a, uint8_t x, uint8_t y) { return mos_call(0xFFF4u, a, x, y); }
+REVS_FLAG_OP MosRegs mos_osword(uint8_t a, uint8_t x, uint8_t y) { return mos_call(0xFFF1u, a, x, y); }
+REVS_FLAG_OP void     mos_oswrch(uint8_t a) { cpu.A = a; platform_mos_call(0xFFEEu); }
 
 /* ---- span-plotter descriptors (defined in revs_native.c) ---- */
 extern const SpanPlotter SPAN_PLOT_1;

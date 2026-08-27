@@ -8915,8 +8915,7 @@ uint8_t vdu_char_emit_core(void)
        the reason code in A, and clobbers X/Y.  The routine's $509D/$50EF PUSH/PULL of the
        caller's X/Y is reconstructed by each shim (and the i=5 fixture ignores the two stack
        residue bytes the transliterated oracle leaves at $01FE/$01FF). */
-    cpu.Y = 0x62u; cpu.X = 0xC3u; cpu.A = 0x0Au;
-    platform_mos_call(0xFFF1);
+    mos_osword(0x0Au, 0xC3u, 0x62u);   /* param block at $62C3, reason code 10 */
 
     /* $50AA-$50C5 — half-width expansion (rows 1..8): shared_temp_77 zero leaves the glyph
        whole; bit 7 clear keeps only the top nibble, set brings the bottom nibble up. */
@@ -8981,10 +8980,10 @@ uint8_t draw_gear_indicator_core(void)
 AdcRead adc_read_core(uint8_t channel)
 {
     /* $503F — OSBYTE $80 (ADVAL) with the channel in X; the reading's high byte comes back in Y.
-       MOS ABI — documented cpu exception. */
-    cpu.A = 0x80u; cpu.X = channel;
-    platform_mos_call(0xFFF4);
-    uint8_t reading = cpu.Y;                           /* $5044 */
+       mos_call_ax leaves the entry Y flowing through (ADVAL's entry-Y is don't-care, and the
+       differential does not compare it for A=$80 — validate_native.c). */
+    MosRegs r80 = mos_call_ax(0xFFF4u, 0x80u, channel);
+    uint8_t reading = r80.y;                            /* $5044 */
 
     /* $5047 — recentre on $80 (adding $80 with no carry-in just flips bit 7, i.e. ^ $80), then
        fold to a magnitude and a direction bit.  The recentre's C/V/Z are dead; only bit 7 (the
@@ -9282,11 +9281,9 @@ have_pedal:
        set no V of their own, so it leaks out of the routine. */
     cpu.V = (uint8_t)((mem[OPTION_FLAGS] >> 6) & 1u);  /* $1685 BIT — V escapes */
     if (mem[OPTION_FLAGS] & 0x80u) {                   /* $1685 BMI — joystick */
-        uint8_t buttons;
-        /* $168A — ADVAL 0, the stick buttons.  MOS ABI — documented cpu exception. */
-        cpu.X = 0x00u; cpu.A = 0x80u;
-        platform_mos_call(0xFFF4);
-        buttons = cpu.X;
+        /* $168A — ADVAL 0, the stick buttons; the fire-button bits come back in X.
+           (Y flows through — ADVAL's entry-Y is don't-care and the differential ignores it.) */
+        uint8_t buttons = mos_call_ax(0xFFF4u, 0x80u, 0x00u).x;
         if ((buttons & 0x01u) == 0) goto no_key;       /* $1691 — no fire button (carry leaks in) */
         cpu.Y = (uint8_t)(pedal_mode - 1);             /* $1696 LDY/DEY — Y escapes to the held return */
         if (pedal_mode != 0x01u) goto shift_up;        /* not braking: shift up */

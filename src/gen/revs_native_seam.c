@@ -464,7 +464,7 @@ void vdu_char_def(void)
            A (= ch) and X/Y.  V is dropped by the fixture mask. */
         cpu.N = 1;
         cpu.Z = ((ch & text_out_via_mos) == 0);
-        platform_mos_call(0xFFEE);                       /* $50F6 — A already = ch */
+        mos_oswrch(ch);                                  /* $50F6 — OSWRCH the character */
         return;
     }
     uint8_t x = cpu.X, y = cpu.Y;
