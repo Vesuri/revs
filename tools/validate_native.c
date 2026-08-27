@@ -417,8 +417,13 @@ void irq1v_band_schedule__t6502(void);
    ULA and the T1 latch are not in mem[] and this routine leaves only four bytes there, so
    a mem[]-only differential was validating almost none of its output.
    -------------------------------------------------------------------------- */
+/* band2_duration ($4F21/2) was relocated out of mem[] into a native uint16_t (wide-value
+   cleanup, mechanism B); this seeds it so the standalone band-2 arm — whose producer ran in
+   an earlier interrupt — reads the same value the oracle reads from the pinned mem[] cells. */
+extern void set_band2_duration_v(uint16_t v);
+
 static int irq1v_case(const char* label, int state, int pending, int cases,
-                      int pinSplit, unsigned split, int* printed)
+                      int pinSplit, unsigned split, int seedB2, int* printed)
 {
     static uint8_t pre[65536];
     unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
@@ -430,6 +435,11 @@ static int irq1v_case(const char* label, int state, int pending, int cases,
         fill_random(pre);
         pre[0x4F43] = (uint8_t)state;
         if (pinSplit) { pre[0x4F1F] = (uint8_t)split; pre[0x4F20] = (uint8_t)(split >> 8); }
+        if (seedB2 >= 0) {
+            /* pin the oracle's storage AND the native value to the same input */
+            pre[0x4F21] = (uint8_t)seedB2; pre[0x4F22] = (uint8_t)((unsigned)seedB2 >> 8);
+            set_band2_duration_v((uint16_t)seedB2);
+        }
         /* A real IRQ arrives with the foreground's registers live and S well inside the
            stack page (measured mid-race on a BBC: $F2).  Randomising them is what makes
            "A, X and Y come back unchanged" a tested contract instead of 0 == 0. */
@@ -450,24 +460,37 @@ static int test_irq1v_band_schedule(void)
     register_fixture("irq1v_band_schedule");
     if (!want("irq1v_band_schedule")) return 0;
 
+    /* band2_duration ($4F21/2) is relocated to a native uint16_t: the __t6502 oracle still
+       writes those mem[] cells (band-1 arm) but the twin no longer does, so ignore them in
+       the mem diff.  Every observable output (the latch, the palette/hardware writes, the
+       control flow) is compared as before. */
+    static const uint16_t band2_cells[] = { 0x4F21, 0x4F22 };
+    set_ignore(band2_cells, 2);
+
     /* not our interrupt: chain on to the saved IRQ1V.  A is left 0 by the AND. */
-    fail += irq1v_case("irq1v:chain",  0x00, 0, 2000, 0, 0, &printed);
+    fail += irq1v_case("irq1v:chain",  0x00, 0, 2000, 0, 0, -1, &printed);
 
-    fail += irq1v_case("irq1v:band0",  0x00, 1, 4000, 0, 0, &printed);
+    fail += irq1v_case("irq1v:band0",  0x00, 1, 4000, 0, 0, -1, &printed);
     /* band 1 both sides of the $153C horizon split, plus the two boundary values */
-    fail += irq1v_case("irq1v:band1",  0x01, 1, 4000, 0, 0,      &printed);
-    fail += irq1v_case("irq1v:band1<", 0x01, 1,  500, 1, 0x153B, &printed);
-    fail += irq1v_case("irq1v:band1=", 0x01, 1,  500, 1, 0x153C, &printed);
-    fail += irq1v_case("irq1v:band1>", 0x01, 1,  500, 1, 0x153D, &printed);
-    fail += irq1v_case("irq1v:band2",  0x02, 1, 4000, 0, 0, &printed);
-    fail += irq1v_case("irq1v:band3",  0x03, 1, 4000, 0, 0, &printed);
-    fail += irq1v_case("irq1v:wrap",   0xFF, 1, 2000, 0, 0, &printed);
-    fail += irq1v_case("irq1v:idle",   0x80, 1, 2000, 0, 0, &printed);
-    fail += irq1v_case("irq1v:idle2",  0xC3, 1, 2000, 0, 0, &printed);
+    fail += irq1v_case("irq1v:band1",  0x01, 1, 4000, 0, 0,      -1, &printed);
+    fail += irq1v_case("irq1v:band1<", 0x01, 1,  500, 1, 0x153B, -1, &printed);
+    fail += irq1v_case("irq1v:band1=", 0x01, 1,  500, 1, 0x153C, -1, &printed);
+    fail += irq1v_case("irq1v:band1>", 0x01, 1,  500, 1, 0x153D, -1, &printed);
+    /* band 2 entered standalone reads band2_duration produced by an earlier interrupt: seed
+       it (and the oracle's mem[] copy) to drive both arms of the `hi != 0` branch —
+       hi != 0 breaks after the horizon palette, hi == 0 falls through into band 3. */
+    fail += irq1v_case("irq1v:band2hi", 0x02, 1, 2000, 0, 0, 0x0140, &printed);
+    fail += irq1v_case("irq1v:band2lo", 0x02, 1, 2000, 0, 0, 0x0040, &printed);
+    fail += irq1v_case("irq1v:band2z",  0x02, 1, 2000, 0, 0, 0x0000, &printed);
+    fail += irq1v_case("irq1v:band3",  0x03, 1, 4000, 0, 0, -1, &printed);
+    fail += irq1v_case("irq1v:wrap",   0xFF, 1, 2000, 0, 0, -1, &printed);
+    fail += irq1v_case("irq1v:idle",   0x80, 1, 2000, 0, 0, -1, &printed);
+    fail += irq1v_case("irq1v:idle2",  0xC3, 1, 2000, 0, 0, -1, &printed);
     /* every state above 3 takes band 4's arm; $04 and a high one both prove it */
-    fail += irq1v_case("irq1v:band4",  0x04, 1,   64, 0, 0, &printed);
-    fail += irq1v_case("irq1v:band4b", 0x7F, 1,   64, 0, 0, &printed);
+    fail += irq1v_case("irq1v:band4",  0x04, 1,   64, 0, 0, -1, &printed);
+    fail += irq1v_case("irq1v:band4b", 0x7F, 1,   64, 0, 0, -1, &printed);
 
+    set_ignore(0, 0);
     printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXYS+flags\n",
            "irq1v_band_schedule", 25628, fail);
     return fail;

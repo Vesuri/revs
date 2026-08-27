@@ -28,6 +28,24 @@ import sys
 STACK_LO = 0x01B8   # first byte of the hardware-stack scratch (car_target_speed ends $01B7)
 STACK_HI = 0x01FF   # last byte of page 1
 
+# Cells relocated OUT of mem[] into native wide values by the wide-value cleanup (mechanism B).
+# After relocation nothing reads or writes these mem[] bytes, so a fresh run leaves them at
+# whatever the loader/unpack put there while the recorded golden still holds the old computed
+# value.  They are no longer game state; skip them.  Each entry is (lo, hi) inclusive.
+#   $4F21..$4F22  band2_duration  — the horizon-band remainder, now band2_duration_v
+#                 (src/gen/revs_native.c, irq1v_band_schedule)
+RELOCATED = [
+    (0x4F21, 0x4F22),
+]
+
+def _skipped(i):
+    if STACK_LO <= i <= STACK_HI:
+        return True
+    for lo, hi in RELOCATED:
+        if lo <= i <= hi:
+            return True
+    return False
+
 def main():
     if len(sys.argv) != 3:
         sys.stderr.write("usage: det_compare.py <ref.mem> <run.mem>\n")
@@ -37,7 +55,7 @@ def main():
         sys.stderr.write("det_compare: image not 64K (ref=%d run=%d)\n" % (len(ref), len(run)))
         return 2
     diffs = [(i, ref[i], run[i]) for i in range(0x10000)
-             if ref[i] != run[i] and not (STACK_LO <= i <= STACK_HI)]
+             if ref[i] != run[i] and not _skipped(i)]
     if not diffs:
         return 0
     for i, r, n in diffs[:20]:

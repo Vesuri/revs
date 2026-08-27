@@ -123,7 +123,7 @@ multiplicand/multiplier). Convert as one unit or the shared storage corrupts.
 |---|---|---|---|---|---|
 | `car_heading` | $0A/$0B | 16-bit heading angle | some | A (B blocked) | TODO |
 | `lap_length` | $59FC/D | track-file lap distance | some | A | TODO |
-| `band2_duration` | $4F21/2 | horizon band duration | few | A→B | TODO |
+| `band2_duration` | $4F21/2 | horizon band duration | 0 (only irq1v + its oracle) | **B DONE** | ✅ `band2_duration_v` (revs_native.c) |
 
 ### Tier 3 — SoA state vectors, non-adjacent (relocate `lo_8[N]`/`hi_8[N]` → `value_16[N]`)
 
@@ -193,6 +193,30 @@ The 68000 has single-instruction `add.l`/`sub.l`/`move.l`/`cmp.l`, so a binary 2
 5. **Perf-size the hot ones** (Tier 1 render cells, Tier 3 arrays): in-process differential
    `make VERIFY=1 PROBES=1 FIXED_RNG=1`, quote the `fps_series.gdb` **row-vector** (not `total`),
    averaging non-outlier rows. Expect a measurable gain — this is the perf thesis under test.
+
+### The mechanism (B) template (established on `band2_duration`, the first zero-reader relocation)
+
+The concrete machinery, reusable for every (B) cell. The relocated var stores identically to the
+two mem[] bytes it replaces; the **`__t6502` oracle still uses mem[]**, so validate and determinism
+must be told the old cells are no longer state:
+
+- **The var:** a file-scope `static uintNN_t <name>_v;` in `revs_native.c` (or `revs_native_seam.h`
+  for an array shared across files). A *persistent* cell (written in one call, read in a later one)
+  is faithful as a static — it persists exactly as the mem[] bytes did.
+- **validate:** `set_ignore({old cells}, n)` around the fixture block, `set_ignore(0,0)` after. If
+  the value is consumed in a *different* invocation than it is produced (so the oracle reads its
+  pinned mem[] copy while the twin reads a stale static), add a tiny native-only setter
+  (`set_<name>_v`) and seed it to match the pinned input in that arm. A within-one-call
+  producer→consumer path needs no seeding (the twin writes then reads its own var).
+- **`det_compare.py`:** add the cell range to `RELOCATED` (a fresh run leaves those bytes at
+  unpack residue; the old-code golden still holds the computed value).
+- ⚠⚠ **TRAP — the parked determinism frame can coincidentally match.** `make determinism` (parked)
+  passed *without* the skip because at that frame the residue equalled the golden's value; only
+  **`determinism-drive` and `determinism-crash` genuinely diverge** at the relocated cell. Always
+  sabotage-verify the `RELOCATED` skip against **drive AND crash**, not the parked variant, and
+  confirm the diff is scoped to *exactly* the relocated addresses (nothing else moved).
+- **Amiga:** the setter is unreferenced there → dropped by `--gc-sections`; the relocation itself
+  is pure-mem code compiled into both backends. Confirm `make` (amiga) links clean.
 
 ## Ordering
 

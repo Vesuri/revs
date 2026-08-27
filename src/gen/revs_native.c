@@ -137,8 +137,10 @@ static void build_road_sign_core(void);
      $FF             the arm is skipped; the counter just wraps to 0 and takes band 0's
                      latch.  Any OTHER negative counter does nothing at all.
 
-   WHAT IT LEAVES BEHIND.  In mem[]: the pushed X on the 6502 stack (and back),
-   band2_duration and irq_band_state.  Nothing else.  In the hardware model: $FE6D (the
+   WHAT IT LEAVES BEHIND.  In mem[]: the pushed X on the 6502 stack (and back) and
+   irq_band_state.  band2_duration is no longer in mem[] — it was relocated to a native
+   wide value (band2_duration_v, below) by the wide-value cleanup, mechanism (B).  Nothing
+   else in mem[].  In the hardware model: $FE6D (the
    interrupt acknowledge), $FE20/$FE21 (the ULA), $FE66/$FE67 (the next band's duration —
    the write to $FE66 is what closes a band record in bbc_hw.cpp) and $FE69 once per field.
 
@@ -184,6 +186,22 @@ static void irq1v_return(void)
     cpu.A = mos_irq_a;
     PLP();
 }
+
+/* ⭐ WIDE-VALUE CLEANUP, mechanism (B): band2_duration ($4F21/$4F22) relocated out of mem[]
+   into this native uint16_t.  It is genuine cross-interrupt state — band 1's arm computes it
+   (the horizon split remainder) and band 2's arm, a LATER T1 interrupt of the same field,
+   loads it — so a file-scope static that persists exactly as the two mem[] bytes did is the
+   faithful storage.  Grep confirms this function (and its __t6502 validation oracle, which
+   still uses mem[]) are the ONLY readers/writers, so no de-transliteration was needed.
+   ⚠ The oracle still writes mem[$4F21/$4F22]; the validate fixture set_ignore's those cells,
+   and det_compare.py skips them (they are no longer game state).  set_band2_duration_v below
+   lets the fixture seed the standalone band-2 arm to match the oracle's pinned input. */
+static uint16_t band2_duration_v;
+
+/* Native-only test hook: seed the relocated value so the validate fixture can drive the
+   band-2 consumer arm on a known input (its producer arm ran in an earlier interrupt).
+   Unreferenced on the Amiga build → dropped by --gc-sections. */
+void set_band2_duration_v(uint16_t v) { band2_duration_v = v; }
 
 void irq1v_band_schedule(void)
 {
@@ -232,8 +250,7 @@ void irq1v_band_schedule(void)
            arm has to run in this same interrupt. */
         sky  = band1_duration_lo | ((unsigned)band1_duration_hi << 8);
         rest = (0x153Cu - sky) & 0xFFFFu;
-        band2_duration_lo = (unsigned char)rest;
-        band2_duration_hi = (unsigned char)(rest >> 8);
+        band2_duration_v = (uint16_t)rest;
         if (sky <= 0x153Cu) {
             latch = sky;
             break;
@@ -242,8 +259,8 @@ void irq1v_band_schedule(void)
 
     case 2:     /* the horizon: black / blue / white / green */
         ula_palette_table(0x3458, 15);
-        latch = band2_duration_lo | ((unsigned)band2_duration_hi << 8);
-        if (band2_duration_hi != 0)
+        latch = band2_duration_v;
+        if ((band2_duration_v >> 8) != 0)
             break;
         /* fall through — zero-height band 3 */
 
