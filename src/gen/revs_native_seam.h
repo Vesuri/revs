@@ -304,7 +304,7 @@ uint8_t shift_near_edge_points_core(uint8_t topSlot, uint8_t wrapSlot, uint8_t l
 void sound_osword_core(uint8_t oswordNum, uint8_t blockLow);
 void sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX);
 void sound_queue_exit_abi(uint8_t slot);
-void sound_stop_channel_core(uint8_t chan);
+uint8_t sound_stop_channel_core(uint8_t chan);
 int state_flags_bit6(void);
 void store_slip_clamped_core(uint8_t valueHi);
 void store_slip_clamped_off_throttle_core(uint8_t valueHi);

@@ -340,7 +340,7 @@ void sound_queue_default(void)
 void sound_stop_channel(void)
 {
     uint8_t entryA = cpu.A;                          /* $0E5A PHA */
-    sound_stop_channel_core(cpu.X);
+    cpu.X = sound_stop_channel_core(cpu.X);          /* exit X from the core */
     cpu.A = entryA;                                  /* $0E72 PLA — its N/Z the exit */
     cpu.N = (uint8_t)(entryA >> 7);
     cpu.Z = (uint8_t)(entryA == 0u);

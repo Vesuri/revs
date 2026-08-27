@@ -6526,20 +6526,19 @@ void sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX)
    keeps update_slip_sound from issuing an OSBYTE every frame the car is not sliding.
    ⚠ X after the OSBYTE is whatever the MOS left, and the `AND #$FB` is applied to THAT.
    --------------------------------------------------------------------------- */
-void sound_stop_channel_core(uint8_t chan)
+uint8_t sound_stop_channel_core(uint8_t chan)
 {
-    /* The caller's A is preserved (PHA/PLA) in the shim, not here — that is exit ABI. */
-    if (mem[SOUND_CHAN_STATE + chan] != 0u) {           /* $0E5B-$0E5E — already idle? do nothing */
-        mem[SOUND_CHAN_STATE + chan] = 0u;              /* $0E60-$0E62 */
-        /* MOS ABI — documented cpu exception.  OSBYTE 21 flushes buffer chan|4 (buffers 4..7 ARE
-           the four sound channels); X returns preserved and the buffer bit is taken back off.
-           ⚠ It reads the MOS's X, not the saved channel: invisible to the differential because
-           OSBYTE 21 preserves X in both the model and the real MOS, but written faithfully. */
-        cpu.X = (uint8_t)(chan | 4u);                   /* $0E65-$0E68 */
-        cpu.A = 0x15u;                                  /* $0E69 — OSBYTE 21 */
-        platform_mos_call(0xFFF4);                      /* $0E6B */
-        cpu.X = (uint8_t)(cpu.X & 0xFBu);               /* $0E6E-$0E71 */
-    }
+    /* The caller's A is preserved (PHA/PLA) in the shim, not here — that is exit ABI.  Returns the
+       exit X: the channel on the idle flow-through, and (MOS X & ~4) on the active path. */
+    if (mem[SOUND_CHAN_STATE + chan] == 0u)             /* $0E5B-$0E5E — already idle? do nothing */
+        return chan;                                    /* X flows through unchanged */
+    mem[SOUND_CHAN_STATE + chan] = 0u;                  /* $0E60-$0E62 */
+    /* MOS ABI: OSBYTE 21 flushes buffer chan|4 (buffers 4..7 ARE the four sound channels); it
+       preserves X, and the buffer bit is taken back off.  mos_call_ax leaves Y flowing through,
+       which OSBYTE 21 also preserves and the differential compares.  ⚠ The `& ~4` is applied to
+       the MOS's returned X, not the saved channel — faithful, though invisible (X is preserved). */
+    MosRegs r = mos_call_ax(0xFFF4u, 0x15u, (uint8_t)(chan | 4u));   /* $0E65-$0E6B */
+    return (uint8_t)(r.x & 0xFBu);                      /* $0E6E-$0E71 */
 }
 
 /* ---------------------------------------------------------------------------
