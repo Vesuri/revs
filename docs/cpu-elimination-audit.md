@@ -28,15 +28,29 @@ removed the arithmetic *helpers* (`adc_step`, `sbc_step`, …) but left the regi
    `scale16_by_y`, `mul16_by_1_5`, `horizon_half_width_at`, …) — those are layer-1 work, not seam, and
    convert in place; they do NOT relocate.
 
-## The MOS boundary — a documented cpu exception (user decision, 2026-08-23)
+## The MOS boundary — resolved with a typed wrapper (user decision, 2026-08-27)
 
 The I/O cores reach the Acorn OS through `platform_mos_call(entry)`, whose ABI is the real BBC's
-OSBYTE/OSWORD **register** contract (`cpu.A/X/Y` in, `cpu.A/X/Y` + C out). The user chose to keep a
-**small, localized, commented `cpu` block at each of the 7 MOS sites** rather than introduce a typed
-`mos_*` wrapper. So `revs_native.c` does NOT reach literally 0 `cpu.` refs: the MOS-ABI marshalling
-stays, exactly like the flag-escape exceptions — a genuine hardware boundary, not interpreter residue.
-Everything ELSE around it becomes typed C, so a caller of a MOS-wrapping leaf sees a typed signature
-and holds no `cpu`. Mark each kept block `/* MOS ABI — documented cpu exception */`.
+OSBYTE/OSWORD **register** contract (`cpu.A/X/Y` in, `cpu.A/X/Y` + C out). The 2026-08-23 decision to
+keep a localized `cpu` block at each MOS site was **reversed on 2026-08-27**: the user chose the
+**full typed wrapper**. `revs_native_seam.h` now carries `MosRegs {a,x,y,c}` and the always-inline
+`mos_call`/`mos_call_ax`/`mos_osbyte`/`mos_osword`/`mos_oswrch` — each deposits the input registers
+into `cpu` exactly as the interpreter's LDA/LDX/LDY would (the differential logs every MOS call from
+`cpu.A/X/Y` at call time, as a sequence) and returns the exit `MosRegs`. `mos_call` deposits A/X/Y;
+`mos_call_ax` deposits A/X and lets Y flow through (OSBYTE 21 / ADVAL sites, where the differential
+compares Y). By construction the wrappers still leave `cpu` mutated on exit, so residue-reader shims
+(`sound_queue`, `sound_osword`, `kbd_test_key`) read the exit A/X/Y back from `cpu` unchanged.
+
+The two explicit residue-reader **cores** were made cpu-free by threading typed structs:
+`engine_starter_poll` reads `kbd_test_key_regs(...)` (a `MosRegs`); `sound_osword_core` returns
+`MosRegs`, `sound_queue_core` returns the OSWORD's exit Y, and `begin_spin_from_a_core` returns
+`SpinExit {y,c,v}` (block C/V via the shared `sound_queue_block_cv`, both 0 on slot 4), which
+`update_camera_and_drive_state_core` reads instead of `cpu`. The `begin_spin` shims replay X/N/Z +
+block C/V via `sound_queue_exit_abi` and take exit A/Y from the OSWORD side-effect.
+
+**No computational core in `revs_native.c` holds a `cpu` ref any more** — the only remaining `cpu`
+access is inside the seam vocabulary (the MOS wrappers and the flag-escape helpers), which is the
+hardware/flag boundary by design.
 
 ⚠ **Dependency reorders the clusters:** cluster 2 (drivers) sits ATOP cluster 3 (the text/adc/kbd
 leaves), so the leaves convert FIRST. `adc_read`/`kbd_test_key` are called only by the cluster-2
@@ -72,6 +86,7 @@ caller and written at the code (V-escape rule + PHP-residue rule from the prior 
 | 7 | View pipeline (`fill_object_gap`, `plot_shape_edges`, `plot_view_src_line`, `mark_line_surfaces`, `fill_line_attr`, `fill_edge_column_run`, `column_gap_walk`, `surface_colour_at`, `view_paint_lines`, `edge_x_offscreen`, `shift_near_edge_points`, `emit_edge_width_offset`, `emit_edge_bearing`, `road_edge_walk`) | ~14 | ✅ |
 | 8 | Computational helpers still on `cpu` (`abs8`, `abs16_math`, `mul8_*`, `mul16_by_1_5`, `scale16_by_y`, `div16by8`, `horizon_half_width_at`, `road_edge_side`, `derive_endpoint`, `place_car_world_coords`, `place_player_in_section`, `road_edge_walk_subdivide`, `paint_lines_short`, …) | ~20 | ✅ |
 | 9 | **Seam relocation** — 72 thin shims → `revs_native_seam.c`; shared header; both Makefiles; validate | 72 | ✅ |
+| 10 | **MOS wrapper** — typed `MosRegs` + `mos_call*`/`mos_osbyte`/`mos_osword`/`mos_oswrch` in seam.h; 7 sites converted; `sound_osword`/`sound_queue`/`begin_spin_from_a` return typed residue; `engine_starter_poll`/`update_camera` read structs, not `cpu` (4 sub-commits) | 7 | ✅ |
 
 ⚠ These groupings track the `validate_native.c` fixture groups; sub-commits split a group when it is
 too large for one logical change. The counts are the survey's; they will drift as work lands.
