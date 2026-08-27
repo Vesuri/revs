@@ -403,7 +403,6 @@ void irq1v_band_schedule(void)
                                          fill_dash_edge_columns */
 #define VIEW_R_START_SRC    0x4400u   /* ...and the RIGHT run's first cell's */
 #define VIEW_LINE_SURFACE   0x5F60u   /* per-line surface index, 2 bits, into surface_colours */
-#define SURFACE_COLOURS_TBL 0x38FCu
 
 /* The SMC records: where each driver last planted its RTS.  They outlive the call. */
 #define VIEW_REC_A2         0x7D24u   /* phase 2, chain A */
@@ -1547,8 +1546,6 @@ void race_main_loop_core(RestartDepth depth)
    stores `bearing - car_heading`, so an edge point is an azimuth relative to where the car is
    pointing and interp_edge is what turns one into a screen column. */
 #define EDGE_Y_TBL       0x5F20u   /* edge_y      — per edge point: the scan line it projects to */
-#define EDGE_X_HI_TBL    0x5E90u   /* edge_x_hi   — ...and the high byte of its angle */
-#define EDGE_X_LO_TBL    0x5E40u   /* edge_x_lo   — ...and the low byte */
 #define EDGE_OPP_X_LO    0x5E50u   /* edge_opp_x_lo — the OPPOSITE boundary's angle at that point */
 #define EDGE_OPP_X_HI    0x5EA0u   /* edge_opp_x_hi */
 #define EDGE_STYLE_TBL   0x5EE0u   /* edge_style  — which surface style the span there uses */
@@ -2903,8 +2900,6 @@ void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
    No hardware writes and no $FC00-$FEFF access in the driver itself.
    =========================================================================== */
 
-#define MODEL_STATE_LO   0x62D0u   /* the driving model's 16-bit state vector, low bytes */
-#define MODEL_STATE_HI   0x62E0u   /* ...and high bytes; element i is +i in each */
 
 /* ⚠ Every model cell below is read from mem[] at the point of use and never cached in a local:
    any of the fifteen sub-models can write any of them, and stage_accum_delta in particular is *supposed* to
@@ -3036,7 +3031,6 @@ void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
    this routine's own accesses straight to mem[].
    =========================================================================== */
 
-#define CAR_FLAGS_SHAPE      0x018Cu   /* per slot: flags, with the object's shape in bits 0-3 */
 #define OBJECT_BEARING_LO    0x0380u   /* per slot: 16-bit track position, low byte */
 #define OBJECT_BEARING_HI    0x0398u   /* ...and high byte */
 #define OBJECT_LINE       0x03B0u   /* per slot: screen cell column */
@@ -3144,8 +3138,6 @@ SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, ui
    as it must; swapping the order does not.
    =========================================================================== */
 
-#define VIEW_LEFT_START_SRC   0x0504u   /* per scan line: the LEFT run's first source byte */
-#define VIEW_RIGHT_START_SRC  0x4400u   /* ...and the RIGHT run's */
 
 /* One end of the viewport.  `stopColumn` is exclusive of the plot_ptr2 half of the run and
    inclusive of the plot_ptr half — fill_edge_column_run walks two columns per iteration and
@@ -3205,7 +3197,6 @@ SlotExit fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightStartS
    =========================================================================== */
 
 #define DASH_PTR_INIT     0x192Fu   /* 4-byte seed: src lo/hi ($3000) then dst lo/hi ($7FB0) */
-#define DASH_BLOCK_STARTS 0x3900u   /* per block: the offset its live data begins at (< $4F) */
 #define DASH_BLOCK_COUNT  0x29u     /* 41 blocks */
 #define DASH_BLOCK_TOP    0x4Fu     /* a block's live data always ENDS at offset $4F */
 
@@ -3430,8 +3421,6 @@ void div16by8(void)
 #define POINT_DELTA_LO    0x0080u  /* point_delta_lo[0..2]   — camera-relative delta, low byte */
 #define POINT_DELTA_HI    0x0083u  /* point_delta_hi[0..2]   — ...its magnitude's high byte */
 #define POINT_DELTA_SIGN  0x0086u  /* point_delta_sign[0..2] — ...and the raw high byte, the sign */
-#define VIEW_ORIGIN_LO    0x6280u  /* view_origin_lo — 3 components, STRIDE 6, two origins */
-#define VIEW_ORIGIN_HI    0x6283u  /* view_origin_hi */
 #define ARCTAN_TABLE      0x6100u  /* arctan_table — atan(i/256) with 45 degrees at $FF */
 #define RECIP_TABLE_BIAS  0x6180u  /* reciprocal_table reached biased: entry i = $8000/(i+$80) */
 
@@ -3725,10 +3714,7 @@ ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
 
 #define COLOUR_PATTERN     0x628Fu   /* colour_pattern_tbl     — 4 bytes, the span's pixels */
 #define COLOUR_PATTERN_OR  0x629Cu   /* colour_pattern_or_tbl  — ...masked to this column */
-#define COLOUR_PATTERN_AND 0x337Cu   /* colour_pattern_and_tbl — ...and what it keeps */
-#define COLOUR_PATTERN_KEEP 0x33FCu  /* colour_pattern_keep_tbl */
 #define SURFACE_STYLE_TBL  0x5FD0u   /* surface_style_tbl — 4 bytes per style record */
-#define DASH_BLOCK_STARTS  0x3900u   /* dash_block_starts — first scan line of each block */
 #define SPAN_PAIR_OFFSET   0x30FCu   /* span_pair_offset_tbl — by pass, the paired-index gap */
 #define ROW_BASE_HI        0x2B1Eu   /* row_base_hi — by pass, the surface_edge buffer */
 #define ROW_BASE_LO        0x2B22u   /* row_base_lo */
@@ -5523,10 +5509,6 @@ void neg16_math(void)
 #define MUL_SIGN       0x0079u   /* hypot_min_hi — product-sign accumulator (bit 7) + apply_angle_term's store/accumulate mode (bit 6) */
 #define MODEL_TERM     0x007Cu   /* point_dist_lo — the destination element index */
 #define MODEL_SRC_SLOT 0x007Fu   /* span_line_cursor — apply_angle_term_at's source element */
-#define MODEL_STATE_LO 0x62D0u   /* model_state_lo[0..14] */
-#define MODEL_STATE_HI 0x62E0u   /* model_state_hi[0..14] */
-#define CAR_ANGLE_LO   0x62A0u   /* the car-angle array: heading_sin_lo / heading_cos_lo / steer_angle_lo */
-#define CAR_ANGLE_HI   0x62A3u   /* ...high bytes: heading_sin_hi / heading_cos_hi / steer_angle_hi */
 
 /* ---------------------------------------------------------------------------
    $0DD7  mul16_signed — THE SIGNED 16x16 MULTIPLY  (twin #50)
@@ -5871,8 +5853,6 @@ void apply_angle_term_at(void)   { apply_angle_term_at_core(cpu.A, cpu.X); }
    =========================================================================== */
 
 #define VIEW_ORIGIN_FRAC 0x62B1u  /* view_origin_frac[0..2] — the camera's sub-byte remainder */
-#define VIEW_ORIGIN_LO   0x6280u  /* view_origin_lo[0..2] */
-#define VIEW_ORIGIN_HI   0x6283u  /* view_origin_hi[0..2] */
 #define MODEL_STATE_FRAC 0x62AEu  /* model_state_frac[0..2] — elements 0..2 at 24 bits */
 #define MODEL_ROT_MODE   0x0088u  /* point_delta_sign[2] — here the rotation's sign/mode byte */
 #define STEER_ANGLE      2u       /* element 2 (steer_angle) of the heading_sin/heading_cos/steer array */
@@ -6703,11 +6683,6 @@ void update_slip_sound(void)    { update_slip_sound_core(cpu.X, cpu.Y); } /* res
           The curve is covered by sabotages that move a segment's OFFSET or SLOPE instead.
    =========================================================================== */
 
-#define CAR_ANGLE_LO   0x62A0u   /* heading_sin / heading_cos / steer_angle, low bytes; bit 0 is the SIGN */
-#define CAR_ANGLE_HI   0x62A3u   /* ...and their high bytes */
-#define TRACK_DIR_0    0x5400u   /* the track's forward direction at each position: */
-#define TRACK_DIR_1    0x5500u   /*   component 0, the GRADIENT (component 1), */
-#define TRACK_DIR_2    0x5600u   /*   and component 2 — see disasm/symbols.csv */
 #define SECTION_DIR_IX 0x0700u   /* per live section, its index into the three pages above */
 #define SECTION_CRD_LO 0x0900u   /* section_coord_lo / _hi — the live section geometry */
 #define SECTION_CRD_HI 0x0A00u
@@ -7973,7 +7948,6 @@ void store_object_flags(void)   { store_object_flags_core(cpu.Y, cpu.A); }
    comment on each says whose they are the rest of the time.
    =========================================================================== */
 
-#define SURFACE_COLOURS_TBL 0x38FCu   /* surface_colours — four MODE 5 colour bytes */
 #define COLOUR_PATTERN_TBL  0x628Fu   /* colour_pattern_tbl — plot_view_src_line's four */
 #define CAR_ORDER_TBL       0x013Cu   /* car_order */
 #define SHAPE_VECTOR_TBL    0x4480u   /* shape_vector_tbl */
@@ -8368,9 +8342,6 @@ void plot_shape_edges(void)     { SlotExit e = plot_shape_edges_core();
 
 #define PIXEL_KEEP_OTHERS   0x3FE8u   /* pixel_keep_others_tbl */
 #define PIXEL_AFTER_MASK    0x39D0u   /* pixel_after_mask_tbl */
-#define COLOUR_PATTERN_AND  0x337Cu   /* colour_pattern_and_tbl */
-#define COLOUR_PATTERN_KEEP 0x33FCu   /* colour_pattern_keep_tbl */
-#define DASH_BLOCK_STARTS   0x3900u   /* dash_block_starts */
 #define GAP_TOP_TBL         0x3F4Fu   /* object_gap_top_tbl */
 #define VIEW_SRC_PAGE       0x30u     /* the forty $80-spaced source blocks start at $3000 */
 #define SRC_CELL_BLANK      0x55u     /* the "written but empty" sentinel */
@@ -8860,8 +8831,6 @@ close_gap:
 #define ASSIST_LAMP_2  0x77E3u
 #define ASSIST_LAMP_3  0x77E4u
 #define OPTION_FLAGS   0x05F5u   /* state_flags + 1: bit 7 selects the JOYSTICK input path */
-#define EDGE_X_LO_TBL  0x5E40u   /* edge_x_lo / edge_x_hi — the track edges the assist reads */
-#define EDGE_X_HI_TBL  0x5E90u
 #define SECTION_CURVE  0x0701u   /* section_curve — field 1 of the per-section record */
 #define SLIP_MAG_LO_10 0x62DAu   /* slip_magnitude_lo / _hi — model_state element $0A */
 #define SLIP_MAG_HI_10 0x62EAu
@@ -9984,9 +9953,6 @@ void step_segment_dir_index(void)
    the high bytes in point_delta_hi[0..2].  When track_direction is set (running the
    track backwards) each 16-bit component is two's-complement negated.  D=0 on this
    path; the callers ($1335, $2A11) discard the exit registers/flags. */
-#define TRACK_DIR_0   0x5400u   /* track_dir_0[Y] — direction component 0 (ground plane) */
-#define TRACK_DIR_1   0x5500u   /* track_dir_1[Y] — component 1 (gradient) */
-#define TRACK_DIR_2   0x5600u   /* track_dir_2[Y] — component 2 (ground plane) */
 void build_section_step_delta(void)
 {
     uint8_t y = cpu.Y;
@@ -10383,9 +10349,6 @@ void step_section_curve(void)
 #define OBJECT_COORD_HI   0x0AFDu   /*                                    high bytes */
 #define SECTION_COORD_LO  0x0900u   /* section origin, low  (section_coord_lo) */
 #define SECTION_COORD_HI  0x0A00u   /* section origin, high (section_coord_hi) */
-#define TRACK_DIR_0       0x5400u
-#define TRACK_DIR_1       0x5500u
-#define TRACK_DIR_2       0x5600u
 #define TRACK_DIR_3       0x5700u   /* ⚠ shares ModifyGameCode's address; read as DATA here */
 #define TRACK_DIR_4       0x5800u
 #define SECTION_DIR_INDEX 0x0700u
@@ -10628,8 +10591,6 @@ void tally_bcd_column(void)
 #define FENCE_PATTERN_HI       0x3D7Cu  /* fence_pattern_hi — 4-byte dither, rows at/above it   */
 #define VIEW_BLOCK_BASE        0x3000u  /* the forty $80-spaced view source blocks             */
 #define VIEW_BLOCK_STRIDE      0x80u
-#define VIEW_LEFT_START_SRC    0x0504u  /* view_left_start_src  — per-line left run source byte */
-#define VIEW_RIGHT_START_SRC   0x4400u  /* view_right_start_src — per-line right run source byte */
 
 uint8_t paint_fence_backdrop_core(uint8_t horizon)
 {
@@ -10958,7 +10919,6 @@ void full_track_scan_rebuild(void)
  * BCD bytes order like their decimal value, so no decimal arithmetic is needed merely to sort them.
  * No register or flag escapes (the sole caller discards A/flags), so the shim marshals nothing back.
  * ------------------------------------------------------------------------------------------------ */
-#define CAR_FLAGS_SHAPE   0x018Cu   /* car_flags_shape: bit6 = projection rejected this car */
 #define CAR_LAP_START_LO  0x0898u   /* car_lap_start_lo: per-car lap-start BCD timestamp, low  */
 #define CAR_LAP_START_MID 0x08ACu   /* car_lap_start_mid:                               middle */
 #define CAR_LAP_START_HI  0x04DCu   /* car_lap_start_hi:                                 high  */

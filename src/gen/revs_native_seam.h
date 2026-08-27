@@ -32,6 +32,24 @@
 #define CAR_STATE_1    0x0164u   /* per-driver; the camera adds a gradient-scaled copy */
 #define FENCE_COL_COUNT        0x28u    /* 40 view columns                                    */
 
+/* ---- SoA array bases (Step 0 of the wide-value cleanup: one home each, was duplicated
+ *      across revs_native.c; the single swap point when a base becomes a value_16[N]) ---- */
+#define MODEL_STATE_LO   0x62D0u   /* the driving model's 16-bit state vector, low bytes */
+#define MODEL_STATE_HI   0x62E0u   /* ...and high bytes; element i is +i in each */
+#define CAR_ANGLE_LO     0x62A0u   /* car-angle array: heading_sin/heading_cos/steer_angle low; bit0 = SIGN */
+#define CAR_ANGLE_HI     0x62A3u   /* ...and their high bytes */
+#define VIEW_ORIGIN_LO   0x6280u   /* view_origin_lo — 3 components, STRIDE 6, two origins */
+#define VIEW_ORIGIN_HI   0x6283u   /* view_origin_hi */
+#define EDGE_X_LO_TBL    0x5E40u   /* edge_x_lo — the track edges' angle, low byte */
+#define EDGE_X_HI_TBL    0x5E90u   /* edge_x_hi — ...and the high byte */
+#define TRACK_DIR_0      0x5400u   /* track_dir_0[Y] — direction component 0 (ground plane) */
+#define TRACK_DIR_1      0x5500u   /* track_dir_1[Y] — component 1 (gradient) */
+#define TRACK_DIR_2      0x5600u   /* track_dir_2[Y] — component 2 (ground plane) */
+#define SURFACE_COLOURS_TBL 0x38FCu /* surface_colours — four MODE 5 colour bytes */
+#define COLOUR_PATTERN_AND  0x337Cu /* colour_pattern_and_tbl */
+#define COLOUR_PATTERN_KEEP 0x33FCu /* colour_pattern_keep_tbl */
+#define CAR_FLAGS_SHAPE  0x018Cu   /* per slot: flags, with the object's shape in bits 0-3 */
+
 /* ---- exit-struct typedefs (moved out of revs_native.c) ---- */
 typedef struct { uint8_t a, x, y, n, z, v, c; } SlotExit;
 typedef struct { uint8_t val, carry; } Adc;
