@@ -218,6 +218,35 @@ must be told the old cells are no longer state:
 - **Amiga:** the setter is unreferenced there → dropped by `--gc-sections`; the relocation itself
   is pure-mem code compiled into both backends. Confirm `make` (amiga) links clean.
 
+### ⚠⚠ (B) DISQUALIFIER — a cell that bridges a hybrid oracle's glue and its native sub-cores
+
+"Zero transliterated readers in `revs_gen.c`" is necessary but **not sufficient** for mechanism (B).
+A validated parent (in `VALIDATE_FUNCS`) gets a `__t6502` oracle that is a *hybrid*: its
+transliterated glue calls the parent's **native** sub-cores, and any `mem[]` cell the glue uses to
+pass a value to (or receive one from) those native children is the **data channel between them**.
+Relocate that cell and the oracle breaks against itself: the glue writes/reads `mem[]` while the
+native child now writes/reads the `_v` static the glue never touches — the *reference* is corrupted,
+so validate fails on downstream outputs (not on the ignored cells) even though each sub-core passes
+in isolation.
+
+- **The tell:** parent validate FAILS on physics/state outputs while every relocated sub-cell is on
+  the ignore-list AND each sub-core validates 0-mismatch standalone. The break is in the composed
+  oracle's internal data flow, invisible to per-sub fixtures.
+- **The disqualified case (2026-08-27):** `model_accum_entry` ($38/$39) + `model_accum_delta`
+  ($3A/$3B). Every `revs_gen.c` reference is inside a `__t6502` oracle — but that oracle is
+  `apply_driving_model__t6502`, whose glue does the $46AE entry-save into `mem[$38/$39]` and the
+  $46DF restore from `mem[$3A/$3B]`, while calling native `stage_accum_delta` (writes the delta) and
+  native `apply_drag_terms` (reads the entry high byte). The cells ARE the glue↔core channel.
+  Relocation broke `apply_driving_model` 200/200; **reverted, kept in `mem[]`.**
+- **The clean case for contrast:** `band2_duration` lives entirely inside one function
+  (`irq1v_band_schedule`) — producer and consumer are both native code in the same core, no parent
+  oracle marshals it through `mem[]`. That is what makes a cell a *true* zero-reader (B) candidate.
+- **Refined criterion:** a cell is (B)-eligible only if it is scratch **local to a single native
+  function** (produced and consumed within one `_core`), OR every function that touches it is native
+  with no `__t6502` oracle-glue reading/writing it as a call-boundary channel. When a validated
+  parent's oracle-glue passes the cell to a native child, the cell stays in `mem[]` until the parent
+  itself goes native (`NATIVE_FUNCS`, gated by determinism not validate) — then the glue is gone.
+
 ## Ordering
 
 0. **Step 0 consolidation** (above) — clears the duplicate-define debt first.
