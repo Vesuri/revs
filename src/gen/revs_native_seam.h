@@ -102,6 +102,7 @@ typedef struct { uint8_t ch; int usedMos; } VduDef;       /* def took the OSWRCH
 typedef struct { uint8_t mag; uint8_t dir; } AdcRead;   /* distance from centre, and its sign */
 typedef struct { uint8_t a, n, c; } GapTail;
 typedef struct { uint8_t a, x, y, c; } MosRegs;  /* an MOS call's exit A/X/Y and carry */
+typedef struct { uint8_t y, c, v; } SpinExit;    /* begin_spin's residue: OSWORD Y + block ADC C/V */
 
 /* ---- always_inline 6502 flag helpers (moved out of revs_native.c) ---- */
 #define REVS_FLAG_OP static inline __attribute__((always_inline))
@@ -301,8 +302,8 @@ AddFlags rotate_accum_by_steer_core(void);
 AddFlags rotate_pair_a_by_steer_core(void);
 void section_coord_add_delta_core(uint8_t dst, uint8_t src, const uint8_t dlo[3], const uint8_t dhi[3]);
 uint8_t shift_near_edge_points_core(uint8_t topSlot, uint8_t wrapSlot, uint8_t lowTop, uint8_t nearSlots);
-void sound_osword_core(uint8_t oswordNum, uint8_t blockLow);
-void sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX);
+MosRegs sound_osword_core(uint8_t oswordNum, uint8_t blockLow);
+uint8_t sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX);
 void sound_queue_exit_abi(uint8_t slot);
 uint8_t sound_stop_channel_core(uint8_t chan);
 int state_flags_bit6(void);

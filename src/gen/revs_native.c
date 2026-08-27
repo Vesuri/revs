@@ -6493,23 +6493,22 @@ static void clamp_slip_to_grip_core(uint8_t axle)
    ⚠ sound_queue's `ADC #$10` leaves C and V live all the way to the exit: nothing below it
    writes either flag.
    --------------------------------------------------------------------------- */
-void sound_osword_core(uint8_t oswordNum, uint8_t blockLow)
+MosRegs sound_osword_core(uint8_t oswordNum, uint8_t blockLow)
 {
-    /* MOS ABI — documented cpu exception.  OSWORD `oswordNum` on the block at $0B00 + blockLow;
-       Y ($0B) is that address's high byte.  $0B70-$0B73.  The caller's X (in sound_saved_x) is
-       restored by the shim, not here — that is exit ABI, not the MOS call. */
-    cpu.A = oswordNum;
-    cpu.X = blockLow;
-    cpu.Y = 0x0Bu;
-    platform_mos_call(0xFFF1);
+    /* OSWORD `oswordNum` on the block at $0B00 + blockLow; Y ($0B) is that address's high byte
+       ($0B70-$0B73).  Returns the MOS's exit registers; the caller's X (in sound_saved_x) is
+       restored by the exit ABI, not here.  mos_osword also leaves cpu.A/X/Y set, which the
+       sound_osword / sound_queue shims read back as their exit A/Y. */
+    return mos_osword(oswordNum, blockLow, 0x0Bu);
 }
 
-void sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX)
+/* Returns the OSWORD's exit Y — begin_spin threads it out as the spin's yScale residue. */
+uint8_t sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX)
 {
     sound_saved_x = savedX;                                     /* $0B4A STX */
 
     /* $0B4D-$0B53 — the slot picks a control block ((slot << 3) + $10).  The add's C and V leak to
-       the exit (reconstructed in the shim); D = 0 here so it is a plain binary add. */
+       the exit (reconstructed by sound_queue_block_cv); D = 0 here so it is a plain binary add. */
     uint8_t blockLow = (uint8_t)((uint8_t)(slot << 3) + 0x10u);
     unsigned block = 0x0B00u + blockLow;
 
@@ -6517,7 +6516,7 @@ void sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX)
 
     uint8_t chan = (uint8_t)(mem[block] & 3u);                  /* $0B58-$0B5D — the CHANNEL */
     mem[SOUND_CHAN_STATE + chan] = 0x07u;                       /* $0B5E-$0B60 — the OSWORD 7 marker */
-    sound_osword_core(0x07u, blockLow);                         /* $0B63 — OSWORD 7 (SOUND) */
+    return sound_osword_core(0x07u, blockLow).y;               /* $0B63 — OSWORD 7 (SOUND) */
 }
 
 /* ---------------------------------------------------------------------------
@@ -6598,14 +6597,27 @@ void store_slip_exit_abi(uint8_t sign)
 void check_wheel_slip(void)     { check_wheel_slip_core(cpu.X); }   /* result-only */
 void clamp_slip_to_grip(void)   { clamp_slip_to_grip_core(cpu.X); } /* result-only */
 
+/* The $0B4D `ADC #$10` block-index carry and overflow — a plain binary add (D = 0), so C is the
+   unsigned carry and V the signed overflow.  begin_spin threads these out as its exit C/V; the
+   exit ABI below replays them into cpu. */
+typedef struct { uint8_t c, v; } BlockCV;
+static BlockCV sound_queue_block_cv(uint8_t slot)
+{
+    unsigned s   = (uint8_t)(slot << 3);
+    unsigned sum = s + 0x10u;
+    BlockCV r;
+    r.c = (uint8_t)(sum > 0xFFu);
+    r.v = (uint8_t)(((~(s ^ 0x10u)) & (s ^ sum) & 0x80u) ? 1u : 0u);
+    return r;
+}
+
 /* Reconstruct sound_queue / sound_queue_default's exit: A/Y left by OSWORD, X restored from
    sound_saved_x (its N/Z the exit), and the block-index ADD's C and V ($0B4D ADC #$10). */
 void sound_queue_exit_abi(uint8_t slot)
 {
-    unsigned s   = (uint8_t)(slot << 3);
-    unsigned sum = s + 0x10u;
-    cpu.C = (uint8_t)(sum > 0xFFu);
-    cpu.V = (uint8_t)(((~(s ^ 0x10u)) & (s ^ sum) & 0x80u) ? 1u : 0u);
+    BlockCV cv = sound_queue_block_cv(slot);
+    cpu.C = cv.c;
+    cpu.V = cv.v;
     cpu.X = sound_saved_x;                           /* $0B73 LDX sound_saved_x (inside sound_osword) */
     cpu.N = (uint8_t)(sound_saved_x >> 7);
     cpu.Z = (uint8_t)(sound_saved_x == 0u);
@@ -6802,7 +6814,7 @@ static uint8_t scale_by_track_gradient_core(uint8_t value, uint8_t index)
    queues sound slot 4 — the same slot check_crash's crash arm queues.  It is the milder
    sibling of that arm: nothing here stops the engine or clears the model.
    --------------------------------------------------------------------------- */
-static void begin_spin_from_a_core(uint8_t severity, uint8_t savedX)
+static SpinExit begin_spin_from_a_core(uint8_t severity, uint8_t savedX)
 {
     spin_countdown = (uint8_t)(severity >> 1);  /* $4DCC — severity / 2 */
     spin_shake     = (uint8_t)(severity >> 2);  /* $4DCE-$4DCF — ...and / 4 */
@@ -6812,10 +6824,12 @@ static void begin_spin_from_a_core(uint8_t severity, uint8_t savedX)
     heading_step_lo = (uint8_t)((heading_step_lo >> 1) | 0x80u);
     /* $4DD7-$4DD9 LDA #4 / JSR sound_queue_default — slot 4 at sound_volume.  This is the last thing
        begin_spin does, so its exit ABI IS sound_queue_default's; the caller's X (untouched here) is
-       what sound_queue parks in sound_saved_x.  sound_queue is a cluster-4 leaf whose exit ABI moved
-       to its shim, so this native caller replays it. */
-    sound_queue_core(0x04u, sound_volume, savedX);
-    sound_queue_exit_abi(0x04u);
+       what sound_queue parks in sound_saved_x.  Return the residue the update_camera caller reads:
+       the OSWORD's exit Y and the block ADD's C/V; the begin_spin shims replay the full exit ABI. */
+    SpinExit e;
+    e.y = sound_queue_core(0x04u, sound_volume, savedX);
+    { BlockCV cv = sound_queue_block_cv(0x04u); e.c = cv.c; e.v = cv.v; }
+    return e;
 }
 
 /* ---------------------------------------------------------------------------
@@ -7380,9 +7394,9 @@ yaw:
                 absV = vAdd;
             }
             if (absSpin >= 0x05u) {                     /* $45B7 CMP #5 → C=1 */
-                begin_spin_from_a_core(absSpin, car_section_cursor);  /* $45B9 (X = car_section_cursor) */
-                yScale = cpu.Y;                          /* MOS ABI — the spin's sound OSWORD left the MOS's Y */
-                cArm = cpu.C; vArm = cpu.V;              /* MOS ABI — begin_spin's exit C/V (LDA #1 leaves them) */
+                SpinExit se = begin_spin_from_a_core(absSpin, car_section_cursor);  /* $45B9 (X = car_section_cursor) */
+                yScale = se.y;                          /* the spin's sound OSWORD left this in the MOS's Y */
+                cArm = se.c; vArm = se.v;               /* begin_spin's exit C/V (the block ADD's, LDA #1 leaves them) */
                 driveNew = 0x01u;                        /* $45BD */
             } else {                                     /* $45B7 CMP #5 → C=0 */
                 driveNew = 0x00u;                        /* $45C3 */
@@ -7508,8 +7522,10 @@ void scale_by_track_gradient(void)
         cpu.V = callerV;
     }
 }
-void begin_spin(void)                    { begin_spin_from_a_core(road_speed, cpu.X); }
-void begin_spin_from_a(void)             { begin_spin_from_a_core(cpu.A, cpu.X); }
+/* begin_spin's exit ABI is sound_queue_default's: A/Y are left in cpu by the OSWORD (via mos_call
+   inside the core), and sound_queue_exit_abi replays X/N/Z (from sound_saved_x) and the block C/V. */
+void begin_spin(void)                    { begin_spin_from_a_core(road_speed, cpu.X); sound_queue_exit_abi(0x04u); }
+void begin_spin_from_a(void)             { begin_spin_from_a_core(cpu.A, cpu.X);      sound_queue_exit_abi(0x04u); }
 void apply_drag_terms(void)              { apply_drag_terms_core(); }
 
 /* ===========================================================================
