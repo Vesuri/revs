@@ -245,7 +245,9 @@ void model_integrate_element(void)
 
 void kbd_test_key(void)
 {
-    int down = kbd_test_key_core(cpu.X);   /* core sets A/X/Y from the MOS answer */
+    MosRegs r = kbd_test_key_regs(cpu.X);  /* OSBYTE 129 (INKEY) — the MOS answer in A/X/Y */
+    cpu.A = r.a; cpu.X = r.x; cpu.Y = r.y;
+    int down = (r.x == 0xFFu);
     /* $0E57 CPX #$FF: Z/C set when the key is down (X came back $FF); N = bit 7 of (X-$FF).
        V is untouched by CPX, so it keeps the caller's value. */
     cpu.Z = down;
@@ -317,7 +319,9 @@ void derive_slip_reference(void)
 
 void sound_osword(void)
 {
-    sound_osword_core(cpu.A, cpu.X);                 /* number in A, block low in X */
+    MosRegs r = sound_osword_core(cpu.A, cpu.X);     /* number in A, block low in X */
+    cpu.A = r.a;                                     /* OSWORD leaves A (the reason code) and Y ($0B) */
+    cpu.Y = r.y;
     cpu.X = sound_saved_x;                           /* $0B73 LDX sound_saved_x — its N/Z the exit */
     cpu.N = (uint8_t)(sound_saved_x >> 7);
     cpu.Z = (uint8_t)(sound_saved_x == 0u);
@@ -340,7 +344,7 @@ void sound_queue_default(void)
 void sound_stop_channel(void)
 {
     uint8_t entryA = cpu.A;                          /* $0E5A PHA */
-    cpu.X = sound_stop_channel_core(cpu.X);          /* exit X from the core */
+    cpu.X = sound_stop_channel_core(cpu.X, cpu.Y);   /* exit X from the core; ambient Y → the OSBYTE 21 */
     cpu.A = entryA;                                  /* $0E72 PLA — its N/Z the exit */
     cpu.N = (uint8_t)(entryA >> 7);
     cpu.Z = (uint8_t)(entryA == 0u);
@@ -464,7 +468,7 @@ void vdu_char_def(void)
            A (= ch) and X/Y.  V is dropped by the fixture mask. */
         cpu.N = 1;
         cpu.Z = ((ch & text_out_via_mos) == 0);
-        mos_oswrch(ch);                                  /* $50F6 — OSWRCH the character */
+        mos_oswrch(ch, cpu.X, cpu.Y);                    /* $50F6 — OSWRCH the character (X/Y ambient) */
         return;
     }
     uint8_t x = cpu.X, y = cpu.Y;
@@ -484,7 +488,7 @@ void draw_gear_indicator(void)
 void adc_read(void)
 {
     AdcRead r = adc_read_core(cpu.X);
-    cpu.A = r.mag; cpu.X = r.dir;
+    cpu.A = r.mag; cpu.X = r.dir; cpu.Y = r.reading;    /* exit Y = the ADVAL high byte */
     cpu.C = (r.mag >= 0x0Au);
     cpu.Z = (r.mag == 0x0Au);
     cpu.N = ((uint8_t)(r.mag - 0x0Au) >> 7) & 1u;

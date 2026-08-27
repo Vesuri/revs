@@ -1676,7 +1676,7 @@ static void rotate_state_pair_core(uint8_t dest, uint8_t source, uint8_t mode);
 static void stage_accum_delta_core(void);
 void update_grip_limits_core(void);
 EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY);
-static void update_slip_sound_core(uint8_t axle);
+static void update_slip_sound_core(uint8_t axle, uint8_t ambientY);
 AddFlags rotate_accum_by_steer_core(void);
 AddFlags rotate_pair_a_by_steer_core(void);
 static void damp_and_derive_loads_core(void);
@@ -2955,7 +2955,7 @@ void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
         cpu.N = ee.tail.neg; cpu.Z = ee.tail.zero;
         cpu.X = ee.x; cpu.Y = ee.y;
     }
-    update_slip_sound_core(0x01);
+    update_slip_sound_core(0x01, cpu.Y);   /* the engine's exit Y is the ambient Y its OSBYTE 21 logs */
 
     /* $46DF-$46F5 — restore the entry accumulator, then apply the frame's real increment as one
        16-bit add (D=0 on the driving path — static-map.md §Decimal mode).  The add's exit flags
@@ -2975,7 +2975,7 @@ void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
        OSBYTE 21 (sound_stop_channel) with Y still holding it — a dead input the MOS ignores, but
        the real 6502 passes it, so it is reconstructed here now the core no longer leaves it in cpu. */
     cpu.Y = 8u;
-    update_slip_sound_core(0x00);
+    update_slip_sound_core(0x00, cpu.Y);
     rotate_pair_a_by_steer_core();
     damp_and_derive_loads_core();
 
@@ -5816,14 +5816,21 @@ static void apply_angle_term_at_core(uint8_t mode, uint8_t angle)
 /* OSBYTE 129 (INKEY): the OSBYTE number in A, the negative key code in X and a $FF time-limit in
    Y; the MOS answers X = Y = $FF when that key is held.  engine_starter_poll reads the raw exit
    registers, so this returns them typed; kbd_test_key_core keeps the boolean the other callers want. */
-static MosRegs kbd_test_key_regs(uint8_t keyCode)
+MosRegs kbd_test_key_regs(uint8_t keyCode)
 {
     return mos_osbyte(0x81u, keyCode, 0xFFu);   /* $0E50-$0E54 */
 }
 
 int kbd_test_key_core(uint8_t keyCode)
 {
-    return kbd_test_key_regs(keyCode).x == 0xFFu;   /* $0E57 CPX #$FF — Z set (key down) is the output */
+    /* The $0E50 routine leaves A/X/Y as the INKEY call did (X=Y=$FF held, $00 not; A = the OSBYTE
+       number), and its callers on the driving-control path let those escape as the chain's exit
+       X/Y.  Replay them so the cpu-free wrapper's dropped residue is reconstructed — faithful,
+       since every JSR to this routine in the oracle leaves exactly these.  The boolean return is
+       the CPX #$FF result the flag-testing callers want. */
+    MosRegs r = kbd_test_key_regs(keyCode);
+    cpu.A = r.a; cpu.X = r.x; cpu.Y = r.y;
+    return r.x == 0xFFu;                             /* $0E57 CPX #$FF — Z set (key down) is the output */
 }
 
 /* The 6502-ABI shims. */
@@ -6527,7 +6534,7 @@ uint8_t sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX)
    keeps update_slip_sound from issuing an OSBYTE every frame the car is not sliding.
    ⚠ X after the OSBYTE is whatever the MOS left, and the `AND #$FB` is applied to THAT.
    --------------------------------------------------------------------------- */
-uint8_t sound_stop_channel_core(uint8_t chan)
+uint8_t sound_stop_channel_core(uint8_t chan, uint8_t ambientY)
 {
     /* The caller's A is preserved (PHA/PLA) in the shim, not here — that is exit ABI.  Returns the
        exit X: the channel on the idle flow-through, and (MOS X & ~4) on the active path. */
@@ -6535,10 +6542,12 @@ uint8_t sound_stop_channel_core(uint8_t chan)
         return chan;                                    /* X flows through unchanged */
     mem[SOUND_CHAN_STATE + chan] = 0u;                  /* $0E60-$0E62 */
     /* MOS ABI: OSBYTE 21 flushes buffer chan|4 (buffers 4..7 ARE the four sound channels); it
-       preserves X, and the buffer bit is taken back off.  mos_call_ax leaves Y flowing through,
-       which OSBYTE 21 also preserves and the differential compares.  ⚠ The `& ~4` is applied to
-       the MOS's returned X, not the saved channel — faithful, though invisible (X is preserved). */
-    MosRegs r = mos_call_ax(0xFFF4u, 0x15u, (uint8_t)(chan | 4u));   /* $0E65-$0E6B */
+       preserves X and Y, and the buffer bit is taken back off.  ⚠ Y is a dead input the MOS
+       ignores, but the real 6502 hands it whatever was ambient at the call site and the
+       differential logs it — so the caller threads that ambient Y in for fidelity (it is NOT
+       cpu-sourced here).  ⚠ The `& ~4` is applied to the MOS's returned X, not the saved channel
+       — faithful, though invisible (X is preserved). */
+    MosRegs r = mos_call(0xFFF4u, 0x15u, (uint8_t)(chan | 4u), ambientY);   /* $0E65-$0E6B */
     return (uint8_t)(r.x & 0xFBu);                      /* $0E6E-$0E71 */
 }
 
@@ -6557,7 +6566,7 @@ uint8_t sound_stop_channel_core(uint8_t chan)
    ⭐ The squeal is queued at amplitude 1 on sound slot 3, and the guard is
    sound_chan_state[3]: the MOS is asked once, not once per frame.
    --------------------------------------------------------------------------- */
-static void update_slip_sound_core(uint8_t axle)
+static void update_slip_sound_core(uint8_t axle, uint8_t ambientY)
 {
     if (drive_state < 0x02u) {                       /* $4779-$477D CMP #2 / BCS → the silence arm */
         check_wheel_slip_core(axle);                 /* $477F */
@@ -6572,7 +6581,7 @@ static void update_slip_sound_core(uint8_t axle)
         }
         if ((loop_counter & 0x02u) != 0u) return;    /* $4789-$478D — the two-frame hysteresis */
     }
-    sound_stop_channel_core(3u);                     /* $478F-$4791 */
+    sound_stop_channel_core(3u, ambientY);           /* $478F-$4791 — Y flows through to the OSBYTE 21 */
 }
 
 /* The 6502-ABI shims — they reconstruct each routine's exit registers/flags from the cpu-free
@@ -6611,13 +6620,17 @@ static BlockCV sound_queue_block_cv(uint8_t slot)
     return r;
 }
 
-/* Reconstruct sound_queue / sound_queue_default's exit: A/Y left by OSWORD, X restored from
-   sound_saved_x (its N/Z the exit), and the block-index ADD's C and V ($0B4D ADC #$10). */
+/* Reconstruct sound_queue / sound_queue_default's exit: A/Y left by OSWORD 7 on the $0Bxx block
+   (reason code 7 in A, block high byte $0B in Y — both constants at this call site now the cpu-free
+   wrapper no longer leaves them behind), X restored from sound_saved_x (its N/Z the exit), and the
+   block-index ADD's C and V ($0B4D ADC #$10). */
 void sound_queue_exit_abi(uint8_t slot)
 {
     BlockCV cv = sound_queue_block_cv(slot);
     cpu.C = cv.c;
     cpu.V = cv.v;
+    cpu.A = 0x07u;                                   /* OSWORD reason code, preserved through the call */
+    cpu.Y = 0x0Bu;                                   /* $0B — the sound block's high byte */
     cpu.X = sound_saved_x;                           /* $0B73 LDX sound_saved_x (inside sound_osword) */
     cpu.N = (uint8_t)(sound_saved_x >> 7);
     cpu.Z = (uint8_t)(sound_saved_x == 0u);
@@ -6627,7 +6640,7 @@ void sound_queue_exit_abi(uint8_t slot)
 
 
 
-void update_slip_sound(void)    { update_slip_sound_core(cpu.X); } /* result-only */
+void update_slip_sound(void)    { update_slip_sound_core(cpu.X, cpu.Y); } /* result-only */
 
 /* ===========================================================================
    TWINS #79-#86 — THE EIGHT SUB-MODELS, and with them the whole of
@@ -8998,9 +9011,9 @@ uint8_t draw_gear_indicator_core(void)
 AdcRead adc_read_core(uint8_t channel)
 {
     /* $503F — OSBYTE $80 (ADVAL) with the channel in X; the reading's high byte comes back in Y.
-       mos_call_ax leaves the entry Y flowing through (ADVAL's entry-Y is don't-care, and the
-       differential does not compare it for A=$80 — validate_native.c). */
-    MosRegs r80 = mos_call_ax(0xFFF4u, 0x80u, channel);
+       ADVAL's entry-Y is don't-care and the differential does not compare it for A=$80
+       (validate_native.c), so 0 is passed. */
+    MosRegs r80 = mos_call(0xFFF4u, 0x80u, channel, 0u);
     uint8_t reading = r80.y;                            /* $5044 */
 
     /* $5047 — recentre on $80 (adding $80 with no carry-in just flips bit 7, i.e. ^ $80), then
@@ -9015,6 +9028,7 @@ AdcRead adc_read_core(uint8_t channel)
         r.mag = centred;
         r.dir = 0x01u;                                 /* direction: 1 = positive */
     }
+    r.reading = reading;                               /* exit Y — the ADVAL high byte the shim replays */
     return r;
 }
 
@@ -9299,9 +9313,12 @@ have_pedal:
        set no V of their own, so it leaks out of the routine. */
     cpu.V = (uint8_t)((mem[OPTION_FLAGS] >> 6) & 1u);  /* $1685 BIT — V escapes */
     if (mem[OPTION_FLAGS] & 0x80u) {                   /* $1685 BMI — joystick */
-        /* $168A — ADVAL 0, the stick buttons; the fire-button bits come back in X.
-           (Y flows through — ADVAL's entry-Y is don't-care and the differential ignores it.) */
-        uint8_t buttons = mos_call_ax(0xFFF4u, 0x80u, 0x00u).x;
+        /* $168A — ADVAL 0, the stick buttons; the fire-button bits come back in X, and the MOS's
+           exit X/Y escape through the no_key return (see there).  Replay them now the cpu-free
+           wrapper no longer leaves them behind. */
+        MosRegs b = mos_call(0xFFF4u, 0x80u, 0x00u, 0u);
+        cpu.X = b.x; cpu.Y = b.y;
+        uint8_t buttons = b.x;
         if ((buttons & 0x01u) == 0) goto no_key;       /* $1691 — no fire button (carry leaks in) */
         cpu.Y = (uint8_t)(pedal_mode - 1);             /* $1696 LDY/DEY — Y escapes to the held return */
         if (pedal_mode != 0x01u) goto shift_up;        /* not braking: shift up */
