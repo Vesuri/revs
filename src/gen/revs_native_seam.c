@@ -516,6 +516,44 @@ void update_horizon_band(void)
     CLI();                                   /* $4F75 */
 }
 
+void mirrors_update(void)
+{
+    /* $7B00 — the once-per-frame wing-mirror update (race_main_loop body, $1739).  Result-only:
+       exit regs/flags are dead at that caller.  The core carries the pre-loop bracket (a math_lo
+       reader-nativization); the segment loop and the mirror_draw_car calls stay here because
+       mirror_draw_car is a transliterated plotter shared by both differential sides, and it reads
+       its inputs from the 6502 registers (A = the value to plot, Y = the segment index).  All of
+       shared_temp_84 / span_line_cursor / shared_temp_76 / math_lo are read LIVE from mem[] in the
+       loop so the skip path (which writes none of them) stays byte-exact. */
+    uint8_t slot = mem[CAR_ORDER + car_ahead];          /* the car ahead's object slot */
+    MirrorSetup s;
+    mirrors_update_setup_core(mem[CAR_FLAGS_SHAPE + slot],
+                              mem[OBJECT_WIDTH + slot],
+                              mem[OBJECT_BEARING_HI + slot],
+                              car_heading_hi, &s);
+    if (s.drawable) {
+        math_lo          = s.half;      /* $74 — 6502 exit value, set only on this path */
+        shared_temp_84   = s.bottom;    /* $84 — block bottom line */
+        span_line_cursor = s.top;       /* $7F — block top line */
+    }
+    shared_temp_76 = s.heading;         /* $76 — set on both paths */
+
+    for (int y = 5; y >= 0; --y) {      /* $7B2C-$7B47: segments 5..0 */
+        uint8_t v;
+        if (shared_temp_76 == mem[MIRROR_SEG_BEARING_TBL + y]) {
+            v = shared_temp_84;                 /* the matching segment — draw the car (bottom line) */
+        } else if (mem[MIRROR_SEG_STATE + y] != 0) {
+            v = 0x00;                           /* a still-set stale segment — redraw 0 to erase it */
+        } else {
+            continue;                           /* $7B46 — empty and stays empty */
+        }
+        mem[MIRROR_SEG_STATE + y] = v;
+        cpu.A = v;                              /* mirror_draw_car entry ABI: A = value, Y = segment */
+        cpu.Y = (uint8_t)y;
+        mirror_draw_car();
+    }
+}
+
 void draw_corner_markers(void)
 {
     /* $1B12 — draws the up-to-three corner markers build_track_geometry queued this frame, then

@@ -2075,6 +2075,35 @@ void draw_corner_marker_core(uint8_t offLo, uint8_t offHi, uint16_t edgeX,
     }
 }
 
+/* mirrors_update ($7B00), pre-loop half.  Reader-nativization of math_lo ($74): the mirror car
+   block's half-height (object_width >> 3) becomes a C local, and the block is bracketed around the
+   mirror centre line $B6 — bottom = $B6 + half (shared_temp_84), top = $B6 - half
+   (span_line_cursor).  The folded car-heading term (shared_temp_76) is the segment selector.
+   A negative slot flag (car behind / rejected) skips the whole bracket — the routine only erases —
+   and leaves math_lo/$84/span_line_cursor untouched, so drawable gates those writes in the shim.
+   All plain 8-bit arithmetic (D=0 in-race, no wide value here); the campaign win is deleting the
+   math_lo byte-lane scratch, not de-carrying. */
+void mirrors_update_setup_core(uint8_t slotFlag, uint8_t objWidth,
+                               uint8_t bearingHi, uint8_t carHeadingHi,
+                               MirrorSetup *out)
+{
+    if (slotFlag & 0x80u) {                 /* $7B08 BMI — car behind / rejected slot: erase only */
+        out->drawable = 0;
+        out->heading  = slotFlag;           /* $7B2A shared_temp_76 = the raw flag byte */
+        return;
+    }
+    uint8_t half = (uint8_t)(objWidth >> 3);            /* $7B0A-$7B10 — half the block height */
+    out->half    = half;                                /* $74 exit value (drawable path only) */
+    out->bottom  = (uint8_t)(0xB6u + half);             /* $7B13 shared_temp_84 — block bottom line */
+    out->top     = (uint8_t)(0xB6u - half);             /* $7B1A span_line_cursor — block top line */
+    /* $7B1E-$7B29: (bearingHi - car_heading_hi - 4) >> 3, all 8-bit — the -4 MUST wrap mod 256
+       before the shift (SBC #4 is a byte op; a bare `- 4u` would promote to int and mis-shift a
+       value < 4). */
+    uint8_t fold = (uint8_t)((uint8_t)(bearingHi - carHeadingHi) - 4u);
+    out->heading = (uint8_t)(fold >> 3);
+    out->drawable = 1;
+}
+
 /* Exit ABI of emit_edge_width_offset.  X passes through the caller's; A = the point's scan line
    (the CMP at each exit sets A to it); Y = edge_cursor; V is the width ADC's overflow when the
    scoring branch ran, else the entry V; N/Z/C are the last CMP's on that exit path. */

@@ -773,6 +773,102 @@ static int test_draw_corner_markers(void)
     return fail;
 }
 
+void mirrors_update(void);
+void mirrors_update__t6502(void);
+
+/* mirrors_update's segment selector (shared_temp_76) — replica of the core, so the fixture can
+   both steer a match and count which loop arm each case takes. */
+static int mirror_heading(const uint8_t* pre)
+{
+    uint8_t slot = pre[0x013Cu + pre[0x005Bu]];       /* car_order[car_ahead] */
+    uint8_t flag = pre[0x018Cu + slot];               /* car_flags_shape[slot] */
+    if (flag & 0x80u) return flag;                    /* skip path: the raw flag byte */
+    return (int)(((uint8_t)((uint8_t)(pre[0x0398u + slot] - pre[0x000Bu]) - 4u)) >> 3);
+}
+
+/* ==========================================================================
+   $7B00 mirrors_update — THE WING-MIRROR UPDATE  (twin #152)
+   --------------------------------------------------------------------------
+   A math_lo ($74) reader-nativization: the mirror car block's half-height (object_width>>3) was
+   6502 scratch in math_lo; the core lifts it to a C local and math_lo keeps its 6502 exit value
+   (written ONLY on the drawable path).  Result-only (LIVE_NONE): exit regs/flags are dead at the
+   sole native caller (race_main_loop $1739).  The per-segment loop and the mirror_draw_car calls
+   stay in the shim; mirror_draw_car is a transliterated plotter shared by BOTH differential sides,
+   so its writes CANCEL as long as the twin hands it the same A (value) and Y (segment) per call —
+   a wrong bracket or a wrong segment set shows up as a mem[] avalanche once it plots.
+
+   ⚠ mirror_draw_car's inner loop runs while Y >= shared_temp_77 (= $3EFA[seg]); a ZERO entry there
+   spins forever (Y wraps $00->$FF, never < 0).  Random mem hits that 1/256 per drawn segment, so
+   the fixture PLANTS $3EFA[0..5] nonzero, and points its plot_ptr source ($3B9E[seg]) at page $80
+   so the plotter's own $138-stepped writes stay in $5900..$81FF and can never zero a $3EFA entry
+   of a not-yet-processed segment. */
+static int test_mirrors_update(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("mirrors_update");
+    if (!want("mirrors_update")) return 0;
+
+    unsigned mask = LIVE_NONE;
+    int cases = 3000 * scale;
+    int drawable = 0, skip = 0, matchArm = 0, eraseArm = 0, emptyArm = 0, drawCalls = 0;
+
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;                                   /* in-race, not a SED site */
+
+        for (unsigned y = 0; y < 6; y++) {
+            pre[0x3EFAu + y] = (uint8_t)((xs() % 0xFEu) + 1u);  /* 1..255 — terminate the plotter */
+            pre[0x3B9Eu + y] = 0x80u;                            /* keep plotter writes off $3EFA */
+        }
+
+        /* Force the slot flag both ways so the drawable bracket and the erase-only skip both run. */
+        uint8_t slot = pre[0x013Cu + pre[0x005Bu]];
+        if (t & 1) pre[0x018Cu + slot] |= 0x80u;    /* skip: car behind / rejected */
+        else       pre[0x018Cu + slot] &= 0x7Fu;    /* drawable */
+
+        /* Steer a "match" (the draw arm inside the loop) for a quarter of cases. */
+        int heading = mirror_heading(pre);
+        if (t % 4 == 0) pre[0x3BA4u + (t % 6u)] = (uint8_t)heading;
+
+        /* Count which arm each segment takes (pre-run; independent per index). */
+        int drawableCase = !(pre[0x018Cu + slot] & 0x80u);
+        if (drawableCase) drawable++; else skip++;
+        for (unsigned y = 0; y < 6; y++) {
+            if (heading == pre[0x3BA4u + y]) { matchArm++; drawCalls++; }
+            else if (pre[0x6293u + y] != 0)  { eraseArm++; drawCalls++; }
+            else                              emptyArm++;
+        }
+
+        fail += diff_run("mirrors_update", pre, c, mirrors_update,
+                         mirrors_update__t6502, mask, t, &printed);
+    }
+
+    /* Non-vacuity: both entry paths, all three loop arms, and at least one real plotter call. */
+    if (drawable == 0 || skip == 0) {
+        printf("[VACUOUS] mirrors_update: the slot-flag branch went only one way "
+               "(%d drawable, %d skip)\n", drawable, skip);
+        fail++;
+    }
+    if (matchArm == 0 || eraseArm == 0 || emptyArm == 0) {
+        printf("[VACUOUS] mirrors_update: the segment loop did not take all three arms "
+               "(%d match, %d erase, %d empty)\n", matchArm, eraseArm, emptyArm);
+        fail++;
+    }
+    if (drawCalls == 0) {
+        printf("[VACUOUS] mirrors_update: mirror_draw_car was never called\n");
+        fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  result-only  "
+           "(%d drawable / %d skip; arms %d match / %d erase / %d empty)\n",
+           "mirrors_update", cases, fail, drawable, skip, matchArm, eraseArm, emptyArm);
+    return fail;
+}
+
 void view_paint_lines(void);
 void view_paint_lines__t6502(void);
 extern unsigned long g_viewTableCollisions;   /* asserted below; see revs_native.c */
@@ -5933,6 +6029,7 @@ int main(int argc, char** argv)
     fail += test_draw_starting_lights();
     fail += test_update_horizon_band();
     fail += test_draw_corner_markers();
+    fail += test_mirrors_update();
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();

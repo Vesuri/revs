@@ -316,16 +316,29 @@ their 6502 exit values until relocation. Result-only; feeds `plot_object`, so th
 `draw_track_object` pattern — `plant_plotter_chains` + `$1FE9` planted; `plot_shape` is hardcoded 6
 so plot_object's shape-9 spin cannot arise. `draw_corner_markers` has NO SMC seam of its own, so
 `diff_run`'s own SMC-count equality is what pins the deeper `$1DD4` trap the shape-6 draw path
-reaches ~1/30 of drawn markers).
+reaches ~1/30 of drawn markers),
+`mirrors_update` ($7B00, #152 — the once-per-frame wing-mirror update; a `math_lo` reader-nativization,
+NOT a wide value. The half-height scratch (`object_width>>3`) was `math_lo`; the core lifts it to a
+C local and brackets the block around the mirror centre line `$B6` (bottom = `$B6+half` →
+`shared_temp_84`, top = `$B6-half` → `span_line_cursor`) and folds the heading selector
+`(object_bearing_hi - car_heading_hi - 4)>>3` → `shared_temp_76`; `math_lo`/`$84`/`$7F` keep their
+6502 exit values, written only on the drawable path. Result-only; the per-segment loop and the
+`mirror_draw_car` plotter calls stay in the shim — the plotter is shared by both differential sides
+so its writes cancel as long as the twin hands it the same `A`=value / `Y`=segment. ⚠ Fixture trap:
+`mirror_draw_car`'s inner loop spins forever on a zero `$3EFA[seg]`, so the fixture plants
+`$3EFA[0..5]` nonzero and points `$3B9E[seg]` at page `$80` to keep the plotter's own writes off
+`$3EFA`. ⚠ Core arithmetic trap: the `-4` in the fold is an 8-bit `SBC #4` — a bare `- 4u` promotes
+to `int` and mis-shifts a byte `< 4` (`$FE>>3` should be `$1F`, not `$FF`); wrap to `uint8_t` before
+the `>>3`).
 
-The remaining **17 genuine shipping readers** (`draw_dash_needles`, `mirrors_update` confirmed
-shipping — called from the native `race_main_loop_core`):
+The remaining **16 genuine shipping readers** (`draw_dash_needles` confirmed shipping — called from
+the native `race_main_loop_core`):
 
 ```
 shift_key_commands  sort_cars_by_key  check_car_pair
 FUN_27ed  FUN_28f2  FUN_32d0  FUN_3a50  FUN_3ceb  text_script_interp
 draw_dash_needles  dial_needle_angle  plot_line_octant
-FUN_635d  menu_wait_key  mirrors_update  FUN_2f19  view_paint_lines_short
+FUN_635d  menu_wait_key  FUN_2f19  view_paint_lines_short
 ```
 
 ⭐ **Reader-nativization pattern (from #148):** the counter/scratch becomes a C local, but the

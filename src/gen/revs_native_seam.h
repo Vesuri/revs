@@ -54,6 +54,11 @@
 #define COLOUR_PATTERN_AND  0x337Cu /* colour_pattern_and_tbl */
 #define COLOUR_PATTERN_KEEP 0x33FCu /* colour_pattern_keep_tbl */
 #define CAR_FLAGS_SHAPE  0x018Cu   /* per slot: flags, with the object's shape in bits 0-3 */
+#define CAR_ORDER        0x013Cu   /* the 20-entry sorted car order */
+#define OBJECT_WIDTH     0x03C8u   /* per slot: object screen width in pixels */
+#define OBJECT_BEARING_HI 0x0398u  /* per slot: object bearing high byte */
+#define MIRROR_SEG_BEARING_TBL 0x3BA4u /* 6 wing-mirror segment heading thresholds */
+#define MIRROR_SEG_STATE 0x6293u   /* per wing-mirror segment: last-drawn bottom line, 0 = erased */
 
 /* ---- exit-struct typedefs (moved out of revs_native.c) ---- */
 typedef struct { uint8_t a, x, y, n, z, v, c; } SlotExit;
@@ -131,6 +136,11 @@ typedef struct { int draw; uint8_t mathLo, mathHi, temp76, plotX, plotLine, proj
 /* MosRegs (an MOS call's A/X/Y + carry) is declared in platform_c.h, the header
    that also declares platform_mos_call_typed the wrappers below funnel through. */
 typedef struct { uint8_t y, c, v; } SpinExit;    /* begin_spin's residue: OSWORD Y + block ADC C/V */
+/* mirrors_update_setup_core's pre-loop result.  half is math_lo's ($74) 6502 exit value, written
+   ONLY when drawable (the routine's skip path leaves math_lo untouched); bottom -> shared_temp_84,
+   top -> span_line_cursor are meaningful only when drawable; heading -> shared_temp_76 is set on
+   both paths (the raw negative slot flag on the skip path). */
+typedef struct { int drawable; uint8_t half, bottom, top, heading; } MirrorSetup;
 
 /* ---- always_inline 6502 flag helpers (moved out of revs_native.c) ---- */
 #define REVS_FLAG_OP static inline __attribute__((always_inline))
@@ -340,6 +350,7 @@ void update_grip_limits_core(void);
 uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y);
 int draw_starting_lights_core(void);
 void draw_corner_marker_core(uint8_t offLo, uint8_t offHi, uint16_t edgeX, uint8_t edgeY, CornerMarker *out);
+void mirrors_update_setup_core(uint8_t slotFlag, uint8_t objWidth, uint8_t bearingHi, uint8_t carHeadingHi, MirrorSetup *out);
 int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out);
 uint8_t vdu_char_def_core(uint8_t ch);
 uint8_t vdu_char_emit_core(void);

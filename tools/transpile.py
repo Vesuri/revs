@@ -1053,6 +1053,15 @@ VALIDATE_FUNCS = {
     # plot_shape is always 6, so plot_object's shape-9 spin cannot arise.  Shipping caller:
     # native race_main_loop.
     0x1B12,
+    # ⭐ TWIN #152 — mirrors_update ($7B00).  Wing-mirror update; a math_lo READER-nativization
+    # (not a wide value): math_lo holds object_width>>3, the half-height of the mirror car block,
+    # used to bracket the mirror centre line $B6 into shared_temp_84 (bottom) / span_line_cursor
+    # (top).  The scratch becomes a C local in the core; math_lo keeps its 6502 exit value (only
+    # written on the drawable path, matching the routine) until $74/$75 relocation.  Result-only
+    # (exit regs/flags dead at the sole native caller, race_main_loop $1739).  The per-segment loop
+    # + mirror_draw_car calls stay in the shim (mirror_draw_car is a transliterated plotter, shared
+    # by both differential sides); the core computes only the pre-loop bracket + heading term.
+    0x7B00,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
