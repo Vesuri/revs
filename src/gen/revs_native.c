@@ -9068,6 +9068,59 @@ int draw_starting_lights_core(void)
 }
 
 /* ---------------------------------------------------------------------------
+   $4F44  update_horizon_band — MOVE THE HORIZON WITH THE HILLS  (twin #150)
+
+   The body's 21st call.  Band 1 is the sky; its duration is where the sky/track
+   split sits, and moving that split IS "moving the horizon".  The routine takes
+   $3C - horizon_extent, clamps it (floor $F5 on the negative side; a per-circuit
+   SMC compare+clamp on the positive side), then forms band 1's 16-bit duration as
+
+        0x04D8 + (clamp << 6)          with clamp SIGN-EXTENDED into bits 15..14
+
+   and stores it in band1_duration_lo/hi.
+
+   ⭐ Wide-value cleanup: the 6502 built  clamp << 6 + sign-extend  as a PHP/PLP-
+   threaded pair of RORs across the byte lanes math_hi:A — the archetypal byte-lane
+   carry idiom.  As a wide value it is one expression: (clamp << 6) is a 16-bit
+   left shift, and the saved carry c0 rotated into the top is just a sign extension
+   (c0 => +0xC000).  math_hi keeps its 6502 exit value — the high byte of the sign-
+   extended clamp<<6 — so the cell stays byte-pinned until math_hi ($75) is finally
+   relocated to a wide value; nothing here reads it back except the high-byte add,
+   which the wide `r` already accounts for.
+
+   Returns 0 on the completed path, with the 16-bit duration in *r_out and the
+   6502 math_hi exit value in *mathhi_out; returns -1 if a per-circuit SMC site is
+   unrecognised (it has already been reported).  Result-only: exit A/X/Y/flags are
+   dead at both callers (the race body flows straight to the 22nd call). */
+int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out)
+{
+    uint8_t a = (uint8_t)(0x3Cu - horizon_extent);   /* $4F44 SEC; SBC horizon_extent */
+    uint8_t v;      /* the clamped extent that gets shifted into the duration */
+    int      c0;    /* carry threaded into the sign-extension: 1 => extend $C000 */
+
+    if (a & 0x80u) {                     /* $4F49 BMI: the difference went negative */
+        if (a >= 0xF5u) { v = a;     c0 = 1; }   /* $4F4B CMP #$F5; BCS: already >= floor */
+        else            { v = 0xF5u; c0 = 1; }   /* $4F4F LDA #$F5; SEC: clamp up to the floor */
+    } else {                             /* $4F54 positive side: per-circuit SMC ceiling */
+        if (mem[0x4F54] != 0xC9u) {      /* SMC opcode (unpatched: Silverstone CMP #imm) */
+            platform_smc_unhandled(0x4F54, mem[0x4F54]); return -1;
+        }
+        if (a < mem[0x4F55]) { v = a; c0 = 0; }  /* $4F56 BCC: below the ceiling, keep it */
+        else {                                   /* $4F58 SMC clamp value (unpatched: LDA #imm) */
+            if (mem[0x4F58] != 0xA9u) {
+                platform_smc_unhandled(0x4F58, mem[0x4F58]); return -1;
+            }
+            v = mem[0x4F59]; c0 = 0;             /* $4F5A CLC: clamp down to the per-circuit value */
+        }
+    }
+
+    /* clamp << 6, sign-extended (c0 rotated into bits 15..14 by the 6502's ROR pair). */
+    *mathhi_out = (uint8_t)((c0 ? 0xC0u : 0x00u) | (v >> 2));   /* high byte of (v<<6), extended */
+    *r_out      = (uint16_t)(0x04D8u + ((unsigned)v << 6) + (c0 ? 0xC000u : 0u));
+    return 0;
+}
+
+/* ---------------------------------------------------------------------------
    $42D0  draw_gear_indicator — THE GEAR, DOUBLE WIDTH  (twin #109)
    --------------------------------------------------------------------------- */
 uint8_t draw_gear_indicator_core(void)

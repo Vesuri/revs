@@ -498,6 +498,24 @@ void draw_starting_lights(void)
         mem[0x0100u + cpu.S] = (uint8_t)pattern;
 }
 
+void update_horizon_band(void)
+{
+    /* $4F44 — result-only (exit regs/flags dead at both callers).  The shim reproduces the
+       6502's write ORDER and its interrupt fence: math_hi ($4F5C..$4F66) is set BEFORE the
+       SEI, then band1_duration is stored inside SEI/CLI ($4F67/$4F75), which fence the
+       16-bit store against irq1v_band_schedule reading it from User-VIA interrupt context.
+       cpu.I is inert on the host and the SMC-unhandled path returns before the fence — exactly
+       as the 6502 does (its SEI is past the SMC checks). */
+    uint16_t r; uint8_t mh;
+    if (update_horizon_band_core(&r, &mh) != 0)
+        return;                              /* per-circuit SMC unrecognised, already reported */
+    math_hi = mh;                            /* $4F5C..$4F66: the ROR-pair result, before the fence */
+    SEI();                                   /* $4F67 */
+    band1_duration_lo = (uint8_t)(r & 0xFFu);/* $4F6B */
+    band1_duration_hi = (uint8_t)(r >> 8);   /* $4F72 */
+    CLI();                                   /* $4F75 */
+}
+
 void draw_gear_indicator(void)
 {
     uint8_t y = cpu.Y;

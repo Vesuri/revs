@@ -607,6 +607,71 @@ static int test_draw_starting_lights(void)
     return fail;
 }
 
+void update_horizon_band(void);
+void update_horizon_band__t6502(void);
+
+static int test_update_horizon_band(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("update_horizon_band");
+    if (!want("update_horizon_band")) return 0;
+
+    /* Result-only (LIVE_NONE): exit A/X/Y/flags are dead at both callers (the race body flows
+       straight to the 22nd call).  Every observable effect is in mem[] and reproduced byte-exact
+       — math_hi ($75, the campaign's target: its 6502 exit value is still written so the cell
+       stays pinned until relocation), band1_duration_lo/hi, and, on the completed path, the P
+       byte the PHP at $4F5B leaves as stack residue at $0100+S ($01FF with S=0xFF).  That residue
+       is dead scratch (the PLP at $4F63 pops it right back and nothing reads $01FF; determinism
+       skips the $01B8..$01FF window), so it is the one address ignored here. */
+    static const uint16_t ig[1] = { 0x01FFu };
+    unsigned mask = LIVE_NONE;
+
+    /* The two per-circuit SMC seams ($4F54/$4F58) are real code in BOTH models: an unrecognised
+       opcode traps through platform_smc_unhandled and returns, and that unwind has to match.  So
+       it is TESTED, not avoided — which means the trap must count rather than abort, and the count
+       is asserted below so the trap arm cannot pass vacuously. */
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+    g_smcUnhandled = 0;
+
+    int cases = 4000 * scale;
+    set_ignore(ig, 1);
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();                       /* S=0xFF -> the PHP residue lands at $01FF */
+        fill_random(pre);
+        c.D = 0;                                      /* not a SED site (static-map §Decimal mode) */
+
+        /* horizon_extent ($1F): the 0..79 scan-line reach.  Sweep the whole byte so both the
+           negative-difference floor path and the positive per-circuit ceiling paths are hit. */
+        pre[0x001F] = (uint8_t)xs();
+        if (t % 3 == 0) pre[0x001F] = (uint8_t)(0x40u + (xs() % 0x40u));  /* force $3C-ext negative */
+
+        /* The two SMC seams: unpatched Silverstone opcodes for most cases (so the completed
+           wide-value path runs), randomised ~1/16 each to exercise the trap-and-return arms. */
+        pre[0x4F54] = ((t & 15) == 3) ? (uint8_t)xs() : 0xC9u;
+        pre[0x4F58] = ((t & 15) == 7) ? (uint8_t)xs() : 0xA9u;
+        pre[0x4F55] = (uint8_t)xs();                  /* per-circuit CMP ceiling */
+        pre[0x4F59] = (uint8_t)xs();                  /* per-circuit clamp value */
+
+        fail += diff_run("update_horizon_band", pre, c, update_horizon_band,
+                         update_horizon_band__t6502, mask, t, &printed);
+    }
+    set_ignore(0, 0);
+    unsetenv("REVS_SMC_CONTINUE");
+
+    if (g_smcUnhandled == 0) {
+        printf("[VACUOUS] update_horizon_band: 0 SMC traps — the trap arms never ran, so the "
+               "per-circuit dispatch was not tested\n");
+        fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  result-only, %lu SMC traps ($01FF residue ignored)\n",
+           "update_horizon_band", cases, fail, g_smcUnhandled);
+    return fail;
+}
+
 void view_paint_lines(void);
 void view_paint_lines__t6502(void);
 extern unsigned long g_viewTableCollisions;   /* asserted below; see revs_native.c */
@@ -5765,6 +5830,7 @@ int main(int argc, char** argv)
     fail += test_irq1v_band_schedule();
     fail += test_print_spaces();
     fail += test_draw_starting_lights();
+    fail += test_update_horizon_band();
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();

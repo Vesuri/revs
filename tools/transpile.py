@@ -1038,6 +1038,12 @@ VALIDATE_FUNCS = {
     # column into view_src_blocks col 37.  math_lo held the EOR pattern across the fill loop; the
     # native core uses a local, so it no longer pins $74.  Shipping caller: native race_main_loop.
     0x7B4A,
+    # ⭐ TWIN #150 — update_horizon_band ($4F44).  Moves the sky/track raster split with the hills:
+    # 0x04D8 + (clamp << 6), clamp sign-extended.  The 6502 built the <<6 + sign-extend as a
+    # PHP/PLP-threaded ROR pair across math_hi:A (byte-lane carry); the native core is one wide
+    # expression.  math_hi ($75) keeps its 6502 exit value until relocation.  Two per-circuit SMC
+    # seams ($4F54/$4F58) dispatched on the opcode.  Shipping caller: native race_main_loop.
+    0x4F44,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

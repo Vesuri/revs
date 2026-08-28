@@ -330,6 +330,7 @@ EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY);
 void update_grip_limits_core(void);
 uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y);
 int draw_starting_lights_core(void);
+int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out);
 uint8_t vdu_char_def_core(uint8_t ch);
 uint8_t vdu_char_emit_core(void);
 uint8_t vdu_char_wide_core(uint8_t ch);

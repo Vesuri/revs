@@ -303,16 +303,20 @@ FUN_4876     FUN_48a7      ← only via apply_angle_term / apply_angle_term_at /
                              add_signed_into_element  __t6502
 ```
 
-**Done:** `print_spaces` ($3D50, #148), `draw_starting_lights` ($7B4A, #149).
+**Done:** `print_spaces` ($3D50, #148), `draw_starting_lights` ($7B4A, #149),
+`update_horizon_band` ($4F44, #150 — a `math_hi` reader/writer, the archetypal wide-value target:
+the 6502's `clamp << 6` + sign-extend done as a PHP/PLP-threaded ROR pair across `math_hi:A`
+collapses to `0x04D8 + (v<<6) + (c0?0xC000:0)`; `math_hi` still written with its 6502 exit value
+until relocation).
 
-The remaining **19 genuine shipping readers** (`draw_corner_markers`, `update_horizon_band`,
+The remaining **18 genuine shipping readers** (`draw_corner_markers`,
 `draw_dash_needles`, `mirrors_update` confirmed shipping — called from the native
 `race_main_loop_core`):
 
 ```
 shift_key_commands  sort_cars_by_key  draw_corner_markers  check_car_pair
 FUN_27ed  FUN_28f2  FUN_32d0  FUN_3a50  FUN_3ceb  text_script_interp
-update_horizon_band  draw_dash_needles  dial_needle_angle  plot_line_octant
+draw_dash_needles  dial_needle_angle  plot_line_octant
 FUN_635d  menu_wait_key  mirrors_update  FUN_2f19  view_paint_lines_short
 ```
 
@@ -333,6 +337,17 @@ diff sees — reproduce it in the shim (`mem[0x0100+cpu.S] = pushedByte`) rather
 so the twin stays byte-exact with no ignore-list entry (determinism already skips `$01B8..$01FF`).
 Have the core return the pushed value so the shim can replay it; return a sentinel (`-1`) on the
 early-exit paths that push nothing.
+
+⭐ **PHP residue is the exception that IS `set_ignore`d (from #150, `update_horizon_band`):** when
+the push is a `PHP`/`PLP` of the whole **P register** (not a data byte), the pushed value is a
+path-dependent function of N/V/Z/C at the push point — dead scratch the `PLP` pops right back, and
+not worth reproducing bit-for-bit. `set_ignore` the one stack cell (`$0100+S`, `$01FF` with the
+harness's `S=0xFF`) and note it; determinism already skips `$01B8..$01FF`, so this only affects
+`make validate`. (Contrast #149, where the push was a known data byte the shim replays exactly.)
+Two per-circuit **SMC seams** on this routine's positive-clamp path (`$4F54`/`$4F58`) are tested,
+not avoided: the fixture randomises their opcodes ~1/16 under `REVS_SMC_CONTINUE=1` so the
+trap-and-return arm is a *compared* channel, and asserts `g_smcUnhandled > 0` so it cannot pass
+vacuously.
 
 ⚠ `math_lo/hi` is *shared* scratch, so its 27 readers span unrelated subsystems (menu, dash,
 mirrors, starting lights, text, sorting) — a wide blast radius. A cell used by ONE subsystem is a
