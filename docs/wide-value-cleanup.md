@@ -285,8 +285,6 @@ The "410" in the plan was raw line-hits. At the function level, **90 functions**
 reference `math_lo/hi`; **63 are `__t6502` oracles** of already-native routines (they stay — the
 oracle is the validation twin). The **27 genuine plain transliterated readers** that pin the cell
 in `mem[]`, and must go native before `math_lo/hi` can become a real `uint16_t` (mechanism B).
-**Done: `print_spaces` ($3D50, twin #148).**
-
 ⚠⚠ **The "27 readers" over-counts: 6 are ORACLE-ONLY tail-bodies with NO shipping caller.**
 The worklist method ("top-level def that references the cell, minus `__t6502`") counts every
 transliterated body, but some are reached *only* from `__t6502` oracles of already-native
@@ -305,27 +303,36 @@ FUN_4876     FUN_48a7      ← only via apply_angle_term / apply_angle_term_at /
                              add_signed_into_element  __t6502
 ```
 
-The remaining **20 genuine shipping readers** (`draw_corner_markers`, `update_horizon_band`,
-`draw_dash_needles`, `mirrors_update`, `draw_starting_lights` confirmed shipping — called from the
-native `race_main_loop_core`):
+**Done:** `print_spaces` ($3D50, #148), `draw_starting_lights` ($7B4A, #149).
+
+The remaining **19 genuine shipping readers** (`draw_corner_markers`, `update_horizon_band`,
+`draw_dash_needles`, `mirrors_update` confirmed shipping — called from the native
+`race_main_loop_core`):
 
 ```
 shift_key_commands  sort_cars_by_key  draw_corner_markers  check_car_pair
 FUN_27ed  FUN_28f2  FUN_32d0  FUN_3a50  FUN_3ceb  text_script_interp
 update_horizon_band  draw_dash_needles  dial_needle_angle  plot_line_octant
-FUN_635d  menu_wait_key  mirrors_update  draw_starting_lights  FUN_2f19
-view_paint_lines_short
+FUN_635d  menu_wait_key  mirrors_update  FUN_2f19  view_paint_lines_short
 ```
 
 ⭐ **Reader-nativization pattern (from #148):** the counter/scratch becomes a C local, but the
 twin still writes the cell's 6502 exit value so the routine stays byte-exact (validate compares
 $74, no `set_ignore`) — the cell is only physically lifted in the final relocation step, once all
-20 shipping readers are native (the 6 oracle-only bodies above still reference the cell, so the
+19 remaining shipping readers are native (the 6 oracle-only bodies above still reference the cell, so the
 relocation step must keep it `mem[]`-visible to the oracles regardless — a separate concern). ⚠ Fixture trap: `print_spaces` with `count=0` runs 256 chars
 through the bitmap emitter, whose per-char writes follow a `mem[]` cursor; a fully-random
 char-row base (`char_row_addr_hi` $3B06) can point that at zero page and clobber `math_lo` — the
 *oracle's own* loop counter — so the transliteration never terminates. The fixture pins a valid
 screen char-row base ($58xx), which is the only state the real routine ever runs in.
+
+⭐ **Paint-reader refinement (from #149, `draw_starting_lights`):** a reader whose exit regs/flags
+are all dead at its (native) caller validates RESULT-ONLY (`mask = LIVE_NONE`). If the 6502 body
+does a `PHA`/`PLA`, that leaves the pushed byte as **stack residue** at `$0100+S` which a full-mem
+diff sees — reproduce it in the shim (`mem[0x0100+cpu.S] = pushedByte`) rather than `set_ignore`,
+so the twin stays byte-exact with no ignore-list entry (determinism already skips `$01B8..$01FF`).
+Have the core return the pushed value so the shim can replay it; return a sentinel (`-1`) on the
+early-exit paths that push nothing.
 
 ⚠ `math_lo/hi` is *shared* scratch, so its 27 readers span unrelated subsystems (menu, dash,
 mirrors, starting lights, text, sorting) — a wide blast radius. A cell used by ONE subsystem is a
