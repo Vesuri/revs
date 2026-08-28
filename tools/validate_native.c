@@ -966,6 +966,59 @@ static int test_dial_needle_angle(void)
     return fail;
 }
 
+void driver_name_address(void);
+void driver_name_address__t6502(void);
+
+/* ==========================================================================
+   $3CEB driver_name_address — DRIVER-NAME TABLE ADDRESS  (twin #154)
+   --------------------------------------------------------------------------
+   Maps the car/slot index in X to the (lo,hi) address of that driver's 12-char name in
+   driver_name_table ($4050): hi = $40 + index/4, lo = $50 + (index&3)*12.  A math_lo ($74)
+   reader-nativization — math_lo holds the dead intermediate (index&3)*4.  Exit A = lo, Y = hi
+   are LIVE (emit_driver_name $3250 loads them into plot_ptr2); exit flags are dead, X passes
+   through unchanged.  Pure arithmetic: the twin and its oracle read NO memory (only write the
+   math_lo scratch), and the input is entirely in X — so the fixture plants nothing and, crucially,
+   consumes NO random draws.  (Deliberate: the suite's PRNG is one global stream shared by every
+   fixture; a memory-free twin that called fill_random would shift that stream for every later
+   fixture and surface their coverage-sensitive cases — see the road_span_plot note in
+   docs/validation-harness.md.)  A deterministic 0..255 sweep covers all four column residues and
+   every page group. */
+static int test_driver_name_address(void)
+{
+    static uint8_t pre[65536];      /* all-zero: neither side reads memory, so content is irrelevant */
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("driver_name_address");
+    if (!want("driver_name_address")) return 0;
+
+    memset(pre, 0, sizeof pre);
+    unsigned mask = LIVE_A | LIVE_Y;   /* A=lo, Y=hi are the outputs; flags dead, X preserved */
+    int cases = 256 * scale;
+    int colSeen[4] = {0};
+
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        c.X = (uint8_t)(t & 0xFFu);            /* sweep every index 0..255 deterministically */
+        colSeen[c.X & 3]++;
+        fail += diff_run("driver_name_address", pre, c, driver_name_address,
+                         driver_name_address__t6502, mask, t, &printed);
+    }
+
+    int missing = 0;
+    for (int i = 0; i < 4; i++) if (colSeen[i] == 0) missing++;
+    if (missing) {
+        printf("[VACUOUS] driver_name_address: %d of 4 column residues never reached\n", missing);
+        fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  A=lo/Y=hi  "
+           "(cols %d/%d/%d/%d)\n",
+           "driver_name_address", cases, fail,
+           colSeen[0], colSeen[1], colSeen[2], colSeen[3]);
+    return fail;
+}
+
 void view_paint_lines(void);
 void view_paint_lines__t6502(void);
 extern unsigned long g_viewTableCollisions;   /* asserted below; see revs_native.c */
@@ -6128,6 +6181,7 @@ int main(int argc, char** argv)
     fail += test_draw_corner_markers();
     fail += test_mirrors_update();
     fail += test_dial_needle_angle();
+    fail += test_driver_name_address();
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();

@@ -149,6 +149,10 @@ typedef struct { int drawable; uint8_t half, bottom, top, heading; } MirrorSetup
    temp77 -> shared_temp_77; quadrant -> the index into the origin tables. */
 typedef struct { uint8_t offset, octant, temp77, quadrant; } NeedleDial;
 
+/* driver_name_address_core's result.  lo -> exit A / plot_ptr2_lo, hi -> exit Y / plot_ptr2_hi;
+   scratch -> math_lo ($74) 6502 exit value ((index&3)*4, dead scratch). */
+typedef struct { uint8_t lo, hi, scratch; } NamePtr;
+
 /* ---- always_inline 6502 flag helpers (moved out of revs_native.c) ---- */
 #define REVS_FLAG_OP static inline __attribute__((always_inline))
 REVS_FLAG_OP unsigned load_a(uint8_t value)
@@ -359,6 +363,7 @@ int draw_starting_lights_core(void);
 void draw_corner_marker_core(uint8_t offLo, uint8_t offHi, uint16_t edgeX, uint8_t edgeY, CornerMarker *out);
 void mirrors_update_setup_core(uint8_t slotFlag, uint8_t objWidth, uint8_t bearingHi, uint8_t carHeadingHi, MirrorSetup *out);
 void dial_needle_angle_core(uint8_t engineRevs, NeedleDial *out);
+void driver_name_address_core(uint8_t index, NamePtr *out);
 int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out);
 uint8_t vdu_char_def_core(uint8_t ch);
 uint8_t vdu_char_emit_core(void);

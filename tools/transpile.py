@@ -1072,6 +1072,14 @@ VALIDATE_FUNCS = {
     # plants valid octant step-opcodes and runs under REVS_SMC_CONTINUE=1 so its two SMC seams are a
     # compared channel.  Shipping caller: draw_dash_needles, the last draw of race_main_loop ($17B4).
     0x51A8,
+    # ⭐ TWIN #154 — driver_name_address ($3CEB).  Maps a car/slot index -> the (lo,hi) address of
+    # that driver's 12-char name in driver_name_table ($4050): hi = $40 + index/4, lo = $50 +
+    # (index&3)*12 (4 names per page at 12-char strides).  A math_lo READER-nativization (not a wide
+    # value): math_lo is pure intermediate scratch ((index&3)<<2 en route to *12), dead at every
+    # caller; the twin still writes its 6502 exit value until $74/$75 relocation.  Exit A=lo, Y=hi
+    # (consumed by emit_driver_name $3250 as the 16-bit plot_ptr2); exit flags dead (callers JSR
+    # immediately).  Shipping callers: FUN_667b / FUN_6687 / FUN_66d4, the front-end name-draw menus.
+    0x3CEB,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

@@ -525,3 +525,27 @@ stream, which is what makes "passes alone, fails together" easy to misread as fl
 
 ⇒ `diff_run` now clears `cpu_unwind` alongside `cpu` for both models.  The general rule: **every
 global the CPU model owns is pre-state.**  If a new one appears, it belongs in that reset.
+
+## ⚠⚠ THE GLOBAL PRNG IS ONE STREAM — a NEW fixture's `fill_random` calls shift every LATER fixture's coverage (twin #154)
+
+`rng` (`tools/validate_native.c`) is a single global xorshift seeded ONCE (`0x9D6F1234`) and never
+reset per fixture.  So a fixture's random cases are determined by how many `xs()`/`fill_random`
+draws every fixture *before* it consumed — the stream position, not the fixture's own code.  Adding
+a new fixture that calls `fill_random` (or changing an existing one's case count) **shifts the
+stream for every fixture that runs after it**, so they each draw a *different* set of random cases.
+
+This surfaced a latent, coverage-dependent divergence in an UNRELATED, already-green twin:
+`driver_name_address` (#154) was added with a boilerplate `fill_random` loop, and `road_span_plot`
+— which runs later — then failed exactly one case (`case 1376  A ref=$9E native=$25`), fully
+deterministic across runs.  It had been green only because its prior stream never rolled that
+input.  ⭐ `make determinism`/`-drive`/`-crash` stayed byte-identical, which is the tell that the
+divergent input is a state the *game* never produces (a random-`mem[]` artifact, per §TENTH), not a
+real render-path bug — but it is a real coverage hole in `road_span_plot`'s fixture, logged here for
+follow-up (guard the impossible input, or reseed `rng` per fixture so coverage stops depending on
+order).
+
+⇒ **Discipline for a memory-free twin: do NOT call `fill_random`.**  A pure-arithmetic twin whose
+core and oracle read no `mem[]` (e.g. `driver_name_address` reads only `X`) needs no random
+pre-state; a deterministic input sweep covers it, and consuming ZERO draws keeps every downstream
+fixture on the exact stream it had before — the suite stays green and the addition is truly local.
+Randomising 64K you never read is not neutral; it is a stream perturbation with action at a distance.

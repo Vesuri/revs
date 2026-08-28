@@ -2132,6 +2132,21 @@ void dial_needle_angle_core(uint8_t engineRevs, NeedleDial *out)
     out->quadrant = (uint8_t)(quadrant & 0x03u);
 }
 
+/* driver_name_address ($3CEB).  Maps a car/slot index to the 16-bit address of that driver's
+   12-char name in driver_name_table ($4050).  The names are laid out 4 per 256-byte page at
+   column offsets $50/$5C/$68/$74, so the high byte advances one page every 4 names and the low
+   byte steps by 12 within a page:
+       hi = $40 + index/4,   lo = $50 + (index & 3) * 12.
+   `scratch` is the 6502's intermediate (index&3)*4 en route to *12 (it lands in math_lo, where
+   it is dead at every caller — kept only for byte-exactness until the $74/$75 relocation). */
+void driver_name_address_core(uint8_t index, NamePtr *out)
+{
+    uint8_t col = (uint8_t)(index & 0x03u);
+    out->hi      = (uint8_t)(0x40u + (index >> 2));      /* $3CEB-$3CF1 */
+    out->scratch = (uint8_t)(col << 2);                  /* $3CF5-$3CF7 math_lo = col*4 */
+    out->lo      = (uint8_t)(0x50u + col * 12u);         /* $3CF9-$3CFD col*8 + col*4 + $50 */
+}
+
 /* Exit ABI of emit_edge_width_offset.  X passes through the caller's; A = the point's scan line
    (the CMP at each exit sets A to it); Y = edge_cursor; V is the width ADC's overflow when the
    scoring branch ran, else the entry V; N/Z/C are the last CMP's on that exit path. */

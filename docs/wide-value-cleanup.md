@@ -340,13 +340,22 @@ length from `$3100[offset]`, `$70`/`$71`=origin from `$32FC`/`$397C[quadrant]`) 
 before falling through into the shared SMC plotter `plot_line_octant`. Result-only; the plotter runs
 under `REVS_SMC_CONTINUE=1` on both differential sides so its writes cancel. Named the 3 static dial
 tables `dial_needle_dda_tbl`/`dial_needle_origin_lo_tbl`/`dial_needle_origin_hi_tbl`).
+`driver_name_address` ($3CEB, #154 — was `FUN_3ceb`; a `math_lo` reader-nativization, NOT a wide
+value. Maps a car/slot index in `X` → the `(lo,hi)` address of that driver's 12-char name in
+`driver_name_table` ($4050): `hi = $40 + index/4`, `lo = $50 + (index&3)*12` (4 names per page at
+12-char strides). `math_lo` holds the dead intermediate `(index&3)*4`; exit A=lo, Y=hi are live
+(consumed by `emit_driver_name` $3250 as `plot_ptr2`), exit flags dead. ⚠ Its fixture is
+memory-free — the twin reads no `mem[]`, so it calls NO `fill_random` and consumes zero PRNG draws;
+a boilerplate `fill_random` loop shifted the global stream and surfaced a latent coverage case in
+the unrelated `road_span_plot` twin, see docs/validation-harness.md §"THE GLOBAL PRNG IS ONE STREAM".
+Named `driver_name_address` ($3CEB), `emit_driver_name` ($3250), `driver_name_table` ($4050)).
 
-The remaining **15 genuine shipping readers** (`draw_dash_needles` confirmed shipping — called from
+The remaining **14 genuine shipping readers** (`draw_dash_needles` confirmed shipping — called from
 the native `race_main_loop_core`):
 
 ```
 shift_key_commands  sort_cars_by_key  check_car_pair
-FUN_27ed  FUN_28f2  FUN_32d0  FUN_3a50  FUN_3ceb  text_script_interp
+FUN_27ed  FUN_28f2  FUN_32d0  FUN_3a50  text_script_interp
 draw_dash_needles  plot_line_octant
 FUN_635d  menu_wait_key  FUN_2f19  view_paint_lines_short
 ```

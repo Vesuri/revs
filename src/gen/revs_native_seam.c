@@ -546,6 +546,19 @@ void dial_needle_angle(void)
     plot_line_octant();
 }
 
+void driver_name_address(void)
+{
+    /* $3CEB — the (lo,hi) address of the Nth driver name in driver_name_table ($4050).  The 6502
+       carries the index in X; the core does the layout arithmetic.  Exit A = lo, Y = hi (the two
+       bytes emit_driver_name ($3250) loads into plot_ptr2); math_lo keeps its dead 6502 exit
+       scratch until the $74/$75 relocation.  Exit flags are dead — every caller JSRs immediately. */
+    NamePtr p;
+    driver_name_address_core(cpu.X, &p);
+    math_lo = p.scratch;                         /* $74 — dead intermediate (index&3)*4 */
+    cpu.A   = p.lo;                              /* $3CFD exit A -> plot_ptr2_lo */
+    cpu.Y   = p.hi;                              /* $3CF1 exit Y -> plot_ptr2_hi */
+}
+
 void mirrors_update(void)
 {
     /* $7B00 — the once-per-frame wing-mirror update (race_main_loop body, $1739).  Result-only:
