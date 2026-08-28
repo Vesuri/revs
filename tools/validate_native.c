@@ -71,14 +71,32 @@ static const char* const NATIVE_UNVALIDATED_NAMES[] = { 0 };
 static uint32_t rng = 0x9D6F1234u;
 static uint32_t xs(void) { uint32_t x = rng; x ^= x << 13; x ^= x >> 17; x ^= x << 5; return rng = x; }
 
+/* ⭐⭐ PER-FIXTURE RESEED — the stream a fixture draws from depends ONLY on its own name.
+   Before this, `rng` was ONE global stream advanced across every fixture in order, so a
+   fixture's random cases were a function of how many draws all EARLIER fixtures had made:
+   adding, removing or reordering any fill_random-calling fixture silently shifted every
+   later fixture's coverage (twin #154 surfaced a latent road_span_plot case exactly this
+   way — see docs/validation-harness.md).  Keying the seed to an FNV-1a hash of the fixture
+   name makes each fixture's coverage stable and order-independent. */
+static void seed_rng_for(const char* name) {
+    uint32_t h = 0x811C9DC5u;
+    for (const char* p = name; *p; p++) { h ^= (uint8_t)*p; h *= 0x01000193u; }
+    rng = h ? h : 0x9D6F1234u;     /* never seed the xorshift with 0 (it would stick at 0) */
+}
+
 /* ---------------------------------------------------------------- test filter */
 static char** g_filter  = 0;
 static int    g_nfilter = 0;
 static int want(const char* name) {
-    if (g_nfilter == 0) return 1;
-    for (int i = 0; i < g_nfilter; i++)
-        if (strstr(name, g_filter[i])) return 1;
-    return 0;
+    int run = (g_nfilter == 0);
+    if (!run) {
+        for (int i = 0; i < g_nfilter; i++)
+            if (strstr(name, g_filter[i])) { run = 1; break; }
+    }
+    /* Reseed whenever the fixture is about to run, so its stream never depends on which
+       other fixtures ran first.  want() is the universal per-fixture entry gate. */
+    if (run) seed_rng_for(name);
+    return run;
 }
 
 /* ------------------------------------------------- fixture coverage registry */
@@ -2867,13 +2885,24 @@ static void plant_cap_smc(uint8_t* pre)
    82 of 2000 cases, all with A or a flag differing and mem[] byte-exact.)  The engine's own
    pointers are always RAM, so holding the three high bytes below $80 measures the twin
    rather than the clock. */
+/* ⭐⭐ AND KEEP EVERY DESTINATION HIGH BYTE OUT OF ZERO PAGE, for a second and subtler
+   correctness reason.  road_span_plot parks its incoming accumulator in $008A ($2F45),
+   works in A, and RESTORES it from $008A at $2F5E just before RTS, so the DDA accumulator
+   the caller threads column-to-column comes back unchanged.  A destination pointing into
+   zero page lets one of the routine's own stores ((cellPtr),Y / (linePtr),Y / the surface
+   operand) land on $008A and overwrite the parked A BEFORE that restore — the oracle then
+   exits with the clobbered value while the twin echoes the input, a divergence at ~1/20000
+   fixture inputs.  The engine's pointers are always screen buffers ($30-$5F), never zero
+   page, so mapping every high byte into $20..$7F keeps them RAM, out of the I/O window
+   ($FC00-$FEFF), and clear of the zero-page scratch the routine relies on ($82/$85/$8A/$8B).
+   (This subsumes the old &0x7F I/O-window mask.) */
 static void plant_ram_pointers(uint8_t* pre)
 {
-    pre[0x0071] &= 0x7F;   /* plot_ptr_hi  */
-    pre[0x0073] &= 0x7F;   /* plot_ptr2_hi */
-    pre[0x008F] &= 0x7F;   /* plot_ptr3_hi */
-    pre[0x2F50] &= 0x7F;   /* the patched destination operands, both plotters */
-    pre[0x2F92] &= 0x7F;
+    pre[0x0071] = (uint8_t)(pre[0x0071] % 0x60 + 0x20);   /* plot_ptr_hi  */
+    pre[0x0073] = (uint8_t)(pre[0x0073] % 0x60 + 0x20);   /* plot_ptr2_hi */
+    pre[0x008F] = (uint8_t)(pre[0x008F] % 0x60 + 0x20);   /* plot_ptr3_hi */
+    pre[0x2F50] = (uint8_t)(pre[0x2F50] % 0x60 + 0x20);   /* the patched dest operands, both plotters */
+    pre[0x2F92] = (uint8_t)(pre[0x2F92] % 0x60 + 0x20);
 }
 
 /* Steer the cell the plotter is about to touch, and (sometimes) the end line it compares

@@ -549,3 +549,30 @@ core and oracle read no `mem[]` (e.g. `driver_name_address` reads only `X`) need
 pre-state; a deterministic input sweep covers it, and consuming ZERO draws keeps every downstream
 fixture on the exact stream it had before — the suite stays green and the addition is truly local.
 Randomising 64K you never read is not neutral; it is a stream perturbation with action at a distance.
+
+### ✅ RESOLVED — reseed `rng` per fixture, and the `road_span_plot` hole was a real fixture bug
+
+**The order-dependence is gone.**  `want()` now reseeds `rng` from an FNV-1a hash of the fixture
+name every time a fixture is about to run (`seed_rng_for`).  Each fixture draws from a stream keyed
+ONLY to its own name, so adding, removing, reordering or rescaling any fixture can no longer shift
+another's coverage.  The memory-free-twin discipline above is still good hygiene, but it is no
+longer load-bearing for correctness.  ⚠ Reseeding changed *every* fixture's stream at once; the full
+suite was re-run green afterwards, which is the check that no fixture had been leaning on its old
+stream position to stay green.
+
+**The `road_span_plot` divergence was NOT merely an impossible-`mem[]` artifact — it was a fixture
+input the game never makes, and the fixture now excludes it.**  Once the reseed made coverage
+order-independent, scaling the fixture (`REVS_VALIDATE_CASES=200`) exposed the divergence at a steady
+~1/20000 rate — so it was a genuine hole, not a one-off.  Root cause: `road_span_plot` parks its
+incoming accumulator in `$008A` at `$2F45` and RESTORES it from `$008A` at `$2F5E` just before RTS,
+so the DDA accumulator the caller threads column-to-column returns unchanged.  `plant_ram_pointers`
+only masked the plot-pointer high bytes to `&0x7F` (I/O-window avoidance), which still allowed a high
+byte of `$00` — a **zero-page pointer**.  A store through `(cellPtr),Y` / `(linePtr),Y` / the surface
+operand could then land on `$008A` itself and clobber the parked A *before* the restore; the oracle
+exited with the clobbered value while the twin echoed the input.  The engine's pointers are always
+screen buffers (`$30-$5F`), never zero page, so `plant_ram_pointers` now maps every destination high
+byte into `$20..$7F` — RAM, out of the I/O window, and clear of the zero-page scratch the routine
+relies on (`$82/$85/$8A/$8B`).  400 000 cases per plotter: 0 mismatch, all three arms still reached.
+⭐ The lesson that generalises: a fixture that feeds a plotter a *random pointer* must constrain it to
+the region the engine actually uses — an out-of-domain pointer can alias the routine's own scratch and
+manufacture a divergence that is neither a twin bug nor reachable in the game.
