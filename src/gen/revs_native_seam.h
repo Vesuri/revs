@@ -59,6 +59,9 @@
 #define OBJECT_BEARING_HI 0x0398u  /* per slot: object bearing high byte */
 #define MIRROR_SEG_BEARING_TBL 0x3BA4u /* 6 wing-mirror segment heading thresholds */
 #define MIRROR_SEG_STATE 0x6293u   /* per wing-mirror segment: last-drawn bottom line, 0 = erased */
+#define DIAL_NEEDLE_DDA_TBL       0x3100u /* rev-needle DDA len/delta per angle offset (0..0x13) */
+#define DIAL_NEEDLE_ORIGIN_LO_TBL 0x32FCu /* rev-needle origin addr low per quadrant; &F8=ptr, &7=line */
+#define DIAL_NEEDLE_ORIGIN_HI_TBL 0x397Cu /* rev-needle origin addr high per quadrant (all $75) */
 
 /* ---- exit-struct typedefs (moved out of revs_native.c) ---- */
 typedef struct { uint8_t a, x, y, n, z, v, c; } SlotExit;
@@ -141,6 +144,10 @@ typedef struct { uint8_t y, c, v; } SpinExit;    /* begin_spin's residue: OSWORD
    top -> span_line_cursor are meaningful only when drawable; heading -> shared_temp_76 is set on
    both paths (the raw negative slot flag on the skip path). */
 typedef struct { int drawable; uint8_t half, bottom, top, heading; } MirrorSetup;
+/* dial_needle_angle_core's result.  offset -> math_lo ($74) 6502 exit value AND the index into
+   dial_needle_dda_tbl; octant -> shared_temp_76 (the octant index plot_line_octant dispatches on);
+   temp77 -> shared_temp_77; quadrant -> the index into the origin tables. */
+typedef struct { uint8_t offset, octant, temp77, quadrant; } NeedleDial;
 
 /* ---- always_inline 6502 flag helpers (moved out of revs_native.c) ---- */
 #define REVS_FLAG_OP static inline __attribute__((always_inline))
@@ -351,6 +358,7 @@ uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y);
 int draw_starting_lights_core(void);
 void draw_corner_marker_core(uint8_t offLo, uint8_t offHi, uint16_t edgeX, uint8_t edgeY, CornerMarker *out);
 void mirrors_update_setup_core(uint8_t slotFlag, uint8_t objWidth, uint8_t bearingHi, uint8_t carHeadingHi, MirrorSetup *out);
+void dial_needle_angle_core(uint8_t engineRevs, NeedleDial *out);
 int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out);
 uint8_t vdu_char_def_core(uint8_t ch);
 uint8_t vdu_char_emit_core(void);

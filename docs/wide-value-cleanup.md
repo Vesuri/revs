@@ -330,14 +330,24 @@ so its writes cancel as long as the twin hands it the same `A`=value / `Y`=segme
 `$3EFA`. ⚠ Core arithmetic trap: the `-4` in the fold is an 8-bit `SBC #4` — a bare `- 4u` promotes
 to `int` and mis-shifts a byte `< 4` (`$FE>>3` should be `$1F`, not `$FF`); wrap to `uint8_t` before
 the `>>3`).
+`dial_needle_angle` ($51A8, #153 — the rev-counter needle's arithmetic half; a `math_lo` reader-
+nativization, NOT a wide value. The reading of `engine_revs` is clamped to a floor of `$1E`, taken
+×0.75 (`revs + revs>>1` then `ROR`), rotated by `$4C` and reduced mod `$26` to a quadrant + remainder;
+the remainder is folded about `$13` into an `offset` plus a mirror bit, and `(quadrant<<1)|mirror`
+becomes the `octant` step-opcode selector. The `_core` returns those as a small struct; the shim
+writes the 6502 exit cells (`math_lo`=offset, `$76`=octant, `$77`=step variant, `$83`/`math_hi`=DDA
+length from `$3100[offset]`, `$70`/`$71`=origin from `$32FC`/`$397C[quadrant]`) and sets `A`/`X`/`Y`
+before falling through into the shared SMC plotter `plot_line_octant`. Result-only; the plotter runs
+under `REVS_SMC_CONTINUE=1` on both differential sides so its writes cancel. Named the 3 static dial
+tables `dial_needle_dda_tbl`/`dial_needle_origin_lo_tbl`/`dial_needle_origin_hi_tbl`).
 
-The remaining **16 genuine shipping readers** (`draw_dash_needles` confirmed shipping — called from
+The remaining **15 genuine shipping readers** (`draw_dash_needles` confirmed shipping — called from
 the native `race_main_loop_core`):
 
 ```
 shift_key_commands  sort_cars_by_key  check_car_pair
 FUN_27ed  FUN_28f2  FUN_32d0  FUN_3a50  FUN_3ceb  text_script_interp
-draw_dash_needles  dial_needle_angle  plot_line_octant
+draw_dash_needles  plot_line_octant
 FUN_635d  menu_wait_key  FUN_2f19  view_paint_lines_short
 ```
 

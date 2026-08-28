@@ -2104,6 +2104,34 @@ void mirrors_update_setup_core(uint8_t slotFlag, uint8_t objWidth,
     out->drawable = 1;
 }
 
+/* dial_needle_angle ($51A8), the arithmetic half.  Turns the rev-counter reading into the octant
+   line plot_line_octant draws: clamp engine_revs up to $1E, scale by 0.75, rotate by $4C into a
+   0..$97 angle, split that into a quadrant (angle/$26) and a remainder folded about $13 into a
+   0..$13 offset, and combine (quadrant<<1)|mirror into the octant index.  math_lo first held the
+   clamped-revs scratch (now a C local); its 6502 exit value is the folded offset (out->offset),
+   which the shim also feeds plot_line_octant's DDA.  All plain 8-bit maths (D=0 on the dash path). */
+void dial_needle_angle_core(uint8_t engineRevs, NeedleDial *out)
+{
+    uint8_t revs = engineRevs >= 0x1Eu ? engineRevs : 0x1Eu;    /* $51AC-$51B4 clamp floor */
+    uint16_t v9 = (uint16_t)revs + (uint16_t)(revs >> 1);       /* $51B6-$51B8 revs * 1.5 (9-bit) */
+    uint8_t angle0 = (uint8_t)((v9 >> 1) & 0xFFu);              /* $51BA ROR: * 0.75 */
+    /* $51BB-$51C1: rotate by $4C into [0,$98) — angle0 is < $C0 so a single ±$4C stays in range. */
+    uint8_t rot = angle0 >= 0x4Cu ? (uint8_t)(angle0 - 0x4Cu)
+                                  : (uint8_t)(angle0 + 0x4Cu);
+    uint8_t quadrant = (uint8_t)(rot / 0x26u);                 /* $51C2-$51CB divmod $26 */
+    uint8_t rem      = (uint8_t)(rot % 0x26u);
+    /* $51CC-$51D7: fold the remainder about $13 into a 0..$13 offset; the mirror bit is whether it
+       folded (the SBC/CMP carry that ROLs into the octant index below). */
+    uint8_t offset, mirror;
+    if (rem >= 0x13u) { offset = (uint8_t)(0x26u - rem); mirror = 1u; }
+    else              { offset = rem;                    mirror = 0u; }
+    uint8_t octant = (uint8_t)(((quadrant & 0x03u) << 1) | mirror);  /* $51DB-$51E1 */
+    out->offset   = offset;
+    out->octant   = octant;
+    out->temp77   = (octant & 0xFCu) ? 0x07u : 0x00u;          /* $51E3-$51E9 step-opcode variant */
+    out->quadrant = (uint8_t)(quadrant & 0x03u);
+}
+
 /* Exit ABI of emit_edge_width_offset.  X passes through the caller's; A = the point's scan line
    (the CMP at each exit sets A to it); Y = edge_cursor; V is the width ADC's overflow when the
    scoring branch ran, else the entry V; N/Z/C are the last CMP's on that exit path. */

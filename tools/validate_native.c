@@ -869,6 +869,103 @@ static int test_mirrors_update(void)
     return fail;
 }
 
+void dial_needle_angle(void);
+void dial_needle_angle__t6502(void);
+
+/* dial_needle_angle's octant selector — a replica of the core, so the fixture can count which
+   octants/mirror-bits each engine_revs value reaches. */
+static void needle_octant(uint8_t engineRevs, uint8_t* octant, uint8_t* mirror, uint8_t* quadrant)
+{
+    uint8_t revs = engineRevs >= 0x1Eu ? engineRevs : 0x1Eu;
+    unsigned v9 = (unsigned)revs + (revs >> 1);
+    uint8_t angle0 = (uint8_t)((v9 >> 1) & 0xFFu);
+    uint8_t rot = angle0 >= 0x4Cu ? (uint8_t)(angle0 - 0x4Cu) : (uint8_t)(angle0 + 0x4Cu);
+    uint8_t q = (uint8_t)(rot / 0x26u), rem = (uint8_t)(rot % 0x26u);
+    uint8_t m = rem >= 0x13u ? 1u : 0u;
+    *quadrant = (uint8_t)(q & 3u);
+    *mirror   = m;
+    *octant   = (uint8_t)(((q & 3u) << 1) | m);
+}
+
+/* ==========================================================================
+   $51A8 dial_needle_angle — THE REV-COUNTER NEEDLE  (twin #153)
+   --------------------------------------------------------------------------
+   A math_lo ($74) reader-nativization: the clamped-revs scratch becomes a C local, math_lo keeps
+   its 6502 exit value (the folded angle offset).  Result-only (LIVE_NONE): exit regs/flags are
+   dead at draw_dash_needles ($513D).  The routine falls through into plot_line_octant, a
+   self-modifying line plotter shared by both differential sides — so it runs under
+   REVS_SMC_CONTINUE=1 (its two SMC seams a compared, counted channel) and the fixture plants valid
+   octant step-opcodes so the plotter body actually draws.  The DDA lengths are planted small and
+   the needle origin high byte at its real page ($75) so the plotter's own writes stay off the
+   control cells; correctness does not depend on that (both sides run the same plotter) — it only
+   keeps the test easy to reason about. */
+static int test_dial_needle_angle(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("dial_needle_angle");
+    if (!want("dial_needle_angle")) return 0;
+
+    unsigned mask = LIVE_NONE;
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+    unsigned long smc_before = g_smcUnhandled;
+
+    static const uint8_t STEP_OPS[4] = { 0x88, 0xC8, 0xCA, 0xE8 };  /* DEY/INY/DEX/INX */
+    int cases = 3000 * scale;
+    int octSeen[8] = {0}, mirror0 = 0, mirror1 = 0;
+
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;                                   /* dash path, not a SED site */
+
+        /* Valid step opcodes for both of plot_line_octant's SMC seams, all 8 octants. */
+        for (unsigned k = 0; k < 8; k++) {
+            pre[0x3B86u + k] = STEP_OPS[(t + k) & 3u];
+            pre[0x3B8Eu + k] = STEP_OPS[(t + k + 1u) & 3u];
+        }
+        /* Bounded, varied DDA line lengths; needle origin at its real screen page. */
+        for (unsigned i = 0; i <= 0x13u; i++) pre[0x3100u + i] = (uint8_t)((xs() % 0x20u) + 1u);
+        for (unsigned q = 0; q < 4; q++)      pre[0x397Cu + q] = 0x75u;
+
+        uint8_t oct, mir, quad;
+        needle_octant(pre[0x003Cu], &oct, &mir, &quad);
+        octSeen[oct & 7]++;
+        if (mir) mirror1++; else mirror0++;
+
+        fail += diff_run("dial_needle_angle", pre, c, dial_needle_angle,
+                         dial_needle_angle__t6502, mask, t, &printed);
+    }
+    unsetenv("REVS_SMC_CONTINUE");
+
+    /* Non-vacuity: every octant reached and both mirror bits.  The plotter always runs
+       (planted DDA lengths are >= 1 and the step opcodes are valid), so its execution is
+       guaranteed by construction rather than counted. */
+    int missing = 0;
+    for (int i = 0; i < 8; i++) if (octSeen[i] == 0) missing++;
+    if (missing) {
+        printf("[VACUOUS] dial_needle_angle: %d of 8 octants never reached (", missing);
+        for (int i = 0; i < 8; i++) printf("%d%s", octSeen[i], i < 7 ? "/" : "");
+        printf(")\n");
+        fail++;
+    }
+    if (mirror0 == 0 || mirror1 == 0) {
+        printf("[VACUOUS] dial_needle_angle: the fold mirror bit went only one way "
+               "(%d unfolded, %d folded)\n", mirror0, mirror1);
+        fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  result-only  "
+           "(octants %d/%d/%d/%d/%d/%d/%d/%d, %d folded, %lu SMC traps)\n",
+           "dial_needle_angle", cases, fail,
+           octSeen[0], octSeen[1], octSeen[2], octSeen[3],
+           octSeen[4], octSeen[5], octSeen[6], octSeen[7],
+           mirror1, g_smcUnhandled - smc_before);
+    return fail;
+}
+
 void view_paint_lines(void);
 void view_paint_lines__t6502(void);
 extern unsigned long g_viewTableCollisions;   /* asserted below; see revs_native.c */
@@ -6030,6 +6127,7 @@ int main(int argc, char** argv)
     fail += test_update_horizon_band();
     fail += test_draw_corner_markers();
     fail += test_mirrors_update();
+    fail += test_dial_needle_angle();
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();

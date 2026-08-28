@@ -1062,6 +1062,16 @@ VALIDATE_FUNCS = {
     # + mirror_draw_car calls stay in the shim (mirror_draw_car is a transliterated plotter, shared
     # by both differential sides); the core computes only the pre-loop bracket + heading term.
     0x7B00,
+    # ⭐ TWIN #153 — dial_needle_angle ($51A8).  The rev-counter needle: engine_revs -> a needle
+    # angle -> (quadrant, folded offset, mirror bit) -> plot_line_octant's octant index.  A math_lo
+    # READER-nativization (not a wide value): math_lo first holds the clamped revs scratch, then the
+    # final folded angle offset (consumed by plot_line_octant's DDA); the scratch becomes a C local,
+    # math_lo/math_hi keep their 6502 exit values until $74/$75 relocation.  Result-only (exit
+    # regs/flags dead at the caller draw_dash_needles $513D).  Falls through into plot_line_octant
+    # (a self-modifying transliterated line plotter, shared by both differential sides); the fixture
+    # plants valid octant step-opcodes and runs under REVS_SMC_CONTINUE=1 so its two SMC seams are a
+    # compared channel.  Shipping caller: draw_dash_needles, the last draw of race_main_loop ($17B4).
+    0x51A8,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

@@ -516,6 +516,36 @@ void update_horizon_band(void)
     CLI();                                   /* $4F75 */
 }
 
+void dial_needle_angle(void)
+{
+    /* $51A8 — the rev-counter needle.  The core does the engine_revs -> octant arithmetic; the shim
+       does the dial-table lookups, sets up the 6502 entry ABI, and FALLS THROUGH into the shared
+       transliterated plot_line_octant (a self-modifying line plotter — both differential sides run
+       it, so its frame-buffer writes cancel given identical inputs).  Result-only: exit regs/flags
+       are dead at the caller draw_dash_needles ($513D), which reloads A/scratch immediately.
+       math_lo ($74) / math_hi ($75) keep their 6502 exit values until the $74/$75 relocation. */
+    hypot_min_hi = 0x00;                         /* $51AA */
+    NeedleDial d;
+    dial_needle_angle_core(engine_revs, &d);
+
+    math_lo        = d.offset;                   /* $74 — folded angle offset; plot_line_octant's DDA */
+    shared_temp_76 = d.octant;                   /* $76 — octant index (SMC dispatch) */
+    shared_temp_77 = d.temp77;                   /* $77 — step-opcode variant */
+
+    uint8_t len = mem[DIAL_NEEDLE_DDA_TBL + d.offset];  /* $51EB — line length / minor delta */
+    mem[0x0083] = len;                           /* $83 point_delta_hi */
+    math_hi     = len;                           /* $75 — DDA loop count */
+
+    uint8_t org = mem[DIAL_NEEDLE_ORIGIN_LO_TBL + d.quadrant];
+    plot_ptr_lo = (uint8_t)(org & 0xF8u);        /* $70 — needle origin address low */
+    plot_ptr_hi = mem[DIAL_NEEDLE_ORIGIN_HI_TBL + d.quadrant]; /* $71 */
+
+    cpu.X = d.quadrant;                          /* plot_line_octant entry ABI: X=quadrant, */
+    cpu.Y = (uint8_t)(org & 0x07u);              /* Y=start scanline, */
+    cpu.A = plot_ptr_hi;                         /* A=plot_ptr_hi (dead, but faithful to $5202). */
+    plot_line_octant();
+}
+
 void mirrors_update(void)
 {
     /* $7B00 — the once-per-frame wing-mirror update (race_main_loop body, $1739).  Result-only:
