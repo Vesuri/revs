@@ -487,6 +487,17 @@ void print_spaces(void)
     /* C/V propagate from the last vdu_char_def (untouched here); X/Y ambient. */
 }
 
+void draw_starting_lights(void)
+{
+    /* $7B4A — exit regs/flags are dead at the sole caller (native race_main_loop), so the
+       shim only reproduces the one observable side effect the core cannot: the PHA at $7B83
+       pushes the pattern and the PLA at $7B90 pops it, leaving that byte as stack residue at
+       $0100+S.  (The core returns -1 on the early exits, which push nothing.) */
+    int pattern = draw_starting_lights_core();
+    if (pattern >= 0)
+        mem[0x0100u + cpu.S] = (uint8_t)pattern;
+}
+
 void draw_gear_indicator(void)
 {
     uint8_t y = cpu.Y;

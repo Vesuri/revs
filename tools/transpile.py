@@ -1034,6 +1034,10 @@ VALIDATE_FUNCS = {
     # (vdu_char_def), a do-while so A=0 prints 256.  Used math_lo purely as the loop counter; the
     # native core uses a local, so it no longer pins $74.
     0x3D50,
+    # ⭐ TWIN #149 — draw_starting_lights ($7B4A).  Walks start_light_state and paints the light
+    # column into view_src_blocks col 37.  math_lo held the EOR pattern across the fill loop; the
+    # native core uses a local, so it no longer pins $74.  Shipping caller: native race_main_loop.
+    0x7B4A,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

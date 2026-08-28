@@ -9000,6 +9000,74 @@ uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y)
 }
 
 /* ---------------------------------------------------------------------------
+   $7B4A  draw_starting_lights — WALK THE LIGHT SEQUENCE, PAINT THE COLUMN  (twin #149)
+   Lives in the $7B00 overlay.  Does nothing outside the race proper (session_is_race
+   positive) or once the lights are dark (state 0).  Otherwise it advances
+   start_light_state through its sequence and lays a light column straight into
+   view_src_blocks column 37 (the screen's right edge): ten rows of $F0, then the
+   arm's pattern into the middle six, XORing a second value between rows.
+     • state $80  — top of the sequence: force $F0 ("all lit") until the engine
+                    catches (engine_running bit 7), else hold; pattern $80.
+     • state $A0  — hold 64 frames (loop_counter AND $3F); when it lapses, release
+                    to $28 with the green pattern $F2/$05, otherwise pattern $A5/$77.
+     • otherwise  — step the state down by one; a still-negative result keeps the
+                    amber pattern ($80 at/above $C0, else $A5/$77); a positive result
+                    uses the green pattern $F2/$05.
+   The XOR value lived in math_lo ($74) across the fill loop; it is a local now (the
+   reader-nativization step of the wide-value cleanup), with the cell's exit value
+   still written so the routine stays byte-exact until math_lo is relocated.
+   Returns the painted pattern (the byte the 6502 PHA'd), or -1 on the early exits
+   so the shim can reproduce that push's stack residue; exit regs/flags are dead at
+   the sole (native) caller, race_main_loop.
+   --------------------------------------------------------------------------- */
+int draw_starting_lights_core(void)
+{
+    /* $42C0 = view_src_blocks column 37, offset $40 — the ten-row light column. */
+    const uint16_t light_col = (uint16_t)(VIEW_SRC_BLOCKS + 37u * 0x80u + 0x40u);
+
+    if (!(session_is_race & 0x80u)) return -1;      /* $7B4A — race only */
+    uint8_t state = start_light_state;              /* $7B4E */
+    if (state == 0) return -1;                      /* $7B50 — lights dark */
+
+    uint8_t new_state = state;
+    uint8_t pattern, eor;
+
+    if (state == 0x80u) {                           /* $7B54 — top of the sequence */
+        if (engine_running & 0x80u) new_state = 0xF0u;  /* $7B58 — force $F0 until engine catches */
+        pattern = 0x80u; eor = 0x00u;               /* $7B5E/$7B60 */
+    } else if (state == 0xA0u) {                    /* $7B64 CPX #$A0 */
+        if ((loop_counter & 0x3Fu) != 0) {          /* $7B75 — still holding (64-frame dwell) */
+            pattern = 0xA5u; eor = 0x77u;           /* $7B6F/$7B71 */
+        } else {
+            new_state = 0x28u;                      /* $7B7B — release */
+            pattern = 0xF2u; eor = 0x05u;           /* $7B7D/$7B7F — green */
+        }
+    } else {
+        uint8_t dec = (uint8_t)(state - 1u);        /* $7B68 DEX */
+        new_state = dec;
+        if (state & 0x80u) {                        /* the DEX result stays negative here */
+            if (dec >= 0xC0u) { pattern = 0x80u; eor = 0x00u; }  /* $7B6D BCS -> $7B5E */
+            else              { pattern = 0xA5u; eor = 0x77u; }  /* $7B6F */
+        } else {
+            pattern = 0xF2u; eor = 0x05u;           /* $7B7D — positive state, green */
+        }
+    }
+
+    start_light_state = new_state;                  /* $7B81 */
+    math_lo = eor;                                  /* $7B84 — the 6502 parked Y here across the fill */
+
+    { int i;
+      for (i = 9; i >= 0; i--) mem[light_col + i] = 0xF0u;   /* $7B8A — clear ten rows */
+      uint8_t a = pattern;
+      for (i = 5; i >= 0; i--) {                    /* $7B93 — pattern into the middle six */
+          mem[light_col + 2 + i] = a;
+          a ^= eor;                                 /* $7B96 EOR math_lo */
+      }
+    }
+    return (int)pattern;
+}
+
+/* ---------------------------------------------------------------------------
    $42D0  draw_gear_indicator — THE GEAR, DOUBLE WIDTH  (twin #109)
    --------------------------------------------------------------------------- */
 uint8_t draw_gear_indicator_core(void)

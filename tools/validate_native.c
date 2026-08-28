@@ -548,6 +548,65 @@ static int test_print_spaces(void)
     return fail;
 }
 
+void draw_starting_lights(void);
+void draw_starting_lights__t6502(void);
+
+static int test_draw_starting_lights(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("draw_starting_lights");
+    if (!want("draw_starting_lights")) return 0;
+
+    /* Result-only (LIVE_NONE): the sole caller is native race_main_loop, which reads no exit
+       register or flag.  Every observable effect is in mem[] and reproduced byte-exact — the
+       state cell, the light column, math_lo ($74, the campaign's target — its 6502 exit value
+       is still written so the cell stays pinned until relocation), and the PHA/PLA stack
+       residue the shim replays at $0100+S.  So NO set_ignore is needed. */
+    unsigned mask = LIVE_NONE;
+
+    int cases = 4000 * scale;
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();                       /* S=0xFF -> the PHA residue lands at $01FF */
+        fill_random(pre);
+        c.D = 0;
+
+        /* session_is_race ($6C): bit 7 set = the race (paint); clear = the early return. */
+        if (t % 5 == 0) pre[0x006C] &= 0x7F;
+        else            pre[0x006C] |= 0x80;
+
+        /* start_light_state ($6D): steer through every arm — 0 (dark), $80 (top), $A0 (dwell),
+           the two negative step-down bands, a positive band, and fully random. */
+        uint8_t st;
+        switch (t % 8) {
+            case 0:  st = 0x00u; break;                       /* lights dark -> early return */
+            case 1:  st = 0x80u; break;                       /* top of sequence */
+            case 2:  st = 0xA0u; break;                       /* 64-frame dwell */
+            case 3:  st = (uint8_t)(0xC0u + (xs() % 0x40u)); break;  /* dec stays >= $C0 */
+            case 4:  st = (uint8_t)(0x81u + (xs() % 0x3Fu)); break;  /* dec -> $80..$BF */
+            case 5:  st = (uint8_t)(0x01u + (xs() % 0x27u)); break;  /* positive band */
+            default: st = (uint8_t)xs(); break;               /* anything */
+        }
+        pre[0x006D] = st;
+
+        /* engine_running ($61) bit 7 selects the $80 arm's force-$F0; loop_counter ($6A) low
+           6 bits gate the $A0 arm's release.  Randomise both, and on the $A0 case force the
+           release path half the time so it is not left to chance. */
+        if (xs() & 1) pre[0x0061] |= 0x80; else pre[0x0061] &= 0x7F;
+        pre[0x006A] = (uint8_t)xs();
+        if ((t % 8) == 2 && (t & 1)) pre[0x006A] &= 0xC0u;    /* -> (loop_counter & $3F) == 0 */
+
+        fail += diff_run("draw_starting_lights", pre, c, draw_starting_lights,
+                         draw_starting_lights__t6502, mask, t, &printed);
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  result-only (regs/flags dead)\n",
+           "draw_starting_lights", cases, fail);
+    return fail;
+}
+
 void view_paint_lines(void);
 void view_paint_lines__t6502(void);
 extern unsigned long g_viewTableCollisions;   /* asserted below; see revs_native.c */
@@ -5705,6 +5764,7 @@ int main(int argc, char** argv)
     (void)test_contract;   /* the generic leaf fixture; twin #1 needs a steered one */
     fail += test_irq1v_band_schedule();
     fail += test_print_spaces();
+    fail += test_draw_starting_lights();
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();
