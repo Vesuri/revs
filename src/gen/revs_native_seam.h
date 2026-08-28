@@ -42,6 +42,11 @@
 #define VIEW_ORIGIN_HI   0x6283u   /* view_origin_hi */
 #define EDGE_X_LO_TBL    0x5E40u   /* edge_x_lo — the track edges' angle, low byte */
 #define EDGE_X_HI_TBL    0x5E90u   /* edge_x_hi — ...and the high byte */
+#define EDGE_Y_TBL       0x5F20u   /* edge_y      — per edge point: the scan line it projects to */
+#define MARKER_EDGE_IDX  0x62B4u   /* marker_edge_index  — 3 corner markers, per frame */
+#define MARKER_FLAGS_TBL 0x6299u   /* marker_flags */
+#define MARKER_OFF_LO    0x62B7u   /* marker_offset_lo */
+#define MARKER_OFF_HI    0x62BAu   /* marker_offset_hi */
 #define TRACK_DIR_0      0x5400u   /* track_dir_0[Y] — direction component 0 (ground plane) */
 #define TRACK_DIR_1      0x5500u   /* track_dir_1[Y] — component 1 (gradient) */
 #define TRACK_DIR_2      0x5600u   /* track_dir_2[Y] — component 2 (ground plane) */
@@ -119,6 +124,10 @@ typedef struct { uint8_t row; uint8_t line; } Mode5Addr;  /* plot_ptr side-effec
 typedef struct { uint8_t ch; int usedMos; } VduDef;       /* def took the OSWRCH path? */
 typedef struct { uint8_t mag; uint8_t dir; uint8_t reading; } AdcRead;   /* distance from centre, its sign, and the raw MOS reading that leaks out in Y */
 typedef struct { uint8_t a, n, c; } GapTail;
+/* draw_corner_marker_core's per-marker result.  math_lo/hi/temp76 are the $74/$75/$76 exit
+   values on the SKIP path (on the DRAW path plot_object overwrites them); plot_x/plot_line/
+   proj_width are meaningful only when draw != 0. */
+typedef struct { int draw; uint8_t mathLo, mathHi, temp76, plotX, plotLine, projWidth; } CornerMarker;
 /* MosRegs (an MOS call's A/X/Y + carry) is declared in platform_c.h, the header
    that also declares platform_mos_call_typed the wrappers below funnel through. */
 typedef struct { uint8_t y, c, v; } SpinExit;    /* begin_spin's residue: OSWORD Y + block ADC C/V */
@@ -330,6 +339,7 @@ EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY);
 void update_grip_limits_core(void);
 uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y);
 int draw_starting_lights_core(void);
+void draw_corner_marker_core(uint8_t offLo, uint8_t offHi, uint16_t edgeX, uint8_t edgeY, CornerMarker *out);
 int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out);
 uint8_t vdu_char_def_core(uint8_t ch);
 uint8_t vdu_char_emit_core(void);

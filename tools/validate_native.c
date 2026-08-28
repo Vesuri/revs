@@ -672,6 +672,107 @@ static int test_update_horizon_band(void)
     return fail;
 }
 
+void draw_corner_markers(void);
+void draw_corner_markers__t6502(void);
+
+/* ==========================================================================
+   $1B12 draw_corner_markers — THE CORNER-MARKER CONSUMER  (twin #151)
+   --------------------------------------------------------------------------
+   Draws the up-to-three markers build_track_geometry queued, then zeroes the list.  Like the
+   draw_track_object fixture it drives the object plotter (plot_object) through a randomised
+   pre-state, and the twin's job is to hand it the same argument block off the same cells — a
+   wrong wide-value shows up as a mem[] avalanche once plot_object runs on it.
+
+   ⭐ draw_corner_markers has NO self-modifying site of its own; the only trap arm reachable is
+   plot_object's $1FE9, so — exactly as in test_body_drivers — the pre-state PLANTS it with
+   Silverstone's own byte ($A6) so plot_object runs to completion in both models rather than
+   trapping out with nothing to compare.  plot_shape is HARDCODED to 6 here, so plot_object's
+   shape-9 outer-loop spin (the hazard the draw_track_object arm has to steer around) cannot
+   arise.  plant_plotter_chains zeros the span-plotters' branch-offset tables so plot_shape_edges
+   terminates.  Result-only: exit regs/flags are dead at the native caller (race_main_loop). */
+static void plant_plotter_chains(uint8_t* pre);   /* defined with the geometry fixtures below */
+
+static int marker_high_byte(const uint8_t* pre, unsigned y)
+{
+    uint8_t  idx   = pre[0x62B4u + y];                         /* marker_edge_index */
+    unsigned off   = pre[0x62B7u + y] | (pre[0x62BAu + y] << 8);
+    unsigned q     = (off << 1) & 0xFFFFu;
+    unsigned edgeX = pre[0x5E40u + idx] | (pre[0x5E90u + idx] << 8);
+    return (int)(((q + edgeX) >> 8) & 0xFFu);
+}
+
+static int test_draw_corner_markers(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("draw_corner_markers");
+    if (!want("draw_corner_markers")) return 0;
+
+    unsigned mask = LIVE_NONE;
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+    unsigned long smc_before = g_smcUnhandled;
+
+    int cases = 3000 * scale;
+    int drawLow = 0, drawHigh = 0, skip = 0, patchSet = 0, patchClear = 0;
+    int haveEmpty = 0, haveFull = 0, drawnMarkers = 0;
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        plant_plotter_chains(pre);
+        pre[0x1FE9] = 0xA6;                       /* plot_object's SMC seam — unpatched Silverstone */
+        c.D = 0;                                  /* render path (static-map §Decimal mode) */
+
+        /* 0..3 markers, so both the empty routine ($1B14 CPY takes the exit at once) and the
+           full three-marker loop are covered; the per-marker data stays random. */
+        uint8_t count = (uint8_t)(xs() % 4);
+        pre[0x0057] = count;                      /* marker_count */
+        if (count == 0) haveEmpty = 1; else haveFull = 1;
+
+        for (unsigned y = 0; y < count; y++) {
+            int phi = marker_high_byte(pre, y);
+            if (phi < 0x18) { drawLow++; drawnMarkers++; }
+            else if (phi >= 0xE8) { drawHigh++; drawnMarkers++; }
+            else skip++;
+            if (pre[0x6299u + y] & 0x20u) patchSet++; else patchClear++;
+        }
+
+        fail += diff_run("draw_corner_markers", pre, c, draw_corner_markers,
+                         draw_corner_markers__t6502, mask, t, &printed);
+    }
+    unsetenv("REVS_SMC_CONTINUE");
+
+    /* Non-vacuity: the wide-value branch must go all three ways, the colour patch both ways, the
+       loop must run empty and full, and — the point of the whole fixture — the DRAW path (which
+       actually consumes the wide value into plot_object) must be reached. */
+    if (drawLow == 0 || drawHigh == 0 || skip == 0) {
+        printf("[VACUOUS] draw_corner_markers: the range branch did not go all three ways "
+               "(%d draw-low, %d draw-high, %d skip)\n", drawLow, drawHigh, skip);
+        fail++;
+    }
+    if (patchSet == 0 || patchClear == 0) {
+        printf("[VACUOUS] draw_corner_markers: the $38FE colour patch went only one way "
+               "(%d set, %d clear)\n", patchSet, patchClear);
+        fail++;
+    }
+    if (!haveEmpty || !haveFull) {
+        printf("[VACUOUS] draw_corner_markers: the marker loop was never both empty and non-empty "
+               "(%d empty seen, %d non-empty seen)\n", haveEmpty, haveFull);
+        fail++;
+    }
+    if (drawnMarkers == 0) {
+        printf("[VACUOUS] draw_corner_markers: not one marker was drawn — plot_object never ran\n");
+        fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  result-only  "
+           "(%d drawn: %d low / %d high, %d skipped, %lu SMC traps)\n",
+           "draw_corner_markers", cases, fail, drawnMarkers, drawLow, drawHigh, skip,
+           g_smcUnhandled - smc_before);
+    return fail;
+}
+
 void view_paint_lines(void);
 void view_paint_lines__t6502(void);
 extern unsigned long g_viewTableCollisions;   /* asserted below; see revs_native.c */
@@ -5831,6 +5932,7 @@ int main(int argc, char** argv)
     fail += test_print_spaces();
     fail += test_draw_starting_lights();
     fail += test_update_horizon_band();
+    fail += test_draw_corner_markers();
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();

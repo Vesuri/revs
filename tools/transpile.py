@@ -1044,6 +1044,15 @@ VALIDATE_FUNCS = {
     # expression.  math_hi ($75) keeps its 6502 exit value until relocation.  Two per-circuit SMC
     # seams ($4F54/$4F58) dispatched on the opcode.  Shipping caller: native race_main_loop.
     0x4F44,
+    # ⭐ TWIN #151 — draw_corner_markers ($1B12).  Consumes the per-frame corner-marker list into
+    # the object plotter.  The wide-value half: the 16-bit marker_offset is doubled and added onto
+    # the edge point's azimuth, then <<6 (top byte, re-centred on $50) gives plot_x and <<3 (|hi
+    # byte|) gives proj_width — all carried in math_lo:math_hi byte lanes with ASL/ROL by the 6502,
+    # one 16-bit expression per quantity in the native core.  math_lo/hi/$76 keep their 6502 exit
+    # values until relocation.  Calls plot_object (its own $1FE9 SMC seam, planted in the fixture);
+    # plot_shape is always 6, so plot_object's shape-9 spin cannot arise.  Shipping caller:
+    # native race_main_loop.
+    0x1B12,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

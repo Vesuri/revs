@@ -307,14 +307,22 @@ FUN_4876     FUN_48a7      ← only via apply_angle_term / apply_angle_term_at /
 `update_horizon_band` ($4F44, #150 — a `math_hi` reader/writer, the archetypal wide-value target:
 the 6502's `clamp << 6` + sign-extend done as a PHP/PLP-threaded ROR pair across `math_hi:A`
 collapses to `0x04D8 + (v<<6) + (c0?0xC000:0)`; `math_hi` still written with its 6502 exit value
-until relocation).
+until relocation),
+`draw_corner_markers` ($1B12, #151 — the corner-marker consumer; both `math_lo` AND `math_hi` as a
+16-bit pair. The 6502 doubles the 16-bit `marker_offset` (`ASL`/`ROL` across the lanes), 16-bit-adds
+it onto the edge point's azimuth, then `<<6` (top byte, re-centred on `$50`) → `plot_x` and `<<3`
+(`|hi byte|`) → `proj_width`; the core is one 16-bit expression per quantity. `math_lo/hi/$76` keep
+their 6502 exit values until relocation. Result-only; feeds `plot_object`, so the fixture is the
+`draw_track_object` pattern — `plant_plotter_chains` + `$1FE9` planted; `plot_shape` is hardcoded 6
+so plot_object's shape-9 spin cannot arise. `draw_corner_markers` has NO SMC seam of its own, so
+`diff_run`'s own SMC-count equality is what pins the deeper `$1DD4` trap the shape-6 draw path
+reaches ~1/30 of drawn markers).
 
-The remaining **18 genuine shipping readers** (`draw_corner_markers`,
-`draw_dash_needles`, `mirrors_update` confirmed shipping — called from the native
-`race_main_loop_core`):
+The remaining **17 genuine shipping readers** (`draw_dash_needles`, `mirrors_update` confirmed
+shipping — called from the native `race_main_loop_core`):
 
 ```
-shift_key_commands  sort_cars_by_key  draw_corner_markers  check_car_pair
+shift_key_commands  sort_cars_by_key  check_car_pair
 FUN_27ed  FUN_28f2  FUN_32d0  FUN_3a50  FUN_3ceb  text_script_interp
 draw_dash_needles  dial_needle_angle  plot_line_octant
 FUN_635d  menu_wait_key  mirrors_update  FUN_2f19  view_paint_lines_short
@@ -323,7 +331,7 @@ FUN_635d  menu_wait_key  mirrors_update  FUN_2f19  view_paint_lines_short
 ⭐ **Reader-nativization pattern (from #148):** the counter/scratch becomes a C local, but the
 twin still writes the cell's 6502 exit value so the routine stays byte-exact (validate compares
 $74, no `set_ignore`) — the cell is only physically lifted in the final relocation step, once all
-19 remaining shipping readers are native (the 6 oracle-only bodies above still reference the cell, so the
+remaining shipping readers are native (the 6 oracle-only bodies above still reference the cell, so the
 relocation step must keep it `mem[]`-visible to the oracles regardless — a separate concern). ⚠ Fixture trap: `print_spaces` with `count=0` runs 256 chars
 through the bitmap emitter, whose per-char writes follow a `mem[]` cursor; a fully-random
 char-row base (`char_row_addr_hi` $3B06) can point that at zero page and clobber `math_lo` — the

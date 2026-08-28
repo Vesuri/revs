@@ -516,6 +516,48 @@ void update_horizon_band(void)
     CLI();                                   /* $4F75 */
 }
 
+void draw_corner_markers(void)
+{
+    /* $1B12 — draws the up-to-three corner markers build_track_geometry queued this frame, then
+       zeroes the list.  Result-only: exit regs/flags are dead at the sole native caller
+       (race_main_loop, $1730), so the shim reproduces only what the core cannot — the loop
+       bookkeeping, the $38FE colour-patch dance, and the plot_object call.  The core carries the
+       wide-value projection; math_lo/hi/$76 are written on both paths (the 6502 sets them before
+       the draw/skip branch), but on the DRAW path plot_object's first act is math_lo=X, so those
+       writes are faithful-but-superseded there and are the routine's own exit values only on the
+       SKIP path.  plot_object gets X = marker_edge_index (its object slot); Y=0 is the DEY loop's
+       exit and V is dead — neither reaches a plot_object mem[] write. */
+    unsigned count = marker_count;
+    for (unsigned y = 0; y < count; y++) {
+        uint8_t idx = mem[MARKER_EDGE_IDX + y];             /* $1B18 — the edge point it hangs off */
+        marker_count_saved = (uint8_t)y;                    /* $1B1B — Y parked across plot_object */
+        uint8_t flags = mem[MARKER_FLAGS_TBL + y];          /* $1B1D */
+        if (flags & 0x20u)
+            mem[0x38FEu] = 0x0F;                            /* $1B26 — bit 5 recolours the marker (SMC) */
+
+        uint16_t edgeX = (uint16_t)(mem[EDGE_X_LO_TBL + idx]
+                                    | (mem[EDGE_X_HI_TBL + idx] << 8));
+        CornerMarker m;
+        draw_corner_marker_core(mem[MARKER_OFF_LO + y], mem[MARKER_OFF_HI + y],
+                                edgeX, mem[EDGE_Y_TBL + idx], &m);
+
+        math_lo = m.mathLo;                                 /* $74/$75/$76 — set on both paths */
+        math_hi = m.mathHi;
+        shared_temp_76 = m.temp76;
+        if (m.draw) {
+            plot_x     = m.plotX;                           /* $1B52 */
+            plot_line  = m.plotLine;                        /* $1B57 */
+            proj_width = m.projWidth;                       /* $1B6B */
+            plot_shape = 0x06;                              /* $1B6F — always the marker shape */
+            cpu.X = idx;                                    /* $1B71 — plot_object reads X (→ math_lo) */
+            cpu.Y = 0x00;
+            plot_object();
+        }
+        mem[0x38FEu] = 0xF0;                                /* $1B74-$1B76 — restore the marker colour */
+    }
+    marker_count = 0x00;                                    /* $1B7F-$1B81 — the list is per-frame */
+}
+
 void draw_gear_indicator(void)
 {
     uint8_t y = cpu.Y;

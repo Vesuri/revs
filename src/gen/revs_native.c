@@ -1562,7 +1562,6 @@ void race_main_loop_core(RestartDepth depth)
    ⭐ edge_x is an ANGLE, not a column: bearing_to_section is an arctan and emit_edge_bearing
    stores `bearing - car_heading`, so an edge point is an azimuth relative to where the car is
    pointing and interp_edge is what turns one into a screen column. */
-#define EDGE_Y_TBL       0x5F20u   /* edge_y      — per edge point: the scan line it projects to */
 #define EDGE_OPP_X_LO    0x5E50u   /* edge_opp_x_lo — the OPPOSITE boundary's angle at that point */
 #define EDGE_OPP_X_HI    0x5EA0u   /* edge_opp_x_hi */
 #define EDGE_STYLE_TBL   0x5EE0u   /* edge_style  — which surface style the span there uses */
@@ -1571,10 +1570,6 @@ void race_main_loop_core(RestartDepth depth)
 #define EDGE_SIDE_MASK   0x306Cu   /* edge_side_flag_mask  — 2, by road side */
 #define EDGE_STYLE_SEL   0x306Eu   /* edge_style_tbl       — 8, by the feature bits */
 #define EDGE_WIDTH_SHIFT 0x3076u   /* edge_width_shift_tbl — 8, likewise */
-#define MARKER_EDGE_IDX  0x62B4u   /* marker_edge_index  — 3 corner markers, per frame */
-#define MARKER_FLAGS_TBL 0x6299u   /* marker_flags */
-#define MARKER_OFF_LO    0x62B7u   /* marker_offset_lo */
-#define MARKER_OFF_HI    0x62BAu   /* marker_offset_hi */
 #define TRACK_SEGMENT_LO 0x5900u   /* track_segment_lo — the TRACK FILE's 8-byte segment records */
 #define TRACK_SEGMENT_HI 0x5300u   /* track_segment_hi */
 #define EDGE_HALF        0x0028u   /* 40 — the stride between the two road sides' halves */
@@ -2046,6 +2041,38 @@ static void append_corner_marker(uint8_t flags, unsigned offset)
     mem[MARKER_OFF_LO + slot] = (uint8_t)offset;
     mem[MARKER_OFF_HI + slot] = (uint8_t)(offset >> 8);
     inc_mem(MEM_marker_count);
+}
+
+/* $1B29-$1B6F — one corner marker's projection, the wide-value half of draw_corner_markers.
+   The 6502 carries the 16-bit offset and its sum in the math_lo/math_hi byte lanes, threading
+   carry with ASL/ROL; here both are ordinary 16-bit expressions.  The offset is doubled onto
+   the edge point's azimuth; the summed high byte off the ends of $18..$E8 (the near/far wrap)
+   selects DRAW, anything inside it SKIP.  On the draw path plot_x is that azimuth's top byte
+   re-centred on $50, and proj_width is |high byte of the offset << 3|. */
+void draw_corner_marker_core(uint8_t offLo, uint8_t offHi, uint16_t edgeX,
+                             uint8_t edgeY, CornerMarker *out)
+{
+    uint16_t q = (uint16_t)(((offHi << 8) | offLo) << 1);   /* $1B31 ASL / $1B32 ROL — doubled */
+    uint16_t p = (uint16_t)(q + edgeX);                     /* $1B36-$1B3F — 16-bit add */
+    uint8_t  phi = (uint8_t)(p >> 8);
+
+    if (phi < 0x18u || phi >= 0xE8u) {                      /* $1B41-$1B47 */
+        uint16_t r = (uint16_t)(q << 2);                    /* $1B5B loop — offset << 3 */
+        uint8_t  rh = (uint8_t)(r >> 8);
+        out->draw      = 1;
+        out->plotX     = (uint8_t)((p >> 6) + 0x50u);       /* $1B49-$1B52 — (P<<2) hi byte + $50 */
+        out->plotLine  = edgeY;                             /* $1B57 — edge_y[marker_edge_index] */
+        out->projWidth = (rh & 0x80u) ? (uint8_t)(0u - rh)  /* $1B62-$1B6B — |hi byte of offset<<3| */
+                                      : rh;
+        out->mathLo    = (uint8_t)r;
+        out->mathHi    = rh;
+        out->temp76    = (uint8_t)(p << 2);                 /* $76 after the two ROLs */
+    } else {
+        out->draw   = 0;
+        out->mathLo = (uint8_t)q;                           /* the doubled offset, never re-shifted */
+        out->mathHi = (uint8_t)(q >> 8);
+        out->temp76 = (uint8_t)p;                           /* $1B3A — P low byte */
+    }
 }
 
 /* Exit ABI of emit_edge_width_offset.  X passes through the caller's; A = the point's scan line
