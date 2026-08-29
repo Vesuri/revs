@@ -11745,3 +11745,103 @@ void sort_cars_by_key(void)
     cpu.D = 0;                                   /* $0FB5 CLD */
     find_player_neighbours();                    /* $0FB6 JSR $63A2 */
 }
+
+/* ===========================================================================
+   $0EE5  shift_key_commands — THE IN-RACE COMMAND KEYS  (twin #161)
+   ===========================================================================
+
+   WHAT IT DOES.  Called once per painted frame from race_main_loop's tail ($1791)
+   and from finish_race, always with Y=$0B.  Returns at once unless SHIFT is held
+   (negative INKEY -1, X=$FF); then scans shift_key_tbl[$0B..0] for the first held
+   key and applies that key's shift_key_action_tbl byte — low nibble selects a cell
+   in the state_flags block ($05F4+n), high nibble (with the low nibble masked off)
+   is the value stored.  The tail then services two of the cells it just may have
+   written: pause_request (negative = real PAUSE: stop sound, then spin redrawing
+   until key $A6 arrives; nonzero-positive = just nudge engine_note) and, every
+   other frame, volume_change_request (steps sound_volume one unit and rewrites the
+   envelope attack level = |volume|*8).
+
+   READER-NATIVISATION (the campaign's point).  The routine's ONLY $74/$75 use is
+   math_lo ($74) as a save/restore slot for the scan index Y — there is no math_hi
+   use at all.  Here that slot is a plain C local; the twin still writes math_lo the
+   6502 exit value (the index the scan stopped on: the matched key's index, or 0 if
+   none matched, or the entry Y=$0B if SHIFT was not held) so mem[] stays byte-exact
+   until the final $74/$75 relocation.  Exit registers/flags are dead — LIVE_NONE.
+
+   ⚠ NOT a decimal-mode site (docs/static-map.md §Decimal mode); no arithmetic here
+   is BCD, so it needs no D handling. */
+
+#define SHIFT_KEY_TBL         0x3DE2u   /* shift_key_tbl[0..$0B]: negative-INKEY codes to probe */
+#define SHIFT_KEY_ACTION_TBL  0x39D4u   /* shift_key_action_tbl: low nibble = state_flags offset, high nibble = value */
+
+void shift_key_commands(void)
+{
+    uint8_t entryY = cpu.Y;                       /* $0EE5 — the caller's Y ($0B) */
+    math_lo = entryY;                             /* STA $74 — Y saved in the $74 slot */
+
+    if (!kbd_test_key_core(0xFFu)) {              /* $0EE7 LDX #$FF / $0EE9 / $0EEC BNE */
+        return;                                   /* SHIFT not held -> nothing to do */
+    }
+
+    /* $0EEE..$0EFF — scan shift_key_tbl[Y..0], stop on the first held key. */
+    uint8_t y = entryY;
+    int matched = 0;
+    for (;;) {
+        math_lo = y;                             /* $0EF0 STA $74 — re-save the scan index */
+        if (kbd_test_key_core(mem[SHIFT_KEY_TBL + y])) { matched = 1; break; }  /* $0EF2/$0EF5/$0EF8 BEQ */
+        if (y == 0u) break;                      /* $0EFC DEY / $0EFD BPL / $0EFF BMI — index wrapped */
+        y = (uint8_t)(y - 1u);
+    }
+
+    if (matched) {                               /* $0F01..$0F0E */
+        cpu.Y = math_lo;                         /* $0F01 LDY $74 — the matched index escapes into the tail */
+        uint8_t action = mem[SHIFT_KEY_ACTION_TBL + math_lo];
+        uint8_t idx    = (uint8_t)(action & 0x0Fu);           /* low nibble = which state_flags cell */
+        cpu.X = idx;                             /* $0F08 TAX — X escapes into the tail too */
+        mem[MEM_state_flags + idx] = (uint8_t)(action & 0xF0u);  /* high nibble = value */
+    }
+
+    /* $0F11 — pause_request.  A/X/Y here reach the MOS inside sound_stop_all, so they are set
+       exactly as the transliteration leaves them (A = pause_request, X = the action's low nibble,
+       Y = the matched index) — the harness compares registers at every OS-call boundary. */
+    uint8_t pr = mem[MEM_pause_request];
+    cpu.A = pr;                                  /* $0F11 LDA pause_request */
+    if (pr != 0u) {                              /* $0F14 BEQ skips */
+        if (pr & 0x80u) {                        /* $0F16 BPL — negative = real pause */
+            sound_stop_all();                    /* $0F18 */
+            do {
+                clear_surface_buffers();         /* $0F1B */
+            } while (!kbd_test_key_core(0xA6u)); /* $0F1E/$0F20/$0F23 — spin until $A6 down */
+        }
+        mem[MEM_engine_note]++;                  /* $0F25 INC engine_note */
+        mem[MEM_pause_request] = 0u;             /* $0F29 */
+    }
+
+    /* $0F2C — volume.  On even frames a nonzero request steps sound_volume; on odd frames
+       the whole step is skipped ($0F33 BNE) but the request is still cleared at $0F5E. */
+    if ((mem[MEM_loop_counter] & 0x01u) == 0u) { /* $0F2F/$0F31/$0F33 — even frame */
+        uint8_t vcr = mem[MEM_volume_change_request];
+        if (vcr == 0u) return;                   /* $0F38 BEQ $0F63 — nothing to do, request left as 0 */
+        uint8_t vol = mem[MEM_sound_volume];     /* $0F2C LDY sound_volume */
+        int apply;
+        if (vcr & 0x80u) {                       /* $0F3A BPL — negative request = quieter (toward 0) */
+            uint8_t ny = (uint8_t)(vol + 1u);            /* $0F3C INY */
+            apply = (ny == 0u) || (ny & 0x80u);          /* $0F3D BEQ / $0F3F BMI commit; $0F41 BPL skip */
+            if (apply) vol = ny;
+        } else {                                 /* positive request = louder (more negative) */
+            uint8_t ny = (uint8_t)(vol - 1u);            /* $0F43 DEY */
+            apply = (ny >= 0xF1u);                        /* $0F44 CPY #$F1 / $0F46 BCC skip (floor $F1) */
+            if (apply) vol = ny;
+        }
+        if (apply) {                             /* $0F48.. */
+            mem[MEM_sound_volume] = vol;
+            /* envelope attack level = |sound_volume| * 8  ($0F4B EOR/$0F4F ADC = -vol, ASL x3) */
+            mem[MEM_envelope_attack_level] = (uint8_t)((uint8_t)((vol ^ 0xFFu) + 1u) << 3);
+            cpu.A = 0u;                           /* $0F57 LDA #0 -> envelope number 1 base */
+            sound_envelope();                     /* $0F59 */
+            mem[MEM_engine_note]++;               /* $0F5C INC engine_note */
+        }
+    }
+    mem[MEM_volume_change_request] = 0u;         /* $0F5E/$0F60 — reached on odd frames and after an even step */
+    /* $0F63 RTS */
+}

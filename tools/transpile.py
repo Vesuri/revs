@@ -1143,6 +1143,17 @@ VALIDATE_FUNCS = {
     # $0100 (car_race_flags) is reused as a 21-byte sort scratch here — dual-use in rename.md.
     # Exit ABI dead (CLD; JSR; RTS) — LIVE_NONE, mem[]-only compare.  ⚠ Fixture must NOT pin D=0.
     0x0F64,
+    # $0EE5 shift_key_commands — TWIN #161.  The in-race command keys, once per painted frame with
+    # Y=$0B: returns unless SHIFT ($FF) is held, then scans shift_key_tbl[$0B..0] for the first held
+    # key and applies its shift_key_action_tbl byte (low nibble = state_flags offset, high nibble =
+    # value); the tail services pause_request (negative = stop sound + spin redrawing until $A6) and,
+    # on even frames, volume_change_request (steps sound_volume, rewrites envelope attack = |vol|*8).
+    # The reader-nat target is math_lo ($74), used ONLY as the scan-index save slot (no math_hi use);
+    # it becomes a C local but keeps its 6502 exit value (matched index / 0 / entry $0B) in mem[].
+    # NOT a decimal site (no BCD).  Exit ABI dead — LIVE_NONE, mem[]-only compare.  ⚠ Fixture drives
+    # the keyboard through the mode-3 held-SET (platform_test_key_set_*) so SHIFT + a scan key + $A6
+    # can be held together; $A6 must be in the set whenever the pause spin can run, or both models hang.
+    0x0EE5,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

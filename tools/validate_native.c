@@ -1547,6 +1547,135 @@ static int test_sort_cars_by_key(void)
     return fail;
 }
 
+void shift_key_commands(void);
+void shift_key_commands__t6502(void);
+void platform_test_key_set_clear(void);   /* mode-3 held-SET: start empty */
+void platform_test_key_set_add(unsigned char code);  /* ...then mark each code held */
+
+/* --------------------------------------------------------------------------
+   $0EE5 shift_key_commands — the in-race command keys (src/gen/revs_native.c twin #161).
+
+   The reader-nat target is math_lo ($74), used ONLY as the scan-index save slot; the
+   fixture must therefore make the scan STOP at a variety of indices, which means holding
+   SHIFT ($FF) together with a specific scan-table key — impossible with the old all-or-one
+   keyboard backend, so this fixture drives the mode-3 held-SET (platform_test_key_set_*).
+
+   THE HANG HAZARD, and how every class provably avoids it.  A negative pause_request at
+   $0F11 spins in clear_surface_buffers until key $A6 is down; a static held-set cannot
+   "press $A6 later", so any case that reaches a negative pause_request MUST already hold
+   $A6.  The scan-apply writes pause_request negative only for scan index 7 (action $83),
+   and the scan picks the HIGHEST held index — so index 7 can win only when index 8 ($A6)
+   is NOT held, which is exactly the hanging case.  The classes are built to never do that:
+     * EARLY   — SHIFT not held -> returns at $0EEC (math_lo left = entry $0B).
+     * SAFE    — SHIFT + a random subset of scan keys EXCLUDING $96 (idx7) and $A6 (idx8),
+                 so no winner touches pause_request and it stays the non-negative preset:
+                 no spin.  Winner in {0-6,9-11} or none -> the widest math_lo coverage.
+     * IDX8    — SHIFT + $A6 as the top held key -> winner 8 writes pause_request=$40
+                 (positive nudge, no spin); covers the idx8 action.
+     * SPIN    — SHIFT + $A6 + $8A(idx11, action idx4, does NOT touch pause) so idx11 wins
+                 and leaves pause_request at the preset $80; the negative-pause spin then
+                 runs and exits at once because $A6 is held.
+   ⚠ The "index 7 wins -> writes $80 -> spins for $A6" scenario is unreachable by
+   construction (see above) and needs no coverage: the store LINE is exercised by every
+   other winner, and the negative-pause spin is exercised by the SPIN class.
+
+   D is pinned 0 (docs/static-map.md §Decimal mode: this is not one of the eight SED sites,
+   so it is entered with D=0; the one ADC #$01 in the volume step is therefore binary).
+   Exit ABI dead (RTS with no consumed register) -> LIVE_NONE. */
+static int test_shift_key_commands(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("shift_key_commands");
+    if (!want("shift_key_commands")) return 0;
+
+    unsigned mask = LIVE_NONE;   /* RTS, no live exit register or flag */
+
+    /* the two real tables, seeded so the fixture can predict which key is which */
+    static const uint8_t SCAN[12]   = {0x86,0x8E,0x8D,0x8D,0xEB,0x8B,0xDF,0x96,0xA6,0xE9,0x8C,0x8A};
+    static const uint8_t ACTION[12] = {0x80,0x01,0xC1,0x81,0xC2,0x42,0xC0,0x83,0x43,0x20,0x04,0x84};
+
+    int early = 0, safeEnter = 0, idx8 = 0, spin = 0, volEven = 0, volOdd = 0;
+    int cases = 6000 * scale;
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.N = xs()&1; c.V = xs()&1; c.Z = xs()&1; c.I = xs()&1; c.C = xs()&1;
+        c.D = 0;                             /* not a SED site — entered with D=0 */
+        c.Y = 0x0B;                          /* the caller's Y at both call sites */
+
+        /* seed the two tables (fill_random would have scrambled them) */
+        for (int i = 0; i < 12; i++) { pre[0x3DE2u + i] = SCAN[i]; pre[0x39D4u + i] = ACTION[i]; }
+
+        platform_test_key_set_clear();       /* mode 3, nothing held */
+
+        int cls = t % 6;
+        if (cls == 0) {
+            /* EARLY: SHIFT not held -> immediate return */
+            early++;
+        } else if (cls == 4) {
+            /* SPIN: idx11 wins (leaves pause alone), pause_request negative, $A6 held to exit */
+            platform_test_key_set_add(0xFF);
+            platform_test_key_set_add(0xA6);
+            platform_test_key_set_add(0x8A);
+            pre[0x05F7u] = 0x80u;            /* pause_request negative -> real pause spin */
+            spin++;
+        } else if (cls == 5) {
+            /* IDX8: $A6 the top held key -> winner 8, positive pause nudge */
+            platform_test_key_set_add(0xFF);
+            platform_test_key_set_add(0xA6);
+            pre[0x05F7u] = (uint8_t)(xs() & 0x7Fu);   /* non-negative regardless */
+            idx8++;
+        } else {
+            /* SAFE: SHIFT + random subset excluding idx7 ($96) and idx8 ($A6) -> no spin */
+            platform_test_key_set_add(0xFF);
+            unsigned r = xs();
+            for (int i = 0; i < 12; i++) {
+                if (i == 7 || i == 8) continue;
+                if (r & (1u << i)) platform_test_key_set_add(SCAN[i]);
+            }
+            pre[0x05F7u] = (uint8_t)(xs() & 0x7Fu);   /* pause non-negative -> nudge or nothing */
+            safeEnter++;
+        }
+
+        /* volume path: force both frame parities.  On even frames the sound_volume/request-sign
+           pairs are chosen DETERMINISTICALLY to sit on the ceiling (0 -> silent) and floor ($F1 =
+           -15) edges — a random sound_volume hits $FF or $F1 only ~1/256 of the time, which left
+           the ceiling/floor commit conditions untested (a real coverage hole). */
+        static const uint8_t VOL_EDGE[8]  = { 0xFF, 0x00, 0xF1, 0xF2, 0xF0, 0x80, 0x7F, 0x01 };
+        static const uint8_t VCR_SIGN[8]  = { 0x80, 0x80, 0x01, 0x01, 0x01, 0x80, 0x80, 0x01 };
+        if (t % 2 == 0) {
+            int k = (t / 2) % 8;
+            pre[0x006Au] = (uint8_t)(xs() & 0xFEu);          /* loop_counter even -> step runs */
+            pre[0x05F6u] = VCR_SIGN[k];                      /* negative = quieter (toward 0), positive = louder */
+            pre[0x05FEu] = VOL_EDGE[k];                      /* $FF/$00 ceiling, $F1/$F2/$F0 floor, mid values */
+            volEven++;
+        } else {
+            pre[0x006Au] = (uint8_t)(xs() | 1u);             /* loop_counter odd -> step skipped, vcr cleared */
+            pre[0x05F6u] = (uint8_t)xs();
+            volOdd++;
+        }
+
+        fail += diff_run("shift_key_commands", pre, c, shift_key_commands,
+                         shift_key_commands__t6502, mask, t, &printed);
+    }
+
+    if (!early || !safeEnter || !idx8 || !spin || !volEven || !volOdd) {
+        printf("[VACUOUS] shift_key_commands: an arm was never reached "
+               "(%d early, %d safe, %d idx8, %d spin, %d volEven, %d volOdd)\n",
+               early, safeEnter, idx8, spin, volEven, volOdd);
+        fail++;
+    }
+    platform_test_key_set_clear();   /* leave the backend in a known state */
+    printf("%-32s %7d cases, %d mismatch (must be 0)  live=none  "
+           "(%d early/%d safe/%d idx8/%d spin, %d volEven/%d volOdd)\n",
+           "shift_key_commands", cases, fail, early, safeEnter, idx8, spin, volEven, volOdd);
+    return fail;
+}
+
 void view_paint_lines(void);
 void view_paint_lines__t6502(void);
 extern unsigned long g_viewTableCollisions;   /* asserted below; see revs_native.c */
@@ -6727,6 +6856,7 @@ int main(int argc, char** argv)
     fail += test_seed_car_track_position();
     fail += test_FUN_27ed();
     fail += test_sort_cars_by_key();
+    fail += test_shift_key_commands();
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();

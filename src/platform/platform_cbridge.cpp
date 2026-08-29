@@ -182,8 +182,12 @@ static int g_headlessKeyDown = 0;
    down.  With one global answer the fixture could only ever produce "none" or "all", so the
    both-keys arm ran and the one-key arms never did: the sabotage "the key direction is not
    compared with the current sign" survived 5000 cases.  Mode 2 answers for one code only. */
-static int g_headlessKeyMode = 0;      /* 0 none, 1 every key, 2 only g_headlessKeyCode */
+static int g_headlessKeyMode = 0;      /* 0 none, 1 every key, 2 only g_headlessKeyCode, 3 the held-set */
 static unsigned char g_headlessKeyCode = 0;
+/* Mode 3, the held-SET: an arbitrary set of negative-INKEY codes reported down at once.  Mode 2's
+   single code cannot cover shift_key_commands, whose interesting arms need SHIFT ($FF) held AND a
+   specific scan-table key held together (and the pause path needs $A6 held on top). */
+static unsigned char g_headlessKeySet[256];
 /* ...and the same for the analogue axes: Platform's default answers dead centre, which pins
    adc_read's magnitude to 0 and makes its dead-zone compare and the joystick's whole pedal arm
    unreachable (two more surviving sabotages). */
@@ -226,6 +230,7 @@ struct HeadlessPlatform : Platform {
     void    tickVBI() override { if (g_headlessTickClock) mem[g_headlessClockAddr]++; }
     int     loadImage(const char*) override { return -1; }
     bool keyDown(uint8_t x) override {
+        if (g_headlessKeyMode == 3) return g_headlessKeySet[x] != 0;
         if (g_headlessKeyMode == 2) return x == g_headlessKeyCode;
         return g_headlessKeyDown != 0;
     }
@@ -276,6 +281,16 @@ void platform_test_key_only(unsigned char code) {
     g_headlessKeyMode = 2;
     g_headlessKeyCode = code;
     g_headlessKeyDown = 1;
+}
+
+/* Held-SET mode (mode 3): start empty, then add each code that should report held. */
+void platform_test_key_set_clear(void) {
+    g_headlessKeyMode = 3;
+    for (int i = 0; i < 256; i++) g_headlessKeySet[i] = 0;
+}
+void platform_test_key_set_add(unsigned char code) {
+    g_headlessKeyMode = 3;
+    g_headlessKeySet[code] = 1;
 }
 
 /* What ADVAL answers under the test platform: the 16-bit axis (only its high byte is used by
