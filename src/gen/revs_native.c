@@ -2201,6 +2201,39 @@ void draw_dash_needle_core(uint8_t steerLo, uint8_t steerHi, DashNeedle *out)
     out->subPos       = (uint8_t)((originBase << 1) & 0x07u);   /* $5195-$519A -> shared_temp_77 */
 }
 
+/* ---------------------------------------------------------------------------
+   $3A50  menu_draw_gfx_bars — TWO TELETEXT GRAPHICS BARS INTO THE MENU PAGE (twin #156)
+
+   Called once from front_end_menus ($63ED), while MODE 7 is up so $7C00-$7FFF is
+   the teletext page (time-multiplexed with the race view's cell chains).  For each
+   of two rows (Y = 1 then 0) it lays a horizontal graphics-white bar into the page
+   at MENU_SCREEN_BASE + $79:
+     • the start column  menu_bar_start_tbl[Y]  gets $97  (graphics white)
+     • the next column                          gets $E2  (a leading sixel)
+     • every column up to menu_bar_end_tbl[Y]   gets $E6  (the bar fill)
+   The bar's end column lived in math_lo ($74) as the loop's CPX target; it is a
+   local now (the reader-nativization step of the wide-value cleanup), with the
+   cell's exit value still written so the routine stays byte-exact until math_lo is
+   relocated.  Exit regs/flags are dead at the sole (front-end) caller.
+   --------------------------------------------------------------------------- */
+void menu_draw_gfx_bars_core(void)
+{
+    const uint16_t page = (uint16_t)(MENU_SCREEN_BASE + 0x79u);
+    int y;
+    for (y = 1; y >= 0; y--) {                       /* $3A50 LDY #1 ... DEY/BPL */
+        uint8_t end = mem[MENU_BAR_END_TBL + y];     /* $3A52 */
+        math_lo = end;                               /* $3A55 — 6502 parked the end column in $74 */
+        uint8_t x = mem[MENU_BAR_START_TBL + y];     /* $3A57 */
+        mem[page + x] = 0x97u;                        /* $3A5C — graphics white at the start column */
+        uint8_t a = 0xE2u;                            /* $3A5F — leading sixel, then the $E6 fill */
+        do {
+            x++;                                      /* $3A61 INX (8-bit) */
+            mem[page + x] = a;                        /* $3A62 */
+            a = 0xE6u;                                /* $3A65 */
+        } while (x != end);                           /* $3A67 CPX end / BNE */
+    }
+}
+
 /* Exit ABI of emit_edge_width_offset.  X passes through the caller's; A = the point's scan line
    (the CMP at each exit sets A to it); Y = edge_cursor; V is the width ADC's overflow when the
    scoring branch ran, else the entry V; N/Z/C are the last CMP's on that exit path. */

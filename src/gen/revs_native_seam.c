@@ -602,6 +602,15 @@ void driver_name_address(void)
     cpu.Y   = p.hi;                              /* $3CF1 exit Y -> plot_ptr2_hi */
 }
 
+void menu_draw_gfx_bars(void)
+{
+    /* $3A50 — two teletext graphics bars into the MODE 7 menu page (twin #156).  The core does
+       every mem[] write, including math_lo's dead 6502 exit value (the last row's end column).
+       No stack residue (no PHA/PHP), and exit regs/flags are dead — front_end_menus reloads X
+       the instant it returns, so nothing to reconstruct at the seam. */
+    menu_draw_gfx_bars_core();
+}
+
 void mirrors_update(void)
 {
     /* $7B00 — the once-per-frame wing-mirror update (race_main_loop body, $1739).  Result-only:

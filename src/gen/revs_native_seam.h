@@ -63,6 +63,9 @@
 #define DIAL_NEEDLE_ORIGIN_LO_TBL 0x32FCu /* rev-needle origin addr low per quadrant; &F8=ptr, &7=line */
 #define DIAL_NEEDLE_ORIGIN_HI_TBL 0x397Cu /* rev-needle origin addr high per quadrant (all $75) */
 #define STEER_NEEDLE_DDA_TBL      0x3980u /* steering-wheel needle minor-axis delta per angle index */
+#define MENU_SCREEN_BASE   0x7C00u /* front end: $7C00-$7FFF as the MODE 7 teletext page (== TT_SCREEN_BASE; time-multiplexed with the race view's view_cell_chain_a) */
+#define MENU_BAR_START_TBL 0x3A6Fu /* menu_draw_gfx_bars: per-row start column of the two graphics bars */
+#define MENU_BAR_END_TBL   0x3A71u /* ...and end column */
 
 /* ---- exit-struct typedefs (moved out of revs_native.c) ---- */
 typedef struct { uint8_t a, x, y, n, z, v, c; } SlotExit;
@@ -376,6 +379,7 @@ void mirrors_update_setup_core(uint8_t slotFlag, uint8_t objWidth, uint8_t beari
 void dial_needle_angle_core(uint8_t engineRevs, NeedleDial *out);
 void driver_name_address_core(uint8_t index, NamePtr *out);
 void draw_dash_needle_core(uint8_t steerLo, uint8_t steerHi, DashNeedle *out);
+void menu_draw_gfx_bars_core(void);
 int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out);
 uint8_t vdu_char_def_core(uint8_t ch);
 uint8_t vdu_char_emit_core(void);

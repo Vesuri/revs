@@ -1092,6 +1092,14 @@ VALIDATE_FUNCS = {
     # undraw + rev-needle prefix and the final plot_line_octant are shared with the oracle (same native
     # dial + transliterated plotters), so they cancel; the fixture runs under REVS_SMC_CONTINUE=1.
     0x513A,
+    # ⭐ TWIN #156 — menu_draw_gfx_bars ($3A50).  Called once from front_end_menus ($63ED) while
+    # MODE 7 is up, so $7C00-$7FFF is the teletext page (time-multiplexed with the race view's
+    # view_cell_chain_a).  Lays two horizontal graphics-white bars into the menu page at $7C79: for
+    # each of two rows it writes $97 at the start column (menu_bar_start_tbl), $E2 at the next, then
+    # $E6 up to the end column (menu_bar_end_tbl).  A math_lo READER-nat: $74 held the loop's CPX
+    # target (the bar's end column), a local now, kept at its 6502 exit value until the $74 relocation.
+    # Result-only (exit regs/flags dead — front_end_menus reloads X immediately after).
+    0x3A50,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

@@ -1134,6 +1134,62 @@ static int test_draw_dash_needles(void)
     return fail;
 }
 
+void menu_draw_gfx_bars(void);
+void menu_draw_gfx_bars__t6502(void);
+
+static int test_menu_draw_gfx_bars(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("menu_draw_gfx_bars");
+    if (!want("menu_draw_gfx_bars")) return 0;
+
+    /* Result-only (LIVE_NONE): the sole caller front_end_menus reloads X the instant it returns,
+       so exit A/X/Y/flags are all dead.  Every effect is in mem[] — the two graphics bars in the
+       MODE 7 page ($7C79..) and math_lo ($74, the campaign's target — its 6502 exit value is still
+       written until relocation).  No PHA/PHP, so no stack residue; NO set_ignore needed. */
+    unsigned mask = LIVE_NONE;
+
+    int realRows = 0, randRows = 0, wrapCase = 0;
+    int cases = 3000 * scale;
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;
+
+        /* menu_bar_start_tbl ($3A6F) / menu_bar_end_tbl ($3A71): two rows each.  The in-game
+           values are start {$00,$78}, end {$23,$9B}.  Reproduce those 1/4 of the time; otherwise
+           randomise within a screen row with start < end so the do-while terminates promptly. */
+        if (t % 4 == 0) {
+            pre[0x3A6Fu + 0] = 0x00u; pre[0x3A71u + 0] = 0x23u;   /* row 0 */
+            pre[0x3A6Fu + 1] = 0x78u; pre[0x3A71u + 1] = 0x9Bu;   /* row 1 */
+            realRows++;
+        } else {
+            for (int r = 0; r < 2; r++) {
+                uint8_t start = (uint8_t)(xs() % 0x60u);              /* 0..$5F */
+                uint8_t end   = (uint8_t)(start + 1u + (xs() % 0x40u)); /* start+1 .. start+$40 */
+                pre[0x3A6Fu + r] = start;
+                pre[0x3A71u + r] = end;
+            }
+            randRows++;
+        }
+
+        /* 1/8: a start==end row.  The 6502 CPX matches only after X wraps through 256 (a full-row
+           fill); both models do the identical writes, so it still matches — and it exercises the
+           do{}while's post-test, which a for-loop would run zero times. */
+        if (t % 8 == 3) { pre[0x3A6Fu + 0] = 0x40u; pre[0x3A71u + 0] = 0x40u; wrapCase++; }
+
+        fail += diff_run("menu_draw_gfx_bars", pre, c, menu_draw_gfx_bars,
+                         menu_draw_gfx_bars__t6502, mask, t, &printed);
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  result-only  (%d real/%d rand rows, %d wrap)\n",
+           "menu_draw_gfx_bars", cases, fail, realRows, randRows, wrapCase);
+    return fail;
+}
+
 void view_paint_lines(void);
 void view_paint_lines__t6502(void);
 extern unsigned long g_viewTableCollisions;   /* asserted below; see revs_native.c */
@@ -6309,6 +6365,7 @@ int main(int argc, char** argv)
     fail += test_dial_needle_angle();
     fail += test_driver_name_address();
     fail += test_draw_dash_needles();
+    fail += test_menu_draw_gfx_bars();
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();
