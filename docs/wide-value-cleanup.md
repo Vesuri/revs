@@ -350,13 +350,25 @@ a boilerplate `fill_random` loop shifted the global stream and surfaced a latent
 the unrelated `road_span_plot` twin, see docs/validation-harness.md §"THE GLOBAL PRNG IS ONE STREAM".
 Named `driver_name_address` ($3CEB), `emit_driver_name` ($3250), `driver_name_table` ($4050)).
 
-The remaining **14 genuine shipping readers** (`draw_dash_needles` confirmed shipping — called from
-the native `race_main_loop_core`):
+`draw_dash_needles` ($513A, #155 — the steering-wheel needle draw; a `math_lo` reader-nativization,
+result-only fixture (`LIVE_NONE`, `REVS_SMC_CONTINUE=1`). The core `draw_dash_needle_core(steerLo,
+steerHi, &DashNeedle)` computes the needle from `steer_angle` ($62A2/$62A5): sign=bit0,
+doubled=`(hi<<1)|(lo>>7)`, a small/big branch (`doubled<0x26` direct vs a `~clamp+0x4C+cAdc`
+mirror), the AA/XX small/big register role-swap, `rowSel=~((AA<<1)+4)`, origin `(sign?~XX:XX)+0x50`,
+`subPos=(originBase<<1)&7`; the twin then writes the 6502 exit cells (`math_lo`/$76/$83), calls
+`mode5_addr` and falls through into the shared transliterated `plot_line_octant` as a compared
+channel. ⚠⚠ TWO bugs the harness caught: (1) the `small` selector was left UNINITIALIZED in the
+big-path else branch → 2999/3000 mismatch (RULE: every path of a struct-filling core must assign
+every selector); (2) the oracle's balanced PHP/PLP leaves a P-byte stack residue at $01FF the diff
+compares → the shim writes the computed P byte to `mem[0x0100+cpu.S]`. Named `steer_needle_dda_tbl`
+($3980)).
+
+The remaining **13 genuine shipping readers**:
 
 ```
 shift_key_commands  sort_cars_by_key  check_car_pair
 FUN_27ed  FUN_28f2  FUN_32d0  FUN_3a50  text_script_interp
-draw_dash_needles  plot_line_octant
+plot_line_octant
 FUN_635d  menu_wait_key  FUN_2f19  view_paint_lines_short
 ```
 
