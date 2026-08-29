@@ -460,11 +460,26 @@ gap caught by a surviving sabotage). 5 sabotages FAIL distinct (1000/291/230/227
 $A6 (=idx8) outranks $96 (=idx7) in the top-down scan, so idx7 can only win when $A6 is not held —
 exactly when the spin cannot start. Documented at the fixture.)
 
-The remaining **5 genuine shipping readers**:
+`stage_nearby_car` ($28F2, #162 — was FUN_28f2; the per-nearby-car view stager, called twice by
+`move_and_draw_cars`. For a `car_order` position X it saves the slot, forms the signed ring gap to
+the reference car $17 via `car_gap_tail`, and rejects the object when the gap is far (C set), on the
+wrong side (sign ^ `track_direction`), or |gap| >= $28 sections. Otherwise derives the view-section
+cursor `Y = section_cursor - 3*|gap|` (wrapping +$78 when negative), copies that section's curve
+into `car_flags_0` for a fast car in a normal state (`car_race_flags` bit4 clear AND
+`car_speed_scaled` >= $32 — the $2931 AI look-ahead read), and projects via
+`place_car_world_coords`. `math_lo` ($74) reader-nat: the abs8 gap byte is **consumed from
+`car_gap_tail_core`'s return `.a`** (== `math_lo` on both near exits) instead of read back from
+`mem[MATH_LO]`, but the twin still writes `math_lo = mag` at $290b — `place_car_world_coords`'
+object-queue tail reads it. Result-only (`LIVE_NONE`): `move_and_draw_cars` reloads X/Y and reads
+no exit flag after each call. **NOT a decimal site** (D=0 pinned). Fixture 6000 cases forces the
+$298D SMC early-return in `place_car_world_coords` (`REVS_SMC_CONTINUE` + vacuity check), and drives
+3/4 of cases through a controlled positive near gap that sweeps the $28 / $32 / direction
+boundaries. 6 sabotages FAIL distinct (497/1116/941/3/783/2313).)
+
+The remaining **4 genuine shipping readers**:
 
 ```
-check_car_pair
-FUN_28f2  text_script_interp
+check_car_pair    text_script_interp
 plot_line_octant  menu_wait_key
 ```
 
