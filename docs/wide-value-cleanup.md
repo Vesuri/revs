@@ -356,7 +356,7 @@ steerHi, &DashNeedle)` computes the needle from `steer_angle` ($62A2/$62A5): sig
 doubled=`(hi<<1)|(lo>>7)`, a small/big branch (`doubled<0x26` direct vs a `~clamp+0x4C+cAdc`
 mirror), the AA/XX small/big register role-swap, `rowSel=~((AA<<1)+4)`, origin `(sign?~XX:XX)+0x50`,
 `subPos=(originBase<<1)&7`; the twin then writes the 6502 exit cells (`math_lo`/$76/$83), calls
-`mode5_addr` and falls through into the shared transliterated `plot_line_octant` as a compared
+`mode5_addr` and falls through into the shared `plot_line_octant` (native since #164) as a compared
 channel. ⚠⚠ TWO bugs the harness caught: (1) the `small` selector was left UNINITIALIZED in the
 big-path else branch → 2999/3000 mismatch (RULE: every path of a struct-filling core must assign
 every selector); (2) the oracle's balanced PHP/PLP leaves a P-byte stack residue at $01FF the diff
@@ -494,11 +494,34 @@ slices (near / proximity / a wrapped-ring swap slice that seeds the player into 
 levelled laps for the BCD add / random), `REVS_SMC_CONTINUE` + vacuity check on the $2771 arm, D=0
 pinned. 5 sabotages FAIL distinct (2669/302/2883/299/1169).)
 
-The remaining **3 genuine shipping readers**:
+`plot_line_octant` ($5204, #164 — the self-modifying octant line plotter, the shared leaf every
+straight-line draw in the engine goes through: the rev-counter needle (`dial_needle_angle`'s
+fall-through) and the steering-wheel mark (`draw_dash_needles`). A Bresenham DDA whose major- and
+minor-axis step opcodes are patched into itself from the two octant tables ($3B86→$5220,
+$3B8E→$529B) indexed by the octant in `shared_temp_76`; it ORs eight pixels through the ($70),Y
+screen pointer, saving each background byte to the undo list ($0780/$07A8/$07D0, count $69) so
+`undraw_plot_lines` can erase without a repaint. Reader-nat of BOTH `math_lo` ($74, the DDA
+increment) and `math_hi` ($75, the pixel counter): here they become C locals `incr`/`count` and
+**caching them across the loop is sound** — the routine is a LEAF (no child call) and the plot
+pointer is always a screen address, so nothing in the loop rewrites zero page (the inverse of the
+#159 CRUX, where a mid-routine child forced the inline write). The twin still writes `math_hi`'s
+6502 exit value ($FF) at the end for byte-exactness until relocation. The two SMC seams
+**dispatch on the cells $5220/$529B**, not a cached copy — a line that walked its own code would be
+visible only that way — and the trap arm (an opcode that is not DEY/INY/DEX/INX) is real code in
+both models, so it is compared rather than avoided. Result-only (`LIVE_NONE`). Fixture 6800 cases:
+all 8 octants planted through `shared_temp_76` with valid step opcodes in both tables, bounded
+count ($75 = 1..$14) and undo base (0..8) keeping the undo append inside the 40-entry tables,
+varied minor delta ($0083) sweeping the carry/no-carry DDA paths, entry x/y and plot_ptr sweeping
+the column/row wrap branches, `hypot_min_hi` 0 or 4 folding the MODE 5 pixel index onto both halves
+of the keep/colour tables, and an 800-case illegal slice that plants a BRK in the always-executed
+minor-step table entry so the trap-and-return unwind is compared (`REVS_SMC_CONTINUE`, both-way
+vacuity check). D=0 pinned. 5 sabotages FAIL distinct (3305/236/5686/6740/6000). New symbol:
+`plot_line_colour_tbl` ($34F8, the OR-mask counterpart to `pixel_keep_others_tbl`).)
+
+The remaining **2 genuine shipping readers**:
 
 ```
-text_script_interp  plot_line_octant
-menu_wait_key
+text_script_interp  menu_wait_key
 ```
 
 ⚠ **Two more over-counts dropped (2026-08-29), both oracle-only** (no runtime-reachable caller,
