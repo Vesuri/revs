@@ -382,13 +382,29 @@ the original case 4 (value 0..39) / case 5 (value 50..99) split never produced v
 `CMP #$29`→`#$28` was invisible even though value==40 IS reachable via "40" — case 4 widened to
 value 0..49 to span the boundary. Named `parse_two_digit_ascii` ($32D0)).
 
-The remaining **11 genuine shipping readers**:
+`seed_car_track_position` ($635D, #158 — was `FUN_635d`; a `math_lo` reader-nativization. The
+per-car grid-position seeder, called on every (re)start by `FUN_4d4d` / `tick_race_timers` /
+`console_io`: reduce a `USRVIA_T2CL` ($FE68) entropy byte to a small remainder, apply the raw byte's
+sign (abs8), double, subtract `car_grid_base[x]`, scale by `race_class`, add `track_scale_saved`,
+store `car_track_position[x]`, step `car_seed_index` back one (mod 20). `math_lo` ($74) is the
+post-grid scratch (rotated on the Pro path) — a C local, the twin still writes its per-path exit
+value. Fixture: `mask = LIVE_X` (the decremented cursor is the sole live exit, the caller loops on
+it); D pinned 0 (the tail ADC is binary; the reset path is not a SED site); entropy steered through
+`platform_test_via_t2` to cover the sign bit, the second reduction loop (raw&$7F ≥ 64) and zero; the
+PHP/PLP residue byte reproduced in the shim (the oracle's JSRs are C calls that never touch the
+emulated stack). ⚠ The `race_class` scaling fork is **DEY-N, not `>= 2`**: the 6502 BPL ($638C) tests
+`(race_class - 1)`'s bit 7, so `race_class >= $81` takes the ASL (novice) arm, not Pro. In-game
+`race_class` is only 0/1/2, but the oracle honours the full byte and validate randomises it — the
+naive `>= 2` mismatched on the random-`race_class` cases. Named `seed_car_track_position` ($635D),
+`car_track_position` ($0128), `car_grid_base` ($04A0), `car_seed_index` ($4A) [INFERRED]).
+
+The remaining **10 genuine shipping readers**:
 
 ```
 shift_key_commands  sort_cars_by_key  check_car_pair
 FUN_27ed  FUN_28f2  text_script_interp
 plot_line_octant
-FUN_635d  menu_wait_key  FUN_2f19  view_paint_lines_short
+menu_wait_key  FUN_2f19  view_paint_lines_short
 ```
 
 ⭐ **Reader-nativization pattern (from #148):** the counter/scratch becomes a C local, but the
