@@ -546,6 +546,49 @@ void dial_needle_angle(void)
     plot_line_octant();
 }
 
+void draw_dash_needles(void)
+{
+    /* $513A — the STEERING-WHEEL needle, the last thing race_main_loop ($17B4) draws.  The prefix
+       ($513A/$513D) erases last frame's marks and draws the rev-counter needle: undraw_plot_lines +
+       dial_needle_angle (the latter falls through into plot_line_octant).  Both are shared with the
+       oracle, so their frame-buffer writes cancel given identical input cells.  The core then does
+       the steer_angle -> octant arithmetic and this shim reproduces the 6502 entry ABI and falls
+       through into the shared plot_line_octant for a second, 6-pixel line.  Result-only: exit
+       regs/flags are dead at the caller.  math_lo ($74) / math_hi ($75) keep their 6502 exit values
+       (the folded angle index and a fixed 6) until the $74/$75 relocation. */
+    undraw_plot_lines();                          /* $513A */
+    dial_needle_angle();                          /* $513D — rev needle; falls into plot_line_octant */
+
+    /* $5145-$5146 / $5186 — the routine's own PHP/PLP is balanced (S restored), but the pushed
+       processor status stays on the stack as a residue at $0100+S.  It is the flags AFTER
+       LSR steer_angle_lo: N=0, Z from the shifted value, C = bit 0; V/D/I carry through from the
+       shared prefix (identical on both differential sides) and B/bit5 are set in a pushed copy.
+       The later plot_line_octant pushes only below this cell, so the residue survives. */
+    mem[0x0100u + cpu.S] = (uint8_t)(0x30u                     /* bit5 = 1, B = 1 */
+        | (cpu.V ? 0x40u : 0u)
+        | (cpu.D ? 0x08u : 0u)
+        | (cpu.I ? 0x04u : 0u)
+        | (((steer_angle_lo >> 1) == 0u) ? 0x02u : 0u)        /* Z */
+        | (steer_angle_lo & 0x01u));                          /* C */
+
+    DashNeedle n;
+    draw_dash_needle_core(steer_angle_lo, steer_angle_hi, &n);
+
+    math_lo        = n.angleIndex;                /* $74 — folded angle index; plot_line_octant's DDA */
+    shared_temp_76 = n.stepSize;                  /* $76 — octant step (SMC dispatch) */
+    mem[0x0083]    = n.ddaLen;                    /* $83 point_delta_hi — line length / minor delta */
+
+    cpu.A = n.originMasked;                        /* $5190 AND #$FC — mode5_addr A */
+    cpu.Y = n.rowSel;                             /* $5184 the negated row select — mode5_addr Y */
+    mode5_addr();                                 /* $5192 -> plot_ptr; leaves X=row, A/Y=line */
+
+    shared_temp_77 = n.subPos;                    /* $5195-$519A (originBase<<1)&7 */
+    hypot_min_hi   = 0x04;                        /* $519E */
+    math_hi        = 0x06;                        /* $51A0-$51A2 — a 6-pixel line, plot_line_octant's count */
+    cpu.A          = 0x06;                        /* A at plot_line_octant entry ($51A0 LDA #6) */
+    plot_line_octant();                          /* $51A4 */
+}
+
 void driver_name_address(void)
 {
     /* $3CEB — the (lo,hi) address of the Nth driver name in driver_name_table ($4050).  The 6502

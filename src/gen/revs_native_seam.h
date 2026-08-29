@@ -62,6 +62,7 @@
 #define DIAL_NEEDLE_DDA_TBL       0x3100u /* rev-needle DDA len/delta per angle offset (0..0x13) */
 #define DIAL_NEEDLE_ORIGIN_LO_TBL 0x32FCu /* rev-needle origin addr low per quadrant; &F8=ptr, &7=line */
 #define DIAL_NEEDLE_ORIGIN_HI_TBL 0x397Cu /* rev-needle origin addr high per quadrant (all $75) */
+#define STEER_NEEDLE_DDA_TBL      0x3980u /* steering-wheel needle minor-axis delta per angle index */
 
 /* ---- exit-struct typedefs (moved out of revs_native.c) ---- */
 typedef struct { uint8_t a, x, y, n, z, v, c; } SlotExit;
@@ -152,6 +153,16 @@ typedef struct { uint8_t offset, octant, temp77, quadrant; } NeedleDial;
 /* driver_name_address_core's result.  lo -> exit A / plot_ptr2_lo, hi -> exit Y / plot_ptr2_hi;
    scratch -> math_lo ($74) 6502 exit value ((index&3)*4, dead scratch). */
 typedef struct { uint8_t lo, hi, scratch; } NamePtr;
+
+/* draw_dash_needle_core's result — the steering-wheel needle handed to plot_line_octant.
+   angleIndex   -> math_lo ($74) 6502 exit value (folded angle index; plot_line_octant's DDA step);
+   stepSize     -> shared_temp_76 ($76), the octant step plot_line_octant dispatches on (2/5, toggled
+                   to 3/4 on the small-angle path);
+   ddaLen       -> point_delta_hi ($0083), the minor-axis delta (from steer_needle_dda_tbl);
+   originMasked -> A into mode5_addr (the &$FC screen origin);
+   rowSel       -> Y into mode5_addr (its low 3 bits become plot_line_octant's start scanline);
+   subPos       -> shared_temp_77 ($77), the sub-cell X plot_line_octant plots at. */
+typedef struct { uint8_t angleIndex, stepSize, ddaLen, originMasked, rowSel, subPos; } DashNeedle;
 
 /* ---- always_inline 6502 flag helpers (moved out of revs_native.c) ---- */
 #define REVS_FLAG_OP static inline __attribute__((always_inline))
@@ -364,6 +375,7 @@ void draw_corner_marker_core(uint8_t offLo, uint8_t offHi, uint16_t edgeX, uint8
 void mirrors_update_setup_core(uint8_t slotFlag, uint8_t objWidth, uint8_t bearingHi, uint8_t carHeadingHi, MirrorSetup *out);
 void dial_needle_angle_core(uint8_t engineRevs, NeedleDial *out);
 void driver_name_address_core(uint8_t index, NamePtr *out);
+void draw_dash_needle_core(uint8_t steerLo, uint8_t steerHi, DashNeedle *out);
 int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out);
 uint8_t vdu_char_def_core(uint8_t ch);
 uint8_t vdu_char_emit_core(void);

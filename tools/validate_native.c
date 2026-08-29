@@ -1037,6 +1037,103 @@ static int test_driver_name_address(void)
     return fail;
 }
 
+void draw_dash_needles(void);
+void draw_dash_needles__t6502(void);
+
+/* draw_dash_needles' steer-path selector — a replica of draw_dash_needle_core's branch structure,
+   so the fixture can count which sign and which angle path each (steerLo,steerHi) pair reaches. */
+static void steer_path(uint8_t steerLo, uint8_t steerHi,
+                       uint8_t* sign, uint8_t* small, uint8_t* clampArm)
+{
+    uint8_t s = (uint8_t)(steerLo & 1u);
+    uint8_t doubled = (uint8_t)((steerHi << 1) | (steerLo >> 7));
+    uint8_t dcarry  = (uint8_t)(steerHi & 0x80u);
+    *sign = s;
+    if (!dcarry && doubled < 0x26u) { *small = 1u; *clampArm = 0u; }
+    else { *small = 0u; *clampArm = (dcarry || doubled >= 0x3Du) ? 1u : 0u; }
+}
+
+/* ==========================================================================
+   $513A draw_dash_needles — THE STEERING-WHEEL NEEDLE  (twin #155)
+   --------------------------------------------------------------------------
+   The last drawing call of race_main_loop.  A math_lo ($74) reader-nativization, sibling of
+   dial_needle_angle (#153): the folded steer-angle index becomes a C local, math_lo keeps its 6502
+   exit value.  Result-only (LIVE_NONE): exit regs/flags are dead at the caller.  The shim runs the
+   shared prefix (undraw_plot_lines + dial_needle_angle, the rev needle) then falls through into the
+   shared plot_line_octant for the 6-pixel steering mark — a self-modifying plotter both differential
+   sides run, so it goes under REVS_SMC_CONTINUE=1 and the fixture plants valid octant step-opcodes.
+   plot_undo_count is planted 0 so undraw_plot_lines is a no-op at entry (its writes would cancel
+   anyway; this only keeps the case easy to reason about).  Both needles' DDA tables ($3100 dial,
+   $3980 steer) are planted small so the plotters' own writes stay off the control cells. */
+static int test_draw_dash_needles(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("draw_dash_needles");
+    if (!want("draw_dash_needles")) return 0;
+
+    unsigned mask = LIVE_NONE;
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+    unsigned long smc_before = g_smcUnhandled;
+
+    static const uint8_t STEP_OPS[4] = { 0x88, 0xC8, 0xCA, 0xE8 };  /* DEY/INY/DEX/INX */
+    int cases = 3000 * scale;
+    int sign0 = 0, sign1 = 0, smallArm = 0, bigArm = 0, clampDir = 0, clampMirr = 0;
+
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;                                   /* dash path, not a SED site */
+
+        pre[0x0069u] = 0x00;                        /* plot_undo_count: undraw is a no-op at entry */
+
+        /* Valid step opcodes for both of plot_line_octant's SMC seams, all 8 octants. */
+        for (unsigned k = 0; k < 8; k++) {
+            pre[0x3B86u + k] = STEP_OPS[(t + k) & 3u];
+            pre[0x3B8Eu + k] = STEP_OPS[(t + k + 1u) & 3u];
+        }
+        /* Bounded, varied DDA line lengths for the rev needle (dial, $3100) and the steer needle
+           ($3980); needle origin high byte at its real screen page for the dial prefix. */
+        for (unsigned i = 0; i <= 0x13u; i++) pre[0x3100u + i] = (uint8_t)((xs() % 0x20u) + 1u);
+        for (unsigned i = 0; i <= 0x7Fu; i++) pre[0x3980u + i] = (uint8_t)((xs() % 0x20u) + 1u);
+        for (unsigned q = 0; q < 4; q++)      pre[0x397Cu + q] = 0x75u;
+
+        uint8_t sgn, sml, clamp;
+        steer_path(pre[0x62A2u], pre[0x62A5u], &sgn, &sml, &clamp);
+        if (sgn) sign1++; else sign0++;
+        if (sml) smallArm++; else { bigArm++; if (clamp) clampMirr++; else clampDir++; }
+
+        fail += diff_run("draw_dash_needles", pre, c, draw_dash_needles,
+                         draw_dash_needles__t6502, mask, t, &printed);
+    }
+    unsetenv("REVS_SMC_CONTINUE");
+
+    /* Non-vacuity: both signs, both angle paths, and both big-path clamp arms reached. */
+    if (sign0 == 0 || sign1 == 0) {
+        printf("[VACUOUS] draw_dash_needles: the sign bit went only one way "
+               "(%d positive, %d negative)\n", sign0, sign1);
+        fail++;
+    }
+    if (smallArm == 0 || bigArm == 0) {
+        printf("[VACUOUS] draw_dash_needles: only one angle path reached "
+               "(%d small, %d big)\n", smallArm, bigArm);
+        fail++;
+    }
+    if (clampDir == 0 || clampMirr == 0) {
+        printf("[VACUOUS] draw_dash_needles: only one big-path clamp arm reached "
+               "(%d direct, %d clamped)\n", clampDir, clampMirr);
+        fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  result-only  "
+           "(%d pos/%d neg, %d small/%d big [%d direct/%d clamp], %lu SMC traps)\n",
+           "draw_dash_needles", cases, fail, sign0, sign1, smallArm, bigArm,
+           clampDir, clampMirr, g_smcUnhandled - smc_before);
+    return fail;
+}
+
 void view_paint_lines(void);
 void view_paint_lines__t6502(void);
 extern unsigned long g_viewTableCollisions;   /* asserted below; see revs_native.c */
@@ -6211,6 +6308,7 @@ int main(int argc, char** argv)
     fail += test_mirrors_update();
     fail += test_dial_needle_angle();
     fail += test_driver_name_address();
+    fail += test_draw_dash_needles();
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();

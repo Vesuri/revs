@@ -2147,6 +2147,60 @@ void driver_name_address_core(uint8_t index, NamePtr *out)
     out->lo      = (uint8_t)(0x50u + col * 12u);         /* $3CF9-$3CFD col*8 + col*4 + $50 */
 }
 
+/* draw_dash_needles ($513A), the STEERING-WHEEL needle's arithmetic (the rev-needle half and the
+   undraw/plot machinery stay in the shim).  steer_angle_lo carries the sign in bit 0 and the value's
+   own lowest bit in bit 7 (sign-magnitude, docs steer_angle_lo), so the routine doubles the 16-bit
+   (hi:lo) pair to shift the sign out and works with the doubled high byte:
+
+     - bit 0 of steer_lo is the SIGN; it picks the octant step (2 or 5) and later negates the origin.
+     - the doubled high byte, folded about $3C and mirrored about $4C, is the angle index into
+       steer_needle_dda_tbl ($3980) — small angles (< $26) index it directly, larger ones fold.
+     - which quantity (angle index vs. looked-up length) feeds the scanline count vs. the screen
+       origin swaps between the two paths (a 6502 register-juggle), reproduced faithfully via AA/XX.
+
+   All plain 8-bit maths (D = 0 on the dash path).  math_lo/math_hi keep their 6502 exit scratch
+   values (the angle index / a fixed 6) until the $74/$75 relocation. */
+void draw_dash_needle_core(uint8_t steerLo, uint8_t steerHi, DashNeedle *out)
+{
+    uint8_t sign     = (uint8_t)(steerLo & 1u);                 /* $5145 LSR -> C = bit0 */
+    uint8_t stepInit = sign ? 2u : 5u;                          /* $5147-$514D */
+
+    /* $5152-$5154 — double the 16-bit steer_angle; keep the doubled high byte and its carry-out. */
+    uint8_t doubled = (uint8_t)((steerHi << 1) | (steerLo >> 7));
+    uint8_t dcarry  = (uint8_t)(steerHi & 0x80u);
+
+    uint8_t angleIndex, stepSize, small;
+    if (!dcarry && doubled < 0x26u) {                           /* $5155-$5159 small-angle branch */
+        small      = 1u;
+        angleIndex = doubled;
+        stepSize   = (uint8_t)(stepInit ^ 1u);                  /* $5175 toggle 2<->3, 5<->4 */
+    } else {
+        uint8_t clamp, cAdc;
+        small = 0u;
+        if (dcarry || doubled >= 0x3Du) { clamp = 0x3Cu; cAdc = 1u; } /* $515B-$515F clamp, C=1 */
+        else                            { clamp = doubled; cAdc = 0u; } /* $515D direct, C=0 */
+        angleIndex = (uint8_t)((uint8_t)~clamp + 0x4Cu + cAdc); /* $5161-$5165 mirror about $4C */
+        stepSize   = stepInit;
+    }
+    uint8_t ddaLen = mem[STEER_NEEDLE_DDA_TBL + angleIndex];    /* $5168 / $5179 -> point_delta_hi */
+
+    /* $517E-$519A — the two paths hand L_517E the (length, index) pair in swapped registers: the
+       small path has A = length, X = index; the mirror path has A = index, X = length. */
+    uint8_t AA = small ? ddaLen     : angleIndex;
+    uint8_t XX = small ? angleIndex : ddaLen;
+
+    uint8_t rowSel = (uint8_t)~(uint8_t)((AA << 1) + 4u);       /* $517E-$5184 -> mode5_addr row (Y) */
+    uint8_t ob     = sign ? (uint8_t)~XX : XX;                  /* $5185-$5189 PLP/EOR by the sign */
+    uint8_t originBase = (uint8_t)(ob + 0x50u);                 /* $518B-$518E */
+
+    out->angleIndex   = angleIndex;
+    out->stepSize     = stepSize;
+    out->ddaLen       = ddaLen;
+    out->originMasked = (uint8_t)(originBase & 0xFCu);          /* $5190 -> mode5_addr A */
+    out->rowSel       = rowSel;
+    out->subPos       = (uint8_t)((originBase << 1) & 0x07u);   /* $5195-$519A -> shared_temp_77 */
+}
+
 /* Exit ABI of emit_edge_width_offset.  X passes through the caller's; A = the point's scan line
    (the CMP at each exit sets A to it); Y = edge_cursor; V is the width ADC's overflow when the
    scoring branch ran, else the entry V; N/Z/C are the last CMP's on that exit path. */

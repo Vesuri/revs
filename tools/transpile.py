@@ -1080,6 +1080,18 @@ VALIDATE_FUNCS = {
     # (consumed by emit_driver_name $3250 as the 16-bit plot_ptr2); exit flags dead (callers JSR
     # immediately).  Shipping callers: FUN_667b / FUN_6687 / FUN_66d4, the front-end name-draw menus.
     0x3CEB,
+    # ⭐ TWIN #155 — draw_dash_needles ($513A).  The last draw of race_main_loop ($17B4): erase the
+    # previous marks (undraw_plot_lines), draw the rev-counter needle (dial_needle_angle, twin #153,
+    # which falls through into plot_line_octant), then the STEERING-WHEEL needle — this twin's own
+    # work.  It doubles the 16-bit steer_angle (bit 0 = sign), folds the high byte about $3C/$4C into
+    # an angle index, looks up the needle length in steer_needle_dda_tbl ($3980), and hands
+    # plot_line_octant an octant step, a screen origin (via mode5_addr) and a fixed 6-pixel run
+    # ($75=6, $79=4 — a different pattern from the rev needle).  A math_lo/math_hi READER-nat: both
+    # cells are scratch holding the angle index / DDA length, kept at their 6502 exit values until the
+    # $74/$75 relocation.  Result-only (exit regs/flags dead — race_main_loop returns after it).  The
+    # undraw + rev-needle prefix and the final plot_line_octant are shared with the oracle (same native
+    # dial + transliterated plotters), so they cancel; the fixture runs under REVS_SMC_CONTINUE=1.
+    0x513A,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
