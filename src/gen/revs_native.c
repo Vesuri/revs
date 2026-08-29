@@ -2234,6 +2234,57 @@ void menu_draw_gfx_bars_core(void)
     }
 }
 
+/* ---------------------------------------------------------------------------
+   $32D0  parse_two_digit_ascii — TWO ASCII DIGITS -> A NUMBER 0..99  (twin #157)
+
+   The console numeric-entry validator (sole caller $3EE0 reads two chars into
+   math_lo/math_hi via console_io, then loops here until the pair is valid).
+   char0 = math_lo ($74), char1 = math_hi ($75); a $20 (space) in char0 counts as
+   '0'.  Each char is turned into a digit by SBC #$30 and range-checked (< 10); the
+   value is digit0*10 + digit1, built with SHIFTS (ASL/ASL/ADC/ASL = *10), so it is
+   binary by construction and D-independent — this is not one of the 8 SED sites.
+     • char0 not a digit  -> exit, C set (invalid)          [math_lo NOT written]
+     • char1 == space     -> exit, C clear, value = digit0  (single digit)
+     • char1 not a digit  -> exit, C set (invalid)
+     • both digits        -> value in A, C = (value >= $29), i.e. >= 41
+   Exit C is the validity/range flag the caller branches on.  math_lo held the
+   running value (digit0, then digit0*10); a local now (the reader-nativization
+   step of the wide-value cleanup), with the cell's per-path 6502 exit value still
+   written so the routine stays byte-exact until math_lo is relocated.
+   --------------------------------------------------------------------------- */
+void parse_two_digit_ascii_core(uint8_t char0, uint8_t char1, ParseNum *out)
+{
+    out->writeMathlo = 0;
+    if (char0 == 0x20u) char0 = 0x30u;              /* $32D2 CMP #$20 / BNE / LDA #$30 */
+    uint8_t digit0 = (uint8_t)(char0 - 0x30u);      /* $32D8 SEC / SBC #$30 */
+    if (digit0 >= 0x0Au) {                            /* $32DB CMP #$0A / BCS — not a digit */
+        out->a = digit0; out->c = 1;                 /* flags from CMP #$0A (A = digit0) */
+        out->z = (uint8_t)(digit0 == 0x0Au);
+        out->n = (uint8_t)(((digit0 - 0x0Au) >> 7) & 1u);
+        return;                                       /* math_lo untouched on this path */
+    }
+    out->writeMathlo = 1; out->mathlo = digit0;      /* $32DF math_lo = digit0 */
+    if (char1 == 0x20u) {                             /* $32E3 CPX #$20 / BEQ — single digit */
+        out->a = digit0; out->c = 0;                 /* $32E5 CLC */
+        out->z = 1; out->n = 0;                       /* CPX #$20 with char1==$20: Z=1, N=0 */
+        return;
+    }
+    uint8_t tens = (uint8_t)(digit0 * 10u);          /* $32E8 ASL ASL / ADC math_lo / ASL */
+    out->mathlo = tens;                              /* $32ED math_lo = digit0*10 */
+    uint8_t digit1 = (uint8_t)(char1 - 0x30u);       /* $32EF TXA / SEC / SBC #$30 */
+    if (digit1 >= 0x0Au) {                            /* $32F3 CMP #$0A / BCS — not a digit */
+        out->a = digit1; out->c = 1;
+        out->z = (uint8_t)(digit1 == 0x0Au);
+        out->n = (uint8_t)(((digit1 - 0x0Au) >> 7) & 1u);
+        return;
+    }
+    uint8_t value = (uint8_t)(tens + digit1);        /* $32F7 ADC math_lo (carry-in 0) */
+    out->a = value;
+    out->c = (uint8_t)(value >= 0x29u);              /* $32F9 CMP #$29 */
+    out->z = (uint8_t)(value == 0x29u);
+    out->n = (uint8_t)(((value - 0x29u) >> 7) & 1u);
+}
+
 /* Exit ABI of emit_edge_width_offset.  X passes through the caller's; A = the point's scan line
    (the CMP at each exit sets A to it); Y = edge_cursor; V is the width ADC's overflow when the
    scoring branch ran, else the entry V; N/Z/C are the last CMP's on that exit path. */

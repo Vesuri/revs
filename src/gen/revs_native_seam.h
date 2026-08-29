@@ -380,6 +380,8 @@ void dial_needle_angle_core(uint8_t engineRevs, NeedleDial *out);
 void driver_name_address_core(uint8_t index, NamePtr *out);
 void draw_dash_needle_core(uint8_t steerLo, uint8_t steerHi, DashNeedle *out);
 void menu_draw_gfx_bars_core(void);
+typedef struct { uint8_t a, c, z, n, mathlo, writeMathlo; } ParseNum;
+void parse_two_digit_ascii_core(uint8_t char0, uint8_t char1, ParseNum *out);
 int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out);
 uint8_t vdu_char_def_core(uint8_t ch);
 uint8_t vdu_char_emit_core(void);

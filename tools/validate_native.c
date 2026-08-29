@@ -1190,6 +1190,74 @@ static int test_menu_draw_gfx_bars(void)
     return fail;
 }
 
+void parse_two_digit_ascii(void);
+void parse_two_digit_ascii__t6502(void);
+
+static int test_parse_two_digit_ascii(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("parse_two_digit_ascii");
+    if (!want("parse_two_digit_ascii")) return 0;
+
+    /* Exit C is the validity/range flag the sole caller ($3EE0) branches on; A carries the value
+       (reconstructed faithfully though dead there).  math_lo ($74) keeps its per-path 6502 exit
+       value, so it is diffed like any other cell — NO set_ignore.  D pinned 0: the routine's *10 is
+       ASL-based (binary by construction) and it is not one of the 8 SED sites. */
+    unsigned mask = LIVE_A | LIVE_C;
+
+    int badC0 = 0, singleDigit = 0, badC1 = 0, twoDigit = 0, ge41 = 0;
+    int cases = 4000 * scale;
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;
+
+        /* Steer math_lo ($74, char0) / math_hi ($75, char1) through every exit arm: a space in
+           char0 ('0'), an invalid char0, a space in char1 (single digit), an invalid char1, and
+           two real digits (both value<41 and value>=41), plus fully random pairs. */
+        uint8_t char0, char1;
+        switch (t % 8) {
+            case 0: char0 = 0x20u;                       char1 = (uint8_t)(0x30u + xs() % 10u); break; /* space->'0' */
+            case 1: char0 = (uint8_t)(0x3Au + xs() % 6u); char1 = (uint8_t)xs(); break;                /* char0 not a digit */
+            case 2: char0 = (uint8_t)(0x30u + xs() % 10u); char1 = 0x20u; break;                       /* single digit */
+            case 3: char0 = (uint8_t)(0x30u + xs() % 10u); char1 = (uint8_t)(0x3Au + xs() % 6u); break;/* char1 not a digit */
+            case 4: char0 = (uint8_t)(0x30u + xs() % 5u);  char1 = (uint8_t)(0x30u + xs() % 10u); break;/* value 0..49 — spans the CMP #$29 (41) boundary, incl. exactly 40/41 */
+            case 5: char0 = (uint8_t)(0x35u + xs() % 5u);  char1 = (uint8_t)(0x30u + xs() % 10u); break;/* value >= 41 (>=50) */
+            default: char0 = (uint8_t)xs();               char1 = (uint8_t)xs(); break;                /* anything */
+        }
+        pre[0x0074u] = char0;      /* math_lo */
+        pre[0x0075u] = char1;      /* math_hi */
+
+        /* Path bookkeeping (the core's own arithmetic, mirrored) for non-vacuity. */
+        uint8_t c0 = (char0 == 0x20u) ? 0x30u : char0;
+        uint8_t d0 = (uint8_t)(c0 - 0x30u);
+        if (d0 >= 0x0Au) badC0++;
+        else if (char1 == 0x20u) singleDigit++;
+        else {
+            uint8_t d1 = (uint8_t)(char1 - 0x30u);
+            if (d1 >= 0x0Au) badC1++;
+            else { twoDigit++; if ((uint8_t)(d0 * 10u + d1) >= 0x29u) ge41++; }
+        }
+
+        fail += diff_run("parse_two_digit_ascii", pre, c, parse_two_digit_ascii,
+                         parse_two_digit_ascii__t6502, mask, t, &printed);
+    }
+
+    if (badC0 == 0 || singleDigit == 0 || badC1 == 0 || twoDigit == 0 || ge41 == 0) {
+        printf("[VACUOUS] parse_two_digit_ascii: an exit arm was never reached "
+               "(%d badC0, %d single, %d badC1, %d two, %d >=41)\n",
+               badC0, singleDigit, badC1, twoDigit, ge41);
+        fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  (%d badC0/%d single/%d badC1/%d two [%d >=41])\n",
+           "parse_two_digit_ascii", cases, fail, badC0, singleDigit, badC1, twoDigit, ge41);
+    return fail;
+}
+
 void view_paint_lines(void);
 void view_paint_lines__t6502(void);
 extern unsigned long g_viewTableCollisions;   /* asserted below; see revs_native.c */
@@ -6366,6 +6434,7 @@ int main(int argc, char** argv)
     fail += test_driver_name_address();
     fail += test_draw_dash_needles();
     fail += test_menu_draw_gfx_bars();
+    fail += test_parse_two_digit_ascii();
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();

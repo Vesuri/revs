@@ -611,6 +611,21 @@ void menu_draw_gfx_bars(void)
     menu_draw_gfx_bars_core();
 }
 
+void parse_two_digit_ascii(void)
+{
+    /* $32D0 — validate/parse the two ASCII chars in math_lo/math_hi (twin #157).  The core reads
+       both cells, so it is called before math_lo is rewritten.  Exit C is the validity/range flag
+       the caller ($3EE0) branches on; A carries the value (dead at that caller, reconstructed for
+       faithfulness); math_lo keeps its per-path 6502 exit value until the $74 relocation. */
+    ParseNum p;
+    parse_two_digit_ascii_core(math_lo, math_hi, &p);
+    if (p.writeMathlo) math_lo = p.mathlo;       /* $74 — digit0, then digit0*10, per path */
+    cpu.A = p.a;
+    cpu.C = p.c;
+    cpu.Z = p.z;
+    cpu.N = p.n;
+}
+
 void mirrors_update(void)
 {
     /* $7B00 — the once-per-frame wing-mirror update (race_main_loop body, $1739).  Result-only:

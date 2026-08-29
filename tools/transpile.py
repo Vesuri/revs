@@ -1100,6 +1100,15 @@ VALIDATE_FUNCS = {
     # target (the bar's end column), a local now, kept at its 6502 exit value until the $74 relocation.
     # Result-only (exit regs/flags dead — front_end_menus reloads X immediately after).
     0x3A50,
+    # ⭐ TWIN #157 — parse_two_digit_ascii ($32D0, was FUN_32d0).  The console numeric-entry
+    # validator: its sole caller ($3EE0) reads two chars into math_lo/math_hi via console_io, then
+    # loops here until the pair is a valid number.  char0=math_lo, char1=math_hi (a space in char0
+    # counts as '0'); each char -> a digit via SBC #$30, range-checked (<10); value = digit0*10 +
+    # digit1, built with SHIFTS (ASL/ASL/ADC/ASL), so binary by construction and D-independent (NOT
+    # one of the 8 SED sites).  Exit C is the validity/range flag the caller branches on (set =
+    # invalid, or value >= $29).  A math_lo READER-nat: $74 held the running value (digit0, then
+    # digit0*10), a local now, kept at its per-path 6502 exit value until the $74 relocation.
+    0x32D0,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
