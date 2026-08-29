@@ -155,11 +155,17 @@ carry file-local defines so the code reads, but each needs a run before a global
   the name is `player_section_sign` (or similar); if it tracks a quadrant it is `..._quadrant`.
 
 * **`$0100`** — a per-car byte array in the low part of page 1 (safe: the stack lives at
-  `$01F3-$01F8`).  `spin_car_out` writes `$91` to `$0100,X` when a car is spun out; `$0F6B` writes
-  the un-indexed `$0100`.  No `LDA $0100,X` reader found statically.  ⇒ **Settle by dumping
-  `$0100-$0113` mid-race after a collision** (`make refloop`): watch which cars carry `$91` and for
-  how long — it looks like a spin/penalty timer or state, but nothing reads it in the static map,
-  so confirm there IS a reader before naming (it may be write-only per-car scratch).
+  `$01F3-$01F8`), and it is **DUAL-USE**.  (1) `spin_car_out` writes `$91` to `$0100,X` when a car
+  is spun out; no reader of *that* value was found in the static map, so it may be write-only
+  spin/penalty scratch.  (2) `sort_cars_by_key` (`$0F64`, twin #160) reuses the SAME array as a
+  transient stable-position scratch: `$0F6B` clears `$0100`, `$0F75` writes `$0100,X = i`, and — the
+  reader the earlier note said was missing — the tie-shift at `$0FA1` reads `LDA $0100,X` to copy
+  the previous car's position down when two keys tie.  So there IS a reader, but it is internal to
+  the sort's own pass, not the spin state.  The two uses are time-disjoint (sort runs at a
+  lap/standings boundary, spin during racing).  ⇒ Whatever name the spin use earns, `symbols.csv`
+  must record the sort's transient-scratch tenancy in the note (like `$3850`), and the twin already
+  carries a `SORT_SCRATCH` file-local define.  ⇒ **Settle the spin use by dumping `$0100-$0113`
+  mid-race after a collision** (`make refloop`): watch which cars carry `$91` and for how long.
 
 
 ## `span_cap_surface_a` (`$0034`) / `span_cap_surface_b` (`$0033`) — what distinguishes them, beyond which one gets used

@@ -11635,3 +11635,113 @@ void FUN_27ed(void)
         FUN_27ed_car(x);                                     /* $28EE JMP $27F6 */
     }
 }
+
+/* ===========================================================================
+   $0F64  sort_cars_by_key — BUBBLE-SORT THE CAR ORDER ARRAY BY A BCD KEY  (twin #160)
+   ===========================================================================
+
+   WHAT IT COMPUTES.  An adjacent-swap bubble sort of the 21-entry order array at
+   car_order_prev ($13B; car_order $13C is the SAME array + 1, so ORDER[j] = mem[$13B+j]).
+   It compares adjacent pairs ORDER[i]/ORDER[i+1] (each a car slot 0..19) by one of three
+   3-byte keys and swaps them out of order, repeating passes until a pass makes no swap.
+   Entries 1..20 are sorted; ORDER[0] is left as the caller set it.  Ends by calling
+   find_player_neighbours, which reads the sorted order to find the player's rivals.
+
+   ⚠ ONE OF THE EIGHT SED SITES (docs/static-map.md §Decimal mode).  SED at $0F66 and CLD
+   at $0FB5 bracket the whole sort, so the three key compares are BCD and MUST stay
+   sbc_value (decimal-honoured) — this is emphatically NOT a de-carry-to-uint16 site.  The
+   compare's borrow-out is the plain binary borrow in both modes, so the ORDERING is exact
+   regardless of D; only the DIFFERENCE bytes are BCD, and they are the sole reason the
+   fixture must not pin D=0.
+
+   READER-NATIVISATION (the campaign's point).  Four zero-page scratch cells this routine
+   reuses keep their 6502 exit values in mem[] until the final $74/$75 relocation:
+     math_lo      ($74) — the swap-partner car index, STX $74 at $0FEC.  Written ONLY on a
+                          swap, so an already-sorted input leaves it untouched (as the oracle does).
+     math_hi      ($75) — the low  diff byte, STA $75; rewritten by every compare.
+     hypot_min_hi ($79) — the mid  diff byte, STA $79; rewritten by every compare.
+     hypot_min_lo ($78) — the KEY SELECTOR (input A), STA $78 once at entry.
+   shared_temp_76 ($76) is the per-pass swap counter (STX $76=0 at pass start, DEC on each
+   swap, pass repeats while nonzero); shared_temp_77 ($77) is the inner index i.  Both keep
+   their exit bytes.  Exit registers/flags are dead (CLD; JSR; RTS) — LIVE_NONE.
+
+   KEY SELECTION — BIT $78 sets V=bit6, N=bit7; BVS tested before BMI:
+     bits 6,7 clear ($0F83)  key A = car_best_lap  (Y-X order; ascending; tie -> shift)
+     bit 6 set/BVS  ($0FBA)  key B = car_lap       (X-Y order; descending; tie -> shift)
+     bit 7 set/BMI  ($0FD4)  key C = car_lap_start (Y-X order; ascending; NO tie handling)
+
+   ⚠ $0100 is car_race_flags in symbols.csv but is used here as a 21-byte sort scratch
+   array (mem[$100+i] = i, tie-shift copies it down).  Reproduced byte-exact; dual-use
+   queued in docs/rename.md. */
+
+#define CAR_ORDER_PREV    0x013Bu   /* car_order_prev: ORDER[j] = mem[$13B+j]; car_order ($13C) is +1 */
+#define CAR_LAP_LO        0x3864u   /* car_lap_lo:  per-car current lap time, low byte  */
+#define CAR_LAP_MID       0x39E4u   /* car_lap_mid                                       */
+#define CAR_LAP_HI        0x04F0u   /* car_lap_hi                                        */
+#define SORT_SCRATCH      0x0100u   /* stable-position scratch (aliases car_race_flags — see rename.md) */
+
+/* one SEC/SBC 3-byte BCD compare of key[a] - key[b], writing the two diff scratch cells
+   the oracle leaves behind (math_hi = low diff at $0F89/$0FC0/$0FDA, hypot_min_hi = mid
+   diff at $0F91/$0FC8/$0FE2) and returning the borrow-out plus whether all three diff
+   bytes were zero (the ORA $75 / ORA $79 equality test at $0F9B). */
+typedef struct { uint8_t borrow; uint8_t equal; } SortCmp;
+
+static SortCmp sort_bcd_compare3(uint16_t loTbl, uint16_t midTbl, uint16_t hiTbl,
+                                 uint8_t a, uint8_t b)
+{
+    Adc lo  = sbc_value(mem[loTbl  + a], mem[loTbl  + b], 1u);    /* SEC; SBC low  */
+    math_hi = lo.val;                                             /* STA $75 */
+    Adc mid = sbc_value(mem[midTbl + a], mem[midTbl + b], lo.carry);
+    hypot_min_hi = mid.val;                                       /* STA $79 */
+    Adc hi  = sbc_value(mem[hiTbl  + a], mem[hiTbl  + b], mid.carry);
+    SortCmp r;
+    r.borrow = (uint8_t)(hi.carry == 0u);                         /* BCC -> swap */
+    r.equal  = (uint8_t)((hi.val | lo.val | mid.val) == 0u);      /* ORA chain == 0 */
+    return r;
+}
+
+void sort_cars_by_key(void)
+{
+    hypot_min_lo = cpu.A;                        /* $0F64 STA $78 — the key selector */
+    uint8_t sel = hypot_min_lo;
+    cpu.D = 1;                                   /* $0F66 SED — the whole sort is BCD */
+
+    uint8_t swapped;
+    do {
+        shared_temp_76 = 0u;                     /* $0F69 STX $76 (X=0) — per-pass swap counter */
+        mem[SORT_SCRATCH] = 0u;                  /* $0F6B STX $100 */
+        swapped = 0u;
+
+        for (uint8_t i = 1u; i < 0x14u; i++) {   /* $0F6F..$0FAF: i = 1..19, pairs (i, i+1) */
+            shared_temp_77 = i;                  /* $0F6F STX $77 */
+            uint8_t y = mem[CAR_ORDER      + i]; /* $0F71 LDY $13C,X -> ORDER[i+1] */
+            mem[SORT_SCRATCH + i] = i;           /* $0F75 STA $100,X */
+            uint8_t x = mem[CAR_ORDER_PREV + i]; /* $0F78 LDA $13B,X -> ORDER[i]   */
+
+            uint8_t doSwap, tie;
+            if (sel & 0x40u) {                   /* BVS — key B, X-Y order, descending */
+                SortCmp c = sort_bcd_compare3(CAR_LAP_LO, CAR_LAP_MID, CAR_LAP_HI, x, y);
+                doSwap = c.borrow; tie = c.equal;
+            } else if (sel & 0x80u) {            /* BMI — key C, Y-X order, no tie handling */
+                SortCmp c = sort_bcd_compare3(CAR_LAP_START_LO, CAR_LAP_START_MID, CAR_LAP_START_HI, y, x);
+                doSwap = c.borrow; tie = 0u;     /* $0FEA BCS -> next; no ORA test on this arm */
+            } else {                             /* key A, Y-X order, ascending */
+                SortCmp c = sort_bcd_compare3(CAR_BEST_LAP_LO, CAR_BEST_LAP_MID, CAR_BEST_LAP_HI, y, x);
+                doSwap = c.borrow; tie = c.equal;
+            }
+
+            if (doSwap) {                        /* $0FEC swap ORDER[i] <-> ORDER[i+1] */
+                math_lo = x;                     /* STX $74 */
+                mem[CAR_ORDER_PREV + i] = y;     /* STA $13B,X — ORDER[i]   = old ORDER[i+1] */
+                mem[CAR_ORDER      + i] = math_lo; /* STA $13C,X — ORDER[i+1] = old ORDER[i]   */
+                shared_temp_76 = (uint8_t)(shared_temp_76 - 1u); /* $0FF9 DEC $76 */
+                swapped = 1u;
+            } else if (tie) {                    /* $0FA1 tie: SORT_SCRATCH[i] = SORT_SCRATCH[i-1] */
+                mem[SORT_SCRATCH + i] = mem[SORT_SCRATCH + (i - 1u)];
+            }
+        }
+    } while (swapped);                           /* $0FB1 LDA $76; BNE -> another pass */
+
+    cpu.D = 0;                                   /* $0FB5 CLD */
+    find_player_neighbours();                    /* $0FB6 JSR $63A2 */
+}

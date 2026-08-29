@@ -1452,6 +1452,101 @@ static int test_FUN_27ed(void)
     return fail;
 }
 
+void sort_cars_by_key(void);
+void sort_cars_by_key__t6502(void);
+
+/* --------------------------------------------------------------------------
+   $0F64 sort_cars_by_key — bubble-sort the 21-entry car order array by a 3-byte
+   BCD key (src/gen/revs_native.c twin #160).
+
+   ⚠ ONE OF THE EIGHT SED SITES.  The routine forces SED itself, so entry D is
+   irrelevant — but the key compares are BCD, so the diff scratch bytes ($75/$79
+   exit values) differ from a binary subtract even though the ORDERING (the binary
+   borrow) does not.  fill_random gives mostly-invalid-BCD key bytes, which is
+   exactly what makes a binary-diff-byte sabotage diverge.  D is NOT pinned.
+
+   The order entries are seeded to 0..19 so the key lookups stay in the intended
+   tables and the sort is meaningful (random swaps and multi-pass convergence).
+   Three constructed populations guarantee coverage the byte diff cannot infer:
+     * the selector (cpu.A) cycles keyA (bits 6,7 clear) / keyB (bit6) / keyC (bit7);
+     * 1-in-5 forces the whole active key table equal -> NO swap, math_lo ($74) left
+       untouched (the reader-nat's most fragile case) and every compare a tie;
+     * 1-in-7 forces one adjacent pair equal -> the tie-shift path with swaps around it.
+   Exit ABI dead (CLD; JSR find_player_neighbours; RTS) -> LIVE_NONE. */
+static int test_sort_cars_by_key(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("sort_cars_by_key");
+    if (!want("sort_cars_by_key")) return 0;
+
+    unsigned mask = LIVE_NONE;   /* CLD; JSR; RTS — no live exit register or flag */
+
+    /* the three key tables, keyed to the selector arm they belong to */
+    const uint16_t KA[3] = { 0x06A0u, 0x06B8u, 0x06D0u };  /* car_best_lap lo/mid/hi (keyA) */
+    const uint16_t KB[3] = { 0x3864u, 0x39E4u, 0x04F0u };  /* car_lap        lo/mid/hi (keyB) */
+    const uint16_t KC[3] = { 0x0898u, 0x08ACu, 0x04DCu };  /* car_lap_start  lo/mid/hi (keyC) */
+
+    int keyA = 0, keyB = 0, keyC = 0, forcedEqual = 0, forcedTie = 0, randomOrder = 0;
+    int cases = 6000 * scale;
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        /* randomise every entry flag INCLUDING D — the routine's own SED must win */
+        c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.I = xs() & 1; c.C = xs() & 1; c.D = xs() & 1;
+
+        /* seed the order array ($13B..$14F, 21 entries) with car slots 0..19 so the key
+           lookups land inside the intended per-car tables */
+        for (int j = 0; j <= 0x14; j++) pre[0x013Bu + j] = (uint8_t)(xs() % 20u);
+
+        /* selector: cycle the three key arms by construction */
+        int mode = t % 3;
+        uint8_t base = (uint8_t)(xs() & 0x3Fu);
+        const uint16_t* tbl;
+        if (mode == 1)      { c.A = (uint8_t)(base | 0x40u); tbl = KB; keyB++; }  /* BVS */
+        else if (mode == 2) { c.A = (uint8_t)(base | 0x80u); tbl = KC; keyC++; }  /* BMI */
+        else                { c.A = (uint8_t)(base & 0x3Fu); tbl = KA; keyA++; }  /* keyA */
+
+        /* 1-in-5: make the whole active key table equal across all cars -> no swap ever,
+           math_lo left untouched, every compare a tie */
+        if (t % 5 == 0) {
+            uint8_t vlo = (uint8_t)xs(), vmid = (uint8_t)xs(), vhi = (uint8_t)xs();
+            for (int i = 0; i < 20; i++) {
+                pre[tbl[0] + i] = vlo; pre[tbl[1] + i] = vmid; pre[tbl[2] + i] = vhi;
+            }
+            forcedEqual++;
+        } else {
+            randomOrder++;
+            /* 1-in-7 of the remaining: force one adjacent car pair's key equal (tie-shift) */
+            if (t % 7 == 0) {
+                uint8_t s = pre[0x013Bu + 1 + (xs() % 0x13u)];   /* a seeded slot */
+                uint8_t d = pre[0x013Cu + 1 + (xs() % 0x13u)];   /* its neighbour's slot */
+                pre[tbl[0] + d] = pre[tbl[0] + s];
+                pre[tbl[1] + d] = pre[tbl[1] + s];
+                pre[tbl[2] + d] = pre[tbl[2] + s];
+                forcedTie++;
+            }
+        }
+
+        fail += diff_run("sort_cars_by_key", pre, c, sort_cars_by_key,
+                         sort_cars_by_key__t6502, mask, t, &printed);
+    }
+
+    if (!keyA || !keyB || !keyC || !forcedEqual || !forcedTie || !randomOrder) {
+        printf("[VACUOUS] sort_cars_by_key: an arm was never reached "
+               "(%d keyA, %d keyB, %d keyC, %d equal, %d tie, %d rand)\n",
+               keyA, keyB, keyC, forcedEqual, forcedTie, randomOrder);
+        fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  live=none  "
+           "(%d keyA/%d keyB/%d keyC, %d equal/%d tie)\n",
+           "sort_cars_by_key", cases, fail, keyA, keyB, keyC, forcedEqual, forcedTie);
+    return fail;
+}
+
 void view_paint_lines(void);
 void view_paint_lines__t6502(void);
 extern unsigned long g_viewTableCollisions;   /* asserted below; see revs_native.c */
@@ -6631,6 +6726,7 @@ int main(int argc, char** argv)
     fail += test_parse_two_digit_ascii();
     fail += test_seed_car_track_position();
     fail += test_FUN_27ed();
+    fail += test_sort_cars_by_key();
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();

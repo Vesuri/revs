@@ -1131,6 +1131,18 @@ VALIDATE_FUNCS = {
     # loop counter, a C local, restored to its $FF exit.  No BCD (D=0 on this path).  Exit ABI dead
     # (both callers JSR $2692 next) — mem[]-only compare.
     0x27ED,
+    # $0F64 sort_cars_by_key — TWIN #160.  Adjacent-swap bubble sort of the 21-entry order array
+    # at car_order_prev ($13B; car_order $13C is +1) by one of three 3-byte keys (car_best_lap /
+    # car_lap / car_lap_start), selected by bits 6/7 of the A-register selector, repeated until a
+    # pass makes no swap; ends with find_player_neighbours.  ⚠ ONE OF THE EIGHT SED SITES: SED/CLD
+    # bracket the whole sort, so the compares stay sbc_value (decimal-honoured) — NOT a de-carry
+    # site.  The reader-nat targets are the scratch cells math_lo ($74, the swap-partner index,
+    # written only on a swap), math_hi ($75, low diff) and hypot_min_hi ($79, mid diff), all kept at
+    # their 6502 exit values in mem[]; hypot_min_lo ($78) is the key selector input.  shared_temp_76
+    # ($76) swap counter and shared_temp_77 ($77) index are C-tracked but keep their exit bytes.
+    # $0100 (car_race_flags) is reused as a 21-byte sort scratch here — dual-use in rename.md.
+    # Exit ABI dead (CLD; JSR; RTS) — LIVE_NONE, mem[]-only compare.  ⚠ Fixture must NOT pin D=0.
+    0x0F64,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
