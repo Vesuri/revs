@@ -371,11 +371,22 @@ from `front_end_menus` ($63ED): for each of two rows, `$97` (graphics white) at 
 shim (no PHA/PHP → no stack residue; exit regs/flags dead — `front_end_menus` reloads X at once).
 Named `menu_draw_gfx_bars` ($3A50), `menu_bar_start_tbl` ($3A6F), `menu_bar_end_tbl` ($3A71)).
 
-The remaining **12 genuine shipping readers**:
+`parse_two_digit_ascii` ($32D0, #157 — was `FUN_32d0`; a `math_lo` reader-nativization. The console
+two-digit-ASCII→number parser, sole caller the numeric-entry loop `$3EE0`. Four exit arms
+(char0-not-digit / char1-space single-digit / char1-not-digit / both-digits); `math_lo` ($74) is a
+C local, and the twin writes $74's per-path 6502 exit value — untouched on the char0-not-digit arm,
+`digit0` on single-digit, `digit0*10` on both two-digit arms. Fixture: exit C is the validity flag
+the caller branches on, A reconstructed faithfully though dead (mask `LIVE_A|LIVE_C`); D pinned 0
+(the *10 is ASL-based, binary by construction; not a SED site). ⚠ Sabotage caught a fixture gap:
+the original case 4 (value 0..39) / case 5 (value 50..99) split never produced value 40/41, so
+`CMP #$29`→`#$28` was invisible even though value==40 IS reachable via "40" — case 4 widened to
+value 0..49 to span the boundary. Named `parse_two_digit_ascii` ($32D0)).
+
+The remaining **11 genuine shipping readers**:
 
 ```
 shift_key_commands  sort_cars_by_key  check_car_pair
-FUN_27ed  FUN_28f2  FUN_32d0  text_script_interp
+FUN_27ed  FUN_28f2  text_script_interp
 plot_line_octant
 FUN_635d  menu_wait_key  FUN_2f19  view_paint_lines_short
 ```
