@@ -476,11 +476,29 @@ $298D SMC early-return in `place_car_world_coords` (`REVS_SMC_CONTINUE` + vacuit
 3/4 of cases through a controlled positive near gap that sweeps the $28 / $32 / direction
 boundaries. 6 sabotages FAIL distinct (497/1116/941/3/783/2313).)
 
-The remaining **4 genuine shipping readers**:
+`check_car_pair` ($2692, #163 — the adjacent-pair overtake/collision resolver, called from the
+freeze subtree over `car_order` positions X..X (full ring). For each pair (firstSlot at pos,
+secondSlot one behind) it forms the signed ring gap via `car_gap`→`car_gap_tail` and dispatches:
+**far** (C set) → nothing; **out of order, close behind** (N set, gap >= $F6) → swap the two
+`car_order` entries, ROR the `position_swap_flag` ($62FE), and — if the player is one of the pair
+and both are on the same lap — add $99 (player lost a place) or $01 (gained) into `pass_count_bcd`
+via the routine's **one bracketed SED/CLD** BCD add; **positive small gap** (< 5) → derive a braking
+magnitude into `$0083` and set `car_flags_0`/`car_race_flags` proximity bits, with a per-circuit SMC
+compare at $2771. `math_lo` ($74) reader-nat: the gap byte is consumed from `car_gap_tail_core`'s
+`.a`, but the twin writes `math_lo` inline at each 6502 store (**never cached** — the #159 CRUX:
+`car_gap`/`car_order_swap` both overwrite $74 mid-routine). Result-only (`LIVE_NONE`). ⚠⚠ **The tail
+write indexes on `cpu.X`, which the swap arm leaves as `secondSlot`, not `firstSlot`** — the 6502
+`car_order_swap` returns X=oldY; a twin that always writes `car_race_flags[firstSlot]` diverges only
+in the swap slice (caught as 2881 mismatches, all in `$0100..$0113`). Fixture 12000 cases across 4
+slices (near / proximity / a wrapped-ring swap slice that seeds the player into the pair with
+levelled laps for the BCD add / random), `REVS_SMC_CONTINUE` + vacuity check on the $2771 arm, D=0
+pinned. 5 sabotages FAIL distinct (2669/302/2883/299/1169).)
+
+The remaining **3 genuine shipping readers**:
 
 ```
-check_car_pair    text_script_interp
-plot_line_octant  menu_wait_key
+text_script_interp  plot_line_octant
+menu_wait_key
 ```
 
 ⚠ **Two more over-counts dropped (2026-08-29), both oracle-only** (no runtime-reachable caller,
