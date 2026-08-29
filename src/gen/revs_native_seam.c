@@ -764,6 +764,27 @@ void car_gap_tail(void)
     cpu.A = e.a; cpu.N = e.n; cpu.C = e.c;                /* V, Z dead at every caller */
 }
 
+void stage_nearby_car(void)
+{
+    uint8_t slot = mem[CAR_ORDER + cpu.X];                /* $28F2 LDA $013C,X */
+    saved_slot_index = slot;                              /* $28F5 STA $45 */
+    shared_counter_42 = slot;                             /* $28F7 STA $42 */
+
+    /* $28F9 TAX; $28FA LDY #$17; $28FC SEC; $28FD car_gap_tail — X=slot, Y=$17, C=1 in.  The
+       car_gap_tail shim leaves cpu.X/cpu.Y untouched, so X is still slot at the tail call. */
+    GapTail g = car_gap_tail_core(slot, 0x17u, 1u);
+
+    StageNearbyCar s = stage_nearby_car_core(g.a, g.c, slot);
+
+    cpu.X = slot;                                         /* X held from TAX through to the tail */
+    if (s.reject) {                                       /* $2911 reject_object_slot; return */
+        reject_object_slot();
+        return;
+    }
+    cpu.Y = s.y;                                          /* $2922 TAY */
+    place_car_world_coords();                             /* $2937 */
+}
+
 void section_coord_add_delta(void)
 {
     const uint8_t dlo[3] = { math_lo, math_hi, shared_temp_76 };

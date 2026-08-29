@@ -1131,6 +1131,11 @@ VALIDATE_FUNCS = {
     # loop counter, a C local, restored to its $FF exit.  No BCD (D=0 on this path).  Exit ABI dead
     # (both callers JSR $2692 next) — mem[]-only compare.
     0x27ED,
+    # $28F2 stage_nearby_car — TWIN #162.  Per-nearby-car view stager (called twice by
+    # move_and_draw_cars): resolves car_order[X], forms the signed ring gap to car $17
+    # (car_gap_tail), rejects far/wrong-side/out-of-range objects, else derives the view-section
+    # cursor Y=section_cursor-3*|gap| and stages the car via place_car_world_coords.
+    0x28F2,
     # $0F64 sort_cars_by_key — TWIN #160.  Adjacent-swap bubble sort of the 21-entry order array
     # at car_order_prev ($13B; car_order $13C is +1) by one of three 3-byte keys (car_best_lap /
     # car_lap / car_lap_start), selected by bits 6/7 of the A-register selector, repeated until a

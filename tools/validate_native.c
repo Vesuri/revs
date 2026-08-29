@@ -1788,6 +1788,115 @@ static void dash_pre(uint8_t* pre, int sparse, int illegal)
     if (illegal) pre[0x30D0 + 0x03 + (xs() % 0x29)] = 0x08;
 }
 
+void stage_nearby_car(void);
+void stage_nearby_car__t6502(void);
+
+/* ==========================================================================
+   $28F2 stage_nearby_car — THE PER-NEARBY-CAR VIEW STAGER  (twin #162)
+   --------------------------------------------------------------------------
+   Result-only (LIVE_NONE): move_and_draw_cars reloads X from $1D and Y from $62F4 after the first
+   call and reads nothing from the second (it returns), so every exit register/flag is dead.  Every
+   observable effect is in mem[]: math_lo ($74, the campaign target — its 6502 exit value is still
+   written until relocation), the car_flags_0 curve copy, and whatever place_car_world_coords /
+   reject_object_slot write (the SAME native functions in both models).
+
+   place_car_world_coords is steered to its early SMC-unhandled return (mem[$298D] != $29) so it
+   terminates fast and deterministically — but it still runs axis-0, whose section-origin index is
+   mem[SECTION_DIR_INDEX + Y]: a wrong slot->X (car_state_1/2[X]) or a wrong Y diverges mem[] on
+   the very first axis, so the fixture is still sensitive to this twin's two register outputs.
+
+   Coverage.  car_gap_tail treats D = dist[$17]-dist[slot] with a ZERO high byte as a near pair
+   (gap = D) and anything else as wrapped (gap = lap_length-|D|).  So a controlled POSITIVE small D
+   with a huge lap_length gives a known in-range magnitude — that carries the $28 range boundary,
+   the 3*|gap| and +$78 wrap, the wrong-side gate, and the curve-copy $32/bit4 boundaries.  A
+   random quarter (with a small lap_length half the time) samples the far and wrapped-near exits
+   and both signs of the returned gap byte (the abs8-negate path). */
+static int test_stage_nearby_car(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("stage_nearby_car");
+    if (!want("stage_nearby_car")) return 0;
+
+    unsigned mask = LIVE_NONE;
+
+    /* place_car_world_coords' per-circuit SMC seam ($298D) is real code in BOTH models: an
+       unrecognised opcode traps through platform_smc_unhandled and returns.  Steer it there (opcode
+       $00, not the $29 AND) so place terminates on its first axis; the trap must count rather than
+       abort, and equal counts on both sides are asserted by diff_run.  Nonzero total is checked
+       below so the staged (non-reject) path — the only one that reaches place — cannot go untested. */
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+    g_smcUnhandled = 0;
+
+    int cases = 6000 * scale;
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;                                          /* not a SED site (static-map §Decimal mode) */
+        c.X = (uint8_t)xs();                              /* the car_order position input */
+
+        pre[0x298D] = 0x00;                               /* SMC_MASK_OPCODE != $29 -> place early-returns */
+
+        uint8_t slot = pre[0x013Cu + c.X];                /* car_order[X] */
+
+        if ((t & 3) != 0) {
+            /* Controlled near pair: dist[$17] - dist[slot] = +gap, huge lap_length (no wrap). */
+            pre[0x59FC] = 0xFFu; pre[0x59FD] = 0x7Fu;     /* lap_length = $7FFF */
+            uint16_t base = 0x4000u;
+            uint8_t gap;
+            switch (t % 6) {
+                case 0:  gap = 0x27u; break;              /* just inside range -> stage */
+                case 1:  gap = 0x28u; break;              /* the boundary    -> reject */
+                case 2:  gap = 0x29u; break;              /* just outside    -> reject */
+                case 3:  gap = (uint8_t)(xs() % 0x28u); break;   /* anywhere in range */
+                case 4:  gap = 0x00u; break;              /* coincident */
+                default: gap = (uint8_t)(xs() & 0x7Fu); break;   /* 0..$7F: mixes in/out of range */
+            }
+            uint16_t dslot = (uint16_t)(base - gap);
+            pre[0x08D0u + 0x17u] = (uint8_t)base;   pre[0x08E8u + 0x17u] = (uint8_t)(base >> 8);
+            pre[0x08D0u + slot]  = (uint8_t)dslot;  pre[0x08E8u + slot]  = (uint8_t)(dslot >> 8);
+
+            /* track_direction bit7 = 0 so a positive gap PASSES the wrong-side gate; flip it 1/4
+               of the time to exercise the wrong-side reject.  Only bit7 gates; keep the rest. */
+            if (t % 4 == 1) pre[0x0025] |= 0x80u; else pre[0x0025] &= 0x7Fu;
+
+            /* section_cursor: small forces the Y = -3*|gap| negative wrap (+$78); large avoids it. */
+            pre[0x0024] = (t & 1) ? 0x02u : (uint8_t)(0x60u + (xs() & 0x1Fu));
+
+            /* the curve-copy gate: car_race_flags bit4 and car_speed_scaled around the $32 edge. */
+            if (t % 5 == 0) pre[0x0100u + slot] |= 0x10u; else pre[0x0100u + slot] &= 0xEFu;
+            switch (t % 4) {
+                case 0:  pre[0x0150u + slot] = 0x31u; break;   /* just below -> no copy */
+                case 1:  pre[0x0150u + slot] = 0x32u; break;   /* at threshold -> copy */
+                case 2:  pre[0x0150u + slot] = 0x33u; break;   /* above -> copy */
+                default: pre[0x0150u + slot] = (uint8_t)xs(); break;
+            }
+        } else if (t & 1) {
+            /* random distances but a SMALL lap_length -> wrapped gaps fit a byte, so the wrapped-near
+               exits (both signs of the returned gap byte, the abs8-negate path) get sampled. */
+            pre[0x59FC] = (uint8_t)(0x40u + (xs() & 0x7Fu));
+            pre[0x59FD] = 0x00u;
+        }
+        /* the rest keep fully random distances + lap_length -> the far exits and random everything. */
+
+        fail += diff_run("stage_nearby_car", pre, c, stage_nearby_car,
+                         stage_nearby_car__t6502, mask, t, &printed);
+    }
+    unsetenv("REVS_SMC_CONTINUE");
+
+    if (g_smcUnhandled == 0) {
+        printf("[VACUOUS] stage_nearby_car: 0 SMC traps — no case reached place_car_world_coords, "
+               "so the staged (non-reject) path was never tested\n");
+        fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  result-only, %lu place traps\n",
+           "stage_nearby_car", cases, fail, g_smcUnhandled);
+    return fail;
+}
+
 static int test_view_paint_lines(void)
 {
     static uint8_t pre[65536];
@@ -6857,6 +6966,7 @@ int main(int argc, char** argv)
     fail += test_FUN_27ed();
     fail += test_sort_cars_by_key();
     fail += test_shift_key_commands();
+    fail += test_stage_nearby_car();
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();

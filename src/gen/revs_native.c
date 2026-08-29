@@ -11636,6 +11636,58 @@ void FUN_27ed(void)
     }
 }
 
+/* ---------------------------------------------------------------------------
+   $28F2  stage_nearby_car  (twin #162)   — was FUN_28f2
+   ---------------------------------------------------------------------------
+   Called twice per frame by move_and_draw_cars to place one nearby car into the view.  On entry
+   X is a car_order position; the shim resolves the car slot = car_order[X] and stows it in
+   saved_slot_index ($45) and shared_counter_42 ($42) for the slot writers this routine tail-calls.
+   The core then decides the object's fate from the signed ring gap car_gap_tail returned:
+
+     - REJECT when the gap is far (C set out of car_gap_tail), on the wrong side of the reference
+       car (sign of gap ^ track_direction), or |gap| >= $28 sections away;
+     - otherwise stage it: derive the view-section cursor  Y = section_cursor - 3*|gap|, wrapping
+       +$78 when the subtraction goes negative (all 8-bit), and for a fast car in a normal state
+       (car_race_flags bit4 clear AND car_speed_scaled >= $32) copy that section's curve into the
+       car's flag byte (section_curve[Y] -> car_flags_0[slot]).  That is the $2931 AI look-ahead
+       read docs/rename.md flags under `section_curve` — a fast nearby car takes the upcoming
+       section's curvature so its AI can anticipate the corner.
+
+   math_lo ($74) is car_gap_tail's reduced-gap byte, and on every near exit it equals the returned
+   A (car_gap_tail_core: direct-near and wrapped-near both set r.a == math_lo), so the core reads
+   the return and never mem[MATH_LO].  The one remaining MATH_LO touch is the faithful |gap|
+   writeback at $290b, which the object-queue tail inside place_car_world_coords reads back.
+   D=0 on this path (docs/static-map.md §Decimal mode: no SED on the car/geometry path).
+
+   Exit A/X/Y/flags are dead: move_and_draw_cars reloads X from $1D and Y from $62F4 after the
+   first call and reads nothing from the second (it returns) — so the fixture is result-only. */
+StageNearbyCar stage_nearby_car_core(uint8_t gapA, unsigned gapFar, uint8_t slot)
+{
+    StageNearbyCar r = { 1, 0 };                             /* default: reject */
+
+    if (gapFar) return r;                                    /* $2900 BCS — far */
+    if (((uint8_t)(gapA ^ track_direction)) & 0x80u)         /* $2902-04 EOR/BMI — wrong side */
+        return r;
+
+    uint8_t mag = (gapA & 0x80u) ? (uint8_t)(0u - gapA) : gapA;   /* $2908 abs8 */
+    math_lo = mag;                                           /* $290b STA $74 — faithful writeback */
+    if (mag >= 0x28u) return r;                              /* $290d-0f CMP #$28 / BCS reject */
+
+    /* Y = section_cursor - 3*|gap|, +$78 if it wraps below zero (8-bit throughout). */
+    uint8_t y = (uint8_t)(section_cursor - (uint8_t)(3u * mag));  /* $2914 ASL / $2916 ADC $74 / $2918-1b */
+    if (y & 0x80u) y = (uint8_t)(y + 0x78u);                 /* $291d BPL / $2920 ADC #$78 */
+
+    /* AI look-ahead: a fast car in a normal state inherits the upcoming section's curve. */
+    if (!(mem[CAR_RACE_FLAGS + slot] & 0x10u)                /* $2923-28 AND #$10 / BNE skip */
+        && mem[CAR_SPEED_SCALED + slot] >= 0x32u) {          /* $292a-2f CMP #$32 / BCC skip */
+        mem[CAR_FLAGS_0 + slot] = mem[SECTION_CURVE + y];    /* $2931-34 */
+    }
+
+    r.reject = 0;
+    r.y = y;
+    return r;
+}
+
 /* ===========================================================================
    $0F64  sort_cars_by_key — BUBBLE-SORT THE CAR ORDER ARRAY BY A BCD KEY  (twin #160)
    ===========================================================================

@@ -140,6 +140,9 @@ typedef struct { uint8_t row; uint8_t line; } Mode5Addr;  /* plot_ptr side-effec
 typedef struct { uint8_t ch; int usedMos; } VduDef;       /* def took the OSWRCH path? */
 typedef struct { uint8_t mag; uint8_t dir; uint8_t reading; } AdcRead;   /* distance from centre, its sign, and the raw MOS reading that leaks out in Y */
 typedef struct { uint8_t a, n, c; } GapTail;
+/* stage_nearby_car_core's decision: reject == 1 -> the shim calls reject_object_slot; otherwise
+   y is the view-section cursor to pass into place_car_world_coords ($2922 TAY). */
+typedef struct { int reject; uint8_t y; } StageNearbyCar;
 /* draw_corner_marker_core's per-marker result.  math_lo/hi/temp76 are the $74/$75/$76 exit
    values on the SKIP path (on the DRAW path plot_object overwrites them); plot_x/plot_line/
    proj_width are meaningful only when draw != 0. */
@@ -314,6 +317,7 @@ SignOriginExit build_sign_origin_core(uint8_t offset, uint8_t shift);
 void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1);
 unsigned car_gap_lo_core(uint8_t a, uint8_t b);
 GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn);
+StageNearbyCar stage_nearby_car_core(uint8_t gapA, unsigned gapFar, uint8_t slot);
 void car_order_swap_core(uint8_t xi, uint8_t yi, uint8_t* outX, uint8_t* outY);
 void clamp_near_edge_cursor_core(uint8_t candidate);
 void clamp_near_edge_window_core(uint8_t nearSlots);
