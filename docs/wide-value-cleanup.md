@@ -442,10 +442,28 @@ forces one adjacent pair equal → the tie-shift path; the order array is seeded
 entry said was missing (the tie-shift at $0FA1), settling `$0100` as dual-use — spin/penalty state
 (`spin_car_out`) AND the sort's transient position scratch (`SORT_SCRATCH` file-local define).)
 
-The remaining **8 genuine shipping readers**:
+`shift_key_commands` ($0EE5, #161 — the SHIFT+f-key command handler from the 50 Hz body:
+tests SHIFT held (`kbd_test_key_core($FF)`), scans `shift_key_tbl`[$0B..0] ($3DE2) top-down for
+the first held key, applies its `shift_key_action_tbl` ($39D4) byte into `state_flags` (low nibble
+= offset, high nibble = value), then services `pause_request` (spins on `clear_surface_buffers`
+until $A6 is pressed when negative) and the even-frame `volume_change_request` step (ceiling $00 /
+floor $F1, then `sound_envelope`). `math_lo` ($74) is a **pure loop-counter/scratch** reader → C
+local, still written at each 6502 site. **NOT a decimal site** (D=0 pinned per static-map
+§Decimal mode); the one `ADC` in the volume step is binary. `mask = LIVE_NONE`. MOS-boundary
+register contract: the twin threads `cpu.Y=math_lo`, `cpu.X=idx`, `cpu.A=pr` so `sound_stop_all`/
+`sound_envelope` enter with the oracle's A/X/Y. Needed a **new reusable mode-3 held-SET** in the
+test keyboard backend (`platform_test_key_set_clear`/`_add`) — the fixture holds several keys at
+once; `menu_wait_key` will reuse it. Fixture 6000 cases with deterministic `VOL_EDGE`/`VCR_SIGN`
+edge tables (a random `sound_volume` hits the exact ceiling/floor edges ~0 times — a real coverage
+gap caught by a surviving sabotage). 5 sabotages FAIL distinct (1000/291/230/227/3857). ⚠ The
+"index 7 wins → writes negative pause → spins forever" scenario is **unreachable by construction**:
+$A6 (=idx8) outranks $96 (=idx7) in the top-down scan, so idx7 can only win when $A6 is not held —
+exactly when the spin cannot start. Documented at the fixture.)
+
+The remaining **7 genuine shipping readers**:
 
 ```
-shift_key_commands  check_car_pair
+check_car_pair
 FUN_28f2  text_script_interp
 plot_line_octant
 menu_wait_key  FUN_2f19  view_paint_lines_short
