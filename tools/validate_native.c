@@ -1344,6 +1344,114 @@ static int test_seed_car_track_position(void)
     return fail;
 }
 
+void FUN_27ed(void);
+void FUN_27ed__t6502(void);
+
+/* --------------------------------------------------------------------------
+   $27ED FUN_27ed — the per-frame per-car UPDATE ENGINE  (twin #159)
+
+   Runs once a frame over cars X=19..0 (skipping player_car): target speed from the segment
+   ahead, a braking-proximity gap, gap*4 integrated into the 16-bit car speed, the speed added
+   into car_state_1 twice (each carry stepping the car one offset unit via track_pos_advance),
+   then car_state_2 steered toward centre.  Exit ABI is dead (both callers JSR $2692 next), so
+   only mem[] is compared — including the campaign's targets math_lo/math_hi ($74/$75), which the
+   twin writes inline at their 6502 exit values.  D=0 (per-frame sim; not one of the 8 SED sites).
+
+   fill_random covers every branch of the speed/gap/steering trees across the 20 cars over many
+   cases.  What it CANNOT reach on its own is the case that justifies writing math_lo/math_hi
+   INLINE rather than caching: a mid-routine LAP WRAP, where the inner-loop track_pos_advance
+   fires lap_complete (twin #136), which overwrites $74/$75 with a BCD lap time while FUN_27ed is
+   still running.  Both differential sides call the identical native track_pos_advance_core ->
+   lap_complete_core, so the effect is byte-exact by construction — but only a twin that does NOT
+   cache $74/$75 stays byte-exact.  So a slice of cases FORCES that wrap for one car. */
+static int test_FUN_27ed(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("FUN_27ed");
+    if (!want("FUN_27ed")) return 0;
+
+    unsigned mask = LIVE_NONE;   /* both callers JSR $2692 immediately — no live exit register */
+
+    int earlyRet = 0, bodyRun = 0, raceMode = 0, practiceMode = 0;
+    int lapForced = 0, decelSeen = 0, brakeSeen = 0, shapeSteer = 0;
+    int cases = 6000 * scale;
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;
+        /* dead exit flags, but randomise the live entry ones so a shim that leaked one is caught */
+        c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.I = xs() & 1; c.C = xs() & 1;
+
+        /* start lights ($6D): mostly clear so the body runs; 1-in-8 set to hit the early return */
+        uint8_t sl = (t % 8 == 0) ? (uint8_t)(0x80u | (xs() & 0x7Fu)) : (uint8_t)(xs() & 0x7Fu);
+        pre[0x006Du] = sl;
+        if (sl & 0x80u) earlyRet++; else bodyRun++;
+
+        /* player_car ($6F): random 0..19 baseline (exercises the CPX-skip at any index) */
+        uint8_t player = (uint8_t)(xs() % 20u);
+
+        /* session mode ($6C bit7): both ways — gates FUN_27ed's $284B race offset and, via
+           lap_complete, whether a forced lap's TIME is recorded */
+        int race = (t & 1);
+        pre[0x006Cu] = race ? (uint8_t)(0x80u | (xs() & 0x7Fu)) : (uint8_t)(xs() & 0x7Fu);
+        if (race) raceMode++; else practiceMode++;
+
+        /* count some pre-state arms for the vacuity guard (sampled across all 20 cars) */
+        for (int i = 0; i < 20; i++) {
+            if (pre[0x0100u + i] & 0x80u) decelSeen++;           /* car_race_flags bit7 -> L_decel */
+            uint8_t seg = pre[0x06E8u + i];
+            if (!(pre[0x5900u + seg] & 0x80u) && !(pre[0x5900u + seg] & 0x01u)) brakeSeen++;
+            if (!(pre[0x018Cu + i] & 0xC0u)) shapeSteer++;       /* steering tree reachable */
+        }
+
+        /* FORCED LAP WRAP — 1-in-3 cases.  Drive one non-player car down L_decel with a known
+           moderate speed so both inner-loop iterations overflow car_state_1 and call
+           track_pos_advance; seed its distance one short of a full lap so the first advance fires
+           lap_complete; open lap_complete's gates so it reaches the math_lo/math_hi writes. */
+        if (t % 3 == 0) {
+            player = 19u;                                        /* so any tc<=18 records in practice */
+            pre[0x006Cu] = (uint8_t)(xs() & 0x7Fu);             /* practice: record = (tc <= player) */
+            practiceMode++; if (race) raceMode--;               /* keep the tallies honest */
+            race = 0;
+            pre[0x006Du] = (uint8_t)(xs() & 0x7Fu);            /* lights clear so the body runs */
+            if (sl & 0x80u) { earlyRet--; bodyRun++; }
+
+            uint8_t tc = (uint8_t)(1u + (t % 18u));             /* 1..18, never the player (19) */
+            pre[0x0100u + tc] = (uint8_t)(0x80u | (pre[0x0100u + tc] & 0x7Fu)); /* bit7 -> L_decel */
+            pre[0x0150u + tc] = 0x10u;                          /* car_speed_scaled: +$FC00 -> $0C */
+            pre[0x3850u + tc] = 0x00u;                          /* car_speed_frac */
+            pre[0x0164u + tc] = 0xFFu;                          /* car_state_1: +$0C overflows twice */
+            pre[0x08D0u + tc] = 0xFFu;                          /* car_distance_lo */
+            pre[0x08E8u + tc] = 0x00u;                          /* car_distance_hi = $00FF */
+            pre[0x59FCu] = 0x00u; pre[0x59FDu] = 0x01u;         /* lap_length = $0100 -> ++dist wraps */
+            pre[0x62F8u] = (uint8_t)(pre[0x62F8u] & 0x7Fu);     /* track_scan_active clear -> book it */
+            pre[0x018Cu + tc] = (uint8_t)(pre[0x018Cu + tc] & 0xBFu); /* flags_shape bit6 clear */
+            pre[0x04B4u + tc] = (uint8_t)(xs() & 0x7Fu);        /* lap count < $80 so it increments */
+            lapForced++;
+        }
+
+        pre[0x006Fu] = player;
+
+        fail += diff_run("FUN_27ed", pre, c, FUN_27ed, FUN_27ed__t6502, mask, t, &printed);
+    }
+
+    if (!earlyRet || !bodyRun || !raceMode || !practiceMode || !lapForced ||
+        !decelSeen || !brakeSeen || !shapeSteer) {
+        printf("[VACUOUS] FUN_27ed: an arm was never reached "
+               "(%d early, %d body, %d race, %d prac, %d lap, %d decel, %d brake, %d steer)\n",
+               earlyRet, bodyRun, raceMode, practiceMode, lapForced, decelSeen, brakeSeen, shapeSteer);
+        fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  live=none  "
+           "(%d early/%d body, %d race/%d prac, %d lapwrap)\n",
+           "FUN_27ed", cases, fail, earlyRet, bodyRun, raceMode, practiceMode, lapForced);
+    return fail;
+}
+
 void view_paint_lines(void);
 void view_paint_lines__t6502(void);
 extern unsigned long g_viewTableCollisions;   /* asserted below; see revs_native.c */
@@ -6522,6 +6630,7 @@ int main(int argc, char** argv)
     fail += test_menu_draw_gfx_bars();
     fail += test_parse_two_digit_ascii();
     fail += test_seed_car_track_position();
+    fail += test_FUN_27ed();
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();

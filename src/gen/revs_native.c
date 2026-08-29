@@ -11464,3 +11464,174 @@ static void lap_complete_core(uint8_t x)
 }
 
 void lap_complete(void) { lap_complete_core(cpu.X); }   /* X = car index; nothing escapes */
+
+/* ----- TWIN #159: $27ED FUN_27ed — the per-frame per-car update engine -------------------------
+ *
+ * Called once per frame from the driving loop ($117E, $2649); both callers JSR $2692 immediately
+ * after, so FUN_27ed's exit registers and flags are DEAD (fixture mask LIVE_NONE) — only mem[]
+ * (math_lo/math_hi/shared_temp_76 among it) is compared.
+ *
+ * For every car (X = 19..0, skipping player_car) it:
+ *   1. picks a target speed from the segment ahead and, if the car must brake into a corner,
+ *      derives a proximity gap (math_lo/math_hi);
+ *   2. integrates that gap*4 into the 16-bit car speed [car_speed_scaled:car_speed_frac], with an
+ *      overflow guard that resets a car whose speed high byte reaches $BE;
+ *   3. adds the speed into car_state_1 twice, advancing the car one track-offset unit on each wrap
+ *      (track_pos_advance, twin #134 — which books a completed lap via lap_complete, twin #136);
+ *   4. steps the car's steering state car_state_2 toward centre.
+ *
+ * The two genuine wide values, de-carried to plain uint16_t here (the campaign deliverable):
+ *   - $2861-$2865  [math_hi:A] <<= 2         (a 16-bit left shift, top bits discarded)
+ *   - $2867-$287C  speed += that, clamp      (a 16-bit add of [car_speed_scaled:car_speed_frac])
+ * math_lo/math_hi are written to their real cells inline (not deferred): a mid-routine lap wrap
+ * calls the same native lap_complete_core both the oracle and this twin invoke, and that routine
+ * overwrites $74/$75 — so caching them in locals and writing at the end would diverge.
+ * D=0 on this path (per-frame race sim; the 8 SED sites are elsewhere — docs/static-map.md).
+ */
+#define CAR_RACE_FLAGS        0x0100u   /* car_race_flags — per-car race flag byte (bit7/6/4 tested) */
+#define CAR_SPEED_SCALED      0x0150u   /* car_speed_scaled — high byte of the 16-bit car speed */
+#define CAR_TARGET_SPEED      0x01A4u   /* car_target_speed — per-car section speed limit */
+#define CAR_SPEED_FRAC        0x3850u   /* car_speed_frac — low byte of car speed (engine_init overlay) */
+#define SEGMENT_POS_THRESHOLD 0x5305u   /* segment_pos_threshold — per-segment position gauge */
+#define SEGMENT_SPEED_LIMIT   0x5307u   /* segment_speed_limit — per-segment speed limit */
+#define RACE_POSITION_OFFSET  0x5A1Au   /* race_position_offset — per-circuit race-mode gap offset */
+
+static void FUN_27ed_car(uint8_t x)
+{
+    uint8_t a = 0;
+    uint8_t seg = 0;
+
+    uint8_t flags = mem[CAR_RACE_FLAGS + x];             /* $27F6 LDA car_race_flags,X */
+    if (flags & 0x80u) goto L_decel;                      /* $27F9 BMI $285B — inactive/behind */
+
+    seg = mem[CAR_SEGMENT_TBL + x];                       /* $27FB LDY car_segment,X */
+    uint8_t segbyte = mem[TRACK_SEGMENT_LO + seg];        /* $27FE LDA track_segment_lo,Y */
+    if (segbyte & 0x80u) {                                /* $2801 BPL $280D — bit7 set: this arm */
+        /* $2803-$280B: if already at/over the target speed, only integrate; else recompute */
+        if (mem[CAR_SPEED_SCALED + x] >= mem[CAR_TARGET_SPEED + x]) goto L_integrate; /* $2809 BCS */
+        goto L_speedcalc;                                 /* $280B BCC $282F */
+    }
+    if (segbyte & 0x01u) goto L_speedcalc;                /* $280D LSR / $280E BCS $282F (bit0 set) */
+
+    /* $2810-$2820: set target speed from the segment limit; if the car must brake harder than the
+       segment allows, fold the shortfall into a proximity code in math_lo */
+    {
+        uint8_t seglimit = mem[SEGMENT_SPEED_LIMIT + seg];   /* $2810 LDA segment_speed_limit,Y */
+        mem[CAR_TARGET_SPEED + x] = seglimit;                /* $2813 STA car_target_speed,X */
+        int16_t brake = (int16_t)seglimit - mem[CAR_SPEED_SCALED + x] - 1; /* $2816 CLC/$2817 SBC */
+        if (brake >= 0) goto L_speedcalc;                    /* $281A BCS $282F (no borrow) */
+        uint8_t bA = (uint8_t)((((uint8_t)brake) >> 2) | 0xC0u); /* $281C/$281D LSR LSR / $281E ORA #$C0 */
+        math_lo = bA;                                        /* $2820 STA math_lo */
+        /* $2822-$282D: how far into the segment; a car that has not yet reached the braking zone
+           (offset < threshold) and is closer than the code decelerates */
+        int16_t prox = (int16_t)mem[CAR_SEG_OFFSET + x] - mem[SEGMENT_POS_THRESHOLD + seg]; /* $2825 SEC/$2826 SBC */
+        if (prox >= 0) goto L_integrate;                     /* $2829 BCS $287F (no borrow) */
+        if ((uint8_t)prox >= math_lo) goto L_decel;          /* $282B CMP math_lo / $282D BCS $285B */
+        /* else fall into L_speedcalc */
+    }
+
+L_speedcalc:                                              /* $282F */
+    {
+        /* $282F-$2838: floor the effective speed at $16 unless already >= $3C, into math_lo */
+        uint8_t sp  = mem[CAR_SPEED_SCALED + x];             /* $282F LDA car_speed_scaled,X */
+        uint8_t eff = (sp >= 0x3Cu) ? sp : 0x16u;            /* $2832 CMP #$3C / $2836 LDA #$16 */
+        math_lo = eff;                                       /* $2838 STA math_lo */
+        /* $283A-$2844: base offset (+5 if the car's flags bit6 is set) plus its track position */
+        uint8_t base = (flags & 0x40u) ? 0x05u : 0x00u;      /* $283A/$283D AND #$40 / $2841 LDA #$05 */
+        uint16_t sum = (uint16_t)base + mem[CAR_TRACK_POSITION + x]; /* $2843 CLC / $2844 ADC */
+        a = (uint8_t)sum;
+        uint8_t carry = (uint8_t)(sum >> 8);                 /* C out of the ADC, live into the race SBC */
+        /* $2847-$284B: in a race, offset by the per-circuit constant (BIT tests bit7, C untouched) */
+        if (session_is_race & 0x80u)                         /* $2847 BIT / $2849 BPL $284E */
+            a = (uint8_t)((int16_t)a - mem[RACE_POSITION_OFFSET] - (int16_t)(1u - carry)); /* $284B SBC */
+        /* $284E-$2856: gap = a - math_lo, sign-extended (0 or $FF) into math_hi */
+        int16_t gap = (int16_t)a - math_lo;                  /* $2850 SEC / $2851 SBC math_lo */
+        a = (uint8_t)gap;
+        math_hi = (gap < 0) ? 0xFFu : 0x00u;                 /* $2853 BCS / $2855 DEY / $2856 STY math_hi */
+        goto L_shift_add;                                    /* $2858 JMP $2861 */
+    }
+
+L_decel:                                                  /* $285B */
+    math_hi = 0xFFu;                                         /* $285B LDA #$FF / $285D STA math_hi */
+    a = 0x00u;                                               /* $285F LDA #$00 */
+    /* fall into L_shift_add */
+
+L_shift_add:                                              /* $2861 */
+    {
+        /* $2861-$2865: [math_hi:A] <<= 2 — a 16-bit left shift, the high bit falling off each ROL */
+        uint16_t v = (uint16_t)(((uint16_t)math_hi << 8) | a);
+        v = (uint16_t)(v << 2);
+        math_hi = (uint8_t)(v >> 8);                         /* $75 exit value = the ROL result */
+        /* $2867-$287C: [car_speed_scaled:car_speed_frac] += v; a high byte reaching $BE resets both */
+        uint16_t speed = (uint16_t)(((uint16_t)mem[CAR_SPEED_SCALED + x] << 8)
+                                    | mem[CAR_SPEED_FRAC + x]);
+        speed = (uint16_t)(speed + v);
+        uint8_t sfrac   = (uint8_t)speed;
+        uint8_t sscaled = (uint8_t)(speed >> 8);
+        if (sscaled >= 0xBEu) { sfrac = 0; sscaled = 0; }    /* $2873 CMP #$BE / $2877 LDA #0 */
+        mem[CAR_SPEED_FRAC + x]   = sfrac;                   /* $286B / $2879 STA car_speed_frac,X */
+        mem[CAR_SPEED_SCALED + x] = sscaled;                 /* $287C STA car_speed_scaled,X */
+    }
+    /* fall into L_integrate */
+
+L_integrate:                                              /* $287F */
+    /* $287F-$2894: add the speed into car_state_1 twice; each carry advances the car one offset
+       unit (track_pos_advance, which books a lap via lap_complete on a distance wrap) */
+    for (int i = 1; i >= 0; i--) {                           /* $2881 shared_temp_76=1; DEC/BPL loop */
+        uint16_t s = (uint16_t)mem[CAR_STATE_1 + x] + mem[CAR_SPEED_SCALED + x]; /* $2883 CLC/$2887 ADC */
+        mem[CAR_STATE_1 + x] = (uint8_t)s;                   /* $288A STA car_state_1,X */
+        if (s > 0xFFu) {                                     /* $288D BCC skip — a carry crossed a unit */
+            cpu.X = x;                                       /* track_pos_advance->lap_complete reads cpu.X */
+            track_pos_advance_core(x);                       /* $288F JSR track_pos_advance */
+        }
+    }
+    shared_temp_76 = 0xFFu;                                  /* $2892-$2894: DEC to $FF exits the BPL loop */
+
+    /* $2896-$28E4: steer car_state_2 back toward centre, gated by the car's shape/state flags */
+    {
+        uint8_t shape = mem[CAR_FLAGS_SHAPE + x];            /* $2896 LDA / $2899 ASL A */
+        if (shape & 0x80u) return;                           /* $289A BCS $28E7 (old bit7) — next car */
+        if (shape & 0x40u) goto L_adjust;                    /* $289C BMI $28CE (old bit6) */
+        if ((mem[CAR_FLAGS_0 + x] & 0x40u) == 0) goto L_adjust; /* $28A1 AND #$40 / $28A3 BEQ $28CE */
+        if (((mem[CAR_STATE_2 + x] ^ mem[CAR_FLAGS_0 + x]) & 0x80u) == 0) goto L_adjust; /* $28A8 EOR/$28AB BPL */
+
+        uint8_t st2 = mem[CAR_STATE_2 + x];                  /* $28AD LDA car_state_2,X */
+        if (st2 & 0x80u) {                                   /* $28B0 BPL $28C1 — bit7 set arm */
+            if (st2 >= 0xECu) { mem[CAR_STATE_2 + x] = (uint8_t)(st2 - 1); return; } /* $28B2/$28B6 DEC/$28B9 */
+            if (st2 >= 0xE2u) return;                        /* $28BB CMP #$E2 / $28BF BCS $28E7 */
+            goto L_adjust;                                   /* $28BD BCC $28CE (st2 < $E2) */
+        } else {                                             /* $28C1 — bit7 clear arm */
+            if (st2 < 0x14u) { mem[CAR_STATE_2 + x] = (uint8_t)(st2 + 1); return; } /* $28C5 INC/$28C8 */
+            if (st2 < 0x1Eu) return;                         /* $28CA CMP #$1E / $28CC BCC $28E7 */
+            goto L_adjust;                                   /* fall to $28CE (st2 >= $1E) */
+        }
+    }
+
+L_adjust:                                                 /* $28CE */
+    {
+        uint8_t f    = (uint8_t)(mem[CAR_FLAGS_0 + x] & 0xBFu); /* $28CE LDA / $28D1 AND #$BF / $28D3 CLC */
+        uint8_t st2b = mem[CAR_STATE_2 + x];
+        if (f & 0x80u) {                                     /* $28D4 BPL $28DF — bit7 set arm */
+            uint16_t r = (uint16_t)(uint8_t)(f ^ 0x7Fu) + st2b; /* $28D6 EOR #$7F / $28D8 ADC (C=0) */
+            if (r > 0xFFu) mem[CAR_STATE_2 + x] = (uint8_t)r;   /* $28DB BCS $28E4 store on carry */
+        } else {
+            uint16_t r = (uint16_t)f + st2b;                    /* $28DF ADC car_state_2,X (C=0) */
+            if (r <= 0xFFu) mem[CAR_STATE_2 + x] = (uint8_t)r;  /* $28E2 BCS skip; store on no carry */
+        }
+    }
+}
+
+void FUN_27ed(void)
+{
+    /* $27ED-$27EF: while the start lights are still counting down (bit7 set), do nothing */
+    if (start_light_state & 0x80u) return;                   /* $27EF BMI (RTS at $27EC) */
+
+    /* $27F1-$28F1: X = 20, step down to 0, process each car but the player's */
+    uint8_t x = 0x14u;                                       /* $27F1 LDX #$14 */
+    for (;;) {
+        x = (uint8_t)(x - 1);                                /* $28E7 DEX */
+        if (x & 0x80u) return;                               /* $28E8 BMI $28F1 — past car 0, done */
+        if (x == player_car) continue;                       /* $28EA CPX player_car / $28EC BEQ (skip) */
+        FUN_27ed_car(x);                                     /* $28EE JMP $27F6 */
+    }
+}

@@ -1118,6 +1118,19 @@ VALIDATE_FUNCS = {
     # on the Pro path), a local now kept at its per-path 6502 exit value until the $74 relocation.
     # Exit ABI: X live; A/flags dead.  $FE68 is pinned per case by platform_test_via_t2.
     0x635D,
+    # ⭐ TWIN #159 — FUN_27ed ($27ED), the per-frame per-car UPDATE ENGINE.  Called once a frame
+    # from the driving loop ($117E/$2649) for every car but the player's (X=19..0): picks a target
+    # speed from the segment ahead, derives a braking-proximity gap, integrates gap*4 into the
+    # 16-bit car speed [car_speed_scaled:car_speed_frac] (with a $BE overflow reset), adds the speed
+    # into car_state_1 twice — each carry advancing the car one offset unit via track_pos_advance
+    # (twin #134, which books a lap via lap_complete #136) — then steers car_state_2 back toward
+    # centre.  Two genuine wide values de-carried to uint16_t: the $2861 <<2 of [math_hi:A] and the
+    # $2867 speed add.  math_lo/math_hi ($74/$75) are the wide-value readers this nativizes, written
+    # inline at their 6502 exit values (a mid-routine lap wrap overwrites them via the same native
+    # lap_complete_core both sides call) until the $74/$75 relocation; shared_temp_76 ($76) is a pure
+    # loop counter, a C local, restored to its $FF exit.  No BCD (D=0 on this path).  Exit ABI dead
+    # (both callers JSR $2692 next) — mem[]-only compare.
+    0x27ED,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
