@@ -363,11 +363,19 @@ every selector); (2) the oracle's balanced PHP/PLP leaves a P-byte stack residue
 compares → the shim writes the computed P byte to `mem[0x0100+cpu.S]`. Named `steer_needle_dda_tbl`
 ($3980)).
 
-The remaining **13 genuine shipping readers**:
+`menu_draw_gfx_bars` ($3A50, #156 — was `FUN_3a50`; a `math_lo` reader-nativization, result-only.
+The front-end menu's two horizontal teletext graphics bars, drawn into the MODE 7 page at $7C79
+from `front_end_menus` ($63ED): for each of two rows, `$97` (graphics white) at the start column
+(`menu_bar_start_tbl` $3A6F), `$E2` at the next, then an `$E6` fill to the end column
+(`menu_bar_end_tbl` $3A71). `math_lo` held the loop's CPX end-column target, a local now. Trivial
+shim (no PHA/PHP → no stack residue; exit regs/flags dead — `front_end_menus` reloads X at once).
+Named `menu_draw_gfx_bars` ($3A50), `menu_bar_start_tbl` ($3A6F), `menu_bar_end_tbl` ($3A71)).
+
+The remaining **12 genuine shipping readers**:
 
 ```
 shift_key_commands  sort_cars_by_key  check_car_pair
-FUN_27ed  FUN_28f2  FUN_32d0  FUN_3a50  text_script_interp
+FUN_27ed  FUN_28f2  FUN_32d0  text_script_interp
 plot_line_octant
 FUN_635d  menu_wait_key  FUN_2f19  view_paint_lines_short
 ```
