@@ -2285,6 +2285,66 @@ void parse_two_digit_ascii_core(uint8_t char0, uint8_t char1, ParseNum *out)
     out->n = (uint8_t)(((value - 0x29u) >> 7) & 1u);
 }
 
+/* ===========================================================================
+   $635D  seed_car_track_position — place one car on the grid at (re)start  (#158)
+   ---------------------------------------------------------------------------
+   Called per car by FUN_4d4d, tick_race_timers and console_io (the reset paths).
+   Turns a free-running-timer entropy byte into a per-car track position:
+
+     * read USRVIA_T2CL (a clock read used as entropy) and keep its bit 7 as the sign;
+     * reduce the low 7 bits to a small remainder — subtract 4 up to 16 times, then, only
+       if that ran the counter out (the byte was >= 64), subtract 7 up to 9 times.  The
+       6502 keeps the quotient in Y and throws it away; only the remainder in A is used;
+     * negate the remainder iff the raw byte was negative (abs8 tests that saved sign);
+     * double it, subtract the car's grid-base row (car_grid_base[x] = car index >> 1);
+     * scale by race_class — Novice (0) doubles, Amateur (1) leaves it, Pro (>=2) halves
+       it arithmetically (the ROL car scratch / ROR A pair is a sign-preserving >>1);
+     * add the held track scale and store car_track_position[x];
+     * step the car-index cursor back one (mod 20) and hand it back.
+
+   A math_lo ($74) reader-nativization: $74 is the routine's own scratch (the post-grid
+   value, rotated on the Pro path).  It becomes a C local; the twin still writes $74's
+   per-path 6502 exit value so the cell stays byte-exact until the final $74/$75
+   relocation.  Exit ABI: X live (the decremented cursor the caller's loop reads); A and
+   the flags are dead (FUN_4d4d does TXA, the others return). */
+static AddFlags negate8(uint8_t a);            /* defined below ($3452 abs8's cpu-free half) */
+static uint8_t  car_index_dec_core(uint8_t x); /* defined below ($507E) */
+uint8_t seed_car_track_position_core(uint8_t x, uint8_t entropy, uint8_t *mathlo_out)
+{
+    uint8_t sign = entropy & 0x80u;                  /* $635F LDA $FE68 / $6362 PHP — raw byte's N */
+    uint8_t a    = entropy & 0x7Fu;                  /* $6363 AND #$7F */
+
+    uint8_t y = 0x10u;                               /* $6365 LDY #$10 */
+    while (a >= 4u && y != 0u) { a = (uint8_t)(a - 4u); y--; }   /* $6367 CMP #4 / SBC #4 / DEY */
+    if (y == 0u) {                                   /* loop 1 exhausted → byte was >= 64 */
+        y = 9u;                                      /* $6370 LDY #9 */
+        while (a >= 7u && y != 0u) { a = (uint8_t)(a - 7u); y--; }  /* $6372 CMP #7 / SBC #7 / DEY */
+    }
+
+    if (sign) a = negate8(a).hi;                     /* $637C abs8 — negate iff the raw byte was negative */
+
+    a = (uint8_t)(a << 1);                           /* $637F ASL A */
+    uint8_t base    = mem[CAR_GRID_BASE + x];        /* $6381 SBC car_grid_base,X (SEC set first) */
+    uint8_t gridSub = (uint8_t)(a - base);
+    uint8_t carry   = (uint8_t)(a >= base);          /* the SEC/SBC no-borrow carry */
+    uint8_t mathlo  = gridSub;                       /* $6384 math_lo = A */
+
+    uint8_t scaled;
+    uint8_t dey = (uint8_t)(race_class - 1u);        /* $6386 LDY race_class / $6389 DEY */
+    if (dey == 0u) {                                 /* $638A BEQ → Amateur (race_class == 1) */
+        scaled = gridSub;
+    } else if ((dey & 0x80u) == 0u) {                /* $638C BPL (DEY-N clear) → Pro: ROL/ROR = asr1 */
+        mathlo = (uint8_t)((gridSub << 1) | carry);  /* $6392 ROL math_lo (carry-in = grid SBC C) */
+        scaled = (uint8_t)((gridSub & 0x80u) | (gridSub >> 1)); /* $6394 ROR A (carry-in = math_lo bit7 = sign) */
+    } else {                                         /* DEY-N set → ASL (race_class 0, or >= $81) */
+        scaled = (uint8_t)(gridSub << 1);            /* $638E ASL A */
+    }
+
+    mem[CAR_TRACK_POSITION + x] = (uint8_t)(scaled + track_scale_saved); /* $6395 CLC / ADC / $6399 STA */
+    *mathlo_out = mathlo;
+    return car_index_dec_core(x);                    /* $639C DEX mod 20 */
+}
+
 /* Exit ABI of emit_edge_width_offset.  X passes through the caller's; A = the point's scan line
    (the CMP at each exit sets A to it); Y = edge_cursor; V is the width ADC's overflow when the
    scoring branch ran, else the entry V; N/Z/C are the last CMP's on that exit path. */

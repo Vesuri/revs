@@ -66,6 +66,10 @@
 #define MENU_SCREEN_BASE   0x7C00u /* front end: $7C00-$7FFF as the MODE 7 teletext page (== TT_SCREEN_BASE; time-multiplexed with the race view's view_cell_chain_a) */
 #define MENU_BAR_START_TBL 0x3A6Fu /* menu_draw_gfx_bars: per-row start column of the two graphics bars */
 #define MENU_BAR_END_TBL   0x3A71u /* ...and end column */
+#define CAR_TRACK_POSITION 0x0128u /* seed_car_track_position: per-car track position (20 entries) */
+#define CAR_GRID_BASE      0x04A0u /* per-car grid base row = car index >> 1 */
+#define CAR_SEED_INDEX     0x004Au /* car-index cursor for the grid-seeding loop */
+#define USRVIA_T2CL        0xFE68u /* User VIA Timer 2 counter low — free-running entropy source */
 
 /* ---- exit-struct typedefs (moved out of revs_native.c) ---- */
 typedef struct { uint8_t a, x, y, n, z, v, c; } SlotExit;
@@ -382,6 +386,7 @@ void draw_dash_needle_core(uint8_t steerLo, uint8_t steerHi, DashNeedle *out);
 void menu_draw_gfx_bars_core(void);
 typedef struct { uint8_t a, c, z, n, mathlo, writeMathlo; } ParseNum;
 void parse_two_digit_ascii_core(uint8_t char0, uint8_t char1, ParseNum *out);
+uint8_t seed_car_track_position_core(uint8_t x, uint8_t entropy, uint8_t *mathlo_out);
 int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out);
 uint8_t vdu_char_def_core(uint8_t ch);
 uint8_t vdu_char_emit_core(void);

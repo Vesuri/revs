@@ -1258,6 +1258,92 @@ static int test_parse_two_digit_ascii(void)
     return fail;
 }
 
+void seed_car_track_position(void);
+void seed_car_track_position__t6502(void);
+void platform_test_via_t2(unsigned char v);
+
+static int test_seed_car_track_position(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("seed_car_track_position");
+    if (!want("seed_car_track_position")) return 0;
+
+    /* $635D — place one car on the grid from a USRVIA_T2CL ($FE68) entropy byte.  X (the
+       decremented car_seed_index cursor) is the sole live exit — the caller FUN_4d4d loops on
+       it.  Everything else is mem[]: math_lo ($74, the campaign's target — its per-path 6502
+       exit value is still written until relocation), car_track_position[x] ($0128+x, the
+       result), car_seed_index ($4A, stored back), and the PHP/PLP residue byte at
+       mem[$0100+S] (the pushed P from the LDA $FE68's N/Z plus the entry V/D/I/C — the twin's
+       shim reproduces it, since the oracle's JSRs are C calls that never touch the emulated
+       stack).  D pinned 0: the ADC $5F40 at $6396 is binary and this is the (re)start path,
+       not one of the 8 SED sites (docs/static-map.md §Decimal mode). */
+    unsigned mask = LIVE_X;
+
+    int novice = 0, amateur = 0, pro = 0, signSet = 0, loop2 = 0, wrapX = 0, entZero = 0;
+    int cases = 4000 * scale;
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;
+        /* Entry V/I/C feed the PHP residue byte (the LDA overwrites only N/Z); randomise them
+           so a shim bug in any of those residue bits is caught. */
+        c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.I = xs() & 1; c.C = xs() & 1;
+
+        /* car_seed_index ($4A): 0..19, including 0 so car_index_dec's 0->19 wrap is exercised. */
+        uint8_t x = (uint8_t)(xs() % 20u);
+        pre[0x004Au] = x;
+        if (x == 0u) wrapX++;
+
+        /* car_grid_base[x] ($04A0+x): subtracted from the doubled jitter — random. */
+        pre[0x04A0u + x] = (uint8_t)xs();
+        /* track_scale_saved ($5F40): added at the tail — random. */
+        pre[0x5F40u] = (uint8_t)xs();
+
+        /* race_class ($5F3A): cycle 0/1/2 so all three scaling arms run (Novice x2 / Amateur
+           x1 / Pro asr1), plus fully-random values a twelfth of the time. */
+        uint8_t rc = (t % 4 == 3) ? (uint8_t)xs() : (uint8_t)(t % 3);
+        pre[0x5F3Au] = rc;
+        if (rc == 0u)      novice++;
+        else if (rc == 1u) amateur++;
+        else               pro++;   /* rc >= 2 all take the Pro arm */
+
+        /* The entropy byte through $FE68.  Force each arm: sign bit (bit7 -> abs8 negate),
+           loop2 (raw & $7F >= 64 -> loop1 exhausts y), small values, and zero (residue Z). */
+        uint8_t ent;
+        switch (t % 5) {
+            case 0: ent = 0u; break;                              /* zero: residue Z, no jitter */
+            case 1: ent = (uint8_t)(0x80u | (xs() & 0x7Fu)); break;/* sign set */
+            case 2: ent = (uint8_t)(0x40u + xs() % 0x40u); break; /* raw&$7F in 64..127 -> loop2 */
+            case 3: ent = (uint8_t)(xs() % 0x40u); break;         /* small: loop1 exits early */
+            default: ent = (uint8_t)xs(); break;                  /* anything */
+        }
+        platform_test_via_t2(ent);
+        if (ent == 0u) entZero++;
+        if (ent & 0x80u) signSet++;
+        if ((ent & 0x7Fu) >= 64u) loop2++;
+
+        fail += diff_run("seed_car_track_position", pre, c, seed_car_track_position,
+                         seed_car_track_position__t6502, mask, t, &printed);
+    }
+    platform_test_via_t2(0);
+
+    if (!novice || !amateur || !pro || !signSet || !loop2 || !wrapX || !entZero) {
+        printf("[VACUOUS] seed_car_track_position: an arm was never reached "
+               "(%d novice, %d amateur, %d pro, %d sign, %d loop2, %d wrapX, %d entZero)\n",
+               novice, amateur, pro, signSet, loop2, wrapX, entZero);
+        fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  live=X  "
+           "(%d nov/%d ama/%d pro, %d sign, %d loop2, %d wrapX, %d ent0)\n",
+           "seed_car_track_position", cases, fail,
+           novice, amateur, pro, signSet, loop2, wrapX, entZero);
+    return fail;
+}
+
 void view_paint_lines(void);
 void view_paint_lines__t6502(void);
 extern unsigned long g_viewTableCollisions;   /* asserted below; see revs_native.c */
@@ -6435,6 +6521,7 @@ int main(int argc, char** argv)
     fail += test_draw_dash_needles();
     fail += test_menu_draw_gfx_bars();
     fail += test_parse_two_digit_ascii();
+    fail += test_seed_car_track_position();
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();

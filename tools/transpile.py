@@ -1109,6 +1109,15 @@ VALIDATE_FUNCS = {
     # invalid, or value >= $29).  A math_lo READER-nat: $74 held the running value (digit0, then
     # digit0*10), a local now, kept at its per-path 6502 exit value until the $74 relocation.
     0x32D0,
+    # ⭐ TWIN #158 — seed_car_track_position ($635D, was FUN_635d).  Called per car by the reset
+    # paths (FUN_4d4d, tick_race_timers, console_io) to place a car on the grid: a USRVIA_T2CL
+    # timer-entropy byte is reduced to a small remainder, signed (abs8), doubled, has the car's
+    # grid-base row subtracted, is scaled by race_class (Novice x2 / Amateur x1 / Pro asr1), gains
+    # track_scale_saved, and lands in car_track_position[x]; the car-index cursor then steps back
+    # one (mod 20).  A math_lo READER-nat: $74 is the routine's scratch (post-grid value, rotated
+    # on the Pro path), a local now kept at its per-path 6502 exit value until the $74 relocation.
+    # Exit ABI: X live; A/flags dead.  $FE68 is pinned per case by platform_test_via_t2.
+    0x635D,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

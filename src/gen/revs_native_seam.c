@@ -626,6 +626,33 @@ void parse_two_digit_ascii(void)
     cpu.N = p.n;
 }
 
+void seed_car_track_position(void)
+{
+    /* $635D — seed one car's grid position from a timer-entropy byte (#158).  A math_lo
+       reader-nat: $74 is internal scratch, its per-path exit value written below.  Exit ABI:
+       X live (the decremented car-index cursor the caller's loop reads); A/flags dead. */
+    uint8_t x       = mem[CAR_SEED_INDEX];               /* $635D LDX car_seed_index */
+    uint8_t entropy = (uint8_t)bus_read(USRVIA_T2CL);    /* $635F LDA $FE68 (one read, as the 6502) */
+
+    /* $6362 PHP / $637B PLP is balanced (S restored) but the pushed P byte stays on the stack as a
+       residue at $0100+S that the differential compares.  It is the flags AFTER LDA $FE68: N = the
+       entropy byte's bit 7, Z set iff it was 0; C/V/D/I carry through from entry; bit5 and B are set
+       in the pushed copy.  Nothing after (JSR/RTS are C calls in the oracle) rewrites this cell. */
+    mem[0x0100u + cpu.S] = (uint8_t)(0x30u
+        | ((entropy & 0x80u) ? 0x80u : 0u)               /* N */
+        | (cpu.V ? 0x40u : 0u)
+        | (cpu.D ? 0x08u : 0u)
+        | (cpu.I ? 0x04u : 0u)
+        | ((entropy == 0u) ? 0x02u : 0u)                 /* Z */
+        | (cpu.C ? 0x01u : 0u));                         /* C */
+
+    uint8_t mathlo;
+    uint8_t xExit   = seed_car_track_position_core(x, entropy, &mathlo);
+    math_lo = mathlo;                                    /* $6384/$6392 — $74 exit value per path */
+    cpu.X = xExit;                                       /* $639C..$639F — decremented cursor */
+    mem[CAR_SEED_INDEX] = xExit;                         /* $639F STA car_seed_index */
+}
+
 void mirrors_update(void)
 {
     /* $7B00 — the once-per-frame wing-mirror update (race_main_loop body, $1739).  Result-only:
