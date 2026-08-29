@@ -1175,6 +1175,20 @@ VALIDATE_FUNCS = {
     # (D=1 for that one op only), the rest of the routine is D=0.  Exit ABI dead (both callers reload
     # X next) — LIVE_NONE, mem[]-only compare.  ⚠ Fixture pins the SMC opcode mem[$2771]=$C9.
     0x2692,
+    # $5204 plot_line_octant — TWIN #164.  The self-modifying octant LINE PLOTTER every straight
+    # line in the engine goes through (dial_needle_angle / draw_dash_needle fall into it).  A DDA
+    # walk: per octant it patches the major/minor step opcode into its own body ($3B86->$5220,
+    # $3B8E->$529B), then per pixel adds math_lo into a DDA accumulator (major step on carry, minor
+    # step always), carrying x's sub-cell overflow into the plot pointer by one MODE 5 cell ($08)
+    # and y's scan-line overflow by one char row ($140), OR-ing the pixel in and recording an undo
+    # entry.  The reader-nat targets are math_lo ($74, the read-only DDA increment) and math_hi
+    # ($75, the pixel counter DEC'd to its $FF exit) — both become C locals, kept at their 6502 exit
+    # values in mem[] until the $74/$75 relocation (caching is sound: the plot pointer is a screen
+    # address, so nothing here writes zero page).  The two SMC slots are DISPATCHED ON THE CELLS,
+    # not cached, so a pointer that walks its own code still matches.  No BCD (binary DDA).  Exit
+    # ABI dead (both callers return/reload) — LIVE_NONE, mem[]-only compare.  ⚠ Fixture plants valid
+    # octant step-opcodes and keeps the pointer walk in mid-RAM (off zero page and the undo tables).
+    0x5204,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

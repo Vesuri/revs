@@ -589,6 +589,16 @@ void draw_dash_needles(void)
     plot_line_octant();                          /* $51A4 */
 }
 
+void plot_line_octant(void)
+{
+    /* $5204 — the self-modifying octant line plotter (twin #164).  The 6502 entry ABI carries the
+       octant in shared_temp_76 and the start scan line in Y; the core does all the mem[] work (the
+       two SMC opcode slots, the plot pointer walk, the undo list, the pixel OR).  math_lo ($74) /
+       math_hi ($75) keep their 6502 exit values until the $74/$75 relocation.  Result-only: exit
+       regs/flags are dead — dial_needle_angle / draw_dash_needle fall through here and then return. */
+    plot_line_octant_core(cpu.Y);
+}
+
 void driver_name_address(void)
 {
     /* $3CEB — the (lo,hi) address of the Nth driver name in driver_name_table ($4050).  The 6502

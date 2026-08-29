@@ -2202,6 +2202,147 @@ void draw_dash_needle_core(uint8_t steerLo, uint8_t steerHi, DashNeedle *out)
 }
 
 /* ---------------------------------------------------------------------------
+   $5204  plot_line_octant — A SELF-MODIFYING OCTANT LINE PLOTTER  (twin #164)
+
+   ⚠ SELF-MODIFYING BY CONSTRUCTION.  A DDA straight-line drawer whose major- and
+   minor-axis STEP opcodes are chosen per octant and PATCHED INTO the routine's own
+   body: octant_major_step_tbl[octant] -> the opcode slot at $5220, and
+   octant_minor_step_tbl[octant] -> the slot at $529B.  Both slots are compared mem[]
+   cells, so the twin writes them exactly as the 6502 does and DISPATCHES ON THE CELLS
+   (never a cached copy) — that is what keeps it correct even in the pathological case
+   where the plot pointer walks over its own code.  The octant index arrives in
+   shared_temp_76 ($76); the start scan line arrives in Y.
+
+   ⚠ Not just the rev-counter needle — dial_needle_angle and draw_dash_needle both
+   fall through here, and anything drawing a straight line goes through it.
+
+   Reader-nativization (the wide-value cleanup): the DDA increment lived in math_lo
+   ($74, read-only here) and the pixel counter in math_hi ($75, decremented to its $FF
+   exit).  Both become C locals; math_lo is untouched (so its cell keeps its entry
+   value) and math_hi is written back with its 6502 exit value, until the $74/$75
+   relocation.  Caching them is sound because nothing here writes $74/$75 — the plot
+   pointer is a screen address, never zero page.  No BCD (the DDA is a plain binary
+   accumulator; not one of the eight SED sites).  Exit regs/flags are dead — both
+   callers return / reload immediately — so this is LIVE_NONE, mem[]-only.
+
+   The DDA: acc starts at -point_delta_hi; each pixel acc += math_lo; when that carries,
+   acc -= point_delta_hi and the MAJOR step fires (an extra move along the fast axis).
+   The MINOR step fires every pixel.  x is the sub-cell column 0..7 and y the scan line
+   0..7; when either steps past its cell the plot pointer moves one MODE 5 cell ($08) or
+   one character row ($140) and the coordinate wraps.  Each pixel records an undo entry
+   (address + original byte) so undraw_plot_lines can erase the line next frame.
+   --------------------------------------------------------------------------- */
+#define OCTANT_MAJOR_STEP_TBL 0x3B86u  /* per octant: major-axis step opcode -> $5220 */
+#define OCTANT_MINOR_STEP_TBL 0x3B8Eu  /* per octant: minor-axis step opcode -> $529B */
+#define SMC_MAJOR_STEP        0x5220u  /* the patched major-step opcode slot */
+#define SMC_MINOR_STEP        0x529Bu  /* the patched minor-step opcode slot */
+#define PLOT_UNDO_BYTE        0x0780u  /* undo list: original byte, saved before the OR */
+#define PLOT_UNDO_PTR_LO      0x07A8u  /* undo list: low byte of the plotted address */
+#define PLOT_UNDO_PTR_HI      0x07D0u  /* undo list: its high byte */
+#define PLOT_LINE_KEEP_TBL    0x3FE8u  /* pixel_keep_others_tbl — AND mask (keep the other pixels) */
+#define PLOT_LINE_COLOUR_TBL  0x34F8u  /* plot_line_colour_tbl — OR mask (this pixel's colour bits) */
+
+void plot_line_octant_core(uint8_t entryScanline)
+{
+    uint8_t octant = shared_temp_76;                            /* $5204 */
+    mem[SMC_MAJOR_STEP] = mem[OCTANT_MAJOR_STEP_TBL + octant];  /* $5209 -> SMC slot */
+    mem[SMC_MINOR_STEP] = mem[OCTANT_MINOR_STEP_TBL + octant];  /* $520f -> SMC slot */
+
+    uint8_t x   = shared_temp_77;                          /* $5212 sub-cell column */
+    uint8_t y   = entryScanline;                           /* Y — start scan line */
+    uint8_t incr  = math_lo;                               /* $521a DDA increment (reader, invariant) */
+    uint8_t count = math_hi;                               /* $529c pixel counter (reader) */
+    uint8_t acc = (uint8_t)(0u - mem[POINT_DELTA_HI]);     /* $5214-5219 acc = -delta; C then cleared */
+
+    for (;;) {
+        /* $521a DDA step: acc += incr, carry-in always 0 (CLC at $5219 / $529a). */
+        unsigned sum = (unsigned)acc + incr;
+        acc = (uint8_t)sum;
+        if (sum > 0xFFu) {                                 /* $521c carry -> the major step */
+            acc = (uint8_t)(acc - mem[POINT_DELTA_HI]);    /* $521e SBC delta (C=1) */
+            switch (mem[SMC_MAJOR_STEP]) {                 /* $5220 SMC opcode slot */
+            case 0x88u: y = (uint8_t)(y - 1); break;       /* DEY */
+            case 0xC8u: y = (uint8_t)(y + 1); break;       /* INY */
+            case 0xCAu: x = (uint8_t)(x - 1); break;       /* DEX */
+            case 0xE8u: x = (uint8_t)(x + 1); break;       /* INX */
+            default: platform_smc_unhandled(SMC_MAJOR_STEP, mem[SMC_MAJOR_STEP]); return;
+            }
+        }
+        bearing_lo = acc;                                  /* $5221 park the DDA accumulator */
+
+        /* $5223-5229 — the MODE 5 pixel index (0..3) folded onto the mask base. */
+        uint8_t maskIdx = (uint8_t)(((x >> 1) & 3u) | hypot_min_hi);
+        shared_temp_76 = maskIdx;
+
+        /* $522b-524e — carry x's cell overflow/underflow into the plot pointer (one $08 cell). */
+        uint8_t a;
+        if (x & 0x80u) {                                   /* $522c x dropped below 0 -> step left */
+            x = 7u;                                        /* $522e */
+            int t = (int)plot_ptr_lo - 8;                  /* $5230-5233 */
+            plot_ptr_lo = (uint8_t)t;
+            if (t >= 0) goto x_done;                       /* $5237 no borrow -> keep this cell */
+            plot_ptr_hi = (uint8_t)(plot_ptr_hi - 1);      /* $5239 borrow into the high byte */
+            a = plot_ptr_lo;                               /* $523b BCS not taken (borrow) -> re-test */
+        } else {
+            a = x;                                         /* $522b */
+        }
+        if (a >= 8u) {                                     /* $523d-523f a >= 8 -> step right */
+            x = 0u;                                        /* $5241 */
+            int t = (int)plot_ptr_lo + 8;                  /* $5243-5246 */
+            plot_ptr_lo = (uint8_t)t;
+            if (t > 0xFF) plot_ptr_hi = (uint8_t)(plot_ptr_hi + 1); /* $524a-524c */
+        }
+    x_done:
+        shared_temp_77 = x;                                /* $524e */
+
+        /* $5250-527a — carry y's scan-line overflow/underflow into the pointer (one $140 row). */
+        uint8_t undoIdx = plot_undo_count;                 /* $5250 */
+        uint8_t ay;
+        if (y & 0x80u) {                                   /* $5253 y dropped below 0 -> row up */
+            int t = (int)plot_ptr_lo - 0x40;               /* $5255-525a */
+            plot_ptr_lo = (uint8_t)t;
+            plot_ptr_hi = (uint8_t)(plot_ptr_hi - 1 - (t < 0 ? 1 : 0)); /* $525c-5260 */
+            y = 7u;                                        /* $5262 */
+            ay = 7u;                                       /* $5264 (BNE always taken) */
+        } else if (y >= 8u) {                              /* $5267-5269 y >= 8 -> row down */
+            int t = (int)plot_ptr_lo + 0x40;               /* $526b-5270 */
+            plot_ptr_lo = (uint8_t)t;
+            plot_ptr_hi = (uint8_t)(plot_ptr_hi + 1 + (t > 0xFF ? 1 : 0)); /* $5272-5276 */
+            y = 0u;                                        /* $5278 */
+            ay = 0u;                                       /* $527a */
+        } else {
+            ay = y;                                        /* $5267 fall-through: A = y */
+        }
+
+        /* $527b-5294 — record the undo entry, then OR the pixel into the cell. */
+        ay = (uint8_t)(ay | plot_ptr_lo);                  /* $527b address low, scan line folded in */
+        mem[PLOT_UNDO_PTR_LO + undoIdx] = ay;              /* $527d */
+        mem[PLOT_UNDO_PTR_HI + undoIdx] = plot_ptr_hi;     /* $5282 */
+        uint16_t addr = (uint16_t)((plot_ptr_lo | (plot_ptr_hi << 8)) + y);  /* ($70),Y */
+        uint8_t screenByte = (uint8_t)bus_read(addr);      /* $5285 */
+        mem[PLOT_UNDO_BYTE + undoIdx] = screenByte;        /* $5287 */
+        plot_undo_count = (uint8_t)(undoIdx + 1);          /* $528a */
+        uint8_t out = (uint8_t)((screenByte & mem[PLOT_LINE_KEEP_TBL + maskIdx])
+                                | mem[PLOT_LINE_COLOUR_TBL + maskIdx]);       /* $528e-5291 */
+        bus_write(addr, out);                              /* $5294 */
+
+        /* $5296-52a0 — the minor (every-pixel) step, then loop until the counter goes negative. */
+        x   = shared_temp_77;                              /* $5296 (a no-op mirror of the 6502) */
+        acc = bearing_lo;                                  /* $5298 restore the DDA accumulator */
+        switch (mem[SMC_MINOR_STEP]) {                     /* $529b SMC opcode slot */
+        case 0x88u: y = (uint8_t)(y - 1); break;           /* DEY */
+        case 0xC8u: y = (uint8_t)(y + 1); break;           /* INY */
+        case 0xCAu: x = (uint8_t)(x - 1); break;           /* DEX */
+        case 0xE8u: x = (uint8_t)(x + 1); break;           /* INX */
+        default: platform_smc_unhandled(SMC_MINOR_STEP, mem[SMC_MINOR_STEP]); return;
+        }
+        count = (uint8_t)(count - 1);                      /* $529c DEC math_hi */
+        if (count & 0x80u) break;                          /* $529e BMI -> done */
+    }
+    math_hi = count;                                       /* the pixel counter's 6502 exit value ($FF) */
+}
+
+/* ---------------------------------------------------------------------------
    $3A50  menu_draw_gfx_bars — TWO TELETEXT GRAPHICS BARS INTO THE MENU PAGE (twin #156)
 
    Called once from front_end_menus ($63ED), while MODE 7 is up so $7C00-$7FFF is

@@ -389,6 +389,7 @@ void dial_needle_angle_core(uint8_t engineRevs, NeedleDial *out);
 void driver_name_address_core(uint8_t index, NamePtr *out);
 void draw_dash_needle_core(uint8_t steerLo, uint8_t steerHi, DashNeedle *out);
 void menu_draw_gfx_bars_core(void);
+void plot_line_octant_core(uint8_t entryScanline);
 typedef struct { uint8_t a, c, z, n, mathlo, writeMathlo; } ParseNum;
 void parse_two_digit_ascii_core(uint8_t char0, uint8_t char1, ParseNum *out);
 uint8_t seed_car_track_position_core(uint8_t x, uint8_t entropy, uint8_t *mathlo_out);

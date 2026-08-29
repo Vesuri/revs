@@ -1989,6 +1989,130 @@ static int test_check_car_pair(void)
     return fail;
 }
 
+void plot_line_octant(void);
+void plot_line_octant__t6502(void);
+
+/* ==========================================================================
+   $5204 plot_line_octant — THE SELF-MODIFYING OCTANT LINE PLOTTER  (twin #164)
+   --------------------------------------------------------------------------
+   Result-only (LIVE_NONE): both callers (dial_needle_angle's fall-through at $51E3 and
+   draw_dash_needles at $517C) reload immediately and no exit register/flag is live, so every
+   observable effect is in mem[] — the eight pixels ORed into the screen page through ($70),Y,
+   the undo list it appends (plot_undo_byte/ptr_lo/ptr_hi at $0780/$07A8/$07D0, count $69),
+   plot_ptr_lo/hi as the walk left them, shared_temp_76/77 and bearing_lo scratch, and the
+   reader-nat cell math_hi ($75) which keeps its 6502 exit value ($FF) until relocation.
+
+   This is the reader-nativization: the DDA increment (math_lo $74) and the pixel counter
+   (math_hi $75) become C locals `incr`/`count`.  Caching them across the loop is sound
+   BECAUSE plot_line_octant is a LEAF — no child call, and the plot pointer is always a screen
+   address, so nothing in the loop rewrites zero page $74/$75 (contrast #159's crux, where a
+   mid-routine child overwrote them).  The twin still writes math_hi's 6502 exit value at the
+   end so mem[] stays byte-exact until the $74/$75 relocation.
+
+   SMC seams.  The major- and minor-axis STEP OPCODES are patched into the routine from the two
+   octant tables ($3B86 -> $5220, $3B8E -> $529B) indexed by the octant in shared_temp_76.  The
+   twin DISPATCHES ON THE CELLS $5220/$529B (not a cached copy): a line that walked its own code
+   would be visible only that way, and the trap arm (an opcode that is not DEY/INY/DEX/INX) is
+   real code in both models, so it is exercised rather than avoided — which needs
+   Platform::smcUnhandled to count, not abort.
+
+   Coverage.  All 8 octants are planted through shared_temp_76 with valid step opcodes in both
+   tables; a bounded pixel count ($75 = 1..$14) and undo-count base (0..8) keep the undo append
+   inside the 40-entry tables; the minor delta (point_delta_hi $83) is varied so the DDA takes
+   both the carry (major-step) and no-carry paths; the entry x/y (shared_temp_77 / c.Y, 0..7)
+   and plot_ptr sweep the column/row wrap branches; hypot_min_hi is 0 or 4 to fold the MODE 5
+   pixel index onto both halves of the keep/colour tables.  A final slice plants an ILLEGAL
+   opcode in the MINOR table entry (always executed) so the trap-and-return unwind is compared. */
+static int test_plot_line_octant(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("plot_line_octant");
+    if (!want("plot_line_octant")) return 0;
+
+    unsigned mask = LIVE_NONE;
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+    g_smcUnhandled = 0;
+
+    static const uint8_t STEP_OPS[4] = { 0x88, 0xC8, 0xCA, 0xE8 };  /* DEY/INY/DEX/INX */
+    int legal   = 6000 * scale;
+    int illegal = 800  * scale;
+    int octSeen[8] = {0}, fold0 = 0, fold1 = 0;
+    unsigned long smcLegal;
+
+    for (t = 0; t < legal + illegal; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;                                   /* plotter path, not a SED site */
+        c.Y = (uint8_t)(xs() & 7u);                /* entry scanline 0..7 */
+
+        uint8_t oct = (uint8_t)(t & 7u);
+        pre[0x0076u] = oct;                        /* shared_temp_76 = octant */
+        for (unsigned k = 0; k < 8; k++) {
+            pre[0x3B86u + k] = STEP_OPS[(t + k) & 3u];      /* major-axis step opcodes */
+            pre[0x3B8Eu + k] = STEP_OPS[(t + k + 1u) & 3u]; /* minor-axis step opcodes */
+        }
+        pre[0x0077u] = (uint8_t)(xs() & 7u);       /* shared_temp_77 = entry x 0..7 */
+        pre[0x0074u] = (uint8_t)xs();              /* math_lo = DDA increment */
+        pre[0x0075u] = (uint8_t)((xs() % 0x14u) + 1u);      /* math_hi = pixel count 1..$14 */
+        pre[0x0083u] = (uint8_t)((xs() % 0x40u) + 1u);      /* point_delta_hi = minor delta */
+        pre[0x0079u] = (t & 1) ? 0x04u : 0x00u;    /* hypot_min_hi fold base */
+        pre[0x0069u] = (uint8_t)(xs() % 9u);       /* plot_undo_count base 0..8 */
+        pre[0x0070u] = (uint8_t)xs();              /* plot_ptr_lo */
+        pre[0x0071u] = (uint8_t)(0x60u + (xs() % 8u));      /* plot_ptr_hi mid-RAM, off ZP/HW */
+
+        if (t >= legal)                            /* illegal slice: trap the ALWAYS-run minor step */
+            pre[0x3B8Eu + oct] = 0x00u;            /* BRK — not a step opcode */
+        else {
+            octSeen[oct]++;
+            if (pre[0x0079u]) fold1++; else fold0++;
+        }
+
+        fail += diff_run("plot_line_octant", pre, c, plot_line_octant,
+                         plot_line_octant__t6502, mask, t, &printed);
+        if (t == legal - 1) smcLegal = g_smcUnhandled;
+    }
+    unsigned long smcIllegal = g_smcUnhandled - smcLegal;
+    unsetenv("REVS_SMC_CONTINUE");
+
+    /* Non-vacuity.  Every octant reached with a valid step in both seams (so the plotter runs
+       to completion, not into a trap); both fold bases seen; zero traps over the legal cases
+       (a trapping pre-state would compare almost nothing) and non-zero over the illegal ones. */
+    int missing = 0;
+    for (int i = 0; i < 8; i++) if (octSeen[i] == 0) missing++;
+    if (missing) {
+        printf("[VACUOUS] plot_line_octant: %d of 8 octants never reached (", missing);
+        for (int i = 0; i < 8; i++) printf("%d%s", octSeen[i], i < 7 ? "/" : "");
+        printf(")\n");
+        fail++;
+    }
+    if (fold0 == 0 || fold1 == 0) {
+        printf("[VACUOUS] plot_line_octant: the pixel-index fold went only one way "
+               "(%d base 0, %d base 4)\n", fold0, fold1);
+        fail++;
+    }
+    if (smcLegal != 0) {
+        printf("[VACUOUS] plot_line_octant: %lu SMC traps over the %d LEGAL cases — a step "
+               "opcode planted was not DEY/INY/DEX/INX\n", smcLegal, legal);
+        fail++;
+    }
+    if (smcIllegal == 0) {
+        printf("[VACUOUS] plot_line_octant: 0 SMC traps over the %d ILLEGAL cases — the "
+               "trap-and-return unwind was never reached\n", illegal);
+        fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  result-only  "
+           "(octants %d/%d/%d/%d/%d/%d/%d/%d, %lu traps in %d illegal)\n",
+           "plot_line_octant", legal + illegal, fail,
+           octSeen[0], octSeen[1], octSeen[2], octSeen[3],
+           octSeen[4], octSeen[5], octSeen[6], octSeen[7],
+           smcIllegal, illegal);
+    return fail;
+}
+
 static int test_view_paint_lines(void)
 {
     static uint8_t pre[65536];
@@ -7060,6 +7184,7 @@ int main(int argc, char** argv)
     fail += test_shift_key_commands();
     fail += test_stage_nearby_car();
     fail += test_check_car_pair();
+    fail += test_plot_line_octant();
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();

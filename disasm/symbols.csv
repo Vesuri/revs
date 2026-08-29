@@ -449,6 +449,7 @@ addr,name,type,is_hw,note
 0x0780,plot_undo_byte,table,0,"the ORIGINAL byte plot_line_octant read at each plotted address, saved before the OR."
 0x07A8,plot_undo_ptr_lo,table,0,"low byte of the address plot_undo_byte[n] came from (plot_ptr_lo ORed with the Y offset, so the pointer is already complete)."
 0x07D0,plot_undo_ptr_hi,table,0,"high byte of the same address."
+0x34F8,plot_line_colour_tbl,table,0,"[DERIVED] the OR mask plot_line_octant ($5291) lays into each cell — the counterpart to pixel_keep_others_tbl ($3FE8): the keep-mask ANDs the background down to the other pixels, this ORs in the drawn pixel's colour bits. Indexed by the same MODE 5 pixel index 0-3 (folded onto hypot_min_hi's base, so 8 entries)."
 0x513A,draw_dash_needles,func,0,"the last drawing call of race_main_loop ($17B4): undraw_plot_lines to erase last frame's marks, then dial_needle_angle — which FALLS THROUGH into plot_line_octant — for the rev-counter needle, then a second 6-pixel line ($75=6, $79=4 for a different pattern) at the angle held in steer_angle_lo/hi, mapped through $3980 and folded about $3C/$4C. [DERIVED, 2026-08-17] that second mark is on the steering wheel: the angle it plots is now known to be written only by read_driving_controls, and $50FC puts it around cell 20 of character rows 16-20 (display lines 128-167, screen centre, above the dials), it moves with a steering-shaped quantity, and it is the only other thing on screen redrawn through the undo list."
 
 ## ---- the three cells the whole harness reads (named 2026-08-17, clearing the queue) ----
