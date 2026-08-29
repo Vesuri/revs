@@ -398,11 +398,32 @@ emulated stack). ⚠ The `race_class` scaling fork is **DEY-N, not `>= 2`**: the
 naive `>= 2` mismatched on the random-`race_class` cases. Named `seed_car_track_position` ($635D),
 `car_track_position` ($0128), `car_grid_base` ($04A0), `car_seed_index` ($4A) [INFERRED]).
 
-The remaining **10 genuine shipping readers**:
+`FUN_27ed` ($27ED, #159 — the per-frame per-car **update engine**, called once a frame from the
+driving loop ($117E/$2649) over cars 19..0, skipping `player_car`. For each car it picks a target
+speed from the segment ahead, derives a braking-proximity gap, integrates gap×4 into the 16-bit car
+speed `[car_speed_scaled:car_speed_frac]` (with a $BE overflow reset to 0), adds the speed into
+`car_state_1` **twice** — each carry stepping the car one offset unit via `track_pos_advance` (#134,
+which books a lap via `lap_complete` #136) — then steers `car_state_2` back toward centre. Two
+genuine wide values de-carried to `uint16_t`: the $2861 `<<2` of `[math_hi:A]` and the $2867 speed
+add. `math_lo`/`math_hi` ($74/$75) are written **inline** at their 6502 exit values — a mid-routine
+lap wrap overwrites $74/$75 via the same native `lap_complete_core` both differential sides call, so
+caching them would diverge (⚠ this is the crux of the reader-nativization for a routine that calls a
+$74/$75-writing child). `shared_temp_76` ($76) is a pure loop counter → a C local, restored to its
+$FF exit. `mask = LIVE_NONE` (both callers JSR $2692 next → mem[]-only compare); D=0 on this path.
+⚠ Fixture: `fill_random` covers the speed/gap/steering trees, but the lap-wrap that overwrites
+$74/$75 mid-routine is a compound-rare event random data never hits — so 2000/6000 cases **force**
+it (one non-player car driven onto L_decel with a known moderate speed, `car_state_1`=$FF for a
+guaranteed inner-loop overflow, distance one short of a full lap, `track_scan_active`/`flags_shape`
+bit6/lap-count gates opened so `lap_complete` reaches its $74/$75 writes). Named
+`car_race_flags` ($0100), `segment_pos_threshold` ($5305), `segment_speed_limit` ($5307),
+`race_position_offset` ($5A1A) [INFERRED]; `$3850` dual-use (engine_init entry / `car_speed_frac`
+table) noted, split queued in rename.md).
+
+The remaining **9 genuine shipping readers**:
 
 ```
 shift_key_commands  sort_cars_by_key  check_car_pair
-FUN_27ed  FUN_28f2  text_script_interp
+FUN_28f2  text_script_interp
 plot_line_octant
 menu_wait_key  FUN_2f19  view_paint_lines_short
 ```
