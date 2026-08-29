@@ -460,14 +460,23 @@ gap caught by a surviving sabotage). 5 sabotages FAIL distinct (1000/291/230/227
 $A6 (=idx8) outranks $96 (=idx7) in the top-down scan, so idx7 can only win when $A6 is not held —
 exactly when the spin cannot start. Documented at the fixture.)
 
-The remaining **7 genuine shipping readers**:
+The remaining **5 genuine shipping readers**:
 
 ```
 check_car_pair
 FUN_28f2  text_script_interp
-plot_line_octant
-menu_wait_key  FUN_2f19  view_paint_lines_short
+plot_line_octant  menu_wait_key
 ```
+
+⚠ **Two more over-counts dropped (2026-08-29), both oracle-only** (no runtime-reachable caller,
+zero perf win — the raw-address hit is inside a `__t6502` body only):
+- `FUN_2f19` ($2F19) — the span-cap surface writer, **already native** as `span_cap_line`
+  (revs_native.c). Its only callers, `FUN_2f12`/`FUN_2f7e`, are themselves reached only from the
+  span-plotter oracles (`draw_span_*_rev__t6502`, `road_span_plot__t6502`, `road_span_plot_2__t6502`).
+- `view_paint_lines_short` ($7F18) — the native `view_paint_lines` DRIVER reimplemented the whole
+  subsystem in `view_paint_lines_core`, which references **none** of the cell-chain routines
+  (`region_7bf7`, `view_cell_chain_*`, `view_next_scanline`, `view_paint_lines_clipped`,
+  `view_paint_lines_short`, `FUN_7f17`) — they survive only as the `view_paint_lines__t6502` oracle.
 
 ⭐ **Reader-nativization pattern (from #148):** the counter/scratch becomes a C local, but the
 twin still writes the cell's 6502 exit value so the routine stays byte-exact (validate compares
