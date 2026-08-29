@@ -1897,6 +1897,98 @@ static int test_stage_nearby_car(void)
     return fail;
 }
 
+void check_car_pair(void);
+void check_car_pair__t6502(void);
+
+/* ==========================================================================
+   $2692 check_car_pair — THE PER-FRAME OVERTAKING / POSITION-CHANGE PASS  (twin #163)
+   --------------------------------------------------------------------------
+   Result-only (LIVE_NONE): both callers ($1181, $264C) reload X immediately after, and every exit
+   register/flag is dead, so the whole observable effect is in mem[] — car_order (on a swap),
+   position_swap_flag ($62FE), pass_count_bcd ($2F), car_race_flags ($0100), car_flags_0 ($0114),
+   the mem[$0083] magnitude scratch, and the reader-nat cell math_lo ($74) which keeps its 6502
+   exit value until relocation.  car_gap / car_order_swap / car_index_dec/inc are the SAME native
+   cores in both models, so a wrong dispatch or a cached-instead-of-inline $74 diverges mem[].
+
+   Coverage.  The routine walks all 20 car_order positions, comparing each car to the one behind:
+     - EQUAL distance high bytes (slices 0,1) make every pair a direct near pair, so the gap is the
+       low-byte distance difference — many land gap<5 in the PROXIMITY arm, sweeping the c4 (gap>=4),
+       rf (car_race_flags bit6), fs-bit7 (car_flags_shape) and the diff >= $50/$64 boundaries, plus
+       the $2771 SMC compare against a random operand.
+     - A wrapped ring (slice 2) tuned so the in-range complement lands gap >= $F6 with N set drives
+       the SWAP arm: with the player forced into the order and lap counts levelled it reaches the
+       player sub-branches and the bracketed-SED same-lap BCD add into pass_count_bcd.
+     - Fully random (slice 3) samples the far exits and the wrapped-far tail.
+   T2 entropy ($FE68) is pinned per case to sweep the ent & $1F == 0 / != 0 split in the fs-bit7 arm,
+   and a seventh of cases plant a non-$C9 opcode at $2771 so the trap-and-return unwind is compared
+   too (equal trap counts asserted by diff_run; nonzero total checked below). */
+static int test_check_car_pair(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("check_car_pair");
+    if (!want("check_car_pair")) return 0;
+
+    unsigned mask = LIVE_NONE;
+
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+    g_smcUnhandled = 0;
+
+    int cases = 12000 * scale;
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;                                          /* only the pass-count ADC is BCD (bracketed SED) */
+
+        for (int i = 0; i < 20; i++) pre[0x013Cu + i] = (uint8_t)(xs() % 20u);  /* car_order: slots 0..19 */
+        pre[0x006Fu] = (uint8_t)(xs() % 20u);             /* player_car */
+        pre[0x0003u] = (uint8_t)(xs() % 20u);             /* zp_scratch_index: the start position */
+
+        if (t % 7 == 0) pre[0x2771u] = 0x00u;             /* SMC seam: trap-and-return path */
+        else            pre[0x2771u] = 0xC9u;             /*           CMP #imm — the compare runs */
+        pre[0x2772u] = (uint8_t)xs();                     /* sweep the diff >= operand boundary */
+
+        uint8_t ent = (t % 3 == 0) ? 0x00u : (uint8_t)((xs() % 0x1Fu) + 1u);  /* &$1F == 0 vs != 0 */
+        platform_test_via_t2(ent);
+
+        int slice = t % 4;
+        if (slice == 0 || slice == 1) {
+            /* NEAR / PROXIMITY: equal distance high bytes -> direct near pairs, gap = low diff. */
+            for (int i = 0; i < 20; i++) pre[0x08E8u + i] = 0x00u;   /* dist_hi all equal */
+            /* dist_lo ($08D0) and state_1 ($0164) stay random -> assorted small gaps and signs */
+        } else if (slice == 2) {
+            /* SWAP: a wrapped ring where complement = lap_length - |D| ~ 0x100 - k lands gap>=$F6. */
+            pre[0x59FDu] = 0x01u;                                  /* lap_length_hi = 1 */
+            pre[0x59FCu] = (uint8_t)((xs() % 0x0Au) + 1u);         /* lap_length_lo = 1..$0A */
+            for (int i = 0; i < 20; i++) {
+                pre[0x08E8u + i] = (uint8_t)(i & 1u);              /* alternate hi 0/1 -> wrapped pairs */
+                pre[0x08D0u + i] = 0x00u;                          /* equal lo -> |D| low byte 0 */
+                pre[0x0164u + i] = 0x00u;                          /* state_1 equal -> carryIn = 1 */
+            }
+            pre[0x013Cu + (xs() % 20u)] = pre[0x006Fu];            /* seed the player into the order */
+            pre[0x013Cu + (xs() % 20u)] = pre[0x006Fu];
+            if (t & 8) for (int i = 0; i < 20; i++) pre[0x04B4u + i] = 0x00u;   /* level laps -> BCD add */
+            pre[0x002Fu] = (uint8_t)(((xs() % 10u) << 4) | (xs() % 10u));       /* valid BCD counter */
+        }
+        /* slice 3: fully random distances / lap_length -> the far exits and wrapped-far tail. */
+
+        fail += diff_run("check_car_pair", pre, c, check_car_pair,
+                         check_car_pair__t6502, mask, t, &printed);
+    }
+    unsetenv("REVS_SMC_CONTINUE");
+
+    if (g_smcUnhandled == 0) {
+        printf("[VACUOUS] check_car_pair: 0 SMC traps — no case reached the $2771 trap arm\n");
+        fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  result-only, %lu smc traps\n",
+           "check_car_pair", cases, fail, g_smcUnhandled);
+    return fail;
+}
+
 static int test_view_paint_lines(void)
 {
     static uint8_t pre[65536];
@@ -6967,6 +7059,7 @@ int main(int argc, char** argv)
     fail += test_sort_cars_by_key();
     fail += test_shift_key_commands();
     fail += test_stage_nearby_car();
+    fail += test_check_car_pair();
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();

@@ -11688,6 +11688,183 @@ StageNearbyCar stage_nearby_car_core(uint8_t gapA, unsigned gapFar, uint8_t slot
     return r;
 }
 
+/* ---------------------------------------------------------------------------
+   $2692  check_car_pair  (twin #163)
+   ---------------------------------------------------------------------------
+   The per-frame OVERTAKING / POSITION-CHANGE pass, called twice a frame (the driving loop's
+   $1181, and $264C).  It walks car_order BACKWARDS from zp_scratch_index ($03) — pos,
+   dec(pos), dec... wrapping mod-20 (car_index_dec) until it comes back to the start — and for
+   each pos compares the car there (firstSlot) against the car one place behind it (secondSlot)
+   by the signed ring gap car_gap returns.  Three arms:
+
+     (a) FAR / already in order  (car_gap C set)          -> no-op tail.
+     (b) OUT OF ORDER, close behind  (N set, gap >= $F6)  -> SWAP the pair in car_order, rotate
+         a 1 into bit7 of position_swap_flag ($62FE) so the leaderboard redraws, and — when the
+         player is one of the two cars and both are on the same lap — add the pass amount
+         ($99 = BCD -1 if the player LOST the place, $01 if the player GAINED it) to the BCD
+         counter pass_count_bcd ($2F).
+     (c) POSITIVE small gap (< 5)  -> the PROXIMITY arm: from the 16-bit speed difference
+         firstSlot-secondSlot (sign -> shared_temp_76), the two cars' state_2 ($0178), the User
+         VIA T2 entropy ($FE68) and the per-circuit SMC compare at $2771, it derives a view/AI
+         cursor byte (span_line_cursor) that it writes into car_race_flags[firstSlot] and folds a
+         magnitude+sign into car_flags_0[firstSlot].
+
+   math_lo ($74) is the reader-nat target: set to firstSlot, overwritten by car_gap's reduction,
+   then reused as the ROR-accumulated proximity byte.  ⚠ CRUX (#159): car_gap and car_order_swap
+   both write $74 mid-routine through the SAME native cores both models call, so this twin never
+   caches math_lo across those calls — it reads/writes mem[MATH_LO] inline, byte-exact until the
+   $74 relocation.  The other scratch cells (math_hi/hypot_min_lo/hypot_min_hi/shared_temp_76/
+   shared_temp_77 and the mem[$0083] magnitude scratch — point_delta_hi reused, see rename note)
+   keep their 6502 exit values in mem[] too.
+
+   ⚠ ONE BRACKETED SED SITE: only the pass-count ADC at $26DD runs with D=1 (adc_value BCD); the
+   whole rest of the routine, including every sbc_value, is D=0.  Exit A/X/Y/flags are dead — both
+   callers reload X immediately after — so this is result-only (LIVE_NONE, mem[]-only compare). */
+void check_car_pair_core(void)
+{
+    uint8_t pos = zp_scratch_index;                          /* $2692 LDX $03 */
+
+    for (;;) {
+        shared_temp_77 = pos;                                /* $2694 STX $77 */
+        uint8_t firstSlot  = mem[CAR_ORDER + pos];           /* $2696 */
+        math_lo = firstSlot;                                 /* $2699 (car_gap overwrites it) */
+        uint8_t posBehind  = car_index_dec_core(pos);        /* $269b */
+        uint8_t secondSlot = mem[CAR_ORDER + posBehind];     /* $269e */
+        hypot_min_lo = posBehind;                            /* $26a1 STX $78 */
+        span_line_cursor = 0x00u;                            /* $26a6-a8 */
+        mem[CAR_FLAGS_0 + firstSlot] = 0x00u;                /* $26aa clear the front car's flags */
+        uint8_t tailSlot = firstSlot;                        /* $278c indexes on cpu.X: firstSlot on every
+                                                                arm EXCEPT the swap, which leaves X=secondSlot */
+
+        /* $26ad car_gap(X=firstSlot, Y=secondSlot): state_1[second]-state_1[first], reduced to a
+           signed ring gap in math_lo/A with C=far, N=sign (writes math_hi/hypot_min_hi too). */
+        unsigned d = car_gap_lo_core(mem[CAR_STATE_1 + secondSlot], mem[CAR_STATE_1 + firstSlot]);
+        GapTail g  = car_gap_tail_core(firstSlot, secondSlot, !(d & 0x100u));
+        uint8_t gap = g.a;
+
+        if (g.c) goto tail;                                  /* $26b0 far / already in order */
+
+        if (g.n) {
+            /* ---------- (b) SWAP ARM ($26b4): out of order, close behind ---------- */
+            if (gap < 0xF6u) goto tail;                      /* $26b4-b6 too far behind to swap */
+
+            uint8_t nowAtPos, nowAtBehind;                   /* $26bc swap car_order[pos] <-> [posBehind] */
+            car_order_swap_core(pos, posBehind, &nowAtPos, &nowAtBehind);
+            (void)nowAtPos; (void)nowAtBehind;               /* exit X=second, Y=first — used as the slots below */
+            tailSlot = secondSlot;                           /* $278c reads mem[$0100+X], X=second after the swap */
+            position_swap_flag = (uint8_t)((position_swap_flag >> 1) | 0x80u);   /* $26bf SEC / $26c0 ROR $62FE */
+
+            uint8_t passAmt; int doPass;
+            if (firstSlot == player_car)       { passAmt = 0x99u; doPass = 1; }  /* $26c3 CPY (Y=first): player lost */
+            else if (secondSlot == player_car) { passAmt = 0x01u; doPass = 1; }  /* $26cb CPX (X=second): player gained */
+            else                               { passAmt = 0x00u; doPass = 0; }  /* $26cd -> tail (no player) */
+
+            if (doPass) {
+                math_lo = passAmt;                           /* $26d1 STA $74 */
+                uint8_t lapFirst  = mem[CAR_LAP_COUNT + firstSlot];             /* $26d3 (Y=first) */
+                unsigned rolCarryOut = (hypot_min_hi >> 7) & 1u;               /* $26d6 ROL $79 (C-in=1): old bit7 -> C */
+                hypot_min_hi = (uint8_t)((hypot_min_hi << 1) | 1u);
+                uint8_t lapDiff = (uint8_t)((int)lapFirst
+                                            - (int)mem[CAR_LAP_COUNT + secondSlot]   /* $26d8 SBC (X=second) */
+                                            - (rolCarryOut ? 0 : 1));                /* C-in = ROL carry-out; D=0 */
+                if (lapDiff == 0u) {                          /* $26db same lap -> count the pass */
+                    cpu.D = 1;                                /* $26dd SED */
+                    Adc pc = adc_value(passAmt, pass_count_bcd, 0);  /* $26de CLC / $26e1 ADC (BCD) */
+                    cpu.D = 0;                                /* $26e5 CLD */
+                    pass_count_bcd = pc.val;                 /* $26e3 */
+                }
+            }
+            goto tail;                                       /* $26e6 */
+        }
+
+        /* ---------- (c) PROXIMITY ARM ($26e9): positive, small gap ---------- */
+        if (gap >= 0x05u) goto tail;                         /* $26e9-eb */
+
+        {
+            /* 16-bit speed difference firstSlot - secondSlot; borrow-out sign -> shared_temp_76 bit7 */
+            Adc lo = sbc_value(mem[CAR_SPEED_FRAC   + firstSlot],  /* $26ed LDA $3850,X / $26f0 CLC (forced borrow) */
+                               mem[CAR_SPEED_FRAC   + secondSlot], 0);      /* $26f1 SBC $3850,Y */
+            Adc hi = sbc_value(mem[CAR_SPEED_SCALED + firstSlot],  /* $26f4 LDA $0150,X */
+                               mem[CAR_SPEED_SCALED + secondSlot], lo.carry); /* $26f7 SBC $0150,Y */
+            shared_temp_76 = (uint8_t)((hi.carry << 7) | (shared_temp_76 >> 1)); /* $26fa ROR $76 (C-in = hi carry) */
+            if (!hi.carry) goto tail;                        /* $26fc BPL: N(from ROR) = hi.carry; !N -> tail */
+
+            uint8_t mag = (uint8_t)(hi.val >> 1);            /* $26fe LSR A */
+            if (mag >= 0x1Eu) mag = 0x1Eu;                   /* $26ff-2703 clamp high */
+            if (mag <  0x04u) mag = 0x04u;                   /* $2705-2709 clamp low */
+            mem[0x0083] = mag;                               /* $270b store magnitude (point_delta_hi reused — rename note) */
+
+            unsigned c4 = (math_lo >= 0x04u);                /* $270d LDA $74 / $270f CMP #4 (math_lo == gap here) */
+            uint8_t rf = (uint8_t)(mem[CAR_RACE_FLAGS + secondSlot] & 0x40u);   /* $2711 / $2714 AND #$40 */
+
+            if (rf != 0u) {
+                /* bit6 of the trailing car's race flags set */
+                span_line_cursor = c4 ? 0x40u : 0xC0u;       /* $2718 BCS / $271a ORA #$80 / $271c */
+                unsigned cst = (mem[CAR_STATE_2 + firstSlot] >= mem[CAR_STATE_2 + secondSlot]);  /* $2721 CMP */
+                math_lo = (uint8_t)((cst << 7) | (math_lo >> 1));   /* $2724 ROR $74 (C-in = cst) */
+                goto l_277d;                                 /* $2726 */
+            }
+
+            /* bit6 clear ($2729) */
+            if (c4) goto l_2742;                             /* $2729 BCS L_2742 */
+            /* gap < 4 */
+            span_line_cursor = 0x40u;                        /* $272d */
+            {
+                unsigned cst2 = (mem[CAR_STATE_2 + secondSlot] >= mem[CAR_STATE_2 + firstSlot]);  /* $2732 CMP */
+                math_lo = (uint8_t)((cst2 << 7) | (math_lo >> 1));  /* $2735 ROR $74 */
+            }
+            {
+                uint8_t s2 = mem[CAR_STATE_2 + secondSlot];  /* $272f LDA — value survives to abs8 */
+                uint8_t absv = (s2 & 0x80u) ? (uint8_t)(0u - s2) : s2;  /* $2737 AND #$FF (sets N) / $2739 abs8 */
+                if (absv >= 0x3Cu) goto l_2749;              /* $273c CMP #$3C / $273e BCC L_2744 / $2740 BCS L_2749 */
+                goto l_2744;
+            }
+
+        l_2742:                                              /* $2742 */
+            shared_temp_76 = (uint8_t)(shared_temp_76 >> 1); /* LSR $76 */
+        l_2744:                                              /* $2744 */
+            math_lo = mem[CAR_STATE_2 + secondSlot];         /* $2744 LDA / $2747 STA $74 */
+        l_2749:                                              /* $2749 */
+            {
+                uint8_t fs = mem[CAR_FLAGS_SHAPE + firstSlot];   /* $2749 (X=first) */
+                if (fs & 0x80u) {                            /* $274c BPL L_275e; bit7 set -> here */
+                    uint8_t ent = (uint8_t)(bus_read(0xFE68) & 0x1Fu);  /* $274e-51 User VIA T2 entropy */
+                    if (ent != 0u) goto tail;                /* $2753 -> tail */
+                    span_line_cursor = (uint8_t)((shared_temp_76 & 0x80u) | span_line_cursor);  /* $2755-59 */
+                    goto l_278a;                             /* $275b */
+                }
+                /* bit7 clear (L_275e) */
+                Adc df = sbc_value(mem[CAR_STATE_2 + secondSlot],   /* $275e LDA / $2761 SEC */
+                                   mem[CAR_STATE_2 + firstSlot], 1); /* $2762 SBC */
+                uint8_t diff = df.carry ? df.val : (uint8_t)(~df.val);   /* $2765 BCS / $2767 EOR #$FF */
+                if (diff >= 0x64u) goto tail;                /* $2769-6b -> tail */
+                if (diff >= 0x50u) goto l_2786;              /* $276d-6f */
+                /* diff < $50: the per-circuit SMC compare at $2771 */
+                if (mem[0x2771] == 0xC9u) {                  /* unpatched (Silverstone): CMP #imm */
+                    if (diff >= mem[0x2772]) goto l_277d;    /* $2773 BCS L_277d */
+                } else {
+                    platform_smc_unhandled(0x2771, mem[0x2771]);  /* a circuit patched a different opcode in */
+                    return;
+                }
+                span_line_cursor = (uint8_t)((shared_temp_76 & 0x80u) | span_line_cursor);  /* $2775-79, fall to l_277d */
+            }
+        l_277d:                                              /* $277d */
+            mem[CAR_FLAGS_0 + firstSlot] = (uint8_t)((math_lo & 0x80u) | mem[0x0083]);  /* $277d-83 */
+        l_2786:                                              /* $2786 */
+            span_line_cursor = (uint8_t)(span_line_cursor | 0x10u);   /* $2786-88 */
+        l_278a:                                              /* $278a: span_line_cursor already holds the value */
+            ;
+        }
+
+    tail:                                                    /* L_278c $278c */
+        if (!(mem[CAR_RACE_FLAGS + tailSlot] & 0x01u))       /* $278c LDA / $278f LSR (C=bit0) / $2792 BCS */
+            mem[CAR_RACE_FLAGS + tailSlot] = span_line_cursor;   /* $2794 */
+
+        pos = car_index_inc_core(shared_temp_77);            /* $2797 LDX $77 / $2799 inc */
+        if (pos == zp_scratch_index) return;                 /* $279c CPX $03 / $279e BEQ */
+    }
+}
+
 /* ===========================================================================
    $0F64  sort_cars_by_key — BUBBLE-SORT THE CAR ORDER ARRAY BY A BCD KEY  (twin #160)
    ===========================================================================

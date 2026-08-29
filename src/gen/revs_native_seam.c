@@ -785,6 +785,14 @@ void stage_nearby_car(void)
     place_car_world_coords();                             /* $2937 */
 }
 
+/* $2692 check_car_pair — twin #163.  No meaningful entry registers (it loads its start position
+   from zp_scratch_index immediately) and every exit register/flag is dead (both callers reload X),
+   so the shim is a bare call — all state lives in mem[]. */
+void check_car_pair(void)
+{
+    check_car_pair_core();
+}
+
 void section_coord_add_delta(void)
 {
     const uint8_t dlo[3] = { math_lo, math_hi, shared_temp_76 };

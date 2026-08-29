@@ -1159,6 +1159,22 @@ VALIDATE_FUNCS = {
     # the keyboard through the mode-3 held-SET (platform_test_key_set_*) so SHIFT + a scan key + $A6
     # can be held together; $A6 must be in the set whenever the pause spin can run, or both models hang.
     0x0EE5,
+    # $2692 check_car_pair — TWIN #163.  The per-frame overtaking / position-change pass, called
+    # twice a frame (driving loop $1181 and $264C) — walks car_order backwards from zp_scratch_index,
+    # comparing each car against the one behind it via the signed ring gap car_gap returns.  Three
+    # arms: FAR/in-order (C set) is a no-op; OUT-OF-ORDER close behind (N set, gap>=$F6) SWAPS the
+    # pair, ticks the position-swap marker $62FE, and when the player is in the pair on the same lap
+    # adds the pass amount to the BCD counter pass_count_bcd ($2F); POSITIVE small gap (<5) is the
+    # PROXIMITY arm that computes a view/AI cursor into car_race_flags/car_flags_0 from the speed
+    # difference, the two cars' state_2, T2 entropy ($FE68) and the per-circuit SMC compare at $2771.
+    # The reader-nat target is math_lo ($74): set to car_order[X], overwritten by car_gap, and reused
+    # as the ROR-accumulated proximity byte — a C-tracked cell that keeps its 6502 exit value in mem[]
+    # until the $74 relocation.  ⚠ CRUX (#159): car_gap and car_order_swap both write $74 mid-routine
+    # via the same native cores both models call, so the twin reads/writes the cell INLINE, never
+    # caches it across those calls.  ⚠ ONE BRACKETED SED site: the pass-count ADC at $26DD is BCD
+    # (D=1 for that one op only), the rest of the routine is D=0.  Exit ABI dead (both callers reload
+    # X next) — LIVE_NONE, mem[]-only compare.  ⚠ Fixture pins the SMC opcode mem[$2771]=$C9.
+    0x2692,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

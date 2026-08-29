@@ -318,6 +318,7 @@ void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1)
 unsigned car_gap_lo_core(uint8_t a, uint8_t b);
 GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn);
 StageNearbyCar stage_nearby_car_core(uint8_t gapA, unsigned gapFar, uint8_t slot);
+void check_car_pair_core(void);
 void car_order_swap_core(uint8_t xi, uint8_t yi, uint8_t* outX, uint8_t* outY);
 void clamp_near_edge_cursor_core(uint8_t candidate);
 void clamp_near_edge_window_core(uint8_t nearSlots);
