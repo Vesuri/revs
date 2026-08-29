@@ -419,10 +419,33 @@ bit6/lap-count gates opened so `lap_complete` reaches its $74/$75 writes). Named
 `race_position_offset` ($5A1A) [INFERRED]; `$3850` dual-use (engine_init entry / `car_speed_frac`
 table) noted, split queued in rename.md).
 
-The remaining **9 genuine shipping readers**:
+`sort_cars_by_key` ($0F64, #160 — the BCD bubble sort of the 21-entry car order array
+(`car_order_prev` $13B; `car_order` $13C is the same array +1) by one of three 3-byte keys —
+`car_best_lap` (keyA, ascending, Y-X), `car_lap` (keyB, descending, X-Y) or `car_lap_start`
+(keyC, ascending, no tie handling) — selected by bits 6/7 of the A-register selector, repeated
+until a pass makes no swap; ends with `find_player_neighbours`. ⚠ **ONE OF THE EIGHT SED SITES**:
+`SED` at $0F66 / `CLD` at $0FB5 bracket the whole sort, so the compares stay `sbc_value`
+(decimal-honoured) — this is emphatically **NOT** a de-carry-to-`uint16` site. The compare's
+borrow-out is the plain binary borrow in both modes, so the ORDERING is exact regardless of D; only
+the difference BYTES are BCD — which is exactly why the fixture must **not** pin D=0 (random,
+mostly-invalid-BCD key bytes make a binary-diff-byte sabotage diverge). The reader-nat targets are
+the scratch cells `math_lo` ($74, the swap-partner car index — written **only** on a swap, so an
+already-in-order input leaves it untouched, matching the oracle), `math_hi` ($75, low diff byte)
+and `hypot_min_hi` ($79, mid diff byte), all kept at their 6502 exit values in `mem[]`;
+`hypot_min_lo` ($78) is the key selector (input A). `shared_temp_76` ($76, per-pass swap counter)
+and `shared_temp_77` ($77, index) are C-tracked but keep their exit bytes. `mask = LIVE_NONE`
+(CLD; JSR; RTS → mem[]-only compare). Fixture 6000 cases: selector cycles keyA/keyB/keyC; 1-in-5
+forces the active key table equal → no swap, `math_lo` untouched, every compare a tie; 1-in-7
+forces one adjacent pair equal → the tie-shift path; the order array is seeded with car slots
+0..19 (21 entries from 20 values → frequent exact ties). 5 sabotages FAIL distinct
+(1369/1930/4000/4000/4800). This twin also found the `LDA $0100,X` reader the rename.md `$0100`
+entry said was missing (the tie-shift at $0FA1), settling `$0100` as dual-use — spin/penalty state
+(`spin_car_out`) AND the sort's transient position scratch (`SORT_SCRATCH` file-local define).)
+
+The remaining **8 genuine shipping readers**:
 
 ```
-shift_key_commands  sort_cars_by_key  check_car_pair
+shift_key_commands  check_car_pair
 FUN_28f2  text_script_interp
 plot_line_octant
 menu_wait_key  FUN_2f19  view_paint_lines_short
