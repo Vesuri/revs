@@ -127,7 +127,7 @@ in **either** 2- or 4-hex-digit notation, `($xx),Y`). Verdicts:
 | `point_dist` | $7C/$7D | **✅ ELIGIBLE** | both all-native, unindexed; render path — highest value |
 | `bearing` | $8A/$8B | **✅ ELIGIBLE** | both all-native, unindexed; `bearing_to_section` output |
 | `hypot_max` | $7A/$7B | **✅ ELIGIBLE** | both all-native, unindexed |
-| `model_accum_entry` | $38/$39 | **✅ ELIGIBLE** | both all-native, unindexed; driving-model path (small: 6 refs) |
+| `model_accum_entry` | $38/$39 | **✅ B DONE** | `model_accum_entry_v` (revs_native.c). All-native, unindexed — but it HAD the oracle-glue channel below, resolved by shim marshalling |
 | `edge_nearest` | $10/$11 | ✗ blocked | `$11` read by **non-native** `check_crash` ($111E); nativize check_crash to free it |
 | `math_lo/hi` | $74/$75 | ✗ blocked | `$74` INDEXED with `$76` (`SBC 0x74,X` $146E, `ROR 0x74,X` $2B18) — see [[math_lo/hi]] |
 | `hypot_min` | $78/$79 | ✗ blocked | `$78` indexed (`$78,X`) |
@@ -143,6 +143,29 @@ and remember `mul8`/`div16by8`/… ARE native (in the set). (2) zero-page indexe
 `0x74,X` (**2 hex digits**), not `0x0074,X` — a 4-digit-only regex misses every zp index and marks
 indexed cells eligible. Scan with `0x0*7[456],[XY]`. With both fixed, the table above is stable.
 **So (B) for zp scratch is NOT blocked as a class** — four genuine render/model pairs relocate now.
+
+⚠⚠ **THIRD eligibility test, learned by relocating `model_accum_entry` $38/$39 (B DONE):
+all-native + unindexed is NECESSARY, NOT SUFFICIENT — check the oracle-glue → native-core
+channel.** A `__t6502` oracle body JSRs the *plain* (native) name of any sub-routine that is
+itself a twin, not that sub-routine's `__t6502` (e.g. `apply_driving_model__t6502` calls native
+`apply_drag_terms()`). If the relocated pair is how the transliterated PARENT hands a
+value to the native CHILD — the parent still writes mem[$38/$39] at $46AE, the child now reads the
+wide var — the oracle path silently reads a stale var and the fixture fails BROADLY (198/200,
+scattered across model_state), not at the relocated cell. This is the SAME class recorded for
+[[math_lo/hi]] (commit 2cbb2c0).
+- **Resolvable** when the channel is *one-directional input to a single child*: make that child's
+  6502-ABI **shim** marshal the cell in — `void apply_drag_terms(void) { model_accum_entry_v =
+  (hi<<8)|lo; apply_drag_terms_core(); }`. The hot path stays core-to-core and var-only (the shim
+  is validation-only); the oracle glue gets the value through the cell as before. Sabotaging the
+  shim to `= 0` must FAIL the standalone fixture — that proves the channel is load-bearing, not
+  dead code.
+- **Hard block** when the value flows both ways through many native helpers (math_lo/hi: mul8 /
+  div16by8 / … in dozens of `__t6502` bodies) — the shim trick would have to marshal in-and-out on
+  every helper, and $74 is indexed anyway.
+- **Producer's own fixture:** the transliterated parent still writes the cells, so its fixture
+  `set_ignore`s them (native writes the var instead). `det_compare.py` skips the pair as
+  no-longer-game-state (currently unexercised: $38/$39 read 0 at all three determinism dump
+  frames — `make validate` is the byte-exact proof).
 
 ### Tier 2 — persistent, adjacent (wide-local hoist now; relocation later)
 
