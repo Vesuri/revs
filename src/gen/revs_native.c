@@ -9438,6 +9438,70 @@ uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y)
 }
 
 /* ---------------------------------------------------------------------------
+   $4D7E  text_script_interp — RUN A TEXT SCRIPT  (twin #165)
+   A script is a byte string, pointed to by (text_script_ptr_lo[X],
+   text_script_ptr_hi[X]) for script index X, terminated by $FF.  Each byte:
+       $00..$9F  a character  -> vdu_char_def
+       $A0..$C7  N spaces     -> print_spaces  (N = byte-$A0)
+       $C8..$FE  a command    -> recurse into sub-script (byte-$C8), except
+                                 $FE (== $C8+$36) which runs select_text_variant
+       $FF       end of script -> return
+   The command operand (byte-$C8) was math_lo ($74); it is a C local now (the
+   reader-nativization step of the wide-value cleanup), with the cell's exit
+   value still written so the cluster stays byte-exact until math_lo is
+   relocated.  Recursion is the plain 6502 idiom (TXA/PHA/TYA/PHA around a JSR to
+   self); as C recursion the two mem-stack bytes the 6502 pushes have no twin, so
+   the fixture ignores that residue window (see validate_native.c).
+   ⚠ print_spaces always exits Z=1 (its final DEC math_lo -> 0), so the 6502's
+   "draw the char after the spaces" arm ($4DC1 reached with C set) is dead at
+   runtime — reproduced here as the always-taken skip, and `make validate` is the
+   proof (a real Z=0 exit would diverge into vdu_char_def and fail the diff). */
+#define TEXT_SCRIPT_PTR_LO_TBL 0x3AD0u          /* text_script_ptr_lo */
+#define TEXT_SCRIPT_PTR_HI_TBL 0x3B50u          /* text_script_ptr_hi */
+#define TEXT_SCRIPT_VARIANT_CMD 0x36u           /* the $FE command -> select_text_variant */
+
+void text_script_interp_core(uint8_t tableIdx)
+{
+    uint8_t y = 0x00u;                           /* $4D7E LDY #0 — persists across a reload */
+    for (;;) {                                   /* L_4D80 — (re)load this script's pointer */
+        plot_ptr2_hi = mem[TEXT_SCRIPT_PTR_HI_TBL + tableIdx];
+        plot_ptr2_lo = mem[TEXT_SCRIPT_PTR_LO_TBL + tableIdx];
+        for (;;) {                               /* L_4D8A — walk the bytes */
+            uint8_t a = bus_read((zp_pointer(MEM_plot_ptr2_lo) + y) & 0xFFFFu);
+            if (a == 0xFFu) return;              /* $4D8C end of script */
+
+            if (a >= 0xC8u) {                    /* $4D90 command byte */
+                uint8_t sub = (uint8_t)(a - 0xC8u);
+                math_lo = sub;                   /* $4D97 — reader-nat: keep the cell byte-exact */
+                if (sub == TEXT_SCRIPT_VARIANT_CMD) {
+                    cpu.X = 0x00u;               /* $4DA3 LDX #0 — select_text_variant reads X */
+                    select_text_variant();       /* $4DA5 — copies config, recurses into script $21 */
+                } else {
+                    text_script_interp_core(sub);/* $4DAB — recurse into the sub-script */
+                }
+                y = (uint8_t)(y + 1);            /* $4DB2 INY */
+                break;                           /* $4DB3 -> L_4D80 (reload the pointer) */
+            }
+
+            if (a >= 0xA0u) {                    /* $4DB6 space run */
+                uint8_t count = (uint8_t)(a - 0xA0u);   /* $4DBA SBC #$A0 (C set) */
+                print_spaces_core(count, tableIdx, y);  /* $4DBC — X/Y ambient for the MOS arm */
+                /* $4DBF BEQ — always taken (see the Z-always-set note above) */
+            } else {                             /* $4DC1 plain character */
+                /* vdu_char_def's OSWRCH arm lives in its SHIM, not its core, so dispatch here the
+                   way the shim does: OSWRCH when text_out_via_mos bit 7 is set (X/Y ambient),
+                   otherwise the bitmap emitter.  X = tableIdx, Y = y (the 6502's ambient regs). */
+                if (text_out_via_mos & 0x80u)
+                    mos_oswrch(a, tableIdx, y);
+                else
+                    vdu_char_def_core(a);
+            }
+            y = (uint8_t)(y + 1);                /* $4DC4 INY -> L_4D8A (no reload) */
+        }
+    }
+}
+
+/* ---------------------------------------------------------------------------
    $7B4A  draw_starting_lights — WALK THE LIGHT SEQUENCE, PAINT THE COLUMN  (twin #149)
    Lives in the $7B00 overlay.  Does nothing outside the race proper (session_is_race
    positive) or once the lights are dark (state 0).  Otherwise it advances

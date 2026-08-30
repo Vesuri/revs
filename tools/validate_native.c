@@ -2113,6 +2113,169 @@ static int test_plot_line_octant(void)
     return fail;
 }
 
+void text_script_interp(void);
+void text_script_interp__t6502(void);
+
+/* twin #165 — run a $FF-terminated text script.  Bytes: $00..$9F a character (vdu_char_def),
+   $A0..$C7 N spaces (print_spaces, N=byte-$A0), $C8..$FD recurse into sub-script byte-$C8,
+   $FE run select_text_variant, $FF end.  math_lo ($74) is the command operand (reader-nat).
+   The oracle recurses via the PLAIN name (native), so ONLY its top frame pushes X/Y to the 6502
+   mem-stack — with entry S=$FF that is exactly $01FE/$01FF, which the differential ignores.
+   Every script index (0..$36, plus $21 that select_text_variant enters) points at a LEAF script
+   (chars + spaces + $FF) so recursion is bounded at depth 2.  The TOP script carries every byte
+   class each case, so char / space / recurse-command / variant-command / terminate all run. */
+static int test_text_script_interp(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("text_script_interp");
+    if (!want("text_script_interp")) return 0;
+
+    unsigned mask = LIVE_NONE;                    /* both callers return straight after — regs dead */
+    static const uint16_t IGN[] = { 0x01FEu, 0x01FFu };  /* top oracle frame's PHA/PHA residue */
+
+    const unsigned TOP     = 0x0C00u;            /* the top script bytes */
+    const unsigned LEAF    = 0x0D00u;            /* the one leaf every sub-script index points at */
+    const unsigned LEAF_NS = 0x0E00u;            /* a no-space leaf (index $10) — leaves math_lo == sub */
+    /* ⚠ text_script_ptr_lo ($3AD0) physically OVERLAPS char_row_addr_hi ($3B06) from index $36 on:
+       $3AD0+$36 == $3B06.  The engine only ever looks up script indices 0..$35 (a command byte is
+       $C8..$FD -> sub 0..$35; $FE is the special variant), so the overlap is dead in the real
+       binary.  The fixture must respect it — every script index it seeds MUST stay <= $35, or its
+       pointer-table byte lands on char_row_addr_hi[0..7] ($3B06..$3B0D), the emitter reads a $00
+       base, plots into zero page, and the glyph writes corrupt the tables (a fixture-only runaway
+       the real routine never has).  So TOP_IDX and every recurse target live in 0..$35. */
+    const uint8_t  TOP_IDX = 0x35u;              /* the top-script index — the HIGHEST legal one, and
+                                                    reserved: recurse-commands pick 0..$34, never it */
+
+    int sawChar = 0, sawSpace = 0, sawCmd = 0, sawVariant = 0, sawMos = 0, sawBmp = 0;
+
+    int cases = 3000 * scale;
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;                                  /* text path, not a SED site */
+        c.S = 0xFFu;                              /* pin the stack so the oracle's PHA lands at $01FE/$01FF */
+        c.X = TOP_IDX;                            /* the script index (entry ABI: X) */
+
+        /* MODE-5 cursor into real screen RAM so the bitmap emitter never walks into scratch
+           (see the print_spaces fixture — a stray plot_ptr would clobber math_lo). */
+        { int r; for (r = 0; r < 8; r++) pre[0x3B06 + r] = 0x58u; }  /* char_row_addr_hi -> screen */
+        pre[0x62CDu] &= 0x3Fu;                     /* vdu_char_row 0..7 */
+        pre[0x62CCu] = (uint8_t)(xs() & 0x1Fu);    /* vdu_char_column, leave room to advance */
+        /* The bitmap emitter writes through plot_ptr ($70/$71) and backs it DOWN $0140 per char
+           it emits.  The pointer tables ($3AD0/$3B50) sit at a FIXED low address the routine
+           hard-codes, so a long enough emit run drifts plot_ptr down onto them, turns a benign
+           script byte into a command, and recursion runs away — a fixture hazard the real routine
+           never hits (its screen and scripts don't overlap like this).  So the bitmap arm runs
+           only NON-RECURSIVE scripts with a tiny emit budget, and pins plot_ptr near the top of
+           screen RAM; the OSWRCH arm (no screen writes at all) carries the recursive variety. */
+        pre[0x0070u] = 0x00u; pre[0x0071u] = 0x7Eu;   /* plot_ptr = $7E00 */
+        int viaMos = (t % 8u) != 0u;                  /* mostly OSWRCH; every 8th case is bitmap */
+        if (viaMos) { pre[0x0064u] |= 0x80u; sawMos = 1; }   /* text_out_via_mos bit 7: OSWRCH arm */
+        else        { pre[0x0064u] &= 0x7Fu; sawBmp = 1; }   /* ...or the bitmap arm */
+
+        /* Point every legal script index (0..$34 — a recurse-command's sub range, and $21 that
+           select_text_variant enters) at the leaf, so any recursion is one level and terminates.
+           $34 is the ceiling: index $35 is TOP, and $36+ would collide with char_row_addr_hi. */
+        { unsigned i; for (i = 0; i <= 0x34u; i++) {
+            pre[0x3AD0u + i] = (uint8_t)(LEAF & 0xFFu);
+            pre[0x3B50u + i] = (uint8_t)(LEAF >> 8);
+        } }
+        /* ...but the TOP index ($35) points at the top script.  Its LO byte is $3B05, one below
+           char_row_addr_hi[0] ($3B06), so it does not disturb the emitter's row table. */
+        pre[0x3AD0u + TOP_IDX] = (uint8_t)(TOP & 0xFFu);
+        pre[0x3B50u + TOP_IDX] = (uint8_t)(TOP >> 8);
+        /* Re-assert char_row_addr_hi[0..7] AFTER the fill, in case a future index change overlaps. */
+        { int r; for (r = 0; r < 8; r++) pre[0x3B06 + r] = 0x58u; }
+
+        /* The leaf: a couple of chars and a short space run, terminated. */
+        { unsigned p = LEAF;
+          pre[p++] = (uint8_t)(0x41u + (xs() % 0x20u));   /* a char */
+          pre[p++] = (uint8_t)(0xA1u + (xs() % 7u));      /* 1..7 spaces (never $A0 = 256, which via
+                                                             the bitmap arm would emit 256 chars) */
+          pre[p++] = (uint8_t)(0x41u + (xs() % 0x20u));   /* another char */
+          pre[p++] = 0xFFu; }
+
+        /* A no-space leaf, and index $10 points at it.  A char run touches nothing in math_lo
+           ($74), so a command that recurses HERE leaves math_lo holding its sub — the only way to
+           make the command's `math_lo = sub` write the FINAL value (a space run resets it to 0),
+           which is what proves the reader-nat cell is byte-exact (drop the write -> mismatch). */
+        pre[0x3AD0u + 0x10u] = (uint8_t)(LEAF_NS & 0xFFu);
+        pre[0x3B50u + 0x10u] = (uint8_t)(LEAF_NS >> 8);
+        { unsigned p = LEAF_NS;
+          pre[p++] = (uint8_t)(0x41u + (xs() % 0x20u));   /* a char, no space run */
+          pre[p++] = (uint8_t)(0x41u + (xs() % 0x20u));   /* another char */
+          pre[p++] = 0xFFu; }
+
+        if (!viaMos) {
+            /* Bitmap arm: a SHORT, non-recursive script — char, 1 space, char, end.  Exercises the
+               core's plain-char bitmap branch (`else vdu_char_def_core`) and a small space run with
+               a bounded ~3-emit descent that never reaches the tables. */
+            unsigned p = TOP;
+            pre[p++] = (uint8_t)(0x41u + (xs() % 0x20u));   /* a char (< $A0) */
+            pre[p++] = 0xA2u;                               /* 1 space */
+            pre[p++] = (uint8_t)(0x41u + (xs() % 0x20u));   /* a char */
+            pre[p++] = 0xFFu;
+            sawChar = 1; sawSpace = 1;
+        } else {
+            /* OSWRCH arm: one of every byte class, order shuffled a little by t, terminated —
+               char (< $A0), spaces ($A0..$C7), recurse-command ($C8..$FC, sub 0..$34), and on
+               some cases the variant command $FE.  No screen writes, so recursion is safe. */
+            unsigned p = TOP;
+            if ((t % 4u) == 0u) {
+                /* math_lo-final shape: a command into the no-space leaf, then end.  Exit math_lo
+                   == the command's sub ($10), so the reader-nat cell's exit value is under test. */
+                pre[p++] = (uint8_t)(0xC8u + 0x10u);                  /* recurse into LEAF_NS */
+                pre[p++] = 0xFFu;
+                sawCmd = 1;
+            } else {
+                uint8_t ch    = (uint8_t)(0x20u + (xs() % 0x60u));    /* $20..$7F */
+                uint8_t spc   = (uint8_t)(0xA1u + (xs() % 7u));       /* 1..7 spaces */
+                uint8_t rsub  = (uint8_t)(xs() % 0x35u);              /* 0..$34 (never $35=TOP) */
+                uint8_t rcmd  = (uint8_t)(0xC8u + rsub);              /* recurse into leaf */
+                int variant   = (t & 2) ? 1 : 0;
+                switch (t & 3) {
+                  case 1: pre[p++] = spc; pre[p++] = rcmd; pre[p++] = ch;  break;
+                  case 2: pre[p++] = rcmd; pre[p++] = ch;  pre[p++] = spc; break;
+                  default:pre[p++] = ch;  pre[p++] = rcmd; pre[p++] = spc; break;
+                }
+                if (variant) { pre[p++] = 0xFEu; sawVariant = 1; }
+                pre[p++] = 0xFFu;
+                sawChar = 1; sawSpace = 1; sawCmd = 1;
+            }
+        }
+
+        set_ignore(IGN, 2);
+        fail += diff_run("text_script_interp", pre, c, text_script_interp,
+                         text_script_interp__t6502, mask, t, &printed);
+        set_ignore(0, 0);
+    }
+
+    /* Non-vacuity: every byte class actually ran, and both output arms were exercised. */
+    if (!sawChar || !sawSpace || !sawCmd) {
+        printf("[VACUOUS] text_script_interp: a byte class never ran (char %d space %d cmd %d)\n",
+               sawChar, sawSpace, sawCmd);
+        fail++;
+    }
+    if (!sawVariant) {
+        printf("[VACUOUS] text_script_interp: the $FE variant command never ran\n");
+        fail++;
+    }
+    if (!sawMos || !sawBmp) {
+        printf("[VACUOUS] text_script_interp: only one output arm ran (OSWRCH %d bitmap %d)\n",
+               sawMos, sawBmp);
+        fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  result-only  "
+           "(char/space/cmd/variant %d/%d/%d/%d, arms mos %d bmp %d)\n",
+           "text_script_interp", cases, fail,
+           sawChar, sawSpace, sawCmd, sawVariant, sawMos, sawBmp);
+    return fail;
+}
+
 static int test_view_paint_lines(void)
 {
     static uint8_t pre[65536];
@@ -7185,6 +7348,7 @@ int main(int argc, char** argv)
     fail += test_stage_nearby_car();
     fail += test_check_car_pair();
     fail += test_plot_line_octant();
+    fail += test_text_script_interp();
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();

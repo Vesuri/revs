@@ -599,6 +599,15 @@ void plot_line_octant(void)
     plot_line_octant_core(cpu.Y);
 }
 
+void text_script_interp(void)
+{
+    /* $4D7E — run the text script whose index is in X (twin #165).  The core does all the mem[]
+       work (the plot_ptr2 reload, the character/space/command dispatch, the recursion) and threads
+       X/Y to its callees itself; math_lo ($74) keeps its 6502 exit value until the $74/$75
+       relocation.  Result-only: exit regs/flags are dead. */
+    text_script_interp_core(cpu.X);
+}
+
 void driver_name_address(void)
 {
     /* $3CEB — the (lo,hi) address of the Nth driver name in driver_name_table ($4050).  The 6502

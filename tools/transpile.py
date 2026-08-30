@@ -1189,6 +1189,13 @@ VALIDATE_FUNCS = {
     # ABI dead (both callers return/reload) — LIVE_NONE, mem[]-only compare.  ⚠ Fixture plants valid
     # octant step-opcodes and keeps the pointer walk in mid-RAM (off zero page and the undo tables).
     0x5204,
+    # text_script_interp $4D7E — run a $FF-terminated text script (twin #165): char/space/command
+    # bytes dispatched to vdu_char_def / print_spaces / a recursive sub-script (or select_text_variant
+    # for command $36).  Reader-nat of math_lo ($74, the command operand).  Recursion is C recursion;
+    # the oracle recurses via the PLAIN name (native), so only the top oracle frame pushes X/Y to the
+    # 6502 mem-stack — the fixture pins entry S=$FF and ignores the two residue bytes at $01FE/$01FF.
+    # Exit ABI dead — LIVE_NONE, mem[]-only compare.
+    0x4D7E,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,
