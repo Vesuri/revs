@@ -518,10 +518,32 @@ minor-step table entry so the trap-and-return unwind is compared (`REVS_SMC_CONT
 vacuity check). D=0 pinned. 5 sabotages FAIL distinct (3305/236/5686/6740/6000). New symbol:
 `plot_line_colour_tbl` ($34F8, the OR-mask counterpart to `pixel_keep_others_tbl`).)
 
-The remaining **2 genuine shipping readers**:
+`text_script_interp` ($4D7E, #165 — the on-screen text-script interpreter that walks a byte-coded
+script and emits it: $00-$9F is a glyph (`vdu_char_def`, or `mos_oswrch` when `text_out_via_mos`
+bit 7 is set — the OSWRCH arm lives in the shim, so the twin dispatches it itself), $A0-$C7 is a
+run of N spaces (`print_spaces`, N=byte-$A0), $C8-$FD is a command that recurses into sub-script
+index byte-$C8, $FE (=$C8+$36) runs `select_text_variant`, $FF ends. Scripts are pointed to by
+`text_script_ptr_lo`/`_hi` ($3AD0/$3B50) indexed by the sub-script number. `math_lo` ($74)
+reader-nat: the command operand `sub` becomes a C local, but the twin still writes `math_lo=sub`
+where the oracle does ($4D97) for byte-exactness until relocation. ⚠⚠ **Table-overlap trap:**
+`text_script_ptr_lo` at $3AD0 physically overlaps `char_row_addr_hi` at $3B06 ($3AD0+$36 == $3B06);
+the engine only ever looks up indices 0..$35 so the overlap is dead in the real binary, but a
+fixture that seeds a pointer-table byte at index >$35 lands it on `char_row_addr_hi[0..7]` — a $00
+base then sends the glyph plotter (`vdu_char_emit` recomputes plot_ptr every emit from
+`char_row_addr_hi[row>>3]`) into zero page, corrupting the script tables → runaway recursion →
+stack overflow. The fixture keeps every seeded index ≤$35 and re-asserts `char_row_addr_hi` after
+the fill. Result-only (`LIVE_NONE`). Fixture 3000 cases: a top script and a leaf reached by every
+sub-index, char/space/command/variant all exercised, both the OSWRCH and bitmap emit arms
+(`viaMos` on 7-of-8), D=0 pinned. ⚠ The `math_lo=sub` write needed a dedicated no-space leaf
+(index $10 = `[char,char,$FF]`) in the fixture: every command that ends in a space run has its
+`math_lo` overwritten by `print_spaces` (which always exits with `math_lo=0`), so without a leaf
+whose *last* act is the command write, dropping `math_lo=sub` is a no-change survivor. 5 sabotages
+FAIL distinct (46/3000/389/CRASH/2625).)
+
+The remaining **1 genuine shipping reader**:
 
 ```
-text_script_interp  menu_wait_key
+menu_wait_key
 ```
 
 ⚠ **Two more over-counts dropped (2026-08-29), both oracle-only** (no runtime-reachable caller,
