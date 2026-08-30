@@ -3359,15 +3359,27 @@ void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
 /* ⚠ Every model cell below is read from mem[] at the point of use and never cached in a local:
    any of the fifteen sub-models can write any of them, and stage_accum_delta in particular is *supposed* to
    change model_accum under the four calls that follow it. */
+
+/* mechanism-(B) relocation: the accumulator's entry value ($38/$39) is written by
+   apply_driving_model at $46AE and read back by its own restore ($46DF) and by apply_drag_terms
+   ($4C65/$4C7E).  All three sites are native, and $38/$39 are never indexed nor an indirect base,
+   so the pair leaves mem[] for a real uint16_t — a single 68000 word instead of the byte-lane
+   move/shift/or the transliteration paid.  ⚠ apply_driving_model__t6502 (the producer's oracle)
+   sets mem[$38/$39] at $46AE and then JSRs the NATIVE apply_drag_terms child — an oracle-glue →
+   native-core channel through these cells.  The apply_drag_terms SHIM marshals the cells back
+   into this var so that path stays consistent; the shipping chain is core-to-core and never
+   touches the cells.  The producer's oracle still writes mem[$38/$39], so the apply_driving_model
+   fixture set_ignore's them. */
+static uint16_t model_accum_entry_v;
+
 void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
 {
     /* $46A1 — the car's body angles, computed from where the car actually is. */
     compute_car_angles_core(posHi, posLo);
     rotate_state_pair_core(8u, 0u, 0xC0u);   /* rotate_state_0_into_8 */
 
-    /* $46AE — the accumulator's entry value, for the restore at $46DF. */
-    model_accum_entry_lo = model_accum_lo;
-    model_accum_entry_hi = model_accum_hi;
+    /* $46AE — the accumulator's entry value, for the restore at $46DF (relocated to a wide var). */
+    model_accum_entry_v = (uint16_t)(((uint16_t)model_accum_hi << 8) | model_accum_lo);
 
     /* $46B8-$46CD — the speed split.  |car_speed| as a 16-bit sign-magnitude value: abs16_math
        negates the (hi:lo) pair in place when hi is negative (D=0), and is a no-op otherwise.
@@ -3411,7 +3423,7 @@ void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
        16-bit add (D=0 on the driving path — static-map.md §Decimal mode).  The add's exit flags
        are dead: rotate_accum_by_steer_core opens with LDA. */
     {
-        uint16_t accum = (uint16_t)(((uint16_t)model_accum_entry_hi << 8) | model_accum_entry_lo)
+        uint16_t accum = model_accum_entry_v
                        + (uint16_t)(((uint16_t)model_accum_delta_hi  << 8) | model_accum_delta_lo);
         model_accum_lo = (uint8_t)accum;
         model_accum_hi = (uint8_t)(accum >> 8);
@@ -7291,8 +7303,8 @@ static SpinExit begin_spin_from_a_core(uint8_t severity, uint8_t savedX)
    --------------------------------------------------------------------------- */
 static void apply_drag_terms_core(void)
 {
-    /* $4C65-$4C6A — |model_accum_entry_hi| (abs8 on its own bit 7; $80 stays $80). */
-    uint8_t entry = model_accum_entry_hi;
+    /* $4C65-$4C6A — |entry high byte| (abs8 on its own bit 7; $80 stays $80). */
+    uint8_t entry = (uint8_t)(model_accum_entry_v >> 8);
     uint8_t magnitude = (entry & 0x80u)          /* $4C6A — the magnitude, before the floor */
                         ? (uint8_t)(-(int)entry) : entry;
     math_hi = magnitude;
@@ -7308,8 +7320,8 @@ static void apply_drag_terms_core(void)
       math_lo = (uint8_t)p;
       math_hi = (uint8_t)(p >> 8); }
 
-    /* $4C7E-$4C82 — into element 6, with model_accum_entry_hi's bit 7 as the sign. */
-    add_signed_into_element_core(6u, model_accum_entry_hi);
+    /* $4C7E-$4C82 — into element 6, with the entry high byte's bit 7 as the sign. */
+    add_signed_into_element_core(6u, (uint8_t)(model_accum_entry_v >> 8));
 
     /* $4C85-$4C92 — (road_speed x wing_drag_coeff) + 8, high byte held for the fixed-point step. */
     { unsigned p = revs_mulu16(wing_drag_coeff, road_speed);
@@ -7969,7 +7981,15 @@ void scale_by_track_gradient(void)
    inside the core), and sound_queue_exit_abi replays X/N/Z (from sound_saved_x) and the block C/V. */
 void begin_spin(void)                    { begin_spin_from_a_core(road_speed, cpu.X); sound_queue_exit_abi(0x04u); }
 void begin_spin_from_a(void)             { begin_spin_from_a_core(cpu.A, cpu.X);      sound_queue_exit_abi(0x04u); }
-void apply_drag_terms(void)              { apply_drag_terms_core(); }
+/* 6502-ABI entry: model_accum_entry ($38/$39) is a relocated input to the core (its producer,
+   apply_driving_model, sets the wide var directly and calls the core core-to-core).  Callers that
+   still communicate through mem[] — the __t6502 oracle glue, which sets the cells at $46AE then
+   JSRs here — get the value marshalled back into the var.  Off the hot path: the shipping chain is
+   core-to-core and never touches these cells. */
+void apply_drag_terms(void)              { model_accum_entry_v =
+                                           (uint16_t)(((uint16_t)model_accum_entry_hi << 8)
+                                                      | model_accum_entry_lo);
+                                           apply_drag_terms_core(); }
 
 /* ===========================================================================
    TWINS #87-#92 — THE ROAD SIGN, and the OBJECT SLOT WRITER underneath it

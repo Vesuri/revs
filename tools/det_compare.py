@@ -34,8 +34,11 @@ STACK_HI = 0x01FF   # last byte of page 1
 # value.  They are no longer game state; skip them.  Each entry is (lo, hi) inclusive.
 #   $4F21..$4F22  band2_duration  — the horizon-band remainder, now band2_duration_v
 #                 (src/gen/revs_native.c, irq1v_band_schedule)
+#   $0038..$0039  model_accum_entry — the driving accumulator's entry value, now
+#                 model_accum_entry_v (src/gen/revs_native.c, apply_driving_model/apply_drag_terms)
 RELOCATED = [
     (0x4F21, 0x4F22),
+    (0x0038, 0x0039),
 ]
 
 def _skipped(i):

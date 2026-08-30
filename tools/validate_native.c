@@ -2740,6 +2740,13 @@ static int test_body_drivers(void)
 
     if (want("apply_driving_model")) {
         int subFail = 0, splitRan = 0, offPower = 0, onPower = 0;
+        /* model_accum_entry ($38/$39) was relocated out of mem[] into a native uint16_t
+           (wide-value cleanup, mechanism B).  The __t6502 oracle still writes both cells at
+           $46AE; the native twin writes the wide var instead, so the cells diverge and are
+           ignored.  They are exclusively model_accum_entry — written only here — so nothing
+           legitimate shares them. */
+        static const uint16_t accumEntryCells[] = { 0x0038, 0x0039 };
+        set_ignore(accumEntryCells, 2);
         for (t = 0; t < model; t++) {
             Cpu6502 c = zero_cpu();
             fill_random(pre);
@@ -2760,6 +2767,7 @@ static int test_body_drivers(void)
                                 apply_driving_model__t6502, liveMask, t, &printed);
             if (speed_split_ran((const uint8_t*)mem)) splitRan++;
         }
+        set_ignore(0, 0);
         fail += subFail;
         if (splitRan == 0) {
             printf("[VACUOUS] apply_driving_model: not one of %d cases reached the speed "
@@ -5818,6 +5826,9 @@ static int test_sub_models(void)
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
             c.D = pinD0 ? 0 : (uint8_t)(xs() % 4 == 0);
             if (c.D) decimal++;
+            /* apply_drag_terms consumes model_accum_entry ($38/$39), relocated to a native wide
+               var; its 6502-ABI shim marshals the value in from mem[$38/$39], so the randomized
+               pre[] cells reach the twin with no fixture seeding needed. */
             subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
                                 mask, t, &printed);
         }
