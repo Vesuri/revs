@@ -540,11 +540,34 @@ sub-index, char/space/command/variant all exercised, both the OSWRCH and bitmap 
 whose *last* act is the command write, dropping `math_lo=sub` is a no-change survivor. 5 sabotages
 FAIL distinct (46/3000/389/CRASH/2625).)
 
-The remaining **1 genuine shipping reader**:
+`menu_wait_key` ($6571, #166 — the front-end MENU SELECTOR, and the **LAST shipping reader** in the
+campaign: with it native, every runtime-reachable reader of `math_lo`/`math_hi` is idiomatic C).
+The front-end chain ($63E0) calls it five times to read one menu answer. It renders/polls in a loop
+until one of `menu_key_tbl[0..count]` ($39E0 — SPACE/1/2/3 negative-INKEY codes) is held, then
+highlights the chosen row and returns the confirmed selection in X. `math_hi` ($75) reader-nat:
+`count` arrives in X, is stored to `math_hi`, and is **read back twice** (the scan's start index and
+the highlight loop's ceiling) *across* the child calls `FUN_3261` and `text_script_interp` — so the
+twin reads/writes the cell **directly, never caching**, the #159-CRUX-safe form (a child that
+overwrote $75 is then honoured identically). Index 0 (SPACE) confirms, but only once a non-zero row
+has been shown (`shared_temp_77` latched to $1E on the first pick); it writes $98 to $7FC5 and
+returns `hypot_min_lo - 1`. Exit X live — `LIVE_X`. ⚠ **Multi-frame poll needs a clock-driven
+keyboard:** a static held-set can never "press SPACE *after* a pick", so the fixture drives a new
+**mode-4 CLOCK SCHEDULE** backend (`platform_test_key_schedule` + the tick clock): which code reports
+held is a function of the tick clock, which advances one per loop iteration, and the clock cell lives
+in `mem[]` so `diff_run`'s per-run reset gives both models the identical phase sequence. Two hazards
+pinned by construction: `FUN_3261` does TXS + re-enter `front_end_menus` when `mem[$1C]` bit 7 is
+CLEAR (the SHIFT+f0 restart), so bit 7 is pinned SET (the `FUN_327d` no-op arm) and SHIFT ($FF)/f0
+($86) are never scheduled held; and `text_script_interp($1E)` (run once on the first pick) is made a
+no-op by pointing script $1E at a lone $FF byte. Fixture 4000 cases, count ∈ {2,3}, sel ∈ {1..count},
+two schedule shapes (pick→confirm, and space-first→pick→confirm to exercise the $6591 "nothing shown"
+redraw). 4 sabotages FAIL distinct — attr-swap ($7E85 $81↔$84), no-DEX (**REG** X off-by-one, which
+also proves `LIVE_X` is checked), marker ($7FC5 $98→$00), stride ($7ED5 wrong cell). (Dropping the
+entry `math_hi` store is also detected, but manifests as a *hang* — a garbage scan range never
+confirms — so it is not part of the clean-count set.))
 
-```
-menu_wait_key
-```
+**All shipping readers of `math_lo`/`math_hi` are now native.** Next: the mechanism-(B) relocation
+of `math_lo`/`math_hi` ($74/$75) out of `mem[]` into real `uint16_t` variables — keeping the cells
+`mem[]`-visible to the 6 oracle-only bodies that still reference them (see the over-count note below).
 
 ⚠ **Two more over-counts dropped (2026-08-29), both oracle-only** (no runtime-reachable caller,
 zero perf win — the raw-address hit is inside a `__t6502` body only):
