@@ -117,6 +117,25 @@ relocation blast radius. High count ⇒ mechanism (B) is blocked; use (A) now.
 `MUL_SRC` ($80/$81) and `MUL_TERM` ($82/$83) — same zero-page bytes, three names (mul
 multiplicand/multiplier). Convert as one unit or the shared storage corrupts.
 
+⚠⚠ **FINDING (2026-08-30): EVERY Tier-1 render-scratch cell is (B)-blocked — the class, not just
+`math_lo/hi`.** A systematic scan (all direct zp/low-mem refs in `listing.txt`, each PC mapped to
+its owning function, cross-referenced against the native surface = VALIDATE_FUNCS ∪ NATIVE_FUNCS ∪
+`mul8`/`div16by8` et al.) found **exactly ONE** adjacent pair whose *both* bytes are touched only
+by native code and neither is indexed/indirect: `$14/$15` — and those are two **unrelated** single
+bytes (`walk_prev_section` / `edge_end_side0`), not a 16-bit value. So **there is no (B)-eligible
+16-bit lo/hi zp pair touched exclusively by native code.** Spot-proofs of the wall:
+- `edge_nearest` ($10/$11) — written native (`0x23D2` record, `0x24F6` seed, `check_crash` reads
+  hi) but `$10` is read by **transliterated** `scale_angle_in_section` ($4681, in `0x4676`) and its
+  caller `place_player_in_section` ($4626) as the section-distance mul8 scale. Cross-world.
+- `model_accum_entry` ($38/$39) — written native (`apply_driving_model` `0x46A1`) but `$39` is read
+  by the **transliterated** sub-model at `$4C65`/`$4C80`. Cross-world.
+This confirms the [[math_lo/hi]] conclusion generalises: Ordering item 2's hope of "just pick a
+scratch-local render cell" is refuted — the render surface is a patchwork of native twins inside a
+still-transliterated engine, and every 16-bit scratch value threads between the two through `mem[]`.
+**(B) for zero-page scratch is gated on de-transliteration** (below): nativize the transliterated
+reader that owns the bridge, and the cell becomes all-native and relocatable. First unblock target:
+`scale_angle_in_section` ($4676) + `place_player_in_section` ($4626) → frees `edge_nearest`.
+
 ### Tier 2 — persistent, adjacent (wide-local hoist now; relocation later)
 
 | Cell(s) | Addr | Role | gen readers | Mechanism | Status |
@@ -246,6 +265,63 @@ in isolation.
   with no `__t6502` oracle-glue reading/writing it as a call-boundary channel. When a validated
   parent's oracle-glue passes the cell to a native child, the cell stays in `mem[]` until the parent
   itself goes native (`NATIVE_FUNCS`, gated by determinism not validate) — then the glue is gone.
+
+### ⚠⚠ FINDING (2026-08-30): `math_lo/hi` fails the native-only (B) pattern — the disqualifier is PERVASIVE
+
+All shipping *readers* of `math_lo/hi` ($74/$75) are now native (#134–#166), which the worklist
+below treated as the last blocker. It is **not**. The band2 pattern (relocate to a native-only
+`_v`, keep `mem[]` for the oracle) is [[disqualifier]]-broken here, and not by the "6 oracle-only
+bodies" the ledger named — by the **math primitives**:
+
+- `mul8` / `mul8_noinit` / `div16by8` / `neg16_math` / `neg16_math_noinit` / `abs16_math` are the
+  universal math accumulator's own operators, and they are **already native**. The transpiler emits
+  the **native** call (`mul8()`, not `mul8__t6502()`) *inside* `__t6502` oracle bodies — so every
+  oracle that multiplies/divides/negates is a HYBRID whose glue hands operands to the native child
+  **through `mem[$74/$75]`**. Proof: `scale_wing_settings__t6502` does `math_hi = cpu.A; mul8();`.
+  A native-only `_v` would leave `mul8` reading a stale variable while the glue wrote `mem[]` →
+  validate fails on downstream outputs (wing_grip_coeff, car angles, …) in ~dozens of parents.
+- **Consequence:** `math_lo/hi` can only be relocated **globally** — the `mem[$74/$75]`
+  representation replaced by a real variable *everywhere at once*: native cores, the math
+  primitives' cores, AND the entire `__t6502` oracle corpus. Because every reader/writer then uses
+  the same storage, the glue↔core channel is consistent and the disqualifier vanishes; validate
+  `set_ignore`s $74/$75 and `det_compare` `RELOCATED`-skips them. This needs a **transpiler change**
+  so `revs_gen.c` emits variable-operating code for $74/$75 across all forms: plain load/store
+  (already the `math_lo`/`math_hi` macro — redefine it), indexed `mem[MEM_math_lo]`, and the **74
+  RMW `_M(MEM_math_x)` sites** (`ASL/LSR/ROL/ROR/INC/DEC`, needing `_V` variable-operating variants
+  that thread `cpu.C`). Plus converting the hand-written aliases in `revs_native.c`
+  (`PVS_HALF`/`PVS_GAP_COL`/`STEER_SIGN`/`STEER_DEMAND`, raw `mem[0x74/0x75/MATH_LO]`).
+- This is a materially bigger, riskier step than any prior (B): it **regenerates the validation
+  oracle**. The guard is validate staying green (with $74/$75 ignored) and
+  `determinism-drive`/`-crash` (goldens recorded BEFORE the change) diverging at **exactly** $74/$75
+  and nothing else. No `(zp),Y` uses $74/$75 as a pointer base, so a scalar variable is legal.
+
+### ⚠⚠⚠ HARDER BLOCKER (2026-08-30): $74/$75 are INDEXED with $76 — scalar relocation is impossible
+
+The global approach above still assumed a *scalar* `math_lo`/`math_hi`. It cannot be, because
+**$74/$75 are accessed by a runtime index that spans $74/$75/$76 as one 3-byte value** — a scalar
+has no `[X]`. Two sites, both already validated native twins whose `__t6502` oracles emit
+`mem[(uint8_t)(MEM_math_lo+cpu.X)]`:
+
+- **`build_section_step_delta` ($146e, twin #141):** `LDX #2; …SBC $74,X; STA $74,X…` (X=2,1,0) — a
+  24-bit negate of {math_lo, math_hi, shared_temp_76}.
+- **`draw_track_object` ($2b16, twin #7):** `LDX #2; …ROR $83,X; ROR $74,X…` (X=2,1,0) — a 24-bit
+  arithmetic shift-right pairing the $83 window with the $74 window.
+
+So the relocation unit is the **whole $74/$75/$76 window**, and it could only be an indexable
+`uint8_t[3]` — which (a) forfeits the scalar register-allocation win that is the entire point of
+(B), and (b) **drags in `shared_temp_76` ($76), the engine's busiest scratch cell** (~40 unrelated
+writers, **120 transliterated refs** in `revs_gen.c` — nowhere near reader-native). Relocating that
+window is not a "math_lo/hi step"; it is a `shared_temp_76` campaign an order of magnitude larger,
+and one whose payoff is an array access, not a register.
+
+**Conclusion — `math_lo/hi` ($74/$75) is NOT (B)-eligible.** The reader-nativization campaign
+(#134–#166) that made every *direct* reader native was necessary bookkeeping but does **not** unblock
+relocation: the real blockers are the indexed $74/$75/$76 coupling and $76's un-nativized surface
+(and, independently, the hybrid-oracle mem[] channel of the native math primitives). The Ordering
+item #1 below ("math_lo/hi first — highest ref count, the template for the rest") was premised on
+ref-count and on "all readers native ⇒ unblocked"; both are refuted here. **The template cell for
+the rest of the campaign must be a genuinely scratch-local one (Ordering item 2 — Tier-1 render
+scratch), not the shared math accumulator.**
 
 ## Ordering
 
