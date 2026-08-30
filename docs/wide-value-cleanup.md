@@ -117,24 +117,32 @@ relocation blast radius. High count ⇒ mechanism (B) is blocked; use (A) now.
 `MUL_SRC` ($80/$81) and `MUL_TERM` ($82/$83) — same zero-page bytes, three names (mul
 multiplicand/multiplier). Convert as one unit or the shared storage corrupts.
 
-⚠⚠ **FINDING (2026-08-30): EVERY Tier-1 render-scratch cell is (B)-blocked — the class, not just
-`math_lo/hi`.** A systematic scan (all direct zp/low-mem refs in `listing.txt`, each PC mapped to
-its owning function, cross-referenced against the native surface = VALIDATE_FUNCS ∪ NATIVE_FUNCS ∪
-`mul8`/`div16by8` et al.) found **exactly ONE** adjacent pair whose *both* bytes are touched only
-by native code and neither is indexed/indirect: `$14/$15` — and those are two **unrelated** single
-bytes (`walk_prev_section` / `edge_end_side0`), not a 16-bit value. So **there is no (B)-eligible
-16-bit lo/hi zp pair touched exclusively by native code.** Spot-proofs of the wall:
-- `edge_nearest` ($10/$11) — written native (`0x23D2` record, `0x24F6` seed, `check_crash` reads
-  hi) but `$10` is read by **transliterated** `scale_angle_in_section` ($4681, in `0x4676`) and its
-  caller `place_player_in_section` ($4626) as the section-distance mul8 scale. Cross-world.
-- `model_accum_entry` ($38/$39) — written native (`apply_driving_model` `0x46A1`) but `$39` is read
-  by the **transliterated** sub-model at `$4C65`/`$4C80`. Cross-world.
-This confirms the [[math_lo/hi]] conclusion generalises: Ordering item 2's hope of "just pick a
-scratch-local render cell" is refuted — the render surface is a patchwork of native twins inside a
-still-transliterated engine, and every 16-bit scratch value threads between the two through `mem[]`.
-**(B) for zero-page scratch is gated on de-transliteration** (below): nativize the transliterated
-reader that owns the bridge, and the cell becomes all-native and relocatable. First unblock target:
-`scale_angle_in_section` ($4676) + `place_player_in_section` ($4626) → frees `edge_nearest`.
+✅ **FINDING (2026-08-30): the (B)-eligible Tier-1 render pairs — a rigorous scan.** For every
+16-bit zp pair, both bytes must be (a) all-native (every *direct* operand ref lies in a function in
+`VALIDATE_FUNCS ∪ NATIVE_FUNCS`) and (b) never indexed or used as an indirect base (`$xx,X`/`$xx,Y`
+in **either** 2- or 4-hex-digit notation, `($xx),Y`). Verdicts:
+
+| Pair | Addr | (B)-eligible? | Why |
+|---|---|---|---|
+| `point_dist` | $7C/$7D | **✅ ELIGIBLE** | both all-native, unindexed; render path — highest value |
+| `bearing` | $8A/$8B | **✅ ELIGIBLE** | both all-native, unindexed; `bearing_to_section` output |
+| `hypot_max` | $7A/$7B | **✅ ELIGIBLE** | both all-native, unindexed |
+| `model_accum_entry` | $38/$39 | **✅ ELIGIBLE** | both all-native, unindexed; driving-model path (small: 6 refs) |
+| `edge_nearest` | $10/$11 | ✗ blocked | `$11` read by **non-native** `check_crash` ($111E); nativize check_crash to free it |
+| `math_lo/hi` | $74/$75 | ✗ blocked | `$74` INDEXED with `$76` (`SBC 0x74,X` $146E, `ROR 0x74,X` $2B18) — see [[math_lo/hi]] |
+| `hypot_min` | $78/$79 | ✗ blocked | `$78` indexed (`$78,X`) |
+| `plot_ptr` | $70/$71 | ✗ blocked | `$70` is an indirect pointer base (`($70),Y`) |
+| `SLIP_MAG` | $8E/$8F | ✗ blocked | `$8E` indexed |
+
+⚠⚠ **METHOD TRAP that produced a false "blocked as a class" reading first (corrected same day):**
+the native-surface set and the indexed-exclusion set are BOTH easy to under-build. (1) `VALIDATE_FUNCS`
+is a 165-entry `{...}` set in `transpile.py` — a naive non-greedy regex grabs a doc-comment
+occurrence and truncates it to ~14 entries, so almost every render twin reads as "transliterated"
+and every pair looks cross-world. Extract it by brace-counting from the real assignment (line ~557),
+and remember `mul8`/`div16by8`/… ARE native (in the set). (2) zero-page indexed operands appear as
+`0x74,X` (**2 hex digits**), not `0x0074,X` — a 4-digit-only regex misses every zp index and marks
+indexed cells eligible. Scan with `0x0*7[456],[XY]`. With both fixed, the table above is stable.
+**So (B) for zp scratch is NOT blocked as a class** — four genuine render/model pairs relocate now.
 
 ### Tier 2 — persistent, adjacent (wide-local hoist now; relocation later)
 
