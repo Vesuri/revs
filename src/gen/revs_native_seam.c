@@ -608,6 +608,19 @@ void text_script_interp(void)
     text_script_interp_core(cpu.X);
 }
 
+void menu_wait_key(void)
+{
+    /* $6571 — the front-end menu selector (twin #166).  `count` arrives in X (stored to math_hi,
+       $75, and read back across the child calls, so the core touches the cell directly).  The only
+       real exit confirms a selection: exit A = $98, X = hypot_min_lo - 1 with N/Z from that X. */
+    uint8_t r = menu_wait_key_core(cpu.X);
+    cpu.A = 0x98u;                       /* $6595 LDA #$98 */
+    cpu.X = r;                           /* $659a LDX hypot_min_lo / $659c DEX */
+    cpu.Y = 0x00u;                       /* $658d LDY shared_temp_76 — 0 on the confirm path */
+    cpu.N = (r & 0x80u) ? 1 : 0;
+    cpu.Z = (r == 0u) ? 1 : 0;
+}
+
 void driver_name_address(void)
 {
     /* $3CEB — the (lo,hi) address of the Nth driver name in driver_name_table ($4050).  The 6502

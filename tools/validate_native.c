@@ -2276,6 +2276,127 @@ static int test_text_script_interp(void)
     return fail;
 }
 
+void menu_wait_key(void);
+void menu_wait_key__t6502(void);
+void platform_test_key_schedule(const unsigned char* codes, int n);  /* mode-4 clock schedule */
+
+/* --------------------------------------------------------------------------
+   $6571 menu_wait_key — the front-end menu selector (src/gen/revs_native.c twin #166).
+
+   The reader-nat target is math_hi ($75): `count` arrives in X, is stored there, and is read
+   back twice (the scan's start index, the highlight loop's ceiling) ACROSS the child calls
+   FUN_3261 and text_script_interp — so the twin reads the cell directly, never caching, the
+   #159-CRUX-safe form.  This is the LAST shipping reader in the wide-value cleanup.
+
+   THE MULTI-FRAME POLL, and how a static keyboard cannot drive it.  menu_wait_key renders and
+   polls in a loop and only returns when SPACE (menu_key_tbl[0]) is held AFTER a non-zero row was
+   already selected (shared_temp_77 latched to $1E on the first pick).  A one-shot key set can
+   never "press a second key later", so the fixture drives the mode-4 CLOCK SCHEDULE
+   (platform_test_key_schedule + the tick clock): keyDown reports held iff the code matches this
+   phase's schedule slot, indexed by the tick clock, which advances one per loop iteration.  The
+   clock cell lives in mem[] and diff_run resets mem[] from `pre` before each model run, so both
+   models see the identical phase sequence.
+
+   Two hazards pinned by construction:
+     * FUN_3261 (called every iteration) does TXS + re-enter front_end_menus when mem[$1C] bit 7 is
+       CLEAR (the SHIFT+f0 restart) — an unbounded re-entry the fixture must not trigger, so $1C
+       bit 7 is pinned SET (FUN_327d, the no-op arm).  SHIFT ($FF) and f0 ($86) must also never be
+       reported held; the schedule only ever holds a menu_key_tbl code or the 0x01 "nothing" slot.
+     * text_script_interp($1E) runs once on the first pick; script $1E is pointed at a lone $FF
+       byte so it returns immediately (no glyph plotting, no char_row setup) — a safe no-op.
+
+   Exit ABI: X is live (every caller reads the confirmed selection) -> LIVE_X. */
+static int test_menu_wait_key(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("menu_wait_key");
+    if (!want("menu_wait_key")) return 0;
+
+    unsigned mask = LIVE_X;                       /* exit X = confirmed selection - 1 */
+
+    const uint16_t CLOCK = 0x0080u;              /* the phase clock: scratch zero page, untouched by the loop */
+    /* menu_key_tbl codes: distinct, and none is $FF (SHIFT) or $86 (f0), which FUN_3261 tests. */
+    static const uint8_t KEYTBL[4] = { 0xA0u, 0xA1u, 0xA2u, 0xA3u };
+
+    platform_test_clock_addr(CLOCK);
+    platform_test_tick_clock(1);
+
+    int shape0 = 0, shape1 = 0, count2 = 0, count3 = 0;
+    int selSeen[4] = {0,0,0,0};
+
+    int cases = 4000 * scale;
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;                                  /* not a SED site */
+        c.N = xs()&1; c.V = xs()&1; c.Z = xs()&1; c.I = xs()&1; c.C = xs()&1;
+
+        uint8_t count = (t & 1) ? 3u : 2u;        /* menu_key_tbl has 4 slots -> count in {2,3} */
+        uint8_t sel   = (uint8_t)(1u + (xs() % count));  /* the row to pick, 1..count */
+        c.X = count;                              /* entry ABI: count in X */
+        if (count == 3u) count3++; else count2++;
+        selSeen[sel]++;
+
+        pre[CLOCK] = 0x00u;                       /* phase clock starts at 0 (scan sees it at 1) */
+        pre[0x0075u] = 0xAAu;                     /* math_hi != count, so a dropped entry-store shows */
+        pre[0x001Cu] |= 0x80u;                    /* FUN_3261 -> FUN_327d no-op (avoid the TXS restart) */
+
+        /* menu_key_tbl ($39E0) */
+        for (int i = 0; i < 4; i++) pre[0x39E0u + i] = KEYTBL[i];
+
+        /* script $1E -> a lone $FF byte at $2000, so text_script_interp($1E) is a no-op */
+        pre[0x3AD0u + 0x1Eu] = 0x00u;             /* text_script_ptr_lo[$1E] */
+        pre[0x3B50u + 0x1Eu] = 0x20u;             /* text_script_ptr_hi[$1E] -> $2000 */
+        pre[0x2000u] = 0xFFu;
+
+        /* the shared scratch/latch cells the routine drives, seeded to known values */
+        pre[0x0076u] = (uint8_t)xs();             /* shared_temp_76 (overwritten by the scan) */
+        pre[0x0077u] = (uint8_t)xs();             /* shared_temp_77 (cleared at entry) */
+        pre[0x0078u] = (uint8_t)xs();             /* hypot_min_lo (set on the first pick) */
+
+        unsigned char sched[4];
+        int shape = t % 2;
+        if (shape == 0) {
+            /* pick then confirm: iter1 (clock 1) picks row `sel`, iter2 (clock 2) confirms */
+            sched[0] = 0x01u;                     /* clock 0 (unused — scan first sees clock 1) */
+            sched[1] = KEYTBL[sel];               /* clock 1: pick the row */
+            sched[2] = KEYTBL[0];                 /* clock 2: SPACE -> confirm */
+            platform_test_key_schedule(sched, 3);
+            shape0++;
+        } else {
+            /* space-first: iter1 SPACE with nothing shown -> redraw ($6591-$6593), then pick, then confirm */
+            sched[0] = 0x01u;
+            sched[1] = KEYTBL[0];                 /* clock 1: SPACE, shared_temp_77==0 -> redraw */
+            sched[2] = KEYTBL[sel];               /* clock 2: pick the row */
+            sched[3] = KEYTBL[0];                 /* clock 3: SPACE -> confirm */
+            platform_test_key_schedule(sched, 4);
+            shape1++;
+        }
+
+        fail += diff_run("menu_wait_key", pre, c, menu_wait_key,
+                         menu_wait_key__t6502, mask, t, &printed);
+    }
+
+    /* Non-vacuity: both counts, both schedule shapes, and every selectable row were exercised. */
+    if (!shape0 || !shape1 || !count2 || !count3 || !selSeen[1] || !selSeen[2] || !selSeen[3]) {
+        printf("[VACUOUS] menu_wait_key: an arm never ran "
+               "(shape0 %d shape1 %d, count2 %d count3 %d, sel1 %d sel2 %d sel3 %d)\n",
+               shape0, shape1, count2, count3, selSeen[1], selSeen[2], selSeen[3]);
+        fail++;
+    }
+    platform_test_tick_clock(0);
+    platform_test_key_set_clear();                /* leave the backend in a known state */
+    printf("%-32s %7d cases, %d mismatch (must be 0)  live=X  "
+           "(shape %d/%d, count %d/%d, sel %d/%d/%d)\n",
+           "menu_wait_key", cases, fail, shape0, shape1, count2, count3,
+           selSeen[1], selSeen[2], selSeen[3]);
+    return fail;
+}
+
 static int test_view_paint_lines(void)
 {
     static uint8_t pre[65536];
@@ -7349,6 +7470,7 @@ int main(int argc, char** argv)
     fail += test_check_car_pair();
     fail += test_plot_line_octant();
     fail += test_text_script_interp();
+    fail += test_menu_wait_key();
     fail += test_view_paint_lines();
     fail += test_view_producers();
     fail += test_body_drivers();

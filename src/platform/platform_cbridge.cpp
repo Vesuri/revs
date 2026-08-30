@@ -182,8 +182,16 @@ static int g_headlessKeyDown = 0;
    down.  With one global answer the fixture could only ever produce "none" or "all", so the
    both-keys arm ran and the one-key arms never did: the sabotage "the key direction is not
    compared with the current sign" survived 5000 cases.  Mode 2 answers for one code only. */
-static int g_headlessKeyMode = 0;      /* 0 none, 1 every key, 2 only g_headlessKeyCode, 3 the held-set */
+static int g_headlessKeyMode = 0;      /* 0 none, 1 every key, 2 only g_headlessKeyCode, 3 the held-set, 4 the clock schedule */
 static unsigned char g_headlessKeyCode = 0;
+/* Mode 4, the CLOCK SCHEDULE: which single code reports held is a function of the tick clock, so a
+   multi-frame poll loop (menu_wait_key) can be driven phase by phase.  keyDown reports code held iff
+   code == g_headlessKeySchedule[min(mem[g_headlessClockAddr], n-1)].  Because the clock cell lives in
+   mem[] and diff_run resets mem[] from `pre` before each model run, both models see the identical
+   phase sequence.  A schedule slot of 0x01 (never a menu key, never queried by the poll dispatcher)
+   means "nothing held this phase" -> the loop redraws. */
+static unsigned char g_headlessKeySchedule[16];
+static int g_headlessKeyScheduleN = 0;
 /* Mode 3, the held-SET: an arbitrary set of negative-INKEY codes reported down at once.  Mode 2's
    single code cannot cover shift_key_commands, whose interesting arms need SHIFT ($FF) held AND a
    specific scan-table key held together (and the pause path needs $A6 held on top). */
@@ -230,6 +238,12 @@ struct HeadlessPlatform : Platform {
     void    tickVBI() override { if (g_headlessTickClock) mem[g_headlessClockAddr]++; }
     int     loadImage(const char*) override { return -1; }
     bool keyDown(uint8_t x) override {
+        if (g_headlessKeyMode == 4) {
+            int i = g_headlessKeyScheduleN ? (int)mem[g_headlessClockAddr] : 0;
+            if (i >= g_headlessKeyScheduleN) i = g_headlessKeyScheduleN - 1;
+            if (i < 0) i = 0;
+            return g_headlessKeyScheduleN && x == g_headlessKeySchedule[i];
+        }
         if (g_headlessKeyMode == 3) return g_headlessKeySet[x] != 0;
         if (g_headlessKeyMode == 2) return x == g_headlessKeyCode;
         return g_headlessKeyDown != 0;
@@ -291,6 +305,16 @@ void platform_test_key_set_clear(void) {
 void platform_test_key_set_add(unsigned char code) {
     g_headlessKeyMode = 3;
     g_headlessKeySet[code] = 1;
+}
+
+/* Clock-schedule mode (mode 4): the code held is chosen by the tick clock, one entry per phase.
+   Pair with platform_test_tick_clock(1)/platform_test_clock_addr(); a slot of 0x01 = nothing held. */
+void platform_test_key_schedule(const unsigned char* codes, int n) {
+    g_headlessKeyMode = 4;
+    if (n < 0) n = 0;
+    if (n > 16) n = 16;
+    g_headlessKeyScheduleN = n;
+    for (int i = 0; i < n; i++) g_headlessKeySchedule[i] = codes[i];
 }
 
 /* What ADVAL answers under the test platform: the 16-bit axis (only its high byte is used by

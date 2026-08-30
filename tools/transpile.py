@@ -1196,6 +1196,13 @@ VALIDATE_FUNCS = {
     # 6502 mem-stack — the fixture pins entry S=$FF and ignores the two residue bytes at $01FE/$01FF.
     # Exit ABI dead — LIVE_NONE, mem[]-only compare.
     0x4D7E,
+    # menu_wait_key $6571 — the front-end menu SELECTOR (twin #166): renders/polls until one of
+    # menu_key_tbl[0..count] ($39E0) is held, highlights the chosen row, returns the confirmed
+    # selection in X.  count is passed in X and lives in math_hi ($75) — the LAST shipping math_hi
+    # reader.  The twin reads/writes mem[$75] directly (never caches): children (FUN_3261,
+    # text_script_interp) run between the entry write and the two reads, so re-reading the cell is
+    # the #159-CRUX-safe form.  Exit X live (every caller reads it) — LIVE_X.
+    0x6571,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

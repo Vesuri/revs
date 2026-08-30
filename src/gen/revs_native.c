@@ -9502,6 +9502,79 @@ void text_script_interp_core(uint8_t tableIdx)
 }
 
 /* ---------------------------------------------------------------------------
+   $6571  menu_wait_key — THE FRONT-END MENU SELECTOR  (twin #166)
+   The front-end chain ($63E0) calls this five times to read one menu answer.
+   It renders/polls in a loop until one of menu_key_tbl[0..count] ($39E0, the
+   negative-INKEY codes for SPACE/1/2/3) is held, then highlights the chosen row
+   and returns the confirmed selection in X.  `count` arrives in X and is stored
+   in math_hi ($75) — this is the LAST shipping reader of math_hi in the
+   wide-value cleanup.
+     • A non-zero index selects that row: it is remembered in hypot_min_lo, and on
+       the FIRST pick the menu text (script $1E) is shown once (shared_temp_77 goes
+       0 -> $1E, the "already shown" latch).  The chosen row is then re-highlighted
+       ($81) among the others ($84) and the loop redraws.
+     • Index 0 (SPACE) CONFIRMS, but only once something has been shown
+       (shared_temp_77 != 0); it writes $98 to $7FC5 and returns hypot_min_lo - 1.
+   ⚠ math_hi is READ back (`LDY math_hi` at the scan top, `CPY math_hi` in the
+   highlight loop) AFTER child calls (FUN_3261, text_script_interp), so the twin
+   reads/writes the cell directly and never caches `count` — the #159-CRUX-safe
+   form (a child that overwrote $75 would then be honoured identically by both
+   models).  Exit X is live (every caller reads it); the shim rebuilds A/N/Z.
+   ⚠ FUN_3261 dispatches on mem[$1C]: with bit 7 CLEAR it does TXS + re-enter
+   front_end_menus (the SHIFT+f0 menu-restart), so any run of this routine — real
+   or fixture — is only well-defined with $1C bit 7 SET (the normal in-menu state).
+   --------------------------------------------------------------------------- */
+#define MENU_KEY_TBL 0x39E0u                       /* menu_key_tbl: SPACE,1,2,3 negative-INKEY codes */
+
+uint8_t menu_wait_key_core(uint8_t count)
+{
+    mem[MEM_math_hi]  = count;                     /* $6575 STX math_hi — read back below */
+    shared_temp_77    = 0x00u;                     /* $6573 — "menu text shown" latch, clear */
+
+    for (;;) {                                     /* L_6577 — render, poll, then scan */
+        platform_render_frame();
+        platform_tick_vbi();
+        platform_poll_events();
+        FUN_3261();                                /* $6577 — keyboard poll / menu-restart dispatch */
+
+        /* $657a..$658b — scan menu_key_tbl DOWN from `count` for the first held key */
+        uint8_t idx = mem[MEM_math_hi];            /* $657a LDY math_hi */
+        int matched = 0;
+        for (;;) {
+            shared_temp_76 = idx;                  /* $657c */
+            if (kbd_test_key_core(mem[MENU_KEY_TBL + idx])) { matched = 1; break; }  /* $657e-$6584 */
+            if (idx == 0u) break;                  /* $6588 DEY -> $FF (N) -> redraw */
+            idx--;                                 /* $6589 BPL — keep scanning */
+        }
+        if (!matched) continue;                    /* $658b — none held, redraw */
+
+        uint8_t sel = shared_temp_76;              /* $658d LDY shared_temp_76 (Z if 0) */
+        if (sel == 0u) {                           /* $658f BNE */
+            if (shared_temp_77 == 0u) continue;    /* $6591-$6593 — nothing shown yet, redraw */
+            mem[0x7FC5] = 0x98u;                    /* $6595-$6597 */
+            return (uint8_t)(hypot_min_lo - 1u);   /* $659a LDX hypot_min_lo / $659c DEX / RTS */
+        }
+
+        hypot_min_lo = sel;                        /* $659e — remember the chosen row */
+        if (shared_temp_77 == 0u) {                /* $65a0-$65a2 — first pick only */
+            shared_temp_77 = 0x1Eu;                /* $65a4-$65a6 — latch + the script index */
+            text_script_interp_core(0x1Eu);        /* $65a8 — show the menu text once */
+        }
+
+        /* $65ab..$65c6 — repaint the rows: attr $84, but $81 on the selected row */
+        uint8_t hx = 0x00u;                        /* $65ab LDX #0 — screen offset */
+        uint8_t hy = 0x01u;                        /* $65ad LDY #1 — row index */
+        for (;;) {
+            mem[0x7E85u + hx] = (hy == hypot_min_lo) ? 0x81u : 0x84u;  /* $65af-$65b7 */
+            hx = (uint8_t)(hx + 0x50u);            /* $65ba TXA/ADC #$50/TAX — next row */
+            hy++;                                  /* $65bf INY */
+            if (hy > mem[MEM_math_hi]) break;      /* $65c0 CPY math_hi — loop while hy<=count */
+        }
+        /* $65c6 — falls back to redraw (the only true exit is the sel==0 confirm above) */
+    }
+}
+
+/* ---------------------------------------------------------------------------
    $7B4A  draw_starting_lights — WALK THE LIGHT SEQUENCE, PAINT THE COLUMN  (twin #149)
    Lives in the $7B00 overlay.  Does nothing outside the race proper (session_is_race
    positive) or once the lights are dark (state 0).  Otherwise it advances
