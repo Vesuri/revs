@@ -48,12 +48,28 @@ static inline uint8_t bus_read(uint16_t addr) {
     return mem[addr];
 }
 
+/* ⭐ THE INK WATCH (host, opt-in, `make INK_WATCH=1`) — which C routine wrote THIS byte?
+   The frame-buffer differential says a cell is wrong; it never says who wrote it, and the
+   plotters reach the screen through the INDIRECT modes, which means through here.  So this is
+   the one choke point that can name the writer.  Compile-time gated: bus_write is the hottest
+   function in the build and the normal path must not grow a test.  `make fbwrites` is the same
+   question asked of a real BBC (per-PC); this is its host-side twin (per-C-routine). */
+#ifdef REVS_INK_WATCH
+#ifdef __cplusplus
+extern "C"
+#endif
+void revs_ink_watch(uint16_t addr, uint8_t val);
+#endif
+
 static inline void bus_write(uint16_t addr, uint8_t val) {
     if (addr >= BBC_IO_LO && addr < BBC_IO_HI) {
         platform_hw_write(addr, val);
         return;
     }
     mem[addr] = val;
+#ifdef REVS_INK_WATCH
+    revs_ink_watch(addr, val);
+#endif
 #ifndef REVS_PLATFORM_AMIGA
     /* Notify the platform about OS-vector writes so it can react immediately
        (e.g. the game claiming IRQ1V/EVNTV).  On the Amiga backend the copper owns

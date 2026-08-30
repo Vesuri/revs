@@ -23,6 +23,21 @@
 /* Included from BOTH the generated C (revs_gen.c) and C++ backends, so it must not
    reach for <cstdint>; it needs no integer types of its own anyway. */
 
+/* ⭐⭐ THE PHASE CANARY (host, `make INK_WATCH=1`; src/platform/bbc_hw.cpp) — which frame-body
+   STAGE changed a given byte range?  It rides the phase brackets rather than a write seam,
+   because the port's third write path (a plain `mem[addr] = value`, which is what the transpiler
+   emits for every constant address) reaches NO seam and so looks like "never written".
+   Independent of REVS_PROBE: available in a plain host build, compiled to nothing otherwise. */
+#ifdef REVS_INK_WATCH
+#ifdef __cplusplus
+extern "C"
+#endif
+void revs_canary(int phase);
+#define REVS_CANARY(id) revs_canary(id)
+#else
+#define REVS_CANARY(id) ((void)0)
+#endif
+
 #ifdef REVS_PROBE
 
 #ifdef __cplusplus
@@ -199,10 +214,10 @@ extern volatile unsigned long g_beamEpoch;
 }
 #endif
 
-#define PROBE_PHASE(id) probe_phase(id)
+#define PROBE_PHASE(id) do { REVS_CANARY(id); probe_phase(id); } while (0)
 
 #else
-#define PROBE_PHASE(id) ((void)0)
+#define PROBE_PHASE(id) REVS_CANARY(id)
 #define PROBE_VBI()     ((void)0)
 #define PROBE_ISR_BEGIN() ((void)0)
 #define PROBE_ISR_END()   ((void)0)
@@ -330,11 +345,14 @@ extern volatile unsigned long g_roadMarkPts;     /* mark_line_surfaces points st
 #endif
 #define ROAD_COUNT(c)    (++(c))
 #ifdef REVS_PROBE
-#define ROAD_PHASE(id)   probe_phase(id)
+#define ROAD_PHASE(id)   do { REVS_CANARY(id); probe_phase(id); } while (0)
 #else
-#define ROAD_PHASE(id)   ((void)0)
+#define ROAD_PHASE(id)   REVS_CANARY(id)
 #endif
 #else
 #define ROAD_COUNT(c)    ((void)0)
-#define ROAD_PHASE(id)   ((void)0)
+/* ⭐ The canary still rides these brackets in a non-ROADSPLIT build: they are the only sub-stage
+   boundaries draw_road has, and `make INK_WATCH=1` needs them to attribute a stray write inside
+   the road pass without also turning on the ROADSPLIT counters. */
+#define ROAD_PHASE(id)   REVS_CANARY(id)
 #endif /* REVS_ROADSPLIT */

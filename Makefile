@@ -114,6 +114,15 @@ CFLAGS   += -DREVS_TRACK_DEFAULT=$(TRACK)
 CXXFLAGS += -DREVS_TRACK_DEFAULT=$(TRACK)
 endif
 
+# ⭐ `make INK_WATCH=1` — name the C routine that wrote a given frame-buffer byte.  The plotters
+# reach the screen through the indirect modes, hence through bus_write, so that is the choke
+# point; src/platform/bbc_hw.cpp §THE INK WATCH lists the REVS_INK_* run-time knobs.  Opt-in
+# because bus_write is the hottest function in the build.
+ifdef INK_WATCH
+CFLAGS   += -DREVS_INK_WATCH -g -fno-omit-frame-pointer
+CXXFLAGS += -DREVS_INK_WATCH -g -fno-omit-frame-pointer
+endif
+
 ifdef STACK_TRAP
 CFLAGS   += -DREVS_STACK_TRAP -g -fno-omit-frame-pointer
 CXXFLAGS += -DREVS_STACK_TRAP -g -fno-omit-frame-pointer

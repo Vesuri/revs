@@ -281,9 +281,21 @@ REVS_FLAG_OP uint8_t seam_read(unsigned addr, int ram)
     return ram ? mem[addr] : (uint8_t)bus_read((uint16_t)addr);
 }
 
+/* ⚠⚠ THE RAM ARM BYPASSES bus_write, SO IT BYPASSES THE INK WATCH TOO — and that made the
+   watch answer "nobody writes this cell" about a cell a twin was writing every frame.  Hoisting
+   the hardware test out of the loop is the whole point of this seam (CLAUDE.md §bus_read/
+   bus_write), so the diagnostic has to be hoisted with it.  Any future choke point that skips
+   bus_write must repeat this call, or the instrument silently goes blind on that path. */
 REVS_FLAG_OP void seam_write(unsigned addr, int ram, uint8_t value)
 {
-    if (ram) mem[addr] = value; else bus_write((uint16_t)addr, value);
+    if (ram) {
+        mem[addr] = value;
+#ifdef REVS_INK_WATCH
+        revs_ink_watch((uint16_t)addr, value);
+#endif
+    } else {
+        bus_write((uint16_t)addr, value);
+    }
 }
 
 /* ---- the MOS boundary: cpu-free typed wrappers over platform_mos_call_typed ----

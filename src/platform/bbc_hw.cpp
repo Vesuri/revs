@@ -540,3 +540,157 @@ unsigned Platform::fireIrq1vField(void)
 /* Default: no display, so every check reports a frame boundary.  A backend with a real
    vblank overrides this. */
 bool Platform::vsyncElapsed() { return true; }
+
+/* ===========================================================================
+   THE INK WATCH — attribute a frame-buffer byte to the C routine that wrote it
+   ---------------------------------------------------------------------------
+   src/cpu/bus.h calls this after every non-hardware store when the build is
+   `make INK_WATCH=1`.  Configure it per run:
+
+     REVS_INK_ADDR=6E1A     the cell to watch (hex, required, else inert)
+     REVS_INK_VAL=1F        only this value (hex; omit = any value)
+     REVS_INK_SKIP=2000     ignore this many matching stores first, so the
+                            backtraces come from the STEADY STATE rather than
+                            from the menu and the settling frames
+     REVS_INK_N=4           how many backtraces to print (default 3)
+
+   ⚠ Reports the whole C stack, not a routine name: a frame-buffer store made
+   through a shared span/plot leaf says nothing on its own — the CALLER is the
+   answer, and which caller varies per circuit.
+   =========================================================================== */
+#ifdef REVS_INK_WATCH
+#include <execinfo.h>
+#include <cstdio>
+#include <cstdlib>
+
+extern "C" void revs_ink_watch(uint16_t addr, uint8_t val)
+{
+    static bool     inited = false;
+    static bool     armed  = false;
+    static uint16_t wantAddr = 0;
+    static int      wantVal  = -1;      /* -1 = any */
+    static bool     poll     = false;   /* REVS_INK_POLL: report CHANGES, not interceptions */
+    static bool     haveLast = false;
+    static uint8_t  lastVal  = 0;
+    static unsigned long skip = 0, want = 3, hits = 0, shown = 0;
+
+    if (!inited) {
+        inited = true;
+        const char* a = std::getenv("REVS_INK_ADDR");
+        if (a && a[0]) {
+            wantAddr = (uint16_t)std::strtoul(a, 0, 16);
+            armed    = true;
+            if (const char* v = std::getenv("REVS_INK_VAL"))
+                if (v[0]) wantVal = (int)std::strtoul(v, 0, 16);
+            if (const char* s = std::getenv("REVS_INK_SKIP")) if (s[0]) skip = std::strtoul(s, 0, 10);
+            if (const char* n = std::getenv("REVS_INK_N"))    if (n[0]) want = std::strtoul(n, 0, 10);
+            if (const char* p = std::getenv("REVS_INK_POLL")) if (p[0] && p[0] != '0') poll = true;
+            std::fprintf(stderr, "[ink] %s $%04X", poll ? "polling" : "watching", wantAddr);
+            if (wantVal >= 0) std::fprintf(stderr, " for value $%02X", wantVal);
+            std::fprintf(stderr, ", skipping %lu, printing %lu\n", skip, want);
+        }
+    }
+    if (!armed) return;
+
+    /* ⭐⭐ POLL MODE (REVS_INK_POLL=1) — CATCH A WRITE THIS SEAM CANNOT SEE.
+       Attribution by interception only ever names the writers that come THROUGH here, and this
+       project has three write paths: bus_write, seam_write's hoisted RAM arm, and a plain
+       `mem[addr] =` (which is what the transpiler emits for every constant address, and what a
+       block move does).  A cell written the third way looks NEVER WRITTEN — a confident,
+       coherent, wrong answer.
+       So instead of trusting the (addr, val) we were handed, re-read the watched cell on every
+       call and report the moment its value CHANGES.  Any mechanism whatsoever is then visible,
+       and because this seam runs ~10 600 times a game frame the backtrace lands within a few
+       bus operations of the real store — enough to name the routine. */
+    if (poll) {
+        uint8_t now = mem[wantAddr];
+        if (!haveLast) { haveLast = true; lastVal = now; return; }
+        if (now == lastVal) return;
+        uint8_t was = lastVal;
+        lastVal = now;
+        if (wantVal >= 0 && now != (uint8_t)wantVal) return;
+        if (++hits <= skip || shown >= want) return;
+        shown++;
+        std::fprintf(stderr, "\n[ink] change %lu: $%04X  $%02X -> $%02X  (seen from a bus op at "
+                             "$%04X <- $%02X)\n", hits, wantAddr, was, now, addr, val);
+        void*  pbt[24];
+        int    pn = backtrace(pbt, 24);
+        std::fflush(stderr);
+        backtrace_symbols_fd(pbt, pn, 2);
+        return;
+    }
+
+    if (addr != wantAddr) return;
+    if (wantVal >= 0 && val != (uint8_t)wantVal) return;
+    if (++hits <= skip || shown >= want) return;
+
+    shown++;
+    std::fprintf(stderr, "\n[ink] hit %lu: $%04X <- $%02X\n", hits, addr, val);
+    void*  bt[24];
+    int    n = backtrace(bt, 24);
+    std::fflush(stderr);
+    backtrace_symbols_fd(bt, n, 2);
+}
+
+/* ===========================================================================
+   ⭐⭐ THE PHASE CANARY — WHICH FRAME-BODY STAGE changed this byte range?
+   ---------------------------------------------------------------------------
+   The ink watch above can only ever name a writer that comes THROUGH a seam,
+   and the port has a third write path that reaches neither: a plain
+   `mem[addr] = value` store.  That is what the transpiler emits for every
+   CONSTANT address, and what a block move or a unit loop's `*dp = byte` does.
+   A cell written that way looks NEVER WRITTEN — the failure mode this project
+   keeps re-learning (docs/method-lessons.md): a coherent, confident, wrong
+   answer.  Poll mode narrows a change to "between two bus ops", which is still
+   a whole routine.
+
+   This instead compares a snapshot of the range at every PROBE_PHASE boundary,
+   so attribution does not depend on the write path at all — only on where the
+   stage brackets are.  A report reads "changed during phase N-1..N".
+
+     REVS_CANARY_ADDR=6000   range base (hex; default $6000)
+     REVS_CANARY_LEN=32      length in bytes (decimal; default 32, max 256)
+     REVS_CANARY_N=8         how many change reports to print (default 8)
+
+   It RE-ARMS after each report, so a cell corrupted once and then frozen is
+   distinguishable from one rewritten every frame.
+   =========================================================================== */
+extern "C" void revs_canary(int phase)
+{
+    static bool          inited = false;
+    static unsigned      base = 0x6000u, len = 32;
+    static unsigned char snap[256];
+    static unsigned long calls = 0, want = 8, shown = 0;
+    static int           lastPhase = -1;
+
+    if (!inited) {
+        inited = true;
+        if (const char* a = std::getenv("REVS_CANARY_ADDR")) if (a[0]) base = (unsigned)std::strtoul(a, 0, 16);
+        if (const char* l = std::getenv("REVS_CANARY_LEN"))  if (l[0]) len  = (unsigned)std::strtoul(l, 0, 10);
+        if (const char* n = std::getenv("REVS_CANARY_N"))    if (n[0]) want = std::strtoul(n, 0, 10);
+        if (len == 0 || len > sizeof snap) len = (unsigned)sizeof snap;
+        for (unsigned i = 0; i < len; i++) snap[i] = mem[base + i];
+        std::fprintf(stderr, "[canary] watching $%04X..$%04X (%u bytes), printing %lu changes\n",
+                     base, base + len - 1, len, want);
+    }
+    calls++;
+
+    unsigned diffs = 0;
+    for (unsigned i = 0; i < len; i++) if (snap[i] != mem[base + i]) diffs++;
+    if (diffs == 0) { lastPhase = phase; return; }
+
+    if (shown < want) {
+        shown++;
+        std::fprintf(stderr, "\n[canary] change %lu (call %lu): $%04X..$%04X — %u byte(s) differ, "
+                             "written between phase %d and phase %d\n",
+                     shown, calls, base, base + len - 1, diffs, lastPhase, phase);
+        for (unsigned i = 0; i < len && i < 48; i++)
+            if (snap[i] != mem[base + i])
+                std::fprintf(stderr, "[canary]   $%04X  $%02X -> $%02X\n",
+                             base + i, snap[i], mem[base + i]);
+        std::fflush(stderr);
+    }
+    for (unsigned i = 0; i < len; i++) snap[i] = mem[base + i];   /* re-arm */
+    lastPhase = phase;
+}
+#endif
