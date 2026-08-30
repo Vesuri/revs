@@ -281,6 +281,42 @@ register out of `cpu` at the point of use, not into a local at the point it was 
 do cache it, the thing that catches you is the differential, so never cache it without a fixture
 that reaches the MOS path.
 
+### ⚠⚠ A HOOK SEAM MUST HAND OVER EVERY LIVE REGISTER, NOT THE ONES THE DEFAULT CALLEE READS
+
+Measured on `fill_line_attr` (twin #7), and it shipped broken for months.
+
+At `$1946` the routine calls Silverstone's `edge_x_offscreen`, or — on an expansion circuit —
+whatever `ModifyGameCode` put there instead. The twin marshalled `cpu.X` and stopped, with a
+comment that said *"both are 6502-ABI shims that read the start index in X"*. That was true of
+`edge_x_offscreen`, which reads `X` and nothing else. It was false of all five expansion
+circuits' hooks, which open `TYA` and walk `edge_y` **downward** with `DEY`.
+
+Handed a stale `cpu.Y`, that walk can start below the horizon entry, so its only range exit
+(`edge_y[Y] >= horizon_extent`) never fires; `Y` runs off the bottom of the table and wraps to
+`$FF..$E0`, and `$5F20 + Y` is then `$601F..$6000` — the 32 bytes of `view_cell_bytes`, the
+source-byte → screen-byte identity table every cell chain paints through. A table full of `$1F`
+paints three red pixels and a green one wherever a nonzero source byte is carried. **The symptom
+was horizontal red streaks around the wheel, cockpit edge and horizon on the expansion circuits
+only, appearing after a while parked** — nowhere near a plotter, and nothing to do with the table
+that was actually being overwritten.
+
+⭐ **The rule: at an SMC/hook seam, seed every register the 6502 has live at that address —
+derive the set from the surrounding instructions, not from what the unpatched callee happens to
+read.** Here three neighbours settle it beyond doubt: `$1941 STY span_end_index`, `$1943 DEY`,
+`$1944 STY math_hi`, so `Y = endCursor - 1`. (`$1949 LDY horizon_extent` then discards the hook's
+exit `Y`, which is why the walk below re-seeds from `horizon_extent` — the *entry* obligation and
+the *exit* one are separate questions.) This is the same lesson as the interrupt contract in
+`CLAUDE.md` — an ISR shim must reproduce the OS entry's side effects, not just call the handler —
+and it fails the same way: silently, plausibly, and invisibly to every existing gate.
+
+⚠ **Why no gate caught it.** Every `make validate` fixture races Silverstone, so a seam's
+*patched* arm is exercised by no fixture at all; `make determinism`/`-drive` are Silverstone too;
+`make tracks` proves the circuit's bytes land and `make track-run` proves its code *runs*, and
+both passed throughout — a hook can execute 1600 times and corrupt a table on the way. The gap is
+structural: **the expansion-circuit arms of the ~13 hook seams are validated by nothing.** What
+found it was the phase canary (`make INK_WATCH=1`) plus a real-BBC frame-buffer differential over
+display lines 82..165, and what *proves* a fix is that differential going byte-identical.
+
 ### ⭐ A patched SMC BRANCH OFFSET is a narrower obligation than it looks
 
 `$231A`'s offset can in principle name ~200 addresses inside `road_edge_start`, and the

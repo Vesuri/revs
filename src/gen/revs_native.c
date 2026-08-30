@@ -5063,10 +5063,24 @@ SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t first
                           (uint8_t)((onePastLast >> 7) & 1u), (uint8_t)(onePastLast == 0),
                           (uint8_t)entryV, (uint8_t)entryC };
 
-    /* $1946 — Silverstone's own `JSR edge_x_offscreen`, or a circuit's hook in its place.  Both
-       are 6502-ABI shims that read the start index in X, so seed it — the one genuine hook-seam
-       cpu access left in this routine. */
+    /* $1946 — Silverstone's own `JSR edge_x_offscreen`, or a circuit's hook in its place.  These
+       are 6502-ABI shims, so the seam must hand over EVERY register the 6502 has live at $1946,
+       not just the ones Silverstone's callee happens to read — the one genuine hook-seam cpu
+       access left in this routine.
+       ⚠⚠ X *AND* Y.  edge_x_offscreen reads only the start index in X, so seeding X alone looked
+       complete and passed every fixture — all of which race Silverstone.  But each expansion
+       circuit replaces this call with a hook that opens `TYA` and walks `edge_y` DOWNWARD with
+       `DEY` ($56C8, $56C4 on Snetterton), and its only range exit is `edge_y[Y] >= horizon_extent`.
+       Handed a stale Y, that walk can miss the horizon entry, run off the bottom of edge_y and
+       wrap Y to $FF..$E0 — writing $5F20+Y = $601F..$6000, i.e. 32 bytes of view_cell_bytes, the
+       source-byte -> screen-byte identity table the cell chains paint through.  A table full of
+       $1F then paints red+green wherever a nonzero source byte is carried: the horizontal red
+       streaks on the expansion circuits.  The live Y here is the $1943 DEY's value, which the
+       three surrounding instructions confirm ($1941 STY span_end_index, $1943 DEY, $1944 STY
+       math_hi); $1949 `LDY horizon_extent` then discards whatever the hook left, which is why
+       the walk below re-seeds y from horizon_extent rather than from cpu.Y. */
     cpu.X = firstPoint;
+    cpu.Y = onePastLast;
     if (mem[0x1946] == 0x20) {
         uint16_t target = (uint16_t)(mem[0x1947] | (mem[0x1948] << 8));
         if (target == 0x1933) edge_x_offscreen();

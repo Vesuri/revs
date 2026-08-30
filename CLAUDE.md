@@ -409,6 +409,15 @@ Rules that must survive without opening `docs/perf-method.md`:
   `mos_irq_a` (`$FC`), which only the MOS's own IRQ entry ever wrote. Asserted at the seam on both
   backends (`g_irqClobberCount`); keep it at 0. ⚠ Invisible on the host, where the ISR fires at a
   controlled point.
+- ⭐⭐ **A HOOK/SMC SEAM MUST HAND OVER EVERY REGISTER THE 6502 HAS LIVE THERE** — derive the set
+  from the SURROUNDING INSTRUCTIONS, never from what the unpatched callee happens to read.
+  Silverstone's callee is not the contract: an expansion circuit's hook reads registers it does
+  not. ⚠⚠ And **the patched arm of every hook seam is gated by NOTHING** — `validate`,
+  `determinism` and `-drive` all race Silverstone; `tracks` proves the bytes land and `track-run`
+  proves the code RUNS, neither that it computes. So settle a hook seam against the real BBC
+  (`make refloop` + a frame-buffer differential over display lines 82+), and reach for the phase
+  canary (`make INK_WATCH=1`) when a cell is corrupted by an unknown writer.
+  (`docs/faithfulness-seam.md`)
 - **A 6502 idiom that touches the STACK POINTER has no C equivalent and is dropped silently** —
   suspect that class first for any hang inside generated code. When the idiom manipulates `S` to
   talk about RETURN ADDRESSES, model the control flow and leave `S` alone: modelling neither is a

@@ -219,3 +219,20 @@ table once init has run (a classic BBC overlay). Twin #159 references the table 
 (init runs once, before any race frame), the address could carry the *table* name with a note that
 `$63BD` jumps into it — verify by dumping `$3850..$3863` at `$63BD` (should be init code) vs mid-race
 (should be per-car speed fractions), then rename to `car_speed_frac` with the JMP-target as the note.
+
+
+## `$253B` — an unnamed routine inside `build_track_geometry`, called by every circuit hook
+
+Generated as `FUN_253b`, and it has no `symbols.csv` row at all, yet it is *documented in someone
+else's note*: the `edge_x_hi` row (`$5E90`) says "`$253B` differences `$5E90,Y` against `$5EB8,Y` =
+this + `$28`, which is what proves the 2x40 stride". So the behaviour is already known — it takes
+the horizon HALF-WIDTH at an edge point by differencing the two sides' `edge_x_hi` entries.
+
+It surfaced while tracing the expansion circuits' `$56C8` hook, which calls it at `$56EE` inside its
+`edge_y` walk — so it is on the road pass of all five expansion circuits, not a cold path.
+
+**What would settle the name**: confirm it is the same routine `horizon_half_width_at` wraps (see
+`revs_native.c` around the `$2542` SMC seam); if so it is that routine's leaf and wants a name in
+the same family — `edge_half_width_at` / `edge_x_difference`. Dump `$5E90,Y`/`$5EB8,Y` and the
+returned A at `$56EE` for a few Y to fix the sign convention, then add the row with the two callers
+(`$253B` from `build_track_geometry`, `$56EE` from each circuit hook).
