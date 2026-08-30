@@ -417,7 +417,13 @@ Rules that must survive without opening `docs/perf-method.md`:
   proves the code RUNS, neither that it computes. So settle a hook seam against the real BBC
   (`make refloop` + a frame-buffer differential over display lines 82+), and reach for the phase
   canary (`make INK_WATCH=1`) when a cell is corrupted by an unknown writer.
-  (`docs/faithfulness-seam.md`)
+  ⭐⭐ **And a hook can jump BACK INTO the transliteration**: `region_23d8` — `road_edge_walk`'s
+  body, dead on Silverstone because the twin runs the whole walk — is re-entered at `$2490` by every
+  expansion circuit's hook, so the rest of that walk runs transliterated, reading `mem[]` cells the
+  twin's own path no longer uses. **A `region_*` / `FUN_*` name is SHIPPING code until proven
+  otherwise, and "proven" cannot come from a Silverstone run.** Never conclude a cell is
+  twin-private from a native-surface scan alone. (`docs/faithfulness-seam.md`,
+  `docs/wide-value-cleanup.md` §FOURTH eligibility test)
 - **A 6502 idiom that touches the STACK POINTER has no C equivalent and is dropped silently** —
   suspect that class first for any hang inside generated code. When the idiom manipulates `S` to
   talk about RETURN ADDRESSES, model the control flow and leave `S` alone: modelling neither is a

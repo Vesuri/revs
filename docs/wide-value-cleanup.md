@@ -124,9 +124,9 @@ in **either** 2- or 4-hex-digit notation, `($xx),Y`). Verdicts:
 
 | Pair | Addr | (B)-eligible? | Why |
 |---|---|---|---|
-| `point_dist` | $7C/$7D | **✅ ELIGIBLE** | both all-native, unindexed; render path — highest value |
-| `bearing` | $8A/$8B | **✅ ELIGIBLE** | both all-native, unindexed; `bearing_to_section` output |
-| `hypot_max` | $7A/$7B | **✅ ELIGIBLE** | both all-native, unindexed |
+| `hypot_max` | $7A/$7B | **✅ ELIGIBLE** | all-native, unindexed, and CLEAN of both channel tests — producer `bearing_to_section_core` and consumer `point_distance_hypot_core` are both native and the shipping glue between them (`FUN_2a5f`) never touches $7A/$7B. The one other tenant, `plot_view_src_line`'s PVS_BYTE/PVS_MODE, keeps the cells. **Do this one first** |
+| `point_dist` | $7C/$7D | ⚠ eligible ONLY with shim marshal-OUT | a SHIPPING transliterated reader on the patched arm — `region_23d8` (the FOURTH test below). Marshal out in `emit_edge_bearing_at_cursor()`, `emit_edge_bearing()` and `point_distance_hypot()`; proof needs a Brands frame-buffer differential, not a fixture |
+| `bearing` | $8A/$8B | ⚠ eligible ONLY with shim marshal-OUT | same shape, lower risk: shipping `FUN_2a5f` (the car projector, $2A5F) calls native `bearing_to_section()` and then reads `bearing_lo`/`bearing_hi` into `object_bearing` ($0380/$0398). Not a patched arm, so `make determinism` DOES gate it |
 | `model_accum_entry` | $38/$39 | **✅ B DONE** | `model_accum_entry_v` (revs_native.c). All-native, unindexed — but it HAD the oracle-glue channel below, resolved by shim marshalling |
 | `edge_nearest` | $10/$11 | ✗ blocked | `$11` read by **non-native** `check_crash` ($111E); nativize check_crash to free it |
 | `math_lo/hi` | $74/$75 | ✗ blocked | `$74` INDEXED with `$76` (`SBC 0x74,X` $146E, `ROR 0x74,X` $2B18) — see [[math_lo/hi]] |
@@ -166,6 +166,61 @@ scattered across model_state), not at the relocated cell. This is the SAME class
   `set_ignore`s them (native writes the var instead). `det_compare.py` skips the pair as
   no-longer-game-state (currently unexercised: $38/$39 read 0 at all three determinism dump
   frames — `make validate` is the byte-exact proof).
+
+⚠⚠ **FOURTH eligibility test (2026-08-30): A TRANSLITERATED MULTI-ENTRY *REGION* IS SHIPPING CODE,
+AND A CIRCUIT HOOK CAN RE-ENTER ONE.** The three tests above all ask about *functions*. But
+`build_regions()` emits a `region_NNNN(entry)` for any 6502 loop whose segments tail-call each other
+in a cycle, and a region is **not** a `VALIDATE_FUNCS` member and carries **no** `__t6502` suffix —
+so a scan that classifies by "is the enclosing function native?" reads it as neither native nor
+oracle and skips it, while a scan that classifies by "does the name end in `__t6502`?" reads it as
+shipping but cannot tell whether anything reaches it.
+
+The case that matters: **`region_23d8` = the transliterated body of `road_edge_walk`.** Silverstone
+never enters it — the native twin runs the whole walk — which is why it looks dead. On every
+expansion circuit the SMC at `$248B` is the circuit's own `JMP`, the twin dispatches to
+`revs_track_hook`, and the hook's `L_56c5` does `FUN_2490()` → `region_23d8(0x2490)` → `$24B5 goto
+L_23d8` → **the rest of the edge walk runs transliterated**, calling the native shims per point and
+reading `point_dist_lo`/`point_dist_hi` out of `mem[]` for the running-nearest compare
+(`$23DB-$23ED`). So a shipping reader of the pair exists on five circuits and on none of the gates.
+
+Consequences, and they generalise past this campaign:
+- **Grep for the bare alias AND the `MEM_` form AND raw hex.** `revs_gen.c` writes named cells as
+  bare lvalue aliases (`point_dist_lo = cpu.A`) *and* as `ASL_M(MEM_point_dist_lo)` / `INC_M(...)`
+  for read-modify-write opcodes. A hex-only or `MEM_`-only scan of $7C/$7D returns **2 hits**; the
+  alias scan returns **35**. Any one form alone understates the surface by an order of magnitude.
+- **Classify every hit by enclosing function and then ask what REACHES it** — `region_*` and `FUN_*`
+  names are shipping until proven otherwise, and "proven" cannot come from a Silverstone run.
+- **Resolution is the same shim marshal, in the OUT direction**: the region calls the producer's
+  6502-ABI shim (`emit_edge_bearing_at_cursor()`), so that shim writes the wide var back to the two
+  cells. Hot Silverstone stays core-to-core and var-only; the expansion arm pays two byte stores per
+  point, which is what it pays today.
+- ⚠ **But the proof is different, and that is the real cost.** A fixture cannot cover it (the region
+  is shipping, not an oracle), and `validate` / `determinism` / `-drive` all race Silverstone. The
+  gate is a real-BBC frame-buffer differential on an expansion circuit over display lines 82+
+  (`make refloop --park` + the view comparison), plus `make tracks` / `track-run` — the same
+  apparatus the `fill_line_attr` hook-seam bug needed. Budget for it before starting such a pair.
+
+⭐⭐ **AND IT IS A BOUNDED SET — measure it once, reuse it.** The circuit hooks
+(`revs_track_hooks.c`) call exactly eleven names, five of them transliterated
+(`FUN_12f3`, `FUN_140b`, `FUN_2490`, `FUN_253b`, `FUN_461b`). Closing that over the call graph,
+stopping at every native name, the whole transliterated surface an expansion circuit can reach is
+**ten functions**:
+
+    FUN_12f3  FUN_140b  FUN_1420  FUN_1433  FUN_2490  FUN_24b8  FUN_253b  FUN_461b
+    project_point  region_23d8
+
+and the native shims they call — the marshalling surface, the only shims on a shipping hot path —
+are `abs8`, `mul8`, `advance_dir_on_segment_flag`, `build_road_section`,
+`emit_edge_bearing_at_cursor`, `emit_edge_width_offset`, `project_point_from`, `track_pos_advance`,
+`track_pos_retreat`. Of those ten bodies **only `region_23d8` touches a named 16-bit zp pair at
+all**, and it touches exactly three: `point_dist`, `edge_nearest` and `math_lo`/`hi` — which
+independently re-confirms the existing block on the latter two. `hypot_max`, `hypot_min` and
+`bearing` are clean on this test. So this test is cheap to apply: check the pair against those ten
+bodies, not against the whole corpus.
+
+⚠ For `point_dist` specifically the marshal is **both directions**: `region_23d8` also calls the
+`project_point` shim, which READS the pair for its far clip and shifts the low byte IN PLACE
+($22C5), so that shim needs the cells in *and* the shifted residue back out.
 
 ### Tier 2 — persistent, adjacent (wide-local hoist now; relocation later)
 
