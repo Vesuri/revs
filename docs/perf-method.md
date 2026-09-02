@@ -256,6 +256,51 @@ The lever is that driver (fewer lines, cheaper per-run setup), not the cell loop
 per-item-setup shape as the other two stages. Phase 1, by contrast, is the honest throughput
 phase (1443 units at a flat 17 µs) and is already near its floor.
 
+### ⚠⚠ MEASURED (2026-09-02): the WIDE-VALUE campaign is NOT VISIBLE end to end — +0.65%, inside noise
+
+The byte-lane→wide-value campaign (`docs/wide-value-cleanup.md`) had been argued entirely from
+instruction counts and never measured. It has now been measured, and the measurement is the
+campaign's most important number.
+
+**Method** (the only quotable one — Rule 1): both builds `make clean` + `make STRAIGHT_TO_RACE=1
+FPSCOUNT=1 FIXED_RNG=1`, both run `EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=fps_series.gdb
+./diag_run.sh 30`, **in the same session**, control built from a `git worktree` at `b35fe8a^`
+(4263f29 — the commit before the campaign's first code change). Row vectors compared, the two
+off-track/reset rows (~2.9) dropped as the documented outliers, the remaining ten averaged.
+
+| | non-outlier rows | mean FPS |
+|---|---|---|
+| control (`4263f29`, pre-campaign) | 10 | **4.136** |
+| HEAD (`e6f497b`, ~20 pairs relocated) | 10 | **4.163** |
+
+**+0.027 FPS = +0.65%.** The project's own rule is that **FPS under ~3% is noise**, so this is a
+null result: five weeks of pair relocations did not move the displayed framerate measurably. Two
+caveats that both cut the same way — the runs are **cross-run**, which Rule 2 forbids for pricing a
+change (total vbi differed, 6796 vs 7011, i.e. the two builds do not drive identical trajectories),
+and ten rows resolve to ~0.3%, so 0.65% is above resolution but far below the noise band. Nothing
+here supports a claim of a win.
+
+⭐⭐ **What this does NOT mean.** It does not mean the byte-lane work was wrong or wasted:
+a wide `+` genuinely is fewer instructions than a `move.b`/`lsl`/`or`/`lsr`/`branch` chain, the
+twins are now readable C, and several gate-strengthening findings (the driver-bypass class, the
+publish-don't-blunt rule) came out of it. It means the **byte lanes were not where the frame went**
+— which is the same answer this document already records for the view-pipeline twins
+(§CURRENT NUMBERS: "neither pass's twins moved the framerate") and the same standing conclusion
+restated once more: **the port's biggest costs are the MACHINERY the transliteration is wrapped in,
+not the arithmetic inside it.** ~10 600 `bus_*` calls a frame, a BBC-shaped frame buffer decoded
+every painted frame, and per-instruction `cpu` field writes are each an order of magnitude larger
+than the byte-lane savings.
+
+⭐⭐ **Consequence for planning.** Do not spend further effort on wide-value pairs on the strength of
+ref counts. `math_lo/hi` is retired as ineligible (NINTH lesson) and the two remaining Tier-1 items
+(`point_dist` $7C/$7D, `edge_nearest` $10/$11) are each gated on building a **Brands
+expansion-circuit real-BBC frame-buffer differential over display lines 82+** — a substantial new
+instrument. On this measurement that instrument cannot be justified *by the campaign*; build it
+when a correctness question needs it (the hook seams are gated by nothing, which is its own reason)
+and take any wide-value pair it unblocks as a by-product. **The next real performance work is the
+REPRESENTATION change in `docs/direct-bitplane-plan.md`**, which attacks the machinery this
+measurement points at.
+
 ## Lessons — measurement
 
 - **Compare FPS row vectors, never the `total painted` line.** The total spans a partial
