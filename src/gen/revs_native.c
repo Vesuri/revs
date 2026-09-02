@@ -4777,7 +4777,20 @@ void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine)
        though the twin then decodes the offset rather than executing it. */
     mem[arm->operand] = mem[arm->table + phase];
 
-    /* The accumulator starts at MINUS the delta the DDA gives back, so the first carry is
+    /* ⚠⚠ DO NOT HOIST `mem[arm->addend]` / `mem[arm->subtrahend]` OUT OF THE LOOPS BELOW.
+       It looks free — they are SPAN_DX/SPAN_DY, written only by interp_edge_core before this
+       call, and nothing in this subtree names either cell — but they are $83/$84, and on an
+       ASCENDING arm entered ABOVE its bound the walk runs the long way round to it, climbing
+       plot_ptr_hi through page $00, and the plotter's own store then lands ON the deltas and
+       moves the DDA under itself.  Tried and rejected 2026-09-02: the hoist fails 3 of 400
+       fixture cases on each of the two `fwd` arms and 0 of 400 on the two `rev` arms, which
+       is exactly the "one ascending case in twelve starts above its bound" the fixture plants.
+       The re-read is the faithful behaviour, not a missed optimisation.
+       ⭐ And the method note: the invariance had to be checked by ADDRESS.  $83/$84 are also
+       point_delta_hi[0]/[1], so grepping the SPAN_DX/SPAN_DY names found "no other writer"
+       and was wrong twice over — a second named tenant, and an unnamed one through a pointer.
+
+       The accumulator starts at MINUS the delta the DDA gives back, so the first carry is
        what lands the first pixel:  ~sub + 1 == -sub. */
     acc   = (uint8_t)(0u - (unsigned)mem[arm->subtrahend]);
     carry = 0;
