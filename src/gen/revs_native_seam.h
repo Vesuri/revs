@@ -379,6 +379,18 @@ Mode5Addr mode5_addr_for_cell_core(uint8_t column, uint8_t y);
 AddFlags model_integrate_element_core(uint8_t slot);
 Mul8AccumExit mul8_accum_core(void);
 ContactExit note_object_contact_core(uint8_t threshold, uint8_t entryC);
+#define SOUND_SLOT_IMPACT 0x04u  /* the bang: the scrape arm, the crash arm and begin_spin */
+
+/* check_crash_core's three arms — which tail the routine took, and so which exit ABI. */
+#define CRASH_ARM_NONE   0u    /* still on the track: it did nothing */
+#define CRASH_ARM_SCRAPE 1u    /* the scrape: exit ABI is sound_queue_default's */
+#define CRASH_ARM_FULL   2u    /* into the fence: engine off, driving model zeroed */
+uint8_t check_crash_core(uint8_t savedX);
+void    begin_scrape_core(uint8_t yawKick, uint8_t savedX);
+void    sound_stop_all_core(uint8_t ambientY);
+void    build_player_car_core(void);
+void    step_delta_halve_core(void);
+uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor);
 uint8_t paint_fence_backdrop_core(uint8_t horizon);
 SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect);
 uint8_t point_distance_hypot_apply(void);

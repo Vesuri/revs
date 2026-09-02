@@ -1203,6 +1203,39 @@ VALIDATE_FUNCS = {
     # text_script_interp) run between the entry write and the two reads, so re-reading the cell is
     # the #159-CRUX-safe form.  Exit X live (every caller reads it) — LIVE_X.
     0x6571,
+    # ⭐ THE CRASH / RESTART SUBTREE (twins #167-#171, user 2026-09-02) — the whole call tree of
+    # check_crash, build_player_car and $1200, made native together.  Each was the LAST
+    # transliteration in its own tree; the trees are otherwise entirely native already, and
+    # disasm/track_smc.txt has NO extent in any of these ranges, so none of them is patched
+    # by an expansion circuit and Silverstone's control flow IS every circuit's here.
+    #
+    # check_crash $111E — did the car leave the track? (twin #167).  Gates on edge_nearest_hi
+    # >= 2 (the nearest bit of track is at least $200 away = we are off it), then splits on
+    # |nearest_edge_bearing_hi| against $60: a SCRAPE (the track is still roughly ahead) or a
+    # full CRASH (it is off to the side).  Exit ABI dead — race_main_loop's next act is its
+    # 24th call — LIVE_NONE, mem[]-only compare.
+    0x111E,
+    # begin_scrape $1C0B — check_crash's scrape arm, reached by JMP so it is a TAIL not a
+    # callee (twin #168): parks the clamped yaw kick in heading_step_hi, marks BOTH axles
+    # slipping, and queues sound slot 4.  Its one entry is that JMP.  LIVE_NONE.
+    0x1C0B,
+    # sound_stop_all $43F6 — silence all four channels (twin #169).  Five callers.  X = $FF and
+    # the last DEX's N/Z are the exit; A is preserved by every sound_stop_channel.  LIVE_NONE
+    # (no caller reads a register: check_crash and race_main_loop both LDA immediately).
+    0x43F6,
+    # build_player_car $11CE — RESTART_LATE, the shallowest restart step (twin #170).  Places the
+    # player's car in the world twice: once at its own section (the result becomes the VIEW
+    # ORIGIN) and once three sections ahead (the result becomes car_heading).  ⚠ Its body runs
+    # $11CE-$1207 and so FALLS THROUGH $1200, which symbols.csv names `loader_stub` — that name
+    # belongs to revs_mem.bin only and in the runtime image the address is this routine's own
+    # tail (docs/rename.md).  Exit ABI dead — LIVE_NONE.
+    0x11CE,
+    # step_delta_halve $2B0E — arithmetic-halve the 3-component step-delta vector (twin #171).
+    # The 6502 spells each component `LDA hi / CLC / BPL / SEC / ROR hi / ROR lo`, i.e. a
+    # sign-propagating 16-bit >>1 over ($83+i : $74+i).  ⭐ This is the routine that made
+    # math_lo/hi look indexed: $74/$75/$76 here are the three LOW bytes of THIS vector, not a
+    # lo/hi pair (docs/wide-value-cleanup.md, the EIGHTH lesson).  LIVE_NONE.
+    0x2B0E,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

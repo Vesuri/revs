@@ -236,3 +236,40 @@ It surfaced while tracing the expansion circuits' `$56C8` hook, which calls it a
 the same family — `edge_half_width_at` / `edge_x_difference`. Dump `$5E90,Y`/`$5EB8,Y` and the
 returned A at `$56EE` for a few Y to fix the sign convention, then add the row with the two callers
 (`$253B` from `build_track_geometry`, `$56EE` from each circuit hook).
+
+
+## `loader_stub` (`$1200`) — the name belongs to `revs_mem.bin`, and it SHADOWS a routine's tail
+
+`symbols.csv` carries a `func` row for `$1200` called `loader_stub`.  That is the *loader image*'s
+entry point: `REVS2` loads at `$1200` and `revs_mem.bin` really does begin a stub there.  In the
+**runtime** image — the only image any address in this project refers to (`CLAUDE.md`,
+`docs/static-map.md`) — `$1200` is nine bytes into `build_player_car`, whose body runs
+`$11CE-$1207` and falls straight through it.  Surfaced making that routine native (twin #170): the
+call-tree walk listed `loader_stub` as a third root to convert, and it is not a routine at all.
+
+⇒ **Delete the `$1200` `func` row, or retag it.**  A `func` row inside another function's extent is
+a false entry point: the sweep seeds it, the transpiler would emit a body for it, and a call-graph
+walk manufactures a root.  If the loader-image meaning is worth keeping, it belongs in
+`revs_mem.bin`-scoped notes (like `$3850`'s dual-use note), never as a runtime `func`.
+
+
+## `$62A7` — `slip_flags`' second byte has no row of its own
+
+`slip_flags` (`$62A6`) is documented as two bytes, one per axle, and `begin_scrape` (twin #168)
+writes both explicitly (`$1C10`/`$1C13`) rather than through an index.  `$62A7` has no
+`symbols.csv` row, so a twin writing it reads as an unnamed hex address.  ⇒ Either add a row
+`slip_flags_rear` (and rename `$62A6` `slip_flags_front`), or extend `$62A6`'s note to declare the
+extent `$62A6-$62A7` so `mem[MEM_slip_flags + 1]` is self-documenting.  **Which axle is which is
+NOT derived** — settle it on `make refloop` by locking one axle (brake hard from speed) and
+watching which byte sets bit 7 first.
+
+
+## `$31D0` and `$3D68` — two provably-dead loop labels inside `paint_fence_backdrop`
+
+Both are unnamed addresses inside `paint_fence_backdrop`'s extent (`$3D5C`, twin #128) that the
+sweep reported as branch targets and that the pre-twin call graph therefore carried as separate
+nodes.  Each has exactly ONE entry, from inside the routine's own column/row loops, and the twin
+absorbs both loops — so they are dead as *entry points*, not as code.  ⇒ **Drop them from
+`ghidra_scripts/entrypoints.csv` if they are seeded there**, and do not give them `func` rows: a
+one-entry back-branch target is a label, and a `func` row for it manufactures the same false
+call-graph root `loader_stub` did.

@@ -895,3 +895,70 @@ void clear_race_clock(void)
     clear_race_clock_core(cpu.X);
     cpu.A = 0x00u;                               /* LDA #0 residue (dead, reproduced for the diff) */
 }
+
+/* ---------------------------------------------------------------------------
+   The crash / restart subtree's 6502-ABI shims (twins #167-#171).
+   --------------------------------------------------------------------------- */
+
+void sound_stop_all(void)
+{
+    uint8_t entryA = cpu.A;                      /* sound_stop_channel preserves A (PHA/PLA) */
+    sound_stop_all_core(cpu.Y);
+    cpu.A = entryA;
+    cpu.X = 0xFFu;                               /* $43FB DEX ran once past channel 0 */
+    cpu.N = 1; cpu.Z = 0;                        /* ...and that DEX's flags are the exit's */
+}
+
+void begin_scrape(void)
+{
+    begin_scrape_core(cpu.A, cpu.X);             /* A carries the clamped yaw kick in from $1135 */
+    sound_queue_exit_abi(SOUND_SLOT_IMPACT);     /* $1C18 JSR / $1C1B RTS — the tail call's ABI */
+}
+
+void check_crash(void)
+{
+    uint8_t entryA = cpu.A, entryX = cpu.X;
+    switch (check_crash_core(entryX)) {
+    case CRASH_ARM_NONE:
+        /* $1122 BCC $1162 — the CMP #2's residue.  edge_nearest_hi is 0 or 1, so A-2 is $FE/$FF
+           and N is always set; X, Y and V pass through. */
+        cpu.A = edge_nearest_hi;
+        cpu.C = 0; cpu.N = 1; cpu.Z = 0;
+        break;
+    case CRASH_ARM_SCRAPE:
+        sound_queue_exit_abi(SOUND_SLOT_IMPACT); /* the JMP to begin_scrape is a tail call */
+        break;
+    default:
+        /* The sound_queue at $1145 sets C/V and Y; everything after it is loads and stores, so
+           only A/X/N/Z are overwritten again by the model-zeroing loop and the six constants. */
+        sound_queue_exit_abi(SOUND_SLOT_IMPACT);
+        cpu.A = 0x1Fu;                           /* $115E LDA #$1F, still live at the RTS */
+        cpu.X = 0xFFu;                           /* $114F DEX ran once past element 0 */
+        cpu.N = 0; cpu.Z = 0;
+        break;
+    }
+    (void)entryA;
+}
+
+void build_player_car(void)
+{
+    /* ⭐ NO EXIT ABI TO RECONSTRUCT, and that is an argument, not an omission.  Its ONE caller
+       (race_main_loop's RESTART_LATE arm, $16F6) does `LDA #0` next, so A and every flag are
+       dead there; X and Y are dead too — the next reader is $0B77, which loads both itself.
+       Two of them could not be reconstructed anyway: the second place_car_world_coords leaves
+       the exit Y and C, and that twin's contract declares only X.  Fixture: LIVE_NONE. */
+    build_player_car_core();
+}
+
+void step_delta_halve(void)
+{
+    /* A is the high byte of component 0 as it was BEFORE the shift (the last LDA $83,X), and C
+       is the bit rotated out of that component's LOW byte — the only two register residues. */
+    uint8_t hi0 = mem[POINT_DELTA_HI + 0];
+    uint8_t lo0 = mem[MEM_math_lo + 0];
+    step_delta_halve_core();
+    cpu.A = hi0;
+    cpu.C = (uint8_t)(lo0 & 1u);
+    cpu.X = 0xFFu;                               /* $2B1A DEX ran once past component 0 */
+    cpu.N = 1; cpu.Z = 0;                        /* ...and its flags are the exit's */
+}

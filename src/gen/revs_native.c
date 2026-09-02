@@ -10639,7 +10639,7 @@ void spin_car_out(void)
    Resolves the frame's car-vs-car (or car-vs-scenery) contact.  From the closing
    distance it builds an impact magnitude (floored at 5, doubled); a hard hit in a race
    spins the other car out; the slower of the two cars is credited some speed; and the
-   shared crash tail (FUN_1c0b) gets a signed heading kick plus a queued crash sound.
+   shared crash tail (begin_scrape) gets a signed heading kick plus a queued crash sound.
    The PHP/PLP saving the heading-difference sign across the speed logic becomes one
    local carried into abs16_math's N.
    --------------------------------------------------------------------------- */
@@ -10656,7 +10656,7 @@ void process_car_contact(void)
 
     uint8_t x = contact_slot;
     uint8_t y = player_car;
-    cpu.X = x;   /* $1BD0 LDX contact_slot — X survives to FUN_1c0b's sound save ($0B46) */
+    cpu.X = x;   /* $1BD0 LDX contact_slot — X survives to begin_scrape's sound save ($0B46) */
 
     /* Hard hit during the race: spin the other car out. */
     if (impact2 >= 0x28 && (session_is_race & 0x80)) { cpu.X = x; spin_car_out(); }
@@ -10689,7 +10689,9 @@ void process_car_contact(void)
     cpu.A = a;
     cpu.N = hd_sign;                                         /* PLP: the saved sign */
     abs16_math();                                           /* negate (A:math_lo) per N; A -> tail */
-    FUN_1c0b();                                             /* heading_step_hi = A; slip flags; sound */
+    begin_scrape();                                         /* the shared crash tail: heading_step_hi = A,
+                                                               both axles slipping, the impact sound —
+                                                               a tail call, so its exit ABI is ours */
 }
 
 #define CAR_DISTANCE_LO   0x08D0u   /* car_distance_lo: distance-round-the-lap, low byte */
@@ -11309,10 +11311,12 @@ static int16_t place_car_axis_term(uint8_t dir, uint8_t factor, int shl2)
     return term;
 }
 
-void place_car_world_coords(void)
+/* Returns the exit X: saved_slot_index on every real path, 1 on the SMC trap.  Typed entry so
+   build_player_car (twin #170) can call it without routing its two arguments through cpu. */
+uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
 {
-    uint8_t x0  = cpu.X;                              /* object/car slot */
-    uint8_t y0  = cpu.Y;                              /* section byte cursor */
+    uint8_t x0  = slot;                               /* object/car slot */
+    uint8_t y0  = sectionCursor;                      /* section byte cursor */
     uint8_t soi = mem[SECTION_DIR_INDEX + y0];        /* indexes the direction tables */
     uint8_t along  = mem[CAR_STATE_1 + x0];
     uint8_t across = mem[CAR_STATE_2 + x0];
@@ -11346,7 +11350,7 @@ void place_car_world_coords(void)
         uint8_t hiOrigin = mem[SECTION_COORD_HI + sy];
         if (axis == 1) {                              /* the SMC site */
             if (mem[SMC_MASK_OPCODE] == 0x29) hiOrigin &= mem[SMC_MASK_OPERAND];
-            else { cpu.X = 1; platform_smc_unhandled(SMC_MASK_OPCODE, mem[SMC_MASK_OPCODE]); return; }
+            else { platform_smc_unhandled(SMC_MASK_OPCODE, mem[SMC_MASK_OPCODE]); return 0x01u; }
         }
         mem[OBJECT_COORD_HI + axis] =
             (uint8_t)(hiOrigin + (uint8_t)((uint16_t)sp >> 8) + carry);           /* ADC shared_temp_76 */
@@ -11368,7 +11372,9 @@ void place_car_world_coords(void)
             (uint8_t)(mem[OBJECT_COORD_HI + axis] + (uint8_t)((uint16_t)sp >> 8) + carry);
     }
 
-    /* Nudge coordinate 1 by $90.  The ADC's carry-out is left in C and FUN_2a5d reads it. */
+    /* Nudge coordinate 1 by $90.  ⚠ The old note here claimed the ADC's carry-out was live into
+       the object-queue tail; it is not.  $2A5F's first op is a STA, and $2147's first act is
+       `LDA $0900,X / SEC`, so entry C, N and Z are all dead on both arms. */
     uint8_t nudge_carry;
     {
         unsigned t = (unsigned)mem[OBJECT_COORD_LO + 1] + 0x90u;                  /* CLC; ADC #$90 */
@@ -11385,18 +11391,18 @@ void place_car_world_coords(void)
     cpu.X = 0x04;
     cpu.C = nudge_carry; cpu.N = 0; cpu.Z = 0;
     cpu.A = 0x04; FUN_2a5d();
-    cpu.X = saved_slot_index;
+    /* The queue routines all restore X from saved_slot_index, so from here on the slot the tail
+       works on is that byte, not a register. */
+    uint8_t qslot = saved_slot_index;
     if (object_dist_hi >= 0x03) {
         if (object_dist_hi >= 0x05 &&                            /* CMP #5; BCC L_2a4d */
-            !(mem[CAR_FLAGS_SHAPE + cpu.X] & 0x80))              /* BMI L_2a4d */
-            mem[CAR_FLAGS_SHAPE + cpu.X]++;                      /* INC */
-        cpu.X = saved_slot_index;                               /* L_2a4d */
-        return;
+            !(mem[CAR_FLAGS_SHAPE + qslot] & 0x80))              /* BMI L_2a4d */
+            mem[CAR_FLAGS_SHAPE + qslot]++;                      /* INC */
+        return saved_slot_index;                                 /* L_2a4d */
     }
-    if (mem[0x001D] != car_behind) { cpu.X = saved_slot_index; return; }   /* $1D: queued in rename.md */
-    cpu.A = mem[CAR_FLAGS_SHAPE + cpu.X];                        /* $2A07 LDA $018C,X */
-    if (!(cpu.A & 0x80))                                         /* BPL: not yet flagged */
-        mem[CAR_FLAGS_SHAPE + cpu.X]--;                          /* DEC */
+    if (mem[0x001D] != car_behind) return saved_slot_index;       /* $1D: queued in rename.md */
+    if (!(mem[CAR_FLAGS_SHAPE + qslot] & 0x80))                  /* $2A07 LDA / BPL: not yet flagged */
+        mem[CAR_FLAGS_SHAPE + qslot]--;                           /* DEC */
 
     /* build_section_step_delta ($1442) reads only Y (the segment index); the C/N/Z the tail
        leaves are set here for the calls that follow it down this branch. */
@@ -11413,7 +11419,13 @@ void place_car_world_coords(void)
     shared_counter_42 = 0x14; cpu.A = 0x02; FUN_2a5d();
     shared_counter_42 = 0x15; cpu.A = 0x01; cpu.X = 0xF4; FUN_2a5f();
     shared_counter_42 = 0x16; cpu.A = 0x00; cpu.X = 0xFA; FUN_2a5f();
-    cpu.X = saved_slot_index;                                    /* L_2a4d */
+    return saved_slot_index;                                     /* L_2a4d */
+}
+
+/* 6502-ABI shim: slot in X, section byte cursor in Y; X comes back as the exit slot. */
+void place_car_world_coords(void)
+{
+    cpu.X = place_car_world_coords_core(cpu.X, cpu.Y);
 }
 
 /* ---------------------------------------------------------------------------
@@ -12548,4 +12560,196 @@ void shift_key_commands(void)
     }
     mem[MEM_volume_change_request] = 0u;         /* $0F5E/$0F60 — reached on odd frames and after an even step */
     /* $0F63 RTS */
+}
+
+/* ===========================================================================
+   THE CRASH / RESTART SUBTREE  (twins #167-#171)
+   ===========================================================================
+   The whole call tree of check_crash and build_player_car, made native together — each of
+   these was the last transliteration in its own tree.  ⭐ NONE of them is patched by an
+   expansion circuit: disasm/track_smc.txt has no extent anywhere in $111E-$1207, $1C0B-$1C1B,
+   $2B0E-$2B1D or $43F6-$43FE, so Silverstone's control flow through here IS every circuit's
+   and `make determinism` genuinely gates them.
+   =========================================================================== */
+
+
+/* ---------------------------------------------------------------------------
+   $43F6  sound_stop_all — SILENCE EVERY CHANNEL  (twin #169)
+   ---------------------------------------------------------------------------
+   Four calls of sound_stop_channel, channel 3 down to 0.  ⚠ The 6502's `DEX` steps the X the
+   CALLEE returned, not a private counter — sound_stop_channel hands the channel straight back
+   on both of its paths, so the walk really is 3,2,1,0, but the twin threads the returned value
+   the same way rather than assuming it.
+   --------------------------------------------------------------------------- */
+void sound_stop_all_core(uint8_t ambientY)
+{
+    uint8_t chan = 0x03u;                               /* $43F6 LDX #3 */
+    do {
+        chan = (uint8_t)(sound_stop_channel_core(chan, ambientY) - 1u);   /* JSR; DEX */
+    } while (!(chan & 0x80u));                          /* $43FC BPL — stops when X hits $FF */
+}
+
+/* ---------------------------------------------------------------------------
+   $1C0B  begin_scrape — check_crash's SCRAPE arm  (twin #168)
+   ---------------------------------------------------------------------------
+   Reached by JMP from $1135, so it is check_crash's TAIL rather than a callee.  The car has
+   left the track but the track is still roughly ahead: park the clamped yaw kick, tell both
+   axles they are sliding, and make the noise.  Its exit ABI is therefore sound_queue_default's,
+   which the shim replays.
+   --------------------------------------------------------------------------- */
+void begin_scrape_core(uint8_t yawKick, uint8_t savedX)
+{
+    heading_step_hi           = yawKick;    /* $1C0B — the high byte IS the yaw rate; see check_crash */
+    mem[MEM_slip_flags + 0]   = 0x80u;      /* $1C0E-$1C13 — both axles marked slipping, so */
+    mem[MEM_slip_flags + 1]   = 0x80u;      /*   update_slip_sound starts the squeal next frame */
+    sound_queue_core(SOUND_SLOT_IMPACT, sound_volume, savedX);   /* $1C16-$1C18 */
+}
+
+/* ---------------------------------------------------------------------------
+   $111E  check_crash — DID THE CAR LEAVE THE TRACK?  (twin #167)
+   ---------------------------------------------------------------------------
+   Two memory cells decide everything, and both are byproducts of the road pass that has
+   already run this frame:
+
+     edge_nearest_hi          the high byte of the frame's running MINIMUM distance to a track
+                              edge point.  Under 2 (nearer than $200) the car is still on the
+                              track and there is nothing to do at all.
+     nearest_edge_bearing_hi  the AZIMUTH of that closest bit of track.  Its magnitude says
+                              where the track went: still ahead (a SCRAPE) or off to the side
+                              past ~$60 (a CRASH — the car is into the fence).
+
+   ⭐ THE SIGN-COPY IDIOM at $112D-$1132 is the one thing here worth spelling out.  The 6502
+   writes `LDA #$14 / BIT heading_step_hi / JSR abs8`: BIT leaves N = bit 7 of the MEMORY
+   operand and abs8's `BPL` tests N, not A's sign — so the constant $14 comes back NEGATED iff
+   heading_step_hi was negative.  A is never itself negative here, so this is not an absolute
+   value at all, it is a sign COPY: clamp the yaw rate's magnitude to $14 and keep the direction
+   the car was already turning.
+
+   ⚠ THE TWO ARMS PASS DIFFERENT X TO sound_queue.  The scrape arm reaches it with the caller's
+   X untouched (BIT and abs8 leave X alone); the crash arm has run paint_fence_backdrop (X = $28
+   on exit) and then sound_stop_all (X = $FF), so it queues with X = $FF.  sound_queue parks that
+   byte in sound_saved_x, so the difference is observable in mem[] and is not a detail.
+   --------------------------------------------------------------------------- */
+uint8_t check_crash_core(uint8_t savedX)
+{
+    if (edge_nearest_hi < 0x02u)                  /* $111E-$1122 — still on the track */
+        return CRASH_ARM_NONE;
+
+    /* $1124-$112B — |azimuth of the nearest track point|.  Here abs8's BPL does agree with A's
+       own sign, because the LDA immediately before it set N. */
+    uint8_t offAxis = (nearest_edge_bearing_hi & 0x80u)
+                        ? negate8(nearest_edge_bearing_hi).hi
+                        : nearest_edge_bearing_hi;
+
+    if (offAxis < 0x60u) {
+        /* $112D-$1135 THE SCRAPE — see the sign-copy note above. */
+        uint8_t yawKick = (heading_step_hi & 0x80u) ? negate8(0x14u).hi : 0x14u;
+        begin_scrape_core(yawKick, savedX);
+        return CRASH_ARM_SCRAPE;
+    }
+
+    /* ---- $1138 THE CRASH ------------------------------------------------------------- */
+    crash_flag = (uint8_t)(crash_flag - 1u);      /* $1138 DEC: 0 -> $FF for exactly one frame */
+    horizon_extent++;                             /* $113B — one line more of backdrop to fill */
+    paint_fence_backdrop_core(horizon_extent);    /* $113D — the barrier over the whole view */
+    /* $1140 — engine and tyres off.  The Y the real 6502 hands the OSBYTEs is whatever
+       paint_fence_backdrop left, which is the math_hi it parks its last column sentinel in. */
+    sound_stop_all_core(math_hi);
+    sound_queue_core(SOUND_SLOT_IMPACT, sound_volume, 0xFFu);    /* $1143-$1145; X = $FF */
+
+    /* $1148-$1150 — zero the WHOLE driving model.  $62D0+$1E down to $62D0 spans
+       model_state_lo[0..14], the unused gap byte at $62DF and model_state_hi[0..14]: every
+       16-bit element of the state vector at once, which is why the loop counts bytes and not
+       elements. */
+    for (int i = 0x1E; i >= 0; i--)
+        mem[MODEL_STATE_LO + i] = 0x00u;
+
+    engine_running      = 0x00u;   /* $1152 — the engine has stalled */
+    spin_countdown      = 0x00u;   /* $1154 — and this is not a spin */
+    engine_note         = 0x00u;   /* $1156 */
+    engine_note_target  = 0x00u;   /* $1158 */
+    drive_state         = 0x7Fu;   /* $115A-$115C — not under power, and not spinning either */
+    starter_random_mask = 0x1Fu;   /* $115E-$1160 — restarting takes ~4x longer after a crash */
+    return CRASH_ARM_FULL;
+}
+
+/* ---------------------------------------------------------------------------
+   $11CE  build_player_car — put the player's car back into the world  (twin #170)
+   ---------------------------------------------------------------------------
+   It runs place_car_world_coords TWICE for the same car —
+
+     at the section the car is IN     ...whose world coordinate becomes the VIEW ORIGIN, i.e.
+                                        where the camera sits for the whole next frame;
+     three sections FURTHER ON        ...whose bearing becomes car_heading, i.e. which way the
+                                        car is pointing.
+
+   ⚠ ITS BODY RUNS $11CE-$1207 AND SO FALLS THROUGH $1200, which symbols.csv names
+   `loader_stub`.  That name is a revs_mem.bin artifact — in the runtime image the address is
+   this routine's own tail (docs/rename.md).
+   --------------------------------------------------------------------------- */
+void build_player_car_core(void)
+{
+    uint8_t slot = player_car;
+    saved_slot_index  = slot;                     /* $11D0 STX $45 */
+    shared_counter_42 = slot;                     /* $11D2 STX $42 — the slot the queue tail files */
+
+    place_car_world_coords_core(slot, car_section_cursor);         /* $11D4-$11D6 */
+
+    /* $11D9-$11E8 — the camera sits where the car is.  Three components, and both tables are
+       SoA (lows at +0..+2, highs in the sibling table), so this is a component-wise copy of the
+       whole world coordinate rather than one wide value. */
+    for (int axis = 2; axis >= 0; axis--) {
+        mem[VIEW_ORIGIN_LO + axis] = mem[OBJECT_COORD_LO + axis];
+        mem[VIEW_ORIGIN_HI + axis] = mem[OBJECT_COORD_HI + axis];
+    }
+
+    /* $11EA-$11F5 — three section bytes further round the ring, wrapping the $78-byte table. */
+    uint8_t ahead = (uint8_t)(car_section_cursor + 0x03u);
+    if (ahead >= 0x78u) ahead = 0x00u;
+
+    /* ⚠ $11F6-$11F8 — THE CALLEE'S RETURN VALUE IS THE INDEX THE TAIL USES, not the slot.
+       place_car_world_coords hands X back as saved_slot_index on every real path but as 1 on
+       its per-circuit SMC trap, and the 6502 then indexes object_bearing with whatever came
+       back.  Threading the returned byte (rather than re-reading saved_slot_index) is what
+       makes the trap arm agree with the oracle. */
+    uint8_t x = place_car_world_coords_core(saved_slot_index, ahead);
+
+    /* $11FB-$1207 ⭐ WIDE VALUE: the heading is ONE 16-bit angle ($10000 = a full turn).  The
+       object queue has just filed the bearing to that look-ahead point in object_bearing[slot];
+       the car points that way, mirrored by which way round the circuit it is going — the 6502
+       EORs track_direction into the HIGH byte only, so as a wide value that is an EOR with
+       track_direction << 8 and the low byte passes straight through. */
+    uint16_t bearing = (uint16_t)(mem[OBJECT_BEARING_LO + x]
+                                | ((unsigned)mem[OBJECT_BEARING_HI + x] << 8));
+    uint16_t heading = (uint16_t)(bearing ^ ((unsigned)track_direction << 8));
+    car_heading_lo = (uint8_t)heading;
+    car_heading_hi = (uint8_t)(heading >> 8);
+}
+
+/* ---------------------------------------------------------------------------
+   $2B0E  step_delta_halve — HALVE THE STEP-DELTA VECTOR  (twin #171)
+   ---------------------------------------------------------------------------
+   The step delta is three SIGNED 16-bit components whose LOW bytes are $74/$75/$76 and whose
+   HIGH bytes are point_delta_hi[0..2] ($83/$84/$85) — build_section_step_delta's output, the
+   per-section increment place_car_world_coords walks a car along.  This halves all three with
+   the sign preserved.
+
+   ⭐ ONE 68000 INSTRUCTION PER COMPONENT.  The 6502 spells the halve `LDA hi / CLC / BPL / SEC /
+   ROR hi / ROR lo` — seed the carry from the sign bit, then rotate both bytes — which is exactly
+   an arithmetic shift right of the pair.  Written as a signed 16-bit `>> 1` it is one ASR.W,
+   instead of a load, a branch, two rotates and two stores.
+
+   ⭐ THIS IS THE ROUTINE THAT MADE math_lo/math_hi LOOK INDEXED and blocked that pair's
+   relocation for three passes: $74/$75/$76 here are the three LOW bytes of THIS vector, not a
+   lo/hi pair, so `$74,X` is a component select and says nothing about math_lo
+   (docs/wide-value-cleanup.md, the EIGHTH lesson).
+   --------------------------------------------------------------------------- */
+void step_delta_halve_core(void)
+{
+    for (int c = 2; c >= 0; c--) {                    /* $2B0E LDX #2 ... $2B1A DEX / BPL */
+        int16_t v = (int16_t)(((unsigned)mem[POINT_DELTA_HI + c] << 8) | mem[MEM_math_lo + c]);
+        v = (int16_t)(v >> 1);                        /* ASR.W #1 — sign-propagating halve */
+        mem[MEM_math_lo    + c] = (uint8_t)v;
+        mem[POINT_DELTA_HI + c] = (uint8_t)((uint16_t)v >> 8);
+    }
 }

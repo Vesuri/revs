@@ -6323,6 +6323,176 @@ void track_pos_advance(void);       void track_pos_advance__t6502(void);
 void track_pos_retreat(void);       void track_pos_retreat__t6502(void);
 void lap_complete(void);            void lap_complete__t6502(void);
 
+/* ==========================================================================
+   TWINS #167-#171 — THE CRASH / RESTART SUBTREE
+   --------------------------------------------------------------------------
+   $111E check_crash, $1C0B begin_scrape, $43F6 sound_stop_all,
+   $11CE build_player_car, $2B0E step_delta_halve.
+
+   All five run with D = 0: none of them is one of the eight SED sites in
+   docs/static-map.md §Decimal mode, and check_crash is on the 50 Hz body, which is entered
+   with D clear.  sound_queue's block-index ADC is the only add in the subtree and the sound
+   cluster's own fixture already proves that one against decimal separately.
+
+   ⭐ WHAT EACH FIXTURE HAS TO FORCE, and why a random pre-state is not enough:
+
+     check_crash        THREE arms behind two thresholds on bytes that are almost never in
+                        range by accident.  edge_nearest_hi ($11) is pinned to 0/1 a third of
+                        the time (the on-track arm — a random byte takes it 2 in 256) and
+                        nearest_edge_bearing_hi ($5E) is drawn so that |it| straddles $60,
+                        which splits scrape from crash.  heading_step_hi's SIGN is forced both
+                        ways because it is the whole content of the BIT/abs8 sign copy: with
+                        it always positive, negating the $14 constant is undetectable.
+     begin_scrape       pure but for the sound queue; A is the yaw kick, X the byte
+                        sound_queue parks in sound_saved_x.
+     sound_stop_all     ⚠ the already-idle guard again, and here FOUR channels deep: a random
+                        page has all four of $62BD..$62C0 non-zero, so half the cases zero a
+                        random one of them.  Without that the MOS-call trace never sees the
+                        skipped flush that the sound cluster's own fixture had to force.
+     build_player_car   it runs place_car_world_coords TWICE, so it inherits that twin's whole
+                        steering: the per-circuit SMC seam at $298D (Silverstone's AND opcode
+                        nine cases in ten, a trap in the tenth), a slot in range, and the
+                        object_dist_hi / car_behind splits its queue tail turns on.  Also pins
+                        car_section_cursor across and over the $78 wrap so the look-ahead's
+                        `>= $78 -> 0` arm runs.  ⭐ RESULT-ONLY, argued at the shim: its one
+                        caller reads no register, and the callee's exit Y and C are outside
+                        place_car_world_coords' own declared contract, so they could not be
+                        reconstructed even if they were wanted.
+     step_delta_halve   pure; the only thing worth forcing is a NEGATIVE component, since the
+                        sign propagation is all the routine does.  Random bytes give that in
+                        seven cases in eight, and the counter asserts it.
+   ========================================================================== */
+void check_crash(void);        void check_crash__t6502(void);
+void begin_scrape(void);       void begin_scrape__t6502(void);
+void sound_stop_all(void);     void sound_stop_all__t6502(void);
+void build_player_car(void);   void build_player_car__t6502(void);
+void step_delta_halve(void);   void step_delta_halve__t6502(void);
+
+static int test_crash_restart_subtree(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    const int LIVE_ALL = LIVE_A | LIVE_X | LIVE_Y | LIVE_FLAGS;
+
+    /* ---- check_crash -------------------------------------------------------------- */
+    register_fixture("check_crash");
+    if (want("check_crash")) {
+        const int cases = 3000;
+        int onTrack = 0, scrape = 0, crash = 0, negYaw = 0;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu(); fill_random(pre); c.D = 0;
+            c.X = (uint8_t)xs(); c.Y = (uint8_t)xs(); c.A = (uint8_t)xs();
+            if (t % 3 == 0) pre[0x0011] = (uint8_t)(xs() & 1);       /* still on the track */
+            else if (pre[0x0011] < 2) pre[0x0011] = 2;
+            /* draw the azimuth around the $60 split, both signs */
+            pre[0x005E] = (uint8_t)((xs() % 0xC0u) + 0x20u);
+            if (xs() & 1) pre[0x005E] = (uint8_t)(0u - pre[0x005E]);
+            pre[0x62E2] = (uint8_t)((xs() & 1) ? (xs() | 0x80u) : (xs() & 0x7Fu));
+            if (pre[0x62E2] & 0x80u) negYaw++;
+
+            {   uint8_t off = (pre[0x005E] & 0x80u) ? (uint8_t)(0u - pre[0x005E]) : pre[0x005E];
+                if (pre[0x0011] < 2) onTrack++; else if (off < 0x60u) scrape++; else crash++; }
+
+            fail += diff_run("check_crash", pre, c,
+                             check_crash, check_crash__t6502, LIVE_ALL, t, &printed);
+        }
+        if (!onTrack || !scrape || !crash || !negYaw) {
+            printf("[VACUOUS] check_crash: onTrack=%d scrape=%d crash=%d negYaw=%d\n",
+                   onTrack, scrape, crash, negYaw);
+            fail++;
+        }
+        printf("%-32s %7d cases, mismatch above must be 0  live=AXY+flags  "
+               "(%d on-track, %d scrape, %d crash, %d negative yaw)\n",
+               "check_crash", cases, onTrack, scrape, crash, negYaw);
+    }
+
+    /* ---- begin_scrape ------------------------------------------------------------- */
+    register_fixture("begin_scrape");
+    if (want("begin_scrape")) {
+        const int cases = 2000;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu(); fill_random(pre); c.D = 0;
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            fail += diff_run("begin_scrape", pre, c,
+                             begin_scrape, begin_scrape__t6502, LIVE_ALL, t, &printed);
+        }
+        printf("%-32s %7d cases, mismatch above must be 0  live=AXY+flags\n",
+               "begin_scrape", cases);
+    }
+
+    /* ---- sound_stop_all ----------------------------------------------------------- */
+    register_fixture("sound_stop_all");
+    if (want("sound_stop_all")) {
+        const int cases = 2000;
+        int idle = 0;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu(); fill_random(pre); c.D = 0;
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            if (xs() & 1) { pre[0x62BD + (xs() & 3)] = 0; idle++; }
+            fail += diff_run("sound_stop_all", pre, c,
+                             sound_stop_all, sound_stop_all__t6502, LIVE_ALL, t, &printed);
+        }
+        if (!idle) { printf("[VACUOUS] sound_stop_all: no already-idle channel\n"); fail++; }
+        printf("%-32s %7d cases, mismatch above must be 0  live=AXY+flags  "
+               "(%d with a channel already idle)\n", "sound_stop_all", cases, idle);
+    }
+
+    /* ---- build_player_car --------------------------------------------------------- */
+    register_fixture("build_player_car");
+    if (want("build_player_car")) {
+        static const uint16_t ig[] = { 0x01FF };      /* the mul8 residue place_car_world_coords leaves */
+        const int cases = 3000;
+        int smcArm = 0, wrapArm = 0;
+        unsigned long smcBefore = g_smcUnhandled;
+        setenv("REVS_SMC_CONTINUE", "1", 1);
+        set_ignore(ig, 1);
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu(); fill_random(pre); c.D = 0;
+            c.X = (uint8_t)xs(); c.Y = (uint8_t)xs(); c.A = (uint8_t)xs();
+            pre[0x006F] = (uint8_t)(xs() % 0x14);       /* player_car: a real slot */
+            pre[0x0022] = (t & 1) ? (uint8_t)(0x75u + (xs() % 4))   /* straddle the $78 wrap */
+                                  : (uint8_t)(xs() % 0x78);
+            if ((uint8_t)(pre[0x0022] + 3) >= 0x78) wrapArm++;
+            pre[0x0055] = (uint8_t)(xs() % 8);          /* object_dist_hi: the 3/5 splits */
+            pre[0x004D] = (uint8_t)(xs() % 0x20);       /* car_behind */
+            pre[0x001D] = (xs() & 1) ? pre[0x004D] : (uint8_t)(xs() % 0x20);
+            if (xs() % 10) pre[0x298D] = 0x29;          /* Silverstone's AND opcode */
+            else { pre[0x298D] = (uint8_t)(0x2A + (xs() & 3)); smcArm++; }
+            pre[0x298E] = (uint8_t)xs();
+            fail += diff_run("build_player_car", pre, c,
+                             build_player_car, build_player_car__t6502, LIVE_NONE, t, &printed);
+        }
+        set_ignore(0, 0);
+        unsetenv("REVS_SMC_CONTINUE");
+        if (!smcArm || !wrapArm || g_smcUnhandled == smcBefore) {
+            printf("[VACUOUS] build_player_car: smc=%d wrap=%d traps=%lu\n",
+                   smcArm, wrapArm, g_smcUnhandled - smcBefore);
+            fail++;
+        }
+        printf("%-32s %7d cases, mismatch above must be 0  result-only  "
+               "(%d SMC-trap, %d section wrap)\n", "build_player_car", cases, smcArm, wrapArm);
+    }
+
+    /* ---- step_delta_halve --------------------------------------------------------- */
+    register_fixture("step_delta_halve");
+    if (want("step_delta_halve")) {
+        const int cases = 2000;
+        int neg = 0;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu(); fill_random(pre); c.D = 0;
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            if (pre[0x0083] & 0x80u) neg++;
+            fail += diff_run("step_delta_halve", pre, c,
+                             step_delta_halve, step_delta_halve__t6502, LIVE_ALL, t, &printed);
+        }
+        if (!neg) { printf("[VACUOUS] step_delta_halve: no negative component\n"); fail++; }
+        printf("%-32s %7d cases, mismatch above must be 0  live=AXY+flags  "
+               "(%d negative component 0)\n", "step_delta_halve", cases, neg);
+    }
+
+    return fail;
+}
+
 static int test_car_order_cluster(void)
 {
     static uint8_t pre[65536];
@@ -7497,6 +7667,7 @@ int main(int argc, char** argv)
     fail += test_last_shim_callers();
     fail += test_crash_fence();
     fail += test_car_order_cluster();
+    fail += test_crash_restart_subtree();
     fail += test_road_sign();
     fail += test_object_shape();
     fail += test_object_lines();
