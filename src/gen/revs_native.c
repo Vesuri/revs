@@ -3821,7 +3821,7 @@ void copy_dash_data_core(uint8_t dirFlag)
     uint16_t page  = (uint16_t)(mem[DASH_PTR_INIT + 2] | (mem[DASH_PTR_INIT + 3] << 8));
 
     uint8_t bytes = 0;
-    for (uint8_t b = 0; b < DASH_BLOCK_COUNT; b++) {
+    for (unsigned b = 0; b < DASH_BLOCK_COUNT; b++) {
         const uint8_t *from = &mem[stow ? page  : block];
         uint8_t       *to   = &mem[stow ? block : page];
 
@@ -11518,7 +11518,7 @@ uint8_t paint_fence_backdrop_core(uint8_t horizon)
     uint8_t  last = 0;                          /* the final byte written (for the exit A) */
     uint16_t block = VIEW_BLOCK_BASE;
 
-    for (uint8_t col = 0; col < FENCE_COL_COUNT; col++) {
+    for (unsigned col = 0; col < FENCE_COL_COUNT; col++) {
         const uint8_t bottom = mem[DASH_BLOCK_STARTS + col];   /* $3900,col — this column's floor */
 
         uint8_t pat = 3;                        /* dither index resets to 3 at the top of each column */
@@ -11759,8 +11759,10 @@ void full_track_scan_rebuild(void)
 
     /* 1. advance the whole field until car 0 sits on the start line (distance == 0) */
     do {
-        for (uint8_t x = 0x13u; x != 0xFFu; x--) {
-            cpu.X = x;
+        for (int x = 0x13; x >= 0; x--) {          /* was uint8_t counting down THROUGH the 8-bit
+                                                     wrap to $FF; `int` states the descent and
+                                                     drops the per-use zero-extend */
+            cpu.X = (uint8_t)x;
             track_pos_advance();
         }
     } while ((mem[CAR_DISTANCE_LO + 0] | mem[CAR_DISTANCE_HI + 0]) != 0u);
@@ -11771,7 +11773,7 @@ void full_track_scan_rebuild(void)
     for (;;) {
         hypot_min_lo++;
         if (hypot_min_lo >= 0x14u) break;
-        for (uint8_t x = hypot_min_lo; x < 0x14u; x++) {
+        for (unsigned x = hypot_min_lo; x < 0x14u; x++) {
             shared_temp_77 = shared_temp_76;                 /* reset the per-car retreat counter */
             do {
                 cpu.X = mem[CAR_ORDER_TBL + x];              /* the car at this sorted position */
@@ -11808,7 +11810,7 @@ void full_track_scan_rebuild(void)
        (A starts $50 and is EOR #$FF'd before each store, so it toggles each car) */
     {
         uint8_t a = 0x50u;
-        for (uint8_t y = 0x13u; y != 0xFFu; y--) {
+        for (int y = 0x13; y >= 0; y--) {          /* ...the same descent-through-wrap */
             a ^= 0xFFu;
             mem[CAR_STATE_2 + mem[CAR_ORDER_TBL + y]] = a;
         }
@@ -12397,7 +12399,7 @@ void sort_cars_by_key(void)
         mem[SORT_SCRATCH] = 0u;                  /* $0F6B STX $100 */
         swapped = 0u;
 
-        for (uint8_t i = 1u; i < 0x14u; i++) {   /* $0F6F..$0FAF: i = 1..19, pairs (i, i+1) */
+        for (unsigned i = 1u; i < 0x14u; i++) {   /* $0F6F..$0FAF: i = 1..19, pairs (i, i+1) */
             shared_temp_77 = i;                  /* $0F6F STX $77 */
             uint8_t y = mem[CAR_ORDER      + i]; /* $0F71 LDY $13C,X -> ORDER[i+1] */
             mem[SORT_SCRATCH + i] = i;           /* $0F75 STA $100,X */
