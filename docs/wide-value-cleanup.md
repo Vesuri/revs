@@ -105,7 +105,7 @@ relocation blast radius. High count ⇒ mechanism (B) is blocked; use (A) now.
 
 | Cell(s) | Addr | Role | Mechanism | Status |
 |---|---|---|---|---|
-| `math_lo/hi` | $74/$75 | shared 16-bit accumulator (305 refs — the big one; template) | A→B | TODO |
+| `math_lo/hi` | $74/$75 | shared 16-bit SCRATCH accumulator — 388 operand refs in 84 routines (the count was 305; re-measured off the listing 2026-09-02, both the `0x74` and `0x0074` notations) | ✗ not B | **BLOCKED, settled** — see the eligibility row |
 | `point_dist` | $7C/$7D | projected distance (render) | A→B | TODO |
 | `hypot_max` | $7A/$7B | larger sorted ground-plane magnitude | B | **✅ B DONE** (`hypot_max_v`) |
 | `hypot_min` | $78/$79 | smaller sorted ground-plane magnitude | B | **✅ B DONE** (`hypot_min_v`) |
@@ -146,7 +146,7 @@ in **either** 2- or 4-hex-digit notation, `($xx),Y`). Verdicts:
 | `bearing` | $8A/$8B | **✅ B DONE** (`bearing_v`) | same shape, lower risk: shipping `FUN_2a5f` (the car projector, $2A5F) calls native `bearing_to_section()` and then reads `bearing_lo`/`bearing_hi` into `object_bearing` ($0380/$0398). Not a patched arm, so `make determinism` DOES gate it |
 | `model_accum_entry` | $38/$39 | **✅ B DONE** | `model_accum_entry_v` (revs_native.c). All-native, unindexed — but it HAD the oracle-glue channel below, resolved by shim marshalling |
 | `edge_nearest` | $10/$11 | ✗ blocked | `$11` read by **non-native** `check_crash` ($111E); nativize check_crash to free it |
-| `math_lo/hi` | $74/$75 | ⚠ **block now IN DOUBT — re-audit before treating as blocked** | the three indexed sites (`SBC/STA 0x74,X` $146E in `build_section_step_delta`, `ROR 0x74,X` $2B18 in `draw_track_object`) are all `X = 2..0` loops over a **three-component vector: lows $74/$75/$76, highs $83/$84/$85**. That is a DIFFERENT TENANT from the 16-bit accumulator, and under the EIGHTH lesson a tenant's indexed access does not block a relocation. Prerequisite: settle the vector's identity (`docs/rename.md`, "$74/$75/$76 paired with $83/$84/$85") — two current names contradict it. **The campaign's biggest pair (305 refs) may be eligible** |
+| `math_lo/hi` | $74/$75 | ✗ **BLOCKED — settled 2026-09-02, do not re-open as a pair relocation** | The re-audit the EIGHTH lesson called for is DONE, and it cleared the indexing charge while confirming the block on other grounds. **Test 2 (indexing) PASSES:** all three indexed sites (`SBC/STA 0x74,X` $146E in `build_section_step_delta`, `ROR 0x74,X` $2B18 in `step_delta_halve` — *not* `draw_track_object`, which was an address-ordering misattribution) index the **step-delta vector** (lows $74/$75/$76, highs `point_delta_hi[0..2]` $83/$84/$85), a DIFFERENT TENANT, which under the EIGHTH lesson does not block a relocation. Tenancy now recorded on the cells themselves in `symbols.csv` (commit 67fb302). **Test 1 (all-native) FAILS by 6 refs in 4 routines**, each a self-contained local scratch use in its own tenant: `$262D` (an unnamed 6×256 DELAY LOOP, `DEC $74/BNE`), `$2B18` `step_delta_halve`, `$31D0` (a dash-code plotter loop, `$74` a row counter and `$75` its limit, `(plot_ptr),Y` store), `$49BB` (an unnamed seeder, `$74` scratch across 8 instructions). **But the decisive blocker is neither** — it is the HYBRID ORACLE GLUE of the 2026-08-30 FINDING below, which no amount of nativization removes: the math primitives (`mul8`/`mul8_noinit`/`div16by8`/`neg16_math`/`abs16_math`) are the pair's own operators and are already native, so every `__t6502` body that multiplies hands operands to a native child **through `mem[$74/$75]`**. ⭐ **The right mechanism here is not (B) at all** — see §`math_lo/hi` is a SCRATCH pair, so the win is PER-TWIN below |
 | `hypot_min` | $78/$79 | **✅ B DONE** (`hypot_min_v`) | ⚠ **this row used to read "✗ blocked — `$78` indexed", and that was a MISREADING of the second test** (see the EIGHTH lesson). The one indexed access, `ADC 0x78,X` at $4C52, belongs to `update_grip_limits`' axle load terms — a DIFFERENT TENANT. A relocation moves ONE USE, so what test 2 has to ask is whether the *relocated use* is ever indexed, and the road-pass use never is |
 | `plot_ptr` | $70/$71 | ✗ blocked | `$70` is an indirect pointer base (`($70),Y`) |
 | `SLIP_MAG` | $8E/$8F | ✗ blocked | ⚠ reason CORRECTED: `$8E` is **not** indexed anywhere (0 sites in either notation) — it is an **indirect pointer base**. Right verdict, wrong reason; the old reason would have survived the EIGHTH lesson's tenant re-read and kept the block for nothing |
@@ -599,8 +599,11 @@ has no `[X]`. Two sites, both already validated native twins whose `__t6502` ora
 
 - **`build_section_step_delta` ($146e, twin #141):** `LDX #2; …SBC $74,X; STA $74,X…` (X=2,1,0) — a
   24-bit negate of {math_lo, math_hi, shared_temp_76}.
-- **`draw_track_object` ($2b16, twin #7):** `LDX #2; …ROR $83,X; ROR $74,X…` (X=2,1,0) — a 24-bit
-  arithmetic shift-right pairing the $83 window with the $74 window.
+- ~~**`draw_track_object` ($2b16, twin #7):**~~ ⚠ **MISATTRIBUTED** — the site is `$2B18` inside
+  **`step_delta_halve` ($2B0E)**, its own routine ending `RTS` at $2B1D, which had no `symbols.csv`
+  row and so resolved to the preceding named function. `LDX #2; …ROR $83,X; ROR $74,X…` (X=2,1,0) —
+  a per-component arithmetic shift-right of the STEP-DELTA vector, i.e. the *same tenant* as
+  `build_section_step_delta` above and **not** the math accumulator. See §SETTLED below.
 
 So the relocation unit is the **whole $74/$75/$76 window**, and it could only be an indexable
 `uint8_t[3]` — which (a) forfeits the scalar register-allocation win that is the entire point of
@@ -618,10 +621,60 @@ ref-count and on "all readers native ⇒ unblocked"; both are refuted here. **Th
 the rest of the campaign must be a genuinely scratch-local one (Ordering item 2 — Tier-1 render
 scratch), not the shared math accumulator.**
 
+### ⭐⭐ SETTLED (2026-09-02): `math_lo/hi` is a SCRATCH pair, so the win is PER-TWIN, not a relocation
+
+The re-audit the EIGHTH lesson demanded is done. Two corrections to the two sections above, then
+the mechanism that actually applies.
+
+**Correction 1 — the indexing charge is dropped.** The three indexed sites are `$146E`/`$1470` in
+`build_section_step_delta` and `$2B18` in **`step_delta_halve` ($2B0E)** — a routine that had **no
+`symbols.csv` row at all** and was being reported as `draw_track_object` ($2AD1) purely by address
+ordering (see the §HARDER BLOCKER text above, which names `draw_track_object` for exactly that
+reason). All three index the **step-delta vector** — lows $74/$75/$76, highs `point_delta_hi[0..2]`
+($83/$84/$85) — built by `build_section_step_delta` and halved per component by `step_delta_halve`
+on behalf of `place_car_world_coords`. That is a **different tenant** from the 16-bit accumulator,
+and a tenant's indexed access does not block a relocation (EIGHTH lesson, part 1). The tenancy and
+the `point_delta_hi` dual-low-half contradiction are now recorded on the cells in `symbols.csv`
+(commit 67fb302). ⚠ The §HARDER BLOCKER conclusion "the relocation unit is the whole $74/$75/$76
+window" therefore **does not follow** — it conflated two tenants of the same cells.
+
+**Correction 2 — test 1 fails, but only just, and not where it matters.** Measured off the listing
+(both notations; the earlier 305 was a partial count): **388 operand refs in 84 routines**, of which
+only **6 refs in 4 routines** lie outside `VALIDATE_FUNCS ∪ NATIVE_FUNCS` — `$262D` (an unnamed
+6×256 delay loop, `DEC $74/BNE $262F`), `$2B18` (`step_delta_halve`), `$31D0` (a dash-code plotter
+loop: `$74` a row counter, `$75` its limit, storing through `(plot_ptr),Y`), and `$49BB` (an
+unnamed seeder, `$74` scratch across eight instructions). Every one is **self-contained local
+scratch in its own tenant**.
+
+**The decisive blocker is the one in §FINDING (2026-08-30), and it is permanent.** The math
+primitives (`mul8`, `mul8_noinit`, `div16by8`, `neg16_math`, `neg16_math_noinit`, `abs16_math`) are
+this pair's *own operators* and are already native, so the transpiler emits the **native** call
+inside `__t6502` bodies and every oracle that multiplies passes its operands to a native child
+**through `mem[$74/$75]`**. Nativizing more readers cannot remove that channel; only replacing the
+representation across the entire oracle corpus would, which regenerates the validation oracle
+itself. **Do not re-open `math_lo/hi` as a pair relocation.**
+
+⭐⭐ **NINTH LESSON — a SHARED SCRATCH cell is the wrong shape for mechanism (B), whatever its ref
+count says.** (B) relocates *one use* of a pair; it pays off when that use is a **subsystem's
+persistent value** with few tenants, so one marshal at the seam amortises over many wide ops.
+`math_lo/hi` is the opposite: 84 tenants, each writing it, doing a few ops, and abandoning it. Its
+huge ref count is a count of *tenants*, not of wide arithmetic — which is why it looked like the
+campaign's biggest prize for three separate passes and was never eligible. **Rank candidates by
+ops-per-marshal, not by ref count.** The corollary is that the win on a scratch pair is still
+there, just under a different mechanism: **compute in a `uint16_t` local and store the two lanes
+once at the end of the tenant's own use** (mechanism (A), per-twin, no relocation, no seam, no gate
+blunting, oracle untouched). §FINDING (2026-08-27) records that this hoist is *already done* across
+nearly all of `revs_native.c` — so for `math_lo/hi` the campaign's work is largely complete and was
+mis-booked as pending. The 353 `math_lo`/`math_hi` references left in `revs_native.c` (90 functions)
+are overwhelmingly single marshals into and out of the native math primitives, which is the ABI and
+must stay.
+
 ## Ordering
 
 0. **Step 0 consolidation** (above) — clears the duplicate-define debt first.
-1. **`math_lo/hi`** — highest ref count; its threading pattern is the template for the rest.
+1. ~~**`math_lo/hi`** — highest ref count; its threading pattern is the template for the rest.~~
+   **✗ RETIRED (2026-09-02)** — not (B)-eligible and never was; see §SETTLED above and the NINTH
+   lesson. Ranking it first was the ref-count error that lesson names.
 2. **Tier 1 render scratch** (`point_dist`, `hypot_*`, `bearing`, `plot_ptr*`, `edge_*`) — the
    view pipeline is 54% of the frame; mechanism (B) reachable, biggest near-term FPS.
 3. **Tier 3 via mechanism (A)** — wide-local hoist on `MODEL_STATE`/`CAR_ANGLE` etc. now; the
