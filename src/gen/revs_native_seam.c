@@ -59,6 +59,7 @@ void emit_edge_bearing(void)
     /* Y is unchanged to exit — entered with the slot in Y, the core never touches it, so the
        walk still reads the same slot back; A comes out as the point's distance high byte. */
     hypot_max_marshal_in();               /* the tail-called hypot's larger magnitude */
+    bearing_marshal_in();                 /* the absolute bearing its caller left in mem[$8A/$8B] */
     cpu.A = emit_edge_bearing_core(cpu.Y);
 }
 
@@ -69,6 +70,7 @@ void emit_edge_bearing_at_cursor(void)
     cpu.A = emit_edge_bearing_at_cursor_core(cpu.X);
     cpu.Y = edge_cursor;
     hypot_max_marshal_out();              /* the bearing inside it PRODUCES the magnitude */
+    bearing_marshal_out();                /* ...and the bearing itself */
 }
 
 void emit_edge_width_offset(void)
@@ -98,25 +100,25 @@ void road_edge_side(void)
    the paths that never reach a bearing — the cells come back exactly as they went in. */
 void road_edge_start(void)
 {
-    hypot_max_marshal_in();
+    hypot_max_marshal_in();  bearing_marshal_in();
     road_edge_start_core(0x06, (uint8_t)EDGE_HALF, (uint8_t)SECTION_NEAR, 0x3C, 0x07);
-    hypot_max_marshal_out();
+    hypot_max_marshal_out(); bearing_marshal_out();
 }
 
 void road_edge_walk(void)
 {
-    hypot_max_marshal_in();
+    hypot_max_marshal_in();  bearing_marshal_in();
     cpu.X = road_edge_walk_core(cpu.A, cpu.X, (uint8_t)SECTION_MID, 0x12, 0x14);
-    hypot_max_marshal_out();
+    hypot_max_marshal_out(); bearing_marshal_out();
 }
 
 void build_track_geometry(void)
 {
     /* the top of the road pass, and the same IN/OUT pair as the two walks below it: whether any
        point reaches a bearing at all depends on the track, so the cells are carried through. */
-    hypot_max_marshal_in();
+    hypot_max_marshal_in();  bearing_marshal_in();
     build_track_geometry_core(0x06, 0x2E);
-    hypot_max_marshal_out();
+    hypot_max_marshal_out(); bearing_marshal_out();
 }
 
 void draw_road(void)
@@ -158,7 +160,9 @@ void copy_dash_data(void)
 void bearing_to_section_from(void)
 {
     bearing_to_section_core(cpu.X, cpu.Y);
-    hypot_max_marshal_out();              /* the sorted LARGER magnitude — this routine's output */
+    hypot_max_marshal_out();              /* the sorted LARGER magnitude — a by-product */
+    bearing_marshal_out();                /* ...and THE BEARING, this routine's actual output: the
+                                             shipping FUN_2a5f reads the cells straight after */
 }
 
 void project_point_from(void)

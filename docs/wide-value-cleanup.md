@@ -109,7 +109,7 @@ relocation blast radius. High count ⇒ mechanism (B) is blocked; use (A) now.
 | `point_dist` | $7C/$7D | projected distance (render) | A→B | TODO |
 | `hypot_max` | $7A/$7B | larger sorted ground-plane magnitude | B | **✅ B DONE** (`hypot_max_v`) |
 | `hypot_min` | $78/$79 | smaller sorted ground-plane magnitude | A→B | TODO |
-| `bearing` | $8A/$8B | bearing_to_section output | A→B | TODO |
+| `bearing` | $8A/$8B | bearing_to_section output | B | **✅ B DONE** (`bearing_v`) |
 | `plot_ptr`/`plot_ptr2`/`plot_ptr3` | $70/$71,… | screen write pointers | A→B | TODO |
 | `edge_nearest`, `point_delta`, `object_dist`, `nearest_edge_bearing` | $10/$11, $80–$83, $55, $5E | edge-walk scratch | A→B | TODO |
 | `SLIP_MAG` | $8E/$8F | slip magnitude (adjacent; aliases plot_ptr3) | A→B | TODO |
@@ -127,7 +127,7 @@ in **either** 2- or 4-hex-digit notation, `($xx),Y`). Verdicts:
 |---|---|---|---|
 | `hypot_max` | $7A/$7B | **✅ B DONE** | `hypot_max_v` (revs_native.c). All-native, unindexed, and CLEAN of both channel tests — producer `bearing_to_section_core` and consumer `point_distance_hypot_core` are both native and the shipping glue between them (`FUN_2a5f`) never touches $7A/$7B. The one other tenant, `plot_view_src_line`'s PVS_BYTE/PVS_MODE, keeps the cells — see the IN/OUT rule below |
 | `point_dist` | $7C/$7D | ⚠ eligible ONLY with shim marshal-OUT | a SHIPPING transliterated reader on the patched arm — `region_23d8` (the FOURTH test below). Marshal out in `emit_edge_bearing_at_cursor()`, `emit_edge_bearing()` and `point_distance_hypot()`; proof needs a Brands frame-buffer differential, not a fixture |
-| `bearing` | $8A/$8B | ⚠ eligible ONLY with shim marshal-OUT | same shape, lower risk: shipping `FUN_2a5f` (the car projector, $2A5F) calls native `bearing_to_section()` and then reads `bearing_lo`/`bearing_hi` into `object_bearing` ($0380/$0398). Not a patched arm, so `make determinism` DOES gate it |
+| `bearing` | $8A/$8B | **✅ B DONE** (`bearing_v`) | same shape, lower risk: shipping `FUN_2a5f` (the car projector, $2A5F) calls native `bearing_to_section()` and then reads `bearing_lo`/`bearing_hi` into `object_bearing` ($0380/$0398). Not a patched arm, so `make determinism` DOES gate it |
 | `model_accum_entry` | $38/$39 | **✅ B DONE** | `model_accum_entry_v` (revs_native.c). All-native, unindexed — but it HAD the oracle-glue channel below, resolved by shim marshalling |
 | `edge_nearest` | $10/$11 | ✗ blocked | `$11` read by **non-native** `check_crash` ($111E); nativize check_crash to free it |
 | `math_lo/hi` | $74/$75 | ✗ blocked | `$74` INDEXED with `$76` (`SBC 0x74,X` $146E, `ROR 0x74,X` $2B18) — see [[math_lo/hi]] |
@@ -265,6 +265,46 @@ OUT dropped; IN loses the high byte; OUT swaps lanes; one walk's IN+OUT removed)
 `PVS_BYTE`/`PVS_MODE`, read back by its transliterated tail `FUN_1d94` (reachable only from two
 oracles, never from a track hook). A relocation moves ONE USE of a pair, not the pair.
 
+
+
+⭐⭐ **SIXTH — THE DRIVER BYPASSES THE SHIMS, AND THAT IS WHERE A RELOCATED PAIR GOES STALE**
+(learned relocating `bearing` $8A/$8B). `race_main_loop` is the one `NATIVE_FUNCS` driver, and it
+called `build_track_geometry_core(0x06, 0x2E)` and `build_road_sign_core()` **directly** — the
+sensible thing when the shim exists only to marshal 6502 registers. But once a pair is relocated the
+shim is also the *publisher*: it is the only place the wide var goes back into `mem[]`. Bypassing it
+left $8A/$8B holding the previous frame's bearing for a whole frame.
+
+- **It failed as ONE byte.** `make determinism` printed `$008B: ref=0x0B run=0xFF` and nothing else —
+  `make validate` was green (fixtures enter through the shim), `tracks` / `track-run` green,
+  `endian-lint` green. A single-byte determinism diff is the whole signal for this class.
+- **The fix is structural, not another marshal call:** have the driver call the **shims**
+  (`build_track_geometry()`, `build_road_sign()`) — their argument lists are the same constants, so
+  there is nothing to duplicate, and the marshalling can never drift out of step again.
+- ⚠ **`hypot_max` had the same hole and no gate could see it**, because $7A/$7B are rewritten every
+  frame by their second tenant (`plot_view_src_line`'s PVS_BYTE/PVS_MODE) before anything reads them.
+  Routing the driver through the shims closed it too. **So audit the driver's call sites for every
+  relocated pair, whether or not a gate complains** — a masked hole is still a hole, and the mask is
+  another routine's unrelated tenancy.
+
+### `bearing` $8A/$8B — ✅ B DONE (`bearing_v`)
+
+`bearing_to_section`'s whole output: the absolute angle from the camera to a section point, computed
+once per edge point per frame. Producer `bearing_arm` / `bearing_diagonal` write one word; readers
+`emit_edge_bearing_core` (which subtracts `car_heading` from it) and `build_road_sign` take it in a
+register. Marshalling by the IN/OUT rule: OUT in `bearing_to_section_from` and
+`emit_edge_bearing_at_cursor` (unconditional producers), IN in `emit_edge_bearing` (consumer), IN+OUT
+in `road_edge_start` / `road_edge_walk` / `build_track_geometry` / `build_road_sign` (conditional).
+`make validate` passed **first try** — the IN/OUT rule generalised without a search this time.
+
+⚠ **The pair is far more multi-tenant than `hypot_max`'s and none of it moves**: `road_span_plot` /
+`road_span_plot_2` park their DDA accumulator in $8A and carry the span's pixel byte in $8B (loaded
+from `COLOUR_PATTERN`, not from a bearing); `plot_line_octant`, `plot_object`, `scale_shape_vectors`
+and `interp_edge` each use the pair as scratch; `OBJ_VECTOR_END` is $8A by another name. Relocating
+only the bearing is sound because the bearing chain is **tight** — a producer call is immediately
+followed by its reader, with no tenant between — so no reader ever depended on a tenant's leftovers.
+
+Gates: `validate` PASS, `determinism` + `-drive` 64K byte-identical, `endian-lint` clean, `tracks`
+6/6, `track-run` all hooks, Amiga muldiv + probe-audit clean. Seven sabotages, all FAIL.
 
 ### Tier 2 — persistent, adjacent (wide-local hoist now; relocation later)
 

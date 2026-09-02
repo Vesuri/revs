@@ -357,6 +357,11 @@ SlotExit fill_object_gap_core(uint8_t width);
    the 6502-ABI boundary is the one place a transliterated parent still hands it over in mem[]. */
 void hypot_max_marshal_in(void);
 void hypot_max_marshal_out(void);
+
+/* ⭐ bearing ($8A/$8B) is a mechanism-(B) relocated wide value too (see revs_native.c), and the
+   same IN/OUT rule applies.  Its shipping reader is the transliterated FUN_2a5f. */
+void bearing_marshal_in(void);
+void bearing_marshal_out(void);
 AddFlags integrate_car_position_core(void);
 AddFlags integrate_state_rates_core(void);
 EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint, int publishOnly);

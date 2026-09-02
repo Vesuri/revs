@@ -1484,7 +1484,12 @@ void race_main_loop_core(RestartDepth depth)
             PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  draw_starting_lights();
             PROBE_PHASE(3);  PROBE_SHAPE_PHASE(3);  read_driving_controls_core();
             PROBE_PHASE(4);  PROBE_SHAPE_PHASE(4);  apply_driving_model_core(car_heading_lo, car_heading_hi);
-            PROBE_PHASE(5);  PROBE_SHAPE_PHASE(5);  build_track_geometry_core(0x06, 0x2E);
+            /* ⚠ the SHIM, not the core: this driver is the one caller of these two that is not
+               a transliterated parent, and the shim is where the relocated wide values (hypot_max,
+               bearing) are marshalled back into mem[$7A/$7B] and mem[$8A/$8B].  Calling the core
+               here would leave the cells stale for a whole frame — which `make determinism` sees as
+               a single diverging byte at $8B. */
+            PROBE_PHASE(5);  PROBE_SHAPE_PHASE(5);  build_track_geometry();
             PROBE_PHASE(6);  PROBE_SHAPE_PHASE(6);  place_player_in_section();
             PROBE_PHASE(7);  PROBE_SHAPE_PHASE(7);  advance_player_section();
             PROBE_PHASE(8);  PROBE_SHAPE_PHASE(8);  update_lap_timers();
@@ -1495,7 +1500,7 @@ void race_main_loop_core(RestartDepth depth)
             PROBE_SHAPE_ROAD_AFTER();
             PROBE_PHASE(12); PROBE_SHAPE_PHASE(12); engine_sound_update();
             PROBE_PHASE(13); PROBE_SHAPE_PHASE(13); fill_line_surface();
-            PROBE_PHASE(14); PROBE_SHAPE_PHASE(14); build_road_sign_core();
+            PROBE_PHASE(14); PROBE_SHAPE_PHASE(14); build_road_sign();       /* the shim — see phase 5 */
             /* $172B: the object slot count is the starting slot */
             PROBE_PHASE(15); PROBE_SHAPE_PHASE(15);
             {   /* race_main_loop_core is cpu (NATIVE_FUNCS driver) — marshal the typed exit */
@@ -1900,6 +1905,44 @@ void hypot_max_marshal_out(void)
     hypot_max_hi = (uint8_t)(hypot_max_v >> 8);
 }
 
+/* ⭐ WIDE-VALUE CLEANUP, mechanism (B): bearing ($8A/$8B) relocated out of mem[] into this native
+   uint16_t.  It is bearing_to_section's whole output — the absolute angle from the camera to a
+   section point — and every one of its readers is a native twin: emit_edge_bearing subtracts the
+   car's heading from it, build_road_sign files it in a sign's object slot.  Both producer arms
+   (bearing_arm and bearing_diagonal) and both readers now trade one 68000 word where the
+   transliteration wrote two bytes and reloaded/shifted/OR'd them back on every edge point of every
+   frame — and the bearing is computed once per point, so this is the road pass's hottest pair
+   after point_dist.
+
+   ⚠⚠ THE CELLS ARE NOT FREED — $8A/$8B ARE HEAVILY MULTI-TENANT.  road_span_plot and
+   road_span_plot_2 park their DDA accumulator in $8A and carry the span's pixel byte in $8B (it is
+   loaded from COLOUR_PATTERN, not from a bearing); plot_line_octant, plot_object,
+   scale_shape_vectors and interp_edge each use the pair as their own scratch; and OBJ_VECTOR_END
+   is $8A by another name.  Every one of those tenancies keeps mem[] untouched.  Only the
+   BEARING's use of the pair moves, which is sound because the bearing chain is tight — a producer
+   call is immediately followed by its reader, with no tenant between them — so no reader ever
+   depended on seeing a tenant's leftovers.
+
+   ⚠ The 6502-ABI boundary keeps the two representations in step, by the IN/OUT rule in
+   docs/wide-value-cleanup.md: a shim whose core CONSUMES the bearing marshals the cells in, one
+   whose core PRODUCES it unconditionally marshals them out, and one that produces it only
+   CONDITIONALLY does both.  The shipping reader is the reason this pair needs the OUT at all:
+   FUN_2a5f, the car projector at $2A5F, is transliterated, calls the native bearing_to_section()
+   shim and then reads bearing_lo/bearing_hi into object_bearing ($0380/$0398).  Because that path
+   races on Silverstone, `make determinism` genuinely gates it. */
+static uint16_t bearing_v;
+
+void bearing_marshal_in(void)
+{
+    bearing_v = (uint16_t)(bearing_lo | ((unsigned)bearing_hi << 8));
+}
+
+void bearing_marshal_out(void)
+{
+    bearing_lo = (uint8_t)bearing_v;
+    bearing_hi = (uint8_t)(bearing_v >> 8);
+}
+
 /* ===========================================================================
    $0CA5  point_distance_hypot — HOW FAR AWAY IS THIS POINT?  (twin #22)
    ---------------------------------------------------------------------------
@@ -1985,7 +2028,7 @@ uint8_t emit_edge_bearing_core(uint8_t slot)
 {
     /* $23C0-$23CC — the point's angle FROM WHERE THE CAR POINTS: bearing - car_heading, one
        16-bit subtract (binary on the render path — docs/static-map.md §Decimal mode). */
-    uint16_t rel = (uint16_t)(((unsigned)bearing_lo | ((unsigned)bearing_hi << 8))
+    uint16_t rel = (uint16_t)(bearing_v      /* relocated out of mem[$8A/$8B] — see above */
                             -  ((unsigned)car_heading_lo | ((unsigned)car_heading_hi << 8)));
     mem[EDGE_X_LO_TBL + slot] = (uint8_t)rel;
     mem[EDGE_X_HI_TBL + slot] = (uint8_t)(rel >> 8);
@@ -3985,8 +4028,7 @@ static void bearing_diagonal(void)
                       | ((mem[POINT_DELTA_SIGN + 2] & 0x80u) ? 1u : 0u);
 
     shared_temp_7e = 0xFFu;                         /* $220D */
-    bearing_lo     = 0x00u;                         /* $2211 */
-    bearing_hi     = diagonal[quadrant];
+    bearing_v      = (uint16_t)(diagonal[quadrant] << 8);   /* $2211 — low byte 0; relocated */
 }
 
 /* $21C1-$220C and $2239-$2284 — the two arms, which differ in three things and nothing else:
@@ -4041,8 +4083,8 @@ static void bearing_arm(unsigned largerComponent, unsigned smallerComponent,
        added into the angle's high byte. */
     uint8_t base = (mem[POINT_DELTA_SIGN + largerComponent] & 0x80u)
                      ? (uint8_t)(quadrantBase + 0x80u) : quadrantBase;
-    bearing_lo = (uint8_t)angle;
-    bearing_hi = (uint8_t)((angle >> 8) + base);
+    bearing_v = (uint16_t)((angle & 0xFFu)
+                | (((((angle >> 8) & 0xFFu) + base) & 0xFFu) << 8));  /* relocated out of mem[] */
 }
 
 void bearing_to_section_core(uint8_t sectionByte, uint8_t origin)
@@ -8383,13 +8425,13 @@ static void build_road_sign_core(void)
 
     /* $4CEB-$4CF9 — the bearing, FROM THE SIGN'S OWN ORIGIN, into slot $17. */
     bearing_to_section_core(scratchX, VIEW_ORIGIN_STRIDE);
-    mem[OBJECT_BEARING_LO + SIGN_SLOT] = bearing_lo;
-    mem[OBJECT_BEARING_HI + SIGN_SLOT] = bearing_hi;
+    mem[OBJECT_BEARING_LO + SIGN_SLOT] = (uint8_t)bearing_v;
+    mem[OBJECT_BEARING_HI + SIGN_SLOT] = (uint8_t)(bearing_v >> 8);
 
     /* $4CFA-$4D08 — how far off the car's heading the sign is.  Past $40 it has left the view,
        and THAT is what commits the sign number for the next frame.  abs8 here branches on bit 7
        of (bearing_hi - car_heading_hi) — the caller's N equals bit 7 — and $80 negates to $80. */
-    uint8_t off    = (uint8_t)(bearing_hi - car_heading_hi);
+    uint8_t off    = (uint8_t)((uint8_t)(bearing_v >> 8) - car_heading_hi);
     uint8_t absOff = (off & 0x80u) ? (uint8_t)(-off) : off;
     if (cmp_ge(absOff, 0x40u))                           /* the sign has left the view */
         sign_last_index = saved_slot_index;
@@ -8409,9 +8451,9 @@ static void build_road_sign_core(void)
    gets as far as the bearing — an SMC trap at either sign-table site returns before it — so the
    marshal-in is what makes the marshal-out faithful on the early exits: the cells come back
    holding exactly what they held on entry, which is what the 6502 left there. */
-void build_road_sign(void)      { hypot_max_marshal_in();
+void build_road_sign(void)      { hypot_max_marshal_in();  bearing_marshal_in();
                                   build_road_sign_core();
-                                  hypot_max_marshal_out(); }
+                                  hypot_max_marshal_out(); bearing_marshal_out(); }
 void store_object_flags(void)   { store_object_flags_core(cpu.Y, cpu.A); }
 
 /* ===========================================================================
