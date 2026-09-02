@@ -3646,17 +3646,6 @@ void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
 #define OBJECT_LINE       0x03B0u   /* per slot: screen cell column */
 #define OBJECT_WIDTH     0x03C8u   /* per slot: screen width */
 
-/* (hi : math_lo) << 1, returning the new high byte — the 6502's `ASL math_lo / ROL A`.  Run
-   twice, it is the x4 that turns a distance into a scan line, and math_lo is left holding the
-   scaled low byte because the plotter has no use for it. */
-static unsigned shift_pair_left(unsigned hi)
-{
-    cpu.A = (uint8_t)hi;
-    ASL_M(MEM_math_lo);
-    ROL_A();
-    return cpu.A;
-}
-
 /* Exit ABI is the full register+flag set (SlotExit).  A, V and C differ per path; X, N and Z
    are the closing `arg_x` (LDX saved_slot_index).  Entry Y passes through every path (nothing
    writes it before arg_x), and entry V/C pass through the empty-slot path — so all three are
@@ -3695,7 +3684,22 @@ SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, ui
         c = (uint8_t)(deltaHi >= limit);                /* ...and C = its own carry */
         int visible = (deltaHi & 0x80u) ? (deltaHi >= 0xE0u) : (deltaHi < 0x20u);
         if (visible) {
-            unsigned row = shift_pair_left(shift_pair_left(deltaHi));
+            /* ⭐ WIDE VALUE: the x4 that turns the distance into a scan line.  The 6502
+               spells it `ASL math_lo / ROL A` run twice — a byte-pair shift over the pair
+               (deltaHi : math_lo), which IS `delta`, since math_lo was just loaded with its
+               low byte and nothing since has written it.  So the whole thing is one 16-bit
+               `<< 2`, and math_lo still ends up holding the scaled low byte because the
+               plotter's setup shares that cell.  ROL A's N/Z/C are dead — see below.
+               ⚠ SABOTAGE NOTE: falsifying the `math_lo` store alone PASSES all 69 drawn
+               cases, and that is explanation three (no change at all), not a fixture gap —
+               plot_object_core's FIRST statement is `math_lo = slot`, so on the only path
+               that reaches here the scaled low byte is overwritten before any reader.  The
+               store stays anyway: the oracle makes it, and "the callee clobbers it today"
+               is a claim about a subtree, not about this routine.  Falsifying the SHIFT
+               (<<1 for <<2) or the row fails 68/69 and 69/69 respectively. */
+            unsigned scaled = (uint16_t)(delta << 2);
+            unsigned row    = scaled >> 8;
+            math_lo = (uint8_t)scaled;
             plot_x = (uint8_t)(row + 0x50);             /* carry-in 0 */
             /* N/Z/C are dead (the LDAs below rewrite N/Z, nothing reads C), but V ESCAPES on
                the drawn path: this ADC's V is the routine's exit V unless plot_object writes
