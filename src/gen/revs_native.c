@@ -11259,7 +11259,7 @@ void step_section_curve(void)
    unhandled case, faithfully reproduced.
 
    The tail (from $29F4) is the object queue: FUN_2a5d dispatches on object_dist_hi, and for a
-   near car ahead of car_behind the AI branch runs build_section_step_delta / FUN_2b0e / section_coord_add_delta / FUN_2a5f.
+   near car ahead of car_behind the AI branch runs build_section_step_delta / step_delta_halve / section_coord_add_delta / FUN_2a5f.
    Those are the real generated routines, called with the registers the transliteration set, so
    they cancel in the differential — the twin's job is the two loops and the coordinate adds.
    --------------------------------------------------------------------------- */
@@ -11387,11 +11387,11 @@ void place_car_world_coords(void)
     cpu.Y = soi;                                                 /* $2A0F LDY $0C */
     cpu.N = (soi & 0x80) != 0; cpu.Z = (soi == 0);
     build_section_step_delta();
-    FUN_2b0e();
+    step_delta_halve();
     cpu.Y = 0xFD; cpu.X = 0xFA; section_coord_add_delta();
-    FUN_2b0e();
+    step_delta_halve();
     cpu.X = 0xF4; section_coord_add_delta();
-    FUN_2b0e();
+    step_delta_halve();
     cpu.X = 0xFD; section_coord_add_delta();
     shared_counter_42 = 0x14; cpu.A = 0x02; FUN_2a5d();
     shared_counter_42 = 0x15; cpu.A = 0x01; cpu.X = 0xF4; FUN_2a5f();
