@@ -107,7 +107,8 @@ relocation blast radius. High count ⇒ mechanism (B) is blocked; use (A) now.
 |---|---|---|---|---|
 | `math_lo/hi` | $74/$75 | shared 16-bit accumulator (305 refs — the big one; template) | A→B | TODO |
 | `point_dist` | $7C/$7D | projected distance (render) | A→B | TODO |
-| `hypot_min`/`hypot_max` | $78/$79, $7A/$7B | sorted ground-plane magnitudes | A→B | TODO |
+| `hypot_max` | $7A/$7B | larger sorted ground-plane magnitude | B | **✅ B DONE** (`hypot_max_v`) |
+| `hypot_min` | $78/$79 | smaller sorted ground-plane magnitude | A→B | TODO |
 | `bearing` | $8A/$8B | bearing_to_section output | A→B | TODO |
 | `plot_ptr`/`plot_ptr2`/`plot_ptr3` | $70/$71,… | screen write pointers | A→B | TODO |
 | `edge_nearest`, `point_delta`, `object_dist`, `nearest_edge_bearing` | $10/$11, $80–$83, $55, $5E | edge-walk scratch | A→B | TODO |
@@ -124,7 +125,7 @@ in **either** 2- or 4-hex-digit notation, `($xx),Y`). Verdicts:
 
 | Pair | Addr | (B)-eligible? | Why |
 |---|---|---|---|
-| `hypot_max` | $7A/$7B | **✅ ELIGIBLE** | all-native, unindexed, and CLEAN of both channel tests — producer `bearing_to_section_core` and consumer `point_distance_hypot_core` are both native and the shipping glue between them (`FUN_2a5f`) never touches $7A/$7B. The one other tenant, `plot_view_src_line`'s PVS_BYTE/PVS_MODE, keeps the cells. **Do this one first** |
+| `hypot_max` | $7A/$7B | **✅ B DONE** | `hypot_max_v` (revs_native.c). All-native, unindexed, and CLEAN of both channel tests — producer `bearing_to_section_core` and consumer `point_distance_hypot_core` are both native and the shipping glue between them (`FUN_2a5f`) never touches $7A/$7B. The one other tenant, `plot_view_src_line`'s PVS_BYTE/PVS_MODE, keeps the cells — see the IN/OUT rule below |
 | `point_dist` | $7C/$7D | ⚠ eligible ONLY with shim marshal-OUT | a SHIPPING transliterated reader on the patched arm — `region_23d8` (the FOURTH test below). Marshal out in `emit_edge_bearing_at_cursor()`, `emit_edge_bearing()` and `point_distance_hypot()`; proof needs a Brands frame-buffer differential, not a fixture |
 | `bearing` | $8A/$8B | ⚠ eligible ONLY with shim marshal-OUT | same shape, lower risk: shipping `FUN_2a5f` (the car projector, $2A5F) calls native `bearing_to_section()` and then reads `bearing_lo`/`bearing_hi` into `object_bearing` ($0380/$0398). Not a patched arm, so `make determinism` DOES gate it |
 | `model_accum_entry` | $38/$39 | **✅ B DONE** | `model_accum_entry_v` (revs_native.c). All-native, unindexed — but it HAD the oracle-glue channel below, resolved by shim marshalling |
@@ -166,6 +167,9 @@ scattered across model_state), not at the relocated cell. This is the SAME class
   `set_ignore`s them (native writes the var instead). `det_compare.py` skips the pair as
   no-longer-game-state (currently unexercised: $38/$39 read 0 at all three determinism dump
   frames — `make validate` is the byte-exact proof).
+  ⭐ **Superseded as the default by the FIFTH lesson below** — marshalling the pair at *every* ABI
+  crossing (IN as well as OUT) keeps the cells byte-exact and needs neither the `set_ignore` nor the
+  `det_compare.py` skip. Reach for a blunted gate only when a crossing genuinely cannot marshal.
 
 ⚠⚠ **FOURTH eligibility test (2026-08-30): A TRANSLITERATED MULTI-ENTRY *REGION* IS SHIPPING CODE,
 AND A CIRCUIT HOOK CAN RE-ENTER ONE.** The three tests above all ask about *functions*. But
@@ -221,6 +225,46 @@ bodies, not against the whole corpus.
 ⚠ For `point_dist` specifically the marshal is **both directions**: `region_23d8` also calls the
 `project_point` shim, which READS the pair for its far clip and shifts the low byte IN PLACE
 ($22C5), so that shim needs the cells in *and* the shifted residue back out.
+
+⭐⭐ **FIFTH — THE IN/OUT MARSHALLING RULE, and it makes the relocation STRICTLY CLEANER than
+`set_ignore`** (learned relocating `hypot_max` $7A/$7B, the first render-path pair). The two earlier
+relocations each had to blunt a gate: the producer's fixture `set_ignore`d the cells and
+`det_compare.py` gained a skip. Neither is necessary. Decide each 6502-ABI shim by what its CORE
+does with the value:
+
+| The core… | The shim marshals | Why |
+|---|---|---|
+| CONSUMES it | **IN** | a transliterated parent (oracle or shipping) still hands it over in `mem[]`, as the 6502 did |
+| produces it UNCONDITIONALLY | **OUT** | the cells are this routine's 6502 output; a transliterated caller reads them next |
+| produces it **CONDITIONALLY** | **IN *and* OUT** | ⚠ this is the trap — see below |
+
+⚠⚠ **AN UNCONDITIONAL MARSHAL-OUT ON A CONDITIONAL PRODUCER IS A REAL DEFECT, and it fails
+SCATTERED.** `build_road_sign_core` reaches the bearing only on the path that gets past both
+sign-table SMC traps; an early exit leaves `hypot_max_v` holding *the previous call's* value, which
+an unconditional OUT then stamps into cells the 6502 never touched. The fixture failed on isolated
+cases (3, 12) with nothing wrong at the relocated cell. **The marshal-IN is what makes the
+marshal-OUT faithful:** read the cells first and every early-exit path writes back exactly what it
+read — which is what the 6502 left there. Same shape in `road_edge_start` (the near point may
+already be in range), `road_edge_walk` (every candidate may be rejected) and `build_track_geometry`.
+
+⭐ **Let the differential FIND the set; do not reason it out a priori.** Four `make validate` runs
+each named exactly one more parent as the cascade climbed the road pass
+(`build_road_sign` → `road_edge_start`/`road_edge_walk` → `build_track_geometry`). Adding IN/OUT
+where the harness points is faster and more complete than auditing shims by hand.
+
+**Outcome, and this is the standard to hold the remaining pairs to:** every fixture stayed
+byte-exact on $7A/$7B — **zero `set_ignore`, zero `det_compare.py` skip** — because a relocated pair
+that is marshalled at every ABI crossing is still, at every frame boundary, exactly the game state
+it always was. Cost is four accesses at a crossing and **nothing** core-to-core, which is where the
+road pass's calls actually are. Gates: `validate` PASS, `determinism` + `-drive` 64K byte-identical,
+`endian-lint` clean, `tracks` 6/6, `track-run` all hooks run, Amiga link muldiv + probe clean.
+Six sabotages, all FAIL with distinct fixture sets and distinct counts (wrong sort arm; IN dropped;
+OUT dropped; IN loses the high byte; OUT swaps lanes; one walk's IN+OUT removed).
+
+⚠ The cells are **NOT freed** — $7A/$7B keep a second tenant, `plot_view_src_line`'s
+`PVS_BYTE`/`PVS_MODE`, read back by its transliterated tail `FUN_1d94` (reachable only from two
+oracles, never from a track hook). A relocation moves ONE USE of a pair, not the pair.
+
 
 ### Tier 2 — persistent, adjacent (wide-local hoist now; relocation later)
 
@@ -300,6 +344,9 @@ The 68000 has single-instruction `add.l`/`sub.l`/`move.l`/`cmp.l`, so a binary 2
    averaging non-outlier rows. Expect a measurable gain — this is the perf thesis under test.
 
 ### The mechanism (B) template (established on `band2_duration`, the first zero-reader relocation)
+
+⭐ For a pair with readers on the far side of a 6502-ABI shim, the template is this plus the **IN/OUT
+marshalling rule** above — that is the current, cleaner standard.
 
 The concrete machinery, reusable for every (B) cell. The relocated var stores identically to the
 two mem[] bytes it replaces; the **`__t6502` oracle still uses mem[]**, so validate and determinism

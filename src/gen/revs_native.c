@@ -1868,6 +1868,38 @@ void load_section_triple_core(uint8_t destSection, uint8_t segmentByte)
 }
 
 
+/* ⭐ WIDE-VALUE CLEANUP, mechanism (B): hypot_max ($7A/$7B) relocated out of mem[] into this
+   native uint16_t.  It is the LARGER of the two ground-plane magnitudes bearing_to_section
+   sorts, handed straight to point_distance_hypot — one producer, one consumer, both native, and
+   the shipping glue between them (FUN_2a5f, region_23d8) never touches the cells.  So the pair
+   travels in a single 68000 word instead of the two byte stores plus the load/shift/or the
+   transliteration paid on every edge point of every frame.
+
+   ⚠⚠ THE CELLS ARE NOT FREED — $7A/$7B HAVE A SECOND TENANT.  plot_view_src_line uses them as
+   PVS_BYTE/PVS_MODE (see the #defines over that twin) and FUN_1d94, its transliterated tail,
+   reads $7B back.  That tenancy keeps mem[] and is untouched by this relocation; only the
+   hypot's own use of the pair moves.
+
+   ⚠ THE 6502-ABI BOUNDARY KEEPS THE TWO REPRESENTATIONS IN STEP.  Wherever a transliterated
+   parent — a shipping FUN_ or region_ body, or a validation oracle — hands the value to or takes
+   it from a native shim, it does so through mem[$7A/$7B], exactly as the 6502 did.  So every shim
+   whose core produces the value marshals it OUT, and every shim whose core consumes it marshals
+   it IN (revs_native_seam.c).  That costs four accesses at an ABI crossing and NOTHING on the
+   core-to-core road pass, which is where the calls actually are — and it keeps the producer's
+   validate fixture byte-exact on the cells instead of having to set_ignore them. */
+static uint16_t hypot_max_v;
+
+void hypot_max_marshal_in(void)
+{
+    hypot_max_v = (uint16_t)(hypot_max_lo | ((unsigned)hypot_max_hi << 8));
+}
+
+void hypot_max_marshal_out(void)
+{
+    hypot_max_lo = (uint8_t)hypot_max_v;
+    hypot_max_hi = (uint8_t)(hypot_max_v >> 8);
+}
+
 /* ===========================================================================
    $0CA5  point_distance_hypot — HOW FAR AWAY IS THIS POINT?  (twin #22)
    ---------------------------------------------------------------------------
@@ -1924,7 +1956,7 @@ uint8_t point_distance_hypot_apply(void)
     PointDist d = point_distance_hypot_core(
                       shared_temp_7e,
                       (uint16_t)(hypot_min_lo | ((unsigned)hypot_min_hi << 8)),
-                      (uint16_t)(hypot_max_lo | ((unsigned)hypot_max_hi << 8)));
+                      hypot_max_v);            /* relocated out of mem[$7A/$7B] — see above */
 
     hypot_min_hi = (uint8_t)(d.min >> 8);
     if (d.farArm) {
@@ -4038,14 +4070,12 @@ void bearing_to_section_core(uint8_t sectionByte, uint8_t origin)
         if (d2Smaller) {
             hypot_min_hi = (uint8_t)(d2.mag >> 8);
             hypot_min_lo = (uint8_t)d2.mag;
-            hypot_max_lo = (uint8_t)d0.mag;
-            hypot_max_hi = (uint8_t)(d0.mag >> 8);
+            hypot_max_v  = d0.mag;                  /* $219D/$21A1, relocated out of mem[] */
             bearing_arm(0, 2, 0x40u, 1);            /* $21C1 — measured off component 0 */
         } else {
             hypot_min_hi = (uint8_t)(d0.mag >> 8);
             hypot_min_lo = (uint8_t)d0.mag;
-            hypot_max_lo = (uint8_t)d2.mag;
-            hypot_max_hi = (uint8_t)(d2.mag >> 8);
+            hypot_max_v  = d2.mag;                  /* $21B1/$21B5, relocated out of mem[] */
             if (equal)
                 bearing_diagonal();                 /* $21B8 — the two are the same length */
             else
@@ -8375,7 +8405,13 @@ static void build_road_sign_core(void)
 }
 
 /* The 6502-ABI shims. */
-void build_road_sign(void)      { build_road_sign_core(); }
+/* ⚠ hypot_max IN *AND* OUT.  The core produces the relocated magnitude only on the path that
+   gets as far as the bearing — an SMC trap at either sign-table site returns before it — so the
+   marshal-in is what makes the marshal-out faithful on the early exits: the cells come back
+   holding exactly what they held on entry, which is what the 6502 left there. */
+void build_road_sign(void)      { hypot_max_marshal_in();
+                                  build_road_sign_core();
+                                  hypot_max_marshal_out(); }
 void store_object_flags(void)   { store_object_flags_core(cpu.Y, cpu.A); }
 
 /* ===========================================================================

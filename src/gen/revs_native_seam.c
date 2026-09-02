@@ -50,6 +50,7 @@ void load_section_triple(void)
 
 void point_distance_hypot(void)
 {
+    hypot_max_marshal_in();               /* the larger magnitude arrives in mem[$7A/$7B] */
     cpu.A = point_distance_hypot_apply();
 }
 
@@ -57,6 +58,7 @@ void emit_edge_bearing(void)
 {
     /* Y is unchanged to exit — entered with the slot in Y, the core never touches it, so the
        walk still reads the same slot back; A comes out as the point's distance high byte. */
+    hypot_max_marshal_in();               /* the tail-called hypot's larger magnitude */
     cpu.A = emit_edge_bearing_core(cpu.Y);
 }
 
@@ -66,6 +68,7 @@ void emit_edge_bearing_at_cursor(void)
        point's distance high byte. */
     cpu.A = emit_edge_bearing_at_cursor_core(cpu.X);
     cpu.Y = edge_cursor;
+    hypot_max_marshal_out();              /* the bearing inside it PRODUCES the magnitude */
 }
 
 void emit_edge_width_offset(void)
@@ -89,19 +92,31 @@ void road_edge_side(void)
     cpu.Z = (uint8_t)(r.side == 0);
 }
 
+/* ⚠ hypot_max IN *AND* OUT in both of these: each produces the relocated magnitude only on the
+   path that keeps a point (the walk can reject every candidate, the start can find the near
+   point already in range), so marshalling in first is what makes marshalling out faithful on
+   the paths that never reach a bearing — the cells come back exactly as they went in. */
 void road_edge_start(void)
 {
+    hypot_max_marshal_in();
     road_edge_start_core(0x06, (uint8_t)EDGE_HALF, (uint8_t)SECTION_NEAR, 0x3C, 0x07);
+    hypot_max_marshal_out();
 }
 
 void road_edge_walk(void)
 {
+    hypot_max_marshal_in();
     cpu.X = road_edge_walk_core(cpu.A, cpu.X, (uint8_t)SECTION_MID, 0x12, 0x14);
+    hypot_max_marshal_out();
 }
 
 void build_track_geometry(void)
 {
+    /* the top of the road pass, and the same IN/OUT pair as the two walks below it: whether any
+       point reaches a bearing at all depends on the track, so the cells are carried through. */
+    hypot_max_marshal_in();
     build_track_geometry_core(0x06, 0x2E);
+    hypot_max_marshal_out();
 }
 
 void draw_road(void)
@@ -143,6 +158,7 @@ void copy_dash_data(void)
 void bearing_to_section_from(void)
 {
     bearing_to_section_core(cpu.X, cpu.Y);
+    hypot_max_marshal_out();              /* the sorted LARGER magnitude — this routine's output */
 }
 
 void project_point_from(void)
@@ -396,6 +412,7 @@ void reject_object_slot(void)
 
 void note_object_contact(void)
 {
+    hypot_max_marshal_in();               /* the hypot it runs takes the magnitude from mem[] */
     ContactExit e = note_object_contact_core(cpu.Y, cpu.C);
     cpu.A = e.a; cpu.Y = e.y; cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;
 }

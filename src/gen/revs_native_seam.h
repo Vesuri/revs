@@ -352,6 +352,11 @@ SlotExit fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightStartS
 SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn, uint8_t firstLine, uint8_t entryV);
 SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint, int entryC, int entryV);
 SlotExit fill_object_gap_core(uint8_t width);
+/* ⭐ hypot_max ($7A/$7B) is a mechanism-(B) relocated wide value (see revs_native.c).  A shim
+   whose core CONSUMES it marshals the cells in; one whose core PRODUCES it marshals them out —
+   the 6502-ABI boundary is the one place a transliterated parent still hands it over in mem[]. */
+void hypot_max_marshal_in(void);
+void hypot_max_marshal_out(void);
 AddFlags integrate_car_position_core(void);
 AddFlags integrate_state_rates_core(void);
 EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint, int publishOnly);
