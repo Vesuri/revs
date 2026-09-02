@@ -946,8 +946,12 @@ void build_player_car(void)
        (race_main_loop's RESTART_LATE arm, $16F6) does `LDA #0` next, so A and every flag are
        dead there; X and Y are dead too — the next reader is $0B77, which loads both itself.
        Two of them could not be reconstructed anyway: the second place_car_world_coords leaves
-       the exit Y and C, and that twin's contract declares only X.  Fixture: LIVE_NONE. */
+       the exit Y and C, and that twin's contract declares only X.  Fixture: LIVE_NONE.
+       ⚠ The marshal-outs come from place_car_world_coords' queue tail (twin #172) — see that
+       shim's note; this routine runs the whole thing twice. */
+    hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     build_player_car_core();
+    hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
 }
 
 void step_delta_halve(void)
@@ -961,4 +965,24 @@ void step_delta_halve(void)
     cpu.C = (uint8_t)(lo0 & 1u);
     cpu.X = 0xFFu;                               /* $2B1A DEX ran once past component 0 */
     cpu.N = 1; cpu.Z = 0;                        /* ...and its flags are the exit's */
+}
+
+/* project_object_slot's 6502-ABI shims (twin #172).  ⭐ The marshal-outs are the whole reason
+   these are not one-liners: the core leaves the bearing and the two sorted hypot magnitudes in
+   their relocated uint16_t homes, and the transliterated oracle leaves them in mem[$78-$7B] and
+   mem[$8A/$8B].  No marshal-IN is needed — the core has no early exit, so bearing_to_section_core
+   always overwrites all three before anything reads them.
+   The exit ABI is write_object_slot's (a fall-through, so a tail call), which its own twin
+   already reconstructs; both callers here ignore every register, so the core discards it and the
+   fixture is result-only. */
+void project_object_slot(void)
+{
+    project_object_slot_core(cpu.X, cpu.A);
+    hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
+}
+
+void project_object_coord(void)
+{
+    project_object_slot_core(0xFDu, cpu.A);      /* $2A5D LDX #$FD — the object_coord pair */
+    hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
 }

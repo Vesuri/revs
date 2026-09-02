@@ -6368,6 +6368,82 @@ void sound_stop_all(void);     void sound_stop_all__t6502(void);
 void build_player_car(void);   void build_player_car__t6502(void);
 void step_delta_halve(void);   void step_delta_halve__t6502(void);
 
+/* ---- project_object_slot ($2A5F) / project_object_coord ($2A5D), twin #172 ---------------
+   The object projector: bearing -> object_bearing[slot] -> contact test -> perspective divide
+   -> slot write.  Result-only: its three call sites all read object_dist_hi and the slot fields
+   out of mem[] and never a register.
+
+   ⭐ THE TWO INPUTS THAT MATTER are both indices, and both have to be steered:
+     * X is an index into $0900/$0A00, and the SHIPPING values are $FD (the object_coord pair),
+       $F4 and $FA.  Three quarters of the cases use one of those; the rest sweep the byte,
+       because bearing_to_section and project_point index the same table and a wrapped index is
+       legal 6502.
+     * shared_counter_42 is the slot object_bearing and the slot fields are written through, so
+       it is pinned to 0..$1F — a random byte would scatter the writes across page 3 and past
+       the tables the game actually owns.
+   The shape nibble in A is drawn 0..3, the four values the queue tail passes.
+   ⚠⚠ AND THE NEAR ARM IS FORCED BY MOVING THE OBJECT, NOT BY SEEDING THE DISTANCE — see the
+   note at the line that does it.  point_distance_hypot recomputes point_dist_lo/hi from the
+   deltas, so a seeded distance is overwritten before it is tested.  ⭐ The calibration for all
+   of this is the sabotage `threshold $25 -> $50`: it survived 4000 cases twice — once because
+   the seeded distance was overwritten, and again because moving the object EXACTLY onto the
+   camera gives distance 0, which passes either threshold.  It only fails once the distance
+   straddles $25. */
+void project_object_slot(void);   void project_object_slot__t6502(void);
+void project_object_coord(void);  void project_object_coord__t6502(void);
+
+static int test_object_projector(void)
+{
+    static uint8_t pre[65536];
+    static const uint16_t ig[] = { 0x01FF };      /* the PHP residue the bearing/hypot chain leaves */
+    int fail = 0, printed = 0, t, i;
+    const struct { const char* name; void (*nat)(void); void (*ref)(void); } list[2] = {
+        { "project_object_slot",  project_object_slot,  project_object_slot__t6502  },
+        { "project_object_coord", project_object_coord, project_object_coord__t6502 },
+    };
+
+    for (i = 0; i < 2; i++) {
+        const int cases = 4000;
+        int contact = 0;
+        register_fixture(list[i].name);
+        if (!want(list[i].name)) continue;
+        set_ignore(ig, 1);
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu(); fill_random(pre); c.D = 0;
+            c.A = (uint8_t)(xs() & 3);                       /* the shape nibble */
+            c.Y = (uint8_t)xs();
+            if (t & 1)       c.X = 0xFDu;
+            else if (t & 2)  c.X = (xs() & 1) ? 0xF4u : 0xFAu;
+            else             c.X = (uint8_t)xs();
+            pre[0x0042] = (uint8_t)(xs() % 0x20);            /* shared_counter_42: a real slot */
+            /* ⚠⚠ THE CONTACT ARM CANNOT BE FORCED BY SEEDING point_dist_lo, and the first
+               version of this fixture did exactly that and read a coverage counter of ~2000
+               that was pure fiction: note_object_contact RUNS point_distance_hypot, which
+               overwrites both distance bytes before it tests them.  The tell was a surviving
+               sabotage (threshold $25 -> $50 changed nothing over 4000 cases).  What actually
+               gates the arm is point_dist_hi == 0, i.e. the object really being near the
+               camera — so half the cases put the coordinate this call projects ON TOP of the
+               view origin, which is what makes both deltas, and so the distance, small. */
+            if (xs() & 1) {
+                unsigned o = 0x0900u + c.X, h = 0x0A00u + c.X;
+                /* Equal HIGH bytes and a random low offset: the two deltas then span a byte, so
+                   the computed distance sweeps 0..~$FF and STRADDLES the $25 threshold instead
+                   of sitting on 0 (which passes any threshold and hid the sabotage twice). */
+                pre[o + 0] = (uint8_t)(pre[0x6280] + (uint8_t)xs()); pre[h + 0] = pre[0x6283];
+                pre[o + 2] = (uint8_t)(pre[0x6282] + (uint8_t)xs()); pre[h + 2] = pre[0x6285];
+                contact++;
+            }
+            fail += diff_run(list[i].name, pre, c,
+                             list[i].nat, list[i].ref, LIVE_NONE, t, &printed);
+        }
+        set_ignore(0, 0);
+        if (!contact) { printf("[VACUOUS] %s: no contact-candidate case\n", list[i].name); fail++; }
+        printf("%-32s %7d cases, mismatch above must be 0  result-only  "
+               "(%d with the object near the camera, distance straddling the threshold)\n", list[i].name, cases, contact);
+    }
+    return fail;
+}
+
 static int test_crash_restart_subtree(void)
 {
     static uint8_t pre[65536];
@@ -6442,7 +6518,7 @@ static int test_crash_restart_subtree(void)
     if (want("build_player_car")) {
         static const uint16_t ig[] = { 0x01FF };      /* the mul8 residue place_car_world_coords leaves */
         const int cases = 3000;
-        int smcArm = 0, wrapArm = 0;
+        int smcArm = 0, wrapArm = 0, nearArm = 0;
         unsigned long smcBefore = g_smcUnhandled;
         setenv("REVS_SMC_CONTINUE", "1", 1);
         set_ignore(ig, 1);
@@ -6458,19 +6534,38 @@ static int test_crash_restart_subtree(void)
             pre[0x001D] = (xs() & 1) ? pre[0x004D] : (uint8_t)(xs() % 0x20);
             if (xs() % 10) pre[0x298D] = 0x29;          /* Silverstone's AND opcode */
             else { pre[0x298D] = (uint8_t)(0x2A + (xs() & 3)); smcArm++; }
+            /* ⚠⚠ THE AI ARM NEEDS A NEARBY OBJECT, and seeding object_dist_hi ($55) does NOT
+               give one: the queue tail's first projector runs note_object_contact, which
+               OVERWRITES object_dist_hi from the hypot before the `>= 3` test reads it.  The
+               tell was a surviving sabotage (the tail's third projector given the wrong
+               coordinate index changed nothing over 4000 cases).  What reaches the arm is a
+               small object_coord-to-camera delta, so a third of the cases zero the two
+               within-section offsets and put this section's ORIGIN on the view origin, with a
+               small low-byte jitter so the distance lands in 0..$2 sometimes and above it
+               others. */
+            if (t % 3 == 0) {
+                uint8_t y0 = pre[0x0022], s0 = (uint8_t)(pre[0x0022] + 2);
+                pre[0x0164 + pre[0x006F]] = 0; pre[0x0178 + pre[0x006F]] = 0;    /* car_state_1/2: no offset */
+                pre[0x0900 + y0] = (uint8_t)(pre[0x6280] + (uint8_t)(xs() & 0x3F));
+                pre[0x0A00 + y0] = pre[0x6283];
+                pre[0x0900 + s0] = (uint8_t)(pre[0x6282] + (uint8_t)(xs() & 0x3F));
+                pre[0x0A00 + s0] = pre[0x6285];
+                nearArm++;
+            }
             pre[0x298E] = (uint8_t)xs();
             fail += diff_run("build_player_car", pre, c,
                              build_player_car, build_player_car__t6502, LIVE_NONE, t, &printed);
         }
         set_ignore(0, 0);
         unsetenv("REVS_SMC_CONTINUE");
-        if (!smcArm || !wrapArm || g_smcUnhandled == smcBefore) {
-            printf("[VACUOUS] build_player_car: smc=%d wrap=%d traps=%lu\n",
-                   smcArm, wrapArm, g_smcUnhandled - smcBefore);
+        if (!smcArm || !wrapArm || !nearArm || g_smcUnhandled == smcBefore) {
+            printf("[VACUOUS] build_player_car: smc=%d wrap=%d near=%d traps=%lu\n",
+                   smcArm, wrapArm, nearArm, g_smcUnhandled - smcBefore);
             fail++;
         }
         printf("%-32s %7d cases, mismatch above must be 0  result-only  "
-               "(%d SMC-trap, %d section wrap)\n", "build_player_car", cases, smcArm, wrapArm);
+               "(%d SMC-trap, %d section wrap, %d near the camera)\n",
+               "build_player_car", cases, smcArm, wrapArm, nearArm);
     }
 
     /* ---- step_delta_halve --------------------------------------------------------- */
@@ -6682,7 +6777,7 @@ static int test_last_shim_callers(void)
     if (want("place_car_world_coords")) {
         static const uint16_t ig[] = { 0x01FF };  /* mul8 residue + PHP byte */
         int cases = 4000 * scale;
-        int smcArm = 0, aiArm = 0, incArm = 0;
+        int smcArm = 0, nearArm = 0, incArm = 0;
         set_ignore(ig, (int)(sizeof(ig) / sizeof(ig[0])));
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
@@ -6698,16 +6793,34 @@ static int test_last_shim_callers(void)
             else { pre[0x298D] = (uint8_t)(0x2A + (xs() & 3)); smcArm++; }    /* else-arm trap */
             pre[0x298E] = (uint8_t)xs();                /* the mask */
 
+            /* ⚠⚠ THE AI ARM NEEDS A NEARBY OBJECT, and seeding object_dist_hi ($55) does NOT
+               give one: the queue tail's first projector runs note_object_contact, which
+               OVERWRITES object_dist_hi from the hypot before the `>= 3` test reads it.  The
+               tell was a surviving sabotage (the tail's third projector given the wrong
+               coordinate index changed nothing over 4000 cases).  What reaches the arm is a
+               small object_coord-to-camera delta, so a third of the cases zero the two
+               within-section offsets and put this section's ORIGIN on the view origin, with a
+               small low-byte jitter so the distance lands in 0..$2 sometimes and above it
+               others. */
+            if (t % 3 == 0) {
+                uint8_t y0 = c.Y, s0 = (uint8_t)(c.Y + 2);
+                pre[0x0164 + c.X] = 0; pre[0x0178 + c.X] = 0;    /* car_state_1/2: no offset */
+                pre[0x0900 + y0] = (uint8_t)(pre[0x6280] + (uint8_t)(xs() & 0x3F));
+                pre[0x0A00 + y0] = pre[0x6283];
+                pre[0x0900 + s0] = (uint8_t)(pre[0x6282] + (uint8_t)(xs() & 0x3F));
+                pre[0x0A00 + s0] = pre[0x6285];
+                nearArm++;
+            }
+
             if (pre[0x0055] >= 5) incArm++;
-            else if (pre[0x0055] < 3 && pre[0x001D] == pre[0x004D]) aiArm++;
 
             fail += diff_run("place_car_world_coords", pre, c,
                              place_car_world_coords, place_car_world_coords__t6502,
                              LIVE_X, t, &printed);
         }
         set_ignore(0, 0);
-        if (!smcArm || !aiArm || !incArm) {
-            printf("[VACUOUS] place_car_world_coords: smc=%d ai=%d inc=%d\n", smcArm, aiArm, incArm);
+        if (!smcArm || !nearArm || !incArm) {
+            printf("[VACUOUS] place_car_world_coords: smc=%d near=%d inc=%d\n", smcArm, nearArm, incArm);
             fail++;
         }
         printf("%-24s %7d cases, mismatch above must be 0  live=X  D=0\n",
@@ -7668,6 +7781,7 @@ int main(int argc, char** argv)
     fail += test_crash_fence();
     fail += test_car_order_cluster();
     fail += test_crash_restart_subtree();
+    fail += test_object_projector();
     fail += test_road_sign();
     fail += test_object_shape();
     fail += test_object_lines();

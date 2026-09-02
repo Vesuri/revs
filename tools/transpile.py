@@ -1236,6 +1236,16 @@ VALIDATE_FUNCS = {
     # math_lo/hi look indexed: $74/$75/$76 here are the three LOW bytes of THIS vector, not a
     # lo/hi pair (docs/wide-value-cleanup.md, the EIGHTH lesson).  LIVE_NONE.
     0x2B0E,
+    # ⭐ THE OBJECT PROJECTOR (twin #172, the same task's batch 2) — the last transliteration in
+    # place_car_world_coords' object-queue tail, and with it the whole of build_player_car's tree.
+    # project_object_slot $2A5F turns one world coordinate into one drawable object slot: the
+    # bearing from the camera, filed into object_bearing[slot]; the contact test at threshold
+    # $25; the perspective divide; the slot write.  project_object_coord $2A5D is its one-
+    # instruction entry (LDX #$FD, the object_coord pair at $09FD/$0AFD).
+    # ⭐ It is the last SHIPPING reader of the relocated bearing_v, so its shim keeps the
+    # bearing / hypot_max / hypot_min marshal-outs (docs/wide-value-cleanup.md).
+    0x2A5D,
+    0x2A5F,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

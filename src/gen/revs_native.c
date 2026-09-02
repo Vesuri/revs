@@ -11375,22 +11375,20 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
     /* Nudge coordinate 1 by $90.  ⚠ The old note here claimed the ADC's carry-out was live into
        the object-queue tail; it is not.  $2A5F's first op is a STA, and $2147's first act is
        `LDA $0900,X / SEC`, so entry C, N and Z are all dead on both arms. */
-    uint8_t nudge_carry;
+    int     nudged;         /* the $90 nudge's carry-out — INCs the high byte; dead past here */
     {
         unsigned t = (unsigned)mem[OBJECT_COORD_LO + 1] + 0x90u;                  /* CLC; ADC #$90 */
         mem[OBJECT_COORD_LO + 1] = (uint8_t)t;
-        nudge_carry = (t & 0x100u) ? 1 : 0;
-        if (nudge_carry) mem[OBJECT_COORD_HI + 1]++;                              /* INC on carry */
+        nudged = (t & 0x100u) ? 1 : 0;
+        if (nudged) mem[OBJECT_COORD_HI + 1]++;                                   /* INC on carry */
     }
 
-    /* ---- The object-queue tail ($29F4).  Real generated routines; registers as set below.
-       Y entering the tail is section_dir_index (the loop-2 LDY $0C), which the tail's projections
-       read; the oracle parks it in $0C, this twin carries it in `soi`.  Entering FUN_2a5d the 6502
-       has X=4 (loop-2 leftover CPX #4), A=4 with N=Z=0 (LDA #4), and C from the $90 nudge. ---- */
-    cpu.Y = soi;
-    cpu.X = 0x04;
-    cpu.C = nudge_carry; cpu.N = 0; cpu.Z = 0;
-    cpu.A = 0x04; FUN_2a5d();
+    /* ---- The object-queue tail ($29F4).  ⭐ The projector is now project_object_slot_core
+       (twin #172), so the four calls pass their coordinate index and shape nibble as ARGUMENTS
+       rather than through cpu — X and A were the only registers those sites ever set, and the
+       entry C the old note threaded from the $90 nudge is dead (see above).  Y still travels in
+       cpu for build_section_step_delta / section_coord_add_delta, which are not split yet. ---- */
+    project_object_slot_core(0xFDu, 0x04u);                      /* $29F4-$29F6 */
     /* The queue routines all restore X from saved_slot_index, so from here on the slot the tail
        works on is that byte, not a register. */
     uint8_t qslot = saved_slot_index;
@@ -11416,16 +11414,27 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
     cpu.X = 0xF4; section_coord_add_delta();
     step_delta_halve();
     cpu.X = 0xFD; section_coord_add_delta();
-    shared_counter_42 = 0x14; cpu.A = 0x02; FUN_2a5d();
-    shared_counter_42 = 0x15; cpu.A = 0x01; cpu.X = 0xF4; FUN_2a5f();
-    shared_counter_42 = 0x16; cpu.A = 0x00; cpu.X = 0xFA; FUN_2a5f();
+    shared_counter_42 = 0x14; project_object_slot_core(0xFDu, 0x02u);   /* the car itself */
+    shared_counter_42 = 0x15; project_object_slot_core(0xF4u, 0x01u);   /* ...and its two */
+    shared_counter_42 = 0x16; project_object_slot_core(0xFAu, 0x00u);   /*    staged neighbours */
     return saved_slot_index;                                     /* L_2a4d */
 }
 
-/* 6502-ABI shim: slot in X, section byte cursor in Y; X comes back as the exit slot. */
+/* 6502-ABI shim: slot in X, section byte cursor in Y; X comes back as the exit slot.
+   ⚠ THE THREE MARSHAL-OUTS ARE NEW WITH TWIN #172.  The queue tail's projector used to be
+   transliterated and reached bearing_to_section through its SHIM, which published the bearing
+   and the two sorted hypot magnitudes into mem[$78-$7B] / mem[$8A/$8B].  Now the tail calls
+   project_object_slot_core, so this shim is where they have to be published — the oracle still
+   leaves them there.
+   ⚠⚠ AND THE MARSHAL-INS ARE NOT OPTIONAL, which cost a failing run to learn: the per-circuit
+   SMC trap at $298D returns before the queue tail, so on that arm the core never writes the
+   relocated values and a bare marshal-out would publish the PREVIOUS call's bearing over cells
+   the 6502 left untouched.  Reading them in first makes the early exit a no-op. */
 void place_car_world_coords(void)
 {
+    hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     cpu.X = place_car_world_coords_core(cpu.X, cpu.Y);
+    hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
 }
 
 /* ---------------------------------------------------------------------------
@@ -12752,4 +12761,57 @@ void step_delta_halve_core(void)
         mem[MEM_math_lo    + c] = (uint8_t)v;
         mem[POINT_DELTA_HI + c] = (uint8_t)((uint16_t)v >> 8);
     }
+}
+
+/* ---------------------------------------------------------------------------
+   $2A5D  project_object_coord  /  $2A5F  project_object_slot  (twin #172)
+   ---------------------------------------------------------------------------
+   ONE WORLD COORDINATE INTO ONE DRAWABLE OBJECT SLOT.  place_car_world_coords' queue tail
+   calls this four times a pass and it is the whole of what an "object" means to the renderer:
+
+     the BEARING     bearing_to_section from the camera, and this is the only writer of
+                     object_bearing[slot] — the angle build_player_car turns into car_heading
+                     and draw_track_object turns into a screen column.
+     the CONTACT test  note_object_contact at a fixed threshold of $25, which runs
+                     point_distance_hypot for the same point and may claim the frame's single
+                     collision candidate.
+     the PROJECTION  project_point, the perspective divide.
+     the SLOT WRITE  write_object_slot: object_line, object_width and the shape nibble.
+
+   The coordinate index arrives in X and is an index into $0900/$0A00, so $FD selects the
+   object_coord pair at $09FD/$0AFD that place_car_world_coords has just filled; $F4 and $FA
+   select the two neighbours it stages.  $2A5D is nothing but `LDX #$FD` falling into $2A5F.
+
+   ⭐ THIS IS THE LAST SHIPPING READER of the relocated bearing_v, which is why the shim below
+   still marshals bearing / hypot_max / hypot_min back out to mem[]: the transliterated oracle
+   reaches them through the bearing_to_section SHIM, so the twin has to publish what the 6502
+   would have left in $78-$7B and $8A/$8B (docs/wide-value-cleanup.md, the publish-don't-blunt
+   gate).  Nothing else in the engine reads those cells any more.
+
+   ⚠ note_object_contact's exit is DEAD here — $2A73's project_point opens `LDY #0 / LDA`, so
+   its entry C is not consumed and the twin passes 0.
+   --------------------------------------------------------------------------- */
+void project_object_slot_core(uint8_t coordIndex, uint8_t shape)
+{
+    plot_shape = shape;                                  /* $2A5F — the slot's shape nibble */
+
+    bearing_to_section_core(coordIndex, 0x00u);          /* $2A61, from the camera (Y = 0) */
+
+    /* $2A64-$2A6D ⭐ WIDE VALUE: the bearing is ONE 16-bit angle, filed whole. */
+    uint8_t slot = shared_counter_42;
+    mem[OBJECT_BEARING_LO + slot] = (uint8_t)bearing_v;
+    mem[OBJECT_BEARING_HI + slot] = (uint8_t)(bearing_v >> 8);
+
+    note_object_contact_core(0x25u, 0u);                 /* $2A70 — exit dead, see above */
+
+    ProjPoint p = project_point_core(coordIndex, 0x00u); /* $2A73 */
+
+    /* ⭐ `coordIndex` reaches write_object_slot only to be handed straight back out in
+       SlotExit.x — the callee stores nothing under it — and both of this routine's shims
+       declare LIVE_NONE because every caller overwrites X immediately.  So perturbing it
+       HERE is provably a no-op, and a sabotage that increments it survives by construction,
+       not through a fixture gap (docs/validation-harness.md §FIFTEENTH).  The sibling case
+       confirms it: perturbing the coordIndex that write_object_slot INDEXES WITH — the
+       third queue projector's $FA — is caught at once. */
+    write_object_slot_core(p.line, coordIndex, /*V dead*/ 0u, p.clip);   /* falls into $2A76 */
 }

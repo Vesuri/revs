@@ -391,6 +391,7 @@ void    sound_stop_all_core(uint8_t ambientY);
 void    build_player_car_core(void);
 void    step_delta_halve_core(void);
 uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor);
+void    project_object_slot_core(uint8_t coordIndex, uint8_t shape);
 uint8_t paint_fence_backdrop_core(uint8_t horizon);
 SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect);
 uint8_t point_distance_hypot_apply(void);
