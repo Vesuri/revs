@@ -1912,6 +1912,43 @@ void load_section_triple_core(uint8_t destSection, uint8_t segmentByte)
    validate fixture byte-exact on the cells instead of having to set_ignore them. */
 static uint16_t hypot_max_v;
 
+/* ⭐ hypot_min ($78/$79) is the SIBLING relocation: bearing_to_section's sort produces both
+   magnitudes and point_distance_hypot consumes both, so the two pairs travel the road pass
+   together and marshal at exactly the same seams.
+
+   ⚠⚠ THE CELLS ARE NOT FREED, and this pair is the most crowded one the campaign has touched —
+   ten other tenants, several of them named in this file: MUL_SIGN / SLIP_SIGN / SLIP_OUT_INDEX /
+   PVS_COLOUR / PVS_COLOUR_P, update_grip_limits' axle load terms (reached by the one INDEXED
+   access to the pair, `ADC $78,X` at $4C52, whose X is the axle so it spans both cells),
+   car_gap_tail's sign shift register, full_track_scan_rebuild's retreat-grid outer index and
+   menu_wait_key's remembered row.  A relocation moves ONE USE; every one of those keeps reading
+   and writing mem[$78/$79] unchanged.
+
+   ⚠ That the marshalling parents (build_track_geometry, road_edge_walk, build_road_sign) all
+   REACH plot_view_src_line — a tenant — is not by itself a problem, and the same was already
+   true of hypot_max: what would break is a tenant value still LIVE at the parent's exit, where
+   the OUT would stamp over it.  It is not, and `make validate`'s per-fixture differential over
+   full mem[] is what says so, not this comment.  Reachability alone is not the test.
+
+   ⚠⚠ The consumer produces the pair back CONDITIONALLY and ASYMMETRICALLY: the near arm's >>3
+   keeps the low byte in A the whole way and stores only the high one, so the low lane comes back
+   UNCHANGED there where the far arm rewrites both.  With the value relocated that asymmetry has
+   to be spelled out on the wide value itself (see point_distance_hypot_apply) — writing d.min
+   whole on both arms is byte-exact arithmetic and a differential failure.  Per the IN/OUT rule
+   a conditional producer marshals IN *and* OUT. */
+static uint16_t hypot_min_v;
+
+void hypot_min_marshal_in(void)
+{
+    hypot_min_v = (uint16_t)(hypot_min_lo | ((unsigned)hypot_min_hi << 8));
+}
+
+void hypot_min_marshal_out(void)
+{
+    hypot_min_lo = (uint8_t)hypot_min_v;
+    hypot_min_hi = (uint8_t)(hypot_min_v >> 8);
+}
+
 void hypot_max_marshal_in(void)
 {
     hypot_max_v = (uint16_t)(hypot_max_lo | ((unsigned)hypot_max_hi << 8));
@@ -2016,14 +2053,17 @@ uint8_t point_distance_hypot_apply(void)
     GEO_COUNT(g_geoHypot);
     PointDist d = point_distance_hypot_core(
                       shared_temp_7e,
-                      (uint16_t)(hypot_min_lo | ((unsigned)hypot_min_hi << 8)),
+                      hypot_min_v,             /* relocated out of mem[$78/$79] — see above */
                       hypot_max_v);            /* relocated out of mem[$7A/$7B] — see above */
 
-    hypot_min_hi = (uint8_t)(d.min >> 8);
+    /* ⚠ the near arm stores only the HIGH lane ($0CB0's LSR with the low byte still in A), so
+       the low lane keeps what it arrived with; the far arm's >>1 rewrites both ($0CC2-$0CC4). */
     if (d.farArm) {
-        hypot_min_lo = (uint8_t)d.min;                /* $0CC4 ROR — the near arm has no store */
+        hypot_min_v = d.min;
         math_lo = (uint8_t)(d.maxEighth >> 8);        /* ⚠ the HIGH byte, in math_lo */
         math_hi = (uint8_t)d.maxEighth;
+    } else {
+        hypot_min_v = (uint16_t)((d.min & 0xFF00u) | (hypot_min_v & 0x00FFu));
     }
     point_dist_lo = (uint8_t)d.dist;
     point_dist_hi = (uint8_t)(d.dist >> 8);
@@ -4138,13 +4178,11 @@ void bearing_to_section_core(uint8_t sectionByte, uint8_t origin)
         int equal     = d2.mag == d0.mag;
 
         if (d2Smaller) {
-            hypot_min_hi = (uint8_t)(d2.mag >> 8);
-            hypot_min_lo = (uint8_t)d2.mag;
+            hypot_min_v  = d2.mag;                  /* $2193/$2197, relocated out of mem[] */
             hypot_max_v  = d0.mag;                  /* $219D/$21A1, relocated out of mem[] */
             bearing_arm(0, 2, 0x40u, 1);            /* $21C1 — measured off component 0 */
         } else {
-            hypot_min_hi = (uint8_t)(d0.mag >> 8);
-            hypot_min_lo = (uint8_t)d0.mag;
+            hypot_min_v  = d0.mag;                  /* $21A7/$21AB, relocated out of mem[] */
             hypot_max_v  = d2.mag;                  /* $21B1/$21B5, relocated out of mem[] */
             if (equal)
                 bearing_diagonal();                 /* $21B8 — the two are the same length */
@@ -8479,9 +8517,9 @@ static void build_road_sign_core(void)
    gets as far as the bearing — an SMC trap at either sign-table site returns before it — so the
    marshal-in is what makes the marshal-out faithful on the early exits: the cells come back
    holding exactly what they held on entry, which is what the 6502 left there. */
-void build_road_sign(void)      { hypot_max_marshal_in();  bearing_marshal_in();
+void build_road_sign(void)      { hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
                                   build_road_sign_core();
-                                  hypot_max_marshal_out(); bearing_marshal_out(); }
+                                  hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out(); }
 void store_object_flags(void)   { store_object_flags_core(cpu.Y, cpu.A); }
 
 /* ===========================================================================

@@ -51,7 +51,9 @@ void load_section_triple(void)
 void point_distance_hypot(void)
 {
     hypot_max_marshal_in();               /* the larger magnitude arrives in mem[$7A/$7B] */
+    hypot_min_marshal_in();               /* ...and the smaller, which this one SHIFTS IN PLACE */
     cpu.A = point_distance_hypot_apply();
+    hypot_min_marshal_out();              /* the shifted minimum is output, not scratch */
 }
 
 void emit_edge_bearing(void)
@@ -59,16 +61,20 @@ void emit_edge_bearing(void)
     /* Y is unchanged to exit — entered with the slot in Y, the core never touches it, so the
        walk still reads the same slot back; A comes out as the point's distance high byte. */
     hypot_max_marshal_in();               /* the tail-called hypot's larger magnitude */
+    hypot_min_marshal_in();               /* ...and its smaller one */
     bearing_marshal_in();                 /* the absolute bearing its caller left in mem[$8A/$8B] */
     cpu.A = emit_edge_bearing_core(cpu.Y);
+    hypot_min_marshal_out();              /* the hypot shifted it — see revs_native.c */
 }
 
 void emit_edge_bearing_at_cursor(void)
 {
     /* the fallen-into emit_edge_bearing emits at edge_cursor, so Y exits = edge_cursor; A is the
        point's distance high byte. */
+    hypot_max_marshal_in();  hypot_min_marshal_in();
     cpu.A = emit_edge_bearing_at_cursor_core(cpu.X);
     cpu.Y = edge_cursor;
+    hypot_min_marshal_out();              /* ...and the smaller magnitude, shifted by the hypot */
     hypot_max_marshal_out();              /* the bearing inside it PRODUCES the magnitude */
     bearing_marshal_out();                /* ...and the bearing itself */
 }
@@ -100,25 +106,25 @@ void road_edge_side(void)
    the paths that never reach a bearing — the cells come back exactly as they went in. */
 void road_edge_start(void)
 {
-    hypot_max_marshal_in();  bearing_marshal_in();
+    hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     road_edge_start_core(0x06, (uint8_t)EDGE_HALF, (uint8_t)SECTION_NEAR, 0x3C, 0x07);
-    hypot_max_marshal_out(); bearing_marshal_out();
+    hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
 }
 
 void road_edge_walk(void)
 {
-    hypot_max_marshal_in();  bearing_marshal_in();
+    hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     cpu.X = road_edge_walk_core(cpu.A, cpu.X, (uint8_t)SECTION_MID, 0x12, 0x14);
-    hypot_max_marshal_out(); bearing_marshal_out();
+    hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
 }
 
 void build_track_geometry(void)
 {
     /* the top of the road pass, and the same IN/OUT pair as the two walks below it: whether any
        point reaches a bearing at all depends on the track, so the cells are carried through. */
-    hypot_max_marshal_in();  bearing_marshal_in();
+    hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     build_track_geometry_core(0x06, 0x2E);
-    hypot_max_marshal_out(); bearing_marshal_out();
+    hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
 }
 
 void draw_road(void)
@@ -162,6 +168,7 @@ void bearing_to_section_from(void)
 {
     bearing_to_section_core(cpu.X, cpu.Y);
     hypot_max_marshal_out();              /* the sorted LARGER magnitude — a by-product */
+    hypot_min_marshal_out();              /* ...and the SMALLER: this sort produces both */
     bearing_marshal_out();                /* ...and THE BEARING, this routine's actual output: the
                                              shipping FUN_2a5f reads the cells straight after */
 }
@@ -418,7 +425,9 @@ void reject_object_slot(void)
 void note_object_contact(void)
 {
     hypot_max_marshal_in();               /* the hypot it runs takes the magnitude from mem[] */
+    hypot_min_marshal_in();               /* ...both of its magnitudes */
     ContactExit e = note_object_contact_core(cpu.Y, cpu.C);
+    hypot_min_marshal_out();              /* the hypot inside it shifts the smaller one */
     cpu.A = e.a; cpu.Y = e.y; cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;
 }
 

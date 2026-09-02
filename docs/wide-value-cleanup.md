@@ -108,11 +108,27 @@ relocation blast radius. High count ⇒ mechanism (B) is blocked; use (A) now.
 | `math_lo/hi` | $74/$75 | shared 16-bit accumulator (305 refs — the big one; template) | A→B | TODO |
 | `point_dist` | $7C/$7D | projected distance (render) | A→B | TODO |
 | `hypot_max` | $7A/$7B | larger sorted ground-plane magnitude | B | **✅ B DONE** (`hypot_max_v`) |
-| `hypot_min` | $78/$79 | smaller sorted ground-plane magnitude | A→B | TODO |
+| `hypot_min` | $78/$79 | smaller sorted ground-plane magnitude | B | **✅ B DONE** (`hypot_min_v`) |
 | `bearing` | $8A/$8B | bearing_to_section output | B | **✅ B DONE** (`bearing_v`) |
 | `plot_ptr`/`plot_ptr2`/`plot_ptr3` | $70/$71,… | screen write pointers | A→B | TODO |
 | `edge_nearest`, `point_delta`, `object_dist`, `nearest_edge_bearing` | $10/$11, $80–$83, $55, $5E | edge-walk scratch | A→B | TODO |
 | `SLIP_MAG` | $8E/$8F | slip magnitude (adjacent; aliases plot_ptr3) | A→B | TODO |
+
+⚠ **A FULL indexed/indirect re-audit of every campaign pair** (both `$xx,X`/`$xx,Y` notations and
+`($xx)` bases, counted straight off `disasm/listing.txt`) — run after the EIGHTH lesson showed the
+per-pair reasons could not be trusted:
+
+| | $74 | $75 | $78 | $79 | $7A | $7B | $7C | $7D | $8E | $8F | $70 | $71 | $10 | $11 | $80 | $81 | $82 | $83 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| indexed | **3** | 0 | **1** | 0 | 0 | 0 | 0 | 0 | 0 | 0 | **1** | 0 | 0 | 0 | 0 | 0 | 0 | **4** |
+| indirect base | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | **1** | 0 | **20** | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+Three of the four blocks that cited indexing were wrong or misattributed: `$78`'s one site belongs
+to `update_grip_limits` (another tenant), `$8E` has **no** indexed site at all (it is an indirect
+base), and `$74`'s three are a separate vector tenant. Only `$70` is blocked for the reason given,
+and `$83` carries four indexed sites the aliasing note below never mentioned. ⭐ **Count the sites
+and attribute each to its enclosing function; never carry a one-line block reason forward
+unchecked.**
 
 ⚠ **Aliasing group — convert together:** `POINT_DELTA` $0080–$0083 is viewed simultaneously as
 `MUL_SRC` ($80/$81) and `MUL_TERM` ($82/$83) — same zero-page bytes, three names (mul
@@ -130,10 +146,10 @@ in **either** 2- or 4-hex-digit notation, `($xx),Y`). Verdicts:
 | `bearing` | $8A/$8B | **✅ B DONE** (`bearing_v`) | same shape, lower risk: shipping `FUN_2a5f` (the car projector, $2A5F) calls native `bearing_to_section()` and then reads `bearing_lo`/`bearing_hi` into `object_bearing` ($0380/$0398). Not a patched arm, so `make determinism` DOES gate it |
 | `model_accum_entry` | $38/$39 | **✅ B DONE** | `model_accum_entry_v` (revs_native.c). All-native, unindexed — but it HAD the oracle-glue channel below, resolved by shim marshalling |
 | `edge_nearest` | $10/$11 | ✗ blocked | `$11` read by **non-native** `check_crash` ($111E); nativize check_crash to free it |
-| `math_lo/hi` | $74/$75 | ✗ blocked | `$74` INDEXED with `$76` (`SBC 0x74,X` $146E, `ROR 0x74,X` $2B18) — see [[math_lo/hi]] |
-| `hypot_min` | $78/$79 | ✗ blocked | `$78` indexed (`$78,X`) |
+| `math_lo/hi` | $74/$75 | ⚠ **block now IN DOUBT — re-audit before treating as blocked** | the three indexed sites (`SBC/STA 0x74,X` $146E in `build_section_step_delta`, `ROR 0x74,X` $2B18 in `draw_track_object`) are all `X = 2..0` loops over a **three-component vector: lows $74/$75/$76, highs $83/$84/$85**. That is a DIFFERENT TENANT from the 16-bit accumulator, and under the EIGHTH lesson a tenant's indexed access does not block a relocation. Prerequisite: settle the vector's identity (`docs/rename.md`, "$74/$75/$76 paired with $83/$84/$85") — two current names contradict it. **The campaign's biggest pair (305 refs) may be eligible** |
+| `hypot_min` | $78/$79 | **✅ B DONE** (`hypot_min_v`) | ⚠ **this row used to read "✗ blocked — `$78` indexed", and that was a MISREADING of the second test** (see the EIGHTH lesson). The one indexed access, `ADC 0x78,X` at $4C52, belongs to `update_grip_limits`' axle load terms — a DIFFERENT TENANT. A relocation moves ONE USE, so what test 2 has to ask is whether the *relocated use* is ever indexed, and the road-pass use never is |
 | `plot_ptr` | $70/$71 | ✗ blocked | `$70` is an indirect pointer base (`($70),Y`) |
-| `SLIP_MAG` | $8E/$8F | ✗ blocked | `$8E` indexed |
+| `SLIP_MAG` | $8E/$8F | ✗ blocked | ⚠ reason CORRECTED: `$8E` is **not** indexed anywhere (0 sites in either notation) — it is an **indirect pointer base**. Right verdict, wrong reason; the old reason would have survived the EIGHTH lesson's tenant re-read and kept the block for nothing |
 
 ⚠⚠ **METHOD TRAP that produced a false "blocked as a class" reading first (corrected same day):**
 the native-surface set and the indexed-exclusion set are BOTH easy to under-build. (1) `VALIDATE_FUNCS`
@@ -343,6 +359,74 @@ The new value is the computed one, and `make validate FN=irq1v_band_schedule` pr
 against the 6502 oracle over 25 628 cases *including those cells*. Only then re-record. **Never
 re-record to make a gate green without that isolation step** — it is the difference between a stale
 golden and a real regression.
+
+### hypot_min $78/$79 — ✅ B DONE (`hypot_min_v`)
+
+`bearing_to_section`'s sort produces both ground-plane magnitudes and `point_distance_hypot`
+consumes both, so this pair travels the road pass beside `hypot_max` and marshals at the same
+seams — plus `note_object_contact()`, which the differential had to point out.
+
+⚠⚠ **The consumer produces it back CONDITIONALLY *and* ASYMMETRICALLY**, which is the one thing a
+relocation has to spell out here. The near arm's `>>3` keeps the low byte in `A` the whole way and
+stores only the high one, so the low lane comes back UNCHANGED there, where the far arm's `>>1`
+rewrites both. On a relocated value that is:
+
+```c
+if (d.farArm) hypot_min_v = d.min;
+else          hypot_min_v = (uint16_t)((d.min & 0xFF00u) | (hypot_min_v & 0x00FFu));
+```
+
+Writing `d.min` whole on both arms is byte-exact arithmetic and a differential failure (sabotage D1
+FAILs on it). Per the IN/OUT rule a conditional producer marshals **IN and OUT**.
+
+⚠ The cells are NOT freed, and this is the most crowded pair the campaign has relocated — ten other
+tenants, five named in `revs_native.c` itself (`MUL_SIGN`, `SLIP_SIGN`, `SLIP_OUT_INDEX`,
+`PVS_COLOUR`, `PVS_COLOUR_P`), plus `update_grip_limits`' axle terms, `car_gap_tail`'s sign shift
+register, `full_track_scan_rebuild`'s retreat-grid index and `menu_wait_key`'s remembered row.
+Every one keeps reading and writing `mem[$78/$79]`.
+
+⭐⭐ **EIGHTH lesson — THREE ways the eligibility tests get misread, all found on this one pair.**
+
+**(1) An indexed access by another TENANT does not block a relocation.** Test 2 as written ("never
+indexed") blocked this pair for a whole campaign on `ADC 0x78,X` at $4C52 — which is
+`update_grip_limits` reaching $78 for axle 0 and $79 for axle 1, nothing to do with the hypot. A
+relocation moves **one use**; the test must be applied to the *relocated use*, not to the pair.
+Re-read the other blocked rows with that correction in hand before trusting them.
+
+**(2) Reaching a tenant from a marshalling parent is not the test either — LIVENESS at the
+marshalling point is, and `validate` is what answers it.** I nearly recorded a second false block
+here: `build_track_geometry`, `road_edge_walk` and `build_road_sign` all reach `plot_view_src_line`,
+a tenant of $78/$79, so an OUT at their exits *could* stamp over a live tenant value. What settled
+it is that `hypot_max` already marshals OUT at those same three parents, with `plot_view_src_line`
+as *its* documented second tenant, and passes every gate — because the tenant's value is dead by
+the parent's exit. Reachability is cheap to compute and proves nothing; the per-fixture differential
+over full `mem[]` decides. ⚠ And build the reachability instrument carefully if you build one at
+all: mine first reported "reaches 0 functions" for all six parents (a definition regex that missed
+cores with arguments), then reported false edges through `kbd_test_key_core` from names matched in
+comments. Zero for all six was the tell.
+
+**(3) The oracle-glue channel bites in the OTHER direction: an inner shim's OUT changes the
+ORACLE's answer, so a parent's diff can flip sign between runs.** `build_road_sign__t6502` calls
+its children by their plain names, which link to the native shims. With `note_object_contact`'s OUT
+missing, the parent's diff read `native = ref>>1` (native shifted, oracle not); adding that OUT
+moved the oracle and the same fixture then read `native = random input` (oracle right, native
+unpublished). **Compare the REF value across runs, not just native's** — a ref that moves when you
+edit a shim is telling you which side the defect is on. Both readings pointed at the same missing
+OUT, and adding it plus restoring the parent's OUT made the fixture pass.
+
+⭐ Once again the differential found the marshalling set (`note_object_contact` was the miss) — the
+a-priori shim audit would not have caught it, since that core calls `point_distance_hypot_apply`
+directly and nothing about its name says "runs a hypot".
+
+**Driver-bypass audit** (now mandatory per the SIXTH lesson, and it paid immediately): every
+hypot-producing phase call in `race_main_loop_core` already goes through its shim
+(`build_track_geometry()`, `build_road_sign()`) thanks to the previous commit. The three bare
+`_core` calls — `draw_road_core`, `draw_track_object_core`, `read_driving_controls_core` — produce
+neither magnitude; `draw_track_object`'s subtree reaches `plot_view_src_line`, which is a *tenant*
+using `mem[]` directly and so is unaffected.
+
+Sabotages D1-D7 all FAIL. validate PASS / determinism PASS / determinism-drive PASS / endian-lint
+clean / tracks 6-of-6 / track-run every hook runs / Amiga muldiv + probe audits clean.
 
 ### Tier 2 — persistent, adjacent (wide-local hoist now; relocation later)
 

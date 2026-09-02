@@ -357,6 +357,10 @@ SlotExit fill_object_gap_core(uint8_t width);
    the 6502-ABI boundary is the one place a transliterated parent still hands it over in mem[]. */
 void hypot_max_marshal_in(void);
 void hypot_max_marshal_out(void);
+/* ⭐ hypot_min ($78/$79) — the sibling pair, marshalled at the same seams.  Its consumer
+   point_distance_hypot produces it back CONDITIONALLY, so it needs IN as well as OUT. */
+void hypot_min_marshal_in(void);
+void hypot_min_marshal_out(void);
 
 /* ⭐ bearing ($8A/$8B) is a mechanism-(B) relocated wide value too (see revs_native.c), and the
    same IN/OUT rule applies.  Its shipping reader is the transliterated FUN_2a5f. */

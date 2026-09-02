@@ -236,3 +236,39 @@ It surfaced while tracing the expansion circuits' `$56C8` hook, which calls it a
 the same family — `edge_half_width_at` / `edge_x_difference`. Dump `$5E90,Y`/`$5EB8,Y` and the
 returned A at `$56EE` for a few Y to fix the sign convention, then add the row with the two callers
 (`$253B` from `build_track_geometry`, `$56EE` from each circuit hook).
+
+
+## `$74/$75/$76` paired with `$83/$84/$85` — a three-component vector two names contradict
+
+`build_section_step_delta` at `$146E` and `draw_track_object` at `$2B18` both loop `X = 2..0` over a
+16-bit **three-component vector whose LOW bytes are `$74/$75/$76` and whose HIGH bytes are
+`$83/$84/$85`**:
+
+```
+146e  SBC 0x74,X / STA 0x74,X      2b10  LDA 0x83,X
+1474  SBC 0x83,X / STA 0x83,X      2b16  ROR 0x83,X / ROR 0x74,X
+```
+
+(a per-component 16-bit negate, and a per-component 16-bit `>>1`). Two current names contradict
+that:
+
+- `$74`/`$75` are named `math_lo`/`math_hi` — a **16-bit accumulator pair**. In this use `$75` is
+  not `$74`'s high byte at all, it is component 1's low byte, and `$76` (`shared_temp_76`) is
+  component 2's.
+- `$0080` `point_delta_lo` is documented as *the* low-byte array for `$0083` `point_delta_hi`
+  ("three components at +0/+1/+2 … one of THREE PARALLEL ARRAYS"). But `$83..$85` is here paired
+  with `$74..$76` instead, so either `point_delta_hi` is dual-purposed as this vector's high half,
+  or one of the two bases is wrong.
+
+⚠ This matters beyond naming: `math_lo/hi` $74/$75 is the wide-value campaign's **biggest** pair
+(305 refs) and the ledger blocks it on "`$74` INDEXED with `$76`". Under the EIGHTH lesson
+(`docs/wide-value-cleanup.md`) an indexed access by a *different tenant* does not block a
+relocation — so if this vector is a separate tenant from the accumulator, the accumulator use may
+be (B)-eligible after all. That makes settling this a prerequisite for the campaign's largest item,
+not a cosmetic tidy.
+
+**What would settle it**: dump `$74..$76` and `$83..$85` at entry and exit of
+`build_section_step_delta` and at `$2B0E` in a driving race, and check them against
+`$80..$82`/`$83..$85` at the same points. If the two vectors are distinct, give `$74..$76` a table
+name in its own family (`step_delta_lo`?) with a note that `$74`/`$75` carry the accumulator's other
+tenancy; if `$83..$85` really is shared, say so in both rows.
