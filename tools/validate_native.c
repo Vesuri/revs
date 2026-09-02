@@ -478,12 +478,9 @@ static int test_irq1v_band_schedule(void)
     register_fixture("irq1v_band_schedule");
     if (!want("irq1v_band_schedule")) return 0;
 
-    /* band2_duration ($4F21/2) is relocated to a native uint16_t: the __t6502 oracle still
-       writes those mem[] cells (band-1 arm) but the twin no longer does, so ignore them in
-       the mem diff.  Every observable output (the latch, the palette/hardware writes, the
-       control flow) is compared as before. */
-    static const uint16_t band2_cells[] = { 0x4F21, 0x4F22 };
-    set_ignore(band2_cells, 2);
+    /* ⭐ band2_duration ($4F21/2) is relocated to a native uint16_t, but the cells are NOT
+       ignored: the band-1 arm publishes the value back into them, exactly where the 6502 wrote
+       it, so the twin and the oracle are compared on them byte for byte like everything else. */
 
     /* not our interrupt: chain on to the saved IRQ1V.  A is left 0 by the AND. */
     fail += irq1v_case("irq1v:chain",  0x00, 0, 2000, 0, 0, -1, &printed);
@@ -2740,13 +2737,10 @@ static int test_body_drivers(void)
 
     if (want("apply_driving_model")) {
         int subFail = 0, splitRan = 0, offPower = 0, onPower = 0;
-        /* model_accum_entry ($38/$39) was relocated out of mem[] into a native uint16_t
-           (wide-value cleanup, mechanism B).  The __t6502 oracle still writes both cells at
-           $46AE; the native twin writes the wide var instead, so the cells diverge and are
-           ignored.  They are exclusively model_accum_entry — written only here — so nothing
-           legitimate shares them. */
-        static const uint16_t accumEntryCells[] = { 0x0038, 0x0039 };
-        set_ignore(accumEntryCells, 2);
+        /* ⭐ model_accum_entry ($38/$39) is relocated out of mem[] into a native uint16_t
+           (wide-value cleanup, mechanism B), but the cells are NOT ignored here: this routine's
+           6502-ABI shim marshals the value back out, so the twin and the oracle still agree on
+           them byte for byte.  Blunting the gate was the old way round. */
         for (t = 0; t < model; t++) {
             Cpu6502 c = zero_cpu();
             fill_random(pre);

@@ -129,6 +129,7 @@ void draw_road(void)
 void apply_driving_model(void)
 {
     apply_driving_model_core(car_heading_lo, car_heading_hi);
+    model_accum_entry_marshal_out();      /* $46AE's value back into mem[$38/$39] */
 }
 
 void draw_track_object(void)

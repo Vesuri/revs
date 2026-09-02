@@ -362,6 +362,7 @@ void hypot_max_marshal_out(void);
    same IN/OUT rule applies.  Its shipping reader is the transliterated FUN_2a5f. */
 void bearing_marshal_in(void);
 void bearing_marshal_out(void);
+void model_accum_entry_marshal_out(void);
 AddFlags integrate_car_position_core(void);
 AddFlags integrate_state_rates_core(void);
 EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint, int publishOnly);

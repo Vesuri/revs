@@ -167,9 +167,9 @@ scattered across model_state), not at the relocated cell. This is the SAME class
   `set_ignore`s them (native writes the var instead). `det_compare.py` skips the pair as
   no-longer-game-state (currently unexercised: $38/$39 read 0 at all three determinism dump
   frames — `make validate` is the byte-exact proof).
-  ⭐ **Superseded as the default by the FIFTH lesson below** — marshalling the pair at *every* ABI
-  crossing (IN as well as OUT) keeps the cells byte-exact and needs neither the `set_ignore` nor the
-  `det_compare.py` skip. Reach for a blunted gate only when a crossing genuinely cannot marshal.
+  ⚠⚠ **NO LONGER TRUE — both blunted gates have been removed** (see the FIFTH and SEVENTH lessons
+  below). $38/$39 are published back by `apply_driving_model`'s shim, the fixture compares them, and
+  `det_compare.py`'s skip list is empty. Marshal the pair at every ABI crossing; never skip it.
 
 ⚠⚠ **FOURTH eligibility test (2026-08-30): A TRANSLITERATED MULTI-ENTRY *REGION* IS SHIPPING CODE,
 AND A CIRCUIT HOOK CAN RE-ENTER ONE.** The three tests above all ask about *functions*. But
@@ -306,13 +306,51 @@ followed by its reader, with no tenant between — so no reader ever depended on
 Gates: `validate` PASS, `determinism` + `-drive` 64K byte-identical, `endian-lint` clean, `tracks`
 6/6, `track-run` all hooks, Amiga muldiv + probe-audit clean. Seven sabotages, all FAIL.
 
+
+⭐⭐ **SEVENTH — PUBLISH THE PAIR; DO NOT BLUNT THE GATE. `det_compare.py`'s `RELOCATED` LIST IS NOW
+EMPTY AND SHOULD STAY EMPTY.** The first two relocations each bought their way past the gates with a
+`set_ignore` in the producer's fixture *and* an entry in `det_compare.py`'s skip list, on the
+reasoning that a relocated pair is "no longer game state". That reasoning is wrong twice over: a
+circuit hook can re-enter the transliteration and read the cells (the FOURTH test), and a skipped
+byte is a byte the whole-corpus differential stops covering. Every relocated pair is now **published
+back into `mem[]`** where the 6502 wrote it:
+
+| Pair | Published at | Because |
+|---|---|---|
+| `hypot_max` $7A/$7B, `bearing` $8A/$8B | the producer's 6502-ABI **shim** | a shim exists, and the IN/OUT rule places it |
+| `model_accum_entry` $38/$39 | `apply_driving_model`'s shim (+ the driver now calls that shim) | was IN-only; the producer never published |
+| `band2_duration` $4F21/$4F22 | **the producer itself**, in band 1's arm | `irq1v_band_schedule` IS the 6502 entry point — `bbc_hw.cpp` calls it straight from interrupt context, so there is no shim to hang it on |
+
+Both `set_ignore`s are gone, `RELOCATED = []`, and the arithmetic stays wide in every case — a
+publish is two byte stores at one point, not a return to byte-lane handling.
+
+⚠ **One of the four publishes is gated only by argument, and it is worth knowing which.** Dropping
+or lane-swapping a publish fails its own fixture in every case (P1/P2 → `apply_driving_model`,
+P3/P4 → `irq1v_band_schedule`). But the *driver call site* for `model_accum_entry` — core vs shim in
+`race_main_loop` phase 4 — survives `validate`, `determinism` **and** `determinism-drive`, because
+$38/$39 read `00/00` at both dump frames (checked in the goldens, not assumed). That is the
+"no change at all" class, not a fixture gap: there is nothing for a differential to see. The same
+site for `bearing` IS gated, because $8A/$8B are live there — which is the only reason the
+driver-bypass bug was ever found. **So the bypass class needs an audit, not a gate**: check every
+`_core` call in the driver against the relocated-pair list whenever a pair is added.
+
+⚠ **Re-recording the drive reference was required, and here is how to tell that is legitimate.**
+Unskipping $4F21/$4F22 made `determinism-drive` fail on exactly those two bytes (`ref=0x1064`,
+`run=0x0FE4`) while parked passed. The check that settles it: stash the change, remove *only* the
+skip on the committed HEAD, and re-run. It PASSED — which means the golden held the **unwritten
+static-image value**, recorded after the relocation had already stopped anything writing the cells.
+The new value is the computed one, and `make validate FN=irq1v_band_schedule` proves it byte-exact
+against the 6502 oracle over 25 628 cases *including those cells*. Only then re-record. **Never
+re-record to make a gate green without that isolation step** — it is the difference between a stale
+golden and a real regression.
+
 ### Tier 2 — persistent, adjacent (wide-local hoist now; relocation later)
 
 | Cell(s) | Addr | Role | gen readers | Mechanism | Status |
 |---|---|---|---|---|---|
 | `car_heading` | $0A/$0B | 16-bit heading angle | some | A (B blocked) | TODO |
 | `lap_length` | $59FC/D | track-file lap distance | some | A | TODO |
-| `band2_duration` | $4F21/2 | horizon band duration | 0 (only irq1v + its oracle) | **B DONE** | ✅ `band2_duration_v` (revs_native.c) |
+| `band2_duration` | $4F21/2 | horizon band duration | 0 (only irq1v + its oracle) | **B DONE** | ✅ `band2_duration_v` (revs_native.c), published back in band 1's arm |
 
 ### Tier 3 — SoA state vectors, non-adjacent (relocate `lo_8[N]`/`hi_8[N]` → `value_16[N]`)
 

@@ -251,6 +251,18 @@ void irq1v_band_schedule(void)
         sky  = band1_duration_lo | ((unsigned)band1_duration_hi << 8);
         rest = (0x153Cu - sky) & 0xFFFFu;
         band2_duration_v = (uint16_t)rest;
+        /* ⭐ ...and PUBLISH it, because a relocated pair that no shim can marshal has to be
+           written back at its producer or the cells go stale for the rest of the run.  This
+           routine is its own 6502 entry point (bbc_hw.cpp calls it straight from interrupt
+           context), so there is no shim to do it.  Two stores once per field, against an arm
+           that already writes sixteen palette registers — and it buys back both gates: the
+           fixture compares $4F21/$4F22 instead of ignoring them, and det_compare.py needs no
+           skip.  The arithmetic above stays wide, which was the point of the relocation.
+           ⚠ Band 2's arm still LOADS the var, not the cells: the value crosses interrupts and
+           the var is the storage.  The cells are the published copy, for anything outside this
+           routine that still reads $4F21/$4F22 as the 6502 could. */
+        band2_duration_lo = (uint8_t)rest;
+        band2_duration_hi = (uint8_t)(rest >> 8);
         if (sky <= 0x153Cu) {
             latch = sky;
             break;
@@ -1483,7 +1495,13 @@ void race_main_loop_core(RestartDepth depth)
             PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers();
             PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  draw_starting_lights();
             PROBE_PHASE(3);  PROBE_SHAPE_PHASE(3);  read_driving_controls_core();
-            PROBE_PHASE(4);  PROBE_SHAPE_PHASE(4);  apply_driving_model_core(car_heading_lo, car_heading_hi);
+            /* the SHIM, for the same reason as phase 5: it publishes model_accum_entry_v back
+               into mem[$38/$39].  ⚠ Unlike phase 5's, THIS call site is gated by nothing — $38/$39
+               read 00/00 at both determinism dump frames, so calling the core here instead
+               survives validate, determinism AND determinism-drive.  Dropping the shim's
+               marshal_out does fail the apply_driving_model fixture, so the publish itself is
+               proven; it is the choice of entry point here that rests on argument. */
+            PROBE_PHASE(4);  PROBE_SHAPE_PHASE(4);  apply_driving_model();
             /* ⚠ the SHIM, not the core: this driver is the one caller of these two that is not
                a transliterated parent, and the shim is where the relocated wide values (hypot_max,
                bearing) are marshalled back into mem[$7A/$7B] and mem[$8A/$8B].  Calling the core
@@ -3446,6 +3464,16 @@ void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
    touches the cells.  The producer's oracle still writes mem[$38/$39], so the apply_driving_model
    fixture set_ignore's them. */
 static uint16_t model_accum_entry_v;
+
+/* ⭐ The 6502-ABI publisher, by the IN/OUT rule (docs/wide-value-cleanup.md).  apply_driving_model
+   is the producer and writes the value unconditionally at $46AE, so its shim marshals OUT — which
+   is what lets the fixture keep comparing $38/$39 instead of set_ignore'ing them, and lets
+   det_compare.py drop its skip.  apply_drag_terms, the consumer, marshals IN (below). */
+void model_accum_entry_marshal_out(void)
+{
+    model_accum_entry_lo = (uint8_t)model_accum_entry_v;
+    model_accum_entry_hi = (uint8_t)(model_accum_entry_v >> 8);
+}
 
 void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
 {
