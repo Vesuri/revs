@@ -362,6 +362,16 @@ against the 6502 oracle over 25 628 cases *including those cells*. Only then re-
 re-record to make a gate green without that isolation step** — it is the difference between a stale
 golden and a real regression.
 
+⚠⚠ **RE-RECORD ALL THREE GOLDENS, NOT THE TWO THE GATE LIST HABITUALLY NAMES.** That pass
+re-recorded `determinism` and `determinism-drive` and left `determinism-crash`'s golden holding the
+same stale `$4F21/$4F22` = `0x1064`, so the crash gate sat red until the next unrelated change ran
+it and looked, at first, like that change's regression. ⭐ The cheap way to tell a stale golden from
+a real divergence *without* a bisect is an **invariant on the differing cells**: `band1_duration +
+band2_duration == $153C` by construction, the run summed to `$153C` and the golden to `$15BC`, and
+`band1_duration` was byte-identical in both — so the trajectory never diverged and only the
+published cell moved. `determinism-crash` is a longer trajectory (frame 1500) than either of the
+other two, so it is the one a re-record pass forgets.
+
 ### hypot_min $78/$79 — ✅ B DONE (`hypot_min_v`)
 
 `bearing_to_section`'s sort produces both ground-plane magnitudes and `point_distance_hypot`
