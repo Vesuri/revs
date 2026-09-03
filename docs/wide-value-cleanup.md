@@ -875,6 +875,39 @@ select a slot at run time. Relocating one and not the others would force a marsh
 a routine that runs eight times per scan line — a cost, not a win. The unit of work is all three
 slots becoming `uint16_t`s and the descriptors carrying pointers to them.
 
+### The aliasing hazard: asked, and MEASURED
+
+Before relocating a plotter pointer there is one question a call-graph scan cannot answer. The span
+walk can climb `plot_ptr_hi` through page $00 and **store through its own pointer into zero page** —
+that is not a theory, it is the measured reason `mem[arm->addend]`/`mem[arm->subtrahend]` may not be
+hoisted out of `span_walk` (the hoist fails 3 of 400 fixture cases on each `fwd` arm, 2026-09-02). A
+relocated `uint16_t` would silently miss such a self-write, so the question is whether a plotter
+store ever lands on $70-$73 or $8E/$8F.
+
+Measured with a temporary `bus_write` probe (page-0 histogram + `__builtin_return_address`
+attribution) over both determinism trajectories, 300 frames each:
+
+| | page-0 `bus_write`s | of which $70-$73 / $8E-$8F |
+|---|---|---|
+| parked (`make determinism`) | 54 723 | **0** |
+| driving (`STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`) | 429 294 | **0** |
+
+⚠⚠ The hazard is real, but it lands somewhere else entirely: **428 745 of the driving run's
+429 294 page-0 indirect stores go to `$74`** (`math_lo`), all from one site in
+`move_and_draw_cars`. That is a FIFTH independent reason to leave `math_lo/hi` alone, and it is
+also the calibration that says the probe works — a probe that had read 0 everywhere would have
+proved nothing.
+
+⭐⭐ **And the measurement overturns the standing "do not widen" comment at
+`plot_line_octant_core`** — the pair's biggest site (21 refs), which reads *"DO NOT widen these
+four pointer steps into a uint16_t — it is a PESSIMISATION"*. That comment is **correct for
+mechanism (A) and wrong for mechanism (B)**, and the difference is the premise: it costs out
+`p = lo | hi<<8; p += 8; store both lanes` — 4 mem[] accesses where the byte path does 2. Once the
+pointer is a real `uint16_t`, `p += 8` is one word read and one word write: 2 accesses on the
+straight path (equal) and 2 on the carry path (better than 3). The site flips from decline to win.
+⚠ Fix that comment in the same commit that relocates the pair, or the next pass will read it and
+stop again.
+
 ⚠ `plot_ptr3` $8E/$8F is dual-tenanted with `slip_magnitude` (§`plot_ptr3` above scores it 0 *as a
 pair*). That verdict stands for the SLIP_MAG tenant, which keeps `mem[]`; the plotter tenant moves
 because the descriptor requires it. The two never overlap in time, and neither reads the other's
