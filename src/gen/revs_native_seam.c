@@ -756,9 +756,8 @@ void mirrors_update(void)
 {
     /* $7B00 — the once-per-frame wing-mirror update (race_main_loop body, $1739).  Result-only:
        exit regs/flags are dead at that caller.  The core carries the pre-loop bracket (a math_lo
-       reader-nativization); the segment loop and the mirror_draw_car calls stay here because
-       mirror_draw_car is a transliterated plotter shared by both differential sides, and it reads
-       its inputs from the 6502 registers (A = the value to plot, Y = the segment index).  All of
+       reader-nativization); the segment loop stays here as the shim's own bookkeeping, but
+       mirror_draw_car is now twin #165c and is called core-to-core.  All of
        shared_temp_84 / span_line_cursor / shared_temp_76 / math_lo are read LIVE from mem[] in the
        loop so the skip path (which writes none of them) stays byte-exact. */
     uint8_t slot = mem[CAR_ORDER + car_ahead];          /* the car ahead's object slot */
@@ -785,9 +784,9 @@ void mirrors_update(void)
             continue;                           /* $7B46 — empty and stays empty */
         }
         mem[MIRROR_SEG_STATE + y] = v;
-        cpu.A = v;                              /* mirror_draw_car entry ABI: A = value, Y = segment */
-        cpu.Y = (uint8_t)y;
-        mirror_draw_car();
+        /* ⭐ Core-to-core, now that mirror_draw_car is a twin (#165c): the 6502 handed it the
+           value in A and the segment in Y, and those are its two arguments here. */
+        mirror_draw_car_core(v, (uint8_t)y);
     }
 }
 
@@ -1025,3 +1024,11 @@ void project_object_coord(void)
     project_object_slot_core(0xFDu, cpu.A);      /* $2A5D LDX #$FD — the object_coord pair */
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
 }
+
+void mirror_draw_car(void)
+{
+    /* $7FB6 — 6502-ABI shim for twin #165c.  A is the car block's bottom line, Y the segment.
+       Exit regs/flags are dead: the one caller, mirrors_update, reloads both per segment. */
+    mirror_draw_car_core(cpu.A, cpu.Y);
+}
+

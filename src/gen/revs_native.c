@@ -13024,3 +13024,59 @@ void project_object_slot_core(uint8_t coordIndex, uint8_t shape)
        third queue projector's $FA — is caught at once. */
     write_object_slot_core(p.line, coordIndex, /*V dead*/ 0u, p.clip);   /* falls into $2A76 */
 }
+
+/* ---------------------------------------------------------------- wing mirrors */
+#define MIRROR_SEG_ADDR_LO    0x3B26u  /* mirror_seg_addr_lo — per segment: low byte of its first screen address */
+#define MIRROR_SEG_ADDR_HI    0x3B9Eu  /* mirror_seg_addr_hi — ...and its high byte */
+#define MIRROR_SEG_END_ROW    0x3EFAu  /* mirror_seg_end_row — per segment: the last scan line of the run */
+#define MIRROR_SEG_START_ROW  0x40FAu  /* mirror_seg_start_row — ...and the first, walked downward to it */
+#define MIRROR_LOWER_BOUND    0x0082u  /* the car block's BOTTOM line — a THIRD tenant of
+                                          point_delta_lo+2, after the camera delta and the
+                                          span rasteriser's end line (see symbols.csv $0080) */
+#define VIA_T1_LOW            0xFE68u  /* User VIA T1 counter low — the shudder's entropy */
+#define MIRROR_SHUDDER_TBL    0x2000u  /* indexed by it: the vibration's AND mask */
+
+/* ⭐ TWIN #165c — mirror_draw_car ($7FB6).  Paints ONE wing-mirror segment: walk its run of scan
+   lines from MIRROR_SEG_START_ROW down to MIRROR_SEG_END_ROW, writing $F0 — the car reflection's
+   pixel pattern — into each.  Between the car block's top (span_line_cursor) and bottom bounds the
+   pattern is ANDed with the engine shudder: a byte of the User VIA's free-running T1 counter, run
+   through a mask table and gated on engine_running, so the reflection vibrates only with the
+   engine turning.  Outside those bounds the full $F0 goes down, which is how the same routine also
+   ERASES a stale segment (mirrors_update passes bound 0 for that).
+
+   ⭐ Why this one is native: it was the largest single shipping transliterated reader of plot_ptr
+   $70/$71 (tools/wide_eligibility.py), and it blocked its own caller as well — twin #152 kept
+   mirrors_update's segment loop in the 6502-ABI shim only because this callee took A and Y.
+
+   The 6502 held the destination in $70/$71 and stored through (zp),Y; here it is a uint16_t, and
+   the SBC #$38 / SBC #$01 pair at $7FEE/$7FF4 is one `dst -= $138` — stepping back over a MODE 5
+   character row when the scan-line cursor wraps past a multiple of 8.  The cells are written once
+   with the walk's final value, their 6502 exit value; nothing between two iterations reads them,
+   and the addresses are frame-buffer addresses, so a store can never alias zero page.
+   ⚠ The three bounds are re-read from mem[] every iteration, as the 6502 re-read them. */
+void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
+{
+    mem[MIRROR_LOWER_BOUND] = lowerBound;                        /* $7FB6 */
+    hypot_min_lo            = segment;                           /* $7FB8 — restored into Y at $7FFC */
+
+    uint16_t dst = (uint16_t)(mem[MIRROR_SEG_ADDR_LO + segment]
+                   | (mem[MIRROR_SEG_ADDR_HI + segment] << 8));  /* $7FBD/$7FC2 */
+    shared_temp_77 = mem[MIRROR_SEG_END_ROW + segment];          /* $7FC7 — the run's last line */
+    uint8_t row    = mem[MIRROR_SEG_START_ROW + segment];        /* $7FC9 — ...and its first */
+
+    do {
+        uint8_t pattern = 0xF0u;                                 /* $7FCD */
+        if (row < mem[MIRROR_LOWER_BOUND] && row >= span_line_cursor) {
+            pattern &= mem[MIRROR_SHUDDER_TBL + bus_read(VIA_T1_LOW)];   /* $7FD7/$7FDA */
+            pattern &= engine_running;                           /* $7FDD — still only with the engine on */
+        }
+        bus_write((uint16_t)(dst + row), pattern);               /* $7FDF */
+
+        row--;                                                   /* $7FE1 */
+        if ((row & 0x80u) && (row & 7u) == 7u)                   /* $7FE2/$7FE7 — wrapped past a char row */
+            dst = (uint16_t)(dst - 0x138u);                      /* $7FEE/$7FF4 */
+    } while (row >= shared_temp_77);                             /* $7FF8 */
+
+    plot_ptr_lo = (uint8_t)dst;                                  /* the walk's 6502 residue */
+    plot_ptr_hi = (uint8_t)(dst >> 8);
+}

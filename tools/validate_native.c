@@ -2110,6 +2110,107 @@ static int test_plot_line_octant(void)
     return fail;
 }
 
+void mirror_draw_car(void);
+void mirror_draw_car__t6502(void);
+
+/* ⭐ TWIN #165c — mirror_draw_car ($7FB6).  Paint one wing-mirror segment: walk its run of scan
+   lines writing the $F0 reflection pattern, ANDed with the engine-shudder term only between the
+   block's top (span_line_cursor) and bottom (A) bounds.
+
+   The fixture has to drive four things the routine branches on and one it reads from hardware:
+     * the bounds, so that BOTH shudder-gate arms and BOTH bound tests are exercised — including
+       the erase case (bottom = 0, which never gates) mirrors_update actually passes;
+     * a run long enough to WRAP the scan-line cursor past $00, because the character-row step
+       back ($138) happens only in the wrapped range and is where the 6502's two-byte SBC pair
+       became one 16-bit subtract;
+     * engine_running both 0 and $FF, since it gates the shudder to nothing when the engine is off;
+     * the User VIA read at $FE68, compared through the harness's hardware channel.
+   ⚠ Segment addresses are planted in the frame buffer ($5800-$7BFF, clear of the $7C00 dashcode
+   page the routine's own bytes live in).  That is the twin's aliasing argument under test: it
+   keeps the destination in a uint16_t and writes plot_ptr $70/$71 once, which is equivalent only
+   because a store through a screen address can never land on zero page. */
+static int test_mirror_draw_car(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("mirror_draw_car");
+    if (!want("mirror_draw_car")) return 0;
+
+    unsigned mask = LIVE_NONE;              /* mirrors_update reloads A and Y per segment */
+    int cases = 2000 * scale;
+    int shud = 0, plain = 0, wrapped = 0, engineOn = 0, erase = 0;
+
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;
+
+        uint8_t seg = (uint8_t)(t % 6u);    /* mirrors_update only ever passes segments 0..5 */
+        c.Y = seg;
+
+        /* A run of 4..40 lines starting anywhere, so roughly a third of them walk past $00 into
+           the wrapped range where the character-row step back lives. */
+        uint8_t start = (uint8_t)(xs() % 0x30u);
+        uint8_t len   = (uint8_t)((xs() % 0x25u) + 4u);
+        uint8_t end   = (uint8_t)(start - len);
+        /* ⚠ end = 0 is excluded because it does not terminate — on either seam.  The 6502's
+           CPY #$00 always sets carry, so the run would walk all 256 lines and start again; the
+           real table never holds 0 for the same reason. */
+        if (end == 0u) end = 1u;
+        pre[0x40FAu + seg] = start;
+        pre[0x3EFAu + seg] = end;
+        if (end > start) wrapped++;
+
+        uint16_t addr = (uint16_t)(0x5800u + (xs() % 0x2400u));
+        pre[0x3B26u + seg] = (uint8_t)addr;
+        pre[0x3B9Eu + seg] = (uint8_t)(addr >> 8);
+
+        int doErase = (t % 4u == 0u);
+        uint8_t bottom = doErase ? 0x00u : (uint8_t)(xs() % 0x40u);
+        uint8_t top    = doErase ? (uint8_t)xs() : (uint8_t)(xs() % 0x40u);
+        c.A = bottom;
+        pre[0x007Fu] = top;                                  /* span_line_cursor */
+        if (doErase) erase++;
+        /* a line is shuddered only when top <= line < bottom */
+        if (!doErase && top < bottom) shud++; else plain++;
+
+        pre[0x0061u] = (t & 1) ? 0xFFu : 0x00u;              /* engine_running */
+        if (t & 1) engineOn++;
+
+        fail += diff_run("mirror_draw_car", pre, c, mirror_draw_car,
+                         mirror_draw_car__t6502, mask, t, &printed);
+    }
+
+    /* Non-vacuity: both shudder arms, both engine states, the erase call mirrors_update makes,
+       and enough wrapped runs that the $138 character-row step is actually compared. */
+    if (shud == 0 || plain == 0) {
+        printf("[VACUOUS] mirror_draw_car: the shudder gate went only one way (%d gated, "
+               "%d plain)\n", shud, plain);
+        fail++;
+    }
+    if (wrapped == 0) {
+        printf("[VACUOUS] mirror_draw_car: no run wrapped past $00, so the $138 character-row "
+               "step back was never reached\n");
+        fail++;
+    }
+    if (engineOn == 0 || engineOn == cases) {
+        printf("[VACUOUS] mirror_draw_car: engine_running was %s in every case\n",
+               engineOn ? "set" : "clear");
+        fail++;
+    }
+    if (erase == 0) {
+        printf("[VACUOUS] mirror_draw_car: the erase call (bottom bound 0) was never made\n");
+        fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  result-only  "
+           "(%d shuddered, %d plain, %d wrapped, %d engine on, %d erase)\n",
+           "mirror_draw_car", cases, fail, shud, plain, wrapped, engineOn, erase);
+    return fail;
+}
+
 void undraw_plot_lines(void);
 void undraw_plot_lines__t6502(void);
 
@@ -7844,6 +7945,7 @@ int main(int argc, char** argv)
     fail += test_check_car_pair();
     fail += test_plot_line_octant();
     fail += test_undraw_plot_lines();
+    fail += test_mirror_draw_car();
     fail += test_text_script_interp();
     fail += test_menu_wait_key();
     fail += test_view_paint_lines();

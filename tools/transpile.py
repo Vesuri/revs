@@ -1256,6 +1256,17 @@ VALIDATE_FUNCS = {
     # Exit ABI: the one caller is native draw_dash_needles, which reloads everything, so
     # LIVE_NONE and a mem[]-only compare.  No BCD.
     0x511E,
+    # ⭐ TWIN #165c — mirror_draw_car ($7FB6).  The SECOND plot_ptr $70/$71 de-transliteration
+    # (tools/wide_eligibility.py; docs/wide-value-cleanup.md), and the one that unblocks its own
+    # caller too: mirrors_update's twin #152 kept its segment loop in the shim precisely because
+    # this callee was transliterated and took its inputs in A and Y.  Paints one wing-mirror
+    # segment: the $F0 reflection pattern down a run of scan lines, ANDed with the engine-shudder
+    # term (User VIA T1 low through $2000, gated on engine_running) only between the block's top
+    # and bottom bounds, so the same routine both draws and erases.  The $70/$71 walk is a
+    # uint16_t local here; the SBC #$38 / SBC #$01 pair that steps back over a character row is
+    # one `dst -= $138`.  ⚠ It reads the User VIA, so the differential compares the HARDWARE
+    # channel as well.  Exit ABI dead (mirrors_update reloads A and Y per segment) — LIVE_NONE.
+    0x7FB6,
     0x2A5D,
     0x2A5F,
 }
