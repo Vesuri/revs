@@ -818,9 +818,67 @@ test: it is a genuine **16-bit screen pointer** doing real wide arithmetic, with
 | after twin #165b (`undraw_plot_lines`) | five | 21 |
 | after twin #165c (`mirror_draw_car`) | `region_7bf7`, `view_paint_lines_short`, `region_31d0`, `console_io` | 15 |
 
-Remaining, by size: `region_31d0` (70 lines, a two-entry region — $31D0 and $3D68),
-`console_io` (107, off the render path), `view_paint_lines_short` (229),
-`region_7bf7` (1042 — the view cell chain, and the one to plan rather than just write).
+### ⭐⭐ ...AND THEN THREE OF THE FOUR TURNED OUT NOT TO EXIST: "not an oracle" ≠ "shipping"
+
+The worklist above (`region_31d0`, `view_paint_lines_short`, `region_7bf7` — 1341 lines of
+de-transliteration) was **the instrument's third bug**, not work. The scanner classified any
+non-`__t6502` transliteration as shipping, and all three are reachable ONLY from an oracle:
+
+| routine | its only callers | verdict |
+|---|---|---|
+| `region_31d0` | `FUN_3d68` (from `paint_fence_backdrop__t6502`) and the uncalled entry wrapper `FUN_31d0` | dead — twin #128 absorbs both loops |
+| `view_paint_lines_short`, `view_paint_lines_clipped`, `region_7bf7` (the whole $7BF7-$7F16 cell chain) | `view_paint_lines__t6502` | dead — the view pipeline is already all-native |
+
+⭐ **This is decidable, because the port has no dynamic dispatch**: `Platform::indirectJmp` is a
+no-op on every backend, so every call in the shipping build is a static C call and reachability is
+a closure over the C call graph. `wide_eligibility.py` now computes it — roots are the corpus names
+referenced from outside `src/gen`, and an edge out of a `__t6502` body is not followed.
+
+⚠ The one thing that closure CANNOT see is the FOURTH eligibility test — a circuit's hook JMPing
+back into the transliteration (`FUN_2490`). Such a target is always an **uncalled `FUN_<addr>`
+wrapper**, so those get their own bucket and a human verdict, never a silent "dead". `region_31d0`
+is in that bucket and is settled: `$31D0`/`$3D68` appear in no `make track-smc` extent, are not in
+`ghidra_scripts/entrypoints.csv`, and `docs/rename.md` already records both as provably-dead
+labels.
+
+Two more instrument bugs fell out of checking the first by hand, and both are the same shape —
+**a parser gap reads as a finding**:
+
+  * `functions()` skipped every ONE-LINER definition, and the transpiler emits every region entry
+    wrapper as one (`void view_next_scanline(void) { region_7bf7(0x7EF3); }`). Those are exactly
+    the edges the graph hangs on.
+  * `external_roots()` matched `name(` and so missed every entry point passed as a function
+    POINTER (`platform_register_vbi`). 17 roots became 49.
+
+Sabotaged four ways before the verdict was believed (a shipping caller gains a call → SHIPPING; an
+oracle gains one → no change; a wrapper-only path → the wrapper bucket; the one-liner support
+removed → the original wrong answer). ⚠ Note the shape of the original error: the tool never
+failed, it produced a coherent worklist of real functions.
+
+### So `plot_ptr` is eligible NOW, and so are its two siblings
+
+The only true shipping readers left are `console_io` ($6300, 2 refs) for `plot_ptr` and
+`emit_driver_name` for `plot_ptr2` — and both are **write-only**: a front-end text routine parks A
+and Y in the plotter's zero page on entry and never reads them back. Keeping those two stores is
+the whole cost; there is no marshal-in anywhere.
+
+| pair | native | shipping | verdict |
+|---|---|---|---|
+| `plot_ptr` $70/$71 | 21 fn / 83 refs | `console_io` (write-only) | ✅ eligible |
+| `plot_ptr2` $72/$73 | 13 fn / 33 refs | `emit_driver_name` (write-only) | ✅ eligible |
+| `plot_ptr3` $8E/$8F | 8 fn / 12 refs | none | ✅ eligible, but see below |
+
+⭐⭐ **They must move together.** The span rasteriser's `SpanPlotter` descriptors carry their
+pointer slots as `mem[]` ADDRESSES (`{MEM_plot_ptr2_lo, MEM_plot_ptr_lo}`,
+`{MEM_plot_ptr_lo, MEM_plot_ptr3_lo}`) and `span_end_marker`/`fill_column_gaps_core`/`sw_marker`
+select a slot at run time. Relocating one and not the others would force a marshalling temp inside
+a routine that runs eight times per scan line — a cost, not a win. The unit of work is all three
+slots becoming `uint16_t`s and the descriptors carrying pointers to them.
+
+⚠ `plot_ptr3` $8E/$8F is dual-tenanted with `slip_magnitude` (§`plot_ptr3` above scores it 0 *as a
+pair*). That verdict stands for the SLIP_MAG tenant, which keeps `mem[]`; the plotter tenant moves
+because the descriptor requires it. The two never overlap in time, and neither reads the other's
+value — each writes before it reads.
 
 ⭐ **Nativizing a blocker pays twice.** `mirror_draw_car` also freed its own caller: twin #152 had
 kept `mirrors_update`'s whole segment loop in the 6502-ABI shim *only* because this callee took its

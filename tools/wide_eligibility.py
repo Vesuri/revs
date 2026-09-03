@@ -45,6 +45,8 @@ NATIVE = [os.path.join(ROOT, p) for p in
 # ⚠ revs_gen.c writes `void f(void) {`; revs_native.c puts the brace on the NEXT line.  A
 # same-line-only regex silently parses zero functions out of the native files, which reads
 # as "no native readers" rather than as a parse failure.
+ONELINER_RE = re.compile(
+    r'^[A-Za-z_][A-Za-z0-9_ \t\*]*?\b([A-Za-z0-9_]+)\s*\([^;{]*\)\s*\{.*\}\s*$')
 FUNC_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_ \t\*]*?\b([A-Za-z0-9_]+)\s*\([^;]*\)\s*\{?\s*$')
 
 def functions(path):
@@ -53,6 +55,16 @@ def functions(path):
     out, depth, name, start, buf, pending = [], 0, None, 0, [], None
     for i, l in enumerate(lines):
         if depth == 0:
+            # ⚠⚠ THE FOURTH INSTRUMENT BUG: the transpiler emits every region ENTRY WRAPPER as
+            # a ONE-LINER — `void view_next_scanline(void) { region_7bf7(0x7EF3); }` — and a
+            # parser that only accepts a trailing `{` skips all of them.  They are exactly the
+            # edges the call graph hangs on: a shipping native caller reaches `region_7bf7`
+            # ONLY through one, so dropping them reported the whole view cell chain as dead.
+            m1 = ONELINER_RE.match(l)
+            if m1:
+                out.append((m1.group(1), i + 1, i + 1, l))
+                pending = None
+                continue
             m = FUNC_RE.match(l)
             if m and not l.lstrip().startswith(('if', 'for', 'while', 'switch', 'return', '}')):
                 pending = (m.group(1), i + 1)
@@ -70,6 +82,84 @@ def functions(path):
                                     #   discards the signature before its `{` on the NEXT line
             depth, name, buf = 0, None, []
     return out
+
+MANUAL = os.path.join(ROOT, 'src/gen/revs_manual.c')
+
+# ---------------------------------------------------------------------------
+# Reachability.  ⚠⚠ THE THIRD INSTRUMENT BUG: "not an oracle" is NOT the same as
+# "shipping".  `region_31d0` (paint_fence_backdrop's fence-fill body) reads plot_ptr
+# three times and was reported as a blocker for two passes — but its ONLY callers are
+# `FUN_3d68`, called from `paint_fence_backdrop__t6502`, and the uncalled entry wrapper
+# `FUN_31d0`.  The twin absorbs the loop, so no shipping path reaches it and nativizing
+# it buys nothing (the reader-side twin of the "oracle-only" finding already recorded in
+# docs/wide-value-cleanup.md).
+#
+# This is decidable here because the port has NO dynamic dispatch: `Platform::indirectJmp`
+# is a no-op on every backend, so every call in the shipping build is a static C call.
+# The one thing the call graph CANNOT see is the FOURTH eligibility test — a circuit's
+# hook JMPing back into the transliteration (`FUN_2490`).  Such a target is an UNCALLED
+# `FUN_<addr>` wrapper, so those get their own bucket and a manual verdict, never a
+# silent "dead".
+CALL_RE = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\(')
+
+def all_functions():
+    out = {}
+    for path in [GEN, MANUAL] + NATIVE:
+        if not os.path.exists(path):
+            continue
+        for name, a, b, text in functions(path):
+            out[name] = text
+    return out
+
+def external_roots(names):
+    """Every corpus function named from OUTSIDE src/gen — platform code, the cpu model,
+    the backends.  These are the shipping build's real entry points."""
+    seen = set()
+    for base, _dirs, files in os.walk(os.path.join(ROOT, 'src')):
+        if os.path.join('src', 'gen') in base:
+            continue
+        for f in files:
+            if not f.endswith(('.c', '.cpp', '.h')):
+                continue
+            txt = open(os.path.join(base, f), errors='ignore').read()
+            # ⚠ Match a BARE identifier, not `name(`: a VBI handler and a spin-wait hook are
+            # passed to `platform_register_vbi` as function POINTERS, so a call-syntax scan
+            # misses exactly the entry points that have no static caller.
+            for m in re.finditer(r'\b([A-Za-z_][A-Za-z0-9_]*)\b', txt):
+                if m.group(1) in names:
+                    seen.add(m.group(1))
+    seen.discard('__attribute__')       # parser noise, not a routine
+    return seen
+
+def closure(seeds, bodies):
+    """Forward reachability, NOT traversing out of a `__t6502` oracle: an oracle runs only
+    under `make validate`, so its callees are not shipping on its account."""
+    reach, work = set(seeds), list(seeds)
+    while work:
+        f = work.pop()
+        if f.endswith('__t6502'):
+            continue
+        for m in CALL_RE.finditer(bodies.get(f, '')):
+            g = m.group(1)
+            if g in bodies and g not in reach:
+                reach.add(g)
+                work.append(g)
+    return reach
+
+BODIES = all_functions()
+_called = set()
+for _n, _t in BODIES.items():
+    for _m in CALL_RE.finditer(_t):
+        if _m.group(1) in BODIES and _m.group(1) != _n:
+            _called.add(_m.group(1))
+ROOTS   = external_roots(set(BODIES))
+SHIPPING = closure(ROOTS, BODIES)
+# Uncalled `FUN_<addr>` wrappers: a sweep-reported branch target with no static caller.
+# Either dead (a back-branch label) or a hook/SMC re-entry — the FOURTH test decides, and
+# only a human can, so anything reachable only from here is reported, not dismissed.
+WRAPPERS = {n for n in BODIES
+            if re.fullmatch(r'FUN_[0-9a-f]{4}', n) and n not in _called and n not in SHIPPING}
+WRAPPER_REACH = closure(WRAPPERS, BODIES) - SHIPPING
 
 MEM_H  = os.path.join(ROOT, 'src/gen/mem.h')
 SEAM_H = os.path.join(ROOT, 'src/gen/revs_native_seam.h')
@@ -124,12 +214,19 @@ def hits(text, addrs):
     return found
 
 def scan(addrs, label, show=False):
-    blocking, oracle, native = {}, {}, {}
+    blocking, oracle, native, hookonly, dead = {}, {}, {}, {}, {}
     for name, a, b, text in functions(GEN):
         h = hits(text, addrs)
         if not h:
             continue
-        (oracle if name.endswith('__t6502') else blocking)[name] = h
+        if name.endswith('__t6502'):
+            oracle[name] = h
+        elif name in SHIPPING:
+            blocking[name] = h
+        elif name in WRAPPER_REACH:
+            hookonly[name] = h          # only via an uncalled FUN_<addr> entry wrapper
+        else:
+            dead[name] = h              # only via an oracle: the twin already absorbed it
     for p in NATIVE:
         for name, a, b, text in functions(p):
             h = hits(text, addrs)
@@ -140,6 +237,17 @@ def scan(addrs, label, show=False):
     print("  native readers        : %d function(s), %d ref(s)"
           % (len(native), sum(len(v) for v in native.values())))
     print("  __t6502 oracles       : %d function(s)  [do NOT block]" % len(oracle))
+    print("  oracle-only translit. : %d function(s)  [do NOT block — no shipping caller]"
+          % len(dead))
+    for n in sorted(dead):
+        print("      %-34s %2d ref(s)" % (n, len(dead[n])))
+    if hookonly:
+        print("  ⚠ ENTRY-WRAPPER ONLY  : %d function(s) — reachable only from an UNCALLED"
+              % len(hookonly))
+        print("    FUN_<addr> wrapper.  Settle each by the FOURTH eligibility test (a circuit")
+        print("    hook can JMP back into the transliteration) before calling it dead:")
+        for n in sorted(hookonly, key=lambda k: -len(hookonly[k])):
+            print("      %-34s %2d ref(s)" % (n, len(hookonly[n])))
     print("  SHIPPING translit.    : %d function(s), %d ref(s)"
           % (len(blocking), sum(len(v) for v in blocking.values())))
     if blocking:
