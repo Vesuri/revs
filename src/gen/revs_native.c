@@ -6396,7 +6396,9 @@ void scale16_by_y(void)
     abs16_math();                   /* $4754 */
     shared_temp_76 = cpu.A;         /* $4757 */
     math_hi        = scale;         /* $4759 */
-    mul8_accum();                   /* $475B */
+    /* Core-to-core: the shim only reconstructs A and N/Z/C/V, and all five are dead here —
+       the next line overwrites A and the PLP below overwrites every flag. */
+    (void)mul8_accum_core();        /* $475B */
     cpu.A = math_hi;                /* $475E — a value only: the LDA's own N/Z are dead here,
                                        because the PLP on the next line overwrites them.  Proved
                                        by sabotage: swapping these two lines passes 3000 cases,
@@ -10985,6 +10987,13 @@ void section_coord_add_delta_core(uint8_t dst, uint8_t src,
 }
 
 
+/* Forward declarations for the core-to-core calls below: these three are defined further down
+   with the car-position twins (#134/#135/#136), but the road builder and the track scan call
+   them directly rather than through their 6502-ABI shims. */
+static uint8_t track_pos_advance_core(uint8_t x);
+static uint8_t track_pos_retreat_core(uint8_t x);
+static void    lap_complete_core(uint8_t x);
+
 /* ---------------------------------------------------------------------------
    $124D  copy_section_height_to_side1  (twin #139)   — was FUN_124d
    ---------------------------------------------------------------------------
@@ -11122,9 +11131,9 @@ void build_road_section(void)
     if (nextCursor >= 0x78) nextCursor = 0;
     section_cursor = nextCursor;
 
-    /* --- 2. step the car one segment; commit a crossed boundary --- */
+    /* --- 2. step the car one segment; commit a crossed boundary ---
+       $17 is the player's car slot; both steppers return the carry the 6502 left in C. */
     int forwardBoundary = 0;
-    cpu.X = 0x17;                                           /* the player's car slot */
     if (!(track_direction & 0x80)) {
         /* forward: arm the lap credit if this section is the finish marker */
         uint8_t marker = (uint8_t)(segment_count_x8 >> 1);
@@ -11133,15 +11142,11 @@ void build_road_section(void)
         else { platform_smc_unhandled(0x1310, mem[0x1310]); return; }
         if (marker == player_car_segment) lap_credit_armed = 1;
 
-        cpu.X = 0x17;
-        track_pos_advance();
-        if (cpu.C) { cross_section_boundary(); forwardBoundary = 1; }
+        if (track_pos_advance_core(0x17)) { cross_section_boundary(); forwardBoundary = 1; }
     } else {
         /* backward: remember the segment being left, then retreat */
         retreat_segment = player_car_segment;
-        cpu.X = 0x17;
-        track_pos_retreat();
-        if (cpu.C) cross_section_boundary();
+        if (track_pos_retreat_core(0x17)) cross_section_boundary();
     }
 
     if (!forwardBoundary) {
@@ -11178,9 +11183,12 @@ void build_road_section(void)
         mem[SECTION_FLAGS + x] = r;
 
         /* --- 4. integrate the step and build side-1's ground-plane pair --- */
-        cpu.X = section_cursor;
-        cpu.Y = section_cursor_prev;
-        section_coord_add_delta();                          /* section N's point from N-1 + step */
+        {
+            const uint8_t dlo[3] = { math_lo, math_hi, shared_temp_76 };
+            const uint8_t dhi[3] = { mem[POINT_DELTA_HI + 0], mem[POINT_DELTA_HI + 1],
+                                     mem[POINT_DELTA_HI + 2] };
+            section_coord_add_delta_core(section_cursor, section_cursor_prev, dlo, dhi);
+        }                                                   /* section N's point from N-1 + step */
         cpu.X = section_cursor;
         copy_section_height_to_side1();                     /* share the height across */
 
@@ -11214,7 +11222,7 @@ void build_road_section(void)
 
     /* --- 5b. store the direction index and derive the car cursor + section curve --- */
     mem[SECTION_DIR_IX + section_cursor] = segment_dir_index;
-    derive_car_section_cursor();
+    car_section_cursor = derive_car_section_cursor_core(section_cursor);
     step_section_curve();
 }
 
@@ -11566,12 +11574,25 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
     cpu.Y = soi;                                                 /* $2A0F LDY $0C */
     cpu.N = (soi & 0x80) != 0; cpu.Z = (soi == 0);
     build_section_step_delta();
-    step_delta_halve();
-    cpu.Y = 0xFD; cpu.X = 0xFA; section_coord_add_delta();
-    step_delta_halve();
-    cpu.X = 0xF4; section_coord_add_delta();
-    step_delta_halve();
-    cpu.X = 0xFD; section_coord_add_delta();
+
+    /* ⭐ Core-to-core: the step delta is halved and integrated three times, each integration
+       reading the SAME three-component delta the halve just rewrote — so the descriptor is
+       rebuilt from its cells at each step rather than passed through cpu.X/cpu.Y.  The 6502
+       spelled the two cursors as X (destination) and Y (source); they are arguments here.
+       Nothing downstream reads the register residues these shims used to reconstruct:
+       project_object_slot_core is typed core-to-core, and the routine's exit X is its RETURN
+       value, marshalled by the shim (see place_car_world_coords below). */
+    for (int step = 0; step < 3; step++) {
+        static const uint8_t dstCursor[3] = { 0xFA, 0xF4, 0xFD };
+
+        step_delta_halve_core();        /* ...which REWRITES the delta, so read it after */
+        {
+            const uint8_t dlo[3] = { math_lo, math_hi, shared_temp_76 };
+            const uint8_t dhi[3] = { mem[POINT_DELTA_HI + 0], mem[POINT_DELTA_HI + 1],
+                                     mem[POINT_DELTA_HI + 2] };
+            section_coord_add_delta_core(dstCursor[step], 0xFD, dlo, dhi);
+        }
+    }
     shared_counter_42 = 0x14; project_object_slot_core(0xFDu, 0x02u);   /* the car itself */
     shared_counter_42 = 0x15; project_object_slot_core(0xF4u, 0x01u);   /* ...and its two */
     shared_counter_42 = 0x16; project_object_slot_core(0xFAu, 0x00u);   /*    staged neighbours */
@@ -11867,7 +11888,7 @@ static uint8_t track_pos_advance_core(uint8_t x)
     if (++dist == lap) {
         mem[CAR_DISTANCE_LO + x] = 0x00u;
         mem[CAR_DISTANCE_HI + x] = 0x00u;
-        lap_complete();                     /* X still == x; lap_complete reads it */
+        lap_complete_core(x);               /* core-to-core: x IS the index the shim read from cpu.X */
     } else {
         mem[CAR_DISTANCE_LO + x] = (uint8_t)dist;
         mem[CAR_DISTANCE_HI + x] = (uint8_t)(dist >> 8);
@@ -11958,8 +11979,7 @@ void full_track_scan_rebuild(void)
         for (int x = 0x13; x >= 0; x--) {          /* was uint8_t counting down THROUGH the 8-bit
                                                      wrap to $FF; `int` states the descent and
                                                      drops the per-use zero-extend */
-            cpu.X = (uint8_t)x;
-            track_pos_advance();
+            track_pos_advance_core((uint8_t)x);   /* exit C dead: the loop only steps */
         }
     } while ((mem[CAR_DISTANCE_LO + 0] | mem[CAR_DISTANCE_HI + 0]) != 0u);
 
@@ -11972,35 +11992,37 @@ void full_track_scan_rebuild(void)
         for (unsigned x = hypot_min_lo; x < 0x14u; x++) {
             shared_temp_77 = shared_temp_76;                 /* reset the per-car retreat counter */
             do {
-                cpu.X = mem[CAR_ORDER_TBL + x];              /* the car at this sorted position */
-                track_pos_retreat();
+                /* the car at this sorted position; exit C dead, the counter drives the loop */
+                track_pos_retreat_core(mem[CAR_ORDER_TBL + x]);
             } while ((int8_t)(--shared_temp_77) >= 0);       /* runs entry_a + 1 times */
         }
     }
 
     /* 3. re-anchor the pace car ($17): advance it until its gap to the player is exactly $20 the
        near way (car_gap_tail: C set = far side, so keep going; A == $20 = the target gap) */
-    do {
-        cpu.X = 0x17u;
-        track_pos_advance();
-        cpu.Y = 0x17u;
-        cpu.X = player_car;
-        cpu.C = 1;                                            /* entry borrow-in for the subtract */
-        car_gap_tail();
-    } while (cpu.C || cpu.A != 0x20u);
+    {
+        GapTail g;
+        do {
+            track_pos_advance_core(0x17u);
+            /* C = 1 is the subtract's entry borrow-in — a genuine input, not a residue. */
+            g = car_gap_tail_core(player_car, 0x17u, 1u);
+        } while (g.c || g.a != 0x20u);
+    }
 
     /* 4. back the pace car up $31 units, then on to the previous segment boundary, counting every
        section it spans (from $31) into shared_counter_42 for step 6 */
-    cpu.X = 0x17u;
     shared_temp_76 = 0x31u;
     shared_counter_42 = 0x31u;
     do {
-        track_pos_retreat();
+        track_pos_retreat_core(0x17u);
     } while (--shared_temp_76 != 0u);
-    do {
-        shared_counter_42++;
-        track_pos_retreat();
-    } while (cpu.C == 0);                                     /* until a segment boundary is crossed */
+    {
+        uint8_t crossed;
+        do {
+            shared_counter_42++;
+            crossed = track_pos_retreat_core(0x17u);
+        } while (!crossed);                                   /* until a segment boundary is crossed */
+    }
 
     /* 5. seed car_state_2 for all 20 cars in sorted order with an alternating $AF/$50 pattern
        (A starts $50 and is EOR #$FF'd before each store, so it toggles each car) */
@@ -12626,7 +12648,7 @@ void sort_cars_by_key(void)
     } while (swapped);                           /* $0FB1 LDA $76; BNE -> another pass */
 
     cpu.D = 0;                                   /* $0FB5 CLD */
-    find_player_neighbours();                    /* $0FB6 JSR $63A2 */
+    find_player_neighbours_core();               /* $0FB6 JSR $63A2 (its shim is a bare forward) */
 }
 
 /* ===========================================================================
