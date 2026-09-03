@@ -357,6 +357,39 @@ can be: the subtract goes through the real `SBC`, so the twin agrees with the or
 `SED` turns the divide into something else entirely.  A twin that computed the subtract in plain C
 would pass 3000 binary-mode cases and fail the decimal ones — sabotage #5 confirms it does.
 
+### ⭐⭐ CALL THE `_core`, NOT THE SHIM — except for the five cases where the shim does real work
+
+When native code calls another twin, it should call the `_core` and pass the values it already
+holds. Going through the `void name(void)` shim means marshalling live values out to `cpu`/`mem[]`
+and then reconstructing exit registers the caller throws away. **But "always call the core" is
+wrong**, and the exceptions are not stylistic — each is a correctness trap:
+
+1. ⚠⚠ **The shim is the PUBLISHER of a relocated wide value.** Once a lo/hi pair becomes a real
+   `uintNN_t` (mechanism (B)), the shim's `*_marshal_in` / `*_marshal_out` are the only thing
+   keeping the wide variable and the `mem[]` cells agreeing. A bare `_core` call reads a stale
+   wide value, or leaves `mem[]` stale for whatever transliterated code reads it next. This is the
+   defect `fe379ed` found, and it is why `race_main_loop` calls shims on purpose.
+   `check_crash` is in this class (`edge_nearest_marshal_in`), and it is the one that looks most
+   like an oversight.
+2. **The shim carries a side effect the core cannot** — an interrupt fence and write order
+   (`update_horizon_band`'s SEI/CLI), a store the core's signature does not cover
+   (`copy_dash_data`'s `math_lo`), stack residue (`draw_starting_lights`), or instrumentation
+   (`view_paint_lines`' `REVS_PLOT_CHECK`).
+3. **The shim's exit ABI IS the caller's own**, because the 6502 reached it by a tail call
+   (`begin_scrape`, `draw_gear_indicator`).
+4. **The call is a HOOK SEAM.** The other arm is a real per-circuit hook that reads registers, so
+   `cpu` must be handed over regardless — calling the core changes nothing but the spelling.
+5. **A shim calling a shim inside `revs_native_seam.c`** is the 6502-ABI layer doing its job.
+
+⭐ The test that separates (1) and (2) from a genuine pure marshal: **read the shim body and ask
+what survives if you delete every line that only writes `cpu`.** If the answer is "nothing", the
+call site should call the core. If anything else is left — a marshal, a store, a fence, a stack
+write — it must not.
+
+⚠ An audit for this cannot grep for `name()` alone: the shims live in `revs_native_seam.c`, not
+beside the cores, and matches inside comments outnumber the real ones. Strip comments first, then
+track brace depth to attribute each call to its enclosing function.
+
 ## What "validated" costs and buys
 
 Buys: a byte-exact differential over randomised inputs, re-run in seconds, forever.
