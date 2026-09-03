@@ -110,10 +110,10 @@ relocation blast radius. High count ⇒ mechanism (B) is blocked; use (A) now.
 | `hypot_max` | $7A/$7B | larger sorted ground-plane magnitude | B | **✅ B DONE** (`hypot_max_v`) |
 | `hypot_min` | $78/$79 | smaller sorted ground-plane magnitude | B | **✅ B DONE** (`hypot_min_v`) |
 | `bearing` | $8A/$8B | bearing_to_section output | B | **✅ B DONE** (`bearing_v`) |
-| `plot_ptr`/`plot_ptr2`/`plot_ptr3` | $70/$71,… | screen write pointers | A→B | TODO |
+| `plot_ptr`/`plot_ptr2`/`plot_ptr3` | $70/$71, $72/$73, $8E/$8F | screen write pointers | **A only** | ✗ **B blocked — the 6502 DEREFERENCES these cells** (`($70),Y` and friends). ⭐ But (A) is INCOMPLETE and this is the largest remaining byte-lane pocket of the seven — §THE SEVEN NAMED PAIRS |
 | `point_delta`, `object_dist` | $80–$83, $55 | edge-walk scratch | B | **ELIGIBLE, unstarted** — re-scanned 2026-09-03 after twins #167-#172: every ref is in a native routine. Score them per §ELEVENTH before starting |
 | `nearest_edge_bearing` | $5E/$5F | edge-walk scratch | B | ⚠ **shares `$5F` with `engine_note_target`** (`CPX 0x005f` at `$0E94`, non-native `engine_sound_update`). A different TENANT, so it does not block under the EIGHTH lesson — but the relocation must leave `$5F` in `mem[]` for the sound path |
-| `SLIP_MAG` | $8E/$8F | slip magnitude (adjacent; aliases plot_ptr3) | A→B | TODO |
+| `SLIP_MAG` | $8E/$8F and $62DA/$62EA | slip magnitude — a TENANT of plot_ptr3, plus a second home as MODEL_STATE element $0A | **A only** | ✗ **B blocked twice over**: the $8E home is an indirect pointer base, the $62DA home is a strided SoA member. §THE SEVEN NAMED PAIRS |
 
 ⚠ **A FULL indexed/indirect re-audit of every campaign pair** (both `$xx,X`/`$xx,Y` notations and
 `($xx)` bases, counted straight off `disasm/listing.txt`) — run after the EIGHTH lesson showed the
@@ -146,8 +146,8 @@ in **either** 2- or 4-hex-digit notation, `($xx),Y`). Verdicts:
 | `point_dist` | $7C/$7D | ⚠ eligible ONLY with shim marshal-OUT (all 32 refs are native as of 2026-09-03; the gate is the differential, not a ref) | a SHIPPING transliterated reader on the patched arm — `region_23d8` (the FOURTH test below). Marshal out in `emit_edge_bearing_at_cursor()`, `emit_edge_bearing()` and `point_distance_hypot()`; proof needs a Brands frame-buffer differential, not a fixture |
 | `bearing` | $8A/$8B | **✅ B DONE** (`bearing_v`) | same shape, lower risk: shipping `FUN_2a5f` (the car projector, $2A5F) calls native `bearing_to_section()` and then reads `bearing_lo`/`bearing_hi` into `object_bearing` ($0380/$0398). Not a patched arm, so `make determinism` DOES gate it |
 | `model_accum_entry` | $38/$39 | **✅ B DONE** | `model_accum_entry_v` (revs_native.c). All-native, unindexed — but it HAD the oracle-glue channel below, resolved by shim marshalling |
-| `edge_nearest` | $10/$11 | **✅ B DONE (2026-09-03)** | `edge_nearest_v` (revs_native.c); one 16-bit compare in `road_edge_walk_core`, marshalled at `road_edge_walk` (IN+OUT), `build_track_geometry` (IN+OUT) and `check_crash` (IN). ⚠ The init stays lane-preserving because $24FD arms only the HIGH lane — and the surviving low lane is DEAD IN PRACTICE: measured 2872 compares over the fixture with `distHi == $FF` in **zero** of them, which is why two sabotages survive. The blocker had been `$11` read by non-native `check_crash` ($111E); twin #169 made it native, and a strict re-scan finds all 7 refs in native routines. Unstarted |
-| `car_heading` | $0A/$0B | **✅ B DONE (2026-09-03)** | `car_heading_v`; seven call sites, marshalled at six shims. ⭐ `apply_driving_model` needs marshal-**OUT** although it is not the producer — its core tail-calls `integrate_car_position_core` core-to-core (the transitive-producer trap). And the block had been ⚠ and the block was **half instrument error**: `build_player_car` ($11CE) is native as of twin #170, and the *second* blocker, `loader_stub`, was never a routine — a stale `func` row at `$1200`, nine bytes into `build_player_car`, made that routine's OWN writes at `$11FE`/`$1205` read as non-native references. Retagged to `loader_image_entry`/`note`. Unstarted |
+| `edge_nearest` | $10/$11 | **✅ B DONE (2026-09-03)** | `edge_nearest_v` (revs_native.c); one 16-bit compare in `road_edge_walk_core`, marshalled at `road_edge_walk` (IN+OUT), `build_track_geometry` (IN+OUT) and `check_crash` (IN). ⚠ The init stays lane-preserving because $24FD arms only the HIGH lane — and the surviving low lane is DEAD IN PRACTICE: measured 2872 compares over the fixture with `distHi == $FF` in **zero** of them, which is why two sabotages survive. The blocker had been `$11` read by non-native `check_crash` ($111E); twin #169 made it native, and a strict re-scan finds all 7 refs in native routines. |
+| `car_heading` | $0A/$0B | **✅ B DONE (2026-09-03)** | `car_heading_v`; seven call sites, marshalled at six shims. ⭐ `apply_driving_model` needs marshal-**OUT** although it is not the producer — its core tail-calls `integrate_car_position_core` core-to-core (the transitive-producer trap). The block had been **half instrument error**: `build_player_car` ($11CE) is native as of twin #170, and the *second* blocker, `loader_stub`, was never a routine — a stale `func` row at `$1200`, nine bytes into `build_player_car`, made that routine's OWN writes at `$11FE`/`$1205` read as non-native references. Retagged to `loader_image_entry`/`note`. |
 | `math_lo/hi` | $74/$75 | ✗ **BLOCKED — settled 2026-09-02, do not re-open as a pair relocation** | The re-audit the EIGHTH lesson called for is DONE, and it cleared the indexing charge while confirming the block on other grounds. **Test 2 (indexing) PASSES:** all three indexed sites (`SBC/STA 0x74,X` $146E in `build_section_step_delta`, `ROR 0x74,X` $2B18 in `step_delta_halve` — *not* `draw_track_object`, which was an address-ordering misattribution) index the **step-delta vector** (lows $74/$75/$76, highs `point_delta_hi[0..2]` $83/$84/$85), a DIFFERENT TENANT, which under the EIGHTH lesson does not block a relocation. Tenancy now recorded on the cells themselves in `symbols.csv` (commit 67fb302). **Test 1 (all-native) FAILS by 6 refs in 4 routines**, each a self-contained local scratch use in its own tenant: `$262D` (an unnamed 6×256 DELAY LOOP, `DEC $74/BNE`), `$2B18` `step_delta_halve`, `$31D0` (a dash-code plotter loop, `$74` a row counter and `$75` its limit, `(plot_ptr),Y` store), `$49BB` (an unnamed seeder, `$74` scratch across 8 instructions). **But the decisive blocker is neither** — it is the HYBRID ORACLE GLUE of the 2026-08-30 FINDING below, which no amount of nativization removes: the math primitives (`mul8`/`mul8_noinit`/`div16by8`/`neg16_math`/`abs16_math`) are the pair's own operators and are already native, so every `__t6502` body that multiplies hands operands to a native child **through `mem[$74/$75]`**. ⭐ **The right mechanism here is not (B) at all** — see §`math_lo/hi` is a SCRATCH pair, so the win is PER-TWIN below |
 | `hypot_min` | $78/$79 | **✅ B DONE** (`hypot_min_v`) | ⚠ **this row used to read "✗ blocked — `$78` indexed", and that was a MISREADING of the second test** (see the EIGHTH lesson). The one indexed access, `ADC 0x78,X` at $4C52, belongs to `update_grip_limits`' axle load terms — a DIFFERENT TENANT. A relocation moves ONE USE, so what test 2 has to ask is whether the *relocated use* is ever indexed, and the road-pass use never is |
 | `plot_ptr` | $70/$71 | ✗ blocked | `$70` is an indirect pointer base (`($70),Y`) |
@@ -445,8 +445,8 @@ in the interim but the final store stays two non-adjacent byte writes until relo
 
 | Base | lo/hi | Shape | gen readers | Mechanism | Status |
 |---|---|---|---|---|---|
-| `MODEL_STATE` | $62D0/$62E0 | 15×16-bit driving-model state (stride $10) | ~47 | A now; B blocked | TODO |
-| `CAR_ANGLE` | $62A0/$62A3 | 3× (heading_sin/cos, steer_angle) | ~9 | A now; B blocked | TODO |
+| `MODEL_STATE` | $62D0/$62E0 | 15×16-bit driving-model state (stride $10) — incl. `heading_step` (element 2, $62D2/$62E2) and `slip_magnitude` (element $0A, $62DA/$62EA) | ~47 | A now; B blocked | TODO |
+| `CAR_ANGLE` | $62A0/$62A3 | 3× (heading_sin/cos, `steer_angle` = element 2, $62A2/$62A5) | ~9 | A now; B blocked | TODO |
 | `CAR_DISTANCE` | $08D0/$08E8 | per-car (20) distance-round-lap | ~19 | A now; B blocked | TODO |
 | `OBJECT_BEARING` | $0380/$0398 | per-slot 16-bit track position | ? | A now; B blocked | TODO |
 | `SECTION_COORD` (=`SECTION_CRD`) | $0900/$0A00 | section origin (stride $100) — **two names, one addr; dedupe** | ~62 | A now; B blocked | TODO |
@@ -670,6 +670,43 @@ nearly all of `revs_native.c` — so for `math_lo/hi` the campaign's work is lar
 mis-booked as pending. The 353 `math_lo`/`math_hi` references left in `revs_native.c` (90 functions)
 are overwhelmingly single marshals into and out of the native math primitives, which is the ABI and
 must stay.
+
+## THE SEVEN NAMED PAIRS (asked 2026-09-03) — none is (B)-eligible, and only one has work left
+
+A pass over the pairs still visible as `_lo`/`_hi` in the twins.  **Not one of them is a mechanism
+(B) candidate**, and the reasons are structural rather than a matter of nativizing more readers, so
+this list is the answer to "when do these get relocated": they don't.
+
+**Group 1 — STRIDED SoA members. There is no adjacent pair to relocate.**
+
+| pair | addrs | array |
+|---|---|---|
+| `heading_step` | $62D2 / $62E2 | `MODEL_STATE` element 2, stride $10 |
+| `steer_angle` | $62A2 / $62A5 | `CAR_ANGLE` element 2, stride 3 |
+| `slip_magnitude` | $62DA / $62EA | `MODEL_STATE` element $0A, stride $10 |
+
+The lanes are $10 (or 3) apart because the engine stores these as parallel low/high arrays.  A
+`uint16_t` here is only reachable as the **whole-array** `value_16[N]` relocation — every element
+moving at once — which is a separate, much larger piece of work.  Until then these are mechanism
+(A) only: compose a wide local inside the twin, store the lanes back once.  `draw_dash_needle_core`
+is the worked example (it takes `uint16_t steer` while $62A2/$62A5 stay in `mem[]`).
+
+**Group 2 — INDIRECT POINTER BASES. The 6502 dereferences the cells themselves.**
+
+`plot_ptr` ($70/$71), `plot_ptr2` ($72/$73), `plot_ptr3` ($8E/$8F) and `SLIP_MAG`'s $8E/$8F home.
+`LDA ($70),Y` / `STA ($70),Y` appear throughout the plotters, so the pointer must be readable *as
+two bytes at $70* at every one of those sites; a relocation would marshal at every store, which is
+the whole cost.  ⭐ **These are also where the real remaining byte traffic is, and (A) is NOT done
+on them**: `revs_native.c:710-722` still advances the pair through two `adc_step` calls, and
+`plot_line_octant` ($5243, $526B) hand-rolls the carry as `if (t > 0xFF) plot_ptr_hi++` twice.
+That is exactly the "one `add.w` written as byte lanes" shape the campaign exists to remove, and
+`plot_ptr` has 70 references in the twins — the largest pocket of the seven.  The store back to
+$70/$71 must stay; what (A) removes is the carry propagation between the loads and that store.
+
+**Group 3 — TRIED AND REVERTED.** `model_accum_delta` ($3A/$3B), with `model_accum_entry`
+($38/$39), on 2026-08-27: the cells are `apply_driving_model__t6502`'s glue↔core channel and the
+relocation broke it 200/200.  `model_accum_entry` was later recovered by shim marshalling (see the
+inventory); `model_accum_delta` stayed in `mem[]` and should not be re-opened as a pair.
 
 ⭐⭐ **ELEVENTH LESSON (2026-09-03) — `point_dist` $7C/$7D is ELIGIBLE and STILL NOT WORTH DOING:
 score the pair SITE BY SITE before writing a line of it.** Eligibility says a relocation is *legal*.
