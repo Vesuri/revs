@@ -115,8 +115,10 @@ void road_edge_start(void)
 void road_edge_walk(void)
 {
     hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
+    edge_nearest_marshal_in();            /* the running minimum it keeps beating down */
     cpu.X = road_edge_walk_core(cpu.A, cpu.X, (uint8_t)SECTION_MID, 0x12, 0x14);
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
+    edge_nearest_marshal_out();
 }
 
 void build_track_geometry(void)
@@ -124,8 +126,10 @@ void build_track_geometry(void)
     /* the top of the road pass, and the same IN/OUT pair as the two walks below it: whether any
        point reaches a bearing at all depends on the track, so the cells are carried through. */
     hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
+    edge_nearest_marshal_in();            /* it ARMS the high lane and keeps the low one */
     build_track_geometry_core(0x06, 0x2E);
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
+    edge_nearest_marshal_out();
 }
 
 void draw_road(void)
@@ -927,11 +931,12 @@ void begin_scrape(void)
 void check_crash(void)
 {
     uint8_t entryA = cpu.A, entryX = cpu.X;
+    edge_nearest_marshal_in();            /* the distance it tests to decide the car is off-track */
     switch (check_crash_core(entryX)) {
     case CRASH_ARM_NONE:
         /* $1122 BCC $1162 — the CMP #2's residue.  edge_nearest_hi is 0 or 1, so A-2 is $FE/$FF
            and N is always set; X, Y and V pass through. */
-        cpu.A = edge_nearest_hi;
+        cpu.A = (uint8_t)(edge_nearest_v >> 8);
         cpu.C = 0; cpu.N = 1; cpu.Z = 0;
         break;
     case CRASH_ARM_SCRAPE:

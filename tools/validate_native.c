@@ -2550,6 +2550,12 @@ static void geometry_pre(uint8_t* pre, int shape)
     { static const uint8_t edge[] = { 0x00, 0x27, 0x28, 0x29, 0x4E, 0x4F, 0x50, 0xFF };
       pre[0x51] = edge[xs() % (sizeof edge)];
       if (xs() % 3 == 0) pre[0x52] = (uint8_t)(xs() % 9); }
+    /* edge_nearest's LOW lane, which $24FD-$24FF deliberately does NOT arm — only the high one
+       gets $FF, so the low lane enters the walk holding the previous frame's value.  Drawn at the
+       extremes rather than left uniform.  ⚠ This does NOT make the surviving low lane observable
+       and is not claimed to: see the measurement at the relocation in revs_native.c. */
+    { static const uint8_t low[] = { 0x00, 0x01, 0x7F, 0x80, 0xFE, 0xFF };
+      pre[0x10] = low[xs() % (sizeof low)]; }
     if (shape == GEO_SILVERSTONE) {
         pre[0x2538] = 0x99; pre[0x2539] = 0x48; pre[0x253A] = 0x5F;  /* STA $5F48,Y */
         pre[0x2542] = 0x20; pre[0x2543] = 0x50; pre[0x2544] = 0x34;  /* JSR abs8    */
@@ -2617,7 +2623,7 @@ static int test_view_producers(void)
                    "reached the horizon_half_width tail — the SMC arm exited first\n", legal);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY (flags=byproduct)  "
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY (flags=byproduct)  "
                "(%d/%d reached the tail)\n", "build_track_geometry",
                legal + hooked + garbage, fail, tailRan, legal);
     }

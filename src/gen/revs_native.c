@@ -1960,6 +1960,45 @@ void hypot_max_marshal_out(void)
     hypot_max_hi = (uint8_t)(hypot_max_v >> 8);
 }
 
+/* ⭐ WIDE-VALUE CLEANUP, mechanism (B): edge_nearest ($10/$11) relocated out of mem[] into this
+   native uint16_t.  It is the frame's RUNNING MINIMUM distance to a track edge point — the walk's
+   own subdivision floor, project_point's far clip, and what check_crash tests to decide the car
+   has left the road.
+
+   ⭐ The relocation turns the 6502's two-lane compare into ONE 16-bit compare.  The walk's test
+   reads `distHi < hi || (distHi == hi && lo >= point_dist_lo)`, which is exactly
+   `newDistance <= edge_nearest_v` — the byte lanes were spelling out a `cmp.w`.
+
+   ⚠ The initialisation is ASYMMETRIC and is kept so: $24FD-$24FF writes only the HIGH lane ($FF,
+   so the first point always wins) and leaves the low lane holding the previous frame's value, so
+   the wide write is lane-preserving rather than `edge_nearest_v = 0xFF00`.
+
+   ⚠⚠ THAT SURVIVING LOW LANE IS DEAD IN PRACTICE, and it was MEASURED, not argued.  Two sabotages
+   — arming the whole word at the init, and dropping build_track_geometry's marshal-IN — both
+   survive `make validate`, because the only thing that can read the low lane before the walk
+   overwrites it is the first point's compare, and only when that point's distance HIGH byte is
+   also $FF.  Instrumenting the compare over the fixture's 400 cases: **2872 compares, distHi==$FF
+   ZERO times** (18 had equal high bytes, all of them later compares against a lane pair the walk
+   had already written).  So the lane-preserving write is faithfulness to $24FD, not behaviour —
+   keep it, but do not read those two surviving sabotages as a gap worth engineering around.  The
+   sibling lane defects ARE all caught: a strict `<` compare, reading the high lane in
+   scale_angle_in_section, a dropped marshal-OUT and a swapped marshal all fail at once.
+
+   Every reader and writer is native (twin #169 freed the last one, check_crash), so the pair
+   carries no transliterated traffic; the shims marshal per the IN/OUT rule. */
+uint16_t edge_nearest_v;   /* not static: check_crash's shim replays its high byte as exit A */
+
+void edge_nearest_marshal_in(void)
+{
+    edge_nearest_v = (uint16_t)(edge_nearest_lo | ((unsigned)edge_nearest_hi << 8));
+}
+
+void edge_nearest_marshal_out(void)
+{
+    edge_nearest_lo = (uint8_t)edge_nearest_v;
+    edge_nearest_hi = (uint8_t)(edge_nearest_v >> 8);
+}
+
 /* ⭐ WIDE-VALUE CLEANUP, mechanism (B): car_heading ($0A/$0B) relocated out of mem[] into this
    native uint16_t.  It is WHERE THE CAR POINTS — one 16-bit angle, $10000 to the turn — and it is
    a PERSISTENT value: integrate_car_position advances it by the frame's heading step and every
@@ -3150,10 +3189,9 @@ uint8_t road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
 
         /* $23DB-$23FA — the RUNNING NEAREST, which is also project_point's far clip and the
            floor below which the walk refuses to subdivide. */
-        if (distHi < edge_nearest_hi ||
-            (distHi == edge_nearest_hi && edge_nearest_lo >= point_dist_lo)) {
-            edge_nearest_hi         = (uint8_t)distHi;
-            edge_nearest_lo         = point_dist_lo;
+        unsigned pointDist = (distHi << 8) | point_dist_lo;
+        if (pointDist <= edge_nearest_v) {          /* ONE 16-bit compare — see the note above */
+            edge_nearest_v          = (uint16_t)pointDist;
             edge_nearest_section    = shared_counter_42;
             nearest_edge_cursor     = edge_cursor;
             nearest_edge_bearing_hi = mem[EDGE_X_HI_TBL + edge_cursor];
@@ -3285,7 +3323,8 @@ void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1)
     GEO_PHASE(GEO_PHASE_START);
     road_edge_start_core(0x06, (uint8_t)EDGE_HALF, (uint8_t)SECTION_NEAR, 0x3C, 0x07);
 
-    edge_nearest_hi = 0xFF;          /* no nearest point yet: the first one always wins */
+    /* $24F9: only the HIGH lane is armed — the low one keeps last frame's value (see above). */
+    edge_nearest_v = (uint16_t)((edge_nearest_v & 0x00FFu) | 0xFF00u);
     edge_nearest_section = 0x0D;     /* ...and do not subdivide before section 13 */
 
     GEO_PHASE(GEO_PHASE_WALK0);
@@ -10520,9 +10559,10 @@ static uint8_t scale_angle_in_section_core(uint8_t a, uint8_t y)
 {
     uint8_t curve = section_angle_curve_core(a);
     uint8_t p1    = (uint8_t)(revs_mulu16(y, curve) >> 8);
-    return (uint8_t)(revs_mulu16(edge_nearest_lo, p1) >> 8);
+    return (uint8_t)(revs_mulu16((uint8_t)edge_nearest_v, p1) >> 8);
 }
-void scale_angle_in_section(void) { cpu.A = scale_angle_in_section_core(cpu.A, cpu.Y); }
+void scale_angle_in_section(void) { edge_nearest_marshal_in();
+                                    cpu.A = scale_angle_in_section_core(cpu.A, cpu.Y); }
 
 /* ---------------------------------------------------------------------------
    $1FA8  record_section_jump  (twin #120)
@@ -12674,7 +12714,7 @@ void begin_scrape_core(uint8_t yawKick, uint8_t savedX)
    --------------------------------------------------------------------------- */
 uint8_t check_crash_core(uint8_t savedX)
 {
-    if (edge_nearest_hi < 0x02u)                  /* $111E-$1122 — still on the track */
+    if ((uint8_t)(edge_nearest_v >> 8) < 0x02u)   /* $111E-$1122 — still on the track */
         return CRASH_ARM_NONE;
 
     /* $1124-$112B — |azimuth of the nearest track point|.  Here abs8's BPL does agree with A's
