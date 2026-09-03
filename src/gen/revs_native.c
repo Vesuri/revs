@@ -4199,31 +4199,32 @@ static ViewDelta view_delta(uint8_t sectionByte, unsigned component, uint8_t ori
 /* Shift the larger magnitude left until the bit leaving its high byte is a 1, taking the
    smaller one with it ONE PLACE FEWER — that spare place is the headroom the 8-bit quotient
    needs — and hand back the high byte with the bit rotated back in: the divisor div16by8
-   wants, normalised so bit 7 is set.  The larger's high byte never goes back to memory (the
-   6502 keeps it in A for the whole loop); its low byte and both of the smaller's do.
-   $21BD-$21C6, $2235-$223E and $22C5-$22CF are all this same idiom.
+   wants, normalised so bit 7 is set.  $21BD-$21C6, $2235-$223E and $22C5-$22CF are all this
+   same idiom.
+
+   ⭐ The 6502 spells the shift `ASL lo / ROL hi`; both magnitudes are single 16-bit values here,
+   so each place is ONE `<<`.  `*larger` comes back fully shifted, but the CALLERS store only its
+   low byte back to mem[]: the 6502 keeps the high byte in A for the whole loop and never writes
+   it out.  Both of the smaller's lanes do go back.
 
    ⚠ A larger of 0 would spin here exactly as the 6502 does.  It cannot happen: a zero larger
    means both ground magnitudes are zero, which is the equal case and never reaches an arm,
    and project_point's far clip rejects every point when point_dist is 0. */
-static uint8_t normalise_for_divide(uint8_t* largerLo, uint8_t largerHi,
-                                    uint16_t* smaller, unsigned* shifts)
+static uint8_t normalise_for_divide(uint16_t* larger, uint16_t* smaller, unsigned* shifts)
 {
-    unsigned hi = largerHi;
-    unsigned lo = *largerLo;
+    uint16_t v = *larger;
 
     *shifts = 0;
     for (;;) {
-        unsigned out = (hi >> 7) & 1u;                    /* ASL lo / ROL hi */
-        hi = ((hi << 1) | ((lo >> 7) & 1u)) & 0xFFu;
-        lo = (lo << 1) & 0xFFu;
+        unsigned out = v >> 15;                           /* the bit the pair sheds off the top */
+        v = (uint16_t)(v << 1);
         if (out)
             break;
         *smaller = (uint16_t)(*smaller << 1);
         (*shifts)++;
     }
-    *largerLo = (uint8_t)lo;
-    return (uint8_t)((hi >> 1) | 0x80u);                  /* ROR A, with the 1 that fell out */
+    *larger = v;
+    return (uint8_t)((v >> 9) | 0x80u);                   /* ROR A, with the 1 that fell out */
 }
 
 /* $220D-$2234 — the four 45-degree diagonals, on the two sign bits.  Reached three ways
@@ -4248,15 +4249,15 @@ static void bearing_diagonal(void)
 static void bearing_arm(unsigned largerComponent, unsigned smallerComponent,
                         uint8_t quadrantBase, int negateWhenSignsAgree)
 {
-    uint8_t  largerLo = mem[POINT_DELTA_LO + largerComponent];
+    uint16_t larger   = (uint16_t)(((unsigned)mem[POINT_DELTA_HI + largerComponent] << 8)
+                                   | mem[POINT_DELTA_LO + largerComponent]);
     uint16_t smaller  = (uint16_t)(((unsigned)mem[POINT_DELTA_HI + smallerComponent] << 8)
                                    | mem[POINT_DELTA_LO + smallerComponent]);
     unsigned shifts;
     uint8_t  divisor;
 
-    divisor = normalise_for_divide(&largerLo, mem[POINT_DELTA_HI + largerComponent],
-                                  &smaller, &shifts);
-    mem[POINT_DELTA_LO + largerComponent]  = largerLo;
+    divisor = normalise_for_divide(&larger, &smaller, &shifts);
+    mem[POINT_DELTA_LO + largerComponent]  = (uint8_t)larger;   /* low lane only — see above */
     mem[POINT_DELTA_LO + smallerComponent] = (uint8_t)smaller;
     mem[POINT_DELTA_HI + smallerComponent] = (uint8_t)(smaller >> 8);
 
@@ -4347,7 +4348,8 @@ ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
     ViewDelta d      = view_delta(sectionByte, 1, origin);
     uint16_t  height = (uint16_t)(d.mag >> 3);
     unsigned  shifts;
-    uint8_t   divisor, distLo, quotient, lineByte;
+    uint8_t   divisor, quotient, lineByte;
+    uint16_t  dist;
 
     mem[POINT_DELTA_SIGN + 1] = d.rawHi;
     mem[POINT_DELTA_LO   + 1] = (uint8_t)height;
@@ -4357,7 +4359,8 @@ ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
        point_distance_hypot filled in for THIS point a moment ago, so it is a vertical
        field-of-view test and not a comparison with a stale distance.  Height at or beyond the
        distance drops the point. */
-    if (height >= (uint16_t)(((unsigned)point_dist_hi << 8) | point_dist_lo))
+    dist = (uint16_t)(((unsigned)point_dist_hi << 8) | point_dist_lo);
+    if (height >= dist)
         return PROJ_CLIPPED;                        /* $22BC SEC — "drop this point" */
 
     /* $22BE-$22D8 — normalise the DISTANCE until its top bit falls out, taking the height
@@ -4366,10 +4369,11 @@ ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
        shift count (its EXPONENT) in proj_width_shift.  Neither is read again here — both are
        for emit_edge_width_offset and the object slot writer.
        ⚠ point_dist_lo is shifted IN PLACE and does not survive; point_dist_hi does, because
-       the 6502 keeps it in A for the whole loop. */
-    distLo  = point_dist_lo;
-    divisor = normalise_for_divide(&distLo, point_dist_hi, &height, &shifts);
-    point_dist_lo = distLo;
+       the 6502 keeps it in A for the whole loop — which is why only the low lane of the shifted
+       word is stored back.  `dist` is the word the far clip has already composed — nothing
+       between the two touches point_dist, so it is read from mem[] once, not twice. */
+    divisor = normalise_for_divide(&dist, &height, &shifts);
+    point_dist_lo = (uint8_t)dist;
 
     mem[POINT_DELTA_LO + 1] = (uint8_t)height;
     mem[POINT_DELTA_HI + 1] = (uint8_t)(height >> 8);
