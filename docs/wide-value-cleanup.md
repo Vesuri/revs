@@ -106,12 +106,13 @@ relocation blast radius. High count ⇒ mechanism (B) is blocked; use (A) now.
 | Cell(s) | Addr | Role | Mechanism | Status |
 |---|---|---|---|---|
 | `math_lo/hi` | $74/$75 | shared 16-bit SCRATCH accumulator — 388 operand refs in 84 routines (the count was 305; re-measured off the listing 2026-09-02, both the `0x74` and `0x0074` notations) | ✗ not B | **BLOCKED, settled** — see the eligibility row |
-| `point_dist` | $7C/$7D | projected distance (render) | A→B | TODO |
+| `point_dist` | $7C/$7D | projected distance (render) | B | **ELIGIBLE, unstarted** — all 32 refs native; gated only on the Brands differential (see the eligibility row) |
 | `hypot_max` | $7A/$7B | larger sorted ground-plane magnitude | B | **✅ B DONE** (`hypot_max_v`) |
 | `hypot_min` | $78/$79 | smaller sorted ground-plane magnitude | B | **✅ B DONE** (`hypot_min_v`) |
 | `bearing` | $8A/$8B | bearing_to_section output | B | **✅ B DONE** (`bearing_v`) |
 | `plot_ptr`/`plot_ptr2`/`plot_ptr3` | $70/$71,… | screen write pointers | A→B | TODO |
-| `edge_nearest`, `point_delta`, `object_dist`, `nearest_edge_bearing` | $10/$11, $80–$83, $55, $5E | edge-walk scratch | A→B | TODO |
+| `edge_nearest`, `point_delta`, `object_dist` | $10/$11, $80–$83, $55 | edge-walk scratch | B | **ELIGIBLE, unstarted** — re-scanned 2026-09-03 after twins #167-#172: every ref is in a native routine |
+| `nearest_edge_bearing` | $5E/$5F | edge-walk scratch | B | ⚠ **shares `$5F` with `engine_note_target`** (`CPX 0x005f` at `$0E94`, non-native `engine_sound_update`). A different TENANT, so it does not block under the EIGHTH lesson — but the relocation must leave `$5F` in `mem[]` for the sound path |
 | `SLIP_MAG` | $8E/$8F | slip magnitude (adjacent; aliases plot_ptr3) | A→B | TODO |
 
 ⚠ **A FULL indexed/indirect re-audit of every campaign pair** (both `$xx,X`/`$xx,Y` notations and
@@ -142,10 +143,11 @@ in **either** 2- or 4-hex-digit notation, `($xx),Y`). Verdicts:
 | Pair | Addr | (B)-eligible? | Why |
 |---|---|---|---|
 | `hypot_max` | $7A/$7B | **✅ B DONE** | `hypot_max_v` (revs_native.c). All-native, unindexed, and CLEAN of both channel tests — producer `bearing_to_section_core` and consumer `point_distance_hypot_core` are both native and the shipping glue between them (`FUN_2a5f`) never touches $7A/$7B. The one other tenant, `plot_view_src_line`'s PVS_BYTE/PVS_MODE, keeps the cells — see the IN/OUT rule below |
-| `point_dist` | $7C/$7D | ⚠ eligible ONLY with shim marshal-OUT | a SHIPPING transliterated reader on the patched arm — `region_23d8` (the FOURTH test below). Marshal out in `emit_edge_bearing_at_cursor()`, `emit_edge_bearing()` and `point_distance_hypot()`; proof needs a Brands frame-buffer differential, not a fixture |
+| `point_dist` | $7C/$7D | ⚠ eligible ONLY with shim marshal-OUT (all 32 refs are native as of 2026-09-03; the gate is the differential, not a ref) | a SHIPPING transliterated reader on the patched arm — `region_23d8` (the FOURTH test below). Marshal out in `emit_edge_bearing_at_cursor()`, `emit_edge_bearing()` and `point_distance_hypot()`; proof needs a Brands frame-buffer differential, not a fixture |
 | `bearing` | $8A/$8B | **✅ B DONE** (`bearing_v`) | same shape, lower risk: shipping `FUN_2a5f` (the car projector, $2A5F) calls native `bearing_to_section()` and then reads `bearing_lo`/`bearing_hi` into `object_bearing` ($0380/$0398). Not a patched arm, so `make determinism` DOES gate it |
 | `model_accum_entry` | $38/$39 | **✅ B DONE** | `model_accum_entry_v` (revs_native.c). All-native, unindexed — but it HAD the oracle-glue channel below, resolved by shim marshalling |
-| `edge_nearest` | $10/$11 | ✗ blocked | `$11` read by **non-native** `check_crash` ($111E); nativize check_crash to free it |
+| `edge_nearest` | $10/$11 | **✅ ELIGIBLE (2026-09-03)** | the one blocker was `$11` read by non-native `check_crash` ($111E); twin #169 made it native, and a strict re-scan finds all 7 refs in native routines. Unstarted |
+| `car_heading` | $0A/$0B | **✅ ELIGIBLE (2026-09-03)** | ⚠ and the block was **half instrument error**: `build_player_car` ($11CE) is native as of twin #170, and the *second* blocker, `loader_stub`, was never a routine — a stale `func` row at `$1200`, nine bytes into `build_player_car`, made that routine's OWN writes at `$11FE`/`$1205` read as non-native references. Retagged to `loader_image_entry`/`note`. Unstarted |
 | `math_lo/hi` | $74/$75 | ✗ **BLOCKED — settled 2026-09-02, do not re-open as a pair relocation** | The re-audit the EIGHTH lesson called for is DONE, and it cleared the indexing charge while confirming the block on other grounds. **Test 2 (indexing) PASSES:** all three indexed sites (`SBC/STA 0x74,X` $146E in `build_section_step_delta`, `ROR 0x74,X` $2B18 in `step_delta_halve` — *not* `draw_track_object`, which was an address-ordering misattribution) index the **step-delta vector** (lows $74/$75/$76, highs `point_delta_hi[0..2]` $83/$84/$85), a DIFFERENT TENANT, which under the EIGHTH lesson does not block a relocation. Tenancy now recorded on the cells themselves in `symbols.csv` (commit 67fb302). **Test 1 (all-native) FAILS by 6 refs in 4 routines**, each a self-contained local scratch use in its own tenant: `$262D` (an unnamed 6×256 DELAY LOOP, `DEC $74/BNE`), `$2B18` `step_delta_halve`, `$31D0` (a dash-code plotter loop, `$74` a row counter and `$75` its limit, `(plot_ptr),Y` store), `$49BB` (an unnamed seeder, `$74` scratch across 8 instructions). **But the decisive blocker is neither** — it is the HYBRID ORACLE GLUE of the 2026-08-30 FINDING below, which no amount of nativization removes: the math primitives (`mul8`/`mul8_noinit`/`div16by8`/`neg16_math`/`abs16_math`) are the pair's own operators and are already native, so every `__t6502` body that multiplies hands operands to a native child **through `mem[$74/$75]`**. ⭐ **The right mechanism here is not (B) at all** — see §`math_lo/hi` is a SCRATCH pair, so the win is PER-TWIN below |
 | `hypot_min` | $78/$79 | **✅ B DONE** (`hypot_min_v`) | ⚠ **this row used to read "✗ blocked — `$78` indexed", and that was a MISREADING of the second test** (see the EIGHTH lesson). The one indexed access, `ADC 0x78,X` at $4C52, belongs to `update_grip_limits`' axle load terms — a DIFFERENT TENANT. A relocation moves ONE USE, so what test 2 has to ask is whether the *relocated use* is ever indexed, and the road-pass use never is |
 | `plot_ptr` | $70/$71 | ✗ blocked | `$70` is an indirect pointer base (`($70),Y`) |
@@ -432,7 +434,7 @@ clean / tracks 6-of-6 / track-run every hook runs / Amiga muldiv + probe audits 
 
 | Cell(s) | Addr | Role | gen readers | Mechanism | Status |
 |---|---|---|---|---|---|
-| `car_heading` | $0A/$0B | 16-bit heading angle | some | A (B blocked) | TODO |
+| `car_heading` | $0A/$0B | 16-bit heading angle | 0 non-native | B | **ELIGIBLE, unstarted** — the block was `build_player_car` + `loader_stub`; #170 made the first native and the second never existed (see below) |
 | `lap_length` | $59FC/D | track-file lap distance | some | A | TODO |
 | `band2_duration` | $4F21/2 | horizon band duration | 0 (only irq1v + its oracle) | **B DONE** | ✅ `band2_duration_v` (revs_native.c), published back in band 1's arm |
 
@@ -668,6 +670,35 @@ nearly all of `revs_native.c` — so for `math_lo/hi` the campaign's work is lar
 mis-booked as pending. The 353 `math_lo`/`math_hi` references left in `revs_native.c` (90 functions)
 are overwhelmingly single marshals into and out of the native math primitives, which is the ABI and
 must stay.
+
+⭐⭐ **TENTH LESSON (2026-09-03) — the ELIGIBILITY SCAN is an instrument, and it has produced a
+wrong answer in three different ways now.** Each was caught only by the
+[[revs_verify_the_instrument]] discipline of checking a KNOWN quantity in the output:
+
+1. **The notation trap.** A pair is written both `0x74` and `0x0074` in the listing; scanning one
+   notation undercounts. (Found 2026-09-02; the ref count went 305 → 388.)
+2. **The extraction trap.** Pulling `VALIDATE_FUNCS` out of `transpile.py` with a non-greedy brace
+   regex truncates the set at the first `}` in a comment, so already-native routines appear in the
+   non-native column. **Extract by `index(name + ' = {')` … `index('\n}', i)`.** The tell was a
+   routine known to be native showing up as a blocker.
+3. **The immediate trap, and the STALE `func` ROW trap.** Matching a bare `$10` in the operand
+   field also matches the immediate `#$10`, which made `edge_nearest` look blocked by seventeen
+   unrelated routines. Match the four-digit zero-page form and skip `JMP`/`JSR`/branch operands.
+   And once that was fixed, the last surviving blocker was a **stale symbol row**: attributing a
+   ref to its owning routine by "last `func` row at or below this address" credits a false `func`
+   row inside a real routine's extent with that routine's own references. `loader_stub` (`$1200`,
+   nine bytes into `build_player_car`) blocked the `car_heading` pair for exactly that reason.
+
+**The standing rule: before believing an eligibility verdict, check that a routine you KNOW is
+native does not appear in the non-native column, and check that each surviving blocker is a real
+routine and not a label.**
+
+⭐ **And one fixture lesson from the same round, worth keeping here because it governs how a
+relocation gets proved:** a **recomputed cell cannot be seeded**, so a coverage counter that counts
+a seeded value is fiction. Two sabotages of twin #172 survived because `note_object_contact`
+*recomputes* `point_dist` and writes `object_dist_hi` unconditionally — the fixtures' pre-seeded
+arm counters were counting nothing. Force an arm through its INPUTS. This bites `point_dist`
+directly: it is the pair whose (B) relocation still needs proof.
 
 ## Ordering
 
