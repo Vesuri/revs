@@ -60,6 +60,7 @@ void emit_edge_bearing(void)
 {
     /* Y is unchanged to exit — entered with the slot in Y, the core never touches it, so the
        walk still reads the same slot back; A comes out as the point's distance high byte. */
+    car_heading_marshal_in();            /* the heading every bearing is measured against */
     hypot_max_marshal_in();               /* the tail-called hypot's larger magnitude */
     hypot_min_marshal_in();               /* ...and its smaller one */
     bearing_marshal_in();                 /* the absolute bearing its caller left in mem[$8A/$8B] */
@@ -134,12 +135,16 @@ void draw_road(void)
 
 void apply_driving_model(void)
 {
-    apply_driving_model_core(car_heading_lo, car_heading_hi);
-    model_accum_entry_marshal_out();      /* $46AE's value back into mem[$38/$39] */
+    car_heading_marshal_in();             /* it reads the heading in, as the car's position... */
+    apply_driving_model_core((uint8_t)car_heading_v, (uint8_t)(car_heading_v >> 8));
+    car_heading_marshal_out();            /* ...and its tail calls integrate_car_position, which
+                                             advances it — core-to-core, so publish it here */
+    model_accum_entry_marshal_out();       /* $46AE's value back into mem[$38/$39] */
 }
 
 void draw_track_object(void)
 {
+    car_heading_marshal_in();
     SlotExit e = draw_track_object_core(cpu.X, cpu.Y, cpu.V, cpu.C);
     cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
     cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
@@ -299,7 +304,9 @@ void rotate_pair_a_by_steer(void)
 
 void integrate_car_position(void)
 {
+    car_heading_marshal_in();
     AddFlags f = integrate_car_position_core();  /* ends in the heading add (car_heading += step) */
+    car_heading_marshal_out();           /* ...and this routine IS that add: publish it */
     cpu.Y = 0xFEu; cpu.X = 0xFFu;                /* $4922/$4923 two DEYs -> $FE; $4924 DEX -> $FF */
     cpu.A = f.hi; cpu.C = f.carry; cpu.V = f.overflow; cpu.N = f.neg; cpu.Z = f.zero;
 }
@@ -396,6 +403,7 @@ void update_engine_revs(void)
 
 void update_camera_and_drive_state(void)
 {
+    car_heading_marshal_in();
     CameraExit e = update_camera_and_drive_state_core();
     cpu.A = e.acc.hi; cpu.C = e.acc.carry; cpu.V = e.acc.overflow;
     cpu.N = e.acc.neg; cpu.Z = e.acc.zero;
@@ -727,10 +735,11 @@ void mirrors_update(void)
        loop so the skip path (which writes none of them) stays byte-exact. */
     uint8_t slot = mem[CAR_ORDER + car_ahead];          /* the car ahead's object slot */
     MirrorSetup s;
+    car_heading_marshal_in();
     mirrors_update_setup_core(mem[CAR_FLAGS_SHAPE + slot],
                               mem[OBJECT_WIDTH + slot],
                               mem[OBJECT_BEARING_HI + slot],
-                              car_heading_hi, &s);
+                              (uint8_t)(car_heading_v >> 8), &s);
     if (s.drawable) {
         math_lo          = s.half;      /* $74 — 6502 exit value, set only on this path */
         shared_temp_84   = s.bottom;    /* $84 — block bottom line */
@@ -952,6 +961,7 @@ void build_player_car(void)
     hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     build_player_car_core();
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
+    car_heading_marshal_out();           /* it rebuilds the heading from scratch */
 }
 
 void step_delta_halve(void)

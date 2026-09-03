@@ -355,6 +355,9 @@ SlotExit fill_object_gap_core(uint8_t width);
 /* ⭐ hypot_max ($7A/$7B) is a mechanism-(B) relocated wide value (see revs_native.c).  A shim
    whose core CONSUMES it marshals the cells in; one whose core PRODUCES it marshals them out —
    the 6502-ABI boundary is the one place a transliterated parent still hands it over in mem[]. */
+extern uint16_t car_heading_v;   /* car_heading ($0A/$0B) relocated — see revs_native.c */
+void car_heading_marshal_in(void);
+void car_heading_marshal_out(void);
 void hypot_max_marshal_in(void);
 void hypot_max_marshal_out(void);
 /* ⭐ hypot_min ($78/$79) — the sibling pair, marshalled at the same seams.  Its consumer

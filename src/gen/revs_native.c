@@ -1960,6 +1960,37 @@ void hypot_max_marshal_out(void)
     hypot_max_hi = (uint8_t)(hypot_max_v >> 8);
 }
 
+/* ⭐ WIDE-VALUE CLEANUP, mechanism (B): car_heading ($0A/$0B) relocated out of mem[] into this
+   native uint16_t.  It is WHERE THE CAR POINTS — one 16-bit angle, $10000 to the turn — and it is
+   a PERSISTENT value: integrate_car_position advances it by the frame's heading step and every
+   reader in the next frame's passes subtracts it from some bearing.  A static holds it exactly as
+   the two mem[] bytes did.
+
+   Every one of its eight readers is a native twin (emit_edge_bearing, draw_track_object,
+   update_camera_and_drive_state, build_road_sign, process_car_contact, mirrors_update_setup via
+   its shim, apply_driving_model via its shim) and both writers are too — so the pair carries no
+   transliterated traffic at all on Silverstone OR on an expansion circuit: the strict listing
+   re-scan (docs/wide-value-cleanup.md, TENTH lesson) finds no reference outside a native routine.
+
+   ⚠ Its LAST blocker was not a routine.  `loader_stub` ($1200) is revs_mem.bin's loader entry
+   stub; in the runtime image it sits nine bytes inside build_player_car, and as a stale `func` row
+   it credited build_player_car's OWN writes at $11FE/$1205 to a non-native caller.  Retagged.
+
+   The 6502-ABI boundary keeps the two representations in step exactly as hypot_max does: the
+   producers' shims marshal OUT, the consumers' marshal IN. */
+uint16_t car_heading_v;   /* not static: apply_driving_model's and mirrors_update's shims pass its high byte */
+
+void car_heading_marshal_in(void)
+{
+    car_heading_v = (uint16_t)(car_heading_lo | ((unsigned)car_heading_hi << 8));
+}
+
+void car_heading_marshal_out(void)
+{
+    car_heading_lo = (uint8_t)car_heading_v;
+    car_heading_hi = (uint8_t)(car_heading_v >> 8);
+}
+
 /* ⭐ WIDE-VALUE CLEANUP, mechanism (B): bearing ($8A/$8B) relocated out of mem[] into this native
    uint16_t.  It is bearing_to_section's whole output — the absolute angle from the camera to a
    section point — and every one of its readers is a native twin: emit_edge_bearing subtracts the
@@ -2087,7 +2118,7 @@ uint8_t emit_edge_bearing_core(uint8_t slot)
     /* $23C0-$23CC — the point's angle FROM WHERE THE CAR POINTS: bearing - car_heading, one
        16-bit subtract (binary on the render path — docs/static-map.md §Decimal mode). */
     uint16_t rel = (uint16_t)(bearing_v      /* relocated out of mem[$8A/$8B] — see above */
-                            -  ((unsigned)car_heading_lo | ((unsigned)car_heading_hi << 8)));
+                            -  car_heading_v);   /* relocated out of mem[$0A/$0B] */
     mem[EDGE_X_LO_TBL + slot] = (uint8_t)rel;
     mem[EDGE_X_HI_TBL + slot] = (uint8_t)(rel >> 8);
 
@@ -3669,7 +3700,7 @@ SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, ui
            path the subtract's V is the routine's exit V.  Replay it from the high byte. */
         uint16_t bearing = (uint16_t)(((uint16_t)mem[OBJECT_BEARING_HI + slot] << 8) |
                                       mem[OBJECT_BEARING_LO + slot]);
-        uint16_t heading = (uint16_t)(((uint16_t)car_heading_hi << 8) | car_heading_lo);
+        uint16_t heading = car_heading_v;         /* relocated out of mem[$0A/$0B] */
         uint16_t delta   = (uint16_t)(bearing - heading);
         math_lo = (uint8_t)delta;                       /* the plotter's setup shares this cell */
         uint8_t  deltaHi = (uint8_t)(delta >> 8);
@@ -6738,11 +6769,10 @@ AddFlags integrate_car_position_core(void)
 
     /* $4927-$4934 — and the heading advances by element 2, the frame's heading step.  The HIGH
        add's A / N / V / Z / C are this routine's exit flags, returned for the shim to replay. */
-    { uint8_t  hc = car_heading_hi, hm = heading_step_hi;
-      unsigned h  = (unsigned)(((uint16_t)hc << 8) | car_heading_lo)
+    { uint8_t  hc = (uint8_t)(car_heading_v >> 8), hm = heading_step_hi;
+      unsigned h  = (unsigned)car_heading_v
                   + (unsigned)(((uint16_t)hm << 8) | heading_step_lo);
-      car_heading_lo = (uint8_t)h;
-      car_heading_hi = (uint8_t)(h >> 8);
+      car_heading_v = (uint16_t)h;                  /* relocated out of mem[$0A/$0B] */
       return add16_flags(hc, hm, h);
     }
 }
@@ -7948,7 +7978,7 @@ yaw:
         if (!c3) a ^= 0x3Fu;                            /* $4558 BCS — complement in the octant */
         if (n2)  a ^= 0x80u;                            /* $455D BPL — the half turn */
         if (n1)  a = (uint8_t)(0u - a);                 /* $4562 abs8 driven by (1)'s sign */
-        sy = (uint8_t)(a - car_heading_hi);            /* $4565-$4566 */
+        sy = (uint8_t)(a - (uint8_t)(car_heading_v >> 8));   /* $4565-$4566 */
         section_yaw = sy;                              /* $4568 */
 
         /* $456A-$4574 — folded to 0..$3F about $40 (the subtract's N is the first test). */
@@ -8514,7 +8544,7 @@ static void build_road_sign_core(void)
     /* $4CFA-$4D08 — how far off the car's heading the sign is.  Past $40 it has left the view,
        and THAT is what commits the sign number for the next frame.  abs8 here branches on bit 7
        of (bearing_hi - car_heading_hi) — the caller's N equals bit 7 — and $80 negates to $80. */
-    uint8_t off    = (uint8_t)((uint8_t)(bearing_v >> 8) - car_heading_hi);
+    uint8_t off    = (uint8_t)((uint8_t)(bearing_v >> 8) - (uint8_t)(car_heading_v >> 8));
     uint8_t absOff = (off & 0x80u) ? (uint8_t)(-off) : off;
     if (cmp_ge(absOff, 0x40u))                           /* the sign has left the view */
         sign_last_index = saved_slot_index;
@@ -8535,6 +8565,7 @@ static void build_road_sign_core(void)
    marshal-in is what makes the marshal-out faithful on the early exits: the cells come back
    holding exactly what they held on entry, which is what the 6502 left there. */
 void build_road_sign(void)      { hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
+                                  car_heading_marshal_in();
                                   build_road_sign_core();
                                   hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out(); }
 void store_object_flags(void)   { store_object_flags_core(cpu.Y, cpu.A); }
@@ -10645,6 +10676,7 @@ void spin_car_out(void)
    --------------------------------------------------------------------------- */
 void process_car_contact(void)
 {
+    car_heading_marshal_in();   /* 6502-ABI entry: this routine has no separate shim */
     if (contact_pending == 0) { FUN_1c1b(); return; }        /* no contact this frame */
     contact_pending = 0x00;
     shared_temp_76 = (uint8_t)((shared_temp_76 >> 1) | 0x80);   /* SEC; ROR $76 */
@@ -10662,7 +10694,8 @@ void process_car_contact(void)
     if (impact2 >= 0x28 && (session_is_race & 0x80)) { cpu.X = x; spin_car_out(); }
 
     /* Heading difference between the two objects, x4; its sign steers abs16_math below. */
-    uint8_t  hd4     = (uint8_t)(((unsigned)mem[OBJECT_BEARING_HI + x] - car_heading_hi) << 2);
+    uint8_t  hd4     = (uint8_t)(((unsigned)mem[OBJECT_BEARING_HI + x]
+                                  - (uint8_t)(car_heading_v >> 8)) << 2);
     int      hd_sign = (hd4 & 0x80) != 0;                    /* PHP: N of the <<2 result */
 
     /* Speed credit: the slower car gets a nudge; scenery slots (X >= $14) are skipped. */
@@ -12731,8 +12764,7 @@ void build_player_car_core(void)
     uint16_t bearing = (uint16_t)(mem[OBJECT_BEARING_LO + x]
                                 | ((unsigned)mem[OBJECT_BEARING_HI + x] << 8));
     uint16_t heading = (uint16_t)(bearing ^ ((unsigned)track_direction << 8));
-    car_heading_lo = (uint8_t)heading;
-    car_heading_hi = (uint8_t)(heading >> 8);
+    car_heading_v = heading;                      /* relocated out of mem[$0A/$0B] */
 }
 
 /* ---------------------------------------------------------------------------
