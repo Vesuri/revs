@@ -892,6 +892,27 @@ attribution) over both determinism trajectories, 300 frames each:
 | parked (`make determinism`) | 54 723 | **0** |
 | driving (`STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`) | 429 294 | **0** |
 
+#### ⚠⚠ ...AND THE PROBE WAS BLIND TO THE STORES THAT MATTER
+
+**Retracted the same day it was written.** The probe hooked `bus_write`. The plotters are native
+twins now, and a native twin stores with a raw `mem[addr] = v` — **356 raw stores in
+`revs_native.c` against 17 `bus_write` calls**, and every plotter store is a raw one
+(`span_plot_core`'s two stores included; the "both stores go through bus_read/bus_write" comment
+above `SPAN_PLOT_1` is stale and describes code that no longer exists). So the table above counts
+the *transliteration's* indirect stores and cannot see the plotter's.
+
+It is the documented failure exactly: **an instrument that answers a narrower question than the one
+asked, and answers it coherently.** The zero is real; it is a zero about the wrong population.
+
+⭐ What survives is the calibration and the negative result about the transliteration — and the
+knowledge that **the real gate was already in the tree.** The four span-arm fixtures plant the
+pathological case deliberately: "one ascending case in twelve starts above its bound", which is
+what makes the walk climb `plot_ptr_hi` through page $00. That plant is what failed the
+`mem[arm->addend]` hoist 3 of 400 times on each `fwd` arm and 0 of 400 on each `rev` arm. So
+`make validate FN=draw_span` is a *stronger* instrument than any probe here, because it
+manufactures the hazard instead of waiting for a trajectory to produce it. Relocate, then run it —
+and treat 400/400 on the two `fwd` arms as the evidence, not a histogram.
+
 ⚠⚠ The hazard is real, but it lands somewhere else entirely: **428 745 of the driving run's
 429 294 page-0 indirect stores go to `$74`** (`math_lo`), all from one site in
 `move_and_draw_cars`. That is a FIFTH independent reason to leave `math_lo/hi` alone, and it is
