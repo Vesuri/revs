@@ -1038,16 +1038,15 @@ void draw_dash_needles(void);
 void draw_dash_needles__t6502(void);
 
 /* draw_dash_needles' steer-path selector — a replica of draw_dash_needle_core's branch structure,
-   so the fixture can count which sign and which angle path each (steerLo,steerHi) pair reaches. */
-static void steer_path(uint8_t steerLo, uint8_t steerHi,
+   so the fixture can count which sign and which angle path each steer angle reaches. */
+static void steer_path(uint16_t steer,
                        uint8_t* sign, uint8_t* small, uint8_t* clampArm)
 {
-    uint8_t s = (uint8_t)(steerLo & 1u);
-    uint8_t doubled = (uint8_t)((steerHi << 1) | (steerLo >> 7));
-    uint8_t dcarry  = (uint8_t)(steerHi & 0x80u);
+    uint8_t s = (uint8_t)(steer & 1u);
+    uint8_t doubled = (uint8_t)((uint16_t)(steer << 1) >> 8);
     *sign = s;
-    if (!dcarry && doubled < 0x26u) { *small = 1u; *clampArm = 0u; }
-    else { *small = 0u; *clampArm = (dcarry || doubled >= 0x3Du) ? 1u : 0u; }
+    if (steer < 0x8000u && doubled < 0x26u) { *small = 1u; *clampArm = 0u; }
+    else { *small = 0u; *clampArm = (steer >= 0x8000u || doubled >= 0x3Du) ? 1u : 0u; }
 }
 
 /* ==========================================================================
@@ -1099,7 +1098,8 @@ static int test_draw_dash_needles(void)
         for (unsigned q = 0; q < 4; q++)      pre[0x397Cu + q] = 0x75u;
 
         uint8_t sgn, sml, clamp;
-        steer_path(pre[0x62A2u], pre[0x62A5u], &sgn, &sml, &clamp);
+        steer_path((uint16_t)(pre[0x62A2u] | ((unsigned)pre[0x62A5u] << 8)),
+                   &sgn, &sml, &clamp);
         if (sgn) sign1++; else sign0++;
         if (sml) smallArm++; else { bigArm++; if (clamp) clampMirr++; else clampDir++; }
 

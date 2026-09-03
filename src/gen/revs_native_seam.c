@@ -615,7 +615,8 @@ void draw_dash_needles(void)
         | (steer_angle_lo & 0x01u));                          /* C */
 
     DashNeedle n;
-    draw_dash_needle_core(steer_angle_lo, steer_angle_hi, &n);
+    /* ⚠ $62A2/$62A5 — STRIDED lanes of the car-angle array, composed here, not relocated. */
+    draw_dash_needle_core((uint16_t)(steer_angle_lo | ((unsigned)steer_angle_hi << 8)), &n);
 
     math_lo        = n.angleIndex;                /* $74 — folded angle index; plot_line_octant's DDA */
     shared_temp_76 = n.stepSize;                  /* $76 — octant step (SMC dispatch) */

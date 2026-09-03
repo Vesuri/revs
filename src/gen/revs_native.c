@@ -2351,9 +2351,12 @@ void driver_name_address_core(uint8_t index, NamePtr *out)
 }
 
 /* draw_dash_needles ($513A), the STEERING-WHEEL needle's arithmetic (the rev-needle half and the
-   undraw/plot machinery stay in the shim).  steer_angle_lo carries the sign in bit 0 and the value's
-   own lowest bit in bit 7 (sign-magnitude, docs steer_angle_lo), so the routine doubles the 16-bit
-   (hi:lo) pair to shift the sign out and works with the doubled high byte:
+   undraw/plot machinery stay in the shim).  The steering angle is SIGN-MAGNITUDE and stored SHIFTED
+   UP ONE PLACE: bit 0 of the low byte is the sign and the value's own lowest bit sits in bit 1, so
+   the routine doubles the 16-bit angle to shift the sign out and works with the doubled high byte.
+   ⚠ The two lanes are STRIDED, not adjacent — $62A2 and $62A5, elements 2-low and 2-high of the
+   car-angle array — so the pair arrives here as one `uint16_t` argument (a per-twin hoist) and the
+   cells themselves stay in mem[]; relocating them is the SoA case, all three elements at once.
 
      - bit 0 of steer_lo is the SIGN; it picks the octant step (2 or 5) and later negates the origin.
      - the doubled high byte, folded about $3C and mirrored about $4C, is the angle index into
@@ -2363,25 +2366,35 @@ void driver_name_address_core(uint8_t index, NamePtr *out)
 
    All plain 8-bit maths (D = 0 on the dash path).  math_lo/math_hi keep their 6502 exit scratch
    values (the angle index / a fixed 6) until the $74/$75 relocation. */
-void draw_dash_needle_core(uint8_t steerLo, uint8_t steerHi, DashNeedle *out)
+void draw_dash_needle_core(uint16_t steer, DashNeedle *out)
 {
-    uint8_t sign     = (uint8_t)(steerLo & 1u);                 /* $5145 LSR -> C = bit0 */
+    uint8_t sign     = (uint8_t)(steer & 1u);                   /* $5145 LSR -> C = bit0 */
     uint8_t stepInit = sign ? 2u : 5u;                          /* $5147-$514D */
 
-    /* $5152-$5154 — double the 16-bit steer_angle; keep the doubled high byte and its carry-out. */
-    uint8_t doubled = (uint8_t)((steerHi << 1) | (steerLo >> 7));
-    uint8_t dcarry  = (uint8_t)(steerHi & 0x80u);
+    /* $5152-$5154 ASL/ROL — ONE 16-bit double, shifting the sign bit out of the bottom.  The angle
+       the tables are indexed by is the doubled HIGH byte, and the bit shifted off the top (the
+       angle's own bit 15) means "too big to fold", forcing the clamp below. */
+    uint8_t doubled = (uint8_t)((uint16_t)(steer << 1) >> 8);
+
+    /* The 6502 keeps the ASL's carry-out and branches on it; in C that bit is just the angle's own
+       sign, so both arms below test `steer` against $8000 directly and no carry variable exists.
+       ⭐ A sabotage moving that threshold to $4000 PASSES `make validate`, correctly and not
+       through a fixture gap: an angle in $4000..$7FFF puts bit 7 of `doubled` up, so
+       `doubled >= $80` and BOTH tests land on the clamp arm whichever way the compare goes — a
+       no-change-by-construction (docs/validation-harness.md §FIFTEENTH).  The sibling cases prove
+       the compare IS watched: $1000 or $0800 fail at once, because those admit angles whose
+       `doubled` lands inside the $26..$3C window the two arms disagree on. */
 
     uint8_t angleIndex, stepSize, small;
-    if (!dcarry && doubled < 0x26u) {                           /* $5155-$5159 small-angle branch */
+    if (steer < 0x8000u && doubled < 0x26u) {                   /* $5155-$5159 small-angle branch */
         small      = 1u;
         angleIndex = doubled;
         stepSize   = (uint8_t)(stepInit ^ 1u);                  /* $5175 toggle 2<->3, 5<->4 */
     } else {
         uint8_t clamp, cAdc;
         small = 0u;
-        if (dcarry || doubled >= 0x3Du) { clamp = 0x3Cu; cAdc = 1u; } /* $515B-$515F clamp, C=1 */
-        else                            { clamp = doubled; cAdc = 0u; } /* $515D direct, C=0 */
+        if (steer >= 0x8000u || doubled >= 0x3Du) { clamp = 0x3Cu; cAdc = 1u; } /* $515B-$515F clamp, C=1 */
+        else                                      { clamp = doubled; cAdc = 0u; } /* $515D direct, C=0 */
         angleIndex = (uint8_t)((uint8_t)~clamp + 0x4Cu + cAdc); /* $5161-$5165 mirror about $4C */
         stepSize   = stepInit;
     }

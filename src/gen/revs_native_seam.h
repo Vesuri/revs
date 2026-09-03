@@ -433,7 +433,7 @@ void draw_corner_marker_core(uint8_t offLo, uint8_t offHi, uint16_t edgeX, uint8
 void mirrors_update_setup_core(uint8_t slotFlag, uint8_t objWidth, uint8_t bearingHi, uint8_t carHeadingHi, MirrorSetup *out);
 void dial_needle_angle_core(uint8_t engineRevs, NeedleDial *out);
 void driver_name_address_core(uint8_t index, NamePtr *out);
-void draw_dash_needle_core(uint8_t steerLo, uint8_t steerHi, DashNeedle *out);
+void draw_dash_needle_core(uint16_t steer, DashNeedle *out);
 void menu_draw_gfx_bars_core(void);
 void plot_line_octant_core(uint8_t entryScanline);
 void text_script_interp_core(uint8_t tableIdx);
