@@ -773,6 +773,59 @@ a seeded value is fiction. Two sabotages of twin #172 survived because `note_obj
 arm counters were counting nothing. Force an arm through its INPUTS. This bites `point_dist`
 directly: it is the pair whose (B) relocation still needs proof.
 
+## ⭐⭐ THE CAMPAIGN IS NOW A DE-TRANSLITERATION CAMPAIGN, and `plot_ptr` $70/$71 is the target
+
+**Read `tools/wide_eligibility.py` before adding a verdict to any table above.** Every eligibility
+row on this page was derived by hand, and several had to be re-derived. The scanner attributes
+every hit to its enclosing C function, parsed out of the generated source, and separates the three
+populations the hand scans kept confusing: **native readers**, **`__t6502` oracles** (which read
+`mem[]` by construction and block nothing) and **shipping transliterations** (which do).
+
+Two of its own bugs are worth carrying forward, because each produced a *coherent wrong verdict*
+rather than an obvious failure, and both were caught only by calibrating against a pair whose
+answer is already known:
+
+- **Only the transliteration spells a cell as raw hex.** Native code uses the `mem.h` names and the
+  seam header's SoA bases, so a hex-only scan reported **zero** native readers for a pair with
+  fourteen. (This is the same lesson as the alias-vs-`MEM_`-vs-hex point above, from the other side.)
+- **A bare hex literal is usually an IMMEDIATE.** `LDX(0x0A)` is the constant 10, not address $0A —
+  and it gave `car_heading`, relocated and green, four shipping readers that never touch it. A raw
+  *address* access in `revs_gen.c` is always spelled `mem[0xNNNN…]`.
+
+### Measured verdicts (2026-09-03), replacing the estimates in the tables above
+
+| Pair | native | oracles | **shipping** | verdict |
+|---|---|---|---|---|
+| `plot_ptr` $70/$71 | 20 fn / 81 ref | 17 | **4 fn / 15 ref** | ⭐ the target — see below |
+| `math_lo/hi` $74/$75 | 89 / 329 | 84 | 9 / 36 | scratch; per-twin, not a relocation (§SETTLED) |
+| `plot_ptr2` $72/$73 | 13 / 33 | 11 | 3 / 8 | second in line |
+| `point_delta` + `object_dist` | 21 / 39 | 26 | 3 / 7 | |
+| `point_dist` $7C/$7D | 11 / 19 | 6 | 5 / 8 | ELIGIBLE-with-marshal, **scored negative** (§ELEVENTH) |
+| `nearest_edge_bearing` $5E/$5F | 3 / 6 | 3 | 2 / 2 | |
+| `plot_ptr3` / `SLIP_MAG` $8E/$8F | 8 / 12 | 11 | **0** | ✅ eligible, **scores 0**: no site holds it as a 16-bit value — `plot_ptr3_lo` is a shape index and a Y, `plot_ptr3_hi` is inc/dec'd alone. Separate tenants, not a pair |
+| `lap_length` $59FC/D | 3 / 6 | 3 | **0** | ✅ eligible and **scores positive** — read-only TRACK FILE data (no runtime writer at all), and all three sites want it as a `uint16_t`. Small but free of any marshal-out |
+
+### Why `plot_ptr`, and the running count
+
+It is the biggest remaining prize by a wide margin — and, unlike the shared scratch cells that made
+`math_lo/hi` look like the prize for three passes (§NINTH LESSON), it survives the ops-per-marshal
+test: it is a genuine **16-bit screen pointer** doing real wide arithmetic, with
+`plot_line_octant_core` alone holding 21 refs in the hottest loop of the render pass.
+
+| | shipping blockers | refs |
+|---|---|---|
+| start (2026-09-03) | `mirror_draw_car`, `region_7bf7`, `view_paint_lines_short`, `region_31d0`, `undraw_plot_lines`, `console_io` | 23 |
+| after twin #165b (`undraw_plot_lines`) | five | 21 |
+| after twin #165c (`mirror_draw_car`) | `region_7bf7`, `view_paint_lines_short`, `region_31d0`, `console_io` | 15 |
+
+Remaining, by size: `region_31d0` (70 lines, a two-entry region — $31D0 and $3D68),
+`console_io` (107, off the render path), `view_paint_lines_short` (229),
+`region_7bf7` (1042 — the view cell chain, and the one to plan rather than just write).
+
+⭐ **Nativizing a blocker pays twice.** `mirror_draw_car` also freed its own caller: twin #152 had
+kept `mirrors_update`'s whole segment loop in the 6502-ABI shim *only* because this callee took its
+inputs in A and Y. Check every caller's shim after removing a blocker.
+
 ## Ordering
 
 0. **Step 0 consolidation** (above) — clears the duplicate-define debt first.
