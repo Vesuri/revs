@@ -702,9 +702,19 @@ static int view_enter_chain(ViewState* v, uint16_t site, uint16_t opnd, unsigned
 
 /* Step both screen pointers to the next scan line: +1 inside a character row, +$139 to
    cross into the next one.  Returns the incremented low byte; `*carry_out` reports the
-   carry off the high byte, which is the odd tail phase 3 spells as a `BCC`.
-   ⚠ The adds go through adc_step because V and C are the two flags that can leave the
-   chain, and because the routine can be entered with decimal mode set. */
+   carry off plot_ptr2's high byte, which is the odd tail phase 3 spells as a `BCC`.
+
+   ⭐ THE CROSSING IS ONE 16-BIT ADD.  The 6502 spells it `ADC #$38` on the low byte then
+   `ADC #1` on the high, and decimal mode is provably 0 here: all eight `SED` sites are
+   race-stats / marker-draw / front-end and each is bracketed by its own `CLD`
+   (docs/static-map.md §Decimal mode — $17C3's clock SEDs and CLDs at $17FA, inside
+   race_main_loop's tail), so view_paint_lines is inside no bracket and the fixture pins
+   c.D = 0 citing the same table.  The byte-pair carry idiom therefore computes nothing a
+   `uint16_t` add does not.
+
+   ⚠ A, N, V, Z and C ALL escape — view_paint_lines' fixture compares them (LIVE_FLAGS) —
+   so the exit state is replayed once, from the operands of the LAST add the 6502 does:
+   plot_ptr2's `ADC #1`.  That is four cpu writes instead of the three adc_steps' fifteen. */
 static unsigned step_scanline(int* carry_out)
 {
     unsigned next = (plot_ptr_lo + 1) & 0xFF;
@@ -716,11 +726,44 @@ static unsigned step_scanline(int* carry_out)
         plot_ptr2_lo = (unsigned char)next;
         return next;
     }
-    plot_ptr_lo  = (unsigned char)adc_step(next, 0x38, 0);
+
+    /* Crossing into the next character row: +$38 into the low byte and +1 into the high. */
+    unsigned adv   = (((unsigned)plot_ptr_hi << 8) | next) + 0x0138u;
+    unsigned advHi = (adv >> 8) & 0xFFu;
+    unsigned c2    = adv >> 16;                  /* the carry off the high byte */
+
+    plot_ptr_lo  = (unsigned char)adv;
     plot_ptr2_lo = plot_ptr_lo;
-    plot_ptr_hi  = (unsigned char)adc_step(plot_ptr_hi, 0x01, cpu.C);
-    plot_ptr2_hi = (unsigned char)adc_step(plot_ptr_hi, 0x01, cpu.C);
-    if (carry_out) *carry_out = cpu.C;
+    plot_ptr_hi  = (unsigned char)advHi;
+
+    /* plot_ptr2 sits one page above, and the 6502 gets there with a SECOND `ADC #1` on the
+       high byte it has just stored — so it also picks up that add's carry-out. */
+    unsigned      hi2 = advHi + 1u + c2;
+    unsigned char r2  = (unsigned char)hi2;
+    plot_ptr2_hi = r2;
+
+    /* ⚠ FOUR SABOTAGES OF THE LINES BELOW SURVIVE `make validate`, in two classes, and both
+       are recorded rather than engineered around (docs/validation-harness.md §FIFTEENTH):
+
+       (1) `c2` is PROVABLY always 0, so dropping it from hi2, or taking the exit C from
+           plot_ptr's own add instead of plot_ptr2's, changes nothing.  c2 is the carry off
+           $FFFF, and the plot pointer's high byte lives in $67..$7A — the same argument the
+           phase-3 tail below is kept under.  Kept because the 6502 has the second ADC.
+       (2) Perturbing the exit A, or dropping the V replay, also survives: the crossing
+           branch's A/V are DEAD AT view_paint_lines' EXIT.  [DERIVED, not proven] —
+           paint_cells ends each line on `CPX #$2C` and paint_lines_short writes V
+           unconditionally per line, so both are overwritten downstream, and 700 fixture
+           cases with A and all flags compared see no difference.  The replay stays anyway:
+           it is four writes against the fifteen the three adc_steps did, faithfulness is
+           the tie-breaker, and "dead at this exit" is not "dead for every future caller".
+
+       The value path IS covered — the step size and plot_ptr2's low byte both fail at once. */
+    cpu.A = r2;                                  /* the exit A is that last ADC's result */
+    cpu.V = adc_overflow((uint8_t)advHi, 0x01, c2);
+    cpu.N = (unsigned char)(r2 >> 7);
+    cpu.Z = (unsigned char)(r2 == 0);
+    cpu.C = (unsigned char)(hi2 >> 8);
+    if (carry_out) *carry_out = (int)(hi2 >> 8);
     return next;
 }
 
@@ -2504,6 +2547,17 @@ void plot_line_octant_core(uint8_t entryScanline)
         }
         if (a >= 8u) {                                     /* $523d-523f a >= 8 -> step right */
             x = 0u;                                        /* $5241 */
+            /* ⚠ DO NOT "widen" these four pointer steps ($5233, $5243, $5255, $526B) into a
+               uint16_t — it is a PESSIMISATION on the target, and the reason is the
+               reduce-the-ACCESSES rule rather than style.  They are already the
+               access-minimal form: one read of the low byte, one write, and the high byte
+               touched only on the carry (1 step in 32 at ±8, 1 in 4 at ±$40).  A wide
+               `p = lo | hi<<8; p += 8; store both` reads AND writes the high byte on every
+               step — 4 accesses where this does 2 — and RAM is uniformly slow here.
+               Hoisting the pointer into one local across the loop body WOULD reduce
+               accesses, but the pointer must be re-read per step: this is the self-modifying
+               plotter, and the loop's own stores can land in the $52xx body it is executing.
+               There is no 6502 idiom left to remove — no adc/sbc macro, no flag plumbing. */
             int t = (int)plot_ptr_lo + 8;                  /* $5243-5246 */
             plot_ptr_lo = (uint8_t)t;
             if (t > 0xFF) plot_ptr_hi = (uint8_t)(plot_ptr_hi + 1); /* $524a-524c */
