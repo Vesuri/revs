@@ -4621,7 +4621,12 @@ static int test_road_pass(void)
             fill_random(pre);
             c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
-            c.D = (uint8_t)(xs() % 4 == 0);
+            /* ⭐ D=0: draw_road's subtree is never entered in decimal mode (docs/static-map.md
+               §Decimal mode — the 8 SED sites are race-stats / marker-draw / front-end, each
+               bracketed by its own CLD), so the twin's `+ $14` is plain binary.  fill_line_attr,
+               the only routine that calls this one, has pinned D=0 on the same citation all
+               along; determinism-drive is the backstop that it truly holds. */
+            c.D = 0;
             if ((uint8_t)(pre[0x5E90 + c.X] + 0x14) >= 0x28) off++;
             subFail += diff_run("edge_x_offscreen", pre, c, edge_x_offscreen,
                                 edge_x_offscreen__t6502, liveMask, t, &printed);

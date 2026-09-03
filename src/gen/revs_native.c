@@ -5304,25 +5304,38 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
    previous top bit slides down to bit 6, which fill_line_attr reads back as the PREVIOUS
    point's answer.
    ⚠ This is a FLAG PRODUCER — its whole output is a mem write plus four escaping flags, so it
-   returns them BY VALUE (the caller replays them; the shim marshals them into cpu).  The add's
-   value/overflow come from the pure adc_value/adc_overflow helpers, which honour decimal mode
-   exactly as the ADC macro does (the fixture randomises D); the CMP is always binary and the ROR
-   is spelled out by hand.  Escapes: A = the add's sum (draw_road never reads it, but the
-   standalone fixture compares it); V = the add's signed overflow (draw_road's exit V on the mark
-   path); C = the byte rolled OUT (old bit 0); N = the rolled-in answer; Z = "cell now zero". */
+   returns them BY VALUE (the caller replays them; the shim marshals them into cpu).  Escapes:
+   A = the add's sum (draw_road never reads it, but the standalone fixture compares it);
+   V = the add's signed overflow (draw_road's exit V on the mark path); C = the byte rolled OUT
+   (old bit 0); N = the rolled-in answer; Z = "cell now zero".
+
+   ⭐ The add is PLAIN BINARY C, not a decimal-aware helper.  This is draw_road's subtree, and
+   docs/static-map.md §Decimal mode inventories all eight SED sites — race-stats, marker-draw and
+   front-end menu, each bracketed by its own CLD — with none on build_track_geometry -> draw_road,
+   so an ADC here computes nothing a `+` does not.  Its one in-tree caller, fill_line_attr, has
+   pinned c.D = 0 on that citation all along; the fixture below now does too, and
+   determinism-drive is the backstop that D = 0 really holds on the path. */
 
 EdgeOffFlags edge_x_offscreen_core(uint8_t pointX)
 {
     uint8_t edgeHi = mem[EDGE_X_HI_TBL + pointX];
-    uint8_t sum    = adc_value(edgeHi, 0x14u, 0).val;    /* + $14 (decimal-aware value) */
-    uint8_t v      = adc_overflow(edgeHi, 0x14u, 0);     /* ...its overflow, replayed pure */
-    uint8_t carry  = (uint8_t)(sum >= 0x28u);            /* CMP #$28 — always binary */
+    uint8_t sum    = (uint8_t)(edgeHi + 0x14u);          /* recentre: "on axis" becomes $00..$27 */
 
-    uint8_t old  = shared_temp_76;                       /* ROR shared_temp_76 */
-    uint8_t newv = (uint8_t)((carry << 7) | (old >> 1));
+    /* The ADC's signed overflow, which draw_road carries out in V.  $14 is a positive constant,
+       so the only signed wrap possible is positive -> negative; a negative edgeHi cannot overflow
+       by adding a positive at all. */
+    uint8_t v = (uint8_t)(edgeHi < 0x80u && sum >= 0x80u);
+
+    /* CMP #$28 — off axis if the recentred value has left the $50-wide window. */
+    uint8_t offAxis = (uint8_t)(sum >= 0x28u);
+
+    /* ROR shared_temp_76: this point's answer enters at bit 7 and the PREVIOUS point's slides
+       down to bit 6, which is where fill_line_attr reads it back. */
+    uint8_t old  = shared_temp_76;
+    uint8_t newv = (uint8_t)((offAxis << 7) | (old >> 1));
     shared_temp_76 = newv;
 
-    EdgeOffFlags e = { sum, v, (uint8_t)(old & 1u), carry, (uint8_t)(newv == 0) };
+    EdgeOffFlags e = { sum, v, (uint8_t)(old & 1u), offAxis, (uint8_t)(newv == 0) };
     return e;
 }
 
@@ -9187,107 +9200,108 @@ void fill_object_gap(void);   /* the shim — plot_view_src_line's close_gap arm
    drops them and this returns only the live A/X/Y/N/Z (v/c filled for completeness, uncompared). */
 SlotExit fill_object_gap_core(uint8_t width)
 {
-    unsigned bias;
-    uint8_t a, x, y, n = 0, z = 0;
-
     /* $1E38-$1E3F — the fill byte: the previous call's colour, or the blank sentinel if it was 0. */
     uint8_t fillByte = mem[PVS_COLOUR_P];
     if (fillByte == 0u) fillByte = SRC_CELL_BLANK;
     shared_temp_76 = fillByte;
 
-    /* $1E40-$1E4A — the pointer bias, and the floor a column falls back to.  D=0 on the object
-       path (static-map §Decimal mode): plain 8-bit -/+.  The SEC/SBC's borrow feeds the ADC. */
-    unsigned biasCarry = (0x7Fu >= span_line_cursor) ? 1u : 0u;   /* SEC/SBC: C = no borrow */
-    a              = (uint8_t)(0x7Fu - span_line_cursor);
-    mem[PVS_HALF]  = a;                           /* ⚠ math_lo, reused: here the BIAS */
-    bias           = a;
-    a              = (uint8_t)(bias + span_top_line + biasCarry);
-    mem[PVS_GAP_FLOOR] = a;
+    /* $1E40-$1E4A — how far below the view the run's pointers sit, and the top line a column
+       falls back to when its own table entry is above the run.  D=0 on the object path
+       (docs/static-map.md §Decimal mode), so both are plain 8-bit arithmetic.  The 6502 spells
+       this `SEC/SBC` then `ADC`, feeding the subtract's borrow into the add; that borrow is
+       worth one line and is absent only if span_line_cursor has passed $7F, which a view scan
+       line (<= $4F) never does. */
+    uint8_t  bias     = (uint8_t)(0x7Fu - span_line_cursor);
+    unsigned noBorrow = (span_line_cursor <= 0x7Fu) ? 1u : 0u;
+    mem[PVS_HALF]      = bias;                    /* ⚠ math_lo, reused: here the BIAS */
+    mem[PVS_GAP_FLOOR] = (uint8_t)(bias + span_top_line + noBorrow);
 
-    /* $1E4B-$1E66 — the two pointers, one block apart, both biased down by `bias`. */
+    /* $1E4B-$1E66 — the two write pointers, one source block apart, both biased down by `bias`.
+       (column + $5F) >> 1 is the block; the bit the shift drops picks $00 or $80 inside it. */
     mem[PVS_GAP_COL] = mem[EDGE_COLUMN];
     {
-        uint8_t  sum      = (uint8_t)(mem[EDGE_COLUMN] + 0x5Fu);            /* column + $5F (D=0) */
-        uint8_t  lsrCarry = (uint8_t)(sum & 1u);                            /* LSR A -> C */
-        uint8_t  ptrHi    = (uint8_t)(sum >> 1u);                           /* LSR A */
-        unsigned lowBase  = lsrCarry ? 0x80u : 0x00u;                       /* LDA #0 / ROR A */
-        int      carry;
-        plot_ptr_hi  = ptrHi;
-        plot_ptr2_hi = ptrHi;
-        /* SEC/SBC: C = no borrow.  (`>=` vs `>` can only differ at lowBase==bias, which never
-           happens: lowBase is 0 or $80 and bias = $7F - line with line a view scan line ≤ $4F,
-           so bias ∈ [$30,$7F] — the equality is unreachable by construction.) */
-        carry = (lowBase >= (unsigned)bias) ? 1 : 0;
-        a = (uint8_t)(lowBase - (unsigned)bias);
-        plot_ptr_lo  = a;
-        plot_ptr2_lo = (uint8_t)(a ^ 0x80u);                               /* EOR #$80 */
-        if (plot_ptr2_lo & 0x80u)                                          /* $1E63 BPL */
-            plot_ptr2_hi = (uint8_t)(plot_ptr2_hi - 1u);
-        if (!carry) {                                                      /* $1E67 BCS */
-            plot_ptr_hi  = (uint8_t)(plot_ptr_hi  - 1u);
-            plot_ptr2_hi = (uint8_t)(plot_ptr2_hi - 1u);
+        uint8_t  block   = (uint8_t)(mem[EDGE_COLUMN] + 0x5Fu);
+        unsigned lowBase = (block & 1u) ? 0x80u : 0x00u;
+        /* The bias can push the pointer below the block, which costs it a page.  (`>=` vs `>`
+           can only differ at lowBase == bias, which never happens: lowBase is 0 or $80 and
+           bias = $7F - line with line a view scan line <= $4F, so bias is in [$30,$7F].) */
+        int borrow = (lowBase < (unsigned)bias);
+
+        plot_ptr_hi  = (uint8_t)(block >> 1u);
+        plot_ptr2_hi = plot_ptr_hi;
+        plot_ptr_lo  = (uint8_t)(lowBase - (unsigned)bias);
+        plot_ptr2_lo = (uint8_t)(plot_ptr_lo ^ 0x80u);
+        if (plot_ptr2_lo & 0x80u)                 /* $1E63 — the EOR wrapped it back a page */
+            plot_ptr2_hi--;
+        if (borrow) {                             /* $1E67 */
+            plot_ptr_hi--;
+            plot_ptr2_hi--;
         }
     }
 
-    x = width;
-    for (;;) {
-        uint8_t c;
-        /* $1E6D-$1E85 — this column pair's top line: the table's entry when it is at or below
-           span_top_line, else the safe floor.  ⚠ The cursor steps back TWO columns. */
-        y = mem[PVS_GAP_COL];
-        a = mem[GAP_TOP_TBL + y];
-        y = (uint8_t)(y - 2u);                        /* DEY; DEY */
-        mem[PVS_GAP_COL] = y;
-        c = (uint8_t)(a >= span_top_line);            /* CMP: leaves A; only C is read here */
-        if (c) {
-            a = (uint8_t)(a + mem[PVS_HALF] + 1u);    /* + bias + carry (=1 here), D=0 */
-            y = a;                                    /* TAY */
-            n = (uint8_t)((a >> 7) & 1u);
-            if (n) {                                  /* $1E7D BPL — off the run entirely */
-                uint8_t t = (uint8_t)(x - 0x02u);     /* CPX #$02 */
-                c = (uint8_t)(x >= 0x02u);
-                n = (uint8_t)((t >> 7) & 1u);
-                z = (uint8_t)(t == 0u);
-                if (!c) { SlotExit e = { a, x, y, n, z, 0u, c }; return e; }   /* $1E83 */
-                goto step;                            /* $1E93 */
-            }
-        } else {
-            y = mem[PVS_GAP_FLOOR];                   /* $1E84 (its N/Z are dead) */
-        }
+    /* $1E6D-$1E9D — one pass per column PAIR, walking the cursor back two columns at a time. */
+    {
+        uint8_t remaining = width;
 
-        /* $1E86-$1E9D — the writes: a PAIR of columns while two are left, the single tail when
-           only one is. */
-        a = shared_temp_76;
-        c = (uint8_t)(x >= 0x02u);                    /* CPX #$02 (its N/Z here are dead) */
-        {
-            unsigned base  = zp_pointer(MEM_plot_ptr_lo);
-            unsigned base2 = zp_pointer(MEM_plot_ptr2_lo);
-            int      ram   = pointer_is_ram(base), ram2 = pointer_is_ram(base2);
-            if (!c) {
+        for (;;) {
+            uint8_t column = mem[PVS_GAP_COL];
+            uint8_t top    = mem[GAP_TOP_TBL + column];
+            uint8_t line, acc;
+            int     write  = 1;
+
+            mem[PVS_GAP_COL] = (uint8_t)(column - 2u);   /* ⚠ back TWO columns */
+
+            if (top >= span_top_line) {
+                /* This column's own top line, rebased onto the biased pointers. */
+                line = (uint8_t)(top + mem[PVS_HALF] + 1u);
+                acc  = line;
+                if (line & 0x80u) {                      /* $1E7D — off the run entirely */
+                    if (remaining < 2u) {                /* $1E83 — and it was the odd column */
+                        uint8_t left = (uint8_t)(remaining - 2u);
+                        SlotExit e = { acc, remaining, line,
+                                       (uint8_t)(left >> 7), (uint8_t)(left == 0u), 0u, 0u };
+                        return e;
+                    }
+                    write = 0;                           /* $1E93 — nothing to paint, just step */
+                }
+            } else {
+                line = mem[PVS_GAP_FLOOR];               /* $1E84 — the run's own floor */
+                acc  = line;
+            }
+
+            if (write) {
+                /* $1E86-$1E9D — down to the foot of the run: a PAIR of columns while two are
+                   left, the single tail when only one is. */
+                uint8_t  byte  = shared_temp_76;
+                unsigned base  = zp_pointer(MEM_plot_ptr_lo);
+                unsigned base2 = zp_pointer(MEM_plot_ptr2_lo);
+                int      ram   = pointer_is_ram(base), ram2 = pointer_is_ram(base2);
+
+                acc = byte;
+                if (remaining < 2u) {
+                    do {
+                        seam_write((base + line) & 0xFFFFu, ram, byte);
+                        line++;
+                    } while (!(line & 0x80u));
+                    { SlotExit e = { acc, remaining, line, (uint8_t)(line >> 7),
+                                     (uint8_t)(line == 0u), 0u, 0u };
+                      return e; }                        /* $1E9D */
+                }
                 do {
-                    seam_write((base + y) & 0xFFFFu, ram, a);
-                    y = (uint8_t)(y + 1u);            /* INY */
-                    n = (uint8_t)((y >> 7) & 1u);
-                    z = (uint8_t)(y == 0u);
-                } while (!n);
-                { SlotExit e = { a, x, y, n, z, 0u, c }; return e; }        /* $1E9D */
+                    seam_write((base  + line) & 0xFFFFu, ram,  byte);
+                    seam_write((base2 + line) & 0xFFFFu, ram2, byte);
+                    line++;
+                } while (!(line & 0x80u));
             }
-            do {
-                seam_write((base  + y) & 0xFFFFu, ram,  a);
-                seam_write((base2 + y) & 0xFFFFu, ram2, a);
-                y = (uint8_t)(y + 1u);                /* INY */
-                n = (uint8_t)((y >> 7) & 1u);
-                z = (uint8_t)(y == 0u);
-            } while (!n);
-        }
 
-    step:
-        x = (uint8_t)(x - 2u);                        /* DEX; DEX — Z is from the second */
-        n = (uint8_t)((x >> 7) & 1u);
-        z = (uint8_t)(x == 0u);
-        if (z) { SlotExit e = { a, x, y, n, z, 0u, 0u }; return e; }        /* $1E93 */
-        plot_ptr_hi  = (uint8_t)(plot_ptr_hi  - 1u);  /* $1E69 — back two columns */
-        plot_ptr2_hi = (uint8_t)(plot_ptr2_hi - 1u);
+            remaining = (uint8_t)(remaining - 2u);       /* $1E93 — two columns done */
+            if (remaining == 0u) {
+                SlotExit e = { acc, remaining, line, (uint8_t)(remaining >> 7), 1u, 0u, 0u };
+                return e;
+            }
+            plot_ptr_hi--;                               /* $1E69 — back two columns */
+            plot_ptr2_hi--;
+        }
     }
 }
 
