@@ -2501,6 +2501,36 @@ void draw_dash_needle_core(uint16_t steer, DashNeedle *out)
 #define PLOT_LINE_KEEP_TBL    0x3FE8u  /* pixel_keep_others_tbl — AND mask (keep the other pixels) */
 #define PLOT_LINE_COLOUR_TBL  0x34F8u  /* plot_line_colour_tbl — OR mask (this pixel's colour bits) */
 
+/* ⭐ TWIN #165b — undraw_plot_lines ($511E).  THE ERASE HALF of the dash needles: walks the undo
+   list plot_line_octant recorded, top entry down to entry 0, writing each saved background byte
+   back through its saved address, then empties the list.  Every byte the plotter ORs into is saved
+   before the OR ($5285-$528A), so this restores the exact background and the dial faces are never
+   repainted.
+
+   ⭐ Why this one is native: it was a shipping transliterated READER of plot_ptr $70/$71 — one of
+   the six standing between that pair and a mechanism-(B) relocation (tools/wide_eligibility.py;
+   docs/wide-value-cleanup.md).  The 6502 had no 16-bit register, so it rebuilt the pointer in
+   $70/$71 once per entry and stored through (zp),Y with Y=0.  Here it is a uint16_t local.
+
+   ⚠ The cells are still written, once, with entry 0's address — their 6502 exit value.  Writing
+   only the last iteration's value is equivalent because NOTHING between two iterations reads
+   $70/$71: the only reader is this loop's own store, and the addresses come from the undo list,
+   which lives at $0780-$07F7 and so can never alias zero page. */
+void undraw_plot_lines_core(void)
+{
+    uint8_t count = plot_undo_count;             /* $511E */
+    if (count == 0u) return;                     /* $5120 — nothing plotted last frame */
+
+    uint16_t addr = 0u;
+    for (int i = (int)count - 1; i >= 0; i--) {  /* $5122 DEX, then down to X = $FF */
+        addr = (uint16_t)(mem[PLOT_UNDO_PTR_LO + i] | (mem[PLOT_UNDO_PTR_HI + i] << 8));
+        bus_write(addr, mem[PLOT_UNDO_BYTE + i]);   /* $5132 STA (plot_ptr),Y with Y = 0 */
+    }
+    plot_ptr_lo = (uint8_t)addr;                 /* the 6502's residue: entry 0's address */
+    plot_ptr_hi = (uint8_t)(addr >> 8);
+    plot_undo_count = 0u;                        /* $5137 STA plot_undo_count with Y = 0 */
+}
+
 void plot_line_octant_core(uint8_t entryScanline)
 {
     uint8_t octant = shared_temp_76;                            /* $5204 */

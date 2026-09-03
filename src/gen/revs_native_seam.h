@@ -436,6 +436,7 @@ void driver_name_address_core(uint8_t index, NamePtr *out);
 void draw_dash_needle_core(uint16_t steer, DashNeedle *out);
 void menu_draw_gfx_bars_core(void);
 void plot_line_octant_core(uint8_t entryScanline);
+void undraw_plot_lines_core(void);   /* twin #165b — replay the plotter's undo list */
 void text_script_interp_core(uint8_t tableIdx);
 uint8_t menu_wait_key_core(uint8_t count);
 typedef struct { uint8_t a, c, z, n, mathlo, writeMathlo; } ParseNum;

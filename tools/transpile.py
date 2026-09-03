@@ -1244,6 +1244,18 @@ VALIDATE_FUNCS = {
     # instruction entry (LDX #$FD, the object_coord pair at $09FD/$0AFD).
     # ⭐ It is the last SHIPPING reader of the relocated bearing_v, so its shim keeps the
     # bearing / hypot_max / hypot_min marshal-outs (docs/wide-value-cleanup.md).
+    # ⭐ TWIN #165b — undraw_plot_lines ($511E).  THE ERASE HALF of the dash needles, and the
+    # first de-transliteration taken purely to UNBLOCK a mechanism-(B) relocation rather than
+    # for its own sake: it was one of the six shipping transliterated readers of plot_ptr
+    # $70/$71 (tools/wide_eligibility.py), the pair with 19 native readers and 79 refs — the
+    # biggest remaining prize in docs/wide-value-cleanup.md.  Replays plot_undo_count entries
+    # of the undo list plot_line_octant recorded, writing each saved byte back through its
+    # saved address, then zeroes the count.  The 6502 walked the list with $70/$71 as its
+    # indirect pointer, so the cells end holding entry 0's address; the twin uses a local and
+    # writes them once (nothing between the iterations reads them — see the note at the code).
+    # Exit ABI: the one caller is native draw_dash_needles, which reloads everything, so
+    # LIVE_NONE and a mem[]-only compare.  No BCD.
+    0x511E,
     0x2A5D,
     0x2A5F,
 }

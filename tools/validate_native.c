@@ -2110,6 +2110,81 @@ static int test_plot_line_octant(void)
     return fail;
 }
 
+void undraw_plot_lines(void);
+void undraw_plot_lines__t6502(void);
+
+/* ⭐ TWIN #165b — undraw_plot_lines ($511E).  The erase half of the dash needles: replay the undo
+   list top entry down, writing each saved background byte back through its saved address, then
+   empty the list.  Randomises the count across the whole list ($00-$28, including the empty-list
+   early return at $5120) and plants each entry's address in the MODE 5 frame buffer ($3000-$7FFF),
+   which is where the plotter's own pointers always point.
+
+   ⚠ That address range is not decoration, it is the twin's correctness argument under test: the
+   core keeps the walk's pointer in a uint16_t and writes plot_ptr $70/$71 only once, with entry
+   0's address, so a saved pointer that ALIASED $70 or $71 would make the two seams diverge.  It
+   cannot: plot_undo_ptr is plot_ptr ORed with a Y offset and plot_ptr is a screen address.  A
+   slice deliberately plants entries that alias EACH OTHER so the replay order is compared too --
+   restoring top-down is what makes overlapping strokes come back in the right order. */
+static int test_undraw_plot_lines(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("undraw_plot_lines");
+    if (!want("undraw_plot_lines")) return 0;
+
+    /* A/X/Y and N/Z are the loop's residue and the shim reproduces them: the one shipping caller
+       falls straight into dial_needle_angle's 6502 entry. */
+    unsigned mask = LIVE_A | LIVE_X | LIVE_Y | LIVE_N | LIVE_Z;
+    int cases = 3000 * scale, empty = 0, full = 0, aliased = 0;
+
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;
+
+        uint8_t count = (t % 7u == 0u) ? 0u : (uint8_t)((xs() % 0x28u) + 1u);
+        pre[0x0069u] = count;                      /* plot_undo_count */
+        if (count == 0u) empty++; else if (count >= 0x20u) full++;
+
+        int alias = (t % 5u == 0u);                /* a slice with entries writing the same cell */
+        uint16_t shared = (uint16_t)(0x5000u + (xs() % 0x0800u));
+        for (unsigned k = 0; k < 0x28u; k++) {
+            uint16_t a = (alias && (k & 1u)) ? shared
+                                             : (uint16_t)(0x3000u + (xs() % 0x5000u));
+            pre[0x07A8u + k] = (uint8_t)a;         /* plot_undo_ptr_lo */
+            pre[0x07D0u + k] = (uint8_t)(a >> 8);  /* plot_undo_ptr_hi */
+            pre[0x0780u + k] = (uint8_t)xs();      /* plot_undo_byte */
+        }
+        if (alias && count >= 2u) aliased++;
+
+        fail += diff_run("undraw_plot_lines", pre, c, undraw_plot_lines,
+                         undraw_plot_lines__t6502, mask, t, &printed);
+    }
+
+    /* Non-vacuity: both arms of the $5120 branch, long lists, and the overlap slice. */
+    if (empty == 0 || empty == cases) {
+        printf("[VACUOUS] undraw_plot_lines: the empty-list early return at $5120 was taken "
+               "%d of %d times\n", empty, cases);
+        fail++;
+    }
+    if (full == 0) {
+        printf("[VACUOUS] undraw_plot_lines: no case replayed a list of $20+ entries\n");
+        fail++;
+    }
+    if (aliased == 0) {
+        printf("[VACUOUS] undraw_plot_lines: the overlapping-entry slice never had 2+ entries, "
+               "so replay ORDER was never compared\n");
+        fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+NZ  "
+           "(%d empty lists, %d long, %d overlapping)\n",
+           "undraw_plot_lines", cases, fail, empty, full, aliased);
+    return fail;
+}
+
 void text_script_interp(void);
 void text_script_interp__t6502(void);
 
@@ -7768,6 +7843,7 @@ int main(int argc, char** argv)
     fail += test_stage_nearby_car();
     fail += test_check_car_pair();
     fail += test_plot_line_octant();
+    fail += test_undraw_plot_lines();
     fail += test_text_script_interp();
     fail += test_menu_wait_key();
     fail += test_view_paint_lines();

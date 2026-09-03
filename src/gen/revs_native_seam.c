@@ -589,6 +589,27 @@ void dial_needle_angle(void)
     plot_line_octant();
 }
 
+void undraw_plot_lines(void)
+{
+    /* $511E — 6502-ABI shim for twin #165b.  The exit registers are the loop's residue: A is
+       entry 0's restored byte, X the $FF that ended the walk (so N=1, Z=0), Y the 0 the store
+       used.  On the empty-list path ($5120) the 6502 returns from LDX with X = 0, Z = 1, N = 0
+       and A / Y untouched.  Reproduced rather than declared dead because the one shipping
+       caller, draw_dash_needles, falls straight into dial_needle_angle's own 6502 entry. */
+    uint8_t count = plot_undo_count;
+    undraw_plot_lines_core();
+
+    if (count == 0u) {
+        cpu.X = 0u;
+        UPD_NZ(0u);
+        return;
+    }
+    cpu.A = mem[0x0780u];                         /* plot_undo_byte[0] — the last one restored */
+    cpu.X = 0xFFu;
+    cpu.Y = 0u;
+    UPD_NZ(0xFFu);                                /* the DEX that ended the loop */
+}
+
 void draw_dash_needles(void)
 {
     /* $513A — the STEERING-WHEEL needle, the last thing race_main_loop ($17B4) draws.  The prefix
@@ -599,7 +620,9 @@ void draw_dash_needles(void)
        through into the shared plot_line_octant for a second, 6-pixel line.  Result-only: exit
        regs/flags are dead at the caller.  math_lo ($74) / math_hi ($75) keep their 6502 exit values
        (the folded angle index and a fixed 6) until the $74/$75 relocation. */
-    undraw_plot_lines();                          /* $513A */
+    /* ⭐ Core-to-core: undraw_plot_lines' 6502 exit ABI (A/X/Y + N/Z) is dead here —
+       dial_needle_angle sets up plot_line_octant's entry registers itself. */
+    undraw_plot_lines_core();                     /* $513A */
     dial_needle_angle();                          /* $513D — rev needle; falls into plot_line_octant */
 
     /* $5145-$5146 / $5186 — the routine's own PHP/PLP is balanced (S restored), but the pushed
