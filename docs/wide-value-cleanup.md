@@ -1013,6 +1013,56 @@ value — each writes before it reads.
 kept `mirrors_update`'s whole segment loop in the 6502-ABI shim *only* because this callee took its
 inputs in A and Y. Check every caller's shim after removing a blocker.
 
+### `plot_line_octant` ($5204): the lanes are load-bearing for the READ, not the store — and only near page $00
+
+The dashboard line plotter (`dial_needle_angle`, `draw_dash_needles`, `undraw_plot_lines`) walks
+`plot_ptr` `$70/$71`.  Converted: the four moves (`$5233` cell left, `$5243` cell right, `$5255`
+row up, `$526B` row down) are one word add each, and the store address at `$5285` is
+`plot_ptr_v + y` — the per-pixel reassembly (two byte reads, a shift, an or) is gone.  The
+"⚠ DO NOT widen these four pointer steps" note that stood in the twin is **retracted**: it costed
+the steps correctly and missed that the reassembly they were protecting was the larger bill.
+
+**But the byte lanes cannot simply be dropped.** The FIFTH eligibility test names the store
+direction — the plotter can write its own pointer, closed by `plot_store_resync`.  The direction
+that actually bit here is the **read**: the pixel is a read-modify-write of `($70),Y`, so a pointer
+in `$006A..$0071` fetches its own low or high lane *as the screen byte*.  Dropping the lanes
+entirely fails the fixture.
+
+The resolution is a page test, not unconditional bookkeeping.  `PLOT_PTR_ADD` refreshes the lanes
+only while the pointer is below `$0100`, a conservative superset of the danger window.  Every
+shipping caller plots into the frame buffer at `$3000` and up, so the steady state is one word add
+and a not-taken branch — no RAM writes at all — and the pathological case stays byte-exact.
+
+⭐ **General form: when a relocated value must keep a live `mem[]` mirror, ask whether the mirror is
+needed EVERYWHERE or only in an address window.** A window test is a register compare; an
+unconditional write-through is two RAM writes in the inner loop, which is the cost the campaign
+exists to remove.
+
+### The fixture had to be AIMED, not just randomised
+
+Two of the eight sabotages — dropping the lane refresh on one of the four steps, and dropping the
+final marshal-out — survived a fixture that seeded the pointer's low byte uniformly.  A uniform
+byte reaches the `$006A..$0071` window 8 draws in 256, and only some of those cases then step in a
+direction that reads the lane.  Biasing the planted low byte to `$50..$8F` caught both.
+**A plant that makes the hazard *possible* is not a plant that makes it *likely*** — size the
+planted distribution against the window it is meant to hit, or the plant is decoration.
+
+### One sabotage that survives for a reason, written at the code
+
+`if (oldLo >= 8u)` vs `> 8u` is the same program: at `oldLo == 8` the new low byte is `0`, and the
+re-test asks `a >= 8`, which `0` fails — so the borrow arm falls through to `x_done` exactly where
+the no-borrow arm jumps.  No-change-by-construction, the third of the standing three explanations.
+
+### ⚠ And a note on the sabotage HARNESS itself
+
+A first pass reported **all eight defects surviving**, including "store address +1", which is
+impossible.  The cause was neither the twin nor the fixture: the sabotage driver was a shell
+function with an inline heredoc, and it was building unpatched sources.  Re-run as a script file,
+seven of eight were caught.  ⭐⭐ **A sabotage sweep in which nothing at all is caught is a report
+about the sweep.** Before believing it, sabotage the sweep — patch one defect by hand, build it by
+hand, and confirm the harness fails.  (And detect a failure by the harness's **exit status**: a
+`grep` for `DIFF]` misses fixtures that report only a `N mismatch` line.)
+
 ## Ordering
 
 0. **Step 0 consolidation** (above) — clears the duplicate-define debt first.

@@ -105,6 +105,21 @@
 #define PLOT_SET_HI(name, b)  do { uint8_t b_ = (uint8_t)(b);                              \
         name##_v = (uint16_t)((name##_v & 0x00FFu) | ((unsigned)b_ << 8));                 \
         mem[MEM_##name##_hi] = b_; } while (0)
+/* A step of an arbitrary delta, for plot_line_octant.  One word add, and the byte lanes are
+   refreshed ONLY when the pointer is in page $00/$01.
+   ⚠ The lanes are load-bearing, and the reason is the READ direction, not the store: the pixel
+   read-modify-write fetches ($70),Y, so a pointer sitting a few bytes below $70 reads its OWN low
+   or high lane as the screen byte.  (The store direction is closed by plot_store_resync.)  That
+   needs plot_ptr_v in [$006A..$0071] — addr is plot_ptr_v + y with y in 0..7 — so the page test
+   is a conservative superset, and every shipping caller (frame-buffer addresses, $3000 up) skips
+   the two stores entirely.  Dropping the lanes altogether FAILS the fixture's planted page-$00
+   cases; keeping them unconditionally costs two RAM writes per pixel step for nothing. */
+#define PLOT_PTR_ADD(name, delta)  do {                                                    \
+        name##_v = (uint16_t)(name##_v + (delta));                                         \
+        if (name##_v < 0x0100u) {                                                          \
+                mem[MEM_##name##_lo] = (uint8_t)name##_v;                                  \
+                mem[MEM_##name##_hi] = (uint8_t)(name##_v >> 8);                           \
+        } } while (0)
 /* One scan line is one PAGE.  Only the high lane changes, so only it is written through. */
 #define PLOT_STEP_PAGE(name, delta)  do {                                                  \
         name##_v = (uint16_t)(name##_v + (delta));                                         \
@@ -2689,6 +2704,10 @@ void undraw_plot_lines_core(void)
 
 void plot_line_octant_core(uint8_t entryScanline)
 {
+    /* The producers (dial_needle_angle, draw_dash_needle) still seed $70/$71 as bytes — they run
+       once a frame, so the pointer is read in here once and written back at every exit. */
+    plot_ptr_marshal_in();
+
     uint8_t octant = shared_temp_76;                            /* $5204 */
     mem[SMC_MAJOR_STEP] = mem[OCTANT_MAJOR_STEP_TBL + octant];  /* $5209 -> SMC slot */
     mem[SMC_MINOR_STEP] = mem[OCTANT_MINOR_STEP_TBL + octant];  /* $520f -> SMC slot */
@@ -2715,7 +2734,8 @@ void plot_line_octant_core(uint8_t entryScanline)
             case 0xC8u: y = (uint8_t)(y + 1); break;       /* INY */
             case 0xCAu: x = (uint8_t)(x - 1); break;       /* DEX */
             case 0xE8u: x = (uint8_t)(x + 1); break;       /* INX */
-            default: platform_smc_unhandled(SMC_MAJOR_STEP, mem[SMC_MAJOR_STEP]); return;
+            default: platform_smc_unhandled(SMC_MAJOR_STEP, mem[SMC_MAJOR_STEP]);
+                     plot_ptr_marshal_out(); return;
             }
         }
         bearing_lo = acc;                                  /* $5221 park the DDA accumulator */
@@ -2728,30 +2748,34 @@ void plot_line_octant_core(uint8_t entryScanline)
         uint8_t a;
         if (x & 0x80u) {                                   /* $522c x dropped below 0 -> step left */
             x = 7u;                                        /* $522e */
-            int t = (int)plot_ptr_lo - 8;                  /* $5230-5233 */
-            plot_ptr_lo = (uint8_t)t;
-            if (t >= 0) goto x_done;                       /* $5237 no borrow -> keep this cell */
-            plot_ptr_hi = (uint8_t)(plot_ptr_hi - 1);      /* $5239 borrow into the high byte */
-            a = plot_ptr_lo;                               /* $523b BCS not taken (borrow) -> re-test */
+            uint8_t oldLo = (uint8_t)plot_ptr_v;
+            PLOT_PTR_ADD(plot_ptr, -8);                    /* $5230-5239 one cell left */
+            /* ⭐ `>= 8` vs `> 8` is provably the same program: at oldLo == 8 the new low byte is
+               0, and the re-test below asks `a >= 8`, which 0 fails — so the borrow arm falls
+               through to x_done without stepping, exactly where the no-borrow arm jumps.  A
+               sabotage of this comparison survives for that reason, not for want of coverage. */
+            if (oldLo >= 8u) goto x_done;                  /* $5237 no borrow -> keep this cell */
+            a = (uint8_t)plot_ptr_v;                       /* $523b BCS not taken (borrow) -> re-test */
         } else {
             a = x;                                         /* $522b */
         }
         if (a >= 8u) {                                     /* $523d-523f a >= 8 -> step right */
             x = 0u;                                        /* $5241 */
-            /* ⚠ DO NOT "widen" these four pointer steps ($5233, $5243, $5255, $526B) into a
-               uint16_t — it is a PESSIMISATION on the target, and the reason is the
-               reduce-the-ACCESSES rule rather than style.  They are already the
-               access-minimal form: one read of the low byte, one write, and the high byte
-               touched only on the carry (1 step in 32 at ±8, 1 in 4 at ±$40).  A wide
-               `p = lo | hi<<8; p += 8; store both` reads AND writes the high byte on every
-               step — 4 accesses where this does 2 — and RAM is uniformly slow here.
-               Hoisting the pointer into one local across the loop body WOULD reduce
-               accesses, but the pointer must be re-read per step: this is the self-modifying
-               plotter, and the loop's own stores can land in the $52xx body it is executing.
-               There is no 6502 idiom left to remove — no adc/sbc macro, no flag plumbing. */
-            int t = (int)plot_ptr_lo + 8;                  /* $5243-5246 */
-            plot_ptr_lo = (uint8_t)t;
-            if (t > 0xFF) plot_ptr_hi = (uint8_t)(plot_ptr_hi + 1); /* $524a-524c */
+            /* ⭐ THE FOUR POINTER STEPS ($5233, $5243, $5255, $526B) ARE ONE WORD ADD EACH, and
+               the earlier "DO NOT widen these" note is RETRACTED.  It was right about the
+               arrangement it was written against — a wide value living in mem[] must read and
+               write both lanes on every step, 4 accesses where the byte form does 2 — and wrong
+               about the one that matters: the carry test, the conditional second store and the
+               branch all disappear, and what they protected (the reassembly at $5285, which
+               EVERY pixel paid: two byte reads, a shift and an or) becomes free.
+               ⚠⚠ THE mem[] LANES STAY LIVE NEAR PAGE $00, and that is not bookkeeping.  This
+               plotter reads and writes through $70/$71, and a pointer just below $70 puts the
+               read at $5285 and the store at $5294 ON the pointer itself — so PLOT_PTR_ADD
+               refreshes the lanes while the pointer is in page $00/$01 and plot_store_resync
+               closes the store direction.  Same pair the span island needed, same measured
+               reason.  The fixture PLANTS the case (one in eight seeds $71 in page $00);
+               without the plant these guards are untested (docs/wide-value-cleanup.md §FIFTH). */
+            PLOT_PTR_ADD(plot_ptr,  8);                    /* $5243-524c one cell right */
         }
     x_done:
         shared_temp_77 = x;                                /* $524e */
@@ -2760,15 +2784,11 @@ void plot_line_octant_core(uint8_t entryScanline)
         uint8_t undoIdx = plot_undo_count;                 /* $5250 */
         uint8_t ay;
         if (y & 0x80u) {                                   /* $5253 y dropped below 0 -> row up */
-            int t = (int)plot_ptr_lo - 0x40;               /* $5255-525a */
-            plot_ptr_lo = (uint8_t)t;
-            plot_ptr_hi = (uint8_t)(plot_ptr_hi - 1 - (t < 0 ? 1 : 0)); /* $525c-5260 */
+            PLOT_PTR_ADD(plot_ptr, -0x140);                /* $5255-5260 one character row up */
             y = 7u;                                        /* $5262 */
             ay = 7u;                                       /* $5264 (BNE always taken) */
         } else if (y >= 8u) {                              /* $5267-5269 y >= 8 -> row down */
-            int t = (int)plot_ptr_lo + 0x40;               /* $526b-5270 */
-            plot_ptr_lo = (uint8_t)t;
-            plot_ptr_hi = (uint8_t)(plot_ptr_hi + 1 + (t > 0xFF ? 1 : 0)); /* $5272-5276 */
+            PLOT_PTR_ADD(plot_ptr,  0x140);                /* $526b-5276 one character row down */
             y = 0u;                                        /* $5278 */
             ay = 0u;                                       /* $527a */
         } else {
@@ -2776,16 +2796,17 @@ void plot_line_octant_core(uint8_t entryScanline)
         }
 
         /* $527b-5294 — record the undo entry, then OR the pixel into the cell. */
-        ay = (uint8_t)(ay | plot_ptr_lo);                  /* $527b address low, scan line folded in */
+        ay = (uint8_t)(ay | (uint8_t)plot_ptr_v);          /* $527b address low, scan line folded in */
         mem[PLOT_UNDO_PTR_LO + undoIdx] = ay;              /* $527d */
-        mem[PLOT_UNDO_PTR_HI + undoIdx] = plot_ptr_hi;     /* $5282 */
-        uint16_t addr = (uint16_t)((plot_ptr_lo | (plot_ptr_hi << 8)) + y);  /* ($70),Y */
+        mem[PLOT_UNDO_PTR_HI + undoIdx] = (uint8_t)(plot_ptr_v >> 8);  /* $5282 */
+        uint16_t addr = (uint16_t)(plot_ptr_v + y);         /* ($70),Y — one word, no reassembly */
         uint8_t screenByte = (uint8_t)bus_read(addr);      /* $5285 */
         mem[PLOT_UNDO_BYTE + undoIdx] = screenByte;        /* $5287 */
         plot_undo_count = (uint8_t)(undoIdx + 1);          /* $528a */
         uint8_t out = (uint8_t)((screenByte & mem[PLOT_LINE_KEEP_TBL + maskIdx])
                                 | mem[PLOT_LINE_COLOUR_TBL + maskIdx]);       /* $528e-5291 */
         bus_write(addr, out);                              /* $5294 */
+        plot_store_resync(addr, out);   /* the plotter can write its OWN pointer cells */
 
         /* $5296-52a0 — the minor (every-pixel) step, then loop until the counter goes negative. */
         x   = shared_temp_77;                              /* $5296 (a no-op mirror of the 6502) */
@@ -2795,11 +2816,13 @@ void plot_line_octant_core(uint8_t entryScanline)
         case 0xC8u: y = (uint8_t)(y + 1); break;           /* INY */
         case 0xCAu: x = (uint8_t)(x - 1); break;           /* DEX */
         case 0xE8u: x = (uint8_t)(x + 1); break;           /* INX */
-        default: platform_smc_unhandled(SMC_MINOR_STEP, mem[SMC_MINOR_STEP]); return;
+        default: platform_smc_unhandled(SMC_MINOR_STEP, mem[SMC_MINOR_STEP]);
+                 plot_ptr_marshal_out(); return;
         }
         math_hi = (uint8_t)(math_hi - 1);                  /* $529c DEC math_hi — IN PLACE */
         if (math_hi & 0x80u) break;                        /* $529e BMI -> done */
     }
+    plot_ptr_marshal_out();                                /* publish $70/$71 for the 6502-ABI mirror */
 }
 
 /* ---------------------------------------------------------------------------

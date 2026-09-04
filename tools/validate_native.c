@@ -913,7 +913,8 @@ static void needle_octant(uint8_t engineRevs, uint8_t* octant, uint8_t* mirror, 
    octant step-opcodes so the plotter body actually draws.  The DDA lengths are planted small and
    the needle origin high byte at its real page ($75) so the plotter's own writes stay off the
    control cells; correctness does not depend on that (both sides run the same plotter) — it only
-   keeps the test easy to reason about. */
+   keeps the test easy to reason about.  ⚠ The self-write case is covered by test_plot_line_octant,
+   which plants it deliberately; do not add it here. */
 static int test_dial_needle_angle(void)
 {
     static uint8_t pre[65536];
@@ -1999,12 +2000,13 @@ void plot_line_octant__t6502(void);
    plot_ptr_lo/hi as the walk left them, shared_temp_76/77 and bearing_lo scratch, and the
    reader-nat cell math_hi ($75) which keeps its 6502 exit value ($FF) until relocation.
 
-   This is the reader-nativization: the DDA increment (math_lo $74) and the pixel counter
-   (math_hi $75) become C locals `incr`/`count`.  Caching them across the loop is sound
-   BECAUSE plot_line_octant is a LEAF — no child call, and the plot pointer is always a screen
-   address, so nothing in the loop rewrites zero page $74/$75 (contrast #159's crux, where a
-   mid-routine child overwrote them).  The twin still writes math_hi's 6502 exit value at the
-   end so mem[] stays byte-exact until the $74/$75 relocation.
+   ⚠⚠ THE DDA INCREMENT ($74) AND THE PIXEL COUNTER ($75) ARE NOT CACHEABLE, and the header that
+   used to stand here argued they were ("plot_line_octant is a LEAF, so nothing in the loop
+   rewrites zero page").  Being a leaf is not the property that matters: this plotter is one of
+   its OWN writers.  It walks +/-8 a pixel and +/-$140 a row from whatever $70/$71 hold, so a
+   pointer near page $00 lands its pixel store on $74/$75 — after which the oracle's increment
+   changes under it and a cached local's does not.  The twin now re-reads $74 per pixel and
+   decrements $75 in place.  Found by PLANTING the case below, not by reading the code.
 
    SMC seams.  The major- and minor-axis STEP OPCODES are patched into the routine from the two
    octant tables ($3B86 -> $5220, $3B8E -> $529B) indexed by the octant in shared_temp_76.  The
@@ -2071,7 +2073,14 @@ static int test_plot_line_octant(void)
            the guard entirely passed all 6800 cases.
            ⚠ These cases really do overwrite the fixture's own zero-page inputs mid-run.  That
            is the point, and it is sound: both sides do it from identical memory. */
-        if ((t & 7u) == 3u) pre[0x0071u] = (uint8_t)(xs() % 2u);   /* page $00 or $01 */
+        if ((t & 7u) == 3u) {
+            pre[0x0071u] = (uint8_t)(xs() % 2u);                   /* page $00 or $01 */
+            /* ...and half of those aimed AT the lanes.  A uniform low byte reaches the danger
+               window ($006A..$0071, where ($70),Y covers $70 or $71) in 8 draws of 256, which
+               was too thin: a sabotage that skipped the lane refresh on ONE of the four steps
+               survived until this line existed. */
+            if (pre[0x0071u] == 0u) pre[0x0070u] = (uint8_t)(0x50u + (xs() % 0x40u));
+        }
 
         if (t >= legal)                            /* illegal slice: trap the ALWAYS-run minor step */
             pre[0x3B8Eu + oct] = 0x00u;            /* BRK — not a step opcode */
