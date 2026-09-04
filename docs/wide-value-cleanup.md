@@ -1217,10 +1217,16 @@ row.
 | `VIEW_ORIGIN` $6280 | 5 fn / 14 ref | **none** | ✅ eligible; `integrate_car_position_core` and `build_sign_origin_core` hold 4 each |
 | `MARKER_OFF` $62B7/$62BA | 2 fn / 6 ref | **none** | ✅ eligible, small — `append_corner_marker` / `draw_corner_markers` |
 | `OBJECT_BEARING` $0380/$0398 | 6 fn / 6 ref | **none** | ✅ eligible but **one ref per function** — score it before writing anything; likely a decline |
-| `CAR_DISTANCE` $08D0/$08E8 | *false zero* | ? | re-score after Step 0 |
-| `SECTION_COORD` $0900/$0A00 | *false zero* | ? | re-score after Step 0 — ~62 gen readers, potentially the largest |
-| `EDGE_OPP_X` $5E50/$5EA0 | *false zero* | ? | re-score after Step 0 |
-| `OBJECT_COORD` $09FD/$0AFD | *false zero* | ? | re-score after Step 0 — 24-bit binary → `uint32_t`, `add.l`/`sub.l`/`cmp.l` only |
+| `SECTION_COORD` $0900/$0A00 | **10 fn / 38 ref** | **none** | ✅ eligible — the largest of the re-scored four |
+| `CAR_DISTANCE` $08D0/$08E8 | 4 fn / 16 ref | **none** | ✅ eligible — 4 refs per function, the best ops-per-marshal of the four |
+| `OBJECT_COORD` $09FD/$0AFD | 10 fn / 27 ref | **none** | ✅ eligible — 24-bit binary → `uint32_t`, `add.l`/`sub.l`/`cmp.l` only |
+| `EDGE_OPP_X` $5E50/$5EA0 | 7 fn / 12 ref | **none** | ✅ eligible, small — ~1.7 refs per function, score before writing |
+
+**Step 0 is DONE** (`af19737`): the scanner resolves a twin's own `#define`s, calibrated against
+$08D0's ground truth (ten grep hits = one define + one comment + eight real refs; the tool reports
+eight), and six sabotages re-verified. ⭐ The false zero had retired four real candidates — every
+one of them turns out to have **zero shipping blockers**, so the whole re-scored group is eligible
+and the only remaining question on each is ops-per-marshal.
 
 `MODEL_STATE`'s five blockers, with their reference counts: `update_lap_timers` (3),
 `finish_race` (1), `reset_driving_variables` (1), `advance_player_section` (1),
