@@ -7302,28 +7302,34 @@ static void slip_magnitude_core(uint8_t slot)
    sign byte, C per the entry/clamp compare) is reconstructed in the shims, not here. */
 void store_slip_signed_core(uint8_t valueHi)
 {
-    uint8_t lo = math_lo;
-    uint8_t hi = valueHi;
+    /* ⭐ WIDE-VALUE CLEANUP: the 6502 hands the value over split (A : math_lo) because it has no
+       word register, but inside the routine it is one uint16_t — so the negate is a negate, not a
+       negate plus a re-split.  math_lo and math_hi are still written: they are OBSERVED 6502
+       output cells, not lanes of a local (math_hi keeps the pre-negate high byte). */
+    uint16_t v = (uint16_t)(math_lo | ((unsigned)valueHi << 8));
     if (mem[SLIP_SIGN] & 0x80u) {                   /* $4B51 BIT N — bit 7 means "negative" */
         /* $4B53 abs16_math negates (hi : math_lo); neg16_math first parks the pre-negate high byte
            in math_hi, and the negate leaves it there.  D = 0 on the slip path — a plain negate. */
-        uint16_t v = (uint16_t)(0u - (uint16_t)(((uint16_t)hi << 8) | lo));
-        math_hi = hi;
-        lo = (uint8_t)v;
-        hi = (uint8_t)(v >> 8);
-        math_lo = lo;
+        math_hi = (uint8_t)(v >> 8);
+        v       = (uint16_t)(0u - v);
+        math_lo = (uint8_t)v;
     }
     uint8_t y = mem[SLIP_OUT_INDEX];                /* $4B56 */
-    mem[MODEL_STATE_HI + 10 + y] = hi;              /* $4B58 */
-    mem[MODEL_STATE_LO + 10 + y] = lo;             /* $4B5B-$4B5D — A = math_lo, then stored */
+    mem[MODEL_STATE_HI + 10 + y] = (uint8_t)(v >> 8); /* $4B58 */
+    mem[MODEL_STATE_LO + 10 + y] = (uint8_t)v;      /* $4B5B-$4B5D — A = math_lo, then stored */
 }
 
 void store_slip_clamped_core(uint8_t valueHi)
 {
+    /* ⚠ The clamp's predicate is a HIGH-BYTE compare, not a 16-bit one — the 6502 tests A
+       against slip_magnitude's high byte alone and never looks at the low lanes.  Written wide
+       the two are different predicates whenever the high bytes are equal, so the compare stays
+       a byte compare even though the value it selects is a word
+       (docs/wide-value-cleanup.md §The wrap test). */
     uint8_t hi = valueHi;
     if (hi >= mem[SLIP_MAG_HI]) {                   /* $4B47 CMP / $4B49 BCC — at/over it: clamp */
-        math_lo = mem[SLIP_MAG_LO];                 /* $4B4B-$4B4D */
-        hi = mem[SLIP_MAG_HI];                      /* $4B4F */
+        math_lo = mem[SLIP_MAG_LO];                 /* $4B4B-$4B4D — the clamp's own low lane */
+        hi      = mem[SLIP_MAG_HI];                 /* $4B4F */
     }
     store_slip_signed_core(hi);
 }
@@ -10416,22 +10422,23 @@ static void steer_demand_from_slip_core(void)
     /* $15F4-$1600 — take |slip_magnitude| (element $0A) as a 16-bit value, its low nibble-masked
        low byte parked in STEER_SIGN.  D = 0 on the steering path (docs/static-map.md §Decimal
        mode), so the old abs16_math is a plain two's-complement negate. */
-    uint8_t lo = (uint8_t)(mem[SLIP_MAG_LO_10] & 0xF0u);
-    uint8_t hi = mem[SLIP_MAG_HI_10];
-    mem[STEER_SIGN] = lo;                              /* $15F4 */
-    if (hi & 0x80u) {                                  /* $15FE BPL — negative: |value| */
+    /* ⭐ WIDE-VALUE CLEANUP: one uint16_t from the two element-$0A lanes.  The abs and the
+       quarter are then a negate and a shift, with no split back into lanes between them; only
+       the 6502's own observable intermediates stay bytes (see the STEER_SIGN writes below). */
+    uint16_t slip = (uint16_t)((mem[SLIP_MAG_LO_10] & 0xF0u)
+                             | ((unsigned)mem[SLIP_MAG_HI_10] << 8));
+    mem[STEER_SIGN] = (uint8_t)slip;                   /* $15F4 */
+    if (slip & 0x8000u) {                              /* $15FE BPL — negative: |value| */
         /* abs16_math parks the pre-negate high byte in math_hi (= STEER_DEMAND); that write is
            dead — steer_demand_store overwrites STEER_DEMAND before any exit — but replay it so the
            full-mem[] oracle diff holds at every intermediate the harness could sample. */
-        mem[STEER_DEMAND] = hi;
-        uint16_t neg = (uint16_t)(0u - (uint16_t)(((uint16_t)hi << 8) | lo));
-        lo = (uint8_t)neg;
-        hi = (uint8_t)(neg >> 8);
-        mem[STEER_SIGN] = lo;
+        mem[STEER_DEMAND] = (uint8_t)(slip >> 8);
+        slip = (uint16_t)(0u - slip);
+        mem[STEER_SIGN] = (uint8_t)slip;
     }
-    /* $1601-$1606 — quarter the 16-bit magnitude (hi : STEER_SIGN). */
-    unsigned mag = (((unsigned)hi << 8) | lo) >> 2;
-    uint8_t a = (uint8_t)(mag >> 8);
+    /* $1601-$1606 — quarter the 16-bit magnitude (its low byte lives in STEER_SIGN). */
+    uint16_t mag = (uint16_t)(slip >> 2);
+    uint8_t  a   = (uint8_t)(mag >> 8);
     mem[STEER_SIGN] = (uint8_t)mag;
     /* $1607 CMP — carry (demand >= driver's own angle) feeds the limiter. */
     a = limit_steer_demand_core(a, a >= steer_angle_hi);

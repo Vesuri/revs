@@ -531,7 +531,7 @@ in the interim but the final store stays two non-adjacent byte writes until relo
 
 | Base | lo/hi | Shape | gen readers | Mechanism | Status |
 |---|---|---|---|---|---|
-| `MODEL_STATE` | $62D0/$62E0 | 15×16-bit driving-model state (stride $10) — incl. `heading_step` (element 2, $62D2/$62E2) and `slip_magnitude` (element $0A, $62DA/$62EA) | ~47 | A now; B blocked | TODO |
+| `MODEL_STATE` | $62D0/$62E0 | 15×16-bit driving-model state (stride $10) — incl. `heading_step` (element 2, $62D2/$62E2) and `slip_magnitude` (element $0A, $62DA/$62EA) | ~47 | A now; B blocked | **`heading_step` ✅ A COMPLETE — nothing left to convert** (see below); **`slip_magnitude` ✅ A DONE (2026-09-04)** — `steer_demand_from_slip` ($15F4) and `store_slip_signed` ($4B51) held the last lane pairs; the rest of the elements are still TODO |
 | `CAR_ANGLE` | $62A0/$62A3 | 3× (heading_sin/cos, `steer_angle` = element 2, $62A2/$62A5) | ~9 | A now; B blocked | TODO |
 | `CAR_DISTANCE` | $08D0/$08E8 | per-car (20) distance-round-lap | ~19 | A now; B blocked | TODO |
 | `OBJECT_BEARING` | $0380/$0398 | per-slot 16-bit track position | ? | A now; B blocked | TODO |
@@ -1104,6 +1104,27 @@ while ((dist & 0x00FFu) == 0u && ((uint16_t)(dist - 1u) & 0x8000u) != 0u) { dist
 the 6502 BRANCHED on, not what the lanes end up holding.** `BPL`/`BMI` after a `DEC` is a sign
 test on one byte, and the wide value's own bit 15 is only the same predicate when the value is
 in range. The lanes agreeing is not the same as the predicates agreeing.
+
+### `heading_step` ($62D2/$62E2): (A) is COMPLETE, and the reason is the LAYOUT
+
+`heading_step` is `MODEL_STATE` element 2, and `MODEL_STATE` is a **plane-split SoA**: the low
+bytes live at `$62D0..$62DF` and the high bytes at `$62E0..$62EF`. The two lanes of any one
+element are therefore **$10 bytes apart**, so *no word load of the pair exists even in
+principle* — not on the 68000, and not after a (B) relocation of one element, which the SoA rule
+forbids anyway (every indexed access would have to move at once, and
+`model_integrate_element` indexes both planes by element).
+
+Two byte loads plus a shift and an or **is** the minimum here, and all three readers already do
+exactly that into a `uint16_t` (`rebase_edge_point` $0BA7, `stage_accum_delta` $4729,
+`integrate_heading` $4927). The remaining byte-wide uses are genuinely 8-bit and not lanes at
+all: `$4DD4`'s `SEC / ROR heading_step_lo` is a one-byte rotate of the low byte on its own, and
+`$1C0B` / `check_crash` use the **high byte alone** as the yaw rate.
+
+⭐ **The lesson for the rest of this campaign: a lo/hi pair whose planes are not adjacent has no
+"two word accesses beat three byte accesses" win available.** The win in the pair grind comes
+from (a) collapsing lane-wise *arithmetic* into one wide op, and (b) turning two adjacent bytes
+into one word access. A plane-split SoA offers (a) only, and once (a) is done the element is
+finished — record it as complete rather than re-opening it looking for (b).
 
 ## Ordering
 
