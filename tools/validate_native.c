@@ -5158,9 +5158,31 @@ static int test_seam_callees(void)
                what makes "the store can land on its own pointer" a tested case. */
             pick = xs() % 8;
             pre[PRE_GAP_POINTER] = pick < 4 ? 0x70 : (pick < 7 ? 0x72 : (uint8_t)xs());
-            if (pre[PRE_GAP_POINTER] != 0x70 && pre[PRE_GAP_POINTER] != 0x72) zpPtr++;
-            /* ...and one case in eight aims plot_ptr2 into the hardware window. */
-            if (xs() % 8 == 0) { pre[0x0072] = (uint8_t)xs(); pre[0x0073] = 0xFE; offPage++; }
+            if (pre[PRE_GAP_POINTER] != 0x70 && pre[PRE_GAP_POINTER] != 0x72) {
+                zpPtr++;
+                /* ⭐ ...and AIM that random pair at the pointer cells.  Leaving the pair itself
+                   random made "the colour store lands on $70..$73" a lottery that a shift in the
+                   shared PRNG stream could win or lose — the sabotage for it flipped from CAUGHT
+                   to SURVIVED when an unrelated plant moved the stream.  A hazard worth testing
+                   is worth aiming at (docs/wide-value-cleanup.md §the fixture had to be AIMED). */
+                pre[pre[PRE_GAP_POINTER]] = (uint8_t)(0x40u + (xs() % 0x40u));
+                pre[(pre[PRE_GAP_POINTER] + 1u) & 0xFFu] = 0x00u;
+            }
+            /* One case in eight aims plot_ptr2 into the hardware window, and one in eight at
+               ZERO PAGE, near the pointer cells themselves.
+               ⭐ The boundary-table pass ($1DC5) stores THROUGH plot_ptr2, so that store can land
+               on $70..$73 — the same self-write hazard the random GAP_POINTER covers for the
+               colour store, and until the second arm existed the plot_ptr2 resync was untested
+               ($0073 is otherwise a random byte, page $00 one time in 256, and the store then
+               has to hit four cells out of it).
+               ⚠ ONE DRAW PER ARM, deliberately: this suite's PRNG is a single shared stream, and
+               an arm that consumes an extra xs() shifts every later case.  Adding this as a
+               second `if` did exactly that and flipped an unrelated sabotage from CAUGHT to
+               SURVIVED (docs/validation-harness.md). */
+            { unsigned aim = xs() % 8;
+              if (aim == 0)      { pre[0x0072] = (uint8_t)xs(); pre[0x0073] = 0xFE; offPage++; }
+              else if (aim == 1) { pre[0x0072] = (uint8_t)(0x40u + (xs() % 0x40u));
+                                   pre[0x0073] = 0x00u; } }
             /* One case in four with a real column zeroes the whole source-block region
                ($3000-$4400, which contains surface_colours at $38FC): every cell then reads
                empty AND surface_colour_at returns colour 0, so the walk takes the fallback

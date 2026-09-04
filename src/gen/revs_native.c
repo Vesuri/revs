@@ -6171,10 +6171,11 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
        high byte, which is the routine's exit A on the (fixture-unreachable) no-iteration path.
        The `ADC #$60` is the last op to write V and nothing below it does (the loop is all
        LDA/CMP), so its overflow reaches every exit. */
-    { uint16_t plot_ptr = (uint16_t)(0x3000u + column * 0x80u);
-      plot_ptr_hi = (uint8_t)(plot_ptr >> 8);
-      plot_ptr_lo = (uint8_t)plot_ptr;
-      a = plot_ptr_hi; }
+    plot_ptr_v = (uint16_t)(0x3000u + column * 0x80u);
+    plot_ptr_marshal_out();
+    a = (uint8_t)(plot_ptr_v >> 8);
+    /* plot_ptr2 belongs to the caller; the walk only reads it, so it is marshalled IN. */
+    plot_ptr2_marshal_in();
     v = adc_overflow((uint8_t)column, 0x60u, 0);
 
     /* ⚠⚠ NOTHING IN THIS LOOP IS HOISTED, AND THAT IS MEASURED RATHER THAN CAUTIOUS.  The
@@ -6195,7 +6196,11 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
             return e;
         }
 
-        unsigned srcBase = zp_pointer(MEM_plot_ptr_lo);
+        /* ⭐ WIDE-VALUE CLEANUP: one word read per pass, not two lanes and an or.  This is still
+           a RE-READ every pass, which the header above insists on — plot_store_resync keeps
+           plot_ptr_v tracking any store the walk lands on $70..$73, so the word is as live as
+           the lanes were. */
+        unsigned srcBase = plot_ptr_v;
         uint8_t  line    = y;
         uint8_t  src;
 
@@ -6222,8 +6227,10 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
             uint8_t stored;
             if (src == 0x55u) { a = 0u; stored = 0u; }    /* CMP #$55 Z: LDA #0 */
             else              { stored = src; }
-            { unsigned altBase = zp_pointer(MEM_plot_ptr2_lo);
-              seam_write((altBase + line) & 0xFFFFu, pointer_is_ram(altBase), stored); }
+            { unsigned altBase = plot_ptr2_v;
+              unsigned dst     = (altBase + line) & 0xFFFFu;
+              seam_write(dst, pointer_is_ram(altBase), stored);
+              plot_store_resync(dst, stored); }
             y = (uint8_t)(line - 1);
             continue;
         }
@@ -6233,8 +6240,13 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
         { SlotExit sc = surface_colour_at_core(line, mem[EDGE_COLUMN], x, v);
           x = sc.x;
           a = sc.a ? sc.a : fallback; }               /* colour, or load_a(fallback) if 0 */
+        /* ⚠ storePtr is a zero-page ADDRESS chosen at runtime ($1DE9's operand), not a fixed
+           pointer, so this one stays a mem[] lookup — and its store can land on $70..$73, which
+           is what the resync is for. */
         { unsigned storeBase = zp_pointer(storePtr);
-          seam_write((storeBase + line) & 0xFFFFu, pointer_is_ram(storeBase), a); }
+          unsigned dst       = (storeBase + line) & 0xFFFFu;
+          seam_write(dst, pointer_is_ram(storeBase), a);
+          plot_store_resync(dst, a); }
         y = (uint8_t)(line - 1);
     }
 }
