@@ -2697,8 +2697,11 @@ void undraw_plot_lines_core(void)
         addr = (uint16_t)(mem[PLOT_UNDO_PTR_LO + i] | (mem[PLOT_UNDO_PTR_HI + i] << 8));
         bus_write(addr, mem[PLOT_UNDO_BYTE + i]);   /* $5132 STA (plot_ptr),Y with Y = 0 */
     }
-    plot_ptr_lo = (uint8_t)addr;                 /* the 6502's residue: entry 0's address */
-    plot_ptr_hi = (uint8_t)(addr >> 8);
+    /* ⭐ WIDE-VALUE CLEANUP: the residue is the relocated pointer's own value, so set the word
+       and let the marshal mirror the 6502-ABI lanes.  Writing the lanes alone would leave
+       plot_ptr_v stale for the next reader of the relocated global. */
+    plot_ptr_v = addr;                           /* the 6502's residue: entry 0's address */
+    plot_ptr_marshal_out();
     plot_undo_count = 0u;                        /* $5137 STA plot_undo_count with Y = 0 */
 }
 
@@ -4109,8 +4112,9 @@ SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, ui
 static SlotExit edge_column_pass(uint16_t startSrc, uint8_t firstColumn, uint8_t stopColumn,
                                  uint8_t firstLine)
 {
-    plot_ptr2_hi = (uint8_t)(startSrc >> 8);
-    plot_ptr2_lo = (uint8_t)startSrc;
+    /* ⭐ WIDE-VALUE CLEANUP: this is a genuine wide SEED for fill_edge_column_run, not residue. */
+    plot_ptr2_v = startSrc;
+    plot_ptr2_marshal_out();
     /* entry V is dead on this path (fill_edge_column_run's own note): pass 0. */
     return fill_edge_column_run_core(firstColumn, stopColumn, firstLine, 0u);
 }
@@ -4199,10 +4203,11 @@ void copy_dash_data_core(uint8_t dirFlag)
 
     /* Leave the zero-page scratch exactly as the 6502 did.  Nothing outside the routine reads
        these, but the differential compares all of mem[]. */
-    plot_ptr_lo     = (uint8_t)block;
-    plot_ptr_hi     = (uint8_t)(block >> 8);
-    plot_ptr2_lo    = (uint8_t)page;
-    plot_ptr2_hi    = (uint8_t)(page >> 8);
+    /* ⭐ WIDE-VALUE CLEANUP: set the relocated words; the marshals mirror the lanes. */
+    plot_ptr_v      = block;
+    plot_ptr2_v     = page;
+    plot_ptr_marshal_out();
+    plot_ptr2_marshal_out();
     shared_temp_76  = bytes;
 }
 
@@ -12035,8 +12040,8 @@ uint8_t paint_fence_backdrop_core(uint8_t horizon)
        column's bottom; plot_ptr walked to $3000 + 40*$80 = $4400. */
     math_lo     = FENCE_COL_COUNT;
     math_hi     = mem[DASH_BLOCK_STARTS + (FENCE_COL_COUNT - 1)];
-    plot_ptr_lo = (uint8_t)block;
-    plot_ptr_hi = (uint8_t)(block >> 8);
+    plot_ptr_v  = block;                        /* ⭐ the word, mirrored by the marshal */
+    plot_ptr_marshal_out();
     return last;
 }
 
@@ -13319,6 +13324,6 @@ void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
             dst = (uint16_t)(dst - 0x138u);                      /* $7FEE/$7FF4 */
     } while (row >= shared_temp_77);                             /* $7FF8 */
 
-    plot_ptr_lo = (uint8_t)dst;                                  /* the walk's 6502 residue */
-    plot_ptr_hi = (uint8_t)(dst >> 8);
+    plot_ptr_v  = dst;                     /* ⭐ the walk's residue, as the relocated word */
+    plot_ptr_marshal_out();
 }
