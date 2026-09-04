@@ -9457,21 +9457,16 @@ SlotExit fill_object_gap_core(uint8_t width)
     {
         uint8_t  block   = (uint8_t)(mem[EDGE_COLUMN] + 0x5Fu);
         unsigned lowBase = (block & 1u) ? 0x80u : 0x00u;
-        /* The bias can push the pointer below the block, which costs it a page.  (`>=` vs `>`
-           can only differ at lowBase == bias, which never happens: lowBase is 0 or $80 and
-           bias = $7F - line with line a view scan line <= $4F, so bias is in [$30,$7F].) */
-        int borrow = (lowBase < (unsigned)bias);
-
-        plot_ptr_hi  = (uint8_t)(block >> 1u);
-        plot_ptr2_hi = plot_ptr_hi;
-        plot_ptr_lo  = (uint8_t)(lowBase - (unsigned)bias);
-        plot_ptr2_lo = (uint8_t)(plot_ptr_lo ^ 0x80u);
-        if (plot_ptr2_lo & 0x80u)                 /* $1E63 — the EOR wrapped it back a page */
-            plot_ptr2_hi--;
-        if (borrow) {                             /* $1E67 */
-            plot_ptr_hi--;
-            plot_ptr2_hi--;
-        }
+        /* ⭐ WIDE-VALUE CLEANUP, and the byte lanes were hiding a much simpler statement.  The
+           6502 sets the second pointer by EOR $80 on the low lane and then DECs its page when
+           that flipped bit 7 ($1E63) — and BOTH branches of that come to the same thing: low
+           below $80 gives +$80 and a page back, low at or above gives -$80 and no page back, so
+           the second pointer is unconditionally the first MINUS $80.  The borrow ($1E67) then
+           takes a page off both, which is just the wide subtract carrying on its own. */
+        plot_ptr_v  = (uint16_t)(((unsigned)(block >> 1u) << 8) + lowBase - (unsigned)bias);
+        plot_ptr2_v = (uint16_t)(plot_ptr_v - 0x80u);
+        plot_ptr_marshal_out();
+        plot_ptr2_marshal_out();
     }
 
     /* $1E6D-$1E9D — one pass per column PAIR, walking the cursor back two columns at a time. */
@@ -9508,8 +9503,8 @@ SlotExit fill_object_gap_core(uint8_t width)
                 /* $1E86-$1E9D — down to the foot of the run: a PAIR of columns while two are
                    left, the single tail when only one is. */
                 uint8_t  byte  = shared_temp_76;
-                unsigned base  = zp_pointer(MEM_plot_ptr_lo);
-                unsigned base2 = zp_pointer(MEM_plot_ptr2_lo);
+                unsigned base  = plot_ptr_v;    /* ⭐ one word read each, not two bytes + or */
+                unsigned base2 = plot_ptr2_v;
                 int      ram   = pointer_is_ram(base), ram2 = pointer_is_ram(base2);
 
                 acc = byte;
@@ -9534,8 +9529,8 @@ SlotExit fill_object_gap_core(uint8_t width)
                 SlotExit e = { acc, remaining, line, (uint8_t)(remaining >> 7), 1u, 0u, 0u };
                 return e;
             }
-            plot_ptr_hi--;                               /* $1E69 — back two columns */
-            plot_ptr2_hi--;
+            PLOT_STEP_PAGE(plot_ptr,  -0x100);           /* $1E69 — back two columns */
+            PLOT_STEP_PAGE(plot_ptr2, -0x100);
         }
     }
 }
