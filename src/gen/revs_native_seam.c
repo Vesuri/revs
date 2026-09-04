@@ -134,7 +134,10 @@ void build_track_geometry(void)
 
 void draw_road(void)
 {
+    /* The road pass owns all three screen pointers from its first seed to its last span. */
+    plot_ptrs_marshal_in();
     draw_road_core(edge_cursor, edge_end_side0);
+    plot_ptrs_marshal_out();
 }
 
 void apply_driving_model(void)
@@ -207,7 +210,10 @@ void road_span_advance(void)
 
 void interp_edge(void)
 {
-    EdgeIndices r = interp_edge_core(cpu.A, cpu.X, cpu.Y, cpu.C);
+    EdgeIndices r;
+    plot_ptrs_marshal_in();               /* it sets the three pages... */
+    r = interp_edge_core(cpu.A, cpu.X, cpu.Y, cpu.C);
+    plot_ptrs_marshal_out();              /* ...and an oracle caller reads them from mem[] */
     cpu.X = r.farIdx;
     cpu.Y = r.nearIdx;
 }

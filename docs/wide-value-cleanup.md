@@ -397,6 +397,62 @@ tenants, five named in `revs_native.c` itself (`MUL_SIGN`, `SLIP_SIGN`, `SLIP_OU
 register, `full_track_scan_rebuild`'s retreat-grid index and `menu_wait_key`'s remembered row.
 Every one keeps reading and writing `mem[$78/$79]`.
 
+⚠⚠ **FIFTH eligibility test (2026-09-04): THE VALUE MUST NOT BE ABLE TO WRITE ITSELF — and if it
+can, the relocated global needs a LIVE MIRROR, not a marshal at the seam.** The four tests above
+all ask *who else reads or writes these cells*. `plot_ptr` `$70/$71`, `plot_ptr2` `$72/$73` and
+`plot_ptr3` `$8E/$8F` pass all four and still break the naive relocation, because they are
+**pointers that are dereferenced**: an ascending span arm entered above its bound runs the long way
+round, climbing the page byte through `$00`, and the plotter's own store then lands in zero page —
+sometimes on `$70`/`$72` themselves. No static scan can see this; the pair is written by an address
+computed at run time. Only the fixtures can, and only because they PLANT the case (one ascending
+case in twelve starts above its bound).
+
+The measured signature, and it is worth recognising: **`draw_span_shallow_fwd` 7/400 and
+`draw_span_steep_fwd` 5/400, both `rev` arms clean**, with the diff naming the cell —
+`$0070 ref=$B8 native=$00`. Ascending-only failure on a pointer pair means self-store.
+
+⚠ **A resync-on-store guard is only HALF the fix, and the half that fails silently is the read.**
+The obvious repair is to notice a store landing on a lane and fold it into the wide copy. That
+handles the write direction. But the plotter also **reads** the cell it is about to merge —
+`cell = mem[cellAddr]` — and when `cellAddr` aliases a pointer lane, a mirror that is only published
+at the shim's exit hands that read the pointer's ENTRY value. The residue after the guard was
+1/400 on each `fwd` arm, and the trace showed the same store site writing `$D7` in the oracle and
+`$77` in the twin. **So the mirror must be LIVE: every mutation of the wide value writes its byte
+lane through to `mem[]` as it happens.** That costs exactly what the 6502 paid (the page step writes
+one high-byte lane per pointer per scan line, against the 6502's three `INC`s) and the win is
+undisturbed, because it is at the ~20 REASSEMBLY sites — `mem[lo] | (mem[hi] << 8)` collapsing to
+one word read — not at the step.
+
+⭐ **And the marshal belongs at the routine every path goes through, not at the 6502-ABI shims.**
+The span walk is reached both ways: through the four `draw_span_*` arms and core-to-core from
+`draw_surface_spans_core`, which no shim covers (the transitive-producer trap again, in the IN
+direction). With the mirror live, `plot_ptrs_marshal_in()` at the top of `span_walk` is correct
+whoever last moved the pointer, and the four shims need nothing at all.
+
+⚠ Two process notes from the same diagnosis, both of which cost real time:
+- **`make` does not build the harness.** `make` alone builds `build/revs`; the fixture binary is
+  `make build/validate_native`. A loop that rebuilds with `make` and then runs
+  `./build/validate_native` measures whatever was linked last — here, a binary five days stale, so
+  three successive "fixes" were never in the code under test. The tell was a `timeout` that did not
+  change behaviour across three different source edits.
+- **Instrument, don't reason, once a second theory fails.** Two rounds of correct-but-insufficient
+  reasoning each identified a real bug and left the symptom standing. `sample`/`lldb` on the hung
+  process named the frame in one shot, and a case-scoped store trace (a global set from
+  `diff_run`'s case index, printed from both the oracle and the twin because both reach
+  `span_plot_core`) named the diverging store in the next.
+- ⚠⚠ **A SABOTAGE LOOP IS ONLY AS WIDE AS ITS `FN` LIST.** The five defects were run against
+  `draw_span,road_span_plot_2,draw_surface_spans,draw_road,interp_edge`, and D4 — the two screen
+  pointers in `SPAN_PLOT_2` swapped, so the merged colour cell and `bearing_hi`'s copy go through
+  each other's pointer — was reported SURVIVED. It is not: `road_span_plot` catches it with **12
+  diffs**. That name was missing from the list, and `road_span_plot_2` (which was in it) enters
+  `span_plot_core` on a path the swap happens not to disturb. So the standing "three explanations
+  for a surviving sabotage" have a fourth, cheaper one that must be ruled out first: **the fixture
+  that covers the defect was not in the filter.** Re-run a survivor against the FULL corpus before
+  spending a minute on an argument. ⚠ And the `span_walk` fixtures are genuinely blind to D4
+  (`draw_span` reads 0/400 with the swap in place) even though they call `SPAN_PLOT_2` 133 516
+  times — measured with a counter, not inferred; the arms' own coverage of that descriptor is
+  weaker than the direct entry point's.
+
 ⭐⭐ **EIGHTH lesson — THREE ways the eligibility tests get misread, all found on this one pair.**
 
 **(1) An indexed access by another TENANT does not block a relocation.** Test 2 as written ("never

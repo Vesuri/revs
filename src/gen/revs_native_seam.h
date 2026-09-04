@@ -115,8 +115,8 @@ typedef struct {
 typedef struct {
     unsigned stepIn, stepOut;   /* the two Y-step opcode slots */
     unsigned destLo, destHi;    /* the patched operand pair: this pass's surface_edge buffer */
-    unsigned cellPtr;           /* zero-page pointer the colour cell is read and written through */
-    unsigned linePtr;           /* ...and the one bearing_hi's copy goes through */
+    uint16_t *cellPtr;          /* the screen pointer the colour cell is read and written through */
+    uint16_t *linePtr;          /* ...and the one bearing_hi's copy goes through */
 } SpanPlotter;
 typedef struct {
     unsigned table;        /* the arm's entry-offset table, indexed by the sub-column phase */
@@ -359,6 +359,11 @@ extern uint16_t edge_nearest_v;  /* edge_nearest ($10/$11) relocated — see rev
 void edge_nearest_marshal_in(void);
 void edge_nearest_marshal_out(void);
 extern uint16_t car_heading_v;   /* car_heading ($0A/$0B) relocated — see revs_native.c */
+extern uint16_t plot_ptr_v, plot_ptr2_v, plot_ptr3_v;
+void plot_ptr_marshal_in(void);   void plot_ptr_marshal_out(void);
+void plot_ptr2_marshal_in(void);  void plot_ptr2_marshal_out(void);
+void plot_ptr3_marshal_in(void);  void plot_ptr3_marshal_out(void);
+void plot_ptrs_marshal_in(void);  void plot_ptrs_marshal_out(void);
 void car_heading_marshal_in(void);
 void car_heading_marshal_out(void);
 void hypot_max_marshal_in(void);
