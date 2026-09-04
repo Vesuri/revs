@@ -11207,15 +11207,21 @@ GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn)
         return r;
     }
 
-    /* WRAPPED: complement = lap_length - |D|, with the saved sign flipped for the re-sign. */
+    /* WRAPPED: complement = lap_length - |D|, with the saved sign flipped for the re-sign.
+       ⭐ WIDE-VALUE CLEANUP: the 6502's SBC pair is one 16-bit subtract.  Its borrow into the
+       high lane is the wide subtract's own, and the byte the $27D5 branch tests is that
+       subtract's high byte — so there is no carry to spell out and no `clo`/`c3` to carry it.
+       ⚠ lap_length stays in mem[]: it is TRACK-FILE data, and an expansion circuit's hook can
+       patch it at runtime, so the pair is read wide per call rather than relocated to a global
+       (docs/wide-value-cleanup.md §FOURTH eligibility test). */
     unsigned flipped = n1 ^ 1u;                     /* P2's N (the PLA/EOR #$80 flip) */
-    int clo = (int)lap_length_lo - maglo;
-    uint8_t  comp_lo = (uint8_t)clo;
-    unsigned c3 = (clo >= 0);
+    uint16_t lap     = (uint16_t)(lap_length_lo | (lap_length_hi << 8));
+    uint16_t mag16   = (uint16_t)((maghi << 8) | maglo);
+    uint16_t comp    = (uint16_t)(lap - mag16);
+    uint8_t  comp_lo = (uint8_t)comp;
     math_lo = comp_lo;
-    int chi = (int)lap_length_hi - maghi - (c3 ? 0 : 1);
-    if ((uint8_t)chi != 0) {                        /* $27D5 BNE -> far exit (PLP/SEC) */
-        r.a = (uint8_t)chi; r.n = (uint8_t)flipped; r.c = 1;
+    if ((uint8_t)(comp >> 8) != 0) {                /* $27D5 BNE -> far exit (PLP/SEC) */
+        r.a = (uint8_t)(comp >> 8); r.n = (uint8_t)flipped; r.c = 1;
         return r;
     }
     /* complement fits in a byte: rotate a 0 into the sign register (CLC at $27D7). */
@@ -12192,19 +12198,26 @@ static uint8_t track_pos_retreat_core(uint8_t x)
 
     /* one unit back round the lap; underflowing past 0 wraps to a full lap and, for the
        PLAYER only, un-books a completed lap */
-    uint8_t lo = mem[CAR_DISTANCE_LO + x];
-    uint8_t hi = mem[CAR_DISTANCE_HI + x];
-    for (;;) {
-        if (lo != 0) break;                 /* low byte still has room -> just decrement it */
-        hi = (uint8_t)(hi - 1);
-        if ((hi & 0x80u) == 0) break;       /* no borrow: distance was >= 0x100 */
-        lo = lap_length_lo;                 /* distance was 0 -> wrap to a full lap */
-        hi = lap_length_hi;
+    /* ⭐ WIDE-VALUE CLEANUP: one 16-bit decrement of the car's lap distance, with a wrap to a
+       full lap when it would go past the start line.  The 6502 spells it as three separate
+       lane steps — decrement the low byte, borrow into the high one, and if the high one came
+       out NEGATIVE reload both lanes from lap_length and start over — so the wrap test is a
+       sign test, not a zero test: a high lane already >= $81 wraps too.  Wide, the same
+       predicate is "the decrement would leave bit 15 set", and the reload is one assignment.
+       ⚠ lap_length stays in mem[]: it is TRACK-FILE data, and an expansion circuit's hook can
+       patch it at runtime, so it is read wide per call rather than relocated to a global
+       (docs/wide-value-cleanup.md §FOURTH eligibility test). */
+    uint16_t dist = (uint16_t)(mem[CAR_DISTANCE_LO + x] | (mem[CAR_DISTANCE_HI + x] << 8));
+    /* ⚠ the low lane is only decremented once, at the end; the 6502 borrows into the high lane
+       ONLY when the low one is already zero, so the sign test is gated on that. */
+    while ((dist & 0x00FFu) == 0u && ((uint16_t)(dist - 1u) & 0x8000u) != 0u) {
+        dist = (uint16_t)(lap_length_lo | (lap_length_hi << 8));   /* wrap to a full lap */
         if (x == player_car && mem[CAR_LAP_COUNT + x] != 0)
-            mem[CAR_LAP_COUNT + x]--;
+            mem[CAR_LAP_COUNT + x]--;                              /* ...and un-book it */
     }
-    mem[CAR_DISTANCE_LO + x] = (uint8_t)(lo - 1);
-    mem[CAR_DISTANCE_HI + x] = hi;
+    dist = (uint16_t)(dist - 1u);
+    mem[CAR_DISTANCE_LO + x] = (uint8_t)dist;
+    mem[CAR_DISTANCE_HI + x] = (uint8_t)(dist >> 8);
     return crossed;
 }
 
