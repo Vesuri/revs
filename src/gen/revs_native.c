@@ -10463,25 +10463,25 @@ static void assist_from_selector(uint8_t selector)
     /* $1F11-$1F18 — which track edge to steer at: selector 2 → the far slot $32, else close $0A. */
     uint8_t edgeSlot = (selector == 0x02u) ? 0x32u : 0x0Au;
 
-    /* $1F19-$1F2E — |steering angle| as a 16-bit value (sign in bit 0 of the low byte). */
-    uint8_t angLo = steer_angle_lo;
-    uint8_t angHi = steer_angle_hi;
-    if (angLo & 0x01u) {                               /* $1F1E LSR / $1F22 BCC — negative: flip */
-        uint16_t neg = (uint16_t)(0u - (uint16_t)(((uint16_t)angHi << 8) | angLo));
-        angLo = (uint8_t)neg;
-        angHi = (uint8_t)(neg >> 8);
-    }
-    mem[STEER_KEYS] = angLo;                            /* $1F1C/$1F29 — |angle| low, read as bias low */
+    /* $1F19-$1F2E — |steering angle| as a 16-bit value (sign in bit 0 of the low byte).
+       ⭐ WIDE-VALUE CLEANUP: one uint16_t, so the negate is a negate and not a negate followed
+       by a split back into lanes.  ⚠ The sign lives in bit 0 of the LOW byte (sign-magnitude
+       packing — see steer_angle_lo in symbols.csv), which is why the test is `ang & 1` and not
+       a bit-15 test. */
+    uint16_t ang = (uint16_t)(steer_angle_lo | ((unsigned)steer_angle_hi << 8));
+    if (ang & 0x0001u)                                 /* $1F1E LSR / $1F22 BCC — negative: flip */
+        ang = (uint16_t)(0u - ang);
+    mem[STEER_KEYS] = (uint8_t)ang;                     /* $1F1C/$1F29 — |angle| low, read as bias low */
 
     /* $1F30-$1F39 — +1 in the high byte, less 2 for the far slot's own look-ahead. */
-    uint8_t biasHi = (uint8_t)(angHi + 1u);            /* $1F30-$1F31 */
+    uint8_t biasHi = (uint8_t)((ang >> 8) + 1u);       /* $1F30-$1F31 */
     if (edgeSlot == 0x32u) biasHi = (uint8_t)(biasHi - 2u);   /* $1F33-$1F37 far slot only */
     shared_temp_77 = biasHi;                           /* $1F39 — bias high (overwritten below) */
 
     /* $1F3B-$1F49 — the track edge less that bias, as a 16-bit magnitude; its sign is kept to
        re-sign the result at the very end (the 6502 parks it with PHP; a local carries it). */
     uint16_t edge = (uint16_t)(((uint16_t)mem[EDGE_X_HI_TBL + edgeSlot] << 8) | mem[EDGE_X_LO_TBL + edgeSlot]);
-    uint16_t bias = (uint16_t)(((uint16_t)biasHi << 8) | mem[STEER_KEYS]);
+    uint16_t bias = (uint16_t)(((uint16_t)biasHi << 8) | (ang & 0x00FFu));
     uint16_t diff = (uint16_t)(edge - bias);
     int diffNegative = (diff & 0x8000u) != 0u;         /* $1F48 PHP — the subtract's sign */
     uint16_t absDiff = diffNegative ? (uint16_t)(0u - diff) : diff;  /* $1F49 abs16 */
@@ -10508,19 +10508,17 @@ static void assist_from_selector(uint8_t selector)
     shared_temp_77 = (uint8_t)(revs_mulu16((uint8_t)absDiff, gainVal) >> 8);   /* mul8_accum's $0DC2 */
     uint16_t prod = (uint16_t)(revs_mulu16(absDiff, gainVal) >> 8);
 
-    /* $1F7C-$1F88 — re-sign the product by the $1F48 subtract's sign, then clear bit 0. */
+    /* $1F7C-$1F88 — re-sign the product by the $1F48 subtract's sign, then clear bit 0.
+       ⭐ WIDE-VALUE CLEANUP: clearing bit 0 of the low lane and keeping the high one is one
+       `& $FFFE` on the word, and the second re-sign is one negate. */
     uint16_t signedProd = diffNegative ? (uint16_t)(0u - prod) : prod;   /* $1F7E PLP / $1F7F abs16 */
-    uint8_t lo = (uint8_t)signedProd & 0xFEu;          /* $1F84-$1F88 */
-    uint8_t hi = (uint8_t)(signedProd >> 8);           /* $1F82 */
+    uint16_t demand = (uint16_t)(signedProd & 0xFFFEu);   /* $1F82-$1F88 */
 
     /* $1F8A-$1F93 — and by the steering's own sign: negate unless bit 0 of steer_angle_lo is set. */
-    if ((steer_angle_lo & 0x01u) == 0u) {              /* $1F8A LSR / $1F8E BCS */
-        uint16_t neg = (uint16_t)(0u - (uint16_t)(((uint16_t)hi << 8) | lo));   /* $1F90 neg16 */
-        lo = (uint8_t)neg;
-        hi = (uint8_t)(neg >> 8);
-    }
-    mem[STEER_SIGN]   = lo;
-    mem[STEER_DEMAND] = hi;
+    if ((steer_angle_lo & 0x01u) == 0u)                /* $1F8A LSR / $1F8E BCS */
+        demand = (uint16_t)(0u - demand);              /* $1F90 neg16 */
+    mem[STEER_SIGN]   = (uint8_t)demand;
+    mem[STEER_DEMAND] = (uint8_t)(demand >> 8);
 
     apply_steer_demand_core(steer_angle_lo);           /* $1F95 */
 }

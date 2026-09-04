@@ -113,6 +113,7 @@ relocation blast radius. High count ⇒ mechanism (B) is blocked; use (A) now.
 | `plot_ptr`/`plot_ptr2`/`plot_ptr3` | $70/$71, $72/$73, $8E/$8F | screen write pointers | **A only** | ✗ **B blocked — the 6502 DEREFERENCES these cells** (`($70),Y` and friends). ⭐ But (A) is INCOMPLETE and this is the largest remaining byte-lane pocket of the seven — §THE SEVEN NAMED PAIRS |
 | `point_delta`, `object_dist` | $80–$83, $55 | edge-walk scratch | B | **ELIGIBLE, unstarted** — re-scanned 2026-09-03 after twins #167-#172: every ref is in a native routine. Score them per §ELEVENTH before starting |
 | `nearest_edge_bearing` | $5E/$5F | edge-walk scratch | B | ⚠ **shares `$5F` with `engine_note_target`** (`CPX 0x005f` at `$0E94`, non-native `engine_sound_update`). A different TENANT, so it does not block under the EIGHTH lesson — but the relocation must leave `$5F` in `mem[]` for the sound path |
+| `steer_angle` | $62A2/$62A5 | the steering wheel's own angle, sign-magnitude (bit 0 of the LOW byte is the sign) | **A only** | **✅ A DONE (2026-09-04)** — `apply_steering_assist`'s `assist_from_selector` held the last two lane pairs on this path (`angLo`/`angHi` around the abs, and `lo`/`hi` around the re-sign); both are single `uint16_t`s now, with `& $FFFE` in place of "clear bit 0 of the low lane and keep the high one". B is blocked: it is element 2 of the strided `CAR_ANGLE` array |
 | `SLIP_MAG` | $8E/$8F and $62DA/$62EA | slip magnitude — a TENANT of plot_ptr3, plus a second home as MODEL_STATE element $0A | **A only** | ✗ **B blocked twice over**: the $8E home is an indirect pointer base, the $62DA home is a strided SoA member. §THE SEVEN NAMED PAIRS |
 
 ⚠ **A FULL indexed/indirect re-audit of every campaign pair** (both `$xx,X`/`$xx,Y` notations and
@@ -520,7 +521,7 @@ clean / tracks 6-of-6 / track-run every hook runs / Amiga muldiv + probe audits 
 | Cell(s) | Addr | Role | gen readers | Mechanism | Status |
 |---|---|---|---|---|---|
 | `car_heading` | $0A/$0B | 16-bit heading angle | 0 non-native | B | **✅ DONE (2026-09-03)** — `car_heading_v`; see the eligibility row |
-| `lap_length` | $59FC/D | track-file lap distance | some | A | TODO |
+| `lap_length` | $59FC/D | track-file lap distance | some | A | **✅ A DONE (2026-09-04)** — all three readers assemble the word: `track_pos_advance` already did, `car_gap_tail` ($27AB) is now one 16-bit subtract instead of a hand-carried borrow chain, and `track_pos_retreat` ($5F9C) one 16-bit decrement. ⚠ Deliberately **not** (B): track-file data an expansion circuit's hook can patch at runtime, so `mem[]` stays the authority. ⚠⚠ And the retreat's wrap predicate is a **sign** test on the decremented high lane, not a zero test on the pair — a high lane already ≥ $81 wraps too. Writing it as `dist == 0` diffed five fixture cases; see §The wrap test below |
 | `band2_duration` | $4F21/2 | horizon band duration | 0 (only irq1v + its oracle) | **B DONE** | ✅ `band2_duration_v` (revs_native.c), published back in band 1's arm |
 
 ### Tier 3 — SoA state vectors, non-adjacent (relocate `lo_8[N]`/`hi_8[N]` → `value_16[N]`)
@@ -1082,6 +1083,27 @@ patched `pointer_is_ram(base)` instead of the store address, and *survived* — 
 RAM-window test almost never changes its answer, so **the patch has to land on the value the
 routine computes, not on a predicate near it.** And the setup's `marshal_out` is genuinely
 load-bearing: dropping it is caught, because the routine's own exit `A` is the pointer's page.
+
+### The wrap test: a 6502 sign test is not a zero test (`track_pos_retreat`, $5F9C)
+
+`track_pos_retreat` steps a car one distance unit backwards and wraps to a full lap at the start
+line. The 6502 spells the wrap as three lane steps: if the low byte is already zero, `DEC` the
+high one, and if the high one comes out **negative**, reload both lanes from `lap_length` and
+un-book a lap.
+
+Rewritten wide, the tempting form is `if (dist == 0) dist = lap_length;`. **It is wrong, and it
+is wrong in a way that only shows up on out-of-range distances**: the 6502 branches on the *sign*
+of the decremented high lane, so a distance whose high byte is already `$81`-or-more wraps too.
+The fixture found it in five cases. The faithful wide form keeps the sign:
+
+```c
+while ((dist & 0x00FFu) == 0u && ((uint16_t)(dist - 1u) & 0x8000u) != 0u) { dist = lap; ... }
+```
+
+⭐ **The general rule for this campaign: when collapsing lane steps into one wide op, check what
+the 6502 BRANCHED on, not what the lanes end up holding.** `BPL`/`BMI` after a `DEC` is a sign
+test on one byte, and the wide value's own bit 15 is only the same predicate when the value is
+in range. The lanes agreeing is not the same as the predicates agreeing.
 
 ## Ordering
 
