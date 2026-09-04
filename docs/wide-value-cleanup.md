@@ -1063,6 +1063,26 @@ about the sweep.** Before believing it, sabotage the sweep — patch one defect 
 hand, and confirm the harness fails.  (And detect a failure by the harness's **exit status**: a
 `grep` for `DIFF]` misses fixtures that report only a `N mismatch` line.)
 
+### `plot_view_src_line` ($1C1C): the resync is DEAD here, and that is a property of the POINTER
+
+`column_gap_walk` and `plot_line_octant` both need `plot_store_resync`, because their pointer is
+seeded from a *runtime* zero-page cell and can therefore be aimed anywhere, including at its own
+lanes. `plot_view_src_line`'s cannot: it is `VIEW_SRC_PAGE * $100 + column * $80` with the column
+already clamped below `$28`, so the pointer spans `$3000..$4380` and nothing else, and neither of
+its two fill loops can store on `$70..$73`.
+
+So the resync calls that looked like due diligence were dead code, and the sabotage sweep said so:
+dropping either one survived. **Both were removed and the argument written at the code.** The rule
+this gives: *a self-write guard belongs where the POINTER's range is open, not wherever a pointer
+is stored through* — and a surviving sabotage of such a guard is the "no case to show it in" third
+explanation, which is free.
+
+Two other results from that sweep are worth keeping. A first attempt at the address sabotage
+patched `pointer_is_ram(base)` instead of the store address, and *survived* — an off-by-one in a
+RAM-window test almost never changes its answer, so **the patch has to land on the value the
+routine computes, not on a predicate near it.** And the setup's `marshal_out` is genuinely
+load-bearing: dropping it is caught, because the routine's own exit `A` is the pointer's page.
+
 ## Ordering
 
 0. **Step 0 consolidation** (above) — clears the duplicate-define debt first.

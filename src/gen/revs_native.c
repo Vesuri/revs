@@ -9594,9 +9594,12 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
        A the 6502 leaves in it, which IS the exit A of the two off-view arms below. */
     edgeCol       = mem[EDGE_COLUMN];
     mem[PVS_HALF] = (uint8_t)((mem[PVS_HALF] << 1) | (edgeCol >= 0x14u ? 1u : 0u));
-    plot_ptr_lo   = (uint8_t)((edgeCol & 1u) << 7);
-    plot_ptr_hi   = (uint8_t)((edgeCol >> 1) + VIEW_SRC_PAGE);
-    acc           = plot_ptr_hi;                    /* A = plot_ptr_hi, live at the exits below */
+    /* ⭐ WIDE-VALUE CLEANUP: the source block for this column is one word.  The 6502 spells it
+       as a page from (edgeCol >> 1) + VIEW_SRC_PAGE and a half-block bit dropped into the low
+       byte's top; written wide it is VIEW_SRC_PAGE * $100 + edgeCol * $80. */
+    plot_ptr_v = (uint16_t)(((unsigned)VIEW_SRC_PAGE << 8) + edgeCol * 0x80u);
+    plot_ptr_marshal_out();
+    acc        = (uint8_t)(plot_ptr_v >> 8);        /* A = plot_ptr's page, live at the exits below */
 
     /* $1C89-$1C9D — off the right of the viewport, or the run's top line. */
     if (edgeCol >= 0x28u) {
@@ -9675,11 +9678,17 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
         /* $1DE5-$1DEE — the PLAIN fill: no read, no surface colour, just the byte.  The
            hardware-window test is hoisted onto the POINTER, one per run. */
         {
-            unsigned base = zp_pointer(MEM_plot_ptr_lo);
+            /* ⭐ one word, not two lanes and an or.  And unlike column_gap_walk's, this
+               pointer needs no plot_store_resync: it is VIEW_SRC_PAGE-relative with a column
+               below $28, so it spans $3000..$4380 only and its stores can never land on the
+               $70..$73 pointer cells.  A dropped resync here is a defect no fixture can show,
+               because there is no case to show it in. */
+            unsigned base = plot_ptr_v;
             int      ram  = pointer_is_ram(base);
             uint8_t  line = span_line_cursor;
             while (line != mem[EDGE_BLOCK_START]) {
-                seam_write((base + line) & 0xFFFFu, ram, acc);
+                unsigned cell = (base + line) & 0xFFFFu;
+                seam_write(cell, ram, acc);
                 line--;
             }
             y = mem[EDGE_BLOCK_START];            /* the fill leaves Y at the stop line */
@@ -9730,7 +9739,7 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
             /* ⚠ NOT HOISTED, for column_gap_walk's reason: the run can cover the cells that
                drive it ($0082 is the end line and $0085 the column), so the pointer, the end
                line and the column are all re-read every pass. */
-            unsigned base = zp_pointer(MEM_plot_ptr_lo);
+            unsigned base = plot_ptr_v;    /* ⭐ ...and the re-read is a word read */
             int      ram  = pointer_is_ram(base);
             unsigned cell = (base + line) & 0xFFFFu;
             uint8_t  src  = seam_read(cell, ram);
@@ -9748,7 +9757,7 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
                 acc = (uint8_t)((src & mem[PVS_KEEP]) | mem[PVS_BYTE]);   /* $1D60 */
                 if (acc == 0) acc = SRC_CELL_BLANK;
             }
-            seam_write(cell, ram, acc);
+            seam_write(cell, ram, acc);   /* $3000-relative: no resync, see the plain fill */
             line--;
         }
         y = mem[EDGE_BLOCK_START];
