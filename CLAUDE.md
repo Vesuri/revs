@@ -313,7 +313,7 @@ negotiable** — 25 FPS means painting every other frame with the simulation sti
 The A500 is a 7 MHz 68000 and a frame is 20 ms: spending 10 ms on *anything* is half the budget.
 Be conscious of absolute milliseconds always.
 
-**Baseline: ~4.15 FPS rendered** (`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`,
+**Baseline: ~4.51 FPS rendered** (`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`,
 row-vector avg of the non-outlier rows; the two ~2.9 rows are the off-track/reset scene).
 ⚠ One painted frame is 3.3% of a row, so this figure IS the noise floor — always re-run the control
 in the same session from a clean build rather than diffing against it (`docs/perf-method.md` §twin #13).
