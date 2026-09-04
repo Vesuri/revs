@@ -261,3 +261,16 @@ limit).  Both readings are of the same code.  ⇒ **Drop both from `ghidra_scrip
 if they are seeded there**, and do not give them `func` rows: a one-entry back-branch target is a
 label, and a `func` row for it manufactures a false call-graph root — exactly what the `$1200`
 `loader_stub` row did to `build_player_car` until it was retagged (`symbols.csv`).
+
+
+## `plot_ptr3_lo` (`$7E`) — `plot_object` uses it as a SCALAR, not half a pointer
+
+`plot_ptr3_lo`/`plot_ptr3_hi` (`$7E`/`$7F`) is named as a pointer pair, and in the plotters it is
+one.  In `plot_object`, however, `$7E` is a **shape-edge index** — a small scalar counter walked
+over the object's edge list — with `$7F` carrying something unrelated to it, so a reader (and the
+wide-value eligibility scan) sees a pointer pair where there is none.  ⇒ Either give `$7E` a
+second, tenancy-scoped row (`shape_edge_index`, noting the `plot_ptr3_lo` tenancy) or extend the
+existing note to declare both tenants explicitly.  **Which is authoritative in `plot_object` is
+DERIVED** — the routine never forms an address from `$7E:$7F`.  Until this is settled the pair
+must not be scored as a wide-value candidate (`docs/wide-value-cleanup.md` §NINTH lesson: a
+scratch cell's ref count counts TENANTS).
