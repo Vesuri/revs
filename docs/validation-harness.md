@@ -100,6 +100,19 @@ make determinism-record   # after a change you have already proven correct
 make determinism          # the check (DET_FRAME=300 by default)
 ```
 
+⚠⚠ **`make clean` BEFORE `make determinism-record`, always.** The record target builds `$(TARGET)`
+with whatever objects are already on disk, and `determinism-drive` / `determinism-crash` leave the
+tree compiled with `STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` — so a record run straight after one of
+them **bakes the wrong trajectory into the reference**. The poisoned reference then fails every
+later honest run, and it fails *consistently*: **1372 bytes, the same count from any build**, which
+reads exactly like a real regression that a source-level control reproduces. It cost two rounds of
+bisection across two sessions, and both times the "control also fails, so the reference is stale"
+diagnosis was right for the wrong reason — the reference was not old, it was *wrong*.
+
+⭐ **The check that distinguishes them: re-record from a clean tree, then `make clean` and run the
+check again.** A sound reference passes that; a poisoned one cannot, because the second build is
+not the build that made it. Repeatability across a clean rebuild is the property, not freshness.
+
 Sabotage-tested three ways: an unpinned clock diverges; a deliberately wrong flag-liveness rule
 (dropping a LIVE `N`) does not merely diverge — it **hangs**, so the run never reaches the dump at
 all; and two different configurations / two different frame depths never compare equal to each

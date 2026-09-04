@@ -45,6 +45,145 @@
 #include "../platform/shape.h"        /* PROBE_SHAPE_DASH_UNIT(): the §7a unit counter */
 #include "../platform/revs_plot.h"    /* REVS_PLOT_*: the direct-to-bitplane run plotter */
 
+/* ⭐⭐ WIDE-VALUE CLEANUP, mechanism (B): THE ENGINE'S THREE SCREEN WRITE POINTERS
+   ($70/$71, $72/$73, $8E/$8F) relocated out of mem[] into native uint16_ts.
+
+   They move together and they had to: the span rasteriser's SpanPlotter descriptors name their
+   pointer slots, and span_end_marker / fill_column_gaps_core pick a slot at run time, so
+   relocating one and not the others would put a marshalling temp inside the routine that runs
+   eight times per scan line.
+
+   WHERE THE WIN IS.  Not in the lo/hi STEPS — those are a wash — but in the REASSEMBLIES.  Every
+   store through one of these pointers used to spell `mem[zp] | (mem[zp+1] << 8)`: two byte reads,
+   a shift and an or, to make an address the 68000 can read in one word.  span_plot_core does that
+   TWICE per call and is called eight times per scan line; zp_pointer and view_screen_addr are the
+   same idiom behind a helper, at ten more sites.  Four accesses become two, and the shift/or chain
+   goes entirely.
+
+   ⭐ AND THE STEPS ARE A WIN TOO, once the byte-lane habit is dropped.  The first draft of
+   step_scanline wrote `plot_ptr_v = (plot_ptr_v & 0xFF00u) | next` to "preserve the high byte" and
+   duly cost 4 accesses against the byte form's 3.  That mask is the idiom being removed: on that
+   path the low byte provably cannot wrap (the character-row branch catches $00 via `next & 7`), so
+   it is just `plot_ptr_v++` — two `addq.w #1,ADDR` read-modify-writes against a read and two
+   writes.  Two word ops beat three byte ops.  Ask what the value DOES before masking a lane.
+
+   ⚠ THE ALIASING QUESTION, and how it is actually settled.  A span walk can climb the high byte
+   through page $00 and store through the pointer INTO ZERO PAGE — that is measured, not theory: it
+   is why `mem[arm->addend]` may not be hoisted out of span_walk.  A relocated uint16_t would miss a
+   store that landed on its own cells.  A bus_write probe was tried and is RETRACTED (it could not
+   see a native twin's raw mem[] stores at all — docs/wide-value-cleanup.md).  The instrument that
+   settles it was already in the tree: the four span-arm fixtures PLANT the pathological case, one
+   ascending case in twelve starting above its bound, and that plant is what failed the addend hoist
+   3 of 400 times on each `fwd` arm.  `make validate FN=draw_span` manufactures the hazard.
+
+   ⚠ mem[] stays the 6502-ABI mirror, exactly as car_heading does: the shims marshal in on entry and
+   out on exit, so the __t6502 oracles' mem[] differential still sees every byte.  Two shipping
+   transliterated routines write these cells (console_io saves A/Y in $70/$71, emit_driver_name in
+   $72/$73) and BOTH are write-only, so a marshal-in is all they need.
+
+   ⚠⚠ $8E/$8F IS DUAL-TENANTED and only the PLOTTER tenant moves.  plot_object reads $8E as a shape
+   index and the driving model uses it as a signed temporary; those sites keep mem[] and are
+   untouched.  The two windows never overlap a span walk (disasm/symbols.csv $008E), and the
+   marshal pair is what keeps that true rather than merely believed. */
+/* ⚠ The seed sites, and ONLY the seed sites.  draw_road writes the three low bytes and
+   interp_edge writes the three pages, so between those two points the pointer is half-built and
+   a whole-word store would invent a high byte the 6502 never wrote — and interp_edge's "off the
+   side" early return really does leave the stale one standing.  Everywhere else (the derefs, the
+   per-scan-line page step) the value is whole and is handled whole. */
+#define PLOT_PTR_SET_LO(v, b)  ((v) = (uint16_t)(((v) & 0xFF00u) | (uint8_t)(b)))
+#define PLOT_PTR_SET_HI(v, b)  ((v) = (uint16_t)(((v) & 0x00FFu) | ((unsigned)(uint8_t)(b) << 8)))
+
+/* ⚠⚠ THE MIRROR MUST STAY LIVE, not just be published at the shim's exit.  The plotters
+   dereference these pointers, and an ascending run can walk one of them onto its OWN zero-page
+   cells — at which point the plotter READS mem[$70..$73]/mem[$8E/$8F] as an ordinary colour cell.
+   A stale mirror hands that read the pointer's ENTRY value and every byte downstream diverges
+   (measured: draw_span_shallow_fwd case 119, ref stored $D7 where the twin stored $77).
+   So every mutation writes the byte lane through as well; plot_store_resync closes the other
+   direction, when a store lands ON a lane. */
+#define PLOT_SET_LO(name, b)  do { uint8_t b_ = (uint8_t)(b);                              \
+        name##_v = (uint16_t)((name##_v & 0xFF00u) | b_); mem[MEM_##name##_lo] = b_; } while (0)
+#define PLOT_SET_HI(name, b)  do { uint8_t b_ = (uint8_t)(b);                              \
+        name##_v = (uint16_t)((name##_v & 0x00FFu) | ((unsigned)b_ << 8));                 \
+        mem[MEM_##name##_hi] = b_; } while (0)
+/* One scan line is one PAGE.  Only the high lane changes, so only it is written through. */
+#define PLOT_STEP_PAGE(name, delta)  do {                                                  \
+        name##_v = (uint16_t)(name##_v + (delta));                                         \
+        mem[MEM_##name##_hi] = (uint8_t)(name##_v >> 8); } while (0)
+
+uint16_t plot_ptr_v;     /* $70/$71 — THE screen write pointer every plotter stores through */
+uint16_t plot_ptr2_v;    /* $72/$73 — the second, one page above: cells 32-39 of a scan line */
+uint16_t plot_ptr3_v;    /* $8E/$8F — the third, road_span_plot_2's buffer */
+
+void plot_ptr_marshal_in(void)   { plot_ptr_v  = (uint16_t)(plot_ptr_lo  | (plot_ptr_hi  << 8)); }
+void plot_ptr2_marshal_in(void)  { plot_ptr2_v = (uint16_t)(plot_ptr2_lo | (plot_ptr2_hi << 8)); }
+void plot_ptr3_marshal_in(void)  { plot_ptr3_v = (uint16_t)(plot_ptr3_lo | (plot_ptr3_hi << 8)); }
+
+void plot_ptr_marshal_out(void)
+{
+    plot_ptr_lo = (uint8_t)plot_ptr_v;   plot_ptr_hi = (uint8_t)(plot_ptr_v >> 8);
+}
+void plot_ptr2_marshal_out(void)
+{
+    plot_ptr2_lo = (uint8_t)plot_ptr2_v; plot_ptr2_hi = (uint8_t)(plot_ptr2_v >> 8);
+}
+void plot_ptr3_marshal_out(void)
+{
+    plot_ptr3_lo = (uint8_t)plot_ptr3_v; plot_ptr3_hi = (uint8_t)(plot_ptr3_v >> 8);
+}
+
+/* The span walk moves all three in lockstep, so its shims marshal all three at once. */
+/* ⚠⚠ THE ALIAS GUARD, and it is not defensive programming — it is a MEASURED behaviour.
+   An ascending arm entered above its bound runs the long way round to it, climbing the page byte
+   through $00, and the plotter's own store then lands IN ZERO PAGE — sometimes on $70/$72
+   themselves.  The oracle re-reads the pointer from mem[] at every dereference and therefore sees
+   its own write; a relocated uint16_t would not.  Without this the four span fixtures fail 7/400
+   (shallow_fwd) and 5/400 (steep_fwd) and 0/400 on both `rev` arms — the same ascending-only
+   signature that failed the `mem[arm->addend]` hoist.
+
+   ⭐ This is what "eligible" actually had to mean here: not "no shipping transliteration touches
+   the cells" (the scanner's test) but "THE VALUE CANNOT WRITE ITSELF".  It can — so it is
+   relocated WITH a re-read at exactly the point the 6502 had one.
+
+   ⚠⚠ AND THE FIRST VERSION OF THIS GUARD HUNG THE FIXTURE.  It reloaded all three pointers from
+   mem[] on any page-0 store.  But mem[] is only refreshed by marshal_out at shim exit, so mid-walk
+   it still holds the ENTRY values — and a store landing anywhere in page $00 (the differential
+   shows $26, $60, $68…, not just the pointer cells) therefore threw away every page step the walk
+   had accumulated and reset the pointers to where they started.  The walk could then never reach
+   `plot_ptr2_v >> 8 == arm->bound` and span_walk spun forever.  The fix is to apply the BYTE THAT
+   WAS ACTUALLY STORED to the matching lane, which is what the 6502 does and all it does.
+
+   The `addr < 0x0100` test is one compare on a path where the relocation saved four memory
+   accesses per call; everything below it runs only on a walk that has reached page $00. */
+static inline __attribute__((always_inline))
+void plot_store_resync(unsigned addr, uint8_t val)
+{
+    /* ⚠⚠ MASK FIRST.  `addr` is the UNWRAPPED sum pointer + Y and can reach $100FE; the store
+       itself wraps it (`mem[(uint16_t)addr]`) and therefore really does land in page $00.  The
+       first version of this test compared the unwrapped value, so it never fired on the one case
+       it exists for — a pointer near $FFxx wrapping to $00xx, which IS "the walk climbed through
+       page $00" — and span_walk spun because the self-write that ends it was dropped. */
+    addr &= 0xFFFFu;
+    if (addr >= 0x0100u) return;              /* the overwhelmingly common case */
+    switch (addr) {
+    case MEM_plot_ptr_lo:   PLOT_SET_LO(plot_ptr,  val); break;
+    case MEM_plot_ptr_hi:   PLOT_PTR_SET_HI(plot_ptr_v,  val); break;
+    case MEM_plot_ptr2_lo:  PLOT_SET_LO(plot_ptr2, val); break;
+    case MEM_plot_ptr2_hi:  PLOT_PTR_SET_HI(plot_ptr2_v, val); break;
+    case MEM_plot_ptr3_lo:  PLOT_SET_LO(plot_ptr3, val); break;
+    case MEM_plot_ptr3_hi:  PLOT_PTR_SET_HI(plot_ptr3_v, val); break;
+    default: break;                           /* some other zero-page cell: not ours */
+    }
+}
+
+void plot_ptrs_marshal_in(void)
+{
+    plot_ptr_marshal_in(); plot_ptr2_marshal_in(); plot_ptr3_marshal_in();
+}
+void plot_ptrs_marshal_out(void)
+{
+    plot_ptr_marshal_out(); plot_ptr2_marshal_out(); plot_ptr3_marshal_out();
+}
+
 /* The object/slot-writer chain's exit ABI — A/X/Y + N/Z/V/C returned by value so a core stays
    cpu-free; the thin shim (or a caller whose own exit ABI is this) replays it onto cpu. */
 
@@ -491,10 +630,12 @@ static int view_span_is_ram(unsigned base)
     return (base + 40 * 8) <= BBC_IO_LO;
 }
 
-/* The screen address a boundary store lands on: one of the two pointers, plus the cell. */
-static uint16_t view_screen_addr(unsigned zp, unsigned cell)
+/* The screen address a boundary store lands on: one of the two pointers, plus the cell.
+   ⭐ WIDE-VALUE CLEANUP: `base` is the relocated uint16_t, so this is one word read and an add
+   where the 6502 idiom was two byte reads, a shift and an or — at the three call sites below. */
+static uint16_t view_screen_addr(uint16_t base, unsigned cell)
 {
-    return (uint16_t)((mem[zp] | (mem[zp + 1] << 8)) + cell);
+    return (uint16_t)(base + cell);
 }
 
 /* (source AND mask) OR fill — one boundary cell.  Through the macros because N and Z from
@@ -717,30 +858,34 @@ static int view_enter_chain(ViewState* v, uint16_t site, uint16_t opnd, unsigned
    plot_ptr2's `ADC #1`.  That is four cpu writes instead of the three adc_steps' fifteen. */
 static unsigned step_scanline(int* carry_out)
 {
-    unsigned next = (plot_ptr_lo + 1) & 0xFF;
+    unsigned next = (plot_ptr_v + 1) & 0xFF;
 
     UPD_NZ(next & 7);                            /* the `TYA / AND #7` — N/Z can outlive us */
     if (carry_out) *carry_out = 0;
     if (next & 7) {                              /* still inside this character row */
-        plot_ptr_lo  = (unsigned char)next;
-        plot_ptr2_lo = (unsigned char)next;
+        /* ⭐ No mask to "preserve the high byte": `next & 7` non-zero means next != 0, so the
+           low byte provably did not wrap and this is just an increment of the whole pointer.
+           Both pointers share the low byte, so both step by one. */
+        plot_ptr_v++;
+        plot_ptr2_v++;
         return next;
     }
 
-    /* Crossing into the next character row: +$38 into the low byte and +1 into the high. */
-    unsigned adv   = (((unsigned)plot_ptr_hi << 8) | next) + 0x0138u;
+    /* Crossing into the next character row: ONE 16-bit add of $0138 to plot_ptr (the 6502
+       spells it `ADC #$38` on the low byte, which has just been incremented to a multiple of
+       8, then `ADC #1` on the high). */
+    unsigned adv   = ((plot_ptr_v & 0xFF00u) | next) + 0x0138u;
     unsigned advHi = (adv >> 8) & 0xFFu;
     unsigned c2    = adv >> 16;                  /* the carry off the high byte */
 
-    plot_ptr_lo  = (unsigned char)adv;
-    plot_ptr2_lo = plot_ptr_lo;
-    plot_ptr_hi  = (unsigned char)advHi;
+    plot_ptr_v = (uint16_t)adv;
 
     /* plot_ptr2 sits one page above, and the 6502 gets there with a SECOND `ADC #1` on the
-       high byte it has just stored — so it also picks up that add's carry-out. */
+       high byte it has just stored — so it also picks up that add's carry-out.  Its low byte
+       is plot_ptr's, which is why this is a build and not an add. */
     unsigned      hi2 = advHi + 1u + c2;
     unsigned char r2  = (unsigned char)hi2;
-    plot_ptr2_hi = r2;
+    plot_ptr2_v = (uint16_t)(((unsigned)r2 << 8) | (adv & 0xFFu));
 
     /* ⚠ FOUR SABOTAGES OF THE LINES BELOW SURVIVE `make validate`, in two classes, and both
        are recorded rather than engineered around (docs/validation-harness.md §FIFTEENTH):
@@ -867,8 +1012,8 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
            `base + cell*8` inside the frame buffer, so nothing it does can reach plot_ptr
            and move the pointer under itself. */
         {
-            unsigned base0 = plot_ptr_lo  | ((unsigned)plot_ptr_hi  << 8);
-            unsigned base1 = plot_ptr2_lo | ((unsigned)plot_ptr2_hi << 8);
+            unsigned base0 = plot_ptr_v;    /* ⭐ one word read each, not two bytes + shift + or */
+            unsigned base1 = plot_ptr2_v;
             MEM_QUAL unsigned char* srcp = mem + VIEW_SRC_BLOCKS
                                                + ((unsigned)unit << 7) + line;
             MEM_QUAL unsigned char* const dp1 = mem + base1;
@@ -1078,12 +1223,16 @@ static void paint_lines_short(ViewState* v)
            ⚠ THIS TAIL IS UNTESTED AND UNREACHABLE, and it is recorded rather than trusted:
            deleting it passes all 700 fixture cases (sabotage S2, 2026-08-17), because the
            high byte only carries out of $FF and the pointer lives at $67..$7A.  Kept because
-           the 6502 has it; do not read the green as coverage. */
+           the 6502 has it; do not read the green as coverage.
+           ⚠ Re-confirmed for the wide form (2026-09-04): dropping plot_ptr2's low-byte write
+           below also passes all 700 cases, for the same reason — `carry_out` is never 1. */
         VIEWP3_PHASE(PROBE_PHASE_VIEWP3);
         next = step_scanline(&carry_out);
         if (!(next & 7) && carry_out) {
-            plot_ptr_lo  = (unsigned char)next;
-            plot_ptr2_lo = (unsigned char)next;
+            /* The odd carry tail: the LOW byte only, and it really can differ from an
+               increment, so this one keeps the mask. */
+            PLOT_PTR_SET_LO(plot_ptr_v,  next);
+            PLOT_PTR_SET_LO(plot_ptr2_v, next);
         }
         VIEWP3_PHASE(PROBE_PHASE_P3_CHAINA);
 
@@ -1103,8 +1252,8 @@ static void paint_lines_short(ViewState* v)
         if (!view_enter_chain(v, 0x7F67, 0x7F68, 0x7C)) { view_commit(v); return; }
         v->byte = view_compose(v->byte, mem[VIEW_L_END_MASK + v->line],
                                         mem[VIEW_L_END_FILL + v->line]);
-        REVS_PLOT_CELL(view_screen_addr(MEM_plot_ptr_lo, v->cell), (uint8_t)v->byte);
-        bus_write(view_screen_addr(MEM_plot_ptr_lo, v->cell), (uint8_t)v->byte);
+        REVS_PLOT_CELL(view_screen_addr(plot_ptr_v, v->cell), (uint8_t)v->byte);
+        bus_write(view_screen_addr(plot_ptr_v, v->cell), (uint8_t)v->byte);
 
         /* chain B: the same again, one page down and with its own tables.  ⚠ the stop is
            re-read here — the chain may have zeroed it (see the header). */
@@ -1129,8 +1278,8 @@ static void paint_lines_short(ViewState* v)
                                         mem[VIEW_R_END_FILL + edge]);
         v->cell = math_hi;
         UPD_NZ(v->cell);                            /* the `LDY math_hi` that reloaded it */
-        REVS_PLOT_CELL(view_screen_addr(MEM_plot_ptr2_lo, v->cell), (uint8_t)v->byte);
-        bus_write(view_screen_addr(MEM_plot_ptr2_lo, v->cell), (uint8_t)v->byte);
+        REVS_PLOT_CELL(view_screen_addr(plot_ptr2_v, v->cell), (uint8_t)v->byte);
+        bus_write(view_screen_addr(plot_ptr2_v, v->cell), (uint8_t)v->byte);
 
 #if defined(REVS_VIEWCAL) && defined(REVS_PROBE)
         /* ⭐ `make VIEWCAL=1` — 14 000 known cycles in their own bracket, at this line's rate.  The
@@ -1184,8 +1333,8 @@ static void paint_lines_clipped(ViewState* v)
 
         v->byte = view_compose(v->byte, mem[VIEW_L_END_MASK + v->line],
                                         mem[VIEW_L_END_FILL + v->line]);
-        REVS_PLOT_CELL(view_screen_addr(MEM_plot_ptr_lo, v->cell), (uint8_t)v->byte);
-        bus_write(view_screen_addr(MEM_plot_ptr_lo, v->cell), (uint8_t)v->byte);
+        REVS_PLOT_CELL(view_screen_addr(plot_ptr_v, v->cell), (uint8_t)v->byte);
+        bus_write(view_screen_addr(plot_ptr_v, v->cell), (uint8_t)v->byte);
 
         v->byte = view_compose(mem[VIEW_R_START_SRC + v->line],
                                mem[VIEW_R_START_MASK + v->line],
@@ -1210,10 +1359,10 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
     if (!g_viewTablesBuilt) view_build_tables();
     view_stops_rescan();          /* what is REALLY in the page, before any plant of ours */
 
-    plot_ptr_lo  = (unsigned char)screenBase;
-    plot_ptr2_lo = (unsigned char)screenBase;
-    plot_ptr_hi  = (unsigned char)(screenBase >> 8);
-    plot_ptr2_hi = (unsigned char)((screenBase >> 8) + 1);
+    /* ⭐ Both pointers are seeded WHOLE here, so this island needs no marshal-IN: nothing it
+       does reads the entry value.  The 6502 wrote four bytes; this is two word stores. */
+    plot_ptr_v  = (uint16_t)screenBase;
+    plot_ptr2_v = (uint16_t)(screenBase + 0x0100u);
 
     v.byte = (unsigned char)screenBase;   /* the `LDA #0` that seeded both low bytes */
     v.line = firstLine;
@@ -1226,6 +1375,12 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
     paint_cells(&v, 0, 0, 1);
     paint_lines_clipped(&v);
     view_commit(&v);
+
+    /* Publish the two pointers back into mem[] for the 6502-ABI mirror.  In the CORE, not the
+       shim: race_main_loop reaches this routine through the shim today, but a future
+       core-to-core caller would otherwise skip it (the transitive-producer trap). */
+    plot_ptr_marshal_out();
+    plot_ptr2_marshal_out();
 }
 
 /* The 6502-ABI shim.  $6700/$6800 is character row 10 of the frame buffer — display line
@@ -2073,144 +2228,6 @@ void car_heading_marshal_out(void)
     car_heading_hi = (uint8_t)(car_heading_v >> 8);
 }
 
-/* ⭐⭐ WIDE-VALUE CLEANUP, mechanism (B): THE ENGINE'S THREE SCREEN WRITE POINTERS
-   ($70/$71, $72/$73, $8E/$8F) relocated out of mem[] into native uint16_ts.
-
-   They move together and they had to: the span rasteriser's SpanPlotter descriptors name their
-   pointer slots, and span_end_marker / fill_column_gaps_core pick a slot at run time, so
-   relocating one and not the others would put a marshalling temp inside the routine that runs
-   eight times per scan line.
-
-   WHERE THE WIN IS.  Not in the lo/hi STEPS — those are a wash — but in the REASSEMBLIES.  Every
-   store through one of these pointers used to spell `mem[zp] | (mem[zp+1] << 8)`: two byte reads,
-   a shift and an or, to make an address the 68000 can read in one word.  span_plot_core does that
-   TWICE per call and is called eight times per scan line; zp_pointer and view_screen_addr are the
-   same idiom behind a helper, at ten more sites.  Four accesses become two, and the shift/or chain
-   goes entirely.
-
-   ⭐ AND THE STEPS ARE A WIN TOO, once the byte-lane habit is dropped.  The first draft of
-   step_scanline wrote `plot_ptr_v = (plot_ptr_v & 0xFF00u) | next` to "preserve the high byte" and
-   duly cost 4 accesses against the byte form's 3.  That mask is the idiom being removed: on that
-   path the low byte provably cannot wrap (the character-row branch catches $00 via `next & 7`), so
-   it is just `plot_ptr_v++` — two `addq.w #1,ADDR` read-modify-writes against a read and two
-   writes.  Two word ops beat three byte ops.  Ask what the value DOES before masking a lane.
-
-   ⚠ THE ALIASING QUESTION, and how it is actually settled.  A span walk can climb the high byte
-   through page $00 and store through the pointer INTO ZERO PAGE — that is measured, not theory: it
-   is why `mem[arm->addend]` may not be hoisted out of span_walk.  A relocated uint16_t would miss a
-   store that landed on its own cells.  A bus_write probe was tried and is RETRACTED (it could not
-   see a native twin's raw mem[] stores at all — docs/wide-value-cleanup.md).  The instrument that
-   settles it was already in the tree: the four span-arm fixtures PLANT the pathological case, one
-   ascending case in twelve starting above its bound, and that plant is what failed the addend hoist
-   3 of 400 times on each `fwd` arm.  `make validate FN=draw_span` manufactures the hazard.
-
-   ⚠ mem[] stays the 6502-ABI mirror, exactly as car_heading does: the shims marshal in on entry and
-   out on exit, so the __t6502 oracles' mem[] differential still sees every byte.  Two shipping
-   transliterated routines write these cells (console_io saves A/Y in $70/$71, emit_driver_name in
-   $72/$73) and BOTH are write-only, so a marshal-in is all they need.
-
-   ⚠⚠ $8E/$8F IS DUAL-TENANTED and only the PLOTTER tenant moves.  plot_object reads $8E as a shape
-   index and the driving model uses it as a signed temporary; those sites keep mem[] and are
-   untouched.  The two windows never overlap a span walk (disasm/symbols.csv $008E), and the
-   marshal pair is what keeps that true rather than merely believed. */
-/* ⚠ The seed sites, and ONLY the seed sites.  draw_road writes the three low bytes and
-   interp_edge writes the three pages, so between those two points the pointer is half-built and
-   a whole-word store would invent a high byte the 6502 never wrote — and interp_edge's "off the
-   side" early return really does leave the stale one standing.  Everywhere else (the derefs, the
-   per-scan-line page step) the value is whole and is handled whole. */
-#define PLOT_PTR_SET_LO(v, b)  ((v) = (uint16_t)(((v) & 0xFF00u) | (uint8_t)(b)))
-#define PLOT_PTR_SET_HI(v, b)  ((v) = (uint16_t)(((v) & 0x00FFu) | ((unsigned)(uint8_t)(b) << 8)))
-
-/* ⚠⚠ THE MIRROR MUST STAY LIVE, not just be published at the shim's exit.  The plotters
-   dereference these pointers, and an ascending run can walk one of them onto its OWN zero-page
-   cells — at which point the plotter READS mem[$70..$73]/mem[$8E/$8F] as an ordinary colour cell.
-   A stale mirror hands that read the pointer's ENTRY value and every byte downstream diverges
-   (measured: draw_span_shallow_fwd case 119, ref stored $D7 where the twin stored $77).
-   So every mutation writes the byte lane through as well; plot_store_resync closes the other
-   direction, when a store lands ON a lane. */
-#define PLOT_SET_LO(name, b)  do { uint8_t b_ = (uint8_t)(b);                              \
-        name##_v = (uint16_t)((name##_v & 0xFF00u) | b_); mem[MEM_##name##_lo] = b_; } while (0)
-#define PLOT_SET_HI(name, b)  do { uint8_t b_ = (uint8_t)(b);                              \
-        name##_v = (uint16_t)((name##_v & 0x00FFu) | ((unsigned)b_ << 8));                 \
-        mem[MEM_##name##_hi] = b_; } while (0)
-/* One scan line is one PAGE.  Only the high lane changes, so only it is written through. */
-#define PLOT_STEP_PAGE(name, delta)  do {                                                  \
-        name##_v = (uint16_t)(name##_v + (delta));                                         \
-        mem[MEM_##name##_hi] = (uint8_t)(name##_v >> 8); } while (0)
-
-uint16_t plot_ptr_v;     /* $70/$71 — THE screen write pointer every plotter stores through */
-uint16_t plot_ptr2_v;    /* $72/$73 — the second, one page above: cells 32-39 of a scan line */
-uint16_t plot_ptr3_v;    /* $8E/$8F — the third, road_span_plot_2's buffer */
-
-void plot_ptr_marshal_in(void)   { plot_ptr_v  = (uint16_t)(plot_ptr_lo  | (plot_ptr_hi  << 8)); }
-void plot_ptr2_marshal_in(void)  { plot_ptr2_v = (uint16_t)(plot_ptr2_lo | (plot_ptr2_hi << 8)); }
-void plot_ptr3_marshal_in(void)  { plot_ptr3_v = (uint16_t)(plot_ptr3_lo | (plot_ptr3_hi << 8)); }
-
-void plot_ptr_marshal_out(void)
-{
-    plot_ptr_lo = (uint8_t)plot_ptr_v;   plot_ptr_hi = (uint8_t)(plot_ptr_v >> 8);
-}
-void plot_ptr2_marshal_out(void)
-{
-    plot_ptr2_lo = (uint8_t)plot_ptr2_v; plot_ptr2_hi = (uint8_t)(plot_ptr2_v >> 8);
-}
-void plot_ptr3_marshal_out(void)
-{
-    plot_ptr3_lo = (uint8_t)plot_ptr3_v; plot_ptr3_hi = (uint8_t)(plot_ptr3_v >> 8);
-}
-
-/* The span walk moves all three in lockstep, so its shims marshal all three at once. */
-/* ⚠⚠ THE ALIAS GUARD, and it is not defensive programming — it is a MEASURED behaviour.
-   An ascending arm entered above its bound runs the long way round to it, climbing the page byte
-   through $00, and the plotter's own store then lands IN ZERO PAGE — sometimes on $70/$72
-   themselves.  The oracle re-reads the pointer from mem[] at every dereference and therefore sees
-   its own write; a relocated uint16_t would not.  Without this the four span fixtures fail 7/400
-   (shallow_fwd) and 5/400 (steep_fwd) and 0/400 on both `rev` arms — the same ascending-only
-   signature that failed the `mem[arm->addend]` hoist.
-
-   ⭐ This is what "eligible" actually had to mean here: not "no shipping transliteration touches
-   the cells" (the scanner's test) but "THE VALUE CANNOT WRITE ITSELF".  It can — so it is
-   relocated WITH a re-read at exactly the point the 6502 had one.
-
-   ⚠⚠ AND THE FIRST VERSION OF THIS GUARD HUNG THE FIXTURE.  It reloaded all three pointers from
-   mem[] on any page-0 store.  But mem[] is only refreshed by marshal_out at shim exit, so mid-walk
-   it still holds the ENTRY values — and a store landing anywhere in page $00 (the differential
-   shows $26, $60, $68…, not just the pointer cells) therefore threw away every page step the walk
-   had accumulated and reset the pointers to where they started.  The walk could then never reach
-   `plot_ptr2_v >> 8 == arm->bound` and span_walk spun forever.  The fix is to apply the BYTE THAT
-   WAS ACTUALLY STORED to the matching lane, which is what the 6502 does and all it does.
-
-   The `addr < 0x0100` test is one compare on a path where the relocation saved four memory
-   accesses per call; everything below it runs only on a walk that has reached page $00. */
-static inline __attribute__((always_inline))
-void plot_store_resync(unsigned addr, uint8_t val)
-{
-    /* ⚠⚠ MASK FIRST.  `addr` is the UNWRAPPED sum pointer + Y and can reach $100FE; the store
-       itself wraps it (`mem[(uint16_t)addr]`) and therefore really does land in page $00.  The
-       first version of this test compared the unwrapped value, so it never fired on the one case
-       it exists for — a pointer near $FFxx wrapping to $00xx, which IS "the walk climbed through
-       page $00" — and span_walk spun because the self-write that ends it was dropped. */
-    addr &= 0xFFFFu;
-    if (addr >= 0x0100u) return;              /* the overwhelmingly common case */
-    switch (addr) {
-    case MEM_plot_ptr_lo:   PLOT_SET_LO(plot_ptr,  val); break;
-    case MEM_plot_ptr_hi:   PLOT_PTR_SET_HI(plot_ptr_v,  val); break;
-    case MEM_plot_ptr2_lo:  PLOT_SET_LO(plot_ptr2, val); break;
-    case MEM_plot_ptr2_hi:  PLOT_PTR_SET_HI(plot_ptr2_v, val); break;
-    case MEM_plot_ptr3_lo:  PLOT_SET_LO(plot_ptr3, val); break;
-    case MEM_plot_ptr3_hi:  PLOT_PTR_SET_HI(plot_ptr3_v, val); break;
-    default: break;                           /* some other zero-page cell: not ours */
-    }
-}
-
-void plot_ptrs_marshal_in(void)
-{
-    plot_ptr_marshal_in(); plot_ptr2_marshal_in(); plot_ptr3_marshal_in();
-}
-void plot_ptrs_marshal_out(void)
-{
-    plot_ptr_marshal_out(); plot_ptr2_marshal_out(); plot_ptr3_marshal_out();
-}
 
 /* ⭐ WIDE-VALUE CLEANUP, mechanism (B): bearing ($8A/$8B) relocated out of mem[] into this native
    uint16_t.  It is bearing_to_section's whole output — the absolute angle from the camera to a

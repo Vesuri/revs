@@ -104,7 +104,7 @@ make validate FN="name"    # only matching tests — prefer this
 make determinism           # ⭐ the WHOLE-CORPUS differential: 300 frames of a pinned race,
                            #   all 64 KB byte-compared.  The ONLY check that covers a change
                            #   to the transpiler / cpu.h / the memory model, because those
-                           #   change `validate`'s oracle too.  `make determinism-record` first
+                           #   change `validate`'s oracle too.  `make clean && make determinism-record` first
 make determinism-drive     # ⭐ ...and the same 300 frames with the car MOVING — a DIFFERENT
                            #   trajectory, and it catches defects the parked one cannot.
                            #   RUN BOTH after a change to any driver routine
