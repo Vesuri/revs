@@ -11181,12 +11181,14 @@ unsigned car_gap_lo_core(uint8_t a, uint8_t b) { return (unsigned)a - b; }
 
 GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn)
 {
-    /* D = dist[Y] - dist[X], 16-bit, borrow chained from the entry carry. */
-    int lo = (int)mem[CAR_DISTANCE_LO + y] - mem[CAR_DISTANCE_LO + x] - (carryIn ? 0 : 1);
-    uint8_t maglo = (uint8_t)lo;
-    unsigned c1   = (lo >= 0);
-    int hi = (int)mem[CAR_DISTANCE_HI + y] - mem[CAR_DISTANCE_HI + x] - (c1 ? 0 : 1);
-    uint8_t  dhi  = (uint8_t)hi;                    /* raw high byte of D (its sign, saved by PHP) */
+    /* D = dist[Y] - dist[X], 16-bit, borrow chained from the entry carry.
+       ⭐ WIDE-VALUE CLEANUP: the 6502's two SBCs with a borrow chained between them ARE one
+       16-bit subtract, and the entry carry is just its incoming borrow — nothing to hand-carry. */
+    int      d     = (int)(mem[CAR_DISTANCE_LO + y] | (mem[CAR_DISTANCE_HI + y] << 8))
+                   - (int)(mem[CAR_DISTANCE_LO + x] | (mem[CAR_DISTANCE_HI + x] << 8))
+                   - (carryIn ? 0 : 1);
+    uint8_t  maglo = (uint8_t)d;
+    uint8_t  dhi   = (uint8_t)((unsigned)d >> 8);   /* raw high byte of D (its sign, saved by PHP) */
     unsigned n1   = (dhi >> 7) & 1u;               /* D negative? */
     unsigned z1   = (dhi == 0);                    /* D's high byte zero? -> near pair */
 
@@ -12752,15 +12754,21 @@ void check_car_pair_core(void)
         if (gap >= 0x05u) goto tail;                         /* $26e9-eb */
 
         {
-            /* 16-bit speed difference firstSlot - secondSlot; borrow-out sign -> shared_temp_76 bit7 */
-            Adc lo = sbc_value(mem[CAR_SPEED_FRAC   + firstSlot],  /* $26ed LDA $3850,X / $26f0 CLC (forced borrow) */
-                               mem[CAR_SPEED_FRAC   + secondSlot], 0);      /* $26f1 SBC $3850,Y */
-            Adc hi = sbc_value(mem[CAR_SPEED_SCALED + firstSlot],  /* $26f4 LDA $0150,X */
-                               mem[CAR_SPEED_SCALED + secondSlot], lo.carry); /* $26f7 SBC $0150,Y */
-            shared_temp_76 = (uint8_t)((hi.carry << 7) | (shared_temp_76 >> 1)); /* $26fa ROR $76 (C-in = hi carry) */
-            if (!hi.carry) goto tail;                        /* $26fc BPL: N(from ROR) = hi.carry; !N -> tail */
+            /* 16-bit speed difference firstSlot - secondSlot; borrow-out sign -> shared_temp_76 bit7
+               ⭐ WIDE-VALUE CLEANUP: D is 0 here — the routine brackets its ONE SED around the
+               pass-count ADC at $26DD — so the two chained SBCs are a plain binary 16-bit subtract
+               with a forced entry borrow ($26f0's CLC).  What escapes is the carry OUT of the high
+               byte, i.e. "no borrow out of 16 bits" (docs/static-map.md §Decimal mode). */
+            int      sd      = (int)(mem[CAR_SPEED_FRAC     + firstSlot]
+                                   | (mem[CAR_SPEED_SCALED  + firstSlot] << 8))
+                             - (int)(mem[CAR_SPEED_FRAC     + secondSlot]
+                                   | (mem[CAR_SPEED_SCALED  + secondSlot] << 8))
+                             - 1;                            /* $26ed-$26f7 */
+            unsigned sdCarry = (sd >= 0);                    /* the high SBC's carry-out */
+            shared_temp_76 = (uint8_t)((sdCarry << 7) | (shared_temp_76 >> 1)); /* $26fa ROR $76 (C-in = it) */
+            if (!sdCarry) goto tail;                         /* $26fc BPL: N(from ROR) = the carry; !N -> tail */
 
-            uint8_t mag = (uint8_t)(hi.val >> 1);            /* $26fe LSR A */
+            uint8_t mag = (uint8_t)((uint8_t)((unsigned)sd >> 8) >> 1);  /* $26fe LSR A */
             if (mag >= 0x1Eu) mag = 0x1Eu;                   /* $26ff-2703 clamp high */
             if (mag <  0x04u) mag = 0x04u;                   /* $2705-2709 clamp low */
             mem[0x0083] = mag;                               /* $270b store magnitude (point_delta_hi reused — rename note) */

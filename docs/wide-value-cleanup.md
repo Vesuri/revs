@@ -1126,6 +1126,62 @@ from (a) collapsing lane-wise *arithmetic* into one wide op, and (b) turning two
 into one word access. A plane-split SoA offers (a) only, and once (a) is done the element is
 finished — record it as complete rather than re-opening it looking for (b).
 
+## ⭐⭐ CAMPAIGN STATUS (2026-09-04) — the by-function ledger, and the last verdicts
+
+**Mechanism (A) — the wide-local hoist — is now COMPLETE across `revs_native.c`.** A sweep for
+lane-wise arithmetic (a byte add/subtract with a hand-carried carry, a lane-by-lane negate, a
+lane-by-lane shift) finds no remaining site: what is left of `adc_value` / `sbc_value` /
+`adc_step` / `sub_from` is the **sanctioned BCD** surface (the standings add, the race clock, the
+decimal-honoured 24-bit key compare) plus single-byte `adc_step` sites with the argument written
+at the code. Those are the eight `SED` routines of `docs/static-map.md` §Decimal mode and they
+must stay byte-wise.
+
+Converted, by function (each landed with `make validate FN=…`, a 4+ defect sabotage sweep, and
+the full gate set):
+
+| Value | Function(s) taken off the byte lanes | What the routine does |
+|---|---|---|
+| `lap_length` | `car_gap_tail` ($27AB), `track_pos_retreat` ($5F9C) | the wrapped gap between two cars; backing a car's lap distance up over the start line |
+| `car_distance` | `car_gap_tail` ($27AB) | `D = dist[Y] - dist[X]`, the raw signed gap, with the entry borrow |
+| `car_speed` (frac:scaled) | `check_car_pair` ($2692) | the 16-bit speed difference feeding the overtaking arm |
+| `steer_angle` | `apply_steering_assist` ($1F08) | Computer Assisted Steering: |angle|, the bias, and the two re-signs |
+| `slip_magnitude` | `steer_demand_from_slip` ($15F4), `store_slip_signed` ($4B51), `store_slip_clamped` ($4B47) | the slip-derived steering demand and its clamp |
+| `car_heading` | relocated to a `uint16_t` global (`bebe208`) | mechanism (B) |
+| `edge_nearest` | relocated to a `uint16_t` global (`47f426e`) | mechanism (B) |
+| `bearing`, `hypot_min`, `band2_duration` | relocated (B), earlier | |
+
+Scored and **declined** — eligibility said legal, the ops-per-marshal metric said no (ELEVENTH
+lesson: score a pair site by site before writing a line of it):
+
+- **`point_dist` $7C/$7D** — all four native sites zero or negative; `note_object_contact` does no
+  wide arithmetic with it at all, and three tenants keep `mem[]` authoritative.
+- **`point_delta` $80–$83 / `object_dist` $55** — massively multi-tenanted scratch (SPAN_DX/DY,
+  MUL_SRC/TERM, EDGE_COLUMN, OBJ_VECTOR_CURSOR, OBJ_EDGE_X/STYLE, the step-delta highs). Every
+  camera-delta site already assembles a `uint16_t` and stores the lanes back **because the cells
+  are the next consumer's input**. `object_dist_hi` has no low lane at all — it is an 8-bit
+  level-of-detail band, not half of a word.
+- **`band1_duration` $4F1F/$4F20** — (B)-eligible and *adjacent* (`band2_duration_v` is the
+  precedent), but it scores ~zero: the bytes must be PUBLISHED to `mem[]` anyway, so the producer's
+  cost is unchanged and the consumer saves one load **once per field**.
+
+Complete **by layout** (THIRTEENTH LESSON — a plane-split pair has no word-access win to find):
+`heading_step` $62D2/$62E2, `car_speed` $62D9/$62E9 and `model_accum` $62D8/$62E8 (MODEL_STATE,
+planes $10 apart); `section_coord` $0900/$0A00 (planes $100 apart); `PLOT_UNDO_PTR` $07A8/$07D0
+(planes 40 apart — and a real `uint16_t[40]` would need 40-word marshalling at two shims per call,
+strictly negative against a ~6-byte needle line).
+
+**Measured outcome: still the null result.** The fresh baseline after the 2026-09-04 conversions is
+**4.27 FPS** (row-vector average of the 11 non-outlier rows, clean `STRAIGHT_TO_RACE=1 FPSCOUNT=1
+FIXED_RNG=1` build under warp) against a stale ~4.15 — **+2.9%, inside noise and not a claimed
+win**. Quote 4.27 as the baseline from here. The instruction-count win is real and the byte traffic
+is gone; the frame is not spent there. **The next lever is the REPRESENTATION change**
+(`docs/direct-bitplane-plan.md`), not another pair.
+
+Still open, and neither is a wide-value conversion:
+- `plot_object` uses `plot_ptr3_lo` as a **scalar** shape-edge index → `docs/rename.md`.
+- `plot_view_src_line`'s `plot_ptr_lo = 0x00u;` before the wide setup — a lane write that is
+  harmless but inconsistent with the twin's own idiom.
+
 ## Ordering
 
 0. **Step 0 consolidation** (above) — clears the duplicate-define debt first.

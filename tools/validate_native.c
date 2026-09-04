@@ -1973,6 +1973,17 @@ static int test_check_car_pair(void)
         }
         /* slice 3: fully random distances / lap_length -> the far exits and wrapped-far tail. */
 
+        if (t % 5 == 0) {
+            /* NEAR-EQUAL SPEEDS: fully random 16-bit speeds make the $26ed-$26f7 subtract's
+               carry-out boundary (a difference of exactly 1) a 1-in-65536 event, so pin the high
+               lanes equal and sweep the low ones through it. */
+            uint8_t base = (uint8_t)xs();
+            for (int i = 0; i < 20; i++) {
+                pre[0x0150u + i] = base;                  /* car_speed_scaled: equal high lanes */
+                pre[0x3850u + i] = (uint8_t)(xs() % 4u);  /* car_speed_frac: differences -3..+3 */
+            }
+        }
+
         fail += diff_run("check_car_pair", pre, c, check_car_pair,
                          check_car_pair__t6502, mask, t, &printed);
     }
