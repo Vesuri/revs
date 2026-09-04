@@ -9906,9 +9906,11 @@ Mode5Addr mode5_addr_core(uint8_t quarterOffset, uint8_t y)
        reads only plot_ptr / X / A / Y; the fixture drops V and C for this cluster. */
     unsigned row = y >> 3;                              /* Y selects the character row */
     uint16_t base = (uint16_t)(((uint16_t)mem[CHAR_ROW_HI + row] << 8) | mem[CHAR_ROW_LO + row]);
-    uint16_t addr = (uint16_t)(base + ((unsigned)quarterOffset << 1));
-    plot_ptr_lo = (uint8_t)addr;
-    plot_ptr_hi = (uint8_t)(addr >> 8);
+    /* ⭐ WIDE-VALUE CLEANUP: the result lands in the relocated plot_ptr_v, and marshal_out keeps
+       the 6502-ABI lanes.  The 6502's ASL plot_ptr_lo / ROL A spread of the doubled offset is a
+       shift on the whole word; there is no lane to spread it over any more. */
+    plot_ptr_v = (uint16_t)(base + ((unsigned)quarterOffset << 1));
+    plot_ptr_marshal_out();
 
     /* $5119-$511F — the line within the row is the low three bits; it leaves in both A and Y
        with N always clear (the value is < 8).  row leaves in X. */
@@ -9976,21 +9978,32 @@ uint8_t vdu_char_emit_core(void)
     {
         int i;
         for (i = 8; i >= 1; i--) {
-            unsigned base = zp_pointer(MEM_plot_ptr_lo);
-            seam_write((base + line) & 0xFFFFu, pointer_is_ram(base),
-                       mem[VDU_CHAR_BLOCK + i]);
+            /* ⭐ One word read where the 6502 re-read both lanes per row, and the row-up step
+               below is one word subtract.  plot_store_resync keeps the relocated pointer honest
+               if a glyph row is blitted ON $70/$71 (this store is ($70),Y like every other). */
+            unsigned base = plot_ptr_v;
+            unsigned dst  = (base + line) & 0xFFFFu;
+            uint8_t  byte = mem[VDU_CHAR_BLOCK + i];
+            seam_write(dst, pointer_is_ram(base), byte);
+            /* ⚠ UNPROVEN BY CONSTRUCTION, and it cannot be proven here.  Dropping this line
+               passes every case, because the cluster's fixture pins char_row_addr to $5800+ —
+               not for convenience but because a page-$00/$01 base breaks the TRANSLITERATED
+               ORACLE, whose blit then overwrites the X/Y it pushed at $01FF/$01FE.  So the one
+               plant that would exercise the guard is the one plant that invalidates the
+               reference.  Kept anyway: the table is DATA, and a per-circuit hook patching it is
+               exactly the class CLAUDE.md says a Silverstone run cannot rule out. */
+            plot_store_resync(dst, byte);
             line = (uint8_t)(line - 1);                /* DEY */
             if (line & 0x80u) {                        /* $50D7 BPL — off the top of the row */
-                /* $50D9-$50E4 — plot_ptr -= $0140 (a plain 16-bit subtract; its flags are
-                   dead — line is reset just below and the exit A/N/Z come from the block). */
-                uint16_t p = (uint16_t)((((uint16_t)plot_ptr_hi << 8) | plot_ptr_lo) - 0x0140u);
-                plot_ptr_lo = (uint8_t)p;
-                plot_ptr_hi = (uint8_t)(p >> 8);
+                /* $50D9-$50E4 — plot_ptr -= $0140.  Its flags are dead: line is reset just
+                   below and the exit A/N/Z come from the block. */
+                PLOT_PTR_ADD(plot_ptr, -0x0140);
                 line = 0x07u;
             }
         }
     }
 
+    plot_ptr_marshal_out();                            /* publish $70/$71 for the 6502-ABI mirror */
     mem[0x62CCu] = (uint8_t)(mem[0x62CCu] + 1);        /* $50EB — the next cell along */
     return mem[VDU_CHAR_BLOCK];                         /* $50F2 — the character comes back live */
 }
