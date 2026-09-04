@@ -1182,6 +1182,81 @@ Still open, and neither is a wide-value conversion:
 - `plot_view_src_line`'s `plot_ptr_lo = 0x00u;` before the wide setup — a lane write that is
   harmless but inconsistent with the twin's own idiom.
 
+## ⭐⭐ NEXT STEPS (planned 2026-09-04) — mechanism (B) on Tier 3, in measured order
+
+Mechanism (A) is finished; **Tier 3 — the SoA state vectors — is the campaign's remaining body of
+work**, and it is mechanism (B): relocating a plane-split `lo_8[N]`/`hi_8[N]` into a real
+`uint16_t value_16[N]`.
+
+⚠ **Scope correction to the THIRTEENTH LESSON.** "A plane-split pair has no word-access win" is
+true **of mechanism (A) only**. A (B) relocation *creates* the adjacency — that is the entire point
+— so `heading_step`, `car_speed`, `model_accum` and `section_coord` are complete as (A) and
+**still open as (B)**. The lesson's "record it complete rather than re-opening it" applies to the
+hoist, not to the relocation, and the earlier phrasing was too broad.
+
+### Step 0 — fix the eligibility scanner's FIFTH bug (a FALSE ZERO), before scoring anything
+
+`wide_eligibility.py` resolves symbolic bases from `mem.h` and **the seam header only**. Several
+SoA bases are declared by a **file-local `#define` inside `src/gen/revs_native.c`** —
+`CAR_DISTANCE_LO` ($08D0), `SECTION_COORD_LO/HI` ($0900/$0A00), `EDGE_OPP_X_LO/HI` ($5E50/$5EA0),
+`OBJECT_COORD_LO/HI` ($09FD/$0AFD), `CAR_SPEED_FRAC` ($3850) — and those are invisible to it.
+Measured: the scanner reports **0 native readers for $08D0** while `CAR_DISTANCE_LO` has **10
+references** in `revs_native.c`.
+
+It is the same class as its documented bug #1, from the other side again, and it is the worst
+possible direction: a false zero reads as *"nothing to gain here"*. ⇒ Teach it the native files'
+own `#define`s, then **re-run the five calibration sabotages** before trusting a single re-scored
+row.
+
+### The measured worklist (scanner output, 2026-09-04)
+
+| Base | native | shipping blockers | verdict / order |
+|---|---|---|---|
+| `MODEL_STATE` $62D0/$62E0 | **22 fn / 82 ref** | 5 fn / 7 ref | **the prize** — de-transliterate or shim-marshal the five, then relocate all 16 elements at once |
+| `CAR_ANGLE` $62A0/$62A3 | 12 fn / 32 ref | **none** | ✅ eligible NOW — the cheapest real (B) win; do it first |
+| `VIEW_ORIGIN` $6280 | 5 fn / 14 ref | **none** | ✅ eligible; `integrate_car_position_core` and `build_sign_origin_core` hold 4 each |
+| `MARKER_OFF` $62B7/$62BA | 2 fn / 6 ref | **none** | ✅ eligible, small — `append_corner_marker` / `draw_corner_markers` |
+| `OBJECT_BEARING` $0380/$0398 | 6 fn / 6 ref | **none** | ✅ eligible but **one ref per function** — score it before writing anything; likely a decline |
+| `CAR_DISTANCE` $08D0/$08E8 | *false zero* | ? | re-score after Step 0 |
+| `SECTION_COORD` $0900/$0A00 | *false zero* | ? | re-score after Step 0 — ~62 gen readers, potentially the largest |
+| `EDGE_OPP_X` $5E50/$5EA0 | *false zero* | ? | re-score after Step 0 |
+| `OBJECT_COORD` $09FD/$0AFD | *false zero* | ? | re-score after Step 0 — 24-bit binary → `uint32_t`, `add.l`/`sub.l`/`cmp.l` only |
+
+`MODEL_STATE`'s five blockers, with their reference counts: `update_lap_timers` (3),
+`finish_race` (1), `reset_driving_variables` (1), `advance_player_section` (1),
+`tick_race_timers` (1). None is on the render path, so the cheap route is a **shim marshal** at
+each rather than a full de-transliteration — decide per function, and remember a `region_*`/`FUN_*`
+name is shipping until the FOURTH test says otherwise.
+
+### Per relocation, the standing template and gates
+
+1. The (B) template of §`band2_duration`: authoritative `uint16_t value_16[N]`, `mem[]` retained as
+   the 6502-ABI mirror, `marshal_in`/`marshal_out` at the shims, mirror cases in the `bus_write`
+   switch for the whole range.
+2. The **FIFTH test** — can the value write itself? For an SoA the question is whether any
+   indirect/plotter store can land in the range; where it can, use `plot_line_octant`'s answer (a
+   page/window test, never an unconditional write-through).
+3. **Aim the fixture, don't just randomise it** — a plant that makes the hazard *possible* is not
+   one that makes it *likely*.
+4. 4+ sabotages from a **script file** that `rm`s the object and binary each iteration, detected by
+   **exit status**.
+5. Full gates: `validate`, `endian-lint`, `determinism` / `-drive` / `-crash`, `tracks`,
+   `track-run`, and the Amiga link's `muldiv-audit` + `probe-audit`.
+
+### Measure ONCE, at the end of Tier 3
+
+A single relocation is far under the 3% noise floor, so per-relocation FPS readings would be
+noise dressed as progress. Take one row-vector reading against the 4.27 baseline when Tier 3 is
+complete. **If Tier 3 is also a null result, that is the campaign's answer** and the representation
+change (`docs/direct-bitplane-plan.md`) takes over as the lever.
+
+### Still owed, unrelated to Tier 3
+
+- Confirm the two write-only shipping blockers are satisfied by shim marshal-in alone:
+  `console_io` ($70/$71) and `emit_driver_name` ($72/$73).
+- The **Brands real-BBC frame-buffer differential** — for CORRECTNESS, because the hook seams are
+  gated by nothing, not for perf.
+
 ## Ordering
 
 0. **Step 0 consolidation** (above) — clears the duplicate-define debt first.
