@@ -24,10 +24,18 @@ Calibration (re-run these if the tool is changed — each was a real bug once):
   * $0A/$0B car_heading and $10/$11 edge_nearest are RELOCATED and green, so their
     shipping-reader list must be either empty (car_heading) or exactly the marshalled
     reader the seam already knows about (edge_nearest -> region_23d8).
-  * Sabotages, each with its own signature: a new FUN_* reader must raise SHIPPING; a new
+  * Sabotages, each with its own signature: a reference planted in a CALLED transliteration
+    (`update_lap_timers`) must raise SHIPPING and flip the verdict; a new UNCALLED `FUN_*`
+    reader must surface under ENTRY-WRAPPER ONLY (not SHIPPING — that bucket is the FOURTH
+    eligibility test, and dismissing it is the mistake, not the classification); a new
     __t6502 reader must raise only the oracle count; a new _core reader must raise only
-    native; a bare `LDA(0x7C)` IMMEDIATE must change nothing; `mem[0x007C]` must raise
-    SHIPPING.  All five verified 2026-09-03.
+    native; a bare `LDA(0x7C)` IMMEDIATE must change nothing; and a local non-address
+    `#define ZZ 0x7Cu` used in a twin must change nothing.  All six verified 2026-09-04.
+  ⚠⚠ PLANT A SABOTAGE IN THE BODY, NEVER ON THE FUNCTION HEADER LINE.  Appending
+    `mem[0x007C] = 1;` after `void update_lap_timers(void) {` stops the line matching either
+    header regex, so the WHOLE FUNCTION is skipped and the planted reference is orphaned —
+    the sabotage then "survives" for a reason that has nothing to do with what it tests.
+    Same class as the FOURTH instrument bug below.
 
 Usage:
     tools/wide_eligibility.py 0x80-0x83          # a range
@@ -176,6 +184,23 @@ def aliases():
         exact.setdefault(a, set()).update({m.group(1), m.group(2)})
     for m in re.finditer(r'#define\s+([A-Z][A-Z0-9_]+)\s+0x([0-9A-Fa-f]+)u?', open(SEAM_H).read()):
         base.setdefault(int(m.group(2), 16), set()).add(m.group(1))
+    # ⚠⚠ THE FIFTH INSTRUMENT BUG, and it is a FALSE ZERO — the worst kind, because "0 native
+    # readers" reads as "nothing to gain" and retires a candidate silently.  A twin may define its
+    # own SoA base at the top of the file instead of in the seam header (`#define CAR_DISTANCE_LO
+    # 0x08D0` in revs_native.c), and resolving names from mem.h + the seam header alone cannot see
+    # it: $08D0 reported 0 native readers against 10 real refs.
+    # ⚠ Accepting every local #define blindly would recreate the SECOND bug (immediates counted as
+    # addresses): this same file defines `OP_RTS 0x60`, `OP_STA_IND_Y 0x91` and `VIEW_LOW_PAGE
+    # 0x7C`, and $7C is point_dist_lo.  So a local define is credible as an address only when it is
+    # above the zero page, or when its own name IS the cell's mem.h name at that address.
+    for path in NATIVE:
+        for m in re.finditer(r'#define\s+([A-Za-z_][A-Za-z0-9_]*)\s+0x([0-9A-Fa-f]+)u?',
+                             open(path).read()):
+            nm, a = m.group(1), int(m.group(2), 16)
+            if a >= 0x0100:
+                base.setdefault(a, set()).add(nm)
+            elif nm.lower() in {x.lower() for x in exact.get(a, set())}:
+                exact.setdefault(a, set()).add(nm)
     return exact, base
 
 EXACT, BASE = aliases()
