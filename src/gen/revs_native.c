@@ -10078,10 +10078,20 @@ void text_script_interp_core(uint8_t tableIdx)
 {
     uint8_t y = 0x00u;                           /* $4D7E LDY #0 — persists across a reload */
     for (;;) {                                   /* L_4D80 — (re)load this script's pointer */
-        plot_ptr2_hi = mem[TEXT_SCRIPT_PTR_HI_TBL + tableIdx];
-        plot_ptr2_lo = mem[TEXT_SCRIPT_PTR_LO_TBL + tableIdx];
+        /* ⭐ WIDE-VALUE CLEANUP: the script pointer is one word, assembled once per reload from
+           the two parallel tables and mirrored into the 6502-ABI lanes.  The inner walk then adds
+           Y to a word instead of re-assembling a pointer out of $72/$73 for every byte.
+           ⚠ Reading it once per reload rather than once per byte is only sound because nothing
+           the walk calls writes plot_ptr2: vdu_char_def / print_spaces / vdu_char_emit use
+           plot_ptr, and the MOS layer touches neither (audited across revs_native.c,
+           src/platform/mos.cpp and src/platform/teletext.*).  The two arms that CAN clobber it —
+           select_text_variant and the recursion — both `break` to this reload, which rewrites it
+           unconditionally. */
+        plot_ptr2_v = (uint16_t)(mem[TEXT_SCRIPT_PTR_LO_TBL + tableIdx]
+                                 | ((unsigned)mem[TEXT_SCRIPT_PTR_HI_TBL + tableIdx] << 8));
+        plot_ptr2_marshal_out();
         for (;;) {                               /* L_4D8A — walk the bytes */
-            uint8_t a = bus_read((zp_pointer(MEM_plot_ptr2_lo) + y) & 0xFFFFu);
+            uint8_t a = bus_read((plot_ptr2_v + y) & 0xFFFFu);
             if (a == 0xFFu) return;              /* $4D8C end of script */
 
             if (a >= 0xC8u) {                    /* $4D90 command byte */
