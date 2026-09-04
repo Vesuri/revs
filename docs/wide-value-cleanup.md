@@ -453,6 +453,25 @@ whoever last moved the pointer, and the four shims need nothing at all.
   times — measured with a counter, not inferred; the arms' own coverage of that descriptor is
   weaker than the direct entry point's.
 
+⭐⭐ **AND THE PLANT PAYS FOR ITSELF TWICE: it found a pre-existing faithfulness defect.**
+Extending the FIFTH test to `plot_line_octant` ($5204, twin #164) meant teaching its fixture the
+same plant the span arms carry — one case in eight seeds `plot_ptr_hi` in page $00, so the
+plotter's own pixel store lands on the cells it is walking. The planted fixture failed **and it
+failed identically on the UNCONVERTED byte-lane twin**, which is what identified it as a defect
+rather than a regression: the twin cached `math_lo` in a local commented "(reader, invariant)" and
+kept the pixel counter `math_hi` in a local too. Neither is invariant — the 6502 re-reads `math_lo`
+at $521a on every pixel and decrements `math_hi` **in place** at $529c, and this plotter can store
+ON $74/$75. The failing case walks `addr = $0074` twelve times, so the oracle's DDA increment
+changes under it and the twin's does not.
+
+⭐ **The general form, and it is wider than this campaign: "this cell cannot change under me" is a
+claim about EVERY writer, and a self-modifying plotter is one of its own writers.** A local that
+caches a `mem[]` cell across a loop is a hypothesis; the plant is the experiment. It is
+unreachable from the real needle origins (the dial-origin tables are frame-buffer addresses and
+the walk spans at most ±$1900), so nothing shipping was wrong — but the fixture had been
+*constructed* to avoid the case (`plot_ptr_hi = $60 + …`, commented "off ZP/HW"), which is why
+6800 cases had nothing to say about it.
+
 ⭐⭐ **EIGHTH lesson — THREE ways the eligibility tests get misread, all found on this one pair.**
 
 **(1) An indexed access by another TENANT does not block a relocation.** Test 2 as written ("never

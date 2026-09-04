@@ -2695,13 +2695,18 @@ void plot_line_octant_core(uint8_t entryScanline)
 
     uint8_t x   = shared_temp_77;                          /* $5212 sub-cell column */
     uint8_t y   = entryScanline;                           /* Y — start scan line */
-    uint8_t incr  = math_lo;                               /* $521a DDA increment (reader, invariant) */
-    uint8_t count = math_hi;                               /* $529c pixel counter (reader) */
+    /* ⚠⚠ NEITHER OF THESE MAY BE CACHED IN A LOCAL, and the earlier "(reader, invariant)" note
+       was wrong.  The 6502 re-reads math_lo at $521a on every pixel and decrements math_hi IN
+       PLACE at $529c — and this plotter can store ON $74/$75: it walks ±8 and ±$140 from
+       whatever $70/$71 hold, so a pointer near page $00 puts its own pixel store on the DDA
+       increment and the pixel counter.  Caching them diverged from the oracle (measured: the
+       fixture's planted case 2155 walks addr=$0074 twelve times, so the oracle's increment
+       changes under it and the twin's does not).  Found by adding that plant, not by reading. */
     uint8_t acc = (uint8_t)(0u - mem[POINT_DELTA_HI]);     /* $5214-5219 acc = -delta; C then cleared */
 
     for (;;) {
         /* $521a DDA step: acc += incr, carry-in always 0 (CLC at $5219 / $529a). */
-        unsigned sum = (unsigned)acc + incr;
+        unsigned sum = (unsigned)acc + math_lo;            /* re-read: the plot can clobber $74 */
         acc = (uint8_t)sum;
         if (sum > 0xFFu) {                                 /* $521c carry -> the major step */
             acc = (uint8_t)(acc - mem[POINT_DELTA_HI]);    /* $521e SBC delta (C=1) */
@@ -2792,10 +2797,9 @@ void plot_line_octant_core(uint8_t entryScanline)
         case 0xE8u: x = (uint8_t)(x + 1); break;           /* INX */
         default: platform_smc_unhandled(SMC_MINOR_STEP, mem[SMC_MINOR_STEP]); return;
         }
-        count = (uint8_t)(count - 1);                      /* $529c DEC math_hi */
-        if (count & 0x80u) break;                          /* $529e BMI -> done */
+        math_hi = (uint8_t)(math_hi - 1);                  /* $529c DEC math_hi — IN PLACE */
+        if (math_hi & 0x80u) break;                        /* $529e BMI -> done */
     }
-    math_hi = count;                                       /* the pixel counter's 6502 exit value ($FF) */
 }
 
 /* ---------------------------------------------------------------------------

@@ -2060,6 +2060,18 @@ static int test_plot_line_octant(void)
         pre[0x0069u] = (uint8_t)(xs() % 9u);       /* plot_undo_count base 0..8 */
         pre[0x0070u] = (uint8_t)xs();              /* plot_ptr_lo */
         pre[0x0071u] = (uint8_t)(0x60u + (xs() % 8u));      /* plot_ptr_hi mid-RAM, off ZP/HW */
+        /* ⭐⭐ ...EXCEPT ONE CASE IN EIGHT, WHICH PLANTS THE PLOTTER ON ITS OWN POINTER.
+           This is a SELF-MODIFYING plotter: it stores through $70/$71 and, walking ±8 a pixel
+           and ±$140 a row for up to $14 pixels, a pointer that starts near page $00 lands its
+           own pixel store ON $70/$71 — after which the oracle (which re-reads the pointer from
+           mem[] at every dereference) and a relocated uint16_t part company.  The FIFTH
+           eligibility test, and the same plant the four span arms carry
+           (docs/wide-value-cleanup.md).  Without it plot_store_resync here is untested: the
+           original `$60 + …` line kept the pointer off zero page BY CONSTRUCTION, so dropping
+           the guard entirely passed all 6800 cases.
+           ⚠ These cases really do overwrite the fixture's own zero-page inputs mid-run.  That
+           is the point, and it is sound: both sides do it from identical memory. */
+        if ((t & 7u) == 3u) pre[0x0071u] = (uint8_t)(xs() % 2u);   /* page $00 or $01 */
 
         if (t >= legal)                            /* illegal slice: trap the ALWAYS-run minor step */
             pre[0x3B8Eu + oct] = 0x00u;            /* BRK — not a step opcode */
