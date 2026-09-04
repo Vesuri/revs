@@ -98,6 +98,12 @@ extern volatile unsigned long g_sndEnvelopes;   /* OSWORD 8 blocks accepted */
 extern volatile unsigned long g_sndFlushes;     /* OSBYTE 21 channel flushes */
 extern volatile unsigned long g_sndTicks;       /* 100 Hz scheduler ticks run */
 extern volatile unsigned long g_sndChipWrites;  /* chip-state changes the backend must apply */
+/* ⭐ WHY THE SCHEDULER COSTS WHAT IT DOES — plain counts, exact, ~1 add each (the ISR runs at
+   50 Hz forever, so its cost is a fixed tax on wall clock; docs/perf-method.md §the VERTB ISR). */
+extern volatile unsigned long g_sndProgramRuns;   /* program() bodies actually executed  */
+extern volatile unsigned long g_sndProgramSkips;  /* ...memo hits that skipped one       */
+extern volatile unsigned long g_sndEnvSteps;      /* envelope steps taken                */
+extern volatile unsigned long g_sndChanVisits;    /* per-tick channel iterations reached */
 /* ⚠ Counted, not shrugged at.  Sync and hold are real MOS features on the channel byte that
    Revs has never once used; a queued (non-flush) command is likewise unmeasured.  If any of
    these ever moves, the model is being asked for something it was not measured against. */

@@ -139,12 +139,88 @@ excludes; read draw_road from `roadsplit.gdb` (which prints "phase 11 whole") an
 `phase4_prof`, as this table does.
 
 Two rows that are not phases and bound everything:
-- the **VERTB ISR**: ~1.1 ms per call, ~17 fires per painted frame at ~2.9 FPS ≈ **19 ms/frame
-  (~5%)**, charged pro-rata to whichever phase it preempted, so it appears in no row of its own.
-  It is proportional to the open phase, so it does not distort the splits.
+- the **VERTB ISR**: charged pro-rata to whichever phase it preempted, so it appears in no row of
+  its own. Measured directly by `make ISRSPLIT=1` — see §The VERTB ISR below. It was ~1.1 ms per
+  call and is now ~0.72 ms; because it fires 50 times a second whatever the framerate does, it is a
+  tax on WALL CLOCK, not on the frame: at ~4.5 FPS that is ~11 fires per painted frame.
 - **one 50 Hz body tick ≈ 1.6-1.7 ms** of its 20 ms budget — faithful, and only a per-painted-frame
   table makes it look large (it runs once per DISPLAY FIELD, not once per painted frame; at low
   FPS one painted frame charges it many times over).
+
+
+## The VERTB ISR — measured, not estimated (`make ISRSPLIT=1`)
+
+⭐⭐ **The ISR is the one cost that is a fixed fraction of WALL CLOCK.** Every other row here
+scales with the frame: make the renderer twice as fast and it halves. The VERTB handler fires 50
+times a second forever, so a microsecond in it is 50 µs/s permanently, and it is stolen from the
+main loop no matter what the main loop is doing. That is why it gets its own instrument.
+
+**The instrument.** `make PROBES=1 ISRSPLIT=1` adds a mark/close bracket chain *inside* the
+handler (`probe.h` §ISRSPLIT) with its own accumulator, so the published phase table stays
+comparable. `amiga/isr_split.gdb` reads it. Two things make its numbers trustworthy:
+- **A NULL CONTROL (slot 0)** — two consecutive transitions bracketing nothing at all, on the same
+  path at the same rate. **Measured floor: 92 µs.** Every other row means something only above it,
+  and a row within ~1× the floor (the mouse, the prologue, the flash tick) is not resolvable — do
+  not chase those.
+- **A CALIBRATION** — `make ISRCAL=1` puts `probe_burn_cycles()` (exactly 14 000 68000 cycles =
+  1.974 ms) in the tail slot. It read **2001 µs above the floor: 0.6% error**, which validates the
+  whole beam-tick → µs chain, not just this table. ⚠ `ISRCAL` changes `EXTRA_DEFINES` and the Amiga
+  Makefile does not track those — **`make clean` when you turn it off**, or the burn stays linked in
+  and the tail row reads ~2 ms of nothing (it happened; CLAUDE.md's stale-build rule, again).
+- ⚠ The first bracket **must open BELOW `PROBE_VBI()`**: that advances `g_beamEpoch` by a whole
+  display frame, so a bracket straddling it reads ~10 ms of pure artefact.
+
+**Where the 1.1 ms was** (7247 fields, driving; "real" = row − the 92 µs floor):
+
+| slot | µs/field | real | what it is |
+|---|---|---|---|
+| 8 `snd_tick` ×2 | 784 | **692** | the MOS sound scheduler, twice per field (100 Hz) |
+| 5 screen | 256 | 164 | `RevsScreen::vbiUpdate` — ⚠ per PAINTED frame, not per field |
+| 2 mouse | 182 | 90 | `sampleMouse` |
+| 6 audio rest | 244 | 60 | `revs_audio_vbi` minus its two children |
+| 9 `program_paula` | 61 | 51 | only on the ~10% of fields where chip state moved |
+| 1 prologue | 130 | 38 | the INTREQ clear + `g_vbiCount` |
+| 3 beam entry | 129 | 37 | `noteVbiEntry` — a **pure diagnostic** |
+| 4 tt flash | 112 | 20 | `tt_tick_flash` |
+| 7 tail | 108 | 16 | the pending-tick accounting |
+
+**Two hypotheses the measurement killed.** The Paula DMA busy-wait in `apply()` looked like the
+obvious suspect and is a **non-issue** — 42 restarts in 7247 fields = 2 µs/field. And
+`RevsScreen::vbiUpdate` is **not** a 50 Hz tax at all: it early-outs on `!m_ready` on ~93% of
+fields, so its cost belongs to the painted frame (~2.3 ms of a ~220 ms frame), not here.
+
+**What actually cut it — 1168 → ~720 µs/field real (−38%), worth +5.6% FPS (4.27 → 4.51):**
+1. ⭐⭐ **`program()` was recomputing an unchanged chip state 100 times a second.** Everything it
+   writes is a pure function of `(bbcChan, active, pitch, level)` and its `chip_set_*` are already
+   no-ops on an unchanged value, so a four-field memo is **exact**, not an approximation. Measured
+   hit rate **94.7%**. ⚠ Any other writer of `s_chip` must clear `progValid` (`snd_flush_channel`
+   and `snd_reset` do) — the memo is state ABOUT the chip.
+2. **`divider_for` did a `divu.w` + `divs.w` (~300 cycles) to look up one of 256 answers.** A
+   512-byte table indexed by the pitch byte removes both. ⚠ Build the table by WALKING
+   `idx`/`oct` counters: `p % 48` on an `unsigned` is a 32-bit divide, and `muldiv-audit` rejects
+   it outright.
+3. ⭐ **Force-inline the memo GATE, out-of-line the body.** At −O2 GCC left the four-field compare
+   in a function, so 94% of calls paid a `jsr` + `movem` to decide to do nothing: 461 → 368
+   µs/field. Same lesson as twins #14/#15.
+4. ⭐⭐ **THE STATS WERE 13% OF THE ROUTINE.** The `g_snd*` counters are `volatile unsigned long`
+   read-modify-writes to absolute memory — ~40 cycles each, uncoalescable *because* volatile — and
+   `snd_tick` bumped ~7 per tick. Only `.gdb` scripts ever read them, so `SND_STAT()` compiles them
+   out unless `REVS_PROBE`: **93 µs/field**, 0.47% of all wall clock, for counters no shipping build
+   reads. Measured with `-DREVS_SND_STAT_OFF`, which leaves the brackets in and takes the counters
+   out. ⚠ The counter DEFINITIONS stay unconditional — `PROBE_SYMS` lists them on every link.
+5. `noteVbiEntry` is a pure diagnostic (two chip reads, 37 µs/field) and is now `#ifdef REVS_PROBE`.
+   `g_beamPresentsLate`, the one CLAUDE.md requires to stay 0, is recorded in `vbiUpdate()` on the
+   present path and is unaffected.
+
+⭐ **The generalisation, and it is not about sound:** a `volatile` counter in a 50 Hz path costs
+more than the work it measures, and an unmemoised recompute of an unchanged value costs everything.
+Both are invisible in a phase table, because the ISR has no row.
+
+**What is left** (~720 µs/field ≈ 3.6% of wall clock): `snd_tick` ×2 at ~276 µs real is still the
+largest and is now mostly the genuine per-tick four-channel walk for the ~1.8 channels that reach
+`program()`. Everything else is at or near the 92 µs instrument floor. ⚠ Do not merge the two ticks
+into one pass to save a walk: `make sound` compares chip state **tick by tick** against a real MOS,
+and the intermediate state is part of the contract.
 
 ⭐⭐ **The view pipeline (`build_track_geometry` → `draw_road` → `view_paint_lines`) is ~58% of
 the frame, and its whole call tree has no transliteration left in it.** Of the ordinary levers,

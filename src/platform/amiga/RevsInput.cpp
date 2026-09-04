@@ -288,9 +288,14 @@ void RevsInput::sampleMouse()
     if (pos > 255) pos = 255;
     m_steer = (uint8_t)pos;
 
-    unsigned char b = (unsigned char)((mouseButton(0) ? 1u : 0u) |
-                                      (mouseButton(1) ? 2u : 0u) |
-                                      (mouseButton(2) ? 4u : 0u));
+    /* ⭐ ONE POTINP read, not two.  mouseButton(1) and mouseButton(2) both read the same
+       register; this runs in the VERTB ISR, which is a fixed 50 Hz tax on wall clock rather than
+       a per-frame cost (docs/perf-method.md §the VERTB ISR), so a duplicated chip read here is
+       paid forever.  Both pins are active LOW, exactly as mouseButton() reads them. */
+    const uint16_t pot = *potinpPointer;
+    unsigned char b = (unsigned char)(((*ciaapraPointer & 0x40u) == 0u ? 1u : 0u) |
+                                      ((pot & 0x0400u) == 0u ? 2u : 0u) |
+                                      ((pot & 0x0100u) == 0u ? 4u : 0u));
     g_mouseBtnMask  = b;
     g_mouseBtnSeen |= b;
 }

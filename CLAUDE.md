@@ -155,6 +155,10 @@ make STRAIGHT_TO_RACE=1   # ⭐ boot straight into the race — see below
 ./run.sh        # boot in FS-UAE (Kickstart 3.1; CTRL + left mouse button quits)
 ./debug.sh      # source-level debug via the FS-UAE GDB stub (prints its $DEBUG_PORT)
 ./diag_run.sh N # headless probe run for N seconds (needs a PROBES=1 build)
+make PROBES=1 ISRSPLIT=1  # ⭐ split the VERTB ISR into its own timed slots (amiga/isr_split.gdb)
+                          #   — the ONLY instrument that can see it, because the ISR's time is
+                          #   charged to whichever phase it preempted.  ISRCAL=1 adds the known-
+                          #   quantity calibration burn; ⚠ `make clean` when you turn it back off
 EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=x.gdb ./diag_run.sh 60   # ⭐⭐ ~4.9x faster, same numbers
 ```
 
@@ -370,6 +374,13 @@ Rules that must survive without opening `docs/perf-method.md`:
   frame parked and **60.5 driving** (`STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`), because
   `road_edge_start` reuses last frame's edge points. A parked call count next to a driving
   framerate is two different workloads.
+- ⭐⭐ **The VERTB ISR is a tax on WALL CLOCK, not on the frame** — 50 fires a second whatever the
+  framerate does, so a microsecond there is permanent and no phase row can see it. Measure it with
+  `make PROBES=1 ISRSPLIT=1` (92 µs instrument floor, calibrated to 0.6%; a row within ~1× the floor
+  is not resolvable). Two classes of fat live there and are invisible elsewhere: a `volatile`
+  diagnostic counter (a 32-bit RMW, ~40 cycles, uncoalescable — 13% of `snd_tick`, now behind
+  `SND_STAT()`) and an unmemoised recompute of an unchanged value (`program()`, 94.7% hit rate).
+  `docs/perf-method.md` §The VERTB ISR.
 - **An A/B switch must PRINT its own state**, and any new instrument must be sabotaged before its
   output is believed.
 

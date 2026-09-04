@@ -6,6 +6,25 @@
  */
 #include "sound.h"
 
+/* ⭐⭐ THE STATS ARE A PROBE, NOT THE MODEL — and this file runs 100 times a second forever.
+ * Each counter is a `volatile unsigned long` read-modify-write to absolute memory: on a 68000
+ * that is a `move.l abs,d0` / `addq.l` / `move.l d0,abs`, ~40 cycles, uncoalescable *because*
+ * it is volatile.  snd_tick() bumps about seven of them per tick (one per tick, one per channel
+ * visit, one per program() call), which measured at roughly a seventh of the whole routine — and
+ * the VERTB ISR is a fixed tax on wall clock, not on the framerate (docs/perf-method.md §the
+ * VERTB ISR), so a shipping build must not pay it.  Only .gdb probe scripts ever read these.
+ * ⚠ The DEFINITIONS below stay unconditional: amiga/Makefile lists g_sndTicks and friends in
+ * PROBE_SYMS for EVERY link, so gating the symbol away fails probe-audit on a plain build. */
+/* ⭐ REVS_SND_STAT_OFF is how the instrument's OWN cost gets measured: a PROBES + ISRSPLIT build
+   with it defined leaves the timing brackets in place and takes the counters out, so the snd_tick
+   row moves by exactly what the counters cost (docs/method-lessons.md: an instrument whose cost
+   exceeds what it measures).  Its counter lines read 0 by construction — that is not a failure. */
+#if defined(REVS_PROBE) && !defined(REVS_SND_STAT_OFF)
+#define SND_STAT(x) do { (x)++; } while (0)
+#else
+#define SND_STAT(x) ((void)0)
+#endif
+
 volatile unsigned long g_sndCommands     = 0;
 volatile unsigned long g_sndEnvelopes    = 0;
 volatile unsigned long g_sndFlushes      = 0;
@@ -57,6 +76,13 @@ typedef struct {
     uint8_t  infinite;   /* duration 255 */
     SndCmd   queue[SND_QUEUE];
     uint8_t  qHead, qCount;
+    /* ⭐ THE PROGRAM MEMO — see program() below.  The last (active, pitch, level) this channel
+       was programmed from, and a valid flag that anything writing the chip behind program()'s
+       back must clear. */
+    uint8_t  progValid;
+    uint8_t  progActive;
+    int16_t  progPitch;
+    int16_t  progLevel;
 } SndChan;
 
 static SndChan   s_chan[SND_CHANNELS];
@@ -67,6 +93,9 @@ static unsigned long s_gen = 0;
    to tell "the scheduler produced nothing" from "the backend dropped it".  Listed in
    amiga/Makefile PROBE_SYMS so --gc-sections cannot turn the name into a .text address and make
    gdb print instruction bytes as a value (docs/method-lessons.md). */
+volatile unsigned long g_sndProgramRuns = 0, g_sndProgramSkips = 0;
+volatile unsigned long g_sndEnvSteps = 0, g_sndChanVisits = 0;
+
 SndChip g_sndChip;
 #define s_chip g_sndChip
 
@@ -85,29 +114,52 @@ uint16_t snd_noise_divisor(const SndChip* c)
 /* The pitch-0 divider a channel resets to, and the ordinary conversion.  The +(ch-1) is the MOS's
    own per-channel detune (sound.h); it is applied AFTER the octave shift — measured at pitch 0,
    130 and 200 on all three tone channels. */
+/* ⭐⭐ THE WHOLE 256-PITCH MAP, FLATTENED — `kMosPitchDivider[p % 48] >> (p / 48)` for every p.
+ * DERIVED from the 48-entry measurement above at reset, so that table stays the single source of
+ * truth and `make sound` still proves the mapping against a real MOS.
+ *
+ * WHY: this is called from program(), which snd_tick() calls per active channel, twice per
+ * display field, forever.  `% 48` and `/ 48` on a uint16 are a `divu.w` and a `divs.w` — ~300
+ * 68000 cycles between them, plus a variable `asr.l`, to look up a value that only ever takes 256
+ * distinct answers.  512 bytes of table removes all of it (docs/m68k-optimisation.md: the 68000
+ * has no cheap divide, and a table indexed by a byte is two instructions). */
+static uint16_t s_dividerOfPitch[256];
+static uint8_t  s_dividerBuilt = 0;
+
+static void build_divider_table(void)
+{
+    /* Walked rather than divided: `p % 48` / `p / 48` on an `unsigned` are a 32-bit divide, which
+       the 68000 does not have and amiga/Makefile's muldiv-audit rejects outright (CLAUDE.md). */
+    unsigned p, idx = 0, oct = 0;
+    for (p = 0; p < 256; p++) {
+        s_dividerOfPitch[p] = (uint16_t)(kMosPitchDivider[idx] >> oct);
+        if (++idx == 48u) { idx = 0; oct++; }
+    }
+    s_dividerBuilt = 1;
+}
+
 static uint16_t divider_for(uint8_t bbcChan, int16_t pitch)
 {
-    uint16_t p, d;
     if (pitch < 0) pitch = 0;
     if (pitch > 255) pitch = 255;
-    p = (uint16_t)pitch;   /* unsigned, so the 68000 gets a divu.w and not a soft divide */
-    d = (uint16_t)(kMosPitchDivider[p % 48u] >> (p / 48u));
-    return (uint16_t)(d + (bbcChan - 1));
+    if (!s_dividerBuilt) build_divider_table();
+    /* The +(ch-1) is the MOS's own per-channel detune, applied AFTER the octave shift. */
+    return (uint16_t)(s_dividerOfPitch[(uint8_t)pitch] + (bbcChan - 1));
 }
 
 static void chip_set_tone(uint8_t chipCh, uint16_t divider)
 {
-    if (s_chip.tone[chipCh] != divider) { s_chip.tone[chipCh] = divider; s_gen++; g_sndChipWrites++; }
+    if (s_chip.tone[chipCh] != divider) { s_chip.tone[chipCh] = divider; s_gen++; SND_STAT(g_sndChipWrites); }
 }
 
 static void chip_set_noise(uint8_t reg)
 {
-    if (s_chip.noise != reg) { s_chip.noise = reg; s_gen++; g_sndChipWrites++; }
+    if (s_chip.noise != reg) { s_chip.noise = reg; s_gen++; SND_STAT(g_sndChipWrites); }
 }
 
 static void chip_set_vol(uint8_t chipCh, uint8_t att)
 {
-    if (s_chip.vol[chipCh] != att) { s_chip.vol[chipCh] = att; s_gen++; g_sndChipWrites++; }
+    if (s_chip.vol[chipCh] != att) { s_chip.vol[chipCh] = att; s_gen++; SND_STAT(g_sndChipWrites); }
 }
 
 /* level 0..126 -> attenuation 15..0.  The one rule behind both static amplitudes and envelopes. */
@@ -120,14 +172,46 @@ static uint8_t att_for(int16_t level)
     return (uint8_t)(a < 0 ? 0 : a);
 }
 
-/* Write a channel's current state to the chip. */
-static void program(uint8_t bbcChan)
+/* Write a channel's current state to the chip.
+ *
+ * ⭐⭐ MEMOISED, and it is EXACT rather than an approximation: everything below is a pure
+ * function of (bbcChan, c->active, c->pitch, c->level), and the three chip_set_* it calls are
+ * already no-ops when the value is unchanged.  So a repeat call with the same three inputs
+ * provably cannot move s_chip or s_gen — skipping it is unobservable.
+ *
+ * WHY IT MATTERS: snd_tick() ends every active channel with program(), and snd_tick() runs
+ * TWICE PER DISPLAY FIELD forever (the MOS schedules sound on the System VIA's 100 Hz timer,
+ * sound.h).  A held engine note recomputes the identical divider and attenuation 100 times a
+ * second.  That is a fixed tax on wall clock, not on the framerate (docs/perf-method.md §the
+ * VERTB ISR), which is why it is worth a four-field compare.
+ *
+ * ⚠ ANY OTHER WRITER OF s_chip MUST CLEAR progValid — snd_flush_channel and snd_reset do.
+ * The memo is state ABOUT the chip, so a write that bypasses program() makes it a lie. */
+static void program_now(uint8_t bbcChan)
 {
     SndChan* c = &s_chan[bbcChan];
     const uint8_t chipCh = (uint8_t)(3 - bbcChan);
+    SND_STAT(g_sndProgramRuns);
+    c->progValid  = 1;
+    c->progActive = c->active;
+    c->progPitch  = c->pitch;
+    c->progLevel  = c->level;
     if (bbcChan == 0) chip_set_noise((uint8_t)(c->pitch & 7));
     else              chip_set_tone(chipCh, divider_for(bbcChan, c->pitch));
     chip_set_vol(chipCh, c->active ? att_for(c->level) : 15);
+}
+
+/* ⭐ THE MEMO GATE, FORCE-INLINED.  The hit rate measured 94%, so the common case must not pay a
+   `jsr` + `movem` at all: GCC leaves a four-field compare out of line at -O2 and every skipped
+   call then costs more in call overhead than in comparing (docs/perf-method.md §twins #14/#15 —
+   the same lesson that put REVS_FLAG_OP's helpers back inline).  The MISS goes out of line to
+   program_now(), which is where the divider table and the chip writes live. */
+__attribute__((always_inline)) static inline void program(uint8_t bbcChan)
+{
+    SndChan* c = &s_chan[bbcChan];
+    if (c->progValid && c->progActive == c->active &&
+        c->progPitch == c->pitch && c->progLevel == c->level) { SND_STAT(g_sndProgramSkips); return; }
+    program_now(bbcChan);
 }
 
 /* ── the scheduler ─────────────────────────────────────────────────────────────────────── */
@@ -140,6 +224,7 @@ void snd_reset(void)
         c->active = 0; c->env = 0; c->level = 0; c->pitch = 0;
         c->phase = PH_ATTACK; c->stepLeft = 1; c->pSection = 0; c->pStep = 0;
         c->durLeft = 0; c->infinite = 0; c->qHead = 0; c->qCount = 0;
+        c->progValid = 0;          /* s_chip is reset below, behind program()'s back */
         for (j = 0; j < SND_QUEUE; j++) { c->queue[j].amp = 0; c->queue[j].pitch = 0; c->queue[j].dur = 0; }
     }
     for (i = 0; i < 4; i++) s_env[i].defined = 0;
@@ -202,6 +287,15 @@ void snd_flush_channel(uint8_t channel)
     c = &s_chan[channel];
     g_sndFlushes++;
     c->active = 0; c->qHead = 0; c->qCount = 0; c->level = 0; c->pitch = 0;
+    /* ⚠ DEFENSIVE, NOT LOAD-BEARING — and the argument is worth keeping because a sabotage of
+       this line SURVIVES `make sound` (validation-harness.md §FIFTEENTH: "no change at all").
+       A flush leaves the chip in EXACTLY the state program() produces from (active 0, pitch 0,
+       level 0): noise 0 / divider_for(ch,0) and attenuation 15, which is what the three lines
+       below write.  So a memo reading (0,0,0) after a flush is telling the truth.
+       ⭐ The SIBLING case is different and its sabotage DOES fail: snd_reset sets all three tone
+       dividers to kMosPitchDivider[0] with no per-channel detune, which program() would never
+       produce for channels 2 and 3 — so that invalidation is real.  Keep both. */
+    c->progValid = 0;
     /* MEASURED: the channel goes silent AND its divider returns to the pitch-0 value; the noise
        register goes to 0.  A flush is how Revs stops the engine noise, so this path is live. */
     if (channel == 0) chip_set_noise(0);
@@ -298,11 +392,12 @@ static int start_next(uint8_t chan)
 void snd_tick(void)
 {
     uint8_t ch;
-    g_sndTicks++;
+    SND_STAT(g_sndTicks);
 
     for (ch = 0; ch < SND_CHANNELS; ch++) {
         SndChan* c = &s_chan[ch];
         int started = 0;
+        SND_STAT(g_sndChanVisits);
 
         if (!c->active) {
             if (!start_next(ch)) continue;
@@ -333,6 +428,7 @@ void snd_tick(void)
             if (started || --c->stepLeft == 0) {
                 c->stepLeft = (uint8_t)(stepLen ? stepLen : 1);
                 env_step(c, &s_env[c->env - 1]);
+                SND_STAT(g_sndEnvSteps);
             }
         }
 
