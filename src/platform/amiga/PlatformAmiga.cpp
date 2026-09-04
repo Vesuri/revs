@@ -144,10 +144,20 @@ static uint32_t vbiHandler()
     // starved by an overrunning one.
     /* ⭐ What does the ISR itself cost?  Its time is charged to whatever phase was open when it
        preempted, so the phase table cannot answer it (probe.cpp §two sub-frame timers). */
+    /* ⭐⭐ ISRSPLIT: the handler's own sub-brackets (probe.h §ISRSPLIT).  Compiles to nothing
+       without `make ISRSPLIT=1`.
+       ⚠ MUST START BELOW PROBE_VBI(): that bumps g_beamEpoch by a whole display frame, so a
+       bracket straddling it reads ~10 ms of pure instrument artefact. */
+    PROBE_ISR_SPLIT(PROBE_ISR_PROLOGUE);
     PROBE_ISR_BEGIN();
+    /* The NULL CONTROL, on the same path at the same rate: two consecutive transitions bracket
+       nothing at all, so slot 0 IS the floor under every other row (probe.h §ISRSPLIT). */
+    PROBE_ISR_SPLIT(PROBE_ISR_NULL);
+    PROBE_ISR_SPLIT(PROBE_ISR_MOUSE);
     if (s_platform) s_platform->sampleMouse();
 
     if (s_scene) s_scene->vbi();
+    PROBE_ISR_SPLIT(-1);
     PROBE_ISR_END();
 
     return 0;

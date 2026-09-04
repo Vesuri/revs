@@ -180,6 +180,27 @@ void probe_irq_null(void)
     if (d >= 0) { g_probeBandTicks[6] += (unsigned long)d; g_probeBandCount[6]++; }
 }
 
+#ifdef REVS_ISRSPLIT
+/* ⭐⭐ The VERTB handler's own split — probe.h §ISRSPLIT.  A mark/close chain exactly like
+   probe_phase(), but with its own accumulator so the phase table stays comparable with the
+   tables already published.  probe_isr_split(-1) closes the last sub-bracket. */
+volatile unsigned long g_isrSplitTicks[PROBE_ISR_SLOTS] = {0};
+volatile unsigned long g_isrSplitCount[PROBE_ISR_SLOTS] = {0};
+static int           s_isrSlot = -1;
+static unsigned long s_isrSplitMark = 0;
+
+void probe_isr_split(int slot)
+{
+    unsigned long now = beamTick();
+    long d = (long)now - (long)s_isrSplitMark;
+    if (d >= 0 && s_isrSlot >= 0 && s_isrSlot < PROBE_ISR_SLOTS)
+        g_isrSplitTicks[s_isrSlot] += (unsigned long)d;
+    if (slot >= 0 && slot < PROBE_ISR_SLOTS) g_isrSplitCount[slot]++;
+    s_isrSlot = slot;
+    s_isrSplitMark = now;
+}
+#endif
+
 void probe_irq_begin(void) { s_irqMark = beamTick(); }
 /* `state` is mem[$4F43] as the handler FOUND it — see probe.h for why the attribution is by
    entry band and why the per-band counts are not equal. */

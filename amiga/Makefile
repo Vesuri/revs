@@ -282,6 +282,21 @@ ifdef HWTIME
 EXTRA_DEFINES += -DREVS_PROBE_HWTIME
 endif
 
+# ⭐⭐ `make ISRSPLIT=1 PROBES=1` — split the VERTB handler into its seven jobs, with an
+# empty-bracket NULL CONTROL in slot 0.  The ISR is a fixed 50 Hz tax that no phase row can
+# see, so this is the only instrument that prices it.  src/platform/probe.h §ISRSPLIT.
+# ⚠ ~8 bracket transitions per field: quote the SPLIT from it, never an FPS or a phase share.
+# Read with amiga/isr_split.gdb.
+ifdef ISRCAL
+EXTRA_DEFINES += -DREVS_ISRCAL
+endif
+
+ifdef ISRSPLIT
+EXTRA_DEFINES += -DREVS_ISRSPLIT
+PROBE_SYMS_ISRSPLIT = g_isrSplitTicks g_isrSplitCount g_sndProgramRuns g_sndProgramSkips \
+                      g_sndEnvSteps g_sndChanVisits
+endif
+
 ifdef SHAPE
 EXTRA_DEFINES += -DREVS_SHAPE
 PROBE_SYMS_SHAPE = g_shapeDashCalls g_shapeDashDirty g_shapeDashLeft g_shapeDashCols \
@@ -558,6 +573,9 @@ PROBE_SYMS += $(PROBE_SYMS_ROAD)
 endif
 ifdef HWTIME
 PROBE_SYMS += g_probeHwWrites g_probeHwReads g_probeHwTicks
+endif
+ifdef ISRSPLIT
+PROBE_SYMS += $(PROBE_SYMS_ISRSPLIT)
 endif
 PROBE_SYMS += $(PROBE_SYMS_CHECK) $(PROBE_SYMS_PLOT) $(PROBE_SYMS_BANDCHECK)
 

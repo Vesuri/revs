@@ -78,6 +78,41 @@ extern volatile unsigned long g_probeBandTicks[PROBE_BANDS], g_probeBandCount[PR
 
 #define PROBE_ISR_BEGIN() probe_isr_begin()
 #define PROBE_ISR_END()   probe_isr_end()
+
+/* ⭐⭐ ISRSPLIT (`make ISRSPLIT=1 PROBES=1`) — WHAT THE VERTB HANDLER SPENDS ITS ~1.1 ms ON.
+ *
+ * The ISR is a FIXED TAX ON WALL CLOCK: it fires 50 times a second whatever the framerate is
+ * doing, so a millisecond here is 5% of every second, permanently, and it is charged pro-rata to
+ * whichever phase it preempted — no row of the phase table can see it.  PROBE_ISR_BEGIN/END
+ * already price the whole handler; this splits it into the seven things it actually does.
+ *
+ * Same shape as probe_phase(): each call closes the open sub-bracket and opens `slot`, and
+ * probe_isr_split(-1) closes the last one.  Slot 0 is the NULL CONTROL — a bracket around
+ * nothing, on the same path at the same rate, so the floor under every other row is measured
+ * rather than assumed (the same control that rescued the per-band table; probe.cpp
+ * §probe_irq_null).  ⚠ Every row below is a bracket cost ABOVE that floor.
+ *
+ * ⚠ Its own cost is two beam reads per transition, ~8 transitions a field — so an ISRSPLIT
+ * build's FPS and phase shares are void.  Read it for the SPLIT and nothing else. */
+#define PROBE_ISR_SLOTS 10
+#define PROBE_ISR_NULL     0   /* the empty-bracket control                                  */
+#define PROBE_ISR_PROLOGUE 1   /* INTREQ clear, g_vbiCount, the FPS series sample            */
+#define PROBE_ISR_MOUSE    2   /* PlatformAmiga::sampleMouse                                 */
+#define PROBE_ISR_ENTRY    3   /* RevsScreen::noteVbiEntry (the beam-entry record)           */
+#define PROBE_ISR_FLASH    4   /* tt_tick_flash (the SAA5050 field-rate flash phase)         */
+#define PROBE_ISR_SCREEN   5   /* RevsScreen::vbiUpdate — buildBands + present, when ready   */
+#define PROBE_ISR_AUDIO    6   /* revs_audio_vbi — two MOS sound ticks, Paula when it moved  */
+#define PROBE_ISR_TAIL     7   /* the pending-tick accounting                                */
+#define PROBE_ISR_SNDTICK  8   /* ...audio, split: the two MOS scheduler ticks               */
+#define PROBE_ISR_PAULA    9   /* ...and program_paula, which BUSY-WAITS on a DMA restart    */
+#ifdef REVS_ISRSPLIT
+void probe_isr_split(int slot);
+extern volatile unsigned long g_isrSplitTicks[PROBE_ISR_SLOTS];
+extern volatile unsigned long g_isrSplitCount[PROBE_ISR_SLOTS];
+#define PROBE_ISR_SPLIT(s) probe_isr_split(s)
+#else
+#define PROBE_ISR_SPLIT(s) ((void)0)
+#endif
 #define PROBE_IRQ_BEGIN() probe_irq_begin()
 #define PROBE_IRQ_END(s)  probe_irq_end(s)
 #define PROBE_IRQ_NULL()  probe_irq_null()
@@ -221,6 +256,7 @@ extern volatile unsigned long g_beamEpoch;
 #define PROBE_VBI()     ((void)0)
 #define PROBE_ISR_BEGIN() ((void)0)
 #define PROBE_ISR_END()   ((void)0)
+#define PROBE_ISR_SPLIT(s) ((void)0)
 #define PROBE_IRQ_BEGIN() ((void)0)
 #define PROBE_IRQ_END(s)  ((void)(s))
 #define PROBE_IRQ_NULL()  ((void)0)

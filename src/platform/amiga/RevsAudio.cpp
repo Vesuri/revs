@@ -7,6 +7,7 @@
 #include "RevsAudio.h"
 #include "framework/AmigaHardware.h"
 #include "../sound.h"
+#include "../probe.h"    /* PROBE_ISR_SPLIT(): the ISR audio split — probe.h §ISRSPLIT */
 
 /* ---- Paula registers ---------------------------------------------------------
    AUD0 = $DFF0A0, AUD1 = $DFF0B0, AUD2 = $DFF0C0, AUD3 = $DFF0D0; within each:
@@ -250,10 +251,16 @@ void revs_audio_vbi(void)
     unsigned long gen;
     if (!s_ready) return;
     gen = snd_generation();
+    PROBE_ISR_SPLIT(PROBE_ISR_SNDTICK);
     /* Two ticks: the MOS schedules sound at 100 Hz and this is a 50 Hz interrupt.  Paula is
        programmed once, from the state after both — see RevsAudio.h for what that quantises. */
     snd_tick();
     snd_tick();
     g_audioTicks += 2;
-    if (snd_generation() != gen) { program_paula(); g_audioUpdates++; }
+    if (snd_generation() != gen) {
+        PROBE_ISR_SPLIT(PROBE_ISR_PAULA);
+        program_paula();
+        g_audioUpdates++;
+    }
+    PROBE_ISR_SPLIT(PROBE_ISR_AUDIO);
 }
