@@ -5712,6 +5712,119 @@ static int test_model_rotations(void)
 }
 
 /* ==========================================================================
+   TWIN #173 — $0E74 engine_sound_update, THE ENGINE NOTE
+   --------------------------------------------------------------------------
+   Six things have to be steered or the body is mostly unreachable:
+
+     slip_flags ($62A6/$62A7)  the skid block runs only when the OR of the two axles' history
+                               is negative.  A uniform pair takes it 3 in 4 times, so both arms
+                               are forced instead.
+     $FE68                     the User VIA T2 counter, pinned per case through
+                               platform_test_via_t2 — the read is NOT a pure function of mem[],
+                               and diff_run runs the oracle first, so an unpinned counter would
+                               hand the two models different bytes.  Half the cases go below
+                               $3F (squeal queued) and half at or above it (gated out).
+     engine_note ($60) and     the step is +-1 toward the target and the EQUAL case returns
+     engine_note_target ($5F)  immediately, so all three relations are forced.  The note is
+                               drawn to straddle all four thresholds: $1C (silence everything),
+                               $40 (channel 2 on) and $5C (channel 1 vs slot 0).
+     sound_volume ($05FE)      0 skips channel 2 entirely ($0ECB) — forced both ways.
+     sound_chan_state          sound_stop_channel's already-idle guard: with a random state byte
+                               the guard almost never fires, so a quarter of the cases zero it.
+
+   ⭐ It reaches the MOS (OSWORD 7 for SOUND, OSBYTE 21 to flush a buffer) on nearly every case,
+   and what the differential proves there is that the twin makes the SAME calls with the same
+   registers, through platform_mos_call in both models.
+   ⚠ Exit ABI is LIVE (A lands in mos_irq_a on the Amiga's interrupt seam) and path-dependent,
+   which is the whole reason the core hands back a SlotExit rather than nothing.
+   D is pinned to 0: this is race logic, not one of the eight BCD sites (docs/static-map.md).
+   ========================================================================== */
+void engine_sound_update(void);     void engine_sound_update__t6502(void);
+
+static int test_engine_sound_update(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("engine_sound_update");
+    if (!want("engine_sound_update")) return 0;
+
+    int cases = 3000 * scale;
+    int squeal = 0, gated = 0, noSlip = 0, atTarget = 0, up = 0, down = 0;
+    int silenced = 0, slotZero = 0, chan1 = 0, chan2 = 0, noVol = 0, idle = 0;
+
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;
+
+        /* the skid block's two arms */
+        int slip = (t % 3) != 0;
+        pre[0x62A6] = slip ? (uint8_t)(xs() | 0x80u) : (uint8_t)(xs() & 0x7Fu);
+        pre[0x62A7] = (uint8_t)(xs() & 0x7Fu);
+        uint8_t t2 = (t & 1) ? (uint8_t)(xs() % 0x3Fu)              /* squeals */
+                             : (uint8_t)(0x3Fu + (xs() % 0xC1u));   /* gated out */
+        platform_test_via_t2(t2);
+        if (!slip) noSlip++; else if (t2 < 0x3F) squeal++; else gated++;
+
+        /* the note and its target: all three relations, straddling $1C / $40 / $5C */
+        uint8_t note = (uint8_t)(0x10u + (xs() % 0x60u));
+        uint8_t targ;
+        switch (t % 4) {
+            case 0:  targ = note; break;                             /* already there */
+            case 1:  targ = (uint8_t)(note + 1u + (xs() % 0x10u)); break;   /* step up */
+            default: targ = (uint8_t)(note - 1u - (xs() % 0x10u)); break;   /* step down */
+        }
+        pre[0x0060] = note;                       /* engine_note */
+        pre[0x005F] = targ;                       /* engine_note_target */
+        if (targ == note) atTarget++;
+        else {
+            uint8_t stepped = (uint8_t)(note >= targ ? note - 1u : note + 1u);
+            if (note >= targ) down++; else up++;
+            if (stepped < 0x1Cu)      silenced++;
+            else if (stepped < 0x5Cu) slotZero++;
+            else                      chan1++;
+            if (stepped >= 0x40u)     chan2++;
+        }
+
+        pre[0x05FE] = (t % 5) ? (uint8_t)(xs() | 1u) : 0x00u;   /* sound_volume, 0 one case in 5 */
+        if (!pre[0x05FE]) noVol++;
+
+        /* sound_stop_channel's already-idle guard, four channels of state at sound_chan_state */
+        if (t % 4 == 0) { pre[0x0B08] = 0; pre[0x0B09] = 0; pre[0x0B0A] = 0; pre[0x0B0B] = 0; idle++; }
+
+        fail += diff_run("engine_sound_update", pre, c, engine_sound_update,
+                         engine_sound_update__t6502, LIVE_A | LIVE_X | LIVE_Y | LIVE_FLAGS, t, &printed);
+    }
+    platform_test_via_t2(0);
+
+    if (!squeal || !gated || !noSlip) {
+        printf("[VACUOUS] engine_sound_update: skid arms %d squeal / %d gated / %d no-slip\n",
+               squeal, gated, noSlip); fail++;
+    }
+    if (!atTarget || !up || !down) {
+        printf("[VACUOUS] engine_sound_update: note step %d equal / %d up / %d down\n",
+               atTarget, up, down); fail++;
+    }
+    if (!silenced || !slotZero || !chan1 || !chan2) {
+        printf("[VACUOUS] engine_sound_update: pitch arms %d silence / %d slot0 / %d chan1 / "
+               "%d chan2\n", silenced, slotZero, chan1, chan2); fail++;
+    }
+    if (!noVol || !idle) {
+        printf("[VACUOUS] engine_sound_update: %d zero-volume, %d already-idle channels\n",
+               noVol, idle); fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+           "(%d squeal/%d gated/%d no-slip, %d at target/%d up/%d down, "
+           "%d silence/%d slot0/%d chan1/%d chan2, %d no volume, %d idle)\n",
+           "engine_sound_update", cases, fail, squeal, gated, noSlip,
+           atTarget, up, down, silenced, slotZero, chan1, chan2, noVol, idle);
+    return fail;
+}
+
+/* ==========================================================================
    TWINS #67-#78 — THE SLIP/SOUND CLUSTER
    --------------------------------------------------------------------------
    $4B61 slip_magnitude, $4B51 store_slip_signed, $4B47 store_slip_clamped,
@@ -8056,6 +8169,7 @@ int main(int argc, char** argv)
     fail += test_model_arithmetic();
     fail += test_model_rotations();
     fail += test_slip_and_sound();
+    fail += test_engine_sound_update();
     fail += test_sub_models();
     fail += test_late_misc_trees();
     fail += test_last_shim_callers();

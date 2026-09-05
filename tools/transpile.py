@@ -1269,6 +1269,17 @@ VALIDATE_FUNCS = {
     0x7FB6,
     0x2A5D,
     0x2A5F,
+    # ⭐ TWIN #173 — engine_sound_update ($0E74), THE ENGINE NOTE.  Taken for the marshalling,
+    # not the milliseconds: it was the transliterated holder of FOUR 6502-ABI sound shims
+    # (sound_queue, sound_queue_default, sound_stop_channel, sound_stop_all), so every one of
+    # its four calls a frame marshalled cpu in and out of each of them.  Body: one step of
+    # engine_note toward engine_note_target, then that note as pitch on channels 1 and 2, plus
+    # the skid-noise pick its first eight instructions make off the User VIA T2 counter.
+    # ⚠ It reads the User VIA ($FE68), so the differential compares the HARDWARE channel too.
+    # Exit ABI is LIVE (A reaches mos_irq_a $FC on the Amiga's interrupt seam) and it differs
+    # per path — the sound_queue exit for the two queueing paths, sound_stop_all's for the
+    # silent one, and the CPX's own flags on the note-already-at-target path.  No BCD.
+    0x0E74,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

@@ -1038,6 +1038,18 @@ void clear_race_clock(void)
    The crash / restart subtree's 6502-ABI shims (twins #167-#171).
    --------------------------------------------------------------------------- */
 
+/* $0E74 — the exit ABI is live (A lands in mos_irq_a on the Amiga's interrupt seam) and it is
+   path-dependent, so the core hands back the whole register/flag set. */
+void engine_sound_update(void)
+{
+    int pushedPitch;
+    SlotExit e = engine_sound_update_core(cpu.X, cpu.Y, cpu.V, cpu.C, &pushedPitch);
+    if (pushedPitch >= 0)                    /* $0EAA's PHA/$0EB0's PLA leave it at $0100+S */
+        mem[STACK_PAGE + cpu.S] = (uint8_t)pushedPitch;
+    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
+}
+
 void sound_stop_all(void)
 {
     uint8_t entryA = cpu.A;                      /* sound_stop_channel preserves A (PHA/PLA) */

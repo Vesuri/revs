@@ -7826,6 +7826,130 @@ void sound_queue_exit_abi(uint8_t slot)
     cpu.Z = (uint8_t)(sound_saved_x == 0u);
 }
 
+/* ===========================================================================
+   $0E74  engine_sound_update — ONE STEP OF THE ENGINE NOTE  (twin #173)
+   ---------------------------------------------------------------------------
+   Called four times per PAINTED frame from race_main_loop, and each call moves engine_note one
+   unit toward engine_note_target, then re-pitches the engine from it:
+
+       note >= $5C   channel 1 sounds at note-$5C, channel 0 is silenced
+       note <  $5C   channel 1 is queued at amplitude 0 and slot 0 takes the note over instead,
+                     pitched at note+$5F (the 6502 spells it (note-$5C)+$BB)
+       note >= $40   channel 2 also sounds, at note-$40 — but only while sound_volume is nonzero
+       note <  $1C   the engine is below its idle floor: silence everything and return
+
+   Its first eight instructions are a separate job: if EITHER axle's slip history is negative
+   (slip_flags is two bytes, one per axle) and the User VIA's free-running T2 counter happens to
+   read below $3F, two bits of that counter pick one of four skid pitches and queue slot 3.
+   That is the game's tyre-squeal randomiser, and it is why this routine reads hardware.
+
+   Taken as a twin for the MARSHALLING, not the milliseconds: it was the last transliterated
+   holder of four 6502-ABI sound shims, so each of its four calls a frame drove cpu in and out
+   of sound_queue, sound_queue_default, sound_stop_channel and sound_stop_all.  Now it calls
+   their cores and reconstructs one exit ABI at the end.
+
+   Exit ABI (LIVE — cpu.A reaches mos_irq_a $FC on the Amiga's interrupt seam, so it is a real
+   mem[] byte) and it differs per path:
+       note already at target -> the CPX's own flags, over whatever the skid block left in A/Y
+       note below $1C         -> sound_stop_all's exit (A preserved, X = $FF, N = 1)
+       otherwise              -> the last sound_queue's exit (A = 7, Y = $0B, X = sound_saved_x)
+   D = 0 throughout: this is race logic, not one of the eight BCD sites (docs/static-map.md).
+   =========================================================================== */
+
+/* The MOS SOUND control block for one slot is sound_blocks + $10 + slot*8 (sound_queue_core
+   forms the same address); field +4 is the block's PITCH byte, the one this routine writes. */
+#define SOUND_BLOCK_PITCH(slot) (0x0B00u /* sound_blocks */ + 0x10u + ((slot) * 8u) + 4u)
+
+SlotExit engine_sound_update_core(uint8_t entryX, uint8_t entryY,
+                                  unsigned entryV, unsigned entryC, int* pushedPitch)
+{
+    *pushedPitch = -1;                       /* set only on the slot-0 path — see $0EAA below */
+    uint8_t  a = (uint8_t)(slip_flags | mem[MEM_slip_flags + 1]);  /* both axles' slip history */
+    uint8_t  x = entryX, y = entryY;
+    unsigned n = (unsigned)(a >> 7), z = (a == 0u), c = entryC, v = entryV;
+
+    /* ---- the skid noise ($0E74-$0E8F) ---- */
+    if (a & 0x80u) {                                   /* $0E7A BPL — no recent slip at all */
+        uint8_t t2 = (uint8_t)bus_read(USRVIA_T2CL);   /* $0E7C — the free-running entropy read */
+        a = t2;
+        c = (t2 >= 0x3Fu);                             /* $0E7F CMP #$3F */
+        z = (t2 == 0x3Fu);
+        n = (unsigned)((uint8_t)(t2 - 0x3Fu) >> 7);
+        if (!c) {                                      /* $0E81 BCS — only the low counts squeal */
+            mem[SOUND_BLOCK_PITCH(3)] = (uint8_t)((t2 & 3u) + 0x82u);  /* one of four pitches */
+            sound_queue_core(0x03u, 0x01u, x);         /* $0E8F — slot 3, amplitude 1 */
+            /* sound_queue's exit ABI, mid-routine: A/Y are the OSWORD's, X comes back from
+               sound_saved_x, and the block-index add leaves C and V. */
+            BlockCV cv = sound_queue_block_cv(0x03u);
+            a = 0x07u; y = 0x0Bu; x = sound_saved_x;
+            n = (unsigned)(x >> 7); z = (x == 0u); c = cv.c; v = cv.v;
+        }
+    }
+
+    /* ---- one step of the note toward its target ($0E92-$0E9E) ---- */
+    x = engine_note;                                   /* $0E92 */
+    { uint8_t t = engine_note_target;                  /* $0E94 CPX engine_note_target */
+      c = (x >= t); z = (x == t); n = (unsigned)((uint8_t)(x - t) >> 7); }
+    SlotExit e;
+    if (z) {                                           /* $0E96 — already there, nothing to do */
+        e.a = a; e.x = x; e.y = y;
+        e.n = (uint8_t)n; e.z = (uint8_t)z; e.v = (uint8_t)v; e.c = (uint8_t)c;
+        return e;
+    }
+    x = (uint8_t)(c ? x - 1u : x + 1u);                /* $0E9A DEX / $0E9D INX */
+    engine_note = x;                                   /* $0E9E */
+
+    /* ---- below the idle floor: silence the engine ($0EA0-$0EA2, $0EE1) ---- */
+    c = (x >= 0x1Cu);                                  /* $0EA0 CPX #$1C */
+    if (!c) {
+        sound_stop_all_core(y);                        /* $0EE1 — Y flows through to the OSBYTEs */
+        e.a = a;                                       /* preserved across the PHA/PLA chain */
+        e.x = 0xFFu;                                   /* $43FB's DEX ran once past channel 0 */
+        e.y = y;
+        e.n = 1u; e.z = 0u;                            /* ...and that DEX's flags */
+        e.v = (uint8_t)v; e.c = 0u;                    /* the CPX that sent us here */
+        return e;
+    }
+
+    /* ---- the note as channel 1's pitch, or slot 0's if it is too low ($0EA4-$0EC5) ---- */
+    unsigned d = (unsigned)x - 0x5Cu;                  /* $0EA5-$0EA6 SEC / SBC #$5C */
+    a = (uint8_t)d;
+    if (d & 0x100u) {                                  /* $0EA8 BCS — note below $5C */
+        uint8_t pitch = a;                             /* $0EAA PHA — and the pushed byte stays
+                                                          on the stack as residue past the PLA,
+                                                          which only the shim can place */
+        *pushedPitch = (int)pitch;
+        sound_queue_core(0x00u, sound_volume, x);      /* $0EAD — slot 0 takes the note over */
+        a = (uint8_t)(pitch + 0xBBu);                  /* $0EB0-$0EB2 PLA / CLC / ADC #$BB */
+        y = 0x00u;                                     /* $0EB4 — amplitude 0: channel 1 silent.
+                                                          Its `BEQ` at $0EB6 is unconditional. */
+    } else {
+        x = sound_stop_channel_core(0x00u, y);         /* $0EB8-$0EBA — silence slot 0's channel */
+        y = sound_volume;                              /* $0EBD */
+    }
+    mem[SOUND_BLOCK_PITCH(1)] = a;                     /* $0EC0 */
+    sound_queue_core(0x01u, y, x);                     /* $0EC5 */
+    x = sound_saved_x;                                 /* sound_queue restores X from it */
+
+    /* ---- channel 2, an octave-and-a-bit down, only while there is any volume ($0EC8-$0EDD) ---- */
+    y = sound_volume;                                  /* $0EC8 */
+    if (y != 0u) {                                     /* $0ECB BEQ */
+        unsigned d2 = (unsigned)engine_note - 0x40u;   /* $0ECD-$0ED0 */
+        a = (uint8_t)d2;
+        if (!(d2 & 0x100u)) mem[SOUND_BLOCK_PITCH(2)] = a;   /* $0ED8 */
+        else                y = 0x00u;                 /* $0ED4 — below $40: skip the store */
+    }
+    a = 0x02u;                                         /* $0EDB */
+    sound_queue_core(0x02u, y, x);                     /* $0EDD */
+
+    /* The last sound_queue's exit is the routine's. */
+    BlockCV cv = sound_queue_block_cv(0x02u);
+    e.a = 0x07u; e.y = 0x0Bu; e.x = sound_saved_x;
+    e.n = (uint8_t)(e.x >> 7); e.z = (uint8_t)(e.x == 0u);
+    e.c = cv.c; e.v = cv.v;
+    return e;
+}
+
 
 
 
