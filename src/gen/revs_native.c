@@ -11011,6 +11011,8 @@ void record_section_jump(void) { cpu.C = record_section_jump_core(cpu.C, cpu.X);
    --------------------------------------------------------------------------- */
 void place_player_in_section(void)
 {
+    edge_nearest_marshal_in();   /* its two folds weight the angle by the relocated running
+                                    minimum (scale_angle_in_section_core reads edge_nearest_v) */
     /* Relative angle of the nearest edge bearing to the section's yaw.  D=0, so a plain 8-bit
        subtract whose bit 7 is the sign abs8 negates on; a circuit hook instead READS the value
        and its sign N via cpu, so that seam re-establishes them. */
@@ -11187,6 +11189,45 @@ void process_car_contact(void)
 #define CAR_DISTANCE_HI   0x08E8u   /* car_distance_hi: ...high byte */
 
 /* ---------------------------------------------------------------------------
+   ⭐ WIDE-VALUE CLEANUP, mechanism (B): THE PER-CAR LAP DISTANCE relocated out of mem[]
+   ---------------------------------------------------------------------------
+   Another plane-split array: low bytes $08D0-$08E7, high bytes $08E8-$08FF, one 16-bit
+   distance-round-the-lap per car slot.  24 slots, $00-$17 — the twenty racing cars the field
+   loops walk ($00-$13) plus the player's own slot $17, which the steppers address directly.
+
+   ⚠ THE MARSHAL IS PER ELEMENT, NOT PER ARRAY, and that is the whole point of doing this one.
+   The boundary shims (`track_pos_advance`, `track_pos_retreat`, `car_gap`, `car_gap_tail`) are
+   entered once per CAR, up to twenty times a frame; marshalling all 24 words there would cost
+   more byte traffic than the relocation saves.  So each shim marshals only the slot(s) its own
+   index names, and the whole-array pair exists solely for full_track_scan_rebuild, whose body
+   walks the entire field core-to-core and is entered once.
+   --------------------------------------------------------------------------- */
+#define CAR_SLOTS 24u
+uint16_t car_distance_16[CAR_SLOTS];
+
+void car_distance_marshal_in_one(uint8_t x)
+{
+    car_distance_16[x] = (uint16_t)(mem[CAR_DISTANCE_LO + x]
+                                    | ((unsigned)mem[CAR_DISTANCE_HI + x] << 8));
+}
+
+void car_distance_marshal_out_one(uint8_t x)
+{
+    mem[CAR_DISTANCE_LO + x] = (uint8_t)car_distance_16[x];
+    mem[CAR_DISTANCE_HI + x] = (uint8_t)(car_distance_16[x] >> 8);
+}
+
+void car_distance_marshal_in(void)
+{
+    for (unsigned x = 0; x < CAR_SLOTS; x++) car_distance_marshal_in_one((uint8_t)x);
+}
+
+void car_distance_marshal_out(void)
+{
+    for (unsigned x = 0; x < CAR_SLOTS; x++) car_distance_marshal_out_one((uint8_t)x);
+}
+
+/* ---------------------------------------------------------------------------
    $27A4  car_gap  (twin #125)
    ---------------------------------------------------------------------------
    Byte 0 of the 24-bit separation between cars Y and X.  Only this subtract's BORROW
@@ -11231,8 +11272,7 @@ GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn)
     /* D = dist[Y] - dist[X], 16-bit, borrow chained from the entry carry.
        ⭐ WIDE-VALUE CLEANUP: the 6502's two SBCs with a borrow chained between them ARE one
        16-bit subtract, and the entry carry is just its incoming borrow — nothing to hand-carry. */
-    int      d     = (int)(mem[CAR_DISTANCE_LO + y] | (mem[CAR_DISTANCE_HI + y] << 8))
-                   - (int)(mem[CAR_DISTANCE_LO + x] | (mem[CAR_DISTANCE_HI + x] << 8))
+    int      d     = (int)car_distance_16[y] - (int)car_distance_16[x]
                    - (carryIn ? 0 : 1);
     uint8_t  maglo = (uint8_t)d;
     uint8_t  dhi   = (uint8_t)((unsigned)d >> 8);   /* raw high byte of D (its sign, saved by PHP) */
@@ -11471,6 +11511,7 @@ void build_road_section(void)
     /* --- 2. step the car one segment; commit a crossed boundary ---
        $17 is the player's car slot; both steppers return the carry the 6502 left in C. */
     int forwardBoundary = 0;
+    car_distance_marshal_in_one(0x17u);        /* the steppers below move the player's slot */
     if (!(track_direction & 0x80)) {
         /* forward: arm the lap credit if this section is the finish marker */
         uint8_t marker = (uint8_t)(segment_count_x8 >> 1);
@@ -11486,6 +11527,7 @@ void build_road_section(void)
         if (track_pos_retreat_core(0x17)) cross_section_boundary();
     }
 
+    car_distance_marshal_out_one(0x17u);
     if (!forwardBoundary) {
         /* --- 3. build this section's flag byte --- */
         cpu.Y = segment_dir_index;
@@ -12220,20 +12262,23 @@ static uint8_t track_pos_advance_core(uint8_t x)
     mem[CAR_SEG_OFFSET + x] = off;
 
     /* one unit further round the lap; a completed lap zeroes the counter and books it */
-    uint16_t dist = (uint16_t)(mem[CAR_DISTANCE_LO + x] | (mem[CAR_DISTANCE_HI + x] << 8));
+    uint16_t dist = car_distance_16[x];
     uint16_t lap  = (uint16_t)(lap_length_lo | (lap_length_hi << 8));
     if (++dist == lap) {
-        mem[CAR_DISTANCE_LO + x] = 0x00u;
-        mem[CAR_DISTANCE_HI + x] = 0x00u;
+        car_distance_16[x] = 0u;
         lap_complete_core(x);               /* core-to-core: x IS the index the shim read from cpu.X */
     } else {
-        mem[CAR_DISTANCE_LO + x] = (uint8_t)dist;
-        mem[CAR_DISTANCE_HI + x] = (uint8_t)(dist >> 8);
+        car_distance_16[x] = dist;
     }
     return crossed;
 }
 
-void track_pos_advance(void) { cpu.C = track_pos_advance_core(cpu.X); }   /* exit ABI: C only */
+void track_pos_advance(void)                     /* exit ABI: C only */
+{
+    car_distance_marshal_in_one(cpu.X);          /* one slot, not the array — see car_distance_16 */
+    cpu.C = track_pos_advance_core(cpu.X);
+    car_distance_marshal_out_one(cpu.X);
+}
 
 /* $14C3 track_pos_retreat — step car x one offset-unit backward (the reverse of advance). */
 static uint8_t track_pos_retreat_core(uint8_t x)
@@ -12261,7 +12306,7 @@ static uint8_t track_pos_retreat_core(uint8_t x)
        ⚠ lap_length stays in mem[]: it is TRACK-FILE data, and an expansion circuit's hook can
        patch it at runtime, so it is read wide per call rather than relocated to a global
        (docs/wide-value-cleanup.md §FOURTH eligibility test). */
-    uint16_t dist = (uint16_t)(mem[CAR_DISTANCE_LO + x] | (mem[CAR_DISTANCE_HI + x] << 8));
+    uint16_t dist = car_distance_16[x];
     /* ⚠ the low lane is only decremented once, at the end; the 6502 borrows into the high lane
        ONLY when the low one is already zero, so the sign test is gated on that. */
     while ((dist & 0x00FFu) == 0u && ((uint16_t)(dist - 1u) & 0x8000u) != 0u) {
@@ -12269,13 +12314,16 @@ static uint8_t track_pos_retreat_core(uint8_t x)
         if (x == player_car && mem[CAR_LAP_COUNT + x] != 0)
             mem[CAR_LAP_COUNT + x]--;                              /* ...and un-book it */
     }
-    dist = (uint16_t)(dist - 1u);
-    mem[CAR_DISTANCE_LO + x] = (uint8_t)dist;
-    mem[CAR_DISTANCE_HI + x] = (uint8_t)(dist >> 8);
+    car_distance_16[x] = (uint16_t)(dist - 1u);
     return crossed;
 }
 
-void track_pos_retreat(void) { cpu.C = track_pos_retreat_core(cpu.X); }   /* exit ABI: C only */
+void track_pos_retreat(void)                     /* exit ABI: C only */
+{
+    car_distance_marshal_in_one(cpu.X);
+    cpu.C = track_pos_retreat_core(cpu.X);
+    car_distance_marshal_out_one(cpu.X);
+}
 
 /* ------------------------------------------------------------------------------------------------
  * $109B  full_track_scan_rebuild  —  NATIVE DRIVER (STAGE 5), the root of the crash-freeze subtree.
@@ -12310,6 +12358,10 @@ void track_pos_retreat(void) { cpu.C = track_pos_retreat_core(cpu.X); }   /* exi
  * ------------------------------------------------------------------------------------------------ */
 void full_track_scan_rebuild(void)
 {
+    /* ⭐ The one place the WHOLE distance array is marshalled: the body below walks all twenty
+       cars, repeatedly, core-to-core, so one 24-word round trip buys hundreds of word-sized
+       steps.  ⚠ It must PUBLISH before step 6, which calls a shim that marshals in itself. */
+    car_distance_marshal_in();
     uint8_t entry_a = cpu.A;                  /* the per-cell retreat depth (see step 2) */
     shared_temp_76 = entry_a;
 
@@ -12325,7 +12377,7 @@ void full_track_scan_rebuild(void)
                                                      drops the per-use zero-extend */
             track_pos_advance_core((uint8_t)x);   /* exit C dead: the loop only steps */
         }
-    } while ((mem[CAR_DISTANCE_LO + 0] | mem[CAR_DISTANCE_HI + 0]) != 0u);
+    } while (car_distance_16[0] != 0u);   /* the OR of the two lanes IS "the word is zero" */
 
     /* 2. triangular retreat grid.  hypot_min_lo is the outer index cell ($FF then pre-incremented
        to 0..$13); the inner sweep starts at the outer index and runs to $13. */
@@ -12378,7 +12430,10 @@ void full_track_scan_rebuild(void)
         }
     }
 
-    /* 6. rebuild shared_counter_42 track sections from the walk origin */
+    /* 6. rebuild shared_counter_42 track sections from the walk origin.
+       ⚠ build_road_section is a boundary SHIM — it re-reads slot $17 out of mem[], so the walk's
+       own steps have to be published first or it would reload a stale distance. */
+    car_distance_marshal_out();
     section_cursor = 0u;
     do {
         build_road_section();
@@ -12386,6 +12441,7 @@ void full_track_scan_rebuild(void)
 
     /* lower the off-line-scan flag (LSR at $111A) */
     track_scan_active = (uint8_t)(track_scan_active >> 1);
+    car_distance_marshal_out();               /* build_road_section kept the array in step above */
 }
 
 /* ------------------------------------------------------------------------------------------------
@@ -12652,7 +12708,10 @@ void FUN_27ed(void)
         x = (uint8_t)(x - 1);                                /* $28E7 DEX */
         if (x & 0x80u) return;                               /* $28E8 BMI $28F1 — past car 0, done */
         if (x == player_car) continue;                       /* $28EA CPX player_car / $28EC BEQ (skip) */
+        car_distance_marshal_in_one(x);                      /* this car's slot only — the loop
+                                                                visits twenty of twenty-four */
         FUN_27ed_car(x);                                     /* $28EE JMP $27F6 */
+        car_distance_marshal_out_one(x);
     }
 }
 
@@ -13399,4 +13458,29 @@ void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
 
     plot_ptr_v  = dst;                     /* ⭐ the walk's residue, as the relocated word */
     plot_ptr_marshal_out();
+}
+
+/* ===========================================================================
+   ⭐⭐ relocated_poison — THE VALIDATION HARNESS'S GUARD ON THE MARSHAL SEAM
+   ---------------------------------------------------------------------------
+   Every mechanism-(B) relocation moves a value out of mem[] into a native global, and the
+   boundary rule says a 6502-ABI shim whose core reads it must marshal it IN.  A missing marshal
+   is INVISIBLE to `make validate` on its own, because the two models share this process's
+   globals: many transliterated oracles tail-call the NATIVE shim (stage_nearby_car__t6502 calls
+   car_gap_tail(), which marshals), so whichever model runs second inherits the value the first
+   one marshalled.  A dropped marshal then reads the right word by accident and the differential
+   PASSES — the same class as the stale cpu_unwind trap diff_run documents.
+
+   diff_run calls this before EACH model so neither can inherit the other's marshal.  The value
+   is deliberately not zero (a zero can be the correct answer) and per-element distinct for the
+   arrays, so a marshal that covers only some slots still diverges.  Never call it from game code.
+   =========================================================================== */
+void relocated_poison(void)
+{
+    plot_ptr_v = 0xA5A5u; plot_ptr2_v = 0xA5A6u; plot_ptr3_v = 0xA5A7u;
+    hypot_min_v = 0xA5A8u; hypot_max_v = 0xA5A9u;
+    edge_nearest_v = 0xA5AAu; car_heading_v = 0xA5ABu; bearing_v = 0xA5ACu;
+    model_accum_entry_v = 0xA5ADu;
+    for (unsigned i = 0; i < 3; i++)         car_angle_16[i]    = (uint16_t)(0xA500u + i);
+    for (unsigned i = 0; i < CAR_SLOTS; i++) car_distance_16[i] = (uint16_t)(0xA5C0u + i);
 }

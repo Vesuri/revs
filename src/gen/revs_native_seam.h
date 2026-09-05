@@ -378,6 +378,15 @@ void car_heading_marshal_out(void);
 extern uint16_t car_angle_16[3];
 void car_angle_marshal_in(void);
 void car_angle_marshal_out(void);
+/* ⭐ the per-car lap distance ($08D0/$08E8, plane-split, 24 slots) relocated — see revs_native.c.
+   ⚠ Its marshal is PER ELEMENT: the boundary shims run once per car, up to twenty times a frame,
+   so a whole-array marshal there would cost more traffic than the relocation saves.  The
+   whole-array pair is for full_track_scan_rebuild, which walks the field core-to-core. */
+extern uint16_t car_distance_16[24];
+void car_distance_marshal_in_one(uint8_t x);
+void car_distance_marshal_out_one(uint8_t x);
+void car_distance_marshal_in(void);
+void car_distance_marshal_out(void);
 void hypot_max_marshal_in(void);
 void hypot_max_marshal_out(void);
 /* ⭐ hypot_min ($78/$79) — the sibling pair, marshalled at the same seams.  Its consumer
@@ -390,6 +399,10 @@ void hypot_min_marshal_out(void);
 void bearing_marshal_in(void);
 void bearing_marshal_out(void);
 void model_accum_entry_marshal_out(void);
+
+/* ⭐⭐ Validation-harness only: scribble every relocated global so neither model in diff_run can
+   inherit the other's marshal.  See the banner in revs_native.c. */
+void relocated_poison(void);
 AddFlags integrate_car_position_core(void);
 AddFlags integrate_state_rates_core(void);
 EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearPoint, int publishOnly);

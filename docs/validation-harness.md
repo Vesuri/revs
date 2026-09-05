@@ -539,6 +539,33 @@ stream, which is what makes "passes alone, fails together" easy to misread as fl
 ⇒ `diff_run` now clears `cpu_unwind` alongside `cpu` for both models.  The general rule: **every
 global the CPU model owns is pre-state.**  If a new one appears, it belongs in that reset.
 
+## ⚠⚠ A RELOCATED GLOBAL IS PROCESS STATE — the two models covered for each other (2026-09-05)
+
+Every wide-value mechanism-(B) relocation moves a value out of `mem[]` into a native global
+(`car_angle_16`, `car_distance_16`, `bearing_v`, `edge_nearest_v`, …), with `mem[]` kept as the
+6502-ABI mirror and `marshal_in`/`marshal_out` at the shims.  `diff_run` resets `mem[]`, `cpu` and
+`cpu_unwind` between the two models — **but not those globals.**
+
+That is a hole, because many transliterated oracles tail-call the **native** shim:
+`stage_nearby_car__t6502` calls `car_gap_tail()`, which marshals.  So whichever model runs second
+inherits the value the first one marshalled, and a shim with its `marshal_in` **deleted** reads the
+right word by accident.  The sabotage that proves the boundary rule PASSED.
+
+⇒ `relocated_poison()` (`src/gen/revs_native.c`, declared in `revs_native_seam.h`) scribbles every
+relocated global with a non-zero, per-element-distinct pattern, and `diff_run` calls it before
+**each** model run.  The pattern is deliberately not zero (zero can be the correct answer) and
+distinct per element (a marshal covering only some slots must still diverge).
+
+**It immediately found three missing marshals in relocations that were already gated** —
+`emit_edge_bearing_at_cursor` (`car_heading`, `bearing`), `road_edge_start` / `road_edge_walk` /
+`build_track_geometry` (`car_heading`), `place_player_in_section` (`edge_nearest`).  `determinism`
+could not see them either: on Silverstone every writer of those cells is native, so the stale
+global happened to hold the right value.  A transliterated or circuit-hook writer would not have.
+
+The general rule, the same one `cpu_unwind` taught: **every global either model can touch is
+pre-state.**  A new relocation belongs in `relocated_poison` in the same commit that creates it,
+or its boundary sabotage is untestable.
+
 ## ⚠⚠ THE GLOBAL PRNG IS ONE STREAM — a NEW fixture's `fill_random` calls shift every LATER fixture's coverage (twin #154)
 
 `rng` (`tools/validate_native.c`) is a single global xorshift seeded ONCE (`0x9D6F1234`) and never

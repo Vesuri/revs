@@ -171,8 +171,8 @@ addr,name,type,is_hw,note
 0x14C3,track_pos_retreat,func,0,"the reverse of track_pos_advance, stepping a car backwards"
 0x06E8,car_segment,table,0,"per-car index into the track segment list, stepped in units of 8"
 0x0880,car_seg_offset,table,0,per-car offset within the current segment
-0x08D0,car_distance_lo,table,0,"per-car distance-round-the-lap counter, low byte"
-0x08E8,car_distance_hi,table,0,"per-car distance counter, high byte"
+0x08D0,car_distance_lo,table,0,"per-car distance-round-the-lap counter, low byte. 24 slots ($00-$13 the drivers, $17 the reference car). ⭐ PORT: the whole array is relocated to car_distance_16[] (revs_native.c); mem[] here is the 6502-ABI mirror, marshalled PER ELEMENT at the shims."
+0x08E8,car_distance_hi,table,0,"per-car distance counter, high byte. ⭐ PORT: relocated to car_distance_16[] (revs_native.c); mem[] here is the 6502-ABI mirror, marshalled PER ELEMENT at the shims."
 0x5907,segment_len_tbl,table,0,TRACK FILE: length of each track segment
 0x59D0,segment_data,table,0,TRACK FILE: per-segment value compute_segment_scale reads
 0x59FA,segment_count_x8,var,0,TRACK FILE: number of segments times 8 -- the wrap point for car_segment

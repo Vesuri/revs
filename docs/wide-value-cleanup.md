@@ -533,7 +533,7 @@ in the interim but the final store stays two non-adjacent byte writes until relo
 |---|---|---|---|---|---|
 | `MODEL_STATE` | $62D0/$62E0 | 15×16-bit driving-model state (stride $10) — incl. `heading_step` (element 2, $62D2/$62E2) and `slip_magnitude` (element $0A, $62DA/$62EA) | ~47 | A now; B blocked | **`heading_step` ✅ A COMPLETE — nothing left to convert** (see below); **`slip_magnitude` ✅ A DONE (2026-09-04)** — `steer_demand_from_slip` ($15F4) and `store_slip_signed` ($4B51) held the last lane pairs; the rest of the elements are still TODO |
 | `CAR_ANGLE` | $62A0/$62A3 | 3× (heading_sin/cos, `steer_angle` = element 2, $62A2/$62A5) | ~9 | **A + B DONE** | `car_angle_16[3]` |
-| `CAR_DISTANCE` | $08D0/$08E8 | per-car (20) distance-round-lap | ~19 | A now; B blocked | TODO |
+| `CAR_DISTANCE` | $08D0/$08E8 | per-car (24) distance-round-lap | ~19 | **A + B DONE** | `car_distance_16[24]` |
 | `OBJECT_BEARING` | $0380/$0398 | per-slot 16-bit track position | ? | A now; B blocked | TODO |
 | `SECTION_COORD` (=`SECTION_CRD`) | $0900/$0A00 | section origin (stride $100) — **two names, one addr; dedupe** | ~62 | A now; B blocked | TODO |
 | `EDGE_OPP_X` | $5E50/$5EA0 | opposite-boundary angle | ? | A→B | TODO |
@@ -1218,7 +1218,7 @@ row.
 | `MARKER_OFF` $62B7/$62BA | 2 fn / 6 ref | **none** | ✅ eligible, small — `append_corner_marker` / `draw_corner_markers` |
 | `OBJECT_BEARING` $0380/$0398 | 6 fn / 6 ref | **none** | ✅ eligible but **one ref per function** — score it before writing anything; likely a decline |
 | `SECTION_COORD` $0900/$0A00 | **10 fn / 38 ref** | **none** | ✅ eligible — the largest of the re-scored four |
-| `CAR_DISTANCE` $08D0/$08E8 | 4 fn / 16 ref | **none** | ✅ eligible — 4 refs per function, the best ops-per-marshal of the four |
+| `CAR_DISTANCE` $08D0/$08E8 | 4 fn / 16 ref | **none** | ✅ **(B) DONE** — `car_distance_16[24]`, see below |
 | `OBJECT_COORD` $09FD/$0AFD | 10 fn / 27 ref | **none** | ✅ eligible — 24-bit binary → `uint32_t`, `add.l`/`sub.l`/`cmp.l` only |
 | `EDGE_OPP_X` $5E50/$5EA0 | 7 fn / 12 ref | **none** | ✅ eligible, small — ~1.7 refs per function, score before writing |
 
@@ -1695,3 +1695,88 @@ reused a stale object):
 | S5 | the clamp stores the steer word byte-swapped | `clamp_and_store_steer_angle` |
 | S6 | the sign read as bit 15 instead of bit 0 (the packing trap) | `apply_steering_assist` |
 | S7 | drop `car_angle_marshal_in` from one boundary shim | `apply_angle_term` |
+
+## `CAR_DISTANCE` $08D0/$08E8 → `car_distance_16[24]` — and the harness hole it exposed
+
+The per-car **distance round the lap**: a plane-split SoA pair, low bytes at $08D0, high bytes at
+$08E8, one entry per car slot. **24 slots, not 20** — the twenty racing cars the field loops walk
+($00-$13) plus the pace/reference car $17 that `stage_nearby_car` measures every gap against; the
+array's own extent is the proof, since $08D0 + 24 = $08E8 is where the high plane starts.
+
+Relocated to `uint16_t car_distance_16[24]` (`src/gen/revs_native.c`), `mem[]` kept as the
+6502-ABI mirror. What the sites become:
+
+| Routine | 6502 byte lanes | wide |
+|---|---|---|
+| `car_gap_tail` | two chained `SBC`s, borrow hand-carried between the lanes | `(int)dist[y] - (int)dist[x] - !carryIn` |
+| `track_pos_advance` | `INC` low, `BNE`, `INC` high, then a two-lane compare against `lap_length` | `if (++dist == lap)` |
+| `track_pos_retreat` | `DEC` low, borrow into high, sign-test the high lane, reload BOTH lanes from `lap_length` | one decrement and one assignment |
+| `full_track_scan_rebuild` | `LDA lo / ORA hi / BNE` as the field-advance loop's exit test | `while (car_distance_16[0] != 0u)` |
+
+⚠ **The marshal is PER ELEMENT, not per array.** The boundary shims here run once per car — up to
+twenty times a frame — so `car_distance_marshal_in_one(x)` moves the one slot the index names.
+Only the two shims that genuinely walk the whole field marshal the whole array: `check_car_pair`
+(one 24-word round trip for a twenty-iteration pair walk) and `full_track_scan_rebuild` (one round
+trip for hundreds of core-to-core word steps). Those two are where the win actually is; the
+per-car shims roughly break even, and are converted because the campaign converts the traffic.
+
+`full_track_scan_rebuild` also has to **publish before calling a nested boundary shim** —
+`build_road_section()` marshals in, so the driver marshals out first or that shim reloads stale
+mem[]. Same rule as `car_angle`'s.
+
+### ⚠⚠ A FIXTURE'S RANDOM INDEX IS A DOMAIN CLAIM, and relocation makes it load-bearing
+
+`mem[CAR_DISTANCE_LO + x]` is in range for **any** byte `x` — an out-of-domain index quietly read a
+neighbouring array, in the twin *and* in the oracle, so the differential stayed green and nobody
+noticed. `car_distance_16[x]` has exactly 24 entries, so the same index segfaults. Three fixtures
+were seeding a car slot from unconstrained random memory: `track_pos_advance` and
+`track_pos_retreat` took `player_car` ($6F, documented 0-19) straight out of `fill_random`, and
+`stage_nearby_car` read `car_order[X]` with both the position and the entry random. All three are
+pinned to their structural domains now, with the argument written at the fixture.
+
+⇒ **A relocation converts a silent domain violation into a crash.** That is the relocation earning
+its keep, not a fixture weakening — but expect to fix the fixture, and write down why the wider
+domain is unreachable.
+
+### ⚠⚠ THE HOLE: a relocated global is PROCESS state, so the two models can cover for each other
+
+Sabotage S6 — drop `car_distance_marshal_in_one` from `stage_nearby_car`'s shim — **PASSED**.
+
+The reason is not a fixture gap. Many transliterated oracles tail-call the **native** shim:
+`stage_nearby_car__t6502` calls `car_gap_tail()`, which marshals. `diff_run` resets `mem[]` and
+`cpu` between the two models but the relocated globals are plain process state, so whichever model
+runs second inherits the value the first one marshalled — and a dropped marshal reads the right
+word **by accident**. Exactly the class of `docs/validation-harness.md` §`cpu_unwind`.
+
+⇒ `relocated_poison()` (`src/gen/revs_native.c`, called by `diff_run` before **each** model)
+scribbles every relocated global with a non-zero, per-element-distinct pattern. With it in place S6
+fails 5965/6000. **It found three genuine missing marshals in relocations that were already
+"gated"**, none of which any differential could see before:
+
+| Shim | missing | what it reads |
+|---|---|---|
+| `emit_edge_bearing_at_cursor` | `car_heading_marshal_in`, `bearing_marshal_in` | the heading every bearing is measured against |
+| `road_edge_start`, `road_edge_walk`, `build_track_geometry` | `car_heading_marshal_in` | same, transitively through `emit_edge_bearing_core` |
+| `place_player_in_section` | `edge_nearest_marshal_in` | `scale_angle_in_section_core` weights the angle by the running minimum |
+
+On Silverstone every writer of those cells is native, which is why `determinism` was green too — a
+transliterated or hook writer would have gone straight past the stale global. **Any future (B)
+relocation must add its global to `relocated_poison`**, or its boundary sabotage cannot fail.
+
+### Gate
+
+`make validate` 136 fixtures, 0 mismatch (with the poison armed) · `determinism`,
+`determinism-drive` and `determinism-crash` 64K byte-identical *including* $08D0-$08FF, so
+`det_compare.py` needs no skip · `tracks` 6/6 byte-exact · `track-run` every circuit's code runs ·
+`endian-lint` clean · Amiga link `muldiv-audit: clean`, `probe-audit: clean (132 symbols)`.
+
+Six sabotages, six distinct first-diff signatures (the stale-object check), all FAIL:
+
+| # | defect | caught by |
+|---|---|---|
+| S1 | `car_distance_marshal_in_one` swaps the two lanes | `track_pos_advance` |
+| S2 | `car_distance_marshal_out_one` swaps the two lanes | `track_pos_advance` |
+| S3 | `car_gap_tail_core` drops the incoming borrow | `car_gap_tail` |
+| S4 | `track_pos_advance_core` does not zero the distance on a lap | `track_pos_advance` |
+| S5 | `track_pos_retreat_core` steps back two units | `track_pos_retreat` |
+| S6 | `stage_nearby_car`'s shim loses its `marshal_in` | `stage_nearby_car` (poison-dependent) |

@@ -72,7 +72,10 @@ void emit_edge_bearing_at_cursor(void)
 {
     /* the fallen-into emit_edge_bearing emits at edge_cursor, so Y exits = edge_cursor; A is the
        point's distance high byte. */
+    car_heading_marshal_in();             /* the heading the bearing inside it is measured against */
     hypot_max_marshal_in();  hypot_min_marshal_in();
+    bearing_marshal_in();                 /* IN as well as OUT: only the paths that keep a point
+                                             produce it — see the note above road_edge_start */
     cpu.A = emit_edge_bearing_at_cursor_core(cpu.X);
     cpu.Y = edge_cursor;
     hypot_min_marshal_out();              /* ...and the smaller magnitude, shifted by the hypot */
@@ -107,6 +110,7 @@ void road_edge_side(void)
    the paths that never reach a bearing — the cells come back exactly as they went in. */
 void road_edge_start(void)
 {
+    car_heading_marshal_in();             /* every bearing it emits is measured against it */
     hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     road_edge_start_core(0x06, (uint8_t)EDGE_HALF, (uint8_t)SECTION_NEAR, 0x3C, 0x07);
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
@@ -114,6 +118,7 @@ void road_edge_start(void)
 
 void road_edge_walk(void)
 {
+    car_heading_marshal_in();             /* every bearing it emits is measured against it */
     hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     edge_nearest_marshal_in();            /* the running minimum it keeps beating down */
     cpu.X = road_edge_walk_core(cpu.A, cpu.X, (uint8_t)SECTION_MID, 0x12, 0x14);
@@ -125,6 +130,7 @@ void build_track_geometry(void)
 {
     /* the top of the road pass, and the same IN/OUT pair as the two walks below it: whether any
        point reaches a bearing at all depends on the track, so the cells are carried through. */
+    car_heading_marshal_in();             /* every bearing it emits is measured against it */
     hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     edge_nearest_marshal_in();            /* it ARMS the high lane and keeps the low one */
     build_track_geometry_core(0x06, 0x2E);
@@ -871,6 +877,9 @@ void car_gap(void)
 
 void car_gap_tail(void)
 {
+    /* consumer of two slots of the relocated distance array — marshal exactly those two */
+    car_distance_marshal_in_one(cpu.X);
+    car_distance_marshal_in_one(cpu.Y);
     GapTail e = car_gap_tail_core(cpu.X, cpu.Y, cpu.C);   /* entry C is a genuine input */
     cpu.A = e.a; cpu.N = e.n; cpu.C = e.c;                /* V, Z dead at every caller */
 }
@@ -883,6 +892,8 @@ void stage_nearby_car(void)
 
     /* $28F9 TAX; $28FA LDY #$17; $28FC SEC; $28FD car_gap_tail — X=slot, Y=$17, C=1 in.  The
        car_gap_tail shim leaves cpu.X/cpu.Y untouched, so X is still slot at the tail call. */
+    car_distance_marshal_in_one(slot);         /* the two slots this gap is measured between */
+    car_distance_marshal_in_one(0x17u);
     GapTail g = car_gap_tail_core(slot, 0x17u, 1u);
 
     StageNearbyCar s = stage_nearby_car_core(g.a, g.c, slot);
@@ -901,6 +912,7 @@ void stage_nearby_car(void)
    so the shim is a bare call — all state lives in mem[]. */
 void check_car_pair(void)
 {
+    car_distance_marshal_in();                 /* it walks every pair in car_order: the whole array */
     check_car_pair_core();
 }
 
