@@ -510,7 +510,7 @@ EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY);
 void update_grip_limits_core(void);
 uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y);
 int draw_starting_lights_core(void);
-void draw_corner_marker_core(uint8_t offLo, uint8_t offHi, uint16_t edgeX, uint8_t edgeY, CornerMarker *out);
+void draw_corner_marker_core(uint16_t offset, uint16_t edgeX, uint8_t edgeY, CornerMarker *out);
 void mirrors_update_setup_core(uint8_t slotFlag, uint8_t objWidth, uint8_t bearingHi, uint8_t carHeadingHi, MirrorSetup *out);
 void dial_needle_angle_core(uint8_t engineRevs, NeedleDial *out);
 void driver_name_address_core(uint8_t index, NamePtr *out);

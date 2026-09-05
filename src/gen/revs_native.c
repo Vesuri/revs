@@ -2466,10 +2466,10 @@ static void append_corner_marker(uint8_t flags, unsigned offset)
    the edge point's azimuth; the summed high byte off the ends of $18..$E8 (the near/far wrap)
    selects DRAW, anything inside it SKIP.  On the draw path plot_x is that azimuth's top byte
    re-centred on $50, and proj_width is |high byte of the offset << 3|. */
-void draw_corner_marker_core(uint8_t offLo, uint8_t offHi, uint16_t edgeX,
+void draw_corner_marker_core(uint16_t offset, uint16_t edgeX,
                              uint8_t edgeY, CornerMarker *out)
 {
-    uint16_t q = (uint16_t)(((offHi << 8) | offLo) << 1);   /* $1B31 ASL / $1B32 ROL — doubled */
+    uint16_t q = (uint16_t)(offset << 1);                   /* $1B31 ASL / $1B32 ROL — doubled */
     uint16_t p = (uint16_t)(q + edgeX);                     /* $1B36-$1B3F — 16-bit add */
     uint8_t  phi = (uint8_t)(p >> 8);
 

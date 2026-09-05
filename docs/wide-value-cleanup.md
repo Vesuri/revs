@@ -2013,3 +2013,29 @@ code:
 The remaining rows it prints are `produces` — a shim that writes and publishes a **scalar** it never
 reads (`build_player_car`/`car_heading`, the three `hypot_max`/`hypot_min`/`bearing` producers). That
 pattern is legitimate exactly because there is no partially-written array to import first.
+
+## `MARKER_OFF` $62B7/$62BA — DECLINED on measurement, and the reason is a different one
+
+The last base the refs-per-element table scored as eligible (3 elements / 8 refs / 2.7). Reading the
+code, **mechanism (A) is already complete here and there is no byte-lane arithmetic left to remove**:
+`append_corner_marker` takes the offset as one `unsigned` and splits it only to store, and
+`draw_corner_markers` recombines it immediately. What a relocation would remove is the four `mem[]`
+byte accesses per marker — **at most three markers a frame** — and what it would add is a 3-element
+marshal at four shims in the closure (`build_track_geometry` 1×, `road_edge_walk` 2×,
+`emit_edge_width_offset`, `draw_corner_markers` 1× a frame). About fifteen word operations to save
+about twelve byte ones: a wash, and a wash is not worth a marshal boundary.
+
+⭐ **The general point: score a base by the arithmetic still in it, not only by its element count.**
+A base whose producer and consumer already hold the value wide has nothing left for mechanism (B) to
+compress — the mirror bytes are pure marshalling, and moving them just moves the marshal.
+
+Taken instead, for free: `draw_corner_marker_core` now takes `uint16_t offset` rather than
+`uint8_t offLo, uint8_t offHi`, so the last two-byte parameter split on this path is gone.
+
+### ⇒ Tier 3 (mechanism (B)) is COMPLETE as far as the measured metric allows
+
+`CAR_ANGLE`, `CAR_DISTANCE`, `MODEL_STATE` and `VIEW_ORIGIN` are relocated. `SECTION_COORD`,
+`EDGE_OPP_X` and `OBJECT_BEARING` are declined on refs-per-element and hold 72 of the remaining 94
+references; `MARKER_OFF` is declined because its arithmetic is already wide. **The next decision is
+the tables' mechanism, and it is the user's** (see §REFS PER ELEMENT, the three options). The
+end-of-tier FPS reading against the 4.51 baseline is owed before that decision.

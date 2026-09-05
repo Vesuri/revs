@@ -887,8 +887,9 @@ void draw_corner_markers(void)
         uint16_t edgeX = (uint16_t)(mem[EDGE_X_LO_TBL + idx]
                                     | (mem[EDGE_X_HI_TBL + idx] << 8));
         CornerMarker m;
-        draw_corner_marker_core(mem[MARKER_OFF_LO + y], mem[MARKER_OFF_HI + y],
-                                edgeX, mem[EDGE_Y_TBL + idx], &m);
+        uint16_t offset = (uint16_t)(mem[MARKER_OFF_LO + y]
+                                     | ((unsigned)mem[MARKER_OFF_HI + y] << 8));
+        draw_corner_marker_core(offset, edgeX, mem[EDGE_Y_TBL + idx], &m);
 
         math_lo = m.mathLo;                                 /* $74/$75/$76 — set on both paths */
         math_hi = m.mathHi;
