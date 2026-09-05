@@ -3753,7 +3753,17 @@ static int test_road_transforms(void)
             fill_random(pre);
             sectionByte = random_section_byte();
             origin      = (xs() & 1) ? 0x06u : 0x00u;
-            if (xs() % 8u == 0) origin = (uint8_t)xs();   /* and a few off the two rows */
+            /* ⭐ THE ORIGIN IS ONE OF EXACTLY TWO ROWS, and that is structural, not incidental:
+               view_origin holds two origins six bytes apart (origin 0 the camera, origin 6 the
+               road sign) and all eleven production call sites pass either 0 or VIEW_ORIGIN_STRIDE
+               — build_road_sign the 6, everything else the 0.  This fixture used to draw a fully
+               random origin one case in eight, which merely read PAST the twelve bytes into
+               $63xx in both models; with view_origin relocated to view_origin_16[9] the same case
+               is out of bounds.  Dropping the arm narrows the fixture to the domain the engine
+               actually has — the same call as constraining road_span_plot's random pointer to
+               the screen buffers (docs/validation-harness.md).  The draw is kept so the shared
+               PRNG stream stays aligned. */
+            (void)xs();
             if (origin == 0x06u) sixth++;
             shaped[shape]++;
 
@@ -3869,7 +3879,7 @@ static int test_road_transforms(void)
             fill_random(pre);
             sectionByte = random_section_byte();
             origin      = (xs() & 1) ? 0x06u : 0x00u;
-            if (xs() % 8u == 0) origin = (uint8_t)xs();
+            (void)xs();          /* the off-domain arm is gone — see bearing_to_section above */
             if (origin == 0x06u) sixth++;
             shaped[shape]++;
 

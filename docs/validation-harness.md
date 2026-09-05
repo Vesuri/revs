@@ -642,3 +642,22 @@ the vector needed marshals because a `_core` two or three levels down nudges it
 (`update_grip_limits`, `update_camera_and_drive_state`, `begin_spin`, `begin_scrape` — all via
 `begin_spin_from_a_core`'s $4DD4 `SEC`/`ROR`). Derive the set from the call graph, then let the
 poison prove it.
+
+### SEVENTEENTH — a relocation's marshal closure comes from `objdump`, and it stops at the next shim
+
+Two campaign steps in a row, a marshal closure derived by **reading the C** was wrong, and a missing
+marshal is invisible to everything but a poisoned differential: MODEL_STATE needed marshals in four
+shims that never mention the vector (a `_core` three levels down nudges it), and VIEW_ORIGIN's
+regex-derived list matched function names inside **comments**, invented edges, and then omitted three
+real shims — `make validate` failed with `road_edge_start 165/200 mismatch`.
+
+`tools/native_closure.py` takes the closure from the compiler's own relocations on the built objects.
+⭐ It must **cut at shim boundaries**: a shim reaching the global only through another shim is already
+bracketed, because the inner shim marshals for itself. Without the cut it accuses `process_car_contact`
+(which tail-calls `begin_scrape()` at $1C18) of a gap that does not exist.
+
+`tools/marshal_audit.py` runs that over every relocated base and diffs it against the marshals actually
+written. ⚠ It reads the marshal calls **textually**, because within a translation unit the compiler may
+inline one and leave no relocation to find. It found a real gap in committed code — the `race_main_loop`
+driver imported one base of five, and its core calls several `_core` functions directly, crossing no
+shim. **A native DRIVER is the one shim whose closure is the whole engine; audit it explicitly.**

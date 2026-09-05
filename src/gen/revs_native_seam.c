@@ -12,6 +12,19 @@ void view_paint_lines(void)
 
 void race_main_loop(void)
 {
+    /* ⭐ THE DRIVER IMPORTS EVERY RELOCATED VALUE ITS CORE REACHES WITHOUT AN INNER SHIM.
+       race_main_loop_core calls a good many `_core` functions DIRECTLY — read_driving_controls_core,
+       check_crash's and mirrors_update's bodies, draw_track_object_core — so those calls never cross
+       a 6502-ABI shim and never pick up that shim's marshal-in.  Everything the engine set up in
+       mem[] before entering the race would otherwise be read from a zero-initialised global on the
+       first frame.  Once per race, so the cost is nothing; found by tools/marshal_audit.py.
+       No marshal-out: every inner shim that WRITES one of these publishes it back itself, and this
+       loop does not return by any path that a publish here would fix. */
+    view_origin_marshal_in();
+    model_state_marshal_in();
+    car_angle_marshal_in();
+    car_heading_marshal_in();
+    edge_nearest_marshal_in();
     hw_init();
 
     arg_a(0x00);
@@ -20,6 +33,7 @@ void race_main_loop(void)
     view_paint_lines();
 
     race_main_loop_core(state_flags_bit6() ? RESTART_NONE : RESTART_FULL);
+    view_origin_marshal_out();
 }
 
 void clamp_near_edge_cursor(void)
@@ -71,6 +85,7 @@ void emit_edge_bearing(void)
 
 void emit_edge_bearing_at_cursor(void)
 {
+    view_origin_marshal_in();
     /* the fallen-into emit_edge_bearing emits at edge_cursor, so Y exits = edge_cursor; A is the
        point's distance high byte. */
     car_heading_marshal_in();             /* the heading the bearing inside it is measured against */
@@ -111,6 +126,7 @@ void road_edge_side(void)
    the paths that never reach a bearing — the cells come back exactly as they went in. */
 void road_edge_start(void)
 {
+    view_origin_marshal_in();   /* read-only: view_delta reads the camera */
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
     car_heading_marshal_in();             /* every bearing it emits is measured against it */
     hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
@@ -120,6 +136,7 @@ void road_edge_start(void)
 
 void road_edge_walk(void)
 {
+    view_origin_marshal_in();   /* read-only: view_delta reads the camera */
     car_heading_marshal_in();             /* every bearing it emits is measured against it */
     hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     edge_nearest_marshal_in();            /* the running minimum it keeps beating down */
@@ -130,6 +147,7 @@ void road_edge_walk(void)
 
 void build_track_geometry(void)
 {
+    view_origin_marshal_in();   /* read-only: view_delta reads the camera */
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
     /* the top of the road pass, and the same IN/OUT pair as the two walks below it: whether any
        point reaches a bearing at all depends on the track, so the cells are carried through. */
@@ -151,6 +169,7 @@ void draw_road(void)
 
 void apply_driving_model(void)
 {
+    view_origin_marshal_in();
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
     car_heading_marshal_in();             /* it reads the heading in, as the car's position... */
     car_angle_marshal_in();               /* element 2 (the wheel) comes in; 0/1 go out below */
@@ -160,6 +179,7 @@ void apply_driving_model(void)
                                              advances it — core-to-core, so publish it here */
     model_accum_entry_marshal_out();       /* $46AE's value back into mem[$38/$39] */
     model_state_marshal_out();    /* ...and publish it back to mem[] */
+    view_origin_marshal_out();
 }
 
 void draw_track_object(void)
@@ -191,6 +211,7 @@ void copy_dash_data(void)
 
 void bearing_to_section_from(void)
 {
+    view_origin_marshal_in();
     bearing_to_section_core(cpu.X, cpu.Y);
     hypot_max_marshal_out();              /* the sorted LARGER magnitude — a by-product */
     hypot_min_marshal_out();              /* ...and the SMALLER: this sort produces both */
@@ -200,6 +221,7 @@ void bearing_to_section_from(void)
 
 void project_point_from(void)
 {
+    view_origin_marshal_in();
     /* The 6502 returned TWO answers in flags, and the transliterated callers read both: carry is
        the clip decision ($23ff BCS), and N is "behind the camera" — bit 7 of the surviving line,
        which the exit SBC left in N ($2401 BPL, reached only when carry is clear).  A caller that
@@ -335,12 +357,14 @@ void rotate_pair_a_by_steer(void)
 
 void integrate_car_position(void)
 {
+    view_origin_marshal_in();
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
     car_heading_marshal_in();
     AddFlags f = integrate_car_position_core();  /* ends in the heading add (car_heading += step) */
     car_heading_marshal_out();           /* ...and this routine IS that add: publish it */
     cpu.Y = 0xFEu; cpu.X = 0xFFu;                /* $4922/$4923 two DEYs -> $FE; $4924 DEX -> $FF */
     cpu.A = f.hi; cpu.C = f.carry; cpu.V = f.overflow; cpu.N = f.neg; cpu.Z = f.zero;
+    view_origin_marshal_out();
 }
 
 void integrate_state_rates(void)
@@ -446,6 +470,7 @@ void update_engine_revs(void)
 
 void update_camera_and_drive_state(void)
 {
+    view_origin_marshal_in();
     model_state_marshal_in();             /* its spin arm nudges element 2, the heading step */
     car_heading_marshal_in();
     CameraExit e = update_camera_and_drive_state_core();
@@ -453,13 +478,16 @@ void update_camera_and_drive_state(void)
     cpu.N = e.acc.neg; cpu.Z = e.acc.zero;
     cpu.X = e.x; cpu.Y = e.y;
     model_state_marshal_out();
+    view_origin_marshal_out();
 }
 
 void build_sign_origin(void)
 {
+    view_origin_marshal_in();
     SignOriginExit e = build_sign_origin_core(cpu.A, cpu.Y);
     cpu.A = e.a; cpu.Y = e.y;
     cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
+    view_origin_marshal_out();
 }
 
 void write_object_slot(void)
@@ -915,6 +943,7 @@ void car_gap_tail(void)
 
 void stage_nearby_car(void)
 {
+    view_origin_marshal_in();
     uint8_t slot = mem[CAR_ORDER + cpu.X];                /* $28F2 LDA $013C,X */
     saved_slot_index = slot;                              /* $28F5 STA $45 */
     shared_counter_42 = slot;                             /* $28F7 STA $42 */
@@ -1036,6 +1065,7 @@ void check_crash(void)
 
 void build_player_car(void)
 {
+    view_origin_marshal_in();
     /* ⭐ NO EXIT ABI TO RECONSTRUCT, and that is an argument, not an omission.  Its ONE caller
        (race_main_loop's RESTART_LATE arm, $16F6) does `LDA #0` next, so A and every flag are
        dead there; X and Y are dead too — the next reader is $0B77, which loads both itself.
@@ -1047,6 +1077,7 @@ void build_player_car(void)
     build_player_car_core();
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
     car_heading_marshal_out();           /* it rebuilds the heading from scratch */
+    view_origin_marshal_out();
 }
 
 void step_delta_halve(void)
@@ -1072,12 +1103,14 @@ void step_delta_halve(void)
    fixture is result-only. */
 void project_object_slot(void)
 {
+    view_origin_marshal_in();
     project_object_slot_core(cpu.X, cpu.A);
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
 }
 
 void project_object_coord(void)
 {
+    view_origin_marshal_in();
     project_object_slot_core(0xFDu, cpu.A);      /* $2A5D LDX #$FD — the object_coord pair */
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
 }

@@ -1214,13 +1214,13 @@ row.
 |---|---|---|---|
 | `MODEL_STATE` $62D0/$62E0 | **23 fn / 84 ref** | **1 fn / 1 ref, and it is a READ** | ✅ **(B) DONE** — `model_state_16[15]`, see below.  ⚠ the "5 fn / 7 ref" first reported here was a SCORING ERROR, see below |
 | `CAR_ANGLE` $62A0/$62A3 | 12 fn / 32 ref | **none** | ✅ **(B) DONE** — `car_angle_16[3]`, see below |
-| `VIEW_ORIGIN` $6280 | 5 fn / 14 ref | **none** | ✅ eligible; `integrate_car_position_core` and `build_sign_origin_core` hold 4 each |
+| `VIEW_ORIGIN` $6280 | 5 fn / 14 ref | **none** | ✅ **(B) DONE** — `view_origin_16[9]`, see below |
 | `MARKER_OFF` $62B7/$62BA | 2 fn / 6 ref | **none** | ✅ eligible, small — `append_corner_marker` / `draw_corner_markers` |
-| `OBJECT_BEARING` $0380/$0398 | 6 fn / 6 ref | **none** | ✅ eligible but **one ref per function** — score it before writing anything; likely a decline |
-| `SECTION_COORD` $0900/$0A00 | **10 fn / 38 ref** | **none** | ✅ eligible — the largest of the re-scored four |
+| `OBJECT_BEARING` $0380/$0398 | 6 fn / 6 ref | **none** | ❌ **DECLINED** — 0.42 refs per element, see §REFS PER ELEMENT |
+| `SECTION_COORD` $0900/$0A00 | **10 fn / 38 ref** | **none** | ❌ **DECLINED, MEASURED** — 256 elements, 0.17 refs per element, a ~15× net loss |
 | `CAR_DISTANCE` $08D0/$08E8 | 4 fn / 16 ref | **none** | ✅ **(B) DONE** — `car_distance_16[24]`, see below |
 | `OBJECT_COORD` $09FD/$0AFD | 10 fn / 27 ref | **none** | ✅ eligible — 24-bit binary → `uint32_t`, `add.l`/`sub.l`/`cmp.l` only |
-| `EDGE_OPP_X` $5E50/$5EA0 | 7 fn / 12 ref | **none** | ✅ eligible, small — ~1.7 refs per function, score before writing |
+| `EDGE_OPP_X` $5E50/$5EA0 | 7 fn / 12 ref | **none** | ❌ **DECLINED** — 80 elements, 0.24 refs per element |
 
 **Step 0 is DONE** (`af19737`): the scanner resolves a twin's own `#define`s, calibrated against
 $08D0's ground truth (ten grep hits = one define + one comment + eight real refs; the tool reports
@@ -1875,3 +1875,141 @@ Six sabotages, six distinct first-diff signatures, every one detected:
 | S4 | `integrate_state_rates_core` drops the 24-bit fraction byte | `integrate_state_rates` |
 | S5 | `slip_magnitude_core` byteswaps the element | `slip_magnitude` |
 | S6 | `ms_set_lo` clobbers the high lane | `begin_spin` |
+
+## ⭐⭐ THE METRIC THAT DECIDES A (B) RELOCATION IS **REFS PER ELEMENT**, not ref count
+
+`SECTION_COORD` ($0900/$0A00) is the largest remaining base by references — 10 functions, 43 refs —
+and it was next in the planned order. **Measured, it is a ~15× net LOSS**, and the measurement is
+what produced the metric.
+
+A whole-array marshal costs `2N` byte reads plus `N` word writes on entry and the same on exit, at
+**every shim in the closure**. What it buys is the byte-lane arithmetic removed at each *reference*.
+So the payoff ratio is
+
+> **refs per element**, weighted by how often each shim is entered
+
+and the ref count on its own says nothing: a 256-entry table with 43 refs pays a 512-byte marshal to
+save 43 lane pairs. Direct instrumentation of a driving frame (`STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`)
+put it at **3.7 shim entries per frame against 98 `view_delta` reads per frame** — the marshal moves
+~1900 bytes to save ~98 lane pairs.
+
+| Base | elements | refs | refs/element | verdict |
+|---|---|---|---|---|
+| `MODEL_STATE` $62D0/$62E0 | 15 | 84 | **5.6** | ✅ done |
+| `VIEW_ORIGIN` $6280/$6283 | 6 | 14 | **4.7** (2.3 counting the 9 array slots) | ✅ done |
+| `MARKER_OFF` $62B7/$62BA | 3 | 8 | **2.7** | ✅ eligible — next |
+| `CAR_DISTANCE` $08D0/$08E8 | 24 | 30 | 1.3 | ✅ done, but **only because it marshals ONE SLOT** (`car_distance_marshal_in_one`) — a per-slot marshal is not scored by this table |
+| `OBJECT_BEARING` $0380/$0398 | 24 | 10 | **0.42** | ❌ declined |
+| `EDGE_OPP_X` $5E50/$5EA0 | 80 | 19 | **0.24** | ❌ declined |
+| `SECTION_COORD` $0900/$0A00 | 256 | 43 | **0.17** | ❌ declined — measured, see above |
+
+⭐ **A large TABLE has no cheap marshal boundary, because its readers index it arbitrarily** — there
+is no window narrower than the whole array that a shim can be shown to touch. The three declined
+bases hold **72 of the remaining 94 refs**, so mechanism (B) as practised cannot finish the tier and
+the tables need a different mechanism. The options, none yet chosen:
+
+1. **array-is-home, `mem[]` a write-through mirror** — no marshal at all, but `make validate`'s
+   oracle writes `mem[]` directly, so the gate becomes `determinism` rather than `validate`;
+2. **mechanism (A) at each site** — keep the bytes in `mem[]` and express every reference as one
+   wide read/write through a named accessor. Removes the lane arithmetic at **zero** marshal cost
+   and keeps every gate; does not create the adjacency, so the win is smaller per site;
+3. **narrow per-shim windows** — fails on the indexing, as above.
+
+**This is an architecture/fidelity decision and belongs to the user, not to the campaign.**
+
+## `VIEW_ORIGIN` $6280/$6283 → `view_origin_16[9]` — the camera, and an extent that is not 3
+
+The view origin is what every bearing and every projection in the frame is measured from, and there
+are **two** of them six bytes apart: origin 0 is the camera, origin 6 the road sign's own viewpoint
+(`build_sign_origin` derives it). Each holds three 16-bit components.
+
+⚠ **The extent is $6280..$628B — six elements, not three.** The stride-6 second origin is part of the
+base, and scoring only $6280..$6282 would have missed `build_sign_origin` and `build_road_sign`
+entirely. Third instance of *an extent is a claim, and a scan's WINDOW is the measurement*.
+
+**Indexed by the 6502's own byte offset.** `view_origin_16[origin + component]` with `origin` ∈ {0, 6}
+is exactly what the addressing modes write, so every converted site kept its index expression
+verbatim and nothing had to be remapped. The price is that elements 3..5 are unused and
+**unmarshalled, and must stay that way**: their "low" bytes $6283..$6285 *are* elements 0..2's high
+bytes, so marshalling them would alias two values onto the same cells. Three wasted words buy a
+mechanical substitution.
+
+⚠ `view_origin_frac` ($62B1) stays in `mem[]`. Components 0 and 2 of origin 0 carry a further 8-bit
+fraction there, so a camera component is the top 16 bits of `(element << 8) | frac`, and
+`integrate_car_position` advances it at 24-bit precision.
+
+### What it removed
+
+| Routine | before | after |
+|---|---|---|
+| `view_delta` | two byte loads + a shift + an OR per call, 98 calls a driving frame | one word load |
+| `integrate_car_position_core` | three-lane 24-bit add spelled as lane/carry steps | `uint32_t` add, one word store + the fraction byte |
+| `update_camera_and_drive_state_core` | a four-term add with **three PHP-saved carries** folded into the high byte | one truncating 16-bit `+` of four values |
+| `build_sign_origin_core` | camera component read as two lanes, difference stored as two | one word read, one word store |
+| `build_player_car_core` | component-wise lane copy of the whole world coordinate | word store per axis (the source is still `SECTION_COORD`, which is not relocated) |
+
+The three-PHP chain at $45E1-$45FB is the clearest case in the campaign: the 6502 adds three terms
+into the low byte, saves each carry with a `PHP`, folds all three into the high byte and then
+**discards** the high byte's own carry-outs with the `PLP`s. That is one truncating 16-bit add, and
+D = 0 on this path (`docs/static-map.md` §Decimal mode).
+
+### The fixture domain it narrowed
+
+`bearing_to_section_from` and `project_point_from` drew a fully random origin one case in eight. In
+`mem[]` that merely read past the twelve bytes into $63xx **in both models**, so it compared equal;
+with the array relocated the same case is out of bounds. All eleven production call sites pass
+either 0 or `VIEW_ORIGIN_STRIDE`, so the arm was dropped and the draw kept (`(void)xs();`) to hold
+the shared PRNG stream aligned. Third instance of *a fixture's random argument is a domain claim*,
+and a relocation is what converts a silent domain violation into a crash.
+
+### Sabotages (six, six distinct signatures, all FAIL)
+
+| # | defect | signature |
+|---|---|---|
+| S1 | `marshal_in` swaps the lanes | 7 fixtures, `bearing_to_section_from` 4000/4000 |
+| S2 | `marshal_out` publishes 5 slots of 6 | only the two sign fixtures: `build_sign_origin` 1010/3000 |
+| S3 | `road_edge_start`'s import dropped | `build_track_geometry` 399/400 + `road_edge_start` 165/200 |
+| S4 | the sign origin written to the camera slot | `build_sign_origin` 3000/3000 alone |
+| S5 | the 24-bit split shifts by 7 | `integrate_car_position` 2000/2000 alone |
+| S6 | `view_delta` ignores the component | the two projection fixtures only |
+
+## ⭐⭐ DERIVE THE MARSHAL CLOSURE FROM `objdump -dr`, NEVER FROM READING THE C
+
+Two campaigns in a row a hand- or regex-derived closure was wrong, and a missing marshal is a silent
+wrong answer that only a poisoned differential catches:
+
+- **MODEL_STATE**: four shims that never mention the vector needed marshals because a `_core` two or
+  three levels down nudged it (all via `begin_spin_from_a_core`).
+- **VIEW_ORIGIN**: a source regex matched function names inside **comments** and invented edges; the
+  hand-checked list it produced then omitted three real shims (`build_track_geometry`,
+  `road_edge_start`, `road_edge_walk`) and `make validate` failed with
+  `road_edge_start 165/200 mismatch`.
+
+`tools/native_closure.py` answers it from the compiler's own relocations on the built objects — it
+cannot invent an edge that is not a call, nor miss one that is.
+
+⭐ **Cut the closure at shim boundaries.** A shim that reaches the global only by calling *another*
+shim is already bracketed, because the inner shim marshals for itself. Without that cut the tool
+accuses `process_car_contact` and `race_main_loop` of missing `model_state` marshals; both reach it
+through `begin_scrape()`, the shim, which `process_car_contact` tail-calls at $1C18.
+
+⚠ **Blind spot:** it sees symbol references, so it cannot see a write that reaches the mirrored
+`mem[]` range through a **plot pointer** rather than a symbol.
+
+### `tools/marshal_audit.py` — the whole campaign, checked in one command
+
+`python3 tools/marshal_audit.py` runs that closure for **every** relocated base and diffs it against
+the marshal calls actually present in each shim's body (read textually, because within a translation
+unit the compiler may inline a marshal and leave no relocation). It found one real gap in committed
+code:
+
+> **`race_main_loop` imported `view_origin` and nothing else.** Its core calls a good many `_core`
+> functions **directly** — `read_driving_controls_core`, `check_crash`'s and `mirrors_update`'s
+> bodies, `draw_track_object_core` — so those calls cross no 6502-ABI shim and pick up no marshal-in.
+> Everything the engine set up in `mem[]` before the race would be read from a zero-initialised
+> global on the first frame. Fixed by importing `model_state`, `car_angle`, `car_heading` and
+> `edge_nearest` at the driver's entry; once per race, so the cost is nothing.
+
+The remaining rows it prints are `produces` — a shim that writes and publishes a **scalar** it never
+reads (`build_player_car`/`car_heading`, the three `hypot_max`/`hypot_min`/`bearing` producers). That
+pattern is legitimate exactly because there is no partially-written array to import first.

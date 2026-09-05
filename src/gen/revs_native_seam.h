@@ -418,6 +418,21 @@ static inline void    ms_set_lo(uint8_t i, uint8_t v)
 static inline void    ms_set_hi(uint8_t i, uint8_t v)
 { model_state_16[i] = (uint16_t)((model_state_16[i] & 0x00FFu) | ((uint16_t)v << 8)); }
 
+/* ⭐ THE VIEW ORIGIN, relocated out of the $6280/$6283 plane split.  Every bearing and every
+   projection in the frame is measured from it, and there are TWO of them: origin 0 is the camera,
+   origin 6 the road sign's own viewpoint (build_sign_origin derives it).  Each holds three
+   16-bit components.
+   ⭐ INDEXED BY THE 6502'S OWN BYTE OFFSET — `origin + component`, exactly as the addressing
+   modes write it — so every converted site keeps its index expression verbatim and no site has to
+   remap.  That leaves elements 3..5 UNUSED and unmarshalled, and they must stay that way: their
+   "low" bytes ($6283..$6285) are elements 0..2's HIGH bytes, so marshalling them would alias two
+   different values onto the same cells.  Three wasted words buy a mechanical substitution.
+   ⚠ Components 0 and 2 of origin 0 carry a further 8-bit fraction in mem[VIEW_ORIGIN_FRAC]
+   ($62B1), which stays in mem[]: a camera component is the top 16 bits of (element << 8) | frac. */
+extern uint16_t view_origin_16[9];
+void view_origin_marshal_in(void);
+void view_origin_marshal_out(void);
+
 extern uint16_t car_distance_16[24];
 void car_distance_marshal_in_one(uint8_t x);
 void car_distance_marshal_out_one(uint8_t x);

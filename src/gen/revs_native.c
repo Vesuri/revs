@@ -3841,6 +3841,34 @@ void model_state_marshal_out(void)
     }
 }
 
+/* THE VIEW ORIGIN'S two rows.  view_origin_16 is indexed by the 6502's byte offset, so the live
+   slots are 0..2 (the camera) and 6..8 (the road sign); 3..5 would alias 0..2's high bytes and are
+   deliberately skipped.  See the banner in revs_native_seam.h. */
+uint16_t view_origin_16[9];
+
+#define VIEW_ORIGIN_LO_BASE  0x6280u
+#define VIEW_ORIGIN_HI_BASE  0x6283u
+
+static const uint8_t g_viewOriginSlots[6] = { 0u, 1u, 2u, 6u, 7u, 8u };
+
+void view_origin_marshal_in(void)
+{
+    for (unsigned k = 0; k < 6; k++) {
+        unsigned j = g_viewOriginSlots[k];
+        view_origin_16[j] = (uint16_t)(mem[VIEW_ORIGIN_LO_BASE + j]
+                                       | ((unsigned)mem[VIEW_ORIGIN_HI_BASE + j] << 8));
+    }
+}
+
+void view_origin_marshal_out(void)
+{
+    for (unsigned k = 0; k < 6; k++) {
+        unsigned j = g_viewOriginSlots[k];
+        mem[VIEW_ORIGIN_LO_BASE + j] = (uint8_t)view_origin_16[j];
+        mem[VIEW_ORIGIN_HI_BASE + j] = (uint8_t)(view_origin_16[j] >> 8);
+    }
+}
+
 
 /* ===========================================================================
    $46A1  apply_driving_model — THE PLAYER CAR'S PHYSICS  (twin #6)
@@ -4440,8 +4468,7 @@ static ViewDelta view_delta(uint8_t sectionByte, unsigned component, uint8_t ori
 {
     int section = (int)mem[SECTION_LO_TBL + sectionByte + component]
                 | ((int)mem[SECTION_HI_TBL + sectionByte + component] << 8);
-    int viewpt  = (int)mem[VIEW_ORIGIN_LO + origin + component]
-                | ((int)mem[VIEW_ORIGIN_HI + origin + component] << 8);
+    int viewpt  = (int)view_origin_16[origin + component];   /* one word, not two lanes */
     uint16_t  diff = (uint16_t)(section - viewpt);
     ViewDelta d;
 
@@ -7166,13 +7193,10 @@ AddFlags integrate_car_position_core(void)
 
         /* $490A-$491F — add it into the 24-bit view component (FRAC:LO:HI); the top carry-out is
            dead (the loop's exit flags are overwritten by the heading add below). */
-        sum = (((uint32_t)mem[VIEW_ORIGIN_HI + comp] << 16)
-             | ((uint32_t)mem[VIEW_ORIGIN_LO + comp] << 8)
-             |  mem[VIEW_ORIGIN_FRAC + comp])
+        sum = (((uint32_t)view_origin_16[comp] << 8) | mem[VIEW_ORIGIN_FRAC + comp])
             + doubled + (ext >> 7);
-        mem[VIEW_ORIGIN_FRAC + comp] = (uint8_t)sum;
-        mem[VIEW_ORIGIN_LO + comp]   = (uint8_t)(sum >> 8);
-        mem[VIEW_ORIGIN_HI + comp]   = (uint8_t)(sum >> 16);
+        mem[VIEW_ORIGIN_FRAC + comp] = (uint8_t)sum;        /* the fraction stays in mem[] */
+        view_origin_16[comp]         = (uint16_t)(sum >> 8);
     }
     /* $4922/$4923's two DEYs leave Y = $FE and $4924's DEX leaves X = $FF (replayed at the shim). */
 
@@ -8600,18 +8624,15 @@ yaw:
         uint8_t scaledLow = scaled;                    /* the gradient-scaled car_state_1 low byte */
         uint8_t secLo = mem[SECTION_CRD_LO + 1 + secCursor];
         uint8_t secHi = mem[SECTION_CRD_HI + 1 + secCursor];
-        unsigned t1 = (unsigned)scaledLow + secLo;     /* $45E1-$45E2 */
-        uint8_t  carryA = (uint8_t)(t1 > 0xFFu);       /* $45E5 PHP (a) */
-        unsigned t2 = (unsigned)(uint8_t)t1 + 0xACu;   /* $45E6-$45E7 — nominal eye height */
-        uint8_t  carryB = (uint8_t)(t2 > 0xFFu);       /* $45E9 PHP (b) */
-        unsigned t3 = (unsigned)(uint8_t)t2 + shared_temp_76;   /* $45EA-$45EB */
-        uint8_t  carry76 = (uint8_t)(t3 > 0xFFu);
-        mem[VIEW_ORIGIN_LO + 1] = (uint8_t)t3;         /* $45ED */
-        /* $45EF-$45FB — the high byte: secHi + shared_temp_77 + the three saved low-byte
-           carries.  $45EF's and $45F6's own carry-outs are discarded by the PLPs (they are
-           bits past the 16-bit result), so the whole high byte is one truncating sum. */
-        mem[VIEW_ORIGIN_HI + 1] =
-            (uint8_t)(secHi + shared_temp_77 + carry76 + carryB + carryA);  /* $45FB */
+        /* $45E1-$45FB — the 6502 adds three terms into the low byte, saves each carry with a
+           PHP and folds all three into the high byte, whose own carry-outs the PLPs discard.
+           That is ONE truncating 16-bit add of four values, and it is exactly what this is:
+           the section's height, the gradient-scaled car state, the nominal eye height $AC and
+           the term parked in shared_temp_77:shared_temp_76.  (D=0 on this path —
+           static-map.md §Decimal mode.) */
+        uint16_t section = (uint16_t)(secLo | ((unsigned)secHi << 8));
+        uint16_t parked  = (uint16_t)(shared_temp_76 | ((unsigned)shared_temp_77 << 8));
+        view_origin_16[1] = (uint16_t)(section + scaledLow + 0x00ACu + parked);
     }
 
     /* $45FE-$460C — car_speed_scaled = road_speed x ($21/256 + 2).  The final add's A/N/V/Z/C
@@ -8818,13 +8839,11 @@ SignOriginExit build_sign_origin_core(uint8_t offset, uint8_t shift)
     component = shared_temp_77;
     shared_temp_77 = (uint8_t)(component - 1u);
 
-    uint16_t wm   = (uint16_t)(((uint16_t)mem[VIEW_ORIGIN_HI + component] << 8) |
-                               mem[VIEW_ORIGIN_LO + component]);
+    uint16_t wm   = view_origin_16[component];              /* the camera component, one word */
     uint16_t ws   = (uint16_t)(((uint16_t)math_hi << 8) | math_lo);
     uint16_t diff = (uint16_t)(wm - ws);
-    mem[VIEW_ORIGIN_LO + VIEW_ORIGIN_STRIDE + component] = (uint8_t)diff;
+    view_origin_16[VIEW_ORIGIN_STRIDE + component] = diff;  /* the sign's own origin, one word */
     uint8_t hiR = (uint8_t)(diff >> 8);
-    mem[VIEW_ORIGIN_HI + VIEW_ORIGIN_STRIDE + component] = hiR;
 
     uint8_t hiM = (uint8_t)(wm >> 8);
     SignOriginExit e;
@@ -9068,9 +9087,10 @@ static void build_road_sign_core(void)
    marshal-in is what makes the marshal-out faithful on the early exits: the cells come back
    holding exactly what they held on entry, which is what the 6502 left there. */
 void build_road_sign(void)      { hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
-                                  car_heading_marshal_in();
+                                  car_heading_marshal_in();  view_origin_marshal_in();
                                   build_road_sign_core();
-                                  hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out(); }
+                                  hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
+                                  view_origin_marshal_out(); }
 void store_object_flags(void)   { store_object_flags_core(cpu.Y, cpu.A); }
 
 /* ===========================================================================
@@ -12074,6 +12094,7 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
    the 6502 left untouched.  Reading them in first makes the early exit a no-op. */
 void place_car_world_coords(void)
 {
+    view_origin_marshal_in();
     hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     cpu.X = place_car_world_coords_core(cpu.X, cpu.Y);
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
@@ -13377,13 +13398,14 @@ void build_player_car_core(void)
 
     place_car_world_coords_core(slot, car_section_cursor);         /* $11D4-$11D6 */
 
-    /* $11D9-$11E8 — the camera sits where the car is.  Three components, and both tables are
-       SoA (lows at +0..+2, highs in the sibling table), so this is a component-wise copy of the
-       whole world coordinate rather than one wide value. */
-    for (int axis = 2; axis >= 0; axis--) {
-        mem[VIEW_ORIGIN_LO + axis] = mem[OBJECT_COORD_LO + axis];
-        mem[VIEW_ORIGIN_HI + axis] = mem[OBJECT_COORD_HI + axis];
-    }
+    /* $11D9-$11E8 — the camera sits where the car is: a component-wise copy of the whole world
+       coordinate.  object_coord is still a plane split in mem[] (it is elements $FD..$FF of the
+       256-entry section table, which does not pay a whole-array marshal — see
+       docs/wide-value-cleanup.md §SECTION_COORD), so the read side rebuilds each word by hand
+       and only the destination is relocated. */
+    for (int axis = 2; axis >= 0; axis--)
+        view_origin_16[axis] = (uint16_t)(mem[OBJECT_COORD_LO + axis]
+                                          | ((unsigned)mem[OBJECT_COORD_HI + axis] << 8));
 
     /* $11EA-$11F5 — three section bytes further round the ring, wrapping the $78-byte table. */
     uint8_t ahead = (uint8_t)(car_section_cursor + 0x03u);
@@ -13568,4 +13590,5 @@ void relocated_poison(void)
     for (unsigned i = 0; i < 3; i++)         car_angle_16[i]    = (uint16_t)(0xA500u + i);
     for (unsigned i = 0; i < CAR_SLOTS; i++) car_distance_16[i] = (uint16_t)(0xA5C0u + i);
     for (unsigned i = 0; i < MODEL_STATE_N; i++) model_state_16[i] = (uint16_t)(0xA5E0u + i);
+    for (unsigned i = 0; i < 9; i++)            view_origin_16[i]  = (uint16_t)(0xA5F0u + i);
 }
