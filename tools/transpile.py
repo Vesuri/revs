@@ -1288,6 +1288,16 @@ VALIDATE_FUNCS = {
     # ⚠ The `CLC`/`ADC #$38` leaves C and V live to the exit — mos_call touches no cpu field and
     # nothing below the add writes either flag — so the exit ABI is A/X/Y + N/Z/C/V, all of it.
     0x0B65,
+    # ⭐ TWIN #175 — irq1v_release ($4F23) and the enter_mos_text_mode ($4F39) it falls into.
+    # The last act of every race: hand IRQ1V back to whoever owned it, silence the User VIA T1
+    # band timer, stop all four sound channels, then switch character output back to the MOS and
+    # run text script $2E.  Taken for the marshalling — $4F23 was the last transliterated holder
+    # of the sound_stop_all shim, and race_main_loop_core (native) called it through a shim of
+    # its own.  Exit is DEAD at both callers (each does `irq1v_release(); return;`), so the
+    # fixtures are result-only.  ⚠ The $0204/$0205 writes must stay bus_write: the platform has
+    # to be told when the game releases IRQ1V (bbc_hw.cpp gates its vblank on those two bytes).
+    0x4F23,
+    0x4F39,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

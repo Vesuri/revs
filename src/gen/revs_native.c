@@ -1818,7 +1818,8 @@ void race_main_loop_core(RestartDepth depth)
        block tails it was assembled from, so the page can be MODE 7 screen memory again. */
     arg_a(0x80);
     copy_dash_data();
-    irq1v_release();
+    irq1v_release_core(cpu.Y);   /* $17BF — core-to-core; the shim's only extra is the CLI */
+    cpu.I = 0;                   /* $4F35 */
 }
 
 /* The 6502-ABI shim.  The only decision the prologue makes is how much to reset: bit 6 of
@@ -10659,6 +10660,42 @@ int draw_starting_lights_core(void)
       }
     }
     return (int)pattern;
+}
+
+/* ---------------------------------------------------------------------------
+   $4F23 / $4F39  irq1v_release + enter_mos_text_mode — THE END OF A RACE  (twin #175)
+   ---------------------------------------------------------------------------
+   The last thing every race does, and it undoes exactly what claimed the raster.  IRQ1V goes
+   back to whoever owned it before irq1v_band_schedule took it, and the User VIA's T1 interrupt
+   — the band timer that drove the five-band palette split — is disabled, so no further band
+   interrupt can arrive.  Then all four sound channels stop, and character output is handed back
+   to the MOS VDU driver for MODE 7, which is all enter_mos_text_mode does (plus text script $2E,
+   the page that greets you on the way out).
+
+   ⚠⚠ The two vector-page writes MUST stay bus_write.  They are plain RAM, but the platform has
+   to be TOLD when the game releases IRQ1V: the backend's IRQ1V shim gates itself on
+   mem[$0204]/mem[$0205] still holding $4E5C (src/platform/bbc_hw.cpp), and the transpiler routes
+   the OS vector page for the same reason.
+   ⚠ The SEI/CLI pair brackets the vector update so a band interrupt cannot land between the two
+   bytes.  On this port that is bookkeeping in cpu.I — which PHP still composes — so the shim
+   keeps it rather than dropping it.
+
+   Result-only: the exit is dead at every caller.  Both do `JSR irq1v_release` / `RTS` — $17BF in
+   the transliterated race body, and race_main_loop_core's very last statement.
+   --------------------------------------------------------------------------- */
+void enter_mos_text_mode_core(void)
+{
+    text_out_via_mos = 0x80u;              /* $4F39-$4F3B — negative: characters go to the MOS */
+    text_script_interp_core(0x2Eu);        /* $4F3D-$4F3F — run script $2E */
+}
+
+void irq1v_release_core(uint8_t ambientY)
+{
+    bus_write(0x0204, saved_irq1v);                /* $4F24-$4F2A — IRQ1V's low byte back */
+    bus_write(0x0205, mem[MEM_saved_irq1v + 1]);   /* $4F2D — ...and its high byte ($4F1E) */
+    bus_write(USRVIA_IER, 0x40u);                  /* $4F30-$4F32 — T1 off: no more band IRQs */
+    sound_stop_all_core(ambientY);                 /* $4F36 — Y flows on into its OSBYTEs */
+    enter_mos_text_mode_core();                    /* $4F39 — fall-through, not a call */
 }
 
 /* ---------------------------------------------------------------------------

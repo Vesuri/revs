@@ -80,6 +80,7 @@
 #define CAR_GRID_BASE      0x04A0u /* per-car grid base row = car index >> 1 */
 #define CAR_SEED_INDEX     0x004Au /* car-index cursor for the grid-seeding loop */
 #define USRVIA_T2CL        0xFE68u /* User VIA Timer 2 counter low — free-running entropy source */
+#define USRVIA_IER         0xFE6Eu /* User VIA interrupt enable — bit 6 is the T1 band timer */
 
 /* ---- exit-struct typedefs (moved out of revs_native.c) ---- */
 typedef struct { uint8_t a, x, y, n, z, v, c; } SlotExit;
@@ -501,6 +502,8 @@ void load_section_from_segment_core(uint8_t x, uint8_t y);
 uint8_t shift_near_edge_points_core(uint8_t topSlot, uint8_t wrapSlot, uint8_t lowTop, uint8_t nearSlots);
 MosRegs sound_osword_core(uint8_t oswordNum, uint8_t blockLow);
 MosRegs sound_envelope_core(uint8_t envBase, uint8_t savedX);
+void    enter_mos_text_mode_core(void);
+void    irq1v_release_core(uint8_t ambientY);
 uint8_t sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX);
 SlotExit engine_sound_update_core(uint8_t entryX, uint8_t entryY,
                                   unsigned entryV, unsigned entryC, int* pushedPitch);

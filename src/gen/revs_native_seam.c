@@ -1063,6 +1063,19 @@ void engine_sound_update(void)
     cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
 }
 
+/* $4F39 — result-only; the whole product is text_out_via_mos plus whatever the script paints. */
+void enter_mos_text_mode(void)
+{
+    enter_mos_text_mode_core();
+}
+
+/* $4F23 — result-only apart from the CLI at $4F35, which PHP still composes from cpu.I. */
+void irq1v_release(void)
+{
+    irq1v_release_core(cpu.Y);      /* Y is the ambient value sound_stop_all's OSBYTEs carry */
+    cpu.I = 0;                      /* $4F35 CLI (the $4F23 SEI is over by then) */
+}
+
 void sound_stop_all(void)
 {
     uint8_t entryA = cpu.A;                      /* sound_stop_channel preserves A (PHA/PLA) */

@@ -629,6 +629,127 @@ static int test_draw_starting_lights(void)
     return fail;
 }
 
+void irq1v_release(void);            void irq1v_release__t6502(void);
+void enter_mos_text_mode(void);      void enter_mos_text_mode__t6502(void);
+
+/* ---------------------------------------------------------------------------
+   $4F23 irq1v_release / $4F39 enter_mos_text_mode — twin #175
+   ---------------------------------------------------------------------------
+   Result-only (LIVE_NONE) for both: each caller does `JSR / RTS` — $17BF in the transliterated
+   race body and race_main_loop_core's last statement — so no exit register or flag is read.
+   ⭐ The interesting half of the differential is NOT mem[]: irq1v_release's three stores are two
+   vector-page bytes and one User VIA register, and the VIA write is invisible to a mem[] diff.
+   REVS_HW_TRACE's hardware-write log is what compares it, as a SEQUENCE, and the $FE6E write has
+   to land in the right place in that sequence relative to sound_stop_all's OSBYTEs.
+
+   ⚠ Script $2E has to be BUILT.  fill_random leaves text_script_ptr_lo/hi random, which would
+   send the interpreter off a wild pointer and recurse away; the pins below are the same ones the
+   text_script_interp fixture derived (see its header for why every index must stay <= $35 and
+   why the bitmap arm needs plot_ptr parked near the top of screen RAM).
+   --------------------------------------------------------------------------- */
+static int test_irq1v_release(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t, i;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+
+    struct { const char* name; void (*nat)(void); void (*ref)(void); }
+      list[2] = {
+        { "irq1v_release",       irq1v_release,       irq1v_release__t6502       },
+        { "enter_mos_text_mode", enter_mos_text_mode, enter_mos_text_mode__t6502 },
+      };
+    const unsigned TOP  = 0x0C00u;               /* script $2E's bytes */
+    const unsigned LEAF = 0x0D00u;               /* the one leaf every sub-script index points at */
+    const uint8_t  SCRIPT_IDX = 0x2Eu;           /* $4F3D LDX #$2E — hard-coded, not an argument */
+
+    for (i = 0; i < 2; i++) register_fixture(list[i].name);
+    for (i = 0; i < 2; i++) {
+        int cases = 2000 * scale;
+        int subFail = 0, sawIdle = 0, sawPlaying = 0, sawBmp = 0, sawMos = 0;
+        if (!want(list[i].name)) continue;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.D = 0;                              /* neither is a SED site (static-map §Decimal) */
+            c.S = 0xFFu;
+            c.Y = (uint8_t)xs();                  /* the ambient Y sound_stop_all's OSBYTEs carry */
+            c.X = (uint8_t)xs();                  /* dead: $4F3D reloads it with the script index */
+            c.A = (uint8_t)xs();
+
+            /* IRQ1V as the game left it, plus the bytes it is about to restore. */
+            pre[0x0204u] = 0x5Cu; pre[0x0205u] = 0x4Eu;    /* irq1v_band_schedule, still claimed */
+            pre[0x4F1Du] = (uint8_t)xs();                  /* saved_irq1v lo */
+            pre[0x4F1Eu] = (uint8_t)xs();                  /* ...and hi */
+
+            /* sound_chan_state: sound_stop_all skips a channel already marked idle, so force the
+               idle arm on half the cases rather than waiting for a random zero byte. */
+            { int ch; for (ch = 0; ch < 4; ch++) {
+                if (xs() & 1) { pre[0x62BDu + ch] = 0; sawIdle = 1; }
+                else          { pre[0x62BDu + ch] = 0x07u; sawPlaying = 1; }
+            } }
+
+            /* ---- script $2E, built so it terminates (see the header) ---- */
+            { int r; for (r = 0; r < 8; r++) pre[0x3B06 + r] = 0x58u; }   /* rows -> screen RAM */
+            pre[0x62CDu] &= 0x3Fu;                        /* vdu_char_row 0..7 */
+            pre[0x62CCu] = (uint8_t)(xs() & 0x1Fu);       /* vdu_char_column */
+            pre[0x0070u] = 0x00u; pre[0x0071u] = 0x7Eu;   /* plot_ptr near the top of screen RAM */
+            { unsigned k; for (k = 0; k <= 0x34u; k++) {
+                pre[0x3AD0u + k] = (uint8_t)(LEAF & 0xFFu);
+                pre[0x3B50u + k] = (uint8_t)(LEAF >> 8);
+            } }
+            pre[0x3AD0u + SCRIPT_IDX] = (uint8_t)(TOP & 0xFFu);
+            pre[0x3B50u + SCRIPT_IDX] = (uint8_t)(TOP >> 8);
+            { int r; for (r = 0; r < 8; r++) pre[0x3B06 + r] = 0x58u; }   /* re-assert after the fill */
+            { unsigned p = LEAF;
+              pre[p++] = (uint8_t)(0x41u + (xs() % 0x20u));
+              pre[p++] = (uint8_t)(0xA1u + (xs() % 7u));
+              pre[p++] = 0xFFu; }
+            /* ⚠ Every case must set text_out_via_mos itself: enter_mos_text_mode's whole job is
+               to WRITE it $80, so a random start value would leave the arm it picks up to chance
+               on the second (nested) script only.  Every 8th case takes the bitmap arm. */
+            { unsigned p = TOP;
+              if ((t % 8u) == 0u) {                       /* bitmap arm — short, non-recursive */
+                  pre[0x0064u] = 0x00u; sawBmp = 1;
+                  pre[p++] = (uint8_t)(0x41u + (xs() % 0x20u));
+                  pre[p++] = 0xA2u;
+                  pre[p++] = 0xFFu;
+              } else {                                    /* OSWRCH arm — recursion is safe here */
+                  pre[0x0064u] = 0x80u; sawMos = 1;
+                  pre[p++] = (uint8_t)(0x20u + (xs() % 0x60u));
+                  /* ⚠ sub must never be $2E — that is THIS script, and a recurse into it is
+                     unbounded (it cost a stack-overflow segfault with no output at all before the
+                     exclusion; the text_script_interp fixture reserves its own top index the same
+                     way).  Legal subs are 0..$34, so shift $2E onto the spare $34. */
+                  { uint8_t sub = (uint8_t)(xs() % 0x34u);      /* 0..$33 */
+                    if (sub == SCRIPT_IDX) sub = 0x34u;
+                    pre[p++] = (uint8_t)(0xC8u + sub); }
+                  pre[p++] = (uint8_t)(0xA1u + (xs() % 7u));
+                  pre[p++] = 0xFFu;
+              } }
+
+            subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
+                                LIVE_NONE, t, &printed);
+        }
+        fail += subFail;
+        if (i == 0 && (!sawIdle || !sawPlaying)) {
+            printf("[VACUOUS] irq1v_release: sound_stop_all arms (idle %d playing %d)\n",
+                   sawIdle, sawPlaying);
+            fail++;
+        }
+        if (!sawBmp || !sawMos) {
+            printf("[VACUOUS] %s: only one output arm ran (bitmap %d, OSWRCH %d)\n",
+                   list[i].name, sawBmp, sawMos);
+            fail++;
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  result-only%s\n",
+               list[i].name, cases, subFail,
+               i == 0 ? " (VIA + vector writes compared through the hw-write log)" : "");
+    }
+    return fail;
+}
+
 void update_horizon_band(void);
 void update_horizon_band__t6502(void);
 
@@ -8151,6 +8272,7 @@ int main(int argc, char** argv)
     fail += test_irq1v_band_schedule();
     fail += test_print_spaces();
     fail += test_draw_starting_lights();
+    fail += test_irq1v_release();
     fail += test_update_horizon_band();
     fail += test_draw_corner_markers();
     fail += test_mirrors_update();
