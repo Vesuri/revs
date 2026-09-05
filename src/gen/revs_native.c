@@ -209,7 +209,7 @@ SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, ui
 /* The rest of the frame body's steps, all defined far below.  race_main_loop_core reaches each
    through its core so the whole hot path is core-to-core with no 6502-ABI shim hops. */
 static void read_driving_controls_core(void);
-void apply_driving_model_core(uint8_t posLo, uint8_t posHi);
+void apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC);
 void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1);
 void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);
 static void build_road_sign_core(void);
@@ -797,7 +797,10 @@ static int view_plant(ViewState* v, uint16_t site, uint16_t opnd, unsigned page,
     uint16_t dst = (uint16_t)(mem[opnd] | (mem[opnd + 1] << 8));
     v->byte = load_a(opcode);
     if (!view_is_slot(dst, page)) { platform_smc_unhandled(site, dst); return 0; }
-    bus_write(dst, (uint8_t)v->byte);
+    /* view_is_slot has just proved `dst` is one of the known opcode slots in the $7C-$7E
+       code pages, so this is RAM by construction and the hardware-window test bus_write
+       would pay is dead. */
+    mem[dst] = (uint8_t)v->byte;
     /* the only writer of an opcode slot during a sweep, so the stop list stays exact */
     if (opcode == OP_STA_IND_Y) view_stop_forget(view_unit_of_slot(dst));
     else                        view_stop_note(view_unit_of_slot(dst));
@@ -1813,8 +1816,8 @@ void race_main_loop_core(RestartDepth depth)
 #define TRACK_SEGMENT_LO 0x5900u   /* track_segment_lo — the TRACK FILE's 8-byte segment records */
 #define TRACK_SEGMENT_HI 0x5300u   /* track_segment_hi */
 #define EDGE_HALF        0x0028u   /* 40 — the stride between the two road sides' halves */
-#define SECTION_LO_TBL   0x0900u   /* section_coord_lo — 40 sections x 3 bytes, + two scratch slots */
-#define SECTION_HI_TBL   0x0A00u   /* section_coord_hi */
+#define SECTION_COORD_LO 0x0900u   /* section_coord_lo — 40 sections x 3 bytes, + two scratch slots */
+#define SECTION_COORD_HI 0x0A00u   /* section_coord_hi */
 #define SECTION_SIDE1    0x0078u   /* +$78: the OPPOSITE road edge's parallel section list
                                       (section byte cursor 0..$77 for side 0, +$78 for side 1) */
 #define SECTION_MID      0x00FAu   /*   ...the triple road_edge_walk interpolates midpoints into */
@@ -1849,7 +1852,7 @@ static void inc_mem(unsigned cell)
 static unsigned section_word(unsigned byteIndex)
 {
     unsigned i = byteIndex & 0xFFu;
-    return (unsigned)mem[SECTION_LO_TBL + i] | ((unsigned)mem[SECTION_HI_TBL + i] << 8);
+    return (unsigned)mem[SECTION_COORD_LO + i] | ((unsigned)mem[SECTION_COORD_HI + i] << 8);
 }
 
 /* ===========================================================================
@@ -2096,8 +2099,8 @@ void load_section_triple_core(uint8_t destSection, uint8_t segmentByte)
     /* $1208-$122B — copy the three 16-bit coordinates of the segment (skipping its first byte,
        the length) into the scratch section triple.  The 6502 reads the segment high byte one
        past the triple at $1226, but that only set flags the callers do not read, so it is gone. */
-    uint8_t*       dstLo = &mem[SECTION_LO_TBL + destSection];
-    uint8_t*       dstHi = &mem[SECTION_HI_TBL + destSection];
+    uint8_t*       dstLo = &mem[SECTION_COORD_LO + destSection];
+    uint8_t*       dstHi = &mem[SECTION_COORD_HI + destSection];
     const uint8_t* srcLo = &mem[TRACK_SEGMENT_LO + segmentByte + 1];
     const uint8_t* srcHi = &mem[TRACK_SEGMENT_HI + segmentByte + 1];
 
@@ -3415,10 +3418,10 @@ static uint8_t road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
 
         /* $2410-$241C — the 16-bit gap as one signed subtract (D=0 on the road pass —
            static-map.md §Decimal mode).  Its high byte's sign is what the shifts need. */
-        uint16_t here16  = (uint16_t)(((uint16_t)mem[SECTION_HI_TBL + here]  << 8)
-                                      | mem[SECTION_LO_TBL + here]);
-        uint16_t there16 = (uint16_t)(((uint16_t)mem[SECTION_HI_TBL + there] << 8)
-                                      | mem[SECTION_LO_TBL + there]);
+        uint16_t here16  = (uint16_t)(((uint16_t)mem[SECTION_COORD_HI + here]  << 8)
+                                      | mem[SECTION_COORD_LO + here]);
+        uint16_t there16 = (uint16_t)(((uint16_t)mem[SECTION_COORD_HI + there] << 8)
+                                      | mem[SECTION_COORD_LO + there]);
         unsigned delta   = (uint16_t)(here16 - there16);
         math_lo = (uint8_t)delta;                    /* $2410 — the low byte, parked */
 
@@ -3433,8 +3436,8 @@ static uint8_t road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
         math_lo        = (uint8_t)quarter;           /* $2425 — after the two RORs */
         shared_temp_76 = (uint8_t)(quarter >> 8);    /* $242B */
 
-        mem[SECTION_LO_TBL + midSlot + i] = (uint8_t)mid;
-        mem[SECTION_HI_TBL + midSlot + i] = (uint8_t)(mid >> 8);
+        mem[SECTION_COORD_LO + midSlot + i] = (uint8_t)mid;
+        mem[SECTION_COORD_HI + midSlot + i] = (uint8_t)(mid >> 8);
 
         if (i < 2) {                                 /* $2445-$244B, skipped on the last pass */
             math_hi        = (uint8_t)(i + 1);
@@ -3731,6 +3734,10 @@ void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
        edge_x_offscreen and the mark walk is skipped, so this add's V is draw_road's exit V and
        the differential compares it (28/200 when it was a plain `+`). */
     unsigned farBase = adc_step(horizon_index, 0x28, 0);
+    /* ⭐ The four passes below are a 6502 FLAG CHAIN: each stage's exit C/V is the next
+       stage's entry.  Both callees return their exit state, so the chain is two locals —
+       only the LAST mark's state is draw_road's own exit ABI and reaches cpu. */
+    int chainC = cpu.C, chainV = cpu.V;         /* the ADC above set both */
     road_split_index = (uint8_t)clamp_up_to(farBase, 0x31);
 
     PLOT_SET_LO(plot_ptr2, 0);      /* the second pointer, for a span that crosses a page */
@@ -3745,7 +3752,10 @@ void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
        it was called with — here farBase's ADC flags, which are draw_road's own exit V/C when the
        walk is skipped (see the farBase comment above).  Pass them live so the trap path echoes
        them back faithfully. */
-    (void)fill_line_attr_core(0x00, endCursorFar, (uint8_t)farBase, cpu.C, cpu.V);
+    {
+        SlotExit f = fill_line_attr_core(0x00, endCursorFar, (uint8_t)farBase, chainC, chainV);
+        chainC = f.c; chainV = f.v;             /* A/X/Y are discarded: the pass talks in mem[] */
+    }
 
     ROAD_PHASE(ROAD_PHASE_SPANS);
     surface_style_base = 0x00;
@@ -3759,16 +3769,13 @@ void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     draw_surface_spans_core(1, (uint8_t)(horizon_index + 0x28));   /* base only; the spans walk
                                                                       overwrites this add's flags */
 
-    /* ⚠ SEAM (like the two fill_line_attr calls above): mark_line_surfaces_core is cpu-free, so
-       draw_road threads the 6502 flag chain by hand.  The far mark's entry V is the live cpu.V
-       here (the near fill below reads cpu.C/cpu.V, exactly as the 6502 left them after this
-       walk), and its full exit state is marshalled back into cpu so that read sees HEAD's bytes. */
+    /* The far mark's entry V is the fill's exit V; its own exit C/V continue the chain into
+       the near half (the span passes between are V-transparent). */
     ROAD_PHASE(ROAD_PHASE_MARK);
     {
-        SlotExit m = mark_side_surfaces(0x04, cpu.V);
+        SlotExit m = mark_side_surfaces(0x04, chainV);
         line_attr_0_limit = m.y;
-        cpu.A = m.a; cpu.X = m.x; cpu.Y = m.y;
-        cpu.N = m.n; cpu.Z = m.z; cpu.V = m.v; cpu.C = m.c;
+        chainC = m.c; chainV = m.v;
     }
 
     /* $1A60-$1A69 — and the NEAR half, whose split is the horizon point itself, floored at
@@ -3781,7 +3788,10 @@ void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     /* ...and $50 is the low byte of line_attr_1, endCursorNear the stop, nearBase the start.
        C/V passed live for the same trap-path reason as the far half above. */
     ROAD_PHASE(ROAD_PHASE_FILL);
-    (void)fill_line_attr_core(0x50, endCursorNear, (uint8_t)nearBase, cpu.C, cpu.V);
+    {
+        SlotExit f = fill_line_attr_core(0x50, endCursorNear, (uint8_t)nearBase, chainC, chainV);
+        chainC = f.c; chainV = f.v;
+    }
 
     ROAD_PHASE(ROAD_PHASE_SPANS);
     shared_temp_8c  = 0x1C;
@@ -3791,12 +3801,11 @@ void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     surface_style_base = 0x1C;
     surface_pass(3, road_split_index);
 
-    /* The near mark's exit IS draw_road's exit (nothing after it touches A/X/Y/flags), so its
-       SlotExit is marshalled into cpu here and the shim leaves cpu alone.  Its entry V is the
-       live cpu.V — the near fill's exit V threaded through the V-transparent span passes. */
+    /* The near mark's exit IS draw_road's exit (nothing after it touches A/X/Y/flags), so this
+       is the one place in the routine where the chain reaches cpu; the shim adds nothing. */
     ROAD_PHASE(ROAD_PHASE_MARK);
     {
-        SlotExit m = mark_side_surfaces(0x14, cpu.V);
+        SlotExit m = mark_side_surfaces(0x14, chainV);
         line_attr_1_limit = m.y;
         cpu.A = m.a; cpu.X = m.x; cpu.Y = m.y;
         cpu.N = m.n; cpu.Z = m.z; cpu.V = m.v; cpu.C = m.c;
@@ -3937,7 +3946,7 @@ void model_accum_entry_marshal_out(void)
     model_accum_entry_hi = (uint8_t)(model_accum_entry_v >> 8);
 }
 
-void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
+void apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC)
 {
     /* $46A1 — the car's body angles, computed from where the car actually is. */
     compute_car_angles_core(posHi, posLo);
@@ -3977,13 +3986,15 @@ void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
        (sound_stop_channel, $0E6B) passes to the MOS, so replay the engine's exit registers here as
        the shim does, before the sound call reads them. */
     {
-        EngineExit ee = update_engine_revs_core(cpu.C,
+        /* entryC is the 6502's carry at $469E — nothing between the entry and here touches it
+           (every callee above is a cpu-free core), so it is an argument rather than a global. */
+        EngineExit ee = update_engine_revs_core(entryC,
                             (uint8_t)(surface_change_0 & surface_change_1));
-        cpu.A = ee.tail.hi; cpu.C = ee.tail.carry; cpu.V = ee.tail.overflow;
-        cpu.N = ee.tail.neg; cpu.Z = ee.tail.zero;
-        cpu.X = ee.x; cpu.Y = ee.y;
+        /* Only the exit Y escapes: it is the ambient Y update_slip_sound's OSBYTE 21
+           (sound_stop_channel, $0E6B) passes to the MOS.  A/X and the flags are dead — the
+           tail below overwrites every one of them from update_camera_and_drive_state. */
+        update_slip_sound_core(0x01, ee.y);
     }
-    update_slip_sound_core(0x01, cpu.Y);   /* the engine's exit Y is the ambient Y its OSBYTE 21 logs */
 
     /* $46DF-$46F5 — restore the entry accumulator, then apply the frame's real increment as one
        16-bit add (D=0 on the driving path — static-map.md §Decimal mode).  The add's exit flags
@@ -4001,8 +4012,7 @@ void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
        Y = 8 (its last apply_angle_term source index).  update_slip_sound's silence arm reaches
        OSBYTE 21 (sound_stop_channel) with Y still holding it — a dead input the MOS ignores, but
        the real 6502 passes it, so it is reconstructed here now the core no longer leaves it in cpu. */
-    cpu.Y = 8u;
-    update_slip_sound_core(0x00, cpu.Y);
+    update_slip_sound_core(0x00, 8u);
     rotate_pair_a_by_steer_core();
     damp_and_derive_loads_core();
 
@@ -4470,8 +4480,8 @@ void div16by8(void)
    the sign is bit 7 of the true two's-complement high byte. */
 static ViewDelta view_delta(uint8_t sectionByte, unsigned component, uint8_t origin)
 {
-    int section = (int)mem[SECTION_LO_TBL + sectionByte + component]
-                | ((int)mem[SECTION_HI_TBL + sectionByte + component] << 8);
+    int section = (int)mem[SECTION_COORD_LO + sectionByte + component]
+                | ((int)mem[SECTION_COORD_HI + sectionByte + component] << 8);
     int viewpt  = (int)view_origin_16[origin + component];   /* one word, not two lanes */
     uint16_t  diff = (uint16_t)(section - viewpt);
     ViewDelta d;
@@ -5762,10 +5772,22 @@ SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t first
                so compute the base once. */
             uint16_t base = (uint16_t)(mem[LINE_ATTR_OPERAND]
                                        | (mem[LINE_ATTR_OPERAND + 1] << 8));
-            while (y != fillDownTo) {
-                ROAD_COUNT(g_roadFillLines);   /* one scan line named in the line->point map */
-                bus_write((uint16_t)(base + y), storeVal);
-                y = (uint8_t)(y - 1);
+            /* ⭐ One hardware-window test per FILL, not per scan line: `y` only ever indexes
+               $00..$FF off `base`, so proving the whole span is RAM once hoists the range
+               check out of the loop.  The else arm stays for the SMC case where the operand
+               has been pointed somewhere unexpected. */
+            if ((unsigned)base + 0xFFu < BBC_IO_LO) {
+                while (y != fillDownTo) {
+                    ROAD_COUNT(g_roadFillLines);   /* one scan line named in the line->point map */
+                    mem[(uint16_t)(base + y)] = storeVal;
+                    y = (uint8_t)(y - 1);
+                }
+            } else {
+                while (y != fillDownTo) {
+                    ROAD_COUNT(g_roadFillLines);
+                    bus_write((uint16_t)(base + y), storeVal);
+                    y = (uint8_t)(y - 1);
+                }
             }
         }
         span_line_cursor = y;
@@ -6190,10 +6212,10 @@ static SlotExit surface_colour_at_core(uint8_t line, uint8_t position,
                      line, entryV, c);
 }
 
-/* Apply surface_colour_at's full exit ABI to the cpu — the shim body, parametrised by the scan
-   line.  The two still-cpu-based callers (column_gap_walk, plot_view_src_line) route through it
-   so the native path leaves exactly the cpu state the ORACLE gets via the shim; returns the
-   colour byte for their own use.  (A documented cross-call boundary until they too convert.) */
+/* The 6502-ABI shim's body, parametrised by the scan line, and living here because the core is
+   static to this file.  ⭐ Its former second job is gone: column_gap_walk and plot_view_src_line
+   both call surface_colour_at_core directly now, so this is reached only through the shim — i.e.
+   only by the validation oracle and by any transliterated caller. */
 uint8_t surface_colour_apply(uint8_t line)
 {
     SlotExit e = surface_colour_at_core(line, mem[EDGE_COLUMN], cpu.X, cpu.V);
@@ -11510,12 +11532,12 @@ void section_coord_add_delta_core(uint8_t dst, uint8_t src,
                                          const uint8_t dlo[3], const uint8_t dhi[3])
 {
     for (int i = 0; i < 3; i++) {
-        uint16_t s = (uint16_t)(mem[SECTION_LO_TBL + src + i]
-                                | (mem[SECTION_HI_TBL + src + i] << 8));
+        uint16_t s = (uint16_t)(mem[SECTION_COORD_LO + src + i]
+                                | (mem[SECTION_COORD_HI + src + i] << 8));
         uint16_t d = (uint16_t)(dlo[i] | (dhi[i] << 8));
         uint16_t r = (uint16_t)(s + d);
-        mem[SECTION_LO_TBL + dst + i] = (uint8_t)r;
-        mem[SECTION_HI_TBL + dst + i] = (uint8_t)(r >> 8);
+        mem[SECTION_COORD_LO + dst + i] = (uint8_t)r;
+        mem[SECTION_COORD_HI + dst + i] = (uint8_t)(r >> 8);
     }
 }
 
@@ -11537,8 +11559,8 @@ void           load_section_from_segment_core(uint8_t x, uint8_t y);
    edges sit at the same HEIGHT, so component 1 is just copied across here (both bytes). */
 void copy_section_height_to_side1_core(uint8_t x)
 {
-    mem[SECTION_LO_TBL + SECTION_SIDE1 + x + 1] = mem[SECTION_LO_TBL + x + 1];
-    mem[SECTION_HI_TBL + SECTION_SIDE1 + x + 1] = mem[SECTION_HI_TBL + x + 1];
+    mem[SECTION_COORD_LO + SECTION_SIDE1 + x + 1] = mem[SECTION_COORD_LO + x + 1];
+    mem[SECTION_COORD_HI + SECTION_SIDE1 + x + 1] = mem[SECTION_COORD_HI + x + 1];
 }
 
 /* 6502-ABI shim: X is the section byte cursor.  The $1253 LDA's exit A is dead at both
@@ -11738,18 +11760,18 @@ void build_road_section(void)
         /* side-1 comp 0 = side-0 comp 0 + across-track normal X, scaled x4 (sign-extended) */
         uint16_t nx = (uint16_t)((int16_t)(int8_t)mem[TRACK_NORMAL_X + dir] << 2);
         mem[POINT_DELTA_HI + 0] = (uint8_t)(nx >> 8);       /* faithful scratch residue */
-        uint16_t c0 = (uint16_t)(mem[SECTION_LO_TBL + x] | (mem[SECTION_HI_TBL + x] << 8));
+        uint16_t c0 = (uint16_t)(mem[SECTION_COORD_LO + x] | (mem[SECTION_COORD_HI + x] << 8));
         uint16_t s0 = (uint16_t)(c0 + nx);
-        mem[SECTION_LO_TBL + SECTION_SIDE1 + x] = (uint8_t)s0;
-        mem[SECTION_HI_TBL + SECTION_SIDE1 + x] = (uint8_t)(s0 >> 8);
+        mem[SECTION_COORD_LO + SECTION_SIDE1 + x] = (uint8_t)s0;
+        mem[SECTION_COORD_HI + SECTION_SIDE1 + x] = (uint8_t)(s0 >> 8);
 
         /* side-1 comp 2 = side-0 comp 2 + across-track normal Y, scaled x4 */
         uint16_t ny = (uint16_t)((int16_t)(int8_t)mem[TRACK_NORMAL_Y + dir] << 2);
         mem[POINT_DELTA_HI + 2] = (uint8_t)(ny >> 8);       /* faithful scratch residue */
-        uint16_t c2 = (uint16_t)(mem[SECTION_LO_TBL + 2 + x] | (mem[SECTION_HI_TBL + 2 + x] << 8));
+        uint16_t c2 = (uint16_t)(mem[SECTION_COORD_LO + 2 + x] | (mem[SECTION_COORD_HI + 2 + x] << 8));
         uint16_t s2 = (uint16_t)(c2 + ny);
-        mem[SECTION_LO_TBL + SECTION_SIDE1 + 2 + x] = (uint8_t)s2;
-        mem[SECTION_HI_TBL + SECTION_SIDE1 + 2 + x] = (uint8_t)(s2 >> 8);
+        mem[SECTION_COORD_LO + SECTION_SIDE1 + 2 + x] = (uint8_t)s2;
+        mem[SECTION_COORD_HI + SECTION_SIDE1 + 2 + x] = (uint8_t)(s2 >> 8);
 
         /* --- 5a. per-circuit direction-index hook (SMC $13C9) --- */
         if (mem[0x13C9] == 0x20) {
@@ -11837,10 +11859,10 @@ void load_section_from_segment_core(uint8_t x, uint8_t y)
     load_section_triple_core(x, y);                         /* fields 1..3 -> side-0 triple */
 
     /* fields 4 and 6 -> side-1 components 0 and 2 (the opposite road edge) */
-    mem[SECTION_LO_TBL + SECTION_SIDE1 + x]     = mem[TRACK_SEGMENT_LO + 4 + y];   /* $0978 <- $5904 */
-    mem[SECTION_LO_TBL + SECTION_SIDE1 + x + 2] = mem[TRACK_SEGMENT_LO + 6 + y];   /* $097A <- $5906 */
-    mem[SECTION_HI_TBL + SECTION_SIDE1 + x]     = mem[TRACK_SEGMENT_HI + 4 + y];   /* $0A78 <- $5304 */
-    mem[SECTION_HI_TBL + SECTION_SIDE1 + x + 2] = mem[TRACK_SEGMENT_HI + 6 + y];   /* $0A7A <- $5306 */
+    mem[SECTION_COORD_LO + SECTION_SIDE1 + x]     = mem[TRACK_SEGMENT_LO + 4 + y];   /* $0978 <- $5904 */
+    mem[SECTION_COORD_LO + SECTION_SIDE1 + x + 2] = mem[TRACK_SEGMENT_LO + 6 + y];   /* $097A <- $5906 */
+    mem[SECTION_COORD_HI + SECTION_SIDE1 + x]     = mem[TRACK_SEGMENT_HI + 4 + y];   /* $0A78 <- $5304 */
+    mem[SECTION_COORD_HI + SECTION_SIDE1 + x + 2] = mem[TRACK_SEGMENT_HI + 6 + y];   /* $0A7A <- $5306 */
 
     /* segment_dir_index from field-5 low byte (SMC $1248) */
     if (mem[0x1248] == 0xB9) {                              /* unpatched: LDA $5905,Y */
@@ -11987,8 +12009,6 @@ void step_section_curve(void)
    --------------------------------------------------------------------------- */
 #define OBJECT_COORD_LO   0x09FDu   /* 3-byte per-object world coordinate, low bytes  */
 #define OBJECT_COORD_HI   0x0AFDu   /*                                    high bytes */
-#define SECTION_COORD_LO  0x0900u   /* section origin, low  (section_coord_lo) */
-#define SECTION_COORD_HI  0x0A00u   /* section origin, high (section_coord_hi) */
 #define TRACK_DIR_3       0x5700u   /* ⚠ shares ModifyGameCode's address; read as DATA here */
 #define TRACK_DIR_4       0x5800u
 #define SECTION_DIR_INDEX 0x0700u
@@ -13610,13 +13630,18 @@ void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
     shared_temp_77 = mem[MIRROR_SEG_END_ROW + segment];          /* $7FC7 — the run's last line */
     uint8_t row    = mem[MIRROR_SEG_START_ROW + segment];        /* $7FC9 — ...and its first */
 
+    /* ⭐ One hardware-window test per SEGMENT, not per row: `dst` only ever DECREASES from here
+       and `row` indexes $00..$FF off it, so proving the top of the walk is RAM proves all of it. */
+    const int dstIsRam = ((unsigned)dst + 0xFFu) < BBC_IO_LO;
+
     do {
         uint8_t pattern = 0xF0u;                                 /* $7FCD */
         if (row < mem[MIRROR_LOWER_BOUND] && row >= span_line_cursor) {
             pattern &= mem[MIRROR_SHUDDER_TBL + bus_read(VIA_T1_LOW)];   /* $7FD7/$7FDA */
             pattern &= engine_running;                           /* $7FDD — still only with the engine on */
         }
-        bus_write((uint16_t)(dst + row), pattern);               /* $7FDF */
+        if (dstIsRam) mem[(uint16_t)(dst + row)] = pattern;      /* $7FDF */
+        else          bus_write((uint16_t)(dst + row), pattern);
 
         row--;                                                   /* $7FE1 */
         if ((row & 0x80u) && (row & 7u) == 7u)                   /* $7FE2/$7FE7 — wrapped past a char row */

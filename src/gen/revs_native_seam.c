@@ -173,7 +173,7 @@ void apply_driving_model(void)
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
     car_heading_marshal_in();             /* it reads the heading in, as the car's position... */
     car_angle_marshal_in();               /* element 2 (the wheel) comes in; 0/1 go out below */
-    apply_driving_model_core((uint8_t)car_heading_v, (uint8_t)(car_heading_v >> 8));
+    apply_driving_model_core((uint8_t)car_heading_v, (uint8_t)(car_heading_v >> 8), cpu.C);
     car_angle_marshal_out();              /* compute_car_angles_core rebuilt the sin/cos pair */
     car_heading_marshal_out();            /* ...and its tail calls integrate_car_position, which
                                              advances it — core-to-core, so publish it here */

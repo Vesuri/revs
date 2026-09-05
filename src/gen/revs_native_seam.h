@@ -332,7 +332,7 @@ extern const SpanPlotter SPAN_PLOT_2;
 /* ---- cpu-free cores the shims call (defined in revs_native.c) ---- */
 AdcRead adc_read_core(uint8_t channel);
 MosRegs kbd_test_key_regs(uint8_t keyCode);   /* OSBYTE 129 exit file — kbd_test_key's shim reads A/X/Y */
-void apply_driving_model_core(uint8_t posLo, uint8_t posHi);
+void apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC);
 void arg_a(uint8_t v);
 void bearing_to_section_core(uint8_t sectionByte, uint8_t origin);
 SignOriginExit build_sign_origin_core(uint8_t offset, uint8_t shift);
