@@ -143,7 +143,9 @@ void draw_road(void)
 void apply_driving_model(void)
 {
     car_heading_marshal_in();             /* it reads the heading in, as the car's position... */
+    car_angle_marshal_in();               /* element 2 (the wheel) comes in; 0/1 go out below */
     apply_driving_model_core((uint8_t)car_heading_v, (uint8_t)(car_heading_v >> 8));
+    car_angle_marshal_out();              /* compute_car_angles_core rebuilt the sin/cos pair */
     car_heading_marshal_out();            /* ...and its tail calls integrate_car_position, which
                                              advances it — core-to-core, so publish it here */
     model_accum_entry_marshal_out();       /* $46AE's value back into mem[$38/$39] */
@@ -300,6 +302,7 @@ void kbd_test_key(void)
 
 void rotate_accum_by_steer(void)
 {
+    car_angle_marshal_in();                   /* it multiplies by a car angle */
     AddFlags f = rotate_accum_by_steer_core();  /* ends in model_integrate_element on element 8 */
     cpu.X = 8u; cpu.Y = 8u;                      /* X live at exit; Y = last apply_angle_term src */
     cpu.A = f.hi; cpu.C = f.carry; cpu.V = f.overflow; cpu.N = f.neg; cpu.Z = f.zero;
@@ -307,6 +310,7 @@ void rotate_accum_by_steer(void)
 
 void rotate_pair_a_by_steer(void)
 {
+    car_angle_marshal_in();                   /* it multiplies by a car angle */
     AddFlags f = rotate_pair_a_by_steer_core(); /* ends in model_integrate_element on element 10 */
     cpu.X = 10u; cpu.Y = 10u;                    /* X live at exit; Y = last apply_angle_term src */
     cpu.A = f.hi; cpu.C = f.carry; cpu.V = f.overflow; cpu.N = f.neg; cpu.Z = f.zero;
@@ -465,6 +469,7 @@ void fill_object_gap(void)
 void limit_steer_demand(void)
 {
     if (cpu.C) {
+        car_angle_marshal_in();                   /* it reads the steering angle back */
         uint8_t r = limit_steer_demand_core(cpu.A, 1);
         cpu.A = r; cpu.N = (r >> 7) & 1u; cpu.Z = (r == 0);
     }
@@ -636,16 +641,17 @@ void draw_dash_needles(void)
        LSR steer_angle_lo: N=0, Z from the shifted value, C = bit 0; V/D/I carry through from the
        shared prefix (identical on both differential sides) and B/bit5 are set in a pushed copy.
        The later plot_line_octant pushes only below this cell, so the residue survives. */
+    car_angle_marshal_in();                       /* consumer: element 2 of the relocated array */
+    uint16_t steerAng = car_angle_16[CAR_ANGLE_STEER];
     mem[0x0100u + cpu.S] = (uint8_t)(0x30u                     /* bit5 = 1, B = 1 */
         | (cpu.V ? 0x40u : 0u)
         | (cpu.D ? 0x08u : 0u)
         | (cpu.I ? 0x04u : 0u)
-        | (((steer_angle_lo >> 1) == 0u) ? 0x02u : 0u)        /* Z */
-        | (steer_angle_lo & 0x01u));                          /* C */
+        | ((((uint8_t)steerAng >> 1) == 0u) ? 0x02u : 0u)     /* Z */
+        | (steerAng & 0x01u));                                /* C */
 
     DashNeedle n;
-    /* ⚠ $62A2/$62A5 — STRIDED lanes of the car-angle array, composed here, not relocated. */
-    draw_dash_needle_core((uint16_t)(steer_angle_lo | ((unsigned)steer_angle_hi << 8)), &n);
+    draw_dash_needle_core(steerAng, &n);          /* one word — the array is car_angle_16[] now */
 
     math_lo        = n.angleIndex;                /* $74 — folded angle index; plot_line_octant's DDA */
     shared_temp_76 = n.stepSize;                  /* $76 — octant step (SMC dispatch) */

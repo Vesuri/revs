@@ -37,7 +37,13 @@
 #define MODEL_STATE_LO   0x62D0u   /* the driving model's 16-bit state vector, low bytes */
 #define MODEL_STATE_HI   0x62E0u   /* ...and high bytes; element i is +i in each */
 #define CAR_ANGLE_LO     0x62A0u   /* car-angle array: heading_sin/heading_cos/steer_angle low; bit0 = SIGN */
-#define CAR_ANGLE_HI     0x62A3u   /* ...and their high bytes */
+#define CAR_ANGLE_HI     0x62A3u   /* ...and their high bytes.  ⭐ RELOCATED to car_angle_16[]:
+                                    * these two are now the marshals' addresses only — no twin
+                                    * reaches the array through mem[] any more. */
+/* Which element is which (see car_angle_16 in revs_native.c for the sign-magnitude packing). */
+#define CAR_ANGLE_SIN    0u        /* SIN(car_heading)  — compute_car_angles' output */
+#define CAR_ANGLE_COS    1u        /* COS(car_heading)  — ...and its second pass */
+#define CAR_ANGLE_STEER  2u        /* the steering angle — the control read owns it */
 #define VIEW_ORIGIN_LO   0x6280u   /* view_origin_lo — 3 components, STRIDE 6, two origins */
 #define VIEW_ORIGIN_HI   0x6283u   /* view_origin_hi */
 #define EDGE_X_LO_TBL    0x5E40u   /* edge_x_lo — the track edges' angle, low byte */
@@ -366,6 +372,12 @@ void plot_ptr3_marshal_in(void);  void plot_ptr3_marshal_out(void);
 void plot_ptrs_marshal_in(void);  void plot_ptrs_marshal_out(void);
 void car_heading_marshal_in(void);
 void car_heading_marshal_out(void);
+/* ⭐ the car-angle array ($62A0-$62A5, plane-split) relocated — see revs_native.c.  A shim whose
+   core reads it marshals in; one whose core writes it marshals in AND out, because no writer owns
+   all three elements. */
+extern uint16_t car_angle_16[3];
+void car_angle_marshal_in(void);
+void car_angle_marshal_out(void);
 void hypot_max_marshal_in(void);
 void hypot_max_marshal_out(void);
 /* ⭐ hypot_min ($78/$79) — the sibling pair, marshalled at the same seams.  Its consumer

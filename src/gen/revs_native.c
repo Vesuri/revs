@@ -6782,8 +6782,9 @@ static void apply_angle_term_body(uint8_t angle, uint8_t source)
        bit 7 the starting sign, bit 6 the store/accumulate select. */
     int16_t  src16 = (int16_t)(uint16_t)((mem[MODEL_STATE_HI + source] << 8)
                                          | mem[MODEL_STATE_LO + source]);
-    uint8_t  termLo = mem[CAR_ANGLE_LO + angle];
-    uint8_t  termHi = mem[CAR_ANGLE_HI + angle];
+    uint16_t term   = car_angle_16[angle];   /* one word, not two strided byte lanes */
+    uint8_t  termLo = (uint8_t)term;
+    uint8_t  termHi = (uint8_t)(term >> 8);
     uint8_t  mode   = mem[MUL_SIGN];
 
     /* $0DD7-$0DF8 — the sign accumulates: a negative multiplicand flips it, and the multiplier's
@@ -6859,8 +6860,8 @@ int kbd_test_key_core(uint8_t keyCode)
 
 /* The 6502-ABI shims. */
 void add_signed_into_element(void) { add_signed_into_element_core(cpu.Y, cpu.N ? 0x80u : 0x00u); }
-void apply_angle_term(void)      { apply_angle_term_core(cpu.A, cpu.X, cpu.Y); }
-void apply_angle_term_at(void)   { apply_angle_term_at_core(cpu.A, cpu.X); }
+void apply_angle_term(void)      { car_angle_marshal_in(); apply_angle_term_core(cpu.A, cpu.X, cpu.Y); }
+void apply_angle_term_at(void)   { car_angle_marshal_in(); apply_angle_term_at_core(cpu.A, cpu.X); }
 
 /* ===========================================================================
    TWINS #58-#66 — THE DRIVING MODEL'S ROTATIONS AND INTEGRATIONS
@@ -7205,9 +7206,9 @@ AddFlags integrate_state_rates_core(void)
 /* The 6502-ABI shims. */
 void stage_accum_delta(void)      { stage_accum_delta_core(); }
 void damp_and_derive_loads(void)  { damp_and_derive_loads_core(); }
-void rotate_state_pair(void)      { rotate_state_pair_core(cpu.A, cpu.Y, cpu.X); }
-void rotate_state_0_into_8(void)  { rotate_state_pair_core(8u, 0u, 0xC0u); }
-void rotate_state_6_into_3(void)  { rotate_state_pair_core(3u, 6u, 0x40u); }
+void rotate_state_pair(void)      { car_angle_marshal_in(); rotate_state_pair_core(cpu.A, cpu.Y, cpu.X); }
+void rotate_state_0_into_8(void)  { car_angle_marshal_in(); rotate_state_pair_core(8u, 0u, 0xC0u); }
+void rotate_state_6_into_3(void)  { car_angle_marshal_in(); rotate_state_pair_core(3u, 6u, 0x40u); }
 
 /* ===========================================================================
    TWINS #67-#78 — THE SLIP/SOUND CLUSTER
@@ -7745,6 +7746,42 @@ void update_slip_sound(void)    { update_slip_sound_core(cpu.X, cpu.Y); } /* res
 #define VIA_T1_LOW     0xFE68u   /* User VIA T1 counter low — the engine's randomness */
 
 /* ---------------------------------------------------------------------------
+   ⭐ WIDE-VALUE CLEANUP, mechanism (B): THE CAR-ANGLE ARRAY relocated out of mem[]
+   ---------------------------------------------------------------------------
+   The three-entry array the 6502 kept PLANE-SPLIT — low bytes at $62A0-$62A2, high bytes at
+   $62A3-$62A5 — so element i cost two strided byte accesses to read and two to write.  Here it
+   is three `uint16_t`, and every one of its thirteen native sites reads or writes one word.
+
+   ⚠⚠ SIGN-MAGNITUDE PACKING, NOT two's complement.  Bit 0 of the low byte is the SIGN and bit 7
+   is the value's own lowest bit: compute_car_angles builds each element as `(magnitude << 1) |
+   sign` (its ASL/ROL pair) and mul16_signed reads bit 0 as its MULTIPLIER's sign.  The packing IS
+   exactly a 16-bit word, which is why (B) applies at all — but NO reader may treat one of these
+   words as a plain signed quantity.  Magnitude is `w >> 1`, sign is `w & 1`.
+
+   THE INVARIANT AT THE 6502-ABI BOUNDARY: mem[$62A0-$62A5] and car_angle_16[] agree at every
+   shim.  A shim whose core READS the array marshals in; one whose core WRITES it marshals out
+   (and marshals in first, because no writer owns all three elements — compute_car_angles owns
+   the sin/cos pair, the steering path owns element 2).  That also means an unknown
+   transliterated writer of these cells is still picked up: the next shim re-reads mem[].
+   --------------------------------------------------------------------------- */
+uint16_t car_angle_16[3];
+
+void car_angle_marshal_in(void)
+{
+    for (int i = 0; i < 3; i++)
+        car_angle_16[i] = (uint16_t)(mem[CAR_ANGLE_LO + i]
+                                     | ((unsigned)mem[CAR_ANGLE_HI + i] << 8));
+}
+
+void car_angle_marshal_out(void)
+{
+    for (int i = 0; i < 3; i++) {
+        mem[CAR_ANGLE_LO + i] = (uint8_t)car_angle_16[i];
+        mem[CAR_ANGLE_HI + i] = (uint8_t)(car_angle_16[i] >> 8);
+    }
+}
+
+/* ---------------------------------------------------------------------------
    $0D01  compute_car_angles — THE SIN/COS PAIR  (twin #79)
    ---------------------------------------------------------------------------
    Takes the player's heading in A (high) and X (low) and leaves car_angle elements 0 and 1 —
@@ -7775,7 +7812,7 @@ static void compute_car_angles_core(uint8_t headingHi, uint8_t headingLo)
     elem[1] = elem[0] ^ 1;
 
     for (int pass = 0; pass < 2; pass++) {
-        uint8_t lo, hi;
+        uint16_t angle_w;
         if ((uint8_t)(h >> 8) < 0x7Au) {
             /* $0D27-$0D4C — the SMALL-ANGLE arm: (h - ($AB/256) h^3) doubled.  Three
                multiplies by h's high byte, the last of them a 16x8 fixed-point step. */
@@ -7784,8 +7821,7 @@ static void compute_car_angles_core(uint8_t headingHi, uint8_t headingLo)
             cube = (uint16_t)((cube >> 8) * hh);                 /* x h_hi */
             cube = (uint16_t)(((uint32_t)cube * hh) >> 8);       /* x h_hi, >> 8 */
             uint16_t res = (uint16_t)((h - cube) << 1);          /* the sine, doubled */
-            lo = (uint8_t)(res & 0xFEu);   /* bit 0 belongs to the sign the tail ORs in */
-            hi = (uint8_t)(res >> 8);
+            angle_w = (uint16_t)(res & 0xFFFEu);   /* bit 0 belongs to the sign the tail ORs in */
         } else {
             /* $0D4F-$0D7C — the LARGE-ANGLE arm: d = $C900 - h, then -(2 x d x d_hi >> 8),
                SATURATED to -2 ($FFFE) when that doubled term is zero (the negate does not
@@ -7794,20 +7830,18 @@ static void compute_car_angles_core(uint8_t headingHi, uint8_t headingLo)
             uint16_t dd = (uint16_t)(((uint32_t)d * (uint8_t)(d >> 8)) >> 8);
             uint16_t d2 = (uint16_t)(dd << 1);
             uint16_t res = (uint16_t)(0u - d2);                  /* negate */
-            lo = (uint8_t)(res & 0xFEu);
-            hi = (uint8_t)(res >> 8);
-            if (d2 == 0u) { lo = 0xFEu; hi = 0xFFu; }            /* the saturation */
+            angle_w = (uint16_t)(res & 0xFFFEu);
+            if (d2 == 0u) angle_w = 0xFFFEu;                     /* the saturation */
         }
-        mem[CAR_ANGLE_LO + elem[pass]] = lo;
-        mem[CAR_ANGLE_HI + elem[pass]] = hi;
+        car_angle_16[elem[pass]] = angle_w;
 
         h = (uint16_t)(0xC900u - h);   /* $0D85-$0D90 — reflect about pi/2 for the second pass */
     }
 
     /* $0D97-$0DB2 — the quadrant, as two sign bits: bit 7 of the heading's high byte for
        element 0, bit 7 XOR bit 6 for element 1. */
-    if (headingHi & 0x80u)                    mem[CAR_ANGLE_LO + 0] |= 0x01u;
-    if (((headingHi << 1) ^ headingHi) & 0x80u) mem[CAR_ANGLE_LO + 1] |= 0x01u;
+    if (headingHi & 0x80u)                    car_angle_16[0] |= 0x0001u;
+    if (((headingHi << 1) ^ headingHi) & 0x80u) car_angle_16[1] |= 0x0001u;
 }
 
 /* ---------------------------------------------------------------------------
@@ -8534,7 +8568,8 @@ yaw:
 }
 
 /* The 6502-ABI shims. */
-void compute_car_angles(void)            { compute_car_angles_core(cpu.A, cpu.X); }
+void compute_car_angles(void)            { car_angle_marshal_in(); compute_car_angles_core(cpu.A, cpu.X);
+                                           car_angle_marshal_out(); }
 void scale_by_track_gradient(void)
 {
     /* Replay the $4610 exit ABI.  Positive arm ($4622 abs8 not taken): flags are the restored
@@ -10403,8 +10438,9 @@ uint8_t limit_steer_demand_core(uint8_t a, int carryIn)
        the driver's angle: park |steer_angle_lo| (bit 0 cleared) as the sign byte and return
        steer_angle_hi as the demand.  Otherwise keep what was computed. */
     if (!carryIn) return a;                            /* $1F9B BCC */
-    mem[STEER_SIGN] = (uint8_t)(steer_angle_lo & 0xFEu);
-    return steer_angle_hi;
+    uint16_t ang = car_angle_16[CAR_ANGLE_STEER];
+    mem[STEER_SIGN] = (uint8_t)(ang & 0xFEu);
+    return (uint8_t)(ang >> 8);
 }
 
 /* ---------------------------------------------------------------------------
@@ -10441,7 +10477,7 @@ static void steer_demand_from_slip_core(void)
     uint8_t  a   = (uint8_t)(mag >> 8);
     mem[STEER_SIGN] = (uint8_t)mag;
     /* $1607 CMP — carry (demand >= driver's own angle) feeds the limiter. */
-    a = limit_steer_demand_core(a, a >= steer_angle_hi);
+    a = limit_steer_demand_core(a, a >= (uint8_t)(car_angle_16[CAR_ANGLE_STEER] >> 8));
     steer_demand_store_core(a);
 }
 
@@ -10474,8 +10510,8 @@ static void assist_from_selector(uint8_t selector)
        ⭐ WIDE-VALUE CLEANUP: one uint16_t, so the negate is a negate and not a negate followed
        by a split back into lanes.  ⚠ The sign lives in bit 0 of the LOW byte (sign-magnitude
        packing — see steer_angle_lo in symbols.csv), which is why the test is `ang & 1` and not
-       a bit-15 test. */
-    uint16_t ang = (uint16_t)(steer_angle_lo | ((unsigned)steer_angle_hi << 8));
+       a bit-15 test.  The array is relocated, so this is one word read, not two lanes. */
+    uint16_t ang = car_angle_16[CAR_ANGLE_STEER];
     if (ang & 0x0001u)                                 /* $1F1E LSR / $1F22 BCC — negative: flip */
         ang = (uint16_t)(0u - ang);
     mem[STEER_KEYS] = (uint8_t)ang;                     /* $1F1C/$1F29 — |angle| low, read as bias low */
@@ -10522,12 +10558,12 @@ static void assist_from_selector(uint8_t selector)
     uint16_t demand = (uint16_t)(signedProd & 0xFFFEu);   /* $1F82-$1F88 */
 
     /* $1F8A-$1F93 — and by the steering's own sign: negate unless bit 0 of steer_angle_lo is set. */
-    if ((steer_angle_lo & 0x01u) == 0u)                /* $1F8A LSR / $1F8E BCS */
+    if ((car_angle_16[CAR_ANGLE_STEER] & 0x0001u) == 0u)   /* $1F8A LSR / $1F8E BCS */
         demand = (uint16_t)(0u - demand);              /* $1F90 neg16 */
     mem[STEER_SIGN]   = (uint8_t)demand;
     mem[STEER_DEMAND] = (uint8_t)(demand >> 8);
 
-    apply_steer_demand_core(steer_angle_lo);           /* $1F95 */
+    apply_steer_demand_core((uint8_t)car_angle_16[CAR_ANGLE_STEER]);   /* $1F95 */
 }
 
 /* ---------------------------------------------------------------------------
@@ -10550,7 +10586,7 @@ static void steer_apply_with_assist_core(void)
         assist_from_selector(mem[STEER_KEYS]);         /* $1F03 → $1F11, selector in A */
         return;
     }
-    apply_steer_demand_core(steer_angle_lo);           /* $1F95 */
+    apply_steer_demand_core((uint8_t)car_angle_16[CAR_ANGLE_STEER]);   /* $1F95 */
 }
 
 /* ---------------------------------------------------------------------------
@@ -10568,7 +10604,7 @@ static void apply_steer_demand_core(uint8_t signByte)
     /* $1612-$161B — 16-bit subtract (steer_angle_hi : signByte) - (STEER_DEMAND : STEER_SIGN),
        low into STEER_SIGN, high into `hi`.  D = 0 on the steering path (docs/static-map.md
        §Decimal mode), so plain 16-bit arithmetic. */
-    uint16_t diff = (uint16_t)((((uint16_t)steer_angle_hi << 8) | signByte)
+    uint16_t diff = (uint16_t)(((car_angle_16[CAR_ANGLE_STEER] & 0xFF00u) | signByte)
                              - (((uint16_t)mem[STEER_DEMAND] << 8) | mem[STEER_SIGN]));
     mem[STEER_SIGN] = (uint8_t)diff;
     uint8_t hi = (uint8_t)(diff >> 8);
@@ -10596,8 +10632,7 @@ static void clamp_and_store_steer_angle_core(uint8_t a)
        6502's CMP #$91 result, `(a >= 0x91u)`; the harness cannot police it, so keep it correct here. */
     cpu.C = (a >= 0x91u);
     if (a >= 0x91u) a = 0x91u;
-    steer_angle_hi = a;
-    steer_angle_lo = mem[STEER_SIGN];
+    car_angle_16[CAR_ANGLE_STEER] = (uint16_t)(((uint16_t)a << 8) | mem[STEER_SIGN]);
     read_pedals_and_gears();                           /* $162D falls into the pedals/gears tail */
 }
 
@@ -10772,7 +10807,8 @@ static void read_driving_controls_core(void)
     if (!amplifyPressed) {                             /* $15C7 PLP — amplify NOT down */
         /* $15CE-$15DA — demand is 1 when the wheel is barely off centre (steer_angle_hi <= 2),
            else 0; sign byte $80. */
-        mem[STEER_DEMAND] = (0x02u >= steer_angle_hi) ? 0x01u : 0x00u;
+        mem[STEER_DEMAND] = (0x02u >= (uint8_t)(car_angle_16[CAR_ANGLE_STEER] >> 8))
+                            ? 0x01u : 0x00u;
         mem[STEER_SIGN]   = 0x80u;
     }
 
@@ -10780,7 +10816,7 @@ static void read_driving_controls_core(void)
         uint8_t keys = mem[STEER_KEYS];                /* $15DF */
         if (keys == 0x00u) { steer_demand_from_slip_core(); return; }
         if (keys == 0x03u) { read_pedals_and_gears(); return; }   /* both keys: no steering */
-        if (((keys ^ steer_angle_lo) & 0x01u) == 0x00u) {         /* $15E8 — already this way */
+        if (((keys ^ (uint8_t)car_angle_16[CAR_ANGLE_STEER]) & 0x01u) == 0x00u) {  /* $15E8 */
             steer_apply_with_assist_core(); return;
         }
     }
@@ -10793,14 +10829,25 @@ static void read_driving_controls_core(void)
 }
 
 /* The 6502-ABI shims. */
-void read_driving_controls(void)        { read_driving_controls_core(); }
-void steer_demand_from_slip(void)       { steer_demand_from_slip_core(); }
-void steer_demand_store(void)           { steer_demand_store_core(cpu.A); }
-void apply_steer_demand(void)           { apply_steer_demand_core(cpu.A); }
-void clamp_and_store_steer_angle(void)  { clamp_and_store_steer_angle_core(cpu.A); }
-void steer_assist_dispatch(void)        { steer_assist_dispatch_core(cpu.A); }
-void steer_apply_with_assist(void)      { steer_apply_with_assist_core(); }
-void apply_steering_assist(void)        { apply_steering_assist_core(); }
+/* ⭐ The steering shims all sit on the car_angle_16 boundary: each of them reads element 2 and
+   every one can reach clamp_and_store_steer_angle, which writes it.  So each marshals in on the
+   way down and out on the way back — the invariant is stated at car_angle_16 above. */
+void read_driving_controls(void)        { car_angle_marshal_in(); read_driving_controls_core();
+                                          car_angle_marshal_out(); }
+void steer_demand_from_slip(void)       { car_angle_marshal_in(); steer_demand_from_slip_core();
+                                          car_angle_marshal_out(); }
+void steer_demand_store(void)           { car_angle_marshal_in(); steer_demand_store_core(cpu.A);
+                                          car_angle_marshal_out(); }
+void apply_steer_demand(void)           { car_angle_marshal_in(); apply_steer_demand_core(cpu.A);
+                                          car_angle_marshal_out(); }
+void clamp_and_store_steer_angle(void)  { car_angle_marshal_in(); clamp_and_store_steer_angle_core(cpu.A);
+                                          car_angle_marshal_out(); }
+void steer_assist_dispatch(void)        { car_angle_marshal_in(); steer_assist_dispatch_core(cpu.A);
+                                          car_angle_marshal_out(); }
+void steer_apply_with_assist(void)      { car_angle_marshal_in(); steer_apply_with_assist_core();
+                                          car_angle_marshal_out(); }
+void apply_steering_assist(void)        { car_angle_marshal_in(); apply_steering_assist_core();
+                                          car_angle_marshal_out(); }
 /* limit is a leaf: on the carry path it returns steer_angle_hi with that value's N/Z, C and V
    unchanged from entry; on the no-carry path A and every flag are the caller's. */
 /* poll is a leaf: A is preserved, X comes back as the flag (with its N/Z), C as bit 7 of

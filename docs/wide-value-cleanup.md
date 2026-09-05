@@ -113,7 +113,7 @@ relocation blast radius. High count ⇒ mechanism (B) is blocked; use (A) now.
 | `plot_ptr`/`plot_ptr2`/`plot_ptr3` | $70/$71, $72/$73, $8E/$8F | screen write pointers | **A only** | ✗ **B blocked — the 6502 DEREFERENCES these cells** (`($70),Y` and friends). ⭐ But (A) is INCOMPLETE and this is the largest remaining byte-lane pocket of the seven — §THE SEVEN NAMED PAIRS |
 | `point_delta`, `object_dist` | $80–$83, $55 | edge-walk scratch | B | **ELIGIBLE, unstarted** — re-scanned 2026-09-03 after twins #167-#172: every ref is in a native routine. Score them per §ELEVENTH before starting |
 | `nearest_edge_bearing` | $5E/$5F | edge-walk scratch | B | ⚠ **shares `$5F` with `engine_note_target`** (`CPX 0x005f` at `$0E94`, non-native `engine_sound_update`). A different TENANT, so it does not block under the EIGHTH lesson — but the relocation must leave `$5F` in `mem[]` for the sound path |
-| `steer_angle` | $62A2/$62A5 | the steering wheel's own angle, sign-magnitude (bit 0 of the LOW byte is the sign) | **A only** | **✅ A DONE (2026-09-04)** — `apply_steering_assist`'s `assist_from_selector` held the last two lane pairs on this path (`angLo`/`angHi` around the abs, and `lo`/`hi` around the re-sign); both are single `uint16_t`s now, with `& $FFFE` in place of "clear bit 0 of the low lane and keep the high one". B is blocked: it is element 2 of the strided `CAR_ANGLE` array |
+| `steer_angle` | $62A2/$62A5 | the steering wheel's own angle, sign-magnitude (bit 0 of the LOW byte is the sign) | **A only** | **✅ A DONE (2026-09-04)** — `apply_steering_assist`'s `assist_from_selector` held the last two lane pairs on this path (`angLo`/`angHi` around the abs, and `lo`/`hi` around the re-sign); both are single `uint16_t`s now, with `& $FFFE` in place of "clear bit 0 of the low lane and keep the high one". B is DONE too: the whole `CAR_ANGLE` array is `car_angle_16[3]` |
 | `SLIP_MAG` | $8E/$8F and $62DA/$62EA | slip magnitude — a TENANT of plot_ptr3, plus a second home as MODEL_STATE element $0A | **A only** | ✗ **B blocked twice over**: the $8E home is an indirect pointer base, the $62DA home is a strided SoA member. §THE SEVEN NAMED PAIRS |
 
 ⚠ **A FULL indexed/indirect re-audit of every campaign pair** (both `$xx,X`/`$xx,Y` notations and
@@ -532,7 +532,7 @@ in the interim but the final store stays two non-adjacent byte writes until relo
 | Base | lo/hi | Shape | gen readers | Mechanism | Status |
 |---|---|---|---|---|---|
 | `MODEL_STATE` | $62D0/$62E0 | 15×16-bit driving-model state (stride $10) — incl. `heading_step` (element 2, $62D2/$62E2) and `slip_magnitude` (element $0A, $62DA/$62EA) | ~47 | A now; B blocked | **`heading_step` ✅ A COMPLETE — nothing left to convert** (see below); **`slip_magnitude` ✅ A DONE (2026-09-04)** — `steer_demand_from_slip` ($15F4) and `store_slip_signed` ($4B51) held the last lane pairs; the rest of the elements are still TODO |
-| `CAR_ANGLE` | $62A0/$62A3 | 3× (heading_sin/cos, `steer_angle` = element 2, $62A2/$62A5) | ~9 | A now; B blocked | TODO |
+| `CAR_ANGLE` | $62A0/$62A3 | 3× (heading_sin/cos, `steer_angle` = element 2, $62A2/$62A5) | ~9 | **A + B DONE** | `car_angle_16[3]` |
 | `CAR_DISTANCE` | $08D0/$08E8 | per-car (20) distance-round-lap | ~19 | A now; B blocked | TODO |
 | `OBJECT_BEARING` | $0380/$0398 | per-slot 16-bit track position | ? | A now; B blocked | TODO |
 | `SECTION_COORD` (=`SECTION_CRD`) | $0900/$0A00 | section origin (stride $100) — **two names, one addr; dedupe** | ~62 | A now; B blocked | TODO |
@@ -1213,7 +1213,7 @@ row.
 | Base | native | shipping blockers | verdict / order |
 |---|---|---|---|
 | `MODEL_STATE` $62D0/$62E0 | **22 fn / 82 ref** | 5 fn / 7 ref | **the prize** — de-transliterate or shim-marshal the five, then relocate all 16 elements at once |
-| `CAR_ANGLE` $62A0/$62A3 | 12 fn / 32 ref | **none** | ✅ eligible NOW — the cheapest real (B) win; do it first |
+| `CAR_ANGLE` $62A0/$62A3 | 12 fn / 32 ref | **none** | ✅ **(B) DONE** — `car_angle_16[3]`, see below |
 | `VIEW_ORIGIN` $6280 | 5 fn / 14 ref | **none** | ✅ eligible; `integrate_car_position_core` and `build_sign_origin_core` hold 4 each |
 | `MARKER_OFF` $62B7/$62BA | 2 fn / 6 ref | **none** | ✅ eligible, small — `append_corner_marker` / `draw_corner_markers` |
 | `OBJECT_BEARING` $0380/$0398 | 6 fn / 6 ref | **none** | ✅ eligible but **one ref per function** — score it before writing anything; likely a decline |
@@ -1639,3 +1639,59 @@ accumulator before the shared one, even though `math_lo/hi` has the highest raw 
 - Commit one cell/base per commit; gate each as above; keep this ledger's Status column current.
 - Nativizing a reader function is itself a faithful-seam twin (per CLAUDE.md) with its own
   validate fixture + sabotage gate — record each on the cpu-elimination / this ledger as it lands.
+
+
+---
+
+## `CAR_ANGLE` $62A0-$62A5 → `car_angle_16[3]` — the first Tier-3 (B) relocation
+
+The three-entry array the 6502 kept **plane-split**: low bytes $62A0-$62A2, high bytes $62A3-$62A5,
+so element *i* cost two strided byte accesses each way.  Now three `uint16_t` in `revs_native.c`,
+declared in `revs_native_seam.h` with `CAR_ANGLE_SIN` / `_COS` / `_STEER` naming the elements.
+**Thirteen native sites, all converted in one commit** (the array is only useful whole):
+
+| routine | what it does with the array |
+|---|---|
+| `compute_car_angles_core` | **producer** of elements 0/1 — builds each word directly (`res & $FFFE`, saturation `$FFFE`) instead of splitting into `lo`/`hi`, then ORs the quadrant sign into bit 0 of the word |
+| `apply_angle_term_body` | the multiplier of every driving-model rotation: one word read, then `termLo`/`termHi` off the register |
+| `clamp_and_store_steer_angle_core` | **producer** of element 2 — one word store where it was two byte stores |
+| `assist_from_selector` | reads element 2 as a word (was composed from two lanes), plus the bit-0 sign test |
+| `limit_steer_demand_core`, `apply_steer_demand_core`, `steer_demand_from_slip_core`, `steer_apply_with_assist_core`, `read_driving_controls_core`, `draw_dash_needles` | consumers of element 2 — high byte, low byte, sign bit or the whole word |
+
+**⚠⚠ The packing is SIGN-MAGNITUDE, not two's complement.** Bit 0 of the low byte is the SIGN and
+bit 7 is the value's own lowest bit — `compute_car_angles` builds `(magnitude << 1) | sign` with its
+`ASL`/`ROL` pair, and `mul16_signed` reads bit 0 as its multiplier's sign.  That packing *is* exactly
+a 16-bit word, which is why (B) applies at all; but no reader may treat one of these words as a
+plain signed quantity.  Magnitude is `w >> 1`, sign is `w & 1`.  Sabotage S6 below is that trap.
+
+### The boundary rule this one established
+
+**mem[$62A0-$62A5] and `car_angle_16[]` agree at every 6502-ABI shim.** A shim whose core reads the
+array marshals in; one whose core writes it marshals in *and* out — **in as well as out, because no
+writer owns all three elements** (`compute_car_angles` owns the sin/cos pair, the steering path owns
+element 2, and a marshal_out publishes all three).  Sixteen shims are on the boundary; a
+read/write transitive closure over the two native files found them, and the four that the first pass
+missed are exactly the ones `make validate` then failed: `apply_angle_term_at`, `apply_driving_model`
+and the two `rotate_state_*` entries.  ⭐ Keeping mem[] authoritative at the boundary is also what
+lets `det_compare.py`'s `RELOCATED` stay **empty** — all three determinism runs are 64K
+byte-identical *including* these six cells, so an unknown transliterated writer of them would still
+be picked up at the next shim.
+
+### Gate
+
+`make validate` 136 fixtures, 0 mismatch; `determinism`, `determinism-drive` and
+`determinism-crash` 64K byte-identical; `tracks` 6/6; `track-run` every circuit's code executes;
+`endian-lint` clean; the Amiga link clean (`muldiv-audit`, `probe-audit`).  Seven sabotages, each
+`rm`-ing the object and the binary first, **all seven FAIL with seven different mismatch counts**
+(1450 / 3000 / 1992 / 1951 / 1990 / 1546 / 2000 — distinct counts are the check that no iteration
+reused a stale object):
+
+| # | defect | detected by |
+|---|---|---|
+| S1 | drop the cos quadrant sign bit (`\|= 0x0000`) | `compute_car_angles` |
+| S2 | `car_angle_marshal_out` swaps the two lanes | `compute_car_angles` |
+| S3 | `car_angle_marshal_in` swaps the two lanes | `apply_angle_term` |
+| S4 | `apply_angle_term_body` takes `termLo` from the high half | `apply_angle_term` |
+| S5 | the clamp stores the steer word byte-swapped | `clamp_and_store_steer_angle` |
+| S6 | the sign read as bit 15 instead of bit 0 (the packing trap) | `apply_steering_assist` |
+| S7 | drop `car_angle_marshal_in` from one boundary shim | `apply_angle_term` |
