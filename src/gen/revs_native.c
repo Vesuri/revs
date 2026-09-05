@@ -7704,6 +7704,28 @@ uint8_t sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX)
 }
 
 /* ---------------------------------------------------------------------------
+   $0B65  sound_envelope — DEFINE ONE MOS SOUND ENVELOPE  (twin #174)
+   ---------------------------------------------------------------------------
+   The sibling entry to sound_queue: same OSWORD tail, different reason code.  The caller names
+   an envelope by the base of its 14-byte definition block, and $38 is where those blocks sit
+   inside the $0B00 page ($0B38 onward, just past the five SOUND control blocks at $0B10-$0B37),
+   so the add forms the OSWORD block address's low byte exactly as sound_queue's `+ $10` does.
+   Reason code 8 is ENVELOPE, 7 is SOUND.
+
+   Taken for the marshalling rather than the milliseconds — it was the last non-oracle holder of
+   the sound_osword 6502-ABI shim outside reset_driving_variables, and the volume-step routine
+   ($0F2C, native since twin #78) reached it through that shim on every volume change.
+   ⚠ The `CLC`/`ADC #$38` is the LAST writer of C and V in the whole routine (mos_call touches no
+   cpu field), so both flags reach the exit and the shim replays them from the operands.
+   --------------------------------------------------------------------------- */
+MosRegs sound_envelope_core(uint8_t envBase, uint8_t savedX)
+{
+    sound_saved_x = savedX;                                     /* $0B65 STX — restored by the tail */
+    uint8_t blockLow = (uint8_t)(envBase + 0x38u);              /* $0B68-$0B69 — D = 0 on this path */
+    return sound_osword_core(0x08u, blockLow);                  /* $0B6C — OSWORD 8 (ENVELOPE) */
+}
+
+/* ---------------------------------------------------------------------------
    $0E5A  sound_stop_channel — SILENCE ONE CHANNEL  (twin #77)
    ---------------------------------------------------------------------------
    Clears sound_chan_state[X] and flushes the MOS buffer X|4, because buffers 4..7 ARE the four
@@ -13515,8 +13537,10 @@ void shift_key_commands(void)
             mem[MEM_sound_volume] = vol;
             /* envelope attack level = |sound_volume| * 8  ($0F4B EOR/$0F4F ADC = -vol, ASL x3) */
             mem[MEM_envelope_attack_level] = (uint8_t)((uint8_t)((vol ^ 0xFFu) + 1u) << 3);
-            cpu.A = 0u;                           /* $0F57 LDA #0 -> envelope number 1 base */
-            sound_envelope();                     /* $0F59 */
+            /* $0F57/$0F59 — redefine envelope 1 (base 0) with the new attack level.  Core-to-
+               core: the shim's whole job would be to put a 0 in cpu.A and read flags nothing
+               here looks at, and X is not live across this call either. */
+            sound_envelope_core(0x00u, cpu.X);
             mem[MEM_engine_note]++;               /* $0F5C INC engine_note */
         }
     }

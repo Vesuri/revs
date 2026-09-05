@@ -500,6 +500,7 @@ void copy_section_height_to_side1_core(uint8_t x);
 void load_section_from_segment_core(uint8_t x, uint8_t y);
 uint8_t shift_near_edge_points_core(uint8_t topSlot, uint8_t wrapSlot, uint8_t lowTop, uint8_t nearSlots);
 MosRegs sound_osword_core(uint8_t oswordNum, uint8_t blockLow);
+MosRegs sound_envelope_core(uint8_t envBase, uint8_t savedX);
 uint8_t sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX);
 SlotExit engine_sound_update_core(uint8_t entryX, uint8_t entryY,
                                   unsigned entryV, unsigned entryC, int* pushedPitch);

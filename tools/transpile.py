@@ -1280,6 +1280,14 @@ VALIDATE_FUNCS = {
     # per path — the sound_queue exit for the two queueing paths, sound_stop_all's for the
     # silent one, and the CPX's own flags on the note-already-at-target path.  No BCD.
     0x0E74,
+    # ⭐ TWIN #174 — sound_envelope ($0B65), the OSWORD 8 (ENVELOPE) entry.  Five instructions,
+    # taken purely for the marshalling: it was the last non-oracle holder of the sound_osword
+    # 6502-ABI shim apart from reset_driving_variables, and the volume-step routine ($0F2C, native
+    # since twin #78) called it through that shim on every volume change.  Body: park the caller's
+    # X, add $38 to the envelope base in A to form the control-block low byte, and OSWORD 8 it.
+    # ⚠ The `CLC`/`ADC #$38` leaves C and V live to the exit — mos_call touches no cpu field and
+    # nothing below the add writes either flag — so the exit ABI is A/X/Y + N/Z/C/V, all of it.
+    0x0B65,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

@@ -427,6 +427,19 @@ void sound_osword(void)
     cpu.Z = (uint8_t)(sound_saved_x == 0u);
 }
 
+/* $0B65 — the OSWORD's A/Y, the parked X back with its own N/Z, and the entry add's C/V. */
+void sound_envelope(void)
+{
+    uint8_t envBase = cpu.A;                         /* the envelope definition block's base */
+    MosRegs r = sound_envelope_core(envBase, cpu.X);
+    cpu.A = r.a; cpu.Y = r.y;                        /* OSWORD leaves A (the reason code) and Y ($0B) */
+    cpu.X = sound_saved_x;                           /* $0B73 LDX sound_saved_x — its N/Z the exit */
+    cpu.N = (uint8_t)(sound_saved_x >> 7);
+    cpu.Z = (uint8_t)(sound_saved_x == 0u);
+    cpu.C = (uint8_t)(((unsigned)envBase + 0x38u) > 0xFFu);   /* $0B69's ADC — nothing below */
+    cpu.V = adc_overflow(envBase, 0x38u, 0u);                 /* ...writes either flag again */
+}
+
 void sound_queue(void)
 {
     uint8_t slot = cpu.A;

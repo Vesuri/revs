@@ -5860,6 +5860,7 @@ void check_wheel_slip(void);        void check_wheel_slip__t6502(void);
 void clamp_slip_to_grip(void);      void clamp_slip_to_grip__t6502(void);
 void sound_osword(void);            void sound_osword__t6502(void);
 void sound_queue(void);             void sound_queue__t6502(void);
+void sound_envelope(void);          void sound_envelope__t6502(void);
 void sound_queue_default(void);     void sound_queue_default__t6502(void);
 void sound_stop_channel(void);      void sound_stop_channel__t6502(void);
 void update_slip_sound(void);       void update_slip_sound__t6502(void);
@@ -5877,7 +5878,7 @@ static int test_slip_and_sound(void)
     if (scale < 1) scale = 1;
 
     struct { const char* name; void (*nat)(void); void (*ref)(void); int cases; }
-      list[12] = {
+      list[13] = {
         { "slip_magnitude",        slip_magnitude,        slip_magnitude__t6502,        3000 },
         { "store_slip_signed",     store_slip_signed,     store_slip_signed__t6502,     2000 },
         { "store_slip_clamped",    store_slip_clamped,    store_slip_clamped__t6502,    2000 },
@@ -5891,17 +5892,24 @@ static int test_slip_and_sound(void)
         { "sound_queue_default",   sound_queue_default,   sound_queue_default__t6502,   1000 },
         { "sound_stop_channel",    sound_stop_channel,    sound_stop_channel__t6502,    1000 },
         { "update_slip_sound",     update_slip_sound,     update_slip_sound__t6502,     3000 },
+        /* ⭐ sound_envelope (i == 12) — sound_osword's sibling entry, OSWORD 8 instead of 7.
+           Its whole input is the entry A (the envelope block's base) and X (parked in
+           sound_saved_x and handed straight back), both already randomised below; the carry the
+           `ADC #$38` leaks to the exit is exercised by every A >= $C8, about a fifth of the
+           cases, and counted as `carried` so the arm cannot go vacuous. */
+        { "sound_envelope",        sound_envelope,        sound_envelope__t6502,         500 },
       };
     static const uint8_t PEDALS[3] = { 1, 0, 0x80 };
-    for (i = 0; i < 12; i++) register_fixture(list[i].name);
+    for (i = 0; i < 13; i++) register_fixture(list[i].name);
 
     /* ⭐ slip_magnitude (i == 0) and check_wheel_slip (i == 5) are verified RESULT-ONLY: their
        native twins are idiomatic C whose whole product is mem[] (slip_magnitude's SLIP_MAG_LO/HI,
        check_wheel_slip's slip flags and state vector), leaving nothing meaningful in the cpu — no
        caller reads their exit registers (each caller overwrites A immediately).  D is pinned to 0
        (the driving model's precondition) and the register/flag comparison is dropped. */
-    for (i = 0; i < 12; i++) {
+    for (i = 0; i < 13; i++) {
         int subFail = 0, decimal = 0, throttle = 0, driven = 0, powered = 0, idle = 0;
+        int carried = 0;
         int cases = list[i].cases * scale;
         /* ⭐ clamp_slip_to_grip (i == 6) and update_slip_sound (i == 11) are RESULT-ONLY too: their
            cpu-free cores' whole product is mem[] (the clamped state vector, the sound blocks /
@@ -5956,7 +5964,7 @@ static int test_slip_and_sound(void)
                would compare two models agreeing on a block the game can never ask for.  The
                decimal counter is taken AFTER this, or the vacuity check counts cases that
                were overridden away (it went negative the first time). */
-            if (i >= 7 && i <= 10) c.D = 0;
+            if ((i >= 7 && i <= 10) || i == 12) c.D = 0;   /* sound_envelope too — same path */
             if (c.D) decimal++;
             /* sound_queue / sound_queue_default take the SLOT in A. */
             if (i == 8 || i == 9) c.A = (uint8_t)(xs() % 8);
@@ -5982,6 +5990,9 @@ static int test_slip_and_sound(void)
             { uint8_t slipOut = (uint8_t)(xs() & 3);
               if (i >= 1 && i <= 3) pre[0x0078u] = slipOut; }
             if (i == 11) c.X = (uint8_t)(xs() & 1);
+            /* sound_envelope takes the envelope block's base in A; A >= $C8 is the case whose
+               `ADC #$38` carries, and that carry reaches the exit. */
+            if (i == 12 && (unsigned)c.A + 0x38u > 0xFFu) carried++;
             subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
                                 mask, t, &printed);
         }
@@ -5992,12 +6003,18 @@ static int test_slip_and_sound(void)
             fail++;
         }
         if (i == 10 && !idle) { printf("[VACUOUS] %s: no already-idle case\n", list[i].name); fail++; }
+        if (i == 12 && (!carried || carried == cases)) {
+            printf("[VACUOUS] %s: %d of %d cases carry out of the ADC\n",
+                   list[i].name, carried, cases);
+            fail++;
+        }
         printf("%-32s %7d cases, %d mismatch (must be 0)  %s  "
                "(%d decimal, %d throttle, %d driven axle, %d under power%s)\n",
                list[i].name, cases, subFail,
                resultOnly ? "result-only" : derivRef ? "live=A+C" : "live=AXY+flags",
                decimal, throttle, driven, powered,
                i == 10 ? ", channel idle forced" : "");
+        if (i == 12) printf("%-32s %7d of them carry out of the ADC\n", "", carried);
     }
     set_ignore(0, 0);
     return fail;
