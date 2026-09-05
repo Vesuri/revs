@@ -10419,6 +10419,48 @@ uint8_t vdu_char_emit_core(void)
     return mem[VDU_CHAR_BLOCK];                         /* $50F2 — the character comes back live */
 }
 
+/* ---- shared by every native text printer (the cluster header is at $3250, further down) ----
+   $0078's OTHER TENANCY: hypot_min_lo to the ground-plane maths, the digit FIELD MASK to the
+   number printers.  The arithmetic-window addresses carry one global symbol each
+   (docs/rename.md), so the second tenancy is a file-local name. */
+#define print_field_mask   hypot_min_lo
+
+/* $5092 BIT/BMI — the character dispatch.  On the OSWRCH arm A is preserved and the BIT's flags
+   stand (N = bit 7 of the flag byte, set or we would not be on this arm; Z = A & flag); on the
+   bitmap arm both come from the character the emitter hands back.  Neither arm touches C. */
+static TextChar vdu_emit_char(uint8_t ch, uint8_t x, uint8_t y)
+{
+    TextChar e;
+    if (text_out_via_mos & 0x80u) {
+        mos_oswrch(ch, x, y);                       /* $50F6 — X/Y ambient */
+        e.a = ch;
+        e.n = 1u;
+        e.z = (uint8_t)((ch & text_out_via_mos) == 0u);
+    } else {
+        e.a = vdu_char_def_core(ch);
+        e.n = (uint8_t)((e.a >> 7) & 1u);
+        e.z = (uint8_t)(e.a == 0u);
+    }
+    return e;
+}
+
+/* ASL $78 — advance the field mask one position and return the bit that fell off the top (the
+   6502 carry).  The cell is the low lane of a relocated word, so both copies move together. */
+static uint8_t field_mask_shift(void)
+{
+    uint8_t out = (uint8_t)(print_field_mask >> 7);
+    print_field_mask = (uint8_t)(print_field_mask << 1);
+    hypot_min_v = (uint16_t)((hypot_min_v & 0xFF00u) | print_field_mask);
+    return out;
+}
+
+/* Seed the field mask (a caller hands it over in A) — same two copies. */
+static void field_mask_set(uint8_t mask)
+{
+    print_field_mask = mask;
+    hypot_min_v = (uint16_t)((hypot_min_v & 0xFF00u) | mask);
+}
+
 /* ---------------------------------------------------------------------------
    $3D50  print_spaces — `count` SPACES THROUGH THE VDU CHAR PATH  (twin #148)
    Each space goes through the same dispatch vdu_char_def uses: OSWRCH when
@@ -10430,8 +10472,6 @@ uint8_t vdu_char_emit_core(void)
    Exit A = the space byte ($20); the caller's exit N/Z come from the final
    DEC to zero (N=0, Z=1) — three callers branch on that Z.
    --------------------------------------------------------------------------- */
-static TextChar vdu_emit_char(uint8_t ch, uint8_t x, uint8_t y);   /* the printer cluster */
-
 uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y)
 {
     uint8_t c = count;
@@ -13416,12 +13456,14 @@ void reset_driving_variables_core(void)
         position_swap_flag  = 0x01u;                   /* $18A7 */
         arg_x(0x2Bu); print_message_upper_row();       /* $18AA — still transliterated */
         arg_x(0x2Cu); print_message_lower_row();       /* $18AF */
-        arg_a(zp_scratch_index); position_to_bcd();    /* $18B4 — the player's grid slot... */
-        pass_count_bcd = cpu.A;                        /* ...as a 1-based BCD number */
+        /* $18B4 — the player's grid slot as a 1-based BCD number */
+        pass_count_bcd = position_to_bcd_core(zp_scratch_index).a;
     } else {
         arg_x(0x28u); print_message_pair();            /* $1892 — both status rows */
         clear_race_clock_core(0x01u);                  /* $1897 */
-        show_lap_time_lines();                         /* $189C */
+        /* $189C — cpu.Y is the ambient OSWRCH register the MOS text arm needs (a documented
+           cpu exception at this seam), not a value this routine computes. */
+        show_lap_time_lines_core(cpu.Y);
         lap_time_show_timer = 0xDFu;                   /* $189F — the first-lap sentinel */
     }
 }
@@ -13458,9 +13500,11 @@ void reset_driving_variables_core(void)
        push overwrite it;
      - add_frame_time is one of the eight SED sites and its exit CARRY is a genuine input — the
        BCD seconds carry its own $17D6 PHP kept — and that carry is what decides $106A;
-     - print_message_pair, print_bcd_digits_at, position_to_bcd, print_time_row21,
-       show_lap_time_lines/lower and update_position_display are still transliterated, so they
-       are still reached by register.  Those arg_* calls are the callees' real ABI, not marshalling.
+     - print_message_pair is still transliterated, so it is still reached by register, and the
+       cursor set at $101B/$101D stays AMBIENT past its call.  Everything else this routine calls
+       is native and takes its inputs as arguments (twins #181-#191); where a cpu register is
+       still passed it is the OSWRCH ambient X/Y, which is state the MOS text arm reads, not a
+       value this routine computes.
 
    ⚠⚠ THE FIXTURE FOUND A LIVE BUG IN AN EXISTING SHIM, not in this twin: clear_race_clock's
    6502-ABI shim set cpu.A alone, so the Z its `LDA #$00` really leaves was stale and $1054's
@@ -13501,9 +13545,11 @@ void update_lap_timers_core(void)
                 | ((lapsLeft == 0u) ? 0x02u : 0u)                      /* Z */
                 | ((sum > 0xFFu) ? 0x01u : 0u)));                      /* C */
 
-            arg_a(lapsLeft); position_to_bcd();       /* $1018 — 1-based BCD */
+            uint8_t lapsBcd = position_to_bcd_core(lapsLeft).a;   /* $1018 — 1-based BCD */
+            /* $101B/$101D — the cursor stays AMBIENT past this call: print_message_pair and
+               update_position_display below are still reached through the 6502 ABI. */
             arg_x(0x0Cu); arg_y(0x21u);
-            print_bcd_digits_at();                    /* $101F — column $0C, row $21 */
+            print_bcd_digits_at_core(lapsBcd, 0x0Cu, 0x21u);   /* $101F */
 
             uint8_t pulled; PULL(pulled);             /* $1022 PLP */
             if (pulled & 0x80u) {                     /* $1023 BPL — negative: the laps ran out */
@@ -13511,7 +13557,7 @@ void update_lap_timers_core(void)
             }
         }
         if (session_end_countdown == 0u)              /* $102A/$102C BNE */
-            update_position_display();                /* $102E */
+            update_position_display_core(cpu.X, cpu.Y);   /* $102E */
         return;
     }
 
@@ -13527,19 +13573,21 @@ void update_lap_timers_core(void)
     if (lapFlags & 0x40u) {                           /* $1039 BVS $1056 — the countdown */
         if (lap_time_show_timer != 0u) {              /* $1056/$1059 BEQ */
             if (--lap_time_show_timer == 0u) {        /* $105B DEC / $105E BNE */
-                show_lap_time_lines();                /* $1060 — restore both lines... */
-                arg_a(0x02u); print_spaces();         /* $1065 — ...and clear the two cells */
+                show_lap_time_lines_core(cpu.Y);      /* $1060 — restore both lines... */
+                /* $501D leaves X on the $15 pseudo-slot, which print_spaces carries into
+                   OSWRCH as its ambient X. */
+                print_spaces_core(0x02u, 0x15u, cpu.Y);  /* $1065 — ...and clear the two cells */
                 /* $1068's BEQ is unconditional (see the header). */
             }
         } else if (timeCarry) {                       /* $106A BCC — the clock's own carry */
-            show_lap_time_lower();                    /* $106C */
+            show_lap_time_lower_core(cpu.Y);          /* $106C */
         }
     } else if (lapFlags & 0x80u) {                    /* $103B BPL — a lap was just credited */
         lap_completed_flag >>= 1;                     /* $103D LSR — consume it, keeping bit 6 */
         uint8_t t = (uint8_t)(lap_time_show_timer + 0x21u);   /* $103F-$1045 (C=0) */
         lap_time_show_timer = t;
         if (t != 0u) {                                /* $1048 BEQ — 0 is the first lap */
-            arg_a(0x26u); print_time_row21();         /* $104C — show the time just set */
+            print_time_row21_core(0x26u, cpu.Y);      /* $104C — show the time just set */
         }
         clear_race_clock_core(0x01u);                 /* $1051 — restart the lap timer */
         /* $1054's BEQ is unconditional (see the header): straight to the qualifying deadline. */
@@ -14332,7 +14380,8 @@ void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
  *      bitmap emitter (`vdu_emit_char` below), which is the same open-coded pair print_spaces_core
  *      already used — factored out here so all five callers agree.
  *
- *   2. ONE SHIFT REGISTER.  $0078 is `hypot_min_lo` when the ground-plane maths owns it; in the
+ *   2. ONE SHIFT REGISTER (`print_field_mask`, defined with the helpers above print_spaces_core).
+ *      $0078 is `hypot_min_lo` when the ground-plane maths owns it; in the
  *      printers it is a FIELD MASK, shifted left once per digit position.  It decides three
  *      things: what a suppressed leading zero looks like (bit 7 set -> the pad glyph $4F, clear ->
  *      a space), and whether the next digit is printed at all (the bit shifted OUT).  That is how
@@ -14364,45 +14413,6 @@ void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
  * models no return address, so the oracle's own residue address is already not the 6502's.  Both
  * fixtures pin S and ignore that one cell (docs/validation-harness.md's i=5 precedent).
  * ================================================================================================ */
-
-/* $0078's OTHER TENANCY — see (2) above. */
-#define print_field_mask   hypot_min_lo
-
-/* $5092 BIT/BMI — the character dispatch.  On the OSWRCH arm A is preserved and the BIT's flags
-   stand (N = bit 7 of the flag byte, set or we would not be on this arm; Z = A & flag); on the
-   bitmap arm both come from the character the emitter hands back.  Neither arm touches C. */
-static TextChar vdu_emit_char(uint8_t ch, uint8_t x, uint8_t y)
-{
-    TextChar e;
-    if (text_out_via_mos & 0x80u) {
-        mos_oswrch(ch, x, y);                       /* $50F6 — X/Y ambient */
-        e.a = ch;
-        e.n = 1u;
-        e.z = (uint8_t)((ch & text_out_via_mos) == 0u);
-    } else {
-        e.a = vdu_char_def_core(ch);
-        e.n = (uint8_t)((e.a >> 7) & 1u);
-        e.z = (uint8_t)(e.a == 0u);
-    }
-    return e;
-}
-
-/* ASL $78 — advance the field mask one position and return the bit that fell off the top (the
-   6502 carry).  The cell is the low lane of a relocated word, so both copies move together. */
-static uint8_t field_mask_shift(void)
-{
-    uint8_t out = (uint8_t)(print_field_mask >> 7);
-    print_field_mask = (uint8_t)(print_field_mask << 1);
-    hypot_min_v = (uint16_t)((hypot_min_v & 0xFF00u) | print_field_mask);
-    return out;
-}
-
-/* Seed the field mask (a caller hands it over in A) — same two copies. */
-static void field_mask_set(uint8_t mask)
-{
-    print_field_mask = mask;
-    hypot_min_v = (uint16_t)((hypot_min_v & 0xFF00u) | mask);
-}
 
 /* ------------------------------------------------------------------------------------------------
  * $3250 emit_driver_name — TWIN #181.  Prints the twelve characters of a driver's name from the
@@ -14507,6 +14517,160 @@ TextExit print_lap_time_core(uint8_t fieldMask, uint8_t carIdx, uint8_t y)
     t = vdu_emit_char(0x2Eu, carIdx, y);                              /* $7BB3 — '.' */
     e.a = t.a; e.n = t.n; e.z = t.z;
     return print_bcd_digits_core(mem[CAR_BEST_LAP_LO + carIdx], carIdx, y); /* $7BB8 — hundredths */
+}
+
+
+/* ================================================================================================
+ * ⭐ TWINS #185-#191 — THE DASHBOARD READOUTS THAT DRIVE THE PRINTERS
+ * ------------------------------------------------------------------------------------------------
+ * The transliterated callers of the number/name printers: the position readout, the lap-time
+ * readout chain and the two driver-name lines.  Between them they are the whole of the in-race
+ * text output, and converting them is what lets the printers be reached core-to-core instead of
+ * through their 6502-ABI shims.
+ *
+ * Three of them are FALL-THROUGH entries into one another ($501D -> $502D -> $502F), so each core
+ * simply calls the next: the 6502 saved a JSR, the C says what it means.
+ * ================================================================================================ */
+
+/* $65C8 position_to_bcd — TWIN #185.  A 0-based index (0..$13) to the 1-based BCD number shown on
+   the dashboard.  The CMP leaves C set for A >= 10, which turns the ADC #$05 into +6 and carries
+   the tens digit into the high nibble; a DECIMAL ADC #$01 then adds the 1.  One of the eight
+   sanctioned SED sites (docs/static-map.md §Decimal mode).  Exit V is not modelled — the two
+   callers read A alone (one stores it, one prints it). */
+BcdExit position_to_bcd_core(uint8_t index)
+{
+    uint8_t  a = index;
+    unsigned c = (index >= 0x0Au);                   /* $65C8 CMP #$0A */
+    BcdExit  e;
+
+    if (c) {                                         /* $65CA BCC — a two-digit position */
+        Adc t = adc_value(a, 0x05u, c);              /* $65CC ADC #$05, C set: +6 */
+        a = t.val; c = t.carry;
+    }
+
+    /* $65CE SED / $65CF ADC #$01 / $65D1 CLD — the 1-based bump, in decimal.  Written out rather
+       than bracketed with cpu.D because the NMOS 6502's decimal ADC takes Z from the BINARY sum
+       and N from the PRE-correction high nibble, so both flags have to come from the intermediate
+       quantities anyway (cpu.h's ADC does the same). */
+    {
+        unsigned lo  = (unsigned)(a & 0x0Fu) + 1u + c;
+        unsigned hi  = (unsigned)(a >> 4);
+        unsigned bin = (unsigned)a + 1u + c;
+        if (lo > 9u) { lo += 6u; hi += 1u; }
+        e.z = (uint8_t)(((bin & 0xFFu)) == 0u);
+        e.n = (uint8_t)((hi & 0x08u) ? 1u : 0u);
+        if (hi > 9u) hi += 6u;
+        c = (hi > 0x0Fu);
+        a = (uint8_t)(((hi << 4) | (lo & 0x0Fu)) & 0xFFu);
+    }
+
+    e.a = a;
+    e.v = 0u;                                        /* not modelled — see the header */
+    e.c = (uint8_t)c;
+    return e;
+}
+
+/* $502F print_time_row21 — TWIN #186.  Car slot $15 — past the twenty drivers, the reference/best
+   time pseudo-slot — printed as mm:ss[.hh] at column $0A, row $21.  A on entry is the field mask,
+   so the caller picks whether the hundredths appear. */
+TextExit print_time_row21_core(uint8_t fieldMask, uint8_t y)
+{
+    vdu_char_column = 0x0Au;                         /* $502F/$5031 */
+    vdu_char_row    = 0x21u;                         /* $5034/$5036 */
+    return print_lap_time_core(fieldMask, 0x15u, y); /* $5039/$503B — X = the pseudo-slot */
+}
+
+/* $502D show_lap_time_lower — TWIN #187.  The lower readout alone: mask $28 (bit 7 clear, so the
+   hundredths print), then fall into the row-$21 printer. */
+TextExit show_lap_time_lower_core(uint8_t y)
+{
+    return print_time_row21_core(0x28u, y);          /* $502D LDA #$28 */
+}
+
+/* $501D show_lap_time_lines — TWIN #188.  Both readouts: the PLAYER's time at column $20 / row
+   $21 first (mask $26), then the lower line.  X carries the player car into print_lap_time as
+   both the table index and the ambient OSWRCH register. */
+TextExit show_lap_time_lines_core(uint8_t y)
+{
+    vdu_char_column = 0x20u;                         /* $501D/$501F */
+    vdu_char_row    = 0x21u;                         /* $5022 INX / $5023 */
+    print_lap_time_core(0x26u, player_car, y);       /* $5026-$502A */
+    return show_lap_time_lower_core(y);              /* fall through */
+}
+
+/* $667B print_driver_name_by_order — TWIN #189.  Y is a POSITION in car_order; turn it into the
+   car, park that in saved_slot_index (the plotter's own slot cell), look the name row up and print
+   its twelve characters.  Exit X is the car, Y is emit_driver_name's terminator ($0C), and the
+   flags are that routine's fixed CPY result. */
+NameExit print_driver_name_by_order_core(uint8_t orderPos)
+{
+    NamePtr  p;
+    NameExit e;
+    uint8_t  car = mem[CAR_ORDER + orderPos];        /* $667B LDX car_order,Y */
+
+    saved_slot_index = car;                          /* $667E */
+    driver_name_address_core(car, &p);               /* $6680 */
+    math_lo = p.scratch;                             /* $74 — the dead 6502 intermediate */
+    e.a = emit_driver_name_core(p.lo, p.hi, car);    /* $6683 — X stays the car throughout */
+    e.x = car;
+    e.n = 0u; e.z = 1u; e.c = 1u;                    /* $325C CPY #$0C with Y = $0C */
+    return e;
+}
+
+/* $6673 print_driver_name_at_row — TWIN #190.  The same, with the cursor placed first: A is the
+   scan-line row and the column is fixed at $1B (the right-hand name field). */
+NameExit print_driver_name_at_row_core(uint8_t row, uint8_t orderPos)
+{
+    vdu_char_row    = row;                           /* $6673 */
+    vdu_char_column = 0x1Bu;                         /* $6676/$6678 */
+    return print_driver_name_by_order_core(orderPos);
+}
+
+/* $1B84 update_position_display — TWIN #191.  The race-arm position readout.  pass_count_bcd holds
+   the positions gained or lost since the last repaint; fold it into race_position_bcd in decimal
+   and reprint (column $0A, row $18) if it changed and stayed inside the field ($21 = 21st, past
+   the grid).  Then, if position_swap_flag says the order changed, redraw the two names either side
+   of the player, and shift the flag along.
+   Exit A/X/Y depend on which arms ran; the flags are the closing LSR's, and V is not modelled (on
+   the name arm it ends up as bit 6 of text_out_via_mos, via the emitter's own BIT). */
+PosDisplayExit update_position_display_core(uint8_t entryX, uint8_t entryY)
+{
+    PosDisplayExit e;
+    uint8_t delta = pass_count_bcd;                  /* $1B84 LDA — A carries the delta from here */
+    uint8_t a = delta, x = entryX, y = entryY;
+
+    if (delta != 0u) {                               /* $1B86 BEQ — nothing gained or lost */
+        Adc t;
+        cpu.D = 1;                                   /* $1B88 SED — sanctioned BCD site */
+        t = adc_value(delta, race_position_bcd, 0u); /* $1B89 CLC / $1B8A ADC */
+        cpu.D = 0;                                   /* $1B8E CLD */
+        race_position_bcd = t.val;                   /* $1B8C */
+        a = t.val;
+
+        /* A zero result means the position is unknown, and $21 or more is off the end of the
+           field — both leave the readout alone. */
+        if (a != 0u && a < 0x21u) {                  /* $1B8F BEQ / $1B91 CMP #$21 / $1B93 BCS */
+            pass_count_bcd = 0x00u;                  /* $1B97 — the delta is spent */
+            field_mask_set(0x00u);                   /* $1B99 — two digits, no padding */
+            x = 0x0Au; y = 0x18u;                    /* $1B9B/$1B9D — column, row */
+            a = print_bcd_digits_at_core(a, x, y).a; /* $1B9F */
+        }
+    }
+
+    /* $1BA2 BIT position_swap_flag — bit 7 says the running order changed this frame. */
+    if (position_swap_flag & 0x80u) {                /* $1BA5 BPL */
+        NameExit n;
+        n = print_driver_name_at_row_core(0x18u, car_behind);   /* $1BA7-$1BAB — the car behind */
+        n = print_driver_name_at_row_core(0x21u, car_ahead);    /* $1BAE-$1BB2 — ...and ahead */
+        a = n.a; x = n.x; y = 0x0Cu;                 /* emit_driver_name's terminator */
+    }
+
+    e.c = (uint8_t)(position_swap_flag & 1u);        /* $1BB5 LSR — the flag shifts along */
+    position_swap_flag >>= 1;
+    e.a = a; e.x = x; e.y = y;
+    e.n = 0u;
+    e.z = (uint8_t)(position_swap_flag == 0u);
+    return e;
 }
 
 /* ===========================================================================

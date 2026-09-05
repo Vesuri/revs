@@ -603,6 +603,64 @@ void vdu_char_def(void)
     cpu.A = rch; cpu.N = (rch >> 7) & 1u; cpu.Z = (rch == 0);
 }
 
+/* $65C8 position_to_bcd — A in, A out; V is not modelled (no caller reads it). */
+void position_to_bcd(void)
+{
+    BcdExit e = position_to_bcd_core(cpu.A);
+    cpu.A = e.a; cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;
+}
+
+/* $502F print_time_row21 / $502D show_lap_time_lower / $501D show_lap_time_lines — the readout
+   chain.  A on entry is the field mask only for the innermost one (the other two supply their
+   own); X comes back as print_lap_time's car slot, Y is the ambient OSWRCH register. */
+void print_time_row21(void)
+{
+    uint8_t y = cpu.Y;
+    TextExit e = print_time_row21_core(cpu.A, y);
+    cpu.A = e.a; cpu.X = 0x15u; cpu.Y = y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;
+}
+
+void show_lap_time_lower(void)
+{
+    uint8_t y = cpu.Y;
+    TextExit e = show_lap_time_lower_core(y);
+    cpu.A = e.a; cpu.X = 0x15u; cpu.Y = y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;
+}
+
+void show_lap_time_lines(void)
+{
+    uint8_t y = cpu.Y;
+    TextExit e = show_lap_time_lines_core(y);
+    cpu.A = e.a; cpu.X = 0x15u; cpu.Y = y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;
+}
+
+/* $667B print_driver_name_by_order / $6673 print_driver_name_at_row — Y is the car_order position
+   on entry and emit_driver_name's terminator ($0C) on the way out. */
+void print_driver_name_by_order(void)
+{
+    NameExit e = print_driver_name_by_order_core(cpu.Y);
+    cpu.A = e.a; cpu.X = e.x; cpu.Y = 0x0Cu;
+    cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;
+}
+
+void print_driver_name_at_row(void)
+{
+    NameExit e = print_driver_name_at_row_core(cpu.A, cpu.Y);
+    cpu.A = e.a; cpu.X = e.x; cpu.Y = 0x0Cu;
+    cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;
+}
+
+/* $1B84 update_position_display — A/X/Y all ambient on entry and all path-dependent on exit. */
+void update_position_display(void)
+{
+    PosDisplayExit e = update_position_display_core(cpu.X, cpu.Y);
+    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;
+}
+
 /* $3250 emit_driver_name — the pointer arrives in Y:A, X is the ambient OSWRCH register.  Y comes
    back as the loop's terminator ($0C) and the exit flags are that CPY's, so they are constants. */
 void emit_driver_name(void)

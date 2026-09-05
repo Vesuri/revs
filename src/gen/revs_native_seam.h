@@ -548,6 +548,17 @@ int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out);
 typedef struct { uint8_t a, n, z; }    TextChar;
 typedef struct { uint8_t a, n, z, c; } TextExit;
 uint8_t  emit_driver_name_core(uint8_t ptrLo, uint8_t ptrHi, uint8_t x);
+/* The dashboard readouts that drive those printers ($65C8/$501D/$502D/$502F/$6673/$667B/$1B84). */
+typedef struct { uint8_t a, n, z, v, c; }    BcdExit;
+typedef struct { uint8_t a, x, n, z, c; }    NameExit;
+typedef struct { uint8_t a, x, y, n, z, c; } PosDisplayExit;
+BcdExit        position_to_bcd_core(uint8_t index);
+TextExit       print_time_row21_core(uint8_t fieldMask, uint8_t y);
+TextExit       show_lap_time_lower_core(uint8_t y);
+TextExit       show_lap_time_lines_core(uint8_t y);
+NameExit       print_driver_name_by_order_core(uint8_t orderPos);
+NameExit       print_driver_name_at_row_core(uint8_t row, uint8_t orderPos);
+PosDisplayExit update_position_display_core(uint8_t entryX, uint8_t entryY);
 TextExit print_bcd_digits_core(uint8_t bcd, uint8_t x, uint8_t y);
 TextExit print_bcd_digits_at_core(uint8_t bcd, uint8_t column, uint8_t row);
 TextExit print_lap_time_core(uint8_t fieldMask, uint8_t carIdx, uint8_t y);

@@ -732,6 +732,198 @@ static int test_number_printers(void)
     return fail;
 }
 
+void position_to_bcd(void);            void position_to_bcd__t6502(void);
+void print_time_row21(void);           void print_time_row21__t6502(void);
+void show_lap_time_lower(void);        void show_lap_time_lower__t6502(void);
+void show_lap_time_lines(void);        void show_lap_time_lines__t6502(void);
+void print_driver_name_by_order(void); void print_driver_name_by_order__t6502(void);
+void print_driver_name_at_row(void);   void print_driver_name_at_row__t6502(void);
+void update_position_display(void);    void update_position_display__t6502(void);
+
+/* ================================================================================================
+ * TWINS #185-#191 — THE DASHBOARD READOUTS that hold the number/name printers' shims.
+ * Every one of them ends in the printer cluster above, so this fixture's job is the WRAPPER: the
+ * BCD fold, the cursor each one places, the car_order indirection, and which arms run.
+ *
+ * V is dropped across the cluster for the same reason as the printers: the emitter's BIT sets it
+ * from bit 6 of text_out_via_mos on both arms and no caller reads it.  position_to_bcd's own V
+ * (from its two ADCs) is not modelled either — its two callers store or print A alone.
+ *
+ * SABOTAGE (each must FAIL, and each patch was verified to have APPLIED before the run):
+ *   D11 position_to_bcd's CMP boundary #$0A -> #$0B          -> 0  (see below)
+ *   D11b ...and the boundary the OTHER way, #$0A -> #$09     -> 44
+ *   D12 position_to_bcd's bump left BINARY (no correction)   -> 643
+ *   D13 print_time_row21 prints car slot $14, not $15        -> 2000
+ *   D14 show_lap_time_lower's mask $28 -> $2C                -> 2000
+ *   D15 show_lap_time_lines' column $20 -> $21               -> 1021
+ *   D16 print_driver_name_by_order skips saved_slot_index    -> 1991
+ *   D17 print_driver_name_at_row's column $1B -> $1C         -> 2000
+ *   D18 update_position_display's field bound #$21 -> #$20   -> 43
+ *   D19 update_position_display drops the name arm           -> 1000
+ *
+ * ⚠ D11 is NO CHANGE AT ALL, not a fixture gap.  Moving the boundary UP changes the answer for
+ * exactly one input, index $0A, and there the two paths provably agree: with C set the ADC #$05
+ * adds 6 giving $10, and the decimal +1 gives $11; with C clear the byte stays $0A and the
+ * decimal +1 corrects $0A+1 to $11 as well, carry 0 both ways.  The SIBLING case settles it —
+ * moving the boundary DOWN (#$09) is caught at once (D11b), so the comparison is live.
+ * ($ docs/validation-harness.md §FIFTEENTH.)
+ * ============================================================================================= */
+static int test_dashboard_readouts(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    int sawTwoDigit = 0, sawOneDigit = 0, sawFold = 0, sawRepaint = 0, sawNames = 0;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("position_to_bcd");
+    register_fixture("print_time_row21");
+    register_fixture("show_lap_time_lower");
+    register_fixture("show_lap_time_lines");
+    register_fixture("print_driver_name_by_order");
+    register_fixture("print_driver_name_at_row");
+    register_fixture("update_position_display");
+
+    int cases = 2000 * scale;
+
+    /* ---- $65C8 position_to_bcd ------------------------------------------------------------ */
+    if (want("position_to_bcd")) {
+        int sub = 0;
+        unsigned mask = LIVE_A | LIVE_X | LIVE_Y | LIVE_N | LIVE_Z | LIVE_C;   /* V not modelled */
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.D = 0;                                  /* the routine sets D itself */
+            c.A = (t % 3 == 0) ? (uint8_t)(xs() % 0x14u) : (uint8_t)xs();
+            c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            if (c.A >= 0x0Au) sawTwoDigit = 1; else sawOneDigit = 1;
+            sub += diff_run("position_to_bcd", pre, c,
+                            position_to_bcd, position_to_bcd__t6502, mask, t, &printed);
+        }
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+NZC (V dropped)\n",
+               "position_to_bcd", cases, sub);
+    }
+
+    /* ---- the three lap-time readouts ($502F / $502D / $501D) ------------------------------ */
+    {
+        struct { const char* name; void (*nat)(void); void (*ref)(void); int entry; } rows[3] = {
+            { "print_time_row21",    print_time_row21,    print_time_row21__t6502,    1 },
+            { "show_lap_time_lower", show_lap_time_lower, show_lap_time_lower__t6502, 0 },
+            { "show_lap_time_lines", show_lap_time_lines, show_lap_time_lines__t6502, 0 },
+        };
+        int r;
+        unsigned mask = LIVE_A | LIVE_X | LIVE_Y | LIVE_N | LIVE_Z | LIVE_C;
+        for (r = 0; r < 3; r++) {
+            int sub = 0;
+            if (!want(rows[r].name)) continue;
+            for (t = 0; t < cases; t++) {
+                Cpu6502 c = zero_cpu();
+                fill_random(pre);
+                printer_common_pre(pre);
+                c.D = 0;
+                /* Only $502F takes a field mask from the caller; the other two supply their own. */
+                c.A = rows[r].entry ? (uint8_t)((t % 3 == 0) ? (xs() & 0x7Fu) : xs())
+                                    : (uint8_t)xs();
+                c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+                c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+                pre[0x006F] = (uint8_t)(xs() % 0x14u);       /* player_car — the $501D index */
+                /* Real BCD in the two slots these three can print: $15 and the player's. */
+                { unsigned k; for (k = 0; k < 2; k++) {
+                    unsigned slot = k ? 0x15u : pre[0x006F];
+                    pre[0x06D0 + slot] = (uint8_t)(((xs() % 6u) << 4) | (xs() % 10u));
+                    pre[0x06B8 + slot] = (uint8_t)(((xs() % 6u) << 4) | (xs() % 10u));
+                    pre[0x06A0 + slot] = (uint8_t)(((xs() % 10u) << 4) | (xs() % 10u));
+                } }
+                sub += diff_run(rows[r].name, pre, c, rows[r].nat, rows[r].ref, mask, t, &printed);
+            }
+            fail += sub;
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+NZC (V dropped)\n",
+                   rows[r].name, cases, sub);
+        }
+    }
+
+    /* ---- $667B / $6673 the driver-name pair ----------------------------------------------- */
+    {
+        int stage;
+        unsigned mask = LIVE_A | LIVE_X | LIVE_Y | LIVE_N | LIVE_Z | LIVE_C;
+        for (stage = 0; stage < 2; stage++) {
+            const char* label = stage ? "print_driver_name_at_row" : "print_driver_name_by_order";
+            int sub = 0;
+            if (!want(label)) continue;
+            for (t = 0; t < cases; t++) {
+                Cpu6502 c = zero_cpu();
+                fill_random(pre);
+                printer_common_pre(pre);
+                c.D = 0;
+                c.A = stage ? (uint8_t)(xs() % 0x28u)     /* $6673: the scan-line row */
+                            : (uint8_t)xs();
+                c.X = (uint8_t)xs();
+                c.Y = (uint8_t)(xs() % 0x14u);            /* a POSITION in car_order */
+                if (t % 32 == 0) c.Y = (uint8_t)xs();     /* ...and one out of range */
+                c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+                { unsigned i; for (i = 0; i < 0x14u; i++)
+                      pre[0x013C + i] = (uint8_t)(xs() % 0x14u); }
+                sub += diff_run(label, pre, c,
+                                stage ? print_driver_name_at_row : print_driver_name_by_order,
+                                stage ? print_driver_name_at_row__t6502
+                                      : print_driver_name_by_order__t6502,
+                                mask, t, &printed);
+            }
+            fail += sub;
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+NZC (V dropped)\n",
+                   label, cases, sub);
+        }
+    }
+
+    /* ---- $1B84 update_position_display ---------------------------------------------------- */
+    if (want("update_position_display")) {
+        int sub = 0;
+        unsigned mask = LIVE_A | LIVE_X | LIVE_Y | LIVE_N | LIVE_Z | LIVE_C;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            printer_common_pre(pre);
+            c.D = 0;
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            /* The delta and the standing position, in BCD often enough to reach the repaint. */
+            pre[0x002F] = (t % 4 == 0) ? 0x00u : (uint8_t)(xs() % 10u);
+            pre[0x0031] = (uint8_t)(((xs() % 3u) << 4) | (xs() % 10u));
+            if (t % 8 == 0) pre[0x0031] = (uint8_t)xs();     /* ...and arbitrary bytes too */
+            if (t % 2 == 0) pre[0x62FE] |= 0x80u;            /* position_swap_flag: the name arm */
+            else            pre[0x62FE] &= 0x7Fu;
+            pre[0x004D] = (uint8_t)(xs() % 0x14u);           /* car_behind */
+            pre[0x005B] = (uint8_t)(xs() % 0x14u);           /* car_ahead */
+            { unsigned i; for (i = 0; i < 0x14u; i++)
+                  pre[0x013C + i] = (uint8_t)(xs() % 0x14u); }
+            if (pre[0x002F] != 0u) {
+                sawFold = 1;
+                { unsigned sum = (unsigned)pre[0x002F] + pre[0x0031];
+                  if (sum != 0u && sum < 0x21u) sawRepaint = 1; }
+            }
+            if (pre[0x62FE] & 0x80u) sawNames = 1;
+            sub += diff_run("update_position_display", pre, c,
+                            update_position_display, update_position_display__t6502,
+                            mask, t, &printed);
+        }
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+NZC (V dropped)\n",
+               "update_position_display", cases, sub);
+    }
+
+    /* A fixture that never reached both position widths, or never folded a delta, repainted the
+       readout or redrew the names, would pass vacuously. */
+    if (want("position_to_bcd") && !(sawTwoDigit && sawOneDigit)) {
+        printf("VACUOUS: position_to_bcd saw only one position width\n"); fail++;
+    }
+    if (want("update_position_display") && !(sawFold && sawRepaint && sawNames)) {
+        printf("VACUOUS: update_position_display did not reach all three arms\n"); fail++;
+    }
+    return fail;
+}
+
 void draw_starting_lights(void);
 void draw_starting_lights__t6502(void);
 
@@ -8838,6 +9030,7 @@ int main(int argc, char** argv)
     fail += test_irq1v_band_schedule();
     fail += test_print_spaces();
     fail += test_number_printers();
+    fail += test_dashboard_readouts();
     fail += test_draw_starting_lights();
     fail += test_move_and_draw_cars();
     fail += test_draw_car_field();

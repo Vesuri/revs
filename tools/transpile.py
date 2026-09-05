@@ -1197,6 +1197,16 @@ VALIDATE_FUNCS = {
     0x37D0,
     0x37D6,
     0x7B9C,
+    # ⭐ TWINS #185-#191 — the DASHBOARD READOUTS that hold the printers' shims: $65C8
+    # position_to_bcd (a sanctioned SED site), the lap-time readout chain $501D/$502D/$502F,
+    # the driver-name pair $6673/$667B, and $1B84 update_position_display.
+    0x65C8,
+    0x501D,
+    0x502D,
+    0x502F,
+    0x6673,
+    0x667B,
+    0x1B84,
     # $5204 plot_line_octant — TWIN #164.  The self-modifying octant LINE PLOTTER every straight
     # line in the engine goes through (dial_needle_angle / draw_dash_needle fall into it).  A DDA
     # walk: per octant it patches the major/minor step opcode into its own body ($3B86->$5220,
