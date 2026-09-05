@@ -2058,3 +2058,37 @@ changes this reading by more than noise.
 per-column dirty mask maintained by the producers. The campaign's own conclusion, unchanged since
 the first null result, is that the port's biggest costs are the machinery the transliteration is
 wrapped in — and the frame buffer the engine plots into is the largest remaining piece of it.
+
+## ⭐⭐ USER DECISION (2026-09-05): FINISH THE TABLES ANYWAY, mechanism chosen per table
+
+Put the three declined tables to the user with the null result in hand. The answer: **convert the
+remaining 72 references regardless of what the framerate says, picking the mechanism per table on
+measurement.** Consistent with the campaign's standing directive — *the byte traffic must be
+converted regardless of the result from one function* — and with the fact that both null results
+measure the FRAME, not the instruction count.
+
+**What that means per table.** A whole-array marshal is out (measured), so for a *table* the
+mechanism is (A): the bytes stay in `mem[]` and every site is expressed as one wide read/write
+through a named accessor. Note that on a plane-split table (A) removes the lane **arithmetic** and
+not the two accesses — the planes are 256 bytes apart, so no word load exists even in principle
+(the THIRTEENTH LESSON, and it stands). The per-table exception is a base whose sites all index one
+slot at a time, where `CAR_DISTANCE`'s per-slot marshal (`car_distance_marshal_in_one`) is available
+and does create the adjacency.
+
+### `SECTION_COORD` $0900/$0A00 — 10 functions, 43 refs, and a duplicate-define debt
+
+The section origin: 40 sections × three 16-bit components, plus two scratch slots past the 120 real
+bytes at $FA and $FD. ⚠ **It is `#define`d TWICE in `revs_native.c`** — `SECTION_LO_TBL`/
+`SECTION_HI_TBL` ($1812) and `SECTION_COORD_LO`/`SECTION_COORD_HI` ($11936) — same addresses, two
+names, and a `section_word()` accessor already exists over the first pair. Consolidating is Step 0's
+own rule and comes first.
+
+| site | refs |
+|---|---|
+| `place_car_world_coords_core` | 11 |
+| `build_road_section` | 8 |
+| `road_edge_walk_subdivide` | 6 |
+| `copy_section_height_to_side1` | 4 |
+| `load_section_from_segment` | 4 |
+| `section_word` (the accessor itself) | 2 |
+| `load_section_triple_core`, `view_delta`, `update_camera_and_drive_state_core`, `build_player_car_core` | 2 each |
