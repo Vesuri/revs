@@ -2039,3 +2039,22 @@ Taken instead, for free: `draw_corner_marker_core` now takes `uint16_t offset` r
 references; `MARKER_OFF` is declined because its arithmetic is already wide. **The next decision is
 the tables' mechanism, and it is the user's** (see §REFS PER ELEMENT, the three options). The
 end-of-tier FPS reading against the 4.51 baseline is owed before that decision.
+
+### ⭐⭐ END-OF-TIER-3 FPS READING (2026-09-05): **4.50** against a 4.51 baseline — a NULL RESULT
+
+`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1`, clean build, `--warp_mode=1`, `fps_series.gdb`, 30 s:
+fourteen rows, the two 3.02 rows the off-track/reset scene as always, the eleven non-outlier rows
+averaging **4.497** (eight at 4.49, two at 4.58, one at 4.39). The baseline is 4.51. **0.3% — inside
+the one-frame row resolution.**
+
+So the four completed Tier-3 relocations (`CAR_ANGLE`, `CAR_DISTANCE`, `MODEL_STATE`, `VIEW_ORIGIN`)
+land exactly where mechanism (A) did: **the instruction-count win is real and the frame does not
+notice it.** That is now measured twice, on the two mechanisms independently, and it is the
+campaign's answer: **the byte lanes are not where the frame goes.** The remaining 72 references live
+in three large tables whose mechanism is still undecided, and no plausible version of that decision
+changes this reading by more than noise.
+
+⇒ **The lever is the REPRESENTATION** (`docs/direct-bitplane-plan.md`), whose stage one is the
+per-column dirty mask maintained by the producers. The campaign's own conclusion, unchanged since
+the first null result, is that the port's biggest costs are the machinery the transliteration is
+wrapped in — and the frame buffer the engine plots into is the largest remaining piece of it.
