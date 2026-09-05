@@ -1212,7 +1212,7 @@ row.
 
 | Base | native | shipping blockers | verdict / order |
 |---|---|---|---|
-| `MODEL_STATE` $62D0/$62E0 | **22 fn / 82 ref** | 5 fn / 7 ref | **the prize** — de-transliterate or shim-marshal the five, then relocate all 16 elements at once |
+| `MODEL_STATE` $62D0/$62E0 | **23 fn / 84 ref** | **1 fn / 1 ref, and it is a READ** | ✅ **(B) DONE** — `model_state_16[15]`, see below.  ⚠ the "5 fn / 7 ref" first reported here was a SCORING ERROR, see below |
 | `CAR_ANGLE` $62A0/$62A3 | 12 fn / 32 ref | **none** | ✅ **(B) DONE** — `car_angle_16[3]`, see below |
 | `VIEW_ORIGIN` $6280 | 5 fn / 14 ref | **none** | ✅ eligible; `integrate_car_position_core` and `build_sign_origin_core` hold 4 each |
 | `MARKER_OFF` $62B7/$62BA | 2 fn / 6 ref | **none** | ✅ eligible, small — `append_corner_marker` / `draw_corner_markers` |
@@ -1228,11 +1228,18 @@ eight), and six sabotages re-verified. ⭐ The false zero had retired four real 
 one of them turns out to have **zero shipping blockers**, so the whole re-scored group is eligible
 and the only remaining question on each is ops-per-marshal.
 
-`MODEL_STATE`'s five blockers, with their reference counts: `update_lap_timers` (3),
-`finish_race` (1), `reset_driving_variables` (1), `advance_player_section` (1),
-`tick_race_timers` (1). None is on the render path, so the cheap route is a **shim marshal** at
-each rather than a full de-transliteration — decide per function, and remember a `region_*`/`FUN_*`
-name is shipping until the FOURTH test says otherwise.
+⚠⚠ **`MODEL_STATE`'s "five shipping blockers" were an ARTEFACT OF A WRONG EXTENT, and they
+retired the biggest base in the engine for three passes.** The scan had been run as
+`--count 16`, which walks $62D0..$62DF and $62E0..$62EF — two bytes past each plane. $62DF is
+`loop_counter_hi` and $62EF is a separate cell, both explicitly excluded from the vector by
+`symbols.csv`, and they are exactly the cells `update_lap_timers` / `finish_race` /
+`reset_driving_variables` / `tick_race_timers` touch. Re-run over the real extent
+(`python3 tools/wide_eligibility.py 0x62D0-0x62DE 0x62E0-0x62EE --label MODEL_STATE`) it is
+**23 native functions / 84 refs with ONE shipping reference** — `advance_player_section` taking
+element 2's high byte — and that one is a READ, which the IN/OUT rule already permits. **The
+lesson is the same one twice: an extent is a claim, and a scan's window IS the measurement**
+(`docs/validation-harness.md`, memory `revs_verify_the_instrument`). Give the scanner the extent
+`symbols.csv` states, not the round number the stride suggests.
 
 ### Per relocation, the standing template and gates
 
@@ -1780,3 +1787,91 @@ Six sabotages, six distinct first-diff signatures (the stale-object check), all 
 | S4 | `track_pos_advance_core` does not zero the distance on a lap | `track_pos_advance` |
 | S5 | `track_pos_retreat_core` steps back two units | `track_pos_retreat` |
 | S6 | `stage_nearby_car`'s shim loses its `marshal_in` | `stage_nearby_car` (poison-dependent) |
+
+## `MODEL_STATE` $62D0/$62E0 → `model_state_16[15]` — the biggest base, and the two new traps
+
+The driving model's state vector: fifteen 16-bit elements held as a **plane-split SoA** (low bytes
+$62D0..$62DE, high bytes $62E0..$62EE, element *i* at `+i` in each). Elements 0/1/2 are the body
+angles and the frame's heading step, 3/4/5 their rates, 6/7 the axle loads, 8 the hand-integrated
+accumulator, 9 the car's signed speed, $0A..$0D the per-axle slip cluster, 14 the per-frame
+increment. **23 native functions, 84 references — the largest wide-value base in the engine**, and
+it was parked behind five blockers that did not exist (see the scoring error above).
+
+⚠ `MODEL_STATE_FRAC` ($62AE, 3 bytes) is a *separate* 24-bit fraction extension for elements 0..2
+and **stays in `mem[]`**: a rate element is the top 16 bits of `(element << 8) | frac`, so
+`integrate_state_rates_core` combines the relocated word with the mem[] byte into a `uint32_t`.
+
+### What the conversion bought, per routine
+
+| Routine | 6502 byte traffic before | after |
+|---|---|---|
+| `model_integrate_element_core` | two lane loads, `ADC`/`ADC`, two lane stores | `model_state_16[slot] + model_state_16[MS_INCREMENT]`, one store |
+| `add_signed_into_element_core` | load/add/store per lane | one `+=` |
+| `apply_angle_term_body` | source split into two lanes, product re-split on store | `(int16_t)model_state_16[source]`, one store |
+| `stage_accum_delta_core` | heading step and accumulator each rebuilt from two lanes | two word reads, one word store |
+| `apply_driving_model_core` | the speed split rebuilt `car_speed_hi:lo`, the accumulator restore re-split | `uint16_t speed = model_state_16[MS_SPEED]`, one store |
+| `integrate_car_position_core` | doubling loop on two lanes | one word read per element |
+| `integrate_state_rates_core` | rate rebuilt from two lanes, 24-bit sum re-split three ways | one word read + one byte, one word store + one byte |
+| `slip_magnitude_core` | element rebuilt from two lanes | one word read |
+| `store_slip_signed_core` | two lane stores | one word store |
+| `clamp_slip_to_grip_core`, the zero-out arms, the crash reset loop | per-lane zero stores | one word store each; the reset is a 15-iteration word loop |
+
+Where the 6502 genuinely handles ONE lane — a sign test or a magnitude off the high byte, or a
+store that must leave the other lane alone because an early return can land between the two halves
+(`apply_axle_slip`'s saturation bail-out: a slip leaves element 10's low lane **stale**) — the
+named lane accessors `ms_lo`/`ms_hi`/`ms_set_lo`/`ms_set_hi` say so at the site instead of
+open-coding a shift and a mask.
+
+### Trap 1 — a whole-array publish can UNDO a write the routine really made
+
+`dial_needle_angle` and `draw_dash_needles` read the vector to draw the needles, and they **plot**.
+With a fixture-random plot pointer a needle line lands inside $62D0..$62EE; a whole-array
+`marshal_out` then writes the entry values back over it. Both were caught by `make validate` (3 of
+3000 cases) and are **import-only** — the general rule is that a whole-array publish belongs only
+to a shim that actually writes the array, and never to one that plots.
+
+### Trap 2 — the covering shim is not always the obvious one
+
+The closure tool over `revs_native.c` + `revs_native_seam.c` missed four shims whose *transitive*
+callee writes the vector, and the poisoned differential found every one:
+
+| Shim | who writes the vector under it |
+|---|---|
+| `update_grip_limits` | `begin_spin_from_a_core`'s heading-step nudge ($4DD4 `SEC`/`ROR`) |
+| `update_camera_and_drive_state` | the same core, via its spin arm ($45B9) |
+| `begin_spin` / `begin_spin_from_a` | that nudge directly |
+| `begin_scrape` | the crash tail's yaw kick ($1C0B) |
+
+⭐ Note the shape: **every one of them was a shim that never mentions the vector**, reached through
+a `_core` two or three levels down. Derive the marshal set from the transitive closure, then let
+the poisoned harness prove it — a hand-read of the shim body sees nothing.
+
+### Trap 3 — a fixture's random byte is a domain claim, again
+
+`SLIP_OUT_INDEX` ($0078) *names a state element*, and its domain is structural: its only writers
+are `derive_slip_reference` (axle + 2, so 2 or 3) and `clamp_slip_to_grip` (axle, so 0 or 1), every
+store landing at element 10 + it. `fill_random` left it a free byte, which before the relocation
+merely wrote **past** the vector into $63xx in *both* models — agreeing, so invisible for the life
+of the fixture. With the vector a 15-entry `uint16_t` array the same case is out of bounds and the
+harness **segfaulted inside `platform_mos_call`**, a corrupted vtable pointer three subsystems away
+from the cause. Third instance of this: a relocation converts a silent domain violation into a
+crash, which is the relocation doing the harness a favour.
+
+### The gates it passed
+
+`make validate` 136 fixtures, 0 mem mismatch, with `relocated_poison()` armed (`model_state_16` is
+in it). `make determinism`, `make determinism-drive` and `make determinism-crash` all 64K
+byte-identical including $62D0-$62EE — references re-recorded from a stashed HEAD build.
+`make tracks` 6/6 byte-exact, `make track-run` every circuit's code runs, `make endian-lint` clean,
+Amiga link `muldiv-audit: clean` + `probe-audit: clean (132 symbols)`.
+
+Six sabotages, six distinct first-diff signatures, every one detected:
+
+| # | Defect | Covering fixture |
+|---|---|---|
+| S1 | `update_grip_limits`'s shim loses its `marshal_in` | `update_grip_limits` (**not** `apply_driving_model` — the FOURTH standing explanation for a surviving sabotage, live again: the covering fixture was outside the `FN` filter) |
+| S2 | `begin_scrape`'s shim loses its `marshal_out` | `check_crash` |
+| S3 | `model_integrate_element_core` reads element 13 as the increment | `model_integrate_element` |
+| S4 | `integrate_state_rates_core` drops the 24-bit fraction byte | `integrate_state_rates` |
+| S5 | `slip_magnitude_core` byteswaps the element | `slip_magnitude` |
+| S6 | `ms_set_lo` clobbers the high lane | `begin_spin` |

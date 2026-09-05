@@ -36,6 +36,10 @@
  *      across revs_native.c; the single swap point when a base becomes a value_16[N]) ---- */
 #define MODEL_STATE_LO   0x62D0u   /* the driving model's 16-bit state vector, low bytes */
 #define MODEL_STATE_HI   0x62E0u   /* ...and high bytes; element i is +i in each */
+#define MODEL_STATE_N    15u       /* ⚠ FIFTEEN elements, 0..14: $62DF is loop_counter_hi and
+                                    * $62EF is a separate cell, so the vector stops at 14.
+                                    * ⭐ RELOCATED to model_state_16[]: these two bases are now
+                                    * the marshals' addresses only. */
 #define CAR_ANGLE_LO     0x62A0u   /* car-angle array: heading_sin/heading_cos/steer_angle low; bit0 = SIGN */
 #define CAR_ANGLE_HI     0x62A3u   /* ...and their high bytes.  ⭐ RELOCATED to car_angle_16[]:
                                     * these two are now the marshals' addresses only — no twin
@@ -382,6 +386,38 @@ void car_angle_marshal_out(void);
    ⚠ Its marshal is PER ELEMENT: the boundary shims run once per car, up to twenty times a frame,
    so a whole-array marshal there would cost more traffic than the relocation saves.  The
    whole-array pair is for full_track_scan_rebuild, which walks the field core-to-core. */
+/* ⭐ THE DRIVING MODEL'S STATE VECTOR, relocated out of the $62D0/$62E0 plane split.  Fifteen
+   16-bit elements: 0/1/2 the body angles and the frame's heading step (0..2 carry a further
+   8-bit fraction in mem[MODEL_STATE_FRAC], which stays in mem[]), 3/4/5 their rates, 6/7 the
+   axle loads, 8 the hand-integrated accumulator, 9 the car's signed speed, $0A..$0D the per-axle
+   slip cluster and 14 the per-frame increment.  Marshalled WHOLE at the boundary shims: no
+   writer owns a known subset, and a shim entered once a frame can afford 30 bytes.
+   ⚠ Two shims import WITHOUT publishing (dial_needle_angle, draw_dash_needles): they read the
+   vector to draw the needles and they PLOT, so with a fixture-random plot pointer a line can
+   land inside $62D0..$62EE — a whole-array publish would undo a write the routine really made. */
+extern uint16_t model_state_16[MODEL_STATE_N];
+void model_state_marshal_in(void);
+void model_state_marshal_out(void);
+
+/* The named elements, so a site reads as the quantity rather than as an offset.  Every name here
+   already exists in mem.h as a lo/hi pair; symbols.csv carries the evidence for each. */
+#define MS_HEADING_STEP  2u    /* heading_step  — the frame's heading increment */
+#define MS_ACCUM         8u    /* model_accum   — the hand-integrated accumulator */
+#define MS_SPEED         9u    /* car_speed     — the car's SIGNED 16-bit speed */
+#define MS_SLIP         10u    /* slip_magnitude, and the base of the per-axle slip cluster */
+#define MS_INCREMENT    14u    /* the per-frame increment model_integrate_element adds */
+
+/* Where the 6502 genuinely handles ONE LANE of an element — a sign test or a magnitude taken from
+   the high byte, or a store that must leave the other lane untouched because an early return can
+   happen between the two halves — these name the lane instead of open-coding a shift and a mask.
+   Wide arithmetic uses `model_state_16[i]` directly; these are for the byte-shaped cases only. */
+static inline uint8_t ms_lo(uint8_t i) { return (uint8_t)model_state_16[i]; }
+static inline uint8_t ms_hi(uint8_t i) { return (uint8_t)(model_state_16[i] >> 8); }
+static inline void    ms_set_lo(uint8_t i, uint8_t v)
+{ model_state_16[i] = (uint16_t)((model_state_16[i] & 0xFF00u) | v); }
+static inline void    ms_set_hi(uint8_t i, uint8_t v)
+{ model_state_16[i] = (uint16_t)((model_state_16[i] & 0x00FFu) | ((uint16_t)v << 8)); }
+
 extern uint16_t car_distance_16[24];
 void car_distance_marshal_in_one(uint8_t x);
 void car_distance_marshal_out_one(uint8_t x);

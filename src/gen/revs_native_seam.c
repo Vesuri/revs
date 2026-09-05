@@ -40,6 +40,7 @@ void shift_near_edge_points(void)
 
 void rebase_edge_point(void)
 {
+    model_state_marshal_in();     /* the 16-bit driving-model state vector */
     rebase_edge_point_core(cpu.Y);
 }
 
@@ -110,6 +111,7 @@ void road_edge_side(void)
    the paths that never reach a bearing — the cells come back exactly as they went in. */
 void road_edge_start(void)
 {
+    model_state_marshal_in();     /* the 16-bit driving-model state vector */
     car_heading_marshal_in();             /* every bearing it emits is measured against it */
     hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     road_edge_start_core(0x06, (uint8_t)EDGE_HALF, (uint8_t)SECTION_NEAR, 0x3C, 0x07);
@@ -128,6 +130,7 @@ void road_edge_walk(void)
 
 void build_track_geometry(void)
 {
+    model_state_marshal_in();     /* the 16-bit driving-model state vector */
     /* the top of the road pass, and the same IN/OUT pair as the two walks below it: whether any
        point reaches a bearing at all depends on the track, so the cells are carried through. */
     car_heading_marshal_in();             /* every bearing it emits is measured against it */
@@ -148,6 +151,7 @@ void draw_road(void)
 
 void apply_driving_model(void)
 {
+    model_state_marshal_in();     /* the 16-bit driving-model state vector */
     car_heading_marshal_in();             /* it reads the heading in, as the car's position... */
     car_angle_marshal_in();               /* element 2 (the wheel) comes in; 0/1 go out below */
     apply_driving_model_core((uint8_t)car_heading_v, (uint8_t)(car_heading_v >> 8));
@@ -155,6 +159,7 @@ void apply_driving_model(void)
     car_heading_marshal_out();            /* ...and its tail calls integrate_car_position, which
                                              advances it — core-to-core, so publish it here */
     model_accum_entry_marshal_out();       /* $46AE's value back into mem[$38/$39] */
+    model_state_marshal_out();    /* ...and publish it back to mem[] */
 }
 
 void draw_track_object(void)
@@ -290,8 +295,10 @@ void mul16_by_pi(void)
 
 void model_integrate_element(void)
 {
+    model_state_marshal_in();     /* the 16-bit driving-model state vector */
     AddFlags f = model_integrate_element_core(cpu.X);   /* X = slot; X/Y unchanged at exit */
     cpu.A = f.hi; cpu.C = f.carry; cpu.V = f.overflow; cpu.N = f.neg; cpu.Z = f.zero;
+    model_state_marshal_out();    /* ...and publish it back to mem[] */
 }
 
 void kbd_test_key(void)
@@ -308,22 +315,27 @@ void kbd_test_key(void)
 
 void rotate_accum_by_steer(void)
 {
+    model_state_marshal_in();     /* the 16-bit driving-model state vector */
     car_angle_marshal_in();                   /* it multiplies by a car angle */
     AddFlags f = rotate_accum_by_steer_core();  /* ends in model_integrate_element on element 8 */
     cpu.X = 8u; cpu.Y = 8u;                      /* X live at exit; Y = last apply_angle_term src */
     cpu.A = f.hi; cpu.C = f.carry; cpu.V = f.overflow; cpu.N = f.neg; cpu.Z = f.zero;
+    model_state_marshal_out();    /* ...and publish it back to mem[] */
 }
 
 void rotate_pair_a_by_steer(void)
 {
+    model_state_marshal_in();     /* the 16-bit driving-model state vector */
     car_angle_marshal_in();                   /* it multiplies by a car angle */
     AddFlags f = rotate_pair_a_by_steer_core(); /* ends in model_integrate_element on element 10 */
     cpu.X = 10u; cpu.Y = 10u;                    /* X live at exit; Y = last apply_angle_term src */
     cpu.A = f.hi; cpu.C = f.carry; cpu.V = f.overflow; cpu.N = f.neg; cpu.Z = f.zero;
+    model_state_marshal_out();    /* ...and publish it back to mem[] */
 }
 
 void integrate_car_position(void)
 {
+    model_state_marshal_in();     /* the 16-bit driving-model state vector */
     car_heading_marshal_in();
     AddFlags f = integrate_car_position_core();  /* ends in the heading add (car_heading += step) */
     car_heading_marshal_out();           /* ...and this routine IS that add: publish it */
@@ -333,40 +345,49 @@ void integrate_car_position(void)
 
 void integrate_state_rates(void)
 {
+    model_state_marshal_in();     /* the 16-bit driving-model state vector */
     AddFlags f = integrate_state_rates_core();   /* last pass leaves A / C / V of the high add live */
     cpu.A = f.hi; cpu.C = f.carry; cpu.V = f.overflow;
     cpu.Y = 0u;                                  /* $4956's DEY ran until Z — Y leaves at zero */
     cpu.X = 0xFFu; cpu.N = 1u; cpu.Z = 0u;       /* $4974's DEX (0 -> $FF); ITS N/Z are the exit flags */
+    model_state_marshal_out();    /* ...and publish it back to mem[] */
 }
 
 void store_slip_signed(void)
 {
+    model_state_marshal_in();     /* the 16-bit driving-model state vector */
     uint8_t sign = mem[SLIP_SIGN];                   /* BIT operand, before the core runs */
     store_slip_signed_core(cpu.A);
     store_slip_exit_abi(sign);                       /* C, X, S untouched by this routine */
+    model_state_marshal_out();    /* ...and publish it back to mem[] */
 }
 
 void store_slip_clamped(void)
 {
+    model_state_marshal_in();     /* the 16-bit driving-model state vector */
     uint8_t valueHi = cpu.A, sign = mem[SLIP_SIGN];
     uint8_t clampC = (uint8_t)(valueHi >= mem[SLIP_MAG_HI]);   /* $4B47 CMP SLIP_MAG_HI */
     store_slip_clamped_core(valueHi);
     store_slip_exit_abi(sign);
     cpu.C = clampC;                                  /* the compare's carry survives to the exit */
+    model_state_marshal_out();    /* ...and publish it back to mem[] */
 }
 
 void store_slip_clamped_off_throttle(void)
 {
+    model_state_marshal_in();     /* the 16-bit driving-model state vector */
     uint8_t valueHi = cpu.A, sign = mem[SLIP_SIGN], entryC = cpu.C;
     int throttle = (pedal_mode == 1u);              /* $4B42 LDY/DEY/BEQ — throttle skips the CMP */
     uint8_t clampC = (uint8_t)(valueHi >= mem[SLIP_MAG_HI]);
     store_slip_clamped_off_throttle_core(valueHi);
     store_slip_exit_abi(sign);
     cpu.C = throttle ? entryC : clampC;             /* throttle path never runs the CMP */
+    model_state_marshal_out();    /* ...and publish it back to mem[] */
 }
 
 void derive_slip_reference(void)
 {
+    model_state_marshal_in();     /* the 16-bit driving-model state vector */
     SlipRef r = derive_slip_reference_core(cpu.X);
     cpu.A = r.hi;                                    /* product high, or element on the declined arm */
     cpu.C = (uint8_t)r.declined;                     /* SEC on decline / CLC on accept */
@@ -407,7 +428,9 @@ void sound_stop_channel(void)
 
 void update_grip_limits(void)
 {
+    model_state_marshal_in();             /* it reads the model's own state to size the limits */
     update_grip_limits_core();
+    model_state_marshal_out();
     /* $4C46 exit Y = the ANDed surface bytes — the one escaping register (see the core). */
     cpu.Y = (uint8_t)(surface_change_0 & surface_change_1);
 }
@@ -423,11 +446,13 @@ void update_engine_revs(void)
 
 void update_camera_and_drive_state(void)
 {
+    model_state_marshal_in();             /* its spin arm nudges element 2, the heading step */
     car_heading_marshal_in();
     CameraExit e = update_camera_and_drive_state_core();
     cpu.A = e.acc.hi; cpu.C = e.acc.carry; cpu.V = e.acc.overflow;
     cpu.N = e.acc.neg; cpu.Z = e.acc.zero;
     cpu.X = e.x; cpu.Y = e.y;
+    model_state_marshal_out();
 }
 
 void build_sign_origin(void)
@@ -578,6 +603,7 @@ void update_horizon_band(void)
 
 void dial_needle_angle(void)
 {
+    model_state_marshal_in();     /* the 16-bit driving-model state vector */
     /* $51A8 — the rev-counter needle.  The core does the engine_revs -> octant arithmetic; the shim
        does the dial-table lookups, sets up the 6502 entry ABI, and FALLS THROUGH into the shared
        transliterated plot_line_octant (a self-modifying line plotter — both differential sides run
@@ -629,6 +655,9 @@ void undraw_plot_lines(void)
 
 void draw_dash_needles(void)
 {
+    model_state_marshal_in();     /* the 16-bit driving-model state vector — READ ONLY here: the
+                                     needles are drawn FROM it, and this shim plots, so it must not
+                                     publish (a line can land inside $62D0..$62EE). */
     /* $513A — the STEERING-WHEEL needle, the last thing race_main_loop ($17B4) draws.  The prefix
        ($513A/$513D) erases last frame's marks and draws the rev-counter needle: undraw_plot_lines +
        dial_needle_angle (the latter falls through into plot_line_octant).  Both are shared with the
@@ -971,12 +1000,15 @@ void sound_stop_all(void)
 
 void begin_scrape(void)
 {
+    model_state_marshal_in();                    /* it kicks element 2, the heading step */
     begin_scrape_core(cpu.A, cpu.X);             /* A carries the clamped yaw kick in from $1135 */
+    model_state_marshal_out();
     sound_queue_exit_abi(SOUND_SLOT_IMPACT);     /* $1C18 JSR / $1C1B RTS — the tail call's ABI */
 }
 
 void check_crash(void)
 {
+    model_state_marshal_in();     /* the 16-bit driving-model state vector */
     uint8_t entryA = cpu.A, entryX = cpu.X;
     edge_nearest_marshal_in();            /* the distance it tests to decide the car is off-track */
     switch (check_crash_core(entryX)) {
@@ -999,6 +1031,7 @@ void check_crash(void)
         break;
     }
     (void)entryA;
+    model_state_marshal_out();    /* ...and publish it back to mem[] */
 }
 
 void build_player_car(void)

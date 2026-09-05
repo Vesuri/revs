@@ -5849,6 +5849,15 @@ static int test_slip_and_sound(void)
                 if (xs() & 1) { pre[0x62BD + c.X] = 0; idle++; }
                 else if (!pre[0x62BD + c.X]) pre[0x62BD + c.X] = 0x07;
             }
+            /* ⭐ SLIP_OUT_INDEX ($0078) NAMES A STATE ELEMENT, and its domain is structural: its
+               only two writers are derive_slip_reference (axle + 2, so 2 or 3) and
+               clamp_slip_to_grip (axle, so 0 or 1), and every store lands at element 10 + it —
+               elements $0A..$0D.  fill_random left it a free byte, which before the relocation
+               merely wrote PAST the vector into $63xx in both models (agreeing, so invisible);
+               with the vector a 15-entry uint16_t array the same case is out of bounds.  The byte
+               is drawn for every case so the shared PRNG stream stays aligned. */
+            { uint8_t slipOut = (uint8_t)(xs() & 3);
+              if (i >= 1 && i <= 3) pre[0x0078u] = slipOut; }
             if (i == 11) c.X = (uint8_t)(xs() & 1);
             subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,
                                 mask, t, &printed);

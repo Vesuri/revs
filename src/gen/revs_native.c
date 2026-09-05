@@ -2058,7 +2058,7 @@ void rebase_edge_point_core(uint8_t slot)
 
     /* $0BA7-$0BB6 — the point's stored azimuth, less this frame's heading step (16-bit). */
     uint16_t az = (uint16_t)(((unsigned)mem[EDGE_X_LO_TBL + slot] | ((unsigned)mem[EDGE_X_HI_TBL + slot] << 8))
-                           -  ((unsigned)heading_step_lo | ((unsigned)heading_step_hi << 8)));
+                           -  (unsigned)model_state_16[MS_HEADING_STEP]);
     mem[EDGE_X_LO_TBL + slot] = (uint8_t)az;
     mem[EDGE_X_HI_TBL + slot] = (uint8_t)(az >> 8);
 
@@ -3806,6 +3806,43 @@ void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
    cpu at that call site (see above); the shim itself adds nothing. */
 
 /* ===========================================================================
+   ⭐⭐ WIDE-VALUE CLEANUP, mechanism (B): THE DRIVING MODEL'S STATE VECTOR
+   ---------------------------------------------------------------------------
+   Fifteen 16-bit elements, plane-split in the 6502 as low bytes at $62D0 and high bytes at
+   $62E0 — element i is ($62D0+i, $62E0+i).  It is the single largest wide-value base in the
+   engine: 23 native routines, 84 references, every one of them a two-lane load, a chained
+   ADC/SBC pair and a two-lane store of what is arithmetically ONE `add.w`/`sub.w`.
+
+   ⚠ The vector stops at element 14.  $62DF is loop_counter_hi and $62EF is a separate cell,
+   which is why the extent is 15 and not 16 (scoring it as 16 invented four shipping blockers
+   out of references to those two neighbours — docs/wide-value-cleanup.md).
+
+   Relocated here to `model_state_16[15]`, with mem[] retained as the 6502-ABI mirror and the
+   whole array marshalled at the boundary shims.  One transliterated routine still READS the
+   vector — advance_player_section takes element 2's high byte ($62E2, heading_step_hi) — and a
+   reader is safe by the IN/OUT rule as long as every shim publishes on the way out; there is no
+   transliterated WRITER, which is what a relocation actually needs.
+   =========================================================================== */
+
+uint16_t model_state_16[MODEL_STATE_N];
+
+void model_state_marshal_in(void)
+{
+    for (unsigned i = 0; i < MODEL_STATE_N; i++)
+        model_state_16[i] = (uint16_t)(mem[MODEL_STATE_LO + i]
+                                       | ((unsigned)mem[MODEL_STATE_HI + i] << 8));
+}
+
+void model_state_marshal_out(void)
+{
+    for (unsigned i = 0; i < MODEL_STATE_N; i++) {
+        mem[MODEL_STATE_LO + i] = (uint8_t)model_state_16[i];
+        mem[MODEL_STATE_HI + i] = (uint8_t)(model_state_16[i] >> 8);
+    }
+}
+
+
+/* ===========================================================================
    $46A1  apply_driving_model — THE PLAYER CAR'S PHYSICS  (twin #6)
    ---------------------------------------------------------------------------
    The body's 4th call, and nothing else in the frame writes the car's motion.  136 bytes of
@@ -3875,16 +3912,17 @@ void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
     rotate_state_pair_core(8u, 0u, 0xC0u);   /* rotate_state_0_into_8 */
 
     /* $46AE — the accumulator's entry value, for the restore at $46DF (relocated to a wide var). */
-    model_accum_entry_v = (uint16_t)(((uint16_t)model_accum_hi << 8) | model_accum_lo);
+    model_accum_entry_v = model_state_16[MS_ACCUM];
 
     /* $46B8-$46CD — the speed split.  |car_speed| as a 16-bit sign-magnitude value: abs16_math
        negates the (hi:lo) pair in place when hi is negative (D=0), and is a no-op otherwise.
        road_speed = |hi|, road_speed_frac = |lo|.  Every register and flag this block leaves is
        dead: stage_accum_delta opens with `LDA` and `LDY #$58`. */
-    math_lo = car_speed_lo;
-    if (car_speed_hi & 0x80u) {                         /* negative: neg16_math */
-        uint16_t v = (uint16_t)(0u - (uint16_t)(((uint16_t)car_speed_hi << 8) | car_speed_lo));
-        math_hi         = car_speed_hi;                 /* neg16_math writes math_hi = the original hi.
+    uint16_t speed = model_state_16[MS_SPEED];          /* one word, not two lanes */
+    math_lo = (uint8_t)speed;
+    if (speed & 0x8000u) {                              /* negative: neg16_math */
+        uint16_t v = (uint16_t)(0u - speed);
+        math_hi         = (uint8_t)(speed >> 8);        /* neg16_math writes math_hi = the original hi.
                                                            Faithful but dead scratch: stage_accum_delta
                                                            overwrites math_hi before any read, so a sabotage
                                                            of THIS byte alone is unobservable (kept per the
@@ -3892,7 +3930,7 @@ void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
         math_lo         = (uint8_t)v;                   /* the negated low byte */
         road_speed      = (uint8_t)(v >> 8);            /* the negated high byte */
     } else {                                            /* non-negative: abs16_math is a no-op */
-        road_speed      = car_speed_hi;                 /* math_lo/math_hi untouched */
+        road_speed      = (uint8_t)(speed >> 8);        /* math_lo/math_hi untouched */
     }
     road_speed_frac = math_lo;
     wheel_spin_rate = road_speed ? road_speed : (uint8_t)(math_lo & 0xF0);
@@ -3921,8 +3959,7 @@ void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
     {
         uint16_t accum = model_accum_entry_v
                        + (uint16_t)(((uint16_t)model_accum_delta_hi  << 8) | model_accum_delta_lo);
-        model_accum_lo = (uint8_t)accum;
-        model_accum_hi = (uint8_t)(accum >> 8);
+        model_state_16[MS_ACCUM] = accum;
     }
 
     /* $46F8-$4703 — and the sub-models that want the accumulator at its new value.  Each of the
@@ -3942,8 +3979,7 @@ void apply_driving_model_core(uint8_t posLo, uint8_t posHi)
     if (drive_state >= 0x02u) {                         /* $4706 CMP #2 (unsigned; flags dead) */
         int element;
         for (element = 7; element >= 5; element--) {
-            mem[MODEL_STATE_LO + element] = 0;
-            mem[MODEL_STATE_HI + element] = 0;
+            model_state_16[element] = 0u;
         }
     }
 
@@ -6719,12 +6755,10 @@ AddFlags model_integrate_element_core(uint8_t slot)
     /* $47E5 — element[slot] += element[14], one 16-bit binary add (D=0 on the driving-model
        path, docs/static-map.md §Decimal mode); the HIGH add's flags are the exit flags, returned
        for the shim / caller to replay. */
-    uint8_t  ah = mem[MODEL_STATE_HI + slot], mh = mem[MODEL_STATE_HI + 14];
-    unsigned sum = (unsigned)(((uint16_t)ah << 8) | mem[MODEL_STATE_LO + slot])
-                 + (unsigned)(((uint16_t)mh << 8) | mem[MODEL_STATE_LO + 14]);
-    mem[MODEL_STATE_LO + slot] = (uint8_t)sum;
-    mem[MODEL_STATE_HI + slot] = (uint8_t)(sum >> 8);
-    return add16_flags(ah, mh, sum);
+    uint16_t a = model_state_16[slot], m = model_state_16[MS_INCREMENT];
+    unsigned sum = (unsigned)a + (unsigned)m;
+    model_state_16[slot] = (uint16_t)sum;
+    return add16_flags((uint8_t)(a >> 8), (uint8_t)(m >> 8), sum);
 }
 
 /* ---------------------------------------------------------------------------
@@ -6742,10 +6776,7 @@ static void add_signed_into_element_core(uint8_t slot, uint8_t signByte)
     uint16_t term = (uint16_t)(((uint16_t)math_hi << 8) | math_lo);
     if (!(signByte & 0x80u)) term = (uint16_t)(0u - term);      /* $48A0-$48A5 */
 
-    uint16_t sum = (uint16_t)((((uint16_t)mem[MODEL_STATE_HI + slot] << 8)
-                               | mem[MODEL_STATE_LO + slot]) + term);   /* $48A7-$48B5 */
-    mem[MODEL_STATE_LO + slot] = (uint8_t)sum;
-    mem[MODEL_STATE_HI + slot] = (uint8_t)(sum >> 8);
+    model_state_16[slot] = (uint16_t)(model_state_16[slot] + term);     /* $48A7-$48B5 */
 }
 
 /* ---------------------------------------------------------------------------
@@ -6780,8 +6811,7 @@ static void apply_angle_term_body(uint8_t angle, uint8_t source)
 {
     /* $4876-$4888 — the two operands.  MUL_SIGN was seeded by the caller with the mode byte:
        bit 7 the starting sign, bit 6 the store/accumulate select. */
-    int16_t  src16 = (int16_t)(uint16_t)((mem[MODEL_STATE_HI + source] << 8)
-                                         | mem[MODEL_STATE_LO + source]);
+    int16_t  src16 = (int16_t)model_state_16[source];   /* one word, not two byte lanes */
     uint16_t term   = car_angle_16[angle];   /* one word, not two strided byte lanes */
     uint8_t  termLo = (uint8_t)term;
     uint8_t  termHi = (uint8_t)(term >> 8);
@@ -6808,12 +6838,8 @@ static void apply_angle_term_body(uint8_t angle, uint8_t source)
     /* $488F-$489E — store the product into element `dest`, or accumulate into it. */
     uint8_t  dest  = mem[MODEL_TERM];
     uint16_t value = product;
-    if (mode & 0x40u) {
-        value = (uint16_t)(value + (uint16_t)((mem[MODEL_STATE_HI + dest] << 8)
-                                              | mem[MODEL_STATE_LO + dest]));
-    }
-    mem[MODEL_STATE_LO + dest] = (uint8_t)value;
-    mem[MODEL_STATE_HI + dest] = (uint8_t)(value >> 8);
+    if (mode & 0x40u) value = (uint16_t)(value + model_state_16[dest]);
+    model_state_16[dest] = value;
 }
 
 static void apply_angle_term_core(uint8_t dest, uint8_t angle, uint8_t source)
@@ -6859,10 +6885,24 @@ int kbd_test_key_core(uint8_t keyCode)
 }
 
 /* The 6502-ABI shims. */
-void add_signed_into_element(void) { add_signed_into_element_core(cpu.Y, cpu.N ? 0x80u : 0x00u); }
-void apply_angle_term(void)      { car_angle_marshal_in(); apply_angle_term_core(cpu.A, cpu.X, cpu.Y); }
-void apply_angle_term_at(void)   { car_angle_marshal_in(); apply_angle_term_at_core(cpu.A, cpu.X); }
-
+void add_signed_into_element(void)
+{
+    model_state_marshal_in();
+    add_signed_into_element_core(cpu.Y, cpu.N ? 0x80u : 0x00u);
+    model_state_marshal_out();
+}
+void apply_angle_term(void)
+{
+    model_state_marshal_in();
+    car_angle_marshal_in(); apply_angle_term_core(cpu.A, cpu.X, cpu.Y);
+    model_state_marshal_out();
+}
+void apply_angle_term_at(void)
+{
+    model_state_marshal_in();
+    car_angle_marshal_in(); apply_angle_term_at_core(cpu.A, cpu.X);
+    model_state_marshal_out();
+}
 /* ===========================================================================
    TWINS #58-#66 — THE DRIVING MODEL'S ROTATIONS AND INTEGRATIONS
    ---------------------------------------------------------------------------
@@ -6919,13 +6959,12 @@ void apply_angle_term_at(void)   { car_angle_marshal_in(); apply_angle_term_at_c
 static void stage_accum_delta_core(void)
 {
     /* $4729-$4736 — scale the heading step (state element 2) by $58/256, keeping its sign. */
-    uint16_t step   = (uint16_t)(heading_step_lo | (heading_step_hi << 8));
+    uint16_t step   = model_state_16[MS_HEADING_STEP];
     uint16_t scaled = model_scale16(step, 0x58u);
 
     /* $4738-$4746 — the accumulator loses the scaled term for the next four sub-models. */
-    uint16_t accum  = (uint16_t)((model_accum_lo | (model_accum_hi << 8)) - scaled);
-    model_accum_lo = (uint8_t)accum;
-    model_accum_hi = (uint8_t)(accum >> 8);
+    uint16_t accum  = (uint16_t)(model_state_16[MS_ACCUM] - scaled);
+    model_state_16[MS_ACCUM] = accum;
 
     /* $4749-$4750 — and 1.5x what was removed is parked as the midpoint delta. */
     uint16_t delta = model_mul_1_5(scaled);
@@ -7016,17 +7055,10 @@ static uint16_t model_mul_1_5(uint16_t value)
     return (uint16_t)(v + (v >> 1));                         /* v + arithmetic v/2 */
 }
 
-/* One element of the model's 16-bit state vector, little-endian across the LO/HI halves. */
-static uint16_t model_state_get(uint8_t i)
-{
-    return (uint16_t)(mem[MODEL_STATE_LO + i] | (mem[MODEL_STATE_HI + i] << 8));
-}
-
-static void model_state_put(uint8_t i, uint16_t v)
-{
-    mem[MODEL_STATE_LO + i] = (uint8_t)v;
-    mem[MODEL_STATE_HI + i] = (uint8_t)(v >> 8);
-}
+/* One element of the model's state vector.  Since the relocation these are the array itself —
+   kept as named accessors because the call sites read better with them than with a subscript. */
+static uint16_t model_state_get(uint8_t i)          { return model_state_16[i]; }
+static void     model_state_put(uint8_t i, uint16_t v) { model_state_16[i] = v; }
 
 static void damp_and_derive_loads_core(void)
 {
@@ -7054,7 +7086,7 @@ static void damp_and_derive_loads_core(void)
     }
 
     /* $4866-$4869 — the one value update_grip_limits reads out of here. */
-    wheel_load = mem[MODEL_STATE_HI + 7];
+    wheel_load = (uint8_t)(model_state_16[7] >> 8);
 }
 
 /* ---------------------------------------------------------------------------
@@ -7119,8 +7151,9 @@ AddFlags integrate_car_position_core(void)
        loop's own A / flags are dead — overwritten next pass, and by the heading add at exit. */
     for (slot = 1; slot != 0xFFu; slot--) {
         unsigned comp = (unsigned)slot * 2u;            /* Y = 2 then 0, stepped by two */
-        uint8_t  lo   = mem[MODEL_STATE_LO + slot];     /* $48F7-$48FA */
-        uint8_t  hi   = mem[MODEL_STATE_HI + slot];     /* $48FC */
+        uint16_t elem = model_state_16[slot];           /* $48F7-$48FC — one word */
+        uint8_t  lo   = (uint8_t)elem;
+        uint8_t  hi   = (uint8_t)(elem >> 8);
         uint8_t  ext  = (uint8_t)((hi & 0x80u) ? 0xFFu : 0x00u);  /* $48FF-$4901 sign extend */
         uint32_t doubled, sum;
 
@@ -7145,9 +7178,8 @@ AddFlags integrate_car_position_core(void)
 
     /* $4927-$4934 — and the heading advances by element 2, the frame's heading step.  The HIGH
        add's A / N / V / Z / C are this routine's exit flags, returned for the shim to replay. */
-    { uint8_t  hc = (uint8_t)(car_heading_v >> 8), hm = heading_step_hi;
-      unsigned h  = (unsigned)car_heading_v
-                  + (unsigned)(((uint16_t)hm << 8) | heading_step_lo);
+    { uint8_t  hc = (uint8_t)(car_heading_v >> 8), hm = ms_hi(MS_HEADING_STEP);
+      unsigned h  = (unsigned)car_heading_v + (unsigned)model_state_16[MS_HEADING_STEP];
       car_heading_v = (uint16_t)h;                  /* relocated out of mem[$0A/$0B] */
       return add16_flags(hc, hm, h);
     }
@@ -7171,12 +7203,13 @@ AddFlags integrate_state_rates_core(void)
     /* All binary 24-bit adds: D = 0 on the driving-model path (docs/static-map.md §Decimal
        mode).  The LAST pass (slot 0) leaves A / C / V live; the DEX below rewrites N / Z. */
     for (slot = 2; slot != 0xFFu; slot--) {
-        uint8_t  lo    = mem[MODEL_STATE_LO + 3 + slot];        /* $493D-$4940 */
-        uint8_t  hi    = mem[MODEL_STATE_HI + 3 + slot];        /* $4942 */
+        uint16_t rate  = model_state_16[3 + slot];              /* $493D-$4942 — the RATE word */
+        uint8_t  lo    = (uint8_t)rate;
+        uint8_t  hi    = (uint8_t)(rate >> 8);
         uint8_t  ext   = (uint8_t)((hi & 0x80u) ? 0xFFu : 0x00u);  /* $4945-$4947 */
         unsigned shift = (slot == 2u) ? 5u : 3u;                /* $4949-$494F */
         unsigned wide  = (((unsigned)ext << 16) | ((unsigned)hi << 8) | lo) << shift;
-        uint8_t  ah = mem[MODEL_STATE_HI + slot], mh, hr;
+        uint8_t  ah = (uint8_t)(model_state_16[slot] >> 8), mh, hr;
         uint32_t sum;
 
         math_lo        = (uint8_t)wide;                         /* $4951-$4959 (live in mem) */
@@ -7186,14 +7219,13 @@ AddFlags integrate_state_rates_core(void)
 
         /* $495B-$4971 — add the low 24 bits of the shifted rate into element X (FRAC:LO:HI); the
            shift's own carry out was cleared ($495E CLC), so carry-in is 0. */
-        sum = (((uint32_t)ah << 16)
-             | ((uint32_t)mem[MODEL_STATE_LO + slot] << 8)
-             |  mem[MODEL_STATE_FRAC + slot])
+        /* ⭐ the element is the TOP 16 BITS of a 24-bit quantity whose fraction byte lives in
+           the separate model_state_frac array — so the wide value is (element << 8) | frac. */
+        sum = (((uint32_t)model_state_16[slot] << 8) | mem[MODEL_STATE_FRAC + slot])
             + (wide & 0xFFFFFFu);
         hr = (uint8_t)(sum >> 16);
         mem[MODEL_STATE_FRAC + slot] = (uint8_t)sum;
-        mem[MODEL_STATE_LO + slot]   = (uint8_t)(sum >> 8);
-        mem[MODEL_STATE_HI + slot]   = hr;
+        model_state_16[slot]         = (uint16_t)(sum >> 8);
         /* the HIGH byte add's A / C / V — live only from the last pass (slot 0). */
         f.hi       = hr;
         f.carry    = (uint8_t)(sum > 0xFFFFFFu);
@@ -7204,12 +7236,36 @@ AddFlags integrate_state_rates_core(void)
 }
 
 /* The 6502-ABI shims. */
-void stage_accum_delta(void)      { stage_accum_delta_core(); }
-void damp_and_derive_loads(void)  { damp_and_derive_loads_core(); }
-void rotate_state_pair(void)      { car_angle_marshal_in(); rotate_state_pair_core(cpu.A, cpu.Y, cpu.X); }
-void rotate_state_0_into_8(void)  { car_angle_marshal_in(); rotate_state_pair_core(8u, 0u, 0xC0u); }
-void rotate_state_6_into_3(void)  { car_angle_marshal_in(); rotate_state_pair_core(3u, 6u, 0x40u); }
-
+void stage_accum_delta(void)
+{
+    model_state_marshal_in();
+    stage_accum_delta_core();
+    model_state_marshal_out();
+}
+void damp_and_derive_loads(void)
+{
+    model_state_marshal_in();
+    damp_and_derive_loads_core();
+    model_state_marshal_out();
+}
+void rotate_state_pair(void)
+{
+    model_state_marshal_in();
+    car_angle_marshal_in(); rotate_state_pair_core(cpu.A, cpu.Y, cpu.X);
+    model_state_marshal_out();
+}
+void rotate_state_0_into_8(void)
+{
+    model_state_marshal_in();
+    car_angle_marshal_in(); rotate_state_pair_core(8u, 0u, 0xC0u);
+    model_state_marshal_out();
+}
+void rotate_state_6_into_3(void)
+{
+    model_state_marshal_in();
+    car_angle_marshal_in(); rotate_state_pair_core(3u, 6u, 0x40u);
+    model_state_marshal_out();
+}
 /* ===========================================================================
    TWINS #67-#78 — THE SLIP/SOUND CLUSTER
    ---------------------------------------------------------------------------
@@ -7269,8 +7325,7 @@ static void slip_magnitude_core(uint8_t slot)
        A immediately), so the whole product is mem[]: SLIP_MAG_HI, and SLIP_MAG_LO left where the
        loop stopped.  ⚠ the clamp leaves state behind — on overflow the routine bails with $7F and
        SLIP_MAG_LO keeps its part-shifted value — so the shift loop is reproduced step for step. */
-    uint16_t v = (uint16_t)(((uint16_t)mem[MODEL_STATE_HI + slot] << 8)  /* $4B61-$4B66 */
-                            | mem[MODEL_STATE_LO + slot]);
+    uint16_t v = model_state_16[slot];                          /* $4B61-$4B66 — one word */
     uint8_t  count;
 
     if (v & 0x8000u) v = (uint16_t)(0x10000u - v);              /* $4B69-$4B74 — |x| */
@@ -7316,8 +7371,7 @@ void store_slip_signed_core(uint8_t valueHi)
         math_lo = (uint8_t)v;
     }
     uint8_t y = mem[SLIP_OUT_INDEX];                /* $4B56 */
-    mem[MODEL_STATE_HI + 10 + y] = (uint8_t)(v >> 8); /* $4B58 */
-    mem[MODEL_STATE_LO + 10 + y] = (uint8_t)v;      /* $4B5B-$4B5D — A = math_lo, then stored */
+    model_state_16[MS_SLIP + y] = v;                /* $4B58/$4B5B-$4B5D — both lanes, one word */
 }
 
 void store_slip_clamped_core(uint8_t valueHi)
@@ -7377,7 +7431,7 @@ SlipRef derive_slip_reference_core(uint8_t axle)
     } else {
         /* OFF THE THROTTLE — $4B93-$4BAC. */
         slip_magnitude_core(9);                                  /* |car_speed| << 5 */
-        mem[SLIP_SIGN] = (uint8_t)(car_speed_hi ^ 0x80u);        /* $4B98-$4B9B */
+        mem[SLIP_SIGN] = (uint8_t)(ms_hi(MS_SPEED) ^ 0x80u);      /* $4B98-$4B9B */
         ref = mem[MEM_grip_limit + axle];                       /* $4B9F */
         if (axle != 1u) {                                        /* $4BA2-$4BA4 CPX #1/BEQ */
             /* $4BA6-$4BAB — three-quarters of the limit: (g/2 + g)/2, each add truncated to 8
@@ -7419,25 +7473,27 @@ static void check_wheel_slip_core(uint8_t axle)
 {
     /* $4A91-$4A99 — is the accumulator zero at all?  (the 6502 parks the answer on the stack
        to survive the negate and five shifts; a local carries it here.) */
-    uint16_t accum = (uint16_t)(((uint16_t)model_accum_hi << 8) | model_accum_lo);
+    uint16_t accum = model_state_16[MS_ACCUM];
     int accumZero = (accum == 0u);
 
     /* $4A9A-$4AA8 — -model_accum << 5, the low byte into element 10 + axle later, the high now. */
     uint16_t shifted   = (uint16_t)((uint16_t)(0u - accum) << 5);
     uint8_t  shiftedHi = (uint8_t)(shifted >> 8);
     uint8_t  shiftedLo = (uint8_t)shifted;
-    mem[MODEL_STATE_HI + 10 + axle] = shiftedHi;
+    ms_set_hi((uint8_t)(MS_SLIP + axle), shiftedHi);
 
     /* $4AAC-$4AB2 — a SATURATED SHIFT IS A SLIP.  The negate should have flipped the sign, so if
        the shifted high byte still agrees in sign with the pre-negate value the shift overflowed;
        that goes straight to the history roll with the over-limit bit already set.  A zero
        accumulator skips the test entirely. */
-    if (!accumZero && ((shiftedHi ^ model_accum_hi) & 0x80u) == 0u) {
+    if (!accumZero && ((shiftedHi ^ (uint8_t)(accum >> 8)) & 0x80u) == 0u) {
         mem[MEM_slip_flags + axle] = (uint8_t)(0x80u | (mem[MEM_slip_flags + axle] >> 1));
         return;
     }
 
-    mem[MODEL_STATE_LO + axle + 10] = shiftedLo;    /* $4AB4-$4AB6 */
+    /* ⚠ the two lanes are stored either side of the saturation bail-out above, so this one
+       cannot be folded into the high store — a slip leaves element 10's low lane STALE. */
+    ms_set_lo((uint8_t)(MS_SLIP + axle), shiftedLo);  /* $4AB4-$4AB6 */
 
     /* $4AB9 — derive_slip_reference sets SLIP_SIGN / SLIP_OUT_INDEX / (hi : math_lo) and answers
        whether it declined.  Its hi : math_lo feed the store below, so they are not disturbed
@@ -7450,16 +7506,15 @@ static void check_wheel_slip_core(uint8_t axle)
            own magnitude.  ⚠ BOTH indices are absolute 12 here, not 12 + axle — and it provably
            makes no difference: this arm needs pedal_mode == 1 AND X != 1, and X is 0 or 1, so X
            is 0 and `+ 12` IS `+ 12 + axle` (the absolute operands are the 6502 saving bytes). */
-        mem[MODEL_STATE_LO + 12] = 0u;
-        mem[MODEL_STATE_HI + 12] = 0u;
-        uint8_t hi10 = mem[MODEL_STATE_HI + 10];
+        model_state_16[12] = 0u;
+        uint8_t hi10 = ms_hi(MS_SLIP);
         ref = (uint8_t)((hi10 & 0x80u) ? (0u - hi10) : hi10);   /* |element 10 high| */
     } else {
         store_slip_clamped_off_throttle_core(sr.hi); /* $4ACF — consumes derive's hi : math_lo */
         /* $4AD2-$4AEB — max + min/2 over the two elements' magnitudes (the cheap hypotenuse). */
-        uint8_t m12 = mem[MODEL_STATE_HI + 12 + axle];
+        uint8_t m12 = ms_hi((uint8_t)(12 + axle));
         m12 = (uint8_t)((m12 & 0x80u) ? (0u - m12) : m12);
-        uint8_t m10 = mem[MODEL_STATE_HI + 10 + axle];
+        uint8_t m10 = ms_hi((uint8_t)(MS_SLIP + axle));
         m10 = (uint8_t)((m10 & 0x80u) ? (0u - m10) : m10);
         ref = (uint8_t)((m10 >= m12) ? (m10 + (m12 >> 1))       /* halve the smaller */
                                      : ((m10 >> 1) + m12));
@@ -7482,11 +7537,10 @@ static void check_wheel_slip_core(uint8_t axle)
    --------------------------------------------------------------------------- */
 static void clamp_slip_to_grip_core(uint8_t axle)
 {
-    mem[MODEL_STATE_HI + 12 + axle] = 0u;                       /* $4AF7-$4AF9 */
-    mem[MODEL_STATE_LO + 12 + axle] = 0u;                       /* $4AFC */
+    model_state_16[12 + axle] = 0u;                             /* $4AF7-$4AFC — both lanes */
 
     slip_magnitude_core(8);                                     /* $4AFF-$4B01 — |model_accum| */
-    mem[SLIP_SIGN] = (uint8_t)(model_accum_hi ^ 0x80u);         /* $4B04-$4B09 */
+    mem[SLIP_SIGN] = (uint8_t)(ms_hi(MS_ACCUM) ^ 0x80u);        /* $4B04-$4B09 */
     math_lo = 0x00u;                                            /* $4B0B-$4B0D */
     mem[SLIP_OUT_INDEX] = axle;                                 /* $4B12 */
     store_slip_clamped_core(mem[MEM_grip_limit_alt + axle]);    /* $4B0F/$4B14 */
@@ -7509,8 +7563,7 @@ static void clamp_slip_to_grip_core(uint8_t axle)
        taken.  Kept because it is what the 6502 does; a sabotage that deletes it survives the
        differential, which is the evidence for the claim rather than a gap in the fixture. */
     if (axle == 0u) return;
-    mem[MODEL_STATE_HI + 10 + axle] = 0u;                      /* $4B34-$4B36 */
-    mem[MODEL_STATE_LO + 10 + axle] = 0u;                      /* $4B39 */
+    model_state_16[MS_SLIP + axle] = 0u;                       /* $4B34-$4B39 */
 }
 
 /* ---------------------------------------------------------------------------
@@ -7616,8 +7669,11 @@ static void update_slip_sound_core(uint8_t axle, uint8_t ambientY)
    core's typed outputs and the mem[] state, and hold the MOS-boundary marshalling.  The stores
    share an exit: A = the stored low byte (LDA math_lo), Y = the element (LDY SLIP_OUT_INDEX),
    N/Z from that low byte, V = bit 6 of SLIP_SIGN (BIT), C is the entry-value clamp compare. */
-void slip_magnitude(void)       { slip_magnitude_core(cpu.Y); }
-
+void slip_magnitude(void)
+{
+    model_state_marshal_in();
+    slip_magnitude_core(cpu.Y);
+}
 void store_slip_exit_abi(uint8_t sign)
 {
     cpu.A = math_lo;                                 /* $4B5B LDA math_lo — the stored low byte */
@@ -7631,8 +7687,18 @@ void store_slip_exit_abi(uint8_t sign)
 
 
 
-void check_wheel_slip(void)     { check_wheel_slip_core(cpu.X); }   /* result-only */
-void clamp_slip_to_grip(void)   { clamp_slip_to_grip_core(cpu.X); } /* result-only */
+void check_wheel_slip(void)
+{
+    model_state_marshal_in();
+    check_wheel_slip_core(cpu.X);
+    model_state_marshal_out();
+} /* result-only */
+void clamp_slip_to_grip(void)
+{
+    model_state_marshal_in();
+    clamp_slip_to_grip_core(cpu.X);
+    model_state_marshal_out();
+} /* result-only */
 
 /* The $0B4D `ADC #$10` block-index carry and overflow — a plain binary add (D = 0), so C is the
    unsigned carry and V the signed overflow.  begin_spin threads these out as its exit C/V; the
@@ -7668,7 +7734,12 @@ void sound_queue_exit_abi(uint8_t slot)
 
 
 
-void update_slip_sound(void)    { update_slip_sound_core(cpu.X, cpu.Y); } /* result-only */
+void update_slip_sound(void)
+{
+    model_state_marshal_in();
+    update_slip_sound_core(cpu.X, cpu.Y);
+    model_state_marshal_out();
+} /* result-only */
 
 /* ===========================================================================
    TWINS #79-#86 — THE EIGHT SUB-MODELS, and with them the whole of
@@ -7890,7 +7961,7 @@ static SpinExit begin_spin_from_a_core(uint8_t severity, uint8_t savedX)
     drive_state    = (uint8_t)(drive_state + 1u);  /* $4DD1 — mark not-under-power */
     /* $4DD4 SEC / ROR heading_step_lo — nudge the heading increment by $80 and halve it (C in = 1
        sets bit 7; the ROR's own carry-out is dead, overwritten by the sound tail below). */
-    heading_step_lo = (uint8_t)((heading_step_lo >> 1) | 0x80u);
+    ms_set_lo(MS_HEADING_STEP, (uint8_t)((ms_lo(MS_HEADING_STEP) >> 1) | 0x80u));
     /* $4DD7-$4DD9 LDA #4 / JSR sound_queue_default — slot 4 at sound_volume.  This is the last thing
        begin_spin does, so its exit ABI IS sound_queue_default's; the caller's X (untouched here) is
        what sound_queue parks in sound_saved_x.  Return the residue the update_camera caller reads:
@@ -7953,7 +8024,7 @@ static void apply_drag_terms_core(void)
       math_lo = (uint8_t)result; }
 
     /* $4C9B-$4CA0 — into element 7, with car_speed_hi's bit 7 as the sign. */
-    add_signed_into_element_core(7u, car_speed_hi);
+    add_signed_into_element_core(7u, ms_hi(MS_SPEED));
 }
 
 /* ---------------------------------------------------------------------------
@@ -8018,7 +8089,7 @@ void update_grip_limits_core(void)
         uint8_t speed = road_speed;
         if (speed >= 0x35u) speed = 0x35u;                /* the speed term saturates */
         uint8_t term = (uint8_t)(((unsigned)mem[WING_GRIP + axle] * speed) >> 8);
-        if (car_speed_hi & 0x80u)                         /* abs8: sign from car_speed_hi */
+        if (ms_hi(MS_SPEED) & 0x80u)                      /* abs8: sign from car_speed's high byte */
             term = (uint8_t)(-(int)term);
 
         uint8_t base = (surfaceBoth == 0xFFu)             /* $4C4A — BOTH surface bytes $FF */
@@ -8594,17 +8665,33 @@ void scale_by_track_gradient(void)
 }
 /* begin_spin's exit ABI is sound_queue_default's: A/Y are left in cpu by the OSWORD (via mos_call
    inside the core), and sound_queue_exit_abi replays X/N/Z (from sound_saved_x) and the block C/V. */
-void begin_spin(void)                    { begin_spin_from_a_core(road_speed, cpu.X); sound_queue_exit_abi(0x04u); }
-void begin_spin_from_a(void)             { begin_spin_from_a_core(cpu.A, cpu.X);      sound_queue_exit_abi(0x04u); }
+void begin_spin(void)
+{
+    model_state_marshal_in();                /* it nudges element 2, the heading step */
+    begin_spin_from_a_core(road_speed, cpu.X);
+    model_state_marshal_out();
+    sound_queue_exit_abi(0x04u);
+}
+void begin_spin_from_a(void)
+{
+    model_state_marshal_in();                /* it nudges element 2, the heading step */
+    begin_spin_from_a_core(cpu.A, cpu.X);
+    model_state_marshal_out();
+    sound_queue_exit_abi(0x04u);
+}
 /* 6502-ABI entry: model_accum_entry ($38/$39) is a relocated input to the core (its producer,
    apply_driving_model, sets the wide var directly and calls the core core-to-core).  Callers that
    still communicate through mem[] — the __t6502 oracle glue, which sets the cells at $46AE then
    JSRs here — get the value marshalled back into the var.  Off the hot path: the shipping chain is
    core-to-core and never touches these cells. */
-void apply_drag_terms(void)              { model_accum_entry_v =
-                                           (uint16_t)(((uint16_t)model_accum_entry_hi << 8)
-                                                      | model_accum_entry_lo);
-                                           apply_drag_terms_core(); }
+void apply_drag_terms(void)
+{
+    model_accum_entry_v = (uint16_t)(((uint16_t)model_accum_entry_hi << 8)
+                                     | model_accum_entry_lo);
+    model_state_marshal_in();                /* it adds into elements 6 and 7 */
+    apply_drag_terms_core();
+    model_state_marshal_out();
+}
 
 /* ===========================================================================
    TWINS #87-#92 — THE ROAD SIGN, and the OBJECT SLOT WRITER underneath it
@@ -9934,8 +10021,6 @@ close_gap:
 #define ASSIST_LAMP_3  0x77E4u
 #define OPTION_FLAGS   0x05F5u   /* state_flags + 1: bit 7 selects the JOYSTICK input path */
 #define SECTION_CURVE  0x0701u   /* section_curve — field 1 of the per-section record */
-#define SLIP_MAG_LO_10 0x62DAu   /* slip_magnitude_lo / _hi — model_state element $0A */
-#define SLIP_MAG_HI_10 0x62EAu
 #define GEAR_CHAR_TBL  0x3779u   /* gear_char_tbl — 'R' 'N' '1'..'5' 'P' */
 #define VDU_CHAR_BLOCK 0x62C3u   /* vdu_char_block — the OSWORD 10 block */
 #define CHAR_ROW_LO    0x3FE0u   /* char_row_addr_lo — ⚠ entries 8..15 are pixel_keep_others_tbl */
@@ -10461,8 +10546,7 @@ static void steer_demand_from_slip_core(void)
     /* ⭐ WIDE-VALUE CLEANUP: one uint16_t from the two element-$0A lanes.  The abs and the
        quarter are then a negate and a shift, with no split back into lanes between them; only
        the 6502's own observable intermediates stay bytes (see the STEER_SIGN writes below). */
-    uint16_t slip = (uint16_t)((mem[SLIP_MAG_LO_10] & 0xF0u)
-                             | ((unsigned)mem[SLIP_MAG_HI_10] << 8));
+    uint16_t slip = (uint16_t)(model_state_16[MS_SLIP] & 0xFFF0u);
     mem[STEER_SIGN] = (uint8_t)slip;                   /* $15F4 */
     if (slip & 0x8000u) {                              /* $15FE BPL — negative: |value| */
         /* abs16_math parks the pre-negate high byte in math_hi (= STEER_DEMAND); that write is
@@ -10832,9 +10916,9 @@ static void read_driving_controls_core(void)
 /* ⭐ The steering shims all sit on the car_angle_16 boundary: each of them reads element 2 and
    every one can reach clamp_and_store_steer_angle, which writes it.  So each marshals in on the
    way down and out on the way back — the invariant is stated at car_angle_16 above. */
-void read_driving_controls(void)        { car_angle_marshal_in(); read_driving_controls_core();
+void read_driving_controls(void)        { model_state_marshal_in(); car_angle_marshal_in(); read_driving_controls_core();
                                           car_angle_marshal_out(); }
-void steer_demand_from_slip(void)       { car_angle_marshal_in(); steer_demand_from_slip_core();
+void steer_demand_from_slip(void)       { model_state_marshal_in(); car_angle_marshal_in(); steer_demand_from_slip_core();
                                           car_angle_marshal_out(); }
 void steer_demand_store(void)           { car_angle_marshal_in(); steer_demand_store_core(cpu.A);
                                           car_angle_marshal_out(); }
@@ -10842,7 +10926,7 @@ void apply_steer_demand(void)           { car_angle_marshal_in(); apply_steer_de
                                           car_angle_marshal_out(); }
 void clamp_and_store_steer_angle(void)  { car_angle_marshal_in(); clamp_and_store_steer_angle_core(cpu.A);
                                           car_angle_marshal_out(); }
-void steer_assist_dispatch(void)        { car_angle_marshal_in(); steer_assist_dispatch_core(cpu.A);
+void steer_assist_dispatch(void)        { model_state_marshal_in(); car_angle_marshal_in(); steer_assist_dispatch_core(cpu.A);
                                           car_angle_marshal_out(); }
 void steer_apply_with_assist(void)      { car_angle_marshal_in(); steer_apply_with_assist_core();
                                           car_angle_marshal_out(); }
@@ -13197,7 +13281,7 @@ void sound_stop_all_core(uint8_t ambientY)
    --------------------------------------------------------------------------- */
 void begin_scrape_core(uint8_t yawKick, uint8_t savedX)
 {
-    heading_step_hi           = yawKick;    /* $1C0B — the high byte IS the yaw rate; see check_crash */
+    ms_set_hi(MS_HEADING_STEP, yawKick);    /* $1C0B — the high byte IS the yaw rate; see check_crash */
     mem[MEM_slip_flags + 0]   = 0x80u;      /* $1C0E-$1C13 — both axles marked slipping, so */
     mem[MEM_slip_flags + 1]   = 0x80u;      /*   update_slip_sound starts the squeal next frame */
     sound_queue_core(SOUND_SLOT_IMPACT, sound_volume, savedX);   /* $1C16-$1C18 */
@@ -13241,7 +13325,7 @@ uint8_t check_crash_core(uint8_t savedX)
 
     if (offAxis < 0x60u) {
         /* $112D-$1135 THE SCRAPE — see the sign-copy note above. */
-        uint8_t yawKick = (heading_step_hi & 0x80u) ? negate8(0x14u).hi : 0x14u;
+        uint8_t yawKick = (ms_hi(MS_HEADING_STEP) & 0x80u) ? negate8(0x14u).hi : 0x14u;
         begin_scrape_core(yawKick, savedX);
         return CRASH_ARM_SCRAPE;
     }
@@ -13259,8 +13343,8 @@ uint8_t check_crash_core(uint8_t savedX)
        model_state_lo[0..14], the unused gap byte at $62DF and model_state_hi[0..14]: every
        16-bit element of the state vector at once, which is why the loop counts bytes and not
        elements. */
-    for (int i = 0x1E; i >= 0; i--)
-        mem[MODEL_STATE_LO + i] = 0x00u;
+    for (unsigned i = 0; i < MODEL_STATE_N; i++) model_state_16[i] = 0u;
+    mem[MODEL_STATE_LO + 0x0Fu] = 0x00u;   /* $62DF, the gap byte the byte-wise loop also clears */
 
     engine_running      = 0x00u;   /* $1152 — the engine has stalled */
     spin_countdown      = 0x00u;   /* $1154 — and this is not a spin */
@@ -13483,4 +13567,5 @@ void relocated_poison(void)
     model_accum_entry_v = 0xA5ADu;
     for (unsigned i = 0; i < 3; i++)         car_angle_16[i]    = (uint16_t)(0xA500u + i);
     for (unsigned i = 0; i < CAR_SLOTS; i++) car_distance_16[i] = (uint16_t)(0xA5C0u + i);
+    for (unsigned i = 0; i < MODEL_STATE_N; i++) model_state_16[i] = (uint16_t)(0xA5E0u + i);
 }

@@ -616,3 +616,29 @@ relies on (`$82/$85/$8A/$8B`).  400 000 cases per plotter: 0 mismatch, all three
 ⭐ The lesson that generalises: a fixture that feeds a plotter a *random pointer* must constrain it to
 the region the engine actually uses — an out-of-domain pointer can alias the routine's own scratch and
 manufacture a divergence that is neither a twin bug nor reachable in the game.
+
+### SIXTEENTH — a relocation's marshals: every PUBLISH must first IMPORT, and a PLOTTING shim must not publish
+
+Two failures from the `MODEL_STATE` → `model_state_16[15]` relocation, both found by the poisoned
+differential and neither visible in a hand-read of the shim.
+
+**A whole-array `marshal_out` without a preceding `marshal_in` publishes fourteen stale elements.**
+The shim writes back all 15 entries whatever the core touched, so an unimported array publishes
+whatever the *previous* shim left there — or, with `relocated_poison()` armed, the poison itself.
+`store_slip_signed`, `store_slip_clamped`, `store_slip_clamped_off_throttle` and `check_crash` all
+failed this way. The rule: **import is unconditional; publish is conditional on the closure
+writing.** Never publish without importing.
+
+**A whole-array publish is wrong in a shim that PLOTS.** `dial_needle_angle` and
+`draw_dash_needles` read the vector to draw the needles, and a fixture-random plot pointer can land
+a needle line *inside* $62D0..$62EE. The publish then writes the entry values back over a store the
+routine genuinely made — 3 mismatches in 3000 cases, at addresses the routine had every right to
+touch. Both are import-only. Generalised: **a whole-array publish belongs only to a shim that
+actually writes the array**; for anything that writes through a pointer, publish nothing, or
+publish only the elements the core owns.
+
+⭐ And the marshal set is a **transitive closure, not a text search.** Four shims that never mention
+the vector needed marshals because a `_core` two or three levels down nudges it
+(`update_grip_limits`, `update_camera_and_drive_state`, `begin_spin`, `begin_scrape` — all via
+`begin_spin_from_a_core`'s $4DD4 `SEC`/`ROR`). Derive the set from the call graph, then let the
+poison prove it.
