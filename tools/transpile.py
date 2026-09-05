@@ -1183,6 +1183,10 @@ VALIDATE_FUNCS = {
     # car_index_inc/dec through theirs; all six calls are core-to-core now.  Its practice arm is
     # a 1536-iteration DELAY loop, not an early RTS — see the twin's header.
     0x2637,
+    # ⭐ TWIN #180 — draw_car_field ($66DF), the other-car DRAW pass, on the frame's hot path
+    # (move_and_draw_cars calls it once a frame).  It was the last transliterated holder of the
+    # draw_track_object shim; its own $2ACB entry (draw_car_at_order) is two lines, inlined.
+    0x66DF,
     # $5204 plot_line_octant — TWIN #164.  The self-modifying octant LINE PLOTTER every straight
     # line in the engine goes through (dial_needle_angle / draw_dash_needle fall into it).  A DDA
     # walk: per octant it patches the major/minor step opcode into its own body ($3B86->$5220,

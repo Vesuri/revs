@@ -251,6 +251,7 @@ void plot_ptrs_marshal_out(void)
 /* The object plotter (twin #94), defined far below but called from race_main_loop_core with
    the object slot count.  The main loop reaches it through the core, not the 6502-ABI shim. */
 SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, uint8_t entryC);
+SlotExit draw_car_field_core(uint8_t entryY, uint8_t entryV, uint8_t entryC);
 
 /* The rest of the frame body's steps, all defined far below.  race_main_loop_core reaches each
    through its core so the whole hot path is core-to-core with no 6502-ABI shim hops. */
@@ -13042,8 +13043,101 @@ void move_and_draw_cars_core(void)
         pos = staging_order_index;                     /* $266E LDX staging_order_index */
     }
 
-    FUN_66df();                                        /* $2676 — draw the staged queue */
+    /* $2676 — draw them.  Y arrives as $FF: $2670/$2673 reload the loop counter (0 on the
+       last pass) and DEY it, which is what ends the loop.  V/C are stage_nearby_car's exit
+       flags, and they provably cannot reach mem[] anywhere in the pass: draw_track_object
+       threads V and C to its exit registers only, and those are dead at both of this routine's
+       callers.  So they are not carried here — draw_car_field's own fixture is what pins the
+       threading against the oracle. */
+    draw_car_field_core(0xFFu, 0u, 0u);
     stage_nearby_car_at_core(car_ahead);               /* $2679/$267B — and the car ahead */
+}
+
+/* ---------------------------------------------------------------------------
+   $66DF  draw_car_field — DRAW EVERY OTHER CAR, BACK TO FRONT  (twin #180)
+   ---------------------------------------------------------------------------
+   The frame's other-car draw pass, and move_and_draw_cars' last call but one.  Three groups,
+   in the order they are painted:
+
+     1. the ring walk.  Starting at the player's own car_order position (zp_scratch_index, left
+        there by find_player_neighbours) it steps FORWARD with car_index_inc and draws each car
+        it lands on, stopping when the cursor reaches car_behind.
+     2. object slots $16, $15 and $14 — the three non-car objects, drawn by slot number.
+     3. car_behind itself, LAST.
+
+   The order IS the algorithm: the ring walk runs away from the player and back round, so cars
+   are painted far-to-near and the nearest one wins every overlap.  The car BEHIND is nearest of
+   all, which is why it is held back to the end instead of being drawn when the walk reaches it.
+
+   ⚠ $66E1's `BPL $66E6` skips the first draw whenever zp_scratch_index is positive — and a
+   car_order position is 0..19, so it always is.  The fall-through draw at $66E3 is therefore
+   reachable only from the loop's own BNE, never on entry.  Kept as written: "the cursor is
+   never negative" is a claim about find_player_neighbours, not about this routine.
+
+   Groups 1 and 3 go through the $2ACB entry (draw_car_at_order), which saves the caller's
+   POSITION in saved_slot_index and indexes car_order to get the object SLOT; group 2 enters at
+   $2AD1 with a slot already in hand.  Both are two lines, so they are inlined here.
+
+   ⚠ Y and V thread from one draw to the next; C does NOT, even though draw_track_object leaves
+   it live.  Every draw here is preceded by a CPX — the ring stop at $66E9 and the slot-loop
+   bound at $66F5 — and those recompute the carry, so what each draw receives is the COMPARE's
+   result, not the previous draw's.  (Threading C instead is a real divergence: it shows up as a
+   flag-only mismatch on about one case in five.)  X threads through neither, because $2B0A
+   reloads it from saved_slot_index — the cursor this routine just stored.
+
+   SABOTAGE (7 defects, 6 detected).  Detected by a diverging FRAME BUFFER: the car behind drawn
+   during the ring walk instead of last ($3E43); two object slots instead of three ($3BC0); the
+   ring walked backward ($33C0).  Detected as an exit-flag divergence: the slot loop's carry
+   threaded from the previous draw instead of from $66F5's CPX (flag C, ~1 case in 5).  Detected
+   as a NON-TERMINATING walk, which is a divergence the harness cannot print but the clock can:
+   dropping `saved_slot_index = pos` leaves the cursor pinned to whatever $45 already held, so
+   the ring never reaches its stop; drawing the POSITION instead of car_order[position] does the
+   same by way of a different slot's exit.
+   ⚠ ONE SURVIVES AND IT IS NOT A FIXTURE GAP: threading the RING loop's carry from the previous
+   draw (rather than from $66E9's CPX) changes nothing, because entryC reaches mem[] on no path —
+   draw_track_object keeps it only on the empty-slot arm, and $66E9 overwrites it before the next
+   draw either way.  That is explanation three, "no change at all", and the SIBLING case proves
+   the distinction rather than assuming it: the same defect in the SLOT loop, where no CPX
+   intervenes before the final draw, IS caught.
+   --------------------------------------------------------------------------- */
+SlotExit draw_car_field_core(uint8_t entryY, uint8_t entryV, uint8_t entryC)
+{
+    /* Every bearing draw_track_object measures is against the camera heading, and nothing in
+       this pass moves it — so the relocated wide value is published once, not per car. */
+    car_heading_marshal_in();
+
+    uint8_t pos = zp_scratch_index;                         /* $66DF LDX zp_scratch_index */
+    uint8_t y = entryY, v = entryV, c = entryC;
+    /* $66DF's own LDX flags, in case the loop draws nothing at all. */
+    SlotExit e = { 0x00u, pos, y, (uint8_t)((pos >> 7) & 1u), (uint8_t)(pos == 0u), v, c };
+    int draw = (pos & 0x80u) != 0;                          /* $66E1 BPL — see the header */
+
+    for (;;) {
+        if (draw) {                                         /* $66E3 JSR draw_car_at_order */
+            saved_slot_index = pos;                         /* $2ACB — the POSITION, not the slot */
+            e = draw_track_object_core(mem[CAR_ORDER + pos], y, v, c);
+            y = e.y; v = e.v;                               /* C is recomputed below, not threaded */
+            pos = e.x;                                      /* $2B0A reloads X = saved_slot_index */
+        }
+        pos = car_index_inc_core(pos);                      /* $66E6 — forward round the ring */
+        c = (uint8_t)(pos >= car_behind);                   /* $66E9 CPX — the NEXT draw's carry */
+        if (pos == car_behind) break;                       /* $66EB BNE */
+        draw = 1;
+    }
+
+    unsigned slot = 0x16u;                                  /* $66ED LDX #$16 */
+    for (;;) {                                              /* the three non-car object slots */
+        saved_slot_index = (uint8_t)slot;                   /* $66EF STX */
+        e = draw_track_object_core((uint8_t)slot, y, v, c); /* $66F1 — slot entry, not $2ACB */
+        y = e.y; v = e.v;
+        slot--;                                             /* $66F4 DEX */
+        c = (uint8_t)(slot >= 0x14u);                       /* $66F5 CPX #$14 */
+        if (!c) break;                                      /* $66F7 BCS $66EF */
+    }
+
+    uint8_t behind = car_behind;                            /* $66F9 LDX car_behind */
+    saved_slot_index = behind;                              /* $2ACB again */
+    return draw_track_object_core(mem[CAR_ORDER + behind], y, v, c);
 }
 
 /* ----- TWIN #159: $27ED FUN_27ed — the per-frame per-car update engine -------------------------

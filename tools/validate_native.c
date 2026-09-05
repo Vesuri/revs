@@ -635,6 +635,123 @@ void enter_mos_text_mode(void);      void enter_mos_text_mode__t6502(void);
 void move_and_draw_cars(void);
 void move_and_draw_cars__t6502(void);
 
+void draw_car_field(void);
+void draw_car_field__t6502(void);
+
+/* Defined with the object-plotter fixtures further down; draw_car_field reaches the same plotter
+   through draw_track_object, so it needs the same legal-table setup and the same cell names. */
+static int force_shape_tables(uint8_t* pre);
+#define DCF_HORIZ_HALF     0x62FC
+#define DCF_HORIZ_EXTENT   0x001F
+#define DCF_LINE_CEILING   0x62FD
+
+/* ==========================================================================
+   $66DF  draw_car_field — THE OTHER-CAR DRAW PASS                (twin #180)
+   --------------------------------------------------------------------------
+   Fully live (A/X/Y and all four flags): the shim publishes the last draw's exit registers, and
+   Y/V/C thread from one draw_track_object to the next inside the routine, so a dropped thread is
+   a real defect and the fixture must be able to see it.
+
+   Three structural pins:
+
+     - car_order is a permutation of the twenty slots, and car_behind is a position in 0..19.  The
+       walk steps car_index_inc from zp_scratch_index until it lands on car_behind, so any
+       position in range terminates it; a car_behind of $FF would spin forever, and the game never
+       produces one (find_player_neighbours writes a ring position).
+     - car_heading ($0A/$0B) is the camera the twin marshals in ONCE instead of per car.  It is
+       randomised, not pinned — that is the thing being compared.
+     - The three object groups all have to DRAW, not just be skipped.  draw_track_object rejects a
+       slot whose car_flags_shape bit 7 is set and one whose bearing leaves the visibility window,
+       so half the cases clear bit 7 across the board and park every object's bearing high byte at
+       $00 with the camera at 0 — which puts the whole field in view and makes the paint ORDER
+       itself observable in the frame buffer.
+   ========================================================================== */
+static int test_draw_car_field(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("draw_car_field");
+    if (!want("draw_car_field")) return 0;
+
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+
+    int cases = 3000 * scale;
+    int sawDraw = 0, sawSkip = 0, sawNegCursor = 0, sawSmcTrap = 0, closing = 0;
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;                                    /* not a SED site (static-map §Decimal mode) */
+        c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+        c.N = xs() & 1u; c.Z = xs() & 1u; c.V = xs() & 1u; c.C = xs() & 1u;
+
+        { uint8_t ord[20]; int i;
+          for (i = 0; i < 20; i++) ord[i] = (uint8_t)i;
+          for (i = 19; i > 0; i--) { int j = (int)(xs() % (unsigned)(i + 1));
+                                     uint8_t tmp = ord[i]; ord[i] = ord[j]; ord[j] = tmp; }
+          for (i = 0; i < 20; i++) pre[0x013Cu + i] = ord[i]; }
+
+        pre[0x0003u] = (uint8_t)(xs() % 20u);       /* zp_scratch_index — the walk's start */
+        pre[0x004Du] = (uint8_t)(xs() % 20u);       /* car_behind — and its stop */
+
+        /* $1FE9 is plot_object's per-circuit SMC extent, reached through draw_track_object.
+           Sweep both real arms (Silverstone's `LDX horizon_extent` and an expansion circuit's
+           `LDX #imm`) and, one case in ten, the trap-and-return that an unrecognised opcode
+           takes — exactly as test_plot_object does. */
+        if (xs() % 10) {
+            if (xs() & 1u) pre[0x1FE9u] = 0xA6u;
+            else         { pre[0x1FE9u] = 0xA2u; pre[0x1FEAu] = (uint8_t)(xs() % 0x50u); }
+        } else { pre[0x1FE9u] = 0x00u; sawSmcTrap = 1; }
+
+        /* One case in eight starts the cursor NEGATIVE, which is the only way $66E3's
+           fall-through draw is reached.  The game never does it (a ring position is 0..19) but
+           the branch is in the routine, so the fixture covers it. */
+        if ((t & 7) == 3) { pre[0x0003u] = (uint8_t)(0x80u | (xs() % 20u)); sawNegCursor = 1; }
+
+        if (xs() & 1u) {                            /* everything in view, everything drawable */
+            int i;
+            closing += force_shape_tables(pre) ? 1 : 0;        /* legal, terminating edge walks */
+            pre[0x000Au] = 0x00u; pre[0x000Bu] = 0x00u;        /* camera heading at 0 */
+            pre[DCF_HORIZ_HALF]   = (uint8_t)(xs() % 0x80u);
+            pre[DCF_HORIZ_EXTENT] = (uint8_t)(xs() % 0x50u);
+            pre[DCF_LINE_CEILING] = (uint8_t)(xs() % 0x50u);
+            for (i = 0; i < 0x17; i++) {
+                /* bit 7 clear = a real shape.  ⚠⚠ SHAPE 9 IS EXCLUDED, and not for convenience:
+                   plot_object re-enters below its own clamp, so a plot_shape of exactly 9 keeps
+                   rewriting 9 into object_shape_clamped and $2021's `CMP #$09` never stops
+                   agreeing — BOTH models hang, identically.  It is unreachable in the game (9 is
+                   the "stand-in drawn" marker, never a shape); test_plot_object excludes it for
+                   the same reason, and this fixture hung on it before it did. */
+                { unsigned pick = xs() % 15u;
+                  pre[0x018Cu + i] = (uint8_t)(pick < 9u ? pick : pick + 1u); }
+                pre[0x0380u + i] = (uint8_t)xs();              /* bearing lo */
+                pre[0x0398u + i] = 0x00u;                      /*         hi -> inside the window */
+                pre[0x03B0u + i] = (uint8_t)(xs() % 0x50u);    /* object scan line */
+                pre[0x03C8u + i] = (uint8_t)(xs() % 0x80u);    /* projected width */
+            }
+            sawDraw = 1;
+        } else {
+            int i;                                  /* ...and the all-rejected control */
+            for (i = 0; i < 0x17; i++) pre[0x018Cu + i] |= 0x80u;
+            sawSkip = 1;
+        }
+
+        fail += diff_run("draw_car_field", pre, c, draw_car_field,
+                         draw_car_field__t6502,
+                         LIVE_A | LIVE_X | LIVE_Y | LIVE_FLAGS, t, &printed);
+    }
+    if (!sawDraw || !sawSkip || !sawNegCursor || !sawSmcTrap) {
+        printf("  draw_car_field: VACUOUS (draw=%d skip=%d negCursor=%d smcTrap=%d)\n",
+               sawDraw, sawSkip, sawNegCursor, sawSmcTrap);
+        fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  (%d closing-arm setups)\n",
+           "draw_car_field", cases, fail, closing);
+    return fail;
+}
+
 /* ==========================================================================
    $2637 move_and_draw_cars — THE OTHER-CAR PASS  (twin #179)
    --------------------------------------------------------------------------
@@ -8560,6 +8677,7 @@ int main(int argc, char** argv)
     fail += test_print_spaces();
     fail += test_draw_starting_lights();
     fail += test_move_and_draw_cars();
+    fail += test_draw_car_field();
     fail += test_reject_all_object_slots();
     fail += test_update_lap_timers();
     fail += test_irq1v_release();

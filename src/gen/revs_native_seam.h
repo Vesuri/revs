@@ -343,6 +343,7 @@ GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn);
 StageNearbyCar stage_nearby_car_core(uint8_t gapA, unsigned gapFar, uint8_t slot);
 void    stage_nearby_car_at_core(uint8_t orderIndex);
 void    move_and_draw_cars_core(void);
+SlotExit draw_car_field_core(uint8_t entryY, uint8_t entryV, uint8_t entryC);
 void check_car_pair_core(void);
 void car_order_swap_core(uint8_t xi, uint8_t yi, uint8_t* outX, uint8_t* outY);
 void clamp_near_edge_cursor_core(uint8_t candidate);

@@ -1006,6 +1006,16 @@ void stage_nearby_car(void) { stage_nearby_car_at_core(cpu.X); }
    come out of mem[]) and the body's next call reloads every register. */
 void move_and_draw_cars(void) { move_and_draw_cars_core(); }
 
+/* $66DF draw_car_field — the other-car draw pass.  Y/V/C arrive ambient and thread through the
+   whole pass; X does not (draw_track_object reloads it from saved_slot_index).  A/N/Z are the
+   last draw's. */
+void draw_car_field(void)
+{
+    SlotExit e = draw_car_field_core(cpu.Y, cpu.V, cpu.C);
+    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
+}
+
 /* $2692 check_car_pair — twin #163.  No meaningful entry registers (it loads its start position
    from zp_scratch_index immediately) and every exit register/flag is dead (both callers reload X),
    so the shim is a bare call — all state lives in mem[]. */
