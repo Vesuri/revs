@@ -608,7 +608,7 @@ void draw_starting_lights(void)
        $0100+S.  (The core returns -1 on the early exits, which push nothing.) */
     int pattern = draw_starting_lights_core();
     if (pattern >= 0)
-        mem[0x0100u + cpu.S] = (uint8_t)pattern;
+        mem[STACK_PAGE + cpu.S] = (uint8_t)pattern;
 }
 
 void update_horizon_band(void)
@@ -705,7 +705,7 @@ void draw_dash_needles(void)
        The later plot_line_octant pushes only below this cell, so the residue survives. */
     car_angle_marshal_in();                       /* consumer: element 2 of the relocated array */
     uint16_t steerAng = car_angle_16[CAR_ANGLE_STEER];
-    mem[0x0100u + cpu.S] = (uint8_t)(0x30u                     /* bit5 = 1, B = 1 */
+    mem[STACK_PAGE + cpu.S] = (uint8_t)(0x30u                     /* bit5 = 1, B = 1 */
         | (cpu.V ? 0x40u : 0u)
         | (cpu.D ? 0x08u : 0u)
         | (cpu.I ? 0x04u : 0u)
@@ -814,7 +814,7 @@ void seed_car_track_position(void)
        residue at $0100+S that the differential compares.  It is the flags AFTER LDA $FE68: N = the
        entropy byte's bit 7, Z set iff it was 0; C/V/D/I carry through from entry; bit5 and B are set
        in the pushed copy.  Nothing after (JSR/RTS are C calls in the oracle) rewrites this cell. */
-    mem[0x0100u + cpu.S] = (uint8_t)(0x30u
+    mem[STACK_PAGE + cpu.S] = (uint8_t)(0x30u
         | ((entropy & 0x80u) ? 0x80u : 0u)               /* N */
         | (cpu.V ? 0x40u : 0u)
         | (cpu.D ? 0x08u : 0u)

@@ -112,14 +112,17 @@ void cpu_stack_ceiling(unsigned char s);
 #define STACK_WATERMARK_HOOK(s)  ((void)0)
 #define STACK_CEILING_HOOK(s)    ((void)0)
 #endif
-#define PUSH(v)  do { mem[0x100|cpu.S]=(uint8_t)(v); \
+/* The 6502 stack page.  ⚠ $0100 is ALSO car_race_flags / the front end's sort scratch — the
+   engine's stack only ever lives in $01F3-$01F8, so the two tenants do not overlap. */
+#define STACK_PAGE 0x0100u
+#define PUSH(v)  do { mem[STACK_PAGE|cpu.S]=(uint8_t)(v); \
                       if (cpu.S < g_stackLow) { g_stackLow = cpu.S; \
                                                 STACK_WATERMARK_HOOK(cpu.S); } \
                       if (cpu.S < STACK_FLOOR) g_stackTrespass++; \
                       cpu.S--; } while(0)
 /* ⚠ The ceiling matters as much as the floor: S starts at $F8, so a PULL that takes it higher is
    unbalanced, and a few more walk it to $FF and WRAP it to $00 — where pushes hit car_order. */
-#define PULL(v)  do { cpu.S++; (v)=mem[0x100|cpu.S]; \
+#define PULL(v)  do { cpu.S++; (v)=mem[STACK_PAGE|cpu.S]; \
                       if (cpu.S > g_stackHigh) { g_stackHigh = cpu.S; \
                                                  STACK_CEILING_HOOK(cpu.S); } } while(0)
 #define PHA()    PUSH(cpu.A)

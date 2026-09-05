@@ -45,6 +45,52 @@
 #include "../platform/shape.h"        /* PROBE_SHAPE_DASH_UNIT(): the §7a unit counter */
 #include "../platform/revs_plot.h"    /* REVS_PLOT_*: the direct-to-bitplane run plotter */
 
+/* ---------------------------------------------------------------------------
+   ⭐ THE PER-CIRCUIT HOOK SEAMS, BY NAME
+   ---------------------------------------------------------------------------
+   Each of these is an address IN CODE that an expansion circuit's ModifyGameCode rewrites
+   (`make track-smc` / `make track-patch`).  A twin that reaches one has to read the opcode
+   byte and dispatch on it, and the operand follows at +1/+2 — so the seam gets ONE name and
+   the operand is written as an offset off it, the same shape as SMC_MASK_OPCODE below.
+   ⚠ These are code addresses, not variables: the name says which seam, not what it holds.
+   --------------------------------------------------------------------------- */
+#define SMC_BOUNDARY_HOOK      0x1289u  /* cross_section_boundary: JSR the circuit's own arm */
+#define SMC_SEGMENT_LOAD       0x1248u  /* load_section_from_segment: LDA table,Y vs a hook JSR */
+#define SMC_SECTION_ADVANCE    0x12FBu  /* build_road_section: CLC/ADC #3 vs a hook JSR */
+#define SMC_MARKER_MASK        0x1310u  /* build_road_section: AND #$F8 vs LDA #imm */
+#define SMC_SECTION_TAIL_HOOK  0x13C9u  /* build_road_section's tail: a hook JSR */
+#define SMC_CONTROLS_HOOK      0x1593u  /* read_driving_controls: a hook JSR */
+#define SMC_FILL_ATTR_HOOK     0x1946u  /* fill_line_attr: a hook JSR */
+#define SMC_GAP_WALK_BRANCH    0x1DD4u  /* column_gap_walk: the source-byte branch (BEQ $1DC5) */
+#define SMC_OBJECT_CEILING     0x1FE9u  /* plot_object: the object-count ceiling (LDX #imm) */
+#define SMC_REBASE_BRANCH      0x231Au  /* the rebase pair's BEQ — taken or not, per circuit */
+#define SMC_EDGE_WALK_HOOK     0x248Bu  /* road_edge_walk: BCS vs the circuit's own JMP */
+#define SMC_GEOMETRY_STORE     0x2538u  /* build_track_geometry: STA abs,Y vs a hook JSR */
+#define SMC_HALF_WIDTH_CALL    0x2542u  /* horizon_half_width_at: the JSR whose target moves */
+#define SMC_EDGE_WIDTH_HOOK    0x261Au  /* emit_edge_width_offset: STA zp pair vs a JMP */
+#define SMC_CAR_PAIR_HOOK      0x2771u  /* check_car_pair */
+#define SMC_SPAN_CAP_LOAD      0x2F23u  /* span_cap_line_slot_z: LDA table,Y vs a hook JSR */
+#define SMC_SEGMENT_SCALE_TBL  0x44D5u  /* compute_segment_scale: LDA abs,Y — the base moves */
+#define SMC_PLACE_PLAYER_HOOK  0x462Bu  /* place_player_in_section: a hook JSR */
+#define SMC_CAMERA_SCALE       0x45CBu  /* update_camera_and_drive_state: ASL/ROL vs a hook JSR */
+#define SMC_HORIZON_CMP        0x4F54u  /* update_horizon_band: CMP #imm — the ceiling */
+#define SMC_HORIZON_CLAMP      0x4F58u  /* ...and LDA #imm — the value it clamps down to */
+
+/* ⭐ CELLS THAT HAD NO NAME, named here for the tenant that uses them.
+   Queued in docs/rename.md for a symbols.csv row. */
+#define ULA_PALETTE_BAND4      0x347Cu  /* the four ULA palette bytes for band 4 (the dashboard) */
+#define VDU_CHAR_COL           0x62CCu  /* vdu_char_emit's target column ... */
+#define VDU_CHAR_ROW           0x62CDu  /* ...and its scan line (character row * 8) */
+#define MENU_ROW_ATTR          0x7E85u  /* MODE 7 page: the menu rows' attribute cell, +$50/row */
+#define MENU_CURSOR_CELL       0x7FC5u  /* MODE 7 page: the "nothing chosen yet" marker cell */
+/* tick_wheel_spin XORs five runs of frame-buffer cells to animate the wheels. */
+#define WHEEL_SPIN_CELL_A      0x6FC0u
+#define WHEEL_SPIN_CELL_B      0x70F8u
+#define WHEEL_SPIN_CELL_C      0x6E85u
+#define WHEEL_SPIN_CELL_D      0x6FBDu
+#define WHEEL_SPIN_CELL_E      0x6E8Au
+#define WHEEL_SPIN_CELL_F      0x6FB2u
+
 /* ⭐⭐ WIDE-VALUE CLEANUP, mechanism (B): THE ENGINE'S THREE SCREEN WRITE POINTERS
    ($70/$71, $72/$73, $8E/$8F) relocated out of mem[] into native uint16_ts.
 
@@ -436,7 +482,7 @@ void irq1v_band_schedule(void)
         break;
 
     default:    /* band 4 (and anything above 3): the dashboard, and then the GAME RUNS */
-        ula_palette_table(0x347C, 3);
+        ula_palette_table(ULA_PALETTE_BAND4, 3);
         irq_band_state = 0xFF;     /* the tail's INC wraps it to 0 */
 
         /* tick_wheel_spin is an ordinary JSR target, so it is entered with whatever the
@@ -449,7 +495,7 @@ void irq1v_band_schedule(void)
            same harness catching a dropped call at once) — the body reloads all of them
            before use.  Kept anyway: it costs five stores per FIELD, and "the callee does
            not read it today" is a claim about a 400-routine subtree. */
-        cpu.A = mem[0x347C]; cpu.X = 0xFF;
+        cpu.A = mem[ULA_PALETTE_BAND4]; cpu.X = 0xFF;
         cpu.N = 1; cpu.Z = 0; cpu.C = 1;
 
         PROBE_PHASE(PROBE_PHASE_BODYARM);
@@ -3071,7 +3117,7 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
             return e;
         }
         /* line >= horizon_extent: this point IS the new horizon (or a circuit hook owns it). */
-        if (mem[0x261A] == 0x85 && mem[0x261C] == 0x84) {       /* unpatched: Silverstone */
+        if (mem[SMC_EDGE_WIDTH_HOOK] == 0x85 && mem[SMC_EDGE_WIDTH_HOOK + 2] == 0x84) {       /* unpatched: Silverstone */
             uint8_t z = (uint8_t)(d == 0u);           /* the CMP's Z, before the store moves it */
             horizon_extent = (uint8_t)line;
             horizon_index  = edge_cursor;
@@ -3090,12 +3136,12 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
         cpu.Z = (uint8_t)(d == 0u);
         cpu.C = 1u;
         cpu.V = vOut;
-        if (mem[0x261A] == 0x4C) {                              /* a circuit's own JMP */
-            uint16_t target = (uint16_t)(mem[0x261B] | (mem[0x261C] << 8));
+        if (mem[SMC_EDGE_WIDTH_HOOK] == 0x4C) {                              /* a circuit's own JMP */
+            uint16_t target = (uint16_t)(mem[SMC_EDGE_WIDTH_HOOK + 1] | (mem[SMC_EDGE_WIDTH_HOOK + 2] << 8));
             if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
-            else                                      platform_smc_unhandled(0x261A, target);
+            else                                      platform_smc_unhandled(SMC_EDGE_WIDTH_HOOK, target);
         } else {
-            platform_smc_unhandled(0x261A, mem[0x261A]);
+            platform_smc_unhandled(SMC_EDGE_WIDTH_HOOK, mem[SMC_EDGE_WIDTH_HOOK]);
         }
         { WidthExit e = { cpu.A, cpu.Y, cpu.N, cpu.Z, cpu.V, cpu.C }; return e; }
     }
@@ -3232,15 +3278,15 @@ RoadSide road_edge_side_apply(uint8_t sideSelect)
    slots the oracle never reached (case 4 of the first run). */
 static int rebase_takes_branch(int equal, int* trapped)
 {
-    if (mem[0x231A] != 0xF0) {                       /* not a BEQ at all */
-        platform_smc_unhandled(0x231A, mem[0x231A]);
+    if (mem[SMC_REBASE_BRANCH] != 0xF0) {                       /* not a BEQ at all */
+        platform_smc_unhandled(SMC_REBASE_BRANCH, mem[SMC_REBASE_BRANCH]);
         *trapped = 1;
         return 0;
     }
     if (!equal) return 0;                            /* the branch simply is not taken */
-    if (mem[0x231B] == 0x0F) return 1;               /* BEQ $232B — skip the pair */
-    if (mem[0x231B] == 0x00) return 0;               /* BEQ $231C — fall through, re-base it */
-    platform_smc_unhandled(0x231A, (uint16_t)(0x231C + (int)(int8_t)mem[0x231B]));
+    if (mem[SMC_REBASE_BRANCH + 1] == 0x0F) return 1;               /* BEQ $232B — skip the pair */
+    if (mem[SMC_REBASE_BRANCH + 1] == 0x00) return 0;               /* BEQ $231C — fall through, re-base it */
+    platform_smc_unhandled(SMC_REBASE_BRANCH, (uint16_t)((SMC_REBASE_BRANCH + 2) + (int)(int8_t)mem[SMC_REBASE_BRANCH + 1]));
     *trapped = 1;
     return 0;
 }
@@ -3510,20 +3556,20 @@ uint8_t road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
                    dispatching to it re-establish the entry ABI: A + N/Z/C are angle_off_axis's
                    CMP #$14 result (left in cpu by the helper), Y = edge_cursor (the $2475 LDY),
                    X = section.  After the hook runs it owns the exit. */
-                if (mem[0x248B] == 0xB0 && mem[0x248D] == 0x4C) {    /* unpatched: Silverstone */
+                if (mem[SMC_EDGE_WALK_HOOK] == 0xB0 && mem[SMC_EDGE_WALK_HOOK + 2] == 0x4C) {    /* unpatched: Silverstone */
                     if (!prevFar)
                         return road_edge_walk_subdivide(section, midSlot);
                     return (uint8_t)section;                         /* $248B BCS $24B8, X=section */
                 }
                 cpu.Y = (uint8_t)here;
                 cpu.X = (uint8_t)section;
-                if (mem[0x248B] == 0x4C) {                           /* a circuit's own JMP */
-                    uint16_t target = (uint16_t)(mem[0x248C] | (mem[0x248D] << 8));
+                if (mem[SMC_EDGE_WALK_HOOK] == 0x4C) {                           /* a circuit's own JMP */
+                    uint16_t target = (uint16_t)(mem[SMC_EDGE_WALK_HOOK + 1] | (mem[SMC_EDGE_WALK_HOOK + 2] << 8));
                     if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
-                    else                                      platform_smc_unhandled(0x248B, target);
+                    else                                      platform_smc_unhandled(SMC_EDGE_WALK_HOOK, target);
                     return cpu.X;                                    /* the hook owns the exit X */
                 }
-                platform_smc_unhandled(0x248B, mem[0x248B]);
+                platform_smc_unhandled(SMC_EDGE_WALK_HOOK, mem[SMC_EDGE_WALK_HOOK]);
                 return cpu.X;
             }
         }
@@ -3580,11 +3626,11 @@ static void horizon_half_width_at(unsigned horizonPoint)
     /* ⚠ Exit cpu.A IS part of build_track_geometry's ABI (its fixture compares A): it is the
        half-width on both compute arms, diff on the trap fall-through, the hook's own A on the
        circuit arm.  The abs8 cpu round-trip is gone; only that one exit-register write remains. */
-    if (mem[0x2542] == 0x20 && mem[0x2545] == 0x4A) {           /* unpatched: Silverstone */
+    if (mem[SMC_HALF_WIDTH_CALL] == 0x20 && mem[SMC_HALF_WIDTH_CALL + 3] == 0x4A) {           /* unpatched: Silverstone */
         horizon_half_width = (uint8_t)(mag >> 1);               /* $2549 LSR A — half the width */
         cpu.A = horizon_half_width;
-    } else if (mem[0x2542] == 0x20 && mem[0x2545] == 0xEA) {    /* a circuit's own call + NOP */
-        uint16_t target = (uint16_t)(mem[0x2543] | (mem[0x2544] << 8));
+    } else if (mem[SMC_HALF_WIDTH_CALL] == 0x20 && mem[SMC_HALF_WIDTH_CALL + 3] == 0xEA) {    /* a circuit's own call + NOP */
+        uint16_t target = (uint16_t)(mem[SMC_HALF_WIDTH_CALL + 1] | (mem[SMC_HALF_WIDTH_CALL + 2] << 8));
         if (target == 0x3450) {
             horizon_half_width = mag;               /* the abs8 hook, then NOP (no halving) */
             cpu.A = horizon_half_width;
@@ -3595,10 +3641,10 @@ static void horizon_half_width_at(unsigned horizonPoint)
             cpu.N = (diff >> 7) & 1u;
             revs_track_hook(target);
             horizon_half_width = cpu.A;
-        } else { cpu.A = diff; platform_smc_unhandled(0x2542, target); return; }
+        } else { cpu.A = diff; platform_smc_unhandled(SMC_HALF_WIDTH_CALL, target); return; }
     } else {
         cpu.A = diff;
-        platform_smc_unhandled(0x2542, mem[0x2542]);
+        platform_smc_unhandled(SMC_HALF_WIDTH_CALL, mem[SMC_HALF_WIDTH_CALL]);
     }
 }
 
@@ -3657,14 +3703,14 @@ void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1)
        ⚠ SMC $2538: on an expansion circuit the second store is a call to the circuit's own
        code instead, which is why the bytes are dispatched rather than assumed. */
     mem[EDGE_Y_TBL + horizonPoint] = (uint8_t)horizonLine;
-    if (mem[0x2538] == 0x99) {                                  /* unpatched: Silverstone */
+    if (mem[SMC_GEOMETRY_STORE] == 0x99) {                                  /* unpatched: Silverstone */
         mem[EDGE_Y_TBL + EDGE_HALF + horizonPoint] = (uint8_t)horizonLine;
-    } else if (mem[0x2538] == 0x20) {
-        uint16_t target = (uint16_t)(mem[0x2539] | (mem[0x253A] << 8));
+    } else if (mem[SMC_GEOMETRY_STORE] == 0x20) {
+        uint16_t target = (uint16_t)(mem[SMC_GEOMETRY_STORE + 1] | (mem[SMC_GEOMETRY_STORE + 2] << 8));
         if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
-        else { platform_smc_unhandled(0x2538, target); return; }
+        else { platform_smc_unhandled(SMC_GEOMETRY_STORE, target); return; }
     } else {
-        platform_smc_unhandled(0x2538, mem[0x2538]);
+        platform_smc_unhandled(SMC_GEOMETRY_STORE, mem[SMC_GEOMETRY_STORE]);
         return;
     }
 
@@ -4871,11 +4917,11 @@ int road_span_advance_core(uint8_t y)
    still empty — go on and stamp it), 0 when clear (already classified — leave it), -1 on a trap. */
 static int span_cap_line_slot_z(uint8_t y)
 {
-    if (mem[0x2F23] == 0xB9) {                       /* unpatched: Silverstone, LDA $5F60,Y */
+    if (mem[SMC_SPAN_CAP_LOAD] == 0xB9) {                       /* unpatched: Silverstone, LDA $5F60,Y */
         return mem[VIEW_LINE_SURFACE + y] == 0;      /* Z set iff the entry is still zero */
     }
-    if (mem[0x2F23] == 0x20) {                        /* an expansion circuit's own hook (JSR) */
-        uint16_t hook = (uint16_t)(mem[0x2F24] | (mem[0x2F25] << 8));
+    if (mem[SMC_SPAN_CAP_LOAD] == 0x20) {                        /* an expansion circuit's own hook (JSR) */
+        uint16_t hook = (uint16_t)(mem[SMC_SPAN_CAP_LOAD + 1] | (mem[SMC_SPAN_CAP_LOAD + 2] << 8));
         if (hook >= 0x5300 && hook <= 0x5A25) {
             /* Reproduce the 6502 register context $2F19-$2F22 hands the hook: A = span_swapped
                (from the LDA the BMI branched on), Y = this scan line (after the DEY), N/Z from
@@ -4885,9 +4931,9 @@ static int span_cap_line_slot_z(uint8_t y)
             revs_track_hook(hook);
             return cpu.Z ? 1 : 0;
         }
-        platform_smc_unhandled(0x2F23, hook); return -1;
+        platform_smc_unhandled(SMC_SPAN_CAP_LOAD, hook); return -1;
     }
-    platform_smc_unhandled(0x2F23, mem[0x2F23]); return -1;
+    platform_smc_unhandled(SMC_SPAN_CAP_LOAD, mem[SMC_SPAN_CAP_LOAD]); return -1;
 }
 
 static void span_cap_line(uint8_t y)
@@ -5705,13 +5751,13 @@ SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t first
        the walk below re-seeds y from horizon_extent rather than from cpu.Y. */
     cpu.X = firstPoint;
     cpu.Y = onePastLast;
-    if (mem[0x1946] == 0x20) {
-        uint16_t target = (uint16_t)(mem[0x1947] | (mem[0x1948] << 8));
+    if (mem[SMC_FILL_ATTR_HOOK] == 0x20) {
+        uint16_t target = (uint16_t)(mem[SMC_FILL_ATTR_HOOK + 1] | (mem[SMC_FILL_ATTR_HOOK + 2] << 8));
         if (target == 0x1933) edge_x_offscreen();
         else if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
-        else { platform_smc_unhandled(0x1946, target); return trapExit; }
+        else { platform_smc_unhandled(SMC_FILL_ATTR_HOOK, target); return trapExit; }
     } else {
-        platform_smc_unhandled(0x1946, mem[0x1946]);
+        platform_smc_unhandled(SMC_FILL_ATTR_HOOK, mem[SMC_FILL_ATTR_HOOK]);
         return trapExit;
     }
 
@@ -6115,7 +6161,7 @@ SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int e
 #define EDGE_STYLE_PREV    0x5EDFu   /* edge_style - 1: a line_attr entry is an index PLUS ONE */
 
 #define GAP_PTR_OPERAND    0x1DDEu   /* the store's zero-page pointer number */
-#define GAP_BRANCH_OPERAND 0x1DD5u   /* the non-zero-source arm's branch offset */
+#define GAP_BRANCH_OPERAND (SMC_GAP_WALK_BRANCH + 1)   /* the non-zero-source arm's branch offset */
 #define GAP_FALLBACK       0x1DDCu   /* the colour substituted for a zero surface_colour_at */
 
 /* ⭐ ONE range test per column instead of one per cell (CLAUDE.md §bus_read/bus_write).  The
@@ -6312,7 +6358,7 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
                non-zero source byte is found, so a column of zeroes never executes it and an
                unmodelled offset must leave A, Y and the flags as this LDA left them. */
             if (offset != 0xEFu) {
-                platform_smc_unhandled(0x1DD4, (uint16_t)(0x1DD6 + (int8_t)offset));
+                platform_smc_unhandled(SMC_GAP_WALK_BRANCH, (uint16_t)((SMC_GAP_WALK_BRANCH + 2) + (int8_t)offset));
                 SlotExit e = { src, x, line, (uint8_t)((src >> 7) & 1u),
                                0u /* src != 0 */, v, loopC };
                 return e;
@@ -6765,7 +6811,7 @@ void mul16_by_1_5(void)
     uint8_t hiHalf   = (uint8_t)((hiIn >> 1) | (hiIn & 0x80u));
     int     midCarry = hiIn & 1u;
 
-    mem[0x0100u + cpu.S] = hiHalf;                      /* $476C PHA — the stack residue */
+    mem[STACK_PAGE + cpu.S] = hiHalf;                      /* $476C PHA — the stack residue */
 
     /* $476D-$4773 — x/2 low (loIn rotated right through midCarry) + x low, carry-in clear. */
     { uint8_t  loHalf = (uint8_t)(((unsigned)midCarry << 7) | (loIn >> 1));
@@ -8615,19 +8661,19 @@ CameraExit update_camera_and_drive_state_core(void)
        camera term's high byte.  The first ASL/ROL pair is the per-circuit hook site. */
     {
         uint8_t camA = driveNew, carry;
-        if (mem[0x45CB] == 0x0A && mem[0x45CC] == 0x26) {   /* unpatched: Silverstone — inline ASL/ROL */
+        if (mem[SMC_CAMERA_SCALE] == 0x0A && mem[SMC_CAMERA_SCALE + 1] == 0x26) {   /* unpatched: Silverstone — inline ASL/ROL */
             carry = (uint8_t)(camA >> 7);
             camA  = (uint8_t)(camA << 1);
             shared_temp_77 = (uint8_t)((shared_temp_77 << 1) | carry);
-        } else if (mem[0x45CB] == 0x20) {
-            uint16_t target = (uint16_t)(mem[0x45CC] | (mem[0x45CD] << 8));
+        } else if (mem[SMC_CAMERA_SCALE] == 0x20) {
+            uint16_t target = (uint16_t)(mem[SMC_CAMERA_SCALE + 1] | (mem[SMC_CAMERA_SCALE + 2] << 8));
             if (target >= 0x5300 && target <= 0x5A25) {
                 cpu.A = camA;                            /* SMC/hook boundary — the circuit code runs on cpu.A */
                 revs_track_hook(target);
                 camA = cpu.A;
-            } else { platform_smc_unhandled(0x45CB, target); return preSmc; }
+            } else { platform_smc_unhandled(SMC_CAMERA_SCALE, target); return preSmc; }
         } else {
-            platform_smc_unhandled(0x45CB, mem[0x45CB]); return preSmc;
+            platform_smc_unhandled(SMC_CAMERA_SCALE, mem[SMC_CAMERA_SCALE]); return preSmc;
         }
         carry = (uint8_t)(camA >> 7);                    /* $45CF-$45D0 — second ASL/ROL (always) */
         camA  = (uint8_t)(camA << 1);
@@ -9444,13 +9490,13 @@ SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV)
     {
         uint8_t pw = proj_width, hw = horizon_half_width;
         if (pw < hw) {                               /* CMP; BCS skips the narrow-object arm */
-            uint8_t op = mem[0x1FE9];
+            uint8_t op = mem[SMC_OBJECT_CEILING];
             if (op == 0xA6u)      ceiling = horizon_extent;   /* unpatched: LDX horizon_extent */
-            else if (op == 0xA2u) ceiling = mem[0x1FEA];      /* a circuit's own `LDX #imm` */
+            else if (op == 0xA2u) ceiling = mem[SMC_OBJECT_CEILING + 1];      /* a circuit's own `LDX #imm` */
             else {
                 /* SMC trap — a COMPARED return.  A and its N/Z come from the CMP just made,
                    C=0 (pw < hw), X=0, and entry Y/V pass through untouched. */
-                platform_smc_unhandled(0x1FE9, op);
+                platform_smc_unhandled(SMC_OBJECT_CEILING, op);
                 uint8_t d = (uint8_t)(pw - hw);
                 SlotExit e = { pw, 0x00u, entryY,
                                (uint8_t)((d >> 7) & 1u), (uint8_t)(pw == hw), v, 0u };
@@ -10192,7 +10238,7 @@ uint8_t vdu_char_emit_core(void)
 
     /* $50C6-$50EA — blit the eight rows BOTTOM-UP; stepping off the top of a character row
        backs plot_ptr up one MODE-5 character row ($0140 bytes) and resets the line to 7. */
-    Mode5Addr m = mode5_addr_for_cell_core(mem[0x62CCu], mem[0x62CDu]);  /* column, row */
+    Mode5Addr m = mode5_addr_for_cell_core(mem[VDU_CHAR_COL], mem[VDU_CHAR_ROW]);  /* column, row */
     uint8_t line = m.line;
     {
         int i;
@@ -10223,7 +10269,7 @@ uint8_t vdu_char_emit_core(void)
     }
 
     plot_ptr_marshal_out();                            /* publish $70/$71 for the 6502-ABI mirror */
-    mem[0x62CCu] = (uint8_t)(mem[0x62CCu] + 1);        /* $50EB — the next cell along */
+    mem[VDU_CHAR_COL] = (uint8_t)(mem[VDU_CHAR_COL] + 1);        /* $50EB — the next cell along */
     return mem[VDU_CHAR_BLOCK];                         /* $50F2 — the character comes back live */
 }
 
@@ -10378,7 +10424,7 @@ uint8_t menu_wait_key_core(uint8_t count)
         uint8_t sel = shared_temp_76;              /* $658d LDY shared_temp_76 (Z if 0) */
         if (sel == 0u) {                           /* $658f BNE */
             if (shared_temp_77 == 0u) continue;    /* $6591-$6593 — nothing shown yet, redraw */
-            mem[0x7FC5] = 0x98u;                    /* $6595-$6597 */
+            mem[MENU_CURSOR_CELL] = 0x98u;                    /* $6595-$6597 */
             return (uint8_t)(hypot_min_lo - 1u);   /* $659a LDX hypot_min_lo / $659c DEX / RTS */
         }
 
@@ -10392,7 +10438,7 @@ uint8_t menu_wait_key_core(uint8_t count)
         uint8_t hx = 0x00u;                        /* $65ab LDX #0 — screen offset */
         uint8_t hy = 0x01u;                        /* $65ad LDY #1 — row index */
         for (;;) {
-            mem[0x7E85u + hx] = (hy == hypot_min_lo) ? 0x81u : 0x84u;  /* $65af-$65b7 */
+            mem[MENU_ROW_ATTR + hx] = (hy == hypot_min_lo) ? 0x81u : 0x84u;  /* $65af-$65b7 */
             hx = (uint8_t)(hx + 0x50u);            /* $65ba TXA/ADC #$50/TAX — next row */
             hy++;                                  /* $65bf INY */
             if (hy > mem[MEM_math_hi]) break;      /* $65c0 CPY math_hi — loop while hy<=count */
@@ -10504,15 +10550,15 @@ int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out)
         if (a >= 0xF5u) { v = a;     c0 = 1; }   /* $4F4B CMP #$F5; BCS: already >= floor */
         else            { v = 0xF5u; c0 = 1; }   /* $4F4F LDA #$F5; SEC: clamp up to the floor */
     } else {                             /* $4F54 positive side: per-circuit SMC ceiling */
-        if (mem[0x4F54] != 0xC9u) {      /* SMC opcode (unpatched: Silverstone CMP #imm) */
-            platform_smc_unhandled(0x4F54, mem[0x4F54]); return -1;
+        if (mem[SMC_HORIZON_CMP] != 0xC9u) {      /* SMC opcode (unpatched: Silverstone CMP #imm) */
+            platform_smc_unhandled(SMC_HORIZON_CMP, mem[SMC_HORIZON_CMP]); return -1;
         }
-        if (a < mem[0x4F55]) { v = a; c0 = 0; }  /* $4F56 BCC: below the ceiling, keep it */
+        if (a < mem[SMC_HORIZON_CMP + 1]) { v = a; c0 = 0; }  /* $4F56 BCC: below the ceiling, keep it */
         else {                                   /* $4F58 SMC clamp value (unpatched: LDA #imm) */
-            if (mem[0x4F58] != 0xA9u) {
-                platform_smc_unhandled(0x4F58, mem[0x4F58]); return -1;
+            if (mem[SMC_HORIZON_CLAMP] != 0xA9u) {
+                platform_smc_unhandled(SMC_HORIZON_CLAMP, mem[SMC_HORIZON_CLAMP]); return -1;
             }
-            v = mem[0x4F59]; c0 = 0;             /* $4F5A CLC: clamp down to the per-circuit value */
+            v = mem[SMC_HORIZON_CLAMP + 1]; c0 = 0;             /* $4F5A CLC: clamp down to the per-circuit value */
         }
     }
 
@@ -10527,9 +10573,9 @@ int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out)
    --------------------------------------------------------------------------- */
 uint8_t draw_gear_indicator_core(void)
 {
-    mem[0x62CCu]   = 0x22u;                             /* $42D0 — column $22 */
+    mem[VDU_CHAR_COL]   = 0x22u;                             /* $42D0 — column $22 */
     shared_temp_77 = 0x22u;                             /* bit 7 clear: the LEFT four pixels */
-    mem[0x62CDu]   = 0xD7u;                             /* scan line $D7 = character row 26 */
+    mem[VDU_CHAR_ROW]   = 0xD7u;                             /* scan line $D7 = character row 26 */
     uint8_t glyph  = mem[GEAR_CHAR_TBL + gear_index];  /* $42DC/$42DE — the gear's glyph */
     uint8_t block  = vdu_char_wide_core(glyph);        /* left half; returns the block byte */
     shared_temp_77 = 0xFFu;                            /* $42E4 bit 7 set: the RIGHT four pixels */
@@ -10936,9 +10982,9 @@ static void read_driving_controls_core(void)
            dispatch on the operands rather than bake the call — a randomised pre-state took the
            trap 255 times in 256 and returned, which is exactly the 2448-of-5000 the fixture
            reported before this arm existed. */
-        if (mem[0x1593] != 0x20u) { platform_smc_unhandled(0x1593, mem[0x1593]); return; }
+        if (mem[SMC_CONTROLS_HOOK] != 0x20u) { platform_smc_unhandled(SMC_CONTROLS_HOOK, mem[SMC_CONTROLS_HOOK]); return; }
         {
-            uint16_t target = (uint16_t)(mem[0x1594] | ((unsigned)mem[0x1595] << 8));
+            uint16_t target = (uint16_t)(mem[SMC_CONTROLS_HOOK + 1] | ((unsigned)mem[SMC_CONTROLS_HOOK + 2] << 8));
             if (target == 0x0C00u) {
                 /* $0C00 mul8 — the joystick reading squared, a plain 8x8 product (D = 0 on
                    the steering path).  demandHi = product high, math_lo = product low. */
@@ -10953,7 +10999,7 @@ static void read_driving_controls_core(void)
                 revs_track_hook(target);
                 demandHi = cpu.A;
             }
-            else { platform_smc_unhandled(0x1593, target); return; }
+            else { platform_smc_unhandled(SMC_CONTROLS_HOOK, target); return; }
         }
         if (!amplifyPressed) {                         /* $15A9 PLP — amplify NOT down: quarter */
             unsigned demand = ((unsigned)demandHi << 8) | mem[STEER_SIGN];
@@ -11054,6 +11100,7 @@ void apply_steering_assist(void)        { car_angle_marshal_in(); apply_steering
 
 #define CAR_STATE_2        0x0178u   /* per-car; the other of place_player's two outputs */
 #define CAR_FLAGS_0        0x0114u   /* per-car flag byte; spin_car_out marks it */
+#define CAR_RACE_FLAGS     0x0100u   /* car_race_flags — per-car race flag byte (bit7/6/4 tested) */
 #define CAR_SEG_OFFSET     0x0880u   /* per-car offset within the current segment */
 #define TRACK_SCALE        0x5A14u   /* TRACK FILE: per-track scale factor */
 #define SEGMENT_SCALE      0x5FB0u   /* per-segment scaled output */
@@ -11105,8 +11152,8 @@ void compute_segment_scale(void)
     mem[MEM_track_scale_saved] = scale;         /* held for reuse; read back at $6396 */
     math_hi = scale;
 
-    if (mem[0x44D5] != 0xB9) { platform_smc_unhandled(0x44D5, mem[0x44D5]); return; }
-    uint16_t base = (uint16_t)(mem[0x44D6] | (mem[0x44D7] << 8));
+    if (mem[SMC_SEGMENT_SCALE_TBL] != 0xB9) { platform_smc_unhandled(SMC_SEGMENT_SCALE_TBL, mem[SMC_SEGMENT_SCALE_TBL]); return; }
+    uint16_t base = (uint16_t)(mem[SMC_SEGMENT_SCALE_TBL + 1] | (mem[SMC_SEGMENT_SCALE_TBL + 2] << 8));
 
     for (int y = segment_count_x8 >> 3; y >= 0; y--) {
         uint8_t  datum   = mem[(uint16_t)(base + y)];
@@ -11186,17 +11233,17 @@ void place_player_in_section(void)
        and its sign N via cpu, so that seam re-establishes them. */
     uint8_t rel = (uint8_t)(nearest_edge_bearing_hi - section_yaw);   /* SEC; SBC */
 
-    if (mem[0x462B] != 0x20) { platform_smc_unhandled(0x462B, mem[0x462B]); return; }
+    if (mem[SMC_PLACE_PLAYER_HOOK] != 0x20) { platform_smc_unhandled(SMC_PLACE_PLAYER_HOOK, mem[SMC_PLACE_PLAYER_HOOK]); return; }
     uint8_t mag;
     {
-        uint16_t hook = (uint16_t)(mem[0x462C] | (mem[0x462D] << 8));
+        uint16_t hook = (uint16_t)(mem[SMC_PLACE_PLAYER_HOOK + 1] | (mem[SMC_PLACE_PLAYER_HOOK + 2] << 8));
         if (hook == 0x3450)                          mag = (rel & 0x80u) ? negate8(rel).hi : rel;
         else if (hook >= 0x5300 && hook <= 0x5A25) {
             cpu.A = rel; cpu.N = (rel >> 7) & 1u;    /* the circuit hook reads A and its sign */
             revs_track_hook(hook);
             mag = cpu.A;
         }
-        else { platform_smc_unhandled(0x462B, hook); return; }
+        else { platform_smc_unhandled(SMC_PLACE_PLAYER_HOOK, hook); return; }
     }
 
     /* Quadrant flag: bit 7 of $0043 records whether |rel| reached a quarter turn ($40). */
@@ -11261,15 +11308,15 @@ void tick_wheel_spin(void)
     if (wheel_spin_rate == 0) return;        /* spin disabled */
 
     for (int x = 4; x >= 0; x--) {
-        mem[0x6FC0 + x] ^= mem[WHEEL_SPIN_XOR_A + x];
-        mem[0x70F8 + x] ^= mem[WHEEL_SPIN_XOR_B + x];
+        mem[WHEEL_SPIN_CELL_A + x] ^= mem[WHEEL_SPIN_XOR_A + x];
+        mem[WHEEL_SPIN_CELL_B + x] ^= mem[WHEEL_SPIN_XOR_B + x];
         if (x < 3) {                                     /* CPX #3; BCS skips this pair */
-            mem[0x6E85 + x] ^= 0xF0;
-            uint8_t r = (uint8_t)(mem[0x6FBD + x] ^= 0xF0);
+            mem[WHEEL_SPIN_CELL_C + x] ^= 0xF0;
+            uint8_t r = (uint8_t)(mem[WHEEL_SPIN_CELL_D + x] ^= 0xF0);
             if (r != 0) continue;                        /* BNE: skip the lower pair */
         }
-        mem[0x6E8A + x] ^= 0xC0;
-        mem[0x6FB2 + x] ^= 0x30;
+        mem[WHEEL_SPIN_CELL_E + x] ^= 0xC0;
+        mem[WHEEL_SPIN_CELL_F + x] ^= 0x30;
     }
 }
 
@@ -11285,7 +11332,7 @@ void spin_car_out(void)
     uint8_t x = cpu.X;
     if (x >= 0x14) { FUN_11cd(); return; }        /* not a car slot: shared no-op tail */
     mem[CAR_FLAGS_0 + x] = (uint8_t)((mem[CAR_STATE_2 + x] & 0x7F) | 0x45);
-    mem[0x0100 + x]      = 0x91;
+    mem[CAR_RACE_FLAGS + x] = 0x91;
     FUN_11be();                                   /* shared crash tail, indexed by X */
 }
 
@@ -11682,13 +11729,13 @@ void build_road_section(void)
     /* --- 1. advance the walk cursor by one section (three bytes), wrap at $78 --- */
     section_cursor_prev = section_cursor;
     uint8_t nextCursor;
-    if (mem[0x12FB] == 0x18 && mem[0x12FC] == 0x69) {       /* unpatched: CLC; ADC #3 */
+    if (mem[SMC_SECTION_ADVANCE] == 0x18 && mem[SMC_SECTION_ADVANCE + 1] == 0x69) {       /* unpatched: CLC; ADC #3 */
         nextCursor = (uint8_t)(section_cursor + 3);
-    } else if (mem[0x12FB] == 0x20) {                       /* per-circuit hook */
-        uint16_t t = (uint16_t)(mem[0x12FC] | (mem[0x12FD] << 8));
+    } else if (mem[SMC_SECTION_ADVANCE] == 0x20) {                       /* per-circuit hook */
+        uint16_t t = (uint16_t)(mem[SMC_SECTION_ADVANCE + 1] | (mem[SMC_SECTION_ADVANCE + 2] << 8));
         if (t >= 0x5300 && t <= 0x5A25) { revs_track_hook(t); nextCursor = cpu.A; }
-        else { platform_smc_unhandled(0x12FB, t); return; }
-    } else { platform_smc_unhandled(0x12FB, mem[0x12FB]); return; }
+        else { platform_smc_unhandled(SMC_SECTION_ADVANCE, t); return; }
+    } else { platform_smc_unhandled(SMC_SECTION_ADVANCE, mem[SMC_SECTION_ADVANCE]); return; }
     if (nextCursor >= 0x78) nextCursor = 0;
     section_cursor = nextCursor;
 
@@ -11699,9 +11746,9 @@ void build_road_section(void)
     if (!(track_direction & 0x80)) {
         /* forward: arm the lap credit if this section is the finish marker */
         uint8_t marker = (uint8_t)(segment_count_x8 >> 1);
-        if (mem[0x1310] == 0x29)      marker &= 0xF8;       /* unpatched: AND #$F8 */
-        else if (mem[0x1310] == 0xA9) marker = mem[0x1311];/* patched: LDA #imm */
-        else { platform_smc_unhandled(0x1310, mem[0x1310]); return; }
+        if (mem[SMC_MARKER_MASK] == 0x29)      marker &= 0xF8;       /* unpatched: AND #$F8 */
+        else if (mem[SMC_MARKER_MASK] == 0xA9) marker = mem[SMC_MARKER_MASK + 1];/* patched: LDA #imm */
+        else { platform_smc_unhandled(SMC_MARKER_MASK, mem[SMC_MARKER_MASK]); return; }
         if (marker == player_car_segment) lap_credit_armed = 1;
 
         if (track_pos_advance_core(0x17)) { cross_section_boundary(); forwardBoundary = 1; }
@@ -11774,12 +11821,12 @@ void build_road_section(void)
         mem[SECTION_COORD_HI + SECTION_SIDE1 + 2 + x] = (uint8_t)(s2 >> 8);
 
         /* --- 5a. per-circuit direction-index hook (SMC $13C9) --- */
-        if (mem[0x13C9] == 0x20) {
-            uint16_t t = (uint16_t)(mem[0x13CA] | (mem[0x13CB] << 8));
+        if (mem[SMC_SECTION_TAIL_HOOK] == 0x20) {
+            uint16_t t = (uint16_t)(mem[SMC_SECTION_TAIL_HOOK + 1] | (mem[SMC_SECTION_TAIL_HOOK + 2] << 8));
             if (t == 0x13DA) { advance_dir_on_segment_flag(); }
             else if (t >= 0x5300 && t <= 0x5A25) { revs_track_hook(t); }
-            else { platform_smc_unhandled(0x13C9, t); return; }
-        } else { platform_smc_unhandled(0x13C9, mem[0x13C9]); return; }
+            else { platform_smc_unhandled(SMC_SECTION_TAIL_HOOK, t); return; }
+        } else { platform_smc_unhandled(SMC_SECTION_TAIL_HOOK, mem[SMC_SECTION_TAIL_HOOK]); return; }
     }
 
     /* --- 5b. store the direction index and derive the car cursor + section curve --- */
@@ -11821,13 +11868,13 @@ void cross_section_boundary(void)
         /* backward: the segment being left */
         load_section_from_segment_core(x, retreat_segment);
         /* SMC $1289: unpatched steps segment_dir_index; a circuit may hook it */
-        if (mem[0x1289] == 0x20) {
-            uint16_t t = (uint16_t)(mem[0x128A] | (mem[0x128B] << 8));
+        if (mem[SMC_BOUNDARY_HOOK] == 0x20) {
+            uint16_t t = (uint16_t)(mem[SMC_BOUNDARY_HOOK + 1] | (mem[SMC_BOUNDARY_HOOK + 2] << 8));
             if (t == 0x13E0) { step_segment_dir_index(); }
             else if (t >= 0x5300 && t <= 0x5A25) { revs_track_hook(t); }
-            else { platform_smc_unhandled(0x1289, t); return; }
+            else { platform_smc_unhandled(SMC_BOUNDARY_HOOK, t); return; }
         } else {
-            platform_smc_unhandled(0x1289, mem[0x1289]); return;
+            platform_smc_unhandled(SMC_BOUNDARY_HOOK, mem[SMC_BOUNDARY_HOOK]); return;
         }
         shiftSrc = 0x02;
     }
@@ -11865,14 +11912,14 @@ void load_section_from_segment_core(uint8_t x, uint8_t y)
     mem[SECTION_COORD_HI + SECTION_SIDE1 + x + 2] = mem[TRACK_SEGMENT_HI + 6 + y];   /* $0A7A <- $5306 */
 
     /* segment_dir_index from field-5 low byte (SMC $1248) */
-    if (mem[0x1248] == 0xB9) {                              /* unpatched: LDA $5905,Y */
+    if (mem[SMC_SEGMENT_LOAD] == 0xB9) {                              /* unpatched: LDA $5905,Y */
         segment_dir_index = mem[TRACK_SEGMENT_LO + 5 + y];
-    } else if (mem[0x1248] == 0x20) {                       /* per-circuit hook JSR */
-        uint16_t t = (uint16_t)(mem[0x1249] | (mem[0x124A] << 8));
+    } else if (mem[SMC_SEGMENT_LOAD] == 0x20) {                       /* per-circuit hook JSR */
+        uint16_t t = (uint16_t)(mem[SMC_SEGMENT_LOAD + 1] | (mem[SMC_SEGMENT_LOAD + 2] << 8));
         if (t >= 0x5300 && t <= 0x5A25) { revs_track_hook(t); segment_dir_index = cpu.A; }
-        else { platform_smc_unhandled(0x1248, t); return; }
+        else { platform_smc_unhandled(SMC_SEGMENT_LOAD, t); return; }
     } else {
-        platform_smc_unhandled(0x1248, mem[0x1248]); return;
+        platform_smc_unhandled(SMC_SEGMENT_LOAD, mem[SMC_SEGMENT_LOAD]); return;
     }
 
     copy_section_height_to_side1_core(x);                   /* side-0 height -> side-1 */
@@ -12014,6 +12061,14 @@ void step_section_curve(void)
 #define SECTION_DIR_INDEX 0x0700u
 #define SMC_MASK_OPCODE   0x298Du   /* per-circuit; unpatched = $29 (AND zp) */
 #define SMC_MASK_OPERAND  0x298Eu
+/* The zero-page arithmetic window as THIS routine's tenant uses it — the object-queue tail
+   reads its inputs back out of these cells, so they are an output of the twin, not scratch.
+   ($84 is shared_temp_84; $86-$88 are point_delta_sign's three cells under a different tenant;
+   $0C, $85 and $87 have no name yet — queued in docs/rename.md.) */
+#define PLACE_CAR_SOI     0x000Cu   /* section direction index */
+#define PLACE_CAR_ALONG   0x0084u   /* car_state_1[slot] — distance along the section */
+#define PLACE_CAR_ACROSS  0x0085u   /* car_state_2[slot] — offset across it */
+#define PLACE_CAR_DIR     0x0086u   /* the three direction bytes at +0/+1/+2 */
 
 /* signextend8( |dir| * factor >> 8 ) with the sign of dir — the signed contribution of one axis,
    optionally <<2 (the second loop's ASL/ROL pair).  ⚠ Also reproduces the mul8 residue the
@@ -12028,9 +12083,9 @@ static int16_t place_car_axis_term(uint8_t dir, uint8_t factor, int shl2)
     int16_t term  = (dir & 0x80u) ? (int16_t)(-(int)(prod >> 8)) : (int16_t)(prod >> 8);
     if (shl2) term = (int16_t)(term << 2);
 
-    mem[0x0074] = (uint8_t)prod;                    /* math_lo: product low byte */
-    mem[0x0075] = factor;                           /* math_hi: preserved multiplicand */
-    mem[0x0076] = (uint8_t)((uint16_t)term >> 8);   /* shared_temp_76: the (shifted) sign extension */
+    math_lo        = (uint8_t)prod;                  /* the product's low byte (mul8 never shifts it) */
+    math_hi        = factor;                         /* the preserved multiplicand */
+    shared_temp_76 = (uint8_t)((uint16_t)term >> 8); /* the (shifted) sign extension */
     return term;
 }
 
@@ -12048,17 +12103,17 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
        $85 across, $86..$88 dir bytes) and the object-queue tail reads them back through those
        cells.  Reproduce those writes exactly so the shared tail routines see identical memory;
        only the mul8 product residue ($74/$75/$76) and the PHP stack byte then differ. */
-    mem[0x000C] = soi;
-    mem[0x0084] = along;             /* the oracle's STA $84 from car_state_1[X] */
-    mem[0x0085] = across;            /* STA $85 from car_state_2[X] */
+    mem[PLACE_CAR_SOI]    = soi;
+    mem[PLACE_CAR_ALONG]  = along;
+    mem[PLACE_CAR_ACROSS] = across;
 
     uint8_t dir1[3];
     dir1[0] = mem[TRACK_DIR_0 + soi];
     dir1[1] = mem[TRACK_DIR_1 + soi];
     dir1[2] = mem[TRACK_DIR_2 + soi];
-    mem[0x0086] = dir1[0];
-    mem[0x0087] = dir1[1];
-    mem[0x0088] = dir1[2];
+    mem[PLACE_CAR_DIR + 0] = dir1[0];
+    mem[PLACE_CAR_DIR + 1] = dir1[1];
+    mem[PLACE_CAR_DIR + 2] = dir1[2];
 
     /* First loop: origin + (along * dir) >> 8, per world axis.  ⚠ The section index is the 6502's
        8-bit Y (LDY y0 then INY per axis), so it WRAPS at 256 — y0+axis must be masked to a byte. */
@@ -12081,10 +12136,10 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
 
     /* Second loop: fold the "across" offset in at 4x, axes 0 and 2 only. */
     uint8_t dir2[3];
-    dir2[0] = mem[TRACK_DIR_3 + soi];                 /* $86 reloaded */
-    dir2[2] = mem[TRACK_DIR_4 + soi];                 /* $88 reloaded */
-    mem[0x0086] = dir2[0];
-    mem[0x0088] = dir2[2];
+    dir2[0] = mem[TRACK_DIR_3 + soi];                 /* dir[0] reloaded */
+    dir2[2] = mem[TRACK_DIR_4 + soi];                 /* dir[2] reloaded */
+    mem[PLACE_CAR_DIR + 0] = dir2[0];
+    mem[PLACE_CAR_DIR + 2] = dir2[2];
     for (int axis = 0; axis < 4; axis += 2) {
         int16_t sp = place_car_axis_term(dir2[axis], across, 1);                  /* ASL/ROL x2 */
 
@@ -12741,7 +12796,6 @@ void lap_complete(void) { lap_complete_core(cpu.X); }   /* X = car index; nothin
  * overwrites $74/$75 — so caching them in locals and writing at the end would diverge.
  * D=0 on this path (per-frame race sim; the 8 SED sites are elsewhere — docs/static-map.md).
  */
-#define CAR_RACE_FLAGS        0x0100u   /* car_race_flags — per-car race flag byte (bit7/6/4 tested) */
 #define CAR_SPEED_SCALED      0x0150u   /* car_speed_scaled — high byte of the 16-bit car speed */
 #define CAR_TARGET_SPEED      0x01A4u   /* car_target_speed — per-car section speed limit */
 #define CAR_SPEED_FRAC        0x3850u   /* car_speed_frac — low byte of car speed (engine_init overlay) */
@@ -13105,11 +13159,11 @@ void check_car_pair_core(void)
                             outcome = PROX_TAIL;             /* $2769-6b -> tail */
                         } else if (diff >= 0x50u) {
                             outcome = PROX_SETBIT;           /* $276d-6f -> $2786 */
-                        } else if (mem[0x2771] != 0xC9u) {
+                        } else if (mem[SMC_CAR_PAIR_HOOK] != 0xC9u) {
                             /* the per-circuit SMC site at $2771 is not the unpatched CMP #imm */
-                            platform_smc_unhandled(0x2771, mem[0x2771]);
+                            platform_smc_unhandled(SMC_CAR_PAIR_HOOK, mem[SMC_CAR_PAIR_HOOK]);
                             return;
-                        } else if (diff >= mem[0x2772]) {
+                        } else if (diff >= mem[SMC_CAR_PAIR_HOOK + 1]) {
                             outcome = PROX_PUBLISH;          /* $2773 BCS $277d */
                         } else {
                             span_line_cursor = (uint8_t)((shared_temp_76 & 0x80u) | span_line_cursor);  /* $2775-79 */

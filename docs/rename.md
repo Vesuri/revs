@@ -274,3 +274,39 @@ existing note to declare both tenants explicitly.  **Which is authoritative in `
 DERIVED** — the routine never forms an address from `$7E:$7F`.  Until this is settled the pair
 must not be scored as a wide-value candidate (`docs/wide-value-cleanup.md` §NINTH lesson: a
 scratch cell's ref count counts TENANTS).
+
+
+## The zero-page cells `$0C`, `$43`, `$1D`, `$85`, `$87` — no `symbols.csv` row at all
+
+The twins carry file-local defines for them now (`PLACE_CAR_SOI`, `PLACE_CAR_ACROSS`,
+`PLACE_CAR_DIR + 1`), so no generated file has a bare hex address left, but the map itself is
+still blank at these five addresses:
+
+* `$0C` — `place_car_world_coords` parks the section DIRECTION INDEX here and the object-queue
+  tail reads it back.  Sole writer seen so far; **[DERIVED]** from that one tenancy only.
+* `$43` — `place_player_in_section` rotates the quadrant carry into it (`ROR $43`) and then tests
+  bit 7 to pick the negate (`BIT $43 / BPL`).  A one-bit direction history, but **whose** history
+  is not derived: nothing else in the twinned surface reads it.
+* `$1D` — compared against `car_behind` in `place_car_world_coords`'s tail to choose the AI arm.
+  Almost certainly a car slot, unnamed since the queue's earliest pass.
+* `$85`, `$87` — the *middle* cells of two three-byte windows whose ends ARE named
+  (`shared_temp_84`/`$86 point_delta_sign`, `$0086`+2).  A row each, if only to record that they
+  are components 1 of those windows and not free scratch.
+
+⇒ **Cheap settlement: `make refloop` + a `mem[]` watch.**  Dump `$0C`, `$1D` and `$43` once a
+frame for a lap and see which of them tracks the section cursor, which tracks a car index, and
+whether `$43` alternates with the steering direction.  Until then no fact-shaped name.
+
+
+## The per-circuit hook seams need `symbols.csv` rows, not just twin-local defines
+
+`src/gen/revs_native.c` now names all twenty-one of them (`SMC_BOUNDARY_HOOK`, `SMC_EDGE_WALK_HOOK`,
+`SMC_HALF_WIDTH_CALL`, … — the block at the top of the file), and each name is **[DERIVED]** from
+the Silverstone opcode the twin dispatches on plus `make track-smc`'s extents.  Those names exist
+only in that one file: `disasm/symbols.csv` has no row for `$1248`, `$1289`, `$12FB`, `$1310`,
+`$13C9`, `$1593`, `$1946`, `$1DD4`, `$1FE9`, `$231A`, `$248B`, `$2538`, `$2542`, `$261A`, `$2771`,
+`$2F23`, `$44D5`, `$45CB`, `$462B`, `$4F54` or `$4F58`, so the disassembly and `make sweep` still
+show them as bare addresses.  ⇒ **Add a `smc` row per seam** carrying the unpatched opcode, what
+each circuit rewrites it to (from `make track-patch`), and the twin that dispatches on it.  No
+measurement needed — this one is transcription, and it is only queued rather than done because
+the naming source of truth is a different file from the one the cleanup touched.
