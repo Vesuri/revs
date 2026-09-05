@@ -629,9 +629,11 @@ void update_horizon_band(void)
     CLI();                                   /* $4F75 */
 }
 
-void dial_needle_angle(void)
+/* $51A8's body, WITHOUT the 6502-ABI entry marshal.  draw_dash_needles has already
+   published the driving-model state vector when it reaches here, so re-marshalling it would be
+   pure duplicated traffic; the shim below does it for the transliterated entry. */
+static void dial_needle_angle_plot(void)
 {
-    model_state_marshal_in();     /* the 16-bit driving-model state vector */
     /* $51A8 — the rev-counter needle.  The core does the engine_revs -> octant arithmetic; the shim
        does the dial-table lookups, sets up the 6502 entry ABI, and FALLS THROUGH into the shared
        transliterated plot_line_octant (a self-modifying line plotter — both differential sides run
@@ -657,6 +659,12 @@ void dial_needle_angle(void)
     /* $5202 sets up X=quadrant / A=plot_ptr_hi as well, but the plotter consumes only the start
        scan line, and both are dead at the caller (result-only fixture). */
     plot_line_octant_core((uint8_t)(org & 0x07u));
+}
+
+void dial_needle_angle(void)
+{
+    model_state_marshal_in();     /* the 16-bit driving-model state vector */
+    dial_needle_angle_plot();
 }
 
 void undraw_plot_lines(void)
@@ -696,7 +704,8 @@ void draw_dash_needles(void)
     /* ⭐ Core-to-core: undraw_plot_lines' 6502 exit ABI (A/X/Y + N/Z) is dead here —
        dial_needle_angle sets up plot_line_octant's entry registers itself. */
     undraw_plot_lines_core();                     /* $513A */
-    dial_needle_angle();                          /* $513D — rev needle; falls into plot_line_octant */
+    dial_needle_angle_plot();                     /* $513D — rev needle; falls into plot_line_octant.
+                                                     Core-to-core: the model state is already live. */
 
     /* $5145-$5146 / $5186 — the routine's own PHP/PLP is balanced (S restored), but the pushed
        processor status stays on the stack as a residue at $0100+S.  It is the flags AFTER
@@ -929,10 +938,16 @@ void adc_read(void)
 
 void car_gap(void)
 {
+    /* $27A4-$27AA: state_1[Y] - state_1[X], then FALL THROUGH into the shared tail at $27AB.
+       The tail's only inputs are X, Y and the borrow this subtract leaves, so hand them to its
+       core directly rather than parking them in cpu for the tail's own shim to read back.
+       (cpu.A is not one of them — the tail recomputes the difference from car_distance_16 — so
+       the byte this subtract leaves in A is overwritten by the exit ABI below either way.) */
     unsigned d = car_gap_lo_core(mem[CAR_STATE_1 + cpu.Y], mem[CAR_STATE_1 + cpu.X]);
-    cpu.A = (uint8_t)d;
-    cpu.C = !(d & 0x100);                          /* SEC/SBC: C clear = borrow */
-    car_gap_tail();
+    car_distance_marshal_in_one(cpu.X);            /* the two slots the gap is measured between */
+    car_distance_marshal_in_one(cpu.Y);
+    GapTail e = car_gap_tail_core(cpu.X, cpu.Y, (unsigned)!(d & 0x100));
+    cpu.A = e.a; cpu.N = e.n; cpu.C = e.c;         /* V, Z dead at every caller */
 }
 
 void car_gap_tail(void)
