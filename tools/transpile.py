@@ -1336,6 +1336,25 @@ NATIVE_FUNCS = {
     # this routine's per-car write diverges the 64 KB dump (2026-08-26).  It covers the per-crash
     # path and provably not any arm a HOLD_THROTTLE crash never reaches.
     0x109B,
+    # ⭐ TWIN #176 — reset_driving_variables ($1805), the session reset, and the LARGEST single
+    # holder of 6502-ABI shims left in production: it reached sound_envelope, car_order_swap,
+    # clear_race_clock and draw_gear_indicator through their shims, so four native cores were
+    # being called by stuffing cpu.A/cpu.X and reading exit flags nobody looks at.
+    # ⚠ A DRIVER BY INHERITANCE, which is why it is here and not in VALIDATE_FUNCS: its third
+    # part IS full_track_scan_rebuild above, and no randomised fixture can bound that — step 1
+    # advances the field until car 0's distance wraps to 0 (a car whose random speed byte is 0
+    # never wraps) and step 3 advances car $17 until car_gap_tail returns EXACTLY $20.  Pinning
+    # enough of the field and the segment tables to make both terminate would be authoring the
+    # game state, not randomising it, and the driver half of the diff compares native code
+    # against itself anyway.
+    # ⭐ WHAT GATES IT: `make determinism-crash`, the same 1500-frame crashing run — this is
+    # full_track_scan_rebuild's only caller, so it too runs seven times there, over the PRACTICE
+    # arm (STRAIGHT_TO_RACE boots a practice session, so session_is_race is clear).
+    # ⚠ THE RACE ARM ($18A5-$18BB) IS GATED BY NOTHING: five stores, the two status-row printers
+    # and position_to_bcd seeding pass_count_bcd.  Each of those is separately reachable —
+    # position_to_bcd from FUN_65d3's standings print, the printers from update_lap_timers — but
+    # this arm's own composition is unproven until a real-BBC race differential runs it.
+    0x1805,
 }
 
 # Every address whose transliteration is emitted under the `__t6502` suffix, whether or not a

@@ -1063,6 +1063,10 @@ void engine_sound_update(void)
     cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
 }
 
+/* $1805 — result-only: the routine takes no register argument (it reads session_is_race,
+   zp_scratch_index and the circuit's own cells out of mem[]) and leaves nothing live. */
+void reset_driving_variables(void) { reset_driving_variables_core(); }
+
 /* $4F39 — result-only; the whole product is text_out_via_mos plus whatever the script paints. */
 void enter_mos_text_mode(void)
 {

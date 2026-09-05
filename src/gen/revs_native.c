@@ -1720,13 +1720,11 @@ void race_main_loop_core(RestartDepth depth)
 #define RESET_SPLIT(i) ((void)0)
 #endif
         /* ---- the session reset, nested: FULL falls into MID falls into LATE ---- */
-        if (depth >= RESTART_FULL) {
-            arg_x(0x00);              /* driver 0 = the player */
-            clear_race_clock();
-        }
+        if (depth >= RESTART_FULL)
+            clear_race_clock_core(0x00u);            /* driver 0 = the player */
         RESET_SPLIT(0);
         if (depth >= RESTART_MID)
-            reset_driving_variables();
+            reset_driving_variables_core();
         RESET_SPLIT(1);
         if (depth >= RESTART_LATE)
             build_player_car();
@@ -12771,14 +12769,13 @@ void track_pos_retreat(void)                     /* exit ABI: C only */
  * (the retreat counters), hypot_min_lo (the grid's outer index), shared_counter_42 (the section
  * count) — because the 64K determinism compare sees them.
  * ------------------------------------------------------------------------------------------------ */
-void full_track_scan_rebuild(void)
+void full_track_scan_rebuild_core(uint8_t retreatDepth)
 {
     /* ⭐ The one place the WHOLE distance array is marshalled: the body below walks all twenty
        cars, repeatedly, core-to-core, so one 24-word round trip buys hundreds of word-sized
        steps.  ⚠ It must PUBLISH before step 6, which calls a shim that marshals in itself. */
     car_distance_marshal_in();
-    uint8_t entry_a = cpu.A;                  /* the per-cell retreat depth (see step 2) */
-    shared_temp_76 = entry_a;
+    shared_temp_76 = retreatDepth;            /* the per-cell retreat depth (see step 2) */
 
     /* raise the off-line-scan flag.  SEC/ROR at $109E is byte-exact: the rotate shifts the old
        byte down under the new bit 7, and the matching LSR at exit shifts it back — reproduced so
@@ -12805,7 +12802,7 @@ void full_track_scan_rebuild(void)
             do {
                 /* the car at this sorted position; exit C dead, the counter drives the loop */
                 track_pos_retreat_core(mem[CAR_ORDER_TBL + x]);
-            } while ((int8_t)(--shared_temp_77) >= 0);       /* runs entry_a + 1 times */
+            } while ((int8_t)(--shared_temp_77) >= 0);       /* runs retreatDepth + 1 times */
         }
     }
 
@@ -12858,6 +12855,11 @@ void full_track_scan_rebuild(void)
     track_scan_active = (uint8_t)(track_scan_active >> 1);
     car_distance_marshal_out();               /* build_road_section kept the array in step above */
 }
+
+/* $109B — the driver's 6502-ABI entry, kept for the transliterated callers: A is the retreat
+   depth.  Nothing on the way out is live (both callers fall straight through to the per-slot
+   rebuild), so there is no exit state to replay. */
+void full_track_scan_rebuild(void) { full_track_scan_rebuild_core(cpu.A); }
 
 /* ------------------------------------------------------------------------------------------------
  * $4F77 lap_complete — TWIN #136.  track_pos_advance calls this when a car's distance counter wraps
@@ -13129,6 +13131,133 @@ void FUN_27ed(void)
                                                                 visits twenty of twenty-four */
         FUN_27ed_car(x);                                     /* $28EE JMP $27F6 */
         car_distance_marshal_out_one(x);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   $1805  reset_driving_variables  (twin #176)
+   ---------------------------------------------------------------------------
+   THE SESSION RESET — everything a new practice/qualifying/race session, or a crash recovery,
+   needs put back.  race_main_loop's restart ladder calls it at RESTART_MID and deeper.  Five
+   parts, in order:
+
+     1. wipe the driving state: zero page $00-$68 (the whole per-frame block) and $6280-$62FF
+        (the view-origin page and the HUD scratch above it);
+     2. redefine sound envelope 1 from definition block 0, so the engine note starts from a known
+        shape;
+     3. re-lay the FIELD.  All 24 object slots get the circuit's own start_distance and a zeroed
+        segment/offset, then the running order is settled: a practice session swaps the player
+        into practice_start_slot and fans the other cars right round the lap
+        (practice_field_spread, $28 for Silverstone), while a race keeps them on the grid with a
+        retreat depth of 1.  full_track_scan_rebuild does the walking either way.  The twenty
+        DRIVERS then get their per-car arrays reset — $80 into car_flags_shape and
+        car_lap_start_hi, $FF into car_target_speed (no limit yet) and zero into the lap count,
+        both flag bytes, the steering state and BOTH halves of the 16-bit speed
+        (car_speed_scaled and the car_speed_frac overlay at $3850);
+     4. the driver's own controls: first gear (and lap_credit_armed, which shares the constant),
+        the starter's random mask, the two near-edge cursors, and a non-zero mirror_seg_state for
+        all six wing-mirror segments — 1 matches no bearing threshold, so mirrors_update erases
+        each of them on the first frame rather than leaving a stale car drawn there;
+     5. the opening message, which is the one place the two session kinds diverge.  Practice
+        prints token $28 on both status rows, clears clock 1, paints both lap-time readouts and
+        arms lap_time_show_timer with the $DF sentinel that makes the FIRST completed lap
+        suppress its readout.  A race instead clears the lap/position markers, prints tokens
+        $2B and $2C on the two rows, and seeds pass_count_bcd from the player's grid slot.
+
+   D=0 on this path: the only decimal arithmetic reached is inside position_to_bcd, which brackets
+   its own SED/CLD (docs/static-map.md §Decimal mode).
+   Exit A/X/Y/flags are dead — the only caller is the restart ladder in race_main_loop's twin,
+   which does `reset_driving_variables_core();` and carries nothing across — so the shim replays
+   no exit state.
+   ⚠ NATIVE_FUNCS, not VALIDATE_FUNCS: part 3 is full_track_scan_rebuild, whose loops end on game
+   state and not on bounded inputs, so no randomised fixture can drive this routine to an exit
+   either.  `make determinism-crash` is the gate — it is that driver's only caller, so it runs
+   the same seven times there, over the PRACTICE arm.  The RACE arm ($18A5-$18BB) is gated by
+   nothing; see the NATIVE_FUNCS comment in tools/transpile.py.
+   ⭐ SABOTAGE (2026-09-05, six defects): the gate sees this routine — car_target_speed $FF -> $FE
+   and the lap_time_show_timer sentinel $DF -> $DE each diverge the 64 KB dump.  Three PASSED and
+   the reason is one and the same, not a bug: the gate is an END-STATE dump at frame 1500 and
+   those three cells each have a PER-FRAME writer that has long since overwritten the reset value
+   — mirror_seg_state (mirrors_update draws or erases all six every frame), contact_pending ($68,
+   note_object_contact decrements / process_car_contact clears it) and sign_last_index (updated at
+   $4D06 whenever a sign's bearing passes).  The sixth was the race arm's message token, expected
+   to pass because that arm never runs under STRAIGHT_TO_RACE, and it did.
+   --------------------------------------------------------------------------- */
+#define CAR_SEGMENT_TBL_R   0x06E8u   /* car_segment — per-car index into the segment list */
+#define CAR_FLAGS_SHAPE     0x018Cu   /* car_flags_shape — per-car shape/behind flags */
+#define VIEW_ORIGIN_PAGE    0x6280u   /* view_origin_lo and the HUD scratch that follows it */
+#define MIRROR_SEG_STATE    0x6293u   /* mirror_seg_state — six wing-mirror segments */
+
+void reset_driving_variables_core(void)
+{
+    /* 1. the two wipes ($1805-$1814) */
+    for (int i = 0x68; i >= 0; i--)  mem[i] = 0x00u;                    /* zero page $00-$68 */
+    for (int i = 0x7F; i >= 0; i--)  mem[VIEW_ORIGIN_PAGE + i] = 0x00u; /* $6280-$62FF */
+
+    /* 2. envelope 1 from definition block 0 ($1816).  A is still 0 from the wipe and X is $FF
+          out of the second loop's final DEX — the core parks that X exactly as the shim would. */
+    sound_envelope_core(0x00u, 0xFFu);
+
+    /* 3a. all 24 object slots to the circuit's start distance ($1819-$1833).  sign_last_index
+           shares the loop's initial count, so it is set once, not per iteration. */
+    sign_last_index = 0x17u;
+    {
+        uint8_t distLo = start_distance_lo, distHi = start_distance_hi;
+        for (int x = 0x17; x >= 0; x--) {
+            mem[CAR_DISTANCE_HI + x]   = distHi;
+            mem[CAR_DISTANCE_LO + x]   = distLo;
+            mem[CAR_SEGMENT_TBL_R + x] = 0x00u;
+            mem[CAR_SEG_OFFSET + x]    = 0x00u;
+        }
+    }
+    find_player_neighbours_core();                     /* $1835 */
+
+    /* 3b. settle the running order and re-lay the field ($1838-$184C).  BIT tests bit 7 of
+           session_is_race, so the practice arm is the one where it is CLEAR. */
+    uint8_t retreatDepth = 0x01u;                      /* $1838 LDA #$01 — the race depth */
+    if (!(session_is_race & 0x80u)) {
+        uint8_t swappedX, swappedY;                    /* car_order_swap's exit pair, dead here */
+        car_order_swap_core(practice_start_slot, zp_scratch_index, &swappedX, &swappedY);
+        find_player_neighbours_core();                 /* $1846 — the order just changed */
+        retreatDepth = practice_field_spread;          /* $1849 */
+    }
+    full_track_scan_rebuild_core(retreatDepth);        /* $184C */
+
+    /* 3c. the twenty drivers' per-car arrays ($184F-$1873) */
+    for (int x = 0x13; x >= 0; x--) {
+        mem[CAR_FLAGS_SHAPE + x]   = 0x80u;
+        mem[CAR_LAP_START_HI + x]  = 0x80u;
+        mem[CAR_LAP_COUNT + x]     = 0x00u;
+        mem[CAR_FLAGS_0 + x]       = 0x00u;
+        mem[CAR_STATE_1 + x]       = 0x00u;
+        mem[CAR_SPEED_SCALED + x]  = 0x00u;            /* the 16-bit speed, high byte... */
+        mem[CAR_RACE_FLAGS + x]    = 0x00u;
+        mem[CAR_SPEED_FRAC + x]    = 0x00u;            /* ...and low ($3850, the init overlay) */
+        mem[CAR_TARGET_SPEED + x]  = 0xFFu;
+    }
+
+    /* 4. the player's controls and the mirror state ($1875-$188B) */
+    gear_index       = 0x01u;
+    lap_credit_armed = 0x01u;
+    starter_random_mask = 0x07u;
+    near_edge_last   = 0x06u;
+    near_edge_cursor = 0x06u;
+    for (int x = 5; x >= 0; x--)  mem[MIRROR_SEG_STATE + x] = 0x01u;
+    draw_gear_indicator_core();                        /* $188B — repaint the gear digit */
+
+    /* 5. the opening message.  LDA/BMI here, so the RACE arm is the bit-7-set one. */
+    if (session_is_race & 0x80u) {
+        lap_completed_flag  = 0x01u;                   /* $18A5 — A is still the #$01 from $1875 */
+        position_swap_flag  = 0x01u;                   /* $18A7 */
+        arg_x(0x2Bu); print_message_upper_row();       /* $18AA — still transliterated */
+        arg_x(0x2Cu); print_message_lower_row();       /* $18AF */
+        arg_a(zp_scratch_index); position_to_bcd();    /* $18B4 — the player's grid slot... */
+        pass_count_bcd = cpu.A;                        /* ...as a 1-based BCD number */
+    } else {
+        arg_x(0x28u); print_message_pair();            /* $1892 — both status rows */
+        clear_race_clock_core(0x01u);                  /* $1897 */
+        show_lap_time_lines();                         /* $189C */
+        lap_time_show_timer = 0xDFu;                   /* $189F — the first-lap sentinel */
     }
 }
 
