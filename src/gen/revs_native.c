@@ -1905,7 +1905,7 @@ SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t first
                                     int entryC, int entryV);
 SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
                                           uint8_t firstLine, uint8_t entryV);
-static SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV);   /* SlotExit: top of file */
+SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV);   /* SlotExit: top of file */
 SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect);
 
 /* The exit flags of a 16-bit binary add, returned by value so a core stays cpu-free; a shim
@@ -9392,7 +9392,7 @@ static SlotExit plot_shape_edges_core(void)
 /* Exit ABI is the full register+flag set (SlotExit).  Entry Y and V flow through the SMC-trap
    exit (which writes neither); the normal exits carry plot_shape_edges' exit Y/V, which that
    routine now returns by value. */
-static SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV)
+SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV)
 {
     int     i;
     uint8_t v = entryV;
@@ -11186,7 +11186,7 @@ void place_player_in_section(void)
        sub-calls, then pulls it back for the second fold.  The value is genuinely written
        to page 1 and lives there below SP until the next frame overwrites it, so the twin
        uses the real stack — determinism is byte-exact over $0100-$01FF. */
-    cpu.A = mag; PHA();                               /* push V1 (folded magnitude) */
+    PUSH(mag);                                        /* push V1 (folded magnitude) */
 
     /* First fold: weight $BA, then flip if the nearest edge is far enough along ($28). */
     uint8_t a = scale_angle_in_section_core(mag, 0xBA);
@@ -11201,7 +11201,7 @@ void place_player_in_section(void)
     if (neg) { AddFlags f = negate8(a); placed = f.hi; placedC = f.carry; }
     else     { placed = a; placedC = (nearest_edge_cursor >= 0x28); }
 
-    cpu.A = placed; PHA();                            /* $464E push V2 (placed) — stack residue */
+    PUSH(placed);                                     /* $464E push V2 (placed) — stack residue */
 
     /* Change since last frame -> record_section_jump's carry (SBC borrow = !C). */
     unsigned diff = (unsigned)placed - mem[CAR_STATE_2 + x] - (placedC ? 0u : 1u);   /* SBC */
@@ -11209,11 +11209,10 @@ void place_player_in_section(void)
     if (diff & 0x100) d ^= 0xFF;                       /* BCC (borrow): EOR #$FF -> |diff| */
     record_section_jump_core(d >= 0x16, x);           /* CMP #$16 */
 
-    PLA();                                            /* $465B pull V2 */
-    mem[CAR_STATE_2 + x] = cpu.A;                      /* car_state_2[X] = placed */
-
-    PLA();                                            /* $465F pull V1 back into A */
-    uint8_t folded = cpu.A;
+    uint8_t v2, folded;
+    PULL(v2);                                         /* $465B pull V2 — this is `placed` */
+    mem[CAR_STATE_2 + x] = v2;
+    PULL(folded);                                     /* $465F pull V1 back */
     /* Second fold: weight $88, sign from the quadrant flag. */
     uint8_t b = scale_angle_in_section_core((uint8_t)((folded ^ 0xFF) + 0x41), 0x88);  /* EOR;ADC #$41 */
     b = (uint8_t)(b << 2);                             /* ASL; ASL */
@@ -11290,9 +11289,9 @@ void process_car_contact(void)
     uint8_t  impact = (d & 0x100) ? 0x05 : (uint8_t)d;       /* BCC: floor at 5 */
     uint8_t  impact2 = (uint8_t)(impact << 1);
 
-    uint8_t x = contact_slot;
+    uint8_t x = contact_slot;    /* $1BD0 LDX contact_slot — the other object's slot; the 6502
+                                    holds it in X all the way to begin_scrape's sound save */
     uint8_t y = player_car;
-    cpu.X = x;   /* $1BD0 LDX contact_slot — X survives to begin_scrape's sound save ($0B46) */
 
     /* Hard hit during the race: spin the other car out. */
     if (impact2 >= 0x28 && (session_is_race & 0x80)) { cpu.X = x; spin_car_out(); }
@@ -11323,12 +11322,23 @@ void process_car_contact(void)
     math_lo = (uint8_t)prod;                                /* the low byte abs16_math negates */
     uint8_t a = (uint8_t)(prod >> 8);
     if (a >= 0x10) a = 0x10;                                 /* CMP #$10; clamp */
-    cpu.A = a;
-    cpu.N = hd_sign;                                         /* PLP: the saved sign */
-    abs16_math();                                           /* negate (A:math_lo) per N; A -> tail */
-    begin_scrape();                                         /* the shared crash tail: heading_step_hi = A,
-                                                               both axles slipping, the impact sound —
-                                                               a tail call, so its exit ABI is ours */
+    /* abs16_math ($0E40) with the saved heading sign (PLP) as its N: negative means negate
+       (a : math_lo) as one 16-bit value, parking the PRE-negate high byte in math_hi — a cell
+       the tail's callers read.  D = 0 here (docs/static-map.md §Decimal mode). */
+    uint8_t yawKick = a;
+    if (hd_sign) {
+        uint16_t v = (uint16_t)(0u - (uint16_t)(((uint16_t)a << 8) | math_lo));
+        math_hi = a;
+        math_lo = (uint8_t)v;
+        yawKick = (uint8_t)(v >> 8);
+    }
+
+    /* The shared crash tail: heading_step_hi = the kick, both axles slipping, the impact sound.
+       A tail call, so begin_scrape's exit ABI is ours. */
+    model_state_marshal_in();
+    begin_scrape_core(yawKick, x);
+    model_state_marshal_out();
+    sound_queue_exit_abi(SOUND_SLOT_IMPACT);
 }
 
 #define CAR_DISTANCE_LO   0x08D0u   /* car_distance_lo: distance-round-the-lap, low byte */
@@ -11516,6 +11526,7 @@ void section_coord_add_delta_core(uint8_t dst, uint8_t src,
 static uint8_t track_pos_advance_core(uint8_t x);
 static uint8_t track_pos_retreat_core(uint8_t x);
 static void    lap_complete_core(uint8_t x);
+void           load_section_from_segment_core(uint8_t x, uint8_t y);
 
 /* ---------------------------------------------------------------------------
    $124D  copy_section_height_to_side1  (twin #139)   — was FUN_124d
@@ -11524,13 +11535,15 @@ static void    lap_complete_core(uint8_t x);
    side 1 (the opposite road edge) at cursor + SECTION_SIDE1.  FUN_12f7 / FUN_122d build side 1's
    ground-plane pair (components 0 and 2) as side 0 plus the across-track normal, but the two
    edges sit at the same HEIGHT, so component 1 is just copied across here (both bytes). */
-void copy_section_height_to_side1(void)
+void copy_section_height_to_side1_core(uint8_t x)
 {
-    uint8_t x = cpu.X;
     mem[SECTION_LO_TBL + SECTION_SIDE1 + x + 1] = mem[SECTION_LO_TBL + x + 1];
-    cpu.A = mem[SECTION_HI_TBL + x + 1];                 /* $1253 LDA — dead at both callers */
-    mem[SECTION_HI_TBL + SECTION_SIDE1 + x + 1] = cpu.A;
+    mem[SECTION_HI_TBL + SECTION_SIDE1 + x + 1] = mem[SECTION_HI_TBL + x + 1];
 }
+
+/* 6502-ABI shim: X is the section byte cursor.  The $1253 LDA's exit A is dead at both
+   callers (fixture LIVE_NONE), so the core does not produce it. */
+void copy_section_height_to_side1(void) { copy_section_height_to_side1_core(cpu.X); }
 
 /* ---------------------------------------------------------------------------
    $13DA  advance_dir_on_segment_flag  (twin #143)   — was FUN_13da
@@ -11580,9 +11593,8 @@ void step_segment_dir_index(void)
    the high bytes in point_delta_hi[0..2].  When track_direction is set (running the
    track backwards) each 16-bit component is two's-complement negated.  D=0 on this
    path; the callers ($1335, $2A11) discard the exit registers/flags. */
-void build_section_step_delta(void)
+void build_section_step_delta_core(uint8_t y)
 {
-    uint8_t y = cpu.Y;
     int16_t d[3];
     d[0] = (int16_t)(int8_t)mem[TRACK_DIR_0 + y];
     d[1] = (int16_t)(int8_t)mem[TRACK_DIR_1 + y];
@@ -11596,6 +11608,10 @@ void build_section_step_delta(void)
     math_hi               = (uint8_t)d[1];  mem[POINT_DELTA_HI + 1] = (uint8_t)(d[1] >> 8);
     shared_temp_76        = (uint8_t)d[2];  mem[POINT_DELTA_HI + 2] = (uint8_t)(d[2] >> 8);
 }
+
+/* 6502-ABI shim: Y is the segment index.  Only the validation oracle needs this entry —
+   every production caller uses the core directly. */
+void build_section_step_delta(void) { build_section_step_delta_core(cpu.Y); }
 
 /* ---------------------------------------------------------------------------
    $125A  derive_car_section_cursor  (twin #140)   — was FUN_125a
@@ -11676,8 +11692,7 @@ void build_road_section(void)
     car_distance_marshal_out_one(0x17u);
     if (!forwardBoundary) {
         /* --- 3. build this section's flag byte --- */
-        cpu.Y = segment_dir_index;
-        build_section_step_delta();
+        build_section_step_delta_core(segment_dir_index);
 
         uint8_t x  = section_cursor;
         uint8_t cf = cur_segment_flags;
@@ -11715,7 +11730,7 @@ void build_road_section(void)
             section_coord_add_delta_core(section_cursor, section_cursor_prev, dlo, dhi);
         }                                                   /* section N's point from N-1 + step */
         cpu.X = section_cursor;
-        copy_section_height_to_side1();                     /* share the height across */
+        copy_section_height_to_side1_core(x);               /* share the height across */
 
         uint8_t dir = segment_dir_index;
         x = section_cursor;
@@ -11776,16 +11791,13 @@ void cross_section_boundary(void)
     if (far_edge_rebuild != 0)
         near_edge_last = 6;
 
-    cpu.X = x;                              /* load_section_from_segment reads cpu.X / cpu.Y */
     if (!(track_direction & 0x80)) {
         /* forward: the segment the car has just entered */
-        cpu.Y = player_car_segment;
-        load_section_from_segment();
+        load_section_from_segment_core(x, player_car_segment);
         shiftSrc = mem[TRACK_SEGMENT_HI + player_car_segment];   /* field-0 high byte */
     } else {
         /* backward: the segment being left */
-        cpu.Y = retreat_segment;
-        load_section_from_segment();
+        load_section_from_segment_core(x, retreat_segment);
         /* SMC $1289: unpatched steps segment_dir_index; a circuit may hook it */
         if (mem[0x1289] == 0x20) {
             uint16_t t = (uint16_t)(mem[0x128A] | (mem[0x128B] << 8));
@@ -11820,11 +11832,8 @@ void cross_section_boundary(void)
    circuit rewrites it to a hook JSR whose result A becomes segment_dir_index.  Reproduced exactly.
    No flags or registers escape (both callers overwrite A next, and X/Y are left as the entry
    values the caller still needs) — bare void shim. */
-void load_section_from_segment(void)
+void load_section_from_segment_core(uint8_t x, uint8_t y)
 {
-    uint8_t x = cpu.X;          /* dest section byte cursor (side 0) */
-    uint8_t y = cpu.Y;          /* track-file segment byte index */
-
     load_section_triple_core(x, y);                         /* fields 1..3 -> side-0 triple */
 
     /* fields 4 and 6 -> side-1 components 0 and 2 (the opposite road edge) */
@@ -11844,8 +11853,11 @@ void load_section_from_segment(void)
         platform_smc_unhandled(0x1248, mem[0x1248]); return;
     }
 
-    copy_section_height_to_side1();                         /* side-0 height -> side-1 (reads cpu.X) */
+    copy_section_height_to_side1_core(x);                   /* side-0 height -> side-1 */
 }
+
+/* 6502-ABI shim: X = dest section byte cursor, Y = segment byte index.  Oracle entry only. */
+void load_section_from_segment(void) { load_section_from_segment_core(cpu.X, cpu.Y); }
 
 /* ---------------------------------------------------------------------------
    $150E  step_section_curve  (twin #144)   — was FUN_150e
@@ -12093,12 +12105,10 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
     if (!(mem[CAR_FLAGS_SHAPE + qslot] & 0x80))                  /* $2A07 LDA / BPL: not yet flagged */
         mem[CAR_FLAGS_SHAPE + qslot]--;                           /* DEC */
 
-    /* build_section_step_delta ($1442) reads only Y (the segment index); the C/N/Z the tail
-       leaves are set here for the calls that follow it down this branch. */
-    cpu.C = 1;
-    cpu.Y = soi;                                                 /* $2A0F LDY $0C */
-    cpu.N = (soi & 0x80) != 0; cpu.Z = (soi == 0);
-    build_section_step_delta();
+    /* $2A0F LDY $0C: the segment index is build_section_step_delta's only input, and the
+       C/N/Z the 6502 leaves here are dead (fixture LIVE_X) now that the rest of this branch
+       is core-to-core. */
+    build_section_step_delta_core(soi);
 
     /* ⭐ Core-to-core: the step delta is halved and integrated three times, each integration
        reading the SAME three-component delta the halve just rewrote — so the descriptor is

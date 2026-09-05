@@ -654,10 +654,9 @@ void dial_needle_angle(void)
     plot_ptr_lo = (uint8_t)(org & 0xF8u);        /* $70 — needle origin address low */
     plot_ptr_hi = mem[DIAL_NEEDLE_ORIGIN_HI_TBL + d.quadrant]; /* $71 */
 
-    cpu.X = d.quadrant;                          /* plot_line_octant entry ABI: X=quadrant, */
-    cpu.Y = (uint8_t)(org & 0x07u);              /* Y=start scanline, */
-    cpu.A = plot_ptr_hi;                         /* A=plot_ptr_hi (dead, but faithful to $5202). */
-    plot_line_octant();
+    /* $5202 sets up X=quadrant / A=plot_ptr_hi as well, but the plotter consumes only the start
+       scan line, and both are dead at the caller (result-only fixture). */
+    plot_line_octant_core((uint8_t)(org & 0x07u));
 }
 
 void undraw_plot_lines(void)
@@ -720,15 +719,18 @@ void draw_dash_needles(void)
     shared_temp_76 = n.stepSize;                  /* $76 — octant step (SMC dispatch) */
     mem[0x0083]    = n.ddaLen;                    /* $83 point_delta_hi — line length / minor delta */
 
-    cpu.A = n.originMasked;                        /* $5190 AND #$FC — mode5_addr A */
-    cpu.Y = n.rowSel;                             /* $5184 the negated row select — mode5_addr Y */
-    mode5_addr();                                 /* $5192 -> plot_ptr; leaves X=row, A/Y=line */
+    /* $5192 mode5_addr -> plot_ptr; its exit line number is the plotter's start scan line
+       ($5192 leaves it in Y and $51A4 hands it straight on).  X=row and A are dead. */
+    Mode5Addr m = mode5_addr_core(n.originMasked, n.rowSel);
 
     shared_temp_77 = n.subPos;                    /* $5195-$519A (originBase<<1)&7 */
     hypot_min_hi   = 0x04;                        /* $519E */
     math_hi        = 0x06;                        /* $51A0-$51A2 — a 6-pixel line, plot_line_octant's count */
-    cpu.A          = 0x06;                        /* A at plot_line_octant entry ($51A0 LDA #6) */
-    plot_line_octant();                          /* $51A4 */
+    /* ⚠ The $51A0 `LDA #6` is NOT dead: A stays 6 across the plot, and the port's interrupt seam
+       publishes A into mos_irq_a ($FC) on every field, so dropping it moves a real mem[] byte
+       (caught by `make determinism`, $00FC 0x06 -> 0x00). */
+    arg_a(0x06);
+    plot_line_octant_core(m.line);                /* $51A4 */
 }
 
 void plot_line_octant(void)
@@ -899,9 +901,9 @@ void draw_corner_markers(void)
             plot_line  = m.plotLine;                        /* $1B57 */
             proj_width = m.projWidth;                       /* $1B6B */
             plot_shape = 0x06;                              /* $1B6F — always the marker shape */
-            cpu.X = idx;                                    /* $1B71 — plot_object reads X (→ math_lo) */
-            cpu.Y = 0x00;
-            plot_object();
+            /* $1B71 — the slot index and a zero Y are plot_object's whole entry ABI, and its
+               exit registers/flags are dead here (the loop reloads everything). */
+            plot_object_core(idx, 0x00u, 0u);
         }
         mem[0x38FEu] = 0xF0;                                /* $1B74-$1B76 — restore the marker colour */
     }
@@ -957,13 +959,15 @@ void stage_nearby_car(void)
 
     StageNearbyCar s = stage_nearby_car_core(g.a, g.c, slot);
 
-    cpu.X = slot;                                         /* X held from TAX through to the tail */
+    /* X is held from the $28F9 TAX through to the tail; both tails consume it as a value. */
     if (s.reject) {                                       /* $2911 reject_object_slot; return */
-        reject_object_slot();
+        reject_object_slot_core();                        /* its A/Y/N/Z are dead here */
         return;
     }
-    cpu.Y = s.y;                                          /* $2922 TAY */
-    place_car_world_coords();                             /* $2937 */
+    view_origin_marshal_in();
+    hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
+    place_car_world_coords_core(slot, s.y);               /* $2922 TAY; $2937 — exit X dead */
+    hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
 }
 
 /* $2692 check_car_pair — twin #163.  No meaningful entry registers (it loads its start position
