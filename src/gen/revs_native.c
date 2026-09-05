@@ -1004,7 +1004,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
     /* ⚠ THE THREE THREADED VALUES BECOME LOCALS FOR THE DURATION, and that is a 68000
        requirement, not tidiness: this is 30% of the port's frame, and `v->byte` inside the
        2093-iteration loop is a memory operand gcc cannot keep in a register.  They are
-       written back at every exit — `done:` is the only label in this file. */
+       written back at the single exit below, which every arm reaches by breaking out. */
     unsigned byte = v->byte, line = v->line, cell = v->cell;
     PLOT_DECL();
     VIEWSPLIT_DECL();
@@ -1082,6 +1082,8 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                carries no test at all. */
             const int busSafe = view_span_is_ram(base0) && view_span_is_ram(base1);
 
+            int stopped = 0;                /* a planted stop ends the whole sweep, not just the run */
+
             VIEWSPLIT_UNITS_BEGIN();
             for (;;) {
                 /* the run ends at the segment's last cell, or on the planted stop */
@@ -1148,7 +1150,8 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                     op = *slot;
                     if (op != OP_RTS) platform_smc_unhandled((uint16_t)(slot - mem), op);
                     PLOT_FLUSH();
-                    goto done;
+                    stopped = 1;
+                    break;
                 }
                 if (lastSeg) break;
                 segBase  = dp1;                         /* cells 32-39 live in the next page */
@@ -1158,6 +1161,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                 segLimit = 40;
                 lastSeg  = 1;
             }
+            if (stopped) break;                     /* the planted RTS: leave the bracket open */
             VIEWSPLIT_UNITS_END();
             cell = 0x38;                            /* unit 39's cell, had the chain not stopped */
             PLOT_FLUSH();
@@ -1166,17 +1170,17 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
         /* $7EEE — the sweep's own terminator, itself an opcode slot. */
         {
             unsigned op = mem[VIEW_CHAIN_END];
-            if (op == OP_RTS) goto done;
-            if (op != OP_CPX_IMM) { platform_smc_unhandled(VIEW_CHAIN_END, op); goto done; }
+            if (op == OP_RTS) break;
+            if (op != OP_CPX_IMM) { platform_smc_unhandled(VIEW_CHAIN_END, op); break; }
         }
         /* `CPX #$2C` — the last full-width line.  Its C is live. */
         cpu.X = (uint8_t)line;
         CPX(0x2C);
-        if (cpu.Z) goto done;
+        if (cpu.Z) break;
         line = (line - 1) & 0xFF;
         advance_first = 1;
     }
-done:
+
     VIEWSPLIT_UNITS_END();      /* the planted-RTS exit leaves the bracket open otherwise */
     v->byte = byte;
     v->line = line;
@@ -2749,20 +2753,21 @@ void plot_line_octant_core(uint8_t entryScanline)
 
         /* $522b-524e — carry x's cell overflow/underflow into the plot pointer (one $08 cell). */
         uint8_t a;
+        int stepRight = 1;                                 /* the no-borrow arm skips the right step */
         if (x & 0x80u) {                                   /* $522c x dropped below 0 -> step left */
             x = 7u;                                        /* $522e */
             uint8_t oldLo = (uint8_t)plot_ptr_v;
             PLOT_PTR_ADD(plot_ptr, -8);                    /* $5230-5239 one cell left */
             /* ⭐ `>= 8` vs `> 8` is provably the same program: at oldLo == 8 the new low byte is
                0, and the re-test below asks `a >= 8`, which 0 fails — so the borrow arm falls
-               through to x_done without stepping, exactly where the no-borrow arm jumps.  A
-               sabotage of this comparison survives for that reason, not for want of coverage. */
-            if (oldLo >= 8u) goto x_done;                  /* $5237 no borrow -> keep this cell */
+               through without stepping, exactly where the no-borrow arm jumps.  A sabotage of
+               this comparison survives for that reason, not for want of coverage. */
+            stepRight = (oldLo < 8u);                      /* $5237 no borrow -> keep this cell */
             a = (uint8_t)plot_ptr_v;                       /* $523b BCS not taken (borrow) -> re-test */
         } else {
             a = x;                                         /* $522b */
         }
-        if (a >= 8u) {                                     /* $523d-523f a >= 8 -> step right */
+        if (stepRight && a >= 8u) {                        /* $523d-523f a >= 8 -> step right */
             x = 0u;                                        /* $5241 */
             /* ⭐ THE FOUR POINTER STEPS ($5233, $5243, $5255, $526B) ARE ONE WORD ADD EACH, and
                the earlier "DO NOT widen these" note is RETRACTED.  It was right about the
@@ -2780,7 +2785,6 @@ void plot_line_octant_core(uint8_t entryScanline)
                without the plant these guards are untested (docs/wide-value-cleanup.md §FIFTH). */
             PLOT_PTR_ADD(plot_ptr,  8);                    /* $5243-524c one cell right */
         }
-    x_done:
         shared_temp_77 = x;                                /* $524e */
 
         /* $5250-527a — carry y's scan-line overflow/underflow into the pointer (one $140 row). */
@@ -8445,9 +8449,10 @@ CameraExit update_camera_and_drive_state_core(void)
             else settle = 1;
         }
         if (settle) {                                   /* $4510-$4515 — drift back to centre */
-            if (bias == 0) goto yaw;                    /* already centred: nothing to store */
-            if (!(bias & 0x80u)) down = 1;              /* positive: step down */
-            else { bias++; up = 1; }                    /* $4515 — negative: +2 */
+            /* bias == 0 is already centred: the 6502 branches past the store, which is the same
+               program as storing the value back unchanged, so no step and no special case. */
+            if (bias & 0x80u) { bias++; up = 1; }        /* $4515 — negative: +2 */
+            else if (bias != 0) down = 1;               /* positive: step down */
         }
         if (up) {                                       /* $4516-$451F */
             bias++;
@@ -8463,7 +8468,6 @@ CameraExit update_camera_and_drive_state_core(void)
         camera_pitch_bias = bias;                       /* $452A */
     }
 
-yaw:
     /* $452D-$4568 — the section yaw.  A cheap atan2 over the section's direction vector: the
        smaller-magnitude ground-plane component, scaled by 0.375 and folded through three saved
        signs, minus car_heading_hi.  The three 6502 PHPs each carry ONE flag past the scaling —
@@ -9701,6 +9705,62 @@ SlotExit fill_object_gap_core(uint8_t width)
 }
 
 /* ---------------------------------------------------------------------------
+   plot_view_src_line's three shared tails ($1D25, $1D7C, $1D86)
+   ---------------------------------------------------------------------------
+   The 6502 reaches each of these from several arms by branching; in C they are functions the
+   arms return through.  `acc` is not a parameter of the gap tails: close_gap recomputes it from
+   the column pair, so every arm's working byte is dead there.
+   --------------------------------------------------------------------------- */
+
+/* $1D86-$1D93 — CLC/SBC: the gap is `column - previous - 1` (D=0 on the object path).  Zero or
+   negative, no fill.  Only N and Z are read (the branch just below); the subtract's V and C
+   reach the routine's exit UNREAD — every caller ($20F1/$20F5) opens BIT before touching a
+   flag — so they are dropped from the fixture mask, not reproduced.  X is set only AFTER the
+   exit test, so the return leaves whatever X the path already held. */
+static SlotExit slot_close_gap(uint8_t x, uint8_t y)
+{
+    uint8_t gap = (uint8_t)(mem[EDGE_COLUMN] - mem[PVS_PREV_COL] - 1u);
+    uint8_t n   = (uint8_t)((gap >> 7) & 1u);
+    uint8_t z   = (uint8_t)(gap == 0u);
+
+    if (z || n) { SlotExit e = { gap, x, y, n, z, 0, 0 }; return e; }
+    /* fill_object_gap's own exit A/X/Y/N/Z are the routine's (V/C unread here).  TAX first. */
+    return fill_object_gap_core(gap);
+}
+
+/* $1D7C-$1D85 — a previous column off the viewport is treated as "no gap at all". */
+static SlotExit slot_prev_col(uint8_t x, uint8_t y)
+{
+    if (mem[PVS_PREV_COL] >= 0x28u) mem[PVS_PREV_COL] = 0xFFu;
+    return slot_close_gap(x, y);
+}
+
+/* $1D25-$1D33 — both endpoints in one column?  Shared by mode 1 and by mode 0's deferred-merge
+   arm.  Returns 1 when the column DEFERS (the routine returns *out); 0 to fall on into the
+   read-modify-write fill.  Leaves X = edgeCol either way, as the 6502's CPX does. */
+static int slot_defer_if_same_column(uint8_t acc, uint8_t edgeCol, uint8_t *x, uint8_t y,
+                                     SlotExit *out)
+{
+    *x = edgeCol;                                            /* CPX left X = edgeCol */
+    if (edgeCol != mem[PVS_OTHER_COL]) return 0;             /* $1D25 */
+
+    /* $1D2B — one column for both ends: DEFER, and remember the carry in bit 7.  The ROR
+       carries in the compare's C, which is 1 on the equal (>=) arm; the exit A is PVS_KEEP
+       (load_a) and N/Z come from the ROR result. */
+    uint8_t res = (uint8_t)((span_defer_pending >> 1) | 0x80u);   /* carry-in = 1 -> bit 7 set */
+    mem[PVS_COLOUR]    = acc;
+    shared_temp_8c     = mem[PVS_KEEP];
+    span_defer_pending = res;
+    { SlotExit e = { mem[PVS_KEEP],                          /* load_a left A = PVS_KEEP */
+                     *x, y,
+                     (uint8_t)(res >> 7),                    /* = 1 */
+                     (uint8_t)(res == 0),                    /* = 0 */
+                     0, 0 };
+      *out = e; }
+    return 1;
+}
+
+/* ---------------------------------------------------------------------------
    $1C1C  plot_view_src_line — ONE COLUMN OF ONE SHAPE EDGE  (twin #96)
    ---------------------------------------------------------------------------
    `mode` arrives in Y (0, 1 or 2 — see the group header, item 2) and the colour selector in A.
@@ -9773,7 +9833,7 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
             }
         }
         mem[EDGE_COLUMN] = 0x28u;
-        goto close_gap;
+        return slot_close_gap(x, y);
     }
     x = edgeCol;                                    /* the fall-through CPX also left X = edgeCol */
     blockStart = span_top_line;
@@ -9788,7 +9848,7 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
             n = 0; z = 1;
             { SlotExit e = { acc, x, y, n, z, 0, 0 }; return e; }
         }
-        goto prev_col;
+        return slot_prev_col(x, y);
     }
 
     /* $1CAA-$1CC2 — the style's bit 4 re-picks the colour, but only on a closing pass whose
@@ -9814,18 +9874,20 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
         mem[PVS_BYTE] = acc;
 
         if (span_defer_pending != 0) {
-            /* $1CEE — mode 1 left a byte for us: merge it and take the shared tail. */
+            /* $1CEE — mode 1 left a byte for us: merge it and take mode 1's own same-column
+               test, then its read-modify-write fill. */
             span_defer_pending = 0x00u;
             mem[PVS_KEEP]      = shared_temp_8c;
             acc                = (uint8_t)(~shared_temp_8c & acc);
-            goto same_column_test;
-        }
+            SlotExit deferred;
+            if (slot_defer_if_same_column(acc, edgeCol, &x, y, &deferred)) return deferred;
+        } else {
         x = edgeCol;                                         /* CPX left X = edgeCol */
         if (edgeCol == mem[PVS_OTHER_COL]) {                 /* $1CFD */
             /* both ends in one column: hand the byte on and paint nothing.  load_a's A/N/Z
                die at close_gap, so only the store survives. */
             mem[PVS_COLOUR] = mem[PVS_BYTE];
-            goto prev_col;
+            return slot_prev_col(x, y);
         }
         acc = acc ? acc : SRC_CELL_BLANK;                    /* $1D0A */
         /* $1DE5-$1DEE — the PLAIN fill: no read, no surface colour, just the byte.  The
@@ -9846,9 +9908,10 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
             }
             y = mem[EDGE_BLOCK_START];            /* the fill leaves Y at the stop line */
         }
-        goto prev_col;
-    }
-    if (mode == 1) {
+        return slot_prev_col(x, y);
+        }
+        /* the deferred-merge arm falls on into the read-modify-write fill below */
+    } else if (mode == 1) {
         /* ---- mode 1: open the span ---- */
         {
             uint8_t pat = mem[COLOUR_PATTERN_AND + pixel];   /* $1D17 */
@@ -9856,22 +9919,8 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
             acc = (uint8_t)(((uint8_t)~pat & mem[PVS_COLOUR] & mem[PIXEL_KEEP_OTHERS + pixel])
                             | shared_temp_76);
         }
-    same_column_test:
-        x = edgeCol;                                         /* CPX left X = edgeCol */
-        if (edgeCol == mem[PVS_OTHER_COL]) {                 /* $1D25 */
-            /* $1D2B — one column for both ends: DEFER, and remember the carry in bit 7.  The
-               ROR carries in the compare's C, which is 1 on the equal (>=) arm; the exit A is
-               PVS_KEEP (load_a) and N/Z come from the ROR result. */
-            uint8_t prev = span_defer_pending;
-            uint8_t res  = (uint8_t)((prev >> 1) | 0x80u);   /* carry-in = 1 -> bit 7 set */
-            mem[PVS_COLOUR] = acc;
-            shared_temp_8c  = mem[PVS_KEEP];
-            acc             = mem[PVS_KEEP];                 /* load_a left A = PVS_KEEP */
-            span_defer_pending = res;
-            n = (uint8_t)(res >> 7);                         /* = 1 */
-            z = (uint8_t)(res == 0);                         /* = 0 */
-            { SlotExit e = { acc, x, y, n, z, 0, 0 }; return e; }
-        }
+        SlotExit deferred;
+        if (slot_defer_if_same_column(acc, edgeCol, &x, y, &deferred)) return deferred;
         /* not the same column: fall through to the read-modify-write fill */
     } else {
         /* ---- mode 2: close the span, merging mode 1's deferred mask ---- */
@@ -9932,26 +9981,7 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
     }
     mem[EDGE_COLUMN] = (uint8_t)(mem[EDGE_COLUMN] - 1u);
 
-prev_col:
-    /* $1D7C-$1D85 — a previous column off the viewport is treated as "no gap at all". */
-    if (mem[PVS_PREV_COL] >= 0x28u) mem[PVS_PREV_COL] = 0xFFu;
-
-close_gap:
-    /* $1D86-$1D93 — CLC/SBC: the gap is `column - previous - 1` (D=0 on the object path).  Zero
-       or negative, no fill.  Only N and Z are read (the branch just below); the subtract's V and
-       C reach the routine's exit UNREAD — every caller ($20F1/$20F5) opens BIT before touching a
-       flag — so they are dropped from the fixture mask, not reproduced.  X is set only AFTER the
-       exit test, so the return leaves whatever X the path already held. */
-    {
-        uint8_t gap = (uint8_t)(mem[EDGE_COLUMN] - mem[PVS_PREV_COL] - 1u);
-        acc = gap;
-        n   = (uint8_t)((gap >> 7) & 1u);
-        z   = (uint8_t)(gap == 0u);
-    }
-    if (z || n) { SlotExit e = { acc, x, y, n, z, 0, 0 }; return e; }
-    x = acc;                                      /* TAX before fill_object_gap */
-    /* fill_object_gap's own exit A/X/Y/N/Z are the routine's (V/C unread here). */
-    return fill_object_gap_core(x);
+    return slot_prev_col(x, y);
 }
 
 /* The 6502-ABI shims. */
@@ -10742,92 +10772,104 @@ static void clamp_and_store_steer_angle_core(uint8_t a)
 
 /* $163B-$16DB — the rest of read_driving_controls, reached only by falling out of the steering.
    Not a 6502 routine of its own; kept as a function so the two entries above can share it. */
+/* $163B-$1677 — THROTTLE and BRAKE.  Returns 1 with *mode / *amount set when the driver is
+   asking for something, 0 when nobody is driving (the caller then supplies the self-drive
+   demand).  The pedal carry is the one flag this leaves — mirrored so it leaks faithfully to the
+   gear tail's no-key return on the joystick path (nothing there overwrites it, which is why
+   clamp's own CMP #$91 carry can survive to the exit on the session-over path).  The clamp
+   fixture drops V and C, but determinism reads the live path, so the escaping carry is kept at
+   the real 6502 value by argument. */
+static int read_pedal_demand(uint8_t *mode, uint8_t *amount)
+{
+    if (session_end_countdown != 0) return 0;          /* $163B — the session is over */
+
+    if (mem[OPTION_FLAGS] & 0x80u) {                   /* $163F BIT/BMI — joystick */
+        AdcRead a = adc_read_core(0x02u);              /* $1644 — channel 2 */
+        int outside = (a.mag >= 0x0Au);                /* $504F dead-zone carry (leaks to no_key) */
+        cpu.C = outside;
+        if (!outside) return 0;                        /* $1649 — inside the dead zone */
+
+        uint8_t mag = a.mag;                            /* $164B — scale the reading up x1.5 */
+        mem[STEER_SIGN] = (uint8_t)(mag >> 1);
+        /* ⚠ `ADC $74` with no `CLC` — the doubling's own carry ($164F ASL) is in the sum:
+           (mag<<1) + (mag>>1) + bit7(mag).  bit7(mag) is provably 0 here (adc_read folds both
+           sides of centre to a magnitude in 0..$7F), so the ASL never carries; the term is kept
+           as the faithful idiom.  Only this add's OWN carry is read (the in-range test just
+           below) — and the doubled sum CAN exceed $FF (mag=$7F → $13D). */
+        unsigned sum = (unsigned)(uint8_t)(mag << 1) + mem[STEER_SIGN] + (mag >> 7);
+        if (sum <= 0xFFu) {                             /* $1652 — the sum didn't overflow */
+            uint8_t hi = ((uint8_t)sum >= 0xFAu);       /* $1654 CMP #$FA (carry leaks to no_key) */
+            cpu.C = hi;
+            if (!hi) { *mode = a.dir; *amount = (uint8_t)sum; return 1; }   /* in range */
+        }
+        /* $1658 CPX #0 — the sign is unsigned so this carry is ALWAYS set, and it is the
+           routine's LIVE exit carry (it leaks through the gear tail to no_key). */
+        cpu.C = 1;
+        if (a.dir == 0x00u) { *mode = 0x00u; *amount = 0xFAu; return 1; }   /* $1674 full brake */
+        *mode = 0x01u; *amount = 0xFFu; return 1;                          /* $1665 full throttle */
+    }
+
+    if (kbd_test_key_core(0xAEu)) { *mode = 0x01u; *amount = 0xFFu; return 1; }  /* $165E throttle */
+    if (kbd_test_key_core(0xBEu)) { *mode = 0x00u; *amount = 0xFAu; return 1; }  /* $166B brake */
+    return 0;
+}
+
 static void read_pedals_and_gears(void)
 {
     uint8_t mode, amount, delta;
 
-    /* $163B-$1684 — THROTTLE and BRAKE into pedal_mode / pedal_amount.  Once the session is
-       over ($000F non-zero) the car drives itself: mode $80, amount revs/4 + 5.  Only the mode
-       and amount VALUES landing at have_pedal matter from this section; the pedal carry is the
-       one flag it leaves — mirrored so it leaks faithfully to no_key on the joystick gear path
-       (nothing there overwrites it, which is why clamp's own CMP #$91 carry can survive to the
-       exit on the session-over path).  The clamp fixture drops V and C, but determinism reads the
-       live path, so the escaping carry is kept at the real 6502 value by argument. */
-    if (session_end_countdown == 0) {                  /* $163B — session still running */
-        if (mem[OPTION_FLAGS] & 0x80u) {               /* $163F BIT/BMI — joystick */
-            AdcRead a = adc_read_core(0x02u);          /* $1644 — channel 2 */
-            int outside = (a.mag >= 0x0Au);            /* $504F dead-zone carry (leaks to no_key) */
-            cpu.C = outside;
-            if (outside) {                             /* $1649 — outside the dead zone */
-                uint8_t mag = a.mag;                    /* $164B — scale the reading up x1.5 */
-                mem[STEER_SIGN] = (uint8_t)(mag >> 1);
-                /* ⚠ `ADC $74` with no `CLC` — the doubling's own carry ($164F ASL) is in the
-                   sum: (mag<<1) + (mag>>1) + bit7(mag).  bit7(mag) is provably 0 here (adc_read
-                   folds both sides of centre to a magnitude in 0..$7F), so the ASL never carries;
-                   the term is kept as the faithful idiom.  Only this add's OWN carry is read (the
-                   in-range test just below) — and the doubled sum CAN exceed $FF (mag=$7F → $13D). */
-                unsigned sum = (unsigned)(uint8_t)(mag << 1) + mem[STEER_SIGN] + (mag >> 7);
-                if (sum <= 0xFFu) {                     /* $1652 — the sum didn't overflow */
-                    uint8_t hi = ((uint8_t)sum >= 0xFAu);   /* $1654 CMP #$FA (carry leaks to no_key) */
-                    cpu.C = hi;
-                    if (!hi) { mode = a.dir; amount = (uint8_t)sum; goto have_pedal; }  /* in range */
-                }
-                /* $1658 CPX #0 — the sign is unsigned so this carry is ALWAYS set, and it is the
-                   routine's LIVE exit carry (it leaks through the gear tail to no_key). */
-                cpu.C = 1;
-                if (a.dir == 0x00u) { mode = 0x00u; amount = 0xFAu; goto have_pedal; }  /* $1674 full brake */
-                mode = 0x01u; amount = 0xFFu; goto have_pedal;                          /* $1665 full throttle */
-            }
-        } else {
-            if (kbd_test_key_core(0xAEu)) { mode = 0x01u; amount = 0xFFu; goto have_pedal; }  /* $165E throttle */
-            if (kbd_test_key_core(0xBEu)) { mode = 0x00u; amount = 0xFAu; goto have_pedal; }  /* $166B brake */
-        }
+    /* $163B-$1684 — the pedals.  Once the session is over ($000F non-zero) the car drives
+       itself: mode $80, amount revs/4 + 5. */
+    if (!read_pedal_demand(&mode, &amount)) {
+        mode   = 0x80u;                                /* $1678 — nobody is driving */
+        amount = (uint8_t)((uint8_t)(engine_revs >> 2) + 0x05u);   /* self-drive: revs/4 + 5 */
     }
-    mode = 0x80u;                                      /* $1678 — nobody is driving */
-    amount = (uint8_t)((uint8_t)(engine_revs >> 2) + 0x05u);   /* self-drive: revs/4 + 5 */
-
-have_pedal:
     pedal_mode   = mode;                               /* $1681 */
     pedal_amount = amount;
 
     /* $1685-$16DB — the GEARS.  One shift per key press, latched in gear_key_latch.
        ⚠ BIT's V (bit 6 of OPTION_FLAGS) is a LIVE EXIT flag: the no_key and latch-held returns
        set no V of their own, so it leaks out of the routine. */
+    enum GearRequest { GEAR_NONE, GEAR_UP, GEAR_DOWN } request = GEAR_NONE;
+
     cpu.V = (uint8_t)((mem[OPTION_FLAGS] >> 6) & 1u);  /* $1685 BIT — V escapes */
     if (mem[OPTION_FLAGS] & 0x80u) {                   /* $1685 BMI — joystick */
         /* $168A — ADVAL 0, the stick buttons; the fire-button bits come back in X, and the MOS's
-           exit X/Y escape through the no_key return (see there).  Replay them now the cpu-free
+           exit X/Y escape through the no-key return (see there).  Replay them now the cpu-free
            wrapper no longer leaves them behind. */
         MosRegs b = mos_call(0xFFF4u, 0x80u, 0x00u, 0u);
         cpu.X = b.x; cpu.Y = b.y;
-        uint8_t buttons = b.x;
-        if ((buttons & 0x01u) == 0) goto no_key;       /* $1691 — no fire button (carry leaks in) */
-        cpu.Y = (uint8_t)(pedal_mode - 1);             /* $1696 LDY/DEY — Y escapes to the held return */
-        if (pedal_mode != 0x01u) goto shift_up;        /* not braking: shift up */
-        /* ⚠ CMP's C (pedal_amount >= $C8) is a LIVE exit flag — it leaks through the shift path
-           to the latch-held return, which sets no carry of its own. */
-        { uint8_t hard = (pedal_amount >= 0xC8u);      /* $169D CMP #$C8 */
-          cpu.C = hard;
-          if (hard) goto shift_down; }                 /* $169F — hard brake: shift down */
-        goto shift_up;
+        if (b.x & 0x01u) {                             /* $1691 — the fire button (carry leaks in) */
+            cpu.Y = (uint8_t)(pedal_mode - 1);         /* $1696 LDY/DEY — Y escapes to the held return */
+            if (pedal_mode != 0x01u) {
+                request = GEAR_UP;                     /* not braking: shift up */
+            } else {
+                /* ⚠ CMP's C (pedal_amount >= $C8) is a LIVE exit flag — it leaks through the
+                   shift path to the latch-held return, which sets no carry of its own. */
+                uint8_t hard = (pedal_amount >= 0xC8u);   /* $169D CMP #$C8 */
+                cpu.C   = hard;
+                request = hard ? GEAR_DOWN : GEAR_UP;  /* $169F — hard brake: shift down */
+            }
+        }
+    } else {
+        int up = kbd_test_key_core(0x9Fu); cpu.C = up; /* $16A3 — gear up (carry leaks) */
+        if (up) {
+            request = GEAR_UP;
+        } else {
+            int dn = kbd_test_key_core(0xEFu); cpu.C = dn;  /* $16AA — gear down (carry leaks) */
+            if (dn) request = GEAR_DOWN;
+        }
     }
-    { int up = kbd_test_key_core(0x9Fu); cpu.C = up;   /* $16A3 — gear up (carry leaks) */
-      if (up) goto shift_up; }
-    { int dn = kbd_test_key_core(0xEFu); cpu.C = dn;   /* $16AA — gear down (carry leaks) */
-      if (dn) goto shift_down; }
 
-no_key:
-    gear_key_latch = 0x00u;                            /* $16B1 — release the latch */
-    cpu.A = 0x00u; cpu.N = 0; cpu.Z = 1;               /* exit A/N/Z (compared through the clamp tail);
+    if (request == GEAR_NONE) {
+        gear_key_latch = 0x00u;                        /* $16B1 — release the latch */
+        cpu.A = 0x00u; cpu.N = 0; cpu.Z = 1;           /* exit A/N/Z (compared through the clamp tail);
                                                           X and Y here came from a shared MOS call. */
-    return;
+        return;
+    }
 
-shift_up:
-    delta = 0xFFu;                                     /* $16B7 — one gear up (adds -1) */
-    goto shift;
-shift_down:
-    delta = 0x01u;                                     /* $16BB — one gear down (adds +1) */
-shift:
+    delta = (request == GEAR_UP) ? 0xFFu               /* $16B7 — one gear up (adds -1) */
+                                 : 0x01u;              /* $16BB — one gear down (adds +1) */
     gear_change_flag = (uint8_t)(gear_change_flag - 1);  /* $16BD */
     /* $16C1 — latch still held from last frame?  X = the latch and N/Z from it escape on the held
        return, as does A = the delta.  On the continue path draw_gear_indicator overwrites them. */
@@ -12677,42 +12719,62 @@ void lap_complete(void) { lap_complete_core(cpu.X); }   /* X = car index; nothin
 #define SEGMENT_SPEED_LIMIT   0x5307u   /* segment_speed_limit — per-segment speed limit */
 #define RACE_POSITION_OFFSET  0x5A1Au   /* race_position_offset — per-circuit race-mode gap offset */
 
+/* $28CE-$28E4 — the steering nudge itself, the tail five of the tests above branch to. */
+static void FUN_27ed_car_adjust(uint8_t x)
+{
+    uint8_t f    = (uint8_t)(mem[CAR_FLAGS_0 + x] & 0xBFu); /* $28CE LDA / $28D1 AND #$BF / $28D3 CLC */
+    uint8_t st2b = mem[CAR_STATE_2 + x];
+    if (f & 0x80u) {                                     /* $28D4 BPL $28DF — bit7 set arm */
+        uint16_t r = (uint16_t)(uint8_t)(f ^ 0x7Fu) + st2b; /* $28D6 EOR #$7F / $28D8 ADC (C=0) */
+        if (r > 0xFFu) mem[CAR_STATE_2 + x] = (uint8_t)r;   /* $28DB BCS $28E4 store on carry */
+    } else {
+        uint16_t r = (uint16_t)f + st2b;                    /* $28DF ADC car_state_2,X (C=0) */
+        if (r <= 0xFFu) mem[CAR_STATE_2 + x] = (uint8_t)r;  /* $28E2 BCS skip; store on no carry */
+    }
+}
+
 static void FUN_27ed_car(uint8_t x)
 {
+    /* The 6502 enters the speed chain at one of three points ($282F speed-calc, $285B decel,
+       $287F integrate-only); the tests below pick which, and the chain then runs in order. */
+    enum SpeedStage { STAGE_DECEL, STAGE_SPEEDCALC, STAGE_INTEGRATE } stage;
     uint8_t a = 0;
-    uint8_t seg = 0;
 
     uint8_t flags = mem[CAR_RACE_FLAGS + x];             /* $27F6 LDA car_race_flags,X */
-    if (flags & 0x80u) goto L_decel;                      /* $27F9 BMI $285B — inactive/behind */
-
-    seg = mem[CAR_SEGMENT_TBL + x];                       /* $27FB LDY car_segment,X */
-    uint8_t segbyte = mem[TRACK_SEGMENT_LO + seg];        /* $27FE LDA track_segment_lo,Y */
-    if (segbyte & 0x80u) {                                /* $2801 BPL $280D — bit7 set: this arm */
-        /* $2803-$280B: if already at/over the target speed, only integrate; else recompute */
-        if (mem[CAR_SPEED_SCALED + x] >= mem[CAR_TARGET_SPEED + x]) goto L_integrate; /* $2809 BCS */
-        goto L_speedcalc;                                 /* $280B BCC $282F */
+    if (flags & 0x80u) {
+        stage = STAGE_DECEL;                             /* $27F9 BMI $285B — inactive/behind */
+    } else {
+        uint8_t seg     = mem[CAR_SEGMENT_TBL + x];      /* $27FB LDY car_segment,X */
+        uint8_t segbyte = mem[TRACK_SEGMENT_LO + seg];   /* $27FE LDA track_segment_lo,Y */
+        if (segbyte & 0x80u) {                           /* $2801 BPL $280D — bit7 set: this arm */
+            /* $2803-$280B: if already at/over the target speed, only integrate; else recompute */
+            stage = (mem[CAR_SPEED_SCALED + x] >= mem[CAR_TARGET_SPEED + x])
+                        ? STAGE_INTEGRATE                /* $2809 BCS */
+                        : STAGE_SPEEDCALC;               /* $280B BCC $282F */
+        } else if (segbyte & 0x01u) {
+            stage = STAGE_SPEEDCALC;                     /* $280D LSR / $280E BCS $282F (bit0 set) */
+        } else {
+            /* $2810-$2820: set target speed from the segment limit; if the car must brake harder
+               than the segment allows, fold the shortfall into a proximity code in math_lo */
+            uint8_t seglimit = mem[SEGMENT_SPEED_LIMIT + seg];   /* $2810 LDA segment_speed_limit,Y */
+            mem[CAR_TARGET_SPEED + x] = seglimit;                /* $2813 STA car_target_speed,X */
+            int16_t brake = (int16_t)seglimit - mem[CAR_SPEED_SCALED + x] - 1; /* $2816 CLC/$2817 SBC */
+            if (brake >= 0) {
+                stage = STAGE_SPEEDCALC;                         /* $281A BCS $282F (no borrow) */
+            } else {
+                math_lo = (uint8_t)((((uint8_t)brake) >> 2) | 0xC0u); /* $281C-$2820 LSR LSR / ORA #$C0 */
+                /* $2822-$282D: how far into the segment; a car that has not yet reached the
+                   braking zone (offset < threshold) and is closer than the code decelerates */
+                int16_t prox = (int16_t)mem[CAR_SEG_OFFSET + x]
+                             - mem[SEGMENT_POS_THRESHOLD + seg];     /* $2825 SEC/$2826 SBC */
+                if (prox >= 0)                        stage = STAGE_INTEGRATE;  /* $2829 BCS $287F */
+                else if ((uint8_t)prox >= math_lo)    stage = STAGE_DECEL;      /* $282B/$282D BCS */
+                else                                  stage = STAGE_SPEEDCALC;
+            }
+        }
     }
-    if (segbyte & 0x01u) goto L_speedcalc;                /* $280D LSR / $280E BCS $282F (bit0 set) */
 
-    /* $2810-$2820: set target speed from the segment limit; if the car must brake harder than the
-       segment allows, fold the shortfall into a proximity code in math_lo */
-    {
-        uint8_t seglimit = mem[SEGMENT_SPEED_LIMIT + seg];   /* $2810 LDA segment_speed_limit,Y */
-        mem[CAR_TARGET_SPEED + x] = seglimit;                /* $2813 STA car_target_speed,X */
-        int16_t brake = (int16_t)seglimit - mem[CAR_SPEED_SCALED + x] - 1; /* $2816 CLC/$2817 SBC */
-        if (brake >= 0) goto L_speedcalc;                    /* $281A BCS $282F (no borrow) */
-        uint8_t bA = (uint8_t)((((uint8_t)brake) >> 2) | 0xC0u); /* $281C/$281D LSR LSR / $281E ORA #$C0 */
-        math_lo = bA;                                        /* $2820 STA math_lo */
-        /* $2822-$282D: how far into the segment; a car that has not yet reached the braking zone
-           (offset < threshold) and is closer than the code decelerates */
-        int16_t prox = (int16_t)mem[CAR_SEG_OFFSET + x] - mem[SEGMENT_POS_THRESHOLD + seg]; /* $2825 SEC/$2826 SBC */
-        if (prox >= 0) goto L_integrate;                     /* $2829 BCS $287F (no borrow) */
-        if ((uint8_t)prox >= math_lo) goto L_decel;          /* $282B CMP math_lo / $282D BCS $285B */
-        /* else fall into L_speedcalc */
-    }
-
-L_speedcalc:                                              /* $282F */
-    {
+    if (stage == STAGE_SPEEDCALC) {                       /* $282F */
         /* $282F-$2838: floor the effective speed at $16 unless already >= $3C, into math_lo */
         uint8_t sp  = mem[CAR_SPEED_SCALED + x];             /* $282F LDA car_speed_scaled,X */
         uint8_t eff = (sp >= 0x3Cu) ? sp : 0x16u;            /* $2832 CMP #$3C / $2836 LDA #$16 */
@@ -12729,16 +12791,12 @@ L_speedcalc:                                              /* $282F */
         int16_t gap = (int16_t)a - math_lo;                  /* $2850 SEC / $2851 SBC math_lo */
         a = (uint8_t)gap;
         math_hi = (gap < 0) ? 0xFFu : 0x00u;                 /* $2853 BCS / $2855 DEY / $2856 STY math_hi */
-        goto L_shift_add;                                    /* $2858 JMP $2861 */
+    } else if (stage == STAGE_DECEL) {                       /* $285B */
+        math_hi = 0xFFu;                                     /* $285B LDA #$FF / $285D STA math_hi */
+        a = 0x00u;                                           /* $285F LDA #$00 */
     }
 
-L_decel:                                                  /* $285B */
-    math_hi = 0xFFu;                                         /* $285B LDA #$FF / $285D STA math_hi */
-    a = 0x00u;                                               /* $285F LDA #$00 */
-    /* fall into L_shift_add */
-
-L_shift_add:                                              /* $2861 */
-    {
+    if (stage != STAGE_INTEGRATE) {                          /* $2861 — the shift-and-add */
         /* $2861-$2865: [math_hi:A] <<= 2 — a 16-bit left shift, the high bit falling off each ROL */
         uint16_t v = (uint16_t)(((uint16_t)math_hi << 8) | a);
         v = (uint16_t)(v << 2);
@@ -12753,9 +12811,7 @@ L_shift_add:                                              /* $2861 */
         mem[CAR_SPEED_FRAC + x]   = sfrac;                   /* $286B / $2879 STA car_speed_frac,X */
         mem[CAR_SPEED_SCALED + x] = sscaled;                 /* $287C STA car_speed_scaled,X */
     }
-    /* fall into L_integrate */
 
-L_integrate:                                              /* $287F */
     /* $287F-$2894: add the speed into car_state_1 twice; each carry advances the car one offset
        unit (track_pos_advance, which books a lap via lap_complete on a distance wrap) */
     for (int i = 1; i >= 0; i--) {                           /* $2881 shared_temp_76=1; DEC/BPL loop */
@@ -12772,32 +12828,21 @@ L_integrate:                                              /* $287F */
     {
         uint8_t shape = mem[CAR_FLAGS_SHAPE + x];            /* $2896 LDA / $2899 ASL A */
         if (shape & 0x80u) return;                           /* $289A BCS $28E7 (old bit7) — next car */
-        if (shape & 0x40u) goto L_adjust;                    /* $289C BMI $28CE (old bit6) */
-        if ((mem[CAR_FLAGS_0 + x] & 0x40u) == 0) goto L_adjust; /* $28A1 AND #$40 / $28A3 BEQ $28CE */
-        if (((mem[CAR_STATE_2 + x] ^ mem[CAR_FLAGS_0 + x]) & 0x80u) == 0) goto L_adjust; /* $28A8 EOR/$28AB BPL */
+        if (shape & 0x40u) { FUN_27ed_car_adjust(x); return; }   /* $289C BMI $28CE (old bit6) */
+        if ((mem[CAR_FLAGS_0 + x] & 0x40u) == 0) { FUN_27ed_car_adjust(x); return; }  /* $28A1/$28A3 */
+        if (((mem[CAR_STATE_2 + x] ^ mem[CAR_FLAGS_0 + x]) & 0x80u) == 0) {           /* $28A8/$28AB */
+            FUN_27ed_car_adjust(x); return;
+        }
 
         uint8_t st2 = mem[CAR_STATE_2 + x];                  /* $28AD LDA car_state_2,X */
         if (st2 & 0x80u) {                                   /* $28B0 BPL $28C1 — bit7 set arm */
             if (st2 >= 0xECu) { mem[CAR_STATE_2 + x] = (uint8_t)(st2 - 1); return; } /* $28B2/$28B6 DEC/$28B9 */
             if (st2 >= 0xE2u) return;                        /* $28BB CMP #$E2 / $28BF BCS $28E7 */
-            goto L_adjust;                                   /* $28BD BCC $28CE (st2 < $E2) */
+            FUN_27ed_car_adjust(x);                          /* $28BD BCC $28CE (st2 < $E2) */
         } else {                                             /* $28C1 — bit7 clear arm */
             if (st2 < 0x14u) { mem[CAR_STATE_2 + x] = (uint8_t)(st2 + 1); return; } /* $28C5 INC/$28C8 */
             if (st2 < 0x1Eu) return;                         /* $28CA CMP #$1E / $28CC BCC $28E7 */
-            goto L_adjust;                                   /* fall to $28CE (st2 >= $1E) */
-        }
-    }
-
-L_adjust:                                                 /* $28CE */
-    {
-        uint8_t f    = (uint8_t)(mem[CAR_FLAGS_0 + x] & 0xBFu); /* $28CE LDA / $28D1 AND #$BF / $28D3 CLC */
-        uint8_t st2b = mem[CAR_STATE_2 + x];
-        if (f & 0x80u) {                                     /* $28D4 BPL $28DF — bit7 set arm */
-            uint16_t r = (uint16_t)(uint8_t)(f ^ 0x7Fu) + st2b; /* $28D6 EOR #$7F / $28D8 ADC (C=0) */
-            if (r > 0xFFu) mem[CAR_STATE_2 + x] = (uint8_t)r;   /* $28DB BCS $28E4 store on carry */
-        } else {
-            uint16_t r = (uint16_t)f + st2b;                    /* $28DF ADC car_state_2,X (C=0) */
-            if (r <= 0xFFu) mem[CAR_STATE_2 + x] = (uint8_t)r;  /* $28E2 BCS skip; store on no carry */
+            FUN_27ed_car_adjust(x);                          /* fall to $28CE (st2 >= $1E) */
         }
     }
 }
@@ -12906,6 +12951,12 @@ StageNearbyCar stage_nearby_car_core(uint8_t gapA, unsigned gapFar, uint8_t slot
    callers reload X immediately after — so this is result-only (LIVE_NONE, mem[]-only compare). */
 void check_car_pair_core(void)
 {
+    /* The proximity arm's tail is a five-stage chain the 6502 enters at four different points
+       ($2742/$2744/$2749/$277D/$2786).  In C that is one classification followed by two flags:
+       `publish` runs the car_flags_0 store and `setBit` the cursor's bit4 — and publish implies
+       setBit, exactly as $277D falls through into $2786. */
+    enum ProxOutcome { PROX_TAIL, PROX_PUBLISH, PROX_SETBIT, PROX_NONE };
+
     uint8_t pos = zp_scratch_index;                          /* $2692 LDX $03 */
 
     for (;;) {
@@ -12926,45 +12977,40 @@ void check_car_pair_core(void)
         GapTail g  = car_gap_tail_core(firstSlot, secondSlot, !(d & 0x100u));
         uint8_t gap = g.a;
 
-        if (g.c) goto tail;                                  /* $26b0 far / already in order */
-
-        if (g.n) {
+        if (g.c) {
+            /* $26b0 far / already in order — straight to the tail */
+        } else if (g.n) {
             /* ---------- (b) SWAP ARM ($26b4): out of order, close behind ---------- */
-            if (gap < 0xF6u) goto tail;                      /* $26b4-b6 too far behind to swap */
+            if (gap >= 0xF6u) {                              /* $26b4-b6 else too far behind to swap */
+                uint8_t nowAtPos, nowAtBehind;               /* $26bc swap car_order[pos] <-> [posBehind] */
+                car_order_swap_core(pos, posBehind, &nowAtPos, &nowAtBehind);
+                (void)nowAtPos; (void)nowAtBehind;           /* exit X=second, Y=first — used as the slots below */
+                tailSlot = secondSlot;                       /* $278c reads mem[$0100+X], X=second after the swap */
+                position_swap_flag = (uint8_t)((position_swap_flag >> 1) | 0x80u);  /* $26bf SEC / $26c0 ROR $62FE */
 
-            uint8_t nowAtPos, nowAtBehind;                   /* $26bc swap car_order[pos] <-> [posBehind] */
-            car_order_swap_core(pos, posBehind, &nowAtPos, &nowAtBehind);
-            (void)nowAtPos; (void)nowAtBehind;               /* exit X=second, Y=first — used as the slots below */
-            tailSlot = secondSlot;                           /* $278c reads mem[$0100+X], X=second after the swap */
-            position_swap_flag = (uint8_t)((position_swap_flag >> 1) | 0x80u);   /* $26bf SEC / $26c0 ROR $62FE */
+                uint8_t passAmt; int doPass;
+                if (firstSlot == player_car)       { passAmt = 0x99u; doPass = 1; }  /* $26c3 CPY (Y=first): player lost */
+                else if (secondSlot == player_car) { passAmt = 0x01u; doPass = 1; }  /* $26cb CPX (X=second): player gained */
+                else                               { passAmt = 0x00u; doPass = 0; }  /* $26cd -> tail (no player) */
 
-            uint8_t passAmt; int doPass;
-            if (firstSlot == player_car)       { passAmt = 0x99u; doPass = 1; }  /* $26c3 CPY (Y=first): player lost */
-            else if (secondSlot == player_car) { passAmt = 0x01u; doPass = 1; }  /* $26cb CPX (X=second): player gained */
-            else                               { passAmt = 0x00u; doPass = 0; }  /* $26cd -> tail (no player) */
-
-            if (doPass) {
-                math_lo = passAmt;                           /* $26d1 STA $74 */
-                uint8_t lapFirst  = mem[CAR_LAP_COUNT + firstSlot];             /* $26d3 (Y=first) */
-                unsigned rolCarryOut = (hypot_min_hi >> 7) & 1u;               /* $26d6 ROL $79 (C-in=1): old bit7 -> C */
-                hypot_min_hi = (uint8_t)((hypot_min_hi << 1) | 1u);
-                uint8_t lapDiff = (uint8_t)((int)lapFirst
-                                            - (int)mem[CAR_LAP_COUNT + secondSlot]   /* $26d8 SBC (X=second) */
-                                            - (rolCarryOut ? 0 : 1));                /* C-in = ROL carry-out; D=0 */
-                if (lapDiff == 0u) {                          /* $26db same lap -> count the pass */
-                    cpu.D = 1;                                /* $26dd SED */
-                    Adc pc = adc_value(passAmt, pass_count_bcd, 0);  /* $26de CLC / $26e1 ADC (BCD) */
-                    cpu.D = 0;                                /* $26e5 CLD */
-                    pass_count_bcd = pc.val;                 /* $26e3 */
+                if (doPass) {
+                    math_lo = passAmt;                       /* $26d1 STA $74 */
+                    uint8_t lapFirst  = mem[CAR_LAP_COUNT + firstSlot];            /* $26d3 (Y=first) */
+                    unsigned rolCarryOut = (hypot_min_hi >> 7) & 1u;               /* $26d6 ROL $79 (C-in=1): old bit7 -> C */
+                    hypot_min_hi = (uint8_t)((hypot_min_hi << 1) | 1u);
+                    uint8_t lapDiff = (uint8_t)((int)lapFirst
+                                                - (int)mem[CAR_LAP_COUNT + secondSlot]  /* $26d8 SBC (X=second) */
+                                                - (rolCarryOut ? 0 : 1));               /* C-in = ROL carry-out; D=0 */
+                    if (lapDiff == 0u) {                     /* $26db same lap -> count the pass */
+                        cpu.D = 1;                           /* $26dd SED */
+                        Adc pc = adc_value(passAmt, pass_count_bcd, 0);  /* $26de CLC / $26e1 ADC (BCD) */
+                        cpu.D = 0;                           /* $26e5 CLD */
+                        pass_count_bcd = pc.val;             /* $26e3 */
+                    }
                 }
             }
-            goto tail;                                       /* $26e6 */
-        }
-
-        /* ---------- (c) PROXIMITY ARM ($26e9): positive, small gap ---------- */
-        if (gap >= 0x05u) goto tail;                         /* $26e9-eb */
-
-        {
+        } else if (gap < 0x05u) {
+            /* ---------- (c) PROXIMITY ARM ($26e9): positive, small gap ---------- */
             /* 16-bit speed difference firstSlot - secondSlot; borrow-out sign -> shared_temp_76 bit7
                ⭐ WIDE-VALUE CLEANUP: D is 0 here — the routine brackets its ONE SED around the
                pass-count ADC at $26DD — so the two chained SBCs are a plain binary 16-bit subtract
@@ -12977,76 +13023,81 @@ void check_car_pair_core(void)
                              - 1;                            /* $26ed-$26f7 */
             unsigned sdCarry = (sd >= 0);                    /* the high SBC's carry-out */
             shared_temp_76 = (uint8_t)((sdCarry << 7) | (shared_temp_76 >> 1)); /* $26fa ROR $76 (C-in = it) */
-            if (!sdCarry) goto tail;                         /* $26fc BPL: N(from ROR) = the carry; !N -> tail */
 
-            uint8_t mag = (uint8_t)((uint8_t)((unsigned)sd >> 8) >> 1);  /* $26fe LSR A */
-            if (mag >= 0x1Eu) mag = 0x1Eu;                   /* $26ff-2703 clamp high */
-            if (mag <  0x04u) mag = 0x04u;                   /* $2705-2709 clamp low */
-            mem[0x0083] = mag;                               /* $270b store magnitude (point_delta_hi reused — rename note) */
+            if (sdCarry) {                                   /* $26fc BPL: N(from ROR) = the carry; !N -> tail */
+                uint8_t mag = (uint8_t)((uint8_t)((unsigned)sd >> 8) >> 1);  /* $26fe LSR A */
+                if (mag >= 0x1Eu) mag = 0x1Eu;               /* $26ff-2703 clamp high */
+                if (mag <  0x04u) mag = 0x04u;               /* $2705-2709 clamp low */
+                mem[0x0083] = mag;                           /* $270b store magnitude (point_delta_hi reused — rename note) */
 
-            unsigned c4 = (math_lo >= 0x04u);                /* $270d LDA $74 / $270f CMP #4 (math_lo == gap here) */
-            uint8_t rf = (uint8_t)(mem[CAR_RACE_FLAGS + secondSlot] & 0x40u);   /* $2711 / $2714 AND #$40 */
+                unsigned c4 = (math_lo >= 0x04u);            /* $270d LDA $74 / $270f CMP #4 (math_lo == gap here) */
+                uint8_t rf = (uint8_t)(mem[CAR_RACE_FLAGS + secondSlot] & 0x40u);   /* $2711 / $2714 AND #$40 */
+                enum ProxOutcome outcome;
 
-            if (rf != 0u) {
-                /* bit6 of the trailing car's race flags set */
-                span_line_cursor = c4 ? 0x40u : 0xC0u;       /* $2718 BCS / $271a ORA #$80 / $271c */
-                unsigned cst = (mem[CAR_STATE_2 + firstSlot] >= mem[CAR_STATE_2 + secondSlot]);  /* $2721 CMP */
-                math_lo = (uint8_t)((cst << 7) | (math_lo >> 1));   /* $2724 ROR $74 (C-in = cst) */
-                goto l_277d;                                 /* $2726 */
-            }
-
-            /* bit6 clear ($2729) */
-            if (c4) goto l_2742;                             /* $2729 BCS L_2742 */
-            /* gap < 4 */
-            span_line_cursor = 0x40u;                        /* $272d */
-            {
-                unsigned cst2 = (mem[CAR_STATE_2 + secondSlot] >= mem[CAR_STATE_2 + firstSlot]);  /* $2732 CMP */
-                math_lo = (uint8_t)((cst2 << 7) | (math_lo >> 1));  /* $2735 ROR $74 */
-            }
-            {
-                uint8_t s2 = mem[CAR_STATE_2 + secondSlot];  /* $272f LDA — value survives to abs8 */
-                uint8_t absv = (s2 & 0x80u) ? (uint8_t)(0u - s2) : s2;  /* $2737 AND #$FF (sets N) / $2739 abs8 */
-                if (absv >= 0x3Cu) goto l_2749;              /* $273c CMP #$3C / $273e BCC L_2744 / $2740 BCS L_2749 */
-                goto l_2744;
-            }
-
-        l_2742:                                              /* $2742 */
-            shared_temp_76 = (uint8_t)(shared_temp_76 >> 1); /* LSR $76 */
-        l_2744:                                              /* $2744 */
-            math_lo = mem[CAR_STATE_2 + secondSlot];         /* $2744 LDA / $2747 STA $74 */
-        l_2749:                                              /* $2749 */
-            {
-                uint8_t fs = mem[CAR_FLAGS_SHAPE + firstSlot];   /* $2749 (X=first) */
-                if (fs & 0x80u) {                            /* $274c BPL L_275e; bit7 set -> here */
-                    uint8_t ent = (uint8_t)(bus_read(0xFE68) & 0x1Fu);  /* $274e-51 User VIA T2 entropy */
-                    if (ent != 0u) goto tail;                /* $2753 -> tail */
-                    span_line_cursor = (uint8_t)((shared_temp_76 & 0x80u) | span_line_cursor);  /* $2755-59 */
-                    goto l_278a;                             /* $275b */
-                }
-                /* bit7 clear (L_275e) */
-                Adc df = sbc_value(mem[CAR_STATE_2 + secondSlot],   /* $275e LDA / $2761 SEC */
-                                   mem[CAR_STATE_2 + firstSlot], 1); /* $2762 SBC */
-                uint8_t diff = df.carry ? df.val : (uint8_t)(~df.val);   /* $2765 BCS / $2767 EOR #$FF */
-                if (diff >= 0x64u) goto tail;                /* $2769-6b -> tail */
-                if (diff >= 0x50u) goto l_2786;              /* $276d-6f */
-                /* diff < $50: the per-circuit SMC compare at $2771 */
-                if (mem[0x2771] == 0xC9u) {                  /* unpatched (Silverstone): CMP #imm */
-                    if (diff >= mem[0x2772]) goto l_277d;    /* $2773 BCS L_277d */
+                if (rf != 0u) {
+                    /* bit6 of the trailing car's race flags set — classification is decided here */
+                    span_line_cursor = c4 ? 0x40u : 0xC0u;   /* $2718 BCS / $271a ORA #$80 / $271c */
+                    unsigned cst = (mem[CAR_STATE_2 + firstSlot] >= mem[CAR_STATE_2 + secondSlot]);  /* $2721 CMP */
+                    math_lo = (uint8_t)((cst << 7) | (math_lo >> 1));   /* $2724 ROR $74 (C-in = cst) */
+                    outcome = PROX_PUBLISH;                  /* $2726 -> $277D */
                 } else {
-                    platform_smc_unhandled(0x2771, mem[0x2771]);  /* a circuit patched a different opcode in */
-                    return;
+                    /* bit6 clear ($2729): pick the chain's entry point, then run it */
+                    int loadState2 = 1;                      /* the $2744 stage runs unless we enter at $2749 */
+                    if (c4) {
+                        shared_temp_76 = (uint8_t)(shared_temp_76 >> 1);   /* $2742 LSR $76 */
+                    } else {
+                        span_line_cursor = 0x40u;            /* $272d */
+                        unsigned cst2 = (mem[CAR_STATE_2 + secondSlot] >= mem[CAR_STATE_2 + firstSlot]);  /* $2732 CMP */
+                        math_lo = (uint8_t)((cst2 << 7) | (math_lo >> 1));  /* $2735 ROR $74 */
+                        uint8_t s2 = mem[CAR_STATE_2 + secondSlot];        /* $272f LDA — value survives to abs8 */
+                        uint8_t absv = (s2 & 0x80u) ? (uint8_t)(0u - s2) : s2;  /* $2737 AND #$FF (sets N) / $2739 abs8 */
+                        loadState2 = (absv < 0x3Cu);         /* $273c CMP #$3C / $273e BCC $2744 / $2740 BCS $2749 */
+                    }
+                    if (loadState2)
+                        math_lo = mem[CAR_STATE_2 + secondSlot];   /* $2744 LDA / $2747 STA $74 */
+
+                    /* $2749: the trailing/leading pair's own classification */
+                    uint8_t fs = mem[CAR_FLAGS_SHAPE + firstSlot];   /* $2749 (X=first) */
+                    if (fs & 0x80u) {                        /* $274c BPL $275e; bit7 set -> here */
+                        uint8_t ent = (uint8_t)(bus_read(0xFE68) & 0x1Fu);  /* $274e-51 User VIA T2 entropy */
+                        if (ent != 0u) {
+                            outcome = PROX_TAIL;             /* $2753 -> tail */
+                        } else {
+                            span_line_cursor = (uint8_t)((shared_temp_76 & 0x80u) | span_line_cursor);  /* $2755-59 */
+                            outcome = PROX_NONE;             /* $275b -> $278A: neither stage runs */
+                        }
+                    } else {
+                        /* bit7 clear ($275E): |state_2[second] - state_2[first]| decides */
+                        Adc df = sbc_value(mem[CAR_STATE_2 + secondSlot],    /* $275e LDA / $2761 SEC */
+                                           mem[CAR_STATE_2 + firstSlot], 1); /* $2762 SBC */
+                        uint8_t diff = df.carry ? df.val : (uint8_t)(~df.val);   /* $2765 BCS / $2767 EOR #$FF */
+                        if (diff >= 0x64u) {
+                            outcome = PROX_TAIL;             /* $2769-6b -> tail */
+                        } else if (diff >= 0x50u) {
+                            outcome = PROX_SETBIT;           /* $276d-6f -> $2786 */
+                        } else if (mem[0x2771] != 0xC9u) {
+                            /* the per-circuit SMC site at $2771 is not the unpatched CMP #imm */
+                            platform_smc_unhandled(0x2771, mem[0x2771]);
+                            return;
+                        } else if (diff >= mem[0x2772]) {
+                            outcome = PROX_PUBLISH;          /* $2773 BCS $277d */
+                        } else {
+                            span_line_cursor = (uint8_t)((shared_temp_76 & 0x80u) | span_line_cursor);  /* $2775-79 */
+                            outcome = PROX_PUBLISH;          /* falls into $277d */
+                        }
+                    }
                 }
-                span_line_cursor = (uint8_t)((shared_temp_76 & 0x80u) | span_line_cursor);  /* $2775-79, fall to l_277d */
+
+                if (outcome == PROX_PUBLISH) {               /* $277d-83 */
+                    mem[CAR_FLAGS_0 + firstSlot] = (uint8_t)((math_lo & 0x80u) | mem[0x0083]);
+                }
+                if (outcome == PROX_PUBLISH || outcome == PROX_SETBIT) {
+                    span_line_cursor = (uint8_t)(span_line_cursor | 0x10u);   /* $2786-88 */
+                }
             }
-        l_277d:                                              /* $277d */
-            mem[CAR_FLAGS_0 + firstSlot] = (uint8_t)((math_lo & 0x80u) | mem[0x0083]);  /* $277d-83 */
-        l_2786:                                              /* $2786 */
-            span_line_cursor = (uint8_t)(span_line_cursor | 0x10u);   /* $2786-88 */
-        l_278a:                                              /* $278a: span_line_cursor already holds the value */
-            ;
         }
 
-    tail:                                                    /* L_278c $278c */
+        /* ---------- the shared tail (L_278c $278c) ---------- */
         if (!(mem[CAR_RACE_FLAGS + tailSlot] & 0x01u))       /* $278c LDA / $278f LSR (C=bit0) / $2792 BCS */
             mem[CAR_RACE_FLAGS + tailSlot] = span_line_cursor;   /* $2794 */
 
