@@ -654,6 +654,12 @@ void print_driver_name_at_row(void)
 }
 
 /* $1B84 update_position_display — A/X/Y all ambient on entry and all path-dependent on exit. */
+/* $5052 tick_race_timers — no inputs and no live outputs; see the twin's header. */
+void tick_race_timers(void)
+{
+    tick_race_timers_core();
+}
+
 /* $17C3 add_frame_time — X selects the clock; the flags out are the low byte's decimal add. */
 void add_frame_time(void)
 {

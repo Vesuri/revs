@@ -564,6 +564,8 @@ PosDisplayExit update_position_display_core(uint8_t entryX, uint8_t entryY);
    which the routine's own PHP/PLP carries past the two higher bytes. */
 typedef struct { uint8_t a, y, n, z, v, c; } FrameTimeExit;
 FrameTimeExit add_frame_time_core(uint8_t clockIdx);
+
+void tick_race_timers_core(void);
 TextExit print_bcd_digits_core(uint8_t bcd, uint8_t x, uint8_t y);
 TextExit print_bcd_digits_at_core(uint8_t bcd, uint8_t column, uint8_t row);
 TextExit print_lap_time_core(uint8_t fieldMask, uint8_t carIdx, uint8_t y);

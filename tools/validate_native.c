@@ -732,6 +732,68 @@ static int test_number_printers(void)
     return fail;
 }
 
+void tick_race_timers(void);           void tick_race_timers__t6502(void);
+
+/* ================================================================================================
+ * TWIN #193 — $5052 tick_race_timers, the body's FIRST call every frame.  Result-only
+ * (LIVE_NONE): both callers reload A/X/Y at once, so every observable effect is in mem[].
+ * The two callees it reaches are already native (add_frame_time, seed_car_track_position), so
+ * oracle and twin share them and this fixture gates the BOOKKEEPING around them.
+ *
+ * SABOTAGE (each must FAIL, patch verified applied):
+ *   D25 the divider reloads with period, not period + 1    -> 1052
+ *   D26 the clock runs while the lights are still on       -> 1334
+ *   D27 loop_counter_hi carries on every frame             -> 3177
+ *   D28 the refresh mask $1F -> $0F                        -> 63
+ *   D29 the refresh drops the "minutes not yet ticked" arm -> 1191
+ * ============================================================================================= */
+static int test_tick_race_timers(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    int sawReload = 0, sawLightsOn = 0, sawLightsOut = 0, sawRefresh = 0, sawCarry = 0;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("tick_race_timers");
+    if (!want("tick_race_timers")) return 0;
+
+    int cases = 4000 * scale;
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;
+        c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+        c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+        pre[0x5A19] = (uint8_t)(0x10u + (xs() % 0x20u));    /* time_tick_period */
+        pre[0x0046] = (t % 4 == 0) ? 0x00u : (uint8_t)(xs() % 0x40u);  /* the countdown */
+        if (pre[0x0046] == 0u) sawReload = 1;
+        if (t % 3 == 0) pre[0x006D] |= 0x80u;               /* start_light_state: lights on */
+        else            pre[0x006D] &= 0x7Fu;
+        if (pre[0x006D] & 0x80u) sawLightsOn = 1; else sawLightsOut = 1;
+        pre[0x006A] = (t % 5 == 0) ? 0xFFu : (uint8_t)xs(); /* loop_counter — force the carry */
+        if (pre[0x006A] == 0xFFu) sawCarry = 1;
+        pre[0x006F] = (uint8_t)(xs() % 0x14u);              /* player_car */
+        /* The refresh arm turns on the minutes byte of clock 0 and on the 32-frame mask. */
+        pre[0x06CC] = (t % 3 == 1) ? 0x00u : (uint8_t)(((xs() % 6u) << 4) | (xs() % 10u));
+        pre[0x06B4] = (uint8_t)(((xs() % 10u) << 4) | (xs() % 10u));
+        pre[0x06E4] = (uint8_t)(((xs() % 10u) << 4) | (xs() % 10u));
+        if (pre[0x06CC] == 0u || (((uint8_t)(pre[0x006A] + 1u)) & 0x1Fu) == 0u) sawRefresh = 1;
+        fail += diff_run("tick_race_timers", pre, c,
+                         tick_race_timers, tick_race_timers__t6502, LIVE_NONE, t, &printed);
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  result-only (A/X/Y dead at both callers)\n",
+           "tick_race_timers", cases, fail);
+
+    if (!sawReload)  { printf("VACUOUS: the divider never reloaded\n"); fail++; }
+    if (!(sawLightsOn && sawLightsOut)) {
+        printf("VACUOUS: only one starting-light state was reached\n"); fail++;
+    }
+    if (!sawCarry)   { printf("VACUOUS: loop_counter never carried\n"); fail++; }
+    if (!sawRefresh) { printf("VACUOUS: the speed refresh never ran\n"); fail++; }
+    return fail;
+}
+
 void add_frame_time(void);             void add_frame_time__t6502(void);
 
 /* ================================================================================================
@@ -9100,6 +9162,7 @@ int main(int argc, char** argv)
     fail += test_number_printers();
     fail += test_dashboard_readouts();
     fail += test_add_frame_time();
+    fail += test_tick_race_timers();
     fail += test_draw_starting_lights();
     fail += test_move_and_draw_cars();
     fail += test_draw_car_field();

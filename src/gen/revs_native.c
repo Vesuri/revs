@@ -14740,6 +14740,45 @@ FrameTimeExit add_frame_time_core(uint8_t clockIdx)
     return e;
 }
 
+/* $5052 tick_race_timers — TWIN #193.  The body's FIRST call of every frame, and four unrelated
+   pieces of frame bookkeeping:
+     1. time_tick_countdown steps down and reloads from time_tick_period + 1 at zero — the
+        divider add_frame_time's long frame is picked out of;
+     2. the player's own race clock advances, but ONLY once the starting lights have gone out
+        (start_light_state negative means the sequence is still running);
+     3. loop_counter (and its high byte) counts the frame;
+     4. the non-player drivers' speeds are re-seeded — every 32nd frame, and on every frame
+        before the minutes byte has ticked at all.
+   ⚠ Exit A/X/Y and the flags are DEAD: both callers ($1171 in finish_race, $1701 in
+   race_main_loop) reload immediately, so the fixture compares mem[] alone. */
+void tick_race_timers_core(void)
+{
+    /* $5052-$505D — the divider.  At zero it reloads with period + 1 and then decrements, so the
+       stored value cycles period..0; a period of $FF would wrap the reload to zero and the store
+       is skipped instead ($505A BEQ), leaving the cell alone. */
+    uint8_t divider = time_tick_countdown;
+    if (divider == 0u)
+        divider = (uint8_t)(time_tick_period + 1u);
+    if (divider != 0u)
+        time_tick_countdown = (uint8_t)(divider - 1u);
+
+    if ((start_light_state & 0x80u) == 0u) {          /* $505F/$5061 BMI — lights out? */
+        FrameTimeExit ft = add_frame_time_core(0x00u);   /* $5063/$5065 — clock 0, the player's */
+        /* ⚠ Its carry and overflow stay AMBIENT in P as far as $507A, whose callee still has a
+           6502 ABI that captures the whole flag byte as a stack residue.  So they are threaded
+           through cpu rather than dropped — the one place this twin touches it. */
+        cpu.C = ft.c; cpu.V = ft.v; cpu.D = 0;
+    }
+
+    if (++loop_counter == 0u)                         /* $5068 INC / $506A BNE */
+        loop_counter_hi++;                            /* $506C */
+
+    /* $506F-$5078 — the speed refresh: every 32nd frame, and unconditionally until the player's
+       minutes byte has ticked (which is how the field is seeded at the start of a session). */
+    if (mem[RACE_CLOCK_MID] == 0u || (loop_counter & 0x1Fu) == 0u)
+        seed_car_track_position();                    /* $507A — 6502 ABI: it reads its own cursor */
+}
+
 /* ===========================================================================
    ⭐⭐ relocated_poison — THE VALIDATION HARNESS'S GUARD ON THE MARSHAL SEAM
    ---------------------------------------------------------------------------
