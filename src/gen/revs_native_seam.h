@@ -504,6 +504,7 @@ MosRegs sound_osword_core(uint8_t oswordNum, uint8_t blockLow);
 MosRegs sound_envelope_core(uint8_t envBase, uint8_t savedX);
 void    full_track_scan_rebuild_core(uint8_t retreatDepth);
 void    reset_driving_variables_core(void);
+void    update_lap_timers_core(void);
 void    enter_mos_text_mode_core(void);
 void    irq1v_release_core(uint8_t ambientY);
 uint8_t sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX);

@@ -1298,6 +1298,21 @@ VALIDATE_FUNCS = {
     # to be told when the game releases IRQ1V (bbc_hw.cpp gates its vblank on those two bytes).
     0x4F23,
     0x4F39,
+    # ⭐ TWIN #177 — update_lap_timers ($0FFE), the session's clocks and the two message rows.
+    # It held the clear_race_clock and print_spaces shims, and reached position_to_bcd,
+    # print_bcd_digits_at, print_message_pair/upper_row, print_time_row21, show_lap_time_lines
+    # and show_lap_time_lower by register.
+    # ⭐ TWO BRANCHES ARE UNCONDITIONAL BY CALLEE and the twin says so instead of copying them:
+    # $1054's BEQ can never fall through (clear_race_clock's body opens with LDA #$00, so its
+    # exit Z is always 1) and neither can $1068's ($3D50 print_spaces ends the same way).  That
+    # collapses the practice arm's control flow to a plain if/else chain.
+    # ⚠ The $1017 PHP / $1022 PLP straddles two calls to keep ONE flag alive (the sign of
+    # race_lap_total - laps_done) across them, and it leaves the composed status byte as stack
+    # residue at $0100+S — the core returns it and the shim writes it, as engine_sound_update's
+    # PHA already does.  ⚠ Two callee EXIT CARRIES are genuine inputs: add_frame_time's ($17F9
+    # PLP restores the BCD seconds carry) decides $106A's BCC, and it is a SED routine, so the
+    # twin must not assume D=0 downstream of it.
+    0x0FFE,
 }
 
 # ⭐⭐ NATIVE DRIVERS — the same `__t6502` split as VALIDATE_FUNCS, but WITHOUT a fixture,

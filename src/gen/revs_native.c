@@ -13262,6 +13262,142 @@ void reset_driving_variables_core(void)
 }
 
 /* ---------------------------------------------------------------------------
+   $0FFE  update_lap_timers  (twin #177)
+   ---------------------------------------------------------------------------
+   The body's 8th call: the session clocks and the two message rows along the top of the screen.
+   The two session kinds share nothing but the entry test.
+
+   RACE (session_is_race bit 7 set):
+     On a credited lap, work out how many laps are LEFT — race_lap_total - laps_done, computed the
+     6502's way as ~laps_done + total + (laps_done >= 1) — print it as BCD at column $0C / row $21,
+     and when the count has gone NEGATIVE (the flag the PHP/PLP pair carries across both calls)
+     print token $35, the chequered-flag line.  Then, unless the session-end countdown is already
+     running, update the position readout.
+
+   PRACTICE / QUALIFYING:
+     Add a frame to clock 1 — the LAP timer, separate from the player's race clock — then run the
+     lap-time readout: a credited lap adds $21 to lap_time_show_timer and reprints the time
+     (except on the very first lap, where the $DF sentinel reset_driving_variables planted makes
+     the add land on 0), and otherwise the timer counts down one a frame and, on reaching 0,
+     restores the standard pair of lines.  Finally, the qualifying deadline: qualify_minutes
+     against race_clock_hi[0], token $29 the first time they match and token $2A plus a 60-frame
+     session_end_countdown once the clock passes it, both gated by qualify_msg_flags.
+
+   ⭐ TWO OF THE 6502'S BRANCHES CANNOT BE TAKEN THE OTHER WAY, so this reads as a plain if/else
+   chain where the transliteration has gotos: $1054's `BEQ $106F` follows clear_race_clock, whose
+   body opens `LDA #$00`, so its exit Z is always 1; $1068's follows print_spaces ($3D50), which
+   ends the same way.  Both are unconditional jumps written as conditional branches.
+   ⚠ THREE things here are genuinely 6502 and are modelled, not simplified:
+     - the $1017 PHP / $1022 PLP really occupies its stack slot.  print_bcd_digits does its own
+       PHA/PLA between the two, so leaving the byte as residue without moving S would let that
+       push overwrite it;
+     - add_frame_time is one of the eight SED sites and its exit CARRY is a genuine input — the
+       BCD seconds carry its own $17D6 PHP kept — and that carry is what decides $106A;
+     - print_message_pair, print_bcd_digits_at, position_to_bcd, print_time_row21,
+       show_lap_time_lines/lower and update_position_display are still transliterated, so they
+       are still reached by register.  Those arg_* calls are the callees' real ABI, not marshalling.
+
+   ⚠⚠ THE FIXTURE FOUND A LIVE BUG IN AN EXISTING SHIM, not in this twin: clear_race_clock's
+   6502-ABI shim set cpu.A alone, so the Z its `LDA #$00` really leaves was stale and $1054's
+   supposedly-unconditional BEQ fell THROUGH in the oracle, into the readout countdown, and
+   decremented lap_time_show_timer a second time.  The shim now publishes Z and N
+   (revs_native_seam.c).  A shim that drops a flag a transliterated caller branches on is the
+   same class of silent failure as an undeclared SMC site.
+
+   SABOTAGE (6 defects, 6 detected, all with distinct mismatch counts):
+     +$20 instead of +$21 on the readout timer (684); dropping the `limit != elapsed` early
+     return (225); the first milestone flag $40 -> $C0 (261); the PHP's N bit taken from bit 6
+     of the laps-left byte (17); the end countdown $3C -> $3B (354); consuming the whole lap
+     flag instead of shifting it (684).
+   ⭐ The N-bit defect SURVIVED the first fixture, and the explanation was "no change at all":
+   inside the real 0..19 lap domain the laps-left byte is either 0..$13 or $ED..$FF, so its bits
+   6 and 7 are always EQUAL.  A quarter of the cases now span 0..99 to decouple them.
+   --------------------------------------------------------------------------- */
+void update_lap_timers_core(void)
+{
+    if (session_is_race & 0x80u) {                    /* $0FFE/$1000 BPL — the practice arm */
+        if (lap_completed_flag & 0x80u) {             /* $1002 BIT / $1004 BPL */
+            lap_completed_flag = 0x00u;               /* $1008 — consume the credit */
+            hypot_min_lo       = 0x00u;               /* $100A — print_bcd_digits' digit mask */
+
+            /* $100C-$1015: laps left = race_lap_total - laps_done, as the 6502 spells it. */
+            uint8_t lapsDone = mem[CAR_LAP_COUNT + player_car];
+            unsigned sum = (unsigned)(uint8_t)(lapsDone ^ 0xFFu)
+                         + race_lap_total + (lapsDone >= 0x01u);
+            uint8_t lapsLeft = (uint8_t)sum;
+
+            /* $1017 PHP — only the SIGN is read back at $1022, but the byte has to really take
+               its stack slot: print_bcd_digits pushes below it. */
+            PUSH((uint8_t)(0x30u                                       /* bit5 = 1, B = 1 */
+                | ((lapsLeft & 0x80u) ? 0x80u : 0u)                    /* N */
+                | (adc_overflow((uint8_t)(lapsDone ^ 0xFFu), race_lap_total,
+                                (uint8_t)(lapsDone >= 0x01u)) ? 0x40u : 0u)  /* V */
+                | (cpu.D ? 0x08u : 0u) | (cpu.I ? 0x04u : 0u)          /* both ambient */
+                | ((lapsLeft == 0u) ? 0x02u : 0u)                      /* Z */
+                | ((sum > 0xFFu) ? 0x01u : 0u)));                      /* C */
+
+            arg_a(lapsLeft); position_to_bcd();       /* $1018 — 1-based BCD */
+            arg_x(0x0Cu); arg_y(0x21u);
+            print_bcd_digits_at();                    /* $101F — column $0C, row $21 */
+
+            uint8_t pulled; PULL(pulled);             /* $1022 PLP */
+            if (pulled & 0x80u) {                     /* $1023 BPL — negative: the laps ran out */
+                arg_x(0x35u); print_message_pair();   /* $1027 — the chequered-flag line */
+            }
+        }
+        if (session_end_countdown == 0u)              /* $102A/$102C BNE */
+            update_position_display();                /* $102E */
+        return;
+    }
+
+    /* ---- practice / qualifying ---- */
+    arg_x(0x01u);
+    add_frame_time();                                 /* $1034 — clock 1, the LAP timer */
+    uint8_t timeCarry = cpu.C;                        /* its $17F9 PLP restores the BCD carry */
+
+    /* $1037's BIT reads BOTH high bits of lap_completed_flag and the two branches that follow
+       pick one of three ways on: bit 6 runs the readout countdown, bit 7 alone books a new lap
+       time, and neither goes straight to the deadline check. */
+    uint8_t lapFlags = lap_completed_flag;
+    if (lapFlags & 0x40u) {                           /* $1039 BVS $1056 — the countdown */
+        if (lap_time_show_timer != 0u) {              /* $1056/$1059 BEQ */
+            if (--lap_time_show_timer == 0u) {        /* $105B DEC / $105E BNE */
+                show_lap_time_lines();                /* $1060 — restore both lines... */
+                arg_a(0x02u); print_spaces();         /* $1065 — ...and clear the two cells */
+                /* $1068's BEQ is unconditional (see the header). */
+            }
+        } else if (timeCarry) {                       /* $106A BCC — the clock's own carry */
+            show_lap_time_lower();                    /* $106C */
+        }
+    } else if (lapFlags & 0x80u) {                    /* $103B BPL — a lap was just credited */
+        lap_completed_flag >>= 1;                     /* $103D LSR — consume it, keeping bit 6 */
+        uint8_t t = (uint8_t)(lap_time_show_timer + 0x21u);   /* $103F-$1045 (C=0) */
+        lap_time_show_timer = t;
+        if (t != 0u) {                                /* $1048 BEQ — 0 is the first lap */
+            arg_a(0x26u); print_time_row21();         /* $104C — show the time just set */
+        }
+        clear_race_clock_core(0x01u);                 /* $1051 — restart the lap timer */
+        /* $1054's BEQ is unconditional (see the header): straight to the qualifying deadline. */
+    }
+
+    /* ---- the qualifying deadline ($106F-$1097) ---- */
+    uint8_t limit = qualify_minutes;
+    if (limit & 0x80u) return;                        /* $1072 BMI — no limit set */
+    uint8_t elapsed = mem[RACE_CLOCK_HI];             /* $1074 CMP race_clock_hi (clock 0) */
+    if (limit >= elapsed) {                           /* $1077 BCC $1089 */
+        if (limit != elapsed) return;                 /* $1079 BNE — not there yet */
+        if (qualify_msg_flags & 0x40u) return;        /* $107B BIT / $107D BVS — shown already */
+        qualify_msg_flags = 0x40u;                    /* $107F */
+        arg_x(0x29u); print_message_upper_row();      /* $1085 — the target-minute line */
+    } else {
+        if (qualify_msg_flags & 0x80u) return;        /* $1089/$108B BMI — already ended */
+        qualify_msg_flags     = 0xC0u;                /* $108F */
+        session_end_countdown = 0x3Cu;                /* $1091 — 60 frames and out */
+        arg_x(0x2Au); print_message_upper_row();      /* $1097 — the session-over line */
+    }
+}
+
+/* ---------------------------------------------------------------------------
    $28F2  stage_nearby_car  (twin #162)   — was FUN_28f2
    ---------------------------------------------------------------------------
    Called twice per frame by move_and_draw_cars to place one nearby car into the view.  On entry

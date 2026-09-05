@@ -632,6 +632,136 @@ static int test_draw_starting_lights(void)
 void irq1v_release(void);            void irq1v_release__t6502(void);
 void enter_mos_text_mode(void);      void enter_mos_text_mode__t6502(void);
 
+void update_lap_timers(void);
+void update_lap_timers__t6502(void);
+
+/* ---------------------------------------------------------------------------
+   $0FFE  update_lap_timers  (twin #177)
+   ---------------------------------------------------------------------------
+   Both session arms, and inside each the three lap-flag ways on and the four qualifying-deadline
+   outcomes.  Three things have to be authored rather than randomised or the routine never
+   returns / never reaches its own code:
+
+     - the TEXT SCRIPTS.  print_message_pair, print_message_upper_row and the readout printers all
+       end in text_script_interp, which is a byte-stream interpreter that RECURSES on a $C8+
+       command.  Random bytes there are an unbounded recursion, so every script index points at
+       one authored leaf that terminates ($FF) and carries no recurse command — the same
+       construction test_irq1v_release uses, for the same reason.
+     - player_car and car_behind must index inside the 20-driver arrays.
+     - race_lap_total and car_lap_count are pinned into 0..$13 so position_to_bcd sees the domain
+       it converts (it is a 0..19 -> BCD routine) rather than a random byte.
+
+   D = 0 on entry: race_main_loop's body runs this with decimal clear, and the two SED users it
+   reaches (add_frame_time, update_position_display) bracket their own SED/CLD
+   (docs/static-map.md §Decimal mode).  Exit is dead at the only caller, so LIVE_NONE — but the
+   $1017 PHP's stack residue and the hardware-write log are both in the diff.
+   --------------------------------------------------------------------------- */
+static int test_update_lap_timers(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+
+    const unsigned LEAF = 0x0D00u;          /* the one terminating script every index points at */
+    int cases = 4000 * scale;
+    int sawRace = 0, sawPractice = 0, sawCredit = 0, sawFlag = 0;
+    int sawCountdown = 0, sawNewLap = 0, sawQuiet = 0;
+    int sawEqual = 0, sawPast = 0, sawEarly = 0, sawNoLimit = 0;
+
+    register_fixture("update_lap_timers");
+    if (!want("update_lap_timers")) return 0;
+
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;                              /* see the header */
+        c.S = 0xFFu;
+        c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+        c.I = (uint8_t)(xs() & 1u);           /* ambient — the PHP composes it */
+        c.V = (uint8_t)(xs() & 1u);
+        c.C = (uint8_t)(xs() & 1u);
+
+        /* ---- the text scripts: every index at one authored terminating leaf ---- */
+        { unsigned k; for (k = 0; k <= 0x40u; k++) {
+            pre[0x3AD0u + k] = (uint8_t)(LEAF & 0xFFu);
+            pre[0x3B50u + k] = (uint8_t)(LEAF >> 8);
+        } }
+        { unsigned p = LEAF;
+          pre[p++] = (uint8_t)(0x41u + (xs() % 0x20u));   /* one printable, then stop */
+          pre[p++] = (uint8_t)(0xA1u + (xs() % 7u));
+          pre[p++] = 0xFFu; }
+        { int r; for (r = 0; r < 8; r++) pre[0x3B06 + r] = 0x58u; }   /* rows -> screen RAM */
+        pre[0x0064u] = (uint8_t)((xs() & 1u) ? 0x80u : 0x00u);        /* text_out_via_mos: both arms */
+        pre[0x62CDu] &= 0x3Fu;                                        /* vdu_char_row 0..$3F */
+        pre[0x62CCu] = (uint8_t)(xs() & 0x1Fu);                       /* vdu_char_column */
+        pre[0x0070u] = 0x00u; pre[0x0071u] = 0x7Eu;                   /* plot_ptr in screen RAM */
+
+        /* ---- the indices ---- */
+        pre[0x006Fu] = (uint8_t)(xs() % 0x14u);       /* player_car */
+        pre[0x004Du] = (uint8_t)(xs() % 0x14u);       /* car_behind */
+        pre[0x005Bu] = (uint8_t)(xs() % 0x14u);       /* car_ahead */
+        /* laps done / laps in the session.  Three quarters of the cases use the real 0..19
+           domain; the rest span 0..99, because inside 0..19 the laps-left byte is either
+           0..$13 or $ED..$FF and its bits 6 and 7 are then always EQUAL — which makes the
+           $1017 PHP's N bit unfalsifiable (a sabotage taking N from bit 6 passed until the
+           wider quarter was added). */
+        { unsigned span = (xs() % 4u) ? 0x14u : 0x64u;
+          pre[0x04B4u + pre[0x006Fu]] = (uint8_t)(xs() % span);   /* car_lap_count[player] */
+          pre[0x006Eu] = (uint8_t)(xs() % span); }                /* race_lap_total */
+
+        /* ---- the session arm and the lap flag ($1000, $1004, $1039/$103B) ---- */
+        if (xs() & 1u) { pre[0x006Cu] |= 0x80u; sawRace = 1; }
+        else           { pre[0x006Cu] &= 0x7Fu; sawPractice = 1; }
+        { uint32_t r = xs() % 3u;
+          pre[0x0066u] = (uint8_t)(r == 0u ? 0x40u : r == 1u ? 0x80u : 0x00u);
+          if (pre[0x006Cu] & 0x80u) { if (r == 1u) sawCredit = 1; else sawFlag = 1; }
+          else { if (r == 0u) sawCountdown = 1; else if (r == 1u) sawNewLap = 1; else sawQuiet = 1; } }
+        pre[0x000Fu] = (uint8_t)((xs() & 1u) ? 0x00u : (uint8_t)xs());  /* session_end_countdown */
+        pre[0x62EFu] = (uint8_t)((xs() % 4u) ? (uint8_t)xs() : 0x00u);  /* lap_time_show_timer */
+
+        /* ---- the qualifying deadline ($1072, $1077, $1079) ---- */
+        { uint8_t elapsed = (uint8_t)(xs() % 0x60u);
+          pre[0x06E4u] = elapsed;                        /* race_clock_hi[0], BCD minutes */
+          switch (xs() % 4u) {
+            case 0: pre[0x5F3Bu] = 0x80u; sawNoLimit = 1; break;             /* qualify_minutes */
+            case 1: pre[0x5F3Bu] = elapsed; sawEqual = 1; break;
+            case 2: pre[0x5F3Bu] = (uint8_t)(elapsed > 0u ? elapsed - 1u : 0u);
+                    if (elapsed > 0u) sawPast = 1; break;
+            default: pre[0x5F3Bu] = (uint8_t)((elapsed + 1u) & 0x7Fu); sawEarly = 1; break;
+          } }
+        pre[0x0065u] = (uint8_t)((xs() & 1u) ? 0x00u : (uint8_t)(xs() | 0x40u)); /* qualify_msg_flags */
+
+        /* ---- add_frame_time's own inputs: BCD clock 1 and the tick divider ---- */
+        pre[0x06B4u + 1] = (uint8_t)(xs() % 0x60u);
+        pre[0x06CCu + 1] = (uint8_t)(xs() % 0x60u);
+        pre[0x06E4u + 1] = (uint8_t)(xs() % 0x60u);
+        pre[0x5A19u] = (uint8_t)(1u + (xs() % 0x30u));   /* time_tick_period, non-zero */
+        pre[0x0046u] = (uint8_t)(xs() % 0x31u);          /* time_tick_countdown */
+
+        fail += diff_run("update_lap_timers", pre, c, update_lap_timers,
+                         update_lap_timers__t6502, LIVE_NONE, t, &printed);
+    }
+
+    if (!sawRace || !sawPractice || !sawCredit || !sawFlag
+        || !sawCountdown || !sawNewLap || !sawQuiet) {
+        printf("[VACUOUS] update_lap_timers: arms race %d practice %d credit %d flag %d "
+               "countdown %d newlap %d quiet %d\n", sawRace, sawPractice, sawCredit, sawFlag,
+               sawCountdown, sawNewLap, sawQuiet);
+        fail++;
+    }
+    if (!sawEqual || !sawPast || !sawEarly || !sawNoLimit) {
+        printf("[VACUOUS] update_lap_timers: deadline equal %d past %d early %d nolimit %d\n",
+               sawEqual, sawPast, sawEarly, sawNoLimit);
+        fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  result-only "
+           "(the $1017 PHP residue and the hw-write log are in the diff)\n",
+           "update_lap_timers", cases, fail);
+    return fail;
+}
+
 /* ---------------------------------------------------------------------------
    $4F23 irq1v_release / $4F39 enter_mos_text_mode — twin #175
    ---------------------------------------------------------------------------
@@ -8272,6 +8402,7 @@ int main(int argc, char** argv)
     fail += test_irq1v_band_schedule();
     fail += test_print_spaces();
     fail += test_draw_starting_lights();
+    fail += test_update_lap_timers();
     fail += test_irq1v_release();
     fail += test_update_horizon_band();
     fail += test_draw_corner_markers();

@@ -1044,7 +1044,13 @@ void car_order_swap(void)
 void clear_race_clock(void)
 {
     clear_race_clock_core(cpu.X);
-    cpu.A = 0x00u;                               /* LDA #0 residue (dead, reproduced for the diff) */
+    /* ⚠ The exit flags are NOT dead: $5011's own `LDA #$00` leaves Z = 1 / N = 0, and
+       update_lap_timers' $1054 `BEQ $106F` reads that Z as an UNCONDITIONAL jump.  A shim that
+       set A alone let the transliterated caller fall through into the readout countdown and
+       decrement lap_time_show_timer a second time (caught by twin #177's fixture, 2026-09-05). */
+    cpu.A = 0x00u;
+    cpu.Z = 1u;
+    cpu.N = 0u;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1066,6 +1072,11 @@ void engine_sound_update(void)
 /* $1805 — result-only: the routine takes no register argument (it reads session_is_race,
    zp_scratch_index and the circuit's own cells out of mem[]) and leaves nothing live. */
 void reset_driving_variables(void) { reset_driving_variables_core(); }
+
+/* $0FFE — result-only.  Both arms end in a callee whose exit ABI nobody reads (race_main_loop's
+   body ignores it entirely), and the core does its own PHP/PLP on the real stack pointer, so
+   there is nothing left for the shim to marshal in either direction. */
+void update_lap_timers(void) { update_lap_timers_core(); }
 
 /* $4F39 — result-only; the whole product is text_out_via_mos plus whatever the script paints. */
 void enter_mos_text_mode(void)
