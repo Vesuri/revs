@@ -341,6 +341,8 @@ void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1)
 unsigned car_gap_lo_core(uint8_t a, uint8_t b);
 GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn);
 StageNearbyCar stage_nearby_car_core(uint8_t gapA, unsigned gapFar, uint8_t slot);
+void    stage_nearby_car_at_core(uint8_t orderIndex);
+void    move_and_draw_cars_core(void);
 void check_car_pair_core(void);
 void car_order_swap_core(uint8_t xi, uint8_t yi, uint8_t* outX, uint8_t* outY);
 void clamp_near_edge_cursor_core(uint8_t candidate);
@@ -504,6 +506,7 @@ MosRegs sound_osword_core(uint8_t oswordNum, uint8_t blockLow);
 MosRegs sound_envelope_core(uint8_t envBase, uint8_t savedX);
 void    full_track_scan_rebuild_core(uint8_t retreatDepth);
 void    reset_driving_variables_core(void);
+void    reject_all_object_slots_core(void);
 void    update_lap_timers_core(void);
 void    enter_mos_text_mode_core(void);
 void    irq1v_release_core(uint8_t ambientY);

@@ -632,6 +632,163 @@ static int test_draw_starting_lights(void)
 void irq1v_release(void);            void irq1v_release__t6502(void);
 void enter_mos_text_mode(void);      void enter_mos_text_mode__t6502(void);
 
+void move_and_draw_cars(void);
+void move_and_draw_cars__t6502(void);
+
+/* ==========================================================================
+   $2637 move_and_draw_cars — THE OTHER-CAR PASS  (twin #179)
+   --------------------------------------------------------------------------
+   Result-only (LIVE_NONE): the body's next call reloads every register.
+
+   Three structural pins, all of them the game's own invariants rather than fixture convenience:
+
+     - car_order is a PERMUTATION of the twenty slots and player_car is one of them.  That is what
+       sort_cars_by_key produces, and it is what makes the routine terminate: find_player_neighbours
+       leaves the player's ring position in zp_scratch_index, and FUN_66df walks the ring forward
+       from there until it reaches car_behind.  With player_car missing from car_order the slot is
+       $FF and that walk never meets its stop.
+     - place_car_world_coords' per-circuit SMC seam ($298D) is steered to the unhandled-opcode
+       early return, exactly as test_stage_nearby_car does, so the six staging calls terminate fast.
+     - lap_length is $7FFF so car_gap_tail's near/wrapped split is decided by the distances the
+       fixture sets rather than by a random 16-bit modulus.
+
+   Coverage: both session arms (the race pass and the practice DELAY loop), both track directions
+   (which decides whether the ring is walked forward or backward), and a quarter of the cases with
+   the six staged cars pulled deliberately close to the reference car so the staging path — not
+   just the reject path — runs.
+   ========================================================================== */
+static int test_move_and_draw_cars(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("move_and_draw_cars");
+    if (!want("move_and_draw_cars")) return 0;
+
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+
+    int cases = 600 * scale;
+    int sawRace = 0, sawPractice = 0, sawFwd = 0, sawBack = 0, sawNear = 0, sawDraw = 0, sawDraw2 = 0;
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;                                    /* not a SED site (static-map §Decimal mode) */
+        c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+
+        /* car_order = a random permutation of the twenty slots; the player is one of them. */
+        { uint8_t ord[20]; int i;
+          for (i = 0; i < 20; i++) ord[i] = (uint8_t)i;
+          for (i = 19; i > 0; i--) { int j = (int)(xs() % (unsigned)(i + 1));
+                                     uint8_t tmp = ord[i]; ord[i] = ord[j]; ord[j] = tmp; }
+          for (i = 0; i < 20; i++) pre[0x013Cu + i] = ord[i]; }
+        pre[0x006Fu] = (uint8_t)(xs() % 20u);       /* player_car */
+
+        pre[0x0003u] = (uint8_t)(xs() % 20u);       /* zp_scratch_index: check_car_pair's start
+                                                       position, which it walks BACKWARD — the
+                                                       routine only overwrites it later, at $2652 */
+        /* place_car_world_coords' per-circuit SMC seam.  Most cases steer it to the
+           unhandled-opcode early return (as test_stage_nearby_car does) so the six staging calls
+           are cheap; a fifth run Silverstone's REAL instruction there ($29 $1F, AND #$1F) so the
+           staging path completes, clears car_flags_shape bit 7, and FUN_66df's draw queue is
+           actually reachable — without those, skipping the draw entirely is undetectable. */
+        if ((t % 5) == 1) { pre[0x298Du] = 0x29u; pre[0x298Eu] = 0x1Fu; sawDraw = 1; }
+        else                pre[0x298Du] = 0x00u;
+        /* check_car_pair's own per-circuit SMC seam ($2771): a CMP most of the time, the
+           trap-and-return opcode occasionally, exactly as test_check_car_pair sweeps it. */
+        pre[0x2771u] = (t % 7 == 0) ? 0x00u : 0xC9u;
+        pre[0x2772u] = (uint8_t)xs();
+        pre[0x59FCu] = 0xFFu; pre[0x59FDu] = 0x7Fu; /* lap_length = $7FFF */
+
+        if (xs() & 1u) { pre[0x0025u] |= 0x80u; sawFwd = 1; }   /* track_direction */
+        else           { pre[0x0025u] &= 0x7Fu; sawBack = 1; }
+
+        /* ⭐ Reaching the DRAW.  draw_track_object skips any slot whose car_flags_shape bit 7 is
+           set, and this routine clears that bit for exactly one slot — the car AHEAD's — before
+           re-rejecting everything else.  So a draw happens only when the six-position ring walk
+           does NOT visit the car ahead and that slot's object is in view range.  Set both up
+           deliberately in a fifth of the cases: walk BACKWARD (away from the car ahead), park the
+           view origin at 0 and put the slot's object coordinates inside the +/-$2000 window.
+           Without this, deleting the whole draw queue is invisible. */
+        if ((t % 5) == 2) {
+            int playerSlot = 0, i;
+            for (i = 0; i < 20; i++) if (pre[0x013Cu + i] == pre[0x006Fu]) playerSlot = i;
+            uint8_t aheadSlot = pre[0x013Cu + ((playerSlot + 1) % 20)];
+            pre[0x0025u] &= 0x7Fu;                  /* backward: the walk misses the car ahead */
+            pre[0x000Au] = 0x00u; pre[0x000Bu] = 0x00u;        /* view origin at 0 */
+            pre[0x0380u + aheadSlot] = (uint8_t)xs();          /* object x, lo */
+            pre[0x0398u + aheadSlot] = 0x00u;                  /*           hi -> in range */
+            pre[0x018Cu + aheadSlot] = (uint8_t)(xs() & 0x0Fu);/* bit7 clear, a real shape index */
+            sawDraw2 = 1;
+        }
+
+        if (xs() & 1u) { pre[0x5F3Bu] &= 0x7Fu; sawRace = 1; }  /* qualify_minutes: the race pass */
+        else           { pre[0x5F3Bu] |= 0x80u; sawPractice = 1; }
+
+        if ((t & 3) == 0) {
+            /* Pull every car within staging range of the reference car $17, so the six calls
+               take the staged path rather than all rejecting. */
+            uint16_t base = 0x4000u; int i;
+            pre[0x08D0u + 0x17u] = (uint8_t)base; pre[0x08E8u + 0x17u] = (uint8_t)(base >> 8);
+            for (i = 0; i < 20; i++) {
+                uint16_t d = (uint16_t)(base - (xs() % 0x20u));
+                pre[0x08D0u + i] = (uint8_t)d; pre[0x08E8u + i] = (uint8_t)(d >> 8);
+            }
+            sawNear = 1;
+        }
+
+        fail += diff_run("move_and_draw_cars", pre, c, move_and_draw_cars,
+                         move_and_draw_cars__t6502, LIVE_NONE, t, &printed);
+    }
+
+    if (!sawRace || !sawPractice || !sawFwd || !sawBack || !sawNear || !sawDraw || !sawDraw2) {
+        printf("[VACUOUS] move_and_draw_cars: race %d practice %d fwd %d back %d near %d draw %d inview %d\n",
+               sawRace, sawPractice, sawFwd, sawBack, sawNear, sawDraw, sawDraw2);
+        fail++;
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  result-only\n",
+           "move_and_draw_cars", cases, fail);
+    return fail;
+}
+
+void reject_all_object_slots(void);
+void reject_all_object_slots__t6502(void);
+
+/* ---------------------------------------------------------------------------
+   $261F  reject_all_object_slots  (twin #178)
+   ---------------------------------------------------------------------------
+   23 slots, no input but the flags bytes themselves, no register argument.  Random memory IS the
+   domain here, so the fixture only has to prove the extent: a defect that walks 22 slots or 24,
+   or that sets the wrong bit, changes mem[].  Exit is dead at both callers (LIVE_NONE), but the
+   A/X residue the shim publishes is still compared through the cpu diff.
+   --------------------------------------------------------------------------- */
+static int test_reject_all_object_slots(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+
+    register_fixture("reject_all_object_slots");
+    if (!want("reject_all_object_slots")) return 0;
+
+    for (t = 0; t < 400 * scale; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+        /* half the cases start from all-clear flags, so a wrong bit shows as plainly as a
+           wrong extent */
+        if (t & 1) { unsigned k; for (k = 0; k < 0x18u; k++) pre[0x018Cu + k] = 0x00u; }
+        fail += diff_run("reject_all_object_slots", pre, c, reject_all_object_slots,
+                         reject_all_object_slots__t6502, LIVE_NONE, t, &printed);
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  result-only\n",
+           "reject_all_object_slots", 400 * scale, fail);
+    return fail;
+}
+
 void update_lap_timers(void);
 void update_lap_timers__t6502(void);
 
@@ -8402,6 +8559,8 @@ int main(int argc, char** argv)
     fail += test_irq1v_band_schedule();
     fail += test_print_spaces();
     fail += test_draw_starting_lights();
+    fail += test_move_and_draw_cars();
+    fail += test_reject_all_object_slots();
     fail += test_update_lap_timers();
     fail += test_irq1v_release();
     fail += test_update_horizon_band();

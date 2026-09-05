@@ -1175,6 +1175,14 @@ VALIDATE_FUNCS = {
     # (D=1 for that one op only), the rest of the routine is D=0.  Exit ABI dead (both callers reload
     # X next) — LIVE_NONE, mem[]-only compare.  ⚠ Fixture pins the SMC opcode mem[$2771]=$C9.
     0x2692,
+    # ⭐ TWIN #178 — reject_all_object_slots ($261F): 23 stores, and the only reason it is a twin
+    # is that move_and_draw_cars (twin #179) calls it, so it needs a core with no 6502 ABI.
+    0x261F,
+    # ⭐ TWIN #179 — move_and_draw_cars ($2637), the body's other-car pass.  Holds the
+    # stage_nearby_car shim (twice) and reached check_car_pair / find_player_neighbours /
+    # car_index_inc/dec through theirs; all six calls are core-to-core now.  Its practice arm is
+    # a 1536-iteration DELAY loop, not an early RTS — see the twin's header.
+    0x2637,
     # $5204 plot_line_octant — TWIN #164.  The self-modifying octant LINE PLOTTER every straight
     # line in the engine goes through (dial_needle_angle / draw_dash_needle fall into it).  A DDA
     # walk: per octant it patches the major/minor step opcode into its own body ($3B86->$5220,

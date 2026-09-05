@@ -972,10 +972,12 @@ void car_gap_tail(void)
     cpu.A = e.a; cpu.N = e.n; cpu.C = e.c;                /* V, Z dead at every caller */
 }
 
-void stage_nearby_car(void)
+/* $28F2 — the whole routine as a function of the car_order POSITION it is handed, so a native
+   caller (move_and_draw_cars) reaches it without going through the register ABI. */
+void stage_nearby_car_at_core(uint8_t orderIndex)
 {
     view_origin_marshal_in();
-    uint8_t slot = mem[CAR_ORDER + cpu.X];                /* $28F2 LDA $013C,X */
+    uint8_t slot = mem[CAR_ORDER + orderIndex];           /* $28F2 LDA $013C,X */
     saved_slot_index = slot;                              /* $28F5 STA $45 */
     shared_counter_42 = slot;                             /* $28F7 STA $42 */
 
@@ -997,6 +999,12 @@ void stage_nearby_car(void)
     place_car_world_coords_core(slot, s.y);               /* $2922 TAY; $2937 — exit X dead */
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
 }
+
+void stage_nearby_car(void) { stage_nearby_car_at_core(cpu.X); }
+
+/* $2637 — result-only: no register argument (car_ahead, zp_scratch_index and track_direction all
+   come out of mem[]) and the body's next call reloads every register. */
+void move_and_draw_cars(void) { move_and_draw_cars_core(); }
 
 /* $2692 check_car_pair — twin #163.  No meaningful entry registers (it loads its start position
    from zp_scratch_index immediately) and every exit register/flag is dead (both callers reload X),
@@ -1072,6 +1080,16 @@ void engine_sound_update(void)
 /* $1805 — result-only: the routine takes no register argument (it reads session_is_race,
    zp_scratch_index and the circuit's own cells out of mem[]) and leaves nothing live. */
 void reset_driving_variables(void) { reset_driving_variables_core(); }
+
+/* $261F — result-only: no register argument, and both callers reload X immediately after.
+   A = the last slot's new flags byte and X = $FF are pure residue nobody reads. */
+void reject_all_object_slots(void)
+{
+    reject_all_object_slots_core();
+    cpu.A = (uint8_t)(mem[0x018Cu] | 0x80u);     /* the $2621-$2626 residue, for the diff */
+    cpu.X = 0xFFu;
+    cpu.N = 1u; cpu.Z = 0u;                      /* the ORA #$80 that ended the loop */
+}
 
 /* $0FFE — result-only.  Both arms end in a callee whose exit ABI nobody reads (race_main_loop's
    body ignores it entirely), and the core does its own PHP/PLP on the real stack pointer, so

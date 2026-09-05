@@ -12958,6 +12958,94 @@ static void lap_complete_core(uint8_t x)
 
 void lap_complete(void) { lap_complete_core(cpu.X); }   /* X = car index; nothing escapes */
 
+/* ---------------------------------------------------------------------------
+   TWIN #178 — $261F  reject_all_object_slots
+   ---------------------------------------------------------------------------
+   Mark every one of the 23 object slots as rejected by the projection (car_flags_shape bit 7),
+   so each frame's other-car pass starts with nothing visible and only the slots it accepts get
+   the bit cleared again.  Both callers reload X on the next instruction, so nothing is live out.
+   --------------------------------------------------------------------------- */
+void reject_all_object_slots_core(void)
+{
+    for (int slot = 0x16; slot >= 0; slot--)
+        mem[CAR_FLAGS_SHAPE + slot] |= 0x80u;
+}
+
+/* ---------------------------------------------------------------------------
+   TWIN #179 — $2637  move_and_draw_cars
+   ---------------------------------------------------------------------------
+   The body's other-car pass, and the whole of it in one page:
+
+     - PRACTICE (qualify_minutes negative) has no other cars, and the routine's early exit is not
+       a plain RTS: $262D-$2636 is a busy DELAY, six passes of 256 decrements of math_lo.  The BBC
+       needed it to keep the practice frame rate near the race one; it is reproduced because it
+       leaves math_lo at 0 and because dropping it would change the game's own pacing, not just
+       the port's.
+     - Otherwise: un-reject the car AHEAD's object slot, run the three motion passes (the per-car
+       update engine, the overtaking pass, then re-reject every slot) and re-find the player's
+       neighbours; walk SIX ring positions outwards from zp_scratch_index in the direction the
+       car is travelling, staging each for the view; draw the queue; and finally stage the car
+       ahead itself.
+
+   ⭐ The two scratch stores in the loop are NOT marshalling and are kept: nearby_car_countdown
+   ($62F4) is the loop counter saved across a call that clobbers Y, and staging_order_index ($1D)
+   is read downstream at $2A01, where write_object_slot's chain compares it against car_behind to
+   recognise the car immediately behind the player.  Naming them is what made that visible.
+
+   The exit registers are dead: the body's next call reloads everything (LIVE_NONE).
+
+   SABOTAGE (6 defects on the race pass, 6 detected): no un-reject of the car ahead (127); five
+   ring positions instead of six (288); the direction test inverted (288); staging_order_index not
+   published (288); the car ahead never staged (288); the draw queue skipped (3 cells including
+   the frame buffer).  The four 288s are saturation — every race case diverges — and they were
+   checked to be different builds by their first differing ADDRESS, not just their count.
+   ⭐ The draw-queue defect SURVIVED the first two fixtures, both times for a reachability reason
+   the fixture itself created: draw_track_object skips every slot whose car_flags_shape bit 7 is
+   set, and the only slot this routine clears is the car ahead's.  Reaching a real plot needs
+   Silverstone's actual SMC bytes at $298D, a BACKWARD ring walk (so the six staging calls do not
+   re-reject that slot) and the slot's object inside the view window — all three are now set up in
+   a fifth of the cases, and the defect diverges the frame buffer.
+   ⚠ TWO defects in the practice delay are provably invisible here and are NOT fixture gaps: five
+   passes instead of six, and replacing the loop with `math_lo = 0`.  The loop's only memory effect
+   IS math_lo reaching 0, so a mem[] differential cannot see its length by construction; the effect
+   is wall-clock, which no harness in this project measures.  Keep the count faithful by reading.
+   --------------------------------------------------------------------------- */
+void move_and_draw_cars_core(void)
+{
+    if (qualify_minutes & 0x80u) {                     /* $2637/$263A BMI $262D — practice */
+        uint8_t pass = 6u;                             /* $262D LDX #$06 */
+        for (;;) {
+            do { } while (--math_lo != 0u);            /* $262F DEC math_lo / $2631 BNE */
+            if (--pass == 0u) return;                  /* $2633 DEX / $2634 BNE $262F */
+        }
+    }
+
+    uint8_t aheadSlot = mem[CAR_ORDER + car_ahead];    /* $263C LDX car_ahead / $263E LDY */
+    mem[CAR_FLAGS_SHAPE + aheadSlot] &= 0x7Fu;         /* $2641-$2646 — the one slot NOT rejected */
+
+    FUN_27ed();                                        /* $2649 — the per-car update engine */
+    car_distance_marshal_in();                         /* check_car_pair walks every pair in
+                                                          car_order, so the whole distance array */
+    check_car_pair_core();                             /* $264C — overtaking / position changes */
+    reject_all_object_slots_core();                    /* $264F */
+    find_player_neighbours_core();                     /* $2652 */
+
+    /* $2655-$2674: six ring positions, walked in the direction of travel. */
+    uint8_t pos = zp_scratch_index;                    /* $2655 LDX zp_scratch_index */
+    for (int n = 5; n >= 0; n--) {                     /* $2657 LDY #$05 ... $2673 DEY / BPL */
+        pos = (track_direction & 0x80u)                /* $2659 BIT track_direction / $265B BPL */
+                  ? car_index_inc_core(pos)            /* $265D */
+                  : car_index_dec_core(pos);           /* $2663 */
+        nearby_car_countdown = (uint8_t)n;             /* $2666 STY — Y is clobbered below */
+        staging_order_index  = pos;                    /* $2669 STX — read at $2A01 */
+        stage_nearby_car_at_core(pos);                 /* $266B */
+        pos = staging_order_index;                     /* $266E LDX staging_order_index */
+    }
+
+    FUN_66df();                                        /* $2676 — draw the staged queue */
+    stage_nearby_car_at_core(car_ahead);               /* $2679/$267B — and the car ahead */
+}
+
 /* ----- TWIN #159: $27ED FUN_27ed — the per-frame per-car update engine -------------------------
  *
  * Called once per frame from the driving loop ($117E, $2649); both callers JSR $2692 immediately
@@ -13184,7 +13272,6 @@ void FUN_27ed(void)
    to pass because that arm never runs under STRAIGHT_TO_RACE, and it did.
    --------------------------------------------------------------------------- */
 #define CAR_SEGMENT_TBL_R   0x06E8u   /* car_segment — per-car index into the segment list */
-#define CAR_FLAGS_SHAPE     0x018Cu   /* car_flags_shape — per-car shape/behind flags */
 #define VIEW_ORIGIN_PAGE    0x6280u   /* view_origin_lo and the HUD scratch that follows it */
 #define MIRROR_SEG_STATE    0x6293u   /* mirror_seg_state — six wing-mirror segments */
 
