@@ -1207,6 +1207,9 @@ VALIDATE_FUNCS = {
     0x6673,
     0x667B,
     0x1B84,
+    # ⭐ TWIN #192 — $17C3 add_frame_time, the per-frame BCD clock tick (a sanctioned SED site)
+    # and clear_race_clock's last transliterated holder.
+    0x17C3,
     # $5204 plot_line_octant — TWIN #164.  The self-modifying octant LINE PLOTTER every straight
     # line in the engine goes through (dial_needle_angle / draw_dash_needle fall into it).  A DDA
     # walk: per octant it patches the major/minor step opcode into its own body ($3B86->$5220,

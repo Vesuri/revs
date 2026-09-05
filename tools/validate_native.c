@@ -732,6 +732,74 @@ static int test_number_printers(void)
     return fail;
 }
 
+void add_frame_time(void);             void add_frame_time__t6502(void);
+
+/* ================================================================================================
+ * TWIN #192 — $17C3 add_frame_time, the per-frame BCD clock tick, and clear_race_clock's last
+ * transliterated holder.  Result-plus-registers: the exit CARRY is a genuine output (the low
+ * byte's decimal add, carried past the two higher bytes by the routine's own PHP/PLP), and V is
+ * modelled here rather than dropped because it comes out of that same flag byte.
+ *
+ * The twin makes NO stack write — it returns the flags instead of pushing them — so the oracle's
+ * PHP residue at $0100+S is ignored, with S pinned by zero_cpu().
+ *
+ * SABOTAGE (each must FAIL, patch verified applied):
+ *   D20 the long frame's $18 -> $19                          -> 955
+ *   D21 the seconds wrap at BCD 60 dropped                   -> 69
+ *   D22 the minutes tick on the ADD's carry, not the CMP's   -> 70
+ *   D23 the overflow arm flags the wrong car ($45)           -> 1264
+ *   D24 exit C taken from the HIGH byte's add                -> 442
+ * ============================================================================================= */
+static int test_add_frame_time(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    int sawLongFrame = 0, sawShortFrame = 0, sawWrap = 0, sawOverflow = 0;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("add_frame_time");
+    if (!want("add_frame_time")) return 0;
+
+    unsigned mask = LIVE_A | LIVE_X | LIVE_Y | LIVE_N | LIVE_Z | LIVE_V | LIVE_C;
+    int cases = 4000 * scale;
+
+    set_ignore(g_ignore_pha_residue, 1);              /* the oracle's $17D6 PHP, at $01FF */
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;                                      /* the routine sets D itself */
+        c.A = (uint8_t)xs();
+        c.X = (uint8_t)(xs() % 0x15u);                /* a driver clock (or the $14 pseudo-slot) */
+        c.Y = (uint8_t)xs();
+        c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+        pre[0x006F] = (uint8_t)(xs() % 0x14u);        /* player_car — the overflow arm's index */
+        pre[0x5A19] = (uint8_t)(0x10u + (xs() % 0x20u));   /* time_tick_period */
+        /* One frame in a period is the long one, so force it often enough to matter. */
+        pre[0x0046] = (t % 3 == 0) ? pre[0x5A19] : (uint8_t)(xs() % 0x40u);
+        if (pre[0x0046] == pre[0x5A19]) sawLongFrame = 1; else sawShortFrame = 1;
+        /* Real BCD in the three clock bytes, with the seconds pushed to the wrap and the hours
+           pushed negative often enough to reach both arms. */
+        pre[0x06B4 + c.X] = (uint8_t)(((xs() % 10u) << 4) | (xs() % 10u));
+        pre[0x06CC + c.X] = (t % 5 == 0) ? 0x59u : (uint8_t)(((xs() % 6u) << 4) | (xs() % 10u));
+        pre[0x06E4 + c.X] = (t % 7 == 0) ? 0x99u : (uint8_t)(((xs() % 10u) << 4) | (xs() % 10u));
+        if (pre[0x06CC + c.X] == 0x59u && pre[0x06B4 + c.X] >= 0x91u) sawWrap = 1;
+        if (pre[0x06E4 + c.X] >= 0x80u) sawOverflow = 1;
+        fail += diff_run("add_frame_time", pre, c,
+                         add_frame_time, add_frame_time__t6502, mask, t, &printed);
+    }
+    set_ignore(0, 0);
+    printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+NZVC\n",
+           "add_frame_time", cases, fail);
+
+    if (!(sawLongFrame && sawShortFrame)) {
+        printf("VACUOUS: add_frame_time saw only one frame length\n"); fail++;
+    }
+    if (!sawWrap)     { printf("VACUOUS: the seconds never wrapped at 60\n"); fail++; }
+    if (!sawOverflow) { printf("VACUOUS: the clock never overflowed\n"); fail++; }
+    return fail;
+}
+
 void position_to_bcd(void);            void position_to_bcd__t6502(void);
 void print_time_row21(void);           void print_time_row21__t6502(void);
 void show_lap_time_lower(void);        void show_lap_time_lower__t6502(void);
@@ -9031,6 +9099,7 @@ int main(int argc, char** argv)
     fail += test_print_spaces();
     fail += test_number_printers();
     fail += test_dashboard_readouts();
+    fail += test_add_frame_time();
     fail += test_draw_starting_lights();
     fail += test_move_and_draw_cars();
     fail += test_draw_car_field();

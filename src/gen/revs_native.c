@@ -13562,9 +13562,12 @@ void update_lap_timers_core(void)
     }
 
     /* ---- practice / qualifying ---- */
-    arg_x(0x01u);
-    add_frame_time();                                 /* $1034 — clock 1, the LAP timer */
-    uint8_t timeCarry = cpu.C;                        /* its $17F9 PLP restores the BCD carry */
+    /* $1034 — clock 1, the LAP timer.  Its exit carry is the BCD seconds' own, and the Y it
+       leaves (the tick countdown) is the ambient OSWRCH row register every text call below
+       inherits — none of them changes it. */
+    FrameTimeExit ft = add_frame_time_core(0x01u);
+    uint8_t timeCarry = ft.c;
+    uint8_t textY     = ft.y;
 
     /* $1037's BIT reads BOTH high bits of lap_completed_flag and the two branches that follow
        pick one of three ways on: bit 6 runs the readout countdown, bit 7 alone books a new lap
@@ -13573,21 +13576,21 @@ void update_lap_timers_core(void)
     if (lapFlags & 0x40u) {                           /* $1039 BVS $1056 — the countdown */
         if (lap_time_show_timer != 0u) {              /* $1056/$1059 BEQ */
             if (--lap_time_show_timer == 0u) {        /* $105B DEC / $105E BNE */
-                show_lap_time_lines_core(cpu.Y);      /* $1060 — restore both lines... */
+                show_lap_time_lines_core(textY);      /* $1060 — restore both lines... */
                 /* $501D leaves X on the $15 pseudo-slot, which print_spaces carries into
                    OSWRCH as its ambient X. */
-                print_spaces_core(0x02u, 0x15u, cpu.Y);  /* $1065 — ...and clear the two cells */
+                print_spaces_core(0x02u, 0x15u, textY);  /* $1065 — ...and clear the two cells */
                 /* $1068's BEQ is unconditional (see the header). */
             }
         } else if (timeCarry) {                       /* $106A BCC — the clock's own carry */
-            show_lap_time_lower_core(cpu.Y);          /* $106C */
+            show_lap_time_lower_core(textY);          /* $106C */
         }
     } else if (lapFlags & 0x80u) {                    /* $103B BPL — a lap was just credited */
         lap_completed_flag >>= 1;                     /* $103D LSR — consume it, keeping bit 6 */
         uint8_t t = (uint8_t)(lap_time_show_timer + 0x21u);   /* $103F-$1045 (C=0) */
         lap_time_show_timer = t;
         if (t != 0u) {                                /* $1048 BEQ — 0 is the first lap */
-            print_time_row21_core(0x26u, cpu.Y);      /* $104C — show the time just set */
+            print_time_row21_core(0x26u, textY);      /* $104C — show the time just set */
         }
         clear_race_clock_core(0x01u);                 /* $1051 — restart the lap timer */
         /* $1054's BEQ is unconditional (see the header): straight to the qualifying deadline. */
@@ -14532,6 +14535,32 @@ TextExit print_lap_time_core(uint8_t fieldMask, uint8_t carIdx, uint8_t y)
  * simply calls the next: the 6502 saved a JSR, the C says what it means.
  * ================================================================================================ */
 
+/* ---- one NMOS 6502 DECIMAL add, flags and all -------------------------------------------------
+   The corrected byte is not where the flags come from: Z and V come from the BINARY sum and N
+   from the PRE-correction high nibble (cpu.h's ADC does exactly this).  Every BCD twin that
+   needs a decimal add's flags — not just its value — goes through here rather than bracketing
+   adc_value() with cpu.D, so the intermediates stay visible.  ⚠ Only the eight sanctioned SED
+   sites may use it (docs/static-map.md §Decimal mode). */
+typedef struct { uint8_t val, carry, n, z, v; } BcdAdd;
+
+static BcdAdd bcd_add(uint8_t a, uint8_t m, unsigned carryIn)
+{
+    unsigned c   = carryIn ? 1u : 0u;
+    unsigned bin = (unsigned)a + m + c;
+    unsigned lo  = (unsigned)(a & 0x0Fu) + (m & 0x0Fu) + c;
+    unsigned hi  = (unsigned)(a >> 4) + (m >> 4);
+    BcdAdd   r;
+
+    if (lo > 9u) { lo += 6u; hi += 1u; }             /* the low nibble carried */
+    r.z = (uint8_t)((bin & 0xFFu) == 0u);
+    r.n = (uint8_t)((hi & 0x08u) ? 1u : 0u);
+    r.v = (uint8_t)((((unsigned)~(a ^ m) & (a ^ (unsigned)bin)) >> 7) & 1u);
+    if (hi > 9u) hi += 6u;                           /* ...and so did the high one */
+    r.carry = (uint8_t)(hi > 0x0Fu);
+    r.val   = (uint8_t)(((hi << 4) | (lo & 0x0Fu)) & 0xFFu);
+    return r;
+}
+
 /* $65C8 position_to_bcd — TWIN #185.  A 0-based index (0..$13) to the 1-based BCD number shown on
    the dashboard.  The CMP leaves C set for A >= 10, which turns the ADC #$05 into +6 and carries
    the tens digit into the high nibble; a DECIMAL ADC #$01 then adds the 1.  One of the eight
@@ -14544,24 +14573,13 @@ BcdExit position_to_bcd_core(uint8_t index)
     BcdExit  e;
 
     if (c) {                                         /* $65CA BCC — a two-digit position */
-        Adc t = adc_value(a, 0x05u, c);              /* $65CC ADC #$05, C set: +6 */
-        a = t.val; c = t.carry;
+        unsigned t = (unsigned)a + 0x05u + 1u;       /* $65CC ADC #$05 with C set: +6, binary */
+        a = (uint8_t)t; c = (t > 0xFFu);
     }
 
-    /* $65CE SED / $65CF ADC #$01 / $65D1 CLD — the 1-based bump, in decimal.  Written out rather
-       than bracketed with cpu.D because the NMOS 6502's decimal ADC takes Z from the BINARY sum
-       and N from the PRE-correction high nibble, so both flags have to come from the intermediate
-       quantities anyway (cpu.h's ADC does the same). */
-    {
-        unsigned lo  = (unsigned)(a & 0x0Fu) + 1u + c;
-        unsigned hi  = (unsigned)(a >> 4);
-        unsigned bin = (unsigned)a + 1u + c;
-        if (lo > 9u) { lo += 6u; hi += 1u; }
-        e.z = (uint8_t)(((bin & 0xFFu)) == 0u);
-        e.n = (uint8_t)((hi & 0x08u) ? 1u : 0u);
-        if (hi > 9u) hi += 6u;
-        c = (hi > 0x0Fu);
-        a = (uint8_t)(((hi << 4) | (lo & 0x0Fu)) & 0xFFu);
+    {   /* $65CE SED / $65CF ADC #$01 / $65D1 CLD — the 1-based bump, in decimal */
+        BcdAdd t = bcd_add(a, 0x01u, c);
+        a = t.val; c = t.carry; e.n = t.n; e.z = t.z;
     }
 
     e.a = a;
@@ -14640,10 +14658,8 @@ PosDisplayExit update_position_display_core(uint8_t entryX, uint8_t entryY)
     uint8_t a = delta, x = entryX, y = entryY;
 
     if (delta != 0u) {                               /* $1B86 BEQ — nothing gained or lost */
-        Adc t;
-        cpu.D = 1;                                   /* $1B88 SED — sanctioned BCD site */
-        t = adc_value(delta, race_position_bcd, 0u); /* $1B89 CLC / $1B8A ADC */
-        cpu.D = 0;                                   /* $1B8E CLD */
+        /* $1B88 SED / $1B89 CLC / $1B8A ADC / $1B8E CLD — sanctioned BCD site */
+        BcdAdd t = bcd_add(delta, race_position_bcd, 0u);
         race_position_bcd = t.val;                   /* $1B8C */
         a = t.val;
 
@@ -14670,6 +14686,57 @@ PosDisplayExit update_position_display_core(uint8_t entryX, uint8_t entryY)
     e.a = a; e.x = x; e.y = y;
     e.n = 0u;
     e.z = (uint8_t)(position_swap_flag == 0u);
+    return e;
+}
+
+/* $17C3 add_frame_time — TWIN #192.  ONE main-loop frame of elapsed time onto driver
+   `clockIdx`'s 3-byte BCD clock.  Nine hundredths a frame, except on the single frame where
+   time_tick_countdown has come back round to time_tick_period, which gets $18 — with the
+   Silverstone period of $18 that averages 9.36 hundredths, the BBC's own ~10.7 frames a second.
+   The seconds byte wraps at BCD 60 rather than at 100, and a NEGATIVE hours byte means the clock
+   ran off the end: the clock is reset and the player's lap-start high byte is flagged $80.
+
+   One of the eight sanctioned SED sites (docs/static-map.md §Decimal mode).
+
+   ⚠ The exit CARRY is a real output — update_lap_timers' $106A BCC reads it — and it is the
+   carry of the LOW byte's add, not of the last one: the $17D6 PHP / $17F9 PLP pair carries that
+   whole flag byte across the two higher bytes.  The twin returns it directly instead, so it
+   makes no stack write of its own; the fixture ignores the oracle's residue cell. */
+FrameTimeExit add_frame_time_core(uint8_t clockIdx)
+{
+    FrameTimeExit e;
+    BcdAdd        lo, mid, hi;
+
+    /* $17C4-$17CD — the frame's tick, with the one long frame that keeps the average exact.
+       Y is the countdown the comparison loaded, and it stays there (the callers do not read it,
+       but the shim must still hand it back). */
+    uint8_t countdown = time_tick_countdown;         /* $17C6 LDY */
+    uint8_t tick = (countdown == time_tick_period) ? 0x18u : 0x09u;
+
+    lo = bcd_add(tick, mem[RACE_CLOCK_LO + clockIdx], 0u);      /* $17CF CLC / $17D0 ADC */
+    mem[RACE_CLOCK_LO + clockIdx] = lo.val;                     /* $17D3 */
+
+    mid = bcd_add(mem[RACE_CLOCK_MID + clockIdx], 0x00u, lo.carry);   /* $17D7/$17DA */
+    /* ⚠ The MINUTES tick on the CMP's carry, not on the add's: $17DC CMP #$60 leaves C set for
+       60 seconds or more, $17E0 zeroes the byte, and that same C is the carry into $17E8.  A
+       seconds byte that wrapped 99->00 in BCD therefore does NOT advance the minutes — it cannot
+       happen from a legal clock, but the twin reproduces the 6502's arithmetic, not the intent. */
+    { int wrapped = (mid.val >= 0x60u);                          /* $17DC / $17DE BCC */
+      if (wrapped) mid.val = 0x00u;                              /* $17E0 */
+      mem[RACE_CLOCK_MID + clockIdx] = mid.val;                  /* $17E2 */
+      hi = bcd_add(mem[RACE_CLOCK_HI + clockIdx], 0x00u, (unsigned)wrapped); }  /* $17E5/$17E8 */
+    mem[RACE_CLOCK_HI + clockIdx] = hi.val;                     /* $17EA */
+
+    e.a = hi.val;
+    e.y = countdown;                                            /* $17C6's LDY, still there */
+    if (hi.n) {                                                 /* $17ED BPL — the clock overflowed */
+        clear_race_clock_core(clockIdx);                        /* $17EF */
+        mem[CAR_LAP_START_HI + player_car] = 0x80u;             /* $17F2-$17F6 */
+        e.a = 0x80u;
+        e.y = player_car;
+    }
+
+    e.n = lo.n; e.z = lo.z; e.v = lo.v; e.c = lo.carry;          /* $17F9 PLP — the low add's */
     return e;
 }
 

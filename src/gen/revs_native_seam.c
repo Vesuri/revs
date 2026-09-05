@@ -654,6 +654,15 @@ void print_driver_name_at_row(void)
 }
 
 /* $1B84 update_position_display — A/X/Y all ambient on entry and all path-dependent on exit. */
+/* $17C3 add_frame_time — X selects the clock; the flags out are the low byte's decimal add. */
+void add_frame_time(void)
+{
+    FrameTimeExit e = add_frame_time_core(cpu.X);
+    cpu.A = e.a; cpu.Y = e.y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
+    cpu.D = 0;                                       /* $17FA CLD */
+}
+
 void update_position_display(void)
 {
     PosDisplayExit e = update_position_display_core(cpu.X, cpu.Y);
