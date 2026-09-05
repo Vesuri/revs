@@ -570,6 +570,168 @@ static int test_print_spaces(void)
     return fail;
 }
 
+
+/* ⭐ TWINS #181-#184 — the number/name printers ($3250, $37D0, $37D6, $7B9C).  One fixture body
+   serves all four: the differences are which entry registers mean what, and the field mask at
+   $78.  Both plotter arms are exercised (text_out_via_mos bit 7), and, exactly as print_spaces
+   needs, char_row_addr_hi is pinned to a screen page — a random one aims the bitmap emitter's
+   plot_ptr at zero page, where it would clobber $72/$73 and $78/$79, and those are RELOCATED, so
+   the twin (which reads its native copy) and the oracle (which re-reads the cell) would diverge on
+   a fixture artefact the real routine cannot produce (the dashboard cursor is always live). */
+void emit_driver_name(void);        void emit_driver_name__t6502(void);
+void print_bcd_digits(void);        void print_bcd_digits__t6502(void);
+void print_bcd_digits_at(void);     void print_bcd_digits_at__t6502(void);
+void print_lap_time(void);          void print_lap_time__t6502(void);
+
+/* The one cell the PHA/PLA residue can land on, with S pinned below. */
+static const uint16_t g_ignore_pha_residue[1] = { 0x01FF };
+
+static void printer_common_pre(uint8_t* pre)
+{
+    int r;
+    for (r = 0; r < 8; r++) pre[0x3B06 + r] = 0x58;   /* char_row_addr_hi -> screen page */
+    pre[0x62CD] &= 0x3Fu;                             /* vdu_char_row: a valid row index */
+    if (xs() & 1) pre[0x0064] |= 0x80;                /* text_out_via_mos: pick the plotter arm */
+    else          pre[0x0064] &= 0x7F;
+}
+
+static int test_number_printers(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    int sawOswrch = 0, sawBitmap = 0, sawPad = 0, sawSpace = 0, sawTruncated = 0, sawHundredths = 0;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("emit_driver_name");
+    register_fixture("print_bcd_digits");
+    register_fixture("print_bcd_digits_at");
+    register_fixture("print_lap_time");
+
+    /* A/X/Y and N/Z/C are all compared.  V is dropped across the cluster: $5092's BIT sets it from
+       bit 6 of the flag byte on both arms and no caller reads it (vdu_char_def's own fixture drops
+       it for the same reason). */
+    unsigned mask = LIVE_A | LIVE_X | LIVE_Y | LIVE_N | LIVE_Z | LIVE_C;
+
+    int cases = 2000 * scale;
+
+    /* ---- $3250 emit_driver_name ---------------------------------------------------------- */
+    if (want("emit_driver_name")) {
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            printer_common_pre(pre);
+            c.D = 0;
+            /* The pointer always comes from driver_name_address, which selects a row of the name
+               table at $40xx; half the cases point anywhere at all, because the twelve reads are
+               reads and a wild pointer must still match byte for byte. */
+            if (xs() & 1) { c.A = (uint8_t)(0x30u + (xs() % 0xC0u)); c.Y = 0x40u; }
+            else          { c.A = (uint8_t)xs();                     c.Y = (uint8_t)xs(); }
+            c.X = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            if (pre[0x0064] & 0x80) sawOswrch = 1; else sawBitmap = 1;
+            fail += diff_run("emit_driver_name", pre, c,
+                             emit_driver_name, emit_driver_name__t6502, mask, t, &printed);
+        }
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+NZC (V dropped)\n",
+               "emit_driver_name", cases, fail);
+    }
+
+    /* ---- $37D6 print_bcd_digits and $37D0's cursor entry --------------------------------- */
+    {
+        int stage;
+        for (stage = 0; stage < 2; stage++) {
+            const char* label = stage ? "print_bcd_digits_at" : "print_bcd_digits";
+            int sub = 0;
+            if (!want(label)) continue;
+            /* The transliterated $37D6 pushes A and pulls it back; the twin does not, and must
+               not — the oracle pushes at $0100+S with the CALLER's S (a C call models no return
+               address), so that residue address is already not the 6502's.  S is pinned so the
+               one cell it can touch is known, and ignored.  $37D0's oracle falls through into the
+               NATIVE $37D6, so it pushes nothing and needs no ignore. */
+            if (!stage) set_ignore(g_ignore_pha_residue, 1);
+            for (t = 0; t < cases; t++) {
+                Cpu6502 c = zero_cpu();                 /* S = $FF -> residue at $01FF */
+                fill_random(pre);
+                printer_common_pre(pre);
+                c.D = 0;
+                c.A = (uint8_t)xs();                    /* the BCD byte */
+                if (xs() % 3 == 0)                      /* ...often with a zero high nibble */
+                    c.A = (uint8_t)(c.A & 0x0Fu);
+                if (xs() % 7 == 0)                      /* ...and sometimes a zero low one */
+                    c.A = (uint8_t)(c.A & 0xF0u);
+                c.X = (uint8_t)xs();
+                c.Y = (uint8_t)xs();
+                if (stage) {                            /* $37D0 places the cursor from X/Y */
+                    c.X = (uint8_t)(xs() % 0x28u);
+                    c.Y = (uint8_t)(xs() % 0x08u);
+                }
+                c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+                /* The field mask decides all three of the routine's shapes: bit 7 set = still
+                   inside the field (pad glyph), clear = past it (a space), and bit 6 set means
+                   the second shift carries out and the low nibble is never printed. */
+                pre[0x0078] = (uint8_t)xs();
+                if (t % 4 == 0) pre[0x0078] |= 0x80u;
+                if (t % 4 == 1) pre[0x0078] &= 0x3Fu;
+                if (t % 4 == 2) pre[0x0078] |= 0x40u;
+                if (pre[0x0078] & 0x40u) sawTruncated = 1;
+                if ((c.A >> 4) == 0) { if (pre[0x0078] & 0x80u) sawPad = 1; else sawSpace = 1; }
+                sub += diff_run(label, pre, c,
+                                stage ? print_bcd_digits_at : print_bcd_digits,
+                                stage ? print_bcd_digits_at__t6502 : print_bcd_digits__t6502,
+                                mask, t, &printed);
+            }
+            set_ignore(0, 0);
+            fail += sub;
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+NZC (V dropped)\n",
+                   label, cases, sub);
+        }
+    }
+
+    /* ---- $7B9C print_lap_time ------------------------------------------------------------ */
+    if (want("print_lap_time")) {
+        int sub = 0;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            printer_common_pre(pre);
+            c.D = 0;
+            c.A = (uint8_t)xs();                        /* the field mask, chosen by the caller */
+            if (t % 3 == 0) c.A &= 0x7Fu;               /* bit 7 clear -> the hundredths print */
+            if (t % 3 == 1) c.A |= 0x80u;
+            c.X = (uint8_t)(xs() % 0x14u);              /* a real car index */
+            if (t % 32 == 0) c.X = (uint8_t)xs();       /* ...and one out of range, to pin the read */
+            c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            /* Real BCD in the three time bytes most of the time, arbitrary bytes otherwise. */
+            if (xs() & 1) {
+                pre[0x06D0 + c.X] = (uint8_t)(((xs() % 6u) << 4) | (xs() % 10u));
+                pre[0x06B8 + c.X] = (uint8_t)(((xs() % 6u) << 4) | (xs() % 10u));
+                pre[0x06A0 + c.X] = (uint8_t)(((xs() % 10u) << 4) | (xs() % 10u));
+            }
+            if ((c.A & 0x0Cu) != 0x0Cu) sawHundredths = 1;
+            sub += diff_run("print_lap_time", pre, c,
+                            print_lap_time, print_lap_time__t6502, mask, t, &printed);
+        }
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+NZC (V dropped)\n",
+               "print_lap_time", cases, sub);
+    }
+
+    /* A fixture that never reached both plotter arms, both leading-zero glyphs, the truncated
+       field or the hundredths would pass vacuously. */
+    if (want("emit_driver_name") && !(sawOswrch && sawBitmap)) {
+        printf("VACUOUS: printers reached only one plotter arm\n"); fail++;
+    }
+    if (want("print_bcd_digits") && !(sawPad && sawSpace && sawTruncated)) {
+        printf("VACUOUS: the field mask did not drive all three shapes\n"); fail++;
+    }
+    if (want("print_lap_time") && !sawHundredths) {
+        printf("VACUOUS: print_lap_time never printed the hundredths\n"); fail++;
+    }
+    return fail;
+}
+
 void draw_starting_lights(void);
 void draw_starting_lights__t6502(void);
 
@@ -8675,6 +8837,7 @@ int main(int argc, char** argv)
     (void)test_contract;   /* the generic leaf fixture; twin #1 needs a steered one */
     fail += test_irq1v_band_schedule();
     fail += test_print_spaces();
+    fail += test_number_printers();
     fail += test_draw_starting_lights();
     fail += test_move_and_draw_cars();
     fail += test_draw_car_field();

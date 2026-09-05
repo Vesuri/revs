@@ -10430,14 +10430,13 @@ uint8_t vdu_char_emit_core(void)
    Exit A = the space byte ($20); the caller's exit N/Z come from the final
    DEC to zero (N=0, Z=1) — three callers branch on that Z.
    --------------------------------------------------------------------------- */
+static TextChar vdu_emit_char(uint8_t ch, uint8_t x, uint8_t y);   /* the printer cluster */
+
 uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y)
 {
     uint8_t c = count;
     do {
-        if (text_out_via_mos & 0x80u)          /* $5092 BIT/BMI — OSWRCH path */
-            mos_oswrch(0x20u, x, y);
-        else
-            vdu_char_def_core(0x20u);          /* the MODE-5 bitmap emitter */
+        vdu_emit_char(0x20u, x, y);            /* $5092's dispatch — OSWRCH or the bitmap emitter */
     } while (--c != 0);                         /* $3D59 DEC math_lo / BNE — post-tested */
     /* The 6502 counted down in math_lo ($74), so it exits holding 0; the counter is a local
        now, but keep that scratch residue until math_lo is relocated wholesale (the reader
@@ -13084,21 +13083,6 @@ void move_and_draw_cars_core(void)
    result, not the previous draw's.  (Threading C instead is a real divergence: it shows up as a
    flag-only mismatch on about one case in five.)  X threads through neither, because $2B0A
    reloads it from saved_slot_index — the cursor this routine just stored.
-
-   SABOTAGE (7 defects, 6 detected).  Detected by a diverging FRAME BUFFER: the car behind drawn
-   during the ring walk instead of last ($3E43); two object slots instead of three ($3BC0); the
-   ring walked backward ($33C0).  Detected as an exit-flag divergence: the slot loop's carry
-   threaded from the previous draw instead of from $66F5's CPX (flag C, ~1 case in 5).  Detected
-   as a NON-TERMINATING walk, which is a divergence the harness cannot print but the clock can:
-   dropping `saved_slot_index = pos` leaves the cursor pinned to whatever $45 already held, so
-   the ring never reaches its stop; drawing the POSITION instead of car_order[position] does the
-   same by way of a different slot's exit.
-   ⚠ ONE SURVIVES AND IT IS NOT A FIXTURE GAP: threading the RING loop's carry from the previous
-   draw (rather than from $66E9's CPX) changes nothing, because entryC reaches mem[] on no path —
-   draw_track_object keeps it only on the empty-slot arm, and $66E9 overwrites it before the next
-   draw either way.  That is explanation three, "no change at all", and the SIBLING case proves
-   the distinction rather than assuming it: the same defect in the SLOT loop, where no CPX
-   intervenes before the final draw, IS caught.
    --------------------------------------------------------------------------- */
 SlotExit draw_car_field_core(uint8_t entryY, uint8_t entryV, uint8_t entryC)
 {
@@ -14335,6 +14319,194 @@ void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
 
     plot_ptr_v  = dst;                     /* ⭐ the walk's residue, as the relocated word */
     plot_ptr_marshal_out();
+}
+
+
+/* ================================================================================================
+ * ⭐ TWINS #181-#184 — THE NUMBER AND NAME PRINTERS
+ * ------------------------------------------------------------------------------------------------
+ * Four small routines that were the last transliterated holders of the vdu_char_def shim.  They
+ * share two things:
+ *
+ *   1. ONE DISPATCH.  Every character goes through $5092's choice between OSWRCH and the MODE-5
+ *      bitmap emitter (`vdu_emit_char` below), which is the same open-coded pair print_spaces_core
+ *      already used — factored out here so all five callers agree.
+ *
+ *   2. ONE SHIFT REGISTER.  $0078 is `hypot_min_lo` when the ground-plane maths owns it; in the
+ *      printers it is a FIELD MASK, shifted left once per digit position.  It decides three
+ *      things: what a suppressed leading zero looks like (bit 7 set -> the pad glyph $4F, clear ->
+ *      a space), and whether the next digit is printed at all (the bit shifted OUT).  That is how
+ *      one routine paints one-digit, two-digit and blank-padded numbers.  The arithmetic-window
+ *      addresses carry one global symbol each (docs/rename.md), so the tenancy is a file-local
+ *      name here, and the shift keeps the relocated `hypot_min_v` word in step with the cell.
+ *
+ * SABOTAGE (ten defects; each must FAIL, and the patch was checked to have APPLIED — the first
+ * attempt at D4 was a no-op perl substitution that "passed"):
+ *   D1  eleven characters instead of twelve            -> 2000/2000 cases diverge
+ *   D2  the name pointer's two lanes swapped           -> 1988
+ *   D3  the leading-zero pad/space choice inverted     ->  375
+ *   D4  one mask shift per call instead of two         -> 1991
+ *   D5  a zero low nibble printed as '0', not the pad  ->  213
+ *   D6  the truncated exit returns the char, not the byte -> 994
+ *   D7  the minutes read from the hundredths' table    -> 1921
+ *   D8  the field mask not seeded from A               -> 1962
+ *   D9  print_bcd_digits_at's cursor stores swapped    -> 1943
+ *   D10 the (plot_ptr2),Y read forced to mem[] with no hardware arm -> 9 (this was a REAL bug the
+ *       fixture caught: a wild pointer can resolve into $FCxx-$FExx, and the 6502 read there)
+ * ⚠ D3/D4/D5/D6 read ZERO through print_bcd_digits_at's and print_lap_time's own fixtures, and
+ * that is structural, not a gap: their transliterated oracles CALL the native $37D6 shim (the
+ * transpiler emits the plain name), so oracle and twin share one printer and no defect inside it
+ * can diverge.  Those two fixtures gate exactly what their own bodies do — the cursor stores (D9)
+ * and the time-lane/mask plumbing (D7/D8) — which is what they measure at full strength.
+ *
+ * ⚠ print_bcd_digits' PHA/PLA leaves a stack residue byte that the twin does NOT write, and it
+ * must not: the transliterated oracle pushes at $0100+S with the CALLER's S, because a C call
+ * models no return address, so the oracle's own residue address is already not the 6502's.  Both
+ * fixtures pin S and ignore that one cell (docs/validation-harness.md's i=5 precedent).
+ * ================================================================================================ */
+
+/* $0078's OTHER TENANCY — see (2) above. */
+#define print_field_mask   hypot_min_lo
+
+/* $5092 BIT/BMI — the character dispatch.  On the OSWRCH arm A is preserved and the BIT's flags
+   stand (N = bit 7 of the flag byte, set or we would not be on this arm; Z = A & flag); on the
+   bitmap arm both come from the character the emitter hands back.  Neither arm touches C. */
+static TextChar vdu_emit_char(uint8_t ch, uint8_t x, uint8_t y)
+{
+    TextChar e;
+    if (text_out_via_mos & 0x80u) {
+        mos_oswrch(ch, x, y);                       /* $50F6 — X/Y ambient */
+        e.a = ch;
+        e.n = 1u;
+        e.z = (uint8_t)((ch & text_out_via_mos) == 0u);
+    } else {
+        e.a = vdu_char_def_core(ch);
+        e.n = (uint8_t)((e.a >> 7) & 1u);
+        e.z = (uint8_t)(e.a == 0u);
+    }
+    return e;
+}
+
+/* ASL $78 — advance the field mask one position and return the bit that fell off the top (the
+   6502 carry).  The cell is the low lane of a relocated word, so both copies move together. */
+static uint8_t field_mask_shift(void)
+{
+    uint8_t out = (uint8_t)(print_field_mask >> 7);
+    print_field_mask = (uint8_t)(print_field_mask << 1);
+    hypot_min_v = (uint16_t)((hypot_min_v & 0xFF00u) | print_field_mask);
+    return out;
+}
+
+/* Seed the field mask (a caller hands it over in A) — same two copies. */
+static void field_mask_set(uint8_t mask)
+{
+    print_field_mask = mask;
+    hypot_min_v = (uint16_t)((hypot_min_v & 0xFF00u) | mask);
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * $3250 emit_driver_name — TWIN #181.  Prints the twelve characters of a driver's name from the
+ * table entry driver_name_address ($40xx) just selected, which arrives as a pointer in Y:A and is
+ * parked in plot_ptr2.  Y is both the character index and the ambient OSWRCH register, so it walks
+ * 0..11 in both roles.  Exit A is the last character; the exit flags are the terminating
+ * CPY #$0C's, i.e. fixed (N=0, Z=1, C=1).
+ * ------------------------------------------------------------------------------------------------ */
+uint8_t emit_driver_name_core(uint8_t ptrLo, uint8_t ptrHi, uint8_t x)
+{
+    uint8_t last = 0u;
+    unsigned i;
+
+    plot_ptr2_v = (uint16_t)(ptrLo | ((unsigned)ptrHi << 8));   /* $3250/$3252 */
+    plot_ptr2_marshal_out();
+
+    /* One range test for the whole name, not twelve: the pointer cannot move under the loop
+       (only an emitter blitting into zero page could reach $72/$73, and the dashboard cursor the
+       real routine runs under is always a screen address).  Names live at $40xx, so this is the
+       RAM arm every time in the game — the hardware arm exists because (plot_ptr2),Y could
+       resolve there and the twin must read what the 6502 read. */
+    { const unsigned base = plot_ptr2_v;
+      const int      ram  = pointer_is_ram(base);
+      for (i = 0u; i < 12u; i++) {                              /* $325C CPY #$0C */
+          uint8_t ch = seam_read((base + i) & 0xFFFFu, ram);    /* $3256 LDA (plot_ptr2),Y */
+          last = vdu_emit_char(ch, x, (uint8_t)i).a;
+      }
+    }
+    return last;
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * $37D6 print_bcd_digits — TWIN #182.  Prints one packed-BCD byte as up to two characters: each
+ * nibble +$30, high nibble first.  A zero high nibble is not printed as '0' — the field mask
+ * decides whether it becomes the pad glyph or a space — and if the mask's second shift carries out,
+ * the low nibble is dropped too.  Exit A/N/Z are the last character's, unless the field ended after
+ * one digit, in which case A is the BCD byte the PLA restored and N/Z are the shift's.
+ * ------------------------------------------------------------------------------------------------ */
+TextExit print_bcd_digits_core(uint8_t bcd, uint8_t x, uint8_t y)
+{
+    uint8_t  glyph = (uint8_t)(bcd >> 4);                    /* $37D7-$37DA four LSRs */
+    TextChar t;
+    TextExit e;
+
+    if (glyph == 0u)                                         /* $37DB BNE — a real digit prints */
+        glyph = (print_field_mask & 0x80u) ? 0x1Fu           /* $37DF BIT/BMI — still inside the field */
+                                          : 0xF0u;           /* $37E3 — past it: $F0+$30 is a space */
+
+    t = vdu_emit_char((uint8_t)(glyph + 0x30u), x, y);        /* $37E5 CLC/ADC #$30, $37E8 */
+    e.a = t.a; e.n = t.n; e.z = t.z; e.c = 0u;
+
+    field_mask_shift();                                      /* $37EB — first digit position spent */
+    if (field_mask_shift()) {                                /* $37EE/$37F0 BCS — field full */
+        e.a = bcd;                                           /* $37ED PLA restored the byte */
+        e.n = (uint8_t)((print_field_mask >> 7) & 1u);        /* ...and the ASL set these */
+        e.z = (uint8_t)(print_field_mask == 0u);
+        e.c = 1u;
+        return e;
+    }
+
+    glyph = (uint8_t)(bcd & 0x0Fu);                          /* $37F2 AND #$0F */
+    if (glyph == 0u) glyph = 0x1Fu;                          /* $37F4/$37F6 — a zero pads */
+    t = vdu_emit_char((uint8_t)(glyph + 0x30u), x, y);        /* $37F8 CLC/ADC #$30, $37FB */
+    e.a = t.a; e.n = t.n; e.z = t.z; e.c = 0u;                /* $30+$1F cannot carry */
+    return e;
+}
+
+/* $37D0 print_bcd_digits_at — TWIN #183.  The same printer with a cursor: X/Y place the character
+   cell and then serve as the ambient OSWRCH registers, and it falls straight through. */
+TextExit print_bcd_digits_at_core(uint8_t bcd, uint8_t column, uint8_t row)
+{
+    vdu_char_column = column;                                /* $37D0 */
+    vdu_char_row    = row;                                   /* $37D3 */
+    return print_bcd_digits_core(bcd, column, row);
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * $7B9C print_lap_time — TWIN #184.  Prints car X's three-byte BCD time as mm:ss[.hh].  A on entry
+ * IS the field mask, so the caller chooses the layout: after the seconds the mask is shifted once
+ * more and a carry out drops the '.'  and the hundredths.  X is the car index AND the ambient
+ * OSWRCH register, so this is a general time printer, not one readout.
+ * ------------------------------------------------------------------------------------------------ */
+TextExit print_lap_time_core(uint8_t fieldMask, uint8_t carIdx, uint8_t y)
+{
+    TextExit e;
+    TextChar t;
+
+    field_mask_set(fieldMask);                                        /* $7B9C */
+
+    e = print_bcd_digits_core(mem[CAR_BEST_LAP_HI + carIdx], carIdx, y);   /* $7B9E — minutes */
+    t = vdu_emit_char(0x3Au, carIdx, y);                                   /* $7BA4 — ':' */
+    e.a = t.a; e.n = t.n; e.z = t.z;
+    e = print_bcd_digits_core(mem[CAR_BEST_LAP_MID + carIdx], carIdx, y);  /* $7BA9 — seconds */
+
+    if (field_mask_shift()) {                                         /* $7BAF ASL $78 / $7BB1 BCS */
+        e.n = (uint8_t)((print_field_mask >> 7) & 1u);
+        e.z = (uint8_t)(print_field_mask == 0u);
+        e.c = 1u;
+        return e;
+    }
+
+    t = vdu_emit_char(0x2Eu, carIdx, y);                              /* $7BB3 — '.' */
+    e.a = t.a; e.n = t.n; e.z = t.z;
+    return print_bcd_digits_core(mem[CAR_BEST_LAP_LO + carIdx], carIdx, y); /* $7BB8 — hundredths */
 }
 
 /* ===========================================================================

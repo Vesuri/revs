@@ -1187,6 +1187,16 @@ VALIDATE_FUNCS = {
     # (move_and_draw_cars calls it once a frame).  It was the last transliterated holder of the
     # draw_track_object shim; its own $2ACB entry (draw_car_at_order) is two lines, inlined.
     0x66DF,
+    # ⭐ TWINS #181-#184 — the NUMBER/NAME PRINTERS, the vdu_char_def shim's last three holders:
+    #   $3250 emit_driver_name   — twelve characters through the (plot_ptr2),Y pointer
+    #   $37D0 print_bcd_digits_at / $37D6 print_bcd_digits — one BCD byte as up to two digits
+    #   $7B9C print_lap_time     — a car's 3-byte BCD time as mm:ss[.hh]
+    # All four share one dispatch (OSWRCH vs the MODE-5 bitmap emitter) and one shift register,
+    # hypot_min_lo's DIGIT-MASK tenancy at $78.
+    0x3250,
+    0x37D0,
+    0x37D6,
+    0x7B9C,
     # $5204 plot_line_octant — TWIN #164.  The self-modifying octant LINE PLOTTER every straight
     # line in the engine goes through (dial_needle_angle / draw_dash_needle fall into it).  A DDA
     # walk: per octant it patches the major/minor step opcode into its own body ($3B86->$5220,

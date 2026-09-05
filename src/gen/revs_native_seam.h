@@ -543,6 +543,14 @@ typedef struct { uint8_t a, c, z, n, mathlo, writeMathlo; } ParseNum;
 void parse_two_digit_ascii_core(uint8_t char0, uint8_t char1, ParseNum *out);
 uint8_t seed_car_track_position_core(uint8_t x, uint8_t entropy, uint8_t *mathlo_out);
 int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out);
+/* The number/name printers ($3250/$37D0/$37D6/$7B9C).  TextChar is what the shared $5092
+   dispatch returns; TextExit adds the carry the BCD printer's field-width shift produces. */
+typedef struct { uint8_t a, n, z; }    TextChar;
+typedef struct { uint8_t a, n, z, c; } TextExit;
+uint8_t  emit_driver_name_core(uint8_t ptrLo, uint8_t ptrHi, uint8_t x);
+TextExit print_bcd_digits_core(uint8_t bcd, uint8_t x, uint8_t y);
+TextExit print_bcd_digits_at_core(uint8_t bcd, uint8_t column, uint8_t row);
+TextExit print_lap_time_core(uint8_t fieldMask, uint8_t carIdx, uint8_t y);
 uint8_t vdu_char_def_core(uint8_t ch);
 uint8_t vdu_char_emit_core(void);
 uint8_t vdu_char_wide_core(uint8_t ch);

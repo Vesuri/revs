@@ -603,6 +603,44 @@ void vdu_char_def(void)
     cpu.A = rch; cpu.N = (rch >> 7) & 1u; cpu.Z = (rch == 0);
 }
 
+/* $3250 emit_driver_name — the pointer arrives in Y:A, X is the ambient OSWRCH register.  Y comes
+   back as the loop's terminator ($0C) and the exit flags are that CPY's, so they are constants. */
+void emit_driver_name(void)
+{
+    uint8_t x = cpu.X;
+    uint8_t ch = emit_driver_name_core(cpu.A, cpu.Y, x);
+    cpu.A = ch; cpu.X = x; cpu.Y = 0x0Cu;
+    cpu.N = 0; cpu.Z = 1; cpu.C = 1;             /* $325C CPY #$0C with Y = $0C */
+}
+
+/* $37D6 print_bcd_digits — A is the BCD byte, X/Y are ambient.  ⚠ The PHA/PLA residue is NOT
+   replayed: see the twin's header (the oracle's own residue address is not the 6502's). */
+void print_bcd_digits(void)
+{
+    uint8_t x = cpu.X, y = cpu.Y;
+    TextExit e = print_bcd_digits_core(cpu.A, x, y);
+    cpu.A = e.a; cpu.X = x; cpu.Y = y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;
+}
+
+/* $37D0 print_bcd_digits_at — X/Y place the cursor, then fall through into the printer. */
+void print_bcd_digits_at(void)
+{
+    uint8_t x = cpu.X, y = cpu.Y;
+    TextExit e = print_bcd_digits_at_core(cpu.A, x, y);
+    cpu.A = e.a; cpu.X = x; cpu.Y = y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;
+}
+
+/* $7B9C print_lap_time — A is the field mask, X the car index (and the ambient OSWRCH X). */
+void print_lap_time(void)
+{
+    uint8_t x = cpu.X, y = cpu.Y;
+    TextExit e = print_lap_time_core(cpu.A, x, y);
+    cpu.A = e.a; cpu.X = x; cpu.Y = y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;
+}
+
 void print_spaces(void)
 {
     /* $3D50 — A is the count, X/Y are the ambient OSWRCH registers.  The loop leaves them
