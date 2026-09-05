@@ -11314,7 +11314,7 @@ void apply_steering_assist(void)        { car_angle_marshal_in(); apply_steering
    helpers around them.  D = 0 on every one of these paths (docs/static-map.md
    §Decimal mode: none of the eight SED sites is here), so the ADC/SBC byte
    arithmetic is plain binary and the twins spell it as such.  Where a value
-   crosses into a shared tail (car_gap_tail — now native twin #137 — FUN_1c0b, FUN_11be) or a
+   crosses into a shared tail (car_gap_tail — now native twin #137 — FUN_1c0b, retire_car) or a
    native leaf with a live-flag input (abs8, abs16_math), the seam reconstructs
    exactly the cpu inputs that leaf reads — nothing more.
    =========================================================================== */
@@ -11546,15 +11546,15 @@ void tick_wheel_spin(void)
    ---------------------------------------------------------------------------
    Flags car X as spun out.  For a real car slot (X < $14) it folds the low seven bits
    of car_state_2 into car_flags_0 with the spin marker $45, stamps $91 into the page-1
-   status array, then runs the shared crash tail (FUN_11be).  Scenery slots do nothing.
+   status array, then runs the shared crash tail (retire_car).  Scenery slots do nothing.
    --------------------------------------------------------------------------- */
 void spin_car_out(void)
 {
     uint8_t x = cpu.X;
-    if (x >= 0x14) { FUN_11cd(); return; }        /* not a car slot: shared no-op tail */
+    if (x >= 0x14) { car_tail_rts(); return; }     /* not a car slot: shared no-op tail */
     mem[CAR_FLAGS_0 + x] = (uint8_t)((mem[CAR_STATE_2 + x] & 0x7F) | 0x45);
     mem[CAR_RACE_FLAGS + x] = 0x91;
-    FUN_11be();                                   /* shared crash tail, indexed by X */
+    retire_car();                                 /* shared crash tail, indexed by X */
 }
 
 /* ---------------------------------------------------------------------------
@@ -13969,7 +13969,8 @@ void sort_cars_by_key(void)
    ===========================================================================
 
    WHAT IT DOES.  Called once per painted frame from race_main_loop's tail ($1791)
-   and from finish_race, always with Y=$0B.  Returns at once unless SHIFT is held
+   ($1791, Y=$0B) and from finish_race's run-out ($1176, Y=$00 — the whole table).
+   Returns at once unless SHIFT is held
    (negative INKEY -1, X=$FF); then scans shift_key_tbl[$0B..0] for the first held
    key and applies that key's shift_key_action_tbl byte — low nibble selects a cell
    in the state_flags block ($05F4+n), high nibble (with the low nibble masked off)
@@ -13992,10 +13993,13 @@ void sort_cars_by_key(void)
 #define SHIFT_KEY_TBL         0x3DE2u   /* shift_key_tbl[0..$0B]: negative-INKEY codes to probe */
 #define SHIFT_KEY_ACTION_TBL  0x39D4u   /* shift_key_action_tbl: low nibble = state_flags offset, high nibble = value */
 
-void shift_key_commands(void)
+/* The only input is the scan index in Y; the cpu writes inside are the MOS boundary's own
+   registers, not marshalling (see the tail's comment). */
+void shift_key_commands(void) { shift_key_commands_core(cpu.Y); }
+
+void shift_key_commands_core(uint8_t entryY)
 {
-    uint8_t entryY = cpu.Y;                       /* $0EE5 — the caller's Y ($0B) */
-    math_lo = entryY;                             /* STA $74 — Y saved in the $74 slot */
+    math_lo = entryY;                             /* $0EE5 — the caller's Y ($0B) */                             /* STA $74 — Y saved in the $74 slot */
 
     if (!kbd_test_key_core(0xFFu)) {              /* $0EE7 LDX #$FF / $0EE9 / $0EEC BNE */
         return;                                   /* SHIFT not held -> nothing to do */
@@ -14777,6 +14781,22 @@ void tick_race_timers_core(void)
        minutes byte has ticked (which is how the field is seeded at the start of a session). */
     if (mem[RACE_CLOCK_MID] == 0u || (loop_counter & 0x1Fu) == 0u)
         seed_car_track_position();                    /* $507A — 6502 ABI: it reads its own cursor */
+}
+
+/* $11BE retire_car — TWIN #194.  Car X is out of the running: $C0 into car_flags_shape[X] (bit 6
+   is the FINISHED bit finish_race polls; the store also wipes the low SHAPE nibble, which no
+   longer matters for a car that is out), and if the car has NOT covered the full distance —
+   race_lap_total is still >= its lap count — $C0 into car_lap_start_hi[X] as well, the same
+   negative marker add_frame_time writes for a clock that ran off the end: no valid time.
+   Returns the CMP's carry, which is the only flag either caller could read. */
+uint8_t retire_car_core(uint8_t x)
+{
+    uint8_t notFinished = (uint8_t)(race_lap_total >= mem[CAR_LAP_COUNT + x]);  /* $11BE/$11C0 */
+
+    mem[CAR_FLAGS_SHAPE + x] = 0xC0u;                /* $11C3 LDA #$C0 / $11C5 */
+    if (notFinished)                                 /* $11C8 BCC — it finished, leave the time */
+        mem[CAR_LAP_START_HI + x] = 0xC0u;           /* $11CA */
+    return notFinished;
 }
 
 /* ===========================================================================

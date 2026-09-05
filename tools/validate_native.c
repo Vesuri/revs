@@ -732,6 +732,56 @@ static int test_number_printers(void)
     return fail;
 }
 
+void retire_car(void);                 void retire_car__t6502(void);
+
+/* ================================================================================================
+ * TWIN #194 — $11BE retire_car.  X selects the car; the exit flags are the lap comparison's carry
+ * with A/N/Z fixed by the $C0 it stores.  Both car tables are randomised, and one case in 32
+ * hands it an out-of-range index so the two reads stay pinned to the same cells as the oracle's.
+ *
+ * SABOTAGE (each must FAIL, patch verified applied):
+ *   D30 the finished flag is $80, not $C0                  -> 4000
+ *   D31 the lap comparison reads car_lap_start_hi          -> 2361
+ *   D32 the no-time marker is written unconditionally      -> 1513
+ *   D33 the comparison is inverted (> instead of >=)       ->  900
+ * ============================================================================================= */
+static int test_retire_car(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    int sawFinished = 0, sawRunning = 0, sawEqual = 0;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("retire_car");
+    if (!want("retire_car")) return 0;
+
+    int cases = 4000 * scale;
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;
+        c.A = (uint8_t)xs(); c.Y = (uint8_t)xs();
+        c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+        c.X = (uint8_t)(xs() % 0x14u);                       /* a real car slot */
+        if (t % 32 == 0) c.X = (uint8_t)xs();                /* ...and one out of range */
+        pre[0x006E] = (uint8_t)(xs() % 0x20u);               /* race_lap_total */
+        pre[0x04B4 + c.X] = (uint8_t)(xs() % 0x20u);         /* car_lap_count[X] */
+        if (t % 5 == 0) pre[0x04B4 + c.X] = pre[0x006E];     /* ...and the exact boundary */
+        if (pre[0x006E] == pre[0x04B4 + c.X]) sawEqual = 1;
+        if (pre[0x006E] >= pre[0x04B4 + c.X]) sawRunning = 1; else sawFinished = 1;
+        fail += diff_run("retire_car", pre, c, retire_car, retire_car__t6502,
+                         LIVE_A | LIVE_X | LIVE_Y | LIVE_N | LIVE_Z | LIVE_V | LIVE_C,
+                         t, &printed);
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+NZVC\n", "retire_car", cases, fail);
+
+    if (!sawFinished) { printf("VACUOUS: no car ever reached the finish\n"); fail++; }
+    if (!sawRunning)  { printf("VACUOUS: no car was ever short of the distance\n"); fail++; }
+    if (!sawEqual)    { printf("VACUOUS: the comparison's boundary was never hit\n"); fail++; }
+    return fail;
+}
+
 void tick_race_timers(void);           void tick_race_timers__t6502(void);
 
 /* ================================================================================================
@@ -9163,6 +9213,7 @@ int main(int argc, char** argv)
     fail += test_dashboard_readouts();
     fail += test_add_frame_time();
     fail += test_tick_race_timers();
+    fail += test_retire_car();
     fail += test_draw_starting_lights();
     fail += test_move_and_draw_cars();
     fail += test_draw_car_field();

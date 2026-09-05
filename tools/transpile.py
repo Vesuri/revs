@@ -1213,6 +1213,8 @@ VALIDATE_FUNCS = {
     # ⭐ TWIN #193 — $5052 tick_race_timers, the body's FIRST call every frame: the tick
     # countdown, the player's clock, the frame counter and the 32-frame speed refresh.
     0x5052,
+    # ⭐ TWIN #194 — $11BE retire_car, the run-out's per-car retirement.
+    0x11BE,
     # $5204 plot_line_octant — TWIN #164.  The self-modifying octant LINE PLOTTER every straight
     # line in the engine goes through (dial_needle_angle / draw_dash_needle fall into it).  A DDA
     # walk: per octant it patches the major/minor step opcode into its own body ($3B86->$5220,

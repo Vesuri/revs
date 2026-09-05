@@ -661,3 +661,21 @@ written. ⚠ It reads the marshal calls **textually**, because within a translat
 inline one and leave no relocation to find. It found a real gap in committed code — the `race_main_loop`
 driver imported one base of five, and its core calls several `_core` functions directly, crossing no
 shim. **A native DRIVER is the one shim whose closure is the whole engine; audit it explicitly.**
+
+### EIGHTEENTH — a fixture for a routine that DRIVES has to pin every ring the callees walk
+
+`retire_car` ($11BE) fixtured in one pass.  Its caller `finish_race` ($1163) did not: the first run
+never returned.  `sample` on the stuck process put it inside `check_car_pair`, whose walk closes only
+when `car_index_inc(pos)` comes back around to `zp_scratch_index` ($03) — with `fill_random` in the
+memory that index is usually **above 20**, so the ring never meets it and the routine spins forever.
+`check_car_pair`'s own fixture pins `zp_scratch_index` and the twenty `car_order` entries to real
+slots; a fixture for anything that *calls* it must do the same.  Generalised: **randomised memory is
+only safe for a leaf.  The moment a fixture drives a subsystem, every loop bound its callees read is
+an input, and an unpinned one is a hang, not a mismatch.**
+
+⚠ The related trap is a **coverage limit that reads as a passing sabotage.**  `finish_race`'s race arm
+loops while any driver is still running, so a fixture can only present cases that end on their first
+pass — and a defect that makes the field walk stop early ends there too, with identical `mem[]`.  Such
+a defect is not "no change at all" (the THIRD explanation in §FIFTEENTH); it is a real hole, and the
+honest move is to write the hole into the fixture's header and gate the loop machinery some other way
+(there, a practice case two frames short of the bound, which loops exactly once).

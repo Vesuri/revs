@@ -654,6 +654,15 @@ void print_driver_name_at_row(void)
 }
 
 /* $1B84 update_position_display — A/X/Y all ambient on entry and all path-dependent on exit. */
+/* $11BE retire_car — X selects the car.  Exit A is the $C0 it stored, so N/Z are that byte's
+   and C is the lap comparison's. */
+void retire_car(void)
+{
+    uint8_t notFinished = retire_car_core(cpu.X);
+    cpu.A = 0xC0u;
+    cpu.N = 1u; cpu.Z = 0u; cpu.C = notFinished;
+}
+
 /* $5052 tick_race_timers — no inputs and no live outputs; see the twin's header. */
 void tick_race_timers(void)
 {
