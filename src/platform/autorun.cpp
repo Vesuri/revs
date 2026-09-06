@@ -1,5 +1,8 @@
 /* AutoRun — see autorun.h for why a scripted keyboard is a measurement prerequisite. */
 #include "autorun.h"
+#if !defined(REVS_PLATFORM_AMIGA)
+#include <cstdlib>
+#endif
 
 /* The game's own state, for AutoStep::until — a scripted key that waits on a PROBABILISTIC
    effect (the starter) can only be released by looking at what the game did with it. */
@@ -24,6 +27,8 @@ enum : uint8_t {
     KEY_TAB   = 0x9F,   /* -97  gear down  ($16A5) */
     KEY_Q     = 0xEF,   /* -17  gear up    ($16AC) */
     KEY_T     = 0xDC,   /* -36  starter motor ($497A) — BBC 'T' */
+    KEY_L     = 0xA9,   /* -87  steer LEFT  ($15B5) — BBC 'L' */
+    KEY_SEMI  = 0xA8,   /* -88  steer RIGHT ($15C0) — BBC ';/+' */
 };
 
 /* A step holds ONE key and ends when EITHER limit is reached; 0 disables that limit.
@@ -226,6 +231,15 @@ bool AutoRun::keyDown(uint8_t x)
 {
     m_polls++;
 
+    if (!m_steerRead) {
+        m_steerRead = true;
+#if !defined(REVS_PLATFORM_AMIGA)
+        const char* e = std::getenv("REVS_HOLD_STEER");
+        if (e && (e[0] == 'l' || e[0] == 'L')) m_holdSteer = KEY_L;
+        else if (e && (e[0] == 'r' || e[0] == 'R')) m_holdSteer = KEY_SEMI;
+#endif
+    }
+
     if (m_step >= S_SCRIPT_LEN) {
         /* Steady state, past the end of the script.  A measurement build holds the
            throttle and nothing else — the car under power on the circuit, with the same
@@ -248,6 +262,11 @@ bool AutoRun::keyDown(uint8_t x)
            workload stays comparable to a run that never crashed. */
         if (mem[MEM_engine_running] == 0) return x == KEY_T;
         if (mem[MEM_gear_index] < 2)      return x == KEY_Q;
+        /* ⭐ REVS_HOLD_STEER=l|r additionally holds a STEERING key, which is the only way to
+           exercise the steering chain on a host build (the host has no keyboard, and the mouse
+           axis belongs to the Amiga).  Without it a host run can only ever show a car going
+           straight, so "does the wheel move at all" is unanswerable off-target. */
+        if (m_holdSteer && x == m_holdSteer) return true;
         return x == KEY_S;
     }
 

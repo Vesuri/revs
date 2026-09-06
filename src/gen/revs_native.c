@@ -1792,7 +1792,14 @@ void race_main_loop_core(RestartDepth depth)
 
             PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers();
             PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  draw_starting_lights();
-            PROBE_PHASE(3);  PROBE_SHAPE_PHASE(3);  read_driving_controls_core();
+            /* ⚠⚠ the SHIM, and this one is LOAD-BEARING: the core writes the new steer angle
+               into car_angle_16[2] and only the shim's car_angle_marshal_out() publishes it to
+               mem[$62A2/$62A5].  Calling the core here dropped that publish, so phase 4's
+               compute_car_angles shim marshalled the STALE mem[] back in and the frame's
+               steering was discarded — the wheel would not turn at all, on either input path.
+               ⚠ Invisible to every gate we have: validate compares the shim, and `determinism`
+               and `-drive` never STEER, so the stale value equals the fresh one in both. */
+            PROBE_PHASE(3);  PROBE_SHAPE_PHASE(3);  read_driving_controls();
             /* the SHIM, for the same reason as phase 5: it publishes model_accum_entry_v back
                into mem[$38/$39].  ⚠ Unlike phase 5's, THIS call site is gated by nothing — $38/$39
                read 00/00 at both determinism dump frames, so calling the core here instead

@@ -100,6 +100,12 @@ CFLAGS   += -DREVS_HOLD_THROTTLE
 CXXFLAGS += -DREVS_HOLD_THROTTLE
 endif
 
+# ⭐ ...and `REVS_HOLD_STEER=l|r` at RUN time holds a STEERING key beside the throttle, which is
+# the only way to exercise the steering chain on a host build (the host has no keyboard, and the
+# mouse axis is the Amiga's).  It is how "the wheel does not turn" was reproduced off-target in
+# one run.  ⚠ Read it as TWO runs with opposite keys and check the sign bits differ: one run
+# showing a moving wheel cannot tell steering from the slip-cancelling self-drive demand.
+
 # ⭐ `make STACK_TRAP=1` — arm the 6502 stack-watermark backtrace (host only; cpu.c has the
 # mechanism).  Then run with a hex threshold: `REVS_STACK_TRAP=f0 ./build/revs`, and the first
 # push that takes S below $F0 prints ONE backtrace naming the 6502 routines that leaked it.

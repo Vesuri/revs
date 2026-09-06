@@ -371,6 +371,21 @@ wrong**, and the exceptions are not stylistic — each is a correctness trap:
    defect `fe379ed` found, and it is why `race_main_loop` calls shims on purpose.
    `check_crash` is in this class (`edge_nearest_marshal_in`), and it is the one that looks most
    like an oversight.
+
+   ⚠⚠ **AND A MISSING PUBLISH CAN BE INVISIBLE TO EVERY GATE, because the value it drops is only
+   ever non-zero on an arm the gates never take.** `race_main_loop` phase 3 called
+   `read_driving_controls_core()`, so the frame's new steering angle went into `car_angle_16[2]`
+   and nothing published it; phase 4's `apply_driving_model` shim then did its own
+   `car_angle_marshal_in()` and restored the stale `mem[$62A2/$62A5]`. **The wheel could not turn
+   at all, on either input path** — and `validate` compares the *shim* (so it passes), while
+   `determinism` and `determinism-drive` hold the throttle and **never steer**, so the stale value
+   equalled the fresh one in both, byte for byte, at frame 300. It took a player to find it.
+   ⭐ The lesson is about the gates, not the seam: **a differential proves nothing about an input
+   the differential never supplies.** `REVS_HOLD_STEER=l|r` (`src/platform/autorun.cpp`) exists so
+   that a host run can hold a steering key, which is what made this reproducible off-target in one
+   run — and the check that settles it is two runs with opposite keys: the angle must come back
+   with *opposite sign bits*, because a single run showing a moving wheel cannot tell steering from
+   the slip-cancelling self-drive demand.
 2. **The shim carries a side effect the core cannot** — an interrupt fence and write order
    (`update_horizon_band`'s SEI/CLI), a store the core's signature does not cover
    (`copy_dash_data`'s `math_lo`), stack residue (`draw_starting_lights`), or instrumentation

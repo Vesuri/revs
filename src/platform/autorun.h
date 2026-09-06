@@ -63,4 +63,8 @@ private:
     unsigned long m_stepAt   = 0;   /* m_polls when the current step began */
     unsigned      m_step     = 0;   /* index into the script table */
     unsigned      m_hits     = 0;   /* times the current step's key was answered HELD */
+    /* REVS_HOLD_STEER=l|r — a steering key held alongside the throttle in the steady state.
+       Resolved once, on the first poll, because the Amiga build is freestanding. */
+    unsigned char m_holdSteer = 0;
+    bool          m_steerRead = false;
 };
