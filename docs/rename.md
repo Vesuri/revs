@@ -138,34 +138,24 @@ same mid-race dump `track_dir` used** — dump `$5700-$58FF` on a moving Silvers
 `(c0, c2)` there is the 90-degree rotation of `track_dir`'s ground-plane pair.  Until then the
 note stays `[INFERRED from the generator]`.
 
-## `$0043` / `$0100` — two unnamed cells the place-player / spin-car twins touch
+## `$0100` (`car_race_flags`) — the SPIN value's reader, and a name that is still `[INFERRED]`
 
 Surfaced making `place_player_in_section` and `spin_car_out` native (twins in the
-`car_gap`…`tick_wheel_spin` group).  Both are still `[unnamed]` in `symbols.csv`; the twins
-carry file-local defines so the code reads, but each needs a run before a global name is earned.
-(A third cell in this group, `$5F40`, was settled statically and named `track_scale_saved` —
-`compute_segment_scale` just holds the active track scale there for the restart path at `$6396`.)
+`car_gap`…`tick_wheel_spin` group).  (`$0043` left this entry as `section_quad_flags`, derived from
+its two readers; `$5F40` left it as `track_scale_saved`.)
 
-* **`$0043`** — a one-bit sign/quadrant flag.  `place_player_in_section` `ROR`s the carry of
-  `CMP #$40` into it (`$4630`, i.e. "did the section-relative angle fold past a quarter turn?")
-  and later reads bit 7 with `BIT $43 / BMI` (`$466C`) to pick the sign of `car_state_1`.
-  `build_track_geometry` also reads it (`BIT $43` at `$24E1`).  Two independent readers, so it is
-  real shared state, not a local.  ⇒ **Settle on `make refloop`**: steer across a section and dump
-  `$43`; if bit 7 tracks which side of straight-ahead the section runs, it is a direction sign and
-  the name is `player_section_sign` (or similar); if it tracks a quadrant it is `..._quadrant`.
-
-* **`$0100`** — a per-car byte array in the low part of page 1 (safe: the stack lives at
-  `$01F3-$01F8`), and it is **DUAL-USE**.  (1) `spin_car_out` writes `$91` to `$0100,X` when a car
-  is spun out; no reader of *that* value was found in the static map, so it may be write-only
-  spin/penalty scratch.  (2) `sort_cars_by_key` (`$0F64`, twin #160) reuses the SAME array as a
-  transient stable-position scratch: `$0F6B` clears `$0100`, `$0F75` writes `$0100,X = i`, and — the
-  reader the earlier note said was missing — the tie-shift at `$0FA1` reads `LDA $0100,X` to copy
-  the previous car's position down when two keys tie.  So there IS a reader, but it is internal to
-  the sort's own pass, not the spin state.  The two uses are time-disjoint (sort runs at a
-  lap/standings boundary, spin during racing).  ⇒ Whatever name the spin use earns, `symbols.csv`
-  must record the sort's transient-scratch tenancy in the note (like `$3850`), and the twin already
-  carries a `SORT_SCRATCH` file-local define.  ⇒ **Settle the spin use by dumping `$0100-$0113`
-  mid-race after a collision** (`make refloop`): watch which cars carry `$91` and for how long.
+`$0100` is a per-car byte array in the low part of page 1 (safe: the stack lives at
+`$01F3-$01F8`), and it is **DUAL-USE**.  (1) `spin_car_out` writes `$91` to `$0100,X` when a car
+is spun out; no reader of *that* value was found in the static map, so it may be write-only
+spin/penalty scratch.  (2) `sort_cars_by_key` (`$0F64`, twin #160) reuses the SAME array as a
+transient stable-position scratch: `$0F6B` clears `$0100`, `$0F75` writes `$0100,X = i`, and — the
+reader the earlier note said was missing — the tie-shift at `$0FA1` reads `LDA $0100,X` to copy
+the previous car's position down when two keys tie.  So there IS a reader, but it is internal to
+the sort's own pass, not the spin state.  The two uses are time-disjoint (sort runs at a
+lap/standings boundary, spin during racing), and the row records the sort's tenancy in its note
+(like `$3850`); the twin carries a `SORT_SCRATCH` file-local define.  ⇒ The name
+`car_race_flags` stays `[INFERRED]` until the spin use is settled: **dump `$0100-$0113` mid-race
+after a collision** (`make refloop`) and watch which cars carry `$91` and for how long.
 
 
 ## `span_cap_surface_a` (`$0034`) / `span_cap_surface_b` (`$0033`) — what distinguishes them, beyond which one gets used
@@ -213,23 +203,6 @@ table once init has run (a classic BBC overlay). Twin #159 references the table 
 (should be per-car speed fractions), then rename to `car_speed_frac` with the JMP-target as the note.
 
 
-## `$253B` — an unnamed routine inside `build_track_geometry`, called by every circuit hook
-
-Generated as `FUN_253b`, and it has no `symbols.csv` row at all, yet it is *documented in someone
-else's note*: the `edge_x_hi` row (`$5E90`) says "`$253B` differences `$5E90,Y` against `$5EB8,Y` =
-this + `$28`, which is what proves the 2x40 stride". So the behaviour is already known — it takes
-the horizon HALF-WIDTH at an edge point by differencing the two sides' `edge_x_hi` entries.
-
-It surfaced while tracing the expansion circuits' `$56C8` hook, which calls it at `$56EE` inside its
-`edge_y` walk — so it is on the road pass of all five expansion circuits, not a cold path.
-
-**What would settle the name**: confirm it is the same routine `horizon_half_width_at` wraps (see
-`revs_native.c` around the `$2542` SMC seam); if so it is that routine's leaf and wants a name in
-the same family — `edge_half_width_at` / `edge_x_difference`. Dump `$5E90,Y`/`$5EB8,Y` and the
-returned A at `$56EE` for a few Y to fix the sign convention, then add the row with the two callers
-(`$253B` from `build_track_geometry`, `$56EE` from each circuit hook).
-
-
 ## `$62A7` — `slip_flags`' second byte has no row of its own
 
 `slip_flags` (`$62A6`) is documented as two bytes, one per axle, and `begin_scrape` (twin #168)
@@ -268,38 +241,52 @@ must not be scored as a wide-value candidate (`docs/wide-value-cleanup.md` §NIN
 scratch cell's ref count counts TENANTS).
 
 
-## The zero-page cells `$0C`, `$43`, `$1D`, `$85`, `$87` — no `symbols.csv` row at all
+## The zero-page cells `$0C`, `$85`, `$87` — no `symbols.csv` row at all
 
 The twins carry file-local defines for them now (`PLACE_CAR_SOI`, `PLACE_CAR_ACROSS`,
 `PLACE_CAR_DIR + 1`), so no generated file has a bare hex address left, but the map itself is
-still blank at these five addresses:
+still blank at these three addresses.  (`$43` left this list as `section_quad_flags` and `$1D` as
+`staging_order_index`; both are in `symbols.csv` now.)
 
 * `$0C` — `place_car_world_coords` parks the section DIRECTION INDEX here and the object-queue
   tail reads it back.  Sole writer seen so far; **[DERIVED]** from that one tenancy only.
-* `$43` — `place_player_in_section` rotates the quadrant carry into it (`ROR $43`) and then tests
-  bit 7 to pick the negate (`BIT $43 / BPL`).  A one-bit direction history, but **whose** history
-  is not derived: nothing else in the twinned surface reads it.
-* `$1D` — compared against `car_behind` in `place_car_world_coords`'s tail to choose the AI arm.
-  Almost certainly a car slot, unnamed since the queue's earliest pass.
 * `$85`, `$87` — the *middle* cells of two three-byte windows whose ends ARE named
   (`shared_temp_84`/`$86 point_delta_sign`, `$0086`+2).  A row each, if only to record that they
   are components 1 of those windows and not free scratch.
 
-⇒ **Cheap settlement: `make refloop` + a `mem[]` watch.**  Dump `$0C`, `$1D` and `$43` once a
-frame for a lap and see which of them tracks the section cursor, which tracks a car index, and
-whether `$43` alternates with the steering direction.  Until then no fact-shaped name.
+⇒ **Cheap settlement: `make refloop` + a `mem[]` watch.**  Dump `$0C` once a frame for a lap and
+see whether it tracks the section cursor; `$85`/`$87` need only the argument that they are
+components 1 of their windows.  Until then no fact-shaped name.
 
 
-## The per-circuit hook seams need `symbols.csv` rows, not just twin-local defines
+## `$298D`'s "per-circuit" claim is contradicted by the measured patch surface
 
-`src/gen/revs_native.c` now names all twenty-one of them (`SMC_BOUNDARY_HOOK`, `SMC_EDGE_WALK_HOOK`,
-`SMC_HALF_WIDTH_CALL`, … — the block at the top of the file), and each name is **[DERIVED]** from
-the Silverstone opcode the twin dispatches on plus `make track-smc`'s extents.  Those names exist
-only in that one file: `disasm/symbols.csv` has no row for `$1248`, `$1289`, `$12FB`, `$1310`,
-`$13C9`, `$1593`, `$1946`, `$1DD4`, `$1FE9`, `$231A`, `$248B`, `$2538`, `$2542`, `$261A`, `$2771`,
-`$2F23`, `$44D5`, `$45CB`, `$462B`, `$4F54` or `$4F58`, so the disassembly and `make sweep` still
-show them as bare addresses.  ⇒ **Add a `smc` row per seam** carrying the unpatched opcode, what
-each circuit rewrites it to (from `make track-patch`), and the twin that dispatches on it.  No
-measurement needed — this one is transcription, and it is only queued rather than done because
-the naming source of truth is a different file from the one the cleanup touched.
+`src/gen/revs_native.c` (`SMC_MASK_OPCODE`, in `place_car_world_coords`' header) says the AND at
+`$298D-$298E` is masked "per-circuit".  `make track-patch` disagrees: neither byte appears in the
+62-address surface any circuit's `ModifyGameCode` writes, on any of the four expansion circuits.
+So either the mask is patched by something else (the circuits' *runtime* hook code rather than
+their load-time patcher, which `track-patch` does not see) or the claim is an inference that was
+never measured.  ⇒ **Settle it with `make track-run` + a watch on `$298D-$298E`**: race each
+circuit and log any write to the pair.  If nothing writes it, drop "per-circuit" from the comment
+and give the seam an `smc` row saying it is a constant; if something does, the row records which
+circuit and from where.  Until then it has deliberately been left out of `symbols.csv`'s `smc`
+section, whose other rows are all `[MEASURED]`.
 
+
+## `FUN_4ca4` — an unnamed routine that carries FIVE of the per-circuit table bases
+
+Found while transcribing the hook seams into `symbols.csv`.  `$4CA4-$4D20` has no name, and it is
+not incidental: five of its `LDA abs,X` operands are in the measured per-circuit patch surface —
+`$4CC1` (`$53E0`→`$5762`), `$4CC9` (`$53F0`→`$5662`), `$4CD1` (`$53D0`→`$5562`), `$4CD7` and
+`$4CE1` (both `$59EA`→`$5462`), all four expansion circuits identically.  The routine reads its
+index out of `$0045` (a nibble of something compared against `$62F9`), calls `$4D21` three times
+with `Y` = 2/4/2, then splits `$59EA,X` into a low-3-bit value stowed in `$0037` and a
+high-5-bit one used as `Y` into `$1208`, and finishes through `$2147` (the arctan) into
+`$0397`/`$03AF`.  That shape — three coefficient tables plus an angle — reads like the per-circuit
+**scenery or marker placement** for one section, but it is not derived.
+
+⇒ **It needs a name before those five seams get `smc` rows** (they are the only measured
+per-circuit bytes still absent from `symbols.csv`, deliberately: an `smc` row that says
+"`FUN_4ca4`'s third table base" documents nothing).  Cheap settlement: it is not twinned, so
+bracket it in a `PROBES=1` run to see how often it is called and with what `$45`, then dump
+`$0397`/`$03AF` across a lap.

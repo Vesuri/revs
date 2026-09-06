@@ -1,7 +1,8 @@
 ## The SOURCE OF TRUTH for names.  tools/transpile.py reads this; never hand-rename in
 ## generated files.  Grows over time — append as understanding arrives.
 ##
-## type:  func | var | table
+## type:  func | var | table | smc  (smc = a per-circuit patched instruction; see the section at
+##        the end of this file)
 ## is_hw: 1 for a BBC I/O address ($FC00-$FEFF) or an OS vector cell ($0200-$0235), else 0
 ##
 ## ⚠⚠ ALL ADDRESSES ARE IN THE RUNTIME IMAGE (disasm/revs_runtime.bin, `make runtime`).
@@ -859,3 +860,45 @@ addr,name,type,is_hw,note
 0x13FA,segment_dir_tail_rts,func,0,"[MEASURED 2026-09-06] a bare RTS, and it is one on ALL FIVE circuits -- step_segment_dir_index ($13E0) and advance_dir_on_segment_flag ($13DA) both end by calling it. ⚠ The older note calling it a per-circuit hook was WRONG: make track-smc lists no extent covering $13FA, make track-patch writes no byte in it, and no circuit hook jumps to it -- what the circuits rewrite is the JSR OPERANDS at $13C9/$1426, which point at $13DA. So the call is a no-op on every circuit and the twins of #142/#143 drop it."
 0x001A,walk_reverse_active,var,0,"[DERIVED] 2026-09-06 (was unnamed) -- raised to $40 across reverse_walk_direction's 64-section rebuild and cleared to 0 after ($13FF-$1408). ⚠ NO ENGINE READER: it is written twice and read nowhere in the image, so on Silverstone it is dead. It is published for the per-circuit dir-index hook that runs inside rebuild_walk_reversed (SMC $1426) -- the same shape far_edge_rebuild has with an engine reader. [ASSUMED] that reading; a circuit hook that reads it has not been demonstrated."
 0x0043,section_quad_flags,var,0,"[DERIVED] 2026-09-06 (was unnamed) -- a one-bit-per-section SHIFT REGISTER of quarter-turn flags. place_player_in_section RORs a new bit in at $4631 (set when the player's angle to the nearest edge bearing reached $40 = a quarter turn) and reads bit 7 back at $4667 to sign the second angle fold; road_edge_walk's tail BITs bit 7 at $24E1 to decide whether to build the section ahead. So bit 7 is the most recent section's flag and the byte carries the last eight."
+
+## ---- the per-circuit HOOK SEAMS (type `smc`) -----------------------------------------------
+## ⚠ These are addresses of INSTRUCTIONS the expansion circuits' ModifyGameCode rewrites at load
+## time, so the byte in revs_runtime.bin is only SILVERSTONE's.  A row here is not a variable and
+## not a function: it names the seam so `make sweep`, the disassembly and the twins all call it the
+## same thing (`src/gen/revs_native.c` carries the identical name uppercased as a #define, and
+## dispatches on mem[] at run time rather than baking the unpatched byte).
+## Evidence for every row: `make track-patch` (which VERIFY=1 checks against a real BBC) for the
+## per-circuit bytes, `make track-smc` for the extents, and the listing for the unpatched form.
+## ⚠⚠ The PATCHED arm of every one of these is gated by nothing — validate/determinism all race
+## Silverstone — so settle a seam against the real BBC (CLAUDE.md §Hard rules).
+## ℹ Two more per-circuit bytes are DATA, not seams, and so have no row here: $3574/$35F4 (Brands
+## and Oulton only), which are table CONTENTS the generated C already reads out of mem[].
+0x1248,smc_segment_load,smc,0,"[MEASURED 2026-09-06] load_section_from_segment's table read. Unpatched LDA $5905,Y ($B9); all four expansion circuits write JSR $5672. Dispatched by load_section_from_segment_core."
+0x1289,smc_boundary_hook,smc,0,"[MEASURED 2026-09-06] cross_section_boundary's call. Unpatched JSR $13E0 (step_segment_dir_index); all four circuits retarget it to JSR $5A1B — the opcode never changes, only the operand. Dispatched by cross_section_boundary."
+0x12FB,smc_section_advance,smc,0,"[MEASURED 2026-09-06] build_road_section's section step. Unpatched CLC / ADC #3 (two instructions, three bytes); all four circuits overwrite both with one JSR — $54F1 on Brands, $54EF on the other three. Dispatched by build_road_section."
+0x1310,smc_marker_mask,smc,0,"[MEASURED 2026-09-06] build_road_section's marker byte. Unpatched AND #$F8; Donington writes LDA #$88 and Snetterton LDA #$10 (Brands and Oulton leave it alone), i.e. the mask becomes a constant. Dispatched by build_road_section."
+0x13C9,smc_section_tail_hook,smc,0,"[MEASURED 2026-09-06] build_road_section's tail call. Unpatched JSR $13DA; all four circuits retarget to JSR $5572. Dispatched by build_road_section."
+0x1426,smc_walk_dir_hook,smc,0,"[MEASURED 2026-09-06] rebuild_walk_reversed's dir-index call. Unpatched JSR $13DA; all four circuits retarget to JSR $5572 (the same arm $13C9 gets). Dispatched by rebuild_walk_reversed_core, which traps anything that is not a JSR."
+0x1593,smc_controls_hook,smc,0,"[MEASURED 2026-09-06] read_driving_controls' call. Unpatched JSR $0C00 (mul8); circuits retarget to JSR $57A1, except Donington's JSR $5779. Dispatched by read_driving_controls_core."
+0x1946,smc_fill_attr_hook,smc,0,"[MEASURED 2026-09-06] fill_line_attr's call. Unpatched JSR $1933; all four circuits retarget to JSR $56C8. Dispatched by fill_line_attr_core."
+0x1FE9,smc_object_ceiling,smc,0,"[MEASURED 2026-09-06] plot_object's object-count ceiling. Unpatched LDX $001F (zero page, $A6); all four circuits write LDX #$1F — same operand byte, immediate instead of zero page, so the count becomes a constant. Dispatched by plot_object_core."
+0x231A,smc_rebase_branch,smc,0,"[MEASURED 2026-09-06] the point-rebase pair's BEQ. Unpatched BEQ $232B (offset $0F, i.e. skip the pair); Donington and Snetterton write offset $00, which falls through and RUNS it. Brands and Oulton leave it. Dispatched by rebase_takes_branch."
+0x248B,smc_edge_walk_hook,smc,0,"[MEASURED 2026-09-06] road_edge_walk's loop tail. Unpatched BCS $24B8 followed by JMP $2403; all four circuits overwrite it with JMP $56BC — their own arm, which ends by jumping BACK to $2490 (road_edge_walk_resume, twin #220). Dispatched by road_edge_walk_run."
+0x24DE,smc_section_ahead_hook,smc,0,"[MEASURED 2026-09-06] advance_player_section's step-forward call. Unpatched JSR $12F3 (build_section_ahead); DONINGTON ALONE retargets it, to JSR $53E9. Dispatched by advance_player_section_core via section_hook_call."
+0x24E9,smc_section_back_limit,smc,0,"[MEASURED 2026-09-06] advance_player_section's step-back gate. Unpatched CMP #$0E; all four circuits write CMP #$0D — the opcode is untouched, only the ceiling moves. Dispatched by advance_player_section_core."
+0x24F2,smc_walk_back_hook,smc,0,"[MEASURED 2026-09-06] advance_player_section's step-back call. Unpatched JSR $140B (rebuild_walk_backward); all four circuits retarget to JSR $55BD. Dispatched by advance_player_section_core via section_hook_call."
+0x2538,smc_geometry_store,smc,0,"[MEASURED 2026-09-06] build_track_geometry's store. Unpatched STA $5F48,Y; all four circuits overwrite it with JSR $5772, so the circuit decides where the byte goes. Dispatched by build_track_geometry_core."
+0x2542,smc_half_width_call,smc,0,"[MEASURED 2026-09-06] the call in front of horizon_half_width_at's halve. Unpatched JSR $3450 (abs8) followed by LSR A ($4A); every circuit replaces the LSR with NOP and retargets the JSR — $53F0 Brands, $57B6 Donington, $53E8 Oulton, $53C8 Snetterton — so the horizon width is NOT halved off Silverstone. Dispatched by horizon_half_width_at_core (twin #221); the missing NOP shape is what sabotage D221d exposed."
+0x261A,smc_edge_width_hook,smc,0,"[MEASURED 2026-09-06] emit_edge_width_offset's store pair. Unpatched STA $1F / STY $84; all four circuits overwrite with JMP $56AF, so the whole tail becomes the circuit's. Dispatched by emit_edge_width_offset_core."
+0x2771,smc_car_pair_hook,smc,0,"[MEASURED 2026-09-06] check_car_pair's separation threshold. Unpatched CMP #$3C; all four circuits write CMP #$4B — operand only. Dispatched by check_car_pair_core."
+0x2F23,smc_span_cap_load,smc,0,"[MEASURED 2026-09-06] span_cap_line_slot_z's table read. Unpatched LDA $5F60,Y (view_line_surface); Donington writes JSR $59ED and Snetterton JSR $59E8 (Brands and Oulton leave it). Dispatched by span_cap_line_slot_z."
+0x44D5,smc_segment_scale_tbl,smc,0,"[MEASURED 2026-09-06] compute_segment_scale's table BASE. Unpatched LDA $59D0,Y; all four circuits move the base to $58A0 — the opcode stays LDA abs,Y, which is why the twin reads the base out of mem[] rather than dispatching on an opcode."
+0x45CB,smc_camera_scale,smc,0,"[MEASURED 2026-09-06] update_camera_and_drive_state's scale step. Unpatched ASL A / ROL $77 (inline doubling); all four circuits overwrite both with one JSR — $59E9 Brands, $59C9 Donington, $59E7 Oulton, $59C7 Snetterton. Dispatched by update_camera_and_drive_state_core."
+0x462B,smc_place_player_hook,smc,0,"[MEASURED 2026-09-06] place_player_in_section's call. Unpatched JSR $3450 (abs8); every circuit retargets it — $54EB Brands, $53D7 Donington, $59E1 Oulton, $59C1 Snetterton. Dispatched by place_player_in_section, which traps a non-JSR."
+0x4F54,smc_horizon_cmp,smc,0,"[MEASURED 2026-09-06] update_horizon_band's ceiling. Unpatched CMP #$12; all four circuits write CMP #$16. Dispatched by update_horizon_band_core; pairs with $4F58."
+0x4F58,smc_horizon_clamp,smc,0,"[MEASURED 2026-09-06] the value $4F54's ceiling clamps down to. Unpatched LDA #$12; all four circuits write LDA #$16 — the two always move together, which is what makes them one horizon limit and not two."
+## ...and the three seams in the same `SMC_*` block of revs_native.c that are NOT per-circuit: the
+## engine patches these itself, every frame, on every circuit.
+0x1DD4,smc_gap_walk_branch,smc,0,"[MEASURED] column_gap_walk's source-byte branch. The OFFSET at $1DD5 is rewritten from $1DA9 (STY), so the target is a register value and cannot be enumerated statically; the unpatched image reads BNE $1DDF. The twin dispatches over the enclosing function's instruction starts and traps anything else."
+0x5220,smc_major_step,smc,0,"[MEASURED 2026-08-16] the dial needle's MAJOR-axis step opcode, written from OCTANT_MAJOR_STEP_TBL ($3B86,X) at $5209 — INX/DEY/INY/INX/DEX/INY/DEY/DEX for octants 0-7. The static image holds INY (octant 2), so a frozen transliteration draws every line mirrored; that is what made the rev counter read 9-10 for 2-3 (docs/static-map.md)."
+0x529B,smc_minor_step,smc,0,"[MEASURED 2026-08-16] the needle's MINOR-axis step opcode, written from OCTANT_MINOR_STEP_TBL ($3B8E,X) at $520F — DEY/INX/INX/INY/INY/DEX/DEX/DEY. Pairs with $5220; the octant index is $76."
