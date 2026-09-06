@@ -12353,10 +12353,18 @@ void cross_section_boundary(void)
    and 6 become side 1's components 0 and 2 — the OPPOSITE road edge — and copy_section_height_to_side1
    shares side 0's height (component 1) across.  segment_dir_index is field 5's low byte.
 
-   ⚠ SMC $1248 (per-circuit, ModifyGameCode): unpatched Silverstone is `LDA $5905,Y`; an expansion
-   circuit rewrites it to a hook JSR whose result A becomes segment_dir_index.  Reproduced exactly.
-   No flags or registers escape (both callers overwrite A next, and X/Y are left as the entry
-   values the caller still needs) — bare void shim. */
+   ⚠⚠ SMC $1248 (per-circuit, ModifyGameCode): unpatched Silverstone is `LDA $5905,Y`; an expansion
+   circuit rewrites it to a hook JSR whose result A becomes segment_dir_index.
+   ⭐⭐ AND BOTH INDEX REGISTERS ARE LIVE ACROSS THAT JSR — read them off the surrounding
+   instructions, never off the unpatched callee: $1230-$1245 index the segment record with Y and
+   the destination section with X, and $124D-$1256 go on using X after the hook has returned.  The
+   first version of this twin handed the hook neither, and every expansion circuit's hook then read
+   a stale Y: Brands Hatch's whole section_dir_index column came out wrong (all 40 sections, off by
+   $0F at the start line), which put car_heading 206 degrees out and its horizon 13 display lines
+   too high.  Silverstone cannot see it — the unpatched arm has no registers to hand over — and
+   `tracks`/`track-run` cannot either: the bytes land and the hook runs, it just computes with the
+   wrong index (CLAUDE.md's hook-seam rule; settled against a real BBC by `make viewdiff`).
+   No FLAGS escape (both callers overwrite A next) — bare void shim. */
 void load_section_from_segment_core(uint8_t x, uint8_t y)
 {
     load_section_triple_core(x, y);                         /* fields 1..3 -> side-0 triple */
@@ -12370,7 +12378,13 @@ void load_section_from_segment_core(uint8_t x, uint8_t y)
         segment_dir_index = mem[TRACK_SEGMENT_LO + 5 + y];
     } else if (mem[SMC_SEGMENT_LOAD] == 0x20) {                       /* per-circuit hook JSR */
         uint16_t t = (uint16_t)(mem[SMC_SEGMENT_LOAD + 1] | (mem[SMC_SEGMENT_LOAD + 2] << 8));
-        if (t >= 0x5300 && t <= 0x5A25) { revs_track_hook(t); segment_dir_index = cpu.A; }
+        if (t >= 0x5300 && t <= 0x5A25) {
+            cpu.X = x;                       /* the destination cursor $124D still wants */
+            cpu.Y = y;                       /* ...and the segment index the hook indexes with */
+            revs_track_hook(t);
+            segment_dir_index = cpu.A;
+            x = cpu.X;                       /* $124D reads whatever X the hook left behind */
+        }
         else { platform_smc_unhandled(SMC_SEGMENT_LOAD, t); return; }
     } else {
         platform_smc_unhandled(SMC_SEGMENT_LOAD, mem[SMC_SEGMENT_LOAD]); return;
