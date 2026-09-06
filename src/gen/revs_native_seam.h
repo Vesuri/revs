@@ -140,6 +140,8 @@ typedef enum {
     LOOP_FINISHED       /* $17BA — the session is over; leave the routine */
 } LoopVerdict;
 typedef struct { uint8_t line; int clip; int behind; } ProjPoint;
+typedef struct { uint16_t value; uint8_t c, v; } Wide16Exit;  /* a 16-bit result + the flags
+                                                                 its high-byte op leaves live */
 typedef struct { uint8_t hi, carry, overflow, neg, zero; } AddFlags;
 typedef struct { AddFlags tail; uint8_t x, y; } EngineExit;
 typedef struct { uint8_t x, y; } EngineRegs;
@@ -548,6 +550,7 @@ Mode5Addr mode5_addr_core(uint8_t quarterOffset, uint8_t y);
 Mode5Addr mode5_addr_for_cell_core(uint8_t column, uint8_t y);
 AddFlags model_integrate_element_core(uint8_t slot);
 Mul8AccumExit mul8_accum_core(void);
+Wide16Exit    mul16_by_1_5_core(uint16_t x);
 ContactExit note_object_contact_core(uint8_t threshold, uint8_t entryC);
 #define SOUND_SLOT_IMPACT 0x04u  /* the bang: the scrape arm, the crash arm and begin_spin */
 

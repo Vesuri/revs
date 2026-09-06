@@ -6923,35 +6923,37 @@ void scale16_by_y(void)
    rotate's carry from the value's own bit 7 instead of clearing it, which is a one-instruction
    arithmetic shift right.  ⚠ PHA/PLA, so there is a stack residue here too.
    --------------------------------------------------------------------------- */
+Wide16Exit mul16_by_1_5_core(uint16_t x)
+{
+    /* The halving is SIGNED, so x/2 is an arithmetic shift right of the whole 16-bit value —
+       exactly what the 6502's "seed the rotate from bit 7" idiom computes, one word op here. */
+    uint16_t half = (uint16_t)((int16_t)x >> 1);
+    uint16_t sum  = (uint16_t)(x + half);
+
+    uint8_t hiHalf = (uint8_t)(half >> 8);            /* $476C PHA — the residue below */
+    uint8_t hiIn   = (uint8_t)(x >> 8);
+    uint8_t hiOut  = (uint8_t)(sum >> 8);
+
+    /* $476C PHA leaves x/2's high byte in the stack page, which the differential compares. */
+    mem[STACK_PAGE + cpu.S] = hiHalf;
+
+    Wide16Exit e;
+    e.value = sum;
+    /* The exit flags are the HIGH-byte ADC's ($4776), replayed from its own two operands. */
+    e.c = (uint8_t)(((uint32_t)x + half) > 0xFFFFu);
+    e.v = (uint8_t)(((~(hiHalf ^ hiIn) & (hiHalf ^ hiOut)) >> 7) & 1u);
+    return e;
+}
+
 void mul16_by_1_5(void)
 {
-    /* (A:math_lo) = (math_hi:math_lo) * 1.5 = x + x/2, the halving SIGNED (the 6502 seeds the
-       rotate from bit 7 instead of clearing it — an arithmetic shift right).  PHA/PLA leave the
-       x/2 high byte in the stack page, which the differential compares, so it is written back. */
-    uint8_t hiIn = math_hi, loIn = math_lo;
-
-    /* $4765-$476B — x/2 high byte: arithmetic shift right of math_hi, and the bit0 it rotates
-       down into the low half. */
-    uint8_t hiHalf   = (uint8_t)((hiIn >> 1) | (hiIn & 0x80u));
-    int     midCarry = hiIn & 1u;
-
-    mem[STACK_PAGE + cpu.S] = hiHalf;                      /* $476C PHA — the stack residue */
-
-    /* $476D-$4773 — x/2 low (loIn rotated right through midCarry) + x low, carry-in clear. */
-    { uint8_t  loHalf = (uint8_t)(((unsigned)midCarry << 7) | (loIn >> 1));
-      unsigned sum    = (unsigned)loHalf + loIn;
-      math_lo = (uint8_t)sum;
-      cpu.C   = (uint8_t)(sum > 0xFFu);
-      /* $4775 PLA (hiHalf back into A), $4776 ADC — x/2 high + x high + carry; its flags exit. */
-      { unsigned hs = (unsigned)hiHalf + hiIn + cpu.C;
-        uint8_t  hr = (uint8_t)hs;
-        cpu.A = hr;
-        cpu.V = (uint8_t)(((~(hiHalf ^ hiIn) & (hiHalf ^ hr)) >> 7) & 1u);
-        cpu.C = (uint8_t)(hs > 0xFFu);
-        cpu.N = (uint8_t)((hr >> 7) & 1u);
-        cpu.Z = (uint8_t)(hr == 0);
-      }
-    }
+    Wide16Exit e = mul16_by_1_5_core((uint16_t)((math_hi << 8) | math_lo));
+    math_lo = (uint8_t)e.value;
+    cpu.A   = (uint8_t)(e.value >> 8);
+    cpu.C   = e.c;
+    cpu.V   = e.v;
+    cpu.N   = (uint8_t)((cpu.A >> 7) & 1u);
+    cpu.Z   = (uint8_t)(cpu.A == 0);
 }
 
 /* ---------------------------------------------------------------------------
