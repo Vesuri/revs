@@ -701,3 +701,31 @@ distance with the flag clear — reopens the hang, because the drive pass rewrit
 itself: the flag is not stable across a pass, so such a case loops until the field happens to
 retire, which on randomised memory may be never.  A coverage limit that a second construction also
 cannot reach is worth *recording* rather than fighting.
+
+### NINETEENTH — a SHARED fixture leaf hides a wrong INDEX, and identical counts have a fourth explanation
+
+`print_race_class_name` ($3C6F, twin #197) is one call: `text_script_interp(race_class + 7)`.  The
+obvious fixture seeds the script machinery the way `test_text_script_interp` does — every legal
+pointer-table index aimed at **one** terminating leaf — and it passed clean.  It also scored **D44
+(`race_class + 8`) and D46 (`race_class` with the offset dropped) at exactly 992/2000 each**, which
+§ELEVENTH names as the tell for a stale object file reused across a sabotage loop.  It was not.  With
+one shared leaf, a wrong index prints **byte-identical text**, and the only thing still different is
+the index itself, which `text_script_interp_core` passes on as the 6502's X: `mos_oswrch(a, tableIdx,
+y)` records it, `vdu_char_def_core(a)` never sees it.  So detection was pinned to the fixture's own
+`text_out_via_mos` coin flip — half the cases, and 992 was that half twice over.  Giving each index
+its own leaf, signed by its first glyph, takes every wrong-index defect to **2000/2000**.
+
+Two rules:
+
+- **When a fixture points many table entries at the same target, it has stopped testing the
+  selector.** Sign each target so the *choice* is observable in `mem[]`, not just the action.
+- **Identical mismatch counts from two different defects have a FOURTH explanation** beside a stale
+  build: both defects are being caught by the same *narrow* channel, and the count is that channel's
+  size rather than the defects'.  Distinguish them the way this one was — a third defect whose count
+  differs (D45, the class order reversed, 1305) proves the rebuilds happened, and then the shared
+  number is a coverage question.  ⚠ Once the fixture is fixed the counts **saturate** instead
+  (D44/D46/D47 all 2000); saturation at the case total is not staleness either.
+
+⚠ And one sabotage shape to avoid here: making the index a **random byte** does not fail, it **hangs**
+— index `> $35` walks `text_script_ptr_lo` ($3AD0) into `char_row_addr_hi` ($3B06) and aims the
+emitter at zero page.  Keep every defect inside the table (0..$34); a hang is not a detection.
