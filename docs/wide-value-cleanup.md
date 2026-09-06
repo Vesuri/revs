@@ -1216,7 +1216,7 @@ row.
 | `CAR_ANGLE` $62A0/$62A3 | 12 fn / 32 ref | **none** | ✅ **(B) DONE** — `car_angle_16[3]`, see below |
 | `VIEW_ORIGIN` $6280 | 5 fn / 14 ref | **none** | ✅ **(B) DONE** — `view_origin_16[9]`, see below |
 | `MARKER_OFF` $62B7/$62BA | 2 fn / 6 ref | **none** | ✅ **(A) DONE** — `marker_offset_word()`, done with the edge tables |
-| `OBJECT_BEARING` $0380/$0398 | 6 fn / 6 ref | **none** | ❌ **DECLINED** — 0.42 refs per element, see §REFS PER ELEMENT |
+| `OBJECT_BEARING` $0380/$0398 | 6 fn / 6 ref | **none** | ❌ (B) declined — 0.42 refs per element; (A) ✅ done |
 | `SECTION_COORD` $0900/$0A00 | **10 fn / 38 ref** | **none** | ❌ **DECLINED, MEASURED** — 256 elements, 0.17 refs per element, a ~15× net loss |
 | `CAR_DISTANCE` $08D0/$08E8 | 4 fn / 16 ref | **none** | ✅ **(B) DONE** — `car_distance_16[24]`, see below |
 | `OBJECT_COORD` $09FD/$0AFD | 10 fn / 27 ref | **none** | ✅ eligible — 24-bit binary → `uint32_t`, `add.l`/`sub.l`/`cmp.l` only |
@@ -2149,4 +2149,28 @@ than by re-reading the planes.
 Gated by `make validate` on `clamp_near_edge_cursor`, `rebase_edge_point`, `emit_edge_bearing`,
 `emit_edge_bearing_at_cursor`, `interp_edge`, `draw_corner_markers`, `road_edge_walk`,
 `poll_steering_assist`, `draw_road` and `build_track_geometry`, plus `determinism` and
+`determinism-drive`.
+
+
+### `OBJECT_BEARING` $0380/$0398 — ✅ DONE (mechanism A)
+
+The 16-bit angle from a viewpoint to whatever the object slot holds ($10000 = a full turn), so it
+is one value by construction and never two lanes.  `object_bearing_word()` / `_set()` join the edge
+accessors in `revs_native_seam.h`; the duplicate `#define` pair in `revs_native.c` is gone and the
+low-byte address now has a name in the header the shims share.
+
+Five sites: `draw_track_object` and `build_player_car` read it whole, `build_road_sign` and
+`project_object_slot` file it whole, and the two COARSE heading differences — `process_car_contact`'s
+collision nudge and `mirrors_update`'s setup — keep their high-byte-only reads under the same rule
+the edge tables established.
+
+That closes mechanism (A) on every plane-split table the twins do **wide arithmetic** on.  What a
+`grep '_LO +'` still finds in `revs_native.c` is three things, all of them deliberate: the accessor
+bodies themselves; `MODEL_STATE`'s marshals (that table is relocated, mechanism B, and the lanes
+exist only at the 6502-ABI boundary); and the two bases whose sites are lane-shaped by nature —
+`PLOT_UNDO_PTR` $07A8/$07D0, where a lane IS the needle line's address byte, and the `POINT_DELTA`
+aliasing group, where the same zero-page bytes are read as `MUL_SRC`/`MUL_TERM` and one lane is
+written without the other on purpose.  Gated by `make validate` on
+`draw_track_object`, `build_road_sign`, `process_car_contact`, `build_player_car`,
+`project_object_slot`, `mirrors_update` and `move_and_draw_cars`, plus `determinism` and
 `determinism-drive`.

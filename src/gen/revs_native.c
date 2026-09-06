@@ -4122,8 +4122,6 @@ void apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC)
    this routine's own accesses straight to mem[].
    =========================================================================== */
 
-#define OBJECT_BEARING_LO    0x0380u   /* per slot: 16-bit track position, low byte */
-#define OBJECT_BEARING_HI    0x0398u   /* ...and high byte */
 #define OBJECT_LINE       0x03B0u   /* per slot: screen cell column */
 #define OBJECT_WIDTH     0x03C8u   /* per slot: screen width */
 
@@ -4148,8 +4146,7 @@ SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, ui
            plotter's setup shares that cell.  The high SBC's N/Z/C are dead (the visibility
            CMP recomputes them), but its V ESCAPES: CMP leaves V alone, so on the not-visible
            path the subtract's V is the routine's exit V.  Replay it from the high byte. */
-        uint16_t bearing = (uint16_t)(((uint16_t)mem[OBJECT_BEARING_HI + slot] << 8) |
-                                      mem[OBJECT_BEARING_LO + slot]);
+        uint16_t bearing = object_bearing_word(slot);
         uint16_t heading = car_heading_v;         /* relocated out of mem[$0A/$0B] */
         uint16_t delta   = (uint16_t)(bearing - heading);
         math_lo = (uint8_t)delta;                       /* the plotter's setup shares this cell */
@@ -9276,8 +9273,7 @@ static void build_road_sign_core(void)
 
     /* $4CEB-$4CF9 — the bearing, FROM THE SIGN'S OWN ORIGIN, into slot $17. */
     bearing_to_section_core(scratchX, VIEW_ORIGIN_STRIDE);
-    mem[OBJECT_BEARING_LO + SIGN_SLOT] = (uint8_t)bearing_v;
-    mem[OBJECT_BEARING_HI + SIGN_SLOT] = (uint8_t)(bearing_v >> 8);
+    object_bearing_word_set(SIGN_SLOT, bearing_v);
 
     /* $4CFA-$4D08 — how far off the car's heading the sign is.  Past $40 it has left the view,
        and THAT is what commits the sign number for the next frame.  abs8 here branches on bit 7
@@ -11597,7 +11593,8 @@ void process_car_contact(void)
     /* Hard hit during the race: spin the other car out. */
     if (impact2 >= 0x28 && (session_is_race & 0x80)) { cpu.X = x; spin_car_out(); }
 
-    /* Heading difference between the two objects, x4; its sign steers abs16_math below. */
+    /* Heading difference between the two objects, x4; its sign steers abs16_math below.
+       High bytes only, as the 6502 does — a COARSE angle, the low bytes are never loaded. */
     uint8_t  hd4     = (uint8_t)(((unsigned)mem[OBJECT_BEARING_HI + x]
                                   - (uint8_t)(car_heading_v >> 8)) << 2);
     int      hd_sign = (hd4 & 0x80) != 0;                    /* PHP: N of the <<2 result */
@@ -14238,8 +14235,7 @@ void build_player_car_core(void)
        the car points that way, mirrored by which way round the circuit it is going — the 6502
        EORs track_direction into the HIGH byte only, so as a wide value that is an EOR with
        track_direction << 8 and the low byte passes straight through. */
-    uint16_t bearing = (uint16_t)(mem[OBJECT_BEARING_LO + x]
-                                | ((unsigned)mem[OBJECT_BEARING_HI + x] << 8));
+    uint16_t bearing = object_bearing_word(x);
     uint16_t heading = (uint16_t)(bearing ^ ((unsigned)track_direction << 8));
     car_heading_v = heading;                      /* relocated out of mem[$0A/$0B] */
 }
@@ -14308,8 +14304,7 @@ void project_object_slot_core(uint8_t coordIndex, uint8_t shape)
 
     /* $2A64-$2A6D ⭐ WIDE VALUE: the bearing is ONE 16-bit angle, filed whole. */
     uint8_t slot = shared_counter_42;
-    mem[OBJECT_BEARING_LO + slot] = (uint8_t)bearing_v;
-    mem[OBJECT_BEARING_HI + slot] = (uint8_t)(bearing_v >> 8);
+    object_bearing_word_set(slot, bearing_v);
 
     note_object_contact_core(0x25u, 0u);                 /* $2A70 — exit dead, see above */
 

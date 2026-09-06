@@ -68,7 +68,8 @@
 #define CAR_FLAGS_SHAPE  0x018Cu   /* per slot: flags, with the object's shape in bits 0-3 */
 #define CAR_ORDER        0x013Cu   /* the 20-entry sorted car order */
 #define OBJECT_WIDTH     0x03C8u   /* per slot: object screen width in pixels */
-#define OBJECT_BEARING_HI 0x0398u  /* per slot: object bearing high byte */
+#define OBJECT_BEARING_LO 0x0380u  /* per slot: the 16-bit bearing to the object, low byte */
+#define OBJECT_BEARING_HI 0x0398u  /* ...and high byte */
 #define MIRROR_SEG_BEARING_TBL 0x3BA4u /* 6 wing-mirror segment heading thresholds */
 #define MIRROR_SEG_STATE 0x6293u   /* per wing-mirror segment: last-drawn bottom line, 0 = erased */
 #define DIAL_NEEDLE_DDA_TBL       0x3100u /* rev-needle DDA len/delta per angle offset (0..0x13) */
@@ -453,6 +454,17 @@ static inline uint16_t marker_offset_word(unsigned slot)
                     | ((unsigned)mem[MARKER_OFF_HI + slot] << 8)); }
 static inline void marker_offset_word_set(unsigned slot, uint16_t v)
 { mem[MARKER_OFF_LO + slot] = (uint8_t)v; mem[MARKER_OFF_HI + slot] = (uint8_t)(v >> 8); }
+
+/* object_bearing ($0380/$0398, 24 slots): the 16-bit angle from a viewpoint to the object the
+   slot holds — $10000 is a full turn, so it is one value and never two lanes.  Same one-lane
+   caveat as the edge tables: the two COARSE heading differences (the collision nudge and the
+   wing mirrors' setup) read only the high byte, and they keep doing that. */
+static inline uint16_t object_bearing_word(unsigned slot)
+{ return (uint16_t)((unsigned)mem[OBJECT_BEARING_LO + slot]
+                    | ((unsigned)mem[OBJECT_BEARING_HI + slot] << 8)); }
+static inline void object_bearing_word_set(unsigned slot, uint16_t v)
+{ mem[OBJECT_BEARING_LO + slot] = (uint8_t)v;
+  mem[OBJECT_BEARING_HI + slot] = (uint8_t)(v >> 8); }
 
 /* ⭐ THE VIEW ORIGIN, relocated out of the $6280/$6283 plane split.  Every bearing and every
    projection in the frame is measured from it, and there are TWO of them: origin 0 is the camera,
