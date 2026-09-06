@@ -15767,6 +15767,9 @@ uint8_t console_io_core(uint8_t ptrLo, uint8_t ptrHi, uint8_t width)
        near $70/$71), so composing it once is the same program with one add per character
        instead of two byte loads, a shift and an or. */
     const uint16_t field = (uint16_t)(((uint16_t)ptrHi << 8) | ptrLo);
+    /* ⭐ One hardware-window test for the whole field, not one per character: the column only
+       ever indexes $00..$FF off `field`, so proving the base is RAM proves every store. */
+    const int fieldIsRam = ((unsigned)field + 0xFFu) < BBC_IO_LO;
 
     /* $6306-$6311.  The ambient Y at both calls is the caller's pointer high byte. */
     mos_osbyte(0x02u, 0x00u, ptrHi);                 /* input stream := keyboard */
@@ -15795,7 +15798,8 @@ uint8_t console_io_core(uint8_t ptrLo, uint8_t ptrHi, uint8_t width)
         } else if (y == shared_temp_77) {            /* $6334 — the field is full */
             a = 0x07u;                               /* $6338 — ring the bell instead of storing */
         } else {
-            bus_write((uint16_t)(field + y), a);         /* $633C */
+            if (fieldIsRam) mem[(uint16_t)(field + y)] = a;   /* $633C */
+            else            bus_write((uint16_t)(field + y), a);
             y = (uint8_t)(y + 1);                    /* $633E INY */
         }
         mos_oswrch(a, 0x00u, y);                     /* $633F — echo it */
@@ -15803,7 +15807,8 @@ uint8_t console_io_core(uint8_t ptrLo, uint8_t ptrHi, uint8_t width)
 
     if (y == shared_temp_77) return 0x0Du;           /* $6352-$6356 — the field was already full */
     do {                                             /* $6357 — pad the rest with spaces */
-        bus_write((uint16_t)(field + y), 0x20u);
+        if (fieldIsRam) mem[(uint16_t)(field + y)] = 0x20u;
+        else            bus_write((uint16_t)(field + y), 0x20u);
         y = (uint8_t)(y + 1);                        /* $6351 INY */
     } while (y != shared_temp_77);                   /* $6352 CPY */
     return 0x20u;
