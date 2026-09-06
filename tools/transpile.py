@@ -1118,7 +1118,7 @@ VALIDATE_FUNCS = {
     # on the Pro path), a local now kept at its per-path 6502 exit value until the $74 relocation.
     # Exit ABI: X live; A/flags dead.  $FE68 is pinned per case by platform_test_via_t2.
     0x635D,
-    # ⭐ TWIN #159 — FUN_27ed ($27ED), the per-frame per-car UPDATE ENGINE.  Called once a frame
+    # ⭐ TWIN #159 — drive_other_cars ($27ED), the per-frame per-car UPDATE ENGINE.  Called once a frame
     # from the driving loop ($117E/$2649) for every car but the player's (X=19..0): picks a target
     # speed from the segment ahead, derives a braking-proximity gap, integrates gap*4 into the
     # 16-bit car speed [car_speed_scaled:car_speed_frac] (with a $BE overflow reset), adds the speed

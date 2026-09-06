@@ -1423,7 +1423,7 @@ emulated stack). ⚠ The `race_class` scaling fork is **DEY-N, not `>= 2`**: the
 naive `>= 2` mismatched on the random-`race_class` cases. Named `seed_car_track_position` ($635D),
 `car_track_position` ($0128), `car_grid_base` ($04A0), `car_seed_index` ($4A) [INFERRED]).
 
-`FUN_27ed` ($27ED, #159 — the per-frame per-car **update engine**, called once a frame from the
+`drive_other_cars` ($27ED, #159 — the per-frame per-car **update engine**, called once a frame from the
 driving loop ($117E/$2649) over cars 19..0, skipping `player_car`. For each car it picks a target
 speed from the segment ahead, derives a braking-proximity gap, integrates gap×4 into the 16-bit car
 speed `[car_speed_scaled:car_speed_frac]` (with a $BE overflow reset to 0), adds the speed into

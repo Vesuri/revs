@@ -13086,7 +13086,7 @@ void move_and_draw_cars_core(void)
     uint8_t aheadSlot = mem[CAR_ORDER + car_ahead];    /* $263C LDX car_ahead / $263E LDY */
     mem[CAR_FLAGS_SHAPE + aheadSlot] &= 0x7Fu;         /* $2641-$2646 — the one slot NOT rejected */
 
-    FUN_27ed();                                        /* $2649 — the per-car update engine */
+    drive_other_cars();                                        /* $2649 — the per-car update engine */
     car_distance_marshal_in();                         /* check_car_pair walks every pair in
                                                           car_order, so the whole distance array */
     check_car_pair_core();                             /* $264C — overtaking / position changes */
@@ -13187,10 +13187,10 @@ SlotExit draw_car_field_core(uint8_t entryY, uint8_t entryV, uint8_t entryC)
     return draw_track_object_core(mem[CAR_ORDER + behind], y, v, c);
 }
 
-/* ----- TWIN #159: $27ED FUN_27ed — the per-frame per-car update engine -------------------------
+/* ----- TWIN #159: $27ED drive_other_cars — the per-frame per-car update engine -------------------------
  *
  * Called once per frame from the driving loop ($117E, $2649); both callers JSR $2692 immediately
- * after, so FUN_27ed's exit registers and flags are DEAD (fixture mask LIVE_NONE) — only mem[]
+ * after, so drive_other_cars's exit registers and flags are DEAD (fixture mask LIVE_NONE) — only mem[]
  * (math_lo/math_hi/shared_temp_76 among it) is compared.
  *
  * For every car (X = 19..0, skipping player_car) it:
@@ -13218,7 +13218,7 @@ SlotExit draw_car_field_core(uint8_t entryY, uint8_t entryV, uint8_t entryC)
 #define RACE_POSITION_OFFSET  0x5A1Au   /* race_position_offset — per-circuit race-mode gap offset */
 
 /* $28CE-$28E4 — the steering nudge itself, the tail five of the tests above branch to. */
-static void FUN_27ed_car_adjust(uint8_t x)
+static void car_steering_settle(uint8_t x)
 {
     uint8_t f    = (uint8_t)(mem[CAR_FLAGS_0 + x] & 0xBFu); /* $28CE LDA / $28D1 AND #$BF / $28D3 CLC */
     uint8_t st2b = mem[CAR_STATE_2 + x];
@@ -13231,7 +13231,7 @@ static void FUN_27ed_car_adjust(uint8_t x)
     }
 }
 
-static void FUN_27ed_car(uint8_t x)
+static void drive_one_car(uint8_t x)
 {
     /* The 6502 enters the speed chain at one of three points ($282F speed-calc, $285B decel,
        $287F integrate-only); the tests below pick which, and the chain then runs in order. */
@@ -13326,26 +13326,26 @@ static void FUN_27ed_car(uint8_t x)
     {
         uint8_t shape = mem[CAR_FLAGS_SHAPE + x];            /* $2896 LDA / $2899 ASL A */
         if (shape & 0x80u) return;                           /* $289A BCS $28E7 (old bit7) — next car */
-        if (shape & 0x40u) { FUN_27ed_car_adjust(x); return; }   /* $289C BMI $28CE (old bit6) */
-        if ((mem[CAR_FLAGS_0 + x] & 0x40u) == 0) { FUN_27ed_car_adjust(x); return; }  /* $28A1/$28A3 */
+        if (shape & 0x40u) { car_steering_settle(x); return; }   /* $289C BMI $28CE (old bit6) */
+        if ((mem[CAR_FLAGS_0 + x] & 0x40u) == 0) { car_steering_settle(x); return; }  /* $28A1/$28A3 */
         if (((mem[CAR_STATE_2 + x] ^ mem[CAR_FLAGS_0 + x]) & 0x80u) == 0) {           /* $28A8/$28AB */
-            FUN_27ed_car_adjust(x); return;
+            car_steering_settle(x); return;
         }
 
         uint8_t st2 = mem[CAR_STATE_2 + x];                  /* $28AD LDA car_state_2,X */
         if (st2 & 0x80u) {                                   /* $28B0 BPL $28C1 — bit7 set arm */
             if (st2 >= 0xECu) { mem[CAR_STATE_2 + x] = (uint8_t)(st2 - 1); return; } /* $28B2/$28B6 DEC/$28B9 */
             if (st2 >= 0xE2u) return;                        /* $28BB CMP #$E2 / $28BF BCS $28E7 */
-            FUN_27ed_car_adjust(x);                          /* $28BD BCC $28CE (st2 < $E2) */
+            car_steering_settle(x);                          /* $28BD BCC $28CE (st2 < $E2) */
         } else {                                             /* $28C1 — bit7 clear arm */
             if (st2 < 0x14u) { mem[CAR_STATE_2 + x] = (uint8_t)(st2 + 1); return; } /* $28C5 INC/$28C8 */
             if (st2 < 0x1Eu) return;                         /* $28CA CMP #$1E / $28CC BCC $28E7 */
-            FUN_27ed_car_adjust(x);                          /* fall to $28CE (st2 >= $1E) */
+            car_steering_settle(x);                          /* fall to $28CE (st2 >= $1E) */
         }
     }
 }
 
-void FUN_27ed(void)
+void drive_other_cars(void)
 {
     /* $27ED-$27EF: while the start lights are still counting down (bit7 set), do nothing */
     if (start_light_state & 0x80u) return;                   /* $27EF BMI (RTS at $27EC) */
@@ -13358,7 +13358,7 @@ void FUN_27ed(void)
         if (x == player_car) continue;                       /* $28EA CPX player_car / $28EC BEQ (skip) */
         car_distance_marshal_in_one(x);                      /* this car's slot only — the loop
                                                                 visits twenty of twenty-four */
-        FUN_27ed_car(x);                                     /* $28EE JMP $27F6 */
+        drive_one_car(x);                                     /* $28EE JMP $27F6 */
         car_distance_marshal_out_one(x);
     }
 }
@@ -14846,7 +14846,7 @@ void finish_race_core(void)
         if (state_flags & 0x80u)                     /* $1179/$117C BMI — aborted */
             return;
 
-        FUN_27ed();                                  /* $117E — drive the other nineteen cars */
+        drive_other_cars();                                  /* $117E — drive the other nineteen cars */
         check_car_pair();                            /* $1181 — and re-sort the running order.
                                                         ⚠ the SHIM, not the core: it marshals the
                                                         relocated car_distance array in, and the

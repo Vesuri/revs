@@ -1418,7 +1418,7 @@ void finish_race(void);                void finish_race__t6502(void);
  *   - the race, with every driver flagged home AND beyond the distance;
  *   - and one that LOOPS: practice in slot $13 two frames short of the bound, which reaches it
  *     on the second pass (loop_counter $FE -> $FF -> $00 carries loop_counter_hi $0D -> $0E).
- * The driving pass itself (FUN_27ed, check_car_pair, find_player_neighbours) is shared with the
+ * The driving pass itself (drive_other_cars, check_car_pair, find_player_neighbours) is shared with the
  * oracle, so what this gates is the run-out's own bookkeeping and its exit tests.
  *
  * ⚠⚠ COVERAGE LIMIT, by construction, and it is the third of the three explanations for a
@@ -3156,11 +3156,11 @@ static int test_seed_car_track_position(void)
     return fail;
 }
 
-void FUN_27ed(void);
-void FUN_27ed__t6502(void);
+void drive_other_cars(void);
+void drive_other_cars__t6502(void);
 
 /* --------------------------------------------------------------------------
-   $27ED FUN_27ed — the per-frame per-car UPDATE ENGINE  (twin #159)
+   $27ED drive_other_cars — the per-frame per-car UPDATE ENGINE  (twin #159)
 
    Runs once a frame over cars X=19..0 (skipping player_car): target speed from the segment
    ahead, a braking-proximity gap, gap*4 integrated into the 16-bit car speed, the speed added
@@ -3172,19 +3172,19 @@ void FUN_27ed__t6502(void);
    fill_random covers every branch of the speed/gap/steering trees across the 20 cars over many
    cases.  What it CANNOT reach on its own is the case that justifies writing math_lo/math_hi
    INLINE rather than caching: a mid-routine LAP WRAP, where the inner-loop track_pos_advance
-   fires lap_complete (twin #136), which overwrites $74/$75 with a BCD lap time while FUN_27ed is
+   fires lap_complete (twin #136), which overwrites $74/$75 with a BCD lap time while drive_other_cars is
    still running.  Both differential sides call the identical native track_pos_advance_core ->
    lap_complete_core, so the effect is byte-exact by construction — but only a twin that does NOT
    cache $74/$75 stays byte-exact.  So a slice of cases FORCES that wrap for one car. */
-static int test_FUN_27ed(void)
+static int test_drive_other_cars(void)
 {
     static uint8_t pre[65536];
     int fail = 0, printed = 0, t;
     int scale = 1;
     { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
     if (scale < 1) scale = 1;
-    register_fixture("FUN_27ed");
-    if (!want("FUN_27ed")) return 0;
+    register_fixture("drive_other_cars");
+    if (!want("drive_other_cars")) return 0;
 
     unsigned mask = LIVE_NONE;   /* both callers JSR $2692 immediately — no live exit register */
 
@@ -3206,7 +3206,7 @@ static int test_FUN_27ed(void)
         /* player_car ($6F): random 0..19 baseline (exercises the CPX-skip at any index) */
         uint8_t player = (uint8_t)(xs() % 20u);
 
-        /* session mode ($6C bit7): both ways — gates FUN_27ed's $284B race offset and, via
+        /* session mode ($6C bit7): both ways — gates drive_other_cars's $284B race offset and, via
            lap_complete, whether a forced lap's TIME is recorded */
         int race = (t & 1);
         pre[0x006Cu] = race ? (uint8_t)(0x80u | (xs() & 0x7Fu)) : (uint8_t)(xs() & 0x7Fu);
@@ -3248,19 +3248,19 @@ static int test_FUN_27ed(void)
 
         pre[0x006Fu] = player;
 
-        fail += diff_run("FUN_27ed", pre, c, FUN_27ed, FUN_27ed__t6502, mask, t, &printed);
+        fail += diff_run("drive_other_cars", pre, c, drive_other_cars, drive_other_cars__t6502, mask, t, &printed);
     }
 
     if (!earlyRet || !bodyRun || !raceMode || !practiceMode || !lapForced ||
         !decelSeen || !brakeSeen || !shapeSteer) {
-        printf("[VACUOUS] FUN_27ed: an arm was never reached "
+        printf("[VACUOUS] drive_other_cars: an arm was never reached "
                "(%d early, %d body, %d race, %d prac, %d lap, %d decel, %d brake, %d steer)\n",
                earlyRet, bodyRun, raceMode, practiceMode, lapForced, decelSeen, brakeSeen, shapeSteer);
         fail++;
     }
     printf("%-32s %7d cases, %d mismatch (must be 0)  live=none  "
            "(%d early/%d body, %d race/%d prac, %d lapwrap)\n",
-           "FUN_27ed", cases, fail, earlyRet, bodyRun, raceMode, practiceMode, lapForced);
+           "drive_other_cars", cases, fail, earlyRet, bodyRun, raceMode, practiceMode, lapForced);
     return fail;
 }
 
@@ -9982,7 +9982,7 @@ int main(int argc, char** argv)
     fail += test_menu_draw_gfx_bars();
     fail += test_parse_two_digit_ascii();
     fail += test_seed_car_track_position();
-    fail += test_FUN_27ed();
+    fail += test_drive_other_cars();
     fail += test_sort_cars_by_key();
     fail += test_shift_key_commands();
     fail += test_stage_nearby_car();
