@@ -1583,8 +1583,7 @@ static LoopVerdict race_session_end(RestartDepth* depth)
         return LOOP_RESTART;
     }
 
-    arg_x(0x30);                  /* the token for the "please wait" message */
-    print_message_pair();
+    print_message_pair_core(0x30);   /* the "please wait" message on both status rows */
     finish_race();                   /* race the remaining drivers to the finish */
 
     if (!(load_a(state_flags) & 0x80)) {
@@ -13604,16 +13603,16 @@ void reset_driving_variables_core(void)
     if (session_is_race & 0x80u) {
         lap_completed_flag  = 0x01u;                   /* $18A5 — A is still the #$01 from $1875 */
         position_swap_flag  = 0x01u;                   /* $18A7 */
-        arg_x(0x2Bu); print_message_upper_row();       /* $18AA — still transliterated */
-        arg_x(0x2Cu); print_message_lower_row();       /* $18AF */
+        print_message_upper_row_core(0x2Bu);           /* $18AA — the two race-start lines */
+        print_message_lower_row_core(0x2Cu);           /* $18AF */
         /* $18B4 — the player's grid slot as a 1-based BCD number */
         pass_count_bcd = position_to_bcd_core(zp_scratch_index).a;
     } else {
-        arg_x(0x28u); print_message_pair();            /* $1892 — both status rows */
+        uint8_t ambY = print_message_pair_core(0x28u); /* $1892 — both status rows */
         clear_race_clock_core(0x01u);                  /* $1897 */
-        /* $189C — cpu.Y is the ambient OSWRCH register the MOS text arm needs (a documented
-           cpu exception at this seam), not a value this routine computes. */
-        show_lap_time_lines_core(cpu.Y);
+        /* $189C — the OSWRCH ambient Y the MOS text arm needs is the offset the message script
+           ended on, not a value this routine computes. */
+        show_lap_time_lines_core(ambY);
         lap_time_show_timer = 0xDFu;                   /* $189F — the first-lap sentinel */
     }
 }
@@ -13650,10 +13649,10 @@ void reset_driving_variables_core(void)
        push overwrite it;
      - add_frame_time is one of the eight SED sites and its exit CARRY is a genuine input — the
        BCD seconds carry its own $17D6 PHP kept — and that carry is what decides $106A;
-     - print_message_pair is still transliterated, so it is still reached by register, and the
-       cursor set at $101B/$101D stays AMBIENT past its call.  Everything else this routine calls
-       is native and takes its inputs as arguments (twins #181-#191); where a cpu register is
-       still passed it is the OSWRCH ambient X/Y, which is state the MOS text arm reads, not a
+     - the cursor set at $101B/$101D stays AMBIENT past print_message_pair's call, which is why
+       it is carried in two locals and not recomputed.  Everything this routine calls is native
+       and takes its inputs as arguments (twins #181-#191, #206); the only cpu registers still
+       read are the OSWRCH ambient X/Y at entry, which is state the MOS text arm reads, not a
        value this routine computes.
 
    ⚠⚠ THE FIXTURE FOUND A LIVE BUG IN AN EXISTING SHIM, not in this twin: clear_race_clock's
@@ -13674,6 +13673,11 @@ void reset_driving_variables_core(void)
    --------------------------------------------------------------------------- */
 void update_lap_timers_core(void)
 {
+    /* ⭐ The OSWRCH cursor is genuinely AMBIENT here — it arrives in X/Y from whatever the body
+       called last and is handed on unchanged when the race arm prints nothing.  It is threaded
+       through these two locals so nothing but the entry read touches the cpu struct. */
+    uint8_t ambX = cpu.X, ambY = cpu.Y;
+
     if (session_is_race & 0x80u) {                    /* $0FFE/$1000 BPL — the practice arm */
         if (lap_completed_flag & 0x80u) {             /* $1002 BIT / $1004 BPL */
             lap_completed_flag = 0x00u;               /* $1008 — consume the credit */
@@ -13696,18 +13700,18 @@ void update_lap_timers_core(void)
                 | ((sum > 0xFFu) ? 0x01u : 0u)));                      /* C */
 
             uint8_t lapsBcd = position_to_bcd_core(lapsLeft).a;   /* $1018 — 1-based BCD */
-            /* $101B/$101D — the cursor stays AMBIENT past this call: print_message_pair and
-               update_position_display below are still reached through the 6502 ABI. */
-            arg_x(0x0Cu); arg_y(0x21u);
-            print_bcd_digits_at_core(lapsBcd, 0x0Cu, 0x21u);   /* $101F */
+            ambX = 0x0Cu; ambY = 0x21u;               /* $101B/$101D — and the cursor STAYS
+                                                         ambient past the two calls below */
+            print_bcd_digits_at_core(lapsBcd, ambX, ambY);   /* $101F */
 
             uint8_t pulled; PULL(pulled);             /* $1022 PLP */
             if (pulled & 0x80u) {                     /* $1023 BPL — negative: the laps ran out */
-                arg_x(0x35u); print_message_pair();   /* $1027 — the chequered-flag line */
+                ambY = print_message_pair_core(0x35u);/* $1027 — the chequered-flag line, and */
+                ambX = 0x2Du;                         /*   the script index it left in X */
             }
         }
         if (session_end_countdown == 0u)              /* $102A/$102C BNE */
-            update_position_display_core(cpu.X, cpu.Y);   /* $102E */
+            update_position_display_core(ambX, ambY);     /* $102E */
         return;
     }
 
@@ -13754,12 +13758,12 @@ void update_lap_timers_core(void)
         if (limit != elapsed) return;                 /* $1079 BNE — not there yet */
         if (qualify_msg_flags & 0x40u) return;        /* $107B BIT / $107D BVS — shown already */
         qualify_msg_flags = 0x40u;                    /* $107F */
-        arg_x(0x29u); print_message_upper_row();      /* $1085 — the target-minute line */
+        print_message_upper_row_core(0x29u);          /* $1085 — the target-minute line */
     } else {
         if (qualify_msg_flags & 0x80u) return;        /* $1089/$108B BMI — already ended */
         qualify_msg_flags     = 0xC0u;                /* $108F */
         session_end_countdown = 0x3Cu;                /* $1091 — 60 frames and out */
-        arg_x(0x2Au); print_message_upper_row();      /* $1097 — the session-over line */
+        print_message_upper_row_core(0x2Au);          /* $1097 — the session-over line */
     }
 }
 
@@ -15593,4 +15597,41 @@ void front_end_menus_core(void)
             } while (!(hypot_min_lo & 0x80u));       /* $654C BIT; BPL — until dismissed */
         } while (player_car != human_car_first);     /* $6552 */
     }                                                /* $6557 — round again, forever */
+}
+
+/* ===========================================================================
+   $17FC/$4D70/$4D74/$4D76  the STATUS-ROW PRINTERS                   (twin #206)
+   ---------------------------------------------------------------------------
+   The race view keeps two one-line message rows above the road, and every message in the game
+   goes out through these four entries.  Only the scan line differs: $21 is the LOWER row and $18
+   the UPPER one, both at column 1, and the body is text_script_interp on the caller's script.
+
+   print_message_pair is the "announce something" form: the caller's script on the lower row, then
+   the fixed script $2D on the upper one — the three callers (reset_driving_variables' session
+   opener, update_lap_timers' chequered flag and race_main_loop's session end) all want both lines.
+
+   The exit value is text_script_interp's live Y — the offset of the $FF that ended the script,
+   which print_standings_table passes on as the ambient OSWRCH register.
+   --------------------------------------------------------------------------- */
+uint8_t print_message_at_row_core(uint8_t row, uint8_t script)
+{
+    vdu_char_row    = row;                       /* $4D76 */
+    vdu_char_column = 0x01;                      /* $4D79 */
+    return text_script_interp_core(script);      /* $4D7E — falls through on the 6502 */
+}
+
+uint8_t print_message_lower_row_core(uint8_t script)
+{
+    return print_message_at_row_core(0x21, script);   /* $4D70 */
+}
+
+uint8_t print_message_upper_row_core(uint8_t script)
+{
+    return print_message_at_row_core(0x18, script);   /* $4D74 */
+}
+
+uint8_t print_message_pair_core(uint8_t script)
+{
+    print_message_lower_row_core(script);        /* $17FC */
+    return print_message_upper_row_core(0x2D);   /* $17FF — the fixed second line */
 }

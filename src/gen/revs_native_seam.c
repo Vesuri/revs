@@ -1475,3 +1475,12 @@ void tally_bcd_column(void) { cpu.Y = tally_bcd_column_core(cpu.X); }
 void front_end_menus(void)        { front_end_menus_core(); }
 void enter_practice_session(void) { enter_practice_session_core(); }
 void enter_session(void)          { enter_session_core(cpu.A); }
+
+/* $17FC/$4D70/$4D74/$4D76 the status-row printers (twin #206).  Entry X = the script index (and
+   A = the scan line at $4D76 only); exit Y is text_script_interp's live terminator offset, X is
+   the script index it ran, and A is dead at every call site — text_script_interp's own twin does
+   not model it either. */
+void print_message_at_row(void)    { cpu.Y = print_message_at_row_core(cpu.A, cpu.X); }
+void print_message_lower_row(void) { cpu.Y = print_message_lower_row_core(cpu.X); }
+void print_message_upper_row(void) { cpu.Y = print_message_upper_row_core(cpu.X); }
+void print_message_pair(void)      { cpu.Y = print_message_pair_core(cpu.X); cpu.X = 0x2Du; }

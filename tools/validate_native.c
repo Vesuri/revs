@@ -4764,6 +4764,104 @@ static int test_text_script_interp(void)
     return fail;
 }
 
+
+/* ============================================================================================
+ * $17FC/$4D70/$4D74/$4D76 — the STATUS-ROW PRINTERS (twin #206)
+ * --------------------------------------------------------------------------------------------
+ * Four thin entries onto one body: put the cursor on a status row (scan line $21 lower, $18
+ * upper, column 1) and run the caller's text script there.  print_message_pair does the lower
+ * row with the caller's script and then the upper row with the fixed script $2D.
+ *
+ * The differential is worth running even though the body is a native shim on both sides: what it
+ * compares is WHICH row each entry picks, the column, the fixed $2D second line, and the exit Y
+ * that update_lap_timers and reset_driving_variables hand on as the ambient OSWRCH register.
+ *
+ * A is dropped from the live mask: text_script_interp's own twin does not model it (its fixture
+ * runs LIVE_NONE for the same reason), so comparing it here would compare two stale bytes.
+ *
+ * SABOTAGE (each must FAIL, patch verified applied):
+ *   D87 the lower row prints at scan line $18                  -> 1000/4000
+ *   D88 the upper row prints at scan line $21                  -> 1000/4000
+ *   D89 the cursor column is 0, not 1                          -> 1000/4000
+ *   D90 the pair's second line is the caller's script, not $2D ->  983/4000
+ *
+ * ⚠ 1000 is a QUARTER, not a shortfall: the four entries share the 4000 cases, and all four are
+ *   VALIDATE_FUNCS members, so each oracle calls the NATIVE shims of the others.  A defect in
+ *   print_message_at_row therefore shows up on BOTH sides of the pair/lower/upper diffs and is
+ *   caught only by at_row's own quarter — the twin-#199 shape.  Verified by reading back which
+ *   entry names the MEM DIFF lines carry (D89: print_message_at_row, every one).
+ *   D90's 983 is the pair's quarter less the 17 cases that drew script $2D for themselves.
+ * ============================================================================================ */
+void print_message_pair(void);       void print_message_pair__t6502(void);
+void print_message_lower_row(void);  void print_message_lower_row__t6502(void);
+void print_message_upper_row(void);  void print_message_upper_row__t6502(void);
+void print_message_at_row(void);     void print_message_at_row__t6502(void);
+
+static int test_status_row_printers(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("print_message_pair");
+    register_fixture("print_message_lower_row");
+    register_fixture("print_message_upper_row");
+    register_fixture("print_message_at_row");
+
+    /* X (the script index, unchanged by the body) and Y (the script's terminator offset). */
+    unsigned mask = LIVE_X | LIVE_Y;
+    static const uint16_t IGN[] = { 0x01FEu, 0x01FFu };   /* the oracle frame's PHA/PHA residue */
+
+    int cases = 4000 * scale;      /* 1000 per entry */
+    int sawMos = 0, sawBmp = 0;
+
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        script_common_pre(pre);              /* a signed terminating leaf per index 0..$34 */
+        printer_common_pre(pre);             /* the char-row bases and a cursor in screen RAM */
+        c.D = 0;                             /* the text path is not one of the eight SED sites */
+        c.S = 0xFFu;
+        c.X = (uint8_t)(xs() % 0x35u);       /* the script index — never $35+, see script_common_pre */
+        c.Y = (uint8_t)xs();
+        c.A = (uint8_t)xs();
+
+        if (xs() & 1u) { pre[0x0064u] |= 0x80u; sawMos = 1; }   /* text_out_via_mos: the OSWRCH arm */
+        else           { pre[0x0064u] &= 0x7Fu; sawBmp = 1; }   /* ...or the bitmap arm */
+
+        set_ignore(IGN, 2);
+        switch (t & 3) {
+        case 0:
+            fail += diff_run("print_message_pair", pre, c, print_message_pair,
+                             print_message_pair__t6502, mask, t, &printed);
+            break;
+        case 1:
+            fail += diff_run("print_message_lower_row", pre, c, print_message_lower_row,
+                             print_message_lower_row__t6502, mask, t, &printed);
+            break;
+        case 2:
+            fail += diff_run("print_message_upper_row", pre, c, print_message_upper_row,
+                             print_message_upper_row__t6502, mask, t, &printed);
+            break;
+        default:
+            c.A = (uint8_t)(xs() & 0x3Fu);   /* $4D76 takes the scan line in A — keep it on screen */
+            fail += diff_run("print_message_at_row", pre, c, print_message_at_row,
+                             print_message_at_row__t6502, mask, t, &printed);
+            break;
+        }
+        set_ignore(0, 0);
+    }
+    if (!sawMos || !sawBmp) {
+        printf("[VACUOUS] status-row printers: one output arm never ran (mos %d bmp %d)\n",
+               sawMos, sawBmp);
+        fail++;
+    }
+    printf("%-24s %7d cases, %d mismatch (must be 0)  live=X,Y  (4 entries)\n",
+           "status-row printers", cases, fail);
+    return fail;
+}
+
 void menu_wait_key(void);
 void menu_wait_key__t6502(void);
 void platform_test_key_schedule(const unsigned char* codes, int n);  /* mode-4 clock schedule */
@@ -10460,6 +10558,7 @@ int main(int argc, char** argv)
     fail += test_undraw_plot_lines();
     fail += test_mirror_draw_car();
     fail += test_text_script_interp();
+    fail += test_status_row_printers();
     fail += test_menu_wait_key();
     fail += test_view_paint_lines();
     fail += test_view_producers();

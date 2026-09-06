@@ -555,6 +555,11 @@ MANUAL_FUNCS = set()
 # pick the twins — the Atari port chose them by reasoning and got the choice wrong
 # (docs/perf-method.md).
 VALIDATE_FUNCS = {
+    # ⭐ TWIN #206 — the STATUS-ROW PRINTERS: print_message_pair ($17FC), print_message_lower_row
+    # ($4D70), print_message_upper_row ($4D74) and print_message_at_row ($4D76).  Four thin
+    # routines, but they were text_script_interp's LAST transliterated caller, and seven sites in
+    # update_lap_timers and reset_driving_variables were reaching them by stuffing cpu.X.
+    0x17FC, 0x4D70, 0x4D74, 0x4D76,
     # ⭐⭐ TWIN #1, $4E5C irq1v_band_schedule — the 50 Hz body's raster-band state machine.
     # 51.1% of the frame lives in the band cycle and 10.8 ms of every 11.1 ms body tick is
     # this function (docs/perf-method.md §Inside the 51%).  It is ~80 6502 instructions,
