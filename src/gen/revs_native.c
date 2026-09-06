@@ -2206,7 +2206,7 @@ void load_section_triple_core(uint8_t destSection, uint8_t segmentByte)
 /* ⭐ WIDE-VALUE CLEANUP, mechanism (B): hypot_max ($7A/$7B) relocated out of mem[] into this
    native uint16_t.  It is the LARGER of the two ground-plane magnitudes bearing_to_section
    sorts, handed straight to point_distance_hypot — one producer, one consumer, both native, and
-   the shipping glue between them (FUN_2a5f, region_23d8) never touches the cells.  So the pair
+   the shipping glue between them (project_object_slot, region_23d8) never touches the cells.  So the pair
    travels in a single 68000 word instead of the two byte stores plus the load/shift/or the
    transliteration paid on every edge point of every frame.
 
@@ -2365,7 +2365,7 @@ void car_heading_marshal_out(void)
    docs/wide-value-cleanup.md: a shim whose core CONSUMES the bearing marshals the cells in, one
    whose core PRODUCES it unconditionally marshals them out, and one that produces it only
    CONDITIONALLY does both.  The shipping reader is the reason this pair needs the OUT at all:
-   FUN_2a5f, the car projector at $2A5F, is transliterated, calls the native bearing_to_section()
+   project_object_slot, the car projector at $2A5F, is transliterated, calls the native bearing_to_section()
    shim and then reads bearing_lo/bearing_hi into object_bearing ($0380/$0398).  Because that path
    races on Silverstone, `make determinism` genuinely gates it. */
 static uint16_t bearing_v;
@@ -3067,7 +3067,7 @@ uint8_t console_read_two_digits_core(void)
 /* ===========================================================================
    $635D  seed_car_track_position — place one car on the grid at (re)start  (#158)
    ---------------------------------------------------------------------------
-   Called per car by FUN_4d4d and tick_race_timers (the reset paths).  ⚠ NOT by
+   Called per car by reset_all_cars_for_session and tick_race_timers (the reset paths).  ⚠ NOT by
    console_io ($6300), whose tail appears to fall through into it: the BNE at $635B
    is taken unconditionally (the LDA #$20 two bytes earlier can never set Z), so that
    edge does not exist.
@@ -3088,7 +3088,7 @@ uint8_t console_read_two_digits_core(void)
    value, rotated on the Pro path).  It becomes a C local; the twin still writes $74's
    per-path 6502 exit value so the cell stays byte-exact until the final $74/$75
    relocation.  Exit ABI: X live (the decremented cursor the caller's loop reads); A and
-   the flags are dead (FUN_4d4d does TXA, the others return). */
+   the flags are dead (reset_all_cars_for_session does TXA, the others return). */
 static AddFlags negate8(uint8_t a);            /* defined below ($3452 abs8's cpu-free half) */
 static uint8_t  car_index_dec_core(uint8_t x); /* defined below ($507E) */
 uint8_t seed_car_track_position_core(uint8_t x, uint8_t entropy, uint8_t *mathlo_out)
@@ -11552,7 +11552,7 @@ Adc add_tally_to_lap_total_core(uint8_t column, uint8_t car)
    helpers around them.  D = 0 on every one of these paths (docs/static-map.md
    §Decimal mode: none of the eight SED sites is here), so the ADC/SBC byte
    arithmetic is plain binary and the twins spell it as such.  Where a value
-   crosses into a shared tail (car_gap_tail — now native twin #137 — FUN_1c0b, retire_car) or a
+   crosses into a shared tail (car_gap_tail — now native twin #137 — begin_scrape, retire_car) or a
    native leaf with a live-flag input (abs8, abs16_math), the seam reconstructs
    exactly the cpu inputs that leaf reads — nothing more.
    =========================================================================== */
@@ -12018,7 +12018,7 @@ GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn)
 
 
 /* ---------------------------------------------------------------------------
-   $0BCC  section_coord_add_delta  (twin #138)   — was FUN_0bcc
+   $0BCC  section_coord_add_delta  (twin #138)
    ---------------------------------------------------------------------------
    Integrates one signed direction step into a section's 3-component world coordinate:
 
@@ -12033,7 +12033,7 @@ GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn)
 
    The 6502 does this as three ADC lo / ADC hi byte-pair chains (CLC before each low add); on the
    D=0 road/placement path that is exactly a binary uint16_t add, so it is written as one here.
-   No flag escapes: FUN_12f7 does LDX straight after, and place_car_world_coords' AI branch
+   No flag escapes: build_road_section does LDX straight after, and place_car_world_coords' AI branch
    likewise — A/N/V/Z/C are all dead at both call sites. */
 void section_coord_add_delta_core(uint8_t dst, uint8_t src,
                                          const uint8_t dlo[3], const uint8_t dhi[3])
@@ -12054,10 +12054,10 @@ static void    lap_complete_core(uint8_t x);
 void           load_section_from_segment_core(uint8_t x, uint8_t y);
 
 /* ---------------------------------------------------------------------------
-   $124D  copy_section_height_to_side1  (twin #139)   — was FUN_124d
+   $124D  copy_section_height_to_side1  (twin #139)
    ---------------------------------------------------------------------------
    The road builder keeps two coordinate lists per section: side 0 at the section byte cursor X,
-   side 1 (the opposite road edge) at cursor + SECTION_SIDE1.  FUN_12f7 / FUN_122d build side 1's
+   side 1 (the opposite road edge) at cursor + SECTION_SIDE1.  build_road_section / load_section_from_segment build side 1's
    ground-plane pair (components 0 and 2) as side 0 plus the across-track normal, but the two
    edges sit at the same HEIGHT, so component 1 is just copied across here (both bytes). */
 void copy_section_height_to_side1_core(uint8_t x)
@@ -12070,7 +12070,7 @@ void copy_section_height_to_side1_core(uint8_t x)
 void copy_section_height_to_side1(void) { copy_section_height_to_side1_core(cpu.X); }
 
 /* ---------------------------------------------------------------------------
-   $13DA  advance_dir_on_segment_flag  (twin #143)   — was FUN_13da
+   $13DA  advance_dir_on_segment_flag  (twin #143)
    ---------------------------------------------------------------------------
    If bit 0 of the current segment's flags is set, advance segment_dir_index;
    otherwise do nothing (the 6502 tail-calls $13FA, a bare RTS on every circuit).
@@ -12086,7 +12086,7 @@ void advance_dir_on_segment_flag(void)
 }
 
 /* ---------------------------------------------------------------------------
-   $13E0  step_segment_dir_index  (twin #142)   — was FUN_13e0
+   $13E0  step_segment_dir_index  (twin #142)
    ---------------------------------------------------------------------------
    Advances segment_dir_index one track position along the direction tables,
    wrapping at track_dir_count, in whichever sense track_direction's bit 7 gives:
@@ -12108,7 +12108,7 @@ void step_segment_dir_index(void)
 }
 
 /* ---------------------------------------------------------------------------
-   $1442  build_section_step_delta  (twin #141)   — was FUN_1442
+   $1442  build_section_step_delta  (twin #141)
    ---------------------------------------------------------------------------
    Builds the signed 16-bit 3-component step delta that section_coord_add_delta then
    integrates into a section's coordinate.  Sign-extends the track's three direction bytes
@@ -12138,7 +12138,7 @@ void build_section_step_delta_core(uint8_t y)
 void build_section_step_delta(void) { build_section_step_delta_core(cpu.Y); }
 
 /* ---------------------------------------------------------------------------
-   $125A  derive_car_section_cursor  (twin #140)   — was FUN_125a
+   $125A  derive_car_section_cursor  (twin #140)
    ---------------------------------------------------------------------------
    Maps the walk-origin section cursor to the CAR's section cursor: subtract $60
    and, if that went negative, wrap by the $78-wide section ring (40 sections x
@@ -12152,7 +12152,7 @@ uint8_t derive_car_section_cursor_core(uint8_t cursor)
 }
 
 /* ---------------------------------------------------------------------------
-   $12F7  build_road_section  (twin #147)   — was FUN_12f7
+   $12F7  build_road_section  (twin #147)
    ---------------------------------------------------------------------------
    THE ROAD BUILDER.  Builds one live road section per call; build_road_section's callers loop it
    over shared_counter_42 to (re)generate the whole track walk, which is the bulk of the off-track
@@ -12285,9 +12285,9 @@ void build_road_section(void)
 }
 
 /* ---------------------------------------------------------------------------
-   $1267  cross_section_boundary  (twin #146)   — was FUN_1267
+   $1267  cross_section_boundary  (twin #146)
    ---------------------------------------------------------------------------
-   Commits the road walk crossing into a new section (called by FUN_12f7 after track_pos_advance /
+   Commits the road walk crossing into a new section (called by build_road_section after track_pos_advance /
    track_pos_retreat reports a section boundary was crossed).  It marks the near edge points to be
    scrolled next frame, loads the new section's world geometry, and clears the section's flag byte.
 
@@ -12334,7 +12334,7 @@ void cross_section_boundary(void)
 }
 
 /* ---------------------------------------------------------------------------
-   $122D  load_section_from_segment  (twin #145)   — was FUN_122d
+   $122D  load_section_from_segment  (twin #145)
    ---------------------------------------------------------------------------
    Builds one live section's world geometry from its track-file segment record.  A track segment
    is an 8-byte record whose fields 1..6 are three-plus-three 16-bit coordinates (low byte in the
@@ -12376,9 +12376,9 @@ void load_section_from_segment_core(uint8_t x, uint8_t y)
 void load_section_from_segment(void) { load_section_from_segment_core(cpu.X, cpu.Y); }
 
 /* ---------------------------------------------------------------------------
-   $150E  step_section_curve  (twin #144)   — was FUN_150e
+   $150E  step_section_curve  (twin #144)
    ---------------------------------------------------------------------------
-   The section-CURVE stepper, a leaf of the FUN_12f7 road-builder cluster.  It writes one byte,
+   The section-CURVE stepper, a leaf of the build_road_section road-builder cluster.  It writes one byte,
    section_curve[section_cursor], describing the curvature the road should show at the section the
    walk is filling, and it carries a small marker state machine between calls in four zero-page
    cells (near_curve_scale/_marker_countdown/_ramp_width/_curve_signed).
@@ -12410,7 +12410,7 @@ void load_section_from_segment(void) { load_section_from_segment_core(cpu.X, cpu
        store-flipped.
 
    D=0 on this path (render/geometry); every arithmetic step is plain binary.  No flags or registers
-   escape — the sole caller (the $13CC region inside FUN_12f7) returns immediately after — so the
+   escape — the sole caller (the $13CC region inside build_road_section) returns immediately after — so the
    shim is a bare void wrapper. */
 void step_section_curve(void)
 {
@@ -12496,8 +12496,8 @@ void step_section_curve(void)
    mask, the 6502's PHP/PLP).  All circuits keep the AND opcode, so a different opcode is the
    unhandled case, faithfully reproduced.
 
-   The tail (from $29F4) is the object queue: FUN_2a5d dispatches on object_dist_hi, and for a
-   near car ahead of car_behind the AI branch runs build_section_step_delta / step_delta_halve / section_coord_add_delta / FUN_2a5f.
+   The tail (from $29F4) is the object queue: project_object_coord dispatches on object_dist_hi, and for a
+   near car ahead of car_behind the AI branch runs build_section_step_delta / step_delta_halve / section_coord_add_delta / project_object_slot.
    Those are the real generated routines, called with the registers the transliteration set, so
    they cancel in the differential — the twin's job is the two loops and the coordinate adds.
    --------------------------------------------------------------------------- */
@@ -13003,7 +13003,6 @@ void track_pos_retreat(void)                     /* exit ABI: C only */
 
 /* ------------------------------------------------------------------------------------------------
  * $109B  full_track_scan_rebuild  —  NATIVE DRIVER (STAGE 5), the root of the crash-freeze subtree.
- * Was FUN_109b.
  *
  * reset_driving_variables calls this on a crash / session reset.  With the off-line-scan flag
  * (track_scan_active bit 7) raised — so lap_complete ignores the artificial track motion — it
@@ -13849,7 +13848,7 @@ void update_lap_timers_core(void)
 }
 
 /* ---------------------------------------------------------------------------
-   $28F2  stage_nearby_car  (twin #162)   — was FUN_28f2
+   $28F2  stage_nearby_car  (twin #162)
    ---------------------------------------------------------------------------
    Called twice per frame by move_and_draw_cars to place one nearby car into the view.  On entry
    X is a car_order position; the shim resolves the car slot = car_order[X] and stows it in
@@ -15125,7 +15124,7 @@ void finish_race_core(void)
 /* ================================================================================================
  * $43D0 / $43E7  print_lap_value_field / print_lap_value_from_mid — TWIN #196
  * ------------------------------------------------------------------------------------------------
- * ONE LAP-TIME COLUMN of the standings/results table (FUN_65d3's two call sites are the only
+ * ONE LAP-TIME COLUMN of the standings/results table (print_standings_table's two call sites are the only
  * callers).  The value is car `x`'s two low BCD bytes of car_lap_* — mid and lo — printed as a
  * padded field with a space either side:
  *
@@ -15134,7 +15133,7 @@ void finish_race_core(void)
  *                                 printed as "00": two more spaces stand in for it, the mask
  *                                 steps BACK one position, and only the low byte prints.
  *   $43E7 print_lap_value_from_mid  the same field with the leading byte supplied by the caller
- *                                 (FUN_65d3 hands it car_lap_hi[x] and its own mask $28), and no
+ *                                 (print_standings_table hands it car_lap_hi[x] and its own mask $28), and no
  *                                 leading spaces.
  *
  * Both fall through the same tail at $43EA — the low byte then one trailing space — so the exit
@@ -15182,14 +15181,14 @@ TextExit print_lap_value_field_core(uint8_t x, uint8_t y)
  *   $3E60 set_row_rule_glyphs   picks the row's pair of rule glyphs and PATCHES them into the
  *                               script that draws the column rule
  *   $3C6F print_race_class_name runs the script that names the class
- * Both are result-only: their exit registers and flags are dead at every caller (FUN_65d3 reloads
+ * Both are result-only: their exit registers and flags are dead at every caller (print_standings_table reloads
  * X immediately, and text_script_interp's own exit ABI is dead by its twin's contract).
  * ================================================================================================ */
 
 #define ROW_RULE_GLYPH_TBL 0x3E74u   /* row_rule_glyph_tbl: 12 glyph codes, read at +X and +2+X */
 #define TEXT_SCRIPT_1F     0x3580u   /* text_script_1f: the column-rule script's own bytes */
 
-/* $3E60 — the rule's two glyphs are chosen by the table MODE (shared_counter_42, which FUN_65d3
+/* $3E60 — the rule's two glyphs are chosen by the table MODE (shared_counter_42, which print_standings_table
    seeded from its mode nibble: $0, $4 or $8) and the ROW's parity, and written straight into
    script $1F's byte string at offsets +5 and +3.  The script is run twice per row, either side of
    the driver name, so patching it is how one script draws six different rules.
@@ -15830,7 +15829,7 @@ uint8_t console_io_core(uint8_t ptrLo, uint8_t ptrHi, uint8_t width)
    with a lap of margin.
 
    ⚠ These were the last unnamed transliterated routines reachable in production
-   (FUN_1433 / FUN_12f3 / FUN_1420 / FUN_140b / FUN_13fb).
+   (step_walk_one_segment / build_section_ahead / rebuild_walk_reversed / rebuild_walk_backward / reverse_walk_direction).
    =========================================================================== */
 
 /* $1433 — step the PLAYER one segment along the walk.  `against` is the caller's carry: the
