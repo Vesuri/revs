@@ -261,7 +261,7 @@ SlotExit draw_car_field_core(uint8_t entryY, uint8_t entryV, uint8_t entryC);
    through its core so the whole hot path is core-to-core with no 6502-ABI shim hops. */
 static void read_driving_controls_core(void);
 CameraExit apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC);
-void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1);
+GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1);
 SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);
 static void build_road_sign_core(void);
 
@@ -3712,47 +3712,52 @@ static uint8_t road_side_walk(uint8_t sideSelect, uint8_t firstPoint)
    build_track_geometry calls it inline (below) and three of the five expansion circuits call
    it from their own hook code at $56EE, which is why it needs a 6502-ABI entry as well: the
    horizon point arrives in Y and the half-width leaves in A. */
-void horizon_half_width_at_core(unsigned horizonPoint)
+uint8_t horizon_half_width_at_core(unsigned horizonPoint)
 {
     /* $253B — the two sides' x at the horizon point, differenced.  D=0 on the geometry path
        (static-map §Decimal mode), so this is a plain 8-bit subtract, and its own sign (bit 7)
        is what abs8 negated on.  The subtract's C/V/Z are dead (abs8 overwrote them when it
-       negated, and on the keep path they reach build_track_geometry's exit UNREAD); cpu.A is
-       not read after this routine either — horizon_half_width_at is the last call in the core. */
+       negated, and on the keep path they reach build_track_geometry's exit UNREAD). */
     uint8_t diff = (uint8_t)(mem[EDGE_X_HI_TBL + horizonPoint] -
                              mem[EDGE_X_HI_TBL + EDGE_HALF + horizonPoint]);
     uint8_t mag  = (diff & 0x80u) ? negate8(diff).hi : diff;    /* |diff| — cpu-free abs8 */
 
-    /* ⚠ Exit cpu.A IS part of build_track_geometry's ABI (its fixture compares A): it is the
-       half-width on both compute arms, diff on the trap fall-through, the hook's own A on the
-       circuit arm.  The abs8 cpu round-trip is gone; only that one exit-register write remains. */
+    /* ⚠ The RETURN VALUE is part of build_track_geometry's exit ABI (its fixture compares A):
+       the half-width on both compute arms, the unhalved difference on either trap
+       fall-through — the 6502 has it in A from the subtract and executes no LDA on those
+       paths — and the hook's own A on the circuit arm. */
     if (mem[SMC_HALF_WIDTH_CALL] == 0x20 && mem[SMC_HALF_WIDTH_CALL + 3] == 0x4A) {           /* unpatched: Silverstone */
         horizon_half_width = (uint8_t)(mag >> 1);               /* $2549 LSR A — half the width */
-        cpu.A = horizon_half_width;
-    } else if (mem[SMC_HALF_WIDTH_CALL] == 0x20 && mem[SMC_HALF_WIDTH_CALL + 3] == 0xEA) {    /* a circuit's own call + NOP */
+        return horizon_half_width;
+    }
+    if (mem[SMC_HALF_WIDTH_CALL] == 0x20 && mem[SMC_HALF_WIDTH_CALL + 3] == 0xEA) {          /* a circuit's own call + NOP */
         uint16_t target = (uint16_t)(mem[SMC_HALF_WIDTH_CALL + 1] | (mem[SMC_HALF_WIDTH_CALL + 2] << 8));
         if (target == 0x3450) {
             horizon_half_width = mag;               /* the abs8 hook, then NOP (no halving) */
-            cpu.A = horizon_half_width;
-        } else if (target >= 0x5300 && target <= 0x5A25) {
+            return horizon_half_width;
+        }
+        if (target >= 0x5300 && target <= 0x5A25) {
             /* Circuit-hook seam: the hook READS A and its sign N, so re-establish the 6502
                entry ABI before dispatching, then hand its own exit A back verbatim. */
             cpu.A = diff;
             cpu.N = (diff >> 7) & 1u;
             revs_track_hook(target);
             horizon_half_width = cpu.A;
-        } else { cpu.A = diff; platform_smc_unhandled(SMC_HALF_WIDTH_CALL, target); return; }
-    } else {
-        cpu.A = diff;
-        platform_smc_unhandled(SMC_HALF_WIDTH_CALL, mem[SMC_HALF_WIDTH_CALL]);
+            return horizon_half_width;
+        }
+        platform_smc_unhandled(SMC_HALF_WIDTH_CALL, target);
+        return diff;
     }
+    platform_smc_unhandled(SMC_HALF_WIDTH_CALL, mem[SMC_HALF_WIDTH_CALL]);
+    return diff;
 }
 
 /* `firstPoint` per side: the cursor each walk starts from.  They are 6 and $2E = 6 + 40 — the
    same offset into each half of the 2x40 edge arrays, which is what makes the two lists
    parallel and lets everything downstream address a side by adding 40. */
-void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1)
+GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1)
 {
+    GeoExit ex;                      /* the routine's own exit A/X/Y — live=AXY at $24F6 */
     GEO_COUNT(g_geoFrames);
     horizon_extent = 0;              /* $24F6: the road reaches nowhere until a walk says so */
     /* the nearest point of each side, and last frame's clamp */
@@ -3769,8 +3774,8 @@ void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1)
     GEO_PHASE(GEO_PHASE_WALK1);
     /* road_edge_walk leaves the last section byte in X ($24B4 TAX / the off-axis arm), and it
        sits in the register untouched through the horizon-fold tail below to become this
-       routine's own exit X ($24F6, live=AXY).  Model that by parking it now. */
-    cpu.X = road_side_walk(0x80, firstPointSide1);
+       routine's own exit X. */
+    ex.x = road_side_walk(0x80, firstPointSide1);
     GEO_PHASE(GEO_PHASE_TAIL);
 
     /* $251D-$2529 — WHICH POINT IS THE HORIZON?  The walks record it as an index into
@@ -3787,7 +3792,7 @@ void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1)
     /* The `TAY` at $2528 — and it has to happen HERE, not at the tail that reads it: both
        SMC sites below are exits, and on the trap path Y is already the horizon point.  (The
        first version set it after the dispatch and 99 of 400 fixture cases said so.) */
-    arg_y((uint8_t)horizonPoint);
+    ex.y = (uint8_t)horizonPoint;
     horizon_index_prev = (uint8_t)horizonPoint;
 
     /* $252B-$2533 — and the horizon can never be the top line of the 80-line space: $4E is
@@ -3808,14 +3813,16 @@ void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1)
     } else if (mem[SMC_GEOMETRY_STORE] == 0x20) {
         uint16_t target = (uint16_t)(mem[SMC_GEOMETRY_STORE + 1] | (mem[SMC_GEOMETRY_STORE + 2] << 8));
         if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
-        else { platform_smc_unhandled(SMC_GEOMETRY_STORE, target); return; }
+        else { platform_smc_unhandled(SMC_GEOMETRY_STORE, target); ex.a = (uint8_t)horizonLine; return ex; }
     } else {
         platform_smc_unhandled(SMC_GEOMETRY_STORE, mem[SMC_GEOMETRY_STORE]);
-        return;
+        ex.a = (uint8_t)horizonLine;   /* the trap paths bail with the stored line still in A */
+        return ex;
     }
 
-    horizon_half_width_at_core(horizonPoint);
+    ex.a = horizon_half_width_at_core(horizonPoint);
     GEO_PHASE(5);   /* reopen the enclosing phase: its remainder is the driver + the return */
+    return ex;
 }
 
 /* The 6502-ABI shim.  Both walk cursors are constants in the 6502; they are arguments here

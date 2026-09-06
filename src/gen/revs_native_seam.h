@@ -100,6 +100,8 @@
 
 /* ---- exit-struct typedefs (moved out of revs_native.c) ---- */
 typedef struct { uint8_t a, x, y, n, z, v, c; } SlotExit;
+/* build_track_geometry's exit ABI: live=AXY, flags a byproduct. */
+typedef struct { uint8_t a, x, y; } GeoExit;
 typedef struct { uint8_t val, carry; } Adc;
 typedef struct {
     unsigned byte;   /* A: the pixel byte the chain carries left to right */
@@ -353,7 +355,7 @@ CameraExit apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC);
 void arg_a(uint8_t v);
 void bearing_to_section_core(uint8_t sectionByte, uint8_t origin);
 SignOriginExit build_sign_origin_core(uint8_t offset, uint8_t shift);
-void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1);
+GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1);
 unsigned car_gap_lo_core(uint8_t a, uint8_t b);
 GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn);
 StageNearbyCar stage_nearby_car_core(uint8_t gapA, unsigned gapFar, uint8_t slot);
@@ -552,7 +554,7 @@ RoadSide road_edge_side_apply(uint8_t sideSelect);
 void road_edge_start_core(uint8_t nearSlotCount, uint8_t halfStride, uint8_t scratchSection, uint8_t pointLimit, uint8_t staleHorizonCap);
 uint8_t road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex, uint8_t midSlot, uint8_t pointCap, uint8_t offAxis);
 uint8_t road_edge_walk_resume_core(uint8_t section, uint8_t midSlot, uint8_t pointCap, uint8_t offAxis);
-void horizon_half_width_at_core(unsigned horizonPoint);
+uint8_t horizon_half_width_at_core(unsigned horizonPoint);
 uint8_t scale_by_track_gradient_tail_core(uint8_t value, int negative);
 int road_span_advance_core(uint8_t y);
 AddFlags rotate_accum_by_steer_core(void);

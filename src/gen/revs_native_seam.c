@@ -158,10 +158,10 @@ void road_edge_walk_resume(void)
     edge_nearest_marshal_out();
 }
 
-/* $253B — the horizon point in Y, the half-width out in A (the core writes cpu.A itself). */
+/* $253B — the horizon point in Y, the half-width out in A. */
 void horizon_half_width_at(void)
 {
-    horizon_half_width_at_core(cpu.Y);
+    cpu.A = horizon_half_width_at_core(cpu.Y);
 }
 
 /* $461B — the gradient scaler's tail.  ⭐ THE SIGN COMES OFF THE 6502 STACK: the caller's PHP
@@ -183,7 +183,10 @@ void build_track_geometry(void)
     car_heading_marshal_in();             /* every bearing it emits is measured against it */
     hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     edge_nearest_marshal_in();            /* it ARMS the high lane and keeps the low one */
-    build_track_geometry_core(0x06, 0x2E);
+    GeoExit ex = build_track_geometry_core(0x06, 0x2E);
+    /* live=AXY: A is the horizon half-width, X the walk's last section byte, Y the horizon
+       point.  The flags are a byproduct nothing downstream reads. */
+    cpu.A = ex.a; cpu.X = ex.x; cpu.Y = ex.y;
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
     edge_nearest_marshal_out();
 }
