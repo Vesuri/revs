@@ -1289,6 +1289,116 @@ static int test_driver_name_pages(void)
 }
 
 /* ================================================================================================
+ * ⭐ TWIN #207 — $6300 console_io, THE LINE EDITOR, and the last transliterated callee of any
+ * native core (console_read_two_digits and read_driver_name were reaching it through A/Y/X).
+ *
+ * Entered with the field's address in A/Y and its width in X, so the fixture sweeps all three:
+ * four kinds of buffer base (zero page, plain RAM, the $3000 block area and the MODE 7 page —
+ * $0074 among them, which is the real caller's) against widths 0..16 including the two the game
+ * actually asks for (2 and $0C).  The typist (platform_test_rdch_seq) is drawn to hit every arm:
+ * printable stores, a DELETE rub-out, a DELETE at column 0 (which restarts the line), a leading
+ * space, a control code, a byte above $7F, an over-length line (the bell) and a short line (the
+ * space-pad tail).  Past the end of the script rdch answers CR, so termination is by construction.
+ *
+ * ⚠ Its whole visible output is the field it writes plus the OS calls it makes, so the MOS trace
+ * is half the compare here: every accepted key is an OSWRCH, and the two OSBYTEs at entry are the
+ * stream select and the buffer flush.  A/X/Y are all live (console_read_two_digits reads the exit
+ * Y as the number of characters to un-echo, and the exit X as the ambient OSWRCH register).
+ *
+ * ⚠ THE ESCAPE ARM ($6345) IS UNREACHABLE, deliberately: src/platform/mos.cpp's OSRDCH forces
+ * C=0, so no fixture here can reach it.  It is the second of the three explanations for a
+ * surviving sabotage — unreachable by construction — and the reason no defect is planted in it.
+ *
+ * SABOTAGE (each must FAIL, patch verified applied; counts measured, not predicted):
+ *   D91 the leading-space guard is dropped                ->  156/2000
+ *   D92 DELETE below column 0 keeps the line, not resets  ->  132/2000
+ *   D93 the full field stores the key as well as belling  ->  821/2000
+ *   D94 the pad tail writes $00 instead of $20            -> 1124/2000
+ * The four counts differ because each arm has its own frequency in the typist's draw: a leading
+ * space and a column-0 DELETE are one key in twenty EACH and only count when they land first,
+ * the bell needs a line longer than the field, and the pad needs one shorter.
+ * ============================================================================================= */
+void console_io(void);  void console_io__t6502(void);
+
+static int test_console_io(void)
+{
+    static uint8_t pre[65536];
+    static const uint16_t IGN[] = { 0x01FE, 0x01FF };
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("console_io");
+    if (!want("console_io")) return 0;
+
+    {
+        int sub = 0, cases = 2000 * scale;
+        int sawStore = 0, sawDelete = 0, sawRestart = 0, sawLeadSpace = 0;
+        int sawCtrl = 0, sawHigh = 0, sawBell = 0, sawPad = 0, sawExact = 0;
+        set_ignore(IGN, (int)(sizeof IGN / sizeof IGN[0]));
+        for (t = 0; t < cases; t++) {
+            unsigned char keys[48];
+            int n = 0, i, typed = 0;
+            uint16_t base;
+            uint8_t width;
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            printer_common_pre(pre);
+            c.D = 0;
+            c.S = 0xFFu;
+
+            switch (xs() & 3u) {                     /* where the field lives */
+                case 0:  base = 0x0074u; break;      /*   the wing prompt's own buffer */
+                case 1:  base = (uint16_t)(0x0C00u + (xs() % 0x0100u)); break;
+                case 2:  base = (uint16_t)(0x3000u + (xs() % 0x0400u)); break;
+                default: base = (uint16_t)(0x7C00u + (xs() % 0x0300u)); break;
+            }
+            width = (uint8_t)((xs() & 1u) ? ((xs() % 3u) ? 0x0Cu : 0x02u)   /* the real widths */
+                                          : (uint8_t)(xs() % 17u));        /* ...and 0..16 */
+            c.A = (uint8_t)(base & 0xFFu);
+            c.Y = (uint8_t)(base >> 8);
+            c.X = width;
+
+            int want_keys = (int)(xs() % 22u);
+            for (i = 0; i < want_keys && n < 44; i++) {
+                unsigned r = xs() % 20u;
+                if (r == 0u) {                       /* DELETE — a rub-out, or a line restart */
+                    keys[n++] = 0x7Fu;
+                    if (typed) { typed--; sawDelete = 1; } else { typed = 0; sawRestart = 1; }
+                } else if (r == 1u) {                /* a control code: ignored */
+                    keys[n++] = (unsigned char)(xs() % 0x0Du); sawCtrl = 1;
+                } else if (r == 2u) {                /* above DELETE: ignored */
+                    keys[n++] = (unsigned char)(0x80u + (xs() % 0x80u)); sawHigh = 1;
+                } else if (r == 3u) {                /* a space — leading, it is dropped */
+                    keys[n++] = 0x20u;
+                    if (typed == 0) sawLeadSpace = 1; else typed++;
+                } else {
+                    keys[n++] = (unsigned char)(0x21u + (xs() % 0x5Eu));
+                    if (typed < width) { typed++; sawStore = 1; } else sawBell = 1;
+                }
+            }
+            keys[n++] = 0x0Du;                       /* RETURN ends the line */
+            if (typed >= width) sawExact = 1; else sawPad = 1;
+            platform_test_rdch_seq(keys, n);
+
+            sub += diff_run("console_io", pre, c, console_io, console_io__t6502,
+                            LIVE_A | LIVE_X | LIVE_Y, t, &printed);
+        }
+        set_ignore(0, 0);
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,Y + the MOS trace\n",
+               "console_io", cases, sub);
+        if (!(sawStore && sawDelete && sawRestart && sawLeadSpace &&
+              sawCtrl && sawHigh && sawBell && sawPad && sawExact)) {
+            printf("VACUOUS: console_io missed a store, rub-out, restart, lead space, control code,"
+                   " high byte, bell, pad or exact-fit case\n");
+            fail++;
+        }
+    }
+    return fail;
+}
+
+/* ================================================================================================
  * ⭐ TWIN #201 — $3EE0 console_read_two_digits, THE NUMBER PROMPT that will not take no for an
  * answer, and parse_two_digit_ascii's last transliterated caller.
  *
@@ -10524,6 +10634,7 @@ int main(int argc, char** argv)
     fail += test_standings_leaves();
     fail += test_dismiss_waiters();
     fail += test_driver_name_pages();
+    fail += test_console_io();
     fail += test_console_number();
     fail += test_wing_prompt();
     fail += test_lap_reset_and_tally();

@@ -1484,3 +1484,11 @@ void print_message_at_row(void)    { cpu.Y = print_message_at_row_core(cpu.A, cp
 void print_message_lower_row(void) { cpu.Y = print_message_lower_row_core(cpu.X); }
 void print_message_upper_row(void) { cpu.Y = print_message_upper_row_core(cpu.X); }
 void print_message_pair(void)      { cpu.Y = print_message_pair_core(cpu.X); cpu.X = 0x2Du; }
+
+void console_io(void)
+{
+    cpu.A = console_io_core(cpu.A, cpu.Y, cpu.X);
+    cpu.X = 0x00u;                                   /* every OSBYTE it issues returns X = 0 */
+    cpu.Y = shared_temp_77;                          /* the field width the CPY exited on */
+    cpu.Z = 1; cpu.C = 1; cpu.N = 0;                 /* $6352 CPY, equal */
+}

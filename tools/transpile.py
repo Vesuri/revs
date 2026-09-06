@@ -555,6 +555,10 @@ MANUAL_FUNCS = set()
 # pick the twins — the Atari port chose them by reasoning and got the choice wrong
 # (docs/perf-method.md).
 VALIDATE_FUNCS = {
+    # $6300 console_io — the game's only line editor, and the LAST transliterated callee
+    # of any native core (console_read_two_digits and read_driver_name were reaching it by
+    # stuffing A/Y/X).  Twin #207.
+    0x6300,
     # ⭐ TWIN #206 — the STATUS-ROW PRINTERS: print_message_pair ($17FC), print_message_lower_row
     # ($4D70), print_message_upper_row ($4D74) and print_message_at_row ($4D76).  Four thin
     # routines, but they were text_script_interp's LAST transliterated caller, and seven sites in

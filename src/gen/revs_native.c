@@ -3004,22 +3004,22 @@ void prompt_wing_settings_core(void)
    the caller ($3C50) stores it straight into a wing setting and X/Y/flags are dead
    there.
 
-   ⚠ console_io ($6300) is still transliterated, so its arguments go through the
-   6502 registers — A/Y the buffer address ($0074, i.e. math_lo/math_hi), X the field
-   width — and so does the ONE value this routine reads back out of it: the exit Y,
-   which console_io leaves holding the field width and which is exactly the number of
-   characters the DELETE loop has to undo.
+   The one value it reads back out of console_io ($6300) is that routine's exit Y — the
+   field width, and so exactly the number of echoed characters the DELETE loop has to
+   undo.  Since twin #207 that is a constant here (the line editor always returns with
+   the field full), and the ambient OSWRCH register it hands the DELETEs is console_io's
+   exit X, which is 0 because every OSBYTE returns X = 0.
    --------------------------------------------------------------------------- */
 uint8_t console_read_two_digits_core(void)
 {
     for (;;) {                                       /* $3EE0 — ask until the pair is valid */
         ParseNum p;
 
-        arg_a(0x74u); arg_y(0x00u); arg_x(0x02u);    /* $3EE0-$3EE4 — buffer $0074, width 2 */
-        console_io();                                /* $3EE6 */
+        console_io_core(0x74u, 0x00u, 0x02u);        /* $3EE0-$3EE6 — buffer $0074, width 2 */
 
-        uint8_t y = cpu.Y;                           /* the characters console_io echoed */
-        uint8_t x = cpu.X;                           /* ...and the ambient OSWRCH register */
+        uint8_t y = 0x02u;                           /* the characters console_io echoed: the */
+                                                     /*   field is always full when it returns */
+        uint8_t x = 0x00u;                           /* ...and its exit X, every OSBYTE's X */
 
         parse_two_digit_ascii_core(math_lo, math_hi, &p);   /* $3EE9 */
         if (p.writeMathlo) math_lo = p.mathlo;       /* $74 — the per-path 6502 exit value */
@@ -3033,7 +3033,10 @@ uint8_t console_read_two_digits_core(void)
 /* ===========================================================================
    $635D  seed_car_track_position — place one car on the grid at (re)start  (#158)
    ---------------------------------------------------------------------------
-   Called per car by FUN_4d4d, tick_race_timers and console_io (the reset paths).
+   Called per car by FUN_4d4d and tick_race_timers (the reset paths).  ⚠ NOT by
+   console_io ($6300), whose tail appears to fall through into it: the BNE at $635B
+   is taken unconditionally (the LDA #$20 two bytes earlier can never set Z), so that
+   edge does not exist.
    Turns a free-running-timer entropy byte into a per-car track position:
 
      * read USRVIA_T2CL (a clock read used as entropy) and keep its bit 7 as the sign;
@@ -14815,16 +14818,14 @@ void prompt_driver_ready_core(void)
 /* $66D4 read_driver_name — TWIN #200.  The other half of the pair, and the only routine in the
    game that WRITES driver_name_table: it hands console_io the address of the player's own name
    row and a field width of twelve, and the line editor types straight into the table.
-   ⚠ console_io ($6300) is still transliterated, so its arguments go through the 6502 registers —
-   A/Y the pointer, X the width.  Exit ABI dead (the sole caller runs a session next). */
+   Exit ABI dead (the sole caller runs a session next). */
 void read_driver_name_core(void)
 {
     NamePtr p;
 
     driver_name_address_core(player_car, &p);        /* $66D4-$66D6 */
     math_lo = p.scratch;                             /* $74 — the dead 6502 intermediate */
-    arg_a(p.lo); arg_y(p.hi); arg_x(0x0Cu);          /* $66D9 LDX #$0C, with A/Y still the pointer */
-    console_io();                                    /* $66DB */
+    console_io_core(p.lo, p.hi, 0x0Cu);              /* $66D9-$66DB — a twelve-character field */
 }
 
 /* $1B84 update_position_display — TWIN #191.  The race-arm position readout.  pass_count_bcd holds
@@ -15634,4 +15635,85 @@ uint8_t print_message_pair_core(uint8_t script)
 {
     print_message_lower_row_core(script);        /* $17FC */
     return print_message_upper_row_core(0x2D);   /* $17FF — the fixed second line */
+}
+
+/* ===========================================================================
+   $6300  console_io — THE LINE EDITOR  (twin #207)
+   ---------------------------------------------------------------------------
+   The game's only text-input routine: read a fixed-width field from the keyboard
+   into memory, echoing as it goes.  Two callers, both in the pits —
+   console_read_two_digits ($3EE0) types a two-character wing setting into
+   math_lo/math_hi, and read_driver_name ($66D4) types a twelve-character name
+   straight into driver_name_table.
+
+     * select the keyboard as the input stream (OSBYTE 2) and flush its buffer
+       (OSBYTE $15), so a keypress left over from the menu cannot be typed here;
+     * then loop on OSRDCH:
+         RETURN            finish, space-padding the rest of the field;
+         below $20         ignored (no control codes in a name);
+         a leading SPACE   ignored (the field never starts with one);
+         DELETE ($7F)      rub the previous character out — below the start of the
+                           line, start the line over from column 0;
+         above $7F         ignored;
+         anything else     store it if the field has room, otherwise ring the bell
+                           ($07) instead of storing;
+       every accepted key (including the bell and the DELETE) is echoed with OSWRCH,
+       which is what draws the field.
+
+   Returns the exit A the 6502 leaves: $0D when the field was already full at RETURN
+   (nothing was padded), else $20, the last space written.  Exit Y is the field width
+   and exit X is 0 — every OSBYTE here returns X = 0 — which is what
+   console_read_two_digits reads back to count the characters it must un-echo.
+
+   ⚠ THE ESCAPE ARM ($6345) IS UNREACHABLE ON THIS PORT, and is kept faithfully
+   anyway: OSRDCH returning C=1 means an ESCAPE condition, which the real MOS raises
+   and src/platform/mos.cpp's OSRDCH never does (it forces C=0).  The 6502
+   acknowledges it with OSBYTE $7E and reads again, preserving Y across the call by
+   pushing it — so the partly-typed line survives an ESCAPE.
+   =========================================================================== */
+uint8_t console_io_core(uint8_t ptrLo, uint8_t ptrHi, uint8_t width)
+{
+    plot_ptr_lo    = ptrLo;                          /* $6300 — the field's address */
+    plot_ptr_hi    = ptrHi;                          /* $6302 */
+    shared_temp_77 = width;                          /* $6304 — and its width */
+
+    /* $6306-$6311.  The ambient Y at both calls is the caller's pointer high byte. */
+    mos_osbyte(0x02u, 0x00u, ptrHi);                 /* input stream := keyboard */
+    mos_osbyte(0x15u, 0x00u, ptrHi);                 /* flush the keyboard buffer */
+
+    uint8_t a = 0x15u;                               /* the A the last OSBYTE left */
+    uint8_t y = 0x00u;                               /* $6314 — column 0 */
+
+    for (;;) {
+        MosRegs r = mos_call(0xFFE0u, a, 0x00u, y);   /* $6316 OSRDCH */
+        a = r.a;
+
+        if (r.c) {                                   /* $6319 BCS — an ESCAPE condition */
+            mos_osbyte(0x7Eu, 0x00u, y);             /* $6345-$6349 — acknowledge it, keeping Y */
+            a = y;                                   /* $634C PLA / $634D TAY: A = Y = the column */
+            continue;
+        }
+        if (a == 0x0Du) break;                       /* $631B — RETURN ends the line */
+        if (a < 0x20u) continue;                     /* $631F BCC — a control code: ignore */
+        if (a == 0x20u && y == 0x00u) continue;      /* $6323-$6327 — no leading space */
+
+        if (a >= 0x7Fu) {                            /* $6329 BCS */
+            if (a != 0x7Fu) continue;                /* $632D BNE — above DELETE: ignore */
+            y = (uint8_t)(y - 1);                    /* $632F DEY — rub out the last character */
+            if (y & 0x80u) { y = 0x00u; continue; }  /* $6332 BMI — past the start: start over */
+        } else if (y == shared_temp_77) {            /* $6334 — the field is full */
+            a = 0x07u;                               /* $6338 — ring the bell instead of storing */
+        } else {
+            bus_write((uint16_t)(((plot_ptr_hi << 8) | plot_ptr_lo) + y), a);   /* $633C */
+            y = (uint8_t)(y + 1);                    /* $633E INY */
+        }
+        mos_oswrch(a, 0x00u, y);                     /* $633F — echo it */
+    }
+
+    if (y == shared_temp_77) return 0x0Du;           /* $6352-$6356 — the field was already full */
+    do {                                             /* $6357 — pad the rest with spaces */
+        bus_write((uint16_t)(((plot_ptr_hi << 8) | plot_ptr_lo) + y), 0x20u);
+        y = (uint8_t)(y + 1);                        /* $6351 INY */
+    } while (y != shared_temp_77);                   /* $6352 CPY */
+    return 0x20u;
 }
