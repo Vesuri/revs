@@ -640,6 +640,9 @@ TextExit print_lap_value_from_mid_core(uint8_t bcd, uint8_t x, uint8_t y);
    every call site reloads its registers immediately, so the exit ABI is dead. */
 void abort_if_quit_keys_core(void);
 void wait_dismiss_space_core(void);
+void compute_segment_scale_core(uint8_t trackClass);
+void reset_all_cars_for_session_core(uint8_t startCar);
+void sort_cars_by_key_core(uint8_t sel);
 void car_reset_best_lap_core(uint8_t car);
 void all_cars_reset_best_lap_core(void);
 Adc  add_tally_to_lap_total_core(uint8_t column, uint8_t car);

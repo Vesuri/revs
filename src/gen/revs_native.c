@@ -11367,6 +11367,54 @@ void apply_steering_assist(void)        { car_angle_marshal_in(); apply_steering
 /* $503F adc_read — magnitude in A, sign in X, the dead-zone carry rebuilt from CMP #$0A
    ($504F).  Y is left as the OSBYTE reading the core's MOS call returned; V is dropped. */
 /* ===========================================================================
+   $4D4D  reset_all_cars_for_session — put the whole 20-car field back to a start  (#204)
+   ---------------------------------------------------------------------------
+   `startCar` arrives in X and does three jobs: it is the seeding cursor, it becomes the race
+   class, and it selects the track-scale byte.  front_end_menus, the only caller, passes 0.
+
+   Per car: the order array is set to the identity (car c in slot c), the grid base row is
+   c >> 1 (two cars to a grid row) and the car is placed on the track by the seeder.
+
+   ⚠ TWO faithful details the transliteration made invisible:
+    - the seeder returns the cursor already DECREMENTED (mod 20), so the walk visits
+      startCar, then 19, 18, .. 1, 0 — every car exactly once whatever startCar is;
+    - the three lap-total stores at $4D63-$4D6B use that DECREMENTED cursor, so each pass
+      zeroes the lap total of the NEXT car, not the one it just placed.  Over the whole walk
+      both sets still cover all 20 cars, which is why it never mattered.
+   --------------------------------------------------------------------------- */
+void reset_all_cars_for_session_core(uint8_t startCar)
+{
+    mem[CAR_SEED_INDEX] = startCar;                  /* $4D4D STX car_seed_index */
+    race_class          = startCar;                  /* $4D4F STX race_class */
+    compute_segment_scale_core(startCar);            /* $4D52 */
+
+    uint8_t car = startCar;
+    do {
+        /* $4D56 — the identity order.  car_seed_index holds this same value here on every
+           pass (the store above on the first, the seeder's own write on the rest), so a twin
+           that read the cell instead would be indistinguishable — see the fixture's note. */
+        mem[CAR_ORDER     + car] = car;
+        mem[CAR_GRID_BASE + car] = (uint8_t)(car >> 1);
+
+        /* ⚠ A FLAG ESCAPES: the $4D59 LSR that halves the car index leaves its bit 0 in the
+           carry, and the carry is still live inside the seeder — its PHP residue byte captures
+           it.  C has no C equivalent, so it is set explicitly here. */
+        cpu.C = (car & 1u) ? 1 : 0;
+
+        /* $4D5E — the seeder reads and rewrites car_seed_index itself and hands the
+           decremented cursor back in X.  It stays a 6502-ABI call because its faithful
+           PHP/PLP residue byte at $0100+S is a function of the LIVE stack pointer, which
+           only the shim can see. */
+        seed_car_track_position();
+        car = cpu.X;
+
+        mem[CAR_LAP_LO  + car] = 0x00;               /* $4D61-$4D6B — the NEXT car's total */
+        mem[CAR_LAP_MID + car] = 0x00;
+        mem[CAR_LAP_HI  + car] = 0x00;
+    } while (car != 0u);                             /* $4D6C TXA; BNE */
+}
+
+/* ===========================================================================
    $40EB  car_reset_best_lap        — one car's best lap back to "no time yet"  (#203)
    $42EC  all_cars_reset_best_lap   — ...for the whole 20-car field
    ---------------------------------------------------------------------------
@@ -11477,9 +11525,9 @@ void scale_wing_settings(void)
    ⚠ SMC $44D5-$44D7: the segment-data base address is patched per circuit by
    ModifyGameCode; the guard reproduces the oracle's opcode check and trap.
    --------------------------------------------------------------------------- */
-void compute_segment_scale(void)
+void compute_segment_scale_core(uint8_t trackClass)
 {
-    uint8_t scale = mem[TRACK_SCALE + cpu.X];
+    uint8_t scale = mem[TRACK_SCALE + trackClass];
     mem[MEM_track_scale_saved] = scale;         /* held for reuse; read back at $6396 */
     math_hi = scale;
 
@@ -14018,15 +14066,14 @@ static SortCmp sort_bcd_compare3(uint16_t loTbl, uint16_t midTbl, uint16_t hiTbl
     return r;
 }
 
-void sort_cars_by_key(void)
+void sort_cars_by_key_core(uint8_t sel)
 {
-    hypot_min_lo = cpu.A;                        /* $0F64 STA $78 — the key selector */
-    uint8_t sel = hypot_min_lo;
+    hypot_min_lo = sel;                          /* $0F64 STA $78 — the key selector */
     cpu.D = 1;                                   /* $0F66 SED — the whole sort is BCD */
 
     uint8_t swapped;
     do {
-        shared_temp_76 = 0u;                     /* $0F69 STX $76 (X=0) — per-pass swap counter */
+        shared_temp_76 = 0u;                     /* $0F69 STX $76 ($0F67 LDX #0) */
         mem[SORT_SCRATCH] = 0u;                  /* $0F6B STX $100 */
         swapped = 0u;
 

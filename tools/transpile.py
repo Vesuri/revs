@@ -1230,6 +1230,10 @@ VALIDATE_FUNCS = {
     # why that twin's core now returns it.  Exit ABI dead at all four callers — LIVE_NONE.
     0x41D0,
     0x65D3,
+    # ⭐ TWIN #204 — $4D4D reset_all_cars_for_session (was FUN_4d4d), front_end_menus' first
+    # act: the identity car order, the grid rows, the seeded track positions and the zeroed
+    # BCD lap totals for all 20 cars.
+    0x4D4D,
     # ⭐ TWIN #203 — the three small routines front_end_menus needs as cores: the best-lap
     # sentinel ($40EB per car, $42EC for the field) and the BCD fold of a standings column
     # into a car's cumulative lap total ($6698 add_tally_to_lap_total).

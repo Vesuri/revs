@@ -1473,6 +1473,73 @@ static int test_wing_prompt(void)
     return fail;
 }
 
+void reset_all_cars_for_session(void);
+void reset_all_cars_for_session__t6502(void);
+
+/* ================================================================================================
+ * ⭐ TWIN #204 — $4D4D reset_all_cars_for_session, front_end_menus' first act.
+ *
+ * A driver over three already-validated pieces (compute_segment_scale, seed_car_track_position and
+ * plain stores), so what this fixture gates is the WALK: that the cursor the seeder hands back is
+ * what drives it, that the lap-total stores use that decremented cursor, and that it covers every
+ * car exactly once.
+ *
+ * The pre-state has to satisfy compute_segment_scale's SMC guard (the $44D5 opcode check and the
+ * patched base — its TRAP arm belongs to that routine's own fixture, and taking it here aborts
+ * the harness) and seed_car_track_position's D = 0 requirement.  X sweeps 0..4 — the real class
+ * range — plus wilder values a fifth of the time, which lengthen the walk but must still
+ * terminate, because the cursor decrement wraps to 19 only once it reaches 0.
+ *
+ * ⚠ The seeder reads USRVIA_T2CL twenty-plus times per case, so this fixture is also a check that
+ * the hardware model hands both models the same entropy sequence — diff_run's re-arm has to cover
+ * it or every case would diverge.
+ *
+ * SABOTAGE (each must FAIL, patch verified applied; counts measured, not predicted):
+ *   D83 the grid row is the car index, not car >> 1       -> 2000/2000
+ *   D84 the lap totals are zeroed for the car just placed -> 1691/2000
+ *   D85 the identity order lands one slot low ($013B)     -> 2000/2000
+ *   D86 the escaping LSR carry is dropped                 -> 1011/2000
+ *
+ * ⚠ A FIFTH defect — writing car_seed_index into the order array instead of the car index —
+ *   SURVIVES, and it is the third explanation (no change at all), not a fixture gap: the cell
+ *   and the loop variable are provably equal at that store on EVERY pass.  The first pass has
+ *   just written startCar to it, and every later pass takes `car` from the cursor the seeder
+ *   itself stored there.  D85 above is the same store attacked in a way that can differ.
+ * ⚠ D86 fails in only half the cases by construction: the carry it drops is the car index's
+ *   bit 0, so an even car leaves C clear either way.
+ * ============================================================================================= */
+static int test_reset_all_cars(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t, wide = 0;
+    const int cases = 2000;
+
+    register_fixture("reset_all_cars_for_session");
+    if (!want("reset_all_cars_for_session")) return 0;
+
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.D = 0;                                     /* the (re)start path is binary, not BCD */
+        c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.I = xs() & 1; c.C = xs() & 1;
+
+        if (t % 5 == 4) { c.X = (uint8_t)xs(); wide++; }   /* a longer walk, still terminating */
+        else              c.X = (uint8_t)(xs() % 5u);      /* the real class range */
+
+        /* compute_segment_scale's SMC site: the unpatched opcode and a base inside RAM. */
+        pre[0x44D5] = 0xB9; pre[0x44D6] = 0x00; pre[0x44D7] = 0x30;
+        pre[0x59FA] = (uint8_t)xs();                 /* segment_count_x8 */
+
+        fail += diff_run("reset_all_cars_for_session", pre, c,
+                         reset_all_cars_for_session, reset_all_cars_for_session__t6502,
+                         LIVE_A | LIVE_X | LIVE_N | LIVE_Z, t, &printed);
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,N,Z  (%d wide start)\n",
+           "reset_all_cars_for_session", cases, fail, wide);
+    if (!wide) { printf("VACUOUS: reset_all_cars_for_session never took a wide start\n"); fail++; }
+    return fail;
+}
+
 void car_reset_best_lap(void);        void car_reset_best_lap__t6502(void);
 void all_cars_reset_best_lap(void);  void all_cars_reset_best_lap__t6502(void);
 void add_tally_to_lap_total(void);   void add_tally_to_lap_total__t6502(void);
@@ -10362,6 +10429,7 @@ int main(int argc, char** argv)
     fail += test_console_number();
     fail += test_wing_prompt();
     fail += test_lap_reset_and_tally();
+    fail += test_reset_all_cars();
     fail += test_standings_table();
     fail += test_dashboard_readouts();
     fail += test_add_frame_time();

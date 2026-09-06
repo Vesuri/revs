@@ -1445,3 +1445,24 @@ void add_tally_to_lap_total(void)
     cpu.A = hi.val;
     cpu.C = hi.carry;
 }
+
+void compute_segment_scale(void)
+{
+    /* $44CF — X is the race class / track-scale index. */
+    compute_segment_scale_core(cpu.X);
+}
+
+void sort_cars_by_key(void)
+{
+    /* $0F64 — A is the sort-key selector (bit 6 = key B, bit 7 = key C, else key A). */
+    sort_cars_by_key_core(cpu.A);
+}
+
+void reset_all_cars_for_session(void)
+{
+    /* $4D4D — X is the seeding cursor / race class / track-scale index (#204).  Exit ABI: the
+       walk ends with the cursor at 0, and $4D61's LDA #0 is the last load, so A = 0 with Z set
+       and N clear; X = 0 too. */
+    reset_all_cars_for_session_core(cpu.X);
+    cpu.A = 0x00u; cpu.X = 0x00u; cpu.Z = 1; cpu.N = 0;
+}
