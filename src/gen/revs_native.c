@@ -11599,7 +11599,7 @@ void record_section_jump(void) { cpu.C = record_section_jump_core(cpu.C, cpu.X);
    road-edge bearing relative to the current section's yaw.  It folds that relative
    angle through scale_angle_in_section twice — once with weight $BA into car_state_1,
    once with weight $88 into car_state_2 — flipping sign by track direction and by a
-   quadrant flag ($0043), and feeds record_section_jump the change since last frame.
+   quadrant flag (section_quad_flags), and feeds record_section_jump the change since last frame.
 
    The abs8 and the SMC hook are native leaves with live-flag INPUTS, so the seam sets
    exactly the cpu registers each reads (A and its sign N; abs8's threaded carry).
@@ -11629,7 +11629,7 @@ void place_player_in_section(void)
 
     /* Quadrant flag: bit 7 of $0043 records whether |rel| reached a quarter turn ($40). */
     int quad_c = (mag >= 0x40);                       /* CMP #$40 */
-    mem[0x0043] = (uint8_t)((quad_c << 7) | (mem[0x0043] >> 1));   /* ROR $0043; N = quad_c */
+    section_quad_flags = (uint8_t)((quad_c << 7) | (section_quad_flags >> 1));   /* ROR section_quad_flags; N = quad_c */
     if (quad_c) mag = (uint8_t)((mag ^ 0x7F) + 1);   /* BMI arm: reflect past the quarter turn */
 
     /* $4639 PHA: the routine parks this magnitude on the 6502 stack across the two
@@ -11666,7 +11666,7 @@ void place_player_in_section(void)
     /* Second fold: weight $88, sign from the quadrant flag. */
     uint8_t b = scale_angle_in_section_core((uint8_t)((folded ^ 0xFF) + 0x41), 0x88);  /* EOR;ADC #$41 */
     b = (uint8_t)(b << 2);                             /* ASL; ASL */
-    if (!(mem[0x0043] & 0x80)) b ^= 0xFF;             /* BIT $0043; BPL: EOR #$FF */
+    if (!(section_quad_flags & 0x80)) b ^= 0xFF;             /* BIT section_quad_flags; BPL: EOR #$FF */
     mem[CAR_STATE_1 + x] = b;
 }
 
@@ -11995,7 +11995,7 @@ void copy_section_height_to_side1(void) { copy_section_height_to_side1_core(cpu.
    $13DA  advance_dir_on_segment_flag  (twin #143)   — was FUN_13da
    ---------------------------------------------------------------------------
    If bit 0 of the current segment's flags is set, advance segment_dir_index;
-   otherwise fall through to the FUN_13fa per-circuit hook (RTS on Silverstone).
+   otherwise fall through to the segment_dir_circuit_hook per-circuit hook (RTS on Silverstone).
    Reached via the per-circuit SMC dispatch at $13C9/$1426.  Preserves X; the
    callers discard the exit flags. */
 void advance_dir_on_segment_flag(void)
@@ -12003,7 +12003,7 @@ void advance_dir_on_segment_flag(void)
     if (cur_segment_flags & 0x01)
         step_segment_dir_index();
     else
-        FUN_13fa();
+        segment_dir_circuit_hook();
 }
 
 /* ---------------------------------------------------------------------------
@@ -12012,7 +12012,7 @@ void advance_dir_on_segment_flag(void)
    Advances segment_dir_index one track position along the direction tables,
    wrapping at track_dir_count, in whichever sense track_direction's bit 7 gives:
    forward is idx+1 rolling to 0 at the count, backward is idx-1 rolling 0 to
-   count-1.  Tail-calls FUN_13fa (a Silverstone RTS no-op the expansion circuits
+   count-1.  Tail-calls segment_dir_circuit_hook (a Silverstone RTS no-op the expansion circuits
    patch).  Preserves X; the callers discard the exit flags. */
 void step_segment_dir_index(void)
 {
@@ -12026,7 +12026,7 @@ void step_segment_dir_index(void)
         if (idx == count) idx = 0;          /* wrap count -> 0 */
     }
     segment_dir_index = idx;
-    FUN_13fa();                             /* per-circuit hook; RTS on Silverstone */
+    segment_dir_circuit_hook();                             /* per-circuit hook; RTS on Silverstone */
 }
 
 /* ---------------------------------------------------------------------------
