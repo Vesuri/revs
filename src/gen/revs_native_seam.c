@@ -1092,11 +1092,9 @@ void draw_corner_markers(void)
         if (flags & 0x20u)
             mem[0x38FEu] = 0x0F;                            /* $1B26 — bit 5 recolours the marker (SMC) */
 
-        uint16_t edgeX = (uint16_t)(mem[EDGE_X_LO_TBL + idx]
-                                    | (mem[EDGE_X_HI_TBL + idx] << 8));
+        uint16_t edgeX = edge_x_word(idx);
         CornerMarker m;
-        uint16_t offset = (uint16_t)(mem[MARKER_OFF_LO + y]
-                                     | ((unsigned)mem[MARKER_OFF_HI + y] << 8));
+        uint16_t offset = marker_offset_word(y);
         draw_corner_marker_core(offset, edgeX, mem[EDGE_Y_TBL + idx], &m);
 
         math_lo = m.mathLo;                                 /* $74/$75/$76 — set on both paths */

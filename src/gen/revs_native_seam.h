@@ -52,6 +52,8 @@
 #define VIEW_ORIGIN_HI   0x6283u   /* view_origin_hi */
 #define EDGE_X_LO_TBL    0x5E40u   /* edge_x_lo — the track edges' angle, low byte */
 #define EDGE_X_HI_TBL    0x5E90u   /* edge_x_hi — ...and the high byte */
+#define EDGE_OPP_X_LO_TBL 0x5E50u  /* edge_opp_x_lo — the OPPOSITE boundary's angle at that point */
+#define EDGE_OPP_X_HI_TBL 0x5EA0u  /* edge_opp_x_hi */
 #define EDGE_Y_TBL       0x5F20u   /* edge_y      — per edge point: the scan line it projects to */
 #define MARKER_EDGE_IDX  0x62B4u   /* marker_edge_index  — 3 corner markers, per frame */
 #define MARKER_FLAGS_TBL 0x6299u   /* marker_flags */
@@ -421,6 +423,36 @@ static inline void    ms_set_lo(uint8_t i, uint8_t v)
 { model_state_16[i] = (uint16_t)((model_state_16[i] & 0xFF00u) | v); }
 static inline void    ms_set_hi(uint8_t i, uint8_t v)
 { model_state_16[i] = (uint16_t)((model_state_16[i] & 0x00FFu) | ((uint16_t)v << 8)); }
+
+/* ⭐ THE PLANE-SPLIT EDGE TABLES, read and written as WHOLE 16-BIT VALUES.  The road pass's three
+   edge arrays are all lo/hi plane pairs $50 apart — edge_x ($5E40/$5E90, the point's azimuth),
+   edge_opp_x ($5E50/$5EA0, the OPPOSITE boundary's azimuth at the same point) and marker_offset
+   ($62B7/$62BA, the corner marker's own offset) — so, as with every plane split, what these
+   remove is the lane ARITHMETIC and not the two accesses (the planes are further apart than a
+   word, so no word load exists even in principle).
+   ⚠ WHERE THE 6502 GENUINELY READS ONE LANE, KEEP READING ONE LANE.  A coarse angle comparison
+   ($1B05's surface classifier, the horizon tests, the clip tests) reads only the HIGH byte and
+   the low byte is not merely unused, it is not even loaded — writing those as a wide read and a
+   shift would ADD an access.  These accessors are for the sites that build or store a whole
+   value; `mem[EDGE_X_HI_TBL + slot]` stays the idiom for a high-byte-only test. */
+static inline uint16_t edge_x_word(unsigned slot)
+{ return (uint16_t)((unsigned)mem[EDGE_X_LO_TBL + slot]
+                    | ((unsigned)mem[EDGE_X_HI_TBL + slot] << 8)); }
+static inline void edge_x_word_set(unsigned slot, uint16_t v)
+{ mem[EDGE_X_LO_TBL + slot] = (uint8_t)v; mem[EDGE_X_HI_TBL + slot] = (uint8_t)(v >> 8); }
+
+static inline uint16_t edge_opp_x_word(unsigned slot)
+{ return (uint16_t)((unsigned)mem[EDGE_OPP_X_LO_TBL + slot]
+                    | ((unsigned)mem[EDGE_OPP_X_HI_TBL + slot] << 8)); }
+static inline void edge_opp_x_word_set(unsigned slot, uint16_t v)
+{ mem[EDGE_OPP_X_LO_TBL + slot] = (uint8_t)v;
+  mem[EDGE_OPP_X_HI_TBL + slot] = (uint8_t)(v >> 8); }
+
+static inline uint16_t marker_offset_word(unsigned slot)
+{ return (uint16_t)((unsigned)mem[MARKER_OFF_LO + slot]
+                    | ((unsigned)mem[MARKER_OFF_HI + slot] << 8)); }
+static inline void marker_offset_word_set(unsigned slot, uint16_t v)
+{ mem[MARKER_OFF_LO + slot] = (uint8_t)v; mem[MARKER_OFF_HI + slot] = (uint8_t)(v >> 8); }
 
 /* ⭐ THE VIEW ORIGIN, relocated out of the $6280/$6283 plane split.  Every bearing and every
    projection in the frame is measured from it, and there are TWO of them: origin 0 is the camera,

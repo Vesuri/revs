@@ -1851,8 +1851,6 @@ void race_main_loop_core(RestartDepth depth)
    ⭐ edge_x is an ANGLE, not a column: bearing_to_section is an arctan and emit_edge_bearing
    stores `bearing - car_heading`, so an edge point is an azimuth relative to where the car is
    pointing and interp_edge is what turns one into a screen column. */
-#define EDGE_OPP_X_LO    0x5E50u   /* edge_opp_x_lo — the OPPOSITE boundary's angle at that point */
-#define EDGE_OPP_X_HI    0x5EA0u   /* edge_opp_x_hi */
 #define EDGE_STYLE_TBL   0x5EE0u   /* edge_style  — which surface style the span there uses */
 #define SECTION_FLAGS    0x0702u   /* section_flags — per section byte: its feature bits */
 #define SECTION_FLAGS_W  0x068Au   /*   ...the same table at -$78, for a byte index past 120 */
@@ -2096,8 +2094,7 @@ uint8_t shift_near_edge_points_core(uint8_t topSlot,    /* $2C — slot 4 of the
     unsigned slot = topSlot;
 
     for (;;) {                                        /* $12A2-$12BB */
-        mem[EDGE_X_LO_TBL + slot + 1] = mem[EDGE_X_LO_TBL + slot];
-        mem[EDGE_X_HI_TBL + slot + 1] = mem[EDGE_X_HI_TBL + slot];
+        edge_x_word_set(slot + 1, edge_x_word(slot));
         mem[EDGE_Y_TBL    + slot + 1] = mem[EDGE_Y_TBL    + slot];
 
         if (slot == wrapSlot)                         /* the far half is done — cross over */
@@ -2134,10 +2131,8 @@ void rebase_edge_point_core(uint8_t slot)
     mem[EDGE_STYLE_TBL + slot] = 0;                                     /* $0BA2-$0BA4 */
 
     /* $0BA7-$0BB6 — the point's stored azimuth, less this frame's heading step (16-bit). */
-    uint16_t az = (uint16_t)(((unsigned)mem[EDGE_X_LO_TBL + slot] | ((unsigned)mem[EDGE_X_HI_TBL + slot] << 8))
-                           -  (unsigned)model_state_16[MS_HEADING_STEP]);
-    mem[EDGE_X_LO_TBL + slot] = (uint8_t)az;
-    mem[EDGE_X_HI_TBL + slot] = (uint8_t)(az >> 8);
+    uint16_t az = (uint16_t)(edge_x_word(slot) - model_state_16[MS_HEADING_STEP]);
+    edge_x_word_set(slot, az);
 
     /* $0BBA-$0BC0 — and its scan line, less the frame's pitch delta. */
     uint8_t line = (uint8_t)(mem[EDGE_Y_TBL + slot] - view_pitch_delta);
@@ -2443,8 +2438,7 @@ uint8_t emit_edge_bearing_core(uint8_t slot)
        16-bit subtract (binary on the render path — docs/static-map.md §Decimal mode). */
     uint16_t rel = (uint16_t)(bearing_v      /* relocated out of mem[$8A/$8B] — see above */
                             -  car_heading_v);   /* relocated out of mem[$0A/$0B] */
-    mem[EDGE_X_LO_TBL + slot] = (uint8_t)rel;
-    mem[EDGE_X_HI_TBL + slot] = (uint8_t)(rel >> 8);
+    edge_x_word_set(slot, rel);
 
     return point_distance_hypot_apply();     /* $23CF JMP — the point's distance high byte in A */
 }
@@ -2526,8 +2520,7 @@ static void append_corner_marker(uint8_t flags, unsigned offset)
         math_lo   = (uint8_t)offset;
     }
 
-    mem[MARKER_OFF_LO + slot] = (uint8_t)offset;
-    mem[MARKER_OFF_HI + slot] = (uint8_t)(offset >> 8);
+    marker_offset_word_set(slot, offset);
     inc_mem(MEM_marker_count);
 }
 
@@ -3092,16 +3085,14 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
         /* $25C0-$25D2 — the far kerb's azimuth: this point's angle plus that offset (16-bit add). */
         {
             unsigned slot = edge_cursor;
-            unsigned base = (unsigned)mem[EDGE_X_LO_TBL + slot]
-                          | ((unsigned)mem[EDGE_X_HI_TBL + slot] << 8);
-            unsigned res  = (base + offset) & 0xFFFFu;
-            mem[EDGE_OPP_X_LO + slot] = (uint8_t)res;
-            mem[EDGE_OPP_X_HI + slot] = (uint8_t)(res >> 8);
+            uint16_t base = edge_x_word(slot);
+            edge_opp_x_word_set(slot, (uint16_t)(base + offset));
             /* ⚠ V escapes: the HIGH half's ADC is the last thing in the routine to write V —
                everything after it is CMP/CPY, which do not — so the caller gets its overflow.
-               Replayed from the operands (565 of 2000 cases differ on V alone otherwise). */
-            unsigned carryLo = (mem[EDGE_X_LO_TBL + slot] + (offset & 0xFFu)) > 0xFFu;
-            vOut = adc_overflow(mem[EDGE_X_HI_TBL + slot], (uint8_t)(offset >> 8), carryLo);
+               Replayed from the two high bytes and the low half's carry (565 of 2000 cases
+               differ on V alone otherwise). */
+            unsigned carryLo = ((base & 0xFFu) + (offset & 0xFFu)) > 0xFFu;
+            vOut = adc_overflow((uint8_t)(base >> 8), (uint8_t)(offset >> 8), carryLo);
         }
 
         /* $25D3-$25FB — and a corner marker, if the point carries one. */
@@ -5488,7 +5479,7 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     }
 
     /* 2 — the endpoint, as a 10-bit x biased by $80 in the high byte. */
-    x = (unsigned)((mem[EDGE_X_HI_TBL + farPoint] << 8) | mem[EDGE_X_LO_TBL + farPoint]);
+    x = edge_x_word(farPoint);
     shared_temp_77 = (uint8_t)(((x << 2) >> 8) + 0x80u);
     mem[SPAN_LINE_END] = mem[EDGE_Y_TBL + nearPoint];
     saved_slot_index   = farPoint;
@@ -5521,10 +5512,8 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
         /* ⚠ The 6502 loads the two point indices into Y and X ($2B91) and does this in
            byte-pair arithmetic; both registers are reloaded before anything reads them (the
            phase into X at $2C92, the start line into Y at $2C93), so the twin uses a uint16_t. */
-        uint16_t vSaved = (uint16_t)((mem[EDGE_X_HI_TBL + saved_slot_index] << 8)
-                                     | mem[EDGE_X_LO_TBL + saved_slot_index]);
-        uint16_t vFar   = (uint16_t)((mem[EDGE_X_HI_TBL + span_index_far] << 8)
-                                     | mem[EDGE_X_LO_TBL + span_index_far]);
+        uint16_t vSaved = edge_x_word(saved_slot_index);
+        uint16_t vFar   = edge_x_word(span_index_far);
         uint16_t dxRaw  = (uint16_t)(vSaved - vFar);
         uint8_t  armHi  = (uint8_t)(dxRaw >> 8);           /* pre-abs high byte → arm select */
         uint16_t adx    = (dxRaw & 0x8000u) ? (uint16_t)(0u - dxRaw) : dxRaw;
@@ -6016,7 +6005,6 @@ void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint)
    ⚠ And the whole walk is SKIPPED once view_yaw_offset reaches $28 — 45 degrees off the
    section — with only that limit computed.
    --------------------------------------------------------------------------- */
-#define EDGE_OPP_X_HI_TBL 0x5EA0u   /* edge_opp_x_hi — the point's other boundary */
 
 SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int entryV)
 {
@@ -6047,6 +6035,8 @@ SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int e
                 if (!(a & 0x80u)) {
                     uint8_t other;                /* the point's OTHER boundary, order per side */
                     if (mem[SPAN_CLIP] == 0x14u) {
+                        /* high byte only, as the 6502 does: this is a COARSE angle test and
+                           the low byte is never loaded (see the note on edge_x_word). */
                         other = mem[EDGE_X_HI_TBL + x];
                         a     = mem[EDGE_OPP_X_HI_TBL + x];
                     } else {
@@ -10967,7 +10957,7 @@ static void assist_from_selector(uint8_t selector)
 
     /* $1F3B-$1F49 — the track edge less that bias, as a 16-bit magnitude; its sign is kept to
        re-sign the result at the very end (the 6502 parks it with PHP; a local carries it). */
-    uint16_t edge = (uint16_t)(((uint16_t)mem[EDGE_X_HI_TBL + edgeSlot] << 8) | mem[EDGE_X_LO_TBL + edgeSlot]);
+    uint16_t edge = edge_x_word(edgeSlot);
     uint16_t bias = (uint16_t)(((uint16_t)biasHi << 8) | (ang & 0x00FFu));
     uint16_t diff = (uint16_t)(edge - bias);
     int diffNegative = (diff & 0x8000u) != 0u;         /* $1F48 PHP — the subtract's sign */

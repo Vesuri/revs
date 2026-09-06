@@ -536,7 +536,7 @@ in the interim but the final store stays two non-adjacent byte writes until relo
 | `CAR_DISTANCE` | $08D0/$08E8 | per-car (24) distance-round-lap | ~19 | **A + B DONE** | `car_distance_16[24]` |
 | `OBJECT_BEARING` | $0380/$0398 | per-slot 16-bit track position | ? | A now; B blocked | TODO |
 | `SECTION_COORD` | $0900/$0A00 | section origin (stride $100) | ~62 | A done; B blocked | ✅ DONE |
-| `EDGE_OPP_X` | $5E50/$5EA0 | opposite-boundary angle | ? | A→B | TODO |
+| `EDGE_OPP_X` | $5E50/$5EA0 | opposite-boundary angle | 19 | A done; B declined | ✅ DONE |
 | `MARKER_OFF` | $62B7/$62BA | marker offset | ? | A→B | TODO |
 | `VIEW_ORIGIN` | $6280/$6283 | 3 components, stride 6, two origins | ~30 | A now; B blocked | TODO |
 | `ROW_BASE` | $2B22/$2B1E | surface_edge buffer bases | ? | A→B | TODO |
@@ -1215,7 +1215,7 @@ row.
 | `MODEL_STATE` $62D0/$62E0 | **23 fn / 84 ref** | **1 fn / 1 ref, and it is a READ** | ✅ **(B) DONE** — `model_state_16[15]`, see below.  ⚠ the "5 fn / 7 ref" first reported here was a SCORING ERROR, see below |
 | `CAR_ANGLE` $62A0/$62A3 | 12 fn / 32 ref | **none** | ✅ **(B) DONE** — `car_angle_16[3]`, see below |
 | `VIEW_ORIGIN` $6280 | 5 fn / 14 ref | **none** | ✅ **(B) DONE** — `view_origin_16[9]`, see below |
-| `MARKER_OFF` $62B7/$62BA | 2 fn / 6 ref | **none** | ✅ eligible, small — `append_corner_marker` / `draw_corner_markers` |
+| `MARKER_OFF` $62B7/$62BA | 2 fn / 6 ref | **none** | ✅ **(A) DONE** — `marker_offset_word()`, done with the edge tables |
 | `OBJECT_BEARING` $0380/$0398 | 6 fn / 6 ref | **none** | ❌ **DECLINED** — 0.42 refs per element, see §REFS PER ELEMENT |
 | `SECTION_COORD` $0900/$0A00 | **10 fn / 38 ref** | **none** | ❌ **DECLINED, MEASURED** — 256 elements, 0.17 refs per element, a ~15× net loss |
 | `CAR_DISTANCE` $08D0/$08E8 | 4 fn / 16 ref | **none** | ✅ **(B) DONE** — `car_distance_16[24]`, see below |
@@ -1900,7 +1900,7 @@ put it at **3.7 shim entries per frame against 98 `view_delta` reads per frame**
 | `MARKER_OFF` $62B7/$62BA | 3 | 8 | **2.7** | ✅ eligible — next |
 | `CAR_DISTANCE` $08D0/$08E8 | 24 | 30 | 1.3 | ✅ done, but **only because it marshals ONE SLOT** (`car_distance_marshal_in_one`) — a per-slot marshal is not scored by this table |
 | `OBJECT_BEARING` $0380/$0398 | 24 | 10 | **0.42** | ❌ declined |
-| `EDGE_OPP_X` $5E50/$5EA0 | 80 | 19 | **0.24** | ❌ declined |
+| `EDGE_OPP_X` $5E50/$5EA0 | 80 | 19 | **0.24** | ❌ (B) declined; (A) ✅ done |
 | `SECTION_COORD` $0900/$0A00 | 256 | 43 | **0.17** | ❌ (B) declined — measured; (A) ✅ done |
 
 ⭐ **A large TABLE has no cheap marshal boundary, because its readers index it arbitrarily** — there
@@ -2123,3 +2123,30 @@ sat:
 | `load_section_from_segment` | 4 |
 | `section_word` (the accessor itself) | 2 |
 | `load_section_triple_core`, `view_delta`, `update_camera_and_drive_state_core`, `build_player_car_core` | 2 each |
+
+
+### `EDGE_X` $5E40/$5E90, `EDGE_OPP_X` $5E50/$5EA0, `MARKER_OFF` $62B7/$62BA — ✅ DONE (mechanism A)
+
+The three remaining plane-split tables on the road pass, converted in one pass because they are the
+same shape and two of them are read by the same twins.  Six `static inline` accessors now live in
+`revs_native_seam.h` beside `ms_lo`/`ms_hi` — `edge_x_word`/`_set`, `edge_opp_x_word`/`_set`,
+`marker_offset_word`/`_set` — so both `revs_native.c` and the shims in `revs_native_seam.c` reach
+them the same way, and the two local duplicate `#define`s of the `edge_opp_x` planes are gone.
+
+⚠⚠ **The one rule this table taught: WHERE THE 6502 READS ONE LANE, KEEP READING ONE LANE.** Nine of
+the `EDGE_X` sites are coarse-angle tests — `$1B05`'s surface classifier, the horizon test, the two
+clip tests — that load only the HIGH byte, and the low byte is not merely unused, *it is never
+loaded*.  Rewriting those as a wide read plus a shift would have ADDED an access per test on the
+hottest pass in the frame.  So the accessors are for the sites that build or store a whole value;
+`mem[EDGE_X_HI_TBL + slot]` stays the idiom for a high-byte-only test, and the note at the accessors
+says so, because the temptation on the next pass will be to "finish the job".
+
+One site kept genuine lane operands for a reason worth recording: `road_edge_walk`'s far-kerb add
+has its **V escape to the caller**, so the wide add produces the value and `adc_overflow` replays
+the flag from the two HIGH bytes plus the low half's carry — derived from the wide operands rather
+than by re-reading the planes.
+
+Gated by `make validate` on `clamp_near_edge_cursor`, `rebase_edge_point`, `emit_edge_bearing`,
+`emit_edge_bearing_at_cursor`, `interp_edge`, `draw_corner_markers`, `road_edge_walk`,
+`poll_steering_assist`, `draw_road` and `build_track_geometry`, plus `determinism` and
+`determinism-drive`.
