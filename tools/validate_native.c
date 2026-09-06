@@ -167,6 +167,9 @@ void tt_reset_state(void);
 /* ⚠⚠ Mode 5's poll counters live outside mem[], so they are PROCESS state and diff_run has to
    rewind them before EACH model — see platform_cbridge.cpp.  A no-op in every other mode. */
 void platform_test_key_poll_rearm(void);
+/* ...and the OSRDCH script's cursor, for the same reason (console_io's line editor). */
+void platform_test_rdch_rearm(void);
+void platform_test_rdch_seq(const unsigned char* chars, int n);
 void platform_test_init_headless(void);
 void platform_test_tick_clock(int on);
 void platform_test_clock_addr(uint16_t a);
@@ -232,6 +235,7 @@ static int diff_run(const char* name, const uint8_t* pre, Cpu6502 pre_cpu,
                                     model can inherit the other one's marshal (revs_native.c) */
     tt_reset_state();
     platform_test_key_poll_rearm();
+    platform_test_rdch_rearm();
     g_hwLogN = 0; g_hwLogOverflow = 0;
     g_mosLogN = 0; g_mosLogOverflow = 0;
     t6502();
@@ -255,6 +259,7 @@ static int diff_run(const char* name, const uint8_t* pre, Cpu6502 pre_cpu,
                                     model can inherit the other one's marshal (revs_native.c) */
     tt_reset_state();
     platform_test_key_poll_rearm();
+    platform_test_rdch_rearm();
     g_hwLogN = 0; g_hwLogOverflow = 0;
     g_mosLogN = 0; g_mosLogOverflow = 0;
     native();
@@ -1158,6 +1163,126 @@ static int test_dismiss_waiters(void)
                 printf("VACUOUS: wait_dismiss_key never reached the RETURN exit\n");
                 fail++;
             }
+        }
+    }
+    return fail;
+}
+
+/* ================================================================================================
+ * ⭐ TWIN #200 — THE TWO DRIVER-NAME PAGES ($6687 prompt_driver_ready, $66D4 read_driver_name).
+ *
+ * These are the last two transliterated callers of driver_name_address ($3CEB) and
+ * emit_driver_name ($3250), which is the point of twinning them: while a transliterated caller
+ * exists, those routines' 6502-ABI shims are PRODUCTION code, not oracle scaffolding.
+ *
+ *   $6687 paints script $1D, prints the player's own name under it and waits for SPACE, so it
+ *   needs the script machinery (script_common_pre's per-index signed leaves), a real MODE-5
+ *   cursor (printer_common_pre) AND twin #198's mode-5 keyboard schedule, or it spins forever.
+ *   player_car is swept over the whole grid (0..19) so all four name COLUMNS and all five pages
+ *   of driver_name_address's layout arithmetic are reached.
+ *
+ *   $66D4 is the game's only WRITER of driver_name_table, and its whole body is a call into the
+ *   still-transliterated console_io ($6300) with the pointer in A/Y and the field width in X.
+ *   ⚠⚠ Platform::rdch() answers CR by default, so with no schedule the line editor ends on its
+ *   first read and every arm it has — the printable-range test, the DELETE rub-out, the
+ *   field-full bell, the space-pad on CR — is unreachable.  That is the default-answering test
+ *   backend exactly, so this fixture SCRIPTS the typist (platform_test_rdch_seq) and covers all
+ *   four arms; the coverage counters below fail the run if one of them stops being reached.
+ *
+ * Both are result-only (exit ABI dead at every caller — $6445/$64FB reload immediately, and
+ * $645F runs a session next), so the compare is mem[] + the hardware and MOS-call traces.  The
+ * MOS trace is what actually gates $66D4: every character it echoes is an OSWRCH.
+ *
+ * SABOTAGE (each must FAIL, patch verified applied; counts measured, not predicted):
+ *   D64 the prompt runs script $1C, not $1D                -> 1500/1500
+ *   D65 the name is printed for car 0, not player_car      -> 1430/1500 (the ~75 cases where the
+ *                                                            grid draw IS car 0 agree, which is
+ *                                                            what separates it from a stale build)
+ *   D66 the prompt does not wait for SPACE                 -> 1500/1500
+ *   D67 the name pointer's two lanes swap at console_io    -> 1500/1500
+ *   D68 the line-editor field is eleven characters wide    -> 1500/1500
+ *   D69 THE INSTRUMENT: diff_run's platform_test_rdch_rearm removed, so the twin inherits the
+ *       oracle's position in the typist's script          -> 1500/1500
+ * ============================================================================================= */
+void prompt_driver_ready(void);  void prompt_driver_ready__t6502(void);
+void read_driver_name(void);     void read_driver_name__t6502(void);
+
+static int test_driver_name_pages(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("prompt_driver_ready");
+    register_fixture("read_driver_name");
+
+    unsigned mask = LIVE_NONE;                       /* result-only at every caller */
+
+    /* ---- $6687 prompt_driver_ready ---------------------------------------------------------- */
+    if (want("prompt_driver_ready")) {
+        int sub = 0, sawCol[4] = { 0, 0, 0, 0 }, sawHeld = 0, sawRet = 0;
+        int cases = 1500 * scale;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.D = 0;
+            c.S = 0xFFu;
+            uint8_t car = (uint8_t)(xs() % 20u);     /* the grid, which is player_car's range */
+            pre[0x006Fu] = car;
+            sawCol[car & 3u] = 1;
+            script_common_pre(pre);
+            printer_common_pre(pre);
+            pre[0x001Cu] = (uint8_t)xs();            /* abort_state, swept whole */
+            arm_dismiss_keys(&sawHeld, &sawRet, 0);  /* SPACE only — $34D0 forces the flag to 0 */
+            sub += diff_run("prompt_driver_ready", pre, c,
+                            prompt_driver_ready, prompt_driver_ready__t6502, mask, t, &printed);
+        }
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  mem[] only (exit ABI dead)\n",
+               "prompt_driver_ready", cases, sub);
+        if (!(sawCol[0] && sawCol[1] && sawCol[2] && sawCol[3] && sawHeld)) {
+            printf("VACUOUS: prompt_driver_ready missed a name column or the held-SPACE entry\n");
+            fail++;
+        }
+    }
+
+    /* ---- $66D4 read_driver_name ------------------------------------------------------------- */
+    if (want("read_driver_name")) {
+        int sub = 0, sawDelete = 0, sawFull = 0, sawIgnored = 0, sawEarlyCR = 0;
+        int cases = 1500 * scale;
+        for (t = 0; t < cases; t++) {
+            unsigned char keys[40];
+            int n = 0, typed = 0, i;
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.D = 0;
+            c.S = 0xFFu;
+            pre[0x006Fu] = (uint8_t)(xs() % 20u);
+
+            /* The typist: printable characters, the odd DELETE, the odd control code the editor
+               must ignore, and sometimes more than twelve characters so the bell arm fires. */
+            int want_chars = (int)(xs() % 18u);
+            for (i = 0; i < want_chars && n < 36; i++) {
+                unsigned r = xs() % 16u;
+                if (r == 0u) { keys[n++] = 0x7Fu; if (typed) typed--; sawDelete = 1; }
+                else if (r == 1u) { keys[n++] = (unsigned char)(xs() % 0x0Du); sawIgnored = 1; }
+                else { keys[n++] = (unsigned char)(0x20u + (xs() % 0x5Fu)); typed++; }
+                if (typed > 12) sawFull = 1;
+            }
+            if (want_chars < 3) sawEarlyCR = 1;
+            keys[n++] = 0x0Du;                       /* CR ends the line and space-pads the field */
+            platform_test_rdch_seq(keys, n);
+
+            sub += diff_run("read_driver_name", pre, c,
+                            read_driver_name, read_driver_name__t6502, mask, t, &printed);
+        }
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  mem[] + MOS trace (exit ABI dead)\n",
+               "read_driver_name", cases, sub);
+        if (!(sawDelete && sawFull && sawIgnored && sawEarlyCR)) {
+            printf("VACUOUS: read_driver_name missed the DELETE, bell, ignored-code or short-line arm\n");
+            fail++;
         }
     }
     return fail;
@@ -9961,6 +10086,7 @@ int main(int argc, char** argv)
     fail += test_lap_value_column();
     fail += test_standings_leaves();
     fail += test_dismiss_waiters();
+    fail += test_driver_name_pages();
     fail += test_standings_table();
     fail += test_dashboard_readouts();
     fail += test_add_frame_time();

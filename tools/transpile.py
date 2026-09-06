@@ -1230,6 +1230,11 @@ VALIDATE_FUNCS = {
     # why that twin's core now returns it.  Exit ABI dead at all four callers — LIVE_NONE.
     0x41D0,
     0x65D3,
+    # ⭐ TWIN #200 — the front end's two DRIVER-NAME pages, the last transliterated holders of
+    # driver_name_address / emit_driver_name: $6687 prompt_driver_ready (script $1D + the name
+    # + wait for SPACE) and $66D4 read_driver_name (the name LINE EDITOR, console_io with X=$0C).
+    0x6687,
+    0x66D4,
     # ⭐ TWIN #197 — the standings table's other two leaf callees: $3E60 set_row_rule_glyphs
     # (patches script $1F's two rule glyphs) and $3C6F print_race_class_name.  Both result-only.
     0x3E60,

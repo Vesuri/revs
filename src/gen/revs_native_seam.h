@@ -625,6 +625,8 @@ TextExit print_lap_value_from_mid_core(uint8_t bcd, uint8_t x, uint8_t y);
    every call site reloads its registers immediately, so the exit ABI is dead. */
 void abort_if_quit_keys_core(void);
 void wait_dismiss_space_core(void);
+void prompt_driver_ready_core(void);
+void read_driver_name_core(void);
 void wait_dismiss_key_core(uint8_t offerReturn);
 /* $3E60 / $3C6F the standings table's leaf callees (twin #197) — result-only. */
 void set_row_rule_glyphs_core(uint8_t row);

@@ -14653,6 +14653,37 @@ NameExit print_driver_name_at_row_core(uint8_t row, uint8_t orderPos)
     return print_driver_name_by_order_core(orderPos);
 }
 
+/* $6687 prompt_driver_ready — TWIN #200.  The hand-over page between two drivers' sessions: run
+   text script $1D, print the player's own name under it, and hold the page until SPACE.  Both
+   callers are front_end_menus' per-car walk, and both reload a register the instant it returns,
+   so there is no exit ABI to reconstruct. */
+void prompt_driver_ready_core(void)
+{
+    NamePtr p;
+    uint8_t car = player_car;                        /* $668C LDX player_car */
+
+    text_script_interp_core(0x1Du);                  /* $6687-$6689 — the "next driver" prompt */
+    driver_name_address_core(car, &p);               /* $668E */
+    math_lo = p.scratch;                             /* $74 — the dead 6502 intermediate */
+    emit_driver_name_core(p.lo, p.hi, car);          /* $6691 — X is the ambient OSWRCH register */
+    wait_dismiss_space_core();                       /* $6694 */
+}
+
+/* $66D4 read_driver_name — TWIN #200.  The other half of the pair, and the only routine in the
+   game that WRITES driver_name_table: it hands console_io the address of the player's own name
+   row and a field width of twelve, and the line editor types straight into the table.
+   ⚠ console_io ($6300) is still transliterated, so its arguments go through the 6502 registers —
+   A/Y the pointer, X the width.  Exit ABI dead (the sole caller runs a session next). */
+void read_driver_name_core(void)
+{
+    NamePtr p;
+
+    driver_name_address_core(player_car, &p);        /* $66D4-$66D6 */
+    math_lo = p.scratch;                             /* $74 — the dead 6502 intermediate */
+    arg_a(p.lo); arg_y(p.hi); arg_x(0x0Cu);          /* $66D9 LDX #$0C, with A/Y still the pointer */
+    console_io();                                    /* $66DB */
+}
+
 /* $1B84 update_position_display — TWIN #191.  The race-arm position readout.  pass_count_bcd holds
    the positions gained or lost since the last repaint; fold it into race_position_bcd in decimal
    and reprint (column $0A, row $18) if it changed and stayed inside the field ($21 = 21st, past

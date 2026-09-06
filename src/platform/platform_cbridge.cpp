@@ -209,6 +209,17 @@ static unsigned char g_headlessKeySet[256];
    platform_test_key_poll_rearm() is that hook, and it is called from both halves of diff_run. */
 static unsigned int  g_headlessKeyPollMask[256];
 static unsigned char g_headlessKeyPolls[256];
+/* ⭐⭐ THE OSRDCH SCHEDULE.  Platform::rdch() defaults to CR, which ends console_io's line the
+   instant it starts — a default-answering test backend, and the whole line editor (the printable
+   range test, the DELETE arm, the field-full bell) would then be an arm no fixture ever runs.
+   A test gives the character SEQUENCE the typist produces; past its end the answer is CR, so any
+   schedule terminates.  ⚠⚠ Like the poll counters this cursor is PROCESS state, so diff_run
+   re-arms it before EACH model (platform_test_rdch_rearm). */
+enum { RDCH_MAX = 64 };
+static unsigned char g_headlessRdch[RDCH_MAX];
+static int           g_headlessRdchN   = 0;
+static int           g_headlessRdchPos = 0;
+
 /* ...and the same for the analogue axes: Platform's default answers dead centre, which pins
    adc_read's magnitude to 0 and makes its dead-zone compare and the joystick's whole pedal arm
    unreachable (two more surviving sabotages). */
@@ -266,6 +277,10 @@ struct HeadlessPlatform : Platform {
         if (g_headlessKeyMode == 3) return g_headlessKeySet[x] != 0;
         if (g_headlessKeyMode == 2) return x == g_headlessKeyCode;
         return g_headlessKeyDown != 0;
+    }
+    uint8_t rdch() override {
+        if (g_headlessRdchPos < g_headlessRdchN) return g_headlessRdch[g_headlessRdchPos++];
+        return 0x0Du;                        /* out of script: CR ends the line */
     }
     uint8_t  adcButtons() override { return g_headlessAdcButtons; }
     uint16_t adcAxis(uint8_t) override { return g_headlessAdcAxis; }
@@ -352,6 +367,17 @@ void platform_test_key_poll_set(unsigned char code, unsigned int mask) {
 void platform_test_key_poll_rearm(void) {
     for (int i = 0; i < 256; i++) g_headlessKeyPolls[i] = 0;
 }
+
+/* The OSRDCH script: the characters console_io's line editor reads, in order. */
+void platform_test_rdch_seq(const unsigned char* chars, int n) {
+    if (n < 0) n = 0;
+    if (n > RDCH_MAX) n = RDCH_MAX;
+    g_headlessRdchN = n;
+    g_headlessRdchPos = 0;
+    for (int i = 0; i < n; i++) g_headlessRdch[i] = chars[i];
+}
+/* ⚠⚠ Rewind the script to its first character — diff_run calls this before EACH model. */
+void platform_test_rdch_rearm(void) { g_headlessRdchPos = 0; }
 
 /* What ADVAL answers under the test platform: the 16-bit axis (only its high byte is used by
    adc_read) and the fire-button word. */

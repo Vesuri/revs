@@ -736,6 +736,11 @@ void abort_if_quit_keys(void) { abort_if_quit_keys_core(); }
 void wait_dismiss_space(void) { wait_dismiss_space_core(); }
 void wait_dismiss_key(void)   { wait_dismiss_key_core(cpu.A); }
 
+/* $6687 prompt_driver_ready / $66D4 read_driver_name (twin #200) — no entry registers (both read
+   player_car themselves) and no exit ABI: every caller reloads a register immediately. */
+void prompt_driver_ready(void) { prompt_driver_ready_core(); }
+void read_driver_name(void)    { read_driver_name_core(); }
+
 /* $3E60 set_row_rule_glyphs — the row arrives in Y.  Result-only: the sole caller reloads X
    into the script index on the next instruction, and A/Y/flags are dead with it. */
 void set_row_rule_glyphs(void)
