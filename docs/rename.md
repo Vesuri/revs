@@ -252,7 +252,9 @@ still blank at these three addresses.  (`$43` left this list as `section_quad_fl
   tail reads it back.  Sole writer seen so far; **[DERIVED]** from that one tenancy only.
 * `$85`, `$87` — the *middle* cells of two three-byte windows whose ends ARE named
   (`shared_temp_84`/`$86 point_delta_sign`, `$0086`+2).  A row each, if only to record that they
-  are components 1 of those windows and not free scratch.
+  are components 1 of those windows and not free scratch.  ⭐ `$85` now has one real reading:
+  `project_geometry`'s edge tail uses it as a RUN LENGTH clamped to `$28` (see the last entry),
+  which makes it a tenancy list rather than a single name.
 
 ⇒ **Cheap settlement: `make refloop` + a `mem[]` watch.**  Dump `$0C` once a frame for a lap and
 see whether it tracks the section cursor; `$85`/`$87` need only the argument that they are
@@ -292,17 +294,22 @@ bracket it in a `PROBES=1` run to see how often it is called and with what `$45`
 `$0397`/`$03AF` across a lap.
 
 
-## `$1D94` — `plot_view_src_line`'s transliterated tail, and the second tenant of `$7A/$7B`
+## `$7B`'s second tenant, and `$85`/`$7C` inside `project_geometry`'s edge tail
 
-`$1D94` has no `symbols.csv` row, and it is not incidental: it is the shipping tail of
-`plot_view_src_line` and it is the reason `hypot_max`'s relocation could not free `$7A/$7B` — it
-reads `$7B` back as `PVS_MODE`, the other tenancy of that pair (the note over `hypot_max_v` in
-`src/gen/revs_native.c` records the split).  So the cells stay in `mem[]` for a routine whose job
-is written down nowhere.
+Opened while naming revs_native.c's callees: the last address-shaped label in the file was `$1D94`,
+and it is **not** an unnamed routine — it is a second entry into `project_geometry`
+(`$1C1C-$1DEE`), reached by the `JMP $1D94` at `$1C8F`.  It joins the same tail `$1D6F` does:
+`$7B != 1`, then `$7C < $28` clamps `$85` to `$28`, and `$1D86` takes `$85 - $7C` as the run to
+draw.  [DERIVED] from the listing, 2026-09-06.
 
-⇒ **Cheap settlement**: it is transliterated, so it needs no twin to be read — disassemble
-`$1D94` out of `disasm/listing.txt` and record what it does with `$7A/$7B` and where it returns.
-Two candidates from its one caller: it is either the line's STORE (the plotter's tail, in which
-case `PVS_MODE` selects the store form) or the per-line ADVANCE.  A name plus a `var` note on
-`$7B`'s second tenant closes both this entry and the `⚠⚠` in that twin's header.
+What that leaves open is **cell tenancy, not a function name**:
 
+* `$7B` — `hypot_max`'s high byte in the road pass, `PVS_MODE` in `plot_view_src_line`, and this
+  arm's own mode test.  The third reader is why `hypot_max`'s relocation could not free `$7A/$7B`
+  (the `⚠⚠` over `hypot_max_v` in `src/gen/revs_native.c` records the split).  ⇒ A `var` note
+  listing the three tenants.
+* `$85` — a **run length clamped to `$28`** here, i.e. 40 units, which is the viewport's column
+  count.  That is the first concrete reading of a cell the `$0C`/`$85`/`$87` entry above knew only
+  as "component 1 of `shared_temp_84`'s window".  ⇒ It is the row that entry was waiting for.
+* `$7C` — compared against `$28` and force-set to `$FF`, so a column index here, not
+  `point_dist`'s low byte.  ⇒ Same treatment: a tenancy list, not a rename.

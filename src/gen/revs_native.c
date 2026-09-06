@@ -2211,8 +2211,8 @@ void load_section_triple_core(uint8_t destSection, uint8_t segmentByte)
    the transliteration paid on every edge point of every frame.
 
    ⚠⚠ THE CELLS ARE NOT FREED — $7A/$7B HAVE A SECOND TENANT.  plot_view_src_line uses them as
-   PVS_BYTE/PVS_MODE (see the #defines over that twin) and $1D94, its transliterated tail
-   (unnamed — docs/rename.md), reads $7B back.  That tenancy keeps mem[] and is untouched by this relocation; only the
+   PVS_BYTE/PVS_MODE (see the #defines over that twin), and project_geometry's $1D94 arm — its
+   second entry into the edge tail — reads $7B back as that mode.  That tenancy keeps mem[] and is untouched by this relocation; only the
    hypot's own use of the pair moves.
 
    ⚠ THE 6502-ABI BOUNDARY KEEPS THE TWO REPRESENTATIONS IN STEP.  Wherever a transliterated
