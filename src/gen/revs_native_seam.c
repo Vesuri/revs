@@ -1080,6 +1080,17 @@ void seed_car_track_position(void)
     mem[CAR_SEED_INDEX] = xExit;                         /* $639F STA car_seed_index */
 }
 
+/* The one flag a caller of the seeder deliberately varies is the carry: reset_all_cars_for_
+   session's $4D59 LSR halves the car index and leaves its bit 0 in C, still live when the PHP
+   above captures it.  This form takes that bit and returns the decremented cursor, so the twin
+   itself needs no cpu at all. */
+uint8_t seed_car_track_position_with_carry(uint8_t carry)
+{
+    cpu.C = carry ? 1u : 0u;
+    seed_car_track_position();
+    return cpu.X;
+}
+
 void mirrors_update(void)
 {
     /* $7B00 — the once-per-frame wing-mirror update (race_main_loop body, $1739).  Result-only:

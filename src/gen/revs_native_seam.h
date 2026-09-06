@@ -606,6 +606,7 @@ void parse_two_digit_ascii_core(uint8_t char0, uint8_t char1, ParseNum *out);
 uint8_t console_read_two_digits_core(void);
 void prompt_wing_settings_core(void);
 uint8_t seed_car_track_position_core(uint8_t x, uint8_t entropy, uint8_t *mathlo_out);
+uint8_t seed_car_track_position_with_carry(uint8_t carry);
 int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out);
 /* The number/name printers ($3250/$37D0/$37D6/$7B9C).  TextChar is what the shared $5092
    dispatch returns; TextExit adds the carry the BCD printer's field-width shift produces. */

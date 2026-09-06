@@ -11451,17 +11451,12 @@ void reset_all_cars_for_session_core(uint8_t startCar)
         mem[CAR_ORDER     + car] = car;
         mem[CAR_GRID_BASE + car] = (uint8_t)(car >> 1);
 
-        /* ⚠ A FLAG ESCAPES: the $4D59 LSR that halves the car index leaves its bit 0 in the
-           carry, and the carry is still live inside the seeder — its PHP residue byte captures
-           it.  C has no C equivalent, so it is set explicitly here. */
-        cpu.C = (car & 1u) ? 1 : 0;
-
         /* $4D5E — the seeder reads and rewrites car_seed_index itself and hands the
-           decremented cursor back in X.  It stays a 6502-ABI call because its faithful
-           PHP/PLP residue byte at $0100+S is a function of the LIVE stack pointer, which
-           only the shim can see. */
-        seed_car_track_position();
-        car = cpu.X;
+           decremented cursor back.  ⚠ A FLAG ESCAPES: the $4D59 LSR that halves the car index
+           leaves its bit 0 in the carry, which is still live inside the seeder — its PHP
+           residue byte at $0100+S captures it.  That residue is a function of the LIVE stack
+           pointer, so it stays in the seam; this call passes the escaping bit across. */
+        car = seed_car_track_position_with_carry(car & 1u);
 
         mem[CAR_LAP_LO  + car] = 0x00;               /* $4D61-$4D6B — the NEXT car's total */
         mem[CAR_LAP_MID + car] = 0x00;
