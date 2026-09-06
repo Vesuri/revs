@@ -95,8 +95,28 @@
 #define CLASS_LAP_TARGET_HI  0x5A03u /* ...and high byte */
 #define QUALIFY_MINUTES_TBL  0x3DF0u /* the three qualifying durations: 4, 9, 25 minutes */
 #define RACE_LAP_TOTAL_TBL   0x3DF4u /* the three race lengths: 5, 10, 20 laps */
-#define USRVIA_T2CL        0xFE68u /* User VIA Timer 2 counter low — free-running entropy source */
-#define USRVIA_IER         0xFE6Eu /* User VIA interrupt enable — bit 6 is the T1 band timer */
+/* ---- the BBC hardware registers the twins touch ----------------------------------------
+   6522 VIA register file, offset from the base: +0 ORB, +1 ORA, +2/+3 DDRB/DDRA, +4/+5 T1
+   counter lo/hi, +6/+7 T1 LATCH lo/hi, +8/+9 T2 counter lo/hi, +$B ACR, +$D IFR, +$E IER.
+   System VIA is at $FE40, User VIA at $FE60.  ⚠ Naming these was not cosmetic: `VIA_T1_LOW`
+   used to be defined TWICE, both times as $FE68, which is T2's counter — the engine's
+   entropy source, not a T1 register (bbc_hw.cpp models it as a 1 MHz down-counter). */
+#define SYSVIA_T1CH        0xFE45u /* System VIA T1 counter high */
+#define SYSVIA_T1LL        0xFE46u /* ...T1 latch low */
+#define SYSVIA_T1LH        0xFE47u /* ...T1 latch high */
+#define SYSVIA_ACR         0xFE4Bu /* ...auxiliary control (T1 continuous-interrupt mode) */
+#define SYSVIA_IFR         0xFE4Du /* ...interrupt flags — bit 1 is VSYNC */
+#define SYSVIA_IER         0xFE4Eu /* ...interrupt enable */
+#define USRVIA_T1CL        0xFE64u /* User VIA T1 counter low */
+#define USRVIA_T1CH        0xFE65u /* ...T1 counter high */
+#define USRVIA_T1LL        0xFE66u /* ...T1 latch low — the LAST write of every band arm, which
+                                      is what closes a band record (see bbc_hw.cpp) */
+#define USRVIA_T1LH        0xFE67u /* ...T1 latch high */
+#define USRVIA_T2CL        0xFE68u /* ...T2 counter low — the engine's ONLY entropy source */
+#define USRVIA_T2CH        0xFE69u /* ...T2 counter high — written once a field to restart T2 */
+#define USRVIA_ACR         0xFE6Bu /* ...auxiliary control (T1 free-run) */
+#define USRVIA_IFR         0xFE6Du /* ...interrupt flags — bit 6 is the T1 band timeout */
+#define USRVIA_IER         0xFE6Eu /* ...interrupt enable — bit 6 is the T1 band timer */
 
 /* ---- exit-struct typedefs (moved out of revs_native.c) ---- */
 typedef struct { uint8_t a, x, y, n, z, v, c; } SlotExit;

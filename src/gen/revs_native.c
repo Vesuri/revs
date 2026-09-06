@@ -414,11 +414,11 @@ void irq1v_band_schedule(void)
     unsigned char state;
 
     /* Is this interrupt ours?  User VIA IFR bit 6 is the T1 timeout. */
-    if ((bus_read(0xFE6D) & 0x40) == 0) {
+    if ((bus_read(USRVIA_IFR) & 0x40) == 0) {
         irq1v_chain_on();
         return;
     }
-    bus_write(0xFE6D, 0x40);      /* acknowledge our own T1 flag */
+    bus_write(USRVIA_IFR, 0x40);  /* acknowledge our own T1 flag */
 
     PUSH(cpu.X);                  /* X is the arms' loop counter, restored before the RTI */
     cpu.D = 0;                    /* CLD */
@@ -507,15 +507,15 @@ void irq1v_band_schedule(void)
         tick_wheel_spin();
         PROBE_PHASE(PROBE_PHASE_DRAIN);
 
-        bus_write(0xFE69, 0xFF);   /* User VIA ORB, once per field */
+        bus_write(USRVIA_T2CH, 0xFF);  /* restart User VIA T2, once per field */
         latch = 0x0B16;
         break;
     }
 
-    /* How long until the next band.  $FE66 LAST: bbc_hw.cpp closes the band record on it,
-       and the record must already hold this band's mode and palette. */
-    bus_write(0xFE67, (uint8_t)(latch >> 8));
-    bus_write(0xFE66, (uint8_t)latch);
+    /* How long until the next band.  The LATCH LOW write is LAST: bbc_hw.cpp closes the band
+       record on it, and the record must already hold this band's mode and palette. */
+    bus_write(USRVIA_T1LH, (uint8_t)(latch >> 8));
+    bus_write(USRVIA_T1LL, (uint8_t)latch);
     irq_band_state++;
     irq1v_return();
 }
@@ -8178,7 +8178,6 @@ void update_slip_sound(void)
 #define GRIP_LIMIT_ALT 0x62ACu   /* ...and the second threshold beside them */
 #define GRIP_BASE      0x4C61u   /* the constant in each axle's threshold, $35/$35 */
 #define GRIP_BASE_ALT  0x4C63u   /* ...and its changed-surface replacement, $19/$1A */
-#define VIA_T1_LOW     0xFE68u   /* User VIA T1 counter low — the engine's randomness */
 
 /* ---------------------------------------------------------------------------
    ⭐ WIDE-VALUE CLEANUP, mechanism (B): THE CAR-ANGLE ARRAY relocated out of mem[]
@@ -8451,7 +8450,7 @@ void update_grip_limits_core(void)
     uint8_t oldDisturb  = grip_disturbance;
     uint8_t newDisturb  = 0u;
     if (surface_change_0 == 0xFFu || surface_change_1 == 0xFFu) {
-        newDisturb = (uint8_t)((((unsigned)bus_read(VIA_T1_LOW) * road_speed) >> 8) & 0x07u);
+        newDisturb = (uint8_t)((((unsigned)bus_read(USRVIA_T2CL) * road_speed) >> 8) & 0x07u);
         if (newDisturb == 0u) newDisturb = 1u;            /* $4C0F — never 0 once the arm runs */
         if (oldDisturb == 0u && drive_state == 0u && (section_jump_history & 0x80u)) {
             /* begin_spin ($4DC9) is reached with X still holding the disturbance value, which its
@@ -8547,7 +8546,7 @@ static AddFlags engine_torque_and_note(uint8_t curve, uint8_t gear)
 /* $49BB-$49C7 — the revs land as `base` plus 0..7 of User VIA jitter.  Three arms reach it. */
 static void engine_revs_from(uint8_t base)
 {
-    uint8_t jitter = (uint8_t)(bus_read(VIA_T1_LOW) & 0x07u);       /* $49BD-$49C1 */
+    uint8_t jitter = (uint8_t)(bus_read(USRVIA_T2CL) & 0x07u);       /* $49BD-$49C1 */
     uint8_t a      = (uint8_t)(jitter + base);                      /* $49C3 — ADC (D=0) */
     math_lo = base;                                                 /* $49BB */
     /* The ADD's exit A/flags are ALWAYS overwritten by a following engine_note_only (every arm
@@ -8613,7 +8612,7 @@ static EngineRegs engine_starter_poll(void)
         return r;
     }
     {
-        uint8_t luck = (uint8_t)(bus_read(VIA_T1_LOW) & starter_random_mask);  /* $498C-$498F */
+        uint8_t luck = (uint8_t)(bus_read(USRVIA_T2CL) & starter_random_mask);  /* $498C-$498F */
         r.x = kr.x;                              /* MOS ABI — X as OSBYTE 129 left it */
         r.y = kr.y;                              /* MOS ABI — Y untouched in this arm */
         if (luck == 0) { engine_catches(); r.x = 0xFFu; }          /* $4991 — no luck this frame */
@@ -14041,7 +14040,7 @@ void check_car_pair_core(void)
                     /* $2749: the trailing/leading pair's own classification */
                     uint8_t fs = mem[CAR_FLAGS_SHAPE + firstSlot];   /* $2749 (X=first) */
                     if (fs & 0x80u) {                        /* $274c BPL $275e; bit7 set -> here */
-                        uint8_t ent = (uint8_t)(bus_read(0xFE68) & 0x1Fu);  /* $274e-51 User VIA T2 entropy */
+                        uint8_t ent = (uint8_t)(bus_read(USRVIA_T2CL) & 0x1Fu);  /* $274e-51 User VIA T2 entropy */
                         if (ent != 0u) {
                             outcome = PROX_TAIL;             /* $2753 -> tail */
                         } else {
@@ -14555,7 +14554,6 @@ void project_object_slot_core(uint8_t coordIndex, uint8_t shape)
 #define MIRROR_LOWER_BOUND    0x0082u  /* the car block's BOTTOM line — a THIRD tenant of
                                           point_delta_lo+2, after the camera delta and the
                                           span rasteriser's end line (see symbols.csv $0080) */
-#define VIA_T1_LOW            0xFE68u  /* User VIA T1 counter low — the shudder's entropy */
 #define MIRROR_SHUDDER_TBL    0x2000u  /* indexed by it: the vibration's AND mask */
 
 /* ⭐ TWIN #165c — mirror_draw_car ($7FB6).  Paints ONE wing-mirror segment: walk its run of scan
@@ -14593,7 +14591,7 @@ void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
     do {
         uint8_t pattern = 0xF0u;                                 /* $7FCD */
         if (row < mem[MIRROR_LOWER_BOUND] && row >= span_line_cursor) {
-            pattern &= mem[MIRROR_SHUDDER_TBL + bus_read(VIA_T1_LOW)];   /* $7FD7/$7FDA */
+            pattern &= mem[MIRROR_SHUDDER_TBL + bus_read(USRVIA_T2CL)];   /* $7FD7/$7FDA */
             pattern &= engine_running;                           /* $7FDD — still only with the engine on */
         }
         if (dstIsRam) mem[(uint16_t)(dst + row)] = pattern;      /* $7FDF */
@@ -16156,21 +16154,27 @@ void hw_init_core(uint8_t osbyteY)
     mem[MEM_saved_irq1v]     = mem[0x0204];              /* $4E06 — chain target, low */
     mem[MEM_saved_irq1v + 1] = mem[0x0205];              /* $4E0C — ...and high */
 
-    while (!(bus_read(0xFE4Du) & 0x02u))                 /* $4E0F-$4E14 — wait for vsync */
+    while (!(bus_read(SYSVIA_IFR) & 0x02u))              /* $4E0F-$4E14 — wait for vsync */
         ;
 
-    bus_write(0xFE6Bu, 0x40u);                           /* $4E18 — User VIA ACR: T1 free-run */
-    bus_write(0xFE4Bu, (uint8_t)(bus_read(0xFE4Bu) | 0x40u));  /* $4E1B-$4E1E — System VIA ACR */
-    bus_write(0xFE6Eu, 0xC0u);                           /* $4E23 — User VIA IER: enable T1 */
-    bus_write(0xFE4Eu, 0xC0u);                           /* $4E26 — System VIA IER: enable T1 */
-    bus_write(0xFE64u, 0xD4u);                           /* $4E2B — System VIA T1 latch low */
-    bus_write(0xFE65u, 0x11u);                           /* $4E30 — ...and high ($11D4) */
-    bus_write(0xFE46u, 0x01u);                           /* $4E35 */
-    bus_write(0xFE45u, 0x3Du);                           /* $4E3A */
-    bus_write(0xFE46u, 0x1Eu);                           /* $4E3F */
-    bus_write(0xFE66u, 0x1Eu);                           /* $4E42 */
-    bus_write(0xFE47u, 0x4Eu);                           /* $4E47 */
-    bus_write(0xFE67u, 0x4Eu);                           /* $4E4A */
+    bus_write(USRVIA_ACR, 0x40u);                        /* $4E18 — User VIA ACR: T1 free-run */
+    bus_write(SYSVIA_ACR, (uint8_t)(bus_read(SYSVIA_ACR) | 0x40u));  /* $4E1B-$4E1E */
+    bus_write(USRVIA_IER, 0xC0u);                        /* $4E23 — User VIA IER: enable T1 */
+    bus_write(SYSVIA_IER, 0xC0u);                        /* $4E26 — System VIA IER: enable T1 */
+    /* ⚠ The first pair is the USER VIA's T1 COUNTER, not the System VIA's latch (an older
+       comment here had both wrong): $11D4 us is the first band's duration, started at once. */
+    bus_write(USRVIA_T1CL, 0xD4u);                       /* $4E2B */
+    bus_write(USRVIA_T1CH, 0x11u);                       /* $4E30 — $11D4 */
+    /* Then the System VIA's T1 is STARTED short and RELOADS long: latch low $01 and a write
+       to the counter high byte begin a $3D01 us count, after which the pair of latch writes
+       below leaves $4E1E (= 20 002 us, one field) as every subsequent reload.  The User VIA's
+       latch gets the same $4E1E, low byte first — that is the band schedule's own period. */
+    bus_write(SYSVIA_T1LL, 0x01u);                       /* $4E35 */
+    bus_write(SYSVIA_T1CH, 0x3Du);                       /* $4E3A — starts $3D01 */
+    bus_write(SYSVIA_T1LL, 0x1Eu);                       /* $4E3F */
+    bus_write(USRVIA_T1LL, 0x1Eu);                       /* $4E42 */
+    bus_write(SYSVIA_T1LH, 0x4Eu);                       /* $4E47 — $4E1E from here on */
+    bus_write(USRVIA_T1LH, 0x4Eu);                       /* $4E4A */
 
     bus_write(0x0205u, 0x4Eu);                           /* $4E4F — IRQ1V high byte first */
     bus_write(0x0204u, 0x5Cu);                           /* $4E54 — ...then low: $4E5C is live */
