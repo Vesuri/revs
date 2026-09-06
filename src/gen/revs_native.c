@@ -12523,13 +12523,11 @@ void place_car_world_coords(void)
 #define STANDINGS_BCD_LO    0x3878u
 #define STANDINGS_BCD_HI    0x39F8u
 #define STANDINGS_INCREMENT 0x3DF7u
-#define STANDINGS_MODE      0x5F38u   /* $5F38, semantics queued in rename.md */
-#define STANDINGS_CUTOFF    0x5F39u   /* $5F39, queued in rename.md */
 
 void tally_bcd_column(void)
 {
     uint8_t x = cpu.X;
-    uint8_t s = mem[STANDINGS_MODE];
+    uint8_t nHumans = human_driver_count;
     uint8_t y = (x == 0x06) ? mem[CAR_ORDER_TBL] : mem[CAR_ORDER_TBL + x];   /* the column's car */
 
     mem[STANDINGS_BCD_LO + x] = 0x00;
@@ -12537,23 +12535,23 @@ void tally_bcd_column(void)
 
     uint8_t ctr_lo, ctr_hi = 0x00;
 
-    if (s == 0x01) {
-        ctr_lo = s;                                       /* L_5a5a: count = $5F38 (=1) */
+    if (nHumans == 0x01) {
+        ctr_lo = nHumans;                                 /* L_5a5a: one human, one bump */
     } else {
-        uint8_t am1 = (uint8_t)(s - 1);                   /* SEC; SBC #1 */
+        uint8_t am1 = (uint8_t)(nHumans - 1);             /* SEC; SBC #1 */
         int use_product;
         uint8_t aEntry = 0;
 
         if (y == player_car)            { use_product = 1; aEntry = am1; }   /* BEQ L_5a4d */
-        else if (y >= mem[STANDINGS_CUTOFF]) { use_product = 0; ctr_lo = s; }/* BCS L_5a5a */
+        else if (y >= human_car_first)  { use_product = 0; ctr_lo = nHumans; } /* BCS */
         else {
             uint8_t sh = (uint8_t)(am1 << 1);             /* ASL A */
             if (sh != 0) { use_product = 0; ctr_lo = sh; }/* BNE L_5a5f */
             else         { use_product = 1; aEntry = 0; } /* -> L_5a4d */
         }
 
-        if (use_product) {                                /* L_5a4d: $5F38 * aEntry, was mul8 */
-            unsigned p = revs_mulu16(s, aEntry);
+        if (use_product) {                                /* L_5a4d: humans * aEntry, was mul8 */
+            unsigned p = revs_mulu16(nHumans, aEntry);
             ctr_lo = (uint8_t)p;
             ctr_hi = (uint8_t)(p >> 8);
         }
