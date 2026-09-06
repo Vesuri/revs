@@ -14208,17 +14208,19 @@ void shift_key_commands_core(uint8_t entryY)
         y = (uint8_t)(y - 1u);
     }
 
+    uint8_t actionIdx = 0u;                      /* the action's state_flags index, live into the tail */
     if (matched) {                               /* $0F01..$0F0E */
-        cpu.Y = math_lo;                         /* $0F01 LDY $74 — the matched index escapes into the tail */
         uint8_t action = mem[SHIFT_KEY_ACTION_TBL + math_lo];
-        uint8_t idx    = (uint8_t)(action & 0x0Fu);           /* low nibble = which state_flags cell */
-        cpu.X = idx;                             /* $0F08 TAX — X escapes into the tail too */
-        mem[MEM_state_flags + idx] = (uint8_t)(action & 0xF0u);  /* high nibble = value */
+        actionIdx = (uint8_t)(action & 0x0Fu);               /* low nibble = which state_flags cell */
+        mem[MEM_state_flags + actionIdx] = (uint8_t)(action & 0xF0u);  /* high nibble = value */
+        cpu.Y = math_lo;                         /* $0F01 LDY $74 — the matched index escapes... */
+        cpu.X = actionIdx;                       /* $0F08 TAX — ...and so does the index */
     }
 
     /* $0F11 — pause_request.  A/X/Y here reach the MOS inside sound_stop_all, so they are set
        exactly as the transliteration leaves them (A = pause_request, X = the action's low nibble,
-       Y = the matched index) — the harness compares registers at every OS-call boundary. */
+       Y = the matched index) — the harness compares registers at every OS-call boundary.  ⚠ And
+       they stay AMBIENT from there on: the pause spin's kbd_test_key rewrites X and Y. */
     uint8_t pr = mem[MEM_pause_request];
     cpu.A = pr;                                  /* $0F11 LDA pause_request */
     if (pr != 0u) {                              /* $0F14 BEQ skips */
@@ -14255,6 +14257,8 @@ void shift_key_commands_core(uint8_t entryY)
             /* $0F57/$0F59 — redefine envelope 1 (base 0) with the new attack level.  Core-to-
                core: the shim's whole job would be to put a 0 in cpu.A and read flags nothing
                here looks at, and X is not live across this call either. */
+            /* ⚠ X here is AMBIENT, not actionIdx: the pause spin's own kbd_test_key leaves
+               $FF in it on any frame that paused, so the live value has to come from cpu. */
             sound_envelope_core(0x00u, cpu.X);
             mem[MEM_engine_note]++;               /* $0F5C INC engine_note */
         }
