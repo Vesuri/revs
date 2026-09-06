@@ -782,6 +782,132 @@ static int test_retire_car(void)
     return fail;
 }
 
+void finish_race(void);                void finish_race__t6502(void);
+
+/* ================================================================================================
+ * TWIN #195 — $1163 finish_race, the end-of-session run-out.  Result-only (LIVE_NONE): the only
+ * caller is race_main_loop, which returns straight after it.
+ *
+ * ⚠ The routine is an UNBOUNDED loop over the rest of the session, so every case pins ONE exit
+ * and the fixture drives all of them:
+ *   - the abort (state_flags negative), which leaves before the driving pass;
+ *   - practice with the player NOT in slot $13;
+ *   - practice in slot $13 with the frame counter already past $0E;
+ *   - the race, with every driver flagged home AND beyond the distance;
+ *   - and one that LOOPS: practice in slot $13 two frames short of the bound, which reaches it
+ *     on the second pass (loop_counter $FE -> $FF -> $00 carries loop_counter_hi $0D -> $0E).
+ * The driving pass itself (FUN_27ed, check_car_pair, find_player_neighbours) is shared with the
+ * oracle, so what this gates is the run-out's own bookkeeping and its exit tests.
+ *
+ * ⚠⚠ COVERAGE LIMIT, by construction, and it is the third of the three explanations for a
+ * surviving sabotage (docs/validation-harness.md §FIFTEENTH): the RACE arm's field walk is NOT
+ * gated here.  Observing a walk defect needs a case whose walk says "keep going", and such a case
+ * only returns once the drive pass has retired the whole field — which on randomised memory it
+ * may never do, because it rewrites car_flags_shape itself.  So every race case this fixture can
+ * run must end on its FIRST pass, and a walk that stops early ends there too with identical
+ * mem[] (D39).  Covering the walk's two tests one at a time — a driver out by the flag but short
+ * on distance, and vice versa — was tried and hangs for exactly that reason.  What IS gated: the
+ * loop machinery, by the practice loop-back arm (D38), and the walk itself by inspection against
+ * $1199-$11A8.
+ *
+ * SABOTAGE (each must FAIL, patch verified applied):
+ *   D34 the player is not retired on the way in                   -> 977
+ *   D35 the object slots are not emptied on the way in            -> 1000
+ *   D36 the abort tests bit 6 of state_flags, not bit 7           -> 412
+ *   D37 shift_key_commands is handed the ambient Y, not 0         -> 198
+ *   D38 the run-out makes exactly one pass and returns     -> TBD
+ * ============================================================================================= */
+static int test_finish_race(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t, i;
+    int scale = 1;
+    int sawAbort = 0, sawPractice = 0, sawFrameBound = 0, sawRace = 0, sawLoop = 0;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("finish_race");
+    if (!want("finish_race")) return 0;
+
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+
+    /* Each case runs at least one full driving pass, so a case is far dearer than a leaf twin's —
+       but only ~0.2 ms once the ring walks terminate, which is what the car_order permutation
+       below buys.  A thousand cases is two hundred per arm. */
+    int cases = 1000 * scale;
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        int arm = t % 5;
+        fill_random(pre);
+        c.D = 0;
+        c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+        c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+        pre[0x5A19] = (uint8_t)(0x10u + (xs() % 0x20u));     /* time_tick_period */
+        pre[0x0046] = (uint8_t)(xs() % 0x40u);               /* the tick countdown */
+        pre[0x006F] = (uint8_t)(xs() % 0x14u);               /* player_car */
+        pre[0x006E] = (uint8_t)(xs() % 0x20u);               /* race_lap_total */
+        /* ⚠ car_order must be a real PERMUTATION of the twenty slots, not twenty random slots.
+           The pass ends with find_player_neighbours, which searches car_order[$13..0] for
+           player_car and parks the position it found in zp_scratch_index — and leaves $FF there
+           when the player is ABSENT.  check_car_pair's ring closes only on that cell, so a
+           missing player hangs the NEXT pass, not this one (docs/validation-harness.md
+           §EIGHTEENTH).  In the game the array is a permutation by construction. */
+        for (i = 0; i < 20; i++) pre[0x013C + i] = (uint8_t)i;
+        for (i = 19; i > 0; i--) {
+            int j = (int)(xs() % (unsigned)(i + 1));
+            uint8_t tmp = pre[0x013C + i];
+            pre[0x013C + i] = pre[0x013C + j];
+            pre[0x013C + j] = tmp;
+        }
+        pre[0x0003] = (uint8_t)(xs() % 20u);                 /* zp_scratch_index */
+        pre[0x2771] = 0xC9u;                                 /* the per-circuit SMC seam, unpatched */
+        pre[0x62DF] = (uint8_t)(0x0Eu + (xs() % 0x10u));     /* loop_counter_hi, past the bound */
+        pre[0x006A] = (uint8_t)(xs() % 0xF0u);               /* loop_counter, no carry */
+
+        if (arm == 0) {                                      /* the abort */
+            pre[0x05F4] |= 0xC0u; sawAbort = 1;              /* bit 6 too — see D36 */
+        } else {
+            pre[0x05F4] &= 0x7Fu;
+            if (arm == 1) {                                  /* practice, wrong slot */
+                pre[0x006C] &= 0x7Fu;
+                pre[0x006F] = (uint8_t)(xs() % 0x13u);
+                sawPractice = 1;
+            } else if (arm == 2) {                            /* practice, out of frames */
+                pre[0x006C] &= 0x7Fu;
+                pre[0x006F] = 0x13u;
+                sawFrameBound = 1;
+            } else if (arm == 3) {                            /* the race: the whole field is home */
+                pre[0x006C] |= 0x80u;
+                /* Every driver out of the running by BOTH tests at once — see the coverage
+                   limit in the header: covering them one at a time is what makes the loop
+                   unbounded, because the drive pass rewrites car_flags_shape. */
+                for (i = 0; i <= 0x13; i++) {
+                    pre[0x018C + i] |= 0x40u;                 /* flagged home... */
+                    pre[0x04B4 + i] = (uint8_t)(pre[0x006E] + 1u + (xs() % 0x10u));
+                }                                             /* ...and beyond the distance */
+                sawRace = 1;
+            } else {                                          /* practice, TWO passes to the bound */
+                pre[0x006C] &= 0x7Fu;
+                pre[0x006F] = 0x13u;
+                pre[0x62DF] = 0x0Du;
+                pre[0x006A] = 0xFEu;                          /* $FE -> $FF -> $00 carries the hi */
+                sawLoop = 1;
+            }
+        }
+        if (getenv("REVS_TRACE_CASES")) { fprintf(stderr, "[case %d arm %d]\n", t, arm); fflush(stderr); }
+        fail += diff_run("finish_race", pre, c, finish_race, finish_race__t6502,
+                         LIVE_NONE, t, &printed);
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  result-only (race_main_loop returns)\n",
+           "finish_race", cases, fail);
+
+    if (!sawAbort)      { printf("VACUOUS: the abort arm never ran\n"); fail++; }
+    if (!sawPractice)   { printf("VACUOUS: the practice slot test never ran\n"); fail++; }
+    if (!sawFrameBound) { printf("VACUOUS: the frame bound never ran\n"); fail++; }
+    if (!sawRace)       { printf("VACUOUS: the field walk never ran\n"); fail++; }
+    if (!sawLoop)       { printf("VACUOUS: the run-out never made a second pass\n"); fail++; }
+    return fail;
+}
+
 void tick_race_timers(void);           void tick_race_timers__t6502(void);
 
 /* ================================================================================================
@@ -9214,6 +9340,7 @@ int main(int argc, char** argv)
     fail += test_add_frame_time();
     fail += test_tick_race_timers();
     fail += test_retire_car();
+    fail += test_finish_race();
     fail += test_draw_starting_lights();
     fail += test_move_and_draw_cars();
     fail += test_draw_car_field();

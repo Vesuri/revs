@@ -568,6 +568,7 @@ FrameTimeExit add_frame_time_core(uint8_t clockIdx);
 void tick_race_timers_core(void);
 void shift_key_commands_core(uint8_t entryY);
 uint8_t retire_car_core(uint8_t x);
+void finish_race_core(void);
 TextExit print_bcd_digits_core(uint8_t bcd, uint8_t x, uint8_t y);
 TextExit print_bcd_digits_at_core(uint8_t bcd, uint8_t column, uint8_t row);
 TextExit print_lap_time_core(uint8_t fieldMask, uint8_t carIdx, uint8_t y);

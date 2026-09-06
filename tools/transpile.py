@@ -1215,6 +1215,9 @@ VALIDATE_FUNCS = {
     0x5052,
     # ⭐ TWIN #194 — $11BE retire_car, the run-out's per-car retirement.
     0x11BE,
+    # ⭐ TWIN #195 — $1163 finish_race, the end-of-session run-out (and the last transliterated
+    # holder of check_car_pair / reject_all_object_slots / tick_race_timers).
+    0x1163,
     # $5204 plot_line_octant — TWIN #164.  The self-modifying octant LINE PLOTTER every straight
     # line in the engine goes through (dial_needle_angle / draw_dash_needle fall into it).  A DDA
     # walk: per octant it patches the major/minor step opcode into its own body ($3B86->$5220,

@@ -663,6 +663,12 @@ void retire_car(void)
     cpu.N = 1u; cpu.Z = 0u; cpu.C = notFinished;
 }
 
+/* $1163 finish_race — no inputs, and no live outputs: race_main_loop returns after it. */
+void finish_race(void)
+{
+    finish_race_core();
+}
+
 /* $5052 tick_race_timers — no inputs and no live outputs; see the twin's header. */
 void tick_race_timers(void)
 {

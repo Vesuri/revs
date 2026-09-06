@@ -310,3 +310,23 @@ show them as bare addresses.  ⇒ **Add a `smc` row per seam** carrying the unpa
 each circuit rewrites it to (from `make track-patch`), and the twin that dispatches on it.  No
 measurement needed — this one is transcription, and it is only queued rather than done because
 the naming source of truth is a different file from the one the cleanup touched.
+
+
+## `FUN_27ed` and its two inner arms have no `symbols.csv` row at all
+
+`$27ED` is the frame's **other-car driving pass**, called from `move_and_draw_cars` ($2649) and from
+`finish_race`'s run-out ($117E), and twin #159 settled what it does: for X = 19..0, skipping
+`player_car`, it picks a target speed from the segment ahead, derives a braking gap, integrates
+`gap*4` into the 16-bit `[car_speed_scaled:car_speed_frac]` with an overflow reset at `$BE`, adds
+the speed into `car_state_1` twice (advancing the track offset through `track_pos_advance`, which
+books a lap via `lap_complete`), and steps `car_state_2` back toward centre. Its two callers both
+`JSR $2692` straight after, so the exit registers are dead.
+
+That is a fully derived description and the address still carries the transpiler's placeholder, so
+every twin that calls it — now including `finish_race` — reads `FUN_27ed()`. Its two static arms
+are placeholders too: `FUN_27ed_car` ($27F6, the per-car body) and `FUN_27ed_car_adjust` ($28CE,
+the steering nudge the five flag tests branch to).
+
+⇒ **Suggested: `drive_other_cars` ($27ED), `drive_one_car` ($27F6), `car_steering_settle` ($28CE)**,
+all **[DERIVED]** from twin #159 plus the two call sites. No measurement needed — the behaviour is
+already validated byte-for-byte; this is transcription into `symbols.csv` plus a transpiler regen.

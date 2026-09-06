@@ -673,9 +673,31 @@ slots; a fixture for anything that *calls* it must do the same.  Generalised: **
 only safe for a leaf.  The moment a fixture drives a subsystem, every loop bound its callees read is
 an input, and an unpinned one is a hang, not a mismatch.**
 
+⭐⭐ **And a LOOPING driver needs the bound to survive its own pass, which means pinning the
+INVARIANT and not just the value.**  Copying `check_car_pair`'s pins verbatim — `car_order[i] =
+xs() % 20` — fixed `finish_race`'s first pass and hung its second, and the surprise was that the
+native twin's trace printed nothing for the stuck case: the ORACLE runs first in `diff_run`, so the
+hang was in the transliteration, on memory the fixture itself had built.  The cause is that the pass
+*ends* with `find_player_neighbours`, which searches `car_order[$13..0]` for `player_car` and parks
+the position in `zp_scratch_index` — leaving **`$FF` there when the player is absent**.  Twenty
+random slots usually omit the player, so the next pass's ring had no closing index.  The real
+precondition is not "each entry is a valid slot" but "the array is a PERMUTATION of the twenty
+slots", which is what it is in the game by construction; the fixture now shuffles `0..19`.  Once it
+did, the whole fixture went from minutes-per-case to **0.2 ms** — the "pathologically slow fixture"
+was never slow, it was a thousand runaway ring walks.  Two rules fall out: **when a driver's fixture
+hangs, look at what the LAST call in the pass writes, not just what the first one reads**, and
+**instrument the model that runs FIRST** (`t6502`), because that is the one a shared-memory hang
+stops.
+
 ⚠ The related trap is a **coverage limit that reads as a passing sabotage.**  `finish_race`'s race arm
 loops while any driver is still running, so a fixture can only present cases that end on their first
 pass — and a defect that makes the field walk stop early ends there too, with identical `mem[]`.  Such
 a defect is not "no change at all" (the THIRD explanation in §FIFTEENTH); it is a real hole, and the
 honest move is to write the hole into the fixture's header and gate the loop machinery some other way
-(there, a practice case two frames short of the bound, which loops exactly once).
+(there, a practice case two frames short of the bound, which loops exactly once — D38, 200
+mismatches, against D39's 0 for the walk itself).  ⚠ Trying to close the hole by covering the walk's
+two tests *separately* — one driver home by the flag but short on distance, another beyond the
+distance with the flag clear — reopens the hang, because the drive pass rewrites `car_flags_shape`
+itself: the flag is not stable across a pass, so such a case loops until the field happens to
+retire, which on randomised memory may be never.  A coverage limit that a second construction also
+cannot reach is worth *recording* rather than fighting.

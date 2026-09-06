@@ -13999,7 +13999,7 @@ void shift_key_commands(void) { shift_key_commands_core(cpu.Y); }
 
 void shift_key_commands_core(uint8_t entryY)
 {
-    math_lo = entryY;                             /* $0EE5 — the caller's Y ($0B) */                             /* STA $74 — Y saved in the $74 slot */
+    math_lo = entryY;                             /* $0EE5 — the entry Y, saved in the $74 slot */
 
     if (!kbd_test_key_core(0xFFu)) {              /* $0EE7 LDX #$FF / $0EE9 / $0EEC BNE */
         return;                                   /* SHIFT not held -> nothing to do */
@@ -14797,6 +14797,67 @@ uint8_t retire_car_core(uint8_t x)
     if (notFinished)                                 /* $11C8 BCC — it finished, leave the time */
         mem[CAR_LAP_START_HI + x] = 0xC0u;           /* $11CA */
     return notFinished;
+}
+
+/* $1163 finish_race — TWIN #195.  Called once, when a session really ends, so that the results
+   table is a real one: the player is parked and the REMAINING drivers are raced to the finish
+   with nothing drawn at all (which is why the screen holds the last painted frame while this
+   runs).  Each pass is one frame of clock, the command keys (so the player can still abort),
+   the other-car driving pass and the running-order re-sort — and then the exit test:
+     - in a RACE, walk all twenty drivers from slot $13 down and keep going while any one of them
+       has neither finished (car_flags_shape bit 6) nor fallen a full distance behind;
+     - outside a race there is no field to run out, so the loop just counts frames and stops at
+       loop_counter_hi $0E — and only when the player is in slot $13, which is where the front
+       end puts them for practice and qualifying.
+   ⚠ Exit A/X/Y and the flags are DEAD: the only caller is race_main_loop, which returns. */
+void finish_race_core(void)
+{
+    wheel_spin_rate   = 0x00u;                       /* $1163/$1165 */
+    start_light_state = 0x00u;                       /* $1167 — stop the light sequence */
+    reject_all_object_slots_core();                  /* $1169 — empty every object slot */
+    retire_car_core(player_car);                     /* $116C/$116E — park the player */
+
+    for (;;) {
+        tick_race_timers_core();                     /* $1171 — one frame of clock */
+        shift_key_commands_core(0x00u);              /* $1174/$1176 — SHIFT+fn, the abort included */
+        if (state_flags & 0x80u)                     /* $1179/$117C BMI — aborted */
+            return;
+
+        FUN_27ed();                                  /* $117E — drive the other nineteen cars */
+        check_car_pair();                            /* $1181 — and re-sort the running order.
+                                                        ⚠ the SHIM, not the core: it marshals the
+                                                        relocated car_distance array in, and the
+                                                        drive pass above leaves that global as the
+                                                        authority (it marshals per car, one slot
+                                                        at a time). */
+        find_player_neighbours_core();               /* $1184 */
+
+        if ((session_is_race & 0x80u) == 0u) {       /* $1189/$118B BMI — practice or qualifying */
+            if (player_car != 0x13u)                 /* $1187 LDX #$13 / $118D CPX / $118F BNE */
+                return;
+            if (loop_counter_hi >= 0x0Eu)            /* $1191/$1194/$1196 BCC */
+                return;
+            continue;
+        }
+
+        /* $1199-$11A8 — the field walk, from slot $13 down to 0.  The first driver still out
+           there sends us round again; if the walk runs off the bottom, everyone is home. */
+        {
+            uint8_t x = 0x13u;
+            int stillRunning = 0;
+            for (;;) {
+                if ((mem[CAR_FLAGS_SHAPE + x] & 0x40u) == 0u &&        /* $1199/$119C/$119E */
+                    race_lap_total >= mem[CAR_LAP_COUNT + x]) {        /* $11A0/$11A2/$11A5 */
+                    stillRunning = 1;
+                    break;
+                }
+                if (x == 0u) break;                  /* $11A7 DEX / $11A8 BPL */
+                x--;
+            }
+            if (!stillRunning)                       /* every driver is home */
+                return;
+        }
+    }
 }
 
 /* ===========================================================================
