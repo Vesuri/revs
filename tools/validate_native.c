@@ -1473,6 +1473,93 @@ static int test_wing_prompt(void)
     return fail;
 }
 
+void car_reset_best_lap(void);        void car_reset_best_lap__t6502(void);
+void all_cars_reset_best_lap(void);  void all_cars_reset_best_lap__t6502(void);
+void add_tally_to_lap_total(void);   void add_tally_to_lap_total__t6502(void);
+/* ================================================================================================
+ * ⭐ TWIN #203 — the three small routines front_end_menus needs as cores.
+ *
+ *   $40EB car_reset_best_lap       one car's best lap back to the $10:00:00 sentinel
+ *   $42EC all_cars_reset_best_lap  ...for all 20
+ *   $6698 add_tally_to_lap_total   a 3-byte BCD fold of one standings column into one car's
+ *                                  cumulative lap total
+ *
+ * The two resets are pure stores, so whole-mem[] randomisation with a random index is the whole
+ * contract; the index sweeps the FULL byte range because the 6502 indexes these tables unmasked
+ * and a caller with a stale X really would spill past car 19.
+ *
+ * ⚠ add_tally_to_lap_total is one of the eight SED sites, and D is part of its contract: the
+ * routine SEDs at entry and CLDs at exit, yet diff_run has no LIVE_ bit for D.  The fixture
+ * therefore checks D explicitly after each case, and randomises the ENTRY D so a twin that just
+ * passed the caller's mode through would be caught too.
+ *
+ * SABOTAGE (each must FAIL, patch verified applied; counts measured, not predicted):
+ *   D79 the sentinel is $01:00:00, not $10:00:00       -> 4000/4000
+ *   D80 the field reset skips car 0                    -> 4000/4000
+ *   D81 the BCD fold adds the tally's bytes swapped    -> 3979/4000
+ *   D82 the fold leaves decimal mode set (no CLD)      -> 0 mem, caught by the D check
+ *
+ * ⚠ D82 is the reason the D check exists: the mem[] differential and every live register agree
+ *   to the byte, and only the explicit check sees it.  D81 is 21 short of the full count because
+ *   a case whose two tally bytes happen to be equal has nothing to swap.
+ * ============================================================================================= */
+static int test_lap_reset_and_tally(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    const int cases = 4000;
+
+    register_fixture("car_reset_best_lap");
+    if (want("car_reset_best_lap")) {
+        int sub = 0;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu(); fill_random(pre); c.X = (uint8_t)xs();
+            sub += diff_run("car_reset_best_lap", pre, c,
+                            car_reset_best_lap, car_reset_best_lap__t6502,
+                            LIVE_A | LIVE_N | LIVE_Z, t, &printed);
+        }
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,N,Z\n",
+               "car_reset_best_lap", cases, sub);
+    }
+
+    register_fixture("all_cars_reset_best_lap");
+    if (want("all_cars_reset_best_lap")) {
+        int sub = 0;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu(); fill_random(pre); c.X = (uint8_t)xs();
+            sub += diff_run("all_cars_reset_best_lap", pre, c,
+                            all_cars_reset_best_lap, all_cars_reset_best_lap__t6502,
+                            LIVE_A | LIVE_X | LIVE_N | LIVE_Z, t, &printed);
+        }
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,N,Z\n",
+               "all_cars_reset_best_lap", cases, sub);
+    }
+
+    register_fixture("add_tally_to_lap_total");
+    if (want("add_tally_to_lap_total")) {
+        int sub = 0, dLeftSet = 0, sawCarry = 0;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu(); fill_random(pre);
+            c.X = (uint8_t)xs();                     /* the standings column */
+            c.Y = (uint8_t)xs();                     /* the car */
+            c.D = (uint8_t)(xs() & 1u);              /* entry mode must not matter */
+            sub += diff_run("add_tally_to_lap_total", pre, c,
+                            add_tally_to_lap_total, add_tally_to_lap_total__t6502,
+                            LIVE_A | LIVE_C, t, &printed);
+            if (cpu.D) dLeftSet++;                   /* the $66B4 CLD is part of the contract */
+            if (cpu.C) sawCarry = 1;
+        }
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,C  BCD (D cleared: %s)\n",
+               "add_tally_to_lap_total", cases, sub, dLeftSet ? "NO" : "yes");
+        if (dLeftSet) { printf("add_tally_to_lap_total left D set in %d cases\n", dLeftSet); fail++; }
+        if (!sawCarry) { printf("VACUOUS: add_tally_to_lap_total never carried out of the top byte\n"); fail++; }
+    }
+    return fail;
+}
+
 void retire_car(void);                 void retire_car__t6502(void);
 
 /* ================================================================================================
@@ -10274,6 +10361,7 @@ int main(int argc, char** argv)
     fail += test_driver_name_pages();
     fail += test_console_number();
     fail += test_wing_prompt();
+    fail += test_lap_reset_and_tally();
     fail += test_standings_table();
     fail += test_dashboard_readouts();
     fail += test_add_frame_time();

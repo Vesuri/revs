@@ -82,6 +82,19 @@
 #define CAR_TRACK_POSITION 0x0128u /* seed_car_track_position: per-car track position (20 entries) */
 #define CAR_GRID_BASE      0x04A0u /* per-car grid base row = car index >> 1 */
 #define CAR_SEED_INDEX     0x004Au /* car-index cursor for the grid-seeding loop */
+#define CAR_BEST_LAP_LO    0x06A0u /* per-car best lap, 3-byte BCD: low byte */
+#define CAR_BEST_LAP_MID   0x06B8u /* ...middle */
+#define CAR_BEST_LAP_HI    0x06D0u /* ...high ($10 = the 'no time yet' sentinel) */
+#define CAR_LAP_LO         0x3864u /* per-car cumulative lap total, 3-byte BCD: low byte */
+#define CAR_LAP_MID        0x39E4u /* ...middle */
+#define CAR_LAP_HI         0x04F0u /* ...high */
+#define STANDINGS_BCD_LO   0x3878u /* per-column 16-bit BCD tally, low byte */
+#define STANDINGS_BCD_HI   0x39F8u /* ...and high */
+#define CAR_ORDER_GRID     0x04C8u /* the starting-grid order, saved across the results re-sorts */
+#define CLASS_LAP_TARGET_MID 0x5A00u /* the three race classes' BCD best-lap targets, mid byte */
+#define CLASS_LAP_TARGET_HI  0x5A03u /* ...and high byte */
+#define QUALIFY_MINUTES_TBL  0x3DF0u /* the three qualifying durations: 4, 9, 25 minutes */
+#define RACE_LAP_TOTAL_TBL   0x3DF4u /* the three race lengths: 5, 10, 20 laps */
 #define USRVIA_T2CL        0xFE68u /* User VIA Timer 2 counter low — free-running entropy source */
 #define USRVIA_IER         0xFE6Eu /* User VIA interrupt enable — bit 6 is the T1 band timer */
 
@@ -627,6 +640,9 @@ TextExit print_lap_value_from_mid_core(uint8_t bcd, uint8_t x, uint8_t y);
    every call site reloads its registers immediately, so the exit ABI is dead. */
 void abort_if_quit_keys_core(void);
 void wait_dismiss_space_core(void);
+void car_reset_best_lap_core(uint8_t car);
+void all_cars_reset_best_lap_core(void);
+Adc  add_tally_to_lap_total_core(uint8_t column, uint8_t car);
 void prompt_driver_ready_core(void);
 void read_driver_name_core(void);
 void wait_dismiss_key_core(uint8_t offerReturn);

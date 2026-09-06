@@ -11367,6 +11367,54 @@ void apply_steering_assist(void)        { car_angle_marshal_in(); apply_steering
 /* $503F adc_read — magnitude in A, sign in X, the dead-zone carry rebuilt from CMP #$0A
    ($504F).  Y is left as the OSBYTE reading the core's MOS call returned; V is dropped. */
 /* ===========================================================================
+   $40EB  car_reset_best_lap        — one car's best lap back to "no time yet"  (#203)
+   $42EC  all_cars_reset_best_lap   — ...for the whole 20-car field
+   ---------------------------------------------------------------------------
+   The sentinel is the 3-byte BCD value $10:00:00 — ten minutes, slower than any lap any
+   circuit on this disc can produce, so the first real lap always wins the comparison.
+   front_end_menus resets the field at every session boundary and one car at a time as it
+   walks the drivers; reset_driving_variables uses the single-car form too.
+   --------------------------------------------------------------------------- */
+void car_reset_best_lap_core(uint8_t car)
+{
+    mem[CAR_BEST_LAP_LO  + car] = 0x00;
+    mem[CAR_BEST_LAP_MID + car] = 0x00;
+    mem[CAR_BEST_LAP_HI  + car] = 0x10;
+}
+
+void all_cars_reset_best_lap_core(void)
+{
+    uint8_t car = 0x13;                       /* $42EC LDX #$13 — cars $13 down to 0 */
+    do {
+        car_reset_best_lap_core(car);
+    } while (car-- != 0);
+}
+
+/* ===========================================================================
+   $6698  add_tally_to_lap_total — fold a standings column into a car's lap total  (#203)
+   ---------------------------------------------------------------------------
+   A three-byte BCD add of column `column`'s 16-bit tally into car `car`'s 24-bit cumulative
+   lap total, the third byte taking only the carry.  ⚠ One of the eight SED sites
+   (docs/static-map.md §Decimal mode): the adds are genuinely decimal, which is why this twin
+   keeps adc_value instead of a plain uint32_t sum, and it restores D=0 on the way out exactly
+   as the $66B4 CLD does.  Returns the high byte's add so the caller can see the final carry.
+   --------------------------------------------------------------------------- */
+Adc add_tally_to_lap_total_core(uint8_t column, uint8_t car)
+{
+    cpu.D = 1;                                                                    /* $6698 SED */
+
+    Adc lo  = adc_value(mem[CAR_LAP_LO  + car], mem[STANDINGS_BCD_LO + column], 0);
+    mem[CAR_LAP_LO  + car] = lo.val;
+    Adc mid = adc_value(mem[CAR_LAP_MID + car], mem[STANDINGS_BCD_HI + column], lo.carry);
+    mem[CAR_LAP_MID + car] = mid.val;
+    Adc hi  = adc_value(mem[CAR_LAP_HI  + car], 0x00, mid.carry);
+    mem[CAR_LAP_HI  + car] = hi.val;
+
+    cpu.D = 0;                                                                    /* $66B4 CLD */
+    return hi;
+}
+
+/* ===========================================================================
    THE LATE MISC TREES  (twins #116-#125, user 2026-08-21)
    ---------------------------------------------------------------------------
    Everything still transliterated in the call trees of scale_wing_settings,
@@ -12506,7 +12554,7 @@ void place_car_world_coords(void)
    Front-end grid/standings BCD tally for one column X.  Zeroes the per-column 16-bit BCD
    accumulator standings_bcd_lo:standings_bcd_hi, derives a repeat count, then BCD-accumulates
    standings_increment into the pair that many times before folding the pair into the 24-bit
-   BCD car-lap total via FUN_6698.
+   BCD car-lap total via add_tally_to_lap_total.
 
    The repeat count comes from standings_mode ($5F38):
      * mode 1                     -> count = 1               (accumulate once)
@@ -12520,8 +12568,6 @@ void place_car_world_coords(void)
    the two adds go through adc_value with D set — that is sanctioned here and nowhere on the render
    path.  Only the pre-SED product at $5A52 was a shim (mul8); it is now revs_mulu16.
    --------------------------------------------------------------------------- */
-#define STANDINGS_BCD_LO    0x3878u
-#define STANDINGS_BCD_HI    0x39F8u
 #define STANDINGS_INCREMENT 0x3DF7u
 
 void tally_bcd_column(void)
@@ -12570,8 +12616,8 @@ void tally_bcd_column(void)
         break;
     } while (1);
 
-    cpu.Y = y;                                            /* FUN_6698 indexes the lap total by Y */
-    FUN_6698();                                           /* folds the pair into the lap total; CLD */
+    cpu.Y = y;                                            /* $5A73 TAY — the caller's exit Y */
+    add_tally_to_lap_total_core(x, y);                    /* folds the pair into the lap total */
 }
 
 /* ===========================================================================
@@ -12967,9 +13013,6 @@ void full_track_scan_rebuild(void) { full_track_scan_rebuild_core(cpu.A); }
 #define CAR_LAP_START_LO  0x0898u   /* car_lap_start_lo: per-car lap-start BCD timestamp, low  */
 #define CAR_LAP_START_MID 0x08ACu   /* car_lap_start_mid:                               middle */
 #define CAR_LAP_START_HI  0x04DCu   /* car_lap_start_hi:                                 high  */
-#define CAR_BEST_LAP_LO   0x06A0u   /* car_best_lap_lo: per-car best lap time, low byte  */
-#define CAR_BEST_LAP_MID  0x06B8u   /* car_best_lap_mid */
-#define CAR_BEST_LAP_HI   0x06D0u   /* car_best_lap_hi  */
 
 static void lap_complete_core(uint8_t x)
 {
@@ -13953,9 +13996,6 @@ void check_car_pair_core(void)
    queued in docs/rename.md. */
 
 #define CAR_ORDER_PREV    0x013Bu   /* car_order_prev: ORDER[j] = mem[$13B+j]; car_order ($13C) is +1 */
-#define CAR_LAP_LO        0x3864u   /* car_lap_lo:  per-car current lap time, low byte  */
-#define CAR_LAP_MID       0x39E4u   /* car_lap_mid                                       */
-#define CAR_LAP_HI        0x04F0u   /* car_lap_hi                                        */
 #define SORT_SCRATCH      0x0100u   /* stable-position scratch (aliases car_race_flags — see rename.md) */
 
 /* one SEC/SBC 3-byte BCD compare of key[a] - key[b], writing the two diff scratch cells

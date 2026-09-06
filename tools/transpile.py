@@ -1230,6 +1230,10 @@ VALIDATE_FUNCS = {
     # why that twin's core now returns it.  Exit ABI dead at all four callers — LIVE_NONE.
     0x41D0,
     0x65D3,
+    # ⭐ TWIN #203 — the three small routines front_end_menus needs as cores: the best-lap
+    # sentinel ($40EB per car, $42EC for the field) and the BCD fold of a standings column
+    # into a car's cumulative lap total ($6698 add_tally_to_lap_total).
+    0x40EB, 0x42EC, 0x6698,
     # ⭐ TWIN #202 — $3C50 prompt_wing_settings, the pit-lane page that holds the shims for
     # select_text_variant, text_script_interp, console_read_two_digits and wait_dismiss_space.
     0x3C50,

@@ -1421,3 +1421,27 @@ void mirror_draw_car(void)
     mirror_draw_car_core(cpu.A, cpu.Y);
 }
 
+void car_reset_best_lap(void)
+{
+    /* $40EB — X is the car (#203).  Exit ABI: A = $10 from the last LDA, N/Z clear; X, Y unchanged. */
+    car_reset_best_lap_core(cpu.X);
+    cpu.A = 0x10u; cpu.N = 0; cpu.Z = 0;
+}
+
+void all_cars_reset_best_lap(void)
+{
+    /* $42EC (#203).  Exit ABI: the DEX that ends the loop leaves X = $FF with N set, and A is the
+       last car_reset_best_lap's $10. */
+    all_cars_reset_best_lap_core();
+    cpu.X = 0xFFu; cpu.N = 1; cpu.Z = 0; cpu.A = 0x10u;
+}
+
+void add_tally_to_lap_total(void)
+{
+    /* $6698 — X the standings column, Y the car (#203).  Exit ABI: A and C are the high byte's
+       BCD add; N/Z/V are whatever the 6502's ADC left and its one caller (tally_bcd_column,
+       whose own exit ABI is X-only) never reads them, so they are not reconstructed here. */
+    Adc hi = add_tally_to_lap_total_core(cpu.X, cpu.Y);
+    cpu.A = hi.val;
+    cpu.C = hi.carry;
+}
