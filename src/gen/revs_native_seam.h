@@ -656,6 +656,7 @@ void print_race_class_name_core(void);
 void select_text_variant_core(uint8_t variant);
 void print_standings_table_core(uint8_t variant, uint8_t mode);
 uint8_t tally_bcd_column_core(uint8_t column);
+void abort_to_front_end_core(int carry);
 void advance_player_section_core(void);
 void clear_surface_buffers_core(void);
 void fill_line_surface_core(void);

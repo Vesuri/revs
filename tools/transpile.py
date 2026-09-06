@@ -1437,6 +1437,12 @@ VALIDATE_FUNCS = {
 # flow — one restart branch, one register hand-off, one dropped call — moves the 64 KB dump.
 # docs/validation-harness.md §a driver with no fixture.
 NATIVE_FUNCS = {
+    # ⭐ TWIN #216 — abort_to_front_end ($3273), the in-race ABORT longjmp.  Three
+    # instructions and a JMP, but its oracle re-enters front_end_menus, so a randomised
+    # fixture would run the whole front end in both models and agree by construction —
+    # the blindness `test_abort_keys` already documents.  Gated by `make refloop`.
+    0x3273,
+
     0x16DC,   # race_main_loop — see above
     # ⭐ STAGE 5 (user, 2026-08-26) — full_track_scan_rebuild ($109B, was FUN_109b), the root of
     # the crash-freeze subtree: on a crash/session reset it walks the WHOLE circuit, stepping all

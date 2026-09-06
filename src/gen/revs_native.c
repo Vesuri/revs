@@ -15173,7 +15173,9 @@ void abort_if_quit_keys_core(void)
     }
     if (abort_state & 0x80u)                        /* $326F BIT / $3271 BMI — already aborting */
         return;
-    abort_to_front_end();                           /* $3273 — S := top_level_stack, -> the menus */
+    /* Carry is 1 by construction: kbd_test_key's tail is CPX #$FF, and reaching here
+       means the last poll found the key DOWN (X = $FF), so the CPX set C as well as Z. */
+    abort_to_front_end_core(1);                     /* $3273 — the abort longjmp */
 }
 
 /* $34D2 — wait for the page to be dismissed.  `offerReturn` is the caller's A: bit 7 set also
@@ -15402,9 +15404,10 @@ void relocated_poison(void)
    ⚠ Still a 6502-ABI call at two points, both deliberate:
      * race_main_loop() — its shim IS the $16DC entry contract (hw_init, the view-origin
        marshal, the RESTART depth from state_flags bit 6), not a marshal to be deleted.
-     * abort_to_front_end() — a transliterated non-local exit whose ROR rotates the LIVE CARRY
-       into abort_state, and that carry is whatever race_main_loop returned.  Nothing here may
-       disturb cpu.C between the two calls (the 6502's BIT does not either).
+     * abort_to_front_end_core(cpu.C) — the non-local exit's ROR rotates the LIVE CARRY into
+       abort_state, and that carry is whatever race_main_loop returned, so it has to be read
+       from the cpu here.  Nothing between the two calls may disturb it (the 6502's BIT does
+       not either).
    --------------------------------------------------------------------------- */
 void enter_session_core(uint8_t kind)
 {
@@ -15417,7 +15420,7 @@ void enter_session_core(uint8_t kind)
     } while (state_flags & 0x40u);               /* $6566 BIT; BVS — restarted in the pits */
 
     if (state_flags & 0x80u)                     /* $656B BPL */
-        abort_to_front_end();                    /* $656D — does not return on the 6502 */
+        abort_to_front_end_core(cpu.C);          /* $656D — does not return on the 6502 */
 }
 
 void enter_practice_session_core(void)
@@ -15970,4 +15973,24 @@ void advance_player_section_core(void)
     }
     if (section_quad_flags & 0x80u)                                 /* $24E1-$24E3 */
         build_section_ahead_core();                                 /* $24E5 */
+}
+
+/* ---------------------------------------------------------------------------
+   $3273  abort_to_front_end  (twin #216)
+   ---------------------------------------------------------------------------
+   The in-race ABORT longjmp: rotate the caller's carry into abort_state's bit 7
+   — the latch that makes a second abort a no-op — and go back to the front end.
+   ⚠⚠ THE STACK UNWIND CANNOT BE MODELLED.  On the 6502 this restores S from
+   top_level_stack (saved by the front-end reset at $386D) and JMPs, so the race's
+   whole call chain is discarded.  The port instead RECURSES into front_end_menus
+   and unwinds back up the C stack when the menus finally return — the
+   S-manipulation class in docs/faithfulness-seam.md.  Both the twin and its
+   oracle do this, which is exactly why the differential is blind to the arm:
+   `make refloop` gates it, not `make validate`.
+   --------------------------------------------------------------------------- */
+void abort_to_front_end_core(int carry)
+{
+    /* $3273-$3275 LDX top_level_stack / TXS — the unwind, deliberately not modelled. */
+    abort_state = (uint8_t)((abort_state >> 1) | (carry ? 0x80u : 0x00u));   /* $3276 ROR */
+    front_end_menus_core();                                                  /* $3278 JMP */
 }
