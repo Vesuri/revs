@@ -1323,7 +1323,20 @@ if (dumpDir && frames > 0) {
     const ppmF = path.join(dir, `bbc_screen_${tag}.ppm`);
     fs.writeFileSync(ppmF, Buffer.concat([Buffer.from(`P6\n${FB_W} ${FB_H}\n255\n`), ppm]));
 
+    // (3) ⭐ THE WHOLE 64 KB, the exact counterpart of the port's REVS_MEM_DUMP.  A frame-buffer
+    // diff can say the picture is wrong but never why: `make viewdiff` reported Brands Hatch's
+    // horizon 13 display lines too high and there was no way to ask the real machine what its
+    // own horizon cells held at that moment.  Dumping everything turns "the picture differs"
+    // into "cell $NN differs", which is a localisation rather than a search.
+    // ⚠ Read it against a port dump taken in the SAME parked state, and only cells the game
+    // actually owns — page 1, the OS workspace and the MOS's own scratch differ by construction.
+    const memBuf = Buffer.alloc(0x10000);
+    for (let i = 0; i < 0x10000; i++) memBuf[i] = rd(i);
+    const memF = path.join(dir, `bbc_mem_${tag}.bin`);
+    fs.writeFileSync(memF, memBuf);
+
     console.log(`\nground truth written (${paints} frames painted by the real Video chip):`);
     console.log(`   frame buffer $${BASE.toString(16)}+$${LEN.toString(16)} -> ${rawF}`);
     console.log(`   real display ${FB_W}x${FB_H} RGB   -> ${ppmF}`);
+    console.log(`   whole 64 KB                 -> ${memF}`);
 }
