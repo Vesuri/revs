@@ -1505,3 +1505,5 @@ void clear_surface_buffers(void) { clear_surface_buffers_core(); }   /* exit ABI
 void fill_line_surface(void)     { fill_line_surface_core(); }       /* exit ABI dead */
 void advance_player_section(void) { advance_player_section_core(); }   /* exit ABI dead */
 void abort_to_front_end(void) { abort_to_front_end_core(cpu.C); }   /* the ROR's input carry */
+void engine_init(void) { engine_init_core(); }
+void engine_main(void) { engine_main_core(); }

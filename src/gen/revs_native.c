@@ -15994,3 +15994,42 @@ void abort_to_front_end_core(int carry)
     abort_state = (uint8_t)((abort_state >> 1) | (carry ? 0x80u : 0x00u));   /* $3276 ROR */
     front_end_menus_core();                                                  /* $3278 JMP */
 }
+
+/* ---------------------------------------------------------------------------
+   $63BD  engine_main  /  $3850  engine_init  (twins #217-#218)
+   ---------------------------------------------------------------------------
+   THE entry point: the unpack stub's closing JMP lands on engine_main, which is
+   itself just a JMP to engine_init.  Init makes the keyboard behave (cursor keys
+   as plain ASCII), hands the screen to the MOS VDU driver, clears the ten status
+   bytes at state_flags, sets the default sound amplitude, records the stack top
+   the in-race abort unwinds to, gives the circuit's own code its one chance to
+   run, and falls into the front end for good.
+   ⚠ NATIVE_FUNCS, not VALIDATE_FUNCS: the tail IS front_end_menus, so an oracle
+   would run the entire front end alongside the twin and agree by construction —
+   the same blindness abort_to_front_end has.  `make refloop` and every boot of
+   the port gate this, not the differential.
+   ⚠ engine_init's bytes are ALSO the car_speed_frac table once init has run; the
+   dual use is why nothing may be assumed about them afterwards.
+   --------------------------------------------------------------------------- */
+void engine_init_core(void)
+{
+    mos_osbyte(0x04u, 0x01u, 0x00u);              /* $3850-$3856 — cursor keys as ASCII */
+    enter_mos_text_mode_core();                   /* $3859 — MODE 7, text via the MOS */
+    plot_undo_count = 0x00u;                      /* $3860 — the undo list is empty */
+    for (int i = 0x09; i >= 0; i--)
+        mem[MEM_state_flags + i] = 0x00u;         /* $3862-$3866 — $05F4..$05FD */
+    sound_volume = 0xF6u;                         /* $386A — amplitude -10 */
+    top_level_stack = cpu.S;                      /* $386D TSX — abort's unwind target, and
+                                                     the one cell that genuinely IS the 6502's S */
+    /* $3870 JSR CallTrackHook ($5A22).  A no-op here for EVERY circuit: an expansion
+       circuit's hook is ModifyGameCode, whose output this port applies as DATA at
+       selection time (tools/track_patch.py) — running it would patch a patched image.
+       See the $5A22 note in symbols.csv. */
+    mos_osbyte(0xBEu, 0x20u, 0x00u);              /* $3873-$3879 — ADC channel count */
+    front_end_menus_core();                       /* $387C JMP — never comes back */
+}
+
+void engine_main_core(void)
+{
+    engine_init_core();                           /* $63BD JMP $3850 */
+}

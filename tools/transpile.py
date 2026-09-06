@@ -1442,6 +1442,9 @@ NATIVE_FUNCS = {
     # fixture would run the whole front end in both models and agree by construction —
     # the blindness `test_abort_keys` already documents.  Gated by `make refloop`.
     0x3273,
+    # ⭐ TWINS #217-#218 — engine_main ($63BD) and engine_init ($3850), the boot path.
+    # Same shape as $3273: init's tail IS front_end_menus, so an oracle can only agree.
+    0x63BD, 0x3850,
 
     0x16DC,   # race_main_loop — see above
     # ⭐ STAGE 5 (user, 2026-08-26) — full_track_scan_rebuild ($109B, was FUN_109b), the root of
