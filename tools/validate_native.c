@@ -829,6 +829,136 @@ static int test_lap_value_column(void)
     return fail;
 }
 
+/* ================================================================================================
+ * ⭐ TWIN #197 — the standings table's two leaf callees.
+ *
+ * $3E60 set_row_rule_glyphs is pure table work: the mode (shared_counter_42) and the row parity
+ * (Y) pick a glyph pair out of row_rule_glyph_tbl and it lands in script $1F's byte string.  Both
+ * the mode and the row are randomised over the whole byte, so the index's 8-bit wrap is exercised
+ * as well as the six pairs the game actually uses.
+ *
+ * $3C6F print_race_class_name runs script race_class + 7, so the fixture has to seed the script
+ * machinery the way test_text_script_interp does — every legal index pointed at a terminating
+ * leaf, a MODE-5 cursor in real screen RAM, plot_ptr high in screen RAM.  ⚠ race_class is swept
+ * over 0..2 ONLY: the menu writes nothing else, and an index past $2E would land its pointer-table
+ * byte on char_row_addr_hi ($3AD0+$36 == $3B06), which aims the emitter at zero page — a
+ * fixture-only runaway, exactly as that fixture documents.
+ *
+ * ⭐⭐ Each index gets its OWN leaf here, signed by its first glyph, and that is what makes the
+ * stage non-vacuous.  With one SHARED leaf (the obvious seeding, and what this fixture did first)
+ * a wrong-index defect prints byte-identical text, and the only thing that still differs is the
+ * index itself, which text_script_interp_core passes on as X — visible in the OSWRCH arm's mos log
+ * and invisible to the bitmap arm, because vdu_char_def_core never sees it.  Detection therefore
+ * capped at the pre[$0064] bit-7 coin flip: D44 and D46 BOTH scored exactly 992/2000, which is the
+ * documented tell for a stale object file and was in fact a fixture that could only see half the
+ * cases.  Per-index leaves take every wrong-index defect to 2000/2000.
+ *
+ * Both are result-only (exit ABI dead at every caller), so the compare is mem[]-only.
+ *
+ * SABOTAGE (each must FAIL, patch verified applied; counts measured, not predicted):
+ *   D41 the pair is read at +1+X, not +2+X                -> 3981/4000 (glyphs)
+ *   D42 the row parity is dropped from the index          -> 1963/4000 (glyphs)
+ *   D43 the two glyphs are written to the wrong offsets   -> 4000/4000 (glyphs)
+ *   D44 the class script is race_class + 8                -> 2000/2000 (class)
+ *   D45 the class order is reversed (9 - race_class)      -> 1305/2000 (class; class 1 maps to
+ *                                                            itself, so a third of cases agree)
+ *   D46 the +7 script offset is dropped                   -> 2000/2000 (class)
+ *   D47 the class is never printed at all                 -> 2000/2000 (class)
+ * ⚠ D44/D46/D47 all read 2000 because the compare SATURATES once every case differs, not because
+ * a build went stale — D45's 1305 and the pre-strengthening spread above separate them.
+ * ⚠ A defect that makes the index a RANDOM byte is not a usable sabotage: it hangs instead of
+ * failing, by walking the pointer table into char_row_addr_hi.  Keep every defect in 0..$34.
+ * ============================================================================================= */
+void set_row_rule_glyphs(void);        void set_row_rule_glyphs__t6502(void);
+void print_race_class_name(void);      void print_race_class_name__t6502(void);
+
+static int test_standings_leaves(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("set_row_rule_glyphs");
+    register_fixture("print_race_class_name");
+
+    unsigned mask = LIVE_NONE;                   /* result-only at every caller */
+
+    /* ---- $3E60 set_row_rule_glyphs -------------------------------------------------------- */
+    if (want("set_row_rule_glyphs")) {
+        int sub = 0, sawLive = 0, sawWrap = 0;
+        int cases = 4000 * scale;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.D = 0;                             /* the index add is binary — §Decimal mode */
+            c.Y = (uint8_t)xs();                 /* the row; only its low bit is read */
+            pre[0x0042] = (uint8_t)xs();         /* shared_counter_42: the table mode */
+            if (t % 3 == 0) {                    /* ...and the three modes the game really uses */
+                static const uint8_t MODES[3] = { 0x00u, 0x04u, 0x08u };
+                pre[0x0042] = MODES[xs() % 3u];
+                sawLive = 1;
+            }
+            if ((unsigned)pre[0x0042] + (c.Y & 1u) > 0xFFu) sawWrap = 1;
+            sub += diff_run("set_row_rule_glyphs", pre, c,
+                            set_row_rule_glyphs, set_row_rule_glyphs__t6502, mask, t, &printed);
+        }
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  mem[] only (exit ABI dead)\n",
+               "set_row_rule_glyphs", cases, sub);
+        if (!(sawLive && sawWrap)) {
+            printf("VACUOUS: set_row_rule_glyphs missed the live modes or the index wrap\n");
+            fail++;
+        }
+    }
+
+    /* ---- $3C6F print_race_class_name ------------------------------------------------------ */
+    if (want("print_race_class_name")) {
+        int sub = 0, sawClass[3] = { 0, 0, 0 };
+        const unsigned LEAF = 0x0D00u;
+        int cases = 2000 * scale;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.D = 0;
+            c.S = 0xFFu;
+            /* The class the menu chose: 0 Novice, 1 Amateur, 2 Professional -> scripts $07..$09. */
+            uint8_t cls = (uint8_t)(xs() % 3u);
+            pre[0x5F3A] = cls;
+            sawClass[cls] = 1;
+            /* The script machinery, seeded exactly as test_text_script_interp needs it — except
+               that every index gets its OWN leaf, whose first byte identifies it.  A shared leaf
+               would make a wrong-index defect invisible on the bitmap arm (vdu_char_def_core does
+               not see the index), and detection would cap at the OSWRCH arm's ~50%. */
+            { unsigned i; for (i = 0; i <= 0x34u; i++) {
+                unsigned leaf = LEAF + i * 8u;
+                pre[0x3AD0u + i] = (uint8_t)(leaf & 0xFFu);
+                pre[0x3B50u + i] = (uint8_t)(leaf >> 8);
+                pre[leaf] = (uint8_t)(0x41u + i);              /* this index's signature glyph */
+                { unsigned j; for (j = 1u; j < 6u; j++)
+                    pre[leaf + j] = (uint8_t)(0x20u + (xs() % 0x60u)); }
+                pre[leaf + 6u] = 0xFFu;          /* short, non-recursing, terminating */
+            } }
+            { int r; for (r = 0; r < 8; r++) pre[0x3B06 + r] = 0x58u; }  /* cursor -> screen */
+            pre[0x62CDu] &= 0x3Fu;
+            pre[0x62CCu] = (uint8_t)(xs() & 0x1Fu);
+            pre[0x0070u] = 0x00u; pre[0x0071u] = 0x7Eu;                  /* plot_ptr = $7E00 */
+            if (xs() & 1) pre[0x0064u] |= 0x80u; else pre[0x0064u] &= 0x7Fu;  /* both arms */
+            sub += diff_run("print_race_class_name", pre, c,
+                            print_race_class_name, print_race_class_name__t6502,
+                            mask, t, &printed);
+        }
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  mem[] only (exit ABI dead)\n",
+               "print_race_class_name", cases, sub);
+        if (!(sawClass[0] && sawClass[1] && sawClass[2])) {
+            printf("VACUOUS: print_race_class_name did not reach all three classes\n");
+            fail++;
+        }
+    }
+    return fail;
+}
+
 void retire_car(void);                 void retire_car__t6502(void);
 
 /* ================================================================================================
@@ -9434,6 +9564,7 @@ int main(int argc, char** argv)
     fail += test_print_spaces();
     fail += test_number_printers();
     fail += test_lap_value_column();
+    fail += test_standings_leaves();
     fail += test_dashboard_readouts();
     fail += test_add_frame_time();
     fail += test_tick_race_timers();

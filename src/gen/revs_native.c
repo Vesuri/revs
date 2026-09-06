@@ -10584,13 +10584,14 @@ void text_script_interp_core(uint8_t tableIdx)
      • Index 0 (SPACE) CONFIRMS, but only once something has been shown
        (shared_temp_77 != 0); it writes $98 to $7FC5 and returns hypot_min_lo - 1.
    ⚠ math_hi is READ back (`LDY math_hi` at the scan top, `CPY math_hi` in the
-   highlight loop) AFTER child calls (FUN_3261, text_script_interp), so the twin
+   highlight loop) AFTER child calls (abort_if_quit_keys, text_script_interp), so the twin
    reads/writes the cell directly and never caches `count` — the #159-CRUX-safe
    form (a child that overwrote $75 would then be honoured identically by both
    models).  Exit X is live (every caller reads it); the shim rebuilds A/N/Z.
-   ⚠ FUN_3261 dispatches on mem[$1C]: with bit 7 CLEAR it does TXS + re-enter
-   front_end_menus (the SHIFT+f0 menu-restart), so any run of this routine — real
-   or fixture — is only well-defined with $1C bit 7 SET (the normal in-menu state).
+   ⚠ abort_if_quit_keys ($3261) dispatches on abort_state (mem[$1C]): with bit 7
+   CLEAR, and the abort keys held, it does TXS + re-enter front_end_menus (the
+   SHIFT+abort longjmp), so any run of this routine — real or fixture — is only
+   well-defined with $1C bit 7 SET (the normal in-menu state).
    --------------------------------------------------------------------------- */
 #define MENU_KEY_TBL 0x39E0u                       /* menu_key_tbl: SPACE,1,2,3 negative-INKEY codes */
 
@@ -10603,7 +10604,7 @@ uint8_t menu_wait_key_core(uint8_t count)
         platform_render_frame();
         platform_tick_vbi();
         platform_poll_events();
-        FUN_3261();                                /* $6577 — keyboard poll / menu-restart dispatch */
+        abort_if_quit_keys();                      /* $6577 — the SHIFT+abort poll (a longjmp on a hit) */
 
         /* $657a..$658b — scan menu_key_tbl DOWN from `count` for the first held key */
         uint8_t idx = mem[MEM_math_hi];            /* $657a LDY math_hi */
@@ -14932,6 +14933,38 @@ TextExit print_lap_value_field_core(uint8_t x, uint8_t y)
        with $20, so one LSR leaves $10.  Kept because the fall-through is what the 6502 does, and
        A there is the space print_spaces returned. */
     return print_lap_value_from_mid_core(0x20u, x, y);
+}
+
+/* ================================================================================================
+ * TWIN #197 — the standings table's two remaining leaf callees
+ * ------------------------------------------------------------------------------------------------
+ *   $3E60 set_row_rule_glyphs   picks the row's pair of rule glyphs and PATCHES them into the
+ *                               script that draws the column rule
+ *   $3C6F print_race_class_name runs the script that names the class
+ * Both are result-only: their exit registers and flags are dead at every caller (FUN_65d3 reloads
+ * X immediately, and text_script_interp's own exit ABI is dead by its twin's contract).
+ * ================================================================================================ */
+
+#define ROW_RULE_GLYPH_TBL 0x3E74u   /* row_rule_glyph_tbl: 12 glyph codes, read at +X and +2+X */
+#define TEXT_SCRIPT_1F     0x3580u   /* text_script_1f: the column-rule script's own bytes */
+
+/* $3E60 — the rule's two glyphs are chosen by the table MODE (shared_counter_42, which FUN_65d3
+   seeded from its mode nibble: $0, $4 or $8) and the ROW's parity, and written straight into
+   script $1F's byte string at offsets +5 and +3.  The script is run twice per row, either side of
+   the driver name, so patching it is how one script draws six different rules.
+   ⚠ The index add is BINARY: this is front-end display code entered with D = 0, and none of the
+   eight sanctioned SED sites is on the path (docs/static-map.md §Decimal mode). */
+void set_row_rule_glyphs_core(uint8_t row)
+{
+    uint8_t idx = (uint8_t)((row & 1u) + shared_counter_42);           /* $3E60-$3E66 */
+    mem[TEXT_SCRIPT_1F + 5] = mem[ROW_RULE_GLYPH_TBL + idx];           /* $3E67/$3E6A */
+    mem[TEXT_SCRIPT_1F + 3] = mem[ROW_RULE_GLYPH_TBL + 2u + idx];      /* $3E6D/$3E70 */
+}
+
+/* $3C6F — scripts $07/$08/$09 are the three class names, so the class IS the script offset. */
+void print_race_class_name_core(void)
+{
+    text_script_interp_core((uint8_t)(race_class + 7u));               /* $3C6F-$3C76 */
 }
 
 /* ===========================================================================

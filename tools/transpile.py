@@ -1215,6 +1215,10 @@ VALIDATE_FUNCS = {
     0x5052,
     # ⭐ TWIN #194 — $11BE retire_car, the run-out's per-car retirement.
     0x11BE,
+    # ⭐ TWIN #197 — the standings table's other two leaf callees: $3E60 set_row_rule_glyphs
+    # (patches script $1F's two rule glyphs) and $3C6F print_race_class_name.  Both result-only.
+    0x3E60,
+    0x3C6F,
     # ⭐ TWIN #196 — $43D0 / $43E7 print_lap_value_field / print_lap_value_from_mid, the
     # standings table's lap-time COLUMN (FUN_65d3's two call sites).  Two entries into one tail
     # at $43EA, which stays transliterated as part of both oracles.

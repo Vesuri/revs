@@ -729,6 +729,19 @@ void print_lap_time(void)
     cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;
 }
 
+/* $3E60 set_row_rule_glyphs — the row arrives in Y.  Result-only: the sole caller reloads X
+   into the script index on the next instruction, and A/Y/flags are dead with it. */
+void set_row_rule_glyphs(void)
+{
+    set_row_rule_glyphs_core(cpu.Y);
+}
+
+/* $3C6F print_race_class_name — no entry registers, and text_script_interp's exit ABI is dead. */
+void print_race_class_name(void)
+{
+    print_race_class_name_core();
+}
+
 /* $43D0 / $43E7 the lap-value table column — X is the car index AND the ambient OSWRCH
    register; $43E7 takes the field's leading byte in A.  Both exit as print_spaces does. */
 void print_lap_value_field(void)
