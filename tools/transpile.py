@@ -1456,6 +1456,29 @@ NATIVE_FUNCS = {
     # position_to_bcd from FUN_65d3's standings print, the printers from update_lap_timers — but
     # this arm's own composition is unproven until a real-BBC race differential runs it.
     0x1805,
+    # ⭐ TWIN #205 — the FRONT-END CHAIN: front_end_menus ($63E0), enter_session ($655C) and
+    # enter_practice_session ($655A).  front_end_menus was the last transliterated holder of the
+    # select_text_variant, menu_draw_gfx_bars, text_script_interp, menu_wait_key and
+    # wait_dismiss_space shims — every one of those was being called by stuffing cpu.X and
+    # reading an exit register nobody looks at — and enter_session had to come with it because
+    # the two are one loop (the menu chain calls the session, the session's abort arm re-enters
+    # the menu chain through abort_to_front_end).
+    # ⚠ DRIVERS, so no fixture is possible on either count:
+    #   * front_end_menus NEVER RETURNS — its tail is `goto L_641f`, an unconditional jump back
+    #     to the qualifying menu, so there is no exit state to diff.
+    #   * enter_session's body IS race_main_loop, the whole engine; a randomised fixture would be
+    #     racing a random car round a random circuit.
+    # ⭐ WHAT GATES IT: every determinism run, because engine_init JMPs here and this is the code
+    # that answers its way into the race — `make determinism` / `-drive` / `-crash` all enter the
+    # race through $63F7 + enter_practice_session, so the entry block, the practice arm and the
+    # session loop are all live in the 64 KB differential.
+    # ⚠ THE QUALIFYING AND RACE ARMS ARE GATED BY NOTHING: the per-driver naming walk ($6436),
+    # the class pick ($6480), the grid-order stash ($64BA), the race-length menu ($64D7) and the
+    # results-page loop ($6525) are never reached by an autorun that answers "practice" at the
+    # top-level menu.  Settling those needs a real-BBC front-end differential (`make refloop`).
+    0x655A,
+    0x655C,
+    0x63E0,
 }
 
 # Every address whose transliteration is emitted under the `__t6502` suffix, whether or not a

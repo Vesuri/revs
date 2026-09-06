@@ -655,6 +655,10 @@ void print_race_class_name_core(void);
 /* twin #199 — the standings/results page.  X = layout variant, A = mode; both result-only. */
 void select_text_variant_core(uint8_t variant);
 void print_standings_table_core(uint8_t variant, uint8_t mode);
+uint8_t tally_bcd_column_core(uint8_t column);
+void enter_session_core(uint8_t kind);
+void enter_practice_session_core(void);
+void front_end_menus_core(void);
 void select_text_variant(void);
 void print_standings_table(void);
 uint8_t vdu_char_def_core(uint8_t ch);

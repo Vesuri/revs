@@ -12618,9 +12618,8 @@ void place_car_world_coords(void)
    --------------------------------------------------------------------------- */
 #define STANDINGS_INCREMENT 0x3DF7u
 
-void tally_bcd_column(void)
+uint8_t tally_bcd_column_core(uint8_t x)
 {
-    uint8_t x = cpu.X;
     uint8_t nHumans = human_driver_count;
     uint8_t y = (x == 0x06) ? mem[CAR_ORDER_TBL] : mem[CAR_ORDER_TBL + x];   /* the column's car */
 
@@ -12664,8 +12663,8 @@ void tally_bcd_column(void)
         break;
     } while (1);
 
-    cpu.Y = y;                                            /* $5A73 TAY — the caller's exit Y */
     add_tally_to_lap_total_core(x, y);                    /* folds the pair into the lap total */
+    return y;                                             /* $5A73 TAY — the caller's exit Y */
 }
 
 /* ===========================================================================
@@ -15377,4 +15376,221 @@ void relocated_poison(void)
     for (unsigned i = 0; i < CAR_SLOTS; i++) car_distance_16[i] = (uint16_t)(0xA5C0u + i);
     for (unsigned i = 0; i < MODEL_STATE_N; i++) model_state_16[i] = (uint16_t)(0xA5E0u + i);
     for (unsigned i = 0; i < 9; i++)            view_origin_16[i]  = (uint16_t)(0xA5F0u + i);
+}
+
+/* ===========================================================================
+   $655C  enter_session / $655A enter_practice_session — run one session  (twin #205)
+   ---------------------------------------------------------------------------
+   `kind` is the session flavour and lands in BOTH session_is_race ($6C) and start_light_state
+   ($6D): $28 for a practice or qualifying run (enter_practice_session's own entry loads it),
+   $80 for the race, from front_end_menus' grid walk.
+
+   The body is one loop: ask for the wing settings, then run the engine.  race_main_loop comes
+   back with two bits of verdict in state_flags — bit 6 "the driver restarted from the pits",
+   which re-asks the wings and runs again, and bit 7 "abort", which leaves through
+   abort_to_front_end and never comes back on the 6502.
+
+   ⚠ Still a 6502-ABI call at two points, both deliberate:
+     * race_main_loop() — its shim IS the $16DC entry contract (hw_init, the view-origin
+       marshal, the RESTART depth from state_flags bit 6), not a marshal to be deleted.
+     * abort_to_front_end() — a transliterated non-local exit whose ROR rotates the LIVE CARRY
+       into abort_state, and that carry is whatever race_main_loop returned.  Nothing here may
+       disturb cpu.C between the two calls (the 6502's BIT does not either).
+   --------------------------------------------------------------------------- */
+void enter_session_core(uint8_t kind)
+{
+    session_is_race   = kind;                    /* $655C */
+    start_light_state = kind;                    /* $655E */
+
+    do {
+        prompt_wing_settings_core();             /* $6560 */
+        race_main_loop();                        /* $6563 — the whole engine */
+    } while (state_flags & 0x40u);               /* $6566 BIT; BVS — restarted in the pits */
+
+    if (state_flags & 0x80u)                     /* $656B BPL */
+        abort_to_front_end();                    /* $656D — does not return on the 6502 */
+}
+
+void enter_practice_session_core(void)
+{
+    enter_session_core(0x28);                    /* $655A LDA #$28, falling into enter_session */
+}
+
+/* ===========================================================================
+   $63E0  front_end_menus — the whole front end                       (twin #205)
+   ---------------------------------------------------------------------------
+   engine_init JMPs here once the hardware is up, and this routine NEVER RETURNS: its tail jumps
+   back to the qualifying menu, so the front end and the race are one endless cycle.  The shape:
+
+     1. $63E0  clear state_flags, put the field back to a session start
+               (reset_all_cars_for_session with class 0), dress the menu page (text variant 4 +
+               the two graphics bars) and print the top-level menu, script $27.
+     2. $63F5  two answers: PRACTICE (0) runs one unlimited practice session for car 0
+               (qualify_minutes = $FF is the "no limit" sentinel — the DEX from 0), then falls
+               through; RACE (1) goes straight on.
+     3. $640A  the championship cycle — pick the class (script $15), then forever:
+                  a. $641F  pick the qualifying length (script $16) and clear every best lap;
+                  b. $6436  walk the cars DOWN from $13, one qualifying run each.  On the first
+                     time round (drivers_named still 0) each car's driver is named first
+                     (script $17 + read_driver_name) and the walk stops when the player answers
+                     "no more drivers" at script $1B — that car index becomes human_car_first,
+                     the boundary between human and computer cars.  On later laps of the cycle
+                     the names stand and the walk simply re-runs every human car.
+                  c. $6480  first time only: pick the race class from the SLOWEST human's best
+                     lap against the three class targets, but never a faster class than the one
+                     the player chose.
+                  d. $64B3  print the qualifying standings, stash the resulting order as the
+                     starting grid, and give each human car its grid row (place >> 1 — two cars
+                     to a row).  First time only, ask the race length (script $1C).
+                  e. $64F6  for each human car in turn: hand over (prompt_driver_ready), restore
+                     the grid order, clear the best laps and RACE ($80).  Then tally the six
+                     statistics columns plus the total, and show the results pages until
+                     hypot_min_lo's bit 7 says the driver dismissed them.
+                  f. $6557  round again from (a) — a fresh qualifying session.
+
+   ⚠ Two shared cells are read here under their OTHER tenancy:
+     * $0100 SORT_SCRATCH holds sort_cars_by_key's stable PLACE per order slot, which is what
+       the grid rows are derived from — not car_race_flags, its name in the race.
+     * hypot_min_lo ($78) is sort_cars_by_key's key selector on the way in, and on the way out
+       it is wait_dismiss_key's dismiss flag: print_standings_table's $88 mode accepts RETURN as
+       well as SPACE and LSRs the flag, so bit 7 says WHICH key ended the results page.
+
+   ⚠ WHAT GATES THIS ROUTINE, and what does not: `make determinism` enters the race through this
+   code, and four deliberate defects in the entry block diverge the 64 KB dump (a different
+   seeding class, an off-by-one menu answer, an off-by-one player car, dropping the DEX that
+   makes qualify_minutes $FF).  Two do NOT and cannot: changing the text-script index or the text
+   variant only alters the MODE 7 page at $7C00, which the race's own dash code has overwritten
+   long before the frame-300 dump.  Those belong to a real-BBC front-end differential.
+   --------------------------------------------------------------------------- */
+void front_end_menus_core(void)
+{
+    state_flags = 0x00;                              /* $63E0 */
+    reset_all_cars_for_session_core(0x00);           /* $63E5 — X = 0: class 0, seed from car 0 */
+
+    select_text_variant_core(0x04);                  /* $63E8 */
+    menu_draw_gfx_bars_core();                       /* $63ED */
+    text_script_interp_core(0x27);                   /* $63F0 — the top-level menu page */
+
+    uint8_t top = menu_wait_key_core(0x02);          /* $63F5 — PRACTICE (0) or RACE (1) */
+    if (top < 0x01) {                                /* $63FA CPX #1; BCS */
+        player_car      = top;                       /* $63FE — practice always drives car 0 */
+        qualify_minutes = (uint8_t)(top - 1);        /* $6400 DEX — $FF: no time limit */
+        all_cars_reset_best_lap_core();              /* $6404 */
+        enter_practice_session_core();               /* $6407 */
+    }
+
+    drivers_named = 0x00;                            /* $640A */
+    text_script_interp_core(0x15);                   /* $640F — the class menu */
+    race_class = menu_wait_key_core(0x03);           /* $6414 */
+    compute_segment_scale_core(race_class);          /* $641C */
+
+    for (;;) {                                       /* L_641F — the championship cycle */
+        text_script_interp_core(0x16);               /* $641F — the qualifying-length menu */
+        qualify_minutes = mem[QUALIFY_MINUTES_TBL + menu_wait_key_core(0x03)];   /* $6424 */
+        all_cars_reset_best_lap_core();              /* $642F */
+
+        player_car = 0x14;                           /* $6432 */
+        for (;;) {                                   /* L_6436 — one qualifying run per car */
+            player_car = (uint8_t)(player_car - 1);  /* $6436 */
+            car_reset_best_lap_core(player_car);     /* $643A */
+
+            if (drivers_named != 0x00) {             /* $643D — the names already stand */
+                prompt_driver_ready_core();          /* $6442 */
+                enter_practice_session_core();       /* $6445 */
+                if (player_car != human_car_first)   /* $644A */
+                    continue;
+                sort_cars_by_key_core(0x00);         /* $6451 — order by best lap */
+                break;                               /* $6454 -> the standings */
+            }
+
+            /* L_6457 — the first time round the cycle: name this driver, then qualify. */
+            text_script_interp_core(0x17);           /* $6457 — "driver name?" */
+            read_driver_name_core();                 /* $645C */
+            enter_practice_session_core();           /* $645F */
+
+            if (player_car != 0x00) {                /* $6462 — car 0 ends the walk regardless */
+                text_script_interp_core(0x1B);       /* $6466 — "another driver?" */
+                if (menu_wait_key_core(0x02) == 0x00)/* $646B */
+                    continue;
+            }
+
+            /* L_6474 — the last named car is the human/computer boundary. */
+            human_car_first = player_car;            /* $6474 */
+            sort_cars_by_key_core(0x00);             /* $647B */
+
+            /* L_6480 — the class the field actually qualified for: walk the three class
+               targets until the SLOWEST human's best lap (a 16-bit BCD field, compared here
+               as a plain binary pair — the SBC chain runs with D clear) reaches one.  X wraps
+               through 256 targets before giving up, exactly as the 6502 does. */
+            uint8_t slowest = mem[CAR_ORDER_TBL + 0x13];       /* $6480 — the last place */
+            if (slowest >= human_car_first) {                  /* $6483 — a human at all? */
+                uint8_t cls = 0x00;
+                do {
+                    uint16_t lap    = (uint16_t)(mem[CAR_BEST_LAP_MID + slowest] |
+                                                 ((unsigned)mem[CAR_BEST_LAP_HI + slowest] << 8));
+                    uint16_t target = (uint16_t)(mem[CLASS_LAP_TARGET_MID + cls] |
+                                                 ((unsigned)mem[CLASS_LAP_TARGET_HI + cls] << 8));
+                    if (lap >= target) break;                  /* $6495 BCS */
+                    cls = (uint8_t)(cls + 1);                  /* $6497 INX */
+                } while (cls != 0x00);                         /* $6498 BNE */
+                if (cls < race_class)                          /* $649A — never a faster class */
+                    race_class = cls;                          /* $649F */
+            }
+
+            /* L_64A2 */
+            compute_segment_scale_core(race_class);  /* $64A2 */
+            text_script_interp_core(0x1A);           /* $64A8 — the class announcement */
+            print_race_class_name_core();            /* $64AD */
+            wait_dismiss_space_core();               /* $64B0 */
+            break;
+        }
+
+        /* L_64B3 — the qualifying result, and the grid it implies. */
+        print_standings_table_core(0x02, 0x00);      /* $64B3 */
+
+        for (uint8_t slot = 0x13; slot != 0xFFu; slot--) {     /* $64BA..$64D0 */
+            uint8_t car = mem[CAR_ORDER_TBL + slot];
+            mem[CAR_ORDER_GRID + slot] = car;                  /* the grid order, kept aside */
+            if (car >= human_car_first)                        /* $64C2 — humans only */
+                mem[CAR_GRID_BASE + car] = (uint8_t)(mem[SORT_SCRATCH + slot] >> 1);
+        }
+
+        if (drivers_named == 0x00) {                 /* $64D2 — the race length, asked once */
+            text_script_interp_core(0x1C);           /* $64D7 */
+            human_driver_count = (uint8_t)(0x14u - human_car_first);   /* $64DC */
+            uint8_t len = menu_wait_key_core(0x03);  /* $64E5 */
+            race_lap_total     = mem[RACE_LAP_TOTAL_TBL + len];        /* $64EA */
+            race_length_choice = len;                                 /* $64EF */
+        }
+
+        /* L_64F2 — race the field once per human driver, newest car index first. */
+        player_car = 0x14;                           /* $64F2 */
+        do {
+            player_car = (uint8_t)(player_car - 1);  /* $64F6 */
+            prompt_driver_ready_core();              /* $64F8 */
+
+            for (uint8_t slot = 0x13; slot != 0xFFu; slot--)   /* $64FB..$6504 */
+                mem[CAR_ORDER_TBL + slot] = mem[CAR_ORDER_GRID + slot];
+
+            all_cars_reset_best_lap_core();          /* $6506 */
+            enter_session_core(0x80);                /* $6509 — the race */
+
+            /* $650E — the six statistics columns, then the total, each in its own sort order. */
+            sort_cars_by_key_core(0x80);
+            for (uint8_t col = 0x05; col != 0xFFu; col--)      /* $6513..$6519 */
+                (void)tally_bcd_column_core(col);
+            sort_cars_by_key_core(0x00);             /* $651B */
+            (void)tally_bcd_column_core(0x06);       /* $6520 */
+
+            do {                                     /* L_6525 — the results pages */
+                sort_cars_by_key_core(0x80);
+                print_standings_table_core(0x01, 0x04);
+                sort_cars_by_key_core(0x00);
+                print_standings_table_core(0x06, 0x00);
+                sort_cars_by_key_core(0x40);
+                drivers_named = 0x03;                /* $6542 — the names are settled now */
+                print_standings_table_core(0x03, 0x88);
+            } while (!(hypot_min_lo & 0x80u));       /* $654C BIT; BPL — until dismissed */
+        } while (player_car != human_car_first);     /* $6552 */
+    }                                                /* $6557 — round again, forever */
 }

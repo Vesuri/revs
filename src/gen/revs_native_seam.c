@@ -1466,3 +1466,12 @@ void reset_all_cars_for_session(void)
     reset_all_cars_for_session_core(cpu.X);
     cpu.A = 0x00u; cpu.X = 0x00u; cpu.Z = 1; cpu.N = 0;
 }
+
+/* $5A25 tally_bcd_column — X is the statistics column, exit Y the car it belongs to. */
+void tally_bcd_column(void) { cpu.Y = tally_bcd_column_core(cpu.X); }
+
+/* $63E0/$655A/$655C the front-end chain (twin #205).  front_end_menus never returns, and
+   enter_session's exit registers are dead at all four of its call sites. */
+void front_end_menus(void)        { front_end_menus_core(); }
+void enter_practice_session(void) { enter_practice_session_core(); }
+void enter_session(void)          { enter_session_core(cpu.A); }
