@@ -1215,6 +1215,12 @@ VALIDATE_FUNCS = {
     0x5052,
     # ⭐ TWIN #194 — $11BE retire_car, the run-out's per-car retirement.
     0x11BE,
+    # ⭐ TWIN #198 — $3261 abort_if_quit_keys (the SHIFT+$86 escape poll) and the dismiss-key
+    # waiters $34D0 / $34D2 wait_dismiss_space / wait_dismiss_key, two entries into one wait.
+    # ⚠ The abort arm's non-local exit is blind to the differential in BOTH models; see the twin.
+    0x3261,
+    0x34D0,
+    0x34D2,
     # ⭐ TWIN #197 — the standings table's other two leaf callees: $3E60 set_row_rule_glyphs
     # (patches script $1F's two rule glyphs) and $3C6F print_race_class_name.  Both result-only.
     0x3E60,

@@ -182,7 +182,8 @@ static int g_headlessKeyDown = 0;
    down.  With one global answer the fixture could only ever produce "none" or "all", so the
    both-keys arm ran and the one-key arms never did: the sabotage "the key direction is not
    compared with the current sign" survived 5000 cases.  Mode 2 answers for one code only. */
-static int g_headlessKeyMode = 0;      /* 0 none, 1 every key, 2 only g_headlessKeyCode, 3 the held-set, 4 the clock schedule */
+static int g_headlessKeyMode = 0;      /* 0 none, 1 every key, 2 only g_headlessKeyCode, 3 the held-set, 4 the clock schedule,
+                                          5 the per-code POLL-COUNT schedule */
 static unsigned char g_headlessKeyCode = 0;
 /* Mode 4, the CLOCK SCHEDULE: which single code reports held is a function of the tick clock, so a
    multi-frame poll loop (menu_wait_key) can be driven phase by phase.  keyDown reports code held iff
@@ -196,6 +197,18 @@ static int g_headlessKeyScheduleN = 0;
    single code cannot cover shift_key_commands, whose interesting arms need SHIFT ($FF) held AND a
    specific scan-table key held together (and the pause path needs $A6 held on top). */
 static unsigned char g_headlessKeySet[256];
+/* Mode 5, the POLL-COUNT schedule: the answer for a code is a function of HOW MANY TIMES that code
+   has been polled, not of the tick clock.  Mode 4 cannot drive the dismiss-key waiters
+   (wait_dismiss_space / wait_dismiss_key, $34D0/$34D2) at all: they spin on kbd_test_key without
+   ever reaching a frame hook, so mem[g_headlessClockAddr] never advances and the wait for SPACE to
+   be RELEASED never ends.  Here each code carries a 32-bit mask, bit i = "held on this code's i'th
+   poll", saturating on bit 31 — so a mask with bit 31 set is a key that ends up held forever, which
+   is what makes a poll loop terminate by construction.
+   ⚠⚠ The poll counters are PROCESS state, not mem[], so diff_run must re-arm them before EACH
+   model or the twin inherits the oracle's poll positions and reads a different key sequence.
+   platform_test_key_poll_rearm() is that hook, and it is called from both halves of diff_run. */
+static unsigned int  g_headlessKeyPollMask[256];
+static unsigned char g_headlessKeyPolls[256];
 /* ...and the same for the analogue axes: Platform's default answers dead centre, which pins
    adc_read's magnitude to 0 and makes its dead-zone compare and the joystick's whole pedal arm
    unreachable (two more surviving sabotages). */
@@ -243,6 +256,12 @@ struct HeadlessPlatform : Platform {
             if (i >= g_headlessKeyScheduleN) i = g_headlessKeyScheduleN - 1;
             if (i < 0) i = 0;
             return g_headlessKeyScheduleN && x == g_headlessKeySchedule[i];
+        }
+        if (g_headlessKeyMode == 5) {
+            unsigned n = g_headlessKeyPolls[x];
+            if (n < 31u) g_headlessKeyPolls[x] = (unsigned char)(n + 1u);
+            else n = 31u;
+            return ((g_headlessKeyPollMask[x] >> n) & 1u) != 0u;
         }
         if (g_headlessKeyMode == 3) return g_headlessKeySet[x] != 0;
         if (g_headlessKeyMode == 2) return x == g_headlessKeyCode;
@@ -315,6 +334,23 @@ void platform_test_key_schedule(const unsigned char* codes, int n) {
     if (n > 16) n = 16;
     g_headlessKeyScheduleN = n;
     for (int i = 0; i < n; i++) g_headlessKeySchedule[i] = codes[i];
+}
+
+/* Poll-count mode (mode 5): clear every mask, then give each interesting code its schedule.
+   A mask of 0 is a key never held; bit 31 set is a key held from its 31st poll onward. */
+void platform_test_key_poll_clear(void) {
+    g_headlessKeyMode = 5;
+    for (int i = 0; i < 256; i++) { g_headlessKeyPollMask[i] = 0u; g_headlessKeyPolls[i] = 0; }
+}
+void platform_test_key_poll_set(unsigned char code, unsigned int mask) {
+    g_headlessKeyMode = 5;
+    g_headlessKeyPollMask[code] = mask;
+    g_headlessKeyPolls[code] = 0;
+}
+/* ⚠⚠ Rewind every code to its first poll.  diff_run calls this before EACH model run: the counters
+   live outside mem[], so without it the native twin starts where the oracle stopped. */
+void platform_test_key_poll_rearm(void) {
+    for (int i = 0; i < 256; i++) g_headlessKeyPolls[i] = 0;
 }
 
 /* What ADVAL answers under the test platform: the 16-bit axis (only its high byte is used by

@@ -10604,7 +10604,7 @@ uint8_t menu_wait_key_core(uint8_t count)
         platform_render_frame();
         platform_tick_vbi();
         platform_poll_events();
-        abort_if_quit_keys();                      /* $6577 — the SHIFT+abort poll (a longjmp on a hit) */
+        abort_if_quit_keys_core();                 /* $6577 — the SHIFT+abort poll (a longjmp on a hit) */
 
         /* $657a..$658b — scan menu_key_tbl DOWN from `count` for the first held key */
         uint8_t idx = mem[MEM_math_hi];            /* $657a LDY math_hi */
@@ -14965,6 +14965,85 @@ void set_row_rule_glyphs_core(uint8_t row)
 void print_race_class_name_core(void)
 {
     text_script_interp_core((uint8_t)(race_class + 7u));               /* $3C6F-$3C76 */
+}
+
+/* ================================================================================================
+   ⭐ TWIN #198 — the ABORT poll and the DISMISS-KEY waiters.
+   ------------------------------------------------------------------------------------------------
+   $3261 abort_if_quit_keys is the in-race/front-end escape hatch: SHIFT (negative INKEY -1, code
+   $FF) together with key $86 (-122, shift_key_tbl's index $0B) means "give up and go back to the
+   menus".  ⚠ abort_state ($1C) is NOT a plain flag — every poll that does not see the combination
+   LSRs it, so it walks down to 0 while the keys are up, and only bit 7 is ever tested.  Bit 7 set
+   means an abort is already in progress and the poll does nothing at all.
+
+   $34D0 / $34D2 wait_dismiss_space / wait_dismiss_key are one routine with two entries: $34D0
+   seeds the flag with 0, $34D2 takes it from the caller's A.  The flag is print_field_mask ($78),
+   borrowed here as a one-bit "RETURN is also accepted" switch, and its EXIT value is a real output
+   — $654C reads bit 7 to tell "dismissed with SPACE" from "dismissed with RETURN".  The sequence
+   is: paint prompt script $1E, wait for SPACE to be RELEASED (so the keypress that got here does
+   not dismiss the page it just opened), then poll until SPACE goes down, or — when bit 7 was set on
+   entry — RETURN does, which LSRs the flag to record which key it was.
+
+   ⚠ $34D0 is an oracle that CANNOT see this body.  Both entries are VALIDATE_FUNCS members, so
+   the generated $34D0 oracle is `LDA #0` plus a call to the native $34D2 shim — its own answer.
+   Only the "force the flag to 0" step is gated at that entry; the wait itself is gated at $34D2.
+
+   ⚠⚠ The abort arm is a NON-LOCAL EXIT the port cannot reproduce: abort_to_front_end restores S
+   from top_level_stack and jumps to front_end_menus, where the C version can only tail-call and
+   return back up the stack.  Both models do the same wrong thing, so the differential is blind to
+   it by construction — the fixture keeps SHIFT and $86 from ever being held together, and this arm
+   is gated by `make refloop` instead (docs/faithfulness-seam.md, the S-manipulation class).
+   ------------------------------------------------------------------------------------------------ */
+#define KEY_INKEY_SHIFT   0xFFu   /* negative INKEY -1   — either SHIFT */
+#define KEY_INKEY_ABORT   0x86u   /* negative INKEY -122 — shift_key_tbl index $0B, the abort key */
+#define KEY_INKEY_SPACE   0x9Du   /* negative INKEY -99  — SPACE */
+#define KEY_INKEY_RETURN  0xB6u   /* negative INKEY -74  — RETURN */
+
+/* $3261 — poll the abort combination.  Returns nothing: its whole effect is abort_state, plus the
+   longjmp when the combination is live and no abort is in progress yet. */
+void abort_if_quit_keys_core(void)
+{
+    if (!kbd_test_key_core(KEY_INKEY_SHIFT)         /* $3261-$3266 */
+        || !kbd_test_key_core(KEY_INKEY_ABORT)) {   /* $3268-$326D */
+        abort_state = (uint8_t)(abort_state >> 1);  /* $327B LSR — the keys are up, walk it down */
+        return;
+    }
+    if (abort_state & 0x80u)                        /* $326F BIT / $3271 BMI — already aborting */
+        return;
+    abort_to_front_end();                           /* $3273 — S := top_level_stack, -> the menus */
+}
+
+/* $34D2 — wait for the page to be dismissed.  `offerReturn` is the caller's A: bit 7 set also
+   accepts RETURN, and the exit value of print_field_mask says which key was used. */
+static void wait_dismiss_core(uint8_t offerReturn)
+{
+    field_mask_set(offerReturn);                     /* $34D2 STA $78 */
+    text_script_interp_core(0x1Eu);                  /* $34D4/$34D6 — paint the prompt */
+
+    while (kbd_test_key_core(KEY_INKEY_SPACE))       /* $34D9-$34DE — wait for SPACE to come UP */
+        ;
+    for (;;) {
+        if (kbd_test_key_core(KEY_INKEY_SPACE))      /* $34E0-$34E5 — SPACE dismisses */
+            return;
+        abort_if_quit_keys_core();                   /* $34E7 — SHIFT+$86 escapes the whole page */
+        if (!(print_field_mask & 0x80u))             /* $34EA BIT $78 / $34EC BPL */
+            continue;                                /* RETURN is not on offer here */
+        if (!kbd_test_key_core(KEY_INKEY_RETURN))    /* $34EE-$34F3 */
+            continue;
+        field_mask_lsr();                            /* $34F5 — record "it was RETURN" */
+        return;
+    }
+}
+
+/* $34D0 — the same wait with the flag seeded 0, i.e. SPACE only. */
+void wait_dismiss_space_core(void)
+{
+    wait_dismiss_core(0x00u);                        /* $34D0 LDA #0 -> $34D2 */
+}
+
+void wait_dismiss_key_core(uint8_t offerReturn)
+{
+    wait_dismiss_core(offerReturn);
 }
 
 /* ===========================================================================

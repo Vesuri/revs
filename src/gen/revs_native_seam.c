@@ -729,6 +729,13 @@ void print_lap_time(void)
     cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;
 }
 
+/* $3261 abort_if_quit_keys / $34D0 wait_dismiss_space / $34D2 wait_dismiss_key (twin #198).
+   No entry registers except wait_dismiss_key's flag, which arrives in A ($666E PLA), and all
+   three exit ABIs are dead: every call site RTSs or reloads X/Y on the next instruction. */
+void abort_if_quit_keys(void) { abort_if_quit_keys_core(); }
+void wait_dismiss_space(void) { wait_dismiss_space_core(); }
+void wait_dismiss_key(void)   { wait_dismiss_key_core(cpu.A); }
+
 /* $3E60 set_row_rule_glyphs — the row arrives in Y.  Result-only: the sole caller reloads X
    into the script index on the next instruction, and A/Y/flags are dead with it. */
 void set_row_rule_glyphs(void)

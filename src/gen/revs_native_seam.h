@@ -575,6 +575,11 @@ TextExit print_lap_time_core(uint8_t fieldMask, uint8_t carIdx, uint8_t y);
 /* $43D0 / $43E7 the lap-value table column (twin #196) — exit is always print_spaces'. */
 TextExit print_lap_value_field_core(uint8_t x, uint8_t y);
 TextExit print_lap_value_from_mid_core(uint8_t bcd, uint8_t x, uint8_t y);
+/* $3261 / $34D0 / $34D2 the abort poll and the dismiss-key waiters (twin #198) — result-only;
+   every call site reloads its registers immediately, so the exit ABI is dead. */
+void abort_if_quit_keys_core(void);
+void wait_dismiss_space_core(void);
+void wait_dismiss_key_core(uint8_t offerReturn);
 /* $3E60 / $3C6F the standings table's leaf callees (twin #197) — result-only. */
 void set_row_rule_glyphs_core(uint8_t row);
 void print_race_class_name_core(void);

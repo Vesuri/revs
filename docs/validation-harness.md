@@ -702,6 +702,25 @@ itself: the flag is not stable across a pass, so such a case loops until the fie
 retire, which on randomised memory may be never.  A coverage limit that a second construction also
 cannot reach is worth *recording* rather than fighting.
 
+### ⚠⚠ A SABOTAGE SCRIPT'S RESTORE CLOBBERS ANY EDIT MADE WHILE IT RUNS
+
+§ELEVENTH's rule is to drive a sabotage loop from a script that copies a pristine backup over the
+file for each defect and restores it at the end.  The trap on the other side of that: **editing the
+same file while the script is in flight silently loses the edit** — the restore at exit puts the
+pre-sabotage backup back.  Worse, an edit made *after* the script's first copy and then saved as
+"the good version" preserves the SABOTAGE, not the twin.  That is how twin #198's second re-arm
+went missing: the fixture's ledger was written while the instrument sabotage (D55, the re-arm
+deleted) was applied, the annotated file was snapshotted as the keeper, and the next clean run hung
+in the very loop D55 was built to break.
+
+- **While a sabotage script is running, treat every file it touches as read-only.** Queue the
+  write-ups and apply them after it restores.
+- **A hang right after restoring "the good version" is the tell.** Verify the load-bearing lines are
+  present (`grep -c` on the call the instrument needs) rather than re-reasoning about the twin.
+- Sabotage scripts should also **kill their own grandchildren**: `subprocess.run(timeout=)` kills
+  `make`, not the `validate_native` it spawned, so a hung defect leaves an orphan spinning at 100%
+  behind every later measurement.
+
 ### NINETEENTH — a SHARED fixture leaf hides a wrong INDEX, and identical counts have a fourth explanation
 
 `print_race_class_name` ($3C6F, twin #197) is one call: `text_script_interp(race_class + 7)`.  The

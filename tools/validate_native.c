@@ -164,6 +164,9 @@ static int             g_ignore_n = 0;
 static void set_ignore(const uint16_t* addrs, int n) { g_ignore = addrs; g_ignore_n = n; }
 
 void tt_reset_state(void);
+/* ⚠⚠ Mode 5's poll counters live outside mem[], so they are PROCESS state and diff_run has to
+   rewind them before EACH model — see platform_cbridge.cpp.  A no-op in every other mode. */
+void platform_test_key_poll_rearm(void);
 void platform_test_init_headless(void);
 void platform_test_tick_clock(int on);
 void platform_test_clock_addr(uint16_t a);
@@ -228,6 +231,7 @@ static int diff_run(const char* name, const uint8_t* pre, Cpu6502 pre_cpu,
     relocated_poison();          /* ⚠⚠ a relocated global is PROCESS state: poison it so neither
                                     model can inherit the other one's marshal (revs_native.c) */
     tt_reset_state();
+    platform_test_key_poll_rearm();
     g_hwLogN = 0; g_hwLogOverflow = 0;
     g_mosLogN = 0; g_mosLogOverflow = 0;
     t6502();
@@ -250,6 +254,7 @@ static int diff_run(const char* name, const uint8_t* pre, Cpu6502 pre_cpu,
     relocated_poison();          /* ⚠⚠ a relocated global is PROCESS state: poison it so neither
                                     model can inherit the other one's marshal (revs_native.c) */
     tt_reset_state();
+    platform_test_key_poll_rearm();
     g_hwLogN = 0; g_hwLogOverflow = 0;
     g_mosLogN = 0; g_mosLogOverflow = 0;
     native();
@@ -595,6 +600,26 @@ static void printer_common_pre(uint8_t* pre)
     else          pre[0x0064] &= 0x7F;
 }
 
+/* ⭐ The text-script machinery, seeded so text_script_interp can be CALLED from a fixture.
+   Every legal pointer-table index (0..$34 — $35 upward would put a pointer byte on
+   char_row_addr_hi at $3AD0+$36 == $3B06 and aim the emitter at zero page) gets its OWN short
+   terminating leaf, signed by its first glyph so that WHICH script ran is visible in mem[].
+   See test_standings_leaves' header for what a shared leaf costs. */
+enum { SCRIPT_LEAF_BASE = 0x0D00u, SCRIPT_LEAF_MAX = 0x34u };
+static void script_common_pre(uint8_t* pre)
+{
+    unsigned i, j;
+    for (i = 0; i <= SCRIPT_LEAF_MAX; i++) {
+        unsigned leaf = SCRIPT_LEAF_BASE + i * 8u;
+        pre[0x3AD0u + i] = (uint8_t)(leaf & 0xFFu);      /* text_script_ptr_lo */
+        pre[0x3B50u + i] = (uint8_t)(leaf >> 8);         /* text_script_ptr_hi */
+        pre[leaf] = (uint8_t)(0x41u + i);                /* this index's signature glyph */
+        for (j = 1u; j < 6u; j++) pre[leaf + j] = (uint8_t)(0x20u + (xs() % 0x60u));
+        pre[leaf + 6u] = 0xFFu;                          /* terminate; no command bytes, no recursion */
+    }
+    pre[0x0070u] = 0x00u; pre[0x0071u] = 0x7Eu;          /* plot_ptr high in real screen RAM */
+}
+
 static int test_number_printers(void)
 {
     static uint8_t pre[65536];
@@ -915,7 +940,6 @@ static int test_standings_leaves(void)
     /* ---- $3C6F print_race_class_name ------------------------------------------------------ */
     if (want("print_race_class_name")) {
         int sub = 0, sawClass[3] = { 0, 0, 0 };
-        const unsigned LEAF = 0x0D00u;
         int cases = 2000 * scale;
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
@@ -926,24 +950,9 @@ static int test_standings_leaves(void)
             uint8_t cls = (uint8_t)(xs() % 3u);
             pre[0x5F3A] = cls;
             sawClass[cls] = 1;
-            /* The script machinery, seeded exactly as test_text_script_interp needs it — except
-               that every index gets its OWN leaf, whose first byte identifies it.  A shared leaf
-               would make a wrong-index defect invisible on the bitmap arm (vdu_char_def_core does
-               not see the index), and detection would cap at the OSWRCH arm's ~50%. */
-            { unsigned i; for (i = 0; i <= 0x34u; i++) {
-                unsigned leaf = LEAF + i * 8u;
-                pre[0x3AD0u + i] = (uint8_t)(leaf & 0xFFu);
-                pre[0x3B50u + i] = (uint8_t)(leaf >> 8);
-                pre[leaf] = (uint8_t)(0x41u + i);              /* this index's signature glyph */
-                { unsigned j; for (j = 1u; j < 6u; j++)
-                    pre[leaf + j] = (uint8_t)(0x20u + (xs() % 0x60u)); }
-                pre[leaf + 6u] = 0xFFu;          /* short, non-recursing, terminating */
-            } }
-            { int r; for (r = 0; r < 8; r++) pre[0x3B06 + r] = 0x58u; }  /* cursor -> screen */
-            pre[0x62CDu] &= 0x3Fu;
+            script_common_pre(pre);            /* per-index signed leaves + plot_ptr in screen RAM */
+            printer_common_pre(pre);           /* cursor -> screen, a valid row, both plotter arms */
             pre[0x62CCu] = (uint8_t)(xs() & 0x1Fu);
-            pre[0x0070u] = 0x00u; pre[0x0071u] = 0x7Eu;                  /* plot_ptr = $7E00 */
-            if (xs() & 1) pre[0x0064u] |= 0x80u; else pre[0x0064u] &= 0x7Fu;  /* both arms */
             sub += diff_run("print_race_class_name", pre, c,
                             print_race_class_name, print_race_class_name__t6502,
                             mask, t, &printed);
@@ -954,6 +963,201 @@ static int test_standings_leaves(void)
         if (!(sawClass[0] && sawClass[1] && sawClass[2])) {
             printf("VACUOUS: print_race_class_name did not reach all three classes\n");
             fail++;
+        }
+    }
+    return fail;
+}
+
+/* ================================================================================================
+ * ⭐ TWIN #198 — the abort poll and the dismiss-key waiters ($3261 / $34D0 / $34D2).
+ *
+ * These are the harness's first SPIN LOOPS on the keyboard, and none of the four existing key
+ * modes can drive them.  Mode 4's clock advances only in tickVBI, and the waiters never reach a
+ * frame hook: they poll kbd_test_key back to back, so "wait for SPACE to be RELEASED" never ends.
+ * Mode 5 (platform_cbridge.cpp) answers from a per-code POLL COUNT instead — each code carries a
+ * 32-bit mask, bit i = held on that code's i'th poll, saturating on bit 31.  A mask with bit 31
+ * set is a key held forever, which is what makes the wait terminate by construction.
+ *   ⚠⚠ Those poll counters are PROCESS state, not mem[], so diff_run re-arms them before EACH
+ *   model.  Without that the twin starts where the oracle stopped and reads a different key
+ *   sequence — the "differential harness carrying state between its two models" failure, and the
+ *   reason platform_test_key_poll_rearm() exists.
+ *
+ * The SPACE schedule is built to cover both phases: ones for `held` polls (the keypress that
+ * opened the page is still down), then zeros through the poll where RETURN may win, then ones from
+ * `spacePoll` to saturation.  RETURN either never goes down or goes down from `retPoll`, so with
+ * print_field_mask bit 7 seeded the RETURN exit is reached about half the time — and that exit is
+ * the one that LSRs the mask, which is the routine's real output ($654C reads bit 7 to tell the
+ * two keys apart).
+ *
+ * ⚠⚠ THE ABORT ARM IS NOT GATED HERE, and cannot be.  abort_to_front_end restores S from
+ * top_level_stack and jumps to front_end_menus; the transpiler drops the stack unwind and emits a
+ * tail call, so BOTH models recurse into the front end and return back up the C stack.  They agree,
+ * which means the differential is blind to it by construction — not a fixture gap that can be
+ * closed, a faithfulness question for `make refloop`.  The fixture therefore keeps SHIFT ($FF) and
+ * the abort key ($86) from ever being held together UNLESS abort_state bit 7 is already set, which
+ * is the arm that just returns ($326F BIT / $3271 BMI).  The waiters never hold $86 at all.
+ *
+ * ⚠⚠ TWO BLIND SPOTS, both structural.
+ *   1. The $34D0 stage cannot see the shared body at all.  $34D0 is `LDA #0` falling through to
+ *      $34D2, and both are VALIDATE_FUNCS entries, so the generated $34D0 ORACLE is literally
+ *      `LDA(0x00); wait_dismiss_key();` — a call to the native shim.  Its oracle IS the twin
+ *      below the first instruction, which is why D51 and D54 score 0 on wait_dismiss_space and
+ *      full marks on wait_dismiss_key.  Only wait_dismiss_space_core's own act — forcing the flag
+ *      to 0 — is testable at that entry (D52), and everything else is gated by the $34D2 stage.
+ *      Same shape as twin #196's D39; an oracle that tail-calls an already-validated PLAIN name
+ *      hands the differential its own answer.
+ *   2. A defect that reaches the abort longjmp does not fail, it CRASHES: the first D48 (drop the
+ *      SHIFT test) and the first D50 (invert the BMI) both took abort_to_front_end on a fixture
+ *      case, recursed into front_end_menus and died with no output at all.  Both were rewritten to
+ *      stay clear of that arm — D48 swaps the two polls (visible in the MOS-call log), D50 makes
+ *      the latched arm shift as well.  A sabotage has to be reachable AND survivable.
+ *
+ * SABOTAGE (each must FAIL, patch verified applied; counts measured):
+ *   D48 the SHIFT and abort polls swap order            -> 4000/4000 (poll; MOS log sequence)
+ *   D49 abort_state is masked, not shifted              -> 2987/4000 (poll)
+ *   D50 the already-latched arm shifts abort_state too  ->  995/4000 (poll)
+ *   D51 the wait for SPACE to be RELEASED is skipped    -> 1500/1500 (key); 0 (space, blind spot 1)
+ *   D52 $34D0 does not force the flag to 0              -> 1495/1500 (space)
+ *   D53 the RETURN exit does not LSR the flag           ->  367/1500 (key; only the RETURN cases)
+ *   D54 RETURN is accepted even when not offered        ->  356/1500 (key); 0 (space, blind spot 1)
+ *   D55 THE INSTRUMENT: diff_run's second poll-counter re-arm removed, so the twin inherits the
+ *       oracle's poll positions                         -> HANGS (harness never completes)
+ * ⚠ D55 is a detection, and the loudest kind for an instrument: the twin starts at SPACE's
+ * saturated poll index, where the key reads held forever, so the wait for it to be RELEASED never
+ * ends.  The re-arm is load-bearing and its absence cannot produce a green run.
+ * ============================================================================================= */
+void abort_if_quit_keys(void);   void abort_if_quit_keys__t6502(void);
+void wait_dismiss_space(void);   void wait_dismiss_space__t6502(void);
+void wait_dismiss_key(void);     void wait_dismiss_key__t6502(void);
+
+void platform_test_key_poll_clear(void);
+void platform_test_key_poll_set(unsigned char code, unsigned int mask);
+
+enum { KEY_SHIFT = 0xFFu, KEY_ABORT = 0x86u, KEY_SPACE = 0x9Du, KEY_RETURN = 0xB6u };
+
+/* Arm mode 5 for a dismiss wait, and return nothing the routine can see: the schedule is the input.
+   `offerReturn` says whether the RETURN arm is even reachable, so the caller can score coverage. */
+static void arm_dismiss_keys(int* sawHeldFirst, int* sawReturnFirst, int offerReturn)
+{
+    unsigned held  = xs() % 4u;                     /* polls SPACE is still down for on entry */
+    unsigned retP  = 1u + (xs() % 8u);              /* RETURN goes down from this poll of RETURN */
+    unsigned spaceP;
+    unsigned spaceMask, retMask;
+    int retWins = (xs() & 1) != 0;
+
+    /* SPACE comes back down either before RETURN could win, or well after it. */
+    spaceP = retWins ? (retP + 4u + (xs() % 6u)) : 1u;
+    if (spaceP > 30u) spaceP = 30u;
+
+    spaceMask = 0u;
+    { unsigned i; for (i = 0; i < held; i++) spaceMask |= 1u << i; }          /* still held */
+    { unsigned i; for (i = held + spaceP; i < 32u; i++) spaceMask |= 1u << i; } /* down again, forever */
+    retMask = 0u;
+    if (retWins) { unsigned i; for (i = retP; i < 32u; i++) retMask |= 1u << i; }
+
+    platform_test_key_poll_clear();
+    platform_test_key_poll_set((unsigned char)KEY_SPACE,  spaceMask);
+    platform_test_key_poll_set((unsigned char)KEY_RETURN, retMask);
+    /* SHIFT alone is fine (abort_if_quit_keys just LSRs abort_state); $86 stays up so the
+       non-local exit is never taken.  See the header. */
+    platform_test_key_poll_set((unsigned char)KEY_SHIFT, (xs() & 1) ? 0xFFFFFFFFu : 0u);
+    platform_test_key_poll_set((unsigned char)KEY_ABORT, 0u);
+
+    if (held) *sawHeldFirst = 1;
+    if (retWins && offerReturn) *sawReturnFirst = 1;
+}
+
+static int test_dismiss_waiters(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("abort_if_quit_keys");
+    register_fixture("wait_dismiss_space");
+    register_fixture("wait_dismiss_key");
+
+    /* All three exit ABIs are dead: every call site RTSs or reloads X/Y on the next instruction
+       ($3C6E, $64B3, $6672, $6697 for the waiters; $327A, $657A for the poll).  mem[] only. */
+    unsigned mask = LIVE_NONE;
+
+    /* ---- $3261 abort_if_quit_keys ----------------------------------------------------------- */
+    if (want("abort_if_quit_keys")) {
+        int sub = 0, sawShiftOnly = 0, sawNeither = 0, sawLatched = 0;
+        int cases = 4000 * scale;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.D = 0;
+            /* abort_state is a shift register, so sweep the whole byte and not just bit 7. */
+            pre[0x001Cu] = (uint8_t)xs();
+            int shift = (xs() & 1) != 0;
+            int abortKey = (xs() & 1) != 0;
+            if (shift && abortKey) {
+                /* The only safe way to hold both: an abort already in progress, which is the
+                   arm that returns without touching anything.  See the header. */
+                pre[0x001Cu] |= 0x80u;
+                sawLatched = 1;
+            } else if (shift) sawShiftOnly = 1;
+            else sawNeither = 1;
+            platform_test_key_poll_clear();
+            platform_test_key_poll_set((unsigned char)KEY_SHIFT, shift    ? 0xFFFFFFFFu : 0u);
+            platform_test_key_poll_set((unsigned char)KEY_ABORT, abortKey ? 0xFFFFFFFFu : 0u);
+            sub += diff_run("abort_if_quit_keys", pre, c,
+                            abort_if_quit_keys, abort_if_quit_keys__t6502, mask, t, &printed);
+        }
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  mem[] only (exit ABI dead)\n",
+               "abort_if_quit_keys", cases, sub);
+        if (!(sawShiftOnly && sawNeither && sawLatched)) {
+            printf("VACUOUS: abort_if_quit_keys missed an arm (shift-only/neither/already-latched)\n");
+            fail++;
+        }
+    }
+
+    /* ---- $34D0 wait_dismiss_space and $34D2 wait_dismiss_key -------------------------------- */
+    {
+        struct { const char* name; void (*nat)(void); void (*orc)(void); int offersReturn; }
+        stage[2] = { { "wait_dismiss_space", wait_dismiss_space, wait_dismiss_space__t6502, 0 },
+                     { "wait_dismiss_key",   wait_dismiss_key,   wait_dismiss_key__t6502,   1 } };
+        int k;
+        for (k = 0; k < 2; k++) {
+            int sub = 0, sawHeldFirst = 0, sawReturnFirst = 0, sawOffered = 0, sawSpaceOnly = 0;
+            int cases;
+            if (!want(stage[k].name)) continue;
+            cases = 1500 * scale;
+            for (t = 0; t < cases; t++) {
+                Cpu6502 c = zero_cpu();
+                fill_random(pre);
+                c.D = 0;
+                c.S = 0xFFu;
+                script_common_pre(pre);      /* script $1E, the prompt this paints, is index $1E */
+                printer_common_pre(pre);
+                pre[0x62CCu] = (uint8_t)(xs() & 0x1Fu);
+                pre[0x001Cu] = (uint8_t)xs();               /* abort_state, swept whole */
+                /* $34D2 takes the flag from A; $34D0 forces 0 and must IGNORE whatever A holds,
+                   so randomise A on both stages. */
+                c.A = (xs() & 1) ? (uint8_t)(0x80u | (xs() & 0x7Fu)) : (uint8_t)(xs() & 0x7Fu);
+                if (stage[k].offersReturn && (c.A & 0x80u)) sawOffered = 1;
+                arm_dismiss_keys(&sawHeldFirst, &sawReturnFirst,
+                                 stage[k].offersReturn && (c.A & 0x80u));
+                if (!(stage[k].offersReturn && (c.A & 0x80u))) sawSpaceOnly = 1;
+                sub += diff_run(stage[k].name, pre, c,
+                                stage[k].nat, stage[k].orc, mask, t, &printed);
+            }
+            fail += sub;
+            printf("%-32s %7d cases, %d mismatch (must be 0)  mem[] only (exit ABI dead)\n",
+                   stage[k].name, cases, sub);
+            if (!(sawHeldFirst && sawSpaceOnly)) {
+                printf("VACUOUS: %s never saw SPACE held on entry, or never a SPACE-only exit\n",
+                       stage[k].name);
+                fail++;
+            }
+            if (stage[k].offersReturn && !(sawOffered && sawReturnFirst)) {
+                printf("VACUOUS: wait_dismiss_key never reached the RETURN exit\n");
+                fail++;
+            }
         }
     }
     return fail;
@@ -9565,6 +9769,7 @@ int main(int argc, char** argv)
     fail += test_number_printers();
     fail += test_lap_value_column();
     fail += test_standings_leaves();
+    fail += test_dismiss_waiters();
     fail += test_dashboard_readouts();
     fail += test_add_frame_time();
     fail += test_tick_race_timers();
