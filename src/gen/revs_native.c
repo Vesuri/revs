@@ -260,9 +260,9 @@ SlotExit draw_car_field_core(uint8_t entryY, uint8_t entryV, uint8_t entryC);
 /* The rest of the frame body's steps, all defined far below.  race_main_loop_core reaches each
    through its core so the whole hot path is core-to-core with no 6502-ABI shim hops. */
 static void read_driving_controls_core(void);
-void apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC);
+CameraExit apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC);
 void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1);
-void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);
+SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);
 static void build_road_sign_core(void);
 
 /* ===========================================================================
@@ -3868,7 +3868,7 @@ static void surface_pass(uint8_t pass, uint8_t firstPoint)
    The cursors are written only by build_track_geometry and its walk, so they cannot change under
    this routine — but road_split_index is written by two of the callees below and horizon_index is
    read four separate times by the 6502, so both are read from mem[] at every use. */
-void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
+SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
 {
     ROAD_COUNT(g_roadFrames);
     PLOT_SET_LO(plot_ptr, 0x80u);   /* $1A20: every span plotter stores through this */
@@ -3947,16 +3947,13 @@ void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     surface_style_base = 0x1C;
     surface_pass(3, road_split_index);
 
-    /* The near mark's exit IS draw_road's exit (nothing after it touches A/X/Y/flags), so this
-       is the one place in the routine where the chain reaches cpu; the shim adds nothing. */
+    /* The near mark's exit IS draw_road's exit — nothing after it touches A/X/Y/flags — so it
+       is handed straight back for the shim to publish. */
     ROAD_PHASE(ROAD_PHASE_MARK);
-    {
-        SlotExit m = mark_side_surfaces(0x14, chainV);
-        line_attr_1_limit = m.y;
-        cpu.A = m.a; cpu.X = m.x; cpu.Y = m.y;
-        cpu.N = m.n; cpu.Z = m.z; cpu.V = m.v; cpu.C = m.c;
-    }
+    SlotExit m = mark_side_surfaces(0x14, chainV);
+    line_attr_1_limit = m.y;
     ROAD_PHASE(11);                  /* reopen the enclosing phase: its remainder is the return */
+    return m;
 }
 
 /* The 6502-ABI shim.  draw_road takes no arguments — the frame's geometry reaches it entirely
@@ -4092,7 +4089,7 @@ void model_accum_entry_marshal_out(void)
     model_accum_entry_hi = (uint8_t)(model_accum_entry_v >> 8);
 }
 
-void apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC)
+CameraExit apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC)
 {
     /* $46A1 — the car's body angles, computed from where the car actually is. */
     compute_car_angles_core(posHi, posLo);
@@ -4177,14 +4174,9 @@ void apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC)
     rotate_state_pair_core(3u, 6u, 0x40u);   /* rotate_state_6_into_3 */
     integrate_state_rates_core();
     integrate_car_position_core();
-    /* apply_driving_model's exit A/X/Y/flags ARE update_camera_and_drive_state's (its last call);
-       replay them into cpu so the shim returns them untouched. */
-    {
-        CameraExit ce = update_camera_and_drive_state_core();
-        cpu.A = ce.acc.hi; cpu.C = ce.acc.carry; cpu.V = ce.acc.overflow;
-        cpu.N = ce.acc.neg; cpu.Z = ce.acc.zero;
-        cpu.X = ce.x; cpu.Y = ce.y;
-    }
+    /* apply_driving_model's exit A/X/Y/flags ARE update_camera_and_drive_state's (its last
+       call), so they are handed straight back for the shim to publish. */
+    return update_camera_and_drive_state_core();
 }
 
 /* The 6502-ABI shim.  The player's own position is the routine's one input — it reaches the

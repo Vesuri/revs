@@ -349,7 +349,7 @@ extern const SpanPlotter SPAN_PLOT_2;
 /* ---- cpu-free cores the shims call (defined in revs_native.c) ---- */
 AdcRead adc_read_core(uint8_t channel);
 MosRegs kbd_test_key_regs(uint8_t keyCode);   /* OSBYTE 129 exit file — kbd_test_key's shim reads A/X/Y */
-void apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC);
+CameraExit apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC);
 void arg_a(uint8_t v);
 void bearing_to_section_core(uint8_t sectionByte, uint8_t origin);
 SignOriginExit build_sign_origin_core(uint8_t offset, uint8_t shift);
@@ -370,7 +370,7 @@ void copy_dash_data_core(uint8_t dirFlag);
 uint8_t derive_car_section_cursor_core(uint8_t cursor);
 SlipRef derive_slip_reference_core(uint8_t axle);
 uint8_t draw_gear_indicator_core(void);
-void draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);
+SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);
 void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint);
 SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, uint8_t entryC);
 EdgeOffFlags edge_x_offscreen_core(uint8_t pointX);

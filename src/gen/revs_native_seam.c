@@ -192,7 +192,12 @@ void draw_road(void)
 {
     /* The road pass owns all three screen pointers from its first seed to its last span. */
     plot_ptrs_marshal_in();
-    draw_road_core(edge_cursor, edge_end_side0);
+    SlotExit e = draw_road_core(edge_cursor, edge_end_side0);
+    /* draw_road leaves A, X, Y and the flags wherever its last callee (the near mark) left
+       them — the frame's geometry reaches it entirely through the edge lists and the three
+       cursor cells, so this exit is the whole 6502 ABI. */
+    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
     plot_ptrs_marshal_out();
 }
 
@@ -202,13 +207,18 @@ void apply_driving_model(void)
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
     car_heading_marshal_in();             /* it reads the heading in, as the car's position... */
     car_angle_marshal_in();               /* element 2 (the wheel) comes in; 0/1 go out below */
-    apply_driving_model_core((uint8_t)car_heading_v, (uint8_t)(car_heading_v >> 8), cpu.C);
+    CameraExit ce = apply_driving_model_core((uint8_t)car_heading_v,
+                                             (uint8_t)(car_heading_v >> 8), cpu.C);
     car_angle_marshal_out();              /* compute_car_angles_core rebuilt the sin/cos pair */
     car_heading_marshal_out();            /* ...and its tail calls integrate_car_position, which
                                              advances it — core-to-core, so publish it here */
     model_accum_entry_marshal_out();       /* $46AE's value back into mem[$38/$39] */
     model_state_marshal_out();    /* ...and publish it back to mem[] */
     view_origin_marshal_out();
+    /* A, X, Y and the flags come back from update_camera_and_drive_state untouched. */
+    cpu.A = ce.acc.hi; cpu.C = ce.acc.carry; cpu.V = ce.acc.overflow;
+    cpu.N = ce.acc.neg; cpu.Z = ce.acc.zero;
+    cpu.X = ce.x; cpu.Y = ce.y;
 }
 
 void draw_track_object(void)
