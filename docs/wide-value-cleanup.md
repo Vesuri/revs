@@ -535,7 +535,7 @@ in the interim but the final store stays two non-adjacent byte writes until relo
 | `CAR_ANGLE` | $62A0/$62A3 | 3× (heading_sin/cos, `steer_angle` = element 2, $62A2/$62A5) | ~9 | **A + B DONE** | `car_angle_16[3]` |
 | `CAR_DISTANCE` | $08D0/$08E8 | per-car (24) distance-round-lap | ~19 | **A + B DONE** | `car_distance_16[24]` |
 | `OBJECT_BEARING` | $0380/$0398 | per-slot 16-bit track position | ? | A now; B blocked | TODO |
-| `SECTION_COORD` (=`SECTION_CRD`) | $0900/$0A00 | section origin (stride $100) — **two names, one addr; dedupe** | ~62 | A now; B blocked | TODO |
+| `SECTION_COORD` | $0900/$0A00 | section origin (stride $100) | ~62 | A done; B blocked | ✅ DONE |
 | `EDGE_OPP_X` | $5E50/$5EA0 | opposite-boundary angle | ? | A→B | TODO |
 | `MARKER_OFF` | $62B7/$62BA | marker offset | ? | A→B | TODO |
 | `VIEW_ORIGIN` | $6280/$6283 | 3 components, stride 6, two origins | ~30 | A now; B blocked | TODO |
@@ -1901,7 +1901,7 @@ put it at **3.7 shim entries per frame against 98 `view_delta` reads per frame**
 | `CAR_DISTANCE` $08D0/$08E8 | 24 | 30 | 1.3 | ✅ done, but **only because it marshals ONE SLOT** (`car_distance_marshal_in_one`) — a per-slot marshal is not scored by this table |
 | `OBJECT_BEARING` $0380/$0398 | 24 | 10 | **0.42** | ❌ declined |
 | `EDGE_OPP_X` $5E50/$5EA0 | 80 | 19 | **0.24** | ❌ declined |
-| `SECTION_COORD` $0900/$0A00 | 256 | 43 | **0.17** | ❌ declined — measured, see above |
+| `SECTION_COORD` $0900/$0A00 | 256 | 43 | **0.17** | ❌ (B) declined — measured; (A) ✅ done |
 
 ⭐ **A large TABLE has no cheap marshal boundary, because its readers index it arbitrarily** — there
 is no window narrower than the whole array that a shim can be shown to touch. The three declined
@@ -2075,13 +2075,44 @@ not the two accesses — the planes are 256 bytes apart, so no word load exists 
 slot at a time, where `CAR_DISTANCE`'s per-slot marshal (`car_distance_marshal_in_one`) is available
 and does create the adjacency.
 
-### `SECTION_COORD` $0900/$0A00 — 10 functions, 43 refs, and a duplicate-define debt
+### `SECTION_COORD` $0900/$0A00 — ✅ DONE (mechanism A), 43 refs behind three accessors
+
+Every one of the 43 references now goes through `section_word(byteIndex)` /
+`section_word_set(byteIndex, value)` (and `segment_word(byteIndex)` for the TRACK FILE side of
+the two copies), so no site in `revs_native.c` holds a section coordinate as a lo/hi pair any
+more — `grep SECTION_COORD_LO` finds only the two `#define`s and the accessor bodies.  What that
+removed, per the THIRTEENTH LESSON, is the lane **arithmetic** and not the two accesses: the
+planes are $100 apart, so a word load does not exist even in principle.
+
+Three things the conversion settled that a ref count does not show:
+
+* **The duplicate define is gone.** `SECTION_CRD_LO`/`_HI` (over the driving-model twins) and
+  `SECTION_COORD_LO`/`_HI` were the same two addresses under two names; the second pair won.
+* **`road_edge_walk_subdivide` was reading the same word twice** — `base = section_word(there)`
+  and then `there16` rebuilt byte by byte from the same index.  Writing both as one accessor
+  call made the duplication visible and it is now one read.
+* ⚠ **`place_car_world_coords`' SMC site masks the ORIGIN's high byte, before the add**, not the
+  sum's, so the wide form has to apply the mask to `origin` and not to `origin + term`.  That is
+  the one site in the table where the lane form was carrying real information.
+
+⚠ The accessors deliberately do **not** mask the index.  The 6502 bakes the component into the
+address (`LDA $0902,X`), so `$FD` + component 2 is `$09FF` — inside the table, not wrapped; the
+two callers whose index really did come out of an 8-bit register add (`road_edge_walk_subdivide`,
+`place_car_world_coords`) mask it themselves.  The old `section_word` masked internally, which
+was wrong for every other caller and right only by accident for its one.
+
+Gated by `make validate` on all ten owning twins (`load_section_triple`, `road_edge_walk`,
+`section_coord_add_delta`, `copy_section_height_to_side1`, `build_road_section`,
+`load_section_from_segment`, `place_car_world_coords`, `build_player_car`,
+`update_camera_and_drive_state`, `build_track_geometry`) plus `determinism` and
+`determinism-drive`.
+
+#### The site table as it stood before the conversion
 
 The section origin: 40 sections × three 16-bit components, plus two scratch slots past the 120 real
-bytes at $FA and $FD. ⚠ **It is `#define`d TWICE in `revs_native.c`** — `SECTION_LO_TBL`/
-`SECTION_HI_TBL` ($1812) and `SECTION_COORD_LO`/`SECTION_COORD_HI` ($11936) — same addresses, two
-names, and a `section_word()` accessor already exists over the first pair. Consolidating is Step 0's
-own rule and comes first.
+bytes at $FA and $FD. It was `#define`d twice (`SECTION_CRD_*` and `SECTION_COORD_*`, same two
+addresses) with a `section_word()` reader over one of the pairs, and this is where the 43 references
+sat:
 
 | site | refs |
 |---|---|

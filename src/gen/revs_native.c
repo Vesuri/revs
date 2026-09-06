@@ -1893,12 +1893,36 @@ static void inc_mem(unsigned cell)
     UPD_NZ(v);
 }
 
-/* One 16-bit section coordinate.  Each section owns three of them at +0/+1/+2, and the index
-   is a BYTE — the two scratch slots live at $FA and $FD, past the 120 real bytes. */
-static unsigned section_word(unsigned byteIndex)
+/* One 16-bit section coordinate, read and written as ONE value.  Each section owns three of
+   them at +0/+1/+2, and the index is a BYTE index into the pair of planes — the two scratch
+   slots live at $FA and $FD, past the 120 real bytes.
+
+   ⚠ The planes are $100 apart, so there is no word load even in principle: what these remove
+   is the LANE ARITHMETIC (the shift/or on the way in, the two truncating stores on the way
+   out), not the two accesses.  Every site that holds a section coordinate now holds a
+   uint16_t.
+   ⚠ No wrap here.  The 6502 addresses these absolute,X / absolute,Y with the component baked
+   into the address ($0902,X), so $FD + component 2 is $09FF — still inside the table.  A
+   caller whose index came out of an 8-bit register ADD masks it itself, which is what
+   road_edge_walk_subdivide and place_car_world_coords do. */
+static uint16_t section_word(unsigned byteIndex)
 {
-    unsigned i = byteIndex & 0xFFu;
-    return (unsigned)mem[SECTION_COORD_LO + i] | ((unsigned)mem[SECTION_COORD_HI + i] << 8);
+    return (uint16_t)((unsigned)mem[SECTION_COORD_LO + byteIndex]
+                      | ((unsigned)mem[SECTION_COORD_HI + byteIndex] << 8));
+}
+
+static void section_word_set(unsigned byteIndex, uint16_t value)
+{
+    mem[SECTION_COORD_LO + byteIndex] = (uint8_t)value;
+    mem[SECTION_COORD_HI + byteIndex] = (uint8_t)(value >> 8);
+}
+
+/* The same for a TRACK FILE segment field: an 8-byte record's field is a 16-bit value split
+   across the two segment planes ($5900 low / $5300 high). */
+static uint16_t segment_word(unsigned byteIndex)
+{
+    return (uint16_t)((unsigned)mem[TRACK_SEGMENT_LO + byteIndex]
+                      | ((unsigned)mem[TRACK_SEGMENT_HI + byteIndex] << 8));
 }
 
 /* ===========================================================================
@@ -2136,24 +2160,18 @@ void rebase_edge_point_core(uint8_t slot)
 
    ⚠ Neither index wraps: the 6502 addresses these as absolute,X and absolute,Y, so a byte
    index of $FE really does reach three bytes past the end of the array rather than back to
-   the start.  The two halves are copied in the 6502's order (all three low bytes, then all
-   three high), which matters only if source and destination overlap — and the near-point
-   scratch slot at $FD is close enough to the end of the live array that they can.
+   the start.  The 6502 copies all three low bytes and then all three high bytes; this copies
+   the three values whole, which is the same thing here because source and destination are
+   DIFFERENT arrays — the widest reach is $09FF, short of the high plane at $0A00 — so no store
+   can be read back by a later load of this copy.
    =========================================================================== */
 void load_section_triple_core(uint8_t destSection, uint8_t segmentByte)
 {
     /* $1208-$122B — copy the three 16-bit coordinates of the segment (skipping its first byte,
        the length) into the scratch section triple.  The 6502 reads the segment high byte one
        past the triple at $1226, but that only set flags the callers do not read, so it is gone. */
-    uint8_t*       dstLo = &mem[SECTION_COORD_LO + destSection];
-    uint8_t*       dstHi = &mem[SECTION_COORD_HI + destSection];
-    const uint8_t* srcLo = &mem[TRACK_SEGMENT_LO + segmentByte + 1];
-    const uint8_t* srcHi = &mem[TRACK_SEGMENT_HI + segmentByte + 1];
-
-    for (int i = 0; i < 3; i++) {
-        dstLo[i] = srcLo[i];
-        dstHi[i] = srcHi[i];
-    }
+    for (unsigned i = 0; i < 3; i++)
+        section_word_set(destSection + i, segment_word(segmentByte + 1 + i));
 }
 
 
@@ -3460,14 +3478,10 @@ static uint8_t road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
     for (i = 0; i < 3; i++) {                        /* the triple's three components */
         unsigned here    = (section + i) & 0xFFu;
         unsigned there   = (prev + i) & 0xFFu;
-        unsigned base    = section_word(there);
-
         /* $2410-$241C — the 16-bit gap as one signed subtract (D=0 on the road pass —
            static-map.md §Decimal mode).  Its high byte's sign is what the shifts need. */
-        uint16_t here16  = (uint16_t)(((uint16_t)mem[SECTION_COORD_HI + here]  << 8)
-                                      | mem[SECTION_COORD_LO + here]);
-        uint16_t there16 = (uint16_t)(((uint16_t)mem[SECTION_COORD_HI + there] << 8)
-                                      | mem[SECTION_COORD_LO + there]);
+        uint16_t there16 = section_word(there);
+        uint16_t here16  = section_word(here);
         unsigned delta   = (uint16_t)(here16 - there16);
         math_lo = (uint8_t)delta;                    /* $2410 — the low byte, parked */
 
@@ -3477,13 +3491,12 @@ static uint8_t road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
            the push/pop computes nothing — its only trace is the $01FF residue the fixture
            ignores as dead stack (same as the bearing leaves). */
         unsigned quarter = ((delta >> 2) | ((delta & 0x8000u) ? 0xC000u : 0u)) & 0xFFFFu;
-        unsigned mid     = (base + quarter) & 0xFFFFu;
+        unsigned mid     = (there16 + quarter) & 0xFFFFu;
 
         math_lo        = (uint8_t)quarter;           /* $2425 — after the two RORs */
         shared_temp_76 = (uint8_t)(quarter >> 8);    /* $242B */
 
-        mem[SECTION_COORD_LO + midSlot + i] = (uint8_t)mid;
-        mem[SECTION_COORD_HI + midSlot + i] = (uint8_t)(mid >> 8);
+        section_word_set(midSlot + i, (uint16_t)mid);
 
         if (i < 2) {                                 /* $2445-$244B, skipped on the last pass */
             math_hi        = (uint8_t)(i + 1);
@@ -4526,8 +4539,7 @@ void div16by8(void)
    the sign is bit 7 of the true two's-complement high byte. */
 static ViewDelta view_delta(uint8_t sectionByte, unsigned component, uint8_t origin)
 {
-    int section = (int)mem[SECTION_COORD_LO + sectionByte + component]
-                | ((int)mem[SECTION_COORD_HI + sectionByte + component] << 8);
+    int section = (int)section_word(sectionByte + component);
     int viewpt  = (int)view_origin_16[origin + component];   /* one word, not two lanes */
     uint16_t  diff = (uint16_t)(section - viewpt);
     ViewDelta d;
@@ -8045,8 +8057,6 @@ void update_slip_sound(void)
    =========================================================================== */
 
 #define SECTION_DIR_IX 0x0700u   /* per live section, its index into the three pages above */
-#define SECTION_CRD_LO 0x0900u   /* section_coord_lo / _hi — the live section geometry */
-#define SECTION_CRD_HI 0x0A00u
 #define CAR_STATE_1    0x0164u   /* per-driver; the camera adds a gradient-scaled copy */
 #define CAR_SPEED_SCL  0x0150u   /* per-driver speed in the AI's units */
 #define GEAR_REV_RATIO 0x5A06u   /* TRACK FILE: revs per unit road speed, by gear_index */
@@ -8840,15 +8850,13 @@ CameraExit update_camera_and_drive_state_core(void)
     uint8_t secCursor = car_section_cursor;             /* $45DF — Y for the section coords + exit */
     {
         uint8_t scaledLow = scaled;                    /* the gradient-scaled car_state_1 low byte */
-        uint8_t secLo = mem[SECTION_CRD_LO + 1 + secCursor];
-        uint8_t secHi = mem[SECTION_CRD_HI + 1 + secCursor];
         /* $45E1-$45FB — the 6502 adds three terms into the low byte, saves each carry with a
            PHP and folds all three into the high byte, whose own carry-outs the PLPs discard.
            That is ONE truncating 16-bit add of four values, and it is exactly what this is:
            the section's height, the gradient-scaled car state, the nominal eye height $AC and
            the term parked in shared_temp_77:shared_temp_76.  (D=0 on this path —
            static-map.md §Decimal mode.) */
-        uint16_t section = (uint16_t)(secLo | ((unsigned)secHi << 8));
+        uint16_t section = section_word(1 + secCursor);   /* the section's own height */
         uint16_t parked  = (uint16_t)(shared_temp_76 | ((unsigned)shared_temp_77 << 8));
         view_origin_16[1] = (uint16_t)(section + scaledLow + 0x00ACu + parked);
     }
@@ -11812,13 +11820,9 @@ GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn)
 void section_coord_add_delta_core(uint8_t dst, uint8_t src,
                                          const uint8_t dlo[3], const uint8_t dhi[3])
 {
-    for (int i = 0; i < 3; i++) {
-        uint16_t s = (uint16_t)(mem[SECTION_COORD_LO + src + i]
-                                | (mem[SECTION_COORD_HI + src + i] << 8));
+    for (unsigned i = 0; i < 3; i++) {
         uint16_t d = (uint16_t)(dlo[i] | (dhi[i] << 8));
-        uint16_t r = (uint16_t)(s + d);
-        mem[SECTION_COORD_LO + dst + i] = (uint8_t)r;
-        mem[SECTION_COORD_HI + dst + i] = (uint8_t)(r >> 8);
+        section_word_set(dst + i, (uint16_t)(section_word(src + i) + d));
     }
 }
 
@@ -11840,8 +11844,7 @@ void           load_section_from_segment_core(uint8_t x, uint8_t y);
    edges sit at the same HEIGHT, so component 1 is just copied across here (both bytes). */
 void copy_section_height_to_side1_core(uint8_t x)
 {
-    mem[SECTION_COORD_LO + SECTION_SIDE1 + x + 1] = mem[SECTION_COORD_LO + x + 1];
-    mem[SECTION_COORD_HI + SECTION_SIDE1 + x + 1] = mem[SECTION_COORD_HI + x + 1];
+    section_word_set(SECTION_SIDE1 + x + 1, section_word(x + 1));
 }
 
 /* 6502-ABI shim: X is the section byte cursor.  The $1253 LDA's exit A is dead at both
@@ -12041,18 +12044,12 @@ void build_road_section(void)
         /* side-1 comp 0 = side-0 comp 0 + across-track normal X, scaled x4 (sign-extended) */
         uint16_t nx = (uint16_t)((int16_t)(int8_t)mem[TRACK_NORMAL_X + dir] << 2);
         mem[POINT_DELTA_HI + 0] = (uint8_t)(nx >> 8);       /* faithful scratch residue */
-        uint16_t c0 = (uint16_t)(mem[SECTION_COORD_LO + x] | (mem[SECTION_COORD_HI + x] << 8));
-        uint16_t s0 = (uint16_t)(c0 + nx);
-        mem[SECTION_COORD_LO + SECTION_SIDE1 + x] = (uint8_t)s0;
-        mem[SECTION_COORD_HI + SECTION_SIDE1 + x] = (uint8_t)(s0 >> 8);
+        section_word_set(SECTION_SIDE1 + x, (uint16_t)(section_word(x) + nx));
 
         /* side-1 comp 2 = side-0 comp 2 + across-track normal Y, scaled x4 */
         uint16_t ny = (uint16_t)((int16_t)(int8_t)mem[TRACK_NORMAL_Y + dir] << 2);
         mem[POINT_DELTA_HI + 2] = (uint8_t)(ny >> 8);       /* faithful scratch residue */
-        uint16_t c2 = (uint16_t)(mem[SECTION_COORD_LO + 2 + x] | (mem[SECTION_COORD_HI + 2 + x] << 8));
-        uint16_t s2 = (uint16_t)(c2 + ny);
-        mem[SECTION_COORD_LO + SECTION_SIDE1 + 2 + x] = (uint8_t)s2;
-        mem[SECTION_COORD_HI + SECTION_SIDE1 + 2 + x] = (uint8_t)(s2 >> 8);
+        section_word_set(SECTION_SIDE1 + 2 + x, (uint16_t)(section_word(2 + x) + ny));
 
         /* --- 5a. per-circuit direction-index hook (SMC $13C9) --- */
         if (mem[SMC_SECTION_TAIL_HOOK] == 0x20) {
@@ -12140,10 +12137,8 @@ void load_section_from_segment_core(uint8_t x, uint8_t y)
     load_section_triple_core(x, y);                         /* fields 1..3 -> side-0 triple */
 
     /* fields 4 and 6 -> side-1 components 0 and 2 (the opposite road edge) */
-    mem[SECTION_COORD_LO + SECTION_SIDE1 + x]     = mem[TRACK_SEGMENT_LO + 4 + y];   /* $0978 <- $5904 */
-    mem[SECTION_COORD_LO + SECTION_SIDE1 + x + 2] = mem[TRACK_SEGMENT_LO + 6 + y];   /* $097A <- $5906 */
-    mem[SECTION_COORD_HI + SECTION_SIDE1 + x]     = mem[TRACK_SEGMENT_HI + 4 + y];   /* $0A78 <- $5304 */
-    mem[SECTION_COORD_HI + SECTION_SIDE1 + x + 2] = mem[TRACK_SEGMENT_HI + 6 + y];   /* $0A7A <- $5306 */
+    section_word_set(SECTION_SIDE1 + x,     segment_word(4 + y));   /* $0978/$0A78 <- field 4 */
+    section_word_set(SECTION_SIDE1 + x + 2, segment_word(6 + y));   /* $097A/$0A7A <- field 6 */
 
     /* segment_dir_index from field-5 low byte (SMC $1248) */
     if (mem[SMC_SEGMENT_LOAD] == 0xB9) {                              /* unpatched: LDA $5905,Y */
@@ -12355,17 +12350,19 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
         uint8_t sy = (uint8_t)(y0 + axis);
         int16_t sp = place_car_axis_term(dir1[axis], along, 0);
 
-        unsigned lo = (unsigned)(uint8_t)sp + mem[SECTION_COORD_LO + sy];          /* CLC; ADC */
-        unsigned carry = lo >> 8;
-        mem[OBJECT_COORD_LO + axis] = (uint8_t)lo;
-
-        uint8_t hiOrigin = mem[SECTION_COORD_HI + sy];
+        /* $... CLC / ADC low / ADC high — one 16-bit add of the section origin and the term.
+           ⚠ The SMC site masks the ORIGIN's high byte only, before the add, so the mask goes on
+           the wide origin rather than on the sum. */
+        uint16_t origin = section_word(sy);
         if (axis == 1) {                              /* the SMC site */
-            if (mem[SMC_MASK_OPCODE] == 0x29) hiOrigin &= mem[SMC_MASK_OPERAND];
+            if (mem[SMC_MASK_OPCODE] == 0x29)
+                origin = (uint16_t)((origin & 0x00FFu)
+                                    | ((unsigned)((origin >> 8) & mem[SMC_MASK_OPERAND]) << 8));
             else { platform_smc_unhandled(SMC_MASK_OPCODE, mem[SMC_MASK_OPCODE]); return 0x01u; }
         }
-        mem[OBJECT_COORD_HI + axis] =
-            (uint8_t)(hiOrigin + (uint8_t)((uint16_t)sp >> 8) + carry);           /* ADC shared_temp_76 */
+        uint16_t sum = (uint16_t)(origin + (uint16_t)sp);
+        mem[OBJECT_COORD_LO + axis] = (uint8_t)sum;
+        mem[OBJECT_COORD_HI + axis] = (uint8_t)(sum >> 8);
     }
 
     /* Second loop: fold the "across" offset in at 4x, axes 0 and 2 only. */
