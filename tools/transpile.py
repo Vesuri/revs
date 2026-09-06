@@ -1230,6 +1230,9 @@ VALIDATE_FUNCS = {
     # why that twin's core now returns it.  Exit ABI dead at all four callers — LIVE_NONE.
     0x41D0,
     0x65D3,
+    # ⭐ TWIN #202 — $3C50 prompt_wing_settings, the pit-lane page that holds the shims for
+    # select_text_variant, text_script_interp, console_read_two_digits and wait_dismiss_space.
+    0x3C50,
     # ⭐ TWIN #201 — $3EE0 console_read_two_digits, the pit-lane wing prompts' input routine
     # and parse_two_digit_ascii's last transliterated caller.
     0x3EE0,

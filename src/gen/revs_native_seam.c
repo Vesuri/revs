@@ -998,6 +998,10 @@ void menu_draw_gfx_bars(void)
     menu_draw_gfx_bars_core();
 }
 
+/* $3C50 prompt_wing_settings — no entry registers and no exit ABI: the pit-stop wait loop
+   ($6560) runs the race loop the instant it returns. */
+void prompt_wing_settings(void) { prompt_wing_settings_core(); }
+
 /* $3EE0 console_read_two_digits — no entry registers; exit A is the number the caller stores
    into a wing setting, and X/Y/flags are dead there ($3C5D/$3C68 are both STA). */
 void console_read_two_digits(void)

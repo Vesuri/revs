@@ -1321,6 +1321,8 @@ static int test_driver_name_pages(void)
  * shape).  A hang is a detection, but it cannot be scored, so both were replaced above.
  * ============================================================================================= */
 void console_read_two_digits(void);  void console_read_two_digits__t6502(void);
+void prompt_wing_settings(void);     void prompt_wing_settings__t6502(void);
+static void standings_scripts_pre(uint8_t* pre);
 
 static int test_console_number(void)
 {
@@ -1383,6 +1385,88 @@ static int test_console_number(void)
                "console_read_two_digits", cases, sub);
         if (!(sawRetry && sawFirstTime && sawSingle && sawTooBig && sawBadChar)) {
             printf("VACUOUS: console_read_two_digits missed a retry, a single digit or a reject kind\n");
+            fail++;
+        }
+    }
+    return fail;
+}
+
+/* ================================================================================================
+ * ⭐ TWIN #202 — $3C50 prompt_wing_settings, THE PIT-LANE WING PAGE, and the last transliterated
+ * holder of the shims for select_text_variant, text_script_interp, console_read_two_digits and
+ * wait_dismiss_space.  Its own body is four decisions — the layout variant, the two script
+ * indices, and which setting each answer lands in — so that is what the differential gates; each
+ * callee is validated by its own fixture.
+ *
+ * The pre-state is the union of what those callees need: the script machinery and a real cursor
+ * (script_common_pre / printer_common_pre), the variant tables at their real addresses
+ * (standings_scripts_pre, so the patches land where the interpreter reads them), a typist script
+ * long enough for BOTH prompts, and twin #198's keyboard schedule for the closing wait.
+ *
+ * SABOTAGE (each must FAIL, patch verified applied; counts measured, not predicted):
+ *   D75 the two answers land in the opposite settings      -> 1166/1200
+ *   D76 the page is dressed for variant 4, not 5           -> 1200/1200
+ *   D77 the front prompt runs script $18 again             -> 1200/1200
+ *   D78 the page does not wait for SPACE                   -> 1200/1200
+ *
+ * ⚠ D75 is under 1200 by construction: 34 of the 1200 cases drew the same value for both wings,
+ *   and there a swap writes the bytes it would have written anyway.
+ * ============================================================================================= */
+static int test_wing_prompt(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("prompt_wing_settings");
+    if (!want("prompt_wing_settings")) return 0;
+
+    {
+        int sub = 0, sawRetry = 0, sawDiffer = 0, sawHeld = 0, sawRet = 0;
+        int cases = 1200 * scale;
+        for (t = 0; t < cases; t++) {
+            unsigned char keys[40];
+            int n = 0, q;
+            unsigned answer[2];
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.D = 0;
+            c.S = 0xFFu;
+            script_common_pre(pre);
+            printer_common_pre(pre);
+            standings_scripts_pre(pre);
+            pre[0x62CCu] = (uint8_t)(xs() & 0x1Fu);
+            pre[0x001Cu] = (uint8_t)xs();                /* abort_state, swept whole */
+
+            /* Two answers, so a defect that swaps them has something to swap; one prompt in three
+               is rejected once first, which is what puts a retry inside the page. */
+            for (q = 0; q < 2; q++) {
+                if (xs() % 3u == 0u) {                   /* an entry the validator throws out */
+                    unsigned v = 41u + (xs() % 59u);
+                    keys[n++] = (unsigned char)('0' + v / 10u);
+                    keys[n++] = (unsigned char)('0' + v % 10u);
+                    keys[n++] = 0x0Du;
+                    sawRetry = 1;
+                }
+                answer[q] = xs() % 41u;
+                keys[n++] = (unsigned char)('0' + answer[q] / 10u);
+                keys[n++] = (unsigned char)('0' + answer[q] % 10u);
+                keys[n++] = 0x0Du;
+            }
+            if (answer[0] != answer[1]) sawDiffer = 1;   /* ...or a swap is invisible */
+            platform_test_rdch_seq(keys, n);
+            arm_dismiss_keys(&sawHeld, &sawRet, 0);      /* SPACE only */
+
+            sub += diff_run("prompt_wing_settings", pre, c,
+                            prompt_wing_settings, prompt_wing_settings__t6502,
+                            LIVE_NONE, t, &printed);
+        }
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  mem[] only (exit ABI dead)\n",
+               "prompt_wing_settings", cases, sub);
+        if (!(sawRetry && sawDiffer && sawHeld)) {
+            printf("VACUOUS: prompt_wing_settings missed a retry, two different answers or held SPACE\n");
             fail++;
         }
     }
@@ -10189,6 +10273,7 @@ int main(int argc, char** argv)
     fail += test_dismiss_waiters();
     fail += test_driver_name_pages();
     fail += test_console_number();
+    fail += test_wing_prompt();
     fail += test_standings_table();
     fail += test_dashboard_readouts();
     fail += test_add_frame_time();

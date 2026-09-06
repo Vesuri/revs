@@ -2977,6 +2977,25 @@ void parse_two_digit_ascii_core(uint8_t char0, uint8_t char1, ParseNum *out)
 }
 
 /* ---------------------------------------------------------------------------
+   $3C50  prompt_wing_settings — THE PIT-LANE WING PROMPT  (twin #202)
+
+   The page the pit-stop wait loop ($6560) puts up before handing the car back:
+   dress the front end for layout variant 5, ask for the rear wing and then the
+   front, and hold the page until SPACE.  Each answer comes back from
+   console_read_two_digits as a number 0..40 and goes straight into its setting.
+   Exit ABI dead — the caller runs the race loop next.
+   --------------------------------------------------------------------------- */
+void prompt_wing_settings_core(void)
+{
+    select_text_variant_core(0x05u);                     /* $3C50-$3C52 */
+    text_script_interp_core(0x18u);                      /* $3C55-$3C57 — the rear-wing prompt */
+    wing_setting_rear  = console_read_two_digits_core(); /* $3C5A-$3C5D */
+    text_script_interp_core(0x19u);                      /* $3C60-$3C62 — ...and the front */
+    wing_setting_front = console_read_two_digits_core(); /* $3C65-$3C68 */
+    wait_dismiss_space_core();                           /* $3C6B */
+}
+
+/* ---------------------------------------------------------------------------
    $3EE0  console_read_two_digits — READ A NUMBER 0..40 FROM THE CONSOLE (twin #201)
 
    The pit-lane wing prompts' input routine, and it will not take no for an answer:
