@@ -313,7 +313,7 @@ negotiable** — 25 FPS means painting every other frame with the simulation sti
 The A500 is a 7 MHz 68000 and a frame is 20 ms: spending 10 ms on *anything* is half the budget.
 Be conscious of absolute milliseconds always.
 
-**Baseline: ~4.51 FPS rendered** (`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`,
+**Baseline: ~4.52 FPS rendered** (`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`,
 row-vector avg of the non-outlier rows; the two ~2.9 rows are the off-track/reset scene).
 ⚠ One painted frame is 3.3% of a row, so this figure IS the noise floor — always re-run the control
 in the same session from a clean build rather than diffing against it (`docs/perf-method.md` §twin #13).
@@ -359,6 +359,13 @@ Rules that must survive without opening `docs/perf-method.md`:
   `always_inline`d, or it is a memory operand in the inner loop.** A `const SpanPlotter*`
   descriptor in the span rasteriser's leaf cost 2.6% of the frame on its own
   (`docs/perf-method.md` §twins #25-#39).
+- ⚠⚠ **A TWIN CAN ALSO BE SLOWER BECAUSE GCC WAS DELETING WORK.** A 6502 busy-DELAY loop whose
+  only observable is its exit value gets folded away in the transliteration (final-value
+  replacement), so the port never paid it; written out honestly in C it becomes a real burn. Twin
+  #179's practice pad cost **5% of the framerate** this way, invisible to `validate` by
+  construction (0 mismatch either way) and to every phase row (it runs on the 50 Hz body, so it
+  taxes WALL CLOCK). **Diff the objdump on BOTH sides of a twin, and treat a pure cycle-burn as a
+  faithfulness call to argue at the code, not to transliterate.** `docs/perf-method.md`.
 - ⭐⭐ **A 6502 macro writes FIVE cpu fields; a routine usually reads one.** `SBC` stores A/N/V/Z/C
   (~16-20 cycles each on a 68000) and computes V through mask chains, so a subtract chain pays it
   over and over for flags that are dead at the exit. Where a flag genuinely escapes, use `sbc_value`

@@ -85,8 +85,9 @@ reachable remains to be seen".
 
 **FPS baseline** (rendered, moving car): `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` +
 `fps_series.gdb`, warp, 30 s. Under `FIXED_RNG`+warp the row vector is deterministic frame for
-frame; the modal non-outlier rows read **~3.5** (36 painted / 512 vbi at HEAD; one reset-dip row
-per run, where the car leaves the track and re-parks — discard it). ⚠ The ABSOLUTE drifts as the
+frame; the modal non-outlier rows read **4.49-4.58, averaging 4.52** (46-47 painted / 512 vbi,
+measured 2026-09-06 at `fb13c3f`+the delay-loop fix; one or two reset-dip rows per run, where the
+car leaves the track and re-parks — discard them). ⚠ The ABSOLUTE drifts as the
 port changes (this note read 2.92-3.02 in an earlier session) — the number is only meaningful
 against an in-session control, so never quote a delta without re-running this exact control from a
 clean build in the same session (Rule 3).
@@ -147,6 +148,43 @@ Two rows that are not phases and bound everything:
   table makes it look large (it runs once per DISPLAY FIELD, not once per painted frame; at low
   FPS one painted frame charges it many times over).
 
+
+### ⚠⚠ A BUSY-DELAY LOOP THE TRANSLITERATION NEVER PAID — twin #179's practice pad (2026-09-06)
+
+`move_and_draw_cars`'s practice arm (`$262D-$2636`) is not an early RTS: it is a 1536-iteration
+busy delay (six passes of 256 `DEC math_lo`) that padded a practice frame by ~6 ms on a 2 MHz 6502
+so it paced like a race frame. Twin #179 reproduced it faithfully as a real C loop, and the
+framerate fell **4.53 → 4.30 (−5%)**.
+
+**Why it was a REGRESSION and not merely a cost: the port had never executed it.** GCC eliminated
+the transliteration's version by *final-value replacement* — the loop's only observable effects are
+`mem[$74]` reaching 0 and three `cpu` fields, all of which sink out of the loop, so the whole
+practice arm compiled to `clr.b mem+0x74; …; rts` (verified in the `830ae5d` objdump). Every
+determinism run, every refloop differential and every FPS baseline this project has recorded was
+therefore measured with **no burn**. Writing the loop out honestly in C is what made it real.
+
+The fix is to keep the memory effect (`math_lo = 0`) and drop the cycles, argued at the code: the
+pad exists to *slow* practice to 50 Hz and the port is already 12× below it. FPS returned to 4.52.
+
+Three general lessons, in order of leverage:
+
+- ⭐⭐ **A twin can be slower than the transliteration because GCC was DELETING work — check for
+  an eliminated loop, not just for a missed inlining.** The known trap (`§twins #14/#15`) is a
+  twin paying for out-of-line flag helpers; this is its mirror image, and no objdump of the *twin*
+  can reveal it. Diff the objdump of the routine **on both sides**.
+- ⭐⭐ **A pure cycle-burn is a faithfulness question a `mem[]` differential cannot ask.** `validate`
+  passed at 0 mismatch before and after, by construction — the loop's only memory effect is its
+  exit value. The twin's own sabotage ledger had already recorded `math_lo = 0` as a provably
+  invisible defect; it took a framerate bisect to notice that "invisible" also meant "free to drop".
+- ⭐ **It runs on the 50 Hz BODY, so it is a tax on WALL CLOCK, not on the frame** — fifty fires a
+  second whatever the framerate does, exactly like the VERTB ISR below, and no phase-share row can
+  see it. 1536 iterations × 50/s ≈ 8% of wall clock.
+
+**How it was found:** a clean-build in-session control read 4.32 against a recorded 4.51, and a
+five-step bisect over the 27 commits since `85533ed` (each: worktree checkout → `make gen` →
+clean build → the Rule 1 control) landed on `aed19ac` alone. Row vectors under `FIXED_RNG`+warp
+were *identical* at 4.30 for four consecutive revisions, which is what made a −5% step legible at
+all — the resolution argument in Rule 1 is what carried this.
 
 ## The VERTB ISR — measured, not estimated (`make ISRSPLIT=1`)
 

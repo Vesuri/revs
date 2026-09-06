@@ -13017,10 +13017,9 @@ void reject_all_object_slots_core(void)
    The body's other-car pass, and the whole of it in one page:
 
      - PRACTICE (qualify_minutes negative) has no other cars, and the routine's early exit is not
-       a plain RTS: $262D-$2636 is a busy DELAY, six passes of 256 decrements of math_lo.  The BBC
-       needed it to keep the practice frame rate near the race one; it is reproduced because it
-       leaves math_lo at 0 and because dropping it would change the game's own pacing, not just
-       the port's.
+       a plain RTS: $262D-$2636 is a busy DELAY, six passes of 256 decrements of math_lo, which on
+       a 2 MHz 6502 padded a practice frame by ~6 ms so that it paced like a race one.
+       ⚠⚠ THE BURN IS NOT REPRODUCED, and that is deliberate — see the note below.
      - Otherwise: un-reject the car AHEAD's object slot, run the three motion passes (the per-car
        update engine, the overtaking pass, then re-reject every slot) and re-find the player's
        neighbours; walk SIX ring positions outwards from zp_scratch_index in the direction the
@@ -13048,16 +13047,27 @@ void reject_all_object_slots_core(void)
    ⚠ TWO defects in the practice delay are provably invisible here and are NOT fixture gaps: five
    passes instead of six, and replacing the loop with `math_lo = 0`.  The loop's only memory effect
    IS math_lo reaching 0, so a mem[] differential cannot see its length by construction; the effect
-   is wall-clock, which no harness in this project measures.  Keep the count faithful by reading.
+   is wall-clock, which no harness in this project measures.
+   ⭐⭐ AND THAT SECOND ONE IS WHAT THE PORT SHIPS, ON PURPOSE.  Written out as a real C loop the
+   burn cost 5% of the framerate (4.53 -> 4.30), because it runs on the 50 Hz BODY: fifty times a
+   second whatever the framerate does, so it is a tax on WALL CLOCK, like the VERTB ISR.  What
+   makes it a REGRESSION rather than a cost is that the port never paid it before: GCC eliminated
+   the transliteration's loop by final-value replacement (at 830ae5d the whole practice arm is
+   `clr.b mem+0x74; rts`), so every determinism run, every refloop differential and every FPS
+   baseline this project has recorded was measured with NO burn.  Reproducing it faithfully in C
+   is what made it real.  Nothing is bought by paying it: the delay exists to SLOW practice down
+   to race pacing, and the port is already 12x below 50 Hz.  Keep the memory effect, drop the
+   cycles.  (docs/perf-method.md §twin #179's delay loop)
    --------------------------------------------------------------------------- */
 void move_and_draw_cars_core(void)
 {
     if (qualify_minutes & 0x80u) {                     /* $2637/$263A BMI $262D — practice */
-        uint8_t pass = 6u;                             /* $262D LDX #$06 */
-        for (;;) {
-            do { } while (--math_lo != 0u);            /* $262F DEC math_lo / $2631 BNE */
-            if (--pass == 0u) return;                  /* $2633 DEX / $2634 BNE $262F */
-        }
+        /* $262D-$2636 is a 1536-iteration busy delay whose ONLY memory effect is math_lo
+           reaching 0.  The burn is deliberately not reproduced: it is 5% of the framerate on
+           the 50 Hz body, the transliteration never paid it (GCC folded the loop away), and a
+           cycle-pad that exists to slow practice to 50 Hz buys a 4 FPS port nothing. */
+        math_lo = 0x00u;
+        return;
     }
 
     uint8_t aheadSlot = mem[CAR_ORDER + car_ahead];    /* $263C LDX car_ahead / $263E LDY */
