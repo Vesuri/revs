@@ -3708,7 +3708,11 @@ static uint8_t road_side_walk(uint8_t sideSelect, uint8_t firstPoint)
 
    ⚠ SMC $2542-$2545: an expansion circuit replaces the `JSR abs8 / LSR A` pair with a call of
    its own plus a NOP, so on those circuits the width is NOT halved. */
-static void horizon_half_width_at(unsigned horizonPoint)
+/* $253B — HOW WIDE IS THE ROAD AT THE HORIZON, as a routine of its own (twin #221).
+   build_track_geometry calls it inline (below) and three of the five expansion circuits call
+   it from their own hook code at $56EE, which is why it needs a 6502-ABI entry as well: the
+   horizon point arrives in Y and the half-width leaves in A. */
+void horizon_half_width_at_core(unsigned horizonPoint)
 {
     /* $253B — the two sides' x at the horizon point, differenced.  D=0 on the geometry path
        (static-map §Decimal mode), so this is a plain 8-bit subtract, and its own sign (bit 7)
@@ -3810,7 +3814,7 @@ void build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1)
         return;
     }
 
-    horizon_half_width_at(horizonPoint);
+    horizon_half_width_at_core(horizonPoint);
     GEO_PHASE(5);   /* reopen the enclosing phase: its remainder is the driver + the return */
 }
 
@@ -8276,6 +8280,20 @@ static uint8_t scale_by_track_gradient_core(uint8_t value, uint8_t index)
     uint8_t high = (uint8_t)(p >> 8);                                   /* ≤ 0x7F */
     return (eor & 0x80u) ? (uint8_t)(-(int)high) : high;                /* $4622 abs8: re-sign high */
 }
+
+/* $461B — SCALE_BY_TRACK_GRADIENT'S TAIL, an entry of its own (twin #222).  Three of the five
+   expansion circuits jump straight here from $57BC after pushing their own sign byte, so the
+   entry ABI is A = the value, N = its sign (the $3450 BPL tests N, not bit 7 of A) and
+   math_hi = the multiplier the hook parked in $75.  Returns the product's high byte BEFORE the
+   $4622 re-sign, which the shim applies from the P the caller stacked. */
+uint8_t scale_by_track_gradient_tail_core(uint8_t value, int negative)
+{
+    uint8_t  mag = negative ? negate8(value).hi : value;   /* $461B abs8 */
+    unsigned p   = revs_mulu16(mag, math_hi);              /* $461E mul8 — D = 0 on this path */
+    math_lo = (uint8_t)p;
+    return (uint8_t)(p >> 8);
+}
+
 
 /* ---------------------------------------------------------------------------
    $4DC9 / $4DCB  begin_spin — THE CAR LOSES CONTROL  (twins #81, #82)

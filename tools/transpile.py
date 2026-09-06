@@ -629,6 +629,13 @@ VALIDATE_FUNCS = {
     0x22FF,
     0x23D2,
     0x2490,   # road_edge_walk_resume — twin #220, the hooks' re-entry into the walk
+    # ⭐ TWIN #221 — $253B horizon_half_width_at.  build_track_geometry already runs it as a
+    # static in the twin; it needs a 6502-ABI entry of its own because three of the five
+    # expansion circuits call $253B from their own hook code at $56EE.
+    0x253B,
+    # ⭐ TWIN #222 — $461B, scale_by_track_gradient's tail.  Three circuits' hooks push their
+    # own sign at $57BB and jump straight here, so the tail is a shipping entry point.
+    0x461B,
     0x254A,
     0x3450,
     # ⭐ TWIN #13 — $0C47 div16by8, the ONE function project_point and bearing_to_section call

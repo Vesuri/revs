@@ -1366,6 +1366,58 @@ void hw_init(void);   void hw_init__t6502(void);
    so the register loop cannot pass on constant data, and the old vector at
    $0204/$0205 is randomised so the save is testable.
    --------------------------------------------------------------------------- */
+/* ===========================================================================
+   $461B  scale_by_track_gradient_tail — THE GRADIENT SCALER'S TAIL  (twin #222)
+   ---------------------------------------------------------------------------
+   An entry point in its own right: three of the five expansion circuits push their own sign
+   byte at $57BB and jump straight here.  |A| (signed by the CALLER's N, not by bit 7 of A)
+   times math_hi, then $4621 PLP and a second abs8 re-sign the product's high byte from the P
+   the caller STACKED — so the stack is part of this fixture's pre-state, not scenery.
+
+   ⚠ The stacked byte's D bit is forced 0.  The oracle's abs8 negates with `EOR #$FF / CLC /
+   ADC #1`, which is a BCD add under D = 1; the camera path is only ever entered with D = 0
+   (docs/static-map.md §Decimal mode) and the twin's domain says so.  Every other bit of the
+   pulled status is random, N most of all — it is the routine's second input. */
+void scale_by_track_gradient_tail(void);
+void scale_by_track_gradient_tail__t6502(void);
+
+static int test_scale_by_track_gradient_tail(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t, negIn = 0, negOut = 0;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    const int cases = 3000 * scale;
+    register_fixture("scale_by_track_gradient_tail");
+    if (!want("scale_by_track_gradient_tail")) return 0;
+
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.A = (uint8_t)xs();
+        c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+        /* the entry N: decorrelated from bit 7 of A in a third of the cases, because $3450
+           branches on the flag and not on the value. */
+        c.N = (xs() % 3) ? ((c.A >> 7) & 1u) : (uint8_t)(xs() & 1);
+        c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+        c.D = 0;
+        /* the stacked status byte the caller's PHP left, D cleared — see the header. */
+        c.S = (uint8_t)(0xC0 + (xs() & 0x3E));
+        pre[0x0100 + ((c.S + 1) & 0xFF)] = (uint8_t)(xs() & ~0x08u);
+        pre[0x0075] = (uint8_t)xs();                 /* math_hi — the multiplier */
+        if (c.N) negIn++;
+        if (pre[0x0100 + ((c.S + 1) & 0xFF)] & 0x80u) negOut++;
+        fail += diff_run("scale_by_track_gradient_tail", pre, c,
+                         scale_by_track_gradient_tail, scale_by_track_gradient_tail__t6502,
+                         LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS, t, &printed);
+    }
+    printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,Y,S,flags  "
+           "(%d negated in, %d re-signed out)\n",
+           "scale_by_track_gradient_tail", cases, fail, negIn, negOut);
+    return fail;
+}
+
 static int test_hw_init(void)
 {
     static uint8_t pre[65536];
@@ -5991,6 +6043,8 @@ void road_edge_walk(void);
 void road_edge_walk__t6502(void);
 void road_edge_walk_resume(void);
 void road_edge_walk_resume__t6502(void);
+void horizon_half_width_at(void);
+void horizon_half_width_at__t6502(void);
 void road_edge_side(void);
 void road_edge_side__t6502(void);
 void abs8(void);
@@ -6157,6 +6211,7 @@ static int test_geometry_callees(void)
     register_fixture("road_edge_start");
     register_fixture("road_edge_walk");
     register_fixture("road_edge_walk_resume");
+    register_fixture("horizon_half_width_at");
     register_fixture("road_edge_side");
     register_fixture("abs8");
     setenv("REVS_SMC_CONTINUE", "1", 1);
@@ -6271,6 +6326,50 @@ static int test_geometry_callees(void)
         printf("%-32s %7d cases, %d mismatch (must be 0)  live=S (mem-only result)  "
                "(%d/%d emitted a point)\n",
                "road_edge_walk_resume", walkCases, subFail, emitted, walkCases);
+    }
+
+    /* $253B — the horizon half-width on its own.  A leaf: two table reads, a subtract, an
+       absolute value and the $2542 SMC arm that decides whether it is halved.  Entry Y is the
+       horizon point, exit A the value, and the three SMC shapes are Silverstone's `JSR abs8 /
+       LSR A`, a circuit's own `JSR <hook> / NOP`, and the abs8-target variant that skips only
+       the halving. */
+    if (want("horizon_half_width_at")) {
+        int subFail = 0, halved = 0, hooked = 0, unhalved = 0;
+        for (t = 0; t < sideCases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            plant_geometry_smc(pre);
+            switch (t % 5) {
+            case 0: case 1:                                     /* Silverstone: JSR abs8 / LSR */
+                pre[0x2542] = 0x20; pre[0x2543] = 0x50; pre[0x2544] = 0x34; pre[0x2545] = 0x4A;
+                halved++; break;
+            case 2:                                             /* a circuit's own call + NOP */
+                pre[0x2542] = 0x20; pre[0x2543] = 0xB4; pre[0x2544] = 0x57; pre[0x2545] = 0xEA;
+                hooked++; break;
+            case 3:                                             /* ⭐ the SAME abs8, then NOP:
+                   the arm that keeps the magnitude UNHALVED.  Without it a defect that halves
+                   here passed 400 cases — the circuit-hook shape does not cover it. */
+                pre[0x2542] = 0x20; pre[0x2543] = 0x50; pre[0x2544] = 0x34; pre[0x2545] = 0xEA;
+                unhalved++; break;
+            default:                                            /* garbage: both models trap */
+                pre[0x2542] = (uint8_t)xs(); pre[0x2545] = (uint8_t)xs(); break;
+            }
+            c.Y = (uint8_t)(xs() % 0x28);          /* the horizon point indexes edge_x_hi[0..$27] */
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;
+            /* half the cases put the two sides' x exactly on the sign boundary, so the abs8
+               negate and the keep path are both reached at their edge. */
+            if (xs() & 1) {
+                pre[0x5E90 + c.Y] = (uint8_t)(pre[0x5EB8 + c.Y] + ((xs() & 1) ? 0x00 : 0x80));
+            }
+            subFail += diff_run("horizon_half_width_at", pre, c, horizon_half_width_at,
+                                horizon_half_width_at__t6502, LIVE_A | LIVE_S, t, &printed);
+        }
+        fail += subFail;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,S (the half-width)  "
+               "(%d halved, %d unhalved, %d hooked)\n",
+               "horizon_half_width_at", sideCases, subFail, halved, unhalved, hooked);
     }
 
     if (want("road_edge_side")) {
@@ -10994,6 +11093,7 @@ int main(int argc, char** argv)
     fail += test_dismiss_waiters();
     fail += test_driver_name_pages();
     fail += test_hw_init();
+    fail += test_scale_by_track_gradient_tail();
     fail += test_advance_player_section();
     fail += test_surface_table();
     fail += test_walk_direction();

@@ -158,6 +158,22 @@ void road_edge_walk_resume(void)
     edge_nearest_marshal_out();
 }
 
+/* $253B — the horizon point in Y, the half-width out in A (the core writes cpu.A itself). */
+void horizon_half_width_at(void)
+{
+    horizon_half_width_at_core(cpu.Y);
+}
+
+/* $461B — the gradient scaler's tail.  ⭐ THE SIGN COMES OFF THE 6502 STACK: the caller's PHP
+   is what $4621 pulls, so this is one of the places a flag genuinely escapes and the macro
+   stays.  $4622's abs8 then acts on the pulled N, which is the twin above. */
+void scale_by_track_gradient_tail(void)
+{
+    cpu.A = scale_by_track_gradient_tail_core(cpu.A, cpu.N);
+    PLP();                                   /* $4621 */
+    abs8();                                  /* $4622 — negates A when the pulled N says so */
+}
+
 void build_track_geometry(void)
 {
     view_origin_marshal_in();   /* read-only: view_delta reads the camera */

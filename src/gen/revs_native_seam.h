@@ -552,6 +552,8 @@ RoadSide road_edge_side_apply(uint8_t sideSelect);
 void road_edge_start_core(uint8_t nearSlotCount, uint8_t halfStride, uint8_t scratchSection, uint8_t pointLimit, uint8_t staleHorizonCap);
 uint8_t road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex, uint8_t midSlot, uint8_t pointCap, uint8_t offAxis);
 uint8_t road_edge_walk_resume_core(uint8_t section, uint8_t midSlot, uint8_t pointCap, uint8_t offAxis);
+void horizon_half_width_at_core(unsigned horizonPoint);
+uint8_t scale_by_track_gradient_tail_core(uint8_t value, int negative);
 int road_span_advance_core(uint8_t y);
 AddFlags rotate_accum_by_steer_core(void);
 AddFlags rotate_pair_a_by_steer_core(void);
