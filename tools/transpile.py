@@ -619,13 +619,16 @@ VALIDATE_FUNCS = {
     # ⚠ road_edge_walk's body is a multi-entry REGION in the transliteration (`region_23d8`
     # covers $23D8-$24B8, because $2490 is both a branch target and a container split), so the
     # oracle for it is the 11-line stub plus that whole region — which is exactly the code the
-    # twin replaces.  `FUN_2490` is a dead entry the region generator emits; nothing calls it.
+    # twin replaces.  ⚠ $2490 is NOT a dead entry: every expansion circuit's $248B hook ends by
+    # jumping back to it, so it is a shipping re-entry point and gets a twin of its own (#220,
+    # road_edge_walk_resume) rather than being left as the last transliterated road-pass code.
     #
     # These are NOT short drivers: the walk carries the subdivision arithmetic, road_edge_start
     # carries the near-slot bookkeeping and the horizon maximum, and neither delegates the work
     # (docs/faithfulness-seam.md §8 — pick a twin by how much of the row is IN the routine).
     0x22FF,
     0x23D2,
+    0x2490,   # road_edge_walk_resume — twin #220, the hooks' re-entry into the walk
     0x254A,
     0x3450,
     # ⭐ TWIN #13 — $0C47 div16by8, the ONE function project_point and bearing_to_section call

@@ -145,6 +145,19 @@ void road_edge_walk(void)
     edge_nearest_marshal_out();
 }
 
+/* $2490 — the walk resumed from an expansion circuit's hook.  Same marshalling as the walk
+   itself; the section byte arrives in X and the exit X is the walk's own. */
+void road_edge_walk_resume(void)
+{
+    view_origin_marshal_in();
+    car_heading_marshal_in();
+    hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
+    edge_nearest_marshal_in();
+    cpu.X = road_edge_walk_resume_core(cpu.X, (uint8_t)SECTION_MID, 0x12, 0x14);
+    hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
+    edge_nearest_marshal_out();
+}
+
 void build_track_geometry(void)
 {
     view_origin_marshal_in();   /* read-only: view_delta reads the camera */

@@ -5989,6 +5989,8 @@ void road_edge_start(void);
 void road_edge_start__t6502(void);
 void road_edge_walk(void);
 void road_edge_walk__t6502(void);
+void road_edge_walk_resume(void);
+void road_edge_walk_resume__t6502(void);
 void road_edge_side(void);
 void road_edge_side__t6502(void);
 void abs8(void);
@@ -6154,6 +6156,7 @@ static int test_geometry_callees(void)
 
     register_fixture("road_edge_start");
     register_fixture("road_edge_walk");
+    register_fixture("road_edge_walk_resume");
     register_fixture("road_edge_side");
     register_fixture("abs8");
     setenv("REVS_SMC_CONTINUE", "1", 1);
@@ -6226,6 +6229,48 @@ static int test_geometry_callees(void)
         printf("%-32s %7d cases, %d mismatch (must be 0)  live=S (mem-only result)  "
                "(%d/%d emitted a point)\n",
                "road_edge_walk", walkCases, subFail, emitted, walkCases);
+    }
+
+    /* $2490 — THE HOOKS' RE-ENTRY.  Same walk, entered one step in with the section byte in X
+       and edge_cursor / shared_counter_42 / walk_prev_section already carrying the walk's
+       state.  No Silverstone run reaches it (the $248B BCS/JMP pair never jumps here), so this
+       fixture is the ONLY thing that compares the two models on it — `make track-run` proves
+       only that the circuits get here, not what happens when they do.  edge_pre's SMC shapes
+       still matter: the resumed loop runs into $248B on its very next point. */
+    if (want("road_edge_walk_resume")) {
+        int subFail = 0, emitted = 0;
+        static const uint16_t walkIgnore[] = { 0x01FFu };
+        set_ignore(walkIgnore, 1);
+        for (t = 0; t < walkCases; t++) {
+            Cpu6502 c = zero_cpu();
+            int shape = (t % 5 == 3) ? EDGE_HOOKED : (t % 5 == 4) ? EDGE_GARBAGE
+                                                                  : EDGE_SILVERSTONE;
+            edge_pre(pre, shape);
+            /* the state the hook left behind: a cursor and a point count part-way through a
+               walk, plus the count's two boundaries (the $12 cap, and one below it). */
+            { static const uint8_t emittedSoFar[] = { 0x00, 0x01, 0x0B, 0x11, 0x12, 0x13 };
+              pre[0x0042] = emittedSoFar[xs() % (sizeof emittedSoFar)]; }
+            pre[0x0012] = (xs() % 3) ? (uint8_t)(0x06u + (xs() % 0x20u)) : (uint8_t)xs();
+            pre[0x0014] = (uint8_t)(xs() % 0xF0);            /* walk_prev_section */
+            c.A = (uint8_t)xs();
+            c.X = (uint8_t)(xs() % 0xF0);                    /* the section byte it resumes on */
+            c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;
+            subFail += diff_run("road_edge_walk_resume", pre, c, road_edge_walk_resume,
+                                road_edge_walk_resume__t6502, resultMask, t, &printed);
+            if (walk_emitted(pre, (const uint8_t*)mem)) emitted++;
+        }
+        fail += subFail;
+        if (emitted == 0) {
+            printf("[VACUOUS] road_edge_walk_resume: not one of the %d cases emitted a point\n",
+                   walkCases);
+            fail++;
+        }
+        set_ignore(0, 0);
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=S (mem-only result)  "
+               "(%d/%d emitted a point)\n",
+               "road_edge_walk_resume", walkCases, subFail, emitted, walkCases);
     }
 
     if (want("road_edge_side")) {

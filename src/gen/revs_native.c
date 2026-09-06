@@ -3572,72 +3572,71 @@ static uint8_t road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
 /* Returns the section byte the 6502 leaves in X ($24F6 reads it back as build_track_geometry's
    exit X; live=AXY).  The cap/off-axis/hook exits leave `section` in X ($24B4 TAX and the
    $2475-$248F arm carry it); the two subdivide exits inherit subdivide's exit X. */
-uint8_t road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
-                                uint8_t midSlot,      /* $FA */
-                                uint8_t pointCap,     /* $12 = 18 points */
-                                uint8_t offAxis)      /* $14 */
+/* The walk's loop, shared by its two entry points.  `resume` enters it at the $2490 step
+   instead of at the top of a point — see road_edge_walk_resume_core below. */
+static uint8_t road_edge_walk_run(unsigned section, uint8_t midSlot, uint8_t pointCap,
+                                  uint8_t offAxis, int resume)
 {
-    unsigned section = sectionIndex;
-
-    edge_cursor       = firstPoint;                  /* $23D2 */
-    shared_counter_42 = 0;                           /* $23D6 — points emitted so far */
-
     for (;;) {
-        GEO_POINT();   /* one edge point visited on this side */
-        /* $23D8 — this point's angle, and how far away it is.  A comes back as the high byte
-           of the distance point_distance_hypot ($0CA5) left in point_dist_lo/hi. */
-        unsigned distHi = emit_edge_bearing_at_cursor_core((uint8_t)section);
+        if (!resume) {
+            GEO_POINT();   /* one edge point visited on this side */
+            /* $23D8 — this point's angle, and how far away it is.  A comes back as the high byte
+               of the distance point_distance_hypot ($0CA5) left in point_dist_lo/hi. */
+            unsigned distHi = emit_edge_bearing_at_cursor_core((uint8_t)section);
 
-        /* $23DB-$23FA — the RUNNING NEAREST, which is also project_point's far clip and the
-           floor below which the walk refuses to subdivide. */
-        unsigned pointDist = (distHi << 8) | point_dist_lo;
-        if (pointDist <= edge_nearest_v) {          /* ONE 16-bit compare — see the note above */
-            edge_nearest_v          = (uint16_t)pointDist;
-            edge_nearest_section    = shared_counter_42;
-            nearest_edge_cursor     = edge_cursor;
-            nearest_edge_bearing_hi = mem[EDGE_X_HI_TBL + edge_cursor];
-        }
-
-        /* $23FC-$2401 — project it.  clip = past the far clip, behind = below the camera. */
-        {
-            ProjPoint p = project_point_core((uint8_t)section, 0);
-            if (p.clip || p.behind)
-                return road_edge_walk_subdivide(section, midSlot);
-        }
-
-        /* $246A — EMIT: the point's second angle, and any corner marker it carries. */
-        emit_edge_width_offset_core((uint8_t)section, 0x03, 0u);   /* mem-only here; exit V dead */
-
-        /* $246D-$248F — past the subdivision floor, has the road swung more than $14 off the
-           view axis in this one step?  If so, subdivide — unless the point BEFORE it was
-           already out there, in which case the side is done. */
-        if (shared_counter_42 > edge_nearest_section) {              /* $2471 BEQ/$2473 BCC */
-            unsigned here = edge_cursor;                             /* $2475 LDY $12 */
-            if (angle_off_axis(EDGE_X_HI_TBL + here, offAxis)) {
-                int prevFar = angle_off_axis((EDGE_X_HI_TBL - 1) + here, offAxis);
-
-                /* ⚠ SMC $248B-$248F — see the header.  The unpatched arm just exits in mem[];
-                   a circuit's own JMP is real 6502 code that READS the registers, so before
-                   dispatching to it re-establish the entry ABI: A + N/Z/C are angle_off_axis's
-                   CMP #$14 result (left in cpu by the helper), Y = edge_cursor (the $2475 LDY),
-                   X = section.  After the hook runs it owns the exit. */
-                if (mem[SMC_EDGE_WALK_HOOK] == 0xB0 && mem[SMC_EDGE_WALK_HOOK + 2] == 0x4C) {    /* unpatched: Silverstone */
-                    if (!prevFar)
-                        return road_edge_walk_subdivide(section, midSlot);
-                    return (uint8_t)section;                         /* $248B BCS $24B8, X=section */
-                }
-                cpu.Y = (uint8_t)here;
-                cpu.X = (uint8_t)section;
-                if (mem[SMC_EDGE_WALK_HOOK] == 0x4C) {                           /* a circuit's own JMP */
-                    uint16_t target = (uint16_t)(mem[SMC_EDGE_WALK_HOOK + 1] | (mem[SMC_EDGE_WALK_HOOK + 2] << 8));
-                    if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
-                    else                                      platform_smc_unhandled(SMC_EDGE_WALK_HOOK, target);
-                    return cpu.X;                                    /* the hook owns the exit X */
-                }
-                platform_smc_unhandled(SMC_EDGE_WALK_HOOK, mem[SMC_EDGE_WALK_HOOK]);
-                return cpu.X;
+            /* $23DB-$23FA — the RUNNING NEAREST, which is also project_point's far clip and the
+               floor below which the walk refuses to subdivide. */
+            unsigned pointDist = (distHi << 8) | point_dist_lo;
+            if (pointDist <= edge_nearest_v) {          /* ONE 16-bit compare — see the note above */
+                edge_nearest_v          = (uint16_t)pointDist;
+                edge_nearest_section    = shared_counter_42;
+                nearest_edge_cursor     = edge_cursor;
+                nearest_edge_bearing_hi = mem[EDGE_X_HI_TBL + edge_cursor];
             }
+
+            /* $23FC-$2401 — project it.  clip = past the far clip, behind = below the camera. */
+            {
+                ProjPoint p = project_point_core((uint8_t)section, 0);
+                if (p.clip || p.behind)
+                    return road_edge_walk_subdivide(section, midSlot);
+            }
+
+            /* $246A — EMIT: the point's second angle, and any corner marker it carries. */
+            emit_edge_width_offset_core((uint8_t)section, 0x03, 0u);   /* mem-only here; exit V dead */
+
+            /* $246D-$248F — past the subdivision floor, has the road swung more than $14 off the
+               view axis in this one step?  If so, subdivide — unless the point BEFORE it was
+               already out there, in which case the side is done. */
+            if (shared_counter_42 > edge_nearest_section) {              /* $2471 BEQ/$2473 BCC */
+                unsigned here = edge_cursor;                             /* $2475 LDY $12 */
+                if (angle_off_axis(EDGE_X_HI_TBL + here, offAxis)) {
+                    int prevFar = angle_off_axis((EDGE_X_HI_TBL - 1) + here, offAxis);
+
+                    /* ⚠ SMC $248B-$248F — see the header.  The unpatched arm just exits in mem[];
+                       a circuit's own JMP is real 6502 code that READS the registers, so before
+                       dispatching to it re-establish the entry ABI: A + N/Z/C are angle_off_axis's
+                       CMP #$14 result (left in cpu by the helper), Y = edge_cursor (the $2475 LDY),
+                       X = section.  After the hook runs it owns the exit. */
+                    if (mem[SMC_EDGE_WALK_HOOK] == 0xB0 && mem[SMC_EDGE_WALK_HOOK + 2] == 0x4C) {    /* unpatched: Silverstone */
+                        if (!prevFar)
+                            return road_edge_walk_subdivide(section, midSlot);
+                        return (uint8_t)section;                         /* $248B BCS $24B8, X=section */
+                    }
+                    cpu.Y = (uint8_t)here;
+                    cpu.X = (uint8_t)section;
+                    if (mem[SMC_EDGE_WALK_HOOK] == 0x4C) {                           /* a circuit's own JMP */
+                        uint16_t target = (uint16_t)(mem[SMC_EDGE_WALK_HOOK + 1] | (mem[SMC_EDGE_WALK_HOOK + 2] << 8));
+                        if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
+                        else                                      platform_smc_unhandled(SMC_EDGE_WALK_HOOK, target);
+                        return cpu.X;                                    /* the hook owns the exit X */
+                    }
+                    platform_smc_unhandled(SMC_EDGE_WALK_HOOK, mem[SMC_EDGE_WALK_HOOK]);
+                    return cpu.X;
+                }
+            }
+
         }
+        resume = 0;
 
         /* $2490-$24B5 — keep the point, then step the section index.  18 points is the cap;
            section_wrap_limit is what sends the two sides opposite ways round the list. */
@@ -3650,13 +3649,45 @@ uint8_t road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
             return (uint8_t)section;                 /* $24B4 TAX left the section byte in X */
 
         unsigned step = mem[WALK_STEP_TBL + emitted];
-        math_lo = (uint8_t)step;                     /* $249F — observable */
+        /* $249F — the 6502 parks the step in $74 only to compare against it two instructions
+           later; the twin uses the local, but the store is kept because it is observable in
+           principle.  ⚠ DELETING IT SURVIVES SABOTAGE at 3000 cases on BOTH this fixture and
+           road_edge_walk's, and that is the "no change" explanation rather than a gap: the
+           store is only reached on a path that goes round the loop again, and the next point's
+           point_distance_hypot (far arm) or emit_edge_width_offset rewrites $74.  Observing it
+           needs the next point to clip, its midpoint to clip too, both hypots to take the near
+           arm and the point count to be under 3 — a conjunction neither fixture reached. */
+        math_lo = (uint8_t)step;
 
         unsigned from = section;
         if (((section - section_wrap_limit) & 0xFFu) < (uint8_t)step)
             from = (section + 0x78) & 0xFFu;         /* $24A9 — round the 120-byte list */
         section = (from - step) & 0xFFu;
     }
+}
+
+/* $23D2 — the walk proper: start at `firstPoint` on the edge buffers and emit up to 18 points. */
+uint8_t road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex,
+                                uint8_t midSlot,      /* $FA */
+                                uint8_t pointCap,     /* $12 = 18 points */
+                                uint8_t offAxis)      /* $14 */
+{
+    edge_cursor       = firstPoint;                  /* $23D2 */
+    shared_counter_42 = 0;                           /* $23D6 — points emitted so far */
+    return road_edge_walk_run(sectionIndex, midSlot, pointCap, offAxis, 0);
+}
+
+/* $2490 — THE EXPANSION CIRCUITS' RE-ENTRY.  Silverstone's `BCS $24B8 / JMP $2403` at $248B is
+   one JMP into the circuit's own hook on every other circuit, and every one of those hooks ends
+   by jumping back here: keep the point that was just emitted and carry on walking.  Entered with
+   the section byte in X; edge_cursor, shared_counter_42 and the edge buffers carry the rest of
+   the walk's state, and the exit X is the walk's own ($24B4 TAX / the subdivide arms).
+   ⚠ This is the one place a hook re-enters the walk, and no Silverstone run reaches it —
+   `make track-run` is what proves the circuits' code gets here at all. */
+uint8_t road_edge_walk_resume_core(uint8_t section, uint8_t midSlot,
+                                   uint8_t pointCap, uint8_t offAxis)
+{
+    return road_edge_walk_run(section, midSlot, pointCap, offAxis, 1);
 }
 
 
