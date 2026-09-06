@@ -233,7 +233,11 @@ bool AutoRun::keyDown(uint8_t x)
 
     if (!m_steerRead) {
         m_steerRead = true;
-#if !defined(REVS_PLATFORM_AMIGA)
+#if defined(REVS_HOLD_STEER_LEFT)
+        m_holdSteer = KEY_L;                    /* the target has no environment to read */
+#elif defined(REVS_HOLD_STEER_RIGHT)
+        m_holdSteer = KEY_SEMI;
+#elif !defined(REVS_PLATFORM_AMIGA)
         const char* e = std::getenv("REVS_HOLD_STEER");
         if (e && (e[0] == 'l' || e[0] == 'L')) m_holdSteer = KEY_L;
         else if (e && (e[0] == 'r' || e[0] == 'R')) m_holdSteer = KEY_SEMI;

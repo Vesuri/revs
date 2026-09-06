@@ -259,6 +259,20 @@ ifdef HOLD_THROTTLE
 EXTRA_DEFINES += -DREVS_HOLD_THROTTLE
 endif
 
+# ⭐ `make HOLD_STEER=l` / `HOLD_STEER=r` — hold a STEERING key beside the throttle, so an
+# unattended run actually TURNS THE WHEEL.  Compile-time here because the target has no
+# environment to read; the host takes the same thing at run time as REVS_HOLD_STEER.  It exists
+# because the whole steering chain was once dead in the port and NO gate could see it: a
+# throttle-only autorun drives in a straight line, so the steering angle stayed 0 either way.
+# ⚠ Read it as two runs with OPPOSITE keys and require the sign bits to differ — one run showing
+# a moving wheel cannot tell steering from the slip-cancelling self-drive demand.
+ifeq ($(HOLD_STEER),l)
+EXTRA_DEFINES += -DREVS_HOLD_STEER_LEFT -DREVS_HOLD_THROTTLE
+endif
+ifeq ($(HOLD_STEER),r)
+EXTRA_DEFINES += -DREVS_HOLD_STEER_RIGHT -DREVS_HOLD_THROTTLE
+endif
+
 # `make FIXED_RNG=1` — pin any RNG seeding so every build drives the SAME simulation.
 # On the Atari port, render speed shifted the free-running main loop against the 50 Hz
 # interrupt, which shifted the RNG read count, which selected a DIFFERENT level — the

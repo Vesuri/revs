@@ -105,6 +105,7 @@ endif
 # mouse axis is the Amiga's).  It is how "the wheel does not turn" was reproduced off-target in
 # one run.  ⚠ Read it as TWO runs with opposite keys and check the sign bits differ: one run
 # showing a moving wheel cannot tell steering from the slip-cancelling self-drive demand.
+# On the Amiga the same knob is COMPILE-time (`amiga/make HOLD_STEER=l`) — no environment there.
 
 # ⭐ `make STACK_TRAP=1` — arm the 6502 stack-watermark backtrace (host only; cpu.c has the
 # mechanism).  Then run with a hex threshold: `REVS_STACK_TRAP=f0 ./build/revs`, and the first
