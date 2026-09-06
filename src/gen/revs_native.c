@@ -644,6 +644,34 @@ void irq1v_band_schedule(void)
 #define VIEW_REC_B3         0x7F7Du   /* phase 3, chain B */
 #define VIEW_CHAIN_END      0x7EEEu   /* the sweep's terminator, itself an opcode slot */
 
+/* ⚠ THE ROUTINE'S OWN SMC OPERAND CELLS.  Every one of these is a two-byte absolute-address
+   operand inside the $7B00 overlay that the routine WRITES and then EXECUTES: `_SITE` is the
+   instruction (only a trap report ever needs it), `_ADDR` the operand pair.  They were bare
+   hex in the twin; the names come from what the instruction does, per phase and chain.
+   ⚠⚠ These are self-modifying by construction, so no static image shows the live value —
+   the whole page is assembled at run time by copy_dash_data (docs/static-map.md §Open item 10). */
+#define VIEW_RESTORE_A2_SITE   0x7BD3u  /* view_paint_restore: put `STA` back over chain A's... */
+#define VIEW_RESTORE_A2_ADDR   0x7BD4u  /* ...phase-2 stop slot */
+#define VIEW_RESTORE_A3_SITE   0x7BD6u  /* ...chain A's phase-3 stop slot */
+#define VIEW_RESTORE_A3_ADDR   0x7BD7u
+#define VIEW_RESTORE_B3_SITE   0x7BD9u  /* ...and chain B's */
+#define VIEW_RESTORE_B3_ADDR   0x7BDAu
+#define VIEW_P2_RESTORE_A_SITE 0x7D23u  /* phase 2: un-plant last line's chain-A stop */
+#define VIEW_P2_STOP_A_SITE    0x7D2Eu  /* ...and plant this line's */
+#define VIEW_P2_STOP_A_ADDR    0x7D2Fu
+#define VIEW_P2_ENTER_B_SITE   0x7D4Cu  /* phase 2: the computed JSR into chain B */
+#define VIEW_P2_ENTER_B_ADDR   0x7D4Du
+#define VIEW_P3_RESTORE_A_SITE 0x7F23u  /* phase 3: the same four for chain A... */
+#define VIEW_P3_STOP_A_SITE    0x7F2Eu
+#define VIEW_P3_STOP_A_ADDR    0x7F2Fu
+#define VIEW_P3_ENTER_A_SITE   0x7F67u
+#define VIEW_P3_ENTER_A_ADDR   0x7F68u
+#define VIEW_P3_RESTORE_B_SITE 0x7F7Cu  /* ...and for chain B, which phase 3 also stops */
+#define VIEW_P3_STOP_B_SITE    0x7F87u
+#define VIEW_P3_STOP_B_ADDR    0x7F88u
+#define VIEW_P3_ENTER_B_SITE   0x7F9Au
+#define VIEW_P3_ENTER_B_ADDR   0x7F9Bu
+
 #define OP_STA_IND_Y        0x91u
 #define OP_RTS              0x60u
 #define OP_CPX_IMM          0xE0u
@@ -1245,12 +1273,12 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
    into the restoring stores' own operands first; that is why the records survive the call. */
 static void unplant_stops(ViewState* v)
 {
-    mem[0x7BD4] = mem[VIEW_REC_A2];
-    mem[0x7BD7] = mem[VIEW_REC_A3];
-    mem[0x7BDA] = mem[VIEW_REC_B3];
-    if (!view_plant(v, 0x7BD3, 0x7BD4, 0x7C, OP_STA_IND_Y)) return;
-    if (!view_plant(v, 0x7BD6, 0x7BD7, 0x7C, OP_STA_IND_Y)) return;
-    if (!view_plant(v, 0x7BD9, 0x7BDA, 0x7E, OP_STA_IND_Y)) return;
+    mem[VIEW_RESTORE_A2_ADDR] = mem[VIEW_REC_A2];
+    mem[VIEW_RESTORE_A3_ADDR] = mem[VIEW_REC_A3];
+    mem[VIEW_RESTORE_B3_ADDR] = mem[VIEW_REC_B3];
+    if (!view_plant(v, VIEW_RESTORE_A2_SITE, VIEW_RESTORE_A2_ADDR, 0x7C, OP_STA_IND_Y)) return;
+    if (!view_plant(v, VIEW_RESTORE_A3_SITE, VIEW_RESTORE_A3_ADDR, 0x7C, OP_STA_IND_Y)) return;
+    if (!view_plant(v, VIEW_RESTORE_B3_SITE, VIEW_RESTORE_B3_ADDR, 0x7E, OP_STA_IND_Y)) return;
     v->byte = load_a(OP_CPX_IMM);
     mem[VIEW_CHAIN_END] = (unsigned char)v->byte;
 }
@@ -1286,7 +1314,8 @@ static void paint_lines_short(ViewState* v)
         /* chain A's stop */
         VIEWP3_PHASE(PROBE_PHASE_P3_STOPA);
         v->cell = mem[VIEW_RUN_L_END + v->line];
-        if (!view_move_stop(v, v->cell, VIEW_REC_A3, 0x7F23, 0x7F2E, 0x7F2F, 0x7C)) {
+        if (!view_move_stop(v, v->cell, VIEW_REC_A3, VIEW_P3_RESTORE_A_SITE,
+                            VIEW_P3_STOP_A_SITE, VIEW_P3_STOP_A_ADDR, 0x7C)) {
             view_commit(v);
             return;
         }
@@ -1316,13 +1345,13 @@ static void paint_lines_short(ViewState* v)
            nothing below rewrites it — replay just that flag (cpu otherwise untouched). */
         v->byte = (uint8_t)(0xF1 - mem[VIEW_RUN_R_END + v->line]);
         cpu.V = sbc_overflow(0xF1, mem[VIEW_RUN_R_END + v->line], 1);
-        mem[0x7F68] = (unsigned char)v->byte;
+        mem[VIEW_P3_ENTER_A_ADDR] = (unsigned char)v->byte;
         edge    = mem[VIEW_EDGE_PHASE + v->line];
         v->byte = view_compose(mem[VIEW_L_START_SRC + v->line],
                                mem[VIEW_L_START_MASK + edge],
                                mem[VIEW_L_START_FILL + edge]);
         v->cell = v->byte;                          /* TAY: N/Z already match */
-        if (!view_enter_chain(v, 0x7F67, 0x7F68, 0x7C)) { view_commit(v); return; }
+        if (!view_enter_chain(v, VIEW_P3_ENTER_A_SITE, VIEW_P3_ENTER_A_ADDR, 0x7C)) { view_commit(v); return; }
         v->byte = view_compose(v->byte, mem[VIEW_L_END_MASK + v->line],
                                         mem[VIEW_L_END_FILL + v->line]);
         REVS_PLOT_CELL(view_screen_addr(plot_ptr_v, v->cell), (uint8_t)v->byte);
@@ -1332,19 +1361,20 @@ static void paint_lines_short(ViewState* v)
            re-read here — the chain may have zeroed it (see the header). */
         VIEWP3_PHASE(PROBE_PHASE_P3_STOPB);
         v->cell = mem[VIEW_RUN_R_END + v->line];
-        if (!view_move_stop(v, v->cell, VIEW_REC_B3, 0x7F7C, 0x7F87, 0x7F88, 0x7E)) {
+        if (!view_move_stop(v, v->cell, VIEW_REC_B3, VIEW_P3_RESTORE_B_SITE,
+                            VIEW_P3_STOP_B_SITE, VIEW_P3_STOP_B_ADDR, 0x7E)) {
             view_commit(v);
             return;
         }
         VIEWP3_PHASE(PROBE_PHASE_P3_CHAINB);
         entry   = mem[VIEW_RUN_R_START + v->line];
         v->cell = entry;
-        mem[0x7F9B] = (unsigned char)entry;
+        mem[VIEW_P3_ENTER_B_ADDR] = (unsigned char)entry;
         v->byte = view_compose(mem[VIEW_R_START_SRC + v->line],
                                mem[VIEW_R_START_MASK + v->line],
                                mem[VIEW_R_START_FILL + v->line]);
         v->cell = v->byte;                          /* TAY */
-        if (!view_enter_chain(v, 0x7F9A, 0x7F9B, 0x7E)) { view_commit(v); return; }
+        if (!view_enter_chain(v, VIEW_P3_ENTER_B_SITE, VIEW_P3_ENTER_B_ADDR, 0x7E)) { view_commit(v); return; }
         math_hi = (unsigned char)v->cell;           /* the chain's cell, parked in scratch */
         edge    = mem[VIEW_EDGE_PHASE + v->line];
         v->byte = view_compose(v->byte, mem[VIEW_R_END_MASK + edge],
@@ -1387,19 +1417,19 @@ static void paint_lines_clipped(ViewState* v)
 
         v->cell = mem[VIEW_RUN_L_END + v->line];
         if (!stop_unchanged(v->cell, mem[VIEW_REC_A2])) {
-            if (!view_plant(v, 0x7D23, VIEW_REC_A2, 0x7C, OP_STA_IND_Y)) {
+            if (!view_plant(v, VIEW_P2_RESTORE_A_SITE, VIEW_REC_A2, 0x7C, OP_STA_IND_Y)) {
                 view_commit(v);
                 return;
             }
-            mem[0x7D2F]      = (unsigned char)v->cell;
+            mem[VIEW_P2_STOP_A_ADDR] = (unsigned char)v->cell;
             mem[VIEW_REC_A2] = (unsigned char)v->cell;
-            if (!view_plant(v, 0x7D2E, 0x7D2F, 0x7C, OP_RTS)) {
+            if (!view_plant(v, VIEW_P2_STOP_A_SITE, VIEW_P2_STOP_A_ADDR, 0x7C, OP_RTS)) {
                 view_commit(v);
                 return;
             }
             v->cell     = mem[VIEW_RUN_R_START + v->line];   /* chain B's entry, for the store */
             UPD_NZ(v->cell);                             /* its `LDY` outlives the chain */
-            mem[0x7D4D] = (unsigned char)v->cell;
+            mem[VIEW_P2_ENTER_B_ADDR] = (unsigned char)v->cell;
         }
 
         paint_cells(v, 0, 0, 1);                /* the JSR through view_next_scanline */
@@ -1413,7 +1443,7 @@ static void paint_lines_clipped(ViewState* v)
                                mem[VIEW_R_START_MASK + v->line],
                                mem[VIEW_R_START_FILL + v->line]);
         v->cell = v->byte;                          /* TAY */
-        if (!view_enter_chain(v, 0x7D4C, 0x7D4D, 0x7E)) { view_commit(v); return; }
+        if (!view_enter_chain(v, VIEW_P2_ENTER_B_SITE, VIEW_P2_ENTER_B_ADDR, 0x7E)) { view_commit(v); return; }
 
         cpu.X = (uint8_t)v->line;
         CPX(0x1C);
