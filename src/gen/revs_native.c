@@ -11996,15 +11996,16 @@ void copy_section_height_to_side1(void) { copy_section_height_to_side1_core(cpu.
    $13DA  advance_dir_on_segment_flag  (twin #143)   — was FUN_13da
    ---------------------------------------------------------------------------
    If bit 0 of the current segment's flags is set, advance segment_dir_index;
-   otherwise fall through to the segment_dir_circuit_hook per-circuit hook (RTS on Silverstone).
+   otherwise do nothing (the 6502 tail-calls $13FA, a bare RTS on every circuit).
    Reached via the per-circuit SMC dispatch at $13C9/$1426.  Preserves X; the
    callers discard the exit flags. */
 void advance_dir_on_segment_flag(void)
 {
     if (cur_segment_flags & 0x01)
         step_segment_dir_index();
-    else
-        segment_dir_circuit_hook();
+    /* $13DE's else arm calls segment_dir_tail_rts ($13FA), which is a bare RTS on every
+       circuit (no SMC extent, no patch, no hook jumps to it — make track-smc/track-patch),
+       so the twin does nothing here rather than calling an empty function. */
 }
 
 /* ---------------------------------------------------------------------------
@@ -12013,8 +12014,7 @@ void advance_dir_on_segment_flag(void)
    Advances segment_dir_index one track position along the direction tables,
    wrapping at track_dir_count, in whichever sense track_direction's bit 7 gives:
    forward is idx+1 rolling to 0 at the count, backward is idx-1 rolling 0 to
-   count-1.  Tail-calls segment_dir_circuit_hook (a Silverstone RTS no-op the expansion circuits
-   patch).  Preserves X; the callers discard the exit flags. */
+   count-1.  Preserves X; the callers discard the exit flags. */
 void step_segment_dir_index(void)
 {
     uint8_t count = track_dir_count;
@@ -12027,7 +12027,7 @@ void step_segment_dir_index(void)
         if (idx == count) idx = 0;          /* wrap count -> 0 */
     }
     segment_dir_index = idx;
-    segment_dir_circuit_hook();                             /* per-circuit hook; RTS on Silverstone */
+    /* $13F7 tail-calls segment_dir_tail_rts ($13FA) — a bare RTS on every circuit. */
 }
 
 /* ---------------------------------------------------------------------------
