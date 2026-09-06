@@ -1355,6 +1355,42 @@ static void walk_cluster_pre(uint8_t* pre)
     pre[0x1426] = 0x20; pre[0x1427] = 0xDA; pre[0x1428] = 0x13;   /* walk dir hook:     $13DA */
 }
 
+void hw_init(void);   void hw_init__t6502(void);
+
+/* ---------------------------------------------------------------------------
+   Twin #219 — hw_init, the platform boundary.
+   ---------------------------------------------------------------------------
+   Almost all of its output is the HARDWARE-WRITE TRACE, which diff_run compares
+   in full, plus the one MOS call (whose input Y comes from the caller, so the
+   fixture randomises it) and the saved IRQ1V pair.  The CRTC table is randomised
+   so the register loop cannot pass on constant data, and the old vector at
+   $0204/$0205 is randomised so the save is testable.
+   --------------------------------------------------------------------------- */
+static int test_hw_init(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t, cases, sub = 0, sawY = 0, sawVec = 0;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("hw_init");
+    if (!want("hw_init")) return 0;
+    cases = 400 * scale;
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+        if (c.Y) sawY = 1;
+        if (pre[0x0204] || pre[0x0205]) sawVec = 1;
+        sub += diff_run("hw_init", pre, c, hw_init, hw_init__t6502, LIVE_NONE, t, &printed);
+    }
+    fail += sub;
+    printf("%-32s %7d cases, %d mismatch (must be 0)  live=none (the caller reloads A)\n",
+           "hw_init", cases, sub);
+    if (!(sawY && sawVec)) { printf("VACUOUS: hw_init missed an input\n"); fail++; }
+    return fail;
+}
+
 void advance_player_section(void);   void advance_player_section__t6502(void);
 
 /* ---------------------------------------------------------------------------
@@ -10912,6 +10948,7 @@ int main(int argc, char** argv)
     fail += test_standings_leaves();
     fail += test_dismiss_waiters();
     fail += test_driver_name_pages();
+    fail += test_hw_init();
     fail += test_advance_player_section();
     fail += test_surface_table();
     fail += test_walk_direction();

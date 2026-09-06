@@ -658,6 +658,7 @@ void print_standings_table_core(uint8_t variant, uint8_t mode);
 uint8_t tally_bcd_column_core(uint8_t column);
 void abort_to_front_end_core(int carry);
 void engine_init_core(void);
+void hw_init_core(uint8_t osbyteY);
 void engine_main_core(void);
 void advance_player_section_core(void);
 void clear_surface_buffers_core(void);

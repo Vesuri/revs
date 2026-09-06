@@ -1507,3 +1507,4 @@ void advance_player_section(void) { advance_player_section_core(); }   /* exit A
 void abort_to_front_end(void) { abort_to_front_end_core(cpu.C); }   /* the ROR's input carry */
 void engine_init(void) { engine_init_core(); }
 void engine_main(void) { engine_main_core(); }
+void hw_init(void) { hw_init_core(cpu.Y); }   /* Y is the OSBYTE $9A call's input Y */

@@ -16033,3 +16033,69 @@ void engine_main_core(void)
 {
     engine_init_core();                           /* $63BD JMP $3850 */
 }
+
+/* ---------------------------------------------------------------------------
+   $4DDD  hw_init  (twin #219)
+   ---------------------------------------------------------------------------
+   THE PLATFORM BOUNDARY: the only routine in the game that programs hardware,
+   run once as race_main_loop's first act.  In order:
+     * the 14 6845 CRTC registers, from crtc_init_regs, counted down with
+       interrupts off — this is what puts the display into the race's geometry;
+     * irq_band_state := $FE, the raster-band counter two below zero, which is
+       the state irq1v_band_schedule starts from;
+     * OSBYTE $9A X=$C4 — the video ULA control register, through the MOS so the
+       OS's own shadow copy stays right.  ⚠ Y is whatever the caller had, and it
+       is passed through because the differential logs a MOS call's input Y;
+     * all 16 Video ULA palette entries, $07 stepping by $10;
+     * IRQ1V taken over: the old vector saved into saved_irq1v to chain on, the
+       System VIA's vsync flag waited for so the claim lands in the vertical
+       blank, then the User VIA's T1 armed for the band interrupts and both VIAs'
+       timers loaded with the band schedule ($11D4 and $1E, $4E4E);
+     * IRQ1V := $4E5C (irq1v_band_schedule), low byte LAST — the two stores go
+       through bus_write so the platform's shadow notify sees the claim.
+   Hardware writes stay bus_write() by design: they ARE the hardware.
+   --------------------------------------------------------------------------- */
+#define CRTC_INIT_REGS     0x4F0Fu   /* crtc_init_regs — 14 values, indexed by register number */
+#define CRTC_ADDR_REG      0xFE00u   /* 6845 address register */
+#define CRTC_DATA_REG      0xFE01u   /* ...and its data port */
+#define ULA_PALETTE        0xFE21u   /* Video ULA palette register */
+
+void hw_init_core(uint8_t osbyteY)
+{
+    /* $4DDD SEI — the CRTC must not be reprogrammed under an interrupt. */
+    for (int reg = 0x0D; reg >= 0; reg--) {              /* $4DE0-$4DEA */
+        bus_write(CRTC_ADDR_REG, (uint8_t)reg);
+        bus_write(CRTC_DATA_REG, mem[CRTC_INIT_REGS + reg]);
+    }
+    irq_band_state = 0xFEu;                              /* $4DEC-$4DED — X fell twice past 0 */
+    /* $4DF0 CLI */
+
+    mos_osbyte(0x9Au, 0xC4u, osbyteY);                   /* $4DF1-$4DF5 — video ULA control */
+
+    for (unsigned ink = 0x07u; ink < 0x100u; ink += 0x10u)
+        bus_write(ULA_PALETTE, (uint8_t)ink);            /* $4DFB-$4E00 — all 16 entries */
+
+    /* $4E02 SEI — claim IRQ1V without an interrupt in flight. */
+    mem[MEM_saved_irq1v]     = mem[0x0204];              /* $4E06 — chain target, low */
+    mem[MEM_saved_irq1v + 1] = mem[0x0205];              /* $4E0C — ...and high */
+
+    while (!(bus_read(0xFE4Du) & 0x02u))                 /* $4E0F-$4E14 — wait for vsync */
+        ;
+
+    bus_write(0xFE6Bu, 0x40u);                           /* $4E18 — User VIA ACR: T1 free-run */
+    bus_write(0xFE4Bu, (uint8_t)(bus_read(0xFE4Bu) | 0x40u));  /* $4E1B-$4E1E — System VIA ACR */
+    bus_write(0xFE6Eu, 0xC0u);                           /* $4E23 — User VIA IER: enable T1 */
+    bus_write(0xFE4Eu, 0xC0u);                           /* $4E26 — System VIA IER: enable T1 */
+    bus_write(0xFE64u, 0xD4u);                           /* $4E2B — System VIA T1 latch low */
+    bus_write(0xFE65u, 0x11u);                           /* $4E30 — ...and high ($11D4) */
+    bus_write(0xFE46u, 0x01u);                           /* $4E35 */
+    bus_write(0xFE45u, 0x3Du);                           /* $4E3A */
+    bus_write(0xFE46u, 0x1Eu);                           /* $4E3F */
+    bus_write(0xFE66u, 0x1Eu);                           /* $4E42 */
+    bus_write(0xFE47u, 0x4Eu);                           /* $4E47 */
+    bus_write(0xFE67u, 0x4Eu);                           /* $4E4A */
+
+    bus_write(0x0205u, 0x4Eu);                           /* $4E4F — IRQ1V high byte first */
+    bus_write(0x0204u, 0x5Cu);                           /* $4E54 — ...then low: $4E5C is live */
+    /* $4E57 CLI */
+}

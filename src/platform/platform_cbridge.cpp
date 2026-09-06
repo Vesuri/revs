@@ -287,6 +287,10 @@ struct HeadlessPlatform : Platform {
     uint8_t hwRead(uint16_t addr) override {
         if (addr == 0xFE6D && g_headlessT1Pending) return 0xC0;
         if (addr == 0xFE68) return g_headlessViaT2;
+        /* $FE4D bit 1 is the vsync flag hw_init's alignment spin blocks on.  Answering 0
+           here would hang BOTH models forever (twin #219's fixture found it), so defer to
+           the hardware model, which reports the field as elapsed. */
+        if (addr == 0xFE4D) return Platform::hwRead(addr);
         return 0x00;
     }
     void hwWrite(uint16_t addr, uint8_t val) override {
