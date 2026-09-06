@@ -117,6 +117,10 @@
 #define USRVIA_ACR         0xFE6Bu /* ...auxiliary control (T1 free-run) */
 #define USRVIA_IFR         0xFE6Du /* ...interrupt flags — bit 6 is the T1 band timeout */
 #define USRVIA_IER         0xFE6Eu /* ...interrupt enable — bit 6 is the T1 band timer */
+/* The one OS vector Revs claims: hw_init saves the MOS handler out of it into saved_irq1v,
+   points it at irq1v_band_schedule ($4E5C), and irq1v_release puts the MOS one back. */
+#define IRQ1V_LO           0x0204u /* IRQ1V, low byte */
+#define IRQ1V_HI           0x0205u /* ...and high */
 
 /* ---- exit-struct typedefs (moved out of revs_native.c) ---- */
 typedef struct { uint8_t a, x, y, n, z, v, c; } SlotExit;

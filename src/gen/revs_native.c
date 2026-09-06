@@ -10876,8 +10876,8 @@ void enter_mos_text_mode_core(void)
 
 void irq1v_release_core(uint8_t ambientY)
 {
-    bus_write(0x0204, saved_irq1v);                /* $4F24-$4F2A — IRQ1V's low byte back */
-    bus_write(0x0205, mem[MEM_saved_irq1v + 1]);   /* $4F2D — ...and its high byte ($4F1E) */
+    bus_write(IRQ1V_LO, saved_irq1v);              /* $4F24-$4F2A — IRQ1V's low byte back */
+    bus_write(IRQ1V_HI, mem[MEM_saved_irq1v + 1]); /* $4F2D — ...and its high byte ($4F1E) */
     bus_write(USRVIA_IER, 0x40u);                  /* $4F30-$4F32 — T1 off: no more band IRQs */
     sound_stop_all_core(ambientY);                 /* $4F36 — Y flows on into its OSBYTEs */
     enter_mos_text_mode_core();                    /* $4F39 — fall-through, not a call */
@@ -12625,7 +12625,7 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
             mem[CAR_FLAGS_SHAPE + qslot]++;                      /* INC */
         return saved_slot_index;                                 /* L_2a4d */
     }
-    if (mem[0x001D] != car_behind) return saved_slot_index;       /* $1D: queued in rename.md */
+    if (staging_order_index != car_behind) return saved_slot_index;  /* $1D — the ring position */
     if (!(mem[CAR_FLAGS_SHAPE + qslot] & 0x80))                  /* $2A07 LDA / BPL: not yet flagged */
         mem[CAR_FLAGS_SHAPE + qslot]--;                           /* DEC */
 
@@ -14011,7 +14011,8 @@ void check_car_pair_core(void)
                 uint8_t mag = (uint8_t)((uint8_t)((unsigned)sd >> 8) >> 1);  /* $26fe LSR A */
                 if (mag >= 0x1Eu) mag = 0x1Eu;               /* $26ff-2703 clamp high */
                 if (mag <  0x04u) mag = 0x04u;               /* $2705-2709 clamp low */
-                mem[0x0083] = mag;                           /* $270b store magnitude (point_delta_hi reused — rename note) */
+                mem[POINT_DELTA_HI] = mag;                   /* $270b — the +0 slot as scratch (see its note:
+                                                                the geometry tenant is idle here) */
 
                 unsigned c4 = (math_lo >= 0x04u);            /* $270d LDA $74 / $270f CMP #4 (math_lo == gap here) */
                 uint8_t rf = (uint8_t)(mem[CAR_RACE_FLAGS + secondSlot] & 0x40u);   /* $2711 / $2714 AND #$40 */
@@ -14072,7 +14073,7 @@ void check_car_pair_core(void)
                 }
 
                 if (outcome == PROX_PUBLISH) {               /* $277d-83 */
-                    mem[CAR_FLAGS_0 + firstSlot] = (uint8_t)((math_lo & 0x80u) | mem[0x0083]);
+                    mem[CAR_FLAGS_0 + firstSlot] = (uint8_t)((math_lo & 0x80u) | mem[POINT_DELTA_HI]);
                 }
                 if (outcome == PROX_PUBLISH || outcome == PROX_SETBIT) {
                     span_line_cursor = (uint8_t)(span_line_cursor | 0x10u);   /* $2786-88 */
@@ -16159,8 +16160,8 @@ void hw_init_core(uint8_t osbyteY)
         bus_write(ULA_PALETTE, (uint8_t)ink);            /* $4DFB-$4E00 — all 16 entries */
 
     /* $4E02 SEI — claim IRQ1V without an interrupt in flight. */
-    mem[MEM_saved_irq1v]     = mem[0x0204];              /* $4E06 — chain target, low */
-    mem[MEM_saved_irq1v + 1] = mem[0x0205];              /* $4E0C — ...and high */
+    mem[MEM_saved_irq1v]     = mem[IRQ1V_LO];            /* $4E06 — chain target, low */
+    mem[MEM_saved_irq1v + 1] = mem[IRQ1V_HI];            /* $4E0C — ...and high */
 
     while (!(bus_read(SYSVIA_IFR) & 0x02u))              /* $4E0F-$4E14 — wait for vsync */
         ;
@@ -16184,7 +16185,7 @@ void hw_init_core(uint8_t osbyteY)
     bus_write(SYSVIA_T1LH, 0x4Eu);                       /* $4E47 — $4E1E from here on */
     bus_write(USRVIA_T1LH, 0x4Eu);                       /* $4E4A */
 
-    bus_write(0x0205u, 0x4Eu);                           /* $4E4F — IRQ1V high byte first */
-    bus_write(0x0204u, 0x5Cu);                           /* $4E54 — ...then low: $4E5C is live */
+    bus_write(IRQ1V_HI, 0x4Eu);                          /* $4E4F — IRQ1V high byte first */
+    bus_write(IRQ1V_LO, 0x5Cu);                          /* $4E54 — ...then low: $4E5C is live */
     /* $4E57 CLI */
 }
