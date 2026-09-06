@@ -8813,7 +8813,7 @@ CameraExit update_camera_and_drive_state_core(void)
         } else if (down) {                              /* $4521-$4528 */
             bias--;
             if (bias & 0x80u) {                         /* negative: CPY #$FB (carry dead here) */
-                if (!(bias >= 0xFBu)) bias = 0xFBu;     /* ...and to -5 */
+                if (bias < 0xFBu) bias = 0xFBu;         /* ...and to -5 */
             }
         }
         camera_pitch_bias = bias;                       /* $452A */
