@@ -10516,9 +10516,10 @@ uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y)
    proof (a real Z=0 exit would diverge into vdu_char_def and fail the diff). */
 #define TEXT_SCRIPT_PTR_LO_TBL 0x3AD0u          /* text_script_ptr_lo */
 #define TEXT_SCRIPT_PTR_HI_TBL 0x3B50u          /* text_script_ptr_hi */
+void select_text_variant_core(uint8_t variant);   /* twin #199, mutually recursive */
 #define TEXT_SCRIPT_VARIANT_CMD 0x36u           /* the $FE command -> select_text_variant */
 
-void text_script_interp_core(uint8_t tableIdx)
+uint8_t text_script_interp_core(uint8_t tableIdx)
 {
     uint8_t y = 0x00u;                           /* $4D7E LDY #0 — persists across a reload */
     for (;;) {                                   /* L_4D80 — (re)load this script's pointer */
@@ -10536,14 +10537,15 @@ void text_script_interp_core(uint8_t tableIdx)
         plot_ptr2_marshal_out();
         for (;;) {                               /* L_4D8A — walk the bytes */
             uint8_t a = bus_read((plot_ptr2_v + y) & 0xFFFFu);
-            if (a == 0xFFu) return;              /* $4D8C end of script */
+            if (a == 0xFFu) return y;             /* $4D8C end of script — Y is live at the
+                                                    exit: print_standings_table hands it on as
+                                                    the ambient OSWRCH register (twin #199) */
 
             if (a >= 0xC8u) {                    /* $4D90 command byte */
                 uint8_t sub = (uint8_t)(a - 0xC8u);
                 math_lo = sub;                   /* $4D97 — reader-nat: keep the cell byte-exact */
                 if (sub == TEXT_SCRIPT_VARIANT_CMD) {
-                    cpu.X = 0x00u;               /* $4DA3 LDX #0 — select_text_variant reads X */
-                    select_text_variant();       /* $4DA5 — copies config, recurses into script $21 */
+                    select_text_variant_core(0x00u);  /* $4DA3 LDX #0 / $4DA5 — variant 0's heading */
                 } else {
                     text_script_interp_core(sub);/* $4DAB — recurse into the sub-script */
                 }
@@ -15044,6 +15046,157 @@ void wait_dismiss_space_core(void)
 void wait_dismiss_key_core(uint8_t offerReturn)
 {
     wait_dismiss_core(offerReturn);
+}
+
+/* ================================================================================================
+ * ⭐⭐ TWIN #199 — THE STANDINGS / RESULTS TABLE  ($65D3 print_standings_table, $41D0
+ *                 select_text_variant)
+ * ------------------------------------------------------------------------------------------------
+ * The page the game shows after practice, qualifying and the race: a heading line, twenty rows of
+ * "position  DRIVER NAME  time", and a footer.  It is the last transliterated routine in the text
+ * subsystem, so converting it is what finally lets the whole cluster be reached core-to-core —
+ * every one of its nine callees already has a twin.
+ *
+ * Two parameters, and the 6502 passes them in registers:
+ *   X = the LAYOUT VARIANT (0..6).  select_text_variant patches the heading scripts for it.
+ *   A = the MODE.  Its low nibble seeds shared_counter_42, which set_row_rule_glyphs turns into
+ *       the row's pair of rule glyphs ($0, $4 or $8 in practice), and the rest picks the TIME
+ *       COLUMN — three different columns out of one row loop:
+ *         $00            the car's BEST lap, mm:ss  (print_lap_time, field mask $26)
+ *         positive != 0  car_lap_*[$14 + row], the six REFERENCE pseudo-slots, for rows 0..5 —
+ *                        rows 6..$13 get seven spaces, because there are only six of them
+ *         negative       the car's OWN current three-byte time, hi:mid:lo (field mask $28)
+ *
+ * ⭐ The mode byte is also the argument the routine ENDS on: wait_dismiss_key(mode) means bit 7 of
+ * the mode decides whether RETURN dismisses the page as well as SPACE, and $654C reads the flag
+ * back to tell "the player pressed SPACE, cycle the pages again" from "RETURN, we are done".  So
+ * one byte carries the rule glyphs, the time column and the page's exit condition.
+ *
+ * ⭐ Why the ambient X/Y are threaded so carefully here: every character this page prints goes
+ * through vdu_emit_char, whose OSWRCH arm hands the 6502's X and Y to the MOS.  They are ambient
+ * junk — the script index the interpreter happened to leave in X, the offset of the $FF that ended
+ * the last script in Y — but they are ambient junk the real machine passed on, so the twin passes
+ * the same.  That is why text_script_interp_core now RETURNS its exit Y.
+ *
+ * ⚠ The two heading scripts are SELF-MODIFIED, by design and at every entry: select_text_variant
+ * writes five glyph bytes and one command byte into scripts $21 and $22 before running them.
+ * Those writes stay as mem[] stores (they are the mechanism, not an artefact) and the addresses
+ * are named in symbols.csv.
+ *
+ * ⚠ Binary arithmetic throughout: this is front-end display code entered with D = 0, and none of
+ * the eight sanctioned SED sites is on the path (docs/static-map.md §Decimal mode).  The one
+ * decimal add in the neighbourhood is inside position_to_bcd, which does its own SED/CLD.
+ * ================================================================================================ */
+
+/* The five parallel per-variant tables and the two scripts they patch. */
+#define VARIANT_HDR_GLYPH1_TBL  0x3BD0u   /* variant_hdr_glyph1_tbl  -> text_script_21 + 2 */
+#define VARIANT_HDR_GLYPH2_TBL  0x3BD7u   /* variant_hdr_glyph2_tbl  -> text_script_21 + 3 */
+#define VARIANT_HDR_GAP_TBL     0x3BDEu   /* variant_hdr_gap_tbl     -> text_script_21 + 5 */
+#define VARIANT_CELL_GLYPH1_TBL 0x3BE5u   /* variant_cell_glyph1_tbl -> text_script_22 + 1 */
+#define VARIANT_CELL_GLYPH2_TBL 0x3BECu   /* variant_cell_glyph2_tbl -> text_script_22 + 3 */
+#define TEXT_SCRIPT_21          0x40E0u   /* text_script_21: the heading LINE */
+#define TEXT_SCRIPT_22          0x3D13u   /* text_script_22: one heading CELL, run twice by $21 */
+#define TEXT_SCRIPT_32          0x3C7Au   /* text_script_32: the footer's race-length line */
+
+/* $1B's second tenancy: here the cell is the twenty-row loop counter, kept in mem[] because the
+   row has to survive the printers each row calls.  (symbols.csv §0x001B — the cell keeps its
+   primary road-pass name and the twin carries the alias.) */
+#define STANDINGS_ROW span_saved_index
+
+/* ------------------------------------------------------------------------------------------------
+ * $41D0 select_text_variant — DRESS THE HEADING SCRIPTS FOR ONE LAYOUT, THEN DRAW THEM.
+ * Six bytes of patch and one script run.  Five come straight out of the parallel tables; the
+ * sixth is computed: script $22's +4 becomes the text-script command "recurse into script
+ * <variant>", which is how the cell picks up the words that name THIS variant's column.
+ * Result-only: its exit registers are dead at both callers (print_standings_table reloads Y and X
+ * immediately, and text_script_interp's $4DA5 arm restores both off the 6502 stack).
+ * ------------------------------------------------------------------------------------------------ */
+void select_text_variant_core(uint8_t variant)
+{
+    mem[TEXT_SCRIPT_21 + 2] = mem[VARIANT_HDR_GLYPH1_TBL  + variant];  /* $41D0/$41D3 */
+    mem[TEXT_SCRIPT_21 + 3] = mem[VARIANT_HDR_GLYPH2_TBL  + variant];  /* $41D6/$41D9 */
+    mem[TEXT_SCRIPT_21 + 5] = mem[VARIANT_HDR_GAP_TBL     + variant];  /* $41DC/$41DF */
+    mem[TEXT_SCRIPT_22 + 1] = mem[VARIANT_CELL_GLYPH1_TBL + variant];  /* $41E2/$41E5 */
+    mem[TEXT_SCRIPT_22 + 3] = mem[VARIANT_CELL_GLYPH2_TBL + variant];  /* $41E8/$41EB */
+    mem[TEXT_SCRIPT_22 + 4] = (uint8_t)(variant + 0xC8u);              /* $41EE-$41F2 */
+
+    text_script_interp_core(0x21u);                                    /* $41F5/$41F7 */
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * $65D3 print_standings_table — the page itself.
+ * ------------------------------------------------------------------------------------------------ */
+void print_standings_table_core(uint8_t variant, uint8_t mode)
+{
+    uint8_t row;
+    uint8_t ambX = 0x00u;      /* the ambient X the last row's time column left behind */
+
+    shared_counter_42 = (uint8_t)(mode & 0x0Fu);   /* $65D4/$65D6 — the rule-glyph table mode */
+    select_text_variant_core(variant);             /* $65D8 — dress and draw the heading */
+
+    for (row = 0x00u; ; row = (uint8_t)(row + 1u)) {
+        uint8_t y, car, pos;
+
+        STANDINGS_ROW = row;                       /* $65DD STY — survives the printers below */
+        field_mask_set(0x00u);                     /* $65DF/$65E1 — no field for the position */
+        set_row_rule_glyphs_core(row);             /* $65E3 — this row's rule pair */
+        text_script_interp_core(0x20u);            /* $65E6/$65E8 — the row's left margin */
+
+        /* $65ED-$65F4.  In a RACE the leading number comes out of car_race_flags — the finishing
+           order latched there — and outside one it is simply the row.  Either way position_to_bcd
+           makes it 1-based BCD.  X is still the script index the interpreter left ($20). */
+        pos = (session_is_race & 0x80u) ? mem[CAR_RACE_FLAGS + row] : row;
+        print_bcd_digits_core(position_to_bcd_core(pos).a, 0x20u, row);    /* $65F5/$65F8 */
+
+        text_script_interp_core(0x1Fu);             /* $65FB/$65FD — the column rule */
+        print_driver_name_by_order_core(row);       /* $6600/$6602 — Y is the ORDER position */
+        y = text_script_interp_core(0x1Fu);         /* $6605/$6607 — and the rule again */
+        car = saved_slot_index;                     /* $660A — the car the name printer parked */
+
+        if (mode == 0x00u) {                        /* $660E BNE */
+            ambX = car;
+            print_lap_time_core(0x26u, car, y);     /* $6610/$6612 — the car's best lap, mm:ss */
+        } else if (mode & 0x80u) {                  /* $6618 BMI */
+            uint8_t hi;
+            field_mask_set(0x28u);                  /* $662B/$662D */
+            ambX = car;
+            hi = mem[CAR_LAP_HI + car];             /* $662F */
+            if (hi != 0u) {                         /* $6632 BEQ — a zero hour byte is not printed */
+                print_bcd_digits_core(hi, car, y);                              /* $6634 */
+                print_lap_value_from_mid_core(mem[CAR_LAP_MID + car], car, y);  /* $6637/$663A */
+            } else {
+                print_lap_value_field_core(car, y); /* $6640 — mid:lo with its own leading spaces */
+            }
+        } else {
+            /* $661A-$6629.  The six reference pseudo-slots sit at car_lap_*[$14..$19], one per
+               row, and the CMP/TAX order means X is loaded with the slot even when there is no
+               such slot — so the blank column is printed with that out-of-range index ambient. */
+            uint8_t slot = (uint8_t)(row + 0x14u);  /* $661A-$661F */
+            ambX = slot;
+            if (slot < 0x1Au)                       /* $6621 TAX / $6622 BCC */
+                print_lap_value_field_core(slot, y);/* $6640 */
+            else
+                print_spaces_core(0x07u, slot, y);  /* $6624/$6626 — seven spaces, then done */
+        }
+
+        if (row == 0x13u) break;                    /* $6643-$6648 INY / CPY #$14 */
+    }
+
+    print_spaces_core(0x03u, ambX, 0x14u);          /* $664A/$664C — the footer's indent */
+    /* $664F/$6651 — a DIRECT JSR OSWRCH, not the vdu_char_def dispatch: this one byte always goes
+       to the MOS whatever text_out_via_mos says. */
+    mos_oswrch(0x9Cu, ambX, 0x14u);
+
+    if (session_is_race & 0x80u) {                  /* $6654/$6656 BPL — the race page has a footer */
+        text_script_interp_core(0x31u);             /* $6658/$665A — "…RACE" */
+        print_race_class_name_core();               /* $665D */
+        /* $6660-$6666.  The length is named in words by script $12 + the menu answer, and a text
+           script has no way to say "index this" — so the command byte itself is patched. */
+        mem[TEXT_SCRIPT_32 + 3] = (uint8_t)(race_length_choice + 0xDAu);
+        text_script_interp_core(0x32u);             /* $6669/$666B */
+    }
+
+    wait_dismiss_key_core(mode);                    /* $666E PLA / $666F — SPACE, or RETURN if <0 */
 }
 
 /* ===========================================================================

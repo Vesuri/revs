@@ -929,13 +929,33 @@ void plot_line_octant(void)
     plot_line_octant_core(cpu.Y);
 }
 
+/* $41D0 select_text_variant / $65D3 print_standings_table (twin #199).  select_text_variant takes
+   the layout variant in X; the table takes that same variant in X and its mode byte in A (which it
+   PHAs and hands to wait_dismiss_key at the end).  Both are result-only: select_text_variant's
+   callers reload X and Y on the next instruction, and every caller of the table either RTSs or
+   reloads — what the page leaves behind is print_field_mask ($78), a mem[] cell. */
+void select_text_variant(void)
+{
+    select_text_variant_core(cpu.X);
+}
+
+void print_standings_table(void)
+{
+    print_standings_table_core(cpu.X, cpu.A);
+}
+
 void text_script_interp(void)
 {
     /* $4D7E — run the text script whose index is in X (twin #165).  The core does all the mem[]
        work (the plot_ptr2 reload, the character/space/command dispatch, the recursion) and threads
        X/Y to its callees itself; math_lo ($74) keeps its 6502 exit value until the $74/$75
-       relocation.  Result-only: exit regs/flags are dead. */
-    text_script_interp_core(cpu.X);
+       relocation.
+       ⭐ EXIT Y IS LIVE, contrary to this shim's original contract: the 6502 leaves Y holding the
+       offset of the $FF that ended the script, and print_standings_table hands exactly that on as
+       the ambient OSWRCH register for its time column (twin #199 — the differential caught it as a
+       MOS-log Y mismatch, ref $0C against native $06, the stale Y from the driver-name printer).
+       X is unchanged (it is the script index throughout) and A is dead at every call site. */
+    cpu.Y = text_script_interp_core(cpu.X);
 }
 
 void menu_wait_key(void)

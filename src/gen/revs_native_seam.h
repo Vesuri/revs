@@ -537,7 +537,9 @@ void plot_line_octant_core(uint8_t entryScanline);
 void undraw_plot_lines_core(void);   /* twin #165b — replay the plotter's undo list */
 void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment);  /* twin #165c */
 void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment);  /* twin #165c */
-void text_script_interp_core(uint8_t tableIdx);
+/* ⭐ returns the script offset Y ended on: print_standings_table hands it straight on as the
+   ambient OSWRCH register, so it is a real result, not residue (twin #199). */
+uint8_t text_script_interp_core(uint8_t tableIdx);
 uint8_t menu_wait_key_core(uint8_t count);
 typedef struct { uint8_t a, c, z, n, mathlo, writeMathlo; } ParseNum;
 void parse_two_digit_ascii_core(uint8_t char0, uint8_t char1, ParseNum *out);
@@ -583,6 +585,11 @@ void wait_dismiss_key_core(uint8_t offerReturn);
 /* $3E60 / $3C6F the standings table's leaf callees (twin #197) — result-only. */
 void set_row_rule_glyphs_core(uint8_t row);
 void print_race_class_name_core(void);
+/* twin #199 — the standings/results page.  X = layout variant, A = mode; both result-only. */
+void select_text_variant_core(uint8_t variant);
+void print_standings_table_core(uint8_t variant, uint8_t mode);
+void select_text_variant(void);
+void print_standings_table(void);
 uint8_t vdu_char_def_core(uint8_t ch);
 uint8_t vdu_char_emit_core(void);
 uint8_t vdu_char_wide_core(uint8_t ch);

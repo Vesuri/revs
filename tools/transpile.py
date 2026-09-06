@@ -1221,6 +1221,15 @@ VALIDATE_FUNCS = {
     0x3261,
     0x34D0,
     0x34D2,
+    # ⭐⭐ TWIN #199 — the page all of the above serve: $65D3 print_standings_table (X = layout
+    # variant, A = mode: rule-glyph mode nibble + which of three time columns) and $41D0
+    # select_text_variant, which patches heading scripts $21/$22 for the variant and runs them.
+    # ⚠ The heading patches are SELF-MODIFYING BY DESIGN (six bytes into $40E0/$3D13), and the
+    # footer patches a text-script COMMAND byte at $3C7D from race_length_choice.
+    # ⚠ text_script_interp's exit Y is LIVE here (it becomes the ambient OSWRCH register), which is
+    # why that twin's core now returns it.  Exit ABI dead at all four callers — LIVE_NONE.
+    0x41D0,
+    0x65D3,
     # ⭐ TWIN #197 — the standings table's other two leaf callees: $3E60 set_row_rule_glyphs
     # (patches script $1F's two rule glyphs) and $3C6F print_race_class_name.  Both result-only.
     0x3E60,

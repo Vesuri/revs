@@ -1166,6 +1166,197 @@ static int test_dismiss_waiters(void)
 void retire_car(void);                 void retire_car__t6502(void);
 
 /* ================================================================================================
+ * ⭐⭐ TWIN #199 — THE STANDINGS / RESULTS TABLE ($65D3) and its heading dresser ($41D0).
+ *
+ * TWO STAGES, and they gate DIFFERENT things.
+ *
+ *   $41D0 select_text_variant patches six bytes into heading scripts $21 and $22 and then runs
+ *   $21.  ⭐⭐ Those patches are only OBSERVABLE if the interpreter reads them back, so this
+ *   fixture puts scripts $21, $22 and $32 at their REAL addresses ($40E0 / $3D13 / $3C7A) and
+ *   seeds each with its real byte layout.  script_common_pre alone would point every index at a
+ *   synthetic leaf, and then a patch written to the WRONG address — or not written at all —
+ *   changes nothing anybody prints: exactly the §NINETEENTH failure, one step further out.
+ *
+ *   $65D3 print_standings_table can only be gated on its own decisions, and that is worth saying
+ *   plainly: every one of its nine callees is already a VALIDATE_FUNCS member, so the generated
+ *   oracle calls the NATIVE shims for all of them.  What the differential compares is therefore
+ *   the routine's control flow — twenty rows, which of three time columns, the six pseudo-slots
+ *   and their blank tail, the footer's two arms — and the ARGUMENTS it hands over, including the
+ *   ambient X and Y that reach the MOS on the OSWRCH arm (printer_common_pre picks that arm half
+ *   the time, so the MOS-call log compares them).  select_text_variant's patches are invisible
+ *   from here and are gated by the stage above; that is the twin-#196-D39 shape again.
+ *
+ * ⚠ The page ENDS in wait_dismiss_key, so this fixture needs twin #198's mode-5 keyboard schedule
+ * (arm_dismiss_keys) or it spins forever.  The abort key is never held, for the reason twin #198
+ * documents: that arm is a non-local exit both models get wrong identically.
+ *
+ * ⚠ Every seeded script index stays <= $34 (the pointer table physically ends there), which is why
+ * race_class is 0..2 and race_length_choice 0..$0B — the footer turns the latter into command
+ * $DA+choice, i.e. script $12..$1D.  A larger value walks the emitter into zero page and HANGS.
+ *
+ * SABOTAGE (each must FAIL, patch verified applied):
+ *   D56 the heading gap is patched into script $21 + 4     -> 3000/3000
+ *   D57 the cell's command byte is $C8, not $C8 + variant  -> 2511/3000
+ *   D58 the position number is always the row              ->  106/400
+ *   D59 the pseudo-slot base is $14 + 1                    ->  150/400
+ *   D60 the blank column prints six spaces, not seven      ->  150/400
+ *   D61 the negative arm drops the zero-hi special case    ->   46/400
+ *   D62 the footer's length command loses race_length_choice ->  184/400
+ *   D63 the ambient Y for the time column is the row       ->  202/400
+ * ============================================================================================= */
+
+/* ⭐ Put the three PATCHED scripts at their real addresses, with their real layouts, so a patch
+   that lands anywhere else stops printing what the oracle printed.  Call AFTER script_common_pre,
+   which seeds the whole pointer table with synthetic leaves. */
+static void standings_scripts_pre(uint8_t* pre)
+{
+    unsigned i;
+
+    /* script $21 -> $40E0 — the heading LINE.  +2/+3 are glyphs and +5 a space run, all three
+       patched; the two $EA bytes recurse into script $22, which is how one script draws two
+       heading cells. */
+    pre[0x3AD0u + 0x21u] = 0xE0u; pre[0x3B50u + 0x21u] = 0x40u;
+    pre[0x40E0u + 0u] = 0x41u; pre[0x40E0u + 1u] = 0x42u;
+    pre[0x40E0u + 2u] = 0x00u; pre[0x40E0u + 3u] = 0x00u;      /* patched */
+    pre[0x40E0u + 4u] = 0xEAu;                                  /* -> script $22 */
+    pre[0x40E0u + 5u] = 0x00u;                                  /* patched */
+    pre[0x40E0u + 6u] = 0xEAu;
+    pre[0x40E0u + 7u] = 0xFFu;
+
+    /* script $22 -> $3D13 — one heading CELL.  +1/+3 are glyphs and +4 the command byte that
+       select_text_variant computes as $C8 + variant: "now name THIS variant's column". */
+    pre[0x3AD0u + 0x22u] = 0x13u; pre[0x3B50u + 0x22u] = 0x3Du;
+    pre[0x3D13u + 0u] = 0x43u; pre[0x3D13u + 1u] = 0x00u;       /* patched */
+    pre[0x3D13u + 2u] = 0x44u; pre[0x3D13u + 3u] = 0x00u;       /* patched */
+    pre[0x3D13u + 4u] = 0x00u;                                  /* patched (the command) */
+    pre[0x3D13u + 5u] = 0xA2u;
+    pre[0x3D13u + 6u] = 0x45u; pre[0x3D13u + 7u] = 0xFFu;
+
+    /* script $32 -> $3C7A — the footer's race-length line; +3 is the patched command byte. */
+    pre[0x3AD0u + 0x32u] = 0x7Au; pre[0x3B50u + 0x32u] = 0x3Cu;
+    pre[0x3C7Au + 0u] = 0x46u; pre[0x3C7Au + 1u] = 0x47u; pre[0x3C7Au + 2u] = 0x48u;
+    pre[0x3C7Au + 3u] = 0x00u;                                  /* patched */
+    pre[0x3C7Au + 4u] = 0xD6u;                                  /* -> script $0E, a safe leaf */
+    pre[0x3C7Au + 5u] = 0xFFu;
+
+    /* The five per-variant tables.  The four glyph slots stay PRINTABLE ($20..$7F): a byte >= $C8
+       would turn a heading cell into a recursion and $FE into another select_text_variant, and a
+       runaway index is the hang §NINETEENTH warns about.  The gap slot is a real space run. */
+    for (i = 0; i < 7u; i++) {
+        pre[0x3BD0u + i] = (uint8_t)(0x20u + (xs() % 0x60u));
+        pre[0x3BD7u + i] = (uint8_t)(0x20u + (xs() % 0x60u));
+        pre[0x3BDEu + i] = (uint8_t)(0xA1u + (xs() % 8u));
+        pre[0x3BE5u + i] = (uint8_t)(0x20u + (xs() % 0x60u));
+        pre[0x3BECu + i] = (uint8_t)(0x20u + (xs() % 0x60u));
+    }
+}
+
+void select_text_variant(void);      void select_text_variant__t6502(void);
+void print_standings_table(void);    void print_standings_table__t6502(void);
+
+static int test_standings_table(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("select_text_variant");
+    register_fixture("print_standings_table");
+
+    /* ---- $41D0 select_text_variant --------------------------------------------------------- */
+    if (want("select_text_variant")) {
+        int sub = 0, seen[7] = { 0, 0, 0, 0, 0, 0, 0 };
+        int cases = 3000 * scale;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.D = 0;                                  /* the $C8 add is binary — §Decimal mode */
+            c.S = 0xFFu;
+            c.X = (uint8_t)(xs() % 7u);               /* the layout variant */
+            seen[c.X] = 1;
+            script_common_pre(pre);
+            printer_common_pre(pre);
+            standings_scripts_pre(pre);
+            pre[0x62CCu] = (uint8_t)(xs() & 0x1Fu);   /* vdu_char_column: somewhere on the line */
+            sub += diff_run("select_text_variant", pre, c,
+                            select_text_variant, select_text_variant__t6502,
+                            LIVE_NONE, t, &printed);
+        }
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  mem[] only (exit ABI dead)\n",
+               "select_text_variant", cases, sub);
+        { int v, missing = 0; for (v = 0; v < 7; v++) if (!seen[v]) missing++;
+          if (missing) { printf("VACUOUS: select_text_variant missed %d of 7 variants\n", missing);
+                         fail++; } }
+    }
+
+    /* ---- $65D3 print_standings_table ------------------------------------------------------- */
+    if (want("print_standings_table")) {
+        static const uint8_t MODES[3] = { 0x00u, 0x04u, 0x88u };   /* the four callers' modes */
+        int sub = 0;
+        int sawBest = 0, sawSlots = 0, sawOwn = 0, sawZeroHi = 0, sawFooter = 0, sawNoFooter = 0;
+        int sawReturnExit = 0, sawSpaceHeld = 0;
+        int cases = 400 * scale;                      /* each case prints twenty rows twice over */
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            uint8_t mode;
+            unsigned i;
+            fill_random(pre);
+            c.D = 0;                                  /* front-end display code — §Decimal mode */
+            c.S = 0xFFu;
+            c.X = (uint8_t)(xs() % 7u);               /* the layout variant */
+
+            mode = MODES[xs() % 3u];
+            if (t % 4 == 0) mode = (uint8_t)(xs() & 0x8Fu);   /* ...and other bit patterns */
+            c.A = mode;
+            if (mode == 0x00u)            sawBest  = 1;
+            else if (mode & 0x80u)        sawOwn   = 1;
+            else                          sawSlots = 1;
+
+            script_common_pre(pre);
+            printer_common_pre(pre);
+            standings_scripts_pre(pre);
+            /* The oracle's own PHA of the mode byte, with S pinned by zero_cpu(). */
+            set_ignore(g_ignore_pha_residue, 1);
+
+            /* The footer's two arms, and the leading number's two sources: session_is_race picks
+               both (car_race_flags in a race, the row index otherwise). */
+            if (xs() & 1) { pre[0x006Cu] = 0x80u; sawFooter = 1; }
+            else          { pre[0x006Cu] = 0x28u; sawNoFooter = 1; }
+
+            pre[0x5F3Au] = (uint8_t)(xs() % 3u);      /* race_class    -> script $07..$09 */
+            pre[0x5F3Fu] = (uint8_t)(xs() % 0x0Cu);   /* race_length_choice -> script $12..$1D */
+            for (i = 0; i < 0x14u; i++) {
+                pre[0x013Cu + i] = (uint8_t)(xs() % 0x14u);        /* car_order: real slots */
+                if (t % 3 == 0 && (xs() & 1)) { pre[0x04F0u + i] = 0x00u; sawZeroHi = 1; }
+            }
+
+            /* The terminal wait: SPACE released then pressed, RETURN sometimes first. */
+            arm_dismiss_keys(&sawSpaceHeld, &sawReturnExit, (mode & 0x80u) != 0);
+            pre[0x001Cu] = (uint8_t)(xs() & 0x7Fu);   /* abort_state, never already latched */
+
+            sub += diff_run("print_standings_table", pre, c,
+                            print_standings_table, print_standings_table__t6502,
+                            LIVE_NONE, t, &printed);
+        }
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  mem[] only (exit ABI dead)\n",
+               "print_standings_table", cases, sub);
+        if (!sawBest)      { printf("VACUOUS: the best-lap column never ran\n");          fail++; }
+        if (!sawSlots)     { printf("VACUOUS: the pseudo-slot column never ran\n");       fail++; }
+        if (!sawOwn)       { printf("VACUOUS: the own-time column never ran\n");          fail++; }
+        if (!sawZeroHi)    { printf("VACUOUS: car_lap_hi was never zero\n");              fail++; }
+        if (!sawFooter)    { printf("VACUOUS: the race footer never ran\n");              fail++; }
+        if (!sawNoFooter)  { printf("VACUOUS: the page was always a race page\n");        fail++; }
+        if (!sawReturnExit){ printf("VACUOUS: RETURN never dismissed the page\n");        fail++; }
+        if (!sawSpaceHeld) { printf("VACUOUS: SPACE was never still held on entry\n");    fail++; }
+        set_ignore(0, 0);
+    }
+    return fail;
+}
+
+/* ================================================================================================
  * TWIN #194 — $11BE retire_car.  X selects the car; the exit flags are the lap comparison's carry
  * with A/N/Z fixed by the $C0 it stores.  Both car tables are randomised, and one case in 32
  * hands it an out-of-range index so the two reads stay pinned to the same cells as the oracle's.
@@ -9770,6 +9961,7 @@ int main(int argc, char** argv)
     fail += test_lap_value_column();
     fail += test_standings_leaves();
     fail += test_dismiss_waiters();
+    fail += test_standings_table();
     fail += test_dashboard_readouts();
     fail += test_add_frame_time();
     fail += test_tick_race_timers();
