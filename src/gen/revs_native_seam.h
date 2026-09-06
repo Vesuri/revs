@@ -572,6 +572,9 @@ void finish_race_core(void);
 TextExit print_bcd_digits_core(uint8_t bcd, uint8_t x, uint8_t y);
 TextExit print_bcd_digits_at_core(uint8_t bcd, uint8_t column, uint8_t row);
 TextExit print_lap_time_core(uint8_t fieldMask, uint8_t carIdx, uint8_t y);
+/* $43D0 / $43E7 the lap-value table column (twin #196) — exit is always print_spaces'. */
+TextExit print_lap_value_field_core(uint8_t x, uint8_t y);
+TextExit print_lap_value_from_mid_core(uint8_t bcd, uint8_t x, uint8_t y);
 uint8_t vdu_char_def_core(uint8_t ch);
 uint8_t vdu_char_emit_core(void);
 uint8_t vdu_char_wide_core(uint8_t ch);

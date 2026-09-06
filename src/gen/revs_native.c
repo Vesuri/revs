@@ -10461,6 +10461,16 @@ static void field_mask_set(uint8_t mask)
     hypot_min_v = (uint16_t)((hypot_min_v & 0xFF00u) | mask);
 }
 
+/* LSR $78 — the field mask the other way, one position BACK (the lap-value column printer's
+   blank-minutes arm), returning the new mask so a caller can branch on the 6502's Z.  The
+   shifted-out bit lands in C on the 6502 and is dead at the one site. */
+static uint8_t field_mask_lsr(void)
+{
+    print_field_mask = (uint8_t)(print_field_mask >> 1);
+    hypot_min_v = (uint16_t)((hypot_min_v & 0xFF00u) | print_field_mask);
+    return print_field_mask;
+}
+
 /* ---------------------------------------------------------------------------
    $3D50  print_spaces — `count` SPACES THROUGH THE VDU CHAR PATH  (twin #148)
    Each space goes through the same dispatch vdu_char_def uses: OSWRCH when
@@ -14868,6 +14878,60 @@ void finish_race_core(void)
                 return;
         }
     }
+}
+
+/* ================================================================================================
+ * $43D0 / $43E7  print_lap_value_field / print_lap_value_from_mid — TWIN #196
+ * ------------------------------------------------------------------------------------------------
+ * ONE LAP-TIME COLUMN of the standings/results table (FUN_65d3's two call sites are the only
+ * callers).  The value is car `x`'s two low BCD bytes of car_lap_* — mid and lo — printed as a
+ * padded field with a space either side:
+ *
+ *   $43D0 print_lap_value_field   two spaces, mask $20 (a leading digit still inside the field),
+ *                                 then car_lap_mid[x] and car_lap_lo[x].  A ZERO mid byte is not
+ *                                 printed as "00": two more spaces stand in for it, the mask
+ *                                 steps BACK one position, and only the low byte prints.
+ *   $43E7 print_lap_value_from_mid  the same field with the leading byte supplied by the caller
+ *                                 (FUN_65d3 hands it car_lap_hi[x] and its own mask $28), and no
+ *                                 leading spaces.
+ *
+ * Both fall through the same tail at $43EA — the low byte then one trailing space — so the exit
+ * is always print_spaces': A = $20, N = 0, Z = 1, with C left by the last print_bcd_digits.
+ * ================================================================================================ */
+
+/* $43EA — the tail both entries fall into. */
+static TextExit print_lap_value_low(uint8_t x, uint8_t y)
+{
+    TextExit e = print_bcd_digits_core(mem[CAR_LAP_LO + x], x, y);  /* $43EA/$43ED */
+    print_spaces_core(0x01u, x, y);                                 /* $43F0/$43F2 — the gap */
+    e.a = 0x20u; e.n = 0u; e.z = 1u;         /* print_spaces' exit; its C is untouched */
+    return e;
+}
+
+TextExit print_lap_value_from_mid_core(uint8_t bcd, uint8_t x, uint8_t y)
+{
+    print_bcd_digits_core(bcd, x, y);        /* $43E7 — the field's leading byte */
+    return print_lap_value_low(x, y);        /* $43EA — unconditional fall-through */
+}
+
+TextExit print_lap_value_field_core(uint8_t x, uint8_t y)
+{
+    uint8_t mid;
+
+    print_spaces_core(0x02u, x, y);           /* $43D0/$43D2 — two leading spaces */
+    field_mask_set(0x20u);                    /* $43D5/$43D7 — the field's leading position */
+    mid = mem[CAR_LAP_MID + x];               /* $43D9 */
+    if (mid != 0u)                            /* $43DC BNE — a real minutes/seconds byte */
+        return print_lap_value_from_mid_core(mid, x, y);
+
+    print_spaces_core(0x02u, x, y);           /* $43DE/$43E0 — a zero byte blanks its two cells */
+    if (field_mask_lsr() != 0u)               /* $43E3 LSR $78 / $43E5 BNE */
+        return print_lap_value_low(x, y);
+
+    /* $43E5 falling through to $43E7 is UNREACHABLE from this entry: the mask was just seeded
+       with $20, so one LSR leaves $10.  Kept because the fall-through is what the 6502 does, and
+       A there is the space print_spaces returned. */
+    return print_lap_value_from_mid_core(0x20u, x, y);
 }
 
 /* ===========================================================================

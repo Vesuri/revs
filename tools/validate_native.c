@@ -732,6 +732,103 @@ static int test_number_printers(void)
     return fail;
 }
 
+/* ================================================================================================
+ * ⭐ TWIN #196 — the standings table's LAP-VALUE COLUMN ($43D0 print_lap_value_field and its
+ * second entry $43E7 print_lap_value_from_mid).  X is the car index and the ambient OSWRCH
+ * register; $43E7 also takes the leading BCD byte in A.  Both share the tail at $43EA, which
+ * stays transliterated inside both oracles.
+ *
+ * The same printer_common_pre the number printers need (a screen char-row base, a valid cursor
+ * row, both plotter arms), plus:
+ *   - X swept over 0..$19: the twenty real drivers AND the six pseudo-slots FUN_65d3's third mode
+ *     indexes ($14..$19), with one case in 32 fully random so a wild index stays pinned;
+ *   - car_lap_mid[X] forced to 0 on a third of the cases — that is $43D0's blank-minutes arm, the
+ *     one the mask's LSR belongs to, and a random byte almost never hits it;
+ *   - the entry field mask driven through the number printer's three shapes for the $43E7 entry,
+ *     whose caller (not the routine) seeds it.
+ *
+ * ⚠ $43D0's oracle tail-calls the NATIVE $43E7, so this fixture cannot see a defect that lives
+ * only in print_lap_value_from_mid_core — the $43E7 stage is what covers that (D39 below reads 0
+ * on the $43D0 stage for exactly that reason, and the shared-tail defects only score on the 679
+ * blank-minutes cases, the arm that reaches the tail without going through $43E7).
+ *
+ * SABOTAGE (each must FAIL, patch verified applied; counts are $43D0 / $43E7 of 2000 each):
+ *   D34 the leading gap is one space, not two            -> 2000 /    0
+ *   D35 the seeded field mask is $10, not $20            -> 2000 /    0
+ *   D36 the blank-minutes arm shifts the mask LEFT       ->  679 /    0
+ *   D37 the tail reads car_lap_mid instead of car_lap_lo ->  670 / 1916
+ *   D38 the tail drops the trailing space                ->  679 / 2000
+ *   D39 $43E7 does not print its leading byte            ->    0 / 2000
+ *   D40 the tail's exit Z is cleared, not set            ->  679 / 2000
+ * ============================================================================================= */
+void print_lap_value_field(void);      void print_lap_value_field__t6502(void);
+void print_lap_value_from_mid(void);   void print_lap_value_from_mid__t6502(void);
+
+static int test_lap_value_column(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t, stage;
+    int scale = 1;
+    int sawZeroMid = 0, sawRealMid = 0, sawPseudoSlot = 0;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("print_lap_value_field");
+    register_fixture("print_lap_value_from_mid");
+
+    /* A/X/Y and N/Z/C compared; V dropped across the whole text cluster (the emitter's BIT sets
+       it from bit 6 of the flag byte and no caller reads it). */
+    unsigned mask = LIVE_A | LIVE_X | LIVE_Y | LIVE_N | LIVE_Z | LIVE_C;
+
+    int cases = 2000 * scale;
+    for (stage = 0; stage < 2; stage++) {
+        const char* label = stage ? "print_lap_value_from_mid" : "print_lap_value_field";
+        int sub = 0;
+        if (!want(label)) continue;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            printer_common_pre(pre);
+            c.D = 0;                                /* text path, not a SED site */
+            c.X = (uint8_t)(xs() % 0x1Au);           /* 0..$19: the drivers and the pseudo-slots */
+            if (t % 32 == 0) c.X = (uint8_t)xs();    /* ...and one wild index, to pin the reads */
+            if (c.X >= 0x14u && c.X < 0x1Au) sawPseudoSlot = 1;
+            c.Y = (uint8_t)xs();
+            c.A = (uint8_t)xs();                    /* $43E7: the leading BCD byte */
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+
+            /* The entry mask only matters at $43E7 ($43D0 seeds its own), but randomise it for
+               both so a twin that read the cell where it should not diverges. */
+            pre[0x0078] = (uint8_t)xs();
+            if (t % 4 == 0) pre[0x0078] |= 0x80u;
+            if (t % 4 == 1) pre[0x0078] &= 0x3Fu;
+            if (t % 4 == 2) pre[0x0078] |= 0x40u;
+
+            /* Real BCD in the two printed bytes half the time; and a zero mid byte on a third of
+               the cases, which is $43D0's blank-minutes arm. */
+            if (xs() & 1) {
+                pre[0x39E4 + c.X] = (uint8_t)(((xs() % 6u) << 4) | (xs() % 10u));
+                pre[0x3864 + c.X] = (uint8_t)(((xs() % 10u) << 4) | (xs() % 10u));
+            }
+            if (t % 3 == 0) pre[0x39E4 + c.X] = 0x00u;
+            if (pre[0x39E4 + c.X] == 0u) sawZeroMid = 1; else sawRealMid = 1;
+
+            sub += diff_run(label, pre, c,
+                            stage ? print_lap_value_from_mid : print_lap_value_field,
+                            stage ? print_lap_value_from_mid__t6502 : print_lap_value_field__t6502,
+                            mask, t, &printed);
+        }
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+NZC (V dropped)\n",
+               label, cases, sub);
+    }
+
+    if (want("print_lap_value_field") && !(sawZeroMid && sawRealMid && sawPseudoSlot)) {
+        printf("VACUOUS: the lap-value column missed the blank-minutes arm or the pseudo-slots\n");
+        fail++;
+    }
+    return fail;
+}
+
 void retire_car(void);                 void retire_car__t6502(void);
 
 /* ================================================================================================
@@ -9336,6 +9433,7 @@ int main(int argc, char** argv)
     fail += test_irq1v_band_schedule();
     fail += test_print_spaces();
     fail += test_number_printers();
+    fail += test_lap_value_column();
     fail += test_dashboard_readouts();
     fail += test_add_frame_time();
     fail += test_tick_race_timers();

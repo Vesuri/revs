@@ -1215,6 +1215,11 @@ VALIDATE_FUNCS = {
     0x5052,
     # ⭐ TWIN #194 — $11BE retire_car, the run-out's per-car retirement.
     0x11BE,
+    # ⭐ TWIN #196 — $43D0 / $43E7 print_lap_value_field / print_lap_value_from_mid, the
+    # standings table's lap-time COLUMN (FUN_65d3's two call sites).  Two entries into one tail
+    # at $43EA, which stays transliterated as part of both oracles.
+    0x43D0,
+    0x43E7,
     # ⭐ TWIN #195 — $1163 finish_race, the end-of-session run-out (and the last transliterated
     # holder of check_car_pair / reject_all_object_slots / tick_race_timers).
     0x1163,

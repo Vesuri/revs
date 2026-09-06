@@ -729,6 +729,24 @@ void print_lap_time(void)
     cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;
 }
 
+/* $43D0 / $43E7 the lap-value table column — X is the car index AND the ambient OSWRCH
+   register; $43E7 takes the field's leading byte in A.  Both exit as print_spaces does. */
+void print_lap_value_field(void)
+{
+    uint8_t x = cpu.X, y = cpu.Y;
+    TextExit e = print_lap_value_field_core(x, y);
+    cpu.A = e.a; cpu.X = x; cpu.Y = y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;
+}
+
+void print_lap_value_from_mid(void)
+{
+    uint8_t x = cpu.X, y = cpu.Y;
+    TextExit e = print_lap_value_from_mid_core(cpu.A, x, y);
+    cpu.A = e.a; cpu.X = x; cpu.Y = y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;
+}
+
 void print_spaces(void)
 {
     /* $3D50 — A is the count, X/Y are the ambient OSWRCH registers.  The loop leaves them
