@@ -2976,6 +2976,42 @@ void parse_two_digit_ascii_core(uint8_t char0, uint8_t char1, ParseNum *out)
     out->n = (uint8_t)(((value - 0x29u) >> 7) & 1u);
 }
 
+/* ---------------------------------------------------------------------------
+   $3EE0  console_read_two_digits — READ A NUMBER 0..40 FROM THE CONSOLE (twin #201)
+
+   The pit-lane wing prompts' input routine, and it will not take no for an answer:
+   line-edit two characters into math_lo/math_hi, validate them with
+   parse_two_digit_ascii ($32D0), and on a bad or out-of-range pair rub the echoed
+   characters back out (one DELETE each) and ask again.  Returns the number in A;
+   the caller ($3C50) stores it straight into a wing setting and X/Y/flags are dead
+   there.
+
+   ⚠ console_io ($6300) is still transliterated, so its arguments go through the
+   6502 registers — A/Y the buffer address ($0074, i.e. math_lo/math_hi), X the field
+   width — and so does the ONE value this routine reads back out of it: the exit Y,
+   which console_io leaves holding the field width and which is exactly the number of
+   characters the DELETE loop has to undo.
+   --------------------------------------------------------------------------- */
+uint8_t console_read_two_digits_core(void)
+{
+    for (;;) {                                       /* $3EE0 — ask until the pair is valid */
+        ParseNum p;
+
+        arg_a(0x74u); arg_y(0x00u); arg_x(0x02u);    /* $3EE0-$3EE4 — buffer $0074, width 2 */
+        console_io();                                /* $3EE6 */
+
+        uint8_t y = cpu.Y;                           /* the characters console_io echoed */
+        uint8_t x = cpu.X;                           /* ...and the ambient OSWRCH register */
+
+        parse_two_digit_ascii_core(math_lo, math_hi, &p);   /* $3EE9 */
+        if (p.writeMathlo) math_lo = p.mathlo;       /* $74 — the per-path 6502 exit value */
+        if (!p.c) return p.a;                        /* $3EEC BCC — valid, and under 41 */
+
+        /* $3EEE-$3EF6 — DEY down through the echoed characters, sending a DELETE for each. */
+        while (y-- != 0u) mos_oswrch(0x7Fu, x, y);
+    }
+}
+
 /* ===========================================================================
    $635D  seed_car_track_position — place one car on the grid at (re)start  (#158)
    ---------------------------------------------------------------------------

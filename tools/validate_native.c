@@ -1288,6 +1288,107 @@ static int test_driver_name_pages(void)
     return fail;
 }
 
+/* ================================================================================================
+ * ⭐ TWIN #201 — $3EE0 console_read_two_digits, THE NUMBER PROMPT that will not take no for an
+ * answer, and parse_two_digit_ascii's last transliterated caller.
+ *
+ * The fixture is the twin-#200 typist again, but scripted as a SEQUENCE OF ATTEMPTS: zero to two
+ * rejected entries (a letter in either position, or a two-digit value of 41 or more) followed by
+ * one the validator accepts.  Each rejection is what exercises the routine's own body — the
+ * DELETE loop that rubs the echoed characters back out, whose length comes from console_io's exit
+ * Y and reaches the MOS as a run of OSWRCH $7F.
+ *
+ * ⚠ Termination is by construction and worth stating: past the end of the script rdch answers CR,
+ * console_io space-pads the field, and a leading space parses as '0' — so the worst case is a
+ * valid 0 rather than a spin.
+ *
+ * Exit A is live (the caller stores it into a wing setting); X/Y and the flags are dead there.
+ *
+ * SABOTAGE (each must FAIL, patch verified applied; counts measured, not predicted):
+ *   D70 the rub-out sends one DELETE too few              -> 1030/1500
+ *   D71 the parser reads the two characters swapped       -> 1379/1500
+ *   D72 the rub-out sends $7E, not DELETE ($7F)           -> 1030/1500 (MOS trace)
+ *   D73 an invalid pair is accepted instead of re-asked   -> 1030/1500
+ *   D74 math_lo's per-path 6502 exit value is not written -> 1500/1500
+ * ⚠ D70, D72 and D73 all read 1030 and that is NOT the stale-object tell: all three can only
+ * diverge on a case that has a REJECTED entry, and 1030 is how many of the 1500 have one (the
+ * fixture draws 0..2 rejects uniformly, so two thirds).  D71 sees the accepted entry too, and
+ * D74 every case.
+ * ⚠⚠ TWO OBVIOUS DEFECTS ARE NOT USABLE HERE, and for one reason: the loop only ends when the
+ * parser accepts something.  Point the buffer at $75 instead of $74, or ask console_io for a
+ * one-character field, and math_lo is never written by the line editor — the routine re-asks
+ * for ever and the harness HANGS instead of failing (observed, not predicted; the twin-#198 D55
+ * shape).  A hang is a detection, but it cannot be scored, so both were replaced above.
+ * ============================================================================================= */
+void console_read_two_digits(void);  void console_read_two_digits__t6502(void);
+
+static int test_console_number(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("console_read_two_digits");
+    if (!want("console_read_two_digits")) return 0;
+
+    {
+        int sub = 0, sawRetry = 0, sawFirstTime = 0, sawSingle = 0, sawTooBig = 0, sawBadChar = 0;
+        int cases = 1500 * scale;
+        for (t = 0; t < cases; t++) {
+            unsigned char keys[40];
+            int n = 0, a, bad;
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            c.D = 0;
+            c.S = 0xFFu;
+
+            int rejects = (int)(xs() % 3u);          /* 0..2 entries the validator throws out */
+            if (rejects) sawRetry = 1; else sawFirstTime = 1;
+            for (a = 0; a < rejects; a++) {
+                bad = (int)(xs() % 3u);
+                if (bad == 0) {                      /* a letter first — rejected before math_lo */
+                    keys[n++] = (unsigned char)('A' + (xs() % 26u));
+                    keys[n++] = (unsigned char)('0' + (xs() % 10u));
+                    sawBadChar = 1;
+                } else if (bad == 1) {               /* ...or second, after math_lo is written */
+                    keys[n++] = (unsigned char)('0' + (xs() % 10u));
+                    keys[n++] = (unsigned char)('A' + (xs() % 26u));
+                    sawBadChar = 1;
+                } else {                             /* in range for the parser, too big for a wing */
+                    unsigned v = 41u + (xs() % 59u);
+                    keys[n++] = (unsigned char)('0' + v / 10u);
+                    keys[n++] = (unsigned char)('0' + v % 10u);
+                    sawTooBig = 1;
+                }
+                keys[n++] = 0x0Du;
+            }
+            if (xs() & 1) {                          /* the accepted entry: one digit... */
+                keys[n++] = (unsigned char)('0' + (xs() % 10u));
+                sawSingle = 1;
+            } else {                                 /* ...or two, 00..40 */
+                unsigned v = xs() % 41u;
+                keys[n++] = (unsigned char)('0' + v / 10u);
+                keys[n++] = (unsigned char)('0' + v % 10u);
+            }
+            keys[n++] = 0x0Du;
+            platform_test_rdch_seq(keys, n);
+
+            sub += diff_run("console_read_two_digits", pre, c,
+                            console_read_two_digits, console_read_two_digits__t6502,
+                            LIVE_A, t, &printed);
+        }
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=A (the wing setting)\n",
+               "console_read_two_digits", cases, sub);
+        if (!(sawRetry && sawFirstTime && sawSingle && sawTooBig && sawBadChar)) {
+            printf("VACUOUS: console_read_two_digits missed a retry, a single digit or a reject kind\n");
+            fail++;
+        }
+    }
+    return fail;
+}
+
 void retire_car(void);                 void retire_car__t6502(void);
 
 /* ================================================================================================
@@ -10087,6 +10188,7 @@ int main(int argc, char** argv)
     fail += test_standings_leaves();
     fail += test_dismiss_waiters();
     fail += test_driver_name_pages();
+    fail += test_console_number();
     fail += test_standings_table();
     fail += test_dashboard_readouts();
     fail += test_add_frame_time();

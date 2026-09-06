@@ -587,6 +587,7 @@ uint8_t text_script_interp_core(uint8_t tableIdx);
 uint8_t menu_wait_key_core(uint8_t count);
 typedef struct { uint8_t a, c, z, n, mathlo, writeMathlo; } ParseNum;
 void parse_two_digit_ascii_core(uint8_t char0, uint8_t char1, ParseNum *out);
+uint8_t console_read_two_digits_core(void);
 uint8_t seed_car_track_position_core(uint8_t x, uint8_t entropy, uint8_t *mathlo_out);
 int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out);
 /* The number/name printers ($3250/$37D0/$37D6/$7B9C).  TextChar is what the shared $5092

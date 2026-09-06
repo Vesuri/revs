@@ -998,6 +998,13 @@ void menu_draw_gfx_bars(void)
     menu_draw_gfx_bars_core();
 }
 
+/* $3EE0 console_read_two_digits — no entry registers; exit A is the number the caller stores
+   into a wing setting, and X/Y/flags are dead there ($3C5D/$3C68 are both STA). */
+void console_read_two_digits(void)
+{
+    cpu.A = console_read_two_digits_core();
+}
+
 void parse_two_digit_ascii(void)
 {
     /* $32D0 — validate/parse the two ASCII chars in math_lo/math_hi (twin #157).  The core reads
