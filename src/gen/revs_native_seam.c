@@ -1503,3 +1503,4 @@ void reverse_walk_direction(void) { reverse_walk_direction_core(); }
 
 void clear_surface_buffers(void) { clear_surface_buffers_core(); }   /* exit ABI dead */
 void fill_line_surface(void)     { fill_line_surface_core(); }       /* exit ABI dead */
+void advance_player_section(void) { advance_player_section_core(); }   /* exit ABI dead */

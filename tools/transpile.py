@@ -555,6 +555,7 @@ MANUAL_FUNCS = set()
 # pick the twins — the Atari port chose them by reasoning and got the choice wrong
 # (docs/perf-method.md).
 VALIDATE_FUNCS = {
+    0x24B9,           # twin #215: advance_player_section
     0x66B6, 0x18BC,   # twins #213-#214: the per-scan-line surface table
 
     # The road walk's DIRECTION cluster — the last unnamed transliterated routines that were

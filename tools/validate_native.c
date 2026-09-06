@@ -1355,6 +1355,79 @@ static void walk_cluster_pre(uint8_t* pre)
     pre[0x1426] = 0x20; pre[0x1427] = 0xDA; pre[0x1428] = 0x13;   /* walk dir hook:     $13DA */
 }
 
+void advance_player_section(void);   void advance_player_section__t6502(void);
+
+/* ---------------------------------------------------------------------------
+   Twin #215 — advance_player_section.
+   ---------------------------------------------------------------------------
+   Shares walk_cluster_pre with the direction cluster, because every arm of this
+   routine ends in one of those walks.  On top of it the fixture pins the three
+   per-circuit SMC sites to their unpatched Silverstone bytes (the harness cannot
+   run a circuit hook) and steers the two deciders: the subdivision count $13
+   across its whole window, and the heading drift so the reverse arm is reached.
+   --------------------------------------------------------------------------- */
+static int test_advance_player_section(void)
+{
+    static uint8_t pre[65536];
+    static const uint16_t IGN[] = { 0x01FF };            /* build_road_section's PHP/PLP byte */
+    int fail = 0, printed = 0, t;
+    int cases, sub = 0;
+    int sawReverse = 0, sawShort = 0, sawEqual = 0, sawBack1 = 0, sawBack2 = 0, sawQuad = 0;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("advance_player_section");
+    if (!want("advance_player_section")) return 0;
+    cases = 1500 * scale;
+
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+    set_ignore(IGN, 1);
+    for (t = 0; t < cases; t++) {
+        uint8_t count, drift, doubled, sd;
+        Cpu6502 c = zero_cpu();
+        fill_random(pre);
+        walk_cluster_pre(pre);
+        pre[0x24DE] = 0x20; pre[0x24DF] = 0xF3; pre[0x24E0] = 0x12;   /* JSR $12F3 */
+        pre[0x24E9] = 0xC9; pre[0x24EA] = (xs() & 1u) ? 0x0Eu : 0x0Du;      /* CMP #imm, both real values */
+        pre[0x24F2] = 0x20; pre[0x24F3] = 0x0B; pre[0x24F4] = 0x14;   /* JSR $140B */
+        /* the subdivision count, mostly inside its own window */
+        pre[0x0013] = (xs() & 1u) ? (uint8_t)(0x08u + (xs() % 0x0Cu)) : (uint8_t)xs();
+        c.D = 0;                                          /* the geometry path, always binary */
+        c.S = 0xFFu;
+        c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+
+        /* which arm this case will take, computed the same way the twin does */
+        drift = (uint8_t)(pre[0x0044] - pre[0x62E2]);
+        if (drift & 0x80u) drift ^= 0xFFu;
+        doubled = (uint8_t)(drift << 1);
+        sd = (uint8_t)(doubled ^ pre[0x0025]);
+        if (sd & 0x80u) {
+            if (doubled >= 0x80u) sd ^= 0x7Fu;
+            if (sd < 0xFCu) sawReverse = 1;
+        }
+        count = pre[0x0013];
+        if (count < 0x0Cu) sawShort = 1;
+        else if (count == 0x0Cu) sawEqual = 1;
+        else if (count == pre[0x24EA]) sawBack1 = 1;
+        else if (count > pre[0x24EA]) sawBack2 = 1;
+        if (pre[0x0043] & 0x80u) sawQuad = 1;
+
+        sub += diff_run("advance_player_section", pre, c,
+                        advance_player_section, advance_player_section__t6502,
+                        LIVE_NONE, t, &printed);
+    }
+    set_ignore(0, 0);
+    fail += sub;
+    printf("%-32s %7d cases, %d mismatch (must be 0)  live=none (the body discards it)\n",
+           "advance_player_section", cases, sub);
+    if (!(sawReverse && sawShort && sawEqual && sawBack1 && sawBack2 && sawQuad)) {
+        printf("VACUOUS: advance_player_section missed an arm (%d%d%d%d%d%d)\n",
+               sawReverse, sawShort, sawEqual, sawBack1, sawBack2, sawQuad);
+        fail++;
+    }
+    return fail;
+}
+
 void clear_surface_buffers(void);   void clear_surface_buffers__t6502(void);
 void fill_line_surface(void);       void fill_line_surface__t6502(void);
 
@@ -10839,6 +10912,7 @@ int main(int argc, char** argv)
     fail += test_standings_leaves();
     fail += test_dismiss_waiters();
     fail += test_driver_name_pages();
+    fail += test_advance_player_section();
     fail += test_surface_table();
     fail += test_walk_direction();
     fail += test_console_io();

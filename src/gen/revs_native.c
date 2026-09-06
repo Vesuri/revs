@@ -65,6 +65,9 @@
 #define SMC_GAP_WALK_BRANCH    0x1DD4u  /* column_gap_walk: the source-byte branch (BEQ $1DC5) */
 #define SMC_OBJECT_CEILING     0x1FE9u  /* plot_object: the object-count ceiling (LDX #imm) */
 #define SMC_REBASE_BRANCH      0x231Au  /* the rebase pair's BEQ — taken or not, per circuit */
+#define SMC_SECTION_AHEAD_HOOK 0x24DEu  /* advance_player_section: step-forward hook JSR */
+#define SMC_SECTION_BACK_LIMIT 0x24E9u  /* advance_player_section: the CMP #imm step-back gate */
+#define SMC_WALK_BACK_HOOK     0x24F2u  /* advance_player_section: step-back hook JSR */
 #define SMC_EDGE_WALK_HOOK     0x248Bu  /* road_edge_walk: BCS vs the circuit's own JMP */
 #define SMC_GEOMETRY_STORE     0x2538u  /* build_track_geometry: STA abs,Y vs a hook JSR */
 #define SMC_HALF_WIDTH_CALL    0x2542u  /* horizon_half_width_at: the JSR whose target moves */
@@ -15887,4 +15890,84 @@ void fill_line_surface_core(void)
         if (here != 0u) colour = here;
         mem[VIEW_LINE_SURFACE + line] = colour;
     }
+}
+
+/* ---------------------------------------------------------------------------
+   $24B9  advance_player_section  (twin #215)
+   ---------------------------------------------------------------------------
+   The body's 7th call: moves the CURSOR into the section arrays, not the car.
+   Two decisions, in order.
+
+   (a) Has the car turned so far off the section's own bearing that the whole
+       walk should run the other way?  The heading difference is folded to a
+       magnitude, doubled, and signed by track_direction; if that lands in the
+       narrow band below -4 the walk reverses (reverse_walk_direction) and the
+       frame is done.
+   (b) Otherwise the subdivision count build_track_geometry left in
+       edge_nearest_section says whether the road ahead ran short or long:
+       below $0C step the cursor FORWARD one section, above the (per-circuit)
+       ceiling step it BACK one or two, and at exactly $0C do neither.  Either
+       way a forward step also happens whenever section_quad_flags' bit 7 is
+       set — the quarter-turn shift register wanting another section built.
+
+   ⚠ THREE per-circuit SMC sites, all three hook JSRs or their operands
+   (make track-smc): the forward call at $24DE (Donington redirects it to
+   $53E9), the ceiling byte at $24EA ($0E unpatched, $0D on all four expansion
+   circuits) and the back-step call at $24F2 (all four redirect it to $55BD).
+   The hook arms hand over A and the CMP's flags; X and Y arrive from the body
+   untouched by this routine and are passed through as they stand.
+   --------------------------------------------------------------------------- */
+static int section_hook_call(uint16_t site, uint16_t silverstone,
+                             void (*silverstoneFn)(void), uint8_t a, int carry, int zero)
+{
+    uint16_t target;
+    if (mem[site] != 0x20) { platform_smc_unhandled(site, mem[site]); return 0; }
+    target = (uint16_t)(mem[site + 1] | (mem[site + 2] << 8));
+    if (target == silverstone) { silverstoneFn(); return 1; }
+    if (target >= 0x5300u && target <= 0x5A25u) {
+        cpu.A = a;                                   /* edge_nearest_section, as the CMP left it */
+        cpu.C = (uint8_t)carry;
+        cpu.Z = (uint8_t)zero;
+        cpu.N = (uint8_t)((a >> 7) & 1u);
+        revs_track_hook(target);
+        return 1;
+    }
+    platform_smc_unhandled(site, target);
+    return 0;
+}
+
+void advance_player_section_core(void)
+{
+    /* (a) the heading drift, as a signed quantity in the walk's own sense */
+    uint8_t drift = (uint8_t)(section_yaw - heading_step_hi);       /* $24B9-$24BC */
+    if (drift & 0x80u) drift ^= 0xFFu;                              /* $24BF-$24C1 — fold to magnitude */
+    uint8_t doubled = (uint8_t)(drift << 1);                        /* $24C3 */
+    int      wide   = (doubled >= 0x80u);                           /* $24C4 CMP #$80 */
+    uint8_t  signedDrift = (uint8_t)(doubled ^ track_direction);    /* $24C6 */
+    if (signedDrift & 0x80u) {                                      /* $24C8 — only the negative side */
+        if (wide) signedDrift ^= 0x7Fu;                             /* $24CA-$24CC — reflect the fold */
+        if (signedDrift < 0xFCu) {                                  /* $24CE-$24D0 */
+            reverse_walk_direction_core();                          /* $24D2 — run the walk the other way */
+            return;
+        }
+    }
+
+    /* (b) the subdivision count against its window */
+    uint8_t count = edge_nearest_section;                           /* $24D6 */
+    if (count > 0x0Cu) {                                            /* $24DC — the road ran long */
+        uint8_t ceiling = mem[SMC_SECTION_BACK_LIMIT + 1];          /* $24EA — $0E, $0D per circuit */
+        if (count < ceiling) return;                                /* $24EB */
+        if (count != ceiling)                                       /* $24ED — over it: step back twice */
+            rebuild_walk_backward_core();                           /* $24EF */
+        section_hook_call(SMC_WALK_BACK_HOOK, 0x140Bu, rebuild_walk_backward_core,
+                          count, 1, count == ceiling);              /* $24F2 */
+        return;
+    }
+    if (count < 0x0Cu) {                                            /* the road ran short */
+        if (!section_hook_call(SMC_SECTION_AHEAD_HOOK, 0x12F3u, build_section_ahead_core,
+                               count, 0, 0))                        /* $24DE */
+            return;
+    }
+    if (section_quad_flags & 0x80u)                                 /* $24E1-$24E3 */
+        build_section_ahead_core();                                 /* $24E5 */
 }
