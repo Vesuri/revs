@@ -12853,7 +12853,7 @@ void car_order_swap_core(uint8_t xi, uint8_t yi, uint8_t* outX, uint8_t* outY)
    record the cars immediately ahead and behind.  Scans car_order from slot 19 down; a
    miss leaves the slot at $FF (the 6502's DEX-past-0), which the mod-20 helpers then
    wrap exactly as the original did. */
-static void find_player_neighbours_core(void)
+static uint8_t find_player_neighbours_core(void)
 {
     uint8_t p = player_car;
     int i = 0x13;
@@ -12863,10 +12863,10 @@ static void find_player_neighbours_core(void)
     mem[FPN_PLAYER_SLOT] = slot;
     car_ahead  = car_index_inc_core(slot);
     car_behind = car_index_dec_core(slot);
-    cpu.X = car_behind;                          /* exit ABI: X = the last index computed */
+    return car_behind;                           /* exit ABI: X = the last index computed */
 }
 
-void find_player_neighbours(void) { find_player_neighbours_core(); }
+void find_player_neighbours(void) { cpu.X = find_player_neighbours_core(); }
 
 /* $5011 clear_race_clock — zero the 3-byte BCD race clock for car X. */
 void clear_race_clock_core(uint8_t x)
