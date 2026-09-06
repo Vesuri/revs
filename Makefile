@@ -186,7 +186,7 @@ TARGET   := build/revs
 
 .PHONY: all clean gen validate image runtime dashcode sweep endian-lint refloop refloop-keys \
         mode7 mode7-fixture font mos-font refloop-charset refloop-comp track-patch \
-        tracks tracks-gen track-fixtures track-smc track-smc-check track-run \
+        tracks tracks-gen track-fixtures track-smc track-smc-check track-run viewdiff \
         trackmenu trackmenu-fixture titlescreen \
         sound sound-fixture sound-fixture-race determinism determinism-record fbwrites \
         determinism-drive determinism-drive-record \
@@ -662,6 +662,47 @@ TRACK  ?= 5
 refloop:
 	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs \
 	    --frames=$(FRAMES) --track=$(TRACK) --wing=$(WING) --drive --dump=tmp/bbcref
+
+# ⭐⭐ THE ONE GATE ON A HOOK SEAM'S PATCHED ARM.  `validate`, `determinism` and `-drive` all race
+# SILVERSTONE, and Silverstone patches nothing; `tracks` proves an expansion circuit's bytes land
+# and `track-run` proves its code runs — neither that it COMPUTES.  This races the same parked
+# scene on a real BBC and on the port and compares the frame buffer byte for byte.
+#
+#   make viewdiff                  every circuit this build has a real-BBC counterpart for
+#   make viewdiff CIRCUITS="0 1"   just those (PORT indices: 0 = Silverstone)
+#   make viewdiff BBCFRAMES=40 FRAME=60
+#
+# ⭐ PARKED on both sides, and that is the whole reason a comparison is possible: a moving car
+# diverges on the first input frame and every byte then differs for reasons that are not bugs.
+# --park leaves the engine running in first gear and touches nothing, which is exactly the state
+# src/platform/autorun.cpp parks the port in, so the scene is static and frame alignment stops
+# mattering.  Only display lines 82+ are gated — the text rows and the sky band above them carry
+# the clocks (which do differ) and, in the sky, live code.
+# ⚠ It leaves the tree in the default configuration for the same reason `track-run` does.
+BBCFRAMES ?= 40
+viewdiff:
+	@set -e; mkdir -p tmp; \
+	list="$(if $(CIRCUITS),$(CIRCUITS),0 1 2 3 4)"; \
+	frame=$(if $(FRAME),$(FRAME),60); fails=0; \
+	for t in $$list; do \
+	  case $$t in 0) bt=5;; *) bt=$$t;; esac; \
+	  (cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs \
+	      --frames=$(BBCFRAMES) --track=$$bt --wing=$(WING) --park --dump=tmp/viewdiff_$$t) \
+	      >tmp/viewdiff_$$t.log 2>&1 || { echo "  FAIL circuit $$t: the BBC run died (tmp/viewdiff_$$t.log)"; fails=1; continue; }; \
+	  bbc=$$(ls tmp/viewdiff_$$t/bbc_fb_*.bin | tail -1); \
+	  $(MAKE) --no-print-directory clean >/dev/null; \
+	  $(MAKE) --no-print-directory STRAIGHT_TO_RACE=1 TRACK=$$t >/dev/null; \
+	  REVS_SCREEN_DUMP=tmp/viewdiff_port_$$t.bin REVS_SCREEN_FRAME=$$frame \
+	      REVS_QUIT_AFTER_DUMP=1 timeout $(if $(TIMEOUT),$(TIMEOUT),300) ./build/revs 2>&1 | tail -1 | sed -n 's/^/  /p'; \
+	  echo "  circuit $$t:"; \
+	  st=0; python3 tools/fb_diff.py $$bbc tmp/viewdiff_port_$$t.bin >tmp/viewdiff_$$t.diff 2>&1 || st=$$?; \
+	  sed -n 's/^/    /p' tmp/viewdiff_$$t.diff; \
+	  [ $$st = 0 ] || { echo "    FAIL circuit $$t: the view differs from the real BBC"; fails=1; }; \
+	done; \
+	$(MAKE) --no-print-directory clean >/dev/null; \
+	$(MAKE) --no-print-directory $(TARGET) >/dev/null; \
+	[ $$fails = 0 ] || { echo "viewdiff: a circuit's VIEW differs from the real BBC"; exit 1; }; \
+	echo "viewdiff: every circuit's view matches the real BBC over display lines 82+"
 
 # ⭐⭐ THE STORE CENSUS — every frame-buffer write a REAL BBC makes, attributed to the routine that
 # made it, over the whole picture.  This is the measurement docs/direct-bitplane-plan.md §3's layout

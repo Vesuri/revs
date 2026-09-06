@@ -110,7 +110,13 @@ const opt = (name, dflt) => {
 const wantFrames = Number(opt("frames", 200));
 const track = Number(opt("track", 5)); // 5 = Silverstone
 const dumpDir = opt("dump", null);
-const drive = argv.includes("--drive");
+// ⚠ --park is a STOPPING POINT INSIDE the drive-in sequence, not an alternative to it: the
+// starter and the gear change live under `if (drive)` below, so `--park` on its own once
+// captured a car that was still in the pits with the engine OFF — a dump that compares fine
+// against a port in the same state and proves nothing about a running engine.  It implies
+// --drive for that reason.  (`park` is declared further down; hoisted here.)
+const park = argv.includes("--park");
+const drive = argv.includes("--drive") || park;
 const wing = String(opt("wing", "20")); // rear and front wing, 0-40 (the game has no default)
 // --fill=lo-hi : attribute every frame-buffer write in those DISPLAY LINES to the routine
 // that made it.  This is how you find the fill loop the port is failing to run: the real BBC
@@ -143,13 +149,18 @@ const charset = argv.includes("--charset");
 const competition = argv.includes("--competition");
 // --park : start the engine, engage first gear, and then TOUCH NOTHING — no throttle, no
 // steering — before rendering the frames and dumping.  ⭐ This exists so a dump can be compared
-// with the port's, because `src/platform/autorun.cpp` parks in exactly this state (measured with
-// amiga/dash_state.gdb: $61=$FF, $40=2, $63=0, $3C=$28).  ⚠ Plain --drive holds the throttle and
+// with the port's, because `src/platform/autorun.cpp` parks in exactly this state.
+// ⭐⭐ AND THE STATE IS A STALLED ENGINE, not an idling one — measured here, 2026-09-06, on both
+// machines: first gear with no throttle drops the revs below 3 within a second and $4A43 INCs
+// $61 from $FF back to 0.  So the settled parked row is $61=$00, $3C=$00, $40=2, $63=0.  (An
+// earlier note here quoted $61=$FF / $3C=$28, which is the row printed one second EARLIER —
+// "engine on, first gear, no throttle", before the stall.)  The port reproduces the stall
+// exactly, which is what makes the parked frame comparable at all.  ⚠ Plain --drive holds the throttle and
 // steers, so its dump is taken at speed on a moving car: comparing it against a parked target is
 // comparing two different scenes, which is the trap this project has paid for more than once.
 // The dashboard is the reason it matters — a needle is a function of $3C, so the two machines
 // have to be at the same $3C before a pixel diff of the dial means anything.
-const park = argv.includes("--park");
+// (park is declared beside `drive` above — --park implies --drive.)
 // --via-t2 : measure WHAT THE GAME ACTUALLY READS FROM $FE68, on real hardware.  The port
 // answered a constant $0 there, and $FE68 is Revs's ONLY entropy source (the starter's catch
 // delay, the idle-rev jitter, the gravel/skid trigger, the mirrors' shudder), so "what is the
