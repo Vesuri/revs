@@ -2206,13 +2206,13 @@ void load_section_triple_core(uint8_t destSection, uint8_t segmentByte)
 /* ⭐ WIDE-VALUE CLEANUP, mechanism (B): hypot_max ($7A/$7B) relocated out of mem[] into this
    native uint16_t.  It is the LARGER of the two ground-plane magnitudes bearing_to_section
    sorts, handed straight to point_distance_hypot — one producer, one consumer, both native, and
-   the shipping glue between them (project_object_slot, region_23d8) never touches the cells.  So the pair
-   travels in a single 68000 word instead of the two byte stores plus the load/shift/or the
-   transliteration paid on every edge point of every frame.
+   the shipping glue between them (project_object_slot, region_23d8) never touches the cells.  So
+   the pair travels in a single 68000 word instead of the two byte stores plus the load/shift/or
+   the transliteration paid on every edge point of every frame.
 
    ⚠⚠ THE CELLS ARE NOT FREED — $7A/$7B HAVE A SECOND TENANT.  plot_view_src_line uses them as
-   PVS_BYTE/PVS_MODE (see the #defines over that twin) and FUN_1d94, its transliterated tail,
-   reads $7B back.  That tenancy keeps mem[] and is untouched by this relocation; only the
+   PVS_BYTE/PVS_MODE (see the #defines over that twin) and $1D94, its transliterated tail
+   (unnamed — docs/rename.md), reads $7B back.  That tenancy keeps mem[] and is untouched by this relocation; only the
    hypot's own use of the pair moves.
 
    ⚠ THE 6502-ABI BOUNDARY KEEPS THE TWO REPRESENTATIONS IN STEP.  Wherever a transliterated

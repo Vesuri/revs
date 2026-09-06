@@ -290,3 +290,19 @@ per-circuit bytes still absent from `symbols.csv`, deliberately: an `smc` row th
 "`FUN_4ca4`'s third table base" documents nothing).  Cheap settlement: it is not twinned, so
 bracket it in a `PROBES=1` run to see how often it is called and with what `$45`, then dump
 `$0397`/`$03AF` across a lap.
+
+
+## `$1D94` — `plot_view_src_line`'s transliterated tail, and the second tenant of `$7A/$7B`
+
+`$1D94` has no `symbols.csv` row, and it is not incidental: it is the shipping tail of
+`plot_view_src_line` and it is the reason `hypot_max`'s relocation could not free `$7A/$7B` — it
+reads `$7B` back as `PVS_MODE`, the other tenancy of that pair (the note over `hypot_max_v` in
+`src/gen/revs_native.c` records the split).  So the cells stay in `mem[]` for a routine whose job
+is written down nowhere.
+
+⇒ **Cheap settlement**: it is transliterated, so it needs no twin to be read — disassemble
+`$1D94` out of `disasm/listing.txt` and record what it does with `$7A/$7B` and where it returns.
+Two candidates from its one caller: it is either the line's STORE (the plotter's tail, in which
+case `PVS_MODE` selects the store form) or the per-line ADVANCE.  A name plus a `var` note on
+`$7B`'s second tenant closes both this entry and the `⚠⚠` in that twin's header.
+
