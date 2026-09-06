@@ -1289,6 +1289,126 @@ static int test_driver_name_pages(void)
 }
 
 /* ================================================================================================
+ * ⭐ TWINS #208-#212 — THE ROAD WALK'S DIRECTION CLUSTER: $12F3 build_section_ahead,
+ * $1420 rebuild_walk_reversed, $140B rebuild_walk_backward, $13FB reverse_walk_direction
+ * (and $1433 step_walk_one_segment, a static all four reach).
+ *
+ * These MOVE the walk; build_road_section (twin #147, case 20 above) builds one section of it.
+ * So the pre-state here is that fixture's, and every case runs the road builder between 1 and
+ * 256 times over it — which is the point: a defect in the direction bit or the section count
+ * shows up as a whole ring of wrong geometry, and nothing smaller would reach it.
+ *
+ * The counts are the ring's: $78 bytes of three-byte sections = 40 = $28, so $27 is one short
+ * and $40 = 64 a full overwrite with margin.  rebuild_walk_reversed takes its count in X and
+ * the fixture sweeps the three real values plus 1..3 (a count of 0 means 256 and is swept too,
+ * because the 6502's DEC/BNE loop tests at the bottom).
+ *
+ * ⚠ track_direction is randomised over BOTH senses in every entry: the cluster's whole job is
+ * that bit, and $1420 is the image's only writer of it.
+ *
+ * Exit ABI: LIVE_NONE.  Every caller is road_edge_walk's tail ($24D2/$24E5/$24EF/$24F2), which
+ * either returns immediately or falls into its own next test with nothing carried over — and the
+ * registers that come out are build_road_section's leavings, not a result.
+ *
+ * SABOTAGE (each must FAIL, patch verified applied; counts measured, not predicted):
+ *   D95 build_section_ahead steps AGAINST the direction of travel  -> 2000/2000
+ *   D96 rebuild_walk_reversed does not flip track_direction        ->  400/400
+ *   D97 rebuild_walk_backward's second pass rebuilds 40, not 39    ->  200/200
+ *   D98 reverse_walk_direction leaves near_edge_last alone         ->  100/200
+ * ⚠ D98's other half is the THIRD explanation for a surviving sabotage — no change at all.
+ *   cross_section_boundary writes near_edge_last = 6 itself whenever the rebuild crosses a
+ *   segment boundary with far_edge_rebuild set, so the deleted store is only observable on a
+ *   case whose 64 sections cross none.  Confirmed by splitting the fixture on the direction
+ *   bit: pinned forward (so the rebuild runs BACKWARD, where a crossing needs offset == 0 and
+ *   is rare) the defect shows in 149 of 200; pinned backward (the rebuild runs forward, where
+ *   nearly every step crosses) in 36.  That split also proves the flip at $1424 really happens.
+ * ============================================================================================= */
+void build_section_ahead(void);     void build_section_ahead__t6502(void);
+void rebuild_walk_reversed(void);   void rebuild_walk_reversed__t6502(void);
+void rebuild_walk_backward(void);   void rebuild_walk_backward__t6502(void);
+void reverse_walk_direction(void);  void reverse_walk_direction__t6502(void);
+
+/* The road builder's own pre-state (see case 20 of test_late_misc_trees), plus the $1426
+   dir-index hook this cluster dispatches on.  Returns the player's segment index. */
+static void walk_cluster_pre(uint8_t* pre)
+{
+    uint8_t cnt8 = (uint8_t)((1 + xs() % 31) * 8);       /* segment_count_x8 (a multiple of 8) */
+    uint8_t seg  = (uint8_t)((xs() % (cnt8 / 8)) * 8);
+    pre[0x59FA] = cnt8;
+    pre[0x59FB] = (uint8_t)(1 + xs() % 40);              /* track_dir_count */
+    pre[0x59FC] = (uint8_t)xs();                         /* lap_length lo/hi (nonzero) */
+    pre[0x59FD] = (uint8_t)(1 + xs() % 0x7F);
+    pre[0x06FF] = seg;                                   /* player_car_segment */
+    pre[0x0024] = (uint8_t)(xs() % 0x75);                /* section_cursor */
+    pre[0x0001] = (uint8_t)xs();                         /* cur_segment_flags */
+    pre[0x0002] = (uint8_t)(xs() % pre[0x59FB]);         /* segment_dir_index */
+    pre[0x006F] = (uint8_t)(xs() % 20);                  /* player_car */
+    pre[0x0025] = (uint8_t)((xs() & 1) ? (xs() | 0x80) : (xs() & 0x7F));   /* track_direction */
+    /* a mix of short and long segments, so boundaries are crossed on some sections and not others */
+    { int k; for (k = 0; k < 256; k++) pre[0x5907 + k] = (uint8_t)((xs() & 1) ? 1 : (0x40 + xs() % 0xC0)); }
+    /* every SMC site on the path unpatched (Silverstone) */
+    pre[0x12FB] = 0x18; pre[0x12FC] = 0x69;              /* section advance: CLC; ADC #3 */
+    pre[0x1310] = 0x29;                                  /* lap marker: AND #$F8 */
+    pre[0x1248] = 0xB9;                                  /* load_section: LDA $5905,Y */
+    pre[0x1289] = 0x20; pre[0x128A] = 0xE0; pre[0x128B] = 0x13;   /* cross backward: step dir */
+    pre[0x13C9] = 0x20; pre[0x13CA] = 0xDA; pre[0x13CB] = 0x13;   /* section tail hook: $13DA */
+    pre[0x1426] = 0x20; pre[0x1427] = 0xDA; pre[0x1428] = 0x13;   /* walk dir hook:     $13DA */
+}
+
+static int test_walk_direction(void)
+{
+    static uint8_t pre[65536];
+    static const uint16_t IGN[] = { 0x01FF };            /* build_road_section's PHP/PLP byte */
+    struct { const char* name; void (*nat)(void); void (*ref)(void); int cases; }
+      list[4] = {
+        { "build_section_ahead",    build_section_ahead,    build_section_ahead__t6502,    2000 },
+        { "rebuild_walk_reversed",  rebuild_walk_reversed,  rebuild_walk_reversed__t6502,   400 },
+        { "rebuild_walk_backward",  rebuild_walk_backward,  rebuild_walk_backward__t6502,   200 },
+        { "reverse_walk_direction", reverse_walk_direction, reverse_walk_direction__t6502,  200 },
+      };
+    int fail = 0, printed = 0, t, i;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    for (i = 0; i < 4; i++) register_fixture(list[i].name);
+
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+    for (i = 0; i < 4; i++) {
+        int cases = list[i].cases * scale, sub = 0, sawFwd = 0, sawBwd = 0, sawRing = 0;
+        if (!want(list[i].name)) continue;
+        set_ignore(IGN, 1);
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            walk_cluster_pre(pre);
+            c.D = 0;                                     /* the geometry path, always binary */
+            c.S = 0xFFu;
+            c.A = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            if (i == 1) {                                /* the section count, in X */
+                static const uint8_t counts[6] = { 0x28, 0x27, 0x40, 0x01, 0x02, 0x03 };
+                c.X = counts[xs() % 6u];
+                if (c.X >= 0x27u) sawRing = 1;
+            } else {
+                c.X = (uint8_t)xs();                     /* dead on entry everywhere else */
+                sawRing = 1;
+            }
+            if (pre[0x0025] & 0x80) sawBwd = 1; else sawFwd = 1;
+
+            sub += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref, LIVE_NONE, t, &printed);
+        }
+        set_ignore(0, 0);
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=none (road_edge_walk's tail)\n",
+               list[i].name, cases, sub);
+        if (!(sawFwd && sawBwd && sawRing)) {
+            printf("VACUOUS: %s missed a direction sense or the ring-sized count\n", list[i].name);
+            fail++;
+        }
+    }
+    return fail;
+}
+
+/* ================================================================================================
  * ⭐ TWIN #207 — $6300 console_io, THE LINE EDITOR, and the last transliterated callee of any
  * native core (console_read_two_digits and read_driver_name were reaching it through A/Y/X).
  *
@@ -10634,6 +10754,7 @@ int main(int argc, char** argv)
     fail += test_standings_leaves();
     fail += test_dismiss_waiters();
     fail += test_driver_name_pages();
+    fail += test_walk_direction();
     fail += test_console_io();
     fail += test_console_number();
     fail += test_wing_prompt();

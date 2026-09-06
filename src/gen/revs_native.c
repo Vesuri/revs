@@ -59,6 +59,7 @@
 #define SMC_SECTION_ADVANCE    0x12FBu  /* build_road_section: CLC/ADC #3 vs a hook JSR */
 #define SMC_MARKER_MASK        0x1310u  /* build_road_section: AND #$F8 vs LDA #imm */
 #define SMC_SECTION_TAIL_HOOK  0x13C9u  /* build_road_section's tail: a hook JSR */
+#define SMC_WALK_DIR_HOOK      0x1426u  /* rebuild_walk_reversed: the dir-index hook JSR */
 #define SMC_CONTROLS_HOOK      0x1593u  /* read_driving_controls: a hook JSR */
 #define SMC_FILL_ATTR_HOOK     0x1946u  /* fill_line_attr: a hook JSR */
 #define SMC_GAP_WALK_BRANCH    0x1DD4u  /* column_gap_walk: the source-byte branch (BEQ $1DC5) */
@@ -15716,4 +15717,110 @@ uint8_t console_io_core(uint8_t ptrLo, uint8_t ptrHi, uint8_t width)
         y = (uint8_t)(y + 1);                        /* $6351 INY */
     } while (y != shared_temp_77);                   /* $6352 CPY */
     return 0x20u;
+}
+
+/* ===========================================================================
+   THE ROAD WALK'S DIRECTION CLUSTER  (twins #208-#212)
+   $1433 step_walk_one_segment · $12F3 build_section_ahead · $1420 rebuild_walk_reversed
+   $140B rebuild_walk_backward · $13FB reverse_walk_direction
+   ---------------------------------------------------------------------------
+   Everything that MOVES the road walk, as opposed to building one section of it
+   (build_road_section, twin #147).  road_edge_walk's tail decides each frame how far the
+   view has to travel and calls in here: one section along the direction of travel is the
+   ordinary case, one section back costs a whole re-lay of the ring, and a heading that has
+   crossed the track's costs a re-lay in the opposite direction.
+
+   The live ring is $78 bytes of three-byte sections = 40 sections, which is where the
+   counts come from: $28 = the whole ring, $27 = one short of it, $40 = a full overwrite
+   with a lap of margin.
+
+   ⚠ These were the last unnamed transliterated routines reachable in production
+   (FUN_1433 / FUN_12f3 / FUN_1420 / FUN_140b / FUN_13fb).
+   =========================================================================== */
+
+/* $1433 — step the PLAYER one segment along the walk.  `against` is the caller's carry: the
+   6502 rotates C into bit 7 and EORs it with track_direction, so a request that agrees with
+   the direction of travel advances the car's track position and one that disagrees retreats
+   it.  Both steppers take the player's slot, and both move the relocated distance counter,
+   so the marshal is here rather than in either core. */
+static void step_walk_one_segment_core(int against)
+{
+    uint8_t x = player_car;
+    car_distance_marshal_in_one(x);
+    if (((against ? 0x80u : 0x00u) ^ track_direction) & 0x80u)
+        track_pos_retreat_core(x);                   /* $143E — backwards along the track */
+    else
+        track_pos_advance_core(x);                   /* $143A — forwards */
+    car_distance_marshal_out_one(x);
+}
+
+/* $12F3 — the ordinary advance: one segment along the direction of travel, then build the
+   road section the walk has just reached. */
+void build_section_ahead_core(void)
+{
+    step_walk_one_segment_core(0);                   /* $12F3 CLC / $12F4 */
+    build_road_section();                            /* $12F7 — the boundary shim, see #147 */
+}
+
+/* $1420 — flip the direction of travel and rebuild `count` sections.  ⚠ It does NOT flip the
+   bit back: rebuild_walk_backward calls it twice to end where it started, and
+   reverse_walk_direction leaves it flipped on purpose.  $1424 is the image's only writer of
+   track_direction. */
+void rebuild_walk_reversed_core(uint8_t count)
+{
+    uint8_t dir = (uint8_t)(track_direction ^ 0x80u);
+    track_direction = dir;                           /* $1420-$1424 */
+
+    /* $1426 — the per-circuit dir-index hook.  The count is live in X across it and the
+       flipped direction in A with its sign, so the patched arm gets all three; the hook is
+       not obliged to preserve X, and the 6502 re-reads it into the loop counter after. */
+    if (mem[SMC_WALK_DIR_HOOK] != 0x20) {
+        platform_smc_unhandled(SMC_WALK_DIR_HOOK, mem[SMC_WALK_DIR_HOOK]); return;
+    }
+    {
+        uint16_t hook = (uint16_t)(mem[SMC_WALK_DIR_HOOK + 1] | (mem[SMC_WALK_DIR_HOOK + 2] << 8));
+        if (hook == 0x13DA) {
+            advance_dir_on_segment_flag();           /* Silverstone; preserves X */
+        } else if (hook >= 0x5300 && hook <= 0x5A25) {
+            cpu.A = dir; cpu.N = (dir >> 7) & 1u; cpu.Z = (dir == 0);
+            cpu.X = count;
+            revs_track_hook(hook);
+            count = cpu.X;
+        } else { platform_smc_unhandled(SMC_WALK_DIR_HOOK, hook); return; }
+    }
+
+    /* $1429-$1430 — build that many sections, counting down in the shared scratch cell (which
+       is where the walk's other users expect the count to be). */
+    shared_counter_42 = count;
+    do {
+        build_road_section();
+        shared_counter_42--;
+    } while (shared_counter_42 != 0u);                /* a count of 0 therefore runs 256 */
+}
+
+/* $140B — move the walk one section BACKWARD, which costs a full re-lay: step the car one
+   segment against the direction of travel, rebuild the whole ring in the flipped direction,
+   then 39 sections back in the original one, so the direction bit ends where it started.
+   far_edge_rebuild is held non-zero across both passes — cross_section_boundary reads it and
+   forces a full near-edge rebuild while it is set. */
+void rebuild_walk_backward_core(void)
+{
+    step_walk_one_segment_core(1);                   /* $140B SEC / $140C */
+    far_edge_rebuild = 0x28u;                        /* $140F-$1411 */
+    rebuild_walk_reversed_core(0x28u);               /* $1413 — 40 sections, reversed */
+    rebuild_walk_reversed_core(0x27u);               /* $1416 — 39 back the other way */
+    far_edge_rebuild = 0x00u;                        /* $141B-$141D */
+}
+
+/* $13FB — the U-turn.  The car's heading has crossed far enough past the track's that nothing
+   in the walk can be reused, so mark the whole near edge dead and rebuild 64 sections with the
+   direction of travel flipped ONCE — the flip is the point, not a side effect.
+   walk_reverse_active is raised across the rebuild for the per-circuit hook inside it; no
+   engine code reads it. */
+void reverse_walk_direction_core(void)
+{
+    near_edge_last      = 0x06u;                     /* $13FB-$13FD — nothing is reusable */
+    walk_reverse_active = 0x40u;                     /* $13FF-$1401 */
+    rebuild_walk_reversed_core(0x40u);               /* $1403 */
+    walk_reverse_active = 0x00u;                     /* $1406-$1408 */
 }

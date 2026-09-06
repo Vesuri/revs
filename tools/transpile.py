@@ -555,6 +555,9 @@ MANUAL_FUNCS = set()
 # pick the twins — the Atari port chose them by reasoning and got the choice wrong
 # (docs/perf-method.md).
 VALIDATE_FUNCS = {
+    # The road walk's DIRECTION cluster — the last unnamed transliterated routines that were
+    # reachable in production.  Twins #208-#212 ($1433 is a static inside the file).
+    0x12F3, 0x1420, 0x140B, 0x13FB,
     # $6300 console_io — the game's only line editor, and the LAST transliterated callee
     # of any native core (console_read_two_digits and read_driver_name were reaching it by
     # stuffing A/Y/X).  Twin #207.

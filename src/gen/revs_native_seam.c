@@ -1492,3 +1492,11 @@ void console_io(void)
     cpu.Y = shared_temp_77;                          /* the field width the CPY exited on */
     cpu.Z = 1; cpu.C = 1; cpu.N = 0;                 /* $6352 CPY, equal */
 }
+
+/* The road walk's direction cluster (twins #208-#212).  Every caller is a JSR whose exit
+   registers are dead — road_edge_walk's tail returns or falls into its own next test — so the
+   shims marshal nothing but the one argument $1420 takes in X. */
+void build_section_ahead(void)    { build_section_ahead_core(); }
+void rebuild_walk_reversed(void)  { rebuild_walk_reversed_core(cpu.X); }
+void rebuild_walk_backward(void)  { rebuild_walk_backward_core(); }
+void reverse_walk_direction(void) { reverse_walk_direction_core(); }
