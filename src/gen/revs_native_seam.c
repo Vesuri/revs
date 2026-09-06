@@ -1500,3 +1500,6 @@ void build_section_ahead(void)    { build_section_ahead_core(); }
 void rebuild_walk_reversed(void)  { rebuild_walk_reversed_core(cpu.X); }
 void rebuild_walk_backward(void)  { rebuild_walk_backward_core(); }
 void reverse_walk_direction(void) { reverse_walk_direction_core(); }
+
+void clear_surface_buffers(void) { clear_surface_buffers_core(); }   /* exit ABI dead */
+void fill_line_surface(void)     { fill_line_surface_core(); }       /* exit ABI dead */

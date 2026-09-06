@@ -656,6 +656,8 @@ void print_race_class_name_core(void);
 void select_text_variant_core(uint8_t variant);
 void print_standings_table_core(uint8_t variant, uint8_t mode);
 uint8_t tally_bcd_column_core(uint8_t column);
+void clear_surface_buffers_core(void);
+void fill_line_surface_core(void);
 uint8_t console_io_core(uint8_t ptrLo, uint8_t ptrHi, uint8_t width);
 void build_section_ahead_core(void);
 void rebuild_walk_reversed_core(uint8_t count);

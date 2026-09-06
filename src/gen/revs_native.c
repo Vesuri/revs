@@ -11712,7 +11712,7 @@ void tick_wheel_spin(void)
 void spin_car_out(void)
 {
     uint8_t x = cpu.X;
-    if (x >= 0x14) { car_tail_rts(); return; }     /* not a car slot: shared no-op tail */
+    if (x >= 0x14) return;                        /* not a car slot: the $11CD tail is a bare RTS */
     mem[CAR_FLAGS_0 + x] = (uint8_t)((mem[CAR_STATE_2 + x] & 0x7F) | 0x45);
     mem[CAR_RACE_FLAGS + x] = 0x91;
     retire_car();                                 /* shared crash tail, indexed by X */
@@ -11731,7 +11731,7 @@ void spin_car_out(void)
 void process_car_contact(void)
 {
     car_heading_marshal_in();   /* 6502-ABI entry: this routine has no separate shim */
-    if (contact_pending == 0) { FUN_1c1b(); return; }        /* no contact this frame */
+    if (contact_pending == 0) return;                        /* no contact: $1C1B is a bare RTS */
     contact_pending = 0x00;
     shared_temp_76 = (uint8_t)((shared_temp_76 >> 1) | 0x80);   /* SEC; ROR $76 */
 
@@ -15823,4 +15823,68 @@ void reverse_walk_direction_core(void)
     walk_reverse_active = 0x40u;                     /* $13FF-$1401 */
     rebuild_walk_reversed_core(0x40u);               /* $1403 */
     walk_reverse_active = 0x00u;                     /* $1406-$1408 */
+}
+
+/* ===========================================================================
+   THE PER-SCAN-LINE SURFACE TABLE  (twins #213-#214)
+   ===========================================================================
+   Two halves of the same job, run either side of draw_road in the body: one
+   clears the drawing state for the lines the road can reach, the other decides
+   what colour each of the 80 scan lines shows where no road cell covers it.
+   =========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   $66B6  clear_surface_buffers  (twin #213)
+   ---------------------------------------------------------------------------
+   Resets the per-scan-line drawing state for the frame: the four surface-edge
+   buffers get $80 (the "no boundary on this line" marker) for every line the
+   road can reach, 0..horizon_extent, and the whole 80-entry view_line_surface
+   table goes to zero so fill_line_surface can tell "unwritten" from a colour.
+   ⚠ The two loops have DIFFERENT bounds — the edges only up to the horizon,
+   the surface table always all 80 lines.  Exit ABI dead (both callers issue an
+   unrelated LDX next).
+   --------------------------------------------------------------------------- */
+void clear_surface_buffers_core(void)
+{
+    /* The 6502 counts X down and exits on N, so an entry value of $80 or more
+       clears exactly ONE line and stops — kept, because horizon_extent is only
+       clamped to <= $4E by build_track_geometry, not by this routine. */
+    uint8_t line = horizon_extent;
+    do {
+        mem[SURFACE_EDGE_1 + line] = 0x80u;              /* $66BA — in the 6502's own order */
+        mem[SURFACE_EDGE_3 + line] = 0x80u;
+        mem[SURFACE_EDGE_2 + line] = 0x80u;
+        mem[SURFACE_EDGE_0 + line] = 0x80u;
+    } while (!(--line & 0x80u));
+    for (int l = 0x4F; l >= 0; l--)
+        mem[VIEW_LINE_SURFACE + l] = 0x00u;              /* $66CD — all 80 lines */
+}
+
+/* ---------------------------------------------------------------------------
+   $18BC  fill_line_surface  (twin #214)
+   ---------------------------------------------------------------------------
+   Paints the background-colour index for every scan line, from the road's own
+   horizon downward.  One entry is seeded at the horizon line: $23 normally, but
+   $20 when the two edge points at horizon_index straddle -$14 in screen X (the
+   far one left of it, the near one right of it) — the horizon is then looking
+   ALONG the road rather than across it.  The rest of the table is then filled by
+   a single downward sweep from line 79: every zero entry inherits the last
+   non-zero value seen above it, and the sweep starts holding $21, so the lines
+   below everything the road wrote get the plain-ground colour.
+   Exit ABI dead (the body's next call is unrelated).
+   --------------------------------------------------------------------------- */
+void fill_line_surface_core(void)
+{
+    uint8_t point = horizon_index;
+    uint8_t far   = (uint8_t)(mem[EDGE_X_HI_TBL + 0x28u + point] + 0x14u);   /* $18C0-$18C4 */
+    uint8_t near  = (uint8_t)(mem[EDGE_X_HI_TBL +         point] + 0x14u);   /* $18C8-$18CC */
+    uint8_t seed  = ((far & 0x80u) && !(near & 0x80u)) ? 0x20u : 0x23u;
+    mem[VIEW_LINE_SURFACE + horizon_extent] = seed;      /* $18D6 */
+
+    uint8_t colour = 0x21u;                              /* $18D9 — below the road: ground */
+    for (int line = 0x4F; line >= 0; line--) {           /* $18DD-$18E7 */
+        uint8_t here = mem[VIEW_LINE_SURFACE + line];
+        if (here != 0u) colour = here;
+        mem[VIEW_LINE_SURFACE + line] = colour;
+    }
 }

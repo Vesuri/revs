@@ -1355,6 +1355,91 @@ static void walk_cluster_pre(uint8_t* pre)
     pre[0x1426] = 0x20; pre[0x1427] = 0xDA; pre[0x1428] = 0x13;   /* walk dir hook:     $13DA */
 }
 
+void clear_surface_buffers(void);   void clear_surface_buffers__t6502(void);
+void fill_line_surface(void);       void fill_line_surface__t6502(void);
+
+/* ---------------------------------------------------------------------------
+   Twins #213-#214 — the per-scan-line surface table.
+   ---------------------------------------------------------------------------
+   Both are pure table sweeps over RAM, so the fixture only has to randomise
+   what they read: horizon_extent ($1F) for the clear, plus horizon_index ($51)
+   and the two edge_x_hi banks for the fill.  horizon_extent is swept across the
+   whole byte range, not just the 0..$4E build_track_geometry clamps it to, so
+   the 6502's count-down-and-exit-on-N bound is exercised at $80 and above.
+   --------------------------------------------------------------------------- */
+static int test_surface_table(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    register_fixture("clear_surface_buffers");
+    register_fixture("fill_line_surface");
+
+    if (want("clear_surface_buffers")) {
+        int cases = 2000 * scale, sub = 0, sawLow = 0, sawHigh = 0, sawZero = 0;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            /* three quarters in the real 0..$4E band, the rest anywhere */
+            pre[0x001F] = (t & 3) ? (uint8_t)(xs() % 0x4Fu) : (uint8_t)xs();
+            if (pre[0x001F] == 0) sawZero = 1;
+            else if (pre[0x001F] & 0x80) sawHigh = 1;
+            else sawLow = 1;
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            sub += diff_run("clear_surface_buffers", pre, c,
+                            clear_surface_buffers, clear_surface_buffers__t6502,
+                            LIVE_NONE, t, &printed);
+        }
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=none\n",
+               "clear_surface_buffers", cases, sub);
+        if (!(sawLow && sawHigh && sawZero)) {
+            printf("VACUOUS: clear_surface_buffers missed a horizon_extent class\n");
+            fail++;
+        }
+    }
+
+    if (want("fill_line_surface")) {
+        int cases = 2000 * scale, sub = 0;
+        int sawSeed20 = 0, sawSeed23 = 0, sawCarry = 0, sawGround = 0;
+        for (t = 0; t < cases; t++) {
+            uint8_t far, nearv;
+            int i, allZero;
+            Cpu6502 c = zero_cpu();
+            fill_random(pre);
+            pre[0x001F] = (t & 3) ? (uint8_t)(xs() % 0x4Fu) : (uint8_t)xs();
+            pre[0x0051] = (t & 1) ? (uint8_t)(xs() % 0x28u) : (uint8_t)xs();
+            /* half the cases start from a freshly cleared table, which is what
+               clear_surface_buffers really hands it; the rest keep the noise so
+               the downward carry has something to carry. */
+            if (t & 1) { for (i = 0; i < 0x50; i++) pre[0x5F60 + i] = 0; }
+            /* steer the seed test: put both edge points near the -$14 boundary */
+            pre[0x5E90 + pre[0x0051]]          = (uint8_t)(0xE4u + (xs() % 0x18u));
+            pre[0x5E90 + 0x28 + pre[0x0051]]   = (uint8_t)(0xE4u + (xs() % 0x18u));
+            far   = (uint8_t)(pre[0x5E90 + 0x28 + pre[0x0051]] + 0x14u);
+            nearv = (uint8_t)(pre[0x5E90 +        pre[0x0051]] + 0x14u);
+            if ((far & 0x80u) && !(nearv & 0x80u)) sawSeed20 = 1; else sawSeed23 = 1;
+            allZero = 1;
+            for (i = 0; i < 0x50; i++) if (pre[0x5F60 + i]) { allZero = 0; break; }
+            if (allZero) sawGround = 1; else sawCarry = 1;
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            sub += diff_run("fill_line_surface", pre, c,
+                            fill_line_surface, fill_line_surface__t6502,
+                            LIVE_NONE, t, &printed);
+        }
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=none\n",
+               "fill_line_surface", cases, sub);
+        if (!(sawSeed20 && sawSeed23 && sawCarry && sawGround)) {
+            printf("VACUOUS: fill_line_surface missed a seed arm or a fill arm\n");
+            fail++;
+        }
+    }
+    return fail;
+}
+
 static int test_walk_direction(void)
 {
     static uint8_t pre[65536];
@@ -10754,6 +10839,7 @@ int main(int argc, char** argv)
     fail += test_standings_leaves();
     fail += test_dismiss_waiters();
     fail += test_driver_name_pages();
+    fail += test_surface_table();
     fail += test_walk_direction();
     fail += test_console_io();
     fail += test_console_number();
