@@ -11127,6 +11127,18 @@ static void hook_back_oracle(void)  { g_hookOracle = 1; trk_brands(0x55BD); g_ho
 static void hook_merge_twin(void)   { g_hookOracle = 0; trk_brands(0x5772); }
 static void hook_merge_oracle(void) { g_hookOracle = 1; trk_brands(0x5772); g_hookOracle = 0; }
 
+/* $5582 / $557F — the track generator's cursor step, in its two state blocks.  Brands Hatch
+   carries the $53F8 one and Donington the $53FA one, so the two circuits are the two arms. */
+void trk_doning(unsigned short entry);         /* src/gen/revs_track_hooks.h */
+static void hook_gca_twin(void)     { g_hookOracle = 0; trk_brands(0x5582); }
+static void hook_gca_oracle(void)   { g_hookOracle = 1; trk_brands(0x5582); g_hookOracle = 0; }
+static void hook_gcb_twin(void)     { g_hookOracle = 0; trk_doning(0x5582); }
+static void hook_gcb_oracle(void)   { g_hookOracle = 1; trk_doning(0x5582); g_hookOracle = 0; }
+static void hook_dga_twin(void)     { g_hookOracle = 0; trk_brands(0x557F); }
+static void hook_dga_oracle(void)   { g_hookOracle = 1; trk_brands(0x557F); g_hookOracle = 0; }
+static void hook_dgb_twin(void)     { g_hookOracle = 0; trk_doning(0x557F); }
+static void hook_dgb_oracle(void)   { g_hookOracle = 1; trk_doning(0x557F); g_hookOracle = 0; }
+
 static int test_hook_twins(void)
 {
     static uint8_t pre[65536];
@@ -11438,6 +11450,94 @@ static int test_hook_twins(void)
                    "(pull-in %d leave %d from-0 %d past-end %d wrap %d lo-tie %d)\n",
                    sawPullIn, sawLeave, sawFull, sawPastEnd, sawWrap, sawLoTie);
             fail++;
+        }
+    }
+
+    /* --------------------------------------- $5582 / $557F, the generator cursor's step.
+       Four fixtures over one body: two state blocks x with and without the engine's own
+       segment-direction step in front.  The run-length table gets a few ZERO entries because
+       the 6502 walks it with a bottom-tested loop and a zero-length place is reachable. */
+    {
+        static const struct { const char* name; void (*tw)(void); void (*or_)(void);
+                              uint16_t block; } GEN[4] = {
+            { "hook_step_gen_cursor_a",     hook_gca_twin, hook_gca_oracle, 0x53F8 },
+            { "hook_step_gen_cursor_b",     hook_gcb_twin, hook_gcb_oracle, 0x53FA },
+            { "hook_step_dir_gen_cursor_a", hook_dga_twin, hook_dga_oracle, 0x53F8 },
+            { "hook_step_dir_gen_cursor_b", hook_dgb_twin, hook_dgb_oracle, 0x53FA },
+        };
+        int g;
+        for (g = 0; g < 4; g++) {
+            int sawFwd = 0, sawFwdWrap = 0, sawPlaceWrap = 0, sawBwd = 0, sawBwdUnder = 0;
+            int sawBwdPlaceWrap = 0, sawHighPlace = 0, sawZeroRun = 0;
+            int genCases = cases / 2;
+            register_fixture(GEN[g].name);
+            if (!want(GEN[g].name)) continue;
+            sub = 0; printed = 0;
+            for (t = 0; t < genCases; t++) {
+                Cpu6502 c = zero_cpu();
+                uint8_t count, place, offset, run;
+                int i;
+
+                fill_random(pre);
+                c.D = 0;                 /* the geometry path is only ever entered binary */
+                c.S = 0xFFu;
+
+                /* the run table: mostly small lengths, one entry in sixteen empty */
+                for (i = 0; i < 0x40; i++) {
+                    pre[0x5728 + i] = (xs() % 16u) ? (uint8_t)(1u + (xs() % 0x08u)) : 0u;
+                    if (pre[0x5728 + i] == 0u) sawZeroRun = 1;
+                }
+                count = (uint8_t)(1u + (xs() % 0x20u));
+                place = (uint8_t)(xs() % count);
+                if ((xs() % 8u) == 0u) { place |= 0x80u; sawHighPlace = 1; }
+                run = pre[0x5728 + place];
+                /* the offset: usually inside the place, but its two boundaries by name */
+                switch (xs() % 4u) {
+                    case 0:  offset = 0u; break;
+                    case 1:  offset = (uint8_t)(run ? run - 1u : 0u); break;
+                    default: offset = (uint8_t)xs(); break;
+                }
+                pre[GEN[g].block]      = place;
+                pre[GEN[g].block + 1u] = count;
+                pre[GEN[g].block + 5u] = offset;
+
+                /* the direction bit, both ways, plus the engine state $557F's prefix steps */
+                pre[0x0025] = (xs() & 1u) ? (uint8_t)(xs() | 0x80u) : (uint8_t)(xs() & 0x7Fu);
+                pre[0x59FB] = (uint8_t)(1u + (xs() % 40u));      /* track_dir_count */
+                pre[0x0002] = (uint8_t)(xs() % pre[0x59FB]);     /* segment_dir_index */
+
+                c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+                c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+
+                /* which arm — fixture arithmetic */
+                if (pre[0x0025] & 0x80u) {
+                    sawBwd = 1;
+                    if (offset == 0u) {
+                        sawBwdUnder = 1;
+                        if ((place & 0x7Fu) == 0u) sawBwdPlaceWrap = 1;
+                    }
+                } else {
+                    sawFwd = 1;
+                    if ((uint8_t)(offset + 1u) >= run) {
+                        sawFwdWrap = 1;
+                        if ((uint8_t)(place + 1u) >= count) sawPlaceWrap = 1;
+                    }
+                }
+
+                sub += diff_run(GEN[g].name, pre, c, GEN[g].tw, GEN[g].or_,
+                                LIVE_A | LIVE_X | LIVE_Y | LIVE_S, t, &printed);
+            }
+            fail += sub;
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,Y (the stored pair; "
+                   "the flags are dead at both call sites)\n", GEN[g].name, genCases, sub);
+            if (!(sawFwd && sawFwdWrap && sawPlaceWrap && sawBwd && sawBwdUnder &&
+                  sawBwdPlaceWrap && sawHighPlace && sawZeroRun)) {
+                printf("VACUOUS: %s missed an arm (fwd %d fwd-wrap %d place-wrap %d bwd %d "
+                       "bwd-under %d bwd-place-wrap %d high-bit place %d zero run %d)\n",
+                       GEN[g].name, sawFwd, sawFwdWrap, sawPlaceWrap, sawBwd, sawBwdUnder,
+                       sawBwdPlaceWrap, sawHighPlace, sawZeroRun);
+                fail++;
+            }
         }
     }
     return fail;

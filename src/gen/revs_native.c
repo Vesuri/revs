@@ -16526,3 +16526,89 @@ void hook_merge_horizon_edges(void)
     cpu.C = 1u;                                         /* the loop only leaves on C set */
     cpu.V = ex.v;
 }
+
+/* $557F / $5582 — STEP THE TRACK GENERATOR'S CURSOR ONE PLACE ALONG THE DIRECTION OF TRAVEL.
+   Every expansion circuit has this body, and the only difference between the five copies is
+   WHICH state block it works in: Brands Hatch, Oulton Park and Snetterton keep the cursor at
+   $53F8 (count $53F9, offset $53FD), Donington and the Nurburgring two bytes further up at
+   $53FA (count $53FB, offset $53FF).  Same code, same run-length table at $5728, so one core
+   takes the block base and the two shims name the halves.  ⚠ Those cells are per-circuit
+   variables whose SLOT ASSIGNMENT differs between circuits — $53FA is this cursor on Donington
+   and a 24-bit coordinate accumulator on Brands Hatch — which is why they are queued in
+   docs/rename.md rather than named in symbols.csv.
+
+   The state is a (place, offset) pair walking a list of run lengths: going forward the offset
+   advances until it reaches the current place's length, then the place does; going backward the
+   offset retreats and, on underflow, the place steps back to the last offset of the previous
+   place.  Both ends wrap on the place count, which is what makes the generated geometry a ring.
+   `track_direction`'s bit 7 is the sense; $557F is the same thing with the engine's own
+   segment-direction step in front of it.
+
+   Exit ABI: A and Y are the two values just stored, X passes through, and the FLAGS ARE DEAD —
+   both call sites are inside circuit code ($54F1's `JSR $5582`, whose next act is
+   `LDA section_cursor`, and $5A1B's `JSR $557F / JMP $5472`, whose is `LDA $53FA`), and no
+   engine patch site reaches either entry (make track-patch). */
+/* SABOTAGE (each must FAIL; counts measured on the four 2000-case fixtures, not predicted, and
+   quoted as the range over them — the four shims are two blocks x two prefixes over one core):
+     S18 the forward step compares against the NEXT place's length ->  186..207 / 2000
+     S19 the place wraps at the count, not past it                 ->   66.. 90 / 2000
+     S20 the backward underflow keeps bit 7 of the place           ->   22.. 38 / 2000
+     S21 the backward step lands on the previous place's length    ->  285..317 / 2000
+     S22 the direction sense is inverted                           -> 1992..1995 / 2000
+     S23 the forward place step lands on offset 1, not 0           ->  726..752 / 2000
+     S24 the backward place wrap starts one place short            ->   31.. 39 / 2000
+     S25 the $557F prefix's segment-direction step is dropped      -> 1952 / 2000, and 0 in the
+         other three — the LOCALIZATION is the expected result, not a survival: only
+         hook_step_dir_gen_cursor_a carries that prefix, so the three fixtures whose entry is
+         $5582 (or the _b block) cannot observe it.  Checking the sibling is what tells the two
+         apart; see docs/validation-harness.md §FIFTEENTH. */
+#define GEN_CURSOR_RUNS  0x5728u   /* per place: how many offsets it holds (a per-circuit table) */
+
+void hook_step_gen_cursor_core(uint16_t block)
+{
+    const uint16_t placeAddr  = block;          /* which entry of the run table we are in */
+    const uint16_t countAddr  = block + 1u;     /* how many entries the ring has */
+    const uint16_t offsetAddr = block + 5u;     /* how far into this entry */
+    uint8_t place  = mem[placeAddr];
+    uint8_t offset = mem[offsetAddr];
+
+    if (track_direction & 0x80u) {
+        /* $55A0 — backward.  The offset retreats; only an underflow moves the place. */
+        if (offset == 0u) {
+            place &= 0x7Fu;                             /* $55A4-$55A7 */
+            if (place == 0u)
+                place = mem[countAddr];                 /* $55AC — wrap onto the last place */
+            place--;
+            offset = (uint8_t)(mem[GEN_CURSOR_RUNS + place] - 1u);   /* its last offset */
+        } else {
+            offset--;
+        }
+    } else {
+        /* $558D — forward.  The offset advances until this place is used up. */
+        offset++;
+        if (offset >= mem[GEN_CURSOR_RUNS + place]) {    /* $558F */
+            offset = 0u;
+            place++;
+            if (place >= mem[countAddr])                 /* $5597 */
+                place = 0u;
+        }
+    }
+
+    mem[offsetAddr] = offset;                            /* $55B6 */
+    mem[placeAddr]  = place;
+}
+
+/* The two shims.  A and Y come back as the stored pair; the flags are dead (see above). */
+static void hook_step_gen_cursor_at(uint16_t block)
+{
+    hook_step_gen_cursor_core(block);
+    cpu.A = mem[block + 5u];
+    cpu.Y = mem[block];
+}
+
+void hook_step_gen_cursor_a(void) { hook_step_gen_cursor_at(0x53F8u); }
+void hook_step_gen_cursor_b(void) { hook_step_gen_cursor_at(0x53FAu); }
+
+/* $557F — the same, with the engine's segment-direction step in front. */
+void hook_step_dir_gen_cursor_a(void) { step_segment_dir_index(); hook_step_gen_cursor_a(); }
+void hook_step_dir_gen_cursor_b(void) { step_segment_dir_index(); hook_step_gen_cursor_b(); }

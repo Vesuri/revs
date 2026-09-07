@@ -753,6 +753,11 @@ void hook_walk_back_gate(void);
 typedef struct { uint8_t a; uint8_t v; } HookMergeExit;
 HookMergeExit hook_merge_horizon_edges_core(uint8_t point, uint8_t horizonLine);
 void hook_merge_horizon_edges(void);
+void hook_step_gen_cursor_core(uint16_t block);
+void hook_step_gen_cursor_a(void);
+void hook_step_gen_cursor_b(void);
+void hook_step_dir_gen_cursor_a(void);
+void hook_step_dir_gen_cursor_b(void);
 void hook_horizon_clamp(void);
 
 #endif /* REVS_NATIVE_SEAM_H */
