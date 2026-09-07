@@ -783,3 +783,10 @@ void hook_seg_advance_oulton(void);
 void hook_seg_advance_snetter(void);
 void hook_seg_advance_doning(void);
 void hook_seg_advance_nurburg(void);
+
+/* $5672 — seed the generator at a section boundary (twin #225) */
+void hook_gen_seed_brands(void);
+void hook_gen_seed_oulton(void);
+void hook_gen_seed_snetter(void);
+void hook_gen_seed_doning(void);
+void hook_gen_seed_nurburg(void);

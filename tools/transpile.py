@@ -583,6 +583,14 @@ HOOK_TWINS = {
     ('SNETTER', 0x5572): 'hook_seg_advance_snetter',
     ('DONING',  0x5572): 'hook_seg_advance_doning',
     ('NURBURG', 0x5572): 'hook_seg_advance_nurburg',
+
+    # $5672 — seed the generator from a section's saved state (twin #225).  One body, block-
+    #         shifted; the Nurburgring calls hook_gen_step at $55BD where the others call $55C4.
+    ('BRANDS',  0x5672): 'hook_gen_seed_brands',
+    ('OULTON',  0x5672): 'hook_gen_seed_oulton',
+    ('SNETTER', 0x5672): 'hook_gen_seed_snetter',
+    ('DONING',  0x5672): 'hook_gen_seed_doning',
+    ('NURBURG', 0x5672): 'hook_gen_seed_nurburg',
     ('NURBURG', 0x55BD): 'hook_gen_step_nurburg',
     ('BRANDS',  0x55C4): 'hook_gen_step_brands',
     ('OULTON',  0x55C4): 'hook_gen_step_oulton',

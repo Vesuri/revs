@@ -103,11 +103,20 @@ static int want(const char* name) {
 }
 
 /* ------------------------------------------------- fixture coverage registry */
-enum { MAX_FIXTURES = 256 };
+/* ⚠⚠ THIS CAP IS A SILENT-VACUOUS TRAP AND THE OVERFLOW IS NOW LOUD.  register_fixture() used to
+   drop everything past the cap on the floor, so the fixtures registered LAST — the newest twin,
+   always — reported "0 mismatch" from their own loop and then "[NO FIXTURE]" from the coverage
+   walk, which reads as a missing fixture rather than a full table.  Raise it and keep the abort. */
+enum { MAX_FIXTURES = 512 };
 static const char* g_registered[MAX_FIXTURES];
 static int         g_nregistered = 0;
 static void register_fixture(const char* name) {
-    if (g_nregistered < MAX_FIXTURES) g_registered[g_nregistered++] = name;
+    if (g_nregistered >= MAX_FIXTURES) {
+        printf("FATAL: more than %d fixtures — raise MAX_FIXTURES (the ones past it would be "
+               "silently unregistered and report [NO FIXTURE])\n", MAX_FIXTURES);
+        exit(2);
+    }
+    g_registered[g_nregistered++] = name;
 }
 static int is_registered(const char* name) {
     for (int i = 0; i < g_nregistered; i++)
@@ -11179,6 +11188,16 @@ static void hook_sadv_4_twin(void)   { g_hookOracle = 0; trk_snetter(0x5572); }
 static void hook_sadv_4_oracle(void) { g_hookOracle = 1; trk_snetter(0x5572); g_hookOracle = 0; }
 static void hook_sadv_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5572); }
 static void hook_sadv_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5572); g_hookOracle = 0; }
+static void hook_gseed_1_twin(void)   { g_hookOracle = 0; trk_brands(0x5672); }
+static void hook_gseed_1_oracle(void) { g_hookOracle = 1; trk_brands(0x5672); g_hookOracle = 0; }
+static void hook_gseed_2_twin(void)   { g_hookOracle = 0; trk_doning(0x5672); }
+static void hook_gseed_2_oracle(void) { g_hookOracle = 1; trk_doning(0x5672); g_hookOracle = 0; }
+static void hook_gseed_3_twin(void)   { g_hookOracle = 0; trk_oulton(0x5672); }
+static void hook_gseed_3_oracle(void) { g_hookOracle = 1; trk_oulton(0x5672); g_hookOracle = 0; }
+static void hook_gseed_4_twin(void)   { g_hookOracle = 0; trk_snetter(0x5672); }
+static void hook_gseed_4_oracle(void) { g_hookOracle = 1; trk_snetter(0x5672); g_hookOracle = 0; }
+static void hook_gseed_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5672); }
+static void hook_gseed_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5672); g_hookOracle = 0; }
 static void hook_gstep_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x55BD); }
 static void hook_gstep_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x55BD); g_hookOracle = 0; }
 static void hook_gdv_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5472); }
@@ -11895,6 +11914,88 @@ static int test_hook_twins(void)
                 printf("VACUOUS: %s missed an arm (boundary %d no-op %d reverse %d forward %d "
                        "wrap up %d wrap down %d)\n", SADV[g].name, sawGate, sawOpen, sawRev,
                        sawFwd, sawWrapUp, sawWrapDown);
+                fail++;
+            }
+        }
+    }
+    /* --------------------------------------- $5672, the generator's section seed.
+       Both arms of the reverse test (forward runs a whole generator step, reverse runs none),
+       both values of the packed byte's bit 1 (which is the $23B3 SMC operand) and of its bit 0
+       (the "places exhausted" flag the step then tests), and a Y that ranges over enough
+       segments to land in several different sections. */
+    {
+        static const struct { const char* name; void (*tw)(void); void (*or_)(void);
+                              uint16_t block; } GSEED[5] = {
+            { "hook_gen_seed_brands",  hook_gseed_1_twin, hook_gseed_1_oracle, 0x53FA },
+            { "hook_gen_seed_doning",  hook_gseed_2_twin, hook_gseed_2_oracle, 0x53FC },
+            { "hook_gen_seed_oulton",  hook_gseed_3_twin, hook_gseed_3_oracle, 0x53FA },
+            { "hook_gen_seed_snetter", hook_gseed_4_twin, hook_gseed_4_oracle, 0x53FA },
+            { "hook_gen_seed_nurburg", hook_gseed_5_twin, hook_gseed_5_oracle, 0x53FC },
+        };
+        int g;
+        for (g = 0; g < 5; g++) {
+            int sawRev = 0, sawFwd = 0, sawCap = 0, sawNoCap = 0, sawExh = 0, sawOpen = 0;
+            int secSeen[32]; int seenSections = 0;
+            int gsCases = cases / 4, i;
+            register_fixture(GSEED[g].name);
+            if (!want(GSEED[g].name)) continue;
+            for (i = 0; i < 32; i++) secSeen[i] = 0;
+            sub = 0; printed = 0;
+            for (t = 0; t < gsCases; t++) {
+                Cpu6502 c = zero_cpu();
+                uint8_t segment, section, packed, dir, place;
+
+                fill_random(pre);
+                c.D = 0;                 /* the generator runs binary (docs/static-map.md) */
+                c.S = 0xFFu;
+
+                for (i = 0; i <= 0x40; i++) {           /* $5472's octant sine table */
+                    pre[0x57BF + i] = (uint8_t)(xs() % 0x79u);
+                    pre[0x58BF + i] = (uint8_t)(xs() % 0x79u);
+                    if (xs() & 1u) pre[0x57BF + i] = (uint8_t)(-(int)pre[0x57BF + i]);
+                    if (xs() & 1u) pre[0x58BF + i] = (uint8_t)(-(int)pre[0x58BF + i]);
+                }
+
+                segment = (uint8_t)(xs() % 0xF8u);      /* 31 sections of 8 */
+                section = (uint8_t)(segment >> 3);
+                secSeen[section & 31u] = 1;
+
+                pre[0x5905u + segment] = (uint8_t)xs();  /* the direction-basis entry */
+                pre[0x5846u + section] = (uint8_t)xs();  /* seeded heading low  */
+                pre[0x5864u + section] = (uint8_t)xs();  /* seeded heading high */
+                pre[0x5828u + section] = (uint8_t)xs();  /* seeded gradient     */
+
+                /* the packed byte: bit 1 is the $23B3 cap, bit 0 the places-exhausted flag,
+                   bits 2..7 the place cursor the generator step then indexes with */
+                packed = (uint8_t)(xs() & 0xFCu);
+                if (t & 1u) { packed |= 2u; sawCap = 1; } else sawNoCap = 1;
+                if ((t & 6u) == 0u) { packed |= 1u; sawExh = 1; } else sawOpen = 1;
+                pre[0x5882u + section] = packed;
+
+                place = (uint8_t)(packed >> 2);
+                pre[0x5428u + place] = (uint8_t)xs();   /* the step's per-place turn and climb */
+                pre[0x5528u + place] = (uint8_t)xs();
+                pre[0x5628u + place] = (uint8_t)xs();
+
+                dir = (uint8_t)xs();
+                if (t & 8u) { dir |= 0x80u; sawRev = 1; } else { dir &= 0x7Fu; sawFwd = 1; }
+                pre[0x0025] = dir;                      /* track_direction */
+
+                c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = segment;
+                c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+
+                sub += diff_run(GSEED[g].name, pre, c, GSEED[g].tw, GSEED[g].or_,
+                                LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS, t, &printed);
+            }
+            fail += sub;
+            for (i = 0; i < 32; i++) seenSections += secSeen[i];
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,Y+flags (and $23B3, the "
+                   "runtime SMC operand)\n", GSEED[g].name, gsCases, sub);
+            if (!(sawRev && sawFwd && sawCap && sawNoCap && sawExh && sawOpen
+                  && seenSections >= 8)) {
+                printf("VACUOUS: %s missed an arm (reverse %d forward %d cap-off %d cap-on %d "
+                       "exhausted %d open %d sections %d)\n", GSEED[g].name, sawRev, sawFwd,
+                       sawCap, sawNoCap, sawExh, sawOpen, seenSections);
                 fail++;
             }
         }

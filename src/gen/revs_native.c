@@ -16937,3 +16937,91 @@ void hook_seg_advance_oulton(void)  { hook_seg_advance_at(0x53FAu, 0x80u); }
 void hook_seg_advance_snetter(void) { hook_seg_advance_at(0x53FAu, 0x84u); }
 void hook_seg_advance_doning(void)  { hook_seg_advance_at(0x53FCu, 0x86u); }
 void hook_seg_advance_nurburg(void) { hook_seg_advance_at(0x53FCu, 0x9Au); }
+
+/* ===========================================================================
+   $5672  hook_gen_seed — SEED THE GENERATOR AT A SECTION BOUNDARY (twin #225)
+   ---------------------------------------------------------------------------
+   All five expansion circuits, one body, block-shifted.  Entered with Y = the segment index the
+   caller is about to build; it (re)starts the track generator from that segment's own recorded
+   state instead of letting the running heading drift on from wherever the last walk left it.
+
+   Y indexes two different granularities and that is the whole shape of the routine:
+     - at FULL resolution, $5905[Y] is the direction-basis entry this segment uses;
+     - at one-eighth resolution (Y >> 3 — a SECTION of eight segments), four parallel tables hold
+       the generator's saved state at the start of that section:
+           $5846[s] : heading low        -> block+0
+           $5864[s] : heading high       -> block+1
+           $5828[s] : gradient           -> block+2
+           $5882[s] : the packed place cursor and the stale-horizon flag
+   $5882's byte is unpacked by `LSR / ROR`: the place cursor is (v >> 2) with v's bit 0 rotated in
+   as bit 7 (the "places exhausted" flag hook_gen_step tests), and the bit that falls out — v's
+   bit 1 — becomes bit 7 of the byte written to $23B3.
+
+   ⚠⚠ $23B3 IS SELF-MODIFYING CODE, PATCHED HERE AT RACE TIME.  `LDA #$0E / ROR` yields $07 or
+   $87, and that byte is the immediate of `$23B2 LDA #$07` inside road_edge_start — the cap that
+   stops a stale horizon surviving into this frame.  With bit 7 set the CMP below it never takes
+   and the clamp is OFF, which is the common case on all five circuits.  This is the only runtime
+   SMC site the hooks own besides $1FEA, and `make track-smc` cannot see either because it replays
+   ModifyGameCode, the INSTALLER.  docs/static-map.md §Self-modifying code.
+
+   The within-place offset (block+3) is reset to zero: the generator restarts at the beginning of
+   that place.  Then, unless the circuit is being driven in reverse, one generator step runs to
+   turn the seeded heading into a direction vector.
+
+   Exit ABI: Y = the entry Y (span_saved_index), A = this segment's direction-basis entry with the
+   N/Z it sets.  On the reverse arm C = 0 (from the `ROR` of $0E) and V = bit 6 of track_direction
+   (from the `BIT`), with X untouched; on the forward arm hook_gen_step owns C/V and restores X.
+
+   SABOTAGE (each must FAIL; counts measured on the five 1000-case fixtures, not predicted):
+     S51 the section is Y >> 2, not Y >> 3                          -> 979..987 / 1000
+     S52 the seeded heading's low and high tables are swapped       -> 994..997 / 1000
+     S53 the place cursor's bit 7 comes from the packed bit 1       ->      500 / 1000
+     S54 the stale-horizon cap is always $07 (the pre-twin bug)     ->      500 / 1000
+     S55 the within-place offset keeps its old value                -> 994..998 / 1000
+     S56 the reverse arm runs the generator step too                ->      496 / 1000
+     S57 the exit A is the segment index, not its direction entry   -> 995..997 / 1000
+   ⭐ S54 is the defect this twin's sibling commit fixed elsewhere, aimed at the twin itself: the
+   fixture sees it at exactly the fixture's own 50/50 split of the packed byte's bit 1, which is
+   the rate at which $87 and $07 differ.  S53 and S56 read the same 500 for the same reason — one
+   is that bit again, the other the reverse arm's own half. */
+#define GEN_SEG_DIR_TBL   0x5905u   /* [segment]  the direction-basis entry (see docs/rename.md) */
+#define GEN_SEED_HDG_LO   0x5846u   /* [section]  saved heading low  */
+#define GEN_SEED_HDG_HI   0x5864u   /* [section]  saved heading high */
+#define GEN_SEED_GRADIENT 0x5828u   /* [section]  saved gradient     */
+#define GEN_SEED_PLACE    0x5882u   /* [section]  packed place cursor + the $23B3 flag */
+
+static void hook_gen_seed_at(uint16_t block, uint8_t scale)
+{
+    uint8_t segment = cpu.Y;
+    span_saved_index  = segment;                                 /* $5672 STY */
+    segment_dir_index = mem[GEN_SEG_DIR_TBL + segment];          /* $5677 */
+
+    uint8_t section = (uint8_t)(segment >> 3);                   /* $5679 TYA / LSR x3 / TAY */
+    mem[block]      = mem[GEN_SEED_HDG_LO + section];            /* $5681 */
+    mem[block + 1u] = mem[GEN_SEED_HDG_HI + section];            /* $5687 */
+    mem[block + 2u] = mem[GEN_SEED_GRADIENT + section];          /* $568D */
+
+    uint8_t packed = mem[GEN_SEED_PLACE + section];              /* $5690 */
+    mem[block - 2u] = (uint8_t)((packed >> 2) | ((packed & 1u) << 7));   /* $5693 LSR / ROR */
+    mem[SMC_STALE_HORIZON_CAP] = (uint8_t)(0x07u | ((packed & 2u) << 6));/* $5698 — the SMC */
+
+    mem[block + 3u] = 0u;                                        /* $569E — restart the place */
+
+    if (track_direction & 0x80u) {          /* $56A3 BIT — reverse: no step, and V/C are left as */
+        cpu.V = (uint8_t)((track_direction >> 6) & 1u);          /* the BIT and the ROR set them */
+        cpu.C = 0u;
+    } else {
+        hook_gen_step_at(block, scale);                          /* $56A7 */
+    }
+
+    cpu.Y = span_saved_index;                                    /* $56AA */
+    cpu.A = segment_dir_index;                                   /* $56AC — and its own N/Z */
+    cpu.N = (uint8_t)((cpu.A >> 7) & 1u);
+    cpu.Z = (uint8_t)(cpu.A == 0u);
+}
+
+void hook_gen_seed_brands(void)  { hook_gen_seed_at(0x53FAu, 0x88u); }
+void hook_gen_seed_oulton(void)  { hook_gen_seed_at(0x53FAu, 0x80u); }
+void hook_gen_seed_snetter(void) { hook_gen_seed_at(0x53FAu, 0x84u); }
+void hook_gen_seed_doning(void)  { hook_gen_seed_at(0x53FCu, 0x86u); }
+void hook_gen_seed_nurburg(void) { hook_gen_seed_at(0x53FCu, 0x9Au); }
