@@ -103,6 +103,15 @@ extern uint16_t      g_trackHookMissingAddr;
    silently running Silverstone's control flow would look like.  This is the number that says the
    per-circuit code executes; on an expansion circuit it must be > 0. */
 extern unsigned long g_trackHookCalls;
+#ifdef REVS_HOOK_PROFILE
+/* Per-entry hook call counts (host instrument, REVS_HOOK_PROFILE builds only).  The total
+   above says the circuit's code ran; these say WHICH of its entries, which is what decides
+   the order a twinning campaign works in. */
+extern unsigned long g_hookProfCount[];
+extern uint16_t      g_hookProfAddr[];
+extern unsigned      g_hookProfUsed;
+extern unsigned long g_hookProfOverflow;
+#endif
 
 /* The interrupt register contract (see platform_cbridge.cpp): A, X and Y must come back out of
    irq1v_band_schedule unchanged, as they do on a real BBC.  Non-zero here means a foreground routine

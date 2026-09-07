@@ -81,6 +81,16 @@ CFLAGS   += -DREVS_STRAIGHT_TO_RACE
 CXXFLAGS += -DREVS_STRAIGHT_TO_RACE
 endif
 
+# `make HOOK_PROFILE=1 TRACK=n STRAIGHT_TO_RACE=1` — per-ENTRY call counts for the circuit's own
+# hook bodies, printed beside the screen dump.  The order a hook-twinning campaign should work in
+# is not derivable from the listing: the same $53xx-$5Axx address is DIFFERENT CODE on every
+# circuit, and several entries are only reached from an arm the render path takes on some frames.
+# Host only, and `make clean` when you toggle it.
+ifdef HOOK_PROFILE
+CFLAGS   += -DREVS_HOOK_PROFILE
+CXXFLAGS += -DREVS_HOOK_PROFILE
+endif
+
 # `make COMPETITION=1` — the COMPETITION branch instead of practice, so the session has a FIELD
 # of other cars in it and competitor-car rendering finally has a stimulus (amiga/Makefile has the
 # full rationale; src/platform/autorun.cpp has the menu chain).  Same `make clean` caveat.

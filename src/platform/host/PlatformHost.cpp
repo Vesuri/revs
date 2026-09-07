@@ -317,6 +317,19 @@ void PlatformHost::renderFrame()
                          "band cycles run %lu, skipped %lu)\n",
                          frames, path, g_trackInstalled, g_trackHookCalls, g_trackHookMissing,
                          g_bandRuns, g_bandSkips);
+#ifdef REVS_HOOK_PROFILE
+            /* ⭐ Per-ENTRY counts, which is the number that decides what to twin first — the
+               total above cannot, because one circuit's 18 entries differ by three orders of
+               magnitude and the same address is different code on every circuit.  A row of 0
+               means the engine never took the arm that reaches that hook in this window, NOT
+               that the circuit lacks the body (revs_track_hook_has says that). */
+            std::fprintf(stderr, "hook profile: circuit %u, %u distinct entries"
+                         " (overflow %lu)\n",
+                         g_trackInstalled, g_hookProfUsed, g_hookProfOverflow);
+            for (unsigned i = 0; i < g_hookProfUsed; i++)
+                std::fprintf(stderr, "  hook $%04X  %lu\n",
+                             g_hookProfAddr[i], g_hookProfCount[i]);
+#endif
         }
         /* ⭐ REVS_QUIT_AFTER_DUMP=1 — stop once the last requested frame is written.
            Without it the host races on forever after the dump, so a scripted check has to rely
