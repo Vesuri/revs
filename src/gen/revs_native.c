@@ -16443,3 +16443,86 @@ void hook_walk_back_gate(void)
 
     rebuild_walk_backward_core();                       /* $55C1 */
 }
+
+/* $5772 — MERGE THE TWO ROAD EDGES AT THE VANISHING POINT (Brands Hatch, Oulton Park,
+   Snetterton).  Patched in at $2538 over build_track_geometry's SECOND horizon store
+   (`STA edge_y+$28,Y`), so the store is the hook's own first act.
+   ⚠ Donington's body at the same address does only that store and returns, and the
+   Nurburgring's adds an edge_style-clearing arm below point 6 — different code, both left
+   transliterated.
+
+   What it computes, after caching the horizon's line as plot_object's object ceiling (the
+   `LDX #imm` operand at $1FE9, which each circuit rewrote from `LDX horizon_extent`): over
+   the first nine edge points, wherever the near side's azimuth has fallen BEHIND the far
+   side's, the far side is pulled back onto it, and the far side's scan line is copied from
+   the near side's throughout.  That is what stops the two road edges from crossing over as
+   they converge on the horizon.
+
+   ⚠ The walk runs UPWARD from the entry point and the compare is at the bottom, so an entry
+   point past 8 runs the body exactly once at that index — the shape that made the $2538
+   register handover matter (see the seam's note at build_track_geometry_core).
+
+   Entry: A = the clamped horizon line, Y = the folded horizon point ($2528's TAY).
+   Exit: A = the last edge_y read, Y = horizon_index, N/Z from that LDY, C = 1 (the loop's
+   own exit compare) and V from the last high-byte subtract. */
+/* SABOTAGE (each must FAIL; counts measured on the 4000-case fixture, not predicted):
+     S11 the merge stops at point 8, not 9             -> 3179/4000
+     S12 the far side is pulled in when it is AHEAD    -> 3999/4000
+     S13 only the low azimuth byte is copied across    -> 2709/4000
+     S14 the object ceiling keeps its old value        -> 3985/4000
+     S15 edge_y is copied the other way                -> 3990/4000
+     S16 the exit V's borrow comes from `>` not `>=`   ->    2/4000
+     S17 the exit carry is 0                           -> 4000/4000
+ ⚠ S16 SURVIVED 4000 cases twice before the fixture grew its low-byte-tie arm: the two
+   borrows differ only on a tie, and a tie between two SMALL angles cannot overflow the high
+   subtract, so the flag it feeds was provably 0 either way.  The arm ties the low bytes and
+   randomises the high ones over the full range; it then shows in 2 cases of 4000. */
+HookMergeExit hook_merge_horizon_edges_core(uint8_t point, uint8_t horizonLine)
+{
+    HookMergeExit ex;
+    uint8_t y = point;
+    uint8_t line = 0;
+    uint8_t v = 0;
+
+    mem[SMC_OBJECT_CEILING + 1] = horizonLine;          /* $5772 — plot_object's ceiling */
+    mem[EDGE_Y_TBL + EDGE_HALF + y] = horizonLine;      /* $5775 — the displaced store */
+
+    do {
+        /* $5778-$5785 — the two azimuths as whole 16-bit values; the 6502 does it as a byte
+           pair only because it has no wider subtract.  N of the high byte is the test. */
+        uint8_t  loNear = mem[EDGE_X_LO_TBL + y];
+        uint8_t  loFar  = mem[EDGE_X_LO_TBL + EDGE_HALF + y];
+        uint8_t  hiNear = mem[EDGE_X_HI_TBL + y];
+        uint8_t  hiFar  = mem[EDGE_X_HI_TBL + EDGE_HALF + y];
+        uint16_t nearAz = (uint16_t)(loNear | (hiNear << 8));
+        uint16_t farAz  = (uint16_t)(loFar  | (hiFar  << 8));
+
+        v = sbc_overflow(hiNear, hiFar, (unsigned)(loNear >= loFar));
+
+        if ((uint16_t)(nearAz - farAz) & 0x8000u) {     /* $5785 BPL over the copy */
+            mem[EDGE_X_LO_TBL + EDGE_HALF + y] = loNear;
+            mem[EDGE_X_HI_TBL + EDGE_HALF + y] = hiNear;
+        }
+
+        line = mem[EDGE_Y_TBL + y];                     /* $5793 — and the same line both sides */
+        mem[EDGE_Y_TBL + EDGE_HALF + y] = line;
+        y++;                                            /* $5799 INY / CPY #9 / BCC */
+    } while (y < 0x09u);
+
+    ex.a = line;
+    ex.v = v;
+    return ex;
+}
+
+void hook_merge_horizon_edges(void)
+{
+    HookMergeExit ex = hook_merge_horizon_edges_core(cpu.Y, cpu.A);
+    uint8_t point = horizon_index;                      /* $579E LDY */
+
+    cpu.A = ex.a;
+    cpu.Y = point;
+    cpu.N = (uint8_t)((point >> 7) & 1u);
+    cpu.Z = (uint8_t)(point == 0u);
+    cpu.C = 1u;                                         /* the loop only leaves on C set */
+    cpu.V = ex.v;
+}

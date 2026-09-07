@@ -468,6 +468,15 @@ that checks nothing: `diff_run` takes the mask per call, so compute the arm in t
 (`stopArm = C && count >= $0A`) and pass the mask that arm really has. The same shape applies to
 `hook_walk_back_gate` (`$55BD`): registers live when the gate closes, `LIVE_NONE` when it rebuilds.
 
+⭐⭐ **A REPLAYED FLAG NEEDS A FIXTURE ARM THAT CAN MAKE IT DIFFER.** `hook_merge_horizon_edges`
+(`$5772`) exits with V from a 16-bit subtract's high byte, whose borrow is the low byte's carry.
+A wrong borrow (`>` for `>=`) changes that carry **only on a tie**, and a tie between two small
+angles cannot overflow the high subtract — so the sabotage survived 4000 randomised cases twice,
+not because the fixture missed the flag but because the flag was provably 0 on every case it
+generated. The arm that fixes it ties the low bytes and randomises the high ones over the full
+range; the defect then shows in 2 cases of 4000. **A byte range chosen for plausibility is a
+coverage decision.**
+
 ### ⚠⚠ `make viewdiff` COVERS THE WALK AND NOT THE CLAMP — measured, 2026-09-07
 
 `viewdiff` is the outer gate on every hook, and it is the right one, but it compares the finished

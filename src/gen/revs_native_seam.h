@@ -750,6 +750,9 @@ uint8_t hook_record_horizon_core(uint8_t line, uint8_t point);
 void hook_record_horizon(void);
 void hook_edge_walk_limit(void);
 void hook_walk_back_gate(void);
+typedef struct { uint8_t a; uint8_t v; } HookMergeExit;
+HookMergeExit hook_merge_horizon_edges_core(uint8_t point, uint8_t horizonLine);
+void hook_merge_horizon_edges(void);
 void hook_horizon_clamp(void);
 
 #endif /* REVS_NATIVE_SEAM_H */

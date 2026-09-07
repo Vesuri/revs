@@ -11098,6 +11098,7 @@ static int test_driving_controls(void)
    ⚠ It must be a fixture and not just a viewdiff: `make viewdiff` compares the finished
    PICTURE, so it only sees an arm the recorded frames happen to take, and the one-shot's
    suppressed arm (entry Y with bit 5 set) is exactly the kind of thing it would miss. */
+#define EDGE_HALF_T 0x28                       /* the stride between the two road sides */
 extern int g_hookOracle;                       /* src/gen/revs_track_hooks.c */
 void trk_brands(unsigned short entry);         /* src/gen/revs_track_hooks.h */
 extern unsigned char g_track;                  /* src/platform/track.h */
@@ -11122,12 +11123,16 @@ static void hook_lim_oracle(void)   { g_hookOracle = 1; trk_brands(0x56BC); g_ho
 static void hook_back_twin(void)    { g_hookOracle = 0; trk_brands(0x55BD); }
 static void hook_back_oracle(void)  { g_hookOracle = 1; trk_brands(0x55BD); g_hookOracle = 0; }
 
+/* $5772 — the horizon edge merge, installed over build_track_geometry's second horizon store. */
+static void hook_merge_twin(void)   { g_hookOracle = 0; trk_brands(0x5772); }
+static void hook_merge_oracle(void) { g_hookOracle = 1; trk_brands(0x5772); g_hookOracle = 0; }
+
 static int test_hook_twins(void)
 {
     static uint8_t pre[65536];
     int fail = 0, printed = 0, t, cases = 4000, sub = 0;
     int sawLatched = 0, sawOneShot = 0, sawClamp = 0, sawAdvance = 0, sawEarlyStop = 0;
-    int scale = 1, runClamp, runRecord, runLimit, runBack;
+    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge;
     { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
     if (scale < 1) scale = 1;
     cases *= scale;
@@ -11135,6 +11140,7 @@ static int test_hook_twins(void)
     register_fixture("hook_record_horizon");
     register_fixture("hook_edge_walk_limit");
     register_fixture("hook_walk_back_gate");
+    register_fixture("hook_merge_horizon_edges");
     /* ⚠⚠ want() RESEEDS the stream, so it is called ONCE per fixture and NEVER in a loop
        condition — inside one it restarts the generator every iteration and every case is
        then the same case.  (It cost this fixture its `latched` and `early-stop` arms once.) */
@@ -11142,6 +11148,7 @@ static int test_hook_twins(void)
     runRecord = want("hook_record_horizon");
     runLimit  = want("hook_edge_walk_limit");
     runBack   = want("hook_walk_back_gate");
+    runMerge  = want("hook_merge_horizon_edges");
     g_track = 1;                                    /* Brands Hatch — whose body this is */
     setenv("REVS_SMC_CONTINUE", "1", 1);
 
@@ -11347,6 +11354,89 @@ static int test_hook_twins(void)
             printf("VACUOUS: hook_walk_back_gate missed an arm "
                    "(gated %d rebuilt %d fwd %d bwd %d)\n",
                    sawGated, sawRebuilt, sawFwd, sawBwd);
+            fail++;
+        }
+    }
+
+    /* -------------------------------------------------- $5772, the horizon edge merge.
+       Its two indexed halves are the whole point, so the fixture randomises both and then
+       forces the pull-in arm on some cases outright: with random azimuths the near side is
+       behind the far side half the time, but the ENTRY POINT past 8 (one iteration at a bogus
+       index — the shape the $2538 handover bug produced) needs asking for. */
+    if (runMerge) {
+        int sawPullIn = 0, sawLeave = 0, sawFull = 0, sawPastEnd = 0, sawWrap = 0;
+        int sawLoTie = 0;
+        sub = 0; printed = 0;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            uint8_t point;
+            int i;
+
+            fill_random(pre);
+            c.D = 0;
+            c.S = 0xFFu;
+
+            /* the horizon fan: nine points on each side, azimuths that straddle each other */
+            for (i = 0; i < 0x50; i++) {
+                pre[0x5E40 + i] = (uint8_t)xs();                    /* edge_x_lo, both halves */
+                /* edge_x_hi — mostly a small angle, sometimes anything: the exit V comes
+                   from this subtract and a small-angle-only fixture can never overflow it. */
+                pre[0x5E90 + i] = (xs() % 4u) ? (uint8_t)(xs() % 0x08u) : (uint8_t)xs();
+                pre[0x5F20 + i] = (uint8_t)(xs() % 0x50u);          /* edge_y */
+            }
+            /* a quarter of the cases make the two hi bytes EQUAL, so the low byte decides —
+               the arm a hi-byte-only compare would get wrong. */
+            if ((xs() & 3u) == 0u)
+                for (i = 0; i < 9; i++) pre[0x5E90 + EDGE_HALF_T + i] = pre[0x5E90 + i];
+            /* ⭐ ...and an eighth make the two LOW bytes equal with full-range high bytes.
+               The exit V is the high subtract's overflow, and its BORROW comes from the low
+               subtract: the two differ only on a tie, and a tie with small angles cannot
+               overflow, so without this arm a wrong borrow is unobservable (measured — the
+               sabotage survived 4000 cases twice before this went in). */
+            if ((xs() % 8u) == 0u) {
+                for (i = 0; i < 9; i++) {
+                    pre[0x5E40 + EDGE_HALF_T + i] = pre[0x5E40 + i];
+                    pre[0x5E90 + i]               = (uint8_t)xs();
+                    pre[0x5E90 + EDGE_HALF_T + i] = (uint8_t)xs();
+                }
+                sawLoTie = 1;
+            }
+
+            pre[0x0020] = (uint8_t)(xs() % 0x28u);                  /* horizon_index, the exit Y */
+
+            /* the entry point: inside the fan most of the time, past its end sometimes, and
+               $FF now and then (the INY wraps to 0 and the body runs the whole fan). */
+            switch (xs() % 8u) {
+                case 6:  point = (uint8_t)(0x09u + (xs() % 0x30u)); sawPastEnd = 1; break;
+                case 7:  point = 0xFFu;                             sawWrap    = 1; break;
+                default: point = (uint8_t)(xs() % 0x09u);
+                         if (point == 0) sawFull = 1;               break;
+            }
+            c.Y = point;
+            c.A = (uint8_t)(0x30u + (xs() % 0x20u));                /* the clamped horizon line */
+            c.X = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+
+            /* which arm the first iteration takes — fixture arithmetic, not the twin's */
+            {
+                uint16_t nearAz = (uint16_t)(pre[0x5E40 + point] | (pre[0x5E90 + point] << 8));
+                uint16_t farAz  = (uint16_t)(pre[0x5E40 + EDGE_HALF_T + point]
+                                           | (pre[0x5E90 + EDGE_HALF_T + point] << 8));
+                if ((uint16_t)(nearAz - farAz) & 0x8000u) sawPullIn = 1; else sawLeave = 1;
+            }
+
+            sub += diff_run("hook_merge_horizon_edges", pre, c,
+                            hook_merge_twin, hook_merge_oracle,
+                            LIVE_A | LIVE_X | LIVE_Y | LIVE_S |
+                            LIVE_N | LIVE_V | LIVE_Z | LIVE_C, t, &printed);
+        }
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,Y,N,V,Z,C\n",
+               "hook_merge_horizon_edges", cases, sub);
+        if (!(sawPullIn && sawLeave && sawFull && sawPastEnd && sawWrap && sawLoTie)) {
+            printf("VACUOUS: hook_merge_horizon_edges missed an arm "
+                   "(pull-in %d leave %d from-0 %d past-end %d wrap %d lo-tie %d)\n",
+                   sawPullIn, sawLeave, sawFull, sawPastEnd, sawWrap, sawLoTie);
             fail++;
         }
     }
