@@ -428,6 +428,40 @@ write — it must not.
 beside the cores, and matches inside comments outnumber the real ones. Strip comments first, then
 track brace depth to attribute each call to its enclosing function.
 
+## ⭐⭐ WHAT THE SURVIVING `cpu` TRAFFIC ACTUALLY IS — measured on the linked target, 2026-09-07
+
+The standing worry is that `revs_native.c`'s remaining `cpu.A/X/Y/C/N/V/Z` traffic is **oracle
+overhead** — marshalling that exists only so `make validate` has something to compare, and that a
+properly-native production build should not pay. Settled by looking at the target binary, not at
+the source:
+
+**The oracle costs the target NOTHING.** `src/gen/revs_gen.c` carries **239 `__t6502` bodies** and
+is compiled and linked into the Amiga build, but **0 of them survive the link** — `--gc-sections`
+drops every one, because the only references to them are from the harness, which is not in this
+binary (525 KB of transliteration in, 320 KB shipped). So there is no oracle-only cost to remove.
+
+**Every shim that DOES survive has a production caller**, and only four do. Dump them the same way
+rather than guessing:
+
+```
+m68k-amiga-elf-objdump -d out/Revs.elf > /tmp/revs.dis
+awk -v t="<abs8>" '/^[0-9a-f]+ </{fn=$2} $0 ~ ("jsr.*"t"$"){print fn}' /tmp/revs.dis | sort -u
+```
+
+| Surviving shim | Called from | Why the `cpu` handover is the contract |
+|---|---|---|
+| `abs8`, `scale_by_track_gradient` | **`trk_brands` / `trk_doning` / `trk_nurburg` / `trk_oulton` / `trk_snetter`** | the **per-circuit hook bodies**, still transliterated in `src/gen/revs_track_hooks.c` — 3066 lines, 454 `cpu.` refs. A hook calls these by 6502 address with live registers, so the shim's ABI is the seam's ABI |
+| `read_pedals_and_gears` | `read_driving_controls` | native→native, but a genuine escaping flag: $162D's `CMP #$91` carry leaks out through the no-key exit |
+| `sound_queue_exit_abi` | `check_crash` | native→native exit-ABI replay |
+
+⭐ **The conclusion that matters: the last transpiled PRODUCTION code in this port is the
+per-circuit hook file, and it is what keeps the 6502 ABI alive at the seam.** Not the oracle, and
+not the twins. So "get rid of the cpu-struct stuff that only validation needs" has no work left in
+it; the work is **twinning `revs_track_hooks.c`**, whose gate already exists and is green —
+`make viewdiff`, every circuit's race view byte-exact over display lines 82..166. ⚠ And it is the
+one campaign where the CLAUDE.md hook-seam rule bites hardest: these bodies run on four of the five
+circuits and nothing but `viewdiff` can see them compute wrongly.
+
 ## What "validated" costs and buys
 
 Buys: a byte-exact differential over randomised inputs, re-run in seconds, forever.
