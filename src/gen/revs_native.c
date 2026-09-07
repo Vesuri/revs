@@ -16815,3 +16815,79 @@ void hook_gen_dir_vector_oulton(void)  { hook_gen_dir_vector_at(0x53FAu, 0x80u);
 void hook_gen_dir_vector_snetter(void) { hook_gen_dir_vector_at(0x53FAu, 0x84u); }
 void hook_gen_dir_vector_doning(void)  { hook_gen_dir_vector_at(0x53FCu, 0x86u); }
 void hook_gen_dir_vector_nurburg(void) { hook_gen_dir_vector_at(0x53FCu, 0x9Au); }
+
+/* ===========================================================================
+   $55C4  hook_gen_step — ONE STEP OF THE TRACK GENERATOR  (twin #223)
+   ---------------------------------------------------------------------------
+   Brands Hatch, Donington, Oulton and Snetterton (the Nurburgring reaches the same work through
+   $55BD instead, already twinned as hook_walk_back_gate).  Reached from $5672 and from $5772.
+
+   The generator carries a running HEADING (16-bit) and a running GRADIENT (8-bit) in its state
+   block, and this routine folds ONE segment's turn and climb into them before regenerating the
+   direction vector for the new heading:
+
+     turn   = $5428[place]:$5528[place]   the segment's 16-bit heading delta
+     climb  = $5628[place]                its 8-bit gradient delta
+     both are signed by track_direction bit 7 — driven the other way round the circuit, every
+     turn and every climb reverses — and then added into block+0/+1 and block+2.
+
+   The whole fold is SKIPPED when the place cursor has bit 7 set (the generator has run out of
+   places and the heading is final); $5472 still runs, so the vector is regenerated either way.
+
+   ⚠ The per-circuit shift again: the place cursor is block-2, i.e. $53F8 on Brands Hatch, Oulton
+   and Snetterton and $53FA on Donington, exactly as $5472's block shifts.  Both parameters ride
+   through to hook_gen_dir_vector_at, gradient multiplier included.
+
+   ⚠ X is SAVED AND RESTORED here (saved_slot_index), which is what covers $5472's TAX clobber on
+   this path.  The exit N/Z come from that restoring LDX — from X, not from the gradient $5472 left
+   in A — and C/V are whatever $5472 exits with.
+
+   SABOTAGE (each must FAIL; counts measured on the four 1000-case fixtures, not predicted):
+     S40 the fold's skip test reads bit 6 of the place cursor          ->      250 / 1000
+     S41 the turn's high and low table pages are swapped               -> 748..749 / 1000
+     S42 track_direction does not sign the turn                        ->      250 / 1000
+     S43 track_direction does not sign the climb                       -> 247..249 / 1000
+     S44 the climb add carries in the heading add's carry               -> 309..334 / 1000
+     S45 X is not restored                                             ->     1000 / 1000
+   S40/S42/S43 all read ~250 because the fixture skips the fold on one case in four and signs it
+   on one in two; the fold-only defects can only be seen on the cases that fold. */
+#define GEN_SEG_TURN_HI  (TRACK_DIR_0 + 0x28u)   /* $5428[place] (see docs/rename.md) */
+#define GEN_SEG_TURN_LO  (TRACK_DIR_1 + 0x28u)   /* $5528[place] */
+#define GEN_SEG_CLIMB    (TRACK_DIR_2 + 0x28u)   /* $5628[place] */
+
+static void hook_gen_step_at(uint16_t block, uint8_t scale)
+{
+    uint8_t savedX = cpu.X;
+    saved_slot_index = savedX;                                  /* $55C4 STX */
+
+    uint8_t place = mem[block - 2u];                            /* $55C6 LDY */
+    if (!(place & 0x80u)) {                                     /* $55C9 BMI — places exhausted */
+        int reverse = (track_direction & 0x80u) != 0u;          /* $55D3 / $55EE BIT */
+
+        uint16_t turn = (uint16_t)((mem[GEN_SEG_TURN_HI + place] << 8)
+                                   | mem[GEN_SEG_TURN_LO + place]);
+        if (reverse) turn = (uint16_t)(0u - turn);               /* $55D5 abs16_math */
+        math_lo = (uint8_t)turn;    /* abs16_math's own low-byte write; math_hi ($55D8) is dead —
+                                       hook_gen_dir_vector_at overwrites it with the multiplier */
+
+        uint16_t heading = (uint16_t)(mem[block] | (mem[block + 1u] << 8));
+        heading = (uint16_t)(heading + turn);                    /* $55DC-$55E8 */
+        mem[block]      = (uint8_t)heading;
+        mem[block + 1u] = (uint8_t)(heading >> 8);
+
+        uint8_t climb = mem[GEN_SEG_CLIMB + place];              /* $55EB */
+        if (reverse) climb = negate8(climb).hi;                  /* $55F0 abs8 */
+        mem[block + 2u] = (uint8_t)(mem[block + 2u] + climb);    /* $55F3 CLC / ADC / STA */
+    }
+
+    hook_gen_dir_vector_at(block, scale);                        /* $55FA */
+
+    cpu.X = savedX;                                              /* $55FD LDX — and its own N/Z */
+    cpu.N = (uint8_t)((savedX >> 7) & 1u);
+    cpu.Z = (uint8_t)(savedX == 0u);
+}
+
+void hook_gen_step_brands(void)  { hook_gen_step_at(0x53FAu, 0x88u); }
+void hook_gen_step_oulton(void)  { hook_gen_step_at(0x53FAu, 0x80u); }
+void hook_gen_step_snetter(void) { hook_gen_step_at(0x53FAu, 0x84u); }
+void hook_gen_step_doning(void)  { hook_gen_step_at(0x53FCu, 0x86u); }

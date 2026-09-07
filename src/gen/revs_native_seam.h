@@ -773,3 +773,7 @@ void hook_gen_dir_vector_oulton(void);
 void hook_gen_dir_vector_snetter(void);
 void hook_gen_dir_vector_doning(void);
 void hook_gen_dir_vector_nurburg(void);
+void hook_gen_step_brands(void);
+void hook_gen_step_oulton(void);
+void hook_gen_step_snetter(void);
+void hook_gen_step_doning(void);

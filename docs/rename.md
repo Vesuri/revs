@@ -375,3 +375,20 @@ respectively, i.e. the circuit's overall vertical scale.  Reading that constant 
 sharing it is exactly the mistake the hook seam invites; the byte differential caught it on the
 second circuit's first case.  ⇒ owed: a `var` tenancy note per state-block address and a named
 per-circuit scale constant in `src/platform/track.h` rather than five literals in the twin.
+
+## The generator's per-segment turn/climb table — `$5428`/`$5528`/`$5628`
+
+Found while twinning `$55C4` (one step of the track generator, on Brands Hatch, Donington, Oulton
+and Snetterton).  Indexed by the *place* cursor, the three pages hold one segment's shape:
+`$5428[place]`:`$5528[place]` is a **16-bit heading delta** (high byte at `$5428`, low at `$5528`)
+and `$5628[place]` an **8-bit gradient delta**; `track_direction` bit 7 negates both, so driving
+the circuit the other way round reverses every turn and every climb.  [DERIVED] from the circuit
+bodies, 2026-09-07.
+
+⚠ These are offsets `$28` into the `track_dir_0`/`_1`/`_2` pages, whose race-time tenants are the
+*generated* direction basis indexed by `segment_dir_index` — so this is another **tenancy** on
+those three pages, not a rename of them: on an expansion circuit the region from `$28` is the
+circuit's own source data, read by the generator to produce the entries below it.  ⇒ owed: three
+`table` rows (suggested `gen_seg_turn_hi` / `gen_seg_turn_lo` / `gen_seg_climb`) plus a tenancy
+note on the `track_dir_0` row saying which index range is generated and which is source.  The twin
+carries local `GEN_SEG_TURN_HI`/`_LO`/`GEN_SEG_CLIMB` defines until they exist.

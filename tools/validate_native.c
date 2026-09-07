@@ -11161,6 +11161,14 @@ static void hook_gdv_3_twin(void)   { g_hookOracle = 0; trk_oulton(0x5472); }
 static void hook_gdv_3_oracle(void) { g_hookOracle = 1; trk_oulton(0x5472); g_hookOracle = 0; }
 static void hook_gdv_4_twin(void)   { g_hookOracle = 0; trk_snetter(0x5472); }
 static void hook_gdv_4_oracle(void) { g_hookOracle = 1; trk_snetter(0x5472); g_hookOracle = 0; }
+static void hook_gstep_1_twin(void)   { g_hookOracle = 0; trk_brands(0x55C4); }
+static void hook_gstep_1_oracle(void) { g_hookOracle = 1; trk_brands(0x55C4); g_hookOracle = 0; }
+static void hook_gstep_2_twin(void)   { g_hookOracle = 0; trk_doning(0x55C4); }
+static void hook_gstep_2_oracle(void) { g_hookOracle = 1; trk_doning(0x55C4); g_hookOracle = 0; }
+static void hook_gstep_3_twin(void)   { g_hookOracle = 0; trk_oulton(0x55C4); }
+static void hook_gstep_3_oracle(void) { g_hookOracle = 1; trk_oulton(0x55C4); g_hookOracle = 0; }
+static void hook_gstep_4_twin(void)   { g_hookOracle = 0; trk_snetter(0x55C4); }
+static void hook_gstep_4_oracle(void) { g_hookOracle = 1; trk_snetter(0x55C4); g_hookOracle = 0; }
 static void hook_gdv_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5472); }
 static void hook_gdv_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5472); g_hookOracle = 0; }
 
@@ -11704,6 +11712,95 @@ static int test_hook_twins(void)
                     printf("VACUOUS: %s missed an arm (all 8 octants %d mirror %d straight %d "
                            "zero component %d $80 component %d)\n", GDV[g].name, allOct,
                            sawMirror, sawStraight, sawZeroComp, sawMinComp);
+                    fail++;
+                }
+            }
+        }
+    }
+    /* --------------------------------------- $55C4, one step of the track generator.
+       The fold has to be seen BOTH WAYS ROUND the circuit (track_direction bit 7 signs both the
+       turn and the climb) and it has to be seen SKIPPED (place cursor bit 7), and because the
+       routine tail-calls $5472 the heading's octant is swept here too — a step that always landed
+       in the same octant would leave the vector store's own arms to the $5472 fixtures. */
+    {
+        static const struct { const char* name; void (*tw)(void); void (*or_)(void);
+                              uint16_t block; } GST[4] = {
+            { "hook_gen_step_brands",  hook_gstep_1_twin, hook_gstep_1_oracle, 0x53FA },
+            { "hook_gen_step_doning",  hook_gstep_2_twin, hook_gstep_2_oracle, 0x53FC },
+            { "hook_gen_step_oulton",  hook_gstep_3_twin, hook_gstep_3_oracle, 0x53FA },
+            { "hook_gen_step_snetter", hook_gstep_4_twin, hook_gstep_4_oracle, 0x53FA },
+        };
+        int g;
+        for (g = 0; g < 4; g++) {
+            int octSeen[8]; int sawSkip = 0, sawFold = 0, sawRev = 0, sawFwd = 0;
+            int sawWrap = 0, sawClimbCarry = 0;
+            int gstCases = cases / 4, i;
+            for (i = 0; i < 8; i++) octSeen[i] = 0;
+            register_fixture(GST[g].name);
+            if (!want(GST[g].name)) continue;
+            sub = 0; printed = 0;
+            for (t = 0; t < gstCases; t++) {
+                Cpu6502 c = zero_cpu();
+                uint8_t hi, lo, oct, place, dir;
+
+                fill_random(pre);
+                c.D = 0;                 /* the generator runs binary (docs/static-map.md) */
+                c.S = 0xFFu;
+
+                for (i = 0; i <= 0x40; i++) {           /* $5472's octant sine table */
+                    pre[0x57BF + i] = (uint8_t)(xs() % 0x79u);
+                    pre[0x58BF + i] = (uint8_t)(xs() % 0x79u);
+                    if (xs() & 1u) pre[0x57BF + i] = (uint8_t)(-(int)pre[0x57BF + i]);
+                    if (xs() & 1u) pre[0x58BF + i] = (uint8_t)(-(int)pre[0x58BF + i]);
+                }
+
+                /* the place cursor: bit 7 set is "places exhausted", which skips the whole fold */
+                place = (uint8_t)(xs() % 0x40u);
+                if ((t & 3u) == 3u) { place |= 0x80u; sawSkip = 1; } else sawFold = 1;
+                pre[GST[g].block - 2u] = place;
+
+                /* one segment's turn and climb, at the place the cursor names */
+                pre[(0x5428u) + (place & 0x7Fu)] = (uint8_t)xs();
+                pre[(0x5528u) + (place & 0x7Fu)] = (uint8_t)xs();
+                pre[(0x5628u) + (place & 0x7Fu)] = (uint8_t)xs();
+
+                oct = (uint8_t)(t & 7u);
+                hi  = (uint8_t)((oct << 5) | (xs() & 0x1Fu));
+                lo  = (uint8_t)xs();
+                pre[GST[g].block]      = lo;
+                pre[GST[g].block + 1u] = hi;
+                pre[GST[g].block + 2u] = (uint8_t)xs();     /* the running gradient */
+                octSeen[oct] = 1;
+                /* did the 16-bit heading add wrap, and did the 8-bit gradient add carry?  Both
+                   are places a mis-modelled carry would show, so they are arms, not luck. */
+                if (((unsigned)lo + (unsigned)pre[(0x5528u) + (place & 0x7Fu)]) > 0xFFu)
+                    sawWrap = 1;
+                if (((unsigned)pre[GST[g].block + 2u]
+                     + (unsigned)pre[(0x5628u) + (place & 0x7Fu)]) > 0xFFu)
+                    sawClimbCarry = 1;
+
+                dir = (uint8_t)xs();
+                if (t & 1u) { dir |= 0x80u; sawRev = 1; } else { dir &= 0x7Fu; sawFwd = 1; }
+                pre[0x0025] = dir;                          /* track_direction */
+                pre[0x0002] = (uint8_t)(xs() % 40u);        /* segment_dir_index */
+
+                c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+                c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+
+                sub += diff_run(GST[g].name, pre, c, GST[g].tw, GST[g].or_,
+                                LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS, t, &printed);
+            }
+            fail += sub;
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,Y+flags (X is restored "
+                   "here, and its LDX is what sets the exit N/Z)\n", GST[g].name, gstCases, sub);
+            {
+                int allOct = 1;
+                for (i = 0; i < 8; i++) if (!octSeen[i]) allOct = 0;
+                if (!(allOct && sawSkip && sawFold && sawRev && sawFwd && sawWrap
+                      && sawClimbCarry)) {
+                    printf("VACUOUS: %s missed an arm (all 8 octants %d skip %d fold %d reverse %d "
+                           "forward %d heading wrap %d climb carry %d)\n", GST[g].name, allOct,
+                           sawSkip, sawFold, sawRev, sawFwd, sawWrap, sawClimbCarry);
                     fail++;
                 }
             }
