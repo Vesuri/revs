@@ -11146,6 +11146,24 @@ static void hook_nsc_a_oracle(void) { g_hookOracle = 1; trk_brands(0x54F1); g_ho
 static void hook_nsc_b_twin(void)   { g_hookOracle = 0; trk_doning(0x54EF); }
 static void hook_nsc_b_oracle(void) { g_hookOracle = 1; trk_doning(0x54EF); g_hookOracle = 0; }
 
+/* $5472 — the generator's direction-vector store.  ⚠ ALL FIVE circuits get a fixture: the state
+   block AND the gradient multiplier are both per-circuit, so a two-arm fixture would have left
+   three circuits' constants unchecked (and did, until the byte differential caught Donington's
+   $86 against Brands Hatch's $88). */
+void trk_oulton(unsigned short entry);         /* src/gen/revs_track_hooks.h */
+void trk_snetter(unsigned short entry);
+void trk_nurburg(unsigned short entry);
+static void hook_gdv_1_twin(void)   { g_hookOracle = 0; trk_brands(0x5472); }
+static void hook_gdv_1_oracle(void) { g_hookOracle = 1; trk_brands(0x5472); g_hookOracle = 0; }
+static void hook_gdv_2_twin(void)   { g_hookOracle = 0; trk_doning(0x5472); }
+static void hook_gdv_2_oracle(void) { g_hookOracle = 1; trk_doning(0x5472); g_hookOracle = 0; }
+static void hook_gdv_3_twin(void)   { g_hookOracle = 0; trk_oulton(0x5472); }
+static void hook_gdv_3_oracle(void) { g_hookOracle = 1; trk_oulton(0x5472); g_hookOracle = 0; }
+static void hook_gdv_4_twin(void)   { g_hookOracle = 0; trk_snetter(0x5472); }
+static void hook_gdv_4_oracle(void) { g_hookOracle = 1; trk_snetter(0x5472); g_hookOracle = 0; }
+static void hook_gdv_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5472); }
+static void hook_gdv_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5472); g_hookOracle = 0; }
+
 static int test_hook_twins(void)
 {
     static uint8_t pre[65536];
@@ -11611,6 +11629,83 @@ static int test_hook_twins(void)
                        "fwd %d bwd %d)\n", NSC[n].name, sawGated, sawOpen, sawCarry,
                        sawNoCarry, sawFwd, sawBwd);
                 fail++;
+            }
+        }
+    }
+
+    /* --------------------------------------- $5472, the generator's direction-vector store.
+       All EIGHT octants have to be seen (each one is a different pair of signs and a different
+       component order) and both mirror senses; the two scalings' sign comes off the 6502 stack,
+       so the gradient multiplier's own path is exercised with negative components too.  The
+       heading is swept rather than randomised, because a uniform 16-bit draw would visit each
+       octant only ~250 times in 2000 cases and the fixture wants every one of them dense. */
+    {
+        static const struct { const char* name; void (*tw)(void); void (*or_)(void);
+                              uint16_t block; } GDV[5] = {
+            { "hook_gen_dir_vector_brands",  hook_gdv_1_twin, hook_gdv_1_oracle, 0x53FA },
+            { "hook_gen_dir_vector_doning",  hook_gdv_2_twin, hook_gdv_2_oracle, 0x53FC },
+            { "hook_gen_dir_vector_oulton",  hook_gdv_3_twin, hook_gdv_3_oracle, 0x53FA },
+            { "hook_gen_dir_vector_snetter", hook_gdv_4_twin, hook_gdv_4_oracle, 0x53FA },
+            { "hook_gen_dir_vector_nurburg", hook_gdv_5_twin, hook_gdv_5_oracle, 0x53FC },
+        };
+        int g;
+        for (g = 0; g < 5; g++) {
+            int octSeen[8]; int sawMirror = 0, sawStraight = 0, sawZeroComp = 0, sawMinComp = 0;
+            int gdvCases = cases / 4, i;
+            for (i = 0; i < 8; i++) octSeen[i] = 0;
+            register_fixture(GDV[g].name);
+            if (!want(GDV[g].name)) continue;
+            sub = 0; printed = 0;
+            for (t = 0; t < gdvCases; t++) {
+                Cpu6502 c = zero_cpu();
+                uint8_t hi, lo, oct;
+
+                fill_random(pre);
+                c.D = 0;                 /* the generator runs binary (docs/static-map.md) */
+                c.S = 0xFFu;
+
+                /* the two quarter-turn tables: real ones hold a quadrant of a circle of radius
+                   $78, so keep the magnitudes in range but include 0 and $80 by name */
+                for (i = 0; i <= 0x40; i++) {
+                    pre[0x57BF + i] = (uint8_t)(xs() % 0x79u);
+                    pre[0x58BF + i] = (uint8_t)(xs() % 0x79u);
+                    if ((xs() % 32u) == 0u) { pre[0x57BF + i] = 0x00u; sawZeroComp = 1; }
+                    if ((xs() % 32u) == 1u) { pre[0x58BF + i] = 0x80u; sawMinComp  = 1; }
+                    if (xs() & 1u) pre[0x57BF + i] = (uint8_t)(-(int)pre[0x57BF + i]);
+                    if (xs() & 1u) pre[0x58BF + i] = (uint8_t)(-(int)pre[0x58BF + i]);
+                }
+
+                /* the heading: sweep the octant, randomise the position inside it */
+                oct = (uint8_t)(t & 7u);
+                hi  = (uint8_t)((oct << 5) | (xs() & 0x1Fu));
+                lo  = (uint8_t)xs();
+                pre[GDV[g].block]      = lo;
+                pre[GDV[g].block + 1u] = hi;
+                pre[GDV[g].block + 2u] = (uint8_t)xs();     /* the gradient, carried through */
+                octSeen[oct] = 1;
+                if (oct & 1u) sawMirror = 1; else sawStraight = 1;
+
+                pre[0x0002] = (uint8_t)(xs() % 40u);        /* segment_dir_index */
+                pre[0x0025] = (uint8_t)xs();                /* track_direction (the tail re-signs) */
+
+                c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+                c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+
+                sub += diff_run(GDV[g].name, pre, c, GDV[g].tw, GDV[g].or_,
+                                LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS, t, &printed);
+            }
+            fail += sub;
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,Y+flags (X is the "
+                   "$5493 TAX, clobbered on purpose)\n", GDV[g].name, gdvCases, sub);
+            {
+                int allOct = 1;
+                for (i = 0; i < 8; i++) if (!octSeen[i]) allOct = 0;
+                if (!(allOct && sawMirror && sawStraight && sawZeroComp && sawMinComp)) {
+                    printf("VACUOUS: %s missed an arm (all 8 octants %d mirror %d straight %d "
+                           "zero component %d $80 component %d)\n", GDV[g].name, allOct,
+                           sawMirror, sawStraight, sawZeroComp, sawMinComp);
+                    fail++;
+                }
             }
         }
     }

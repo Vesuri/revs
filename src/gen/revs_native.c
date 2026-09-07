@@ -16666,3 +16666,152 @@ static void hook_next_section_cursor_at(uint16_t block)
 
 void hook_next_section_cursor_a(void) { hook_next_section_cursor_at(0x53F8u); }
 void hook_next_section_cursor_b(void) { hook_next_section_cursor_at(0x53FAu); }
+
+/* $5472 — THE GENERATOR'S DIRECTION-VECTOR STORE, one 6502 body in all five circuits (only the
+   self-call's target and the state-block base differ).  Reached from $55C4 (which brackets it
+   with its own X save/restore) and, as a tail call, from $5A1B.
+
+   What it computes: the circuit's running 16-bit heading, held in the generator state block, is
+   turned into a direction vector and written into the four per-position tables at the current
+   segment_dir_index.  The heading's top nine bits split into an OCTANT (bits 6..8) and a
+   position INSIDE that octant (bits 0..5); the octant picks which of the pair of quarter-turn
+   tables at $57BF/$58BF supplies which component and what signs the two carry, and odd octants
+   read the position mirrored ($40 - i) because the tables only cover half a quadrant.  Then:
+
+     track_dir_0[dir] = component A          track_dir_2[dir] = component B
+     $5800[dir]       = A scaled by $88      $5700[dir]       = -(B scaled by $88)
+     track_dir_1[dir] = the block's third byte (the gradient, carried straight through)
+
+   The $5700/$5800 pair is the across-track normal the race reads (symbols.csv calls that its
+   second tenant, over ModifyGameCode's address); this is the code that writes it.
+
+   ⭐ THE SIGN GOES THROUGH THE 6502 STACK, twice.  The two scalings are `PHP / JMP $461B` —
+   scale_by_track_gradient's tail, whose $4621 PLP re-signs the product's high byte from the P
+   its caller stacked.  So the macro stays at exactly those two points (hook_scale_by_gradient
+   below), which also means the C and V standing at each PHP are part of the contract: they come
+   off the octant's compare chain, and the core returns them rather than hiding them.
+
+   ⚠ FIVE SHIMS, not two: the circuits differ in BOTH parameters.  The state block is $53FA on
+   Brands Hatch, Oulton and Snetterton and $53FC on Donington and the Nurburgring (bytes +0/+1
+   are the heading, +2 the gradient), and the gradient multiplier is a per-circuit constant —
+   $88, $80, $84, $86, $9A respectively.  That constant is the circuit's overall scale; reading
+   it off one circuit and sharing it across the others is exactly the mistake this hook seam
+   invites, and the byte differential caught it on the second circuit's first case.
+
+   ⚠ X IS CLOBBERED (the $5493 TAX), and the engine site that reaches $5A1B — $1289's patched
+   `JSR $5A1B` — still has X live at $129C.  $55C4's own save/restore is what covers its path;
+   the $5A1B path is the circuits' business and is reproduced, not corrected.
+
+   SABOTAGE (each must FAIL; counts measured on the five 1000-case fixtures, not predicted, and
+   quoted as the range over them):
+     S31 the octant comes from bits 4..6 of the heading's high byte    -> 870..891 / 1000
+     S32 the in-octant mirror is $3F - i, not $40 - i                 ->      500 / 1000
+     S33 the two components are never swapped                         -> 496..499 / 1000
+     S34 component A's negate arm is octant > 4                       -> 119..124 / 1000
+     S35 component B's negate window is [2,6] closed at both ends     -> 116..122 / 1000
+     S36 the second scaling's result is stored without the negate     ->     1000 / 1000
+     S37 the C standing at the first PHP is the entry C               -> 236..277 / 1000
+     S38 the gradient byte comes from block+1                         -> 994..998 / 1000
+     S39 Oulton is given Brands Hatch's $88 multiplier                -> 1000 / 1000 on Oulton,
+         0 on the other four — LOCALIZED by construction (only that one shim was patched), which
+         is the point: this is the defect the five shims exist to prevent, and only a per-circuit
+         fixture can see it.  This is the mistake the differential actually caught while the twin
+         was being written, on the second circuit's first case.
+   ⭐ S31 was first written as `(angleHi >> 5) & 7`, and it SURVIVED at 0/1000 on all five
+   circuits.  That is the third explanation and not a fixture gap: `nine` is
+   `(angleHi << 1) | (angleLo >> 7)`, so `nine >> 6` drops the bit angleLo contributed and the two
+   expressions are the SAME function of the heading (docs/validation-harness.md §FIFTEENTH).  The
+   defect above moves the field instead, and detects. */
+#define GEN_DIR_TBL_A   0x57BFu   /* quarter-turn component table, first of the pair */
+#define GEN_DIR_TBL_B   0x58BFu   /* ...and the second (per-circuit; see docs/rename.md) */
+
+GenDirVector hook_gen_dir_vector_core(uint16_t block)
+{
+    uint8_t  angleLo = mem[block];                              /* $5472 */
+    uint8_t  angleHi = mem[block + 1u];                         /* $5476 */
+    /* $5474-$5482: ASL lo / ROL hi then three more ROLs of {C,A}, i.e. rotate the heading's top
+       nine bits left by three — which lands bits 6..8 (the octant) in the low three bits. */
+    uint16_t nine   = (uint16_t)((angleHi << 1) | (angleLo >> 7));
+    uint8_t  octant = (uint8_t)((nine >> 6) & 7u);
+    uint8_t  index  = (uint8_t)(nine & 0x3Fu);                  /* $5483-$5484 */
+    if (octant & 1u)                                            /* $5486-$548A, on the LSR's C */
+        index = (uint8_t)(0x40u - index);   /* odd octants read the table mirrored */
+
+    uint8_t tableA = mem[GEN_DIR_TBL_A + index];                /* $548D LDY */
+    uint8_t tableB = mem[GEN_DIR_TBL_B + index];                /* $5490 LDA / $5493 TAX */
+
+    GenDirVector d;
+    if ((octant + 1u) & 2u) { d.compA = tableB; d.compB = tableA; }  /* $5494-$54A5 */
+    else                    { d.compA = tableA; d.compB = tableB; }
+
+    /* The signs.  Two windows on the octant, each negating one component; the 6502 wrote the
+       negates as `LDA #0 / SBC`, which agrees with negate8's `EOR #$FF / CLC / ADC #1` in
+       result AND in C and V (C set only for 0, V only for $80 — same in both forms). */
+    d.c = (uint8_t)(octant >= 4u);                              /* $54A9 CMP #$04 */
+    /* V does NOT come from entry: the swap test at $5496 is a real `CLC / ADC #$01` on the octant,
+       and an ADC writes V.  The octant is 0..7 and the carry is clear, so that add can never
+       overflow — V is 0 here on every path, and only the negate arms below can set it again. */
+    d.v = 0u;
+    if (octant >= 4u) {                                         /* $54AD-$54B1 */
+        AddFlags f = negate8(d.compA);
+        d.compA = f.hi; d.c = f.carry; d.v = f.overflow;
+    }
+    d.c = (uint8_t)(octant >= 6u);                              /* $54B5 CMP #$06 */
+    if (octant < 6u) {
+        d.c = (uint8_t)(octant >= 2u);                          /* $54B9 CMP #$02 */
+        if (octant >= 2u) {                                     /* $54BD-$54C1 */
+            AddFlags f = negate8(d.compB);
+            d.compB = f.hi; d.c = f.carry; d.v = f.overflow;
+        }
+    }
+    d.tableB = tableB;
+    return d;
+}
+
+/* $57BB (Brands) / $54EB (Donington, Oulton, Snetterton) / $555C (the Nurburgring) — all four
+   bytes of it: `PHP / JMP $461B`.  ⭐ The macro stays because a flag genuinely escapes: the P
+   this pushes is what scale_by_track_gradient_tail's $4621 PLP pulls to re-sign the product, and
+   the pushed byte lands in mem[] where the differential can see it. */
+static uint8_t hook_scale_by_gradient(uint8_t value)
+{
+    LDA(value);                    /* the caller's own LDA — N is the sign it is about to stack */
+    PHP();
+    scale_by_track_gradient_tail();
+    return cpu.A;
+}
+
+static void hook_gen_dir_vector_at(uint16_t block, uint8_t scale)
+{
+    GenDirVector d = hook_gen_dir_vector_core(block);
+    uint8_t dir = segment_dir_index;                       /* $54C3 LDY */
+    /* $549D-$54C1 kept the two components in $76/$77, and they are still there when the routine
+       returns — a scratch pair, but the oracle's writes are part of the contract. */
+    shared_temp_76 = d.compA;
+    shared_temp_77 = d.compB;
+    math_hi = scale;                                       /* $54C7 — both scalings' multiplier */
+
+    mem[TRACK_DIR_0 + dir] = d.compA;                      /* $54C9-$54CB */
+    cpu.C = d.c; cpu.V = d.v;                              /* what the octant chain left standing */
+    mem[TRACK_NORMAL_Y + dir] = hook_scale_by_gradient(d.compA);   /* $54CE-$54D1 */
+
+    mem[TRACK_DIR_2 + dir] = d.compB;                      /* $54D4-$54D6 */
+    AddFlags neg = negate8(hook_scale_by_gradient(d.compB));       /* $54D9-$54E0 */
+    mem[TRACK_NORMAL_X + dir] = neg.hi;                    /* $54E1 — the normal points the other way */
+
+    uint8_t gradient = mem[block + 2u];                    /* $54E4 */
+    mem[TRACK_DIR_1 + dir] = gradient;                     /* $54E7 */
+
+    cpu.A = gradient;
+    cpu.X = d.tableB;                                      /* the $5493 TAX, never overwritten */
+    cpu.Y = dir;
+    cpu.N = (uint8_t)((gradient >> 7) & 1u);
+    cpu.Z = (uint8_t)(gradient == 0u);
+    cpu.C = neg.carry;                                     /* the $54DF ADC's own flags survive */
+    cpu.V = neg.overflow;
+}
+
+void hook_gen_dir_vector_brands(void)  { hook_gen_dir_vector_at(0x53FAu, 0x88u); }
+void hook_gen_dir_vector_oulton(void)  { hook_gen_dir_vector_at(0x53FAu, 0x80u); }
+void hook_gen_dir_vector_snetter(void) { hook_gen_dir_vector_at(0x53FAu, 0x84u); }
+void hook_gen_dir_vector_doning(void)  { hook_gen_dir_vector_at(0x53FCu, 0x86u); }
+void hook_gen_dir_vector_nurburg(void) { hook_gen_dir_vector_at(0x53FCu, 0x9Au); }

@@ -347,3 +347,31 @@ a single global name for either address would be wrong on two circuits.  ⇒ The
 `var` **tenancy** notes naming both readings per address, plus one `table` row for `$5728`
 (per-circuit run lengths, indexed by place).  The twin carries a local `GEN_CURSOR_RUNS` define
 and takes the block base as an argument until those exist.
+
+## The generator's octant sine table — `$57BF`/`$58BF` (and `$5472`'s per-circuit scale)
+
+Found while twinning `$5472` (the geometry generator's direction-vector store, one body in all five
+expansion circuits).  The hook takes the generator's running 16-bit heading, splits it into an
+**octant** (bits 6..8) and a **within-octant index 0..$40**, and reads a component pair from
+`$57BF + i` and `$58BF + i`.  Those 65-entry runs are a **sine/cosine octant table of radius
+`$78` = 120**: `$57BF[i] = round(120 sin(i·π/256))`, `$58BF[i] = round(120 cos(i·π/256))`, so
+`i = $40` is 45° and both read `$55`, and `hypot` is exactly 120 at every entry checked.  120 is
+the same radius `symbols.csv` records for `track_dir_0`'s ground-plane pair, which is what the
+hook writes.  The bytes are **identical on all five circuits** — unlike `$5472`'s other two
+parameters.  [MEASURED] from `src/gen/revs_tracks.c`, 2026-09-07.
+
+⚠ These are the **tails of the `$5700`/`$5800` pages**, whose live tenants are the across-track
+normal pair the same hook writes at index `dir` (≲ `$26`).  So `$5700`/`$5800` now has a *third*
+reading, and the rows owed are two `table` rows at `$57BF`/`$58BF` (suggested
+`gen_octant_sin` / `gen_octant_cos`) plus a tenancy note on the existing `$5700`/`$5800` entry
+saying the page tail from `$BF` is constant data, not generated state.  The twin carries local
+`GEN_DIR_TBL_A`/`_B` defines until they exist.
+
+⚠⚠ `$5472`'s **other** two parameters DO differ per circuit and neither has a name: the generator
+state block is `$53FA` on Brands Hatch, Oulton and Snetterton and `$53FC` on Donington and the
+Nurburgring (+0/+1 the heading, +2 the gradient), and the gradient multiplier fed to
+`scale_by_track_gradient_tail` is a per-circuit constant — `$88`, `$80`, `$84`, `$86`, `$9A`
+respectively, i.e. the circuit's overall vertical scale.  Reading that constant off one circuit and
+sharing it is exactly the mistake the hook seam invites; the byte differential caught it on the
+second circuit's first case.  ⇒ owed: a `var` tenancy note per state-block address and a named
+per-circuit scale constant in `src/platform/track.h` rather than five literals in the twin.

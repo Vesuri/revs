@@ -764,3 +764,12 @@ void hook_horizon_clamp(void);
 uint8_t hook_next_section_cursor_core(uint16_t genBlock);
 void hook_next_section_cursor_a(void);
 void hook_next_section_cursor_b(void);
+/* $5472's vector: the two ground-plane components (signed), what the $5493 TAX leaves in X,
+   and the C and V standing at the first PHP (V is always 0 there — see the twin). */
+typedef struct { uint8_t compA, compB, tableB, c, v; } GenDirVector;
+GenDirVector hook_gen_dir_vector_core(uint16_t block);
+void hook_gen_dir_vector_brands(void);
+void hook_gen_dir_vector_oulton(void);
+void hook_gen_dir_vector_snetter(void);
+void hook_gen_dir_vector_doning(void);
+void hook_gen_dir_vector_nurburg(void);
