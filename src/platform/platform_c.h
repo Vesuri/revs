@@ -60,6 +60,17 @@ void    platform_brk(uint16_t pc);
    exactly like a working rasteriser that draws nothing.  docs/transpiler.md §SMC. */
 void    platform_smc_unhandled(uint16_t site, uint16_t value);
 
+/* ⭐ THE INTERMEDIATE 64 KB SNAPSHOT, at a named 6502 PC rather than at a frame boundary.
+   The frame-boundary dump (REVS_MEM_DUMP) is taken with the road pass long finished, so every
+   edge_* / surface_edge_* cell in it is end-of-frame SCRATCH — the object plotter rewrites
+   three of them after draw_road, and comparing those against a real BBC sent one hunt chasing
+   a writer that was not the cause.  Calling this at the entry of a stage instead compares that
+   stage's real INPUT.  The counterpart on the reference side is
+   `tools/bbc_refloop_race.mjs --mem-at=<pc>`, and the two must name the same PC.
+   Controlled by REVS_MEM_DUMP_AT=<hex pc> (+ REVS_MEM_DUMP_AT_FRAME, default 40); writes once,
+   to <REVS_SCREEN_DUMP>.memat.<pc>, and is a no-op in a build that was not asked for it. */
+void    platform_mem_snapshot_at(uint16_t pc);
+
 /* A merged loop region was entered at an address its dispatch switch does not cover.
    A region is a set of 6502 segments that form a control-flow cycle, emitted as ONE C
    function so the cycle is a goto loop rather than unbounded mutual recursion

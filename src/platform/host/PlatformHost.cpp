@@ -19,11 +19,56 @@ extern "C" {
 #include "../../cpu/mem_decl.h"
 extern "C" MEM_QUAL uint8_t mem[65536];
 
+/* ⭐ THE INTERMEDIATE 64 KB SNAPSHOT — platform_mem_snapshot_at()'s host body.
+   A twin calls it at the entry of a render stage; this writes all 64 KB the FIRST time the
+   requested PC is reached at or after REVS_MEM_DUMP_AT_FRAME, then never again.  Its whole
+   reason for existing is that the frame-boundary dump answers a different question: by the
+   time a frame ends the object plotter has rewritten cells the road pass produced, so an
+   edge_* diff there says nothing about what draw_road was handed.  The counterpart is
+   `tools/bbc_refloop_race.mjs --mem-at=<pc>`; give both the same PC.
+   ⚠ It reads its configuration once and caches the ANSWER, including "not asked for" — the
+   call sits on the 50 Hz path and a getenv per frame is not free.  A build that was not asked
+   is a load and a branch. */
+static const char* snapAtPath   = 0;      /* where to write, or 0 */
+static unsigned    snapAtPc     = 0;
+static unsigned long snapAtFrame = 0;
+static int         snapAtInit   = 0;
+static int         snapAtDone   = 0;
+static unsigned long* snapAtFrames = 0;   /* the host's own frame counter, once constructed */
+
+extern "C" void revs_host_mem_snapshot_at(uint16_t pc)
+{
+    if (!snapAtInit) {
+        snapAtInit = 1;
+        const char* w = std::getenv("REVS_MEM_DUMP_AT");
+        const char* d = std::getenv("REVS_SCREEN_DUMP");
+        if (w && w[0] && d && d[0]) {
+            snapAtPc   = (unsigned)std::strtoul(w, 0, 16);
+            snapAtPath = d;
+            const char* f = std::getenv("REVS_MEM_DUMP_AT_FRAME");
+            snapAtFrame = (f && f[0]) ? (unsigned long)std::strtoul(f, 0, 0) : 40ul;
+        }
+    }
+    if (!snapAtPath || snapAtDone || pc != snapAtPc) return;
+    if (snapAtFrames && *snapAtFrames < snapAtFrame) return;
+
+    char path[512];
+    std::snprintf(path, sizeof path, "%s.memat.%04x", snapAtPath, (unsigned)pc);
+    std::FILE* f = std::fopen(path, "wb");
+    if (!f) return;
+    for (unsigned i = 0; i < 0x10000; i++) std::fputc(mem[i], f);
+    std::fclose(f);
+    snapAtDone = 1;
+    std::fprintf(stderr, "PlatformHost: mem snapshot at $%04X (frame %lu) -> %s\n",
+                 (unsigned)pc, snapAtFrames ? *snapAtFrames : 0ul, path);
+}
+
 PlatformHost::PlatformHost(const char* imagePath) : vbi(0), frames(0), traceKeys(false)
 {
     const char* t = std::getenv("REVS_TRACE_KEYS");
     traceKeys = (t && t[0] && t[0] != '0');
 
+    snapAtFrames = &frames;   /* the snapshot hook's frame gate reads the live counter */
     dumpPath = std::getenv("REVS_SCREEN_DUMP");
     const char* df = std::getenv("REVS_SCREEN_FRAME");
     dumpFrame = (df && df[0]) ? (unsigned long)std::strtoul(df, 0, 0) : 400ul;

@@ -115,6 +115,33 @@ const dumpDir = opt("dump", null);
 // captured a car that was still in the pits with the engine OFF — a dump that compares fine
 // against a port in the same state and proves nothing about a running engine.  It implies
 // --drive for that reason.  (`park` is declared further down; hoisted here.)
+// ⭐ --mem-at=NNNN : dump the whole 64 KB the moment the CPU first reaches that PC, once the
+// drive-in has settled (frame >= --mem-at-frame, default 40).  The frame-boundary dump below is
+// taken with the road pass long finished, so every edge_* / surface_edge_* cell in it is
+// end-of-frame SCRATCH — three of those cells sent this hunt after the object plotter before a
+// control showed they are rewritten after draw_road.  Sampling at draw_road's own entry ($1A20)
+// instead compares build_track_geometry's real OUTPUT.  The port's counterpart is
+// REVS_MEM_DUMP_AT (src/platform/... ), and the two must name the same PC.
+// ⭐ --watch=NNNN : every WRITE to one address, attributed to the PC that made it, over the
+// settled frames.  "Which routine puts that value there" is the question a memory diff always
+// raises and can never answer, and reasoning about it from the listing is exactly the
+// nearly-right scan this project has paid for before.  `--watch-frames=a-b` moves the window.
+const watchArg = opt("watch", null);
+const watchAddr = watchArg === null ? null : parseInt(watchArg, 16);
+const watchPCs = new Map();
+// ⭐ --trace-edge : one line per EDGE POINT the road walk emits, for ONE settled frame — the
+// slot it lands in, the section byte it came from, and the bearing/heading the store is made
+// from.  A memory diff can say WHICH edge cell differs; only a per-point trace can say whether
+// the port's walk visited the same points in the same order, which is the question every
+// road-pass divergence turns into.  Matched on the port side by REVS_TRACE_EDGE.
+const traceEdge = argv.includes("--trace-edge");
+const traceEdgeLines = [];
+const memAtArg = opt("mem-at", null);
+const memAt = memAtArg === null ? null : parseInt(memAtArg, 16);
+const memAtFrame = Number(opt("mem-at-frame", 40));
+let memAtDone = false;
+let memAtSnapshot = null;
+let memAtFrames = 0;
 const park = argv.includes("--park");
 const drive = argv.includes("--drive") || park;
 const wing = String(opt("wing", "20")); // rear and front wing, 0-40 (the game has no default)
@@ -325,6 +352,22 @@ let ringAt = 0,
     engineInsns = 0;
 
 tm.processor.debugInstruction.add((addr) => {
+    if (traceEdge && addr === 0x23c0 && frames === memAtFrame) {
+        const pk = (a) => tm.processor.peekmem(a);
+        const w = (a) => pk(a) | (pk(a + 1) << 8);
+        traceEdgeLines.push(`  slot $${tm.processor.y.toString(16).padStart(2, "0")}` +
+            ` section $${tm.processor.x.toString(16).padStart(2, "0")}` +
+            ` count $${pk(0x42).toString(16).padStart(2, "0")}` +
+            ` bearing $${w(0x8a).toString(16).padStart(4, "0")}` +
+            ` heading $${w(0x0a).toString(16).padStart(4, "0")}` +
+            ` -> $${((w(0x8a) - w(0x0a)) & 0xffff).toString(16).padStart(4, "0")}`);
+    }
+    if (memAt !== null && !memAtDone && addr === memAt && frames >= memAtFrame) {
+        memAtDone = true;
+        memAtSnapshot = Buffer.alloc(0x10000);
+        for (let i = 0; i < 0x10000; i++) memAtSnapshot[i] = tm.processor.peekmem(i);
+        memAtFrames = frames;
+    }
     switch (addr) {
         case PRINT_MSG: {
             const x = tm.processor.x;
@@ -637,6 +680,14 @@ const ULA_CTRL = 0xfe20, ULA_PAL = 0xfe21;
 const bandFrames = []; // one entry per captured field: the writes and the line they landed on
 let curBand = null;
 tm.processor.debugWrite.add((addr, b) => {
+    if (watchAddr !== null && addr === watchAddr && frames >= memAtFrame) {
+        /* getPrevPc(0), not processor.pc — see the note in the fill census below. */
+        const pc = tm.processor.getPrevPc(0);
+        let w = watchPCs.get(pc);
+        if (!w) watchPCs.set(pc, (w = { n: 0, vals: new Map() }));
+        w.n++;
+        w.vals.set(b, (w.vals.get(b) || 0) + 1);
+    }
     if (fillArg && frames >= fillFrameLo && frames <= fillFrameHi && fillFlags[addr]) {
         // ⚠ A window of frames only: this fires on every frame-buffer write in it.
         //
@@ -1295,6 +1346,20 @@ if (soundOut) {
 }
 
 // ── ground truth out ──────────────────────────────────────────────────────────────────────
+if (traceEdge) {
+    console.log(`\nedge points emitted at $23C0 during frame ${memAtFrame} (${traceEdgeLines.length}):`);
+    for (const l of traceEdgeLines) console.log(l);
+}
+
+if (watchAddr !== null) {
+    console.log(`\nwrites to $${watchAddr.toString(16)} from frame ${memAtFrame} on, by the PC that made them:`);
+    if (watchPCs.size === 0) console.log("   NONE — nothing wrote it in the window");
+    for (const [pc, w] of [...watchPCs.entries()].sort((x, y) => y[1].n - x[1].n))
+        console.log(`   $${pc.toString(16).padStart(4, "0")}  ${w.n} writes  values ` +
+            [...w.vals.entries()].sort((x, y) => y[1] - x[1]).slice(0, 6)
+                .map(([v, n]) => `$${v.toString(16).padStart(2, "0")}x${n}`).join(" "));
+}
+
 if (dumpDir && frames > 0) {
     // ⚠ Paths inside these scripts are relative to the SCRIPT, not the cwd, because they must
     // be run from tools/jsbeeb — "../tmp" is the repo's tmp, "../../tmp" silently writes into
@@ -1339,4 +1404,14 @@ if (dumpDir && frames > 0) {
     console.log(`   frame buffer $${BASE.toString(16)}+$${LEN.toString(16)} -> ${rawF}`);
     console.log(`   real display ${FB_W}x${FB_H} RGB   -> ${ppmF}`);
     console.log(`   whole 64 KB                 -> ${memF}`);
+
+    if (memAt !== null) {
+        if (memAtSnapshot === null) {
+            console.log(`   ⚠ --mem-at=$${memAt.toString(16)} NEVER REACHED (frame >= ${memAtFrame}) — no snapshot`);
+        } else {
+            const atF = path.join(dir, `bbc_memat_${memAt.toString(16).padStart(4, "0")}.bin`);
+            fs.writeFileSync(atF, memAtSnapshot);
+            console.log(`   64 KB at $${memAt.toString(16)} (frame ${memAtFrames}) -> ${atF}`);
+        }
+    }
 }

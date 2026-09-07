@@ -85,6 +85,21 @@ void platform_smc_unhandled(uint16_t site, uint16_t value) {
     if (platform) platform->smcUnhandled(site, value);
 }
 
+/* Deliberately NOT a Platform virtual, for the same reason as platform_bad_region_entry
+   below: it is a diagnostic on the generated code, identical on every backend.  The Amiga
+   has no filesystem to write 64 KB to and no reference to compare against, so the whole
+   body is host-only. */
+#ifndef REVS_PLATFORM_AMIGA
+void revs_host_mem_snapshot_at(uint16_t pc);
+#endif
+void platform_mem_snapshot_at(uint16_t pc) {
+#ifdef REVS_PLATFORM_AMIGA
+    (void)pc;
+#else
+    revs_host_mem_snapshot_at(pc);
+#endif
+}
+
 /* Deliberately NOT a Platform virtual: this is a property of the generated code, identical
    on every backend, and adding an interface method for it would imply a backend could
    sensibly differ about it.  Counted rather than aborted so a headless run reports it in
