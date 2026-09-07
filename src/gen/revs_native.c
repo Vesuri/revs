@@ -63,6 +63,7 @@
 #define SMC_CONTROLS_HOOK      0x1593u  /* read_driving_controls: a hook JSR */
 #define SMC_FILL_ATTR_HOOK     0x1946u  /* fill_line_attr: a hook JSR */
 #define SMC_GAP_WALK_BRANCH    0x1DD4u  /* column_gap_walk: the source-byte branch (BEQ $1DC5) */
+#define SMC_STALE_HORIZON_CAP  0x23B3u  /* road_edge_start's `LDA #$07` — per-circuit, at RUN time */
 #define SMC_OBJECT_CEILING     0x1FE9u  /* plot_object: the object-count ceiling (LDX #imm) */
 #define SMC_REBASE_BRANCH      0x231Au  /* the rebase pair's BEQ — taken or not, per circuit */
 #define SMC_SECTION_AHEAD_HOOK 0x24DEu  /* advance_player_section: step-forward hook JSR */
@@ -3407,7 +3408,7 @@ void road_edge_start_core(uint8_t nearSlotCount,   /* 6 — also the "nothing to
                                  uint8_t halfStride,      /* $28 = 40 */
                                  uint8_t scratchSection,  /* $FD */
                                  uint8_t pointLimit,      /* $3C = 60, one past slot 5 + 40 */
-                                 uint8_t staleHorizonCap) /* 7 */
+                                 uint8_t staleHorizonCap) /* mem[$23B3]: 7, or $87 */
 {
     /* $22FF-$2309 — fold in a pending scroll of the near edge points before anything reads them. */
     if (near_edge_scroll_pending != 0) {
@@ -3804,7 +3805,13 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
     horizon_extent = 0;              /* $24F6: the road reaches nowhere until a walk says so */
     /* the nearest point of each side, and last frame's clamp */
     GEO_PHASE(GEO_PHASE_START);
-    road_edge_start_core(0x06, (uint8_t)EDGE_HALF, (uint8_t)SECTION_NEAR, 0x3C, 0x07);
+    /* ⚠⚠ The stale-horizon cap is an SMC OPERAND, not the literal 7 it reads as on Silverstone:
+       every expansion circuit's $5672 hook writes $07 or $87 to $23B3 at RUN TIME (`LDA #$0E /
+       ROR`), and $87 is the common case on all five — so the clamp is effectively OFF there.  It
+       is not a ModifyGameCode patch, so `make track-smc` never saw it and this call site passed a
+       hard 7 for as long as the twin has existed. */
+    road_edge_start_core(0x06, (uint8_t)EDGE_HALF, (uint8_t)SECTION_NEAR, 0x3C,
+                         mem[SMC_STALE_HORIZON_CAP]);
 
     /* $24F9: only the HIGH lane is armed — the low one keeps last frame's value (see above). */
     edge_nearest_v = (uint16_t)((edge_nearest_v & 0x00FFu) | 0xFF00u);

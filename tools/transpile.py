@@ -128,6 +128,15 @@ SMC_SITES = {
     # $1DDD  STA ($70),Y — the ZERO-PAGE POINTER NUMBER at $1DDE rewritten from $1DA6
     #        (STX), so the store walks a different pointer pair per call.
     0x1DDD: {'kind': 'operand', 'bytes': {0x1DDE}, 'from': ['$1DA6']},
+    # $23B2  LDA #$07 — the IMMEDIATE at $23B3, rewritten AT RUN TIME by every expansion
+    #        circuit's $5672 hook (`LDA #$0E / ROR / STA $23B3`), so it holds $07 or $87
+    #        depending on bit 1 of the segment record's $5882 byte.  ⚠⚠ NOT a ModifyGameCode
+    #        patch, so `make track-smc` — which replays the INSTALLER — cannot see it, and the
+    #        transliteration baked `LDA(0x07)` while the hooks wrote $87 for months.  The
+    #        surviving instrument for this whole class is a scan of the hook bodies for stores
+    #        outside the track window; it finds exactly two, this one and $1FEA.
+    0x23B2: {'kind': 'operand', 'bytes': {0x23B3},
+             'from': ["each circuit's $5672 hook (runtime, not install)"]},
     # $2F4E  STA $7000,Y — BOTH operand bytes rewritten: lo $2F4F from $19C9, hi $2F50
     #        from $19C0, sourced from the table pair $2B22 (lo) / $2B1E (hi).  That table
     #        holds the four per-scan-line surface_edge buffers $0554/$05A4/$0600/$0650, which is how

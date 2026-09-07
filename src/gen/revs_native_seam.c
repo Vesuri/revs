@@ -130,7 +130,9 @@ void road_edge_start(void)
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
     car_heading_marshal_in();             /* every bearing it emits is measured against it */
     hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
-    road_edge_start_core(0x06, (uint8_t)EDGE_HALF, (uint8_t)SECTION_NEAR, 0x3C, 0x07);
+    /* the stale-horizon cap is $23B3's SMC operand — see the twin */
+    road_edge_start_core(0x06, (uint8_t)EDGE_HALF, (uint8_t)SECTION_NEAR, 0x3C,
+                         mem[0x23B3u]);
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
 }
 
