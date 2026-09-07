@@ -12558,8 +12558,22 @@ void step_section_curve(void)
    Those are the real generated routines, called with the registers the transliteration set, so
    they cancel in the differential — the twin's job is the two loops and the coordinate adds.
    --------------------------------------------------------------------------- */
-#define OBJECT_COORD_LO   0x09FDu   /* 3-byte per-object world coordinate, low bytes  */
-#define OBJECT_COORD_HI   0x0AFDu   /*                                    high bytes */
+#define OBJECT_COORD_LO   0x09FDu   /* per-object world coordinate: 3 axes, low bytes  */
+#define OBJECT_COORD_HI   0x0AFDu   /*                              3 axes, high bytes */
+
+/* One axis of the staged object's world coordinate as the 16-bit value it is.  The 6502 keeps
+   the three axes as two parallel byte rows a page apart, so every add there is a two-lane
+   carry chain; here it is one word. */
+static inline uint16_t object_coord_word(unsigned axis)
+{
+    return (uint16_t)(mem[OBJECT_COORD_LO + axis]
+                      | ((unsigned)mem[OBJECT_COORD_HI + axis] << 8));
+}
+static inline void object_coord_word_set(unsigned axis, uint16_t value)
+{
+    mem[OBJECT_COORD_LO + axis] = (uint8_t)value;
+    mem[OBJECT_COORD_HI + axis] = (uint8_t)(value >> 8);
+}
 #define TRACK_DIR_3       0x5700u   /* ⚠ shares ModifyGameCode's address; read as DATA here */
 #define TRACK_DIR_4       0x5800u
 #define SECTION_DIR_INDEX 0x0700u
@@ -12629,15 +12643,23 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
            ⚠ The SMC site masks the ORIGIN's high byte only, before the add, so the mask goes on
            the wide origin rather than on the sum. */
         uint16_t origin = section_word(sy);
+
+        /* ⚠⚠ THE LOW BYTE IS STORED BEFORE THE SMC SITE IS EVEN REACHED ($297F `ADC $0900,Y`
+           / $2982 `STA $09FD,X`, and only then $2985-$298D), so a circuit whose mask opcode we
+           cannot model still leaves this byte written.  Storing it after the opcode test made
+           the trap arm diverge from the 6502 in one cell, on one case in ten of the fixture —
+           the whole visible cost of getting this order wrong. */
+        mem[OBJECT_COORD_LO + axis] = (uint8_t)((uint8_t)origin + (uint8_t)sp);
+
         if (axis == 1) {                              /* the SMC site */
             if (mem[SMC_MASK_OPCODE] == 0x29)
                 origin = (uint16_t)((origin & 0x00FFu)
                                     | ((unsigned)((origin >> 8) & mem[SMC_MASK_OPERAND]) << 8));
             else { platform_smc_unhandled(SMC_MASK_OPCODE, mem[SMC_MASK_OPCODE]); return 0x01u; }
         }
-        uint16_t sum = (uint16_t)(origin + (uint16_t)sp);
-        mem[OBJECT_COORD_LO + axis] = (uint8_t)sum;
-        mem[OBJECT_COORD_HI + axis] = (uint8_t)(sum >> 8);
+        /* The mask touches the high byte only, so the word store rewrites the low byte with the
+           value it already holds — one 16-bit add for what the 6502 carries by hand. */
+        object_coord_word_set(axis, (uint16_t)(origin + (uint16_t)sp));
     }
 
     /* Second loop: fold the "across" offset in at 4x, axes 0 and 2 only. */
@@ -12649,23 +12671,16 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
     for (int axis = 0; axis < 4; axis += 2) {
         int16_t sp = place_car_axis_term(dir2[axis], across, 1);                  /* ASL/ROL x2 */
 
-        unsigned lo = (unsigned)(uint8_t)sp + mem[OBJECT_COORD_LO + axis];        /* CLC; ADC */
-        unsigned carry = lo >> 8;
-        mem[OBJECT_COORD_LO + axis] = (uint8_t)lo;
-        mem[OBJECT_COORD_HI + axis] =
-            (uint8_t)(mem[OBJECT_COORD_HI + axis] + (uint8_t)((uint16_t)sp >> 8) + carry);
+        /* $29D1-$29DD — `CLC / ADC lo / ADC hi` across the two rows is one 16-bit add. */
+        object_coord_word_set(axis, (uint16_t)(object_coord_word(axis) + (uint16_t)sp));
     }
 
     /* Nudge coordinate 1 by $90.  ⚠ The old note here claimed the ADC's carry-out was live into
        the object-queue tail; it is not.  $2A5F's first op is a STA, and $2147's first act is
        `LDA $0900,X / SEC`, so entry C, N and Z are all dead on both arms. */
-    int     nudged;         /* the $90 nudge's carry-out — INCs the high byte; dead past here */
-    {
-        unsigned t = (unsigned)mem[OBJECT_COORD_LO + 1] + 0x90u;                  /* CLC; ADC #$90 */
-        mem[OBJECT_COORD_LO + 1] = (uint8_t)t;
-        nudged = (t & 0x100u) ? 1 : 0;
-        if (nudged) mem[OBJECT_COORD_HI + 1]++;                                   /* INC on carry */
-    }
+    /* $29E6-$29F1 — `ADC #$90` on the low row then `INC` the high row on the carry: a plain
+       +$90 on the word, the high row's own wrap being the word's wrap. */
+    object_coord_word_set(1, (uint16_t)(object_coord_word(1) + 0x0090u));
 
     /* ---- The object-queue tail ($29F4).  ⭐ The projector is now project_object_slot_core
        (twin #172), so the four calls pass their coordinate index and shape nibble as ARGUMENTS
