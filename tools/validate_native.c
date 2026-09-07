@@ -11139,6 +11139,13 @@ static void hook_dga_oracle(void)   { g_hookOracle = 1; trk_brands(0x557F); g_ho
 static void hook_dgb_twin(void)     { g_hookOracle = 0; trk_doning(0x557F); }
 static void hook_dgb_oracle(void)   { g_hookOracle = 1; trk_doning(0x557F); g_hookOracle = 0; }
 
+/* $54F1 / $54EF / $54EB — the section-cursor advance, over build_road_section's $12FB.  Brands
+   Hatch carries the $53F8 generator block and Donington the $53FA one, so those are the arms. */
+static void hook_nsc_a_twin(void)   { g_hookOracle = 0; trk_brands(0x54F1); }
+static void hook_nsc_a_oracle(void) { g_hookOracle = 1; trk_brands(0x54F1); g_hookOracle = 0; }
+static void hook_nsc_b_twin(void)   { g_hookOracle = 0; trk_doning(0x54EF); }
+static void hook_nsc_b_oracle(void) { g_hookOracle = 1; trk_doning(0x54EF); g_hookOracle = 0; }
+
 static int test_hook_twins(void)
 {
     static uint8_t pre[65536];
@@ -11536,6 +11543,73 @@ static int test_hook_twins(void)
                        "bwd-under %d bwd-place-wrap %d high-bit place %d zero run %d)\n",
                        GEN[g].name, sawFwd, sawFwdWrap, sawPlaceWrap, sawBwd, sawBwdUnder,
                        sawBwdPlaceWrap, sawHighPlace, sawZeroRun);
+                fail++;
+            }
+        }
+    }
+
+    /* --------------------------------------- $54F1 / $54EF / $54EB, the section-cursor advance.
+       Two fixtures, one per generator state block.  The gate (cur_segment_flags bit 6) has to be
+       seen both ways, and the +3 has to be seen wrapping past $FF as well as not — the wrap at
+       $78 lives in build_road_section, on the value this returns, so a cursor near $FF is
+       reachable here on the very first call of a walk. */
+    {
+        static const struct { const char* name; void (*tw)(void); void (*or_)(void);
+                              uint16_t block; } NSC[2] = {
+            { "hook_next_section_cursor_a", hook_nsc_a_twin, hook_nsc_a_oracle, 0x53F8 },
+            { "hook_next_section_cursor_b", hook_nsc_b_twin, hook_nsc_b_oracle, 0x53FA },
+        };
+        int n;
+        for (n = 0; n < 2; n++) {
+            int sawGated = 0, sawOpen = 0, sawCarry = 0, sawNoCarry = 0, sawFwd = 0, sawBwd = 0;
+            int nscCases = cases / 2;
+            register_fixture(NSC[n].name);
+            if (!want(NSC[n].name)) continue;
+            sub = 0; printed = 0;
+            for (t = 0; t < nscCases; t++) {
+                Cpu6502 c = zero_cpu();
+                uint8_t count, cursor;
+                int i;
+
+                fill_random(pre);
+                c.D = 0;                 /* $12F7's subtree carries no SED (docs/static-map.md) */
+                c.S = 0xFFu;
+
+                /* the generator cursor's state, as the $5582 fixture above seeds it */
+                for (i = 0; i < 0x40; i++)
+                    pre[0x5728 + i] = (xs() % 16u) ? (uint8_t)(1u + (xs() % 0x08u)) : 0u;
+                count = (uint8_t)(1u + (xs() % 0x20u));
+                pre[NSC[n].block]      = (uint8_t)(xs() % count);
+                pre[NSC[n].block + 1u] = count;
+                pre[NSC[n].block + 5u] = (xs() % 4u) ? (uint8_t)xs() : 0u;
+
+                /* the gate, both ways by name */
+                if (xs() & 1u) { pre[0x0001] = (uint8_t)(xs() | 0x40u); sawGated = 1; }
+                else           { pre[0x0001] = (uint8_t)(xs() & 0xBFu); sawOpen  = 1; }
+
+                /* the cursor: mostly a legal walk position, one in four up against $FF */
+                cursor = (xs() % 4u) ? (uint8_t)(3u * (xs() % 40u))
+                                     : (uint8_t)(0xFDu + (xs() % 3u));
+                pre[0x0024] = cursor;
+                if ((unsigned)cursor + 3u > 0xFFu) sawCarry = 1; else sawNoCarry = 1;
+
+                pre[0x0025] = (xs() & 1u) ? (uint8_t)(xs() | 0x80u) : (uint8_t)(xs() & 0x7Fu);
+                if (pre[0x0025] & 0x80u) sawBwd = 1; else sawFwd = 1;
+
+                c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+                c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+
+                sub += diff_run(NSC[n].name, pre, c, NSC[n].tw, NSC[n].or_,
+                                LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS, t, &printed);
+            }
+            fail += sub;
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,Y+flags (only A is read "
+                   "at $12FB; the rest are replayed and checked anyway)\n",
+                   NSC[n].name, nscCases, sub);
+            if (!(sawGated && sawOpen && sawCarry && sawNoCarry && sawFwd && sawBwd)) {
+                printf("VACUOUS: %s missed an arm (gated %d open %d carry %d no-carry %d "
+                       "fwd %d bwd %d)\n", NSC[n].name, sawGated, sawOpen, sawCarry,
+                       sawNoCarry, sawFwd, sawBwd);
                 fail++;
             }
         }

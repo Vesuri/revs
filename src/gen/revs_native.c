@@ -16612,3 +16612,57 @@ void hook_step_gen_cursor_b(void) { hook_step_gen_cursor_at(0x53FAu); }
 /* $557F — the same, with the engine's segment-direction step in front. */
 void hook_step_dir_gen_cursor_a(void) { step_segment_dir_index(); hook_step_gen_cursor_a(); }
 void hook_step_dir_gen_cursor_b(void) { step_segment_dir_index(); hook_step_gen_cursor_b(); }
+
+/* $54F1 (Brands Hatch) / $54EF (Donington, Oulton, Snetterton) / $54EB (the Nurburgring) — the
+   SECTION-CURSOR ADVANCE, installed over the engine's own `CLC / ADC #$03` at $12FB inside
+   build_road_section (make track-patch: $12FB $18->$20, $12FC $69->$F1/$EF/$EB, $12FD $03->$54).
+
+   What it computes: the next section byte cursor, section_cursor + 3, exactly as the unpatched
+   engine did — and, when the current segment is flagged for it (cur_segment_flags bit 6), first
+   advances the circuit's own geometry-generator cursor (the $5582 body, twinned above).  So the
+   expansion circuits piggyback one extra piece of per-section generator state onto the walk
+   cursor's step; the wrap at $78 stays in build_road_section, on the value returned here.
+
+   The `_a` / `_b` split is the generator cursor's per-circuit state block ($53F8 vs $53FA), the
+   same split $5582 has.  One 6502 body per circuit, structurally identical in all five: only the
+   generated self-call's target address differs.
+
+   Exit ABI: A is the new cursor and it is the ONLY thing the call site consumes —
+   build_road_section's seam reads `cpu.A` and nothing else, and the engine's next act at $12FE is
+   `CMP #$78`, which overwrites N/V/Z/C.  Y is nevertheless replayed exactly (the generator step
+   leaves the place index in it, and it passes through when the gate is closed) and so are the
+   add's flags, so the fixture can check the full A/X/Y + flags set rather than a narrowed mask.
+   ⚠ D=0: $12F7's subtree carries none of the eight SED sites (docs/static-map.md §Decimal mode),
+   so the add is binary and the fixture pins c.D = 0.
+
+   SABOTAGE (each must FAIL; counts measured on the two 2000-case fixtures, not predicted):
+     S26 the step is +2, not +3                                    -> 2000 / 2000
+     S27 the gate reads bit 7 of cur_segment_flags                 ->  957..1008 / 2000
+     S28 the gate's sense is inverted                              -> 1998 / 2000 (the two
+         survivors are cases where the generator step happens to be idempotent on that state)
+     S29 the generator cursor is stepped on the WRONG state block  -> 1002 / 2000 in the fixture
+         whose shim was patched, 0 in the other — LOCALIZED by construction, as S25 is
+     S30 the exit carry comes from the gate instead of the add      -> 1010..1014 / 2000 */
+uint8_t hook_next_section_cursor_core(uint16_t genBlock)
+{
+    if (cur_segment_flags & 0x40u)                  /* $54F1 LDA / AND #$40 / BEQ */
+        hook_step_gen_cursor_core(genBlock);        /* $54F7 JSR $5582 */
+    return (uint8_t)(section_cursor + 3u);          /* $54FA LDA / CLC / ADC #$03 */
+}
+
+static void hook_next_section_cursor_at(uint16_t block)
+{
+    uint8_t gated  = (uint8_t)((cur_segment_flags & 0x40u) != 0u);
+    uint8_t cursor = section_cursor;
+    uint8_t next   = hook_next_section_cursor_core(block);
+
+    if (gated) cpu.Y = mem[block];                  /* the generator step's LDY, else Y is untouched */
+    cpu.A = next;
+    cpu.C = (uint8_t)(cursor + 3u > 0xFFu);
+    cpu.V = (uint8_t)((((cursor ^ next) & ~(cursor ^ 0x03u)) >> 7) & 1u);
+    cpu.N = (uint8_t)((next >> 7) & 1u);
+    cpu.Z = (uint8_t)(next == 0u);
+}
+
+void hook_next_section_cursor_a(void) { hook_next_section_cursor_at(0x53F8u); }
+void hook_next_section_cursor_b(void) { hook_next_section_cursor_at(0x53FAu); }

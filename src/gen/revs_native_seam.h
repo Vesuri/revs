@@ -761,3 +761,6 @@ void hook_step_dir_gen_cursor_b(void);
 void hook_horizon_clamp(void);
 
 #endif /* REVS_NATIVE_SEAM_H */
+uint8_t hook_next_section_cursor_core(uint16_t genBlock);
+void hook_next_section_cursor_a(void);
+void hook_next_section_cursor_b(void);
