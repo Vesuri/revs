@@ -240,7 +240,7 @@ Four things fall out, and each one is a port design decision:
   helper at `$0E7C`. A free-running timer used as a clock/entropy source — the Amiga backend needs
   a real answer for it, not a stub returning 0.
 
-### Self-modifying code — 24 sites, precisely located
+### Self-modifying code — 26 sites, precisely located
 
 The sweep reports a store as self-modifying only when it lands **inside a byte the walk decoded
 as part of an instruction**.  (Flagging every store into `$0B00-$78FF` instead gives 133 hits, of
@@ -265,6 +265,24 @@ byte, not a decoded instruction — but it is patched code state all the same: i
 colour `view_next_scanline` loads for every line, so both values are legal and **no `mem[]`
 differential can ever see a frozen one.**  Same class as the rev-counter case in §Open items.
 It needs a `data` SMC declaration in `tools/transpile.py` before `$1B12` or `$7EF3` is twinned.
+
+⚠⚠ **A 26th site, and a WHOLE CLASS the tooling could not see: `$23B3`, patched at RACE TIME by
+a track hook.**  `make track-smc` replays `ModifyGameCode` — the *installer* — so it reports every
+byte a circuit rewrites at load and **none** that a hook body rewrites while the race runs.
+`$23B3` is the immediate of `$23B2 LDA #$07` inside `road_edge_start` (the cap that stops a stale
+horizon surviving into this frame); every expansion circuit's `$5672` hook writes `$07` or `$87`
+there with `LDA #$0E / ROR`, chosen by bit 1 of that segment's `$5882` record byte.  With bit 7
+set the `CMP` two bytes later never takes — **the clamp is off** — and bit 1 is set in 25/40, 6/40,
+32/40, 26/40 and 30/40 entries on Brands / Donington / Oulton / Snetterton / the Nurburgring, so
+`$87` is the common case.  A live `STRAIGHT_TO_RACE` dump at frame 30 reads `$07 $07 $07 $87 $87`
+across the five circuits.  `road_edge_start`'s twin passed a hard `7` for as long as it existed and
+nothing caught it: `validate` and both `determinism` runs race Silverstone, and `viewdiff` was green
+because host and BBC agreed on whichever value the hook had just written.
+
+⭐ **The instrument for this class is a scan of the hook bodies for stores outside `$5300-$5A25`.**
+It is cheap and it terminates: over all five circuits it returns exactly two sites, `$1FEA` (already
+a declared extent) and `$23B3`.  Run it before twinning any hook body, and treat any *engine-window*
+store a hook makes as SMC until shown otherwise.
 
 The shape is clear: **`$2C00-$2FFF` is a self-modifying inner loop** — opcode slots switched
 between `NOP`/`INY`/`CPX` and store addresses rewritten from `$19C0-$19CC`.  That is a rasteriser
