@@ -16819,8 +16819,9 @@ void hook_gen_dir_vector_nurburg(void) { hook_gen_dir_vector_at(0x53FCu, 0x9Au);
 /* ===========================================================================
    $55C4  hook_gen_step — ONE STEP OF THE TRACK GENERATOR  (twin #223)
    ---------------------------------------------------------------------------
-   Brands Hatch, Donington, Oulton and Snetterton (the Nurburgring reaches the same work through
-   $55BD instead, already twinned as hook_walk_back_gate).  Reached from $5672 and from $5772.
+   Brands Hatch, Donington, Oulton and Snetterton, and the Nurburgring at $55BD — the SAME body
+   seven bytes lower, not the walk-back gate the other four keep at that address.  Reached from
+   $5672 and from $5772.
 
    The generator carries a running HEADING (16-bit) and a running GRADIENT (8-bit) in its state
    block, and this routine folds ONE segment's turn and climb into them before regenerating the
@@ -16842,7 +16843,7 @@ void hook_gen_dir_vector_nurburg(void) { hook_gen_dir_vector_at(0x53FCu, 0x9Au);
    this path.  The exit N/Z come from that restoring LDX — from X, not from the gradient $5472 left
    in A — and C/V are whatever $5472 exits with.
 
-   SABOTAGE (each must FAIL; counts measured on the four 1000-case fixtures, not predicted):
+   SABOTAGE (each must FAIL; counts measured on the five 1000-case fixtures, not predicted):
      S40 the fold's skip test reads bit 6 of the place cursor          ->      250 / 1000
      S41 the turn's high and low table pages are swapped               -> 748..749 / 1000
      S42 track_direction does not sign the turn                        ->      250 / 1000
@@ -16891,3 +16892,41 @@ void hook_gen_step_brands(void)  { hook_gen_step_at(0x53FAu, 0x88u); }
 void hook_gen_step_oulton(void)  { hook_gen_step_at(0x53FAu, 0x80u); }
 void hook_gen_step_snetter(void) { hook_gen_step_at(0x53FAu, 0x84u); }
 void hook_gen_step_doning(void)  { hook_gen_step_at(0x53FCu, 0x86u); }
+void hook_gen_step_nurburg(void) { hook_gen_step_at(0x53FCu, 0x9Au); }   /* at $55BD */
+
+/* ===========================================================================
+   $5572  hook_seg_advance — ADVANCE THE GENERATOR ONE SEGMENT, IF THIS IS A BOUNDARY (twin #224)
+   ---------------------------------------------------------------------------
+   All five expansion circuits, identical in shape.  cur_segment_flags bit 6 is "this build step
+   crossed a segment boundary"; when it did, step the direction index on to the next entry and run
+   one generator step to fill it in.  When it did not, the routine is a no-op that returns A = 0.
+
+   ⚠ The five bodies differ only in the address they call — $55C4 on four circuits and $55BD on the
+   Nurburgring — and both are hook_gen_step, so in C the difference disappears into the block and
+   multiplier the shim already carries.
+
+   SABOTAGE (each must FAIL; counts measured on the five 1000-case fixtures, not predicted):
+     S46 the boundary test reads bit 7 of cur_segment_flags            -> 482..519 / 1000
+     S47 the gate's sense is inverted                                  ->     1000 / 1000
+     S48 the direction index is stepped but no generator step runs     ->      500 / 1000
+     S49 the generator step runs before the index is stepped           ->      500 / 1000
+     S50 the no-op arm returns the flags byte instead of 0             -> 492..499 / 1000
+   The 500s are the fixture's own gate split (half the cases cross a boundary), and S49 detects at
+   the same rate because the step decides WHICH direction entry the generator writes. */
+static void hook_seg_advance_at(uint16_t block, uint8_t scale)
+{
+    if (!(cur_segment_flags & 0x40u)) {     /* $5572 LDA / AND #$40 / BEQ — no boundary crossed */
+        cpu.A = 0u;
+        cpu.N = 0u;
+        cpu.Z = 1u;
+        return;
+    }
+    step_segment_dir_index();               /* $5578 — on to the next direction-basis entry */
+    hook_gen_step_at(block, scale);         /* $557B — and generate it */
+}
+
+void hook_seg_advance_brands(void)  { hook_seg_advance_at(0x53FAu, 0x88u); }
+void hook_seg_advance_oulton(void)  { hook_seg_advance_at(0x53FAu, 0x80u); }
+void hook_seg_advance_snetter(void) { hook_seg_advance_at(0x53FAu, 0x84u); }
+void hook_seg_advance_doning(void)  { hook_seg_advance_at(0x53FCu, 0x86u); }
+void hook_seg_advance_nurburg(void) { hook_seg_advance_at(0x53FCu, 0x9Au); }

@@ -11169,6 +11169,18 @@ static void hook_gstep_3_twin(void)   { g_hookOracle = 0; trk_oulton(0x55C4); }
 static void hook_gstep_3_oracle(void) { g_hookOracle = 1; trk_oulton(0x55C4); g_hookOracle = 0; }
 static void hook_gstep_4_twin(void)   { g_hookOracle = 0; trk_snetter(0x55C4); }
 static void hook_gstep_4_oracle(void) { g_hookOracle = 1; trk_snetter(0x55C4); g_hookOracle = 0; }
+static void hook_sadv_1_twin(void)   { g_hookOracle = 0; trk_brands(0x5572); }
+static void hook_sadv_1_oracle(void) { g_hookOracle = 1; trk_brands(0x5572); g_hookOracle = 0; }
+static void hook_sadv_2_twin(void)   { g_hookOracle = 0; trk_doning(0x5572); }
+static void hook_sadv_2_oracle(void) { g_hookOracle = 1; trk_doning(0x5572); g_hookOracle = 0; }
+static void hook_sadv_3_twin(void)   { g_hookOracle = 0; trk_oulton(0x5572); }
+static void hook_sadv_3_oracle(void) { g_hookOracle = 1; trk_oulton(0x5572); g_hookOracle = 0; }
+static void hook_sadv_4_twin(void)   { g_hookOracle = 0; trk_snetter(0x5572); }
+static void hook_sadv_4_oracle(void) { g_hookOracle = 1; trk_snetter(0x5572); g_hookOracle = 0; }
+static void hook_sadv_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5572); }
+static void hook_sadv_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5572); g_hookOracle = 0; }
+static void hook_gstep_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x55BD); }
+static void hook_gstep_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x55BD); g_hookOracle = 0; }
 static void hook_gdv_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5472); }
 static void hook_gdv_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5472); g_hookOracle = 0; }
 
@@ -11724,14 +11736,15 @@ static int test_hook_twins(void)
        in the same octant would leave the vector store's own arms to the $5472 fixtures. */
     {
         static const struct { const char* name; void (*tw)(void); void (*or_)(void);
-                              uint16_t block; } GST[4] = {
+                              uint16_t block; } GST[5] = {
             { "hook_gen_step_brands",  hook_gstep_1_twin, hook_gstep_1_oracle, 0x53FA },
             { "hook_gen_step_doning",  hook_gstep_2_twin, hook_gstep_2_oracle, 0x53FC },
             { "hook_gen_step_oulton",  hook_gstep_3_twin, hook_gstep_3_oracle, 0x53FA },
             { "hook_gen_step_snetter", hook_gstep_4_twin, hook_gstep_4_oracle, 0x53FA },
+            { "hook_gen_step_nurburg", hook_gstep_5_twin, hook_gstep_5_oracle, 0x53FC },
         };
         int g;
-        for (g = 0; g < 4; g++) {
+        for (g = 0; g < 5; g++) {
             int octSeen[8]; int sawSkip = 0, sawFold = 0, sawRev = 0, sawFwd = 0;
             int sawWrap = 0, sawClimbCarry = 0;
             int gstCases = cases / 4, i;
@@ -11803,6 +11816,86 @@ static int test_hook_twins(void)
                            sawSkip, sawFold, sawRev, sawFwd, sawWrap, sawClimbCarry);
                     fail++;
                 }
+            }
+        }
+    }
+    /* --------------------------------------- $5572, the generator's segment-advance gate.
+       Both arms of the boundary gate, and on the taken arm both senses of track_direction (which
+       is what step_segment_dir_index steps by) plus its wrap at either end of the index — the
+       wrap is the only place the step's two directions read different cells. */
+    {
+        static const struct { const char* name; void (*tw)(void); void (*or_)(void);
+                              uint16_t block; } SADV[5] = {
+            { "hook_seg_advance_brands",  hook_sadv_1_twin, hook_sadv_1_oracle, 0x53FA },
+            { "hook_seg_advance_doning",  hook_sadv_2_twin, hook_sadv_2_oracle, 0x53FC },
+            { "hook_seg_advance_oulton",  hook_sadv_3_twin, hook_sadv_3_oracle, 0x53FA },
+            { "hook_seg_advance_snetter", hook_sadv_4_twin, hook_sadv_4_oracle, 0x53FA },
+            { "hook_seg_advance_nurburg", hook_sadv_5_twin, hook_sadv_5_oracle, 0x53FC },
+        };
+        int g;
+        for (g = 0; g < 5; g++) {
+            int sawGate = 0, sawOpen = 0, sawRev = 0, sawFwd = 0, sawWrapUp = 0, sawWrapDown = 0;
+            int sadvCases = cases / 4, i;
+            register_fixture(SADV[g].name);
+            if (!want(SADV[g].name)) continue;
+            sub = 0; printed = 0;
+            for (t = 0; t < sadvCases; t++) {
+                Cpu6502 c = zero_cpu();
+                uint8_t place, dir, count, idx;
+
+                fill_random(pre);
+                c.D = 0;                 /* the generator runs binary (docs/static-map.md) */
+                c.S = 0xFFu;
+
+                for (i = 0; i <= 0x40; i++) {           /* $5472's octant sine table */
+                    pre[0x57BF + i] = (uint8_t)(xs() % 0x79u);
+                    pre[0x58BF + i] = (uint8_t)(xs() % 0x79u);
+                    if (xs() & 1u) pre[0x57BF + i] = (uint8_t)(-(int)pre[0x57BF + i]);
+                    if (xs() & 1u) pre[0x58BF + i] = (uint8_t)(-(int)pre[0x58BF + i]);
+                }
+
+                /* the boundary gate */
+                if (t & 1u) { pre[0x0001] |= 0x40u; sawGate = 1; }   /* cur_segment_flags */
+                else        { pre[0x0001] &= (uint8_t)~0x40u; sawOpen = 1; }
+
+                place = (uint8_t)(xs() % 0x40u);
+                if ((t & 7u) == 7u) place |= 0x80u;             /* places exhausted */
+                pre[SADV[g].block - 2u] = place;
+                pre[0x5428u + (place & 0x7Fu)] = (uint8_t)xs();
+                pre[0x5528u + (place & 0x7Fu)] = (uint8_t)xs();
+                pre[0x5628u + (place & 0x7Fu)] = (uint8_t)xs();
+                pre[SADV[g].block]      = (uint8_t)xs();
+                pre[SADV[g].block + 1u] = (uint8_t)xs();
+                pre[SADV[g].block + 2u] = (uint8_t)xs();
+
+                /* the direction index and its count: land on both wrap edges on purpose */
+                count = (uint8_t)(4u + (xs() % 36u));
+                idx   = (uint8_t)(xs() % count);
+                if ((t % 6u) == 0u) idx = 0u;                   /* the backward wrap */
+                if ((t % 6u) == 1u) idx = (uint8_t)(count - 1u); /* the forward wrap */
+                pre[0x0002] = idx;                              /* segment_dir_index */
+                pre[0x59FBu] = count;                           /* track_dir_count */
+
+                dir = (uint8_t)xs();
+                if (t & 2u) { dir |= 0x80u; sawRev = 1; } else { dir &= 0x7Fu; sawFwd = 1; }
+                pre[0x0025] = dir;                              /* track_direction */
+                if ((dir & 0x80u) && idx == 0u)                 sawWrapDown = 1;
+                if (!(dir & 0x80u) && idx == (uint8_t)(count - 1u)) sawWrapUp = 1;
+
+                c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+                c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+
+                sub += diff_run(SADV[g].name, pre, c, SADV[g].tw, SADV[g].or_,
+                                LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS, t, &printed);
+            }
+            fail += sub;
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,Y+flags (the no-op arm "
+                   "returns A=0 and leaves C/V alone)\n", SADV[g].name, sadvCases, sub);
+            if (!(sawGate && sawOpen && sawRev && sawFwd && sawWrapUp && sawWrapDown)) {
+                printf("VACUOUS: %s missed an arm (boundary %d no-op %d reverse %d forward %d "
+                       "wrap up %d wrap down %d)\n", SADV[g].name, sawGate, sawOpen, sawRev,
+                       sawFwd, sawWrapUp, sawWrapDown);
+                fail++;
             }
         }
     }
