@@ -317,6 +317,29 @@ structural: **the expansion-circuit arms of the ~13 hook seams are validated by 
 found it was the phase canary (`make INK_WATCH=1`) plus a real-BBC frame-buffer differential over
 display lines 82..165, and what *proves* a fix is that differential going byte-identical.
 
+### ⚠⚠ A TRAP ARM MUST TRAP AT THE 6502'S OWN INSTRUCTION BOUNDARY, NOT BEFORE THE STORES IT FOLLOWS
+
+`platform_smc_unhandled(...); return` is how a twin bails out when a per-circuit SMC site holds an
+opcode it does not model. The temptation is to test the opcode *first*, as a precondition — one
+early return at the top of the axis loop, before any work. The 6502 does not work that way.
+
+In `place_car_world_coords` ($2937) the mask site is $298D, and the instructions in front of it
+include a **store**: $297F `ADC $0900,Y` / $2982 `STA $09FD,X` lands axis 1's low byte, and only
+then does $2985-$298D reach the mask. So on the unmodelled-opcode path the real machine leaves
+that byte written and the twin's early return left it stale. It diverged at exactly one cell,
+`$09FE`, on the one fixture case in ten that arms the trap — and `make validate` was FAILING in the
+tree for it.
+
+Two rules fall out:
+
+- **Place the bail-out where the 6502's PC would be, and let every store in front of it happen.**
+  Write the low byte, then test the opcode. The wide store that follows the mask rewrites that
+  byte with the value it already holds, so the wide idiom survives the ordering intact.
+- **The trap arm is REACHABLE FIXTURE STATE even when it is unreachable on hardware.** All five
+  circuits keep the `AND` opcode here, so nothing on a real disc takes this path — but the fixture
+  arms it deliberately, which is the whole point of arming it. An arm that "cannot happen" is
+  still a byte-exactness obligation, and a vacuity guard on it is what turns it into one.
+
 ### ⭐ A patched SMC BRANCH OFFSET is a narrower obligation than it looks
 
 `$231A`'s offset can in principle name ~200 addresses inside `road_edge_start`, and the

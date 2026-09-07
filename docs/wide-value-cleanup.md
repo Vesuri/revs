@@ -538,7 +538,7 @@ in the interim but the final store stays two non-adjacent byte writes until relo
 | `SECTION_COORD` | $0900/$0A00 | section origin (stride $100) | ~62 | A done; B blocked | ✅ DONE |
 | `EDGE_OPP_X` | $5E50/$5EA0 | opposite-boundary angle | 19 | A done; B declined | ✅ DONE |
 | `MARKER_OFF` | $62B7/$62BA | marker offset | ? | A→B | TODO |
-| `VIEW_ORIGIN` | $6280/$6283 | 3 components, stride 6, two origins | ~30 | A now; B blocked | TODO |
+| `VIEW_ORIGIN` | $6280/$6283 | 3 components, stride 6, two origins | ~30 | **(A) DONE** | ✅ `view_origin_16[9]` + `view_origin_marshal_in/_out` at ~25 shim sites; `mem[]` stays the authority, which is what keeps `reset_driving_variables_core`'s wipe of $6280-$62FF correct |
 | `ROW_BASE` | $2B22/$2B1E | surface_edge buffer bases | ? | A→B | TODO |
 
 ### Excluded — NOT plain 16-bit binary (do not force into `value_16`)
@@ -561,7 +561,7 @@ the 8 SED sites.
 
 | Base | Addr | Shape | Mechanism | Status |
 |---|---|---|---|---|
-| `OBJECT_COORD` | $09FD/$0AFD (+mid plane) | per-object 3-byte binary world coord | A→B | TODO |
+| `OBJECT_COORD` | $09FD/$0AFD | **3 axes x 16-bit** — lows at $09FD+axis, highs at $0AFD+axis (NOT one 3-byte value) | A | ✅ **(A) DONE** — `object_coord_word()/_set()` in `place_car_world_coords_core`; three two-lane ADC chains and the $90 nudge's INC-on-carry are now plain `uint16_t` adds |
 
 The 68000 has single-instruction `add.l`/`sub.l`/`move.l`/`cmp.l`, so a binary 24-bit value in a
 `uint32_t` is one op where three byte lanes were a carry-chain. Extend the wide-value idiom:
@@ -1216,12 +1216,12 @@ row.
 |---|---|---|---|
 | `MODEL_STATE` $62D0/$62E0 | **23 fn / 84 ref** | **1 fn / 1 ref, and it is a READ** | ✅ **(B) DONE** — `model_state_16[15]`, see below.  ⚠ the "5 fn / 7 ref" first reported here was a SCORING ERROR, see below |
 | `CAR_ANGLE` $62A0/$62A3 | 12 fn / 32 ref | **none** | ✅ **(B) DONE** — `car_angle_16[3]`, see below |
-| `VIEW_ORIGIN` $6280 | 5 fn / 14 ref | **none** | ✅ **(B) DONE** — `view_origin_16[9]`, see below |
+| `VIEW_ORIGIN` $6280 | 5 fn / 14 ref | **none** | ✅ **(A) DONE** — `view_origin_16[9]` with marshals, not a relocation: `mem[]` is still the authority, see below |
 | `MARKER_OFF` $62B7/$62BA | 2 fn / 6 ref | **none** | ✅ **(A) DONE** — `marker_offset_word()`, done with the edge tables |
 | `OBJECT_BEARING` $0380/$0398 | 6 fn / 6 ref | **none** | ❌ (B) declined — 0.42 refs per element; (A) ✅ done |
 | `SECTION_COORD` $0900/$0A00 | **10 fn / 38 ref** | **none** | ❌ **DECLINED, MEASURED** — 256 elements, 0.17 refs per element, a ~15× net loss |
 | `CAR_DISTANCE` $08D0/$08E8 | 4 fn / 16 ref | **none** | ✅ **(B) DONE** — `car_distance_16[24]`, see below |
-| `OBJECT_COORD` $09FD/$0AFD | 10 fn / 27 ref | **none** | ✅ eligible — 24-bit binary → `uint32_t`, `add.l`/`sub.l`/`cmp.l` only |
+| `OBJECT_COORD` $09FD/$0AFD | 10 fn / 27 ref | **none** | ✅ **(A) DONE** — and the earlier reading of it as one 24-bit value was WRONG: it is 3 axes x 16-bit, so the conversion is three `uint16_t` words, never an `add.l` |
 | `EDGE_OPP_X` $5E50/$5EA0 | 7 fn / 12 ref | **none** | ❌ **DECLINED** — 80 elements, 0.24 refs per element |
 
 **Step 0 is DONE** (`af19737`): the scanner resolves a twin's own `#define`s, calibrated against
