@@ -11111,22 +11111,37 @@ static void hook_rec_oracle(void)   { g_hookOracle = 1; trk_brands(0x56AF); g_ho
 static void hook_clamp_twin(void)   { g_hookOracle = 0; trk_brands(0x56C8); }
 static void hook_clamp_oracle(void) { g_hookOracle = 1; trk_brands(0x56C8); g_hookOracle = 0; }
 
+/* $56BC — the walk's point-count limit, installed over road_edge_walk's `BCS $24B8` at $248B.
+   Two arms: stop (the off-axis carry set AND the count already at $0A), or straight back into
+   the walk at $2490.  The second arm runs a whole road walk, so its result is mem[] only. */
+static void hook_lim_twin(void)     { g_hookOracle = 0; trk_brands(0x56BC); }
+static void hook_lim_oracle(void)   { g_hookOracle = 1; trk_brands(0x56BC); g_hookOracle = 0; }
+
+/* $55BD — the walk-back gate, installed over advance_player_section's `JSR rebuild_walk_backward`
+   at $24F2.  The circuits gate that call on section_quad_flags' bit 7. */
+static void hook_back_twin(void)    { g_hookOracle = 0; trk_brands(0x55BD); }
+static void hook_back_oracle(void)  { g_hookOracle = 1; trk_brands(0x55BD); g_hookOracle = 0; }
+
 static int test_hook_twins(void)
 {
     static uint8_t pre[65536];
     int fail = 0, printed = 0, t, cases = 4000, sub = 0;
     int sawLatched = 0, sawOneShot = 0, sawClamp = 0, sawAdvance = 0, sawEarlyStop = 0;
-    int scale = 1, runClamp, runRecord;
+    int scale = 1, runClamp, runRecord, runLimit, runBack;
     { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
     if (scale < 1) scale = 1;
     cases *= scale;
     register_fixture("hook_horizon_clamp");
     register_fixture("hook_record_horizon");
+    register_fixture("hook_edge_walk_limit");
+    register_fixture("hook_walk_back_gate");
     /* ⚠⚠ want() RESEEDS the stream, so it is called ONCE per fixture and NEVER in a loop
        condition — inside one it restarts the generator every iteration and every case is
        then the same case.  (It cost this fixture its `latched` and `early-stop` arms once.) */
     runClamp  = want("hook_horizon_clamp");
     runRecord = want("hook_record_horizon");
+    runLimit  = want("hook_edge_walk_limit");
+    runBack   = want("hook_walk_back_gate");
     g_track = 1;                                    /* Brands Hatch — whose body this is */
     setenv("REVS_SMC_CONTINUE", "1", 1);
 
@@ -11228,6 +11243,110 @@ static int test_hook_twins(void)
             printf("VACUOUS: hook_record_horizon missed an arm "
                    "(record %d suppressed %d threshold %d)\n",
                    sawRecord, sawSuppressed, sawEdge);
+            fail++;
+        }
+    }
+
+    /* ------------------------------------------------ $56BC, the walk's point-count limit.
+       The stop arm is a compare and nothing else; the other arm is a whole resumed road walk,
+       so the live mask is per-case: registers only where the hook really returns them. */
+    if (runLimit) {
+        static const uint16_t IGN[] = { 0x01FF };   /* build_road_section's PHP/PLP byte */
+        int sawStop = 0, sawWalk = 0, sawThreshold = 0, sawNoCarry = 0, emitted = 0;
+        int walkCases = cases / 8;                  /* each non-stop case runs a full walk */
+        sub = 0; printed = 0;
+        set_ignore(IGN, 1);
+        for (t = 0; t < walkCases; t++) {
+            Cpu6502 c = zero_cpu();
+            uint8_t count;
+            int shape = (t % 5 == 3) ? EDGE_HOOKED : (t % 5 == 4) ? EDGE_GARBAGE
+                                                                  : EDGE_SILVERSTONE;
+            int stopArm;
+            unsigned mask;
+
+            edge_pre(pre, shape);
+            /* the count straddling $0A, the threshold itself included */
+            count = (uint8_t)(0x06u + (xs() % 0x0Au));
+            pre[0x0042] = count;                             /* shared_counter_42 */
+            /* the walk state $2490 resumes on, as road_edge_walk_resume's fixture seeds it */
+            pre[0x0012] = (xs() % 3) ? (uint8_t)(0x06u + (xs() % 0x20u)) : (uint8_t)xs();
+            pre[0x0014] = (uint8_t)(xs() % 0xF0);            /* walk_prev_section */
+            c.A = (uint8_t)xs();
+            c.X = (uint8_t)(xs() % 0xF0);                    /* the section byte */
+            c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1;
+            c.C = (uint8_t)(xs() & 1);                       /* the off-axis compare's carry */
+            c.D = 0;
+            c.S = 0xFFu;
+
+            if (count == 0x0Au) sawThreshold = 1;
+            if (!c.C) sawNoCarry = 1;
+            stopArm = (c.C && count >= 0x0Au);
+            if (stopArm) sawStop++; else sawWalk++;
+            mask = stopArm ? (LIVE_A | LIVE_X | LIVE_Y | LIVE_S |
+                              LIVE_N | LIVE_V | LIVE_Z | LIVE_C)
+                           : LIVE_S;
+
+            sub += diff_run("hook_edge_walk_limit", pre, c,
+                            hook_lim_twin, hook_lim_oracle, mask, t, &printed);
+            if (!stopArm && walk_emitted(pre, (const uint8_t*)mem)) emitted++;
+        }
+        set_ignore(0, 0);
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags on the stop arm, "
+               "mem-only on the walk (%d walked, %d emitted a point)\n",
+               "hook_edge_walk_limit", walkCases, sub, sawWalk, emitted);
+        if (!(sawStop && sawWalk && sawThreshold && sawNoCarry && emitted)) {
+            printf("VACUOUS: hook_edge_walk_limit missed an arm "
+                   "(stop %d walk %d threshold %d carry-clear %d emitted %d)\n",
+                   sawStop, sawWalk, sawThreshold, sawNoCarry, emitted);
+            fail++;
+        }
+    }
+
+    /* -------------------------------------------------------- $55BD, the walk-back gate.
+       Its pre-state is rebuild_walk_backward's (the routine it gates), plus the flag byte
+       whose bit 7 is the gate itself, swept both ways. */
+    if (runBack) {
+        static const uint16_t IGN[] = { 0x01FF };   /* build_road_section's PHP/PLP byte */
+        int sawGated = 0, sawRebuilt = 0, sawFwd = 0, sawBwd = 0;
+        int backCases = cases / 20;                 /* each ungated case rebuilds 39 sections */
+        sub = 0; printed = 0;
+        set_ignore(IGN, 1);
+        for (t = 0; t < backCases; t++) {
+            Cpu6502 c = zero_cpu();
+            uint8_t flags;
+            int gated;
+
+            fill_random(pre);
+            walk_cluster_pre(pre);
+            flags = (uint8_t)xs();
+            if (xs() & 1u) flags |= 0x80u; else flags &= 0x7Fu;
+            pre[0x0043] = flags;                             /* section_quad_flags */
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+            c.D = 0;
+            c.S = 0xFFu;
+
+            gated = (flags & 0x80u) != 0;
+            if (gated) sawGated = 1; else sawRebuilt = 1;
+            if (pre[0x0025] & 0x80u) sawBwd = 1; else sawFwd = 1;
+
+            sub += diff_run("hook_walk_back_gate", pre, c,
+                            hook_back_twin, hook_back_oracle,
+                            gated ? (LIVE_A | LIVE_X | LIVE_Y | LIVE_S |
+                                     LIVE_N | LIVE_V | LIVE_Z | LIVE_C)
+                                  : LIVE_NONE,
+                            t, &printed);
+        }
+        set_ignore(0, 0);
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags when gated, "
+               "none when it rebuilds\n", "hook_walk_back_gate", backCases, sub);
+        if (!(sawGated && sawRebuilt && sawFwd && sawBwd)) {
+            printf("VACUOUS: hook_walk_back_gate missed an arm "
+                   "(gated %d rebuilt %d fwd %d bwd %d)\n",
+                   sawGated, sawRebuilt, sawFwd, sawBwd);
             fail++;
         }
     }

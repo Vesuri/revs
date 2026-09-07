@@ -748,6 +748,8 @@ extern int g_hookOracle;              /* 0 = twins, non-zero = the transliterate
 uint8_t hook_horizon_clamp_core(uint8_t entryY);
 uint8_t hook_record_horizon_core(uint8_t line, uint8_t point);
 void hook_record_horizon(void);
+void hook_edge_walk_limit(void);
+void hook_walk_back_gate(void);
 void hook_horizon_clamp(void);
 
 #endif /* REVS_NATIVE_SEAM_H */

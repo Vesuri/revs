@@ -555,6 +555,14 @@ HOOK_TWINS = {
     ('DONING',  0x56AF): 'hook_record_horizon',
     ('OULTON',  0x56AF): 'hook_record_horizon',
     ('SNETTER', 0x56AF): 'hook_record_horizon',
+    ('BRANDS',  0x56BC): 'hook_edge_walk_limit',
+    ('DONING',  0x56BC): 'hook_edge_walk_limit',
+    ('OULTON',  0x56BC): 'hook_edge_walk_limit',
+    ('SNETTER', 0x56BC): 'hook_edge_walk_limit',
+    ('BRANDS',  0x55BD): 'hook_walk_back_gate',
+    ('DONING',  0x55BD): 'hook_walk_back_gate',
+    ('OULTON',  0x55BD): 'hook_walk_back_gate',
+    ('SNETTER', 0x55BD): 'hook_walk_back_gate',
 }
 
 # Functions being reimplemented natively, validated against the transliteration.

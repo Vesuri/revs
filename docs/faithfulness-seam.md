@@ -460,6 +460,14 @@ one-shot recomputes the road half-width through `$2542`, which Brands has rewrit
 `JSR $53F0` + `NOP`. A fixture that randomises those four bytes traps instead of taking the arm
 the circuit actually runs.
 
+⭐ **A hook with two arms needs TWO live masks, chosen per case.** `hook_edge_walk_limit`
+(`$56BC`) either returns the section count with the compare's flags — a full `A/X/Y`+flags ABI —
+or jumps into the resumed road walk, whose registers are `build_road_section`'s leavings and match
+between the models only in `mem[]`. One mask over both arms is either a false failure or a gate
+that checks nothing: `diff_run` takes the mask per call, so compute the arm in the fixture
+(`stopArm = C && count >= $0A`) and pass the mask that arm really has. The same shape applies to
+`hook_walk_back_gate` (`$55BD`): registers live when the gate closes, `LIVE_NONE` when it rebuilds.
+
 ### ⚠⚠ `make viewdiff` COVERS THE WALK AND NOT THE CLAMP — measured, 2026-09-07
 
 `viewdiff` is the outer gate on every hook, and it is the right one, but it compares the finished

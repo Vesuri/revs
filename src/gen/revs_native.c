@@ -16382,3 +16382,64 @@ void hook_record_horizon(void)
     cpu.N = (uint8_t)((cpu.A >> 7) & 1u);
     cpu.Z = (uint8_t)(cpu.A == 0u);
 }
+
+/* $56BC — TEN SECTIONS IS ENOUGH SUBDIVIDING (Brands Hatch, Donington, Oulton, Snetterton;
+   byte-identical in all four).  Patched in at $248B, over road_edge_walk's `BCS $24B8` —
+   Silverstone's "this point is off the view axis and the one before it was too, so the side is
+   done".  The circuits keep that exit only once the walk already holds ten sections; below
+   that they resume the walk instead, which is how a longer sight line keeps subdividing.
+   
+   Entry: C = the off-axis compare, X = the section byte, Y = the edge cursor — the ABI
+   $248B's neighbourhood leaves live, not what the displaced BCS reads. */
+/* SABOTAGE (each must FAIL; counts measured on the 500-case fixture, not predicted):
+     S1 ignore the entry carry and always compare      -> 144/500
+     S2 the count threshold is $0B, not $0A            ->  30/500
+     S3 the compare's Z comes from $09                 ->  29/500
+     S4 the count never reaches A                      -> 138/500
+     S5 the non-stop arm returns instead of walking    -> 361/500 (+ VACUOUS: nothing emitted) */
+void hook_edge_walk_limit(void)
+{
+    if (cpu.C) {
+        uint8_t count = shared_counter_42;
+
+        /* $56BE-$56C2 — the count lands in A and the compare's flags go with it. */
+        cpu.A = count;
+        cpu.C = (uint8_t)(count >= 0x0Au);
+        cpu.N = (uint8_t)(((count - 0x0Au) >> 7) & 1u);
+        cpu.Z = (uint8_t)(count == 0x0Au);
+        if (cpu.C)
+            return;                                     /* $56C4 — stop, as Silverstone would */
+    }
+
+    /* $56C5 — back into the engine's own walk.  ⭐ The SHIM, not the core: it marshals the
+       relocated wide globals the walk works in (the sanctioned exception to the call-the-core
+       rule — see docs/faithfulness-seam.md). */
+    road_edge_walk_resume();
+}
+
+/* $55BD — STEP THE WALK BACK, UNLESS A SECTION IS ALREADY QUEUED (Brands Hatch, Donington,
+   Oulton, Snetterton).  Patched in at $24F2, over advance_player_section's
+   `JSR rebuild_walk_backward`: the circuits gate that call on section_quad_flags' bit 7,
+   because the quarter-turn shift register wanting another section built means the walk is
+   about to be rebuilt forward anyway. */
+/* SABOTAGE (each must FAIL; counts measured on the 200-case fixture):
+     S6 the gate reads bit 6 of the flag byte          ->  93/200
+     S7 the gate's sense is inverted                   -> 200/200
+     S8 Z comes from the flag byte, not from A & it    ->   7/200
+     S9 V comes from bit 5                             ->  43/200
+     S10 the rebuild is skipped entirely               -> 102/200 */
+void hook_walk_back_gate(void)
+{
+    uint8_t flags = section_quad_flags;
+
+    /* $55BD BIT — N/V from the flag byte's top two bits, Z from the mask against A.  Dead at
+       this seam (advance_player_section returns immediately), replayed because they are free. */
+    cpu.N = (uint8_t)((flags >> 7) & 1u);
+    cpu.V = (uint8_t)((flags >> 6) & 1u);
+    cpu.Z = (uint8_t)((cpu.A & flags) == 0u);
+
+    if (flags & 0x80u)
+        return;                                         /* $55BF BMI — leave it to the rebuild */
+
+    rebuild_walk_backward_core();                       /* $55C1 */
+}
