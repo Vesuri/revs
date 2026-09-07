@@ -237,6 +237,33 @@ REVS_FLAG_OP unsigned load_a(uint8_t value)
     return cpu.A;
 }
 
+/* `BIT` — N and V are bits 7 and 6 of the tested byte and Z is `A & byte`, so all three can
+   still be live after it; this is the one form with no plain-C equivalent at all. */
+REVS_FLAG_OP void bit_test(uint8_t value)
+{
+    BIT(value);
+}
+
+/* `AND #imm` / `LDX` / `DEX` — the register and the N/Z the 6502 writes with them, for the
+   handful of places where those flags are still read after the operation. */
+REVS_FLAG_OP unsigned and_a(uint8_t mask)
+{
+    AND(mask);
+    return cpu.A;
+}
+
+REVS_FLAG_OP unsigned load_x(uint8_t value)
+{
+    LDX(value);
+    return cpu.X;
+}
+
+REVS_FLAG_OP unsigned dec_x(void)
+{
+    DEX();
+    return cpu.X;
+}
+
 REVS_FLAG_OP unsigned adc_step(unsigned a, uint8_t addend, int carry_in)
 {
     cpu.A = (uint8_t)a;

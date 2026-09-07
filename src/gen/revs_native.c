@@ -24,7 +24,7 @@
  * ⚠ THE ONE PLACE 6502 MACROS SURVIVE, AND WHY.  A twin's exit contract can include the
  * FLAGS — every twin here declares AXY(+S)+flags live — and C has no carry or overflow.  Where a
  * flag genuinely leaves the routine the arithmetic goes through a small named helper
- * (`load_a`, `adc_step`, `sub_from`, `view_compose`) that wraps cpu.h's macro, so the
+ * (`load_a`, `adc_step`, `sub_from`) that wraps cpu.h's macro, so the
  * semantics are the 6502's by construction, decimal mode included (the fixture randomises
  * it).  The macro is INSIDE the helper; the caller reads as C.  Everywhere else the flags
  * are dead and there are no macros at all.
@@ -732,14 +732,18 @@ static uint16_t view_screen_addr(uint16_t base, unsigned cell)
     return (uint16_t)(base + cell);
 }
 
-/* (source AND mask) OR fill — one boundary cell.  Through the macros because N and Z from
-   the `ORA` are live if the JSR that follows traps. */
+/* One boundary cell of a run: the per-line source byte, masked down to the part of the cell the
+   run actually covers, then filled with the edge phase's pattern.  Plain C — the 6502's three
+   ops here have no carry and no decimal behaviour, so the value is just `(source & mask) | fill`.
+   A and N/Z are still recorded because the composed byte is in A and sets the flags at the exact
+   point where the chain below can trap out of the routine, and that exit is part of the twin's
+   contract. */
 static unsigned view_compose(unsigned source, unsigned mask, unsigned fill)
 {
-    LDA(source);
-    AND(mask);
-    ORA(fill);
-    return cpu.A;
+    unsigned cell = (source & mask) | fill;
+    cpu.A = (uint8_t)cell;
+    UPD_NZ(cell);
+    return cell;
 }
 
 /* ⭐⭐ ADDRESS -> UNIT IN ONE LOAD, instead of a forty-entry search.
@@ -884,6 +888,16 @@ static int view_plant(ViewState* v, uint16_t site, uint16_t opnd, unsigned page,
     if (opcode == OP_STA_IND_Y) view_stop_forget(view_unit_of_slot(dst));
     else                        view_stop_note(view_unit_of_slot(dst));
     return 1;
+}
+
+/* The terminator every paint pass ends its line loop on: the line number goes into X and is
+   compared against the pass's last line, which sets X and N/Z/C — and all of those are live at
+   the routine's exit, so the comparison stays the 6502's.  True on the last line. */
+REVS_FLAG_OP int line_is_last(unsigned line, unsigned lastLine)
+{
+    cpu.X = (uint8_t)line;
+    CPX(lastLine);
+    return cpu.Z;
 }
 
 /* Is the planted stop already where we want it?  ⚠ The 6502 asks this with a `CPY`, which
@@ -1255,10 +1269,8 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
             if (op == OP_RTS) break;
             if (op != OP_CPX_IMM) { platform_smc_unhandled(VIEW_CHAIN_END, op); break; }
         }
-        /* `CPX #$2C` — the last full-width line.  Its C is live. */
-        cpu.X = (uint8_t)line;
-        CPX(0x2C);
-        if (cpu.Z) break;
+        /* The last full-width line.  Its C is live. */
+        if (line_is_last(line, 0x2C)) break;
         line = (line - 1) & 0xFF;
         advance_first = 1;
     }
@@ -1305,9 +1317,7 @@ static void paint_lines_short(ViewState* v)
            1.4 ms a line and NOTHING in the generated code for them is 10 000 cycles — so the
            question "is that time in this body at all, or is it interrupt time landing in whichever
            bracket is open?" has to be answered before any of it is optimised. */
-        cpu.X = (uint8_t)v->line;
-        CPX(0x03);
-        if (cpu.Z) break;
+        if (line_is_last(v->line, 0x03)) break;
         continue;
 #endif
 
@@ -1394,10 +1404,8 @@ static void paint_lines_short(ViewState* v)
         }
 #endif
 
-        /* `CPX #3` — the last line of the viewport.  Its C is part of the exit contract. */
-        cpu.X = (uint8_t)v->line;
-        CPX(0x03);
-        if (cpu.Z) break;
+        /* The last line of the viewport.  Its C is part of the exit contract. */
+        if (line_is_last(v->line, 0x03)) break;
     }
     unplant_stops(v);
 }
@@ -1445,9 +1453,7 @@ static void paint_lines_clipped(ViewState* v)
         v->cell = v->byte;                          /* TAY */
         if (!view_enter_chain(v, VIEW_P2_ENTER_B_SITE, VIEW_P2_ENTER_B_ADDR, 0x7E)) { view_commit(v); return; }
 
-        cpu.X = (uint8_t)v->line;
-        CPX(0x1C);
-        if (cpu.Z) break;
+        if (line_is_last(v->line, 0x1C)) break;
     }
     paint_lines_short(v);
 }
@@ -1574,7 +1580,7 @@ static void arg_y(uint8_t v) { LDY(v); }
    callee reads them" is a claim about a 400-routine subtree, not something to assume here. */
 int state_flags_bit6(void)
 {
-    BIT(state_flags);
+    bit_test(state_flags);
     return cpu.V;
 }
 
@@ -1713,8 +1719,7 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
     if (load_a(state_flags) != 0) {
         if (!(cpu.A & 0x80))                       /* $1799: a positive request quits */
             return race_session_end(depth);
-        AND(0x40);                                 /* $179B — and it writes A */
-        if (cpu.Z)
+        if (and_a(0x40) == 0)                      /* $179B masks A down to the pit bit */
             return LOOP_FINISHED;                  /* SHIFT+f0 alone: leave for the pits */
         if (load_a(wheel_spin_rate) == 0)
             return LOOP_FINISHED;                  /* stopped: the pit request is granted */
@@ -1725,12 +1730,11 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
 
     /* The session's own countdown.  Non-zero means the limit was already passed and the car
        is coasting; the frame it would reach zero is the frame the session ends. */
-    arg_x(session_end_countdown);
-    if (cpu.X != 0) {
-        DEX();
-        if (cpu.X == 0)
+    if (load_x(session_end_countdown) != 0) {
+        unsigned remaining = dec_x();
+        if (remaining == 0)
             return race_session_end(depth);
-        session_end_countdown = cpu.X;
+        session_end_countdown = (unsigned char)remaining;
     }
 
     engine_sound_update();        /* the fourth and last note step of the frame */
@@ -6921,7 +6925,7 @@ void mul16_signed(void)
       cpu.A   = (uint8_t)result; }
 
     /* $0E3C-$0E3E — and the sign byte decides the exit flags AND whether to negate. */
-    BIT(mem[MUL_SIGN]);
+    bit_test(mem[MUL_SIGN]);
     abs16_math();
 }
 
