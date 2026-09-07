@@ -435,6 +435,47 @@ Named-milestone captures (step 3) and the jsbeeb cycle-diff harness against the 
 needed (the measured band schedule above) but is not yet a general savestate-to-composition
 description.  Not yet wired into `make` as a repeatable check.
 
+## ⭐⭐ `make viewdiff`, and the three instruments that make a road-pass divergence findable
+
+`make viewdiff` is the gate the hook seams never had: per circuit it races a real BBC
+(`--park`), builds the port for that circuit, and diffs the frame buffer over **display lines
+82..166** with `tools/fb_diff.py`. `CIRCUITS="3 4"` narrows it; `FRAME=` / `BBCFRAMES=` move the
+sample. Everything outside those lines (the text rows, the sky, the dash) is deliberately
+ungated — the port's front end and dash are not byte-faithful and never claimed to be.
+
+A frame-buffer diff says WHICH pixels differ. Turning that into a cause needed three more
+instruments, and the order they are used in is the method:
+
+1. **`--mem-at=NNNN` (BBC) ↔ `platform_mem_snapshot_at(pc)` / `REVS_MEM_DUMP_AT` (port)** — a
+   whole 64 KB snapshot at a named 6502 PC instead of at a frame boundary. ⚠⚠ **A
+   frame-boundary dump is the WRONG instrument for the road pass**: by frame end the object
+   plotter has rewritten cells the road pass produced, so an `edge_*` diff there names innocent
+   writers. Sampling at `draw_road`'s own entry (`$1A20`) compares `build_track_geometry`'s real
+   OUTPUT. Both sides must name the same PC. Parked geometry is frame-invariant (verified: the
+   snapshots at frames 48 and 55 are identical), so the two snapshots need not be at the same
+   frame number.
+2. **`--watch=NNNN`** — every write to one address over the settled frames, attributed to the PC
+   that made it. "Which routine puts that value there" is the question a memory diff always
+   raises and can never answer, and reasoning about it from the listing is exactly the
+   nearly-right scan this project has paid for before. Its port-side counterpart is an ordinary
+   lldb watchpoint on `(char*)mem + addr` with `bt` — cheaper than the ink watch and it sees a
+   plain `mem[addr] =` that interception-based attribution misses.
+3. **`--trace-edge`** — one line per edge point the road walk emits for one settled frame: slot,
+   section byte, bearing, heading, difference. A memory diff can say which edge cell differs;
+   only a per-point trace can say whether the port's walk visited the same points in the same
+   order, which is the question every road-pass divergence turns into. Print **Y**, not
+   `edge_cursor` — `road_edge_start` sets the slot itself and calls the two halves separately, so
+   `mem[$12]` is not the slot at every entry.
+
+⚠ **Two aliasing traps will otherwise send you after the wrong table.** `edge_opp_x_lo`
+(`$5E50`) / `edge_opp_x_hi` (`$5EA0`) deliberately alias `edge_x_lo`/`edge_x_hi` **+ `$10`**, so
+`edge_opp_x_lo[$48]` *is* `edge_x_hi[8]` and `edge_opp_x_hi[$48]` *is* `edge_style[8]`; a naive
+table diff reports the same byte twice. And `edge_y[$1D]/[$1E]` is benign alias scratch that
+shows on the byte-exact Silverstone control too. Above `horizon_extent`, page 6 on a real BBC
+still holds leftover **BASIC ASCII** — `clear_surface_buffers` clears only
+`[horizon_extent..0]`, using the *previous* frame's extent — so a "missing port write" up there
+is usually a stale BBC leftover, not a gap.
+
 ## The standing rule this loop exists to serve
 
 > **Validate against the 6502 + the reference emulator — never against the dev-host backend.**

@@ -115,6 +115,13 @@ make runtime               # ⭐ replay the engine's self-unpack -> disasm/revs_
 make sweep                 # the entry-point sweep report -> disasm/sweep.txt
 make refloop               # ⭐⭐ RACE A REAL BBC under jsbeeb -> tmp/bbcref (the visual ground truth)
 make fbwrites              #   ...every frame-buffer store attributed to the PC that made it
+make viewdiff              # ⭐⭐ EVERY CIRCUIT'S RACE VIEW vs a real BBC, byte for byte over display
+                           #   lines 82..166 — the ONLY gate on an expansion circuit's PATCHED arm
+                           #   (CIRCUITS="3 4" narrows it).  Its three probes for turning a pixel
+                           #   diff into a cause: --mem-at=<pc> / REVS_MEM_DUMP_AT (64 KB at a named
+                           #   PC, because a FRAME-BOUNDARY dump is the wrong instrument for the road
+                           #   pass), --watch=<addr> (writes attributed to the writing PC) and
+                           #   --trace-edge (the road walk point by point).  docs/bbc-reference-loop.md
 make mode7                 # ⭐ the MODE 7 front end vs a real BBC, byte for byte (PPM=tmp/m7 to look)
 make mode7-fixture         #   ...re-record that fixture off jsbeeb
 make font                  #   regenerate the MODE 7 character generator (checked in)
@@ -433,8 +440,12 @@ Rules that must survive without opening `docs/perf-method.md`:
   not. ⚠⚠ And **the patched arm of every hook seam is gated by NOTHING** — `validate`,
   `determinism` and `-drive` all race Silverstone; `tracks` proves the bytes land and `track-run`
   proves the code RUNS, neither that it computes. So settle a hook seam against the real BBC
-  (`make refloop` + a frame-buffer differential over display lines 82+), and reach for the phase
+  (**`make viewdiff`**, which is exactly that differential per circuit), and reach for the phase
   canary (`make INK_WATCH=1`) when a cell is corrupted by an unknown writer.
+  ⚠ A stale-register handover is the recurring shape of this defect: the hook runs an INDEXED
+  loop, so a wrong Y does not fail, it addresses a NEIGHBOURING TABLE and computes something
+  plausible ($2538's leaked `Y=$30` put `$5E68+Y` on `edge_x_hi[8]` and cost one horizon scan
+  line on two circuits).
   ⭐⭐ **And a hook can jump BACK INTO the transliteration**: `region_23d8` — `road_edge_walk`'s
   body, dead on Silverstone because the twin runs the whole walk — is re-entered at `$2490` by every
   expansion circuit's hook, so the rest of that walk runs transliterated, reading `mem[]` cells the

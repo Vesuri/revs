@@ -2474,6 +2474,7 @@ uint8_t point_distance_hypot_apply(void)
    =========================================================================== */
 uint8_t emit_edge_bearing_core(uint8_t slot)
 {
+
     /* $23C0-$23CC — the point's angle FROM WHERE THE CAR POINTS: bearing - car_heading, one
        16-bit subtract (binary on the render path — docs/static-map.md §Decimal mode). */
     uint16_t rel = (uint16_t)(bearing_v      /* relocated out of mem[$8A/$8B] — see above */
@@ -3835,7 +3836,9 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
     /* $252B-$2533 — and the horizon can never be the top line of the 80-line space: $4E is
        as far as the road is allowed to reach, because line $4F is the sky's. */
     unsigned horizonLine = horizon_extent;
+    int horizonClamped = 0;
     if (cmp_ge(horizonLine, 0x4F)) {
+        horizonClamped = 1;
         horizonLine = load_a(0x4E);
         horizon_extent = 0x4E;
     }
@@ -3849,6 +3852,31 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
         mem[EDGE_Y_TBL + EDGE_HALF + horizonPoint] = (uint8_t)horizonLine;
     } else if (mem[SMC_GEOMETRY_STORE] == 0x20) {
         uint16_t target = (uint16_t)(mem[SMC_GEOMETRY_STORE + 1] | (mem[SMC_GEOMETRY_STORE + 2] << 8));
+        /* ⭐ THE ENTRY ABI, DERIVED FROM THE INSTRUCTIONS AROUND $2538 AND NOT FROM THE STORE
+           IT REPLACES.  The patched-out `STA $5F48,Y` reads only A and Y, but a circuit's hook
+           is real 6502 code that inherits the whole register file, and Y is the one that bites:
+           every expansion circuit's hook here ($5772) reproduces that store and then walks Y
+           UPWARD to 9 (`CPY #9 / BCC`) comparing each point's edge_x against edge_opp_x, so an
+           entry Y past 8 runs the body ONCE at a bogus index and the two indexed stores
+           ($5E68+Y and $5EB8+Y, both addressing the far side's half of a 40-entry table) land
+           outside it.  Handing over nothing left Y at $30 from earlier in the frame, which is
+           $5E68+$30 = edge_x_hi[8] and $5EB8+$30 = edge_style[8]: horizon_half_width_at then
+           read $20 instead of $04 and computed $1B for the horizon's half width, one wrong scan
+           line at the horizon on Oulton Park AND Snetterton.  A real BBC is the only thing that
+           can see this — Silverstone never takes the patched arm.
+           A/X and N/Z/C are handed over too, for the rule rather than for an observable: at
+           $5772 the A store is overwritten by the loop's own first iteration ($5793 rewrites
+           $5F48+Y from $5F20+Y at the same Y), X is never read, and the entry flags die on the
+           hook's opening `LDA / SEC / SBC`.  All four sabotage to no change for those reasons,
+           and Y sabotages to exactly the 16 bytes this fix removed. */
+        cpu.A = (uint8_t)horizonLine;    /* $2531/$252B — the clamped horizon line */
+        cpu.X = ex.x;                    /* road_edge_walk's exit section byte */
+        cpu.Y = (uint8_t)horizonPoint;   /* $2528 TAY — the folded horizon point */
+        /* The flags are the $252D `CMP #$4F`, except on the clamped path where the $2531
+           `LDA #$4E` is the last op to touch N/Z and the compare's C=1 stands. */
+        cpu.Z = 0u;
+        cpu.N = (uint8_t)(horizonClamped ? 0u : 1u);
+        cpu.C = (uint8_t)(horizonClamped ? 1u : 0u);
         if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
         else { platform_smc_unhandled(SMC_GEOMETRY_STORE, target); ex.a = (uint8_t)horizonLine; return ex; }
     } else {
@@ -3915,6 +3943,10 @@ static void surface_pass(uint8_t pass, uint8_t firstPoint)
 SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
 {
     ROAD_COUNT(g_roadFrames);
+    /* The reference differential's sample point: build_track_geometry has just finished, so
+       every edge_* cell here is the road pass's real INPUT rather than end-of-frame scratch
+       (platform_mem_snapshot_at; the BBC side is `--mem-at=1A20`).  A no-op unless asked. */
+    platform_mem_snapshot_at(0x1A20);
     PLOT_SET_LO(plot_ptr, 0x80u);   /* $1A20: every span plotter stores through this */
 
     /* $1A24-$1A30 — the FAR half of the road.  The split is the horizon point in the 40..79
