@@ -748,3 +748,21 @@ Two rules:
 ⚠ And one sabotage shape to avoid here: making the index a **random byte** does not fail, it **hangs**
 — index `> $35` walks `text_script_ptr_lo` ($3AD0) into `char_row_addr_hi` ($3B06) and aims the
 emitter at zero page.  Keep every defect inside the table (0..$34); a hang is not a detection.
+
+### ⚠⚠ `want()` RESEEDS — CALLING IT IN A LOOP CONDITION MAKES EVERY CASE THE SAME CASE
+
+`want()` is the per-fixture entry gate *and* the per-fixture reseed (the FNV hash of the name),
+so it must be called **once**, before the case loop. Put it in the loop's own condition —
+`for (t = 0; want("x") && t < cases; t++)` — and the generator restarts on every iteration:
+4000 cases that are one case, printed as "4000 cases, 0 mismatch".
+
+Measured on the first hook twin, 2026-09-07: the fixture's own VACUOUS check caught it (two of
+five arms read 0), which is exactly what that check is for — but only *after* six sabotages had
+been "detected" by a fixture running a single input. **A sabotage result is only as strong as the
+coverage line printed next to it**; re-run the sabotages after any fixture fix that changes
+coverage.
+
+⚠ And when scripting a sabotage loop, grep for **`REG DIFF` as well as `MEM DIFF`**. A twin whose
+only defect is an exit FLAG prints nothing matching `MEM DIFF`, and the loop reports it as
+surviving — a fake gap that costs an investigation.
+

@@ -746,6 +746,8 @@ SlotExit write_object_slot_core(uint8_t projectedLine, uint8_t entryX, uint8_t e
 /* per-circuit hook twins (see revs_native.c's PER-CIRCUIT HOOK TWINS section) */
 extern int g_hookOracle;              /* 0 = twins, non-zero = the transliterated bodies */
 uint8_t hook_horizon_clamp_core(uint8_t entryY);
+uint8_t hook_record_horizon_core(uint8_t line, uint8_t point);
+void hook_record_horizon(void);
 void hook_horizon_clamp(void);
 
 #endif /* REVS_NATIVE_SEAM_H */

@@ -11102,6 +11102,12 @@ extern int g_hookOracle;                       /* src/gen/revs_track_hooks.c */
 void trk_brands(unsigned short entry);         /* src/gen/revs_track_hooks.h */
 extern unsigned char g_track;                  /* src/platform/track.h */
 
+/* $56AF — the horizon recorder.  Its whole observable is two zero-page stores and its exit
+   flags, so the fixture's job is to straddle the section-count threshold and to check that A
+   comes back untouched (the 6502 saves it across the compare). */
+static void hook_rec_twin(void)     { g_hookOracle = 0; trk_brands(0x56AF); }
+static void hook_rec_oracle(void)   { g_hookOracle = 1; trk_brands(0x56AF); g_hookOracle = 0; }
+
 static void hook_clamp_twin(void)   { g_hookOracle = 0; trk_brands(0x56C8); }
 static void hook_clamp_oracle(void) { g_hookOracle = 1; trk_brands(0x56C8); g_hookOracle = 0; }
 
@@ -11110,16 +11116,21 @@ static int test_hook_twins(void)
     static uint8_t pre[65536];
     int fail = 0, printed = 0, t, cases = 4000, sub = 0;
     int sawLatched = 0, sawOneShot = 0, sawClamp = 0, sawAdvance = 0, sawEarlyStop = 0;
-    int scale = 1;
+    int scale = 1, runClamp, runRecord;
     { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
     if (scale < 1) scale = 1;
     cases *= scale;
     register_fixture("hook_horizon_clamp");
-    if (!want("hook_horizon_clamp")) return 0;
+    register_fixture("hook_record_horizon");
+    /* ⚠⚠ want() RESEEDS the stream, so it is called ONCE per fixture and NEVER in a loop
+       condition — inside one it restarts the generator every iteration and every case is
+       then the same case.  (It cost this fixture its `latched` and `early-stop` arms once.) */
+    runClamp  = want("hook_horizon_clamp");
+    runRecord = want("hook_record_horizon");
     g_track = 1;                                    /* Brands Hatch — whose body this is */
     setenv("REVS_SMC_CONTINUE", "1", 1);
 
-    for (t = 0; t < cases; t++) {
+    for (t = 0; runClamp && t < cases; t++) {
         Cpu6502 c = zero_cpu();
         uint8_t horizon, y, cursor, latch;
         int i, walked;
@@ -11136,7 +11147,7 @@ static int test_hook_twins(void)
         for (i = 0; i < 0x50; i++)
             pre[0x5F20 + i] = (uint8_t)(xs() % horizon);
         pre[0x004B]   = (uint8_t)(1u + (xs() % 0x28u));  /* span_end_index */
-        pre[0x0074] = (uint8_t)xs();
+        pre[0x007F]               = (uint8_t)xs();  /* span_line_cursor */
         pre[0x0082]               = (uint8_t)xs();  /* the latch cell, live only inside */
 
         /* ⭐ SEED THE SMC EXTENT THE WAY BRANDS HATCH INSTALLS IT ($2542-$2545: its own
@@ -11151,6 +11162,12 @@ static int test_hook_twins(void)
         y = (uint8_t)(0x0Au + (xs() % 0x40u));
         if (xs() & 1u) { y |= 0x20u;  sawLatched = 1; } else { y &= (uint8_t)~0x20u; }
         c.Y = y;
+
+        /* ...and one case in four puts the horizon itself at the first point the walk reads,
+           so the range exit fires before anything is clamped.  Without this the seeded row
+           is entirely BELOW the horizon and that arm is unreachable by construction. */
+        if ((xs() & 3u) == 0u)
+            pre[0x5F20 + (uint8_t)(y - 1u)] = (uint8_t)(horizon + (xs() % 0x08u));
 
         /* Classify the arms the walk will take — fixture arithmetic, not the twin's. */
         cursor = 0; latch = (uint8_t)(y & 0x20u); walked = 0;
@@ -11167,13 +11184,52 @@ static int test_hook_twins(void)
                         LIVE_X | LIVE_Y, t, &printed);
     }
     fail += sub;
+    if (runClamp)
     printf("%-32s %7d cases, %d mismatch (must be 0)  live=X,Y ($1946 keeps both)\n",
            "hook_horizon_clamp", cases, sub);
-    if (!(sawLatched && sawOneShot && sawClamp && sawAdvance && sawEarlyStop)) {
+    if (runClamp && !(sawLatched && sawOneShot && sawClamp && sawAdvance && sawEarlyStop)) {
         printf("VACUOUS: hook_horizon_clamp missed an arm "
                "(latched %d one-shot %d clamp %d advance %d early-stop %d)\n",
                sawLatched, sawOneShot, sawClamp, sawAdvance, sawEarlyStop);
         fail++;
+    }
+
+    /* ------------------------------------------------------- $56AF, the horizon recorder */
+    if (runRecord) {
+        static const uint16_t IGN[] = { 0x01FF };   /* the hook's own PHA/PLA byte */
+        int sawRecord = 0, sawSuppressed = 0, sawEdge = 0;
+        sub = 0; printed = 0;
+        set_ignore(IGN, 1);
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            uint8_t count;
+
+            fill_random(pre);
+            c.D = 0;
+            c.S = 0xFFu;
+            /* The section count straddling 12, with the threshold itself in the mix. */
+            count = (uint8_t)(0x08u + (xs() % 0x09u));
+            pre[0x0042] = count;                    /* shared_counter_42 */
+            if (count >= 0x0Cu) sawSuppressed = 1; else sawRecord = 1;
+            if (count == 0x0Cu || count == 0x0Bu) sawEdge = 1;
+            c.A = (uint8_t)xs();                    /* the point's line, live in and out */
+            c.Y = (uint8_t)xs();                    /* its index */
+            c.X = (uint8_t)xs();
+
+            sub += diff_run("hook_record_horizon", pre, c,
+                            hook_rec_twin, hook_rec_oracle,
+                            LIVE_A | LIVE_X | LIVE_Y | LIVE_N | LIVE_Z | LIVE_C, t, &printed);
+        }
+        set_ignore(0, 0);
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,Y,N,Z,C\n",
+               "hook_record_horizon", cases, sub);
+        if (!(sawRecord && sawSuppressed && sawEdge)) {
+            printf("VACUOUS: hook_record_horizon missed an arm "
+                   "(record %d suppressed %d threshold %d)\n",
+                   sawRecord, sawSuppressed, sawEdge);
+            fail++;
+        }
     }
     return fail;
 }

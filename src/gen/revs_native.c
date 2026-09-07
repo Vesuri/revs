@@ -16350,3 +16350,35 @@ void hook_horizon_clamp(void)
     cpu.Y = exitY;
     cpu.A = e.a; cpu.V = e.v; cpu.C = e.c; cpu.N = e.n; cpu.Z = e.z;
 }
+
+/* $56AF — RECORD THIS POINT AS THE HORIZON, BUT ONLY CLOSE TO THE CAR (all four expansion
+   circuits; byte-identical in each).  Patched in at $261A, over emit_edge_width_offset's own
+   `STA horizon_extent / STY horizon_index` pair — and as a JMP, so the hook's RTS returns from
+   emit_edge_width_offset itself and the stores are the only thing it replaces.
+   
+   The circuits add one condition the 1985 engine did not have: a point only becomes the frame's
+   horizon while fewer than 12 sections are in the walk.  Beyond that the horizon stays where it
+   was, which is what stops these circuits' longer sight lines from pushing the horizon up into
+   the sky band.
+   
+   Returns the exit carry — `shared_counter_42 >= 12`, which is also the "did not record" answer. */
+uint8_t hook_record_horizon_core(uint8_t line, uint8_t point)
+{
+    if (shared_counter_42 >= 0x0Cu)                /* $56B0-$56B5 CMP #$0C / BCS */
+        return 1u;
+
+    horizon_extent = line;                         /* $56B7-$56BA — what the JMP replaced */
+    horizon_index  = point;
+    return 0u;
+}
+
+void hook_record_horizon(void)
+{
+    cpu.C = hook_record_horizon_core(cpu.A, cpu.Y);
+
+    /* ⚠ N and Z are NOT the compare's.  The 6502 saves A across the compare with PHA/PLA, and
+       the PLA re-sets them from A — so the flags this hook hands emit_edge_width_offset are
+       the carry from the section count and the sign/zero of the LINE. */
+    cpu.N = (uint8_t)((cpu.A >> 7) & 1u);
+    cpu.Z = (uint8_t)(cpu.A == 0u);
+}

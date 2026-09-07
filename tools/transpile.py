@@ -551,6 +551,10 @@ HOOK_TWINS = {
     ('BRANDS', 0x56C8): 'hook_horizon_clamp',
     ('DONING', 0x56C8): 'hook_horizon_clamp',
     ('OULTON', 0x56C8): 'hook_horizon_clamp',
+    ('BRANDS',  0x56AF): 'hook_record_horizon',
+    ('DONING',  0x56AF): 'hook_record_horizon',
+    ('OULTON',  0x56AF): 'hook_record_horizon',
+    ('SNETTER', 0x56AF): 'hook_record_horizon',
 }
 
 # Functions being reimplemented natively, validated against the transliteration.
