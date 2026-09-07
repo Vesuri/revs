@@ -536,6 +536,23 @@ SMC_REGION_OF = {}
 # transliteration at all (docs/faithfulness-seam.md), and say why.
 MANUAL_FUNCS = set()
 
+# ⭐ HOOK TWINS — the per-circuit hook seam's counterpart to SPLIT_FUNCS.
+#
+# {(dfs, entry_addr): twin_name}.  The transliterated body is still emitted (it is the
+# validation ORACLE and the only description of the circuit's real code), but the dispatch
+# prologue routes production to the twin unless g_hookOracle says otherwise, so ONE binary
+# carries both models and `make validate` can diff them.
+#
+# ⚠⚠ Keyed by (circuit, address), never by address alone: the same $53xx-$5Axx entry is
+# DIFFERENT CODE on every circuit.  $56C8's clamp loop happens to be byte-identical on
+# Brands/Donington/Oulton, which is why they share a twin; Snetterton's tail jumps back into
+# its own transliterated body ($53DC) and is deliberately NOT twinned here.
+HOOK_TWINS = {
+    ('BRANDS', 0x56C8): 'hook_horizon_clamp',
+    ('DONING', 0x56C8): 'hook_horizon_clamp',
+    ('OULTON', 0x56C8): 'hook_horizon_clamp',
+}
+
 # Functions being reimplemented natively, validated against the transliteration.
 # For each address here the transpiler still emits the faithful transliterated
 # body, but DEFINES it under a `<name>__t6502` suffix instead of the plain name.
@@ -2931,7 +2948,7 @@ def compute_imm_store_folds(insns, symbols, local_targets, external_entry_labels
 def translate_func(func, all_funcs_by_start, symbols,
                    external_entry_labels=None,
                    external_entries=None, wrapper_names=None,
-                   unit_addrs=None, dispatch_entries=None):
+                   unit_addrs=None, dispatch_entries=None, hook_twins=None):
     """Translate one 6502 function to C.
 
     external_entry_labels: set of addresses within this function that are
@@ -3052,7 +3069,15 @@ def translate_func(func, all_funcs_by_start, symbols,
         lines.append(f'void {def_name}(uint16_t _entry) {{')
         lines.append('    switch (_entry) {')
         for e in dispatch_entries:
-            lines.append(f'    case 0x{e:04X}: goto L_{e:04x};')
+            twin = (hook_twins or {}).get(e)
+            if twin:
+                # Production runs the twin; the harness sets g_hookOracle to reach the
+                # transliteration below, which is what it compares against.
+                lines.append(f'    case 0x{e:04X}:'
+                             f' if (!g_hookOracle) {{ {twin}(); return; }}'
+                             f' goto L_{e:04x};')
+            else:
+                lines.append(f'    case 0x{e:04X}: goto L_{e:04x};')
         lines.append(f'    default: platform_bad_region_entry(0x{start:04X}, _entry); return;')
         lines.append('    }')
     else:
@@ -3202,6 +3227,11 @@ def emit_track_hooks(rows, funcs_by_start, symbols, external_entries, wrapper_na
         ' * what an expansion circuit running Silverstone\'s control flow would look like.  A',
         ' * non-zero count here is the evidence that the per-circuit code actually EXECUTES. */',
         'unsigned long g_trackHookCalls = 0;',
+        '/* ⭐ 0 = run the hook TWINS, non-zero = run the transliteration they replaced.',
+        ' * `make validate` flips this to reach the oracle, so one binary carries both models.',
+        ' * Production leaves it 0 and pays one global test per hook call (~110 a race second).',
+        ' * ⚠ It must NOT be const-folded away: the harness writes it at run time. */',
+        'int g_hookOracle = 0;',
         '',
         '#ifdef REVS_HOOK_PROFILE',
         '/* Per-ENTRY call counts, because "which hook is hot" cannot be reasoned out of the',
@@ -3287,6 +3317,7 @@ def emit_track_hooks(rows, funcs_by_start, symbols, external_entries, wrapper_na
         '#include "../platform/probe.h"',
         '#include "../platform/track.h"   /* g_track — which circuit the engine is running */',
         '#include "revs_track_hooks.h"',
+        '#include "revs_native_seam.h"   /* the hook TWINS and g_hookOracle */',
         '',
     ] + seam
     decl = [
@@ -3330,7 +3361,9 @@ def emit_track_hooks(rows, funcs_by_start, symbols, external_entries, wrapper_na
                                external_entries=external_entries,
                                wrapper_names=wrapper_names,
                                unit_addrs=addrs,
-                               dispatch_entries=row['entries'])
+                               dispatch_entries=row['entries'],
+                               hook_twins={a: t for (dfs, a), t in HOOK_TWINS.items()
+                                           if dfs == row['dfs']})
         # translate_func emits `void <name>(uint16_t _entry)`; the header declares it with
         # `unsigned short`, which is the same type — keep the signatures textually identical so
         # the Amiga C++ build (which has no <stdint.h>) does not see two different declarations.
@@ -3813,6 +3846,13 @@ def main():
     val_lines += [f'    "{n}",' for n in sorted(val_names)]
     val_lines += ['    0', '};', '', 'static const char* const NATIVE_UNVALIDATED_NAMES[] = {']
     val_lines += [f'    "{n}",' for n in sorted(nat_names)]
+    val_lines += ['    0', '};', '',
+                  '/* HOOK_TWIN_NAMES: twins of PER-CIRCUIT hook bodies (HOOK_TWINS).  Same',
+                  '   anti-vacuity rule as VALIDATE_NAMES — the harness fails if one has no',
+                  '   fixture — but their oracle is reached by setting g_hookOracle rather than',
+                  '   by a __t6502 name, because the transliteration stays in the dispatch. */',
+                  'static const char* const HOOK_TWIN_NAMES[] = {']
+    val_lines += [f'    "{n}",' for n in sorted(set(HOOK_TWINS.values()))]
     val_lines += ['    0', '};', '']
     OUT_VAL.write_text('\n'.join(val_lines) + '\n')
     print(f'Wrote {OUT_VAL}  ({len(val_names)} validated names, '

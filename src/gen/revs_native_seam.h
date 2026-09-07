@@ -743,4 +743,9 @@ uint8_t vdu_char_wide_core(uint8_t ch);
 void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entryCell);
 SlotExit write_object_slot_core(uint8_t projectedLine, uint8_t entryX, uint8_t entryV, uint8_t entryC);
 
+/* per-circuit hook twins (see revs_native.c's PER-CIRCUIT HOOK TWINS section) */
+extern int g_hookOracle;              /* 0 = twins, non-zero = the transliterated bodies */
+uint8_t hook_horizon_clamp_core(uint8_t entryY);
+void hook_horizon_clamp(void);
+
 #endif /* REVS_NATIVE_SEAM_H */

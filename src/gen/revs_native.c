@@ -16265,3 +16265,88 @@ void hw_init_core(uint8_t osbyteY)
     bus_write(IRQ1V_LO, 0x5Cu);                          /* $4E54 — ...then low: $4E5C is live */
     /* $4E57 CLI */
 }
+
+/* ===========================================================================================
+   PER-CIRCUIT HOOK TWINS
+   ===========================================================================================
+   These are twins of code that lives in an EXPANSION CIRCUIT's own file, not in the engine —
+   the bodies `src/gen/revs_track_hooks.c` transliterates.  Same seam rules as every other
+   twin (`HOOK_TWINS` in tools/transpile.py routes the dispatch to them; `g_hookOracle` flips
+   a validation run back to the transliteration), with one extra caution: a hook is entered
+   with whatever registers the PATCHED-OUT instruction's neighbourhood left live, so the entry
+   ABI is derived from the call site and never from the callee it displaced.
+   ⚠⚠ And `make validate`/`determinism` race SILVERSTONE, which never calls any of this.
+   `make viewdiff` is the gate that actually exercises these. */
+
+/* The hook's one-shot latch — a tenant of the $80..$82 scratch trio, live only inside one
+   $56C8 call.  It is mirrored into mem[] rather than kept purely local so the oracle
+   differential stays byte-exact on the scratch cell too. */
+#define HOOK_CLAMP_LATCH 0x0082u
+
+/* $56C8 — MAKE THE HORIZON MONOTONIC (Brands Hatch, Donington Park, Oulton Park; the three
+   circuits emit byte-identical code here).  Patched in at $1946, over the engine's
+   `JSR edge_x_offscreen` in fill_line_attr.
+    
+   Walking edge points DOWNWARD from the entry point, it carries a running cursor of the
+   highest (numerically largest, i.e. lowest on screen) line seen so far and pulls any point
+   that projects ABOVE it back down to it, so the far road cannot poke through a nearer crest.
+   The walk stops at the first point at or beyond `horizon_extent` — the horizon itself.
+   
+   The FIRST clamp is also the trigger for a one-shot: the cursor becomes the object-count
+   ceiling ($1FE9's SMC operand, which these circuits have rewritten to the `LDX #imm` shape),
+   and the road's half-width is recomputed at the point just above.  A latch seeded from bit 5
+   of the entry Y suppresses that entirely — an entry from the upper band gets the clamp with
+   no width recompute.
+   
+   Returns the exit Y ($56F7's `LDY span_end_index / DEY`). */
+uint8_t hook_horizon_clamp_core(uint8_t entryY)
+{
+    uint8_t y      = entryY;
+    uint8_t latch  = (uint8_t)(entryY & 0x20u);   /* $56C8-$56CC — non-zero suppresses the one-shot */
+    uint8_t cursor = 0;
+
+    mem[HOOK_CLAMP_LATCH] = latch;
+    span_line_cursor      = 0;
+
+    for (;;) {
+        uint8_t line;
+
+        y--;                                      /* $56D1 DEY — the walk runs downward */
+        line = mem[EDGE_Y_TBL + y];
+        if (line >= horizon_extent)               /* $56D7 — reached the horizon: done */
+            break;
+
+        if (line >= cursor) {                     /* $56DC — a new low-water mark on screen */
+            cursor           = line;
+            span_line_cursor = cursor;
+            continue;
+        }
+
+        mem[EDGE_Y_TBL + y] = cursor;             /* $56E3 — pull the point down to the cursor */
+        if (latch)
+            continue;
+
+        /* $56E8-$56F4 — the one-shot, fired by the first clamp only. */
+        mem[SMC_OBJECT_CEILING + 1] = cursor;     /* the patched `LDX #imm` operand */
+        (void)horizon_half_width_at_core((unsigned)(uint8_t)(y + 1));
+        latch                 = 0x80u;            /* `SEC / ROR $82` on a zero latch */
+        mem[HOOK_CLAMP_LATCH] = latch;
+    }
+
+    /* $56F7-$56FD */
+    math_hi = (uint8_t)(span_end_index - 1u);
+    return math_hi;
+}
+
+void hook_horizon_clamp(void)
+{
+    uint8_t exitY = hook_horizon_clamp_core(cpu.Y);
+
+    /* $56FD `JMP edge_x_offscreen` is a tail call, so the hook also returns whatever that
+       leaves: X is the entry X (the clamp never touches it) and Y survives the callee.  The
+       $1946 seam discards A and the flags, but they are handed back regardless so the twin
+       leaves state identical to the transliteration it replaces. */
+    EdgeOffFlags e = edge_x_offscreen_core(cpu.X);
+    cpu.Y = exitY;
+    cpu.A = e.a; cpu.V = e.v; cpu.C = e.c; cpu.N = e.n; cpu.Z = e.z;
+}

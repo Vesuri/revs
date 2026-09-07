@@ -135,6 +135,22 @@ static int check_coverage(void) {
    execute a whole frame of the engine.  Silence would be the vacuous-green failure mode
    wearing a different hat, so the names are PRINTED on every run together with what does
    gate them.  Returns 0: this is a report, not a failure. */
+/* The hook twins' half of check_coverage.  Their oracle is the transliteration still sitting
+   in the dispatch (reached with g_hookOracle), so they have no __t6502 name for the coverage
+   walk above to key on — but a fixture-less hook twin is just as vacuous. */
+
+static int check_hook_coverage(void) {
+    int missing = 0;
+    for (int i = 0; HOOK_TWIN_NAMES[i]; i++) {
+        if (!is_registered(HOOK_TWIN_NAMES[i])) {
+            printf("[NO FIXTURE] %s is in HOOK_TWINS but has no test here — "
+                   "and no Silverstone run can reach it either\n", HOOK_TWIN_NAMES[i]);
+            missing++;
+        }
+    }
+    return missing;
+}
+
 static int report_unvalidated_natives(void)
 {
     int i;
@@ -6525,7 +6541,7 @@ static int test_div16by8(void)
             shaped[shape]++;
 
             pre[0x0076] = divisor;                            /* shared_temp_76 — the divisor */
-            pre[0x0074] = (uint8_t)xs();                      /* math_lo — the dividend's low half */
+            pre[0x007F] = (uint8_t)xs();  /* span_line_cursor */                      /* math_lo — the dividend's low half */
             c.A = hi;                                         /* ...and its high half */
             c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
@@ -11074,6 +11090,94 @@ static int test_driving_controls(void)
     return fail;
 }
 
+/* ------------------------------------------------------------------ hook twins ($56C8)
+   ⭐ THE ORACLE IS THE OTHER ARM OF THE SAME DISPATCH.  A hook twin replaces code that
+   lives in a CIRCUIT FILE, so there is no __t6502 body to call: both models are reached
+   through trk_brands($56C8) and g_hookOracle picks which one runs.  Everything else is a
+   normal fixture — same randomised pre-state, same full-mem[] diff.
+   ⚠ It must be a fixture and not just a viewdiff: `make viewdiff` compares the finished
+   PICTURE, so it only sees an arm the recorded frames happen to take, and the one-shot's
+   suppressed arm (entry Y with bit 5 set) is exactly the kind of thing it would miss. */
+extern int g_hookOracle;                       /* src/gen/revs_track_hooks.c */
+void trk_brands(unsigned short entry);         /* src/gen/revs_track_hooks.h */
+extern unsigned char g_track;                  /* src/platform/track.h */
+
+static void hook_clamp_twin(void)   { g_hookOracle = 0; trk_brands(0x56C8); }
+static void hook_clamp_oracle(void) { g_hookOracle = 1; trk_brands(0x56C8); g_hookOracle = 0; }
+
+static int test_hook_twins(void)
+{
+    static uint8_t pre[65536];
+    int fail = 0, printed = 0, t, cases = 4000, sub = 0;
+    int sawLatched = 0, sawOneShot = 0, sawClamp = 0, sawAdvance = 0, sawEarlyStop = 0;
+    int scale = 1;
+    { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
+    if (scale < 1) scale = 1;
+    cases *= scale;
+    register_fixture("hook_horizon_clamp");
+    if (!want("hook_horizon_clamp")) return 0;
+    g_track = 1;                                    /* Brands Hatch — whose body this is */
+    setenv("REVS_SMC_CONTINUE", "1", 1);
+
+    for (t = 0; t < cases; t++) {
+        Cpu6502 c = zero_cpu();
+        uint8_t horizon, y, cursor, latch;
+        int i, walked;
+
+        fill_random(pre);
+        c.D = 0;                                    /* the geometry path, always binary */
+        c.S = 0xFFu;
+        c.A = (uint8_t)xs(); c.X = (uint8_t)xs();
+
+        /* A plausible horizon and an edge_y row that mostly sits above it, so the walk
+           actually walks instead of stopping on its first read. */
+        horizon = (uint8_t)(0x38u + (xs() % 0x14u));
+        pre[0x001F] = horizon;        /* horizon_extent */
+        for (i = 0; i < 0x50; i++)
+            pre[0x5F20 + i] = (uint8_t)(xs() % horizon);
+        pre[0x004B]   = (uint8_t)(1u + (xs() % 0x28u));  /* span_end_index */
+        pre[0x0074] = (uint8_t)xs();
+        pre[0x0082]               = (uint8_t)xs();  /* the latch cell, live only inside */
+
+        /* ⭐ SEED THE SMC EXTENT THE WAY BRANDS HATCH INSTALLS IT ($2542-$2545: its own
+           `JSR $53F0` where Silverstone calls abs8, and `NOP` where Silverstone halves).
+           The one-shot's half-width recompute goes through that site, so a random image
+           there would trap instead of taking the arm the circuit really runs. */
+        pre[0x2542] = 0x20u; pre[0x2543] = 0xF0u;
+        pre[0x2544] = 0x53u; pre[0x2545] = 0xEAu;
+
+        /* Entry Y: inside the seeded row, and bit 5 both ways — that bit decides whether
+           the one-shot (object ceiling + half-width recompute) can fire at all. */
+        y = (uint8_t)(0x0Au + (xs() % 0x40u));
+        if (xs() & 1u) { y |= 0x20u;  sawLatched = 1; } else { y &= (uint8_t)~0x20u; }
+        c.Y = y;
+
+        /* Classify the arms the walk will take — fixture arithmetic, not the twin's. */
+        cursor = 0; latch = (uint8_t)(y & 0x20u); walked = 0;
+        for (i = 0; i < 256; i++) {
+            uint8_t line = pre[0x5F20 + (uint8_t)(y - 1u - (uint8_t)i)];
+            if (line >= horizon) { if (!walked) sawEarlyStop = 1; break; }
+            walked = 1;
+            if (line >= cursor) { cursor = line; sawAdvance = 1; }
+            else { sawClamp = 1; if (!latch) { sawOneShot = 1; latch = 0x80u; } }
+        }
+
+        sub += diff_run("hook_horizon_clamp", pre, c,
+                        hook_clamp_twin, hook_clamp_oracle,
+                        LIVE_X | LIVE_Y, t, &printed);
+    }
+    fail += sub;
+    printf("%-32s %7d cases, %d mismatch (must be 0)  live=X,Y ($1946 keeps both)\n",
+           "hook_horizon_clamp", cases, sub);
+    if (!(sawLatched && sawOneShot && sawClamp && sawAdvance && sawEarlyStop)) {
+        printf("VACUOUS: hook_horizon_clamp missed an arm "
+               "(latched %d one-shot %d clamp %d advance %d early-stop %d)\n",
+               sawLatched, sawOneShot, sawClamp, sawAdvance, sawEarlyStop);
+        fail++;
+    }
+    return fail;
+}
+
 int main(int argc, char** argv)
 {
     if (argc > 1) { g_filter = &argv[1]; g_nfilter = argc - 1; }
@@ -11162,8 +11266,10 @@ int main(int argc, char** argv)
     fail += test_object_shape();
     fail += test_object_lines();
     fail += test_driving_controls();
+    fail += test_hook_twins();
 
     fail += check_coverage();
+    fail += check_hook_coverage();
     fail += report_unvalidated_natives();
 
     if (g_nregistered == 0 && VALIDATE_NAMES[0] == 0) {

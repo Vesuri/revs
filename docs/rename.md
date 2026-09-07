@@ -313,3 +313,18 @@ What that leaves open is **cell tenancy, not a function name**:
   as "component 1 of `shared_temp_84`'s window".  ⇒ It is the row that entry was waiting for.
 * `$7C` — compared against `$28` and force-set to `$FF`, so a column index here, not
   `point_dist`'s low byte.  ⇒ Same treatment: a tenancy list, not a rename.
+
+## `$0082` — the `$56C8` hook's one-shot latch
+
+Found while twinning Brands/Donington/Oulton's `$56C8` (the horizon monotonic clamp).  The hook
+seeds `$0082` from bit 5 of its entry Y and then, on its first clamp, does `SEC / ROR $82` — so
+the cell is a **one-shot latch, live only inside one hook call**: non-zero means "the object
+ceiling and the half-width have already been recomputed, don't do it again", and an entry from
+the upper band arrives with it already armed, suppressing the recompute entirely.
+
+It has no `symbols.csv` row, so the twin carries a local `#define HOOK_CLAMP_LATCH` instead of a
+`mem.h` name.  ⇒ A `var` row is owed, and it must be a **tenancy** note, not a plain name:
+`$80..$82` is the road pass's scratch trio and this is one tenant of it.  What is not yet
+measured is whether any *other* reader of `$82` overlaps the hook's use — the hook writes it on
+entry unconditionally, so it cannot be carrying anything in, but whether it is expected to carry
+something *out* is unproven.  [DERIVED] from the circuit bodies, 2026-09-07.

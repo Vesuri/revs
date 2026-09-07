@@ -428,6 +428,55 @@ write — it must not.
 beside the cores, and matches inside comments outnumber the real ones. Strip comments first, then
 track brace depth to attribute each call to its enclosing function.
 
+## ⭐⭐ TWINNING A PER-CIRCUIT HOOK BODY — the seam, and where its gate has a hole
+
+The hook bodies in `src/gen/revs_track_hooks.c` are the last transliterated production code in
+the port, and they are the reason the 6502 ABI is still alive at the seam. They can be twinned,
+but not through `VALIDATE_FUNCS`: the code lives in a *circuit file*, occupies the same
+`$5300-$5A25` addresses on every circuit, and is dispatched by address, so there is no `__t6502`
+name for the harness to call.
+
+**The mechanism** (`HOOK_TWINS` in `tools/transpile.py`, keyed by `(circuit, entry)`): the
+transliterated body is still emitted — it is the oracle, and the only description of what the
+circuit really does — and the dispatch prologue routes production past it:
+
+```c
+case 0x56C8: if (!g_hookOracle) { hook_horizon_clamp(); return; } goto L_56c8;
+```
+
+One binary carries both models; `g_hookOracle` picks. Production leaves it 0 (one global test per
+hook call, ~110 a race second) and the Amiga link can fold it away. The twin itself goes in
+`revs_native.c` like any other — `_core` plus a shim — and `HOOK_TWIN_NAMES` makes a fixture-less
+hook twin fail `make validate`, the same anti-vacuity rule `VALIDATE_NAMES` gets.
+
+⚠⚠ **Key it by circuit, never by address.** `$56C8` is byte-identical on Brands/Donington/Oulton
+and *different code* on Snetterton, whose tail jumps back into its own transliterated body at
+`$53DC` — an internal label, not a dispatch entry. Twinning Snetterton's copy would mean adding
+`$53DC` as an entry and making `revs_track_hook_has` claim a hook body at an address nothing
+patches. Leave it transliterated.
+
+⚠ **Seed the SMC extents the circuit installs, not a random image.** `hook_horizon_clamp`'s
+one-shot recomputes the road half-width through `$2542`, which Brands has rewritten to its own
+`JSR $53F0` + `NOP`. A fixture that randomises those four bytes traps instead of taking the arm
+the circuit actually runs.
+
+### ⚠⚠ `make viewdiff` COVERS THE WALK AND NOT THE CLAMP — measured, 2026-09-07
+
+`viewdiff` is the outer gate on every hook, and it is the right one, but it compares the finished
+*picture*: it can only see the arms the recorded frames take. Two deliberate defects in
+`hook_horizon_clamp` — dropping the object-ceiling store, and shifting every clamped `edge_y` by
++3 — **both survived it with 0 differing bytes on all five circuits.**
+
+A counter in the twin says why: at frame 60 the hook is entered 110 times per circuit and walks
+1100-1430 edge points, and **clamps zero of them.** The horizon is already monotonic in those
+frames, so the arm that gives the routine its name never executes; only the walk and the
+`$56F7` tail do.
+
+So: **a hook twin needs a randomised fixture even though `viewdiff` exists**, and a `viewdiff`
+PASS is evidence about the frames it recorded and nothing else. The reverse also holds — when a
+sabotage survives `viewdiff`, instrument the arm before concluding anything, because "the picture
+did not change" and "the code did not run" look identical from outside.
+
 ## ⭐⭐ WHAT THE SURVIVING `cpu` TRAFFIC ACTUALLY IS — measured on the linked target, 2026-09-07
 
 The standing worry is that `revs_native.c`'s remaining `cpu.A/X/Y/C/N/V/Z` traffic is **oracle
