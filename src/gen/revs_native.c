@@ -13504,7 +13504,11 @@ SlotExit draw_car_field_core(uint8_t entryY, uint8_t entryV, uint8_t entryC)
  */
 #define CAR_SPEED_SCALED      0x0150u   /* car_speed_scaled — high byte of the 16-bit car speed */
 #define CAR_TARGET_SPEED      0x01A4u   /* car_target_speed — per-car section speed limit */
-#define CAR_SPEED_FRAC        0x3850u   /* car_speed_frac — low byte of car speed (engine_init overlay) */
+#define CAR_SPEED_FRAC        0x3850u   /* car_speed_frac — low byte of car speed, overlaying
+                                          engine_init's bytes.  ⭐ MEASURED: mid-race those twenty
+                                          bytes are all $00 on a real BBC, so the init code is
+                                          GONE by the first race frame and the two roles never
+                                          overlap in time (symbols.csv $3850). */
 #define SEGMENT_POS_THRESHOLD 0x5305u   /* segment_pos_threshold — per-segment position gauge */
 #define SEGMENT_SPEED_LIMIT   0x5307u   /* segment_speed_limit — per-segment speed limit */
 #define RACE_POSITION_OFFSET  0x5A1Au   /* race_position_offset — per-circuit race-mode gap offset */

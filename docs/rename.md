@@ -190,23 +190,6 @@ with no traffic. This needs a race with opponents staged, not another watch on t
 `human_car_first` is the lowest human-driven car index and `human_driver_count` is `$14` minus it.)
 
 
-## `$3850` — `engine_init` is only half the story (dual-use code/data overlay)
-
-`$3850` carries ONE symbols.csv name (`engine_init`, the `JMP $3850` target at `$63BD`) but is used
-two ways: as that code entry, AND as a 20-entry per-car table — `$3850,X` is the fractional/low byte
-of the 16-bit car speed (high byte = `car_speed_scaled` `$0150,X`), accumulated by drive_other_cars
-(`$2868`/`$286B`/`$2879`) and zeroed at race init (`$186A`). The init code's bytes are reused as the
-table once init has run (a classic BBC overlay). Twin #159 references the table role via a
-`CAR_SPEED_FRAC 0x3850u` #define and the row now documents both.
-
-⚠ **The transpiler applies one name per address**, so transliterated code that indexes the table
-(`$186A`, `$26ED`, `$26F1`) renders as `engine_init[X]` — misleading but not wrong (same bytes).
-**What would settle a clean split**: if the code-entry bytes and the table never overlap in time
-(init runs once, before any race frame), the address could carry the *table* name with a note that
-`$63BD` jumps into it — verify by dumping `$3850..$3863` at `$63BD` (should be init code) vs mid-race
-(should be per-car speed fractions), then rename to `car_speed_frac` with the JMP-target as the note.
-
-
 ## `$7B`'s second tenant, and `$85`/`$7C` inside `project_geometry`'s edge tail
 
 Opened while naming revs_native.c's callees: the last address-shaped label in the file was `$1D94`,
