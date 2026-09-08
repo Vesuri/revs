@@ -11124,6 +11124,7 @@ static void hook_clamp_oracle(void) { g_hookOracle = 1; trk_brands(0x56C8); g_ho
 void trk_oulton(unsigned short entry);         /* src/gen/revs_track_hooks.h */
 void trk_snetter(unsigned short entry);
 void trk_nurburg(unsigned short entry);
+void trk_doning(unsigned short entry);
 
 static void hook_steer_twin(void)   { g_hookOracle = 0; trk_brands(0x57A1); }
 static void hook_steer_oracle(void) { g_hookOracle = 1; trk_brands(0x57A1); g_hookOracle = 0; }
@@ -11131,6 +11132,8 @@ static void hook_steero_twin(void)   { g_hookOracle = 0; trk_oulton(0x57A1); }
 static void hook_steero_oracle(void) { g_hookOracle = 1; trk_oulton(0x57A1); g_hookOracle = 0; }
 static void hook_steers_twin(void)   { g_hookOracle = 0; trk_snetter(0x57A1); }
 static void hook_steers_oracle(void) { g_hookOracle = 1; trk_snetter(0x57A1); g_hookOracle = 0; }
+static void hook_steerd_twin(void)   { g_hookOracle = 0; trk_doning(0x5779); }
+static void hook_steerd_oracle(void) { g_hookOracle = 1; trk_doning(0x5779); g_hookOracle = 0; }
 
 /* Snetterton's $56C8 and the Nurburgring's $56C4 run that same clamp loop and then release
    through a yaw guard of their own ($53DC / $53E0), so they get their own pair. */
@@ -11156,7 +11159,6 @@ static void hook_merge_oracle(void) { g_hookOracle = 1; trk_brands(0x5772); g_ho
 
 /* $5582 / $557F — the track generator's cursor step, in its two state blocks.  Brands Hatch
    carries the $53F8 one and Donington the $53FA one, so the two circuits are the two arms. */
-void trk_doning(unsigned short entry);         /* src/gen/revs_track_hooks.h */
 static void hook_gca_twin(void)     { g_hookOracle = 0; trk_brands(0x5582); }
 static void hook_gca_oracle(void)   { g_hookOracle = 1; trk_brands(0x5582); g_hookOracle = 0; }
 static void hook_gcb_twin(void)     { g_hookOracle = 0; trk_doning(0x5582); }
@@ -11267,7 +11269,7 @@ static int test_hook_twins(void)
     static uint8_t pre[65536];
     int fail = 0, printed = 0, t, cases = 4000, sub = 0;
     int sawLatched = 0, sawOneShot = 0, sawClamp = 0, sawAdvance = 0, sawEarlyStop = 0;
-    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge, runGuard[2], runSteer, runSteerO, runSteerS;
+    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge, runGuard[2], runSteer, runSteerO, runSteerS, runSteerD;
     { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
     if (scale < 1) scale = 1;
     cases *= scale;
@@ -11275,6 +11277,7 @@ static int test_hook_twins(void)
     register_fixture("hook_steer_response_brands");
     register_fixture("hook_steer_response_oulton");
     register_fixture("hook_steer_response_snetter");
+    register_fixture("hook_steer_response_doning");
     register_fixture("hook_horizon_clamp_guarded_snetter");
     register_fixture("hook_horizon_clamp_guarded_nurburg");
     register_fixture("hook_record_horizon");
@@ -11288,6 +11291,7 @@ static int test_hook_twins(void)
     runSteer  = want("hook_steer_response_brands");
     runSteerO = want("hook_steer_response_oulton");
     runSteerS = want("hook_steer_response_snetter");
+    runSteerD = want("hook_steer_response_doning");
     runGuard[0] = want("hook_horizon_clamp_guarded_snetter");
     runGuard[1] = want("hook_horizon_clamp_guarded_nurburg");
     runRecord = want("hook_record_horizon");
@@ -11589,6 +11593,72 @@ static int test_hook_twins(void)
             printf("VACUOUS: hook_steer_response_snetter missed an arm "
                    "($28 earned %d unearned %d $A8 %d $A0 %d default %d zero reading %d)\n",
                    saw28in, saw28out, sawA8, sawA0, sawDef, sawZeroMul);
+            fail++;
+        }
+    }
+
+    /* ------------------------ $5779 (Donington), four scales and five pardon conditions */
+    if (runSteerD) {
+        int dsub = 0, arm[7] = {0}, sawEarned = 0, sawUnearned = 0, sawZeroMul = 0;
+        static const uint8_t DSEG[6] = { 0x10u, 0x58u, 0xA8u, 0x60u, 0xB0u, 0x18u };
+        g_track = 2;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            uint8_t car, pick;
+
+            fill_random(pre);
+            c.D = 0;
+            c.S = 0xFFu;
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.V = (uint8_t)(xs() & 1u);
+
+            car = (uint8_t)(xs() % 20u);
+            pre[0x006F] = car;
+            pre[0x62FB] = (uint8_t)xs();            /* section_jump_history */
+
+            /* Six named segments plus the default; the three THRESHOLD arms ($10/$58/$A8) need
+               car_seg_offset driven both sides of their own threshold, which a random byte would
+               only manage for $10. */
+            pick = (uint8_t)(xs() % 7u);
+            arm[pick] = 1;
+            pre[0x06E8 + car] = (pick < 6u) ? DSEG[pick] : (uint8_t)0u;
+            if (pick >= 6u) {
+                uint8_t seg = (uint8_t)xs();
+                while (seg == 0x10u || seg == 0x58u || seg == 0xA8u ||
+                       seg == 0x60u || seg == 0xB0u || seg == 0x18u) seg ^= 1u;
+                pre[0x06E8 + car] = seg;
+            }
+            {
+                uint8_t thr = (pick == 1u) ? 0x27u : (pick == 2u) ? 0x21u : 0x01u;
+                uint8_t off;
+                /* ⭐ HALF the cases sit ON the threshold or one either side.  Spread uniformly
+                   instead, an off-by-one in a threshold shows up in ~4 cases in 4000 — a thin
+                   enough margin to be luck rather than a gate. */
+                if (xs() & 1u) off = (uint8_t)(thr - 1u + (xs() % 3u));
+                else if (xs() & 1u) off = (uint8_t)(thr + 1u + (xs() % 0x20u));
+                else off = (uint8_t)(xs() % (unsigned)(thr + 1u));
+                pre[0x0880 + car] = off;
+                if (off > thr) sawEarned = 1; else sawUnearned = 1;
+            }
+
+            if ((xs() & 7u) == 0u) { pre[0x0075] = 0x00u; sawZeroMul = 1; }
+            else                   { pre[0x0075] = (uint8_t)xs(); }
+            pre[0x0074] = (uint8_t)xs();
+
+            dsub += diff_run("hook_steer_response_doning", pre, c,
+                             hook_steerd_twin, hook_steerd_oracle,
+                             LIVE_A | LIVE_X | LIVE_Y | LIVE_FLAGS, t, &printed);
+        }
+        fail += dsub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,Y+flags\n",
+               "hook_steer_response_doning", cases, dsub);
+        if (!(arm[0] && arm[1] && arm[2] && arm[3] && arm[4] && arm[5] && arm[6] &&
+              sawEarned && sawUnearned && sawZeroMul)) {
+            printf("VACUOUS: hook_steer_response_doning missed an arm "
+                   "($10 %d $58 %d $A8 %d $60 %d $B0 %d $18 %d default %d "
+                   "offset over %d under %d zero reading %d)\n",
+                   arm[0], arm[1], arm[2], arm[3], arm[4], arm[5], arm[6],
+                   sawEarned, sawUnearned, sawZeroMul);
             fail++;
         }
     }

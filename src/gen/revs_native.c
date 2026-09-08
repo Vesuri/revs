@@ -16505,6 +16505,80 @@ void hook_steer_response_snetter(void)
     steer_response_curve(k);                               /* $53CF TYA / mul8 / mul8 / ASL / ROL */
 }
 
+/* $5779 (Donington Park) — THE FOURTH STEERING RESPONSE CURVE, AND THE WIDEST PARDON.  Donington
+   is the odd one of the family: `make track-patch` shows it retargeting $1593 to $5779, not the
+   $57A1 the other three use, and its curve lives at $53DC.  The curve is the same
+   scale-square-double; everything before it is Donington's own.
+
+   Four scales:  $D7 on segment $10, $CD on $18, $BC on $30 and $28, $B5 everywhere else.
+
+   And FIVE segments pardon a pending grip loss (`LSR section_jump_history`, the bit-7 record
+   update_grip_limits reads at $4C1C — see hook_steer_response_snetter above), three of them only
+   once the car is far enough into the segment:
+
+       $10   when car_seg_offset >  1     ($5785 CMP #$02 / BCC)
+       $58   when car_seg_offset >  $27   ($57A0 CMP car_seg_offset,Y / BCC — the sense is
+       $A8   when car_seg_offset >  $21    reversed here: the THRESHOLD is in A, so the branch
+                                           taken on carry-clear is the one that pardons)
+       $60   always
+       $B0   always
+
+   ⚠ The $10 arm tests `offset >= 2` and the $58/$A8 arms test `offset > threshold`, because the
+   compare operands are swapped between them — not a transcription slip.
+
+   ⚠ $5791 PHA / $57B2 PLA park the segment on the stack across the pardon tests.  That is a REAL
+   STORE a memory differential sees (docs/validation-harness.md — the same trap as $01FF in
+   hook_scale_entry_by_gradient), so the twin writes the byte; S comes back where it started.
+
+   Exit ABI: steer_response_curve's.
+
+   SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
+   S94 the $10 pardon is unconditional                            331
+   S95 the $58 threshold is $26                                   103
+   S96 the $58/$A8 tests pardon on `offset >= threshold`           88
+   S97 segment $B0 does not pardon                                588
+   S98 segment $18 takes the default scale                        561
+   S99 the segment is never parked on the stack                  3415
+   ⭐ S95/S96 first read 4 and 11 — an off-by-one in a threshold that a UNIFORM car_seg_offset
+   barely reaches.  The fixture now puts half its cases ON the threshold or one either side,
+   which is what makes those two a gate rather than luck. */
+void hook_steer_response_doning(void)
+{
+    uint8_t car     = player_car;                          /* $5779 LDY player_car */
+    uint8_t segment = mem[CAR_SEGMENT_TBL + car];          /* $577B LDA car_segment,Y */
+    uint8_t offset  = mem[CAR_SEG_OFFSET + car];
+    uint8_t k;
+
+    if (segment == 0x10u) {                                /* $577E CMP #$10 */
+        if (offset >= 0x02u)                               /* $5785 CMP #$02 / BCC $578C */
+            section_jump_history >>= 1;                    /* $5789 LSR */
+        k = 0xD7u;                                         /* $578C LDY #$D7 */
+    } else {
+        uint8_t pardon;
+
+        mem[0x0100u + cpu.S] = segment;                    /* $5791 PHA */
+
+        if (segment == 0x58u)                              /* $5792 / $5796 LDA #$27 */
+            pardon = (uint8_t)(offset > 0x27u);
+        else if (segment == 0xA8u)                         /* $579A / $579E LDA #$21 */
+            pardon = (uint8_t)(offset > 0x21u);
+        else                                               /* $57A7 CMP #$60 / $57AB CMP #$B0 */
+            pardon = (uint8_t)(segment == 0x60u || segment == 0xB0u);
+
+        if (pardon)
+            section_jump_history >>= 1;                    /* $57AF LSR */
+
+        /* $57B2 PLA — the segment back in A, and $59D8's compares run on it. */
+        k = 0xB5u;                                         /* $59D8 LDY #$B5 */
+        if (segment == 0x18u)                              /* $59DA CMP #$18 / LDY #$CD */
+            k = 0xCDu;
+        if (segment == 0x30u || segment == 0x28u)          /* $59E0 / $59E4 / LDY #$BC */
+            k = 0xBCu;
+    }
+
+    steer_response_curve(k);                               /* $53DC TYA / mul8 / mul8 / ASL / ROL */
+}
+
 /* $56C8 (Snetterton) / $56C4 (the Nurburgring) — THE SAME MONOTONIC-HORIZON CLAMP, RELEASED
    THROUGH A YAW GUARD.  The clamp walk is byte-identical to the other three circuits' $56C8
    (these two files' whole hook region is shifted, which is the only reason the Nurburgring's

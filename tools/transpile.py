@@ -561,6 +561,7 @@ HOOK_TWINS = {
     ('BRANDS', 0x57A1): 'hook_steer_response_brands',
     ('OULTON', 0x57A1): 'hook_steer_response_oulton',
     ('SNETTER', 0x57A1): 'hook_steer_response_snetter',
+    ('DONING', 0x5779): 'hook_steer_response_doning',
     ('BRANDS', 0x56C8): 'hook_horizon_clamp',
     ('DONING', 0x56C8): 'hook_horizon_clamp',
     ('OULTON', 0x56C8): 'hook_horizon_clamp',
