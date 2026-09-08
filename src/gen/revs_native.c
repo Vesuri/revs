@@ -16617,8 +16617,14 @@ void hook_step_gen_cursor_a(void) { hook_step_gen_cursor_at(0x53F8u); }
 void hook_step_gen_cursor_b(void) { hook_step_gen_cursor_at(0x53FAu); }
 
 /* $557F — the same, with the engine's segment-direction step in front. */
-void hook_step_dir_gen_cursor_a(void) { step_segment_dir_index(); hook_step_gen_cursor_a(); }
-void hook_step_dir_gen_cursor_b(void) { step_segment_dir_index(); hook_step_gen_cursor_b(); }
+static void hook_step_dir_gen_cursor_at(uint16_t block)
+{
+    step_segment_dir_index();
+    hook_step_gen_cursor_at(block);
+}
+
+void hook_step_dir_gen_cursor_a(void) { hook_step_dir_gen_cursor_at(0x53F8u); }
+void hook_step_dir_gen_cursor_b(void) { hook_step_dir_gen_cursor_at(0x53FAu); }
 
 /* $54F1 (Brands Hatch) / $54EF (Donington, Oulton, Snetterton) / $54EB (the Nurburgring) — the
    SECTION-CURSOR ADVANCE, installed over the engine's own `CLC / ADC #$03` at $12FB inside
@@ -17025,3 +17031,40 @@ void hook_gen_seed_oulton(void)  { hook_gen_seed_at(0x53FAu, 0x80u); }
 void hook_gen_seed_snetter(void) { hook_gen_seed_at(0x53FAu, 0x84u); }
 void hook_gen_seed_doning(void)  { hook_gen_seed_at(0x53FCu, 0x86u); }
 void hook_gen_seed_nurburg(void) { hook_gen_seed_at(0x53FCu, 0x9Au); }
+
+/* ===========================================================================
+   $5A1B  hook_advance_gen_place — STEP THE GENERATOR'S CURSOR AND REBUILD ITS VECTOR (twin #226)
+   ---------------------------------------------------------------------------
+   All five expansion circuits, one body: `JSR $557F / JMP $5472`.  It is the pairing of the two
+   halves already twinned above — step the segment-direction index and the (place, offset) cursor
+   one place along the direction of travel, then regenerate the direction vector and the across-
+   track normal for the heading that cursor now names.
+
+   ⚠ TWO blocks are in play and they are two apart: the cursor lives at block-2 (the $557F twin's
+   own base) and the generator state at block, exactly as everywhere else in this file.  The shims
+   pass the generator block and the circuit's gradient multiplier; hook_step_dir_gen_cursor_{a,b}
+   already carries the cursor base, so `a` pairs with $53FA and `b` with $53FC.
+
+   Exit ABI: entirely $5472's — A = the gradient, X = the second table byte, Y = the direction
+   index, and C/V from the final negate.  The cursor step's own A/Y are dead, overwritten by it.
+
+   SABOTAGE (each must FAIL; counts measured on the five 1000-case fixtures, not predicted):
+     S58 the cursor step is skipped entirely                        ->     1000 / 1000
+     S59 the vector is rebuilt before the cursor steps              ->     1000 / 1000
+     S60 the cursor and the generator share one block               ->     1000 / 1000
+     S61 the segment-direction step in front is dropped             -> 967..977 / 1000
+     S62 Oulton is given Brands Hatch's $88 multiplier              -> 1000 / 1000 on Oulton and 0
+         on the other four — LOCALIZED by construction, since only that shim was patched.
+   S59 detects everywhere because the ORDER is the whole routine: the vector is built from the
+   heading the cursor has just moved to, so building it first builds the previous one. */
+static void hook_advance_gen_place_at(uint16_t block, uint8_t scale)
+{
+    hook_step_dir_gen_cursor_at(block - 2u);    /* $5A1B — the segment index and the cursor */
+    hook_gen_dir_vector_at(block, scale);       /* $5A1E — and the vector the cursor now names */
+}
+
+void hook_advance_gen_place_brands(void)  { hook_advance_gen_place_at(0x53FAu, 0x88u); }
+void hook_advance_gen_place_oulton(void)  { hook_advance_gen_place_at(0x53FAu, 0x80u); }
+void hook_advance_gen_place_snetter(void) { hook_advance_gen_place_at(0x53FAu, 0x84u); }
+void hook_advance_gen_place_doning(void)  { hook_advance_gen_place_at(0x53FCu, 0x86u); }
+void hook_advance_gen_place_nurburg(void) { hook_advance_gen_place_at(0x53FCu, 0x9Au); }

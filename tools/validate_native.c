@@ -11198,6 +11198,16 @@ static void hook_gseed_4_twin(void)   { g_hookOracle = 0; trk_snetter(0x5672); }
 static void hook_gseed_4_oracle(void) { g_hookOracle = 1; trk_snetter(0x5672); g_hookOracle = 0; }
 static void hook_gseed_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5672); }
 static void hook_gseed_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5672); g_hookOracle = 0; }
+static void hook_agp_1_twin(void)   { g_hookOracle = 0; trk_brands(0x5A1B); }
+static void hook_agp_1_oracle(void) { g_hookOracle = 1; trk_brands(0x5A1B); g_hookOracle = 0; }
+static void hook_agp_2_twin(void)   { g_hookOracle = 0; trk_doning(0x5A1B); }
+static void hook_agp_2_oracle(void) { g_hookOracle = 1; trk_doning(0x5A1B); g_hookOracle = 0; }
+static void hook_agp_3_twin(void)   { g_hookOracle = 0; trk_oulton(0x5A1B); }
+static void hook_agp_3_oracle(void) { g_hookOracle = 1; trk_oulton(0x5A1B); g_hookOracle = 0; }
+static void hook_agp_4_twin(void)   { g_hookOracle = 0; trk_snetter(0x5A1B); }
+static void hook_agp_4_oracle(void) { g_hookOracle = 1; trk_snetter(0x5A1B); g_hookOracle = 0; }
+static void hook_agp_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5A1B); }
+static void hook_agp_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5A1B); g_hookOracle = 0; }
 static void hook_gstep_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x55BD); }
 static void hook_gstep_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x55BD); g_hookOracle = 0; }
 static void hook_gdv_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5472); }
@@ -11996,6 +12006,97 @@ static int test_hook_twins(void)
                 printf("VACUOUS: %s missed an arm (reverse %d forward %d cap-off %d cap-on %d "
                        "exhausted %d open %d sections %d)\n", GSEED[g].name, sawRev, sawFwd,
                        sawCap, sawNoCap, sawExh, sawOpen, seenSections);
+                fail++;
+            }
+        }
+    }
+    /* --------------------------------------- $5A1B, the cursor step plus the vector rebuild.
+       The union of the two halves' arms: the cursor's four (forward, forward place advance,
+       backward, backward underflow) and the vector's octant sweep, since the cursor decides
+       which heading the vector is then built from. */
+    {
+        static const struct { const char* name; void (*tw)(void); void (*or_)(void);
+                              uint16_t block; } AGP[5] = {
+            { "hook_advance_gen_place_brands",  hook_agp_1_twin, hook_agp_1_oracle, 0x53FA },
+            { "hook_advance_gen_place_doning",  hook_agp_2_twin, hook_agp_2_oracle, 0x53FC },
+            { "hook_advance_gen_place_oulton",  hook_agp_3_twin, hook_agp_3_oracle, 0x53FA },
+            { "hook_advance_gen_place_snetter", hook_agp_4_twin, hook_agp_4_oracle, 0x53FA },
+            { "hook_advance_gen_place_nurburg", hook_agp_5_twin, hook_agp_5_oracle, 0x53FC },
+        };
+        int g;
+        for (g = 0; g < 5; g++) {
+            int sawFwd = 0, sawFwdWrap = 0, sawBwd = 0, sawBwdUnder = 0, sawZeroRun = 0;
+            int octSeen[8]; int seenOct = 0;
+            int agpCases = cases / 4, i;
+            register_fixture(AGP[g].name);
+            if (!want(AGP[g].name)) continue;
+            for (i = 0; i < 8; i++) octSeen[i] = 0;
+            sub = 0; printed = 0;
+            for (t = 0; t < agpCases; t++) {
+                Cpu6502 c = zero_cpu();
+                uint16_t cursor = (uint16_t)(AGP[g].block - 2u);
+                uint8_t count, place, offset, run, angleLo, angleHi;
+                uint16_t nine;
+
+                fill_random(pre);
+                c.D = 0;                 /* the geometry path is only ever entered binary */
+                c.S = 0xFFu;
+
+                for (i = 0; i <= 0x40; i++) {           /* $5472's octant sine table */
+                    pre[0x57BF + i] = (uint8_t)(xs() % 0x79u);
+                    pre[0x58BF + i] = (uint8_t)(xs() % 0x79u);
+                    if (xs() & 1u) pre[0x57BF + i] = (uint8_t)(-(int)pre[0x57BF + i]);
+                    if (xs() & 1u) pre[0x58BF + i] = (uint8_t)(-(int)pre[0x58BF + i]);
+                }
+
+                /* the cursor's run table, with the odd empty place the 6502 walk allows */
+                for (i = 0; i < 0x40; i++) {
+                    pre[0x5728 + i] = (xs() % 16u) ? (uint8_t)(1u + (xs() % 0x08u)) : 0u;
+                    if (pre[0x5728 + i] == 0u) sawZeroRun = 1;
+                }
+                count  = (uint8_t)(1u + (xs() % 0x20u));
+                place  = (uint8_t)(xs() % count);
+                run    = pre[0x5728 + place];
+                offset = (xs() & 1u) ? (uint8_t)(run ? run - 1u : 0u) : (uint8_t)(xs() % 8u);
+                pre[cursor]      = place;
+                pre[cursor + 1u] = count;
+                pre[cursor + 5u] = offset;
+
+                /* the heading the vector is built from — sweep the octants */
+                angleHi = (uint8_t)((t & 7u) << 5 | (xs() & 0x1Fu));
+                angleLo = (uint8_t)xs();
+                pre[AGP[g].block]      = angleLo;
+                pre[AGP[g].block + 1u] = angleHi;
+                pre[AGP[g].block + 2u] = (uint8_t)xs();   /* the gradient it stores and returns */
+                nine = (uint16_t)((angleHi << 1) | (angleLo >> 7));
+                octSeen[(nine >> 6) & 7u] = 1;
+
+                pre[0x0025] = (xs() & 1u) ? (uint8_t)(xs() | 0x80u) : (uint8_t)(xs() & 0x7Fu);
+                pre[0x59FB] = (uint8_t)(1u + (xs() % 40u));      /* track_dir_count */
+                pre[0x0002] = (uint8_t)(xs() % pre[0x59FB]);     /* segment_dir_index */
+
+                if (pre[0x0025] & 0x80u) {
+                    sawBwd = 1;
+                    if (offset == 0u) sawBwdUnder = 1;
+                } else {
+                    sawFwd = 1;
+                    if ((uint8_t)(offset + 1u) >= run) sawFwdWrap = 1;
+                }
+
+                c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+                c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+
+                sub += diff_run(AGP[g].name, pre, c, AGP[g].tw, AGP[g].or_,
+                                LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS, t, &printed);
+            }
+            fail += sub;
+            for (i = 0; i < 8; i++) seenOct += octSeen[i];
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,Y+flags ($5472's exit, "
+                   "which is this routine's)\n", AGP[g].name, agpCases, sub);
+            if (!(sawFwd && sawFwdWrap && sawBwd && sawBwdUnder && sawZeroRun && seenOct == 8)) {
+                printf("VACUOUS: %s missed an arm (fwd %d fwd-wrap %d bwd %d bwd-under %d "
+                       "zero run %d octants %d)\n", AGP[g].name, sawFwd, sawFwdWrap, sawBwd,
+                       sawBwdUnder, sawZeroRun, seenOct);
                 fail++;
             }
         }

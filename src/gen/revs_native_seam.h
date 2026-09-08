@@ -790,3 +790,10 @@ void hook_gen_seed_oulton(void);
 void hook_gen_seed_snetter(void);
 void hook_gen_seed_doning(void);
 void hook_gen_seed_nurburg(void);
+
+/* $5A1B — step the generator's cursor, then rebuild its direction vector (twin #226) */
+void hook_advance_gen_place_brands(void);
+void hook_advance_gen_place_oulton(void);
+void hook_advance_gen_place_snetter(void);
+void hook_advance_gen_place_doning(void);
+void hook_advance_gen_place_nurburg(void);

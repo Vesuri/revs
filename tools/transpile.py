@@ -591,6 +591,14 @@ HOOK_TWINS = {
     ('SNETTER', 0x5672): 'hook_gen_seed_snetter',
     ('DONING',  0x5672): 'hook_gen_seed_doning',
     ('NURBURG', 0x5672): 'hook_gen_seed_nurburg',
+
+    # $5A1B — the cursor step and the vector rebuild, back to back (twin #226).  One body on
+    #         all five; the shim carries the generator block and the gradient multiplier.
+    ('BRANDS',  0x5A1B): 'hook_advance_gen_place_brands',
+    ('OULTON',  0x5A1B): 'hook_advance_gen_place_oulton',
+    ('SNETTER', 0x5A1B): 'hook_advance_gen_place_snetter',
+    ('DONING',  0x5A1B): 'hook_advance_gen_place_doning',
+    ('NURBURG', 0x5A1B): 'hook_advance_gen_place_nurburg',
     ('NURBURG', 0x55BD): 'hook_gen_step_nurburg',
     ('BRANDS',  0x55C4): 'hook_gen_step_brands',
     ('OULTON',  0x55C4): 'hook_gen_step_oulton',
