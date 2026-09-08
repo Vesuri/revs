@@ -11127,6 +11127,8 @@ void trk_nurburg(unsigned short entry);
 
 static void hook_steer_twin(void)   { g_hookOracle = 0; trk_brands(0x57A1); }
 static void hook_steer_oracle(void) { g_hookOracle = 1; trk_brands(0x57A1); g_hookOracle = 0; }
+static void hook_steero_twin(void)   { g_hookOracle = 0; trk_oulton(0x57A1); }
+static void hook_steero_oracle(void) { g_hookOracle = 1; trk_oulton(0x57A1); g_hookOracle = 0; }
 
 /* Snetterton's $56C8 and the Nurburgring's $56C4 run that same clamp loop and then release
    through a yaw guard of their own ($53DC / $53E0), so they get their own pair. */
@@ -11263,12 +11265,13 @@ static int test_hook_twins(void)
     static uint8_t pre[65536];
     int fail = 0, printed = 0, t, cases = 4000, sub = 0;
     int sawLatched = 0, sawOneShot = 0, sawClamp = 0, sawAdvance = 0, sawEarlyStop = 0;
-    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge, runGuard[2], runSteer;
+    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge, runGuard[2], runSteer, runSteerO;
     { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
     if (scale < 1) scale = 1;
     cases *= scale;
     register_fixture("hook_horizon_clamp");
     register_fixture("hook_steer_response_brands");
+    register_fixture("hook_steer_response_oulton");
     register_fixture("hook_horizon_clamp_guarded_snetter");
     register_fixture("hook_horizon_clamp_guarded_nurburg");
     register_fixture("hook_record_horizon");
@@ -11280,6 +11283,7 @@ static int test_hook_twins(void)
        then the same case.  (It cost this fixture its `latched` and `early-stop` arms once.) */
     runClamp  = want("hook_horizon_clamp");
     runSteer  = want("hook_steer_response_brands");
+    runSteerO = want("hook_steer_response_oulton");
     runGuard[0] = want("hook_horizon_clamp_guarded_snetter");
     runGuard[1] = want("hook_horizon_clamp_guarded_nurburg");
     runRecord = want("hook_record_horizon");
@@ -11476,6 +11480,55 @@ static int test_hook_twins(void)
             printf("VACUOUS: hook_steer_response_brands missed an arm "
                    "(segment $20 %d other %d zero reading %d non-zero %d)\n",
                    sawBoost, sawPlain, sawZeroMul, sawBigMul);
+            fail++;
+        }
+    }
+
+    /* --------------------------------- $57A1 (Oulton), the same curve, three special segments */
+    if (runSteerO) {
+        int osub = 0, saw48 = 0, sawB8 = 0, sawB0 = 0, sawDefault = 0, sawZeroMul = 0;
+        g_track = 3;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            uint8_t car;
+
+            fill_random(pre);
+            c.D = 0;
+            c.S = 0xFFu;
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.V = (uint8_t)(xs() & 1u);
+
+            car = (uint8_t)(xs() % 20u);
+            pre[0x006F] = car;
+            /* All FOUR selection arms, driven explicitly — leaving the segment to a random byte
+               would reach $48/$B8/$B0 about once in 85 cases between them. */
+            switch (xs() & 3u) {
+            case 0: pre[0x06E8 + car] = 0x48u; saw48 = 1; break;
+            case 1: pre[0x06E8 + car] = 0xB8u; sawB8 = 1; break;
+            case 2: pre[0x06E8 + car] = 0xB0u; sawB0 = 1; break;
+            default: {
+                uint8_t seg = (uint8_t)xs();
+                if (seg == 0x48u || seg == 0xB8u || seg == 0xB0u) seg ^= 1u;
+                pre[0x06E8 + car] = seg; sawDefault = 1;
+                break;
+            }
+            }
+
+            if ((xs() & 7u) == 0u) { pre[0x0075] = 0x00u; sawZeroMul = 1; }
+            else                   { pre[0x0075] = (uint8_t)xs(); }
+            pre[0x0074] = (uint8_t)xs();
+
+            osub += diff_run("hook_steer_response_oulton", pre, c,
+                             hook_steero_twin, hook_steero_oracle,
+                             LIVE_A | LIVE_X | LIVE_Y | LIVE_FLAGS, t, &printed);
+        }
+        fail += osub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,Y+flags\n",
+               "hook_steer_response_oulton", cases, osub);
+        if (!(saw48 && sawB8 && sawB0 && sawDefault && sawZeroMul)) {
+            printf("VACUOUS: hook_steer_response_oulton missed an arm "
+                   "($48 %d $B8 %d $B0 %d default %d zero reading %d)\n",
+                   saw48, sawB8, sawB0, sawDefault, sawZeroMul);
             fail++;
         }
     }

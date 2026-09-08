@@ -16371,8 +16371,8 @@ void hook_horizon_clamp(void)
 
    $B5/256 = 0.71 and $F0/256 = 0.94, so the wheel is softened everywhere except across that one
    segment, where it comes back nearly full — and the doubling recovers the range the scaling
-   costs at full lock.  Oulton and Snetterton patch the same site to bodies of their own; only
-   this one is the plain scale-square-double.
+   costs at full lock.  Oulton Park picks its scale from three segments instead of one and then
+   runs the same curve (below); Snetterton patches the site to a body of its own entirely.
 
    Exit ABI: A = the product's high byte and math_lo its low, exactly as the mul8 it displaced;
    math_hi is left holding `a` (the $57B2 store), Y the scale k, and N/Z/C the closing ROL's.
@@ -16391,13 +16391,13 @@ void hook_horizon_clamp(void)
    change at all.  S83 is its replacement and fails.  (S81 and S83 both print 3463 because
    they are wrong on the same case set — every case with a non-trivial product; their VALUES
    differ, checked at case 0: $64 vs $A4.) */
-void hook_steer_response_brands(void)
+/* The curve itself, shared by every circuit that patches $1593: scale the reading by k, square
+   the scaled value, double the product.  Only the CHOICE of k differs per circuit. */
+static void steer_response_curve(uint8_t k)
 {
-    /* $57A1-$57AD — pick the scale, and leave it in Y as the 6502 does. */
-    uint8_t k = (mem[CAR_SEGMENT_TBL + player_car] == 0x20u) ? 0xF0u : 0xB5u;
-    cpu.Y = k;
+    cpu.Y = k;                                         /* the LDY, still live at the exit */
 
-    Mul8 scaled = mul8_noinit_core(k, math_hi);        /* $57AE TYA / $57AF mul8 */
+    Mul8 scaled = mul8_noinit_core(k, math_hi);        /* TYA / mul8 — k x the reading */
     uint8_t a   = (uint8_t)(scaled.product >> 8);
     math_lo     = (uint8_t)scaled.product;
     if (scaled.setV) cpu.V = scaled.v;
@@ -16413,6 +16413,46 @@ void hook_steer_response_brands(void)
     cpu.C   = (uint8_t)(squared.product >> 15);
     cpu.N   = (uint8_t)((cpu.A >> 7) & 1u);
     cpu.Z   = (uint8_t)(cpu.A == 0u);
+}
+
+void hook_steer_response_brands(void)
+{
+    /* $57A1-$57AD — $B5 everywhere, $F0 across segment $20. */
+    steer_response_curve(mem[CAR_SEGMENT_TBL + player_car] == 0x20u ? 0xF0u : 0xB5u);
+}
+
+/* $57A1 (Oulton Park) — THE SAME STEERING RESPONSE CURVE, THREE SEGMENTS SINGLED OUT.  Patched
+   over the same `JSR mul8` at $1593, and its tail is Brands Hatch's byte for byte (Oulton spells
+   it as a JMP to a shared $53EF instead of inlining it), so both run steer_response_curve.  What
+   differs is only which segments get which scale:
+
+       k = $F8 on segment $48        — 0.97, very nearly the raw reading
+       k = $BE on segments $B8/$B0   — 0.74
+       k = $B5 everywhere else       — 0.71, the same soft default as Brands Hatch
+
+   ⚠ The three compares run in sequence on the SAME loaded byte and the $B8/$B0 test is not
+   skipped when the $48 test hits, so the last match would win — but a byte cannot equal both,
+   which is why this reads as three independent tests rather than a chain.
+
+   Exit ABI: steer_response_curve's (A/math_lo the doubled product, math_hi the scaled value,
+   Y the scale, N/Z/C the closing ROL's, V the last shift-and-add's).
+
+   SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
+   S85 the $48 arm scales by $F9                                  989
+   S86 the $B0 arm is dropped (only $B8 is special)              1030
+   S87 the default scale is $BE, not $B5                         1000
+   S88 the $48 test uses Brands Hatch's segment ($20)             994 */
+void hook_steer_response_oulton(void)
+{
+    uint8_t segment = mem[CAR_SEGMENT_TBL + player_car];   /* $57A1 LDY player_car / LDA */
+    uint8_t k       = 0xB5u;                               /* $57A6 LDY #$B5 */
+
+    if (segment == 0x48u)                                  /* $57A8 CMP #$48 / $57AC LDY #$F8 */
+        k = 0xF8u;
+    if (segment == 0xB8u || segment == 0xB0u)              /* $57AE / $57B2 / $57B6 LDY #$BE */
+        k = 0xBEu;
+
+    steer_response_curve(k);                               /* $57B8 TYA / mul8 / JMP $53EF */
 }
 
 /* $56C8 (Snetterton) / $56C4 (the Nurburgring) — THE SAME MONOTONIC-HORIZON CLAMP, RELEASED
