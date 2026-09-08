@@ -1180,7 +1180,9 @@ is gone; the frame is not spent there. **The next lever is the REPRESENTATION ch
 (`docs/direct-bitplane-plan.md`), not another pair.
 
 Still open, and neither is a wide-value conversion:
-- `plot_object` uses `plot_ptr3_lo` as a **scalar** shape-edge index → `docs/rename.md`.
+- `plot_object` uses `plot_ptr3_lo` as a **scalar** shape-edge index — settled 2026-09-08 in
+  `symbols.csv`'s `$008E` row (three tenants declared, none of them a 16-bit value), which is
+  why the pair scores 0 above.  Not a rename and no longer queued.
 - `plot_view_src_line`'s `plot_ptr_lo = 0x00u;` before the wide setup — a lane write that is
   harmless but inconsistent with the twin's own idiom.
 

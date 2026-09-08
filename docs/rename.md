@@ -229,33 +229,6 @@ NOT derived** — settle it on `make refloop` by locking one axle (brake hard fr
 watching which byte sets bit 7 first.
 
 
-## `$31D0` and `$3D68` — two provably-dead loop labels inside `paint_fence_backdrop`
-
-Both are unnamed addresses the sweep reported as branch targets, and that the pre-twin call graph
-therefore carried as separate nodes.  Each has exactly ONE entry, from inside `paint_fence_backdrop`
-(`$3D5C`, twin #128), and the twin absorbs both loops — so they are dead as *entry points*, not as
-code.  ⚠ `$31D0` is **not** inside `$3D5C`'s extent — it is the fence loop's body, sitting far below
-it, reading `FENCE_PATTERN` (`$3D78`/`$3D7C`) and storing through `(plot_ptr),Y`; the same loop is
-described in `docs/wide-value-cleanup.md` as a `math_lo` tenant (`$74` a row counter, `$75` its
-limit).  Both readings are of the same code.  ⇒ **Drop both from `ghidra_scripts/entrypoints.csv`
-if they are seeded there**, and do not give them `func` rows: a one-entry back-branch target is a
-label, and a `func` row for it manufactures a false call-graph root — exactly what the `$1200`
-`loader_stub` row did to `build_player_car` until it was retagged (`symbols.csv`).
-
-
-## `plot_ptr3_lo` (`$7E`) — `plot_object` uses it as a SCALAR, not half a pointer
-
-`plot_ptr3_lo`/`plot_ptr3_hi` (`$7E`/`$7F`) is named as a pointer pair, and in the plotters it is
-one.  In `plot_object`, however, `$7E` is a **shape-edge index** — a small scalar counter walked
-over the object's edge list — with `$7F` carrying something unrelated to it, so a reader (and the
-wide-value eligibility scan) sees a pointer pair where there is none.  ⇒ Either give `$7E` a
-second, tenancy-scoped row (`shape_edge_index`, noting the `plot_ptr3_lo` tenancy) or extend the
-existing note to declare both tenants explicitly.  **Which is authoritative in `plot_object` is
-DERIVED** — the routine never forms an address from `$7E:$7F`.  Until this is settled the pair
-must not be scored as a wide-value candidate (`docs/wide-value-cleanup.md` §NINTH lesson: a
-scratch cell's ref count counts TENANTS).
-
-
 ## The zero-page cells `$0C`, `$85`, `$87` — no `symbols.csv` row at all
 
 The twins carry file-local defines for them now (`PLACE_CAR_SOI`, `PLACE_CAR_ACROSS`,
