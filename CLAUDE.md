@@ -89,10 +89,12 @@ sites. `docs/static-map.md` §Open items 6 and 10.
 ℹ The 1986 engine differs from the 1985 single-track release in 974 of 24064 bytes (an authentic
 revision, not a repack) — relevant only when reading a 1985-era reference.
 
-Documented keys: `L`/`+` steer, `S` throttle, `A` brake, `T` starter, `Q` gears up, `TAB` gears
-down, `SPACE` amplify steering, `SHIFT+f0` return to pits, `SHIFT+f1` keyboard, `SHIFT+f2`
-joystick. **Amiga input: mouse + keyboard** (user decision) — the BBC's own keyboard mode is the
-faithful precedent; mouse replaces the uPD7002 analogue axis.
+**Every control, and its Amiga key, is in `docs/controls.md`** — the handbook, `REVINST` and the
+engine's own `shift_key_tbl`, reconciled and measured on a real BBC. ⚠ The BBC function keys are
+NOT contiguous (f0 `$DF`, f4 `$EB`, f7 `$E9` sit outside row 7); assuming they were put every
+function key in the port on the wrong Amiga key. **Amiga input: mouse + keyboard** (user
+decision) — the BBC's own keyboard mode is the faithful precedent; mouse replaces the uPD7002
+analogue axis.
 
 ## Build / run / debug
 
@@ -218,6 +220,7 @@ Hard-won detail lives in `docs/`, not here. **Read the relevant one BEFORE worki
 | `docs/bbc-reference-loop.md` ⭐ | Anything about ground truth, jsbeeb/b2, or trusting an image |
 | `docs/entrypoint-sweep.md` ⭐ | Before generating C; whenever you find a dispatch table or vector |
 | `docs/bbc-hardware.md` | Touching hardware, MOS calls, screen modes, input, or sound |
+| **`docs/controls.md`** | Any question about a KEY — what the game binds, what it does, which Amiga key carries it |
 | `docs/toolchain.md` | Running the pipeline: disc tools, Ghidra headless, the builds |
 | `docs/transpiler.md` | Working on `tools/transpile.py`, or when generated-code shape surprises you |
 | `docs/validation-harness.md` | Writing or trusting a `make validate` fixture |
