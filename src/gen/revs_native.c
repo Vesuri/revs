@@ -16579,6 +16579,61 @@ void hook_steer_response_doning(void)
     steer_response_curve(k);                               /* $53DC TYA / mul8 / mul8 / ASL / ROL */
 }
 
+/* $59E9 (Brands) / $59C9 (Donington) / $59E7 (Oulton) / $59C7 (Snetterton) — THE CAMERA SCALE
+   TAKES THE ROAD SPEED WHEN THE CAR IS SETTLED.  One body, four circuits, byte for byte (only
+   the address differs, which is just where each file's hook region happens to sit).  It is
+   installed over update_camera_and_drive_state's FIRST doubling at $45CB — `ASL A / ROL
+   shared_temp_77`, three bytes replaced by one `JSR` (`disasm/track_hooks.txt`: $45CB-$45CD
+   $0A->$20, $26->the entry low byte, $77->$59), so the hook owes the caller that doubling and
+   $45CE's second ASL/ROL then runs on what it leaves.
+
+   What it adds: when the byte $45C9 just stored in drive_state is ZERO — the settled arm, as
+   against the $01 and $7F the other two paths store — the term being doubled is replaced by
+   the road speed scaled by the track's gradient at Y, and a negative product borrows a unit
+   from shared_temp_77.  So on these four circuits a settled car's camera scale follows how fast
+   it is going up or down the hill in front of it, where Silverstone simply doubles the state
+   byte (which is 0, so Silverstone's first doubling is a no-op on this arm).
+
+   Entry ABI (the hook seam, derived from $45BF-$45C9): A = the stored byte, Z = whether it is
+   zero, Y = the gradient index the routine has been carrying.  Exit: the ASL/ROL pair's — A and
+   shared_temp_77 the doubled 16-bit value, C its bit 15, N/Z from the high byte, and V left
+   exactly as the gradient callee left it.
+
+   SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
+   S100 the road-speed arm runs whatever drive_state was        10516
+   S101 the negative product does not borrow                     2696
+   S102 the borrow happens on a POSITIVE product                 5484
+   S103 A is doubled without the pair's carry into shared_temp_77 2696
+   S104 C is left alone instead of taking bit 15                  8036
+   S105 the gradient callee's V is not allowed to escape          1520
+   (counts are over 4 x 4000 runs — every circuit's entry through the one body.) */
+void hook_camera_scale_by_gradient(void)
+{
+    uint8_t a = cpu.A;
+
+    if (cpu.Z) {                                       /* $59E9 BNE — the settled arm only */
+        /* ⭐ The SHIM, not the core: this callee's exit V escapes the hook (its negative arm
+           clears V, its positive arm passes the caller's through) and $45D8's own
+           scale_by_track_gradient reads it, so the one place that ABI is written down should
+           be the one place it is computed. */
+        cpu.A = road_speed;                            /* $59EB LDA road_speed */
+        scale_by_track_gradient();                     /* $59EC JSR $4610 */
+        a = cpu.A;
+        if (cpu.N)                                     /* $59EF BPL — the flag, not bit 7 of A */
+            shared_temp_77--;                          /* $59F1 DEC */
+    }
+
+    /* $59F4 ASL A / ROL shared_temp_77 — the 16-bit pair (shared_temp_77 : A) doubled, its top
+       bit into C.  This is the doubling the JSR displaced at $45CB. */
+    uint16_t pair = (uint16_t)(((uint16_t)shared_temp_77 << 8) | a);
+    cpu.C          = (uint8_t)(shared_temp_77 >> 7);
+    pair         <<= 1;
+    cpu.A          = (uint8_t)pair;
+    shared_temp_77 = (uint8_t)(pair >> 8);
+    cpu.N          = (uint8_t)(shared_temp_77 >> 7);   /* the ROL's flags, not the ASL's */
+    cpu.Z          = (uint8_t)(shared_temp_77 == 0u);
+}
+
 /* $56C8 (Snetterton) / $56C4 (the Nurburgring) — THE SAME MONOTONIC-HORIZON CLAMP, RELEASED
    THROUGH A YAW GUARD.  The clamp walk is byte-identical to the other three circuits' $56C8
    (these two files' whole hook region is shifted, which is the only reason the Nurburgring's

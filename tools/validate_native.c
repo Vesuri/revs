@@ -11135,6 +11135,16 @@ static void hook_steers_oracle(void) { g_hookOracle = 1; trk_snetter(0x57A1); g_
 static void hook_steerd_twin(void)   { g_hookOracle = 0; trk_doning(0x5779); }
 static void hook_steerd_oracle(void) { g_hookOracle = 1; trk_doning(0x5779); g_hookOracle = 0; }
 
+/* $45CB's camera scale — one body, and the four circuits that install it. */
+static void hook_cam_b_twin(void)   { g_hookOracle = 0; trk_brands(0x59E9); }
+static void hook_cam_b_oracle(void) { g_hookOracle = 1; trk_brands(0x59E9); g_hookOracle = 0; }
+static void hook_cam_d_twin(void)   { g_hookOracle = 0; trk_doning(0x59C9); }
+static void hook_cam_d_oracle(void) { g_hookOracle = 1; trk_doning(0x59C9); g_hookOracle = 0; }
+static void hook_cam_o_twin(void)   { g_hookOracle = 0; trk_oulton(0x59E7); }
+static void hook_cam_o_oracle(void) { g_hookOracle = 1; trk_oulton(0x59E7); g_hookOracle = 0; }
+static void hook_cam_s_twin(void)   { g_hookOracle = 0; trk_snetter(0x59C7); }
+static void hook_cam_s_oracle(void) { g_hookOracle = 1; trk_snetter(0x59C7); g_hookOracle = 0; }
+
 /* Snetterton's $56C8 and the Nurburgring's $56C4 run that same clamp loop and then release
    through a yaw guard of their own ($53DC / $53E0), so they get their own pair. */
 static void hook_clampg_s_twin(void)   { g_hookOracle = 0; trk_snetter(0x56C8); }
@@ -11269,7 +11279,7 @@ static int test_hook_twins(void)
     static uint8_t pre[65536];
     int fail = 0, printed = 0, t, cases = 4000, sub = 0;
     int sawLatched = 0, sawOneShot = 0, sawClamp = 0, sawAdvance = 0, sawEarlyStop = 0;
-    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge, runGuard[2], runSteer, runSteerO, runSteerS, runSteerD;
+    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge, runGuard[2], runSteer, runSteerO, runSteerS, runSteerD, runCam;
     { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
     if (scale < 1) scale = 1;
     cases *= scale;
@@ -11278,6 +11288,7 @@ static int test_hook_twins(void)
     register_fixture("hook_steer_response_oulton");
     register_fixture("hook_steer_response_snetter");
     register_fixture("hook_steer_response_doning");
+    register_fixture("hook_camera_scale_by_gradient");
     register_fixture("hook_horizon_clamp_guarded_snetter");
     register_fixture("hook_horizon_clamp_guarded_nurburg");
     register_fixture("hook_record_horizon");
@@ -11292,6 +11303,7 @@ static int test_hook_twins(void)
     runSteerO = want("hook_steer_response_oulton");
     runSteerS = want("hook_steer_response_snetter");
     runSteerD = want("hook_steer_response_doning");
+    runCam    = want("hook_camera_scale_by_gradient");
     runGuard[0] = want("hook_horizon_clamp_guarded_snetter");
     runGuard[1] = want("hook_horizon_clamp_guarded_nurburg");
     runRecord = want("hook_record_horizon");
@@ -11659,6 +11671,77 @@ static int test_hook_twins(void)
                    "offset over %d under %d zero reading %d)\n",
                    arm[0], arm[1], arm[2], arm[3], arm[4], arm[5], arm[6],
                    sawEarned, sawUnearned, sawZeroMul);
+            fail++;
+        }
+    }
+
+    /* ---------------------------- $45CB's camera scale, driven through all four circuits' entries */
+    if (runCam) {
+        static const struct { void (*tw)(void); void (*or_)(void); unsigned char track; }
+            CAM[4] = { { hook_cam_b_twin, hook_cam_b_oracle, 1 },
+                       { hook_cam_d_twin, hook_cam_d_oracle, 2 },
+                       { hook_cam_o_twin, hook_cam_o_oracle, 3 },
+                       { hook_cam_s_twin, hook_cam_s_oracle, 4 } };
+        int csub = 0, k, sawSettled = 0, sawOther = 0, sawBorrow = 0, sawNoBorrow = 0;
+        int sawPairCarry = 0, sawTop = 0;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            uint8_t stored, grad;
+
+            fill_random(pre);
+            c.D = 0;                                /* the camera path, always binary */
+            c.S = 0xFFu;
+            c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.V = xs() & 1u; c.C = xs() & 1u; c.N = xs() & 1u;
+
+            /* $45BF/$45C3/$45C7 store one of exactly three bytes, and only the $00 one takes
+               the road-speed arm — so drive those three, not a random byte. */
+            switch (xs() % 3u) {
+            case 0:  stored = 0x00u; sawSettled = 1; break;
+            case 1:  stored = 0x01u; sawOther = 1; break;
+            default: stored = 0x7Fu; sawOther = 1; break;
+            }
+            c.A = stored;
+            c.Z = (uint8_t)(stored == 0u);          /* the LDA's own Z, which the hook branches on */
+
+            /* The gradient's SIGN decides the borrow, and track_dir_1[Y] EOR track_direction is
+               what sets it — so drive both signs of both bytes rather than hoping. */
+            grad = (uint8_t)xs();
+            if (xs() & 1u) grad |= 0x80u; else grad &= 0x7Fu;
+            pre[0x5500 + c.Y] = grad;               /* track_dir_1[Y] */
+            pre[0x0025] = (uint8_t)((xs() & 1u) ? 0x80u : 0x00u);   /* track_direction */
+            pre[0x0027] = (uint8_t)xs();            /* road_speed — the value being scaled */
+
+            /* shared_temp_77's top bit is the pair's carry out; its low bit is what the ROL
+               brings the doubling into.  Both matter, so both are driven. */
+            if (xs() & 1u) { pre[0x0077] = (uint8_t)(xs() | 0x80u); sawTop = 1; }
+            else           { pre[0x0077] = (uint8_t)(xs() & 0x7Fu); }
+            /* What the doubled byte will be — recomputed from the same inputs the twin reads
+               (so it cannot agree with a broken twin), for the arm counters below. */
+            {
+                uint8_t eor  = (uint8_t)(grad ^ pre[0x0025]);
+                uint8_t mag  = (grad & 0x80u) ? (uint8_t)(-(int)grad) : grad;
+                uint8_t high = (uint8_t)(((unsigned)mag * pre[0x0027]) >> 8);
+                uint8_t sc   = (eor & 0x80u) ? (uint8_t)(-(int)high) : high;
+                uint8_t byte = (stored == 0u) ? sc : stored;
+                if (byte & 0x80u) sawPairCarry = 1;    /* the ASL's carry into the ROL */
+                if (stored == 0u) { if (sc & 0x80u) sawBorrow = 1; else sawNoBorrow = 1; }
+            }
+
+            for (k = 0; k < 4; k++) {
+                g_track = CAM[k].track;
+                csub += diff_run("hook_camera_scale_by_gradient", pre, c,
+                                 CAM[k].tw, CAM[k].or_,
+                                 LIVE_A | LIVE_X | LIVE_Y | LIVE_FLAGS, t, &printed);
+            }
+        }
+        fail += csub;
+        printf("%-32s %7d cases x every circuit's entry, %d mismatch (must be 0)  "
+               "live=A,X,Y+flags\n", "hook_camera_scale_by_gradient", cases, csub);
+        if (!(sawSettled && sawOther && sawBorrow && sawNoBorrow && sawPairCarry && sawTop)) {
+            printf("VACUOUS: hook_camera_scale_by_gradient missed an arm "
+                   "(settled %d other %d borrow %d no-borrow %d A bit7 %d $77 bit7 %d)\n",
+                   sawSettled, sawOther, sawBorrow, sawNoBorrow, sawPairCarry, sawTop);
             fail++;
         }
     }
