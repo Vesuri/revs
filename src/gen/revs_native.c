@@ -8219,6 +8219,9 @@ void update_slip_sound(void)
       `begin_spin` still did not fire in that run; its extra gate is `section_jump_history`
       bit 7.  The FIXTURE forces the arm regardless, because randomised memory reaches $FF in
       both bytes only once in 65536.
+      ✅ THE PORT EXERCISES IT TOO, so it is already gated: on the host, `make determinism-drive`'s
+      own 300-frame trajectory puts $FF in both cells on 22 frames and in one on 2 more (and
+      `REVS_HOLD_STEER=l` over 600 frames, 208 and 18).  No new gate is owed.
    6. ⚠ TWO THINGS HERE CANNOT BE SABOTAGED, and both are properties of the code rather than
       holes in the fixture (docs/validation-harness.md §FIFTEENTH):
         * the `AND #$FE` in BOTH of `compute_car_angles`' arms is defensive — the value comes
