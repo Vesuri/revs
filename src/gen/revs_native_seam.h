@@ -761,6 +761,7 @@ void hook_step_dir_gen_cursor_b(void);
 void hook_horizon_clamp(void);
 void hook_steer_response_brands(void);           /* Brands Hatch $57A1 */
 void hook_steer_response_oulton(void);           /* Oulton Park $57A1 */
+void hook_steer_response_snetter(void);          /* Snetterton $57A1 */
 void hook_horizon_clamp_guarded_snetter(void);   /* Snetterton  $56C8 */
 void hook_horizon_clamp_guarded_nurburg(void);   /* Nurburgring $56C4 */
 

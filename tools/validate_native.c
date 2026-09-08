@@ -11129,6 +11129,8 @@ static void hook_steer_twin(void)   { g_hookOracle = 0; trk_brands(0x57A1); }
 static void hook_steer_oracle(void) { g_hookOracle = 1; trk_brands(0x57A1); g_hookOracle = 0; }
 static void hook_steero_twin(void)   { g_hookOracle = 0; trk_oulton(0x57A1); }
 static void hook_steero_oracle(void) { g_hookOracle = 1; trk_oulton(0x57A1); g_hookOracle = 0; }
+static void hook_steers_twin(void)   { g_hookOracle = 0; trk_snetter(0x57A1); }
+static void hook_steers_oracle(void) { g_hookOracle = 1; trk_snetter(0x57A1); g_hookOracle = 0; }
 
 /* Snetterton's $56C8 and the Nurburgring's $56C4 run that same clamp loop and then release
    through a yaw guard of their own ($53DC / $53E0), so they get their own pair. */
@@ -11265,13 +11267,14 @@ static int test_hook_twins(void)
     static uint8_t pre[65536];
     int fail = 0, printed = 0, t, cases = 4000, sub = 0;
     int sawLatched = 0, sawOneShot = 0, sawClamp = 0, sawAdvance = 0, sawEarlyStop = 0;
-    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge, runGuard[2], runSteer, runSteerO;
+    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge, runGuard[2], runSteer, runSteerO, runSteerS;
     { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
     if (scale < 1) scale = 1;
     cases *= scale;
     register_fixture("hook_horizon_clamp");
     register_fixture("hook_steer_response_brands");
     register_fixture("hook_steer_response_oulton");
+    register_fixture("hook_steer_response_snetter");
     register_fixture("hook_horizon_clamp_guarded_snetter");
     register_fixture("hook_horizon_clamp_guarded_nurburg");
     register_fixture("hook_record_horizon");
@@ -11284,6 +11287,7 @@ static int test_hook_twins(void)
     runClamp  = want("hook_horizon_clamp");
     runSteer  = want("hook_steer_response_brands");
     runSteerO = want("hook_steer_response_oulton");
+    runSteerS = want("hook_steer_response_snetter");
     runGuard[0] = want("hook_horizon_clamp_guarded_snetter");
     runGuard[1] = want("hook_horizon_clamp_guarded_nurburg");
     runRecord = want("hook_record_horizon");
@@ -11529,6 +11533,62 @@ static int test_hook_twins(void)
             printf("VACUOUS: hook_steer_response_oulton missed an arm "
                    "($48 %d $B8 %d $B0 %d default %d zero reading %d)\n",
                    saw48, sawB8, sawB0, sawDefault, sawZeroMul);
+            fail++;
+        }
+    }
+
+    /* ------------------------- $57A1 (Snetterton), the curve plus the grip-loss pardon */
+    if (runSteerS) {
+        int nsub = 0, saw28in = 0, saw28out = 0, sawA8 = 0, sawA0 = 0, sawDef = 0, sawZeroMul = 0;
+        g_track = 4;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            uint8_t car;
+
+            fill_random(pre);
+            c.D = 0;
+            c.S = 0xFFu;
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.V = (uint8_t)(xs() & 1u);
+
+            car = (uint8_t)(xs() % 20u);
+            pre[0x006F] = car;
+            pre[0x62FB] = (uint8_t)xs();            /* section_jump_history — the shifted byte */
+
+            /* Five arms: segment $28 with the pardon earned and not earned, $A8, $A0, and the
+               default.  $28's two sides differ only in car_seg_offset, so drive that too. */
+            switch (xs() % 5u) {
+            case 0: pre[0x06E8 + car] = 0x28u;
+                    pre[0x0880 + car] = (uint8_t)(0x02u + (xs() % 0x30u));
+                    saw28in = 1; break;
+            case 1: pre[0x06E8 + car] = 0x28u;
+                    pre[0x0880 + car] = (uint8_t)(xs() & 1u);
+                    saw28out = 1; break;
+            case 2: pre[0x06E8 + car] = 0xA8u; sawA8 = 1; break;
+            case 3: pre[0x06E8 + car] = 0xA0u; sawA0 = 1; break;
+            default: {
+                uint8_t seg = (uint8_t)xs();
+                if (seg == 0x28u || seg == 0xA8u || seg == 0xA0u) seg ^= 1u;
+                pre[0x06E8 + car] = seg; sawDef = 1;
+                break;
+            }
+            }
+
+            if ((xs() & 7u) == 0u) { pre[0x0075] = 0x00u; sawZeroMul = 1; }
+            else                   { pre[0x0075] = (uint8_t)xs(); }
+            pre[0x0074] = (uint8_t)xs();
+
+            nsub += diff_run("hook_steer_response_snetter", pre, c,
+                             hook_steers_twin, hook_steers_oracle,
+                             LIVE_A | LIVE_X | LIVE_Y | LIVE_FLAGS, t, &printed);
+        }
+        fail += nsub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,Y+flags\n",
+               "hook_steer_response_snetter", cases, nsub);
+        if (!(saw28in && saw28out && sawA8 && sawA0 && sawDef && sawZeroMul)) {
+            printf("VACUOUS: hook_steer_response_snetter missed an arm "
+                   "($28 earned %d unearned %d $A8 %d $A0 %d default %d zero reading %d)\n",
+                   saw28in, saw28out, sawA8, sawA0, sawDef, sawZeroMul);
             fail++;
         }
     }

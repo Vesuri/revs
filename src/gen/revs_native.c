@@ -16455,6 +16455,56 @@ void hook_steer_response_oulton(void)
     steer_response_curve(k);                               /* $57B8 TYA / mul8 / JMP $53EF */
 }
 
+/* $57A1 (Snetterton) — THE SAME STEERING RESPONSE CURVE, AND A GRIP-LOSS PARDON.  The third
+   body patched over `JSR mul8` at $1593, and the third to end in the shared scale-square-double
+   (Snetterton spells the curve at $53CF; Brands inlines it, Oulton JMPs to its own $53EF copy).
+   Two things make this one different:
+
+     - four scales instead of three:  $DC on segment $28, $C3 on $A0 and $A8, $B5 elsewhere;
+     - on two of those segments it LSRs section_jump_history, which is a SIDE EFFECT, not part
+       of the curve at all.  That byte is a one-bit-per-frame record of "the player jumped
+       sideways", and update_grip_limits' `BIT $62FB / BPL` ($4C1C) reads only bit 7 — so the
+       shift pardons the pending grip loss.  Snetterton is doing it where its own geometry makes
+       the car step sideways for reasons the driver did not cause.
+
+   The pardon is conditional in different ways on the two segments: on $28 only when the car is
+   at least 2 units into the segment (car_seg_offset >= 2), on $A8 unconditionally.  Segment $A0
+   takes the same $C3 scale as $A8 with no pardon at all.
+
+   Exit ABI: steer_response_curve's.  ⚠ The LSR's C does NOT escape — the curve's closing ROL
+   overwrites it — and its N/Z are overwritten by the TYA; the WRITE is the whole point.
+
+   SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
+   S89 the $28 pardon runs unconditionally                        799
+   S90 the $A8 pardon is dropped                                  844
+   S91 segment $A0 pardons too                                    767
+   S92 the $28 scale is $DD                                      1607
+   S93 $A8 scales by $B5 (the default)                            847 */
+void hook_steer_response_snetter(void)
+{
+    uint8_t car     = player_car;                          /* $57A1 LDY player_car */
+    uint8_t segment = mem[CAR_SEGMENT_TBL + car];          /* $57A3 LDA car_segment,Y */
+    uint8_t k;
+
+    if (segment == 0x28u) {                                /* $57A6 CMP #$28 */
+        /* $57AA LDA car_seg_offset,Y / CMP #$02 / BCC — pardon only once the car is properly
+           into the segment. */
+        if (mem[CAR_SEG_OFFSET + car] >= 0x02u)
+            section_jump_history >>= 1;                    /* $57B1 LSR */
+        k = 0xDCu;                                         /* $57B4 LDY #$DC */
+    } else {
+        k = 0xB5u;                                         /* $59D6 LDY #$B5 */
+        if (segment == 0xA8u) {                            /* $59DC CMP #$A8 */
+            section_jump_history >>= 1;                    /* $59E0 LSR, then falls into $59E3 */
+            k = 0xC3u;
+        } else if (segment == 0xA0u) {                      /* $59D8 CMP #$A0 / BEQ $59E3 */
+            k = 0xC3u;
+        }
+    }
+
+    steer_response_curve(k);                               /* $53CF TYA / mul8 / mul8 / ASL / ROL */
+}
+
 /* $56C8 (Snetterton) / $56C4 (the Nurburgring) — THE SAME MONOTONIC-HORIZON CLAMP, RELEASED
    THROUGH A YAW GUARD.  The clamp walk is byte-identical to the other three circuits' $56C8
    (these two files' whole hook region is shifted, which is the only reason the Nurburgring's
