@@ -218,37 +218,6 @@ table once init has run (a classic BBC overlay). Twin #159 references the table 
 (should be per-car speed fractions), then rename to `car_speed_frac` with the JMP-target as the note.
 
 
-## `$62A7` — `slip_flags`' second byte has no row of its own
-
-`slip_flags` (`$62A6`) is documented as two bytes, one per axle, and `begin_scrape` (twin #168)
-writes both explicitly (`$1C10`/`$1C13`) rather than through an index.  `$62A7` has no
-`symbols.csv` row, so a twin writing it reads as an unnamed hex address.  ⇒ Either add a row
-`slip_flags_rear` (and rename `$62A6` `slip_flags_front`), or extend `$62A6`'s note to declare the
-extent `$62A6-$62A7` so `mem[MEM_slip_flags + 1]` is self-documenting.  **Which axle is which is
-NOT derived** — settle it on `make refloop` by locking one axle (brake hard from speed) and
-watching which byte sets bit 7 first.
-
-
-## The zero-page cells `$0C`, `$85`, `$87` — no `symbols.csv` row at all
-
-The twins carry file-local defines for them now (`PLACE_CAR_SOI`, `PLACE_CAR_ACROSS`,
-`PLACE_CAR_DIR + 1`), so no generated file has a bare hex address left, but the map itself is
-still blank at these three addresses.  (`$43` left this list as `section_quad_flags` and `$1D` as
-`staging_order_index`; both are in `symbols.csv` now.)
-
-* `$0C` — `place_car_world_coords` parks the section DIRECTION INDEX here and the object-queue
-  tail reads it back.  Sole writer seen so far; **[DERIVED]** from that one tenancy only.
-* `$85`, `$87` — the *middle* cells of two three-byte windows whose ends ARE named
-  (`shared_temp_84`/`$86 point_delta_sign`, `$0086`+2).  A row each, if only to record that they
-  are components 1 of those windows and not free scratch.  ⭐ `$85` now has one real reading:
-  `project_geometry`'s edge tail uses it as a RUN LENGTH clamped to `$28` (see the last entry),
-  which makes it a tenancy list rather than a single name.
-
-⇒ **Cheap settlement: `make refloop` + a `mem[]` watch.**  Dump `$0C` once a frame for a lap and
-see whether it tracks the section cursor; `$85`/`$87` need only the argument that they are
-components 1 of their windows.  Until then no fact-shaped name.
-
-
 ## `$7B`'s second tenant, and `$85`/`$7C` inside `project_geometry`'s edge tail
 
 Opened while naming revs_native.c's callees: the last address-shaped label in the file was `$1D94`,

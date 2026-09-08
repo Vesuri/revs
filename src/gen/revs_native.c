@@ -12597,9 +12597,9 @@ static inline void object_coord_word_set(unsigned axis, uint16_t value)
    reads its inputs back out of these cells, so they are an output of the twin, not scratch.
    ($84 is shared_temp_84; $86-$88 are point_delta_sign's three cells under a different tenant;
    $0C, $85 and $87 have no name yet — queued in docs/rename.md.) */
-#define PLACE_CAR_SOI     0x000Cu   /* section direction index */
+/* PLACE_CAR_SOI / PLACE_CAR_ACROSS retired 2026-09-08 — both cells have symbols.csv rows
+   (and therefore mem.h names) now: car_section_dir_index and shared_temp_85. */
 #define PLACE_CAR_ALONG   0x0084u   /* car_state_1[slot] — distance along the section */
-#define PLACE_CAR_ACROSS  0x0085u   /* car_state_2[slot] — offset across it */
 #define PLACE_CAR_DIR     0x0086u   /* the three direction bytes at +0/+1/+2 */
 
 /* signextend8( |dir| * factor >> 8 ) with the sign of dir — the signed contribution of one axis,
@@ -12635,9 +12635,9 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
        $85 across, $86..$88 dir bytes) and the object-queue tail reads them back through those
        cells.  Reproduce those writes exactly so the shared tail routines see identical memory;
        only the mul8 product residue ($74/$75/$76) and the PHP stack byte then differ. */
-    mem[PLACE_CAR_SOI]    = soi;
+    mem[MEM_car_section_dir_index]    = soi;
     mem[PLACE_CAR_ALONG]  = along;
-    mem[PLACE_CAR_ACROSS] = across;
+    mem[MEM_shared_temp_85] = across;
 
     uint8_t dir1[3];
     dir1[0] = mem[TRACK_DIR_0 + soi];
@@ -14429,8 +14429,11 @@ void sound_stop_all_core(uint8_t ambientY)
 void begin_scrape_core(uint8_t yawKick, uint8_t savedX)
 {
     ms_set_hi(MS_HEADING_STEP, yawKick);    /* $1C0B — the high byte IS the yaw rate; see check_crash */
-    mem[MEM_slip_flags + 0]   = 0x80u;      /* $1C0E-$1C13 — both axles marked slipping, so */
-    mem[MEM_slip_flags + 1]   = 0x80u;      /*   update_slip_sound starts the squeal next frame */
+    mem[MEM_slip_flags + 0]   = 0x80u;      /* $1C0E-$1C13 — the front axle... */
+    mem[MEM_slip_flags + 1]   = 0x80u;      /*   ...and the driven rear one, so update_slip_sound
+                                                 starts the squeal next frame (axle 1 is the driven
+                                                 one: derive_slip_reference's throttle arm declines
+                                                 every other X — see symbols.csv $62A6) */
     sound_queue_core(SOUND_SLOT_IMPACT, sound_volume, savedX);   /* $1C16-$1C18 */
 }
 
