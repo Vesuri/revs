@@ -15,10 +15,15 @@
    sites, paired with the Amiga rawkey that should drive it.  Multiple rows may share a
    BBC code (an alternative Amiga key) or an Amiga key (one key, two meanings).
 
-   BBC internal key numbers decode as (row = n>>4, col = n&15), which is how the function
-   keys were identified: row 7 is f0..f9, so -114 = f1 and -115 = f2 — and those are
-   exactly the two the mode table at $3DE2/$39D4 pairs with "keyboard" and "analogue".
-   That agreement is the check on the whole table.
+   BBC internal key numbers decode as (row = n>>4, col = n&15) and a negative-INKEY byte is
+   255 - internal.  ⚠⚠ THE FUNCTION KEYS ARE NOT CONTIGUOUS — an earlier version of this map
+   assumed "row 7 is f0..f9" and every single function-key row was wrong.  f0, f4 and f7 sit
+   OUTSIDE row 7 (they share their columns with other keys), so the real codes are
+     f0 $DF  f1 $8E  f2 $8D  f3 $8C  f4 $EB  f5 $8B  f6 $8A  f7 $E9  f8 $89  f9 $88,
+   with ESCAPE at $8F [0,7] — which is what the old map had mistaken for f0.  Every row below
+   is derived by inverting jsbeeb's own key matrix (tools/jsbeeb/src/utils.js `BBC`), and the
+   check on the whole table is that $8E and $8D then land on the two entries the mode table at
+   $3DE2/$39D4 pairs with "keyboard" and "joystick", which the disc's instructions call f1/f2.
    --------------------------------------------------------------------------- */
 struct KeyMap { uint8_t bbc; uint8_t rawkey; };
 
@@ -41,6 +46,7 @@ struct KeyMap { uint8_t bbc; uint8_t rawkey; };
 #define RK_TAB      0x42
 #define RK_RETURN   0x44
 #define RK_ESC      0x45
+#define RK_DEL      0x46
 #define RK_UP       0x4C
 #define RK_DOWN     0x4D
 #define RK_RIGHT    0x4E
@@ -51,6 +57,8 @@ struct KeyMap { uint8_t bbc; uint8_t rawkey; };
 #define RK_F4       0x53
 #define RK_F5       0x54
 #define RK_F6       0x55
+#define RK_F7       0x56
+#define RK_F8       0x57
 #define RK_F9       0x58
 #define RK_F10      0x59
 #define RK_LSHIFT   0x60
@@ -98,24 +106,40 @@ static const KeyMap kKeys[] = {
     { 0xED, RK_4      },   /* -19  '4'  menu only                             */
     { 0xEC, RK_5      },   /* -20  '5'  menu only                             */
     { 0xCB, RK_6      },   /* -53  '6'  menu only (Nurburgring)               */
-    { 0xDD, RK_E      },   /* -35  the sixth menu_key_tbl entry               */
     { 0xB6, RK_RETURN },   /* -74  RETURN                                     */
-    { 0xA6, RK_BACKSPC},   /* -90  DELETE                                     */
+    { 0xA6, RK_BACKSPC},   /* -90  the BBC's DELETE key -> Amiga Backspace.   */
+                           /*      ⭐ Amiga Del is RESERVED for BBC BREAK,    */
+                           /*      which is a reset line and not a matrix key */
+                           /*      (RK_DEL is defined but deliberately unbound) */
+    { 0x8F, RK_ESC    },   /* -113 ESCAPE [0,7] -> Amiga Esc.  No engine site */
+                           /*      polls it today; bound so the one key whose  */
+                           /*      Amiga equivalent is unambiguous is never    */
+                           /*      silently missing (g_keyUnmapped)            */
     { 0xFF, RK_LSHIFT },   /* -1   SHIFT: the prefix for every mode switch    */
     { 0xFF, RK_RSHIFT },
-    /* --- SHIFT + function key: the mode table at $3DE2 ------------------ */
-    /* BBC f0..f9 are -113..-122; the Amiga's F1..F10 sit one place along, so F1 IS f0. */
-    { 0x8F, RK_F1     },   /* -113 f0  ($05F4 = $80 elsewhere; pits)          */
-    { 0x8E, RK_F2     },   /* -114 f1  -> $05F5 = $00   KEYBOARD mode         */
-    { 0x8D, RK_F3     },   /* -115 f2  -> $05F5 = $C0   ANALOGUE (mouse) mode */
-    { 0x8C, RK_F4     },   /* -116 f3  -> $05F8 = $00                         */
-    { 0x8B, RK_F5     },   /* -117 f4  -> $05F6 = $40                         */
-    { 0x8A, RK_F6     },   /* -118 f5  -> $05F8 = $80                         */
-    { 0x86, RK_F10    },   /* -122 f9  -> $05F4 = $80                         */
-    { 0x96, RK_HELP   },   /* -106     -> $05F7 = $80  (function not yet named) */
-    { 0xEB, RK_F9     },   /* -21      -> $05F6 = $C0  (function not yet named) */
-    { 0xE9, RK_ESC    },   /* -23      -> $05F4 = $20  (function not yet named) */
-    { 0xDF, RK_F6     },   /* -33      -> $05F4 = $C0  (function not yet named) */
+    /* --- SHIFT + <key>: shift_key_commands' table at $3DE2/$39D4 --------
+       Scanned from index $0B DOWN to 0, so where the same code appears twice the HIGHER index
+       wins (f2 at index 3 is the live one; index 2 is unreachable).  Each row's comment is the
+       action byte's effect: low nibble = which byte of the state_flags block ($05F4+n), high
+       nibble = the value stored.                                                            */
+    { 0xDF, RK_F10    },   /* -33   f0 -> $05F4 = $C0  return to the pits (session continues) */
+    { 0x8E, RK_F1     },   /* -114  f1 -> $05F5 = $00  KEYBOARD steering                     */
+    { 0x8D, RK_F2     },   /* -115  f2 -> $05F5 = $80  JOYSTICK/analogue (the mouse) steering */
+    { 0x8C, RK_F3     },   /* -116  f3 -> $05F8 = $00  computer-assisted steering OFF        */
+    { 0xEB, RK_F4     },   /* -21   f4 -> $05F6 = $C0  volume down                           */
+    { 0x8B, RK_F5     },   /* -117  f5 -> $05F6 = $40  volume up                             */
+    { 0x8A, RK_F6     },   /* -118  f6 -> $05F8 = $80  computer-assisted steering ON         */
+    { 0xE9, RK_F7     },   /* -23   f7 -> $05F4 = $20  (effect not yet named)                */
+    { 0x96, RK_HELP   },   /* -106  COPY [9,6] -> Amiga Help: $05F7 = $80  PAUSE             */
+                           /*       (DELETE, mapped above, is the key that RESUMES)          */
+    /* ⭐ THE WAY OUT OF A SESSION: SHIFT + right-arrow writes $80 to state_flags, so
+       race_main_loop exits with bit 6 CLEAR and enter_session ($655C) leaves through
+       abort_to_front_end ($3273) to the menu.  abort_if_quit_keys ($3261) polls the same pair
+       directly from the "press SPACE" prompts, so it works there too.
+       ⚠ The right arrow is ALSO this port's steer-right key (above).  On the BBC it was only
+       ever the abort key; here the two overlap, and the abort wins — which is the harmless
+       order, since you are leaving the race either way.                                     */
+    { 0x86, RK_RIGHT  },   /* -122  RIGHT [9,7] -> $05F4 = $80  ABORT to the front end       */
 };
 #define KEY_COUNT (sizeof(kKeys) / sizeof(kKeys[0]))
 
