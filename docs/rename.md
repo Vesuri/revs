@@ -24,26 +24,6 @@ what it computes.  Nothing to do there.
 
 ---
 
-## `section_curve` (`$0701`) — the CURVATURE reading and the `car_flags_0` one
-
-Field 1 of the 3-byte per-section record at `$0700-$0777`, named 2026-08-18 with twins #98-#114
-and `[INFERRED]` because its two readers disagree:
-
-* `apply_steering_assist` (`$1F5E`) takes its **low seven bits as the section's curvature** —
-  clamped to 2..7, shifted up four, and used as the CEILING on the assist's gain, so a bigger
-  value means a tighter corner and a weaker assist.  That is the reading the name records.
-* `$2931` copies **the whole byte into `car_flags_0`** for any car whose `car_speed_scaled` is at
-  least `$32`.  A curvature is not a flag byte, and nothing explains why a fast car should take one.
-
-The single writer (`$1575`) stores either an accumulated value or `$0016` with bit 7 optionally
-flipped, so bit 7 is a sign or a direction and the low seven bits are the quantity.
-
-⇒ **Cheap settlement: `make refloop`.**  Drive one lap and dump `$0700-$0777` at a known section;
-the field should track the circuit's corners if the curvature reading is right.  Then read
-`car_flags_0` for an overtaking car and see whether the byte that lands there behaves like a flag
-set or like a number.  Until then the name is `[INFERRED]` and this entry says why.
-
-
 ## `model_accum_lo`/`model_accum_hi` (`$62D8`/`$62E8`) — element 8 of what, physically?
 
 Named for its ROLE (the one element `apply_driving_model` integrates by hand) rather than its

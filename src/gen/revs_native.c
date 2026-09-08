@@ -11622,7 +11622,7 @@ Adc add_tally_to_lap_total_core(uint8_t column, uint8_t car)
    =========================================================================== */
 
 #define CAR_SECTION_ACROSS        0x0178u   /* per-car: offset ACROSS the track from the section axis */
-#define CAR_FLAGS_0        0x0114u   /* per-car flag byte; spin_car_out marks it */
+#define CAR_ACROSS_DRIFT        0x0114u   /* per-car across-track drift: bit7 sign, bit6 armed, bits0-5 magnitude */
 #define CAR_RACE_FLAGS     0x0100u   /* car_race_flags — per-car race flag byte (bit7/6/4 tested) */
 #define CAR_SEG_OFFSET     0x0880u   /* per-car offset within the current segment */
 #define TRACK_SCALE        0x5A14u   /* TRACK FILE: per-track scale factor */
@@ -11848,14 +11848,14 @@ void tick_wheel_spin(void)
    $11AB  spin_car_out  (twin #123)
    ---------------------------------------------------------------------------
    Flags car X as spun out.  For a real car slot (X < $14) it folds the low seven bits
-   of car_section_across into car_flags_0 with the spin marker $45, stamps $91 into the page-1
+   of car_section_across into car_across_drift, armed and with magnitude 5 ($45), stamps $91 into the page-1
    status array, then runs the shared crash tail (retire_car).  Scenery slots do nothing.
    --------------------------------------------------------------------------- */
 void spin_car_out(void)
 {
     uint8_t x = cpu.X;
     if (x >= 0x14) return;                        /* not a car slot: the $11CD tail is a bare RTS */
-    mem[CAR_FLAGS_0 + x] = (uint8_t)((mem[CAR_SECTION_ACROSS + x] & 0x7F) | 0x45);
+    mem[CAR_ACROSS_DRIFT + x] = (uint8_t)((mem[CAR_SECTION_ACROSS + x] & 0x7F) | 0x45);
     mem[CAR_RACE_FLAGS + x] = 0x91;
     retire_car();                                 /* shared crash tail, indexed by X */
 }
@@ -13534,7 +13534,7 @@ SlotExit draw_car_field_core(uint8_t entryY, uint8_t entryV, uint8_t entryC)
 /* $28CE-$28E4 — the steering nudge itself, the tail five of the tests above branch to. */
 static void car_steering_settle(uint8_t x)
 {
-    uint8_t f    = (uint8_t)(mem[CAR_FLAGS_0 + x] & 0xBFu); /* $28CE LDA / $28D1 AND #$BF / $28D3 CLC */
+    uint8_t f    = (uint8_t)(mem[CAR_ACROSS_DRIFT + x] & 0xBFu); /* $28CE LDA / $28D1 AND #$BF / $28D3 CLC */
     uint8_t st2b = mem[CAR_SECTION_ACROSS + x];
     if (f & 0x80u) {                                     /* $28D4 BPL $28DF — bit7 set arm */
         uint16_t r = (uint16_t)(uint8_t)(f ^ 0x7Fu) + st2b; /* $28D6 EOR #$7F / $28D8 ADC (C=0) */
@@ -13642,8 +13642,8 @@ static void drive_one_car(uint8_t x)
         uint8_t shape = mem[CAR_FLAGS_SHAPE + x];            /* $2896 LDA / $2899 ASL A */
         if (shape & 0x80u) return;                           /* $289A BCS $28E7 (old bit7) — next car */
         if (shape & 0x40u) { car_steering_settle(x); return; }   /* $289C BMI $28CE (old bit6) */
-        if ((mem[CAR_FLAGS_0 + x] & 0x40u) == 0) { car_steering_settle(x); return; }  /* $28A1/$28A3 */
-        if (((mem[CAR_SECTION_ACROSS + x] ^ mem[CAR_FLAGS_0 + x]) & 0x80u) == 0) {           /* $28A8/$28AB */
+        if ((mem[CAR_ACROSS_DRIFT + x] & 0x40u) == 0) { car_steering_settle(x); return; }  /* $28A1/$28A3 */
+        if (((mem[CAR_SECTION_ACROSS + x] ^ mem[CAR_ACROSS_DRIFT + x]) & 0x80u) == 0) {           /* $28A8/$28AB */
             car_steering_settle(x); return;
         }
 
@@ -13771,7 +13771,7 @@ void reset_driving_variables_core(void)
         mem[CAR_FLAGS_SHAPE + x]   = 0x80u;
         mem[CAR_LAP_START_HI + x]  = 0x80u;
         mem[CAR_LAP_COUNT + x]     = 0x00u;
-        mem[CAR_FLAGS_0 + x]       = 0x00u;
+        mem[CAR_ACROSS_DRIFT + x]       = 0x00u;
         mem[CAR_SECTION_ALONG + x]       = 0x00u;
         mem[CAR_SPEED_SCALED + x]  = 0x00u;            /* the 16-bit speed, high byte... */
         mem[CAR_RACE_FLAGS + x]    = 0x00u;
@@ -13969,9 +13969,10 @@ void update_lap_timers_core(void)
      - otherwise stage it: derive the view-section cursor  Y = section_cursor - 3*|gap|, wrapping
        +$78 when the subtraction goes negative (all 8-bit), and for a fast car in a normal state
        (car_race_flags bit4 clear AND car_speed_scaled >= $32) copy that section's curve into the
-       car's flag byte (section_curve[Y] -> car_flags_0[slot]).  That is the $2931 AI look-ahead
-       read docs/rename.md flags under `section_curve` — a fast nearby car takes the upcoming
-       section's curvature so its AI can anticipate the corner.
+       car's drift command (section_curve[Y] -> car_across_drift[slot]).  ⭐ The two share a bit
+       layout — bit 7 direction, bit 6 armed, bits 0-5 magnitude — and car_steering_settle adds
+       that magnitude into car_section_across, so this hand-off is literally "a fast car runs wide
+       in the coming corner" ([DERIVED] 2026-09-08 on a real BBC; see the section_curve row).
 
    math_lo ($74) is car_gap_tail's reduced-gap byte, and on every near exit it equals the returned
    A (car_gap_tail_core: direct-near and wrapped-near both set r.a == math_lo), so the core reads
@@ -14000,7 +14001,7 @@ StageNearbyCar stage_nearby_car_core(uint8_t gapA, unsigned gapFar, uint8_t slot
     /* AI look-ahead: a fast car in a normal state inherits the upcoming section's curve. */
     if (!(mem[CAR_RACE_FLAGS + slot] & 0x10u)                /* $2923-28 AND #$10 / BNE skip */
         && mem[CAR_SPEED_SCALED + slot] >= 0x32u) {          /* $292a-2f CMP #$32 / BCC skip */
-        mem[CAR_FLAGS_0 + slot] = mem[SECTION_CURVE + y];    /* $2931-34 */
+        mem[CAR_ACROSS_DRIFT + slot] = mem[SECTION_CURVE + y];    /* $2931-34 */
     }
 
     r.reject = 0;
@@ -14027,7 +14028,7 @@ StageNearbyCar stage_nearby_car_core(uint8_t gapA, unsigned gapFar, uint8_t slot
          firstSlot-secondSlot (sign -> shared_temp_76), the two cars' state_2 ($0178), the User
          VIA T2 entropy ($FE68) and the per-circuit SMC compare at $2771, it derives a view/AI
          cursor byte (span_line_cursor) that it writes into car_race_flags[firstSlot] and folds a
-         magnitude+sign into car_flags_0[firstSlot].
+         magnitude+sign into car_across_drift[firstSlot].
 
    math_lo ($74) is the reader-nat target: set to firstSlot, overwritten by car_gap's reduction,
    then reused as the ROR-accumulated proximity byte.  ⚠ CRUX (#159): car_gap and car_order_swap
@@ -14044,7 +14045,7 @@ void check_car_pair_core(void)
 {
     /* The proximity arm's tail is a five-stage chain the 6502 enters at four different points
        ($2742/$2744/$2749/$277D/$2786).  In C that is one classification followed by two flags:
-       `publish` runs the car_flags_0 store and `setBit` the cursor's bit4 — and publish implies
+       `publish` runs the car_across_drift store and `setBit` the cursor's bit4 — and publish implies
        setBit, exactly as $277D falls through into $2786. */
     enum ProxOutcome { PROX_TAIL, PROX_PUBLISH, PROX_SETBIT, PROX_NONE };
 
@@ -14058,7 +14059,7 @@ void check_car_pair_core(void)
         uint8_t secondSlot = mem[CAR_ORDER + posBehind];     /* $269e */
         hypot_min_lo = posBehind;                            /* $26a1 STX $78 */
         span_line_cursor = 0x00u;                            /* $26a6-a8 */
-        mem[CAR_FLAGS_0 + firstSlot] = 0x00u;                /* $26aa clear the front car's flags */
+        mem[CAR_ACROSS_DRIFT + firstSlot] = 0x00u;                /* $26aa clear the front car's flags */
         uint8_t tailSlot = firstSlot;                        /* $278c indexes on cpu.X: firstSlot on every
                                                                 arm EXCEPT the swap, which leaves X=secondSlot */
 
@@ -14181,7 +14182,7 @@ void check_car_pair_core(void)
                 }
 
                 if (outcome == PROX_PUBLISH) {               /* $277d-83 */
-                    mem[CAR_FLAGS_0 + firstSlot] = (uint8_t)((math_lo & 0x80u) | mem[POINT_DELTA_HI]);
+                    mem[CAR_ACROSS_DRIFT + firstSlot] = (uint8_t)((math_lo & 0x80u) | mem[POINT_DELTA_HI]);
                 }
                 if (outcome == PROX_PUBLISH || outcome == PROX_SETBIT) {
                     span_line_cursor = (uint8_t)(span_line_cursor | 0x10u);   /* $2786-88 */

@@ -4574,7 +4574,7 @@ void stage_nearby_car__t6502(void);
    Result-only (LIVE_NONE): move_and_draw_cars reloads X from $1D and Y from $62F4 after the first
    call and reads nothing from the second (it returns), so every exit register/flag is dead.  Every
    observable effect is in mem[]: math_lo ($74, the campaign target — its 6502 exit value is still
-   written until relocation), the car_flags_0 curve copy, and whatever place_car_world_coords /
+   written until relocation), the car_across_drift curve copy, and whatever place_car_world_coords /
    reject_object_slot write (the SAME native functions in both models).
 
    place_car_world_coords is steered to its early SMC-unhandled return (mem[$298D] != $29) so it
@@ -4687,7 +4687,7 @@ void check_car_pair__t6502(void);
    --------------------------------------------------------------------------
    Result-only (LIVE_NONE): both callers ($1181, $264C) reload X immediately after, and every exit
    register/flag is dead, so the whole observable effect is in mem[] — car_order (on a swap),
-   position_swap_flag ($62FE), pass_count_bcd ($2F), car_race_flags ($0100), car_flags_0 ($0114),
+   position_swap_flag ($62FE), pass_count_bcd ($2F), car_race_flags ($0100), car_across_drift ($0114),
    the mem[$0083] magnitude scratch, and the reader-nat cell math_lo ($74) which keeps its 6502
    exit value until relocation.  car_gap / car_order_swap / car_index_dec/inc are the SAME native
    cores in both models, so a wrong dispatch or a cached-instead-of-inline $74 diverges mem[].

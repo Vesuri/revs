@@ -1319,7 +1319,7 @@ VALIDATE_FUNCS = {
     # arms: FAR/in-order (C set) is a no-op; OUT-OF-ORDER close behind (N set, gap>=$F6) SWAPS the
     # pair, ticks the position-swap marker $62FE, and when the player is in the pair on the same lap
     # adds the pass amount to the BCD counter pass_count_bcd ($2F); POSITIVE small gap (<5) is the
-    # PROXIMITY arm that computes a view/AI cursor into car_race_flags/car_flags_0 from the speed
+    # PROXIMITY arm that computes a view/AI cursor into car_race_flags/car_across_drift from the speed
     # difference, the two cars' state_2, T2 entropy ($FE68) and the per-circuit SMC compare at $2771.
     # The reader-nat target is math_lo ($74): set to car_order[X], overwritten by car_gap, and reused
     # as the ROR-accumulated proximity byte — a C-tracked cell that keeps its 6502 exit value in mem[]

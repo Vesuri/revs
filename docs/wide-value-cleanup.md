@@ -1494,7 +1494,7 @@ exactly when the spin cannot start. Documented at the fixture.)
 the reference car $17 via `car_gap_tail`, and rejects the object when the gap is far (C set), on the
 wrong side (sign ^ `track_direction`), or |gap| >= $28 sections. Otherwise derives the view-section
 cursor `Y = section_cursor - 3*|gap|` (wrapping +$78 when negative), copies that section's curve
-into `car_flags_0` for a fast car in a normal state (`car_race_flags` bit4 clear AND
+into `car_across_drift` for a fast car in a normal state (`car_race_flags` bit4 clear AND
 `car_speed_scaled` >= $32 — the $2931 AI look-ahead read), and projects via
 `place_car_world_coords`. `math_lo` ($74) reader-nat: the abs8 gap byte is **consumed from
 `car_gap_tail_core`'s return `.a`** (== `math_lo` on both near exits) instead of read back from
@@ -1512,7 +1512,7 @@ secondSlot one behind) it forms the signed ring gap via `car_gap`→`car_gap_tai
 `car_order` entries, ROR the `position_swap_flag` ($62FE), and — if the player is one of the pair
 and both are on the same lap — add $99 (player lost a place) or $01 (gained) into `pass_count_bcd`
 via the routine's **one bracketed SED/CLD** BCD add; **positive small gap** (< 5) → derive a braking
-magnitude into `$0083` and set `car_flags_0`/`car_race_flags` proximity bits, with a per-circuit SMC
+magnitude into `$0083` and set `car_across_drift`/`car_race_flags` proximity bits, with a per-circuit SMC
 compare at $2771. `math_lo` ($74) reader-nat: the gap byte is consumed from `car_gap_tail_core`'s
 `.a`, but the twin writes `math_lo` inline at each 6502 store (**never cached** — the #159 CRUX:
 `car_gap`/`car_order_swap` both overwrite $74 mid-routine). Result-only (`LIVE_NONE`). ⚠⚠ **The tail
