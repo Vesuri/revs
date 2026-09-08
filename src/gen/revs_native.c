@@ -16295,10 +16295,11 @@ void hw_init_core(uint8_t osbyteY)
    ⚠⚠ And `make validate`/`determinism` race SILVERSTONE, which never calls any of this.
    `make viewdiff` is the gate that actually exercises these. */
 
-/* The hook's one-shot latch — a tenant of the $80..$82 scratch trio, live only inside one
-   $56C8 call.  It is mirrored into mem[] rather than kept purely local so the oracle
-   differential stays byte-exact on the scratch cell too. */
-#define HOOK_CLAMP_LATCH 0x0082u
+/* The hook's one-shot latch — the THIRD tenant of point_delta_lo[2] ($0082; symbols.csv's $0080
+   row carries all three), live only inside one $56C8 call and carrying nothing out: the hook
+   returns to $1949, which JMPs straight to $1977 without reading the cell.  It is mirrored into
+   mem[] rather than kept purely local so the oracle differential stays byte-exact on it too. */
+#define HOOK_CLAMP_LATCH 0x0082u   /* = point_delta_lo + 2 */
 
 /* $56C8 — MAKE THE HORIZON MONOTONIC (Brands Hatch, Donington Park, Oulton Park; the three
    circuits emit byte-identical code here).  Patched in at $1946, over the engine's

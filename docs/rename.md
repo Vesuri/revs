@@ -196,6 +196,10 @@ staging, written at `$2669`), but `place_car_world_coords`' tail (`$2A03`) compa
 `car_behind` (`$004D`) to gate the other-car AI branch. That reads like the SAME index — but a zero
 page scratch cell with two readers is exactly the trap, so it is an assumption until measured.
 ⚠ Settle it by dumping it at `$2A01` during a race with a car close behind.
+⚠⚠ **The obvious cheap run does NOT settle it and was tried** (2026-09-08): over frames 40-180 of
+`bbc_refloop_race --watch=001d` the ONLY write is `reset_driving_variables`' zero at `$1809` —
+`move_and_draw_cars`' `$2669` never fires, because the reference loop drives a PRACTICE session
+with no traffic. This needs a race with opponents staged, not another watch on the same run.
 
 (`$5F38` and `$5F39` left this queue with twin #203: `front_end_menus` derives both statically —
 `human_car_first` is the lowest human-driven car index and `human_driver_count` is `$14` minus it.)
@@ -237,21 +241,6 @@ What that leaves open is **cell tenancy, not a function name**:
   as "component 1 of `shared_temp_84`'s window".  ⇒ It is the row that entry was waiting for.
 * `$7C` — compared against `$28` and force-set to `$FF`, so a column index here, not
   `point_dist`'s low byte.  ⇒ Same treatment: a tenancy list, not a rename.
-
-## `$0082` — the `$56C8` hook's one-shot latch
-
-Found while twinning Brands/Donington/Oulton's `$56C8` (the horizon monotonic clamp).  The hook
-seeds `$0082` from bit 5 of its entry Y and then, on its first clamp, does `SEC / ROR $82` — so
-the cell is a **one-shot latch, live only inside one hook call**: non-zero means "the object
-ceiling and the half-width have already been recomputed, don't do it again", and an entry from
-the upper band arrives with it already armed, suppressing the recompute entirely.
-
-It has no `symbols.csv` row, so the twin carries a local `#define HOOK_CLAMP_LATCH` instead of a
-`mem.h` name.  ⇒ A `var` row is owed, and it must be a **tenancy** note, not a plain name:
-`$80..$82` is the road pass's scratch trio and this is one tenant of it.  What is not yet
-measured is whether any *other* reader of `$82` overlaps the hook's use — the hook writes it on
-entry unconditionally, so it cannot be carrying anything in, but whether it is expected to carry
-something *out* is unproven.  [DERIVED] from the circuit bodies, 2026-09-07.
 
 ## The track generator's cursor blocks — `$53F8`/`$53F9`/`$53FD`, `$53FA`/`$53FB`/`$53FF`, `$5728`
 
