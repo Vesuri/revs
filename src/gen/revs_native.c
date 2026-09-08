@@ -16915,7 +16915,7 @@ HookMergeExit hook_merge_horizon_edges_core(uint8_t point, uint8_t horizonLine,
            draw_road's span passes re-cover them from scratch. */
         if (clearStyleBelow6 && y < 0x06u) {
             mem[EDGE_STYLE_TBL + y] = 0u;
-            mem[EDGE_STYLE_TBL + EDGE_HALF + y] = 0u;
+            mem[EDGE_STYLE_TBL + EDGE_HALF + y] = 0u;    /* edge_style_far, $5F08 */
         }
 
         y++;                                            /* $5799 INY / CPY #9 / BCC */
@@ -17428,11 +17428,11 @@ void hook_seg_advance_nurburg(void) { hook_seg_advance_at(0x53FCu, 0x9Au); }
    fixture sees it at exactly the fixture's own 50/50 split of the packed byte's bit 1, which is
    the rate at which $87 and $07 differ.  S53 and S56 read the same 500 for the same reason — one
    is that bit again, the other the reverse arm's own half. */
-#define GEN_SEG_DIR_TBL   0x5905u   /* [segment]  the direction-basis entry (see docs/rename.md) */
-#define GEN_SEED_HDG_LO   0x5846u   /* [section]  saved heading low  */
-#define GEN_SEED_HDG_HI   0x5864u   /* [section]  saved heading high */
-#define GEN_SEED_GRADIENT 0x5828u   /* [section]  saved gradient     */
-#define GEN_SEED_PLACE    0x5882u   /* [section]  packed place cursor + the $23B3 flag */
+#define GEN_SEG_DIR_TBL   0x5905u   /* gen_segment_dir_tbl   [segment] direction-basis entry */
+#define GEN_SEED_HDG_LO   0x5846u   /* gen_seed_heading_lo   [section] saved heading low     */
+#define GEN_SEED_HDG_HI   0x5864u   /* gen_seed_heading_hi   [section] saved heading high    */
+#define GEN_SEED_GRADIENT 0x5828u   /* gen_seed_gradient     [section] saved gradient        */
+#define GEN_SEED_PLACE    0x5882u   /* gen_seed_place        [section] cursor + $23B3 flag   */
 
 static void hook_gen_seed_at(uint16_t block, uint8_t scale)
 {
