@@ -8202,14 +8202,23 @@ void update_slip_sound(void)
       `ADC $78,X` reaches hypot_min_lo for axle 0 and hypot_min_hi for axle 1, and those two
       cells hold -(load) and +(load) from $4BE1-$4BE8.  One `,X` on a zero-page address is the
       whole of the front/rear split.
-   5. ⚠⚠ AND THE CHANGED-SURFACE ARM IS DEAD ON THIS RELEASE.  `surface_change_0`/`_1` are
-      $00 in disasm/revs_runtime.bin and mid-race on both Silverstone and Brands, nothing in
-      the image writes them, and no circuit patches the operands — so `grip_disturbance` is
-      always 0, `grip_limit_base_alt_tbl` is never read and the unprompted `begin_spin` never
-      fires.  The twin keeps all of it and the FIXTURE FORCES the arm, because randomised
-      memory reaches $FF in both bytes once in 65536.  (MEASURED 2026-08-18; the addresses sit
-      inside the dashboard bitmap the second unpack drops at $70DB-$7813, which is worth one
-      reference-loop check before calling it dead for good.)
+   5. ⭐⭐ THE CHANGED-SURFACE ARM READS THE PICTURE.  `surface_change_0` ($713D) and
+      `surface_change_1` ($7205) are FRAME-BUFFER bytes, not variables: both sit on display
+      line 149 — well inside the track band — at MODE 5 pixels 28..31 and 128..131, symmetric
+      about the 160-pixel centre, and the view rasteriser in the second unpack's $7B00 page
+      rewrites them every frame ($7F70 / $7E75).  So the grip model asks what colour the road
+      is under the car's left and right, and $FF means the probe is over a solid area.
+      MEASURED on the reference loop 2026-09-08, 600 Silverstone frames with the wheel held
+      over: $FF in at least one on 27 frames — `grip_disturbance` non-zero on exactly those —
+      and in BOTH on 24, so `grip_limit_base_alt_tbl` is reached too.
+      ⚠⚠ An earlier note here called all of this DEAD on the strength of the two cells reading
+      $00 in the runtime image and in two mid-race dumps.  They did: those dumps were of a car
+      driving straight down the middle of the road, which is the one state where the arm never
+      opens.  "The cell was 0 every time I looked" is not "the cell is always 0" — the reading
+      needed a state that provokes it (docs/method-lessons.md).
+      `begin_spin` still did not fire in that run; its extra gate is `section_jump_history`
+      bit 7.  The FIXTURE forces the arm regardless, because randomised memory reaches $FF in
+      both bytes only once in 65536.
    6. ⚠ TWO THINGS HERE CANNOT BE SABOTAGED, and both are properties of the code rather than
       holes in the fixture (docs/validation-harness.md §FIFTEENTH):
         * the `AND #$FE` in BOTH of `compute_car_angles`' arms is defensive — the value comes

@@ -460,7 +460,19 @@ instruments, and the order they are used in is the method:
    nearly-right scan this project has paid for before. Its port-side counterpart is an ordinary
    lldb watchpoint on `(char*)mem + addr` with `bt` — cheaper than the ink watch and it sees a
    plain `mem[addr] =` that interception-based attribution misses.
-3. **`--trace-edge`** — one line per edge point the road walk emits for one settled frame: slot,
+3. **`--peek=a,b,…`** — the *tuple* of those cells sampled once a frame, histogrammed. `--watch`
+   answers "who wrote it"; only this answers **"did these cells ever hold X at the same time"**,
+   which is a different question and the one a two-byte predicate turns into. It settled the
+   changed-surface arm: `surface_change_0`/`_1` are both `$FF` on 24 of 600 frames, so
+   `grip_limit_base_alt_tbl` is reached — the pair had been recorded as dead.
+4. **`--hold-steer=left|right`** — keep the wheel hard over for the rest of the run. Plain
+   `--drive` steers for one second each way and then releases, so it drives essentially straight
+   and eventually crashes; several arms of the driving model only open while the car is
+   **cornering or off line**, and are unreachable without this. ⚠⚠ It is the direct lesson of the
+   changed-surface arm: those two cells read `$00` in every earlier dump because every earlier
+   dump was of a car going straight. **"It was 0 every time I looked" is not "it is always 0" —
+   provoke the state before recording a cell as dead.**
+5. **`--trace-edge`** — one line per edge point the road walk emits for one settled frame: slot,
    section byte, bearing, heading, difference. A memory diff can say which edge cell differs;
    only a per-point trace can say whether the port's walk visited the same points in the same
    order, which is the question every road-pass divergence turns into. Print **Y**, not

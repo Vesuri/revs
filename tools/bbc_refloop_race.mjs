@@ -142,6 +142,12 @@ const memAtFrame = Number(opt("mem-at-frame", 40));
 let memAtDone = false;
 let memAtSnapshot = null;
 let memAtFrames = 0;
+const peekArg = opt("peek", null);
+const peekAddrs = peekArg === null ? null : peekArg.split(",").map((h) => parseInt(h, 16));
+const peekHist = new Map();
+const holdSteer = opt("hold-steer", null); // "left" | "right": see the drive-in sequence below
+if (holdSteer !== null && holdSteer !== "left" && holdSteer !== "right")
+    throw new Error(`--hold-steer must be left or right, got ${holdSteer}`);
 const park = argv.includes("--park");
 const drive = argv.includes("--drive") || park;
 const wing = String(opt("wing", "20")); // rear and front wing, 0-40 (the game has no default)
@@ -419,6 +425,14 @@ tm.processor.debugInstruction.add((addr) => {
             break;
         case FRAME:
             frames++;
+            // ⭐ --peek=a,b,... : the TUPLE of those cells sampled once a frame, histogrammed.
+            // --watch answers "who wrote it"; this answers "did these two ever hold X at the same
+            // time", which no per-address watch can (surface_change_0 AND _1 both $FF is what
+            // selects grip_limit_base_alt_tbl, and each alone proves nothing about the pair).
+            if (peekAddrs && frames >= memAtFrame) {
+                const key = peekAddrs.map((a) => rd(a).toString(16).padStart(2, "0")).join(" ");
+                peekHist.set(key, (peekHist.get(key) || 0) + 1);
+            }
             // Every 4th frame, because the sky/track split moves with the hills
             // (update_horizon_band, $4F44) — one frame proves nothing either way.
             if (frames > 8 && frames % 4 === 0 && skySamples.length < 80)
@@ -1021,6 +1035,16 @@ if (drive) {
         await tm.runFor(CPS / 2);
     }
     dashRow("throttle, steering released");
+    // ⭐ --hold-steer=left|right : keep the wheel HARD OVER for the rest of the run, which is the
+    // only way this loop has ever provoked a SPIN.  A straight-line drive crashes eventually but
+    // never spins, so the spin arms of update_camera_and_drive_state ($45BF) and begin_spin_from_a
+    // ($4DCB) are unreachable without it — and they are what drive_state's 1 and spin_countdown's
+    // seeding mean.  Pair it with --watch=002D.
+    if (holdSteer) {
+        const code = holdSteer === "left" ? 0xa9 : 0xa8;
+        tm.processor.sysvia.keyDownRaw(inkeyToColRow(code));
+        console.log(`   --hold-steer=${holdSteer}: wheel held over for the rest of the run`);
+    }
     }
 }
 
@@ -1349,6 +1373,12 @@ if (soundOut) {
 if (traceEdge) {
     console.log(`\nedge points emitted at $23C0 during frame ${memAtFrame} (${traceEdgeLines.length}):`);
     for (const l of traceEdgeLines) console.log(l);
+}
+
+if (peekAddrs) {
+    console.log(`\nper-frame values of ${peekAddrs.map((a) => "$" + a.toString(16)).join(", ")} from frame ${memAtFrame} on:`);
+    for (const [k, n] of [...peekHist.entries()].sort((x, y) => y[1] - x[1]))
+        console.log(`   ${k}   x${n}`);
 }
 
 if (watchAddr !== null) {
