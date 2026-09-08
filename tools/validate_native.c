@@ -11178,6 +11178,12 @@ static void hook_mergen_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5772); }
 static void hook_mergen_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5772); g_hookOracle = 0; }
 static void hook_merged_twin(void)   { g_hookOracle = 0; trk_doning(0x5772); }
 static void hook_merged_oracle(void) { g_hookOracle = 1; trk_doning(0x5772); g_hookOracle = 0; }
+/* Donington's two remaining singletons: the horizon scale with the magnitude kept, and the
+   double section step. */
+static void hook_hhwd_twin(void)    { g_hookOracle = 0; trk_doning(0x57B6); }
+static void hook_hhwd_oracle(void)  { g_hookOracle = 1; trk_doning(0x57B6); g_hookOracle = 0; }
+static void hook_sahd_twin(void)    { g_hookOracle = 0; trk_doning(0x53E9); }
+static void hook_sahd_oracle(void)  { g_hookOracle = 1; trk_doning(0x53E9); g_hookOracle = 0; }
 
 /* $5582 / $557F — the track generator's cursor step, in its two state blocks.  Brands Hatch
    carries the $53F8 one and Donington the $53FA one, so the two circuits are the two arms. */
@@ -11291,7 +11297,7 @@ static int test_hook_twins(void)
     static uint8_t pre[65536];
     int fail = 0, printed = 0, t, mv, cases = 4000, sub = 0;
     int sawLatched = 0, sawOneShot = 0, sawClamp = 0, sawAdvance = 0, sawEarlyStop = 0;
-    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge[3], runGuard[2], runSteer, runSteerO, runSteerS, runSteerD, runCam, runSlot;
+    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge[3], runGuard[2], runSteer, runSteerO, runSteerS, runSteerD, runCam, runSlot, runSahd;
     { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
     if (scale < 1) scale = 1;
     cases *= scale;
@@ -11302,6 +11308,7 @@ static int test_hook_twins(void)
     register_fixture("hook_steer_response_doning");
     register_fixture("hook_camera_scale_by_gradient");
     register_fixture("hook_span_cap_slot_test");
+    register_fixture("hook_section_ahead_doning");
     register_fixture("hook_horizon_clamp_guarded_snetter");
     register_fixture("hook_horizon_clamp_guarded_nurburg");
     register_fixture("hook_record_horizon");
@@ -11320,6 +11327,7 @@ static int test_hook_twins(void)
     runSteerD = want("hook_steer_response_doning");
     runCam    = want("hook_camera_scale_by_gradient");
     runSlot   = want("hook_span_cap_slot_test");
+    runSahd   = want("hook_section_ahead_doning");
     runGuard[0] = want("hook_horizon_clamp_guarded_snetter");
     runGuard[1] = want("hook_horizon_clamp_guarded_nurburg");
     runRecord = want("hook_record_horizon");
@@ -11815,6 +11823,53 @@ static int test_hook_twins(void)
                    "(inherit %d fallback %d empty %d full %d below>$8B %d below<$8B %d "
                    "Y wrap %d)\n", sawInherit, sawFall, sawEmpty, sawFull, sawAbove8B,
                    sawBelow8B, sawWrap);
+            fail++;
+        }
+    }
+
+    /* --------------------------------------- $53E9, Donington's double section step.
+       ⚠ The CALLEE (build_section_ahead and the walk under it) is left at its Silverstone
+       SMC bytes here: it is the same code on both sides of the diff, and the arm under test
+       is the count compare in front of it.  walk_cluster_pre supplies a walk that can
+       actually step, so the second build has somewhere to go. */
+    if (runSahd) {
+        static const uint16_t IGN[] = { 0x01FF };   /* build_road_section's PHP/PLP byte */
+        int sawDouble = 0, sawSingle = 0, sawEdge = 0;
+        sub = 0; printed = 0;
+        setenv("REVS_SMC_CONTINUE", "1", 1);
+        set_ignore(IGN, 1);
+        g_track = 2;                                /* Donington */
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            uint8_t count;
+
+            fill_random(pre);
+            walk_cluster_pre(pre);
+            c.D = 0;                                /* the geometry path is always binary */
+            c.S = 0xFFu;
+
+            /* The count as $24DE's CMP left it: below $0C by construction on this arm, and
+               sitting ON $0B or either side of it half the time. */
+            count = (xs() & 1u) ? (uint8_t)(0x0Au + (xs() % 3u)) : (uint8_t)(xs() % 0x0Cu);
+            pre[0x0013] = count;                    /* edge_nearest_section */
+            if (count < 0x0Bu) sawDouble = 1; else sawSingle = 1;
+            if (count == 0x0Au || count == 0x0Bu) sawEdge = 1;
+
+            c.A = count;                            /* the hook's own input */
+            c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.N = xs() & 1u; c.V = xs() & 1u; c.Z = xs() & 1u; c.C = xs() & 1u;
+
+            sub += diff_run("hook_section_ahead_doning", pre, c,
+                            hook_sahd_twin, hook_sahd_oracle,
+                            LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS, t, &printed);
+        }
+        set_ignore(0, 0);
+        fail += sub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,Y+flags\n",
+               "hook_section_ahead_doning", cases, sub);
+        if (!(sawDouble && sawSingle && sawEdge)) {
+            printf("VACUOUS: hook_section_ahead_doning missed an arm "
+                   "(double %d single %d on-the-edge %d)\n", sawDouble, sawSingle, sawEdge);
             fail++;
         }
     }
@@ -12643,7 +12698,7 @@ static int test_hook_twins(void)
        One twin each, so ONE fixture each — but every circuit's dispatch entry is driven through
        it, because the thing that could differ between them is the entry, not the body. */
     {
-        static const struct { const char* name; void (*tw)(void); void (*or_)(void); } ONE[14] = {
+        static const struct { const char* name; void (*tw)(void); void (*or_)(void); } ONE[15] = {
             { "hook_horizon_half_width_scale", hook_hhw_1_twin, hook_hhw_1_oracle },
             { "hook_horizon_half_width_scale", hook_hhw_2_twin, hook_hhw_2_oracle },
             { "hook_horizon_half_width_scale", hook_hhw_3_twin, hook_hhw_3_oracle },
@@ -12658,12 +12713,17 @@ static int test_hook_twins(void)
             { "hook_scale_entry_by_gradient",  hook_seg_3_twin, hook_seg_3_oracle },
             { "hook_scale_entry_by_gradient",  hook_seg_4_twin, hook_seg_4_oracle },
             { "hook_scale_entry_by_gradient",  hook_seg_5_twin, hook_seg_5_oracle },
+            { "hook_horizon_half_width_abs_doning", hook_hhwd_twin, hook_hhwd_oracle },
         };
-        static const char* const ONE_NAMES[3] = { "hook_horizon_half_width_scale",
+        /* ⭐ Donington's $57B6 rides this fixture rather than one of its own: it IS the horizon
+           scale with an abs8 in front, and the N-decorrelated cases below are exactly what
+           tells the flag test from a bit-7 test. */
+        static const char* const ONE_NAMES[4] = { "hook_horizon_half_width_scale",
                                                   "hook_abs_by_track_direction",
-                                                  "hook_scale_entry_by_gradient" };
+                                                  "hook_scale_entry_by_gradient",
+                                                  "hook_horizon_half_width_abs_doning" };
         int n;
-        for (n = 0; n < 3; n++) {
+        for (n = 0; n < 4; n++) {
             int sawNeg = 0, sawPos = 0, sawZero = 0, sawFwd = 0, sawBwd = 0, sawNoAdd = 0;
             int oneCases = cases / 4, e;
             register_fixture(ONE_NAMES[n]);
@@ -12700,7 +12760,7 @@ static int test_hook_twins(void)
                 c.N = (xs() % 3u) ? (uint8_t)((value >> 7) & 1u) : (uint8_t)(xs() & 1u);
                 c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
 
-                for (e = 0; e < 14; e++) {
+                for (e = 0; e < 15; e++) {
                     if (strcmp(ONE[e].name, ONE_NAMES[n]) != 0) continue;
                     sub += diff_run(ONE_NAMES[n], pre, c, ONE[e].tw, ONE[e].or_,
                                     LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS, t, &printed);

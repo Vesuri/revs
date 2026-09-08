@@ -17525,7 +17525,8 @@ void hook_advance_gen_place_nurburg(void) { hook_advance_gen_place_at(0x53FCu, 0
    ⚠ It REPLACES the engine's `|d| / 2` with `d * $CD / 256` — and drops the absolute value with
    it, so a negative difference stays negative through the multiply's high byte.  $CD/256 = 0.801,
    so these four circuits sit their horizon about 60% wider than Silverstone's halving does.
-   Donington does NOT share this: it patches the same site to its own $57B6 instead.
+   Donington patches the same site to its own $57B6, which runs abs8 and then falls INTO this
+   body — hook_horizon_half_width_abs_doning, just below.
 
    Exit ABI: mul8's — A = the product's high byte, math_lo its low, N/Z from math_lo, C = 0 and V
    the last shift-and-add's (untouched when the multiplier contributes no add).
@@ -17543,6 +17544,54 @@ void hook_horizon_half_width_scale(void)
     math_hi = cpu.A;        /* the difference becomes the multiply's addend */
     math_lo = 0xCDu;        /* $CD/256 = 0.801, the circuit's own horizon scale */
     mul8_noinit();
+}
+
+/* $57B6 (Donington Park) — THE SAME HORIZON SCALE, WITH THE ABSOLUTE VALUE KEPT.  Donington
+   patches the same $2542 site as the other four, but to a body that runs the engine's own
+   `JSR abs8` first and only then falls into the shared `d * $CD / 256` at $53D0.  So its
+   horizon width is |d| * 0.801 where the other four carry a negative difference straight
+   through the multiply — the one circuit whose horizon cannot come out on the wrong side.
+   ⚠ abs8 tests the CALLER'S N, not bit 7 of A: the flag $2542's SBC left standing.
+
+   SABOTAGE (each must FAIL; counts measured on the fixture's 1000 cases, not predicted):
+   S119 the abs8 is dropped (the other four circuits' body)       ->  326/1000
+   S120 the magnitude is taken from bit 7 of A, not the N flag    ->  110/1000
+   S121 the scale is applied before the magnitude                 ->  630/1000
+   S122 multiplier $CD -> $CC                                     ->  805/1000
+   ⚠ S122 edits the SHARED body, so it fails hook_horizon_half_width_scale (3312) as well —
+   which is the point: the two twins differ only by the abs8, and that is what S119 gates. */
+void hook_horizon_half_width_abs_doning(void)
+{
+    abs8();                             /* $57B6 — the engine's own call, kept */
+    hook_horizon_half_width_scale();    /* $57B9 JMP $53D0 — and then the shared scale */
+}
+
+/* $53E9 (Donington Park) — THE SECTION STEP FORWARD, TWICE WHERE THE ROAD RAN VERY SHORT.
+   advance_player_section's forward call at $24DE, which arrives with A = edge_nearest_section
+   (the subdivision count, already known below $0C on this arm).  Silverstone builds one
+   section; Donington builds a SECOND when the count is below $0B, so the walk catches up
+   faster on the circuit's shortest sections.
+
+   Exit ABI: the CMP's flags stand at the return — build_section_ahead is native and touches no
+   cpu field — so they are replayed here even though advance_player_section discards them.
+
+   SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
+   S123 the second section is never built                         -> 2554/4000
+   S124 the threshold is $0C, not $0B                             ->  790/4000
+   S125 the second build happens on the OTHER side of the test    -> 4000/4000
+   S126 the CMP's carry is left as it arrived                     -> 1975/4000 */
+void hook_section_ahead_doning(void)
+{
+    uint8_t count = cpu.A;                              /* $53E9 CMP #$0B */
+    uint8_t diff  = (uint8_t)(count - 0x0Bu);
+
+    cpu.C = (uint8_t)(count >= 0x0Bu);
+    cpu.Z = (uint8_t)(diff == 0u);
+    cpu.N = (uint8_t)((diff >> 7) & 1u);
+
+    if (count < 0x0Bu)
+        build_section_ahead_core();                      /* $53ED — the extra section */
+    build_section_ahead_core();                          /* $53F0 — the ordinary one */
 }
 
 /* $54EB (Brands Hatch) / $53D7 (Donington) / $59E1 (Oulton) / $59C1 (Snetterton) /
