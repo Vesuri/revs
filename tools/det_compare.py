@@ -36,7 +36,7 @@ STACK_HI = 0x01FF   # last byte of page 1
 #                 (src/gen/revs_native.c, irq1v_band_schedule)
 # ⭐ EMPTY, AND IT SHOULD STAY EMPTY.  A relocated pair is published back into mem[] — at its
 # producer's 6502-ABI shim where there is one (hypot_max $7A/$7B, bearing $8A/$8B,
-# model_accum_entry $38/$39), or at the producer itself where there is not (band2_duration
+# car_lateral_speed_entry $38/$39), or at the producer itself where there is not (band2_duration
 # $4F21/$4F22, whose producer is an interrupt entry point).  So a relocated pair stays real game
 # state and this gate keeps covering it.  Adding an entry here blunts the whole-corpus
 # differential; publish the value instead.

@@ -477,7 +477,7 @@ void model_state_marshal_out(void);
 /* The named elements, so a site reads as the quantity rather than as an offset.  Every name here
    already exists in mem.h as a lo/hi pair; symbols.csv carries the evidence for each. */
 #define MS_HEADING_STEP  2u    /* heading_step  — the frame's heading increment */
-#define MS_ACCUM         8u    /* model_accum   — the hand-integrated accumulator */
+#define MS_LATERAL_SPEED         8u    /* car_lateral_speed   — the hand-integrated accumulator */
 #define MS_SPEED         9u    /* car_speed     — the car's SIGNED 16-bit speed */
 #define MS_SLIP         10u    /* slip_magnitude, and the base of the per-axle slip cluster */
 #define MS_INCREMENT    14u    /* the per-frame increment model_integrate_element adds */
@@ -565,7 +565,7 @@ void hypot_min_marshal_out(void);
    same IN/OUT rule applies.  Its shipping reader is the transliterated FUN_2a5f. */
 void bearing_marshal_in(void);
 void bearing_marshal_out(void);
-void model_accum_entry_marshal_out(void);
+void lateral_speed_entry_marshal_out(void);
 
 /* ⭐⭐ Validation-harness only: scribble every relocated global so neither model in diff_run can
    inherit the other's marshal.  See the banner in revs_native.c. */
@@ -611,7 +611,7 @@ uint8_t road_edge_walk_resume_core(uint8_t section, uint8_t midSlot, uint8_t poi
 uint8_t horizon_half_width_at_core(unsigned horizonPoint);
 uint8_t scale_by_track_gradient_tail_core(uint8_t value, int negative);
 int road_span_advance_core(uint8_t y);
-AddFlags rotate_accum_by_steer_core(void);
+AddFlags rotate_velocity_by_steer_core(void);
 AddFlags rotate_pair_a_by_steer_core(void);
 void section_coord_add_delta_core(uint8_t dst, uint8_t src, const uint8_t dlo[3], const uint8_t dhi[3]);
 SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV);

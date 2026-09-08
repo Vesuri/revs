@@ -1805,7 +1805,7 @@ void race_main_loop_core(RestartDepth depth)
                ⚠ Invisible to every gate we have: validate compares the shim, and `determinism`
                and `-drive` never STEER, so the stale value equals the fresh one in both. */
             PROBE_PHASE(3);  PROBE_SHAPE_PHASE(3);  read_driving_controls();
-            /* the SHIM, for the same reason as phase 5: it publishes model_accum_entry_v back
+            /* the SHIM, for the same reason as phase 5: it publishes lateral_speed_entry_v back
                into mem[$38/$39].  ⚠ Unlike phase 5's, THIS call site is gated by nothing — $38/$39
                read 00/00 at both determinism dump frames, so calling the core here instead
                survives validate, determinism AND determinism-drive.  Dropping the shim's
@@ -2009,7 +2009,7 @@ void bearing_to_section_core(uint8_t sectionByte, uint8_t origin);
 ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin);
 
 /* The driving model's two pure-binary scale helpers (defined with damp_and_derive_loads),
-   used by stage_accum_delta above them in the file. */
+   used by stage_lateral_speed_delta above them in the file. */
 static uint16_t model_scale16(uint16_t value, uint8_t scale);
 static uint16_t model_mul_1_5(uint16_t value);
 
@@ -2038,11 +2038,11 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect);
    every one through its core so the whole chain is one native call sequence, not shim hops. */
 static void compute_car_angles_core(uint8_t headingHi, uint8_t headingLo);
 static void rotate_state_pair_core(uint8_t dest, uint8_t source, uint8_t mode);
-static void stage_accum_delta_core(void);
+static void stage_lateral_speed_delta_core(void);
 void update_grip_limits_core(void);
 EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY);
 static void update_slip_sound_core(uint8_t axle, uint8_t ambientY);
-AddFlags rotate_accum_by_steer_core(void);
+AddFlags rotate_velocity_by_steer_core(void);
 AddFlags rotate_pair_a_by_steer_core(void);
 static void damp_and_derive_loads_core(void);
 static void apply_drag_terms_core(void);
@@ -4127,12 +4127,12 @@ void view_origin_marshal_out(void)
         moving" — is road_speed, or the fraction's top nibble when the integer part came out
         zero, so that a crawling car still turns its front wheels.
 
-     2. THE HAND-INTEGRATED ACCUMULATOR.  model_accum_lo/hi is element 8 of the same vector,
+     2. THE HAND-INTEGRATED ACCUMULATOR.  car_lateral_speed_lo/hi is element 8 of the same vector,
         and it is the only element this routine integrates itself.  The sequence is deliberate
-        and looks wrong until you read it twice: the entry value is saved, stage_accum_delta subtracts a
+        and looks wrong until you read it twice: the entry value is saved, stage_lateral_speed_delta subtracts a
         scaled velocity from the accumulator, the next four sub-models therefore run against
         the OFFSET value, and only then is the entry value restored and the frame's real
-        increment (model_accum_delta_lo/hi, 1.5x what stage_accum_delta removed) added.
+        increment (lateral_speed_delta_lo/hi, 1.5x what stage_lateral_speed_delta removed) added.
 
      3. THE OFF-POWER GATE.  Once drive_state reaches 2 — crashed or spinning, the value
         check_crash writes — elements 5..7 of the state vector are forced to zero instead of
@@ -4151,8 +4151,8 @@ void view_origin_marshal_out(void)
 
 
 /* ⚠ Every model cell below is read from mem[] at the point of use and never cached in a local:
-   any of the fifteen sub-models can write any of them, and stage_accum_delta in particular is *supposed* to
-   change model_accum under the four calls that follow it. */
+   any of the fifteen sub-models can write any of them, and stage_lateral_speed_delta in particular is *supposed* to
+   change car_lateral_speed under the four calls that follow it. */
 
 /* mechanism-(B) relocation: the accumulator's entry value ($38/$39) is written by
    apply_driving_model at $46AE and read back by its own restore ($46DF) and by apply_drag_terms
@@ -4164,16 +4164,16 @@ void view_origin_marshal_out(void)
    into this var so that path stays consistent; the shipping chain is core-to-core and never
    touches the cells.  The producer's oracle still writes mem[$38/$39], so the apply_driving_model
    fixture set_ignore's them. */
-static uint16_t model_accum_entry_v;
+static uint16_t lateral_speed_entry_v;
 
 /* ⭐ The 6502-ABI publisher, by the IN/OUT rule (docs/wide-value-cleanup.md).  apply_driving_model
    is the producer and writes the value unconditionally at $46AE, so its shim marshals OUT — which
    is what lets the fixture keep comparing $38/$39 instead of set_ignore'ing them, and lets
    det_compare.py drop its skip.  apply_drag_terms, the consumer, marshals IN (below). */
-void model_accum_entry_marshal_out(void)
+void lateral_speed_entry_marshal_out(void)
 {
-    model_accum_entry_lo = (uint8_t)model_accum_entry_v;
-    model_accum_entry_hi = (uint8_t)(model_accum_entry_v >> 8);
+    lateral_speed_entry_lo = (uint8_t)lateral_speed_entry_v;
+    lateral_speed_entry_hi = (uint8_t)(lateral_speed_entry_v >> 8);
 }
 
 CameraExit apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC)
@@ -4183,18 +4183,18 @@ CameraExit apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC)
     rotate_state_pair_core(8u, 0u, 0xC0u);   /* rotate_state_0_into_8 */
 
     /* $46AE — the accumulator's entry value, for the restore at $46DF (relocated to a wide var). */
-    model_accum_entry_v = model_state_16[MS_ACCUM];
+    lateral_speed_entry_v = model_state_16[MS_LATERAL_SPEED];
 
     /* $46B8-$46CD — the speed split.  |car_speed| as a 16-bit sign-magnitude value: abs16_math
        negates the (hi:lo) pair in place when hi is negative (D=0), and is a no-op otherwise.
        road_speed = |hi|, road_speed_frac = |lo|.  Every register and flag this block leaves is
-       dead: stage_accum_delta opens with `LDA` and `LDY #$58`. */
+       dead: stage_lateral_speed_delta opens with `LDA` and `LDY #$58`. */
     uint16_t speed = model_state_16[MS_SPEED];          /* one word, not two lanes */
     math_lo = (uint8_t)speed;
     if (speed & 0x8000u) {                              /* negative: neg16_math */
         uint16_t v = (uint16_t)(0u - speed);
         math_hi         = (uint8_t)(speed >> 8);        /* neg16_math writes math_hi = the original hi.
-                                                           Faithful but dead scratch: stage_accum_delta
+                                                           Faithful but dead scratch: stage_lateral_speed_delta
                                                            overwrites math_hi before any read, so a sabotage
                                                            of THIS byte alone is unobservable (kept per the
                                                            scratch-write rule; road_speed/math_lo below ARE live). */
@@ -4206,9 +4206,9 @@ CameraExit apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC)
     road_speed_frac = math_lo;
     wheel_spin_rate = road_speed ? road_speed : (uint8_t)(math_lo & 0xF0);
 
-    /* $46CF-$46DA — the four sub-models that run against the OFFSET accumulator.  stage_accum_delta is
-       what offsets it, and what leaves model_accum_delta_lo/hi behind. */
-    stage_accum_delta_core();
+    /* $46CF-$46DA — the four sub-models that run against the OFFSET accumulator.  stage_lateral_speed_delta is
+       what offsets it, and what leaves lateral_speed_delta_lo/hi behind. */
+    stage_lateral_speed_delta_core();
     update_grip_limits_core();
     /* update_engine_revs consumes the caller's CARRY (the coast arm's ADC #7, $49A6) and preserves
        its ENTRY Y on the off-power arms — that Y is the ANDed surface bytes update_grip_limits left
@@ -4228,17 +4228,17 @@ CameraExit apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC)
 
     /* $46DF-$46F5 — restore the entry accumulator, then apply the frame's real increment as one
        16-bit add (D=0 on the driving path — static-map.md §Decimal mode).  The add's exit flags
-       are dead: rotate_accum_by_steer_core opens with LDA. */
+       are dead: rotate_velocity_by_steer_core opens with LDA. */
     {
-        uint16_t accum = model_accum_entry_v
-                       + (uint16_t)(((uint16_t)model_accum_delta_hi  << 8) | model_accum_delta_lo);
-        model_state_16[MS_ACCUM] = accum;
+        uint16_t accum = lateral_speed_entry_v
+                       + (uint16_t)(((uint16_t)lateral_speed_delta_hi  << 8) | lateral_speed_delta_lo);
+        model_state_16[MS_LATERAL_SPEED] = accum;
     }
 
     /* $46F8-$4703 — and the sub-models that want the accumulator at its new value.  Each of the
        two rotations ends in model_integrate_element, on element 8 and on element $0A. */
-    rotate_accum_by_steer_core();
-    /* MOS-seam replay: rotate_accum_by_steer ends in model_integrate_element on element 8, leaving
+    rotate_velocity_by_steer_core();
+    /* MOS-seam replay: rotate_velocity_by_steer ends in model_integrate_element on element 8, leaving
        Y = 8 (its last apply_angle_term source index).  update_slip_sound's silence arm reaches
        OSBYTE 21 (sound_stop_channel) with Y still holding it — a dead input the MOS ignores, but
        the real 6502 passes it, so it is reconstructed here now the core no longer leaves it in cpu. */
@@ -7185,8 +7185,8 @@ void apply_angle_term_at(void)
    layer above the 16-bit arithmetic, where the state vector is treated as vectors and rates
    rather than as numbers.
 
-     $4729 stage_accum_delta      the midpoint offset — accumulator -= v, delta = 1.5v
-     $47A5 rotate_accum_by_steer  the (8, 9) pair turned by the steering angle
+     $4729 stage_lateral_speed_delta      the midpoint offset — accumulator -= v, delta = 1.5v
+     $47A5 rotate_velocity_by_steer  the (8, 9) pair turned by the steering angle
      $47C5 rotate_pair_a_by_steer ...and the (10, 12) pair, with the opposite pair of modes
      $47F9 damp_and_derive_loads  elements 10..13 decayed by 4, then loads 6 and 7 rebuilt
      $48C7 rotate_state_pair      THE 2x2 ROTATION — four apply_angle_term_at calls
@@ -7216,10 +7216,10 @@ void apply_angle_term_at(void)
 #define STEER_ANGLE      2u       /* element 2 (steer_angle) of the heading_sin/heading_cos/steer array */
 
 /* ---------------------------------------------------------------------------
-   $4729  stage_accum_delta — THE MIDPOINT OFFSET  (twin #58)
+   $4729  stage_lateral_speed_delta — THE MIDPOINT OFFSET  (twin #58)
    ---------------------------------------------------------------------------
    Scales element 2 (the heading step) by $58/$100, SUBTRACTS that from the accumulator, and
-   parks 1.5x it in model_accum_delta.  The four sub-models that run next therefore see the
+   parks 1.5x it in car_lateral_speed_delta.  The four sub-models that run next therefore see the
    accumulator at x - v while apply_driving_model restores x and adds +1.5v afterwards — the
    shape of a midpoint integration, and the reason this routine looks like it corrupts state.
 
@@ -7229,22 +7229,22 @@ void apply_angle_term_at(void)
    model_mul_1_5 on 16-bit words, so this twin is arithmetic on locals.  Its exit registers,
    arithmetic scratch ($74-$77) and stack residue ($01FF) are all dead: apply_driving_model's
    next act is `update_grip_limits`, which opens with `LDA #0`.  The fixture verifies the four
-   output cells (model_accum and model_accum_delta) only.
+   output cells (car_lateral_speed and car_lateral_speed_delta) only.
    --------------------------------------------------------------------------- */
-static void stage_accum_delta_core(void)
+static void stage_lateral_speed_delta_core(void)
 {
     /* $4729-$4736 — scale the heading step (state element 2) by $58/256, keeping its sign. */
     uint16_t step   = model_state_16[MS_HEADING_STEP];
     uint16_t scaled = model_scale16(step, 0x58u);
 
     /* $4738-$4746 — the accumulator loses the scaled term for the next four sub-models. */
-    uint16_t accum  = (uint16_t)(model_state_16[MS_ACCUM] - scaled);
-    model_state_16[MS_ACCUM] = accum;
+    uint16_t accum  = (uint16_t)(model_state_16[MS_LATERAL_SPEED] - scaled);
+    model_state_16[MS_LATERAL_SPEED] = accum;
 
     /* $4749-$4750 — and 1.5x what was removed is parked as the midpoint delta. */
     uint16_t delta = model_mul_1_5(scaled);
-    model_accum_delta_lo = (uint8_t)delta;
-    model_accum_delta_hi = (uint8_t)(delta >> 8);
+    lateral_speed_delta_lo = (uint8_t)delta;
+    lateral_speed_delta_hi = (uint8_t)(delta >> 8);
 }
 
 /* ---------------------------------------------------------------------------
@@ -7260,7 +7260,7 @@ static void stage_accum_delta_core(void)
    (10, 12) one, i.e. the two products swap signs between the two rotations, which is what
    makes one turn the opposite way from the other.
    --------------------------------------------------------------------------- */
-AddFlags rotate_accum_by_steer_core(void)
+AddFlags rotate_velocity_by_steer_core(void)
 {
     /* $47A5-$47AF — element 14 = -(element 9 * steer):  bit 7 negates, bit 6 clear stores. */
     mem[MUL_SIGN] = 0x80u;
@@ -7508,10 +7508,10 @@ AddFlags integrate_state_rates_core(void)
 }
 
 /* The 6502-ABI shims. */
-void stage_accum_delta(void)
+void stage_lateral_speed_delta(void)
 {
     model_state_marshal_in();
-    stage_accum_delta_core();
+    stage_lateral_speed_delta_core();
     model_state_marshal_out();
 }
 void damp_and_derive_loads(void)
@@ -7745,10 +7745,10 @@ static void check_wheel_slip_core(uint8_t axle)
 {
     /* $4A91-$4A99 — is the accumulator zero at all?  (the 6502 parks the answer on the stack
        to survive the negate and five shifts; a local carries it here.) */
-    uint16_t accum = model_state_16[MS_ACCUM];
+    uint16_t accum = model_state_16[MS_LATERAL_SPEED];
     int accumZero = (accum == 0u);
 
-    /* $4A9A-$4AA8 — -model_accum << 5, the low byte into element 10 + axle later, the high now. */
+    /* $4A9A-$4AA8 — -car_lateral_speed << 5, the low byte into element 10 + axle later, the high now. */
     uint16_t shifted   = (uint16_t)((uint16_t)(0u - accum) << 5);
     uint8_t  shiftedHi = (uint8_t)(shifted >> 8);
     uint8_t  shiftedLo = (uint8_t)shifted;
@@ -7811,8 +7811,8 @@ static void clamp_slip_to_grip_core(uint8_t axle)
 {
     model_state_16[12 + axle] = 0u;                             /* $4AF7-$4AFC — both lanes */
 
-    slip_magnitude_core(8);                                     /* $4AFF-$4B01 — |model_accum| */
-    mem[SLIP_SIGN] = (uint8_t)(ms_hi(MS_ACCUM) ^ 0x80u);        /* $4B04-$4B09 */
+    slip_magnitude_core(8);                                     /* $4AFF-$4B01 — |car_lateral_speed| */
+    mem[SLIP_SIGN] = (uint8_t)(ms_hi(MS_LATERAL_SPEED) ^ 0x80u);        /* $4B04-$4B09 */
     math_lo = 0x00u;                                            /* $4B0B-$4B0D */
     mem[SLIP_OUT_INDEX] = axle;                                 /* $4B12 */
     store_slip_clamped_core(mem[MEM_grip_limit_alt + axle]);    /* $4B0F/$4B14 */
@@ -8196,7 +8196,7 @@ void update_slip_sound(void)
       either way), but named here so nobody re-derives it.
    3. ⚠⚠ `update_engine_revs` CONSUMES THE CALLER'S CARRY.  The coast arm's `ADC #7` at $49A6
       is reached through six instructions that write no carry at all, so what it adds is
-      7 + whatever C apply_driving_model left in `stage_accum_delta`'s wake.  That is not a
+      7 + whatever C apply_driving_model left in `stage_lateral_speed_delta`'s wake.  That is not a
       readable design and it is exactly what a randomised differential catches.
    4. `update_grip_limits` GIVES THE TWO AXLES OPPOSITE SIGNS of the load term: $4C52's
       `ADC $78,X` reaches hypot_min_lo for axle 0 and hypot_min_hi for axle 1, and those two
@@ -8418,7 +8418,7 @@ static SpinExit begin_spin_from_a_core(uint8_t severity, uint8_t savedX)
 /* ---------------------------------------------------------------------------
    $4C65  apply_drag_terms — TWO SPEED-DEPENDENT TERMS  (twin #83)
    ---------------------------------------------------------------------------
-   The first sub-model past the off-power gate.  Term one: |model_accum_entry_hi| floored at
+   The first sub-model past the off-power gate.  Term one: |lateral_speed_entry_hi| floored at
    road_speed (and DOUBLED while grip_disturbance is non-zero), squared against the same
    magnitude, added into state element 6.  Term two: (road_speed x wing_drag_coeff + 8) times
    term one's pre-square magnitude, added into element 7.  Both grow with speed, both take
@@ -8432,7 +8432,7 @@ static SpinExit begin_spin_from_a_core(uint8_t severity, uint8_t savedX)
 static void apply_drag_terms_core(void)
 {
     /* $4C65-$4C6A — |entry high byte| (abs8 on its own bit 7; $80 stays $80). */
-    uint8_t entry = (uint8_t)(model_accum_entry_v >> 8);
+    uint8_t entry = (uint8_t)(lateral_speed_entry_v >> 8);
     uint8_t magnitude = (entry & 0x80u)          /* $4C6A — the magnitude, before the floor */
                         ? (uint8_t)(-(int)entry) : entry;
     math_hi = magnitude;
@@ -8449,7 +8449,7 @@ static void apply_drag_terms_core(void)
       math_hi = (uint8_t)(p >> 8); }
 
     /* $4C7E-$4C82 — into element 6, with the entry high byte's bit 7 as the sign. */
-    add_signed_into_element_core(6u, (uint8_t)(model_accum_entry_v >> 8));
+    add_signed_into_element_core(6u, (uint8_t)(lateral_speed_entry_v >> 8));
 
     /* $4C85-$4C92 — (road_speed x wing_drag_coeff) + 8, high byte held for the fixed-point step. */
     { unsigned p = revs_mulu16(wing_drag_coeff, road_speed);
@@ -9117,15 +9117,15 @@ void begin_spin_from_a(void)
     model_state_marshal_out();
     sound_queue_exit_abi(0x04u);
 }
-/* 6502-ABI entry: model_accum_entry ($38/$39) is a relocated input to the core (its producer,
+/* 6502-ABI entry: car_lateral_speed_entry ($38/$39) is a relocated input to the core (its producer,
    apply_driving_model, sets the wide var directly and calls the core core-to-core).  Callers that
    still communicate through mem[] — the __t6502 oracle glue, which sets the cells at $46AE then
    JSRs here — get the value marshalled back into the var.  Off the hot path: the shipping chain is
    core-to-core and never touches these cells. */
 void apply_drag_terms(void)
 {
-    model_accum_entry_v = (uint16_t)(((uint16_t)model_accum_entry_hi << 8)
-                                     | model_accum_entry_lo);
+    lateral_speed_entry_v = (uint16_t)(((uint16_t)lateral_speed_entry_hi << 8)
+                                     | lateral_speed_entry_lo);
     model_state_marshal_in();                /* it adds into elements 6 and 7 */
     apply_drag_terms_core();
     model_state_marshal_out();
@@ -15572,7 +15572,7 @@ void relocated_poison(void)
     plot_ptr_v = 0xA5A5u; plot_ptr2_v = 0xA5A6u; plot_ptr3_v = 0xA5A7u;
     hypot_min_v = 0xA5A8u; hypot_max_v = 0xA5A9u;
     edge_nearest_v = 0xA5AAu; car_heading_v = 0xA5ABu; bearing_v = 0xA5ACu;
-    model_accum_entry_v = 0xA5ADu;
+    lateral_speed_entry_v = 0xA5ADu;
     for (unsigned i = 0; i < 3; i++)         car_angle_16[i]    = (uint16_t)(0xA500u + i);
     for (unsigned i = 0; i < CAR_SLOTS; i++) car_distance_16[i] = (uint16_t)(0xA5C0u + i);
     for (unsigned i = 0; i < MODEL_STATE_N; i++) model_state_16[i] = (uint16_t)(0xA5E0u + i);

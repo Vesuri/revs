@@ -5833,7 +5833,7 @@ static int test_body_drivers(void)
 
     if (want("apply_driving_model")) {
         int subFail = 0, splitRan = 0, offPower = 0, onPower = 0;
-        /* ⭐ model_accum_entry ($38/$39) is relocated out of mem[] into a native uint16_t
+        /* ⭐ car_lateral_speed_entry ($38/$39) is relocated out of mem[] into a native uint16_t
            (wide-value cleanup, mechanism B), but the cells are NOT ignored here: this routine's
            6502-ABI shim marshals the value back out, so the twin and the oracle still agree on
            them byte for byte.  Blunting the gate was the old way round. */
@@ -8536,7 +8536,7 @@ static int test_model_arithmetic(void)
 /* ==========================================================================
    TWINS #58-#66 — THE DRIVING MODEL'S ROTATIONS AND INTEGRATIONS
    --------------------------------------------------------------------------
-   $4729 stage_accum_delta, $47A5 rotate_accum_by_steer, $47C5 rotate_pair_a_by_steer,
+   $4729 stage_lateral_speed_delta, $47A5 rotate_velocity_by_steer, $47C5 rotate_pair_a_by_steer,
    $47F9 damp_and_derive_loads, $48C7 rotate_state_pair, $48B9 rotate_state_0_into_8,
    $48C1 rotate_state_6_into_3, $48EF integrate_car_position, $4937 integrate_state_rates.
 
@@ -8546,7 +8546,7 @@ static int test_model_arithmetic(void)
    to anything but an AXY comparison.  liveMask therefore keeps A, X, Y, S and the flags, and
    the sabotage list below includes one deleted register write for exactly this reason.
 
-   ⚠ TWO OF THEM READ THE CALLER'S N through scale16_by_y: stage_accum_delta hands it the
+   ⚠ TWO OF THEM READ THE CALLER'S N through scale16_by_y: stage_lateral_speed_delta hands it the
    `LDA $62E2` that loaded the value's high byte, and damp_and_derive_loads hands it a
    subtract's and an add's.  Those are computed INSIDE the routine, so unlike twins #50-#57
    the incoming N does not matter here — but it is randomised anyway, because a twin that
@@ -8558,8 +8558,8 @@ static int test_model_arithmetic(void)
    entries take no arguments at all, which is what makes them worth their own two cases: what
    they prove is the constant triple, and nothing else.
    ========================================================================== */
-void stage_accum_delta(void);       void stage_accum_delta__t6502(void);
-void rotate_accum_by_steer(void);   void rotate_accum_by_steer__t6502(void);
+void stage_lateral_speed_delta(void);       void stage_lateral_speed_delta__t6502(void);
+void rotate_velocity_by_steer(void);   void rotate_velocity_by_steer__t6502(void);
 void rotate_pair_a_by_steer(void);  void rotate_pair_a_by_steer__t6502(void);
 void damp_and_derive_loads(void);   void damp_and_derive_loads__t6502(void);
 void rotate_state_pair(void);       void rotate_state_pair__t6502(void);
@@ -8579,8 +8579,8 @@ static int test_model_rotations(void)
 
     struct { const char* name; void (*nat)(void); void (*ref)(void); int cases; }
       list[9] = {
-        { "stage_accum_delta",      stage_accum_delta,      stage_accum_delta__t6502,      2000 },
-        { "rotate_accum_by_steer",  rotate_accum_by_steer,  rotate_accum_by_steer__t6502,  2000 },
+        { "stage_lateral_speed_delta",      stage_lateral_speed_delta,      stage_lateral_speed_delta__t6502,      2000 },
+        { "rotate_velocity_by_steer",  rotate_velocity_by_steer,  rotate_velocity_by_steer__t6502,  2000 },
         { "rotate_pair_a_by_steer", rotate_pair_a_by_steer, rotate_pair_a_by_steer__t6502, 2000 },
         { "damp_and_derive_loads",  damp_and_derive_loads,  damp_and_derive_loads__t6502,  3000 },
         { "rotate_state_pair",      rotate_state_pair,      rotate_state_pair__t6502,      3000 },
@@ -8591,12 +8591,12 @@ static int test_model_rotations(void)
       };
     for (i = 0; i < 9; i++) register_fixture(list[i].name);
 
-    /* ⭐ stage_accum_delta (i == 0) and damp_and_derive_loads (i == 3) are verified RESULT-ONLY:
+    /* ⭐ stage_lateral_speed_delta (i == 0) and damp_and_derive_loads (i == 3) are verified RESULT-ONLY:
        their native twins are plain 16-bit binary C that leaves nothing in the cpu, so the fixture
        pins D = 0 (the driving model's real precondition — docs/static-map.md §Decimal mode),
        drops the register/flag comparison, and ignores the oracle's arithmetic scratch ($74-$78)
        and stack residue ($01FF), which are the 6502's register spill and dead the moment the
-       routine returns.  stage_accum_delta scales through scale16_by_y (PHP/PLP) and mul16_by_1_5
+       routine returns.  stage_lateral_speed_delta scales through scale16_by_y (PHP/PLP) and mul16_by_1_5
        (PHA/PLA), so its residue is $74-$77 + $01FF; damp also spills $78. */
     static const uint16_t stageIgnore[] = { 0x0074, 0x0075, 0x0076, 0x0077, 0x01FF };
     static const uint16_t dampIgnore[]  = { 0x0074, 0x0075, 0x0076, 0x0077, 0x0078, 0x01FF };
@@ -8617,7 +8617,7 @@ static int test_model_rotations(void)
         int subFail = 0, decimal = 0, negative = 0, accumulate = 0, carried = 0;
         int cases = list[i].cases * scale;
         int resultOnly = (i == 0 || i == 3 || i == 4 || i == 5 || i == 6);
-        /* rotate_accum_by_steer (i == 1) and rotate_pair_a_by_steer (i == 2) reach the idiomatic
+        /* rotate_velocity_by_steer (i == 1) and rotate_pair_a_by_steer (i == 2) reach the idiomatic
            binary neg16_math_noinit; like the result-only pair they run only with D = 0 (the driving
            model's precondition — docs/static-map.md §Decimal mode), so they pin D = 0 while keeping
            the full register/flag comparison. */
@@ -9184,7 +9184,7 @@ static int test_sub_models(void)
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
             c.D = pinD0 ? 0 : (uint8_t)(xs() % 4 == 0);
             if (c.D) decimal++;
-            /* apply_drag_terms consumes model_accum_entry ($38/$39), relocated to a native wide
+            /* apply_drag_terms consumes car_lateral_speed_entry ($38/$39), relocated to a native wide
                var; its 6502-ABI shim marshals the value in from mem[$38/$39], so the randomized
                pre[] cells reach the twin with no fixture seeding needed. */
             subFail += diff_run(list[i].name, pre, c, list[i].nat, list[i].ref,

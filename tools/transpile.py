@@ -733,7 +733,7 @@ VALIDATE_FUNCS = {
     # (docs/faithfulness-seam.md §8), and that is stated up front so the framerate is not
     # quoted as the reason.  What they buy is the last of the body's per-frame data
     # structures getting names: the driving model's 16-bit state vector (model_state_lo/hi and
-    # the hand-integrated model_accum), the object plotter's four-cell argument block
+    # the hand-integrated car_lateral_speed), the object plotter's four-cell argument block
     # (plot_x / plot_line / proj_width / plot_shape) and the 24 per-slot object arrays.
     0x46A1,
     0x2AD1,
@@ -907,8 +907,8 @@ VALIDATE_FUNCS = {
     # ⭐⭐ TWINS #58-#66 — THE ROTATIONS AND THE INTEGRATIONS, apply_driving_model's third
     # group.  Every leaf underneath these was already a twin (#50-#57), so this is the ordering
     # rule's happy case: nine drivers over an arithmetic layer that is already real C.
-    #   $4729 stage_accum_delta      ( 42 B) the midpoint offset: accumulator -= v, delta = 1.5v
-    #   $47A5 rotate_accum_by_steer  ( 32 B) the (8, 9) pair rotated by the steering angle
+    #   $4729 stage_lateral_speed_delta      ( 42 B) the midpoint offset: accumulator -= v, delta = 1.5v
+    #   $47A5 rotate_velocity_by_steer  ( 32 B) the (8, 9) pair rotated by the steering angle
     #   $47C5 rotate_pair_a_by_steer ( 32 B) ...and the same for the (10, 12) pair
     #   $47F9 damp_and_derive_loads  (116 B) elements 10..13 decayed by 4, then loads 6 and 7
     #   $48C7 rotate_state_pair      ( 40 B) THE 2x2 ROTATION — four apply_angle_term_at calls

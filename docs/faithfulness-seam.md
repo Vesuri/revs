@@ -96,7 +96,7 @@ purely for this reason — same 0/700 differential, same framerate (465 vs 467 p
    ⭐ Twins #6, #7 and #8 (`apply_driving_model`, `draw_track_object`, `fill_dash_edge_columns` —
    136, 61 and 35 bytes) were written on that basis with **no performance claim made at all**, and
    what they bought is exactly what the rule predicts: the driving model's 16-bit state vector
-   (`model_state_lo`/`_hi` and the hand-integrated `model_accum`), the object plotter's four-cell
+   (`model_state_lo`/`_hi` and the hand-integrated `car_lateral_speed`), the object plotter's four-cell
    argument block (`plot_x` / `plot_line` / `proj_width` / `plot_shape`) and the 24 per-slot
    object arrays now have names, and `docs/rename.md` gained five well-evidenced open items
    instead of a shrug.  When a twin's honest reason is "this is how the subsystem gets named",

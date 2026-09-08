@@ -719,19 +719,21 @@ and 18 got the second one when they became twins.  What came out:
   `model_state[X] += model_state[14]` on both halves — called with X=8 and X=`$0A`.  What is
   identified: **2** is the angular rate `integrate_car_position` (`$48EF`) adds into
   `car_heading_lo/hi`; **3/4/5** are the rates of **0/1/2**, applied by `integrate_state_rates`
-  (`$4937`) through the extra fraction byte `model_state_frac`; **8** is `model_accum`, the one
-  element `apply_driving_model` integrates by hand, and `rotate_state_0_into_8` (`$48B9`) is what
-  resolves the pair **0/1** into **8/9**; **9** is `car_speed_lo/hi`, signed, whose magnitude the
+  (`$4937`) through the extra fraction byte `model_state_frac`; **8** is `car_lateral_speed`, the car's
+  SIGNED LATERAL velocity ([DERIVED] 2026-09-08: `rotate_state_0_into_8` (`$48B9`) resolves the pair
+  **0/1** into **8/9**, i.e. one velocity vector in the CAR's frame, and on a real BBC element 8 is
+  `$0000` for the whole start straight and swings ±`$1F00` under `--hold-steer`), and the one element
+  `apply_driving_model` integrates by hand; **9** is `car_speed_lo/hi`, its forward partner, signed, whose magnitude the
   routine splits into `road_speed` (integer) and `road_speed_frac`; **$0A..$0D** are what
   `damp_and_derive_loads` (`$47F9`) halves twice a frame and `check_wheel_slip` (`$4A91`) writes.
-  Elements 5..7 are forced to zero once `drive_state` reaches 2.  ⚠ What those elements are
-  PHYSICALLY is still open — `docs/rename.md`.
+  Elements 5..7 are forced to zero once `drive_state` reaches 2.  ⚠ What the REMAINING elements are
+  physically (0/1 in world axes, 6/7, `$0A..$0D` per axle, 14) is still open — `docs/rename.md`.
   ⚠ `$62DF` (`loop_counter_hi`) and `$62EF` sit inside those address ranges and are **not** members
   — the vector stops at element 14, which is why it is 15 long and not 16.
-- **`model_accum`'s integration is a midpoint step, and it reads as a bug until you read it twice**:
-  the entry value is saved into `model_accum_entry_lo/hi`, `$4729` *subtracts* a scaled velocity so
+- **`car_lateral_speed`'s integration is a midpoint step, and it reads as a bug until you read it twice**:
+  the entry value is saved into `lateral_speed_entry_lo/hi`, `$4729` *subtracts* a scaled velocity so
   the next four sub-models run against the offset value, and only then is the entry value restored
-  and `model_accum_delta_lo/hi` (1.5x what was removed) added.
+  and `lateral_speed_delta_lo/hi` (1.5x what was removed) added.
 - **THE OBJECT PLOTTER HAS A FOUR-CELL ARGUMENT BLOCK**, and slots 15 and 16 are its only two
   producers: `plot_x` (`$35`, always `4 * an azimuth + $50`, in 2-pixel units), `plot_line` (`$36`,
   a scan line), `proj_width` (`$2A`) and `plot_shape` (`$37`).  ⚠⚠ The first two were called

@@ -24,20 +24,21 @@ what it computes.  Nothing to do there.
 
 ---
 
-## `model_accum_lo`/`model_accum_hi` (`$62D8`/`$62E8`) — element 8 of what, physically?
+## The driving model's fifteen state elements — what each is PHYSICALLY
 
-Named for its ROLE (the one element `apply_driving_model` integrates by hand) rather than its
-meaning, and the role is unusually visible: saved on entry, offset downward by `stage_accum_delta`
-for the duration of four sub-models, restored, then advanced by 1.5x what was removed.  A quantity
-that sub-models are shown at `x - v` while it really becomes `x + 1.5v` looks like a midpoint
-integration of a position or a heading.  `check_wheel_slip` shifts it left 5 into
-`model_state[$0A]`, `rotate_state_0_into_8` is what resolves it out of elements 0/1, and
-`rotate_accum_by_steer` rotates the (8, 9) pair by the steering angle.
+Element **8** is settled (`car_lateral_speed`, measured 2026-09-08) and **9** (`car_speed`), **2**
+(the angular rate) and **3/4/5** (the rates of 0/1/2) were already `[DERIVED]`.  That leaves
+**0/1** (the same velocity vector in world axes, if element 8's rotation reading generalises),
+**6/7**, **$0A..$0D** (per-axle, written by `check_wheel_slip` and halved twice a frame by
+`damp_and_derive_loads`) and **14** (what `model_integrate_element` adds in).
 
-The same question covers the whole vector: **the fifteen sub-models all have names now, and not one
-of the fifteen ELEMENTS does.**  Settle it the cheap way, one element at a time: park the car, drive
-straight, then steer, and watch which elements track speed, which track heading and which are
-per-axle.  `amiga/dash_state.gdb` is the pattern for the probe.
+⭐ **Element 8 settled in one run and the recipe generalises**: `--peek` the pair on the reference
+loop over a plain `--drive` and a `--drive --hold-steer=left`, and read the STRAIGHT phase, not the
+tail — a quantity that is identically `$0000` while the car runs straight and large the moment the
+wheel goes over is a lateral one, and one that tracks `car_speed` is longitudinal.  ⚠ Read only the
+frames before the car leaves the track: after the reset every element is wild and the comparison
+inverts.
+
 
 ## `drive_state` (`$002D`) — three values written, and only the `>= 2` test is understood
 

@@ -217,7 +217,7 @@ void apply_driving_model(void)
     car_angle_marshal_out();              /* compute_car_angles_core rebuilt the sin/cos pair */
     car_heading_marshal_out();            /* ...and its tail calls integrate_car_position, which
                                              advances it — core-to-core, so publish it here */
-    model_accum_entry_marshal_out();       /* $46AE's value back into mem[$38/$39] */
+    lateral_speed_entry_marshal_out();       /* $46AE's value back into mem[$38/$39] */
     model_state_marshal_out();    /* ...and publish it back to mem[] */
     view_origin_marshal_out();
     /* A, X, Y and the flags come back from update_camera_and_drive_state untouched. */
@@ -379,11 +379,11 @@ void kbd_test_key(void)
     cpu.N = ((uint8_t)(cpu.X - 0xFFu)) >> 7;
 }
 
-void rotate_accum_by_steer(void)
+void rotate_velocity_by_steer(void)
 {
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
     car_angle_marshal_in();                   /* it multiplies by a car angle */
-    AddFlags f = rotate_accum_by_steer_core();  /* ends in model_integrate_element on element 8 */
+    AddFlags f = rotate_velocity_by_steer_core();  /* ends in model_integrate_element on element 8 */
     cpu.X = 8u; cpu.Y = 8u;                      /* X live at exit; Y = last apply_angle_term src */
     cpu.A = f.hi; cpu.C = f.carry; cpu.V = f.overflow; cpu.N = f.neg; cpu.Z = f.zero;
     model_state_marshal_out();    /* ...and publish it back to mem[] */

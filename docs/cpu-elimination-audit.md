@@ -81,7 +81,7 @@ caller and written at the code (V-escape rule + PHP-residue rule from the prior 
 | 2 | Pedals / gears / driving-controls driver (`read_pedals_and_gears`, `read_driving_controls`) | 2 | ✅ |
 | 3 | Text / screen-address (`mode5_addr`, `mode5_addr_for_cell`, `vdu_char_emit`/`_wide`/`_def`, `draw_gear_indicator`, `adc_read`) | 7 | ✅ |
 | 4 | Slip / sound (`clamp_slip_to_grip`, `derive_slip_reference`, `check_wheel_slip`, `store_slip_*`, `update_slip_sound`, `sound_queue`, `sound_stop_channel`, `sound_osword`) | 11 | ✅ |
-| 5 | Sub-models / physics (`begin_spin_from_a`, `update_camera_and_drive_state`, `update_engine_revs`, `apply_driving_model`, `compute_car_angles`, `integrate_*`, `apply_drag_terms`, `update_grip_limits`, `rotate_*`, `stage_accum_delta`, `model_integrate_element`, `scale_by_track_gradient`, `apply_angle_term_at`, `rotate_state_pair`) | 16 | ✅ |
+| 5 | Sub-models / physics (`begin_spin_from_a`, `update_camera_and_drive_state`, `update_engine_revs`, `apply_driving_model`, `compute_car_angles`, `integrate_*`, `apply_drag_terms`, `update_grip_limits`, `rotate_*`, `stage_lateral_speed_delta`, `model_integrate_element`, `scale_by_track_gradient`, `apply_angle_term_at`, `rotate_state_pair`) | 16 | ✅ |
 | 6 | Objects / signs (`build_road_sign`, `write_object_slot`, `scale_shape_vectors`, `build_sign_origin`, `note_object_contact`, `store_object_flags`, `reject_object_slot`, `draw_track_object`, `plot_object`) | 9 | ✅ |
 | 7 | View pipeline (`fill_object_gap`, `plot_shape_edges`, `plot_view_src_line`, `mark_line_surfaces`, `fill_line_attr`, `fill_edge_column_run`, `column_gap_walk`, `surface_colour_at`, `view_paint_lines`, `edge_x_offscreen`, `shift_near_edge_points`, `emit_edge_width_offset`, `emit_edge_bearing`, `road_edge_walk`) | ~14 | ✅ |
 | 8 | Computational helpers still on `cpu` (`abs8`, `abs16_math`, `mul8_*`, `mul16_by_1_5`, `scale16_by_y`, `div16by8`, `horizon_half_width_at`, `road_edge_side`, `derive_endpoint`, `place_car_world_coords`, `place_player_in_section`, `road_edge_walk_subdivide`, `paint_lines_short`, …) | ~20 | ✅ |
@@ -215,7 +215,7 @@ The physics sub-models. All 16 cores are cpu-free; the only residual `cpu.` in t
 
 - **`abs16_math` on the render/physics path is a plain 16-bit negate (D=0).** `apply_driving_model`'s
   speed split becomes `if (hi & 0x80) { v = -(hi:lo); ... }` — one `uint16_t`. Its scratch write
-  `math_hi = original_hi` is **faithful but provably dead**: `stage_accum_delta` (the next call) opens
+  `math_hi = original_hi` is **faithful but provably dead**: `stage_lateral_speed_delta` (the next call) opens
   with `LDA` and overwrites `math_hi` before any read, so a sabotage of THAT byte alone is unobservable
   (0 mismatch — a "no change at all" survivor, kept per the scratch-write rule). The LIVE outputs of the
   same arm — `road_speed` (the negated high byte) and `math_lo` — ARE caught (99 mismatch each). When a

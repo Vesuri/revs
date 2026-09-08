@@ -146,7 +146,7 @@ in **either** 2- or 4-hex-digit notation, `($xx),Y`). Verdicts:
 | `hypot_max` | $7A/$7B | **✅ B DONE** | `hypot_max_v` (revs_native.c). All-native, unindexed, and CLEAN of both channel tests — producer `bearing_to_section_core` and consumer `point_distance_hypot_core` are both native and the shipping glue between them (`FUN_2a5f`) never touches $7A/$7B. The one other tenant, `plot_view_src_line`'s PVS_BYTE/PVS_MODE, keeps the cells — see the IN/OUT rule below |
 | `point_dist` | $7C/$7D | ⚠ eligible ONLY with shim marshal-OUT (all 32 refs are native as of 2026-09-03; the gate is the differential, not a ref) | a SHIPPING transliterated reader on the patched arm — `region_23d8` (the FOURTH test below). Marshal out in `emit_edge_bearing_at_cursor()`, `emit_edge_bearing()` and `point_distance_hypot()`; proof needs a Brands frame-buffer differential, not a fixture |
 | `bearing` | $8A/$8B | **✅ B DONE** (`bearing_v`) | same shape, lower risk: shipping `FUN_2a5f` (the car projector, $2A5F) calls native `bearing_to_section()` and then reads `bearing_lo`/`bearing_hi` into `object_bearing` ($0380/$0398). Not a patched arm, so `make determinism` DOES gate it |
-| `model_accum_entry` | $38/$39 | **✅ B DONE** | `model_accum_entry_v` (revs_native.c). All-native, unindexed — but it HAD the oracle-glue channel below, resolved by shim marshalling |
+| `car_lateral_speed_entry` | $38/$39 | **✅ B DONE** | `lateral_speed_entry_v` (revs_native.c). All-native, unindexed — but it HAD the oracle-glue channel below, resolved by shim marshalling |
 | `edge_nearest` | $10/$11 | **✅ B DONE (2026-09-03)** | `edge_nearest_v` (revs_native.c); one 16-bit compare in `road_edge_walk_core`, marshalled at `road_edge_walk` (IN+OUT), `build_track_geometry` (IN+OUT) and `check_crash` (IN). ⚠ The init stays lane-preserving because $24FD arms only the HIGH lane — and the surviving low lane is DEAD IN PRACTICE: measured 2872 compares over the fixture with `distHi == $FF` in **zero** of them, which is why two sabotages survive. The blocker had been `$11` read by non-native `check_crash` ($111E); twin #169 made it native, and a strict re-scan finds all 7 refs in native routines. |
 | `car_heading` | $0A/$0B | **✅ B DONE (2026-09-03)** | `car_heading_v`; seven call sites, marshalled at six shims. ⭐ `apply_driving_model` needs marshal-**OUT** although it is not the producer — its core tail-calls `integrate_car_position_core` core-to-core (the transitive-producer trap). The block had been **half instrument error**: `build_player_car` ($11CE) is native as of twin #170, and the *second* blocker, `loader_stub`, was never a routine — a stale `func` row at `$1200`, nine bytes into `build_player_car`, made that routine's OWN writes at `$11FE`/`$1205` read as non-native references. Retagged to `loader_image_entry`/`note`. |
 | `math_lo/hi` | $74/$75 | ✗ **BLOCKED — settled 2026-09-02, do not re-open as a pair relocation** | The re-audit the EIGHTH lesson called for is DONE, and it cleared the indexing charge while confirming the block on other grounds. **Test 2 (indexing) PASSES:** all three indexed sites (`SBC/STA 0x74,X` $146E in `build_section_step_delta`, `ROR 0x74,X` $2B18 in `step_delta_halve` — *not* `draw_track_object`, which was an address-ordering misattribution) index the **step-delta vector** (lows $74/$75/$76, highs `point_delta_hi[0..2]` $83/$84/$85), a DIFFERENT TENANT, which under the EIGHTH lesson does not block a relocation. Tenancy now recorded on the cells themselves in `symbols.csv` (commit 67fb302). **Test 1 (all-native) FAILS by 6 refs in 4 routines**, each a self-contained local scratch use in its own tenant: `$262D` (an unnamed 6×256 DELAY LOOP, `DEC $74/BNE`), `$2B18` `step_delta_halve`, `$31D0` (a dash-code plotter loop, `$74` a row counter and `$75` its limit, `(plot_ptr),Y` store), `$49BB` (an unnamed seeder, `$74` scratch across 8 instructions). **But the decisive blocker is neither** — it is the HYBRID ORACLE GLUE of the 2026-08-30 FINDING below, which no amount of nativization removes: the math primitives (`mul8`/`mul8_noinit`/`div16by8`/`neg16_math`/`abs16_math`) are the pair's own operators and are already native, so every `__t6502` body that multiplies hands operands to a native child **through `mem[$74/$75]`**. ⭐ **The right mechanism here is not (B) at all** — see §`math_lo/hi` is a SCRATCH pair, so the win is PER-TWIN below |
@@ -164,7 +164,7 @@ and remember `mul8`/`div16by8`/… ARE native (in the set). (2) zero-page indexe
 indexed cells eligible. Scan with `0x0*7[456],[XY]`. With both fixed, the table above is stable.
 **So (B) for zp scratch is NOT blocked as a class** — four genuine render/model pairs relocate now.
 
-⚠⚠ **THIRD eligibility test, learned by relocating `model_accum_entry` $38/$39 (B DONE):
+⚠⚠ **THIRD eligibility test, learned by relocating `car_lateral_speed_entry` $38/$39 (B DONE):
 all-native + unindexed is NECESSARY, NOT SUFFICIENT — check the oracle-glue → native-core
 channel.** A `__t6502` oracle body JSRs the *plain* (native) name of any sub-routine that is
 itself a twin, not that sub-routine's `__t6502` (e.g. `apply_driving_model__t6502` calls native
@@ -174,7 +174,7 @@ wide var — the oracle path silently reads a stale var and the fixture fails BR
 scattered across model_state), not at the relocated cell. This is the SAME class recorded for
 [[math_lo/hi]] (commit 2cbb2c0).
 - **Resolvable** when the channel is *one-directional input to a single child*: make that child's
-  6502-ABI **shim** marshal the cell in — `void apply_drag_terms(void) { model_accum_entry_v =
+  6502-ABI **shim** marshal the cell in — `void apply_drag_terms(void) { lateral_speed_entry_v =
   (hi<<8)|lo; apply_drag_terms_core(); }`. The hot path stays core-to-core and var-only (the shim
   is validation-only); the oracle glue gets the value through the cell as before. Sabotaging the
   shim to `= 0` must FAIL the standalone fixture — that proves the channel is load-bearing, not
@@ -337,7 +337,7 @@ back into `mem[]`** where the 6502 wrote it:
 | Pair | Published at | Because |
 |---|---|---|
 | `hypot_max` $7A/$7B, `bearing` $8A/$8B | the producer's 6502-ABI **shim** | a shim exists, and the IN/OUT rule places it |
-| `model_accum_entry` $38/$39 | `apply_driving_model`'s shim (+ the driver now calls that shim) | was IN-only; the producer never published |
+| `car_lateral_speed_entry` $38/$39 | `apply_driving_model`'s shim (+ the driver now calls that shim) | was IN-only; the producer never published |
 | `band2_duration` $4F21/$4F22 | **the producer itself**, in band 1's arm | `irq1v_band_schedule` IS the 6502 entry point — `bbc_hw.cpp` calls it straight from interrupt context, so there is no shim to hang it on |
 
 Both `set_ignore`s are gone, `RELOCATED = []`, and the arithmetic stays wide in every case — a
@@ -345,7 +345,7 @@ publish is two byte stores at one point, not a return to byte-lane handling.
 
 ⚠ **One of the four publishes is gated only by argument, and it is worth knowing which.** Dropping
 or lane-swapping a publish fails its own fixture in every case (P1/P2 → `apply_driving_model`,
-P3/P4 → `irq1v_band_schedule`). But the *driver call site* for `model_accum_entry` — core vs shim in
+P3/P4 → `irq1v_band_schedule`). But the *driver call site* for `car_lateral_speed_entry` — core vs shim in
 `race_main_loop` phase 4 — survives `validate`, `determinism` **and** `determinism-drive`, because
 $38/$39 read `00/00` at both dump frames (checked in the goldens, not assumed). That is the
 "no change at all" class, not a fixture gap: there is nothing for a differential to see. The same
@@ -531,7 +531,7 @@ in the interim but the final store stays two non-adjacent byte writes until relo
 
 | Base | lo/hi | Shape | gen readers | Mechanism | Status |
 |---|---|---|---|---|---|
-| `MODEL_STATE` | $62D0/$62E0 | 15×16-bit driving-model state (stride $10) — incl. `heading_step` (element 2, $62D2/$62E2) and `slip_magnitude` (element $0A, $62DA/$62EA) | ~47 | A now; B blocked | **`heading_step` ✅ A COMPLETE — nothing left to convert** (see below); **`slip_magnitude` ✅ A DONE** — `steer_demand_from_slip` ($15F4) and `store_slip_signed` ($4B51) held the last lane pairs. **And the other elements are now closed too**, by audit rather than by conversion: the whole vector is marshalled through `model_state_16[]`, and of the per-element lane names only five are still referenced in `revs_native.c` — `car_speed_lo/hi`, `heading_step_lo/hi`, `model_accum_lo` — every one of them at a site that is **genuinely 8-bit**: a bit-7 sign test (`abs8` on `car_speed_hi`, the `BIT heading_step_hi` at $14437), the high byte used AS the sign into `add_signed_into_element`, `section_yaw - heading_step_hi` at $24B9, and $4DD4's `SEC / ROR heading_step_lo`, which rotates the low lane alone and leaves the high byte untouched. Nothing here is a lane pair pretending to be a word. |
+| `MODEL_STATE` | $62D0/$62E0 | 15×16-bit driving-model state (stride $10) — incl. `heading_step` (element 2, $62D2/$62E2) and `slip_magnitude` (element $0A, $62DA/$62EA) | ~47 | A now; B blocked | **`heading_step` ✅ A COMPLETE — nothing left to convert** (see below); **`slip_magnitude` ✅ A DONE** — `steer_demand_from_slip` ($15F4) and `store_slip_signed` ($4B51) held the last lane pairs. **And the other elements are now closed too**, by audit rather than by conversion: the whole vector is marshalled through `model_state_16[]`, and of the per-element lane names only five are still referenced in `revs_native.c` — `car_speed_lo/hi`, `heading_step_lo/hi`, `car_lateral_speed_lo` — every one of them at a site that is **genuinely 8-bit**: a bit-7 sign test (`abs8` on `car_speed_hi`, the `BIT heading_step_hi` at $14437), the high byte used AS the sign into `add_signed_into_element`, `section_yaw - heading_step_hi` at $24B9, and $4DD4's `SEC / ROR heading_step_lo`, which rotates the low lane alone and leaves the high byte untouched. Nothing here is a lane pair pretending to be a word. |
 | `CAR_ANGLE` | $62A0/$62A3 | 3× (heading_sin/cos, `steer_angle` = element 2, $62A2/$62A5) | ~9 | **A + B DONE** | `car_angle_16[3]` |
 | `CAR_DISTANCE` | $08D0/$08E8 | per-car (24) distance-round-lap | ~19 | **A + B DONE** | `car_distance_16[24]` |
 | `OBJECT_BEARING` | $0380/$0398 | per-slot 16-bit track position | 6 | **(A) DONE**, (B) declined at 0.42 refs/element | ✅ see §`OBJECT_BEARING` below |
@@ -634,10 +634,10 @@ in isolation.
 - **The tell:** parent validate FAILS on physics/state outputs while every relocated sub-cell is on
   the ignore-list AND each sub-core validates 0-mismatch standalone. The break is in the composed
   oracle's internal data flow, invisible to per-sub fixtures.
-- **The disqualified case (2026-08-27):** `model_accum_entry` ($38/$39) + `model_accum_delta`
+- **The disqualified case (2026-08-27):** `car_lateral_speed_entry` ($38/$39) + `car_lateral_speed_delta`
   ($3A/$3B). Every `revs_gen.c` reference is inside a `__t6502` oracle — but that oracle is
   `apply_driving_model__t6502`, whose glue does the $46AE entry-save into `mem[$38/$39]` and the
-  $46DF restore from `mem[$3A/$3B]`, while calling native `stage_accum_delta` (writes the delta) and
+  $46DF restore from `mem[$3A/$3B]`, while calling native `stage_lateral_speed_delta` (writes the delta) and
   native `apply_drag_terms` (reads the entry high byte). The cells ARE the glue↔core channel.
   Relocation broke `apply_driving_model` 200/200; **reverted, kept in `mem[]`.**
 - **The clean case for contrast:** `band2_duration` lives entirely inside one function
@@ -791,10 +791,10 @@ propagation and no `adc_step` on the pair survives in the file.  The last byte-l
 loops; it now composes it once on entry and adds the column to a `uint16_t`.  The stores to
 $70/$71 stay, as the FIFTH lesson requires.
 
-**Group 3 — TRIED AND REVERTED.** `model_accum_delta` ($3A/$3B), with `model_accum_entry`
+**Group 3 — TRIED AND REVERTED.** `car_lateral_speed_delta` ($3A/$3B), with `car_lateral_speed_entry`
 ($38/$39), on 2026-08-27: the cells are `apply_driving_model__t6502`'s glue↔core channel and the
-relocation broke it 200/200.  `model_accum_entry` was later recovered by shim marshalling (see the
-inventory); `model_accum_delta` stayed in `mem[]` and should not be re-opened as a pair.
+relocation broke it 200/200.  `car_lateral_speed_entry` was later recovered by shim marshalling (see the
+inventory); `car_lateral_speed_delta` stayed in `mem[]` and should not be re-opened as a pair.
 
 ⭐⭐ **ELEVENTH LESSON (2026-09-03) — `point_dist` $7C/$7D is ELIGIBLE and STILL NOT WORTH DOING:
 score the pair SITE BY SITE before writing a line of it.** Eligibility says a relocation is *legal*.
@@ -1117,7 +1117,7 @@ forbids anyway (every indexed access would have to move at once, and
 `model_integrate_element` indexes both planes by element).
 
 Two byte loads plus a shift and an or **is** the minimum here, and all three readers already do
-exactly that into a `uint16_t` (`rebase_edge_point` $0BA7, `stage_accum_delta` $4729,
+exactly that into a `uint16_t` (`rebase_edge_point` $0BA7, `stage_lateral_speed_delta` $4729,
 `integrate_heading` $4927). The remaining byte-wide uses are genuinely 8-bit and not lanes at
 all: `$4DD4`'s `SEC / ROR heading_step_lo` is a one-byte rotate of the low byte on its own, and
 `$1C0B` / `check_crash` use the **high byte alone** as the yaw rate.
@@ -1167,7 +1167,7 @@ lesson: score a pair site by site before writing a line of it):
   cost is unchanged and the consumer saves one load **once per field**.
 
 Complete **by layout** (THIRTEENTH LESSON — a plane-split pair has no word-access win to find):
-`heading_step` $62D2/$62E2, `car_speed` $62D9/$62E9 and `model_accum` $62D8/$62E8 (MODEL_STATE,
+`heading_step` $62D2/$62E2, `car_speed` $62D9/$62E9 and `car_lateral_speed` $62D8/$62E8 (MODEL_STATE,
 planes $10 apart); `section_coord` $0900/$0A00 (planes $100 apart); `PLOT_UNDO_PTR` $07A8/$07D0
 (planes 40 apart — and a real `uint16_t[40]` would need 40-word marshalling at two shims per call,
 strictly negative against a ~6-byte needle line).
@@ -1194,7 +1194,7 @@ work**, and it is mechanism (B): relocating a plane-split `lo_8[N]`/`hi_8[N]` in
 
 ⚠ **Scope correction to the THIRTEENTH LESSON.** "A plane-split pair has no word-access win" is
 true **of mechanism (A) only**. A (B) relocation *creates* the adjacency — that is the entire point
-— so `heading_step`, `car_speed`, `model_accum` and `section_coord` are complete as (A) and
+— so `heading_step`, `car_speed`, `car_lateral_speed` and `section_coord` are complete as (A) and
 **still open as (B)**. The lesson's "record it complete rather than re-opening it" applies to the
 hoist, not to the relocation, and the earlier phrasing was too broad.
 
@@ -1812,7 +1812,7 @@ and **stays in `mem[]`**: a rate element is the top 16 bits of `(element << 8) |
 | `model_integrate_element_core` | two lane loads, `ADC`/`ADC`, two lane stores | `model_state_16[slot] + model_state_16[MS_INCREMENT]`, one store |
 | `add_signed_into_element_core` | load/add/store per lane | one `+=` |
 | `apply_angle_term_body` | source split into two lanes, product re-split on store | `(int16_t)model_state_16[source]`, one store |
-| `stage_accum_delta_core` | heading step and accumulator each rebuilt from two lanes | two word reads, one word store |
+| `stage_lateral_speed_delta_core` | heading step and accumulator each rebuilt from two lanes | two word reads, one word store |
 | `apply_driving_model_core` | the speed split rebuilt `car_speed_hi:lo`, the accumulator restore re-split | `uint16_t speed = model_state_16[MS_SPEED]`, one store |
 | `integrate_car_position_core` | doubling loop on two lanes | one word read per element |
 | `integrate_state_rates_core` | rate rebuilt from two lanes, 24-bit sum re-split three ways | one word read + one byte, one word store + one byte |
