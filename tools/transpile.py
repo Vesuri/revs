@@ -554,12 +554,15 @@ MANUAL_FUNCS = set()
 #
 # ⚠⚠ Keyed by (circuit, address), never by address alone: the same $53xx-$5Axx entry is
 # DIFFERENT CODE on every circuit.  $56C8's clamp loop happens to be byte-identical on
-# Brands/Donington/Oulton, which is why they share a twin; Snetterton's tail jumps back into
-# its own transliterated body ($53DC) and is deliberately NOT twinned here.
+# Brands/Donington/Oulton, which is why they share a twin; Snetterton's ($56C8) and the
+# Nurburgring's ($56C4) run the SAME loop and then tail into a yaw guard that exists only in
+# those two files — and not even the same guard, so they get a twin each over a shared core.
 HOOK_TWINS = {
     ('BRANDS', 0x56C8): 'hook_horizon_clamp',
     ('DONING', 0x56C8): 'hook_horizon_clamp',
     ('OULTON', 0x56C8): 'hook_horizon_clamp',
+    ('SNETTER', 0x56C8): 'hook_horizon_clamp_guarded_snetter',
+    ('NURBURG', 0x56C4): 'hook_horizon_clamp_guarded_nurburg',
     ('BRANDS',  0x56AF): 'hook_record_horizon',
     ('DONING',  0x56AF): 'hook_record_horizon',
     ('OULTON',  0x56AF): 'hook_record_horizon',

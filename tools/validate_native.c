@@ -11121,6 +11121,17 @@ static void hook_rec_oracle(void)   { g_hookOracle = 1; trk_brands(0x56AF); g_ho
 static void hook_clamp_twin(void)   { g_hookOracle = 0; trk_brands(0x56C8); }
 static void hook_clamp_oracle(void) { g_hookOracle = 1; trk_brands(0x56C8); g_hookOracle = 0; }
 
+void trk_oulton(unsigned short entry);         /* src/gen/revs_track_hooks.h */
+void trk_snetter(unsigned short entry);
+void trk_nurburg(unsigned short entry);
+
+/* Snetterton's $56C8 and the Nurburgring's $56C4 run that same clamp loop and then release
+   through a yaw guard of their own ($53DC / $53E0), so they get their own pair. */
+static void hook_clampg_s_twin(void)   { g_hookOracle = 0; trk_snetter(0x56C8); }
+static void hook_clampg_s_oracle(void) { g_hookOracle = 1; trk_snetter(0x56C8); g_hookOracle = 0; }
+static void hook_clampg_n_twin(void)   { g_hookOracle = 0; trk_nurburg(0x56C4); }
+static void hook_clampg_n_oracle(void) { g_hookOracle = 1; trk_nurburg(0x56C4); g_hookOracle = 0; }
+
 /* $56BC — the walk's point-count limit, installed over road_edge_walk's `BCS $24B8` at $248B.
    Two arms: stop (the off-axis carry set AND the count already at $0A), or straight back into
    the walk at $2490.  The second arm runs a whole road walk, so its result is mem[] only. */
@@ -11159,9 +11170,6 @@ static void hook_nsc_b_oracle(void) { g_hookOracle = 1; trk_doning(0x54EF); g_ho
    block AND the gradient multiplier are both per-circuit, so a two-arm fixture would have left
    three circuits' constants unchecked (and did, until the byte differential caught Donington's
    $86 against Brands Hatch's $88). */
-void trk_oulton(unsigned short entry);         /* src/gen/revs_track_hooks.h */
-void trk_snetter(unsigned short entry);
-void trk_nurburg(unsigned short entry);
 static void hook_gdv_1_twin(void)   { g_hookOracle = 0; trk_brands(0x5472); }
 static void hook_gdv_1_oracle(void) { g_hookOracle = 1; trk_brands(0x5472); g_hookOracle = 0; }
 static void hook_gdv_2_twin(void)   { g_hookOracle = 0; trk_doning(0x5472); }
@@ -11252,11 +11260,13 @@ static int test_hook_twins(void)
     static uint8_t pre[65536];
     int fail = 0, printed = 0, t, cases = 4000, sub = 0;
     int sawLatched = 0, sawOneShot = 0, sawClamp = 0, sawAdvance = 0, sawEarlyStop = 0;
-    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge;
+    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge, runGuard[2];
     { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
     if (scale < 1) scale = 1;
     cases *= scale;
     register_fixture("hook_horizon_clamp");
+    register_fixture("hook_horizon_clamp_guarded_snetter");
+    register_fixture("hook_horizon_clamp_guarded_nurburg");
     register_fixture("hook_record_horizon");
     register_fixture("hook_edge_walk_limit");
     register_fixture("hook_walk_back_gate");
@@ -11265,6 +11275,8 @@ static int test_hook_twins(void)
        condition — inside one it restarts the generator every iteration and every case is
        then the same case.  (It cost this fixture its `latched` and `early-stop` arms once.) */
     runClamp  = want("hook_horizon_clamp");
+    runGuard[0] = want("hook_horizon_clamp_guarded_snetter");
+    runGuard[1] = want("hook_horizon_clamp_guarded_nurburg");
     runRecord = want("hook_record_horizon");
     runLimit  = want("hook_edge_walk_limit");
     runBack   = want("hook_walk_back_gate");
@@ -11334,6 +11346,90 @@ static int test_hook_twins(void)
                "(latched %d one-shot %d clamp %d advance %d early-stop %d)\n",
                sawLatched, sawOneShot, sawClamp, sawAdvance, sawEarlyStop);
         fail++;
+    }
+
+    /* ------------------ $56C8 / $56C4, the same clamp released through Snetterton's and the
+       Nurburgring's own yaw guard.  Both circuits' entries run through ONE fixture name. */
+    {
+        static const struct { const char* name; void (*twin)(void); void (*oracle)(void);
+                              uint8_t lo, hi; int track; } CG[2] = {
+            { "hook_horizon_clamp_guarded_snetter",
+              hook_clampg_s_twin, hook_clampg_s_oracle, 0xC8u, 0x53u, 4 },
+            { "hook_horizon_clamp_guarded_nurburg",
+              hook_clampg_n_twin, hook_clampg_n_oracle, 0x55u, 0x55u, 5 },
+        };
+        int gsawOff = 0, gsawHalve = 0, gsawTurn = 0, gsawPitch = 0;
+        int gsawEarlySeg = 0, gsawLateSeg = 0, k;
+
+        for (k = 0; k < 2; k++) {
+            int gsub = 0;
+            if (!runGuard[k]) continue;
+            g_track = CG[k].track;
+            for (t = 0; t < cases / 2; t++) {
+                Cpu6502 c = zero_cpu();
+                uint8_t horizon, y;
+                int i;
+
+                fill_random(pre);
+                c.D = 0;
+                c.S = 0xFFu;
+                c.A = (uint8_t)xs(); c.X = (uint8_t)xs();
+
+                horizon = (uint8_t)(0x38u + (xs() % 0x14u));
+                pre[0x001F] = horizon;
+                for (i = 0; i < 0x50; i++)
+                    pre[0x5F20 + i] = (uint8_t)(xs() % horizon);
+                pre[0x004B] = (uint8_t)(1u + (xs() % 0x28u));
+                pre[0x007F] = (uint8_t)xs();
+                pre[0x0082] = (uint8_t)xs();
+
+                /* This circuit's OWN $2542 patch — the half-width recompute goes through it. */
+                pre[0x2542] = 0x20u; pre[0x2543] = CG[k].lo;
+                pre[0x2544] = CG[k].hi; pre[0x2545] = 0xEAu;
+
+                y = (uint8_t)(0x0Au + (xs() % 0x40u));
+                if (xs() & 1u) y |= 0x20u; else y &= (uint8_t)~0x20u;
+                c.Y = y;
+                if ((xs() & 3u) == 0u)
+                    pre[0x5F20 + (uint8_t)(y - 1u)] = (uint8_t)(horizon + (xs() % 0x08u));
+
+                /* ⭐ THE GUARD IS THE POINT OF THIS FIXTURE, so its three outcomes are DRIVEN,
+                   not left to a random byte: a random section_yaw is |yaw| >= $19 in 87% of
+                   cases and the halve arm would be all but unreachable. */
+                switch (xs() % 3u) {
+                    case 0:  pre[0x0044] = (uint8_t)(0x19u + (xs() % 0x60u));  /* turning */
+                             gsawTurn = 1; gsawOff = 1; break;
+                    case 1:  pre[0x0044] = (uint8_t)(xs() % 0x19u);            /* straight... */
+                             pre[0x000D] = (uint8_t)(xs() & 0x7Fu);            /* ...pitched up */
+                             gsawPitch = 1; gsawOff = 1; break;
+                    default: pre[0x0044] = (uint8_t)(xs() % 0x19u);
+                             pre[0x000D] = (uint8_t)(0x80u | (xs() & 0x7Fu));  /* the halve arm */
+                             gsawHalve = 1; break;
+                }
+                pre[0x0076] = (uint8_t)xs();          /* shared_temp_76 — the halved width */
+
+                /* ⭐ The Nurburgring's guard has a THIRD test the others do not (segment < $30),
+                   so the player's segment is driven both sides of it — a random $06FF is past
+                   $30 five sixths of the time and its keep arm would barely be sampled. */
+                if (xs() & 1u) { pre[0x06FF] = (uint8_t)(xs() % 0x30u);        gsawEarlySeg = 1; }
+                else           { pre[0x06FF] = (uint8_t)(0x30u + (xs() % 0xD0u)); gsawLateSeg = 1; }
+
+                gsub += diff_run(CG[k].name, pre, c,
+                                 CG[k].twin, CG[k].oracle,
+                                 LIVE_X | LIVE_Y, t, &printed);
+            }
+            fail += gsub;
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=X,Y ($1946's)\n",
+                   CG[k].name, cases / 2, gsub);
+        }
+        if ((runGuard[0] || runGuard[1]) &&
+            !(gsawTurn && gsawPitch && gsawHalve && gsawOff && gsawEarlySeg && gsawLateSeg)) {
+            printf("VACUOUS: the guarded clamp missed an arm (turning %d pitched %d halve %d "
+                   "offscreen %d segment<$30 %d segment>=$30 %d)\n",
+                   gsawTurn, gsawPitch, gsawHalve, gsawOff, gsawEarlySeg, gsawLateSeg);
+            fail++;
+        }
+        g_track = 1;
     }
 
     /* ------------------------------------------------------- $56AF, the horizon recorder */

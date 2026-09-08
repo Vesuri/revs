@@ -16351,12 +16351,85 @@ void hook_horizon_clamp(void)
 
     /* $56FD `JMP edge_x_offscreen` is a tail call, so the hook also returns whatever that
        leaves: X is the entry X (the clamp never touches it) and Y survives the callee.  The
-       $1946 seam discards A and the flags, but they are handed back regardless so the twin
-       leaves state identical to the transliteration it replaces. */
+       $1946 seam discards A and the flags ($1949 `LDY $1F / JMP $1977`), and they are handed
+       back only as far as the callee's own exit — ⚠ V is NOT reproduced, because the walk's
+       own ADC sets it in the transliteration and the C core has no carry chain to set it from.
+       The fixture declares X,Y for exactly that reason. */
     EdgeOffFlags e = edge_x_offscreen_core(cpu.X);
     cpu.Y = exitY;
     cpu.A = e.a; cpu.V = e.v; cpu.C = e.c; cpu.N = e.n; cpu.Z = e.z;
 }
+
+/* $56C8 (Snetterton) / $56C4 (the Nurburgring) — THE SAME MONOTONIC-HORIZON CLAMP, RELEASED
+   THROUGH A YAW GUARD.  The clamp walk is byte-identical to the other three circuits' $56C8
+   (these two files' whole hook region is shifted, which is the only reason the Nurburgring's
+   copy sits four bytes lower), so both reuse hook_horizon_clamp_core outright.  What differs is
+   the exit: where Brands/Donington/Oulton fall straight into `JMP edge_x_offscreen`, these two
+   jump to a guard of their own at $53DC / $53E0 — code that exists in no other circuit's file.
+
+   The guard: unless the section is turning (|section_yaw| >= $19) or the view is pitched up
+   (view_pitch_offset >= 0), it does NOT push the point off screen — it HALVES shared_temp_76 and
+   returns, so on a near-straight section seen from below the horizon these two circuits keep the
+   point and narrow it instead of discarding it.  That is how their long flat sight lines stay
+   drawn.  Every other case is the engine's own edge_x_offscreen.
+
+   ⚠ AND THE TWO GUARDS ARE NOT THE SAME GUARD.  The Nurburgring's tails into a further test at
+   $5655 — the keep only applies while the player is before segment $30; from there on it goes
+   off screen like everyone else.  A single twin written from Snetterton's body passes on
+   Snetterton and diverges on the Nurburgring for exactly the cases the extra test rejects, which
+   is what the differential caught.  Hence the two entry points below.
+
+   Entry ABI is the $1946 seam's, exactly as for hook_horizon_clamp.  Exit: X and Y, and mem[].
+   ⚠ V IS DEAD AND DELIBERATELY NOT MODELLED — both seam sites discard it ($1949 `LDY $1F / JMP
+   $1977` reloads Y and reads no flag), and reproducing it would mean threading the clamp loop's
+   last ADC through the C core for a bit nothing reads.  A and N/Z/C are set anyway because they
+   cost nothing here; the fixture declares X,Y.
+
+   SABOTAGE (each must FAIL; counts measured on the two circuits' 1000 cases, not predicted):
+                                                              SNETTER  NURBURG
+   S75 always take the edge_x_offscreen arm (drop the guard)      549      283
+   S76 |section_yaw| > $19 instead of >= $19                        5        3
+   S77 guard on view_pitch_offset POSITIVE instead of negative   1124      543
+   S78 drop the Nurburgring's segment test                          0      292
+   ⭐ S78 is the one that matters: it is Snetterton's guard applied to both, which is the twin
+   this pair started as — 0 on Snetterton (correctly, it IS Snetterton's guard) and 292 on the
+   Nurburgring.  A single shared twin would have been sabotaged into a PASS on one circuit. */
+static void hook_horizon_clamp_guarded_at(int segmentGated)
+{
+    uint8_t exitY = hook_horizon_clamp_core(cpu.Y);
+
+    /* $53DC/$53E0 LDA section_yaw / abs8 — the sign is bit 7 of the byte the LDA just loaded. */
+    uint8_t yaw  = section_yaw;
+    uint8_t mag  = (yaw & 0x80u) ? negate8(yaw).hi : yaw;
+    uint8_t keep = (uint8_t)(mag < 0x19u && (view_pitch_offset & 0x80u));  /* CMP #$19 / BPL */
+    uint8_t a    = view_pitch_offset;                  /* what the guard's last LDA left in A */
+
+    if (keep && segmentGated) {                        /* $53ED JMP $5655 — the Nurburgring only */
+        a = player_car_segment;                        /* $5655 */
+        if (a >= 0x30u)                                /* $5658 CMP #$30 / BCS $565F */
+            keep = 0u;
+    }
+
+    if (!keep) {
+        EdgeOffFlags e = edge_x_offscreen_core(cpu.X); /* $53EC / $53F0 / $565F */
+        cpu.A = e.a; cpu.C = e.c; cpu.N = e.n; cpu.Z = e.z;
+        cpu.Y = exitY;
+        return;
+    }
+
+    /* $53E9 / $565C LSR shared_temp_76 — keep the point, at half the width. */
+    uint8_t width  = shared_temp_76;
+    cpu.C          = (uint8_t)(width & 1u);
+    width        >>= 1;
+    shared_temp_76 = width;
+    cpu.A = a;
+    cpu.N = 0u;
+    cpu.Z = (uint8_t)(width == 0u);
+    cpu.Y = exitY;
+}
+
+void hook_horizon_clamp_guarded_snetter(void) { hook_horizon_clamp_guarded_at(0); }
+void hook_horizon_clamp_guarded_nurburg(void) { hook_horizon_clamp_guarded_at(1); }
 
 /* $56AF — RECORD THIS POINT AS THE HORIZON, BUT ONLY CLOSE TO THE CAR (all four expansion
    circuits; byte-identical in each).  Patched in at $261A, over emit_edge_width_offset's own
