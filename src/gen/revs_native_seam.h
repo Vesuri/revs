@@ -769,7 +769,8 @@ void hook_span_cap_slot_test(void);
 void hook_merge_horizon_edges_nurburg(void);     /* Nurburgring $5772 */
 void hook_horizon_store_only(void);              /* Donington Park $5772 */
 void hook_horizon_half_width_abs_doning(void);   /* Donington Park $57B6 */
-void hook_section_ahead_doning(void);            /* Donington Park $53E9 */              /* $2F23 — Donington + Snetterton */
+void hook_section_ahead_doning(void);            /* Donington Park $53E9 */
+void hook_steer_response_nurburg(void);          /* Nurburgring $59D9 */              /* $2F23 — Donington + Snetterton */
 void hook_horizon_clamp_guarded_snetter(void);   /* Snetterton  $56C8 */
 void hook_horizon_clamp_guarded_nurburg(void);   /* Nurburgring $56C4 */
 

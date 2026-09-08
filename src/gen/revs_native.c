@@ -17546,6 +17546,67 @@ void hook_horizon_half_width_scale(void)
     mul8_noinit();
 }
 
+/* $59D9 (the Nurburgring) — ITS STEERING RESPONSE CURVE, WITH A SECOND ARM.  The fifth and
+   last member of the $1593 family (see hook_steer_response_brands): the same per-segment scale
+   k, but the tail at $56AF asks a question the other four do not.
+
+   read_driving_controls wraps the call in its own `PHP ... PLP / BEQ` ($1586/$1596), and this
+   hook PUSHES THE FLAGS AGAIN on entry and pulls them back mid-curve — so the ENGINE's Z at
+   $1591, not anything the hook computes, chooses between two curves:
+
+     Z clear — the shared shape: (reading * k), squared, doubled.
+     Z set   — scale by k a SECOND time instead: (reading * k) * k, and no doubling.
+
+   ⚠ The two pushes are real stores to $01FF/$01FE that the differential compares, so the macro
+   pair stays (docs/faithfulness-seam.md §Writing one) — everything between them is ordinary C.
+   Exit: mul8's ABI on both arms, plus Y = k (the LDY is still live) and, on the doubling arm,
+   the ASL/ROL's own C/N/Z.
+
+   SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
+   S127 the two arms are swapped                                  4000/4000
+   S128 the Z arm squares as well (the other circuits' tail)      1988
+   S129 segment $40's scale $CD -> $CE                            1013
+   S130 the default scale $B5 -> $B4                               966
+   S131 the doubling arm's carry comes from the low byte           827 */
+void hook_steer_response_nurburg(void)
+{
+    uint8_t segment, k;
+
+    PHP();                                          /* $59D9 — the engine's Z, wanted at $56B5 */
+    PHA();                                          /* $59DA — and the steering reading */
+
+    segment = mem[CAR_SEGMENT_TBL + player_car];     /* $59DB LDY player_car / $59DD LDA */
+    k       = 0xB5u;                                 /* $59E0 LDY #$B5 */
+    if (segment == 0x58u) k = 0xD4u;                 /* $59E2 CMP #$58 / $59E6 LDY #$D4 */
+    if (segment == 0x40u) k = 0xCDu;                 /* $59E8 CMP #$40 / $59EC LDY #$CD */
+    if (segment == 0xD0u) k = 0xCAu;                 /* $59EE CMP #$D0 / $59F2 LDY #$CA */
+
+    cpu.Y   = k;                                     /* the LDY, still live at the exit */
+    math_hi = k;                                     /* $59F4 TYA / $56AF STA math_hi */
+
+    PLA();                                           /* $56B1 — the reading back */
+    mul8();                                          /* $56B2 — reading x k, high byte into A */
+    PLP();                                           /* $56B5 — and the engine's flags back */
+
+    if (cpu.Z) {                                     /* $56B6 BEQ $56C1 */
+        mul8();                                      /* $56C1 — scaled by k a second time */
+        return;
+    }
+
+    math_hi = cpu.A;                                 /* $56B8 */
+    mul8();                                          /* $56BA — the scaled value squared */
+
+    /* $56BD ASL math_lo / $56BF ROL A — the 16-bit product doubled, its top bit into C. */
+    {
+        uint16_t doubled = (uint16_t)((((uint16_t)cpu.A << 8) | math_lo) << 1);
+        cpu.C   = (uint8_t)(cpu.A >> 7);
+        math_lo = (uint8_t)doubled;
+        cpu.A   = (uint8_t)(doubled >> 8);
+        cpu.N   = (uint8_t)((cpu.A >> 7) & 1u);
+        cpu.Z   = (uint8_t)(cpu.A == 0u);
+    }
+}
+
 /* $57B6 (Donington Park) — THE SAME HORIZON SCALE, WITH THE ABSOLUTE VALUE KEPT.  Donington
    patches the same $2542 site as the other four, but to a body that runs the engine's own
    `JSR abs8` first and only then falls into the shared `d * $CD / 256` at $53D0.  So its

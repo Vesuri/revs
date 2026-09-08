@@ -11184,6 +11184,18 @@ static void hook_hhwd_twin(void)    { g_hookOracle = 0; trk_doning(0x57B6); }
 static void hook_hhwd_oracle(void)  { g_hookOracle = 1; trk_doning(0x57B6); g_hookOracle = 0; }
 static void hook_sahd_twin(void)    { g_hookOracle = 0; trk_doning(0x53E9); }
 static void hook_sahd_oracle(void)  { g_hookOracle = 1; trk_doning(0x53E9); g_hookOracle = 0; }
+/* The Nurburgring's copies of four bodies already twinned, at its own addresses, plus the
+   $1593 family's fifth member. */
+static void hook_back_n_twin(void)  { g_hookOracle = 0; trk_nurburg(0x53F3); }
+static void hook_back_n_oracle(void){ g_hookOracle = 1; trk_nurburg(0x53F3); g_hookOracle = 0; }
+static void hook_lim_n_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5456); }
+static void hook_lim_n_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5456); g_hookOracle = 0; }
+static void hook_rec_n_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5755); }
+static void hook_rec_n_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5755); g_hookOracle = 0; }
+static void hook_cam_n_twin(void)   { g_hookOracle = 0; trk_nurburg(0x57AD); }
+static void hook_cam_n_oracle(void) { g_hookOracle = 1; trk_nurburg(0x57AD); g_hookOracle = 0; }
+static void hook_steern_twin(void)   { g_hookOracle = 0; trk_nurburg(0x59D9); }
+static void hook_steern_oracle(void) { g_hookOracle = 1; trk_nurburg(0x59D9); g_hookOracle = 0; }
 
 /* $5582 / $557F — the track generator's cursor step, in its two state blocks.  Brands Hatch
    carries the $53F8 one and Donington the $53FA one, so the two circuits are the two arms. */
@@ -11297,7 +11309,7 @@ static int test_hook_twins(void)
     static uint8_t pre[65536];
     int fail = 0, printed = 0, t, mv, cases = 4000, sub = 0;
     int sawLatched = 0, sawOneShot = 0, sawClamp = 0, sawAdvance = 0, sawEarlyStop = 0;
-    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge[3], runGuard[2], runSteer, runSteerO, runSteerS, runSteerD, runCam, runSlot, runSahd;
+    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge[3], runGuard[2], runSteer, runSteerO, runSteerS, runSteerD, runSteerN, runCam, runSlot, runSahd;
     { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
     if (scale < 1) scale = 1;
     cases *= scale;
@@ -11306,6 +11318,7 @@ static int test_hook_twins(void)
     register_fixture("hook_steer_response_oulton");
     register_fixture("hook_steer_response_snetter");
     register_fixture("hook_steer_response_doning");
+    register_fixture("hook_steer_response_nurburg");
     register_fixture("hook_camera_scale_by_gradient");
     register_fixture("hook_span_cap_slot_test");
     register_fixture("hook_section_ahead_doning");
@@ -11325,6 +11338,7 @@ static int test_hook_twins(void)
     runSteerO = want("hook_steer_response_oulton");
     runSteerS = want("hook_steer_response_snetter");
     runSteerD = want("hook_steer_response_doning");
+    runSteerN = want("hook_steer_response_nurburg");
     runCam    = want("hook_camera_scale_by_gradient");
     runSlot   = want("hook_span_cap_slot_test");
     runSahd   = want("hook_section_ahead_doning");
@@ -11701,13 +11715,74 @@ static int test_hook_twins(void)
         }
     }
 
-    /* ---------------------------- $45CB's camera scale, driven through all four circuits' entries */
+    /* ------------------- $59D9 (the Nurburgring), the $1593 family's fifth and last member.
+       Four per-segment scales, and the only member whose SHAPE is conditional: the ENGINE's Z
+       (pushed at $59D9, restored at $56B5) chooses between a second plain scale and the
+       square-then-double curve, so Z must arrive both ways. */
+    if (runSteerN) {
+        int nnsub = 0, arm[4] = {0}, sawZset = 0, sawZclear = 0, sawZeroMul = 0, sawTopBit = 0;
+        static const uint8_t NSEG[3] = { 0x58u, 0x40u, 0xD0u };
+        g_track = 5;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            uint8_t car, pick;
+
+            fill_random(pre);
+            c.D = 0;
+            c.S = 0xFFu;
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.V = (uint8_t)(xs() & 1u);
+            c.N = (uint8_t)(xs() & 1u);
+            c.C = (uint8_t)(xs() & 1u);
+            c.Z = (uint8_t)(xs() & 1u);             /* ⭐ the engine's Z picks the curve */
+            if (c.Z) sawZset = 1; else sawZclear = 1;
+
+            car = (uint8_t)(xs() % 20u);
+            pre[0x006F] = car;                      /* player_car */
+            /* The three named segments and the default, driven explicitly. */
+            pick = (uint8_t)(xs() & 3u);
+            arm[pick] = 1;
+            if (pick < 3u) pre[0x06E8 + car] = NSEG[pick];
+            else {
+                uint8_t seg = (uint8_t)xs();
+                if (seg == 0x58u || seg == 0x40u || seg == 0xD0u) seg ^= 1u;
+                pre[0x06E8 + car] = seg;
+            }
+
+            /* The reading arrives in A and is what gets scaled; a zero product exercises the
+               "no ADC ran, V survives" path, and a large one the doubling's carry-out. */
+            if ((xs() & 7u) == 0u) { c.A = 0x00u; sawZeroMul = 1; }
+            else if (xs() & 1u)    { c.A = (uint8_t)(0xC0u + (xs() % 0x40u)); sawTopBit = 1; }
+            pre[0x0074] = (uint8_t)xs();            /* math_lo / math_hi, both overwritten */
+            pre[0x0075] = (uint8_t)xs();
+
+            nnsub += diff_run("hook_steer_response_nurburg", pre, c,
+                              hook_steern_twin, hook_steern_oracle,
+                              LIVE_A | LIVE_X | LIVE_Y | LIVE_FLAGS, t, &printed);
+        }
+        fail += nnsub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,Y+flags\n",
+               "hook_steer_response_nurburg", cases, nnsub);
+        if (!(arm[0] && arm[1] && arm[2] && arm[3] &&
+              sawZset && sawZclear && sawZeroMul && sawTopBit)) {
+            printf("VACUOUS: hook_steer_response_nurburg missed an arm "
+                   "($58 %d $40 %d $D0 %d default %d Z set %d Z clear %d "
+                   "zero reading %d top-bit reading %d)\n",
+                   arm[0], arm[1], arm[2], arm[3],
+                   sawZset, sawZclear, sawZeroMul, sawTopBit);
+            fail++;
+        }
+        g_track = 1;
+    }
+
+    /* ------------------------ $45CB's camera scale, driven through all five circuits' entries */
     if (runCam) {
         static const struct { void (*tw)(void); void (*or_)(void); unsigned char track; }
-            CAM[4] = { { hook_cam_b_twin, hook_cam_b_oracle, 1 },
+            CAM[5] = { { hook_cam_b_twin, hook_cam_b_oracle, 1 },
                        { hook_cam_d_twin, hook_cam_d_oracle, 2 },
                        { hook_cam_o_twin, hook_cam_o_oracle, 3 },
-                       { hook_cam_s_twin, hook_cam_s_oracle, 4 } };
+                       { hook_cam_s_twin, hook_cam_s_oracle, 4 },
+                       { hook_cam_n_twin, hook_cam_n_oracle, 5 } };
         int csub = 0, k, sawSettled = 0, sawOther = 0, sawBorrow = 0, sawNoBorrow = 0;
         int sawPairCarry = 0, sawTop = 0;
         for (t = 0; t < cases; t++) {
@@ -11754,7 +11829,7 @@ static int test_hook_twins(void)
                 if (stored == 0u) { if (sc & 0x80u) sawBorrow = 1; else sawNoBorrow = 1; }
             }
 
-            for (k = 0; k < 4; k++) {
+            for (k = 0; k < 5; k++) {
                 g_track = CAM[k].track;
                 csub += diff_run("hook_camera_scale_by_gradient", pre, c,
                                  CAM[k].tw, CAM[k].or_,
@@ -11899,11 +11974,14 @@ static int test_hook_twins(void)
             sub += diff_run("hook_record_horizon", pre, c,
                             hook_rec_twin, hook_rec_oracle,
                             LIVE_A | LIVE_X | LIVE_Y | LIVE_N | LIVE_Z | LIVE_C, t, &printed);
+            sub += diff_run("hook_record_horizon", pre, c,       /* $5755, the Nurburgring's */
+                            hook_rec_n_twin, hook_rec_n_oracle,
+                            LIVE_A | LIVE_X | LIVE_Y | LIVE_N | LIVE_Z | LIVE_C, t, &printed);
         }
         set_ignore(0, 0);
         fail += sub;
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,Y,N,Z,C\n",
-               "hook_record_horizon", cases, sub);
+        printf("%-32s %7d cases x both circuits' entries, %d mismatch (must be 0)  "
+               "live=A,X,Y,N,Z,C\n", "hook_record_horizon", cases, sub);
         if (!(sawRecord && sawSuppressed && sawEdge)) {
             printf("VACUOUS: hook_record_horizon missed an arm "
                    "(record %d suppressed %d threshold %d)\n",
@@ -11954,6 +12032,8 @@ static int test_hook_twins(void)
 
             sub += diff_run("hook_edge_walk_limit", pre, c,
                             hook_lim_twin, hook_lim_oracle, mask, t, &printed);
+            sub += diff_run("hook_edge_walk_limit", pre, c,      /* $5456, the Nurburgring's */
+                            hook_lim_n_twin, hook_lim_n_oracle, mask, t, &printed);
             if (!stopArm && walk_emitted(pre, (const uint8_t*)mem)) emitted++;
         }
         set_ignore(0, 0);
@@ -11997,8 +12077,15 @@ static int test_hook_twins(void)
             if (gated) sawGated = 1; else sawRebuilt = 1;
             if (pre[0x0025] & 0x80u) sawBwd = 1; else sawFwd = 1;
 
+            /* both entries: $55BD on the four Superior circuits, $53F3 on the Nurburgring */
             sub += diff_run("hook_walk_back_gate", pre, c,
                             hook_back_twin, hook_back_oracle,
+                            gated ? (LIVE_A | LIVE_X | LIVE_Y | LIVE_S |
+                                     LIVE_N | LIVE_V | LIVE_Z | LIVE_C)
+                                  : LIVE_NONE,
+                            t, &printed);
+            sub += diff_run("hook_walk_back_gate", pre, c,
+                            hook_back_n_twin, hook_back_n_oracle,
                             gated ? (LIVE_A | LIVE_X | LIVE_Y | LIVE_S |
                                      LIVE_N | LIVE_V | LIVE_Z | LIVE_C)
                                   : LIVE_NONE,
