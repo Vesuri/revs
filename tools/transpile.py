@@ -558,6 +558,7 @@ MANUAL_FUNCS = set()
 # Nurburgring's ($56C4) run the SAME loop and then tail into a yaw guard that exists only in
 # those two files — and not even the same guard, so they get a twin each over a shared core.
 HOOK_TWINS = {
+    ('BRANDS', 0x57A1): 'hook_steer_response_brands',
     ('BRANDS', 0x56C8): 'hook_horizon_clamp',
     ('DONING', 0x56C8): 'hook_horizon_clamp',
     ('OULTON', 0x56C8): 'hook_horizon_clamp',

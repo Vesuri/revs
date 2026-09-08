@@ -11125,6 +11125,9 @@ void trk_oulton(unsigned short entry);         /* src/gen/revs_track_hooks.h */
 void trk_snetter(unsigned short entry);
 void trk_nurburg(unsigned short entry);
 
+static void hook_steer_twin(void)   { g_hookOracle = 0; trk_brands(0x57A1); }
+static void hook_steer_oracle(void) { g_hookOracle = 1; trk_brands(0x57A1); g_hookOracle = 0; }
+
 /* Snetterton's $56C8 and the Nurburgring's $56C4 run that same clamp loop and then release
    through a yaw guard of their own ($53DC / $53E0), so they get their own pair. */
 static void hook_clampg_s_twin(void)   { g_hookOracle = 0; trk_snetter(0x56C8); }
@@ -11260,11 +11263,12 @@ static int test_hook_twins(void)
     static uint8_t pre[65536];
     int fail = 0, printed = 0, t, cases = 4000, sub = 0;
     int sawLatched = 0, sawOneShot = 0, sawClamp = 0, sawAdvance = 0, sawEarlyStop = 0;
-    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge, runGuard[2];
+    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge, runGuard[2], runSteer;
     { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
     if (scale < 1) scale = 1;
     cases *= scale;
     register_fixture("hook_horizon_clamp");
+    register_fixture("hook_steer_response_brands");
     register_fixture("hook_horizon_clamp_guarded_snetter");
     register_fixture("hook_horizon_clamp_guarded_nurburg");
     register_fixture("hook_record_horizon");
@@ -11275,6 +11279,7 @@ static int test_hook_twins(void)
        condition — inside one it restarts the generator every iteration and every case is
        then the same case.  (It cost this fixture its `latched` and `early-stop` arms once.) */
     runClamp  = want("hook_horizon_clamp");
+    runSteer  = want("hook_steer_response_brands");
     runGuard[0] = want("hook_horizon_clamp_guarded_snetter");
     runGuard[1] = want("hook_horizon_clamp_guarded_nurburg");
     runRecord = want("hook_record_horizon");
@@ -11430,6 +11435,49 @@ static int test_hook_twins(void)
             fail++;
         }
         g_track = 1;
+    }
+
+    /* -------------------------- $57A1, Brands Hatch's steering response (the $1593 SMC site) */
+    if (runSteer) {
+        int ssub = 0, sawBoost = 0, sawPlain = 0, sawZeroMul = 0, sawBigMul = 0;
+        g_track = 1;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            uint8_t car;
+
+            fill_random(pre);
+            c.D = 0;                                /* the steering path, always binary */
+            c.S = 0xFFu;
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+            c.V = (uint8_t)(xs() & 1u);             /* ⭐ V must arrive BOTH ways: a zero
+                                                       multiplier leaves the caller's V alone */
+
+            car = (uint8_t)(xs() % 20u);            /* player_car — 0..19 */
+            pre[0x006F] = car;
+            /* Segment $20 is the boosted one; drive it both ways rather than leaving it to a
+               random byte, which would hit $20 once in 256. */
+            if (xs() & 1u) { pre[0x06E8 + car] = 0x20u; sawBoost = 1; }
+            else           { pre[0x06E8 + car] = (uint8_t)(xs() | 1u); sawPlain = 1; }
+
+            /* math_hi is the joystick reading the hook multiplies by. 0 exercises the
+               "no ADC ran, V survives" path in both multiplies. */
+            if ((xs() & 7u) == 0u) { pre[0x0075] = 0x00u; sawZeroMul = 1; }
+            else                   { pre[0x0075] = (uint8_t)xs(); sawBigMul = 1; }
+            pre[0x0074] = (uint8_t)xs();            /* math_lo — overwritten, but seeded anyway */
+
+            ssub += diff_run("hook_steer_response_brands", pre, c,
+                             hook_steer_twin, hook_steer_oracle,
+                             LIVE_A | LIVE_X | LIVE_Y | LIVE_FLAGS, t, &printed);
+        }
+        fail += ssub;
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,Y+flags\n",
+               "hook_steer_response_brands", cases, ssub);
+        if (!(sawBoost && sawPlain && sawZeroMul && sawBigMul)) {
+            printf("VACUOUS: hook_steer_response_brands missed an arm "
+                   "(segment $20 %d other %d zero reading %d non-zero %d)\n",
+                   sawBoost, sawPlain, sawZeroMul, sawBigMul);
+            fail++;
+        }
     }
 
     /* ------------------------------------------------------- $56AF, the horizon recorder */

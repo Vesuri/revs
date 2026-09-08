@@ -16360,6 +16360,61 @@ void hook_horizon_clamp(void)
     cpu.A = e.a; cpu.V = e.v; cpu.C = e.c; cpu.N = e.n; cpu.Z = e.z;
 }
 
+/* $57A1 (Brands Hatch) — THE STEERING RESPONSE CURVE, RESHAPED FOR THIS CIRCUIT.  Patched in at
+   $1593 (`make track-patch`: $1594 $00->$A1, $1595 $0C->$57), which is read_driving_controls'
+   `JSR mul8` on the JOYSTICK path — the squaring of the steering axis.  Silverstone squares the
+   reading and stops; Brands Hatch first SCALES it, then squares, then doubles:
+
+       k     = $B5, or $F0 while the player is on segment $20
+       a     = high(k * reading)
+       out   = high((a * a) << 1),  low byte left in math_lo
+
+   $B5/256 = 0.71 and $F0/256 = 0.94, so the wheel is softened everywhere except across that one
+   segment, where it comes back nearly full — and the doubling recovers the range the scaling
+   costs at full lock.  Oulton and Snetterton patch the same site to bodies of their own; only
+   this one is the plain scale-square-double.
+
+   Exit ABI: A = the product's high byte and math_lo its low, exactly as the mul8 it displaced;
+   math_hi is left holding `a` (the $57B2 store), Y the scale k, and N/Z/C the closing ROL's.
+   V is the last shift-and-add's, which is why the multiplies go through mul8_noinit_core — it
+   returns that one escaping bit, and a zero multiplier must NOT overwrite the caller's V.
+
+   SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
+   S79 the segment test uses $21 instead of $20                  2008
+   S80 scale $B5 -> $B4                                          2001
+   S81 drop the doubling                                         3463
+   S83 scale a second time instead of squaring (a * k)           3463
+   S84 never take the multiply's V (leave the caller's)          1399
+   ⚠ S82 "square the READING instead of the scaled value" PASSES, and it is the third
+   explanation rather than a fixture gap: `math_hi = a` executes on the line above, so
+   mul8_noinit_core(math_hi, a) and mul8_noinit_core(a, a) are literally the same call — no
+   change at all.  S83 is its replacement and fails.  (S81 and S83 both print 3463 because
+   they are wrong on the same case set — every case with a non-trivial product; their VALUES
+   differ, checked at case 0: $64 vs $A4.) */
+void hook_steer_response_brands(void)
+{
+    /* $57A1-$57AD — pick the scale, and leave it in Y as the 6502 does. */
+    uint8_t k = (mem[CAR_SEGMENT_TBL + player_car] == 0x20u) ? 0xF0u : 0xB5u;
+    cpu.Y = k;
+
+    Mul8 scaled = mul8_noinit_core(k, math_hi);        /* $57AE TYA / $57AF mul8 */
+    uint8_t a   = (uint8_t)(scaled.product >> 8);
+    math_lo     = (uint8_t)scaled.product;
+    if (scaled.setV) cpu.V = scaled.v;
+
+    math_hi      = a;                                  /* $57B2 STA math_hi */
+    Mul8 squared = mul8_noinit_core(a, a);             /* $57B4 mul8 — a * a */
+    if (squared.setV) cpu.V = squared.v;
+
+    /* $57B7 ASL math_lo / $57B9 ROL A — the 16-bit product doubled, top bit into C. */
+    uint16_t doubled = (uint16_t)(squared.product << 1);
+    math_lo = (uint8_t)doubled;
+    cpu.A   = (uint8_t)(doubled >> 8);
+    cpu.C   = (uint8_t)(squared.product >> 15);
+    cpu.N   = (uint8_t)((cpu.A >> 7) & 1u);
+    cpu.Z   = (uint8_t)(cpu.A == 0u);
+}
+
 /* $56C8 (Snetterton) / $56C4 (the Nurburgring) — THE SAME MONOTONIC-HORIZON CLAMP, RELEASED
    THROUGH A YAW GUARD.  The clamp walk is byte-identical to the other three circuits' $56C8
    (these two files' whole hook region is shifted, which is the only reason the Nurburgring's
