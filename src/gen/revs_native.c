@@ -16656,9 +16656,14 @@ void hook_camera_scale_by_gradient(void)
    whatever this line holds, so the cap is not stamped here at all.  Any other value and the
    test falls back to reading this line, exactly as the displaced LDA did.
 
-   ⚠ $8B is a specific value, not a mask — half of the byte's bits are outside the two-bit
-   colour field view_paint_lines reads, so this is one particular class inheriting downward
-   rather than a general "is it set" test (docs/rename.md carries the question of what $8B is).
+   ⭐ $8B is a specific CLASS, not a mask, and it decomposes exactly — interp_edge composes the
+   byte itself ($2C46-$2C57, `code | $80 | math_lo`), so: bit 7 is span_cap_surface_b's marker
+   (the arm taken when span_swapped is negative, i.e. the SECOND road side), bits 3-5 are the
+   PASS NUMBER and $8B has 001 there, and the low two bits are colour_pattern[3]'s two sampled
+   bits, both set.  So the line the two circuits refuse to stamp over is "pass 1's second-side
+   span, fully patterned" — and that low-bits-both-set case is the same predicate interp_edge
+   uses one page earlier to decide a span needs END MARKERS instead of a solid run, which is why
+   span_cap_line's own flatten at $2F35 is the one arm that leaves the byte untouched.
 
    Entry ABI (the seam at $2F19-$2F22, reproduced by span_cap_line_slot_z): A = span_swapped,
    Y = the scan line after the DEY, N/Z from that DEY.  Only Y is read.  Exit: A and N/Z as the
