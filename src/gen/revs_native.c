@@ -8233,7 +8233,7 @@ void update_slip_sound(void)
    =========================================================================== */
 
 #define SECTION_DIR_IX 0x0700u   /* per live section, its index into the three pages above */
-#define CAR_STATE_1    0x0164u   /* per-driver; the camera adds a gradient-scaled copy */
+#define CAR_SECTION_ALONG    0x0164u   /* per-driver: distance ALONG the section from its origin */
 #define CAR_SPEED_SCL  0x0150u   /* per-driver speed in the AI's units */
 #define GEAR_REV_RATIO 0x5A06u   /* TRACK FILE: revs per unit road speed, by gear_index */
 #define GEAR_TORQUE    0x5A0Du   /* TRACK FILE: the per-gear torque multiplier */
@@ -8347,8 +8347,10 @@ static void compute_car_angles_core(uint8_t headingHi, uint8_t headingLo)
    ---------------------------------------------------------------------------
    A x |track_dir_1[Y]| / 256, re-signed by track_dir_1[Y] EOR track_direction.  Both of
    update_camera_and_drive_state's camera terms go through it: the yaw-derived one and the
-   player's own car_state_1, which is what makes an across-track offset raise the camera on a
-   banked section (the CAMBER reading in docs/rename.md).
+   player's own car_section_along, i.e. distance along the section times the local slope — the
+   CLIMB the camera has made since the section's origin.  (This was read as camber while it was
+   still open which of the pair was along and which across; $0164 is the ALONG one, measured
+   2026-09-08 — see the car_section_along row in symbols.csv.)
 
    ⭐ WRITTEN AS PLAIN C.  The 6502 carried the EOR's sign across the abs8+multiply on the stack
    (PHP $4617 / PLP $4621) only because abs8 branches on the CALLER's N; in C the two signs are
@@ -8825,7 +8827,7 @@ EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY)
          grip_disturbance, camera_pitch_bias and spin_shake, and view_pitch_delta from it;
      (d) DRIVE_STATE ITSELF, from spin_countdown stepped -4 a frame with a saturating jump to
          $C8; and finally the camera, which is the section's own coordinate 1 plus a
-         gradient-scaled car_state_1 plus $AC (nominal eye height), and car_speed_scaled.
+         gradient-scaled car_section_along plus $AC (nominal eye height), and car_speed_scaled.
 
    ⚠⚠ THE THREE PHPs at $453C/$4540/$4546 ARE PULLED IN REVERSE, and two of the three exist
    only to steer an abs8 that branches on the caller's N.  The pushed bytes are part of the
@@ -9027,18 +9029,18 @@ CameraExit update_camera_and_drive_state_core(void)
     }
 
     /* $45D3-$45FB — the camera: the section's coordinate 1, the player's gradient-scaled
-       car_state_1, and $AC of nominal eye height, as one 16-bit add with two carries saved
+       car_section_along, and $AC of nominal eye height, as one 16-bit add with two carries saved
        past the term in between. */
     uint8_t playerCar = player_car;                    /* $45D3 — exit X */
     /* ⚠⚠ yScale IS NOT dirIndex ANY MORE ON ONE PATH.  The spin arm above reaches begin_spin_from_a,
        which queues a MOS SOUND — and sound_osword leaves the MOS's own Y behind.  So this call
        scales by whatever table entry Y now points at, and a twin that "knew" the index was
        still the section's differed in one case in six. */
-    uint8_t scaled = scale_by_track_gradient_core(mem[CAR_STATE_1 + playerCar], yScale);  /* $45D5-$45D8 */
+    uint8_t scaled = scale_by_track_gradient_core(mem[CAR_SECTION_ALONG + playerCar], yScale);  /* $45D5-$45D8 */
     if (scaled & 0x80u) shared_temp_77 = (uint8_t)(shared_temp_77 - 1u);  /* $45DB DEC_M — sign-extend it */
     uint8_t secCursor = car_section_cursor;             /* $45DF — Y for the section coords + exit */
     {
-        uint8_t scaledLow = scaled;                    /* the gradient-scaled car_state_1 low byte */
+        uint8_t scaledLow = scaled;                    /* the gradient-scaled car_section_along low byte */
         /* $45E1-$45FB — the 6502 adds three terms into the low byte, saves each carry with a
            PHP and folds all three into the high byte, whose own carry-outs the PLPs discard.
            That is ONE truncating 16-bit add of four values, and it is exactly what this is:
@@ -11619,7 +11621,7 @@ Adc add_tally_to_lap_total_core(uint8_t column, uint8_t car)
    exactly the cpu inputs that leaf reads — nothing more.
    =========================================================================== */
 
-#define CAR_STATE_2        0x0178u   /* per-car; the other of place_player's two outputs */
+#define CAR_SECTION_ACROSS        0x0178u   /* per-car: offset ACROSS the track from the section axis */
 #define CAR_FLAGS_0        0x0114u   /* per-car flag byte; spin_car_out marks it */
 #define CAR_RACE_FLAGS     0x0100u   /* car_race_flags — per-car race flag byte (bit7/6/4 tested) */
 #define CAR_SEG_OFFSET     0x0880u   /* per-car offset within the current segment */
@@ -11735,10 +11737,11 @@ void record_section_jump(void) { cpu.C = record_section_jump_core(cpu.C, cpu.X);
 /* ---------------------------------------------------------------------------
    $4626  place_player_in_section  (twin #121)
    ---------------------------------------------------------------------------
-   Derives the two per-car placement bytes (car_state_1/car_state_2) from the nearest
-   road-edge bearing relative to the current section's yaw.  It folds that relative
-   angle through scale_angle_in_section twice — once with weight $BA into car_state_1,
-   once with weight $88 into car_state_2 — flipping sign by track direction and by a
+   Derives the two per-car placement bytes from the nearest road-edge bearing relative to the
+   current section's yaw: the car's displacement from the section origin, resolved onto the
+   section's own axes.  It folds that relative angle through scale_angle_in_section twice —
+   once with weight $BA into car_section_across, once (then x4) with weight $88 into
+   car_section_along — flipping sign by track direction and by a
    quadrant flag (section_quad_flags), and feeds record_section_jump the change since last frame.
 
    The abs8 and the SMC hook are native leaves with live-flag INPUTS, so the seam sets
@@ -11794,20 +11797,20 @@ void place_player_in_section(void)
     PUSH(placed);                                     /* $464E push V2 (placed) — stack residue */
 
     /* Change since last frame -> record_section_jump's carry (SBC borrow = !C). */
-    unsigned diff = (unsigned)placed - mem[CAR_STATE_2 + x] - (placedC ? 0u : 1u);   /* SBC */
+    unsigned diff = (unsigned)placed - mem[CAR_SECTION_ACROSS + x] - (placedC ? 0u : 1u);   /* SBC */
     uint8_t d = (uint8_t)diff;
     if (diff & 0x100) d ^= 0xFF;                       /* BCC (borrow): EOR #$FF -> |diff| */
     record_section_jump_core(d >= 0x16, x);           /* CMP #$16 */
 
     uint8_t v2, folded;
     PULL(v2);                                         /* $465B pull V2 — this is `placed` */
-    mem[CAR_STATE_2 + x] = v2;
+    mem[CAR_SECTION_ACROSS + x] = v2;
     PULL(folded);                                     /* $465F pull V1 back */
     /* Second fold: weight $88, sign from the quadrant flag. */
     uint8_t b = scale_angle_in_section_core((uint8_t)((folded ^ 0xFF) + 0x41), 0x88);  /* EOR;ADC #$41 */
     b = (uint8_t)(b << 2);                             /* ASL; ASL */
     if (!(section_quad_flags & 0x80)) b ^= 0xFF;             /* BIT section_quad_flags; BPL: EOR #$FF */
-    mem[CAR_STATE_1 + x] = b;
+    mem[CAR_SECTION_ALONG + x] = b;
 }
 
 /* ---------------------------------------------------------------------------
@@ -11845,14 +11848,14 @@ void tick_wheel_spin(void)
    $11AB  spin_car_out  (twin #123)
    ---------------------------------------------------------------------------
    Flags car X as spun out.  For a real car slot (X < $14) it folds the low seven bits
-   of car_state_2 into car_flags_0 with the spin marker $45, stamps $91 into the page-1
+   of car_section_across into car_flags_0 with the spin marker $45, stamps $91 into the page-1
    status array, then runs the shared crash tail (retire_car).  Scenery slots do nothing.
    --------------------------------------------------------------------------- */
 void spin_car_out(void)
 {
     uint8_t x = cpu.X;
     if (x >= 0x14) return;                        /* not a car slot: the $11CD tail is a bare RTS */
-    mem[CAR_FLAGS_0 + x] = (uint8_t)((mem[CAR_STATE_2 + x] & 0x7F) | 0x45);
+    mem[CAR_FLAGS_0 + x] = (uint8_t)((mem[CAR_SECTION_ACROSS + x] & 0x7F) | 0x45);
     mem[CAR_RACE_FLAGS + x] = 0x91;
     retire_car();                                 /* shared crash tail, indexed by X */
 }
@@ -12547,9 +12550,12 @@ void step_section_curve(void)
 /* ---------------------------------------------------------------------------
    $2937  place_car_world_coords  (twin #126)
    ---------------------------------------------------------------------------
-   Projects one object's within-section offsets — car_state_1 ("along" the section) and
-   car_state_2 ("across" it) — through the section's direction basis into the 3-value world
-   coordinate at object_coord_lo:object_coord_hi.
+   Projects one object's within-section offsets — car_section_along and car_section_across —
+   through the section's direction basis into the 3-value world coordinate at
+   object_coord_lo:object_coord_hi.  ⭐ This routine is the evidence for which of the pair is
+   which: the along offset multiplies all THREE components of the direction vector
+   (track_dir_0/1/2), the across offset the two components of the horizontal NORMAL
+   ($5700/$5800, measured perpendicular to the direction at 0.725 of its length), x4.
 
    The section byte cursor Y indexes the section ORIGIN (section_coord_lo/hi); the byte it
    points at, section_dir_index, indexes the five direction bytes (track_dir_0/1/2 and the two
@@ -12611,7 +12617,7 @@ static inline void object_coord_word_set(unsigned axis, uint16_t value)
    $0C, $85 and $87 have no name yet — queued in docs/rename.md.) */
 /* PLACE_CAR_SOI / PLACE_CAR_ACROSS retired 2026-09-08 — both cells have symbols.csv rows
    (and therefore mem.h names) now: car_section_dir_index and shared_temp_85. */
-#define PLACE_CAR_ALONG   0x0084u   /* car_state_1[slot] — distance along the section */
+#define PLACE_CAR_ALONG   0x0084u   /* car_section_along[slot] — distance along the section */
 #define PLACE_CAR_DIR     0x0086u   /* the three direction bytes at +0/+1/+2 */
 
 /* signextend8( |dir| * factor >> 8 ) with the sign of dir — the signed contribution of one axis,
@@ -12640,8 +12646,8 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
     uint8_t x0  = slot;                               /* object/car slot */
     uint8_t y0  = sectionCursor;                      /* section byte cursor */
     uint8_t soi = mem[SECTION_DIR_INDEX + y0];        /* indexes the direction tables */
-    uint8_t along  = mem[CAR_STATE_1 + x0];
-    uint8_t across = mem[CAR_STATE_2 + x0];
+    uint8_t along  = mem[CAR_SECTION_ALONG + x0];
+    uint8_t across = mem[CAR_SECTION_ACROSS + x0];
 
     /* ⚠ The oracle parks its inputs in the zero-page arithmetic window ($0C soi, $84 along,
        $85 across, $86..$88 dir bytes) and the object-queue tail reads them back through those
@@ -13114,7 +13120,7 @@ void track_pos_retreat(void)                     /* exit ABI: C only */
  *      near way round;
  *   4. back the pace car up $31 units, then on to the previous segment boundary, counting the
  *      sections spanned into shared_counter_42;
- *   5. seed every car's car_state_2 with an alternating $AF/$50 pattern in sorted order;
+ *   5. seed every car's car_section_across with an alternating $AF/$50 pattern in sorted order;
  *   6. rebuild that many track sections from the walk origin (build_road_section).
  *
  * A DRIVER, not a leaf: every loop ends on a game-state boundary (the field's distance wrap; the
@@ -13192,13 +13198,13 @@ void full_track_scan_rebuild_core(uint8_t retreatDepth)
         } while (!crossed);                                   /* until a segment boundary is crossed */
     }
 
-    /* 5. seed car_state_2 for all 20 cars in sorted order with an alternating $AF/$50 pattern
+    /* 5. seed car_section_across for all 20 cars in sorted order with an alternating $AF/$50 pattern
        (A starts $50 and is EOR #$FF'd before each store, so it toggles each car) */
     {
         uint8_t a = 0x50u;
         for (int y = 0x13; y >= 0; y--) {          /* ...the same descent-through-wrap */
             a ^= 0xFFu;
-            mem[CAR_STATE_2 + mem[CAR_ORDER_TBL + y]] = a;
+            mem[CAR_SECTION_ACROSS + mem[CAR_ORDER_TBL + y]] = a;
         }
     }
 
@@ -13502,9 +13508,9 @@ SlotExit draw_car_field_core(uint8_t entryY, uint8_t entryV, uint8_t entryC)
  *      derives a proximity gap (math_lo/math_hi);
  *   2. integrates that gap*4 into the 16-bit car speed [car_speed_scaled:car_speed_frac], with an
  *      overflow guard that resets a car whose speed high byte reaches $BE;
- *   3. adds the speed into car_state_1 twice, advancing the car one track-offset unit on each wrap
+ *   3. adds the speed into car_section_along twice, advancing the car one track-offset unit on each wrap
  *      (track_pos_advance, twin #134 — which books a completed lap via lap_complete, twin #136);
- *   4. steps the car's steering state car_state_2 toward centre.
+ *   4. nudges the car's across-track offset (car_section_across) +/-1 back toward the centre line.
  *
  * The two genuine wide values, de-carried to plain uint16_t here (the campaign deliverable):
  *   - $2861-$2865  [math_hi:A] <<= 2         (a 16-bit left shift, top bits discarded)
@@ -13529,13 +13535,13 @@ SlotExit draw_car_field_core(uint8_t entryY, uint8_t entryV, uint8_t entryC)
 static void car_steering_settle(uint8_t x)
 {
     uint8_t f    = (uint8_t)(mem[CAR_FLAGS_0 + x] & 0xBFu); /* $28CE LDA / $28D1 AND #$BF / $28D3 CLC */
-    uint8_t st2b = mem[CAR_STATE_2 + x];
+    uint8_t st2b = mem[CAR_SECTION_ACROSS + x];
     if (f & 0x80u) {                                     /* $28D4 BPL $28DF — bit7 set arm */
         uint16_t r = (uint16_t)(uint8_t)(f ^ 0x7Fu) + st2b; /* $28D6 EOR #$7F / $28D8 ADC (C=0) */
-        if (r > 0xFFu) mem[CAR_STATE_2 + x] = (uint8_t)r;   /* $28DB BCS $28E4 store on carry */
+        if (r > 0xFFu) mem[CAR_SECTION_ACROSS + x] = (uint8_t)r;   /* $28DB BCS $28E4 store on carry */
     } else {
-        uint16_t r = (uint16_t)f + st2b;                    /* $28DF ADC car_state_2,X (C=0) */
-        if (r <= 0xFFu) mem[CAR_STATE_2 + x] = (uint8_t)r;  /* $28E2 BCS skip; store on no carry */
+        uint16_t r = (uint16_t)f + st2b;                    /* $28DF ADC car_section_across,X (C=0) */
+        if (r <= 0xFFu) mem[CAR_SECTION_ACROSS + x] = (uint8_t)r;  /* $28E2 BCS skip; store on no carry */
     }
 }
 
@@ -13618,11 +13624,11 @@ static void drive_one_car(uint8_t x)
         mem[CAR_SPEED_SCALED + x] = sscaled;                 /* $287C STA car_speed_scaled,X */
     }
 
-    /* $287F-$2894: add the speed into car_state_1 twice; each carry advances the car one offset
+    /* $287F-$2894: add the speed into car_section_along twice; each carry advances the car one offset
        unit (track_pos_advance, which books a lap via lap_complete on a distance wrap) */
     for (int i = 1; i >= 0; i--) {                           /* $2881 shared_temp_76=1; DEC/BPL loop */
-        uint16_t s = (uint16_t)mem[CAR_STATE_1 + x] + mem[CAR_SPEED_SCALED + x]; /* $2883 CLC/$2887 ADC */
-        mem[CAR_STATE_1 + x] = (uint8_t)s;                   /* $288A STA car_state_1,X */
+        uint16_t s = (uint16_t)mem[CAR_SECTION_ALONG + x] + mem[CAR_SPEED_SCALED + x]; /* $2883 CLC/$2887 ADC */
+        mem[CAR_SECTION_ALONG + x] = (uint8_t)s;                   /* $288A STA car_section_along,X */
         if (s > 0xFFu) {                                     /* $288D BCC skip — a carry crossed a unit */
             cpu.X = x;                                       /* track_pos_advance->lap_complete reads cpu.X */
             track_pos_advance_core(x);                       /* $288F JSR track_pos_advance */
@@ -13630,23 +13636,24 @@ static void drive_one_car(uint8_t x)
     }
     shared_temp_76 = 0xFFu;                                  /* $2892-$2894: DEC to $FF exits the BPL loop */
 
-    /* $2896-$28E4: steer car_state_2 back toward centre, gated by the car's shape/state flags */
+    /* $2896-$28E4: nudge the car's across-track offset back toward the centre line, gated by its
+       shape/state flags */
     {
         uint8_t shape = mem[CAR_FLAGS_SHAPE + x];            /* $2896 LDA / $2899 ASL A */
         if (shape & 0x80u) return;                           /* $289A BCS $28E7 (old bit7) — next car */
         if (shape & 0x40u) { car_steering_settle(x); return; }   /* $289C BMI $28CE (old bit6) */
         if ((mem[CAR_FLAGS_0 + x] & 0x40u) == 0) { car_steering_settle(x); return; }  /* $28A1/$28A3 */
-        if (((mem[CAR_STATE_2 + x] ^ mem[CAR_FLAGS_0 + x]) & 0x80u) == 0) {           /* $28A8/$28AB */
+        if (((mem[CAR_SECTION_ACROSS + x] ^ mem[CAR_FLAGS_0 + x]) & 0x80u) == 0) {           /* $28A8/$28AB */
             car_steering_settle(x); return;
         }
 
-        uint8_t st2 = mem[CAR_STATE_2 + x];                  /* $28AD LDA car_state_2,X */
+        uint8_t st2 = mem[CAR_SECTION_ACROSS + x];                  /* $28AD LDA car_section_across,X */
         if (st2 & 0x80u) {                                   /* $28B0 BPL $28C1 — bit7 set arm */
-            if (st2 >= 0xECu) { mem[CAR_STATE_2 + x] = (uint8_t)(st2 - 1); return; } /* $28B2/$28B6 DEC/$28B9 */
+            if (st2 >= 0xECu) { mem[CAR_SECTION_ACROSS + x] = (uint8_t)(st2 - 1); return; } /* $28B2/$28B6 DEC/$28B9 */
             if (st2 >= 0xE2u) return;                        /* $28BB CMP #$E2 / $28BF BCS $28E7 */
             car_steering_settle(x);                          /* $28BD BCC $28CE (st2 < $E2) */
         } else {                                             /* $28C1 — bit7 clear arm */
-            if (st2 < 0x14u) { mem[CAR_STATE_2 + x] = (uint8_t)(st2 + 1); return; } /* $28C5 INC/$28C8 */
+            if (st2 < 0x14u) { mem[CAR_SECTION_ACROSS + x] = (uint8_t)(st2 + 1); return; } /* $28C5 INC/$28C8 */
             if (st2 < 0x1Eu) return;                         /* $28CA CMP #$1E / $28CC BCC $28E7 */
             car_steering_settle(x);                          /* fall to $28CE (st2 >= $1E) */
         }
@@ -13765,7 +13772,7 @@ void reset_driving_variables_core(void)
         mem[CAR_LAP_START_HI + x]  = 0x80u;
         mem[CAR_LAP_COUNT + x]     = 0x00u;
         mem[CAR_FLAGS_0 + x]       = 0x00u;
-        mem[CAR_STATE_1 + x]       = 0x00u;
+        mem[CAR_SECTION_ALONG + x]       = 0x00u;
         mem[CAR_SPEED_SCALED + x]  = 0x00u;            /* the 16-bit speed, high byte... */
         mem[CAR_RACE_FLAGS + x]    = 0x00u;
         mem[CAR_SPEED_FRAC + x]    = 0x00u;            /* ...and low ($3850, the init overlay) */
@@ -14057,7 +14064,7 @@ void check_car_pair_core(void)
 
         /* $26ad car_gap(X=firstSlot, Y=secondSlot): state_1[second]-state_1[first], reduced to a
            signed ring gap in math_lo/A with C=far, N=sign (writes math_hi/hypot_min_hi too). */
-        unsigned d = car_gap_lo_core(mem[CAR_STATE_1 + secondSlot], mem[CAR_STATE_1 + firstSlot]);
+        unsigned d = car_gap_lo_core(mem[CAR_SECTION_ALONG + secondSlot], mem[CAR_SECTION_ALONG + firstSlot]);
         GapTail g  = car_gap_tail_core(firstSlot, secondSlot, !(d & 0x100u));
         uint8_t gap = g.a;
 
@@ -14122,7 +14129,7 @@ void check_car_pair_core(void)
                 if (rf != 0u) {
                     /* bit6 of the trailing car's race flags set — classification is decided here */
                     span_line_cursor = c4 ? 0x40u : 0xC0u;   /* $2718 BCS / $271a ORA #$80 / $271c */
-                    unsigned cst = (mem[CAR_STATE_2 + firstSlot] >= mem[CAR_STATE_2 + secondSlot]);  /* $2721 CMP */
+                    unsigned cst = (mem[CAR_SECTION_ACROSS + firstSlot] >= mem[CAR_SECTION_ACROSS + secondSlot]);  /* $2721 CMP */
                     math_lo = (uint8_t)((cst << 7) | (math_lo >> 1));   /* $2724 ROR $74 (C-in = cst) */
                     outcome = PROX_PUBLISH;                  /* $2726 -> $277D */
                 } else {
@@ -14132,14 +14139,14 @@ void check_car_pair_core(void)
                         shared_temp_76 = (uint8_t)(shared_temp_76 >> 1);   /* $2742 LSR $76 */
                     } else {
                         span_line_cursor = 0x40u;            /* $272d */
-                        unsigned cst2 = (mem[CAR_STATE_2 + secondSlot] >= mem[CAR_STATE_2 + firstSlot]);  /* $2732 CMP */
+                        unsigned cst2 = (mem[CAR_SECTION_ACROSS + secondSlot] >= mem[CAR_SECTION_ACROSS + firstSlot]);  /* $2732 CMP */
                         math_lo = (uint8_t)((cst2 << 7) | (math_lo >> 1));  /* $2735 ROR $74 */
-                        uint8_t s2 = mem[CAR_STATE_2 + secondSlot];        /* $272f LDA — value survives to abs8 */
+                        uint8_t s2 = mem[CAR_SECTION_ACROSS + secondSlot];        /* $272f LDA — value survives to abs8 */
                         uint8_t absv = (s2 & 0x80u) ? (uint8_t)(0u - s2) : s2;  /* $2737 AND #$FF (sets N) / $2739 abs8 */
                         loadState2 = (absv < 0x3Cu);         /* $273c CMP #$3C / $273e BCC $2744 / $2740 BCS $2749 */
                     }
                     if (loadState2)
-                        math_lo = mem[CAR_STATE_2 + secondSlot];   /* $2744 LDA / $2747 STA $74 */
+                        math_lo = mem[CAR_SECTION_ACROSS + secondSlot];   /* $2744 LDA / $2747 STA $74 */
 
                     /* $2749: the trailing/leading pair's own classification */
                     uint8_t fs = mem[CAR_FLAGS_SHAPE + firstSlot];   /* $2749 (X=first) */
@@ -14153,8 +14160,8 @@ void check_car_pair_core(void)
                         }
                     } else {
                         /* bit7 clear ($275E): |state_2[second] - state_2[first]| decides */
-                        Adc df = sbc_value(mem[CAR_STATE_2 + secondSlot],    /* $275e LDA / $2761 SEC */
-                                           mem[CAR_STATE_2 + firstSlot], 1); /* $2762 SBC */
+                        Adc df = sbc_value(mem[CAR_SECTION_ACROSS + secondSlot],    /* $275e LDA / $2761 SEC */
+                                           mem[CAR_SECTION_ACROSS + firstSlot], 1); /* $2762 SBC */
                         uint8_t diff = df.carry ? df.val : (uint8_t)(~df.val);   /* $2765 BCS / $2767 EOR #$FF */
                         if (diff >= 0x64u) {
                             outcome = PROX_TAIL;             /* $2769-6b -> tail */

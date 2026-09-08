@@ -4129,8 +4129,8 @@ void drive_other_cars__t6502(void);
 
    Runs once a frame over cars X=19..0 (skipping player_car): target speed from the segment
    ahead, a braking-proximity gap, gap*4 integrated into the 16-bit car speed, the speed added
-   into car_state_1 twice (each carry stepping the car one offset unit via track_pos_advance),
-   then car_state_2 steered toward centre.  Exit ABI is dead (both callers JSR $2692 next), so
+   into car_section_along twice (each carry stepping the car one offset unit via track_pos_advance),
+   then car_section_across steered toward centre.  Exit ABI is dead (both callers JSR $2692 next), so
    only mem[] is compared — including the campaign's targets math_lo/math_hi ($74/$75), which the
    twin writes inline at their 6502 exit values.  D=0 (per-frame sim; not one of the 8 SED sites).
 
@@ -4186,7 +4186,7 @@ static int test_drive_other_cars(void)
         }
 
         /* FORCED LAP WRAP — 1-in-3 cases.  Drive one non-player car down L_decel with a known
-           moderate speed so both inner-loop iterations overflow car_state_1 and call
+           moderate speed so both inner-loop iterations overflow car_section_along and call
            track_pos_advance; seed its distance one short of a full lap so the first advance fires
            lap_complete; open lap_complete's gates so it reaches the math_lo/math_hi writes. */
         if (t % 3 == 0) {
@@ -4201,7 +4201,7 @@ static int test_drive_other_cars(void)
             pre[0x0100u + tc] = (uint8_t)(0x80u | (pre[0x0100u + tc] & 0x7Fu)); /* bit7 -> L_decel */
             pre[0x0150u + tc] = 0x10u;                          /* car_speed_scaled: +$FC00 -> $0C */
             pre[0x3850u + tc] = 0x00u;                          /* car_speed_frac */
-            pre[0x0164u + tc] = 0xFFu;                          /* car_state_1: +$0C overflows twice */
+            pre[0x0164u + tc] = 0xFFu;                          /* car_section_along: +$0C overflows twice */
             pre[0x08D0u + tc] = 0xFFu;                          /* car_distance_lo */
             pre[0x08E8u + tc] = 0x00u;                          /* car_distance_hi = $00FF */
             pre[0x59FCu] = 0x00u; pre[0x59FDu] = 0x01u;         /* lap_length = $0100 -> ++dist wraps */
@@ -4579,7 +4579,7 @@ void stage_nearby_car__t6502(void);
 
    place_car_world_coords is steered to its early SMC-unhandled return (mem[$298D] != $29) so it
    terminates fast and deterministically — but it still runs axis-0, whose section-origin index is
-   mem[SECTION_DIR_INDEX + Y]: a wrong slot->X (car_state_1/2[X]) or a wrong Y diverges mem[] on
+   mem[SECTION_DIR_INDEX + Y]: a wrong slot->X (car_section_along/2[X]) or a wrong Y diverges mem[] on
    the very first axis, so the fixture is still sensitive to this twin's two register outputs.
 
    Coverage.  car_gap_tail treats D = dist[$17]-dist[slot] with a ZERO high byte as a near pair
@@ -9909,7 +9909,7 @@ static int test_crash_restart_subtree(void)
                others. */
             if (t % 3 == 0) {
                 uint8_t y0 = pre[0x0022], s0 = (uint8_t)(pre[0x0022] + 2);
-                pre[0x0164 + pre[0x006F]] = 0; pre[0x0178 + pre[0x006F]] = 0;    /* car_state_1/2: no offset */
+                pre[0x0164 + pre[0x006F]] = 0; pre[0x0178 + pre[0x006F]] = 0;    /* car_section_along/2: no offset */
                 pre[0x0900 + y0] = (uint8_t)(pre[0x6280] + (uint8_t)(xs() & 0x3F));
                 pre[0x0A00 + y0] = pre[0x6283];
                 pre[0x0900 + s0] = (uint8_t)(pre[0x6282] + (uint8_t)(xs() & 0x3F));
@@ -10175,7 +10175,7 @@ static int test_last_shim_callers(void)
                others. */
             if (t % 3 == 0) {
                 uint8_t y0 = c.Y, s0 = (uint8_t)(c.Y + 2);
-                pre[0x0164 + c.X] = 0; pre[0x0178 + c.X] = 0;    /* car_state_1/2: no offset */
+                pre[0x0164 + c.X] = 0; pre[0x0178 + c.X] = 0;    /* car_section_along/2: no offset */
                 pre[0x0900 + y0] = (uint8_t)(pre[0x6280] + (uint8_t)(xs() & 0x3F));
                 pre[0x0A00 + y0] = pre[0x6283];
                 pre[0x0900 + s0] = (uint8_t)(pre[0x6282] + (uint8_t)(xs() & 0x3F));

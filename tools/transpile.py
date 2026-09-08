@@ -1276,8 +1276,8 @@ VALIDATE_FUNCS = {
     # from the driving loop ($117E/$2649) for every car but the player's (X=19..0): picks a target
     # speed from the segment ahead, derives a braking-proximity gap, integrates gap*4 into the
     # 16-bit car speed [car_speed_scaled:car_speed_frac] (with a $BE overflow reset), adds the speed
-    # into car_state_1 twice — each carry advancing the car one offset unit via track_pos_advance
-    # (twin #134, which books a lap via lap_complete #136) — then steers car_state_2 back toward
+    # into car_section_along twice — each carry advancing the car one offset unit via track_pos_advance
+    # (twin #134, which books a lap via lap_complete #136) — then steers car_section_across back toward
     # centre.  Two genuine wide values de-carried to uint16_t: the $2861 <<2 of [math_hi:A] and the
     # $2867 speed add.  math_lo/math_hi ($74/$75) are the wide-value readers this nativizes, written
     # inline at their 6502 exit values (a mid-routine lap wrap overwrites them via the same native

@@ -1209,7 +1209,7 @@ void car_gap(void)
        core directly rather than parking them in cpu for the tail's own shim to read back.
        (cpu.A is not one of them — the tail recomputes the difference from car_distance_16 — so
        the byte this subtract leaves in A is overwritten by the exit ABI below either way.) */
-    unsigned d = car_gap_lo_core(mem[CAR_STATE_1 + cpu.Y], mem[CAR_STATE_1 + cpu.X]);
+    unsigned d = car_gap_lo_core(mem[CAR_SECTION_ALONG + cpu.Y], mem[CAR_SECTION_ALONG + cpu.X]);
     car_distance_marshal_in_one(cpu.X);            /* the two slots the gap is measured between */
     car_distance_marshal_in_one(cpu.Y);
     GapTail e = car_gap_tail_core(cpu.X, cpu.Y, (unsigned)!(d & 0x100));

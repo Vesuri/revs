@@ -44,44 +44,6 @@ the field should track the circuit's corners if the curvature reading is right. 
 set or like a number.  Until then the name is `[INFERRED]` and this entry says why.
 
 
-## `car_state_1` (`$0164,X`) / `car_state_2` (`$0178,X`) — which is ALONG and which is ACROSS
-
-The two per-driver quantities `place_player_in_section` computes, still named by address only, and
-`[INFERRED]` in both rows.  The evidence is now full and still symmetrical:
-
-* `car_state_1` is scaled and ADDED INTO THE CAMERA's coordinate 1 by
-  `update_camera_and_drive_state` (`$45D5`-`$45ED`, into `$6281`/`$6284`), so it is an offset from
-  the section's own origin along one axis; `$27A4` differences it between two cars, `$2887`
-  accumulates it, and race init zeroes it.
-* `car_state_2` is compared BETWEEN cars at `$271E`-`$2762`, stepped by ±1 per frame by the
-  other-car AI at `$28A5`-`$28DF`, seeded to `$50 EOR $FF` for all twenty drivers at `$1100`, and
-  masked with `$7F` into `car_flags_0` when `$11AB` spins a car out.
-
-Both readings fit both axes: a ±1 step per frame is either a lane index (⇒ across) or a coarse
-progress counter (⇒ along), and comparing it between cars is either a side-by-side collision test
-or a who-is-ahead test.  **Settle it on the reference loop, not in the listing**: park the car and
-drive it dead straight, and watch which of the two moves; then steer without moving and watch
-again.  Whichever changes when the car translates is the ALONG one.
-
-⭐ **Twins #14/#15 narrowed this, and the question as posed may be malformed.**  Two things are now
-`[DERIVED]`: (a) `view_origin` component 1 is the VERTICAL axis — `project_point` divides it by the
-point's distance and the quotient is a scan ROW, while components 0 and 2 go to
-`bearing_to_section` and become an azimuth, i.e. a column; (b) the `$45D5`-`$45ED` write is
-`view_origin_lo[1] = section_coord[cursor + 1] + (car_state_1 scaled) + $AC + a term`, so
-`car_state_1` reaches the camera's ELEVATION, not its ground position.
-⇒ `[INFERRED]` the scale is what makes this ACROSS rather than along: `$4610` multiplies
-`car_state_1` by `mem[$5500 + Y]` (a per-section byte, sign EORed with `track_direction`) through
-`mul8`, and *offset × a per-section coefficient = a height change* is exactly CAMBER.  An
-across-track offset on a banked section raises you; an along-track one does not.  That also makes
-sense of `$27A4` differencing it between cars (side-by-side) and of the `$AC` constant reading as
-nominal eye height.
-⚠ Still not measured, and the reference-loop test above is still the decider — but it now has a
-prediction to falsify: **`car_state_1` should change when the car is steered across a CAMBERED
-section and barely at all on a flat straight.**  ⭐ The coefficient's own name is now settled and it STRENGTHENS the camber reading:
-`mem[$5500 + Y]` is `track_dir_1`, MEASURED as the track's GRADIENT component — small and signed
-where the two ground-plane components are ±$78 — so `$4610` (now `scale_by_track_gradient`) is
-literally "an offset times the local slope".  The prediction to falsify is unchanged.
-
 ## `model_accum_lo`/`model_accum_hi` (`$62D8`/`$62E8`) — element 8 of what, physically?
 
 Named for its ROLE (the one element `apply_driving_model` integrates by hand) rather than its

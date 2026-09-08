@@ -288,7 +288,7 @@ What the campaign leaves on the table, if it is wanted:
   session bookkeeping;
 * `docs/rename.md` is down to open items that need a MEASUREMENT rather than more reading, and
   three of them now name the exact reference-loop run that settles them (`section_curve`,
-  `car_state_1`/`car_state_2`, the fifteen state-vector elements);
+  `car_section_along`/`car_section_across`, the fifteen state-vector elements);
 * Phase 6's representation change (`docs/direct-bitplane-plan.md`), which is where the framerate
   actually is — and the campaign's standing conclusion is unchanged: **the port's biggest costs
   are the machinery the transliteration is wrapped in, not the game's algorithms.**

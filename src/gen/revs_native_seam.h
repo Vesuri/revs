@@ -29,7 +29,7 @@
 #define POINT_DELTA_HI    0x0083u  /* point_delta_hi[0..2]   — ...its magnitude's high byte */
 #define SLIP_MAG_HI      0x008Fu  /* plot_ptr3_hi — ...and its high byte (docs/rename.md) */
 #define SLIP_SIGN        0x0079u  /* hypot_min_hi — here the sign byte abs16_math branches on */
-#define CAR_STATE_1    0x0164u   /* per-driver; the camera adds a gradient-scaled copy */
+#define CAR_SECTION_ALONG    0x0164u   /* per-driver: distance ALONG the section from its origin */
 #define FENCE_COL_COUNT        0x28u    /* 40 view columns                                    */
 
 /* ---- SoA array bases (Step 0 of the wide-value cleanup: one home each, was duplicated
