@@ -204,6 +204,50 @@ splits the routine instead of abandoning the oracle:
    "all terrain, then all objects" changed what occludes what. If any restructuring here reorders
    drawing, that part cannot be mem-diffed at all and needs the reference machine.
 
+### ⛔⛔ 5z. THE GAME READS ITS OWN FRAME BUFFER — a hard constraint on every layout here (2026-09-08)
+
+**The driving model samples two screen bytes as an input.** `update_grip_limits` reads
+`surface_change_0` (`$713D`) and `surface_change_1` (`$7205`), and those are not variables: they
+are frame-buffer cells on **display line 149** (inside the track band) at MODE 5 pixels 28..31 and
+128..131, symmetric about the 160-pixel centre — the picture under the car's left and right.
+`$FF` in either opens `grip_disturbance` and can start a spin; `$FF` in both halves the grip base.
+Measured on a real BBC over 600 frames with the wheel held over: one-of-two on 27 frames, both on
+24 (`symbols.csv` `$713D`).
+
+⇒ Every option in this document that stops maintaining a BBC-shaped frame buffer — direct
+plotting (§7f), the trapezoid fill (§9), sprites for anything in the track band (§8) — **must
+still leave those two bytes readable with the values a real BBC would have.** A direct plotter
+that never materialises line 149 does not merely lose a pixel: it changes the *physics*, silently,
+in a way no frame-buffer diff can see because there is no frame buffer left to diff.
+
+⚠ The cheap discharge is a **producer-side probe**: whatever draws that line computes the two
+values anyway, so have it write them to `mem[$713D]`/`mem[$7205]` explicitly and keep the read
+side untouched. Cheap — but it has to be *designed in*, and it has to be on the list before any
+layout is chosen, not discovered afterwards. Note also that the pair is a *pixel* predicate, so a
+representation change that alters the plotted bit pattern at those four-pixel cells (a different
+dither, a colour remap, sub-pixel rounding) changes the answer even if the picture looks the same.
+
+✅ **The sweep for siblings is done (2026-09-08) and the answer is: these two, and nothing else.**
+Every absolute read (`LDA/LDX/LDY/CMP/CPX/CPY/AND/ORA/EOR/BIT/ADC/SBC`, direct and indexed) in
+`disasm/listing.txt` targeting the frame buffer, restricted to the **visible lower picture**
+(`$6980+`, display line 96 down — everything above that is the code-and-variables the sky hides,
+§4), is eight instructions at six addresses:
+
+| Address | Read by | What it is |
+|---|---|---|
+| `$713D` | `$4BF0`, `$4BF8` | ⛔ `surface_change_0` — **feeds the physics** |
+| `$7205` | `$4BF3`, `$4BFF` | ⛔ `surface_change_1` — **feeds the physics** |
+| `$6E85` `$6E8A` `$6FB2` `$6FBD` `$6FC0` `$70F8` | `$52BA`-`$52EA`, all `LDA abs,X` | the dial-needle plotter reading the byte it is about to merge into |
+
+The six needle reads are ordinary read-modify-write of the picture: self-consistent, and any
+plotter that keeps read-modify-write semantics reproduces them. **Only the two `surface_change`
+cells escape the renderer and reach the simulation**, so the constraint above is exactly two
+bytes wide — but it is absolute.
+
+⚠ It was found by accident, and it had been recorded as dead code for three weeks. The sweep
+above is what turns "assume there are more" into a number; run it again if the screen base or the
+band layout ever moves.
+
 ### ⭐⭐ 5a. WHAT THE PRODUCER BUFFERS ACTUALLY HOLD (2026-08-17, twins #9-#12)
 
 Before rearranging these buffers, know what is in them, because the previous names said something
