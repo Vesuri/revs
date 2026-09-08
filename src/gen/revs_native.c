@@ -17193,8 +17193,11 @@ void hook_next_section_cursor_b(void) { hook_next_section_cursor_at(0x53FAu); }
    `(angleHi << 1) | (angleLo >> 7)`, so `nine >> 6` drops the bit angleLo contributed and the two
    expressions are the SAME function of the heading (docs/validation-harness.md §FIFTEENTH).  The
    defect above moves the field instead, and detects. */
-#define GEN_DIR_TBL_A   0x57BFu   /* quarter-turn component table, first of the pair */
-#define GEN_DIR_TBL_B   0x58BFu   /* ...and the second (per-circuit; see docs/rename.md) */
+/* The 65-entry octant sine/cosine table of radius 120 that the generator resolves a heading
+   against — the constant tail of the $5700/$5800 pages, identical on all five circuits
+   (symbols.csv gen_octant_sin / gen_octant_cos).  No MEM_ define: they are `table` rows. */
+#define GEN_OCTANT_SIN  0x57BFu
+#define GEN_OCTANT_COS  0x58BFu
 
 GenDirVector hook_gen_dir_vector_core(uint16_t block)
 {
@@ -17208,12 +17211,12 @@ GenDirVector hook_gen_dir_vector_core(uint16_t block)
     if (octant & 1u)                                            /* $5486-$548A, on the LSR's C */
         index = (uint8_t)(0x40u - index);   /* odd octants read the table mirrored */
 
-    uint8_t tableA = mem[GEN_DIR_TBL_A + index];                /* $548D LDY */
-    uint8_t tableB = mem[GEN_DIR_TBL_B + index];                /* $5490 LDA / $5493 TAX */
+    uint8_t sinI = mem[GEN_OCTANT_SIN + index];                 /* $548D LDY */
+    uint8_t cosI = mem[GEN_OCTANT_COS + index];                 /* $5490 LDA / $5493 TAX */
 
     GenDirVector d;
-    if ((octant + 1u) & 2u) { d.compA = tableB; d.compB = tableA; }  /* $5494-$54A5 */
-    else                    { d.compA = tableA; d.compB = tableB; }
+    if ((octant + 1u) & 2u) { d.compA = cosI; d.compB = sinI; }  /* $5494-$54A5 */
+    else                    { d.compA = sinI; d.compB = cosI; }
 
     /* The signs.  Two windows on the octant, each negating one component; the 6502 wrote the
        negates as `LDA #0 / SBC`, which agrees with negate8's `EOR #$FF / CLC / ADC #1` in
@@ -17235,7 +17238,7 @@ GenDirVector hook_gen_dir_vector_core(uint16_t block)
             d.compB = f.hi; d.c = f.carry; d.v = f.overflow;
         }
     }
-    d.tableB = tableB;
+    d.cosI = cosI;
     return d;
 }
 
@@ -17273,7 +17276,7 @@ static void hook_gen_dir_vector_at(uint16_t block, uint8_t scale)
     mem[TRACK_DIR_1 + dir] = gradient;                     /* $54E7 */
 
     cpu.A = gradient;
-    cpu.X = d.tableB;                                      /* the $5493 TAX, never overwritten */
+    cpu.X = d.cosI;                                      /* the $5493 TAX, never overwritten */
     cpu.Y = dir;
     cpu.N = (uint8_t)((gradient >> 7) & 1u);
     cpu.Z = (uint8_t)(gradient == 0u);

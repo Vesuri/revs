@@ -116,28 +116,6 @@ points, both walks start at 6, `shift_near_edge_points` slides exactly five entr
 MEASURED.  Cheap confirmation on the reference loop: drive at a steady speed and watch how often
 `$62F5` is set and what `$0007` reads when it is; it should equal the number of sections crossed.
 
-## `$5700` / `$5800` — confirm the ACROSS-TRACK NORMAL reading with a dump
-
-⭐⭐ **The `$5400`/`$5500`/`$5600` question is SETTLED and gone** — a 64 KB `REVS_MEM_DUMP` mid-race
-on Silverstone (frame 300) and Brands (frame 120) proved the three pages are the track's forward
-DIRECTION VECTOR per position, now `track_dir_0`/`track_dir_1`/`track_dir_2`.
-
-The two remaining pages are `[INFERRED]` from the generator, not yet measured.  BRANDS' generator
-(`$54C0`) writes `$5800,Y` as component 0 re-signed by `track_direction` and `$5700,Y` as
-component 2 re-signed AND negated — a 90-degree rotation of the forward vector, i.e. the
-**across-track NORMAL**.  Their readers are `$299D`-`$29A5` (into `point_delta_sign` components 0
-and 2, inside the other-car projector `$2937`) and `$1391` (inside `$12F7`).
-
-The naming DECISION is closed the same way `track_dir` closed it: one global symbol per address, so
-`$5700` keeps `ModifyGameCode` (it is a code entry point) and its note records the runtime
-across-track-normal tenancy; `$5800` has no row of its own — it sits inside that function region —
-so the tenancy is noted on `$5700`.  There is nothing to rename.
-
-⇒ What is left is only the same class as the other entries: **confirm the normal reading with the
-same mid-race dump `track_dir` used** — dump `$5700-$58FF` on a moving Silverstone frame and check
-`(c0, c2)` there is the 90-degree rotation of `track_dir`'s ground-plane pair.  Until then the
-note stays `[INFERRED from the generator]`.
-
 ## `$0100` (`car_race_flags`) — the SPIN value's reader, and a name that is still `[INFERRED]`
 
 Surfaced making `place_player_in_section` and `spin_car_out` native (twins in the
@@ -229,24 +207,11 @@ a single global name for either address would be wrong on two circuits.  ⇒ The
 (per-circuit run lengths, indexed by place).  The twin carries a local `GEN_CURSOR_RUNS` define
 and takes the block base as an argument until those exist.
 
-## The generator's octant sine table — `$57BF`/`$58BF` (and `$5472`'s per-circuit scale)
+## `$5472`'s per-circuit generator state block and vertical scale
 
 Found while twinning `$5472` (the geometry generator's direction-vector store, one body in all five
-expansion circuits).  The hook takes the generator's running 16-bit heading, splits it into an
-**octant** (bits 6..8) and a **within-octant index 0..$40**, and reads a component pair from
-`$57BF + i` and `$58BF + i`.  Those 65-entry runs are a **sine/cosine octant table of radius
-`$78` = 120**: `$57BF[i] = round(120 sin(i·π/256))`, `$58BF[i] = round(120 cos(i·π/256))`, so
-`i = $40` is 45° and both read `$55`, and `hypot` is exactly 120 at every entry checked.  120 is
-the same radius `symbols.csv` records for `track_dir_0`'s ground-plane pair, which is what the
-hook writes.  The bytes are **identical on all five circuits** — unlike `$5472`'s other two
-parameters.  [MEASURED] from `src/gen/revs_tracks.c`, 2026-09-07.
-
-⚠ These are the **tails of the `$5700`/`$5800` pages**, whose live tenants are the across-track
-normal pair the same hook writes at index `dir` (≲ `$26`).  So `$5700`/`$5800` now has a *third*
-reading, and the rows owed are two `table` rows at `$57BF`/`$58BF` (suggested
-`gen_octant_sin` / `gen_octant_cos`) plus a tenancy note on the existing `$5700`/`$5800` entry
-saying the page tail from `$BF` is constant data, not generated state.  The twin carries local
-`GEN_DIR_TBL_A`/`_B` defines until they exist.
+expansion circuits).  Its octant sine/cosine table half is settled — `gen_octant_sin` `$57BF` /
+`gen_octant_cos` `$58BF` in `symbols.csv`, and the twin uses those names.  What is still owed:
 
 ⚠⚠ `$5472`'s **other** two parameters DO differ per circuit and neither has a name: the generator
 state block is `$53FA` on Brands Hatch, Oulton and Snetterton and `$53FC` on Donington and the
