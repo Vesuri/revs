@@ -11145,6 +11145,12 @@ static void hook_cam_o_oracle(void) { g_hookOracle = 1; trk_oulton(0x59E7); g_ho
 static void hook_cam_s_twin(void)   { g_hookOracle = 0; trk_snetter(0x59C7); }
 static void hook_cam_s_oracle(void) { g_hookOracle = 1; trk_snetter(0x59C7); g_hookOracle = 0; }
 
+/* $2F23's slot test — Donington's and Snetterton's copies of the one body. */
+static void hook_slot_d_twin(void)   { g_hookOracle = 0; trk_doning(0x59ED); }
+static void hook_slot_d_oracle(void) { g_hookOracle = 1; trk_doning(0x59ED); g_hookOracle = 0; }
+static void hook_slot_s_twin(void)   { g_hookOracle = 0; trk_snetter(0x59E8); }
+static void hook_slot_s_oracle(void) { g_hookOracle = 1; trk_snetter(0x59E8); g_hookOracle = 0; }
+
 /* Snetterton's $56C8 and the Nurburgring's $56C4 run that same clamp loop and then release
    through a yaw guard of their own ($53DC / $53E0), so they get their own pair. */
 static void hook_clampg_s_twin(void)   { g_hookOracle = 0; trk_snetter(0x56C8); }
@@ -11279,7 +11285,7 @@ static int test_hook_twins(void)
     static uint8_t pre[65536];
     int fail = 0, printed = 0, t, cases = 4000, sub = 0;
     int sawLatched = 0, sawOneShot = 0, sawClamp = 0, sawAdvance = 0, sawEarlyStop = 0;
-    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge, runGuard[2], runSteer, runSteerO, runSteerS, runSteerD, runCam;
+    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge, runGuard[2], runSteer, runSteerO, runSteerS, runSteerD, runCam, runSlot;
     { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
     if (scale < 1) scale = 1;
     cases *= scale;
@@ -11289,6 +11295,7 @@ static int test_hook_twins(void)
     register_fixture("hook_steer_response_snetter");
     register_fixture("hook_steer_response_doning");
     register_fixture("hook_camera_scale_by_gradient");
+    register_fixture("hook_span_cap_slot_test");
     register_fixture("hook_horizon_clamp_guarded_snetter");
     register_fixture("hook_horizon_clamp_guarded_nurburg");
     register_fixture("hook_record_horizon");
@@ -11304,6 +11311,7 @@ static int test_hook_twins(void)
     runSteerS = want("hook_steer_response_snetter");
     runSteerD = want("hook_steer_response_doning");
     runCam    = want("hook_camera_scale_by_gradient");
+    runSlot   = want("hook_span_cap_slot_test");
     runGuard[0] = want("hook_horizon_clamp_guarded_snetter");
     runGuard[1] = want("hook_horizon_clamp_guarded_nurburg");
     runRecord = want("hook_record_horizon");
@@ -11742,6 +11750,61 @@ static int test_hook_twins(void)
             printf("VACUOUS: hook_camera_scale_by_gradient missed an arm "
                    "(settled %d other %d borrow %d no-borrow %d A bit7 %d $77 bit7 %d)\n",
                    sawSettled, sawOther, sawBorrow, sawNoBorrow, sawPairCarry, sawTop);
+            fail++;
+        }
+    }
+
+    /* ------------------------------------ $2F23's slot test, both circuits' copies of the body */
+    if (runSlot) {
+        static const struct { void (*tw)(void); void (*or_)(void); unsigned char track; }
+            SLOT[2] = { { hook_slot_d_twin, hook_slot_d_oracle, 2 },
+                        { hook_slot_s_twin, hook_slot_s_oracle, 4 } };
+        int lsub = 0, k, sawInherit = 0, sawFall = 0, sawEmpty = 0, sawFull = 0;
+        int sawAbove8B = 0, sawBelow8B = 0, sawWrap = 0;
+        for (t = 0; t < cases; t++) {
+            Cpu6502 c = zero_cpu();
+            uint8_t y, below;
+
+            fill_random(pre);
+            c.D = 0;
+            c.S = 0xFFu;
+            c.A = (uint8_t)xs(); c.X = (uint8_t)xs();
+            c.N = xs() & 1u; c.Z = xs() & 1u; c.C = xs() & 1u; c.V = xs() & 1u;
+
+            /* Y is a scan line 0..$4F, plus $FF — what `y--` leaves when the walk steps off
+               the top, which span_cap_line only range-checks AFTER asking this question. */
+            if ((xs() % 16u) == 0u) { y = 0xFFu; sawWrap = 1; }
+            else                     y = (uint8_t)(xs() % 0x50u);
+            c.Y = y;
+
+            /* The line BELOW decides everything, so $8B gets half the cases and the two sides
+               of the compare are named as well (C on the fallback path is the CMP's). */
+            switch (xs() % 4u) {
+            case 0: case 1: below = 0x8Bu; sawInherit = 1; break;
+            case 2: below = (uint8_t)(0x8Cu + (xs() % 0x74u)); sawAbove8B = 1; sawFall = 1; break;
+            default: below = (uint8_t)(xs() % 0x8Bu);         sawBelow8B = 1; sawFall = 1; break;
+            }
+            pre[0x5F61 + y] = below;
+
+            /* ...and this line's own class, whose ZERO is the "still empty" answer. */
+            if (xs() & 1u) { pre[0x5F60 + y] = 0x00u; sawEmpty = 1; }
+            else           { pre[0x5F60 + y] = (uint8_t)(xs() | 1u); sawFull = 1; }
+
+            for (k = 0; k < 2; k++) {
+                g_track = SLOT[k].track;
+                lsub += diff_run("hook_span_cap_slot_test", pre, c, SLOT[k].tw, SLOT[k].or_,
+                                 LIVE_A | LIVE_X | LIVE_Y | LIVE_FLAGS, t, &printed);
+            }
+        }
+        fail += lsub;
+        printf("%-32s %7d cases x both circuits' entries, %d mismatch (must be 0)  "
+               "live=A,X,Y+flags\n", "hook_span_cap_slot_test", cases, lsub);
+        if (!(sawInherit && sawFall && sawEmpty && sawFull && sawAbove8B && sawBelow8B &&
+              sawWrap)) {
+            printf("VACUOUS: hook_span_cap_slot_test missed an arm "
+                   "(inherit %d fallback %d empty %d full %d below>$8B %d below<$8B %d "
+                   "Y wrap %d)\n", sawInherit, sawFall, sawEmpty, sawFull, sawAbove8B,
+                   sawBelow8B, sawWrap);
             fail++;
         }
     }

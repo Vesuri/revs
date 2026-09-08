@@ -16634,6 +16634,54 @@ void hook_camera_scale_by_gradient(void)
     cpu.Z          = (uint8_t)(shared_temp_77 == 0u);
 }
 
+/* $59ED (Donington) / $59E8 (Snetterton) — THE SURFACE CAP INHERITS THE LINE BELOW.  One body,
+   two circuits, byte for byte; Brands and Oulton leave this site alone.  It is installed over
+   span_cap_line's `LDA view_line_surface,Y` at $2F23 (`disasm/track_hooks.txt`: $2F23-$2F25
+   $B9->$20), the descending walk's "is this scan line still unclassified?" test — the one
+   operation in the cap whose answer leaves the routine, through Z.
+
+   Silverstone answers from the line itself.  These two look first at the line BELOW (the one
+   the $2F22 DEY just stepped off): if its class is exactly $8B, the answer is "occupied"
+   whatever this line holds, so the cap is not stamped here at all.  Any other value and the
+   test falls back to reading this line, exactly as the displaced LDA did.
+
+   ⚠ $8B is a specific value, not a mask — half of the byte's bits are outside the two-bit
+   colour field view_paint_lines reads, so this is one particular class inheriting downward
+   rather than a general "is it set" test (docs/rename.md carries the question of what $8B is).
+
+   Entry ABI (the seam at $2F19-$2F22, reproduced by span_cap_line_slot_z): A = span_swapped,
+   Y = the scan line after the DEY, N/Z from that DEY.  Only Y is read.  Exit: A and N/Z as the
+   displaced LDA would have left them — the caller's `BNE $2F44` is the whole point — plus the
+   C the CMP or the LSR leaves.  ⚠ A is dead at the return ($2F28 LDA span_cap_surface_a
+   overwrites it); it is reproduced because the differential compares it, not because it is read.
+
+   SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
+   S106 the inheritance test reads THIS line, not the one below  5968
+   S107 $8B is treated as a mask (below & $8B)                    3782
+   S108 the $8B arm answers with $8B, not $8B >> 1                3948
+   S109 the fallback reads the line below too                     4018
+   S110 C is left at the caller's on the fallback path            2048
+   (counts are over 2 x 4000 runs — both circuits' entries through the one body.) */
+void hook_span_cap_slot_test(void)
+{
+    uint8_t below = mem[VIEW_LINE_SURFACE + 1u + cpu.Y];   /* $59ED LDA view_line_surface+1,Y */
+    uint8_t a;
+
+    if (below == 0x8Bu) {                                  /* $59F0 CMP #$8B / BEQ */
+        /* $59F8 LSR A.  The CMP set C on equality and the LSR shifts out $8B's bit 0 — both 1,
+           so the two ways of spelling this carry agree. */
+        a     = 0x8Bu >> 1;                                /* $45 — nonzero, so Z stays clear */
+        cpu.C = 1u;
+    } else {
+        cpu.C = (uint8_t)(below > 0x8Bu);                  /* only the CMP ran */
+        a     = mem[VIEW_LINE_SURFACE + cpu.Y];            /* $59F4 — the displaced load */
+    }
+
+    cpu.A = a;
+    cpu.N = (uint8_t)((a >> 7) & 1u);
+    cpu.Z = (uint8_t)(a == 0u);
+}
+
 /* $56C8 (Snetterton) / $56C4 (the Nurburgring) — THE SAME MONOTONIC-HORIZON CLAMP, RELEASED
    THROUGH A YAW GUARD.  The clamp walk is byte-identical to the other three circuits' $56C8
    (these two files' whole hook region is shifted, which is the only reason the Nurburgring's

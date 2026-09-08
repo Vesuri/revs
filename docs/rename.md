@@ -174,6 +174,21 @@ one where it runs downhill.  The `a`/`b` split is the only thing in the pass tha
 direction, so whichever visual feature swaps between those two frames is what bit 6 vs bit 7 names.
 
 
+## `$8B` — the one `view_line_surface` class two circuits inherit downward
+
+Donington's and Snetterton's `$2F23` hook (`hook_span_cap_slot_test`) tests the line below the
+one being capped for **exactly** `$8B` and, on a match, refuses the stamp.  `$8B` is
+`10001011`: bit 7 is `span_cap_surface_b`'s marker, bit 6 is clear, and the low bits are `11`
+— the one combination `$2F35`'s flatten leaves alone.  So it is a *named class*, not a mask
+(the sabotage that reads it as one is S107 in that twin), and the two circuits that install the
+hook are saying "a line of THIS kind claims the line above it too".
+
+⚠ **What would settle it**: `make viewdiff CIRCUITS="2 4"` already runs those two circuits, so
+dump `view_line_surface` on a frame where the hook fires (`--watch=$5F60`) and look at which
+feature the suppressed line belongs to.  A name for the class belongs in `surface_colours`'
+neighbourhood, and it should say what the surface IS, not that it is `$8B`.
+
+
 ## `$001D` — is `place_car_world_coords`' reader the same tenant as `staging_order_index`?
 
 `$001D` carries the name `staging_order_index` (the `car_order` position `move_and_draw_cars` is

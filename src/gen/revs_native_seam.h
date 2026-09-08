@@ -764,6 +764,7 @@ void hook_steer_response_oulton(void);           /* Oulton Park $57A1 */
 void hook_steer_response_snetter(void);          /* Snetterton $57A1 */
 void hook_steer_response_doning(void);           /* Donington Park $5779 */
 void hook_camera_scale_by_gradient(void);        /* $45CB — four circuits */
+void hook_span_cap_slot_test(void);              /* $2F23 — Donington + Snetterton */
 void hook_horizon_clamp_guarded_snetter(void);   /* Snetterton  $56C8 */
 void hook_horizon_clamp_guarded_nurburg(void);   /* Nurburgring $56C4 */
 
