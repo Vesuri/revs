@@ -134,22 +134,6 @@ one where it runs downhill.  The `a`/`b` split is the only thing in the pass tha
 direction, so whichever visual feature swaps between those two frames is what bit 6 vs bit 7 names.
 
 
-## `$001D` — is `place_car_world_coords`' reader the same tenant as `staging_order_index`?
-
-`$001D` carries the name `staging_order_index` (the `car_order` position `move_and_draw_cars` is
-staging, written at `$2669`), but `place_car_world_coords`' tail (`$2A03`) compares it with
-`car_behind` (`$004D`) to gate the other-car AI branch. That reads like the SAME index — but a zero
-page scratch cell with two readers is exactly the trap, so it is an assumption until measured.
-⚠ Settle it by dumping it at `$2A01` during a race with a car close behind.
-⚠⚠ **The obvious cheap run does NOT settle it and was tried** (2026-09-08): over frames 40-180 of
-`bbc_refloop_race --watch=001d` the ONLY write is `reset_driving_variables`' zero at `$1809` —
-`move_and_draw_cars`' `$2669` never fires, because the reference loop drives a PRACTICE session
-with no traffic. This needs a race with opponents staged, not another watch on the same run.
-
-(`$5F38` and `$5F39` left this queue with twin #203: `front_end_menus` derives both statically —
-`human_car_first` is the lowest human-driven car index and `human_driver_count` is `$14` minus it.)
-
-
 ## `$7B`'s second tenant, and `$85`/`$7C` inside `project_geometry`'s edge tail
 
 Opened while naming revs_native.c's callees: the last address-shaped label in the file was `$1D94`,
