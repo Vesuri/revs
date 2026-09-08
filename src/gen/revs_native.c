@@ -17068,3 +17068,103 @@ void hook_advance_gen_place_oulton(void)  { hook_advance_gen_place_at(0x53FAu, 0
 void hook_advance_gen_place_snetter(void) { hook_advance_gen_place_at(0x53FAu, 0x84u); }
 void hook_advance_gen_place_doning(void)  { hook_advance_gen_place_at(0x53FCu, 0x86u); }
 void hook_advance_gen_place_nurburg(void) { hook_advance_gen_place_at(0x53FCu, 0x9Au); }
+
+/* ===========================================================================
+   THE THREE CROSS-CIRCUIT ONE-LINE HOOK BODIES (twins #227-#229)
+   ---------------------------------------------------------------------------
+   Fourteen (circuit, entry) pairs, three bodies.  Each is one or two 6502 instructions installed
+   over one engine instruction, and each appears at a DIFFERENT address on every circuit — which
+   is why they read as fourteen singletons in the dispatch and as three routines here.  None takes
+   a per-circuit parameter: the bodies are byte-identical, so one twin serves every entry.
+   =========================================================================== */
+
+/* $53F0 (Brands Hatch) / $53E8 (Oulton) / $53C8 (Snetterton) / $5555 (the Nurburgring) —
+   THE HORIZON HALF-WIDTH SCALE.  Installed over `JSR abs8 / LSR A` at $2542 inside
+   build_track_geometry (make track-patch: $2543 $50->$F0/$E8/$C8, $2544 $34->$53, $2545 $4A->$EA
+   — the LSR becomes a NOP), which is where horizon_half_width is computed from the difference
+   edge_x_hi[horizon] - edge_x_hi[horizon + 40].
+
+   ⚠ It REPLACES the engine's `|d| / 2` with `d * $CD / 256` — and drops the absolute value with
+   it, so a negative difference stays negative through the multiply's high byte.  $CD/256 = 0.801,
+   so these four circuits sit their horizon about 60% wider than Silverstone's halving does.
+   Donington does NOT share this: it patches the same site to its own $57B6 instead.
+
+   Exit ABI: mul8's — A = the product's high byte, math_lo its low, N/Z from math_lo, C = 0 and V
+   the last shift-and-add's (untouched when the multiplier contributes no add).
+
+   SABOTAGE (each must FAIL; counts measured on the four circuits' 1000 cases, not predicted):
+   S63 multiplier $CD -> $CC                                     3312
+   S64 math_hi = A >> 1 (restore the LSR the patch NOPs out)     3312
+   S65 mul8() instead of mul8_noinit() (A overwrites math_lo)    3684
+   S66 math_hi = A & $7F (restore the |d| the patch drops)       2068
+   ⚠ S63 and S64 print the same count and it is NOT a stale build (the object was removed before
+   each link): both defects change the product for exactly the cases with A != 0, and each such
+   case differs in the same slots, so the totals coincide by construction.  S65/S66 separate. */
+void hook_horizon_half_width_scale(void)
+{
+    math_hi = cpu.A;        /* the difference becomes the multiply's addend */
+    math_lo = 0xCDu;        /* $CD/256 = 0.801, the circuit's own horizon scale */
+    mul8_noinit();
+}
+
+/* $54EB (Brands Hatch) / $53D7 (Donington) / $59E1 (Oulton) / $59C1 (Snetterton) /
+   $54FA (the Nurburgring) — SIGN A VALUE BY THE DIRECTION OF TRAVEL, THEN TAKE ITS MAGNITUDE.
+   Installed over the bare `JSR abs8` at $462B (make track-patch: $462C $50->$EB/$D7/$E1/$C1,
+   $462D $34->$54/$53/$59), inside the compare that follows `LDA $5E / SEC / SBC $44`.
+
+   The EOR is not a sign test on the difference — it REPLACES the value with `d ^ track_direction`
+   and abs8 then acts on that, so driving the circuit the other way round both re-signs the
+   difference and flips which end of the range it folds about.  The engine's own version has no
+   direction term at all.
+
+   Exit ABI: abs8's.  Positive: A = the EOR result with the EOR's own N/Z, and C/V passed through
+   from the caller (neither the EOR nor a not-taken abs8 touches them).  Negative: A and all four
+   flags from the negate.
+
+   SABOTAGE (each must FAIL; counts measured on the five circuits' 1000 cases, not predicted):
+   S67 drop the EOR (abs8 on the raw difference)                 4965
+   S68 A + track_direction instead of A ^ track_direction        3005
+   S69 leave the entry N standing instead of the EOR's           2570
+   S70 drop the abs8                                             2490 */
+void hook_abs_by_track_direction(void)
+{
+    uint8_t eor = (uint8_t)(cpu.A ^ track_direction);
+    cpu.A = eor;
+    cpu.N = (uint8_t)((eor >> 7) & 1u);      /* the EOR's own flags; C and V pass through */
+    cpu.Z = (uint8_t)(eor == 0u);
+    abs8();                                  /* negate when the re-signed value came out negative */
+}
+
+/* $57BB (Brands Hatch) / $54EB (Donington, Oulton, Snetterton) / $555C (the Nurburgring) —
+   SCALE THE VALUE IN A BY THE TRACK GRADIENT, SIGNED BY THE CALLER'S OWN N.  `PHP / JMP $461B`:
+   two instructions, and the first of them is the whole point.
+
+   ⭐ THE SIGN GENUINELY ESCAPES THROUGH THE 6502 STACK: the PHP stacks the entry P,
+   scale_by_track_gradient_tail's $4621 PLP pulls it back, and its $4622 abs8 re-signs the product
+   from that N.  Carrying the sign as a C argument instead computes the right answer and still
+   FAILS the differential — the PHP's byte at $01FF is real memory the oracle writes — so the
+   stack push stays a push.
+
+   Exit ABI: A = the re-signed product high byte, math_lo its low byte, math_hi the multiplier the
+   caller parked.  The flags are the entry flags when the sign is positive (PLP restores them and
+   abs8 does not run) and the negate's when it is negative.
+
+   SABOTAGE (each must FAIL; counts measured on the five circuits' 1000 cases, not predicted):
+   S71 drop the PHP entirely                                     5000
+   S72 stack a cleared N (the product never re-signs)            2440
+   S73 push AFTER the tail instead of before it                  5000
+   S74 the core alone, without the tail's PLP + abs8             5000
+   ⚠ S71/S73/S74 all print 5000 because each leaves $01FF wrong in EVERY case — 5 circuits x
+   1000, one diff apiece.  S72 stacks a byte that is merely wrong in one bit, so it only diverges
+   where the sign mattered. */
+void hook_scale_entry_by_gradient(void)
+{
+    /* ⚠ The PHP is not bookkeeping to be optimised away: it is a REAL STORE to $01FF that the
+       oracle makes and a differential sees, and the P it stacks is what the tail's own PLP pulls
+       one routine later.  Writing the flag through as a C argument passes the arithmetic and
+       fails the memory compare — so this is the sanctioned macro exception, at its narrowest:
+       two macros, no arithmetic, and the tail below is a twin in ordinary C.
+       (docs/faithfulness-seam.md §Writing one — where a flag genuinely leaves the routine.) */
+    PHP();                                   /* $57BB */
+    scale_by_track_gradient_tail();          /* $57BC JMP $461B — its PLP pulls that P back */
+}

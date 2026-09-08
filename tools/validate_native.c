@@ -11208,6 +11208,40 @@ static void hook_agp_4_twin(void)   { g_hookOracle = 0; trk_snetter(0x5A1B); }
 static void hook_agp_4_oracle(void) { g_hookOracle = 1; trk_snetter(0x5A1B); g_hookOracle = 0; }
 static void hook_agp_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5A1B); }
 static void hook_agp_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5A1B); g_hookOracle = 0; }
+
+/* The three cross-circuit one-line bodies: one twin each, entered at a different address on
+   every circuit.  Every entry is exercised — a twin that is right for one dispatch row and
+   wrong for another is exactly the defect this table exists to catch. */
+static void hook_hhw_1_twin(void)   { g_hookOracle = 0; trk_brands(0x53F0); }
+static void hook_hhw_1_oracle(void) { g_hookOracle = 1; trk_brands(0x53F0); g_hookOracle = 0; }
+static void hook_hhw_2_twin(void)   { g_hookOracle = 0; trk_oulton(0x53E8); }
+static void hook_hhw_2_oracle(void) { g_hookOracle = 1; trk_oulton(0x53E8); g_hookOracle = 0; }
+static void hook_hhw_3_twin(void)   { g_hookOracle = 0; trk_snetter(0x53C8); }
+static void hook_hhw_3_oracle(void) { g_hookOracle = 1; trk_snetter(0x53C8); g_hookOracle = 0; }
+static void hook_hhw_4_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5555); }
+static void hook_hhw_4_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5555); g_hookOracle = 0; }
+
+static void hook_abd_1_twin(void)   { g_hookOracle = 0; trk_brands(0x54EB); }
+static void hook_abd_1_oracle(void) { g_hookOracle = 1; trk_brands(0x54EB); g_hookOracle = 0; }
+static void hook_abd_2_twin(void)   { g_hookOracle = 0; trk_doning(0x53D7); }
+static void hook_abd_2_oracle(void) { g_hookOracle = 1; trk_doning(0x53D7); g_hookOracle = 0; }
+static void hook_abd_3_twin(void)   { g_hookOracle = 0; trk_oulton(0x59E1); }
+static void hook_abd_3_oracle(void) { g_hookOracle = 1; trk_oulton(0x59E1); g_hookOracle = 0; }
+static void hook_abd_4_twin(void)   { g_hookOracle = 0; trk_snetter(0x59C1); }
+static void hook_abd_4_oracle(void) { g_hookOracle = 1; trk_snetter(0x59C1); g_hookOracle = 0; }
+static void hook_abd_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x54FA); }
+static void hook_abd_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x54FA); g_hookOracle = 0; }
+
+static void hook_seg_1_twin(void)   { g_hookOracle = 0; trk_brands(0x57BB); }
+static void hook_seg_1_oracle(void) { g_hookOracle = 1; trk_brands(0x57BB); g_hookOracle = 0; }
+static void hook_seg_2_twin(void)   { g_hookOracle = 0; trk_doning(0x54EB); }
+static void hook_seg_2_oracle(void) { g_hookOracle = 1; trk_doning(0x54EB); g_hookOracle = 0; }
+static void hook_seg_3_twin(void)   { g_hookOracle = 0; trk_oulton(0x54EB); }
+static void hook_seg_3_oracle(void) { g_hookOracle = 1; trk_oulton(0x54EB); g_hookOracle = 0; }
+static void hook_seg_4_twin(void)   { g_hookOracle = 0; trk_snetter(0x54EB); }
+static void hook_seg_4_oracle(void) { g_hookOracle = 1; trk_snetter(0x54EB); g_hookOracle = 0; }
+static void hook_seg_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x555C); }
+static void hook_seg_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x555C); g_hookOracle = 0; }
 static void hook_gstep_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x55BD); }
 static void hook_gstep_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x55BD); g_hookOracle = 0; }
 static void hook_gdv_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5472); }
@@ -12097,6 +12131,84 @@ static int test_hook_twins(void)
                 printf("VACUOUS: %s missed an arm (fwd %d fwd-wrap %d bwd %d bwd-under %d "
                        "zero run %d octants %d)\n", AGP[g].name, sawFwd, sawFwdWrap, sawBwd,
                        sawBwdUnder, sawZeroRun, seenOct);
+                fail++;
+            }
+        }
+    }
+    /* --------------------------------------- the three cross-circuit one-line bodies.
+       One twin each, so ONE fixture each — but every circuit's dispatch entry is driven through
+       it, because the thing that could differ between them is the entry, not the body. */
+    {
+        static const struct { const char* name; void (*tw)(void); void (*or_)(void); } ONE[14] = {
+            { "hook_horizon_half_width_scale", hook_hhw_1_twin, hook_hhw_1_oracle },
+            { "hook_horizon_half_width_scale", hook_hhw_2_twin, hook_hhw_2_oracle },
+            { "hook_horizon_half_width_scale", hook_hhw_3_twin, hook_hhw_3_oracle },
+            { "hook_horizon_half_width_scale", hook_hhw_4_twin, hook_hhw_4_oracle },
+            { "hook_abs_by_track_direction",   hook_abd_1_twin, hook_abd_1_oracle },
+            { "hook_abs_by_track_direction",   hook_abd_2_twin, hook_abd_2_oracle },
+            { "hook_abs_by_track_direction",   hook_abd_3_twin, hook_abd_3_oracle },
+            { "hook_abs_by_track_direction",   hook_abd_4_twin, hook_abd_4_oracle },
+            { "hook_abs_by_track_direction",   hook_abd_5_twin, hook_abd_5_oracle },
+            { "hook_scale_entry_by_gradient",  hook_seg_1_twin, hook_seg_1_oracle },
+            { "hook_scale_entry_by_gradient",  hook_seg_2_twin, hook_seg_2_oracle },
+            { "hook_scale_entry_by_gradient",  hook_seg_3_twin, hook_seg_3_oracle },
+            { "hook_scale_entry_by_gradient",  hook_seg_4_twin, hook_seg_4_oracle },
+            { "hook_scale_entry_by_gradient",  hook_seg_5_twin, hook_seg_5_oracle },
+        };
+        static const char* const ONE_NAMES[3] = { "hook_horizon_half_width_scale",
+                                                  "hook_abs_by_track_direction",
+                                                  "hook_scale_entry_by_gradient" };
+        int n;
+        for (n = 0; n < 3; n++) {
+            int sawNeg = 0, sawPos = 0, sawZero = 0, sawFwd = 0, sawBwd = 0, sawNoAdd = 0;
+            int oneCases = cases / 4, e;
+            register_fixture(ONE_NAMES[n]);
+            if (!want(ONE_NAMES[n])) continue;
+            sub = 0; printed = 0;
+            for (t = 0; t < oneCases; t++) {
+                Cpu6502 c = zero_cpu();
+                uint8_t value, dir;
+
+                fill_random(pre);
+                c.D = 0;                 /* none of the eight SED sites reach here */
+                c.S = 0xFFu;
+
+                /* the value, with its two edges by name: $00 (the abs8 no-op that still sets Z,
+                   and the multiplier that adds nothing) and $80 (the negate that overflows) */
+                switch (xs() % 6u) {
+                    case 0:  value = 0x00u; sawZero = 1; break;
+                    case 1:  value = 0x80u; break;
+                    default: value = (uint8_t)xs(); break;
+                }
+                if (value & 0x80u) sawNeg = 1; else sawPos = 1;
+                if (value == 0u) sawNoAdd = 1;
+
+                dir = (uint8_t)xs();
+                if (xs() & 1u) { dir |= 0x80u; sawBwd = 1; } else { dir &= 0x7Fu; sawFwd = 1; }
+                pre[0x0025] = dir;                       /* track_direction */
+                pre[0x0075] = (uint8_t)xs();             /* math_hi — the gradient multiplier */
+                pre[0x0074] = (uint8_t)xs();             /* math_lo */
+
+                c.A = value; c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
+                /* ⭐ N is DECORRELATED from bit 7 of A on a third of the cases: abs8 and the
+                   gradient tail both test the flag, not the value, and the two hooks that reach
+                   them are entered from 6502 code whose last op may have set N from elsewhere. */
+                c.N = (xs() % 3u) ? (uint8_t)((value >> 7) & 1u) : (uint8_t)(xs() & 1u);
+                c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
+
+                for (e = 0; e < 14; e++) {
+                    if (strcmp(ONE[e].name, ONE_NAMES[n]) != 0) continue;
+                    sub += diff_run(ONE_NAMES[n], pre, c, ONE[e].tw, ONE[e].or_,
+                                    LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS, t, &printed);
+                }
+            }
+            fail += sub;
+            printf("%-32s %7d cases x every circuit's entry, %d mismatch (must be 0)  "
+                   "live=A,X,Y+flags\n", ONE_NAMES[n], oneCases, sub);
+            if (!(sawNeg && sawPos && sawZero && sawFwd && sawBwd && sawNoAdd)) {
+                printf("VACUOUS: %s missed an arm (neg %d pos %d zero %d fwd %d bwd %d "
+                       "no-add %d)\n", ONE_NAMES[n], sawNeg, sawPos, sawZero, sawFwd, sawBwd,
+                       sawNoAdd);
                 fail++;
             }
         }

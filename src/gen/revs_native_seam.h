@@ -797,3 +797,8 @@ void hook_advance_gen_place_oulton(void);
 void hook_advance_gen_place_snetter(void);
 void hook_advance_gen_place_doning(void);
 void hook_advance_gen_place_nurburg(void);
+
+/* The three cross-circuit one-line hook bodies (twins #227-#229) */
+void hook_horizon_half_width_scale(void);
+void hook_abs_by_track_direction(void);
+void hook_scale_entry_by_gradient(void);

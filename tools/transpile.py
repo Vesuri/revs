@@ -599,6 +599,25 @@ HOOK_TWINS = {
     ('SNETTER', 0x5A1B): 'hook_advance_gen_place_snetter',
     ('DONING',  0x5A1B): 'hook_advance_gen_place_doning',
     ('NURBURG', 0x5A1B): 'hook_advance_gen_place_nurburg',
+
+    # The three cross-circuit ONE-LINE bodies (twins #227-#229).  Byte-identical on every
+    # circuit, at a different address on each, so one twin name serves all fourteen pairs.
+    ('BRANDS',  0x53F0): 'hook_horizon_half_width_scale',
+    ('OULTON',  0x53E8): 'hook_horizon_half_width_scale',
+    ('SNETTER', 0x53C8): 'hook_horizon_half_width_scale',
+    ('NURBURG', 0x5555): 'hook_horizon_half_width_scale',
+
+    ('BRANDS',  0x54EB): 'hook_abs_by_track_direction',
+    ('DONING',  0x53D7): 'hook_abs_by_track_direction',
+    ('OULTON',  0x59E1): 'hook_abs_by_track_direction',
+    ('SNETTER', 0x59C1): 'hook_abs_by_track_direction',
+    ('NURBURG', 0x54FA): 'hook_abs_by_track_direction',
+
+    ('BRANDS',  0x57BB): 'hook_scale_entry_by_gradient',
+    ('DONING',  0x54EB): 'hook_scale_entry_by_gradient',
+    ('OULTON',  0x54EB): 'hook_scale_entry_by_gradient',
+    ('SNETTER', 0x54EB): 'hook_scale_entry_by_gradient',
+    ('NURBURG', 0x555C): 'hook_scale_entry_by_gradient',
     ('NURBURG', 0x55BD): 'hook_gen_step_nurburg',
     ('BRANDS',  0x55C4): 'hook_gen_step_brands',
     ('OULTON',  0x55C4): 'hook_gen_step_oulton',
