@@ -155,6 +155,26 @@ const holdSteer = opt("hold-steer", null); // "left" | "right": see the drive-in
 if (holdSteer !== null && holdSteer !== "left" && holdSteer !== "right")
     throw new Error(`--hold-steer must be left or right, got ${holdSteer}`);
 const park = argv.includes("--park");
+// ⭐ --press=<code>[+<code>...]@<sec>[:<hold>] : hold negative-INKEY codes DOWN during the race,
+// `sec` seconds into the racing loop, for `hold` seconds (default 1).  The only way to settle what
+// a COMMAND key actually does on real hardware — the manual (REVINST) and shift_key_tbl ($3DE2)
+// disagree about which key quits, and neither is evidence.  Codes are hex negative-INKEY bytes,
+// e.g. `--press=ff+e9@4` = SHIFT + f7.  state_flags ($05F4) is sampled every second either way.
+const pressArg = opt("press", null);
+let press = null;
+if (pressArg !== null) {
+    const [codeSpec, when] = pressArg.split("@");
+    const [at, hold] = (when || "4").split(":");
+    press = {
+        codes: codeSpec.split("+").map((h) => parseInt(h, 16)),
+        at: Number(at),
+        hold: Number(hold || 1),
+        down: false,
+        released: false,
+    };
+    if (press.codes.some((c) => !(c >= 0 && c <= 255)) || !(press.at >= 0))
+        throw new Error(`--press: cannot parse ${pressArg}`);
+}
 const drive = argv.includes("--drive") || park;
 const wing = String(opt("wing", "20")); // rear and front wing, 0-40 (the game has no default)
 // --fill=lo-hi : attribute every frame-buffer write in those DISPLAY LINES to the routine
@@ -1062,7 +1082,25 @@ let waited = 0;
 while (frames - f0 < wantFrames && waited < 60 * CPS) {
     await tm.runFor(CPS);
     waited += CPS;
-    if (waited % (10 * CPS) === 0) console.log(`   t=${waited / CPS}s frames=${frames - f0}/${wantFrames}`);
+    const t = waited / CPS;
+    if (press) {
+        // ⚠ The report has to be per SECOND, not just at the end: a key that ends the session
+        // shows up as state_flags changing and the frame counter STOPPING, and an end-of-run
+        // total cannot tell those apart from a run that simply finished.
+        if (!press.down && t >= press.at) {
+            for (const c of press.codes) tm.processor.sysvia.keyDownRaw(inkeyToColRow(c));
+            press.down = true;
+            console.log(`   t=${t}s --press: holding ${press.codes.map((c) => "$" + c.toString(16)).join(" + ")}`);
+        } else if (press.down && !press.released && t >= press.at + press.hold) {
+            for (const c of press.codes) tm.processor.sysvia.keyUpRaw(inkeyToColRow(c));
+            press.released = true;
+            console.log(`   t=${t}s --press: released`);
+        }
+        console.log(`   t=${t}s frames=${frames - f0}  $05F4=$${rd(0x05f4).toString(16).padStart(2, "0")}` +
+            `  session_is_race=$${rd(0x006c).toString(16).padStart(2, "0")}  engine insns=${engineInsns}`);
+    } else if (waited % (10 * CPS) === 0) {
+        console.log(`   t=${t}s frames=${frames - f0}/${wantFrames}`);
+    }
 }
 
 // ⚠ A session that renders no frames must SAY WHERE IT IS, not just report zero.  Every
@@ -1099,10 +1137,15 @@ console.log(`session entries=${sessionEntries}  spacebar prompts=${spacebarPromp
 // ── what the engine polled while racing ───────────────────────────────────────────────────
 if (frames > 0) {
     const NAME = {
-        0x9d: "SPACE amplify-steering", 0x9f: "TAB gear-down", 0xa6: "DELETE",
+        0x9d: "SPACE amplify-steering", 0x9f: "TAB gear-down", 0xa6: "DELETE unfreeze",
         0xa8: "'+' steer-right", 0xa9: "'L' steer-left", 0xae: "'S' throttle",
         0xb6: "RETURN", 0xbe: "'A' brake", 0xdc: "'T' starter", 0xef: "'Q' gear-up",
-        0xff: "SHIFT", 0x86: "RIGHT",
+        0xff: "SHIFT", 0x86: "RIGHT (SHIFT+ = quit)",
+        /* shift_key_commands' table, $3DE2 — ⚠ the BBC function keys are NOT contiguous:
+           f0, f4 and f7 sit outside row 7.  Re-derived from utils.BBC 2026-09-08. */
+        0xdf: "f0 return to pits", 0x8e: "f1 keyboard", 0x8d: "f2 joystick",
+        0x8c: "f3 CAS off", 0xeb: "f4 volume down", 0x8b: "f5 volume up",
+        0x8a: "f6 CAS on", 0xe9: "f7 retire", 0x96: "COPY freeze",
     };
     const rows = [...keyPolls.entries()].sort((a, b) => b[1] - a[1]);
     console.log(`\nkeys the engine polled during the race (starter poll $4978 x${starterPolls}, ` +
