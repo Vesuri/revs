@@ -126,8 +126,14 @@ const dumpDir = opt("dump", null);
 // settled frames.  "Which routine puts that value there" is the question a memory diff always
 // raises and can never answer, and reasoning about it from the listing is exactly the
 // nearly-right scan this project has paid for before.  `--watch-frames=a-b` moves the window.
+// ⭐ `--watch=lo-hi` widens it to a RANGE, which is what an ARRAY's tenancy question needs: a
+// single-address watch on $0100 says only what happened to car 0, and "no car was ever spun out"
+// is a claim about all twenty slots.
 const watchArg = opt("watch", null);
-const watchAddr = watchArg === null ? null : parseInt(watchArg, 16);
+const watchAddr = watchArg === null || watchArg.includes("-") ? null : parseInt(watchArg, 16);
+const watchLo = watchArg !== null && watchArg.includes("-")
+    ? parseInt(watchArg.split("-")[0], 16) : null;
+const watchHi = watchLo === null ? null : parseInt(watchArg.split("-")[1], 16);
 const watchPCs = new Map();
 // ⭐ --trace-edge : one line per EDGE POINT the road walk emits, for ONE settled frame — the
 // slot it lands in, the section byte it came from, and the bearing/heading the store is made
@@ -694,13 +700,16 @@ const ULA_CTRL = 0xfe20, ULA_PAL = 0xfe21;
 const bandFrames = []; // one entry per captured field: the writes and the line they landed on
 let curBand = null;
 tm.processor.debugWrite.add((addr, b) => {
-    if (watchAddr !== null && addr === watchAddr && frames >= memAtFrame) {
+    if ((watchAddr !== null ? addr === watchAddr
+                            : watchLo !== null && addr >= watchLo && addr <= watchHi)
+        && frames >= memAtFrame) {
         /* getPrevPc(0), not processor.pc — see the note in the fill census below. */
         const pc = tm.processor.getPrevPc(0);
         let w = watchPCs.get(pc);
         if (!w) watchPCs.set(pc, (w = { n: 0, vals: new Map() }));
         w.n++;
         w.vals.set(b, (w.vals.get(b) || 0) + 1);
+        if (watchLo !== null) (w.addrs || (w.addrs = new Set())).add(addr);
     }
     if (fillArg && frames >= fillFrameLo && frames <= fillFrameHi && fillFlags[addr]) {
         // ⚠ A window of frames only: this fires on every frame-buffer write in it.
@@ -1381,13 +1390,17 @@ if (peekAddrs) {
         console.log(`   ${k}   x${n}`);
 }
 
-if (watchAddr !== null) {
-    console.log(`\nwrites to $${watchAddr.toString(16)} from frame ${memAtFrame} on, by the PC that made them:`);
+if (watchAddr !== null || watchLo !== null) {
+    const what = watchAddr !== null ? `$${watchAddr.toString(16)}`
+                                    : `$${watchLo.toString(16)}-$${watchHi.toString(16)}`;
+    console.log(`\nwrites to ${what} from frame ${memAtFrame} on, by the PC that made them:`);
     if (watchPCs.size === 0) console.log("   NONE — nothing wrote it in the window");
     for (const [pc, w] of [...watchPCs.entries()].sort((x, y) => y[1].n - x[1].n))
         console.log(`   $${pc.toString(16).padStart(4, "0")}  ${w.n} writes  values ` +
             [...w.vals.entries()].sort((x, y) => y[1] - x[1]).slice(0, 6)
-                .map(([v, n]) => `$${v.toString(16).padStart(2, "0")}x${n}`).join(" "));
+                .map(([v, n]) => `$${v.toString(16).padStart(2, "0")}x${n}`).join(" ") +
+            (w.addrs ? `   cells ${[...w.addrs].sort((a, b) => a - b)
+                .map((a) => "$" + a.toString(16)).join(",")}` : ""));
 }
 
 if (dumpDir && frames > 0) {

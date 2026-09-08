@@ -118,26 +118,6 @@ immediately after `begin_spin_from_a`, and `begin_spin`'s other caller is
 frames), so the remaining gate on the unprompted spin is `section_jump_history` bit 7 — settle by
 driving until that bit is set with `grip_disturbance` at 0, then `--peek=002d,0026,0028`.
 
-## `$0100` (`car_race_flags`) — the SPIN value's reader, and a name that is still `[INFERRED]`
-
-Surfaced making `place_player_in_section` and `spin_car_out` native (twins in the
-`car_gap`…`tick_wheel_spin` group).  (`$0043` left this entry as `section_quad_flags`, derived from
-its two readers; `$5F40` left it as `track_scale_saved`.)
-
-`$0100` is a per-car byte array in the low part of page 1 (safe: the stack lives at
-`$01F3-$01F8`), and it is **DUAL-USE**.  (1) `spin_car_out` writes `$91` to `$0100,X` when a car
-is spun out; no reader of *that* value was found in the static map, so it may be write-only
-spin/penalty scratch.  (2) `sort_cars_by_key` (`$0F64`, twin #160) reuses the SAME array as a
-transient stable-position scratch: `$0F6B` clears `$0100`, `$0F75` writes `$0100,X = i`, and — the
-reader the earlier note said was missing — the tie-shift at `$0FA1` reads `LDA $0100,X` to copy
-the previous car's position down when two keys tie.  So there IS a reader, but it is internal to
-the sort's own pass, not the spin state.  The two uses are time-disjoint (sort runs at a
-lap/standings boundary, spin during racing), and the row records the sort's tenancy in its note
-(like `$3850`); the twin carries a `SORT_SCRATCH` file-local define.  ⇒ The name
-`car_race_flags` stays `[INFERRED]` until the spin use is settled: **dump `$0100-$0113` mid-race
-after a collision** (`make refloop`) and watch which cars carry `$91` and for how long.
-
-
 ## `span_cap_surface_a` (`$0034`) / `span_cap_surface_b` (`$0033`) — what distinguishes them, beyond which one gets used
 
 Both are per-scan-line surface codes `interp_edge` composes for the span it is about to walk, and
