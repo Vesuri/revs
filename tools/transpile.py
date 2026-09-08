@@ -3176,6 +3176,14 @@ def translate_func(func, all_funcs_by_start, symbols,
     if start in SPLIT_FUNCS:
         lines.append(f'/* faithful transliteration kept as the validation oracle; '
                      f'native {name}() lives in revs_native.c (see SPLIT_FUNCS) */')
+    # ⭐ THE TRANSLITERATION TRAP.  Under `make TRANS_TRAP=1` every entry into a
+    # transliterated body that is NOT a validation oracle records itself, so `make transtrap`
+    # can assert what would otherwise only be believed: that a production build executes no
+    # transliteration at all.  Oracles are exempt — running them IS the harness's job.
+    is_oracle = def_name.endswith(VALIDATE_SUFFIX)
+    def trap(label):
+        return '' if is_oracle else f' REVS_TRANS_HIT("{label}");'
+
     if dispatch_entries:
         lines.append(f'void {def_name}(uint16_t _entry) {{')
         lines.append('    switch (_entry) {')
@@ -3186,13 +3194,15 @@ def translate_func(func, all_funcs_by_start, symbols,
                 # transliteration below, which is what it compares against.
                 lines.append(f'    case 0x{e:04X}:'
                              f' if (!g_hookOracle) {{ {twin}(); return; }}'
-                             f' goto L_{e:04x};')
+                             f'{trap(f"{name}@{e:04X}")} goto L_{e:04x};')
             else:
-                lines.append(f'    case 0x{e:04X}: goto L_{e:04x};')
+                lines.append(f'    case 0x{e:04X}:{trap(f"{name}@{e:04X}")} goto L_{e:04x};')
         lines.append(f'    default: platform_bad_region_entry(0x{start:04X}, _entry); return;')
         lines.append('    }')
     else:
         lines.append(f'void {def_name}(void) {{')
+        if not is_oracle:
+            lines.append(f'   {trap(name).strip()}')
     # Orphan-prefix functions: the named entry is mid-body, so callers must
     # skip the prefix (which is reachable only via an internal backward branch).
     if skip_to is not None:
@@ -3402,6 +3412,7 @@ def emit_track_hooks(rows, funcs_by_start, symbols, external_entries, wrapper_na
              '#include "../cpu/cpu.h"',
              '#include "../platform/platform_c.h"',
              '#include "../platform/track.h"',
+             '#include "../platform/trans_trap.h"',
              '#include "revs_track_hooks.h"',
              ''] + seam) + '\n')
         print(f'Wrote {OUT_HOOKS_H}  (no circuits — the seam traps)')
@@ -3427,6 +3438,7 @@ def emit_track_hooks(rows, funcs_by_start, symbols, external_entries, wrapper_na
         '#include "../platform/platform_c.h"',
         '#include "../platform/probe.h"',
         '#include "../platform/track.h"   /* g_track — which circuit the engine is running */',
+        '#include "../platform/trans_trap.h"',
         '#include "revs_track_hooks.h"',
         '#include "revs_native_seam.h"   /* the hook TWINS and g_hookOracle */',
         '',
@@ -3749,6 +3761,7 @@ def main():
         '#include "../platform/platform_c.h"',
         '#include "../platform/probe.h"   /* PROBE_PHASE(): main-loop phase brackets */',
         '#include "../platform/shape.h"   /* PROBE_SHAPE_*(): input-distribution counters */',
+        '#include "../platform/trans_trap.h"   /* REVS_TRANS_HIT(): the transliteration trap */',
         '',
     ]
     body = []

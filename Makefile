@@ -140,6 +140,14 @@ CFLAGS   += -DREVS_INK_WATCH -g -fno-omit-frame-pointer
 CXXFLAGS += -DREVS_INK_WATCH -g -fno-omit-frame-pointer
 endif
 
+# ⭐⭐ `make TRANS_TRAP=1` — record every entry into a body that is still a 6502 TRANSLITERATION
+# (validation oracles excepted: running those is the harness's job).  `make transtrap` below is
+# the gate; the macro compiles to nothing without this flag, so the shipping build pays nothing.
+ifdef TRANS_TRAP
+CFLAGS   += -DREVS_TRANS_TRAP
+CXXFLAGS += -DREVS_TRANS_TRAP
+endif
+
 ifdef STACK_TRAP
 CFLAGS   += -DREVS_STACK_TRAP -g -fno-omit-frame-pointer
 CXXFLAGS += -DREVS_STACK_TRAP -g -fno-omit-frame-pointer
@@ -177,6 +185,7 @@ C_SRCS := \
     src/cpu/cpu.c \
     src/platform/sound.c \
     src/platform/track.c \
+    src/platform/trans_trap.c \
     $(wildcard src/gen/revs_tracks.c) \
     $(wildcard src/gen/revs_gen.c) \
     $(wildcard src/gen/revs_track_hooks.c) \
@@ -547,6 +556,47 @@ f={p:open(p,"rb").read() for p in sorted(glob.glob("tmp/trackrun_*.bin"))}; \
 same=[(a,b) for a,b in itertools.combinations(sorted(f),2) if f[a]==f[b]]; \
 print("track-run: all %d frame pairs differ" % len(list(itertools.combinations(f,2))) if not same \
 else "FAIL: identical frames: %s" % same); sys.exit(1 if same else 0)'
+
+# ⭐⭐ DOES ANY 6502 TRANSLITERATION STILL RUN?  The whole port's direction is "delete the
+# interpreter", and until this target existed that claim rested on reading the source — which
+# cannot see a rare arm, a per-circuit hook body or a self-modifying re-entry.  TRANS_TRAP=1
+# makes every non-oracle generated body record its own entry; this drives the scenarios the host
+# can drive and FAILS if any of them reports one.
+#
+#   make transtrap              the front end, a 300-frame race, the crash trajectory, 6 circuits
+#   make transtrap FRAMES=...   (the race frame; the others are fixed)
+#
+# ⚠ A body that no scenario reaches is NOT proven dead — it is unproven, which is why the arms
+# this cannot drive (qualifying, the pits, unusual menus) stay documented as unproven rather than
+# quietly counted as clean.
+# ⚠⚠ It rebuilds with different flags six times over and RESTORES the default build at the end,
+# for the reason spelled out above track-run.
+transtrap:
+	@set -e; \
+	mkdir -p tmp/trans; rm -f tmp/trans/*.txt; \
+	run() { \
+	  tag=$$1; shift; frame=$$1; shift; \
+	  $(MAKE) --no-print-directory clean >/dev/null; \
+	  $(MAKE) --no-print-directory TRANS_TRAP=1 "$$@" $(TARGET) >/dev/null; \
+	  REVS_TRANS_LOG=tmp/trans/$$tag.txt REVS_FIXED_RNG=1 \
+	    REVS_SCREEN_DUMP=tmp/trans/$$tag.bin REVS_SCREEN_FRAME=$$frame \
+	    REVS_QUIT_AFTER_DUMP=1 timeout $(if $(TIMEOUT),$(TIMEOUT),600) ./$(TARGET) >/dev/null 2>&1; \
+	  test -f tmp/trans/$$tag.txt || { echo "  FAIL $$tag: no log — the run died before exit"; exit 1; }; \
+	  n=$$(wc -l < tmp/trans/$$tag.txt | tr -d ' '); \
+	  echo "  $$tag: $$n transliterated bodies entered"; \
+	  sed -n 's/^/      /p' tmp/trans/$$tag.txt; \
+	}; \
+	run frontend 200; \
+	run race $(if $(FRAMES),$(FRAMES),300) STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1; \
+	run crash 1500 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1; \
+	for t in 0 1 2 3 4 5; do run circuit$$t 60 STRAIGHT_TO_RACE=1 TRACK=$$t; done; \
+	$(MAKE) --no-print-directory clean >/dev/null; \
+	$(MAKE) --no-print-directory $(TARGET) >/dev/null; \
+	if [ -s tmp/trans/frontend.txt ] || [ -n "$$(cat tmp/trans/*.txt)" ]; then \
+	  echo "transtrap: FAIL — a production build still executes 6502 transliteration"; exit 1; \
+	else \
+	  echo "transtrap: no transliteration executed in any scenario (9 runs)"; \
+	fi
 
 # ⭐ Which character codes does the RACE VIEW actually ask the MOS for, and where do the glyphs
 # land?  Measures it on a real BBC in a real driving race — the input to mos-font above.

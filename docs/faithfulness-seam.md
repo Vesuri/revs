@@ -494,6 +494,36 @@ PASS is evidence about the frames it recorded and nothing else. The reverse also
 sabotage survives `viewdiff`, instrument the arm before concluding anything, because "the picture
 did not change" and "the code did not run" look identical from outside.
 
+## ⭐⭐ `make transtrap` — DOES ANY TRANSLITERATION STILL RUN?  (measured 2026-09-08)
+
+With the hook campaign finished (93 of 93 `(circuit, entry)` pairs twinned), the claim the whole
+port is aimed at — *the interpreter is gone* — was still only a claim: reading the source cannot
+see a rare arm, a per-circuit hook body or a self-modifying re-entry, and `revs_gen.c` still
+defines ~49 non-oracle bodies that a call site somewhere could reach.
+
+`make TRANS_TRAP=1` makes every generated body that is **not** a `__t6502` oracle record its own
+entry (`src/platform/trans_trap.h`; the macro compiles to nothing without the flag), and
+`make transtrap` drives nine scenarios — the front end, a 300-frame race, the 1500-frame crash
+trajectory, and all six circuits — and FAILS if any of them reports one.
+
+**Result: zero. No transliterated body executes in any of the nine.** Not `region_23d8`
+(`road_edge_walk`'s body, which the expansion circuits' hooks used to re-enter at `$2490` — the
+twins now run that walk), not the `$7BF7` view-cell chain, not `project_point`'s or
+`bearing_to_section`'s two-byte short entries.
+
+**Sabotaged both emission shapes before believing it:**
+- drop `('NURBURG', 0x57AD)` from `HOOK_TWINS` → `trk_nurburg@57AD`, 55 entries on circuit 5;
+- call `step_walk_one_segment()` from the main loop → `step_walk_one_segment`, 55 entries.
+
+⚠ **Two honest limits, and the first one bit during the sabotage.**
+1. **A body no scenario drives is UNPROVEN, not dead.** The first sabotage aimed at
+   `('NURBURG', 0x59D9)` — the steering hook — and the gate reported *nothing*, because `$1593`'s
+   hook is on the **joystick** arm and a host run drives the keyboard. The gate covers what it
+   drives: qualifying, the pits and the unusual menus are outside it.
+2. **A clean run must still write its log.** Arming `atexit` on the first hit makes a clean run
+   indistinguishable from one that died before exit; the runtime arms it in a constructor instead,
+   so "no log" means the run died and is a FAIL.
+
 ## ⭐⭐ WHAT THE SURVIVING `cpu` TRAFFIC ACTUALLY IS — measured on the linked target, 2026-09-07
 
 The standing worry is that `revs_native.c`'s remaining `cpu.A/X/Y/C/N/V/Z` traffic is **oracle

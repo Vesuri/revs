@@ -109,6 +109,9 @@ make determinism-drive     # ⭐ ...and the same 300 frames with the car MOVING 
                            #   trajectory, and it catches defects the parked one cannot.
                            #   RUN BOTH after a change to any driver routine
 make endian-lint           # fail if mem[] is aliased as a wide pointer
+make transtrap             # ⭐⭐ does ANY 6502 transliteration still run?  Nine scenarios
+                           #   (front end, race, crash, six circuits) under TRANS_TRAP=1; a hit
+                           #   is a FAIL.  ⚠ a body no scenario DRIVES is unproven, not dead
 make gen                   # regenerate src/gen from listing.txt + dashcode.txt (DASHCODE=0 skips)
 make image                 # rebuild disasm/revs_mem.bin from revs.ssd
 make runtime               # ⭐ replay the engine's self-unpack -> disasm/revs_runtime.bin
