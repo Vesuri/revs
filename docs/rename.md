@@ -118,14 +118,6 @@ immediately after `begin_spin_from_a`, and `begin_spin`'s other caller is
 frames), so the remaining gate on the unprompted spin is `section_jump_history` bit 7 — settle by
 driving until that bit is set with `grip_disturbance` at 0, then `--peek=002d,0026,0028`.
 
-## `near_edge_first`/`near_edge_last`/`near_edge_shift` (`$0005`/`$0006`/`$0007`) are `[INFERRED]`
-
-The reading is structural and consistent — slots 0..5 of each 40-point half are the near edge
-points, both walks start at 6, `shift_near_edge_points` slides exactly five entries, `6` is the
-"nothing to do" sentinel in both cells, and race init seeds both to 6 — but nothing has been
-MEASURED.  Cheap confirmation on the reference loop: drive at a steady speed and watch how often
-`$62F5` is set and what `$0007` reads when it is; it should equal the number of sections crossed.
-
 ## `$0100` (`car_race_flags`) — the SPIN value's reader, and a name that is still `[INFERRED]`
 
 Surfaced making `place_player_in_section` and `spin_car_out` native (twins in the
