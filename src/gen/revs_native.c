@@ -16849,9 +16849,9 @@ void hook_walk_back_gate(void)
 /* $5772 — MERGE THE TWO ROAD EDGES AT THE VANISHING POINT (Brands Hatch, Oulton Park,
    Snetterton).  Patched in at $2538 over build_track_geometry's SECOND horizon store
    (`STA edge_y+$28,Y`), so the store is the hook's own first act.
-   ⚠ Donington's body at the same address does only that store and returns, and the
-   Nurburgring's adds an edge_style-clearing arm below point 6 — different code, both left
-   transliterated.
+   ⚠ Donington's body at the same address does only that store and returns
+   (hook_horizon_store_only), and the Nurburgring's adds an edge_style-clearing arm below
+   point 6 (hook_merge_horizon_edges_nurburg) — the same opening bytes, three routines.
 
    What it computes, after caching the horizon's line as plot_object's object ceiling (the
    `LDX #imm` operand at $1FE9, which each circuit rewrote from `LDX horizon_extent`): over
@@ -16879,7 +16879,8 @@ void hook_walk_back_gate(void)
    borrows differ only on a tie, and a tie between two SMALL angles cannot overflow the high
    subtract, so the flag it feeds was provably 0 either way.  The arm ties the low bytes and
    randomises the high ones over the full range; it then shows in 2 cases of 4000. */
-HookMergeExit hook_merge_horizon_edges_core(uint8_t point, uint8_t horizonLine)
+HookMergeExit hook_merge_horizon_edges_core(uint8_t point, uint8_t horizonLine,
+                                           int clearStyleBelow6)
 {
     HookMergeExit ex;
     uint8_t y = point;
@@ -16908,6 +16909,15 @@ HookMergeExit hook_merge_horizon_edges_core(uint8_t point, uint8_t horizonLine)
 
         line = mem[EDGE_Y_TBL + y];                     /* $5793 — and the same line both sides */
         mem[EDGE_Y_TBL + EDGE_HALF + y] = line;
+
+        /* $5799-$57A2, the Nurburgring's alone: over the six points NEAREST the horizon, both
+           sides' edge_style is wiped — style 0 and, with bit 7 clear, "not yet covered", so
+           draw_road's span passes re-cover them from scratch. */
+        if (clearStyleBelow6 && y < 0x06u) {
+            mem[EDGE_STYLE_TBL + y] = 0u;
+            mem[EDGE_STYLE_TBL + EDGE_HALF + y] = 0u;
+        }
+
         y++;                                            /* $5799 INY / CPY #9 / BCC */
     } while (y < 0x09u);
 
@@ -16916,9 +16926,9 @@ HookMergeExit hook_merge_horizon_edges_core(uint8_t point, uint8_t horizonLine)
     return ex;
 }
 
-void hook_merge_horizon_edges(void)
+static void hook_merge_horizon_edges_at(int clearStyleBelow6)
 {
-    HookMergeExit ex = hook_merge_horizon_edges_core(cpu.Y, cpu.A);
+    HookMergeExit ex = hook_merge_horizon_edges_core(cpu.Y, cpu.A, clearStyleBelow6);
     uint8_t point = horizon_index;                      /* $579E LDY */
 
     cpu.A = ex.a;
@@ -16927,6 +16937,39 @@ void hook_merge_horizon_edges(void)
     cpu.Z = (uint8_t)(point == 0u);
     cpu.C = 1u;                                         /* the loop only leaves on C set */
     cpu.V = ex.v;
+}
+
+void hook_merge_horizon_edges(void)         { hook_merge_horizon_edges_at(0); }
+
+/* $5772 (the Nurburgring) — the same merge, and it also WIPES THE STYLE of the six points
+   nearest the horizon.  ⚠ The clear sits INSIDE the loop, so it is "every merged point below
+   index 6", not a separate pass — which is why it shares the core rather than running after it.
+
+   SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
+   S111 the clear runs at every point, not below 6                -> 4000/4000
+   S112 only the near side's style is wiped                       -> 2498/4000
+   S113 the boundary is `y <= 6`                                  -> 2849/4000
+   S114 the style is wiped to $80 (marked covered) instead of 0   -> 2500/4000 */
+void hook_merge_horizon_edges_nurburg(void) { hook_merge_horizon_edges_at(1); }
+
+/* $5772 (Donington Park) — THE DISPLACED STORE AND NOTHING ELSE.  ⚠ Donington's body is the
+   first two instructions of the shared merge and then an RTS: the same address, the same
+   opening bytes, a DIFFERENT routine — which is the trap in grouping hook bodies by normalised
+   text (docs/faithfulness-seam.md).  So $2538's store happens and the edges are never merged;
+   Donington's geometry evidently never crosses them over at the vanishing point.
+
+   Entry: A = the clamped horizon line, Y = the folded horizon point.  Exit: A, X, Y and every
+   flag exactly as they arrived — two absolute stores set none.
+
+   SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
+   S115 the object ceiling is not cached                          -> 3984/4000
+   S116 the displaced store goes to the NEAR half                 -> 3999/4000
+   S117 the merge loop runs after all (the shared body)           -> 4000/4000
+   S118 the stores set N/Z as a load would                        -> 2981/4000 */
+void hook_horizon_store_only(void)
+{
+    mem[SMC_OBJECT_CEILING + 1] = cpu.A;                /* $5772 — plot_object's ceiling */
+    mem[EDGE_Y_TBL + EDGE_HALF + cpu.Y] = cpu.A;        /* $5775 — the displaced store */
 }
 
 /* $557F / $5582 — STEP THE TRACK GENERATOR'S CURSOR ONE PLACE ALONG THE DIRECTION OF TRAVEL.

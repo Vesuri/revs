@@ -11172,6 +11172,12 @@ static void hook_back_oracle(void)  { g_hookOracle = 1; trk_brands(0x55BD); g_ho
 /* $5772 — the horizon edge merge, installed over build_track_geometry's second horizon store. */
 static void hook_merge_twin(void)   { g_hookOracle = 0; trk_brands(0x5772); }
 static void hook_merge_oracle(void) { g_hookOracle = 1; trk_brands(0x5772); g_hookOracle = 0; }
+/* $5772's two other tenants: the Nurburgring's merge-plus-style-clear, and Donington's
+   store-and-return (the same opening bytes, a different routine). */
+static void hook_mergen_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5772); }
+static void hook_mergen_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5772); g_hookOracle = 0; }
+static void hook_merged_twin(void)   { g_hookOracle = 0; trk_doning(0x5772); }
+static void hook_merged_oracle(void) { g_hookOracle = 1; trk_doning(0x5772); g_hookOracle = 0; }
 
 /* $5582 / $557F — the track generator's cursor step, in its two state blocks.  Brands Hatch
    carries the $53F8 one and Donington the $53FA one, so the two circuits are the two arms. */
@@ -11283,9 +11289,9 @@ static void hook_gdv_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5472); g_h
 static int test_hook_twins(void)
 {
     static uint8_t pre[65536];
-    int fail = 0, printed = 0, t, cases = 4000, sub = 0;
+    int fail = 0, printed = 0, t, mv, cases = 4000, sub = 0;
     int sawLatched = 0, sawOneShot = 0, sawClamp = 0, sawAdvance = 0, sawEarlyStop = 0;
-    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge, runGuard[2], runSteer, runSteerO, runSteerS, runSteerD, runCam, runSlot;
+    int scale = 1, runClamp, runRecord, runLimit, runBack, runMerge[3], runGuard[2], runSteer, runSteerO, runSteerS, runSteerD, runCam, runSlot;
     { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
     if (scale < 1) scale = 1;
     cases *= scale;
@@ -11302,6 +11308,8 @@ static int test_hook_twins(void)
     register_fixture("hook_edge_walk_limit");
     register_fixture("hook_walk_back_gate");
     register_fixture("hook_merge_horizon_edges");
+    register_fixture("hook_merge_horizon_edges_nurburg");
+    register_fixture("hook_horizon_store_only");
     /* ⚠⚠ want() RESEEDS the stream, so it is called ONCE per fixture and NEVER in a loop
        condition — inside one it restarts the generator every iteration and every case is
        then the same case.  (It cost this fixture its `latched` and `early-stop` arms once.) */
@@ -11317,7 +11325,9 @@ static int test_hook_twins(void)
     runRecord = want("hook_record_horizon");
     runLimit  = want("hook_edge_walk_limit");
     runBack   = want("hook_walk_back_gate");
-    runMerge  = want("hook_merge_horizon_edges");
+    runMerge[0] = want("hook_merge_horizon_edges");
+    runMerge[1] = want("hook_merge_horizon_edges_nurburg");
+    runMerge[2] = want("hook_horizon_store_only");
     g_track = 1;                                    /* Brands Hatch — whose body this is */
     setenv("REVS_SMC_CONTINUE", "1", 1);
 
@@ -11956,9 +11966,24 @@ static int test_hook_twins(void)
        forces the pull-in arm on some cases outright: with random azimuths the near side is
        behind the far side half the time, but the ENTRY POINT past 8 (one iteration at a bogus
        index — the shape the $2538 handover bug produced) needs asking for. */
-    if (runMerge) {
+    /* Three fixtures over the one address.  Variant 0 is the shared merge (Brands, Oulton,
+       Snetterton), 1 the Nurburgring's merge with its style clear below point 6, 2 Donington's
+       store-and-return.  Variant 2 shares the fan setup so its sabotages have somewhere to go
+       wrong: a merge that runs when it should not is exactly what the fixture must catch. */
+    for (mv = 0; mv < 3; mv++) {
         int sawPullIn = 0, sawLeave = 0, sawFull = 0, sawPastEnd = 0, sawWrap = 0;
-        int sawLoTie = 0;
+        int sawLoTie = 0, sawClear = 0, sawNoClear = 0;
+        static const char *const MERGE_NAME[3] = {
+            "hook_merge_horizon_edges",
+            "hook_merge_horizon_edges_nurburg",
+            "hook_horizon_store_only"
+        };
+        static void (*const MERGE_TWIN[3])(void)   = { hook_merge_twin, hook_mergen_twin,
+                                                       hook_merged_twin };
+        static void (*const MERGE_ORACLE[3])(void) = { hook_merge_oracle, hook_mergen_oracle,
+                                                       hook_merged_oracle };
+
+        if (!runMerge[mv]) continue;
         sub = 0; printed = 0;
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
@@ -12017,19 +12042,25 @@ static int test_hook_twins(void)
                                            | (pre[0x5E90 + EDGE_HALF_T + point] << 8));
                 if ((uint16_t)(nearAz - farAz) & 0x8000u) sawPullIn = 1; else sawLeave = 1;
             }
+            /* whether this entry point reaches a point below 6 at all — the Nurburgring's
+               style clear only runs there, and $FF's wrap reaches every one of them. */
+            if (point < 0x06u || point == 0xFFu) sawClear = 1; else sawNoClear = 1;
 
-            sub += diff_run("hook_merge_horizon_edges", pre, c,
-                            hook_merge_twin, hook_merge_oracle,
+            sub += diff_run(MERGE_NAME[mv], pre, c,
+                            MERGE_TWIN[mv], MERGE_ORACLE[mv],
                             LIVE_A | LIVE_X | LIVE_Y | LIVE_S |
                             LIVE_N | LIVE_V | LIVE_Z | LIVE_C, t, &printed);
         }
         fail += sub;
         printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,Y,N,V,Z,C\n",
-               "hook_merge_horizon_edges", cases, sub);
-        if (!(sawPullIn && sawLeave && sawFull && sawPastEnd && sawWrap && sawLoTie)) {
-            printf("VACUOUS: hook_merge_horizon_edges missed an arm "
-                   "(pull-in %d leave %d from-0 %d past-end %d wrap %d lo-tie %d)\n",
-                   sawPullIn, sawLeave, sawFull, sawPastEnd, sawWrap, sawLoTie);
+               MERGE_NAME[mv], cases, sub);
+        if (!(sawPullIn && sawLeave && sawFull && sawPastEnd && sawWrap && sawLoTie
+              && sawClear && sawNoClear)) {
+            printf("VACUOUS: %s missed an arm "
+                   "(pull-in %d leave %d from-0 %d past-end %d wrap %d lo-tie %d "
+                   "below-6 %d at-or-above-6 %d)\n",
+                   MERGE_NAME[mv], sawPullIn, sawLeave, sawFull, sawPastEnd, sawWrap,
+                   sawLoTie, sawClear, sawNoClear);
             fail++;
         }
     }

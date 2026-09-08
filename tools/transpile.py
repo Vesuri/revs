@@ -568,6 +568,8 @@ HOOK_TWINS = {
     ('SNETTER', 0x59C7): 'hook_camera_scale_by_gradient',
     ('DONING',  0x59ED): 'hook_span_cap_slot_test',
     ('SNETTER', 0x59E8): 'hook_span_cap_slot_test',
+    ('NURBURG', 0x5772): 'hook_merge_horizon_edges_nurburg',
+    ('DONING',  0x5772): 'hook_horizon_store_only',
     ('BRANDS', 0x56C8): 'hook_horizon_clamp',
     ('DONING', 0x56C8): 'hook_horizon_clamp',
     ('OULTON', 0x56C8): 'hook_horizon_clamp',

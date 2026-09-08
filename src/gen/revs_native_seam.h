@@ -751,7 +751,8 @@ void hook_record_horizon(void);
 void hook_edge_walk_limit(void);
 void hook_walk_back_gate(void);
 typedef struct { uint8_t a; uint8_t v; } HookMergeExit;
-HookMergeExit hook_merge_horizon_edges_core(uint8_t point, uint8_t horizonLine);
+HookMergeExit hook_merge_horizon_edges_core(uint8_t point, uint8_t horizonLine,
+                                           int clearStyleBelow6);
 void hook_merge_horizon_edges(void);
 void hook_step_gen_cursor_core(uint16_t block);
 void hook_step_gen_cursor_a(void);
@@ -764,7 +765,9 @@ void hook_steer_response_oulton(void);           /* Oulton Park $57A1 */
 void hook_steer_response_snetter(void);          /* Snetterton $57A1 */
 void hook_steer_response_doning(void);           /* Donington Park $5779 */
 void hook_camera_scale_by_gradient(void);        /* $45CB — four circuits */
-void hook_span_cap_slot_test(void);              /* $2F23 — Donington + Snetterton */
+void hook_span_cap_slot_test(void);
+void hook_merge_horizon_edges_nurburg(void);     /* Nurburgring $5772 */
+void hook_horizon_store_only(void);              /* Donington Park $5772 */              /* $2F23 — Donington + Snetterton */
 void hook_horizon_clamp_guarded_snetter(void);   /* Snetterton  $56C8 */
 void hook_horizon_clamp_guarded_nurburg(void);   /* Nurburgring $56C4 */
 
