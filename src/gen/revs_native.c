@@ -12584,7 +12584,14 @@ static inline void object_coord_word_set(unsigned axis, uint16_t value)
 #define TRACK_DIR_3       0x5700u   /* ⚠ shares ModifyGameCode's address; read as DATA here */
 #define TRACK_DIR_4       0x5800u
 #define SECTION_DIR_INDEX 0x0700u
-#define SMC_MASK_OPCODE   0x298Du   /* per-circuit; unpatched = $29 (AND zp) */
+/* ⭐ $298D is NOT per-circuit — MEASURED 2026-09-08, and the old comment here said it was.
+   No circuit writes either byte at LOAD time (it is absent from the 62-address surface
+   `make track-patch` reads out of every ModifyGameCode) and none writes it at RUNTIME
+   either (`bbc_refloop_race --watch=298d` / `--watch=298e`, frames 40-100, all four
+   expansion circuits on a real BBC: NONE, against a control on $0A that reported 116
+   writes).  The dispatch below therefore stays as a TRAP on an unmodellable shape, not as
+   a per-circuit expectation — which is why it costs one mem[] read and not a table. */
+#define SMC_MASK_OPCODE   0x298Du   /* AND zp ($29) on every circuit; see above */
 #define SMC_MASK_OPERAND  0x298Eu
 /* The zero-page arithmetic window as THIS routine's tenant uses it — the object-queue tail
    reads its inputs back out of these cells, so they are an output of the twin, not scratch.

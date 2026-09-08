@@ -276,39 +276,6 @@ see whether it tracks the section cursor; `$85`/`$87` need only the argument tha
 components 1 of their windows.  Until then no fact-shaped name.
 
 
-## `$298D`'s "per-circuit" claim is contradicted by the measured patch surface
-
-`src/gen/revs_native.c` (`SMC_MASK_OPCODE`, in `place_car_world_coords`' header) says the AND at
-`$298D-$298E` is masked "per-circuit".  `make track-patch` disagrees: neither byte appears in the
-62-address surface any circuit's `ModifyGameCode` writes, on any of the four expansion circuits.
-So either the mask is patched by something else (the circuits' *runtime* hook code rather than
-their load-time patcher, which `track-patch` does not see) or the claim is an inference that was
-never measured.  ⇒ **Settle it with `make track-run` + a watch on `$298D-$298E`**: race each
-circuit and log any write to the pair.  If nothing writes it, drop "per-circuit" from the comment
-and give the seam an `smc` row saying it is a constant; if something does, the row records which
-circuit and from where.  Until then it has deliberately been left out of `symbols.csv`'s `smc`
-section, whose other rows are all `[MEASURED]`.
-
-
-## `FUN_4ca4` — an unnamed routine that carries FIVE of the per-circuit table bases
-
-Found while transcribing the hook seams into `symbols.csv`.  `$4CA4-$4D20` has no name, and it is
-not incidental: five of its `LDA abs,X` operands are in the measured per-circuit patch surface —
-`$4CC1` (`$53E0`→`$5762`), `$4CC9` (`$53F0`→`$5662`), `$4CD1` (`$53D0`→`$5562`), `$4CD7` and
-`$4CE1` (both `$59EA`→`$5462`), all four expansion circuits identically.  The routine reads its
-index out of `$0045` (a nibble of something compared against `$62F9`), calls `$4D21` three times
-with `Y` = 2/4/2, then splits `$59EA,X` into a low-3-bit value stowed in `$0037` and a
-high-5-bit one used as `Y` into `$1208`, and finishes through `$2147` (the arctan) into
-`$0397`/`$03AF`.  That shape — three coefficient tables plus an angle — reads like the per-circuit
-**scenery or marker placement** for one section, but it is not derived.
-
-⇒ **It needs a name before those five seams get `smc` rows** (they are the only measured
-per-circuit bytes still absent from `symbols.csv`, deliberately: an `smc` row that says
-"`FUN_4ca4`'s third table base" documents nothing).  Cheap settlement: it is not twinned, so
-bracket it in a `PROBES=1` run to see how often it is called and with what `$45`, then dump
-`$0397`/`$03AF` across a lap.
-
-
 ## `$7B`'s second tenant, and `$85`/`$7C` inside `project_geometry`'s edge tail
 
 Opened while naming revs_native.c's callees: the last address-shaped label in the file was `$1D94`,
