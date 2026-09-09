@@ -162,6 +162,22 @@ volatile unsigned long g_keyUnmapped = 0;
 volatile unsigned char g_keyUnmappedCode = 0;
 volatile unsigned long g_keyEvents = 0;     /* keycodes seen; 0 = the handler never ran */
 
+/* ⭐⭐ THE DOUBLE-PRESS INSTRUMENT (docs/controls.md §The double-press).  A menu needing SPACE
+   pressed twice has exactly two possible shapes, and these three counters tell them apart in
+   one run with a finger on the key:
+     g_spaceEdges     — rising edges of the SPACE rawkey, i.e. how many times it was PHYSICALLY
+                        pressed.  Counted in the CIA handler, so it is the ground truth.
+     g_spaceAnswered  — how many polls of BBC code $9D this backend answered "held".
+     g_spacePolls     — how many times the game ASKED about $9D at all.
+   Two edges to advance one page with g_spaceAnswered > 0 on the first one means the port SAW the
+   press and the engine's own logic discarded it — the masked-by-a-number-key scan or the
+   up-then-down debounce, both faithful, both then a TIMING question at the seam.  Two edges with
+   nothing answered on the first means the input layer lost it, which is a port bug outright.
+   ⚠ The distinction is the whole diagnosis; do not fix either shape before reading these. */
+volatile unsigned long g_spaceEdges    = 0;
+volatile unsigned long g_spaceAnswered = 0;
+volatile unsigned long g_spacePolls    = 0;
+
 /* ⭐ PROBE_SYMS: the three mouse buttons as a bitmask (1 = left, 2 = right, 4 = middle),
    sampled every VBI, plus a sticky OR of everything ever seen.  This exists because the
    POTINP failure mode is SILENT and inverted: get the POTGO setup wrong and right/middle
@@ -196,6 +212,7 @@ static uint32_t keyboardHandler()
     uint8_t raw  = (uint8_t)(code & 0x7Fu);
     bool    down = (code & 0x80u) == 0u;
 
+    if (raw == RK_SPACE && down && !g_keyDown[raw]) g_spaceEdges++;   /* a real press */
     g_keyDown[raw] = down ? 1u : 0u;
     g_keyEvents++;
     return 0;
@@ -261,10 +278,14 @@ void RevsInput::releaseAllKeys()
 bool RevsInput::keyDown(uint8_t x) const
 {
     bool mapped = false;
+    if (x == 0x9Du) g_spacePolls++;                     /* SPACE — the instrument above */
     for (unsigned i = 0; i < KEY_COUNT; i++) {
         if (kKeys[i].bbc != x) continue;
         mapped = true;
-        if (g_keyDown[kKeys[i].rawkey]) return true;
+        if (g_keyDown[kKeys[i].rawkey]) {
+            if (x == 0x9Du) g_spaceAnswered++;
+            return true;
+        }
     }
     if (!mapped) { g_keyUnmappedCode = x; g_keyUnmapped++; }
     return false;

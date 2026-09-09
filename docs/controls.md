@@ -139,6 +139,42 @@ empty line and takes the game's own default. Wing settings therefore cannot be c
 real gap, not a design decision. `src/platform/autorun.cpp` documents the same fact from the other
 side.
 
+## The double-press
+
+⚠⚠ **REPORTED DEFECT (open): a menu or prompt needs SPACE pressed TWICE to advance.** One press
+per page is the correct behaviour; the port needing two is a bug. It is recorded here because it
+has been reported more than once and was never written down, which is the failure mode
+`docs/postmortem.md` warns about.
+
+Reading the two routines involved turns up **two** mechanisms that can swallow a press, and both
+are in the engine's own 6502 logic — so neither is a port bug *by itself*, and that is exactly
+why this needs measuring rather than patching:
+
+1. **`menu_wait_key` (`$6577`) scans `menu_key_tbl` DOWNWARD from the option count and stops at
+   the first key it finds held — SPACE is index 0, so it is scanned LAST.** Hold the number key
+   you just chose and press SPACE, and the scan matches the *number* every pass and never looks
+   at SPACE. The number must come up before SPACE is seen at all.
+2. **`wait_dismiss` (`$34D2`) debounces: `$34D9` spins while SPACE is DOWN, and only then does
+   `$34E0` wait for it to come down again.** So a press still held from the page before satisfies
+   only the up-wait, and the page then wants a fresh press.
+
+Both fire only when a key is *still held* at the moment the next page starts polling — which is a
+question about TIME, and the port and the BBC do not spend the same amount of it. The real machine
+repaints a MODE 7 page through `OSWRCH` character by character before it polls at all; the port
+repaints it in microseconds and polls immediately, while the finger is still down. That is the
+leading hypothesis: not a broken key map, but a port that arrives at the poll far sooner than the
+original did.
+
+⭐ **What settles it, and it is cheap:** `make refloop` can press a key mid-run with
+`--press=<codes>@<sec>[:<hold>]`, so the real BBC can be given a single SPACE press of a realistic
+hold time at a page boundary and asked whether one press advances it. If the real machine advances
+on one press and the port needs two with the same hold, the difference is the port's timing and
+the fix belongs at the seam — not in either routine, which must stay faithful.
+
+⚠ Do NOT take `src/platform/autorun.cpp`'s paired SPACE steps as evidence the double-press is
+faithful. A script holds a key until its step ends, so it genuinely needs a release step and then
+a press; a player's finger is not a script.
+
 ## Keys deliberately left unbound
 
 - **Amiga `Del`** is reserved for **BBC BREAK**. BREAK is a reset line, not a keyboard-matrix key,

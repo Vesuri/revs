@@ -531,6 +531,7 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_decodeModeDirty g_decodeDirtyChecks g_decodeDirtyMismatch \
              g_decodeDirtyMismatchOff \
              g_bandCount g_bandOverflow g_bandSkips g_bandRuns g_bandHorizonMoves g_keyUnmapped g_keyUnmappedCode g_keyEvents g_keyDown \
+             g_spaceEdges g_spaceAnswered g_spacePolls \
              g_mouseBtnMask g_mouseBtnSeen \
              g_irqClobberCount g_irqClobberWhich \
              g_irqUnwindPending g_irqUnwindTouched g_irqStackImbalance \
