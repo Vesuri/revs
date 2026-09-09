@@ -129,15 +129,27 @@ cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs \
 | Menu option 1 / 2 / 3 (`menu_key_tbl`, `$39E0` — exactly four entries) | `1` `2` `3` | `1` `2` `3` |
 | Dismiss the standings tables (see them again) | `RETURN` (`$B6`) | `Return` |
 | Circuit menu options 4 / 5 / 6 | — (the BBC's menu is `REVSMEN`, a separate BASIC program) | `4` `5` `6` — **this port's own menu**, `src/platform/trackmenu.c` |
-| Wing settings, qualifying minutes, driver name | typed at a console prompt through `OSRDCH` | ⚠ **not implemented** — see below |
+| Wing settings, qualifying minutes, driver name | typed at a console prompt through `OSRDCH` | typed — letters, digits, `Return`, `Backspace` (the BBC's DELETE) |
 | Load the game | `SHIFT+BREAK` | n/a |
 
-⚠⚠ **Text and number entry does not work on the Amiga yet.** `console_read_two_digits` (`$3EE0`)
-and the driver-name editor both read through `OSRDCH` (`$FFE0`), and the Amiga backend does not
-override `Platform::rdch()` — the default returns CR, so every such prompt answers itself with an
-empty line and takes the game's own default. Wing settings therefore cannot be chosen, which is a
-real gap, not a design decision. `src/platform/autorun.cpp` documents the same fact from the other
-side.
+### Typing
+
+`console_io` (`$6300`) is the game's only text input: the two wing settings (`$3C50`, two digits
+each) and the twelve-character driver name (`$66D4`). It reads through `OSRDCH` (`$FFE0`), and
+`Platform::rdch()` defaults to CR — an immediate end of line — so until the Amiga backend
+overrode it, every such prompt answered itself and took the game's own default.
+
+`keyDown()` cannot serve `rdch()`: it answers "is this key held **now**", and a line editor needs
+what was typed **in order**, including keys pressed and released between two polls. So the CIA-A
+handler pushes a **character** on every down edge into a 16-entry ring
+(`RevsInput.cpp` §The typing queue) and `rdch()` pops one, driving real frames while it waits —
+without that the echo of the character just typed would never reach the screen. OSBYTE `$15` with
+X=0 empties the ring through `Platform::flushKeyboard()`, which is what stops the SPACE that
+confirmed the menu being typed into the field `console_io` is about to read.
+
+⚠ Under `REVS_AUTORUN_BUILD` `rdch()` still returns CR immediately. An unattended run has no
+typist, and `src/platform/autorun.cpp`'s script is written against the instant answer — a blocking
+read would hang every probe and FPS run at the first wing prompt.
 
 ## Fast taps, and why the port lost them
 
@@ -177,27 +189,39 @@ taps and stalls at `TM_SELECT` with `g_keyLatchHits` 0.
 `continue`. An earlier harness "pressed" keys this way and reported, coherently and wrongly, that
 nothing registered. Any input injection must live *inside* the program. `docs/method-lessons.md`.
 
-## The double-press (still open)
+## The "extra SPACE" after practice/competition — SOLVED
 
-⚠ **After choosing practice/competition with 1 or 2 and then SPACE, one more SPACE is needed.**
-Distinct from the tap loss above and not fixed by the latch. The leading candidate is
-`prompt_wing_settings_core` (`$3C50`), which ends in `wait_dismiss_space_core()` at `$3C6B`; it is
-made invisible to the player because the Amiga backend does not override `Platform::rdch()`, so the
-two `console_read_two_digits` wing prompts auto-answer instantly and only the SPACE wait shows.
-Two engine mechanisms can also swallow a press and both are the 6502's own, so neither is a port
-bug by itself:
+⚠ **Reported as: choose practice or competition with `1` then SPACE, and the game wants another
+SPACE before it continues.** There is no extra SPACE. What the player was looking at was the
+**pit-lane wing page** (`prompt_wing_settings`, `$3C50`) — text script `$18` "SELECT WING SETTINGS
+/ range 0 to 40 / rear", script `$19` "front", then `wait_dismiss_space` at `$3C6B`, which is the
+page's own faithful dismiss. Two port defects made it unrecognisable, and both are fixed:
+
+1. **The page was never presented.** On the 6502 MODE 7 screen RAM *is* the display, so a page is
+   visible the instant `text_script_interp` writes it. This port paints into a BBC-shaped frame
+   buffer that only reaches the bitplanes when `platform_render_frame()` decodes it — and
+   `wait_dismiss` (`$34D2`) polled the keyboard **rendering nothing**, where `menu_wait_key`
+   (`$6577`) has always driven a frame per pass. So the previous page (the practice/competition
+   menu) stayed on screen for the whole wait and the game looked like it wanted a second SPACE on
+   a page it had already answered. Both of `wait_dismiss`'s poll loops now drive a frame — the
+   UP-wait too, or a page entered with SPACE still held is not presented until the finger lifts.
+2. **The fields could not be typed.** See §Typing above.
+
+⭐ The general shape, worth keeping: **a spin-wait in ported code is a presentation point.** Any
+loop that waits for input without calling the frame hook freezes the display on whatever was last
+decoded, and that reads as a logic bug on the *next* page, not as a missing render.
+
+Two engine mechanisms can also swallow a press, and both are the 6502's own — neither is a port
+bug, and both are worth knowing before blaming the port for a lost keystroke:
 
 1. **`menu_wait_key` (`$6577`) scans `menu_key_tbl` DOWNWARD from the option count and stops at
    the first key held — SPACE is index 0, scanned LAST.** Hold the number you just chose and press
-   SPACE, and the scan matches the *number* every pass. The number must come up first.
+   SPACE, and the scan matches the *number* every pass. The number must come up first. So a menu
+   costs a row key and then a SPACE by design.
 2. **`wait_dismiss` (`$34D2`) debounces: `$34D9` spins while SPACE is DOWN, then `$34E0` waits for
    it to come down again.** A press still held from the previous page satisfies only the up-wait.
 
-⭐ **What settles it:** `make refloop --press=<codes>@<sec>[:<hold>]` gives a real BBC a single
-SPACE of realistic hold time at the same page boundary. If the real machine advances on one press
-and the port needs two, the fix belongs at the seam, not in either routine.
-
-⚠ Do NOT take `src/platform/autorun.cpp`'s paired SPACE steps as evidence the double-press is
+⚠ Do NOT take `src/platform/autorun.cpp`'s paired SPACE steps as evidence a double-press is
 faithful. A script holds a key until its step ends, so it genuinely needs a release step and then
 a press; a player's finger is not a script.
 

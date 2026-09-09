@@ -15418,15 +15418,41 @@ void abort_if_quit_keys_core(void)
 }
 
 /* $34D2 — wait for the page to be dismissed.  `offerReturn` is the caller's A: bit 7 set also
-   accepts RETURN, and the exit value of print_field_mask says which key was used. */
+   accepts RETURN, and the exit value of print_field_mask says which key was used.
+
+   ⭐⭐ THE TWO POLL LOOPS DRIVE A FRAME, and that is not decoration.  On the 6502 the page is
+   already on the screen the instant text_script_interp writes it — MODE 7 screen RAM IS the
+   display.  This port paints into a BBC-shaped frame buffer that only reaches the bitplanes
+   when platform_render_frame() decodes it, so a spin-wait that renders nothing leaves the
+   PREVIOUS page up for as long as the wait lasts.  Measured symptom: the pit-lane wing page
+   ($3C50) never appeared at all — the practice/competition menu stayed on screen and the game
+   looked like it wanted a second SPACE on a page it had already answered.  menu_wait_key
+   ($6577) has always had this trio; this routine is the other front-end wait and was missing it.
+   ⚠ The UP-wait needs it too, or a page entered with SPACE still held is not presented until
+   the finger comes off.
+   ⚠⚠ AMIGA ONLY, and the guard is load-bearing.  Neither hook is free on the host:
+   PlatformHost::renderFrame() is the GAME-FRAME COUNTER ($1701) and also drives the 50 Hz band
+   cycle, and platform_tick_vbi() IS the host's 50 Hz interrupt.  Calling either from a wait the
+   6502 spent no game frames in moves the whole trajectory — `make determinism` diverged in 7003
+   bytes, and is byte-identical with the guard.  So this is a presentation need of a port that
+   decodes a frame buffer, not a property of the routine, and it belongs behind the platform
+   ifdef (CLAUDE.md §Which side of the seam).  tickVBI() is a no-op on the Amiga anyway — the
+   VERTB ISR owns that clock — so only the render and the quit poll are here. */
+#ifdef REVS_PLATFORM_AMIGA
+#define WAIT_DISMISS_PRESENT()  do { platform_render_frame(); platform_poll_events(); } while (0)
+#else
+#define WAIT_DISMISS_PRESENT()  do { } while (0)
+#endif
 static void wait_dismiss_core(uint8_t offerReturn)
 {
     field_mask_set(offerReturn);                     /* $34D2 STA $78 */
     text_script_interp_core(0x1Eu);                  /* $34D4/$34D6 — paint the prompt */
 
-    while (kbd_test_key_core(KEY_INKEY_SPACE))       /* $34D9-$34DE — wait for SPACE to come UP */
-        ;
+    while (kbd_test_key_core(KEY_INKEY_SPACE)) {     /* $34D9-$34DE — wait for SPACE to come UP */
+        WAIT_DISMISS_PRESENT();
+    }
     for (;;) {
+        WAIT_DISMISS_PRESENT();
         if (kbd_test_key_core(KEY_INKEY_SPACE))      /* $34E0-$34E5 — SPACE dismisses */
             return;
         abort_if_quit_keys_core();                   /* $34E7 — SHIFT+$86 escapes the whole page */
