@@ -17374,9 +17374,13 @@ void hook_gen_dir_vector_nurburg(void) { hook_gen_dir_vector_at(TRACK_GEN_ARGS(N
      S45 X is not restored                                             ->     1000 / 1000
    S40/S42/S43 all read ~250 because the fixture skips the fold on one case in four and signs it
    on one in two; the fold-only defects can only be seen on the cases that fold. */
-#define GEN_SEG_TURN_HI  (TRACK_DIR_0 + 0x28u)   /* $5428[place] (see docs/rename.md) */
-#define GEN_SEG_TURN_LO  (TRACK_DIR_1 + 0x28u)   /* $5528[place] */
-#define GEN_SEG_CLIMB    (TRACK_DIR_2 + 0x28u)   /* $5628[place] */
+/* ⭐ The circuit's own SOURCE geometry, one entry per place, and a generation-time TENANCY of
+   the three race-time direction pages: from index $28 up they hold the track file's per-segment
+   deltas, below it the basis the generator writes.  symbols.csv carries the split on all six
+   rows. */
+#define GEN_SEG_TURN_HI  (TRACK_DIR_0 + 0x28u)   /* gen_seg_turn_hi $5428[place] — heading delta, high */
+#define GEN_SEG_TURN_LO  (TRACK_DIR_1 + 0x28u)   /* gen_seg_turn_lo $5528[place] — ...and low */
+#define GEN_SEG_CLIMB    (TRACK_DIR_2 + 0x28u)   /* gen_seg_climb   $5628[place] — gradient delta */
 
 static void hook_gen_step_at(uint16_t block, uint8_t scale)
 {
