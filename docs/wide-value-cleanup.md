@@ -1186,6 +1186,50 @@ Still open, and neither is a wide-value conversion:
 - `plot_view_src_line`'s `plot_ptr_lo = 0x00u;` before the wide setup — a lane write that is
   harmless but inconsistent with the twin's own idiom.
 
+### ⭐⭐ ORACLE-ONLY MARSHALLING COSTS THE SHIPPING BUILD NOTHING (measured 2026-09-09)
+
+The standing worry — that the relocations left the port paying for `mem[]` mirrors that only the
+differentials read — is answered, and the answer is **no, not for the oracle half**:
+
+```
+m68k-amiga-elf-objdump -t amiga/out/Revs.elf | grep -c __t6502   ->  0
+                                             | grep project_object   ->  project_object_slot_core
+```
+
+**Zero `__t6502` symbols are linked into the Amiga binary**, and a 6502-ABI shim whose plain name
+has no shipping caller goes with them — `project_object_slot` and `project_object_coord` are both
+absent, only the core survives. `--gc-sections` removes the whole oracle surface. So a
+marshal-out that exists purely to keep `make validate`'s fixture byte-exact is free on the target,
+and the publish-don't-blunt gate can stay without an apology.
+
+⚠ **What DOES survive is a different thing, and it is the real remainder.** Nineteen `*_marshal_*`
+helpers are in the shipping binary, called from these shims:
+
+| helper | shipping callers |
+|---|---|
+| `bearing`, `hypot_max`, `hypot_min` (in+out) | `build_player_car`, `build_track_geometry`, `road_edge_walk_resume`, `stage_nearby_car_at_core` |
+| `car_angle`, `model_state`, `view_origin`, `lateral_speed_entry` | `apply_driving_model`, `draw_dash_needles`, `race_main_loop` |
+| `car_heading` | + `mirrors_update` |
+| `edge_nearest` | + `check_crash` |
+| `car_distance` | `check_car_pair` |
+
+None of that is oracle-only, and it splits into two kinds:
+
+1. **Two twins talking to each other through `mem[]`.** `race_main_loop_core`'s phase list calls
+   the SHIM at phases 3/4/5/14, each with a measured breakage recorded at the call site: phase 3's
+   `read_driving_controls` publishes the new steer angle that phase 4 reads back, phase 5's
+   `build_track_geometry` publishes `$8A/$8B`, and so on. Removing these means moving producer and
+   consumer core-to-core *together* and re-recording `make determinism`'s baseline — a
+   representation change, not a cleanup, one value at a time with `determinism-drive` as the gate.
+2. **A HOOK SEAM, which is 6502-ABI by construction and stays.** `road_edge_walk_resume` ($2490) is
+   itself a twin — `road_edge_walk_resume_core` is in the binary — but its plain name is reached
+   from `trk_brands`/`trk_doning`/`trk_oulton`/`trk_snetter`/`trk_nurburg`, the per-circuit hook
+   dispatchers, which arrive holding real 6502 registers. There is no core-to-core call to make
+   here; the marshalling *is* the seam. Same for `stage_nearby_car_at_core`'s callers.
+
+⭐ So the remainder is smaller than it looks: kind 2 is permanent, and kind 1 is four call sites in
+one function.
+
 ## ⭐⭐ NEXT STEPS (planned 2026-09-04) — mechanism (B) on Tier 3, in measured order
 
 Mechanism (A) is finished; **Tier 3 — the SoA state vectors — is the campaign's remaining body of
