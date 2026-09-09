@@ -704,6 +704,9 @@ FrameTimeExit add_frame_time_core(uint8_t clockIdx);
 void tick_race_timers_core(void);
 void shift_key_commands_core(uint8_t entryY);
 uint8_t retire_car_core(uint8_t x);
+/* $11AB spin_car_out — the slot as an argument; returns retire_car's lap comparison, or -1
+   on the scenery-slot exit, where the 6502 leaves the flags alone. */
+int spin_car_out_core(uint8_t x);
 void finish_race_core(void);
 TextExit print_bcd_digits_core(uint8_t bcd, uint8_t x, uint8_t y);
 TextExit print_bcd_digits_at_core(uint8_t bcd, uint8_t column, uint8_t row);

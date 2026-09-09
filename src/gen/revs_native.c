@@ -11891,17 +11891,30 @@ void tick_wheel_spin(void)
 /* ---------------------------------------------------------------------------
    $11AB  spin_car_out  (twin #123)
    ---------------------------------------------------------------------------
-   Flags car X as spun out.  For a real car slot (X < $14) it folds the low seven bits
+   Flags car `x` as spun out.  For a real car slot (x < $14) it folds the low seven bits
    of car_section_across into car_across_drift, armed and with magnitude 5 ($45), stamps $91 into the page-1
    status array, then runs the shared crash tail (retire_car).  Scenery slots do nothing.
+   Returns retire_car's lap comparison — the only flag either arm leaves a caller — or -1 on the
+   scenery-slot exit, where $11CD is a bare RTS and the 6502's flags are untouched.
    --------------------------------------------------------------------------- */
-void spin_car_out(void)
+int spin_car_out_core(uint8_t x)
 {
-    uint8_t x = cpu.X;
-    if (x >= 0x14) return;                        /* not a car slot: the $11CD tail is a bare RTS */
+    if (x >= 0x14) return -1;                     /* not a car slot: the $11CD tail is a bare RTS */
     mem[CAR_ACROSS_DRIFT + x] = (uint8_t)((mem[CAR_SECTION_ACROSS + x] & 0x7F) | 0x45);
     mem[CAR_RACE_FLAGS + x] = 0x91;
-    retire_car();                                 /* shared crash tail, indexed by X */
+    return (int)retire_car_core(x);               /* shared crash tail, same car */
+}
+
+/* 6502-ABI shim — ORACLE-ONLY.  The one production caller (process_car_contact, just below)
+   calls the core with the slot as an argument; this half exists because the transliterated
+   process_car_contact__t6502 still calls the plain name. */
+void spin_car_out(void)
+{
+    int c = spin_car_out_core(cpu.X);
+    if (c < 0) return;                            /* the bare-RTS arm publishes no flags */
+    cpu.A = 0xC0u;                                /* the byte retire_car stored... */
+    cpu.N = 1u; cpu.Z = 0u;                       /* ...so N/Z are its */
+    cpu.C = (uint8_t)c;                           /* ...and C the lap comparison's */
 }
 
 /* ---------------------------------------------------------------------------
@@ -11931,7 +11944,7 @@ void process_car_contact(void)
     uint8_t y = player_car;
 
     /* Hard hit during the race: spin the other car out. */
-    if (impact2 >= 0x28 && (session_is_race & 0x80)) { cpu.X = x; spin_car_out(); }
+    if (impact2 >= 0x28 && (session_is_race & 0x80)) spin_car_out_core(x);
 
     /* Heading difference between the two objects, x4; its sign steers abs16_math below.
        High bytes only, as the 6502 does — a COARSE angle, the low bytes are never loaded. */
