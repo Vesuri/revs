@@ -363,3 +363,32 @@ the same reason (they call `span_walk`).
 - **Duplicated address `#define`s are safe to centralise only because every name maps to one value**
   (verified: no name has two values). Object-like macro redefinition with an *identical* token list is
   benign in C — no warning — so the header can define them while `revs_native.c` keeps its own copies.
+
+## ⭐⭐ THE CLASS IS CLOSED — the whole-file census of REGISTER ARGUMENTS (2026-09-09)
+
+The remaining question the campaign actually cared about is narrower than `grep -c 'cpu\.'`: **does
+any function still take a VALUE as a register argument?** A `cpu.A` read is only a defect when it is
+an *input*; reading a register back after calling a 6502-ABI callee is the seam working as designed.
+
+Censused mechanically over all 385 top-level functions in `revs_native.c` — for each `cpu.<field>`
+reference, is it read before any call and before any write to that field? **25 functions read a cpu
+field as an input, and every one of them is one of four things that stay:**
+
+| Class | Members | Why it stays |
+|---|---|---|
+| **The per-circuit HOOK SEAM** | the 11 `hook_*` bodies, plus `abs8`, `abs16_math`, `scale_by_track_gradient` reached from `trk_brands`/`trk_doning`/`trk_oulton`/`trk_snetter`/`trk_nurburg` | 6502-ABI **by construction**: the dispatchers arrive holding real registers, so the marshalling *is* the seam. There is no core-to-core call to make. `docs/wide-value-cleanup.md` §ORACLE-ONLY kind 2 |
+| **Oracle-only** | `road_span_plot`, `road_span_plot_2`, `span_end_marker_p1`, `span_end_marker_p2`, `neg16_math`, `scale16_by_y` | No production caller at all, and **free on the target**: `--gc-sections` links zero `__t6502` symbols into `Revs.exe`, and `make transtrap` enters no transliterated body in any of nine scenarios |
+| **A flag that genuinely ESCAPES** | `stop_unchanged` (Z, via `paint_lines_clipped`) | CLAUDE.md's one narrow exception — the 6502 asks with `CPY`, which also writes the C that is live if the plant traps out. Written as `==` it passed the legal cases and **failed 35 of the illegal ones** |
+| **The 6502 STACK model** | `mul16_by_1_5_core` (S), `hook_steer_response_doning` (S) | The PHA/PHP residue is real memory at `mem[STACK_PAGE + S]` that the differential compares. Not an argument — an address |
+
+⭐ **The one real violation the census found has been fixed:** `update_lap_timers_core` took the
+ambient OSWRCH cursor from `cpu.X`/`cpu.Y` and the two ambient P bits from `cpu.D`/`cpu.I` *inside
+the core*. It now takes `(ambX, ambY, ambientPBits)`, with the reads in its shim. (The earlier one,
+`spin_car_out`, was fixed the same way — the slot as an argument, `spin_car_out_core(x)`.)
+
+⚠ **A `FUN_*` fragment reads as production code and is not necessarily.** The census first flagged
+`FUN_1f11` as a shipping caller of `abs16_math`/`neg16_math_noinit`, because the transpiler's
+placeholder for an unnamed jump target carries no `__t6502` suffix. Both of its callers are oracle
+bodies. It was `apply_steering_assist`'s second entry point ($1F11, the assist body proper) and is
+now named `apply_steering_assist_noinit` in `symbols.csv`. **Check the ENCLOSING function's suffix,
+not the callee's name.**
