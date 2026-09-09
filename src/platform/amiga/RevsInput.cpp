@@ -154,6 +154,49 @@ static const KeyMap kKeys[] = {
 extern "C" volatile uint8_t g_keyDown[128];
 volatile uint8_t g_keyDown[128];
 
+/* ⭐⭐ THE TAP LATCH — "a quick tap does not register", and the cause is the port's POLL RATE.
+ *
+ * OSBYTE 129 asks whether a key is held AT THIS INSTANT, so a level poll can only ever miss a
+ * press that began and ended between two polls — and the front end polls rarely.  Measured on the
+ * target (amiga/spacerate.gdb): ~27 SPACE polls a SECOND, one per ~37 ms of game time, because
+ * every iteration of a front-end loop goes through renderFrame(), which decodes the page and then
+ * waits for the next PAL field.  The BBC's own menu loop ($6577) does neither — it polls at 6502
+ * speed, hundreds of times in the same 37 ms — so a tap it would have caught is one this port
+ * drops on the floor.  That gap is ENTIRELY the port's: the frame wait is a hook this project put
+ * there (docs/amiga-arch.md), not something the 6502 did.
+ *
+ * So the fix belongs at the seam, and it is to stop throwing away what the hardware already told
+ * us.  The CIA-A handler sees every real key EDGE, timestamped by field; a key whose down-edge
+ * landed within the last few fields is reported held ONCE even if the finger has already come off.
+ * That is what a fast poll would have answered, which is why it is a fidelity fix and not a
+ * convenience: it makes the port's answer match the machine it is porting.
+ *
+ * ⚠ THREE BOUNDS, and each one is load-bearing:
+ *   • Only while the MODE 7 page is up (g_screenMode7).  In the RACE both machines poll once per
+ *     frame — the 6502 read the keyboard from its own 50 Hz body — so there is no gap to close and
+ *     a latch there would invent input the BBC never saw.
+ *   • Consumed on the answer, so one tap is one answer.  A latch that stayed set would re-answer
+ *     the same tap on the next poll, and menu_wait_key polls in a loop: one tap would walk two
+ *     rows.
+ *   • Expired after KEY_LATCH_FIELDS.  A tap nobody polls for must not surface half a second later
+ *     as a phantom press on whatever page happens to be up by then.
+ * The live level is still checked FIRST and answered without touching the latch, so a HELD key
+ * behaves exactly as before — this only ever adds an answer the slow poll had lost.
+ */
+extern "C" volatile uint8_t  g_keyLatch[128];
+volatile uint8_t  g_keyLatch[128];
+extern "C" volatile uint16_t g_keyLatchAt[128];
+volatile uint16_t g_keyLatchAt[128];
+/* Taps the latch rescued.  ⭐ It is the instrument for the fix, and it doubles as the sabotage
+   check: with the latch working this climbs while tapping the menus, and a build where it stays 0
+   through a front-end walk has the fix compiled out or gated off. */
+extern "C" volatile unsigned long g_keyLatchHits;
+volatile unsigned long g_keyLatchHits = 0;
+#define KEY_LATCH_FIELDS 4u        /* ~80 ms — one poll interval plus margin, no more */
+
+extern "C" volatile uint16_t g_vbiCount;
+extern "C" volatile uint16_t g_screenMode7;
+
 /* ⚠ PROBE_SYMS (amiga/Makefile): a code the game asks about that this map does not carry.
    Counted rather than answered "not held", because a missing mapping and a wrong mapping
    look identical from the game's side — one of them is silent forever. */
@@ -212,7 +255,11 @@ static uint32_t keyboardHandler()
     uint8_t raw  = (uint8_t)(code & 0x7Fu);
     bool    down = (code & 0x80u) == 0u;
 
-    if (raw == RK_SPACE && down && !g_keyDown[raw]) g_spaceEdges++;   /* a real press */
+    if (down && !g_keyDown[raw]) {                  /* a real press — latch the EDGE */
+        if (raw == RK_SPACE) g_spaceEdges++;
+        g_keyLatch[raw]   = 1u;
+        g_keyLatchAt[raw] = g_vbiCount;
+    }
     g_keyDown[raw] = down ? 1u : 0u;
     g_keyEvents++;
     return 0;
@@ -222,7 +269,7 @@ bool RevsInput::initialize()
 {
     m_steer      = 0x80;      /* dead centre */
     m_lastMouseX = (uint8_t)(*joy0datPointer & 0xFFu);
-    for (unsigned i = 0; i < 128; i++) g_keyDown[i] = 0;
+    for (unsigned i = 0; i < 128; i++) { g_keyDown[i] = 0; g_keyLatch[i] = 0; }
 
     /* ⚠ Make the pot pins INPUTS so POTINP reports the right and middle buttons.  Clearing
        POTGO's four OUT* enables is the whole requirement; the START bit is for the paddle
@@ -272,21 +319,44 @@ void RevsInput::releaseAllKeys()
 {
     /* The whole rawkey array, not just the mapped codes: this is "nothing is held", and
        leaving an unmapped rawkey set would be the same bug with a different key. */
-    for (unsigned i = 0; i < 128; i++) g_keyDown[i] = 0;
+    for (unsigned i = 0; i < 128; i++) { g_keyDown[i] = 0; g_keyLatch[i] = 0; }
 }
 
 bool RevsInput::keyDown(uint8_t x) const
 {
     bool mapped = false;
     if (x == 0x9Du) g_spacePolls++;                     /* SPACE — the instrument above */
+
+    /* The live level first: a key that is down now needs no latch, and the answer must not
+       consume one (see the tap-latch note above — a held key would otherwise eat its own edge). */
     for (unsigned i = 0; i < KEY_COUNT; i++) {
         if (kKeys[i].bbc != x) continue;
         mapped = true;
         if (g_keyDown[kKeys[i].rawkey]) {
+            g_keyLatch[kKeys[i].rawkey] = 0u;           /* seen while held — the edge is spent */
             if (x == 0x9Du) g_spaceAnswered++;
             return true;
         }
     }
+
+    /* ...then the tap this port's slow front-end poll would otherwise have lost.
+       ⚠ `make NOLATCH=1` compiles this arm out — that is the SABOTAGE arm for the proof below,
+       and the only thing that separates "the latch works" from "the taps were never short". */
+#ifndef REVS_NOLATCH
+    if (mapped && g_screenMode7) {
+        for (unsigned i = 0; i < KEY_COUNT; i++) {
+            const uint8_t rk = kKeys[i].rawkey;
+            if (kKeys[i].bbc != x || !g_keyLatch[rk]) continue;
+            g_keyLatch[rk] = 0u;                        /* one tap, one answer */
+            if ((uint16_t)(g_vbiCount - g_keyLatchAt[rk]) > KEY_LATCH_FIELDS)
+                continue;                               /* stale — not this page's press */
+            g_keyLatchHits++;
+            if (x == 0x9Du) g_spaceAnswered++;
+            return true;
+        }
+    }
+#endif
+
     if (!mapped) { g_keyUnmappedCode = x; g_keyUnmapped++; }
     return false;
 }
@@ -392,3 +462,52 @@ bool RevsInput::mouseButton(uint8_t which) const
     if (which == 2) return (p & 0x0100u) == 0u;
     return false;
 }
+
+#ifdef REVS_TAPTEST
+/* ================================================================================================
+ * ⭐⭐ THE PROOF THAT THE TAP LATCH WORKS, and it had to be built INSIDE the program.
+ *
+ * ⚠⚠ The obvious instrument does not exist: gdb cannot write this target's memory through the
+ * FS-UAE stub.  `set var g_keyLatchHits = 12345` reads back 0, and so does a write to
+ * g_keyDown[] — measured, after a whole harness had been written on the assumption that it could
+ * (the harness reported "no key press registered" for a run in which no key was ever pressed,
+ * which is the failure shape docs/method-lessons.md keeps warning about).  So a synthetic press
+ * must come from the program's own side of the seam.
+ *
+ * WHAT THIS INJECTS IS A TAP OF NO LENGTH AT ALL: it writes only what the CIA handler's down-edge
+ * branch writes — the latch and its field stamp — and NEVER touches g_keyDown.  So the level poll
+ * can never see it, and any progress through the front end is the latch's work and nothing else.
+ * That is what makes it a proof rather than a demonstration:
+ *   make clean && make PROBES=1 NOAUTORUN=1 TAPTEST=1   -> the circuit menu reaches TM_FINISHED
+ *                                                          (g_tmPhase 3) and g_keyLatchHits climbs
+ *   ...the same plus NOLATCH=1                          -> it must NOT get past TM_SELECT and
+ *                                                          g_keyLatchHits must stay 0
+ * A run where both arms behave the same is measuring something else — read
+ * docs/controls.md §The double-press before believing either.
+ * ============================================================================================== */
+extern "C" volatile unsigned long g_tapInjected;
+volatile unsigned long g_tapInjected = 0;
+
+/* ⭐ It ALTERNATES '1' and SPACE forever rather than replaying a scripted chain, and that is
+   deliberate: every page in this front end wants either a row (1 is always a valid row — the first
+   circuit, PRACTICE, the shortest race) or a SPACE, so an alternating pair answers all of them
+   without the script having to know which page is up.  A fixed chain is what autorun.cpp does, and
+   getting it wrong there cost three runs; this proof only has to keep the front end MOVING. */
+#define TAP_PERIOD_FIELDS 15u      /* > one front-end iteration, so each tap lands on its own page */
+
+extern "C" void revs_input_tap_test(void)
+{
+    static uint16_t s_lastTap = 0;
+    static unsigned s_next    = 0;
+    if (!g_screenMode7) return;                       /* the front end is the whole point */
+    if ((uint16_t)(g_vbiCount - s_lastTap) < TAP_PERIOD_FIELDS) return;
+    s_lastTap = g_vbiCount;
+
+    const uint8_t raw = (s_next & 1u) ? (uint8_t)RK_SPACE : (uint8_t)RK_1;
+    s_next++;
+    /* EXACTLY the CIA handler's down-edge branch, and deliberately nothing else. */
+    g_keyLatch[raw]   = 1u;
+    g_keyLatchAt[raw] = g_vbiCount;
+    g_tapInjected++;
+}
+#endif

@@ -63,6 +63,9 @@ static PlatformAmiga* s_platform = 0;   // for the ISR's mouse sampling
 // denominated in this, never in host wall clock: it is immune to emulator speed and
 // to the gdb stub.  (docs/perf-method.md)
 extern "C" { volatile uint16_t g_vbiCount = 0; }
+#ifdef REVS_TAPTEST
+extern "C" void revs_input_tap_test(void);
+#endif
 extern "C" uint16_t platform_frame_count(void) { return g_vbiCount; }
 
 // Painted-frame counter — the numerator of the ONLY honest framerate figure:
@@ -296,6 +299,9 @@ void PlatformAmiga::renderFrame()
         s_lastPresent = nowv;
         s_havePresent = true;
     }
+#endif
+#ifdef REVS_TAPTEST
+    revs_input_tap_test();   /* zero-length synthetic taps — RevsInput.cpp §THE PROOF */
 #endif
     // Present, then wait for the next real vblank.  The wait is on g_vbiCount (the ISR's
     // own counter), not WaitTOF(): once the VERTB vector is taken over, graphics.library's

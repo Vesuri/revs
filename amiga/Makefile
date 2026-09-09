@@ -249,6 +249,23 @@ ifdef COMPETITION
 EXTRA_DEFINES += -DREVS_COMPETITION
 endif
 
+# ⭐ `make NOAUTORUN=1` — compile the probes WITHOUT the scripted keyboard, so the run stays in
+# the front end.  The only way to measure the front end unattended: every other probe flag
+# implies the script, and the script answers the first menu in microseconds.
+ifdef NOAUTORUN
+EXTRA_DEFINES += -DREVS_NOAUTORUN
+endif
+
+# ⭐⭐ `make TAPTEST=1 NOAUTORUN=1 PROBES=1` — drive the front end with taps of NO LENGTH, which
+# only the tap latch can answer (RevsInput.cpp §THE PROOF).  `NOLATCH=1` is its sabotage arm:
+# with the latch compiled out the same build must stall on the circuit menu.
+ifdef TAPTEST
+EXTRA_DEFINES += -DREVS_TAPTEST
+endif
+ifdef NOLATCH
+EXTRA_DEFINES += -DREVS_NOLATCH
+endif
+
 # `make HOLD_THROTTLE=1` — keep the throttle held after the script ends instead of handing the
 # keyboard over.  FPSCOUNT and PROBES do this implicitly; this flag is for a diagnostic build that
 # wants neither.  ⚠ It matters more than it looks: with the keyboard handed over the car is PARKED
@@ -519,6 +536,10 @@ VASMFLAGS = -m68010 -Felf -quiet -x -no-opt -nowarn=62 $(EXTRA_VASMDEFS)
 # code inside processBlitterQueue).  `--undefined=<sym>` makes the symbol a gc ROOT, at zero
 # runtime cost.  `__attribute__((retain))` does NOT work here — it is ignored on this target.
 # Add a symbol here the moment you add a counter; `make probe-audit` enforces it on every link.
+ifdef TAPTEST
+PROBE_SYMS_TAPTEST = g_tapInjected
+endif
+
 PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCount g_brkPC \
              g_mosUnknownCount g_mosUnknownEntry g_mosUnknownA \
              g_mosCharDefCount g_mosCharDefOutOfRange g_mosCharDefLastBad \
@@ -531,7 +552,8 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_decodeModeDirty g_decodeDirtyChecks g_decodeDirtyMismatch \
              g_decodeDirtyMismatchOff \
              g_bandCount g_bandOverflow g_bandSkips g_bandRuns g_bandHorizonMoves g_keyUnmapped g_keyUnmappedCode g_keyEvents g_keyDown \
-             g_spaceEdges g_spaceAnswered g_spacePolls \
+             g_spaceEdges g_spaceAnswered g_spacePolls g_keyLatchHits g_screenMode7 \
+             $(PROBE_SYMS_TAPTEST) \
              g_mouseBtnMask g_mouseBtnSeen \
              g_irqClobberCount g_irqClobberWhich \
              g_irqUnwindPending g_irqUnwindTouched g_irqStackImbalance \

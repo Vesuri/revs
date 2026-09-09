@@ -26,8 +26,14 @@
  * Every new place that must behave differently in an unattended run tests THIS, so adding a flag
  * is one edit rather than N.
  */
-#if defined(REVS_FPSCOUNT) || defined(REVS_PROBE) || defined(REVS_STRAIGHT_TO_RACE) || \
-    defined(REVS_COMPETITION)
+/* ⭐ ...and ONE way to turn it off again (`make NOAUTORUN=1`), which a FRONT-END measurement
+ * needs: every flag above implies a scripted keyboard, so a probe build walks straight past the
+ * menus and any counter read afterwards averages the front end together with the race.  With the
+ * script suppressed the target sits in menu_wait_key for the whole run, which is what makes
+ * "how often does the front end poll the keyboard" a measurable quantity (amiga/spacerate.gdb).
+ */
+#if (defined(REVS_FPSCOUNT) || defined(REVS_PROBE) || defined(REVS_STRAIGHT_TO_RACE) || \
+     defined(REVS_COMPETITION)) && !defined(REVS_NOAUTORUN)
 #define REVS_AUTORUN_BUILD 1
 #endif
 

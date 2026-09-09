@@ -139,37 +139,63 @@ empty line and takes the game's own default. Wing settings therefore cannot be c
 real gap, not a design decision. `src/platform/autorun.cpp` documents the same fact from the other
 side.
 
-## The double-press
+## Fast taps, and why the port lost them
 
-⚠⚠ **REPORTED DEFECT (open): a menu or prompt needs SPACE pressed TWICE to advance.** One press
-per page is the correct behaviour; the port needing two is a bug. It is recorded here because it
-has been reported more than once and was never written down, which is the failure mode
-`docs/postmortem.md` warns about.
+⚠⚠ **The port polls the keyboard once per rendered front-end frame; the BBC polls it at 6502
+speed.** `menu_wait_key` (`$6577`) calls the render/tick/poll hooks every iteration before it scans
+`menu_key_tbl`, and on the Amiga `PlatformAmiga::renderFrame()` ends in a full PAL-field wait — a
+hook the port added (`docs/amiga-arch.md`), not something the 6502 ever did. So one loop pass costs
+at least one field.
 
-Reading the two routines involved turns up **two** mechanisms that can swallow a press, and both
-are in the engine's own 6502 logic — so neither is a port bug *by itself*, and that is exactly
-why this needs measuring rather than patching:
+**Measured** (`amiga/spacerate.gdb`, `make PROBES=1 NOAUTORUN=1` — the `NOAUTORUN` matters, every
+probe flag otherwise implies `REVS_AUTORUN_BUILD` and the scripted keyboard walks past the front
+end, averaging the race into the figure): **~27 SPACE polls a second, one per ~37 ms**, and one
+observed iteration spanned 15 fields (300 ms) — a full-page MODE 7 decode when the SAA5050 flash
+phase dirties every row. A *level* poll cannot see a press shorter than its own period, so every
+tap under ~37 ms was simply not there when the game looked. That is the whole mechanism behind
+"tapping 1-6 or SPACE quickly does nothing".
+
+⭐ **The fix is at the seam, not in either twin.** The CIA-A handler already sees every edge, so
+`RevsInput.cpp` latches the down-edge and `keyDown()` answers from the latch when the live level is
+clear. Three bounds keep it a fidelity fix rather than a convenience:
+
+- **Front end only** (`g_screenMode7`). In the race both machines poll once per frame, so there is
+  no gap to close and no licence to invent one.
+- **Consumed on the answer.** One tap answers exactly one poll — otherwise a single tap walks two
+  menu rows.
+- **Expired after `KEY_LATCH_FIELDS` (4 fields, ~80 ms)** — one poll interval plus margin. A latch
+  that outlived the page would surface as a phantom press on the next one.
+
+**Proof** (`amiga/taplatch.gdb`, `make PROBES=1 NOAUTORUN=1 TAPTEST=1`): `REVS_TAPTEST` injects
+taps of *zero length* — it writes the latch and never touches `g_keyDown`, so a level poll can
+provably not see them. With the latch on, the circuit menu reaches `TM_FINISHED` and the game's
+practice menu answers (`session_is_race=28`). The sabotage arm `NOLATCH=1` injects 569 of the same
+taps and stalls at `TM_SELECT` with `g_keyLatchHits` 0.
+
+⚠⚠ **gdb CANNOT WRITE this target's memory through the FS-UAE stub.** `set var g_keyLatchHits =
+12345`, `set var g_keyDown[0x40] = 1` and `set var s_dwell = 4000` all read back unchanged across a
+`continue`. An earlier harness "pressed" keys this way and reported, coherently and wrongly, that
+nothing registered. Any input injection must live *inside* the program. `docs/method-lessons.md`.
+
+## The double-press (still open)
+
+⚠ **After choosing practice/competition with 1 or 2 and then SPACE, one more SPACE is needed.**
+Distinct from the tap loss above and not fixed by the latch. The leading candidate is
+`prompt_wing_settings_core` (`$3C50`), which ends in `wait_dismiss_space_core()` at `$3C6B`; it is
+made invisible to the player because the Amiga backend does not override `Platform::rdch()`, so the
+two `console_read_two_digits` wing prompts auto-answer instantly and only the SPACE wait shows.
+Two engine mechanisms can also swallow a press and both are the 6502's own, so neither is a port
+bug by itself:
 
 1. **`menu_wait_key` (`$6577`) scans `menu_key_tbl` DOWNWARD from the option count and stops at
-   the first key it finds held — SPACE is index 0, so it is scanned LAST.** Hold the number key
-   you just chose and press SPACE, and the scan matches the *number* every pass and never looks
-   at SPACE. The number must come up before SPACE is seen at all.
-2. **`wait_dismiss` (`$34D2`) debounces: `$34D9` spins while SPACE is DOWN, and only then does
-   `$34E0` wait for it to come down again.** So a press still held from the page before satisfies
-   only the up-wait, and the page then wants a fresh press.
+   the first key held — SPACE is index 0, scanned LAST.** Hold the number you just chose and press
+   SPACE, and the scan matches the *number* every pass. The number must come up first.
+2. **`wait_dismiss` (`$34D2`) debounces: `$34D9` spins while SPACE is DOWN, then `$34E0` waits for
+   it to come down again.** A press still held from the previous page satisfies only the up-wait.
 
-Both fire only when a key is *still held* at the moment the next page starts polling — which is a
-question about TIME, and the port and the BBC do not spend the same amount of it. The real machine
-repaints a MODE 7 page through `OSWRCH` character by character before it polls at all; the port
-repaints it in microseconds and polls immediately, while the finger is still down. That is the
-leading hypothesis: not a broken key map, but a port that arrives at the poll far sooner than the
-original did.
-
-⭐ **What settles it, and it is cheap:** `make refloop` can press a key mid-run with
-`--press=<codes>@<sec>[:<hold>]`, so the real BBC can be given a single SPACE press of a realistic
-hold time at a page boundary and asked whether one press advances it. If the real machine advances
-on one press and the port needs two with the same hold, the difference is the port's timing and
-the fix belongs at the seam — not in either routine, which must stay faithful.
+⭐ **What settles it:** `make refloop --press=<codes>@<sec>[:<hold>]` gives a real BBC a single
+SPACE of realistic hold time at the same page boundary. If the real machine advances on one press
+and the port needs two, the fix belongs at the seam, not in either routine.
 
 ⚠ Do NOT take `src/platform/autorun.cpp`'s paired SPACE steps as evidence the double-press is
 faithful. A script holds a key until its step ends, so it genuinely needs a release step and then
