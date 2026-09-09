@@ -129,6 +129,7 @@ cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs \
 | Menu option 1 / 2 / 3 (`menu_key_tbl`, `$39E0` — exactly four entries) | `1` `2` `3` | `1` `2` `3` |
 | Dismiss the standings tables (see them again) | `RETURN` (`$B6`) | `Return` |
 | Circuit menu options 4 / 5 / 6 | — (the BBC's menu is `REVSMEN`, a separate BASIC program) | `4` `5` `6` — **this port's own menu**, `src/platform/trackmenu.c` |
+| Skip the teletext title screen | — (REVSMEN's delay loop has no key test) | **any key** — a port convenience, see below |
 | Wing settings, qualifying minutes, driver name | typed at a console prompt through `OSRDCH` | typed — letters, digits, `Return`, `Backspace` (the BBC's DELETE) |
 | Load the game | `SHIFT+BREAK` | n/a |
 
@@ -224,6 +225,31 @@ bug, and both are worth knowing before blaming the port for a lost keystroke:
 ⚠ Do NOT take `src/platform/autorun.cpp`'s paired SPACE steps as evidence a double-press is
 faithful. A script holds a key until its step ends, so it genuinely needs a release step and then
 a press; a player's finger is not a script.
+
+## The title screen skip — a deliberate deviation
+
+⚠ **The teletext REVS title page holds for 5.45 s and the real machine cannot be hurried:**
+`TM_TITLE_FIELDS` is 273 fields, measured off a real BBC (10 900 001 cycles at 2 MHz between the
+title page appearing and the menu page being complete), and REVSMEN line 50 is a bare
+`FOR X=0 TO 10000:NEXT` with no key test at all.
+
+**Any key now cuts the remaining dwell short** (user decision). The justification, such as it is:
+a good part of those 10.9 M cycles is the **disc access** loading the next program, which this
+port does not perform — so some of what the constant faithfully reproduces is a wait with no
+cause here. The dwell itself is unchanged and is still the default; only the escape is new.
+
+Two details that are easy to get wrong, both covered by `make trackmenu`:
+
+- **Any key means any key** (`TM_KEY_ANY`, `RevsInput::anyKeyDown()`), not one of the menu's
+  seven — someone hurrying a title screen does not consult the key map first. Modifiers are
+  excluded: resting on SHIFT or CTRL must not count, and CTRL is half the quit chord.
+- **The key that skipped must be released before the menu reads it.** Otherwise one press both
+  skips the title and picks a circuit, which looks like the page doing two things — the same trap
+  `TM_SELECT` already guards with `s_spaceSeenUp`.
+
+`make trackmenu` diffs PAGES, not timing, so it does not notice this on its own; the three checks
+`title skip`, `title skip release` and `title dwell intact` are what hold it, and all four
+sabotages of them fail as they should.
 
 ## Keys deliberately left unbound
 

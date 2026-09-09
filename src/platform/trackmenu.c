@@ -61,6 +61,7 @@ static unsigned s_options   = TM_OPTIONS_FAITHFUL;
 static unsigned s_rowShift  = 0;
 static unsigned s_dwell     = 0;   /* fields the title page has been up for */
 static unsigned s_spaceSeenUp = 0; /* SPACE has been observed released since the digit landed */
+static unsigned s_allKeysSeenUp = 1; /* every key has been released since the title was skipped */
 
 /* ── painting ─────────────────────────────────────────────────────────────────────────────
  * Through tt_vdu(), never straight into mem[]: the driver is the validated one and it is what
@@ -201,6 +202,7 @@ void tm_begin(unsigned options)
     g_tmFields = 0;
     s_dwell    = 0;
     s_spaceSeenUp = 0;
+    s_allKeysSeenUp = 1;
 
     /* REVSMEN 40: `*LOAD 5TRSCRN` — a straight 1 KB copy into MODE 7 screen RAM, which is
        exactly what the real machine displays (titlescreen.h has the provenance).  ⚠ Not through
@@ -226,7 +228,14 @@ void tm_tick(unsigned keys, unsigned fields)
     case TM_TITLE:
         /* REVSMEN 50: a delay loop, measured on real hardware rather than counted in BASIC. */
         s_dwell += fields;
-        if (s_dwell >= TM_TITLE_FIELDS) {
+        /* ⚠ DELIBERATE DEVIATION (user decision): any key cuts the dwell short.  The real
+           machine cannot be hurried here — line 50 has no key test — but much of the measured
+           5.45 s is disc access this port does not perform.  trackmenu.h carries the reasoning.
+           The key that skipped must be RELEASED before the menu will read it, or one press both
+           skips the title and picks a circuit, which looks like the page doing two things —
+           the same trap TM_SELECT already guards against with s_spaceSeenUp. */
+        if (s_dwell >= TM_TITLE_FIELDS || (keys & TM_KEY_ANY)) {
+            s_allKeysSeenUp = (keys & TM_KEY_ANY) ? 0u : 1u;
             paint_menu();
             g_tmPhase = TM_SELECT;
         }
@@ -237,6 +246,8 @@ void tm_tick(unsigned keys, unsigned fields)
            low-to-high so a stuck high key cannot mask option 1 — the real program takes whatever
            the keyboard buffer hands it, which has no ordering at all. */
         unsigned n;
+        if (!(keys & TM_KEY_ANY)) s_allKeysSeenUp = 1;
+        if (!s_allKeysSeenUp) break;      /* still holding the key that skipped the title */
         for (n = 1; n <= s_options; n++) {
             if (!(keys & TM_KEY_OPTION(n))) continue;
             g_tmOption = (unsigned char)n;

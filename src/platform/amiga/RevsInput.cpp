@@ -287,6 +287,15 @@ static void typeQueuePush(uint8_t raw)
     s_typeHead = next;
 }
 
+bool RevsInput::anyKeyDown() const
+{
+    /* Skip the modifiers: SHIFT/CTRL/ALT/AMIGA are held while chording (CTRL + left button is
+       quit) and resting on one must not count as hurrying the title page. */
+    for (unsigned raw = 0; raw < 96u; raw++)
+        if (g_keyDown[raw]) return true;
+    return false;
+}
+
 uint8_t RevsInput::typedChar()
 {
     if (s_typeTail == s_typeHead) return 0;

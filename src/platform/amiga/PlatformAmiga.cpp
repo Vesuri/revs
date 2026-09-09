@@ -404,6 +404,8 @@ bool PlatformAmiga::runTrackMenu()
         unsigned keys = 0;
         for (unsigned i = 0; i <= TM_OPTIONS_MAX; i++)
             if (input.keyDown(tm_key_codes[i])) keys |= (1u << i);
+        // ...and the title page's skip, which answers to ANY key, not just the menu's seven.
+        if (input.anyKeyDown()) keys |= TM_KEY_ANY;
 
         uint16_t now = g_vbiCount;
         tm_tick(keys, (uint16_t)(now - last));

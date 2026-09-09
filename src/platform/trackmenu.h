@@ -80,6 +80,12 @@ extern "C" {
    page being complete on a real BBC (`tools/bbc_probe_trackmenu.mjs` prints it).  That is REVSMEN
    line 50's `FOR X=0 TO 10000:NEXT` plus the disc access, and it is counted here in DISPLAY
    FIELDS because that is what the backend can actually count — 5.45 s x 50 Hz. */
+/* ⚠ A DELIBERATE DEVIATION sits on top of this constant: any key SKIPS the remaining dwell
+   (TM_KEY_ANY).  REVSMEN line 50 has no key test, so the real machine cannot be hurried — but a
+   good part of the 10.9 M cycles is the DISC ACCESS, which this port does not do, so a chunk of
+   what the constant reproduces is a wait with no cause here.  The dwell stays the default; the
+   skip is a port convenience, recorded in docs/controls.md.  `make trackmenu` diffs PAGES, not
+   timing, so it neither notices nor guards this. */
 #define TM_TITLE_FIELDS      273u
 
 /* Where the menu is in its two-key sequence.  The real program's shape, kept: a digit selects and
@@ -96,6 +102,11 @@ typedef enum {
    what OSBYTE 129 (and so RevsInput::keyDown) wants. */
 #define TM_KEY_SPACE     0x01u
 #define TM_KEY_OPTION(n) (1u << (n))          /* n = 1..6 */
+/* ⭐ ANY key at all is held — not one of the seven above, ANY of them.  Only the title page reads
+   it, and only to cut the dwell short (see TM_TITLE in trackmenu.c).  It is a separate bit rather
+   than "keys != 0" because the seven named bits are the keys the MENU means, and a player waiting
+   out the title page reaches for whatever is nearest. */
+#define TM_KEY_ANY       0x80u
 extern const unsigned char tm_key_codes[TM_OPTIONS_MAX + 1];
 
 /* ── diagnostics.  ⚠ every one of these is in amiga/Makefile PROBE_SYMS ──────────────────── */

@@ -74,6 +74,12 @@ public:
        nothing is queued.  Separate from keyDown() because console_io ($6300) asks
        what was typed between two polls, not what is held now — see the typing queue
        in RevsInput.cpp.  flushTyped() empties it, which is OSBYTE $15. */
+    /* ⭐ Is ANY key at all held — including one this map does not carry?  The only caller is the
+       circuit menu's title page, which lets any key cut the dwell short; a player reaching to
+       hurry a title screen does not consult the key map first.  ⚠ Reads the RAW state, so it
+       ignores the tap latch: a skip should follow the finger, not a 4-field echo of it. */
+    bool anyKeyDown() const;
+
     uint8_t typedChar();
     void    flushTyped();
 

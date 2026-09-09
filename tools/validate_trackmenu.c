@@ -196,6 +196,65 @@ int main(int argc, char **argv)
     }
     compare("menu", "menu.bin");
 
+    /* ── the title SKIP, a deliberate deviation (trackmenu.h §TM_TITLE_FIELDS) ──────────── */
+    {
+        /* Any key cuts the dwell short.  Checked at a field the faithful dwell has nowhere near
+           reached, so a broken skip cannot pass by simply timing out. */
+        tm_begin(TM_OPTIONS_FAITHFUL);
+        unsigned f;
+        for (f = 0; f < 10u && tm_phase() == TM_TITLE; f++) tm_tick(TM_KEY_ANY, 1);
+        if (tm_phase() != TM_SELECT) {
+            printf("FAIL %-22s a held key did not skip the dwell (phase %u after %u fields)\n",
+                   "title skip", tm_phase(), f);
+            g_fail++;
+        } else if (f > 1u) {
+            printf("FAIL %-22s the skip took %u fields, not one\n", "title skip", f);
+            g_fail++;
+        } else {
+            printf("ok   %-22s any key leaves the title page in one field\n", "title skip");
+        }
+        g_compared++;
+
+        /* ⭐ And the half that is easy to get wrong: the key that skipped must be RELEASED before
+           the menu reads it, or one press both skips the title and picks a circuit.  '1' is held
+           continuously here, so TM_SELECT must ignore it until it comes up. */
+        tm_begin(TM_OPTIONS_FAITHFUL);
+        const unsigned held = TM_KEY_ANY | TM_KEY_OPTION(1);
+        tm_tick(held, 1);                       /* skips the title */
+        tm_tick(held, 1);                       /* ...and must NOT select option 1 */
+        tm_tick(held, 1);
+        if (tm_phase() != TM_SELECT) {
+            printf("FAIL %-22s the key that skipped the title also picked a circuit (phase %u)\n",
+                   "title skip release", tm_phase());
+            g_fail++;
+        } else {
+            tm_tick(0, 1);                      /* released */
+            tm_tick(held, 1);                   /* pressed again — now it counts */
+            if (tm_phase() != TM_CONFIRM) {
+                printf("FAIL %-22s option 1 did not take after the release (phase %u)\n",
+                       "title skip release", tm_phase());
+                g_fail++;
+            } else {
+                printf("ok   %-22s the skipping key is ignored until released\n",
+                       "title skip release");
+            }
+        }
+        g_compared++;
+
+        /* The faithful path must be untouched: no key, and the dwell still runs its full length. */
+        tm_begin(TM_OPTIONS_FAITHFUL);
+        for (f = 0; f < TM_TITLE_FIELDS - 1u; f++) tm_tick(0, 1);
+        if (tm_phase() != TM_TITLE) {
+            printf("FAIL %-22s the dwell ended early with no key held (phase %u at field %u)\n",
+                   "title dwell intact", tm_phase(), f);
+            g_fail++;
+        } else {
+            printf("ok   %-22s with no key held the full %u-field dwell still runs\n",
+                   "title dwell intact", TM_TITLE_FIELDS);
+        }
+        g_compared++;
+    }
+
     /* ── one page per selection ─────────────────────────────────────────────────────────── */
     for (unsigned n = 1; n <= TM_OPTIONS_FAITHFUL; n++) {
         char what[32], file[32];
