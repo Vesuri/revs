@@ -639,7 +639,9 @@ MosRegs sound_envelope_core(uint8_t envBase, uint8_t savedX);
 void    full_track_scan_rebuild_core(uint8_t retreatDepth);
 void    reset_driving_variables_core(void);
 void    reject_all_object_slots_core(void);
-void    update_lap_timers_core(void);
+/* $0FFE update_lap_timers — the ambient OSWRCH cursor and the two ambient P bits the routine's
+   own PHP stacks, all three inputs it does not compute. */
+void    update_lap_timers_core(uint8_t ambX, uint8_t ambY, uint8_t ambientPBits);
 void    enter_mos_text_mode_core(void);
 void    irq1v_release_core(uint8_t ambientY);
 uint8_t sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX);

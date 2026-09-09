@@ -13918,9 +13918,10 @@ void reset_driving_variables_core(void)
        BCD seconds carry its own $17D6 PHP kept — and that carry is what decides $106A;
      - the cursor set at $101B/$101D stays AMBIENT past print_message_pair's call, which is why
        it is carried in two locals and not recomputed.  Everything this routine calls is native
-       and takes its inputs as arguments (twins #181-#191, #206); the only cpu registers still
-       read are the OSWRCH ambient X/Y at entry, which is state the MOS text arm reads, not a
-       value this routine computes.
+       and takes its inputs as arguments (twins #181-#191, #206), and so does this one: the
+       OSWRCH ambient X/Y and the two ambient P bits the PHP stacks arrive as PARAMETERS,
+       marshalled out of cpu by the 6502-ABI shim.  They are state the MOS text arm reads, not
+       values this routine computes, which is why they are arguments and not cpu reads here.
 
    ⚠⚠ THE FIXTURE FOUND A LIVE BUG IN AN EXISTING SHIM, not in this twin: clear_race_clock's
    6502-ABI shim set cpu.A alone, so the Z its `LDA #$00` really leaves was stale and $1054's
@@ -13938,12 +13939,12 @@ void reset_driving_variables_core(void)
    inside the real 0..19 lap domain the laps-left byte is either 0..$13 or $ED..$FF, so its bits
    6 and 7 are always EQUAL.  A quarter of the cases now span 0..99 to decouple them.
    --------------------------------------------------------------------------- */
-void update_lap_timers_core(void)
+/* ⭐ ambX/ambY are the OSWRCH cursor, genuinely AMBIENT here: it arrives from whatever the body
+   called last and is handed on unchanged when the race arm prints nothing.  ambientPBits carries
+   the D and I bits ($08/$04) the $1017 PHP stacks — the routine reads only the SIGN back out, but
+   the whole byte is real memory the differential compares. */
+void update_lap_timers_core(uint8_t ambX, uint8_t ambY, uint8_t ambientPBits)
 {
-    /* ⭐ The OSWRCH cursor is genuinely AMBIENT here — it arrives in X/Y from whatever the body
-       called last and is handed on unchanged when the race arm prints nothing.  It is threaded
-       through these two locals so nothing but the entry read touches the cpu struct. */
-    uint8_t ambX = cpu.X, ambY = cpu.Y;
 
     if (session_is_race & 0x80u) {                    /* $0FFE/$1000 BPL — the practice arm */
         if (lap_completed_flag & 0x80u) {             /* $1002 BIT / $1004 BPL */
@@ -13962,7 +13963,7 @@ void update_lap_timers_core(void)
                 | ((lapsLeft & 0x80u) ? 0x80u : 0u)                    /* N */
                 | (adc_overflow((uint8_t)(lapsDone ^ 0xFFu), race_lap_total,
                                 (uint8_t)(lapsDone >= 0x01u)) ? 0x40u : 0u)  /* V */
-                | (cpu.D ? 0x08u : 0u) | (cpu.I ? 0x04u : 0u)          /* both ambient */
+                | ambientPBits                                         /* D and I, both ambient */
                 | ((lapsLeft == 0u) ? 0x02u : 0u)                      /* Z */
                 | ((sum > 0xFFu) ? 0x01u : 0u)));                      /* C */
 

@@ -1357,7 +1357,11 @@ void reject_all_object_slots(void)
 /* $0FFE — result-only.  Both arms end in a callee whose exit ABI nobody reads (race_main_loop's
    body ignores it entirely), and the core does its own PHP/PLP on the real stack pointer, so
    there is nothing left for the shim to marshal in either direction. */
-void update_lap_timers(void) { update_lap_timers_core(); }
+void update_lap_timers(void)
+{
+    update_lap_timers_core(cpu.X, cpu.Y,
+                           (uint8_t)((cpu.D ? 0x08u : 0u) | (cpu.I ? 0x04u : 0u)));
+}
 
 /* $4F39 — result-only; the whole product is text_out_via_mos plus whatever the script paints. */
 void enter_mos_text_mode(void)
