@@ -5100,8 +5100,11 @@ int road_span_advance_core(uint8_t y)
    the class of the scan line the run ended on, which view_paint_lines later turns into that
    line's background colour.
 
-   Which of the two codes it writes is the walk direction (span_swapped), and a descending
-   walk steps back a line first and gives up if that line already carries a class.  Past 45
+   Which of the two codes it writes is the walk direction (span_swapped), and the two are the
+   style's OVER colour and its FILL colour: an ascending walk stamps the run's END line, which
+   is beyond the run and so still the surface the span was drawn on, while a descending walk
+   steps BACK one line onto a line the run itself covered and stamps the fill.  It gives up if
+   that stepped-onto line already carries a class.  Past 45
    degrees off the section (view_yaw_offset >= $28) the low two bits are left alone; below it
    they are cleared unless they are already 3.
 
@@ -5143,9 +5146,9 @@ static void span_cap_line(uint8_t y)
         y--;
         int z = span_cap_line_slot_z(y);
         if (z <= 0) return;              /* trapped, or the line already has a class — leave it */
-        code = span_cap_surface_b;
+        code = span_cap_surface_fill;    /* it stepped onto a line the run COVERED */
     } else {
-        code = span_cap_surface_a;
+        code = span_cap_surface_over;    /* the run's end line, beyond the run itself */
     }
 
     if (y >= 0x50u) return;              /* $2F2A CPY #$50 — off the bottom of the view */
@@ -5761,16 +5764,24 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
         mem[COLOUR_PATTERN_OR + i] = (uint8_t)(pat & mem[COLOUR_PATTERN_KEEP + i]);
     }
 
+    /* The two surface classes a cap can stamp on the scan line the span ends on.  The style
+       record is a boundary RAMP: byte 0 is its no-fill end (a uniform-colour byte, $00/$0F/
+       $F0/$FF) and byte 3 has the fill colour in columns 0-2.  So the two bit pairs below are
+       the OVER colour and the FILL colour read out whole, and which one caps the line is only
+       the walk direction.  $40/$80 tag the writer and never reach a colour — both consumers
+       mask the class with 3.  Verified over all ten reachable styles (symbols.csv). */
     math_lo = (uint8_t)(surface_pass_index << 3);        /* the pass, in bits 3-5 */
-    span_cap_surface_a = (uint8_t)(((mem[COLOUR_PATTERN] >> 3) & 3) | math_lo | 0x40u);
+    /* byte 0's colour: column 0's low bit (bit 3) and column 3's high bit (bit 4). */
+    span_cap_surface_over = (uint8_t)(((mem[COLOUR_PATTERN] >> 3) & 3) | math_lo | 0x40u);
 
     if (mem[COLOUR_PATTERN] == 0) mem[COLOUR_PATTERN] = 0x55u;
     bearing_hi = mem[COLOUR_PATTERN];
 
+    /* byte 3's fill colour: column 2's low bit (bit 1) and column 0's high bit (bit 7). */
     { uint8_t p3 = mem[COLOUR_PATTERN + 3];
       uint8_t code = (uint8_t)((p3 >> 1) & 1u);
       if (p3 & 0x80u) code |= 2u;                        /* $2C4C BIT — bit 7 through N */
-      span_cap_surface_b = (uint8_t)(code | 0x80u | math_lo); }
+      span_cap_surface_fill = (uint8_t)(code | 0x80u | math_lo); }
 
     /* The LAST span of a pass is clamped to the top or the bottom of the view rather than to
        its own end line, so the walk always terminates on a real scan line. */
@@ -5797,7 +5808,7 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
         /* X-MAJOR.  A solid run needs no terminator, so the two end markers are switched off
            by planting RTS over their first byte. */
         int wantMarkers = (mem[COLOUR_PATTERN] == 0xFFu)
-                       || ((span_cap_surface_b & 3u) == 3u);
+                       || ((span_cap_surface_fill & 3u) == 3u);
         if (!wantMarkers) {
             mem[SLOT_MARKER_P2] = OP_RTS;
             mem[SLOT_MARKER_P1] = OP_RTS;
@@ -16719,18 +16730,18 @@ void hook_camera_scale_by_gradient(void)
    test falls back to reading this line, exactly as the displaced LDA did.
 
    ⭐ $8B is a specific CLASS, not a mask, and it decomposes exactly — interp_edge composes the
-   byte itself ($2C46-$2C57, `code | $80 | math_lo`), so: bit 7 is span_cap_surface_b's marker
-   (the arm taken when span_swapped is negative, i.e. the SECOND road side), bits 3-5 are the
-   PASS NUMBER and $8B has 001 there, and the low two bits are colour_pattern[3]'s two sampled
-   bits, both set.  So the line the two circuits refuse to stamp over is "pass 1's second-side
-   span, fully patterned" — and that low-bits-both-set case is the same predicate interp_edge
+   byte itself ($2C46-$2C57, `code | $80 | math_lo`), so: bit 7 is span_cap_surface_fill's
+   marker (the descending arm, taken when span_swapped is negative), bits 3-5 are the PASS
+   NUMBER and $8B has 001 there, and the low two bits are the style's FILL COLOUR, here 3.
+   So the line the two circuits refuse to stamp over is "pass 1's fill-capped span, fill
+   colour 3" — and that low-bits-both-set case is the same predicate interp_edge
    uses one page earlier to decide a span needs END MARKERS instead of a solid run, which is why
    span_cap_line's own flatten at $2F35 is the one arm that leaves the byte untouched.
 
    Entry ABI (the seam at $2F19-$2F22, reproduced by span_cap_line_slot_z): A = span_swapped,
    Y = the scan line after the DEY, N/Z from that DEY.  Only Y is read.  Exit: A and N/Z as the
    displaced LDA would have left them — the caller's `BNE $2F44` is the whole point — plus the
-   C the CMP or the LSR leaves.  ⚠ A is dead at the return ($2F28 LDA span_cap_surface_a
+   C the CMP or the LSR leaves.  ⚠ A is dead at the return ($2F28 LDA span_cap_surface_over
    overwrites it); it is reproduced because the differential compares it, not because it is read.
 
    SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
