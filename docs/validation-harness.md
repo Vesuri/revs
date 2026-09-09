@@ -177,6 +177,36 @@ closing `LSR` into an exit carry its single call site discards.  The decisive ch
 SIBLING (§FIFTEENTH): `lap_completed_flag`, written from the same `A` one instruction earlier, IS
 seen, so the gate demonstrably reaches the arm.
 
+**…and the other four race arms the same commit named** (`autorun.cpp` lists five routines that
+were gated by nothing).  One defect each, against `determinism-race`:
+
+| Arm | Defect | Result |
+|---|---|---|
+| `draw_starting_lights` | the 64-frame dwell mask `$3F` → `$1F` | 737 bytes — **gated** |
+| `race_position_offset` (`$284B`) | the race gap offset off by one | 928 bytes — **gated** |
+| `spin_car_out`'s race gate (`$1BD4`) | `impact2 >= $28` → `>= $40` | 352 bytes — **gated** |
+| `update_lap_timers`' chequered flag (`$1027`) | token `$35` → `$36` | PASS — **NOT reached** |
+
+⭐ The spin arm is reached because the run is **parked on the grid** and the field drives into the
+player — so the contact path runs without anyone steering.
+⚠⚠ **MEASURED, so nobody builds it twice:** a *driving* race proper (`RACEPROPER=1
+HOLD_THROTTLE=1`, which needs no new script — the two flags are orthogonal) covers strictly
+**less**.  It reaches `session_is_race = $80` and the AI field laps normally, but the held-throttle
+car leaves the pack within seconds, so the same spin defect PASSES there at frame 14500, and the
+player's own lap count is still **0 at frame 40000** — which is also why the chequered-flag arm is
+out of reach: it needs laps-left to go NEGATIVE, i.e. a player-completed five-lap race, and no
+scripted key set drives one.  That arm is a **declared hole**, not a covered one.
+
+### ⚠⚠ A defect must be reachable in VALUE SPACE, not just in control flow
+
+The spin-arm defect above was first written `impact2 >= $28` → `>= $27` and it PASSED — and that
+was a **bad defect**, not a coverage gap: `impact2` is `impact << 1`, so it is always EVEN and can
+never equal `$27`.  The comparison was moved to a value the program cannot produce, in *any*
+scenario, so the sabotage was a no-op by construction and said nothing about the gate.  Adding a
+fourth question to §FIFTEENTH's three: before concluding anything from a surviving sabotage, check
+that the value you moved a threshold to is **producible** — parity, a floor, a mask or a BCD
+constraint can make a one-step change unreachable while looking like the smallest possible edit.
+
 ## ⭐⭐ …and a NINTH: a DRIVER with no fixture, and what actually gates it
 
 `transpile.py` has a second split set beside `VALIDATE_FUNCS`: **`NATIVE_FUNCS`**, for a native twin

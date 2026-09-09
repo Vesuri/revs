@@ -81,6 +81,13 @@ struct AutoStep {
  * race-only gate and race_position_offset are all in that set — and `determinism`,
  * `determinism-drive` and `determinism-crash` are every one of them a PRACTICE trajectory,
  * which is why the race arms were gated by nothing at all.
+ * ⭐ SABOTAGED, so this is a measured claim and not an intention (2026-09-09): with the
+ * reference recorded, `make determinism-race` sees four of those five — reset_driving_variables'
+ * race arm, draw_starting_lights, race_position_offset and spin_car_out's gate, the last
+ * because the field drives into the PARKED player, so contact happens with nobody steering.
+ * ⚠ The fifth, update_lap_timers' chequered-flag arm, is still gated by NOTHING: it needs
+ * laps-left to go negative, and the player's lap count is 0 even at frame 40000 under a held
+ * throttle.  docs/validation-harness.md carries the table and the driving-race negative.
  *
  * ⭐ THE WALK NEEDS EXACTLY ONE QUALIFYING RUN, not twenty.  $6462's second question is
  * `1 ENTER ANOTHER DRIVER / 2 START RACE`; answering 2 makes the car just qualified the
