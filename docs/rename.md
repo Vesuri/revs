@@ -77,26 +77,6 @@ one where it runs downhill.  The `a`/`b` split is the only thing in the pass tha
 direction, so whichever visual feature swaps between those two frames is what bit 6 vs bit 7 names.
 
 
-## `$7B`'s second tenant, and `$85`/`$7C` inside `project_geometry`'s edge tail
-
-Opened while naming revs_native.c's callees: the last address-shaped label in the file was `$1D94`,
-and it is **not** an unnamed routine — it is a second entry into `project_geometry`
-(`$1C1C-$1DEE`), reached by the `JMP $1D94` at `$1C8F`.  It joins the same tail `$1D6F` does:
-`$7B != 1`, then `$7C < $28` clamps `$85` to `$28`, and `$1D86` takes `$85 - $7C` as the run to
-draw.  [DERIVED] from the listing, 2026-09-06.
-
-What that leaves open is **cell tenancy, not a function name**:
-
-* `$7B` — `hypot_max`'s high byte in the road pass, `PVS_MODE` in `plot_view_src_line`, and this
-  arm's own mode test.  The third reader is why `hypot_max`'s relocation could not free `$7A/$7B`
-  (the `⚠⚠` over `hypot_max_v` in `src/gen/revs_native.c` records the split).  ⇒ A `var` note
-  listing the three tenants.
-* `$85` — a **run length clamped to `$28`** here, i.e. 40 units, which is the viewport's column
-  count.  That is the first concrete reading of a cell the `$0C`/`$85`/`$87` entry above knew only
-  as "component 1 of `shared_temp_84`'s window".  ⇒ It is the row that entry was waiting for.
-* `$7C` — compared against `$28` and force-set to `$FF`, so a column index here, not
-  `point_dist`'s low byte.  ⇒ Same treatment: a tenancy list, not a rename.
-
 ## The track generator's cursor blocks — `$53F8`/`$53F9`/`$53FD`, `$53FA`/`$53FB`/`$53FF`, `$5728`
 
 Found while twinning `$5582`/`$557F` (the geometry generator's cursor step, all five expansion
