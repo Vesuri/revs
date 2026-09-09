@@ -11177,12 +11177,12 @@ static void steer_demand_from_slip_core(void)
    steer_assist_dispatch, which derives the look-ahead selector from the demand's own direction,
    and at $1F11 from steer_apply_with_assist, which already has it in A.
    --------------------------------------------------------------------------- */
-static void assist_from_selector(uint8_t selector);
+static void apply_steering_assist_noinit_core(uint8_t selector);
 
 static void apply_steering_assist_core(void)
 {
     /* $1F08-$1F10 — the look-ahead selector: 3 when the demand's sign byte is even, 2 when odd. */
-    assist_from_selector((mem[STEER_SIGN] & 0x01u) ? 0x02u : 0x03u);
+    apply_steering_assist_noinit_core((mem[STEER_SIGN] & 0x01u) ? 0x02u : 0x03u);
 }
 
 /* `selector` arrives in A on the 6502 (2 or 3); only "== 2" is tested.  Pure C throughout — the
@@ -11190,7 +11190,7 @@ static void apply_steering_assist_core(void)
    helper this used to call (abs16_math, mul8_accum, neg16_math_noinit) is just plain binary
    16-bit arithmetic.  The scratch cells $74-$77 are written to the SAME final values the
    transliterated oracle leaves, so make validate's full-mem[] diff still holds. */
-static void assist_from_selector(uint8_t selector)
+static void apply_steering_assist_noinit_core(uint8_t selector)
 {
     /* $1F11-$1F18 — which track edge to steer at: selector 2 → the far slot $32, else close $0A. */
     uint8_t edgeSlot = (selector == 0x02u) ? 0x32u : 0x0Au;
@@ -11272,7 +11272,7 @@ static void steer_apply_with_assist_core(void)
 {
     poll_steering_assist_core();                       /* $1EFA — lamps */
     if (steering_assist_flag != 0 && ((track_direction >> 7) & 1u) == 0u && mem[STEER_KEYS] != 0) {
-        assist_from_selector(mem[STEER_KEYS]);         /* $1F03 → $1F11, selector in A */
+        apply_steering_assist_noinit_core(mem[STEER_KEYS]);         /* $1F03 → $1F11, selector in A */
         return;
     }
     apply_steer_demand_core((uint8_t)car_angle_16[CAR_ANGLE_STEER]);   /* $1F95 */
