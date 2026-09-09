@@ -485,6 +485,18 @@ measurement points at.
   pointer is provably RAM for the loop's duration** (once per scan line, not once per cell) — the
   transpiler already does this for constant addresses, so what leaks is the indirect addressing
   modes.
+  ⭐⭐ **AUDITED SITE BY SITE IN `revs_native.c` AND THE CLASS IS CLOSED (2026-09-09).** All 56
+  remaining `bus_*` calls there are one of four things, and none is a hoist that was missed:
+  **(a) real hardware** — the two VIAs, the CRTC, the Video ULA, and every `USRVIA_T2CL` entropy
+  read (the starter's luck, the mirror shudder, the crash disturbance, `check_car_pair`'s cursor);
+  **(b) the IRQ1V vector-page writes**, plain RAM but routed deliberately so `platform_shadow_write`
+  sees the game claim the vector; **(c) an already-hoisted `else` arm** — `pointer_is_ram(base)`
+  + `seam_write(addr, ram, val)` with the fast path a bare `mem[]` store (the road fill, the gap
+  walk, the surface writers, `mirrors_update`, the object fields); **(d) a write that is already
+  once per SCAN LINE, not per cell** — the view painter's three start/end cell stores sit in the
+  sweep's `for(;;)` line loop, so converting them would save ~255 range tests a frame out of
+  ~10 600 bus calls. ⚠ Under 3% is noise, so **do not churn (d)** — and the else arm is not
+  removable anyway, because under a randomised fixture a pointer really can land in SHEILA.
 - **Don't qualify `mem[]` `volatile` unless something on THIS platform actually races it.** The
   qualifier blocks every optimisation over the array that holds the whole engine's state — no
   register-caching, no reordering, no CSE — for a hazard that has to be demonstrated for the
