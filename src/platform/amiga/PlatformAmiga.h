@@ -50,6 +50,8 @@ public:
     // mosCall is deliberately NOT overridden — src/platform/mos.cpp owns the whole MOS
     // surface for both backends.  What this backend answers is the input, below.
     virtual bool     keyDown(uint8_t x)                 override;
+    virtual uint8_t  rdch()                             override;  // ⭐ typed text (the wing/name fields)
+    virtual void     flushKeyboard()                    override;
     virtual uint8_t  adcButtons()                       override;
     virtual uint16_t adcAxis(uint8_t channel)           override;
     virtual int     loadImage(const char* path)         override;  // embedded -> copies incbin

@@ -152,6 +152,11 @@ public:
        Default: CR, which ends the line immediately. */
     virtual uint8_t rdch();
 
+    /* OSBYTE $15 with X=0 — flush the keyboard buffer.  console_io ($6311) does this
+       before every field so a keypress left over from the menu cannot be typed into it.
+       A no-op only for a backend whose rdch() is not buffered.  Default: nothing. */
+    virtual void flushKeyboard();
+
     /* OSWRCH — VDU output byte.  Default: discarded. */
     virtual void wrch(uint8_t c);
 

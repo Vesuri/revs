@@ -244,6 +244,46 @@ uint32_t PlatformAmiga::hwMicros()
 #endif
 }
 
+/* ===========================================================================
+   OSRDCH — the game's only text input                                (rdch)
+   ---------------------------------------------------------------------------
+   console_io ($6300) reads a fixed-width field a character at a time: the two
+   wing settings ($3C50, two digits each) and the driver names ($66D4, twelve).
+   Platform::rdch()'s default answers CR, which ends the field before the player
+   can type anything — so on this backend both wing prompts self-answered and the
+   wing page looked like a screen that only wanted SPACE, which is how it was
+   reported.  It is not an extra SPACE: the page is faithful ($3C6B's
+   wait_dismiss_space), it was just untypeable.
+
+   Blocking by contract — mos.cpp: "must always return a real character; signalling
+   ESCAPE instead loops forever" — so the wait drives real frames, exactly as the
+   engine's own spin-wait hooks do.  Without renderFrame() here the echo of the
+   character just typed would never reach the screen and the field would look dead
+   while it filled.
+   =========================================================================== */
+uint8_t PlatformAmiga::rdch()
+{
+#ifdef REVS_AUTORUN_BUILD
+    // ⚠ An unattended run has no typist.  autorun.cpp's script is written against
+    // rdch() answering CR immediately (it documents this), and a blocking read here
+    // would hang every probe and FPS run at the first wing prompt.
+    return 0x0D;
+#else
+    for (;;) {
+        uint8_t ch = input.typedChar();
+        if (ch) return ch;
+        if (quit) return 0x0D;                 // CTRL + left button: let the field close
+        renderFrame();                         // echo what is already typed, wait one field
+        pollEvents();
+    }
+#endif
+}
+
+void PlatformAmiga::flushKeyboard()
+{
+    input.flushTyped();
+}
+
 bool PlatformAmiga::keyDown(uint8_t x)
 {
 #ifdef REVS_AUTORUN_BUILD   // autorun.h — one predicate, not four flags per site

@@ -92,13 +92,17 @@ static MosRegs osbyte(MosRegs r)
         break;
 
     /* 21 — flush buffer X.  Sites $0E6B (sound channel buffers 4-7) and $6311 (keyboard
-       buffer 0).  The keyboard is polled, not buffered, so that one is a genuine no-op.
+       buffer 0).  The keyboard buffer is flushed through the backend (see below).
        ⭐ THE SOUND BUFFERS ARE NOT.  Flushing buffer 4+channel SILENCES the channel on a real
        BBC (measured: attenuation 15, and the divider resets), and `sound_stop_channel` ($0E5A)
        is the ONLY way Revs ever stops a sound — every one of them has duration 255 = play
        forever.  Treat this as a no-op and the engine noise never goes quiet. */
     case 0x15:
         if ((r.x & 0xFC) == 0x04) snd_flush_channel((uint8_t)(r.x & 3));
+        /* ⚠ Buffer 0 is NOT a no-op any more: a backend with a real rdch() queues typed
+           characters, and $6311's flush is what stops the menu's own SPACE landing in the
+           field console_io is about to read. */
+        else if (r.x == 0x00 && platform) platform->flushKeyboard();
         break;
 
     /* 126 — acknowledge ESCAPE.  Site $6349, inside console_io's line editor.  Returns
@@ -318,4 +322,5 @@ uint8_t Platform::adcButtons()                   { return 0x00; }
 /* $8000 is centre: adc_read ($503F) takes the HIGH byte and adds $80, so $80 → 0 offset. */
 uint16_t Platform::adcAxis(uint8_t /*channel*/)  { return 0x8000; }
 uint8_t Platform::rdch()                         { return 0x0D; }   /* CR: end of line */
+void    Platform::flushKeyboard()                { }
 void    Platform::wrch(uint8_t /*c*/)            {}

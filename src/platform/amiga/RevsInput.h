@@ -70,6 +70,13 @@ public:
        parked in gear stalls within a second. */
     void releaseAllKeys();
 
+    /* ⭐ OSRDCH's side of the keyboard: the next character the player TYPED, or 0 if
+       nothing is queued.  Separate from keyDown() because console_io ($6300) asks
+       what was typed between two polls, not what is held now — see the typing queue
+       in RevsInput.cpp.  flushTyped() empties it, which is OSBYTE $15. */
+    uint8_t typedChar();
+    void    flushTyped();
+
     /* VBI context: accumulate the mouse counter.  Must be sampled every frame — the
        hardware counter is 8 bits and wraps, so a missed frame is a lost delta. */
     void sampleMouse();

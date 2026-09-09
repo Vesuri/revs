@@ -235,6 +235,72 @@ static struct Library*   s_ciaaBase    = 0;
 static struct Interrupt  s_kbInterrupt;
 static struct Interrupt* s_savedVector = 0;
 
+/* ===========================================================================
+   THE TYPING QUEUE — OSRDCH's characters                            (rdch)
+   ---------------------------------------------------------------------------
+   keyDown() answers "is this key held NOW", which is all the game's own control
+   polling ever asks.  console_io ($6300) needs the other question: what did the
+   player TYPE, in order, including the ones pressed and released between two of
+   its OSRDCH calls.  Without this, Platform::rdch()'s default CR ended every
+   field instantly — the two wing prompts ($3C50) and the twelve-character driver
+   name ($66D4) all answered themselves, and the wing page degenerated into a
+   screen that only wanted SPACE.
+
+   So the handler pushes a CHARACTER, not a level, on every down edge, and rdch()
+   pops one.  A ring rather than a single byte because the queue must survive a
+   burst: the front end polls ~27 times a second (docs/controls.md §Fast taps) and
+   a fast typist beats that easily.  Sixteen is far more than console_io's widest
+   field (12) and costs nothing.
+
+   ⚠ The ISR is the only writer of s_head and rdch() the only writer of s_tail, so
+   a byte each and no disabling of interrupts is needed; a full ring drops the
+   newest character, which is what the BBC's own buffer does. */
+#define TYPE_QUEUE 16u
+static volatile uint8_t  s_typed[TYPE_QUEUE];
+static volatile uint8_t  s_typeHead = 0;   /* written by the ISR only */
+static volatile uint8_t  s_typeTail = 0;   /* written by rdch() only  */
+
+/* Amiga rawkey -> the ASCII the BBC's line editor expects, UNSHIFTED.  Uppercase
+   because every field the game reads is displayed uppercase (MODE 7 has no
+   lowercase in the game's own font selection) and console_io stores the byte it
+   echoes.  0 = "not a typing key", which is every code the table leaves out. */
+static const uint8_t kAscii[0x40] = {
+/* 00 */ '`', '1','2','3','4','5','6','7','8','9','0', '-','=','\\', 0,  0,
+/* 10 */ 'Q','W','E','R','T','Y','U','I','O','P', '[',']', 0,  0,  0,  0,
+/* 20 */ 'A','S','D','F','G','H','J','K','L', ';','\'', 0,  0,  0,  0,  0,
+/* 30 */  0, 'Z','X','C','V','B','N','M', ',','.','/',  0,  0,  0,  0,  0,
+};
+
+static void typeQueuePush(uint8_t raw)
+{
+    uint8_t ch = 0;
+    if (raw < 0x40u)             ch = kAscii[raw];
+    else if (raw == RK_SPACE)    ch = 0x20u;
+    else if (raw == RK_RETURN)   ch = 0x0Du;
+    else if (raw == RK_BACKSPC)  ch = 0x7Fu;   /* the BBC's DELETE — console_io's rub-out */
+    else if (raw == RK_DEL)      ch = 0x7Fu;
+    if (!ch) return;
+
+    uint8_t next = (uint8_t)((s_typeHead + 1u) % TYPE_QUEUE);
+    if (next == s_typeTail) return;            /* full: drop the newest, as the BBC does */
+    s_typed[s_typeHead] = ch;
+    s_typeHead = next;
+}
+
+uint8_t RevsInput::typedChar()
+{
+    if (s_typeTail == s_typeHead) return 0;
+    uint8_t ch = s_typed[s_typeTail];
+    s_typeTail = (uint8_t)((s_typeTail + 1u) % TYPE_QUEUE);
+    return ch;
+}
+
+void RevsInput::flushTyped()
+{
+    s_typeTail = s_typeHead;
+}
+
+
 static uint32_t keyboardHandler()
 {
     uint8_t sdr = *ciaasdrPointer;
@@ -259,6 +325,7 @@ static uint32_t keyboardHandler()
         if (raw == RK_SPACE) g_spaceEdges++;
         g_keyLatch[raw]   = 1u;
         g_keyLatchAt[raw] = g_vbiCount;
+        typeQueuePush(raw);                         /* ...and as a TYPED character */
     }
     g_keyDown[raw] = down ? 1u : 0u;
     g_keyEvents++;
@@ -503,11 +570,16 @@ extern "C" void revs_input_tap_test(void)
     if ((uint16_t)(g_vbiCount - s_lastTap) < TAP_PERIOD_FIELDS) return;
     s_lastTap = g_vbiCount;
 
-    const uint8_t raw = (s_next & 1u) ? (uint8_t)RK_SPACE : (uint8_t)RK_1;
+    /* '1', '1', RETURN, SPACE.  One cycle answers a MENU (a row key, then SPACE) and also
+       fills a two-digit wing FIELD (two characters, then RETURN), so one script drives both
+       kinds of front-end page and the run reaches the race through the pits. */
+    static const uint8_t kSeq[4] = { RK_1, RK_1, RK_RETURN, RK_SPACE };
+    const uint8_t raw = kSeq[s_next & 3u];
     s_next++;
     /* EXACTLY the CIA handler's down-edge branch, and deliberately nothing else. */
     g_keyLatch[raw]   = 1u;
     g_keyLatchAt[raw] = g_vbiCount;
+    typeQueuePush(raw);              /* ...and its TYPED half, which is what a field reads */
     g_tapInjected++;
 }
 #endif

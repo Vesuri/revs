@@ -180,12 +180,15 @@ static const AutoStep s_script[] = {
  *            —     ENTER NAME OF DRIVER (console_io)     -> no key: see below
  *            —     WING SETTINGS, rear then front        -> no key: see below
  *
- * ⚠ THE TWO LINE-EDITOR PROMPTS NEED NO KEYS HERE, and that is a property of the PORT, not of
- * the game: both read through OSRDCH, and Platform::rdch() returns CR — an immediate
- * end-of-line.  The name comes out empty and the wings take the validator's default.  On the
- * real BBC those same prompts had to be typed, which is why the reference loop grew answerName()
- * and answerNumber() and this script did not.  If rdch() ever starts returning real characters,
- * this script wedges at the name prompt and that is the first place to look.
+ * ⚠ THE TWO LINE-EDITOR PROMPTS NEED NO KEYS HERE, and that is a property of this BUILD: both
+ * read through OSRDCH, and under REVS_AUTORUN_BUILD rdch() answers CR — an immediate end-of-line.
+ * The name comes out empty and the wings take the validator's default.  On the real BBC those
+ * same prompts had to be typed, which is why the reference loop grew answerName() and
+ * answerNumber() and this script did not.
+ * ⚠⚠ The Amiga backend's rdch() DOES return real characters for an ordinary build
+ * (docs/controls.md §Typing), and it BLOCKS.  The instant answer is kept for autorun builds
+ * precisely so this script cannot wedge at the name prompt; if it ever does wedge there, the
+ * REVS_AUTORUN_BUILD guard in PlatformAmiga::rdch() is the first place to look.
  *
  * The result is $5F3B = $4 rather than practice's $FF — measured on a real BBC, and the cheapest
  * single check that this script took the branch it thinks it did.
