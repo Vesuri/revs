@@ -2,6 +2,7 @@
 #include "autorun.h"
 #if !defined(REVS_PLATFORM_AMIGA)
 #include <cstdlib>
+#include <cstdio>
 #endif
 
 /* The game's own state, for AutoStep::until — a scripted key that waits on a PROBABILISTIC
@@ -68,7 +69,100 @@ struct AutoStep {
   #define AUTORUN_HOLD_THROTTLE 0
 #endif
 
-#if defined(REVS_COMPETITION)
+#if defined(REVS_RACE_PROPER)
+
+/* ⭐⭐ STRAIGHT TO THE RACE PROPER — the only script that reaches session_is_race = $80.
+ *
+ * Why it exists: REVS_COMPETITION below stops in QUALIFYING.  front_end_menus' championship
+ * cycle runs one qualifying session per car and only then lays the grid and races, so a
+ * competition build sits in a timed practice session with session_is_race = $28 and every
+ * `session_is_race & $80` arm in the engine stays unexecuted.  reset_driving_variables' race
+ * arm ($18A5-$18BB), update_lap_timers' race arm, draw_starting_lights, spin_car_out's
+ * race-only gate and race_position_offset are all in that set — and `determinism`,
+ * `determinism-drive` and `determinism-crash` are every one of them a PRACTICE trajectory,
+ * which is why the race arms were gated by nothing at all.
+ *
+ * ⭐ THE WALK NEEDS EXACTLY ONE QUALIFYING RUN, not twenty.  $6462's second question is
+ * `1 ENTER ANOTHER DRIVER / 2 START RACE`; answering 2 makes the car just qualified the
+ * human/computer boundary (human_car_first = $13) and drops straight through to the grid.
+ * So the cost of reaching the race is ONE qualifying session, and that session ends on the
+ * clock rather than on driving: tick_race_timers advances the player's clock on every frame
+ * the lights are out, whatever the car is doing, so a parked qualifying run still hits the
+ * 4-minute deadline (the shortest qualify_minutes_tbl entry) and ends itself.  MEASURED on
+ * the host: the deadline lands around frame 12000 and the menu is up by 14000.
+ *
+ * ⚠ Holding KEY_2 across the whole qualifying session is deliberate and it is safe: the
+ * driving loop polls S/A/TAB/Q/T/L/; and never -50, so the key is invisible until
+ * menu_wait_key finally asks for it.  That is what makes this step self-timing — it expires
+ * on being ANSWERED, not on a frame count nobody can predict.
+ * ⚠ It is the ONE step in any script with `polls` disabled, and it has to be: `polls` is a
+ * uint16_t, and 65535 answered polls is fewer frames than the 4-minute deadline takes, so an
+ * escape hatch that fits in the field would fire BEFORE the menu it is waiting for.  What
+ * bounds it instead is the GAME: qualifying ends on its own clock, which tick_race_timers
+ * advances whatever the car does, so the menu this step is waiting for always arrives.  That
+ * is the whole argument — there is no timeout underneath it.  ⚠⚠ Do not copy the disabled
+ * hatch to the steps after it: a front-end key wait spins WITHOUT advancing the frame
+ * counter, so an unanswered hit-counted step there hangs the process outright, and neither
+ * REVS_SCREEN_FRAME nor REVS_QUIT_AFTER_DUMP can end it (measured — a 3-minute 99% spin).
+ */
+static const AutoStep s_script[] = {
+    {KEY_2,     600, 2}, /* 1 PRACTICE / 2 COMPETITION -> COMPETITION                    */
+    {KEY_NONE,  4,   0},
+    {KEY_SPACE, 600, 2},
+    {KEY_NONE,  4,   0},
+    {KEY_1,     600, 2}, /* SELECT THE CLASS OF RACE -> Novice                           */
+    {KEY_NONE,  4,   0},
+    {KEY_SPACE, 600, 2},
+    {KEY_NONE,  4,   0},
+    {KEY_1,     600, 2}, /* DURATION OF QUALIFYING LAPS -> 4 mins, the shortest           */
+    {KEY_NONE,  4,   0},
+    {KEY_SPACE, 600, 2},
+    {KEY_NONE,  4,   0},
+    /* ...the driver name and the two wing settings answer themselves through rdch().  Then
+       the pits page, and the QUALIFYING session runs until its own clock ends it. */
+    {KEY_SPACE, 900, 2},
+    {KEY_NONE,  4,   0},
+    /* Held right through qualifying; answered the moment $6466's menu comes up. */
+    {KEY_2,     0,      2}, /* 1 ENTER ANOTHER DRIVER / 2 START RACE -> START RACE        */
+    {KEY_NONE,  4,   0},
+
+    /* ⭐⭐ EVERY DISMISS PAGE FROM HERE COSTS *TWO* SPACE STEPS, because a SCRIPT holds keys
+       in a way a player does not.  wait_dismiss spins while SPACE is DOWN ($34D9) and only
+       then waits for it to come down again ($34E0), so a step that is still holding SPACE
+       when the page opens satisfies only the up-wait; the second step is the press that
+       actually dismisses.  One step per page leaves the page waiting for a key the script
+       has already moved past — which is how this chain ran out three separate times.
+       ⚠⚠ This is a fact about the SCRIPT, not about playing the game.  A human needs one
+       press per page, and the port needing two is a REPORTED DEFECT, not this contract —
+       docs/controls.md §The double-press.  Do not cite these paired steps as evidence that
+       the double-press is faithful: they exist because the script never lets go on its own.
+       ⚠⚠ And a wrong chain here cannot be diagnosed from a memory dump: wait_dismiss paints
+       its prompt and then spins on the keyboard WITHOUT rendering a frame (faithfully — the
+       6502 does the same), so the frame counter stops dead and REVS_SCREEN_FRAME never
+       arrives.  A run that looks slow is a run that is stopped.  REVS_AUTORUN_TRACE is the
+       instrument: it names the step and the key codes the page really asked for. */
+    {KEY_SPACE, 65535, 2},  /* $6466's confirm — menu_wait_key takes SPACE straight away    */
+    {KEY_NONE,  4,   0},
+    {KEY_SPACE, 65535, 2},  /* the class announcement ($64A8): seen, then released          */
+    {KEY_NONE,  4,   0},
+    {KEY_SPACE, 65535, 2},  /* ...and dismissed                                             */
+    {KEY_NONE,  4,   0},
+    {KEY_1,     65535, 2},  /* NUMBER OF LAPS ($64D7) -> 5, the shortest                     */
+    {KEY_NONE,  4,   0},
+    {KEY_SPACE, 65535, 2},  /* the laps confirm — a row, then a SPACE                        */
+    {KEY_NONE,  4,   0},
+    {KEY_SPACE, 65535, 2},  /* prompt_driver_ready ($64F8): seen, then released              */
+    {KEY_NONE,  4,   0},
+    {KEY_SPACE, 65535, 2},  /* ...and dismissed — the RACE PROPER begins                     */
+    {KEY_NONE,  4,   0},
+
+    {KEY_T,     400, 0, MEM_engine_running}, /* held until the engine CAUGHT                 */
+    {KEY_NONE,  2,   0},
+    {KEY_Q,     400, 1},    /* first gear                                                    */
+    {KEY_NONE,  2,   0},
+};
+
+#elif defined(REVS_COMPETITION)
 
 /* ⭐ STRAIGHT TO A COMPETITION RACE — the session that has a FIELD OF CARS in it.
  *
@@ -275,11 +369,49 @@ bool AutoRun::keyDown(uint8_t x)
     }
 
     const AutoStep& s = s_script[m_step];
+    m_seen[(uint8_t)x] = 1;
+    m_seen[(uint8_t)x] = 1;
 
     const bool expired = (s.until && mem[s.until])
                       || (s.hits  && m_hits >= s.hits)
                       || (s.polls && m_polls - m_stepAt >= s.polls);
     if (expired) {
+        /* ⭐ REVS_AUTORUN_TRACE prints every step boundary: which step ended, on what, and at
+           which poll.  A menu chain is written blind — the pages between two known ones are a
+           guess — and the failure it produces (a step expiring on its escape hatch before its
+           page was ever drawn, so the rest of the script runs off the end unanswered) looks
+           from the outside exactly like a page the game never reached.  This tells the two
+           apart in one run: an `on=hits` line is an answered key, `on=polls` is a guess that
+           was wrong. */
+#if !defined(REVS_PLATFORM_AMIGA)
+        static const int trace = std::getenv("REVS_AUTORUN_TRACE") != 0;
+        if (trace && !(s.hits && m_hits >= s.hits)) {
+            /* A step that ran out of polls is the interesting one: print the key codes the
+               game DID ask for while it was current, because the answer is almost always
+               that the page on screen wants a different key from the one being held. */
+            std::fprintf(stderr, "[autorun] step %u polled:", m_step);
+            for (unsigned i = 0; i < 256; i++)
+                if (m_seen[i]) std::fprintf(stderr, " %d", (int)(int8_t)i);
+            std::fprintf(stderr, "\n");
+        }
+        for (unsigned i = 0; i < 256; i++) m_seen[i] = 0;
+        if (trace && !(s.hits && m_hits >= s.hits)) {
+            /* A step that ran out of polls is the interesting one: print the key codes the
+               game DID ask for while it was current, because the answer is almost always
+               that the page on screen wants a different key from the one being held. */
+            std::fprintf(stderr, "[autorun] step %u polled:", m_step);
+            for (unsigned i = 0; i < 256; i++)
+                if (m_seen[i]) std::fprintf(stderr, " %d", (int)(int8_t)i);
+            std::fprintf(stderr, "\n");
+        }
+        for (unsigned i = 0; i < 256; i++) m_seen[i] = 0;
+        if (trace)
+            std::fprintf(stderr, "[autorun] step %u key=%d ended on=%s poll=%lu\n",
+                         m_step, (int)s.key,
+                         (s.until && mem[s.until]) ? "until"
+                             : (s.hits && m_hits >= s.hits) ? "hits" : "polls",
+                         (unsigned long)m_polls);
+#endif
         m_step++;
         m_stepAt = m_polls;
         m_hits   = 0;

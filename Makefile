@@ -99,6 +99,16 @@ CFLAGS   += -DREVS_COMPETITION
 CXXFLAGS += -DREVS_COMPETITION
 endif
 
+# `make RACEPROPER=1` — the only build that reaches the RACE ITSELF (session_is_race = $80).
+# COMPETITION above stops in qualifying, so every `session_is_race & $80` arm in the engine —
+# reset_driving_variables' race arm included — is unexecuted in all three determinism
+# trajectories.  src/platform/autorun.cpp has the menu chain and why one qualifying run is
+# enough.  Same `make clean` caveat.
+ifdef RACEPROPER
+CFLAGS   += -DREVS_RACE_PROPER
+CXXFLAGS += -DREVS_RACE_PROPER
+endif
+
 # `make STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` — hold the throttle past the end of the script, so
 # the host runs a MOVING car.  ⚠ Without it the script hands the keyboard back and the host
 # sits parked in gear, which is a DIFFERENT SCENE from an Amiga FPSCOUNT/PROBES build (those
@@ -354,6 +364,59 @@ determinism-crash:
 	   echo "determinism-crash: 64K byte-identical (stack scratch aside) at frame $(DET_CRASH_FRAME), car CRASHED (FUN_109b ran 7×) — PASS"; \
 	 else \
 	   echo "determinism-crash: FAIL — the crash/scan trajectory diverged"; exit 1; \
+	 fi
+
+# ⭐⭐ …AND A FOURTH TRAJECTORY, THROUGH THE RACE PROPER.  The three above are all PRACTICE
+# (session_is_race = $28), so every `session_is_race & $80` arm in the engine was covered by
+# nothing at all: reset_driving_variables' race arm ($18A5-$18BB), update_lap_timers' race arm,
+# draw_starting_lights, spin_car_out's race-only gate and race_position_offset.  This one boots
+# RACEPROPER=1, whose autorun script (src/platform/autorun.cpp) drives the championship menus,
+# sits out one 4-minute qualifying session, answers START RACE, and starts the engine on the grid
+# with session_is_race = $80 (VERIFIED — the dump reads $80 at DET_RACE_FRAME).
+# ⚠ The frame number is large because ~12000 of those frames ARE the qualifying session, which
+# ends on its own clock and cannot be shortened below the menu's 4-minute minimum.  That is also
+# why this is the one determinism target built RELEASE=1: at -O0 the run does not finish in any
+# tolerable time, and both the record and the check use the same flags, so the comparison is
+# still like for like.
+DET_RACE_REF   := tmp/determinism/ref_race.mem
+DET_RACE_RUN   := tmp/determinism/race
+DET_RACE_FRAME ?= 13000
+
+determinism-race-record:
+	@$(MAKE) --no-print-directory clean >/dev/null
+	@$(MAKE) --no-print-directory RELEASE=1 RACEPROPER=1 $(TARGET) >/dev/null
+	@mkdir -p tmp/determinism
+	@rm -f $(DET_RACE_RUN)*
+	REVS_FIXED_RNG=1 REVS_SCREEN_DUMP=$(DET_RACE_RUN) \
+	  REVS_SCREEN_FRAME=$(DET_RACE_FRAME) REVS_MEM_DUMP=1 REVS_QUIT_AFTER_DUMP=1 \
+	  ./$(TARGET) >/dev/null 2>&1
+	@cp $(DET_RACE_RUN).mem.$(DET_RACE_FRAME) $(DET_RACE_REF)
+	@$(MAKE) --no-print-directory clean >/dev/null
+	@$(MAKE) --no-print-directory $(TARGET) >/dev/null
+	@echo "determinism-race: recorded frame $(DET_RACE_FRAME) -> $(DET_RACE_REF)"
+
+determinism-race:
+	@test -f $(DET_RACE_REF) || \
+	  { echo "no reference — run 'make determinism-race-record' first"; exit 1; }
+	@$(MAKE) --no-print-directory clean >/dev/null
+	@$(MAKE) --no-print-directory RELEASE=1 RACEPROPER=1 $(TARGET) >/dev/null
+	@mkdir -p tmp/determinism
+	@rm -f $(DET_RACE_RUN)*
+	REVS_FIXED_RNG=1 REVS_SCREEN_DUMP=$(DET_RACE_RUN) \
+	  REVS_SCREEN_FRAME=$(DET_RACE_FRAME) REVS_MEM_DUMP=1 REVS_QUIT_AFTER_DUMP=1 \
+	  ./$(TARGET) >/dev/null 2>&1
+	@test -f $(DET_RACE_RUN).mem.$(DET_RACE_FRAME) || \
+	  { echo "determinism-race: FAIL — no dump: the script never reached the grid"; \
+	    $(MAKE) --no-print-directory clean >/dev/null; \
+	    $(MAKE) --no-print-directory $(TARGET) >/dev/null; exit 1; }
+	@python3 tools/det_compare.py $(DET_RACE_REF) $(DET_RACE_RUN).mem.$(DET_RACE_FRAME) \
+	  && r=PASS || r=FAIL; \
+	 $(MAKE) --no-print-directory clean >/dev/null; \
+	 $(MAKE) --no-print-directory $(TARGET) >/dev/null; \
+	 if [ "$$r" = PASS ]; then \
+	   echo "determinism-race: 64K byte-identical (stack scratch aside) at frame $(DET_RACE_FRAME), THE RACE PROPER (session_is_race = \$$80) — PASS"; \
+	 else \
+	   echo "determinism-race: FAIL — the race trajectory diverged"; exit 1; \
 	 fi
 
 # Native-twin validation harness.  Links the full object graph minus main.o (for the

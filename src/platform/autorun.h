@@ -62,6 +62,7 @@ private:
     unsigned long m_polls    = 0;   /* total answered polls */
     unsigned long m_stepAt   = 0;   /* m_polls when the current step began */
     unsigned      m_step     = 0;   /* index into the script table */
+    uint8_t       m_seen[256] = {0}; /* key codes polled during the current step (REVS_AUTORUN_TRACE) */
     unsigned      m_hits     = 0;   /* times the current step's key was answered HELD */
     /* REVS_HOLD_STEER=l|r — a steering key held alongside the throttle in the steady state.
        Resolved once, on the first poll, because the Amiga build is freestanding. */
