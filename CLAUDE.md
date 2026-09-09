@@ -309,8 +309,13 @@ a small Amiga variation **stays in `revs_native.c`** under `#ifdef REVS_PLATFORM
 decision procedure: `docs/faithfulness-seam.md`.
 
 **Amiga specifics:** the INTB_VERTB vector is taken over wholesale (the handler clears INTREQ
-itself; `WaitTOF()` is unavailable). The copper owns the display. Spin-wait points in transpiled
-code become hooks that drive one real Amiga frame. `bus_write` to BBC hardware is largely ignored.
+itself; `WaitTOF()` is unavailable). The copper owns the display. ⭐⭐ **EVERY spin-wait is a PRESENTATION POINT**, not
+just a timing one: MODE 7 screen RAM *is* the BBC's display, but this port only reaches the
+bitplanes through `platform_render_frame()`, so a wait that renders nothing freezes the display on
+the previous page — which reads as a logic bug on the *next* page, never as a missing render
+(`wait_dismiss` `$34D2` hid the whole wing page this way). ⚠ Guard it with
+`REVS_PLATFORM_AMIGA`: on the host `renderFrame()` is the GAME-FRAME counter and `tick_vbi()` IS
+the 50 Hz interrupt, so an unguarded hook moves the trajectory and `make determinism` diverges. `bus_write` to BBC hardware is largely ignored.
 ⚠⚠ The VERTB ISR does the **copper work only** and counts fields; the game's 50 Hz body is drained
 from main-loop context at the engine's own frame hook (`$1701`) and frame-wait spin (`$1760`),
 because the body DRAWS and running it in the ISR gave ~50 scene changes per painted frame.
