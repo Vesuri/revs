@@ -2218,7 +2218,7 @@ void load_section_triple_core(uint8_t destSection, uint8_t segmentByte)
 /* ⭐ WIDE-VALUE CLEANUP, mechanism (B): hypot_max ($7A/$7B) relocated out of mem[] into this
    native uint16_t.  It is the LARGER of the two ground-plane magnitudes bearing_to_section
    sorts, handed straight to point_distance_hypot — one producer, one consumer, both native, and
-   the shipping glue between them (project_object_slot, region_23d8) never touches the cells.  So
+   the glue between them (project_object_slot's twin, region_23d8) never touches the cells.  So
    the pair travels in a single 68000 word instead of the two byte stores plus the load/shift/or
    the transliteration paid on every edge point of every frame.
 
@@ -2376,10 +2376,23 @@ void car_heading_marshal_out(void)
    ⚠ The 6502-ABI boundary keeps the two representations in step, by the IN/OUT rule in
    docs/wide-value-cleanup.md: a shim whose core CONSUMES the bearing marshals the cells in, one
    whose core PRODUCES it unconditionally marshals them out, and one that produces it only
-   CONDITIONALLY does both.  The shipping reader is the reason this pair needs the OUT at all:
-   project_object_slot, the car projector at $2A5F, is transliterated, calls the native bearing_to_section()
-   shim and then reads bearing_lo/bearing_hi into object_bearing ($0380/$0398).  Because that path
-   races on Silverstone, `make determinism` genuinely gates it. */
+   CONDITIONALLY does both.
+
+   ⭐ CORRECTED 2026-09-09 — THERE IS NO LONGER A TRANSLITERATED READER OF THIS PAIR.  This
+   block used to name project_object_slot ($2A5F), the car projector, as the shipping reader that
+   forced the OUT; it became twin #172 on 2026-09-02 and files the angle with
+   object_bearing_word_set(bearing_v), never touching the cells.  Its three callers are all in
+   place_car_world_coords' queue tail, which is itself native and calls
+   project_object_slot_core.  Nothing in revs_gen.c outside a __t6502 oracle names bearing_lo or
+   bearing_hi, and revs_track_hooks.c names them nowhere at all.
+
+   So what the OUT still serves is the DIFFERENTIALS, not the engine: `make validate` compares
+   full mem[] against a transliterated oracle that does write the cells, and `make determinism`
+   byte-compares all 64 KB against a recorded run.  ⚠ That is not the same as being free to
+   delete — the publish in race_main_loop_core's phase 5 is the one that keeps mem[$8A/$8B] from
+   going stale for a frame, and determinism sees exactly that as one diverging byte.  Removing it
+   means moving the whole producer/consumer chain core-to-core and re-recording the baseline; it is
+   a representation change, not a cleanup, and it is tracked in docs/wide-value-cleanup.md. */
 static uint16_t bearing_v;
 
 void bearing_marshal_in(void)
@@ -14628,11 +14641,16 @@ void step_delta_halve_core(void)
    object_coord pair at $09FD/$0AFD that place_car_world_coords has just filled; $F4 and $FA
    select the two neighbours it stages.  $2A5D is nothing but `LDX #$FD` falling into $2A5F.
 
-   ⭐ THIS IS THE LAST SHIPPING READER of the relocated bearing_v, which is why the shim below
-   still marshals bearing / hypot_max / hypot_min back out to mem[]: the transliterated oracle
-   reaches them through the bearing_to_section SHIM, so the twin has to publish what the 6502
-   would have left in $78-$7B and $8A/$8B (docs/wide-value-cleanup.md, the publish-don't-blunt
-   gate).  Nothing else in the engine reads those cells any more.
+   ⭐ THE SHIM BELOW IS ORACLE-ONLY, and so is its marshalling.  It used to be called the last
+   shipping reader of the relocated bearing_v; it is not a reader at all — the core files the
+   angle with object_bearing_word_set(bearing_v) — and since place_car_world_coords went native
+   its three call sites all reach project_object_slot_core directly, so nothing in the shipping
+   build calls the plain name.  ⭐ MEASURED 2026-09-09: `m68k-amiga-elf-objdump -t out/Revs.elf`
+   lists project_object_slot_core and NEITHER shim, and zero __t6502 symbols in the whole binary —
+   --gc-sections drops every oracle, so this marshalling costs the Amiga nothing.
+   It stays because `make validate` needs it: the transliterated oracle reaches $78-$7B and
+   $8A/$8B through the bearing_to_section SHIM, so the twin has to publish what the 6502 would
+   have left there (docs/wide-value-cleanup.md, the publish-don't-blunt gate).
 
    ⚠ note_object_contact's exit is DEAD here — $2A73's project_point opens `LDY #0 / LDA`, so
    its entry C is not consumed and the twin passes 0.
