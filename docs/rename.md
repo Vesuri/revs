@@ -24,22 +24,6 @@ what it computes.  Nothing to do there.
 
 ---
 
-## The driving model's fifteen state elements — what each is PHYSICALLY
-
-Element **8** is settled (`car_lateral_speed`, measured 2026-09-08) and **9** (`car_speed`), **2**
-(the angular rate) and **3/4/5** (the rates of 0/1/2) were already `[DERIVED]`.  That leaves
-**0/1** (the same velocity vector in world axes, if element 8's rotation reading generalises),
-**6/7**, **$0A..$0D** (per-axle, written by `check_wheel_slip` and halved twice a frame by
-`damp_and_derive_loads`) and **14** (what `model_integrate_element` adds in).
-
-⭐ **Element 8 settled in one run and the recipe generalises**: `--peek` the pair on the reference
-loop over a plain `--drive` and a `--drive --hold-steer=left`, and read the STRAIGHT phase, not the
-tail — a quantity that is identically `$0000` while the car runs straight and large the moment the
-wheel goes over is a lateral one, and one that tracks `car_speed` is longitudinal.  ⚠ Read only the
-frames before the car leaves the track: after the reset every element is wild and the comparison
-inverts.
-
-
 ## `drive_state` (`$002D`) — three values written, and only the `>= 2` test is understood
 
 0 is normal driving and `>= 2` is "not under power" (elements 5..7 of `model_state` are zeroed and

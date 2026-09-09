@@ -462,10 +462,11 @@ void car_angle_marshal_out(void);
    so a whole-array marshal there would cost more traffic than the relocation saves.  The
    whole-array pair is for full_track_scan_rebuild, which walks the field core-to-core. */
 /* ⭐ THE DRIVING MODEL'S STATE VECTOR, relocated out of the $62D0/$62E0 plane split.  Fifteen
-   16-bit elements: 0/1/2 the body angles and the frame's heading step (0..2 carry a further
-   8-bit fraction in mem[MODEL_STATE_FRAC], which stays in mem[]), 3/4/5 their rates, 6/7 the
-   axle loads, 8 the hand-integrated accumulator, 9 the car's signed speed, $0A..$0D the per-axle
-   slip cluster and 14 the per-frame increment.  Marshalled WHOLE at the boundary shims: no
+   16-bit elements: 0/1 the car's VELOCITY IN WORLD AXES and 2 the frame's heading step (0..2
+   carry a further 8-bit fraction in mem[MODEL_STATE_FRAC], which stays in mem[]), 3/4/5 their
+   rates, 6/7 the same acceleration in the CAR'S OWN axes (lateral, longitudinal), 8 the
+   hand-integrated lateral accumulator, 9 the car's signed speed, $0A..$0D two PER-AXLE pairs
+   (front = +0, rear = +1) and 14 the per-frame increment.  Marshalled WHOLE at the boundary shims: no
    writer owns a known subset, and a shim entered once a frame can afford 30 bytes.
    ⚠ Two shims import WITHOUT publishing (dial_needle_angle, draw_dash_needles): they read the
    vector to draw the needles and they PLOT, so with a fixture-random plot pointer a line can
@@ -476,10 +477,24 @@ void model_state_marshal_out(void);
 
 /* The named elements, so a site reads as the quantity rather than as an offset.  Every name here
    already exists in mem.h as a lo/hi pair; symbols.csv carries the evidence for each. */
+/* ⭐ [MEASURED 2026-09-09] 0/1 and 8/9 are the SAME velocity vector in two frames: |(0,1)| ==
+   |(8,9)| frame for frame, and (0,1)'s direction is car_heading exactly while the car runs
+   straight and lags it while the car slides.  6/7 is that vector's derivative in the car's axes
+   — element 6 is identically zero on a straight — and rotate_state_6_into_3 turns it into 3/4.
+   symbols.csv (model_state_lo) carries the runs. */
+#define MS_VEL_WORLD_X   0u    /* velocity along view_origin component 0 */
+#define MS_VEL_WORLD_Z   1u    /* ...and along component 2 — the pair integrate_car_position moves
+                                  the camera by, and the pair rotate_state_0_into_8 resolves */
 #define MS_HEADING_STEP  2u    /* heading_step  — the frame's heading increment */
-#define MS_LATERAL_SPEED         8u    /* car_lateral_speed   — the hand-integrated accumulator */
-#define MS_SPEED         9u    /* car_speed     — the car's SIGNED 16-bit speed */
-#define MS_SLIP         10u    /* slip_magnitude, and the base of the per-axle slip cluster */
+#define MS_RATE_BASE     3u    /* 3/4/5 are the rates of 0/1/2 (integrate_state_rates) */
+#define MS_LOAD_LATERAL  6u    /* the acceleration/load pair in the CAR'S axes: across the car... */
+#define MS_LOAD_LONG     7u    /* ...and along it; wheel_load is this element's high byte */
+#define MS_LATERAL_SPEED 8u    /* car_lateral_speed — the hand-integrated accumulator */
+#define MS_SPEED         9u    /* car_speed — the car's SIGNED 16-bit speed */
+#define MS_SLIP         10u    /* slip_magnitude, and the base of the per-axle slip cluster:
+                                  check_wheel_slip(axle) writes MS_SLIP + axle and MS_SLIP_REF +
+                                  axle, axle 0 = FRONT and 1 = REAR (the driven one) */
+#define MS_SLIP_REF     12u    /* the second, reference slip term — cleared on the declined arm */
 #define MS_INCREMENT    14u    /* the per-frame increment model_integrate_element adds */
 
 /* Where the 6502 genuinely handles ONE LANE of an element — a sign test or a magnitude taken from

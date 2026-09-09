@@ -4158,7 +4158,15 @@ void view_origin_marshal_out(void)
    limits, the engine, the two axles' slip sound with two steering rotations between them, the
    load terms, then — past the off-power gate — drag, a second rotation, the rate integrator,
    the heading integrator and the camera.  ⚠ Every name is [INFERRED] from what the routine
-   COMPUTES; what the fifteen state elements MEAN physically is still open (docs/rename.md).
+   COMPUTES; and what the fifteen state elements MEAN physically is now measured:
+
+   ⭐ [MEASURED 2026-09-09, reference loop] 0/1 is the car's velocity in WORLD axes and 8/9 the
+   same vector in the CAR'S axes (lateral, forward) — |(0,1)| == |(8,9)| frame for frame, and
+   (0,1)'s direction IS car_heading while the car runs straight and lags it while it slides.  2 is
+   the heading step and 3/4/5 the rates of 0/1/2; 6/7 is the acceleration in the car's axes, which
+   rotate_state_6_into_3 turns into the rates of 0/1 (element 6 is identically zero on a straight);
+   $0A..$0D are two PER-AXLE pairs (front + 0, rear + 1) and 14 is scratch.  The runs are in
+   disasm/symbols.csv under model_state_lo, and revs_native_seam.h names the elements.
 
    No hardware writes and no $FC00-$FEFF access in the driver itself.
    =========================================================================== */
@@ -4194,7 +4202,8 @@ CameraExit apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC)
 {
     /* $46A1 — the car's body angles, computed from where the car actually is. */
     compute_car_angles_core(posHi, posLo);
-    rotate_state_pair_core(8u, 0u, 0xC0u);   /* rotate_state_0_into_8 */
+    rotate_state_pair_core(MS_LATERAL_SPEED, MS_VEL_WORLD_X, 0xC0u);  /* rotate_state_0_into_8:
+                                                the world-axes velocity into the car's axes */
 
     /* $46AE — the accumulator's entry value, for the restore at $46DF (relocated to a wide var). */
     lateral_speed_entry_v = model_state_16[MS_LATERAL_SPEED];
@@ -4272,7 +4281,8 @@ CameraExit apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC)
     /* $4719-$4725 — the tail.  integrate_car_position is what advances car_heading_lo/hi, so
        the car has not actually moved until the second-to-last call of the chain. */
     apply_drag_terms_core();
-    rotate_state_pair_core(3u, 6u, 0x40u);   /* rotate_state_6_into_3 */
+    rotate_state_pair_core(MS_RATE_BASE, MS_LOAD_LATERAL, 0x40u);     /* rotate_state_6_into_3:
+                                                ...and the body-axes acceleration back out */
     integrate_state_rates_core();
     integrate_car_position_core();
     /* apply_driving_model's exit A/X/Y/flags ARE update_camera_and_drive_state's (its last
@@ -7305,13 +7315,15 @@ AddFlags rotate_pair_a_by_steer_core(void)
    ---------------------------------------------------------------------------
    Three things, in order:
 
-     1. element 5 = (element 10 - element 11) * $4E/$100 — the DIFFERENCE of the two damped
-        quantities, which is the only place a difference of them is taken.
+     1. element 5 = (front slip - rear slip) * $4E/$100 — the DIFFERENCE of the two axles'
+        damped slip, which is the only place a difference of them is taken, and it is the rate of
+        element 2, the heading step.  The car turns here because its two axles slide by different
+        amounts.
      2. elements 10..13 halved TWICE, arithmetically (>> 1 with the sign preserved).  A
         per-frame decay of four: these are the model's transient terms and this is their damping.
      3. elements 6 and 7 rebuilt from the damped pairs, each as
         ((1.5 * odd) + even) * $CD/$100, doubled.  Load 7 comes from the (12, 13) pair and
-        load 6 from the (10, 11) one.
+        load 6 from the (10, 11) one — front and rear of each, so both loads mix the two axles.
 
    Finally the high byte of element 7 is copied to wheel_load, which is the one value
    update_grip_limits reads out of this routine.
@@ -7353,12 +7365,14 @@ static void damp_and_derive_loads_core(void)
 {
     uint8_t slot;
 
-    /* 1. $47F9-$4812 — element 5 = (element 10 - element 11) * $4E/$100. */
-    model_state_put(5, model_scale16((uint16_t)(model_state_get(10) - model_state_get(11)),
+    /* 1. $47F9-$4812 — element 5 (the heading step's rate) = (front slip - rear slip) * $4E/$100,
+       i.e. the two axles' DIFFERENCE is what turns the car. */
+    model_state_put(5, model_scale16((uint16_t)(model_state_get(MS_SLIP)
+                                                - model_state_get(MS_SLIP + 1u)),
                                      0x4Eu));
 
-    /* 2. $4815-$482A — elements 10..13 halved arithmetically, twice. */
-    for (slot = 10; slot <= 13; slot++) {
+    /* 2. $4815-$482A — the two per-axle pairs halved arithmetically, twice. */
+    for (slot = MS_SLIP; slot <= MS_SLIP_REF + 1u; slot++) {
         int16_t e = (int16_t)model_state_get(slot);
         e = (int16_t)(e >> 1);
         e = (int16_t)(e >> 1);
@@ -7375,7 +7389,7 @@ static void damp_and_derive_loads_core(void)
     }
 
     /* $4866-$4869 — the one value update_grip_limits reads out of here. */
-    wheel_load = (uint8_t)(model_state_16[7] >> 8);
+    wheel_load = (uint8_t)(model_state_16[MS_LOAD_LONG] >> 8);
 }
 
 /* ---------------------------------------------------------------------------
@@ -7792,13 +7806,13 @@ static void check_wheel_slip_core(uint8_t axle)
            own magnitude.  ⚠ BOTH indices are absolute 12 here, not 12 + axle — and it provably
            makes no difference: this arm needs pedal_mode == 1 AND X != 1, and X is 0 or 1, so X
            is 0 and `+ 12` IS `+ 12 + axle` (the absolute operands are the 6502 saving bytes). */
-        model_state_16[12] = 0u;
+        model_state_16[MS_SLIP_REF] = 0u;
         uint8_t hi10 = ms_hi(MS_SLIP);
         ref = (uint8_t)((hi10 & 0x80u) ? (0u - hi10) : hi10);   /* |element 10 high| */
     } else {
         store_slip_clamped_off_throttle_core(sr.hi); /* $4ACF — consumes derive's hi : math_lo */
         /* $4AD2-$4AEB — max + min/2 over the two elements' magnitudes (the cheap hypotenuse). */
-        uint8_t m12 = ms_hi((uint8_t)(12 + axle));
+        uint8_t m12 = ms_hi((uint8_t)(MS_SLIP_REF + axle));
         m12 = (uint8_t)((m12 & 0x80u) ? (0u - m12) : m12);
         uint8_t m10 = ms_hi((uint8_t)(MS_SLIP + axle));
         m10 = (uint8_t)((m10 & 0x80u) ? (0u - m10) : m10);
@@ -7823,7 +7837,7 @@ static void check_wheel_slip_core(uint8_t axle)
    --------------------------------------------------------------------------- */
 static void clamp_slip_to_grip_core(uint8_t axle)
 {
-    model_state_16[12 + axle] = 0u;                             /* $4AF7-$4AFC — both lanes */
+    model_state_16[MS_SLIP_REF + axle] = 0u;                     /* $4AF7-$4AFC — both lanes */
 
     slip_magnitude_core(8);                                     /* $4AFF-$4B01 — |car_lateral_speed| */
     mem[SLIP_SIGN] = (uint8_t)(ms_hi(MS_LATERAL_SPEED) ^ 0x80u);        /* $4B04-$4B09 */
