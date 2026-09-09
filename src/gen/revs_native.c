@@ -82,9 +82,19 @@
 #define SMC_HORIZON_CMP        0x4F54u  /* update_horizon_band: CMP #imm — the ceiling */
 #define SMC_HORIZON_CLAMP      0x4F58u  /* ...and LDA #imm — the value it clamps down to */
 
-/* ⭐ CELLS THAT HAD NO NAME, named here for the tenant that uses them.
-   Queued in docs/rename.md for a symbols.csv row. */
-#define ULA_PALETTE_BAND4      0x347Cu  /* the four ULA palette bytes for band 4 (the dashboard) */
+/* The four ULA palette tables irq1v_band_schedule writes, one per raster band.  They are
+   CONTIGUOUS — $3458 and $3468 are 16 bytes each, $3478 and $347C four each, together
+   $3458-$347F — and that is what fixes which band owns which, rather than a plausible reading
+   of the dispatch.  Rows in disasm/symbols.csv; a `table` row is not exposed in mem.h, so the
+   name lives here and the evidence lives there. */
+#define BAND2_PALETTE          0x3458u  /* the horizon band: black / blue / white / green */
+#define BAND0_PALETTE          0x3468u  /* band 0 */
+#define BAND3_PALETTE          0x3478u  /* the track band: logical colour 1 becomes red */
+#define BAND4_PALETTE          0x347Cu  /* the dashboard band — and its tail runs the game body */
+
+/* ⭐ MODE 7 SCREEN POSITIONS, named here for the tenant that writes them.  These are positions
+   in the teletext page, not variables, so they get no symbols.csv row — there is no precedent
+   for naming a screen cell and it would be noise. */
 #define MENU_ROW_ATTR          0x7E85u  /* MODE 7 page: the menu rows' attribute cell, +$50/row */
 #define MENU_CURSOR_CELL       0x7FC5u  /* MODE 7 page: the "nothing chosen yet" marker cell */
 /* tick_wheel_spin XORs five runs of frame-buffer cells to animate the wheels. */
@@ -437,7 +447,7 @@ void irq1v_band_schedule(void)
 
     case 0:     /* the two blanked text rows at the top, in MODE 4 */
         bbc_ula_control_write(BBC_ULA_MODE4);
-        ula_palette_table(0x3468, 15);
+        ula_palette_table(BAND0_PALETTE, 15);
         latch = 0x0FC4;
         break;
 
@@ -475,19 +485,19 @@ void irq1v_band_schedule(void)
     }   /* fall through — zero-height band 2 */
 
     case 2:     /* the horizon: black / blue / white / green */
-        ula_palette_table(0x3458, 15);
+        ula_palette_table(BAND2_PALETTE, 15);
         latch = band2_duration_v;
         if ((band2_duration_v >> 8) != 0)
             break;
         /* fall through — zero-height band 3 */
 
     case 3:     /* the track: colour 1 becomes red */
-        ula_palette_table(0x3478, 3);
+        ula_palette_table(BAND3_PALETTE, 3);
         latch = 0x1E00;
         break;
 
     default:    /* band 4 (and anything above 3): the dashboard, and then the GAME RUNS */
-        ula_palette_table(ULA_PALETTE_BAND4, 3);
+        ula_palette_table(BAND4_PALETTE, 3);
         irq_band_state = 0xFF;     /* the tail's INC wraps it to 0 */
 
         /* tick_wheel_spin is an ordinary JSR target, so it is entered with whatever the
@@ -500,7 +510,7 @@ void irq1v_band_schedule(void)
            same harness catching a dropped call at once) — the body reloads all of them
            before use.  Kept anyway: it costs five stores per FIELD, and "the callee does
            not read it today" is a claim about a 400-routine subtree. */
-        cpu.A = mem[ULA_PALETTE_BAND4]; cpu.X = 0xFF;
+        cpu.A = mem[BAND4_PALETTE]; cpu.X = 0xFF;
         cpu.N = 1; cpu.Z = 0; cpu.C = 1;
 
         PROBE_PHASE(PROBE_PHASE_BODYARM);
