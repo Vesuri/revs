@@ -686,11 +686,28 @@ void irq1v_band_schedule(void)
 #define OP_RTS              0x60u
 #define OP_CPX_IMM          0xE0u
 
+/* The two unrolled cell chains (disasm/symbols.csv: view_cell_chain_a / _b / _b_mid) and the
+   shape of one unit: 17 bytes, with the store's opcode fifteen in.  `func` rows get no mem.h
+   name, so the names live here and the evidence lives in the csv. */
+#define VIEW_CELL_CHAIN_A      0x7C00u
+#define VIEW_CELL_CHAIN_B      0x7D56u
+#define VIEW_CELL_CHAIN_B_MID  0x7E00u   /* = VIEW_CELL_CHAIN_B + 10 units; a JSR target */
+#define VIEW_UNIT_STRIDE       0x11u
+#define VIEW_UNIT_OPCODE_OFF   0x0Fu
+
 /* The forty unit addresses, in the order the chain runs them.  Chain A is sixteen 17-byte
-   units from $7C00 (cells 0-15); its tail `JMP $7D56` makes chain B's twenty-four (cells
-   16-39) part of the same pass. */
-#define VIEW_UNIT_ADDR(i)  ((uint16_t)((i) < 16 ? 0x7C00 + 0x11 * (i)          \
-                                                : 0x7D56 + 0x11 * ((i) - 16)))
+   units (cells 0-15); its tail `JMP $7D56` makes chain B's twenty-four (cells 16-39) part
+   of the same pass. */
+#define VIEW_UNIT_ADDR(i)  ((uint16_t)((i) < 16                                          \
+        ? VIEW_CELL_CHAIN_A + VIEW_UNIT_STRIDE * (i)                                     \
+        : VIEW_CELL_CHAIN_B + VIEW_UNIT_STRIDE * ((i) - 16)))
+
+/* One unit's opcode slot, as a pointer into mem[].  Every use below has a literal `n`, so
+   this folds to the same compile-time constant the bare hex was. */
+#define VIEW_UNIT_SLOT(base, n) \
+        (mem + (base) + VIEW_UNIT_OPCODE_OFF + VIEW_UNIT_STRIDE * (n))
+#define SLOT_A(n)  VIEW_UNIT_SLOT(VIEW_CELL_CHAIN_A, n)      /* cells 0-15  */
+#define SLOT_B(n)  VIEW_UNIT_SLOT(VIEW_CELL_CHAIN_B_MID, n)  /* cells 26-39 */
 
 /* The opcode slot of each unit, as a POINTER INTO mem[], or NULL for the eleven no writer
    can reach (page $7D).
@@ -704,15 +721,15 @@ void irq1v_band_schedule(void)
    frame.  The address form is recovered where it is wanted (once per plant) by subtracting
    `mem`, which costs nothing outside the loop. */
 static MEM_QUAL unsigned char* const g_viewSlotP[40] = {
-    mem + 0x7C0F, mem + 0x7C20, mem + 0x7C31, mem + 0x7C42,
-    mem + 0x7C53, mem + 0x7C64, mem + 0x7C75, mem + 0x7C86,
-    mem + 0x7C97, mem + 0x7CA8, mem + 0x7CB9, mem + 0x7CCA,
-    mem + 0x7CDB, mem + 0x7CEC, mem + 0x7CFD, 0,
+    SLOT_A(0), SLOT_A(1), SLOT_A(2), SLOT_A(3),
+    SLOT_A(4), SLOT_A(5), SLOT_A(6), SLOT_A(7),
+    SLOT_A(8), SLOT_A(9), SLOT_A(10), SLOT_A(11),
+    SLOT_A(12), SLOT_A(13), SLOT_A(14), 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    mem + 0x7E0F, mem + 0x7E20, mem + 0x7E31, mem + 0x7E42,
-    mem + 0x7E53, mem + 0x7E64, mem + 0x7E75, mem + 0x7E86,
-    mem + 0x7E97, mem + 0x7EA8, mem + 0x7EB9, mem + 0x7ECA,
-    mem + 0x7EDB, mem + 0x7EEC
+    SLOT_B(0), SLOT_B(1), SLOT_B(2), SLOT_B(3),
+    SLOT_B(4), SLOT_B(5), SLOT_B(6), SLOT_B(7),
+    SLOT_B(8), SLOT_B(9), SLOT_B(10), SLOT_B(11),
+    SLOT_B(12), SLOT_B(13)
 };
 
 /* The three values the chain and its drivers thread through each other — the 6502's A, X
@@ -17213,8 +17230,8 @@ static void hook_step_gen_cursor_at(uint16_t block)
     cpu.Y = mem[block];
 }
 
-void hook_step_gen_cursor_a(void) { hook_step_gen_cursor_at(0x53F8u); }
-void hook_step_gen_cursor_b(void) { hook_step_gen_cursor_at(0x53FAu); }
+void hook_step_gen_cursor_a(void) { hook_step_gen_cursor_at(MEM_gen_cursor_place_a); }
+void hook_step_gen_cursor_b(void) { hook_step_gen_cursor_at(MEM_gen_cursor_place_b); }
 
 /* $557F — the same, with the engine's segment-direction step in front. */
 static void hook_step_dir_gen_cursor_at(uint16_t block)
@@ -17223,8 +17240,8 @@ static void hook_step_dir_gen_cursor_at(uint16_t block)
     hook_step_gen_cursor_at(block);
 }
 
-void hook_step_dir_gen_cursor_a(void) { hook_step_dir_gen_cursor_at(0x53F8u); }
-void hook_step_dir_gen_cursor_b(void) { hook_step_dir_gen_cursor_at(0x53FAu); }
+void hook_step_dir_gen_cursor_a(void) { hook_step_dir_gen_cursor_at(MEM_gen_cursor_place_a); }
+void hook_step_dir_gen_cursor_b(void) { hook_step_dir_gen_cursor_at(MEM_gen_cursor_place_b); }
 
 /* $54F1 (Brands Hatch) / $54EF (Donington, Oulton, Snetterton) / $54EB (the Nurburgring) — the
    SECTION-CURSOR ADVANCE, installed over the engine's own `CLC / ADC #$03` at $12FB inside
@@ -17277,8 +17294,8 @@ static void hook_next_section_cursor_at(uint16_t block)
     cpu.Z = (uint8_t)(next == 0u);
 }
 
-void hook_next_section_cursor_a(void) { hook_next_section_cursor_at(0x53F8u); }
-void hook_next_section_cursor_b(void) { hook_next_section_cursor_at(0x53FAu); }
+void hook_next_section_cursor_a(void) { hook_next_section_cursor_at(MEM_gen_cursor_place_a); }
+void hook_next_section_cursor_b(void) { hook_next_section_cursor_at(MEM_gen_cursor_place_b); }
 
 /* $5472 — THE GENERATOR'S DIRECTION-VECTOR STORE, one 6502 body in all five circuits (only the
    self-call's target and the state-block base differ).  Reached from $55C4 (which brackets it
@@ -17672,11 +17689,11 @@ static void hook_advance_gen_place_at(uint16_t block, uint8_t scale)
     hook_gen_dir_vector_at(block, scale);       /* $5A1E — and the vector the cursor now names */
 }
 
-void hook_advance_gen_place_brands(void)  { hook_advance_gen_place_at(0x53FAu, 0x88u); }
-void hook_advance_gen_place_oulton(void)  { hook_advance_gen_place_at(0x53FAu, 0x80u); }
-void hook_advance_gen_place_snetter(void) { hook_advance_gen_place_at(0x53FAu, 0x84u); }
-void hook_advance_gen_place_doning(void)  { hook_advance_gen_place_at(0x53FCu, 0x86u); }
-void hook_advance_gen_place_nurburg(void) { hook_advance_gen_place_at(0x53FCu, 0x9Au); }
+void hook_advance_gen_place_brands(void)  { hook_advance_gen_place_at(MEM_gen_cursor_place_b, 0x88u); }
+void hook_advance_gen_place_oulton(void)  { hook_advance_gen_place_at(MEM_gen_cursor_place_b, 0x80u); }
+void hook_advance_gen_place_snetter(void) { hook_advance_gen_place_at(MEM_gen_cursor_place_b, 0x84u); }
+void hook_advance_gen_place_doning(void)  { hook_advance_gen_place_at(MEM_gen_state_heading_b, 0x86u); }
+void hook_advance_gen_place_nurburg(void) { hook_advance_gen_place_at(MEM_gen_state_heading_b, 0x9Au); }
 
 /* ===========================================================================
    THE THREE CROSS-CIRCUIT ONE-LINE HOOK BODIES (twins #227-#229)
