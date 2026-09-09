@@ -1,7 +1,13 @@
 # Wide-value cleanup — deleting 6502 byte-lane handling of 16-bit values
 
-**Status: PLAN (no code touched). User-directed campaign, currently PAUSED pending confirmation
-and the in-flight MOS-dispatcher session landing.**
+**Status: IN PROGRESS. Ten bases are relocated by mechanism (B) (see the per-base rows), with
+`mem[]` kept as the 6502-ABI mirror and `tools/marshal_audit.py` enforcing the boundary rule.
+The oracle half of that mirroring is measured FREE on the target (§ORACLE-ONLY MARSHALLING
+COSTS THE SHIPPING BUILD NOTHING) and no transliteration runs in production at all
+(`make transtrap`, nine scenarios, zero bodies entered). What is left is the nineteen shipping
+`*_marshal_*` helpers, and they are two kinds: a permanent hook seam, and a handful of twins
+talking to each other through `mem[]` — the latter is a representation change, one value at a
+time, gated by `make determinism-drive`.**
 
 A ledger, not a log. As each base/cell is converted, update its row's **Status** and delete it
 from the "Remaining" reasoning once done. Same discipline as `docs/helper-elimination-audit.md`

@@ -4075,10 +4075,21 @@ SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
    out of references to those two neighbours — docs/wide-value-cleanup.md).
 
    Relocated here to `model_state_16[15]`, with mem[] retained as the 6502-ABI mirror and the
-   whole array marshalled at the boundary shims.  One transliterated routine still READS the
-   vector — advance_player_section takes element 2's high byte ($62E2, heading_step_hi) — and a
-   reader is safe by the IN/OUT rule as long as every shim publishes on the way out; there is no
-   transliterated WRITER, which is what a relocation actually needs.
+   whole array marshalled at the boundary shims.
+
+   ⭐ NO TRANSLITERATED CODE READS OR WRITES THE VECTOR ANY MORE.  Every $62D0/$62E0 reference in
+   src/gen/revs_gen.c is inside a `__t6502` oracle body, and `make transtrap` enters no oracle
+   body in any of its nine scenarios, so the mirror is not keeping a transpiled reader alive.
+   It also costs the port nothing: `--gc-sections` links zero `__t6502` symbols into Revs.exe,
+   so a marshal that exists only to keep `make validate`'s fixture byte-exact is free on the
+   target (docs/wide-value-cleanup.md §ORACLE-ONLY MARSHALLING COSTS THE SHIPPING BUILD NOTHING).
+
+   ⚠ What DOES still read the mirror in production is a TWIN: advance_player_section_core takes
+   element 2's high byte as `heading_step_hi` ($62E2).  That is the remaining class — two native
+   routines talking to each other through mem[] — and closing it means moving producer and
+   consumer to `model_state_16` together and re-recording the determinism baselines, which is a
+   representation change, not a cleanup.  A pure reader is safe meanwhile by the IN/OUT rule, as
+   long as every shim publishes on the way out.
    =========================================================================== */
 
 uint16_t model_state_16[MODEL_STATE_N];
