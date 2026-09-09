@@ -141,6 +141,42 @@ builds per invocation.  That is deliberate: this Makefile tracks no build flag, 
 would eventually compare a DRIVE reference against a stale default binary, which is the failure
 this project has already hit twice.
 
+### ⭐⭐ …and FOUR in all, because a SESSION KIND is a trajectory too
+
+`determinism` and `determinism-drive` are both a **practice** session, and practice is only one of
+the engine's three session kinds.  `session_is_race` is `$28` in practice/qualifying and `$80` in
+the race proper, and a good deal of the engine reads it: `reset_driving_variables`' opening-message
+arm (`$18A5-$18BB`), `update_lap_timers`' race arm, `draw_starting_lights`, `spin_car_out`'s
+race-only gate and `race_position_offset`.  Two further targets cover what the practice pair
+provably cannot:
+
+```
+make determinism-crash-record / make determinism-crash   # DET_CRASH_FRAME=1500
+make determinism-race-record  / make determinism-race    # DET_RACE_FRAME=13000
+```
+
+- **`determinism-crash`** drives the car off the track and lets the reset ladder run:
+  `full_track_scan_rebuild` executes seven times, which is the only thing that gates that driver
+  and `reset_driving_variables`' PRACTICE arm.
+- **`determinism-race`** is the ONLY target that reaches `session_is_race = $80`.  It builds
+  `RACEPROPER=1`, whose autorun script answers the championship menus, sits out one qualifying
+  session and answers START RACE.  ⚠ Its frame depth is 13000 because ~12000 of those frames *are*
+  that qualifying session, which ends on its own 4-minute clock and cannot be shortened — which is
+  also why it is the one determinism target built `RELEASE=1` (at `-O0` the run does not finish in
+  a tolerable time; record and check use the same flags, so the comparison is still like for like).
+
+⚠ Neither reference is in git (`tmp/` is ignored), so **a fresh clone has to record both before
+either can fail** — and a missing reference is a hard error, not a skip.
+
+**Sabotage record (2026-09-09), `determinism-race` against `reset_driving_variables`' race arm:**
+four of five defects detected with distinct counts — `lap_completed_flag` `$01`→`$00` (1 byte),
+message token `$2B`→`$2A` (135), `$2C`→`$2D` (91), `pass_count_bcd` off by one (13).  The fifth,
+`position_swap_flag` `$01`→`$00`, is a **no change** rather than a gap: only bit 7 of that cell is
+functional and it is clear either way, and bit 0 — the one bit that differs — is consumed by the
+closing `LSR` into an exit carry its single call site discards.  The decisive check was the
+SIBLING (§FIFTEENTH): `lap_completed_flag`, written from the same `A` one instruction earlier, IS
+seen, so the gate demonstrably reaches the arm.
+
 ## ⭐⭐ …and a NINTH: a DRIVER with no fixture, and what actually gates it
 
 `transpile.py` has a second split set beside `VALIDATE_FUNCS`: **`NATIVE_FUNCS`**, for a native twin

@@ -13759,17 +13759,27 @@ void drive_other_cars(void)
    no exit state.
    ⚠ NATIVE_FUNCS, not VALIDATE_FUNCS: part 3 is full_track_scan_rebuild, whose loops end on game
    state and not on bounded inputs, so no randomised fixture can drive this routine to an exit
-   either.  `make determinism-crash` is the gate — it is that driver's only caller, so it runs
-   the same seven times there, over the PRACTICE arm.  The RACE arm ($18A5-$18BB) is gated by
-   nothing; see the NATIVE_FUNCS comment in tools/transpile.py.
+   either.  `make determinism-crash` is the gate for the PRACTICE arm — it is that driver's only
+   caller, so it runs the same seven times there.  The RACE arm ($18A5-$18BB) is gated by
+   `make determinism-race`, which is the one target that reaches session_is_race = $80
+   (RACEPROPER=1: the championship menus, one 4-minute qualifying session, then the grid).
    ⭐ SABOTAGE (2026-09-05, six defects): the gate sees this routine — car_target_speed $FF -> $FE
    and the lap_time_show_timer sentinel $DF -> $DE each diverge the 64 KB dump.  Three PASSED and
    the reason is one and the same, not a bug: the gate is an END-STATE dump at frame 1500 and
    those three cells each have a PER-FRAME writer that has long since overwritten the reset value
    — mirror_seg_state (mirrors_update draws or erases all six every frame), contact_pending ($68,
    note_object_contact decrements / process_car_contact clears it) and sign_last_index (updated at
-   $4D06 whenever a sign's bearing passes).  The sixth was the race arm's message token, expected
-   to pass because that arm never runs under STRAIGHT_TO_RACE, and it did.
+   $4D06 whenever a sign's bearing passes).  The sixth was the race arm's message token, which
+   passed because determinism-crash's trajectory never enters that arm — now covered below.
+   ⭐ SABOTAGE of the RACE arm (2026-09-09, `make determinism-race`, five defects): four
+   detected with distinct counts — lap_completed_flag $01 -> $00 (1 byte), the upper message
+   token $2B -> $2A (135), the lower $2C -> $2D (91) and pass_count_bcd off by one (13).  The
+   fifth, position_swap_flag $01 -> $00, PASSED and is a NO CHANGE, not a gap: only bit 7 of that
+   cell is functional (update_position_display BIT-tests it to redraw the two neighbouring
+   names) and it is clear in both values, while bit 0 — the only bit that differs — is
+   consumed by the closing LSR into an exit carry that its single call site ($102E) discards
+   before returning.  Its sibling lap_completed_flag, set from the same A one instruction
+   earlier, IS seen, which is what proves the gate reaches this arm at all.
    --------------------------------------------------------------------------- */
 #define CAR_SEGMENT_TBL_R   0x06E8u   /* car_segment — per-car index into the segment list */
 #define VIEW_ORIGIN_PAGE    0x6280u   /* view_origin_lo and the HUD scratch that follows it */

@@ -110,6 +110,12 @@ make determinism           # ⭐ the WHOLE-CORPUS differential: 300 frames of a 
 make determinism-drive     # ⭐ ...and the same 300 frames with the car MOVING — a DIFFERENT
                            #   trajectory, and it catches defects the parked one cannot.
                            #   RUN BOTH after a change to any driver routine
+make determinism-crash     #   ...and the RESET LADDER (car off the track, full_track_scan_rebuild
+                           #   runs 7x) — the gate on reset_driving_variables' practice arm
+make determinism-race      # ⭐ ...and THE RACE PROPER (session_is_race = $80), the ONLY target
+                           #   that reaches any `& $80` arm — every other determinism run is a
+                           #   PRACTICE session.  ⚠ 13000 frames, RELEASE=1, ~2 min: ~12000 of
+                           #   them are the qualifying session the grid is reached through
 make endian-lint           # fail if mem[] is aliased as a wide pointer
 make transtrap             # ⭐⭐ does ANY 6502 transliteration still run?  Nine scenarios
                            #   (front end, race, crash, six circuits) under TRANS_TRAP=1; a hit
