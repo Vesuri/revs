@@ -44,6 +44,7 @@
 #include "../platform/probe.h"        /* PROBE_PHASE(): the phase-29 body-arm split */
 #include "../platform/shape.h"        /* PROBE_SHAPE_DASH_UNIT(): the §7a unit counter */
 #include "../platform/revs_plot.h"    /* REVS_PLOT_*: the direct-to-bitplane run plotter */
+#include "../platform/track.h"        /* TRACK_GEN_ARGS(): the generator's two per-circuit constants */
 
 /* ---------------------------------------------------------------------------
    ⭐ THE PER-CIRCUIT HOOK SEAMS, BY NAME
@@ -17037,8 +17038,13 @@ void hook_horizon_store_only(void)
    $53FA (count $53FB, offset $53FF).  Same code, same run-length table at $5728, so one core
    takes the block base and the two shims name the halves.  ⚠ Those cells are per-circuit
    variables whose SLOT ASSIGNMENT differs between circuits — $53FA is this cursor on Donington
-   and a 24-bit coordinate accumulator on Brands Hatch — which is why they are queued in
-   docs/rename.md rather than named in symbols.csv.
+   and the Nurburgring, the generator STATE BLOCK on the other three, and a 24-bit coordinate
+   accumulator on Brands Hatch — so no address here can carry one global reading, and the core
+   takes the base as an argument for that reason and not for tidiness.  ⭐ Each address now
+   carries a symbols.csv row that DECLARES every tenancy (gen_cursor_place_a/_b,
+   gen_cursor_count_a/_b, gen_cursor_offset_a/_b, gen_state_heading_b, gen_cursor_runs), which is
+   what the docs/rename.md entry owed; the row also records the RACE-time tenant, which for
+   $53F8-$53FF is the last eight entries of sign_offset_1.
 
    The state is a (place, offset) pair walking a list of run lengths: going forward the offset
    advances until it reaches the current place's length, then the place does; going backward the
@@ -17065,7 +17071,9 @@ void hook_horizon_store_only(void)
          hook_step_dir_gen_cursor_a carries that prefix, so the three fixtures whose entry is
          $5582 (or the _b block) cannot observe it.  Checking the sibling is what tells the two
          apart; see docs/validation-harness.md §FIFTEENTH. */
-#define GEN_CURSOR_RUNS  0x5728u   /* per place: how many offsets it holds (a per-circuit table) */
+#define GEN_CURSOR_RUNS  0x5728u   /* gen_cursor_runs — per place: how many offsets it holds.
+                                      A per-circuit table, and GENERATION-time only: at race
+                                      time this page is the across-track normal ($5700). */
 
 void hook_step_gen_cursor_core(uint16_t block)
 {
@@ -17188,7 +17196,7 @@ void hook_next_section_cursor_b(void) { hook_next_section_cursor_at(0x53FAu); }
    read the position mirrored ($40 - i) because the tables only cover half a quadrant.  Then:
 
      track_dir_0[dir] = component A          track_dir_2[dir] = component B
-     $5800[dir]       = A scaled by $88      $5700[dir]       = -(B scaled by $88)
+     $5800[dir]       = A scaled by VSCALE   $5700[dir]       = -(B scaled by VSCALE)
      track_dir_1[dir] = the block's third byte (the gradient, carried straight through)
 
    The $5700/$5800 pair is the across-track normal the race reads (symbols.csv calls that its
@@ -17200,12 +17208,14 @@ void hook_next_section_cursor_b(void) { hook_next_section_cursor_at(0x53FAu); }
    below), which also means the C and V standing at each PHP are part of the contract: they come
    off the octant's compare chain, and the core returns them rather than hiding them.
 
-   ⚠ FIVE SHIMS, not two: the circuits differ in BOTH parameters.  The state block is $53FA on
-   Brands Hatch, Oulton and Snetterton and $53FC on Donington and the Nurburgring (bytes +0/+1
-   are the heading, +2 the gradient), and the gradient multiplier is a per-circuit constant —
-   $88, $80, $84, $86, $9A respectively.  That constant is the circuit's overall scale; reading
-   it off one circuit and sharing it across the others is exactly the mistake this hook seam
-   invites, and the byte differential caught it on the second circuit's first case.
+   ⚠ FIVE SHIMS, not two: the circuits differ in BOTH parameters, and both are now NAMED in
+   src/platform/track.h rather than repeated as twenty literals down here —
+   TRACK_GEN_ARGS(BRANDS) expands to the pair.  The state block (TRACK_GEN_STATE_*) is $53FA on
+   Brands Hatch, Oulton and Snetterton and $53FC on Donington and the Nurburgring, bytes +0/+1
+   the heading and +2 the gradient; the gradient multiplier (TRACK_GEN_VSCALE_*) is $88, $80,
+   $84, $86, $9A respectively and is the circuit's overall VERTICAL SCALE.  Reading that constant
+   off one circuit and sharing it is exactly the mistake this hook seam invites, and the byte
+   differential caught it on the second circuit's first case.
 
    ⚠ X IS CLOBBERED (the $5493 TAX), and the engine site that reaches $5A1B — $1289's patched
    `JSR $5A1B` — still has X live at $129C.  $55C4's own save/restore is what covers its path;
@@ -17322,11 +17332,11 @@ static void hook_gen_dir_vector_at(uint16_t block, uint8_t scale)
     cpu.V = neg.overflow;
 }
 
-void hook_gen_dir_vector_brands(void)  { hook_gen_dir_vector_at(0x53FAu, 0x88u); }
-void hook_gen_dir_vector_oulton(void)  { hook_gen_dir_vector_at(0x53FAu, 0x80u); }
-void hook_gen_dir_vector_snetter(void) { hook_gen_dir_vector_at(0x53FAu, 0x84u); }
-void hook_gen_dir_vector_doning(void)  { hook_gen_dir_vector_at(0x53FCu, 0x86u); }
-void hook_gen_dir_vector_nurburg(void) { hook_gen_dir_vector_at(0x53FCu, 0x9Au); }
+void hook_gen_dir_vector_brands(void)  { hook_gen_dir_vector_at(TRACK_GEN_ARGS(BRANDS)); }
+void hook_gen_dir_vector_oulton(void)  { hook_gen_dir_vector_at(TRACK_GEN_ARGS(OULTON)); }
+void hook_gen_dir_vector_snetter(void) { hook_gen_dir_vector_at(TRACK_GEN_ARGS(SNETTER)); }
+void hook_gen_dir_vector_doning(void)  { hook_gen_dir_vector_at(TRACK_GEN_ARGS(DONING)); }
+void hook_gen_dir_vector_nurburg(void) { hook_gen_dir_vector_at(TRACK_GEN_ARGS(NURBURG)); }
 
 /* ===========================================================================
    $55C4  hook_gen_step — ONE STEP OF THE TRACK GENERATOR  (twin #223)
@@ -17400,11 +17410,11 @@ static void hook_gen_step_at(uint16_t block, uint8_t scale)
     cpu.Z = (uint8_t)(savedX == 0u);
 }
 
-void hook_gen_step_brands(void)  { hook_gen_step_at(0x53FAu, 0x88u); }
-void hook_gen_step_oulton(void)  { hook_gen_step_at(0x53FAu, 0x80u); }
-void hook_gen_step_snetter(void) { hook_gen_step_at(0x53FAu, 0x84u); }
-void hook_gen_step_doning(void)  { hook_gen_step_at(0x53FCu, 0x86u); }
-void hook_gen_step_nurburg(void) { hook_gen_step_at(0x53FCu, 0x9Au); }   /* at $55BD */
+void hook_gen_step_brands(void)  { hook_gen_step_at(TRACK_GEN_ARGS(BRANDS)); }
+void hook_gen_step_oulton(void)  { hook_gen_step_at(TRACK_GEN_ARGS(OULTON)); }
+void hook_gen_step_snetter(void) { hook_gen_step_at(TRACK_GEN_ARGS(SNETTER)); }
+void hook_gen_step_doning(void)  { hook_gen_step_at(TRACK_GEN_ARGS(DONING)); }
+void hook_gen_step_nurburg(void) { hook_gen_step_at(TRACK_GEN_ARGS(NURBURG)); }   /* at $55BD */
 
 /* ===========================================================================
    $5572  hook_seg_advance — ADVANCE THE GENERATOR ONE SEGMENT, IF THIS IS A BOUNDARY (twin #224)
@@ -17437,11 +17447,11 @@ static void hook_seg_advance_at(uint16_t block, uint8_t scale)
     hook_gen_step_at(block, scale);         /* $557B — and generate it */
 }
 
-void hook_seg_advance_brands(void)  { hook_seg_advance_at(0x53FAu, 0x88u); }
-void hook_seg_advance_oulton(void)  { hook_seg_advance_at(0x53FAu, 0x80u); }
-void hook_seg_advance_snetter(void) { hook_seg_advance_at(0x53FAu, 0x84u); }
-void hook_seg_advance_doning(void)  { hook_seg_advance_at(0x53FCu, 0x86u); }
-void hook_seg_advance_nurburg(void) { hook_seg_advance_at(0x53FCu, 0x9Au); }
+void hook_seg_advance_brands(void)  { hook_seg_advance_at(TRACK_GEN_ARGS(BRANDS)); }
+void hook_seg_advance_oulton(void)  { hook_seg_advance_at(TRACK_GEN_ARGS(OULTON)); }
+void hook_seg_advance_snetter(void) { hook_seg_advance_at(TRACK_GEN_ARGS(SNETTER)); }
+void hook_seg_advance_doning(void)  { hook_seg_advance_at(TRACK_GEN_ARGS(DONING)); }
+void hook_seg_advance_nurburg(void) { hook_seg_advance_at(TRACK_GEN_ARGS(NURBURG)); }
 
 /* ===========================================================================
    $5672  hook_gen_seed — SEED THE GENERATOR AT A SECTION BOUNDARY (twin #225)
@@ -17525,11 +17535,11 @@ static void hook_gen_seed_at(uint16_t block, uint8_t scale)
     cpu.Z = (uint8_t)(cpu.A == 0u);
 }
 
-void hook_gen_seed_brands(void)  { hook_gen_seed_at(0x53FAu, 0x88u); }
-void hook_gen_seed_oulton(void)  { hook_gen_seed_at(0x53FAu, 0x80u); }
-void hook_gen_seed_snetter(void) { hook_gen_seed_at(0x53FAu, 0x84u); }
-void hook_gen_seed_doning(void)  { hook_gen_seed_at(0x53FCu, 0x86u); }
-void hook_gen_seed_nurburg(void) { hook_gen_seed_at(0x53FCu, 0x9Au); }
+void hook_gen_seed_brands(void)  { hook_gen_seed_at(TRACK_GEN_ARGS(BRANDS)); }
+void hook_gen_seed_oulton(void)  { hook_gen_seed_at(TRACK_GEN_ARGS(OULTON)); }
+void hook_gen_seed_snetter(void) { hook_gen_seed_at(TRACK_GEN_ARGS(SNETTER)); }
+void hook_gen_seed_doning(void)  { hook_gen_seed_at(TRACK_GEN_ARGS(DONING)); }
+void hook_gen_seed_nurburg(void) { hook_gen_seed_at(TRACK_GEN_ARGS(NURBURG)); }
 
 /* ===========================================================================
    $5A1B  hook_advance_gen_place — STEP THE GENERATOR'S CURSOR AND REBUILD ITS VECTOR (twin #226)

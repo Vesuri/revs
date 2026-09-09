@@ -139,6 +139,40 @@ int revs_track_install_forced(unsigned char index);
  */
 void revs_track_forget(void);
 
+/* ═══════════════════════════════════════════════════════════════════════════════════════════
+ * ⭐ THE TRACK GENERATOR'S TWO PER-CIRCUIT CONSTANTS
+ * ═══════════════════════════════════════════════════════════════════════════════════════════
+ * Four of the geometry generator's hook bodies ($5472's direction-vector store and the three
+ * steppers around it) are the SAME CODE on all five expansion circuits and differ only in two
+ * numbers.  They live here rather than as twenty literals in src/gen/revs_native.c, because
+ * reading one circuit's value and sharing it is exactly the mistake the hook seam invites — the
+ * byte differential caught it on the second circuit's first case.
+ *
+ *   STATE   the base of the generator state block: +0/+1 the running 16-bit heading, +2 the
+ *           gradient.  $53FA on Brands Hatch, Oulton and Snetterton; $53FC on Donington and the
+ *           Nurburgring.  (symbols.csv: gen_cursor_place_b $53FA, gen_state_heading_b $53FC —
+ *           both cells are multi-tenant, which is why there is no single global name.)
+ *   VSCALE  the multiplier handed to scale_by_track_gradient_tail, i.e. the circuit's overall
+ *           VERTICAL SCALE.  A bigger number is a hillier circuit; the Nurburgring's $9A against
+ *           Oulton's $80 is the whole difference between the Eifel and a Cheshire park.
+ *
+ * [DERIVED] from the five circuit bodies + `make track-patch`, 2026-09-07.
+ */
+#define TRACK_GEN_STATE_BRANDS   0x53FAu
+#define TRACK_GEN_STATE_OULTON   0x53FAu
+#define TRACK_GEN_STATE_SNETTER  0x53FAu
+#define TRACK_GEN_STATE_DONING   0x53FCu
+#define TRACK_GEN_STATE_NURBURG  0x53FCu
+
+#define TRACK_GEN_VSCALE_BRANDS  0x88u
+#define TRACK_GEN_VSCALE_OULTON  0x80u
+#define TRACK_GEN_VSCALE_SNETTER 0x84u
+#define TRACK_GEN_VSCALE_DONING  0x86u
+#define TRACK_GEN_VSCALE_NURBURG 0x9Au
+
+/* The pair, in the order every one of those four cores takes them. */
+#define TRACK_GEN_ARGS(C)  TRACK_GEN_STATE_##C, TRACK_GEN_VSCALE_##C
+
 /* Which circuit a plain build boots.  ⚠ 0 (Silverstone) until the front end has a track menu —
  * `make TRACK=n` on either backend overrides it, which is how an expansion circuit gets tested
  * before the menu exists.  An out-of-range or refused choice falls back to 0 and leaves

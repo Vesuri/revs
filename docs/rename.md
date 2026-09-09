@@ -77,40 +77,6 @@ one where it runs downhill.  The `a`/`b` split is the only thing in the pass tha
 direction, so whichever visual feature swaps between those two frames is what bit 6 vs bit 7 names.
 
 
-## The track generator's cursor blocks — `$53F8`/`$53F9`/`$53FD`, `$53FA`/`$53FB`/`$53FF`, `$5728`
-
-Found while twinning `$5582`/`$557F` (the geometry generator's cursor step, all five expansion
-circuits).  The hook walks a **(place, offset) cursor over a per-circuit run-length table**: the
-block's byte 0 is the place, byte 1 the number of places, byte 5 the offset within the current
-place, and `$5728 + place` holds how many offsets that place has.  Forward advances the offset
-until it reaches that length and then steps the place, wrapping at the count; backward retreats
-and, on underflow, steps the place back (masking bit 7 off it, wrapping onto the count) and lands
-on the previous place's *last* offset.  `track_direction` bit 7 picks the sense.
-[DERIVED] from the circuit bodies + `make track-patch`, 2026-09-07.
-
-⚠ The reason this is a queue entry and not three `symbols.csv` rows: **the slot assignment differs
-per circuit.** Brands Hatch, Oulton and Snetterton put the cursor at `$53F8`; Donington and the
-Nurburgring put it at `$53FA` — and `$53FA` on Brands Hatch is a 24-bit coordinate accumulator, so
-a single global name for either address would be wrong on two circuits.  ⇒ The rows owed are
-`var` **tenancy** notes naming both readings per address, plus one `table` row for `$5728`
-(per-circuit run lengths, indexed by place).  The twin carries a local `GEN_CURSOR_RUNS` define
-and takes the block base as an argument until those exist.
-
-## `$5472`'s per-circuit generator state block and vertical scale
-
-Found while twinning `$5472` (the geometry generator's direction-vector store, one body in all five
-expansion circuits).  Its octant sine/cosine table half is settled — `gen_octant_sin` `$57BF` /
-`gen_octant_cos` `$58BF` in `symbols.csv`, and the twin uses those names.  What is still owed:
-
-⚠⚠ `$5472`'s **other** two parameters DO differ per circuit and neither has a name: the generator
-state block is `$53FA` on Brands Hatch, Oulton and Snetterton and `$53FC` on Donington and the
-Nurburgring (+0/+1 the heading, +2 the gradient), and the gradient multiplier fed to
-`scale_by_track_gradient_tail` is a per-circuit constant — `$88`, `$80`, `$84`, `$86`, `$9A`
-respectively, i.e. the circuit's overall vertical scale.  Reading that constant off one circuit and
-sharing it is exactly the mistake the hook seam invites; the byte differential caught it on the
-second circuit's first case.  ⇒ owed: a `var` tenancy note per state-block address and a named
-per-circuit scale constant in `src/platform/track.h` rather than five literals in the twin.
-
 ## The generator's per-segment turn/climb table — `$5428`/`$5528`/`$5628`
 
 Found while twinning `$55C4` (one step of the track generator, on Brands Hatch, Donington, Oulton
