@@ -8965,8 +8965,13 @@ CameraExit update_camera_and_drive_state_core(void)
         view_pitch_delta  = (uint8_t)(a - shared_temp_76);  /* $4596-$4599 */
     }
 
-    /* $459B-$45C9 — drive_state.  spin_countdown steps -4 a frame and SATURATES to $C8; the
-       sum with drive_state picks between the three values it can take.
+    /* $459B-$45C9 — drive_state.  spin_countdown steps -4 a frame and SATURATES to $C8, and the
+       ADD's own result is kept: through a spin drive_state is the RUNNING SUM of that decaying
+       countdown, not a three-value enum.  ⭐ [MEASURED 2026-09-09, reference loop, --hold-steer=right]
+       one spin ran drive_state $10 $1B $22 $25 $24 $1F $16 $09 against spin_countdown $0F $0B $07
+       $03 $FF $FB $F7 $F3 — every step exactly countdown + previous — and landed on 1 when
+       |countdown| >= 5 sent it back through begin_spin_from_a.  So 1 is the frame a spin (re)starts,
+       and it is the one spin value below apply_driving_model's >= 2 off-power gate.
        ⚠⚠ The $45CB SMC dispatch just past this block RETURNS on an unrecognised opcode, and on
        that exit (a real, compared path — 1 fixture case in 10 randomises the SMC bytes) the
        routine's live A/X/Y/N/Z/C/V are exactly what this block leaves.  So the block builds a

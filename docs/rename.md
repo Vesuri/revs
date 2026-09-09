@@ -24,27 +24,6 @@ what it computes.  Nothing to do there.
 
 ---
 
-## `drive_state` (`$002D`) — three values written, and only the `>= 2` test is understood
-
-0 is normal driving and `>= 2` is "not under power" (elements 5..7 of `model_state` are zeroed and
-`update_slip_sound` silences sound channel 3), but the engine writes exactly three values — 0 and 1
-from `update_camera_and_drive_state`'s own arms at `$45BF`-`$45C9`, `$7F` from both that routine and
-`check_crash`'s crash arm at `$115C` — and `$4DCB` INCs it.  So 1 is a state that behaves like
-normal driving and `$7F` counts upward from a crash.
-`update_camera_and_drive_state`, `$49D2` and `apply_drag_terms` are the other readers.
-
-⭐ **Half of it is now measured** (2026-09-08, reference loop, 600 + 1500 Silverstone frames, plain
-`--drive` and `--drive --hold-steer=left`): the cell holds **0 on every one of those frames** and
-takes `$7F` once, from `check_crash` — so 0 and `$7F` are settled as "driving" and "crashed", and
-the steady state at `$45C9` is the zero-sum arm with `spin_countdown` at `$FC` exactly as
-`symbols.csv` records.  **1 is a SPIN**, not a stall or the pits: it is written only at `$45BF`,
-immediately after `begin_spin_from_a`, and `begin_spin`'s other caller is
-`update_grip_limits`' changed-surface arm.
-
-⇒ What is left is provoking one.  The changed-surface arm itself **does** fire (27 of those 600
-frames), so the remaining gate on the unprompted spin is `section_jump_history` bit 7 — settle by
-driving until that bit is set with `grip_disturbance` at 0, then `--peek=002d,0026,0028`.
-
 ## `span_cap_surface_a` (`$0034`) / `span_cap_surface_b` (`$0033`) — what distinguishes them, beyond which one gets used
 
 Both are per-scan-line surface codes `interp_edge` composes for the span it is about to walk, and
