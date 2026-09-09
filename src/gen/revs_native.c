@@ -85,8 +85,6 @@
 /* ⭐ CELLS THAT HAD NO NAME, named here for the tenant that uses them.
    Queued in docs/rename.md for a symbols.csv row. */
 #define ULA_PALETTE_BAND4      0x347Cu  /* the four ULA palette bytes for band 4 (the dashboard) */
-#define VDU_CHAR_COL           0x62CCu  /* vdu_char_emit's target column ... */
-#define VDU_CHAR_ROW           0x62CDu  /* ...and its scan line (character row * 8) */
 #define MENU_ROW_ATTR          0x7E85u  /* MODE 7 page: the menu rows' attribute cell, +$50/row */
 #define MENU_CURSOR_CELL       0x7FC5u  /* MODE 7 page: the "nothing chosen yet" marker cell */
 /* tick_wheel_spin XORs five runs of frame-buffer cells to animate the wheels. */
@@ -8287,9 +8285,6 @@ void update_slip_sound(void)
 #define CAR_SPEED_SCL  0x0150u   /* per-driver speed in the AI's units */
 #define GEAR_REV_RATIO 0x5A06u   /* TRACK FILE: revs per unit road speed, by gear_index */
 #define GEAR_TORQUE    0x5A0Du   /* TRACK FILE: the per-gear torque multiplier */
-#define WING_GRIP      0x62A8u   /* the two per-wing downforce coefficients */
-#define GRIP_LIMIT     0x62AAu   /* the two per-axle thresholds check_wheel_slip compares to */
-#define GRIP_LIMIT_ALT 0x62ACu   /* ...and the second threshold beside them */
 #define GRIP_BASE      0x4C61u   /* the constant in each axle's threshold, $35/$35 */
 #define GRIP_BASE_ALT  0x4C63u   /* ...and its changed-surface replacement, $19/$1A */
 
@@ -8581,7 +8576,7 @@ void update_grip_limits_core(void)
     for (axle = 1; axle >= 0; axle--) {
         uint8_t speed = road_speed;
         if (speed >= 0x35u) speed = 0x35u;                /* the speed term saturates */
-        uint8_t term = (uint8_t)(((unsigned)mem[WING_GRIP + axle] * speed) >> 8);
+        uint8_t term = (uint8_t)(((unsigned)mem[MEM_wing_grip_coeff + axle] * speed) >> 8);
         if (ms_hi(MS_SPEED) & 0x80u)                      /* abs8: sign from car_speed's high byte */
             term = (uint8_t)(-(int)term);
 
@@ -8589,8 +8584,8 @@ void update_grip_limits_core(void)
                        ? mem[GRIP_BASE_ALT + axle]
                        : (uint8_t)(term + mem[GRIP_BASE + axle]);
         uint8_t limit = (uint8_t)(base + loadForAxle[axle]);
-        mem[GRIP_LIMIT + axle]     = limit;               /* $4C54 */
-        mem[GRIP_LIMIT_ALT + axle] = (uint8_t)(((unsigned)limit * 0xF3u) >> 8);  /* $4C57-$4C5A */
+        mem[MEM_grip_limit + axle]     = limit;               /* $4C54 */
+        mem[MEM_grip_limit_alt + axle] = (uint8_t)(((unsigned)limit * 0xF3u) >> 8);  /* $4C57-$4C5A */
     }
 
     /* $4C46 — each axle iteration reloads Y from the ANDed surface bytes (0xFF in the both-$FF arm,
@@ -10637,7 +10632,7 @@ uint8_t vdu_char_emit_core(void)
 
     /* $50C6-$50EA — blit the eight rows BOTTOM-UP; stepping off the top of a character row
        backs plot_ptr up one MODE-5 character row ($0140 bytes) and resets the line to 7. */
-    Mode5Addr m = mode5_addr_for_cell_core(mem[VDU_CHAR_COL], mem[VDU_CHAR_ROW]);  /* column, row */
+    Mode5Addr m = mode5_addr_for_cell_core(mem[MEM_vdu_char_column], mem[MEM_vdu_char_row]);  /* column, row */
     uint8_t line = m.line;
     {
         int i;
@@ -10668,7 +10663,7 @@ uint8_t vdu_char_emit_core(void)
     }
 
     plot_ptr_marshal_out();                            /* publish $70/$71 for the 6502-ABI mirror */
-    mem[VDU_CHAR_COL] = (uint8_t)(mem[VDU_CHAR_COL] + 1);        /* $50EB — the next cell along */
+    mem[MEM_vdu_char_column] = (uint8_t)(mem[MEM_vdu_char_column] + 1);        /* $50EB — the next cell along */
     return mem[VDU_CHAR_BLOCK];                         /* $50F2 — the character comes back live */
 }
 
@@ -11060,9 +11055,9 @@ int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out)
    --------------------------------------------------------------------------- */
 uint8_t draw_gear_indicator_core(void)
 {
-    mem[VDU_CHAR_COL]   = 0x22u;                             /* $42D0 — column $22 */
+    mem[MEM_vdu_char_column]   = 0x22u;                             /* $42D0 — column $22 */
     shared_temp_77 = 0x22u;                             /* bit 7 clear: the LEFT four pixels */
-    mem[VDU_CHAR_ROW]   = 0xD7u;                             /* scan line $D7 = character row 26 */
+    mem[MEM_vdu_char_row]   = 0xD7u;                             /* scan line $D7 = character row 26 */
     uint8_t glyph  = mem[GEAR_CHAR_TBL + gear_index];  /* $42DC/$42DE — the gear's glyph */
     uint8_t block  = vdu_char_wide_core(glyph);        /* left half; returns the block byte */
     shared_temp_77 = 0xFFu;                            /* $42E4 bit 7 set: the RIGHT four pixels */
