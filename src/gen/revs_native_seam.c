@@ -438,6 +438,11 @@ void fill_edge_column_run(void)
     cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
 }
 
+/* $0DB3  mul16_by_pi — A 16-BIT ANGLE TIMES PI  (twin #47)
+   Shifts (A : math_lo) left twice, parks the high byte where mul8_accum wants it, seeds the
+   multiplier with $C9 and falls into mul8_accum.  ⭐ $C9/256 = 0.785 = pi/4 to three figures,
+   and 4 x pi/4 = pi — so what compute_car_angles gets back is its angle multiplied by pi
+   [INFERRED from the constant; the x4 and the multiply are [DERIVED]].  A is high on exit. */
 void mul16_by_pi(void)
 {
     unsigned scaled = ((((unsigned)cpu.A << 8) | math_lo) << 2) & 0xFFFFu;

@@ -1586,22 +1586,8 @@ void race_main_loop_core(RestartDepth depth)
 }
 
 
-/* $24F6  build_track_geometry — THE FRAME'S ROAD GEOMETRY  (twin #4)
-   The view pipeline's FIRST producer, and the fifth call of the frame.  It turns the track
-   ahead into the two 40-point edge lists everything downstream reads: road_edge_start emits
-   the nearest point of each side, then one road_edge_walk per side climbs the section list
-   into the distance, and the three lines at the end record where the road's HORIZON came out
-   — its scan line (horizon_extent), which point it was (horizon_index), and how wide the road
-   still looks there (horizon_half_width).
-
-   The routine itself is 84 bytes of driver — every edge point is projected by the walk — and
-   what it owns is the four SEEDS that shape both walks (the "no nearest point yet" pair and the
-   13-section subdivision floor) plus the frame's horizon record.  Pure RAM: no hardware writes,
-   no $FC00-$FEFF access.
-
-   ⚠ SELF-MODIFYING, twice, and both sites belong to the expansion circuits: $2538 and $2542
-   are rewritten by each circuit's ModifyGameCode, so the bytes below are Silverstone's and
-   the other four circuits take the hook arms.  docs/static-map.md §Open items. */
+/* The road-geometry pass — its shared arrays, its subroutines, and at the end of the section
+   the driver ($24F6) they all serve. */
 
 /* The road-geometry pass's shared arrays (symbols.csv holds the evidence for each name).
    ⭐ edge_x is an ANGLE, not a column: bearing_to_section is an arctan and emit_edge_bearing
@@ -2111,31 +2097,7 @@ uint8_t emit_edge_bearing_at_cursor_core(uint8_t sectionByte)
 }
 
 
-/* $2565  emit_edge_width_offset — THE OTHER SIDE OF THE ROAD, AND THE MARKERS  (twin #24)
-   The last thing road_edge_walk does with a point it has decided to keep, and it produces
-   three separate things out of one lookup:
-
-     1. THE OPPOSITE BOUNDARY.  The point's section byte carries feature bits; masked by the
-        bits that belong to this road side, their low three select a width EXPONENT, and
-        proj_width (the reciprocal-table mantissa project_point just left) shifted by the
-        difference is how wide the road looks HERE.  Added to — or subtracted from, depending
-        on which side and which way round the circuit — the point's own azimuth, that is
-        edge_opp_x, the angle of the far kerb.
-     2. THE STYLE.  edge_style_by_feature's entry for the same feature bits, or a flat 2 on an odd
-        section byte, becomes the point's edge_style: which surface draw_road paints there.
-     3. A CORNER MARKER, when the masked bits include either of the $18 pair and the frame has
-        fewer than three already.  Bit 0 halves the marker's offset from its edge point.
-
-   ⭐ WHAT THE TWIN CHANGES.  The width shift is a VARIABLE 16-bit shift, and the 6502 has to
-   run it as a loop of `ASL A / ROL math_hi` (or `LSR / ROR`) one place per iteration, up to
-   255 times.  The 68000 shifts a word by a register in one instruction, so the loop becomes a
-   shift and a range test — the one place in this pass where the twin does asymptotically less
-   work than the 6502 rather than the same work with less bookkeeping.
-
-   ⚠ The first THREE points of a side get no width offset at all ($2580 CMP #3): they are the
-   ones beside the car, where the perspective divide has nothing useful to say.
-   ⚠ SELF-MODIFYING at $261A: all four expansion circuits replace the horizon store pair with
-   `JMP $56AF` (`make track-patch`), so the bytes are dispatched rather than assumed. */
+/* emit_edge_width_offset's three helpers; the routine itself is at the end of this section. */
 
 /* $2596-$25A7 — proj_width shifted by `steps`, as a 16-bit value.  The 6502's loop shifts one
    place per iteration and the count is a signed byte, so a count of 16 or more shifts every
@@ -2692,6 +2654,32 @@ uint8_t seed_car_track_position_core(uint8_t x, uint8_t entropy, uint8_t *mathlo
     *mathlo_out = mathlo;
     return car_index_dec_core(x);                    /* $639C DEX mod 20 */
 }
+
+/* $2565  emit_edge_width_offset — THE OTHER SIDE OF THE ROAD, AND THE MARKERS  (twin #24)
+   The last thing road_edge_walk does with a point it has decided to keep, and it produces
+   three separate things out of one lookup:
+
+     1. THE OPPOSITE BOUNDARY.  The point's section byte carries feature bits; masked by the
+        bits that belong to this road side, their low three select a width EXPONENT, and
+        proj_width (the reciprocal-table mantissa project_point just left) shifted by the
+        difference is how wide the road looks HERE.  Added to — or subtracted from, depending
+        on which side and which way round the circuit — the point's own azimuth, that is
+        edge_opp_x, the angle of the far kerb.
+     2. THE STYLE.  edge_style_by_feature's entry for the same feature bits, or a flat 2 on an odd
+        section byte, becomes the point's edge_style: which surface draw_road paints there.
+     3. A CORNER MARKER, when the masked bits include either of the $18 pair and the frame has
+        fewer than three already.  Bit 0 halves the marker's offset from its edge point.
+
+   ⭐ WHAT THE TWIN CHANGES.  The width shift is a VARIABLE 16-bit shift, and the 6502 has to
+   run it as a loop of `ASL A / ROL math_hi` (or `LSR / ROR`) one place per iteration, up to
+   255 times.  The 68000 shifts a word by a register in one instruction, so the loop becomes a
+   shift and a range test — the one place in this pass where the twin does asymptotically less
+   work than the 6502 rather than the same work with less bookkeeping.
+
+   ⚠ The first THREE points of a side get no width offset at all ($2580 CMP #3): they are the
+   ones beside the car, where the perspective divide has nothing useful to say.
+   ⚠ SELF-MODIFYING at $261A: all four expansion circuits replace the horizon store pair with
+   `JMP $56AF` (`make track-patch`), so the bytes are dispatched rather than assumed. */
 
 /* Exit ABI of emit_edge_width_offset.  X passes through the caller's; A = the point's scan line
    (the CMP at each exit sets A to it); Y = edge_cursor; V is the width ADC's overflow when the
@@ -3335,6 +3323,23 @@ uint8_t horizon_half_width_at_core(unsigned horizonPoint)
     platform_smc_unhandled(MEM_smc_half_width_call, mem[MEM_smc_half_width_call]);
     return diff;
 }
+
+/* $24F6  build_track_geometry — THE FRAME'S ROAD GEOMETRY  (twin #4)
+   The view pipeline's FIRST producer, and the fifth call of the frame.  It turns the track
+   ahead into the two 40-point edge lists everything downstream reads: road_edge_start emits
+   the nearest point of each side, then one road_edge_walk per side climbs the section list
+   into the distance, and the three lines at the end record where the road's HORIZON came out
+   — its scan line (horizon_extent), which point it was (horizon_index), and how wide the road
+   still looks there (horizon_half_width).
+
+   The routine itself is 84 bytes of driver — every edge point is projected by the walk — and
+   what it owns is the four SEEDS that shape both walks (the "no nearest point yet" pair and the
+   13-section subdivision floor) plus the frame's horizon record.  Pure RAM: no hardware writes,
+   no $FC00-$FEFF access.
+
+   ⚠ SELF-MODIFYING, twice, and both sites belong to the expansion circuits: $2538 and $2542
+   are rewritten by each circuit's ModifyGameCode, so the bytes below are Silverstone's and
+   the other four circuits take the hook arms.  docs/static-map.md §Open items. */
 
 /* `firstPoint` per side: the cursor each walk starts from.  They are 6 and $2E = 6 + 40 — the
    same offset into each half of the 2x40 edge arrays, which is what makes the two lists
@@ -6216,12 +6221,6 @@ void mul8_accum(void)
     Mul8AccumExit e = mul8_accum_core();
     cpu.A = e.a; cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c; cpu.V = e.v;
 }
-
-/* $0DB3  mul16_by_pi — A 16-BIT ANGLE TIMES PI  (twin #47)
-   Shifts (A : math_lo) left twice, parks the high byte where mul8_accum wants it, seeds the
-   multiplier with $C9 and falls into mul8_accum.  ⭐ $C9/256 = 0.785 = pi/4 to three figures,
-   and 4 x pi/4 = pi — so what compute_car_angles gets back is its angle multiplied by pi
-   [INFERRED from the constant; the x4 and the multiply are [DERIVED]].  A KEPT shim; A is high. */
 
 /* $0E42 / $0E44  neg16_math — NEGATE (math_hi : math_lo)  (twins #48, #49)
    Two's-complement negate of the 16-bit accumulator.  ⚠ The high byte comes back in A and is
