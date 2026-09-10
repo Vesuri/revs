@@ -118,7 +118,7 @@ relocation blast radius. High count ⇒ mechanism (B) is blocked; use (A) now.
 | `bearing` | $8A/$8B | bearing_to_section output | B | **✅ B DONE** (`bearing_v`) |
 | `plot_ptr`/`plot_ptr2`/`plot_ptr3` | $70/$71, $72/$73, $8E/$8F | screen write pointers | **done** | The 6502 DEREFERENCES these cells (`($70),Y` and friends), so (B) looked blocked — but all three were relocated behind a store dispatch anyway: `plot_ptr*_v` are the live slots and the lanes stay published. ✅ No byte-lane arithmetic on the pair is left — §THE SEVEN NAMED PAIRS |
 | `point_delta`, `object_dist` | $80–$83, $55 | edge-walk scratch | — | ❌ **CLOSED — nothing left to convert.** Re-audited after the `OBJECT_COORD` pass: **(A) is already DONE** everywhere. Every one of the 40-odd `POINT_DELTA_*` sites in `revs_native.c` either composes/decomposes a `uint16_t` at the `mem[]` boundary (`project_point`, `point_delta_pack`, `$12174`/`$12295`/`$14564`) or is a genuinely **8-bit tenant** use — the span DDA reads `POINT_DELTA_HI` as `SPAN_DX`, an 8-bit delta, and `$270B` uses the +0 slot as a one-byte scratch. There is no hand-carried lane chain to widen. **(B) stays blocked** on the tenancy at §135/§1160 (`SPAN_*`, `EDGE_COLUMN`, `MUL_SRC` all alias $80-$88), and `object_dist_hi` has no low lane at all — it is an 8-bit value compared against constants, not a wide one. |
-| `nearest_edge_bearing` | $5E/$5F | edge-walk scratch | B | ⚠ **shares `$5F` with `engine_note_target`** (`CPX 0x005f` at `$0E94`, non-native `engine_sound_update`). A different TENANT, so it does not block under the EIGHTH lesson — but the relocation must leave `$5F` in `mem[]` for the sound path |
+| `nearest_edge_bearing` | $5E/$5F | edge-walk scratch | — | ❌ **NOT A WIDE VALUE — closed 2026-09-10.** It was never a lo/hi pair: `symbols.csv` has $5E as the standalone 8-bit `nearest_edge_bearing_hi` (the azimuth of the nearest edge point) and $5F as `engine_note_target`, an unrelated variable one byte along. There is no `nearest_edge_bearing_lo` in `mem.h` and zero references to one anywhere. All six native refs are 8-bit: `check_crash_core` sign-tests and `negate8`s the byte, `place_player_in_section_native` subtracts `section_yaw` from it, and the `engine_note_target` hits belong to the sound path. ⚠ The row's old text argued the $5F **tenancy** — which is the right question for a real pair and the wrong one here; adjacency in the candidate list is not evidence of a pair. Same closure shape as `ROW_BASE` |
 | `steer_angle` | $62A2/$62A5 | the steering wheel's own angle, sign-magnitude (bit 0 of the LOW byte is the sign) | **A only** | **✅ A DONE (2026-09-04)** — `apply_steering_assist`'s `assist_from_selector` held the last two lane pairs on this path (`angLo`/`angHi` around the abs, and `lo`/`hi` around the re-sign); both are single `uint16_t`s now, with `& $FFFE` in place of "clear bit 0 of the low lane and keep the high one". B is DONE too: the whole `CAR_ANGLE` array is `car_angle_16[3]` |
 | `SLIP_MAG` | $8E/$8F and $62DA/$62EA | slip magnitude — a TENANT of plot_ptr3, plus a second home as MODEL_STATE element $0A | **A only** | ✗ **B blocked twice over**: the $8E home is an indirect pointer base, the $62DA home is a strided SoA member. §THE SEVEN NAMED PAIRS |
 
@@ -150,7 +150,7 @@ in **either** 2- or 4-hex-digit notation, `($xx),Y`). Verdicts:
 | Pair | Addr | (B)-eligible? | Why |
 |---|---|---|---|
 | `hypot_max` | $7A/$7B | **✅ B DONE** | `hypot_max_v` (revs_native.c). All-native, unindexed, and CLEAN of both channel tests — producer `bearing_to_section_core` and consumer `point_distance_hypot_core` are both native and the shipping glue between them (`FUN_2a5f`) never touches $7A/$7B. The one other tenant, `plot_view_src_line`'s PVS_BYTE/PVS_MODE, keeps the cells — see the IN/OUT rule below |
-| `point_dist` | $7C/$7D | ⚠ eligible ONLY with shim marshal-OUT (all 32 refs are native as of 2026-09-03; the gate is the differential, not a ref) | a SHIPPING transliterated reader on the patched arm — `region_23d8` (the FOURTH test below). Marshal out in `emit_edge_bearing_at_cursor()`, `emit_edge_bearing()` and `point_distance_hypot()`; proof needs a Brands frame-buffer differential, not a fixture |
+| `point_dist` | $7C/$7D | ✅ eligible outright as of twin #220 — **no marshal needed, and it stays DECLINED on SCORE** (§ELEVENTH) | ⚠ **this row's blocker is STALE and the correction is the FOURTH test's own good news**: the shipping transliterated reader was `region_23d8` re-entered at $2490 by every expansion circuit's hook, and twin #220 made that entry native (`road_edge_walk_resume_core`), so all five hooks in `revs_track_hooks.c` now call the native shim and `region_23d8` is reachable only from `road_edge_walk__t6502`. Verified at the call sites, not from the scanner. So the marshal-out plan in `emit_edge_bearing_at_cursor()` / `emit_edge_bearing()` / `point_distance_hypot()` and the Brands differential it needed are both moot — but the site-by-site score that declined it is unchanged |
 | `bearing` | $8A/$8B | **✅ B DONE** (`bearing_v`) | same shape, lower risk: shipping `FUN_2a5f` (the car projector, $2A5F) calls native `bearing_to_section()` and then reads `bearing_lo`/`bearing_hi` into `object_bearing` ($0380/$0398). Not a patched arm, so `make determinism` DOES gate it |
 | `car_lateral_speed_entry` | $38/$39 | **✅ B DONE** | `lateral_speed_entry_v` (revs_native.c). All-native, unindexed — but it HAD the oracle-glue channel below, resolved by shim marshalling |
 | `edge_nearest` | $10/$11 | **✅ B DONE (2026-09-03)** | `edge_nearest_v` (revs_native.c); one 16-bit compare in `road_edge_walk_core`, marshalled at `road_edge_walk` (IN+OUT), `build_track_geometry` (IN+OUT) and `check_crash` (IN). ⚠ The init stays lane-preserving because $24FD arms only the HIGH lane — and the surviving low lane is DEAD IN PRACTICE: measured 2872 compares over the fixture with `distHi == $FF` in **zero** of them, which is why two sabotages survive. The blocker had been `$11` read by non-native `check_crash` ($111E); twin #169 made it native, and a strict re-scan finds all 7 refs in native routines. |
@@ -537,7 +537,7 @@ in the interim but the final store stays two non-adjacent byte writes until relo
 
 | Base | lo/hi | Shape | gen readers | Mechanism | Status |
 |---|---|---|---|---|---|
-| `MODEL_STATE` | $62D0/$62E0 | 15×16-bit driving-model state (stride $10) — incl. `heading_step` (element 2, $62D2/$62E2) and `slip_magnitude` (element $0A, $62DA/$62EA) | ~47 | A now; B blocked | **`heading_step` ✅ A COMPLETE — nothing left to convert** (see below); **`slip_magnitude` ✅ A DONE** — `steer_demand_from_slip` ($15F4) and `store_slip_signed` ($4B51) held the last lane pairs. **And the other elements are now closed too**, by audit rather than by conversion: the whole vector is marshalled through `model_state_16[]`, and of the per-element lane names only five are still referenced in `revs_native.c` — `car_speed_lo/hi`, `heading_step_lo/hi`, `car_lateral_speed_lo` — every one of them at a site that is **genuinely 8-bit**: a bit-7 sign test (`abs8` on `car_speed_hi`, the `BIT heading_step_hi` at $14437), the high byte used AS the sign into `add_signed_into_element`, `section_yaw - heading_step_hi` at $24B9, and $4DD4's `SEC / ROR heading_step_lo`, which rotates the low lane alone and leaves the high byte untouched. Nothing here is a lane pair pretending to be a word. |
+| `MODEL_STATE` | $62D0/$62E0 | 15×16-bit driving-model state (stride $10) — incl. `heading_step` (element 2, $62D2/$62E2) and `slip_magnitude` (element $0A, $62DA/$62EA) | ~47 | **A + B DONE** | **`heading_step` ✅ A COMPLETE — nothing left to convert** (see below); **`slip_magnitude` ✅ A DONE** — `steer_demand_from_slip` ($15F4) and `store_slip_signed` ($4B51) held the last lane pairs. **And the other elements are now closed too**, by audit rather than by conversion: the whole vector is marshalled through `model_state_16[]`, and of the per-element lane names only five are still referenced in `revs_native.c` — `car_speed_lo/hi`, `heading_step_lo/hi`, `car_lateral_speed_lo` — every one of them at a site that is **genuinely 8-bit**: a bit-7 sign test (`abs8` on `car_speed_hi`, the `BIT heading_step_hi` at $14437), the high byte used AS the sign into `add_signed_into_element`, `section_yaw - heading_step_hi` at $24B9, and $4DD4's `SEC / ROR heading_step_lo`, which rotates the low lane alone and leaves the high byte untouched. Nothing here is a lane pair pretending to be a word. |
 | `CAR_ANGLE` | $62A0/$62A3 | 3× (heading_sin/cos, `steer_angle` = element 2, $62A2/$62A5) | ~9 | **A + B DONE** | `car_angle_16[3]` |
 | `CAR_DISTANCE` | $08D0/$08E8 | per-car (24) distance-round-lap | ~19 | **A + B DONE** | `car_distance_16[24]` |
 | `OBJECT_BEARING` | $0380/$0398 | per-slot 16-bit track position | 6 | **(A) DONE**, (B) declined at 0.42 refs/element | ✅ see §`OBJECT_BEARING` below |
@@ -885,9 +885,48 @@ answer is already known:
 | `plot_ptr2` $72/$73 | 13 / 33 | 11 | 3 / 8 | second in line |
 | `point_delta` + `object_dist` | 21 / 39 | 26 | 3 / 7 | |
 | `point_dist` $7C/$7D | 11 / 19 | 6 | 5 / 8 | ELIGIBLE-with-marshal, **scored negative** (§ELEVENTH) |
-| `nearest_edge_bearing` $5E/$5F | 3 / 6 | 3 | 2 / 2 | |
+| `nearest_edge_bearing` $5E/$5F | 3 / 6 | 3 | **0** | ❌ **not a pair at all** — see the eligibility row |
 | `plot_ptr3` / `SLIP_MAG` $8E/$8F | 8 / 12 | 11 | **0** | ✅ eligible, **scores 0**: no site holds it as a 16-bit value — `plot_ptr3_lo` is a shape index and a Y, `plot_ptr3_hi` is inc/dec'd alone. Separate tenants, not a pair |
 | `lap_length` $59FC/D | 3 / 6 | 3 | **0** | ✅ eligible and **scores positive** — read-only TRACK FILE data (no runtime writer at all), and all three sites want it as a `uint16_t`. Small but free of any marshal-out |
+
+### ⭐ RE-SCAN (2026-09-10, after the false-zero fix): every pair is now (B)-ELIGIBLE, and there is no candidate left
+
+`python3 tools/wide_eligibility.py --all-pairs`, re-run once the FIFTH instrument bug (file-local
+`#define` bases invisible to the resolver) was fixed. **Every one of the eight candidate pairs now
+reports ZERO shipping transliterated readers** — the de-transliteration the campaign was gated on
+has finished underneath it:
+
+| Pair | native | oracles | shipping | was |
+|---|---|---|---|---|
+| `math_lo/hi` $74/$75 | 104 fn / 366 ref | 85 | **0** | 9 fn / 36 ref |
+| `point_delta` + `object_dist` | 15 / 38 | 27 | **0** | 3 / 7 |
+| `plot_ptr` $70/$71 | 10 / 20 | 19 | **0** | 4 / 15 |
+| `point_dist` $7C/$7D | 3 / 10 | 6 | **0** | 5 / 8 |
+| `plot_ptr2` $72/$73 | 5 / 9 | 12 | **0** | 3 / 8 |
+| `plot_ptr3` / `SLIP_MAG` $8E/$8F | 5 / 8 | 11 | **0** | 0 |
+| `lap_length` $59FC/D | 3 / 6 | 3 | **0** | 0 |
+| `nearest_edge_bearing` $5E/$5F | 3 / 6 | 4 | **0** | 2 / 2 |
+
+⚠⚠ **And eligibility turns out to be worth nothing, which is the finding.** Walk the rows against
+their verdicts above and **not one is an open (B) candidate**: `plot_ptr`/`plot_ptr2`/`plot_ptr3`
+and `lap_length` are done, `point_delta`+`object_dist` is closed with nothing left to convert,
+`point_dist` and `SLIP_MAG` score 0-to-negative site by site, `math_lo/hi` is settled as per-twin
+work rather than a relocation (the hybrid oracle glue is not something de-transliteration removes,
+and it is still there), and `nearest_edge_bearing` was never a pair. Tier 3 is likewise closed row
+by row in its own table. **Mechanism (B) has no remaining candidate in this codebase.**
+
+⭐ **The lesson for the ranking, and it is the NINTH lesson's twin**: the campaign spent three
+passes ranking by ref count, then corrected to ops-per-marshal — and this scan shows a *third*
+quantity that reads like progress and is not. "Shipping readers: 0" is a **legality** result. It
+says a relocation would not be wrong; it says nothing about whether it would be worth anything, and
+here legality arrived everywhere at once precisely because the twin campaign finished, i.e. at the
+moment the byte lanes it would have unblocked had already been rewritten as wide C by mechanism (A).
+**Screen on the score, and only then check legality.** Running it the other way round is what makes
+an empty worklist look like eight opportunities.
+
+ℹ Two per-row corrections fell out of the same re-scan and are folded into the rows above:
+`point_dist`'s "shipping reader on the patched arm" is stale (twin #220 nativized the hook
+re-entry), and `math_lo/hi`'s Test 1 (all-native) now passes — neither changes a verdict.
 
 ### Why `plot_ptr`, and the running count
 
@@ -1266,17 +1305,21 @@ this pair, and its sabotage table shows all three round-trip defects passing `de
 `-drive` and failing only it. **A representation change on a value no gate exercises is not a
 change you can land; find or build the trajectory first.**
 
-## ⭐⭐ NEXT STEPS (planned 2026-09-04) — mechanism (B) on Tier 3, in measured order
+## ⭐⭐ NEXT STEPS — ✅ **THE WORKLIST IS EMPTY** (Tier 3 closed 2026-09-10)
 
-Mechanism (A) is finished; **Tier 3 — the SoA state vectors — is the campaign's remaining body of
-work**, and it is mechanism (B): relocating a plane-split `lo_8[N]`/`hi_8[N]` into a real
-`uint16_t value_16[N]`.
+Mechanism (A) is finished, and **Tier 3 is now finished too**: every base in the measured worklist
+below is either (B) DONE (`MODEL_STATE` → `model_state_16[15]`, `CAR_ANGLE` → `car_angle_16[3]`,
+`CAR_DISTANCE` → `car_distance_16[24]`) or DECLINED against a measured refs-per-element score
+(`SECTION_COORD` 0.17, `EDGE_OPP_X` 0.24, `OBJECT_BEARING` 0.42 — each a net loss). The Tier 1
+pairs are closed the same way by the 2026-09-10 all-pairs re-scan above. **There is no remaining
+(B) candidate**, so what is owed here is the one measurement, not more conversions.
 
-⚠ **Scope correction to the THIRTEENTH LESSON.** "A plane-split pair has no word-access win" is
-true **of mechanism (A) only**. A (B) relocation *creates* the adjacency — that is the entire point
-— so `heading_step`, `car_speed`, `car_lateral_speed` and `section_coord` are complete as (A) and
-**still open as (B)**. The lesson's "record it complete rather than re-opening it" applies to the
-hoist, not to the relocation, and the earlier phrasing was too broad.
+ℹ **Two stale scope notes, retired.** The "scope correction to the THIRTEENTH LESSON" that used to
+head this section listed `heading_step`, `car_speed`, `car_lateral_speed` and `section_coord` as
+"complete as (A), still open as (B)". The first three are `MODEL_STATE` *elements* and went with
+its relocation; `section_coord` is the measured decline. The correction's *reasoning* stands — a
+(B) relocation does create the adjacency (A) cannot, so "no word-access win" is a statement about
+the hoist alone — but its worklist is spent.
 
 ### Step 0 — fix the eligibility scanner's FIFTH bug (a FALSE ZERO), before scoring anything
 
