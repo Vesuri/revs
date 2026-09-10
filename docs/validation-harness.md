@@ -866,3 +866,27 @@ coverage.
 only defect is an exit FLAG prints nothing matching `MEM DIFF`, and the loop reports it as
 surviving — a fake gap that costs an investigation.
 
+
+### TWENTIETH — a surviving sabotage filed as "the value is dead" was a FIXTURE GAP all along
+
+`view_paint_lines_core`'s third parameter is the 6502's entry Y, the cell index the rasteriser
+starts from. A fixture sabotage forcing it to 0 changed **nothing** over 700 cases, and that was
+written at the code as the argument that the seed is dead — the first chain overwrites it before
+any read.
+
+It is not dead. Dropping the parameter and seeding 0 **FAILS `make determinism`** on the parked
+trajectory; it PASSES `make determinism-drive`. The 700 fixture cases genuinely do overwrite the
+seed before reading it, so the fixture cannot see the value at all, and the one trajectory that
+can is the one where the car is not moving.
+
+Two rules come out of it, and they sharpen §FIFTEENTH's three explanations for a surviving
+sabotage:
+
+- ⚠⚠ **"Unreachable by construction" has to be argued from the CODE, never from the fixture's
+  silence.** A fixture sabotage that changes nothing is evidence about the *fixture*. The three
+  explanations are a menu you choose from with an argument — reaching for the second one because
+  the run came back green is just the first one (a fixture gap) wearing its clothes.
+- ⚠ **A parameter is not proven dead until a determinism run says so.** The fixture compares one
+  routine on synthetic memory; `determinism` compares the whole corpus on a trajectory the game
+  actually takes. For an ambient register threaded in from a driver, only the second has the real
+  entry value. And it takes BOTH parked and moving: this one is invisible to `-drive`.

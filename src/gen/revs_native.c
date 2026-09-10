@@ -1502,10 +1502,13 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
 
     v.byte = (unsigned char)screenBase;   /* the `LDA #0` that seeded both low bytes */
     v.line = firstLine;
-    v.cell = entryCell;                   /* the 6502's entry Y — but the first chain overwrites
-                                             it before any read, so it is a dead seed (a fixture
-                                             sabotage forcing it to 0 changes nothing over 700
-                                             cases); threaded in only to mirror the entry ABI */
+    /* ⚠⚠ THE 6502'S ENTRY Y, AND IT IS LIVE — the note that used to stand here called it a dead
+       seed because a fixture sabotage forcing it to 0 changed nothing over 700 cases.  That was
+       the FIXTURE being blind, not the value being dead: dropping the parameter and seeding 0
+       FAILS `make determinism` on the parked trajectory (and passes -drive, which is why only
+       the pair of them catches it).  The first chain does overwrite it on the fixture's inputs;
+       on the real frame the driver arrives with $4F ambient and the seed is read first. */
+    v.cell = entryCell;
     UPD_NZ(firstLine);                    /* `LDX #$4F` is the prologue's last flag write */
 
     paint_cells(&v, 0, 0, 1);
@@ -1857,6 +1860,20 @@ void race_main_loop_core(RestartDepth depth)
             PROBE_PHASE(14); PROBE_SHAPE_PHASE(14); build_road_sign();       /* the shim — see phase 5 */
             /* $172B: the object slot count is the starting slot */
             PROBE_PHASE(15); PROBE_SHAPE_PHASE(15);
+            /* ⚠⚠ WHY THIS DRIVER STILL SPEAKS cpu, AND WHY THAT IS NOT ORACLE PLUMBING.
+               The 6502's X and Y are LIVE ACROSS PHASE BOUNDARIES here, and the values are real:
+               MEASURED with a per-phase drift probe over 300 driving frames, phases 1, 3, 4, 5,
+               7, 9, 12, 18, 20, 23, 24 and the frame tail each rewrite the ambient X or Y, and
+               three consumers READ it — update_lap_timers (phase 8) hands ambient X/Y straight to
+               update_position_display_core as a text cursor on the race arm, engine_sound_update
+               (phases 9/12/20) and check_crash (phase 23) pass it to sound_queue_core, which
+               stores it in sound_saved_x.  So it reaches mem[] and the determinism family sees it.
+               The producers are not removable either: phase 5's writer is build_track_geometry's
+               own SHIM publishing GeoExit (the driver calls the shim deliberately, for the
+               wide-value marshals), and the rest are the sanctioned hook/SMC seams, which hand a
+               circuit's own 6502 code the whole register file by design.  Threading this as a
+               FrameAmbient struct through thirteen shims would move the same bytes through a
+               different container and buy nothing, so the register file stays the carrier. */
             {   /* race_main_loop_core is cpu (NATIVE_FUNCS driver) — marshal the typed exit */
                 SlotExit e = draw_track_object_core(0x17, cpu.Y, cpu.V, cpu.C);
                 cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
