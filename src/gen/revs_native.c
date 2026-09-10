@@ -13502,6 +13502,9 @@ static void drive_one_car(uint8_t x)
     uint8_t a = 0;
 
     uint8_t flags = mem[MEM_car_race_flags + x];             /* $27F6 LDA car_race_flags,X */
+    /* Read once: only the integrate below writes it, and neither track_pos_advance_core nor
+       lap_complete_core touches this cell or car_section_along. */
+    uint8_t speedScaled = mem[MEM_car_speed_scaled + x];
     if (flags & 0x80u) {
         stage = STAGE_DECEL;                             /* $27F9 BMI $285B — inactive/behind */
     } else {
@@ -13509,7 +13512,7 @@ static void drive_one_car(uint8_t x)
         uint8_t segbyte = mem[MEM_track_segment_lo + seg];   /* $27FE LDA track_segment_lo,Y */
         if (segbyte & 0x80u) {                           /* $2801 BPL $280D — bit7 set: this arm */
             /* $2803-$280B: if already at/over the target speed, only integrate; else recompute */
-            stage = (mem[MEM_car_speed_scaled + x] >= mem[MEM_car_target_speed + x])
+            stage = (speedScaled >= mem[MEM_car_target_speed + x])
                         ? STAGE_INTEGRATE                /* $2809 BCS */
                         : STAGE_SPEEDCALC;               /* $280B BCC $282F */
         } else if (segbyte & 0x01u) {
@@ -13519,7 +13522,7 @@ static void drive_one_car(uint8_t x)
                than the segment allows, fold the shortfall into a proximity code in math_lo */
             uint8_t seglimit = mem[MEM_segment_speed_limit + seg];   /* $2810 LDA segment_speed_limit,Y */
             mem[MEM_car_target_speed + x] = seglimit;                /* $2813 STA car_target_speed,X */
-            int16_t brake = (int16_t)seglimit - mem[MEM_car_speed_scaled + x] - 1; /* $2816 CLC/$2817 SBC */
+            int16_t brake = (int16_t)seglimit - speedScaled - 1; /* $2816 CLC/$2817 SBC */
             if (brake >= 0) {
                 stage = STAGE_SPEEDCALC;                         /* $281A BCS $282F (no borrow) */
             } else {
@@ -13537,8 +13540,7 @@ static void drive_one_car(uint8_t x)
 
     if (stage == STAGE_SPEEDCALC) {                       /* $282F */
         /* $282F-$2838: floor the effective speed at $16 unless already >= $3C, into math_lo */
-        uint8_t sp  = mem[MEM_car_speed_scaled + x];             /* $282F LDA car_speed_scaled,X */
-        uint8_t eff = (sp >= 0x3Cu) ? sp : 0x16u;            /* $2832 CMP #$3C / $2836 LDA #$16 */
+        uint8_t eff = (speedScaled >= 0x3Cu) ? speedScaled : 0x16u;  /* $282F-$2836 CMP #$3C / LDA #$16 */
         math_lo = eff;                                       /* $2838 STA math_lo */
         /* $283A-$2844: base offset (+5 if the car's flags bit6 is set) plus its track position */
         uint8_t base = (flags & 0x40u) ? 0x05u : 0x00u;      /* $283A/$283D AND #$40 / $2841 LDA #$05 */
@@ -13563,7 +13565,7 @@ static void drive_one_car(uint8_t x)
         v = (uint16_t)(v << 2);
         math_hi = (uint8_t)(v >> 8);                         /* $75 exit value = the ROL result */
         /* $2867-$287C: [car_speed_scaled:car_speed_frac] += v; a high byte reaching $BE resets both */
-        uint16_t speed = (uint16_t)(((uint16_t)mem[MEM_car_speed_scaled + x] << 8)
+        uint16_t speed = (uint16_t)(((uint16_t)speedScaled << 8)
                                     | mem[CAR_SPEED_FRAC + x]);
         speed = (uint16_t)(speed + v);
         uint8_t sfrac   = (uint8_t)speed;
@@ -13571,17 +13573,23 @@ static void drive_one_car(uint8_t x)
         if (sscaled >= 0xBEu) { sfrac = 0; sscaled = 0; }    /* $2873 CMP #$BE / $2877 LDA #0 */
         mem[CAR_SPEED_FRAC + x]   = sfrac;                   /* $286B / $2879 STA car_speed_frac,X */
         mem[MEM_car_speed_scaled + x] = sscaled;                 /* $287C STA car_speed_scaled,X */
+        speedScaled = sscaled;
     }
 
     /* $287F-$2894: add the speed into car_section_along twice; each carry advances the car one offset
        unit (track_pos_advance, which books a lap via lap_complete on a distance wrap) */
-    for (int i = 1; i >= 0; i--) {                           /* $2881 shared_temp_76=1; DEC/BPL loop */
-        uint16_t s = (uint16_t)mem[MEM_car_section_along + x] + mem[MEM_car_speed_scaled + x]; /* $2883 CLC/$2887 ADC */
-        mem[MEM_car_section_along + x] = (uint8_t)s;                   /* $288A STA car_section_along,X */
-        if (s > 0xFFu) {                                     /* $288D BCC skip — a carry crossed a unit */
-            cpu.X = x;                                       /* track_pos_advance->lap_complete reads cpu.X */
-            track_pos_advance_core(x);                       /* $288F JSR track_pos_advance */
+    {   /* Written back only before a callee runs, and once at the end. */
+        uint8_t along = mem[MEM_car_section_along + x];
+        for (int i = 1; i >= 0; i--) {                       /* $2881 shared_temp_76=1; DEC/BPL loop */
+            uint16_t s = (uint16_t)along + speedScaled;      /* $2883 CLC/$2887 ADC */
+            along = (uint8_t)s;
+            if (s > 0xFFu) {                                 /* $288D BCC skip — a carry crossed a unit */
+                mem[MEM_car_section_along + x] = along;      /* the callee may look at mem[] */
+                cpu.X = x;                                   /* track_pos_advance->lap_complete reads cpu.X */
+                track_pos_advance_core(x);                   /* $288F JSR track_pos_advance */
+            }
         }
+        mem[MEM_car_section_along + x] = along;              /* $288A STA car_section_along,X */
     }
     shared_temp_76 = 0xFFu;                                  /* $2892-$2894: DEC to $FF exits the BPL loop */
 
