@@ -1494,9 +1494,16 @@ void check_crash_native(void)
     model_state_marshal_out();    /* ...and publish it back to mem[] */
 }
 
+/* The marshal-IN below is oracle-only in production and stays on this 6502-ABI path for the
+   harness; native callers enter at the _native split.  Full argument at build_track_geometry. */
 void build_player_car(void)
 {
     view_origin_marshal_in();
+    build_player_car_native();
+}
+
+void build_player_car_native(void)
+{
     /* ⭐ NO EXIT ABI TO RECONSTRUCT, and that is an argument, not an omission.  Its ONE caller
        (race_main_loop's RESTART_LATE arm, $16F6) does `LDA #0` next, so A and every flag are
        dead there; X and Y are dead too — the next reader is $0B77, which loads both itself.

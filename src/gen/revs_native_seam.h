@@ -431,6 +431,8 @@ void mirrors_update_native(void);
 void process_car_contact_native(void);
 void apply_driving_model_frame_native(void);
 void road_edge_walk_resume_native(void);
+void place_player_in_section_native(void);
+void build_player_car_native(void);
 
 unsigned car_gap_lo_core(uint8_t a, uint8_t b);
 GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn);

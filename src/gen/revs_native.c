@@ -1755,7 +1755,7 @@ void race_main_loop_core(RestartDepth depth)
             reset_driving_variables_core();
         RESET_SPLIT(1);
         if (depth >= RESTART_LATE)
-            build_player_car();
+            build_player_car_native();
         RESET_SPLIT(2);
 
         arg_a(0x00);
@@ -1807,7 +1807,7 @@ void race_main_loop_core(RestartDepth depth)
                here would leave the cells stale for a whole frame — which `make determinism` sees as
                a single diverging byte at $8B. */
             PROBE_PHASE(5);  PROBE_SHAPE_PHASE(5);  build_track_geometry_native();
-            PROBE_PHASE(6);  PROBE_SHAPE_PHASE(6);  place_player_in_section();
+            PROBE_PHASE(6);  PROBE_SHAPE_PHASE(6);  place_player_in_section_native();
             PROBE_PHASE(7);  PROBE_SHAPE_PHASE(7);  advance_player_section();
             PROBE_PHASE(8);  PROBE_SHAPE_PHASE(8);  update_lap_timers();
             PROBE_PHASE(9);  PROBE_SHAPE_PHASE(9);  engine_sound_update();
@@ -11755,10 +11755,17 @@ void record_section_jump(void) { cpu.C = record_section_jump_core(cpu.C, cpu.X);
    exactly the cpu registers each reads (A and its sign N; abs8's threaded carry).
    ⚠ SMC $462B-$462D: Silverstone calls abs8; an expansion circuit runs its own hook.
    --------------------------------------------------------------------------- */
+/* The marshal-IN below is oracle-only in production and stays on this 6502-ABI path for the
+   harness; native callers enter at the _native split.  Full argument at build_track_geometry in revs_native_seam.c. */
 void place_player_in_section(void)
 {
     edge_nearest_marshal_in();   /* its two folds weight the angle by the relocated running
                                     minimum (scale_angle_in_section_core reads edge_nearest_v) */
+    place_player_in_section_native();
+}
+
+void place_player_in_section_native(void)
+{
     /* Relative angle of the nearest edge bearing to the section's yaw.  D=0, so a plain 8-bit
        subtract whose bit 7 is the sign abs8 negates on; a circuit hook instead READS the value
        and its sign N via cpu, so that seam re-establishes them. */
