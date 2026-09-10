@@ -2356,51 +2356,32 @@ void draw_dash_needle_core(uint16_t steer, DashNeedle *out)
     out->subPos       = (uint8_t)((originBase << 1) & 0x07u);   /* $5195-$519A -> shared_temp_77 */
 }
 
-/* $5204  plot_line_octant — A SELF-MODIFYING OCTANT LINE PLOTTER  (twin #164)
+/* $5204  plot_line_octant — A SELF-MODIFYING OCTANT LINE PLOTTER
 
-   ⚠ SELF-MODIFYING BY CONSTRUCTION.  A DDA straight-line drawer whose major- and
-   minor-axis STEP opcodes are chosen per octant and PATCHED INTO the routine's own
-   body: octant_major_step_tbl[octant] -> the opcode slot at $5220, and
-   octant_minor_step_tbl[octant] -> the slot at $529B.  Both slots are compared mem[]
-   cells, so the twin writes them exactly as the 6502 does and DISPATCHES ON THE CELLS
-   (never a cached copy) — that is what keeps it correct even in the pathological case
-   where the plot pointer walks over its own code.  The octant index arrives in
-   shared_temp_76 ($76); the start scan line arrives in Y.
+   A DDA straight-line drawer used by everything that draws a line (both dash needles among
+   them).  Octant index in shared_temp_76 ($76), start scan line in Y.
 
-   ⚠ Not just the rev-counter needle — dial_needle_angle and draw_dash_needle both
-   fall through here, and anything drawing a straight line goes through it.
+   ⚠ SELF-MODIFYING BY CONSTRUCTION: the major- and minor-axis STEP opcodes are chosen per
+   octant and patched into the body — octant_major_step_tbl[octant] -> the slot at $5220,
+   octant_minor_step_tbl[octant] -> $529B.  The twin writes both slots as the 6502 does and
+   DISPATCHES ON THE CELLS, never a cached copy, which is what keeps it right in the
+   pathological case where the plot pointer walks over its own code.
 
-   Reader-nativization (the wide-value cleanup): the DDA increment lived in math_lo
-   ($74, read-only here) and the pixel counter in math_hi ($75, decremented to its $FF
-   exit).  Both become C locals; math_lo is untouched (so its cell keeps its entry
-   value) and math_hi is written back with its 6502 exit value, until the $74/$75
-   relocation.  Caching them is sound because nothing here writes $74/$75 — the plot
-   pointer is a screen address, never zero page.  No BCD (the DDA is a plain binary
-   accumulator; not one of the eight SED sites).  Exit regs/flags are dead — both
-   callers return / reload immediately — so this is LIVE_NONE, mem[]-only.
+   The DDA: acc starts at -point_delta_hi; each pixel acc += math_lo, and a carry does
+   acc -= point_delta_hi plus the MAJOR step (an extra move along the fast axis).  The MINOR
+   step fires every pixel.  x is the sub-cell column 0..7 and y the scan line; when either
+   steps past its cell the plot pointer moves one MODE 5 cell ($08) or one character row
+   ($140) and the coordinate wraps.  Each pixel records an undo entry (address + original
+   byte) for undraw_plot_lines.  Exit regs/flags dead (LIVE_NONE), no BCD. */
 
-   The DDA: acc starts at -point_delta_hi; each pixel acc += math_lo; when that carries,
-   acc -= point_delta_hi and the MAJOR step fires (an extra move along the fast axis).
-   The MINOR step fires every pixel.  x is the sub-cell column 0..7 and y the scan line
-   0..7; when either steps past its cell the plot pointer moves one MODE 5 cell ($08) or
-   one character row ($140) and the coordinate wraps.  Each pixel records an undo entry
-   (address + original byte) so undraw_plot_lines can erase the line next frame. */
+/* $511E  undraw_plot_lines — THE ERASE HALF of the dash needles.  Walks the undo list
+   plot_line_octant recorded, top entry down to 0, writing each saved background byte back
+   through its saved address, then empties the list.  Every byte the plotter ORs into is saved
+   before the OR, so the dial faces are never repainted.
 
-/* ⭐ TWIN #165b — undraw_plot_lines ($511E).  THE ERASE HALF of the dash needles: walks the undo
-   list plot_line_octant recorded, top entry down to entry 0, writing each saved background byte
-   back through its saved address, then empties the list.  Every byte the plotter ORs into is saved
-   before the OR ($5285-$528A), so this restores the exact background and the dial faces are never
-   repainted.
-
-   ⭐ Why this one is native: it was a shipping transliterated READER of plot_ptr $70/$71 — one of
-   the six standing between that pair and a mechanism-(B) relocation (tools/wide_eligibility.py;
-   docs/wide-value-cleanup.md).  The 6502 had no 16-bit register, so it rebuilt the pointer in
-   $70/$71 once per entry and stored through (zp),Y with Y=0.  Here it is a uint16_t local.
-
-   ⚠ The cells are still written, once, with entry 0's address — their 6502 exit value.  Writing
-   only the last iteration's value is equivalent because NOTHING between two iterations reads
-   $70/$71: the only reader is this loop's own store, and the addresses come from the undo list,
-   which lives at $0780-$07F7 and so can never alias zero page. */
+   ⚠ plot_ptr's cells are written once, with entry 0's address — their 6502 exit value.  That is
+   equivalent because nothing between two iterations reads $70/$71: the only reader is this
+   loop's own store, and the undo list lives at $0780-$07F7, which cannot alias zero page. */
 void undraw_plot_lines_core(void)
 {
     uint8_t count = plot_undo_count;             /* $511E */
@@ -2431,13 +2412,11 @@ void plot_line_octant_core(uint8_t entryScanline)
 
     uint8_t x   = shared_temp_77;                          /* $5212 sub-cell column */
     uint8_t y   = entryScanline;                           /* Y — start scan line */
-    /* ⚠⚠ NEITHER OF THESE MAY BE CACHED IN A LOCAL, and the earlier "(reader, invariant)" note
-       was wrong.  The 6502 re-reads math_lo at $521a on every pixel and decrements math_hi IN
-       PLACE at $529c — and this plotter can store ON $74/$75: it walks ±8 and ±$140 from
-       whatever $70/$71 hold, so a pointer near page $00 puts its own pixel store on the DDA
-       increment and the pixel counter.  Caching them diverged from the oracle (measured: the
-       fixture's planted case 2155 walks addr=$0074 twelve times, so the oracle's increment
-       changes under it and the twin's does not).  Found by adding that plant, not by reading. */
+    /* ⚠⚠ NEITHER math_lo NOR math_hi MAY BE CACHED IN A LOCAL.  The 6502 re-reads math_lo every
+       pixel and decrements math_hi in place, and this plotter can store ON $74/$75: it walks ±8
+       and ±$140 from whatever $70/$71 hold, so a pointer near page $00 puts its own pixel store
+       on the DDA increment and the counter.  Caching diverged from the oracle (the fixture's
+       planted case 2155 walks addr=$0074 twelve times). */
     uint8_t acc = (uint8_t)(0u - mem[MEM_point_delta_hi]);     /* $5214-5219 acc = -delta; C then cleared */
 
     for (;;) {
@@ -2479,20 +2458,14 @@ void plot_line_octant_core(uint8_t entryScanline)
         }
         if (stepRight && a >= 8u) {                        /* $523d-523f a >= 8 -> step right */
             x = 0u;                                        /* $5241 */
-            /* ⭐ THE FOUR POINTER STEPS ($5233, $5243, $5255, $526B) ARE ONE WORD ADD EACH, and
-               the earlier "DO NOT widen these" note is RETRACTED.  It was right about the
-               arrangement it was written against — a wide value living in mem[] must read and
-               write both lanes on every step, 4 accesses where the byte form does 2 — and wrong
-               about the one that matters: the carry test, the conditional second store and the
-               branch all disappear, and what they protected (the reassembly at $5285, which
-               EVERY pixel paid: two byte reads, a shift and an or) becomes free.
-               ⚠⚠ THE mem[] LANES STAY LIVE NEAR PAGE $00, and that is not bookkeeping.  This
-               plotter reads and writes through $70/$71, and a pointer just below $70 puts the
-               read at $5285 and the store at $5294 ON the pointer itself — so PLOT_PTR_ADD
-               refreshes the lanes while the pointer is in page $00/$01 and plot_store_resync
-               closes the store direction.  Same pair the span island needed, same measured
-               reason.  The fixture PLANTS the case (one in eight seeds $71 in page $00);
-               without the plant these guards are untested (docs/wide-value-cleanup.md §FIFTH). */
+            /* THE FOUR POINTER STEPS ($5233, $5243, $5255, $526B) ARE ONE WORD ADD EACH: the
+               carry test, the conditional second store and the branch all go, and so does the
+               reassembly at $5285 that every pixel paid.
+               ⚠⚠ THE mem[] LANES STAY LIVE NEAR PAGE $00: a pointer just below $70 puts the read
+               at $5285 and the store at $5294 ON the pointer itself, so PLOT_PTR_ADD refreshes
+               the lanes while the pointer is in page $00/$01 and plot_store_resync closes the
+               store direction.  The fixture PLANTS the case (one seed in eight puts $71 in page
+               $00); without the plant these guards are untested. */
             PLOT_PTR_ADD(plot_ptr,  8);                    /* $5243-524c one cell right */
         }
         shared_temp_77 = x;                                /* $524e */
@@ -2551,10 +2524,8 @@ void plot_line_octant_core(uint8_t entryScanline)
      • the start column  menu_bar_start_tbl[Y]  gets $97  (graphics white)
      • the next column                          gets $E2  (a leading sixel)
      • every column up to menu_bar_end_tbl[Y]   gets $E6  (the bar fill)
-   The bar's end column lived in math_lo ($74) as the loop's CPX target; it is a
-   local now (the reader-nativization step of the wide-value cleanup), with the
-   cell's exit value still written so the routine stays byte-exact until math_lo is
-   relocated.  Exit regs/flags are dead at the sole (front-end) caller. */
+   The bar's end column lived in math_lo ($74) as the loop's CPX target; it is a local
+   now, with the cell's 6502 exit value still written.  Exit regs/flags dead. */
 void menu_draw_gfx_bars_core(void)
 {
     const uint16_t page = (uint16_t)(MENU_SCREEN_BASE + 0x79u);
@@ -2585,10 +2556,9 @@ void menu_draw_gfx_bars_core(void)
      • char1 == space     -> exit, C clear, value = digit0  (single digit)
      • char1 not a digit  -> exit, C set (invalid)
      • both digits        -> value in A, C = (value >= $29), i.e. >= 41
-   Exit C is the validity/range flag the caller branches on.  math_lo held the
-   running value (digit0, then digit0*10); a local now (the reader-nativization
-   step of the wide-value cleanup), with the cell's per-path 6502 exit value still
-   written so the routine stays byte-exact until math_lo is relocated. */
+   Exit C is the validity/range flag the caller branches on.  math_lo held the running
+   value (digit0, then digit0*10); a local now, with the cell's per-path 6502 exit value
+   still written. */
 void parse_two_digit_ascii_core(uint8_t char0, uint8_t char1, ParseNum *out)
 {
     out->writeMathlo = 0;
@@ -2691,10 +2661,8 @@ uint8_t console_read_two_digits_core(void)
      * add the held track scale and store car_track_position[x];
      * step the car-index cursor back one (mod 20) and hand it back.
 
-   A math_lo ($74) reader-nativization: $74 is the routine's own scratch (the post-grid
-   value, rotated on the Pro path).  It becomes a C local; the twin still writes $74's
-   per-path 6502 exit value so the cell stays byte-exact until the final $74/$75
-   relocation.  Exit ABI: X live (the decremented cursor the caller's loop reads); A and
+   $74 is the routine's own scratch (the post-grid value, rotated on the Pro path) and is a
+   C local here; the twin still writes its per-path 6502 exit value.  Exit ABI: X live (the decremented cursor the caller's loop reads); A and
    the flags are dead (reset_all_cars_for_session does TXA, the others return). */
 static AddFlags negate8(uint8_t a);            /* defined below ($3452 abs8's cpu-free half) */
 static uint8_t  car_index_dec_core(uint8_t x); /* defined below ($507E) */
@@ -9949,10 +9917,8 @@ static uint8_t field_mask_lsr(void)
    Each space goes through the same dispatch vdu_char_def uses: OSWRCH when
    text_out_via_mos bit 7 is set (X/Y ambient), otherwise the bitmap emitter.
    The 6502 counts down and tests AFTER the decrement, so a count of 0 prints
-   256 — a do-while.  The loop counter was math_lo ($74); it is a local now (the
-   reader-nativization step of the wide-value cleanup), with the cell's exit value
-   (0) still written so the routine stays byte-exact until math_lo is relocated.
-   Exit A = the space byte ($20); the caller's exit N/Z come from the final
+   256 — a do-while.  The loop counter was math_lo ($74); it is a local now, with the
+   cell's exit value (0) still written.  Exit A = the space byte ($20); the caller's exit N/Z come from the final
    DEC to zero (N=0, Z=1) — three callers branch on that Z. */
 uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y)
 {
@@ -9960,9 +9926,7 @@ uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y)
     do {
         vdu_emit_char(0x20u, x, y);            /* $5092's dispatch — OSWRCH or the bitmap emitter */
     } while (--c != 0);                         /* $3D59 DEC math_lo / BNE — post-tested */
-    /* The 6502 counted down in math_lo ($74), so it exits holding 0; the counter is a local
-       now, but keep that scratch residue until math_lo is relocated wholesale (the reader
-       campaign nativizes readers first, then removes the cell) — keeps the byte-exact match. */
+    /* The 6502 counted down in math_lo ($74) and exits holding 0 — keep that residue. */
     math_lo = 0x00u;
     return 0x20u;                               /* both paths return the character in A */
 }
@@ -9975,10 +9939,8 @@ uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y)
        $C8..$FE  a command    -> recurse into sub-script (byte-$C8), except
                                  $FE (== $C8+$36) which runs select_text_variant
        $FF       end of script -> return
-   The command operand (byte-$C8) was math_lo ($74); it is a C local now (the
-   reader-nativization step of the wide-value cleanup), with the cell's exit
-   value still written so the cluster stays byte-exact until math_lo is
-   relocated.  Recursion is the plain 6502 idiom (TXA/PHA/TYA/PHA around a JSR to
+   The command operand (byte-$C8) was math_lo ($74); a C local now, with the cell's
+   exit value still written.  Recursion is the plain 6502 idiom (TXA/PHA/TYA/PHA around a JSR to
    self); as C recursion the two mem-stack bytes the 6502 pushes have no twin, so
    the fixture ignores that residue window (see validate_native.c).
    ⚠ print_spaces always exits Z=1 (its final DEC math_lo -> 0), so the 6502's
@@ -10124,9 +10086,8 @@ uint8_t menu_wait_key_core(uint8_t count)
      • otherwise  — step the state down by one; a still-negative result keeps the
                     amber pattern ($80 at/above $C0, else $A5/$77); a positive result
                     uses the green pattern $F2/$05.
-   The XOR value lived in math_lo ($74) across the fill loop; it is a local now (the
-   reader-nativization step of the wide-value cleanup), with the cell's exit value
-   still written so the routine stays byte-exact until math_lo is relocated.
+   The XOR value lived in math_lo ($74) across the fill loop; a local now, with the
+   cell's exit value still written.
    Returns the painted pattern (the byte the 6502 PHA'd), or -1 on the early exits
    so the shim can reproduce that push's stack residue; exit regs/flags are dead at
    the sole (native) caller, race_main_loop. */
