@@ -173,6 +173,13 @@ What the pass has to do:
    `uintNN_t`.
 3. **Then delete `cpu.D` from these bodies**, which retires the whole fourth group of the
    `cpu`-in-a-`_core` table.
+4. **The front owns every `adc_value`/`sbc_value` left in the file.** All 13 call sites are
+   inside a decimal bracket, so nothing else in the sweep can reach them. ⚠ One of them —
+   `check_car_pair_core`'s `$275E` subtract — runs with **D=0** and uses only `.val`/`.carry`,
+   i.e. it is a plain binary subtract wearing the helper. It looks like an easy standalone
+   conversion and is not: the routine only clears D at `$26E5`, so whether that site is binary
+   depends on the **entry** D the fixture hands it, which is a claim to settle inside this pass
+   and not from the outside.
 
 Constraints this pass inherits:
 
