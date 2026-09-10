@@ -1519,13 +1519,17 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
 
 /* What the tail decided about this frame. */
 
-/* A JSR is handed the whole register file, and a callee may branch on the flags before it
-   reloads anything.  These three exist so that the argument passing is visibly the 6502's —
-   the macro is inside, the call site reads as C — and so that nothing else in this routine
-   has to mention a register at all. */
+/* ⚠ THESE ARE NOT ARGUMENT PASSING — they are a LIVE REGISTER the following code reads.
+   Every surviving call site loads a literal whose value is still live *after* the call it
+   precedes, so the load cannot be folded into a typed argument: arg_a($9C) stays in A across
+   the crash hold because the interrupt seam publishes A into mos_irq_a on every field, and
+   arg_a($00)/arg_a($20) are read by the lines below them ("either way A is now 0").  arg_x
+   is the near-slot clamps' `LDX #5` AFTER a compare, which rewrites N and Z while leaving C.
+   Where a literal really was only an argument the call site now passes it as one — see
+   shift_key_commands_core and copy_dash_data_core below; arg_y had no other kind of site
+   left and is gone. */
 void arg_a(uint8_t v) { LDA(v); }
 static void arg_x(uint8_t v) { LDX(v); }
-static void arg_y(uint8_t v) { LDY(v); }
 
 /* $16E9's `BIT $05F4` — bit 6 of state_flags lands in V.  Through the macro rather than as a
    plain mask because the test leaves N and V set across the calls that follow it, and "no
@@ -1664,9 +1668,12 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
         return race_session_end(depth);
     }
 
-    /* The in-race command keys.  Y is the index of the last entry of shift_key_tbl. */
-    arg_y(0x0B);
-    shift_key_commands();
+    /* The in-race command keys.  $0B is the index of the last entry of shift_key_tbl — the
+       scan runs down from there.  Straight to the core: the shim is a bare
+       `shift_key_commands_core(cpu.Y)`, the core stores the entry index into math_lo ($74)
+       itself, and the routine's exit registers are dead by its fixture's declaration
+       (LIVE_NONE) — so the ambient `LDY #$0B` was carrying an argument, not state. */
+    shift_key_commands_core(0x0Bu);
 
     if (load_a(state_flags) != 0) {
         if (!(cpu.A & 0x80))                       /* $1799: a positive request quits */
@@ -1698,6 +1705,7 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
    is the only thing the 6502 prologue decides before the loop starts. */
 void race_main_loop_core(RestartDepth depth)
 {
+
     for (;;) {
         LoopVerdict verdict;
 
@@ -1825,10 +1833,27 @@ void race_main_loop_core(RestartDepth depth)
 
     /* $17BA — out.  A = $80 tells copy_dash_data to stow the $7B00 overlay back into the
        block tails it was assembled from, so the page can be MODE 7 screen memory again. */
-    arg_a(0x80);
-    copy_dash_data();
-    irq1v_release_core(cpu.Y);   /* $17BF — core-to-core; the shim's only extra is the CLI */
-    cpu.I = 0;                   /* $4F35 */
+    math_lo = 0x80;                                  /* $18EA STA $74 — the direction flag slot */
+    copy_dash_data_core(0x80u);
+    /* $17BF — the release's Y is copy_dash_data's own exit Y: the start offset of the LAST
+       dash block, which its block loop stopped on.  Core-to-core; the shim's only extra is
+       the CLI, which is cpu.I below. */
+    irq1v_release_core(mem[MEM_dash_block_starts + (DASH_BLOCK_COUNT - 1)]);
+    cpu.I = 0;                                       /* $4F35 CLI */
+
+    /* ⚠ COPY_DASH_DATA'S EXIT REGISTER FILE IS PUBLISHED HERE, AND THE CARRY IS GENUINELY
+       LIVE.  enter_session_core's `BIT state_flags` immediately after this call overwrites
+       N, V and Z but NOT C, and its negative arm hands C straight to abort_to_front_end_core
+       ($656D).  C is copy_dash_data's block loop closing on `CPX #$29` with X == $29, so it
+       is 1; A is `LDA $70 / ADC #$80` and X the block count.
+       ⚠⚠ DO NOT TRUST A GREEN HERE.  This exit is reached exactly ONCE in the whole
+       determinism family — `make determinism-race`, frame ~12000, at the qualifying->race
+       transition — and never in the other four trajectories.  That run does not take
+       enter_session_core's negative arm, so poisoning all six of these still PASSES every
+       target (measured).  They are kept on the argument above, not on the test. */
+    cpu.A = (uint8_t)adc_step((uint8_t)(plot_ptr_lo - 0x80), 0x80u, 0);
+    cpu.X = DASH_BLOCK_COUNT;
+    cpu.N = 0; cpu.Z = 1; cpu.C = 1;
 }
 
 
