@@ -124,10 +124,14 @@
 #define IRQ1V_HI           0x0205u /* ...and high */
 
 /* ---- exit-struct typedefs (moved out of revs_native.c) ---- */
+/* The object/slot-writer chain's exit ABI — A/X/Y + N/Z/V/C returned by value so a core stays
+   cpu-free; the thin shim (or a caller whose own exit ABI is this) replays it onto cpu. */
 typedef struct { uint8_t a, x, y, n, z, v, c; } SlotExit;
 /* build_track_geometry's exit ABI: live=AXY, flags a byproduct. */
 typedef struct { uint8_t a, x, y; } GeoExit;
 typedef struct { uint8_t val, carry; } Adc;
+/* The three values the chain and its drivers thread through each other — the 6502's A, X
+   and Y under the names of what they actually hold.  Everything else is a plain local. */
 typedef struct {
     unsigned byte;   /* A: the pixel byte the chain carries left to right */
     unsigned line;   /* X: the scan line being painted */
@@ -147,9 +151,16 @@ typedef enum {
 typedef struct { uint8_t line; int clip; int behind; } ProjPoint;
 typedef struct { uint16_t value; uint8_t c, v; } Wide16Exit;  /* a 16-bit result + the flags
                                                                  its high-byte op leaves live */
+/* The exit flags of a 16-bit binary add, returned by value so a core stays cpu-free; a shim
+   (or a caller whose own exit ABI is this add's) replays them onto the cpu. */
 typedef struct { uint8_t hi, carry, overflow, neg, zero; } AddFlags;
+/* update_engine_revs' escaping registers: the tail add's exit A/flags (every arm ends in
+   engine_note_only), plus X and Y, which take path-dependent values.  Returned by value so the
+   core stays cpu-free; the shim replays them.  EngineRegs is the starter poll's escaping X/Y. */
 typedef struct { AddFlags tail; uint8_t x, y; } EngineExit;
 typedef struct { uint8_t x, y; } EngineRegs;
+/* update_camera_and_drive_state's escaping registers: the final car_speed_scaled add's exit
+   A/flags, plus X (= player_car) and Y (= car_section_cursor).  Returned by value; shim replays. */
 typedef struct { AddFlags acc; uint8_t x, y; } CameraExit;
 typedef struct {
     uint16_t dist;        /* -> point_dist_lo/hi */
@@ -184,6 +195,12 @@ typedef struct {
     int      steep;        /* Y-major */
     uint8_t  bound;        /* the plot_ptr2_hi value at which the walk stops */
 } SpanArm;
+/* The far/near endpoint indices interp_edge hands back to its caller.  The 6502 left them in
+   X and Y ($2D05/$2D08) — not a computed result but the caller's OWN input indices, which the
+   convention keeps in place so the caller can step them.  The native caller
+   (draw_surface_spans_core) tracks x/y in its own locals and IGNORES this return; only the
+   transliterated oracle (draw_surface_spans__t6502) does INX/INY on them, so the interp_edge
+   SHIM marshals these two fields back into cpu.X/cpu.Y for that oracle's benefit. */
 typedef struct { uint8_t farIdx, nearIdx; } EdgeIndices;
 typedef struct { uint8_t a, v, c, n, z; } EdgeOffFlags;
 typedef struct { uint16_t product; uint8_t v, setV; } Mul8;
@@ -232,6 +249,8 @@ typedef struct { uint8_t angleIndex, stepSize, ddaLen, originMasked, rowSel, sub
 
 /* ---- always_inline 6502 flag helpers (moved out of revs_native.c) ---- */
 #define REVS_FLAG_OP static inline __attribute__((always_inline))
+/* A = value, with N and Z from it.  Used where a value reaches A and an SMC trap can then
+   exit the routine with both still live. */
 REVS_FLAG_OP unsigned load_a(uint8_t value)
 {
     LDA(value);
@@ -265,6 +284,9 @@ REVS_FLAG_OP unsigned dec_x(void)
     return cpu.X;
 }
 
+/* a + addend + carry_in, setting C and V.  C chains (the 16-bit pointer step adds three
+   times) and V is the one flag the cell chain can leak to its caller — nothing else in it
+   writes V at all. */
 REVS_FLAG_OP unsigned adc_step(unsigned a, uint8_t addend, int carry_in)
 {
     cpu.A = (uint8_t)a;
@@ -273,6 +295,10 @@ REVS_FLAG_OP unsigned adc_step(unsigned a, uint8_t addend, int carry_in)
     return cpu.A;
 }
 
+/* a + addend + carry_in as a VALUE ONLY — the ADC counterpart of sbc_value below, and it
+   exists for the same reason: a 16-bit add's low half feeds nothing but the high half's
+   carry, so paying cpu.h's five flag stores for it is paying for nothing.  ⚠ Decimal mode is
+   honoured, because D changes the RESULT BYTE and not merely the flags. */
 REVS_FLAG_OP Adc adc_value(uint8_t a, uint8_t m, unsigned carryIn)
 {
     unsigned c = carryIn ? 1u : 0u;
@@ -293,6 +319,11 @@ REVS_FLAG_OP Adc adc_value(uint8_t a, uint8_t m, unsigned carryIn)
     return r;
 }
 
+/* a - m - !carry_in as a VALUE + borrow-out — the SBC counterpart of adc_value, for the same
+   reason (a multi-byte subtract's low halves feed only the next half's borrow).  ⚠ Decimal mode
+   is honoured because D changes the RESULT BYTE.  On the 6502 the CARRY out of an SBC is the
+   BINARY borrow even in decimal mode (only the accumulator digits are corrected), so .carry is
+   computed from the plain subtraction in both branches. */
 REVS_FLAG_OP Adc sbc_value(uint8_t a, uint8_t m, unsigned carryIn)
 {
     int borrow = carryIn ? 0 : 1;
@@ -312,18 +343,26 @@ REVS_FLAG_OP Adc sbc_value(uint8_t a, uint8_t m, unsigned carryIn)
     return r;
 }
 
+/* V for ONE add, replayed from its operands — the ADC counterpart of the SBC overflow replay, and it
+   exists for the same reason: mul8's exit V is the V of the LAST add in an eight-step chain,
+   so the twin computes that one add's overflow instead of the seven dead ones. */
 REVS_FLAG_OP uint8_t adc_overflow(uint8_t a, uint8_t m, unsigned carryIn)
 {
     unsigned t = (unsigned)a + m + (carryIn ? 1u : 0u);
     return (uint8_t)(((~(a ^ m) & (a ^ (uint8_t)t)) >> 7) & 1u);
 }
 
+/* V for ONE subtract, replayed from its operands — the SBC counterpart of adc_overflow.
+   SBC computes A + ~M + C, so its overflow is ((A^M) & (A^result))>>7 (the two operands
+   differ in sign and the result took the sign of M).  Used where a converted subtract's V is
+   the only flag that escapes the routine. */
 REVS_FLAG_OP uint8_t sbc_overflow(uint8_t a, uint8_t m, unsigned carryIn)
 {
     uint8_t r = (uint8_t)(a - m - (carryIn ? 0u : 1u));
     return (uint8_t)((((a ^ m) & (a ^ r)) >> 7) & 1u);
 }
 
+/* value - subtrahend with the borrow clear (SEC/SBC), setting C and V. */
 REVS_FLAG_OP unsigned sub_from(unsigned value, uint8_t subtrahend)
 {
     cpu.A = (uint8_t)value;
@@ -332,6 +371,8 @@ REVS_FLAG_OP unsigned sub_from(unsigned value, uint8_t subtrahend)
     return cpu.A;
 }
 
+/* value - subtrahend - !carry_in, setting C and V — the second half of a 16-bit subtract,
+   where the borrow has to come from the low half's own SBC. */
 REVS_FLAG_OP unsigned sbc_step(unsigned value, uint8_t subtrahend, int carry_in)
 {
     cpu.A = (uint8_t)value;
@@ -340,6 +381,10 @@ REVS_FLAG_OP unsigned sbc_step(unsigned value, uint8_t subtrahend, int carry_in)
     return cpu.A;
 }
 
+/* `value >= limit`, spelled as the 6502's CMP so that the comparison's own C/N/Z are left
+   behind.  ⚠ NOT decoration: every SMC site in these two routines is an EXIT, so a clamp
+   test three lines earlier is the last thing that touched the flags on that path, and a
+   plain C `>=` reads the same and validates differently. */
 REVS_FLAG_OP int cmp_ge(unsigned value, uint8_t limit)
 {
     cpu.A = (uint8_t)value;
@@ -347,6 +392,8 @@ REVS_FLAG_OP int cmp_ge(unsigned value, uint8_t limit)
     return cpu.C;
 }
 
+/* `value >= limit` through the 6502's CPX, which also leaves X = value.  The near-slot clamps
+   below end on one of these, so the compare's own C/N/Z are their exit flags. */
 REVS_FLAG_OP int cpx_ge(unsigned value, uint8_t limit)
 {
     cpu.X = (uint8_t)value;

@@ -248,8 +248,6 @@ void plot_ptrs_marshal_out(void)
     plot_ptr_marshal_out(); plot_ptr2_marshal_out(); plot_ptr3_marshal_out();
 }
 
-/* The object/slot-writer chain's exit ABI — A/X/Y + N/Z/V/C returned by value so a core stays
-   cpu-free; the thin shim (or a caller whose own exit ABI is this) replays it onto cpu. */
 
 /* The object plotter (twin #94), defined far below but called from race_main_loop_core with
    the object slot count.  The main loop reaches it through the core, not the 6502-ABI shim. */
@@ -279,38 +277,6 @@ static void build_road_sign_core(void);
    ⭐ So: read the objdump for `jsr <sub_from>` before believing any arithmetic twin is fast.
    =========================================================================== */
 
-/* A = value, with N and Z from it.  Used where a value reaches A and an SMC trap can then
-   exit the routine with both still live. */
-
-/* a + addend + carry_in, setting C and V.  C chains (the 16-bit pointer step adds three
-   times) and V is the one flag the cell chain can leak to its caller — nothing else in it
-   writes V at all. */
-
-/* a + addend + carry_in as a VALUE ONLY — the ADC counterpart of sbc_value below, and it
-   exists for the same reason: a 16-bit add's low half feeds nothing but the high half's
-   carry, so paying cpu.h's five flag stores for it is paying for nothing.  ⚠ Decimal mode is
-   honoured, because D changes the RESULT BYTE and not merely the flags. */
-
-
-/* a - m - !carry_in as a VALUE + borrow-out — the SBC counterpart of adc_value, for the same
-   reason (a multi-byte subtract's low halves feed only the next half's borrow).  ⚠ Decimal mode
-   is honoured because D changes the RESULT BYTE.  On the 6502 the CARRY out of an SBC is the
-   BINARY borrow even in decimal mode (only the accumulator digits are corrected), so .carry is
-   computed from the plain subtraction in both branches. */
-
-/* V for ONE add, replayed from its operands — the ADC counterpart of the SBC overflow replay, and it
-   exists for the same reason: mul8's exit V is the V of the LAST add in an eight-step chain,
-   so the twin computes that one add's overflow instead of the seven dead ones. */
-
-/* V for ONE subtract, replayed from its operands — the SBC counterpart of adc_overflow.
-   SBC computes A + ~M + C, so its overflow is ((A^M) & (A^result))>>7 (the two operands
-   differ in sign and the result took the sign of M).  Used where a converted subtract's V is
-   the only flag that escapes the routine. */
-
-/* value - subtrahend with the borrow clear (SEC/SBC), setting C and V. */
-
-/* value - subtrahend - !carry_in, setting C and V — the second half of a 16-bit subtract,
-   where the borrow has to come from the low half's own SBC. */
 
 /* ===========================================================================
    $4E5C  irq1v_band_schedule — THE RASTER-BAND PALETTE/MODE SCHEDULE
@@ -692,8 +658,6 @@ static MEM_QUAL unsigned char* const g_viewSlotP[40] = {
     SLOT_B(12), SLOT_B(13)
 };
 
-/* The three values the chain and its drivers thread through each other — the 6502's A, X
-   and Y under the names of what they actually hold.  Everything else is a plain local. */
 
 /* Publish the state as the 6502 register file.  EVERY exit from the routine goes through
    here, including the SMC trap exits, because the fixture declares A, X and Y live. */
@@ -1913,10 +1877,6 @@ void race_main_loop_core(RestartDepth depth)
 /* MEM_car_segment — car_segment */
 #define PLAYER_CAR       0x17u     /* slot 23 — the player's own car */
 
-/* `value >= limit`, spelled as the 6502's CMP so that the comparison's own C/N/Z are left
-   behind.  ⚠ NOT decoration: every SMC site in these two routines is an EXIT, so a clamp
-   test three lines earlier is the last thing that touched the flags on that path, and a
-   plain C `>=` reads the same and validates differently. */
 
 /* max(value, floor), via the same CMP.  Used where the floor's own `LDA #imm` flags are
    provably overwritten before anything reads them (draw_road's two clamps). */
@@ -2022,15 +1982,6 @@ SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
 SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV);   /* SlotExit: top of file */
 SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect);
 
-/* The exit flags of a 16-bit binary add, returned by value so a core stays cpu-free; a shim
-   (or a caller whose own exit ABI is this add's) replays them onto the cpu. */
-
-/* update_engine_revs' escaping registers: the tail add's exit A/flags (every arm ends in
-   engine_note_only), plus X and Y, which take path-dependent values.  Returned by value so the
-   core stays cpu-free; the shim replays them.  EngineRegs is the starter poll's escaping X/Y. */
-
-/* update_camera_and_drive_state's escaping registers: the final car_speed_scaled add's exit
-   A/flags, plus X (= player_car) and Y (= car_section_cursor).  Returned by value; shim replays. */
 
 /* apply_driving_model's sub-models (twins #58-#86), all defined further down.  It reaches
    every one through its core so the whole chain is one native call sequence, not shim hops. */
@@ -2048,8 +1999,6 @@ AddFlags integrate_state_rates_core(void);
 AddFlags integrate_car_position_core(void);
 CameraExit update_camera_and_drive_state_core(void);
 
-/* `value >= limit` through the 6502's CPX, which also leaves X = value.  The near-slot clamps
-   below end on one of these, so the compare's own C/N/Z are their exit flags. */
 
 /* ===========================================================================
    $12DC  clamp_near_edge_cursor — WHICH NEAR SLOT DOES THE NEXT FRAME REBUILD?  (twin #18)
@@ -5618,12 +5567,6 @@ void draw_span_steep_rev(void) { span_walk(&ARM_STEEP_REV, cpu.X, cpu.Y); }
    have written is one 6502-stack byte the oracle still writes; the fixture ignores it.
    --------------------------------------------------------------------------- */
 
-/* The far/near endpoint indices interp_edge hands back to its caller.  The 6502 left them in
-   X and Y ($2D05/$2D08) — not a computed result but the caller's OWN input indices, which the
-   convention keeps in place so the caller can step them.  The native caller
-   (draw_surface_spans_core) tracks x/y in its own locals and IGNORES this return; only the
-   transliterated oracle (draw_surface_spans__t6502) does INX/INY on them, so the interp_edge
-   SHIM marshals these two fields back into cpu.X/cpu.Y for that oracle's benefit. */
 
 /* $2B26's three exits all run the same tail: publish this endpoint for the next span unless the
    endpoints were swapped, then report the two indices. */
@@ -6368,10 +6311,6 @@ static int pointer_is_ram(unsigned base)
 {
     return base < 0xFB01u;
 }
-
-/* The 16-bit pointer a zero-page PAIR holds — the address an `STA (zp),Y` resolves through,
-   before Y is added. */
-
 
 
 /* ===========================================================================
