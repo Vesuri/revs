@@ -164,9 +164,7 @@ static void build_road_sign_core(void);
    (docs/perf-method.md §twins #14/#15) */
 
 
-/* ===========================================================================
-   $4E5C  irq1v_band_schedule — THE RASTER-BAND PALETTE/MODE SCHEDULE
-   ===========================================================================
+/* $4E5C  irq1v_band_schedule — THE RASTER-BAND PALETTE/MODE SCHEDULE
 
    Revs owns IRQ1V and drives its display from a User VIA T1 timer.  One PAL field is FIVE
    interrupts; each repaints the Video ULA for the band about to be scanned out and reloads T1
@@ -199,8 +197,7 @@ static void build_road_sign_core(void);
    real BBC over 2858 engine-context interrupts (`make refloop --irq-abi`) and asserted at the
    seam.  A arrives via mos_irq_a; `PLA/TAX` restores X; Y is never touched; flags and S from
    the RTI.
-
-   =========================================================================== */
+ */
 
 /* One palette table → the ULA, last entry first.  The order is observable: entries share
    logical colours, so the last write to a high nibble wins.  $3468/$3458 are 16 entries,
@@ -356,9 +353,7 @@ void irq1v_band_schedule(void)
     irq1v_return();
 }
 
-/* ===========================================================================
-   $7BE2  view_paint_lines — THE 3D VIEWPORT RASTERISER, ONE SCAN LINE PER CHAIN
-   ===========================================================================
+/* $7BE2  view_paint_lines — THE 3D VIEWPORT RASTERISER, ONE SCAN LINE PER CHAIN
 
    WHAT IT COMPUTES.  The viewport is not drawn where it is computed: the producers
    ($24F6 → $1A20) write a *source byte* into one of forty $80-spaced blocks at
@@ -426,8 +421,7 @@ void irq1v_band_schedule(void)
    the last chain stopped at; the flags are live too (C from `CPX #3`, V from phase 3's
    `SEC / SBC`), so the fixture declares AXY+flags and the twin computes them.  The chain's
    own intermediate flags are dead — every one of the four call sites sets N/Z with an
-   `AND`/`CPX` before the next branch — which is why the unit loop keeps no flags at all.
-   =========================================================================== */
+   `AND`/`CPX` before the next branch — which is why the unit loop keeps no flags at all. */
 
 /* The per-scan-line control tables (symbols.csv carries the derivation).  Addresses rather than
    mem.h aliases because they are indexed tables.
@@ -443,8 +437,6 @@ void irq1v_band_schedule(void)
    left-END with right-START on the per-line ones.
    MEM_view_edge_phase ($3050) is the dash edge's sub-byte PIXEL PHASE, 0-6; one value serves
    both runs because they mirror. */
-/* MEM_view_edge_phase ($3050): the dash edge's sub-byte PIXEL PHASE, 0-6; one value
-   serves both runs because they mirror. */
 
 /* THE ROUTINE'S OWN SELF-MODIFIED CODE (symbols.csv `code` rows).  Each MEM_view_*_site is an
    instruction in the $7B00 overlay that the routine writes and then executes; the two-byte
@@ -518,20 +510,16 @@ static int view_span_is_ram(unsigned base)
     return (base + 40 * 8) <= BBC_IO_LO;
 }
 
-/* The screen address a boundary store lands on: one of the two pointers, plus the cell.
-   ⭐ WIDE-VALUE CLEANUP: `base` is the relocated uint16_t, so this is one word read and an add
-   where the 6502 idiom was two byte reads, a shift and an or — at the three call sites below. */
+/* The screen address a boundary store lands on: one of the two pointers, plus the cell.  `base`
+   is the relocated uint16_t, so this is one word read and an add. */
 static uint16_t view_screen_addr(uint16_t base, unsigned cell)
 {
     return (uint16_t)(base + cell);
 }
 
-/* One boundary cell of a run: the per-line source byte, masked down to the part of the cell the
-   run actually covers, then filled with the edge phase's pattern.  Plain C — the 6502's three
-   ops here have no carry and no decimal behaviour, so the value is just `(source & mask) | fill`.
-   A and N/Z are still recorded because the composed byte is in A and sets the flags at the exact
-   point where the chain below can trap out of the routine, and that exit is part of the twin's
-   contract. */
+/* One boundary cell of a run: the per-line source byte masked to the part the run covers, then
+   filled with the edge phase's pattern — just `(source & mask) | fill`.  A and N/Z are recorded
+   because the chain below can trap out of the routine at exactly this point. */
 static unsigned view_compose(unsigned source, unsigned mask, unsigned fill)
 {
     unsigned cell = (source & mask) | fill;
@@ -540,19 +528,13 @@ static unsigned view_compose(unsigned source, unsigned mask, unsigned fill)
     return cell;
 }
 
-/* ⭐⭐ ADDRESS -> UNIT IN ONE LOAD, instead of a forty-entry search.
-   The drivers ask three questions about an address they computed: is it a unit START (a JSR
-   into the chain), is it unit+$05 (the entry that skips the dirty test and uses the caller's
-   cell index), and is it a unit's opcode SLOT (a plant target).  All three were linear
-   searches over the forty units, and between them they run ~190 times a frame — measured as
-   most of the per-line DRIVER half of phase 24 (docs/perf-method.md §the unit loop's bytes).
-   These two tables answer them in one indexed load, and they are BUILT FROM the same
-   VIEW_UNIT_ADDR and g_viewSlotP the rest of the file uses, so the layout has one source of
-   truth and there is no second copy to keep in step.
-   ⚠ The one-answer-per-address form is only equivalent to the oracle's first-match search
-   because no address is both a unit start and another unit's +$05: chain A's units sit at
-   offset 0 mod 17 from $7C00 and chain B's at 2 mod 17 (342 = 17*20 + 2), while a +$05 entry
-   is 5 or 7 mod 17.  The builder ASSERTS it rather than trusting the arithmetic. */
+/* ADDRESS -> UNIT IN ONE LOAD.  The drivers ask three questions about a computed address ~190
+   times a frame: is it a unit START, is it unit+$05 (the entry that skips the dirty test), is it
+   an opcode SLOT.  All three were forty-entry linear searches.  These tables are BUILT FROM the
+   same VIEW_UNIT_ADDR and g_viewSlotP as the rest of the file, so the layout has one source.
+   ⚠ One-answer-per-address is equivalent to the oracle's first-match search only because no
+   address is both a unit start and another unit's +$05: chain A's units are 0 mod 17 from $7C00
+   and chain B's 2 mod 17, while a +$05 entry is 5 or 7 mod 17.  The builder ASSERTS it. */
 #define VIEW_LOW_PAGE   0x7Cu                /* the chain occupies $7C, $7D and $7E */
 #define VIEW_LOW_PAGES  3
 static unsigned char g_viewUnitOf[VIEW_LOW_PAGES][256];  /* unit+1, +$80 = the unit+$05 entry */
@@ -597,21 +579,15 @@ static int view_is_slot(uint16_t dst, unsigned page)
     return g_viewSlotOf[page - VIEW_LOW_PAGE][dst & 0xFF] != 0;
 }
 
-/* ⭐⭐ WHERE THE PLANTED STOPS ARE, TRACKED INSTEAD OF RE-READ PER UNIT.
-   45% of the unit loop was the SMC check — two loads and two compares per cell to ask whether
-   this unit's store had been overwritten with an `RTS`.  The answer changes only when a driver
-   PLANTS, and every plant in the sweep goes through view_plant below, so it is tracked: one
-   scan of the forty slots when the sweep starts, and an update at each plant.  The unit loop
-   then runs to a precomputed stop and tests nothing at all.
-   ⚠ THE SCAN IS NOT OPTIONAL and the tracking cannot replace it: a slot can hold garbage that
-   no plant of ours put there (`make validate`'s illegal cases poison the page between calls),
-   so each sweep starts from what is REALLY in the page.
-   ⚠ Sound only because the chain cannot modify its own page: it stores to $3000-$43CF and to
-   base + cell*8, and the sweep's pointers span $6700-$737D — below $7C00.  Same construction
-   argument as the hoisted destination bases, and the same one that lets the plant tracking
-   survive a whole sweep.
-   The list is unit indices, ascending, with a 40 sentinel — normally one entry (phases 2 and 3
-   plant one stop per chain) and none at all through phase 1's 1440 units. */
+/* WHERE THE PLANTED STOPS ARE, TRACKED INSTEAD OF RE-READ PER UNIT.  45% of the unit loop was
+   the SMC check — two loads and two compares per cell asking whether this unit's store had been
+   overwritten with an `RTS`.  The answer changes only at a plant, and every plant goes through
+   view_plant, so the loop runs to a precomputed stop and tests nothing.
+   ⚠ THE PER-SWEEP RESCAN IS NOT OPTIONAL: a slot can hold garbage no plant of ours put there
+   (validate's illegal cases poison the page between calls), so each sweep starts from the page.
+   ⚠ Sound only because the chain cannot modify its own page — it stores to $3000-$43CF and
+   base + cell*8, and the sweep's pointers span $6700-$737D, below $7C00.
+   Unit indices ascending with a 40 sentinel: normally one entry, none through phase 1. */
 static unsigned char g_viewStopList[41];
 static int g_viewStopN;
 
@@ -694,10 +670,9 @@ REVS_FLAG_OP int line_is_last(unsigned line, unsigned lastLine)
     return cpu.Z;
 }
 
-/* Is the planted stop already where we want it?  ⚠ The 6502 asks this with a `CPY`, which
-   writes C as well as Z — and C is live if the plant that follows traps out of the routine,
-   so the comparison has to be the 6502's rather than C's `==`.  (Found by sabotage: written
-   as `==` this passed the legal cases and failed 35 of the illegal ones.) */
+/* Is the planted stop already where we want it?  ⚠ The 6502 asks with `CPY`, which writes C as
+   well as Z, and C is live if the following plant traps out of the routine — so this must be the
+   6502's compare, not `==`.  (Sabotage: `==` passes the legal cases, fails 35 illegal ones.) */
 static int stop_unchanged(unsigned stop, unsigned recorded)
 {
     cpu.Y = (uint8_t)stop;
@@ -728,10 +703,9 @@ static int view_enter_chain(ViewState* v, uint16_t site, uint16_t opnd, unsigned
 {
     uint16_t target = (uint16_t)(mem[opnd] | (mem[opnd + 1] << 8));
 #ifdef REVS_VIEWP3_NOCHAIN
-    /* ⭐ `make VIEWP3=3` — THE PICTURE IS WRONG BY CONSTRUCTION.  Every computed chain entry is
-       validated and then NOT RUN, so the difference against the shipping row prices the chain runs
-       the drivers of phases 2 and 3 make — the four-way split's biggest claim, re-measured with an
-       instrument that has no bracket in it at all. */
+    /* ⭐ `make VIEWP3=3` — THE PICTURE IS WRONG BY CONSTRUCTION: every computed chain entry is
+       validated and then NOT RUN, so the difference against the shipping row prices the chain
+       runs that phases 2 and 3 make. */
     if ((target >> 8) == page && view_low_page(page)
         && g_viewUnitOf[page - VIEW_LOW_PAGE][target & 0xFF]) return 1;
 #endif
@@ -1290,9 +1264,7 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
 }
 
 
-/* ===========================================================================
-   $16DC  race_main_loop — THE RACE
-   ===========================================================================
+/* $16DC  race_main_loop — THE RACE
 
    WHAT IT COMPUTES.  Nothing itself: it is the driver.  One call runs a whole driving
    session — practice, a qualifying lap or a race — and returns to the front end
@@ -1353,8 +1325,7 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
    twin on randomised memory — the frame body always runs at least once and it is the whole
    engine.  The full reasoning is beside NATIVE_FUNCS in tools/transpile.py; the practical
    consequence is that every change in here must be followed by `make determinism`, which
-   drives 300 frames of exactly this loop and byte-compares all 64 KB.
-   =========================================================================== */
+   drives 300 frames of exactly this loop and byte-compares all 64 KB. */
 
 /* How much of the session reset a restart re-runs.  The 6502 expresses this as three branch
    targets INSIDE the prologue ($16EE, $16F3, $16F6) that the tail jumps back to, so the
@@ -1704,9 +1675,7 @@ void race_main_loop_core(RestartDepth depth)
 }
 
 
-/* ===========================================================================
-   $24F6  build_track_geometry — THE FRAME'S ROAD GEOMETRY  (twin #4)
-   ---------------------------------------------------------------------------
+/* $24F6  build_track_geometry — THE FRAME'S ROAD GEOMETRY  (twin #4)
    The view pipeline's FIRST producer, and the fifth call of the frame.  It turns the track
    ahead into the two 40-point edge lists everything downstream reads: road_edge_start emits
    the nearest point of each side, then one road_edge_walk per side climbs the section list
@@ -1723,8 +1692,7 @@ void race_main_loop_core(RestartDepth depth)
 
    ⚠ SELF-MODIFYING, twice, and both sites belong to the expansion circuits: $2538 and $2542
    are rewritten by each circuit's ModifyGameCode, so the bytes below are Silverstone's and
-   the other four circuits take the hook arms.  docs/static-map.md §Open items.
-   =========================================================================== */
+   the other four circuits take the hook arms.  docs/static-map.md §Open items. */
 
 /* The road-geometry pass's shared arrays (symbols.csv holds the evidence for each name).
    ⭐ edge_x is an ANGLE, not a column: bearing_to_section is an arctan and emit_edge_bearing
@@ -1786,9 +1754,7 @@ static uint16_t segment_word(unsigned byteIndex)
                       | ((unsigned)mem[MEM_track_segment_hi + byteIndex] << 8));
 }
 
-/* ===========================================================================
-   TWINS #16-#24 — THE REST OF THE ROAD-GEOMETRY PASS
-   ---------------------------------------------------------------------------
+/* TWINS #16-#24 — THE REST OF THE ROAD-GEOMETRY PASS
    With these nine, the whole call tree under build_track_geometry is real C: 19 routines,
    776 6502 instructions, no transliteration left anywhere in it.  They divide into three
    groups, and only the last two carry arithmetic worth compressing:
@@ -1810,8 +1776,7 @@ static uint16_t segment_word(unsigned byteIndex)
    ⭐ $2145 and $2285 are deliberately NOT twinned (see transpile.py) — each is one `LDY #0`
    falling into a body that already is one, so their oracles would call the native code and
    the fixtures would be vacuous.  What changed instead is that nothing here calls them: every
-   caller in this subtree is a twin now and passes the view origin as an ARGUMENT.
-   =========================================================================== */
+   caller in this subtree is a twin now and passes the view origin as an ARGUMENT. */
 
 /* The two coordinate transforms (twins #14/#15), defined further down the file.  Everything
    in this pass reaches them through the cores, never through the 6502-ABI shims. */
@@ -1860,9 +1825,7 @@ AddFlags integrate_car_position_core(void);
 CameraExit update_camera_and_drive_state_core(void);
 
 
-/* ===========================================================================
-   $12DC  clamp_near_edge_cursor — WHICH NEAR SLOT DOES THE NEXT FRAME REBUILD?  (twin #18)
-   ---------------------------------------------------------------------------
+/* $12DC  clamp_near_edge_cursor — WHICH NEAR SLOT DOES THE NEXT FRAME REBUILD?  (twin #18)
    Handed a candidate slot, which it steps up by one first.  Two independent clamps:
 
      * the window's TOP.  If candidate+1 is below near_edge_last, the window shrinks to it —
@@ -1872,8 +1835,7 @@ CameraExit update_camera_and_drive_state_core(void);
 
    ⚠ The exit flags are the second clamp's `CPX #6`, and on the path that fires it the `LDX #5`
    AFTER the compare overwrites N and Z while leaving C — which is why both steps go through
-   cpx_ge/arg_x rather than a C conditional.
-   =========================================================================== */
+   cpx_ge/arg_x rather than a C conditional. */
 void clamp_near_edge_cursor_core(uint8_t candidate)
 {
     unsigned slot = (candidate + 1u) & 0xFFu;         /* $12DC INX */
@@ -1894,14 +1856,11 @@ void clamp_near_edge_cursor_core(uint8_t candidate)
 }
 
 
-/* ===========================================================================
-   $12C8  clamp_near_edge_window — RE-OPEN THE WINDOW BY ONE SLOT  (twin #17)
-   ---------------------------------------------------------------------------
+/* $12C8  clamp_near_edge_window — RE-OPEN THE WINDOW BY ONE SLOT  (twin #17)
    The other half of a section step: near_edge_last moves up one, held inside
    [near_edge_first, 6], and then the cursor clamp above runs on near_edge_cursor + 1.  (The
    6502 spells that as `LDX near_edge_cursor / INX` falling into clamp_near_edge_cursor's own
-   `INX`, so the cursor really is stepped TWICE before the first compare.)
-   =========================================================================== */
+   `INX`, so the cursor really is stepped TWICE before the first compare.) */
 void clamp_near_edge_window_core(uint8_t nearSlots)   /* 6 — one past the last near slot */
 {
     unsigned last = (near_edge_last + 1u) & 0xFFu;    /* $12C8-$12CA */
@@ -1920,9 +1879,7 @@ void clamp_near_edge_window_core(uint8_t nearSlots)   /* 6 — one past the last
 }
 
 
-/* ===========================================================================
-   $12A0  shift_near_edge_points — THE CAR CROSSED A SECTION  (twin #16)
-   ---------------------------------------------------------------------------
+/* $12A0  shift_near_edge_points — THE CAR CROSSED A SECTION  (twin #16)
    Slides the near slots of BOTH 40-point halves up by one — entry i becomes entry i+1 for
    i = 4..0 and i = $2C..$28 — which frees slot 0 and slot $28 for the point road_edge_start
    is about to build, and keeps the two halves in step.  All three per-point arrays move
@@ -1936,8 +1893,7 @@ void clamp_near_edge_window_core(uint8_t nearSlots)   /* 6 — one past the last
    near_edge_first with an immediate CMP #6 before touching V, so that overflow is a DEAD byproduct
    (dropped from the fixture mask, not reproduced).  A does stay the computed near_edge_first across
    both clamps (they work in X), so it is kept live.  The subtract runs D=0 (the road pass is never
-   decimal — static-map.md §Decimal mode), so it is a plain binary `6 - near_edge_shift`.
-   =========================================================================== */
+   decimal — static-map.md §Decimal mode), so it is a plain binary `6 - near_edge_shift`. */
 uint8_t shift_near_edge_points_core(uint8_t topSlot,    /* $2C — slot 4 of the far half */
                                            uint8_t wrapSlot,   /* $28 — where the far half starts */
                                            uint8_t lowTop,     /* 5  — ...and the near half's top */
@@ -1962,9 +1918,7 @@ uint8_t shift_near_edge_points_core(uint8_t topSlot,    /* $2C — slot 4 of the
 }
 
 
-/* ===========================================================================
-   $0BA2  rebase_edge_point — ONE SURVIVING POINT ONTO THIS FRAME'S CAMERA  (twin #19)
-   ---------------------------------------------------------------------------
+/* $0BA2  rebase_edge_point — ONE SURVIVING POINT ONTO THIS FRAME'S CAMERA  (twin #19)
    An edge point is stored relative to the camera — its azimuth is measured from where the car
    points, its scan line from where the camera looks — so a point kept from last frame is
    wrong by exactly one frame of camera motion.  This corrects both halves of that in one go:
@@ -1976,8 +1930,7 @@ uint8_t shift_near_edge_points_core(uint8_t topSlot,    /* $2C — slot 4 of the
    The routine answers entirely in mem[] (the two edge cells, the scan line and the horizon
    pair); its sole caller — road_edge_start's re-base loop — reads no exit register or flag, so
    the subtracts' flags are dead (fixture: live=S) and they are plain 16-bit binary on the render
-   path (docs/static-map.md §Decimal mode).
-   =========================================================================== */
+   path (docs/static-map.md §Decimal mode). */
 void rebase_edge_point_core(uint8_t slot)
 {
     mem[MEM_edge_style + slot] = 0;                                     /* $0BA2-$0BA4 */
@@ -1997,9 +1950,7 @@ void rebase_edge_point_core(uint8_t slot)
 }
 
 
-/* ===========================================================================
-   $1208  load_section_triple — TRACK FILE -> A LIVE SECTION SLOT  (twin #20)
-   ---------------------------------------------------------------------------
+/* $1208  load_section_triple — TRACK FILE -> A LIVE SECTION SLOT  (twin #20)
    A track-file segment is an 8-byte record (which is why the wrap point is segment_count_x8),
    and fields 1..3 of it are the segment's three 16-bit coordinates.  This copies that triple
    into one of the 40+2 live section slots, whose two arrays road_edge_start, road_edge_walk,
@@ -2010,8 +1961,7 @@ void rebase_edge_point_core(uint8_t slot)
    the start.  The 6502 copies all three low bytes and then all three high bytes; this copies
    the three values whole, which is the same thing here because source and destination are
    DIFFERENT arrays — the widest reach is $09FF, short of the high plane at $0A00 — so no store
-   can be read back by a later load of this copy.
-   =========================================================================== */
+   can be read back by a later load of this copy. */
 void load_section_triple_core(uint8_t destSection, uint8_t segmentByte)
 {
     /* $1208-$122B — copy the three 16-bit coordinates of the segment (skipping its first byte,
@@ -2213,9 +2163,7 @@ void bearing_marshal_out(void)
     bearing_hi = (uint8_t)(bearing_v >> 8);
 }
 
-/* ===========================================================================
-   $0CA5  point_distance_hypot — HOW FAR AWAY IS THIS POINT?  (twin #22)
-   ---------------------------------------------------------------------------
+/* $0CA5  point_distance_hypot — HOW FAR AWAY IS THIS POINT?  (twin #22)
    The distance from the camera to the point bearing_to_section has just transformed, from the
    two ground-plane magnitudes that routine sorted into hypot_min and hypot_max.  It is an
    octagonal approximation to sqrt(min^2 + max^2) — and it is TWO of them, picked on the raw
@@ -2234,8 +2182,7 @@ void bearing_marshal_out(void)
    write DIFFERENT AMOUNTS of it: the near arm's >>3 keeps the low byte in A the whole way and
    only ever stores the high one, so hypot_min_lo comes back UNCHANGED there, where the far
    arm's >>1 is a read-modify-write of both.  Storing both on both arms is byte-exact
-   arithmetic and a differential failure — 829 of 2000 cases, all on the near arm.
-   =========================================================================== */
+   arithmetic and a differential failure — 829 of 2000 cases, all on the near arm. */
 
 static PointDist point_distance_hypot_core(uint8_t angle, uint16_t minMag, uint16_t maxMag)
 {
@@ -2286,17 +2233,14 @@ uint8_t point_distance_hypot_apply(void)
 }
 
 
-/* ===========================================================================
-   $23C0  emit_edge_bearing — THE POINT'S ANGLE, RELATIVE TO THE CAR  (twin #21)
-   ---------------------------------------------------------------------------
+/* $23C0  emit_edge_bearing — THE POINT'S ANGLE, RELATIVE TO THE CAR  (twin #21)
    bearing_to_section leaves an absolute bearing; an edge point stores the angle FROM WHERE
    THE CAR IS POINTING, so this is the one subtraction between them, written into both bytes
    of edge_x at the given slot.  It then falls into point_distance_hypot, which is why every
    caller gets the point's distance as well as its angle out of one call.
 
    The subtract's own flags are all dead — the hypot's opening `LDA / CMP` overwrites N, Z and
-   C and both of its exits overwrite V — so it is a value chain, not a flag chain.
-   =========================================================================== */
+   C and both of its exits overwrite V — so it is a value chain, not a flag chain. */
 uint8_t emit_edge_bearing_core(uint8_t slot)
 {
 
@@ -2310,13 +2254,10 @@ uint8_t emit_edge_bearing_core(uint8_t slot)
 }
 
 
-/* ===========================================================================
-   $23BB  emit_edge_bearing_at_cursor — ...FOR THE POINT THE WALK IS ON  (twin #23)
-   ---------------------------------------------------------------------------
+/* $23BB  emit_edge_bearing_at_cursor — ...FOR THE POINT THE WALK IS ON  (twin #23)
    Five bytes: take the section's bearing from the camera, then emit it at edge_cursor.  It
    exists because road_edge_walk always wants both together, where road_edge_start picks the
-   slot itself and calls the two halves separately.
-   =========================================================================== */
+   slot itself and calls the two halves separately. */
 uint8_t emit_edge_bearing_at_cursor_core(uint8_t sectionByte)
 {
     bearing_to_section_core(sectionByte, 0);        /* $23BB -> $2145: origin 0 = the camera */
@@ -2324,9 +2265,7 @@ uint8_t emit_edge_bearing_at_cursor_core(uint8_t sectionByte)
 }
 
 
-/* ===========================================================================
-   $2565  emit_edge_width_offset — THE OTHER SIDE OF THE ROAD, AND THE MARKERS  (twin #24)
-   ---------------------------------------------------------------------------
+/* $2565  emit_edge_width_offset — THE OTHER SIDE OF THE ROAD, AND THE MARKERS  (twin #24)
    The last thing road_edge_walk does with a point it has decided to keep, and it produces
    three separate things out of one lookup:
 
@@ -2350,8 +2289,7 @@ uint8_t emit_edge_bearing_at_cursor_core(uint8_t sectionByte)
    ⚠ The first THREE points of a side get no width offset at all ($2580 CMP #3): they are the
    ones beside the car, where the perspective divide has nothing useful to say.
    ⚠ SELF-MODIFYING at $261A: all four expansion circuits replace the horizon store pair with
-   `JMP $56AF` (`make track-patch`), so the bytes are dispatched rather than assumed.
-   =========================================================================== */
+   `JMP $56AF` (`make track-patch`), so the bytes are dispatched rather than assumed. */
 
 /* $2596-$25A7 — proj_width shifted by `steps`, as a 16-bit value.  The 6502's loop shifts one
    place per iteration and the count is a signed byte, so a count of 16 or more shifts every
@@ -2563,8 +2501,7 @@ void draw_dash_needle_core(uint16_t steer, DashNeedle *out)
     out->subPos       = (uint8_t)((originBase << 1) & 0x07u);   /* $5195-$519A -> shared_temp_77 */
 }
 
-/* ---------------------------------------------------------------------------
-   $5204  plot_line_octant — A SELF-MODIFYING OCTANT LINE PLOTTER  (twin #164)
+/* $5204  plot_line_octant — A SELF-MODIFYING OCTANT LINE PLOTTER  (twin #164)
 
    ⚠ SELF-MODIFYING BY CONSTRUCTION.  A DDA straight-line drawer whose major- and
    minor-axis STEP opcodes are chosen per octant and PATCHED INTO the routine's own
@@ -2592,8 +2529,7 @@ void draw_dash_needle_core(uint16_t steer, DashNeedle *out)
    The MINOR step fires every pixel.  x is the sub-cell column 0..7 and y the scan line
    0..7; when either steps past its cell the plot pointer moves one MODE 5 cell ($08) or
    one character row ($140) and the coordinate wraps.  Each pixel records an undo entry
-   (address + original byte) so undraw_plot_lines can erase the line next frame.
-   --------------------------------------------------------------------------- */
+   (address + original byte) so undraw_plot_lines can erase the line next frame. */
 
 /* ⭐ TWIN #165b — undraw_plot_lines ($511E).  THE ERASE HALF of the dash needles: walks the undo
    list plot_line_octant recorded, top entry down to entry 0, writing each saved background byte
@@ -2751,8 +2687,7 @@ void plot_line_octant_core(uint8_t entryScanline)
     plot_ptr_marshal_out();                                /* publish $70/$71 for the 6502-ABI mirror */
 }
 
-/* ---------------------------------------------------------------------------
-   $3A50  menu_draw_gfx_bars — TWO TELETEXT GRAPHICS BARS INTO THE MENU PAGE (twin #156)
+/* $3A50  menu_draw_gfx_bars — TWO TELETEXT GRAPHICS BARS INTO THE MENU PAGE (twin #156)
 
    Called once from front_end_menus ($63ED), while MODE 7 is up so $7C00-$7FFF is
    the teletext page (time-multiplexed with the race view's cell chains).  For each
@@ -2764,8 +2699,7 @@ void plot_line_octant_core(uint8_t entryScanline)
    The bar's end column lived in math_lo ($74) as the loop's CPX target; it is a
    local now (the reader-nativization step of the wide-value cleanup), with the
    cell's exit value still written so the routine stays byte-exact until math_lo is
-   relocated.  Exit regs/flags are dead at the sole (front-end) caller.
-   --------------------------------------------------------------------------- */
+   relocated.  Exit regs/flags are dead at the sole (front-end) caller. */
 void menu_draw_gfx_bars_core(void)
 {
     const uint16_t page = (uint16_t)(MENU_SCREEN_BASE + 0x79u);
@@ -2784,8 +2718,7 @@ void menu_draw_gfx_bars_core(void)
     }
 }
 
-/* ---------------------------------------------------------------------------
-   $32D0  parse_two_digit_ascii — TWO ASCII DIGITS -> A NUMBER 0..99  (twin #157)
+/* $32D0  parse_two_digit_ascii — TWO ASCII DIGITS -> A NUMBER 0..99  (twin #157)
 
    The console numeric-entry validator (sole caller $3EE0 reads two chars into
    math_lo/math_hi via console_io, then loops here until the pair is valid).
@@ -2800,8 +2733,7 @@ void menu_draw_gfx_bars_core(void)
    Exit C is the validity/range flag the caller branches on.  math_lo held the
    running value (digit0, then digit0*10); a local now (the reader-nativization
    step of the wide-value cleanup), with the cell's per-path 6502 exit value still
-   written so the routine stays byte-exact until math_lo is relocated.
-   --------------------------------------------------------------------------- */
+   written so the routine stays byte-exact until math_lo is relocated. */
 void parse_two_digit_ascii_core(uint8_t char0, uint8_t char1, ParseNum *out)
 {
     out->writeMathlo = 0;
@@ -2835,15 +2767,13 @@ void parse_two_digit_ascii_core(uint8_t char0, uint8_t char1, ParseNum *out)
     out->n = (uint8_t)(((value - 0x29u) >> 7) & 1u);
 }
 
-/* ---------------------------------------------------------------------------
-   $3C50  prompt_wing_settings — THE PIT-LANE WING PROMPT  (twin #202)
+/* $3C50  prompt_wing_settings — THE PIT-LANE WING PROMPT  (twin #202)
 
    The page the pit-stop wait loop ($6560) puts up before handing the car back:
    dress the front end for layout variant 5, ask for the rear wing and then the
    front, and hold the page until SPACE.  Each answer comes back from
    console_read_two_digits as a number 0..40 and goes straight into its setting.
-   Exit ABI dead — the caller runs the race loop next.
-   --------------------------------------------------------------------------- */
+   Exit ABI dead — the caller runs the race loop next. */
 void prompt_wing_settings_core(void)
 {
     select_text_variant_core(0x05u);                     /* $3C50-$3C52 */
@@ -2854,8 +2784,7 @@ void prompt_wing_settings_core(void)
     wait_dismiss_space_core();                           /* $3C6B */
 }
 
-/* ---------------------------------------------------------------------------
-   $3EE0  console_read_two_digits — READ A NUMBER 0..40 FROM THE CONSOLE (twin #201)
+/* $3EE0  console_read_two_digits — READ A NUMBER 0..40 FROM THE CONSOLE (twin #201)
 
    The pit-lane wing prompts' input routine, and it will not take no for an answer:
    line-edit two characters into math_lo/math_hi, validate them with
@@ -2868,8 +2797,7 @@ void prompt_wing_settings_core(void)
    field width, and so exactly the number of echoed characters the DELETE loop has to
    undo.  Since twin #207 that is a constant here (the line editor always returns with
    the field full), and the ambient OSWRCH register it hands the DELETEs is console_io's
-   exit X, which is 0 because every OSBYTE returns X = 0.
-   --------------------------------------------------------------------------- */
+   exit X, which is 0 because every OSBYTE returns X = 0. */
 uint8_t console_read_two_digits_core(void)
 {
     for (;;) {                                       /* $3EE0 — ask until the pair is valid */
@@ -2890,9 +2818,7 @@ uint8_t console_read_two_digits_core(void)
     }
 }
 
-/* ===========================================================================
-   $635D  seed_car_track_position — place one car on the grid at (re)start  (#158)
-   ---------------------------------------------------------------------------
+/* $635D  seed_car_track_position — place one car on the grid at (re)start  (#158)
    Called per car by reset_all_cars_for_session and tick_race_timers (the reset paths).  ⚠ NOT by
    console_io ($6300), whose tail appears to fall through into it: the BNE at $635B
    is taken unconditionally (the LDA #$20 two bytes earlier can never set Z), so that
@@ -3074,13 +3000,10 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
 }
 
 
-/* ===========================================================================
-   $3450  abs8 — |A|  (twin #12)
-   ---------------------------------------------------------------------------
+/* $3450  abs8 — |A|  (twin #12)
    Eight bytes and 21 callers, with one trap in them: the `BPL` at $3450 tests the CALLER's
    N flag, not bit 7 of A.  Real callers have just computed A so the two agree; a randomised
-   pre-state decorrelates them, and the 6502 follows N.  $80 negates to itself.
-   =========================================================================== */
+   pre-state decorrelates them, and the 6502 follows N.  $80 negates to itself. */
 /* $3452-$3455 EOR #$FF / CLC / ADC #1 — negate `a` as (~a)+1, computing the add's own exit
    flags directly: C set iff the value was 0 (~a+1 carries only from $FF), V set iff it was
    $80 (~a == $7F is the one operand whose +1 signed-overflows), N/Z from the result.  cpu-free:
@@ -3115,9 +3038,7 @@ void abs8(void)
     cpu.Z = f.zero;
 }
 
-/* ===========================================================================
-   $254A  road_edge_side — WHICH ROAD SIDE, AND WHICH WAY ROUND IT  (twin #11)
-   ---------------------------------------------------------------------------
+/* $254A  road_edge_side — WHICH ROAD SIDE, AND WHICH WAY ROUND IT  (twin #11)
    Called twice a frame, with $00 and $80, and it EORs that against track_direction — so the
    two calls pick OPPOSITE sides whichever way round the circuit the car is going.  What it
    hands road_edge_walk is three things:
@@ -3130,8 +3051,7 @@ void abs8(void)
      road_side_index      0 or 1, which emit_edge_width_offset uses to pick the road's width
                           record and the sign of the offset
 
-   No arithmetic, no hardware, and the two arms differ only in three constants.
-   =========================================================================== */
+   No arithmetic, no hardware, and the two arms differ only in three constants. */
 
 
 static RoadSide road_edge_side_core(uint8_t sideSelect, uint8_t cursor, uint8_t direction)
@@ -3163,9 +3083,7 @@ RoadSide road_edge_side_apply(uint8_t sideSelect)
 }
 
 
-/* ===========================================================================
-   $22FF  road_edge_start — THE NEAR EDGE POINTS  (twin #9)
-   ---------------------------------------------------------------------------
+/* $22FF  road_edge_start — THE NEAR EDGE POINTS  (twin #9)
    build_track_geometry's first call, and the only part of the road pipeline that REUSES last
    frame's work.  Slots 0..5 of each 40-point half are the edge points beside and behind the
    car — both walks start at slot 6 — and they are far too close to the camera to re-derive
@@ -3191,8 +3109,7 @@ RoadSide road_edge_side_apply(uint8_t sideSelect)
    slot too.  Those are the only two bytes any circuit writes (`make track-patch`), so any
    other offset traps instead of being guessed at.
 
-   No hardware writes and no $FC00-$FEFF access: the whole routine is RAM.
-   =========================================================================== */
+   No hardware writes and no $FC00-$FEFF access: the whole routine is RAM. */
 
 /* $231A — see above.  Returns 1 when the branch is taken to $232B, i.e. the re-base pair is
    skipped for this slot; sets *trapped when the bytes are neither recognised shape, and the
@@ -3323,9 +3240,7 @@ void road_edge_start_core(uint8_t nearSlotCount,   /* 6 — also the "nothing to
 }
 
 
-/* ===========================================================================
-   $23D2  road_edge_walk — ONE ROAD SIDE, FROM THE CURSOR INTO THE DISTANCE  (twin #10)
-   ---------------------------------------------------------------------------
+/* $23D2  road_edge_walk — ONE ROAD SIDE, FROM THE CURSOR INTO THE DISTANCE  (twin #10)
    The road pipeline's real walk, run once per side.  Starting from the section byte index
    road_edge_side chose, it emits up to 18 edge points, stepping further along the section
    list for each one (edge_walk_step_tbl) so the far half of the road costs almost nothing.
@@ -3349,8 +3264,7 @@ void road_edge_start_core(uint8_t nearSlotCount,   /* 6 — also the "nothing to
    rewritten by every expansion circuit into a single JMP into its own hook block.
    ⚠ In the transliteration the body is the multi-entry region `region_23d8` rather than one
    function, because $2490 is both a branch target and a container split; the oracle for this
-   twin is the $23D2 stub plus that whole region.
-   =========================================================================== */
+   twin is the $23D2 stub plus that whole region. */
 
 /* $2477-$2489 — |edge_x_hi[…]| against the off-axis threshold, spelled with the 6502's
    LDA/BPL/EOR/CMP because both exits below inherit A and the compare's flags.  Note EOR #$FF
@@ -3715,9 +3629,7 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
 }
 
 
-/* ===========================================================================
-   $1A20  draw_road — THE ROAD RASTERISER  (twin #5)
-   ---------------------------------------------------------------------------
+/* $1A20  draw_road — THE ROAD RASTERISER  (twin #5)
    The view pipeline's SECOND producer, and the eleventh call of the frame: it consumes
    build_track_geometry's two edge lists and produces the per-scan-line data view_paint_lines
    turns into screen bytes.  ⭐ It writes SIX visible frame-buffer bytes in a whole frame
@@ -3739,8 +3651,7 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
    be a different program.  horizon_index is reread for the same reason — nothing in this
    subtree writes it today, but that is a claim about a large subtree and the cell is one byte.
 
-   No hardware writes and no $FC00-$FEFF access: RAM only, like its sibling above.
-   =========================================================================== */
+   No hardware writes and no $FC00-$FEFF access: RAM only, like its sibling above. */
 
 /* $1A98 twice — the third stage, whose return value is the scan line at which that side's
    line_attr buffer stops being valid.  surface_colour_at reads exactly that: at or past
@@ -3855,9 +3766,7 @@ SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
 }
 
 
-/* ===========================================================================
-   ⭐⭐ WIDE-VALUE CLEANUP, mechanism (B): THE DRIVING MODEL'S STATE VECTOR
-   ---------------------------------------------------------------------------
+/* ⭐⭐ WIDE-VALUE CLEANUP, mechanism (B): THE DRIVING MODEL'S STATE VECTOR
    Fifteen 16-bit elements, plane-split in the 6502 as low bytes at $62D0 and high bytes at
    $62E0 — element i is ($62D0+i, $62E0+i).  It is the single largest wide-value base in the
    engine: 23 native routines, 84 references, every one of them a two-lane load, a chained
@@ -3882,8 +3791,7 @@ SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
    routines talking to each other through mem[] — and closing it means moving producer and
    consumer to `model_state_16` together and re-recording the determinism baselines, which is a
    representation change, not a cleanup.  A pure reader is safe meanwhile by the IN/OUT rule, as
-   long as every shim publishes on the way out.
-   =========================================================================== */
+   long as every shim publishes on the way out. */
 
 uint16_t model_state_16[MODEL_STATE_N];
 
@@ -3929,9 +3837,7 @@ void view_origin_marshal_out(void)
 }
 
 
-/* ===========================================================================
-   $46A1  apply_driving_model — THE PLAYER CAR'S PHYSICS  (twin #6)
-   ---------------------------------------------------------------------------
+/* $46A1  apply_driving_model — THE PLAYER CAR'S PHYSICS  (twin #6)
    The body's 4th call, and nothing else in the frame writes the car's motion.  136 bytes of
    DRIVER over fifteen sub-models, so — like twins #4 and #5 — what it buys is the naming, not
    milliseconds (docs/faithfulness-seam.md §8).  What the routine itself owns is three things:
@@ -3970,8 +3876,7 @@ void view_origin_marshal_out(void)
    $0A..$0D are two PER-AXLE pairs (front + 0, rear + 1) and 14 is scratch.  The runs are in
    disasm/symbols.csv under model_state_lo, and revs_native_seam.h names the elements.
 
-   No hardware writes and no $FC00-$FEFF access in the driver itself.
-   =========================================================================== */
+   No hardware writes and no $FC00-$FEFF access in the driver itself. */
 
 
 /* ⚠ Every model cell below is read from mem[] at the point of use and never cached in a local:
@@ -4093,9 +3998,7 @@ CameraExit apply_driving_model_core(uint16_t heading, int entryC)
 }
 
 
-/* ===========================================================================
-   $2AD1  draw_track_object — ONE OBJECT SLOT ONTO THE SCREEN  (twin #7)
-   ---------------------------------------------------------------------------
+/* $2AD1  draw_track_object — ONE OBJECT SLOT ONTO THE SCREEN  (twin #7)
    The body's 15th call, entered with an object SLOT index in X.  There are 24 slots and they
    hold both the other cars and the road signs, which is why the main loop can reuse this call
    for slot $17 — the sign build_road_sign has just assembled.
@@ -4118,8 +4021,7 @@ CameraExit apply_driving_model_core(uint16_t heading, int entryC)
    Six routines share the cell — docs/rename.md.
 
    No hardware writes: the plotter's stores are RAM, and the transpiler was already routing
-   this routine's own accesses straight to mem[].
-   =========================================================================== */
+   this routine's own accesses straight to mem[]. */
 
 
 /* Exit ABI is the full register+flag set (SlotExit).  A, V and C differ per path; X, N and Z
@@ -4196,9 +4098,7 @@ SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, ui
 }
 
 
-/* ===========================================================================
-   $1E15  fill_dash_edge_columns — THE VIEW/DASHBOARD SEAM  (twin #8)
-   ---------------------------------------------------------------------------
+/* $1E15  fill_dash_edge_columns — THE VIEW/DASHBOARD SEAM  (twin #8)
    The body's 18th call, and the smallest driver in the frame: 35 bytes, two calls of
    fill_edge_column_run.  What it makes happen is that the road view MEETS the front tyres and
    the dashboard without a gap — the columns at the two ends of the viewport still have source
@@ -4223,8 +4123,7 @@ SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, ui
    A, X and Y into $42, $85 and $7F before touching any of them, and the first thing that reads
    a flag in the whole subtree ($1DB3) comes after $1DF5's own `LDA` has reset N and Z — so no
    incoming flag survives to be wrong.  Swapping WHICH register carries which value does fail,
-   as it must; swapping the order does not.
-   =========================================================================== */
+   as it must; swapping the order does not. */
 
 
 /* One end of the viewport.  `stopColumn` is exclusive of the plot_ptr2 half of the run and
@@ -4251,9 +4150,7 @@ SlotExit fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightStartS
 }
 
 
-/* ===========================================================================
-   $18EA  copy_dash_data — THE SECOND UNPACK / STOW  (twin #115)
-   ---------------------------------------------------------------------------
+/* $18EA  copy_dash_data — THE SECOND UNPACK / STOW  (twin #115)
    The whole call tree is this one routine — it has no JSR of its own; it just moves bytes.
    race_main_loop calls it twice per race:
 
@@ -4280,8 +4177,7 @@ SlotExit fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightStartS
 
    No hardware writes and no callees — the whole thing is RAM.  Addresses are masked to 16 bits
    so the faithful Y-wrap can never index past mem[]; with real data (block starts all < $4F)
-   the copy provably stays inside $3000-$7FFF and never reaches the hardware window.
-   =========================================================================== */
+   the copy provably stays inside $3000-$7FFF and never reaches the hardware window. */
 
 /* DASH_BLOCK_COUNT is in revs_native_seam.h — race_main_loop_core's exit needs it too. */
 #define DASH_BLOCK_TOP    0x4Fu     /* a block's live data always ENDS at offset $4F */
@@ -4330,9 +4226,7 @@ void copy_dash_data_core(uint8_t dirFlag)
 }
 
 
-/* ===========================================================================
-   $0C47  div16by8 — THE ENGINE'S DIVIDE  (twin #13)
-   ---------------------------------------------------------------------------
+/* $0C47  div16by8 — THE ENGINE'S DIVIDE  (twin #13)
    mul8's opposite number, and the one function project_point and bearing_to_section call:
    unsigned (A : math_lo) / shared_temp_76, quotient back in math_lo, remainder in A.  Every
    edge point of every frame goes through it — bearing_to_section divides the smaller
@@ -4374,8 +4268,7 @@ void copy_dash_data_core(uint8_t dirFlag)
    dead at all three call sites (bearing_to_section's `LDA #0` and project_point's `LDA math_lo
    / CMP #$80` overwrite N, Z and C, and nothing reads V), so once project_point and
    bearing_to_section are twins themselves the flags become internal and a single DIVU is
-   provably enough.  Worth ~1% of the frame, i.e. under the noise floor — docs/perf-method.md.
-   =========================================================================== */
+   provably enough.  Worth ~1% of the frame, i.e. under the noise floor — docs/perf-method.md. */
 
 
 /* The numerator is ONE 16-bit value; the 6502 keeps its top half in A and its bottom half in
@@ -4454,10 +4347,8 @@ void div16by8(void)
     if (r.setV) cpu.V = r.overflow;     /* the last subtract's V; untouched when none ran */
 }
 
-/* ===========================================================================
-   TWIN #14, $2145/$2147 bearing_to_section — THE BEARING
+/* TWIN #14, $2145/$2147 bearing_to_section — THE BEARING
    TWIN #15, $2285/$2287 project_point      — THE PERSPECTIVE DIVIDE
-   ---------------------------------------------------------------------------
    The road pass's two coordinate transforms, and every edge point in the frame goes through
    both: bearing_to_section turns a track section's position into an ANGLE measured from the
    view origin, project_point turns the same section's height into a SCAN LINE.  They are
@@ -4499,8 +4390,7 @@ void div16by8(void)
    exit V is dead at all three of its call sites; those three sites are now both in this file,
    so the DIVU.W replacement it describes is provably legal.  It is NOT taken here — it is a
    separate and separately-measurable change, and these fixtures still compare V, so taking it
-   means relaxing them in the same commit.
-   =========================================================================== */
+   means relaxing them in the same commit. */
 
 /* reciprocal_table indexed by a MANTISSA: project_point normalises the distance until bit 7 is
    set, so the entry it wants is $80 below the table's base ($6200) — entry i = $8000/(i+$80). */
@@ -4741,9 +4631,7 @@ ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
 }
 
 
-/* ===========================================================================
-   $2B26-$2FFF  THE SPAN RASTERISER — twins #25-#39
-   ---------------------------------------------------------------------------
+/* $2B26-$2FFF  THE SPAN RASTERISER — twins #25-#39
    Everything draw_road reaches below its three stages, and the one part of the view pipeline
    that was still transliterated after twins #16-#24 closed the geometry pass.  Read as one
    subsystem it is a Bresenham span painter with an unusual amount of machinery around it:
@@ -4771,8 +4659,7 @@ ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
    ⚠ THE NINE BYTES AT $80-$88 ARE A SECOND TENANT of point_delta_lo/hi/sign (see
    docs/rename.md): to build_track_geometry they are a camera-relative delta vector, to this
    pass they are DDA state.  The windows never overlap — draw_road runs after
-   build_track_geometry has finished — and the defines below are what make the code readable.
-   =========================================================================== */
+   build_track_geometry has finished — and the defines below are what make the code readable. */
 
 #define SPAN_LINE_END  (MEM_point_delta_lo + 2u)   /* point_delta_lo[2]   — the scan line the span stops at */
 #define SPAN_DX        MEM_point_delta_hi   /* point_delta_hi[0]   — the DDA's major delta */
@@ -4807,9 +4694,7 @@ static int span_step_y(unsigned slot, uint8_t *y)
     }
 }
 
-/* ---------------------------------------------------------------------------
-   $0E40  abs16_math  (twin #25)
-   ---------------------------------------------------------------------------
+/* $0E40  abs16_math  (twin #25)
    |math_lo:A| in place: the 16-bit value's low byte lives in math_lo and its high byte
    arrives (and leaves) in A.  Twenty-one callers across the engine; interp_edge's is the
    one in this subsystem.
@@ -4819,8 +4704,7 @@ static int span_step_y(unsigned slot, uint8_t *y)
    a randomised pre-state, and decimal mode decorrelates them even for a freshly computed
    value (docs/faithfulness-seam.md).
    ⚠ It BRANCHES ON THE CALLER'S N and then falls into neg16_math (twin #48), which is the
-   function this now calls — nothing is duplicated.
-   --------------------------------------------------------------------------- */
+   function this now calls — nothing is duplicated. */
 void abs16_math(void)
 {
     if (!cpu.N) return;             /* $0E40 BPL — caller's N is the value's sign; positive: A kept */
@@ -4837,9 +4721,7 @@ void abs16_math(void)
     cpu.A   = (uint8_t)(v >> 8);
 }
 
-/* ---------------------------------------------------------------------------
-   $2FEE  road_span_advance  (twin #26)
-   ---------------------------------------------------------------------------
+/* $2FEE  road_span_advance  (twin #26)
    "Has this span walked off the top of its source block?"  Returns nothing but the CARRY:
    set while the scan line is still PAST the block's first line, clear the moment it reaches
    it.  Both plotters consult it before merging a pixel into an occupied cell, and a clear
@@ -4848,8 +4730,7 @@ void abs16_math(void)
    ⚠ Its exit N/Z come from reloading X, not from the compare — the compare's own N/Z are
    dead by then, and no caller reads them (both plotters and both markers consult only the
    CARRY).  A and X are preserved — the whole point of the 6502's math_lo/math_hi round trip,
-   which the pure-C core simply does not need — so the routine is a pure predicate on Y.
-   --------------------------------------------------------------------------- */
+   which the pure-C core simply does not need — so the routine is a pure predicate on Y. */
 int road_span_advance_core(uint8_t y)
 {
     /* CMP then a CLC on equal: carry SET while the scan line is still past the block's first
@@ -4858,9 +4739,7 @@ int road_span_advance_core(uint8_t y)
 }
 
 
-/* ---------------------------------------------------------------------------
-   $2F12-$2F44  the run's SURFACE CAP
-   ---------------------------------------------------------------------------
+/* $2F12-$2F44  the run's SURFACE CAP
    Not a function of its own in the disassembly — it is the tail two of the four arms fall
    into, and the plotters' abort path jumps to it.  It stamps ONE view_line_surface entry:
    the class of the scan line the run ended on, which view_paint_lines later turns into that
@@ -4875,8 +4754,7 @@ int road_span_advance_core(uint8_t y)
    they are cleared unless they are already 3.
 
    ⚠ X is CLOBBERED here — $2F2E loads view_yaw_offset into it — and Y by the descending
-   arm's step.  Both are live at the plotters' exit, so both are part of the contract.
-   --------------------------------------------------------------------------- */
+   arm's step.  Both are live at the plotters' exit, so both are part of the contract. */
 /* $2F23's per-circuit "is this scan line already classified?" test — the one operation in the
    surface cap whose answer genuinely leaves an external routine.  Silverstone reads
    view_line_surface directly ($2F23 == LDA abs,Y); an expansion circuit runs its own hook,
@@ -4941,9 +4819,7 @@ static void span_abandon_chain(uint8_t y)
    corpus does, so a native arm and a transliterated one behave identically. */
 #define span_chain_abandoned()  UNWIND_TAKEN()
 
-/* ---------------------------------------------------------------------------
-   $2F45  road_span_plot  (twin #27)  and  $2F87  road_span_plot_2  (twin #28)
-   ---------------------------------------------------------------------------
+/* $2F45  road_span_plot  (twin #27)  and  $2F87  road_span_plot_2  (twin #28)
    THE LEAF OF THE WHOLE VIEW PIPELINE: one column of one span, merged into one buffer cell.
    The two are the same routine against different pointers — that is the only difference —
    so they share a core and differ by a descriptor.
@@ -4966,8 +4842,7 @@ static void span_abandon_chain(uint8_t y)
 
    ⚠ The two cell stores are raw mem[] stores, NOT bus_read/bus_write.  (A comment here used to
    claim otherwise; it described code that no longer exists, and believing it is what made a
-   bus_write aliasing probe look like it covered the plotters — docs/wide-value-cleanup.md.)
-   --------------------------------------------------------------------------- */
+   bus_write aliasing probe look like it covered the plotters — docs/wide-value-cleanup.md.) */
 
 const SpanPlotter SPAN_PLOT_1 = {
     MEM_span_step_p1_in_slot, MEM_span_step_p1_out_slot, MEM_span_dest_p1_operand, (MEM_span_dest_p1_operand + 1u),
@@ -5052,9 +4927,7 @@ void road_span_plot_2(void)
     cpu.Y = y; cpu.C = carry ? 1 : 0;
 }
 
-/* ---------------------------------------------------------------------------
-   $2FC0  span_end_marker_p1  (twin #29)  and  $2FD7  span_end_marker_p2  (twin #30)
-   ---------------------------------------------------------------------------
+/* $2FC0  span_end_marker_p1  (twin #29)  and  $2FD7  span_end_marker_p2  (twin #30)
    Close a run: write the $FF terminator the view rasteriser reads as "no more spans on this
    line" through one of the two pointers, then reset X to $80.  Called once after each group
    of four columns.
@@ -5066,8 +4939,7 @@ void road_span_plot_2(void)
 
    ⭐ X is the "the column ran clean to its end" mark: the arms load 0..3 into it before each
    plot and only the untouched $80 gets a terminator.  A is preserved across the store by the
-   TAX/TXA pair, which is also what makes X's exit value $80 rather than the pattern byte.
-   --------------------------------------------------------------------------- */
+   TAX/TXA pair, which is also what makes X's exit value $80 rather than the pattern byte. */
 static void span_end_marker(unsigned slot, const uint16_t *ptr, uint8_t y,
                             uint8_t *colMark, unsigned *carry)
 {
@@ -5103,10 +4975,8 @@ void span_end_marker_p2(void)
     cpu.X = colMark; cpu.C = carry ? 1 : 0;
 }
 
-/* ---------------------------------------------------------------------------
-   $2D17 draw_span_shallow_fwd  (twin #31)   $2D9A draw_span_shallow_rev  (#32)
+/* $2D17 draw_span_shallow_fwd  (twin #31)   $2D9A draw_span_shallow_rev  (#32)
    $2E20 draw_span_steep_fwd    (twin #33)   $2E99 draw_span_steep_rev    (#34)
-   ---------------------------------------------------------------------------
    THE SPAN WALK ITSELF, and the four are one algorithm with two independent choices:
 
      X-MAJOR ("shallow", dx >= dy)   one pixel per column; the DDA adds dy and a carry is
@@ -5134,8 +5004,7 @@ void span_end_marker_p2(void)
    $2D9A / $2E20 / $2E99 are the only references to them in the whole listing, and although
    they sit inside the $80-spaced source blocks they sit in the blocks' TAILS (offset $50 and
    $58), above the $50 scan lines the span plotters can reach through ($70),Y.  Anything else
-   goes to platform_smc_unhandled, exactly as an unrecognised opcode slot does.
-   --------------------------------------------------------------------------- */
+   goes to platform_smc_unhandled, exactly as an unrecognised opcode slot does. */
 
 /* Where an entry offset may land, relative to the chain's own base.  Both shallow arms share
    one pair of tables and both steep arms share one: the two mirrors have identical layouts. */
@@ -5344,9 +5213,7 @@ void draw_span_shallow_rev(void) { span_walk(&ARM_SHALLOW_REV, cpu.X, cpu.Y); }
 void draw_span_steep_fwd(void) { span_walk(&ARM_STEEP_FWD, cpu.X, cpu.Y); }
 void draw_span_steep_rev(void) { span_walk(&ARM_STEEP_REV, cpu.X, cpu.Y); }
 
-/* ---------------------------------------------------------------------------
-   $2B26  interp_edge  (twin #35)
-   ---------------------------------------------------------------------------
+/* $2B26  interp_edge  (twin #35)
    THE SPAN RASTERISER'S SETUP, and the routine that decides everything the four arms and the
    two plotters then do.  draw_surface_spans calls it once per span with the span's two
    endpoints: X names the point in one edge half, Y the point in the other, A the surface
@@ -5394,8 +5261,7 @@ void draw_span_steep_rev(void) { span_walk(&ARM_STEEP_REV, cpu.X, cpu.Y); }
    the caller's N/Z/V in that same PHP byte, but they are dead the instant the first internal
    test overwrites them, so the twin ignores them and its exit registers/flags are ALL dead
    (validate_native.c declares interp_edge LIVE_NONE).  The only mem[] the removed PHP would
-   have written is one 6502-stack byte the oracle still writes; the fixture ignores it.
-   --------------------------------------------------------------------------- */
+   have written is one 6502-stack byte the oracle still writes; the fixture ignores it. */
 
 
 /* $2B26's three exits all run the same tail: publish this endpoint for the next span unless the
@@ -5610,9 +5476,7 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
 }
 
 
-/* ---------------------------------------------------------------------------
-   $1933 edge_x_offscreen (twin #36) and $193E fill_line_attr (twin #37)
-   ---------------------------------------------------------------------------
+/* $1933 edge_x_offscreen (twin #36) and $193E fill_line_attr (twin #37)
    draw_road's FIRST stage, run once per road side: it turns the side's edge points into a
    PER-SCAN-LINE MAP.  line_attr_0 and line_attr_1 hold, for every scan line, the index of the
    edge point that covers it — which is exactly what surface_colour_at reads them for.
@@ -5630,8 +5494,7 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
    ⚠ TWO SELF-MODIFYING SITES.  $1946 is a per-circuit extent — Silverstone calls
    edge_x_offscreen, an expansion circuit calls its own hook instead.  $1970 is the store's
    own low operand byte, which is how ONE loop serves both line_attr buffers: draw_road passes
-   $00 or $50 in A and the routine writes it into the instruction.
-   --------------------------------------------------------------------------- */
+   $00 or $50 in A and the routine writes it into the instruction. */
 
 /* $1933 — "is edge point X more than $14 off the road centre?"  Computes
    (edge_x_hi[X] + $14) >= $28 and rolls that answer into shared_temp_76's top bit; the cell's
@@ -5850,9 +5713,7 @@ SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t first
 }
 
 
-/* ---------------------------------------------------------------------------
-   $19AF  draw_surface_spans  (twin #38)
-   ---------------------------------------------------------------------------
+/* $19AF  draw_surface_spans  (twin #38)
    draw_road's SECOND stage, run four times.  It walks the two edge halves in lockstep — index
    i in one, i + span_pair_offset_tbl[pass] in the other — and hands each pair to interp_edge
    as a span.  Before the walk it patches both plotters' destination operands with this pass's
@@ -5864,8 +5725,7 @@ SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t first
    road_split_index — either moves the split to here and publishes without drawing, or falls
    into the near arm, depending on the pass.  ⚠ The CARRY is an argument to interp_edge and
    means "publish this endpoint, draw nothing": it is set on the first call of every pass and
-   on the boundary arms, and clear everywhere else.
-   --------------------------------------------------------------------------- */
+   on the boundary arms, and clear everywhere else. */
 void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint)
 {
     surface_pass_index = pass;
@@ -5953,9 +5813,7 @@ void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint)
 }
 
 
-/* ---------------------------------------------------------------------------
-   $1A98  mark_line_surfaces  (twin #39)
-   ---------------------------------------------------------------------------
+/* $1A98  mark_line_surfaces  (twin #39)
    draw_road's THIRD stage, run once per road side: it stamps each edge point's surface class
    onto the SCAN LINE that point projects to, in view_line_surface — the array view_paint_lines
    reads for a line's background colour.
@@ -5969,8 +5827,7 @@ void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint)
    which this side's line_attr buffer stops being valid.  draw_road stores it as
    line_attr_0_limit / line_attr_1_limit.
    ⚠ And the whole walk is SKIPPED once view_yaw_offset reaches $28 — 45 degrees off the
-   section — with only that limit computed.
-   --------------------------------------------------------------------------- */
+   section — with only that limit computed. */
 
 SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int entryV)
 {
@@ -6078,9 +5935,7 @@ SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int e
 }
 
 
-/* ===========================================================================
-   TWINS #40-#43 — THE VIEW/DASHBOARD SEAM'S OWN CALLEES
-   ---------------------------------------------------------------------------
+/* TWINS #40-#43 — THE VIEW/DASHBOARD SEAM'S OWN CALLEES
    With these four, the call tree under fill_dash_edge_columns (twin #8) has no
    transliteration left in it:
 
@@ -6112,8 +5967,7 @@ SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int e
    ⚠ $1DAF has a second caller outside this tree ($1D77, the other column filler), which
    enters the walk WITHOUT patching — i.e. it runs on whatever the last fill_column_gaps left
    behind.  That is why the walk decodes the three bytes out of mem[] instead of taking them as
-   arguments, and why it is a twin of its own rather than fill_column_gaps' loop body.
-   =========================================================================== */
+   arguments, and why it is a twin of its own rather than fill_column_gaps' loop body. */
 
 #define EDGE_RUN_LIMIT     MEM_shared_counter_42   /* shared_counter_42 — the column the run stops at */
 #define EDGE_COLUMN        MEM_shared_temp_85   /* point_delta_hi[2] as this pass's column cursor */
@@ -6132,9 +5986,7 @@ static int pointer_is_ram(unsigned base)
 }
 
 
-/* ===========================================================================
-   $1E9E  surface_colour_at — WHICH SURFACE IS AT (LINE, POSITION)?  (twin #40)
-   ---------------------------------------------------------------------------
+/* $1E9E  surface_colour_at — WHICH SURFACE IS AT (LINE, POSITION)?  (twin #40)
    The road renderer's colour decision, and the only routine that reads all four
    surface_edge buffers together.  Given a scan line in Y and a position along it in
    EDGE_COLUMN, it walks the boundaries outward and returns the surface's colour byte:
@@ -6153,8 +6005,7 @@ static int pointer_is_ram(unsigned base)
    ⚠ EVERY EXIT'S CARRY IS THE LAST COMPARE'S, and the caller's next instruction is a store,
    not a branch — so the carry is only observable through the differential.  It is 1 on every
    arm reached by a taken BCS and 0 on the two that fall through, which is what the compares
-   below reproduce rather than compute.
-   =========================================================================== */
+   below reproduce rather than compute. */
 
 /* Build surface_colour_at's exit: A = colour with N/Z from it, Y = the scan line, V unchanged
    from entry, X and C are per-arm.  (Nothing in the routine writes V, and CPY/CPX/CMP never do,
@@ -6225,9 +6076,7 @@ uint8_t surface_colour_apply(uint8_t line)
 }
 
 
-/* ===========================================================================
-   $1DAF  column_gap_walk — FILL ONE COLUMN'S EMPTY SOURCE BYTES  (twin #41)
-   ---------------------------------------------------------------------------
+/* $1DAF  column_gap_walk — FILL ONE COLUMN'S EMPTY SOURCE BYTES  (twin #41)
    Walks EDGE_COLUMN's source block from span_line_cursor down to (not including)
    dash_block_starts[column], replacing every ZERO byte with surface_colour_at's answer for
    that scan line.  Which pointer it stores through, what a NON-ZERO byte does and what a zero
@@ -6235,8 +6084,7 @@ uint8_t surface_colour_apply(uint8_t line)
 
    ⚠ The block address is computed, not tabulated: plot_ptr = $3000 + column*$80, spelled by
    the 6502 as (column + $60) >> 1 with the shifted-out bit rotated back into the low byte.
-   The ADC that does it is the last thing to write V, and V is live at every exit.
-   =========================================================================== */
+   The ADC that does it is the last thing to write V, and V is live at every exit. */
 
 SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
 {
@@ -6344,16 +6192,13 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
 }
 
 
-/* ===========================================================================
-   $1DA6  fill_column_gaps — THE PATCH, THEN THE WALK  (twin #42)
-   ---------------------------------------------------------------------------
+/* $1DA6  fill_column_gaps — THE PATCH, THEN THE WALK  (twin #42)
    Three stores and a fall-through.  It exists because the walk is one routine serving two
    passes: this entry is what turns the registers into the walk's configuration.
 
    ⚠ THE FIXTURE FOR THIS ONE COVERS THE MAPPING, NOT THE WALK ($1DAF has its own): what can
    be wrong here is which register lands in which patch byte, and swapping any two of them
-   fails at once.  The ORDER of the three stores is NOT observable — see twin #8's header.
-   =========================================================================== */
+   fails at once.  The ORDER of the three stores is NOT observable — see twin #8's header. */
 
 SlotExit fill_column_gaps_core(uint8_t pointer, uint8_t branchOffset,
                                       uint8_t fallback, uint8_t entryV)
@@ -6368,9 +6213,7 @@ SlotExit fill_column_gaps_core(uint8_t pointer, uint8_t branchOffset,
 }
 
 
-/* ===========================================================================
-   $1DEF  fill_edge_column_run — ONE RUN OF END COLUMNS  (twin #43)
-   ---------------------------------------------------------------------------
+/* $1DEF  fill_edge_column_run — ONE RUN OF END COLUMNS  (twin #43)
    Entered with X = the first column, A = the column to stop at and Y = the scan line the
    first column's walk starts from.  Per iteration it walks column N through plot_ptr2 (into
    the per-line boundary table) and column N+1 through plot_ptr (into the column's own source
@@ -6379,8 +6222,7 @@ SlotExit fill_column_gaps_core(uint8_t pointer, uint8_t branchOffset,
    ⭐ THE START LINE IS NOT RE-SUPPLIED PER COLUMN, and that is the loop's real subtlety: Y
    comes back from the walk holding the line it stopped at, and the next iteration stores THAT
    as the next column's start line.  So each column's walk begins where its neighbour's ended,
-   which is what makes the filled region follow the dashboard's diagonal edge.
-   =========================================================================== */
+   which is what makes the filled region follow the dashboard's diagonal edge. */
 
 SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
                                           uint8_t firstLine, uint8_t entryV)
@@ -6421,9 +6263,7 @@ SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
 }
 
 
-/* ===========================================================================
-   TWINS #44-#49 — THE ENGINE'S MULTIPLY, AND THE NEGATE BESIDE IT
-   ---------------------------------------------------------------------------
+/* TWINS #44-#49 — THE ENGINE'S MULTIPLY, AND THE NEGATE BESIDE IT
    The first group of apply_driving_model's callee tree, and the one place in this project
    where the 68000 replaces an algorithm rather than an interpreter:
 
@@ -6453,8 +6293,7 @@ SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
        that one add.  With a zero multiplier no add runs at all and the caller's V survives.
    ⚠ Decimal mode is not "a flag detail" here: D changes the RESULT BYTE of every `ADC`, so the
    routine stops being a multiply.  The bit-for-bit replay below is kept for it.  The engine
-   never sets D; a randomised fixture does.
-   =========================================================================== */
+   never sets D; a randomised fixture does. */
 
 /* $0C02  mul8_noinit — the 8x8 multiply, math_lo x math_hi.  The binary path is one MULU.W (see
    the header); decimal mode still runs the 6502's own shift-and-add, because D changes the RESULT
@@ -6512,9 +6351,7 @@ void mul8_noinit(void)
 /* $0C00  mul8 — mul8_noinit with the multiplicand taken from A (a store, so no flags). */
 void mul8(void) { math_lo = cpu.A; mul8_noinit(); }
 
-/* ---------------------------------------------------------------------------
-   $0DBF  mul8_accum — THE 16x8 FIXED-POINT STEP  (twin #46)
-   ---------------------------------------------------------------------------
+/* $0DBF  mul8_accum — THE 16x8 FIXED-POINT STEP  (twin #46)
    Multiplies the 16-bit value (shared_temp_76 : math_lo) by math_hi and keeps the top 16 bits
    of the 24-bit result: the low product's HIGH byte is added into the high product, which is
    the ordinary way to spell a x.8 fixed-point multiply on a machine with an 8x8 multiplier.
@@ -6566,17 +6403,13 @@ void mul8_accum(void)
     cpu.A = e.a; cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c; cpu.V = e.v;
 }
 
-/* ---------------------------------------------------------------------------
-   $0DB3  mul16_by_pi — A 16-BIT ANGLE TIMES PI  (twin #47)
-   ---------------------------------------------------------------------------
+/* $0DB3  mul16_by_pi — A 16-BIT ANGLE TIMES PI  (twin #47)
    Shifts (A : math_lo) left twice, parks the high byte where mul8_accum wants it, seeds the
    multiplier with $C9 and falls into mul8_accum.  ⭐ $C9/256 = 0.785 = pi/4 to three figures,
    and 4 x pi/4 = pi — so what compute_car_angles gets back is its angle multiplied by pi
    [INFERRED from the constant; the x4 and the multiply are [DERIVED]].  A KEPT shim; A is high. */
 
-/* ---------------------------------------------------------------------------
-   $0E42 / $0E44  neg16_math — NEGATE (math_hi : math_lo)  (twins #48, #49)
-   ---------------------------------------------------------------------------
+/* $0E42 / $0E44  neg16_math — NEGATE (math_hi : math_lo)  (twins #48, #49)
    Two's-complement negate of the 16-bit accumulator.  ⚠ The high byte comes back in A and is
    NOT written to math_hi — the caller decides whether to keep it — and the second subtract's
    N/V/Z/C are the exit flags.  $0E42 parks A in math_hi first (so it negates the value the
@@ -6596,9 +6429,7 @@ void neg16_math(void)
     neg16_math_noinit();
 }
 
-/* ===========================================================================
-   TWINS #50-#57 — THE DRIVING MODEL'S 16-BIT ARITHMETIC
-   ---------------------------------------------------------------------------
+/* TWINS #50-#57 — THE DRIVING MODEL'S 16-BIT ARITHMETIC
    The layer between the multiply and the sub-models: everything that reads or writes the
    model's 16-bit state vector as a NUMBER rather than as physics.
 
@@ -6621,8 +6452,7 @@ void neg16_math(void)
    forms) plus a half-count of rounding.  Three `MULU.W`s and two adds here.
    ⚠ The five scratch cells are part of the contract, not workspace: shared_temp_76/77,
    hypot_min_lo, math_lo and math_hi all keep values the differential compares, so the twin
-   writes what the 6502 left there even where its own arithmetic did not need it.
-   =========================================================================== */
+   writes what the 6502 left there even where its own arithmetic did not need it. */
 
 /* mul16_signed's two operands sit in the point_delta scratch window with ASYMMETRIC sign
    conventions (see the routine note): the MULTIPLICAND is a plain two's-complement value,
@@ -6635,9 +6465,7 @@ void neg16_math(void)
 #define MODEL_TERM     MEM_point_dist_lo   /* point_dist_lo — the destination element index */
 #define MODEL_SRC_SLOT MEM_span_line_cursor   /* span_line_cursor — apply_angle_term_at's source element */
 
-/* ---------------------------------------------------------------------------
-   $0DD7  mul16_signed — THE SIGNED 16x16 MULTIPLY  (twin #50)
-   ---------------------------------------------------------------------------
+/* $0DD7  mul16_signed — THE SIGNED 16x16 MULTIPLY  (twin #50)
    ⚠ ASYMMETRIC sign conventions on the two operands.  The MULTIPLICAND (MUL_SRC_HI:LO) is a
    plain two's-complement value — made positive up front, its sign flipped into MUL_SIGN bit 7.
    The MULTIPLIER (MUL_TERM_HI:LO) is a car-angle coefficient (heading_sin/heading_cos) whose
@@ -6712,17 +6540,14 @@ void mul16_signed(void)
     abs16_math();
 }
 
-/* ---------------------------------------------------------------------------
-   $4753  scale16_by_y — |x| * Y >> 8, SIGN RESTORED  (twin #51)
-   ---------------------------------------------------------------------------
+/* $4753  scale16_by_y — |x| * Y >> 8, SIGN RESTORED  (twin #51)
    The model's scale operation: take the caller's 16-bit value in (A : math_lo), scale it by
    the unsigned byte in Y, and give it its sign back.
 
    ⚠ PHP/PLP, and both halves matter.  The sign is the CALLER's N — the same contract abs16_math
    has — so it has to survive the multiply, and the 6502 parks it on the stack.  The push leaves
    a byte in the stack page that the differential compares, so the pair is reproduced rather
-   than replaced by a saved C variable.
-   --------------------------------------------------------------------------- */
+   than replaced by a saved C variable. */
 void scale16_by_y(void)
 {
     uint8_t scale = cpu.Y;          /* the multiplier byte */
@@ -6742,13 +6567,10 @@ void scale16_by_y(void)
     abs16_math();                   /* $4761 */
 }
 
-/* ---------------------------------------------------------------------------
-   $4765  mul16_by_1_5 — x + x/2, ARITHMETIC  (twin #52)
-   ---------------------------------------------------------------------------
+/* $4765  mul16_by_1_5 — x + x/2, ARITHMETIC  (twin #52)
    (A : math_lo) = (math_hi : math_lo) * 1.5, with the halving SIGNED — the 6502 seeds the
    rotate's carry from the value's own bit 7 instead of clearing it, which is a one-instruction
-   arithmetic shift right.  ⚠ PHA/PLA, so there is a stack residue here too.
-   --------------------------------------------------------------------------- */
+   arithmetic shift right.  ⚠ PHA/PLA, so there is a stack residue here too. */
 Wide16Exit mul16_by_1_5_core(uint16_t x)
 {
     /* The halving is SIGNED, so x/2 is an arithmetic shift right of the whole 16-bit value —
@@ -6782,13 +6604,10 @@ void mul16_by_1_5(void)
     cpu.Z   = (uint8_t)(cpu.A == 0);
 }
 
-/* ---------------------------------------------------------------------------
-   $47E5  model_integrate_element — ELEMENT X += ELEMENT 14  (twin #53)
-   ---------------------------------------------------------------------------
+/* $47E5  model_integrate_element — ELEMENT X += ELEMENT 14  (twin #53)
    One 16-bit add over the state vector.  Element 14 is the per-frame delta the sub-models
    above have been accumulating into, so this is the model's integration step; the two
-   rotations ($47A5/$47C5) each end with one.
-   --------------------------------------------------------------------------- */
+   rotations ($47A5/$47C5) each end with one. */
 static AddFlags add16_flags(uint8_t ah, uint8_t mh, unsigned sum)
 {
     uint8_t  hr = (uint8_t)(sum >> 8);
@@ -6812,13 +6631,10 @@ AddFlags model_integrate_element_core(uint8_t slot)
     return add16_flags((uint8_t)(a >> 8), (uint8_t)(m >> 8), sum);
 }
 
-/* ---------------------------------------------------------------------------
-   $48A0  add_signed_into_element — ELEMENT Y += ±(math_hi : math_lo)  (twin #54)
-   ---------------------------------------------------------------------------
+/* $48A0  add_signed_into_element — ELEMENT Y += ±(math_hi : math_lo)  (twin #54)
    ⚠⚠ IT BRANCHES ON THE CALLER'S N, like abs8 and abs16_math: a set N means "subtract this
    instead", spelled as a negate followed by the same add.  A twin that tests bit 7 of anything
-   it can see is wrong, and a fixture that leaves N correlated with the value cannot tell.
-   --------------------------------------------------------------------------- */
+   it can see is wrong, and a fixture that leaves N correlated with the value cannot tell. */
 static void add_signed_into_element_core(uint8_t slot, uint8_t signByte)
 {
     /* The term is math_hi : math_lo.  $48A0 BMI branches on the caller's sign: a SET sign bit
@@ -6830,9 +6646,7 @@ static void add_signed_into_element_core(uint8_t slot, uint8_t signByte)
     model_state_16[slot] = (uint16_t)(model_state_16[slot] + term);     /* $48A7-$48B5 */
 }
 
-/* ---------------------------------------------------------------------------
-   $4874 / $486D  apply_angle_term — ONE STATE ELEMENT THROUGH ONE CAR ANGLE  (twins #55, #56)
-   ---------------------------------------------------------------------------
+/* $4874 / $486D  apply_angle_term — ONE STATE ELEMENT THROUGH ONE CAR ANGLE  (twins #55, #56)
    The model's rotation primitive: multiply state element `source` by car angle `angle` and
    either STORE the product into element `dest` or ADD it there — bit 6 of MUL_SIGN, which
    the caller sets along with the sign, is what chooses, and the add path is literally
@@ -6851,8 +6665,7 @@ static void add_signed_into_element_core(uint8_t slot, uint8_t signByte)
    multiplicand (model element) is two's-complement; the multiplier (car angle) is sign-MAGNITUDE
    with its sign in bit 0 of the low byte — that bit stays in the magnitude, exactly as the 6502
    multiply used the whole byte.  D = 0 throughout the model path (docs/static-map.md §Decimal
-   mode), so every add here is plain binary.
-   --------------------------------------------------------------------------- */
+   mode), so every add here is plain binary. */
 /* The pure-C body: multiply element `source` by car angle `angle` and store or accumulate into
    element `dest` (= mem[MODEL_TERM]).  Plain 16-bit C on mem[] — touches no cpu state at all.
    Its exit registers/flags are DEAD in the real program (its only callers are the driving-model
@@ -6906,15 +6719,12 @@ static void apply_angle_term_at_core(uint8_t mode, uint8_t angle)
     apply_angle_term_body(angle, source);       /* $4871 JMP $4876 */
 }
 
-/* ---------------------------------------------------------------------------
-   $0E50  kbd_test_key — IS THIS KEY DOWN?  (twin #57)
-   ---------------------------------------------------------------------------
+/* $0E50  kbd_test_key — IS THIS KEY DOWN?  (twin #57)
    OSBYTE 129 with a negative INKEY code in X and $FF in Y: the MOS answers X = $FF when that
    key is being held.  The routine's whole output is the CPX #$FF result — Z set means the key
    IS down (the callers read it as "pressed": throttle key down -> full throttle).  Returns 1
    when the key is down.  Kept as a twin because the driving model's starter poll goes through
-   it, and because the MOS call has to stay a MOS call.
-   --------------------------------------------------------------------------- */
+   it, and because the MOS call has to stay a MOS call. */
 /* OSBYTE 129 (INKEY): the OSBYTE number in A, the negative key code in X and a $FF time-limit in
    Y; the MOS answers X = Y = $FF when that key is held.  engine_starter_poll reads the raw exit
    registers, so this returns them typed; kbd_test_key_core keeps the boolean the other callers want. */
@@ -6954,9 +6764,7 @@ void apply_angle_term_at(void)
     car_angle_marshal_in(); apply_angle_term_at_core(cpu.A, cpu.X);
     model_state_marshal_out();
 }
-/* ===========================================================================
-   TWINS #58-#66 — THE DRIVING MODEL'S ROTATIONS AND INTEGRATIONS
-   ---------------------------------------------------------------------------
+/* TWINS #58-#66 — THE DRIVING MODEL'S ROTATIONS AND INTEGRATIONS
    apply_driving_model's third group, and the one that finally says what the model DOES: the
    layer above the 16-bit arithmetic, where the state vector is treated as vectors and rates
    rather than as numbers.
@@ -6983,15 +6791,12 @@ void apply_angle_term_at(void)
    ⚠ THE LOOP EXIT REGISTERS ARE PART OF THE CONTRACT.  Four of these routines end by falling
    out of a `DEX`/`DEY` loop, so X and Y leave holding the value that failed the test ($FF,
    $FE) and the differential compares them; the twins set them explicitly where the C loop has
-   no equivalent, with the instruction that wrote them named.
-   =========================================================================== */
+   no equivalent, with the instruction that wrote them named. */
 
 #define MODEL_ROT_MODE   (MEM_point_delta_sign + 2u)  /* point_delta_sign[2] — here the rotation's sign/mode byte */
 #define STEER_ANGLE      2u       /* element 2 (steer_angle) of the heading_sin/heading_cos/steer array */
 
-/* ---------------------------------------------------------------------------
-   $4729  stage_lateral_speed_delta — THE MIDPOINT OFFSET  (twin #58)
-   ---------------------------------------------------------------------------
+/* $4729  stage_lateral_speed_delta — THE MIDPOINT OFFSET  (twin #58)
    Scales element 2 (the heading step) by $58/$100, SUBTRACTS that from the accumulator, and
    parks 1.5x it in car_lateral_speed_delta.  The four sub-models that run next therefore see the
    accumulator at x - v while apply_driving_model restores x and adds +1.5v afterwards — the
@@ -7003,8 +6808,7 @@ void apply_angle_term_at(void)
    model_mul_1_5 on 16-bit words, so this twin is arithmetic on locals.  Its exit registers,
    arithmetic scratch ($74-$77) and stack residue ($01FF) are all dead: apply_driving_model's
    next act is `update_grip_limits`, which opens with `LDA #0`.  The fixture verifies the four
-   output cells (car_lateral_speed and car_lateral_speed_delta) only.
-   --------------------------------------------------------------------------- */
+   output cells (car_lateral_speed and car_lateral_speed_delta) only. */
 static void stage_lateral_speed_delta_core(void)
 {
     /* $4729-$4736 — scale the heading step (state element 2) by $58/256, keeping its sign. */
@@ -7021,9 +6825,7 @@ static void stage_lateral_speed_delta_core(void)
     lateral_speed_delta_hi = (uint8_t)(delta >> 8);
 }
 
-/* ---------------------------------------------------------------------------
-   $47A5 / $47C5  the two INCREMENTAL ROTATIONS BY THE STEERING ANGLE  (twins #59, #60)
-   ---------------------------------------------------------------------------
+/* $47A5 / $47C5  the two INCREMENTAL ROTATIONS BY THE STEERING ANGLE  (twins #59, #60)
    Both are the same three steps over a different pair of elements: element 14 takes one
    component times the steering angle, the OTHER component accumulates the second product, and
    model_integrate_element then advances the first component by element 14.  That is a rotation
@@ -7032,8 +6834,7 @@ static void stage_lateral_speed_delta_core(void)
 
    The mode bytes are the whole difference: $80/$40 for the (8, 9) pair and $00/$C0 for the
    (10, 12) one, i.e. the two products swap signs between the two rotations, which is what
-   makes one turn the opposite way from the other.
-   --------------------------------------------------------------------------- */
+   makes one turn the opposite way from the other. */
 AddFlags rotate_velocity_by_steer_core(void)
 {
     /* $47A5-$47AF — element 14 = -(element 9 * steer):  bit 7 negates, bit 6 clear stores. */
@@ -7060,9 +6861,7 @@ AddFlags rotate_pair_a_by_steer_core(void)
     return model_integrate_element_core(10);
 }
 
-/* ---------------------------------------------------------------------------
-   $47F9  damp_and_derive_loads — THE SUSPENSION DECAY AND THE TWO LOADS  (twin #61)
-   ---------------------------------------------------------------------------
+/* $47F9  damp_and_derive_loads — THE SUSPENSION DECAY AND THE TWO LOADS  (twin #61)
    Three things, in order:
 
      1. element 5 = (front slip - rear slip) * $4E/$100 — the DIFFERENCE of the two axles'
@@ -7088,8 +6887,7 @@ AddFlags rotate_pair_a_by_steer_core(void)
    ($74-$78) and its stack residue ($01FF) are all dead here: apply_driving_model's next act is
    `LDA drive_state` and both of its arms reload the registers, and apply_drag_terms opens with
    `LDA`.  The only outputs are the state-vector elements and wheel_load — which is what the
-   fixture verifies, ignoring the register spill (as road_span_advance does).
-   --------------------------------------------------------------------------- */
+   fixture verifies, ignoring the register spill (as road_span_advance does). */
 
 /* scale16_by_y ($4753) and mul16_by_1_5 ($4765) as pure 16-bit math — D = 0 only. */
 static uint16_t model_scale16(uint16_t value, uint8_t scale)
@@ -7142,9 +6940,7 @@ static void damp_and_derive_loads_core(void)
     wheel_load = (uint8_t)(model_state_16[MS_LOAD_LONG] >> 8);
 }
 
-/* ---------------------------------------------------------------------------
-   $48C7  rotate_state_pair — THE 2x2 ROTATION  (twins #62, #63, #64)
-   ---------------------------------------------------------------------------
+/* $48C7  rotate_state_pair — THE 2x2 ROTATION  (twins #62, #63, #64)
    Four apply_angle_term_at calls that turn the (source, source + 1) pair through car angles 1
    and 0 into the (dest, dest + 1) pair:
 
@@ -7158,8 +6954,7 @@ static void damp_and_derive_loads_core(void)
 
    ⚠ A FOURTH TENANT of $0088, which is point_delta_sign[2] to build_track_geometry, a clip
    history to the span rasteriser and a surface class to mark_line_surfaces (docs/rename.md).
-   Here it is where the mode byte lives across the four calls, because A is needed for it.
-   --------------------------------------------------------------------------- */
+   Here it is where the mode byte lives across the four calls, because A is needed for it. */
 static void rotate_state_pair_core(uint8_t dest, uint8_t source, uint8_t mode)
 {
     mem[MODEL_SRC_SLOT]  = source;              /* $48C7 */
@@ -7182,9 +6977,7 @@ static void rotate_state_pair_core(uint8_t dest, uint8_t source, uint8_t mode)
        and every fixture here is result-only — so nothing to replay. */
 }
 
-/* ---------------------------------------------------------------------------
-   $48EF  integrate_car_position — THE CAMERA, AT 24 BITS  (twin #65)
-   ---------------------------------------------------------------------------
+/* $48EF  integrate_car_position — THE CAMERA, AT 24 BITS  (twin #65)
    Element 1 is added (doubled) into view_origin component 2 and element 0 into component 0,
    each as a 24-bit add through view_origin_frac — the camera moves by fractions of a unit per
    frame, so the remainder has to be carried or a slow car never moves at all.  Then the
@@ -7193,8 +6986,7 @@ static void rotate_state_pair_core(uint8_t dest, uint8_t source, uint8_t mode)
    ⚠⚠ THE FIRST ADD HAS NO `CLC`: $490D's carry is the one the `ROL shared_temp_76` above it
    left, i.e. the doubling's own carry out.  The doubling and the add are ONE 24-bit operation.
    ⚠ The name's second half is a misnomer worth keeping in mind — what $4927 advances is the
-   HEADING, not a position (disasm/symbols.csv).
-   --------------------------------------------------------------------------- */
+   HEADING, not a position (disasm/symbols.csv). */
 AddFlags integrate_car_position_core(void)
 {
     uint8_t slot;
@@ -7235,16 +7027,13 @@ AddFlags integrate_car_position_core(void)
     }
 }
 
-/* ---------------------------------------------------------------------------
-   $4937  integrate_state_rates — ELEMENTS 3/4/5 ARE THE RATES OF 0/1/2  (twin #66)
-   ---------------------------------------------------------------------------
+/* $4937  integrate_state_rates — ELEMENTS 3/4/5 ARE THE RATES OF 0/1/2  (twin #66)
    For X = 2, 1, 0: element 3+X is shifted left three places (FIVE for X = 2) into a 24-bit
    value and added into element X, with the sub-byte remainder carried in model_state_frac.
    So elements 3/4/5 are the rates of 0/1/2 and this is the integrator that applies them — and
    the odd shift on X = 2 is a per-axis scale factor, four times the other two.
 
-   The shift's own carry out is discarded: $495E clears it before the add.
-   --------------------------------------------------------------------------- */
+   The shift's own carry out is discarded: $495E clears it before the add. */
 AddFlags integrate_state_rates_core(void)
 {
     uint8_t slot;
@@ -7316,9 +7105,7 @@ void rotate_state_6_into_3(void)
     car_angle_marshal_in(); rotate_state_pair_core(3u, 6u, 0x40u);
     model_state_marshal_out();
 }
-/* ===========================================================================
-   TWINS #67-#78 — THE SLIP/SOUND CLUSTER
-   ---------------------------------------------------------------------------
+/* TWINS #67-#78 — THE SLIP/SOUND CLUSTER
    apply_driving_model's fourth group: how the engine decides a wheel is sliding, what it does
    to the model when it is, and the tyre squeal that comes out of it.  ⭐ It is the only group
    in this tree that reaches the MOS, so `make sound` is a second gate for it — what the twins
@@ -7348,22 +7135,18 @@ void rotate_state_6_into_3(void)
    the rename queue had recorded wrongly and this pass corrected are worth repeating here:
    $0B46 is a SPARE BYTE where X is parked across the OSWORD, not self-modifying code, and
    derive_slip_reference's two arms were written down the wrong way round (pedal_mode == 1 is
-   the throttle, so `LDY pedal_mode / DEY / BEQ` takes the THROTTLE to the gear-based arm).
-   =========================================================================== */
+   the throttle, so `LDY pedal_mode / DEY / BEQ` takes the THROTTLE to the gear-based arm). */
 
 #define SLIP_MAG_LO      MEM_plot_ptr3_lo  /* plot_ptr3_lo — here slip_magnitude's low byte  */
 #define SLIP_OUT_INDEX   MEM_hypot_min_lo  /* hypot_min_lo — here WHICH element the store lands in */
 #define SLIP_REV_TERM    MEM_engine_torque  /* engine_torque — update_engine_revs' second
                                      rev-derived term */
 
-/* ---------------------------------------------------------------------------
-   $4B61  slip_magnitude — |ELEMENT Y| << 5, CLAMPED  (twin #67)
-   ---------------------------------------------------------------------------
+/* $4B61  slip_magnitude — |ELEMENT Y| << 5, CLAMPED  (twin #67)
    ⚠ THE CLAMP LEAVES STATE BEHIND.  When the high byte goes negative the routine bails out
    with $7F, and both Y (wherever the loop stopped) and SLIP_MAG_LO (part-shifted) keep the
    values that moment left — so a twin that computes the saturated result in one step and
-   tidies up afterwards is wrong, and the differential says so.
-   --------------------------------------------------------------------------- */
+   tidies up afterwards is wrong, and the differential says so. */
 static void slip_magnitude_core(uint8_t slot)
 {
     /* $4B61 — |element[slot]| << 5, saturated to $7F.  D = 0 on the driving path
@@ -7389,15 +7172,12 @@ static void slip_magnitude_core(uint8_t slot)
     mem[SLIP_MAG_HI] = (v & 0x8000u) ? 0x7Fu : (uint8_t)(v >> 8);  /* $4B81, clamp = $7F */
 }
 
-/* ---------------------------------------------------------------------------
-   $4B51 / $4B47 / $4B42  the three entries of ONE STORE  (twins #68, #69, #70)
-   ---------------------------------------------------------------------------
+/* $4B51 / $4B47 / $4B42  the three entries of ONE STORE  (twins #68, #69, #70)
    store_slip_signed re-signs (A : math_lo) on bit 7 of the sign byte and puts it in model_state
    element 10 + slip_out_index.  store_slip_clamped is that with the value first held down to
    slip_magnitude's, and the third entry skips the clamp while the throttle is down — i.e. ON
    the throttle the caller's value goes through unclamped, which is what lets wheelspin exceed
-   what the grip limit would otherwise allow.
-   --------------------------------------------------------------------------- */
+   what the grip limit would otherwise allow. */
 /* The store takes a 16-bit value as (valueHi : math_lo) — the 6502's own split, and math_lo is an
    observed output — and writes it, re-signed, into model_state element 10 + slip_out_index.  The
    exit ABI (A = the stored low byte, Y = the element index, N/Z from that byte, V = bit 6 of the
@@ -7444,9 +7224,7 @@ void store_slip_clamped_off_throttle_core(uint8_t valueHi)
     store_slip_clamped_core(valueHi);
 }
 
-/* ---------------------------------------------------------------------------
-   $4B88  derive_slip_reference — THE REFERENCE TERM, AND THE CARRY  (twin #71)
-   ---------------------------------------------------------------------------
+/* $4B88  derive_slip_reference — THE REFERENCE TERM, AND THE CARRY  (twin #71)
    Sets up everything the store above needs — which element (slip_out_index = X + 2), what sign
    (SLIP_SIGN), and the value (A : math_lo) — and answers with a CARRY: set means it declined,
    which is the one bit both its callers branch on.
@@ -7456,8 +7234,7 @@ void store_slip_clamped_off_throttle_core(uint8_t valueHi)
    the driven axle, X == 1, is answered at all — the other gets a bare `SEC`), while OFF the
    throttle the reference is the car's own speed, |element 9| << 5, against grip_limit[X],
    three-quartered for the axle that is not X == 1.  Either way the term is multiplied by
-   pedal_amount and, on the throttle, halved.
-   --------------------------------------------------------------------------- */
+   pedal_amount and, on the throttle, halved. */
 /* derive_slip_reference answers with a small pair: the reference term's high byte (its low byte is
    left in math_lo, the 6502's own split) and whether it DECLINED — the carry the 6502 returned. */
 
@@ -7497,9 +7274,7 @@ SlipRef derive_slip_reference_core(uint8_t axle)
     return r;
 }
 
-/* ---------------------------------------------------------------------------
-   $4A91  check_wheel_slip — IS THIS AXLE SLIDING?  (twin #72)
-   ---------------------------------------------------------------------------
+/* $4A91  check_wheel_slip — IS THIS AXLE SLIDING?  (twin #72)
    ⚠⚠ TWO NON-OBVIOUS THINGS, both of which a plain reading of the name would miss.
 
    (a) THE PHP/PLP CARRIES ONE BIT ACROSS THE ARITHMETIC.  `ORA` answers "is the accumulator
@@ -7513,8 +7288,7 @@ SlipRef derive_slip_reference_core(uint8_t axle)
 
    Otherwise: the two magnitudes are combined as max + min/2 — alpha-max-plus-beta-min, the
    same cheap hypotenuse the road pass uses — and compared against grip_limit.  ⚠ EQUAL is not
-   over: `BNE` past the `CLC` means only a strictly greater magnitude sets the bit.
-   --------------------------------------------------------------------------- */
+   over: `BNE` past the `CLC` means only a strictly greater magnitude sets the bit. */
 static void check_wheel_slip_core(uint8_t axle)
 {
     /* $4A91-$4A99 — is the accumulator zero at all?  (the 6502 parks the answer on the stack
@@ -7572,15 +7346,12 @@ static void check_wheel_slip_core(uint8_t axle)
     mem[MEM_slip_flags + axle] = (uint8_t)((over ? 0x80u : 0u) | (mem[MEM_slip_flags + axle] >> 1));
 }
 
-/* ---------------------------------------------------------------------------
-   $4AF7  clamp_slip_to_grip — WHAT SLIPPING DOES TO THE MODEL  (twin #73)
-   ---------------------------------------------------------------------------
+/* $4AF7  clamp_slip_to_grip — WHAT SLIPPING DOES TO THE MODEL  (twin #73)
    Run once update_slip_sound has seen slip in either of the last two frames: element 12 + X is
    zeroed, element 10 + X is held at grip_limit_alt[X] (twice, by two different routes — first
    unconditionally through store_slip_clamped, then again against derive_slip_reference's own
    term), and on the throttle the driven axle's element 10 is zeroed outright.  So the grip
-   limit is not advisory: this is where the model is forced back inside it.
-   --------------------------------------------------------------------------- */
+   limit is not advisory: this is where the model is forced back inside it. */
 static void clamp_slip_to_grip_core(uint8_t axle)
 {
     model_state_16[MS_SLIP_REF + axle] = 0u;                     /* $4AF7-$4AFC — both lanes */
@@ -7612,9 +7383,7 @@ static void clamp_slip_to_grip_core(uint8_t axle)
     model_state_16[MS_SLIP + axle] = 0u;                       /* $4B34-$4B39 */
 }
 
-/* ---------------------------------------------------------------------------
-   $0B6E / $0B4A / $0B47  the MOS SOUND path  (twins #74, #75, #76)
-   ---------------------------------------------------------------------------
+/* $0B6E / $0B4A / $0B47  the MOS SOUND path  (twins #74, #75, #76)
    sound_queue fills in one field of one 8-byte MOS SOUND control block and hands the block to
    OSWORD 7.  The slot the caller names picks the block TWO on from the base (`A << 3` then
    `+ $10`), Y is the amplitude, and the CHANNEL is read back out of the block's own first byte
@@ -7625,8 +7394,7 @@ static void clamp_slip_to_grip_core(uint8_t axle)
    ⚠ The caller's X is parked in sound_saved_x across the call and restored by sound_osword.
    That byte is a spare, NOT a self-modified operand — no instruction covers $0B46.
    ⚠ sound_queue's `ADC #$10` leaves C and V live all the way to the exit: nothing below it
-   writes either flag.
-   --------------------------------------------------------------------------- */
+   writes either flag. */
 MosRegs sound_osword_core(uint8_t oswordNum, uint8_t blockLow)
 {
     /* OSWORD `oswordNum` on the block at $0B00 + blockLow; Y ($0B) is that address's high byte
@@ -7653,9 +7421,7 @@ uint8_t sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX)
     return sound_osword_core(0x07u, blockLow).y;               /* $0B63 — OSWORD 7 (SOUND) */
 }
 
-/* ---------------------------------------------------------------------------
-   $0B65  sound_envelope — DEFINE ONE MOS SOUND ENVELOPE  (twin #174)
-   ---------------------------------------------------------------------------
+/* $0B65  sound_envelope — DEFINE ONE MOS SOUND ENVELOPE  (twin #174)
    The sibling entry to sound_queue: same OSWORD tail, different reason code.  The caller names
    an envelope by the base of its 14-byte definition block, and $38 is where those blocks sit
    inside the $0B00 page ($0B38 onward, just past the five SOUND control blocks at $0B10-$0B37),
@@ -7666,8 +7432,7 @@ uint8_t sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX)
    the sound_osword 6502-ABI shim outside reset_driving_variables, and the volume-step routine
    ($0F2C, native since twin #78) reached it through that shim on every volume change.
    ⚠ The `CLC`/`ADC #$38` is the LAST writer of C and V in the whole routine (mos_call touches no
-   cpu field), so both flags reach the exit and the shim replays them from the operands.
-   --------------------------------------------------------------------------- */
+   cpu field), so both flags reach the exit and the shim replays them from the operands. */
 MosRegs sound_envelope_core(uint8_t envBase, uint8_t savedX)
 {
     sound_saved_x = savedX;                                     /* $0B65 STX — restored by the tail */
@@ -7675,14 +7440,11 @@ MosRegs sound_envelope_core(uint8_t envBase, uint8_t savedX)
     return sound_osword_core(0x08u, blockLow);                  /* $0B6C — OSWORD 8 (ENVELOPE) */
 }
 
-/* ---------------------------------------------------------------------------
-   $0E5A  sound_stop_channel — SILENCE ONE CHANNEL  (twin #77)
-   ---------------------------------------------------------------------------
+/* $0E5A  sound_stop_channel — SILENCE ONE CHANNEL  (twin #77)
    Clears sound_chan_state[X] and flushes the MOS buffer X|4, because buffers 4..7 ARE the four
    sound channels.  Does nothing at all if the channel was already marked idle, which is what
    keeps update_slip_sound from issuing an OSBYTE every frame the car is not sliding.
-   ⚠ X after the OSBYTE is whatever the MOS left, and the `AND #$FB` is applied to THAT.
-   --------------------------------------------------------------------------- */
+   ⚠ X after the OSBYTE is whatever the MOS left, and the `AND #$FB` is applied to THAT. */
 uint8_t sound_stop_channel_core(uint8_t chan, uint8_t ambientY)
 {
     /* The caller's A is preserved (PHA/PLA) in the shim, not here — that is exit ABI.  Returns the
@@ -7700,9 +7462,7 @@ uint8_t sound_stop_channel_core(uint8_t chan, uint8_t ambientY)
     return (uint8_t)(r.x & 0xFBu);                      /* $0E6E-$0E71 */
 }
 
-/* ---------------------------------------------------------------------------
-   $4779  update_slip_sound — THE TYRE SQUEAL  (twin #78)
-   ---------------------------------------------------------------------------
+/* $4779  update_slip_sound — THE TYRE SQUEAL  (twin #78)
    Called twice per frame, X = 1 then X = 0 — once per axle.  Three outcomes:
 
      drive_state >= 2 (not under power)   silence channel 3 and do nothing else
@@ -7713,8 +7473,7 @@ uint8_t sound_stop_channel_core(uint8_t chan, uint8_t ambientY)
                                           hysteresis that stops the squeal chattering
 
    ⭐ The squeal is queued at amplitude 1 on sound slot 3, and the guard is
-   sound_chan_state[3]: the MOS is asked once, not once per frame.
-   --------------------------------------------------------------------------- */
+   sound_chan_state[3]: the MOS is asked once, not once per frame. */
 static void update_slip_sound_core(uint8_t axle, uint8_t ambientY)
 {
     if (drive_state < 0x02u) {                       /* $4779-$477D CMP #2 / BCS → the silence arm */
@@ -7795,9 +7554,7 @@ void sound_queue_exit_abi(uint8_t slot)
     cpu.Z = (uint8_t)(sound_saved_x == 0u);
 }
 
-/* ===========================================================================
-   $0E74  engine_sound_update — ONE STEP OF THE ENGINE NOTE  (twin #173)
-   ---------------------------------------------------------------------------
+/* $0E74  engine_sound_update — ONE STEP OF THE ENGINE NOTE  (twin #173)
    Called four times per PAINTED frame from race_main_loop, and each call moves engine_note one
    unit toward engine_note_target, then re-pitches the engine from it:
 
@@ -7822,8 +7579,7 @@ void sound_queue_exit_abi(uint8_t slot)
        note already at target -> the CPX's own flags, over whatever the skid block left in A/Y
        note below $1C         -> sound_stop_all's exit (A preserved, X = $FF, N = 1)
        otherwise              -> the last sound_queue's exit (A = 7, Y = $0B, X = sound_saved_x)
-   D = 0 throughout: this is race logic, not one of the eight BCD sites (docs/static-map.md).
-   =========================================================================== */
+   D = 0 throughout: this is race logic, not one of the eight BCD sites (docs/static-map.md). */
 
 /* The MOS SOUND control block for one slot is sound_blocks + $10 + slot*8 (sound_queue_core
    forms the same address); field +4 is the block's PITCH byte, the one this routine writes. */
@@ -7927,10 +7683,8 @@ void update_slip_sound(void)
     model_state_marshal_out();
 } /* result-only */
 
-/* ===========================================================================
-   TWINS #79-#86 — THE EIGHT SUB-MODELS, and with them the whole of
+/* TWINS #79-#86 — THE EIGHT SUB-MODELS, and with them the whole of
    apply_driving_model's tree
-   ---------------------------------------------------------------------------
    The four groups before this one were the tree's PLUMBING — the multiply, the 16-bit
    arithmetic, the rotations and integrations, the slip/sound cluster.  These eight are the
    parts that talk to the rest of the engine, which is why they came last and why the naming
@@ -7997,13 +7751,10 @@ void update_slip_sound(void)
           already 0.  Checked on both, which is what separates it from a coverage hole;
         * `update_engine_revs`' power curve is CONTINUOUS at all three breakpoints ($BA at the
           first, $B6 at the second, $A2 at the third), so moving one by one changes nothing.
-          The curve is covered by sabotages that move a segment's OFFSET or SLOPE instead.
-   =========================================================================== */
+          The curve is covered by sabotages that move a segment's OFFSET or SLOPE instead. */
 
 
-/* ---------------------------------------------------------------------------
-   ⭐ WIDE-VALUE CLEANUP, mechanism (B): THE CAR-ANGLE ARRAY relocated out of mem[]
-   ---------------------------------------------------------------------------
+/* ⭐ WIDE-VALUE CLEANUP, mechanism (B): THE CAR-ANGLE ARRAY relocated out of mem[]
    The three-entry array the 6502 kept PLANE-SPLIT — low bytes at $62A0-$62A2, high bytes at
    $62A3-$62A5 — so element i cost two strided byte accesses to read and two to write.  Here it
    is three `uint16_t`, and every one of its thirteen native sites reads or writes one word.
@@ -8018,8 +7769,7 @@ void update_slip_sound(void)
    shim.  A shim whose core READS the array marshals in; one whose core WRITES it marshals out
    (and marshals in first, because no writer owns all three elements — compute_car_angles owns
    the sin/cos pair, the steering path owns element 2).  That also means an unknown
-   transliterated writer of these cells is still picked up: the next shim re-reads mem[].
-   --------------------------------------------------------------------------- */
+   transliterated writer of these cells is still picked up: the next shim re-reads mem[]. */
 uint16_t car_angle_16[3];
 
 void car_angle_marshal_in(void)
@@ -8037,9 +7787,7 @@ void car_angle_marshal_out(void)
     }
 }
 
-/* ---------------------------------------------------------------------------
-   $0D01  compute_car_angles — THE SIN/COS PAIR  (twin #79)
-   ---------------------------------------------------------------------------
+/* $0D01  compute_car_angles — THE SIN/COS PAIR  (twin #79)
    Takes the player's heading in A (high) and X (low) and leaves car_angle elements 0 and 1 —
    the pair every `apply_angle_term` in the tree multiplies a state element by.  One angle
    evaluation, run twice: first on h = heading x pi, then on its reflection $C900 - h, with bit
@@ -8053,8 +7801,7 @@ void car_angle_marshal_out(void)
    item 2) simply do not appear.  The routine leaves only car_angle[0]/[1]; its exit registers
    and its arithmetic scratch ($42, $74-$79, $7B) are dead — apply_driving_model's next call,
    rotate_state_0_into_8, opens by reloading X, Y and A — so the fixture verifies the four
-   output bytes only.
-   --------------------------------------------------------------------------- */
+   output bytes only. */
 static void compute_car_angles_core(uint16_t heading)
 {
     /* $0D01-$0D0C — h = heading x pi, as a 16-bit value ($C9/256 x 4 = pi to three figures). */
@@ -8100,9 +7847,7 @@ static void compute_car_angles_core(uint16_t heading)
     if (((heading << 1) ^ heading) & 0x8000u) car_angle_16[1] |= 0x0001u;
 }
 
-/* ---------------------------------------------------------------------------
-   $4610  scale_by_track_gradient — A x THE TRACK'S GRADIENT  (twin #80)
-   ---------------------------------------------------------------------------
+/* $4610  scale_by_track_gradient — A x THE TRACK'S GRADIENT  (twin #80)
    A x |track_dir_1[Y]| / 256, re-signed by track_dir_1[Y] EOR track_direction.  Both of
    update_camera_and_drive_state's camera terms go through it: the yaw-derived one and the
    player's own car_section_along, i.e. distance along the section times the local slope — the
@@ -8147,14 +7892,11 @@ uint8_t scale_by_track_gradient_tail_core(uint8_t value, int negative)
 }
 
 
-/* ---------------------------------------------------------------------------
-   $4DC9 / $4DCB  begin_spin — THE CAR LOSES CONTROL  (twins #81, #82)
-   ---------------------------------------------------------------------------
+/* $4DC9 / $4DCB  begin_spin — THE CAR LOSES CONTROL  (twins #81, #82)
    Seeds the two decaying counters from a severity (road_speed at the $4DC9 entry), nudges the
    frame's heading increment by $80 and halves it, marks drive_state as not-under-power and
    queues sound slot 4 — the same slot check_crash's crash arm queues.  It is the milder
-   sibling of that arm: nothing here stops the engine or clears the model.
-   --------------------------------------------------------------------------- */
+   sibling of that arm: nothing here stops the engine or clears the model. */
 static SpinExit begin_spin_from_a_core(uint8_t severity, uint8_t savedX)
 {
     spin_countdown = (uint8_t)(severity >> 1);  /* $4DCC — severity / 2 */
@@ -8173,9 +7915,7 @@ static SpinExit begin_spin_from_a_core(uint8_t severity, uint8_t savedX)
     return e;
 }
 
-/* ---------------------------------------------------------------------------
-   $4C65  apply_drag_terms — TWO SPEED-DEPENDENT TERMS  (twin #83)
-   ---------------------------------------------------------------------------
+/* $4C65  apply_drag_terms — TWO SPEED-DEPENDENT TERMS  (twin #83)
    The first sub-model past the off-power gate.  Term one: |lateral_speed_entry_hi| floored at
    road_speed (and DOUBLED while grip_disturbance is non-zero), squared against the same
    magnitude, added into state element 6.  Term two: (road_speed x wing_drag_coeff + 8) times
@@ -8185,8 +7925,7 @@ static SpinExit begin_spin_from_a_core(uint8_t severity, uint8_t savedX)
    caller's N.
 
    ⚠ It reads the accumulator as it was on ENTRY to apply_driving_model, not as this frame's
-   sub-models left it.
-   --------------------------------------------------------------------------- */
+   sub-models left it. */
 static void apply_drag_terms_core(void)
 {
     /* $4C65-$4C6A — |entry high byte| (abs8 on its own bit 7; $80 stays $80). */
@@ -8228,9 +7967,7 @@ static void apply_drag_terms_core(void)
     add_signed_into_element_core(7u, ms_hi(MS_SPEED));
 }
 
-/* ---------------------------------------------------------------------------
-   $4BCF  update_grip_limits — THE TWO PER-AXLE THRESHOLDS  (twin #84)
-   ---------------------------------------------------------------------------
+/* $4BCF  update_grip_limits — THE TWO PER-AXLE THRESHOLDS  (twin #84)
    Rebuilt every frame from three things: the load term damp_and_derive_loads left in
    wheel_load (only while the BRAKE is down — on the throttle or coasting the term is 0), the
    road speed through wing_grip_coeff, and the two surface bytes.
@@ -8309,9 +8046,7 @@ void update_grip_limits_core(void)
        apply_driving_model_core at the update_slip_sound seam) rather than written here. */
 }
 
-/* ---------------------------------------------------------------------------
-   $49CE  update_engine_revs — THE ENGINE  (twin #85)
-   ---------------------------------------------------------------------------
+/* $49CE  update_engine_revs — THE ENGINE  (twin #85)
    Four things in one routine, and which one runs is decided in the first eight bytes:
 
      the STARTER POLL ($4978) with the engine stopped — the T key, and a 1-in-8 chance a frame
@@ -8329,8 +8064,7 @@ void update_grip_limits_core(void)
    coast arm's tail, so the next frame takes the starter poll instead.
    ⚠⚠ `ADC #7` at $49A6 adds the CALLER'S CARRY — see the group header, item 3.
    ⚠ $4A37 stores the UNCLAMPED revs and clamps only the copy the power curve reads, so
-   engine_revs can exceed $AA even though the curve never sees more than that.
-   --------------------------------------------------------------------------- */
+   engine_revs can exceed $AA even though the curve never sees more than that. */
 
 /* $4A87-$4A90 — the tail EVERY arm reaches, with A carrying the torque to store.
    ⚠ The off-power arms jump to $4A87, not to $4A7F: they store a zero torque and never touch
@@ -8570,9 +8304,7 @@ EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY)
     return e;
 }
 
-/* ---------------------------------------------------------------------------
-   $44EA  update_camera_and_drive_state — THE LAST SUB-MODEL  (twin #86)
-   ---------------------------------------------------------------------------
+/* $44EA  update_camera_and_drive_state — THE LAST SUB-MODEL  (twin #86)
    294 bytes and four jobs, in this order:
 
      (a) with drive_state non-zero it does nothing but DEC spin_shake twice and jump to (c);
@@ -8592,8 +8324,7 @@ EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY)
    differential; so are $45E5/$45E9's, which carry two carries past an intervening add.
    ⚠ SMC $45CB: every expansion circuit replaces the first `ASL A / ROL shared_temp_77` pair
    with a JSR into its own hook, so on those circuits the camera's high byte is built by the
-   circuit's code instead.
-   --------------------------------------------------------------------------- */
+   circuit's code instead. */
 CameraExit update_camera_and_drive_state_core(void)
 {
     CameraExit e = {{0,0,0,0,0},0,0};
@@ -8895,9 +8626,7 @@ void apply_drag_terms(void)
     model_state_marshal_out();
 }
 
-/* ===========================================================================
-   TWINS #87-#92 — THE ROAD SIGN, and the OBJECT SLOT WRITER underneath it
-   ---------------------------------------------------------------------------
+/* TWINS #87-#92 — THE ROAD SIGN, and the OBJECT SLOT WRITER underneath it
    The first of the three trees the campaign has left, and the smallest: six C functions,
    252 bytes of 6502, with every arithmetic leaf underneath them already a twin (#11-#24).
 
@@ -8941,8 +8670,7 @@ void apply_drag_terms(void)
    proj_width_shift - $09 places"; the `DEX` at $2A8A makes it - $0A, and the sign of that
    difference is the direction.  Fixed in the same commit.
 
-   No hardware writes anywhere in the group: signs live entirely in RAM.
-   =========================================================================== */
+   No hardware writes anywhere in the group: signs live entirely in RAM. */
 
 #define VIEW_ORIGIN_STRIDE   0x06u     /* view_origin_lo/_hi: origin 0 = camera, 6 = the sign */
 #define SIGN_SLOT            0x17u     /* the object slot every sign is built into */
@@ -8966,9 +8694,7 @@ static uint8_t sign_table_byte(uint16_t site, uint8_t index, int* trapped)
     return seam_read((unsigned)(uint16_t)(base + index), pointer_is_ram(base));
 }
 
-/* ---------------------------------------------------------------------------
-   $4D21  build_sign_origin — ONE COMPONENT OF THE SIGN'S VIEWPOINT  (twin #88)
-   ---------------------------------------------------------------------------
+/* $4D21  build_sign_origin — ONE COMPONENT OF THE SIGN'S VIEWPOINT  (twin #88)
    view_origin[6 + c] = view_origin[c] - (signed `offset` << (8 - shift)).
 
    The 6502 spells that as a 24-bit logical shift: the sign extension in shared_temp_76, the
@@ -8983,8 +8709,7 @@ static uint8_t sign_table_byte(uint16_t site, uint8_t index, int* trapped)
 
    The component index is shared_temp_77, which the caller seeds and this routine DECs — so
    three calls walk components 2, 1, 0.  math_lo, math_hi and shared_temp_76 are left as
-   scratch, and the second subtract's flags are the routine's exit flags.
-   --------------------------------------------------------------------------- */
+   scratch, and the second subtract's flags are the routine's exit flags. */
 
 SignOriginExit build_sign_origin_core(uint8_t offset, uint8_t shift)
 {
@@ -9032,9 +8757,7 @@ SignOriginExit build_sign_origin_core(uint8_t offset, uint8_t shift)
     return e;
 }
 
-/* ---------------------------------------------------------------------------
-   $2AB3  note_object_contact — IS THIS OBJECT A COLLISION CANDIDATE?  (twin #92)
-   ---------------------------------------------------------------------------
+/* $2AB3  note_object_contact — IS THIS OBJECT A COLLISION CANDIDATE?  (twin #92)
    Runs point_distance_hypot for the point just transformed and, if the distance fits in a byte
    AND is at or under the caller's threshold in Y, records the object as THE frame's contact
    candidate: contact_pending goes non-zero, contact_distance takes the distance and
@@ -9046,8 +8769,7 @@ SignOriginExit build_sign_origin_core(uint8_t offset, uint8_t shift)
    how far off-heading the sign is.  ⚠ contact_pending is DECremented, not set — so a frame in
    which two objects qualify leaves it at $FE, and process_car_contact's test is `non-zero`.
 
-   object_dist_hi is written unconditionally, before either test, and $29FB is its only reader.
-   --------------------------------------------------------------------------- */
+   object_dist_hi is written unconditionally, before either test, and $29FB is its only reader. */
 
 ContactExit note_object_contact_core(uint8_t threshold, uint8_t entryC)
 {
@@ -9078,11 +8800,9 @@ ContactExit note_object_contact_core(uint8_t threshold, uint8_t entryC)
     return e;
 }
 
-/* ---------------------------------------------------------------------------
-   $2A76  write_object_slot — THE PROJECTION'S RESULT INTO AN OBJECT SLOT  (twin #89)
+/* $2A76  write_object_slot — THE PROJECTION'S RESULT INTO AN OBJECT SLOT  (twin #89)
    $2AA6  reject_object_slot                                               (twin #90)
    $2AAD  store_object_flags                                               (twin #91)
-   ---------------------------------------------------------------------------
    Entered straight off project_point with the projected scan line in A and its carry in C, and
    the slot number in shared_counter_42.  Three fields land: object_line (the line, less one),
    object_width (the apparent width, rescaled) and the low nibble of car_flags_shape (the
@@ -9097,8 +8817,7 @@ ContactExit note_object_contact_core(uint8_t threshold, uint8_t entryC)
 
    ⚠ Two rejects, and they are NOT the same test: C set out of project_point (the point is
    behind the near clip) rejects, and so does a projected line of 0, because the `SBC #1` then
-   goes negative.  Everything else is drawn.
-   --------------------------------------------------------------------------- */
+   goes negative.  Everything else is drawn. */
 /* The slot-writer chain's exit ABI.  All three fixtures compare A/X/Y + N/Z/V/C, so the core
    returns every escaping value and the thin shim replays it into cpu; pass-through registers
    (entry X/V/C on the reject arms) travel in as args and back out unchanged. */
@@ -9179,13 +8898,10 @@ SlotExit write_object_slot_core(uint8_t projectedLine, uint8_t entryX,
     return e;
 }
 
-/* ---------------------------------------------------------------------------
-   $4CA4  build_road_sign — ONE SIGN INTO OBJECT SLOT $17  (twin #87)
-   ---------------------------------------------------------------------------
+/* $4CA4  build_road_sign — ONE SIGN INTO OBJECT SLOT $17  (twin #87)
    The body's 14th call, and the body's 15th (draw_track_object) draws what it leaves.  In
    order: pick the sign, build its viewpoint, take its shape and its anchor segment, bear and
-   project it from that viewpoint, and write the slot.
-   --------------------------------------------------------------------------- */
+   project it from that viewpoint, and write the slot. */
 static void build_road_sign_core(void)
 {
     int     trapped = 0;
@@ -9268,9 +8984,7 @@ void build_road_sign(void)      { hypot_max_marshal_in();  hypot_min_marshal_in(
                                   view_origin_marshal_out(); }
 void store_object_flags(void)   { store_object_flags_core(cpu.Y, cpu.A); }
 
-/* ===========================================================================
-   TWINS #93-#95 — THE OBJECT PLOTTER'S SHAPE SIDE
-   ---------------------------------------------------------------------------
+/* TWINS #93-#95 — THE OBJECT PLOTTER'S SHAPE SIDE
    draw_track_object (twin #7) does nothing but decide WHERE an object goes; these three are
    what draws it, and together they are a small vector-shape rasteriser:
 
@@ -9324,8 +9038,7 @@ void store_object_flags(void)   { store_object_flags_core(cpu.Y, cpu.A); }
 
    ⚠⚠ THE WHOLE PASS IS A SECOND TENANT OF THE point_delta WINDOW ($0080-$008F) — see
    docs/rename.md.  The `OBJ_*` defines below are the pass's own names for those cells and the
-   comment on each says whose they are the rest of the time.
-   =========================================================================== */
+   comment on each says whose they are the rest of the time. */
 
 
 /* The object pass's own names for the point_delta window it borrows (docs/rename.md). */
@@ -9334,16 +9047,13 @@ void store_object_flags(void)   { store_object_flags_core(cpu.Y, cpu.A); }
 #define OBJ_EDGE_X          MEM_point_delta_hi   /* point_delta_hi[0] — the edge's x, into the plotter */
 #define OBJ_EDGE_STYLE      MEM_shared_temp_84   /* point_delta_hi[1] — ...and its style byte */
 
-/* ---------------------------------------------------------------------------
-   $202A  scale_shape_vectors — THE SHAPE AT THIS OBJECT'S SIZE  (twin #94)
-   ---------------------------------------------------------------------------
+/* $202A  scale_shape_vectors — THE SHAPE AT THIS OBJECT'S SIZE  (twin #94)
    Fills shape_vertex[0..7] with the shape's vertex offsets scaled to proj_width, and
    [8..15] with their negations.  Returns with C SET when one of them would not fit in seven
    bits, which is plot_object's signal to abandon the object.
 
    ⚠ proj_width_shift's extra halving is `LSR / DEX / BNE` and the closing `ADC #0` ROUNDS off
-   the last bit shifted out — so the twin keeps the carry, not just the value.
-   --------------------------------------------------------------------------- */
+   the last bit shifted out — so the twin keeps the carry, not just the value. */
 /* Exit ABI is the full register+flag set (SlotExit).  ⚠ V can carry the ENTRY V all the way to
    the abandon exit — a one-term vector with no extra shift never writes V before the reject — so
    the caller's V is an input. */
@@ -9410,9 +9120,7 @@ static SlotExit scale_shape_vectors_core(uint8_t entryV)
     }
 }
 
-/* ---------------------------------------------------------------------------
-   $209A  plot_shape_edges — THE SHAPE'S EDGES, AS FILLED SPANS  (twin #95)
-   ---------------------------------------------------------------------------
+/* $209A  plot_shape_edges — THE SHAPE'S EDGES, AS FILLED SPANS  (twin #95)
    Walks the shape's edge list from shape_edge_start.  Each edge is a vertical span: two vertex
    offsets give its two scan lines (clamped below at $4F and above at object_line_ceiling, i.e.
    the horizon), two more give the x offsets at its ends, and the style byte carries both the
@@ -9425,8 +9133,7 @@ static SlotExit scale_shape_vectors_core(uint8_t entryV)
    ⭐ THE STYLE BYTE'S TOP TWO BITS ARE THE WALK'S CONTROL FLOW, and they mean different things
    on the two paths.  On a REJECTED edge (either scan line off the top, or the top line at or
    past the bottom) bit 7 says "keep skipping" and bit 6 says "the shape ends here".  On a drawn
-   edge bit 7 sends it to the closing arm and bit 6, tested after the close, ends the shape.
-   --------------------------------------------------------------------------- */
+   edge bit 7 sends it to the closing arm and bit 6, tested after the close, ends the shape. */
 /* Exit ABI is the full register+flag set (SlotExit): both callers (its own fixture, and
    plot_object which reads exit Y and V) compare it all.  No entry register is read — Y is
    seeded from plot_ptr3_lo, A/X are written before use — so the core takes no arguments. */
@@ -9544,12 +9251,9 @@ static SlotExit plot_shape_edges_core(void)
     }
 }
 
-/* ---------------------------------------------------------------------------
-   $1FB4  plot_object — THE OBJECT PLOTTER  (twin #93)
-   ---------------------------------------------------------------------------
+/* $1FB4  plot_object — THE OBJECT PLOTTER  (twin #93)
    Entered with the object's SLOT in X and its four-cell argument block already set by
-   draw_track_object: plot_x, plot_line, proj_width and plot_shape.
-   --------------------------------------------------------------------------- */
+   draw_track_object: plot_x, plot_line, proj_width and plot_shape. */
 /* Exit ABI is the full register+flag set (SlotExit).  Entry Y and V flow through the SMC-trap
    exit (which writes neither); the normal exits carry plot_shape_edges' exit Y/V, which that
    routine now returns by value. */
@@ -9650,10 +9354,8 @@ void plot_shape_edges(void)     { SlotExit e = plot_shape_edges_core();
                                   cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
                                   cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c; }
 
-/* ===========================================================================
-   TWINS #96-#97 — THE OBJECT PLOTTER'S LINE SIDE, and with it the whole of
+/* TWINS #96-#97 — THE OBJECT PLOTTER'S LINE SIDE, and with it the whole of
    draw_track_object's tree
-   ---------------------------------------------------------------------------
      $1C1C plot_view_src_line   THE line plotter: one edge of a shape into the view source
      $1E38 fill_object_gap      ...and the columns BETWEEN two edges, filled solid
 
@@ -9706,8 +9408,7 @@ void plot_shape_edges(void)     { SlotExit e = plot_shape_edges_core();
 
    No hardware writes: the whole pass is RAM.
    ⚠⚠ Like twins #93-#95 this is a SECOND TENANT of the point_delta window; the `PVS_*` defines
-   name the cells for this pass and say whose they are the rest of the time (docs/rename.md).
-   =========================================================================== */
+   name the cells for this pass and say whose they are the rest of the time (docs/rename.md). */
 
 #define VIEW_SRC_PAGE       0x30u     /* the forty $80-spaced source blocks start at $3000 */
 #define SRC_CELL_BLANK      0x55u     /* the "written but empty" sentinel */
@@ -9749,13 +9450,10 @@ static void derive_endpoint(uint8_t halved, uint16_t xCell, uint16_t colCell)
     mem[colCell] = (uint8_t)(px >> 2);               /* LSR A; LSR A */
 }
 
-/* ---------------------------------------------------------------------------
-   $1E38  fill_object_gap — THE COLUMNS BETWEEN TWO EDGES  (twin #97)
-   ---------------------------------------------------------------------------
+/* $1E38  fill_object_gap — THE COLUMNS BETWEEN TWO EDGES  (twin #97)
    Fills `width` columns to the LEFT of the column in EDGE_COLUMN with one byte — the previous
    call's colour, or the blank sentinel if that was 0 — over the run's own line range.  See the
-   group header, item 6, for the pair walk and the pointer bias.
-   --------------------------------------------------------------------------- */
+   group header, item 6, for the pair walk and the pointer bias. */
 void fill_object_gap(void);   /* the shim — plot_view_src_line's close_gap arm calls it below */
 
 /* ⚠ V and C reach the exit UNREAD (see plot_view_src_line's close_gap header), so the fixture
@@ -9863,13 +9561,10 @@ SlotExit fill_object_gap_core(uint8_t width)
     }
 }
 
-/* ---------------------------------------------------------------------------
-   plot_view_src_line's three shared tails ($1D25, $1D7C, $1D86)
-   ---------------------------------------------------------------------------
+/* plot_view_src_line's three shared tails ($1D25, $1D7C, $1D86)
    The 6502 reaches each of these from several arms by branching; in C they are functions the
    arms return through.  `acc` is not a parameter of the gap tails: close_gap recomputes it from
-   the column pair, so every arm's working byte is dead there.
-   --------------------------------------------------------------------------- */
+   the column pair, so every arm's working byte is dead there. */
 
 /* $1D86-$1D93 — CLC/SBC: the gap is `column - previous - 1` (D=0 on the object path).  Zero or
    negative, no fill.  Only N and Z are read (the branch just below); the subtract's V and C
@@ -9920,11 +9615,8 @@ static int slot_defer_if_same_column(uint8_t acc, uint8_t edgeCol, uint8_t *x, u
     return 1;
 }
 
-/* ---------------------------------------------------------------------------
-   $1C1C  plot_view_src_line — ONE COLUMN OF ONE SHAPE EDGE  (twin #96)
-   ---------------------------------------------------------------------------
-   `mode` arrives in Y (0, 1 or 2 — see the group header, item 2) and the colour selector in A.
-   --------------------------------------------------------------------------- */
+/* $1C1C  plot_view_src_line — ONE COLUMN OF ONE SHAPE EDGE  (twin #96)
+   `mode` arrives in Y (0, 1 or 2 — see the group header, item 2) and the colour selector in A. */
 SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
 {
     unsigned pixel;
@@ -10145,9 +9837,7 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
 }
 
 
-/* ===========================================================================
-   TWINS #98-#114 — THE DRIVING CONTROLS, and with them the last of the campaign's trees
-   ---------------------------------------------------------------------------
+/* TWINS #98-#114 — THE DRIVING CONTROLS, and with them the last of the campaign's trees
    Seventeen C functions, ~700 bytes: everything `read_driving_controls` reaches.  It is one
    cluster rather than seventeen decisions because the chain is spliced together by TAIL JUMPS
    across four regions —
@@ -10218,8 +9908,7 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
      * and `gear_key_latch` forced to 0 — not a hook but the same lesson: a random byte is 0 once
        in 256, so the gear-shift body ran in 20 of 5000 cases and both of its wrap arms survived.
    ⚠⚠ The steering chain is a SECOND TENANT of math_lo/math_hi/shared_temp_76 — the `STEER_*`
-   defines below are its own names for them (docs/rename.md).
-   =========================================================================== */
+   defines below are its own names for them (docs/rename.md). */
 
 #define STEER_SIGN     MEM_math_lo   /* math_lo        — the demand's sign byte; bit 0 = negative */
 #define STEER_DEMAND   MEM_math_hi   /* math_hi        — ...and its magnitude */
@@ -10235,13 +9924,10 @@ uint8_t vdu_char_emit_core(void);                  /* returns the block char lef
 void adc_read(void);   /* the 6502-ABI shim; the two driver callers below still enter it that way */
 void draw_gear_indicator(void);   /* likewise: read_pedals_and_gears enters it via the shim */
 
-/* ---------------------------------------------------------------------------
-   $50FC  mode5_addr — THE SCREEN ADDRESS OF A CHARACTER CELL  (twins #113, #114)
-   ---------------------------------------------------------------------------
+/* $50FC  mode5_addr — THE SCREEN ADDRESS OF A CHARACTER CELL  (twins #113, #114)
    plot_ptr = char_row_addr[Y >> 3] + A x 2, and Y comes back as the scan line within that
    character row.  $50FA is the entry that multiplies a character COLUMN by four first, so the
-   pair together computes `column x 8` — one MODE 5 cell.
-   --------------------------------------------------------------------------- */
+   pair together computes `column x 8` — one MODE 5 cell. */
 Mode5Addr mode5_addr_core(uint8_t quarterOffset, uint8_t y)
 {
     /* $50FC-$5118 — plot_ptr = char_row_base + (quarterOffset x 2).  The 6502 does it as
@@ -10273,15 +9959,12 @@ Mode5Addr mode5_addr_for_cell_core(uint8_t column, uint8_t y)
     return mode5_addr_core((uint8_t)(column << 2), y);
 }
 
-/* ---------------------------------------------------------------------------
-   $509D  vdu_char_emit — ONE CHARACTER INTO THE DASHBOARD  (twin #112)
+/* $509D  vdu_char_emit — ONE CHARACTER INTO THE DASHBOARD  (twin #112)
    $508C  vdu_char_wide                                     (twin #110)
    $5092  vdu_char_def                                      (twin #111)
-   ---------------------------------------------------------------------------
    OSWORD 10 hands back the character's 8x8 bitmap; shared_temp_77 then says which HALF of it
    this cell carries ($00 = no expansion, bit 7 clear = the left four pixels, set = the right
-   four shifted up), and the eight bytes go into the screen BOTTOM-UP.
-   --------------------------------------------------------------------------- */
+   four shifted up), and the eight bytes go into the screen BOTTOM-UP. */
 uint8_t vdu_char_wide_core(uint8_t ch)
 {
     mem[MEM_vdu_char_block] = ch;                          /* $508C — shared_temp_77 is the caller's */
@@ -10407,8 +10090,7 @@ static uint8_t field_mask_lsr(void)
     return print_field_mask;
 }
 
-/* ---------------------------------------------------------------------------
-   $3D50  print_spaces — `count` SPACES THROUGH THE VDU CHAR PATH  (twin #148)
+/* $3D50  print_spaces — `count` SPACES THROUGH THE VDU CHAR PATH  (twin #148)
    Each space goes through the same dispatch vdu_char_def uses: OSWRCH when
    text_out_via_mos bit 7 is set (X/Y ambient), otherwise the bitmap emitter.
    The 6502 counts down and tests AFTER the decrement, so a count of 0 prints
@@ -10416,8 +10098,7 @@ static uint8_t field_mask_lsr(void)
    reader-nativization step of the wide-value cleanup), with the cell's exit value
    (0) still written so the routine stays byte-exact until math_lo is relocated.
    Exit A = the space byte ($20); the caller's exit N/Z come from the final
-   DEC to zero (N=0, Z=1) — three callers branch on that Z.
-   --------------------------------------------------------------------------- */
+   DEC to zero (N=0, Z=1) — three callers branch on that Z. */
 uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y)
 {
     uint8_t c = count;
@@ -10431,8 +10112,7 @@ uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y)
     return 0x20u;                               /* both paths return the character in A */
 }
 
-/* ---------------------------------------------------------------------------
-   $4D7E  text_script_interp — RUN A TEXT SCRIPT  (twin #165)
+/* $4D7E  text_script_interp — RUN A TEXT SCRIPT  (twin #165)
    A script is a byte string, pointed to by (text_script_ptr_lo[X],
    text_script_ptr_hi[X]) for script index X, terminated by $FF.  Each byte:
        $00..$9F  a character  -> vdu_char_def
@@ -10505,8 +10185,7 @@ uint8_t text_script_interp_core(uint8_t tableIdx)
     }
 }
 
-/* ---------------------------------------------------------------------------
-   $6571  menu_wait_key — THE FRONT-END MENU SELECTOR  (twin #166)
+/* $6571  menu_wait_key — THE FRONT-END MENU SELECTOR  (twin #166)
    The front-end chain ($63E0) calls this five times to read one menu answer.
    It renders/polls in a loop until one of menu_key_tbl[0..count] ($39E0, the
    negative-INKEY codes for SPACE/1/2/3) is held, then highlights the chosen row
@@ -10527,8 +10206,7 @@ uint8_t text_script_interp_core(uint8_t tableIdx)
    ⚠ abort_if_quit_keys ($3261) dispatches on abort_state (mem[$1C]): with bit 7
    CLEAR, and the abort keys held, it does TXS + re-enter front_end_menus (the
    SHIFT+abort longjmp), so any run of this routine — real or fixture — is only
-   well-defined with $1C bit 7 SET (the normal in-menu state).
-   --------------------------------------------------------------------------- */
+   well-defined with $1C bit 7 SET (the normal in-menu state). */
 
 uint8_t menu_wait_key_core(uint8_t count)
 {
@@ -10578,8 +10256,7 @@ uint8_t menu_wait_key_core(uint8_t count)
     }
 }
 
-/* ---------------------------------------------------------------------------
-   $7B4A  draw_starting_lights — WALK THE LIGHT SEQUENCE, PAINT THE COLUMN  (twin #149)
+/* $7B4A  draw_starting_lights — WALK THE LIGHT SEQUENCE, PAINT THE COLUMN  (twin #149)
    Lives in the $7B00 overlay.  Does nothing outside the race proper (session_is_race
    positive) or once the lights are dark (state 0).  Otherwise it advances
    start_light_state through its sequence and lays a light column straight into
@@ -10597,8 +10274,7 @@ uint8_t menu_wait_key_core(uint8_t count)
    still written so the routine stays byte-exact until math_lo is relocated.
    Returns the painted pattern (the byte the 6502 PHA'd), or -1 on the early exits
    so the shim can reproduce that push's stack residue; exit regs/flags are dead at
-   the sole (native) caller, race_main_loop.
-   --------------------------------------------------------------------------- */
+   the sole (native) caller, race_main_loop. */
 int draw_starting_lights_core(void)
 {
     /* $42C0 = view_src_blocks column 37, offset $40 — the ten-row light column. */
@@ -10646,9 +10322,7 @@ int draw_starting_lights_core(void)
     return (int)pattern;
 }
 
-/* ---------------------------------------------------------------------------
-   $4F23 / $4F39  irq1v_release + enter_mos_text_mode — THE END OF A RACE  (twin #175)
-   ---------------------------------------------------------------------------
+/* $4F23 / $4F39  irq1v_release + enter_mos_text_mode — THE END OF A RACE  (twin #175)
    The last thing every race does, and it undoes exactly what claimed the raster.  IRQ1V goes
    back to whoever owned it before irq1v_band_schedule took it, and the User VIA's T1 interrupt
    — the band timer that drove the five-band palette split — is disabled, so no further band
@@ -10665,8 +10339,7 @@ int draw_starting_lights_core(void)
    keeps it rather than dropping it.
 
    Result-only: the exit is dead at every caller.  Both do `JSR irq1v_release` / `RTS` — $17BF in
-   the transliterated race body, and race_main_loop_core's very last statement.
-   --------------------------------------------------------------------------- */
+   the transliterated race body, and race_main_loop_core's very last statement. */
 void enter_mos_text_mode_core(void)
 {
     text_out_via_mos = 0x80u;              /* $4F39-$4F3B — negative: characters go to the MOS */
@@ -10682,8 +10355,7 @@ void irq1v_release_core(uint8_t ambientY)
     enter_mos_text_mode_core();                    /* $4F39 — fall-through, not a call */
 }
 
-/* ---------------------------------------------------------------------------
-   $4F44  update_horizon_band — MOVE THE HORIZON WITH THE HILLS  (twin #150)
+/* $4F44  update_horizon_band — MOVE THE HORIZON WITH THE HILLS  (twin #150)
 
    The body's 21st call.  Band 1 is the sky; its duration is where the sky/track
    split sits, and moving that split IS "moving the horizon".  The routine takes
@@ -10735,9 +10407,7 @@ int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out)
     return 0;
 }
 
-/* ---------------------------------------------------------------------------
-   $42D0  draw_gear_indicator — THE GEAR, DOUBLE WIDTH  (twin #109)
-   --------------------------------------------------------------------------- */
+/* $42D0  draw_gear_indicator — THE GEAR, DOUBLE WIDTH  (twin #109) */
 uint8_t draw_gear_indicator_core(void)
 {
     mem[MEM_vdu_char_column]   = 0x22u;                             /* $42D0 — column $22 */
@@ -10750,13 +10420,10 @@ uint8_t draw_gear_indicator_core(void)
     return vdu_char_wide_core(block);                  /* exit A/N/Z come from this second emit */
 }
 
-/* ---------------------------------------------------------------------------
-   $503F  adc_read — ONE ANALOGUE AXIS, CENTRED  (twin #108)
-   ---------------------------------------------------------------------------
+/* $503F  adc_read — ONE ANALOGUE AXIS, CENTRED  (twin #108)
    OSBYTE $80 (ADVAL) with the channel in X.  Returns the DISTANCE from centre in A, the
    direction in X (1 positive, 0 negative) and C set when that distance is at least $0A — the
-   dead zone both callers test.
-   --------------------------------------------------------------------------- */
+   dead zone both callers test. */
 AdcRead adc_read_core(uint8_t channel)
 {
     /* $503F — OSBYTE $80 (ADVAL) with the channel in X; the reading's high byte comes back in Y.
@@ -10781,12 +10448,9 @@ AdcRead adc_read_core(uint8_t channel)
     return r;
 }
 
-/* ---------------------------------------------------------------------------
-   $63C5  poll_steering_assist — THE LAMP AND THE SETTING  (twin #107)
-   ---------------------------------------------------------------------------
+/* $63C5  poll_steering_assist — THE LAMP AND THE SETTING  (twin #107)
    See the group header, items 4 and 5: A is preserved, X comes back as the flag (with its Z)
-   and C as bit 7 of track_direction.
-   --------------------------------------------------------------------------- */
+   and C as bit 7 of track_direction. */
 void poll_steering_assist_core(void)
 {
     /* $63C5-$63D7 — light the four assist lamps from the flag.  A is the caller's (the 6502 saves
@@ -10799,9 +10463,7 @@ void poll_steering_assist_core(void)
     mem[MEM_assist_lamp_0] = (uint8_t)(flag >> 3);         /* $77DB */
 }
 
-/* ---------------------------------------------------------------------------
-   $1F9B  limit_steer_demand — NEVER MORE LOCK THAN THE DRIVER ASKED FOR  (twin #106)
-   --------------------------------------------------------------------------- */
+/* $1F9B  limit_steer_demand — NEVER MORE LOCK THAN THE DRIVER ASKED FOR  (twin #106) */
 uint8_t limit_steer_demand_core(uint8_t a, int carryIn)
 {
     /* $1F9B — when the computed demand overshot the driver's own lock (carry in), pin it back to
@@ -10813,10 +10475,8 @@ uint8_t limit_steer_demand_core(uint8_t a, int carryIn)
     return (uint8_t)(ang >> 8);
 }
 
-/* ---------------------------------------------------------------------------
-   $15F4  steer_demand_from_slip — CANCEL THE SLIP  (twin #99)
-   $160D  steer_demand_store                          (twin #100)
-   --------------------------------------------------------------------------- */
+/* $15F4  steer_demand_from_slip — CANCEL THE SLIP  (twin #99)
+   $160D  steer_demand_store                          (twin #100) */
 static void steer_demand_store_core(uint8_t a)
 {
     mem[STEER_DEMAND] = a;                             /* $160D */
@@ -10850,13 +10510,10 @@ static void steer_demand_from_slip_core(void)
     steer_demand_store_core(a);
 }
 
-/* ---------------------------------------------------------------------------
-   $1F08  apply_steering_assist — COMPUTER ASSISTED STEERING  (twin #105)
-   ---------------------------------------------------------------------------
+/* $1F08  apply_steering_assist — COMPUTER ASSISTED STEERING  (twin #105)
    The group header's items 2 and 3 are what this computes.  Entered two ways: at $1F08 from
    steer_assist_dispatch, which derives the look-ahead selector from the demand's own direction,
-   and at $1F11 from steer_apply_with_assist, which already has it in A.
-   --------------------------------------------------------------------------- */
+   and at $1F11 from steer_apply_with_assist, which already has it in A. */
 static void apply_steering_assist_noinit_core(uint8_t selector);
 
 static void apply_steering_assist_core(void)
@@ -10935,10 +10592,8 @@ static void apply_steering_assist_noinit_core(uint8_t selector)
     apply_steer_demand_core((uint8_t)car_angle_16[CAR_ANGLE_STEER]);   /* $1F95 */
 }
 
-/* ---------------------------------------------------------------------------
-   $1EE9  steer_assist_dispatch      (twin #103)  — the JOYSTICK path's fork
-   $1EFA  steer_apply_with_assist    (twin #104)  — the KEYBOARD path's
-   --------------------------------------------------------------------------- */
+/* $1EE9  steer_assist_dispatch      (twin #103)  — the JOYSTICK path's fork
+   $1EFA  steer_apply_with_assist    (twin #104)  — the KEYBOARD path's */
 static void steer_assist_dispatch_core(uint8_t demand)
 {
     poll_steering_assist_core();                       /* $1EE9 — lamps; A (= demand) survives it */
@@ -10958,14 +10613,11 @@ static void steer_apply_with_assist_core(void)
     apply_steer_demand_core((uint8_t)car_angle_16[CAR_ANGLE_STEER]);   /* $1F95 */
 }
 
-/* ---------------------------------------------------------------------------
-   $1612  apply_steer_demand            (twin #101)
+/* $1612  apply_steer_demand            (twin #101)
    $162D  clamp_and_store_steer_angle   (twin #102)
-   ---------------------------------------------------------------------------
    ⚠ $162D falls straight into the THROTTLE and GEAR halves of read_driving_controls, so both of
    these end by running that code — the listing's split at $1612 is an artefact of $1F95 and
-   $1EEE jumping into the middle of one routine.
-   --------------------------------------------------------------------------- */
+   $1EEE jumping into the middle of one routine. */
 static void read_pedals_and_gears(void);
 
 static void apply_steer_demand_core(uint8_t signByte)
@@ -11123,12 +10775,9 @@ static void read_pedals_and_gears(void)
     draw_gear_indicator();                             /* cluster-2 driver, still 6502-ABI */
 }
 
-/* ---------------------------------------------------------------------------
-   $1579  read_driving_controls — STEERING, THROTTLE, BRAKE, GEARS  (twin #98)
-   ---------------------------------------------------------------------------
+/* $1579  read_driving_controls — STEERING, THROTTLE, BRAKE, GEARS  (twin #98)
    The body's 3rd call.  Steering first, through whichever of the two input paths $05F5 selects,
-   and the group header's item 1 is the joystick one's whole non-linearity.
-   --------------------------------------------------------------------------- */
+   and the group header's item 1 is the joystick one's whole non-linearity. */
 static void read_driving_controls_core(void)
 {
     mem[STEER_KEYS]   = 0x00u;                          /* $1579 */
@@ -11257,9 +10906,7 @@ void apply_steering_assist(void)        { car_angle_marshal_in(); apply_steering
 
 /* $503F adc_read — magnitude in A, sign in X, the dead-zone carry rebuilt from CMP #$0A
    ($504F).  Y is left as the OSBYTE reading the core's MOS call returned; V is dropped. */
-/* ===========================================================================
-   $4D4D  reset_all_cars_for_session — put the whole 20-car field back to a start  (#204)
-   ---------------------------------------------------------------------------
+/* $4D4D  reset_all_cars_for_session — put the whole 20-car field back to a start  (#204)
    `startCar` arrives in X and does three jobs: it is the seeding cursor, it becomes the race
    class, and it selects the track-scale byte.  front_end_menus, the only caller, passes 0.
 
@@ -11271,8 +10918,7 @@ void apply_steering_assist(void)        { car_angle_marshal_in(); apply_steering
       startCar, then 19, 18, .. 1, 0 — every car exactly once whatever startCar is;
     - the three lap-total stores at $4D63-$4D6B use that DECREMENTED cursor, so each pass
       zeroes the lap total of the NEXT car, not the one it just placed.  Over the whole walk
-      both sets still cover all 20 cars, which is why it never mattered.
-   --------------------------------------------------------------------------- */
+      both sets still cover all 20 cars, which is why it never mattered. */
 void reset_all_cars_for_session_core(uint8_t startCar)
 {
     mem[MEM_car_seed_index] = startCar;                  /* $4D4D STX car_seed_index */
@@ -11300,15 +10946,12 @@ void reset_all_cars_for_session_core(uint8_t startCar)
     } while (car != 0u);                             /* $4D6C TXA; BNE */
 }
 
-/* ===========================================================================
-   $40EB  car_reset_best_lap        — one car's best lap back to "no time yet"  (#203)
+/* $40EB  car_reset_best_lap        — one car's best lap back to "no time yet"  (#203)
    $42EC  all_cars_reset_best_lap   — ...for the whole 20-car field
-   ---------------------------------------------------------------------------
    The sentinel is the 3-byte BCD value $10:00:00 — ten minutes, slower than any lap any
    circuit on this disc can produce, so the first real lap always wins the comparison.
    front_end_menus resets the field at every session boundary and one car at a time as it
-   walks the drivers; reset_driving_variables uses the single-car form too.
-   --------------------------------------------------------------------------- */
+   walks the drivers; reset_driving_variables uses the single-car form too. */
 void car_reset_best_lap_core(uint8_t car)
 {
     mem[MEM_car_best_lap_lo  + car] = 0x00;
@@ -11324,15 +10967,12 @@ void all_cars_reset_best_lap_core(void)
     } while (car-- != 0);
 }
 
-/* ===========================================================================
-   $6698  add_tally_to_lap_total — fold a standings column into a car's lap total  (#203)
-   ---------------------------------------------------------------------------
+/* $6698  add_tally_to_lap_total — fold a standings column into a car's lap total  (#203)
    A three-byte BCD add of column `column`'s 16-bit tally into car `car`'s 24-bit cumulative
    lap total, the third byte taking only the carry.  ⚠ One of the eight SED sites
    (docs/static-map.md §Decimal mode): the adds are genuinely decimal, which is why this twin
    keeps adc_value instead of a plain uint32_t sum, and it restores D=0 on the way out exactly
-   as the $66B4 CLD does.  Returns the high byte's add so the caller can see the final carry.
-   --------------------------------------------------------------------------- */
+   as the $66B4 CLD does.  Returns the high byte's add so the caller can see the final carry. */
 Adc add_tally_to_lap_total_core(uint8_t column, uint8_t car)
 {
     cpu.D = 1;                                                                    /* $6698 SED */
@@ -11348,9 +10988,7 @@ Adc add_tally_to_lap_total_core(uint8_t column, uint8_t car)
     return hi;
 }
 
-/* ===========================================================================
-   THE LATE MISC TREES  (twins #116-#125, user 2026-08-21)
-   ---------------------------------------------------------------------------
+/* THE LATE MISC TREES  (twins #116-#125, user 2026-08-21)
    Everything still transliterated in the call trees of scale_wing_settings,
    compute_segment_scale, place_player_in_section, process_car_contact and
    tick_wheel_spin.  Every arithmetic LEAF they reach (mul8, abs8, abs16_math,
@@ -11360,19 +10998,15 @@ Adc add_tally_to_lap_total_core(uint8_t column, uint8_t car)
    arithmetic is plain binary and the twins spell it as such.  Where a value
    crosses into a shared tail (car_gap_tail — now native twin #137 — begin_scrape, retire_car) or a
    native leaf with a live-flag input (abs8, abs16_math), the seam reconstructs
-   exactly the cpu inputs that leaf reads — nothing more.
-   =========================================================================== */
+   exactly the cpu inputs that leaf reads — nothing more. */
 
 
-/* ---------------------------------------------------------------------------
-   $0B77  scale_wing_settings  (twin #116)
-   ---------------------------------------------------------------------------
+/* $0B77  scale_wing_settings  (twin #116)
    Turns the two pit-menu wing settings into the downforce/drag coefficients the
    driving model reads.  Per wing: grip = ((base * (setting*4)) >> 8) + $5A.  Drag
    folds both wings: ((3*rear + front) / 2) + $3C — accumulated as the 6502 does it,
    where the ASL feeds its own carry (bit 7 of rear) into the first ADD, a faithful
-   8-bit quirk with no 16-bit equivalent.
-   --------------------------------------------------------------------------- */
+   8-bit quirk with no 16-bit equivalent. */
 void scale_wing_settings(void)
 {
     /* X walks 1 then 0: front wing (index 1) then rear wing (index 0). */
@@ -11392,16 +11026,13 @@ void scale_wing_settings(void)
     wing_drag_coeff = (uint8_t)acc;
 }
 
-/* ---------------------------------------------------------------------------
-   $44C6  compute_segment_scale  (twin #117)
-   ---------------------------------------------------------------------------
+/* $44C6  compute_segment_scale  (twin #117)
    Scales every segment's raw datum by the track scale.  X selects the track's scale
    byte.  Per segment (top down): drop the datum's low two bits; when the datum's bit 1
    is clear, take the rounded x.8 product with the scale, otherwise pass the shifted
    datum through; the datum's bit 0 is rotated back into bit 7 as the rounding bit.
    ⚠ SMC $44D5-$44D7: the segment-data base address is patched per circuit by
-   ModifyGameCode; the guard reproduces the oracle's opcode check and trap.
-   --------------------------------------------------------------------------- */
+   ModifyGameCode; the guard reproduces the oracle's opcode check and trap. */
 void compute_segment_scale_core(uint8_t trackClass)
 {
     uint8_t scale = mem[MEM_track_scale + trackClass];
@@ -11422,12 +11053,9 @@ void compute_segment_scale_core(uint8_t trackClass)
     }
 }
 
-/* ---------------------------------------------------------------------------
-   $4687  section_angle_curve  (twin #118)  — returns A
-   ---------------------------------------------------------------------------
+/* $4687  section_angle_curve  (twin #118)  — returns A
    A piecewise remap of a section angle into a steering-feel curve: shallow angles are
-   amplified 6x, mid angles 4x with an offset, steep angles flatten to a linear tail.
-   --------------------------------------------------------------------------- */
+   amplified 6x, mid angles 4x with an offset, steep angles flatten to a linear tail. */
 static uint8_t section_angle_curve_core(uint8_t a)
 {
     if (a >= 0x2E) return (uint8_t)(a + 0xBE);       /* steep: shallow linear tail */
@@ -11436,12 +11064,9 @@ static uint8_t section_angle_curve_core(uint8_t a)
 }
 void section_angle_curve(void) { cpu.A = section_angle_curve_core(cpu.A); }
 
-/* ---------------------------------------------------------------------------
-   $4676  scale_angle_in_section  (twin #119)  — returns A
-   ---------------------------------------------------------------------------
+/* $4676  scale_angle_in_section  (twin #119)  — returns A
    Curves the angle, then folds Y and edge_nearest_lo through it as two x.8 multiplies:
-   A = ((edge_nearest_lo * ((Y * curve(A)) >> 8)) >> 8).
-   --------------------------------------------------------------------------- */
+   A = ((edge_nearest_lo * ((Y * curve(A)) >> 8)) >> 8). */
 static uint8_t scale_angle_in_section_core(uint8_t a, uint8_t y)
 {
     uint8_t curve = section_angle_curve_core(a);
@@ -11451,13 +11076,10 @@ static uint8_t scale_angle_in_section_core(uint8_t a, uint8_t y)
 void scale_angle_in_section(void) { edge_nearest_marshal_in();
                                     cpu.A = scale_angle_in_section_core(cpu.A, cpu.Y); }
 
-/* ---------------------------------------------------------------------------
-   $1FA8  record_section_jump  (twin #120)
-   ---------------------------------------------------------------------------
+/* $1FA8  record_section_jump  (twin #120)
    Rolls one bit into a per-frame history: a 1 iff the caller's carry is set AND this
    car's offset within its segment has reached 3.  Carry in, and the bit rotated OUT
-   of the history byte comes back out in carry.
-   --------------------------------------------------------------------------- */
+   of the history byte comes back out in carry. */
 static int record_section_jump_core(int carry_in, uint8_t x)
 {
     int     bit_in = carry_in ? (mem[MEM_car_seg_offset + x] >= 3) : 0;   /* BCC / CMP #3 */
@@ -11467,9 +11089,7 @@ static int record_section_jump_core(int carry_in, uint8_t x)
 }
 void record_section_jump(void) { cpu.C = record_section_jump_core(cpu.C, cpu.X); }
 
-/* ---------------------------------------------------------------------------
-   $4626  place_player_in_section  (twin #121)
-   ---------------------------------------------------------------------------
+/* $4626  place_player_in_section  (twin #121)
    Derives the two per-car placement bytes from the nearest road-edge bearing relative to the
    current section's yaw: the car's displacement from the section origin, resolved onto the
    section's own axes.  It folds that relative angle through scale_angle_in_section twice —
@@ -11479,8 +11099,7 @@ void record_section_jump(void) { cpu.C = record_section_jump_core(cpu.C, cpu.X);
 
    The abs8 and the SMC hook are native leaves with live-flag INPUTS, so the seam sets
    exactly the cpu registers each reads (A and its sign N; abs8's threaded carry).
-   ⚠ SMC $462B-$462D: Silverstone calls abs8; an expansion circuit runs its own hook.
-   --------------------------------------------------------------------------- */
+   ⚠ SMC $462B-$462D: Silverstone calls abs8; an expansion circuit runs its own hook. */
 /* The marshal-IN below is oracle-only in production and stays on this 6502-ABI path for the
    harness; native callers enter at the _native split.  Full argument at build_track_geometry in revs_native_seam.c. */
 void place_player_in_section(void)
@@ -11553,14 +11172,11 @@ void place_player_in_section_native(void)
     mem[MEM_car_section_along + x] = b;
 }
 
-/* ---------------------------------------------------------------------------
-   $52A4  tick_wheel_spin  (twin #122)
-   ---------------------------------------------------------------------------
+/* $52A4  tick_wheel_spin  (twin #122)
    One PAL field of the wheel-spin flicker.  Advances a field counter and a rate
    accumulator (road_speed + $30); on the accumulator's carry, and only while
    wheel_spin_rate is non-zero, it XORs the wheel graphics in the dashboard overlay.
-   Every $6Exx/$6Fxx/$70xx store is a frame-buffer write.
-   --------------------------------------------------------------------------- */
+   Every $6Exx/$6Fxx/$70xx store is a frame-buffer write. */
 void tick_wheel_spin(void)
 {
     field_countdown++;
@@ -11584,15 +11200,12 @@ void tick_wheel_spin(void)
     }
 }
 
-/* ---------------------------------------------------------------------------
-   $11AB  spin_car_out  (twin #123)
-   ---------------------------------------------------------------------------
+/* $11AB  spin_car_out  (twin #123)
    Flags car `x` as spun out.  For a real car slot (x < $14) it folds the low seven bits
    of car_section_across into car_across_drift, armed and with magnitude 5 ($45), stamps $91 into the page-1
    status array, then runs the shared crash tail (retire_car).  Scenery slots do nothing.
    Returns retire_car's lap comparison — the only flag either arm leaves a caller — or -1 on the
-   scenery-slot exit, where $11CD is a bare RTS and the 6502's flags are untouched.
-   --------------------------------------------------------------------------- */
+   scenery-slot exit, where $11CD is a bare RTS and the 6502's flags are untouched. */
 int spin_car_out_core(uint8_t x)
 {
     if (x >= 0x14) return -1;                     /* not a car slot: the $11CD tail is a bare RTS */
@@ -11613,16 +11226,13 @@ void spin_car_out(void)
     cpu.C = (uint8_t)c;                           /* ...and C the lap comparison's */
 }
 
-/* ---------------------------------------------------------------------------
-   $1BB9  process_car_contact  (twin #124)
-   ---------------------------------------------------------------------------
+/* $1BB9  process_car_contact  (twin #124)
    Resolves the frame's car-vs-car (or car-vs-scenery) contact.  From the closing
    distance it builds an impact magnitude (floored at 5, doubled); a hard hit in a race
    spins the other car out; the slower of the two cars is credited some speed; and the
    shared crash tail (begin_scrape) gets a signed heading kick plus a queued crash sound.
    The PHP/PLP saving the heading-difference sign across the speed logic becomes one
-   local carried into abs16_math's N.
-   --------------------------------------------------------------------------- */
+   local carried into abs16_math's N. */
 /* The two marshal-INs below are oracle-only in production and stay on this 6502-ABI path for
    the harness; native callers enter at the _native split.  Full argument at
    build_track_geometry in revs_native_seam.c.
@@ -11702,9 +11312,7 @@ void process_car_contact_native(void)
 }
 
 
-/* ---------------------------------------------------------------------------
-   ⭐ WIDE-VALUE CLEANUP, mechanism (B): THE PER-CAR LAP DISTANCE relocated out of mem[]
-   ---------------------------------------------------------------------------
+/* ⭐ WIDE-VALUE CLEANUP, mechanism (B): THE PER-CAR LAP DISTANCE relocated out of mem[]
    Another plane-split array: low bytes $08D0-$08E7, high bytes $08E8-$08FF, one 16-bit
    distance-round-the-lap per car slot.  24 slots, $00-$17 — the twenty racing cars the field
    loops walk ($00-$13) plus the player's own slot $17, which the steppers address directly.
@@ -11714,8 +11322,7 @@ void process_car_contact_native(void)
    entered once per CAR, up to twenty times a frame; marshalling all 24 words there would cost
    more byte traffic than the relocation saves.  So each shim marshals only the slot(s) its own
    index names, and the whole-array pair exists solely for full_track_scan_rebuild, whose body
-   walks the entire field core-to-core and is entered once.
-   --------------------------------------------------------------------------- */
+   walks the entire field core-to-core and is entered once. */
 #define CAR_SLOTS 24u
 uint16_t car_distance_16[CAR_SLOTS];
 
@@ -11741,18 +11348,13 @@ void car_distance_marshal_out(void)
     for (unsigned x = 0; x < CAR_SLOTS; x++) car_distance_marshal_out_one((uint8_t)x);
 }
 
-/* ---------------------------------------------------------------------------
-   $27A4  car_gap  (twin #125)
-   ---------------------------------------------------------------------------
+/* $27A4  car_gap  (twin #125)
    Byte 0 of the 24-bit separation between cars Y and X.  Only this subtract's BORROW
    survives into the shared three-byte tail (car_gap_tail) — the low difference itself is
-   discarded there — so the twin's whole job is to hand that tail the right carry.
-   --------------------------------------------------------------------------- */
+   discarded there — so the twin's whole job is to hand that tail the right carry. */
 unsigned car_gap_lo_core(uint8_t a, uint8_t b) { return (unsigned)a - b; }
 
-/* ---------------------------------------------------------------------------
-   $27AB  car_gap_tail — SIGNED GAP AROUND THE RING  (twin #137)
-   ---------------------------------------------------------------------------
+/* $27AB  car_gap_tail — SIGNED GAP AROUND THE RING  (twin #137)
    The shared three-byte tail every car_gap ($27A4) and its two other callers ($10E1, $28FD)
    fall into.  Forms the signed 16-bit separation  D = car_distance[Y] - car_distance[X]  (the
    borrow is chained from the entry carry — car_gap's byte-0 subtract, or a plain SEC), takes
@@ -11778,8 +11380,7 @@ unsigned car_gap_lo_core(uint8_t a, uint8_t b) { return (unsigned)a - b; }
        C = 1 on the three "far" exits (SEC at $27EB), 0 on the two in-range exits (CLC $27E8)
        N = the sign of the returned A          A = the reduced gap byte the caller compares
    V and Z are dead at every caller.  The PHP/PLP stack byte ($01FF) is the oracle's only
-   residue the twin does not reproduce; the fixture ignores it.
-   --------------------------------------------------------------------------- */
+   residue the twin does not reproduce; the fixture ignores it. */
 
 GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn)
 {
@@ -11846,9 +11447,7 @@ GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn)
 }
 
 
-/* ---------------------------------------------------------------------------
-   $0BCC  section_coord_add_delta  (twin #138)
-   ---------------------------------------------------------------------------
+/* $0BCC  section_coord_add_delta  (twin #138)
    Integrates one signed direction step into a section's 3-component world coordinate:
 
        for each component i = 0..2:
@@ -11882,9 +11481,7 @@ static uint8_t track_pos_retreat_core(uint8_t x);
 static void    lap_complete_core(uint8_t x);
 void           load_section_from_segment_core(uint8_t x, uint8_t y);
 
-/* ---------------------------------------------------------------------------
-   $124D  copy_section_height_to_side1  (twin #139)
-   ---------------------------------------------------------------------------
+/* $124D  copy_section_height_to_side1  (twin #139)
    The road builder keeps two coordinate lists per section: side 0 at the section byte cursor X,
    side 1 (the opposite road edge) at cursor + SECTION_SIDE1.  build_road_section / load_section_from_segment build side 1's
    ground-plane pair (components 0 and 2) as side 0 plus the across-track normal, but the two
@@ -11898,9 +11495,7 @@ void copy_section_height_to_side1_core(uint8_t x)
    callers (fixture LIVE_NONE), so the core does not produce it. */
 void copy_section_height_to_side1(void) { copy_section_height_to_side1_core(cpu.X); }
 
-/* ---------------------------------------------------------------------------
-   $13DA  advance_dir_on_segment_flag  (twin #143)
-   ---------------------------------------------------------------------------
+/* $13DA  advance_dir_on_segment_flag  (twin #143)
    If bit 0 of the current segment's flags is set, advance segment_dir_index;
    otherwise do nothing (the 6502 tail-calls $13FA, a bare RTS on every circuit).
    Reached via the per-circuit SMC dispatch at $13C9/$1426.  Preserves X; the
@@ -11914,9 +11509,7 @@ void advance_dir_on_segment_flag(void)
        so the twin does nothing here rather than calling an empty function. */
 }
 
-/* ---------------------------------------------------------------------------
-   $13E0  step_segment_dir_index  (twin #142)
-   ---------------------------------------------------------------------------
+/* $13E0  step_segment_dir_index  (twin #142)
    Advances segment_dir_index one track position along the direction tables,
    wrapping at track_dir_count, in whichever sense track_direction's bit 7 gives:
    forward is idx+1 rolling to 0 at the count, backward is idx-1 rolling 0 to
@@ -11936,9 +11529,7 @@ void step_segment_dir_index(void)
     /* $13F7 tail-calls segment_dir_tail_rts ($13FA) — a bare RTS on every circuit. */
 }
 
-/* ---------------------------------------------------------------------------
-   $1442  build_section_step_delta  (twin #141)
-   ---------------------------------------------------------------------------
+/* $1442  build_section_step_delta  (twin #141)
    Builds the signed 16-bit 3-component step delta that section_coord_add_delta then
    integrates into a section's coordinate.  Sign-extends the track's three direction bytes
    track_dir_0/1/2[Y] (ground plane c0/c2 scaled to |.|=$78, c1 the small gradient)
@@ -11966,9 +11557,7 @@ void build_section_step_delta_core(uint8_t y)
    every production caller uses the core directly. */
 void build_section_step_delta(void) { build_section_step_delta_core(cpu.Y); }
 
-/* ---------------------------------------------------------------------------
-   $125A  derive_car_section_cursor  (twin #140)
-   ---------------------------------------------------------------------------
+/* $125A  derive_car_section_cursor  (twin #140)
    Maps the walk-origin section cursor to the CAR's section cursor: subtract $60
    and, if that went negative, wrap by the $78-wide section ring (40 sections x
    3 bytes).  D=0 on this path, so the subtract/add is plain binary.  No escaping
@@ -11980,9 +11569,7 @@ uint8_t derive_car_section_cursor_core(uint8_t cursor)
     return t;
 }
 
-/* ---------------------------------------------------------------------------
-   $12F7  build_road_section  (twin #147)
-   ---------------------------------------------------------------------------
+/* $12F7  build_road_section  (twin #147)
    THE ROAD BUILDER.  Builds one live road section per call; build_road_section's callers loop it
    over shared_counter_42 to (re)generate the whole track walk, which is the bulk of the off-track
    freeze.  Each call:
@@ -12112,9 +11699,7 @@ void build_road_section(void)
     step_section_curve();
 }
 
-/* ---------------------------------------------------------------------------
-   $1267  cross_section_boundary  (twin #146)
-   ---------------------------------------------------------------------------
+/* $1267  cross_section_boundary  (twin #146)
    Commits the road walk crossing into a new section (called by build_road_section after track_pos_advance /
    track_pos_retreat reports a section boundary was crossed).  It marks the near edge points to be
    scrolled next frame, loads the new section's world geometry, and clears the section's flag byte.
@@ -12161,9 +11746,7 @@ void cross_section_boundary(void)
     mem[MEM_section_flags + x] = 0x00;          /* clear this section's feature flags */
 }
 
-/* ---------------------------------------------------------------------------
-   $122D  load_section_from_segment  (twin #145)
-   ---------------------------------------------------------------------------
+/* $122D  load_section_from_segment  (twin #145)
    Builds one live section's world geometry from its track-file segment record.  A track segment
    is an 8-byte record whose fields 1..6 are three-plus-three 16-bit coordinates (low byte in the
    $5900 bank, high byte in the $5300 bank); this lays them into the two parallel road-edge lists.
@@ -12217,9 +11800,7 @@ void load_section_from_segment_core(uint8_t x, uint8_t y)
 /* 6502-ABI shim: X = dest section byte cursor, Y = segment byte index.  Oracle entry only. */
 void load_section_from_segment(void) { load_section_from_segment_core(cpu.X, cpu.Y); }
 
-/* ---------------------------------------------------------------------------
-   $150E  step_section_curve  (twin #144)
-   ---------------------------------------------------------------------------
+/* $150E  step_section_curve  (twin #144)
    The section-CURVE stepper, a leaf of the build_road_section road-builder cluster.  It writes one byte,
    section_curve[section_cursor], describing the curvature the road should show at the section the
    walk is filling, and it carries a small marker state machine between calls in four zero-page
@@ -12310,9 +11891,7 @@ void step_section_curve(void)
     mem[MEM_section_curve + section_cursor] = out;
 }
 
-/* ---------------------------------------------------------------------------
-   $2937  place_car_world_coords  (twin #126)
-   ---------------------------------------------------------------------------
+/* $2937  place_car_world_coords  (twin #126)
    Projects one object's within-section offsets — car_section_along and car_section_across —
    through the section's direction basis into the 3-value world coordinate at
    object_coord_lo:object_coord_hi.  ⭐ This routine is the evidence for which of the pair is
@@ -12344,8 +11923,7 @@ void step_section_curve(void)
    The tail (from $29F4) is the object queue: project_object_coord dispatches on object_dist_hi, and for a
    near car ahead of car_behind the AI branch runs build_section_step_delta / step_delta_halve / section_coord_add_delta / project_object_slot.
    Those are the real generated routines, called with the registers the transliteration set, so
-   they cancel in the differential — the twin's job is the two loops and the coordinate adds.
-   --------------------------------------------------------------------------- */
+   they cancel in the differential — the twin's job is the two loops and the coordinate adds. */
 
 /* One axis of the staged object's world coordinate as the 16-bit value it is.  The 6502 keeps
    the three axes as two parallel byte rows a page apart, so every add there is a two-lane
@@ -12537,9 +12115,7 @@ void place_car_world_coords(void)
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
 }
 
-/* ---------------------------------------------------------------------------
-   $5A25  tally_bcd_column  (twin #127)
-   ---------------------------------------------------------------------------
+/* $5A25  tally_bcd_column  (twin #127)
    Front-end grid/standings BCD tally for one column X.  Zeroes the per-column 16-bit BCD
    accumulator standings_bcd_lo:standings_bcd_hi, derives a repeat count, then BCD-accumulates
    standings_increment into the pair that many times before folding the pair into the 24-bit
@@ -12555,8 +12131,7 @@ void place_car_world_coords(void)
 
    ⚠ One of the eight SED sites (docs/static-map.md §Decimal mode): the accumulate stays BCD, so
    the two adds go through adc_value with D set — that is sanctioned here and nowhere on the render
-   path.  Only the pre-SED product at $5A52 was a shim (mul8); it is now revs_mulu16.
-   --------------------------------------------------------------------------- */
+   path.  Only the pre-SED product at $5A52 was a shim (mul8); it is now revs_mulu16. */
 
 uint8_t tally_bcd_column_core(uint8_t x)
 {
@@ -12619,9 +12194,7 @@ uint8_t tally_bcd_column_core(uint8_t x)
     return y;                                             /* $5A73 TAY — the caller's exit Y */
 }
 
-/* ===========================================================================
-   $3D5C  paint_fence_backdrop — the crash "show the fence" fill  (twin #128)
-   ---------------------------------------------------------------------------
+/* $3D5C  paint_fence_backdrop — the crash "show the fence" fill  (twin #128)
    check_crash's crash arm JSRs this (its ONLY caller) once the car has hit the fence, right
    after INCing horizon_extent.  It paints the whole 3D view SOURCE buffer to a static
    two-band dither so the next frame shows the crash barrier instead of the road.
@@ -12644,8 +12217,7 @@ uint8_t tally_bcd_column_core(uint8_t x)
 
    No callees and no register inputs (the body opens by storing constants).  check_crash ignores
    every register on return (its next act is JSR sound_stop_all), so nothing is declared live;
-   the shim still reconstructs the true exit ABI for faithfulness.
-   =========================================================================== */
+   the shim still reconstructs the true exit ABI for faithfulness. */
 
 #define FENCE_COL_COUNT        0x28u    /* 40 view columns                                    */
 #define FENCE_TOP_ROW          0x46u    /* every column fills from row $46 downward            */
@@ -12693,15 +12265,12 @@ uint8_t paint_fence_backdrop_core(uint8_t horizon)
 }
 
 
-/* ===========================================================================
-   THE CAR-ORDER INDEX CLUSTER  (twins #129-#133)
-   ===========================================================================
+/* THE CAR-ORDER INDEX CLUSTER  (twins #129-#133)
    The mod-20 running-order index helpers, the car_order swap, and the two
    routines built on them.  All of it is index bookkeeping over the 20-entry
    car_order table — no arithmetic the 68000 lacks — so the twin's only job is
    to delete the per-instruction interpreter around a walk that runs every frame.
-   car_order holds the field in running order; each entry is a car index 0-19.
-   =========================================================================== */
+   car_order holds the field in running order; each entry is a car index 0-19. */
 
 #define FPN_PLAYER_SLOT MEM_zp_scratch_index   /* zp_scratch_index ($0003); in THIS routine = the player's slot in car_order */
 
@@ -12768,8 +12337,7 @@ void clear_race_clock_core(uint8_t x)
 }
 
 
-/* ===========================================================================
-   TWINS #134-#135 — the track-position STEPPERS (user, 2026-08-26, Stage 2).
+/* TWINS #134-#135 — the track-position STEPPERS (user, 2026-08-26, Stage 2).
 
    Each moves car X one offset-unit along (advance) or back (retreat) the track.
    The track is a ring of segments; a car sits at car_segment[X] (an index in
@@ -12782,8 +12350,7 @@ void clear_race_clock_core(uint8_t x)
    Escaping flag: CARRY = "crossed a segment boundary this step" (the ONLY flag
    any caller consumes — all three branch on !C; see the call sites).  No BCD:
    this is the geometry path, always entered with D=0 (docs/static-map.md
-   §Decimal mode), so the distance counter is a plain binary uint16_t.
-   =========================================================================== */
+   §Decimal mode), so the distance counter is a plain binary uint16_t. */
 /* MEM_car_distance_lo / MEM_car_distance_hi defined above, before the car_gap twin. */
 
 /* $147C track_pos_advance — step car x one offset-unit forward. */
@@ -12865,8 +12432,7 @@ void track_pos_retreat(void)                     /* exit ABI: C only */
     car_distance_marshal_out_one(cpu.X);
 }
 
-/* ------------------------------------------------------------------------------------------------
- * $109B  full_track_scan_rebuild  —  NATIVE DRIVER (STAGE 5), the root of the crash-freeze subtree.
+/* * $109B  full_track_scan_rebuild  —  NATIVE DRIVER (STAGE 5), the root of the crash-freeze subtree.
  *
  * reset_driving_variables calls this on a crash / session reset.  With the off-line-scan flag
  * (track_scan_active bit 7) raised — so lap_complete ignores the artificial track motion — it
@@ -12987,8 +12553,7 @@ void full_track_scan_rebuild_core(uint8_t retreatDepth)
    rebuild), so there is no exit state to replay. */
 void full_track_scan_rebuild(void) { full_track_scan_rebuild_core(cpu.A); }
 
-/* ------------------------------------------------------------------------------------------------
- * $4F77 lap_complete — TWIN #136.  track_pos_advance calls this when a car's distance counter wraps
+/* * $4F77 lap_complete — TWIN #136.  track_pos_advance calls this when a car's distance counter wraps
  * a lap.  It books the completed lap and, when the mode calls for it, records the lap TIME:
  * race_clock - car_lap_start as a 3-byte BCD value (centiseconds / seconds base-60 / minutes), and
  * keeps the per-car best.  The player's finish is credited once per approach (a one-shot debounce)
@@ -13078,22 +12643,17 @@ static void lap_complete_core(uint8_t x)
 
 void lap_complete(void) { lap_complete_core(cpu.X); }   /* X = car index; nothing escapes */
 
-/* ---------------------------------------------------------------------------
-   TWIN #178 — $261F  reject_all_object_slots
-   ---------------------------------------------------------------------------
+/* TWIN #178 — $261F  reject_all_object_slots
    Mark every one of the 23 object slots as rejected by the projection (car_flags_shape bit 7),
    so each frame's other-car pass starts with nothing visible and only the slots it accepts get
-   the bit cleared again.  Both callers reload X on the next instruction, so nothing is live out.
-   --------------------------------------------------------------------------- */
+   the bit cleared again.  Both callers reload X on the next instruction, so nothing is live out. */
 void reject_all_object_slots_core(void)
 {
     for (int slot = 0x16; slot >= 0; slot--)
         mem[MEM_car_flags_shape + slot] |= 0x80u;
 }
 
-/* ---------------------------------------------------------------------------
-   TWIN #179 — $2637  move_and_draw_cars
-   ---------------------------------------------------------------------------
+/* TWIN #179 — $2637  move_and_draw_cars
    The body's other-car pass, and the whole of it in one page:
 
      - PRACTICE (qualify_minutes negative) has no other cars, and the routine's early exit is not
@@ -13137,8 +12697,7 @@ void reject_all_object_slots_core(void)
    baseline this project has recorded was measured with NO burn.  Reproducing it faithfully in C
    is what made it real.  Nothing is bought by paying it: the delay exists to SLOW practice down
    to race pacing, and the port is already 12x below 50 Hz.  Keep the memory effect, drop the
-   cycles.  (docs/perf-method.md §twin #179's delay loop)
-   --------------------------------------------------------------------------- */
+   cycles.  (docs/perf-method.md §twin #179's delay loop) */
 void move_and_draw_cars_core(void)
 {
     if (qualify_minutes & 0x80u) {                     /* $2637/$263A BMI $262D — practice */
@@ -13182,9 +12741,7 @@ void move_and_draw_cars_core(void)
     stage_nearby_car_at_core(car_ahead);               /* $2679/$267B — and the car ahead */
 }
 
-/* ---------------------------------------------------------------------------
-   $66DF  draw_car_field — DRAW EVERY OTHER CAR, BACK TO FRONT  (twin #180)
-   ---------------------------------------------------------------------------
+/* $66DF  draw_car_field — DRAW EVERY OTHER CAR, BACK TO FRONT  (twin #180)
    The frame's other-car draw pass, and move_and_draw_cars' last call but one.  Three groups,
    in the order they are painted:
 
@@ -13212,8 +12769,7 @@ void move_and_draw_cars_core(void)
    bound at $66F5 — and those recompute the carry, so what each draw receives is the COMPARE's
    result, not the previous draw's.  (Threading C instead is a real divergence: it shows up as a
    flag-only mismatch on about one case in five.)  X threads through neither, because $2B0A
-   reloads it from saved_slot_index — the cursor this routine just stored.
-   --------------------------------------------------------------------------- */
+   reloads it from saved_slot_index — the cursor this routine just stored. */
 SlotExit draw_car_field_core(uint8_t entryY, uint8_t entryV, uint8_t entryC)
 {
     /* Every bearing draw_track_object measures is against the camera heading, and nothing in
@@ -13436,9 +12992,7 @@ void drive_other_cars(void)
     }
 }
 
-/* ---------------------------------------------------------------------------
-   $1805  reset_driving_variables  (twin #176)
-   ---------------------------------------------------------------------------
+/* $1805  reset_driving_variables  (twin #176)
    THE SESSION RESET — everything a new practice/qualifying/race session, or a crash recovery,
    needs put back.  race_main_loop's restart ladder calls it at RESTART_MID and deeper.  Five
    parts, in order:
@@ -13493,8 +13047,7 @@ void drive_other_cars(void)
    names) and it is clear in both values, while bit 0 — the only bit that differs — is
    consumed by the closing LSR into an exit carry that its single call site ($102E) discards
    before returning.  Its sibling lap_completed_flag, set from the same A one instruction
-   earlier, IS seen, which is what proves the gate reaches this arm at all.
-   --------------------------------------------------------------------------- */
+   earlier, IS seen, which is what proves the gate reaches this arm at all. */
 
 void reset_driving_variables_core(void)
 {
@@ -13590,9 +13143,7 @@ void reset_driving_variables_core(void)
     }
 }
 
-/* ---------------------------------------------------------------------------
-   $0FFE  update_lap_timers  (twin #177)
-   ---------------------------------------------------------------------------
+/* $0FFE  update_lap_timers  (twin #177)
    The body's 8th call: the session clocks and the two message rows along the top of the screen.
    The two session kinds share nothing but the entry test.
 
@@ -13643,8 +13194,7 @@ void reset_driving_variables_core(void)
      flag instead of shifting it (684).
    ⭐ The N-bit defect SURVIVED the first fixture, and the explanation was "no change at all":
    inside the real 0..19 lap domain the laps-left byte is either 0..$13 or $ED..$FF, so its bits
-   6 and 7 are always EQUAL.  A quarter of the cases now span 0..99 to decouple them.
-   --------------------------------------------------------------------------- */
+   6 and 7 are always EQUAL.  A quarter of the cases now span 0..99 to decouple them. */
 /* ⭐ ambX/ambY are the OSWRCH cursor, genuinely AMBIENT here: it arrives from whatever the body
    called last and is handed on unchanged when the race arm prints nothing.  ambientPBits carries
    the D and I bits ($08/$04) the $1017 PHP stacks — the routine reads only the SIGN back out, but
@@ -13741,9 +13291,7 @@ void update_lap_timers_core(uint8_t ambX, uint8_t ambY, uint8_t ambientPBits)
     }
 }
 
-/* ---------------------------------------------------------------------------
-   $28F2  stage_nearby_car  (twin #162)
-   ---------------------------------------------------------------------------
+/* $28F2  stage_nearby_car  (twin #162)
    Called twice per frame by move_and_draw_cars to place one nearby car into the view.  On entry
    X is a car_order position; the shim resolves the car slot = car_order[X] and stows it in
    saved_slot_index ($45) and shared_counter_42 ($42) for the slot writers this routine tail-calls.
@@ -13794,9 +13342,7 @@ StageNearbyCar stage_nearby_car_core(uint8_t gapA, unsigned gapFar, uint8_t slot
     return r;
 }
 
-/* ---------------------------------------------------------------------------
-   $2692  check_car_pair  (twin #163)
-   ---------------------------------------------------------------------------
+/* $2692  check_car_pair  (twin #163)
    The per-frame OVERTAKING / POSITION-CHANGE pass, called twice a frame (the driving loop's
    $1181, and $264C).  It walks car_order BACKWARDS from zp_scratch_index ($03) — pos,
    dec(pos), dec... wrapping mod-20 (car_index_dec) until it comes back to the start — and for
@@ -13984,9 +13530,7 @@ void check_car_pair_core(void)
     }
 }
 
-/* ===========================================================================
-   $0F64  sort_cars_by_key — BUBBLE-SORT THE CAR ORDER ARRAY BY A BCD KEY  (twin #160)
-   ===========================================================================
+/* $0F64  sort_cars_by_key — BUBBLE-SORT THE CAR ORDER ARRAY BY A BCD KEY  (twin #160)
 
    WHAT IT COMPUTES.  An adjacent-swap bubble sort of the 21-entry order array at
    car_order_prev ($13B; car_order $13C is the SAME array + 1, so ORDER[j] = mem[$13B+j]).
@@ -14089,9 +13633,7 @@ void sort_cars_by_key_core(uint8_t sel)
     find_player_neighbours_core();               /* $0FB6 JSR $63A2 (its shim is a bare forward) */
 }
 
-/* ===========================================================================
-   $0EE5  shift_key_commands — THE IN-RACE COMMAND KEYS  (twin #161)
-   ===========================================================================
+/* $0EE5  shift_key_commands — THE IN-RACE COMMAND KEYS  (twin #161)
 
    WHAT IT DOES.  Called once per painted frame from race_main_loop's tail ($1791)
    ($1791, Y=$0B) and from finish_race's run-out ($1176, Y=$00 — the whole table).
@@ -14197,25 +13739,19 @@ void shift_key_commands_core(uint8_t entryY)
     /* $0F63 RTS */
 }
 
-/* ===========================================================================
-   THE CRASH / RESTART SUBTREE  (twins #167-#171)
-   ===========================================================================
+/* THE CRASH / RESTART SUBTREE  (twins #167-#171)
    The whole call tree of check_crash and build_player_car, made native together — each of
    these was the last transliteration in its own tree.  ⭐ NONE of them is patched by an
    expansion circuit: disasm/track_smc.txt has no extent anywhere in $111E-$1207, $1C0B-$1C1B,
    $2B0E-$2B1D or $43F6-$43FE, so Silverstone's control flow through here IS every circuit's
-   and `make determinism` genuinely gates them.
-   =========================================================================== */
+   and `make determinism` genuinely gates them. */
 
 
-/* ---------------------------------------------------------------------------
-   $43F6  sound_stop_all — SILENCE EVERY CHANNEL  (twin #169)
-   ---------------------------------------------------------------------------
+/* $43F6  sound_stop_all — SILENCE EVERY CHANNEL  (twin #169)
    Four calls of sound_stop_channel, channel 3 down to 0.  ⚠ The 6502's `DEX` steps the X the
    CALLEE returned, not a private counter — sound_stop_channel hands the channel straight back
    on both of its paths, so the walk really is 3,2,1,0, but the twin threads the returned value
-   the same way rather than assuming it.
-   --------------------------------------------------------------------------- */
+   the same way rather than assuming it. */
 void sound_stop_all_core(uint8_t ambientY)
 {
     uint8_t chan = 0x03u;                               /* $43F6 LDX #3 */
@@ -14224,14 +13760,11 @@ void sound_stop_all_core(uint8_t ambientY)
     } while (!(chan & 0x80u));                          /* $43FC BPL — stops when X hits $FF */
 }
 
-/* ---------------------------------------------------------------------------
-   $1C0B  begin_scrape — check_crash's SCRAPE arm  (twin #168)
-   ---------------------------------------------------------------------------
+/* $1C0B  begin_scrape — check_crash's SCRAPE arm  (twin #168)
    Reached by JMP from $1135, so it is check_crash's TAIL rather than a callee.  The car has
    left the track but the track is still roughly ahead: park the clamped yaw kick, tell both
    axles they are sliding, and make the noise.  Its exit ABI is therefore sound_queue_default's,
-   which the shim replays.
-   --------------------------------------------------------------------------- */
+   which the shim replays. */
 void begin_scrape_core(uint8_t yawKick, uint8_t savedX)
 {
     ms_set_hi(MS_HEADING_STEP, yawKick);    /* $1C0B — the high byte IS the yaw rate; see check_crash */
@@ -14243,9 +13776,7 @@ void begin_scrape_core(uint8_t yawKick, uint8_t savedX)
     sound_queue_core(SOUND_SLOT_IMPACT, sound_volume, savedX);   /* $1C16-$1C18 */
 }
 
-/* ---------------------------------------------------------------------------
-   $111E  check_crash — DID THE CAR LEAVE THE TRACK?  (twin #167)
-   ---------------------------------------------------------------------------
+/* $111E  check_crash — DID THE CAR LEAVE THE TRACK?  (twin #167)
    Two memory cells decide everything, and both are byproducts of the road pass that has
    already run this frame:
 
@@ -14266,8 +13797,7 @@ void begin_scrape_core(uint8_t yawKick, uint8_t savedX)
    ⚠ THE TWO ARMS PASS DIFFERENT X TO sound_queue.  The scrape arm reaches it with the caller's
    X untouched (BIT and abs8 leave X alone); the crash arm has run paint_fence_backdrop (X = $28
    on exit) and then sound_stop_all (X = $FF), so it queues with X = $FF.  sound_queue parks that
-   byte in sound_saved_x, so the difference is observable in mem[] and is not a detail.
-   --------------------------------------------------------------------------- */
+   byte in sound_saved_x, so the difference is observable in mem[] and is not a detail. */
 uint8_t check_crash_core(uint8_t savedX)
 {
     if ((uint8_t)(edge_nearest_v >> 8) < 0x02u)   /* $111E-$1122 — still on the track */
@@ -14311,9 +13841,7 @@ uint8_t check_crash_core(uint8_t savedX)
     return CRASH_ARM_FULL;
 }
 
-/* ---------------------------------------------------------------------------
-   $11CE  build_player_car — put the player's car back into the world  (twin #170)
-   ---------------------------------------------------------------------------
+/* $11CE  build_player_car — put the player's car back into the world  (twin #170)
    It runs place_car_world_coords TWICE for the same car —
 
      at the section the car is IN     ...whose world coordinate becomes the VIEW ORIGIN, i.e.
@@ -14323,8 +13851,7 @@ uint8_t check_crash_core(uint8_t savedX)
 
    ⚠ ITS BODY RUNS $11CE-$1207 AND SO FALLS THROUGH $1200, which symbols.csv names
    `loader_stub`.  That name is a revs_mem.bin artifact — in the runtime image the address is
-   this routine's own tail (docs/rename.md).
-   --------------------------------------------------------------------------- */
+   this routine's own tail (docs/rename.md). */
 void build_player_car_core(void)
 {
     uint8_t slot = player_car;
@@ -14363,9 +13890,7 @@ void build_player_car_core(void)
     car_heading_v = heading;                      /* relocated out of mem[$0A/$0B] */
 }
 
-/* ---------------------------------------------------------------------------
-   $2B0E  step_delta_halve — HALVE THE STEP-DELTA VECTOR  (twin #171)
-   ---------------------------------------------------------------------------
+/* $2B0E  step_delta_halve — HALVE THE STEP-DELTA VECTOR  (twin #171)
    The step delta is three SIGNED 16-bit components whose LOW bytes are $74/$75/$76 and whose
    HIGH bytes are point_delta_hi[0..2] ($83/$84/$85) — build_section_step_delta's output, the
    per-section increment place_car_world_coords walks a car along.  This halves all three with
@@ -14379,8 +13904,7 @@ void build_player_car_core(void)
    ⭐ THIS IS THE ROUTINE THAT MADE math_lo/math_hi LOOK INDEXED and blocked that pair's
    relocation for three passes: $74/$75/$76 here are the three LOW bytes of THIS vector, not a
    lo/hi pair, so `$74,X` is a component select and says nothing about math_lo
-   (docs/wide-value-cleanup.md, the EIGHTH lesson).
-   --------------------------------------------------------------------------- */
+   (docs/wide-value-cleanup.md, the EIGHTH lesson). */
 void step_delta_halve_core(void)
 {
     for (int c = 2; c >= 0; c--) {                    /* $2B0E LDX #2 ... $2B1A DEX / BPL */
@@ -14391,9 +13915,7 @@ void step_delta_halve_core(void)
     }
 }
 
-/* ---------------------------------------------------------------------------
-   $2A5D  project_object_coord  /  $2A5F  project_object_slot  (twin #172)
-   ---------------------------------------------------------------------------
+/* $2A5D  project_object_coord  /  $2A5F  project_object_slot  (twin #172)
    ONE WORLD COORDINATE INTO ONE DRAWABLE OBJECT SLOT.  place_car_world_coords' queue tail
    calls this four times a pass and it is the whole of what an "object" means to the renderer:
 
@@ -14422,8 +13944,7 @@ void step_delta_halve_core(void)
    have left there (docs/wide-value-cleanup.md, the publish-don't-blunt gate).
 
    ⚠ note_object_contact's exit is DEAD here — $2A73's project_point opens `LDY #0 / LDA`, so
-   its entry C is not consumed and the twin passes 0.
-   --------------------------------------------------------------------------- */
+   its entry C is not consumed and the twin passes 0. */
 void project_object_slot_core(uint8_t coordIndex, uint8_t shape)
 {
     plot_shape = shape;                                  /* $2A5F — the slot's shape nibble */
@@ -14504,8 +14025,7 @@ void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
 }
 
 
-/* ================================================================================================
- * ⭐ TWINS #181-#184 — THE NUMBER AND NAME PRINTERS
+/* * ⭐ TWINS #181-#184 — THE NUMBER AND NAME PRINTERS
  * ------------------------------------------------------------------------------------------------
  * Four small routines that were the last transliterated holders of the vdu_char_def shim.  They
  * share two things:
@@ -14548,8 +14068,7 @@ void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
  * fixtures pin S and ignore that one cell (docs/validation-harness.md's i=5 precedent).
  * ================================================================================================ */
 
-/* ------------------------------------------------------------------------------------------------
- * $3250 emit_driver_name — TWIN #181.  Prints the twelve characters of a driver's name from the
+/* * $3250 emit_driver_name — TWIN #181.  Prints the twelve characters of a driver's name from the
  * table entry driver_name_address ($40xx) just selected, which arrives as a pointer in Y:A and is
  * parked in plot_ptr2.  Y is both the character index and the ambient OSWRCH register, so it walks
  * 0..11 in both roles.  Exit A is the last character; the exit flags are the terminating
@@ -14578,8 +14097,7 @@ uint8_t emit_driver_name_core(uint16_t ptr, uint8_t x)
     return last;
 }
 
-/* ------------------------------------------------------------------------------------------------
- * $37D6 print_bcd_digits — TWIN #182.  Prints one packed-BCD byte as up to two characters: each
+/* * $37D6 print_bcd_digits — TWIN #182.  Prints one packed-BCD byte as up to two characters: each
  * nibble +$30, high nibble first.  A zero high nibble is not printed as '0' — the field mask
  * decides whether it becomes the pad glyph or a space — and if the mask's second shift carries out,
  * the low nibble is dropped too.  Exit A/N/Z are the last character's, unless the field ended after
@@ -14623,8 +14141,7 @@ TextExit print_bcd_digits_at_core(uint8_t bcd, uint8_t column, uint8_t row)
     return print_bcd_digits_core(bcd, column, row);
 }
 
-/* ------------------------------------------------------------------------------------------------
- * $7B9C print_lap_time — TWIN #184.  Prints car X's three-byte BCD time as mm:ss[.hh].  A on entry
+/* * $7B9C print_lap_time — TWIN #184.  Prints car X's three-byte BCD time as mm:ss[.hh].  A on entry
  * IS the field mask, so the caller chooses the layout: after the seconds the mask is shifted once
  * more and a carry out drops the '.'  and the hundredths.  X is the car index AND the ambient
  * OSWRCH register, so this is a general time printer, not one readout.
@@ -14654,8 +14171,7 @@ TextExit print_lap_time_core(uint8_t fieldMask, uint8_t carIdx, uint8_t y)
 }
 
 
-/* ================================================================================================
- * ⭐ TWINS #185-#191 — THE DASHBOARD READOUTS THAT DRIVE THE PRINTERS
+/* * ⭐ TWINS #185-#191 — THE DASHBOARD READOUTS THAT DRIVE THE PRINTERS
  * ------------------------------------------------------------------------------------------------
  * The transliterated callers of the number/name printers: the position readout, the lap-time
  * readout chain and the two driver-name lines.  Between them they are the whole of the in-race
@@ -15016,8 +14532,7 @@ void finish_race_core(void)
     }
 }
 
-/* ================================================================================================
- * $43D0 / $43E7  print_lap_value_field / print_lap_value_from_mid — TWIN #196
+/* * $43D0 / $43E7  print_lap_value_field / print_lap_value_from_mid — TWIN #196
  * ------------------------------------------------------------------------------------------------
  * ONE LAP-TIME COLUMN of the standings/results table (print_standings_table's two call sites are the only
  * callers).  The value is car `x`'s two low BCD bytes of car_lap_* — mid and lo — printed as a
@@ -15070,8 +14585,7 @@ TextExit print_lap_value_field_core(uint8_t x, uint8_t y)
     return print_lap_value_from_mid_core(0x20u, x, y);
 }
 
-/* ================================================================================================
- * TWIN #197 — the standings table's two remaining leaf callees
+/* * TWIN #197 — the standings table's two remaining leaf callees
  * ------------------------------------------------------------------------------------------------
  *   $3E60 set_row_rule_glyphs   picks the row's pair of rule glyphs and PATCHES them into the
  *                               script that draws the column rule
@@ -15100,9 +14614,7 @@ void print_race_class_name_core(void)
     text_script_interp_core((uint8_t)(race_class + 7u));               /* $3C6F-$3C76 */
 }
 
-/* ================================================================================================
-   ⭐ TWIN #198 — the ABORT poll and the DISMISS-KEY waiters.
-   ------------------------------------------------------------------------------------------------
+/* ⭐ TWIN #198 — the ABORT poll and the DISMISS-KEY waiters.
    $3261 abort_if_quit_keys is the in-race/front-end escape hatch: SHIFT (negative INKEY -1, code
    $FF) together with key $86 (-122, shift_key_tbl's index $0B) means "give up and go back to the
    menus".  ⚠ abort_state ($1C) is NOT a plain flag — every poll that does not see the combination
@@ -15125,8 +14637,7 @@ void print_race_class_name_core(void)
    from top_level_stack and jumps to front_end_menus, where the C version can only tail-call and
    return back up the stack.  Both models do the same wrong thing, so the differential is blind to
    it by construction — the fixture keeps SHIFT and $86 from ever being held together, and this arm
-   is gated by `make refloop` instead (docs/faithfulness-seam.md, the S-manipulation class).
-   ------------------------------------------------------------------------------------------------ */
+   is gated by `make refloop` instead (docs/faithfulness-seam.md, the S-manipulation class). */
 #define KEY_INKEY_SHIFT   0xFFu   /* negative INKEY -1   — either SHIFT */
 #define KEY_INKEY_ABORT   0x86u   /* negative INKEY -122 — shift_key_tbl index $0B, the abort key */
 #define KEY_INKEY_SPACE   0x9Du   /* negative INKEY -99  — SPACE */
@@ -15207,8 +14718,7 @@ void wait_dismiss_key_core(uint8_t offerReturn)
     wait_dismiss_core(offerReturn);
 }
 
-/* ================================================================================================
- * ⭐⭐ TWIN #199 — THE STANDINGS / RESULTS TABLE  ($65D3 print_standings_table, $41D0
+/* * ⭐⭐ TWIN #199 — THE STANDINGS / RESULTS TABLE  ($65D3 print_standings_table, $41D0
  *                 select_text_variant)
  * ------------------------------------------------------------------------------------------------
  * The page the game shows after practice, qualifying and the race: a heading line, twenty rows of
@@ -15254,8 +14764,7 @@ void wait_dismiss_key_core(uint8_t offerReturn)
    primary road-pass name and the twin carries the alias.) */
 #define STANDINGS_ROW span_saved_index
 
-/* ------------------------------------------------------------------------------------------------
- * $41D0 select_text_variant — DRESS THE HEADING SCRIPTS FOR ONE LAYOUT, THEN DRAW THEM.
+/* * $41D0 select_text_variant — DRESS THE HEADING SCRIPTS FOR ONE LAYOUT, THEN DRAW THEM.
  * Six bytes of patch and one script run.  Five come straight out of the parallel tables; the
  * sixth is computed: script $22's +4 becomes the text-script command "recurse into script
  * <variant>", which is how the cell picks up the words that name THIS variant's column.
@@ -15274,8 +14783,7 @@ void select_text_variant_core(uint8_t variant)
     text_script_interp_core(0x21u);                                    /* $41F5/$41F7 */
 }
 
-/* ------------------------------------------------------------------------------------------------
- * $65D3 print_standings_table — the page itself.
+/* * $65D3 print_standings_table — the page itself.
  * ------------------------------------------------------------------------------------------------ */
 void print_standings_table_core(uint8_t variant, uint8_t mode)
 {
@@ -15350,9 +14858,7 @@ void print_standings_table_core(uint8_t variant, uint8_t mode)
     wait_dismiss_key_core(mode);                    /* $666E PLA / $666F — SPACE, or RETURN if <0 */
 }
 
-/* ===========================================================================
-   ⭐⭐ relocated_poison — THE VALIDATION HARNESS'S GUARD ON THE MARSHAL SEAM
-   ---------------------------------------------------------------------------
+/* ⭐⭐ relocated_poison — THE VALIDATION HARNESS'S GUARD ON THE MARSHAL SEAM
    Every mechanism-(B) relocation moves a value out of mem[] into a native global, and the
    boundary rule says a 6502-ABI shim whose core reads it must marshal it IN.  A missing marshal
    is INVISIBLE to `make validate` on its own, because the two models share this process's
@@ -15363,8 +14869,7 @@ void print_standings_table_core(uint8_t variant, uint8_t mode)
 
    diff_run calls this before EACH model so neither can inherit the other's marshal.  The value
    is deliberately not zero (a zero can be the correct answer) and per-element distinct for the
-   arrays, so a marshal that covers only some slots still diverges.  Never call it from game code.
-   =========================================================================== */
+   arrays, so a marshal that covers only some slots still diverges.  Never call it from game code. */
 void relocated_poison(void)
 {
     plot_ptr_v = 0xA5A5u; plot_ptr2_v = 0xA5A6u; plot_ptr3_v = 0xA5A7u;
@@ -15377,9 +14882,7 @@ void relocated_poison(void)
     for (unsigned i = 0; i < 9; i++)            view_origin_16[i]  = (uint16_t)(0xA5F0u + i);
 }
 
-/* ===========================================================================
-   $655C  enter_session / $655A enter_practice_session — run one session  (twin #205)
-   ---------------------------------------------------------------------------
+/* $655C  enter_session / $655A enter_practice_session — run one session  (twin #205)
    `kind` is the session flavour and lands in BOTH session_is_race ($6C) and start_light_state
    ($6D): $28 for a practice or qualifying run (enter_practice_session's own entry loads it),
    $80 for the race, from front_end_menus' grid walk.
@@ -15395,8 +14898,7 @@ void relocated_poison(void)
      * abort_to_front_end_core(cpu.C) — the non-local exit's ROR rotates the LIVE CARRY into
        abort_state, and that carry is whatever race_main_loop returned, so it has to be read
        from the cpu here.  Nothing between the two calls may disturb it (the 6502's BIT does
-       not either).
-   --------------------------------------------------------------------------- */
+       not either). */
 void enter_session_core(uint8_t kind)
 {
     session_is_race   = kind;                    /* $655C */
@@ -15416,9 +14918,7 @@ void enter_practice_session_core(void)
     enter_session_core(0x28);                    /* $655A LDA #$28, falling into enter_session */
 }
 
-/* ===========================================================================
-   $63E0  front_end_menus — the whole front end                       (twin #205)
-   ---------------------------------------------------------------------------
+/* $63E0  front_end_menus — the whole front end                       (twin #205)
    engine_init JMPs here once the hardware is up, and this routine NEVER RETURNS: its tail jumps
    back to the qualifying menu, so the front end and the race are one endless cycle.  The shape:
 
@@ -15460,8 +14960,7 @@ void enter_practice_session_core(void)
    seeding class, an off-by-one menu answer, an off-by-one player car, dropping the DEX that
    makes qualify_minutes $FF).  Two do NOT and cannot: changing the text-script index or the text
    variant only alters the MODE 7 page at $7C00, which the race's own dash code has overwritten
-   long before the frame-300 dump.  Those belong to a real-BBC front-end differential.
-   --------------------------------------------------------------------------- */
+   long before the frame-300 dump.  Those belong to a real-BBC front-end differential. */
 void front_end_menus_core(void)
 {
     state_flags = 0x00;                              /* $63E0 */
@@ -15595,9 +15094,7 @@ void front_end_menus_core(void)
     }                                                /* $6557 — round again, forever */
 }
 
-/* ===========================================================================
-   $17FC/$4D70/$4D74/$4D76  the STATUS-ROW PRINTERS                   (twin #206)
-   ---------------------------------------------------------------------------
+/* $17FC/$4D70/$4D74/$4D76  the STATUS-ROW PRINTERS                   (twin #206)
    The race view keeps two one-line message rows above the road, and every message in the game
    goes out through these four entries.  Only the scan line differs: $21 is the LOWER row and $18
    the UPPER one, both at column 1, and the body is text_script_interp on the caller's script.
@@ -15607,8 +15104,7 @@ void front_end_menus_core(void)
    opener, update_lap_timers' chequered flag and race_main_loop's session end) all want both lines.
 
    The exit value is text_script_interp's live Y — the offset of the $FF that ended the script,
-   which print_standings_table passes on as the ambient OSWRCH register.
-   --------------------------------------------------------------------------- */
+   which print_standings_table passes on as the ambient OSWRCH register. */
 uint8_t print_message_at_row_core(uint8_t row, uint8_t script)
 {
     vdu_char_row    = row;                       /* $4D76 */
@@ -15632,9 +15128,7 @@ uint8_t print_message_pair_core(uint8_t script)
     return print_message_upper_row_core(0x2D);   /* $17FF — the fixed second line */
 }
 
-/* ===========================================================================
-   $6300  console_io — THE LINE EDITOR  (twin #207)
-   ---------------------------------------------------------------------------
+/* $6300  console_io — THE LINE EDITOR  (twin #207)
    The game's only text-input routine: read a fixed-width field from the keyboard
    into memory, echoing as it goes.  Two callers, both in the pits —
    console_read_two_digits ($3EE0) types a two-character wing setting into
@@ -15664,8 +15158,7 @@ uint8_t print_message_pair_core(uint8_t script)
    anyway: OSRDCH returning C=1 means an ESCAPE condition, which the real MOS raises
    and src/platform/mos.cpp's OSRDCH never does (it forces C=0).  The 6502
    acknowledges it with OSBYTE $7E and reads again, preserving Y across the call by
-   pushing it — so the partly-typed line survives an ESCAPE.
-   =========================================================================== */
+   pushing it — so the partly-typed line survives an ESCAPE. */
 uint8_t console_io_core(uint16_t field, uint8_t width)
 {
     /* The field's address is ONE value here and is only SPLIT to publish it: plot_ptr_lo/hi
@@ -15723,11 +15216,9 @@ uint8_t console_io_core(uint16_t field, uint8_t width)
     return 0x20u;
 }
 
-/* ===========================================================================
-   THE ROAD WALK'S DIRECTION CLUSTER  (twins #208-#212)
+/* THE ROAD WALK'S DIRECTION CLUSTER  (twins #208-#212)
    $1433 step_walk_one_segment · $12F3 build_section_ahead · $1420 rebuild_walk_reversed
    $140B rebuild_walk_backward · $13FB reverse_walk_direction
-   ---------------------------------------------------------------------------
    Everything that MOVES the road walk, as opposed to building one section of it
    (build_road_section, twin #147).  road_edge_walk's tail decides each frame how far the
    view has to travel and calls in here: one section along the direction of travel is the
@@ -15739,8 +15230,7 @@ uint8_t console_io_core(uint16_t field, uint8_t width)
    with a lap of margin.
 
    ⚠ These were the last unnamed transliterated routines reachable in production
-   (step_walk_one_segment / build_section_ahead / rebuild_walk_reversed / rebuild_walk_backward / reverse_walk_direction).
-   =========================================================================== */
+   (step_walk_one_segment / build_section_ahead / rebuild_walk_reversed / rebuild_walk_backward / reverse_walk_direction). */
 
 /* $1433 — step the PLAYER one segment along the walk.  `against` is the caller's carry: the
    6502 rotates C into bit 7 and EORs it with track_direction, so a request that agrees with
@@ -15829,25 +15319,19 @@ void reverse_walk_direction_core(void)
     walk_reverse_active = 0x00u;                     /* $1406-$1408 */
 }
 
-/* ===========================================================================
-   THE PER-SCAN-LINE SURFACE TABLE  (twins #213-#214)
-   ===========================================================================
+/* THE PER-SCAN-LINE SURFACE TABLE  (twins #213-#214)
    Two halves of the same job, run either side of draw_road in the body: one
    clears the drawing state for the lines the road can reach, the other decides
-   what colour each of the 80 scan lines shows where no road cell covers it.
-   =========================================================================== */
+   what colour each of the 80 scan lines shows where no road cell covers it. */
 
-/* ---------------------------------------------------------------------------
-   $66B6  clear_surface_buffers  (twin #213)
-   ---------------------------------------------------------------------------
+/* $66B6  clear_surface_buffers  (twin #213)
    Resets the per-scan-line drawing state for the frame: the four surface-edge
    buffers get $80 (the "no boundary on this line" marker) for every line the
    road can reach, 0..horizon_extent, and the whole 80-entry view_line_surface
    table goes to zero so fill_line_surface can tell "unwritten" from a colour.
    ⚠ The two loops have DIFFERENT bounds — the edges only up to the horizon,
    the surface table always all 80 lines.  Exit ABI dead (both callers issue an
-   unrelated LDX next).
-   --------------------------------------------------------------------------- */
+   unrelated LDX next). */
 void clear_surface_buffers_core(void)
 {
     /* The 6502 counts X down and exits on N, so an entry value of $80 or more
@@ -15864,9 +15348,7 @@ void clear_surface_buffers_core(void)
         mem[MEM_view_line_surface + l] = 0x00u;              /* $66CD — all 80 lines */
 }
 
-/* ---------------------------------------------------------------------------
-   $18BC  fill_line_surface  (twin #214)
-   ---------------------------------------------------------------------------
+/* $18BC  fill_line_surface  (twin #214)
    Paints the background-colour index for every scan line, from the road's own
    horizon downward.  One entry is seeded at the horizon line: $23 normally, but
    $20 when the two edge points at horizon_index straddle -$14 in screen X (the
@@ -15875,8 +15357,7 @@ void clear_surface_buffers_core(void)
    a single downward sweep from line 79: every zero entry inherits the last
    non-zero value seen above it, and the sweep starts holding $21, so the lines
    below everything the road wrote get the plain-ground colour.
-   Exit ABI dead (the body's next call is unrelated).
-   --------------------------------------------------------------------------- */
+   Exit ABI dead (the body's next call is unrelated). */
 void fill_line_surface_core(void)
 {
     uint8_t point = horizon_index;
@@ -15893,9 +15374,7 @@ void fill_line_surface_core(void)
     }
 }
 
-/* ---------------------------------------------------------------------------
-   $24B9  advance_player_section  (twin #215)
-   ---------------------------------------------------------------------------
+/* $24B9  advance_player_section  (twin #215)
    The body's 7th call: moves the CURSOR into the section arrays, not the car.
    Two decisions, in order.
 
@@ -15916,8 +15395,7 @@ void fill_line_surface_core(void)
    $53E9), the ceiling byte at $24EA ($0E unpatched, $0D on all four expansion
    circuits) and the back-step call at $24F2 (all four redirect it to $55BD).
    The hook arms hand over A and the CMP's flags; X and Y arrive from the body
-   untouched by this routine and are passed through as they stand.
-   --------------------------------------------------------------------------- */
+   untouched by this routine and are passed through as they stand. */
 static int section_hook_call(uint16_t site, uint16_t silverstone,
                              void (*silverstoneFn)(void), uint8_t a, int carry, int zero)
 {
@@ -15973,9 +15451,7 @@ void advance_player_section_core(void)
         build_section_ahead_core();                                 /* $24E5 */
 }
 
-/* ---------------------------------------------------------------------------
-   $3273  abort_to_front_end  (twin #216)
-   ---------------------------------------------------------------------------
+/* $3273  abort_to_front_end  (twin #216)
    The in-race ABORT longjmp: rotate the caller's carry into abort_state's bit 7
    — the latch that makes a second abort a no-op — and go back to the front end.
    ⚠⚠ THE STACK UNWIND CANNOT BE MODELLED.  On the 6502 this restores S from
@@ -15984,8 +15460,7 @@ void advance_player_section_core(void)
    and unwinds back up the C stack when the menus finally return — the
    S-manipulation class in docs/faithfulness-seam.md.  Both the twin and its
    oracle do this, which is exactly why the differential is blind to the arm:
-   `make refloop` gates it, not `make validate`.
-   --------------------------------------------------------------------------- */
+   `make refloop` gates it, not `make validate`. */
 void abort_to_front_end_core(int carry)
 {
     /* $3273-$3275 LDX top_level_stack / TXS — the unwind, deliberately not modelled. */
@@ -15993,9 +15468,7 @@ void abort_to_front_end_core(int carry)
     front_end_menus_core();                                                  /* $3278 JMP */
 }
 
-/* ---------------------------------------------------------------------------
-   $63BD  engine_main  /  $3850  engine_init  (twins #217-#218)
-   ---------------------------------------------------------------------------
+/* $63BD  engine_main  /  $3850  engine_init  (twins #217-#218)
    THE entry point: the unpack stub's closing JMP lands on engine_main, which is
    itself just a JMP to engine_init.  Init makes the keyboard behave (cursor keys
    as plain ASCII), hands the screen to the MOS VDU driver, clears the ten status
@@ -16007,8 +15480,7 @@ void abort_to_front_end_core(int carry)
    the same blindness abort_to_front_end has.  `make refloop` and every boot of
    the port gate this, not the differential.
    ⚠ engine_init's bytes are ALSO the car_speed_frac table once init has run; the
-   dual use is why nothing may be assumed about them afterwards.
-   --------------------------------------------------------------------------- */
+   dual use is why nothing may be assumed about them afterwards. */
 void engine_init_core(void)
 {
     mos_osbyte(0x04u, 0x01u, 0x00u);              /* $3850-$3856 — cursor keys as ASCII */
@@ -16032,9 +15504,7 @@ void engine_main_core(void)
     engine_init_core();                           /* $63BD JMP $3850 */
 }
 
-/* ---------------------------------------------------------------------------
-   $4DDD  hw_init  (twin #219)
-   ---------------------------------------------------------------------------
+/* $4DDD  hw_init  (twin #219)
    THE PLATFORM BOUNDARY: the only routine in the game that programs hardware,
    run once as race_main_loop's first act.  In order:
      * the 14 6845 CRTC registers, from crtc_init_regs, counted down with
@@ -16051,8 +15521,7 @@ void engine_main_core(void)
        timers loaded with the band schedule ($11D4 and $1E, $4E4E);
      * IRQ1V := $4E5C (irq1v_band_schedule), low byte LAST — the two stores go
        through bus_write so the platform's shadow notify sees the claim.
-   Hardware writes stay bus_write() by design: they ARE the hardware.
-   --------------------------------------------------------------------------- */
+   Hardware writes stay bus_write() by design: they ARE the hardware. */
 #define CRTC_ADDR_REG      0xFE00u   /* 6845 address register */
 #define CRTC_DATA_REG      0xFE01u   /* ...and its data port */
 #define ULA_PALETTE        0xFE21u   /* Video ULA palette register */
@@ -16103,9 +15572,7 @@ void hw_init_core(uint8_t osbyteY)
     /* $4E57 CLI */
 }
 
-/* ===========================================================================================
-   PER-CIRCUIT HOOK TWINS
-   ===========================================================================================
+/* PER-CIRCUIT HOOK TWINS
    These are twins of code that lives in an EXPANSION CIRCUIT's own file, not in the engine —
    the bodies `src/gen/revs_track_hooks.c` transliterates.  Same seam rules as every other
    twin (`HOOK_TWINS` in tools/transpile.py routes the dispatch to them; `g_hookOracle` flips
@@ -17113,9 +16580,7 @@ void hook_gen_dir_vector_snetter(void) { hook_gen_dir_vector_at(TRACK_GEN_ARGS(S
 void hook_gen_dir_vector_doning(void)  { hook_gen_dir_vector_at(TRACK_GEN_ARGS(DONING)); }
 void hook_gen_dir_vector_nurburg(void) { hook_gen_dir_vector_at(TRACK_GEN_ARGS(NURBURG)); }
 
-/* ===========================================================================
-   $55C4  hook_gen_step — ONE STEP OF THE TRACK GENERATOR  (twin #223)
-   ---------------------------------------------------------------------------
+/* $55C4  hook_gen_step — ONE STEP OF THE TRACK GENERATOR  (twin #223)
    Brands Hatch, Donington, Oulton and Snetterton, and the Nurburgring at $55BD — the SAME body
    seven bytes lower, not the walk-back gate the other four keep at that address.  Reached from
    $5672 and from $5772.
@@ -17195,9 +16660,7 @@ void hook_gen_step_snetter(void) { hook_gen_step_at(TRACK_GEN_ARGS(SNETTER)); }
 void hook_gen_step_doning(void)  { hook_gen_step_at(TRACK_GEN_ARGS(DONING)); }
 void hook_gen_step_nurburg(void) { hook_gen_step_at(TRACK_GEN_ARGS(NURBURG)); }   /* at $55BD */
 
-/* ===========================================================================
-   $5572  hook_seg_advance — ADVANCE THE GENERATOR ONE SEGMENT, IF THIS IS A BOUNDARY (twin #224)
-   ---------------------------------------------------------------------------
+/* $5572  hook_seg_advance — ADVANCE THE GENERATOR ONE SEGMENT, IF THIS IS A BOUNDARY (twin #224)
    All five expansion circuits, identical in shape.  cur_segment_flags bit 6 is "this build step
    crossed a segment boundary"; when it did, step the direction index on to the next entry and run
    one generator step to fill it in.  When it did not, the routine is a no-op that returns A = 0.
@@ -17232,9 +16695,7 @@ void hook_seg_advance_snetter(void) { hook_seg_advance_at(TRACK_GEN_ARGS(SNETTER
 void hook_seg_advance_doning(void)  { hook_seg_advance_at(TRACK_GEN_ARGS(DONING)); }
 void hook_seg_advance_nurburg(void) { hook_seg_advance_at(TRACK_GEN_ARGS(NURBURG)); }
 
-/* ===========================================================================
-   $5672  hook_gen_seed — SEED THE GENERATOR AT A SECTION BOUNDARY (twin #225)
-   ---------------------------------------------------------------------------
+/* $5672  hook_gen_seed — SEED THE GENERATOR AT A SECTION BOUNDARY (twin #225)
    All five expansion circuits, one body, block-shifted.  Entered with Y = the segment index the
    caller is about to build; it (re)starts the track generator from that segment's own recorded
    state instead of letting the running heading drift on from wherever the last walk left it.
@@ -17315,9 +16776,7 @@ void hook_gen_seed_snetter(void) { hook_gen_seed_at(TRACK_GEN_ARGS(SNETTER)); }
 void hook_gen_seed_doning(void)  { hook_gen_seed_at(TRACK_GEN_ARGS(DONING)); }
 void hook_gen_seed_nurburg(void) { hook_gen_seed_at(TRACK_GEN_ARGS(NURBURG)); }
 
-/* ===========================================================================
-   $5A1B  hook_advance_gen_place — STEP THE GENERATOR'S CURSOR AND REBUILD ITS VECTOR (twin #226)
-   ---------------------------------------------------------------------------
+/* $5A1B  hook_advance_gen_place — STEP THE GENERATOR'S CURSOR AND REBUILD ITS VECTOR (twin #226)
    All five expansion circuits, one body: `JSR $557F / JMP $5472`.  It is the pairing of the two
    halves already twinned above — step the segment-direction index and the (place, offset) cursor
    one place along the direction of travel, then regenerate the direction vector and the across-
@@ -17352,14 +16811,11 @@ void hook_advance_gen_place_snetter(void) { hook_advance_gen_place_at(MEM_gen_cu
 void hook_advance_gen_place_doning(void)  { hook_advance_gen_place_at(MEM_gen_state_heading_b, 0x86u); }
 void hook_advance_gen_place_nurburg(void) { hook_advance_gen_place_at(MEM_gen_state_heading_b, 0x9Au); }
 
-/* ===========================================================================
-   THE THREE CROSS-CIRCUIT ONE-LINE HOOK BODIES (twins #227-#229)
-   ---------------------------------------------------------------------------
+/* THE THREE CROSS-CIRCUIT ONE-LINE HOOK BODIES (twins #227-#229)
    Fourteen (circuit, entry) pairs, three bodies.  Each is one or two 6502 instructions installed
    over one engine instruction, and each appears at a DIFFERENT address on every circuit — which
    is why they read as fourteen singletons in the dispatch and as three routines here.  None takes
-   a per-circuit parameter: the bodies are byte-identical, so one twin serves every entry.
-   =========================================================================== */
+   a per-circuit parameter: the bodies are byte-identical, so one twin serves every entry. */
 
 /* $53F0 (Brands Hatch) / $53E8 (Oulton) / $53C8 (Snetterton) / $5555 (the Nurburgring) —
    THE HORIZON HALF-WIDTH SCALE.  Installed over `JSR abs8 / LSR A` at $2542 inside
