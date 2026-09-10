@@ -9287,12 +9287,12 @@ SlotExit fill_object_gap_core(uint8_t width)
         uint8_t remaining = width;
 
         for (;;) {
-            uint8_t column = mem[PVS_GAP_COL];
-            uint8_t top    = mem[MEM_object_gap_top_tbl + column];
+            uint8_t gapCol = mem[PVS_GAP_COL];
+            uint8_t top    = mem[MEM_object_gap_top_tbl + gapCol];
             uint8_t line, acc;
             int     write  = 1;
 
-            mem[PVS_GAP_COL] = (uint8_t)(column - 2u);   /* ⚠ back TWO columns */
+            mem[PVS_GAP_COL] = (uint8_t)(gapCol - 2u);   /* ⚠ back TWO columns */
 
             if (top >= span_top_line) {
                 /* This column's own top line, rebased onto the biased pointers. */
@@ -9594,7 +9594,8 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
                 acc = (uint8_t)((acc & mem[PVS_KEEP]) | mem[PVS_BYTE]);   /* $1D60 */
                 if (acc == 0) acc = SRC_CELL_BLANK;
             } else if (src == SRC_CELL_BLANK) {
-                acc = mem[PVS_BYTE] ? mem[PVS_BYTE] : SRC_CELL_BLANK;     /* $1D57 */
+                uint8_t fillByte = mem[PVS_BYTE];                         /* one read, not two */
+                acc = fillByte ? fillByte : SRC_CELL_BLANK;               /* $1D57 */
             } else {
                 acc = (uint8_t)((src & mem[PVS_KEEP]) | mem[PVS_BYTE]);   /* $1D60 */
                 if (acc == 0) acc = SRC_CELL_BLANK;
@@ -9608,7 +9609,7 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
 
     /* $1D6F-$1D7B — every mode but 1 also closes the column's own gaps. */
     x = mem[PVS_MODE];                            /* CPX left X = PVS_MODE on both arms */
-    if (mem[PVS_MODE] == 0x01u) {                 /* CPX #1: equal -> return */
+    if (x == 0x01u) {                             /* CPX #1: equal -> return */
         n = 0; z = 1;
         { SlotExit e = { acc, x, y, n, z, 0, 0 }; return e; }
     }
