@@ -129,20 +129,28 @@ sees the claim). Of the rest, five already sit on the `else` arm of a hoisted
 `view_span_is_ram()` predicate (the intended shape), and three are the paint passes' boundary
 stores settled in batch 1 above.
 
-### Open — the two per-cell pointer walks
-Two sites are the shape CLAUDE.md's ~10 600-calls-a-frame rule is actually about, and neither
-is hoisted:
+### ✅ MEASURED and CLOSED — the two per-cell pointer walks are not the plotters' shape
 
-* **`plot_line_octant_core` (~2896/2901)** — a `bus_read` **and** a `bus_write` per plotted
-  pixel, through `plot_ptr_v + y`. ⚠ Not a simple hoist: the line immediately below is
-  `plot_store_resync(addr, out)`, there because *the plotter can write its own pointer cells* —
-  the target can be zero page, so the predicate is not constant across the loop.
-* **`print_text_script` walk (~10669)** — `bus_read((plot_ptr2_v + y))` per script byte, with
-  `plot_ptr2_v` reloaded per table entry. This one IS hoistable per entry.
+Both were held open pending a call-count measurement, because CLAUDE.md's bus-call rule is about
+volume and neither site's volume was known. Measured on the host over the `determinism-drive`
+workload — `RELEASE=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`, `REVS_FIXED_RNG=1`, 300 frames, a
+counter at each site (verified by pinning one to zero: it read 0 while the other stayed put, so
+the printout is that site and the run is deterministic):
 
-⚠ Neither should be touched before its call volume is MEASURED — batch 1's retraction above is
-exactly the trap. The needle plotter runs a handful of short lines a frame and the text walk is
-front-end only, so both may be far off the plotters' volume shape.
+| site | calls / 300 driving frames | per frame |
+|---|---|---|
+| `plot_line_octant_core`'s per-pixel `bus_read` + `bus_write` | 10 198 iterations | ~34 (so ~68 bus calls) |
+| the `print_text_script` walk's per-byte `bus_read` | 407 | ~1.4 |
+
+Against the ~10 600 bus calls a game frame, the needle plotter is **0.6%** and the text walk is
+**0.01%**. Neither is the ~forty-cells-per-hoist shape the rule is about, and the octant site is
+not even eligible: the plotter can write its own pointer cells (`plot_store_resync` is there for
+exactly that), so the target can be zero page and the predicate is genuinely not constant across
+the loop. ⭐ The general form, and the third time this sweep has hit it: **`bus_read` on a
+per-cell walk is only a defect where the walk is LONG.** Count first.
+
+The text walk stays hoistable in principle — its safety argument is already written at the code
+(nothing the walk calls writes `plot_ptr2`) — but at 1.4 calls a frame there is nothing to buy.
 
 ---
 
