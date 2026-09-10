@@ -12216,7 +12216,7 @@ void track_pos_retreat(void)                     /* exit ABI: C only */
     car_distance_marshal_out_one(cpu.X);
 }
 
-/* * $109B  full_track_scan_rebuild  —  NATIVE DRIVER (STAGE 5), the root of the crash-freeze subtree.
+/* $109B  full_track_scan_rebuild  —  NATIVE DRIVER (STAGE 5), the root of the crash-freeze subtree.
  *
  * reset_driving_variables calls this on a crash / session reset.  With the off-line-scan flag
  * (track_scan_active bit 7) raised — so lap_complete ignores the artificial track motion — it
@@ -12337,7 +12337,7 @@ void full_track_scan_rebuild_core(uint8_t retreatDepth)
    rebuild), so there is no exit state to replay. */
 void full_track_scan_rebuild(void) { full_track_scan_rebuild_core(cpu.A); }
 
-/* * $4F77 lap_complete — TWIN #136.  track_pos_advance calls this when a car's distance counter wraps
+/* $4F77 lap_complete — TWIN #136.  track_pos_advance calls this when a car's distance counter wraps
  * a lap.  It books the completed lap and, when the mode calls for it, records the lap TIME:
  * race_clock - car_lap_start as a 3-byte BCD value (centiseconds / seconds base-60 / minutes), and
  * keeps the per-car best.  The player's finish is credited once per approach (a one-shot debounce)
@@ -13809,7 +13809,7 @@ void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
 }
 
 
-/* * ⭐ TWINS #181-#184 — THE NUMBER AND NAME PRINTERS
+/* ⭐ TWINS #181-#184 — THE NUMBER AND NAME PRINTERS
  * ------------------------------------------------------------------------------------------------
  * Four small routines that were the last transliterated holders of the vdu_char_def shim.  They
  * share two things:
@@ -13852,7 +13852,7 @@ void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
  * fixtures pin S and ignore that one cell (docs/validation-harness.md's i=5 precedent).
  * ================================================================================================ */
 
-/* * $3250 emit_driver_name — TWIN #181.  Prints the twelve characters of a driver's name from the
+/* $3250 emit_driver_name — TWIN #181.  Prints the twelve characters of a driver's name from the
  * table entry driver_name_address ($40xx) just selected, which arrives as a pointer in Y:A and is
  * parked in plot_ptr2.  Y is both the character index and the ambient OSWRCH register, so it walks
  * 0..11 in both roles.  Exit A is the last character; the exit flags are the terminating
@@ -13881,7 +13881,7 @@ uint8_t emit_driver_name_core(uint16_t ptr, uint8_t x)
     return last;
 }
 
-/* * $37D6 print_bcd_digits — TWIN #182.  Prints one packed-BCD byte as up to two characters: each
+/* $37D6 print_bcd_digits — TWIN #182.  Prints one packed-BCD byte as up to two characters: each
  * nibble +$30, high nibble first.  A zero high nibble is not printed as '0' — the field mask
  * decides whether it becomes the pad glyph or a space — and if the mask's second shift carries out,
  * the low nibble is dropped too.  Exit A/N/Z are the last character's, unless the field ended after
@@ -13925,7 +13925,7 @@ TextExit print_bcd_digits_at_core(uint8_t bcd, uint8_t column, uint8_t row)
     return print_bcd_digits_core(bcd, column, row);
 }
 
-/* * $7B9C print_lap_time — TWIN #184.  Prints car X's three-byte BCD time as mm:ss[.hh].  A on entry
+/* $7B9C print_lap_time — TWIN #184.  Prints car X's three-byte BCD time as mm:ss[.hh].  A on entry
  * IS the field mask, so the caller chooses the layout: after the seconds the mask is shifted once
  * more and a carry out drops the '.'  and the hundredths.  X is the car index AND the ambient
  * OSWRCH register, so this is a general time printer, not one readout.
@@ -13955,7 +13955,7 @@ TextExit print_lap_time_core(uint8_t fieldMask, uint8_t carIdx, uint8_t y)
 }
 
 
-/* * ⭐ TWINS #185-#191 — THE DASHBOARD READOUTS THAT DRIVE THE PRINTERS
+/* ⭐ TWINS #185-#191 — THE DASHBOARD READOUTS THAT DRIVE THE PRINTERS
  * ------------------------------------------------------------------------------------------------
  * The transliterated callers of the number/name printers: the position readout, the lap-time
  * readout chain and the two driver-name lines.  Between them they are the whole of the in-race
@@ -14316,7 +14316,7 @@ void finish_race_core(void)
     }
 }
 
-/* * $43D0 / $43E7  print_lap_value_field / print_lap_value_from_mid — TWIN #196
+/* $43D0 / $43E7  print_lap_value_field / print_lap_value_from_mid — TWIN #196
  * ------------------------------------------------------------------------------------------------
  * ONE LAP-TIME COLUMN of the standings/results table (print_standings_table's two call sites are the only
  * callers).  The value is car `x`'s two low BCD bytes of car_lap_* — mid and lo — printed as a
@@ -14369,7 +14369,7 @@ TextExit print_lap_value_field_core(uint8_t x, uint8_t y)
     return print_lap_value_from_mid_core(0x20u, x, y);
 }
 
-/* * TWIN #197 — the standings table's two remaining leaf callees
+/* TWIN #197 — the standings table's two remaining leaf callees
  * ------------------------------------------------------------------------------------------------
  *   $3E60 set_row_rule_glyphs   picks the row's pair of rule glyphs and PATCHES them into the
  *                               script that draws the column rule
@@ -14502,7 +14502,7 @@ void wait_dismiss_key_core(uint8_t offerReturn)
     wait_dismiss_core(offerReturn);
 }
 
-/* * ⭐⭐ TWIN #199 — THE STANDINGS / RESULTS TABLE  ($65D3 print_standings_table, $41D0
+/* ⭐⭐ TWIN #199 — THE STANDINGS / RESULTS TABLE  ($65D3 print_standings_table, $41D0
  *                 select_text_variant)
  * ------------------------------------------------------------------------------------------------
  * The page the game shows after practice, qualifying and the race: a heading line, twenty rows of
@@ -14548,7 +14548,7 @@ void wait_dismiss_key_core(uint8_t offerReturn)
    primary road-pass name and the twin carries the alias.) */
 #define STANDINGS_ROW span_saved_index
 
-/* * $41D0 select_text_variant — DRESS THE HEADING SCRIPTS FOR ONE LAYOUT, THEN DRAW THEM.
+/* $41D0 select_text_variant — DRESS THE HEADING SCRIPTS FOR ONE LAYOUT, THEN DRAW THEM.
  * Six bytes of patch and one script run.  Five come straight out of the parallel tables; the
  * sixth is computed: script $22's +4 becomes the text-script command "recurse into script
  * <variant>", which is how the cell picks up the words that name THIS variant's column.
@@ -14567,7 +14567,7 @@ void select_text_variant_core(uint8_t variant)
     text_script_interp_core(0x21u);                                    /* $41F5/$41F7 */
 }
 
-/* * $65D3 print_standings_table — the page itself.
+/* $65D3 print_standings_table — the page itself.
  * ------------------------------------------------------------------------------------------------ */
 void print_standings_table_core(uint8_t variant, uint8_t mode)
 {
