@@ -16580,7 +16580,7 @@ void hook_steer_response_doning(void)
     } else {
         uint8_t pardon;
 
-        mem[0x0100u + cpu.S] = segment;                    /* $5791 PHA */
+        mem[STACK_PAGE + cpu.S] = segment;                    /* $5791 PHA */
 
         if (segment == 0x58u)                              /* $5792 / $5796 LDA #$27 */
             pardon = (uint8_t)(offset > 0x27u);

@@ -89,3 +89,57 @@ declares the register or flag live at the exit, with the argument written at the
 ⭐ The general lesson for the rest of the sweep: **in this file a `cpu.` reference on the
 render/dashboard path is usually an exit-ABI obligation, and the thing to check is not "can
 this be plain C" but "does the fixture's live mask have evidence behind it".**
+
+---
+
+# Batch 2 — lines 2000..4000, plus four FILE-WIDE class sweeps
+
+The read reached line ~2560 before it became clear that three of the sweep's classes can be
+settled for the **whole file** mechanically rather than batch by batch, because each has a
+shape a scan can enumerate exactly. Doing that first means the remaining per-function reading
+only has to look for the classes a scan genuinely cannot see (a comment that describes 6502
+instructions, a `_core` that should take an argument, a repeated `mem[]` read).
+
+## ✅ CLASS CLOSED FILE-WIDE — `goto`
+Zero in the file.
+
+## ✅ CLASS CLOSED FILE-WIDE — unnamed hex memory locations
+One `mem[0x....]` in 17 836 lines, and it was the stack page in `engine_init_core`
+(`mem[0x0100u + cpu.S]`), which every other site in the file spells `STACK_PAGE`. Fixed.
+Every other memory reference goes through a `mem.h` name or a named `MEM_*` base.
+
+## ✅ CLASS CLOSED FILE-WIDE — `cpu` struct usage inside `_core` bodies
+25 `_core` bodies still reference `cpu`, and **every one is load-bearing**. They fall into
+exactly four groups, and each group is mandated somewhere other than this file:
+
+| Group | Members | Why it stays |
+|---|---|---|
+| **Circuit hook / SMC seam** | `horizon_half_width_at_core`, `update_camera_and_drive_state_core`, `read_driving_controls_core`, `rebuild_walk_reversed_core`, `load_section_from_segment_core`, `fill_line_attr_core` | CLAUDE.md: *a hook/SMC seam must hand over every register the 6502 has live there*, derived from the surrounding instructions, not from what Silverstone's callee reads. Each writes `cpu` immediately before `revs_track_hook(target)` and reads back what the circuit's own code left. |
+| **`cpu.D` for a BCD routine** | `add_tally_to_lap_total_core`, `tally_bcd_column_core`, `lap_complete_core`, `check_car_pair_core`, `sort_cars_by_key_core`, `tick_race_timers_core` | These are six of the eight `SED` sites inventoried in `docs/static-map.md` §Decimal mode. Decimal mode is real behaviour here, not an idiom. |
+| **MOS / OS-call ABI** | `shift_key_commands_core`, `kbd_test_key_core`, `engine_init_core` (`cpu.S`), `mul16_by_1_5_core` (`PHA` residue at `$0100+S`) | The harness compares registers at every OS-call boundary, and a `PHA`/`PLA` pair leaves a real byte in the stack page. |
+| **A documented exit publish** | `race_main_loop_core`, `emit_edge_width_offset_core`, `build_track_geometry_core`, `draw_road_core`, `clamp_and_store_steer_angle_core`, `scale_angle_in_section_core`, `enter_session_core` | The fixture declares the mask; the argument is written at the code. |
+
+⭐ **The general form: in this file a `cpu.` inside a `_core` is nearly always one of those four,
+and the productive question is which — not whether it can be deleted.**
+
+## ✅ CLASS LARGELY CLOSED FILE-WIDE — `bus_read`/`bus_write` on a RAM path
+56 call sites. 38 are the genuine hardware window (User/System VIA, CRTC, the Video ULA
+palette, the IRQ1V vector pair — which must stay `bus_write` so the platform's shadow notify
+sees the claim). Of the rest, five already sit on the `else` arm of a hoisted
+`view_span_is_ram()` predicate (the intended shape), and three are the paint passes' boundary
+stores settled in batch 1 above.
+
+### Open — the two per-cell pointer walks
+Two sites are the shape CLAUDE.md's ~10 600-calls-a-frame rule is actually about, and neither
+is hoisted:
+
+* **`plot_line_octant_core` (~2896/2901)** — a `bus_read` **and** a `bus_write` per plotted
+  pixel, through `plot_ptr_v + y`. ⚠ Not a simple hoist: the line immediately below is
+  `plot_store_resync(addr, out)`, there because *the plotter can write its own pointer cells* —
+  the target can be zero page, so the predicate is not constant across the loop.
+* **`print_text_script` walk (~10669)** — `bus_read((plot_ptr2_v + y))` per script byte, with
+  `plot_ptr2_v` reloaded per table entry. This one IS hoistable per entry.
+
+⚠ Neither should be touched before its call volume is MEASURED — batch 1's retraction above is
+exactly the trap. The needle plotter runs a handful of short lines a frame and the text walk is
+front-end only, so both may be far off the plotters' volume shape.
