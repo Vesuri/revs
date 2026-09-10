@@ -1929,7 +1929,8 @@ void race_main_loop_core(RestartDepth depth)
    stores `bearing - car_heading`, so an edge point is an azimuth relative to where the car is
    pointing and interp_edge is what turns one into a screen column. */
 /* MEM_edge_style — edge_style  — which surface style the span there uses */
-#define SECTION_FLAGS_W  0x068Au   /*   ...the same table at -$78, for a byte index past 120 */
+#define SECTION_FLAGS_W  (MEM_section_flags - 0x78u)   /*   ...the same table wrapped, for a
+                                      byte index past 120 */
 /* MEM_edge_side_flag_mask — edge_side_flag_mask  — 2, by road side */
 /* MEM_edge_style_tbl — edge_style_tbl       — 8, by the feature bits */
 /* MEM_edge_width_shift_tbl — edge_width_shift_tbl — 8, likewise */
@@ -5017,13 +5018,13 @@ ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
    build_track_geometry has finished — and the defines below are what make the code readable.
    =========================================================================== */
 
-#define SPAN_LINE_END  0x0082u   /* point_delta_lo[2]   — the scan line the span stops at */
+#define SPAN_LINE_END  (MEM_point_delta_lo + 2u)   /* point_delta_lo[2]   — the scan line the span stops at */
 #define SPAN_DX        MEM_point_delta_hi   /* point_delta_hi[0]   — the DDA's major delta */
 #define SPAN_DY        MEM_shared_temp_84   /* point_delta_hi[1]   — ...and its minor delta */
 #define SPAN_BLOCK     MEM_shared_temp_85   /* point_delta_hi[2]   — the source block, 0..$2C */
 #define SPAN_ARM       MEM_point_delta_sign   /* point_delta_sign[0] — bit 7 picks ascending or descending */
-#define SPAN_YSTEP     0x0087u   /* point_delta_sign[1] — which way the plotters step Y */
-#define SPAN_CLIP      0x0088u   /* point_delta_sign[2] — two-bit rolling clip history */
+#define SPAN_YSTEP     (MEM_point_delta_sign + 1u)   /* point_delta_sign[1] — which way the plotters step Y */
+#define SPAN_CLIP      (MEM_point_delta_sign + 2u)   /* point_delta_sign[2] — two-bit rolling clip history */
 
 /* MEM_colour_pattern_tbl — colour_pattern_tbl     — 4 bytes, the span's pixels */
 /* MEM_colour_pattern_or_tbl — colour_pattern_or_tbl  — ...masked to this column */
@@ -6389,8 +6390,8 @@ SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int e
 
 #define EDGE_RUN_LIMIT     MEM_shared_counter_42   /* shared_counter_42 — the column the run stops at */
 #define EDGE_COLUMN        MEM_shared_temp_85   /* point_delta_hi[2] as this pass's column cursor */
-#define EDGE_BLOCK_START   0x0082u   /* point_delta_lo[2] — dash_block_starts[column] */
-#define EDGE_STYLE_PREV    0x5EDFu   /* edge_style - 1: a line_attr entry is an index PLUS ONE */
+#define EDGE_BLOCK_START   (MEM_point_delta_lo + 2u)   /* point_delta_lo[2] — dash_block_starts[column] */
+#define EDGE_STYLE_PREV    (MEM_edge_style - 1u)   /* a line_attr entry is an index PLUS ONE */
 
 #define GAP_PTR_OPERAND    0x1DDEu   /* the store's zero-page pointer number */
 #define GAP_BRANCH_OPERAND (MEM_smc_gap_walk_branch + 1)   /* the non-zero-source arm's branch offset */
@@ -6910,8 +6911,8 @@ void neg16_math(void)
    conventions (see the routine note): the MULTIPLICAND is a plain two's-complement value,
    the MULTIPLIER is a car-angle coefficient whose sign is packed in bit 0 of its low byte. */
 #define MUL_SRC_LO     MEM_point_delta_lo   /* point_delta_lo[0] — multiplicand low  (two's complement) */
-#define MUL_SRC_HI     0x0081u   /* point_delta_lo[1] — multiplicand high; bit 7 is its sign */
-#define MUL_TERM_LO    0x0082u   /* point_delta_lo[2] — multiplier low; the car angle, bit 0 = SIGN */
+#define MUL_SRC_HI     (MEM_point_delta_lo + 1u)   /* point_delta_lo[1] — multiplicand high; bit 7 is its sign */
+#define MUL_TERM_LO    (MEM_point_delta_lo + 2u)   /* point_delta_lo[2] — multiplier low; the car angle, bit 0 = SIGN */
 #define MUL_TERM_HI    MEM_point_delta_hi   /* point_delta_hi[0] — multiplier high (heading_sin/heading_cos) */
 #define MUL_SIGN       MEM_hypot_min_hi   /* hypot_min_hi — product-sign accumulator (bit 7) + apply_angle_term's store/accumulate mode (bit 6) */
 #define MODEL_TERM     MEM_point_dist_lo   /* point_dist_lo — the destination element index */
@@ -7268,7 +7269,7 @@ void apply_angle_term_at(void)
    no equivalent, with the instruction that wrote them named.
    =========================================================================== */
 
-#define MODEL_ROT_MODE   0x0088u  /* point_delta_sign[2] — here the rotation's sign/mode byte */
+#define MODEL_ROT_MODE   (MEM_point_delta_sign + 2u)  /* point_delta_sign[2] — here the rotation's sign/mode byte */
 #define STEER_ANGLE      2u       /* element 2 (steer_angle) of the heading_sin/heading_cos/steer array */
 
 /* ---------------------------------------------------------------------------
@@ -9629,7 +9630,7 @@ void store_object_flags(void)   { store_object_flags_core(cpu.Y, cpu.A); }
 /* MEM_car_order — car_order */
 
 /* The object pass's own names for the point_delta window it borrows (docs/rename.md). */
-#define OBJ_VECTOR_CURSOR   0x0081u   /* point_delta_lo[1] — the shape's vector cursor */
+#define OBJ_VECTOR_CURSOR   (MEM_point_delta_lo + 1u)   /* point_delta_lo[1] — the shape's vector cursor */
 #define OBJ_VECTOR_END      MEM_bearing_lo   /* bearing_lo        — one past its last vector */
 #define OBJ_EDGE_X          MEM_point_delta_hi   /* point_delta_hi[0] — the edge's x, into the plotter */
 #define OBJ_EDGE_STYLE      MEM_shared_temp_84   /* point_delta_hi[1] — ...and its style byte */
@@ -10532,7 +10533,7 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
 #define ASSIST_LAMP_1  0x77DCu
 #define ASSIST_LAMP_2  0x77E3u
 #define ASSIST_LAMP_3  0x77E4u
-#define OPTION_FLAGS   0x05F5u   /* state_flags + 1: bit 7 selects the JOYSTICK input path */
+#define OPTION_FLAGS   (MEM_state_flags + 1u)   /* bit 7 selects the JOYSTICK input path */
 /* MEM_gear_char_tbl — gear_char_tbl — 'R' 'N' '1'..'5' 'P' */
 /* MEM_char_row_addr_lo — char_row_addr_lo — ⚠ entries 8..15 are pixel_keep_others_tbl */
 /* MEM_char_row_addr_hi — char_row_addr_hi */
@@ -12665,7 +12666,7 @@ static inline void object_coord_word_set(unsigned axis, uint16_t value)
    writes).  The dispatch below therefore stays as a TRAP on an unmodellable shape, not as
    a per-circuit expectation — which is why it costs one mem[] read and not a table. */
 /* MEM_smc_object_coord_mask — AND zp ($29) on every circuit; see above */
-#define SMC_MASK_OPERAND  0x298Eu
+#define SMC_MASK_OPERAND  (MEM_smc_object_coord_mask + 1u)
 /* The zero-page arithmetic window as THIS routine's tenant uses it — the object-queue tail
    reads its inputs back out of these cells, so they are an output of the twin, not scratch.
    ($84 is shared_temp_84; $86-$88 are point_delta_sign's three cells under a different tenant;
@@ -14724,7 +14725,7 @@ void project_object_slot_core(uint8_t coordIndex, uint8_t shape)
 }
 
 /* ---------------------------------------------------------------- wing mirrors */
-#define MIRROR_LOWER_BOUND    0x0082u  /* the car block's BOTTOM line — a THIRD tenant of
+#define MIRROR_LOWER_BOUND    (MEM_point_delta_lo + 2u)  /* the car block's BOTTOM line — a THIRD tenant of
                                           point_delta_lo+2, after the camera delta and the
                                           span rasteriser's end line (see symbols.csv $0080) */
 #define MIRROR_SHUDDER_TBL    0x2000u  /* indexed by it: the vibration's AND mask */
@@ -16395,7 +16396,7 @@ void hw_init_core(uint8_t osbyteY)
    row carries all three), live only inside one $56C8 call and carrying nothing out: the hook
    returns to $1949, which JMPs straight to $1977 without reading the cell.  It is mirrored into
    mem[] rather than kept purely local so the oracle differential stays byte-exact on it too. */
-#define HOOK_CLAMP_LATCH 0x0082u   /* = point_delta_lo + 2 */
+#define HOOK_CLAMP_LATCH (MEM_point_delta_lo + 2u)   /* = point_delta_lo + 2 */
 
 /* $56C8 — MAKE THE HORIZON MONOTONIC (Brands Hatch, Donington Park, Oulton Park; the three
    circuits emit byte-identical code here).  Patched in at $1946, over the engine's
