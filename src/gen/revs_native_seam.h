@@ -252,6 +252,11 @@ typedef struct { uint16_t addr; uint8_t scratch; } NamePtr;
 typedef struct { uint8_t angleIndex, stepSize, ddaLen, originMasked, rowSel, subPos; } DashNeedle;
 
 /* ---- always_inline 6502 flag helpers (moved out of revs_native.c) ---- */
+/* The flag-carrying primitives, so that no twin has to be written in 6502.
+   ⚠⚠ ALWAYS_INLINE IS LOAD-BEARING, NOT A HINT.  Each wraps one cpu.h macro and writes the
+   global `cpu`, so GCC leaves them out of line at -O3 — a `jsr` plus `movem.l` PER SUBTRACT,
+   which made an arithmetic twin SLOWER than the transliteration.  Grep the objdump for
+   `jsr <sub_from>` before believing one is fast.  (docs/perf-method.md §twins #14/#15) */
 #define REVS_FLAG_OP static inline __attribute__((always_inline))
 /* A = value, with N and Z from it.  Used where a value reaches A and an SMC trap can then
    exit the routine with both still live. */

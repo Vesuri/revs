@@ -107,7 +107,6 @@ void plot_ptr3_marshal_out(void)
     plot_ptr3_lo = (uint8_t)plot_ptr3_v; plot_ptr3_hi = (uint8_t)(plot_ptr3_v >> 8);
 }
 
-/* The span walk moves all three in lockstep, so its shims marshal all three at once. */
 /* THE ALIAS GUARD — a store that lands on a pointer's own lane must update the relocated value,
    because the oracle re-reads the pointer from mem[] at every dereference.  Without it the four
    span fixtures fail 7/400 (shallow_fwd) and 5/400 (steep_fwd), ascending arms only.
@@ -133,6 +132,7 @@ void plot_store_resync(unsigned addr, uint8_t val)
     }
 }
 
+/* The span walk moves all three pointers in lockstep, so its shims marshal all three. */
 void plot_ptrs_marshal_in(void)
 {
     plot_ptr_marshal_in(); plot_ptr2_marshal_in(); plot_ptr3_marshal_in();
@@ -155,49 +155,6 @@ CameraExit apply_driving_model_core(uint16_t heading, int entryC);
 GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1);
 SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);
 static void build_road_sign_core(void);
-
-/* The flag-carrying primitives, so that no other line in this file has to be written in 6502.
-   ⚠⚠ ALWAYS_INLINE IS LOAD-BEARING, NOT A HINT.  Each wraps one cpu.h macro and writes the
-   global `cpu`, so GCC leaves them out of line at -O3 — costing a `jsr` plus `movem.l` PER
-   SUBTRACT and making an arithmetic twin SLOWER than the transliteration, which expands the
-   same macro inline.  Grep the objdump for `jsr <sub_from>` before believing one is fast.
-   (docs/perf-method.md §twins #14/#15) */
-
-
-/* $4E5C  irq1v_band_schedule — THE RASTER-BAND PALETTE/MODE SCHEDULE
-
-   Revs owns IRQ1V and drives its display from a User VIA T1 timer.  One PAL field is FIVE
-   interrupts; each repaints the Video ULA for the band about to be scanned out and reloads T1
-   with that band's duration.  irq_band_state says which band is next.  ⭐ THE HANDLER DRAWS
-   NOTHING — the only game work in the cycle is band 4's `tick_wheel_spin`.  This port hands the
-   same schedule to the copper and reuses the record when nothing in it changed.
-
-   THE BANDS, in the order the counter walks them:
-
-     0   sky-top     MODE 4, all sixteen palette entries from $3468;  next latch $0FC4
-     1   sky         MODE 5, the sixteen entries 3,$13..$F3 (one flat colour);  then the
-                     horizon split — band 1 runs for band1_duration and band 2 gets the
-                     remainder of a fixed $153C, stashed in band2_duration.
-                     ⭐ A zero-height band 1 (the split underflows) FALLS THROUGH into
-                     band 2's arm in the same interrupt, which is how the horizon can sit
-                     at the very top of the screen.  Bands 2→3 fall through the same way.
-     2   horizon     the four-colour palette at $3458;  latch = the remainder computed above
-     3   track       four entries from $3478 (colour 1 → red);  next latch $1E00
-     4   dashboard   four entries from $347C (colour 3 → cyan), then tick_wheel_spin,
-                     then the User VIA ORB poke and the wrap back to band 0;  latch $0B16
-     $FF             the arm is skipped; the counter just wraps to 0 and takes band 0's
-                     latch.  Any OTHER negative counter does nothing at all.
-
-   LEAVES BEHIND, in mem[]: the pushed X and irq_band_state, nothing else (band2_duration is
-   relocated to the native band2_duration_v below).  In hardware: $FE6D (ack), $FE20/$FE21 (the
-   ULA), $FE66/$FE67 (the next duration — the $FE66 write closes a band record in bbc_hw.cpp)
-   and $FE69 once per field.
-
-   EXIT CONTRACT.  A, X and Y all come back as the interrupted code left them — measured on a
-   real BBC over 2858 engine-context interrupts (`make refloop --irq-abi`) and asserted at the
-   seam.  A arrives via mos_irq_a; `PLA/TAX` restores X; Y is never touched; flags and S from
-   the RTI.
- */
 
 /* One palette table → the ULA, last entry first.  The order is observable: entries share
    logical colours, so the last write to a high nibble wins.  $3468/$3458 are 16 entries,
@@ -241,6 +198,40 @@ static uint16_t band2_duration_v;
    Unreferenced on the Amiga build → dropped by --gc-sections. */
 void set_band2_duration_v(uint16_t v) { band2_duration_v = v; }
 
+/* $4E5C  irq1v_band_schedule — THE RASTER-BAND PALETTE/MODE SCHEDULE
+
+   Revs owns IRQ1V and drives its display from a User VIA T1 timer.  One PAL field is FIVE
+   interrupts; each repaints the Video ULA for the band about to be scanned out and reloads T1
+   with that band's duration.  irq_band_state says which band is next.  ⭐ THE HANDLER DRAWS
+   NOTHING — the only game work in the cycle is band 4's `tick_wheel_spin`.  This port hands the
+   same schedule to the copper and reuses the record when nothing in it changed.
+
+   THE BANDS, in the order the counter walks them:
+
+     0   sky-top     MODE 4, all sixteen palette entries from $3468;  next latch $0FC4
+     1   sky         MODE 5, the sixteen entries 3,$13..$F3 (one flat colour);  then the
+                     horizon split — band 1 runs for band1_duration and band 2 gets the
+                     remainder of a fixed $153C, stashed in band2_duration.
+                     ⭐ A zero-height band 1 (the split underflows) FALLS THROUGH into
+                     band 2's arm in the same interrupt, which is how the horizon can sit
+                     at the very top of the screen.  Bands 2→3 fall through the same way.
+     2   horizon     the four-colour palette at $3458;  latch = the remainder computed above
+     3   track       four entries from $3478 (colour 1 → red);  next latch $1E00
+     4   dashboard   four entries from $347C (colour 3 → cyan), then tick_wheel_spin,
+                     then the User VIA ORB poke and the wrap back to band 0;  latch $0B16
+     $FF             the arm is skipped; the counter just wraps to 0 and takes band 0's
+                     latch.  Any OTHER negative counter does nothing at all.
+
+   LEAVES BEHIND, in mem[]: the pushed X and irq_band_state, nothing else (band2_duration is
+   relocated to the native band2_duration_v below).  In hardware: $FE6D (ack), $FE20/$FE21 (the
+   ULA), $FE66/$FE67 (the next duration — the $FE66 write closes a band record in bbc_hw.cpp)
+   and $FE69 once per field.
+
+   EXIT CONTRACT.  A, X and Y all come back as the interrupted code left them — measured on a
+   real BBC over 2858 engine-context interrupts (`make refloop --irq-abi`) and asserted at the
+   seam.  A arrives via mos_irq_a; `PLA/TAX` restores X; Y is never touched; flags and S from
+   the RTI.
+ */
 void irq1v_band_schedule(void)
 {
     unsigned latch;               /* microseconds until the next band interrupt */
@@ -352,76 +343,6 @@ void irq1v_band_schedule(void)
     irq_band_state++;
     irq1v_return();
 }
-
-/* $7BE2  view_paint_lines — THE 3D VIEWPORT RASTERISER, ONE SCAN LINE PER CHAIN
-
-   WHAT IT COMPUTES.  The viewport is not drawn where it is computed: the producers
-   ($24F6 → $1A20) write a *source byte* into one of forty $80-spaced blocks at
-   $3000..$4380 — one block per CELL COLUMN, each indexed by scan line — and this routine
-   is the single consumer that turns those into screen bytes.  It paints ONE SCAN LINE per
-   chain, top down, forty cells across:
-
-       plot_ptr  = $6700 = BBC_SCREEN_BASE + 10*320, i.e. character row 10 / cell 0 /
-                   line 0 = DISPLAY LINE 80, stepped +1 within a character row and +$139
-                   across one (view_next_scanline, $7EF3);
-       plot_ptr2 = $6800 = plot_ptr + 256 = cell 32 of the same line, because a line is
-                   40 cells x 8 = 320 bytes and cannot be reached from one base.
-
-   One "unit" is one cell: read the source, and if it is non-zero clear it and translate it
-   through view_cell_bytes ($6000); either way store the byte that is now carried.  The
-   carried byte flows LEFT TO RIGHT, so a cell whose source is zero repeats whatever the
-   cell to its left drew — which is also why one corrupt byte gives a run to the right edge
-   of a line (docs/bbc-reference-loop.md).  That is the whole drawing model, and it is why
-   the chain has to run in order.  Confirmed on a real BBC: stores cover display lines
-   80..157 and buckets 88..111 are full at 320 = 8 lines x 40 cells (`make fbwrites`).
-
-   THREE PHASES, differing only in how much of the line is painted:
-
-     1  $7BE2, line $4F..$2C — the full forty cells, looping through view_next_scanline
-        until the line counter reaches $2C.
-     2  $7D13, line $2B..$1C — the painted run is shorter, so the driver plants an RTS
-        ($60) over the store of unit view_run_left_end[line], runs the chain, and composes
-        the boundary cell itself out of view_left_end_mask/fill.  It then enters chain B at
-        view_run_right_start[line] for the second run.
-     3  $7F18, line $1B..$03 — as phase 2, but BOTH chains get a planted stop and a
-        computed start, and the driver steps the scan-line pointers itself.
-
-   view_paint_restore ($7BBF) then puts `STA` back over the three planted RTSs and `CPX`
-   back at $7EEE, so the chain leaves no patch behind.  ⚠ It does NOT reset the
-   $7D24/$7F24/$7F7D *records* of where it planted, and the drivers skip the re-plant when
-   the stop is unchanged — so the first line of a phase can legally run with no stop
-   planted at all.  Faithful, and reproduced.
-
-   ⚠ THE CONTROL TABLES LIVE INSIDE THE SOURCE BLOCKS, and that is not a mistake to tidy up.
-   A block's live source span is offsets dash_block_starts[col]..$4F, so the rest of each $80
-   is dead — the tails ($50-$7F) once copy_dash_data has moved them to $7B00, and the offsets
-   below the start.  Three of the four tables sit in tails; view_run_right_end ($3080) sits in
-   column 1's below-the-start region, and since column 1 starts at offset $1B while the driver
-   indexes that table only over phase 3's lines 3..$1B, the two readings collide in EXACTLY ONE
-   byte: $309B, at phase 3's topmost line.  That is why the chain can zero a byte the driver is
-   about to read, and why every table read has to happen exactly where the 6502 did it —
-   hoisting one out of the loop changes behaviour.
-
-   ⭐ SHAPE, MEASURED (docs/direct-bitplane-plan.md §7a): 2093 units per sweep, ~83 of which
-   change a byte — 96% of the work is a dirty test that finds nothing.  That 96% is the GAME's
-   algorithm and the twin keeps it; deleting the scan is a representation change tracked
-   separately.  The forty unrolled units are one indexed loop over a regular structure:
-
-       unit i:  source block $3000 + $80*i,  screen offset 8*i,
-                base pointer plot_ptr for i < 32 and plot_ptr2 for i >= 32,
-                opcode slot g_viewSlot[i].
-
-   ⚠ ONLY 29 OF THE 40 SLOTS ARE PATCHABLE, and that is a proof, not a choice: every
-   writer patches only the LOW byte of its store, so it can reach one page.  Chain A's unit
-   15 slot ($7D0E) and chain B's first ten ($7D65..$7DFE) are in page $7D, which no writer
-   addresses — they are plain stores and the twin must not dispatch on them (a randomised
-   fixture puts garbage there, and the oracle stores anyway).
-
-   EXIT CONTRACT.  A = $E0 and the line counter = 3 from $7BBF/$7FAC; Y is the cell offset
-   the last chain stopped at; the flags are live too (C from `CPX #3`, V from phase 3's
-   `SEC / SBC`), so the fixture declares AXY+flags and the twin computes them.  The chain's
-   own intermediate flags are dead — every one of the four call sites sets N/Z with an
-   `AND`/`CPX` before the next branch — which is why the unit loop keeps no flags at all. */
 
 /* The per-scan-line control tables (symbols.csv carries the derivation).  Addresses rather than
    mem.h aliases because they are indexed tables.
@@ -1186,6 +1107,76 @@ static void paint_lines_clipped(ViewState* v)
     }
     paint_lines_short(v);
 }
+
+/* $7BE2  view_paint_lines — THE 3D VIEWPORT RASTERISER, ONE SCAN LINE PER CHAIN
+
+   WHAT IT COMPUTES.  The viewport is not drawn where it is computed: the producers
+   ($24F6 → $1A20) write a *source byte* into one of forty $80-spaced blocks at
+   $3000..$4380 — one block per CELL COLUMN, each indexed by scan line — and this routine
+   is the single consumer that turns those into screen bytes.  It paints ONE SCAN LINE per
+   chain, top down, forty cells across:
+
+       plot_ptr  = $6700 = BBC_SCREEN_BASE + 10*320, i.e. character row 10 / cell 0 /
+                   line 0 = DISPLAY LINE 80, stepped +1 within a character row and +$139
+                   across one (view_next_scanline, $7EF3);
+       plot_ptr2 = $6800 = plot_ptr + 256 = cell 32 of the same line, because a line is
+                   40 cells x 8 = 320 bytes and cannot be reached from one base.
+
+   One "unit" is one cell: read the source, and if it is non-zero clear it and translate it
+   through view_cell_bytes ($6000); either way store the byte that is now carried.  The
+   carried byte flows LEFT TO RIGHT, so a cell whose source is zero repeats whatever the
+   cell to its left drew — which is also why one corrupt byte gives a run to the right edge
+   of a line (docs/bbc-reference-loop.md).  That is the whole drawing model, and it is why
+   the chain has to run in order.  Confirmed on a real BBC: stores cover display lines
+   80..157 and buckets 88..111 are full at 320 = 8 lines x 40 cells (`make fbwrites`).
+
+   THREE PHASES, differing only in how much of the line is painted:
+
+     1  $7BE2, line $4F..$2C — the full forty cells, looping through view_next_scanline
+        until the line counter reaches $2C.
+     2  $7D13, line $2B..$1C — the painted run is shorter, so the driver plants an RTS
+        ($60) over the store of unit view_run_left_end[line], runs the chain, and composes
+        the boundary cell itself out of view_left_end_mask/fill.  It then enters chain B at
+        view_run_right_start[line] for the second run.
+     3  $7F18, line $1B..$03 — as phase 2, but BOTH chains get a planted stop and a
+        computed start, and the driver steps the scan-line pointers itself.
+
+   view_paint_restore ($7BBF) then puts `STA` back over the three planted RTSs and `CPX`
+   back at $7EEE, so the chain leaves no patch behind.  ⚠ It does NOT reset the
+   $7D24/$7F24/$7F7D *records* of where it planted, and the drivers skip the re-plant when
+   the stop is unchanged — so the first line of a phase can legally run with no stop
+   planted at all.  Faithful, and reproduced.
+
+   ⚠ THE CONTROL TABLES LIVE INSIDE THE SOURCE BLOCKS, and that is not a mistake to tidy up.
+   A block's live source span is offsets dash_block_starts[col]..$4F, so the rest of each $80
+   is dead — the tails ($50-$7F) once copy_dash_data has moved them to $7B00, and the offsets
+   below the start.  Three of the four tables sit in tails; view_run_right_end ($3080) sits in
+   column 1's below-the-start region, and since column 1 starts at offset $1B while the driver
+   indexes that table only over phase 3's lines 3..$1B, the two readings collide in EXACTLY ONE
+   byte: $309B, at phase 3's topmost line.  That is why the chain can zero a byte the driver is
+   about to read, and why every table read has to happen exactly where the 6502 did it —
+   hoisting one out of the loop changes behaviour.
+
+   ⭐ SHAPE, MEASURED (docs/direct-bitplane-plan.md §7a): 2093 units per sweep, ~83 of which
+   change a byte — 96% of the work is a dirty test that finds nothing.  That 96% is the GAME's
+   algorithm and the twin keeps it; deleting the scan is a representation change tracked
+   separately.  The forty unrolled units are one indexed loop over a regular structure:
+
+       unit i:  source block $3000 + $80*i,  screen offset 8*i,
+                base pointer plot_ptr for i < 32 and plot_ptr2 for i >= 32,
+                opcode slot g_viewSlot[i].
+
+   ⚠ ONLY 29 OF THE 40 SLOTS ARE PATCHABLE, and that is a proof, not a choice: every
+   writer patches only the LOW byte of its store, so it can reach one page.  Chain A's unit
+   15 slot ($7D0E) and chain B's first ten ($7D65..$7DFE) are in page $7D, which no writer
+   addresses — they are plain stores and the twin must not dispatch on them (a randomised
+   fixture puts garbage there, and the oracle stores anyway).
+
+   EXIT CONTRACT.  A = $E0 and the line counter = 3 from $7BBF/$7FAC; Y is the cell offset
+   the last chain stopped at; the flags are live too (C from `CPX #3`, V from phase 3's
+   `SEC / SBC`), so the fixture declares AXY+flags and the twin computes them.  The chain's
+   own intermediate flags are dead — every one of the four call sites sets N/Z with an
+   `AND`/`CPX` before the next branch — which is why the unit loop keeps no flags at all. */
 
 /* The idiomatic core: paint the viewport from `firstLine` downwards, both pointers seeded
    one page apart at `screenBase`.  Everything above is reachable only from here. */
