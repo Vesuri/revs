@@ -673,6 +673,8 @@ void fill_object_gap(void)
     /* V and C are dropped from this routine's fixture mask (unread by every caller) */
 }
 
+/* A leaf: on the carry path it returns steer_angle_hi with that value's N/Z, and C and V
+   unchanged from entry; on the no-carry path A and every flag are the caller's. */
 void limit_steer_demand(void)
 {
     if (cpu.C) {
@@ -682,6 +684,8 @@ void limit_steer_demand(void)
     }
 }
 
+/* A leaf: A is preserved, X comes back as the flag (with its N/Z), C as bit 7 of
+   track_direction; V is untouched. */
 void poll_steering_assist(void)
 {
     poll_steering_assist_core();
@@ -690,6 +694,9 @@ void poll_steering_assist(void)
     cpu.X = flag; cpu.N = (flag >> 7) & 1u; cpu.Z = (flag == 0);
 }
 
+/* plot_ptr is the side effect; the scan line within the row comes back in A and Y (N clear,
+   the value is < 8) and the row in X.  The fixture drops V and C for this cluster (the second
+   add's flags are dead at every caller). */
 void mode5_addr(void)
 {
     Mode5Addr m = mode5_addr_core(cpu.A, cpu.Y);         /* A = quarter-offset, Y = row */
@@ -704,6 +711,10 @@ void mode5_addr_for_cell(void)
     cpu.N = 0; cpu.Z = (m.line == 0);
 }
 
+/* OSWORD (inside the core) clobbers X/Y, but the 6502 preserves the caller's X/Y across
+   vdu_char_emit and vdu_char_wide ($509D/$50EF PUSH/PULL), so both shims save and restore them.
+   Exit A/N/Z come from the block byte the emit leaves live at $62C3.  (The i=5 fixture ignores
+   $01FE/$01FF, where the transliterated oracle's PUSH/PULL leaves residue these do not write.) */
 void vdu_char_emit(void)
 {
     uint8_t x = cpu.X, y = cpu.Y;
@@ -720,6 +731,7 @@ void vdu_char_wide(void)
     cpu.A = ch; cpu.N = (ch >> 7) & 1u; cpu.Z = (ch == 0);
 }
 
+/* The OSWRCH-path branch is 6502-ABI reconstruction, so it lives here, not in the core. */
 void vdu_char_def(void)
 {
     uint8_t ch = cpu.A;
@@ -1294,6 +1306,8 @@ void draw_corner_markers(void)
     marker_count = 0x00;                                    /* $1B7F-$1B81 — the list is per-frame */
 }
 
+/* Exit A/N/Z from the second emit, X forced to $FF ($42E4, then emit-preserved), Y preserved
+   from entry (both emits preserve it). */
 void draw_gear_indicator(void)
 {
     uint8_t y = cpu.Y;
@@ -1302,6 +1316,8 @@ void draw_gear_indicator(void)
     cpu.A = block; cpu.N = (block >> 7) & 1u; cpu.Z = (block == 0);
 }
 
+/* Magnitude in A, sign in X, the dead-zone carry rebuilt from CMP #$0A ($504F).  Y is left as
+   the OSBYTE reading the core's MOS call returned; V is dropped. */
 void adc_read(void)
 {
     AdcRead r = adc_read_core(cpu.X);

@@ -10692,27 +10692,7 @@ void steer_apply_with_assist(void)      { car_angle_marshal_in(); steer_apply_wi
                                           car_angle_marshal_out(); }
 void apply_steering_assist(void)        { car_angle_marshal_in(); apply_steering_assist_core();
                                           car_angle_marshal_out(); }
-/* limit is a leaf: on the carry path it returns steer_angle_hi with that value's N/Z, C and V
-   unchanged from entry; on the no-carry path A and every flag are the caller's. */
-/* poll is a leaf: A is preserved, X comes back as the flag (with its N/Z), C as bit 7 of
-   track_direction; V is untouched. */
-/* $50FC mode5_addr / $50FA mode5_addr_for_cell — plot_ptr is the side effect; the scan line
-   within the row comes back in A and Y (N clear, the value is < 8) and the row in X.  The
-   fixture drops V and C for this cluster (the second add's flags are dead at every caller). */
 
-/* $509D vdu_char_emit / $508C vdu_char_wide — OSWORD (inside the core) clobbers X/Y, but the
-   6502 preserves the caller's X/Y across these routines ($509D/$50EF PUSH/PULL), so each shim
-   saves and restores them.  Exit A/N/Z come from the block byte the emit leaves live at $62C3.
-   (The i=5 fixture ignores $01FE/$01FF, where the transliterated emit oracle's PUSH/PULL of
-   X/Y leaves residue this shim does not write.) */
-
-/* $5092 vdu_char_def — the OSWRCH-path branch is 6502-ABI reconstruction, so it lives here. */
-
-/* $42D0 draw_gear_indicator — exit A/N/Z from the second emit, X forced to $FF ($42E4, then
-   emit-preserved), Y preserved from entry (both emits preserve it). */
-
-/* $503F adc_read — magnitude in A, sign in X, the dead-zone carry rebuilt from CMP #$0A
-   ($504F).  Y is left as the OSBYTE reading the core's MOS call returned; V is dropped. */
 /* $4D4D  reset_all_cars_for_session — put the whole 20-car field back to a start  (#204)
    `startCar` arrives in X and does three jobs: it is the seeding cursor, it becomes the race
    class, and it selects the track-scale byte.  front_end_menus, the only caller, passes 0.
