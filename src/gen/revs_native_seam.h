@@ -417,6 +417,17 @@ void arg_a(uint8_t v);
 void bearing_to_section_core(uint8_t sectionByte, uint8_t origin);
 SignOriginExit build_sign_origin_core(uint8_t offset, uint8_t shift);
 GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1);
+/* ⭐⭐ THE _native ENTRIES — a shim minus the marshal-INs that are oracle-only in production.
+   Each pair is `void <name>(void)` (the 6502-ABI path `make validate` enters through, which
+   still marshals every lane in) and `void <name>_native(void)` (what native callers use, which
+   skips the lanes reset_driving_variables' wipes are the only writer of).  Every marshal-OUT and
+   every cpu write is on the _native side, so the mem[] mirror `make determinism` compares is
+   unchanged.  Reasoning at build_track_geometry in revs_native_seam.c;
+   docs/wide-value-cleanup.md §IS THE MARSHALLING ORACLE-ONLY for the measurement. */
+void build_track_geometry_native(void);
+void check_crash_native(void);
+void draw_dash_needles_native(void);
+
 unsigned car_gap_lo_core(uint8_t a, uint8_t b);
 GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn);
 StageNearbyCar stage_nearby_car_core(uint8_t gapA, unsigned gapFar, uint8_t slot);

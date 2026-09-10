@@ -1728,7 +1728,7 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
     }
 
     engine_sound_update();        /* the fourth and last note step of the frame */
-    draw_dash_needles();
+    draw_dash_needles_native();
     return LOOP_NEXT_FRAME;
 }
 
@@ -1806,7 +1806,7 @@ void race_main_loop_core(RestartDepth depth)
                bearing) are marshalled back into mem[$7A/$7B] and mem[$8A/$8B].  Calling the core
                here would leave the cells stale for a whole frame — which `make determinism` sees as
                a single diverging byte at $8B. */
-            PROBE_PHASE(5);  PROBE_SHAPE_PHASE(5);  build_track_geometry();
+            PROBE_PHASE(5);  PROBE_SHAPE_PHASE(5);  build_track_geometry_native();
             PROBE_PHASE(6);  PROBE_SHAPE_PHASE(6);  place_player_in_section();
             PROBE_PHASE(7);  PROBE_SHAPE_PHASE(7);  advance_player_section();
             PROBE_PHASE(8);  PROBE_SHAPE_PHASE(8);  update_lap_timers();
@@ -1846,7 +1846,7 @@ void race_main_loop_core(RestartDepth depth)
             PROBE_PHASE(20); PROBE_SHAPE_PHASE(20); engine_sound_update();
             PROBE_PHASE(21); PROBE_SHAPE_PHASE(21); update_horizon_band();
             PROBE_PHASE(22); PROBE_SHAPE_PHASE(22); process_car_contact();
-            PROBE_PHASE(23); PROBE_SHAPE_PHASE(23); check_crash();
+            PROBE_PHASE(23); PROBE_SHAPE_PHASE(23); check_crash_native();
             PROBE_SHAPE_DASH_BEFORE();
             PROBE_PHASE(24); PROBE_SHAPE_PHASE(24); view_paint_lines();
             PROBE_SHAPE_DASH_AFTER();

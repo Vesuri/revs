@@ -178,13 +178,30 @@ void scale_by_track_gradient_tail(void)
 
 void build_track_geometry(void)
 {
+/* ⭐⭐ THE _native ENTRY, AND WHY IT EXISTS.  Everything above the call is a marshal-IN of a
+   wide value whose byte lanes are zeroed ONLY by reset_driving_variables' two wipes, and that
+   routine now zeroes the relocated copies too -- so in production the lanes can tell these
+   arrays nothing they do not already hold, and the read is pure waste (MEASURED over eleven
+   scenarios: docs/wide-value-cleanup.md §IS THE MARSHALLING ORACLE-ONLY).  It cannot simply be
+   deleted, because `make validate` randomises mem[] and enters through this shim, and
+   build/validate_native links the very same objects as build/revs, so there is no compile-time
+   flag to hide it behind.  So it stays HERE, on the 6502-ABI path the harness uses, and native
+   callers enter at the _native split below.  ⚠ Every marshal-OUT and every cpu write stays on
+   the native path: the publishes are the mem[] mirror `make determinism` byte-compares, and the
+   multi-tenant lanes' own marshal-INs (hypot_max/hypot_min/bearing) change on up to 38% of
+   round trips and are load-bearing. */
     view_origin_marshal_in();   /* read-only: view_delta reads the camera */
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
+    car_heading_marshal_in();             /* every bearing it emits is measured against it */
+    edge_nearest_marshal_in();            /* it ARMS the high lane and keeps the low one */
+    build_track_geometry_native();
+}
+
+void build_track_geometry_native(void)
+{
     /* the top of the road pass, and the same IN/OUT pair as the two walks below it: whether any
        point reaches a bearing at all depends on the track, so the cells are carried through. */
-    car_heading_marshal_in();             /* every bearing it emits is measured against it */
     hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
-    edge_nearest_marshal_in();            /* it ARMS the high lane and keeps the low one */
     GeoExit ex = build_track_geometry_core(0x06, 0x2E);
     /* live=AXY: A is the horizon half-width, X the walk's last section byte, Y the horizon
        point.  The flags are a byproduct nothing downstream reads. */
@@ -929,9 +946,16 @@ void undraw_plot_lines(void)
 
 void draw_dash_needles(void)
 {
-    model_state_marshal_in();     /* the 16-bit driving-model state vector — READ ONLY here: the
-                                     needles are drawn FROM it, and this shim plots, so it must not
-                                     publish (a line can land inside $62D0..$62EE). */
+/* The marshal-IN below is oracle-only in production and stays on this 6502-ABI path for the
+   harness; native callers enter at the _native split.  Full argument at build_track_geometry. */
+    model_state_marshal_in();     /* READ ONLY here: the needles are drawn FROM the vector */
+    draw_dash_needles_native();
+}
+
+void draw_dash_needles_native(void)
+{
+    /* ⚠ model_state's marshal-IN is READ ONLY here and lives in the shim above; this routine
+       plots, so it must not publish either (a line can land inside $62D0..$62EE). */
     /* $513A — the STEERING-WHEEL needle, the last thing race_main_loop ($17B4) draws.  The prefix
        ($513A/$513D) erases last frame's marks and draws the rev-counter needle: undraw_plot_lines +
        dial_needle_angle (the latter falls through into plot_line_octant).  Both are shared with the
@@ -951,6 +975,10 @@ void draw_dash_needles(void)
        LSR steer_angle_lo: N=0, Z from the shifted value, C = bit 0; V/D/I carry through from the
        shared prefix (identical on both differential sides) and B/bit5 are set in a pushed copy.
        The later plot_line_octant pushes only below this cell, so the residue survives. */
+    /* ⚠⚠ THIS in-marshal STAYS on the native path, and its POSITION is the reason: it sits after
+       the two needle plots because a plotted line can land inside $62A0..$62A5, so what the lanes
+       hold here is not what they held at entry.  Hoisting it into the shim would read the cells a
+       plot too early. */
     car_angle_marshal_in();                       /* consumer: element 2 of the relocated array */
     uint16_t steerAng = car_angle_16[CAR_ANGLE_STEER];
     mem[STACK_PAGE + cpu.S] = (uint8_t)(0x30u                     /* bit5 = 1, B = 1 */
@@ -1408,9 +1436,16 @@ void begin_scrape(void)
 
 void check_crash(void)
 {
+/* The marshal-IN below is oracle-only in production and stays on this 6502-ABI path for the
+   harness; native callers enter at the _native split.  Full argument at build_track_geometry. */
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
-    uint8_t entryA = cpu.A, entryX = cpu.X;
     edge_nearest_marshal_in();            /* the distance it tests to decide the car is off-track */
+    check_crash_native();
+}
+
+void check_crash_native(void)
+{
+    uint8_t entryA = cpu.A, entryX = cpu.X;
     switch (check_crash_core(entryX)) {
     case CRASH_ARM_NONE:
         /* $1122 BCC $1162 — the CMP #2's residue.  edge_nearest_hi is 0 or 1, so A-2 is $FE/$FF
