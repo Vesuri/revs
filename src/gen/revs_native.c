@@ -33,28 +33,6 @@
 #include "../platform/revs_plot.h"    /* REVS_PLOT_*: the direct-to-bitplane run plotter */
 #include "../platform/track.h"        /* TRACK_GEN_ARGS(): the generator's two per-circuit constants */
 
-/* THE ENGINE'S THREE SCREEN WRITE POINTERS ($70/$71, $72/$73, $8E/$8F) live in native uint16_ts
-   rather than mem[] byte lanes.  All three move together because the span rasteriser's
-   SpanPlotter descriptors name their pointer slots and pick one at run time.
-
-   The win is in the REASSEMBLIES, not the steps: every store through one of these used to spell
-   `mem[zp] | (mem[zp+1] << 8)` — two reads, a shift and an or — and span_plot_core does it twice
-   per call, eight times per scan line.
-
-   ⚠ THESE POINTERS CAN WRITE THEMSELVES.  An ascending span walk climbs the page byte through
-   $00 and stores INTO ZERO PAGE, sometimes onto $70/$72; the oracle re-reads the pointer at every
-   dereference and sees its own write.  Hence the byte lanes below and plot_store_resync.  The
-   four span-arm fixtures PLANT this case (one ascending case in twelve starts above its bound),
-   so `make validate FN=draw_span` manufactures the hazard — it is what failed the
-   `mem[arm->addend]` hoist out of span_walk.
-
-   ⚠ mem[] stays the 6502-ABI mirror: shims marshal in on entry, out on exit, so the oracles' mem[]
-   differential still sees every byte.  console_io ($70/$71) and emit_driver_name ($72/$73) are the
-   two shipping transliterations that touch these cells and both are write-only.
-
-   ⚠⚠ $8E/$8F IS DUAL-TENANTED and only the PLOTTER tenant moved — plot_object's shape index and
-   the driving model's signed temporary keep mem[].  The windows never overlap a span walk
-   (symbols.csv $008E); the marshal pair is what keeps that true. */
 /* ⚠ Seed sites ONLY.  draw_road writes the three low bytes and interp_edge the three pages, so
    between them the pointer is half-built and a whole-word store would invent a high byte the 6502
    never wrote — interp_edge's "off the side" early return leaves the stale one standing.
@@ -86,6 +64,28 @@
         name##_v = (uint16_t)(name##_v + (delta));                                         \
         mem[MEM_##name##_hi] = (uint8_t)(name##_v >> 8); } while (0)
 
+/* THE ENGINE'S THREE SCREEN WRITE POINTERS ($70/$71, $72/$73, $8E/$8F) live in native uint16_ts
+   rather than mem[] byte lanes.  All three move together because the span rasteriser's
+   SpanPlotter descriptors name their pointer slots and pick one at run time.
+
+   The win is in the REASSEMBLIES, not the steps: every store through one of these used to spell
+   `mem[zp] | (mem[zp+1] << 8)` — two reads, a shift and an or — and span_plot_core does it twice
+   per call, eight times per scan line.
+
+   ⚠ THESE POINTERS CAN WRITE THEMSELVES.  An ascending span walk climbs the page byte through
+   $00 and stores INTO ZERO PAGE, sometimes onto $70/$72; the oracle re-reads the pointer at every
+   dereference and sees its own write.  Hence the byte lanes below and plot_store_resync.  The
+   four span-arm fixtures PLANT this case (one ascending case in twelve starts above its bound),
+   so `make validate FN=draw_span` manufactures the hazard — it is what failed the
+   `mem[arm->addend]` hoist out of span_walk.
+
+   ⚠ mem[] stays the 6502-ABI mirror: shims marshal in on entry, out on exit, so the oracles' mem[]
+   differential still sees every byte.  console_io ($70/$71) and emit_driver_name ($72/$73) are the
+   two shipping transliterations that touch these cells and both are write-only.
+
+   ⚠⚠ $8E/$8F IS DUAL-TENANTED and only the PLOTTER tenant moved — plot_object's shape index and
+   the driving model's signed temporary keep mem[].  The windows never overlap a span walk
+   (symbols.csv $008E); the marshal pair is what keeps that true. */
 uint16_t plot_ptr_v;     /* $70/$71 — THE screen write pointer every plotter stores through */
 uint16_t plot_ptr2_v;    /* $72/$73 — the second, one page above: cells 32-39 of a scan line */
 uint16_t plot_ptr3_v;    /* $8E/$8F — the third, road_span_plot_2's buffer */
@@ -343,21 +343,6 @@ void irq1v_band_schedule(void)
     irq_band_state++;
     irq1v_return();
 }
-
-/* The per-scan-line control tables (symbols.csv carries the derivation).  Addresses rather than
-   mem.h aliases because they are indexed tables.
-
-   Every line is painted as TWO RUNS — the LEFT run in chain A's cells 0-15, the RIGHT in chain
-   B's 16-39 — split by the DASHBOARD, not the road.  That silhouette is fixed furniture, so
-   every table here is static data nothing in the engine writes.  At the bottom line (X=3) the
-   runs are cells 5-6 and 33-34: the gaps between the tyres and the dash.
-
-   ⭐ THE RUNS MIRROR about cell 19.5 and the code lives off it: the left run's start is not
-   tabulated, it is $F1 - MEM_view_run_right_end (5+34 = 6+33 = 39), and the four mask/fill pairs
-   come in the mirrored diagonal — left-START with right-END on the pixel-phase tables,
-   left-END with right-START on the per-line ones.
-   MEM_view_edge_phase ($3050) is the dash edge's sub-byte PIXEL PHASE, 0-6; one value serves
-   both runs because they mirror. */
 
 /* THE ROUTINE'S OWN SELF-MODIFIED CODE (symbols.csv `code` rows).  Each MEM_view_*_site is an
    instruction in the $7B00 overlay that the routine writes and then executes; the two-byte
@@ -1107,6 +1092,21 @@ static void paint_lines_clipped(ViewState* v)
     }
     paint_lines_short(v);
 }
+
+/* The per-scan-line control tables (symbols.csv carries the derivation).  Addresses rather than
+   mem.h aliases because they are indexed tables.
+
+   Every line is painted as TWO RUNS — the LEFT run in chain A's cells 0-15, the RIGHT in chain
+   B's 16-39 — split by the DASHBOARD, not the road.  That silhouette is fixed furniture, so
+   every table here is static data nothing in the engine writes.  At the bottom line (X=3) the
+   runs are cells 5-6 and 33-34: the gaps between the tyres and the dash.
+
+   ⭐ THE RUNS MIRROR about cell 19.5 and the code lives off it: the left run's start is not
+   tabulated, it is $F1 - MEM_view_run_right_end (5+34 = 6+33 = 39), and the four mask/fill pairs
+   come in the mirrored diagonal — left-START with right-END on the pixel-phase tables,
+   left-END with right-START on the per-line ones.
+   MEM_view_edge_phase ($3050) is the dash edge's sub-byte PIXEL PHASE, 0-6; one value serves
+   both runs because they mirror. */
 
 /* $7BE2  view_paint_lines — THE 3D VIEWPORT RASTERISER, ONE SCAN LINE PER CHAIN
 
@@ -3679,7 +3679,7 @@ void view_origin_marshal_out(void)
         check_crash writes — elements 5..7 of the state vector are forced to zero instead of
         being integrated.
 
-   ⭐ ALL FIFTEEN SUB-MODELS NOW HAVE NAMES (2026-08-17, the queue's "eleven of fifteen callees
+   ⭐ ALL FIFTEEN SUB-MODELS HAVE NAMES (the queue's "eleven of fifteen callees
    are still FUN_xxxx"), and read in order the chain is legible: the car's angles, a rotation of
    the world-frame pair 0/1 into the car-frame pair 8/9, the accumulator offset, the grip
    limits, the engine, the two axles' slip sound with two steering rotations between them, the
@@ -4929,7 +4929,7 @@ void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine)
        call, and nothing in this subtree names either cell — but they are $83/$84, and on an
        ASCENDING arm entered ABOVE its bound the walk runs the long way round to it, climbing
        plot_ptr_hi through page $00, and the plotter's own store then lands ON the deltas and
-       moves the DDA under itself.  Tried and rejected 2026-09-02: the hoist fails 3 of 400
+       moves the DDA under itself.  Tried and rejected: the hoist fails 3 of 400
        fixture cases on each of the two `fwd` arms and 0 of 400 on the two `rev` arms, which
        is exactly the "one ascending case in twelve starts above its bound" the fixture plants.
        The re-read is the faithful behaviour, not a missed optimisation.
@@ -10774,7 +10774,7 @@ Adc add_tally_to_lap_total_core(uint8_t column, uint8_t car)
     return hi;
 }
 
-/* THE LATE MISC TREES  (twins #116-#125, user 2026-08-21)
+/* THE LATE MISC TREES  (twins #116-#125)
    Everything still transliterated in the call trees of scale_wing_settings,
    compute_segment_scale, place_player_in_section, process_car_contact and
    tick_wheel_spin.  Every arithmetic LEAF they reach (mul8, abs8, abs16_math,
@@ -11725,7 +11725,7 @@ static inline void object_coord_word_set(unsigned axis, uint16_t value)
     mem[MEM_object_coord_hi + axis] = (uint8_t)(value >> 8);
 }
 #define TRACK_DIR_3       0x5700u   /* ⚠ shares ModifyGameCode's address; read as DATA here */
-/* ⭐ $298D is NOT per-circuit — MEASURED 2026-09-08, and the old comment here said it was.
+/* ⭐ $298D is NOT per-circuit  [MEASURED 2026-09-08].
    No circuit writes either byte at LOAD time (it is absent from the 62-address surface
    `make track-patch` reads out of every ModifyGameCode) and none writes it at RUNTIME
    either (`bbc_refloop_race --watch=298d` / `--watch=298e`, frames 40-100, all four
@@ -11737,8 +11737,6 @@ static inline void object_coord_word_set(unsigned axis, uint16_t value)
    reads its inputs back out of these cells, so they are an output of the twin, not scratch.
    ($84 is shared_temp_84; $86-$88 are point_delta_sign's three cells under a different tenant;
    $0C, $85 and $87 have no name yet — queued in docs/rename.md.) */
-/* PLACE_CAR_SOI / PLACE_CAR_ACROSS retired 2026-09-08 — both cells have symbols.csv rows
-   (and therefore mem.h names) now: car_section_dir_index and shared_temp_85. */
 #define PLACE_CAR_DIR     MEM_point_delta_sign   /* the three direction bytes at +0/+1/+2 */
 
 /* signextend8( |dir| * factor >> 8 ) with the sign of dir — the signed contribution of one axis,
@@ -12123,7 +12121,7 @@ void clear_race_clock_core(uint8_t x)
 }
 
 
-/* TWINS #134-#135 — the track-position STEPPERS (user, 2026-08-26, Stage 2).
+/* TWINS #134-#135 — the track-position STEPPERS.
 
    Each moves car X one offset-unit along (advance) or back (retreat) the track.
    The track is a ring of segments; a car sits at car_segment[X] (an index in
