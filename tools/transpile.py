@@ -1848,7 +1848,7 @@ SYMBOL_NOTES = {}
 # generated mem.h) so the transliterated C reads as named state rather than
 # raw hex.  Indexed / indirect / 16-bit-pointer accesses keep raw hex.
 VAR_NAMES = {}
-TBL_NAMES = {}   # addr -> name for symbols.csv `table` rows (MEM_ offsets, no aliases)
+TBL_NAMES = {}   # addr -> name for symbols.csv `table`/`data`/`smc` rows (MEM_ offsets, no aliases)
 
 def sanitize_note(note):
     """Make a symbols.csv note safe to paste into a C comment.
@@ -1886,7 +1886,10 @@ def load_symbols(path):
         # an array is not an lvalue, and a twin addresses it as mem[MEM_<name> + index].
         # Without these every hand-written twin invents its own #define for an address
         # symbols.csv already names — 160 of them did, several under a DIFFERENT name.
-        if len(parts) >= 4 and parts[2].strip() == 'table' and parts[3].strip() == '0':
+        # `smc` and `data` rows join them: an SMC patch site is a memory location a twin
+        # POKES (mem[MEM_smc_x + 1] = operand), so it needs a name for exactly the same
+        # reason a table base does.
+        if len(parts) >= 4 and parts[2].strip() in ('table', 'data', 'smc') and parts[3].strip() == '0':
             TBL_NAMES[addr_i] = name
     return sym
 
@@ -1957,7 +1960,7 @@ def write_mem_header(path):
     tables = sorted(TBL_NAMES.items())
     if tables:
         twidth = max(len(n) for n in TBL_NAMES.values())
-        lines += ['', '// ---- named TABLE bases (symbols.csv `table` rows) ----', '']
+        lines += ['', '// ---- named TABLE bases and SMC patch sites (symbols.csv `table`/`data`/`smc` rows) ----', '']
         for addr, name in tables:
             emit(addr, name, twidth)
     lines += [
