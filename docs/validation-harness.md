@@ -141,7 +141,7 @@ builds per invocation.  That is deliberate: this Makefile tracks no build flag, 
 would eventually compare a DRIVE reference against a stale default binary, which is the failure
 this project has already hit twice.
 
-### ⭐⭐ …and FOUR in all, because a SESSION KIND is a trajectory too
+### ⭐⭐ …and FIVE in all, because a SESSION KIND is a trajectory too — and so is the WHEEL
 
 `determinism` and `determinism-drive` are both a **practice** session, and practice is only one of
 the engine's three session kinds.  `session_is_race` is `$28` in practice/qualifying and `$80` in
@@ -196,6 +196,40 @@ car leaves the pack within seconds, so the same spin defect PASSES there at fram
 player's own lap count is still **0 at frame 40000** — which is also why the chequered-flag arm is
 out of reach: it needs laps-left to go NEGATIVE, i.e. a player-completed five-lap race, and no
 scripted key set drives one.  That arm is a **declared hole**, not a covered one.
+
+### ⭐⭐ …and the FIFTH: `determinism-steer`, because all four above drive in a STRAIGHT LINE
+
+`determinism` and `determinism-crash` never work the steering path, and `determinism-drive` holds
+only the *throttle*.  So at every one of their dump frames `steer_angle` (`$62A2/$62A5`) and the
+car's lateral velocity (`$38/$39`) read `00/00` — and a value that is zero on both sides of a
+change cannot fail a byte differential.  That left the whole steering chain, and more sharply the
+`race_main_loop` phase call sites whose SHIM publishes a relocated wide value back into those
+cells, gated by nothing at all.
+
+```
+make determinism-steer-record / make determinism-steer   # DET_STEER_FRAME=300
+```
+
+It is the `determinism-drive` build (`STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`) with the run-time knob
+`REVS_HOLD_STEER=l` — the autorun holds `KEY_L` beside the throttle — so it adds a trajectory
+without adding a build configuration.  MEASURED at frame 300: `steer_angle` = `$0F81` and lateral
+= `$0015`, where the identical build without the steering key reads `$0000` and `$0000`.
+
+**Sabotage record (2026-09-10) — and the point of the table is the first three COLUMNS agreeing:**
+
+| Defect | `determinism` | `-drive` | `-steer` |
+|---|---|---|---|
+| phase 3 calls `read_driving_controls_core` instead of the shim | PASS | PASS | **FAIL** |
+| phase 4's `lateral_speed_entry_marshal_out()` deleted | PASS | PASS | **FAIL** |
+| `read_driving_controls`' `car_angle_marshal_out()` deleted | PASS | PASS | **FAIL** |
+| `steer_keys` forced to `$01` at `$1579` | FAIL | FAIL | **FAIL** |
+
+The first three are the blind spot stated as a measurement rather than an argument: each one
+discards a frame's steering and **is invisible to every gate that existed before this one**.  The
+fourth is the control — a defect on the shared input path, which every trajectory sees — and it is
+what shows the new target is not simply failing everything handed to it.
+
+⚠ Like the other four, its reference lives in `tmp/` and a fresh clone must record it first.
 
 ### ⚠⚠ A defect must be reachable in VALUE SPACE, not just in control flow
 

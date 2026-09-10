@@ -101,7 +101,7 @@ endif
 
 # `make RACEPROPER=1` — the only build that reaches the RACE ITSELF (session_is_race = $80).
 # COMPETITION above stops in qualifying, so every `session_is_race & $80` arm in the engine —
-# reset_driving_variables' race arm included — is unexecuted in all three determinism
+# reset_driving_variables' race arm included — is unexecuted in every other determinism
 # trajectories.  src/platform/autorun.cpp has the menu chain and why one qualifying run is
 # enough.  Same `make clean` caveat.
 ifdef RACEPROPER
@@ -126,6 +126,7 @@ endif
 # one run.  ⚠ Read it as TWO runs with opposite keys and check the sign bits differ: one run
 # showing a moving wheel cannot tell steering from the slip-cancelling self-drive demand.
 # On the Amiga the same knob is COMPILE-time (`amiga/make HOLD_STEER=l`) — no environment there.
+# ⭐⭐ `make determinism-steer` is the GATE built on it — see its own block below.
 
 # ⭐ `make STACK_TRAP=1` — arm the 6502 stack-watermark backtrace (host only; cpu.c has the
 # mechanism).  Then run with a hex threshold: `REVS_STACK_TRAP=f0 ./build/revs`, and the first
@@ -226,7 +227,8 @@ TARGET   := build/revs
         trackmenu trackmenu-fixture titlescreen \
         sound sound-fixture sound-fixture-race determinism determinism-record fbwrites \
         determinism-drive determinism-drive-record \
-        determinism-crash determinism-crash-record
+        determinism-crash determinism-crash-record \
+        determinism-steer determinism-steer-record
 
 all: $(TARGET)
 
@@ -417,6 +419,56 @@ determinism-race:
 	   echo "determinism-race: 64K byte-identical (stack scratch aside) at frame $(DET_RACE_FRAME), THE RACE PROPER (session_is_race = \$$80) — PASS"; \
 	 else \
 	   echo "determinism-race: FAIL — the race trajectory diverged"; exit 1; \
+	 fi
+
+# ⭐⭐ …AND A FIFTH TRAJECTORY, WITH THE WHEEL TURNED.  The four above all drive in a STRAIGHT
+# LINE: `determinism` and `-crash` never touch the throttle path's steering at all, and `-drive`
+# holds only the throttle, so steer_angle ($62A2/$62A5) and the car's lateral velocity ($38/$39)
+# read 00/00 at every one of their dump frames.  That left the whole steering chain — and, more
+# sharply, the four race_main_loop phase call sites whose SHIM publishes a relocated wide value
+# back into those cells — covered by nothing: calling the core instead of the shim at phase 3 or
+# phase 4 discards a frame's steering and still passes validate, determinism, -drive and -crash.
+# MEASURED at DET_STEER_FRAME with REVS_HOLD_STEER=l: steer_angle = $0F81 and lateral = $0015,
+# where the same build without the steering key reads $0000 and $0000 — so this run is the one
+# that puts a nonzero value in both.
+#
+# Same build as determinism-drive; the STEERING KEY is a run-time knob (src/platform/autorun.cpp
+# holds KEY_L beside the throttle), so no third build configuration is involved.
+DET_STEER_REF   := tmp/determinism/ref_steer.mem
+DET_STEER_RUN   := tmp/determinism/steer
+DET_STEER_FRAME ?= 300
+
+determinism-steer-record:
+	@$(MAKE) --no-print-directory clean >/dev/null
+	@$(MAKE) --no-print-directory STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 $(TARGET) >/dev/null
+	@mkdir -p tmp/determinism
+	@rm -f $(DET_STEER_RUN)*
+	REVS_FIXED_RNG=1 REVS_HOLD_STEER=l REVS_SCREEN_DUMP=$(DET_STEER_RUN) \
+	  REVS_SCREEN_FRAME=$(DET_STEER_FRAME) REVS_MEM_DUMP=1 REVS_QUIT_AFTER_DUMP=1 \
+	  ./$(TARGET) >/dev/null 2>&1
+	@cp $(DET_STEER_RUN).mem.$(DET_STEER_FRAME) $(DET_STEER_REF)
+	@$(MAKE) --no-print-directory clean >/dev/null
+	@$(MAKE) --no-print-directory $(TARGET) >/dev/null
+	@echo "determinism-steer: recorded frame $(DET_STEER_FRAME) -> $(DET_STEER_REF)"
+
+determinism-steer:
+	@test -f $(DET_STEER_REF) || \
+	  { echo "no reference — run 'make determinism-steer-record' first"; exit 1; }
+	@$(MAKE) --no-print-directory clean >/dev/null
+	@$(MAKE) --no-print-directory STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 $(TARGET) >/dev/null
+	@mkdir -p tmp/determinism
+	@rm -f $(DET_STEER_RUN)*
+	REVS_FIXED_RNG=1 REVS_HOLD_STEER=l REVS_SCREEN_DUMP=$(DET_STEER_RUN) \
+	  REVS_SCREEN_FRAME=$(DET_STEER_FRAME) REVS_MEM_DUMP=1 REVS_QUIT_AFTER_DUMP=1 \
+	  ./$(TARGET) >/dev/null 2>&1
+	@python3 tools/det_compare.py $(DET_STEER_REF) $(DET_STEER_RUN).mem.$(DET_STEER_FRAME) \
+	  && r=PASS || r=FAIL; \
+	 $(MAKE) --no-print-directory clean >/dev/null; \
+	 $(MAKE) --no-print-directory $(TARGET) >/dev/null; \
+	 if [ "$$r" = PASS ]; then \
+	   echo "determinism-steer: 64K byte-identical (stack scratch aside) at frame $(DET_STEER_FRAME), wheel TURNED — PASS"; \
+	 else \
+	   echo "determinism-steer: FAIL — the steering trajectory diverged"; exit 1; \
 	 fi
 
 # Native-twin validation harness.  Links the full object graph minus main.o (for the
