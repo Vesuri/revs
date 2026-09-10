@@ -149,12 +149,23 @@ void road_edge_walk(void)
 
 /* $2490 — the walk resumed from an expansion circuit's hook.  Same marshalling as the walk
    itself; the section byte arrives in X and the exit X is the walk's own. */
+/* The marshal-IN below is oracle-only in production and stays on this 6502-ABI path for the
+   harness; native callers enter at the _native split.  Full argument at build_track_geometry. */
 void road_edge_walk_resume(void)
 {
     view_origin_marshal_in();
     car_heading_marshal_in();
-    hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     edge_nearest_marshal_in();
+    road_edge_walk_resume_native();
+}
+
+void road_edge_walk_resume_native(void)
+{
+    /* ⚠ hypot_max/hypot_min/bearing are the MULTI-TENANT lanes -- the 6502 zero page shares
+       $7A/$7B and $8A/$8B between native twins, and they change on ~38% of round trips -- so
+       their INs are load-bearing and stay on the native path.  cpu.X is a genuine argument
+       here, not marshalling: the walk resumes at the point index the caller stopped on. */
+    hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     cpu.X = road_edge_walk_resume_core(cpu.X, (uint8_t)MEM_section_midpoint_triple, 0x12, 0x14);
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
     edge_nearest_marshal_out();
@@ -232,10 +243,17 @@ void draw_road(void)
    ⚠ The OUTPUT marshals stay in this body unconditionally: mem[] is still the faithful mirror
    the whole-corpus differential compares, so every relocated value this pass writes is published
    before the phase returns. */
+/* The marshal-IN below is oracle-only in production and stays on this 6502-ABI path for the
+   harness; native callers enter at the _native split.  Full argument at build_track_geometry. */
 void apply_driving_model_frame(void)
 {
     view_origin_marshal_in();
     car_heading_marshal_in();             /* it reads the heading in, as the car's position... */
+    apply_driving_model_frame_native();
+}
+
+void apply_driving_model_frame_native(void)
+{
     CameraExit ce = apply_driving_model_core(car_heading_v, cpu.C);
     car_angle_marshal_out();              /* compute_car_angles_core rebuilt the sin/cos pair */
     car_heading_marshal_out();            /* ...and its tail calls integrate_car_position, which
@@ -1147,6 +1165,8 @@ uint8_t seed_car_track_position_with_carry(uint8_t carry)
     return cpu.X;
 }
 
+/* The marshal-IN below is oracle-only in production and stays on this 6502-ABI path for the
+   harness; native callers enter at the _native split.  Full argument at build_track_geometry. */
 void mirrors_update(void)
 {
     /* $7B00 — the once-per-frame wing-mirror update (race_main_loop body, $1739).  Result-only:
@@ -1155,9 +1175,14 @@ void mirrors_update(void)
        mirror_draw_car is now twin #165c and is called core-to-core.  All of
        shared_temp_84 / span_line_cursor / shared_temp_76 / math_lo are read LIVE from mem[] in the
        loop so the skip path (which writes none of them) stays byte-exact. */
+    car_heading_marshal_in();
+    mirrors_update_native();
+}
+
+void mirrors_update_native(void)
+{
     uint8_t slot = mem[MEM_car_order + car_ahead];          /* the car ahead's object slot */
     MirrorSetup s;
-    car_heading_marshal_in();
     mirrors_update_setup_core(mem[MEM_car_flags_shape + slot],
                               mem[MEM_object_width + slot],
                               mem[MEM_object_bearing_hi + slot],

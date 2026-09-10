@@ -1800,7 +1800,7 @@ void race_main_loop_core(RestartDepth depth)
                is invisible to validate, determinism, -drive and -crash alike.  Do not touch
                these two lines without running that target (docs/validation-harness.md). */
             PROBE_PHASE(3);  PROBE_SHAPE_PHASE(3);  read_driving_controls_frame();
-            PROBE_PHASE(4);  PROBE_SHAPE_PHASE(4);  apply_driving_model_frame();
+            PROBE_PHASE(4);  PROBE_SHAPE_PHASE(4);  apply_driving_model_frame_native();
             /* ⚠ the SHIM, not the core: this driver is the one caller of these two that is not
                a transliterated parent, and the shim is where the relocated wide values (hypot_max,
                bearing) are marshalled back into mem[$7A/$7B] and mem[$8A/$8B].  Calling the core
@@ -1842,10 +1842,10 @@ void race_main_loop_core(RestartDepth depth)
             PROBE_PHASE(16); PROBE_SHAPE_PHASE(16); draw_corner_markers();
             PROBE_PHASE(17); PROBE_SHAPE_PHASE(17); move_and_draw_cars();
             PROBE_PHASE(18); PROBE_SHAPE_PHASE(18); fill_dash_edge_columns();
-            PROBE_PHASE(19); PROBE_SHAPE_PHASE(19); mirrors_update();
+            PROBE_PHASE(19); PROBE_SHAPE_PHASE(19); mirrors_update_native();
             PROBE_PHASE(20); PROBE_SHAPE_PHASE(20); engine_sound_update();
             PROBE_PHASE(21); PROBE_SHAPE_PHASE(21); update_horizon_band();
-            PROBE_PHASE(22); PROBE_SHAPE_PHASE(22); process_car_contact();
+            PROBE_PHASE(22); PROBE_SHAPE_PHASE(22); process_car_contact_native();
             PROBE_PHASE(23); PROBE_SHAPE_PHASE(23); check_crash_native();
             PROBE_SHAPE_DASH_BEFORE();
             PROBE_PHASE(24); PROBE_SHAPE_PHASE(24); view_paint_lines();
@@ -11890,9 +11890,23 @@ void spin_car_out(void)
    The PHP/PLP saving the heading-difference sign across the speed logic becomes one
    local carried into abs16_math's N.
    --------------------------------------------------------------------------- */
+/* The two marshal-INs below are oracle-only in production and stay on this 6502-ABI path for
+   the harness; native callers enter at the _native split.  Full argument at
+   build_track_geometry in revs_native_seam.c.
+   ⚠ model_state's IN was mid-body, immediately before begin_scrape_core, and hoisting it here
+   is only safe because nothing on the path between writes $62D0/$62E0: the only calls are
+   spin_car_out_core -> retire_car_core (car_across_drift / car_race_flags / car_flags_shape /
+   car_lap_start_hi) and the pure revs_mulu16.  It reads no mem[] byte, so running it ahead of
+   the contact_pending early-out costs the harness nothing either. */
 void process_car_contact(void)
 {
-    car_heading_marshal_in();   /* 6502-ABI entry: this routine has no separate shim */
+    car_heading_marshal_in();
+    model_state_marshal_in();
+    process_car_contact_native();
+}
+
+void process_car_contact_native(void)
+{
     if (contact_pending == 0) return;                        /* no contact: $1C1B is a bare RTS */
     contact_pending = 0x00;
     shared_temp_76 = (uint8_t)((shared_temp_76 >> 1) | 0x80);   /* SEC; ROR $76 */
@@ -11949,7 +11963,6 @@ void process_car_contact(void)
 
     /* The shared crash tail: heading_step_hi = the kick, both axles slipping, the impact sound.
        A tail call, so begin_scrape's exit ABI is ours. */
-    model_state_marshal_in();
     begin_scrape_core(yawKick, x);
     model_state_marshal_out();
     sound_queue_exit_abi(SOUND_SLOT_IMPACT);
@@ -16903,8 +16916,9 @@ void hook_edge_walk_limit(void)
 
     /* $56C5 — back into the engine's own walk.  ⭐ The SHIM, not the core: it marshals the
        relocated wide globals the walk works in (the sanctioned exception to the call-the-core
-       rule — see docs/faithfulness-seam.md). */
-    road_edge_walk_resume();
+       rule — see docs/faithfulness-seam.md).  The _native split: the multi-tenant lanes still
+       marshal in, the wipe-only ones no longer do. */
+    road_edge_walk_resume_native();
 }
 
 /* $55BD — STEP THE WALK BACK, UNLESS A SECTION IS ALREADY QUEUED (Brands Hatch, Donington,
