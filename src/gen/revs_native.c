@@ -7045,8 +7045,12 @@ SlipRef derive_slip_reference_core(uint8_t axle)
     uint8_t element = (uint8_t)(axle + 2u);
     mem[SLIP_OUT_INDEX] = element;
 
+    /* pedal_mode is read once: its only writer is read_driving_controls ($1681), which nothing
+       on this path calls. */
+    int onThrottle = (pedal_mode == 1u);
+
     uint8_t ref;
-    if (pedal_mode == 1u) {                                     /* $4B8E-$4B90 DEY/BEQ */
+    if (onThrottle) {                                           /* $4B8E-$4B90 DEY/BEQ */
         /* ON THE THROTTLE — $4BAF-$4BBA. */
         if (axle != 1u) { SlipRef r = { element, 1 }; return r; } /* $4BB1 → $4BCD: declined */
         mem[SLIP_SIGN] = (uint8_t)(gear_index - 1u);             /* $4BB3-$4BB6 */
@@ -7059,8 +7063,7 @@ SlipRef derive_slip_reference_core(uint8_t axle)
         if (axle != 1u) {                                        /* $4BA2-$4BA4 CPX #1/BEQ */
             /* $4BA6-$4BAB — three-quarters of the limit: (g/2 + g)/2, each add truncated to 8
                bits exactly as the 6502's LSR/ADC/LSR does (the ADC carry-out is dropped by LSR). */
-            uint8_t g = mem[MEM_grip_limit + axle];
-            ref = (uint8_t)(((uint8_t)((g >> 1) + g)) >> 1);
+            ref = (uint8_t)(((uint8_t)((ref >> 1) + ref)) >> 1);
         }
     }
 
@@ -7068,7 +7071,7 @@ SlipRef derive_slip_reference_core(uint8_t axle)
        the throttle it is halved.  hi = product high, math_lo = product low; declined = 0 (CLC). */
     math_hi = ref;                                              /* $4BBC */
     uint16_t product = (uint16_t)revs_mulu16(ref, pedal_amount);  /* $4BBE-$4BC0 */
-    if (pedal_mode == 1u) product >>= 1;                         /* $4BC3-$4BC9 throttle */
+    if (onThrottle) product >>= 1;                               /* $4BC3-$4BC9 throttle */
     math_lo = (uint8_t)product;
     SlipRef r = { (uint8_t)(product >> 8), 0 };                  /* $4BCB CLC — accepted */
     return r;
@@ -7160,19 +7163,21 @@ static void clamp_slip_to_grip_core(uint8_t axle)
     mem[SLIP_SIGN] = (uint8_t)(ms_hi(MS_LATERAL_SPEED) ^ 0x80u);        /* $4B04-$4B09 */
     math_lo = 0x00u;                                            /* $4B0B-$4B0D */
     mem[SLIP_OUT_INDEX] = axle;                                 /* $4B12 */
-    store_slip_clamped_core(mem[MEM_grip_limit_alt + axle]);    /* $4B0F/$4B14 */
+    /* One read: update_grip_limits is the only writer of this cell and nothing below reaches it. */
+    uint8_t grip = mem[MEM_grip_limit_alt + axle];
+    store_slip_clamped_core(grip);                              /* $4B0F/$4B14 */
 
     SlipRef sr = derive_slip_reference_core(axle);              /* $4B17 */
     if (sr.declined) return;                                    /* $4B1A BCS — it declined */
 
-    if (sr.hi < mem[MEM_grip_limit_alt + axle]) {              /* $4B1C CMP / $4B1F BCC → $4B3E */
+    if (sr.hi < grip) {                                         /* $4B1C CMP / $4B1F BCC → $4B3E */
         store_slip_clamped_off_throttle_core(sr.hi);
         return;
     }
 
     /* $4B21-$4B3C — over the second threshold. */
     math_lo = 0x00u;
-    store_slip_clamped_off_throttle_core(mem[MEM_grip_limit_alt + axle]);  /* $4B24/$4B28 */
+    store_slip_clamped_off_throttle_core(grip);                 /* $4B24/$4B28 */
     if (pedal_mode != 1u) return;                              /* $4B2B-$4B2E BNE — off throttle */
     /* $4B30-$4B32 — ⭐ DEAD AS A DECISION, and worth knowing.  Reaching here needs
        derive_slip_reference to have ACCEPTED (declined 0) with pedal_mode == 1, and its throttle
@@ -8987,11 +8992,12 @@ static SlotExit plot_shape_edges_core(void)
         shared_temp_7e = mem[MEM_shape_vertex + x];
         x = mem[MEM_shape_edge_x_1 + y];
         mem[OBJ_EDGE_X] = mem[MEM_shape_vertex + x];
-        mem[OBJ_EDGE_STYLE] = mem[MEM_shape_edge_style + y];
+        uint8_t edgeStyle = mem[MEM_shape_edge_style + y];
+        mem[OBJ_EDGE_STYLE] = edgeStyle;
         span_saved_index = y;
         /* mode 1 — open, with the edge's own style.  plot_view_src_line is cpu-free; take its
            A/X/Y/N/Z into our locals (its V/C are dropped, exactly as its shim leaves cpu.V/C). */
-        { SlotExit e = plot_view_src_line_core(0x01u, mem[OBJ_EDGE_STYLE]);
+        { SlotExit e = plot_view_src_line_core(0x01u, edgeStyle);
           a = e.a; x = e.x; y = e.y; n = e.n; z = e.z; }
 
         for (;;) {
@@ -9008,14 +9014,16 @@ static SlotExit plot_shape_edges_core(void)
                 span_saved_index = y;
                 x = mem[MEM_shape_edge_x_0 + y];
                 mem[OBJ_EDGE_X] = mem[MEM_shape_vertex + x];
-                mem[OBJ_EDGE_STYLE] = mem[MEM_shape_edge_x_1 + y];
-                { SlotExit e = plot_view_src_line_core(0x00u, mem[OBJ_EDGE_STYLE]);
+                uint8_t closeStyle = mem[MEM_shape_edge_x_1 + y];
+                mem[OBJ_EDGE_STYLE] = closeStyle;
+                { SlotExit e = plot_view_src_line_core(0x00u, closeStyle);
                   a = e.a; x = e.x; y = e.y; n = e.n; z = e.z; }
                 y = span_saved_index;
                 x = mem[MEM_shape_edge_line_0 + y];
                 mem[OBJ_EDGE_X] = mem[MEM_shape_vertex + x];
-                mem[OBJ_EDGE_STYLE] = mem[MEM_shape_edge_style + y];
-                { SlotExit e = plot_view_src_line_core(0x00u, mem[OBJ_EDGE_STYLE]);
+                uint8_t nextStyle = mem[MEM_shape_edge_style + y];
+                mem[OBJ_EDGE_STYLE] = nextStyle;
+                { SlotExit e = plot_view_src_line_core(0x00u, nextStyle);
                   a = e.a; x = e.x; y = e.y; n = e.n; z = e.z; }
                 continue;
             }
@@ -9468,8 +9476,8 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
     }
     x = edgeCol;                                    /* the fall-through CPX also left X = edgeCol */
     blockStart = span_top_line;
-    if (blockStart < mem[MEM_dash_block_starts + edgeCol])              /* clamp to the block top */
-        blockStart = mem[MEM_dash_block_starts + edgeCol];
+    { uint8_t blockTop = mem[MEM_dash_block_starts + edgeCol];      /* clamp to the block top */
+      if (blockStart < blockTop) blockStart = blockTop; }
     mem[EDGE_BLOCK_START] = blockStart;
 
     /* $1C9E-$1CA9 — a run with no height. */
@@ -9484,10 +9492,11 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
 
     /* $1CAA-$1CC2 — the style's bit 4 re-picks the colour, but only on a closing pass whose
        parity disagrees with the screen half.  ⚠ mode 0 (Y == 0) is kept out by the TYA/BEQ. */
-    if ((mem[OBJ_EDGE_STYLE] & 0x10u) != 0 &&
-        mode != 0 &&
-        ((mode ^ mem[PVS_HALF]) & 0x01u) != 0)
-        shared_temp_76 = mem[MEM_colour_pattern_tbl + (mem[OBJ_EDGE_STYLE] & 0x03u)];
+    { uint8_t style = mem[OBJ_EDGE_STYLE];
+      if ((style & 0x10u) != 0 &&
+          mode != 0 &&
+          ((mode ^ mem[PVS_HALF]) & 0x01u) != 0)
+          shared_temp_76 = mem[MEM_colour_pattern_tbl + (style & 0x03u)]; }
 
     /* $1CC3-$1CD0 — the PIXEL is the low two bits of the endpoint's x, and the edge colour is
        cut down to that pixel's own bits. */
