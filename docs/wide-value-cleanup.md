@@ -2356,3 +2356,73 @@ cleanup.**  The `_out` publishes are the `mem[]` mirror that `make determinism` 
 all 64 KB; removing them means moving whole producer/consumer chains core-to-core and re-recording
 every determinism baseline, which trades away the port's own whole-corpus gate over those cells.
 That is the call already written at the `bearing` block and it is a user decision, not a refactor.
+
+## ⭐ DROPPING THE IN-MARSHALS FROM THE PRODUCTION PATH — WHAT IT ACTUALLY REMOVED (2026-09-10)
+
+The section above measured that the marshalling is **not** oracle-only, and named the two things
+holding it in place: genuine multi-tenancy of the 6502 zero page between twins, and
+`reset_driving_variables`' two bulk wipes, which address memory as memory and so zero byte lanes
+the native arrays cannot see. The wipes were fixed first (they now zero the relocated copies too,
+writing no `mem[]` byte), which made the arrays — not the lanes — authoritative across a session
+reset. That is the prerequisite; this section is what it bought.
+
+**The shape of the change.** `build/validate_native` links the *same objects* as `build/revs`
+(`VALIDATE_OBJS` in the Makefile), so there is no compile-time flag that can hide oracle-only code
+from production. Each affected routine therefore became a **pair**: `void <name>(void)`, the
+6502-ABI path `make validate` enters, which still marshals every lane in; and
+`void <name>_native(void)`, what native callers use, which skips the lanes the wipes are the only
+writer of. ⚠ Every marshal-**OUT** and every `cpu` write stays on the native side — the publishes
+are the `mem[]` mirror `make determinism` byte-compares, so all 64 KB of it is untouched.
+
+Three of them keep an IN on the native path for a stated reason:
+
+| Routine | What stays native, and why |
+|---|---|
+| `build_track_geometry`, `road_edge_walk_resume`, `build_player_car` | `hypot_max` / `hypot_min` / `bearing` — genuinely multi-tenant zero page ($7A/$7B, $8A/$8B), changing on ~38% of round trips |
+| `draw_dash_needles` | `car_angle`, and its **POSITION** is the reason: it sits after the two needle plots because a plotted line can land inside $62A0..$62A5 |
+| `race_main_loop` | all five — this is the genuine session-entry **import** of the `mem[]` state the front end built, not oracle-only. Once per race |
+
+⭐ **The biggest single win was not a shim at all: it was two INs living inside `_core` bodies.**
+`stage_nearby_car_at_core` ran `view_origin_marshal_in` **twice per call** and
+`move_and_draw_cars_core` calls it seven times a frame, so the camera was rebuilt from its byte
+lanes fourteen times a frame; `draw_car_field_core` carried `car_heading_marshal_in` likewise.
+Because they were in the cores rather than the shims, every native caller paid them.
+**A marshal belongs on the shim; an IN inside a `_core` is a bug in the seam, and a census that
+only looks at `void f(void)` shims cannot see one** — those cores take arguments, so they never
+appear as a "shim called from native code".
+
+### Measured, with a re-verified counter
+
+Same instrument as the audit above, reduced to a pure per-lane call counter, run on the same two
+scenarios. ⚠ Sabotage-verified before the numbers were believed: one deliberate extra
+`edge_nearest_marshal_in()` at phase 6 moved that lane 1 → 296 (exactly one per frame) and no
+other. ⚠ And note what else that sabotage showed — the injected read **also nudged the
+trajectory**, because re-importing a lane over an authoritative array is not a no-op. Adding an
+in-marshal is a behaviour change; only removing one is covered by the measurement.
+
+`marshal_in` calls, before → after:
+
+| Lane | elems | race proper (13000 f) | drive (300 f) |
+|---|---|---|---|
+| `view_origin`   | 9  | 142258 → **12737** (-91%) | 888 → **296** |
+| `model_state`   | 15 | 51896 → **12737** (-75%)  | 1180 → **296** |
+| `car_heading`   | 1  | 77840 → **12737** (-84%)  | 1476 → **296** |
+| `edge_nearest`  | 1  | 38921 → **1**             | 886 → **1** |
+| `hypot_max`     | 1  | 38472 → 25473 (-34%)      | 592 → 591 |
+| `car_angle`     | 3  | 25947 → 25473             | 590 → 591 |
+| **total calls** |    | **375334 → 89158 (-76%)** | **5612 → 2071 (-63%)** |
+
+In byte traffic that is ~3.74 M `mem[]` reads removed over the race and ~41 k over the drive run —
+**~140 byte reads per frame, plus the shift/or that reassembles each value.**
+
+⚠ **Keep this in proportion.** 140 reads a frame is real and it is permanent, but it is small
+against a frame that is still ~4.5 FPS, and it is entirely consistent with this campaign's
+standing headline result: the byte lanes are **not** where the frame goes. Quote this as removed
+traffic, never as a framerate claim, and do not expect `fps_series.gdb` to resolve it.
+
+**Gates.** Every site: `make validate FN=<name>` 0 mismatch, plus all five determinism targets
+(`determinism`, `-drive`, `-crash`, `-steer`, `-race`). ⚠ `place_player_in_section` and
+`road_edge_walk_resume` additionally required **`make viewdiff`**, because both sit on an
+expansion-circuit hook path and `region_23d8` — `road_edge_walk`'s transliterated body, re-entered
+at $2490 by every expansion circuit — is the one shipping body that writes `edge_nearest`'s lanes
+behind the array's back. No determinism run reaches it: they all race Silverstone.
