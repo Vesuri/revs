@@ -4172,12 +4172,6 @@ void div16by8(void)
    subtract, the same normalise-and-divide, the same pair of entry points — and because
    between them they call exactly ONE function, div16by8, which is already real C (twin #13).
 
-   ⭐ THAT CALLEE SET IS WHY THESE ARE WORTH TWINNING AT ALL.  Twins #4-#12 were DRIVERS: short
-   bodies over long transliterated subtrees, and deleting their interpreter collected nothing
-   because the interpreter was never where their time was (docs/faithfulness-seam.md §8).
-   These two have no transliterated subtree left underneath them, so every instruction the
-   interpreter was running for them is an instruction this file now owns.
-
    ⭐ TWO ENTRY POINTS EACH, AND THE SECOND ONE IS AN ORIGIN.  $2145 and $2285 are two bytes
    long — `LDY #0` — and fall into $2147 / $2287, which subtract view_origin[Y].  Y is a byte
    offset into a STRIDE-SIX array of three-component positions, so Y = 0 is the camera and
@@ -4190,23 +4184,20 @@ void div16by8(void)
    high bytes at $83-$85, the RAW signed high bytes at $86-$88, all indexed by component 0..2.
    bearing_to_section fills components 0 and 2 — the ground plane, whose ratio is the bearing —
    and project_point fills component 1, the height.  Those are point_delta_lo / _hi / _sign
-   now; before this twin they were nine bare zero-page addresses, one of which ($0088) carried
-   a name belonging to an unrelated owner.
+   now.
 
-   ⚠ THE ARCTAN SCALE IS THE SAME IN BOTH ARMS, and symbols.csv used to say it was not.  Both
-   have exactly three LSR/ROR pairs, so both scale the table byte by 32 and 45 degrees is
-   $1FE0 either way.  What differs is the octant: the quadrant base, and which way the negate
-   goes.  Counted out of the listing — the prose had been read many times and was still wrong.
+   ⚠ THE ARCTAN SCALE IS THE SAME IN BOTH ARMS.  Both have exactly three LSR/ROR pairs, so both
+   scale the table byte by 32 and 45 degrees is $1FE0 either way.  What differs is the octant:
+   the quadrant base, and which way the negate goes.
 
    ⚠ DECIMAL MODE REACHES EVERY ONE OF THESE SUBTRACTS, so the abs, the negate and both
    closing adjustments go through the 6502's own ADC/SBC.  The fixtures randomise D for the
    same reason twin #13's does, and that is also where the exit V comes from.
 
-   ⭐ WHAT THIS UNLOCKS AND DELIBERATELY DOES NOT TAKE.  div16by8's header records that its
-   exit V is dead at all three of its call sites; those three sites are now both in this file,
-   so the DIVU.W replacement it describes is provably legal.  It is NOT taken here — it is a
-   separate and separately-measurable change, and these fixtures still compare V, so taking it
-   means relaxing them in the same commit. */
+   ⭐ OPEN: div16by8's exit V is dead at all three of its call sites, all now in this file, so
+   the DIVU.W replacement its header describes is provably legal.  Not taken here — it is a
+   separately measurable change, and these fixtures still compare V, so it means relaxing them
+   in the same commit. */
 
 /* reciprocal_table indexed by a MANTISSA: project_point normalises the distance until bit 7 is
    set, so the entry it wants is $80 below the table's base ($6200) — entry i = $8000/(i+$80). */
@@ -13624,10 +13615,9 @@ void build_player_car_core(void)
    an arithmetic shift right of the pair.  Written as a signed 16-bit `>> 1` it is one ASR.W,
    instead of a load, a branch, two rotates and two stores.
 
-   ⭐ THIS IS THE ROUTINE THAT MADE math_lo/math_hi LOOK INDEXED and blocked that pair's
-   relocation for three passes: $74/$75/$76 here are the three LOW bytes of THIS vector, not a
-   lo/hi pair, so `$74,X` is a component select and says nothing about math_lo
-   (docs/wide-value-cleanup.md, the EIGHTH lesson). */
+   ⚠ THIS IS THE ROUTINE THAT MAKES math_lo/math_hi LOOK INDEXED: $74/$75/$76 here are the three
+   LOW bytes of THIS vector, not a lo/hi pair, so `$74,X` is a component select and says nothing
+   about math_lo (docs/wide-value-cleanup.md, the EIGHTH lesson). */
 void step_delta_halve_core(void)
 {
     for (int c = 2; c >= 0; c--) {                    /* $2B0E LDX #2 ... $2B1A DEX / BPL */
