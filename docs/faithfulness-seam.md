@@ -477,6 +477,16 @@ that checks nothing: `diff_run` takes the mask per call, so compute the arm in t
 (`stopArm = C && count >= $0A`) and pass the mask that arm really has. The same shape applies to
 `hook_walk_back_gate` (`$55BD`): registers live when the gate closes, `LIVE_NONE` when it rebuilds.
 
+⚠⚠ **A 6502-ABI SHIM MUST NOT ENTER ANOTHER TWIN AT ITS `_native` SPLIT.** The split exists so a
+*native* caller — one that already holds the relocated wide values — skips a marshal-IN that can
+tell it nothing. A shim is the opposite: the harness enters it with `mem[]` randomised and every
+relocated copy stale, so the INs it skips are exactly the ones that matter. `hook_edge_walk_limit`
+(`$56BC`) is itself a shim and called `road_edge_walk_resume_native()`, dropping
+`view_origin` / `car_heading` / `edge_nearest` — **696 mismatches over 348 walk cases**. ⚠ No
+determinism target sees this: the hook is expansion-circuit-only and all five race Silverstone.
+Rule: a `void name(void)` shim calls the plain shim of whatever it re-enters; only a `_core` or a
+`_native` body may call a `_native`.
+
 ⭐⭐ **A REPLAYED FLAG NEEDS A FIXTURE ARM THAT CAN MAKE IT DIFFER.** `hook_merge_horizon_edges`
 (`$5772`) exits with V from a 16-bit subtract's high byte, whose borrow is the low byte's carry.
 A wrong borrow (`>` for `>=`) changes that carry **only on a tie**, and a tie between two small

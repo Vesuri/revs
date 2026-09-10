@@ -15831,11 +15831,13 @@ void hook_edge_walk_limit(void)
             return;                                     /* $56C4 — stop, as Silverstone would */
     }
 
-    /* $56C5 — back into the engine's own walk.  ⭐ The SHIM, not the core: it marshals the
-       relocated wide globals the walk works in (the sanctioned exception to the call-the-core
-       rule — see docs/faithfulness-seam.md).  The _native split: the multi-tenant lanes still
-       marshal in, the wipe-only ones no longer do. */
-    road_edge_walk_resume_native();
+    /* $56C5 — back into the engine's own walk.  ⭐⭐ The SHIM, not the _native split, and this
+       one is NOT the usual "waste on the ABI path" call: hook_edge_walk_limit is ITSELF a
+       6502-ABI shim, so the harness enters the walk through here with mem[] randomised and the
+       relocated wide values stale.  The _native entry skips view_origin/car_heading/
+       edge_nearest's marshal-INs, which is sound only for a caller that already holds them —
+       see build_track_geometry.  Calling _native here cost 696/348 mismatches. */
+    road_edge_walk_resume();
 }
 
 /* $55BD — STEP THE WALK BACK, UNLESS A SECTION IS ALREADY QUEUED (Brands Hatch, Donington,
