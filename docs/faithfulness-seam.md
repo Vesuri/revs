@@ -558,6 +558,54 @@ it; the work is **twinning `revs_track_hooks.c`**, whose gate already exists and
 one campaign where the CLAUDE.md hook-seam rule bites hardest: these bodies run on four of the five
 circuits and nothing but `viewdiff` can see them compute wrongly.
 
+### …and the SOURCE-SIDE audit that finishes it: all 22 `_core` bodies, 2026-09-10
+
+The section above settles the *cost* question from the binary. This one settles the *style*
+question from the source: **76 `cpu.` references remain inside `_core` bodies, across 22
+functions, and every one is in a class that has to keep it.** Enumerate them the same way rather
+than grepping by hand (blank the comments to spaces, or every line number is wrong):
+
+```
+python3 - <<'EOF'
+import re
+raw=open('src/gen/revs_native.c').read()
+s=re.sub(r'/\*.*?\*/', lambda m: re.sub(r'[^\n]',' ',m.group(0)), raw, flags=re.S)
+# ...attribute each `cpu.` line to the last column-0 function definition above it,
+#    and keep only the owners whose name ends in `_core`.
+EOF
+```
+
+| Class | Functions | Why it stays |
+|---|---|---|
+| **Hook / SMC seam** — hands a circuit's own 6502 code the whole register file | `emit_edge_width_offset_core`, `build_track_geometry_core`, `horizon_half_width_at_core`, `fill_line_attr_core`, `load_section_from_segment_core`, `rebuild_walk_reversed_core`, `read_driving_controls_core` | CLAUDE.md's hook-seam rule: the register set comes from the *surrounding instructions*, and an expansion circuit's hook reads registers Silverstone's callee does not. Gated only by `make viewdiff` |
+| **SED/CLD at a sanctioned BCD site** — `adc_value` reads `cpu.D` | `add_tally_to_lap_total_core`, `lap_complete_core`, `check_car_pair_core`, `sort_cars_by_key_core`, `tally_bcd_column_core` | Decimal mode is inventoried in `docs/static-map.md` §Decimal mode; these are five of the eight `SED` sites and the flag is the mode, not a value |
+| **An OS-call register contract the harness compares** | `shift_key_commands_core`, `kbd_test_key_core` | A/X/Y reach the MOS inside `sound_stop_all`, and the harness compares registers at every OS-call boundary. ⚠ `shift_key_commands_core`'s `cpu.X` at `$0F57` is genuinely ambient — the pause spin's own `kbd_test_key` leaves `$FF` in it on any frame that paused |
+| **The frame driver's live ambient register file** | `race_main_loop_core` | MEASURED, see below |
+| **A flag that genuinely escapes, or `cpu.S`** | `clamp_and_store_steer_angle_core`, `tick_race_timers_core`, `enter_session_core`, `draw_road_core`, `mul16_by_1_5_core`, `update_camera_and_drive_state_core`, `engine_init_core` | each argued at its own site — `update_camera_and_drive_state_core`'s ASL/ROL pair must stay bytes because a per-circuit hook runs *between* the two shifts, and `engine_init_core`'s `cpu.S` is the one cell that really is the 6502 stack pointer |
+
+#### ⚠⚠ `race_main_loop_core`'s ambient X/Y is PRODUCTION state, not oracle plumbing
+
+The frame driver looked like the biggest prize — a NATIVE_FUNCS driver threading raw `cpu.Y/V/C`
+between phases. It is not removable. MEASURED with a per-phase drift probe (`cpu.X`/`cpu.Y`
+compared against the previous phase's exit, sabotage-verified by perturbing the recorded value)
+over 300 driving frames:
+
+- **Twelve writers:** phases 1, 3, 4, 5, 7, 9, 12, 18, 20, 23, 24 and the frame tail each rewrite
+  the ambient X or Y — phases 5, 18, 20 and 24 on essentially every frame.
+- **Three consumers, and the values reach `mem[]`:** `update_lap_timers` (phase 8) hands ambient
+  X/Y straight to `update_position_display_core` as a *text cursor* on the race arm;
+  `engine_sound_update` (phases 9/12/20) and `check_crash` (phase 23) pass X to
+  `sound_queue_core`, which stores it in `sound_saved_x`.
+- **The producers are not removable either.** Phase 5's every-frame writer is
+  `build_track_geometry`'s own **shim**, publishing `GeoExit` — the driver calls the shim
+  deliberately, for the wide-value marshals. The rest are the sanctioned hook/SMC seams.
+
+So threading it as a `FrameAmbient` struct through thirteen shims would move the same bytes
+through a different container and buy nothing. ⭐ **The general form: a driver's `cpu` traffic is
+the TAIL of a chain whose head is a shim or a hook seam publishing an exit ABI. Convert
+bottom-up or not at all** — and check whether the value reaches `mem[]` before assuming it is
+plumbing.
+
 ## What "validated" costs and buys
 
 Buys: a byte-exact differential over randomised inputs, re-run in seconds, forever.
