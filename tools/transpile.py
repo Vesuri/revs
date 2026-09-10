@@ -1848,6 +1848,7 @@ SYMBOL_NOTES = {}
 # generated mem.h) so the transliterated C reads as named state rather than
 # raw hex.  Indexed / indirect / 16-bit-pointer accesses keep raw hex.
 VAR_NAMES = {}
+TBL_NAMES = {}   # addr -> name for symbols.csv `table` rows (MEM_ offsets, no aliases)
 
 def sanitize_note(note):
     """Make a symbols.csv note safe to paste into a C comment.
@@ -1865,6 +1866,7 @@ def load_symbols(path):
     sym = {}
     SYMBOL_NOTES.clear()
     VAR_NAMES.clear()
+    TBL_NAMES.clear()
     for line in path.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith('#'): continue
@@ -1880,6 +1882,12 @@ def load_symbols(path):
         # Collect named RAM state for mem[MEM_*] substitution + AtariMem.h.
         if len(parts) >= 4 and parts[2].strip() == 'var' and parts[3].strip() == '0':
             VAR_NAMES[addr_i] = name
+        # ...and the named TABLE bases, which get a MEM_ offset but no bare alias: the base of
+        # an array is not an lvalue, and a twin addresses it as mem[MEM_<name> + index].
+        # Without these every hand-written twin invents its own #define for an address
+        # symbols.csv already names — 160 of them did, several under a DIFFERENT name.
+        if len(parts) >= 4 and parts[2].strip() == 'table' and parts[3].strip() == '0':
+            TBL_NAMES[addr_i] = name
     return sym
 
 def mem_alias(addr):
@@ -1934,12 +1942,24 @@ def write_mem_header(path):
         '// state byte, $39E0 menu_key_tbl) — named after the mem[] snapshot they index.',
         '',
     ]
-    for addr, name in items:
+    def emit(addr, name, w):
         note = SYMBOL_NOTES.get(addr, '')
         if len(note) > 64:
             note = note[:61] + '...'
         comment = f'  // ${addr:04X}{(" " + note) if note else ""}'
-        lines.append(f'#define MEM_{name:<{width}} 0x{addr:04X}{comment}')
+        lines.append(f'#define MEM_{name:<{w}} 0x{addr:04X}{comment}')
+
+    for addr, name in items:
+        emit(addr, name, width)
+
+    # The TABLE bases.  Offsets only — the base of an array is not an lvalue, so these get no
+    # entry in the REVS_MEM_ALIASES block below; address them as mem[MEM_<name> + index].
+    tables = sorted(TBL_NAMES.items())
+    if tables:
+        twidth = max(len(n) for n in TBL_NAMES.values())
+        lines += ['', '// ---- named TABLE bases (symbols.csv `table` rows) ----', '']
+        for addr, name in tables:
+            emit(addr, name, twidth)
     lines += [
         '',
         '#ifdef REVS_MEM_ALIASES',
@@ -1949,7 +1969,7 @@ def write_mem_header(path):
         lines.append(f'#define {name:<{width}} mem[MEM_{name}]')
     lines += ['#endif /* REVS_MEM_ALIASES */', '']
     path.write_text('\n'.join(lines))
-    print(f'Wrote {path}  ({len(items)} named addresses)')
+    print(f'Wrote {path}  ({len(items)} named addresses, {len(TBL_NAMES)} table bases)')
 
 # ---------------------------------------------------------------------------
 # func_lo: lowest 6502 address that belongs to a function's body.
