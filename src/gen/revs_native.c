@@ -1446,8 +1446,6 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
     plot_ptr2_marshal_out();
 }
 
-/* The 6502-ABI shim.  $6700/$6800 is character row 10 of the frame buffer — display line
-   80 — and $4F is the first scan line painted. */
 
 /* ===========================================================================
    $16DC  race_main_loop — THE RACE
@@ -1833,9 +1831,6 @@ void race_main_loop_core(RestartDepth depth)
     cpu.I = 0;                   /* $4F35 */
 }
 
-/* The 6502-ABI shim.  The only decision the prologue makes is how much to reset: bit 6 of
-   state_flags is set when wait_flag_05F4 is re-entering the race after the pit-lane
-   wing-settings menu, and then the session state must survive untouched. */
 
 /* ===========================================================================
    $24F6  build_track_geometry — THE FRAME'S ROAD GEOMETRY  (twin #4)
@@ -3857,8 +3852,6 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
     return ex;
 }
 
-/* The 6502-ABI shim.  Both walk cursors are constants in the 6502; they are arguments here
-   because they are the one thing that decides which half of the edge arrays each side owns. */
 
 /* ===========================================================================
    $1A20  draw_road — THE ROAD RASTERISER  (twin #5)
@@ -3999,10 +3992,6 @@ SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     return m;
 }
 
-/* The 6502-ABI shim.  draw_road takes no arguments — the frame's geometry reaches it entirely
-   through the edge lists and the three cursor cells — and leaves A, X and the flags wherever
-   its last callee left them, which the core sets by marshalling the near mark's SlotExit into
-   cpu at that call site (see above); the shim itself adds nothing. */
 
 /* ===========================================================================
    ⭐⭐ WIDE-VALUE CLEANUP, mechanism (B): THE DRIVING MODEL'S STATE VECTOR
@@ -4241,8 +4230,6 @@ CameraExit apply_driving_model_core(uint16_t heading, int entryC)
     return update_camera_and_drive_state_core();
 }
 
-/* The 6502-ABI shim.  The player's own position is the routine's one input — it reaches the
-   6502 in A and X — and A, X, Y and the flags come back from update_camera_and_drive_state untouched. */
 
 /* ===========================================================================
    $2AD1  draw_track_object — ONE OBJECT SLOT ONTO THE SCREEN  (twin #7)
@@ -4346,7 +4333,6 @@ SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, ui
     return e;
 }
 
-/* The 6502-ABI shim.  The slot arrives in X; everything else the routine needs is in mem[]. */
 
 /* ===========================================================================
    $1E15  fill_dash_edge_columns — THE VIEW/DASHBOARD SEAM  (twin #8)
@@ -4402,8 +4388,6 @@ SlotExit fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightStartS
     return edge_column_pass(rightStartSrc, 0x1A, 0x22, 0x2B);
 }
 
-/* The 6502-ABI shim.  No inputs at all — every value is an immediate in the original — and
-   A, X, Y and the flags come back from the second fill_edge_column_run. */
 
 /* ===========================================================================
    $18EA  copy_dash_data — THE SECOND UNPACK / STOW  (twin #115)
@@ -4483,10 +4467,6 @@ void copy_dash_data_core(uint8_t dirFlag)
     shared_temp_76  = bytes;
 }
 
-/* The 6502-ABI shim.  A carries the direction in on entry (and is stashed into math_lo ($74),
-   the routine's direction flag).  On exit A/X/Y and the flags carry the tail arithmetic:
-   `LDA $70 / ADC #$80` leaves A = final src low byte with the add's V; the block loop closes on
-   `CPX #$29` (X = $29, N=0 Z=1 C=1); Y is the last block's start offset the inner loop stopped on. */
 
 /* ===========================================================================
    $0C47  div16by8 — THE ENGINE'S DIVIDE  (twin #13)
@@ -4897,15 +4877,6 @@ ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
        6502 left in N and the caller reads to fold back to a subdivide. */
     return (ProjPoint){ lineByte, 0, (lineByte & 0x80u) != 0 };
 }
-
-/* The 6502-ABI shims.  ⚠ Only the BODIES are twinned: $2145 and $2285 stay transliterated,
-   because each is a single `LDY #0` that falls into the body, so a twin of them would run the
-   same core the oracle does and the fixture would compare native against native — a fixture
-   that passes vacuously (docs/validation-harness.md).  Two generated LDY macros is the right
-   price for keeping both oracles real.
-
-   X is the section's byte index into section_coord_lo/hi; Y is the view origin's byte offset,
-   0 for the camera and 6 for the road sign's viewpoint. */
 
 
 /* ===========================================================================
@@ -5779,10 +5750,6 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     return interp_edge_publish();
 }
 
-/* The 6502-ABI shim.  A is the style record's index, X the endpoint in one edge half, Y the
-   endpoint in the other, and the CARRY is "publish this endpoint without drawing a span".  On
-   exit the 6502 leaves the far/near indices in X/Y (the oracle's INX/INY read them), so marshal
-   the returned pair back there. */
 
 /* ---------------------------------------------------------------------------
    $1933 edge_x_offscreen (twin #36) and $193E fill_line_attr (twin #37)
@@ -5846,8 +5813,6 @@ EdgeOffFlags edge_x_offscreen_core(uint8_t pointX)
     EdgeOffFlags e = { sum, v, (uint8_t)(old & 1u), offAxis, (uint8_t)(newv == 0) };
     return e;
 }
-
-/* The 6502-ABI shim: the edge point index arrives in X (unchanged to exit). */
 
 
 /* Idiomatic C: the walk runs on local variables and plain math.  The routine's flags DO leave
@@ -6025,8 +5990,6 @@ SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t first
     return e;
 }
 
-/* The 6502-ABI shim.  A is the target buffer's low byte, Y the side's end cursor, X the point
-   the walk starts from; entry C/V are echoed on the SMC-trap path. */
 
 /* ---------------------------------------------------------------------------
    $19AF  draw_surface_spans  (twin #38)
@@ -6130,7 +6093,6 @@ void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint)
     }
 }
 
-/* The 6502-ABI shim.  Y is the pass number, A the first edge index of the pass. */
 
 /* ---------------------------------------------------------------------------
    $1A98  mark_line_surfaces  (twin #39)
@@ -6256,8 +6218,6 @@ SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int e
     }
 }
 
-/* The 6502-ABI shim.  X is the surface class to OR in, A the first edge index; Y comes back
-   as the scan line at which this side's line_attr buffer stops being valid. */
 
 /* ===========================================================================
    TWINS #40-#43 — THE VIEW/DASHBOARD SEAM'S OWN CALLEES
@@ -6405,8 +6365,6 @@ uint8_t surface_colour_apply(uint8_t line)
     return e.a;
 }
 
-/* The 6502-ABI shim.  Y is the scan line and EDGE_COLUMN the position; A comes back as the
-   colour, X as the surface class on the two arms that compute one. */
 
 /* ===========================================================================
    $1DAF  column_gap_walk — FILL ONE COLUMN'S EMPTY SOURCE BYTES  (twin #41)
@@ -6603,8 +6561,6 @@ SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
     { SlotExit e = { e2.a, (uint8_t)column, y, 0u, 1u, e2.v, 1u }; return e; }
 }
 
-/* The 6502-ABI shim.  X is the first column, A the stop column, Y the first start line; X
-   comes back as the column the run stopped at and Y as the last walk's end line. */
 
 /* ===========================================================================
    TWINS #44-#49 — THE ENGINE'S MULTIPLY, AND THE NEGATE BESIDE IT
@@ -10350,7 +10306,6 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
     return slot_prev_col(x, y);
 }
 
-/* The 6502-ABI shims. */
 
 /* ===========================================================================
    TWINS #98-#114 — THE DRIVING CONTROLS, and with them the last of the campaign's trees

@@ -3,6 +3,8 @@
  * cpu/mem[], calls the typed core, and marshals the result + exit ABI back. */
 #include "revs_native_seam.h"
 
+/* The 6502-ABI shim.  $6700/$6800 is character row 10 of the frame buffer — display line
+   80 — and $4F is the first scan line painted. */
 void view_paint_lines(void)
 {
     REVS_PLOT_CHECK_BEFORE();
@@ -10,6 +12,9 @@ void view_paint_lines(void)
     REVS_PLOT_CHECK_AFTER();
 }
 
+/* The 6502-ABI shim.  The only decision the prologue makes is how much to reset: bit 6 of
+   state_flags is set when wait_flag_05F4 is re-entering the race after the pit-lane
+   wing-settings menu, and then the session state must survive untouched. */
 void race_main_loop(void)
 {
     /* ⭐ THE DRIVER IMPORTS EVERY RELOCATED VALUE ITS CORE REACHES WITHOUT AN INNER SHIM.
@@ -187,6 +192,8 @@ void scale_by_track_gradient_tail(void)
     abs8();                                  /* $4622 — negates A when the pulled N says so */
 }
 
+/* The 6502-ABI shim.  Both walk cursors are constants in the 6502; they are arguments here
+   because they are the one thing that decides which half of the edge arrays each side owns. */
 void build_track_geometry(void)
 {
 /* ⭐⭐ THE _native ENTRY, AND WHY IT EXISTS.  Everything above the call is a marshal-IN of a
@@ -221,6 +228,10 @@ void build_track_geometry_native(void)
     edge_nearest_marshal_out();
 }
 
+/* The 6502-ABI shim.  draw_road takes no arguments — the frame's geometry reaches it entirely
+   through the edge lists and the three cursor cells — and leaves A, X and the flags wherever
+   its last callee left them, which the core sets by marshalling the near mark's SlotExit into
+   cpu at that call site (see above); the shim itself adds nothing. */
 void draw_road(void)
 {
     /* The road pass owns all three screen pointers from its first seed to its last span. */
@@ -267,6 +278,8 @@ void apply_driving_model_frame_native(void)
     cpu.X = ce.x; cpu.Y = ce.y;
 }
 
+/* The 6502-ABI shim.  The player's own position is the routine's one input — it reaches the
+   6502 in A and X — and A, X, Y and the flags come back from update_camera_and_drive_state untouched. */
 void apply_driving_model(void)
 {
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
@@ -274,6 +287,7 @@ void apply_driving_model(void)
     apply_driving_model_frame();
 }
 
+/* The 6502-ABI shim.  The slot arrives in X; everything else the routine needs is in mem[]. */
 void draw_track_object(void)
 {
     car_heading_marshal_in();
@@ -282,6 +296,8 @@ void draw_track_object(void)
     cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
 }
 
+/* The 6502-ABI shim.  No inputs at all — every value is an immediate in the original — and
+   A, X, Y and the flags come back from the second fill_edge_column_run. */
 void fill_dash_edge_columns(void)
 {
     SlotExit e = fill_dash_edge_columns_core(MEM_view_left_start_src, MEM_view_right_start_src);
@@ -289,6 +305,10 @@ void fill_dash_edge_columns(void)
     cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
 }
 
+/* The 6502-ABI shim.  A carries the direction in on entry (and is stashed into math_lo ($74),
+   the routine's direction flag).  On exit A/X/Y and the flags carry the tail arithmetic:
+   `LDA $70 / ADC #$80` leaves A = final src low byte with the add's V; the block loop closes on
+   `CPX #$29` (X = $29, N=0 Z=1 C=1); Y is the last block's start offset the inner loop stopped on. */
 void copy_dash_data(void)
 {
     uint8_t dirFlag = cpu.A;
@@ -311,6 +331,14 @@ void bearing_to_section_from(void)
                                              shipping FUN_2a5f reads the cells straight after */
 }
 
+/* The 6502-ABI shims.  ⚠ Only the BODIES are twinned: $2145 and $2285 stay transliterated,
+   because each is a single `LDY #0` that falls into the body, so a twin of them would run the
+   same core the oracle does and the fixture would compare native against native — a fixture
+   that passes vacuously (docs/validation-harness.md).  Two generated LDY macros is the right
+   price for keeping both oracles real.
+
+   X is the section's byte index into section_coord_lo/hi; Y is the view origin's byte offset,
+   0 for the camera and 6 for the road sign's viewpoint. */
 void project_point_from(void)
 {
     view_origin_marshal_in();
@@ -335,6 +363,10 @@ void road_span_advance(void)
     cpu.C = road_span_advance_core(cpu.Y);
 }
 
+/* The 6502-ABI shim.  A is the style record's index, X the endpoint in one edge half, Y the
+   endpoint in the other, and the CARRY is "publish this endpoint without drawing a span".  On
+   exit the 6502 leaves the far/near indices in X/Y (the oracle's INX/INY read them), so marshal
+   the returned pair back there. */
 void interp_edge(void)
 {
     EdgeIndices r;
@@ -345,12 +377,15 @@ void interp_edge(void)
     cpu.Y = r.nearIdx;
 }
 
+/* The 6502-ABI shim: the edge point index arrives in X (unchanged to exit). */
 void edge_x_offscreen(void)
 {
     EdgeOffFlags e = edge_x_offscreen_core(cpu.X);
     cpu.A = e.a; cpu.V = e.v; cpu.C = e.c; cpu.N = e.n; cpu.Z = e.z;
 }
 
+/* The 6502-ABI shim.  A is the target buffer's low byte, Y the side's end cursor, X the point
+   the walk starts from; entry C/V are echoed on the SMC-trap path. */
 void fill_line_attr(void)
 {
     SlotExit e = fill_line_attr_core(cpu.A, cpu.Y, cpu.X, cpu.C, cpu.V);
@@ -358,11 +393,14 @@ void fill_line_attr(void)
     cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
 }
 
+/* The 6502-ABI shim.  Y is the pass number, A the first edge index of the pass. */
 void draw_surface_spans(void)
 {
     draw_surface_spans_core(cpu.Y, cpu.A);
 }
 
+/* The 6502-ABI shim.  X is the surface class to OR in, A the first edge index; Y comes back
+   as the scan line at which this side's line_attr buffer stops being valid. */
 void mark_line_surfaces(void)
 {
     SlotExit e = mark_line_surfaces_core(cpu.X, cpu.A, cpu.V);
@@ -370,11 +408,15 @@ void mark_line_surfaces(void)
     cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
 }
 
+/* The 6502-ABI shim.  Y is the scan line and EDGE_COLUMN the position; A comes back as the
+   colour, X as the surface class on the two arms that compute one. */
 void surface_colour_at(void)
 {
     surface_colour_apply(cpu.Y);
 }
 
+/* The 6502-ABI shim.  X is the first column, A the stop column, Y the first start line; X
+   comes back as the column the run stopped at and Y as the last walk's end line. */
 void column_gap_walk(void)
 {
     SlotExit e = column_gap_walk_core(cpu.X, cpu.Y, cpu.V);
@@ -617,6 +659,7 @@ void note_object_contact(void)
     cpu.A = e.a; cpu.Y = e.y; cpu.N = e.n; cpu.Z = e.z; cpu.C = e.c;
 }
 
+/* The 6502-ABI shims. */
 void plot_view_src_line(void)
 {
     SlotExit e = plot_view_src_line_core(cpu.Y, cpu.A);
