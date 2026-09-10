@@ -13754,6 +13754,25 @@ void reset_driving_variables_core(void)
     for (int i = 0x68; i >= 0; i--)  mem[i] = 0x00u;                    /* zero page $00-$68 */
     for (int i = 0x7F; i >= 0; i--)  mem[MEM_view_origin_lo + i] = 0x00u; /* $6280-$62FF */
 
+    /* ⭐⭐ THE SAME WIPE, APPLIED TO THE RELOCATED COPIES.  Those two loops address memory as
+       memory, so they zero the byte lanes of five wide values this port keeps in native
+       variables — $0A/$0B car_heading and $10/$11 edge_nearest inside the zero-page range,
+       $6280 view_origin, $62A0 car_angle and $62D0/$62E0 model_state inside the second — and a
+       native array cannot see a memset aimed at its old address.  Zeroing both representations
+       is what makes the arrays, and not the lanes, the source of truth across a session reset.
+       ⚠ MEASURED: this is the ONLY writer that changes those lanes behind the arrays' back.  An
+       audit build that compared every `*_marshal_in`'s reconstruction against the live value
+       over eleven scenarios found the lanes diverging only here — one model_state divergence in
+       51896 race round trips, elem 2, $FFFF vs $0000, at exactly this wipe
+       (docs/wide-value-cleanup.md §IS THE MARSHALLING ORACLE-ONLY).
+       It writes no mem[] byte, so it is invisible to every differential today: the in-marshals
+       still re-read the zeroes a moment later.  It is the PREREQUISITE for dropping them. */
+    car_heading_v   = 0x0000u;
+    edge_nearest_v  = 0x0000u;
+    for (unsigned i = 0; i < MODEL_STATE_N;                     i++) model_state_16[i] = 0x0000u;
+    for (unsigned i = 0; i < 9u;                                i++) view_origin_16[i] = 0x0000u;
+    for (unsigned i = 0; i < 3u;                                i++) car_angle_16[i]   = 0x0000u;
+
     /* 2. envelope 1 from definition block 0 ($1816).  A is still 0 from the wipe and X is $FF
           out of the second loop's final DEX — the core parks that X exactly as the shim would. */
     sound_envelope_core(0x00u, 0xFFu);
