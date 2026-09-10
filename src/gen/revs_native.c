@@ -1546,15 +1546,15 @@ int state_flags_bit6(void)
    class cannot be knocked out.  Anything else has really finished. */
 static LoopVerdict race_resume_point(RestartDepth* depth)
 {
-    if (load_a(qualify_minutes) & 0x80) {           /* practice: untimed, never over */
+    if (qualify_minutes & 0x80) {                   /* practice: untimed, never over */
         *depth = RESTART_FULL;
         return LOOP_RESTART;
     }
-    if (!(load_a(session_is_race) & 0x80)) {        /* qualifying, not the race proper */
+    if (!(session_is_race & 0x80)) {                /* qualifying, not the race proper */
         *depth = RESTART_MID;
         return LOOP_RESTART;
     }
-    if (load_a(race_class) == 0) {                  /* Novice */
+    if (race_class == 0) {                          /* Novice */
         *depth = RESTART_LATE;
         return LOOP_RESTART;
     }
@@ -1574,7 +1574,7 @@ static LoopVerdict race_session_end(RestartDepth* depth)
        there is the one on qualify_minutes that is being repeated, which nothing since has
        written (sound_stop_all touches sound state only).  So a practice lap resumes at
        RESTART_FULL and the re-ask is that, spelled out. */
-    if (load_a(qualify_minutes) & 0x80) {
+    if (qualify_minutes & 0x80) {
         *depth = RESTART_FULL;
         return LOOP_RESTART;
     }
@@ -1582,10 +1582,8 @@ static LoopVerdict race_session_end(RestartDepth* depth)
     print_message_pair_core(0x30);   /* the "please wait" message on both status rows */
     finish_race_core();              /* race the remaining drivers to the finish */
 
-    if (!(load_a(state_flags) & 0x80)) {
-        arg_a(0x20);
-        state_flags = cpu.A;      /* $178D's BNE is unconditional: $20 is never zero */
-    }
+    if (!(state_flags & 0x80))
+        state_flags = 0x20;       /* $178D's BNE is unconditional: $20 is never zero */
     return LOOP_FINISHED;
 }
 
@@ -1605,7 +1603,7 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
     if (irq_band_state & 0x80)
         irq_band_state++;
 
-    if (load_a(crash_flag) != 0) {
+    if (crash_flag != 0) {
         /* ⭐ SHOW THE FENCE BEFORE THE HOLD.  check_crash() drew the fence into the view source
            and view_paint_lines() has already painted it into the frame buffer this frame — but
            the next present is not until the top of the frame loop, AFTER the 2 s hold below AND
@@ -1675,17 +1673,23 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
        (LIVE_NONE) — so the ambient `LDY #$0B` was carrying an argument, not state. */
     shift_key_commands_core(0x0Bu);
 
-    if (load_a(state_flags) != 0) {
-        if (!(cpu.A & 0x80))                       /* $1799: a positive request quits */
-            return race_session_end(depth);
-        if (and_a(0x40) == 0)                      /* $179B masks A down to the pit bit */
-            return LOOP_FINISHED;                  /* SHIFT+f0 alone: leave for the pits */
-        if (load_a(wheel_spin_rate) == 0)
-            return LOOP_FINISHED;                  /* stopped: the pit request is granted */
-        arg_a(0x00);
-        state_flags = 0;                           /* moving: refuse it and drive on */
+    {
+        const uint8_t request = state_flags;
+        if (request != 0) {
+            if (!(request & 0x80))                 /* $1799: a positive request quits */
+                return race_session_end(depth);
+            if (!(request & 0x40))                 /* $179B masks A down to the pit bit */
+                return LOOP_FINISHED;              /* SHIFT+f0 alone: leave for the pits */
+            if (wheel_spin_rate == 0)
+                return LOOP_FINISHED;              /* stopped: the pit request is granted */
+            state_flags = 0;                       /* moving: refuse it and drive on */
+        }
     }
-    /* Either way A is now 0 — from the cell that tested zero, or from the `LDA #0` above. */
+    /* ⚠ The 6502 leaves A = 0 here either way and the port does not, deliberately.  Every path
+       out of this tail either loops back into the frame body — whose twenty-four phase entries
+       consume X, Y, V and C but never A, N or Z — or leaves the loop through $17BA, which
+       republishes A, N and Z from copy_dash_data's exit.  So the scratch A this block used to
+       carry was dead in both directions, and it is a plain local now. */
 
     /* The session's own countdown.  Non-zero means the limit was already passed and the car
        is coasting; the frame it would reach zero is the frame the session ends. */
@@ -4446,7 +4450,7 @@ SlotExit fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightStartS
    the copy provably stays inside $3000-$7FFF and never reaches the hardware window.
    =========================================================================== */
 
-#define DASH_BLOCK_COUNT  0x29u     /* 41 blocks */
+/* DASH_BLOCK_COUNT is in revs_native_seam.h — race_main_loop_core's exit needs it too. */
 #define DASH_BLOCK_TOP    0x4Fu     /* a block's live data always ENDS at offset $4F */
 
 void copy_dash_data_core(uint8_t dirFlag)
