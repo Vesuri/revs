@@ -204,3 +204,33 @@ Constraints this pass inherits:
 * The gate is `make validate FN=` for each of the six plus the determinism family;
   `tick_race_timers` and `lap_complete` additionally need `determinism-race`, which is the only
   trajectory that reaches a lap boundary.
+
+---
+
+# Open front — THE FIXTURE LIVE MASKS (its own campaign, not part of the read-through)
+
+The read-through kept running into the same wall: a 6502 shape that is load-bearing **only
+because a fixture declares a register or flag live at the exit**. The batch-1 table lists seven
+of them (`line_is_last`, `stop_unchanged`, `cpx_ge`/`arg_x`, the replayed `V` in
+`paint_lines_short`, `UPD_NZ`, the two `arg_a`s). Each is correct given its mask. What none of
+them has is evidence that the mask is *tight*.
+
+⚠⚠ **This is deliberately NOT sweep work, and the sweep must keep not doing it.** Narrowing a
+mask is a change to what "faithful" means for that routine, and it is a claim about a whole
+subtree of callers — who actually reads A/X/Y/N/V/Z/C after this returns — not about the routine
+in hand. Get that wrong and `validate` still passes while the port silently diverges on an arm
+no fixture drives.
+
+How the front would have to work, one routine at a time:
+
+1. Enumerate the callers from the listing, not from the twin — including the hook re-entries,
+   because an expansion circuit's hook can jump back into the transliteration
+   (`docs/faithfulness-seam.md`) and read a register Silverstone's path never touches.
+2. Show that no caller reads the register before overwriting it, on **every** arm.
+3. Only then narrow the mask, and only then simplify the shape it was propping up.
+4. `make viewdiff` is the gate for anything on the view pipeline — determinism always races
+   Silverstone.
+
+Expected payoff: each narrowed mask retires a `cpu.`/`arg_a`/`UPD_NZ` shape that the idiom sweep
+is otherwise obliged to keep. Expected cost: the caller audit dominates, so this is worth doing
+per hot routine, never as a file-wide pass.
