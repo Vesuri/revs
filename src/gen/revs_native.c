@@ -12920,29 +12920,45 @@ uint8_t tally_bcd_column_core(uint8_t x)
     mem[STANDINGS_BCD_LO + x] = 0x00;
     mem[STANDINGS_BCD_HI + x] = 0x00;
 
-    uint8_t ctr_lo, ctr_hi = 0x00;
+    /* HOW MANY BUMPS this column's tally is worth.  The 6502 keeps it in math_lo/math_hi and
+       unwinds it with DEC/BNE/DEC/BPL ($5A74-$5A7A), which is ONE 16-bit counter written as two
+       bytes; here it is one value, so only the loop's own quirk has to be spelled out (below).
+       ⚠ math_lo/math_hi are declared scratch for this routine — $74/$75 are in the fixture's
+       ignore list — which is why the count can live in a local at all. */
+    unsigned bumps;
 
     if (nHumans == 0x01) {
-        ctr_lo = nHumans;                                 /* L_5a5a: one human, one bump */
+        bumps = nHumans;                                  /* L_5a5a: one human, one bump */
     } else {
         uint8_t am1 = (uint8_t)(nHumans - 1);             /* SEC; SBC #1 */
         int use_product;
         uint8_t aEntry = 0;
 
+        bumps = 0;
         if (y == player_car)            { use_product = 1; aEntry = am1; }   /* BEQ L_5a4d */
-        else if (y >= human_car_first)  { use_product = 0; ctr_lo = nHumans; } /* BCS */
+        else if (y >= human_car_first)  { use_product = 0; bumps = nHumans; } /* BCS */
         else {
             uint8_t sh = (uint8_t)(am1 << 1);             /* ASL A */
-            if (sh != 0) { use_product = 0; ctr_lo = sh; }/* BNE L_5a5f */
+            if (sh != 0) { use_product = 0; bumps = sh; } /* BNE L_5a5f */
             else         { use_product = 1; aEntry = 0; } /* -> L_5a4d */
         }
 
-        if (use_product) {                                /* L_5a4d: humans * aEntry, was mul8 */
-            unsigned p = revs_mulu16(nHumans, aEntry);
-            ctr_lo = (uint8_t)p;
-            ctr_hi = (uint8_t)(p >> 8);
-        }
+        if (use_product)                                  /* L_5a4d: humans * aEntry, was mul8 */
+            bumps = revs_mulu16(nHumans, aEntry);
     }
+
+    /* ⚠ THE ONE THING THE BYTE PAIR MEANT: the loop decrements the low byte FIRST and only then
+       tests the high byte's sign, so it always runs at least one full low-byte cycle — a low byte
+       of ZERO is 256 iterations, not none.  That is the whole difference between this count and
+       the value the two cells hold.
+       ⚠ A sabotage that drops the `+ 256` only for a NONZERO count SURVIVES, and by construction,
+       not through a fixture gap: every arm above leaves `bumps` either an 8-bit value or the
+       product n*(n-1), and 256 | n(n-1) forces n = 0 or n = 1 (the two factors are consecutive, so
+       the odd one contributes no twos) — n = 1 is the one-human arm and n = 0 makes the product 0.
+       So the low byte is zero only when the whole count is, and this branch is only ever the
+       256 case.  It is written in full anyway because that is what the 6502 does; the sabotages
+       that DO fail are the zero count reading 1 instead of 256, and 256 becoming 255. */
+    unsigned iterations = (bumps & 0xFFu) ? bumps : bumps + 256u;
 
     /* SED; the 16-bit BCD accumulate loop. */
     cpu.D = 1;
@@ -12951,11 +12967,7 @@ uint8_t tally_bcd_column_core(uint8_t x)
         mem[STANDINGS_BCD_LO + x] = lo.val;
         Adc hi = adc_value(mem[STANDINGS_BCD_HI + x], 0x00, lo.carry);                    /* ADC #0 */
         mem[STANDINGS_BCD_HI + x] = hi.val;
-
-        if (--ctr_lo != 0) continue;                      /* DEC math_lo; BNE */
-        if (!((--ctr_hi) & 0x80)) continue;               /* DEC math_hi; BPL */
-        break;
-    } while (1);
+    } while (--iterations != 0);                          /* was DEC math_lo/BNE + DEC math_hi/BPL */
 
     add_tally_to_lap_total_core(x, y);                    /* folds the pair into the lap total */
     return y;                                             /* $5A73 TAY — the caller's exit Y */
