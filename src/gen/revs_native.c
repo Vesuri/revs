@@ -1933,11 +1933,9 @@ void race_main_loop_core(RestartDepth depth)
 /* MEM_edge_side_flag_mask — edge_side_flag_mask  — 2, by road side */
 /* MEM_edge_style_tbl — edge_style_tbl       — 8, by the feature bits */
 /* MEM_edge_width_shift_tbl — edge_width_shift_tbl — 8, likewise */
-#define EDGE_HALF        0x0028u   /* 40 — the stride between the two road sides' halves */
-#define SECTION_SIDE1    0x0078u   /* +$78: the OPPOSITE road edge's parallel section list
+#define SECTION_SIDE1    0x0078u   /* ⚠ an OFFSET, not an address: the OPPOSITE road edge's
+                                      parallel section list starts $78 up the section cursor
                                       (section byte cursor 0..$77 for side 0, +$78 for side 1) */
-#define SECTION_MID      0x00FAu   /*   ...the triple road_edge_walk interpolates midpoints into */
-#define SECTION_NEAR     0x00FDu   /*   ...and the one road_edge_start stages the near point in */
 /* MEM_edge_walk_step_tbl — edge_walk_step_tbl — 18 entries, one per emitted point */
 /* MEM_car_segment — car_segment */
 #define PLAYER_CAR       0x17u     /* slot 23 — the player's own car */
@@ -5021,8 +5019,8 @@ ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
 
 #define SPAN_LINE_END  0x0082u   /* point_delta_lo[2]   — the scan line the span stops at */
 #define SPAN_DX        MEM_point_delta_hi   /* point_delta_hi[0]   — the DDA's major delta */
-#define SPAN_DY        0x0084u   /* point_delta_hi[1]   — ...and its minor delta */
-#define SPAN_BLOCK     0x0085u   /* point_delta_hi[2]   — the source block, 0..$2C */
+#define SPAN_DY        MEM_shared_temp_84   /* point_delta_hi[1]   — ...and its minor delta */
+#define SPAN_BLOCK     MEM_shared_temp_85   /* point_delta_hi[2]   — the source block, 0..$2C */
 #define SPAN_ARM       MEM_point_delta_sign   /* point_delta_sign[0] — bit 7 picks ascending or descending */
 #define SPAN_YSTEP     0x0087u   /* point_delta_sign[1] — which way the plotters step Y */
 #define SPAN_CLIP      0x0088u   /* point_delta_sign[2] — two-bit rolling clip history */
@@ -6389,8 +6387,8 @@ SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int e
    arguments, and why it is a twin of its own rather than fill_column_gaps' loop body.
    =========================================================================== */
 
-#define EDGE_RUN_LIMIT     0x0042u   /* shared_counter_42 — the column the run stops at */
-#define EDGE_COLUMN        0x0085u   /* point_delta_hi[2] as this pass's column cursor */
+#define EDGE_RUN_LIMIT     MEM_shared_counter_42   /* shared_counter_42 — the column the run stops at */
+#define EDGE_COLUMN        MEM_shared_temp_85   /* point_delta_hi[2] as this pass's column cursor */
 #define EDGE_BLOCK_START   0x0082u   /* point_delta_lo[2] — dash_block_starts[column] */
 #define EDGE_STYLE_PREV    0x5EDFu   /* edge_style - 1: a line_attr entry is an index PLUS ONE */
 
@@ -6915,9 +6913,9 @@ void neg16_math(void)
 #define MUL_SRC_HI     0x0081u   /* point_delta_lo[1] — multiplicand high; bit 7 is its sign */
 #define MUL_TERM_LO    0x0082u   /* point_delta_lo[2] — multiplier low; the car angle, bit 0 = SIGN */
 #define MUL_TERM_HI    MEM_point_delta_hi   /* point_delta_hi[0] — multiplier high (heading_sin/heading_cos) */
-#define MUL_SIGN       0x0079u   /* hypot_min_hi — product-sign accumulator (bit 7) + apply_angle_term's store/accumulate mode (bit 6) */
-#define MODEL_TERM     0x007Cu   /* point_dist_lo — the destination element index */
-#define MODEL_SRC_SLOT 0x007Fu   /* span_line_cursor — apply_angle_term_at's source element */
+#define MUL_SIGN       MEM_hypot_min_hi   /* hypot_min_hi — product-sign accumulator (bit 7) + apply_angle_term's store/accumulate mode (bit 6) */
+#define MODEL_TERM     MEM_point_dist_lo   /* point_dist_lo — the destination element index */
+#define MODEL_SRC_SLOT MEM_span_line_cursor   /* span_line_cursor — apply_angle_term_at's source element */
 
 /* ---------------------------------------------------------------------------
    $0DD7  mul16_signed — THE SIGNED 16x16 MULTIPLY  (twin #50)
@@ -7635,13 +7633,10 @@ void rotate_state_6_into_3(void)
    the throttle, so `LDY pedal_mode / DEY / BEQ` takes the THROTTLE to the gear-based arm).
    =========================================================================== */
 
-#define SLIP_MAG_LO      0x008Eu  /* plot_ptr3_lo — here slip_magnitude's low byte  */
-#define SLIP_MAG_HI      0x008Fu  /* plot_ptr3_hi — ...and its high byte (docs/rename.md) */
-#define SLIP_SIGN        0x0079u  /* hypot_min_hi — here the sign byte abs16_math branches on */
-#define SLIP_OUT_INDEX   0x0078u  /* hypot_min_lo — here WHICH element the store lands in */
-#define SLIP_REV_TERM    0x003Du  /* still unnamed: update_engine_revs' second rev-derived
-                                     term, which only a twin of that routine can settle
-                                     (docs/rename.md) */
+#define SLIP_MAG_LO      MEM_plot_ptr3_lo  /* plot_ptr3_lo — here slip_magnitude's low byte  */
+#define SLIP_OUT_INDEX   MEM_hypot_min_lo  /* hypot_min_lo — here WHICH element the store lands in */
+#define SLIP_REV_TERM    MEM_engine_torque  /* engine_torque — update_engine_revs' second
+                                     rev-derived term */
 
 /* ---------------------------------------------------------------------------
    $4B61  slip_magnitude — |ELEMENT Y| << 5, CLAMPED  (twin #67)
@@ -9635,9 +9630,9 @@ void store_object_flags(void)   { store_object_flags_core(cpu.Y, cpu.A); }
 
 /* The object pass's own names for the point_delta window it borrows (docs/rename.md). */
 #define OBJ_VECTOR_CURSOR   0x0081u   /* point_delta_lo[1] — the shape's vector cursor */
-#define OBJ_VECTOR_END      0x008Au   /* bearing_lo        — one past its last vector */
+#define OBJ_VECTOR_END      MEM_bearing_lo   /* bearing_lo        — one past its last vector */
 #define OBJ_EDGE_X          MEM_point_delta_hi   /* point_delta_hi[0] — the edge's x, into the plotter */
-#define OBJ_EDGE_STYLE      0x0084u   /* point_delta_hi[1] — ...and its style byte */
+#define OBJ_EDGE_STYLE      MEM_shared_temp_84   /* point_delta_hi[1] — ...and its style byte */
 
 /* ---------------------------------------------------------------------------
    $202A  scale_shape_vectors — THE SHAPE AT THIS OBJECT'S SIZE  (twin #94)
@@ -10020,16 +10015,16 @@ void plot_shape_edges(void)     { SlotExit e = plot_shape_edges_core();
 #define VIEW_SRC_PAGE       0x30u     /* the forty $80-spaced source blocks start at $3000 */
 #define SRC_CELL_BLANK      0x55u     /* the "written but empty" sentinel */
 
-#define PVS_MODE      0x007Bu   /* hypot_max_hi   — the entry mode, 0, 1 or 2 */
-#define PVS_BYTE      0x007Au   /* hypot_max_lo   — the composed MODE 5 byte */
-#define PVS_KEEP      0x007Du   /* point_dist_hi  — ...and the mask that keeps the rest of a cell */
-#define PVS_PREV_COL  0x007Cu   /* point_dist_lo  — the column the PREVIOUS call painted */
-#define PVS_COLOUR    0x0079u   /* hypot_min_hi   — this call's colour byte */
-#define PVS_COLOUR_P  0x0078u   /* hypot_min_lo   — ...and the previous call's */
-#define PVS_HALF      0x0074u   /* math_lo        — bit 0: is the column past the screen's middle */
-#define PVS_OTHER_COL 0x008Du   /* projected_line — the OTHER endpoint's column */
-#define PVS_OTHER_X   0x008Fu   /* plot_ptr3_hi   — ...and its x, at 6.2 fixed point */
-#define PVS_GAP_COL   0x0075u   /* math_hi        — fill_object_gap's own column cursor */
+#define PVS_MODE      MEM_hypot_max_hi   /* hypot_max_hi   — the entry mode, 0, 1 or 2 */
+#define PVS_BYTE      MEM_hypot_max_lo   /* hypot_max_lo   — the composed MODE 5 byte */
+#define PVS_KEEP      MEM_point_dist_hi   /* point_dist_hi  — ...and the mask that keeps the rest of a cell */
+#define PVS_PREV_COL  MEM_point_dist_lo   /* point_dist_lo  — the column the PREVIOUS call painted */
+#define PVS_COLOUR    MEM_hypot_min_hi   /* hypot_min_hi   — this call's colour byte */
+#define PVS_COLOUR_P  MEM_hypot_min_lo   /* hypot_min_lo   — ...and the previous call's */
+#define PVS_HALF      MEM_math_lo   /* math_lo        — bit 0: is the column past the screen's middle */
+#define PVS_OTHER_COL MEM_projected_line   /* projected_line — the OTHER endpoint's column */
+#define PVS_OTHER_X   MEM_plot_ptr3_hi   /* plot_ptr3_hi   — ...and its x, at 6.2 fixed point */
+#define PVS_GAP_COL   MEM_math_hi   /* math_hi        — fill_object_gap's own column cursor */
 #define PVS_GAP_FLOOR MEM_point_delta_sign   /* point_delta_sign[0] — ...and its safe write cursor */
 
 /* Halve a signed 6.2 coordinate the way $1C42/$1C66 do: arithmetically, and ROUNDED — the
@@ -10530,9 +10525,9 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
    defines below are its own names for them (docs/rename.md).
    =========================================================================== */
 
-#define STEER_SIGN     0x0074u   /* math_lo        — the demand's sign byte; bit 0 = negative */
-#define STEER_DEMAND   0x0075u   /* math_hi        — ...and its magnitude */
-#define STEER_KEYS     0x0076u   /* shared_temp_76 — 0 none, 1 or 2 one way, 3 both keys down */
+#define STEER_SIGN     MEM_math_lo   /* math_lo        — the demand's sign byte; bit 0 = negative */
+#define STEER_DEMAND   MEM_math_hi   /* math_hi        — ...and its magnitude */
+#define STEER_KEYS     MEM_shared_temp_76   /* shared_temp_76 — 0 none, 1 or 2 one way, 3 both keys down */
 #define ASSIST_LAMP_0  0x77DBu   /* the four dashboard screen bytes poll_steering_assist lights */
 #define ASSIST_LAMP_1  0x77DCu
 #define ASSIST_LAMP_2  0x77E3u
@@ -12677,7 +12672,6 @@ static inline void object_coord_word_set(unsigned axis, uint16_t value)
    $0C, $85 and $87 have no name yet — queued in docs/rename.md.) */
 /* PLACE_CAR_SOI / PLACE_CAR_ACROSS retired 2026-09-08 — both cells have symbols.csv rows
    (and therefore mem.h names) now: car_section_dir_index and shared_temp_85. */
-#define PLACE_CAR_ALONG   0x0084u   /* car_section_along[slot] — distance along the section */
 #define PLACE_CAR_DIR     MEM_point_delta_sign   /* the three direction bytes at +0/+1/+2 */
 
 /* signextend8( |dir| * factor >> 8 ) with the sign of dir — the signed contribution of one axis,
@@ -12714,7 +12708,7 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
        cells.  Reproduce those writes exactly so the shared tail routines see identical memory;
        only the mul8 product residue ($74/$75/$76) and the PHP stack byte then differ. */
     mem[MEM_car_section_dir_index]    = soi;
-    mem[PLACE_CAR_ALONG]  = along;
+    mem[MEM_shared_temp_84] = along;
     mem[MEM_shared_temp_85] = across;
 
     uint8_t dir1[3];
@@ -13007,7 +13001,7 @@ uint8_t paint_fence_backdrop_core(uint8_t horizon)
    car_order holds the field in running order; each entry is a car index 0-19.
    =========================================================================== */
 
-#define FPN_PLAYER_SLOT 0x0003u   /* zp_scratch_index ($0003); in THIS routine = the player's slot in car_order */
+#define FPN_PLAYER_SLOT MEM_zp_scratch_index   /* zp_scratch_index ($0003); in THIS routine = the player's slot in car_order */
 
 /* $507E car_index_dec — step a car_order index back one, wrapping 0 -> 19.
    Faithful to `DEX / BPL / LDX #$13` for ANY input byte: a result with bit 7 set
