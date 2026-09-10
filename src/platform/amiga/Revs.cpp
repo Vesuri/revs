@@ -12,6 +12,9 @@
 extern "C" volatile uint16_t g_vbiCount;
 extern "C" volatile unsigned long g_fpsFrames;
 #include "../../cpu/mem_decl.h"
+#ifdef REVS_BCD_SELFTEST
+#include "../../cpu/bcd.h"     // the ABCD/SBCD helpers this build sweeps on the target
+#endif
 extern "C" MEM_QUAL uint8_t mem[65536];   // the 6502 RAM image (src/cpu/cpu.c)
 extern "C" void engine_main(void);        // $63BD, the transpiled engine entry
 
@@ -178,8 +181,57 @@ void Revs::drainTicks()
     g_bodyPending = s_pendingTicks;
 }
 
+#ifdef REVS_BCD_SELFTEST
+/* ⭐⭐ `make BCDSELFTEST=1 PROBES=1` — prove the 68000's ABCD/SBCD paths in src/cpu/bcd.h on the
+   REAL TARGET, because inline asm that has only been eyeballed in an objdump is not verified.
+   Sweeps all 100x100x2 VALID-BCD input triples (the helpers' whole contract domain) and compares
+   the opcode result against the digit algorithm written out here independently.  Read with
+   amiga/bcd_selftest.gdb; g_bcdCases must be 40000 and both fail counters 0. */
+extern "C" {
+volatile unsigned long g_bcdCases    = 0;
+volatile unsigned long g_bcdAddFails = 0;
+volatile unsigned long g_bcdSubFails = 0;
+volatile unsigned long g_bcdFirstBad = 0;   // (a<<16)|(b<<8)|carry of the first disagreement
+}
+
+static void bcd_selftest()
+{
+    for (unsigned ah = 0; ah < 10u; ah++) for (unsigned al = 0; al < 10u; al++)
+    for (unsigned bh = 0; bh < 10u; bh++) for (unsigned bl = 0; bl < 10u; bl++)
+    for (unsigned ci = 0; ci < 2u;  ci++) {
+        const uint8_t a = (uint8_t)((ah << 4) | al), b = (uint8_t)((bh << 4) | bl);
+
+        /* the expected ADD, from the digits, with no opcode involved */
+        unsigned lo = al + bl + ci, hi = ah + bh;
+        if (lo > 9u) { lo -= 10u; hi += 1u; }
+        unsigned addCarry = (hi > 9u) ? 1u : 0u;
+        if (addCarry) hi -= 10u;
+        BcdAdd got = bcd_add(a, b, ci);
+        if (got.val != (uint8_t)((hi << 4) | lo) || got.carry != (uint8_t)addCarry) {
+            if (!g_bcdAddFails) g_bcdFirstBad = ((unsigned long)a << 16) | (b << 8) | ci;
+            g_bcdAddFails = g_bcdAddFails + 1u;
+        }
+
+        /* ...and the expected SUBTRACT, ci = 1 meaning "no borrow in", as on the 6502 */
+        int slo = (int)al - (int)bl - (int)(ci ? 0u : 1u), shi = (int)ah - (int)bh;
+        if (slo < 0) { slo += 10; shi -= 1; }
+        unsigned subCarry = (shi < 0) ? 0u : 1u;   /* 1 = no borrow */
+        if (shi < 0) shi += 10;
+        BcdSub gotS = bcd_sub(a, b, ci);
+        if (gotS.val != (uint8_t)((shi << 4) | slo) || gotS.carry != (uint8_t)subCarry) {
+            if (!g_bcdSubFails) g_bcdFirstBad = ((unsigned long)a << 16) | (b << 8) | ci;
+            g_bcdSubFails = g_bcdSubFails + 1u;
+        }
+        g_bcdCases = g_bcdCases + 2u;
+    }
+}
+#endif
+
 void Revs::initialize()
 {
+#ifdef REVS_BCD_SELFTEST
+    bcd_selftest();
+#endif
     // ⚠ Install the copper list while the copper is halted (display DMA is off at this
     // point — PlatformAmiga::run() guarantees it).  Installing into a running copper is
     // how the Atari port lost its one-time register setup to stray OS-copper frames.

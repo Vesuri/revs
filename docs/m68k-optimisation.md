@@ -138,3 +138,18 @@ Rewrite hot functions in idiomatic C:
   must be empty (bodies unreferenced → not even linked). In this port `amiga/Makefile` runs that
   audit on EVERY link (the `muldiv-audit` target), so a regression is caught the moment it is
   introduced rather than months later.
+
+## ⚠⚠ `ROR`/`ROL` DO NOT AFFECT X — and BCD arithmetic needs X
+
+`ABCD` / `SBCD` / `ADDX` / `SUBX` / `NEGX` take their carry-in from **X**, not C.  Getting a C
+variable into X is therefore not `ror.b #1,<reg>`: **ROR and ROL leave X untouched.**  Only the
+shifts (`ASL`/`ASR`/`LSL`/`LSR`) and `ROXL`/`ROXR` write it — and ROXR/ROXL also *read* X, so
+they are the wrong tool for seeding it.  **Use `lsr.b #1,<reg>`** on a 0/1 byte.
+
+Getting X back out: `moveq #0,<d>` then `addx.b <d>,<d>` — MOVEQ writes N/Z/V/C but **not** X,
+so it can sit anywhere before the ADDX.
+
+⚠ This class of bug assembles cleanly and disassembles to exactly the instructions you intended,
+so an objdump review cannot catch it.  `src/cpu/bcd.h` shipped it briefly and it was found only
+by an on-target sweep (`make BCDSELFTEST=1 PROBES=1`, 4500 add / 10000 sub failures out of
+40000).  **Inline asm for this target is unverified until it has RUN on the target.**

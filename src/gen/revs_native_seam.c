@@ -1655,7 +1655,7 @@ void add_tally_to_lap_total(void)
     /* $6698 — X the standings column, Y the car (#203).  Exit ABI: A and C are the high byte's
        BCD add; N/Z/V are whatever the 6502's ADC left and its one caller (tally_bcd_column,
        whose own exit ABI is X-only) never reads them, so they are not reconstructed here. */
-    Adc hi = add_tally_to_lap_total_core(cpu.X, cpu.Y);
+    BcdAdd hi = add_tally_to_lap_total_core(cpu.X, cpu.Y);
     cpu.A = hi.val;
     cpu.C = hi.carry;
 }

@@ -290,6 +290,41 @@ still computes what it computed an hour ago — it has no independent authority,
 be re-recorded to make a failing check pass.  Ground truth for behaviour is still the BBC
 (`make refloop`).
 
+## ⭐⭐⭐ THE DOMAIN RULE (user-stated, and it outranks the `fill_random` default)
+
+> **We are not here to prove that a function behaves correctly on all possible random inputs.
+> It has to behave correctly on the inputs used in the actual game.**
+
+`fill_random` is the right default for a byte the engine treats as arbitrary — that is what the
+FOURTH..TENTH lessons below are about, and none of them are softened. It is the WRONG default
+for a byte whose **representation is constrained**, because then the harness is asserting
+behaviour on states the game cannot reach, and a twin can only satisfy that by reproducing
+machinery the port exists to delete.
+
+⚠⚠ **The tell: the harness is the only reason a twin is not written the obvious way.** That is
+not a fidelity win, it is a fixture bug. It cost a whole software reimplementation of the NMOS
+decimal `ADC` before it was named: the 68000's `ABCD` agrees with the 6502 on **every valid-BCD
+input** and diverges only where a nibble is `$A..$F`, which Revs never stores — so randomising
+those bytes was forcing a helper to emulate behaviour the game does not have, in place of one
+instruction. The fix is to narrow the fixture (`rnd_bcd` / `RND_BCD_ALL`), not to widen the twin.
+
+**How to narrow one honestly:**
+
+1. Narrow to a **representation invariant you can state about the game** ("these cells are packed
+   BCD", "this index is < 21", "this pointer is in `$3000..$4380`") — never to "the inputs that
+   happen to pass".
+2. Write the invariant, and where it comes from, at the fixture.
+3. Say what happens if it is ever violated at runtime: **the defect is in whatever wrote the
+   byte**, and that is where it gets fixed. If nothing in the engine can be pointed at as the
+   writer, the invariant is not real — go back to `fill_random`.
+4. ⚠ Narrowing is not licence to stop randomising the CONTROL FLOW. Every branch must still go
+   both ways, and the VACUOUS checks still apply.
+
+⭐ And re-read `docs/faithfulness-seam.md` before invoking this on a *value* range rather than a
+representation: "the game only ever passes 0..7 here" is a claim about a trajectory, which is
+much weaker than a claim about a format, and `determinism`/`viewdiff` are the only things that
+could back it.
+
 ## ⭐⭐ …and a TENTH, found by twins #4 and #5: a RANDOM PRE-STATE CAN BE SYSTEMATICALLY DEGENERATE
 
 `fill_random` over the whole 64 KB is the harness's default and rule 4 of its own header — no

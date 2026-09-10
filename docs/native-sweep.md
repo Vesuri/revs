@@ -115,7 +115,7 @@ exactly four groups, and each group is mandated somewhere other than this file:
 | Group | Members | Why it stays |
 |---|---|---|
 | **Circuit hook / SMC seam** | `horizon_half_width_at_core`, `update_camera_and_drive_state_core`, `read_driving_controls_core`, `rebuild_walk_reversed_core`, `load_section_from_segment_core`, `fill_line_attr_core` | CLAUDE.md: *a hook/SMC seam must hand over every register the 6502 has live there*, derived from the surrounding instructions, not from what Silverstone's callee reads. Each writes `cpu` immediately before `revs_track_hook(target)` and reads back what the circuit's own code left. |
-| **`cpu.D` for a BCD routine** | `add_tally_to_lap_total_core`, `tally_bcd_column_core`, `lap_complete_core`, `check_car_pair_core`, `sort_cars_by_key_core`, `tick_race_timers_core` | Decimal mode is real *behaviour* here — six of the eight `SED` sites inventoried in `docs/static-map.md` §Decimal mode. ⚠⚠ But see **The BCD front** below: real behaviour does NOT license the 6502 *idiom*, and this row was used as if it did. |
+| **`cpu.D` for a BCD routine** | `add_tally_to_lap_total_core`, `tally_bcd_column_core`, `lap_complete_core`, `check_car_pair_core`, `sort_cars_by_key_core`, `tick_race_timers_core` | ✅ **CLOSED 2026-09-10** — see **The BCD routines** below. The arithmetic stays decimal but goes through `src/cpu/bcd.h`; every `cpu.D = 1` is gone, and the three surviving `cpu.D = 0` writes are the routines' architectural CLDs, not the idiom. |
 | **MOS / OS-call ABI** | `shift_key_commands_core`, `kbd_test_key_core`, `engine_init_core` (`cpu.S`), `mul16_by_1_5_core` (`PHA` residue at `$0100+S`) | The harness compares registers at every OS-call boundary, and a `PHA`/`PLA` pair leaves a real byte in the stack page. |
 | **A documented exit publish** | `race_main_loop_core`, `emit_edge_width_offset_core`, `build_track_geometry_core`, `draw_road_core`, `clamp_and_store_steer_angle_core`, `scale_angle_in_section_core`, `enter_session_core` | The fixture declares the mask; the argument is written at the code. |
 
@@ -154,56 +154,128 @@ The text walk stays hoistable in principle — its safety argument is already wr
 
 ---
 
-# ⚠⚠ Open front — THE BCD ROUTINES (user-raised; do this as its own pass)
+# ✅ Closed front — THE BCD ROUTINES (user-raised; done 2026-09-10)
 
-The `cpu.D` row in batch 2's table conflated two different claims and only the first is true:
+The `cpu.D` row in batch 2's table conflated two different claims and only the first was true:
 
 * **True:** these six routines really do decimal arithmetic. BCD is the game's own
   representation for lap times, split times and the standings columns — not an artefact of the
   6502.
-* **False, and this is the gap:** that therefore the *implementation* has to stay 6502-shaped.
+* **False, and this was the gap:** that therefore the *implementation* had to stay 6502-shaped.
   Keeping `cpu.D` set and routing the adds through the `ADC`/`SBC` macros so they consult it is
   exactly the "macros, helpers and use of the cpu struct" the sweep exists to remove. **Decimal
   mode being real behaviour is not a licence for the decimal-mode idiom.** These six were
   excluded from the cleanup on that reasoning and should not have been.
 
-What the pass has to do:
+## What shipped
 
-1. **Use the 68000's own BCD instructions where they apply.** `ABCD` / `SBCD` (and `NBCD`) are
-   packed-BCD byte add/subtract with the extend bit as the decimal carry — the direct hardware
-   equivalent of a 6502 `ADC`/`SBC` with D=1. A BCD column add becomes one instruction, not a
-   macro that recomputes five flags. ⚠ `ABCD`/`SBCD` use **X**, not C, as carry-in, and set C
-   as carry-out — so a multi-column chain seeds X once and the C→X handoff is the thing to get
-   right, not the flag soup.
-2. **Where an opcode does not apply, add named BCD helpers** (`src/cpu/` alongside
-   `m68k_math.h`) — a packed-BCD add, subtract, increment and the digit split/join — and write
-   the twins against those, the same way the wide-value campaign replaced byte lanes with
-   `uintNN_t`.
-3. **Then delete `cpu.D` from these bodies**, which retires the whole fourth group of the
-   `cpu`-in-a-`_core` table.
-4. **The front owns every `adc_value`/`sbc_value` left in the file.** All 13 call sites are
-   inside a decimal bracket, so nothing else in the sweep can reach them. ⚠ One of them —
-   `check_car_pair_core`'s `$275E` subtract — runs with **D=0** and uses only `.val`/`.carry`,
-   i.e. it is a plain binary subtract wearing the helper. It looks like an easy standalone
-   conversion and is not: the routine only clears D at `$26E5`, so whether that site is binary
-   depends on the **entry** D the fixture hands it, which is a claim to settle inside this pass
-   and not from the outside.
+`src/cpu/bcd.h` — the BCD vocabulary, alongside `m68k_math.h`: `bcd_add(a, b, carryIn) ->
+{val, carry, n, z, v}` and `bcd_sub(a, b, carryIn) -> {val, carry}` (carry 1 = no borrow, as on
+the 6502). All **13** `adc_value`/`sbc_value` call sites in `revs_native.c` are gone, and with
+them every `cpu.D = 1`:
 
-Constraints this pass inherits:
+| Routine | What changed |
+|---|---|
+| `add_tally_to_lap_total_core` | three `adc_value` → `bcd_add` |
+| `tally_bcd_column_core` | the column loop's two `adc_value` → `bcd_add` |
+| `lap_complete_core` | three `sbc_value` → `bcd_sub`; the base-60 fixup → `bcd_add(t, 0x60, 0)` |
+| `tick_race_timers_core` / `add_frame_time_core` | the three race-clock columns → `bcd_add` |
+| `check_car_pair_core` | the `$26DD` pass count → `bcd_add`; the `$275E` subtract → **plain binary C** |
+| `sort_cars_by_key_core` | `sort_bcd_compare3`'s three `sbc_value` → `bcd_sub` |
 
-* ⚠ **A twin's flags still have to be right.** These routines are compare-and-branch heavy
-  (`sort_cars_by_key`, `check_car_pair`) and the 6502's C after a decimal `ADC` is the decimal
-  carry — which `ABCD`'s C matches, but which a C-level `if (sum > 0x99)` reimplementation gets
-  subtly wrong at the invalid-digit inputs the fixtures generate. **Brute-force the helper over
-  all 256x256x2 inputs against the oracle's decimal `ADC`**, exactly as `halve_signed_rounded`
-  was proven over all 256.
-* ⚠ The 6502's decimal `ADC` is *defined* on invalid BCD digits (`$0A`..`$0F` nibbles) and the
-  fixtures' randomised `mem[]` will hand them to it. `ABCD` on the 68000 is **not** specified
-  the same way there. So the helper — not a bare opcode — is the safe default, and an `ABCD`
-  fast path is only legal where the inputs are provably valid BCD.
-* The gate is `make validate FN=` for each of the six plus the determinism family;
-  `tick_race_timers` and `lap_complete` additionally need `determinism-race`, which is the only
-  trajectory that reaches a lap boundary.
+**Gate, all green:** `make validate` (full, PASS), `make endian-lint` clean, and all five
+determinism trajectories including `determinism-race`.
+
+## ⭐⭐ The 68000's own opcodes do the digits
+
+`ABCD` / `SBCD`, in inline asm under `__mc68000__`, with a C body for the host build. The
+contract is **both operands are valid packed BCD**, which is a statement about the game, not
+about the harness — and it is what licenses the opcode. Measured over all 256×256×2 inputs
+against the 6502's decimal `ADC`:
+
+* **0 disagreements on every valid-BCD input.**
+* 10188 value / 1296 carry disagreements, all with a nibble in `$A..$F` (first: `$04 + $8F +
+  C=1` → 6502 `$9A`/C=0, ABCD `$FA`/C=1).
+
+⇒ on the data the engine holds, the opcode **is** the 6502. The `$A..$F` divergence is not a
+reason to reimplement decimal `ADC` in software — it is a statement about inputs the game does
+not produce. See §THE VALIDATION DOMAIN below for the rule that follows from it.
+
+⚠ **The FLAGS cannot come from the opcode and don't.** An NMOS decimal `ADC` takes Z and V from
+the BINARY sum and N from the PRE-correction high nibble; `ABCD` leaves N/V undefined and sets Z
+from the decimal result. So `val`/`carry` come from the hardware and N/Z/V are replayed from the
+operands in C. Two sites read them (`menu_wait_key`'s digit bump, `add_frame_time`'s overflow
+test); everywhere else they fold away.
+
+## ⚠⚠ ROR DOES NOT AFFECT X ON THE 68000 — and that cost the first version of this helper
+
+`ABCD`/`SBCD` take their carry/borrow in **X**, so the helper has to get a C variable into X.
+The obvious `ror.b #1,<reg>` **does not work**: ROR/ROL leave X untouched (only the shifts and
+ROXR/ROXL touch it), so the carry-in never reached the opcode. It assembles, it disassembles to
+exactly the instructions you meant, and it is wrong. **Use `lsr.b #1`.** Getting X back out is
+`moveq #0,<d>` + `addx.b <d>,<d>` — MOVEQ leaves X alone, so it can sit anywhere before the ADDX.
+
+## ⭐⭐ ...and the only reason that was caught: an ON-TARGET sweep
+
+`make BCDSELFTEST=1 PROBES=1` compiles a startup sweep of all 100×100×2 valid-BCD triples
+through both helpers, comparing against the digit algorithm written out independently, and
+`amiga/bcd_selftest.gdb` reads the counters. **`g_bcdCases` must be 40000 and both fail counters
+0.** The ROR bug read **4500 add / 10000 sub failures** — no host test could have seen it (the
+host takes the C arm) and no objdump review did see it, because the emitted `abcd`/`sbcd` were
+exactly right. Inline asm for this target is unverified until it has run on the target.
+
+⚠ Its own false-zero, worth one line: a `.gdb` script for `diag_run.sh` **must `continue`**.
+`diag_run.sh` attaches with the target halted and SIGINTs gdb after the delay, so a script
+without `continue` reads memory before a single instruction has executed — which is
+indistinguishable from a counter that was never incremented. The first run printed
+`cases = 0`, and the control that settled it was reading `g_vbiCount`, which was also 0.
+
+## ⭐⭐ THE VALIDATION DOMAIN: a fixture models the GAME, not the input space
+
+The rule this front produced, and it is general (see `docs/validation-harness.md`):
+
+> **A validated twin exists to be correct on the data the game produces.** `fill_random` is the
+> right default for a byte the engine treats as arbitrary and the wrong one for a byte whose
+> REPRESENTATION is constrained. Proving a twin correct on inputs the game cannot generate buys
+> nothing, and it can cost real fidelity: here it was about to force a software reimplementation
+> of NMOS decimal `ADC` in place of a one-instruction `ABCD`.
+
+`validate_native.c` grew `rnd_bcd()` and `RND_BCD_ALL()` for it — the latter re-rolls all
+seventeen BCD cells/arrays as valid digits and is called right after `fill_random` in all nine
+BCD fixtures, so a new one cannot forget a table. If a real trajectory ever puts an invalid
+digit in one of these, the defect is in whatever wrote it, and that is where to fix it.
+
+## 📊 Measured: no framerate change, as expected
+
+`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`, 30 s warp, against a
+**same-session control built from the stashed tree**:
+
+| | row vector | non-outlier avg |
+|---|---|---|
+| BCD front | `4.49 4.58 4.49 4.58 [3.02] 4.58 4.49 4.58 4.58 [3.02] 4.49 4.58 4.49` | **4.54 FPS** |
+| control | `4.49 4.58 4.49 4.58 [3.02] 4.58 4.49 4.58 4.58 [3.02] 4.58 4.49` | **4.54 FPS** |
+
+Identical row for row. That is the right answer and not a disappointment: **none of these eight
+routines is on the per-frame render path** — they are the race clock, the standings, the
+lap-time bookkeeping and the front-end menu (`docs/static-map.md` §Decimal mode says so
+explicitly). The front was a correctness-and-idiom job, and the framerate was never the claim.
+
+## ⭐ NMOS decimal flag semantics, for the next reader
+
+The 6502's decimal `ADC` does **not** derive its flags from the decimal result:
+
+* **Z and V come from the BINARY sum**, not the corrected one.
+* **N comes from the high nibble BEFORE its `+6` correction.**
+* A decimal **`SBC`**'s carry-out is the plain **binary** borrow — decimal mode corrects only the
+  accumulator's digits, never the borrow.
+
+## What stayed, and why it is not the idiom
+
+Three `cpu.D = 0` writes remain and are **architectural, not 6502 shape**: the `$66B4` CLD in
+`add_tally_to_lap_total`, the `$0FB5` CLD in `sort_cars_by_key` and `tick_race_timers`' CLD after
+the frame-time add. Each is decimal-mode state the routine *leaves for its caller* — a real side
+effect. `validate_native.c` asserts the first one outright (`add_tally_to_lap_total left D set in
+N cases` is a FAIL). The `SED` half has no such standing and is gone everywhere.
 
 ---
 

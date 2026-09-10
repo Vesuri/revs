@@ -10705,19 +10705,23 @@ void all_cars_reset_best_lap_core(void)
 
 /* $6698  add_tally_to_lap_total — fold a standings column into a car's lap total  (#203)
    A three-byte BCD add of column `column`'s 16-bit tally into car `car`'s 24-bit cumulative
-   lap total, the third byte taking only the carry.  ⚠ One of the eight SED sites
-   (docs/static-map.md §Decimal mode): the adds are genuinely decimal, which is why this twin
-   keeps adc_value instead of a plain uint32_t sum, and it restores D=0 on the way out exactly
-   as the $66B4 CLD does.  Returns the high byte's add so the caller can see the final carry. */
-Adc add_tally_to_lap_total_core(uint8_t column, uint8_t car)
-{
-    cpu.D = 1;                                                                    /* $6698 SED */
+   lap total, the third byte taking only the carry.  Returns the high byte's add so the caller
+   can see the final carry.
 
-    Adc lo  = adc_value(mem[MEM_car_lap_lo  + car], mem[MEM_standings_bcd_lo + column], 0);
+   ⚠ One of the eight SED sites (docs/static-map.md §Decimal mode).  BCD is the GAME's
+   representation for a lap total, so the arithmetic is genuinely decimal and stays decimal —
+   but it is `bcd_add` (src/cpu/bcd.h), not a `cpu.D` bracket around a flag macro.
+   ⚠⚠ The `cpu.D = 0` at the exit is NOT the idiom and does not go: the $66B4 CLD is
+   architectural state this routine leaves for its caller, and validate_native.c asserts it
+   (`add_tally_to_lap_total left D set in N cases` is a FAIL).  The SED has no such standing —
+   nothing reads D between it and the CLD once the adds no longer consult it. */
+BcdAdd add_tally_to_lap_total_core(uint8_t column, uint8_t car)
+{
+    BcdAdd lo  = bcd_add(mem[MEM_car_lap_lo  + car], mem[MEM_standings_bcd_lo + column], 0);
     mem[MEM_car_lap_lo  + car] = lo.val;
-    Adc mid = adc_value(mem[MEM_car_lap_mid + car], mem[MEM_standings_bcd_hi + column], lo.carry);
+    BcdAdd mid = bcd_add(mem[MEM_car_lap_mid + car], mem[MEM_standings_bcd_hi + column], lo.carry);
     mem[MEM_car_lap_mid + car] = mid.val;
-    Adc hi  = adc_value(mem[MEM_car_lap_hi  + car], 0x00, mid.carry);
+    BcdAdd hi  = bcd_add(mem[MEM_car_lap_hi  + car], 0x00, mid.carry);
     mem[MEM_car_lap_hi  + car] = hi.val;
 
     cpu.D = 0;                                                                    /* $66B4 CLD */
@@ -11863,9 +11867,11 @@ void place_car_world_coords(void)
      * otherwise                  -> count = (mode-1) * 2
    The count is a 16-bit down-counter (low byte, then high byte, exactly as the 6502 walks it).
 
-   ⚠ One of the eight SED sites (docs/static-map.md §Decimal mode): the accumulate stays BCD, so
-   the two adds go through adc_value with D set — that is sanctioned here and nowhere on the render
-   path.  Only the pre-SED product at $5A52 was a shim (mul8); it is now revs_mulu16. */
+   ⚠ One of the eight SED sites (docs/static-map.md §Decimal mode): the accumulate stays BCD,
+   because a standings column IS a BCD counter — but as `bcd_add` (src/cpu/bcd.h), not as a
+   `cpu.D` bracket.  ⚠ No CLD here: the SED's scope ends inside add_tally_to_lap_total, whose
+   own $66B4 CLD is what clears it, so this routine never had a D of its own to restore.
+   Only the pre-SED product at $5A52 was a shim (mul8); it is now revs_mulu16. */
 
 uint8_t tally_bcd_column_core(uint8_t x)
 {
@@ -11915,12 +11921,11 @@ uint8_t tally_bcd_column_core(uint8_t x)
        that DO fail are the zero count reading 1 instead of 256, and 256 becoming 255. */
     unsigned iterations = (bumps & 0xFFu) ? bumps : bumps + 256u;
 
-    /* SED; the 16-bit BCD accumulate loop. */
-    cpu.D = 1;
+    /* $5A5D SED — the 16-bit BCD accumulate loop. */
     do {
-        Adc lo = adc_value(mem[MEM_standings_bcd_lo + x], mem[MEM_standings_increment + x], 0);   /* the low BCD column */
+        BcdAdd lo = bcd_add(mem[MEM_standings_bcd_lo + x], mem[MEM_standings_increment + x], 0);   /* the low BCD column */
         mem[MEM_standings_bcd_lo + x] = lo.val;
-        Adc hi = adc_value(mem[MEM_standings_bcd_hi + x], 0x00, lo.carry);       /* the carry into the high column */
+        BcdAdd hi = bcd_add(mem[MEM_standings_bcd_hi + x], 0x00, lo.carry);       /* the carry into the high column */
         mem[MEM_standings_bcd_hi + x] = hi.val;
     } while (--iterations != 0);                          /* was DEC math_lo/BNE + DEC math_hi/BPL */
 
@@ -12294,8 +12299,8 @@ void full_track_scan_rebuild(void) { full_track_scan_rebuild_core(cpu.A); }
  * and, on the final lap, arms the end-of-session countdown.
  *
  * BCD is real here — it is one of the eight sanctioned SED sites (docs/static-map.md §Decimal
- * mode) — so the time subtract goes through sbc_value/adc_value inside a cpu.D=1 bracket, exactly
- * mirroring the routine's SED..CLD.  The best-lap check is a plain 24-bit magnitude compare: valid
+ * mode) — so the time subtract goes through bcd_sub/bcd_add (src/cpu/bcd.h), which do the digit
+ * arithmetic directly instead of wearing a cpu.D=1 bracket around a binary flag macro.  The best-lap check is a plain 24-bit magnitude compare: valid
  * BCD bytes order like their decimal value, so no decimal arithmetic is needed merely to sort them.
  * No register or flag escapes (the sole caller discards A/flags), so the shim marshals nothing back.
  * ------------------------------------------------------------------------------------------------ */
@@ -12341,19 +12346,20 @@ static void lap_complete_core(uint8_t x)
 
     /* lap time = race_clock - car_lap_start, a 3-byte BCD value whose MIDDLE byte is seconds in
        base 60: a borrow there adds $60 and forces a borrow into the minutes byte. */
-    cpu.D = 1;                                          /* SED — sanctioned BCD site */
-    Adc t_lo = sbc_value(mem[MEM_race_clock_lo], mem[MEM_car_lap_start_lo + x], 1);   /* SEC first */
+    /* SED at $4FE1 — sanctioned BCD site, and decimal here is the game's own representation
+       of a time, not a 6502 artefact.  The subtracts are bcd_sub (src/cpu/bcd.h). */
+    BcdSub t_lo = bcd_sub(mem[MEM_race_clock_lo], mem[MEM_car_lap_start_lo + x], 1);   /* SEC first */
     math_lo = t_lo.val;
 
-    Adc t_mid = sbc_value(mem[MEM_race_clock_mid], mem[MEM_car_lap_start_mid + x], t_lo.carry);
+    BcdSub t_mid = bcd_sub(mem[MEM_race_clock_mid], mem[MEM_car_lap_start_mid + x], t_lo.carry);
     unsigned hi_carry_in = t_mid.carry;                 /* 1 = no borrow out of the seconds byte */
     if (!t_mid.carry) {                                 /* seconds underflowed: base-60 fixup */
-        t_mid = adc_value(t_mid.val, 0x60, 0);          /* ADC #$60 (C clear) */
+        t_mid.val = bcd_add(t_mid.val, 0x60, 0).val;    /* ADC #$60 (C clear); its carry is dead */
         hi_carry_in = 0;                                /* CLC — force the borrow into minutes */
     }
     math_hi = t_mid.val;
 
-    Adc t_hi = sbc_value(mem[MEM_race_clock_hi], mem[MEM_car_lap_start_hi + x], hi_carry_in);
+    BcdSub t_hi = bcd_sub(mem[MEM_race_clock_hi], mem[MEM_car_lap_start_hi + x], hi_carry_in);
     hypot_min_hi = t_hi.val;
 
     /* only a non-negative lap time (no borrow out of the whole subtract) can be a best lap */
@@ -13095,8 +13101,8 @@ StageNearbyCar stage_nearby_car_core(uint8_t gapA, unsigned gapFar, uint8_t slot
    shared_temp_77 and the mem[$0083] magnitude scratch — point_delta_hi reused, see rename note)
    keep their 6502 exit values in mem[] too.
 
-   ⚠ ONE BRACKETED SED SITE: only the pass-count ADC at $26DD runs with D=1 (adc_value BCD); the
-   whole rest of the routine, including every sbc_value, is D=0.  Exit A/X/Y/flags are dead — both
+   ⚠ ONE BRACKETED SED SITE: only the pass-count ADC at $26DD is decimal (it goes through
+   `bcd_add`); every other subtract in the routine runs with D=0 and is plain binary C.  Exit A/X/Y/flags are dead — both
    callers reload X immediately after — so this is result-only (LIVE_NONE, mem[]-only compare). */
 void check_car_pair_core(void)
 {
@@ -13151,10 +13157,10 @@ void check_car_pair_core(void)
                                                 - (int)mem[MEM_car_lap_count + secondSlot]  /* $26d8 SBC (X=second) */
                                                 - (rolCarryOut ? 0 : 1));               /* C-in = ROL carry-out; D=0 */
                     if (lapDiff == 0u) {                     /* $26db same lap -> count the pass */
-                        cpu.D = 1;                           /* $26dd SED */
-                        Adc pc = adc_value(passAmt, pass_count_bcd, 0);  /* $26de CLC / $26e1 ADC (BCD) */
-                        cpu.D = 0;                           /* $26e5 CLD */
-                        pass_count_bcd = pc.val;             /* $26e3 */
+                        /* $26dd SED / $26e5 CLD — the pass counter is a BCD tally, so the add
+                           is decimal.  $99 is "minus one" in that representation, which is how
+                           the player LOSING a place is one add rather than a subtract. */
+                        pass_count_bcd = bcd_add(passAmt, pass_count_bcd, 0).val;  /* $26de-$26e3 */
                     }
                 }
             }
@@ -13218,9 +13224,16 @@ void check_car_pair_core(void)
                         }
                     } else {
                         /* bit7 clear ($275E): |state_2[second] - state_2[first]| decides */
-                        Adc df = sbc_value(mem[MEM_car_section_across + secondSlot],    /* $275e LDA / $2761 SEC */
-                                           mem[MEM_car_section_across + firstSlot], 1); /* $2762 SBC */
-                        uint8_t diff = df.carry ? df.val : (uint8_t)(~df.val);   /* $2765 BCS / $2767 EOR #$FF */
+                        /* ⭐ A PLAIN BINARY SUBTRACT, and the D question is settled rather than
+                           dodged: this site sits AFTER the $26e5 CLD on every path that runs the
+                           SED, and the routine is entered with D=0 on two independent grounds —
+                           all eight SED sites bracket their own CLD (docs/static-map.md §Decimal
+                           mode), and validate_native.c's fixture pins `c.D = 0` citing it.  So
+                           the sbc_value that used to wear the decimal helper here was computing
+                           binary every time. */
+                        int      d    = (int)mem[MEM_car_section_across + secondSlot]   /* $275e LDA / $2761 SEC */
+                                      - (int)mem[MEM_car_section_across + firstSlot];   /* $2762 SBC */
+                        uint8_t  diff = (d >= 0) ? (uint8_t)d : (uint8_t)(~(uint8_t)d); /* $2765 BCS / $2767 EOR #$FF */
                         if (diff >= 0x64u) {
                             outcome = PROX_TAIL;             /* $2769-6b -> tail */
                         } else if (diff >= 0x50u) {
@@ -13266,11 +13279,13 @@ void check_car_pair_core(void)
    find_player_neighbours, which reads the sorted order to find the player's rivals.
 
    ⚠ ONE OF THE EIGHT SED SITES (docs/static-map.md §Decimal mode).  SED at $0F66 and CLD
-   at $0FB5 bracket the whole sort, so the three key compares are BCD and MUST stay
-   sbc_value (decimal-honoured) — this is emphatically NOT a de-carry-to-uint16 site.  The
-   compare's borrow-out is the plain binary borrow in both modes, so the ORDERING is exact
-   regardless of D; only the DIFFERENCE bytes are BCD, and they are the sole reason the
-   fixture must not pin D=0.
+   at $0FB5 bracket the whole sort, so the three key compares are genuinely decimal — they
+   go through bcd_sub (src/cpu/bcd.h), and this is emphatically NOT a de-carry-to-uint16
+   site.  The compare's borrow-out is the plain binary borrow in both modes, so the ORDERING
+   is exact regardless of D; only the DIFFERENCE bytes are BCD, and they are the sole reason
+   the fixture must not pin D=0.  ⚠⚠ The $0FB5 CLD stays as a `cpu.D = 0` write even though
+   nothing here consults D any more: it is architectural state the sort leaves for its
+   caller, so dropping it would be dropping a real side effect, not an idiom.
 
    READER-NATIVISATION (the campaign's point).  Four zero-page scratch cells this routine
    reuses keep their 6502 exit values in mem[] until the final $74/$75 relocation:
@@ -13303,11 +13318,11 @@ typedef struct { uint8_t borrow; uint8_t equal; } SortCmp;
 static SortCmp sort_bcd_compare3(uint16_t loTbl, uint16_t midTbl, uint16_t hiTbl,
                                  uint8_t a, uint8_t b)
 {
-    Adc lo  = sbc_value(mem[loTbl  + a], mem[loTbl  + b], 1u);    /* SEC; SBC low  */
+    BcdSub lo  = bcd_sub(mem[loTbl  + a], mem[loTbl  + b], 1u);   /* SEC; SBC low  */
     math_hi = lo.val;                                             /* STA $75 */
-    Adc mid = sbc_value(mem[midTbl + a], mem[midTbl + b], lo.carry);
+    BcdSub mid = bcd_sub(mem[midTbl + a], mem[midTbl + b], lo.carry);
     hypot_min_hi = mid.val;                                       /* STA $79 */
-    Adc hi  = sbc_value(mem[hiTbl  + a], mem[hiTbl  + b], mid.carry);
+    BcdSub hi  = bcd_sub(mem[hiTbl  + a], mem[hiTbl  + b], mid.carry);
     SortCmp r;
     r.borrow = (uint8_t)(hi.carry == 0u);                         /* BCC -> swap */
     r.equal  = (uint8_t)((hi.val | lo.val | mid.val) == 0u);      /* ORA chain == 0 */
@@ -13317,7 +13332,7 @@ static SortCmp sort_bcd_compare3(uint16_t loTbl, uint16_t midTbl, uint16_t hiTbl
 void sort_cars_by_key_core(uint8_t sel)
 {
     hypot_min_lo = sel;                          /* $0F64 STA $78 — the key selector */
-    cpu.D = 1;                                   /* $0F66 SED — the whole sort is BCD */
+                                                 /* $0F66 SED — the compares below are bcd_sub */
 
     uint8_t swapped;
     do {
@@ -13907,31 +13922,13 @@ TextExit print_lap_time_core(uint8_t fieldMask, uint8_t carIdx, uint8_t y)
  * simply calls the next: the 6502 saved a JSR, the C says what it means.
  * ================================================================================================ */
 
-/* ---- one NMOS 6502 DECIMAL add, flags and all -------------------------------------------------
-   The corrected byte is not where the flags come from: Z and V come from the BINARY sum and N
-   from the PRE-correction high nibble (cpu.h's ADC does exactly this).  Every BCD twin that
-   needs a decimal add's flags — not just its value — goes through here rather than bracketing
-   adc_value() with cpu.D, so the intermediates stay visible.  ⚠ Only the eight sanctioned SED
-   sites may use it (docs/static-map.md §Decimal mode). */
-typedef struct { uint8_t val, carry, n, z, v; } BcdAdd;
-
-static BcdAdd bcd_add(uint8_t a, uint8_t m, unsigned carryIn)
-{
-    unsigned c   = carryIn ? 1u : 0u;
-    unsigned bin = (unsigned)a + m + c;
-    unsigned lo  = (unsigned)(a & 0x0Fu) + (m & 0x0Fu) + c;
-    unsigned hi  = (unsigned)(a >> 4) + (m >> 4);
-    BcdAdd   r;
-
-    if (lo > 9u) { lo += 6u; hi += 1u; }             /* the low nibble carried */
-    r.z = (uint8_t)((bin & 0xFFu) == 0u);
-    r.n = (uint8_t)((hi & 0x08u) ? 1u : 0u);
-    r.v = (uint8_t)((((unsigned)~(a ^ m) & (a ^ (unsigned)bin)) >> 7) & 1u);
-    if (hi > 9u) hi += 6u;                           /* ...and so did the high one */
-    r.carry = (uint8_t)(hi > 0x0Fu);
-    r.val   = (uint8_t)(((hi << 4) | (lo & 0x0Fu)) & 0xFFu);
-    return r;
-}
+/* ⭐ THE DECIMAL ADD ITSELF NOW LIVES IN src/cpu/bcd.h (`bcd_add`/`bcd_sub`), alongside
+   m68k_math.h, so the BCD routines below and the standings/lap-total ones share one
+   vocabulary instead of a file-local copy.  That header carries the reasoning: why the flags
+   come off the binary sum, why the C body is the default, and the exhaustive measurement
+   showing the 68000's ABCD is bit-exact with the 6502 on valid BCD and differs on 10188
+   invalid-nibble cases.  ⚠ Only the eight sanctioned SED sites may use it
+   (docs/static-map.md §Decimal mode). */
 
 /* $65C8 position_to_bcd — TWIN #185.  A 0-based index (0..$13) to the 1-based BCD number shown on
    the dashboard.  The CMP leaves C set for A >= 10, which turns the ADC #$05 into +6 and carries

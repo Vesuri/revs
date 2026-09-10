@@ -321,6 +321,28 @@ precondition), and `make determinism-drive` (real race, real D state, 64 KB comp
 empirical backstop that D=0 actually holds there.  Decimal-mode honouring stays ONLY in twins of
 the eight routines above, where BCD must be reproduced exactly.
 
+⭐⭐ **And "reproduced exactly" no longer means the 6502 idiom.** Those twins do their digit
+arithmetic through `bcd_add`/`bcd_sub` in `src/cpu/bcd.h`; every `cpu.D = 1` is gone from
+`revs_native.c` and the `SED`s are expressed as the helper call itself. The three surviving
+`cpu.D = 0` writes are the routines' own architectural CLDs (state left for the caller — one of
+them is asserted by `validate_native.c`), not decimal-mode plumbing. `docs/native-sweep.md`
+§The BCD routines.
+
+⭐ **The 68000's `ABCD`/`SBCD` do the digits**, measured over all 256×256×2 inputs against the
+oracle's decimal `ADC`: **0 disagreements on every valid-BCD input**, and 10188 value / 1296
+carry disagreements — all with a nibble in `$A..$F` (first: `$04 + $8F + C=1` → 6502 `$9A`/C=0,
+ABCD `$FA`/C=1). Valid BCD is what the game stores, so the opcode IS the 6502 here; the
+divergence describes inputs the engine does not produce. The BCD fixtures therefore generate
+valid digits (`validate_native.c`'s `RND_BCD_ALL`) instead of forcing a software
+reimplementation of NMOS decimal `ADC`. Verified on the real 68000 over all 100×100×2 valid
+triples by `make BCDSELFTEST=1 PROBES=1` — ⚠ which is also how a silent defect was caught:
+**`ROR` does not affect X on the 68000**, so the carry-in never reached `ABCD`; use `LSR`.
+
+⭐ **NMOS decimal `ADC` flag semantics** (the part a naive `if (sum > 0x99)` gets wrong): **Z and
+V come from the BINARY sum**, **N from the high nibble BEFORE its `+6` correction**, and a
+decimal **`SBC`**'s carry-out is the plain **binary** borrow — decimal mode corrects only the
+accumulator's digits, never the borrow.
+
 ## The per-track engine patches — the hook inventory
 
 `tools/track_hooks.py`.  `docs/entrypoint-sweep.md` called this "the known, named case"; here it

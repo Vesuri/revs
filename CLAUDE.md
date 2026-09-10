@@ -419,6 +419,14 @@ Rules that must survive without opening `docs/perf-method.md`:
 
 - **Faithfulness first.** Byte-identical twins: `make validate FN=<name>` must show **0 mem
   mismatch**. Validate against the 6502 + a real BBC emulator, not the host backend.
+  ⭐⭐ **But a fixture models the GAME, not the input space.** A twin must be correct on the data
+  the engine actually produces; `fill_random` is the wrong default for a byte whose
+  REPRESENTATION is constrained (packed BCD, a bounded index, an in-range pointer). **If the
+  harness is the only reason a twin is not written the obvious way, that is a fixture bug** —
+  narrow the domain, state the invariant at the fixture, and fix a runtime violation in whatever
+  WROTE the byte. It cost a software reimplementation of the NMOS decimal `ADC` in place of the
+  68000's one-instruction `ABCD`. How to narrow one honestly: `docs/validation-harness.md`
+  §THE DOMAIN RULE.
 - ⭐ **`bus_read`/`bus_write` are for the HARDWARE window ($FC00-$FEFF), and a pure-RAM access
   should not pay their range test.** The transpiler already routes every *constant* non-hardware
   address straight to `mem[]`; what leaks is the **indirect modes** (`(zp),Y`, `(zp,X)`) — the

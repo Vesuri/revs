@@ -231,6 +231,45 @@ static void fill_random(uint8_t* buf) {
     for (int i = 0; i < 65536 / 4; i++) w[i] = xs();
 }
 
+/* ⭐⭐ NARROW A FIXTURE'S INPUT DOMAIN TO THE DOMAIN THE GAME PRODUCES.
+   `fill_random` is the right default for a byte the engine treats as arbitrary, and the wrong
+   one for a byte whose REPRESENTATION is constrained.  A validated twin exists to be correct on
+   the game's data; making it correct on inputs the game cannot produce buys nothing and costs
+   real fidelity — it is what forced a software reimplementation of the NMOS decimal `ADC` in
+   place of the 68000's own `ABCD`.
+   `rnd_bcd` re-rolls a run of cells as VALID packed BCD (every nibble $0..$9), which is the
+   only thing Revs ever stores in its clock, lap-time, standings and position bytes.  Call it
+   AFTER `fill_random`, on the arrays the routine under test reads as BCD.  If a real trajectory
+   ever puts an invalid digit in one of these, the defect is in whatever wrote it. */
+static void rnd_bcd(uint8_t* buf, unsigned addr, unsigned count) {
+    for (unsigned i = 0; i < count; i++) {
+        uint32_t r = xs();
+        buf[(addr + i) & 0xFFFFu] = (uint8_t)((((r >> 4) % 10u) << 4) | (r % 10u));
+    }
+}
+
+/* The BCD surface itself: every cell in the eight decimal-mode routines' inputs
+   (docs/static-map.md §Decimal mode).  One call, so a new BCD fixture cannot forget a table. */
+#define RND_BCD_ALL(buf) do {                                       \
+    rnd_bcd((buf), 0x06B4u, 21);   /* race_clock_lo      */         \
+    rnd_bcd((buf), 0x06CCu, 21);   /* race_clock_mid     */         \
+    rnd_bcd((buf), 0x06E4u, 21);   /* race_clock_hi      */         \
+    rnd_bcd((buf), 0x0898u, 21);   /* car_lap_start_lo   */         \
+    rnd_bcd((buf), 0x08ACu, 21);   /* car_lap_start_mid  */         \
+    rnd_bcd((buf), 0x04DCu, 21);   /* car_lap_start_hi   */         \
+    rnd_bcd((buf), 0x06A0u, 21);   /* car_best_lap_lo    */         \
+    rnd_bcd((buf), 0x06B8u, 21);   /* car_best_lap_mid   */         \
+    rnd_bcd((buf), 0x06D0u, 21);   /* car_best_lap_hi    */         \
+    rnd_bcd((buf), 0x3864u, 21);   /* car_lap_lo         */         \
+    rnd_bcd((buf), 0x39E4u, 21);   /* car_lap_mid        */         \
+    rnd_bcd((buf), 0x04F0u, 21);   /* car_lap_hi         */         \
+    rnd_bcd((buf), 0x3878u, 21);   /* standings_bcd_lo   */         \
+    rnd_bcd((buf), 0x39F8u, 21);   /* standings_bcd_hi   */         \
+    rnd_bcd((buf), 0x3DF7u, 21);   /* standings_increment*/         \
+    rnd_bcd((buf), 0x002Fu,  1);   /* pass_count_bcd     */         \
+    rnd_bcd((buf), 0x0031u,  1);   /* race_position_bcd  */         \
+} while (0)
+
 static Cpu6502 zero_cpu(void) {
     Cpu6502 c; memset(&c, 0, sizeof c); c.S = 0xFF; return c;
 }
@@ -2109,7 +2148,7 @@ static int test_lap_reset_and_tally(void)
     if (want("add_tally_to_lap_total")) {
         int sub = 0, dLeftSet = 0, sawCarry = 0;
         for (t = 0; t < cases; t++) {
-            Cpu6502 c = zero_cpu(); fill_random(pre);
+            Cpu6502 c = zero_cpu(); fill_random(pre); RND_BCD_ALL(pre);
             c.X = (uint8_t)xs();                     /* the standings column */
             c.Y = (uint8_t)xs();                     /* the car */
             c.D = (uint8_t)(xs() & 1u);              /* entry mode must not matter */
@@ -2524,7 +2563,7 @@ static int test_tick_race_timers(void)
     int cases = 4000 * scale;
     for (t = 0; t < cases; t++) {
         Cpu6502 c = zero_cpu();
-        fill_random(pre);
+        fill_random(pre); RND_BCD_ALL(pre);
         c.D = 0;
         c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
         c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
@@ -2592,7 +2631,7 @@ static int test_add_frame_time(void)
     set_ignore(g_ignore_pha_residue, 1);              /* the oracle's $17D6 PHP, at $01FF */
     for (t = 0; t < cases; t++) {
         Cpu6502 c = zero_cpu();
-        fill_random(pre);
+        fill_random(pre); RND_BCD_ALL(pre);
         c.D = 0;                                      /* the routine sets D itself */
         c.A = (uint8_t)xs();
         c.X = (uint8_t)(xs() % 0x15u);                /* a driver clock (or the $14 pseudo-slot) */
@@ -3514,7 +3553,7 @@ static int test_draw_corner_markers(void)
     int haveEmpty = 0, haveFull = 0, drawnMarkers = 0;
     for (t = 0; t < cases; t++) {
         Cpu6502 c = zero_cpu();
-        fill_random(pre);
+        fill_random(pre); RND_BCD_ALL(pre);
         plant_plotter_chains(pre);
         pre[0x1FE9] = 0xA6;                       /* plot_object's SMC seam — unpatched Silverstone */
         c.D = 0;                                  /* render path (static-map §Decimal mode) */
@@ -4271,7 +4310,7 @@ static int test_sort_cars_by_key(void)
     int cases = 6000 * scale;
     for (t = 0; t < cases; t++) {
         Cpu6502 c = zero_cpu();
-        fill_random(pre);
+        fill_random(pre); RND_BCD_ALL(pre);
         /* randomise every entry flag INCLUDING D — the routine's own SED must win */
         c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.I = xs() & 1; c.C = xs() & 1; c.D = xs() & 1;
 
@@ -4722,7 +4761,7 @@ static int test_check_car_pair(void)
     int cases = 12000 * scale;
     for (t = 0; t < cases; t++) {
         Cpu6502 c = zero_cpu();
-        fill_random(pre);
+        fill_random(pre); RND_BCD_ALL(pre);
         c.D = 0;                                          /* only the pass-count ADC is BCD (bracketed SED) */
 
         for (int i = 0; i < 20; i++) pre[0x013Cu + i] = (uint8_t)(xs() % 20u);  /* car_order: slots 0..19 */
@@ -5418,7 +5457,7 @@ static int test_menu_wait_key(void)
     int cases = 4000 * scale;
     for (t = 0; t < cases; t++) {
         Cpu6502 c = zero_cpu();
-        fill_random(pre);
+        fill_random(pre); RND_BCD_ALL(pre);
         c.D = 0;                                  /* not a SED site */
         c.N = xs()&1; c.V = xs()&1; c.Z = xs()&1; c.I = xs()&1; c.C = xs()&1;
 
@@ -10077,7 +10116,7 @@ static int test_car_order_cluster(void)
     register_fixture("lap_complete");
     if (want("lap_complete")) {
         for (t = 0; t < cases; t++) {
-            Cpu6502 c = zero_cpu(); fill_random(pre); c.D = 0;
+            Cpu6502 c = zero_cpu(); fill_random(pre); RND_BCD_ALL(pre); c.D = 0;
             uint8_t px = (uint8_t)(xs() % 20);
             uint8_t x  = (t % 3) ? (uint8_t)(xs() % 20) : px;  /* sometimes the player */
             /* targeted arm A: X exactly at the pseudo-car boundary ($14), where >= and > diverge.
@@ -10206,7 +10245,7 @@ static int test_last_shim_callers(void)
         set_ignore(ig, 2);
         for (t = 0; t < cases; t++) {
             Cpu6502 c = zero_cpu();
-            fill_random(pre);
+            fill_random(pre); RND_BCD_ALL(pre);
             c.X = (uint8_t)(xs() % 7);                   /* column 0..6 */
             c.D = 0;                                     /* the routine sets D itself */
             pre[0x5F38] = (uint8_t)(xs() % 6);           /* standings_mode: keep the count cheap */

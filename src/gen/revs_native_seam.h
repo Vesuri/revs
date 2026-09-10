@@ -10,6 +10,7 @@
 #include "../cpu/cpu.h"
 #include "../cpu/bus.h"
 #include "../cpu/m68k_math.h"
+#include "../cpu/bcd.h"
 #include "revs_decl.h"
 #include "mem.h"
 #include "../platform/platform_c.h"
@@ -806,7 +807,7 @@ void reset_all_cars_for_session_core(uint8_t startCar);
 void sort_cars_by_key_core(uint8_t sel);
 void car_reset_best_lap_core(uint8_t car);
 void all_cars_reset_best_lap_core(void);
-Adc  add_tally_to_lap_total_core(uint8_t column, uint8_t car);
+BcdAdd add_tally_to_lap_total_core(uint8_t column, uint8_t car);
 void prompt_driver_ready_core(void);
 void read_driver_name_core(void);
 void wait_dismiss_key_core(uint8_t offerReturn);

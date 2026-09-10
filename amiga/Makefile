@@ -211,6 +211,14 @@ endif
 ifdef NOBANDS
 EXTRA_DEFINES += -DREVS_SCREEN_NO_BANDS
 endif
+# `make BCDSELFTEST=1 PROBES=1` — sweep src/cpu/bcd.h's ABCD/SBCD paths over all 100x100x2
+# valid-BCD inputs on the real 68000 at startup, and compare against the digit algorithm.
+# Read with amiga/bcd_selftest.gdb.  Verification only: never in a shipping or perf build.
+ifdef BCDSELFTEST
+EXTRA_DEFINES += -DREVS_BCD_SELFTEST
+PROBE_SYMS_BCD = g_bcdCases g_bcdAddFails g_bcdSubFails g_bcdFirstBad
+endif
+
 ifdef FPSCOUNT
 EXTRA_DEFINES += -DREVS_FPSCOUNT
 endif
@@ -615,6 +623,7 @@ ifdef ISRSPLIT
 PROBE_SYMS += $(PROBE_SYMS_ISRSPLIT)
 endif
 PROBE_SYMS += $(PROBE_SYMS_CHECK) $(PROBE_SYMS_PLOT) $(PROBE_SYMS_BANDCHECK)
+PROBE_SYMS += $(PROBE_SYMS_BCD)
 
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \
             $(addprefix -Wl$(COMMA)--undefined=,$(PROBE_SYMS))
