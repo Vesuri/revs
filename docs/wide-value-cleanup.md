@@ -1383,12 +1383,32 @@ lesson is the same one twice: an extent is a claim, and a scan's window IS the m
 5. Full gates: `validate`, `endian-lint`, `determinism` / `-drive` / `-crash`, `tracks`,
    `track-run`, and the Amiga link's `muldiv-audit` + `probe-audit`.
 
-### Measure ONCE, at the end of Tier 3
+### ✅ MEASURED at the end of Tier 3 (2026-09-10) — **the campaign is a NULL RESULT, and that is its answer**
 
-A single relocation is far under the 3% noise floor, so per-relocation FPS readings would be
-noise dressed as progress. Take one row-vector reading against the 4.27 baseline when Tier 3 is
-complete. **If Tier 3 is also a null result, that is the campaign's answer** and the representation
-change (`docs/direct-bitplane-plan.md`) takes over as the lever.
+A single relocation is far under the noise floor, so the plan was one row-vector reading once
+Tier 3 was complete rather than per-relocation readings dressed up as progress. Tier 3 is complete;
+here is the reading.
+
+`make clean && make STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1`, then
+`EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=fps_series.gdb ./diag_run.sh 30`:
+
+    4.49  4.58  4.49  4.58  [3.02]  4.58  4.49  4.49  4.68  [3.02]  4.49  4.58  4.49
+
+**11 non-outlier rows, average 4.54 FPS** (the two bracketed 3.02 rows are the off-track/reset
+scene, as always). Against the standing 4.52 baseline that is **+0.4% — inside noise**, and one
+row's resolution is 3.3%, so the honest statement is *no measurable change*, not *+0.4%*.
+
+⚠ Read this together with the campaign's earlier end-to-end measurement (+0.65%, also inside
+noise): **two independent readings, taken three mechanisms apart, both null.** The instruction
+count genuinely fell — that part was never in doubt and is not retracted (memory
+`revs_byte_lane_is_speed`) — but the byte lanes are not where this frame goes. ⇒ **The
+representation change (`docs/direct-bitplane-plan.md`) is the lever**, as this section said it
+would be if the result came back null.
+
+⚠ Caveat kept honest: the 4.52 baseline is from an earlier session, and `docs/perf-method.md`
+§twin #13 says to re-run the control in the same session rather than diff against a recorded
+figure. A 0.4% gap is far below what that caveat could rescue in either direction, so no control
+re-run was taken — but do not quote 4.54 as an improvement on 4.52.
 
 ### Still owed, unrelated to Tier 3
 
