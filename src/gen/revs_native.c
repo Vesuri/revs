@@ -107,6 +107,13 @@ void plot_ptr3_marshal_out(void)
     plot_ptr3_lo = (uint8_t)plot_ptr3_v; plot_ptr3_hi = (uint8_t)(plot_ptr3_v >> 8);
 }
 
+/* |v| read as a signed byte, in the 6502's own wrapping arithmetic: $80 stays $80, which
+   is what `EOR #$FF / CLC / ADC #1` produces and what every abs8 call site relies on. */
+static inline uint8_t abs8_value(uint8_t v)
+{
+    return (v & 0x80u) ? (uint8_t)(0u - v) : v;
+}
+
 /* THE ALIAS GUARD — a store that lands on a pointer's own lane must update the relocated value,
    because the oracle re-reads the pointer from mem[] at every dereference.  Without it the four
    span fixtures fail 7/400 (shallow_fwd) and 5/400 (steep_fwd), ascending arms only.
@@ -2155,8 +2162,7 @@ void draw_corner_marker_core(uint16_t offset, uint16_t edgeX,
         out->draw      = 1;
         out->plotX     = (uint8_t)((p >> 6) + 0x50u);       /* $1B49-$1B52 — (P<<2) hi byte + $50 */
         out->plotLine  = edgeY;                             /* $1B57 — edge_y[marker_edge_index] */
-        out->projWidth = (rh & 0x80u) ? (uint8_t)(0u - rh)  /* $1B62-$1B6B — |hi byte of offset<<3| */
-                                      : rh;
+        out->projWidth = abs8_value(rh);      /* $1B62-$1B6B — |hi byte of offset<<3| */
         out->mathLo    = (uint8_t)r;
         out->mathHi    = rh;
         out->temp76    = (uint8_t)(p << 2);                 /* $76 after the two ROLs */
@@ -3292,7 +3298,7 @@ uint8_t horizon_half_width_at_core(unsigned horizonPoint)
        negated, and on the keep path they reach build_track_geometry's exit UNREAD). */
     uint8_t diff = (uint8_t)(mem[MEM_edge_x_hi + horizonPoint] -
                              mem[MEM_edge_x_hi + EDGE_HALF + horizonPoint]);
-    uint8_t mag  = (diff & 0x80u) ? negate8(diff).hi : diff;    /* |diff| — cpu-free abs8 */
+    uint8_t mag  = abs8_value(diff);    /* |diff| — cpu-free abs8 */
 
     /* ⚠ The RETURN VALUE is part of build_track_geometry's exit ABI (its fixture compares A):
        the half-width on both compute arms, the unhalved difference on either trap
@@ -8164,11 +8170,11 @@ CameraExit update_camera_and_drive_state_core(void)
         uint8_t dir2 = mem[MEM_track_dir_2 + dirIndex];
         int n1 = ((dir0 ^ dir2) & 0x80u) != 0;         /* $453C PHP (1) — the octant's sign */
         int n2 = (dir2 & 0x80u) != 0;                  /* $4540 PHP (2) — component 2's sign */
-        uint8_t comp = (dir2 & 0x80u) ? (uint8_t)(0u - dir2) : dir2;  /* $4541 abs |c2| */
+        uint8_t comp = abs8_value(dir2);  /* $4541 abs |c2| */
         int c3 = (comp >= 0x3Cu);                      /* $4546 PHP (3) — CMP #$3C */
         uint8_t a, sy, fold;
         if (comp >= 0x3Cu)                             /* $4547 BCC — off the diagonal: use |c0| */
-            comp = (dir0 & 0x80u) ? (uint8_t)(0u - dir0) : dir0;
+            comp = abs8_value(dir0);
         math_lo = comp;                                /* $454F */
         a = (uint8_t)((uint8_t)(comp >> 1) + comp);    /* $4552-$4553 — 1.5x */
         a = (uint8_t)(a >> 2);                          /* $4555-$4556 — ...so 0.375x */
@@ -9202,18 +9208,14 @@ void plot_shape_edges(void)     { SlotExit e = plot_shape_edges_core();
 #define PVS_GAP_COL   MEM_math_hi   /* math_hi        — fill_object_gap's own column cursor */
 #define PVS_GAP_FLOOR MEM_point_delta_sign   /* point_delta_sign[0] — ...and its safe write cursor */
 
-/* Halve a signed 6.2 coordinate the way $1C42/$1C66 do: arithmetically, and ROUNDED — the
-   negative arm is `SEC / ROR / ADC #0`, which is a divide by two that rounds toward zero. */
+/* Halve a signed 6.2 coordinate the way $1C42/$1C66 do: arithmetically, and ROUNDED TOWARD ZERO.
+   Both 6502 arms — `SEC / ROR / ADC #0` negative, `LSR A` positive — are one signed divide, C
+   rounding exactly as the ADC does; verified identical over all 256 inputs.  D=0 on the object
+   path (static-map §Decimal mode).  Value only: the caller (derive_endpoint) overwrites A and
+   every flag before reading anything. */
 static unsigned halve_signed_rounded(uint8_t value)
 {
-    if (value & 0x80u) {
-        /* $1C42 negative arm: SEC / ROR A / ADC #0 — a >>1 that rounds toward zero.  D=0 on the
-           object path (static-map §Decimal mode), so the ADC is a plain +.  Return value only:
-           the caller (derive_endpoint) overwrites A and every flag before reading anything. */
-        uint8_t rotated = (uint8_t)(0x80u | (value >> 1));   /* carry-in was 1 */
-        return (uint8_t)(rotated + (value & 1u));            /* + the bit ROR shifted out */
-    }
-    return value >> 1u;                                      /* $1C48 positive arm: LSR A */
+    return (uint8_t)((int8_t)value / 2);
 }
 
 /* $1C4E / $1C72 — ...then bias it by plot_x and split it into a column (>> 2) and the x itself. */
@@ -10844,7 +10846,7 @@ void place_player_in_section_native(void)
     uint8_t mag;
     {
         uint16_t hook = (uint16_t)(mem[MEM_smc_place_player_hook + 1] | (mem[MEM_smc_place_player_hook + 2] << 8));
-        if (hook == 0x3450)                          mag = (rel & 0x80u) ? negate8(rel).hi : rel;
+        if (hook == 0x3450)                          mag = abs8_value(rel);
         else if (hook >= 0x5300 && hook <= 0x5A25) {
             cpu.A = rel; cpu.N = (rel >> 7) & 1u;    /* the circuit hook reads A and its sign */
             revs_track_hook(hook);
@@ -11685,7 +11687,7 @@ static inline void object_coord_word_set(unsigned axis, uint16_t value)
    SMC-trap exit inside loop 1 too. */
 static int16_t place_car_axis_term(uint8_t dir, uint8_t factor, int shl2)
 {
-    uint8_t mag   = (dir & 0x80u) ? (uint8_t)(0u - dir) : dir;   /* EOR #$FF; ADC #1 on the neg arm */
+    uint8_t mag   = abs8_value(dir);   /* EOR #$FF; ADC #1 on the neg arm */
     unsigned prod = revs_mulu16(mag, factor);                    /* mul8 */
     int16_t term  = (dir & 0x80u) ? (int16_t)(-(int)(prod >> 8)) : (int16_t)(prod >> 8);
     if (shl2) term = (int16_t)(term << 2);
@@ -13037,7 +13039,7 @@ StageNearbyCar stage_nearby_car_core(uint8_t gapA, unsigned gapFar, uint8_t slot
     if (((uint8_t)(gapA ^ track_direction)) & 0x80u)         /* $2902-04 EOR/BMI — wrong side */
         return r;
 
-    uint8_t mag = (gapA & 0x80u) ? (uint8_t)(0u - gapA) : gapA;   /* $2908 abs8 */
+    uint8_t mag = abs8_value(gapA);   /* $2908 abs8 */
     math_lo = mag;                                           /* $290b STA $74 — faithful writeback */
     if (mag >= 0x28u) return r;                              /* $290d-0f CMP #$28 / BCS reject */
 
@@ -13188,7 +13190,7 @@ void check_car_pair_core(void)
                         uint8_t s2 = mem[MEM_car_section_across + secondSlot];        /* $272f LDA — ONE load, as on the 6502: the value survives to abs8 */
                         unsigned cst2 = (s2 >= mem[MEM_car_section_across + firstSlot]);  /* $2732 CMP */
                         math_lo = (uint8_t)((cst2 << 7) | (math_lo >> 1));  /* $2735 ROR $74 */
-                        uint8_t absv = (s2 & 0x80u) ? (uint8_t)(0u - s2) : s2;  /* $2737 AND #$FF (sets N) / $2739 abs8 */
+                        uint8_t absv = abs8_value(s2);  /* $2737 AND #$FF (sets N) / $2739 abs8 */
                         loadState2 = (absv < 0x3Cu);         /* $273c CMP #$3C / $273e BCC $2744 / $2740 BCS $2749 */
                     }
                     if (loadState2)
@@ -15738,7 +15740,7 @@ static void hook_horizon_clamp_guarded_at(int segmentGated)
 
     /* $53DC/$53E0 LDA section_yaw / abs8 — the sign is bit 7 of the byte the LDA just loaded. */
     uint8_t yaw  = section_yaw;
-    uint8_t mag  = (yaw & 0x80u) ? negate8(yaw).hi : yaw;
+    uint8_t mag  = abs8_value(yaw);
     uint8_t keep = (uint8_t)(mag < 0x19u && (view_pitch_offset & 0x80u));  /* CMP #$19 / BPL */
     uint8_t a    = view_pitch_offset;                  /* what the guard's last LDA left in A */
 
