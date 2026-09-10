@@ -19,82 +19,83 @@
 #include "../platform/revs_plot.h"
 
 /* ---- address constants the shims use (copied from revs_native.c; identical) ---- */
-#define EDGE_HALF        0x0028u   /* 40 — the stride between the two road sides' halves */
+#define EDGE_HALF        40u       /* ⚠ a STRIDE, not an address: the two road sides' point
+                                    * halves are 40 apart in every edge_* table */
 #define SECTION_MID      0x00FAu   /*   ...the triple road_edge_walk interpolates midpoints into */
 #define SECTION_NEAR     0x00FDu   /*   ...and the one road_edge_start stages the near point in */
-#define VIEW_LEFT_START_SRC   0x0504u   /* per scan line: the LEFT run's first source byte */
-#define VIEW_RIGHT_START_SRC  0x4400u   /* ...and the RIGHT run's */
-#define DASH_BLOCK_STARTS 0x3900u   /* per block: the offset its live data begins at (< $4F) */
+/* MEM_view_left_start_src — per scan line: the LEFT run's first source byte */
+/* MEM_view_right_start_src — ...and the RIGHT run's */
+/* MEM_dash_block_starts — per block: the offset its live data begins at (< $4F) */
 #define DASH_BLOCK_COUNT  0x29u     /* 41 blocks */
-#define POINT_DELTA_HI    0x0083u  /* point_delta_hi[0..2]   — ...its magnitude's high byte */
-#define SLIP_MAG_HI      0x008Fu  /* plot_ptr3_hi — ...and its high byte (docs/rename.md) */
-#define SLIP_SIGN        0x0079u  /* hypot_min_hi — here the sign byte abs16_math branches on */
-#define CAR_SECTION_ALONG    0x0164u   /* per-driver: distance ALONG the section from its origin */
+/* MEM_point_delta_hi — point_delta_hi[0..2]   — ...its magnitude's high byte */
+#define SLIP_MAG_HI      MEM_plot_ptr3_hi  /* plot_ptr3_hi — ...and its high byte (docs/rename.md) */
+#define SLIP_SIGN        MEM_hypot_min_hi  /* hypot_min_hi — here the sign byte abs16_math branches on */
+/* MEM_car_section_along — per-driver: distance ALONG the section from its origin */
 #define FENCE_COL_COUNT        0x28u    /* 40 view columns                                    */
 
 /* ---- SoA array bases (Step 0 of the wide-value cleanup: one home each, was duplicated
  *      across revs_native.c; the single swap point when a base becomes a value_16[N]) ---- */
-#define MODEL_STATE_LO   0x62D0u   /* the driving model's 16-bit state vector, low bytes */
-#define MODEL_STATE_HI   0x62E0u   /* ...and high bytes; element i is +i in each */
+/* MEM_model_state_lo — the driving model's 16-bit state vector, low bytes */
+/* MEM_model_state_hi — ...and high bytes; element i is +i in each */
 #define MODEL_STATE_N    15u       /* ⚠ FIFTEEN elements, 0..14: $62DF is loop_counter_hi and
                                     * $62EF is a separate cell, so the vector stops at 14.
                                     * ⭐ RELOCATED to model_state_16[]: these two bases are now
                                     * the marshals' addresses only. */
-#define CAR_ANGLE_LO     0x62A0u   /* car-angle array: heading_sin/heading_cos/steer_angle low; bit0 = SIGN */
-#define CAR_ANGLE_HI     0x62A3u   /* ...and their high bytes.  ⭐ RELOCATED to car_angle_16[]:
+#define CAR_ANGLE_LO     MEM_heading_sin_lo   /* car-angle array: heading_sin/heading_cos/steer_angle low; bit0 = SIGN */
+#define CAR_ANGLE_HI     MEM_heading_sin_hi   /* ...and their high bytes.  ⭐ RELOCATED to car_angle_16[]:
                                     * these two are now the marshals' addresses only — no twin
                                     * reaches the array through mem[] any more. */
 /* Which element is which (see car_angle_16 in revs_native.c for the sign-magnitude packing). */
 #define CAR_ANGLE_SIN    0u        /* SIN(car_heading)  — compute_car_angles' output */
 #define CAR_ANGLE_COS    1u        /* COS(car_heading)  — ...and its second pass */
 #define CAR_ANGLE_STEER  2u        /* the steering angle — the control read owns it */
-#define VIEW_ORIGIN_LO   0x6280u   /* view_origin_lo — 3 components, STRIDE 6, two origins */
-#define VIEW_ORIGIN_HI   0x6283u   /* view_origin_hi */
-#define EDGE_X_LO_TBL    0x5E40u   /* edge_x_lo — the track edges' angle, low byte */
-#define EDGE_X_HI_TBL    0x5E90u   /* edge_x_hi — ...and the high byte */
-#define EDGE_OPP_X_LO_TBL 0x5E50u  /* edge_opp_x_lo — the OPPOSITE boundary's angle at that point */
-#define EDGE_OPP_X_HI_TBL 0x5EA0u  /* edge_opp_x_hi */
-#define EDGE_Y_TBL       0x5F20u   /* edge_y      — per edge point: the scan line it projects to */
-#define MARKER_EDGE_IDX  0x62B4u   /* marker_edge_index  — 3 corner markers, per frame */
-#define MARKER_FLAGS_TBL 0x6299u   /* marker_flags */
-#define MARKER_OFF_LO    0x62B7u   /* marker_offset_lo */
-#define MARKER_OFF_HI    0x62BAu   /* marker_offset_hi */
-#define TRACK_DIR_0      0x5400u   /* track_dir_0[Y] — direction component 0 (ground plane) */
-#define TRACK_DIR_1      0x5500u   /* track_dir_1[Y] — component 1 (gradient) */
-#define TRACK_DIR_2      0x5600u   /* track_dir_2[Y] — component 2 (ground plane) */
-#define SURFACE_COLOURS_TBL 0x38FCu /* surface_colours — four MODE 5 colour bytes */
-#define COLOUR_PATTERN_AND  0x337Cu /* colour_pattern_and_tbl */
-#define COLOUR_PATTERN_KEEP 0x33FCu /* colour_pattern_keep_tbl */
-#define CAR_FLAGS_SHAPE  0x018Cu   /* per slot: flags, with the object's shape in bits 0-3 */
-#define CAR_ORDER        0x013Cu   /* the 20-entry sorted car order */
-#define OBJECT_WIDTH     0x03C8u   /* per slot: object screen width in pixels */
-#define OBJECT_BEARING_LO 0x0380u  /* per slot: the 16-bit bearing to the object, low byte */
-#define OBJECT_BEARING_HI 0x0398u  /* ...and high byte */
-#define MIRROR_SEG_BEARING_TBL 0x3BA4u /* 6 wing-mirror segment heading thresholds */
-#define MIRROR_SEG_STATE 0x6293u   /* per wing-mirror segment: last-drawn bottom line, 0 = erased */
-#define DIAL_NEEDLE_DDA_TBL       0x3100u /* rev-needle DDA len/delta per angle offset (0..0x13) */
-#define DIAL_NEEDLE_ORIGIN_LO_TBL 0x32FCu /* rev-needle origin addr low per quadrant; &F8=ptr, &7=line */
-#define DIAL_NEEDLE_ORIGIN_HI_TBL 0x397Cu /* rev-needle origin addr high per quadrant (all $75) */
-#define STEER_NEEDLE_DDA_TBL      0x3980u /* steering-wheel needle minor-axis delta per angle index */
+/* MEM_view_origin_lo — view_origin_lo — 3 components, STRIDE 6, two origins */
+/* MEM_view_origin_hi — view_origin_hi */
+/* MEM_edge_x_lo — edge_x_lo — the track edges' angle, low byte */
+/* MEM_edge_x_hi — edge_x_hi — ...and the high byte */
+/* MEM_edge_opp_x_lo — edge_opp_x_lo — the OPPOSITE boundary's angle at that point */
+/* MEM_edge_opp_x_hi — edge_opp_x_hi */
+/* MEM_edge_y — edge_y      — per edge point: the scan line it projects to */
+/* MEM_marker_edge_index — marker_edge_index  — 3 corner markers, per frame */
+/* MEM_marker_flags — marker_flags */
+/* MEM_marker_offset_lo — marker_offset_lo */
+/* MEM_marker_offset_hi — marker_offset_hi */
+/* MEM_track_dir_0 — track_dir_0[Y] — direction component 0 (ground plane) */
+/* MEM_track_dir_1 — track_dir_1[Y] — component 1 (gradient) */
+/* MEM_track_dir_2 — track_dir_2[Y] — component 2 (ground plane) */
+/* MEM_surface_colours — surface_colours — four MODE 5 colour bytes */
+/* MEM_colour_pattern_and_tbl — colour_pattern_and_tbl */
+/* MEM_colour_pattern_keep_tbl — colour_pattern_keep_tbl */
+/* MEM_car_flags_shape — per slot: flags, with the object's shape in bits 0-3 */
+/* MEM_car_order — the 20-entry sorted car order */
+/* MEM_object_width — per slot: object screen width in pixels */
+/* MEM_object_bearing_lo — per slot: the 16-bit bearing to the object, low byte */
+/* MEM_object_bearing_hi — ...and high byte */
+/* MEM_mirror_seg_bearing_tbl — 6 wing-mirror segment heading thresholds */
+/* MEM_mirror_seg_state — per wing-mirror segment: last-drawn bottom line, 0 = erased */
+/* MEM_dial_needle_dda_tbl — rev-needle DDA len/delta per angle offset (0..0x13) */
+/* MEM_dial_needle_origin_lo_tbl — rev-needle origin addr low per quadrant; &F8=ptr, &7=line */
+/* MEM_dial_needle_origin_hi_tbl — rev-needle origin addr high per quadrant (all $75) */
+/* MEM_steer_needle_dda_tbl — steering-wheel needle minor-axis delta per angle index */
 #define MENU_SCREEN_BASE   0x7C00u /* front end: $7C00-$7FFF as the MODE 7 teletext page (== TT_SCREEN_BASE; time-multiplexed with the race view's view_cell_chain_a) */
-#define MENU_BAR_START_TBL 0x3A6Fu /* menu_draw_gfx_bars: per-row start column of the two graphics bars */
-#define MENU_BAR_END_TBL   0x3A71u /* ...and end column */
-#define CAR_TRACK_POSITION 0x0128u /* seed_car_track_position: per-car track position (20 entries) */
-#define CAR_GRID_BASE      0x04A0u /* per-car grid base row = car index >> 1 */
-#define CAR_SEED_INDEX     0x004Au /* car-index cursor for the grid-seeding loop */
-#define CAR_BEST_LAP_LO    0x06A0u /* per-car best lap, 3-byte BCD: low byte */
-#define CAR_BEST_LAP_MID   0x06B8u /* ...middle */
-#define CAR_BEST_LAP_HI    0x06D0u /* ...high ($10 = the 'no time yet' sentinel) */
-#define CAR_LAP_LO         0x3864u /* per-car cumulative lap total, 3-byte BCD: low byte */
-#define CAR_LAP_MID        0x39E4u /* ...middle */
-#define CAR_LAP_HI         0x04F0u /* ...high */
-#define STANDINGS_BCD_LO   0x3878u /* per-column 16-bit BCD tally, low byte */
-#define STANDINGS_BCD_HI   0x39F8u /* ...and high */
-#define CAR_ORDER_GRID     0x04C8u /* the starting-grid order, saved across the results re-sorts */
-#define CLASS_LAP_TARGET_MID 0x5A00u /* the three race classes' BCD best-lap targets, mid byte */
-#define CLASS_LAP_TARGET_HI  0x5A03u /* ...and high byte */
-#define QUALIFY_MINUTES_TBL  0x3DF0u /* the three qualifying durations: 4, 9, 25 minutes */
-#define RACE_LAP_TOTAL_TBL   0x3DF4u /* the three race lengths: 5, 10, 20 laps */
+/* MEM_menu_bar_start_tbl — menu_draw_gfx_bars: per-row start column of the two graphics bars */
+/* MEM_menu_bar_end_tbl — ...and end column */
+/* MEM_car_track_position — seed_car_track_position: per-car track position (20 entries) */
+/* MEM_car_grid_base — per-car grid base row = car index >> 1 */
+/* MEM_car_seed_index — car-index cursor for the grid-seeding loop */
+/* MEM_car_best_lap_lo — per-car best lap, 3-byte BCD: low byte */
+/* MEM_car_best_lap_mid — ...middle */
+/* MEM_car_best_lap_hi — ...high ($10 = the 'no time yet' sentinel) */
+/* MEM_car_lap_lo — per-car cumulative lap total, 3-byte BCD: low byte */
+/* MEM_car_lap_mid — ...middle */
+/* MEM_car_lap_hi — ...high */
+/* MEM_standings_bcd_lo — per-column 16-bit BCD tally, low byte */
+/* MEM_standings_bcd_hi — ...and high */
+/* MEM_car_order_grid — the starting-grid order, saved across the results re-sorts */
+/* MEM_class_lap_target_mid — the three race classes' BCD best-lap targets, mid byte */
+/* MEM_class_lap_target_hi — ...and high byte */
+/* MEM_qualify_minutes_tbl — the three qualifying durations: 4, 9, 25 minutes */
+/* MEM_race_lap_total_tbl — the three race lengths: 5, 10, 20 laps */
 /* ---- the BBC hardware registers the twins touch ----------------------------------------
    6522 VIA register file, offset from the base: +0 ORB, +1 ORA, +2/+3 DDRB/DDRA, +4/+5 T1
    counter lo/hi, +6/+7 T1 LATCH lo/hi, +8/+9 T2 counter lo/hi, +$B ACR, +$D IFR, +$E IER.
@@ -525,36 +526,36 @@ static inline void    ms_set_hi(uint8_t i, uint8_t v)
    ($1B05's surface classifier, the horizon tests, the clip tests) reads only the HIGH byte and
    the low byte is not merely unused, it is not even loaded — writing those as a wide read and a
    shift would ADD an access.  These accessors are for the sites that build or store a whole
-   value; `mem[EDGE_X_HI_TBL + slot]` stays the idiom for a high-byte-only test. */
+   value; `mem[MEM_edge_x_hi + slot]` stays the idiom for a high-byte-only test. */
 static inline uint16_t edge_x_word(unsigned slot)
-{ return (uint16_t)((unsigned)mem[EDGE_X_LO_TBL + slot]
-                    | ((unsigned)mem[EDGE_X_HI_TBL + slot] << 8)); }
+{ return (uint16_t)((unsigned)mem[MEM_edge_x_lo + slot]
+                    | ((unsigned)mem[MEM_edge_x_hi + slot] << 8)); }
 static inline void edge_x_word_set(unsigned slot, uint16_t v)
-{ mem[EDGE_X_LO_TBL + slot] = (uint8_t)v; mem[EDGE_X_HI_TBL + slot] = (uint8_t)(v >> 8); }
+{ mem[MEM_edge_x_lo + slot] = (uint8_t)v; mem[MEM_edge_x_hi + slot] = (uint8_t)(v >> 8); }
 
 static inline uint16_t edge_opp_x_word(unsigned slot)
-{ return (uint16_t)((unsigned)mem[EDGE_OPP_X_LO_TBL + slot]
-                    | ((unsigned)mem[EDGE_OPP_X_HI_TBL + slot] << 8)); }
+{ return (uint16_t)((unsigned)mem[MEM_edge_opp_x_lo + slot]
+                    | ((unsigned)mem[MEM_edge_opp_x_hi + slot] << 8)); }
 static inline void edge_opp_x_word_set(unsigned slot, uint16_t v)
-{ mem[EDGE_OPP_X_LO_TBL + slot] = (uint8_t)v;
-  mem[EDGE_OPP_X_HI_TBL + slot] = (uint8_t)(v >> 8); }
+{ mem[MEM_edge_opp_x_lo + slot] = (uint8_t)v;
+  mem[MEM_edge_opp_x_hi + slot] = (uint8_t)(v >> 8); }
 
 static inline uint16_t marker_offset_word(unsigned slot)
-{ return (uint16_t)((unsigned)mem[MARKER_OFF_LO + slot]
-                    | ((unsigned)mem[MARKER_OFF_HI + slot] << 8)); }
+{ return (uint16_t)((unsigned)mem[MEM_marker_offset_lo + slot]
+                    | ((unsigned)mem[MEM_marker_offset_hi + slot] << 8)); }
 static inline void marker_offset_word_set(unsigned slot, uint16_t v)
-{ mem[MARKER_OFF_LO + slot] = (uint8_t)v; mem[MARKER_OFF_HI + slot] = (uint8_t)(v >> 8); }
+{ mem[MEM_marker_offset_lo + slot] = (uint8_t)v; mem[MEM_marker_offset_hi + slot] = (uint8_t)(v >> 8); }
 
 /* object_bearing ($0380/$0398, 24 slots): the 16-bit angle from a viewpoint to the object the
    slot holds — $10000 is a full turn, so it is one value and never two lanes.  Same one-lane
    caveat as the edge tables: the two COARSE heading differences (the collision nudge and the
    wing mirrors' setup) read only the high byte, and they keep doing that. */
 static inline uint16_t object_bearing_word(unsigned slot)
-{ return (uint16_t)((unsigned)mem[OBJECT_BEARING_LO + slot]
-                    | ((unsigned)mem[OBJECT_BEARING_HI + slot] << 8)); }
+{ return (uint16_t)((unsigned)mem[MEM_object_bearing_lo + slot]
+                    | ((unsigned)mem[MEM_object_bearing_hi + slot] << 8)); }
 static inline void object_bearing_word_set(unsigned slot, uint16_t v)
-{ mem[OBJECT_BEARING_LO + slot] = (uint8_t)v;
-  mem[OBJECT_BEARING_HI + slot] = (uint8_t)(v >> 8); }
+{ mem[MEM_object_bearing_lo + slot] = (uint8_t)v;
+  mem[MEM_object_bearing_hi + slot] = (uint8_t)(v >> 8); }
 
 /* ⭐ THE VIEW ORIGIN, relocated out of the $6280/$6283 plane split.  Every bearing and every
    projection in the frame is measured from it, and there are TWO of them: origin 0 is the camera,

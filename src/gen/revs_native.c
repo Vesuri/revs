@@ -1126,7 +1126,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
             PROBE_VIEW_LINE();
             step_scanline((int*)0);
             /* the line's background byte: two bits of the per-line surface index */
-            byte = mem[SURFACE_COLOURS_TBL + (mem[MEM_view_line_surface + line] & 3)];
+            byte = mem[MEM_surface_colours + (mem[MEM_view_line_surface + line] & 3)];
             advance_first = 0; unit = 0; forced = 0;
         }
 
@@ -2165,7 +2165,7 @@ uint8_t shift_near_edge_points_core(uint8_t topSlot,    /* $2C — slot 4 of the
 
     for (;;) {                                        /* $12A2-$12BB */
         edge_x_word_set(slot + 1, edge_x_word(slot));
-        mem[EDGE_Y_TBL    + slot + 1] = mem[EDGE_Y_TBL    + slot];
+        mem[MEM_edge_y    + slot + 1] = mem[MEM_edge_y    + slot];
 
         if (slot == wrapSlot)                         /* the far half is done — cross over */
             slot = lowTop;
@@ -2205,8 +2205,8 @@ void rebase_edge_point_core(uint8_t slot)
     edge_x_word_set(slot, az);
 
     /* $0BBA-$0BC0 — and its scan line, less the frame's pitch delta. */
-    uint8_t line = (uint8_t)(mem[EDGE_Y_TBL + slot] - view_pitch_delta);
-    mem[EDGE_Y_TBL + slot] = line;
+    uint8_t line = (uint8_t)(mem[MEM_edge_y + slot] - view_pitch_delta);
+    mem[MEM_edge_y + slot] = line;
 
     if (line >= horizon_extent) {                                      /* $0BC3-$0BC9 CMP (D-blind) */
         horizon_extent = line;
@@ -2595,8 +2595,8 @@ static void append_corner_marker(uint8_t flags, unsigned offset)
     if (slot >= 0x03u)                                /* $25DB CPY #3 / BCS — at most three */
         return;                                       /* (Y and its C are dead: the caller reloads Y) */
 
-    mem[MARKER_EDGE_IDX  + slot] = edge_cursor;
-    mem[MARKER_FLAGS_TBL + slot] = flags;
+    mem[MEM_marker_edge_index  + slot] = edge_cursor;
+    mem[MEM_marker_flags + slot] = flags;
 
     if (flags & 0x01u) {                              /* $25E9-$25EF — a half-width marker */
         offset  >>= 1;                                /* ...halved in math_lo/hi themselves */
@@ -2762,7 +2762,7 @@ void draw_dash_needle_core(uint16_t steer, DashNeedle *out)
         angleIndex = (uint8_t)((uint8_t)~clamp + 0x4Cu + cAdc); /* $5161-$5165 mirror about $4C */
         stepSize   = stepInit;
     }
-    uint8_t ddaLen = mem[STEER_NEEDLE_DDA_TBL + angleIndex];    /* $5168 / $5179 -> point_delta_hi */
+    uint8_t ddaLen = mem[MEM_steer_needle_dda_tbl + angleIndex];    /* $5168 / $5179 -> point_delta_hi */
 
     /* $517E-$519A — the two paths hand L_517E the (length, index) pair in swapped registers: the
        small path has A = length, X = index; the mirror path has A = index, X = length. */
@@ -2992,9 +2992,9 @@ void menu_draw_gfx_bars_core(void)
     const uint16_t page = (uint16_t)(MENU_SCREEN_BASE + 0x79u);
     int y;
     for (y = 1; y >= 0; y--) {                       /* $3A50 LDY #1 ... DEY/BPL */
-        uint8_t end = mem[MENU_BAR_END_TBL + y];     /* $3A52 */
+        uint8_t end = mem[MEM_menu_bar_end_tbl + y];     /* $3A52 */
         math_lo = end;                               /* $3A55 — 6502 parked the end column in $74 */
-        uint8_t x = mem[MENU_BAR_START_TBL + y];     /* $3A57 */
+        uint8_t x = mem[MEM_menu_bar_start_tbl + y];     /* $3A57 */
         mem[page + x] = 0x97u;                        /* $3A5C — graphics white at the start column */
         uint8_t a = 0xE2u;                            /* $3A5F — leading sixel, then the $E6 fill */
         do {
@@ -3153,7 +3153,7 @@ uint8_t seed_car_track_position_core(uint8_t x, uint8_t entropy, uint8_t *mathlo
     if (sign) a = negate8(a).hi;                     /* $637C abs8 — negate iff the raw byte was negative */
 
     a = (uint8_t)(a << 1);                           /* $637F ASL A */
-    uint8_t base    = mem[CAR_GRID_BASE + x];        /* $6381 SBC car_grid_base,X (SEC set first) */
+    uint8_t base    = mem[MEM_car_grid_base + x];        /* $6381 SBC car_grid_base,X (SEC set first) */
     uint8_t gridSub = (uint8_t)(a - base);
     uint8_t carry   = (uint8_t)(a >= base);          /* the SEC/SBC no-borrow carry */
     uint8_t mathlo  = gridSub;                       /* $6384 math_lo = A */
@@ -3169,7 +3169,7 @@ uint8_t seed_car_track_position_core(uint8_t x, uint8_t entropy, uint8_t *mathlo
         scaled = (uint8_t)(gridSub << 1);            /* $638E ASL A */
     }
 
-    mem[CAR_TRACK_POSITION + x] = (uint8_t)(scaled + track_scale_saved); /* $6395 CLC / ADC / $6399 STA */
+    mem[MEM_car_track_position + x] = (uint8_t)(scaled + track_scale_saved); /* $6395 CLC / ADC / $6399 STA */
     *mathlo_out = mathlo;
     return car_index_dec_core(x);                    /* $639C DEX mod 20 */
 }
@@ -3247,7 +3247,7 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
        anything before it.  $50 is the top of the 80-line space: a point at or past it is sky.
        Each exit is a CMP, so A = line and N/Z/C are that CMP's (V untouched — still vOut). */
     line = projected_line;
-    mem[EDGE_Y_TBL + edge_cursor] = (uint8_t)line;
+    mem[MEM_edge_y + edge_cursor] = (uint8_t)line;
     {
         uint8_t d = (uint8_t)(line - 0x50u);          /* CMP #$50 */
         if (line >= 0x50u) {
@@ -3516,8 +3516,8 @@ void road_edge_start_core(uint8_t nearSlotCount,   /* 6 — also the "nothing to
         if (point < halfStride) {                    /* $2379 CPX #$28 */
             project_point_core(scratchSection, 0);    /* origin 0 = the camera */
             unsigned line = projected_line;
-            mem[EDGE_Y_TBL + point]              = (uint8_t)line;
-            mem[EDGE_Y_TBL + halfStride + point] = (uint8_t)line;
+            mem[MEM_edge_y + point]              = (uint8_t)line;
+            mem[MEM_edge_y + halfStride + point] = (uint8_t)line;
 
             /* $238C-$2398 — the frame's HORIZON is the largest projected scan line, ties
                broken in favour of the higher point index. */
@@ -3668,7 +3668,7 @@ static uint8_t road_edge_walk_run(unsigned section, uint8_t midSlot, uint8_t poi
                 edge_nearest_v          = (uint16_t)pointDist;
                 edge_nearest_section    = shared_counter_42;
                 nearest_edge_cursor     = edge_cursor;
-                nearest_edge_bearing_hi = mem[EDGE_X_HI_TBL + edge_cursor];
+                nearest_edge_bearing_hi = mem[MEM_edge_x_hi + edge_cursor];
             }
 
             /* $23FC-$2401 — project it.  clip = past the far clip, behind = below the camera. */
@@ -3686,8 +3686,8 @@ static uint8_t road_edge_walk_run(unsigned section, uint8_t midSlot, uint8_t poi
                already out there, in which case the side is done. */
             if (shared_counter_42 > edge_nearest_section) {              /* $2471 BEQ/$2473 BCC */
                 unsigned here = edge_cursor;                             /* $2475 LDY $12 */
-                if (angle_off_axis(EDGE_X_HI_TBL + here, offAxis)) {
-                    int prevFar = angle_off_axis((EDGE_X_HI_TBL - 1) + here, offAxis);
+                if (angle_off_axis(MEM_edge_x_hi + here, offAxis)) {
+                    int prevFar = angle_off_axis((MEM_edge_x_hi - 1) + here, offAxis);
 
                     /* ⚠ SMC $248B-$248F — see the header.  The unpatched arm just exits in mem[];
                        a circuit's own JMP is real 6502 code that READS the registers, so before
@@ -3795,8 +3795,8 @@ uint8_t horizon_half_width_at_core(unsigned horizonPoint)
        (static-map §Decimal mode), so this is a plain 8-bit subtract, and its own sign (bit 7)
        is what abs8 negated on.  The subtract's C/V/Z are dead (abs8 overwrote them when it
        negated, and on the keep path they reach build_track_geometry's exit UNREAD). */
-    uint8_t diff = (uint8_t)(mem[EDGE_X_HI_TBL + horizonPoint] -
-                             mem[EDGE_X_HI_TBL + EDGE_HALF + horizonPoint]);
+    uint8_t diff = (uint8_t)(mem[MEM_edge_x_hi + horizonPoint] -
+                             mem[MEM_edge_x_hi + EDGE_HALF + horizonPoint]);
     uint8_t mag  = (diff & 0x80u) ? negate8(diff).hi : diff;    /* |diff| — cpu-free abs8 */
 
     /* ⚠ The RETURN VALUE is part of build_track_geometry's exit ABI (its fixture compares A):
@@ -3892,9 +3892,9 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
        point, so a span walk that reaches it from either side stops on the same line.
        ⚠ SMC $2538: on an expansion circuit the second store is a call to the circuit's own
        code instead, which is why the bytes are dispatched rather than assumed. */
-    mem[EDGE_Y_TBL + horizonPoint] = (uint8_t)horizonLine;
+    mem[MEM_edge_y + horizonPoint] = (uint8_t)horizonLine;
     if (mem[MEM_smc_geometry_store] == 0x99) {                                  /* unpatched: Silverstone */
-        mem[EDGE_Y_TBL + EDGE_HALF + horizonPoint] = (uint8_t)horizonLine;
+        mem[MEM_edge_y + EDGE_HALF + horizonPoint] = (uint8_t)horizonLine;
     } else if (mem[MEM_smc_geometry_store] == 0x20) {
         uint16_t target = (uint16_t)(mem[MEM_smc_geometry_store + 1] | (mem[MEM_smc_geometry_store + 2] << 8));
         /* ⭐ THE ENTRY ABI, DERIVED FROM THE INSTRUCTIONS AROUND $2538 AND NOT FROM THE STORE
@@ -4117,15 +4117,15 @@ uint16_t model_state_16[MODEL_STATE_N];
 void model_state_marshal_in(void)
 {
     for (unsigned i = 0; i < MODEL_STATE_N; i++)
-        model_state_16[i] = (uint16_t)(mem[MODEL_STATE_LO + i]
-                                       | ((unsigned)mem[MODEL_STATE_HI + i] << 8));
+        model_state_16[i] = (uint16_t)(mem[MEM_model_state_lo + i]
+                                       | ((unsigned)mem[MEM_model_state_hi + i] << 8));
 }
 
 void model_state_marshal_out(void)
 {
     for (unsigned i = 0; i < MODEL_STATE_N; i++) {
-        mem[MODEL_STATE_LO + i] = (uint8_t)model_state_16[i];
-        mem[MODEL_STATE_HI + i] = (uint8_t)(model_state_16[i] >> 8);
+        mem[MEM_model_state_lo + i] = (uint8_t)model_state_16[i];
+        mem[MEM_model_state_hi + i] = (uint8_t)(model_state_16[i] >> 8);
     }
 }
 
@@ -4357,7 +4357,7 @@ CameraExit apply_driving_model_core(uint16_t heading, int entryC)
    inputs. */
 SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, uint8_t entryC)
 {
-    uint8_t flags = mem[CAR_FLAGS_SHAPE + slot];
+    uint8_t flags = mem[MEM_car_flags_shape + slot];
     uint8_t a, v = entryV, c = entryC;          /* y passes through untouched (= entryY) */
 
     if (flags & 0x80) {
@@ -4545,7 +4545,7 @@ void copy_dash_data_core(uint8_t dirFlag)
             to[y] = from[y];
             bytes++;
             y--;
-        } while (y != mem[DASH_BLOCK_STARTS + b]);
+        } while (y != mem[MEM_dash_block_starts + b]);
 
         page  -= bytes;      /* page descended past the bytes just moved (16-bit) */
         block += 0x80u;      /* next $80-spaced source block                       */
@@ -5108,7 +5108,7 @@ int road_span_advance_core(uint8_t y)
 {
     /* CMP then a CLC on equal: carry SET while the scan line is still past the block's first
        line, CLEAR the moment it reaches (or precedes) it.  C = (Y > dash_block_starts[block]). */
-    return y > mem[DASH_BLOCK_STARTS + mem[SPAN_BLOCK]];
+    return y > mem[MEM_dash_block_starts + mem[SPAN_BLOCK]];
 }
 
 
@@ -5278,7 +5278,7 @@ void span_plot_core(const SpanPlotter* p, uint8_t accumulator, uint8_t column,
         }
         preC = (cell >= 0x55u);                     /* CMP(0x55): carry survives to the exit trap */
         a    = (cell == 0x55u) ? 0u : cell;         /* "all four columns" reads as empty */
-        a    = (a & mem[COLOUR_PATTERN_AND + column]) | mem[MEM_colour_pattern_or_tbl + column];
+        a    = (a & mem[MEM_colour_pattern_and_tbl + column]) | mem[MEM_colour_pattern_or_tbl + column];
         if (a == 0) a = 0x55u;                      /* ...and is substituted back */
     }
 
@@ -5686,11 +5686,11 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
        of the view or more than $14 off axis. */
     {
         uint8_t clipBit;
-        uint8_t line = (uint8_t)(mem[EDGE_Y_TBL + nearPoint] - 1u);
+        uint8_t line = (uint8_t)(mem[MEM_edge_y + nearPoint] - 1u);
         if (line >= 0x4Eu) {
             clipBit = 1;
         } else {
-            uint8_t angle = mem[EDGE_X_HI_TBL + farPoint];
+            uint8_t angle = mem[MEM_edge_x_hi + farPoint];
             if (angle & 0x80u) angle ^= 0xFFu;      /* |angle|, near enough for a clip test */
             clipBit = (angle >= 0x14u) ? 1u : 0u;
         }
@@ -5700,7 +5700,7 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     /* 2 — the endpoint, as a 10-bit x biased by $80 in the high byte. */
     x = edge_x_word(farPoint);
     shared_temp_77 = (uint8_t)(((x << 2) >> 8) + 0x80u);
-    mem[SPAN_LINE_END] = mem[EDGE_Y_TBL + nearPoint];
+    mem[SPAN_LINE_END] = mem[MEM_edge_y + nearPoint];
     saved_slot_index   = farPoint;
     span_saved_index   = nearPoint;
     if (publishOnly) return interp_edge_publish();
@@ -5787,7 +5787,7 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     for (i = 0; i < 4; i++) {
         uint8_t pat = mem[MEM_surface_style_tbl + (uint8_t)(surface_style_index + i)];
         mem[MEM_colour_pattern_tbl + i]    = pat;
-        mem[MEM_colour_pattern_or_tbl + i] = (uint8_t)(pat & mem[COLOUR_PATTERN_KEEP + i]);
+        mem[MEM_colour_pattern_or_tbl + i] = (uint8_t)(pat & mem[MEM_colour_pattern_keep_tbl + i]);
     }
 
     /* The two surface classes a cap can stamp on the scan line the span ends on.  The style
@@ -5916,7 +5916,7 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
 
 EdgeOffFlags edge_x_offscreen_core(uint8_t pointX)
 {
-    uint8_t edgeHi = mem[EDGE_X_HI_TBL + pointX];
+    uint8_t edgeHi = mem[MEM_edge_x_hi + pointX];
     uint8_t sum    = (uint8_t)(edgeHi + 0x14u);          /* recentre: "on axis" becomes $00..$27 */
 
     /* The ADC's signed overflow, which draw_road carries out in V.  $14 is a positive constant,
@@ -6018,14 +6018,14 @@ SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t first
             /* $194E — re-test this point's angle only when the last one was off axis. */
             if (shared_temp_76 & 0x80u) { vFlag = edge_x_offscreen_core(x).v; }
 
-            uint8_t ptLine = mem[EDGE_Y_TBL + x];     /* the scan line this point projects to */
+            uint8_t ptLine = mem[MEM_edge_y + x];     /* the scan line this point projects to */
             if (ptLine >= 0x50u) {
                 clamped = 1;                          /* $195A — off the bottom of the screen */
             } else {
                 /* $195C BIT — its V escapes, so mirror it; bit 7 = "previous point off axis". */
                 int prevOffAxis = (shared_temp_76 & 0x80u) != 0;
                 vFlag = (shared_temp_76 >> 6) & 1u;
-                if (prevOffAxis && ptLine == mem[EDGE_Y_TBL + x + 1]) {
+                if (prevOffAxis && ptLine == mem[MEM_edge_y + x + 1]) {
                     /* previous point off axis + this one on the SAME line ⇒ nothing to add */
                     mem[MEM_edge_style + x] |= 0x80u; completedAny = 1; continue;
                 }
@@ -6040,9 +6040,9 @@ SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t first
         if (clamped) {
             /* $1980 — pull the point's line back to the cursor, mark the index, and fill
                everything that is left down to line 0. */
-            uint8_t ey = mem[EDGE_Y_TBL + x];
+            uint8_t ey = mem[MEM_edge_y + x];
             if (!(ey & 0x80u) && ey >= span_line_cursor)
-                mem[EDGE_Y_TBL + x] = span_line_cursor;
+                mem[MEM_edge_y + x] = span_line_cursor;
             x |= 0x80u;                        /* mark the index; bit 7 ends the walk */
             fillDownTo = 0x00u;
         }
@@ -6264,7 +6264,7 @@ SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int e
 
         ROAD_COUNT(g_roadMarkPts);        /* one edge point examined for its surface class */
         {
-            uint8_t y = mem[EDGE_Y_TBL + x];
+            uint8_t y = mem[MEM_edge_y + x];
             if (y < 0x50u) {
                 /* A holds the style byte; bit 7 set means fill_line_attr already marked it. */
                 a = mem[MEM_edge_style + x];
@@ -6273,11 +6273,11 @@ SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int e
                     if (mem[SPAN_CLIP] == 0x14u) {
                         /* high byte only, as the 6502 does: this is a COARSE angle test and
                            the low byte is never loaded (see the note on edge_x_word). */
-                        other = mem[EDGE_X_HI_TBL + x];
-                        a     = mem[EDGE_OPP_X_HI_TBL + x];
+                        other = mem[MEM_edge_x_hi + x];
+                        a     = mem[MEM_edge_opp_x_hi + x];
                     } else {
-                        other = mem[EDGE_OPP_X_HI_TBL + x];
-                        a     = mem[EDGE_X_HI_TBL + x];
+                        other = mem[MEM_edge_opp_x_hi + x];
+                        a     = mem[MEM_edge_x_hi + x];
                     }
                     shared_temp_77 = other;       /* a real mem[] store the differential sees */
                     /* Both +$14 are plain binary adds: D=0 on the road pass (docs/static-map.md
@@ -6334,7 +6334,7 @@ SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int e
        set on every exit (the CPX/CMP that got us here); INY sets N/Z from the incremented Y. */
     {
         uint8_t x = road_split_index;
-        uint8_t y = (uint8_t)(mem[EDGE_Y_TBL + x] + 1u);
+        uint8_t y = (uint8_t)(mem[MEM_edge_y + x] + 1u);
         SlotExit e;
         e.a = a;
         e.x = x;
@@ -6453,29 +6453,29 @@ static SlotExit surface_colour_at_core(uint8_t line, uint8_t position,
     /* $1E9E — nothing above the horizon has a surface; that is sky.  CPY leaves C = line >=
        horizon_extent; the taken (BCS+BNE) arm needs line > it, and its exit C is 1. */
     if (line > horizon_extent)
-        return surf_exit(mem[SURFACE_COLOURS_TBL + 1], entryX, line, entryV, 1u);
+        return surf_exit(mem[MEM_surface_colours + 1], entryX, line, entryV, 1u);
 
     /* $1EA8-$1EBC — the four boundaries, outermost first.  A taken BCS exits with C = 1. */
     if (position >= mem[MEM_surface_edge_0 + line])
-        return surf_exit(mem[SURFACE_COLOURS_TBL + 3], entryX, line, entryV, 1u);
+        return surf_exit(mem[MEM_surface_colours + 3], entryX, line, entryV, 1u);
 
     if (position >= mem[MEM_surface_edge_2 + line]) {
         if (line >= line_attr_1_limit)                     /* cpy_ge taken: C = 1 */
-            return surf_exit(mem[SURFACE_COLOURS_TBL + 3], entryX, line, entryV, 1u);
+            return surf_exit(mem[MEM_surface_colours + 3], entryX, line, entryV, 1u);
         attr = mem[MEM_line_attr_1 + line];
         c    = 0u;                                         /* the cpy_ge fell through: C = 0 */
     } else if (position >= mem[MEM_surface_edge_3 + line]) {
-        return surf_exit(mem[SURFACE_COLOURS_TBL + 0], entryX, line, entryV, 1u);
+        return surf_exit(mem[MEM_surface_colours + 0], entryX, line, entryV, 1u);
     } else if (position >= mem[MEM_surface_edge_1 + line]) {
         if (line >= line_attr_0_limit)
-            return surf_exit(mem[SURFACE_COLOURS_TBL + 3], entryX, line, entryV, 1u);
+            return surf_exit(mem[MEM_surface_colours + 3], entryX, line, entryV, 1u);
         attr = mem[MEM_line_attr_0 + line];
         c    = 0u;
     } else {
         /* $1EBE — inside everything: the line's own background class.  The last CMP (edge 1)
            fell through, so exit C = 0; X = the surface class. */
         attr = mem[MEM_view_line_surface + line];
-        return surf_exit(mem[SURFACE_COLOURS_TBL + (attr & 3u)], (uint8_t)(attr & 3u),
+        return surf_exit(mem[MEM_surface_colours + (attr & 3u)], (uint8_t)(attr & 3u),
                          line, entryV, 0u);
     }
 
@@ -6486,7 +6486,7 @@ static SlotExit surface_colour_at_core(uint8_t line, uint8_t position,
        the table index one line down fails, which is the pair that proves which one matters.
        X = the surface class; C = 0, carried from the cpy_ge that fell through above. */
     attr = mem[EDGE_STYLE_PREV + (attr & 0x7Fu)];
-    return surf_exit(mem[SURFACE_COLOURS_TBL + (attr & 3u)], (uint8_t)(attr & 3u),
+    return surf_exit(mem[MEM_surface_colours + (attr & 3u)], (uint8_t)(attr & 3u),
                      line, entryV, c);
 }
 
@@ -6678,7 +6678,7 @@ SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
     do {
         mem[EDGE_COLUMN]      = (uint8_t)column;                       /* $1DF1 */
         span_line_cursor      = y;                                     /* $1DF3 */
-        mem[EDGE_BLOCK_START] = mem[DASH_BLOCK_STARTS + column];       /* $1DF5-$1DF8 */
+        mem[EDGE_BLOCK_START] = mem[MEM_dash_block_starts + column];       /* $1DF5-$1DF8 */
 
         /* $1DFA — this column into the per-line boundary table, $55 mapped to empty.  Its exit
            line is discarded: both walks in an iteration start from the SAME span_line_cursor. */
@@ -8414,7 +8414,7 @@ static void compute_car_angles_core(uint16_t heading)
    replayed in the shim; the two native callers here consume the returned byte directly. */
 static uint8_t scale_by_track_gradient_core(uint8_t value, uint8_t index)
 {
-    uint8_t gradByte = mem[TRACK_DIR_1 + index];                        /* $4612/$4618 */
+    uint8_t gradByte = mem[MEM_track_dir_1 + index];                        /* $4612/$4618 */
     uint8_t eor      = (uint8_t)(gradByte ^ track_direction);           /* $4614 — the re-sign */
     uint8_t mag      = (gradByte & 0x80u)                               /* $461B abs8: |grad| */
                        ? (uint8_t)(-(int)gradByte) : gradByte;
@@ -8944,8 +8944,8 @@ CameraExit update_camera_and_drive_state_core(void)
     yScale   = dirIndex;                                /* the scale index at $45D8, unless a spin overwrites it */
     shared_temp_76 = view_pitch_offset;                 /* $4531-$4534 — last frame's pitch */
     {
-        uint8_t dir0 = mem[TRACK_DIR_0 + dirIndex];
-        uint8_t dir2 = mem[TRACK_DIR_2 + dirIndex];
+        uint8_t dir0 = mem[MEM_track_dir_0 + dirIndex];
+        uint8_t dir2 = mem[MEM_track_dir_2 + dirIndex];
         int n1 = ((dir0 ^ dir2) & 0x80u) != 0;         /* $453C PHP (1) — the octant's sign */
         int n2 = (dir2 & 0x80u) != 0;                  /* $4540 PHP (2) — component 2's sign */
         uint8_t comp = (dir2 & 0x80u) ? (uint8_t)(0u - dir2) : dir2;  /* $4541 abs |c2| */
@@ -9144,7 +9144,7 @@ void scale_by_track_gradient(void)
        the PHP/PLP carried them intact).  Negative arm: flags from abs8 negating the high byte —
        N/Z from -(high), C = (high == 0) = Z, V = 0 (high ≤ 0x7F is never $80). */
     uint8_t callerC = cpu.C, callerV = cpu.V;
-    uint8_t eor = (uint8_t)(mem[TRACK_DIR_1 + cpu.Y] ^ track_direction);
+    uint8_t eor = (uint8_t)(mem[MEM_track_dir_1 + cpu.Y] ^ track_direction);
     uint8_t a = scale_by_track_gradient_core(cpu.A, cpu.Y);
     cpu.A = a;
     if (eor & 0x80u) {
@@ -9405,13 +9405,13 @@ ContactExit note_object_contact_core(uint8_t threshold, uint8_t entryC)
 
 static void store_object_flags_core(uint8_t y, uint8_t a)
 {
-    mem[CAR_FLAGS_SHAPE + y] = a;                        /* $2AAD — STA touches no flag/register */
+    mem[MEM_car_flags_shape + y] = a;                        /* $2AAD — STA touches no flag/register */
 }
 
 RejectExit reject_object_slot_core(void)
 {
     uint8_t y = shared_counter_42;                       /* $2AA6 */
-    uint8_t a = (uint8_t)(mem[CAR_FLAGS_SHAPE + y] | 0x80u);   /* ORA #$80 — the slot-empty mark */
+    uint8_t a = (uint8_t)(mem[MEM_car_flags_shape + y] | 0x80u);   /* ORA #$80 — the slot-empty mark */
     store_object_flags_core(y, a);
     RejectExit r = { a, y };                             /* exit: A=a, Y=y, N=1, Z=0 (bit7 set) */
     return r;
@@ -9470,7 +9470,7 @@ SlotExit write_object_slot_core(uint8_t projectedLine, uint8_t entryX,
 
     /* $2A9C-$2AA3 — keep the surviving flag bits, drop this shape in the low nibble, store.
        The ORA's N/Z are the routine's exit flags. */
-    uint8_t flagsA = (uint8_t)((mem[CAR_FLAGS_SHAPE + slot] & 0x70u) | plot_shape);
+    uint8_t flagsA = (uint8_t)((mem[MEM_car_flags_shape + slot] & 0x70u) | plot_shape);
     store_object_flags_core(slot, flagsA);               /* $2AA3 JMP */
     e.a = flagsA; e.x = exitX; e.y = slot;
     e.n = (flagsA >> 7) & 1u; e.z = (flagsA == 0u);
@@ -9739,7 +9739,7 @@ static SlotExit plot_shape_edges_core(void)
         int rejected = 0;
 
         /* $209C-$20A6 — per-edge state: the running colour and the deferred-byte pair. */
-        hypot_min_hi        = mem[SURFACE_COLOURS_TBL];
+        hypot_min_hi        = mem[MEM_surface_colours];
         span_defer_pending  = 0x00;
         shared_temp_8c      = 0x00;
 
@@ -9863,8 +9863,8 @@ SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV)
        ⚠ The DEX/BPL's final X ($FF) is dead — $1FE0's `LDX #0` rewrites it before any read. */
     math_lo = slot;
     for (i = 3; i >= 0; i--)
-        mem[MEM_colour_pattern_tbl + i] = mem[SURFACE_COLOURS_TBL + i];
-    mem[SURFACE_COLOURS_TBL + 2] = 0xF0u;
+        mem[MEM_colour_pattern_tbl + i] = mem[MEM_surface_colours + i];
+    mem[MEM_surface_colours + 2] = 0xF0u;
 
     /* $1FC6-$1FDD — pattern 1 is the object's OWN colour: a car takes it from its slot number,
        slots $14..$16 from the car behind's position in the order, and the road sign ($17)
@@ -9872,7 +9872,7 @@ SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV)
        are dead, because $1FDE's `LDX #0` rewrites N and Z and $1FE2 rewrites A. */
     if (slot != 0x17u) {
         uint8_t sel = (slot >= 0x14u) ? mem[MEM_car_order + car_behind] : slot;
-        mem[MEM_colour_pattern_tbl + 1] = mem[SURFACE_COLOURS_TBL + (sel & 0x03u)];
+        mem[MEM_colour_pattern_tbl + 1] = mem[MEM_surface_colours + (sel & 0x03u)];
     }
 
     /* $1FDE-$1FF9 — the width's scale, and the ceiling the spans may not rise above.  A wide
@@ -10300,8 +10300,8 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
     }
     x = edgeCol;                                    /* the fall-through CPX also left X = edgeCol */
     blockStart = span_top_line;
-    if (blockStart < mem[DASH_BLOCK_STARTS + edgeCol])              /* clamp to the block top */
-        blockStart = mem[DASH_BLOCK_STARTS + edgeCol];
+    if (blockStart < mem[MEM_dash_block_starts + edgeCol])              /* clamp to the block top */
+        blockStart = mem[MEM_dash_block_starts + edgeCol];
     mem[EDGE_BLOCK_START] = blockStart;
 
     /* $1C9E-$1CA9 — a run with no height. */
@@ -10330,9 +10330,9 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
        it flows across the shared same-column / read-modify-write tails. */
     if (mode == 0) {
         /* ---- mode 0: the closing arm's own pass ---- */
-        uint8_t half0 = (uint8_t)(mem[COLOUR_PATTERN_AND + pixel] & mem[PVS_COLOUR_P]);
+        uint8_t half0 = (uint8_t)(mem[MEM_colour_pattern_and_tbl + pixel] & mem[PVS_COLOUR_P]);
         mem[PVS_HALF] = half0;                    /* ⚠ math_lo again, here a partial byte */
-        acc = (uint8_t)(((mem[PVS_COLOUR] & mem[COLOUR_PATTERN_KEEP + pixel]) | half0)
+        acc = (uint8_t)(((mem[PVS_COLOUR] & mem[MEM_colour_pattern_keep_tbl + pixel]) | half0)
                         & mem[MEM_pixel_keep_others_tbl + pixel]) | shared_temp_76;
         mem[PVS_BYTE] = acc;
 
@@ -10377,7 +10377,7 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
     } else if (mode == 1) {
         /* ---- mode 1: open the span ---- */
         {
-            uint8_t pat = mem[COLOUR_PATTERN_AND + pixel];   /* $1D17 */
+            uint8_t pat = mem[MEM_colour_pattern_and_tbl + pixel];   /* $1D17 */
             mem[PVS_KEEP] = pat;
             acc = (uint8_t)(((uint8_t)~pat & mem[PVS_COLOUR] & mem[MEM_pixel_keep_others_tbl + pixel])
                             | shared_temp_76);
@@ -11588,7 +11588,7 @@ void apply_steering_assist(void)        { car_angle_marshal_in(); apply_steering
    --------------------------------------------------------------------------- */
 void reset_all_cars_for_session_core(uint8_t startCar)
 {
-    mem[CAR_SEED_INDEX] = startCar;                  /* $4D4D STX car_seed_index */
+    mem[MEM_car_seed_index] = startCar;                  /* $4D4D STX car_seed_index */
     race_class          = startCar;                  /* $4D4F STX race_class */
     compute_segment_scale_core(startCar);            /* $4D52 */
 
@@ -11597,8 +11597,8 @@ void reset_all_cars_for_session_core(uint8_t startCar)
         /* $4D56 — the identity order.  car_seed_index holds this same value here on every
            pass (the store above on the first, the seeder's own write on the rest), so a twin
            that read the cell instead would be indistinguishable — see the fixture's note. */
-        mem[CAR_ORDER     + car] = car;
-        mem[CAR_GRID_BASE + car] = (uint8_t)(car >> 1);
+        mem[MEM_car_order     + car] = car;
+        mem[MEM_car_grid_base + car] = (uint8_t)(car >> 1);
 
         /* $4D5E — the seeder reads and rewrites car_seed_index itself and hands the
            decremented cursor back.  ⚠ A FLAG ESCAPES: the $4D59 LSR that halves the car index
@@ -11607,9 +11607,9 @@ void reset_all_cars_for_session_core(uint8_t startCar)
            pointer, so it stays in the seam; this call passes the escaping bit across. */
         car = seed_car_track_position_with_carry(car & 1u);
 
-        mem[CAR_LAP_LO  + car] = 0x00;               /* $4D61-$4D6B — the NEXT car's total */
-        mem[CAR_LAP_MID + car] = 0x00;
-        mem[CAR_LAP_HI  + car] = 0x00;
+        mem[MEM_car_lap_lo  + car] = 0x00;               /* $4D61-$4D6B — the NEXT car's total */
+        mem[MEM_car_lap_mid + car] = 0x00;
+        mem[MEM_car_lap_hi  + car] = 0x00;
     } while (car != 0u);                             /* $4D6C TXA; BNE */
 }
 
@@ -11624,9 +11624,9 @@ void reset_all_cars_for_session_core(uint8_t startCar)
    --------------------------------------------------------------------------- */
 void car_reset_best_lap_core(uint8_t car)
 {
-    mem[CAR_BEST_LAP_LO  + car] = 0x00;
-    mem[CAR_BEST_LAP_MID + car] = 0x00;
-    mem[CAR_BEST_LAP_HI  + car] = 0x10;
+    mem[MEM_car_best_lap_lo  + car] = 0x00;
+    mem[MEM_car_best_lap_mid + car] = 0x00;
+    mem[MEM_car_best_lap_hi  + car] = 0x10;
 }
 
 void all_cars_reset_best_lap_core(void)
@@ -11650,12 +11650,12 @@ Adc add_tally_to_lap_total_core(uint8_t column, uint8_t car)
 {
     cpu.D = 1;                                                                    /* $6698 SED */
 
-    Adc lo  = adc_value(mem[CAR_LAP_LO  + car], mem[STANDINGS_BCD_LO + column], 0);
-    mem[CAR_LAP_LO  + car] = lo.val;
-    Adc mid = adc_value(mem[CAR_LAP_MID + car], mem[STANDINGS_BCD_HI + column], lo.carry);
-    mem[CAR_LAP_MID + car] = mid.val;
-    Adc hi  = adc_value(mem[CAR_LAP_HI  + car], 0x00, mid.carry);
-    mem[CAR_LAP_HI  + car] = hi.val;
+    Adc lo  = adc_value(mem[MEM_car_lap_lo  + car], mem[MEM_standings_bcd_lo + column], 0);
+    mem[MEM_car_lap_lo  + car] = lo.val;
+    Adc mid = adc_value(mem[MEM_car_lap_mid + car], mem[MEM_standings_bcd_hi + column], lo.carry);
+    mem[MEM_car_lap_mid + car] = mid.val;
+    Adc hi  = adc_value(mem[MEM_car_lap_hi  + car], 0x00, mid.carry);
+    mem[MEM_car_lap_hi  + car] = hi.val;
 
     cpu.D = 0;                                                                    /* $66B4 CLD */
     return hi;
@@ -11951,7 +11951,7 @@ void process_car_contact(void)
 
     /* Heading difference between the two objects, x4; its sign steers abs16_math below.
        High bytes only, as the 6502 does — a COARSE angle, the low bytes are never loaded. */
-    uint8_t  hd4     = (uint8_t)(((unsigned)mem[OBJECT_BEARING_HI + x]
+    uint8_t  hd4     = (uint8_t)(((unsigned)mem[MEM_object_bearing_hi + x]
                                   - (uint8_t)(car_heading_v >> 8)) << 2);
     int      hd_sign = (hd4 & 0x80) != 0;                    /* PHP: N of the <<2 result */
 
@@ -12243,9 +12243,9 @@ void step_segment_dir_index(void)
 void build_section_step_delta_core(uint8_t y)
 {
     int16_t d[3];
-    d[0] = (int16_t)(int8_t)mem[TRACK_DIR_0 + y];
-    d[1] = (int16_t)(int8_t)mem[TRACK_DIR_1 + y];
-    d[2] = (int16_t)(int8_t)mem[TRACK_DIR_2 + y];
+    d[0] = (int16_t)(int8_t)mem[MEM_track_dir_0 + y];
+    d[1] = (int16_t)(int8_t)mem[MEM_track_dir_1 + y];
+    d[2] = (int16_t)(int8_t)mem[MEM_track_dir_2 + y];
     if (track_direction != 0) {                 /* backwards: negate every component */
         d[0] = (int16_t)-d[0];
         d[1] = (int16_t)-d[1];
@@ -12712,9 +12712,9 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
     mem[MEM_shared_temp_85] = across;
 
     uint8_t dir1[3];
-    dir1[0] = mem[TRACK_DIR_0 + soi];
-    dir1[1] = mem[TRACK_DIR_1 + soi];
-    dir1[2] = mem[TRACK_DIR_2 + soi];
+    dir1[0] = mem[MEM_track_dir_0 + soi];
+    dir1[1] = mem[MEM_track_dir_1 + soi];
+    dir1[2] = mem[MEM_track_dir_2 + soi];
     mem[PLACE_CAR_DIR + 0] = dir1[0];
     mem[PLACE_CAR_DIR + 1] = dir1[1];
     mem[PLACE_CAR_DIR + 2] = dir1[2];
@@ -12779,13 +12779,13 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
     uint8_t qslot = saved_slot_index;
     if (object_dist_hi >= 0x03) {
         if (object_dist_hi >= 0x05 &&                            /* CMP #5; BCC L_2a4d */
-            !(mem[CAR_FLAGS_SHAPE + qslot] & 0x80))              /* BMI L_2a4d */
-            mem[CAR_FLAGS_SHAPE + qslot]++;                      /* INC */
+            !(mem[MEM_car_flags_shape + qslot] & 0x80))              /* BMI L_2a4d */
+            mem[MEM_car_flags_shape + qslot]++;                      /* INC */
         return saved_slot_index;                                 /* L_2a4d */
     }
     if (staging_order_index != car_behind) return saved_slot_index;  /* $1D — the ring position */
-    if (!(mem[CAR_FLAGS_SHAPE + qslot] & 0x80))                  /* $2A07 LDA / BPL: not yet flagged */
-        mem[CAR_FLAGS_SHAPE + qslot]--;                           /* DEC */
+    if (!(mem[MEM_car_flags_shape + qslot] & 0x80))                  /* $2A07 LDA / BPL: not yet flagged */
+        mem[MEM_car_flags_shape + qslot]--;                           /* DEC */
 
     /* $2A0F LDY $0C: the segment index is build_section_step_delta's only input, and the
        C/N/Z the 6502 leaves here are dead (fixture LIVE_X) now that the rest of this branch
@@ -12860,8 +12860,8 @@ uint8_t tally_bcd_column_core(uint8_t x)
     uint8_t nHumans = human_driver_count;
     uint8_t y = (x == 0x06) ? mem[MEM_car_order] : mem[MEM_car_order + x];   /* the column's car */
 
-    mem[STANDINGS_BCD_LO + x] = 0x00;
-    mem[STANDINGS_BCD_HI + x] = 0x00;
+    mem[MEM_standings_bcd_lo + x] = 0x00;
+    mem[MEM_standings_bcd_hi + x] = 0x00;
 
     /* HOW MANY BUMPS this column's tally is worth.  The 6502 keeps it in math_lo/math_hi and
        unwinds it with DEC/BNE/DEC/BPL ($5A74-$5A7A), which is ONE 16-bit counter written as two
@@ -12906,10 +12906,10 @@ uint8_t tally_bcd_column_core(uint8_t x)
     /* SED; the 16-bit BCD accumulate loop. */
     cpu.D = 1;
     do {
-        Adc lo = adc_value(mem[STANDINGS_BCD_LO + x], mem[MEM_standings_increment + x], 0);   /* CLC; ADC */
-        mem[STANDINGS_BCD_LO + x] = lo.val;
-        Adc hi = adc_value(mem[STANDINGS_BCD_HI + x], 0x00, lo.carry);                    /* ADC #0 */
-        mem[STANDINGS_BCD_HI + x] = hi.val;
+        Adc lo = adc_value(mem[MEM_standings_bcd_lo + x], mem[MEM_standings_increment + x], 0);   /* CLC; ADC */
+        mem[MEM_standings_bcd_lo + x] = lo.val;
+        Adc hi = adc_value(mem[MEM_standings_bcd_hi + x], 0x00, lo.carry);                    /* ADC #0 */
+        mem[MEM_standings_bcd_hi + x] = hi.val;
     } while (--iterations != 0);                          /* was DEC math_lo/BNE + DEC math_hi/BPL */
 
     add_tally_to_lap_total_core(x, y);                    /* folds the pair into the lap total */
@@ -12958,7 +12958,7 @@ uint8_t paint_fence_backdrop_core(uint8_t horizon)
     uint16_t block = MEM_view_src_blocks;
 
     for (unsigned col = 0; col < FENCE_COL_COUNT; col++) {
-        const uint8_t bottom = mem[DASH_BLOCK_STARTS + col];   /* $3900,col — this column's floor */
+        const uint8_t bottom = mem[MEM_dash_block_starts + col];   /* $3900,col — this column's floor */
 
         uint8_t pat = 3;                        /* dither index resets to 3 at the top of each column */
         uint8_t y   = FENCE_TOP_ROW;
@@ -12969,8 +12969,8 @@ uint8_t paint_fence_backdrop_core(uint8_t horizon)
                 if (hi) b = hi;                 /* LDA hi / BNE — zero falls back to lo */
             }
             mem[(uint16_t)(block + y)]                 = b;   /* the column's own source block */
-            mem[(uint16_t)(VIEW_LEFT_START_SRC  + y)]  = b;
-            mem[(uint16_t)(VIEW_RIGHT_START_SRC + y)]  = b;
+            mem[(uint16_t)(MEM_view_left_start_src  + y)]  = b;
+            mem[(uint16_t)(MEM_view_right_start_src + y)]  = b;
             last = b;
 
             pat = (uint8_t)((pat - 1) & 3);     /* 3,2,1,0,3,... (DEX / BPL / LDX #3) */
@@ -12984,7 +12984,7 @@ uint8_t paint_fence_backdrop_core(uint8_t horizon)
        mem[].  math_lo counted the columns up to the $28 terminator; math_hi holds the last
        column's bottom; plot_ptr walked to $3000 + 40*$80 = $4400. */
     math_lo     = FENCE_COL_COUNT;
-    math_hi     = mem[DASH_BLOCK_STARTS + (FENCE_COL_COUNT - 1)];
+    math_hi     = mem[MEM_dash_block_starts + (FENCE_COL_COUNT - 1)];
     plot_ptr_v  = block;                        /* ⭐ the word, mirrored by the marshal */
     plot_ptr_marshal_out();
     return last;
@@ -13306,7 +13306,7 @@ static void lap_complete_core(uint8_t x)
     /* only the 20 real cars carry lap stats */
     if (x >= 0x14u) return;
     /* a car the projection rejected (flags bit 6) is skipped */
-    if (mem[CAR_FLAGS_SHAPE + x] & 0x40u) return;
+    if (mem[MEM_car_flags_shape + x] & 0x40u) return;
 
     /* the player's lap is credited only once per approach: a self-restoring one-shot debounce that
        fires exactly when lap_credit_armed == 1 (armed), leaving it disarmed */
@@ -13358,12 +13358,12 @@ static void lap_complete_core(uint8_t x)
     /* only a non-negative lap time (no borrow out of the whole subtract) can be a best lap */
     if (t_hi.carry) {
         uint32_t lap  = ((uint32_t)hypot_min_hi << 16) | ((uint32_t)math_hi << 8) | math_lo;
-        uint32_t best = ((uint32_t)mem[CAR_BEST_LAP_HI + x] << 16)
-                      | ((uint32_t)mem[CAR_BEST_LAP_MID + x] << 8) | mem[CAR_BEST_LAP_LO + x];
+        uint32_t best = ((uint32_t)mem[MEM_car_best_lap_hi + x] << 16)
+                      | ((uint32_t)mem[MEM_car_best_lap_mid + x] << 8) | mem[MEM_car_best_lap_lo + x];
         if (lap < best) {                               /* a new best for this car */
-            mem[CAR_BEST_LAP_LO + x]  = (uint8_t)(math_lo & 0xF0u);   /* drop the centisecond units */
-            mem[CAR_BEST_LAP_MID + x] = math_hi;
-            mem[CAR_BEST_LAP_HI + x]  = hypot_min_hi;
+            mem[MEM_car_best_lap_lo + x]  = (uint8_t)(math_lo & 0xF0u);   /* drop the centisecond units */
+            mem[MEM_car_best_lap_mid + x] = math_hi;
+            mem[MEM_car_best_lap_hi + x]  = hypot_min_hi;
         }
     }
 
@@ -13386,7 +13386,7 @@ void lap_complete(void) { lap_complete_core(cpu.X); }   /* X = car index; nothin
 void reject_all_object_slots_core(void)
 {
     for (int slot = 0x16; slot >= 0; slot--)
-        mem[CAR_FLAGS_SHAPE + slot] |= 0x80u;
+        mem[MEM_car_flags_shape + slot] |= 0x80u;
 }
 
 /* ---------------------------------------------------------------------------
@@ -13448,8 +13448,8 @@ void move_and_draw_cars_core(void)
         return;
     }
 
-    uint8_t aheadSlot = mem[CAR_ORDER + car_ahead];    /* $263C LDX car_ahead / $263E LDY */
-    mem[CAR_FLAGS_SHAPE + aheadSlot] &= 0x7Fu;         /* $2641-$2646 — the one slot NOT rejected */
+    uint8_t aheadSlot = mem[MEM_car_order + car_ahead];    /* $263C LDX car_ahead / $263E LDY */
+    mem[MEM_car_flags_shape + aheadSlot] &= 0x7Fu;         /* $2641-$2646 — the one slot NOT rejected */
 
     drive_other_cars();                                        /* $2649 — the per-car update engine */
     car_distance_marshal_in();                         /* check_car_pair walks every pair in
@@ -13527,7 +13527,7 @@ SlotExit draw_car_field_core(uint8_t entryY, uint8_t entryV, uint8_t entryC)
     for (;;) {
         if (draw) {                                         /* $66E3 JSR draw_car_at_order */
             saved_slot_index = pos;                         /* $2ACB — the POSITION, not the slot */
-            e = draw_track_object_core(mem[CAR_ORDER + pos], y, v, c);
+            e = draw_track_object_core(mem[MEM_car_order + pos], y, v, c);
             y = e.y; v = e.v;                               /* C is recomputed below, not threaded */
             pos = e.x;                                      /* $2B0A reloads X = saved_slot_index */
         }
@@ -13549,7 +13549,7 @@ SlotExit draw_car_field_core(uint8_t entryY, uint8_t entryV, uint8_t entryC)
 
     uint8_t behind = car_behind;                            /* $66F9 LDX car_behind */
     saved_slot_index = behind;                              /* $2ACB again */
-    return draw_track_object_core(mem[CAR_ORDER + behind], y, v, c);
+    return draw_track_object_core(mem[MEM_car_order + behind], y, v, c);
 }
 
 /* ----- TWIN #159: $27ED drive_other_cars — the per-frame per-car update engine -------------------------
@@ -13643,7 +13643,7 @@ static void drive_one_car(uint8_t x)
         math_lo = eff;                                       /* $2838 STA math_lo */
         /* $283A-$2844: base offset (+5 if the car's flags bit6 is set) plus its track position */
         uint8_t base = (flags & 0x40u) ? 0x05u : 0x00u;      /* $283A/$283D AND #$40 / $2841 LDA #$05 */
-        uint16_t sum = (uint16_t)base + mem[CAR_TRACK_POSITION + x]; /* $2843 CLC / $2844 ADC */
+        uint16_t sum = (uint16_t)base + mem[MEM_car_track_position + x]; /* $2843 CLC / $2844 ADC */
         a = (uint8_t)sum;
         uint8_t carry = (uint8_t)(sum >> 8);                 /* C out of the ADC, live into the race SBC */
         /* $2847-$284B: in a race, offset by the per-circuit constant (BIT tests bit7, C untouched) */
@@ -13689,7 +13689,7 @@ static void drive_one_car(uint8_t x)
     /* $2896-$28E4: nudge the car's across-track offset back toward the centre line, gated by its
        shape/state flags */
     {
-        uint8_t shape = mem[CAR_FLAGS_SHAPE + x];            /* $2896 LDA / $2899 ASL A */
+        uint8_t shape = mem[MEM_car_flags_shape + x];            /* $2896 LDA / $2899 ASL A */
         if (shape & 0x80u) return;                           /* $289A BCS $28E7 (old bit7) — next car */
         if (shape & 0x40u) { car_steering_settle(x); return; }   /* $289C BMI $28CE (old bit6) */
         if ((mem[MEM_car_across_drift + x] & 0x40u) == 0) { car_steering_settle(x); return; }  /* $28A1/$28A3 */
@@ -13827,7 +13827,7 @@ void reset_driving_variables_core(void)
 
     /* 3c. the twenty drivers' per-car arrays ($184F-$1873) */
     for (int x = 0x13; x >= 0; x--) {
-        mem[CAR_FLAGS_SHAPE + x]   = 0x80u;
+        mem[MEM_car_flags_shape + x]   = 0x80u;
         mem[MEM_car_lap_start_hi + x]  = 0x80u;
         mem[MEM_car_lap_count + x]     = 0x00u;
         mem[MEM_car_across_drift + x]       = 0x00u;
@@ -14113,10 +14113,10 @@ void check_car_pair_core(void)
 
     for (;;) {
         shared_temp_77 = pos;                                /* $2694 STX $77 */
-        uint8_t firstSlot  = mem[CAR_ORDER + pos];           /* $2696 */
+        uint8_t firstSlot  = mem[MEM_car_order + pos];           /* $2696 */
         math_lo = firstSlot;                                 /* $2699 (car_gap overwrites it) */
         uint8_t posBehind  = car_index_dec_core(pos);        /* $269b */
-        uint8_t secondSlot = mem[CAR_ORDER + posBehind];     /* $269e */
+        uint8_t secondSlot = mem[MEM_car_order + posBehind];     /* $269e */
         hypot_min_lo = posBehind;                            /* $26a1 STX $78 */
         span_line_cursor = 0x00u;                            /* $26a6-a8 */
         mem[MEM_car_across_drift + firstSlot] = 0x00u;                /* $26aa clear the front car's flags */
@@ -14210,7 +14210,7 @@ void check_car_pair_core(void)
                         math_lo = mem[MEM_car_section_across + secondSlot];   /* $2744 LDA / $2747 STA $74 */
 
                     /* $2749: the trailing/leading pair's own classification */
-                    uint8_t fs = mem[CAR_FLAGS_SHAPE + firstSlot];   /* $2749 (X=first) */
+                    uint8_t fs = mem[MEM_car_flags_shape + firstSlot];   /* $2749 (X=first) */
                     if (fs & 0x80u) {                        /* $274c BPL $275e; bit7 set -> here */
                         uint8_t ent = (uint8_t)(bus_read(USRVIA_T2CL) & 0x1Fu);  /* $274e-51 User VIA T2 entropy */
                         if (ent != 0u) {
@@ -14332,26 +14332,26 @@ void sort_cars_by_key_core(uint8_t sel)
 
         for (unsigned i = 1u; i < 0x14u; i++) {   /* $0F6F..$0FAF: i = 1..19, pairs (i, i+1) */
             shared_temp_77 = i;                  /* $0F6F STX $77 */
-            uint8_t y = mem[CAR_ORDER      + i]; /* $0F71 LDY $13C,X -> ORDER[i+1] */
+            uint8_t y = mem[MEM_car_order      + i]; /* $0F71 LDY $13C,X -> ORDER[i+1] */
             mem[SORT_SCRATCH + i] = i;           /* $0F75 STA $100,X */
             uint8_t x = mem[MEM_car_order_prev + i]; /* $0F78 LDA $13B,X -> ORDER[i]   */
 
             uint8_t doSwap, tie;
             if (sel & 0x40u) {                   /* BVS — key B, X-Y order, descending */
-                SortCmp c = sort_bcd_compare3(CAR_LAP_LO, CAR_LAP_MID, CAR_LAP_HI, x, y);
+                SortCmp c = sort_bcd_compare3(MEM_car_lap_lo, MEM_car_lap_mid, MEM_car_lap_hi, x, y);
                 doSwap = c.borrow; tie = c.equal;
             } else if (sel & 0x80u) {            /* BMI — key C, Y-X order, no tie handling */
                 SortCmp c = sort_bcd_compare3(MEM_car_lap_start_lo, MEM_car_lap_start_mid, MEM_car_lap_start_hi, y, x);
                 doSwap = c.borrow; tie = 0u;     /* $0FEA BCS -> next; no ORA test on this arm */
             } else {                             /* key A, Y-X order, ascending */
-                SortCmp c = sort_bcd_compare3(CAR_BEST_LAP_LO, CAR_BEST_LAP_MID, CAR_BEST_LAP_HI, y, x);
+                SortCmp c = sort_bcd_compare3(MEM_car_best_lap_lo, MEM_car_best_lap_mid, MEM_car_best_lap_hi, y, x);
                 doSwap = c.borrow; tie = c.equal;
             }
 
             if (doSwap) {                        /* $0FEC swap ORDER[i] <-> ORDER[i+1] */
                 math_lo = x;                     /* STX $74 */
                 mem[MEM_car_order_prev + i] = y;     /* STA $13B,X — ORDER[i]   = old ORDER[i+1] */
-                mem[CAR_ORDER      + i] = math_lo; /* STA $13C,X — ORDER[i+1] = old ORDER[i]   */
+                mem[MEM_car_order      + i] = math_lo; /* STA $13C,X — ORDER[i+1] = old ORDER[i]   */
                 shared_temp_76 = (uint8_t)(shared_temp_76 - 1u); /* $0FF9 DEC $76 */
                 swapped = 1u;
             } else if (tie) {                    /* $0FA1 tie: SORT_SCRATCH[i] = SORT_SCRATCH[i-1] */
@@ -14575,7 +14575,7 @@ uint8_t check_crash_core(uint8_t savedX)
        16-bit element of the state vector at once, which is why the loop counts bytes and not
        elements. */
     for (unsigned i = 0; i < MODEL_STATE_N; i++) model_state_16[i] = 0u;
-    mem[MODEL_STATE_LO + 0x0Fu] = 0x00u;   /* $62DF, the gap byte the byte-wise loop also clears */
+    mem[MEM_model_state_lo + 0x0Fu] = 0x00u;   /* $62DF, the gap byte the byte-wise loop also clears */
 
     engine_running      = 0x00u;   /* $1152 — the engine has stalled */
     spin_countdown      = 0x00u;   /* $1154 — and this is not a spin */
@@ -14912,10 +14912,10 @@ TextExit print_lap_time_core(uint8_t fieldMask, uint8_t carIdx, uint8_t y)
 
     field_mask_set(fieldMask);                                        /* $7B9C */
 
-    e = print_bcd_digits_core(mem[CAR_BEST_LAP_HI + carIdx], carIdx, y);   /* $7B9E — minutes */
+    e = print_bcd_digits_core(mem[MEM_car_best_lap_hi + carIdx], carIdx, y);   /* $7B9E — minutes */
     t = vdu_emit_char(0x3Au, carIdx, y);                                   /* $7BA4 — ':' */
     e.a = t.a; e.n = t.n; e.z = t.z;
-    e = print_bcd_digits_core(mem[CAR_BEST_LAP_MID + carIdx], carIdx, y);  /* $7BA9 — seconds */
+    e = print_bcd_digits_core(mem[MEM_car_best_lap_mid + carIdx], carIdx, y);  /* $7BA9 — seconds */
 
     if (field_mask_shift()) {                                         /* $7BAF ASL $78 / $7BB1 BCS */
         e.n = (uint8_t)((print_field_mask >> 7) & 1u);
@@ -14926,7 +14926,7 @@ TextExit print_lap_time_core(uint8_t fieldMask, uint8_t carIdx, uint8_t y)
 
     t = vdu_emit_char(0x2Eu, carIdx, y);                              /* $7BB3 — '.' */
     e.a = t.a; e.n = t.n; e.z = t.z;
-    return print_bcd_digits_core(mem[CAR_BEST_LAP_LO + carIdx], carIdx, y); /* $7BB8 — hundredths */
+    return print_bcd_digits_core(mem[MEM_car_best_lap_lo + carIdx], carIdx, y); /* $7BB8 — hundredths */
 }
 
 
@@ -15031,7 +15031,7 @@ NameExit print_driver_name_by_order_core(uint8_t orderPos)
 {
     NamePtr  p;
     NameExit e;
-    uint8_t  car = mem[CAR_ORDER + orderPos];        /* $667B LDX car_order,Y */
+    uint8_t  car = mem[MEM_car_order + orderPos];        /* $667B LDX car_order,Y */
 
     saved_slot_index = car;                          /* $667E */
     driver_name_address_core(car, &p);               /* $6680 */
@@ -15225,7 +15225,7 @@ uint8_t retire_car_core(uint8_t x)
 {
     uint8_t notFinished = (uint8_t)(race_lap_total >= mem[MEM_car_lap_count + x]);  /* $11BE/$11C0 */
 
-    mem[CAR_FLAGS_SHAPE + x] = 0xC0u;                /* $11C3 LDA #$C0 / $11C5 */
+    mem[MEM_car_flags_shape + x] = 0xC0u;                /* $11C3 LDA #$C0 / $11C5 */
     if (notFinished)                                 /* $11C8 BCC — it finished, leave the time */
         mem[MEM_car_lap_start_hi + x] = 0xC0u;           /* $11CA */
     return notFinished;
@@ -15278,7 +15278,7 @@ void finish_race_core(void)
             uint8_t x = 0x13u;
             int stillRunning = 0;
             for (;;) {
-                if ((mem[CAR_FLAGS_SHAPE + x] & 0x40u) == 0u &&        /* $1199/$119C/$119E */
+                if ((mem[MEM_car_flags_shape + x] & 0x40u) == 0u &&        /* $1199/$119C/$119E */
                     race_lap_total >= mem[MEM_car_lap_count + x]) {        /* $11A0/$11A2/$11A5 */
                     stillRunning = 1;
                     break;
@@ -15314,7 +15314,7 @@ void finish_race_core(void)
 /* $43EA — the tail both entries fall into. */
 static TextExit print_lap_value_low(uint8_t x, uint8_t y)
 {
-    TextExit e = print_bcd_digits_core(mem[CAR_LAP_LO + x], x, y);  /* $43EA/$43ED */
+    TextExit e = print_bcd_digits_core(mem[MEM_car_lap_lo + x], x, y);  /* $43EA/$43ED */
     print_spaces_core(0x01u, x, y);                                 /* $43F0/$43F2 — the gap */
     e.a = 0x20u; e.n = 0u; e.z = 1u;         /* print_spaces' exit; its C is untouched */
     return e;
@@ -15332,7 +15332,7 @@ TextExit print_lap_value_field_core(uint8_t x, uint8_t y)
 
     print_spaces_core(0x02u, x, y);           /* $43D0/$43D2 — two leading spaces */
     field_mask_set(0x20u);                    /* $43D5/$43D7 — the field's leading position */
-    mid = mem[CAR_LAP_MID + x];               /* $43D9 */
+    mid = mem[MEM_car_lap_mid + x];               /* $43D9 */
     if (mid != 0u)                            /* $43DC BNE — a real minutes/seconds byte */
         return print_lap_value_from_mid_core(mid, x, y);
 
@@ -15587,10 +15587,10 @@ void print_standings_table_core(uint8_t variant, uint8_t mode)
             uint8_t hi;
             field_mask_set(0x28u);                  /* $662B/$662D */
             ambX = car;
-            hi = mem[CAR_LAP_HI + car];             /* $662F */
+            hi = mem[MEM_car_lap_hi + car];             /* $662F */
             if (hi != 0u) {                         /* $6632 BEQ — a zero hour byte is not printed */
                 print_bcd_digits_core(hi, car, y);                              /* $6634 */
-                print_lap_value_from_mid_core(mem[CAR_LAP_MID + car], car, y);  /* $6637/$663A */
+                print_lap_value_from_mid_core(mem[MEM_car_lap_mid + car], car, y);  /* $6637/$663A */
             } else {
                 print_lap_value_field_core(car, y); /* $6640 — mid:lo with its own leading spaces */
             }
@@ -15762,7 +15762,7 @@ void front_end_menus_core(void)
 
     for (;;) {                                       /* L_641F — the championship cycle */
         text_script_interp_core(0x16);               /* $641F — the qualifying-length menu */
-        qualify_minutes = mem[QUALIFY_MINUTES_TBL + menu_wait_key_core(0x03)];   /* $6424 */
+        qualify_minutes = mem[MEM_qualify_minutes_tbl + menu_wait_key_core(0x03)];   /* $6424 */
         all_cars_reset_best_lap_core();              /* $642F */
 
         player_car = 0x14;                           /* $6432 */
@@ -15802,10 +15802,10 @@ void front_end_menus_core(void)
             if (slowest >= human_car_first) {                  /* $6483 — a human at all? */
                 uint8_t cls = 0x00;
                 do {
-                    uint16_t lap    = (uint16_t)(mem[CAR_BEST_LAP_MID + slowest] |
-                                                 ((unsigned)mem[CAR_BEST_LAP_HI + slowest] << 8));
-                    uint16_t target = (uint16_t)(mem[CLASS_LAP_TARGET_MID + cls] |
-                                                 ((unsigned)mem[CLASS_LAP_TARGET_HI + cls] << 8));
+                    uint16_t lap    = (uint16_t)(mem[MEM_car_best_lap_mid + slowest] |
+                                                 ((unsigned)mem[MEM_car_best_lap_hi + slowest] << 8));
+                    uint16_t target = (uint16_t)(mem[MEM_class_lap_target_mid + cls] |
+                                                 ((unsigned)mem[MEM_class_lap_target_hi + cls] << 8));
                     if (lap >= target) break;                  /* $6495 BCS */
                     cls = (uint8_t)(cls + 1);                  /* $6497 INX */
                 } while (cls != 0x00);                         /* $6498 BNE */
@@ -15826,16 +15826,16 @@ void front_end_menus_core(void)
 
         for (uint8_t slot = 0x13; slot != 0xFFu; slot--) {     /* $64BA..$64D0 */
             uint8_t car = mem[MEM_car_order + slot];
-            mem[CAR_ORDER_GRID + slot] = car;                  /* the grid order, kept aside */
+            mem[MEM_car_order_grid + slot] = car;                  /* the grid order, kept aside */
             if (car >= human_car_first)                        /* $64C2 — humans only */
-                mem[CAR_GRID_BASE + car] = (uint8_t)(mem[SORT_SCRATCH + slot] >> 1);
+                mem[MEM_car_grid_base + car] = (uint8_t)(mem[SORT_SCRATCH + slot] >> 1);
         }
 
         if (drivers_named == 0x00) {                 /* $64D2 — the race length, asked once */
             text_script_interp_core(0x1C);           /* $64D7 */
             human_driver_count = (uint8_t)(0x14u - human_car_first);   /* $64DC */
             uint8_t len = menu_wait_key_core(0x03);  /* $64E5 */
-            race_lap_total     = mem[RACE_LAP_TOTAL_TBL + len];        /* $64EA */
+            race_lap_total     = mem[MEM_race_lap_total_tbl + len];        /* $64EA */
             race_length_choice = len;                                 /* $64EF */
         }
 
@@ -15846,7 +15846,7 @@ void front_end_menus_core(void)
             prompt_driver_ready_core();              /* $64F8 */
 
             for (uint8_t slot = 0x13; slot != 0xFFu; slot--)   /* $64FB..$6504 */
-                mem[MEM_car_order + slot] = mem[CAR_ORDER_GRID + slot];
+                mem[MEM_car_order + slot] = mem[MEM_car_order_grid + slot];
 
             all_cars_reset_best_lap_core();          /* $6506 */
             enter_session_core(0x80);                /* $6509 — the race */
@@ -16156,8 +16156,8 @@ void clear_surface_buffers_core(void)
 void fill_line_surface_core(void)
 {
     uint8_t point = horizon_index;
-    uint8_t far   = (uint8_t)(mem[EDGE_X_HI_TBL + 0x28u + point] + 0x14u);   /* $18C0-$18C4 */
-    uint8_t near  = (uint8_t)(mem[EDGE_X_HI_TBL +         point] + 0x14u);   /* $18C8-$18CC */
+    uint8_t far   = (uint8_t)(mem[MEM_edge_x_hi + 0x28u + point] + 0x14u);   /* $18C0-$18C4 */
+    uint8_t near  = (uint8_t)(mem[MEM_edge_x_hi +         point] + 0x14u);   /* $18C8-$18CC */
     uint8_t seed  = ((far & 0x80u) && !(near & 0x80u)) ? 0x20u : 0x23u;
     mem[MEM_view_line_surface + horizon_extent] = seed;      /* $18D6 */
 
@@ -16426,7 +16426,7 @@ uint8_t hook_horizon_clamp_core(uint8_t entryY)
         uint8_t line;
 
         y--;                                      /* $56D1 DEY — the walk runs downward */
-        line = mem[EDGE_Y_TBL + y];
+        line = mem[MEM_edge_y + y];
         if (line >= horizon_extent)               /* $56D7 — reached the horizon: done */
             break;
 
@@ -16436,7 +16436,7 @@ uint8_t hook_horizon_clamp_core(uint8_t entryY)
             continue;
         }
 
-        mem[EDGE_Y_TBL + y] = cursor;             /* $56E3 — pull the point down to the cursor */
+        mem[MEM_edge_y + y] = cursor;             /* $56E3 — pull the point down to the cursor */
         if (latch)
             continue;
 
@@ -17000,27 +17000,27 @@ HookMergeExit hook_merge_horizon_edges_core(uint8_t point, uint8_t horizonLine,
     uint8_t v = 0;
 
     mem[MEM_smc_object_ceiling + 1] = horizonLine;          /* $5772 — plot_object's ceiling */
-    mem[EDGE_Y_TBL + EDGE_HALF + y] = horizonLine;      /* $5775 — the displaced store */
+    mem[MEM_edge_y + EDGE_HALF + y] = horizonLine;      /* $5775 — the displaced store */
 
     do {
         /* $5778-$5785 — the two azimuths as whole 16-bit values; the 6502 does it as a byte
            pair only because it has no wider subtract.  N of the high byte is the test. */
-        uint8_t  loNear = mem[EDGE_X_LO_TBL + y];
-        uint8_t  loFar  = mem[EDGE_X_LO_TBL + EDGE_HALF + y];
-        uint8_t  hiNear = mem[EDGE_X_HI_TBL + y];
-        uint8_t  hiFar  = mem[EDGE_X_HI_TBL + EDGE_HALF + y];
+        uint8_t  loNear = mem[MEM_edge_x_lo + y];
+        uint8_t  loFar  = mem[MEM_edge_x_lo + EDGE_HALF + y];
+        uint8_t  hiNear = mem[MEM_edge_x_hi + y];
+        uint8_t  hiFar  = mem[MEM_edge_x_hi + EDGE_HALF + y];
         uint16_t nearAz = (uint16_t)(loNear | (hiNear << 8));
         uint16_t farAz  = (uint16_t)(loFar  | (hiFar  << 8));
 
         v = sbc_overflow(hiNear, hiFar, (unsigned)(loNear >= loFar));
 
         if ((uint16_t)(nearAz - farAz) & 0x8000u) {     /* $5785 BPL over the copy */
-            mem[EDGE_X_LO_TBL + EDGE_HALF + y] = loNear;
-            mem[EDGE_X_HI_TBL + EDGE_HALF + y] = hiNear;
+            mem[MEM_edge_x_lo + EDGE_HALF + y] = loNear;
+            mem[MEM_edge_x_hi + EDGE_HALF + y] = hiNear;
         }
 
-        line = mem[EDGE_Y_TBL + y];                     /* $5793 — and the same line both sides */
-        mem[EDGE_Y_TBL + EDGE_HALF + y] = line;
+        line = mem[MEM_edge_y + y];                     /* $5793 — and the same line both sides */
+        mem[MEM_edge_y + EDGE_HALF + y] = line;
 
         /* $5799-$57A2, the Nurburgring's alone: over the six points NEAREST the horizon, both
            sides' edge_style is wiped — style 0 and, with bit 7 clear, "not yet covered", so
@@ -17081,7 +17081,7 @@ void hook_merge_horizon_edges_nurburg(void) { hook_merge_horizon_edges_at(1); }
 void hook_horizon_store_only(void)
 {
     mem[MEM_smc_object_ceiling + 1] = cpu.A;                /* $5772 — plot_object's ceiling */
-    mem[EDGE_Y_TBL + EDGE_HALF + cpu.Y] = cpu.A;        /* $5775 — the displaced store */
+    mem[MEM_edge_y + EDGE_HALF + cpu.Y] = cpu.A;        /* $5775 — the displaced store */
 }
 
 /* $557F / $5582 — STEP THE TRACK GENERATOR'S CURSOR ONE PLACE ALONG THE DIRECTION OF TRAVEL.
@@ -17362,16 +17362,16 @@ static void hook_gen_dir_vector_at(uint16_t block, uint8_t scale)
     shared_temp_77 = d.compB;
     math_hi = scale;                                       /* $54C7 — both scalings' multiplier */
 
-    mem[TRACK_DIR_0 + dir] = d.compA;                      /* $54C9-$54CB */
+    mem[MEM_track_dir_0 + dir] = d.compA;                      /* $54C9-$54CB */
     cpu.C = d.c; cpu.V = d.v;                              /* what the octant chain left standing */
     mem[TRACK_NORMAL_Y + dir] = hook_scale_by_gradient(d.compA);   /* $54CE-$54D1 */
 
-    mem[TRACK_DIR_2 + dir] = d.compB;                      /* $54D4-$54D6 */
+    mem[MEM_track_dir_2 + dir] = d.compB;                      /* $54D4-$54D6 */
     AddFlags neg = negate8(hook_scale_by_gradient(d.compB));       /* $54D9-$54E0 */
     mem[TRACK_NORMAL_X + dir] = neg.hi;                    /* $54E1 — the normal points the other way */
 
     uint8_t gradient = mem[block + 2u];                    /* $54E4 */
-    mem[TRACK_DIR_1 + dir] = gradient;                     /* $54E7 */
+    mem[MEM_track_dir_1 + dir] = gradient;                     /* $54E7 */
 
     cpu.A = gradient;
     cpu.X = d.cosI;                                      /* the $5493 TAX, never overwritten */
@@ -17428,9 +17428,9 @@ void hook_gen_dir_vector_nurburg(void) { hook_gen_dir_vector_at(TRACK_GEN_ARGS(N
    the three race-time direction pages: from index $28 up they hold the track file's per-segment
    deltas, below it the basis the generator writes.  symbols.csv carries the split on all six
    rows. */
-#define GEN_SEG_TURN_HI  (TRACK_DIR_0 + 0x28u)   /* gen_seg_turn_hi $5428[place] — heading delta, high */
-#define GEN_SEG_TURN_LO  (TRACK_DIR_1 + 0x28u)   /* gen_seg_turn_lo $5528[place] — ...and low */
-#define GEN_SEG_CLIMB    (TRACK_DIR_2 + 0x28u)   /* gen_seg_climb   $5628[place] — gradient delta */
+#define GEN_SEG_TURN_HI  (MEM_track_dir_0 + 0x28u)   /* gen_seg_turn_hi $5428[place] — heading delta, high */
+#define GEN_SEG_TURN_LO  (MEM_track_dir_1 + 0x28u)   /* gen_seg_turn_lo $5528[place] — ...and low */
+#define GEN_SEG_CLIMB    (MEM_track_dir_2 + 0x28u)   /* gen_seg_climb   $5628[place] — gradient delta */
 
 static void hook_gen_step_at(uint16_t block, uint8_t scale)
 {

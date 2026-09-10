@@ -249,7 +249,7 @@ void draw_track_object(void)
 
 void fill_dash_edge_columns(void)
 {
-    SlotExit e = fill_dash_edge_columns_core(VIEW_LEFT_START_SRC, VIEW_RIGHT_START_SRC);
+    SlotExit e = fill_dash_edge_columns_core(MEM_view_left_start_src, MEM_view_right_start_src);
     cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
     cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
 }
@@ -262,7 +262,7 @@ void copy_dash_data(void)
 
     cpu.A = (uint8_t)adc_step((uint8_t)(plot_ptr_lo - 0x80), 0x80u, 0);  /* A + V of `ADC #$80` */
     cpu.X = DASH_BLOCK_COUNT;                            /* $29 */
-    cpu.Y = mem[DASH_BLOCK_STARTS + (DASH_BLOCK_COUNT - 1)];
+    cpu.Y = mem[MEM_dash_block_starts + (DASH_BLOCK_COUNT - 1)];
     cpu.N = 0; cpu.Z = 1; cpu.C = 1;                     /* CPX #$29 with X == $29 */
 }
 
@@ -887,13 +887,13 @@ static void dial_needle_angle_plot(void)
     shared_temp_76 = d.octant;                   /* $76 — octant index (SMC dispatch) */
     shared_temp_77 = d.temp77;                   /* $77 — step-opcode variant */
 
-    uint8_t len = mem[DIAL_NEEDLE_DDA_TBL + d.offset];  /* $51EB — line length / minor delta */
+    uint8_t len = mem[MEM_dial_needle_dda_tbl + d.offset];  /* $51EB — line length / minor delta */
     mem[0x0083] = len;                           /* $83 point_delta_hi */
     math_hi     = len;                           /* $75 — DDA loop count */
 
-    uint8_t org = mem[DIAL_NEEDLE_ORIGIN_LO_TBL + d.quadrant];
+    uint8_t org = mem[MEM_dial_needle_origin_lo_tbl + d.quadrant];
     plot_ptr_lo = (uint8_t)(org & 0xF8u);        /* $70 — needle origin address low */
-    plot_ptr_hi = mem[DIAL_NEEDLE_ORIGIN_HI_TBL + d.quadrant]; /* $71 */
+    plot_ptr_hi = mem[MEM_dial_needle_origin_hi_tbl + d.quadrant]; /* $71 */
 
     /* $5202 sets up X=quadrant / A=plot_ptr_hi as well, but the plotter consumes only the start
        scan line, and both are dead at the caller (result-only fixture). */
@@ -1086,7 +1086,7 @@ void seed_car_track_position(void)
     /* $635D — seed one car's grid position from a timer-entropy byte (#158).  A math_lo
        reader-nat: $74 is internal scratch, its per-path exit value written below.  Exit ABI:
        X live (the decremented car-index cursor the caller's loop reads); A/flags dead. */
-    uint8_t x       = mem[CAR_SEED_INDEX];               /* $635D LDX car_seed_index */
+    uint8_t x       = mem[MEM_car_seed_index];               /* $635D LDX car_seed_index */
     uint8_t entropy = (uint8_t)bus_read(USRVIA_T2CL);    /* $635F LDA $FE68 (one read, as the 6502) */
 
     /* $6362 PHP / $637B PLP is balanced (S restored) but the pushed P byte stays on the stack as a
@@ -1105,7 +1105,7 @@ void seed_car_track_position(void)
     uint8_t xExit   = seed_car_track_position_core(x, entropy, &mathlo);
     math_lo = mathlo;                                    /* $6384/$6392 — $74 exit value per path */
     cpu.X = xExit;                                       /* $639C..$639F — decremented cursor */
-    mem[CAR_SEED_INDEX] = xExit;                         /* $639F STA car_seed_index */
+    mem[MEM_car_seed_index] = xExit;                         /* $639F STA car_seed_index */
 }
 
 /* The one flag a caller of the seeder deliberately varies is the carry: reset_all_cars_for_
@@ -1127,12 +1127,12 @@ void mirrors_update(void)
        mirror_draw_car is now twin #165c and is called core-to-core.  All of
        shared_temp_84 / span_line_cursor / shared_temp_76 / math_lo are read LIVE from mem[] in the
        loop so the skip path (which writes none of them) stays byte-exact. */
-    uint8_t slot = mem[CAR_ORDER + car_ahead];          /* the car ahead's object slot */
+    uint8_t slot = mem[MEM_car_order + car_ahead];          /* the car ahead's object slot */
     MirrorSetup s;
     car_heading_marshal_in();
-    mirrors_update_setup_core(mem[CAR_FLAGS_SHAPE + slot],
-                              mem[OBJECT_WIDTH + slot],
-                              mem[OBJECT_BEARING_HI + slot],
+    mirrors_update_setup_core(mem[MEM_car_flags_shape + slot],
+                              mem[MEM_object_width + slot],
+                              mem[MEM_object_bearing_hi + slot],
                               (uint8_t)(car_heading_v >> 8), &s);
     if (s.drawable) {
         math_lo          = s.half;      /* $74 — 6502 exit value, set only on this path */
@@ -1143,14 +1143,14 @@ void mirrors_update(void)
 
     for (int y = 5; y >= 0; --y) {      /* $7B2C-$7B47: segments 5..0 */
         uint8_t v;
-        if (shared_temp_76 == mem[MIRROR_SEG_BEARING_TBL + y]) {
+        if (shared_temp_76 == mem[MEM_mirror_seg_bearing_tbl + y]) {
             v = shared_temp_84;                 /* the matching segment — draw the car (bottom line) */
-        } else if (mem[MIRROR_SEG_STATE + y] != 0) {
+        } else if (mem[MEM_mirror_seg_state + y] != 0) {
             v = 0x00;                           /* a still-set stale segment — redraw 0 to erase it */
         } else {
             continue;                           /* $7B46 — empty and stays empty */
         }
-        mem[MIRROR_SEG_STATE + y] = v;
+        mem[MEM_mirror_seg_state + y] = v;
         /* ⭐ Core-to-core, now that mirror_draw_car is a twin (#165c): the 6502 handed it the
            value in A and the segment in Y, and those are its two arguments here. */
         mirror_draw_car_core(v, (uint8_t)y);
@@ -1170,16 +1170,16 @@ void draw_corner_markers(void)
        exit and V is dead — neither reaches a plot_object mem[] write. */
     unsigned count = marker_count;
     for (unsigned y = 0; y < count; y++) {
-        uint8_t idx = mem[MARKER_EDGE_IDX + y];             /* $1B18 — the edge point it hangs off */
+        uint8_t idx = mem[MEM_marker_edge_index + y];             /* $1B18 — the edge point it hangs off */
         marker_count_saved = (uint8_t)y;                    /* $1B1B — Y parked across plot_object */
-        uint8_t flags = mem[MARKER_FLAGS_TBL + y];          /* $1B1D */
+        uint8_t flags = mem[MEM_marker_flags + y];          /* $1B1D */
         if (flags & 0x20u)
             mem[0x38FEu] = 0x0F;                            /* $1B26 — bit 5 recolours the marker (SMC) */
 
         uint16_t edgeX = edge_x_word(idx);
         CornerMarker m;
         uint16_t offset = marker_offset_word(y);
-        draw_corner_marker_core(offset, edgeX, mem[EDGE_Y_TBL + idx], &m);
+        draw_corner_marker_core(offset, edgeX, mem[MEM_edge_y + idx], &m);
 
         math_lo = m.mathLo;                                 /* $74/$75/$76 — set on both paths */
         math_hi = m.mathHi;
@@ -1222,7 +1222,7 @@ void car_gap(void)
        core directly rather than parking them in cpu for the tail's own shim to read back.
        (cpu.A is not one of them — the tail recomputes the difference from car_distance_16 — so
        the byte this subtract leaves in A is overwritten by the exit ABI below either way.) */
-    unsigned d = car_gap_lo_core(mem[CAR_SECTION_ALONG + cpu.Y], mem[CAR_SECTION_ALONG + cpu.X]);
+    unsigned d = car_gap_lo_core(mem[MEM_car_section_along + cpu.Y], mem[MEM_car_section_along + cpu.X]);
     car_distance_marshal_in_one(cpu.X);            /* the two slots the gap is measured between */
     car_distance_marshal_in_one(cpu.Y);
     GapTail e = car_gap_tail_core(cpu.X, cpu.Y, (unsigned)!(d & 0x100));
@@ -1243,7 +1243,7 @@ void car_gap_tail(void)
 void stage_nearby_car_at_core(uint8_t orderIndex)
 {
     view_origin_marshal_in();
-    uint8_t slot = mem[CAR_ORDER + orderIndex];           /* $28F2 LDA $013C,X */
+    uint8_t slot = mem[MEM_car_order + orderIndex];           /* $28F2 LDA $013C,X */
     saved_slot_index = slot;                              /* $28F5 STA $45 */
     shared_counter_42 = slot;                             /* $28F7 STA $42 */
 
@@ -1294,8 +1294,8 @@ void check_car_pair(void)
 void section_coord_add_delta(void)
 {
     const uint8_t dlo[3] = { math_lo, math_hi, shared_temp_76 };
-    const uint8_t dhi[3] = { mem[POINT_DELTA_HI + 0], mem[POINT_DELTA_HI + 1],
-                             mem[POINT_DELTA_HI + 2] };
+    const uint8_t dhi[3] = { mem[MEM_point_delta_hi + 0], mem[MEM_point_delta_hi + 1],
+                             mem[MEM_point_delta_hi + 2] };
     section_coord_add_delta_core(cpu.X, cpu.Y, dlo, dhi);
 }
 
@@ -1455,7 +1455,7 @@ void step_delta_halve(void)
 {
     /* A is the high byte of component 0 as it was BEFORE the shift (the last LDA $83,X), and C
        is the bit rotated out of that component's LOW byte — the only two register residues. */
-    uint8_t hi0 = mem[POINT_DELTA_HI + 0];
+    uint8_t hi0 = mem[MEM_point_delta_hi + 0];
     uint8_t lo0 = mem[MEM_math_lo + 0];
     step_delta_halve_core();
     cpu.A = hi0;
