@@ -927,8 +927,8 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                 PROBE_VIEW_RUN((unsigned)(runEnd - dp) >> 3);
 
 #ifdef REVS_NO_UNIT_LOOP
-                /* ⭐ `make NOUNITS=2` — the loop does not run AT ALL, so phase 24 is the
-                   per-line DRIVERS alone.  Picture wrong by construction, as above. */
+                /* `make NOUNITS=2` — the loop does not run at all, so phase 24 is the per-line
+                   DRIVERS alone.  Picture wrong by construction. */
                 {
                     unsigned n = (unsigned)(runEnd - dp) >> 3;
                     srcp += n << 7;
@@ -938,15 +938,12 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                 while (dp != runEnd) {
                     PROBE_SHAPE_DASH_UNIT(line);
 #ifdef REVS_NO_UNIT_WORK
-                    /* ⭐ `make NOUNITS=1` — the unit loop keeps its ITERATIONS and loses its
-                       memory work (no source read, no consume, no store).  The picture is wrong
-                       by construction; the point is a decomposition no bracket can give, because
-                       bracketing 118 chain runs a frame costs more than the thing it measures.
-                       phase 24 with this on = the drivers plus the bare loop.
+                    /* `make NOUNITS=1` — the unit loop keeps its ITERATIONS and loses its memory
+                       work, so phase 24 = the drivers plus the bare loop.  (A bracket cannot give
+                       this: bracketing 118 chain runs a frame costs more than it measures.)
                        ⚠ It also stops ZEROING the sources, and the control tables overlap the
-                       source blocks ($3080 is column 1's), so the drivers' own workload shifts:
-                       treat 1 and 2 as indicative and `NOUNITS=3` — which keeps the consume and
-                       drops only the store — as the clean one. */
+                       source blocks ($3080 is column 1's), so the drivers' workload shifts —
+                       `NOUNITS=3` is the clean one. */
                     srcp += 0x80;
                     dp += 8;
                     continue;
@@ -954,8 +951,8 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                     byte = view_consume(srcp, byte, forced, cell);
                     forced = 0;
 #ifdef REVS_NO_UNIT_STORE
-                    /* ⭐ `make NOUNITS=3` — everything but the STORE, so the sources are still
-                       consumed and the drivers see the workload they really have. */
+                    /* `make NOUNITS=3` — everything but the STORE, so the sources are still
+                       consumed and the drivers see their real workload. */
                     srcp += 0x80;
                     dp += 8;
                     continue;
@@ -1049,12 +1046,9 @@ static void paint_lines_short(ViewState* v)
         v->line = (v->line - 1) & 0xFF;
 
 #ifdef REVS_VIEWP3_EMPTY
-        /* ⭐ `make VIEWP3=2` — THE PICTURE IS WRONG BY CONSTRUCTION.  Phase 3's line loop keeps its
-           25 iterations and loses its entire body, so `phase 34 with this on` is the loop and
-           nothing else.  It exists because the four-way split above prices the two chain entries at
-           1.4 ms a line and NOTHING in the generated code for them is 10 000 cycles — so the
-           question "is that time in this body at all, or is it interrupt time landing in whichever
-           bracket is open?" has to be answered before any of it is optimised. */
+        /* `make VIEWP3=2` — picture wrong by construction: phase 3's line loop keeps its 25
+           iterations and loses its whole body, so phase 34 is the loop alone.  It answers "is the
+           chain-entry time really in this body, or interrupt time landing in an open bracket?" */
         if (line_is_last(v->line, 0x03)) break;
         continue;
 #endif
@@ -1068,14 +1062,12 @@ static void paint_lines_short(ViewState* v)
             return;
         }
 
-        /* the scan-line step, with phase 3's tail: a carry off the high byte makes it store
-           the un-crossed low byte after all.
-           ⚠ THIS TAIL IS UNTESTED AND UNREACHABLE, and it is recorded rather than trusted:
-           deleting it passes all 700 fixture cases (sabotage S2, 2026-08-17), because the
-           high byte only carries out of $FF and the pointer lives at $67..$7A.  Kept because
-           the 6502 has it; do not read the green as coverage.
-           ⚠ Re-confirmed for the wide form (2026-09-04): dropping plot_ptr2's low-byte write
-           below also passes all 700 cases, for the same reason — `carry_out` is never 1. */
+        /* The scan-line step, with phase 3's tail: a carry off the high byte makes it store the
+           un-crossed low byte after all.
+           ⚠ THIS TAIL IS UNTESTED AND UNREACHABLE — deleting it (and, separately, dropping
+           plot_ptr2's low-byte write) passes all 700 fixture cases, because the high byte only
+           carries out of $FF and the pointer lives at $67..$7A.  Kept because the 6502 has it;
+           the green is not coverage. */
         VIEWP3_PHASE(PROBE_PHASE_VIEWP3);
         next = step_scanline(&carry_out);
         if (!(next & 7) && carry_out) {
@@ -1086,11 +1078,10 @@ static void paint_lines_short(ViewState* v)
         }
         VIEWP3_PHASE(PROBE_PHASE_P3_CHAINA);
 
-        /* chain A: enter at $F1 - view_run_right_end[line], with the boundary cell composed
-           from the per-line source byte and the edge tables */
-        /* chain A enters at $F1 - view_run_right_end[line] (SEC/SBC).  N/Z/C are recomputed
-           downstream, but this subtract's V reaches view_paint_lines' exit on paths where
-           nothing below rewrites it — replay just that flag (cpu otherwise untouched). */
+        /* Chain A enters at $F1 - view_run_right_end[line] (SEC/SBC), with the boundary cell
+           composed from the per-line source byte and the edge tables.  N/Z/C are recomputed
+           downstream, but this subtract's V reaches view_paint_lines' exit on paths where nothing
+           below rewrites it — replay just that flag. */
         v->byte = (uint8_t)(0xF1 - mem[MEM_view_run_right_end + v->line]);
         cpu.V = sbc_overflow(0xF1, mem[MEM_view_run_right_end + v->line], 1);
         mem[(MEM_view_p3_enter_a_site + 1u)] = (unsigned char)v->byte;
@@ -1236,11 +1227,10 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
 
 /* $16DC  race_main_loop — THE RACE
 
-   WHAT IT COMPUTES.  Nothing itself: it is the driver.  One call runs a whole driving
-   session — practice, a qualifying lap or a race — and returns to the front end
-   (`wait_flag_05F4`, $6563) when that session is over or the player has asked for the pits.
-   Three nested things are going on, and the transliteration next door hides all three
-   behind sixteen labels and a `goto` out of the tail into the middle of the prologue:
+   Nothing is computed here: it is the driver.  One call runs a whole driving session —
+   practice, a qualifying lap or a race — and returns to the front end (`wait_flag_05F4`,
+   $6563) when the session is over or the player has asked for the pits.  Three nested
+   things are going on:
 
      1  ONCE PER SESSION ($16DC-$16E6).  Program the display hardware, put character output
         on the race view's own plotter, build the $7B00 dashboard overlay out of the block
@@ -1251,8 +1241,7 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
         sequence (that flatness is what PROBE_PHASE 1..24 exploits).  Then the tail, which
         is the session's state machine and the only interesting control flow in the routine.
 
-   ⭐ THE TAIL, WHICH IS THE POINT.  It answers one question per frame — does the race go on?
-   Four things can say no, and each has its own answer:
+   THE TAIL answers one question per frame — does the race go on?  Four things can say no:
 
      * A CRASH (crash_flag, set for one frame by the body's 23rd call).  The tail clears it,
        holds the picture for 100 fields = 2 seconds, and then asks where to resume.  It
@@ -1270,9 +1259,7 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
      Ending a session is not just leaving the loop: sound off, the "please wait" message, and
      finish_race races the remaining drivers to the finish so the results table is complete.
 
-   ⚠ THE TWO PORT SEAMS ARE IN HERE, and they are the reason this routine matters far beyond
-   its own cost.  Both were the transpiler's hooks (PRE_INSN_HOOKS / SPINWAIT_HOOKS) and are
-   now spelled out, because the oracle's copies are no longer the code that runs:
+   ⚠ THE TWO PORT SEAMS ARE IN HERE (once the transpiler's PRE_INSN_HOOKS / SPINWAIT_HOOKS):
 
      * platform_render_frame() at the TOP of the frame loop, not at the frame wait.  The wait
        is CONDITIONAL — no crash means no wait — so a paint hooked to it would stop counting
@@ -1284,34 +1271,22 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
        no-op there and the wait ends on its own; on the headless host, which has no
        preemption, tickVBI is the only thing that advances the interrupt.
 
-   NO HARDWARE WRITES.  Every $FCxx-$FExx access in the race belongs to hw_init and
-   irq1v_band_schedule; this routine reaches the machine only through those two calls, so
-   there is no #ifdef-guarded poke here and nothing was dropped for the Amiga.
+   NO HARDWARE WRITES: every $FCxx-$FExx access in the race belongs to hw_init and
+   irq1v_band_schedule, reached only through those two calls.
 
    EXIT CONTRACT: whatever irq1v_release ($4F23) leaves, since that is the last call before
    the RTS.  The one caller does `BIT $05F4` next and consumes no register.
 
-   ⚠⚠ NO FIXTURE, AND `make determinism` IS THE GATE.  The oracle cannot be run against this
-   twin on randomised memory — the frame body always runs at least once and it is the whole
-   engine.  The full reasoning is beside NATIVE_FUNCS in tools/transpile.py; the practical
-   consequence is that every change in here must be followed by `make determinism`, which
-   drives 300 frames of exactly this loop and byte-compares all 64 KB. */
+   ⚠⚠ NO FIXTURE, AND `make determinism` IS THE GATE — the oracle cannot run on randomised
+   memory, because the frame body always runs at least once and it is the whole engine
+   (reasoning beside NATIVE_FUNCS in tools/transpile.py). */
 
-/* How much of the session reset a restart re-runs.  The 6502 expresses this as three branch
-   targets INSIDE the prologue ($16EE, $16F3, $16F6) that the tail jumps back to, so the
-   depths are nested by construction: each entry point falls through into the next. */
-
-/* What the tail decided about this frame. */
-
-/* ⚠ THESE ARE NOT ARGUMENT PASSING — they are a LIVE REGISTER the following code reads.
-   Every surviving call site loads a literal whose value is still live *after* the call it
-   precedes, so the load cannot be folded into a typed argument: arg_a($9C) stays in A across
-   the crash hold because the interrupt seam publishes A into mos_irq_a on every field, and
-   arg_a($00)/arg_a($20) are read by the lines below them ("either way A is now 0").  arg_x
-   is the near-slot clamps' `LDX #5` AFTER a compare, which rewrites N and Z while leaving C.
-   Where a literal really was only an argument the call site now passes it as one — see
-   shift_key_commands_core and copy_dash_data_core below; arg_y had no other kind of site
-   left and is gone. */
+/* ⚠ NOT ARGUMENT PASSING — a LIVE REGISTER the following code reads.  Every surviving site
+   loads a literal still live *after* the call it precedes: arg_a($9C) stays in A across the
+   crash hold (the interrupt seam publishes A into mos_irq_a every field), arg_a($00)/($20)
+   are read by the lines below them, and arg_x is the near-slot clamps' `LDX #5` after a
+   compare, which rewrites N and Z while leaving C.  Sites that were really arguments now
+   pass one. */
 void arg_a(uint8_t v) { LDA(v); }
 static void arg_x(uint8_t v) { LDX(v); }
 
@@ -1388,34 +1363,25 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
         irq_band_state++;
 
     if (crash_flag != 0) {
-        /* ⭐ SHOW THE FENCE BEFORE THE HOLD.  check_crash() drew the fence into the view source
-           and view_paint_lines() has already painted it into the frame buffer this frame — but
-           the next present is not until the top of the frame loop, AFTER the 2 s hold below AND
-           the session reset.  On the BBC the framebuffer IS the screen, so the fence is visible
-           the instant it is drawn and stays up for the whole hold; here the decode-to-bitplanes
-           step needs a present to reproduce that.  Without this one call the crash graphic never
-           appears: the user sees the pre-crash frame frozen for the whole ~3 s sequence.  This
-           touches no game state (host renderFrame() is a no-op), so the determinism gates stay
-           byte-identical; it only makes the already-painted fence visible during the hold.
-           ⚠ Amiga-only: on the host renderFrame() fires tickVBI() (bbc_hw.cpp), which advances
-           the sim clock — an extra present there would move the trajectory the determinism gates
-           pin.  The present is a display concern and the host is headless, so it belongs here. */
+        /* SHOW THE FENCE BEFORE THE HOLD.  The fence is already painted into the frame buffer,
+           but the next present is not until the top of the frame loop — after the 2 s hold and
+           the session reset — so without this call the user sees the pre-crash frame frozen for
+           the whole ~3 s.  (On the BBC the frame buffer IS the screen.)
+           ⚠ Amiga-only: on the host renderFrame() fires tickVBI(), which advances the sim clock
+           and would move the trajectory the determinism gates pin. */
 #if defined(REVS_PLATFORM_AMIGA)
         platform_render_frame();
 #endif
         crash_flag++;                 /* straight back to zero: the crash is handled here */
-        /* 100 fields = two seconds of holding the picture.  ⚠ The `LDA #$9C` is kept rather
-           than folded into the store, because the value stays in A across the wait below and
-           the port's interrupt seam publishes A into mos_irq_a on every field — the oracle's
-           store-immediate peephole cannot see that reader. */
+        /* 100 fields = two seconds of holding the picture.  ⚠ The `LDA #$9C` is not folded into
+           the store: A stays live across the wait, because the interrupt seam publishes it into
+           mos_irq_a every field. */
         arg_a(0x9C);
         field_countdown = cpu.A;
 #if defined(REVS_CRASHPROBE) && defined(REVS_PLATFORM_AMIGA)
-        /* ⭐ THE ~5s CRASH-FREEZE MEASUREMENT.  The hold is meant to last 100 field-countdown
-           INCs = 2 s.  Snapshot the wall clock (g_vbiCount, one per real PAL field), the fields
-           actually DRAINED (g_bodyTicks, = the INCs), and the fields DROPPED (g_bodyTicksDropped)
-           across the hold.  Faithful: vbi delta ~100, ticks ~100, drops ~0.  Drain-starved:
-           vbi delta >> 100 with drops > 0 — the theorem that a field cycle costs > 20 ms. */
+        /* THE CRASH-FREEZE MEASUREMENT.  The hold should last 100 field-countdown INCs = 2 s.
+           Snapshot wall clock (g_vbiCount), fields DRAINED (g_bodyTicks) and fields DROPPED
+           across it.  Faithful: ~100/~100/0.  Drain-starved: vbi >> 100 with drops > 0. */
         {
             extern volatile unsigned long g_bodyTicks, g_bodyTicksDropped;
             extern volatile unsigned long g_crashHolds, g_crashHoldVbi, g_crashHoldVbiMax,
@@ -1426,9 +1392,9 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
             if (bodyD > g_crashBodyFieldsMax) g_crashBodyFieldsMax = bodyD;
 #endif
         do {
-            /* ⭐ THE ENGINE'S ONE TRUE FRAME WAIT.  tick_wheel_spin INCs field_countdown
-               once per PAL field, so on the Amiga the VERTB ISR ends this on its own and
-               platform_tick_vbi() is a no-op; on the host it IS the interrupt. */
+            /* THE ENGINE'S ONE TRUE FRAME WAIT.  tick_wheel_spin INCs field_countdown once
+               per PAL field: on the Amiga the VERTB ISR ends this and platform_tick_vbi() is a
+               no-op; on the host tick_vbi IS the interrupt. */
             PROBE_PHASE(0);
             platform_tick_vbi();
             platform_poll_events();
@@ -1450,11 +1416,9 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
         return race_session_end(depth);
     }
 
-    /* The in-race command keys.  $0B is the index of the last entry of shift_key_tbl — the
-       scan runs down from there.  Straight to the core: the shim is a bare
-       `shift_key_commands_core(cpu.Y)`, the core stores the entry index into math_lo ($74)
-       itself, and the routine's exit registers are dead by its fixture's declaration
-       (LIVE_NONE) — so the ambient `LDY #$0B` was carrying an argument, not state. */
+    /* The in-race command keys.  $0B is the last entry of shift_key_tbl; the scan runs down
+       from there.  The ambient `LDY #$0B` was an argument, not state (the routine's exit
+       registers are LIVE_NONE), so this calls the core directly. */
     shift_key_commands_core(0x0Bu);
 
     {
@@ -1469,11 +1433,9 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
             state_flags = 0;                       /* moving: refuse it and drive on */
         }
     }
-    /* ⚠ The 6502 leaves A = 0 here either way and the port does not, deliberately.  Every path
-       out of this tail either loops back into the frame body — whose twenty-four phase entries
-       consume X, Y, V and C but never A, N or Z — or leaves the loop through $17BA, which
-       republishes A, N and Z from copy_dash_data's exit.  So the scratch A this block used to
-       carry was dead in both directions, and it is a plain local now. */
+    /* ⚠ The 6502 leaves A = 0 here and the port deliberately does not: every path out either
+       re-enters the frame body (whose 24 phases consume X, Y, V and C but never A, N or Z) or
+       leaves through $17BA, which republishes A/N/Z from copy_dash_data's exit. */
 
     /* The session's own countdown.  Non-zero means the limit was already passed and the car
        is coasting; the frame it would reach zero is the frame the session ends. */
@@ -1544,19 +1506,16 @@ void race_main_loop_core(RestartDepth depth)
 
             PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers_core();
             PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  draw_starting_lights();
-            /* ⭐⭐ PHASES 3 AND 4 ARE ONE CONVERSATION, AND IT NO LONGER GOES THROUGH mem[].
-               Both passes are native and they are adjacent, so the steering angle phase 3
-               computes is handed to phase 4 in car_angle_16[2] directly: the `_frame` entries
-               drop phase 3's closing publish of the three car angles and phase 4's re-import of
-               them and of all fifteen model-state elements — 42 byte accesses a frame that only
-               ever copied a value out to mem[] and straight back in.  The 6502-ABI shims keep
-               both marshals; nothing but this driver enters below them.
-               ⚠ Every relocated value is still PUBLISHED once per frame, by phase 4's own
-               output marshals — mem[] remains the mirror the whole-corpus differential compares.
-               ⚠⚠ This is the pair that `make determinism-steer` exists for: with the wheel
-               straight, the stale value and the fresh one are equal, so dropping either publish
-               is invisible to validate, determinism, -drive and -crash alike.  Do not touch
-               these two lines without running that target (docs/validation-harness.md). */
+            /* ⭐ PHASES 3 AND 4 TALK DIRECTLY, NOT THROUGH mem[].  Both are native and adjacent,
+               so the steering angle passes in car_angle_16[2]: the `_frame` entries drop phase 3's
+               closing publish of the three car angles and phase 4's re-import of them and the
+               fifteen model-state elements — 42 byte accesses a frame that only went out to mem[]
+               and straight back.  The 6502-ABI shims keep both marshals.
+               ⚠ Every relocated value is still published once a frame by phase 4's own output
+               marshals, so mem[] stays the mirror the differential compares.
+               ⚠⚠ This is the pair `make determinism-steer` exists for: with the wheel straight the
+               stale and fresh values are equal, so dropping either publish is invisible to
+               validate, determinism, -drive and -crash alike. */
             PROBE_PHASE(3);  PROBE_SHAPE_PHASE(3);  read_driving_controls_frame();
             PROBE_PHASE(4);  PROBE_SHAPE_PHASE(4);  apply_driving_model_frame_native();
             /* ⚠ the SHIM, not the core: this driver is the one caller of these two that is not
@@ -1578,20 +1537,14 @@ void race_main_loop_core(RestartDepth depth)
             PROBE_PHASE(14); PROBE_SHAPE_PHASE(14); build_road_sign();       /* the shim — see phase 5 */
             /* $172B: the object slot count is the starting slot */
             PROBE_PHASE(15); PROBE_SHAPE_PHASE(15);
-            /* ⚠⚠ WHY THIS DRIVER STILL SPEAKS cpu, AND WHY THAT IS NOT ORACLE PLUMBING.
-               The 6502's X and Y are LIVE ACROSS PHASE BOUNDARIES here, and the values are real:
-               MEASURED with a per-phase drift probe over 300 driving frames, phases 1, 3, 4, 5,
-               7, 9, 12, 18, 20, 23, 24 and the frame tail each rewrite the ambient X or Y, and
-               three consumers READ it — update_lap_timers (phase 8) hands ambient X/Y straight to
-               update_position_display_core as a text cursor on the race arm, engine_sound_update
-               (phases 9/12/20) and check_crash (phase 23) pass it to sound_queue_core, which
-               stores it in sound_saved_x.  So it reaches mem[] and the determinism family sees it.
-               The producers are not removable either: phase 5's writer is build_track_geometry's
-               own SHIM publishing GeoExit (the driver calls the shim deliberately, for the
-               wide-value marshals), and the rest are the sanctioned hook/SMC seams, which hand a
-               circuit's own 6502 code the whole register file by design.  Threading this as a
-               FrameAmbient struct through thirteen shims would move the same bytes through a
-               different container and buy nothing, so the register file stays the carrier. */
+            /* ⚠⚠ WHY THIS DRIVER STILL SPEAKS cpu.  X and Y are LIVE ACROSS PHASE BOUNDARIES and
+               the values are real: MEASURED over 300 driving frames, phases 1, 3, 4, 5, 7, 9, 12,
+               18, 20, 23, 24 and the tail each rewrite ambient X or Y, and three consumers read it
+               — update_lap_timers (phase 8) as a text cursor, engine_sound_update (9/12/20) and
+               check_crash (23) via sound_queue_core, which stores it in sound_saved_x, so it
+               reaches mem[].  The producers are not removable: phase 5's is build_track_geometry's
+               SHIM publishing GeoExit, the rest are the sanctioned hook/SMC seams.  A FrameAmbient
+               struct threaded through thirteen shims would move the same bytes and buy nothing. */
             {   /* race_main_loop_core is cpu (NATIVE_FUNCS driver) — marshal the typed exit */
                 SlotExit e = draw_track_object_core(0x17, cpu.Y, cpu.V, cpu.C);
                 cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
@@ -1608,8 +1561,8 @@ void race_main_loop_core(RestartDepth depth)
             PROBE_SHAPE_DASH_BEFORE();
             PROBE_PHASE(24); PROBE_SHAPE_PHASE(24); view_paint_lines();
             PROBE_SHAPE_DASH_AFTER();
-            /* ⭐⭐ Phase 32 exists so that phase 24 means ONLY the view sweep.  Without it the
-               tail's three JSRs were charged to the rasteriser — 11 ms of its 82. */
+            /* Phase 32 exists so phase 24 means ONLY the view sweep; without it the tail's three
+               JSRs were charged to the rasteriser (11 ms of its 82). */
             PROBE_PHASE(PROBE_PHASE_VIEWTAIL);
 
             verdict = race_frame_tail(&depth);
@@ -1629,16 +1582,13 @@ void race_main_loop_core(RestartDepth depth)
     irq1v_release_core(mem[MEM_dash_block_starts + (DASH_BLOCK_COUNT - 1)]);
     cpu.I = 0;                                       /* $4F35 CLI */
 
-    /* ⚠ COPY_DASH_DATA'S EXIT REGISTER FILE IS PUBLISHED HERE, AND THE CARRY IS GENUINELY
-       LIVE.  enter_session_core's `BIT state_flags` immediately after this call overwrites
-       N, V and Z but NOT C, and its negative arm hands C straight to abort_to_front_end_core
-       ($656D).  C is copy_dash_data's block loop closing on `CPX #$29` with X == $29, so it
-       is 1; A is `LDA $70 / ADC #$80` and X the block count.
-       ⚠⚠ DO NOT TRUST A GREEN HERE.  This exit is reached exactly ONCE in the whole
-       determinism family — `make determinism-race`, frame ~12000, at the qualifying->race
-       transition — and never in the other four trajectories.  That run does not take
-       enter_session_core's negative arm, so poisoning all six of these still PASSES every
-       target (measured).  They are kept on the argument above, not on the test. */
+    /* ⚠ COPY_DASH_DATA'S EXIT REGISTER FILE, AND THE CARRY IS GENUINELY LIVE: enter_session_core's
+       `BIT state_flags` right after this call overwrites N, V and Z but NOT C, and its negative
+       arm hands C to abort_to_front_end_core ($656D).  C is the block loop closing on `CPX #$29`
+       with X == $29; A is `LDA $70 / ADC #$80`, X the block count.
+       ⚠⚠ DO NOT TRUST A GREEN HERE — this exit is reached exactly once in the whole determinism
+       family (determinism-race, ~frame 12000) and that run does not take the negative arm, so
+       poisoning all six still PASSES every target.  Kept on the argument, not the test. */
     cpu.A = (uint8_t)adc_step((uint8_t)(plot_ptr_lo - 0x80), 0x80u, 0);
     cpu.X = DASH_BLOCK_COUNT;
     cpu.N = 0; cpu.Z = 1; cpu.C = 1;

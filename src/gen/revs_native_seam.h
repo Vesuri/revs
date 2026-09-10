@@ -137,12 +137,16 @@ typedef struct {
     unsigned line;   /* X: the scan line being painted */
     unsigned cell;   /* Y: the cell's byte offset within the line, or a glyph index */
 } ViewState;
+/* How much of the session reset a restart re-runs.  The 6502 expresses this as three branch
+   targets INSIDE race_main_loop's prologue that the tail jumps back to, so the depths are
+   nested by construction: each entry point falls through into the next. */
 typedef enum {
     RESTART_NONE = 0,   /* $16F9 — back from the pits: keep the session exactly as it was */
     RESTART_LATE,       /* $16F6 — rebuild the player's car and the driver tables only */
     RESTART_MID,        /* $16F3 — and zero $00-$68 plus $6280-$62FF: a fresh lap */
     RESTART_FULL        /* $16EE — and reset the player's race clock: a fresh session */
 } RestartDepth;
+/* What race_frame_tail decided about this frame. */
 typedef enum {
     LOOP_NEXT_FRAME,    /* $17B7 — round again */
     LOOP_RESTART,       /* leave the frame loop and re-run the reset to `g_restartDepth` */
