@@ -1823,21 +1823,21 @@ void race_main_loop_core(RestartDepth depth)
 
             PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers();
             PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  draw_starting_lights();
-            /* ⚠⚠ the SHIM, and this one is LOAD-BEARING: the core writes the new steer angle
-               into car_angle_16[2] and only the shim's car_angle_marshal_out() publishes it to
-               mem[$62A2/$62A5].  Calling the core here dropped that publish, so phase 4's
-               compute_car_angles shim marshalled the STALE mem[] back in and the frame's
-               steering was discarded — the wheel would not turn at all, on either input path.
-               ⚠ Invisible to every gate we have: validate compares the shim, and `determinism`
-               and `-drive` never STEER, so the stale value equals the fresh one in both. */
-            PROBE_PHASE(3);  PROBE_SHAPE_PHASE(3);  read_driving_controls();
-            /* the SHIM, for the same reason as phase 5: it publishes lateral_speed_entry_v back
-               into mem[$38/$39].  ⚠ Unlike phase 5's, THIS call site is gated by nothing — $38/$39
-               read 00/00 at both determinism dump frames, so calling the core here instead
-               survives validate, determinism AND determinism-drive.  Dropping the shim's
-               marshal_out does fail the apply_driving_model fixture, so the publish itself is
-               proven; it is the choice of entry point here that rests on argument. */
-            PROBE_PHASE(4);  PROBE_SHAPE_PHASE(4);  apply_driving_model();
+            /* ⭐⭐ PHASES 3 AND 4 ARE ONE CONVERSATION, AND IT NO LONGER GOES THROUGH mem[].
+               Both passes are native and they are adjacent, so the steering angle phase 3
+               computes is handed to phase 4 in car_angle_16[2] directly: the `_frame` entries
+               drop phase 3's closing publish of the three car angles and phase 4's re-import of
+               them and of all fifteen model-state elements — 42 byte accesses a frame that only
+               ever copied a value out to mem[] and straight back in.  The 6502-ABI shims keep
+               both marshals; nothing but this driver enters below them.
+               ⚠ Every relocated value is still PUBLISHED once per frame, by phase 4's own
+               output marshals — mem[] remains the mirror the whole-corpus differential compares.
+               ⚠⚠ This is the pair that `make determinism-steer` exists for: with the wheel
+               straight, the stale value and the fresh one are equal, so dropping either publish
+               is invisible to validate, determinism, -drive and -crash alike.  Do not touch
+               these two lines without running that target (docs/validation-harness.md). */
+            PROBE_PHASE(3);  PROBE_SHAPE_PHASE(3);  read_driving_controls_frame();
+            PROBE_PHASE(4);  PROBE_SHAPE_PHASE(4);  apply_driving_model_frame();
             /* ⚠ the SHIM, not the core: this driver is the one caller of these two that is not
                a transliterated parent, and the shim is where the relocated wide values (hypot_max,
                bearing) are marshalled back into mem[$7A/$7B] and mem[$8A/$8B].  Calling the core
@@ -11569,8 +11569,14 @@ static void read_driving_controls_core(void)
 /* ⭐ The steering shims all sit on the car_angle_16 boundary: each of them reads element 2 and
    every one can reach clamp_and_store_steer_angle, which writes it.  So each marshals in on the
    way down and out on the way back — the invariant is stated at car_angle_16 above. */
-void read_driving_controls(void)        { model_state_marshal_in(); car_angle_marshal_in(); read_driving_controls_core();
-                                          car_angle_marshal_out(); }
+/* ⭐ The frame driver's entry, WITHOUT the closing publish — see apply_driving_model_frame().
+   race_main_loop_core runs apply_driving_model immediately after this and that pass leaves the
+   steering angle in car_angle_16[2] and publishes it itself, so a car_angle_marshal_out() here
+   would write three cells that are overwritten from the same array a phase later.  The shim
+   keeps it, because a 6502 caller reads its result out of mem[]. */
+void read_driving_controls_frame(void)  { model_state_marshal_in(); car_angle_marshal_in();
+                                          read_driving_controls_core(); }
+void read_driving_controls(void)        { read_driving_controls_frame(); car_angle_marshal_out(); }
 void steer_demand_from_slip(void)       { model_state_marshal_in(); car_angle_marshal_in(); steer_demand_from_slip_core();
                                           car_angle_marshal_out(); }
 void steer_demand_store(void)           { car_angle_marshal_in(); steer_demand_store_core(cpu.A);

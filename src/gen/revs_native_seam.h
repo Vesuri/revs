@@ -405,6 +405,13 @@ extern const SpanPlotter SPAN_PLOT_2;
 AdcRead adc_read_core(uint8_t channel);
 MosRegs kbd_test_key_regs(uint8_t keyCode);   /* OSBYTE 129 exit file — kbd_test_key's shim reads A/X/Y */
 CameraExit apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC);
+
+/* ⭐⭐ The frame driver's entries into phases 3 and 4, one level below the 6502-ABI INPUT
+   marshals: race_main_loop_core runs the two back to back, so each pass's wide inputs are
+   already live and mem[] is not the channel between them.  The plain shims are the 6502 ABI
+   and keep every marshal; only the driver enters here (src/gen/revs_native.c's phase list). */
+void read_driving_controls_frame(void);
+void apply_driving_model_frame(void);
 void arg_a(uint8_t v);
 void bearing_to_section_core(uint8_t sectionByte, uint8_t origin);
 SignOriginExit build_sign_origin_core(uint8_t offset, uint8_t shift);

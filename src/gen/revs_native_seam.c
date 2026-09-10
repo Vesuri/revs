@@ -206,12 +206,19 @@ void draw_road(void)
     plot_ptrs_marshal_out();
 }
 
-void apply_driving_model(void)
+/* ⭐⭐ THE FRAME DRIVER'S ENTRY, one level BELOW the 6502-ABI input marshals.  race_main_loop_core
+   is the only production caller and it runs phase 3 (read_driving_controls) immediately before
+   this, so model_state_16[] and car_angle_16[] are ALREADY the live wide values when it gets
+   here — re-reading them out of mem[] would only re-import what the previous phase just wrote
+   there, 36 byte reads of it (fifteen model-state elements plus three car angles).  The shim
+   below keeps those marshals, because a 6502 caller really does hand its inputs over in mem[].
+   ⚠ The OUTPUT marshals stay in this body unconditionally: mem[] is still the faithful mirror
+   the whole-corpus differential compares, so every relocated value this pass writes is published
+   before the phase returns. */
+void apply_driving_model_frame(void)
 {
     view_origin_marshal_in();
-    model_state_marshal_in();     /* the 16-bit driving-model state vector */
     car_heading_marshal_in();             /* it reads the heading in, as the car's position... */
-    car_angle_marshal_in();               /* element 2 (the wheel) comes in; 0/1 go out below */
     CameraExit ce = apply_driving_model_core((uint8_t)car_heading_v,
                                              (uint8_t)(car_heading_v >> 8), cpu.C);
     car_angle_marshal_out();              /* compute_car_angles_core rebuilt the sin/cos pair */
@@ -224,6 +231,13 @@ void apply_driving_model(void)
     cpu.A = ce.acc.hi; cpu.C = ce.acc.carry; cpu.V = ce.acc.overflow;
     cpu.N = ce.acc.neg; cpu.Z = ce.acc.zero;
     cpu.X = ce.x; cpu.Y = ce.y;
+}
+
+void apply_driving_model(void)
+{
+    model_state_marshal_in();     /* the 16-bit driving-model state vector */
+    car_angle_marshal_in();       /* element 2 (the wheel) comes in; 0/1 go out below */
+    apply_driving_model_frame();
 }
 
 void draw_track_object(void)
