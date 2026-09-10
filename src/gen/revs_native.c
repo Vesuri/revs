@@ -5735,8 +5735,9 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     }
 
     /* 3 — the two deltas.  span_dy is |end line - start line|. */
-    mem[SPAN_YSTEP] = (uint8_t)(mem[SPAN_LINE_END] - span_line_cursor);
-    { uint8_t dy = mem[SPAN_YSTEP];
+    uint8_t lineDelta = (uint8_t)(mem[SPAN_LINE_END] - span_line_cursor);
+    mem[SPAN_YSTEP] = lineDelta;                 /* the cell is the plotters' input, so it stays */
+    { uint8_t dy = lineDelta;                    /* ...but this reader already has the value */
       if (dy & 0x80u) dy = (uint8_t)(0u - dy);
       mem[SPAN_DY] = dy; }
 
@@ -5760,7 +5761,9 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
             else { adx <<= 1; giveBack = ((adx >> 8) & 0x80u) ? 2 : 0; }
         }
         math_lo = (uint8_t)adx;             /* the 6502's ASL_M leaves the shifted low byte here */
-        while (giveBack--) mem[SPAN_DY] >>= 1;
+        /* $2C0F/$2C12 — one or two `LSR span_dy`.  Two shifts of a byte are one shift by two,
+           so this is a single read-modify-write instead of up to two. */
+        if (giveBack > 0) mem[SPAN_DY] = (uint8_t)(mem[SPAN_DY] >> giveBack);
 
         mem[SPAN_DX]  = (uint8_t)(adx >> 8);
         mem[SPAN_ARM] = (uint8_t)(armHi ^ span_swapped);
@@ -5783,11 +5786,14 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
         span_cap_pending = (uint8_t)(mem[SPAN_CLIP] & 0xC0u);
 
     /* A zero line delta borrows its direction from the swap flag. */
-    if (mem[SPAN_YSTEP] == 0)
-        mem[SPAN_YSTEP] = (uint8_t)(span_swapped ^ 0xFFu);
+    uint8_t ystep = mem[SPAN_YSTEP];
+    if (ystep == 0) {
+        ystep = (uint8_t)(span_swapped ^ 0xFFu);
+        mem[SPAN_YSTEP] = ystep;
+    }
 
     /* 5a — the Y step the plotters take on the way OUT; the entry slots stay NOP for now. */
-    { uint8_t step = (mem[SPAN_YSTEP] & 0x80u) ? OP_DEY : OP_INY;
+    { uint8_t step = (ystep & 0x80u) ? OP_DEY : OP_INY;
       mem[SLOT_STEP_P1_OUT] = step;
       mem[SLOT_STEP_P2_OUT] = step;
       mem[SLOT_STEP_P1_IN]  = OP_NOP;
@@ -5808,10 +5814,13 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
        mask the class with 3.  Verified over all ten reachable styles (symbols.csv). */
     math_lo = (uint8_t)(surface_pass_index << 3);        /* the pass, in bits 3-5 */
     /* byte 0's colour: column 0's low bit (bit 3) and column 3's high bit (bit 4). */
-    span_cap_surface_over = (uint8_t)(((mem[COLOUR_PATTERN] >> 3) & 3) | math_lo | 0x40u);
+    uint8_t pattern0 = mem[COLOUR_PATTERN];    /* byte 0, read once and reused below */
+    span_cap_surface_over = (uint8_t)(((pattern0 >> 3) & 3) | math_lo | 0x40u);
 
-    if (mem[COLOUR_PATTERN] == 0) mem[COLOUR_PATTERN] = 0x55u;
-    bearing_hi = mem[COLOUR_PATTERN];
+    /* $2C3E — an all-zero pattern is substituted, and the substitution is what byte 0's
+       consumer sees.  The cell write stays (the plotters read it); the reads do not. */
+    if (pattern0 == 0) { pattern0 = 0x55u; mem[COLOUR_PATTERN] = pattern0; }
+    bearing_hi = pattern0;
 
     /* byte 3's fill colour: column 2's low bit (bit 1) and column 0's high bit (bit 7). */
     { uint8_t p3 = mem[COLOUR_PATTERN + 3];
@@ -9835,9 +9844,10 @@ static SlotExit plot_shape_edges_core(void)
 
         for (;;) {
             /* $20F1 BIT obj_edge_style — N from bit 7, V from bit 6, Z from A & style. */
-            n = (uint8_t)(mem[OBJ_EDGE_STYLE] >> 7);
-            v = (uint8_t)((mem[OBJ_EDGE_STYLE] >> 6) & 1u);
-            z = (uint8_t)((a & mem[OBJ_EDGE_STYLE]) == 0);
+            { uint8_t style = mem[OBJ_EDGE_STYLE];   /* ONE load; the 6502's BIT is one too */
+              n = (uint8_t)(style >> 7);
+              v = (uint8_t)((style >> 6) & 1u);
+              z = (uint8_t)((a & style) == 0); }
             if (n) {
                 /* $2117-$2142 — THE CLOSING ARM.  The span is closed against the NEXT edge's
                    columns, which is why this arm reads shape_edge_x_1 as a style and
@@ -9861,9 +9871,10 @@ static SlotExit plot_shape_edges_core(void)
               a = e.a; x = e.x; y = e.y; n = e.n; z = e.z; }
             /* $20FB BIT obj_edge_style again — bit 6 (V) ends the shape.  C is still the
                no-height CMP's 0, untouched since (the plots drop it). */
-            n = (uint8_t)(mem[OBJ_EDGE_STYLE] >> 7);
-            v = (uint8_t)((mem[OBJ_EDGE_STYLE] >> 6) & 1u);
-            z = (uint8_t)((a & mem[OBJ_EDGE_STYLE]) == 0);
+            { uint8_t style = mem[OBJ_EDGE_STYLE];   /* ONE load; the 6502's BIT is one too */
+              n = (uint8_t)(style >> 7);
+              v = (uint8_t)((style >> 6) & 1u);
+              z = (uint8_t)((a & style) == 0); }
             if (v) { SlotExit e = { a, x, y, n, z, v, c }; return e; }  /* bit 6: shape ends */
             y = span_saved_index;
             break;
@@ -10111,9 +10122,10 @@ SlotExit fill_object_gap_core(uint8_t width)
 
     /* $1E4B-$1E66 — the two write pointers, one source block apart, both biased down by `bias`.
        (column + $5F) >> 1 is the block; the bit the shift drops picks $00 or $80 inside it. */
-    mem[PVS_GAP_COL] = mem[EDGE_COLUMN];
+    uint8_t column = mem[EDGE_COLUMN];
+    mem[PVS_GAP_COL] = column;
     {
-        uint8_t  block   = (uint8_t)(mem[EDGE_COLUMN] + 0x5Fu);
+        uint8_t  block   = (uint8_t)(column + 0x5Fu);
         unsigned lowBase = (block & 1u) ? 0x80u : 0x00u;
         /* ⭐ WIDE-VALUE CLEANUP, and the byte lanes were hiding a much simpler statement.  The
            6502 sets the second pointer by EOR $80 on the low lane and then DECs its page when
@@ -10237,10 +10249,11 @@ static int slot_defer_if_same_column(uint8_t acc, uint8_t edgeCol, uint8_t *x, u
        carries in the compare's C, which is 1 on the equal (>=) arm; the exit A is PVS_KEEP
        (load_a) and N/Z come from the ROR result. */
     uint8_t res = (uint8_t)((span_defer_pending >> 1) | 0x80u);   /* carry-in = 1 -> bit 7 set */
+    uint8_t keep       = mem[PVS_KEEP];
     mem[PVS_COLOUR]    = acc;
-    shared_temp_8c     = mem[PVS_KEEP];
+    shared_temp_8c     = keep;
     span_defer_pending = res;
-    { SlotExit e = { mem[PVS_KEEP],                          /* load_a left A = PVS_KEEP */
+    { SlotExit e = { keep,                                   /* load_a left A = PVS_KEEP */
                      *x, y,
                      (uint8_t)(res >> 7),                    /* = 1 */
                      (uint8_t)(res == 0),                    /* = 0 */
@@ -11321,10 +11334,10 @@ static void apply_steer_demand_core(uint8_t signByte)
     uint8_t hi = (uint8_t)(diff >> 8);
 
     if (hi >= 0xC8u) {                                 /* $161C CMP/BCS — past the half turn: fold */
-        uint16_t neg = (uint16_t)(0u - (uint16_t)(((uint16_t)hi << 8) | mem[STEER_SIGN]));  /* $1620 */
-        mem[STEER_DEMAND] = (uint8_t)(neg >> 8);
+        uint16_t neg = (uint16_t)(0u - (uint16_t)(((uint16_t)hi << 8) | (uint8_t)diff));  /* $1620 */
+        hi = (uint8_t)(neg >> 8);
+        mem[STEER_DEMAND] = hi;                        /* $162B's re-read is `hi` already */
         mem[STEER_SIGN]   = (uint8_t)((uint8_t)neg ^ 0x01u);   /* $1625-$1629 flip which way */
-        hi = mem[STEER_DEMAND];                        /* $162B — clamp reads the magnitude */
     }
     clamp_and_store_steer_angle_core(hi);
 }
@@ -11367,13 +11380,14 @@ static int read_pedal_demand(uint8_t *mode, uint8_t *amount)
         if (!outside) return 0;                        /* $1649 — inside the dead zone */
 
         uint8_t mag = a.mag;                            /* $164B — scale the reading up x1.5 */
-        mem[STEER_SIGN] = (uint8_t)(mag >> 1);
+        uint8_t half = (uint8_t)(mag >> 1);
+        mem[STEER_SIGN] = half;                         /* the cell is compared; the re-read is not needed */
         /* ⚠ `ADC $74` with no `CLC` — the doubling's own carry ($164F ASL) is in the sum:
            (mag<<1) + (mag>>1) + bit7(mag).  bit7(mag) is provably 0 here (adc_read folds both
            sides of centre to a magnitude in 0..$7F), so the ASL never carries; the term is kept
            as the faithful idiom.  Only this add's OWN carry is read (the in-range test just
            below) — and the doubled sum CAN exceed $FF (mag=$7F → $13D). */
-        unsigned sum = (unsigned)(uint8_t)(mag << 1) + mem[STEER_SIGN] + (mag >> 7);
+        unsigned sum = (unsigned)(uint8_t)(mag << 1) + half + (mag >> 7);
         if (sum <= 0xFFu) {                             /* $1652 — the sum didn't overflow */
             uint8_t hi = ((uint8_t)sum >= 0xFAu);       /* $1654 CMP #$FA (carry leaks to no_key) */
             cpu.C = hi;
@@ -14241,9 +14255,9 @@ void check_car_pair_core(void)
                         shared_temp_76 = (uint8_t)(shared_temp_76 >> 1);   /* $2742 LSR $76 */
                     } else {
                         span_line_cursor = 0x40u;            /* $272d */
-                        unsigned cst2 = (mem[CAR_SECTION_ACROSS + secondSlot] >= mem[CAR_SECTION_ACROSS + firstSlot]);  /* $2732 CMP */
+                        uint8_t s2 = mem[CAR_SECTION_ACROSS + secondSlot];        /* $272f LDA — ONE load, as on the 6502: the value survives to abs8 */
+                        unsigned cst2 = (s2 >= mem[CAR_SECTION_ACROSS + firstSlot]);  /* $2732 CMP */
                         math_lo = (uint8_t)((cst2 << 7) | (math_lo >> 1));  /* $2735 ROR $74 */
-                        uint8_t s2 = mem[CAR_SECTION_ACROSS + secondSlot];        /* $272f LDA — value survives to abs8 */
                         uint8_t absv = (s2 & 0x80u) ? (uint8_t)(0u - s2) : s2;  /* $2737 AND #$FF (sets N) / $2739 abs8 */
                         loadState2 = (absv < 0x3Cu);         /* $273c CMP #$3C / $273e BCC $2744 / $2740 BCS $2749 */
                     }

@@ -2228,3 +2228,44 @@ written without the other on purpose.  Gated by `make validate` on
 `draw_track_object`, `build_road_sign`, `process_car_contact`, `build_player_car`,
 `project_object_slot`, `mirrors_update` and `move_and_draw_cars`, plus `determinism` and
 `determinism-drive`.
+
+## ⭐⭐ THE REDUNDANT-`mem[]`-READ CLASS, AND THE SCAN THAT FINDS IT (2026-09-10)
+
+The governing sweep's bullet "use local variables instead of `mem[]` when possible" is NOT
+licence to move a scratch cell into a local: **the differential compares all 64 KB, so every
+scratch WRITE the oracle makes has to stay** (see the twin-style rule). What can go is the
+**re-read** — a cell whose value is already sitting in a register. That is also exactly the
+standing perf lever (RAM is uniformly slow; reduce the NUMBER of accesses), so the class is
+worth sweeping deliberately rather than opportunistically.
+
+⭐ **Three scan shapes find it, and all three are cheap.** Blank comments to spaces rather than
+deleting them, or every line number you report is wrong:
+
+| shape | pattern | found |
+|---|---|---|
+| write-then-read | `mem[C] = expr;` then a read of `mem[C]` with no call and no intervening write | 5 sites |
+| repeated read | `mem[C]` read ≥2× in one straight-line stretch (no call, no branch) | 5 sites |
+| loop-invariant | a `mem[C]` read inside a call-free loop body that the body never writes | 1 site |
+
+⚠⚠ **THE FALSE POSITIVE IS THE INDEXED ONE, and it would have been a real defect.** In
+`plot_shape_edges_core` the scan flagged `mem[SHAPE_VERTEX + x]` as read twice — but `x` is
+REASSIGNED between the two reads (`x = mem[SHAPE_EDGE_X_0 + y]` … `x = mem[SHAPE_EDGE_X_1 + y]`),
+so they are two different cells and merging them would have fused the edge's two x offsets into
+one. **Any candidate whose subscript is not a constant has to be read, not trusted.**
+
+The eleven real sites, 15 reads removed, all on paths that matter (the span setup in
+`interp_edge`, the object/shape walk in `plot_shape_edges`, `fill_object_gap`,
+`slot_defer_if_same_column`, `check_car_pair`, and the two steering-demand routines):
+
+- ⭐ **The 6502 `BIT` decomposition was the worst offender and appears twice.** N, V and Z each
+  re-loaded `obj_edge_style`, so one 6502 instruction had become three memory reads — inside a
+  `for (;;)` over the shape's edges. One load now feeds all three.
+- `interp_edge`: the line delta, the zero-delta substitution, and byte 0 of the colour pattern
+  (three reads of one byte). Also `while (giveBack--) mem[SPAN_DY] >>= 1` — one or two `LSR` of
+  a byte is **one shift by `giveBack`**, so up to two read-modify-writes became one.
+- `apply_steer_demand`: the fold re-read both halves of a value it had just written.
+
+⚠ Not a measurable framerate change on its own and not claimed as one (15 accesses against
+~10 600 bus calls a frame); it is recorded because the CLASS is now swept and should not be
+re-swept, and because the scan shapes above are reusable on any future twin.
+
