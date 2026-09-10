@@ -1236,6 +1236,36 @@ None of that is oracle-only, and it splits into two kinds:
 ⭐ So the remainder is smaller than it looks: kind 2 is permanent, and kind 1 is four call sites in
 one function.
 
+### ✅ KIND 1 IS CLOSED (2026-09-10) — and only TWO of the four were ever the same defect
+
+Resolved, and the split is the finding. **Phases 3 and 4 were a genuine round trip and are gone.**
+`read_driving_controls` and `apply_driving_model` are *adjacent* phases and both native, so phase
+3's shim published the three car angles to `mem[$62A2..]` and phase 4's shim marshalled them
+straight back in — plus all fifteen `model_state` elements, which nothing between the two phases
+touched at all. 42 byte accesses a frame that copied a live wide value out and immediately back.
+Each shim is now factored into a `_frame` entry (the body, below the 6502-ABI *input* marshals)
+and the shim proper (those marshals plus the entry) — **one body, no duplication** — and the
+driver, the only production caller, enters at `_frame`. The *output* marshals are untouched.
+
+**Phases 5 and 14 are NOT the same case and must stay as they are.** They are not adjacent, and
+the values they carry — `hypot_max` (`$7A/$7B`), `hypot_min` (`$78/$79`), `bearing` (`$8A/$8B`) —
+are shared zero-page windows with OTHER TENANTS that run in between. Named, because "it's a shared
+window" is an argument and these are the evidence: `plot_line_octant_core` parks its DDA
+accumulator in `bearing_lo`, `span_plot_core` reads `bearing_hi`, and `interp_edge_core` writes it
+— all three in the ROAD PASS, phase 11, which runs between phase 5 and phase 14. So phase 5's
+marshal-out publishes *before* the tenant borrows the cell and phase 14's marshal-in re-imports
+what the tenant left. That marshalling is the seam between two subsystems, not a round trip
+between two twins, and collapsing it would silently discard the road pass's scratch.
+
+⚠⚠ **The gate had to be BUILT FIRST, and that is the reusable part.** The call-site comments said
+phases 3 and 4 were "invisible to every gate we have", and they were right: `make determinism` and
+`-drive` never STEER, so `steer_angle` and the car's lateral velocity read `00/00` at every dump
+frame in the whole family — and a value that is zero on both sides of a change cannot fail a byte
+differential. `make determinism-steer` (`docs/validation-harness.md` §the FIFTH) exists for exactly
+this pair, and its sabotage table shows all three round-trip defects passing `determinism` and
+`-drive` and failing only it. **A representation change on a value no gate exercises is not a
+change you can land; find or build the trajectory first.**
+
 ## ⭐⭐ NEXT STEPS (planned 2026-09-04) — mechanism (B) on Tier 3, in measured order
 
 Mechanism (A) is finished; **Tier 3 — the SoA state vectors — is the campaign's remaining body of
