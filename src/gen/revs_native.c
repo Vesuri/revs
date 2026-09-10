@@ -3659,7 +3659,7 @@ void view_origin_marshal_out(void)
 /* $46A1  apply_driving_model — THE PLAYER CAR'S PHYSICS  (twin #6)
    The body's 4th call, and nothing else in the frame writes the car's motion.  136 bytes of
    DRIVER over fifteen sub-models, so — like twins #4 and #5 — what it buys is the naming, not
-   milliseconds (docs/faithfulness-seam.md §8).  What the routine itself owns is three things:
+   milliseconds (docs/faithfulness-seam.md §8).  The driver itself owns three things:
 
      1. THE SPEED SPLIT.  car_speed_lo/hi is element 9 of the driving model's 16-bit state
         vector and is SIGNED; the rest of the game only ever reads its magnitude, so this
@@ -3669,23 +3669,21 @@ void view_origin_marshal_out(void)
         zero, so that a crawling car still turns its front wheels.
 
      2. THE HAND-INTEGRATED ACCUMULATOR.  car_lateral_speed_lo/hi is element 8 of the same vector,
-        and it is the only element this routine integrates itself.  The sequence is deliberate
-        and looks wrong until you read it twice: the entry value is saved, stage_lateral_speed_delta subtracts a
-        scaled velocity from the accumulator, the next four sub-models therefore run against
-        the OFFSET value, and only then is the entry value restored and the frame's real
-        increment (lateral_speed_delta_lo/hi, 1.5x what stage_lateral_speed_delta removed) added.
+        and the only element this routine integrates itself.  The sequence looks wrong until read
+        twice: the entry value is saved, stage_lateral_speed_delta subtracts a scaled velocity from
+        the accumulator, the next four sub-models therefore run against the OFFSET value, and only
+        then is the entry value restored and the frame's real increment (lateral_speed_delta_lo/hi,
+        1.5x what stage_lateral_speed_delta removed) added.
 
      3. THE OFF-POWER GATE.  Once drive_state reaches 2 — crashed or spinning, the value
         check_crash writes — elements 5..7 of the state vector are forced to zero instead of
         being integrated.
 
-   ⭐ ALL FIFTEEN SUB-MODELS HAVE NAMES (the queue's "eleven of fifteen callees
-   are still FUN_xxxx"), and read in order the chain is legible: the car's angles, a rotation of
-   the world-frame pair 0/1 into the car-frame pair 8/9, the accumulator offset, the grip
-   limits, the engine, the two axles' slip sound with two steering rotations between them, the
-   load terms, then — past the off-power gate — drag, a second rotation, the rate integrator,
-   the heading integrator and the camera.  ⚠ Every name is [INFERRED] from what the routine
-   COMPUTES; and what the fifteen state elements MEAN physically is now measured:
+   Read in order the sub-model chain is: the car's angles, a rotation of the world-frame pair 0/1
+   into the car-frame pair 8/9, the accumulator offset, the grip limits, the engine, the two axles'
+   slip sound with two steering rotations between them, the load terms, then — past the off-power
+   gate — drag, a second rotation, the rate integrator, the heading integrator and the camera.
+   ⚠ Every sub-model name is [INFERRED] from what the routine COMPUTES.
 
    ⭐ [MEASURED 2026-09-09, reference loop] 0/1 is the car's velocity in WORLD axes and 8/9 the
    same vector in the CAR'S axes (lateral, forward) — |(0,1)| == |(8,9)| frame for frame, and
@@ -4034,9 +4032,8 @@ void copy_dash_data_core(uint8_t dirFlag)
         block += 0x80u;      /* next $80-spaced source block                       */
     }
 
-    /* Leave the zero-page scratch exactly as the 6502 did.  Nothing outside the routine reads
-       these, but the differential compares all of mem[]. */
-    /* Set the relocated words; the marshals mirror the lanes. */
+    /* The zero-page scratch is left exactly as the 6502 left it — nothing outside reads it, but
+       the differential compares all of mem[].  The marshals mirror the relocated words' lanes. */
     plot_ptr_v      = block;
     plot_ptr2_v     = page;
     plot_ptr_marshal_out();
@@ -4053,8 +4050,8 @@ void copy_dash_data_core(uint8_t dirFlag)
    point's distance by the normalised far clip — so it runs a few hundred times a frame off
    three call sites and nothing else in the engine uses it.
 
-   Eight unrolled restoring steps.  Four things about its contract are worth stating because
-   three of them are what the twin has to reproduce and the fourth is why the callers are safe:
+   Eight unrolled restoring steps.  Four things about its contract — the first three the twin has
+   to reproduce, the fourth why the callers are safe:
 
      * C IS ALWAYS CLEAR ON EXIT.  The closing `ROL math_lo` ($0CA2) inserts the eighth
        quotient bit and shifts out the ZERO the opening `ASL math_lo` put in — never a quotient
@@ -5763,7 +5760,7 @@ SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int e
      $1DAF  column_gap_walk        ...the walk itself: fill this column's empty source bytes
      $1E9E  surface_colour_at      which track surface is at (line, position), as a colour
 
-   WHAT THE SUBSYSTEM COMPUTES.  draw_road leaves a source byte at ZERO wherever no span
+   draw_road leaves a source byte at ZERO wherever no span
    covered it, and view_paint_lines reads a zero as "same byte as the cell to my left".  At
    the two ends of the viewport — beside the front tyres and up against the dashboard — that
    is wrong: there is no cell to the left, so the gap has to be filled with the colour of
@@ -6093,16 +6090,13 @@ SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
      $0E42  neg16_math     negate (math_hi:math_lo), the high byte leaving in A
      $0E44  neg16_math_noinit  ...the same without parking A in math_hi first
 
-   ⭐⭐ WHY THIS ONE IS DIFFERENT.  Every twin since #14 has confirmed that being real C buys
-   nothing on its own — the win is ALGORITHMIC COMPRESSION.  `mul8` is the case the rule was
-   waiting for: **28 call sites, the most-called routine in the engine**, and its body is eight
-   unrolled iterations of `BCC` / `CLC` / `ADC` / `ROR A` / `ROR math_lo` — about 40 6502
-   instructions, each of which the transliteration wraps in flag bookkeeping, standing in for
-   one `MULU.W`.  Nothing here is a driver.
+   ⭐⭐ ALGORITHMIC COMPRESSION, not just real C — the one twin group where that is the whole
+   win.  `mul8` has 28 call sites (the most-called routine in the engine) and its body is eight
+   unrolled iterations of `BCC` / `CLC` / `ADC` / `ROR A` / `ROR math_lo` — ~40 6502 instructions,
+   each wrapped in the transliteration's flag bookkeeping — standing in for one `MULU.W`.
 
-   ⚠⚠ AND THE EXIT CONTRACT IS NOT "THE PRODUCT", which is what makes the compression legal
-   rather than approximate.  Checked over all 65536 operand pairs (the twin's own arithmetic
-   against a replay of the 6502):
+   ⚠⚠ THE EXIT CONTRACT IS NOT "THE PRODUCT" — which is what makes the compression legal.
+   Checked over all 65536 operand pairs against a replay of the 6502:
      * A = the product's HIGH byte, math_lo = its LOW byte — but N and Z come from the closing
        `ROR math_lo`, i.e. from the LOW byte, not from A;
      * C is 0 on EVERY input.  The eight `ROR math_lo`s shift the multiplier out completely, so
@@ -6578,9 +6572,8 @@ void apply_angle_term_at(void)
     model_state_marshal_out();
 }
 /* TWINS #58-#66 — THE DRIVING MODEL'S ROTATIONS AND INTEGRATIONS
-   apply_driving_model's third group, and the one that finally says what the model DOES: the
-   layer above the 16-bit arithmetic, where the state vector is treated as vectors and rates
-   rather than as numbers.
+   apply_driving_model's third group, and the one that says what the model DOES: the layer above
+   the 16-bit arithmetic, where the state vector is treated as vectors and rates, not numbers.
 
      $4729 stage_lateral_speed_delta      the midpoint offset — accumulator -= v, delta = 1.5v
      $47A5 rotate_velocity_by_steer  the (8, 9) pair turned by the steering angle
@@ -6592,11 +6585,10 @@ void apply_angle_term_at(void)
      $48EF integrate_car_position the camera triple, at 24-bit precision, plus the heading
      $4937 integrate_state_rates  elements 3/4/5 integrated into 0/1/2, also at 24 bits
 
-   ⭐ EVERY LEAF UNDERNEATH THESE WAS ALREADY A TWIN (#50-#57), so there is no interpreter
-   left below this line and the compression here is structural rather than arithmetic: two
-   nested `ROR` loops over four state elements become one shift, a hand-unrolled 24-bit
-   doubling becomes `wide <<= n`, and the four-call rotation becomes four named calls whose
-   arguments are visible instead of three registers stepped between them.
+   ⭐ Every leaf underneath these is already a twin (#50-#57), so the compression here is
+   structural: two nested `ROR` loops over four state elements become one shift, a hand-unrolled
+   24-bit doubling becomes `wide <<= n`, and the four-call rotation becomes four named calls with
+   visible arguments instead of three registers stepped between them.
 
    ⚠⚠ $48EF's FIRST ADD HAS NO `CLC` — its carry comes from the `ROL` immediately above it, so
    the doubling and the add are one 24-bit operation.  A twin that starts the add with a clear
@@ -6937,18 +6929,16 @@ void rotate_state_6_into_3(void)
      $0B6E sound_osword        the OSWORD tail both sound entries share
      $0E5A sound_stop_channel  OSBYTE 21 on buffer X|4 — buffers 4..7 ARE the sound channels
 
-   ⭐ WHAT THE CLUSTER COMPUTES, now that it reads as C.  Per axle: negate the accumulator,
+   What the cluster computes, per axle: negate the accumulator,
    shift it left five into element 10, and compare a cheap hypotenuse of elements 10 and 12
    (max + min/2, the same alpha-max-plus-beta-min the road pass uses) against grip_limit.  One
    bit of the answer is `ROR`ed into slip_flags, so the squeal answers to the last TWO frames
    rather than to this one — and if the shift SATURATED, that alone counts as a slip whatever
    the limit says ($4AAE-$4AB2, which is the sign-comparison nobody would guess from the name).
 
-   ⚠ SIX OF THESE HAD NO NAME.  The reading behind each is in disasm/symbols.csv; two things
-   the rename queue had recorded wrongly and this pass corrected are worth repeating here:
-   $0B46 is a SPARE BYTE where X is parked across the OSWORD, not self-modifying code, and
-   derive_slip_reference's two arms were written down the wrong way round (pedal_mode == 1 is
-   the throttle, so `LDY pedal_mode / DEY / BEQ` takes the THROTTLE to the gear-based arm). */
+   ⚠ Two readings that are easy to get backwards: $0B46 is a SPARE BYTE where X is parked across
+   the OSWORD, not self-modifying code; and pedal_mode == 1 is the THROTTLE, so
+   derive_slip_reference's `LDY pedal_mode / DEY / BEQ` takes the throttle to the gear-based arm. */
 
 #define SLIP_MAG_LO      MEM_plot_ptr3_lo  /* plot_ptr3_lo — here slip_magnitude's low byte  */
 #define SLIP_OUT_INDEX   MEM_hypot_min_lo  /* hypot_min_lo — here WHICH element the store lands in */
@@ -15410,7 +15400,7 @@ void hook_horizon_clamp(void)
    V is the last shift-and-add's, which is why the multiplies go through mul8_noinit_core — it
    returns that one escaping bit, and a zero multiplier must NOT overwrite the caller's V.
 
-   SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
+   SABOTAGE (each must FAIL; counts over the fixture's 4000 cases):
    S79 the segment test uses $21 instead of $20                  2008
    S80 scale $B5 -> $B4                                          2001
    S81 drop the doubling                                         3463
@@ -15468,7 +15458,7 @@ void hook_steer_response_brands(void)
    Exit ABI: steer_response_curve's (A/math_lo the doubled product, math_hi the scaled value,
    Y the scale, N/Z/C the closing ROL's, V the last shift-and-add's).
 
-   SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
+   SABOTAGE (each must FAIL; counts over the fixture's 4000 cases):
    S85 the $48 arm scales by $F9                                  989
    S86 the $B0 arm is dropped (only $B8 is special)              1030
    S87 the default scale is $BE, not $B5                         1000
@@ -15505,7 +15495,7 @@ void hook_steer_response_oulton(void)
    Exit ABI: steer_response_curve's.  ⚠ The LSR's C does NOT escape — the curve's closing ROL
    overwrites it — and its N/Z are overwritten by the TYA; the WRITE is the whole point.
 
-   SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
+   SABOTAGE (each must FAIL; counts over the fixture's 4000 cases):
    S89 the $28 pardon runs unconditionally                        799
    S90 the $A8 pardon is dropped                                  844
    S91 segment $A0 pardons too                                    767
@@ -15563,7 +15553,7 @@ void hook_steer_response_snetter(void)
 
    Exit ABI: steer_response_curve's.
 
-   SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
+   SABOTAGE (each must FAIL; counts over the fixture's 4000 cases):
    S94 the $10 pardon is unconditional                            331
    S95 the $58 threshold is $26                                   103
    S96 the $58/$A8 tests pardon on `offset >= threshold`           88
@@ -15630,7 +15620,7 @@ void hook_steer_response_doning(void)
    shared_temp_77 the doubled 16-bit value, C its bit 15, N/Z from the high byte, and V left
    exactly as the gradient callee left it.
 
-   SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
+   SABOTAGE (each must FAIL; counts over the fixture's 4000 cases):
    S100 the road-speed arm runs whatever drive_state was        10516
    S101 the negative product does not borrow                     2696
    S102 the borrow happens on a POSITIVE product                 5484
@@ -15691,7 +15681,7 @@ void hook_camera_scale_by_gradient(void)
    C the CMP or the LSR leaves.  ⚠ A is dead at the return ($2F28 LDA span_cap_surface_over
    overwrites it); it is reproduced because the differential compares it, not because it is read.
 
-   SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
+   SABOTAGE (each must FAIL; counts over the fixture's 4000 cases):
    S106 the inheritance test reads THIS line, not the one below  5968
    S107 $8B is treated as a mask (below & $8B)                    3782
    S108 the $8B arm answers with $8B, not $8B >> 1                3948
@@ -15743,7 +15733,7 @@ void hook_span_cap_slot_test(void)
    last ADC through the C core for a bit nothing reads.  A and N/Z/C are set anyway because they
    cost nothing here; the fixture declares X,Y.
 
-   SABOTAGE (each must FAIL; counts measured on the two circuits' 1000 cases, not predicted):
+   SABOTAGE (each must FAIL; counts over the two circuits' 1000 cases):
                                                               SNETTER  NURBURG
    S75 always take the edge_x_offscreen arm (drop the guard)      549      283
    S76 |section_yaw| > $19 instead of >= $19                        5        3
@@ -15829,7 +15819,7 @@ void hook_record_horizon(void)
    
    Entry: C = the off-axis compare, X = the section byte, Y = the edge cursor — the ABI
    $248B's neighbourhood leaves live, not what the displaced BCS reads. */
-/* SABOTAGE (each must FAIL; counts measured on the 500-case fixture, not predicted):
+/* SABOTAGE (each must FAIL; counts over the 500-case fixture):
      S1 ignore the entry carry and always compare      -> 144/500
      S2 the count threshold is $0B, not $0A            ->  30/500
      S3 the compare's Z comes from $09                 ->  29/500
@@ -15904,7 +15894,7 @@ void hook_walk_back_gate(void)
    Entry: A = the clamped horizon line, Y = the folded horizon point ($2528's TAY).
    Exit: A = the last edge_y read, Y = horizon_index, N/Z from that LDY, C = 1 (the loop's
    own exit compare) and V from the last high-byte subtract. */
-/* SABOTAGE (each must FAIL; counts measured on the 4000-case fixture, not predicted):
+/* SABOTAGE (each must FAIL; counts over the 4000-case fixture):
      S11 the merge stops at point 8, not 9             -> 3179/4000
      S12 the far side is pulled in when it is AHEAD    -> 3999/4000
      S13 only the low azimuth byte is copied across    -> 2709/4000
@@ -15982,7 +15972,7 @@ void hook_merge_horizon_edges(void)         { hook_merge_horizon_edges_at(0); }
    nearest the horizon.  ⚠ The clear sits INSIDE the loop, so it is "every merged point below
    index 6", not a separate pass — which is why it shares the core rather than running after it.
 
-   SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
+   SABOTAGE (each must FAIL; counts over the fixture's 4000 cases):
    S111 the clear runs at every point, not below 6                -> 4000/4000
    S112 only the near side's style is wiped                       -> 2498/4000
    S113 the boundary is `y <= 6`                                  -> 2849/4000
@@ -15998,7 +15988,7 @@ void hook_merge_horizon_edges_nurburg(void) { hook_merge_horizon_edges_at(1); }
    Entry: A = the clamped horizon line, Y = the folded horizon point.  Exit: A, X, Y and every
    flag exactly as they arrived — two absolute stores set none.
 
-   SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
+   SABOTAGE (each must FAIL; counts over the fixture's 4000 cases):
    S115 the object ceiling is not cached                          -> 3984/4000
    S116 the displaced store goes to the NEAR half                 -> 3999/4000
    S117 the merge loop runs after all (the shared body)           -> 4000/4000
@@ -16035,7 +16025,7 @@ void hook_horizon_store_only(void)
    both call sites are inside circuit code ($54F1's `JSR $5582`, whose next act is
    `LDA section_cursor`, and $5A1B's `JSR $557F / JMP $5472`, whose is `LDA $53FA`), and no
    engine patch site reaches either entry (make track-patch). */
-/* SABOTAGE (each must FAIL; counts measured on the four 2000-case fixtures, not predicted, and
+/* SABOTAGE (each must FAIL; counts over the four 2000-case fixtures, and
    quoted as the range over them — the four shims are two blocks x two prefixes over one core):
      S18 the forward step compares against the NEXT place's length ->  186..207 / 2000
      S19 the place wraps at the count, not past it                 ->   66.. 90 / 2000
@@ -16129,7 +16119,7 @@ void hook_step_dir_gen_cursor_b(void) { hook_step_dir_gen_cursor_at(MEM_gen_curs
    ⚠ D=0: $12F7's subtree carries none of the eight SED sites (docs/static-map.md §Decimal mode),
    so the add is binary and the fixture pins c.D = 0.
 
-   SABOTAGE (each must FAIL; counts measured on the two 2000-case fixtures, not predicted):
+   SABOTAGE (each must FAIL; counts over the two 2000-case fixtures):
      S26 the step is +2, not +3                                    -> 2000 / 2000
      S27 the gate reads bit 7 of cur_segment_flags                 ->  957..1008 / 2000
      S28 the gate's sense is inverted                              -> 1998 / 2000 (the two
@@ -16332,7 +16322,7 @@ void hook_gen_dir_vector_nurburg(void) { hook_gen_dir_vector_at(TRACK_GEN_ARGS(N
    this path.  The exit N/Z come from that restoring LDX — from X, not from the gradient $5472 left
    in A — and C/V are whatever $5472 exits with.
 
-   SABOTAGE (each must FAIL; counts measured on the five 1000-case fixtures, not predicted):
+   SABOTAGE (each must FAIL; counts over the five 1000-case fixtures):
      S40 the fold's skip test reads bit 6 of the place cursor          ->      250 / 1000
      S41 the turn's high and low table pages are swapped               -> 748..749 / 1000
      S42 track_direction does not sign the turn                        ->      250 / 1000
@@ -16396,7 +16386,7 @@ void hook_gen_step_nurburg(void) { hook_gen_step_at(TRACK_GEN_ARGS(NURBURG)); } 
    Nurburgring — and both are hook_gen_step, so in C the difference disappears into the block and
    multiplier the shim already carries.
 
-   SABOTAGE (each must FAIL; counts measured on the five 1000-case fixtures, not predicted):
+   SABOTAGE (each must FAIL; counts over the five 1000-case fixtures):
      S46 the boundary test reads bit 7 of cur_segment_flags            -> 482..519 / 1000
      S47 the gate's sense is inverted                                  ->     1000 / 1000
      S48 the direction index is stepped but no generator step runs     ->      500 / 1000
@@ -16454,7 +16444,7 @@ void hook_seg_advance_nurburg(void) { hook_seg_advance_at(TRACK_GEN_ARGS(NURBURG
    N/Z it sets.  On the reverse arm C = 0 (from the `ROR` of $0E) and V = bit 6 of track_direction
    (from the `BIT`), with X untouched; on the forward arm hook_gen_step owns C/V and restores X.
 
-   SABOTAGE (each must FAIL; counts measured on the five 1000-case fixtures, not predicted):
+   SABOTAGE (each must FAIL; counts over the five 1000-case fixtures):
      S51 the section is Y >> 2, not Y >> 3                          -> 979..987 / 1000
      S52 the seeded heading's low and high tables are swapped       -> 994..997 / 1000
      S53 the place cursor's bit 7 comes from the packed bit 1       ->      500 / 1000
@@ -16517,7 +16507,7 @@ void hook_gen_seed_nurburg(void) { hook_gen_seed_at(TRACK_GEN_ARGS(NURBURG)); }
    Exit ABI: entirely $5472's — A = the gradient, X = the second table byte, Y = the direction
    index, and C/V from the final negate.  The cursor step's own A/Y are dead, overwritten by it.
 
-   SABOTAGE (each must FAIL; counts measured on the five 1000-case fixtures, not predicted):
+   SABOTAGE (each must FAIL; counts over the five 1000-case fixtures):
      S58 the cursor step is skipped entirely                        ->     1000 / 1000
      S59 the vector is rebuilt before the cursor steps              ->     1000 / 1000
      S60 the cursor and the generator share one block               ->     1000 / 1000
@@ -16559,7 +16549,7 @@ void hook_advance_gen_place_nurburg(void) { hook_advance_gen_place_at(MEM_gen_st
    Exit ABI: mul8's — A = the product's high byte, math_lo its low, N/Z from math_lo, C = 0 and V
    the last shift-and-add's (untouched when the multiplier contributes no add).
 
-   SABOTAGE (each must FAIL; counts measured on the four circuits' 1000 cases, not predicted):
+   SABOTAGE (each must FAIL; counts over the four circuits' 1000 cases):
    S63 multiplier $CD -> $CC                                     3312
    S64 math_hi = A >> 1 (restore the LSR the patch NOPs out)     3312
    S65 mul8() instead of mul8_noinit() (A overwrites math_lo)    3684
@@ -16590,7 +16580,7 @@ void hook_horizon_half_width_scale(void)
    Exit: mul8's ABI on both arms, plus Y = k (the LDY is still live) and, on the doubling arm,
    the ASL/ROL's own C/N/Z.
 
-   SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
+   SABOTAGE (each must FAIL; counts over the fixture's 4000 cases):
    S127 the two arms are swapped                                  4000/4000
    S128 the Z arm squares as well (the other circuits' tail)      1988
    S129 segment $40's scale $CD -> $CE                            1013
@@ -16642,7 +16632,7 @@ void hook_steer_response_nurburg(void)
    through the multiply — the one circuit whose horizon cannot come out on the wrong side.
    ⚠ abs8 tests the CALLER'S N, not bit 7 of A: the flag $2542's SBC left standing.
 
-   SABOTAGE (each must FAIL; counts measured on the fixture's 1000 cases, not predicted):
+   SABOTAGE (each must FAIL; counts over the fixture's 1000 cases):
    S119 the abs8 is dropped (the other four circuits' body)       ->  326/1000
    S120 the magnitude is taken from bit 7 of A, not the N flag    ->  110/1000
    S121 the scale is applied before the magnitude                 ->  630/1000
@@ -16664,7 +16654,7 @@ void hook_horizon_half_width_abs_doning(void)
    Exit ABI: the CMP's flags stand at the return — build_section_ahead is native and touches no
    cpu field — so they are replayed here even though advance_player_section discards them.
 
-   SABOTAGE (each must FAIL; counts measured on the fixture's 4000 cases, not predicted):
+   SABOTAGE (each must FAIL; counts over the fixture's 4000 cases):
    S123 the second section is never built                         -> 2554/4000
    S124 the threshold is $0C, not $0B                             ->  790/4000
    S125 the second build happens on the OTHER side of the test    -> 4000/4000
@@ -16697,7 +16687,7 @@ void hook_section_ahead_doning(void)
    from the caller (neither the EOR nor a not-taken abs8 touches them).  Negative: A and all four
    flags from the negate.
 
-   SABOTAGE (each must FAIL; counts measured on the five circuits' 1000 cases, not predicted):
+   SABOTAGE (each must FAIL; counts over the five circuits' 1000 cases):
    S67 drop the EOR (abs8 on the raw difference)                 4965
    S68 A + track_direction instead of A ^ track_direction        3005
    S69 leave the entry N standing instead of the EOR's           2570
@@ -16725,7 +16715,7 @@ void hook_abs_by_track_direction(void)
    caller parked.  The flags are the entry flags when the sign is positive (PLP restores them and
    abs8 does not run) and the negate's when it is negative.
 
-   SABOTAGE (each must FAIL; counts measured on the five circuits' 1000 cases, not predicted):
+   SABOTAGE (each must FAIL; counts over the five circuits' 1000 cases):
    S71 drop the PHP entirely                                     5000
    S72 stack a cleared N (the product never re-signs)            2440
    S73 push AFTER the tail instead of before it                  5000
