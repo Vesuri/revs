@@ -33,19 +33,6 @@
 #include "../platform/revs_plot.h"    /* REVS_PLOT_*: the direct-to-bitplane run plotter */
 #include "../platform/track.h"        /* TRACK_GEN_ARGS(): the generator's two per-circuit constants */
 
-/* THE PER-CIRCUIT HOOK SEAMS.  Each is an address IN CODE that an expansion circuit's
-   ModifyGameCode rewrites (`make track-smc` / `make track-patch`).  A twin reaching one reads the
-   opcode byte and dispatches on it, operand at +1/+2 — so the seam gets ONE name and the operand
-   is an offset off it.  ⚠ Code addresses, not variables: the name says which seam, not what it
-   holds. */
-
-/* irq1v_band_schedule's four ULA palette tables are CONTIGUOUS ($3458/$3468 16 bytes each,
-   $3478/$347C four each = $3458-$347F), which is what fixes band ownership rather than a reading
-   of the dispatch.  Evidence in disasm/symbols.csv.
-
-   Screen POSITIONS carry mem.h names too (MEM_menu_row_attr, MEM_assist_lamp_*,
-   MEM_wheel_spin_run_*) — symbols.csv holds them as `data` rows, as it does $7000 column_buffer. */
-
 /* THE ENGINE'S THREE SCREEN WRITE POINTERS ($70/$71, $72/$73, $8E/$8F) live in native uint16_ts
    rather than mem[] byte lanes.  All three move together because the span rasteriser's
    SpanPlotter descriptors name their pointer slots and pick one at run time.
@@ -169,34 +156,23 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
 SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);
 static void build_road_sign_core(void);
 
-/* ===========================================================================
-   The flag-carrying primitives.  These exist so that no other line in this file
-   has to be written in 6502; see the header.
-
-   ⚠⚠ ALWAYS_INLINE IS LOAD-BEARING HERE, NOT A HINT.  Each of these is a few instructions
-   wrapping one cpu.h macro, and GCC leaves them OUT OF LINE at -O3 because they write the
-   global `cpu` and have many callers.  In a routine that is nearly all arithmetic that costs a
-   `jsr` plus a `movem.l d2-d7,-(sp)` pair PER SUBTRACT, and it is how twins #14/#15 first
-   measured 349 painted frames against a 383 control — a twin SLOWER than the transliteration
-   it replaced, because the transliteration expands the same macro inline at every site.
-   Inlining them recovered 349 -> 371 for those two twins and 383 -> 388 for the corpus that
-   was already here (docs/perf-method.md §twins #14/#15).
-   ⭐ So: read the objdump for `jsr <sub_from>` before believing any arithmetic twin is fast.
-   =========================================================================== */
+/* The flag-carrying primitives, so that no other line in this file has to be written in 6502.
+   ⚠⚠ ALWAYS_INLINE IS LOAD-BEARING, NOT A HINT.  Each wraps one cpu.h macro and writes the
+   global `cpu`, so GCC leaves them out of line at -O3 — costing a `jsr` plus `movem.l` PER
+   SUBTRACT and making an arithmetic twin SLOWER than the transliteration, which expands the
+   same macro inline.  Grep the objdump for `jsr <sub_from>` before believing one is fast.
+   (docs/perf-method.md §twins #14/#15) */
 
 
 /* ===========================================================================
    $4E5C  irq1v_band_schedule — THE RASTER-BAND PALETTE/MODE SCHEDULE
    ===========================================================================
 
-   WHAT IT COMPUTES.  Revs owns IRQ1V and drives its own display from a User VIA T1
-   timer.  One PAL field is FIVE interrupts; each one repaints the Video ULA for the
-   band that is about to be scanned out and reloads T1 with how long that band lasts.
-   irq_band_state says which band is next.  ⭐ THE HANDLER DRAWS NOTHING — that is what
-   its 2026-08-17 rename settled (docs/rename.md): the only game work in the whole cycle
-   is the `tick_wheel_spin` call in band 4, 4% of the field.  A BBC has to run a raster
-   split on the CPU for want of a copper; this port hands the same schedule to the copper
-   and reuses the record when nothing in it changed.
+   Revs owns IRQ1V and drives its display from a User VIA T1 timer.  One PAL field is FIVE
+   interrupts; each repaints the Video ULA for the band about to be scanned out and reloads T1
+   with that band's duration.  irq_band_state says which band is next.  ⭐ THE HANDLER DRAWS
+   NOTHING — the only game work in the cycle is band 4's `tick_wheel_spin`.  This port hands the
+   same schedule to the copper and reuses the record when nothing in it changed.
 
    THE BANDS, in the order the counter walks them:
 
@@ -214,29 +190,21 @@ static void build_road_sign_core(void);
      $FF             the arm is skipped; the counter just wraps to 0 and takes band 0's
                      latch.  Any OTHER negative counter does nothing at all.
 
-   WHAT IT LEAVES BEHIND.  In mem[]: the pushed X on the 6502 stack (and back) and
-   irq_band_state.  band2_duration is no longer in mem[] — it was relocated to a native
-   wide value (band2_duration_v, below) by the wide-value cleanup, mechanism (B).  Nothing
-   else in mem[].  In the hardware model: $FE6D (the
-   interrupt acknowledge), $FE20/$FE21 (the ULA), $FE66/$FE67 (the next band's duration —
-   the write to $FE66 is what closes a band record in bbc_hw.cpp) and $FE69 once per field.
+   LEAVES BEHIND, in mem[]: the pushed X and irq_band_state, nothing else (band2_duration is
+   relocated to the native band2_duration_v below).  In hardware: $FE6D (ack), $FE20/$FE21 (the
+   ULA), $FE66/$FE67 (the next duration — the $FE66 write closes a band record in bbc_hw.cpp)
+   and $FE69 once per field.
 
-   EXIT CONTRACT.  A, X and Y all come back as the interrupted code left them — measured
-   on a real BBC over 2858 engine-context interrupts (`make refloop --irq-abi`) and
-   asserted at the seam.  A arrives via mos_irq_a, which the MOS's own IRQ entry wrote;
-   the `PLA/TAX` restores X; Y is never touched.  Flags and S come from the RTI.
+   EXIT CONTRACT.  A, X and Y all come back as the interrupted code left them — measured on a
+   real BBC over 2858 engine-context interrupts (`make refloop --irq-abi`) and asserted at the
+   seam.  A arrives via mos_irq_a; `PLA/TAX` restores X; Y is never touched; flags and S from
+   the RTI.
 
-   ⭐ WHY THIS IS TWIN #1, AND WHERE THE TIME WAS.  ~80 6502 instructions, of which 48
-   are `STA $FE21` in the three palette loops.  The transliteration spent its time on
-   per-instruction N/Z bookkeeping against a struct in memory and on a C-bridge +
-   virtual-dispatch + switch per hardware byte; none of that is work the BBC did.  The
-   twin keeps every hardware write and drops the bookkeeping: the only registers that
-   survive the RTI are recomputed at the end, so the intermediate ones are dead.
    =========================================================================== */
 
-/* One palette table → the ULA, in the 6502's order (last entry first).  The order is
-   observable: entries share logical colours, so the LAST write to a given high nibble
-   wins.  $3468/$3458 are 16 entries, $3478/$347C are 4. */
+/* One palette table → the ULA, last entry first.  The order is observable: entries share
+   logical colours, so the last write to a high nibble wins.  $3468/$3458 are 16 entries,
+   $3478/$347C are 4. */
 static void ula_palette_table(unsigned table, int last)
 {
     int x;
@@ -264,15 +232,11 @@ static void irq1v_return(void)
     PLP();
 }
 
-/* ⭐ WIDE-VALUE CLEANUP, mechanism (B): band2_duration ($4F21/$4F22) relocated out of mem[]
-   into this native uint16_t.  It is genuine cross-interrupt state — band 1's arm computes it
-   (the horizon split remainder) and band 2's arm, a LATER T1 interrupt of the same field,
-   loads it — so a file-scope static that persists exactly as the two mem[] bytes did is the
-   faithful storage.  Grep confirms this function (and its __t6502 validation oracle, which
-   still uses mem[]) are the ONLY readers/writers, so no de-transliteration was needed.
-   ⚠ The oracle still writes mem[$4F21/$4F22]; the validate fixture set_ignore's those cells,
-   and det_compare.py skips them (they are no longer game state).  set_band2_duration_v below
-   lets the fixture seed the standalone band-2 arm to match the oracle's pinned input. */
+/* band2_duration ($4F21/$4F22) relocated out of mem[].  Genuine cross-interrupt state: band 1's
+   arm computes the horizon-split remainder and band 2's arm, a later T1 interrupt of the same
+   field, loads it.  This function and its oracle are the only readers/writers.
+   ⚠ The oracle still writes mem[$4F21/$4F22]; the fixture set_ignore's those cells and
+   det_compare.py skips them. */
 static uint16_t band2_duration_v;
 
 /* Native-only test hook: seed the relocated value so the validate fixture can drive the
@@ -443,14 +407,10 @@ void irq1v_band_schedule(void)
    about to read, and why every table read has to happen exactly where the 6502 did it —
    hoisting one out of the loop changes behaviour.
 
-   ⭐ SHAPE, MEASURED (docs/direct-bitplane-plan.md §7a): 2093 units run per sweep and
-   about 83 of them change a byte, i.e. 96% of the work is a dirty test that finds nothing.
-   That 96% is the GAME's algorithm and the twin keeps every bit of it — deleting the scan
-   is a representation change (a producer-maintained dirty mask, or sprites) and is tracked
-   separately.  What the twin drops is the interpreter: the unrolled chain became forty
-   copies of `LDY` + N/Z bookkeeping + a `switch` over a self-modified opcode byte + a
-   region-dispatch prologue, none of which the 6502 paid for.  Here it is one indexed loop
-   over a regular structure:
+   ⭐ SHAPE, MEASURED (docs/direct-bitplane-plan.md §7a): 2093 units per sweep, ~83 of which
+   change a byte — 96% of the work is a dirty test that finds nothing.  That 96% is the GAME's
+   algorithm and the twin keeps it; deleting the scan is a representation change tracked
+   separately.  The forty unrolled units are one indexed loop over a regular structure:
 
        unit i:  source block $3000 + $80*i,  screen offset 8*i,
                 base pointer plot_ptr for i < 32 and plot_ptr2 for i >= 32,
@@ -469,31 +429,30 @@ void irq1v_band_schedule(void)
    `AND`/`CPX` before the next branch — which is why the unit loop keeps no flags at all.
    =========================================================================== */
 
-/* ⭐⭐ The per-scan-line control tables, and what they MEAN (symbols.csv carries the same names
-   and the full derivation).  Addresses rather than mem.h aliases: they are indexed tables, so
-   the twin adds the line itself.
+/* The per-scan-line control tables (symbols.csv carries the derivation).  Addresses rather than
+   mem.h aliases because they are indexed tables.
 
-   Every line is painted as TWO RUNS of cells — the LEFT run in chain A's cells 0-15 and the
-   RIGHT run in chain B's cells 16-39 — and what splits them is the DASHBOARD, not the road.
-   That silhouette is fixed furniture, which is why every table here is static data in the
-   binary and nothing in the engine writes it.  At the bottom line (X=3) the left run is cells
-   5-6 and the right run cells 33-34: the two gaps between the tyres and the dash.
+   Every line is painted as TWO RUNS — the LEFT run in chain A's cells 0-15, the RIGHT in chain
+   B's 16-39 — split by the DASHBOARD, not the road.  That silhouette is fixed furniture, so
+   every table here is static data nothing in the engine writes.  At the bottom line (X=3) the
+   runs are cells 5-6 and 33-34: the gaps between the tyres and the dash.
 
-   ⭐ THE TWO RUNS ARE EXACT MIRRORS about cell 19.5, and the code lives off it: the left run's
-   start is not tabulated at all — it is $F1 - MEM_view_run_right_end (5+34 = 6+33 = 39) — and the four
-   mask/fill pairs come in the mirrored diagonal, left-START with right-END on the pixel-phase
-   tables and left-END with right-START on the per-line ones. */
+   ⭐ THE RUNS MIRROR about cell 19.5 and the code lives off it: the left run's start is not
+   tabulated, it is $F1 - MEM_view_run_right_end (5+34 = 6+33 = 39), and the four mask/fill pairs
+   come in the mirrored diagonal — left-START with right-END on the pixel-phase tables,
+   left-END with right-START on the per-line ones.
+   MEM_view_edge_phase ($3050) is the dash edge's sub-byte PIXEL PHASE, 0-6; one value serves
+   both runs because they mirror. */
 /* MEM_view_edge_phase ($3050): the dash edge's sub-byte PIXEL PHASE, 0-6; one value
    serves both runs because they mirror. */
 
-/* ⚠ THE ROUTINE'S OWN SELF-MODIFIED CODE, by mem.h name (symbols.csv `code` rows).  Every
-   MEM_view_*_site is an instruction inside the $7B00 overlay that the routine WRITES and then
-   EXECUTES; the two-byte absolute-address operand it pokes is that name PLUS ONE, which is why
-   the operand halves have no rows of their own.
-   ⭐ The three records below are exactly those operand pairs read back: a restore instruction's
-   operand IS the memo of where the driver last planted its RTS, and it outlives the call.
-   ⚠⚠ Self-modifying by construction, so no static image shows any live value — the whole page
-   is assembled at run time by copy_dash_data (docs/static-map.md §Open item 10). */
+/* THE ROUTINE'S OWN SELF-MODIFIED CODE (symbols.csv `code` rows).  Each MEM_view_*_site is an
+   instruction in the $7B00 overlay that the routine writes and then executes; the two-byte
+   operand it pokes is that name PLUS ONE.  The three records below are those operand pairs read
+   back — a restore instruction's operand IS the memo of where the driver last planted its RTS,
+   and it outlives the call.
+   ⚠⚠ No static image shows a live value: the page is assembled at run time by copy_dash_data
+   (docs/static-map.md §Open item 10). */
 #define VIEW_REC_A2   (MEM_view_p2_restore_a_site + 1u)   /* phase 2, chain A */
 #define VIEW_REC_A3   (MEM_view_p3_restore_a_site + 1u)   /* phase 3, chain A */
 #define VIEW_REC_B3   (MEM_view_p3_restore_b_site + 1u)   /* phase 3, chain B */
@@ -502,9 +461,8 @@ void irq1v_band_schedule(void)
 #define OP_RTS              0x60u
 #define OP_CPX_IMM          0xE0u
 
-/* The two unrolled cell chains (disasm/symbols.csv: view_cell_chain_a / _b / _b_mid) and the
-   shape of one unit: 17 bytes, with the store's opcode fifteen in.  `func` rows get no mem.h
-   name, so the names live here and the evidence lives in the csv. */
+/* The two unrolled cell chains (symbols.csv: view_cell_chain_a / _b / _b_mid); one unit is
+   17 bytes with the store's opcode fifteen in.  `func` rows get no mem.h name. */
 #define VIEW_CELL_CHAIN_A      0x7C00u
 #define VIEW_CELL_CHAIN_B      0x7D56u
 #define VIEW_CELL_CHAIN_B_MID  0x7E00u   /* = VIEW_CELL_CHAIN_B + 10 units; a JSR target */
@@ -525,17 +483,12 @@ void irq1v_band_schedule(void)
 #define SLOT_A(n)  VIEW_UNIT_SLOT(VIEW_CELL_CHAIN_A, n)      /* cells 0-15  */
 #define SLOT_B(n)  VIEW_UNIT_SLOT(VIEW_CELL_CHAIN_B_MID, n)  /* cells 26-39 */
 
-/* The opcode slot of each unit, as a POINTER INTO mem[], or NULL for the eleven no writer
-   can reach (page $7D).
-   ⚠ A TABLE, not `VIEW_UNIT_ADDR(i) + $0F` recomputed: the oracle's slot address is a
-   compile-time constant in every one of its forty copies, so a twin that derives it per
-   unit hands back the arithmetic it saved.  Measured — the first version of this twin
-   computed it and came out SLOWER than the transliteration (docs/perf-method.md).
-   ⭐ And a POINTER rather than the address: `mem[]` is a fixed global, so `&mem[$7C0F]` is a
-   link-time constant, and the unit loop's opcode fetch becomes `move.l (a3)+,a0 / move.b
-   (a0),d0` instead of a 32-bit `lea mem` plus a long-indexed load — per unit, 2093 times a
-   frame.  The address form is recovered where it is wanted (once per plant) by subtracting
-   `mem`, which costs nothing outside the loop. */
+/* Each unit's opcode slot as a POINTER INTO mem[], or NULL for the eleven no writer can reach.
+   ⚠ A TABLE, not `VIEW_UNIT_ADDR(i) + $0F` recomputed — the oracle's slot address is a
+   compile-time constant in all forty copies, so deriving it per unit hands back the arithmetic
+   the twin saved.  ⭐ A pointer rather than an address: `&mem[$7C0F]` is a link-time constant,
+   so the fetch is `move.l (a3)+,a0 / move.b (a0),d0` instead of a `lea mem` plus long-indexed
+   load, 2093 times a frame.  The address is recovered once per plant by subtracting `mem`. */
 static MEM_QUAL unsigned char* const g_viewSlotP[40] = {
     SLOT_A(0), SLOT_A(1), SLOT_A(2), SLOT_A(3),
     SLOT_A(4), SLOT_A(5), SLOT_A(6), SLOT_A(7),

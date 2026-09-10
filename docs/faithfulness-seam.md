@@ -340,6 +340,15 @@ Two rules fall out:
   arms it deliberately, which is the whole point of arming it. An arm that "cannot happen" is
   still a byte-exactness obligation, and a vacuity guard on it is what turns it into one.
 
+### ⭐ NAMING AN SMC SEAM: one name for the seam, the operand as an offset off it
+
+A per-circuit hook seam is an address IN CODE that an expansion circuit's `ModifyGameCode`
+rewrites (`make track-smc` / `make track-patch`).  A twin that reaches one reads the opcode byte
+and dispatches on it, with the operand at +1/+2.  So the seam gets **one** `symbols.csv` row and
+the twin writes the operand as an offset off that name (`MEM_smc_object_coord_mask + 1u`) — the
+operand halves get no rows of their own.  ⚠ These are code addresses, not variables: the name
+says *which seam*, not what it holds.
+
 ### ⭐ A patched SMC BRANCH OFFSET is a narrower obligation than it looks
 
 `$231A`'s offset can in principle name ~200 addresses inside `road_edge_start`, and the
