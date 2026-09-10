@@ -1,8 +1,14 @@
 ## The SOURCE OF TRUTH for names.  tools/transpile.py reads this; never hand-rename in
 ## generated files.  Grows over time — append as understanding arrives.
 ##
-## type:  func | var | table | smc  (smc = a per-circuit patched instruction; see the section at
-##        the end of this file)
+## type:  func | var | table | smc | code
+##        smc  = a per-circuit patched instruction the expansion tracks' ModifyGameCode rewrites
+##               at LOAD time (see the section near the end of this file)
+##        code = a code byte THE ENGINE ITSELF self-modifies at run time -- an opcode slot it
+##               plants and un-plants, or an absolute-address operand it pokes.  Same as `smc`
+##               in that the static byte is not the live one, but nothing per-circuit about it,
+##               so `make track-smc` / `make track-patch` do NOT cover it (last section of this
+##               file).  Gets a MEM_ offset in mem.h and no bare alias, like `table`.
 ## is_hw: 1 for a BBC I/O address ($FC00-$FEFF) or an OS vector cell ($0200-$0235), else 0
 ##
 ## ⚠⚠ ALL ADDRESSES ARE IN THE RUNTIME IMAGE (disasm/revs_runtime.bin, `make runtime`).
@@ -935,3 +941,60 @@ addr,name,type,is_hw,note
 0x298D,smc_object_coord_mask,smc,0,"[MEASURED 2026-09-08] place_car_world_coords' AND on coordinate 1's origin high byte. ⚠ A CONSTANT, listed here to record that: unpatched AND zp ($29 $8B), and NO circuit writes $298D or $298E — not at load time (absent from make track-patch's 62-address surface) and not at runtime (bbc_refloop_race --watch=298d and --watch=298e, frames 40-100, all four expansion circuits: NONE, with a control on $000A reporting 116 writes). place_car_world_coords_core still dispatches on the opcode, as a trap on a shape it cannot execute rather than a per-circuit expectation. The revs_native.c comment claiming 'per-circuit' was an untagged inference and is corrected."
 0x000C,car_section_dir_index,var,0,"[DERIVED] the DIRECTION INDEX of the section a queued car is in, parked by place_car_world_coords ($293A, `LDA section_dir_index,Y / STA $0C`) so its two tails can reload it as Y: $299B reads track_dir_3/track_dir_4 with it and $2A0F passes it to $1442. Its only other writer is reset_driving_variables ($1809, zero). ⚠ [MEASURED 2026-09-08] just TWO writes over frames 40-100 of a real-BBC race (bbc_refloop_race --watch=000c, both $FE) — it is per-queued-car, not per-frame, which is why it never showed up in a frame-boundary dump."
 0x0085,shared_temp_85,var,0,"⚠ SHARED SCRATCH zero page, fact-shaped name like shared_temp_84 one cell below, and its three tenants are [MEASURED 2026-09-08] (bbc_refloop_race --watch=0085, frames 40-100 of a real-BBC race): (a) project_geometry's edge tail DECs it at $1D7A (174 writes, values $17-$22) as the RUN LENGTH to draw, clamped to $28 = the viewport's 40 columns; (b) the four span arms $2E5C/$2E90/$2ED5/$2F09 INC/DEC it as a column cursor (14-18 writes each, $0B-$22); (c) place_car_world_coords loads car_section_across[slot] into it at $2947 (2 writes, $50), where $84/$85 are the car's two state bytes rather than one window. No window overlaps another."
+
+0x23B3,smc_stale_horizon_cap,smc,0,"[DERIVED] road_edge_start's stale-horizon clamp operand -- reads as `LDA #$07` in the Silverstone image. ⚠⚠ PATCHED AT RUN TIME, not at load time: every expansion circuit's $5672 hook (hook_gen_seed_at) writes $07 or $87 here per seeded section (`LDA #$0E / ROR`), and $87 -- the clamp effectively OFF -- is the common case on all five. Because it is not a ModifyGameCode write, `make track-patch` and `make track-smc` (both LOAD-time surfaces) never see it, which is why the twin passed a hard 7 to road_edge_start_core for as long as it existed. Read at $24F6, written at $5698."
+
+## ---- frame-buffer and MODE 7 screen CELLS a twin addresses by name ---------------------------
+## ⚠ These are POSITIONS in a screen page, not variables — but a twin that pokes one still needs
+## a name for it (CLAUDE.md §Working conventions: an unnamed hex address in a twin is a rename
+## that was skipped).  Precedent: $7000 column_buffer, the frame buffer's own base.
+0x6FC0,wheel_spin_run_a,data,0,"[DERIVED] tick_wheel_spin's first XOR run: 5 dashboard frame-buffer cells, each EORed with the matching byte of wheel_spin_xor_tbl_a. Runs once per PAL field on the spin accumulator's carry, and only while wheel_spin_rate is non-zero."
+0x70F8,wheel_spin_run_b,data,0,"[DERIVED] tick_wheel_spin's second XOR run, 5 cells, masks from wheel_spin_xor_tbl_b."
+0x6E85,wheel_spin_run_c,data,0,"[DERIVED] tick_wheel_spin's upper-pair run, cells 0..2 only (`CPX #3; BCS` skips it above that), EOR #$F0 — the top half of the wheel graphic."
+0x6FBD,wheel_spin_run_d,data,0,"[DERIVED] tick_wheel_spin's upper-pair partner, cells 0..2, EOR #$F0. Its RESULT is a predicate: a non-zero byte back skips the lower pair for that column."
+0x6E8A,wheel_spin_run_e,data,0,"[DERIVED] tick_wheel_spin's lower-pair run, EOR #$C0."
+0x6FB2,wheel_spin_run_f,data,0,"[DERIVED] tick_wheel_spin's lower-pair partner, EOR #$30."
+0x77DB,assist_lamp_0,data,0,"[DERIVED] the first of four dashboard frame-buffer bytes poll_steering_assist lights to show Computer Assisted Steering is engaged. $77DB/$77DC are one pair, $77E3/$77E4 the other."
+0x77DC,assist_lamp_1,data,0,"[DERIVED] see assist_lamp_0."
+0x77E3,assist_lamp_2,data,0,"[DERIVED] see assist_lamp_0."
+0x77E4,assist_lamp_3,data,0,"[DERIVED] see assist_lamp_0."
+0x7E85,menu_row_attr,data,0,"[DERIVED] MODE 7 page: the front end's menu rows' attribute cell, +$50 per row (the teletext page is 40 bytes wide, so a row step is $28; this table walks every OTHER row). ⚠ The same 1 KB is the dash-code overlay at race time (docs/static-map.md §Open item 10)."
+0x7FC5,menu_cursor_cell,data,0,"[DERIVED] MODE 7 page: the front end's ""nothing chosen yet"" marker cell."
+
+## ---- named TABLE bases found only in a twin ---------------------------------------------------
+0x00FA,section_midpoint_triple,table,0,"[DERIVED] the three-byte zero-page slot road_edge_walk interpolates section MIDPOINTS into (passed to road_edge_walk_core as its scratch base). ⚠ DUAL-USE: byte 2 is $00FC, which is also mos_irq_a — the MOS's IRQ entry writes that cell, so an interrupt taken inside the walk corrupts the midpoint's third byte on a real BBC too. Harmless in practice: the walk reads it back before the next OS call."
+0x00FD,section_near_point,table,0,"[DERIVED] the three-byte zero-page slot road_edge_start stages the NEAR point in (its scratch base argument)."
+0x2000,mirror_shudder_mask_tbl,table,0,"[DERIVED] the wing mirrors' vibration AND-mask table, indexed by a byte of the User VIA's free-running T2 counter ($7FD7/$7FDA in mirror_draw_car). Between the car block's top and bottom bounds the reflection's $F0 pixel pattern is ANDed with the entry, so the reflection shudders — gated on engine_running, so it is still with the engine off."
+0x5800,track_normal_y,table,0,"[DERIVED 2026-09-08, measured] the ACROSS-TRACK NORMAL's Y component, indexed by direction index. ⚠⚠ SECOND TENANT: these bytes are ModifyGameCode's own code at LOAD time ($5700, which keeps the func row and so has no mem.h name — the X component is referenced as its address). Measured off a real BBC (Silverstone mid-race, frame 153): ($5700,Y, $5800,Y) = 0.725 * (-track_dir_2, +track_dir_0), a 90-degree rotation of the forward vector in the ground plane. Read by the other-car projector ($299D, $2937) and at $1391; written by the per-circuit gradient hook ($54CE)."
+
+## ---- code bytes THE ENGINE self-modifies (type `code`) ---------------------------------------
+## ⚠ Not per-circuit — nothing in `make track-patch`'s surface — so the sibling checks that cover
+## a `smc` row do NOT cover these.  What gates them is the twin's own differential plus
+## `make determinism` / `-drive`, because the live byte is planted and read within one frame.
+## ⚠⚠ Every $7Bxx-$7Fxx row below lives in the page copy_dash_data assembles at RUN time, so no
+## static image shows any of these bytes at all (docs/static-map.md §Open item 10).
+## An `_operand` row names the LOW byte of an absolute address the engine pokes; the high byte is
+## that address plus one and gets no row of its own.
+0x1970,line_attr_store_operand,code,0,"[DERIVED] the patched low byte of road_edge_walk's `STA line_attr,Y` — which line_attr entry the edge walk stores through."
+0x1DDC,gap_colour_fallback_operand,code,0,"[DERIVED] fill_column_gaps' substituted colour: the immediate operand used when surface_colour_at reads back zero."
+0x1DDE,gap_ptr_operand,code,0,"[DERIVED] fill_column_gaps' store: the zero-page POINTER NUMBER the `STA (zp),Y` goes through, poked per column."
+0x2F18,span_step_cap_slot,code,0,"[DERIVED] road_span_plot's Y-step slot on the capped arm. One of five slots holding INY ($C8), DEY ($88) or NOP ($EA); any other byte is a byte the model cannot execute and the twin traps there exactly where the transliteration does."
+0x2F47,span_step_p1_in_slot,code,0,"[DERIVED] road_span_plot plotter 1's inbound Y-step slot (INY/DEY/NOP; see span_step_cap_slot)."
+0x2F4F,span_dest_p1_operand,code,0,"[DERIVED] plotter 1's patched destination address — the low byte of the absolute address the span stores through; the high byte is the next cell."
+0x2F60,span_step_p1_out_slot,code,0,"[DERIVED] plotter 1's outbound Y-step slot."
+0x2F89,span_step_p2_in_slot,code,0,"[DERIVED] road_span_plot_2's inbound Y-step slot."
+0x2F91,span_dest_p2_operand,code,0,"[DERIVED] plotter 2's patched destination address, low byte."
+0x2FA2,span_step_p2_out_slot,code,0,"[DERIVED] plotter 2's outbound Y-step slot."
+0x7BD3,view_restore_a2_site,code,0,"[DERIVED] view_paint_restore puts `STA (zp),Y` ($91) back over the cell-chain slot view_paint_lines had overwritten with an RTS — this one is chain A's PHASE 2 stop. The operand pair at +1/+2 is also the RECORD of where that RTS was last planted, and it outlives the call."
+0x7BD6,view_restore_a3_site,code,0,"[DERIVED] the same restore for chain A's PHASE 3 stop slot."
+0x7BD9,view_restore_b3_site,code,0,"[DERIVED] the same restore for chain B's phase 3 stop slot."
+0x7D23,view_p2_restore_a_site,code,0,"[DERIVED] view_paint_lines_clipped (phase 2): un-plant the PREVIOUS scan line's chain-A stop. Its operand pair at +1/+2 is the record of that plant."
+0x7D2E,view_p2_stop_a_site,code,0,"[DERIVED] phase 2: plant THIS line's chain-A stop — an RTS ($60) over the unrolled cell's store, which is how a line's left run is cut short at the dashboard silhouette."
+0x7D4C,view_p2_enter_b_site,code,0,"[DERIVED] phase 2: the computed JSR into chain B, whose operand selects which cell the right run starts at."
+0x7EEE,view_chain_end_slot,code,0,"[DERIVED] the cell sweep's TERMINATOR, itself an opcode slot: `CPX #imm` ($E0) or an RTS depending on how the sweep must end."
+0x7F23,view_p3_restore_a_site,code,0,"[DERIVED] view_paint_lines_short (phase 3): un-plant the previous line's chain-A stop."
+0x7F2E,view_p3_stop_a_site,code,0,"[DERIVED] phase 3: plant this line's chain-A stop."
+0x7F67,view_p3_enter_a_site,code,0,"[DERIVED] phase 3: the computed JSR into chain A."
+0x7F7C,view_p3_restore_b_site,code,0,"[DERIVED] phase 3 also stops chain B: un-plant the previous line's chain-B stop."
+0x7F87,view_p3_stop_b_site,code,0,"[DERIVED] phase 3: plant this line's chain-B stop."
+0x7F9A,view_p3_enter_b_site,code,0,"[DERIVED] phase 3: the computed JSR into chain B."

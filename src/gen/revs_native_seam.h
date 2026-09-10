@@ -18,11 +18,11 @@
 #include "../platform/shape.h"
 #include "../platform/revs_plot.h"
 
-/* ---- address constants the shims use (copied from revs_native.c; identical) ---- */
+/* ---- address constants the shims use.  Anything symbols.csv names comes in as a MEM_ name
+ *      from mem.h and is NOT redefined here; what is left is a stride, a count, or an alias
+ *      that says which TENANT of a shared cell is meant. ---- */
 #define EDGE_HALF        40u       /* ⚠ a STRIDE, not an address: the two road sides' point
                                     * halves are 40 apart in every edge_* table */
-#define SECTION_MID      0x00FAu   /*   ...the triple road_edge_walk interpolates midpoints into */
-#define SECTION_NEAR     0x00FDu   /*   ...and the one road_edge_start stages the near point in */
 /* MEM_view_left_start_src — per scan line: the LEFT run's first source byte */
 /* MEM_view_right_start_src — ...and the RIGHT run's */
 /* MEM_dash_block_starts — per block: the offset its live data begins at (< $4F) */

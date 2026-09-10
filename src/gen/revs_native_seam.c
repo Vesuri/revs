@@ -131,7 +131,7 @@ void road_edge_start(void)
     car_heading_marshal_in();             /* every bearing it emits is measured against it */
     hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     /* the stale-horizon cap is $23B3's SMC operand — see the twin */
-    road_edge_start_core(0x06, (uint8_t)EDGE_HALF, (uint8_t)SECTION_NEAR, 0x3C,
+    road_edge_start_core(0x06, (uint8_t)EDGE_HALF, (uint8_t)MEM_section_near_point, 0x3C,
                          mem[0x23B3u]);
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
 }
@@ -142,7 +142,7 @@ void road_edge_walk(void)
     car_heading_marshal_in();             /* every bearing it emits is measured against it */
     hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     edge_nearest_marshal_in();            /* the running minimum it keeps beating down */
-    cpu.X = road_edge_walk_core(cpu.A, cpu.X, (uint8_t)SECTION_MID, 0x12, 0x14);
+    cpu.X = road_edge_walk_core(cpu.A, cpu.X, (uint8_t)MEM_section_midpoint_triple, 0x12, 0x14);
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
     edge_nearest_marshal_out();
 }
@@ -155,7 +155,7 @@ void road_edge_walk_resume(void)
     car_heading_marshal_in();
     hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     edge_nearest_marshal_in();
-    cpu.X = road_edge_walk_resume_core(cpu.X, (uint8_t)SECTION_MID, 0x12, 0x14);
+    cpu.X = road_edge_walk_resume_core(cpu.X, (uint8_t)MEM_section_midpoint_triple, 0x12, 0x14);
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
     edge_nearest_marshal_out();
 }

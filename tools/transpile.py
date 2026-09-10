@@ -1886,10 +1886,11 @@ def load_symbols(path):
         # an array is not an lvalue, and a twin addresses it as mem[MEM_<name> + index].
         # Without these every hand-written twin invents its own #define for an address
         # symbols.csv already names — 160 of them did, several under a DIFFERENT name.
-        # `smc` and `data` rows join them: an SMC patch site is a memory location a twin
+        # `smc`, `data` and `code` rows join them: a patch site is a memory location a twin
         # POKES (mem[MEM_smc_x + 1] = operand), so it needs a name for exactly the same
-        # reason a table base does.
-        if len(parts) >= 4 and parts[2].strip() in ('table', 'data', 'smc') and parts[3].strip() == '0':
+        # reason a table base does.  `code` is the engine's OWN self-modified bytes, as
+        # opposed to `smc`'s per-circuit ones (see symbols.csv's header).
+        if len(parts) >= 4 and parts[2].strip() in ('table', 'data', 'smc', 'code') and parts[3].strip() == '0':
             TBL_NAMES[addr_i] = name
     return sym
 
@@ -1960,7 +1961,7 @@ def write_mem_header(path):
     tables = sorted(TBL_NAMES.items())
     if tables:
         twidth = max(len(n) for n in TBL_NAMES.values())
-        lines += ['', '// ---- named TABLE bases and SMC patch sites (symbols.csv `table`/`data`/`smc` rows) ----', '']
+        lines += ['', '// ---- named TABLE bases and PATCH SITES (symbols.csv `table`/`data`/`smc`/`code` rows) ----', '']
         for addr, name in tables:
             emit(addr, name, twidth)
     lines += [

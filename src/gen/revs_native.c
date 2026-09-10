@@ -64,7 +64,6 @@
 /* MEM_smc_controls_hook — read_driving_controls: a hook JSR */
 /* MEM_smc_fill_attr_hook — fill_line_attr: a hook JSR */
 /* MEM_smc_gap_walk_branch — column_gap_walk: the source-byte branch (BEQ $1DC5) */
-#define SMC_STALE_HORIZON_CAP  0x23B3u  /* road_edge_start's `LDA #$07` — per-circuit, at RUN time */
 /* MEM_smc_object_ceiling — plot_object: the object-count ceiling (LDX #imm) */
 /* MEM_smc_rebase_branch — the rebase pair's BEQ — taken or not, per circuit */
 /* MEM_smc_section_ahead_hook — advance_player_section: step-forward hook JSR */
@@ -85,21 +84,15 @@
 /* The four ULA palette tables irq1v_band_schedule writes, one per raster band.  They are
    CONTIGUOUS — $3458 and $3468 are 16 bytes each, $3478 and $347C four each, together
    $3458-$347F — and that is what fixes which band owns which, rather than a plausible reading
-   of the dispatch.  Rows in disasm/symbols.csv; a `table` row is not exposed in mem.h, so the
-   name lives here and the evidence lives there. */
+   of the dispatch.  Rows and the evidence in disasm/symbols.csv, which is where their mem.h
+   names come from. */
 
-/* ⭐ MODE 7 SCREEN POSITIONS, named here for the tenant that writes them.  These are positions
-   in the teletext page, not variables, so they get no symbols.csv row — there is no precedent
-   for naming a screen cell and it would be noise. */
-#define MENU_ROW_ATTR          0x7E85u  /* MODE 7 page: the menu rows' attribute cell, +$50/row */
-#define MENU_CURSOR_CELL       0x7FC5u  /* MODE 7 page: the "nothing chosen yet" marker cell */
-/* tick_wheel_spin XORs five runs of frame-buffer cells to animate the wheels. */
-#define WHEEL_SPIN_CELL_A      0x6FC0u
-#define WHEEL_SPIN_CELL_B      0x70F8u
-#define WHEEL_SPIN_CELL_C      0x6E85u
-#define WHEEL_SPIN_CELL_D      0x6FBDu
-#define WHEEL_SPIN_CELL_E      0x6E8Au
-#define WHEEL_SPIN_CELL_F      0x6FB2u
+/* ⭐ SCREEN POSITIONS, addressed by the mem.h name of the cell the tenant writes: the MODE 7
+   front end's MEM_menu_row_attr / MEM_menu_cursor_cell, poll_steering_assist's four
+   MEM_assist_lamp_* dashboard bytes, and the six MEM_wheel_spin_run_* runs tick_wheel_spin
+   XORs to animate the wheels.  A position in a screen page is not a variable, but a twin that
+   pokes one still needs a name for it, so symbols.csv carries them as `data` rows — the
+   precedent is $7000 column_buffer, the frame buffer's own base. */
 
 /* ⭐⭐ WIDE-VALUE CLEANUP, mechanism (B): THE ENGINE'S THREE SCREEN WRITE POINTERS
    ($70/$71, $72/$73, $8E/$8F) relocated out of mem[] into native uint16_ts.
@@ -637,39 +630,17 @@ void irq1v_band_schedule(void)
    fill_dash_edge_columns */
 /* MEM_view_right_start_src — ...and the RIGHT run's first cell's */
 
-/* The SMC records: where each driver last planted its RTS.  They outlive the call. */
-#define VIEW_REC_A2         0x7D24u   /* phase 2, chain A */
-#define VIEW_REC_A3         0x7F24u   /* phase 3, chain A */
-#define VIEW_REC_B3         0x7F7Du   /* phase 3, chain B */
-#define VIEW_CHAIN_END      0x7EEEu   /* the sweep's terminator, itself an opcode slot */
-
-/* ⚠ THE ROUTINE'S OWN SMC OPERAND CELLS.  Every one of these is a two-byte absolute-address
-   operand inside the $7B00 overlay that the routine WRITES and then EXECUTES: `_SITE` is the
-   instruction (only a trap report ever needs it), `_ADDR` the operand pair.  They were bare
-   hex in the twin; the names come from what the instruction does, per phase and chain.
-   ⚠⚠ These are self-modifying by construction, so no static image shows the live value —
-   the whole page is assembled at run time by copy_dash_data (docs/static-map.md §Open item 10). */
-#define VIEW_RESTORE_A2_SITE   0x7BD3u  /* view_paint_restore: put `STA` back over chain A's... */
-#define VIEW_RESTORE_A2_ADDR   0x7BD4u  /* ...phase-2 stop slot */
-#define VIEW_RESTORE_A3_SITE   0x7BD6u  /* ...chain A's phase-3 stop slot */
-#define VIEW_RESTORE_A3_ADDR   0x7BD7u
-#define VIEW_RESTORE_B3_SITE   0x7BD9u  /* ...and chain B's */
-#define VIEW_RESTORE_B3_ADDR   0x7BDAu
-#define VIEW_P2_RESTORE_A_SITE 0x7D23u  /* phase 2: un-plant last line's chain-A stop */
-#define VIEW_P2_STOP_A_SITE    0x7D2Eu  /* ...and plant this line's */
-#define VIEW_P2_STOP_A_ADDR    0x7D2Fu
-#define VIEW_P2_ENTER_B_SITE   0x7D4Cu  /* phase 2: the computed JSR into chain B */
-#define VIEW_P2_ENTER_B_ADDR   0x7D4Du
-#define VIEW_P3_RESTORE_A_SITE 0x7F23u  /* phase 3: the same four for chain A... */
-#define VIEW_P3_STOP_A_SITE    0x7F2Eu
-#define VIEW_P3_STOP_A_ADDR    0x7F2Fu
-#define VIEW_P3_ENTER_A_SITE   0x7F67u
-#define VIEW_P3_ENTER_A_ADDR   0x7F68u
-#define VIEW_P3_RESTORE_B_SITE 0x7F7Cu  /* ...and for chain B, which phase 3 also stops */
-#define VIEW_P3_STOP_B_SITE    0x7F87u
-#define VIEW_P3_STOP_B_ADDR    0x7F88u
-#define VIEW_P3_ENTER_B_SITE   0x7F9Au
-#define VIEW_P3_ENTER_B_ADDR   0x7F9Bu
+/* ⚠ THE ROUTINE'S OWN SELF-MODIFIED CODE, by mem.h name (symbols.csv `code` rows).  Every
+   MEM_view_*_site is an instruction inside the $7B00 overlay that the routine WRITES and then
+   EXECUTES; the two-byte absolute-address operand it pokes is that name PLUS ONE, which is why
+   the operand halves have no rows of their own.
+   ⭐ The three records below are exactly those operand pairs read back: a restore instruction's
+   operand IS the memo of where the driver last planted its RTS, and it outlives the call.
+   ⚠⚠ Self-modifying by construction, so no static image shows any live value — the whole page
+   is assembled at run time by copy_dash_data (docs/static-map.md §Open item 10). */
+#define VIEW_REC_A2   (MEM_view_p2_restore_a_site + 1u)   /* phase 2, chain A */
+#define VIEW_REC_A3   (MEM_view_p3_restore_a_site + 1u)   /* phase 3, chain A */
+#define VIEW_REC_B3   (MEM_view_p3_restore_b_site + 1u)   /* phase 3, chain B */
 
 #define OP_STA_IND_Y        0x91u
 #define OP_RTS              0x60u
@@ -1281,9 +1252,9 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
 
         /* $7EEE — the sweep's own terminator, itself an opcode slot. */
         {
-            unsigned op = mem[VIEW_CHAIN_END];
+            unsigned op = mem[MEM_view_chain_end_slot];
             if (op == OP_RTS) break;
-            if (op != OP_CPX_IMM) { platform_smc_unhandled(VIEW_CHAIN_END, op); break; }
+            if (op != OP_CPX_IMM) { platform_smc_unhandled(MEM_view_chain_end_slot, op); break; }
         }
         /* The last full-width line.  Its C is live. */
         if (line_is_last(line, 0x2C)) break;
@@ -1301,14 +1272,14 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
    into the restoring stores' own operands first; that is why the records survive the call. */
 static void unplant_stops(ViewState* v)
 {
-    mem[VIEW_RESTORE_A2_ADDR] = mem[VIEW_REC_A2];
-    mem[VIEW_RESTORE_A3_ADDR] = mem[VIEW_REC_A3];
-    mem[VIEW_RESTORE_B3_ADDR] = mem[VIEW_REC_B3];
-    if (!view_plant(v, VIEW_RESTORE_A2_SITE, VIEW_RESTORE_A2_ADDR, 0x7C, OP_STA_IND_Y)) return;
-    if (!view_plant(v, VIEW_RESTORE_A3_SITE, VIEW_RESTORE_A3_ADDR, 0x7C, OP_STA_IND_Y)) return;
-    if (!view_plant(v, VIEW_RESTORE_B3_SITE, VIEW_RESTORE_B3_ADDR, 0x7E, OP_STA_IND_Y)) return;
+    mem[(MEM_view_restore_a2_site + 1u)] = mem[VIEW_REC_A2];
+    mem[(MEM_view_restore_a3_site + 1u)] = mem[VIEW_REC_A3];
+    mem[(MEM_view_restore_b3_site + 1u)] = mem[VIEW_REC_B3];
+    if (!view_plant(v, MEM_view_restore_a2_site, (MEM_view_restore_a2_site + 1u), 0x7C, OP_STA_IND_Y)) return;
+    if (!view_plant(v, MEM_view_restore_a3_site, (MEM_view_restore_a3_site + 1u), 0x7C, OP_STA_IND_Y)) return;
+    if (!view_plant(v, MEM_view_restore_b3_site, (MEM_view_restore_b3_site + 1u), 0x7E, OP_STA_IND_Y)) return;
     v->byte = load_a(OP_CPX_IMM);
-    mem[VIEW_CHAIN_END] = (unsigned char)v->byte;
+    mem[MEM_view_chain_end_slot] = (unsigned char)v->byte;
 }
 
 /* $7F18 — phase 3.  Both chains stop early and both start late, and the scan-line step is
@@ -1340,8 +1311,8 @@ static void paint_lines_short(ViewState* v)
         /* chain A's stop */
         VIEWP3_PHASE(PROBE_PHASE_P3_STOPA);
         v->cell = mem[MEM_view_run_left_end + v->line];
-        if (!view_move_stop(v, v->cell, VIEW_REC_A3, VIEW_P3_RESTORE_A_SITE,
-                            VIEW_P3_STOP_A_SITE, VIEW_P3_STOP_A_ADDR, 0x7C)) {
+        if (!view_move_stop(v, v->cell, VIEW_REC_A3, MEM_view_p3_restore_a_site,
+                            MEM_view_p3_stop_a_site, (MEM_view_p3_stop_a_site + 1u), 0x7C)) {
             view_commit(v);
             return;
         }
@@ -1371,13 +1342,13 @@ static void paint_lines_short(ViewState* v)
            nothing below rewrites it — replay just that flag (cpu otherwise untouched). */
         v->byte = (uint8_t)(0xF1 - mem[MEM_view_run_right_end + v->line]);
         cpu.V = sbc_overflow(0xF1, mem[MEM_view_run_right_end + v->line], 1);
-        mem[VIEW_P3_ENTER_A_ADDR] = (unsigned char)v->byte;
+        mem[(MEM_view_p3_enter_a_site + 1u)] = (unsigned char)v->byte;
         edge    = mem[MEM_view_edge_phase + v->line];
         v->byte = view_compose(mem[MEM_view_left_start_src + v->line],
                                mem[MEM_view_left_start_mask + edge],
                                mem[MEM_view_left_start_fill + edge]);
         v->cell = v->byte;                          /* TAY: N/Z already match */
-        if (!view_enter_chain(v, VIEW_P3_ENTER_A_SITE, VIEW_P3_ENTER_A_ADDR, 0x7C)) { view_commit(v); return; }
+        if (!view_enter_chain(v, MEM_view_p3_enter_a_site, (MEM_view_p3_enter_a_site + 1u), 0x7C)) { view_commit(v); return; }
         v->byte = view_compose(v->byte, mem[MEM_view_left_end_mask + v->line],
                                         mem[MEM_view_left_end_fill + v->line]);
         REVS_PLOT_CELL(view_screen_addr(plot_ptr_v, v->cell), (uint8_t)v->byte);
@@ -1387,20 +1358,20 @@ static void paint_lines_short(ViewState* v)
            re-read here — the chain may have zeroed it (see the header). */
         VIEWP3_PHASE(PROBE_PHASE_P3_STOPB);
         v->cell = mem[MEM_view_run_right_end + v->line];
-        if (!view_move_stop(v, v->cell, VIEW_REC_B3, VIEW_P3_RESTORE_B_SITE,
-                            VIEW_P3_STOP_B_SITE, VIEW_P3_STOP_B_ADDR, 0x7E)) {
+        if (!view_move_stop(v, v->cell, VIEW_REC_B3, MEM_view_p3_restore_b_site,
+                            MEM_view_p3_stop_b_site, (MEM_view_p3_stop_b_site + 1u), 0x7E)) {
             view_commit(v);
             return;
         }
         VIEWP3_PHASE(PROBE_PHASE_P3_CHAINB);
         entry   = mem[MEM_view_run_right_start + v->line];
         v->cell = entry;
-        mem[VIEW_P3_ENTER_B_ADDR] = (unsigned char)entry;
+        mem[(MEM_view_p3_enter_b_site + 1u)] = (unsigned char)entry;
         v->byte = view_compose(mem[MEM_view_right_start_src + v->line],
                                mem[MEM_view_right_start_mask + v->line],
                                mem[MEM_view_right_start_fill + v->line]);
         v->cell = v->byte;                          /* TAY */
-        if (!view_enter_chain(v, VIEW_P3_ENTER_B_SITE, VIEW_P3_ENTER_B_ADDR, 0x7E)) { view_commit(v); return; }
+        if (!view_enter_chain(v, MEM_view_p3_enter_b_site, (MEM_view_p3_enter_b_site + 1u), 0x7E)) { view_commit(v); return; }
         math_hi = (unsigned char)v->cell;           /* the chain's cell, parked in scratch */
         edge    = mem[MEM_view_edge_phase + v->line];
         v->byte = view_compose(v->byte, mem[MEM_view_right_end_mask + edge],
@@ -1434,26 +1405,26 @@ static void paint_lines_clipped(ViewState* v)
     PROBE_VIEW_PHASE(1);                    /* its lines are counted in paint_cells, which it enters
                                                through view_next_scanline once per line */
     v->byte = load_a(OP_RTS);
-    mem[VIEW_CHAIN_END] = (unsigned char)v->byte;
+    mem[MEM_view_chain_end_slot] = (unsigned char)v->byte;
 
     for (;;) {
         v->line = (v->line - 1) & 0xFF;
 
         v->cell = mem[MEM_view_run_left_end + v->line];
         if (!stop_unchanged(v->cell, mem[VIEW_REC_A2])) {
-            if (!view_plant(v, VIEW_P2_RESTORE_A_SITE, VIEW_REC_A2, 0x7C, OP_STA_IND_Y)) {
+            if (!view_plant(v, MEM_view_p2_restore_a_site, VIEW_REC_A2, 0x7C, OP_STA_IND_Y)) {
                 view_commit(v);
                 return;
             }
-            mem[VIEW_P2_STOP_A_ADDR] = (unsigned char)v->cell;
+            mem[(MEM_view_p2_stop_a_site + 1u)] = (unsigned char)v->cell;
             mem[VIEW_REC_A2] = (unsigned char)v->cell;
-            if (!view_plant(v, VIEW_P2_STOP_A_SITE, VIEW_P2_STOP_A_ADDR, 0x7C, OP_RTS)) {
+            if (!view_plant(v, MEM_view_p2_stop_a_site, (MEM_view_p2_stop_a_site + 1u), 0x7C, OP_RTS)) {
                 view_commit(v);
                 return;
             }
             v->cell     = mem[MEM_view_run_right_start + v->line];   /* chain B's entry, for the store */
             UPD_NZ(v->cell);                             /* its `LDY` outlives the chain */
-            mem[VIEW_P2_ENTER_B_ADDR] = (unsigned char)v->cell;
+            mem[(MEM_view_p2_enter_b_site + 1u)] = (unsigned char)v->cell;
         }
 
         paint_cells(v, 0, 0, 1);                /* the JSR through view_next_scanline */
@@ -1467,7 +1438,7 @@ static void paint_lines_clipped(ViewState* v)
                                mem[MEM_view_right_start_mask + v->line],
                                mem[MEM_view_right_start_fill + v->line]);
         v->cell = v->byte;                          /* TAY */
-        if (!view_enter_chain(v, VIEW_P2_ENTER_B_SITE, VIEW_P2_ENTER_B_ADDR, 0x7E)) { view_commit(v); return; }
+        if (!view_enter_chain(v, MEM_view_p2_enter_b_site, (MEM_view_p2_enter_b_site + 1u), 0x7E)) { view_commit(v); return; }
 
         if (line_is_last(v->line, 0x1C)) break;
     }
@@ -3776,7 +3747,7 @@ static uint8_t road_side_walk(uint8_t sideSelect, uint8_t firstPoint)
 {
     GEO_SIDE_SET(sideSelect ? 1 : 0);
     RoadSide side = road_edge_side_apply(sideSelect);
-    return road_edge_walk_core(firstPoint, side.sectionIndex, (uint8_t)SECTION_MID, 0x12, 0x14);
+    return road_edge_walk_core(firstPoint, side.sectionIndex, (uint8_t)MEM_section_midpoint_triple, 0x12, 0x14);
 }
 
 /* $253B-$2549 — HOW WIDE IS THE ROAD AT THE HORIZON?  The two sides' x at the horizon point,
@@ -3845,8 +3816,8 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
        ROR`), and $87 is the common case on all five — so the clamp is effectively OFF there.  It
        is not a ModifyGameCode patch, so `make track-smc` never saw it and this call site passed a
        hard 7 for as long as the twin has existed. */
-    road_edge_start_core(0x06, (uint8_t)EDGE_HALF, (uint8_t)SECTION_NEAR, 0x3C,
-                         mem[SMC_STALE_HORIZON_CAP]);
+    road_edge_start_core(0x06, (uint8_t)EDGE_HALF, (uint8_t)MEM_section_near_point, 0x3C,
+                         mem[MEM_smc_stale_horizon_cap]);
 
     /* $24F9: only the HIGH lane is armed — the low one keeps last frame's value (see above). */
     edge_nearest_v = (uint16_t)((edge_nearest_v & 0x00FFu) | 0xFF00u);
@@ -4739,7 +4710,9 @@ void div16by8(void)
    means relaxing them in the same commit.
    =========================================================================== */
 
-#define RECIP_TABLE_BIAS  0x6180u  /* reciprocal_table reached biased: entry i = $8000/(i+$80) */
+/* reciprocal_table indexed by a MANTISSA: project_point normalises the distance until bit 7 is
+   set, so the entry it wants is $80 below the table's base ($6200) — entry i = $8000/(i+$80). */
+#define RECIP_TABLE_BIAS  (MEM_reciprocal_table - 0x80u)
 
 
 /* One component of the camera-relative delta: the section coordinate minus the view origin,
@@ -5030,20 +5003,12 @@ ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
 /* MEM_colour_pattern_or_tbl — colour_pattern_or_tbl  — ...masked to this column */
 /* MEM_span_pair_offset_tbl — span_pair_offset_tbl — by pass, the paired-index gap */
 
-/* The five Y-step slots and the two end-marker opcode slots, by address. */
-#define SLOT_STEP_P1_IN    0x2F47u
-#define SLOT_STEP_P1_OUT   0x2F60u
-#define SLOT_STEP_P2_IN    0x2F89u
-#define SLOT_STEP_P2_OUT   0x2FA2u
-#define SLOT_STEP_CAP      0x2F18u
+/* The two end-marker opcode slots, by address; the five Y-step slots and the two patched
+   destination operands are symbols.csv `code` rows (MEM_span_step_*_slot, MEM_span_dest_p*_operand
+   — the operand's high byte is the named low byte plus one). */
 #define SLOT_MARKER_P1     0x2FC0u
 #define SLOT_MARKER_P2     0x2FD7u
 
-/* The patched destination operands: the low/high byte pair each plotter stores through. */
-#define OPERAND_DEST_P1_LO 0x2F4Fu
-#define OPERAND_DEST_P1_HI 0x2F50u
-#define OPERAND_DEST_P2_LO 0x2F91u
-#define OPERAND_DEST_P2_HI 0x2F92u
 
 #define OP_INY 0xC8u
 #define OP_DEY 0x88u
@@ -5225,11 +5190,11 @@ static void span_abandon_chain(uint8_t y)
    --------------------------------------------------------------------------- */
 
 const SpanPlotter SPAN_PLOT_1 = {
-    SLOT_STEP_P1_IN, SLOT_STEP_P1_OUT, OPERAND_DEST_P1_LO, OPERAND_DEST_P1_HI,
+    MEM_span_step_p1_in_slot, MEM_span_step_p1_out_slot, MEM_span_dest_p1_operand, (MEM_span_dest_p1_operand + 1u),
     &plot_ptr2_v, &plot_ptr_v
 };
 const SpanPlotter SPAN_PLOT_2 = {
-    SLOT_STEP_P2_IN, SLOT_STEP_P2_OUT, OPERAND_DEST_P2_LO, OPERAND_DEST_P2_HI,
+    MEM_span_step_p2_in_slot, MEM_span_step_p2_out_slot, MEM_span_dest_p2_operand, (MEM_span_dest_p2_operand + 1u),
     &plot_ptr_v, &plot_ptr3_v
 };
 
@@ -5434,8 +5399,8 @@ static int span_entry_decode(const SpanArm* arm, uint8_t offset,
    (the opcode is copied out of road_span_plot's own entry slot) and cap the run's last line. */
 static void span_walk_cap(uint8_t y)
 {
-    mem[SLOT_STEP_CAP] = mem[SLOT_STEP_P1_IN];   /* copy the plotter's own Y-step opcode */
-    if (!span_step_y(SLOT_STEP_CAP, &y)) return;
+    mem[MEM_span_step_cap_slot] = mem[MEM_span_step_p1_in_slot];   /* copy the plotter's own Y-step opcode */
+    if (!span_step_y(MEM_span_step_cap_slot, &y)) return;
     span_cap_line(y);
 }
 
@@ -5779,10 +5744,10 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
 
     /* 5a — the Y step the plotters take on the way OUT; the entry slots stay NOP for now. */
     { uint8_t step = (ystep & 0x80u) ? OP_DEY : OP_INY;
-      mem[SLOT_STEP_P1_OUT] = step;
-      mem[SLOT_STEP_P2_OUT] = step;
-      mem[SLOT_STEP_P1_IN]  = OP_NOP;
-      mem[SLOT_STEP_P2_IN]  = OP_NOP; }
+      mem[MEM_span_step_p1_out_slot] = step;
+      mem[MEM_span_step_p2_out_slot] = step;
+      mem[MEM_span_step_p1_in_slot]  = OP_NOP;
+      mem[MEM_span_step_p2_in_slot]  = OP_NOP; }
 
     /* 4 — the style record becomes this span's four column patterns. */
     for (i = 0; i < 4; i++) {
@@ -5852,11 +5817,11 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
             uint8_t cin = (pv >= 0x02u) ? 1u : 0u;                  /* CMP #2 carry */
             uint8_t sel = (uint8_t)(((cin << 7) | (pv >> 1)) ^ mem[SPAN_ARM]);
             if (sel & 0x80u) {
-                uint8_t step = mem[SLOT_STEP_P1_OUT];
-                mem[SLOT_STEP_P1_IN]  = step;
-                mem[SLOT_STEP_P2_IN]  = step;
-                mem[SLOT_STEP_P1_OUT] = OP_NOP;
-                mem[SLOT_STEP_P2_OUT] = OP_NOP;
+                uint8_t step = mem[MEM_span_step_p1_out_slot];
+                mem[MEM_span_step_p1_in_slot]  = step;
+                mem[MEM_span_step_p2_in_slot]  = step;
+                mem[MEM_span_step_p1_out_slot] = OP_NOP;
+                mem[MEM_span_step_p2_out_slot] = OP_NOP;
                 if (mem[SPAN_YSTEP] & 0x80u) startLine++; else startLine--;
             }
         }
@@ -5940,7 +5905,6 @@ EdgeOffFlags edge_x_offscreen_core(uint8_t pointX)
 
 /* The 6502-ABI shim: the edge point index arrives in X (unchanged to exit). */
 
-#define LINE_ATTR_OPERAND 0x1970u   /* the patched low byte of `STA line_attr,Y` */
 
 /* Idiomatic C: the walk runs on local variables and plain math.  The routine's flags DO leave
    it (the differential checks A/X/Y and every flag), but they are all recovered at the end from
@@ -5959,7 +5923,7 @@ EdgeOffFlags edge_x_offscreen_core(uint8_t pointX)
 SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t firstPoint,
                                     int entryC, int entryV)
 {
-    mem[LINE_ATTR_OPERAND] = bufferLow;      /* $0400 or $0450 — the store's own operand */
+    mem[MEM_line_attr_store_operand] = bufferLow;      /* $0400 or $0450 — the store's own operand */
     span_end_index = endCursor;
 
     uint8_t onePastLast = (uint8_t)(endCursor - 1);   /* $1943 DEY — one past this half's last point */
@@ -6054,8 +6018,8 @@ SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t first
         {
             /* The store operand cannot move under us: line_attr is $04xx and the operand $1970,
                so compute the base once. */
-            uint16_t base = (uint16_t)(mem[LINE_ATTR_OPERAND]
-                                       | (mem[LINE_ATTR_OPERAND + 1] << 8));
+            uint16_t base = (uint16_t)(mem[MEM_line_attr_store_operand]
+                                       | (mem[MEM_line_attr_store_operand + 1] << 8));
             /* ⭐ One hardware-window test per FILL, not per scan line: `y` only ever indexes
                $00..$FF off `base`, so proving the whole span is RAM once hoists the range
                check out of the loop.  The else arm stays for the SMC case where the operand
@@ -6149,9 +6113,9 @@ void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint)
     span_index_far  = (uint8_t)(firstPoint + offset);
 
     /* $19BD..$19CE — patch both span plotters' store operands with this pass's edge buffer. */
-    mem[OPERAND_DEST_P1_HI] = mem[OPERAND_DEST_P2_HI] = mem[MEM_row_base_hi + pass];
+    mem[(MEM_span_dest_p1_operand + 1u)] = mem[(MEM_span_dest_p2_operand + 1u)] = mem[MEM_row_base_hi + pass];
     uint8_t styleLo = mem[MEM_row_base_lo + pass];
-    mem[OPERAND_DEST_P1_LO] = mem[OPERAND_DEST_P2_LO] = styleLo;
+    mem[MEM_span_dest_p1_operand] = mem[MEM_span_dest_p2_operand] = styleLo;
 
     /* x/y are the 6502's X/Y across the walk: the far and near endpoint indices interp_edge
        takes as arguments. */
@@ -6393,9 +6357,7 @@ SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int e
 #define EDGE_BLOCK_START   (MEM_point_delta_lo + 2u)   /* point_delta_lo[2] — dash_block_starts[column] */
 #define EDGE_STYLE_PREV    (MEM_edge_style - 1u)   /* a line_attr entry is an index PLUS ONE */
 
-#define GAP_PTR_OPERAND    0x1DDEu   /* the store's zero-page pointer number */
 #define GAP_BRANCH_OPERAND (MEM_smc_gap_walk_branch + 1)   /* the non-zero-source arm's branch offset */
-#define GAP_FALLBACK       0x1DDCu   /* the colour substituted for a zero surface_colour_at */
 
 /* ⭐ ONE range test per column instead of one per cell (CLAUDE.md §bus_read/bus_write).  The
    walk touches at most $80 bytes above a pointer it reads once, so the hardware window can be
@@ -6578,8 +6540,8 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
         uint8_t  src;
 
         offset   = mem[GAP_BRANCH_OPERAND];
-        fallback = mem[GAP_FALLBACK];
-        storePtr = mem[GAP_PTR_OPERAND];
+        fallback = mem[MEM_gap_colour_fallback_operand];
+        storePtr = mem[MEM_gap_ptr_operand];
 
         src = seam_read((srcBase + line) & 0xFFFFu, pointer_is_ram(srcBase));
         a   = src;                                    /* LDA (plot_ptr),Y */
@@ -6639,9 +6601,9 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
 SlotExit fill_column_gaps_core(uint8_t pointer, uint8_t branchOffset,
                                       uint8_t fallback, uint8_t entryV)
 {
-    mem[GAP_PTR_OPERAND]    = pointer;        /* $1DA6 — STA (zp),Y's own zero-page number */
+    mem[MEM_gap_ptr_operand]    = pointer;        /* $1DA6 — STA (zp),Y's own zero-page number */
     mem[GAP_BRANCH_OPERAND] = branchOffset;   /* $1DA9 — which arm a non-zero byte takes */
-    mem[GAP_FALLBACK]       = fallback;       /* $1DAC — the colour a zero surface becomes */
+    mem[MEM_gap_colour_fallback_operand]       = fallback;       /* $1DAC — the colour a zero surface becomes */
     /* $1DAF — falls straight through into the walk, and the fall-through leaves the registers
        exactly as they entered: X = pointer, Y = branchOffset, V unchanged.  So the walk's own
        three inputs are those, spelled here as values rather than read back from cpu. */
@@ -10529,10 +10491,6 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
 #define STEER_SIGN     MEM_math_lo   /* math_lo        — the demand's sign byte; bit 0 = negative */
 #define STEER_DEMAND   MEM_math_hi   /* math_hi        — ...and its magnitude */
 #define STEER_KEYS     MEM_shared_temp_76   /* shared_temp_76 — 0 none, 1 or 2 one way, 3 both keys down */
-#define ASSIST_LAMP_0  0x77DBu   /* the four dashboard screen bytes poll_steering_assist lights */
-#define ASSIST_LAMP_1  0x77DCu
-#define ASSIST_LAMP_2  0x77E3u
-#define ASSIST_LAMP_3  0x77E4u
 #define OPTION_FLAGS   (MEM_state_flags + 1u)   /* bit 7 selects the JOYSTICK input path */
 /* MEM_gear_char_tbl — gear_char_tbl — 'R' 'N' '1'..'5' 'P' */
 /* MEM_char_row_addr_lo — char_row_addr_lo — ⚠ entries 8..15 are pixel_keep_others_tbl */
@@ -10869,7 +10827,7 @@ uint8_t menu_wait_key_core(uint8_t count)
         uint8_t sel = shared_temp_76;              /* $658d LDY shared_temp_76 (Z if 0) */
         if (sel == 0u) {                           /* $658f BNE */
             if (shared_temp_77 == 0u) continue;    /* $6591-$6593 — nothing shown yet, redraw */
-            mem[MENU_CURSOR_CELL] = 0x98u;                    /* $6595-$6597 */
+            mem[MEM_menu_cursor_cell] = 0x98u;                    /* $6595-$6597 */
             return (uint8_t)(hypot_min_lo - 1u);   /* $659a LDX hypot_min_lo / $659c DEX / RTS */
         }
 
@@ -10883,7 +10841,7 @@ uint8_t menu_wait_key_core(uint8_t count)
         uint8_t hx = 0x00u;                        /* $65ab LDX #0 — screen offset */
         uint8_t hy = 0x01u;                        /* $65ad LDY #1 — row index */
         for (;;) {
-            mem[MENU_ROW_ATTR + hx] = (hy == hypot_min_lo) ? 0x81u : 0x84u;  /* $65af-$65b7 */
+            mem[MEM_menu_row_attr + hx] = (hy == hypot_min_lo) ? 0x81u : 0x84u;  /* $65af-$65b7 */
             hx = (uint8_t)(hx + 0x50u);            /* $65ba TXA/ADC #$50/TAX — next row */
             hy++;                                  /* $65bf INY */
             if (hy > mem[MEM_math_hi]) break;      /* $65c0 CPY math_hi — loop while hy<=count */
@@ -11107,10 +11065,10 @@ void poll_steering_assist_core(void)
        it round this with PHA/PLA); the exit ABI (A preserved, X = flag with its N/Z, C = bit 7 of
        track_direction) is a leaf output the callers read directly, so the shim reconstructs it. */
     uint8_t flag = steering_assist_flag;
-    mem[ASSIST_LAMP_2] = flag;                         /* $77E3 */
-    mem[ASSIST_LAMP_3] = (uint8_t)(flag >> 1);         /* $77E4 */
-    mem[ASSIST_LAMP_1] = (uint8_t)(flag >> 2);         /* $77DC */
-    mem[ASSIST_LAMP_0] = (uint8_t)(flag >> 3);         /* $77DB */
+    mem[MEM_assist_lamp_2] = flag;                         /* $77E3 */
+    mem[MEM_assist_lamp_3] = (uint8_t)(flag >> 1);         /* $77E4 */
+    mem[MEM_assist_lamp_1] = (uint8_t)(flag >> 2);         /* $77DC */
+    mem[MEM_assist_lamp_0] = (uint8_t)(flag >> 3);         /* $77DB */
 }
 
 /* ---------------------------------------------------------------------------
@@ -11880,15 +11838,15 @@ void tick_wheel_spin(void)
     if (wheel_spin_rate == 0) return;        /* spin disabled */
 
     for (int x = 4; x >= 0; x--) {
-        mem[WHEEL_SPIN_CELL_A + x] ^= mem[MEM_wheel_spin_xor_tbl_a + x];
-        mem[WHEEL_SPIN_CELL_B + x] ^= mem[MEM_wheel_spin_xor_tbl_b + x];
+        mem[MEM_wheel_spin_run_a + x] ^= mem[MEM_wheel_spin_xor_tbl_a + x];
+        mem[MEM_wheel_spin_run_b + x] ^= mem[MEM_wheel_spin_xor_tbl_b + x];
         if (x < 3) {                                     /* CPX #3; BCS skips this pair */
-            mem[WHEEL_SPIN_CELL_C + x] ^= 0xF0;
-            uint8_t r = (uint8_t)(mem[WHEEL_SPIN_CELL_D + x] ^= 0xF0);
+            mem[MEM_wheel_spin_run_c + x] ^= 0xF0;
+            uint8_t r = (uint8_t)(mem[MEM_wheel_spin_run_d + x] ^= 0xF0);
             if (r != 0) continue;                        /* BNE: skip the lower pair */
         }
-        mem[WHEEL_SPIN_CELL_E + x] ^= 0xC0;
-        mem[WHEEL_SPIN_CELL_F + x] ^= 0x30;
+        mem[MEM_wheel_spin_run_e + x] ^= 0xC0;
+        mem[MEM_wheel_spin_run_f + x] ^= 0x30;
     }
 }
 
@@ -12301,7 +12259,6 @@ uint8_t derive_car_section_cursor_core(uint8_t cursor)
    across-track normal pair (docs/rename.md); referenced here by that race-time meaning.
    No flags/registers escape (LIVE_NONE).  The oracle's PHP/PLP byte at $01FF is ignored. */
 #define TRACK_NORMAL_X  0x5700u   /* $5700,dir — across-track normal, X component (race-time tenant) */
-#define TRACK_NORMAL_Y  0x5800u   /* $5800,dir — across-track normal, Y component (race-time tenant) */
 
 void build_road_section(void)
 {
@@ -12389,7 +12346,7 @@ void build_road_section(void)
         section_word_set(SECTION_SIDE1 + x, (uint16_t)(section_word(x) + nx));
 
         /* side-1 comp 2 = side-0 comp 2 + across-track normal Y, scaled x4 */
-        uint16_t ny = (uint16_t)((int16_t)(int8_t)mem[TRACK_NORMAL_Y + dir] << 2);
+        uint16_t ny = (uint16_t)((int16_t)(int8_t)mem[MEM_track_normal_y + dir] << 2);
         mem[MEM_point_delta_hi + 2] = (uint8_t)(ny >> 8);       /* faithful scratch residue */
         section_word_set(SECTION_SIDE1 + 2 + x, (uint16_t)(section_word(2 + x) + ny));
 
@@ -12657,7 +12614,6 @@ static inline void object_coord_word_set(unsigned axis, uint16_t value)
     mem[MEM_object_coord_hi + axis] = (uint8_t)(value >> 8);
 }
 #define TRACK_DIR_3       0x5700u   /* ⚠ shares ModifyGameCode's address; read as DATA here */
-#define TRACK_DIR_4       0x5800u
 /* ⭐ $298D is NOT per-circuit — MEASURED 2026-09-08, and the old comment here said it was.
    No circuit writes either byte at LOAD time (it is absent from the 62-address surface
    `make track-patch` reads out of every ModifyGameCode) and none writes it at RUNTIME
@@ -12752,7 +12708,7 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
     /* Second loop: fold the "across" offset in at 4x, axes 0 and 2 only. */
     uint8_t dir2[3];
     dir2[0] = mem[TRACK_DIR_3 + soi];                 /* dir[0] reloaded */
-    dir2[2] = mem[TRACK_DIR_4 + soi];                 /* dir[2] reloaded */
+    dir2[2] = mem[MEM_track_normal_y + soi];                 /* dir[2] reloaded */
     mem[PLACE_CAR_DIR + 0] = dir2[0];
     mem[PLACE_CAR_DIR + 2] = dir2[2];
     for (int axis = 0; axis < 4; axis += 2) {
@@ -14728,7 +14684,6 @@ void project_object_slot_core(uint8_t coordIndex, uint8_t shape)
 #define MIRROR_LOWER_BOUND    (MEM_point_delta_lo + 2u)  /* the car block's BOTTOM line — a THIRD tenant of
                                           point_delta_lo+2, after the camera delta and the
                                           span rasteriser's end line (see symbols.csv $0080) */
-#define MIRROR_SHUDDER_TBL    0x2000u  /* indexed by it: the vibration's AND mask */
 
 /* ⭐ TWIN #165c — mirror_draw_car ($7FB6).  Paints ONE wing-mirror segment: walk its run of scan
    lines from MEM_mirror_seg_start_row down to MEM_mirror_seg_end_row, writing $F0 — the car reflection's
@@ -14765,7 +14720,7 @@ void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
     do {
         uint8_t pattern = 0xF0u;                                 /* $7FCD */
         if (row < mem[MIRROR_LOWER_BOUND] && row >= span_line_cursor) {
-            pattern &= mem[MIRROR_SHUDDER_TBL + bus_read(USRVIA_T2CL)];   /* $7FD7/$7FDA */
+            pattern &= mem[MEM_mirror_shudder_mask_tbl + bus_read(USRVIA_T2CL)];   /* $7FD7/$7FDA */
             pattern &= engine_running;                           /* $7FDD — still only with the engine on */
         }
         if (dstIsRam) mem[(uint16_t)(dst + row)] = pattern;      /* $7FDF */
@@ -17365,7 +17320,7 @@ static void hook_gen_dir_vector_at(uint16_t block, uint8_t scale)
 
     mem[MEM_track_dir_0 + dir] = d.compA;                      /* $54C9-$54CB */
     cpu.C = d.c; cpu.V = d.v;                              /* what the octant chain left standing */
-    mem[TRACK_NORMAL_Y + dir] = hook_scale_by_gradient(d.compA);   /* $54CE-$54D1 */
+    mem[MEM_track_normal_y + dir] = hook_scale_by_gradient(d.compA);   /* $54CE-$54D1 */
 
     mem[MEM_track_dir_2 + dir] = d.compB;                      /* $54D4-$54D6 */
     AddFlags neg = negate8(hook_scale_by_gradient(d.compB));       /* $54D9-$54E0 */
@@ -17571,7 +17526,7 @@ static void hook_gen_seed_at(uint16_t block, uint8_t scale)
 
     uint8_t packed = mem[MEM_gen_seed_place + section];              /* $5690 */
     mem[block - 2u] = (uint8_t)((packed >> 2) | ((packed & 1u) << 7));   /* $5693 LSR / ROR */
-    mem[SMC_STALE_HORIZON_CAP] = (uint8_t)(0x07u | ((packed & 2u) << 6));/* $5698 — the SMC */
+    mem[MEM_smc_stale_horizon_cap] = (uint8_t)(0x07u | ((packed & 2u) << 6));/* $5698 — the SMC */
 
     mem[block + 3u] = 0u;                                        /* $569E — restart the place */
 
