@@ -2299,3 +2299,60 @@ The eleven real sites, 15 reads removed, all on paths that matter (the span setu
 ~10 600 bus calls a frame); it is recorded because the CLASS is now swept and should not be
 re-swept, and because the scan shapes above are reusable on any future twin.
 
+
+## ⭐⭐ IS THE MARSHALLING ORACLE-ONLY?  MEASURED, AND THE ANSWER IS NO (2026-09-10)
+
+The question put to the campaign was: *if every routine is properly native, the `mem[]` byte lanes
+should be needed by nothing in production, so the `*_marshal_in`/`_out` traffic must be there only
+to keep the validation oracles comparable — delete it.*  `make transtrap` had already closed the
+other half (**0 transliterated bodies entered in any of the nine scenarios**, so nothing still
+transpiled is holding the lanes).  This settles the first half, and it settles it against the
+hypothesis.
+
+**The instrument.**  A temporary `MARSHAL_AUDIT=1` build (uncommitted) made every `*_marshal_in`
+compare the value it reconstructs from `mem[]` against the live native value before assigning it,
+counting the calls and the ones that actually CHANGED something.  A lane whose changed-count is 0
+everywhere is a closed loop: written only by its own `_out`, read only by its own `_in`.
+⚠ Each lane's FIRST call is counted separately — it compares an uninitialised array against real
+`mem[]` and changes by construction.
+Sabotage-verified before its output was believed: publishing a wrong `car_heading` high byte moved
+that lane 0 → 297, and skipping element 5 of `model_state_marshal_out` moved that lane 0 → 10, each
+in its own lane and with different counts (so no stale object).
+
+**The numbers** (`changed` / `calls`, clean build per scenario):
+
+| lane | parked 300 | driving 300 | crash 1500 | 6 circuits, 60 | race proper 13000 |
+|---|---|---|---|---|---|
+| `hypot_max`    | 35/73 | 227/592 | 1207/2997 | ~54/111 each | 15146/38472 |
+| `view_origin`  | 0/110 | 6/888   | 36/4493   | 0/167        | 6/142258 |
+| `car_angle`    | 0/73  | 2/590   | 12/2985   | 0/111        | 2/25947 |
+| `edge_nearest` | 0/109 | 1/886   | 6/4486    | 0/166        | 1/38921 |
+| `model_state`  | 0/145 | 0/1180  | 0/5975    | 0/221        | **1**/51896 |
+| `car_heading`  | 0/181 | 0/1476  | 0/7476    | 0/276        | 0/77840 |
+
+**What holds the marshalling in place — two causes, neither an oracle.**
+
+1. ⭐ **Genuine multi-tenancy of the 6502 zero page, between NATIVE routines.**  `hypot_max`
+   ($7A/$7B) changes on 38% of its round trips because the pair is shared scratch and its other
+   tenants are twins that use the cells as cells.  Same class as the `bearing` $8A/$8B block's list
+   of tenancies.  Nothing about that traffic is validation plumbing.
+2. ⭐⭐ **NATIVE BULK WIPES THAT ADDRESS MEMORY AS MEMORY.**  The one `model_state` divergence in
+   51896 race round trips is `elem=2 live=FFFF mem=0000`, and its writer is
+   `reset_driving_variables` (twin #176), whose part 1 zeroes **zero page $00-$68 and
+   $6280-$62FF** — which spans `model_state`'s $62D0-$62EE, `view_origin`'s $6280 page,
+   `car_angle`'s $62A0-$62A5 and `edge_nearest`'s $10/$11.  That is why every small count above is
+   small and why the ones that need a session boundary only appear in the 13000-frame race: a
+   session reset legitimately changes the lanes behind the arrays' back, and the next `_in` is what
+   picks it up.  Faithful behaviour the port must keep.
+
+**And `car_heading`'s clean 0/77840 is NOT a licence to delete it.**  $0A/$0B lies inside the same
+$00-$68 wipe, so it is load-bearing by exactly the argument above; what the zeroes measure is that
+the heading already reads 0 at every reset the port can currently drive.  Same shape as the
+`edge_nearest` low-lane result recorded earlier in this doc (2872 compares, `distHi==$FF` zero
+times) — keep it as faithfulness, and do not read the zero as a gap worth engineering around.
+
+**So there is nothing to delete here, and the remaining option is a representation change, not a
+cleanup.**  The `_out` publishes are the `mem[]` mirror that `make determinism` byte-compares over
+all 64 KB; removing them means moving whole producer/consumer chains core-to-core and re-recording
+every determinism baseline, which trades away the port's own whole-corpus gate over those cells.
+That is the call already written at the `bearing` block and it is a user decision, not a refactor.
