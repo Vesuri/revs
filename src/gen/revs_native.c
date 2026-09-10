@@ -1614,7 +1614,7 @@ static LoopVerdict race_session_end(RestartDepth* depth)
     }
 
     print_message_pair_core(0x30);   /* the "please wait" message on both status rows */
-    finish_race();                   /* race the remaining drivers to the finish */
+    finish_race_core();              /* race the remaining drivers to the finish */
 
     if (!(load_a(state_flags) & 0x80)) {
         arg_a(0x20);
@@ -1784,7 +1784,7 @@ void race_main_loop_core(RestartDepth depth)
             s_crashBodyStartVbi = g_vbiCount;    /* fields from here to the hold = the body cost */
 #endif
 
-            PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers();
+            PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers_core();
             PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  draw_starting_lights();
             /* ⭐⭐ PHASES 3 AND 4 ARE ONE CONVERSATION, AND IT NO LONGER GOES THROUGH mem[].
                Both passes are native and they are adjacent, so the steering angle phase 3
