@@ -7498,11 +7498,9 @@ void update_slip_sound(void)
 
 /* TWINS #79-#86 — THE EIGHT SUB-MODELS, and with them the whole of
    apply_driving_model's tree
-   The four groups before this one were the tree's PLUMBING — the multiply, the 16-bit
-   arithmetic, the rotations and integrations, the slip/sound cluster.  These eight are the
-   parts that talk to the rest of the engine, which is why they came last and why the naming
-   pass mattered most here: three of the eight had no name, and nine of the cells they read
-   had none either (all of docs/rename.md's "DRIVING MODEL's unnamed callees" entry).
+   The four earlier groups were the tree's PLUMBING (the multiply, the 16-bit arithmetic, the
+   rotations and integrations, the slip/sound cluster).  These eight talk to the rest of the
+   engine.
 
      $0D01 compute_car_angles     the heading -> the sin/cos pair every rotation resolves
                                   through: TWO polynomial evaluations of one pi-scaled angle,
@@ -7516,55 +7514,42 @@ void update_slip_sound(void)
      $4DCB begin_spin_from_a      the car loses control
      $44EA update_camera_and_drive_state  the biggest routine in the tree, four jobs in one
 
-   ⭐⭐ WHAT THE GROUP MADE LEGIBLE, in the order it surprised:
+   What the group computes:
 
-   1. `compute_car_angles` IS A SINE AND A COSINE, computed as ONE polynomial run twice.  The
-      heading is multiplied by pi ($C9/256 = pi/4, shifted twice), then a cubic-ish term
-      ($AB x h^3) is subtracted for the small-angle arm and a quadratic used for the large one,
-      and the second pass runs on $C900 - h — the reflection that turns sin into cos.  Bit 6 of
-      the heading's high byte decides WHICH element each pass writes, and the two sign bits the
-      tail ORs into bit 0 are bit7(h) and bit7(h) XOR bit6(h): the quadrant, spelled in two
-      instructions.
-   2. ⚠ `compute_car_angles` HAS FIVE BYTES OF DEAD CODE, $0D21-$0D25: `BCC $0D27` at $0D1D and
-      `BCS $0D4F` at $0D1F are together unconditional, so the low-byte tie-break under them can
-      never run.  Reproduced anyway (it costs nothing and the differential would not see it
-      either way), but named here so nobody re-derives it.
-   3. ⚠⚠ `update_engine_revs` CONSUMES THE CALLER'S CARRY.  The coast arm's `ADC #7` at $49A6
-      is reached through six instructions that write no carry at all, so what it adds is
-      7 + whatever C apply_driving_model left in `stage_lateral_speed_delta`'s wake.  That is not a
-      readable design and it is exactly what a randomised differential catches.
+   1. `compute_car_angles` IS A SINE AND A COSINE, one polynomial run twice.  The heading is
+      multiplied by pi ($C9/256 = pi/4, shifted twice); a cubic-ish term ($AB x h^3) is
+      subtracted on the small-angle arm, a quadratic on the large one; the second pass runs on
+      $C900 - h — the reflection that turns sin into cos.  Bit 6 of the heading's high byte
+      picks WHICH element each pass writes, and the two sign bits ORed into bit 0 are bit7(h)
+      and bit7(h) XOR bit6(h): the quadrant in two instructions.
+   2. ⚠ Five bytes of dead code at $0D21-$0D25: `BCC $0D27` at $0D1D and `BCS $0D4F` at $0D1F
+      are together unconditional, so the low-byte tie-break under them can never run.
+      Reproduced anyway (costs nothing), noted so nobody re-derives it.
+   3. ⚠⚠ `update_engine_revs` CONSUMES THE CALLER'S CARRY — the coast arm's `ADC #7` at $49A6 is
+      reached through six instructions that write no carry, so it adds 7 + whatever C
+      apply_driving_model left in `stage_lateral_speed_delta`'s wake.
    4. `update_grip_limits` GIVES THE TWO AXLES OPPOSITE SIGNS of the load term: $4C52's
-      `ADC $78,X` reaches hypot_min_lo for axle 0 and hypot_min_hi for axle 1, and those two
-      cells hold -(load) and +(load) from $4BE1-$4BE8.  One `,X` on a zero-page address is the
-      whole of the front/rear split.
+      `ADC $78,X` reaches hypot_min_lo for axle 0 and hypot_min_hi for axle 1, which hold
+      -(load) and +(load) from $4BE1-$4BE8.  One `,X` is the whole front/rear split.
    5. ⭐⭐ THE CHANGED-SURFACE ARM READS THE PICTURE.  `surface_change_0` ($713D) and
-      `surface_change_1` ($7205) are FRAME-BUFFER bytes, not variables: both sit on display
-      line 149 — well inside the track band — at MODE 5 pixels 28..31 and 128..131, symmetric
-      about the 160-pixel centre, and the view rasteriser in the second unpack's $7B00 page
-      rewrites them every frame ($7F70 / $7E75).  So the grip model asks what colour the road
-      is under the car's left and right, and $FF means the probe is over a solid area.
-      MEASURED on the reference loop 2026-09-08, 600 Silverstone frames with the wheel held
-      over: $FF in at least one on 27 frames — `grip_disturbance` non-zero on exactly those —
-      and in BOTH on 24, so `grip_limit_base_alt_tbl` is reached too.
-      ⚠⚠ An earlier note here called all of this DEAD on the strength of the two cells reading
-      $00 in the runtime image and in two mid-race dumps.  They did: those dumps were of a car
-      driving straight down the middle of the road, which is the one state where the arm never
-      opens.  "The cell was 0 every time I looked" is not "the cell is always 0" — the reading
-      needed a state that provokes it (docs/method-lessons.md).
-      `begin_spin` still did not fire in that run; its extra gate is `section_jump_history`
-      bit 7.  The FIXTURE forces the arm regardless, because randomised memory reaches $FF in
-      both bytes only once in 65536.
-      ✅ THE PORT EXERCISES IT TOO, so it is already gated: on the host, `make determinism-drive`'s
-      own 300-frame trajectory puts $FF in both cells on 22 frames and in one on 2 more (and
-      `REVS_HOLD_STEER=l` over 600 frames, 208 and 18).  No new gate is owed.
-   6. ⚠ TWO THINGS HERE CANNOT BE SABOTAGED, and both are properties of the code rather than
-      holes in the fixture (docs/validation-harness.md §FIFTEENTH):
+      `surface_change_1` ($7205) are FRAME-BUFFER bytes: both on display line 149 (inside the
+      track band) at MODE 5 pixels 28..31 and 128..131, symmetric about the 160-pixel centre,
+      rewritten every frame by the view rasteriser in the $7B00 page ($7F70 / $7E75).  So the
+      grip model asks what colour the road is under the car's left and right; $FF means the
+      probe is over a solid area.  [MEASURED 2026-09-08] 600 Silverstone reference frames with
+      the wheel held over: $FF in at least one on 27 frames (`grip_disturbance` non-zero on
+      exactly those), in BOTH on 24, so `grip_limit_base_alt_tbl` is reached.
+      `begin_spin` needs a further gate, `section_jump_history` bit 7.  The FIXTURE forces the
+      arm, because randomised memory reaches $FF in both bytes once in 65536; the PORT reaches
+      it unaided — `make determinism-drive` hits both cells on 22 of its 300 frames — so no new
+      gate is owed.
+   6. ⚠ Two things here cannot be sabotaged, both properties of the code rather than fixture
+      holes (docs/validation-harness.md §FIFTEENTH):
         * the `AND #$FE` in BOTH of `compute_car_angles`' arms is defensive — the value comes
-          out of an `ASL` in one and out of `0 - (an ASL result)` in the other, so bit 0 is
-          already 0.  Checked on both, which is what separates it from a coverage hole;
-        * `update_engine_revs`' power curve is CONTINUOUS at all three breakpoints ($BA at the
-          first, $B6 at the second, $A2 at the third), so moving one by one changes nothing.
-          The curve is covered by sabotages that move a segment's OFFSET or SLOPE instead. */
+          from an `ASL` in one and `0 - (an ASL result)` in the other, so bit 0 is already 0.
+          Checked on both arms, which is what separates it from a coverage hole;
+        * `update_engine_revs`' power curve is CONTINUOUS at all three breakpoints ($BA, $B6,
+          $A2), so moving one changes nothing.  Sabotage a segment's OFFSET or SLOPE instead. */
 
 
 /* THE CAR-ANGLE ARRAY, relocated out of mem[]
@@ -8440,8 +8425,8 @@ void apply_drag_terms(void)
 }
 
 /* TWINS #87-#92 — THE ROAD SIGN, and the OBJECT SLOT WRITER underneath it
-   The first of the three trees the campaign has left, and the smallest: six C functions,
-   252 bytes of 6502, with every arithmetic leaf underneath them already a twin (#11-#24).
+   Six C functions, 252 bytes of 6502; every arithmetic leaf underneath them is already a twin
+   (#11-#24).
 
      $4CA4 build_road_sign       the body's 14th call — one sign into object slot $17
      $4D21 build_sign_origin     one component of the sign's own view origin
@@ -8450,7 +8435,7 @@ void apply_drag_terms(void)
      $2AAD store_object_flags    the one store both arms end on
      $2AB3 note_object_contact   "is this object close enough to be a collision candidate?"
 
-   ⭐⭐ WHAT THE GROUP MADE LEGIBLE — four things, in the order they surprised:
+   What the group computes:
 
    1. A ROAD SIGN IS PROJECTED FROM ITS OWN VIEWPOINT, NOT THE CAMERA'S.  view_origin has a
       stride of six because there are two origins, and build_sign_origin is the only writer of
@@ -8479,9 +8464,8 @@ void apply_drag_terms(void)
       the other end of the routine — sign_last_index is only updated once the sign's bearing is
       more than $40 away from where the car is pointing, i.e. once it has left the view.
 
-   ⭐ AND ONE THING THE GROUP CORRECTED.  object_width's symbols.csv row said "shifted by
-   proj_width_shift - $09 places"; the `DEX` at $2A8A makes it - $0A, and the sign of that
-   difference is the direction.  Fixed in the same commit.
+   ⚠ object_width is shifted by `proj_width_shift - $0A` places (the `DEX` at $2A8A), and the
+   sign of that difference is the direction.
 
    No hardware writes anywhere in the group: signs live entirely in RAM. */
 
@@ -8805,7 +8789,7 @@ void store_object_flags(void)   { store_object_flags_core(cpu.Y, cpu.A); }
      $202A scale_shape_vectors   the shape's vertex offsets, scaled to this object's WIDTH
      $209A plot_shape_edges      ...walked as EDGES, each one a filled vertical span
 
-   ⭐⭐ WHAT THE GROUP MADE LEGIBLE — five things, in the order they surprised:
+   What the group computes:
 
    1. **AN OBJECT IS A VECTOR SHAPE, NOT A SPRITE.**  There are ten of them (indices 0..9, plus
       a two-part case below), each a run of `shape_vector_tbl` bytes and a run of five parallel
@@ -8834,14 +8818,14 @@ void store_object_flags(void)   { store_object_flags_core(cpu.Y, cpu.A); }
       with `track_direction` positive the routine never returns.  It is unreachable in the game
       — cars take shapes 0/1/2/4 ($2A32/$2A3B/$2A46/$29F6), corner markers 6 ($1B6F), and a
       sign's `(size & 7) + 7` misses 9 on every circuit (Silverstone's sixteen give 7/8/10/11/12)
-      — so 9 means "the stand-in has been drawn", never a shape.  MEASURED 2026-08-18: the twin
-      and the transliteration hang identically on it, which is how the fixture found it.
+      — so 9 means "the stand-in has been drawn", never a shape.  [MEASURED] the twin and the
+      transliteration hang identically on it.
    7. ⚠⚠ **THE SHAPE TABLES LIVE IN THE UNUSED TAILS OF THE VIEW SOURCE BLOCKS.**  $3550, $35D0,
       $3650, $36D0 and $3750 are offset $50 inside blocks 10..14 of the forty $80-spaced blocks
       at $3000, and `dash_block_starts` says a block's data always ENDS at offset $4F — so each
       column has exactly 48 table entries and index 48 is the next block's data, which
-      plot_view_src_line paints over.  That is a real constraint on the walk, not a curiosity:
-      it is why every entry's control bits matter and why the fixture has to bound the tables.
+      plot_view_src_line paints over — a real constraint on the walk, and why the fixture has to
+      bound the tables.
 
    ⚠ ONE PER-CIRCUIT SMC SITE, $1FE9: Silverstone reads `horizon_extent` into X and an
    expansion circuit plants `LDX #imm` in its place (`make track-smc`).  Both arms are kept.
@@ -9172,11 +9156,10 @@ void plot_shape_edges(void)     { SlotExit e = plot_shape_edges_core();
      $1C1C plot_view_src_line   THE line plotter: one edge of a shape into the view source
      $1E38 fill_object_gap      ...and the columns BETWEEN two edges, filled solid
 
-   These are what plot_shape_edges (twin #95) calls three times per edge, and they are the only
-   part of the object pipeline that touches the frame buffer's source blocks.  ⚠ Ghidra called
-   $1C1C `project_geometry`; nothing here projects, and the name was corrected before this twin.
+   plot_shape_edges (twin #95) calls these three times per edge; they are the only part of the
+   object pipeline that touches the frame buffer's source blocks.
 
-   ⭐⭐ WHAT THE GROUP MADE LEGIBLE — six things, in the order they surprised:
+   What the group computes:
 
    1. **A SHAPE EDGE IS DRAWN AS A COLUMN, NOT AS A LINE.**  Each call paints ONE column of the
       view source — `plot_ptr` is `$3000 + column x $80` and the walk is `DEY` from
@@ -9650,79 +9633,53 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
 }
 
 
-/* TWINS #98-#114 — THE DRIVING CONTROLS, and with them the last of the campaign's trees
-   Seventeen C functions, ~700 bytes: everything `read_driving_controls` reaches.  It is one
-   cluster rather than seventeen decisions because the chain is spliced together by TAIL JUMPS
-   across four regions —
+/* TWINS #98-#114 — THE DRIVING CONTROLS
+   Seventeen functions, ~700 bytes: everything `read_driving_controls` reaches.  One cluster, not
+   seventeen, because the chain is spliced by TAIL JUMPS across four regions —
 
      $1579 read_driving_controls → $1EE9 steer_assist_dispatch → $15F4 steer_demand_from_slip
         → $160D steer_demand_store → $1EFA steer_apply_with_assist → $1F08 apply_steering_assist
         → $1612 apply_steer_demand → $162D clamp_and_store_steer_angle → the throttle and gears
 
-   — so the "routine" the listing splits into eight is really ONE pass with eight entry points.
-   Under it: $1F9B limit_steer_demand, $63C5 poll_steering_assist, $503F adc_read, and the text
-   path $42D0 draw_gear_indicator → $508C vdu_char_wide / $5092 vdu_char_def → $509D
-   vdu_char_emit → $50FA mode5_addr_for_cell → $50FC mode5_addr.
+   — so what the listing splits into eight is ONE pass with eight entry points.  Under it:
+   $1F9B limit_steer_demand, $63C5 poll_steering_assist, $503F adc_read, and the text path
+   $42D0 draw_gear_indicator → $508C vdu_char_wide / $5092 vdu_char_def → $509D vdu_char_emit
+   → $50FA mode5_addr_for_cell → $50FC mode5_addr.
 
-   ⭐⭐ WHAT THE GROUP MADE LEGIBLE — seven things, in the order they surprised:
+   What the group computes:
 
-   1. **THE JOYSTICK'S STEERING IS SQUARED.**  $1591-$1593 stores the centred reading in math_hi
-      and then calls `mul8` with the SAME value still in A, so the demand is `reading x reading`.
-      That is the non-linear response an analogue stick needs and it costs one instruction.
-   2. **COMPUTER ASSISTED STEERING IS TWO DIFFERENT ASSISTS, chosen by how hard you are asking.**
-      A demand under 5 goes to `steer_demand_from_slip`, which just cancels the car's own slip
-      (model_state element $0A, quartered, and never more than the lock already applied); a
-      bigger one goes to `apply_steering_assist`, which reads a TRACK EDGE ahead of the car and
-      steers toward it.  ⭐ Which edge is the whole of the look-ahead: slot `$32` or slot `$0A` of
-      edge_x, picked on the demand's direction.
-   3. **THE ASSIST'S GAIN FALLS WITH SPEED AND IS CAPPED BY THE CORNER.**  `$3C - road_speed`
-      doubled plus `$20` is the gain, floored at `$20`; the live section's own curvature
-      (`section_flags & $7F`, clamped to 2..7, shifted up four) caps it.  So the assist helps
-      most at low speed and is deliberately weak through a tight corner.
-   4. ⚠⚠ **`poll_steering_assist` PRESERVES A ACROSS ITSELF, and both callers depend on it.**  It
-      is `PHA … PLA`, and the `CMP #5` at $1EF3 is therefore comparing the CALLER'S demand, not
-      the assist setting.  Reading it the other way makes the whole dispatch look like nonsense.
-   5. **THE ASSIST LAMP IS FOUR SCREEN BYTES, written by that same routine** — $77DB, $77DC,
-      $77E3 and $77E4 take `steering_assist_flag` shifted right 0..3 places, which is dark at 0
-      and four lit pixels at $80.  So "read the setting" and "draw the setting" are one call.
-   6. **THE GEAR DIGIT IS ONE CHARACTER DRAWN TWICE.**  `draw_gear_indicator` calls
-      `vdu_char_wide` with shared_temp_77 = $22 and then = $FF; the first cell takes the
-      character's left four pixels, the second its right four, and `vdu_char_column` INCs itself
-      between them.  A MODE 5 byte is four 2-bit pixels, so an 8-pixel MOS character has to
-      become two bytes — and this is where the dashboard's double-width text comes from.
-   7. ⚠⚠ **`char_row_addr_lo`'s ENTRIES 8..15 ARE `pixel_keep_others_tbl`.**  The two tables
-      overlap at $3FE8, so `mode5_addr` returns a wrong low byte for character rows 8..15 and can
-      only legally be asked for rows 0..7 and 16..31.  [INFERRED] the overlap is deliberate and
-      records which rows the text path owns; the road view owns the middle of the screen.
+   1. **The joystick's steering is SQUARED.**  $1591-$1593 stores the centred reading in math_hi
+      and calls `mul8` with the same value still in A: demand = reading x reading.
+   2. **Computer Assisted Steering is TWO assists, chosen by how hard you ask.**  Demand < 5 →
+      `steer_demand_from_slip` (cancels the car's own slip: model_state element $0A, quartered,
+      never more than the lock already applied).  Bigger → `apply_steering_assist`, which reads a
+      track edge ahead and steers toward it — edge_x slot $32 or $0A, picked on the demand's sign.
+   3. **The assist's gain falls with speed and is capped by the corner.**  `($3C - road_speed)*2
+      + $20`, floored at $20; the live section's curvature (`section_flags & $7F`, clamped 2..7,
+      shifted up four) caps it.  Weakest through a tight corner.
+   4. ⚠⚠ **`poll_steering_assist` preserves A across itself (PHA…PLA) and both callers depend on
+      it** — the `CMP #5` at $1EF3 compares the CALLER'S demand, not the assist setting.
+   5. **The assist lamp is four screen bytes written by that same routine** — $77DB/$77DC/$77E3/
+      $77E4 take `steering_assist_flag` shifted right 0..3: dark at 0, four lit pixels at $80.
+      Reading the setting and drawing it are one call.
+   6. **The gear digit is one character drawn twice.**  `draw_gear_indicator` calls
+      `vdu_char_wide` with shared_temp_77 = $22 then $FF — left four pixels, then right four,
+      `vdu_char_column` INCing itself between.  A MODE 5 byte is four 2-bit pixels, so an
+      8-pixel MOS character needs two.  This is where the dashboard's double-width text comes from.
+   7. ⚠⚠ **`char_row_addr_lo`'s entries 8..15 ARE `pixel_keep_others_tbl`** — the tables overlap
+      at $3FE8, so `mode5_addr` may only be asked for character rows 0..7 and 16..31.
+      [INFERRED] deliberate: it records which rows the text path owns.
 
-   ⚠⚠ **AND ONE PER-CIRCUIT SMC SITE THAT IS THE SQUARING ITSELF**, $1593: Silverstone's
-   `JSR mul8` is what an expansion circuit replaces with its own hook, so the twin dispatches on
-   the operands instead of baking the call.  MEASURED as a real difference, not a precaution — a
-   randomised pre-state traps 255 times in 256, and the fixture reported exactly the joystick
-   arm's 2448 of 5000 cases wrong until this arm existed.
+   ⚠⚠ **$1593 is a per-circuit SMC site and it is the squaring itself** — Silverstone's
+   `JSR mul8` is what an expansion circuit's hook replaces, so the twin dispatches on the operands
+   instead of baking the call.  [MEASURED] a randomised pre-state traps 255 times in 256.
 
-   ⚠ Four MOS calls in the group and every one of them can clobber A, X and Y with no hint in
-   the listing (docs/bbc-reference-loop.md): OSBYTE $80 in `adc_read` and in the joystick
-   gear-change poll, OSWORD 10 in `vdu_char_emit`, OSWRCH in `vdu_char_def`'s text arm.
+   ⚠ Four MOS calls here, each able to clobber A, X and Y with no hint in the listing: OSBYTE $80
+   in `adc_read` and in the joystick gear-change poll, OSWORD 10 in `vdu_char_emit`, OSWRCH in
+   `vdu_char_def`'s text arm.
 
-   ⚠⚠ **THE GROUP BOUGHT THREE MORE HARNESS HOOKS, all three from surviving sabotages, and all
-   three the same shape as the sub-models' `platform_test_key_down`** — a test backend answering
-   one DEFAULT for a whole input class (docs/validation-harness.md §FIFTEENTH):
-
-     * `platform_test_key_only` — the backend answered the same thing for every key code, so the
-       fixture could only produce "no key down" or "ALL SEVEN down".  Every interesting arm here
-       is a ONE-KEY arm (steer left or right, throttle or brake, gear up or down), and "the key
-       direction is not compared with the current sign" survived 5000 cases because
-       `STEER_KEYS` was only ever 0 or 3.
-     * `platform_test_adc` — `Platform::adcAxis` answers dead centre, which pins `adc_read`'s
-       magnitude to 0.  Its dead-zone compare and the joystick's whole x1.5 pedal arm were
-       unreachable; two sabotages survived, one of them a dropped ASL carry that is a REAL defect
-       class this group already had twice.
-     * and `gear_key_latch` forced to 0 — not a hook but the same lesson: a random byte is 0 once
-       in 256, so the gear-shift body ran in 20 of 5000 cases and both of its wrap arms survived.
    ⚠⚠ The steering chain is a SECOND TENANT of math_lo/math_hi/shared_temp_76 — the `STEER_*`
-   defines below are its own names for them (docs/rename.md). */
-
+   defines below are its own names for them. */
 #define STEER_SIGN     MEM_math_lo   /* math_lo        — the demand's sign byte; bit 0 = negative */
 #define STEER_DEMAND   MEM_math_hi   /* math_hi        — ...and its magnitude */
 #define STEER_KEYS     MEM_shared_temp_76   /* shared_temp_76 — 0 none, 1 or 2 one way, 3 both keys down */
@@ -12462,26 +12419,23 @@ void reject_all_object_slots_core(void)
    published (288); the car ahead never staged (288); the draw queue skipped (3 cells including
    the frame buffer).  The four 288s are saturation — every race case diverges — and they were
    checked to be different builds by their first differing ADDRESS, not just their count.
-   ⭐ The draw-queue defect SURVIVED the first two fixtures, both times for a reachability reason
-   the fixture itself created: draw_track_object skips every slot whose car_flags_shape bit 7 is
-   set, and the only slot this routine clears is the car ahead's.  Reaching a real plot needs
-   Silverstone's actual SMC bytes at $298D, a BACKWARD ring walk (so the six staging calls do not
-   re-reject that slot) and the slot's object inside the view window — all three are now set up in
-   a fifth of the cases, and the defect diverges the frame buffer.
+   ⭐ The draw-queue defect SURVIVED the first two fixtures for a reachability reason the fixture
+   created: draw_track_object skips every slot whose car_flags_shape bit 7 is set, and the only
+   slot this routine clears is the car ahead's.  Reaching a real plot needs Silverstone's actual
+   SMC bytes at $298D, a BACKWARD ring walk (so the six staging calls do not re-reject that slot)
+   and the slot's object inside the view window — all three now set up in a fifth of the cases.
    ⚠ TWO defects in the practice delay are provably invisible here and are NOT fixture gaps: five
    passes instead of six, and replacing the loop with `math_lo = 0`.  The loop's only memory effect
    IS math_lo reaching 0, so a mem[] differential cannot see its length by construction; the effect
    is wall-clock, which no harness in this project measures.
    ⭐⭐ AND THAT SECOND ONE IS WHAT THE PORT SHIPS, ON PURPOSE.  Written out as a real C loop the
-   burn cost 5% of the framerate (4.53 -> 4.30), because it runs on the 50 Hz BODY: fifty times a
-   second whatever the framerate does, so it is a tax on WALL CLOCK, like the VERTB ISR.  What
-   makes it a REGRESSION rather than a cost is that the port never paid it before: GCC eliminated
-   the transliteration's loop by final-value replacement (at 830ae5d the whole practice arm is
-   `clr.b mem+0x74; rts`), so every determinism run, every refloop differential and every FPS
-   baseline this project has recorded was measured with NO burn.  Reproducing it faithfully in C
-   is what made it real.  Nothing is bought by paying it: the delay exists to SLOW practice down
-   to race pacing, and the port is already 12x below 50 Hz.  Keep the memory effect, drop the
-   cycles.  (docs/perf-method.md §twin #179's delay loop) */
+   burn costs 5% of the framerate, because it runs on the 50 Hz BODY — a tax on WALL CLOCK, like
+   the VERTB ISR.  The port never paid it: GCC eliminated the transliteration's loop by
+   final-value replacement (the whole practice arm was `clr.b mem+0x74; rts`), so every
+   determinism run, refloop differential and FPS baseline recorded here was measured with NO burn.
+   And nothing is bought by paying it — the delay exists to slow practice to RACE pacing, and the
+   port is already 12x below 50 Hz.  Keep the memory effect, drop the cycles.
+   (docs/perf-method.md §twin #179's delay loop) */
 void move_and_draw_cars_core(void)
 {
     if (qualify_minutes & 0x80u) {                     /* $2637/$263A BMI $262D — practice */
@@ -12798,40 +12752,35 @@ void drive_other_cars(void)
         the starter's random mask, the two near-edge cursors, and a non-zero mirror_seg_state for
         all six wing-mirror segments — 1 matches no bearing threshold, so mirrors_update erases
         each of them on the first frame rather than leaving a stale car drawn there;
-     5. the opening message, which is the one place the two session kinds diverge.  Practice
-        prints token $28 on both status rows, clears clock 1, paints both lap-time readouts and
-        arms lap_time_show_timer with the $DF sentinel that makes the FIRST completed lap
-        suppress its readout.  A race instead clears the lap/position markers, prints tokens
-        $2B and $2C on the two rows, and seeds pass_count_bcd from the player's grid slot.
+     5. the opening message, the one place the two session kinds diverge.  Practice prints token
+        $28 on both status rows, clears clock 1, paints both lap-time readouts and arms
+        lap_time_show_timer with the $DF sentinel that makes the FIRST completed lap suppress its
+        readout.  A race instead clears the lap/position markers, prints tokens $2B and $2C on the
+        two rows, and seeds pass_count_bcd from the player's grid slot.
 
    D=0 on this path: the only decimal arithmetic reached is inside position_to_bcd, which brackets
    its own SED/CLD (docs/static-map.md §Decimal mode).
    Exit A/X/Y/flags are dead — the only caller is the restart ladder in race_main_loop's twin,
-   which does `reset_driving_variables_core();` and carries nothing across — so the shim replays
-   no exit state.
+   which carries nothing across — so the shim replays no exit state.
    ⚠ NATIVE_FUNCS, not VALIDATE_FUNCS: part 3 is full_track_scan_rebuild, whose loops end on game
-   state and not on bounded inputs, so no randomised fixture can drive this routine to an exit
-   either.  `make determinism-crash` is the gate for the PRACTICE arm — it is that driver's only
-   caller, so it runs the same seven times there.  The RACE arm ($18A5-$18BB) is gated by
-   `make determinism-race`, which is the one target that reaches session_is_race = $80
-   (RACEPROPER=1: the championship menus, one 4-minute qualifying session, then the grid).
-   ⭐ SABOTAGE (2026-09-05, six defects): the gate sees this routine — car_target_speed $FF -> $FE
-   and the lap_time_show_timer sentinel $DF -> $DE each diverge the 64 KB dump.  Three PASSED and
-   the reason is one and the same, not a bug: the gate is an END-STATE dump at frame 1500 and
-   those three cells each have a PER-FRAME writer that has long since overwritten the reset value
-   — mirror_seg_state (mirrors_update draws or erases all six every frame), contact_pending ($68,
-   note_object_contact decrements / process_car_contact clears it) and sign_last_index (updated at
-   $4D06 whenever a sign's bearing passes).  The sixth was the race arm's message token, which
-   passed because determinism-crash's trajectory never enters that arm — now covered below.
-   ⭐ SABOTAGE of the RACE arm (2026-09-09, `make determinism-race`, five defects): four
-   detected with distinct counts — lap_completed_flag $01 -> $00 (1 byte), the upper message
-   token $2B -> $2A (135), the lower $2C -> $2D (91) and pass_count_bcd off by one (13).  The
-   fifth, position_swap_flag $01 -> $00, PASSED and is a NO CHANGE, not a gap: only bit 7 of that
-   cell is functional (update_position_display BIT-tests it to redraw the two neighbouring
-   names) and it is clear in both values, while bit 0 — the only bit that differs — is
-   consumed by the closing LSR into an exit carry that its single call site ($102E) discards
-   before returning.  Its sibling lap_completed_flag, set from the same A one instruction
-   earlier, IS seen, which is what proves the gate reaches this arm at all. */
+   state and not on bounded inputs, so no randomised fixture can drive this routine to an exit.
+   `make determinism-crash` gates the PRACTICE arm (it is that driver's only caller, so it runs
+   the same seven times); `make determinism-race` gates the RACE arm ($18A5-$18BB), being the one
+   target that reaches session_is_race = $80.
+
+   ⭐ SABOTAGE, practice arm (six defects): car_target_speed $FF -> $FE and the
+   lap_time_show_timer sentinel $DF -> $DE each diverge the 64 KB dump.  Three PASSED for one
+   reason, not a gap: the gate is an END-STATE dump at frame 1500 and each of those cells has a
+   PER-FRAME writer that long since overwrote the reset value — mirror_seg_state (mirrors_update
+   redraws all six), contact_pending ($68) and sign_last_index ($4D06).  The sixth was the race
+   arm's token, unreached by determinism-crash's trajectory and now covered below.
+   ⭐ SABOTAGE, race arm (`make determinism-race`, five defects): four detected with distinct
+   counts — lap_completed_flag $01 -> $00 (1 byte), the upper token $2B -> $2A (135), the lower
+   $2C -> $2D (91), pass_count_bcd off by one (13).  The fifth, position_swap_flag $01 -> $00, is
+   a NO CHANGE: only bit 7 is functional (update_position_display BIT-tests it) and is clear in
+   both values, while bit 0 feeds a closing LSR into an exit carry its one call site ($102E)
+   discards.  Its sibling lap_completed_flag, set from the same A one instruction earlier, IS
+   seen — which proves the gate reaches this arm. */
 
 void reset_driving_variables_core(void)
 {
@@ -16216,12 +16165,12 @@ void hook_next_section_cursor_b(void) { hook_next_section_cursor_at(MEM_gen_curs
    self-call's target and the state-block base differ).  Reached from $55C4 (which brackets it
    with its own X save/restore) and, as a tail call, from $5A1B.
 
-   What it computes: the circuit's running 16-bit heading, held in the generator state block, is
-   turned into a direction vector and written into the four per-position tables at the current
-   segment_dir_index.  The heading's top nine bits split into an OCTANT (bits 6..8) and a
-   position INSIDE that octant (bits 0..5); the octant picks which of the pair of quarter-turn
-   tables at $57BF/$58BF supplies which component and what signs the two carry, and odd octants
-   read the position mirrored ($40 - i) because the tables only cover half a quadrant.  Then:
+   The circuit's running 16-bit heading, held in the generator state block, becomes a direction
+   vector written into the four per-position tables at the current segment_dir_index.  The
+   heading's top nine bits split into an OCTANT (bits 6..8) and a position INSIDE it (bits 0..5);
+   the octant picks which of the quarter-turn table pair at $57BF/$58BF supplies which component
+   and the signs both carry, and odd octants read the position mirrored ($40 - i) because the
+   tables only cover half a quadrant.  Then:
 
      track_dir_0[dir] = component A          track_dir_2[dir] = component B
      $5800[dir]       = A scaled by VSCALE   $5700[dir]       = -(B scaled by VSCALE)
@@ -16230,27 +16179,25 @@ void hook_next_section_cursor_b(void) { hook_next_section_cursor_at(MEM_gen_curs
    The $5700/$5800 pair is the across-track normal the race reads (symbols.csv calls that its
    second tenant, over ModifyGameCode's address); this is the code that writes it.
 
-   ⭐ THE SIGN GOES THROUGH THE 6502 STACK, twice.  The two scalings are `PHP / JMP $461B` —
+   ⭐ THE SIGN GOES THROUGH THE 6502 STACK, twice.  Both scalings are `PHP / JMP $461B` —
    scale_by_track_gradient's tail, whose $4621 PLP re-signs the product's high byte from the P
    its caller stacked.  So the macro stays at exactly those two points (hook_scale_by_gradient
-   below), which also means the C and V standing at each PHP are part of the contract: they come
-   off the octant's compare chain, and the core returns them rather than hiding them.
+   below), and the C and V standing at each PHP are part of the contract: they come off the
+   octant's compare chain, and the core returns them rather than hiding them.
 
-   ⚠ FIVE SHIMS, not two: the circuits differ in BOTH parameters, and both are now NAMED in
-   src/platform/track.h rather than repeated as twenty literals down here —
-   TRACK_GEN_ARGS(BRANDS) expands to the pair.  The state block (TRACK_GEN_STATE_*) is $53FA on
-   Brands Hatch, Oulton and Snetterton and $53FC on Donington and the Nurburgring, bytes +0/+1
-   the heading and +2 the gradient; the gradient multiplier (TRACK_GEN_VSCALE_*) is $88, $80,
-   $84, $86, $9A respectively and is the circuit's overall VERTICAL SCALE.  Reading that constant
-   off one circuit and sharing it is exactly the mistake this hook seam invites, and the byte
-   differential caught it on the second circuit's first case.
+   ⚠ FIVE SHIMS, not two: the circuits differ in BOTH parameters, named in src/platform/track.h
+   (TRACK_GEN_ARGS(BRANDS) expands to the pair).  The state block (TRACK_GEN_STATE_*) is $53FA on
+   Brands Hatch, Oulton and Snetterton, $53FC on Donington and the Nurburgring — bytes +0/+1 the
+   heading, +2 the gradient; the gradient multiplier (TRACK_GEN_VSCALE_*) is $88, $80, $84, $86,
+   $9A respectively and is the circuit's overall VERTICAL SCALE.  Reading that constant off one
+   circuit and sharing it is the mistake this hook seam invites, and the byte differential caught
+   it on the second circuit's first case.
 
    ⚠ X IS CLOBBERED (the $5493 TAX), and the engine site that reaches $5A1B — $1289's patched
-   `JSR $5A1B` — still has X live at $129C.  $55C4's own save/restore is what covers its path;
-   the $5A1B path is the circuits' business and is reproduced, not corrected.
+   `JSR $5A1B` — still has X live at $129C.  $55C4's own save/restore covers its path; the $5A1B
+   path is the circuits' business and is reproduced, not corrected.
 
-   SABOTAGE (each must FAIL; counts measured on the five 1000-case fixtures, not predicted, and
-   quoted as the range over them):
+   SABOTAGE (each must FAIL; ranges over the five 1000-case fixtures):
      S31 the octant comes from bits 4..6 of the heading's high byte    -> 870..891 / 1000
      S32 the in-octant mirror is $3F - i, not $40 - i                 ->      500 / 1000
      S33 the two components are never swapped                         -> 496..499 / 1000
@@ -16259,16 +16206,12 @@ void hook_next_section_cursor_b(void) { hook_next_section_cursor_at(MEM_gen_curs
      S36 the second scaling's result is stored without the negate     ->     1000 / 1000
      S37 the C standing at the first PHP is the entry C               -> 236..277 / 1000
      S38 the gradient byte comes from block+1                         -> 994..998 / 1000
-     S39 Oulton is given Brands Hatch's $88 multiplier                -> 1000 / 1000 on Oulton,
-         0 on the other four — LOCALIZED by construction (only that one shim was patched), which
-         is the point: this is the defect the five shims exist to prevent, and only a per-circuit
-         fixture can see it.  This is the mistake the differential actually caught while the twin
-         was being written, on the second circuit's first case.
-   ⭐ S31 was first written as `(angleHi >> 5) & 7`, and it SURVIVED at 0/1000 on all five
-   circuits.  That is the third explanation and not a fixture gap: `nine` is
+     S39 Oulton is given Brands Hatch's $88 multiplier                -> 1000 on Oulton, 0 on the
+         other four — localized by construction, and the defect the five shims exist to prevent.
+   ⭐ S31 first written as `(angleHi >> 5) & 7` SURVIVED at 0/1000 on all five: `nine` is
    `(angleHi << 1) | (angleLo >> 7)`, so `nine >> 6` drops the bit angleLo contributed and the two
-   expressions are the SAME function of the heading (docs/validation-harness.md §FIFTEENTH).  The
-   defect above moves the field instead, and detects. */
+   expressions are the SAME function of the heading — the third explanation, not a fixture gap
+   (docs/validation-harness.md §FIFTEENTH).  The defect above moves the field instead. */
 /* The 65-entry octant sine/cosine table of radius 120 that the generator resolves a heading
    against — the constant tail of the $5700/$5800 pages, identical on all five circuits
    (symbols.csv gen_octant_sin / gen_octant_cos).  No MEM_ define: they are `table` rows. */
