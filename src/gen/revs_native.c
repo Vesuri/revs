@@ -1603,12 +1603,10 @@ void race_main_loop_core(RestartDepth depth)
    — its scan line (horizon_extent), which point it was (horizon_index), and how wide the road
    still looks there (horizon_half_width).
 
-   ⭐ The routine itself is 84 bytes of driver: every edge point is projected by the walk, so
-   nothing here is arithmetic.  What it does own is the four SEEDS that decide the shape of
-   both walks — the "no nearest point yet" pair and the 13-section subdivision floor — and the
-   frame's horizon record.  There are no hardware writes and no $FC00-$FEFF access at all: the
-   whole routine lives in RAM, so the transpiler was already routing it straight to mem[]
-   and the twin removes interpreter, not bus calls.
+   The routine itself is 84 bytes of driver — every edge point is projected by the walk — and
+   what it owns is the four SEEDS that shape both walks (the "no nearest point yet" pair and the
+   13-section subdivision floor) plus the frame's horizon record.  Pure RAM: no hardware writes,
+   no $FC00-$FEFF access.
 
    ⚠ SELF-MODIFYING, twice, and both sites belong to the expansion circuits: $2538 and $2542
    are rewritten by each circuit's ModifyGameCode, so the bytes below are Silverstone's and
@@ -1674,29 +1672,25 @@ static uint16_t segment_word(unsigned byteIndex)
                       | ((unsigned)mem[MEM_track_segment_hi + byteIndex] << 8));
 }
 
-/* TWINS #16-#24 — THE REST OF THE ROAD-GEOMETRY PASS
-   With these nine, the whole call tree under build_track_geometry is real C: 19 routines,
-   776 6502 instructions, no transliteration left anywhere in it.  They divide into three
-   groups, and only the last two carry arithmetic worth compressing:
+/* THE REST OF THE ROAD-GEOMETRY PASS — the whole call tree under build_track_geometry, in
+   three groups:
 
-     THE NEAR-SLOT BOOKKEEPING — shift_near_edge_points, clamp_near_edge_window and
-     clamp_near_edge_cursor.  Slots 0..5 of each 40-point half are the edge points beside and
-     behind the car; these three slide them along when the car crosses a section and keep the
-     [near_edge_first, near_edge_last] window and near_edge_cursor consistent afterwards.
-     Run at most once a frame.
+     THE NEAR-SLOT BOOKKEEPING — shift_near_edge_points, clamp_near_edge_window,
+     clamp_near_edge_cursor.  Slots 0..5 of each 40-point half are the points beside and behind
+     the car; these slide them along when the car crosses a section and keep the
+     [near_edge_first, near_edge_last] window and near_edge_cursor consistent.  At most once a
+     frame.
 
-     THE PER-POINT PRIMITIVES — rebase_edge_point, load_section_triple, emit_edge_bearing and
-     emit_edge_bearing_at_cursor.  Small, and twinned because leaving one transliterated leaf
-     inside a loop is what made twins #9/#10 driver-shaped in the first place.
+     THE PER-POINT PRIMITIVES — rebase_edge_point, load_section_triple, emit_edge_bearing,
+     emit_edge_bearing_at_cursor.
 
-     THE TWO THAT COMPUTE — point_distance_hypot and emit_edge_width_offset.  Both are byte
-     chains standing in for 16-bit operations the 68000 has: a shift-and-add distance
-     approximation, and a variable-count 16-bit shift the 6502 has to spell as a loop.
+     THE TWO THAT COMPUTE — point_distance_hypot and emit_edge_width_offset: a shift-and-add
+     distance approximation and a variable-count 16-bit shift, both byte chains standing in for
+     16-bit operations the 68000 has.
 
    ⭐ $2145 and $2285 are deliberately NOT twinned (see transpile.py) — each is one `LDY #0`
-   falling into a body that already is one, so their oracles would call the native code and
-   the fixtures would be vacuous.  What changed instead is that nothing here calls them: every
-   caller in this subtree is a twin now and passes the view origin as an ARGUMENT. */
+   falling into a body that already is one, so their fixtures would be vacuous.  Nothing here
+   calls them: every caller in this subtree passes the view origin as an ARGUMENT. */
 
 /* The two coordinate transforms (twins #14/#15), defined further down the file.  Everything
    in this pass reaches them through the cores, never through the 6502-ABI shims. */
@@ -1892,51 +1886,35 @@ void load_section_triple_core(uint8_t destSection, uint8_t segmentByte)
 }
 
 
-/* ⭐ WIDE-VALUE CLEANUP, mechanism (B): hypot_max ($7A/$7B) relocated out of mem[] into this
-   native uint16_t.  It is the LARGER of the two ground-plane magnitudes bearing_to_section
-   sorts, handed straight to point_distance_hypot — one producer, one consumer, both native, and
-   the glue between them (project_object_slot's twin, region_23d8) never touches the cells.  So
-   the pair travels in a single 68000 word instead of the two byte stores plus the load/shift/or
-   the transliteration paid on every edge point of every frame.
+/* hypot_max ($7A/$7B) relocated out of mem[] into a native uint16_t: the LARGER of the two
+   ground-plane magnitudes bearing_to_section sorts, handed straight to point_distance_hypot.
+   One producer, one consumer, both native.
 
-   ⚠⚠ THE CELLS ARE NOT FREED — $7A/$7B HAVE A SECOND TENANT.  plot_view_src_line uses them as
-   PVS_BYTE/PVS_MODE (see the #defines over that twin), and project_geometry's $1D94 arm — its
-   second entry into the edge tail — reads $7B back as that mode.  That tenancy keeps mem[] and is untouched by this relocation; only the
-   hypot's own use of the pair moves.
+   ⚠⚠ THE CELLS ARE NOT FREED — $7A/$7B have a second tenant: plot_view_src_line's
+   PVS_BYTE/PVS_MODE, which project_geometry's $1D94 arm reads back.  That tenancy keeps mem[].
 
-   ⚠ THE 6502-ABI BOUNDARY KEEPS THE TWO REPRESENTATIONS IN STEP.  Wherever a transliterated
-   parent — a shipping FUN_ or region_ body, or a validation oracle — hands the value to or takes
-   it from a native shim, it does so through mem[$7A/$7B], exactly as the 6502 did.  So every shim
-   whose core produces the value marshals it OUT, and every shim whose core consumes it marshals
-   it IN (revs_native_seam.c).  That costs four accesses at an ABI crossing and NOTHING on the
-   core-to-core road pass, which is where the calls actually are — and it keeps the producer's
-   validate fixture byte-exact on the cells instead of having to set_ignore them. */
+   ⚠ The 6502-ABI boundary keeps both representations in step (the IN/OUT rule,
+   docs/wide-value-cleanup.md): a shim whose core produces the value marshals OUT, one whose core
+   consumes it marshals IN.  Four accesses at an ABI crossing, none on the core-to-core road
+   pass. */
 static uint16_t hypot_max_v;
 
-/* ⭐ hypot_min ($78/$79) is the SIBLING relocation: bearing_to_section's sort produces both
-   magnitudes and point_distance_hypot consumes both, so the two pairs travel the road pass
-   together and marshal at exactly the same seams.
+/* hypot_min ($78/$79) is the sibling relocation: the same producer sorts both magnitudes and
+   the same consumer reads both, so the pairs marshal at identical seams.
 
-   ⚠⚠ THE CELLS ARE NOT FREED, and this pair is the most crowded one the campaign has touched —
-   ten other tenants, several of them named in this file: MUL_SIGN / SLIP_SIGN / SLIP_OUT_INDEX /
-   PVS_COLOUR / PVS_COLOUR_P, update_grip_limits' axle load terms (reached by the one INDEXED
-   access to the pair, `ADC $78,X` at $4C52, whose X is the axle so it spans both cells),
-   car_gap_tail's sign shift register, full_track_scan_rebuild's retreat-grid outer index and
-   menu_wait_key's remembered row.  A relocation moves ONE USE; every one of those keeps reading
-   and writing mem[$78/$79] unchanged.
+   ⚠⚠ THE CELLS ARE NOT FREED, and this pair is the most crowded in the file — ten other tenants:
+   MUL_SIGN / SLIP_SIGN / SLIP_OUT_INDEX / PVS_COLOUR / PVS_COLOUR_P, update_grip_limits' axle
+   load terms (the one INDEXED access, `ADC $78,X` at $4C52, spans both cells), car_gap_tail's
+   sign shift register, full_track_scan_rebuild's retreat-grid outer index, menu_wait_key's
+   remembered row.  All keep mem[$78/$79]; only the hypot's use moves.
 
-   ⚠ That the marshalling parents (build_track_geometry, road_edge_walk, build_road_sign) all
-   REACH plot_view_src_line — a tenant — is not by itself a problem, and the same was already
-   true of hypot_max: what would break is a tenant value still LIVE at the parent's exit, where
-   the OUT would stamp over it.  It is not, and `make validate`'s per-fixture differential over
-   full mem[] is what says so, not this comment.  Reachability alone is not the test.
+   ⚠ A marshalling parent REACHING a tenant is not the test — what would break is a tenant value
+   still LIVE at that parent's exit, where the OUT would stamp over it.  `make validate`'s full
+   mem[] differential is what says it is not.
 
    ⚠⚠ The consumer produces the pair back CONDITIONALLY and ASYMMETRICALLY: the near arm's >>3
-   keeps the low byte in A the whole way and stores only the high one, so the low lane comes back
-   UNCHANGED there where the far arm rewrites both.  With the value relocated that asymmetry has
-   to be spelled out on the wide value itself (see point_distance_hypot_apply) — writing d.min
-   whole on both arms is byte-exact arithmetic and a differential failure.  Per the IN/OUT rule
-   a conditional producer marshals IN *and* OUT. */
+   stores only the high lane, the far arm rewrites both (see point_distance_hypot_apply).
+   Writing d.min whole on both arms is a differential failure. */
 static uint16_t hypot_min_v;
 
 void hypot_min_marshal_in(void)
@@ -1961,32 +1939,25 @@ void hypot_max_marshal_out(void)
     hypot_max_hi = (uint8_t)(hypot_max_v >> 8);
 }
 
-/* ⭐ WIDE-VALUE CLEANUP, mechanism (B): edge_nearest ($10/$11) relocated out of mem[] into this
-   native uint16_t.  It is the frame's RUNNING MINIMUM distance to a track edge point — the walk's
+/* edge_nearest ($10/$11) relocated out of mem[] into a native uint16_t.  It is the frame's RUNNING MINIMUM distance to a track edge point — the walk's
    own subdivision floor, project_point's far clip, and what check_crash tests to decide the car
    has left the road.
 
-   ⭐ The relocation turns the 6502's two-lane compare into ONE 16-bit compare.  The walk's test
-   reads `distHi < hi || (distHi == hi && lo >= point_dist_lo)`, which is exactly
-   `newDistance <= edge_nearest_v` — the byte lanes were spelling out a `cmp.w`.
+   ⭐ The walk's two-lane test — `distHi < hi || (distHi == hi && lo >= point_dist_lo)` — is
+   exactly `newDistance <= edge_nearest_v`: the byte lanes were spelling out a `cmp.w`.
 
    ⚠ The initialisation is ASYMMETRIC and is kept so: $24FD-$24FF writes only the HIGH lane ($FF,
    so the first point always wins) and leaves the low lane holding the previous frame's value, so
    the wide write is lane-preserving rather than `edge_nearest_v = 0xFF00`.
 
-   ⚠⚠ THAT SURVIVING LOW LANE IS DEAD IN PRACTICE, and it was MEASURED, not argued.  Two sabotages
-   — arming the whole word at the init, and dropping build_track_geometry's marshal-IN — both
-   survive `make validate`, because the only thing that can read the low lane before the walk
-   overwrites it is the first point's compare, and only when that point's distance HIGH byte is
-   also $FF.  Instrumenting the compare over the fixture's 400 cases: **2872 compares, distHi==$FF
-   ZERO times** (18 had equal high bytes, all of them later compares against a lane pair the walk
-   had already written).  So the lane-preserving write is faithfulness to $24FD, not behaviour —
-   keep it, but do not read those two surviving sabotages as a gap worth engineering around.  The
-   sibling lane defects ARE all caught: a strict `<` compare, reading the high lane in
-   scale_angle_in_section, a dropped marshal-OUT and a swapped marshal all fail at once.
+   ⚠⚠ THAT SURVIVING LOW LANE IS DEAD IN PRACTICE, MEASURED not argued: two sabotages (arming the
+   whole word at the init; dropping build_track_geometry's marshal-IN) survive `make validate`,
+   because only the first point's compare can read the lane, and only if that point's distance
+   high byte is also $FF — instrumented over the fixture's 400 cases, 2872 compares, distHi==$FF
+   ZERO times.  So the lane-preserving write is faithfulness to $24FD, not behaviour; the sibling
+   lane defects ARE all caught.
 
-   Every reader and writer is native (twin #169 freed the last one, check_crash), so the pair
-   carries no transliterated traffic; the shims marshal per the IN/OUT rule. */
+   Every reader and writer is native, so the pair carries no transliterated traffic. */
 uint16_t edge_nearest_v;   /* not static: check_crash's shim replays its high byte as exit A */
 
 void edge_nearest_marshal_in(void)
@@ -2000,24 +1971,13 @@ void edge_nearest_marshal_out(void)
     edge_nearest_hi = (uint8_t)(edge_nearest_v >> 8);
 }
 
-/* ⭐ WIDE-VALUE CLEANUP, mechanism (B): car_heading ($0A/$0B) relocated out of mem[] into this
-   native uint16_t.  It is WHERE THE CAR POINTS — one 16-bit angle, $10000 to the turn — and it is
-   a PERSISTENT value: integrate_car_position advances it by the frame's heading step and every
-   reader in the next frame's passes subtracts it from some bearing.  A static holds it exactly as
-   the two mem[] bytes did.
+/* car_heading ($0A/$0B) relocated out of mem[] into a native uint16_t: WHERE THE CAR POINTS, one
+   16-bit angle with $10000 to the turn, and PERSISTENT — integrate_car_position advances it by
+   the frame's heading step and every reader subtracts it from some bearing.
 
-   Every one of its eight readers is a native twin (emit_edge_bearing, draw_track_object,
-   update_camera_and_drive_state, build_road_sign, process_car_contact, mirrors_update_setup via
-   its shim, apply_driving_model via its shim) and both writers are too — so the pair carries no
-   transliterated traffic at all on Silverstone OR on an expansion circuit: the strict listing
-   re-scan (docs/wide-value-cleanup.md, TENTH lesson) finds no reference outside a native routine.
-
-   ⚠ Its LAST blocker was not a routine.  `loader_stub` ($1200) is revs_mem.bin's loader entry
-   stub; in the runtime image it sits nine bytes inside build_player_car, and as a stale `func` row
-   it credited build_player_car's OWN writes at $11FE/$1205 to a non-native caller.  Retagged.
-
-   The 6502-ABI boundary keeps the two representations in step exactly as hypot_max does: the
-   producers' shims marshal OUT, the consumers' marshal IN. */
+   All eight readers and both writers are native twins, so the pair carries no transliterated
+   traffic on Silverstone or on an expansion circuit (strict listing re-scan,
+   docs/wide-value-cleanup.md TENTH lesson).  The shims marshal per the IN/OUT rule. */
 uint16_t car_heading_v;   /* not static: apply_driving_model's and mirrors_update's shims pass its high byte */
 
 void car_heading_marshal_in(void)
@@ -2032,44 +1992,23 @@ void car_heading_marshal_out(void)
 }
 
 
-/* ⭐ WIDE-VALUE CLEANUP, mechanism (B): bearing ($8A/$8B) relocated out of mem[] into this native
-   uint16_t.  It is bearing_to_section's whole output — the absolute angle from the camera to a
-   section point — and every one of its readers is a native twin: emit_edge_bearing subtracts the
-   car's heading from it, build_road_sign files it in a sign's object slot.  Both producer arms
-   (bearing_arm and bearing_diagonal) and both readers now trade one 68000 word where the
-   transliteration wrote two bytes and reloaded/shifted/OR'd them back on every edge point of every
-   frame — and the bearing is computed once per point, so this is the road pass's hottest pair
-   after point_dist.
+/* bearing ($8A/$8B) relocated out of mem[] into a native uint16_t: bearing_to_section's whole
+   output, the absolute angle from the camera to a section point.  Both producer arms
+   (bearing_arm, bearing_diagonal) and both readers (emit_edge_bearing, build_road_sign) are
+   native.  Computed once per point — the road pass's hottest pair after point_dist.
 
-   ⚠⚠ THE CELLS ARE NOT FREED — $8A/$8B ARE HEAVILY MULTI-TENANT.  road_span_plot and
-   road_span_plot_2 park their DDA accumulator in $8A and carry the span's pixel byte in $8B (it is
-   loaded from MEM_colour_pattern_tbl, not from a bearing); plot_line_octant, plot_object,
-   scale_shape_vectors and interp_edge each use the pair as their own scratch; and OBJ_VECTOR_END
-   is $8A by another name.  Every one of those tenancies keeps mem[] untouched.  Only the
-   BEARING's use of the pair moves, which is sound because the bearing chain is tight — a producer
-   call is immediately followed by its reader, with no tenant between them — so no reader ever
-   depended on seeing a tenant's leftovers.
+   ⚠⚠ THE CELLS ARE NOT FREED — $8A/$8B are heavily multi-tenant: road_span_plot(_2) park their
+   DDA accumulator in $8A and the span's pixel byte in $8B; plot_line_octant, plot_object,
+   scale_shape_vectors and interp_edge use the pair as scratch; OBJ_VECTOR_END is $8A by another
+   name.  All keep mem[].  Only the BEARING's use moves, which is sound because the chain is tight
+   — a producer call is immediately followed by its reader, with no tenant between.
 
-   ⚠ The 6502-ABI boundary keeps the two representations in step, by the IN/OUT rule in
-   docs/wide-value-cleanup.md: a shim whose core CONSUMES the bearing marshals the cells in, one
-   whose core PRODUCES it unconditionally marshals them out, and one that produces it only
-   CONDITIONALLY does both.
-
-   ⭐ CORRECTED 2026-09-09 — THERE IS NO LONGER A TRANSLITERATED READER OF THIS PAIR.  This
-   block used to name project_object_slot ($2A5F), the car projector, as the shipping reader that
-   forced the OUT; it became twin #172 on 2026-09-02 and files the angle with
-   object_bearing_word_set(bearing_v), never touching the cells.  Its three callers are all in
-   place_car_world_coords' queue tail, which is itself native and calls
-   project_object_slot_core.  Nothing in revs_gen.c outside a __t6502 oracle names bearing_lo or
-   bearing_hi, and revs_track_hooks.c names them nowhere at all.
-
-   So what the OUT still serves is the DIFFERENTIALS, not the engine: `make validate` compares
-   full mem[] against a transliterated oracle that does write the cells, and `make determinism`
-   byte-compares all 64 KB against a recorded run.  ⚠ That is not the same as being free to
-   delete — the publish in race_main_loop_core's phase 5 is the one that keeps mem[$8A/$8B] from
-   going stale for a frame, and determinism sees exactly that as one diverging byte.  Removing it
-   means moving the whole producer/consumer chain core-to-core and re-recording the baseline; it is
-   a representation change, not a cleanup, and it is tracked in docs/wide-value-cleanup.md. */
+   ⚠ No transliterated reader of this pair is left, so the marshal-OUT now serves the
+   DIFFERENTIALS rather than the engine (validate compares full mem[] against an oracle that does
+   write the cells; determinism byte-compares 64 KB).  ⚠ Not the same as free to delete: phase 5's
+   publish is what keeps mem[$8A/$8B] from going stale for a frame, and determinism sees that as
+   one diverging byte.  Removing it is a representation change — moving the whole chain
+   core-to-core and re-recording the baseline — tracked in docs/wide-value-cleanup.md. */
 static uint16_t bearing_v;
 
 void bearing_marshal_in(void)
@@ -2092,17 +2031,13 @@ void bearing_marshal_out(void)
      under $67   the components are far apart -> max + min/8      (error under 3% there)
      $67 and up  they are comparable          -> max*7/8 + min/2  (which is the 45-degree case)
 
-   ⭐ WHAT THE TWIN CHANGES.  Every one of those terms is a 16-bit shift the 6502 has to spell
-   as `LSR hi / ROR A` pairs — nine of them in the far arm — and the 68000 does each in one
-   `lsr.w`.  The whole byte-at-a-time chain and its per-instruction flag bookkeeping go; what
-   is left is three shifts, an add and a subtract.
+   Every term is a 16-bit shift the 6502 spells as `LSR hi / ROR A` pairs (nine in the far arm)
+   and the 68000 does in one `lsr.w`; what is left is three shifts, an add and a subtract.
 
-   ⚠ hypot_min is shifted IN PLACE and does not survive the call.  That is not a scratch
-   detail to tidy away — it is output, and the differential compares it.  ⚠⚠ And the two arms
-   write DIFFERENT AMOUNTS of it: the near arm's >>3 keeps the low byte in A the whole way and
-   only ever stores the high one, so hypot_min_lo comes back UNCHANGED there, where the far
-   arm's >>1 is a read-modify-write of both.  Storing both on both arms is byte-exact
-   arithmetic and a differential failure — 829 of 2000 cases, all on the near arm. */
+   ⚠ hypot_min is shifted IN PLACE and does not survive the call — it is OUTPUT, and the
+   differential compares it.  ⚠⚠ The arms write different amounts of it: the near arm's >>3 stores
+   only the high lane (hypot_min_lo comes back unchanged), the far arm's >>1 rewrites both.
+   Storing both on both arms fails 829 of 2000 cases. */
 
 static PointDist point_distance_hypot_core(uint8_t angle, uint16_t minMag, uint16_t maxMag)
 {
@@ -2476,7 +2411,7 @@ void undraw_plot_lines_core(void)
         addr = (uint16_t)(mem[MEM_plot_undo_ptr_lo + i] | (mem[MEM_plot_undo_ptr_hi + i] << 8));
         bus_write(addr, mem[MEM_plot_undo_byte + i]);   /* $5132 STA (plot_ptr),Y with Y = 0 */
     }
-    /* ⭐ WIDE-VALUE CLEANUP: the residue is the relocated pointer's own value, so set the word
+    /* The residue is the relocated pointer's own value, so set the word
        and let the marshal mirror the 6502-ABI lanes.  Writing the lanes alone would leave
        plot_ptr_v stale for the next reader of the relocated global. */
     plot_ptr_v = addr;                           /* the 6502's residue: entry 0's address */
@@ -3686,7 +3621,7 @@ SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
 }
 
 
-/* ⭐⭐ WIDE-VALUE CLEANUP, mechanism (B): THE DRIVING MODEL'S STATE VECTOR
+/* ⭐⭐ THE DRIVING MODEL'S STATE VECTOR, relocated out of mem[]
    Fifteen 16-bit elements, plane-split in the 6502 as low bytes at $62D0 and high bytes at
    $62E0 — element i is ($62D0+i, $62E0+i).  It is the single largest wide-value base in the
    engine: 23 native routines, 84 references, every one of them a two-lane load, a chained
@@ -4052,7 +3987,7 @@ SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, ui
 static SlotExit edge_column_pass(uint16_t startSrc, uint8_t firstColumn, uint8_t stopColumn,
                                  uint8_t firstLine)
 {
-    /* ⭐ WIDE-VALUE CLEANUP: this is a genuine wide SEED for fill_edge_column_run, not residue. */
+    /* This is a genuine wide SEED for fill_edge_column_run, not residue. */
     plot_ptr2_v = startSrc;
     plot_ptr2_marshal_out();
     /* entry V is dead on this path (fill_edge_column_run's own note): pass 0. */
@@ -4137,7 +4072,7 @@ void copy_dash_data_core(uint8_t dirFlag)
 
     /* Leave the zero-page scratch exactly as the 6502 did.  Nothing outside the routine reads
        these, but the differential compares all of mem[]. */
-    /* ⭐ WIDE-VALUE CLEANUP: set the relocated words; the marshals mirror the lanes. */
+    /* Set the relocated words; the marshals mirror the lanes. */
     plot_ptr_v      = block;
     plot_ptr2_v     = page;
     plot_ptr_marshal_out();
@@ -6056,7 +5991,7 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
             return e;
         }
 
-        /* ⭐ WIDE-VALUE CLEANUP: one word read per pass, not two lanes and an or.  This is still
+        /* One word read per pass, not two lanes and an or.  This is still
            a RE-READ every pass, which the header above insists on — plot_store_resync keeps
            plot_ptr_v tracking any store the walk lands on $70..$73, so the word is as live as
            the lanes were. */
@@ -7104,7 +7039,7 @@ static void slip_magnitude_core(uint8_t slot)
    sign byte, C per the entry/clamp compare) is reconstructed in the shims, not here. */
 void store_slip_signed_core(uint8_t valueHi)
 {
-    /* ⭐ WIDE-VALUE CLEANUP: the 6502 hands the value over split (A : math_lo) because it has no
+    /* The 6502 hands the value over split (A : math_lo) because it has no
        word register, but inside the routine it is one uint16_t — so the negate is a negate, not a
        negate plus a re-split.  math_lo and math_hi are still written: they are OBSERVED 6502
        output cells, not lanes of a local (math_hi keeps the pre-negate high byte). */
@@ -7674,7 +7609,7 @@ void update_slip_sound(void)
           The curve is covered by sabotages that move a segment's OFFSET or SLOPE instead. */
 
 
-/* ⭐ WIDE-VALUE CLEANUP, mechanism (B): THE CAR-ANGLE ARRAY relocated out of mem[]
+/* THE CAR-ANGLE ARRAY, relocated out of mem[]
    The three-entry array the 6502 kept PLANE-SPLIT — low bytes at $62A0-$62A2, high bytes at
    $62A3-$62A5 — so element i cost two strided byte accesses to read and two to write.  Here it
    is three `uint16_t`, and every one of its thirteen native sites reads or writes one word.
@@ -9403,7 +9338,7 @@ SlotExit fill_object_gap_core(uint8_t width)
     {
         uint8_t  block   = (uint8_t)(column + 0x5Fu);
         unsigned lowBase = (block & 1u) ? 0x80u : 0x00u;
-        /* ⭐ WIDE-VALUE CLEANUP, and the byte lanes were hiding a much simpler statement.  The
+        /* The byte lanes were hiding a much simpler statement.  The
            6502 sets the second pointer by EOR $80 on the low lane and then DECs its page when
            that flipped bit 7 ($1E63) — and BOTH branches of that come to the same thing: low
            below $80 gives +$80 and a page back, low at or above gives -$80 and no page back, so
@@ -9579,7 +9514,7 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
        A the 6502 leaves in it, which IS the exit A of the two off-view arms below. */
     edgeCol       = mem[EDGE_COLUMN];
     mem[PVS_HALF] = (uint8_t)((mem[PVS_HALF] << 1) | (edgeCol >= 0x14u ? 1u : 0u));
-    /* ⭐ WIDE-VALUE CLEANUP: the source block for this column is one word.  The 6502 spells it
+    /* The source block for this column is one word.  The 6502 spells it
        as a page from (edgeCol >> 1) + VIEW_SRC_PAGE and a half-block bit dropped into the low
        byte's top; written wide it is VIEW_SRC_PAGE * $100 + edgeCol * $80. */
     plot_ptr_v = (uint16_t)(((unsigned)VIEW_SRC_PAGE << 8) + edgeCol * 0x80u);
@@ -9859,7 +9794,7 @@ Mode5Addr mode5_addr_core(uint8_t quarterOffset, uint8_t y)
        reads only plot_ptr / X / A / Y; the fixture drops V and C for this cluster. */
     unsigned row = y >> 3;                              /* Y selects the character row */
     uint16_t base = (uint16_t)(((uint16_t)mem[MEM_char_row_addr_hi + row] << 8) | mem[MEM_char_row_addr_lo + row]);
-    /* ⭐ WIDE-VALUE CLEANUP: the result lands in the relocated plot_ptr_v, and marshal_out keeps
+    /* The result lands in the relocated plot_ptr_v, and marshal_out keeps
        the 6502-ABI lanes.  The 6502's ASL plot_ptr_lo / ROL A spread of the doubled offset is a
        shift on the whole word; there is no lane to spread it over any more. */
     plot_ptr_v = (uint16_t)(base + ((unsigned)quarterOffset << 1));
@@ -10057,7 +9992,7 @@ uint8_t text_script_interp_core(uint8_t tableIdx)
 {
     uint8_t y = 0x00u;                           /* $4D7E LDY #0 — persists across a reload */
     for (;;) {                                   /* L_4D80 — (re)load this script's pointer */
-        /* ⭐ WIDE-VALUE CLEANUP: the script pointer is one word, assembled once per reload from
+        /* The script pointer is one word, assembled once per reload from
            the two parallel tables and mirrored into the 6502-ABI lanes.  The inner walk then adds
            Y to a word instead of re-assembling a pointer out of $72/$73 for every byte.
            ⚠ Reading it once per reload rather than once per byte is only sound because nothing
@@ -10408,7 +10343,7 @@ static void steer_demand_from_slip_core(void)
     /* $15F4-$1600 — take |slip_magnitude| (element $0A) as a 16-bit value, its low nibble-masked
        low byte parked in STEER_SIGN.  D = 0 on the steering path (docs/static-map.md §Decimal
        mode), so the old abs16_math is a plain two's-complement negate. */
-    /* ⭐ WIDE-VALUE CLEANUP: one uint16_t from the two element-$0A lanes.  The abs and the
+    /* One uint16_t from the two element-$0A lanes.  The abs and the
        quarter are then a negate and a shift, with no split back into lanes between them; only
        the 6502's own observable intermediates stay bytes (see the STEER_SIGN writes below). */
     uint16_t slip = (uint16_t)(model_state_16[MS_SLIP] & 0xFFF0u);
@@ -10453,7 +10388,7 @@ static void apply_steering_assist_noinit_core(uint8_t selector)
     uint8_t edgeSlot = (selector == 0x02u) ? 0x32u : 0x0Au;
 
     /* $1F19-$1F2E — |steering angle| as a 16-bit value (sign in bit 0 of the low byte).
-       ⭐ WIDE-VALUE CLEANUP: one uint16_t, so the negate is a negate and not a negate followed
+       One uint16_t, so the negate is a negate and not a negate followed
        by a split back into lanes.  ⚠ The sign lives in bit 0 of the LOW byte (sign-magnitude
        packing — see steer_angle_lo in symbols.csv), which is why the test is `ang & 1` and not
        a bit-15 test.  The array is relocated, so this is one word read, not two lanes. */
@@ -10498,7 +10433,7 @@ static void apply_steering_assist_noinit_core(uint8_t selector)
     uint16_t prod = (uint16_t)(revs_mulu16(absDiff, gainVal) >> 8);
 
     /* $1F7C-$1F88 — re-sign the product by the $1F48 subtract's sign, then clear bit 0.
-       ⭐ WIDE-VALUE CLEANUP: clearing bit 0 of the low lane and keeping the high one is one
+       Clearing bit 0 of the low lane and keeping the high one is one
        `& $FFFE` on the word, and the second re-sign is one negate. */
     uint16_t signedProd = diffNegative ? (uint16_t)(0u - prod) : prod;   /* $1F7E PLP / $1F7F abs16 */
     uint16_t demand = (uint16_t)(signedProd & 0xFFFEu);   /* $1F82-$1F88 */
@@ -11232,7 +11167,7 @@ void process_car_contact_native(void)
 }
 
 
-/* ⭐ WIDE-VALUE CLEANUP, mechanism (B): THE PER-CAR LAP DISTANCE relocated out of mem[]
+/* THE PER-CAR LAP DISTANCE, relocated out of mem[]
    Another plane-split array: low bytes $08D0-$08E7, high bytes $08E8-$08FF, one 16-bit
    distance-round-the-lap per car slot.  24 slots, $00-$17 — the twenty racing cars the field
    loops walk ($00-$13) plus the player's own slot $17, which the steppers address directly.
@@ -11305,7 +11240,7 @@ unsigned car_gap_lo_core(uint8_t a, uint8_t b) { return (unsigned)a - b; }
 GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn)
 {
     /* D = dist[Y] - dist[X], 16-bit, borrow chained from the entry carry.
-       ⭐ WIDE-VALUE CLEANUP: the 6502's two SBCs with a borrow chained between them ARE one
+       The 6502's two SBCs with a borrow chained between them ARE one
        16-bit subtract, and the entry carry is just its incoming borrow — nothing to hand-carry. */
     int      d     = (int)car_distance_16[y] - (int)car_distance_16[x]
                    - (carryIn ? 0 : 1);
@@ -11337,7 +11272,7 @@ GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn)
     }
 
     /* WRAPPED: complement = lap_length - |D|, with the saved sign flipped for the re-sign.
-       ⭐ WIDE-VALUE CLEANUP: the 6502's SBC pair is one 16-bit subtract.  Its borrow into the
+       The 6502's SBC pair is one 16-bit subtract.  Its borrow into the
        high lane is the wide subtract's own, and the byte the $27D5 branch tests is that
        subtract's high byte — so there is no carry to spell out and no `clo`/`c3` to carry it.
        ⚠ lap_length stays in mem[]: it is TRACK-FILE data, and an expansion circuit's hook can
@@ -12324,7 +12259,7 @@ static uint8_t track_pos_retreat_core(uint8_t x)
 
     /* one unit back round the lap; underflowing past 0 wraps to a full lap and, for the
        PLAYER only, un-books a completed lap */
-    /* ⭐ WIDE-VALUE CLEANUP: one 16-bit decrement of the car's lap distance, with a wrap to a
+    /* One 16-bit decrement of the car's lap distance, with a wrap to a
        full lap when it would go past the start line.  The 6502 spells it as three separate
        lane steps — decrement the low byte, borrow into the high one, and if the high one came
        out NEGATIVE reload both lanes from lap_length and start over — so the wrap test is a
@@ -13355,7 +13290,7 @@ void check_car_pair_core(void)
         } else if (gap < 0x05u) {
             /* ---------- (c) PROXIMITY ARM ($26e9): positive, small gap ---------- */
             /* 16-bit speed difference firstSlot - secondSlot; borrow-out sign -> shared_temp_76 bit7
-               ⭐ WIDE-VALUE CLEANUP: D is 0 here — the routine brackets its ONE SED around the
+               D is 0 here — the routine brackets its ONE SED around the
                pass-count ADC at $26DD — so the two chained SBCs are a plain binary 16-bit subtract
                with a forced entry borrow ($26f0's CLC).  What escapes is the carry OUT of the high
                byte, i.e. "no borrow out of 16 bits" (docs/static-map.md §Decimal mode). */
