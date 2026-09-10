@@ -219,8 +219,7 @@ void apply_driving_model_frame(void)
 {
     view_origin_marshal_in();
     car_heading_marshal_in();             /* it reads the heading in, as the car's position... */
-    CameraExit ce = apply_driving_model_core((uint8_t)car_heading_v,
-                                             (uint8_t)(car_heading_v >> 8), cpu.C);
+    CameraExit ce = apply_driving_model_core(car_heading_v, cpu.C);
     car_angle_marshal_out();              /* compute_car_angles_core rebuilt the sin/cos pair */
     car_heading_marshal_out();            /* ...and its tail calls integrate_car_position, which
                                              advances it — core-to-core, so publish it here */
@@ -754,7 +753,7 @@ void update_position_display(void)
 void emit_driver_name(void)
 {
     uint8_t x = cpu.X;
-    uint8_t ch = emit_driver_name_core(cpu.A, cpu.Y, x);
+    uint8_t ch = emit_driver_name_core((uint16_t)(cpu.A | (cpu.Y << 8)), x);
     cpu.A = ch; cpu.X = x; cpu.Y = 0x0Cu;
     cpu.N = 0; cpu.Z = 1; cpu.C = 1;             /* $325C CPY #$0C with Y = $0C */
 }
@@ -1043,8 +1042,8 @@ void driver_name_address(void)
     NamePtr p;
     driver_name_address_core(cpu.X, &p);
     math_lo = p.scratch;                         /* $74 — dead intermediate (index&3)*4 */
-    cpu.A   = p.lo;                              /* $3CFD exit A -> plot_ptr2_lo */
-    cpu.Y   = p.hi;                              /* $3CF1 exit Y -> plot_ptr2_hi */
+    cpu.A   = (uint8_t)p.addr;                   /* $3CFD exit A -> plot_ptr2_lo */
+    cpu.Y   = (uint8_t)(p.addr >> 8);            /* $3CF1 exit Y -> plot_ptr2_hi */
 }
 
 void menu_draw_gfx_bars(void)
@@ -1560,7 +1559,7 @@ void print_message_pair(void)      { cpu.Y = print_message_pair_core(cpu.X); cpu
 
 void console_io(void)
 {
-    cpu.A = console_io_core(cpu.A, cpu.Y, cpu.X);
+    cpu.A = console_io_core((uint16_t)(cpu.A | (cpu.Y << 8)), cpu.X);
     cpu.X = 0x00u;                                   /* every OSBYTE it issues returns X = 0 */
     cpu.Y = shared_temp_77;                          /* the field width the CPY exited on */
     cpu.Z = 1; cpu.C = 1; cpu.N = 0;                 /* $6352 CPY, equal */

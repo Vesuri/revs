@@ -270,7 +270,7 @@ SlotExit draw_car_field_core(uint8_t entryY, uint8_t entryV, uint8_t entryC);
 /* The rest of the frame body's steps, all defined far below.  race_main_loop_core reaches each
    through its core so the whole hot path is core-to-core with no 6502-ABI shim hops. */
 static void read_driving_controls_core(void);
-CameraExit apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC);
+CameraExit apply_driving_model_core(uint16_t heading, int entryC);
 GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1);
 SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear);
 static void build_road_sign_core(void);
@@ -2062,7 +2062,7 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect);
 
 /* apply_driving_model's sub-models (twins #58-#86), all defined further down.  It reaches
    every one through its core so the whole chain is one native call sequence, not shim hops. */
-static void compute_car_angles_core(uint8_t headingHi, uint8_t headingLo);
+static void compute_car_angles_core(uint16_t heading);
 static void rotate_state_pair_core(uint8_t dest, uint8_t source, uint8_t mode);
 static void stage_lateral_speed_delta_core(void);
 void update_grip_limits_core(void);
@@ -2708,9 +2708,11 @@ void dial_needle_angle_core(uint8_t engineRevs, NeedleDial *out)
 void driver_name_address_core(uint8_t index, NamePtr *out)
 {
     uint8_t col = (uint8_t)(index & 0x03u);
-    out->hi      = (uint8_t)(0x40u + (index >> 2));      /* $3CEB-$3CF1 */
     out->scratch = (uint8_t)(col << 2);                  /* $3CF5-$3CF7 math_lo = col*4 */
-    out->lo      = (uint8_t)(0x50u + col * 12u);         /* $3CF9-$3CFD col*8 + col*4 + $50 */
+    /* One address, not two lanes: row (index >> 2) picks the $100-page, the column the offset
+       within it.  $3CEB-$3CF1 built the high byte and $3CF9-$3CFD the low one separately only
+       because the 6502 hands the pointer over in Y:A. */
+    out->addr    = (uint16_t)(((0x40u + (index >> 2)) << 8) | (0x50u + col * 12u));
 }
 
 /* draw_dash_needles ($513A), the STEERING-WHEEL needle's arithmetic (the rev-needle half and the
@@ -3101,7 +3103,7 @@ uint8_t console_read_two_digits_core(void)
     for (;;) {                                       /* $3EE0 — ask until the pair is valid */
         ParseNum p;
 
-        console_io_core(0x74u, 0x00u, 0x02u);        /* $3EE0-$3EE6 — buffer $0074, width 2 */
+        console_io_core(0x0074u, 0x02u);             /* $3EE0-$3EE6 — buffer $0074, width 2 */
 
         uint8_t y = 0x02u;                           /* the characters console_io echoed: the */
                                                      /*   field is always full when it returns */
@@ -4234,10 +4236,10 @@ void lateral_speed_entry_marshal_out(void)
     lateral_speed_entry_hi = (uint8_t)(lateral_speed_entry_v >> 8);
 }
 
-CameraExit apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC)
+CameraExit apply_driving_model_core(uint16_t heading, int entryC)
 {
     /* $46A1 — the car's body angles, computed from where the car actually is. */
-    compute_car_angles_core(posHi, posLo);
+    compute_car_angles_core(heading);
     rotate_state_pair_core(MS_LATERAL_SPEED, MS_VEL_WORLD_X, 0xC0u);  /* rotate_state_0_into_8:
                                                 the world-axes velocity into the car's axes */
 
@@ -4624,14 +4626,15 @@ void copy_dash_data_core(uint8_t dirFlag)
    =========================================================================== */
 
 
-/* `dividendHi` arrives in A and is the top half of the 16-bit numerator; `dividendLo` is
-   math_lo, which the loop consumes bit by bit and hands back as the quotient. */
-static Div16By8 div16by8_core(uint8_t dividendHi, uint8_t dividendLo, uint8_t divisor)
+/* The numerator is ONE 16-bit value; the 6502 keeps its top half in A and its bottom half in
+   math_lo, which the loop consumes bit by bit and hands back as the quotient, so the shim
+   below is where the two halves are joined. */
+static Div16By8 div16by8_core(uint16_t dividend, uint8_t divisor)
 {
     GEO_COUNT(g_geoDiv);
     /* remainder in the high byte, dividend-becoming-quotient in the low byte — the pair the
        6502 keeps in A and math_lo, here shifted as ONE word. */
-    uint16_t work = (uint16_t)(((uint16_t)dividendHi << 8) | dividendLo);
+    uint16_t work = dividend;
     Div16By8 r;
     int step;
 
@@ -4688,7 +4691,7 @@ static Div16By8 div16by8_core(uint8_t dividendHi, uint8_t dividendLo, uint8_t di
    and mem[] sees only the quotient. */
 void div16by8(void)
 {
-    Div16By8 r = div16by8_core(cpu.A, math_lo, shared_temp_76);
+    Div16By8 r = div16by8_core((uint16_t)((cpu.A << 8) | math_lo), shared_temp_76);
 
     math_lo = r.quotient;
     /* $0CA2 `ROL math_lo`, the routine's last instruction: N and Z from the finished quotient,
@@ -8378,16 +8381,16 @@ void car_angle_marshal_out(void)
    rotate_state_0_into_8, opens by reloading X, Y and A — so the fixture verifies the four
    output bytes only.
    --------------------------------------------------------------------------- */
-static void compute_car_angles_core(uint8_t headingHi, uint8_t headingLo)
+static void compute_car_angles_core(uint16_t heading)
 {
     /* $0D01-$0D0C — h = heading x pi, as a 16-bit value ($C9/256 x 4 = pi to three figures). */
-    uint16_t scaled = (uint16_t)(((headingHi << 8) | headingLo) << 2);
+    uint16_t scaled = (uint16_t)(heading << 2);
     uint16_t h      = (uint16_t)(((uint32_t)scaled * 0xC9u) >> 8);
 
     /* $0D0E-$0D19 — bit 6 of the heading's high byte decides which element the first pass
        writes; the second pass takes the other. */
     int elem[2];
-    elem[0] = (headingHi & 0x40u) ? 1 : 0;
+    elem[0] = (heading & 0x4000u) ? 1 : 0;
     elem[1] = elem[0] ^ 1;
 
     for (int pass = 0; pass < 2; pass++) {
@@ -8419,8 +8422,8 @@ static void compute_car_angles_core(uint8_t headingHi, uint8_t headingLo)
 
     /* $0D97-$0DB2 — the quadrant, as two sign bits: bit 7 of the heading's high byte for
        element 0, bit 7 XOR bit 6 for element 1. */
-    if (headingHi & 0x80u)                    car_angle_16[0] |= 0x0001u;
-    if (((headingHi << 1) ^ headingHi) & 0x80u) car_angle_16[1] |= 0x0001u;
+    if (heading & 0x8000u)                    car_angle_16[0] |= 0x0001u;
+    if (((heading << 1) ^ heading) & 0x8000u) car_angle_16[1] |= 0x0001u;
 }
 
 /* ---------------------------------------------------------------------------
@@ -9163,7 +9166,8 @@ CameraExit update_camera_and_drive_state_core(void)
 }
 
 /* The 6502-ABI shims. */
-void compute_car_angles(void)            { car_angle_marshal_in(); compute_car_angles_core(cpu.A, cpu.X);
+void compute_car_angles(void)            { car_angle_marshal_in();
+                                           compute_car_angles_core((uint16_t)((cpu.A << 8) | cpu.X));
                                            car_angle_marshal_out(); }
 void scale_by_track_gradient(void)
 {
@@ -14911,12 +14915,12 @@ void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
  * 0..11 in both roles.  Exit A is the last character; the exit flags are the terminating
  * CPY #$0C's, i.e. fixed (N=0, Z=1, C=1).
  * ------------------------------------------------------------------------------------------------ */
-uint8_t emit_driver_name_core(uint8_t ptrLo, uint8_t ptrHi, uint8_t x)
+uint8_t emit_driver_name_core(uint16_t ptr, uint8_t x)
 {
     uint8_t last = 0u;
     unsigned i;
 
-    plot_ptr2_v = (uint16_t)(ptrLo | ((unsigned)ptrHi << 8));   /* $3250/$3252 */
+    plot_ptr2_v = ptr;                                          /* $3250/$3252 */
     plot_ptr2_marshal_out();
 
     /* One range test for the whole name, not twelve: the pointer cannot move under the loop
@@ -15116,7 +15120,7 @@ NameExit print_driver_name_by_order_core(uint8_t orderPos)
     saved_slot_index = car;                          /* $667E */
     driver_name_address_core(car, &p);               /* $6680 */
     math_lo = p.scratch;                             /* $74 — the dead 6502 intermediate */
-    e.a = emit_driver_name_core(p.lo, p.hi, car);    /* $6683 — X stays the car throughout */
+    e.a = emit_driver_name_core(p.addr, car);        /* $6683 — X stays the car throughout */
     e.x = car;
     e.n = 0u; e.z = 1u; e.c = 1u;                    /* $325C CPY #$0C with Y = $0C */
     return e;
@@ -15143,7 +15147,7 @@ void prompt_driver_ready_core(void)
     text_script_interp_core(0x1Du);                  /* $6687-$6689 — the "next driver" prompt */
     driver_name_address_core(car, &p);               /* $668E */
     math_lo = p.scratch;                             /* $74 — the dead 6502 intermediate */
-    emit_driver_name_core(p.lo, p.hi, car);          /* $6691 — X is the ambient OSWRCH register */
+    emit_driver_name_core(p.addr, car);              /* $6691 — X is the ambient OSWRCH register */
     wait_dismiss_space_core();                       /* $6694 */
 }
 
@@ -15157,7 +15161,7 @@ void read_driver_name_core(void)
 
     driver_name_address_core(player_car, &p);        /* $66D4-$66D6 */
     math_lo = p.scratch;                             /* $74 — the dead 6502 intermediate */
-    console_io_core(p.lo, p.hi, 0x0Cu);              /* $66D9-$66DB — a twelve-character field */
+    console_io_core(p.addr, 0x0Cu);                  /* $66D9-$66DB — a twelve-character field */
 }
 
 /* $1B84 update_position_display — TWIN #191.  The race-arm position readout.  pass_count_bcd holds
@@ -16032,24 +16036,23 @@ uint8_t print_message_pair_core(uint8_t script)
    acknowledges it with OSBYTE $7E and reads again, preserving Y across the call by
    pushing it — so the partly-typed line survives an ESCAPE.
    =========================================================================== */
-uint8_t console_io_core(uint8_t ptrLo, uint8_t ptrHi, uint8_t width)
+uint8_t console_io_core(uint16_t field, uint8_t width)
 {
-    plot_ptr_lo    = ptrLo;                          /* $6300 — the field's address */
-    plot_ptr_hi    = ptrHi;                          /* $6302 */
+    /* The field's address is ONE value here and is only SPLIT to publish it: plot_ptr_lo/hi
+       ($70/$71) are the cells the 6502 stored it in and the twin keeps writing them, but
+       nothing in the loop below reads them back — every character is addressed off `field`
+       with one add, not two byte loads, a shift and an or. */
+    plot_ptr_lo    = (uint8_t)field;                 /* $6300 — the field's address */
+    plot_ptr_hi    = (uint8_t)(field >> 8);          /* $6302 */
     shared_temp_77 = width;                          /* $6304 — and its width */
-
-    /* The field's address as ONE 16-bit value.  The 6502 recomposes it from the two lanes at
-       every store below; nothing in the loop writes them (the MOS's own workspace is nowhere
-       near $70/$71), so composing it once is the same program with one add per character
-       instead of two byte loads, a shift and an or. */
-    const uint16_t field = (uint16_t)(((uint16_t)ptrHi << 8) | ptrLo);
     /* ⭐ One hardware-window test for the whole field, not one per character: the column only
        ever indexes $00..$FF off `field`, so proving the base is RAM proves every store. */
     const int fieldIsRam = ((unsigned)field + 0xFFu) < BBC_IO_LO;
 
     /* $6306-$6311.  The ambient Y at both calls is the caller's pointer high byte. */
-    mos_osbyte(0x02u, 0x00u, ptrHi);                 /* input stream := keyboard */
-    mos_osbyte(0x15u, 0x00u, ptrHi);                 /* flush the keyboard buffer */
+    /* The ambient Y at both calls is the caller's pointer HIGH byte. */
+    mos_osbyte(0x02u, 0x00u, (uint8_t)(field >> 8)); /* input stream := keyboard */
+    mos_osbyte(0x15u, 0x00u, (uint8_t)(field >> 8)); /* flush the keyboard buffer */
 
     uint8_t a = 0x15u;                               /* the A the last OSBYTE left */
     uint8_t y = 0x00u;                               /* $6314 — column 0 */

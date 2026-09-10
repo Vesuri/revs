@@ -217,7 +217,7 @@ typedef struct { uint8_t offset, octant, temp77, quadrant; } NeedleDial;
 
 /* driver_name_address_core's result.  lo -> exit A / plot_ptr2_lo, hi -> exit Y / plot_ptr2_hi;
    scratch -> math_lo ($74) 6502 exit value ((index&3)*4, dead scratch). */
-typedef struct { uint8_t lo, hi, scratch; } NamePtr;
+typedef struct { uint16_t addr; uint8_t scratch; } NamePtr;
 
 /* draw_dash_needle_core's result — the steering-wheel needle handed to plot_line_octant.
    angleIndex   -> math_lo ($74) 6502 exit value (folded angle index; plot_line_octant's DDA step);
@@ -404,7 +404,7 @@ extern const SpanPlotter SPAN_PLOT_2;
 /* ---- cpu-free cores the shims call (defined in revs_native.c) ---- */
 AdcRead adc_read_core(uint8_t channel);
 MosRegs kbd_test_key_regs(uint8_t keyCode);   /* OSBYTE 129 exit file — kbd_test_key's shim reads A/X/Y */
-CameraExit apply_driving_model_core(uint8_t posLo, uint8_t posHi, int entryC);
+CameraExit apply_driving_model_core(uint16_t heading, int entryC);
 
 /* ⭐⭐ The frame driver's entries into phases 3 and 4, one level below the 6502-ABI INPUT
    marshals: race_main_loop_core runs the two back to back, so each pass's wide inputs are
@@ -692,7 +692,7 @@ int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out);
    dispatch returns; TextExit adds the carry the BCD printer's field-width shift produces. */
 typedef struct { uint8_t a, n, z; }    TextChar;
 typedef struct { uint8_t a, n, z, c; } TextExit;
-uint8_t  emit_driver_name_core(uint8_t ptrLo, uint8_t ptrHi, uint8_t x);
+uint8_t  emit_driver_name_core(uint16_t ptr, uint8_t x);
 /* The dashboard readouts that drive those printers ($65C8/$501D/$502D/$502F/$6673/$667B/$1B84). */
 typedef struct { uint8_t a, n, z, v, c; }    BcdExit;
 typedef struct { uint8_t a, x, n, z, c; }    NameExit;
@@ -750,7 +750,7 @@ void engine_main_core(void);
 void advance_player_section_core(void);
 void clear_surface_buffers_core(void);
 void fill_line_surface_core(void);
-uint8_t console_io_core(uint8_t ptrLo, uint8_t ptrHi, uint8_t width);
+uint8_t console_io_core(uint16_t field, uint8_t width);
 void build_section_ahead_core(void);
 void rebuild_walk_reversed_core(uint8_t count);
 void rebuild_walk_backward_core(void);
