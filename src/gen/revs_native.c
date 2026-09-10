@@ -1840,7 +1840,7 @@ void race_main_loop_core(RestartDepth depth)
                 cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
             }
             PROBE_PHASE(16); PROBE_SHAPE_PHASE(16); draw_corner_markers();
-            PROBE_PHASE(17); PROBE_SHAPE_PHASE(17); move_and_draw_cars();
+            PROBE_PHASE(17); PROBE_SHAPE_PHASE(17); move_and_draw_cars_core();
             PROBE_PHASE(18); PROBE_SHAPE_PHASE(18); fill_dash_edge_columns();
             PROBE_PHASE(19); PROBE_SHAPE_PHASE(19); mirrors_update_native();
             PROBE_PHASE(20); PROBE_SHAPE_PHASE(20); engine_sound_update();
@@ -13493,9 +13493,7 @@ void move_and_draw_cars_core(void)
 SlotExit draw_car_field_core(uint8_t entryY, uint8_t entryV, uint8_t entryC)
 {
     /* Every bearing draw_track_object measures is against the camera heading, and nothing in
-       this pass moves it — so the relocated wide value is published once, not per car. */
-    car_heading_marshal_in();
-
+       this pass moves it — so it is marshalled in ONCE, on the shim, not per car. */
     uint8_t pos = zp_scratch_index;                         /* $66DF LDX zp_scratch_index */
     uint8_t y = entryY, v = entryV, c = entryC;
     /* $66DF's own LDX flags, in case the loop draws nothing at all. */

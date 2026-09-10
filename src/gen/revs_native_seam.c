@@ -1295,7 +1295,6 @@ void car_gap_tail(void)
    caller (move_and_draw_cars) reaches it without going through the register ABI. */
 void stage_nearby_car_at_core(uint8_t orderIndex)
 {
-    view_origin_marshal_in();
     uint8_t slot = mem[MEM_car_order + orderIndex];           /* $28F2 LDA $013C,X */
     saved_slot_index = slot;                              /* $28F5 STA $45 */
     shared_counter_42 = slot;                             /* $28F7 STA $42 */
@@ -1313,23 +1312,35 @@ void stage_nearby_car_at_core(uint8_t orderIndex)
         reject_object_slot_core();                        /* its A/Y/N/Z are dead here */
         return;
     }
-    view_origin_marshal_in();
     hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     place_car_world_coords_core(slot, s.y);               /* $2922 TAY; $2937 — exit X dead */
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
 }
 
-void stage_nearby_car(void) { stage_nearby_car_at_core(cpu.X); }
+/* ⭐ THE IN-MARSHALS SIT ON THE SHIMS OF THIS PASS, NOT INSIDE ITS CORES, and here that is a
+   measurement and not just tidiness: stage_nearby_car_at_core ran view_origin_marshal_in TWICE
+   per call and move_and_draw_cars_core calls it seven times a frame, so the camera was being
+   rebuilt from its byte lanes fourteen times a frame for a value nothing in the pass moves
+   (view_origin diverged 6 times in 142258 round trips, car_heading 0 in 77840 --
+   docs/wide-value-cleanup.md §IS THE MARSHALLING ORACLE-ONLY).  `make validate` enters at each
+   shim and still gets its read; the native caller enters at move_and_draw_cars_core. */
+void stage_nearby_car(void) { view_origin_marshal_in(); stage_nearby_car_at_core(cpu.X); }
 
 /* $2637 — result-only: no register argument (car_ahead, zp_scratch_index and track_direction all
    come out of mem[]) and the body's next call reloads every register. */
-void move_and_draw_cars(void) { move_and_draw_cars_core(); }
+void move_and_draw_cars(void)
+{
+    view_origin_marshal_in();    /* for the seven stage_nearby_car_at_core calls */
+    car_heading_marshal_in();    /* ...and for draw_car_field_core's bearing measurements */
+    move_and_draw_cars_core();
+}
 
 /* $66DF draw_car_field — the other-car draw pass.  Y/V/C arrive ambient and thread through the
    whole pass; X does not (draw_track_object reloads it from saved_slot_index).  A/N/Z are the
    last draw's. */
 void draw_car_field(void)
 {
+    car_heading_marshal_in();
     SlotExit e = draw_car_field_core(cpu.Y, cpu.V, cpu.C);
     cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
     cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
