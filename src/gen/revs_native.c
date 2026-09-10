@@ -1,36 +1,23 @@
 /* revs_native.c — FAITHFUL native twins.
  *
- * Every function here replaces a transliterated one of the same name in revs_gen.c, which
- * keeps its body under a `__t6502` suffix as the validation ORACLE.  `make validate` runs
- * both on the same randomised pre-state and diffs the whole of mem[] plus the registers the
- * fixture declares live; a twin with no fixture FAILS the run rather than passing vacuously.
+ * Each function here replaces a transliterated one of the same name in revs_gen.c, which keeps
+ * its body under a `__t6502` suffix as the validation ORACLE.  `make validate` runs both on the
+ * same randomised pre-state and diffs all of mem[] plus the registers the fixture declares live;
+ * a twin with no fixture FAILS rather than passing vacuously.
  *
- * ⭐⭐ HOW A TWIN IS WRITTEN — the checklist is docs/faithfulness-seam.md §Writing one, and it
- * is a REQUIREMENT, not a style preference:
- *   - real C: named locals, `for`/`if`/`switch` instead of `goto`, no LDA/STA/TAY chains;
- *   - a typed `_core(...)` that takes its inputs as arguments, plus the `void <name>(void)`
- *     6502-ABI shim that marshals mem[]/cpu into it;
- *   - mem.h names (`plot_ptr_lo`, `band1_duration_lo`, …) for every cell that has one, and a
- *     symbols.csv row for every one that does not — an unnamed hex address in a twin is a
- *     naming pass that was skipped, and docs/rename.md is where it gets queued;
- *   - comments that say what the routine COMPUTES.  The instruction-by-instruction record
- *     already exists next door in revs_gen.c and does not need re-narrating;
- *   - real locals only where the mem[] cell is PROVEN dead, with the proof written down;
- *   - BBC hardware writes are #ifdef-guarded, never deleted — the removed one is a hole in
- *     the differential, not a saved cycle.  (`make validate` diffs the hardware-write
- *     SEQUENCE, so a dropped $FE69 poke is a FAIL, and bbc_hw.cpp turns $FE20/$FE21/$FE66
- *     into the copper's band records on the Amiga: they are not dead stores there either.)
+ * How to write one: docs/faithfulness-seam.md §Writing one.  In short — real C (named locals,
+ * ordinary control flow, a typed `_core(...)` plus the `void <name>(void)` 6502-ABI shim),
+ * mem.h names for every cell (an unnamed hex address is a skipped rename → docs/rename.md),
+ * comments saying what it COMPUTES, and BBC hardware writes #ifdef-guarded, never deleted
+ * (validate diffs the hardware-write SEQUENCE, and bbc_hw.cpp turns $FE20/$FE21/$FE66 into the
+ * copper's band records).
  *
- * ⚠ THE ONE PLACE 6502 MACROS SURVIVE, AND WHY.  A twin's exit contract can include the
- * FLAGS — every twin here declares AXY(+S)+flags live — and C has no carry or overflow.  Where a
- * flag genuinely leaves the routine the arithmetic goes through a small named helper
- * (`load_a`, `adc_step`, `sub_from`) that wraps cpu.h's macro, so the
- * semantics are the 6502's by construction, decimal mode included (the fixture randomises
- * it).  The macro is INSIDE the helper; the caller reads as C.  Everywhere else the flags
- * are dead and there are no macros at all.
+ * ⚠ 6502 macros survive in exactly one place: where a FLAG leaves the routine.  C has no carry,
+ * so that arithmetic goes through a small named helper (`load_a`, `adc_step`, `sub_from`) with
+ * cpu.h's macro inside it — decimal mode included.  Elsewhere the flags are dead and there are
+ * no macros at all.
  *
- * Linked into BOTH backends.  Anything genuinely Amiga-only belongs in
- * src/platform/amiga/revs_native_amiga.cpp instead.
+ * Linked into BOTH backends; anything Amiga-only belongs in revs_native_amiga.cpp.
  */
 #include "../cpu/cpu.h"
 #include "../cpu/bus.h"
@@ -46,123 +33,61 @@
 #include "../platform/revs_plot.h"    /* REVS_PLOT_*: the direct-to-bitplane run plotter */
 #include "../platform/track.h"        /* TRACK_GEN_ARGS(): the generator's two per-circuit constants */
 
-/* ---------------------------------------------------------------------------
-   ⭐ THE PER-CIRCUIT HOOK SEAMS, BY NAME
-   ---------------------------------------------------------------------------
-   Each of these is an address IN CODE that an expansion circuit's ModifyGameCode rewrites
-   (`make track-smc` / `make track-patch`).  A twin that reaches one has to read the opcode
-   byte and dispatch on it, and the operand follows at +1/+2 — so the seam gets ONE name and
-   the operand is written as an offset off it, the same shape as MEM_smc_object_coord_mask below.
-   ⚠ These are code addresses, not variables: the name says which seam, not what it holds.
-   --------------------------------------------------------------------------- */
-/* MEM_smc_boundary_hook — cross_section_boundary: JSR the circuit's own arm */
-/* MEM_smc_segment_load — load_section_from_segment: LDA table,Y vs a hook JSR */
-/* MEM_smc_section_advance — build_road_section: CLC/ADC #3 vs a hook JSR */
-/* MEM_smc_marker_mask — build_road_section: AND #$F8 vs LDA #imm */
-/* MEM_smc_section_tail_hook — build_road_section's tail: a hook JSR */
-/* MEM_smc_walk_dir_hook — rebuild_walk_reversed: the dir-index hook JSR */
-/* MEM_smc_controls_hook — read_driving_controls: a hook JSR */
-/* MEM_smc_fill_attr_hook — fill_line_attr: a hook JSR */
-/* MEM_smc_gap_walk_branch — column_gap_walk: the source-byte branch (BEQ $1DC5) */
-/* MEM_smc_object_ceiling — plot_object: the object-count ceiling (LDX #imm) */
-/* MEM_smc_rebase_branch — the rebase pair's BEQ — taken or not, per circuit */
-/* MEM_smc_section_ahead_hook — advance_player_section: step-forward hook JSR */
-/* MEM_smc_section_back_limit — advance_player_section: the CMP #imm step-back gate */
-/* MEM_smc_walk_back_hook — advance_player_section: step-back hook JSR */
-/* MEM_smc_edge_walk_hook — road_edge_walk: BCS vs the circuit's own JMP */
-/* MEM_smc_geometry_store — build_track_geometry: STA abs,Y vs a hook JSR */
-/* MEM_smc_half_width_call — horizon_half_width_at: the JSR whose target moves */
-/* MEM_smc_edge_width_hook — emit_edge_width_offset: STA zp pair vs a JMP */
-/* MEM_smc_car_pair_hook — check_car_pair */
-/* MEM_smc_span_cap_load — span_cap_line_slot_z: LDA table,Y vs a hook JSR */
-/* MEM_smc_segment_scale_tbl — compute_segment_scale: LDA abs,Y — the base moves */
-/* MEM_smc_place_player_hook — place_player_in_section: a hook JSR */
-/* MEM_smc_camera_scale — update_camera_and_drive_state: ASL/ROL vs a hook JSR */
-/* MEM_smc_horizon_cmp — update_horizon_band: CMP #imm — the ceiling */
-/* MEM_smc_horizon_clamp — ...and LDA #imm — the value it clamps down to */
+/* THE PER-CIRCUIT HOOK SEAMS.  Each is an address IN CODE that an expansion circuit's
+   ModifyGameCode rewrites (`make track-smc` / `make track-patch`).  A twin reaching one reads the
+   opcode byte and dispatches on it, operand at +1/+2 — so the seam gets ONE name and the operand
+   is an offset off it.  ⚠ Code addresses, not variables: the name says which seam, not what it
+   holds. */
 
-/* The four ULA palette tables irq1v_band_schedule writes, one per raster band.  They are
-   CONTIGUOUS — $3458 and $3468 are 16 bytes each, $3478 and $347C four each, together
-   $3458-$347F — and that is what fixes which band owns which, rather than a plausible reading
-   of the dispatch.  Rows and the evidence in disasm/symbols.csv, which is where their mem.h
-   names come from. */
+/* irq1v_band_schedule's four ULA palette tables are CONTIGUOUS ($3458/$3468 16 bytes each,
+   $3478/$347C four each = $3458-$347F), which is what fixes band ownership rather than a reading
+   of the dispatch.  Evidence in disasm/symbols.csv.
 
-/* ⭐ SCREEN POSITIONS, addressed by the mem.h name of the cell the tenant writes: the MODE 7
-   front end's MEM_menu_row_attr / MEM_menu_cursor_cell, poll_steering_assist's four
-   MEM_assist_lamp_* dashboard bytes, and the six MEM_wheel_spin_run_* runs tick_wheel_spin
-   XORs to animate the wheels.  A position in a screen page is not a variable, but a twin that
-   pokes one still needs a name for it, so symbols.csv carries them as `data` rows — the
-   precedent is $7000 column_buffer, the frame buffer's own base. */
+   Screen POSITIONS carry mem.h names too (MEM_menu_row_attr, MEM_assist_lamp_*,
+   MEM_wheel_spin_run_*) — symbols.csv holds them as `data` rows, as it does $7000 column_buffer. */
 
-/* ⭐⭐ WIDE-VALUE CLEANUP, mechanism (B): THE ENGINE'S THREE SCREEN WRITE POINTERS
-   ($70/$71, $72/$73, $8E/$8F) relocated out of mem[] into native uint16_ts.
+/* THE ENGINE'S THREE SCREEN WRITE POINTERS ($70/$71, $72/$73, $8E/$8F) live in native uint16_ts
+   rather than mem[] byte lanes.  All three move together because the span rasteriser's
+   SpanPlotter descriptors name their pointer slots and pick one at run time.
 
-   They move together and they had to: the span rasteriser's SpanPlotter descriptors name their
-   pointer slots, and span_end_marker / fill_column_gaps_core pick a slot at run time, so
-   relocating one and not the others would put a marshalling temp inside the routine that runs
-   eight times per scan line.
+   The win is in the REASSEMBLIES, not the steps: every store through one of these used to spell
+   `mem[zp] | (mem[zp+1] << 8)` — two reads, a shift and an or — and span_plot_core does it twice
+   per call, eight times per scan line.
 
-   WHERE THE WIN IS.  Not in the lo/hi STEPS — those are a wash — but in the REASSEMBLIES.  Every
-   store through one of these pointers used to spell `mem[zp] | (mem[zp+1] << 8)`: two byte reads,
-   a shift and an or, to make an address the 68000 can read in one word.  span_plot_core does that
-   TWICE per call and is called eight times per scan line; zp_pointer and view_screen_addr are the
-   same idiom behind a helper, at ten more sites.  Four accesses become two, and the shift/or chain
-   goes entirely.
+   ⚠ THESE POINTERS CAN WRITE THEMSELVES.  An ascending span walk climbs the page byte through
+   $00 and stores INTO ZERO PAGE, sometimes onto $70/$72; the oracle re-reads the pointer at every
+   dereference and sees its own write.  Hence the byte lanes below and plot_store_resync.  The
+   four span-arm fixtures PLANT this case (one ascending case in twelve starts above its bound),
+   so `make validate FN=draw_span` manufactures the hazard — it is what failed the
+   `mem[arm->addend]` hoist out of span_walk.
 
-   ⭐ AND THE STEPS ARE A WIN TOO, once the byte-lane habit is dropped.  The first draft of
-   step_scanline wrote `plot_ptr_v = (plot_ptr_v & 0xFF00u) | next` to "preserve the high byte" and
-   duly cost 4 accesses against the byte form's 3.  That mask is the idiom being removed: on that
-   path the low byte provably cannot wrap (the character-row branch catches $00 via `next & 7`), so
-   it is just `plot_ptr_v++` — two `addq.w #1,ADDR` read-modify-writes against a read and two
-   writes.  Two word ops beat three byte ops.  Ask what the value DOES before masking a lane.
+   ⚠ mem[] stays the 6502-ABI mirror: shims marshal in on entry, out on exit, so the oracles' mem[]
+   differential still sees every byte.  console_io ($70/$71) and emit_driver_name ($72/$73) are the
+   two shipping transliterations that touch these cells and both are write-only.
 
-   ⚠ THE ALIASING QUESTION, and how it is actually settled.  A span walk can climb the high byte
-   through page $00 and store through the pointer INTO ZERO PAGE — that is measured, not theory: it
-   is why `mem[arm->addend]` may not be hoisted out of span_walk.  A relocated uint16_t would miss a
-   store that landed on its own cells.  A bus_write probe was tried and is RETRACTED (it could not
-   see a native twin's raw mem[] stores at all — docs/wide-value-cleanup.md).  The instrument that
-   settles it was already in the tree: the four span-arm fixtures PLANT the pathological case, one
-   ascending case in twelve starting above its bound, and that plant is what failed the addend hoist
-   3 of 400 times on each `fwd` arm.  `make validate FN=draw_span` manufactures the hazard.
-
-   ⚠ mem[] stays the 6502-ABI mirror, exactly as car_heading does: the shims marshal in on entry and
-   out on exit, so the __t6502 oracles' mem[] differential still sees every byte.  Two shipping
-   transliterated routines write these cells (console_io saves A/Y in $70/$71, emit_driver_name in
-   $72/$73) and BOTH are write-only, so a marshal-in is all they need.
-
-   ⚠⚠ $8E/$8F IS DUAL-TENANTED and only the PLOTTER tenant moves.  plot_object reads $8E as a shape
-   index and the driving model uses it as a signed temporary; those sites keep mem[] and are
-   untouched.  The two windows never overlap a span walk (disasm/symbols.csv $008E), and the
-   marshal pair is what keeps that true rather than merely believed. */
-/* ⚠ The seed sites, and ONLY the seed sites.  draw_road writes the three low bytes and
-   interp_edge writes the three pages, so between those two points the pointer is half-built and
-   a whole-word store would invent a high byte the 6502 never wrote — and interp_edge's "off the
-   side" early return really does leave the stale one standing.  Everywhere else (the derefs, the
-   per-scan-line page step) the value is whole and is handled whole. */
+   ⚠⚠ $8E/$8F IS DUAL-TENANTED and only the PLOTTER tenant moved — plot_object's shape index and
+   the driving model's signed temporary keep mem[].  The windows never overlap a span walk
+   (symbols.csv $008E); the marshal pair is what keeps that true. */
+/* ⚠ Seed sites ONLY.  draw_road writes the three low bytes and interp_edge the three pages, so
+   between them the pointer is half-built and a whole-word store would invent a high byte the 6502
+   never wrote — interp_edge's "off the side" early return leaves the stale one standing.
+   Everywhere else the value is whole and handled whole. */
 #define PLOT_PTR_SET_LO(v, b)  ((v) = (uint16_t)(((v) & 0xFF00u) | (uint8_t)(b)))
 #define PLOT_PTR_SET_HI(v, b)  ((v) = (uint16_t)(((v) & 0x00FFu) | ((unsigned)(uint8_t)(b) << 8)))
 
-/* ⚠⚠ THE MIRROR MUST STAY LIVE, not just be published at the shim's exit.  The plotters
-   dereference these pointers, and an ascending run can walk one of them onto its OWN zero-page
-   cells — at which point the plotter READS mem[$70..$73]/mem[$8E/$8F] as an ordinary colour cell.
-   A stale mirror hands that read the pointer's ENTRY value and every byte downstream diverges
-   (measured: draw_span_shallow_fwd case 119, ref stored $D7 where the twin stored $77).
-   So every mutation writes the byte lane through as well; plot_store_resync closes the other
-   direction, when a store lands ON a lane. */
+/* ⚠⚠ THE MIRROR MUST STAY LIVE, not merely be published at shim exit: a plotter whose pointer has
+   walked onto its own zero-page cells READS mem[$70..$73]/mem[$8E/$8F] as an ordinary colour cell,
+   and a stale mirror hands it the entry value.  So every mutation writes the byte lane through;
+   plot_store_resync closes the other direction, when a store lands ON a lane. */
 #define PLOT_SET_LO(name, b)  do { uint8_t b_ = (uint8_t)(b);                              \
         name##_v = (uint16_t)((name##_v & 0xFF00u) | b_); mem[MEM_##name##_lo] = b_; } while (0)
 #define PLOT_SET_HI(name, b)  do { uint8_t b_ = (uint8_t)(b);                              \
         name##_v = (uint16_t)((name##_v & 0x00FFu) | ((unsigned)b_ << 8));                 \
         mem[MEM_##name##_hi] = b_; } while (0)
-/* A step of an arbitrary delta, for plot_line_octant.  One word add, and the byte lanes are
-   refreshed ONLY when the pointer is in page $00/$01.
-   ⚠ The lanes are load-bearing, and the reason is the READ direction, not the store: the pixel
-   read-modify-write fetches ($70),Y, so a pointer sitting a few bytes below $70 reads its OWN low
-   or high lane as the screen byte.  (The store direction is closed by plot_store_resync.)  That
-   needs plot_ptr_v in [$006A..$0071] — addr is plot_ptr_v + y with y in 0..7 — so the page test
-   is a conservative superset, and every shipping caller (frame-buffer addresses, $3000 up) skips
-   the two stores entirely.  Dropping the lanes altogether FAILS the fixture's planted page-$00
-   cases; keeping them unconditionally costs two RAM writes per pixel step for nothing. */
+/* Arbitrary-delta step, for plot_line_octant: one word add, lanes refreshed only in page $00/$01.
+   ⚠ The lanes matter for the READ direction — the pixel RMW fetches ($70),Y, so plot_ptr_v in
+   [$006A..$0071] reads its own lane as the screen byte.  The page test is a conservative superset
+   of that; every shipping caller ($3000 up) skips both stores. */
 #define PLOT_PTR_ADD(name, delta)  do {                                                    \
         name##_v = (uint16_t)(name##_v + (delta));                                         \
         if (name##_v < 0x0100u) {                                                          \
@@ -196,36 +121,18 @@ void plot_ptr3_marshal_out(void)
 }
 
 /* The span walk moves all three in lockstep, so its shims marshal all three at once. */
-/* ⚠⚠ THE ALIAS GUARD, and it is not defensive programming — it is a MEASURED behaviour.
-   An ascending arm entered above its bound runs the long way round to it, climbing the page byte
-   through $00, and the plotter's own store then lands IN ZERO PAGE — sometimes on $70/$72
-   themselves.  The oracle re-reads the pointer from mem[] at every dereference and therefore sees
-   its own write; a relocated uint16_t would not.  Without this the four span fixtures fail 7/400
-   (shallow_fwd) and 5/400 (steep_fwd) and 0/400 on both `rev` arms — the same ascending-only
-   signature that failed the `mem[arm->addend]` hoist.
-
-   ⭐ This is what "eligible" actually had to mean here: not "no shipping transliteration touches
-   the cells" (the scanner's test) but "THE VALUE CANNOT WRITE ITSELF".  It can — so it is
-   relocated WITH a re-read at exactly the point the 6502 had one.
-
-   ⚠⚠ AND THE FIRST VERSION OF THIS GUARD HUNG THE FIXTURE.  It reloaded all three pointers from
-   mem[] on any page-0 store.  But mem[] is only refreshed by marshal_out at shim exit, so mid-walk
-   it still holds the ENTRY values — and a store landing anywhere in page $00 (the differential
-   shows $26, $60, $68…, not just the pointer cells) therefore threw away every page step the walk
-   had accumulated and reset the pointers to where they started.  The walk could then never reach
-   `plot_ptr2_v >> 8 == arm->bound` and span_walk spun forever.  The fix is to apply the BYTE THAT
-   WAS ACTUALLY STORED to the matching lane, which is what the 6502 does and all it does.
-
-   The `addr < 0x0100` test is one compare on a path where the relocation saved four memory
-   accesses per call; everything below it runs only on a walk that has reached page $00. */
+/* THE ALIAS GUARD — a store that lands on a pointer's own lane must update the relocated value,
+   because the oracle re-reads the pointer from mem[] at every dereference.  Without it the four
+   span fixtures fail 7/400 (shallow_fwd) and 5/400 (steep_fwd), ascending arms only.
+   ⚠⚠ Apply ONLY the byte actually stored to the matching lane.  Reloading all three pointers from
+   mem[] instead HANGS: mem[] holds the shim's ENTRY values mid-walk, so any page-$00 store resets
+   the walk to where it started and it never reaches its bound. */
 static inline __attribute__((always_inline))
 void plot_store_resync(unsigned addr, uint8_t val)
 {
-    /* ⚠⚠ MASK FIRST.  `addr` is the UNWRAPPED sum pointer + Y and can reach $100FE; the store
-       itself wraps it (`mem[(uint16_t)addr]`) and therefore really does land in page $00.  The
-       first version of this test compared the unwrapped value, so it never fired on the one case
-       it exists for — a pointer near $FFxx wrapping to $00xx, which IS "the walk climbed through
-       page $00" — and span_walk spun because the self-write that ends it was dropped. */
+    /* ⚠⚠ MASK FIRST.  `addr` is the unwrapped pointer + Y and can reach $100FE, but the store
+       wraps it, so a pointer near $FFxx really does land in page $00 — testing unwrapped misses
+       exactly the case this exists for. */
     addr &= 0xFFFFu;
     if (addr >= 0x0100u) return;              /* the overwhelmingly common case */
     switch (addr) {
@@ -576,25 +483,8 @@ void irq1v_band_schedule(void)
    start is not tabulated at all — it is $F1 - MEM_view_run_right_end (5+34 = 6+33 = 39) — and the four
    mask/fill pairs come in the mirrored diagonal, left-START with right-END on the pixel-phase
    tables and left-END with right-START on the per-line ones. */
-/* MEM_view_run_left_end — where the LEFT run stops: a chain-A slot's low byte */
-/* MEM_view_run_right_end — where the RIGHT run stops — and $F1 minus it is where
-   the LEFT run starts.  ⚠ Also cell column 1's source
-   area; the two readings share exactly one byte, $309B
-   at line $1B, because a block's live source span is
-   offsets dash_block_starts[col]..$4F and column 1's
-   start is $1B, while the driver indexes this table only
-   over phase 3's lines 3..$1B. */
-/* MEM_view_run_right_start — where the RIGHT run starts: a chain-B unit+$05 entry */
 /* MEM_view_edge_phase ($3050): the dash edge's sub-byte PIXEL PHASE, 0-6; one value
    serves both runs because they mirror. */
-/* MEM_view_left_start_mask — by phase: the LEFT run's first cell */
-/* MEM_view_right_end_mask — by phase: the RIGHT run's last cell (its mirror) */
-/* MEM_view_left_end_mask — by line: the LEFT run's last cell */
-/* MEM_view_right_start_mask — by line: the RIGHT run's first cell (its mirror) */
-/* MEM_view_left_start_src — the LEFT run's first cell's source byte, per line —
-   both of these are produced by the body's 18th call,
-   fill_dash_edge_columns */
-/* MEM_view_right_start_src — ...and the RIGHT run's first cell's */
 
 /* ⚠ THE ROUTINE'S OWN SELF-MODIFIED CODE, by mem.h name (symbols.csv `code` rows).  Every
    MEM_view_*_site is an instruction inside the $7B00 overlay that the routine WRITES and then
@@ -1887,18 +1777,11 @@ void race_main_loop_core(RestartDepth depth)
    ⭐ edge_x is an ANGLE, not a column: bearing_to_section is an arctan and emit_edge_bearing
    stores `bearing - car_heading`, so an edge point is an azimuth relative to where the car is
    pointing and interp_edge is what turns one into a screen column. */
-/* MEM_edge_style — edge_style  — which surface style the span there uses */
 #define SECTION_FLAGS_W  (MEM_section_flags - 0x78u)   /*   ...the same table wrapped, for a
                                       byte index past 120 */
-/* MEM_edge_side_flag_mask — edge_side_flag_mask  — 2, by road side */
-/* MEM_edge_style_by_feature — 8 entries, by the feature bits.  ⚠ NOT edge_style ($5EE0),
-   which is the 40+40 PER-POINT array this supplies the byte for. */
-/* MEM_edge_width_shift_tbl — edge_width_shift_tbl — 8, likewise */
 #define SECTION_SIDE1    0x0078u   /* ⚠ an OFFSET, not an address: the OPPOSITE road edge's
                                       parallel section list starts $78 up the section cursor
                                       (section byte cursor 0..$77 for side 0, +$78 for side 1) */
-/* MEM_edge_walk_step_tbl — edge_walk_step_tbl — 18 entries, one per emitted point */
-/* MEM_car_segment — car_segment */
 #define PLAYER_CAR       0x17u     /* slot 23 — the player's own car */
 
 
@@ -2758,9 +2641,6 @@ void draw_dash_needle_core(uint16_t steer, DashNeedle *out)
    one character row ($140) and the coordinate wraps.  Each pixel records an undo entry
    (address + original byte) so undraw_plot_lines can erase the line next frame.
    --------------------------------------------------------------------------- */
-/* MEM_smc_major_step — the patched major-step opcode slot */
-/* MEM_smc_minor_step — the patched minor-step opcode slot */
-/* MEM_pixel_keep_others_tbl — pixel_keep_others_tbl — AND mask (keep the other pixels) */
 
 /* ⭐ TWIN #165b — undraw_plot_lines ($511E).  THE ERASE HALF of the dash needles: walks the undo
    list plot_line_octant recorded, top entry down to entry 0, writing each saved background byte
@@ -4949,9 +4829,6 @@ ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
 #define SPAN_YSTEP     (MEM_point_delta_sign + 1u)   /* point_delta_sign[1] — which way the plotters step Y */
 #define SPAN_CLIP      (MEM_point_delta_sign + 2u)   /* point_delta_sign[2] — two-bit rolling clip history */
 
-/* MEM_colour_pattern_tbl — colour_pattern_tbl     — 4 bytes, the span's pixels */
-/* MEM_colour_pattern_or_tbl — colour_pattern_or_tbl  — ...masked to this column */
-/* MEM_span_pair_offset_tbl — span_pair_offset_tbl — by pass, the paired-index gap */
 
 /* The two end-marker opcode slots, by address; the five Y-step slots and the two patched
    destination operands are symbols.csv `code` rows (MEM_span_step_*_slot, MEM_span_dest_p*_operand
@@ -7922,9 +7799,6 @@ void store_slip_exit_abi(uint8_t sign)
 }
 
 
-
-
-
 void check_wheel_slip(void)
 {
     model_state_marshal_in();
@@ -8093,9 +7967,6 @@ SlotExit engine_sound_update_core(uint8_t entryX, uint8_t entryY,
 }
 
 
-
-
-
 void update_slip_sound(void)
 {
     model_state_marshal_in();
@@ -8176,12 +8047,6 @@ void update_slip_sound(void)
           The curve is covered by sabotages that move a segment's OFFSET or SLOPE instead.
    =========================================================================== */
 
-/* MEM_section_dir_index — per live section, its index into the three pages above */
-/* MEM_car_speed_scaled — per-driver speed in the AI's units */
-/* MEM_gear_rev_ratio_tbl — TRACK FILE: revs per unit road speed, by gear_index */
-/* MEM_gear_torque_tbl — TRACK FILE: the per-gear torque multiplier */
-/* MEM_grip_limit_base_tbl — the constant in each axle's threshold, $35/$35 */
-/* MEM_grip_limit_base_alt_tbl — ...and its changed-surface replacement, $19/$1A */
 
 /* ---------------------------------------------------------------------------
    ⭐ WIDE-VALUE CLEANUP, mechanism (B): THE CAR-ANGLE ARRAY relocated out of mem[]
@@ -9127,11 +8992,6 @@ void apply_drag_terms(void)
    =========================================================================== */
 
 #define VIEW_ORIGIN_STRIDE   0x06u     /* view_origin_lo/_hi: origin 0 = camera, 6 = the sign */
-/* MEM_smc_sign_offset_2_tbl — the `LDA sign_offset_2,X` whose operand a circuit */
-/* MEM_smc_sign_offset_1_tbl — ...rewrites.  ⚠ The engine loads component 2 first, */
-/* MEM_smc_sign_offset_0_tbl — ...then 1, then 0 — the order the sites are in. */
-/* MEM_smc_sign_shape_tbl — `LDA sign_shape_segment,X` for the SHAPE nibble */
-/* MEM_smc_sign_segment_tbl — ...and again for the SEGMENT the sign is anchored to */
 #define SIGN_SLOT            0x17u     /* the object slot every sign is built into */
 #define SIGN_SCRATCH_SECTION 0xFDu     /* the live-section slot its coordinate triple goes to */
 
@@ -9514,7 +9374,6 @@ void store_object_flags(void)   { store_object_flags_core(cpu.Y, cpu.A); }
    comment on each says whose they are the rest of the time.
    =========================================================================== */
 
-/* MEM_car_order — car_order */
 
 /* The object pass's own names for the point_delta window it borrows (docs/rename.md). */
 #define OBJ_VECTOR_CURSOR   (MEM_point_delta_lo + 1u)   /* point_delta_lo[1] — the shape's vector cursor */
@@ -9897,9 +9756,6 @@ void plot_shape_edges(void)     { SlotExit e = plot_shape_edges_core();
    name the cells for this pass and say whose they are the rest of the time (docs/rename.md).
    =========================================================================== */
 
-/* MEM_pixel_keep_others_tbl — pixel_keep_others_tbl */
-/* MEM_pixel_after_mask_tbl — pixel_after_mask_tbl */
-/* MEM_object_gap_top_tbl — object_gap_top_tbl */
 #define VIEW_SRC_PAGE       0x30u     /* the forty $80-spaced source blocks start at $3000 */
 #define SRC_CELL_BLANK      0x55u     /* the "written but empty" sentinel */
 
@@ -10416,9 +10272,6 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
 #define STEER_DEMAND   MEM_math_hi   /* math_hi        — ...and its magnitude */
 #define STEER_KEYS     MEM_shared_temp_76   /* shared_temp_76 — 0 none, 1 or 2 one way, 3 both keys down */
 #define OPTION_FLAGS   (MEM_state_flags + 1u)   /* bit 7 selects the JOYSTICK input path */
-/* MEM_gear_char_tbl — gear_char_tbl — 'R' 'N' '1'..'5' 'P' */
-/* MEM_char_row_addr_lo — char_row_addr_lo — ⚠ entries 8..15 are pixel_keep_others_tbl */
-/* MEM_char_row_addr_hi — char_row_addr_hi */
 
 static void steer_apply_with_assist_core(void);
 static void apply_steer_demand_core(uint8_t signByte);
@@ -10644,8 +10497,6 @@ uint8_t print_spaces_core(uint8_t count, uint8_t x, uint8_t y)
    "draw the char after the spaces" arm ($4DC1 reached with C set) is dead at
    runtime — reproduced here as the always-taken skip, and `make validate` is the
    proof (a real Z=0 exit would diverge into vdu_char_def and fail the diff). */
-/* MEM_text_script_ptr_lo — text_script_ptr_lo */
-/* MEM_text_script_ptr_hi — text_script_ptr_hi */
 void select_text_variant_core(uint8_t variant);   /* twin #199, mutually recursive */
 #define TEXT_SCRIPT_VARIANT_CMD 0x36u           /* the $FE command -> select_text_variant */
 
@@ -11559,7 +11410,6 @@ Adc add_tally_to_lap_total_core(uint8_t column, uint8_t car)
    exactly the cpu inputs that leaf reads — nothing more.
    =========================================================================== */
 
-/* MEM_wheel_spin_xor_tbl_a — the two XOR masks the wheel-spin flicker rolls in */
 
 /* ---------------------------------------------------------------------------
    $0B77  scale_wing_settings  (twin #116)
@@ -12565,7 +12415,6 @@ static inline void object_coord_word_set(unsigned axis, uint16_t value)
    expansion circuits on a real BBC: NONE, against a control on $0A that reported 116
    writes).  The dispatch below therefore stays as a TRAP on an unmodellable shape, not as
    a per-circuit expectation — which is why it costs one mem[] read and not a table. */
-/* MEM_smc_object_coord_mask — AND zp ($29) on every circuit; see above */
 #define SMC_MASK_OPERAND  (MEM_smc_object_coord_mask + 1u)
 /* The zero-page arithmetic window as THIS routine's tenant uses it — the object-queue tail
    reads its inputs back out of these cells, so they are an output of the twin, not scratch.
@@ -12847,7 +12696,6 @@ uint8_t tally_bcd_column_core(uint8_t x)
 
 #define FENCE_COL_COUNT        0x28u    /* 40 view columns                                    */
 #define FENCE_TOP_ROW          0x46u    /* every column fills from row $46 downward            */
-/* MEM_view_src_blocks — the forty $80-spaced view source blocks             */
 #define VIEW_BLOCK_STRIDE      0x80u
 
 uint8_t paint_fence_backdrop_core(uint8_t horizon)
@@ -13694,8 +13542,6 @@ void drive_other_cars(void)
    before returning.  Its sibling lap_completed_flag, set from the same A one instruction
    earlier, IS seen, which is what proves the gate reaches this arm at all.
    --------------------------------------------------------------------------- */
-/* MEM_car_segment — car_segment — per-car index into the segment list */
-/* MEM_view_origin_lo — view_origin_lo and the HUD scratch that follows it */
 
 void reset_driving_variables_core(void)
 {
@@ -17479,9 +17325,6 @@ void hook_seg_advance_nurburg(void) { hook_seg_advance_at(TRACK_GEN_ARGS(NURBURG
    fixture sees it at exactly the fixture's own 50/50 split of the packed byte's bit 1, which is
    the rate at which $87 and $07 differ.  S53 and S56 read the same 500 for the same reason — one
    is that bit again, the other the reverse arm's own half. */
-/* MEM_gen_segment_dir_tbl — gen_segment_dir_tbl   [segment] direction-basis entry */
-/* MEM_gen_seed_heading_lo — gen_seed_heading_lo   [section] saved heading low     */
-/* MEM_gen_seed_heading_hi — gen_seed_heading_hi   [section] saved heading high    */
 
 static void hook_gen_seed_at(uint16_t block, uint8_t scale)
 {
