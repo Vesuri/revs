@@ -46,15 +46,29 @@ callers and not about the routine in hand.
 
 ## Open
 
-### `paint_lines_short` / `paint_lines_clipped` — the boundary stores pay `bus_write`'s range test
-`revs_native.c` — the three per-line boundary-cell stores
-(`bus_write(view_screen_addr(plot_ptr_v, v->cell), …)` ×2 in `paint_lines_short`, ×1 in
-`paint_lines_clipped`). The **unit** loop in the same file already hoists this exact test
-(`const int busSafe = view_span_is_ram(base0) && view_span_is_ram(base1);`), so the pattern
-and the predicate both exist — the boundary stores were simply never converted. ~50-58 calls
-a sweep, on the view pipeline (54% of the frame). `view_span_is_ram(base)` covers `base+320`,
-a superset of `base + v->cell` (`v->cell` is one byte), so the existing predicate is a sound
-and conservative hoist. **Gate: `make validate FN=view_paint_lines` + determinism + `viewdiff`.**
+*(nothing outstanding in batch 1)*
+
+## Examined and closed — do not re-open without new evidence
+
+### The paint passes' boundary stores are NOT a `bus_write` defect
+The three per-line boundary-cell stores in `paint_lines_short` / `paint_lines_clipped` go
+through `bus_write(view_screen_addr(plot_ptr_v, v->cell), …)`, and next to the **unit** loop
+in the same routine — which hoists `view_span_is_ram()` out of the scan into `busSafe` — they
+read like an unconverted site. They are not, for two independent reasons:
+
+1. **`bus_write` is `static inline`, and under `REVS_PLATFORM_AMIGA` its whole body is one
+   range test plus `mem[addr] = val`.** There is no call and no dispatch to remove — the
+   hardware-window test *is* the only cost, and it is two compares.
+2. **The test cannot be hoisted anywhere cheaper.** `step_scanline` rewrites `plot_ptr_v` and
+   `plot_ptr2_v` on every line, so the pointer is only known per line, and one
+   `view_span_is_ram(base)` per line replaces one inlined range test per store — at one to two
+   stores per line, that is a wash or worse.
+
+⭐ The general form, because this trap will recur in later batches: **CLAUDE.md's bus-call rule
+is about the ~10 600 calls a frame the plotters' INDIRECT addressing modes make, where one
+hoisted test covers forty cells.** A site that stores once or twice per scan line is not that
+shape, and the volume in this routine — the unit loop — was converted already. Count the
+stores the hoist would cover before calling a `bus_write` a defect.
 
 ## Recorded, deliberately not acted on
 
