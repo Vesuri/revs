@@ -724,17 +724,11 @@ static int view_enter_chain(ViewState* v, uint16_t site, uint16_t opnd, unsigned
    cross into the next one.  Returns the incremented low byte; `*carry_out` reports the
    carry off plot_ptr2's high byte, which is the odd tail phase 3 spells as a `BCC`.
 
-   ⭐ THE CROSSING IS ONE 16-BIT ADD.  The 6502 spells it `ADC #$38` on the low byte then
-   `ADC #1` on the high, and decimal mode is provably 0 here: all eight `SED` sites are
-   race-stats / marker-draw / front-end and each is bracketed by its own `CLD`
-   (docs/static-map.md §Decimal mode — $17C3's clock SEDs and CLDs at $17FA, inside
-   race_main_loop's tail), so view_paint_lines is inside no bracket and the fixture pins
-   c.D = 0 citing the same table.  The byte-pair carry idiom therefore computes nothing a
-   `uint16_t` add does not.
-
-   ⚠ A, N, V, Z and C ALL escape — view_paint_lines' fixture compares them (LIVE_FLAGS) —
-   so the exit state is replayed once, from the operands of the LAST add the 6502 does:
-   plot_ptr2's `ADC #1`.  That is four cpu writes instead of the three adc_steps' fifteen. */
+   ⭐ THE CROSSING IS ONE 16-BIT ADD.  D is provably 0 here (docs/static-map.md §Decimal mode:
+   all eight SED sites are race-stats / marker-draw / front-end, each inside its own CLD
+   bracket), so the 6502's byte-pair carry idiom computes nothing a `uint16_t` add does not.
+   ⚠ A, N, V, Z and C all escape (the fixture compares LIVE_FLAGS), so the exit state is
+   replayed once from the operands of the last add — four cpu writes instead of fifteen. */
 static unsigned step_scanline(int* carry_out)
 {
     unsigned next = (plot_ptr_v + 1) & 0xFF;
@@ -766,22 +760,16 @@ static unsigned step_scanline(int* carry_out)
     unsigned char r2  = (unsigned char)hi2;
     plot_ptr2_v = (uint16_t)(((unsigned)r2 << 8) | (adv & 0xFFu));
 
-    /* ⚠ FOUR SABOTAGES OF THE LINES BELOW SURVIVE `make validate`, in two classes, and both
-       are recorded rather than engineered around (docs/validation-harness.md §FIFTEENTH):
-
-       (1) `c2` is PROVABLY always 0, so dropping it from hi2, or taking the exit C from
-           plot_ptr's own add instead of plot_ptr2's, changes nothing.  c2 is the carry off
-           $FFFF, and the plot pointer's high byte lives in $67..$7A — the same argument the
-           phase-3 tail below is kept under.  Kept because the 6502 has the second ADC.
-       (2) Perturbing the exit A, or dropping the V replay, also survives: the crossing
-           branch's A/V are DEAD AT view_paint_lines' EXIT.  [DERIVED, not proven] —
-           paint_cells ends each line on `CPX #$2C` and paint_lines_short writes V
-           unconditionally per line, so both are overwritten downstream, and 700 fixture
-           cases with A and all flags compared see no difference.  The replay stays anyway:
-           it is four writes against the fifteen the three adc_steps did, faithfulness is
-           the tie-breaker, and "dead at this exit" is not "dead for every future caller".
-
-       The value path IS covered — the step size and plot_ptr2's low byte both fail at once. */
+    /* ⚠ FOUR SABOTAGES BELOW SURVIVE `make validate`, both classes recorded rather than
+       engineered around (docs/validation-harness.md §FIFTEENTH):
+       (1) `c2` is provably always 0 — it is the carry off $FFFF and the plot pointer's high
+           byte lives in $67..$7A — so dropping it changes nothing.  Kept: the 6502 has the
+           second ADC.
+       (2) Perturbing the exit A or dropping the V replay also survives: [DERIVED] the crossing
+           branch's A/V are dead at view_paint_lines' exit (paint_cells ends each line on
+           `CPX #$2C`, paint_lines_short writes V per line).  Kept: faithfulness is the
+           tie-breaker, and "dead at this exit" is not "dead for every future caller".
+       The value path IS covered — the step size and plot_ptr2's low byte both fail. */
     cpu.A = r2;                                  /* the exit A is that last ADC's result */
     cpu.V = adc_overflow((uint8_t)advHi, 0x01, c2);
     cpu.N = (unsigned char)(r2 >> 7);
@@ -791,11 +779,9 @@ static unsigned step_scanline(int* carry_out)
     return next;
 }
 
-/* ⭐⭐ THE RUN ACCUMULATOR (Amiga only — revs_plot.h).  The carried byte usually repeats,
-   and in the Amiga's bitplane layout consecutive cells of a scan line are contiguous, so a
-   run is one fill instead of N stores.  This changes no mem[] byte and no branch — it only
-   notices, as the chain runs, that the byte it is about to store is the byte it stored to
-   the cell on its left.  ⚠ A run never spans a scan line: the unit loop ends at 40. */
+/* THE RUN ACCUMULATOR (Amiga only — revs_plot.h).  The carried byte usually repeats and the
+   Amiga's bitplane cells are contiguous along a scan line, so a run is one fill instead of N
+   stores.  Changes no mem[] byte and no branch.  ⚠ A run never spans a scan line. */
 #ifdef REVS_DIRECT_PLOT
 #define PLOT_DECL()   unsigned runAddr = 0, runVal = 0, runLen = 0
 #define PLOT_UNIT(dd, aa)  do {                                                     \
@@ -865,10 +851,9 @@ static unsigned view_consume(MEM_QUAL unsigned char* srcp, unsigned byte, int fo
                     pointers move and the line's background byte is loaded before any unit */
 static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
 {
-    /* ⚠ THE THREE THREADED VALUES BECOME LOCALS FOR THE DURATION, and that is a 68000
-       requirement, not tidiness: this is 30% of the port's frame, and `v->byte` inside the
-       2093-iteration loop is a memory operand gcc cannot keep in a register.  They are
-       written back at the single exit below, which every arm reaches by breaking out. */
+    /* ⚠ The three threaded values become locals for the duration: this is 30% of the frame and
+       `v->byte` in the 2093-iteration loop is a memory operand gcc cannot register-allocate.
+       Written back at the single exit below, which every arm reaches by breaking out. */
     unsigned byte = v->byte, line = v->line, cell = v->cell;
     PLOT_DECL();
     VIEWSPLIT_DECL();
@@ -882,14 +867,12 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
             advance_first = 0; unit = 0; forced = 0;
         }
 
-        /* ⭐ THE 2093-UNIT LOOP, and everything in it is a running pointer.  The unit is
-           the whole cost of the routine and the only reason it is worth a twin, so the
-           source and destination addresses step by a constant instead of being derived from
-           the cell index, and the opcode slot is not consulted at all (view_stop_from).
-           ⚠ Hoisting the two destination bases out of the loop is safe by CONSTRUCTION,
-           not by luck: the chain writes only its own source blocks ($3000-$43CF) and
-           `base + cell*8` inside the frame buffer, so nothing it does can reach plot_ptr
-           and move the pointer under itself. */
+        /* THE 2093-UNIT LOOP — everything in it is a running pointer: source and destination
+           step by a constant rather than being derived from the cell index, and the opcode slot
+           is not consulted at all (view_stop_from).
+           ⚠ Hoisting the destination bases is safe by CONSTRUCTION: the chain writes only its
+           source blocks ($3000-$43CF) and `base + cell*8`, so it cannot move plot_ptr under
+           itself. */
         {
             unsigned base0 = plot_ptr_v;    /* ⭐ one word read each, not two bytes + shift + or */
             unsigned base1 = plot_ptr2_v;
@@ -897,29 +880,22 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                                                + ((unsigned)unit << 7) + line;
             MEM_QUAL unsigned char* const dp1 = mem + base1;
             int lastSeg;
-            /* ⭐ THE SEGMENT AS A POINTER END, not an `i == 31` test inside the loop.  Cells
-               0-31 come off plot_ptr and 32-39 off plot_ptr2 because 40 x 8 = 320 bytes does
-               not fit one page, and the old form asked `i == 31?` and `i < 40?` separately in
-               every one of the 2093 units — two compares and two branches for a boundary that
-               is crossed twice a line.  One `dp != segEnd` covers both, and the cell index the
-               stop path wants comes back out of the pointer: `(dp - segBase) & $FF` is `i * 8`
-               in BOTH segments, because segment 1 starts at cell 32, i.e. offset 256 = 0 mod
-               256.  ⚠ Segment 0 ends at base0 + 256, NOT at plot_ptr2: the 6502 switches
-               pointers on the cell INDEX, so a plot_ptr2 that is not plot_ptr + 256 must still
-               paint cells 0-31 off plot_ptr. */
-            /* ⭐⭐ ...AND WHEN THE TWO POINTERS ARE ONE PAGE APART, ONE SEGMENT INSTEAD OF TWO.
-               plot_ptr2 is plot_ptr + 256 for every line the routine itself steps (the prologue
-               seeds it that way and view_next_scanline adds the same delta to both), so cell i
-               lands on base0 + i*8 across the WHOLE line and the run 0..39 is contiguous.  Then
-               the segment crossing — a second trip round the outer loop, a second stop lookup, a
-               second run set-up — is not needed at all.
-               ⭐ It is worth a branch because the per-RUN cost is what this routine is made of:
-               measured at ~280 us a run against ~5.5 us a unit (docs/perf-method.md), so the 36
-               crossings phase 1 makes per frame cost more than all 1440 of its units.
-               ⚠ The general path stays, and not defensively: `paint_lines_short` steps the two
-               pointers itself and its odd carry tail can store a low byte to plot_ptr only, so
-               the two CAN drift — and the 6502 switches on the cell INDEX, so cells 0-31 must
-               then still come off plot_ptr.  The condition is the whole difference. */
+            /* THE SEGMENT AS A POINTER END, not an `i == 31` test in the loop.  Cells 0-31 come
+               off plot_ptr and 32-39 off plot_ptr2 (40 x 8 = 320 does not fit a page); one
+               `dp != segEnd` replaces two compares per unit.  The cell index the stop path wants
+               comes back out of the pointer — `(dp - segBase) & $FF` is `i * 8` in both segments,
+               since segment 1 starts at offset 256.
+               ⚠ Segment 0 ends at base0 + 256, NOT at plot_ptr2: the 6502 switches on the cell
+               INDEX, so a plot_ptr2 that is not plot_ptr + 256 must still paint 0-31 off
+               plot_ptr. */
+            /* ...AND WHEN THE POINTERS ARE ONE PAGE APART, ONE SEGMENT INSTEAD OF TWO.  For
+               every line this routine steps itself plot_ptr2 == plot_ptr + 256, so cell i lands
+               on base0 + i*8 across the whole line and the crossing — a second outer trip, stop
+               lookup and run set-up — is not needed.  Worth a branch because the per-RUN cost
+               dominates: ~280 us a run against ~5.5 us a unit (docs/perf-method.md), so phase
+               1's 36 crossings cost more than all 1440 of its units.
+               ⚠ The general path stays: paint_lines_short steps the pointers itself and its odd
+               carry tail can store a low byte to plot_ptr only, so the two CAN drift. */
             const int oneSeg = (base1 == base0 + 256u);
             MEM_QUAL unsigned char* segBase = (unit < 32 || oneSeg) ? mem + base0 : dp1;
             MEM_QUAL unsigned char* dp      = segBase + (((unsigned)unit & 31u) << 3)
@@ -932,18 +908,12 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
             /* ⭐⭐ THE PLANTED STOP, LOOKED UP ONCE — see view_stop_from.  40 means "none in
                this chain run", which is every one of phase 1's lines. */
             const int stopUnit = view_stop_from(unit);
-            /* ⭐ THE BUS'S HARDWARE-RANGE TEST, HOISTED TO ONE CHECK PER SCAN LINE.  A cell
-               store is `STA ($70),Y`, so the transliteration cannot know statically that it
-               misses the $FC00-$FEFF I/O window and pays the test 2093 times a frame.  Here
-               the whole line's span IS known — 40 cells from base0/base1 — so one check
-               licenses plain `mem[]` stores for the line.  ⚠ NOT deleted: if a base ever did
-               reach the window the else arm still routes to the platform, which is the one
-               thing a "provably RAM" comment on its own could get silently wrong.
-               ⭐ Inverting this flag PASSES all 700 fixture cases, and that is the proof rather
-               than a fixture gap: with a RAM address the two arms do the same store, so they
-               can only differ for $FC00-$FEFF — which this routine's own seeding of $70-$73
-               cannot reach.  gcc specialises the unit loop on the flag, so the shipping path
-               carries no test at all. */
+            /* THE BUS'S HARDWARE-RANGE TEST, HOISTED TO ONE CHECK PER SCAN LINE.  A cell store
+               is `STA ($70),Y`, so the transliteration pays the $FC00-$FEFF test 2093 times a
+               frame; here the whole line's span is known, so one check licenses plain mem[]
+               stores.  ⚠ NOT deleted — the else arm still routes to the platform if a base ever
+               does reach the window.  Inverting the flag passes all 700 fixture cases, which is
+               expected rather than a gap: with a RAM address both arms store identically. */
             const int busSafe = view_span_is_ram(base0) && view_span_is_ram(base1);
 
             int stopped = 0;                /* a planted stop ends the whole sweep, not just the run */
