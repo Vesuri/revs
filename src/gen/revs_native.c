@@ -1903,7 +1903,8 @@ void race_main_loop_core(RestartDepth depth)
 #define SECTION_FLAGS_W  (MEM_section_flags - 0x78u)   /*   ...the same table wrapped, for a
                                       byte index past 120 */
 /* MEM_edge_side_flag_mask — edge_side_flag_mask  — 2, by road side */
-/* MEM_edge_style_tbl — edge_style_tbl       — 8, by the feature bits */
+/* MEM_edge_style_by_feature — 8 entries, by the feature bits.  ⚠ NOT edge_style ($5EE0),
+   which is the 40+40 PER-POINT array this supplies the byte for. */
 /* MEM_edge_width_shift_tbl — edge_width_shift_tbl — 8, likewise */
 #define SECTION_SIDE1    0x0078u   /* ⚠ an OFFSET, not an address: the OPPOSITE road edge's
                                       parallel section list starts $78 up the section cursor
@@ -2526,7 +2527,7 @@ uint8_t emit_edge_bearing_at_cursor_core(uint8_t sectionByte)
         difference is how wide the road looks HERE.  Added to — or subtracted from, depending
         on which side and which way round the circuit — the point's own azimuth, that is
         edge_opp_x, the angle of the far kerb.
-     2. THE STYLE.  edge_style_tbl's entry for the same feature bits, or a flat 2 on an odd
+     2. THE STYLE.  edge_style_by_feature's entry for the same feature bits, or a flat 2 on an odd
         section byte, becomes the point's edge_style: which surface draw_road paints there.
      3. A CORNER MARKER, when the masked bits include either of the $18 pair and the frame has
         fewer than three already.  Bit 0 halves the marker's offset from its edge point.
@@ -3165,7 +3166,7 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
                       & mem[MEM_edge_side_flag_mask + road_side_index]);
     shared_temp_77 = flags;
     feature        = flags & 0x07u;
-    style          = mem[MEM_edge_style_tbl + feature];
+    style          = mem[MEM_edge_style_by_feature + feature];
     shared_temp_76 = style;
 
     /* $2580-$2586 — nothing but the style for the first three points of the side.  (The `CMP`
