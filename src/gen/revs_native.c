@@ -80,8 +80,10 @@
    `mem[arm->addend]` hoist out of span_walk.
 
    ⚠ mem[] stays the 6502-ABI mirror: shims marshal in on entry, out on exit, so the oracles' mem[]
-   differential still sees every byte.  console_io ($70/$71) and emit_driver_name ($72/$73) are the
-   two shipping transliterations that touch these cells and both are write-only.
+   differential still sees every byte.  Outside the plotters only two routines touch these cells,
+   both native twins and both write-only: console_io parks its field address in $70/$71 (through
+   PLOT_SET_LO/HI, so the mirror moves too) and emit_driver_name its name pointer in $72/$73
+   (as the word, then plot_ptr2_marshal_out).
 
    ⚠⚠ $8E/$8F IS DUAL-TENANTED and only the PLOTTER tenant moved — plot_object's shape index and
    the driving model's signed temporary keep mem[].  The windows never overlap a span walk
@@ -14826,16 +14828,20 @@ uint8_t console_io_core(uint16_t field, uint8_t width)
     /* The field's address is ONE value here and is only SPLIT to publish it: plot_ptr_lo/hi
        ($70/$71) are the cells the 6502 stored it in and the twin keeps writing them, but
        nothing in the loop below reads them back — every character is addressed off `field`
-       with one add, not two byte loads, a shift and an or. */
-    plot_ptr_lo    = (uint8_t)field;                 /* $6300 — the field's address */
-    plot_ptr_hi    = (uint8_t)(field >> 8);          /* $6302 */
+       with one add, not two byte loads, a shift and an or.
+       ⚠ Through PLOT_SET_LO/HI, so the RELOCATED MIRROR moves with the lanes.  The 6502's
+       pointer after this routine IS the field address, so leaving plot_ptr_v at its entry
+       value would let a later plotter read a different pointer than the 6502 does — invisible
+       to the differential (both models write the same mem[$70/$71]) and a real divergence in
+       the port.  The mirror rule at the top of this file, in the direction that is easy to miss. */
+    PLOT_SET_LO(plot_ptr, (uint8_t)field);           /* $6300 — the field's address */
+    PLOT_SET_HI(plot_ptr, (uint8_t)(field >> 8));    /* $6302 */
     shared_temp_77 = width;                          /* $6304 — and its width */
     /* ⭐ One hardware-window test for the whole field, not one per character: the column only
        ever indexes $00..$FF off `field`, so proving the base is RAM proves every store. */
     const int fieldIsRam = ((unsigned)field + 0xFFu) < BBC_IO_LO;
 
-    /* $6306-$6311.  The ambient Y at both calls is the caller's pointer high byte. */
-    /* The ambient Y at both calls is the caller's pointer HIGH byte. */
+    /* $6306-$6311.  The ambient Y at both calls is the caller's pointer HIGH byte. */
     mos_osbyte(0x02u, 0x00u, (uint8_t)(field >> 8)); /* input stream := keyboard */
     mos_osbyte(0x15u, 0x00u, (uint8_t)(field >> 8)); /* flush the keyboard buffer */
 
