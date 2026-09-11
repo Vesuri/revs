@@ -32,10 +32,14 @@ void race_main_loop(void)
     edge_nearest_marshal_in();
     hw_init();
 
-    arg_a(0x00);
     text_out_via_mos = 0;         /* character output goes to the race view's own plotter */
-    copy_dash_data();             /* A = 0: BUILD the $7B00 overlay from the block tails */
-    view_paint_lines();
+    copy_dash_data_core(0x00u);   /* 0 = BUILD the $7B00 overlay from the block tails */
+    /* The paint's entry cell arrives in Y, and Y here is copy_dash_data's exit Y: the start
+       offset of the LAST block its inner loop stopped on.  BUILD mode only READS the
+       dash_block_starts table (stow mode is the one that overwrites it), so the offset is the
+       same before and after the copy. */
+    view_paint_lines_core(0x6700u, 0x4Fu,
+                          mem[MEM_dash_block_starts + (DASH_BLOCK_COUNT - 1)]);
 
     race_main_loop_core(state_flags_bit6() ? RESTART_NONE : RESTART_FULL);
     view_origin_marshal_out();
@@ -1082,7 +1086,7 @@ void draw_dash_needles_native(void)
     /* ⚠ The $51A0 `LDA #6` is NOT dead: A stays 6 across the plot, and the port's interrupt seam
        publishes A into mos_irq_a ($FC) on every field, so dropping it moves a real mem[] byte
        (caught by `make determinism`, $00FC 0x06 -> 0x00). */
-    arg_a(0x06);
+    hold_a_for_irq_seam(0x06);
     plot_line_octant_core(m.line);                /* $51A4 */
 }
 

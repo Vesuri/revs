@@ -1228,11 +1228,12 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
    memory, because the frame body always runs at least once and it is the whole engine
    (reasoning beside NATIVE_FUNCS in tools/transpile.py). */
 
-/* ⚠ NOT ARGUMENT PASSING — a LIVE REGISTER the following code reads.  Every surviving site
-   loads a literal still live *after* the call it precedes: arg_a($9C) stays in A across the
-   crash hold (the interrupt seam publishes A into mos_irq_a every field), arg_a($00)/($20)
-   are read by the lines below them.  Sites that were really arguments now pass one. */
-void arg_a(uint8_t v) { LDA(v); }
+/* ⚠ NOT ARGUMENT PASSING, AND NOT DEAD EITHER — A ITSELF IS AN OBSERVABLE OUTPUT HERE.  Both
+   remaining sites park a literal in A across a multi-field wait, and the MOS's IRQ entry stows A
+   into mos_irq_a ($FC) on every one of those fields, so the value reaches mem[] and `make
+   determinism` compares it (dropping the $51A0 one moved $00FC from $06 to $00).  That is why
+   this is a named helper with the macro inside rather than plain C: the 68000 has no A. */
+void hold_a_for_irq_seam(uint8_t v) { LDA(v); }
 
 /* $16E9's `BIT $05F4` — bit 6 of state_flags lands in V.  Through the macro rather than as a
    plain mask because the test leaves N and V set across the calls that follow it, and "no
@@ -1320,8 +1321,8 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
         /* 100 fields = two seconds of holding the picture.  ⚠ The `LDA #$9C` is not folded into
            the store: A stays live across the wait, because the interrupt seam publishes it into
            mos_irq_a every field. */
-        arg_a(0x9C);
-        field_countdown = cpu.A;
+        hold_a_for_irq_seam(0x9C);
+        field_countdown = 0x9C;
 #if defined(REVS_CRASHPROBE) && defined(REVS_PLATFORM_AMIGA)
         /* THE CRASH-FREEZE MEASUREMENT.  The hold should last 100 field-countdown INCs = 2 s.
            Snapshot wall clock (g_vbiCount), fields DRAINED (g_bodyTicks) and fields DROPPED
@@ -1422,7 +1423,8 @@ void race_main_loop_core(RestartDepth depth)
             build_player_car_native();
         RESET_SPLIT(2);
 
-        arg_a(0x00);
+        /* the 6502's `LDA #0 / STA state_flags`: A is dead after the store — scale_wing_settings
+           opens `LDX #1 / LDA wing_setting_front,X` and reads no entry register or flag. */
         state_flags = 0;
         scale_wing_settings();                   /* scale the wing settings for the new session */
         RESET_SPLIT(3);

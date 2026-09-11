@@ -944,3 +944,28 @@ proves nothing, and the poisoned run through that gate is vacuous. The fix is a 
 **cannot** repair, which means changing an **input**, not a result — here `view_paint_lines_core`
 called with a wrong first scan line (`$50` for `$4F`), which fails both gates. ⚠ Verify a control
 per gate, not once: `cmp` the two dumps directly before trusting a `viewdiff` PASS.
+
+### ...and the eraser can be the TIME AXIS, not just a repaint (the `arg_a` audit)
+
+The same trap has a second shape, and it caught two controls in a row on the `arg_a` class. Both
+determinism targets dump **at one frame** — 300, or 1500 for the crash ladder — so any defect whose
+observable is *transient* survives its own control:
+
+* a wrong entry cell handed to the **one-time prologue paint** passed `determinism`: 300 frames of
+  repaint erase it.
+* deleting the crash hold's `LDA #$9C` passed `determinism-crash`: `mem[$FC]` differs only during
+  the ~100-field hold, and the 1000+ frames after it rewrite that byte before the dump. Its
+  sibling in `plot_line_at_row` (`LDA #6`) *does* fail, because that one is on the **per-frame**
+  path, so `$FC` carries it at every frame boundary.
+
+And a third eraser: the **WINDOW IN SPACE**. That same wrong entry cell *does* move pixels under
+`viewdiff` — display lines 10..17, tens of cells — but `viewdiff` compares only lines 82..166, so
+it reports PASS while printing the diff. A gate that prints a difference and passes is still a
+pass; read the gated count, not the listing.
+
+⭐ **So ask where in TIME and in SPACE the defect is observable, and compare that to where the gate
+samples.**
+A one-shot prologue effect and a mid-run transient are both invisible to an end-of-run dump, and
+the surviving control says nothing about the change — it says the gate is the wrong instrument.
+When no gate can see a byte the 6502 provably wrote, the faithful move is to KEEP reproducing it
+and to write the argument at the code, because a run will never report its loss.

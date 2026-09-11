@@ -83,8 +83,8 @@ declares the register or flag live at the exit, with the argument written at the
 | ~~`cpx_ge` + `arg_x` in the two near-slot clamps~~ | compare, then `LDX #5` after it | ✅ RESOLVED — both exits are dead; see the near-slot section below. Both helpers are now deleted |
 | `cpu.V = sbc_overflow(0xF1, …)` in `paint_lines_short` | one replayed flag | V reaches `view_paint_lines`' exit on paths where nothing below rewrites it — this is the *reduced* form already (the alternative is the full `SBC` macro's five flag stores) |
 | `UPD_NZ(v->cell)` | the `LDY math_hi` reload's flags | same exit contract |
-| `arg_a(0x9C)` in `race_frame_tail` | `LDA #imm` kept out of the store | A stays live across the field wait, and the port's interrupt seam publishes A into `mos_irq_a` on every field — a reader the oracle's store-immediate peephole cannot see |
-| `arg_a(0x00)` / `arg_a(0x20)` in the tail | ditto | the following code reads A ("either way A is now 0") |
+| `hold_a_for_irq_seam(0x9C)` in `race_frame_tail` (was `arg_a`) | `LDA #imm` kept out of the store | ✅ CONFIRMED LIVE — A stays live across the field wait, and the port's interrupt seam publishes A into `mos_irq_a` on every field, so the value reaches `mem[$FC]`. Renamed, because "argument" was exactly the wrong word for it |
+| ~~`arg_a(0x00)` in the reset tail~~ | ditto | ✅ RESOLVED — dead. `scale_wing_settings` opens `LDX #1 / LDA wing_setting_front,X` and reads no entry register or flag, so the `LDA #0` is fully consumed by `STA state_flags`. Deleted |
 
 ⭐ The general lesson for the rest of the sweep: **in this file a `cpu.` reference on the
 render/dashboard path is usually an exit-ABI obligation, and the thing to check is not "can
@@ -281,8 +281,8 @@ N cases` is a FAIL). The `SED` half has no such standing and is gone everywhere.
 
 # Open front — THE FIXTURE LIVE MASKS (its own campaign, not part of the read-through)
 
-ℹ Done below: `view_paint_lines`, and the three NEAR-SLOT routines (which retired `cpx_ge`
-and `arg_x` entirely).  Only the two `arg_a`s in `race_main_loop` remain.
+ℹ ✅ **CLOSED.** `view_paint_lines`, the three NEAR-SLOT routines (which retired `cpx_ge` and
+`arg_x` entirely) and the `arg_a` class are all done — see the three sections below.
 
 The read-through kept running into the same wall: a 6502 shape that is load-bearing **only
 because a fixture declares a register or flag live at the exit**. The batch-1 table lists seven
@@ -378,5 +378,53 @@ the **no-change** category, not a fixture gap, and the argument is written at th
 either `<`/`>=` clamp boundary by one only adds the case where the clamp stores the value the cell
 already holds. Each one's SIBLING clamp, in the same routine, does fail.
 
-Still open: the two `arg_a`s in `race_main_loop`, which have no fixture at all (gated by
-`make determinism`) and need their own audit.
+---
+
+## ✅ Done: the `arg_a` class — one of four sites was really live, and it is not an argument
+
+`arg_a` existed to keep a `LDA #imm` out of the store it precedes, on the claim that A is read
+after the call. Audited at all four sites:
+
+| Site | Verdict |
+|---|---|
+| `race_main_loop`'s crash hold, `$9C` | **LIVE.** A sits in A across the 100-field hold and the MOS IRQ entry stows it into `mos_irq_a` ($FC) every field, so it reaches `mem[]` |
+| `plot_line_at_row`'s shim, `$06` | **LIVE**, and measured: dropping it moved `$00FC` from `$06` to `$00` under `make determinism` |
+| `race_main_loop`'s reset tail, `$00` | **DEAD** — `scale_wing_settings` opens `LDX #1 / LDA wing_setting_front,X`, reading no entry register or flag. Deleted |
+| `race_main_loop`'s shim prologue, `$00` | **AN ACTUAL ARGUMENT** — it was `copy_dash_data`'s direction flag, passed through A. Now `copy_dash_data_core(0x00u)`, and the `view_paint_lines` shim that followed it (reading `cpu.Y` = `copy_dash_data`'s exit Y) is now `view_paint_lines_core` with that offset passed explicitly |
+
+⭐ The lesson in the naming: two of the four were genuinely live, and for a reason that has nothing
+to do with argument passing — **A is an OUTPUT on this target, because the interrupt seam writes it
+into `mem[$FC]`**. The helper is now called `hold_a_for_irq_seam`, which is what it does. The other
+two were an argument and a dead store.
+
+### ⚠⚠ ...and NEITHER of these two changes is gated by `make determinism`. Two controls PROVED it.
+
+The five trajectories all pass with the change in, but that means nothing until a control fails,
+and **both controls PASSED**:
+
+| Control | Gate | Result | Why |
+|---|---|---|---|
+| the prologue's `view_paint_lines_core` entry cell, `+1` | `determinism` (frame 300) | **PASS — vacuous** | it is the ONE-TIME prologue paint; 300 frames of repaint erase it long before the dump |
+| ...the same control | `viewdiff` (frame 60) | **PASS — but NOT vacuous-silent** | it moves real pixels — text/sky display lines 10..17, 4-23 cells each, absent from the baseline — but `viewdiff` gates only lines 82..166, so the gate passes anyway. The parameter IS load-bearing; no gate's WINDOW covers where it lands |
+| the crash hold's `hold_a_for_irq_seam(0x9C)` deleted | `determinism-crash` (frame 1500) | **PASS — vacuous** | `mem[$FC]` differs only DURING the ~100-field hold; 1000+ later frames rewrite it before the dump. (Its `$06` sibling in `plot_line_at_row` DOES fail, because that one is on the per-frame path, so `$FC` is `$06` at every frame boundary) |
+
+That is the same shape as the `view_paint_lines` live-mask probe — **a control the instrument
+erases is not a control** (`docs/validation-harness.md`) — and the honest consequence is that
+these two rest on ARGUMENT, not on a gate:
+
+* the crash-hold `LDA #$9C` is **kept**, precisely because no gate can see it: `mem[$FC]` provably
+  differs mid-hold, so deleting it would be an unfaithfulness no run would report.
+* the prologue refactor is **textually identical by construction** — the expression passed as the
+  entry cell, `mem[MEM_dash_block_starts + (DASH_BLOCK_COUNT - 1)]`, is the very expression
+  `copy_dash_data`'s shim assigned to `cpu.Y`, evaluated at the same point (after the core
+  returns), and BUILD mode only reads that table. ⭐ And it is checked, not just argued: the
+  `viewdiff` frame-60 dump is byte-for-byte what it was before the change (119/119/121/119/119
+  residual bytes, the same `text/sky line 55` + `dash line 198` cells), while the `+1` control
+  visibly perturbs lines 10..17 — so the value is live AND the port still produces it.
+* the A/X/N/Z/C the old shim also published are dead **by the audit already completed one item
+  earlier**: `copy_dash_data`'s exit state flows only into `view_paint_lines` and then into
+  `$16E9 BIT state_flags`, and `view_paint_lines` is now `live=S` — the per-register table above
+  is exactly the proof that every register and flag is redefined there before any read
+  (`$16EE LDX #0` / `$16F9 LDA #0`, and `BIT` itself rewrites N/V/Z).
+
+**The fixture-live-mask front is now CLOSED.**

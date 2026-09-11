@@ -461,7 +461,7 @@ CameraExit apply_driving_model_core(uint16_t heading, int entryC);
    and keep every marshal; only the driver enters here (src/gen/revs_native.c's phase list). */
 void read_driving_controls_frame(void);
 void apply_driving_model_frame(void);
-void arg_a(uint8_t v);
+void hold_a_for_irq_seam(uint8_t v);
 void bearing_to_section_core(uint8_t sectionByte, uint8_t origin);
 SignOriginExit build_sign_origin_core(uint8_t offset, uint8_t shift);
 GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSide1);
