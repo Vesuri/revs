@@ -7082,6 +7082,8 @@ static int test_geometry_leaves(void)
        JSR, $4CEB LDY) and read no exit flag, so its A/N/Z are dead; the clean core no longer
        spends a load_a to reproduce them.  Keep S live for the stack-balance check. */
     const unsigned resultMask = LIVE_S;
+    /* the three near-slot routines — see the audit at the loop below */
+    const unsigned nearMask = LIVE_S;
     int fail = 0, printed = 0, t;
     int scale = 1;
     { const char* e = getenv("REVS_VALIDATE_CASES"); if (e) scale = atoi(e); }
@@ -7122,10 +7124,17 @@ static int test_geometry_leaves(void)
                 c.D = 0;   /* the road pass is never decimal (static-map.md §Decimal mode); the
                               $12C0 subtract is now a plain binary 6 - near_edge_shift and the
                               clamps are CPX */
-                /* shift_near_edge_points' subtract V is a dead byproduct — its only caller reads
-                   near_edge_first with an immediate CMP before touching V — so drop it (i==0). */
-                unsigned m = (i == 0) ? (liveMask & ~LIVE_V) : liveMask;
-                subFail += diff_run(W[i].name, pre, c, W[i].n, W[i].o, m, t, &printed);
+                /* ⭐ ONLY S for all three.  These routines answer in mem[] — the three near-slot
+                   cells — and every exit register and flag is audited dead, not assumed:
+                   $12A0 has one caller ($2304) whose next four instructions are
+                   `LDA #0 / STA $62F5 / LDY near_edge_first / CPY #6`, redefining A, Y and
+                   N/Z/C; $12C8 has one caller ($12C4) that returns immediately, so its exit IS
+                   $12A0's; $12DC has one caller ($23AF) followed by `LDA #7 / CMP $52`.  X is
+                   read nowhere before road_edge_start's own `LDX $08` at $235E, and the whole
+                   road pass $2145-$2B62 has no BVS/BVC.  No circuit's ModifyGameCode patches
+                   these spans and no hook re-entry point ($2490/$253B/$461B) lands in them.
+                   docs/native-sweep.md §live masks. */
+                subFail += diff_run(W[i].name, pre, c, W[i].n, W[i].o, nearMask, t, &printed);
                 if (mem[0x0008] != pre[0x0008] || mem[0x0006] != pre[0x0006]) moved++;
             }
             fail += subFail;
@@ -7133,9 +7142,8 @@ static int test_geometry_leaves(void)
                 printf("[VACUOUS] %s: the window never moved in %d cases\n", W[i].name, cases);
                 fail++;
             }
-            printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+%s  "
-                   "(%d/%d moved the window)\n", W[i].name, cases, subFail,
-                   (i == 0) ? "NZC (V byproduct, D=0)" : "flags", moved, cases);
+            printf("%-32s %7d cases, %d mismatch (must be 0)  live=S  "
+                   "(%d/%d moved the window)\n", W[i].name, cases, subFail, moved, cases);
         }
     }
 

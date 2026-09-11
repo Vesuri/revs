@@ -402,15 +402,6 @@ REVS_FLAG_OP int cmp_ge(unsigned value, uint8_t limit)
     return cpu.C;
 }
 
-/* `value >= limit` through the 6502's CPX, which also leaves X = value.  The near-slot clamps
-   below end on one of these, so the compare's own C/N/Z are their exit flags. */
-REVS_FLAG_OP int cpx_ge(unsigned value, uint8_t limit)
-{
-    cpu.X = (uint8_t)value;
-    CPX(limit);
-    return cpu.C;
-}
-
 REVS_FLAG_OP unsigned zp_pointer(unsigned zp)
 {
     return (unsigned)mem[zp & 0xFFu] | ((unsigned)mem[(uint8_t)(zp + 1)] << 8);
@@ -715,7 +706,7 @@ SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV);
 void build_section_step_delta_core(uint8_t y);
 void copy_section_height_to_side1_core(uint8_t x);
 void load_section_from_segment_core(uint8_t x, uint8_t y);
-uint8_t shift_near_edge_points_core(uint8_t topSlot, uint8_t wrapSlot, uint8_t lowTop, uint8_t nearSlots);
+void shift_near_edge_points_core(uint8_t topSlot, uint8_t wrapSlot, uint8_t lowTop, uint8_t nearSlots);
 MosRegs sound_osword_core(uint8_t oswordNum, uint8_t blockLow);
 MosRegs sound_envelope_core(uint8_t envBase, uint8_t savedX);
 void    full_track_scan_rebuild_core(uint8_t retreatDepth);

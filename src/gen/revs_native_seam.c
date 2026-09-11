@@ -53,8 +53,7 @@ void clamp_near_edge_window(void)
 
 void shift_near_edge_points(void)
 {
-    /* the clamp inside the core sets X, Y and the flags; A is set last so it survives. */
-    cpu.A = shift_near_edge_points_core(0x2C, (uint8_t)EDGE_HALF, 0x05, 0x06);
+    shift_near_edge_points_core(0x2C, (uint8_t)EDGE_HALF, 0x05, 0x06);
 }
 
 void rebase_edge_point(void)

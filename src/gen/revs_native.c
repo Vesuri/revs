@@ -1231,11 +1231,8 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
 /* ⚠ NOT ARGUMENT PASSING — a LIVE REGISTER the following code reads.  Every surviving site
    loads a literal still live *after* the call it precedes: arg_a($9C) stays in A across the
    crash hold (the interrupt seam publishes A into mos_irq_a every field), arg_a($00)/($20)
-   are read by the lines below them, and arg_x is the near-slot clamps' `LDX #5` after a
-   compare, which rewrites N and Z while leaving C.  Sites that were really arguments now
-   pass one. */
+   are read by the lines below them.  Sites that were really arguments now pass one. */
 void arg_a(uint8_t v) { LDA(v); }
-static void arg_x(uint8_t v) { LDX(v); }
 
 /* $16E9's `BIT $05F4` — bit 6 of state_flags lands in V.  Through the macro rather than as a
    plain mask because the test leaves N and V set across the calls that follow it, and "no
@@ -1680,25 +1677,25 @@ CameraExit update_camera_and_drive_state_core(void);
      * the CURSOR itself.  The candidate must land in [near_edge_first, 5], and both ways out
        of that range snap to 5, not to the boundary that was crossed.
 
-   ⚠ The exit flags are the second clamp's `CPX #6`, and on the path that fires it the `LDX #5`
-   AFTER the compare overwrites N and Z while leaving C — which is why both steps go through
-   cpx_ge/arg_x rather than a C conditional. */
+   It answers entirely in mem[] — the three near-slot cells — and nothing is live at the exit
+   but S: its one caller ($23AF, inside road_edge_start) does `LDA #7 / CMP near_edge_...`
+   immediately, and X is not read again before road_edge_start's own `LDX $08` at $235E.
+   docs/native-sweep.md §live masks. */
 void clamp_near_edge_cursor_core(uint8_t candidate)
 {
     unsigned slot = (candidate + 1u) & 0xFFu;         /* $12DC INX */
 
-    if (!cpx_ge(slot, near_edge_last))                /* $12DD-$12E1 */
-        near_edge_last = (uint8_t)slot;
+    if (slot < near_edge_last)                        /* $12DD-$12E1 */
+        near_edge_last = (uint8_t)slot;               /* ⚠ `<` vs `<=` is UNDETECTABLE here and
+                                                         that is a no-op, not a fixture gap: the
+                                                         extra case is slot == near_edge_last,
+                                                         which stores the value it already holds */
 
     slot = (slot - 1u) & 0xFFu;                       /* $12E3 DEX */
-    if (!cpx_ge(slot, near_edge_first)) {             /* $12E4-$12E8 — below the window */
+    if (slot < near_edge_first)                       /* $12E4-$12E8 — below the window */
         slot = 5;
-        arg_x(5);
-    }
-    if (cpx_ge(slot, 6)) {                            /* $12EA-$12EE — past the last near slot */
+    if (slot >= 6)                                    /* $12EA-$12EE — past the last near slot */
         slot = 5;
-        arg_x(5);
-    }
     near_edge_cursor = (uint8_t)slot;                 /* $12F0 STX */
 }
 
@@ -1712,14 +1709,12 @@ void clamp_near_edge_window_core(uint8_t nearSlots)   /* 6 — one past the last
 {
     unsigned last = (near_edge_last + 1u) & 0xFFu;    /* $12C8-$12CA */
 
-    if (cpx_ge(last, nearSlots)) {                    /* $12CB-$12CF */
+    if (last >= nearSlots)                            /* $12CB-$12CF — `>` is a no-op change for
+                                                         the same reason: at last == nearSlots the
+                                                         clamp assigns the value already there */
         last = nearSlots;
-        arg_x(nearSlots);
-    }
-    if (!cpx_ge(last, near_edge_first)) {             /* $12D1-$12D5 */
+    if (last < near_edge_first)                       /* $12D1-$12D5 */
         last = near_edge_first;
-        arg_x(near_edge_first);
-    }
     near_edge_last = (uint8_t)last;                   /* $12D7 */
 
     clamp_near_edge_cursor_core((uint8_t)(near_edge_cursor + 1u));   /* $12D9-$12DB */
@@ -1735,13 +1730,12 @@ void clamp_near_edge_window_core(uint8_t nearSlots)   /* 6 — one past the last
    Then the window is re-opened: near_edge_first becomes 6 - near_edge_shift, i.e. as many
    slots as the car has just stepped over, and the clamps above tidy up the rest.
 
-   ⚠ The `SEC / SBC near_edge_shift` is the last thing in the routine to write V — the clamps
-   that follow it are all CPX, which does not — but the ONLY caller (road_edge_start $2309) reads
-   near_edge_first with an immediate CMP #6 before touching V, so that overflow is a DEAD byproduct
-   (dropped from the fixture mask, not reproduced).  A does stay the computed near_edge_first across
-   both clamps (they work in X), so it is kept live.  The subtract runs D=0 (the road pass is never
-   decimal — static-map.md §Decimal mode), so it is a plain binary `6 - near_edge_shift`. */
-uint8_t shift_near_edge_points_core(uint8_t topSlot,    /* $2C — slot 4 of the far half */
+   Nothing is live at the exit but S.  The ONLY caller is road_edge_start $2304, and $2307
+   `LDA #0 / STA $62F5 / LDY near_edge_first / CPY #6` redefines A, Y and N/Z/C before any read;
+   X is untouched until road_edge_start's own `LDX $08` at $235E, and the whole road pass has no
+   BVS/BVC, so the `SEC / SBC` overflow is dead too.  That subtract runs D=0 (the road pass is
+   never decimal — static-map.md §Decimal mode), so it is a plain binary `6 - near_edge_shift`. */
+void shift_near_edge_points_core(uint8_t topSlot,       /* $2C — slot 4 of the far half */
                                            uint8_t wrapSlot,   /* $28 — where the far half starts */
                                            uint8_t lowTop,     /* 5  — ...and the near half's top */
                                            uint8_t nearSlots)  /* 6 */
@@ -1760,8 +1754,7 @@ uint8_t shift_near_edge_points_core(uint8_t topSlot,    /* $2C — slot 4 of the
     }
 
     near_edge_first = (uint8_t)(nearSlots - near_edge_shift);          /* $12BD-$12C2 SEC/SBC, D=0 */
-    clamp_near_edge_window_core(nearSlots);                            /* $12C4 — works in X, leaves A */
-    return near_edge_first;   /* A stays near_edge_first across the clamps: the routine's exit A */
+    clamp_near_edge_window_core(nearSlots);                            /* $12C4 */
 }
 
 
@@ -3797,9 +3790,8 @@ CameraExit apply_driving_model_core(uint16_t heading, int entryC)
 
 
 /* Exit ABI is the full register+flag set (SlotExit).  A, V and C differ per path; X, N and Z
-   are the closing `arg_x` (LDX saved_slot_index).  Entry Y passes through every path (nothing
-   writes it before arg_x), and entry V/C pass through the empty-slot path — so all three are
-   inputs. */
+   are the closing `LDX saved_slot_index`.  Entry Y passes through every path (nothing writes it
+   before that LDX), and entry V/C pass through the empty-slot path — so all three are inputs. */
 SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, uint8_t entryC)
 {
     uint8_t flags = mem[MEM_car_flags_shape + slot];
@@ -3859,11 +3851,11 @@ SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, ui
             plot_line   = mem[MEM_object_line + slot];
             proj_width  = mem[MEM_object_width + slot];
             SlotExit po = plot_object_core(slot, entryY, v);
-            a = po.a; entryY = po.y; v = po.v; c = po.c;   /* X/N/Z are the arg_x below */
+            a = po.a; entryY = po.y; v = po.v; c = po.c;   /* X/N/Z are the LDX below */
         }
     }
 
-    /* $2B0A — arg_x(saved_slot_index): LDX sets X and its N/Z. */
+    /* $2B0A — LDX saved_slot_index sets X and its N/Z. */
     uint8_t ssi = saved_slot_index;
     SlotExit e = { a, ssi, entryY, (uint8_t)((ssi >> 7) & 1u), (uint8_t)(ssi == 0u), v, c };
     return e;

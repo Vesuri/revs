@@ -80,7 +80,7 @@ declares the register or flag live at the exit, with the argument written at the
 |---|---|---|
 | `line_is_last` (4 callers) | `cpu.X = line; CPX(last); return cpu.Z` | X **and** N/Z/C are all live at `view_paint_lines`' exit; its fixture declares `LIVE_A\|X\|Y\|S\|FLAGS` |
 | `stop_unchanged` | `CPY` not `==` | C is live if the plant that follows traps out; **found by sabotage** — written as `==` it passed the legal cases and failed 35 illegal ones |
-| `cpx_ge` + `arg_x` in the two near-slot clamps | compare, then `LDX #5` after it | the `LDX` overwrites N and Z while leaving C, so the exit flag set is not expressible as a C conditional |
+| ~~`cpx_ge` + `arg_x` in the two near-slot clamps~~ | compare, then `LDX #5` after it | ✅ RESOLVED — both exits are dead; see the near-slot section below. Both helpers are now deleted |
 | `cpu.V = sbc_overflow(0xF1, …)` in `paint_lines_short` | one replayed flag | V reaches `view_paint_lines`' exit on paths where nothing below rewrites it — this is the *reduced* form already (the alternative is the full `SBC` macro's five flag stores) |
 | `UPD_NZ(v->cell)` | the `LDY math_hi` reload's flags | same exit contract |
 | `arg_a(0x9C)` in `race_frame_tail` | `LDA #imm` kept out of the store | A stays live across the field wait, and the port's interrupt seam publishes A into `mos_irq_a` on every field — a reader the oracle's store-immediate peephole cannot see |
@@ -281,7 +281,8 @@ N cases` is a FAIL). The `SED` half has no such standing and is gone everywhere.
 
 # Open front — THE FIXTURE LIVE MASKS (its own campaign, not part of the read-through)
 
-ℹ First routine done (`view_paint_lines`, below); `cpx_ge`/`arg_x` and the two `arg_a`s remain.
+ℹ Done below: `view_paint_lines`, and the three NEAR-SLOT routines (which retired `cpx_ge`
+and `arg_x` entirely).  Only the two `arg_a`s in `race_main_loop` remain.
 
 The read-through kept running into the same wall: a 6502 shape that is load-bearing **only
 because a fixture declares a register or flag live at the exit**. The batch-1 table lists seven
@@ -346,5 +347,36 @@ The four value-path sabotages re-run after the narrowing (a wrong last line, `st
 always true, `view_compose` dropping the fill, a `$0139` row step) all FAIL, with distinct
 mismatch **and** trap counts.
 
-Still open: `cpx_ge`/`arg_x` (the near-slot clamps) and the two `arg_a`s (`race_main_loop`), which
-belong to different routines and need their own audits.
+---
+
+## ✅ Done: the three NEAR-SLOT routines — `AXYS+flags` → `S`, and `cpx_ge`/`arg_x` are retired
+
+`shift_near_edge_points` ($12A0), `clamp_near_edge_window` ($12C8) and
+`clamp_near_edge_cursor` ($12DC) all answer **entirely in mem[]** — the three near-slot cells
+`near_edge_first` / `near_edge_last` / `near_edge_cursor`. Every register and flag at their exits
+is dead, and each has exactly ONE 6502 caller, so the audit is short:
+
+| Routine | Its one caller | What redefines the exit state |
+|---|---|---|
+| `shift_near_edge_points` | `$2304`, in `road_edge_start` | `$2307 LDA #0 / STA $62F5 / LDY near_edge_first / CPY #6` — A, Y and N/Z/C, before any read |
+| `clamp_near_edge_window` | `$12C4`, in `shift_near_edge_points` | `$12C7 RTS` — its exit **is** `shift_near_edge_points`' exit, so the row above covers it |
+| `clamp_near_edge_cursor` | `$23AF`, in `road_edge_start` | `$23B2 LDA #7 / CMP $52` — A and N/Z/C |
+
+X is read nowhere on any arm out of `$2307` or `$23B2` before `road_edge_start`'s own
+`LDX near_edge_cursor` at `$235E` writes it, and the whole road pass `$2145-$2B62` contains no
+`BVS`/`BVC`, so V is dead too. `road_edge_start`'s own fixture already declared `LIVE_S`, so the
+clamps were never propping up its exit — only their own masks. No circuit's `ModifyGameCode`
+patches these spans (`disasm/track_smc.txt`) and no hook re-entry point (`$2490`/`$253B`/`$461B`)
+lands in them, so the caller set is the same on all five circuits.
+
+What that bought: both clamps are now plain `<`/`>=` conditionals, `shift_near_edge_points_core`
+returns `void` instead of publishing an exit A the caller overwrites two instructions later, and
+**`cpx_ge` and `arg_x` are deleted outright** — these five sites were their only users.
+
+Five sabotages; three FAIL with distinct mismatch counts (61 / 254 / 1000). The two that PASS are
+the **no-change** category, not a fixture gap, and the argument is written at the code: relaxing
+either `<`/`>=` clamp boundary by one only adds the case where the clamp stores the value the cell
+already holds. Each one's SIBLING clamp, in the same routine, does fail.
+
+Still open: the two `arg_a`s in `race_main_loop`, which have no fixture at all (gated by
+`make determinism`) and need their own audit.
