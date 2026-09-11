@@ -241,8 +241,9 @@ dependency** (they were, for two phases).  `vdu_char_def` (`$5092`) has two arms
 bit 7 and they use two *different fonts*: the bitmap arm asks `OSWORD 10` for a **MOS ROM** glyph
 and plots it into the frame buffer, while the MODE 7 arm calls **OSWRCH** and the **SAA5050**
 teletext chip — which has its own character ROM and is not addressable by the CPU at all — draws
-the cell.  Measured on a real BBC in the front end (`tools/bbc_probe_mode7.mjs`): **310 OSWRCH
-calls and ZERO OSWORD 10 calls.**  So MODE 7 needed a VDU driver, not a font (done —
+the cell.  Measured on a real BBC in the front end (`tools/bbc_probe_mode7.mjs`): **359 OSWRCH
+calls on the practice arm, 2734 driving competition through to the grid, and ZERO OSWORD 10 calls
+on either.**  So MODE 7 needed a VDU driver, not a font (done —
 `src/platform/teletext.h`), and `OSWORD 10` belongs to the race view's own text — now implemented
 above, with its own drawn font.
 ⚠ **`$50F6` is the engine's main VDU emitter but NOT its only one.**  The listing has four
