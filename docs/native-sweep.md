@@ -386,6 +386,64 @@ The rest of the window reads clean, and two things are worth stating so they are
   now points at.  A twin that "knew" the index differed in one case in six.  The variable name
   and the ⚠ at the call site both exist for that; leave them.
 
+# Batch 6 — lines 10125..12250 (the steering assist, the road builder, the object projector)
+
+The window: the starting-lights / horizon / gear-indicator leaves, the ADC and the whole
+steering-assist chain (`poll_steering_assist` .. `clamp_and_store_steer_angle`),
+`read_driving_controls` and its pedal/gear tail, the session and best-lap resets, the BCD lap
+tallies, `scale_wing_settings` / `compute_segment_scale`, the section walkers
+(`build_road_section`, `cross_section_boundary`, `load_section_from_segment`,
+`step_section_curve`), `place_player_in_section`, `process_car_contact`, `car_gap_tail`,
+`place_car_world_coords`, `tally_bcd_column`, `paint_fence_backdrop` and the car-order leaves.
+
+## Open
+
+- **⭐⭐ THE THREE ROAD-BUILDER HOOK SEAMS HAND OVER AN INCOMPLETE REGISTER SET.**  `$12FB`
+  (`smc_section_advance`), `$1289` (`smc_boundary_hook`) and `$13C9` (`smc_section_tail_hook`)
+  are each patched to a `JSR <circuit hook>` by ALL FIVE expansion circuits
+  (`src/gen/revs_tracks.c`: `$12FB-$12FD`, `$128A/$128B`, `$13CA/$13CB` are in every `paN`), and
+  the twin calls `revs_track_hook()` at all three with **nothing handed over**:
+    - `$12FB` replaces `CLC; ADC #$03` — the hook's input is **A = `section_cursor`**, and the
+      twin already takes `cpu.A` as the result without ever setting it.
+    - `$1289` — the 6502 arrives with **X = `section_cursor`** ($1267) and **Y =
+      `retreat_segment`** ($1284), and `$129C STA $0702,X` goes on using **whatever X the hook
+      left**, exactly the `$1248` shape (`load_section_from_segment`) that put Brands Hatch's
+      whole `section_dir_index` column out.
+    - `$13C9` — X = `section_cursor`, Y = `segment_dir_index`, A = the side-1 comp-2 high sum;
+      `$13CC` reloads X, so these are inputs only.
+  Derive from the SURROUNDING instructions, per CLAUDE.md; Silverstone cannot see any of it.
+  **Gate: `make viewdiff` (the only gate on a patched arm), plus the determinism family.**
+  ⚠ Set the registers INSIDE the hook arm only — the unpatched arms call native code that reads
+  `mem[]`, so Silverstone must not pay for the handover.
+
+- **`build_road_section`'s stray `cpu.X = section_cursor;`** sits twenty lines above the
+  `$13C9` seam, in front of a `copy_section_height_to_side1_core(x)` that takes its cursor as an
+  argument.  It is the `$13C9` handover in the wrong place and undocumented — it moves to the
+  hook arm as part of the finding above.
+
+- **`$5700` carries TWO contradictory file-local names, one of them wrong.**  `TRACK_NORMAL_X`
+  (in `build_road_section`) and `TRACK_DIR_3` (in `place_car_world_coords`) are the same address,
+  and it is the across-track NORMAL's X component — not a third direction component.
+  `symbols.csv` deliberately leaves `$5700` its `ModifyGameCode` func row (one address, one
+  name), so the fix is ONE file-local define named for the race-time tenant, used by both.
+
+- **The `$298D is NOT per-circuit` note overclaims, and the sixth circuit is the counterexample.**
+  The measurement covered the four Acornsoft circuits; the Nurburgring patches the **operand**
+  `$298E` from `$1F` to `$FF` (`revs_tracks.c` `pa5`/`pv5`), i.e. no masking at all on a much
+  hillier circuit.  The code is right — it reads the operand out of `mem[]` rather than baking
+  it — so this is a comment fix: the OPCODE is not per-circuit, the OPERAND is.
+
+- **Seven cells written through `mem[MEM_…]` that have a `mem.h` bare name**: `vdu_char_column`
+  and `vdu_char_row` (`draw_starting_lights_core`), `car_seed_index`
+  (`reset_all_cars_for_session_core`), `track_scale_saved` (`compute_segment_scale_core`),
+  `car_section_dir_index`, `shared_temp_84`, `shared_temp_85` (`place_car_world_coords_core`).
+  The mem.h-names rule; comment/naming gate.
+
+- **`place_car_world_coords_core` names its two arguments after 6502 registers.**  `uint8_t x0 =
+  slot; uint8_t y0 = sectionCursor;` are pure aliases of the parameters — a 6502 idiom in the
+  naming.  Use the parameters directly.  (`uint8_t dir2[3]` with only `[0]` and `[2]` ever
+  written is the same routine's other leftover; the loop only reads those two.)
+
 # Open front — THE FIXTURE LIVE MASKS (its own campaign, not part of the read-through)
 
 ℹ ✅ **CLOSED.** `view_paint_lines`, the three NEAR-SLOT routines (which retired `cpx_ge` and
