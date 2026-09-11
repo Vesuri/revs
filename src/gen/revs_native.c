@@ -9367,7 +9367,9 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
     mem[PVS_COLOUR]   = mem[MEM_colour_pattern_tbl + (colourSelect & 0x03u)];
     mem[PVS_PREV_COL] = mem[EDGE_COLUMN];
     shared_temp_76    = mem[MEM_colour_pattern_tbl + ((mem[OBJ_EDGE_STYLE] & 0x0Cu) >> 2)];
-    plot_ptr_lo       = 0x00u;
+    plot_ptr_lo       = 0x00u;   /* ⚠ the LANE only, deliberately: nothing reads plot_ptr_v
+                                    between here and the whole-word store at $1C7B below, so the
+                                    mirror is left to that one (cf. the mirror rule at the top) */
 
     /* $1C3E-$1C7A — the endpoints.  Mode 1 derives its OWN from shared_temp_7e and then the
        other; mode 0 takes the saved pair and re-derives the other over it; mode 2 takes the
