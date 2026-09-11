@@ -713,10 +713,37 @@ pays its `advance_first` bookkeeping and the chain still walks, so what the skip
 cheap half.  This is the third null in a row on this subsystem (§7d's wide values +0.65%, the
 direct plotter 9% *slower*, this).  ⚠⚠ **The skip therefore stays OFF by default** — the code is
 correct and fully gated, the null is about its VALUE, so nothing is reverted, but a null does not
-earn a default.  §7 framed it as stage ONE of a change whose stage TWO is the direct bitplane
-plotter; the open question this leaves is whether the pair pays off only TOGETHER, or whether the
-sweep's real cost is somewhere neither of them touches — and the honest next move is to find that
-out before building stage two, not after.
+earn a default.
+
+⭐⭐ **AND THE NULL IS NOW EXPLAINED, STRUCTURALLY — the skip can only reach phase 1.** One
+`PROBES=1` profile of each arm (`docs/perf-method.md` §Inside `view_paint_lines`) gives COUNTS, not
+timings, so the cross-run caveat does not apply to the load-bearing part:
+
+| units/frame | phase 1 | phase 2 | phase 3 |
+|---|---|---|---|
+| control | 1441 | 426 | 282 |
+| `VIEWSKIP=1` | **619** | **426** | **282** |
+| runs/frame | 36 → **15** | 32 → 32 | 50 → 50 |
+
+⚠⚠ **Phases 2 and 3 skip ZERO units and ZERO runs — and they are 47 of the consumer's 70 ms.**
+Their lines are the clipped and short lines around the horizon and the road, which always carry
+content, so the predicate never holds there. The skip's entire reachable surface is phase 1's flat
+full-width background lines: **22 → 15 ms, ~7 ms of a ~290 ms frame = 2.4%**, right at the "under
+3% is noise" floor. Nothing had to cancel the win — **the ceiling was below what FPS can resolve,
+and that was computable from the phase table before the skip was built.**
+
+⭐⭐ **So stage two is aimed at the wrong two-thirds as well.** The direct plotter collapses the
+STORE, and phases 2+3 spend 1100-1200 µs PER LINE on 282 units between them — that is per-line and
+per-run DRIVER cost (50 runs over 25 lines in phase 3), which neither a dirty mask nor a faster
+store touches. **Do not build stage two on the "the pair pays off together" assumption: the pair
+both attack phase 1.** The lever on the expensive two-thirds is the DRIVER — fewer runs per line,
+or a cheaper per-run set-up — and that is a different change.
+
+⭐ **The transferable rule: price an optimisation's CEILING against the phase decomposition
+first.** "39% of line-visits" sounds like 39% of the sweep and is 2.4% of the frame, because the
+visits it deletes are the cheap ones. Multiply the share you can reach by the fraction of it you
+can remove and compare the product to the 3% floor — below that, the experiment cannot answer the
+question whatever it returns.
 
 ⚠⚠ **THE INK WATCH'S POLL MODE NAMES THE OBSERVER, NOT THE WRITER**, and misreading that cost
 three wrong fixes.  `[ink] change 1: $6707 $F3 -> $77 (seen from a bus op at $6C6D)` is the

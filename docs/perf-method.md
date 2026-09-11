@@ -370,6 +370,39 @@ The lever is that driver (fewer lines, cheaper per-run setup), not the cell loop
 per-item-setup shape as the other two stages. Phase 1, by contrast, is the honest throughput
 phase (1443 units at a flat 17 µs) and is already near its floor.
 
+#### ⭐⭐ AND THIS TABLE IS WHY THE PER-LINE SKIP WAS A NULL — the skip can only reach phase 1
+
+`make VIEWSKIP=1` (`docs/direct-bitplane-plan.md` §7i) deletes 39.5% of the sweep's line-visits on
+target and moved the framerate **-0.4%**. One profile of each arm says why, and the load-bearing
+part is a set of COUNTS, not a timing — so the cross-run caveat does not apply to it:
+
+| units/frame | phase 1 | phase 2 | phase 3 |
+|---|---|---|---|
+| control | 1441 | 426 | 282 |
+| `VIEWSKIP=1` | **619** | **426** | **282** |
+| runs/frame, control → skip | 36 → **15** | 32 → 32 | 50 → 50 |
+
+⚠⚠ **Phases 2 and 3 skip ZERO units and ZERO runs, and they are 47 of the consumer's 70 ms.** Their
+lines are the clipped and short lines around the horizon and the road — the ones that always have
+content, so the predicate never holds for them. The skip's whole reachable surface is phase 1, the
+flat full-width background lines, and it took **22 → 15 ms** of it: **~7 ms of a ~290 ms frame =
+2.4%**, which is exactly at the "under ~3% is noise" floor. **Nothing needs to have cancelled the
+saving — the ceiling was below what FPS can resolve, and that was computable from this table
+before the skip was built.**
+
+⭐⭐ **The rule this earns: price an optimisation's CEILING against this decomposition first.**
+"39% of line-visits" sounds like 39% of the sweep and is 2.4% of the frame, because the visits it
+deletes are the cheap ones. Multiply the share you can actually reach by the fraction of it you
+can actually remove, and compare the product to the 3% floor — if it does not clear it, the
+experiment cannot answer the question whatever it returns.
+
+ℹ Two smaller readings, both consistent and neither quotable on its own (cross-run, ±10%):
+phase 1's per-UNIT cost rose 15 → 24 µs while per-LINE fell 616 → 427 µs — the runs removed were
+the all-flat cheap ones, so the surviving units carry the per-run setup over fewer of them. And
+~8 ms appeared across phases 33/34/11/18, which is within trajectory noise; **the marking hooks
+(`view_mark_source`, called from `plot_store_resync` on every plotter store) are a PLAUSIBLE but
+UNPROVEN cost** — do not cite it as measured.
+
 ### ⚠⚠ MEASURED (2026-09-02): the WIDE-VALUE campaign is NOT VISIBLE end to end — +0.65%, inside noise
 
 The byte-lane→wide-value campaign (`docs/wide-value-cleanup.md`) had been argued entirely from
