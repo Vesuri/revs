@@ -349,6 +349,54 @@ the local).
 one that is left is argued at the code as an output the oracle leaves behind; the twins that
 dropped their scratch say so explicitly and their fixtures ignore those cells by name.
 
+# Batch 5 — lines 8000..10125 (the engine rev model, the camera, the object plotter, the text path)
+
+The window: `update_engine_revs`, `update_camera_and_drive_state`, `apply_drag_terms`, the road
+sign + object-slot writer (twins #87-#92), the object plotter's shape and line sides (#93-#97),
+the driving-controls cluster's text/screen-address leaves (#110-#114) and the text-script
+interpreter (#148/#165/#166).
+
+## Open
+
+- **F1 — `text_script_interp_core` pays `bus_read`'s range test ONCE PER SCRIPT BYTE.**  The
+  walk reads `bus_read((plot_ptr2_v + y) & 0xFFFF)` for every byte of every script, while the
+  pointer itself is constant across the inner loop — the routine's own comment already argues
+  that (nothing the walk calls writes `plot_ptr2`, and both clobbering arms `break` to the
+  reload).  `y` is a byte, so the run is exactly the 256 bytes above the base: one
+  `page_is_ram(base)` per RELOAD, `seam_read` per byte, else arm kept for the randomised
+  fixture.  Gate: `make validate FN=text_script_interp` + the determinism family (the front
+  end's text path).
+
+- **F2 — `menu_wait_key_core` spells `mem[MEM_math_hi]` where the whole rest of the file says
+  `math_hi`** (3 sites: the `STX`, the scan top's `LDY`, the highlight loop's `CPY`).  Same
+  storage — mem.h's `math_hi` *is* `mem[MEM_math_hi]` — so this is the mem.h-names rule, not a
+  behaviour change.  ⚠ Keep the reads UNCACHED: the routine deliberately re-reads the cell
+  after child calls (the #159 crux).  Gate: `make -s` + determinism.
+
+- **F3 — `halve_signed_rounded` returns `unsigned` and all three callers cast it back to
+  `uint8_t`.**  It computes a byte; declare it `uint8_t` and drop the casts.
+
+- **F4 — `plot_shape_edges_core`'s horizon floor is written `if (n || !(a >= ceiling))`.**  That
+  is `a < ceiling`; the double negative is the 6502's `BCS` showing through.
+
+## Examined and closed — do not re-open without new evidence
+
+The rest of the window reads clean, and two things are worth stating so they are not
+"cleaned up" later:
+
+- **Every surviving `cpu.` reference in it is one of the five argued classes.**  `cpu.A` at
+  `update_camera_and_drive_state_core`'s `$45CB` is the SMC/hook boundary (the circuit's own code
+  runs on it); the rest are 6502-ABI shims (`compute_car_angles`, `scale_by_track_gradient`,
+  `begin_spin{,_from_a}`, `store_object_flags`, `plot_object`, `scale_shape_vectors`,
+  `plot_shape_edges`).  No `goto`, no unnamed `mem[0x…]`, and the two remaining `bus_read`s are
+  the User VIA timer in the starter poll and the coast arm — real hardware.
+
+- **`yScale` in `update_camera_and_drive_state_core` is NOT the section index on every path.**
+  The spin arm reaches `begin_spin_from_a`, which queues a MOS sound, and `sound_osword` leaves
+  the MOS's own Y — so the second `scale_by_track_gradient_core` call scales by whatever entry Y
+  now points at.  A twin that "knew" the index differed in one case in six.  The variable name
+  and the ⚠ at the call site both exist for that; leave them.
+
 # Open front — THE FIXTURE LIVE MASKS (its own campaign, not part of the read-through)
 
 ℹ ✅ **CLOSED.** `view_paint_lines`, the three NEAR-SLOT routines (which retired `cpx_ge` and
