@@ -640,49 +640,71 @@ the marking side: every writer into the forty source blocks has to set the line'
 "which routines write `$3000..$43CF`" is a question about a large subtree, so it is a measurement
 and not a reading.
 
-### ⚠⚠ 7i. THE SKIP WAS BUILT, AND §7h's PREDICATE IS STILL NOT SUFFICIENT (2026-09-11)
+### ⭐⭐ 7i. THE SKIP IS BUILT AND GREEN — and §7h's predicate needed three more parts (2026-09-11)
 
 `make VIEWSKIP=1` implements §7h: per-line producer marks, the background byte and the flat bit,
-and the sweep skips a line that passes all three.  It **FAILS `make determinism`** — 153 stale
-frame-buffer bytes on display line 87 — and the reason is the method lesson, not the arithmetic.
+and the sweep skips a line that passes all three.  Straight out of the box it **FAILED
+`make determinism`** — 153 stale frame-buffer bytes on display line 87 — and the reason is the
+method lesson, not the arithmetic.
 
 ⭐⭐ **§7h's census measured a world the skip destroys.**  It ran on a build where every line is
 repainted every frame, so "this paint changed nothing" was only ever asked one frame after the
 last paint, of a line whose destination had just been written by that same paint.  Turn the skip
-on and neither holds: a line can stay unpainted for many frames, and in the meantime its
-destination can move or be written by somebody else.  A predicate validated by a census that
-repaints is not validated for a build that does not.  ⚠ **This is the "a control the instrument
-erases is not a control" failure in its purest form** — the erasure here is the skip itself.
+on and neither holds: a line can stay unpainted for many frames.  A predicate validated by a
+census that repaints is not validated for a build that does not.  ⚠ **This is the "a control the
+instrument erases is not a control" failure in its purest form** — the erasure is the skip itself.
 
 Three further parts turned up, in the order the gates found them:
 
-- **(4) A partial paint is not flat.**  The chain's first line is entered at `unit` rather than
-  0 (phases 2 and 3, and the forced entry), and a planted stop ends the sweep on its own unit;
-  either way the units that did not run kept their sources.  Both now mark the line dirty.
-- **(5) The destination MOVES.**  A source line's cells are wherever `plot_ptr` has walked to,
-  and that walk starts from a `screenBase` the caller chooses, so the shadow cannot be keyed by
-  SOURCE line at all.  It is keyed by DISPLAY LINE now.
-- **(6) ⚠ STILL OPEN — the display line has other tenants.**  The ink watch named the first:
-  `paint_lines_clipped`'s and `paint_lines_short`'s run-end composite stores, which write a cell
-  of a display line the chain painted flat.  Clearing the flat bit at those three stores does
-  **not** close it: four source lines ($43, $44, $46, $49) still fail the destination assertion
-  36 times each in 300 frames, so at least one more writer into the viewport band is unaccounted
-  for.  `make fbwrites` already says the band is written by `tick_wheel_spin` (display lines
-  50..140) and `undraw_plot_lines` / `smc_major_step` (129..180); line 87 is inside the first.
+- **(4) A partial paint is not flat, AND it does not clean the line.**  The chain's first line is
+  entered at `unit` rather than 0 (phases 2 and 3, and the forced entry), and a planted stop ends
+  the sweep on its own unit; either way the units that did not run kept their sources.  The line
+  stays dirty in both cases — `g_viewLineDirty` is cleared only on a run that reached unit 40.
+- **(5) The destination MOVES.**  A source line's cells are wherever `plot_ptr` has walked to, and
+  that walk starts from a `screenBase` the caller chooses, so the shadow cannot be keyed by SOURCE
+  line at all.  It is keyed by DISPLAY LINE (`g_viewDstBg[208]` / `g_viewDstFlat[208]`), and the
+  sweep's own run-end composite stores clear the flat bit of whatever line they land on.
+- **(6) ⚠⚠ THE FIRST SWEEP HAS NO HISTORY, AND A ZERO-INITIALISED ARRAY SAYS THE OPPOSITE.**
+  This was the 153 bytes.  `g_viewLineDirty` is a BSS array, so it starts all-zero = "nobody wrote
+  these sources" — and the first sweep therefore booked every line it painted as flat, including
+  lines whose blocks already held real pixels from before the hooks were live.  Display line 87
+  painted `$77`, was recorded flat with background `$0F`, and was skipped for the rest of the run.
+  The fixture path had always called `view_skip_reset()`; the GAME path never did.  It does now,
+  once, at the first sweep.
 
-**So the marking problem is TWO problems, and only the first is solved.**  The producer side is
-complete and proven (`g_shapeMarkUnmarked` reads 0 over 26M line-writes, two sabotages).  The
-DESTINATION side — every writer into the 8320-byte frame buffer that is not the chain's own flat
-store must clear its display line's flat bit — is not enumerated.  The same shadow technique
-would settle it: snapshot the frame buffer at the end of each sweep, diff it at the next, and
-assert that every changed display line had its flat bit cleared.
+- **(7) `copy_dash_data` is a PRODUCER, and it is not a plotter.**  `make determinism-race` then
+  failed with 207 stale SOURCE bytes at rows `$4A..$4F` of every column.  The stow direction of
+  `copy_dash_data` writes the dash-code tails straight back into the `$80`-spaced blocks with a
+  plain `to[y] = from[y]`, so it passes neither `seam_write` nor `plot_store_resync`.  It marks
+  now.  ⚠ The §7h producer census had read 0 written-but-unmarked over 26M line-writes and still
+  missed it — the census only samples the rectangle between sweeps, and this writer runs once at
+  session entry.
 
-⚠ **Do not enable `VIEWSKIP=1` for anything but this diagnosis.**  `make VIEWSKIP=2` adds the
-per-skip assertion (sources all zero, destination already holds the byte) and prints the first
-violation of each; that is the instrument to close item (6) with.  `make validate` cannot gate
-any of it — its fixtures write sources with `fill_random`, behind the marking hooks — so the
-harness resets the state to "everything dirty" per case and the gates are `make determinism`
-/ -drive / -crash / -race and `make viewdiff`.
+**The gates: `make VIEWSKIP=1` passes `determinism`, `-drive`, `-crash`, `-steer`, `-race` and
+`make viewdiff` on all five circuits, and `make VIEWSKIP=2` — which asserts, at every skip, that
+all forty sources are zero and that the destination already holds the byte — fires zero times on
+all five trajectories.**  `make validate` cannot gate any of it (its fixtures write sources with
+`fill_random`, behind the marking hooks), so the harness resets the state to "everything dirty"
+per case and the differential gates are the only ones.
+
+⭐ **Measured skip rate: 39% of line-visits while DRIVING** (6004 of 15392 over 300 frames,
+`STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 REVS_FIXED_RNG=1`; 23% parked, which is the wrong workload to
+size it by).  That is §7h's 38% prediction confirmed against a build that actually skips.  The
+switch prints the ratio itself at exit.  ⚠ A skipped line still costs its `advance_first`
+bookkeeping — the saving is the forty-unit scan, not the whole line — so the FRAME share this
+buys has still to be measured on the target with `fps_series.gdb`.
+
+⚠⚠ **THE INK WATCH'S POLL MODE NAMES THE OBSERVER, NOT THE WRITER**, and misreading that cost
+three wrong fixes.  `[ink] change 1: $6707 $F3 -> $77 (seen from a bus op at $6C6D)` is the
+backtrace of whoever happened to be writing when the change was *noticed* — its own header says
+poll mode catches writes the seam cannot see.  I read it as naming `paint_lines_clipped` and
+chased that routine's composite stores for three attempts.  ⭐ **What settled it in one run was
+three lines of code**: a spy on the single stale byte, printing every change of it tagged by
+position in the sweep.  `SPY $6707 -> $77 at p1-line-end line $49 seq 15` said the corruption
+happened inside the FIRST sweep, in phase 1, painting source line `$49` — which is not a foreign
+tenant at all but the chain itself, and pointed straight at the uninitialised array.  When a
+single byte is wrong, watch that byte; do not reason from an attribution tool built for a
+different question.
 
 ## 8. ⭐⭐ HARDWARE SPRITES for the instruments — capability the BBC never had (user, 2026-08-16)
 

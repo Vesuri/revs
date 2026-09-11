@@ -767,7 +767,8 @@ static void view_dst_touch(unsigned addr)
     if (off < BBC_SCREEN_BYTES) {
         unsigned row = (unsigned)((uint16_t)off / (uint16_t)BBC_SCREEN_BPR);
         unsigned sub = (unsigned)((uint16_t)off % (uint16_t)BBC_SCREEN_BPR);
-        g_viewDstFlat[row * BBC_SCREEN_LINES + (sub & (BBC_SCREEN_LINES - 1u))] = 0;
+        unsigned d   = row * BBC_SCREEN_LINES + (sub & (BBC_SCREEN_LINES - 1u));
+        g_viewDstFlat[d] = 0;
     }
 }
 
@@ -775,11 +776,20 @@ volatile unsigned long g_viewSkipLines  = 0;   /* lines the sweep did not paint 
 volatile unsigned long g_viewSkipPaints = 0;   /* ...and lines it did           */
 
 #ifndef REVS_PLATFORM_AMIGA
+static void revs_report_viewskip(void)
+{
+    extern int printf(const char*, ...);
+    unsigned long total = g_viewSkipLines + g_viewSkipPaints;
+    printf("VIEWSKIP: %lu of %lu line-visits skipped (%lu%%)\n",
+           g_viewSkipLines, total, total ? g_viewSkipLines * 100u / total : 0u);
+}
+
 void revs_announce_viewskip(void)
 {
     extern int printf(const char*, ...);
-    printf("VIEWSKIP: ON — the view sweep skips flat, clean, unmoved lines "
-           "(g_viewSkipLines / g_viewSkipPaints count them)\n");
+    extern int atexit(void (*)(void));
+    printf("VIEWSKIP: ON — the view sweep skips flat, clean, unmoved lines\n");
+    atexit(revs_report_viewskip);
 }
 #endif
 #endif
@@ -862,16 +872,20 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                 cell = 0x38;                    /* unit 39's cell, as a full line leaves it */
                 lineSkipped = 1;
             } else {
+                /* ⚠⚠ ONLY A FULL RUN CONSUMES THE LINE.  A planted stop ends the chain on the
+                   unit it sits on, so units from there to 39 keep their sources — clearing the
+                   dirty bit there tells the next sweep a line is clean while real pixels are
+                   still queued in its blocks.  `make determinism-race` found it as 207 stale
+                   SOURCE bytes at rows $4A..$4F of every column. */
+                const int fullRun = (view_stop_from(0) == 40);
                 g_viewSkipPaints++;
-                /* A paint consumes every source, so the line is flat afterwards exactly when it
-                   was clean going in — and it runs to the end unless a stop is planted. */
                 if (dstLine < 208u) {
                     g_viewDstFlat[dstLine] =
-                        (unsigned char)(!g_viewLineDirty[line] && view_stop_from(0) == 40
+                        (unsigned char)(!g_viewLineDirty[line] && fullRun
                                         && plot_ptr2_v == (unsigned short)(plot_ptr_v + 256u));
                     g_viewDstBg[dstLine] = (unsigned char)byte;
                 }
-                g_viewLineDirty[line] = 0;
+                if (fullRun) g_viewLineDirty[line] = 0;
                 lineSkipped = 0;
             }
 #endif
@@ -1296,6 +1310,17 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
        on the real frame the driver arrives with $4F ambient and the seed is read first. */
     v.cell = entryCell;
 
+#ifdef REVS_VIEWSKIP
+    /* ⚠⚠ THE FIRST SWEEP HAS NO HISTORY, and a zero-initialised array says the opposite.
+       g_viewLineDirty starts all-zero = "nobody wrote these sources", so the first sweep
+       recorded every line it painted as flat — including lines whose sources were already
+       non-zero from before the hooks were live.  One such line ($49, display line 87) painted
+       real pixels, was booked flat, and was then skipped for the rest of the run: the 153
+       stale bytes `make determinism` reported.  Everything dirty until a sweep has consumed
+       it, exactly as the fixture path does. */
+    { static int viewSkipPrimed = 0;
+      if (!viewSkipPrimed) { viewSkipPrimed = 1; view_skip_reset(); } }
+#endif
     paint_cells(&v, 0, 0, 1);
     paint_lines_clipped(&v);
 
@@ -4120,6 +4145,12 @@ void copy_dash_data_core(uint8_t dirFlag)
         uint8_t y = DASH_BLOCK_TOP;
         do {
             to[y] = from[y];
+            /* ⚠ In STOW mode this writes the view's own SOURCE blocks, so it is a producer the
+               skip has to know about — the one that is not a plotter and never passes the seam
+               (`make determinism-race`: 207 stale source bytes at rows $4A..$4F of every
+               column until it marked). */
+            PROBE_SHAPE_MARK((unsigned)((to - mem) + y));
+            VIEW_MARK_SOURCE((unsigned)((to - mem) + y));
             bytes++;
             y--;
         } while (y != mem[MEM_dash_block_starts + b]);
