@@ -958,10 +958,23 @@ observable is *transient* survives its own control:
   sibling in `plot_line_at_row` (`LDA #6`) *does* fail, because that one is on the **per-frame**
   path, so `$FC` carries it at every frame boundary.
 
-And a third eraser: the **WINDOW IN SPACE**. That same wrong entry cell *does* move pixels under
-`viewdiff` — display lines 10..17, tens of cells — but `viewdiff` compares only lines 82..166, so
-it reports PASS while printing the diff. A gate that prints a difference and passes is still a
-pass; read the gated count, not the listing.
+And a third eraser, independent of this control: the **WINDOW IN SPACE**. `viewdiff` compares only
+display lines 82..166 while *printing* diffs from the whole frame, and the port carries ~119
+permanent ungated residual bytes in the text/sky and dash bands. So a `viewdiff` PASS is evidence
+about lines 82..166 and nothing else, and **a gate that prints a difference and still passes is
+still a pass — read the gated count, never the listing.**
+
+### ⚠⚠ ...and the truncated-listing trap: `tail` on one run is not a baseline for another
+
+Reading this very control, I concluded it "moved real pixels at text/sky lines 10..17" and wrote
+that into two docs. It did not. I had captured the baseline run with `tail -N` and the control run
+in full, so the baseline's own lines 10..17 were simply off the top of my window, and I read
+pre-existing residuals as a new defect. Re-run properly, control and baseline are byte-identical:
+the same 119 count and the same 15 detail lines.
+
+⭐ **Compare the SUMMARY COUNT first — it covers the whole frame, gated or not — and only then the
+per-line listing; and never diff two runs captured with different amounts of output.** The count
+is what would have caught this instantly: 119 both times means nothing anywhere moved.
 
 ⭐ **So ask where in TIME and in SPACE the defect is observable, and compare that to where the gate
 samples.**

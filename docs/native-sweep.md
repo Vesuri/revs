@@ -405,7 +405,7 @@ and **both controls PASSED**:
 | Control | Gate | Result | Why |
 |---|---|---|---|
 | the prologue's `view_paint_lines_core` entry cell, `+1` | `determinism` (frame 300) | **PASS — vacuous** | it is the ONE-TIME prologue paint; 300 frames of repaint erase it long before the dump |
-| ...the same control | `viewdiff` (frame 60) | **PASS — but NOT vacuous-silent** | it moves real pixels — text/sky display lines 10..17, 4-23 cells each, absent from the baseline — but `viewdiff` gates only lines 82..166, so the gate passes anyway. The parameter IS load-bearing; no gate's WINDOW covers where it lands |
+| ...the same control | `viewdiff` (frame 60) | **PASS — vacuous** | the frame-60 dump is BYTE-FOR-BYTE the baseline's: the same 119 differing bytes and the same 15 diff-detail lines. So the third gate cannot see the entry cell either. ⚠⚠ I first read this control as "moves pixels at text/sky lines 10..17" by comparing a `tail`-TRUNCATED baseline listing against a full control listing — those lines are PRE-EXISTING ungated residuals, present in both. See `docs/validation-harness.md` §the truncated-listing trap |
 | the crash hold's `hold_a_for_irq_seam(0x9C)` deleted | `determinism-crash` (frame 1500) | **PASS — vacuous** | `mem[$FC]` differs only DURING the ~100-field hold; 1000+ later frames rewrite it before the dump. (Its `$06` sibling in `plot_line_at_row` DOES fail, because that one is on the per-frame path, so `$FC` is `$06` at every frame boundary) |
 
 That is the same shape as the `view_paint_lines` live-mask probe — **a control the instrument
@@ -417,10 +417,10 @@ these two rest on ARGUMENT, not on a gate:
 * the prologue refactor is **textually identical by construction** — the expression passed as the
   entry cell, `mem[MEM_dash_block_starts + (DASH_BLOCK_COUNT - 1)]`, is the very expression
   `copy_dash_data`'s shim assigned to `cpu.Y`, evaluated at the same point (after the core
-  returns), and BUILD mode only reads that table. ⭐ And it is checked, not just argued: the
-  `viewdiff` frame-60 dump is byte-for-byte what it was before the change (119/119/121/119/119
-  residual bytes, the same `text/sky line 55` + `dash line 198` cells), while the `+1` control
-  visibly perturbs lines 10..17 — so the value is live AND the port still produces it.
+  returns), and BUILD mode only reads that table. ⚠ That by-construction argument is ALL there
+  is: the `+1` control passes all three gates and perturbs the frame-60 dump not at all, so no
+  measurement here establishes the value is live. The refactor is safe because it is the same
+  expression at the same point, not because anything checked it.
 * the A/X/N/Z/C the old shim also published are dead **by the audit already completed one item
   earlier**: `copy_dash_data`'s exit state flows only into `view_paint_lines` and then into
   `$16E9 BIT state_flags`, and `view_paint_lines` is now `live=S` — the per-register table above
