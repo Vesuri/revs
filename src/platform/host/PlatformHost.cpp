@@ -275,12 +275,42 @@ void PlatformHost::renderFrame()
                             g_shapeLineUnitsCleanSrc,
                             u ? g_shapeLineUnitsCleanSrc * 100 / u : 0,
                             g_shapeLineCleanButChanged, g_shapeLineDirtyNoChange);
-                std::printf("SHAPE     per line $03..$4F  visits/redundant/units-per-visit:\n");
+                {
+                    extern volatile unsigned long g_shapeCleanChangedBgMoved;
+                    extern volatile unsigned long g_shapeCleanChangedBgSame;
+                    std::printf("SHAPE     ...of the clean-but-changed: %lu had a MOVED "
+                                "background byte, %lu did not\n",
+                                g_shapeCleanChangedBgMoved, g_shapeCleanChangedBgSame);
+                    {
+                        extern volatile unsigned long
+                            g_shapeCleanChangedBgSamePerLine[128];
+                        std::printf("SHAPE     ...and the unexplained ones, per line:");
+                        for (unsigned x = 0x03; x <= 0x4F; x++)
+                            if (g_shapeCleanChangedBgSamePerLine[x])
+                                std::printf(" $%02X:%lu", x,
+                                            g_shapeCleanChangedBgSamePerLine[x]);
+                        std::printf("\n");
+                    }
+                    {
+                        extern volatile unsigned long g_shapeSkippablePredicate;
+                        extern volatile unsigned long g_shapeSkippableUnits;
+                        extern volatile unsigned long g_shapeSkippableWrong;
+                        std::printf("SHAPE     THE 3-PART SKIP (clean sources + unmoved "
+                                    "background + last paint flat): %lu lines, %lu units = "
+                                    "%lu%% of the scan, %lu of them WRONG\n",
+                                    g_shapeSkippablePredicate, g_shapeSkippableUnits,
+                                    u ? g_shapeSkippableUnits * 100 / u : 0,
+                                    g_shapeSkippableWrong);
+                    }
+                }
+                std::printf("SHAPE     per line $03..$4F  "
+                            "visits/redundant/units-per-visit/clean-but-changed:\n");
                 for (unsigned x = 0x03; x <= 0x4F; x++) {
                     if (!g_shapeLinePerVisit[x]) continue;
-                    std::printf("SHAPE       line $%02X  %5lu %5lu  %3lu\n", x,
+                    std::printf("SHAPE       line $%02X  %5lu %5lu  %3lu  %5lu\n", x,
                                 g_shapeLinePerVisit[x], g_shapeLinePerRedundant[x],
-                                g_shapeLinePerUnits[x] / g_shapeLinePerVisit[x]);
+                                g_shapeLinePerUnits[x] / g_shapeLinePerVisit[x],
+                                g_shapeLinePerCleanChanged[x]);
                 }
             }
             std::printf("SHAPE   per-row ($2C..$4F) dirty sweeps:");

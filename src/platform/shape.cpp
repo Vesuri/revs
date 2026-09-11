@@ -1,10 +1,13 @@
 /* shape.cpp — the input-distribution counters described in shape.h. */
+#include <stdio.h>
+#include <stdlib.h>
 #include "shape.h"
 #include "bbc_screen.h"
 
 #ifdef REVS_SHAPE
 
 #include "../cpu/mem_decl.h"
+#include "../gen/mem.h"
 extern "C" MEM_QUAL unsigned char mem[65536];
 
 /* The dashboard sweep's own geometry, from docs/static-map.md item 10 — 40 column blocks
@@ -89,6 +92,7 @@ volatile unsigned long g_shapeLineUnits = 0;
 volatile unsigned long g_shapeLineUnitsRedundant = 0;
 volatile unsigned long g_shapeLineUnitsCleanSrc = 0;
 volatile unsigned long g_shapeLineCleanButChanged = 0;
+volatile unsigned long g_shapeLinePerCleanChanged[128];
 volatile unsigned long g_shapeLineDirtyNoChange = 0;
 volatile unsigned long g_shapeLinePerVisit[128] = {0};
 volatile unsigned long g_shapeLinePerRedundant[128] = {0};
@@ -99,6 +103,26 @@ volatile unsigned long g_shapeLinePerUnits[128] = {0};
    so the census covers all of it, not just DASH_X_LO..DASH_X_HI. */
 #define DASH_LINE_LO 0x03u
 #define DASH_LINE_HI 0x4Fu
+
+/* ⭐ THE SECOND HALF OF THE PREDICATE.  A line with no dirty source still paints its BACKGROUND
+   byte into all forty cells, and that byte is surface_colours[view_line_surface[line] & 3] —
+   which the road pass rewrites every frame.  So "no producer wrote my sources" does NOT mean
+   "my picture is unchanged", and this array is what separates the two. */
+static unsigned char s_lineBg[128];
+static unsigned char s_lineBgSeen[128];
+volatile unsigned long g_shapeCleanChangedBgMoved = 0;
+volatile unsigned long g_shapeCleanChangedBgSame  = 0;
+volatile unsigned long g_shapeCleanChangedBgSamePerLine[128];
+/* ⭐⭐ THE PREDICATE A PRODUCER-SIDE SKIP WOULD ACTUALLY USE, and it is three-part, not one:
+   a line may be skipped only if (1) no producer wrote any of its forty sources since the last
+   sweep, (2) its BACKGROUND byte — surface_colours[view_line_surface & 3] — is the one it was
+   painted with, and (3) the last paint was itself FLAT.  (3) is the one the first reading of
+   this census missed: a line whose sources were dirty LAST frame carries road pixels that this
+   frame's flat repaint has to erase, so "clean now" alone licenses a stale line. */
+static unsigned char s_lineWasFlat[128];
+volatile unsigned long g_shapeSkippablePredicate = 0;   /* lines the 3-part test would skip  */
+volatile unsigned long g_shapeSkippableUnits     = 0;
+volatile unsigned long g_shapeSkippableWrong     = 0;   /* ...that DID need a changed byte   */
 
 static void line_census_before(void)
 {
@@ -129,9 +153,33 @@ static void line_census_after(void)
         if (!s_lineDirty[x]) {
             g_shapeLineCleanSrc++;
             g_shapeLineUnitsCleanSrc += s_lineUnits[x];
-            if (s_lineChanged[x]) g_shapeLineCleanButChanged++;
+            if (s_lineChanged[x]) { unsigned char bg =
+                                        mem[MEM_surface_colours
+                                            + (mem[MEM_view_line_surface + x] & 3)];
+                                    if (s_lineBgSeen[x] && bg == s_lineBg[x])
+                                        { g_shapeCleanChangedBgSame++;
+                                          g_shapeCleanChangedBgSamePerLine[x]++; }
+                                    else
+                                        g_shapeCleanChangedBgMoved++;
+                                    g_shapeLineCleanButChanged++;
+                                    g_shapeLinePerCleanChanged[x]++;
+                                    if (getenv("REVS_SHAPE_CBC"))
+                                        fprintf(stderr, "CBC sweep %lu line $%02X\n",
+                                                g_shapeLineSweeps, x); }
         } else if (!s_lineChanged[x]) {
             g_shapeLineDirtyNoChange++;
+        }
+        {
+            unsigned char bg =
+                mem[MEM_surface_colours + (mem[MEM_view_line_surface + x] & 3)];
+            if (!s_lineDirty[x] && s_lineBgSeen[x] && bg == s_lineBg[x] && s_lineWasFlat[x]) {
+                g_shapeSkippablePredicate++;
+                g_shapeSkippableUnits += s_lineUnits[x];
+                if (s_lineChanged[x]) g_shapeSkippableWrong++;
+            }
+            s_lineWasFlat[x] = (unsigned char)(s_lineDirty[x] == 0);
+            s_lineBg[x] = bg;
+            s_lineBgSeen[x] = 1;
         }
     }
 }

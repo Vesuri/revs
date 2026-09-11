@@ -602,6 +602,44 @@ STRAIGHT_TO_RACE=1`): `AutoRun` restarts a stalled engine and selects a gear, so
 **69% redundant / 38% clean sources** against the target's 63% / 33% — two backends, independently,
 on the same question.  `docs/perf-method.md` §the measurement window.
 
+### ✅ 7h. THE SKIP PREDICATE IS THREE-PART, AND §7g'S ONE-PART VERSION IS UNSOUND (2026-09-11)
+
+§7g sized a producer-side dirty-line flag at 33% of the scan and left it there.  Building it
+needed the other half of the question — *is a clean-source line's picture actually unchanged?* —
+and the census already had the counter for it (`g_shapeLineCleanButChanged`).  It is **not** zero:
+over a long `make SHAPE=1 HOLD_THROTTLE=1 STRAIGHT_TO_RACE=1` run, **78 286 clean-source lines
+still had a store that changed a byte**.  A flag-only skip would have left a stale line roughly
+every third sweep, and neither `validate` nor a frame-boundary dump would have shown it.
+
+Two causes, both now measured, and each needs its own term in the predicate:
+
+* **26 205 of them (33%) had a MOVED BACKGROUND BYTE.**  A line with no dirty source is not
+  "unchanged", it is FLAT: every cell takes `surface_colours[view_line_surface[line] & 3]`, and
+  the road pass rewrites `view_line_surface` every frame.  The line's colour can change with no
+  source written at all.
+* **The other 52 081 were the line's OWN previous paint.**  Sources are consumed and zeroed as
+  they are read, so a line that carried road pixels last frame has clean sources this frame — and
+  those pixels must still be erased back to the background.  "Clean now" says nothing; the
+  predicate needs "clean now AND clean last time".
+
+⭐⭐ **The three-part predicate — no dirty source, background byte unmoved, and the last paint
+itself flat — is sound and nearly free of coverage cost:**
+
+| over 4 319 087 line-visits that satisfy it | |
+|---|---|
+| units it would skip | 172 763 480 = **38% of the scan** |
+| of them WRONG (a store would have changed a byte) | **0** |
+
+So the skip is worth **38%** of `view_paint_lines`, which is 36% of the frame — call it ~13% of
+the frame — and the term §7g was missing costs nothing, because a line that is clean two sweeps
+running with the same background is exactly the static horizon band the redundancy lives in.
+
+⚠ All three terms are cheap PER LINE (one counter, one byte compare, one flag); none of them is a
+per-cell test, which is what §7f established cannot pay for itself.  ⚠ The remaining unknown is
+the marking side: every writer into the forty source blocks has to set the line's bit, and
+"which routines write `$3000..$43CF`" is a question about a large subtree, so it is a measurement
+and not a reading.
+
 ## 8. ⭐⭐ HARDWARE SPRITES for the instruments — capability the BBC never had (user, 2026-08-16)
 
 **The observation.** The BBC has no sprites, so *every* moving thing on the Revs dashboard is drawn

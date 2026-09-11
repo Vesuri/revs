@@ -100,6 +100,10 @@ extern volatile unsigned long g_shapeLineDirtyNoChange;  /* dirty sources, yet n
 extern volatile unsigned long g_shapeLinePerVisit[128];
 extern volatile unsigned long g_shapeLinePerRedundant[128];
 extern volatile unsigned long g_shapeLinePerUnits[128];
+/* ⭐ WHERE the producer flag would be WRONG: a line with no dirty source whose sweep still
+   changed a byte, counted per line.  The summed count alone cannot say whether the skip is
+   unsound everywhere or only where some OTHER routine writes the viewport. */
+extern volatile unsigned long g_shapeLinePerCleanChanged[128];
 void shape_dash_store(unsigned dst, unsigned value, unsigned line);
 
 /* ── THE ROAD PASS ($1A20, phase 11) ────────────────────────────────────────────────────────
