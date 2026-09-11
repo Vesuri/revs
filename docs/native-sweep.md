@@ -428,3 +428,42 @@ these two rest on ARGUMENT, not on a gate:
   (`$16EE LDX #0` / `$16F9 LDA #0`, and `BIT` itself rewrites N/V/Z).
 
 **The fixture-live-mask front is now CLOSED.**
+
+## THE `_core` FRONT IS CLOSED: every surviving `cpu` read is one of five argued classes
+
+The governing sweep's second bullet — *"add the `_core` function to properly pass in arguments if
+needed and use the `_core` when calling the function"* — is **done**, and the survey that says so
+is worth keeping because the naive version of it OVERCOUNTS BADLY.
+
+⚠ **Do not scope this front by grepping for `<name>_core`.** A first pass looking for
+`void <name>(void)` functions with no matching `<name>_core` reported **24** candidates. Nearly all
+were false: a shim is just as converted when its core is *shared* or *differently named* —
+`road_span_plot` / `road_span_plot_2` both delegate to `span_plot_core`, `span_end_marker_p1` /
+`_p2` to `span_end_marker`, and `scale16_by_y`'s cpu-free core is `model_scale16`. Scope it instead
+by asking **which function bodies READ `cpu` without delegating to a cpu-free callee**, and then
+attribute every such read to its enclosing function. That reduces the front to a handful.
+
+### The five classes, and why each one stays
+
+Every remaining `cpu` read in `revs_native.c` is one of these, each with its argument written at
+the code:
+
+| Class | Sites | Why it is not an idiom |
+|---|---|---|
+| **Hook/SMC seam** | `horizon_half_width_at_core`, `scale_by_track_gradient`, `read_driving_controls_core`, `rebuild_walk_reversed_core`, `load_section_from_segment_core`, `fill_line_attr_core`, every `hook_*` | `revs_track_hook()` runs an expansion circuit's own 6502 code. The register file IS the calling convention — see CLAUDE.md's handover rule. Converting these would be a defect, not a cleanup |
+| **ISR seam** | `irq1v_band_schedule` (+ `irq1v_chain_on` / `irq1v_return`) | the measured exit contract is A/X/Y restored as the interrupted code left them, A via `mos_irq_a`. Its `PUSH(cpu.X)` is a stack residue the differential compares |
+| **Stack / `S`** | `engine_init_core`'s `top_level_stack = cpu.S`, `mul16_by_1_5_core`'s `mem[STACK_PAGE + cpu.S]` | C has no `S`, and the residue is compared |
+| **Live flag chain** | `draw_road_core`'s `chainC`/`chainV`, `emit_edge_width_offset_core`'s `WidthExit` | the flag genuinely leaves the routine — the one sanctioned exception in CLAUDE.md |
+| **6502-ABI oracle counterpart** | `mul16_signed`, `scale16_by_y`, `mul16_by_1_5`, `abs16_math`, `neg16_math`, `neg16_math_noinit`, `abs8` | ⭐ **the native path already bypasses these entirely.** `apply_angle_term_body` folds `mul16_signed`'s arithmetic into 16-bit C; `stage_lateral_speed_delta_core` uses `model_scale16` / `model_mul_1_5`; the three "native callers of `abs16_math`" are two oracle bodies plus one *comment*. They survive only so the transliteration's 6502 callers and the validation oracle still link |
+
+⭐ **The consequence for `scale16_by_y`'s `PHP`/`PLP`:** that pair looked like the last real idiom
+worth retiring, and retiring it would have meant loosening the differential to ignore a stack byte
+the 6502 genuinely writes — a faithfulness cost. **It is moot.** Nothing native calls
+`scale16_by_y`; `model_scale16` is the live path. Leave the pair alone: it is the oracle being an
+oracle.
+
+⚠ And two sites are argued the other way round — kept BECAUSE `cpu` is the honest source:
+`race_main_loop_core` threads ambient X/Y across phase boundaries (measured over 300 driving
+frames: three consumers read it, one storing it into `sound_saved_x` so it reaches `mem[]`), and
+`shift_key_commands_core`'s `sound_envelope_core(0, cpu.X)` reads an X the pause spin's own
+`kbd_test_key` left at `$FF`. In both, a threaded struct would move the same bytes and buy nothing.
