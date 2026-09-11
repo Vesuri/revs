@@ -925,3 +925,22 @@ sabotage:
   routine on synthetic memory; `determinism` compares the whole corpus on a trajectory the game
   actually takes. For an ambient register threaded in from a driver, only the second has the real
   entry value. And it takes BOTH parked and moving: this one is invisible to `-drive`.
+
+## ⚠⚠ A CONTROL THE INSTRUMENT ERASES IS NOT A CONTROL (the `view_paint_lines` live-mask probe)
+
+Narrowing a fixture's live mask is a claim about the *callers*, so it is settled empirically as
+well as by hand: poison the registers at the shim's exit and see whether anything downstream
+notices. The probe needs a positive control — a deliberate defect the gate **must** catch — and
+the first one chosen, `mem[0x6700] ^= 0xFF` right after the paint, was wrong in a way that only
+one of the two gates exposed:
+
+* `make determinism` **FAILED** it. 64 KB compared at frame 300, so the flip's downstream effects
+  are visible.
+* `make viewdiff` **PASSED** it. The gate compares a *screen dump* at frame 60, and the frame
+  repaints that cell before the dump — the sabotage was undone by the very pass under test.
+
+A control that fails one gate and passes another is not "mostly fine": for the gate it passes it
+proves nothing, and the poisoned run through that gate is vacuous. The fix is a control the pass
+**cannot** repair, which means changing an **input**, not a result — here `view_paint_lines_core`
+called with a wrong first scan line (`$50` for `$4F`), which fails both gates. ⚠ Verify a control
+per gate, not once: `cmp` the two dumps directly before trusting a `viewdiff` PASS.

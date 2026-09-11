@@ -281,6 +281,8 @@ N cases` is a FAIL). The `SED` half has no such standing and is gone everywhere.
 
 # Open front — THE FIXTURE LIVE MASKS (its own campaign, not part of the read-through)
 
+ℹ First routine done (`view_paint_lines`, below); `cpx_ge`/`arg_x` and the two `arg_a`s remain.
+
 The read-through kept running into the same wall: a 6502 shape that is load-bearing **only
 because a fixture declares a register or flag live at the exit**. The batch-1 table lists seven
 of them (`line_is_last`, `stop_unchanged`, `cpx_ge`/`arg_x`, the replayed `V` in
@@ -306,3 +308,43 @@ How the front would have to work, one routine at a time:
 Expected payoff: each narrowed mask retires a `cpu.`/`arg_a`/`UPD_NZ` shape that the idiom sweep
 is otherwise obliged to keep. Expected cost: the caller audit dominates, so this is worth doing
 per hot routine, never as a file-wide pass.
+
+## ✅ Done: `view_paint_lines` — `AXYS+flags` → `S`, and its whole tree is now cpu-free
+
+The first routine through the procedure, and it took **five** of the seven ledgered shapes with
+it. `view_paint_lines_core`'s tree (`view_commit`, `view_compose`, `line_is_last`,
+`stop_unchanged`, `step_scanline`, `paint_cells`, `paint_lines_short`, `paint_lines_clipped`) now
+contains **no `cpu.` write, no `UPD_NZ` and no `CPX`/`CPY`** — the two compares are `==`, and
+`view_commit` is deleted outright because publishing A/X/Y *was* the whole function.
+
+**The audit (step 1-2).** Exactly two callers, `$16E6` and `$1748`, taken from the listing; no
+circuit's `ModifyGameCode` patches either address or `$7BE2` (`disasm/track_smc.txt` has no extent
+there), so the caller set is the same on all five circuits and the audit is circuit-independent.
+On every arm out of both, the first thing reached redefines what it would read:
+
+| Register | Why it is dead |
+|---|---|
+| A | `$174B LDA $4F43` at caller 2; at caller 1 `BIT $05F4` only branches on V and both arms then `LDA`/`LDX` |
+| X | `$16EE LDX #0`; `reset_driving_variables` `LDX #$68`; `kbd_test_key` `LDX #$FF`; `sound_stop_all` `LDX #3`; `$177B LDX #$30` |
+| Y | `$178F LDY #$0B` before `$0EE5` (the one callee that reads Y, and it is redefined); `build_player_car` `LDY $22`; `finish_race` `LDY #0`; `text_script_interp` `LDY #0` |
+| C | `scale_wing_settings` `CLC`/`ASL` before both `ADC`s; `kbd_test_key`, `sound_stop_channel`, `print_message_pair` read no carry |
+| N/V/Z | overwritten by the `BIT`/`LDA` at each caller's first instruction |
+
+**The empirical cross-check.** Poisoning all seven at the shim's exit
+(`cpu.A=$A5, X=$5A, Y=$3C, N=V=Z=C=1`) left all five determinism trajectories **and** `make
+viewdiff` on all five circuits byte-identical. ⚠ Its first positive control — `mem[0x6700] ^= 0xFF`
+after the paint — **failed determinism but PASSED viewdiff**, because the frame repaints that cell
+before the dump; a wrong first scan line (`$50` instead of `$4F`) fails both, and is the control
+that verified the gate. *A control that the instrument erases is not a control.*
+
+⚠ And the edit that narrows the mask must be anchored on the enclosing `test_<name>` — a
+first-occurrence replace of `unsigned liveMask = LIVE_A | …` in `validate_native.c` lands on
+`irq1v_case` at line 537, which then passes vacuously while the routine you meant keeps its mask.
+The tell was `live=S` printing beside `[REG DIFF] … (declared live)` for X/Y/V/C.
+
+The four value-path sabotages re-run after the narrowing (a wrong last line, `stop_unchanged`
+always true, `view_compose` dropping the fill, a `$0139` row step) all FAIL, with distinct
+mismatch **and** trap counts.
+
+Still open: `cpx_ge`/`arg_x` (the near-slot clamps) and the two `arg_a`s (`race_main_loop`), which
+belong to different routines and need their own audits.

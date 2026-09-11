@@ -5526,7 +5526,16 @@ static int test_menu_wait_key(void)
 static int test_view_paint_lines(void)
 {
     static uint8_t pre[65536];
-    unsigned liveMask = LIVE_A | LIVE_X | LIVE_Y | LIVE_S | LIVE_FLAGS;
+    /* ⭐⭐ ONLY S. view_paint_lines leaves A/X/Y and N/V/Z/C dead, and that is audited, not
+       assumed: it has exactly two callers ($16E6, $1748 — no circuit's ModifyGameCode patches
+       either, so the set is the same on all five), and on EVERY arm out of both the first thing
+       reached redefines what it would read — `LDX #0`/`LDX #$68`/`LDX #$FF`/`LDX #3`/`LDX #$30`
+       for X, `LDY #$0B`/`LDY $22`/`LDY #0` for Y, and scale_wing_settings / kbd_test_key /
+       sound_stop_channel / text_script_interp read no carry before setting their own.
+       Empirically confirmed too: poisoning all seven at the shim's exit leaves all five
+       determinism trajectories and `make viewdiff` on all five circuits byte-identical (the
+       control — a wrong first scan line — does fail both).  docs/native-sweep.md §live masks. */
+    unsigned liveMask = LIVE_S;
     unsigned long smcLegal, smcIllegal;
     int fail = 0, printed = 0, t;
     const int dense = 300, sparse = 300, illegal = 100;
@@ -5594,7 +5603,7 @@ static int test_view_paint_lines(void)
                "not equivalent to the oracle's first-match search\n", g_viewTableCollisions);
         fail++;
     }
-    printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXYS+flags  "
+    printf("%-32s %7d cases, %d mismatch (must be 0)  live=S  "
            "(%lu traps in %d illegal cases)\n",
            "view_paint_lines", dense + sparse + illegal, fail, smcIllegal, illegal);
     return fail;

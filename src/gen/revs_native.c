@@ -407,15 +407,6 @@ static MEM_QUAL unsigned char* const g_viewSlotP[40] = {
 };
 
 
-/* Publish the state as the 6502 register file.  EVERY exit from the routine goes through
-   here, including the SMC trap exits, because the fixture declares A, X and Y live. */
-static void view_commit(const ViewState* v)
-{
-    cpu.A = (uint8_t)v->byte;
-    cpu.X = (uint8_t)v->line;
-    cpu.Y = (uint8_t)v->cell;
-}
-
 /* Can all forty cells off this base ($00..$138 from it) be stored without the bus?  True
    for every base the frame buffer can hold, and the unit loop hoists it out of the scan. */
 static int view_span_is_ram(unsigned base)
@@ -431,14 +422,10 @@ static uint16_t view_screen_addr(uint16_t base, unsigned cell)
 }
 
 /* One boundary cell of a run: the per-line source byte masked to the part the run covers, then
-   filled with the edge phase's pattern — just `(source & mask) | fill`.  A and N/Z are recorded
-   because the chain below can trap out of the routine at exactly this point. */
+   filled with the edge phase's pattern — just `(source & mask) | fill`. */
 static unsigned view_compose(unsigned source, unsigned mask, unsigned fill)
 {
-    unsigned cell = (source & mask) | fill;
-    cpu.A = (uint8_t)cell;
-    UPD_NZ(cell);
-    return cell;
+    return (source & mask) | fill;
 }
 
 /* ADDRESS -> UNIT IN ONE LOAD.  The drivers ask three questions about a computed address ~190
@@ -573,24 +560,16 @@ static int view_plant(ViewState* v, uint16_t site, uint16_t opnd, unsigned page,
     return 1;
 }
 
-/* The terminator every paint pass ends its line loop on: the line number goes into X and is
-   compared against the pass's last line, which sets X and N/Z/C — and all of those are live at
-   the routine's exit, so the comparison stays the 6502's.  True on the last line. */
-REVS_FLAG_OP int line_is_last(unsigned line, unsigned lastLine)
+/* The terminator every paint pass ends its line loop on: true on the pass's last line. */
+static int line_is_last(unsigned line, unsigned lastLine)
 {
-    cpu.X = (uint8_t)line;
-    CPX(lastLine);
-    return cpu.Z;
+    return line == lastLine;
 }
 
-/* Is the planted stop already where we want it?  ⚠ The 6502 asks with `CPY`, which writes C as
-   well as Z, and C is live if the following plant traps out of the routine — so this must be the
-   6502's compare, not `==`.  (Sabotage: `==` passes the legal cases, fails 35 illegal ones.) */
+/* Is the planted stop already where we want it? */
 static int stop_unchanged(unsigned stop, unsigned recorded)
 {
-    cpu.Y = (uint8_t)stop;
-    CPY(recorded);
-    return cpu.Z;
+    return stop == recorded;
 }
 
 /* Move a chain's planted RTS to unit `stop`, unless the record says it is already there.
@@ -646,7 +625,6 @@ static unsigned step_scanline(int* carry_out)
 {
     unsigned next = (plot_ptr_v + 1) & 0xFF;
 
-    UPD_NZ(next & 7);                            /* the `TYA / AND #7` — N/Z can outlive us */
     if (carry_out) *carry_out = 0;
     if (next & 7) {                              /* still inside this character row */
         /* ⭐ No mask to "preserve the high byte": `next & 7` non-zero means next != 0, so the
@@ -673,21 +651,11 @@ static unsigned step_scanline(int* carry_out)
     unsigned char r2  = (unsigned char)hi2;
     plot_ptr2_v = (uint16_t)(((unsigned)r2 << 8) | (adv & 0xFFu));
 
-    /* ⚠ FOUR SABOTAGES BELOW SURVIVE `make validate`, both classes recorded rather than
-       engineered around (docs/validation-harness.md §FIFTEENTH):
-       (1) `c2` is provably always 0 — it is the carry off $FFFF and the plot pointer's high
-           byte lives in $67..$7A — so dropping it changes nothing.  Kept: the 6502 has the
-           second ADC.
-       (2) Perturbing the exit A or dropping the V replay also survives: [DERIVED] the crossing
-           branch's A/V are dead at view_paint_lines' exit (paint_cells ends each line on
-           `CPX #$2C`, paint_lines_short writes V per line).  Kept: faithfulness is the
-           tie-breaker, and "dead at this exit" is not "dead for every future caller".
-       The value path IS covered — the step size and plot_ptr2's low byte both fail. */
-    cpu.A = r2;                                  /* the exit A is that last ADC's result */
-    cpu.V = adc_overflow((uint8_t)advHi, 0x01, c2);
-    cpu.N = (unsigned char)(r2 >> 7);
-    cpu.Z = (unsigned char)(r2 == 0);
-    cpu.C = (unsigned char)(hi2 >> 8);
+    /* ⚠ `c2` is provably always 0 — it is the carry off $FFFF and the plot pointer's high byte
+       lives in $67..$7A — so a sabotage dropping it survives `make validate`.  Kept because the
+       6502 has the second ADC.  The value path IS covered: the step size and plot_ptr2's low
+       byte both fail.  (The exit A/V/N/Z/C the 6502 also leaves here are dead — the routine's
+       only two callers overwrite every one of them; docs/native-sweep.md §live masks.) */
     if (carry_out) *carry_out = (int)(hi2 >> 8);
     return next;
 }
@@ -970,10 +938,7 @@ static void paint_lines_short(ViewState* v)
         VIEWP3_PHASE(PROBE_PHASE_P3_STOPA);
         v->cell = mem[MEM_view_run_left_end + v->line];
         if (!view_move_stop(v, v->cell, VIEW_REC_A3, MEM_view_p3_restore_a_site,
-                            MEM_view_p3_stop_a_site, (MEM_view_p3_stop_a_site + 1u), 0x7C)) {
-            view_commit(v);
-            return;
-        }
+                            MEM_view_p3_stop_a_site, (MEM_view_p3_stop_a_site + 1u), 0x7C)) return;
 
         /* The scan-line step, with phase 3's tail: a carry off the high byte makes it store the
            un-crossed low byte after all.
@@ -992,18 +957,15 @@ static void paint_lines_short(ViewState* v)
         VIEWP3_PHASE(PROBE_PHASE_P3_CHAINA);
 
         /* Chain A enters at $F1 - view_run_right_end[line] (SEC/SBC), with the boundary cell
-           composed from the per-line source byte and the edge tables.  N/Z/C are recomputed
-           downstream, but this subtract's V reaches view_paint_lines' exit on paths where nothing
-           below rewrites it — replay just that flag. */
+           composed from the per-line source byte and the edge tables. */
         v->byte = (uint8_t)(0xF1 - mem[MEM_view_run_right_end + v->line]);
-        cpu.V = sbc_overflow(0xF1, mem[MEM_view_run_right_end + v->line], 1);
         mem[(MEM_view_p3_enter_a_site + 1u)] = (unsigned char)v->byte;
         edge    = mem[MEM_view_edge_phase + v->line];
         v->byte = view_compose(mem[MEM_view_left_start_src + v->line],
                                mem[MEM_view_left_start_mask + edge],
                                mem[MEM_view_left_start_fill + edge]);
-        v->cell = v->byte;                          /* TAY: N/Z already match */
-        if (!view_enter_chain(v, MEM_view_p3_enter_a_site, (MEM_view_p3_enter_a_site + 1u), 0x7C)) { view_commit(v); return; }
+        v->cell = v->byte;                          /* TAY */
+        if (!view_enter_chain(v, MEM_view_p3_enter_a_site, (MEM_view_p3_enter_a_site + 1u), 0x7C)) { return; }
         v->byte = view_compose(v->byte, mem[MEM_view_left_end_mask + v->line],
                                         mem[MEM_view_left_end_fill + v->line]);
         REVS_PLOT_CELL(view_screen_addr(plot_ptr_v, v->cell), (uint8_t)v->byte);
@@ -1014,10 +976,7 @@ static void paint_lines_short(ViewState* v)
         VIEWP3_PHASE(PROBE_PHASE_P3_STOPB);
         v->cell = mem[MEM_view_run_right_end + v->line];
         if (!view_move_stop(v, v->cell, VIEW_REC_B3, MEM_view_p3_restore_b_site,
-                            MEM_view_p3_stop_b_site, (MEM_view_p3_stop_b_site + 1u), 0x7E)) {
-            view_commit(v);
-            return;
-        }
+                            MEM_view_p3_stop_b_site, (MEM_view_p3_stop_b_site + 1u), 0x7E)) return;
         VIEWP3_PHASE(PROBE_PHASE_P3_CHAINB);
         entry   = mem[MEM_view_run_right_start + v->line];
         v->cell = entry;
@@ -1026,13 +985,12 @@ static void paint_lines_short(ViewState* v)
                                mem[MEM_view_right_start_mask + v->line],
                                mem[MEM_view_right_start_fill + v->line]);
         v->cell = v->byte;                          /* the composed byte is the next cell index too */
-        if (!view_enter_chain(v, MEM_view_p3_enter_b_site, (MEM_view_p3_enter_b_site + 1u), 0x7E)) { view_commit(v); return; }
+        if (!view_enter_chain(v, MEM_view_p3_enter_b_site, (MEM_view_p3_enter_b_site + 1u), 0x7E)) { return; }
         math_hi = (unsigned char)v->cell;           /* the chain's cell, parked in scratch */
         edge    = mem[MEM_view_edge_phase + v->line];
         v->byte = view_compose(v->byte, mem[MEM_view_right_end_mask + edge],
                                         mem[MEM_view_right_end_fill + edge]);
         v->cell = math_hi;
-        UPD_NZ(v->cell);                            /* the `LDY math_hi` that reloaded it */
         REVS_PLOT_CELL(view_screen_addr(plot_ptr2_v, v->cell), (uint8_t)v->byte);
         bus_write(view_screen_addr(plot_ptr2_v, v->cell), (uint8_t)v->byte);
 
@@ -1067,18 +1025,11 @@ static void paint_lines_clipped(ViewState* v)
 
         v->cell = mem[MEM_view_run_left_end + v->line];
         if (!stop_unchanged(v->cell, mem[VIEW_REC_A2])) {
-            if (!view_plant(v, MEM_view_p2_restore_a_site, VIEW_REC_A2, 0x7C, OP_STA_IND_Y)) {
-                view_commit(v);
-                return;
-            }
+            if (!view_plant(v, MEM_view_p2_restore_a_site, VIEW_REC_A2, 0x7C, OP_STA_IND_Y)) return;
             mem[(MEM_view_p2_stop_a_site + 1u)] = (unsigned char)v->cell;
             mem[VIEW_REC_A2] = (unsigned char)v->cell;
-            if (!view_plant(v, MEM_view_p2_stop_a_site, (MEM_view_p2_stop_a_site + 1u), 0x7C, OP_RTS)) {
-                view_commit(v);
-                return;
-            }
+            if (!view_plant(v, MEM_view_p2_stop_a_site, (MEM_view_p2_stop_a_site + 1u), 0x7C, OP_RTS)) return;
             v->cell     = mem[MEM_view_run_right_start + v->line];   /* chain B's entry, for the store */
-            UPD_NZ(v->cell);                             /* its `LDY` outlives the chain */
             mem[(MEM_view_p2_enter_b_site + 1u)] = (unsigned char)v->cell;
         }
 
@@ -1093,7 +1044,7 @@ static void paint_lines_clipped(ViewState* v)
                                mem[MEM_view_right_start_mask + v->line],
                                mem[MEM_view_right_start_fill + v->line]);
         v->cell = v->byte;                          /* the composed byte is the next cell index too */
-        if (!view_enter_chain(v, MEM_view_p2_enter_b_site, (MEM_view_p2_enter_b_site + 1u), 0x7E)) { view_commit(v); return; }
+        if (!view_enter_chain(v, MEM_view_p2_enter_b_site, (MEM_view_p2_enter_b_site + 1u), 0x7E)) { return; }
 
         if (line_is_last(v->line, 0x1C)) break;
     }
@@ -1209,11 +1160,9 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
        the pair of them catches it).  The first chain does overwrite it on the fixture's inputs;
        on the real frame the driver arrives with $4F ambient and the seed is read first. */
     v.cell = entryCell;
-    UPD_NZ(firstLine);                    /* `LDX #$4F` is the prologue's last flag write */
 
     paint_cells(&v, 0, 0, 1);
     paint_lines_clipped(&v);
-    view_commit(&v);
 
     /* Publish the two pointers back into mem[] for the 6502-ABI mirror.  In the CORE, not the
        shim: race_main_loop reaches this routine through the shim today, but a future
