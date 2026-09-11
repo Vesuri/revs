@@ -279,6 +279,27 @@ N cases` is a FAIL). The `SED` half has no such standing and is gone everywhere.
 
 ---
 
+# Batch 3 — lines 4000..6000 (the span rasteriser, edge interpolation, surface colour)
+
+## Open
+
+*(nothing outstanding in batch 3 — all five findings applied)*
+
+## Recorded, deliberately not acted on
+
+- **The `$80-$88` window has THREE tenants and the read-through confirmed it.**
+  `build_track_geometry` sees `point_delta_lo/hi/sign`; the span pass sees
+  `SPAN_DX/DY/BLOCK/ARM/YSTEP/CLIP/LINE_END`; `mark_line_surfaces_core` is a third tenant of
+  `$88`.  The defines now spell each group off ONE base with a `_Static_assert` tying it to
+  mem.h's own name for the cell, which is as far as a read-through can go — actually
+  *separating* the tenants is a memory-map change, not a cleanup.
+
+- **`span_walk` must not hoist `mem[arm->addend]` / `mem[arm->subtrahend]`**, and
+  `column_gap_walk_core` must not hoist its boundary-table pointer.  Both are MEASURED: the
+  hoist fails 3 of 400 fixture cases on each `fwd` arm, and a boundary pointer of `$005D`
+  (2 of 1200 randomised cases) makes the run cover `$0082` and `$0085` — the loop's own end
+  line and the column it is filling.  Self-referential by construction; leave them alone.
+
 # Open front — THE FIXTURE LIVE MASKS (its own campaign, not part of the read-through)
 
 ℹ ✅ **CLOSED.** `view_paint_lines`, the three NEAR-SLOT routines (which retired `cpx_ge` and

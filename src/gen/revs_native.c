@@ -411,11 +411,27 @@ static MEM_QUAL unsigned char* const g_viewSlotP[40] = {
 };
 
 
-/* Can all forty cells off this base ($00..$138 from it) be stored without the bus?  True
-   for every base the frame buffer can hold, and the unit loop hoists it out of the scan. */
+/* ⭐⭐ THE HARDWARE-WINDOW TEST, IN ONE PLACE.  CLAUDE.md's rule is to hoist the `bus_write`
+   range check to wherever the POINTER is known — one test per scan line / column / fill, never
+   one per cell — and every hoist in this file asks the same question: does the whole run of
+   bytes above `base` stay below the $FC00 I/O window?  It used to be spelled five different
+   ways, one of them a bare `0xFB01` that would have gone silently wrong if BBC_IO_LO moved.
+   Both forms below derive from BBC_IO_LO, and `span` is the run's length in bytes. */
+static inline int base_span_is_ram(unsigned base, unsigned span)
+{
+    return (base + span) <= BBC_IO_LO;
+}
+
+/* A run of at most 256 bytes above `base` — the shape every $00..$FF indexed walk here has. */
+static inline int page_is_ram(unsigned base)
+{
+    return base_span_is_ram(base, 0x100u);
+}
+
+/* ...and the view sweep's unit: forty cells $00..$138 above the base, hoisted out of the scan. */
 static int view_span_is_ram(unsigned base)
 {
-    return (base + 40 * 8) <= BBC_IO_LO;
+    return base_span_is_ram(base, 40 * 8);
 }
 
 /* The screen address a boundary store lands on: one of the two pointers, plus the cell.  `base`
@@ -4207,11 +4223,16 @@ void copy_dash_data_core(uint8_t dirFlag)
    of the seven conditional subtracts, and recovering which step that was needs the quotient's
    lowest set bit above bit 0 plus a SECOND divide to get that step's partial remainder — 2x
    DIVU plus a bit scan, measurably no faster than the loop below, and only valid on the
-   `dividendHi < divisor` path.  ⭐ The unlock is upstream, not here: all four exit flags are
-   dead at all three call sites (bearing_to_section's `LDA #0` and project_point's `LDA math_lo
-   / CMP #$80` overwrite N, Z and C, and nothing reads V), so once project_point and
-   bearing_to_section are twins themselves the flags become internal and a single DIVU is
-   provably enough.  Worth ~1% of the frame, i.e. under the noise floor — docs/perf-method.md. */
+   `dividendHi < divisor` path.
+
+   ⭐⭐ AND THE QUESTION IS NOW MOOT, WHICH IS THE ONLY REASON THIS LOOP IS STILL HERE.  The
+   "unlock is upstream" note this header used to carry — take the DIVU once project_point and
+   bearing_to_section are twins — was answered by those twins NOT calling this routine at all:
+   `bearing_arm` and `project_point_core` each do their own `revs_divu16` on the normalised
+   operands, and the only callers left of `div16by8()` are the two `__t6502` oracle bodies in
+   revs_gen.c.  So the loop below costs the shipping build nothing per frame, and replacing it
+   would mean relaxing two fixtures that still compare V in order to speed up the ORACLE.  Same
+   shape as `scale16_by_y`'s PHP/PLP: it is the oracle being an oracle (docs/native-sweep.md). */
 
 
 /* The numerator is ONE 16-bit value; the 6502 keeps its top half in A and its bottom half in
@@ -4321,10 +4342,10 @@ void div16by8(void)
    closing adjustments go through the 6502's own ADC/SBC.  The fixtures randomise D for the
    same reason twin #13's does, and that is also where the exit V comes from.
 
-   ⭐ OPEN: div16by8's exit V is dead at all three of its call sites, all now in this file, so
-   the DIVU.W replacement its header describes is provably legal.  Not taken here — it is a
-   separately measurable change, and these fixtures still compare V, so it means relaxing them
-   in the same commit. */
+   ⭐ AND BOTH DIVIDES ARE ALREADY ONE `DIVU.W` — see `bearing_arm` and `project_point_core`
+   below.  Neither twin calls div16by8; each divides the normalised operands directly, so that
+   routine's eight-step restoring loop survives only as the oracle's, and the "replace it with
+   DIVU" note it used to carry here is moot rather than open. */
 
 /* reciprocal_table indexed by a MANTISSA: project_point normalises the distance until bit 7 is
    set, so the entry it wants is $80 below the table's base ($6200) — entry i = $8000/(i+$80). */
@@ -4596,9 +4617,15 @@ ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
    build_track_geometry has finished — and the defines below are what make the code readable. */
 
 #define SPAN_LINE_END  (MEM_point_delta_lo + 2u)   /* point_delta_lo[2]   — the scan line the span stops at */
-#define SPAN_DX        MEM_point_delta_hi   /* point_delta_hi[0]   — the DDA's major delta */
-#define SPAN_DY        MEM_shared_temp_84   /* point_delta_hi[1]   — ...and its minor delta */
-#define SPAN_BLOCK     MEM_shared_temp_85   /* point_delta_hi[2]   — the source block, 0..$2C */
+/* ⚠ All three off ONE base, because they are three CONTIGUOUS cells and that is the fact a
+   reader needs; mem.h also names the upper two individually (shared_temp_84 / shared_temp_85,
+   the static asserts below hold them to it), and spelling two of the three by those names hid
+   the adjacency the interp_edge → span_walk handover depends on. */
+#define SPAN_DX        MEM_point_delta_hi          /* point_delta_hi[0]  — the DDA's major delta */
+#define SPAN_DY        (MEM_point_delta_hi + 1u)   /* point_delta_hi[1]  — ...and its minor delta */
+#define SPAN_BLOCK     (MEM_point_delta_hi + 2u)   /* point_delta_hi[2]  — the source block, 0..$2C */
+_Static_assert(SPAN_DY    == MEM_shared_temp_84, "point_delta_hi[1] is shared_temp_84");
+_Static_assert(SPAN_BLOCK == MEM_shared_temp_85, "point_delta_hi[2] is shared_temp_85");
 #define SPAN_ARM       MEM_point_delta_sign   /* point_delta_sign[0] — bit 7 picks ascending or descending */
 #define SPAN_YSTEP     (MEM_point_delta_sign + 1u)   /* point_delta_sign[1] — which way the plotters step Y */
 #define SPAN_CLIP      (MEM_point_delta_sign + 2u)   /* point_delta_sign[2] — two-bit rolling clip history */
@@ -4793,23 +4820,24 @@ const SpanPlotter SPAN_PLOT_2 = {
    re-loads five fields per call, in the routine that runs eight times per scan line.
    Same rule as REVS_FLAG_OP above — measured, not assumed (docs/perf-method.md).
 
-   Pure C: no cpu struct.  The DDA accumulator is the `accumulator` parameter (it is only ever
-   handed straight back to the caller — the 6502 parked it in bearing_lo across the call, but
-   nothing here reads it, so the spill is gone).  `*y` is the scan-line counter, stepped in
-   place; `*carry` is the DDA carry threaded column-to-column (in, and out); `*abandoned` tells
-   the caller this span hit its predecessor and the chain has been unwound.
+   Pure C: no cpu struct.  ⭐ THE PLOTTER DOES NOT SEE THE DDA ACCUMULATOR AT ALL — the 6502
+   carried it in A across the JSR and parked it in bearing_lo, so the twin used to take it as a
+   parameter and immediately `(void)` it; the whole chain (two shims' `cpu.A`, sw_plot's `acc`)
+   existed to hand a byte to nobody.  The walk keeps `acc` in its own local instead.
+   `*y` is the scan-line counter, stepped in place; `*carry` is the DDA carry threaded
+   column-to-column (in, and out); `*abandoned` tells the caller this span hit its predecessor
+   and the chain has been unwound.
 
    Carry out: 0 on a normal exit; on either Y-step SMC-trap the pre-step compare's carry stands
    (that is what the 6502's CPY/CMP left in C when the trapping slot never ran); unchanged on
    the entry-step trap.  On the abandon path the carry, y and accumulator are all dead. */
 static inline __attribute__((always_inline))
-void span_plot_core(const SpanPlotter* p, uint8_t accumulator, uint8_t column,
+void span_plot_core(const SpanPlotter* p, uint8_t column,
                     uint8_t *y, unsigned *carry, int *abandoned)
 {
     unsigned cellAddr, cell, a, preC;
 
     ROAD_COUNT(g_roadCols);               /* one column of one span — the view pipeline's leaf */
-    (void)accumulator;
     *abandoned = 0;
     if (!span_step_y(p->stepIn, y)) return;        /* entry slot trapped: carry_in stands */
     if (*y == mem[SPAN_LINE_END]) { span_abandon_chain(*y); *abandoned = 1; return; }
@@ -4850,14 +4878,14 @@ void road_span_plot(void)
 {
     uint8_t y = cpu.Y; unsigned carry = cpu.C; int ab;
     plot_ptrs_marshal_in();                         /* read-only: nothing to publish back */
-    span_plot_core(&SPAN_PLOT_1, cpu.A, cpu.X, &y, &carry, &ab);
-    cpu.Y = y; cpu.C = carry ? 1 : 0;               /* A echoes the accumulator unchanged */
+    span_plot_core(&SPAN_PLOT_1, cpu.X, &y, &carry, &ab);
+    cpu.Y = y; cpu.C = carry ? 1 : 0;               /* A is untouched: the plotter never reads it */
 }
 void road_span_plot_2(void)
 {
     uint8_t y = cpu.Y; unsigned carry = cpu.C; int ab;
     plot_ptrs_marshal_in();
-    span_plot_core(&SPAN_PLOT_2, cpu.A, cpu.X, &y, &carry, &ab);
+    span_plot_core(&SPAN_PLOT_2, cpu.X, &y, &carry, &ab);
     cpu.Y = y; cpu.C = carry ? 1 : 0;
 }
 
@@ -4997,10 +5025,10 @@ static void span_walk_cap(uint8_t y)
    (y), whether the chain abandoned, and the plotter's EXIT CARRY — which is 0 on the ordinary
    path but not on the block-first-line / trapped-step exits, and the DDA feeds it straight into
    the next add (the 6502 did `ADC` right after the plot with the plotter's C still live). */
-static void sw_plot(int usePlot2, uint8_t acc, uint8_t column,
+static void sw_plot(int usePlot2, uint8_t column,
                     uint8_t *y, int *abandoned, unsigned *carry)
 {
-    span_plot_core(usePlot2 ? &SPAN_PLOT_2 : &SPAN_PLOT_1, acc, column, y, carry, abandoned);
+    span_plot_core(usePlot2 ? &SPAN_PLOT_2 : &SPAN_PLOT_1, column, y, carry, abandoned);
     /* The abandon path set the two-level-return flag (so the draw_span oracle sees it too);
        clear it here, once per plot, exactly as the oracle's `if (UNWIND_TAKEN()) return` does. */
     if (*abandoned) (void)span_chain_abandoned();
@@ -5014,9 +5042,6 @@ static void sw_marker(int p2, uint8_t *colMark, uint8_t y, unsigned *carry)
     span_end_marker(p2 ? SLOT_MARKER_P2 : SLOT_MARKER_P1,
                     p2 ? &plot_ptr2_v : &plot_ptr_v, y, colMark, carry);
 }
-
-/* The descending arms' shared exit: cap the last line at the scan line y left off on. */
-static void sw_walk_cap(uint8_t y) { span_walk_cap(y); }
 
 /* Inlined so `arm->rev` and `arm->steep` become constants and the four specialisations lose
    the direction tests from their inner loops.  The DDA is a plain binary fixed-point walk:
@@ -5095,7 +5120,7 @@ void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine)
                    comes first, and its exit carry (normally 0) is the carry-in to the adc — so
                    the line's CPX carry-in is overwritten before it is used, as on the 6502. */
                 for (;;) {
-                    sw_plot(usePlot2, acc, (uint8_t)column, &y, &abandoned, &carry);
+                    sw_plot(usePlot2, (uint8_t)column, &y, &abandoned, &carry);
                     if (abandoned) return;
                     { unsigned s = (unsigned)acc + mem[arm->addend] + carry;
                       acc = (uint8_t)s; carry = s >> 8; }
@@ -5115,7 +5140,7 @@ void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine)
                       acc = (uint8_t)d; carry = (d >= 0); }
                 }
                 colMark = (uint8_t)column;
-                sw_plot(usePlot2, acc, (uint8_t)column, &y, &abandoned, &carry);
+                sw_plot(usePlot2, (uint8_t)column, &y, &abandoned, &carry);
                 if (abandoned) return;
                 /* carry is now the plotter's exit carry, the carry-in to the next column's adc */
             }
@@ -5139,7 +5164,8 @@ void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine)
         first = 0;
     }
 
-    if (arm->rev) sw_walk_cap(y);       /* $2D9A's `JMP $2F12`, and $2E99's fall-through */
+    /* The descending arms' shared exit: cap the last line at the scan line y left off on. */
+    if (arm->rev) span_walk_cap(y);     /* $2D9A's `JMP $2F12`, and $2E99's fall-through */
 }
 
 void draw_span_shallow_fwd(void) { span_walk(&ARM_SHALLOW_FWD, cpu.X, cpu.Y); }
@@ -5589,7 +5615,7 @@ SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t first
                $00..$FF off `base`, so proving the whole span is RAM once hoists the range
                check out of the loop.  The else arm stays for the SMC case where the operand
                has been pointed somewhere unexpected. */
-            if ((unsigned)base + 0xFFu < BBC_IO_LO) {
+            if (page_is_ram(base)) {
                 while (y != fillDownTo) {
                     ROAD_COUNT(g_roadFillLines);   /* one scan line named in the line->point map */
                     mem[(uint16_t)(base + y)] = storeVal;
@@ -5904,8 +5930,12 @@ SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int e
    arguments, and why it is a twin of its own rather than fill_column_gaps' loop body. */
 
 #define EDGE_RUN_LIMIT     MEM_shared_counter_42   /* shared_counter_42 — the column the run stops at */
-#define EDGE_COLUMN        MEM_shared_temp_85   /* point_delta_hi[2] as this pass's column cursor */
+/* ⚠ Both off their own array's base for the same reason SPAN_DX/DY/BLOCK are — this pass is
+   the SECOND tenant of the $80-$88 window (docs/static-map.md), and naming one cell
+   `shared_temp_85` and its neighbour `point_delta_lo + 2` made two tenants look like three. */
+#define EDGE_COLUMN        (MEM_point_delta_hi + 2u)   /* point_delta_hi[2] — this pass's column cursor */
 #define EDGE_BLOCK_START   (MEM_point_delta_lo + 2u)   /* point_delta_lo[2] — dash_block_starts[column] */
+_Static_assert(EDGE_COLUMN == MEM_shared_temp_85, "point_delta_hi[2] is shared_temp_85");
 #define EDGE_STYLE_PREV    (MEM_edge_style - 1u)   /* a line_attr entry is an index PLUS ONE */
 
 #define GAP_BRANCH_OPERAND (MEM_smc_gap_walk_branch + 1)   /* the non-zero-source arm's branch offset */
@@ -5916,7 +5946,7 @@ SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int e
    a pointer really can land in SHEILA. */
 static int pointer_is_ram(unsigned base)
 {
-    return base < 0xFB01u;
+    return page_is_ram(base);
 }
 
 
@@ -13871,7 +13901,7 @@ void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
 
     /* ⭐ One hardware-window test per SEGMENT, not per row: `dst` only ever DECREASES from here
        and `row` indexes $00..$FF off it, so proving the top of the walk is RAM proves all of it. */
-    const int dstIsRam = ((unsigned)dst + 0xFFu) < BBC_IO_LO;
+    const int dstIsRam = page_is_ram(dst);
 
     do {
         uint8_t pattern = 0xF0u;                                 /* $7FCD */
@@ -15024,7 +15054,7 @@ uint8_t console_io_core(uint16_t field, uint8_t width)
     shared_temp_77 = width;                          /* $6304 — and its width */
     /* ⭐ One hardware-window test for the whole field, not one per character: the column only
        ever indexes $00..$FF off `field`, so proving the base is RAM proves every store. */
-    const int fieldIsRam = ((unsigned)field + 0xFFu) < BBC_IO_LO;
+    const int fieldIsRam = page_is_ram(field);
 
     /* $6306-$6311.  The ambient Y at both calls is the caller's pointer HIGH byte. */
     mos_osbyte(0x02u, 0x00u, (uint8_t)(field >> 8)); /* input stream := keyboard */
