@@ -1182,9 +1182,11 @@ value written during band n is band n+1's duration.
     ≈1.4 FPS**, i.e. those three main-loop calls are ~36% of the frame.  See
     `docs/perf-method.md` §THE BASELINE.
 
-11. **`DumpHwAccesses.java` still carries Atari ranges.**  The sweep's hardware table above
-   supersedes it for now; retool or retire the script rather than leaving a tool that reports
-   GTIA registers for a BBC binary.
+11. ~~**`DumpHwAccesses.java` still carries Atari ranges.**~~  **Done** — the script is fully
+   retooled for the BBC: it walks `$FC00-$FEFF` (FRED / JIM / SHEILA) plus the OS vector cells
+   `$0200-$0235`, names the 6845 / ACIA / VIA / ADC registers, and carries no Atari range or
+   GTIA/POKEY name.  It deliberately overlaps `tools/sweep_entrypoints.py` so the two can
+   disagree.  ⚠ Run it against `disasm/revs_runtime.bin`, never `revs_mem.bin`.
 
 ## Notes on the toolchain
 

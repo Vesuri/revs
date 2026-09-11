@@ -98,13 +98,19 @@ So the sweep has a concrete, high-value target:
 - get the inventory for free by dumping RAM **before and after** the hooks run, and for **two
   different tracks** — see `docs/bbc-reference-loop.md`.
 
-## Definition of done
+## Definition of done — ✅ MET (Phase 2; evidence in `docs/phases.md` §Phase 2 item 1)
 
-- [ ] Every `JMP ($..)` / computed jump / RTS-dispatch site found, and its table fully seeded.
-- [ ] Every OS vector Revs writes identified, with the handler seeded.
-- [ ] Hardware vectors seeded.
-- [ ] Every self-modifying routine identified and listed (destined for `revs_manual.c`).
-- [ ] `ghidra_scripts/entrypoints.csv` reproduces the whole set on a fresh import.
-- [ ] A re-export of `listing.txt` shows no remaining "referenced but not disassembled" address.
+- [x] Every `JMP ($..)` / computed jump / RTS-dispatch site found, and its table fully seeded —
+      there turned out to be **no** indirect dispatch or RTS trick anywhere outside the two roots
+      no static walk can reach: the engine entry `$63BD` and the `IRQ1V` handler `$4E5C`.
+- [x] Every OS vector Revs writes identified, with the handler seeded.
+- [x] Hardware vectors seeded.
+- [x] Every self-modifying routine identified and listed — 24 sites, clustered in `$2C00-$2FFF`.
+- [x] `ghidra_scripts/entrypoints.csv` reproduces the whole set on a fresh import.
+- [x] A re-export of `listing.txt` shows no remaining "referenced but not disassembled" address —
+      `disasm/sweep.txt` §Undecodable bytes reads **(none)**.
 
-Only then generate C.
+⚠ **One knowingly-accepted residual, and it is NOT zero:** 685 bytes in two runs
+(`$6C00-$6E84`, `$6F8A-$6FB1`) that no mechanism explains, mostly zero-filled and never
+referenced.  Argued and bounded in `docs/static-map.md` §The residual, not silently rounded down.
+Read that section before concluding the static coverage is complete.
