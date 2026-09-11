@@ -640,7 +640,7 @@ the marking side: every writer into the forty source blocks has to set the line'
 "which routines write `$3000..$43CF`" is a question about a large subtree, so it is a measurement
 and not a reading.
 
-### ⭐⭐ 7i. THE SKIP IS BUILT AND GREEN — and §7h's predicate needed three more parts (2026-09-11)
+### ⭐⭐ 7i. THE SKIP IS BUILT, GREEN — AND A NULL RESULT on the target (2026-09-11)
 
 `make VIEWSKIP=1` implements §7h: per-line producer marks, the background byte and the flat bit,
 and the sweep skips a line that passes all three.  Straight out of the box it **FAILED
@@ -690,9 +690,33 @@ per case and the differential gates are the only ones.
 ⭐ **Measured skip rate: 39% of line-visits while DRIVING** (6004 of 15392 over 300 frames,
 `STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 REVS_FIXED_RNG=1`; 23% parked, which is the wrong workload to
 size it by).  That is §7h's 38% prediction confirmed against a build that actually skips.  The
-switch prints the ratio itself at exit.  ⚠ A skipped line still costs its `advance_first`
-bookkeeping — the saving is the forty-unit scan, not the whole line — so the FRAME share this
-buys has still to be measured on the target with `fps_series.gdb`.
+switch prints the ratio itself at exit.
+
+⭐⭐ **AND IT BUYS NOTHING. Measured on the target: a NULL RESULT.**  Both arms
+`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1`, no `PROBES`, `--warp_mode=1`, `fps_series.gdb`, 30 s,
+captured minutes apart in one session from clean builds:
+
+| arm | row vector (FPS per 512 vblanks) | non-outlier mean |
+|---|---|---|
+| control | 4.49 4.58 4.58 4.68 *3.22* 4.49 4.68 4.49 4.68 *3.22* 4.58 4.58 4.58 | **4.583** |
+| `VIEWSKIP=1` | 4.49 4.58 4.49 4.68 *3.12* 4.49 4.58 4.58 4.68 *3.02* 4.58 4.58 4.49 | **4.565** |
+
+(The two italic rows in each series are the off-track/reset scene and are excluded.)  **−0.4% —
+inside the one-frame-per-row noise floor.**  ⚠ And the skip provably FIRED in the arm that was
+measured: reading its own counters off that same build gave **12536 of 31703 line-visits skipped,
+39.5%**, matching the host census — so this is not a build that silently did nothing
+(`amiga/viewskip_count.gdb`, `VIEWSKIP=1` builds only).
+
+**Deleting 39% of the sweep's line-visits moved the framerate by nothing measurable**, which says
+the forty-unit source scan is NOT where `view_paint_lines` spends its time — a skipped line still
+pays its `advance_first` bookkeeping and the chain still walks, so what the skip removes is the
+cheap half.  This is the third null in a row on this subsystem (§7d's wide values +0.65%, the
+direct plotter 9% *slower*, this).  ⚠⚠ **The skip therefore stays OFF by default** — the code is
+correct and fully gated, the null is about its VALUE, so nothing is reverted, but a null does not
+earn a default.  §7 framed it as stage ONE of a change whose stage TWO is the direct bitplane
+plotter; the open question this leaves is whether the pair pays off only TOGETHER, or whether the
+sweep's real cost is somewhere neither of them touches — and the honest next move is to find that
+out before building stage two, not after.
 
 ⚠⚠ **THE INK WATCH'S POLL MODE NAMES THE OBSERVER, NOT THE WRITER**, and misreading that cost
 three wrong fixes.  `[ink] change 1: $6707 $F3 -> $77 (seen from a bus op at $6C6D)` is the
