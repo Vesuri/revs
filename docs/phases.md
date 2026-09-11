@@ -739,7 +739,7 @@ Three things left here, none of them blocking:
 - **the by-ear pass has not happened** (audio cannot be verified headlessly).
 - **sync/hold/queued sounds are unimplemented and counted**; Revs has never issued one.
 
-### 🔧 5. Track selection — the data path is DONE; the code path is next
+### ✅ 5. Track selection — DONE, data path AND code path (`make tracks` + `make track-run`)
 
 **User decision (2026-08-15): ONE BINARY with a runtime track menu**, not five per-track builds.
 

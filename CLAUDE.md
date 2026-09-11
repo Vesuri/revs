@@ -251,7 +251,7 @@ hand-rename in generated files).
 | File | Role |
 |---|---|
 | `tools/ssd_map.py` / `ssd_load.py` | DFS catalogue dump / post-load memory image builder (per-track) |
-| `tools/transpile.py` | The transpiler. Reads `disasm/listing.txt` + `symbols.csv`. ⚠ still carries Atari specifics — `docs/transpiler.md` §Porting checklist |
+| `tools/transpile.py` | The transpiler. Reads `disasm/listing.txt` + `symbols.csv`. Shape and traps: `docs/transpiler.md` |
 | `src/gen/revs_gen.c` | Generated 6502→C transliteration (regenerated; do NOT edit by hand) |
 | `src/gen/revs_manual.c` | Hand-written stubs for self-modifying routines |
 | `src/gen/revs_native.c` | FAITHFUL native twins (idiomatic C `_core` + 6502-ABI shim), `make validate`d, linked into BOTH backends |

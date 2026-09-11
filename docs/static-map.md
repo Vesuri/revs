@@ -837,9 +837,10 @@ value written during band n is band n+1's duration.
    (A from a variable).  Still owed: confirm the heuristic against a trace, and read out the
    *parameters* (X/Y) at the ADC and buffer-flush sites, which is what the implementation needs.
 4. ~~Decode the key table at `$39E0`.~~ **Done** (§The front end).  It is SPACE / 1 / 2 / 3 at
-   runtime.  **Driving to a real race is still open, and is now a different question than it
-   looked:** the front end blocks on `BIT $05F4 / BVS` at `$6560`, waiting for bit 6 to be cleared
-   by something other than the keyboard.  Find what clears it and the trace becomes strong.
+   runtime.  ~~Driving to a real race is still open.~~ **Done** — `make refloop` races a real BBC,
+   driving the front end by transcript.  The old reading, that the front end blocks on
+   `BIT $05F4 / BVS` at `$6560` waiting for something other than the keyboard, was wrong: the
+   blocker was jsbeeb's FakeVideo never raising vsync, not key injection.
 5. 🔧 **Extend the naming pass.**  **365 rows in `disasm/symbols.csv`** as of 2026-08-17; the
    figures below are from the original pass, when there were 129 and they were applied to the
    Ghidra project.  That was 42 of
@@ -976,10 +977,12 @@ value written during band n is band n+1's duration.
    | `$7BE2` | seeds `$70-$73` as screen row pointers, `JSR $7EF3`, `JMP $7D13` |
    | `$7FCC` | draw one car reflection in one mirror segment |
 
-   ⚠ **Confidence: DERIVED and self-checking, NOT yet measured on a BBC.**  Reaching `$16E3` on
-   real hardware is still behind the front-end line-editor blocker above.  Dumping `$7B00-$7FFF`
-   at `$16E6` is a one-line addition to a probe the moment that clears, and it is worth doing —
-   this is exactly the kind of confident-and-unverified reading the postmortem is about.
+   ⚠ **Confidence: DERIVED and self-checking, NOT yet measured on a BBC.**  ⭐ **The blocker is
+   GONE** — `make refloop` races a real BBC and drives the front end by transcript, and
+   `--mem-at=<pc>` already dumps 64 KB at a named PC, so dumping `$7B00-$7FFF` at the first
+   `$16E6` is now a one-line probe run.  Nothing stands in the way; it is 1280 bytes of live code
+   (the view rasteriser and the wing mirrors) that the port has only ever DERIVED, which is
+   exactly the kind of confident-and-unverified reading the postmortem is about.
 
    ⚠ ~~**What this costs the port, and it is not small.**~~  ✅ **Closed 2026-08-12.**  The
    transpiler used to emit `platform_brk()` for these seven sites because the page is empty in the
@@ -1009,9 +1012,9 @@ value written during band n is band n+1's duration.
 
    ✅ ~~Until the port executes them, **every measurement of the main loop is missing three
    routines**~~ — it executes them as of 2026-08-12 (item 10).  What is still owed is the
-   **BBC cross-check**: the overlay's bytes are DERIVED from a replay of `$18EA`, never compared
-   against a dump from real hardware, and that is still blocked on the front-end line editor
-   above.  Dumping `$7B00-$7FFF` at the first `$16E6` remains a one-line addition to a probe.
+   **BBC cross-check**: the overlay's bytes are DERIVED from a replay of `$18EA` and have never
+   been compared against a dump from real hardware.  ⚠ This is NO LONGER BLOCKED — see the
+   confidence note above: `make refloop` + `--mem-at=$16E6` is the whole job.
 
 7. ⭐ **Phase 4 additions to the static map — all three found by RUNNING the corpus.**
    Recorded here because each one is a place where reading the binary gave a confident wrong
