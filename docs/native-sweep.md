@@ -358,26 +358,15 @@ interpreter (#148/#165/#166).
 
 ## Open
 
-- **F1 — `text_script_interp_core` pays `bus_read`'s range test ONCE PER SCRIPT BYTE.**  The
-  walk reads `bus_read((plot_ptr2_v + y) & 0xFFFF)` for every byte of every script, while the
-  pointer itself is constant across the inner loop — the routine's own comment already argues
-  that (nothing the walk calls writes `plot_ptr2`, and both clobbering arms `break` to the
-  reload).  `y` is a byte, so the run is exactly the 256 bytes above the base: one
-  `page_is_ram(base)` per RELOAD, `seam_read` per byte, else arm kept for the randomised
-  fixture.  Gate: `make validate FN=text_script_interp` + the determinism family (the front
-  end's text path).
+*(nothing outstanding in batch 5 — all four findings applied)*
 
-- **F2 — `menu_wait_key_core` spells `mem[MEM_math_hi]` where the whole rest of the file says
-  `math_hi`** (3 sites: the `STX`, the scan top's `LDY`, the highlight loop's `CPY`).  Same
-  storage — mem.h's `math_hi` *is* `mem[MEM_math_hi]` — so this is the mem.h-names rule, not a
-  behaviour change.  ⚠ Keep the reads UNCACHED: the routine deliberately re-reads the cell
-  after child calls (the #159 crux).  Gate: `make -s` + determinism.
+## Recorded, deliberately not acted on
 
-- **F3 — `halve_signed_rounded` returns `unsigned` and all three callers cast it back to
-  `uint8_t`.**  It computes a byte; declare it `uint8_t` and drop the casts.
-
-- **F4 — `plot_shape_edges_core`'s horizon floor is written `if (n || !(a >= ceiling))`.**  That
-  is `a < ceiling`; the double negative is the 6502's `BCS` showing through.
+- **`text_script_interp`'s hoisted hardware-window test keeps its else arm on an ARGUMENT, not
+  on a fixture case.**  Every script leaf the fixture plants is in low RAM, so the `bus_read`
+  fallback is never entered by the harness — but `text_script_ptr_lo/hi` are DATA tables a
+  per-circuit hook could repoint, which is exactly the class CLAUDE.md says a Silverstone run
+  cannot rule out.  Do not delete the arm because no case covers it.
 
 ## Examined and closed — do not re-open without new evidence
 

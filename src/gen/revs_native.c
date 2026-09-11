@@ -9112,7 +9112,7 @@ static SlotExit plot_shape_edges_core(void)
               /* V escapes on the no-height reject path ($20D1 BCS); C there comes from the
                  $20CF CMP below, so only V needs replaying (the ADC's own C is dead). */
               v = adc_overflow(vtx, plot_line, 0); }
-            if (n || !(a >= object_line_ceiling))
+            if (n || a < object_line_ceiling)
                 a = object_line_ceiling;
             /* $20CF CMP span_line_cursor — its carry is the exit C on the no-height path. */
             c = (uint8_t)(a >= span_line_cursor);
@@ -9371,7 +9371,7 @@ void plot_shape_edges(void)     { SlotExit e = plot_shape_edges_core();
    rounding exactly as the ADC does; verified identical over all 256 inputs.  D=0 on the object
    path (static-map §Decimal mode).  Value only: the caller (derive_endpoint) overwrites A and
    every flag before reading anything. */
-static unsigned halve_signed_rounded(uint8_t value)
+static uint8_t halve_signed_rounded(uint8_t value)
 {
     return (uint8_t)((int8_t)value / 2);
 }
@@ -9580,15 +9580,15 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
        other; mode 0 takes the saved pair and re-derives the other over it; mode 2 takes the
        saved pair and derives nothing. */
     if (mode == 1) {
-        derive_endpoint((uint8_t)halve_signed_rounded(shared_temp_7e),
+        derive_endpoint(halve_signed_rounded(shared_temp_7e),
                         MEM_shared_temp_7e, EDGE_COLUMN);
-        derive_endpoint((uint8_t)halve_signed_rounded(mem[OBJ_EDGE_X]),
+        derive_endpoint(halve_signed_rounded(mem[OBJ_EDGE_X]),
                         PVS_OTHER_X, PVS_OTHER_COL);
     } else {
         mem[EDGE_COLUMN] = mem[PVS_OTHER_COL];
         shared_temp_7e   = mem[PVS_OTHER_X];
         if (mode == 0)
-            derive_endpoint((uint8_t)halve_signed_rounded(mem[OBJ_EDGE_X]),
+            derive_endpoint(halve_signed_rounded(mem[OBJ_EDGE_X]),
                             PVS_OTHER_X, PVS_OTHER_COL);
     }
 
@@ -10058,8 +10058,15 @@ uint8_t text_script_interp_core(uint8_t tableIdx)
         plot_ptr2_v = (uint16_t)(mem[MEM_text_script_ptr_lo + tableIdx]
                                  | ((unsigned)mem[MEM_text_script_ptr_hi + tableIdx] << 8));
         plot_ptr2_marshal_out();
+        /* ...and the same audit is what lets the hardware-window test be hoisted here: `y` is a
+           byte, so a script is the 256 bytes above its base — one range check per RELOAD instead
+           of one per character.  ⚠ The else arm is ARGUED, not exercised: the fixture plants every
+           leaf in low RAM, and the pointer tables are DATA a per-circuit hook could repoint, which
+           is the class a Silverstone run cannot rule out.  So it stays. */
+        const unsigned scriptBase  = plot_ptr2_v;
+        const int      scriptIsRam = page_is_ram(scriptBase);
         for (;;) {                               /* L_4D8A — walk the bytes */
-            uint8_t a = bus_read((plot_ptr2_v + y) & 0xFFFFu);
+            uint8_t a = seam_read((scriptBase + y) & 0xFFFFu, scriptIsRam);
             if (a == 0xFFu) return y;             /* $4D8C end of script — Y is live at the
                                                     exit: print_standings_table hands it on as
                                                     the ambient OSWRCH register (twin #199) */
@@ -10119,7 +10126,7 @@ uint8_t text_script_interp_core(uint8_t tableIdx)
 
 uint8_t menu_wait_key_core(uint8_t count)
 {
-    mem[MEM_math_hi]  = count;                     /* $6575 STX math_hi — read back below */
+    math_hi           = count;                     /* $6575 STX math_hi — read back below */
     shared_temp_77    = 0x00u;                     /* $6573 — "menu text shown" latch, clear */
 
     for (;;) {                                     /* L_6577 — render, poll, then scan */
@@ -10129,7 +10136,7 @@ uint8_t menu_wait_key_core(uint8_t count)
         abort_if_quit_keys_core();                 /* $6577 — the SHIFT+abort poll (a longjmp on a hit) */
 
         /* $657a..$658b — scan menu_key_tbl DOWN from `count` for the first held key */
-        uint8_t idx = mem[MEM_math_hi];            /* $657a LDY math_hi */
+        uint8_t idx = math_hi;                     /* $657a LDY math_hi */
         int matched = 0;
         for (;;) {
             shared_temp_76 = idx;                  /* $657c */
@@ -10159,7 +10166,7 @@ uint8_t menu_wait_key_core(uint8_t count)
             mem[MEM_menu_row_attr + hx] = (hy == hypot_min_lo) ? 0x81u : 0x84u;  /* $65af-$65b7 */
             hx = (uint8_t)(hx + 0x50u);            /* $65ba TXA/ADC #$50/TAX — next row */
             hy++;                                  /* $65bf INY */
-            if (hy > mem[MEM_math_hi]) break;      /* $65c0 CPY math_hi — loop while hy<=count */
+            if (hy > math_hi) break;               /* $65c0 CPY math_hi — loop while hy<=count */
         }
         /* $65c6 — falls back to redraw (the only true exit is the sel==0 confirm above) */
     }
