@@ -124,6 +124,72 @@ volatile unsigned long g_shapeSkippablePredicate = 0;   /* lines the 3-part test
 volatile unsigned long g_shapeSkippableUnits     = 0;
 volatile unsigned long g_shapeSkippableWrong     = 0;   /* ...that DID need a changed byte   */
 
+/* ── marking completeness (shape.h) --------------------------------------------------------- */
+
+extern "C" {
+volatile unsigned long g_shapeMarkWritten  = 0;
+volatile unsigned long g_shapeMarkMarked   = 0;
+volatile unsigned long g_shapeMarkUnmarked = 0;
+volatile unsigned long g_shapeMarkOver     = 0;
+volatile unsigned long g_shapeMarkPerUnmarked[128];
+}
+
+static unsigned char s_lineMarked[128];                 /* set by the writer hooks       */
+static unsigned char s_srcShadow[DASH_COLUMNS][128];    /* the rectangle after last sweep */
+static unsigned char s_srcShadowSeen;
+
+/* A hook at a known writer.  Anything outside the forty source blocks, or outside the sweep's
+   own line range, is not a source byte and is ignored — the blocks are $80 apart but only
+   $03..$4F of each is ever painted. */
+void shape_mark_source(unsigned addr)
+{
+    unsigned off, line;
+    addr &= 0xFFFFu;
+    if (addr < DASH_BLOCK_BASE) return;
+    off = addr - DASH_BLOCK_BASE;
+    if (off >= DASH_COLUMNS * DASH_BLOCK_STRIDE) return;
+    line = off & (DASH_BLOCK_STRIDE - 1u);
+    if (line < DASH_LINE_LO || line > DASH_LINE_HI) return;
+    s_lineMarked[line] = 1;
+}
+
+/* The ground truth: which lines changed between the end of the last sweep and the start of this
+   one, whoever changed them.  Run before the sweep consumes anything. */
+static void mark_census(void)
+{
+    unsigned x, k;
+    unsigned char written[128];
+    for (x = 0; x < 128; x++) written[x] = 0;
+    for (k = 0; k < DASH_COLUMNS; k++) {
+        const unsigned base = DASH_BLOCK_BASE + k * DASH_BLOCK_STRIDE;
+        for (x = DASH_LINE_LO; x <= DASH_LINE_HI; x++)
+            if (mem[base + x] != s_srcShadow[k][x]) written[x] = 1;
+    }
+    if (s_srcShadowSeen) {
+        for (x = DASH_LINE_LO; x <= DASH_LINE_HI; x++) {
+            if (written[x]) {
+                g_shapeMarkWritten++;
+                if (!s_lineMarked[x]) { g_shapeMarkUnmarked++; g_shapeMarkPerUnmarked[x]++; }
+            } else if (s_lineMarked[x]) {
+                g_shapeMarkOver++;
+            }
+            if (s_lineMarked[x]) g_shapeMarkMarked++;
+        }
+    }
+    for (x = 0; x < 128; x++) s_lineMarked[x] = 0;
+}
+
+/* Re-take the shadow once the sweep has consumed (and zeroed) what it was going to. */
+static void mark_snapshot(void)
+{
+    unsigned k, x;
+    for (k = 0; k < DASH_COLUMNS; k++) {
+        const unsigned base = DASH_BLOCK_BASE + k * DASH_BLOCK_STRIDE;
+        for (x = 0; x < 128; x++) s_srcShadow[k][x] = mem[base + x];
+    }
+    s_srcShadowSeen = 1;
+}
+
 static void line_census_before(void)
 {
     unsigned x, k;
@@ -187,6 +253,7 @@ static void line_census_after(void)
 void shape_dash_before(void)
 {
     unsigned bytes, cols;
+    mark_census();
     line_census_before();
     scan(&bytes, &cols, /*credit*/1);
     /* The unit count belongs to the sweep that just ENDED, so take its DELTA before this one
@@ -212,6 +279,7 @@ void shape_dash_after(void)
     g_shapeDashLeft     += bytes;
     g_shapeDashColsLeft += cols;
     g_shapeDashLastLeft  = (unsigned short)bytes;
+    mark_snapshot();
 }
 
 

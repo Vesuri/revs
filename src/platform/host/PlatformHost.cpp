@@ -302,6 +302,25 @@ void PlatformHost::renderFrame()
                                     u ? g_shapeSkippableUnits * 100 / u : 0,
                                     g_shapeSkippableWrong);
                     }
+                    {
+                        extern volatile unsigned long g_shapeMarkWritten;
+                        extern volatile unsigned long g_shapeMarkMarked;
+                        extern volatile unsigned long g_shapeMarkUnmarked;
+                        extern volatile unsigned long g_shapeMarkOver;
+                        extern volatile unsigned long g_shapeMarkPerUnmarked[128];
+                        std::printf("SHAPE     MARKING COMPLETENESS: %lu line-writes measured, "
+                                    "%lu marked, %lu WRITTEN-BUT-UNMARKED (must be 0), "
+                                    "%lu marked-but-clean\n",
+                                    g_shapeMarkWritten, g_shapeMarkMarked,
+                                    g_shapeMarkUnmarked, g_shapeMarkOver);
+                        if (g_shapeMarkUnmarked) {
+                            std::printf("SHAPE       unmarked by line:");
+                            for (unsigned x = 0; x < 128; x++)
+                                if (g_shapeMarkPerUnmarked[x])
+                                    std::printf(" $%02X=%lu", x, g_shapeMarkPerUnmarked[x]);
+                            std::printf("\n");
+                        }
+                    }
                 }
                 std::printf("SHAPE     per line $03..$4F  "
                             "visits/redundant/units-per-visit/clean-but-changed:\n");

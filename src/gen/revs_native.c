@@ -129,6 +129,7 @@ void plot_store_resync(unsigned addr, uint8_t val)
        wraps it, so a pointer near $FFxx really does land in page $00 — testing unwrapped misses
        exactly the case this exists for. */
     addr &= 0xFFFFu;
+    PROBE_SHAPE_MARK(addr);   /* every plotter store passes here, so it is the marking hook too */
     if (addr >= 0x0100u) return;              /* the overwhelmingly common case */
     switch (addr) {
     case MEM_plot_ptr_lo:   PLOT_SET_LO(plot_ptr,  val); break;
@@ -10015,10 +10016,12 @@ int draw_starting_lights_core(void)
     math_lo = eor;                                  /* $7B84 — the 6502 parked Y here across the fill */
 
     { int i;
-      for (i = 9; i >= 0; i--) mem[light_col + i] = 0xF0u;   /* $7B8A — clear ten rows */
+      for (i = 9; i >= 0; i--) { mem[light_col + i] = 0xF0u;   /* $7B8A — clear ten rows */
+                                 PROBE_SHAPE_MARK(light_col + i); }
       uint8_t a = pattern;
       for (i = 5; i >= 0; i--) {                    /* $7B93 — pattern into the middle six */
           mem[light_col + 2 + i] = a;
+          PROBE_SHAPE_MARK(light_col + 2 + i);
           a ^= eor;                                 /* $7B96 EOR math_lo */
       }
     }
@@ -11929,6 +11932,9 @@ uint8_t paint_fence_backdrop_core(uint8_t horizon)
             mem[(uint16_t)(block + y)]                 = b;   /* the column's own source block */
             mem[(uint16_t)(MEM_view_left_start_src  + y)]  = b;
             mem[(uint16_t)(MEM_view_right_start_src + y)]  = b;
+            PROBE_SHAPE_MARK(block + y);
+            PROBE_SHAPE_MARK(MEM_view_left_start_src  + y);
+            PROBE_SHAPE_MARK(MEM_view_right_start_src + y);
             last = b;
 
             pat = (uint8_t)((pat - 1) & 3);     /* 3,2,1,0,3,... (DEX / BPL / LDX #3) */

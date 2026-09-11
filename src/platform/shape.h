@@ -106,6 +106,28 @@ extern volatile unsigned long g_shapeLinePerUnits[128];
 extern volatile unsigned long g_shapeLinePerCleanChanged[128];
 void shape_dash_store(unsigned dst, unsigned value, unsigned line);
 
+/* ── ⭐⭐ IS THE PRODUCER-SIDE MARKING COMPLETE? ────────────────────────────────────────────
+ * The three-part skip needs a per-line DIRTY MARK set by whoever writes a source byte, and the
+ * skip is only sound if that mark is set by EVERY writer.  "Which routines write $3000..$43CF"
+ * is a question about a large subtree, so it is measured, not read:
+ *
+ *   shape_mark_source(addr)   a hook at a known writer — "I wrote this source byte"
+ *   the SHADOW                a copy of the whole rectangle taken after each sweep; the bytes
+ *                             that differ at the next sweep's entry are what was ACTUALLY
+ *                             written, whoever wrote them
+ *
+ * ⭐ So the shadow is the ground truth and needs no hook at all, which is the point: a writer I
+ * never found still shows up in it.  `g_shapeMarkUnmarked` counts written-but-unmarked lines and
+ * **must read 0 over a long run before any skip is enabled**.  `g_shapeMarkOver` counts the other
+ * direction (marked, nothing written) — not a bug, just skip coverage given away.
+ * ⚠ 5120 compares per sweep: a SHAPE build only. */
+extern volatile unsigned long g_shapeMarkWritten;      /* lines a producer really wrote      */
+extern volatile unsigned long g_shapeMarkMarked;       /* lines a hook marked                */
+extern volatile unsigned long g_shapeMarkUnmarked;     /* ⚠ written, NOT marked — must be 0  */
+extern volatile unsigned long g_shapeMarkOver;         /* marked, nothing written            */
+extern volatile unsigned long g_shapeMarkPerUnmarked[128];
+void shape_mark_source(unsigned addr);
+
 /* ── THE ROAD PASS ($1A20, phase 11) ────────────────────────────────────────────────────────
  * The other half of step 2, and the number that prices direct plotting: how many BYTES of the
  * 8320-byte frame buffer does the road rasteriser actually write per frame?  The decode converts
@@ -166,6 +188,7 @@ void shape_frame_delta(void);
 #define PROBE_SHAPE_DASH_AFTER()   shape_dash_after()
 #define PROBE_SHAPE_DASH_UNIT(line) shape_dash_unit(line)
 #define PROBE_SHAPE_DASH_STORE(d, v, line) shape_dash_store((d), (v), (line))
+#define PROBE_SHAPE_MARK(addr)     shape_mark_source((addr))
 #define PROBE_SHAPE_ROAD_BEFORE()  shape_road_before()
 #define PROBE_SHAPE_ROAD_AFTER()   shape_road_after()
 #define PROBE_SHAPE_PHASE(n)       shape_phase_mark(n)
@@ -177,6 +200,7 @@ void shape_frame_delta(void);
 #define PROBE_SHAPE_DASH_AFTER()   ((void)0)
 #define PROBE_SHAPE_DASH_UNIT(line) ((void)(line))
 #define PROBE_SHAPE_DASH_STORE(d, v, line) ((void)0)
+#define PROBE_SHAPE_MARK(addr)     ((void)0)
 #define PROBE_SHAPE_ROAD_BEFORE()  ((void)0)
 #define PROBE_SHAPE_ROAD_AFTER()   ((void)0)
 #define PROBE_SHAPE_PHASE(n)       ((void)0)

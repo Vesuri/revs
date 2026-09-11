@@ -421,6 +421,7 @@ REVS_FLAG_OP void seam_write(unsigned addr, int ram, uint8_t value)
 {
     if (ram) {
         mem[addr] = value;
+        PROBE_SHAPE_MARK(addr);   /* a store here may be a view SOURCE byte (§7h marking) */
 #ifdef REVS_INK_WATCH
         revs_ink_watch((uint16_t)addr, value);
 #endif
