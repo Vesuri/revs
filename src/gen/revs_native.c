@@ -6252,44 +6252,44 @@ SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
      * V is the V of the LAST `ADC`, which happens at the multiplier's top set bit, where the
        accumulator holds (addend x (multiplier mod 2^k)) >> k.  `adc_overflow` replays exactly
        that one add.  With a zero multiplier no add runs at all and the caller's V survives.
-   ⚠ Decimal mode is not "a flag detail" here: D changes the RESULT BYTE of every `ADC`, so the
-   routine stops being a multiply.  The bit-for-bit replay below is kept for it.  The engine
-   never sets D; a randomised fixture does. */
+   ⚠ Decimal mode does not arise.  D changes the RESULT BYTE of every `ADC`, so a decimal
+   entry would stop this being a multiply at all — but none of the 8 SED sites reach here
+   (docs/static-map.md §Decimal mode) and the fixture pins D = 0 citing that table, so there is
+   no decimal arm to keep. */
 
-/* $0C02  mul8_noinit — the 8x8 multiply, math_lo x math_hi.  The binary path is one MULU.W (see
-   the header); decimal mode still runs the 6502's own shift-and-add, because D changes the RESULT
-   byte of every ADC.  Exit: A = product high, math_lo = product low; N/Z from math_lo, C = 0,
-   V = the last ADD's.  This is a KEPT shim — generated code and the mul8_accum family call it. */
+/* $0C02  mul8_noinit — the 8x8 multiply, math_lo x math_hi.  Exit: A = product high, math_lo =
+   product low; N/Z from math_lo, C = 0, V = the last shift-and-add's.  This is a KEPT shim —
+   generated code and the mul8_accum family call it. */
 /* The 8x8 product plus the ONE escaping flag: the V of the last shift-and-add.  `setV` is 0 for a
    zero multiplier (no ADC ran, so the 6502 leaves the caller's V — the shim must not overwrite it). */
 
 static Mul8 mul8_noinit_core(uint8_t multiplier, uint8_t addend)
 {
-    /* The 8x8 shift-and-add, simulated exactly as $0C02-$0C46 so the escaping V is the real V of
-       the LAST ADC — a closed form for the accumulator before that add is too fragile to trust
-       (it must reproduce the 6502's ADC overflow bit for all 65536 pairs, not merely the product).
-       math_lo (multiplier) is shifted out a bit at a time; on each set bit math_hi (addend) is
-       added, and the {A:math_lo} pair rotates right.  Product high ends in A, low in m. */
+    /* ⭐⭐ ONE `MULU.W`, PLUS ONE REPLAYED ADD FOR THE ESCAPING V.  The eight-iteration
+       shift-and-add this used to simulate is what the 6502 needed to GET the product; the
+       68000 does not.  The only thing the loop produced that a multiply does not is V, and V
+       belongs to the LAST `ADC` — the one at the multiplier's top set bit k, where the
+       accumulator holds (addend * (multiplier mod 2^k)) >> k.  That is a closed form, not an
+       approximation: it is the loop's own invariant, and it was checked against a replay of
+       $0C02-$0C46 over ALL 65536 operand pairs for product, V and setV alike.  (A previous
+       note here called the closed form "too fragile to trust" while the twin-group header
+       above stated it exactly — the header was right.) */
     Mul8 r;
-    uint8_t A = 0, m = multiplier, C = 0;
+    r.product = (uint16_t)revs_mulu16(multiplier, addend);
     r.v = 0; r.setV = 0;
 
-    for (int i = 0; i < 8; i++) {
-        if (i == 0) { C = m & 1u; m >>= 1; }        /* $0C04 LSR math_lo (seeds the first bit) */
-        /* iters 1..7 reuse the C left by the previous ROR math_lo */
-        if (C) {                                     /* BCC skips the add when the bit is clear */
-            unsigned s   = (unsigned)A + addend;     /* $0C08-$0C09 CLC; ADC math_hi (carry-in 0) */
+    if (multiplier) {
+        int k = 7;
+        while (!((multiplier >> k) & 1u)) k--;       /* the multiplier's top set bit */
+        {   /* the accumulator the 6502 had arrived at when that bit's ADC ran... */
+            uint8_t  A   = (uint8_t)(revs_mulu16(addend,
+                               (uint16_t)(multiplier & ((1u << k) - 1u))) >> k);
+            unsigned s   = (unsigned)A + addend;     /* ...and that one add, for its V alone */
             uint8_t  res = (uint8_t)s;
-            r.v   = (uint8_t)((~(A ^ addend) & (A ^ res)) >> 7) & 1u;
+            r.v   = (uint8_t)(((~(A ^ addend) & (A ^ res)) >> 7) & 1u);
             r.setV = 1;
-            C = (uint8_t)(s > 0xFFu);
-            A = res;
         }
-        { uint8_t cin = C; C = A & 1u; A = (uint8_t)((cin << 7) | (A >> 1)); }  /* ROR A */
-        { uint8_t cin = C; C = m & 1u; m = (uint8_t)((cin << 7) | (m >> 1)); }  /* ROR math_lo */
     }
-
-    r.product = (uint16_t)((A << 8) | m);
     return r;
 }
 

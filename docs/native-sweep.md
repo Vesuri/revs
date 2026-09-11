@@ -300,6 +300,34 @@ N cases` is a FAIL). The `SED` half has no such standing and is gone everywhere.
   (2 of 1200 randomised cases) makes the run cover `$0082` and `$0085` — the loop's own end
   line and the column it is filling.  Self-referential by construction; leave them alone.
 
+# Batch 4 — lines 6000..8000 (the driving model's arithmetic, slip, the sound queue)
+
+## ⭐⭐ `mul8` was documented as one `MULU.W` and was still an eight-iteration bit loop
+
+The engine's most-called routine (28 call sites) carried a twin-group header claiming
+"ALGORITHMIC COMPRESSION … one `MULU.W`", an `#include` comment naming `revs_mulu16` as
+"the 68000 op mul8 stands in for" — and a body that simulated all eight `BCC`/`ADC`/`ROR`
+iterations.  Its own comment said a closed form for the escaping V was "too fragile to
+trust"; the header two screens up stated that closed form exactly.  **The header was right.**
+
+V belongs to the LAST `ADC`, at the multiplier's top set bit *k*, where the accumulator holds
+`(addend * (multiplier mod 2^k)) >> k`.  Checked against a replay of `$0C02-$0C46` over **all
+65536 operand pairs** for product, V and `setV` — 0 mismatches.  So the body is now one
+`revs_mulu16` for the product plus one replayed add for V, and `make validate FN=mul8_noinit`
+is itself the exhaustive 65536-pair gate.
+
+**Measured, statically:** `mul8_noinit` on the Amiga went 252 → 58 instructions, 0 → 2
+`mulu.w`.  No framerate is claimed (docs/perf-method.md §under 3% is noise); the compression
+is the quotable figure.
+
+⚠ The stale prose also claimed a decimal arm ("the bit-for-bit replay below is kept for it").
+There is not one and there never was in this twin — none of the 8 `SED` sites reach here and
+the fixture pins `D = 0` citing that table.  Removed rather than left to mislead again.
+
+## Open
+
+*(nothing else outstanding yet — the read-through of 6000..8000 is in progress)*
+
 # Open front — THE FIXTURE LIVE MASKS (its own campaign, not part of the read-through)
 
 ℹ ✅ **CLOSED.** `view_paint_lines`, the three NEAR-SLOT routines (which retired `cpx_ge` and
