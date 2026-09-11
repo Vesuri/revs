@@ -10329,9 +10329,9 @@ int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out)
 /* $42D0  draw_gear_indicator — THE GEAR, DOUBLE WIDTH  (twin #109) */
 uint8_t draw_gear_indicator_core(void)
 {
-    mem[MEM_vdu_char_column]   = 0x22u;                             /* $42D0 — column $22 */
+    vdu_char_column   = 0x22u;                             /* $42D0 — column $22 */
     shared_temp_77 = 0x22u;                             /* bit 7 clear: the LEFT four pixels */
-    mem[MEM_vdu_char_row]   = 0xD7u;                             /* scan line $D7 = character row 26 */
+    vdu_char_row   = 0xD7u;                             /* scan line $D7 = character row 26 */
     uint8_t glyph  = mem[MEM_gear_char_tbl + gear_index];  /* $42DC/$42DE — the gear's glyph */
     uint8_t block  = vdu_char_wide_core(glyph);        /* left half; returns the block byte */
     shared_temp_77 = 0xFFu;                            /* $42E4 bit 7 set: the RIGHT four pixels */
@@ -10820,7 +10820,7 @@ void apply_steering_assist(void)        { car_angle_marshal_in(); apply_steering
       both sets still cover all 20 cars, which is why it never mattered. */
 void reset_all_cars_for_session_core(uint8_t startCar)
 {
-    mem[MEM_car_seed_index] = startCar;                  /* $4D4D STX car_seed_index */
+    car_seed_index = startCar;                  /* $4D4D STX car_seed_index */
     race_class          = startCar;                  /* $4D4F STX race_class */
     compute_segment_scale_core(startCar);            /* $4D52 */
 
@@ -10939,7 +10939,7 @@ void scale_wing_settings(void)
 void compute_segment_scale_core(uint8_t trackClass)
 {
     uint8_t scale = mem[MEM_track_scale + trackClass];
-    mem[MEM_track_scale_saved] = scale;         /* held for reuse; read back at $6396 */
+    track_scale_saved = scale;         /* held for reuse; read back at $6396 */
     math_hi = scale;
 
     if (mem[MEM_smc_segment_scale_tbl] != 0xB9) { platform_smc_unhandled(MEM_smc_segment_scale_tbl, mem[MEM_smc_segment_scale_tbl]); return; }
@@ -11495,7 +11495,11 @@ uint8_t derive_car_section_cursor_core(uint8_t cursor)
    ⚠ $5700 / $5800 are ModifyGameCode's addresses but, at RACE time, their second tenant is the
    across-track normal pair (docs/rename.md); referenced here by that race-time meaning.
    No flags/registers escape (LIVE_NONE).  The oracle's PHP/PLP byte at $01FF is ignored. */
-#define TRACK_NORMAL_X  0x5700u   /* $5700,dir — across-track normal, X component (race-time tenant) */
+/* $5700,dir — the ACROSS-TRACK NORMAL's X component, the sibling of MEM_track_normal_y
+   ($5800).  It has no mem.h name because symbols.csv keeps $5700 its ModifyGameCode func row
+   (one address, one name) and this is the page's race-time tenant, so it is spelled here once
+   and used by both readers ($1391 in the road builder, $299D in the object projector). */
+#define TRACK_NORMAL_X  0x5700u
 
 void build_road_section(void)
 {
@@ -11506,7 +11510,15 @@ void build_road_section(void)
         nextCursor = (uint8_t)(section_cursor + 3);
     } else if (mem[MEM_smc_section_advance] == 0x20) {                       /* per-circuit hook */
         uint16_t t = (uint16_t)(mem[MEM_smc_section_advance + 1] | (mem[MEM_smc_section_advance + 2] << 8));
-        if (t >= 0x5300 && t <= 0x5A25) { revs_track_hook(t); nextCursor = cpu.A; }
+        if (t >= 0x5300 && t <= 0x5A25) {
+            /* ⭐⭐ The JSR replaces `CLC; ADC #$03` ($12FB-$12FD), so the hook's INPUT is the
+               accumulator the ADC would have advanced — A = the old cursor in, A = the new one
+               back.  Derived from the surrounding instructions, not from the unpatched arm
+               (which has no register to hand over at all). */
+            cpu.A = section_cursor;
+            revs_track_hook(t);
+            nextCursor = cpu.A;
+        }
         else { platform_smc_unhandled(MEM_smc_section_advance, t); return; }
     } else { platform_smc_unhandled(MEM_smc_section_advance, mem[MEM_smc_section_advance]); return; }
     if (nextCursor >= 0x78) nextCursor = 0;
@@ -11571,7 +11583,6 @@ void build_road_section(void)
                                      mem[MEM_point_delta_hi + 2] };
             section_coord_add_delta_core(section_cursor, section_cursor_prev, dlo, dhi);
         }                                                   /* section N's point from N-1 + step */
-        cpu.X = section_cursor;
         copy_section_height_to_side1_core(x);               /* share the height across */
 
         uint8_t dir = segment_dir_index;
@@ -11591,7 +11602,17 @@ void build_road_section(void)
         if (mem[MEM_smc_section_tail_hook] == 0x20) {
             uint16_t t = (uint16_t)(mem[MEM_smc_section_tail_hook + 1] | (mem[MEM_smc_section_tail_hook + 2] << 8));
             if (t == 0x13DA) { advance_dir_on_segment_flag(); }
-            else if (t >= 0x5300 && t <= 0x5A25) { revs_track_hook(t); }
+            else if (t >= 0x5300 && t <= 0x5A25) {
+                /* ⭐⭐ Hand the circuit's hook everything the 6502 has live at $13C9, read off
+                   the surrounding instructions: X is the section byte cursor ($13A2-$13C6 index
+                   the two coordinate rows with it), Y the direction index ($1389 LDY $0002), A
+                   the high byte of the side-1 component-2 add just stored at $13C6.  Inputs
+                   only — $13CC reloads X from section_cursor, so nothing is read back. */
+                cpu.X = x;
+                cpu.Y = dir;
+                cpu.A = (uint8_t)(section_word(SECTION_SIDE1 + 2 + x) >> 8);
+                revs_track_hook(t);
+            }
             else { platform_smc_unhandled(MEM_smc_section_tail_hook, t); return; }
         } else { platform_smc_unhandled(MEM_smc_section_tail_hook, mem[MEM_smc_section_tail_hook]); return; }
     }
@@ -11636,7 +11657,17 @@ void cross_section_boundary(void)
         if (mem[MEM_smc_boundary_hook] == 0x20) {
             uint16_t t = (uint16_t)(mem[MEM_smc_boundary_hook + 1] | (mem[MEM_smc_boundary_hook + 2] << 8));
             if (t == 0x13E0) { step_segment_dir_index(); }
-            else if (t >= 0x5300 && t <= 0x5A25) { revs_track_hook(t); }
+            else if (t >= 0x5300 && t <= 0x5A25) {
+                /* ⭐⭐ X = the section byte cursor ($1267 LDX $0024) and Y = the segment being
+                   left ($1284 LDY $0021) are both live at $1289, and $129C `STA $0702,X` goes
+                   on using WHATEVER X THE HOOK LEFT — the same shape as $1248, where a stale
+                   index put Brands Hatch's whole section_dir_index column out.  So hand both
+                   over and read X back. */
+                cpu.X = x;
+                cpu.Y = retreat_segment;
+                revs_track_hook(t);
+                x = cpu.X;
+            }
             else { platform_smc_unhandled(MEM_smc_boundary_hook, t); return; }
         } else {
             platform_smc_unhandled(MEM_smc_boundary_hook, mem[MEM_smc_boundary_hook]); return;
@@ -11841,14 +11872,15 @@ static inline void object_coord_word_set(unsigned axis, uint16_t value)
     mem[MEM_object_coord_lo + axis] = (uint8_t)value;
     mem[MEM_object_coord_hi + axis] = (uint8_t)(value >> 8);
 }
-#define TRACK_DIR_3       0x5700u   /* ⚠ shares ModifyGameCode's address; read as DATA here */
-/* ⭐ $298D is NOT per-circuit  [MEASURED 2026-09-08].
-   No circuit writes either byte at LOAD time (it is absent from the 62-address surface
-   `make track-patch` reads out of every ModifyGameCode) and none writes it at RUNTIME
-   either (`bbc_refloop_race --watch=298d` / `--watch=298e`, frames 40-100, all four
-   expansion circuits on a real BBC: NONE, against a control on $0A that reported 116
-   writes).  The dispatch below therefore stays as a TRAP on an unmodellable shape, not as
-   a per-circuit expectation — which is why it costs one mem[] read and not a table. */
+/* ⭐ The AND OPCODE at $298D is not per-circuit; the MASK OPERAND at $298E is.
+   [MEASURED 2026-09-08] none of the four Acornsoft expansion circuits writes either byte, at
+   LOAD time (absent from the 62-address surface `make track-patch` reads out of every
+   ModifyGameCode) or at RUNTIME (`bbc_refloop_race --watch=298d` / `--watch=298e`, frames
+   40-100, on a real BBC: NONE, against a control on $0A that reported 116 writes).  ⚠ But the
+   Nurburgring — the sixth, fan-made circuit the port also installs — patches the OPERAND from
+   $1F to $FF (`src/gen/revs_tracks.c`, pa5/pv5), i.e. no masking at all on a far hillier
+   circuit.  That is exactly why the operand is read out of mem[] below instead of baked, and
+   why the opcode test stays a TRAP on an unmodellable shape rather than a per-circuit table. */
 #define SMC_MASK_OPERAND  (MEM_smc_object_coord_mask + 1u)
 /* The zero-page arithmetic window as THIS routine's tenant uses it — the object-queue tail
    reads its inputs back out of these cells, so they are an output of the twin, not scratch.
@@ -11879,19 +11911,17 @@ static int16_t place_car_axis_term(uint8_t dir, uint8_t factor, int shl2)
    build_player_car (twin #170) can call it without routing its two arguments through cpu. */
 uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
 {
-    uint8_t x0  = slot;                               /* object/car slot */
-    uint8_t y0  = sectionCursor;                      /* section byte cursor */
-    uint8_t soi = mem[MEM_section_dir_index + y0];        /* indexes the direction tables */
-    uint8_t along  = mem[MEM_car_section_along + x0];
-    uint8_t across = mem[MEM_car_section_across + x0];
+    uint8_t soi    = mem[MEM_section_dir_index  + sectionCursor];  /* indexes the direction tables */
+    uint8_t along  = mem[MEM_car_section_along  + slot];
+    uint8_t across = mem[MEM_car_section_across + slot];
 
     /* ⚠ The oracle parks its inputs in the zero-page arithmetic window ($0C soi, $84 along,
        $85 across, $86..$88 dir bytes) and the object-queue tail reads them back through those
        cells.  Reproduce those writes exactly so the shared tail routines see identical memory;
        only the mul8 product residue ($74/$75/$76) and the PHP stack byte then differ. */
-    mem[MEM_car_section_dir_index]    = soi;
-    mem[MEM_shared_temp_84] = along;
-    mem[MEM_shared_temp_85] = across;
+    car_section_dir_index    = soi;
+    shared_temp_84 = along;
+    shared_temp_85 = across;
 
     uint8_t dir1[3];
     dir1[0] = mem[MEM_track_dir_0 + soi];
@@ -11902,9 +11932,9 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
     mem[PLACE_CAR_DIR + 2] = dir1[2];
 
     /* First loop: origin + (along * dir) >> 8, per world axis.  ⚠ The section index is the 6502's
-       8-bit Y (LDY y0 then INY per axis), so it WRAPS at 256 — y0+axis must be masked to a byte. */
+       8-bit Y (LDY the cursor then INY per axis), so it WRAPS at 256 — the sum is masked. */
     for (int axis = 0; axis < 3; axis++) {
-        uint8_t sy = (uint8_t)(y0 + axis);
+        uint8_t sy = (uint8_t)(sectionCursor + axis);
         int16_t sp = place_car_axis_term(dir1[axis], along, 0);
 
         /* $... CLC / ADC low / ADC high — one 16-bit add of the section origin and the term.
@@ -11932,7 +11962,7 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
 
     /* Second loop: fold the "across" offset in at 4x, axes 0 and 2 only. */
     uint8_t dir2[3];
-    dir2[0] = mem[TRACK_DIR_3 + soi];                 /* dir[0] reloaded */
+    dir2[0] = mem[TRACK_NORMAL_X + soi];              /* the normal's X component */
     dir2[2] = mem[MEM_track_normal_y + soi];                 /* dir[2] reloaded */
     mem[PLACE_CAR_DIR + 0] = dir2[0];
     mem[PLACE_CAR_DIR + 2] = dir2[2];

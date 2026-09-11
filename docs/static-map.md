@@ -384,6 +384,15 @@ sites in every one:
 | `$45CB` | `JSR` | `$59E9` / `$59C9` / `$59E7` / `$59C7` |
 | `$2F23` | `JSR` | — / `$59ED` / — / `$59E8`  (**Donington and Snetterton only**) |
 
+⚠⚠ **This table is the FOUR Acornsoft circuits, and the port installs SIX.**  A "no circuit
+patches this byte" statement measured over BRANDS/DONING/OULTON/SNETTER is not a statement about
+the disc the port actually ships: the fan-made Nurburgring (`docs/reference-sources.md`) patches
+`$298E` — the per-circuit coordinate mask in `place_car_world_coords` — from `$1F` to `$FF`
+(`src/gen/revs_tracks.c`, `pa5`/`pv5`), which none of the four touches.  A twin that had baked
+Silverstone's `$1F` instead of reading the operand out of `mem[]` would have been wrong on
+exactly one circuit, and no Silverstone gate could see it.  **Scope a per-circuit measurement by
+the circuit LIST, and say which list it was.**
+
 `$2F23` is the one that earns attention: it is a hook **inside the self-modifying
 `$2C00-$2FFF` region**, present for only two of the four circuits.  So the region that is already
 runtime-specialised is *also* per-track patched, for some tracks.  That is the hardest single spot
