@@ -498,14 +498,17 @@ mode7: $(MODE7_OBJS) | build
 	$(CC) $(CFLAGS) -o build/validate_mode7 $(MODE7_OBJS)
 	@echo "--- the PRACTICE arm"
 	./build/validate_mode7 --dir=tmp/mode7 $(if $(PPM),--ppm=$(PPM),)
-	@echo "--- the COMPETITION arm (qualifying)"
+	@echo "--- the COMPETITION arm (qualifying -> standings -> the grid)"
 	./build/validate_mode7 --dir=tmp/mode7-comp $(if $(PPM),--ppm=$(PPM)-comp,)
 
 mode7-fixture:
 	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_probe_mode7.mjs \
 	    --dump=../../tmp/mode7
+	@#  2 = COMPETITION, then the class / qualifying-length menus, then (after the whole
+	@#  five-minute qualifying session, which is why this arm is slow) 2 = START RACE.  That
+	@#  last answer is what reaches print_standings_table and the race-length menu.
 	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_probe_mode7.mjs \
-	    --answers=2 --steps=80 --dump=../../tmp/mode7-comp
+	    --answers=2,1,1,2 --steps=2400 --dump=../../tmp/mode7-comp
 
 # ⭐ TRACK MENU validation — the port's circuit menu against the REAL REVSMEN, byte for byte.
 #   make trackmenu-fixture      record the real pages off jsbeeb (needs volta/node + revs.ssd)
