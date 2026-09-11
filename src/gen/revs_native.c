@@ -6912,19 +6912,21 @@ static void rotate_state_pair_core(uint8_t dest, uint8_t source, uint8_t mode)
 {
     mem[MODEL_SRC_SLOT]  = source;              /* $48C7 */
     mem[MODEL_TERM]      = dest;                /* $48C9 */
-    mem[MODEL_ROT_MODE]  = mode;                /* $48CB */
+    /* $48CB — the store STAYS (the 6502 left the byte there and the differential compares it),
+       but the two reads below are the local: nothing between here and them writes $0088. */
+    mem[MODEL_ROT_MODE]  = mode;
 
     /* $48CD-$48D1 — dest = source * angle 1, stored positive. */
     apply_angle_term_at_core(0x00u, 1u);
     /* $48D4-$48D9 — dest += (source + 1) * angle 0, signed by the mode byte. */
     mem[MODEL_SRC_SLOT]++;
-    apply_angle_term_at_core(mem[MODEL_ROT_MODE], 0u);
+    apply_angle_term_at_core(mode, 0u);
     /* $48DC-$48E1 — dest + 1 = (source + 1) * angle 1, stored positive. */
     mem[MODEL_TERM]++;
     apply_angle_term_at_core(0x00u, 1u);
     /* $48E4-$48EB — dest + 1 += source * angle 0 with the OPPOSITE sign. */
     mem[MODEL_SRC_SLOT]--;
-    apply_angle_term_at_core((uint8_t)(mem[MODEL_ROT_MODE] ^ 0x80u), 0u);
+    apply_angle_term_at_core((uint8_t)(mode ^ 0x80u), 0u);
     /* $48E4's DEX leaves X = 0, but the exit registers are DEAD (the only callers, $46A8/$471C in
        apply_driving_model, overwrite A/N/Z and reload X/Y before any read; $48C7 is never JSR'd)
        and every fixture here is result-only — so nothing to replay. */

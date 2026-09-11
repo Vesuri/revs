@@ -287,12 +287,14 @@ N cases` is a FAIL). The `SED` half has no such standing and is gone everywhere.
 
 ## Recorded, deliberately not acted on
 
-- **The `$80-$88` window has THREE tenants and the read-through confirmed it.**
+- **The `$80-$88` window is multiply-tenanted, and `$0088` alone has FOUR tenants.**
   `build_track_geometry` sees `point_delta_lo/hi/sign`; the span pass sees
-  `SPAN_DX/DY/BLOCK/ARM/YSTEP/CLIP/LINE_END`; `mark_line_surfaces_core` is a third tenant of
-  `$88`.  The defines now spell each group off ONE base with a `_Static_assert` tying it to
-  mem.h's own name for the cell, which is as far as a read-through can go — actually
-  *separating* the tenants is a memory-map change, not a cleanup.
+  `SPAN_DX/DY/BLOCK/ARM/YSTEP/CLIP/LINE_END`; `mark_line_surfaces_core` reads `$88` as a
+  surface class; and `rotate_state_pair_core` (batch 4) parks the rotation's sign/mode byte
+  there as `MODEL_ROT_MODE`.  The defines now spell each group off ONE base with a
+  `_Static_assert` tying it to mem.h's own name for the cell, which is as far as a
+  read-through can go — actually *separating* the tenants is a memory-map change, not a
+  cleanup.
 
 - **`span_walk` must not hoist `mem[arm->addend]` / `mem[arm->subtrahend]`**, and
   `column_gap_walk_core` must not hoist its boundary-table pointer.  Both are MEASURED: the
@@ -326,7 +328,26 @@ the fixture pins `D = 0` citing that table.  Removed rather than left to mislead
 
 ## Open
 
-*(nothing else outstanding yet — the read-through of 6000..8000 is in progress)*
+*(nothing outstanding in batch 4)*
+
+## Examined and closed — do not re-open without new evidence
+
+The rest of this window — `fill_column_gaps` / `fill_edge_column_run`, the 16-bit model
+arithmetic (`mul16_signed`, `scale16_by_y`, `mul16_by_1_5`, `model_integrate_element`,
+`add_signed_into_element`, `apply_angle_term{,_at}`), the rotations and integrations
+(`stage_lateral_speed_delta`, the two steer rotations, `damp_and_derive_loads`,
+`rotate_state_pair`, `integrate_car_position`, `integrate_state_rates`), the slip/sound
+cluster (twins #67-#78) and the sub-models down to `update_grip_limits` — is already
+idiomatic C: wide values are `uint16_t`/`uint32_t` words, not byte lanes; the comments say
+what the code computes; the surviving `mem[]` writes are OBSERVED 6502 outputs the
+differential compares, not scratch a local could replace.  One nit found and fixed:
+`rotate_state_pair_core` re-READ `mem[MODEL_ROT_MODE]` twice for a byte it had just written
+from its own parameter (the store stays — the differential compares it — the reads are now
+the local).
+
+⚠ Do not "simplify" these by dropping a `math_lo` / `math_hi` / `shared_temp_7x` write.  Each
+one that is left is argued at the code as an output the oracle leaves behind; the twins that
+dropped their scratch say so explicitly and their fixtures ignore those cells by name.
 
 # Open front — THE FIXTURE LIVE MASKS (its own campaign, not part of the read-through)
 
