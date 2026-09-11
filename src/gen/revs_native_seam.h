@@ -412,6 +412,49 @@ REVS_FLAG_OP uint8_t seam_read(unsigned addr, int ram)
     return ram ? mem[addr] : (uint8_t)bus_read((uint16_t)addr);
 }
 
+/* ── ⭐⭐ THE VIEW SWEEP'S PER-LINE SKIP (docs/direct-bitplane-plan.md §7h) ──────────────────
+ * `make VIEWSKIP=1`.  A scan line whose forty sources are all zero paints one flat run of its
+ * background byte, so repainting it changes nothing — PROVIDED the background byte has not
+ * moved and the previous paint was itself flat.  (That third part is the one a producer flag
+ * alone gets wrong: a line that carried road pixels last frame still has to erase them.)
+ *
+ * The producers mark; the sweep tests and clears.  Marking rides the two choke points every
+ * store into $3000..$43CF already passes through, so no producer had to be found by reading —
+ * `g_shapeMarkUnmarked` (shape.h) measures that the set is complete, and reads 0.
+ *
+ * ⚠ `make validate` CANNOT gate this: its fixtures write sources with fill_random, which no
+ * hook sees, so the shadow would license a skip the oracle does not take.  The harness resets
+ * the state to "everything dirty" before each case, which makes the skip inert there rather
+ * than wrong.  The real gates are `make determinism` / -drive / -crash / -race (all compare the
+ * frame buffer) and `make viewdiff`. */
+#ifdef REVS_VIEWSKIP
+#define VIEW_SKIP_LINE_LO 0x03u
+#define VIEW_SKIP_LINE_HI 0x4Fu
+extern unsigned char g_viewLineDirty[128];   /* a producer wrote one of this line's sources */
+/* ⚠⚠ THE SHADOW IS KEYED BY DISPLAY LINE, NOT BY SOURCE LINE.  A source line's destination is
+   wherever plot_ptr has walked to, and two source lines — phase 1's and phase 3's — can land on
+   the SAME display line, each overwriting what the other painted.  Keyed by source line the
+   skip then licenses a repaint that never happened; keyed by the destination it does not. */
+extern unsigned char g_viewDstBg[208];       /* the byte this display line was last painted flat with */
+extern unsigned char g_viewDstFlat[208];     /* ...and whether that paint was flat at all             */
+
+/* One store that may be a source byte.  The blocks are $80 apart based at $3000 and only
+   $03..$4F of each is ever painted, so anything else is not a source. */
+REVS_FLAG_OP void view_mark_source(unsigned addr)
+{
+    unsigned off = (addr & 0xFFFFu) - MEM_view_src_blocks;
+    if (off < 40u * 0x80u) {
+        unsigned line = off & 0x7Fu;
+        if (line - VIEW_SKIP_LINE_LO <= VIEW_SKIP_LINE_HI - VIEW_SKIP_LINE_LO)
+            g_viewLineDirty[line] = 1;
+    }
+}
+void view_skip_reset(void);   /* mark everything dirty — the fixture harness's escape hatch */
+#define VIEW_MARK_SOURCE(addr) view_mark_source((addr))
+#else
+#define VIEW_MARK_SOURCE(addr) ((void)0)
+#endif
+
 /* ⚠⚠ THE RAM ARM BYPASSES bus_write, SO IT BYPASSES THE INK WATCH TOO — and that made the
    watch answer "nobody writes this cell" about a cell a twin was writing every frame.  Hoisting
    the hardware test out of the loop is the whole point of this seam (CLAUDE.md §bus_read/
@@ -422,6 +465,7 @@ REVS_FLAG_OP void seam_write(unsigned addr, int ram, uint8_t value)
     if (ram) {
         mem[addr] = value;
         PROBE_SHAPE_MARK(addr);   /* a store here may be a view SOURCE byte (§7h marking) */
+        VIEW_MARK_SOURCE(addr);
 #ifdef REVS_INK_WATCH
         revs_ink_watch((uint16_t)addr, value);
 #endif

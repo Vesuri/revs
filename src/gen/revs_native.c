@@ -130,6 +130,7 @@ void plot_store_resync(unsigned addr, uint8_t val)
        exactly the case this exists for. */
     addr &= 0xFFFFu;
     PROBE_SHAPE_MARK(addr);   /* every plotter store passes here, so it is the marking hook too */
+    VIEW_MARK_SOURCE(addr);
     if (addr >= 0x0100u) return;              /* the overwhelmingly common case */
     switch (addr) {
     case MEM_plot_ptr_lo:   PLOT_SET_LO(plot_ptr,  val); break;
@@ -729,6 +730,60 @@ static unsigned view_consume(MEM_QUAL unsigned char* srcp, unsigned byte, int fo
     return byte;
 }
 
+#ifdef REVS_VIEWSKIP
+unsigned char g_viewLineDirty[128];
+unsigned char g_viewDstBg[208];
+unsigned char g_viewDstFlat[208];
+
+/* plot_ptr -> display line, or 208 for "not a row base in the frame buffer".  The BBC layout
+   puts a character row's eight scan lines 1 byte apart inside an 8-byte cell and the rows 320
+   bytes apart, so a row base always has an offset of 0..7 within its row. */
+static unsigned view_dst_line(unsigned base)
+{
+    unsigned off = (base - BBC_SCREEN_BASE) & 0xFFFFu;
+    unsigned row, sub;
+    if (off >= BBC_SCREEN_BYTES) return 208u;
+    row = (unsigned)((uint16_t)off / (uint16_t)BBC_SCREEN_BPR);
+    sub = (unsigned)((uint16_t)off % (uint16_t)BBC_SCREEN_BPR);
+    if (sub >= BBC_SCREEN_LINES) return 208u;
+    return row * BBC_SCREEN_LINES + sub;
+}
+
+/* Everything dirty and nothing seen — the state a fixture case must start from, because
+   fill_random writes sources behind the marking hooks' backs (revs_native_seam.h §VIEWSKIP). */
+void view_skip_reset(void)
+{
+    unsigned i;
+    for (i = 0; i < 128; i++) g_viewLineDirty[i] = 1;
+    for (i = 0; i < 208; i++) { g_viewDstBg[i] = 0; g_viewDstFlat[i] = 0; }
+}
+
+/* A store into the frame buffer that is NOT one of the chain's flat unit stores: whatever
+   display line it lands on is no longer flat.  The sweep's own run-end composites go through
+   here — they are the tenant the ink watch named on display line 87. */
+static void view_dst_touch(unsigned addr)
+{
+    unsigned off = (addr - BBC_SCREEN_BASE) & 0xFFFFu;
+    if (off < BBC_SCREEN_BYTES) {
+        unsigned row = (unsigned)((uint16_t)off / (uint16_t)BBC_SCREEN_BPR);
+        unsigned sub = (unsigned)((uint16_t)off % (uint16_t)BBC_SCREEN_BPR);
+        g_viewDstFlat[row * BBC_SCREEN_LINES + (sub & (BBC_SCREEN_LINES - 1u))] = 0;
+    }
+}
+
+volatile unsigned long g_viewSkipLines  = 0;   /* lines the sweep did not paint */
+volatile unsigned long g_viewSkipPaints = 0;   /* ...and lines it did           */
+
+#ifndef REVS_PLATFORM_AMIGA
+void revs_announce_viewskip(void)
+{
+    extern int printf(const char*, ...);
+    printf("VIEWSKIP: ON — the view sweep skips flat, clean, unmoved lines "
+           "(g_viewSkipLines / g_viewSkipPaints count them)\n");
+}
+#endif
+#endif
+
 /* The chain itself, $7BF7-$7F16.  Runs units `unit`..39 of the current line, then the
    $7EEE tail, which either returns or steps to the next line and starts over at unit 0.
      forced         entered at unit+$05: no dirty test, v->cell is the glyph index
@@ -742,6 +797,19 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
     unsigned byte = v->byte, line = v->line, cell = v->cell;
     PLOT_DECL();
     VIEWSPLIT_DECL();
+#ifdef REVS_VIEWSKIP
+    int lineSkipped = 0;
+    /* ⚠⚠ THE HOLE THE FIRST VERSION FELL INTO.  The predicate's "last paint was flat" has to
+       mean "the last paint consumed every one of the forty sources", and a paint that did not
+       run the whole chain did not.  Two ways that happens, and BOTH have to leave the line
+       dirty or the next sweep skips a line still holding last frame's road pixels — which is
+       exactly what `make determinism` caught (153 stale frame-buffer bytes on one line):
+         - the caller's first line, entered at `unit` rather than 0 (phases 2 and 3, and the
+           forced entry), so units 0..unit-1 keep their sources;
+         - a planted stop, which ends the sweep on the unit it sits on. */
+    unsigned dstLine = 208u;
+    if (!advance_first) g_viewLineDirty[v->line & 0x7Fu] = 1;
+#endif
 
     for (;;) {
         if (advance_first) {
@@ -750,6 +818,63 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
             /* the line's background byte: two bits of the per-line surface index */
             byte = mem[MEM_surface_colours + (mem[MEM_view_line_surface + line] & 3)];
             advance_first = 0; unit = 0; forced = 0;
+#ifdef REVS_VIEWSKIP
+            /* ⭐⭐ THE THREE-PART SKIP.  Nothing wrote this line's sources, its background byte
+               is the one already on the screen, and the paint that put it there was itself flat
+               — so all forty stores would write the byte that is already in the cell.  Only from
+               unit 0, and only when no planted stop sits in the line: a partial line leaves
+               sources unconsumed, which is the opposite of flat. */
+            /* ⚠⚠ PART (4), AND THE CENSUS COULD NOT HAVE FOUND IT.  A line's DESTINATION is
+               wherever plot_ptr has walked to, and that walk starts from a screenBase the
+               caller chooses, so the cells a source line addresses MOVE between frames.  The
+               §7h census measured a world where every line is repainted every frame, in which
+               a moved destination is repainted anyway — enabling the skip is what makes the
+               mapping observable.  `make determinism` found it as 153 stale bytes on display
+               line 87, and the ink watch named the other tenant of those cells:
+               paint_lines_clipped, the same sweep's phases 2 and 3. */
+            dstLine = view_dst_line(plot_ptr_v);
+            if (!g_viewLineDirty[line] && dstLine < 208u && g_viewDstFlat[dstLine]
+                && g_viewDstBg[dstLine] == (unsigned char)byte
+                && plot_ptr2_v == (unsigned short)(plot_ptr_v + 256u)
+                && view_stop_from(0) == 40) {
+                g_viewSkipLines++;
+#ifdef REVS_VIEWSKIP_ASSERT
+                /* Part (1) of the predicate, checked rather than trusted: a skippable line's
+                   forty sources must all be zero, or the skip is dropping real pixels. */
+                { unsigned k; for (k = 0; k < 40u; k++) {
+                      unsigned char sv = mem[MEM_view_src_blocks + (k << 7) + line];
+                      if (sv) { extern int printf(const char*, ...);
+                                printf("VIEWSKIP BAD line $%02X unit %u src $%02X\n",
+                                       line, k, sv); break; } } }
+                /* ...and the destination really already holds the byte the paint would write.
+                   This is the part a source scan cannot see: if the line's plot_ptr has MOVED
+                   since its last paint, the cells it now addresses were never painted flat. */
+                { unsigned b0 = plot_ptr_v, b1 = plot_ptr2_v, k;
+                  for (k = 0; k < 40u; k++) {
+                      unsigned d = (k < 32u || b1 == b0 + 256u) ? b0 + (k << 3)
+                                                                : b1 + ((k - 32u) << 3);
+                      if (mem[d & 0xFFFFu] != (unsigned char)byte) {
+                          extern int printf(const char*, ...);
+                          printf("VIEWSKIP DST line $%02X cell %u at $%04X has $%02X want $%02X\n",
+                                 line, k, d & 0xFFFFu, mem[d & 0xFFFFu], (unsigned char)byte);
+                          break; } } }
+#endif
+                cell = 0x38;                    /* unit 39's cell, as a full line leaves it */
+                lineSkipped = 1;
+            } else {
+                g_viewSkipPaints++;
+                /* A paint consumes every source, so the line is flat afterwards exactly when it
+                   was clean going in — and it runs to the end unless a stop is planted. */
+                if (dstLine < 208u) {
+                    g_viewDstFlat[dstLine] =
+                        (unsigned char)(!g_viewLineDirty[line] && view_stop_from(0) == 40
+                                        && plot_ptr2_v == (unsigned short)(plot_ptr_v + 256u));
+                    g_viewDstBg[dstLine] = (unsigned char)byte;
+                }
+                g_viewLineDirty[line] = 0;
+                lineSkipped = 0;
+            }
+#endif
         }
 
         /* THE 2093-UNIT LOOP — everything in it is a running pointer: source and destination
@@ -758,6 +883,9 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
            ⚠ Hoisting the destination bases is safe by CONSTRUCTION: the chain writes only its
            source blocks ($3000-$43CF) and `base + cell*8`, so it cannot move plot_ptr under
            itself. */
+#ifdef REVS_VIEWSKIP
+        if (!lineSkipped)
+#endif
         {
             unsigned base0 = plot_ptr_v;    /* ⭐ one word read each, not two bytes + shift + or */
             unsigned base1 = plot_ptr2_v;
@@ -866,6 +994,10 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                     op = *slot;
                     if (op != OP_RTS) platform_smc_unhandled((uint16_t)(slot - mem), op);
                     PLOT_FLUSH();
+#ifdef REVS_VIEWSKIP
+                    g_viewLineDirty[line & 0x7Fu] = 1;   /* units past the stop keep their sources */
+                    if (dstLine < 208u) g_viewDstFlat[dstLine] = 0;
+#endif
                     stopped = 1;
                     break;
                 }
@@ -974,6 +1106,9 @@ static void paint_lines_short(ViewState* v)
                                         mem[MEM_view_left_end_fill + v->line]);
         REVS_PLOT_CELL(view_screen_addr(plot_ptr_v, v->cell), (uint8_t)v->byte);
         bus_write(view_screen_addr(plot_ptr_v, v->cell), (uint8_t)v->byte);
+#ifdef REVS_VIEWSKIP
+        view_dst_touch(view_screen_addr(plot_ptr_v, v->cell));
+#endif
 
         /* chain B: the same again, one page down and with its own tables.  ⚠ the stop is
            re-read here — the chain may have zeroed it (see the header). */
@@ -997,6 +1132,9 @@ static void paint_lines_short(ViewState* v)
         v->cell = math_hi;
         REVS_PLOT_CELL(view_screen_addr(plot_ptr2_v, v->cell), (uint8_t)v->byte);
         bus_write(view_screen_addr(plot_ptr2_v, v->cell), (uint8_t)v->byte);
+#ifdef REVS_VIEWSKIP
+        view_dst_touch(view_screen_addr(plot_ptr2_v, v->cell));
+#endif
 
 #if defined(REVS_VIEWCAL) && defined(REVS_PROBE)
         /* ⭐ `make VIEWCAL=1` — 14 000 known cycles in their own bracket, at this line's rate.  The
@@ -1043,6 +1181,9 @@ static void paint_lines_clipped(ViewState* v)
                                         mem[MEM_view_left_end_fill + v->line]);
         REVS_PLOT_CELL(view_screen_addr(plot_ptr_v, v->cell), (uint8_t)v->byte);
         bus_write(view_screen_addr(plot_ptr_v, v->cell), (uint8_t)v->byte);
+#ifdef REVS_VIEWSKIP
+        view_dst_touch(view_screen_addr(plot_ptr_v, v->cell));
+#endif
 
         v->byte = view_compose(mem[MEM_view_right_start_src + v->line],
                                mem[MEM_view_right_start_mask + v->line],
@@ -10017,11 +10158,13 @@ int draw_starting_lights_core(void)
 
     { int i;
       for (i = 9; i >= 0; i--) { mem[light_col + i] = 0xF0u;   /* $7B8A — clear ten rows */
-                                 PROBE_SHAPE_MARK(light_col + i); }
+                                 PROBE_SHAPE_MARK(light_col + i);
+                                 VIEW_MARK_SOURCE(light_col + i); }
       uint8_t a = pattern;
       for (i = 5; i >= 0; i--) {                    /* $7B93 — pattern into the middle six */
           mem[light_col + 2 + i] = a;
           PROBE_SHAPE_MARK(light_col + 2 + i);
+          VIEW_MARK_SOURCE(light_col + 2 + i);
           a ^= eor;                                 /* $7B96 EOR math_lo */
       }
     }
@@ -11935,6 +12078,9 @@ uint8_t paint_fence_backdrop_core(uint8_t horizon)
             PROBE_SHAPE_MARK(block + y);
             PROBE_SHAPE_MARK(MEM_view_left_start_src  + y);
             PROBE_SHAPE_MARK(MEM_view_right_start_src + y);
+            VIEW_MARK_SOURCE(block + y);
+            VIEW_MARK_SOURCE(MEM_view_left_start_src  + y);
+            VIEW_MARK_SOURCE(MEM_view_right_start_src + y);
             last = b;
 
             pat = (uint8_t)((pat - 1) & 3);     /* 3,2,1,0,3,... (DEX / BPL / LDX #3) */

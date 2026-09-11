@@ -7,6 +7,10 @@
  *   REVS_PLATFORM_AMIGA -> PlatformAmiga  (src/platform/amiga, m68k cross-build)
  *   default             -> PlatformHost  (headless macOS dev build)
  */
+#if defined(REVS_VIEWSKIP) && !defined(REVS_PLATFORM_AMIGA)
+extern "C" void revs_announce_viewskip(void);
+#endif
+
 #if defined(REVS_PLATFORM_AMIGA)
   #include "PlatformAmiga.h"        /* src/platform/amiga — on the cross-build's -I path */
 #else
@@ -38,6 +42,13 @@ int main(int argc, char* argv[]) {
        never lazily on first use.  On the Atari port a 64 KB table built lazily
        inside the first flight interrupt froze the display for ~3.6 s at the worst
        possible moment.  See docs/m68k-optimisation.md. */
+
+#if defined(REVS_VIEWSKIP) && !defined(REVS_PLATFORM_AMIGA)
+    /* ⭐ An A/B switch must PRINT its own state (CLAUDE.md §Performance) — a build measured
+       against a control that silently had the switch in the same position measures nothing.
+       On the Amiga the same fact is read off g_viewSkipLines through gdb. */
+    revs_announce_viewskip();
+#endif
 
     plt.run();   /* runs the game; returns when the user quits */
     return 0;

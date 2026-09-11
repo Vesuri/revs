@@ -120,6 +120,22 @@ CFLAGS   += -DREVS_HOLD_THROTTLE
 CXXFLAGS += -DREVS_HOLD_THROTTLE
 endif
 
+# ⭐⭐ `make VIEWSKIP=1` — the view sweep's per-line skip (docs/direct-bitplane-plan.md §7h).
+# A scan line with no dirty source, an unmoved background byte and a flat previous paint writes
+# the bytes already in its cells, so it is not painted at all.  Measured at 38% of the scan.
+# ⚠ `make validate` cannot gate it (its fixtures write sources behind the marking hooks) — the
+# gates are `make determinism` / -drive / -crash / -race and `make viewdiff`.
+ifdef VIEWSKIP
+CFLAGS   += -DREVS_VIEWSKIP
+CXXFLAGS += -DREVS_VIEWSKIP
+# `VIEWSKIP=2` also CHECKS the predicate at every skip (the sources really are all zero) and
+# prints the first violation — a diagnosis build, not a measurement one.
+ifeq ($(VIEWSKIP),2)
+CFLAGS   += -DREVS_VIEWSKIP_ASSERT
+CXXFLAGS += -DREVS_VIEWSKIP_ASSERT
+endif
+endif
+
 # ⭐ ...and `REVS_HOLD_STEER=l|r` at RUN time holds a STEERING key beside the throttle, which is
 # the only way to exercise the steering chain on a host build (the host has no keyboard, and the
 # mouse axis is the Amiga's).  It is how "the wheel does not turn" was reproduced off-target in

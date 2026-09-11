@@ -640,6 +640,50 @@ the marking side: every writer into the forty source blocks has to set the line'
 "which routines write `$3000..$43CF`" is a question about a large subtree, so it is a measurement
 and not a reading.
 
+### ⚠⚠ 7i. THE SKIP WAS BUILT, AND §7h's PREDICATE IS STILL NOT SUFFICIENT (2026-09-11)
+
+`make VIEWSKIP=1` implements §7h: per-line producer marks, the background byte and the flat bit,
+and the sweep skips a line that passes all three.  It **FAILS `make determinism`** — 153 stale
+frame-buffer bytes on display line 87 — and the reason is the method lesson, not the arithmetic.
+
+⭐⭐ **§7h's census measured a world the skip destroys.**  It ran on a build where every line is
+repainted every frame, so "this paint changed nothing" was only ever asked one frame after the
+last paint, of a line whose destination had just been written by that same paint.  Turn the skip
+on and neither holds: a line can stay unpainted for many frames, and in the meantime its
+destination can move or be written by somebody else.  A predicate validated by a census that
+repaints is not validated for a build that does not.  ⚠ **This is the "a control the instrument
+erases is not a control" failure in its purest form** — the erasure here is the skip itself.
+
+Three further parts turned up, in the order the gates found them:
+
+- **(4) A partial paint is not flat.**  The chain's first line is entered at `unit` rather than
+  0 (phases 2 and 3, and the forced entry), and a planted stop ends the sweep on its own unit;
+  either way the units that did not run kept their sources.  Both now mark the line dirty.
+- **(5) The destination MOVES.**  A source line's cells are wherever `plot_ptr` has walked to,
+  and that walk starts from a `screenBase` the caller chooses, so the shadow cannot be keyed by
+  SOURCE line at all.  It is keyed by DISPLAY LINE now.
+- **(6) ⚠ STILL OPEN — the display line has other tenants.**  The ink watch named the first:
+  `paint_lines_clipped`'s and `paint_lines_short`'s run-end composite stores, which write a cell
+  of a display line the chain painted flat.  Clearing the flat bit at those three stores does
+  **not** close it: four source lines ($43, $44, $46, $49) still fail the destination assertion
+  36 times each in 300 frames, so at least one more writer into the viewport band is unaccounted
+  for.  `make fbwrites` already says the band is written by `tick_wheel_spin` (display lines
+  50..140) and `undraw_plot_lines` / `smc_major_step` (129..180); line 87 is inside the first.
+
+**So the marking problem is TWO problems, and only the first is solved.**  The producer side is
+complete and proven (`g_shapeMarkUnmarked` reads 0 over 26M line-writes, two sabotages).  The
+DESTINATION side — every writer into the 8320-byte frame buffer that is not the chain's own flat
+store must clear its display line's flat bit — is not enumerated.  The same shadow technique
+would settle it: snapshot the frame buffer at the end of each sweep, diff it at the next, and
+assert that every changed display line had its flat bit cleared.
+
+⚠ **Do not enable `VIEWSKIP=1` for anything but this diagnosis.**  `make VIEWSKIP=2` adds the
+per-skip assertion (sources all zero, destination already holds the byte) and prints the first
+violation of each; that is the instrument to close item (6) with.  `make validate` cannot gate
+any of it — its fixtures write sources with `fill_random`, behind the marking hooks — so the
+harness resets the state to "everything dirty" per case and the gates are `make determinism`
+/ -drive / -crash / -race and `make viewdiff`.
+
 ## 8. ⭐⭐ HARDWARE SPRITES for the instruments — capability the BBC never had (user, 2026-08-16)
 
 **The observation.** The BBC has no sprites, so *every* moving thing on the Revs dashboard is drawn

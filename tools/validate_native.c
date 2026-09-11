@@ -4494,6 +4494,16 @@ static int test_shift_key_commands(void)
 
 void view_paint_lines(void);
 void view_paint_lines__t6502(void);
+#ifdef REVS_VIEWSKIP
+/* ⚠ `make VIEWSKIP=1`: the sweep's per-line skip is driven by marks the PRODUCERS set, and a
+   fixture writes its sources with fill_random, which no marking hook sees.  Reset to
+   "everything dirty" before every case so the skip is inert here rather than wrong — this
+   harness cannot gate the skip, `make determinism` and `make viewdiff` do. */
+void view_skip_reset(void);
+#define VIEW_SKIP_RESET() view_skip_reset()
+#else
+#define VIEW_SKIP_RESET() ((void)0)
+#endif
 extern unsigned long g_viewTableCollisions;   /* asserted below; see revs_native.c */
 
 /* --------------------------------------------------------------------------
@@ -5553,6 +5563,7 @@ static int test_view_paint_lines(void)
 
     for (t = 0; t < dense + sparse; t++) {
         Cpu6502 c = zero_cpu();
+        VIEW_SKIP_RESET();
         dash_pre(pre, t >= dense, 0);
         c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
         c.S = (uint8_t)(0xC0 + (xs() & 0x3F));
@@ -5571,6 +5582,7 @@ static int test_view_paint_lines(void)
 
     for (t = dense + sparse; t < dense + sparse + illegal; t++) {
         Cpu6502 c = zero_cpu();
+        VIEW_SKIP_RESET();
         dash_pre(pre, t & 1, 1);
         c.A = (uint8_t)xs(); c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
         c.S = (uint8_t)(0xC0 + (xs() & 0x3F));
