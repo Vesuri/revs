@@ -11,7 +11,8 @@
  *     V b          the engine sent VDU byte b through OSWRCH ($50F6, the only site)
  *     P off val    the GAME poked screen RAM directly (measured: 78 such writes in the front
  *                  end, from $3A65/$65BA/$659A — a driver-only model would silently lose them)
- *     S n file     at this point the real screen RAM was exactly `file`
+ *     S n file m7  at this point the real screen RAM was exactly `file`, with the Video ULA
+ *                  in teletext mode (m7=1) or not (m7=0)
  *
  * MOS writes are deliberately absent from the log: reproducing them IS the thing under test, so
  * logging them would make the comparison vacuous — the failure mode `docs/validation-harness.md`
@@ -20,7 +21,13 @@
  * ⚠ SCOPE, STATED RATHER THAN FUDGED.  Snapshots taken before the engine's own `VDU 22,7` are
  * BASIC's work (REVINST's instruction pages, REVSMEN's menu) and the port does not run BASIC, so
  * they are NOT reproducible and are reported as SKIPPED with the reason.  In-scope snapshots are
- * those from the first V event onward.  The harness FAILS if the in-scope set is empty, because
+ * those from the first V event onward AND taken with the ULA in teletext: $7C00-$7FFF is
+ * time-multiplexed with the dashboard code overlay, so a page captured during a SESSION holds
+ * that overlay's machine code and not anything the VDU driver produced.
+ * ⭐ That skip is a SCOPE statement, not a hiding place, and the difference was measured: mark
+ * such a snapshot as teletext by hand and it PASSES, because copy_dash_data's own writes to
+ * $7C00 are logged as P events and replayed verbatim.  It is skipped because this harness is the
+ * gate on the VDU driver + SAA5050, and the overlay has its own (`make validate FN=copy_dash_data`).  The harness FAILS if the in-scope set is empty, because
  * "0 comparisons, all passed" is the exact shape of a green test that tests nothing.
  */
 #include <stdio.h>
@@ -158,7 +165,7 @@ int main(int argc, char **argv)
 
     unsigned long vdu = 0, pokes = 0;
     int inScope = 0;                 /* the engine's VDU 22,7 has been seen */
-    int checked = 0, failed = 0, skipped = 0;
+    int checked = 0, failed = 0, skipped = 0, notTeletext = 0;
     char line[256];
 
     while (fgets(line, sizeof line, f)) {
@@ -179,13 +186,18 @@ int main(int argc, char **argv)
         }
         if (line[0] != 'S') continue;
 
-        int idx;
+        int idx, m7 = 1;
         char file[128];
-        if (sscanf(line + 2, "%d %127s", &idx, file) != 2) continue;
+        if (sscanf(line + 2, "%d %127s %d", &idx, file, &m7) < 2) continue;
 
         if (!inScope) {
             skipped++;
             continue;      /* BASIC's own screens — stated in the summary, not silently dropped */
+        }
+        if (!m7) {
+            notTeletext++; /* a session was up: those 1024 bytes are the dashboard code overlay,
+                              which is copy_dash_data's business, not the VDU driver's */
+            continue;
         }
 
         static unsigned char want[TT_SCREEN_SIZE];
@@ -223,7 +235,11 @@ int main(int argc, char **argv)
     printf("\n%lu VDU bytes, %lu direct pokes replayed\n", vdu, pokes);
     printf("unknown VDU codes: %lu (last $%02X)\n", g_ttUnknownVdu, g_ttLastUnknown);
     printf("snapshots: %d checked, %d failed, %d skipped (before the engine's VDU 22,7 — "
-           "BASIC's screens, which this port does not run)\n", checked, failed, skipped);
+           "BASIC's screens, which this port does not run)", checked, failed, skipped);
+    if (notTeletext)
+        printf(", %d not a teletext page (a session was running, so $7C00 held the dashboard "
+               "code overlay)", notTeletext);
+    printf("\n");
 
     /* ⭐ Fixture-or-fail, the same rule as make validate: a run that compared nothing is a
        FAILURE, not a pass.  Every green in this project has to have been able to go red. */

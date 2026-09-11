@@ -489,14 +489,23 @@ validate: build/validate_native
 #   make mode7 PPM=tmp/m7   ...and write both decoded pages as PPMs to look at
 # The fixture is an ordered log of the engine's VDU bytes AND its direct screen pokes, because
 # the real page is built by two writers; tools/validate_mode7.c has the full rationale.
+# ⚠ TWO FIXTURES, because the front end has two ARMS and they draw different pages.  The probe
+# answers menu_wait_key with option 1 by default, which is PRACTICE and reaches the pits in two
+# menus; `--answers=2` takes COMPETITION and walks the class, qualifying-length, driver-name and
+# pit pages of the QUALIFYING arm — seven pages that nothing gated before.  Both are checked.
 MODE7_OBJS := src/cpu/cpu.o src/platform/teletext.o tools/validate_mode7.o
 mode7: $(MODE7_OBJS) | build
 	$(CC) $(CFLAGS) -o build/validate_mode7 $(MODE7_OBJS)
-	./build/validate_mode7 $(if $(PPM),--ppm=$(PPM),)
+	@echo "--- the PRACTICE arm"
+	./build/validate_mode7 --dir=tmp/mode7 $(if $(PPM),--ppm=$(PPM),)
+	@echo "--- the COMPETITION arm (qualifying)"
+	./build/validate_mode7 --dir=tmp/mode7-comp $(if $(PPM),--ppm=$(PPM)-comp,)
 
 mode7-fixture:
 	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_probe_mode7.mjs \
 	    --dump=../../tmp/mode7
+	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_probe_mode7.mjs \
+	    --answers=2 --steps=80 --dump=../../tmp/mode7-comp
 
 # ⭐ TRACK MENU validation — the port's circuit menu against the REAL REVSMEN, byte for byte.
 #   make trackmenu-fixture      record the real pages off jsbeeb (needs volta/node + revs.ssd)

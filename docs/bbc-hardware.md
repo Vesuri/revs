@@ -245,6 +245,20 @@ the cell.  Measured on a real BBC in the front end (`tools/bbc_probe_mode7.mjs`)
 calls and ZERO OSWORD 10 calls.**  So MODE 7 needed a VDU driver, not a font (done —
 `src/platform/teletext.h`), and `OSWORD 10` belongs to the race view's own text — now implemented
 above, with its own drawn font.
+⚠ **`$50F6` is the engine's main VDU emitter but NOT its only one.**  The listing has four
+`JSR $FFEE`: `$50F6`, `console_io`'s key echo at `$633F`, `console_read_two_digits`' rubout at
+`$3EF3` and `print_standings_table`'s footer at `$6651`.  The MODE 7 fixture logged only `$50F6`
+for two phases, which dropped every echoed character — i.e. the whole content of the name-entry
+and wing-setting pages — so it now selects engine bytes **by caller** (return address `< $8000`)
+rather than by a hardcoded site.
+
+⭐ **THE MOS ROTATES THREE CHARACTER CODES IN MODE 7**, measured code by code over `$20..$FF`
+with `tools/bbc_probe_m7charmap.mjs`: `#` (`$23`) → `$5F`, `_` (`$5F`) → `$60`, `` ` `` (`$60`) →
+`$23`, `$7F` is DELETE and stores nothing, and **every other code including `$80..$FF` is stored
+verbatim**.  The SAA5050 keeps `#` at `$60` and a horizontal bar at `$5F`, so ASCII that means `#`
+or `_` has to be moved to where the chip holds that shape.  Revs depends on it —
+`read_driver_name` underlines the ENTER NAME OF DRIVER field with twelve `_` — and the port stored
+codes verbatim until `make mode7`'s qualifying arm caught it.
 
 ⚠ The implementation is `src/platform/mos.cpp`, shared by BOTH backends rather than overridden per
 platform.  OSBYTE 129's contract (X=Y=$FF when the key is held) is the 6502's ABI and identical

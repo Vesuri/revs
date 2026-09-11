@@ -25,6 +25,7 @@
 // probe deliberately captures CODES, never glyph bitmaps, so nothing here is lifted.
 
 import { TestMachine } from "./jsbeeb/tests/test-machine.js";
+import { Video } from "./jsbeeb/src/video.js";
 import * as utils from "./jsbeeb/src/utils.js";
 import fs from "fs";
 import path from "path";
@@ -37,6 +38,7 @@ const MENU_POLL = 0x6581; //   its kbd_test_key call — proof a menu is actuall
 const CHAR_DEF = 0x5092; // vdu_char_def — the $64 branch
 const CHAR_M7 = 0x50f6; //   ...its MODE 7 arm (JSR OSWRCH)
 const CHAR_BMP = 0x5096; //   ...its bitmap arm (OSWORD 10 + plot)
+const CONSOLE_IO = 0x6300; // the game's ONLY line editor (X = field width on entry)
 const MODE_FLAG = 0x64; // 0 = bitmap race view, $80 = MODE 7
 const SCREEN = 0x7c00; // MODE 7 screen RAM (1 KB, 25 rows of 40)
 const ULA_CTRL = 0xfe20;
@@ -50,9 +52,30 @@ const opt = (name, dflt) => {
 };
 const megaCycles = Number(opt("mcycles", 12));
 const dumpDir = opt("dump", null);
+// ⭐ WHICH ARM OF THE FRONT END TO DRIVE.  menu_wait_key is answered with option 1 by default,
+// which takes the PRACTICE branch at $63F7 and reaches the pits in two menus.  `--answers=2,1,..`
+// gives the answer for each menu_wait_key encounter in order (1-based option index, as the
+// engine's own key_binding_tbl numbers them), so `--answers=2` picks COMPETITION and walks the
+// qualifying arm's class / length / driver-name pages instead.  Past the end of the list the
+// default of 1 resumes.
+const answers = (opt("answers", "") || "").split(",").filter((s) => s !== "").map(Number);
+const driverName = opt("name", "CLAUDE"); // what to type at read_driver_name's twelve-char field
+const wing = Number(opt("wing", 20)); //      ...and at the pits' two-digit wing prompts (0..40)
+const steps = Number(opt("steps", 60)); //    how many 0.1 s slices of front end to drive
+
+// ⚠⚠ A REAL `Video`, NOT TestMachine's default `FakeVideo` — without it the machine has no
+// VERTICAL SYNC (FakeVideo never calls sysvia.setVBlankInt()), and the engine's display setup
+// spins forever on `BIT $FE4D / BEQ` at $4E11 waiting for System VIA IFR bit 1.  The MOS runs
+// off the 100 Hz timer and does not care, which is why boot, REVINST, the track menu and the
+// front end's MENUS all worked with FakeVideo — the hang only bites the moment the front end
+// hands over to a SESSION, i.e. exactly where the qualifying and race pages live.  Same fix, and
+// same reasoning, as bbc_refloop_race.mjs.
+const FB_W = 1024, FB_H = 625;
+const fb32 = new Uint32Array(FB_W * FB_H);
+const video = new Video(false, fb32, () => {});
 
 const data = fs.readFileSync(new URL("../revs.ssd", import.meta.url));
-const tm = new TestMachine();
+const tm = new TestMachine("B-DFS1.2", { video });
 await tm.initialise();
 tm.loadDiscData(new Uint8Array(data));
 tm.startCapture();
@@ -70,7 +93,12 @@ let charDefM7 = 0;
 let charDefBmp = 0;
 const engineWrch = [];
 const engineCounts = new Map();
+const wrchCallers = new Map(); // which engine PCs actually called OSWRCH — measured, not assumed
 let menuPolling = false; // menu_wait_key's kbd_test_key call ($6581) has run since we last answered
+// console_io ($6300) has been entered and not yet answered; the value is its field WIDTH, which
+// is what separates the two prompts the front end uses it for — $0C = read_driver_name's twelve
+// characters, 2 = console_read_two_digits (the pits' wing settings).
+let lineEditWidth = null;
 
 // ── screen snapshots ──────────────────────────────────────────────────────────────────────
 const snapshots = [];
@@ -83,7 +111,11 @@ function snapshot(label) {
     snapshots.push({
         label,
         mode: readMem(MODE_FLAG),
-        ula: cpu.video ? -1 : -1,
+        // ⭐ THE HARDWARE's answer, not the game's: $64 is the ENGINE's mode flag and reads 0 all
+        // through BASIC's own MODE 7 screens, so it cannot say whether $7C00 currently holds a
+        // teletext page or the dashboard code overlay it is time-multiplexed with.  The Video ULA
+        // control byte ($FE20 bit 1) can, and the validator skips a non-teletext page on it.
+        teletext: video.teletextMode ? 1 : 0,
         wrchAt: wrchStream.length,
         eventAt: events.length,
         bytes,
@@ -115,17 +147,24 @@ cpu.debugInstruction.add((addr) => {
         const b = cpu.a;
         wrchStream.push(b);
         wrchCounts.set(b, (wrchCounts.get(b) || 0) + 1);
-    } else if (addr === CHAR_M7) {
-        // ⭐ THE SPEC FOR Platform::wrch().  $50F6 is the ONLY place the engine itself emits a
-        // VDU byte, so this stream — not the whole-machine one, which is mostly BASIC's — is
-        // what the port's VDU driver has to handle.  A is the byte about to go to OSWRCH.
-        charDefM7++;
-        engineWrch.push(cpu.a);
-        engineCounts.set(cpu.a, (engineCounts.get(cpu.a) || 0) + 1);
-        events.push(`V ${cpu.a}`);
-    }
+        // ⭐ THE SPEC FOR Platform::wrch(), and it is selected BY CALLER, not by one hardcoded
+        // site.  $50F6 (vdu_char_def's MODE 7 arm) is the engine's main emitter but NOT its only
+        // one — the listing has four `JSR $FFEE`: $50F6, console_io's key echo at $633F,
+        // console_read_two_digits' rubout at $3EF3 and print_standings_table's footer at $6651.
+        // Logging only $50F6 dropped every echoed character, which is exactly the content of the
+        // name-entry and wing-setting pages.  Everything at or above $8000 is the MOS's own ROMs
+        // and BASIC (REVINST, REVSMEN), which this port does not run.
+        const ret = readMem(0x101 + cpu.s) | (readMem(0x102 + cpu.s) << 8);
+        if (ret < 0x8000) {
+            engineWrch.push(b);
+            engineCounts.set(b, (engineCounts.get(b) || 0) + 1);
+            wrchCallers.set(ret, (wrchCallers.get(ret) || 0) + 1);
+            events.push(`V ${b}`);
+        }
+    } else if (addr === CHAR_M7) charDefM7++;
     else if (addr === CHAR_BMP) charDefBmp++;
     else if (addr === MENU_POLL) menuPolling = true;
+    else if (addr === CONSOLE_IO) lineEditWidth = cpu.x;
     return false;
 });
 
@@ -194,8 +233,10 @@ const hashScreen = () => {
     return h;
 };
 const armTrace = [];
+const menuAnswerTrace = [];
+let menusAnswered = 0;
 let lastArm = null;
-for (let step = 0; step < 60; step++) {
+for (let step = 0; step < steps; step++) {
     await tm.runFor(0.2 * CPS);
 
     const arm = `\$64=$${hex(readMem(MODE_FLAG))} m7=${charDefM7} bmp=${charDefBmp} wrch=${wrchStream.length}`;
@@ -203,16 +244,37 @@ for (let step = 0; step < 60; step++) {
         armTrace.push(`  step ${String(step).padStart(2)}  ${arm}`);
         lastArm = arm;
     }
+    // ⚠ Once the front end hands over to a session, $7C00 is the dashboard code overlay, not a
+    // page: there is nothing to snapshot, and every key is a DRIVING control, so the drive just
+    // lets time pass until the session ends on its own clock.  (The overlay's own writes to
+    // $7C00 keep being LOGGED — the real machine made them, and the page that comes back after
+    // the session is the result of them plus the VDU stream.)
+    if (!video.teletextMode) continue;
+
     const h = hashScreen();
     if (h !== lastHash) {
         lastHash = h;
         snapshot(`front-end page, step ${step}`);
     }
 
-    // If a menu is polling, answer option 1 then confirm.  If not, it is a
+    // A line-editor prompt is neither a menu nor a space-bar page: console_io reads through
+    // OSRDCH, so it takes actual typed characters and a RETURN, and a page that is waiting on it
+    // never advances on SPACE.  Two prompts use it and the field width tells them apart.
+    if (lineEditWidth !== null) {
+        const typed = lineEditWidth <= 2 ? String(wing) : driverName;
+        menuAnswerTrace.push(`  step ${String(step).padStart(2)}  line editor, width ${lineEditWidth}, typed "${typed}"`);
+        lineEditWidth = null;
+        await tm.type(typed);
+        continue;
+    }
+
+    // If a menu is polling, answer the scripted option then confirm.  If not, it is a
     // "PRESS SPACE BAR TO CONTINUE" page.
     if (readMem(SEL_FLAG) === 0 && menuPolling) {
-        await holdUntil(colrowOf(readMem(KEY_TBL + 1)), () => readMem(SEL_FLAG) !== 0);
+        const pick = menusAnswered < answers.length ? answers[menusAnswered] : 1;
+        menuAnswerTrace.push(`  step ${String(step).padStart(2)}  menu #${menusAnswered} answered ${pick}`);
+        menusAnswered++;
+        await holdUntil(colrowOf(readMem(KEY_TBL + pick)), () => readMem(SEL_FLAG) !== 0);
         await holdUntil(colrowOf(readMem(KEY_TBL)), () => !menuPolling);
         menuPolling = false;
     } else {
@@ -220,6 +282,8 @@ for (let step = 0; step < 60; step++) {
     }
 }
 snapshot("end of the front-end drive");
+console.log(`\n=== menus answered (${menusAnswered}):`);
+for (const l of menuAnswerTrace) console.log(l);
 console.log("\n=== how the engine's front end draws, over time:");
 for (const l of armTrace) console.log(l);
 
@@ -236,7 +300,10 @@ for (const b of ctrl) console.log(`   VDU ${String(b).padStart(3)}  $${hex(b)}  
 console.log(`printable (${print.length}): ${print.map((b) => String.fromCharCode(b)).join("")}`);
 console.log(`>= $80 (${high.length}): ${high.map(hex).join(" ")}`);
 
-console.log(`\n=== ⭐ THE ENGINE'S OWN VDU STREAM (via $50F6): ${engineWrch.length} bytes, ${engineCounts.size} distinct`);
+console.log(`\n=== ⭐ THE ENGINE'S OWN VDU STREAM: ${engineWrch.length} bytes, ${engineCounts.size} distinct`);
+console.log("   emitted from (return address of the JSR $FFEE):");
+for (const [pc, n] of [...wrchCallers.entries()].sort((a, b) => b[1] - a[1]))
+    console.log(`      $${pc.toString(16)}  x${n}`);
 {
     const ks = [...engineCounts.keys()].sort((a, b) => a - b);
     const c = ks.filter((b) => b < 0x20), pr = ks.filter((b) => b >= 0x20 && b < 0x80), hi = ks.filter((b) => b >= 0x80);
@@ -300,6 +367,7 @@ for (const s of snapshots) {
     const nonSpace = [...s.bytes].filter((b) => b !== 0x20 && b !== 0x00).length;
     console.log(
         `\n=== ${s.label}   \$64=$${hex(s.mode)} (${s.mode & 0x80 ? "MODE 7" : "bitmap"})   ` +
+            `ULA ${s.teletext ? "teletext" : "bitmap"}   ` +
             `${nonSpace} non-blank cells`,
     );
     if (nonSpace === 0) {
@@ -326,10 +394,13 @@ if (dumpDir) {
     // ⭐ the one the port is specified by: only the bytes REVS2 itself emitted
     fs.writeFileSync(path.join(dumpDir, "engine_wrch.bin"), new Uint8Array(engineWrch));
     // ⭐⭐ THE FIXTURE.  "V b" = the engine sent VDU byte b; "P off val" = the game poked screen
-    // RAM directly; "S n file" = at this point the real screen looked like file.
+    // RAM directly; "S n file m7" = at this point the real screen looked like file, and m7 says
+    // whether the ULA was in teletext then (0 = $7C00 held the dashboard overlay, so the page is
+    // not a teletext page and the validator skips it saying so).
     const lines = events.slice();
     for (const [i, sn] of snapshots.entries())
-        lines.splice(sn.eventAt + i, 0, `S ${i} mode7_${String(i).padStart(2, "0")}.bin`);
+        lines.splice(sn.eventAt + i, 0,
+            `S ${i} mode7_${String(i).padStart(2, "0")}.bin ${sn.teletext}`);
     fs.writeFileSync(path.join(dumpDir, "mode7_events.txt"), lines.join("\n") + "\n");
     console.log(`   fixture: ${events.length} events + ${snapshots.length} snapshot markers`);
     console.log(`\nwrote ${snapshots.length} screen dumps + wrch_stream.bin to ${dumpDir}`);

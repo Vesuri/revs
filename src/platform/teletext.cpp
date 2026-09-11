@@ -163,6 +163,19 @@ void tt_vdu(unsigned char c)
         return;
     }
 
+    /* ⚠ THE MOS ROTATES THREE CODES IN MODE 7, measured off a real MOS with
+       tools/bbc_probe_m7charmap.mjs (`#` -> `_` -> `` ` `` -> `#`, everything else $20..$FF
+       stored verbatim).  The SAA5050's own set has `#` at $60 and a horizontal bar at $5F, so
+       ASCII that means `#` or `_` has to be moved to where the chip keeps that shape.  Revs
+       leans on it: read_driver_name underlines the ENTER NAME OF DRIVER field with twelve `_`,
+       and storing them untranslated put a bar-less $5F on the page (`make mode7` snapshot 26). */
+    switch (c) {
+        case '#':  c = 0x5F; break;
+        case 0x5F: c = 0x60; break;
+        case 0x60: c = '#';  break;
+        default: break;
+    }
+
     tt_poke(s_cx, s_cy, c);
     tt_advance();
 }
