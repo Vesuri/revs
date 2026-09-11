@@ -1069,73 +1069,63 @@ static void paint_lines_clipped(ViewState* v)
 
 /* $7BE2  view_paint_lines — THE 3D VIEWPORT RASTERISER, ONE SCAN LINE PER CHAIN
 
-   WHAT IT COMPUTES.  The viewport is not drawn where it is computed: the producers
-   ($24F6 → $1A20) write a *source byte* into one of forty $80-spaced blocks at
-   $3000..$4380 — one block per CELL COLUMN, each indexed by scan line — and this routine
-   is the single consumer that turns those into screen bytes.  It paints ONE SCAN LINE per
-   chain, top down, forty cells across:
+   The viewport is not drawn where it is computed: the producers ($24F6 -> $1A20) write a *source
+   byte* into one of forty $80-spaced blocks at $3000..$4380 — one block per CELL COLUMN, indexed
+   by scan line — and this is the single consumer turning those into screen bytes, one scan line
+   per chain, top down, forty cells across.
 
-       plot_ptr  = $6700 = BBC_SCREEN_BASE + 10*320, i.e. character row 10 / cell 0 /
-                   line 0 = DISPLAY LINE 80, stepped +1 within a character row and +$139
-                   across one (view_next_scanline, $7EF3);
-       plot_ptr2 = $6800 = plot_ptr + 256 = cell 32 of the same line, because a line is
-                   40 cells x 8 = 320 bytes and cannot be reached from one base.
+       plot_ptr  = $6700 = BBC_SCREEN_BASE + 10*320 — char row 10 / cell 0 / line 0 =
+                   DISPLAY LINE 80; +1 within a char row, +$139 across one (view_next_scanline)
+       plot_ptr2 = $6800 = plot_ptr + 256 = cell 32 of the same line (a line is 40x8 = 320
+                   bytes, so it cannot be reached from one base)
 
-   One "unit" is one cell: read the source, and if it is non-zero clear it and translate it
-   through view_cell_bytes ($6000); either way store the byte that is now carried.  The
-   carried byte flows LEFT TO RIGHT, so a cell whose source is zero repeats whatever the
-   cell to its left drew — which is also why one corrupt byte gives a run to the right edge
-   of a line (docs/bbc-reference-loop.md).  That is the whole drawing model, and it is why
-   the chain has to run in order.  Confirmed on a real BBC: stores cover display lines
-   80..157 and buckets 88..111 are full at 320 = 8 lines x 40 cells (`make fbwrites`).
+   One unit = one cell: read the source; if non-zero clear it and translate through
+   view_cell_bytes ($6000); either way store the byte now carried.  ⭐ The carried byte flows
+   LEFT TO RIGHT, so a zero-source cell repeats its left neighbour — which is why one corrupt
+   byte gives a run to the line's right edge, and why the chain must run in order.  Measured on a
+   real BBC: stores cover display lines 80..157, buckets 88..111 full at 320 = 8 x 40
+   (`make fbwrites`).
 
    THREE PHASES, differing only in how much of the line is painted:
+     1  $7BE2, lines $4F..$2C — all forty cells, looping until the counter reaches $2C
+     2  $7D13, lines $2B..$1C — shorter run: the driver plants an RTS over the store of unit
+        view_run_left_end[line], composes the boundary cell from view_left_end_mask/fill, then
+        enters chain B at view_run_right_start[line]
+     3  $7F18, lines $1B..$03 — as 2, but BOTH chains get a planted stop and a computed start,
+        and the driver steps the scan-line pointers itself
 
-     1  $7BE2, line $4F..$2C — the full forty cells, looping through view_next_scanline
-        until the line counter reaches $2C.
-     2  $7D13, line $2B..$1C — the painted run is shorter, so the driver plants an RTS
-        ($60) over the store of unit view_run_left_end[line], runs the chain, and composes
-        the boundary cell itself out of view_left_end_mask/fill.  It then enters chain B at
-        view_run_right_start[line] for the second run.
-     3  $7F18, line $1B..$03 — as phase 2, but BOTH chains get a planted stop and a
-        computed start, and the driver steps the scan-line pointers itself.
+   view_paint_restore ($7BBF) puts `STA` back over the three planted RTSs and `CPX` at $7EEE.
+   ⚠ It does NOT reset the $7D24/$7F24/$7F7D *records* of where it planted, and the drivers skip
+   an unchanged re-plant — so a phase's first line can legally run with no stop planted.
 
-   view_paint_restore ($7BBF) then puts `STA` back over the three planted RTSs and `CPX`
-   back at $7EEE, so the chain leaves no patch behind.  ⚠ It does NOT reset the
-   $7D24/$7F24/$7F7D *records* of where it planted, and the drivers skip the re-plant when
-   the stop is unchanged — so the first line of a phase can legally run with no stop
-   planted at all.  Faithful, and reproduced.
+   ⚠ THE CONTROL TABLES LIVE INSIDE THE SOURCE BLOCKS, and that is not untidiness to fix.  A
+   block's live span is dash_block_starts[col]..$4F, so the rest of each $80 is dead: the tails
+   ($50-$7F) once copy_dash_data has moved them to $7B00, and the offsets below the start.  Three
+   tables sit in tails; view_run_right_end ($3080) sits in column 1's below-the-start region, and
+   as column 1 starts at offset $1B while the driver indexes that table only over phase 3's lines
+   3..$1B, the two readings collide in EXACTLY ONE byte: $309B, at phase 3's topmost line.  So the
+   chain can zero a byte the driver is about to read, and **every table read must happen where the
+   6502 did it** — hoisting one out of the loop changes behaviour.
 
-   ⚠ THE CONTROL TABLES LIVE INSIDE THE SOURCE BLOCKS, and that is not a mistake to tidy up.
-   A block's live source span is offsets dash_block_starts[col]..$4F, so the rest of each $80
-   is dead — the tails ($50-$7F) once copy_dash_data has moved them to $7B00, and the offsets
-   below the start.  Three of the four tables sit in tails; view_run_right_end ($3080) sits in
-   column 1's below-the-start region, and since column 1 starts at offset $1B while the driver
-   indexes that table only over phase 3's lines 3..$1B, the two readings collide in EXACTLY ONE
-   byte: $309B, at phase 3's topmost line.  That is why the chain can zero a byte the driver is
-   about to read, and why every table read has to happen exactly where the 6502 did it —
-   hoisting one out of the loop changes behaviour.
+   ⭐ SHAPE, MEASURED (docs/direct-bitplane-plan.md §7a): 2093 units per sweep, ~83 changing a
+   byte — 96% of the work is a dirty test that finds nothing.  That 96% is the GAME's algorithm
+   and the twin keeps it; deleting the scan is a representation change tracked separately.  The
+   forty unrolled units are one indexed loop over a regular structure:
 
-   ⭐ SHAPE, MEASURED (docs/direct-bitplane-plan.md §7a): 2093 units per sweep, ~83 of which
-   change a byte — 96% of the work is a dirty test that finds nothing.  That 96% is the GAME's
-   algorithm and the twin keeps it; deleting the scan is a representation change tracked
-   separately.  The forty unrolled units are one indexed loop over a regular structure:
+       unit i:  source block $3000 + $80*i,  screen offset 8*i,  opcode slot g_viewSlot[i],
+                base pointer plot_ptr for i < 32 and plot_ptr2 for i >= 32
 
-       unit i:  source block $3000 + $80*i,  screen offset 8*i,
-                base pointer plot_ptr for i < 32 and plot_ptr2 for i >= 32,
-                opcode slot g_viewSlot[i].
+   ⚠ ONLY 29 OF THE 40 SLOTS ARE PATCHABLE, and that is a proof, not a choice: every writer
+   patches only the LOW byte of its store, so it can reach one page.  Chain A's unit 15 slot
+   ($7D0E) and chain B's first ten ($7D65..$7DFE) are in page $7D, which no writer addresses —
+   plain stores, and the twin must not dispatch on them (a randomised fixture puts garbage there
+   and the oracle stores anyway).
 
-   ⚠ ONLY 29 OF THE 40 SLOTS ARE PATCHABLE, and that is a proof, not a choice: every
-   writer patches only the LOW byte of its store, so it can reach one page.  Chain A's unit
-   15 slot ($7D0E) and chain B's first ten ($7D65..$7DFE) are in page $7D, which no writer
-   addresses — they are plain stores and the twin must not dispatch on them (a randomised
-   fixture puts garbage there, and the oracle stores anyway).
-
-   EXIT CONTRACT.  A = $E0 and the line counter = 3 from $7BBF/$7FAC; Y is the cell offset
-   the last chain stopped at; the flags are live too (C from `CPX #3`, V from phase 3's
-   `SEC / SBC`), so the fixture declares AXY+flags and the twin computes them.  The chain's
-   own intermediate flags are dead — every one of the four call sites sets N/Z with an
-   `AND`/`CPX` before the next branch — which is why the unit loop keeps no flags at all. */
+   EXIT CONTRACT: **`live=S` — A/X/Y and N/V/Z/C are all dead, and that is AUDITED**, not assumed
+   (docs/native-sweep.md).  $7BBF/$7FAC do leave A = $E0 and the line counter 3, and phase 3 does
+   leave C/V set, but every one of the four call sites redefines what it reads before branching.
+   The chain's own intermediate flags are dead for the same reason, which is why the unit loop
+   keeps no flags at all. */
 
 /* The idiomatic core: paint the viewport from `firstLine` downwards, both pointers seeded
    one page apart at `screenBase`.  Everything above is reachable only from here. */
@@ -1175,10 +1165,9 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
 
 /* $16DC  race_main_loop — THE RACE
 
-   Nothing is computed here: it is the driver.  One call runs a whole driving session —
-   practice, a qualifying lap or a race — and returns to the front end (`wait_flag_05F4`,
-   $6563) when the session is over or the player has asked for the pits.  Three nested
-   things are going on:
+   The driver — nothing is computed here.  One call runs a whole driving session (practice, a
+   qualifying lap or a race) and returns to the front end (`wait_flag_05F4`, $6563) when the
+   session ends or the player asks for the pits.  Three nested scopes:
 
      1  ONCE PER SESSION ($16DC-$16E6).  Program the display hardware, put character output
         on the race view's own plotter, build the $7B00 dashboard overlay out of the block
@@ -1204,16 +1193,15 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
      * session_end_countdown reaching zero: the time or lap limit was passed N frames ago and
        the car has been coasting to the line ever since.
 
-     Ending a session is not just leaving the loop: sound off, the "please wait" message, and
-     finish_race races the remaining drivers to the finish so the results table is complete.
+     ⚠ Ending a session is not just leaving the loop: sound off, the "please wait" message, and
+     finish_race races the remaining drivers home so the results table is complete.
 
    ⚠ THE TWO PORT SEAMS ARE IN HERE (once the transpiler's PRE_INSN_HOOKS / SPINWAIT_HOOKS):
 
-     * platform_render_frame() at the TOP of the frame loop, not at the frame wait.  The wait
-       is CONDITIONAL — no crash means no wait — so a paint hooked to it would stop counting
-       frames on the ordinary path and the framerate would read as a rendering drop
-       (docs/perf-method.md §Rule 3).  One hook here means exactly one painted frame per game
-       frame, always.
+     * platform_render_frame() at the TOP of the frame loop, NOT at the frame wait.  The wait is
+       CONDITIONAL (no crash means no wait), so a paint hooked there would stop counting frames
+       on the ordinary path and the framerate would read as a rendering drop
+       (docs/perf-method.md §Rule 3).  One hook here = exactly one painted frame per game frame.
      * platform_tick_vbi() inside the field_countdown wait, and NOT render_frame: on the Amiga
        the 50 Hz body runs in the real VERTB ISR and this loop is preempted, so tickVBI is a
        no-op there and the wait ends on its own; on the headless host, which has no
@@ -7446,11 +7434,9 @@ void update_slip_sound(void)
     model_state_marshal_out();
 } /* result-only */
 
-/* TWINS #79-#86 — THE EIGHT SUB-MODELS, and with them the whole of
-   apply_driving_model's tree
-   The four earlier groups were the tree's PLUMBING (the multiply, the 16-bit arithmetic, the
-   rotations and integrations, the slip/sound cluster).  These eight talk to the rest of the
-   engine.
+/* THE EIGHT SUB-MODELS — apply_driving_model's tree, less its plumbing (the multiply, the
+   16-bit arithmetic, the rotations/integrations, the slip/sound cluster).  These talk to the
+   rest of the engine.
 
      $0D01 compute_car_angles     the heading -> the sin/cos pair every rotation resolves
                                   through: TWO polynomial evaluations of one pi-scaled angle,
@@ -7474,7 +7460,7 @@ void update_slip_sound(void)
       and bit7(h) XOR bit6(h): the quadrant in two instructions.
    2. ⚠ Five bytes of dead code at $0D21-$0D25: `BCC $0D27` at $0D1D and `BCS $0D4F` at $0D1F
       are together unconditional, so the low-byte tie-break under them can never run.
-      Reproduced anyway (costs nothing), noted so nobody re-derives it.
+      Reproduced anyway (costs nothing); noted so nobody re-derives it.
    3. ⚠⚠ `update_engine_revs` CONSUMES THE CALLER'S CARRY — the coast arm's `ADC #7` at $49A6 is
       reached through six instructions that write no carry, so it adds 7 + whatever C
       apply_driving_model left in `stage_lateral_speed_delta`'s wake.
@@ -7486,13 +7472,12 @@ void update_slip_sound(void)
       track band) at MODE 5 pixels 28..31 and 128..131, symmetric about the 160-pixel centre,
       rewritten every frame by the view rasteriser in the $7B00 page ($7F70 / $7E75).  So the
       grip model asks what colour the road is under the car's left and right; $FF means the
-      probe is over a solid area.  [MEASURED 2026-09-08] 600 Silverstone reference frames with
-      the wheel held over: $FF in at least one on 27 frames (`grip_disturbance` non-zero on
-      exactly those), in BOTH on 24, so `grip_limit_base_alt_tbl` is reached.
-      `begin_spin` needs a further gate, `section_jump_history` bit 7.  The FIXTURE forces the
-      arm, because randomised memory reaches $FF in both bytes once in 65536; the PORT reaches
-      it unaided — `make determinism-drive` hits both cells on 22 of its 300 frames — so no new
-      gate is owed.
+      probe is over a solid area.  MEASURED over 600 Silverstone reference frames, wheel held
+      over: $FF in at least one on 27 frames (`grip_disturbance` non-zero on exactly those), in
+      BOTH on 24, so `grip_limit_base_alt_tbl` is reached; `begin_spin` needs a further gate,
+      `section_jump_history` bit 7.  The FIXTURE forces the arm (randomised memory reaches $FF
+      in both bytes once in 65536); the PORT reaches it unaided — `make determinism-drive` hits
+      both cells on 22 of its 300 frames — so no new gate is owed.
    6. ⚠ Two things here cannot be sabotaged, both properties of the code rather than fixture
       holes (docs/validation-harness.md §FIFTEENTH):
         * the `AND #$FE` in BOTH of `compute_car_angles`' arms is defensive — the value comes
@@ -11794,11 +11779,9 @@ uint8_t place_car_world_coords_core(uint8_t slot, uint8_t sectionCursor)
 }
 
 /* 6502-ABI shim: slot in X, section byte cursor in Y; X comes back as the exit slot.
-   ⚠ THE THREE MARSHAL-OUTS ARE NEW WITH TWIN #172.  The queue tail's projector used to be
-   transliterated and reached bearing_to_section through its SHIM, which published the bearing
-   and the two sorted hypot magnitudes into mem[$78-$7B] / mem[$8A/$8B].  Now the tail calls
-   project_object_slot_core, so this shim is where they have to be published — the oracle still
-   leaves them there.
+   ⚠ THE THREE MARSHAL-OUTS BELONG HERE.  The queue tail calls project_object_slot_core
+   directly, so this shim is the only place the bearing and the two sorted hypot magnitudes
+   reach mem[$78-$7B] / mem[$8A/$8B] — and the oracle leaves them there.
    ⚠⚠ AND THE MARSHAL-INS ARE NOT OPTIONAL, which cost a failing run to learn: the per-circuit
    SMC trap at $298D returns before the queue tail, so on that arm the core never writes the
    relocated values and a bare marshal-out would publish the PREVIOUS call's bearing over cells
@@ -13630,13 +13613,12 @@ void step_delta_halve_core(void)
    object_coord pair at $09FD/$0AFD that place_car_world_coords has just filled; $F4 and $FA
    select the two neighbours it stages.  $2A5D is nothing but `LDX #$FD` falling into $2A5F.
 
-   ⭐ THE SHIM BELOW IS ORACLE-ONLY, and so is its marshalling.  It used to be called the last
-   shipping reader of the relocated bearing_v; it is not a reader at all — the core files the
-   angle with object_bearing_word_set(bearing_v) — and since place_car_world_coords went native
-   its three call sites all reach project_object_slot_core directly, so nothing in the shipping
-   build calls the plain name.  ⭐ MEASURED 2026-09-09: `m68k-amiga-elf-objdump -t out/Revs.elf`
-   lists project_object_slot_core and NEITHER shim, and zero __t6502 symbols in the whole binary —
-   --gc-sections drops every oracle, so this marshalling costs the Amiga nothing.
+   ⭐ THE SHIM BELOW IS ORACLE-ONLY, and so is its marshalling: the core files the angle itself
+   with object_bearing_word_set(bearing_v), and all three call sites reach
+   project_object_slot_core directly, so nothing in the shipping build calls the plain name.
+   ⭐ MEASURED: `objdump -t out/Revs.elf` lists project_object_slot_core and NEITHER shim, and
+   zero __t6502 symbols at all — --gc-sections drops every oracle, so this costs the Amiga
+   nothing.
    It stays because `make validate` needs it: the transliterated oracle reaches $78-$7B and
    $8A/$8B through the bearing_to_section SHIM, so the twin has to publish what the 6502 would
    have left there (docs/wide-value-cleanup.md, the publish-don't-blunt gate).
