@@ -544,11 +544,12 @@ static int view_unit_of_slot(uint16_t dst)
 /* Plant `opcode` over the store of the unit named by the operand cell at `opnd`.  Returns
    0 (and traps) for a low byte that is not a slot boundary — planting mid-instruction would
    leave the real slot reading `STA` and diverge from the 6502 silently.
-   ⚠ `opcode` lands in the carried byte, and N/Z with it: a trap exits right here. */
+   ⚠ `opcode` lands in the carried byte; the 6502's `LDA` flags are dropped because
+   view_paint_lines' fixture is LIVE_S (audited) and its whole tree reads no flag. */
 static int view_plant(ViewState* v, uint16_t site, uint16_t opnd, unsigned page, uint8_t opcode)
 {
     uint16_t dst = (uint16_t)(mem[opnd] | (mem[opnd + 1] << 8));
-    v->byte = load_a(opcode);
+    v->byte = opcode;
     if (!view_is_slot(dst, page)) { platform_smc_unhandled(site, dst); return 0; }
     /* view_is_slot has just proved `dst` is one of the known opcode slots in the $7C-$7E
        code pages, so this is RAM by construction and the hardware-window test bus_write
@@ -907,7 +908,7 @@ static void unplant_stops(ViewState* v)
     if (!view_plant(v, MEM_view_restore_a2_site, (MEM_view_restore_a2_site + 1u), 0x7C, OP_STA_IND_Y)) return;
     if (!view_plant(v, MEM_view_restore_a3_site, (MEM_view_restore_a3_site + 1u), 0x7C, OP_STA_IND_Y)) return;
     if (!view_plant(v, MEM_view_restore_b3_site, (MEM_view_restore_b3_site + 1u), 0x7E, OP_STA_IND_Y)) return;
-    v->byte = load_a(OP_CPX_IMM);
+    v->byte = OP_CPX_IMM;
     mem[MEM_view_chain_end_slot] = (unsigned char)v->byte;
 }
 
@@ -1017,7 +1018,7 @@ static void paint_lines_clipped(ViewState* v)
     PROBE_PHASE(PROBE_PHASE_VIEWP2);        /* one transition a sweep — src/platform/probe.h §33 */
     PROBE_VIEW_PHASE(1);                    /* its lines are counted in paint_cells, which it enters
                                                through view_next_scanline once per line */
-    v->byte = load_a(OP_RTS);
+    v->byte = OP_RTS;
     mem[MEM_view_chain_end_slot] = (unsigned char)v->byte;
 
     for (;;) {
@@ -1343,6 +1344,12 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
             PROBE_PHASE(0);
             platform_tick_vbi();
             platform_poll_events();
+            /* ⚠⚠ STAYS `load_a`: A is an OBSERVABLE OUTPUT across this wait, not a scratch
+               value.  The 6502 spins on `LDA field_countdown / BMI`, so A holds the counter
+               when a field interrupt lands, and the MOS's IRQ entry stows A into mos_irq_a
+               ($FC) — the same seam that makes hold_a_for_irq_seam necessary.  No gate can
+               see it (determinism dumps one frame, long after the hold), so it is KEPT on
+               the faithfulness argument, not a measured one. */
         } while (load_a(field_countdown) & 0x80);
 #if defined(REVS_CRASHPROBE) && defined(REVS_PLATFORM_AMIGA)
             unsigned vbiD = (unsigned)((g_vbiCount - vbi0) & 0xFFFFu);
@@ -1556,11 +1563,16 @@ void race_main_loop_core(RestartDepth depth)
 #define PLAYER_CAR       0x17u     /* slot 23 — the player's own car */
 
 
-/* max(value, floor), via the same CMP.  Used where the floor's own `LDA #imm` flags are
-   provably overwritten before anything reads them (draw_road's two clamps). */
+/* max(value, floor).  Both callers (draw_road's two split clamps) snapshot the flag chain
+   into locals from the adc_step BEFORE this call and read those locals afterwards, so the
+   6502's CMP here leaves nothing live — it is a plain comparison.
+   ⚠ `>=` vs `>` is UNDETECTABLE here, and that is a no-op rather than a fixture gap: the only
+   case the two differ on is value == floor, where both arms return the same number.  The
+   fixture does exercise this helper — moving either FLOOR instead ($31->$32, $09->$0A) fails
+   draw_road with 39 and 7 mismatches. */
 static unsigned clamp_up_to(unsigned value, uint8_t floor)
 {
-    return cmp_ge(value, floor) ? value : floor;
+    return value >= floor ? value : floor;
 }
 
 /* ++mem[cell], leaving N and Z from the result.  Pure RAM by construction here, so unlike
@@ -3040,7 +3052,9 @@ static int angle_off_axis(unsigned addr, uint8_t threshold)
 static uint8_t road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
 {
     GEO_COUNT(g_geoSubdiv);
-    if (load_a(shared_counter_42) == 0)              /* $2403-$2407 */
+    if (shared_counter_42 == 0)                      /* $2403-$2407 — flags dead: this
+                                                        routine's exit A/flags are overwritten
+                                                        by build_track_geometry's own tail */
         return (uint8_t)section;
 
     unsigned prev = walk_prev_section;
@@ -3086,7 +3100,7 @@ static uint8_t road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
 
     marker_count_saved = marker_count;               /* $245C — no corner marker for a midpoint */
     emit_edge_width_offset_core(walk_prev_section, 0x03, 0u);   /* mem-only here; exit V is dead */
-    marker_count       = (uint8_t)load_a(marker_count_saved);
+    marker_count       = marker_count_saved;     /* the LDA's N/Z die on the inc_mem below */
     inc_mem(MEM_edge_cursor);                        /* $2467, and its N/Z are the exit flags */
     return (uint8_t)walk_prev_section;               /* $245A LDX $0014 */
 }
@@ -3327,10 +3341,11 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
        whichever half they were writing, so fold it back into 0..39 and keep it for next
        frame's road_edge_start, which clamps the horizon down when it climbed too far. */
     unsigned horizonPoint = horizon_index;
-    if (cmp_ge(horizonPoint, 0x28)) {
-        /* $251D: guarded by cmp_ge above, so the subtract never borrows — a plain 8-bit
-           fold back into 0..39 (D=0 on the geometry path).  Its flags are dead: overwritten
-           by the cmp_ge at $252B and by horizon_half_width_at below. */
+    if (horizonPoint >= 0x28) {
+        /* $251D: guarded by the compare above, so the subtract never borrows — a plain 8-bit
+           fold back into 0..39 (D=0 on the geometry path).  Its flags are dead, and so are the
+           two compares': the fixture runs `liveMask & ~LIVE_FLAGS`, every exit register is
+           published from `ex`, and the hook arm below re-establishes A/X/Y/N/Z/C by hand. */
         horizonPoint = (unsigned)(uint8_t)(horizonPoint - 0x28);
         horizon_index = (uint8_t)horizonPoint;
     }
@@ -3344,9 +3359,9 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
        as far as the road is allowed to reach, because line $4F is the sky's. */
     unsigned horizonLine = horizon_extent;
     int horizonClamped = 0;
-    if (cmp_ge(horizonLine, 0x4F)) {
+    if (horizonLine >= 0x4F) {
         horizonClamped = 1;
-        horizonLine = load_a(0x4E);
+        horizonLine = 0x4E;
         horizon_extent = 0x4E;
     }
 
@@ -5935,7 +5950,7 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
            surface_colour_at's class escapes in X; its colour byte is A. */
         { SlotExit sc = surface_colour_at_core(line, mem[EDGE_COLUMN], x, v);
           x = sc.x;
-          a = sc.a ? sc.a : fallback; }               /* colour, or load_a(fallback) if 0 */
+          a = sc.a ? sc.a : fallback; }               /* the colour, or the fallback if 0 */
         /* ⚠ storePtr is a zero-page ADDRESS chosen at runtime ($1DE9's operand), not a fixed
            pointer, so this one stays a mem[] lookup — and its store can land on $70..$73, which
            is what the resync is for. */
@@ -8691,12 +8706,12 @@ static void build_road_sign_core(void)
        of (bearing_hi - car_heading_hi) — the caller's N equals bit 7 — and $80 negates to $80. */
     uint8_t off    = (uint8_t)((uint8_t)(bearing_v >> 8) - (uint8_t)(car_heading_v >> 8));
     uint8_t absOff = (off & 0x80u) ? (uint8_t)(-off) : off;
-    if (cmp_ge(absOff, 0x40u))                           /* the sign has left the view */
+    if (absOff >= 0x40u)                                 /* the sign has left the view */
         sign_last_index = saved_slot_index;
 
     /* $4D09-$4D1F — the contact threshold widens for a sign well off to the side, then the
        projection and the slot write.  The CMP #$6E's carry is note_object_contact's entry C. */
-    uint8_t offHeadingC = cmp_ge(absOff, 0x6Eu) ? 1u : 0u;
+    uint8_t offHeadingC = absOff >= 0x6Eu ? 1u : 0u;
     threshold = offHeadingC ? 0x50u : 0x25u;
     shared_counter_42 = SIGN_SLOT;
     note_object_contact_core(threshold, offHeadingC);    /* exit dead here (build_road_sign is mem-only) */
