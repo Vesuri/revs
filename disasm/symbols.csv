@@ -958,7 +958,7 @@ addr,name,type,is_hw,note
 0x77DC,assist_lamp_1,data,0,"[DERIVED] see assist_lamp_0."
 0x77E3,assist_lamp_2,data,0,"[DERIVED] see assist_lamp_0."
 0x77E4,assist_lamp_3,data,0,"[DERIVED] see assist_lamp_0."
-0x7E85,menu_row_attr,data,0,"[DERIVED] MODE 7 page: the front end's menu rows' attribute cell, +$50 per row (the teletext page is 40 bytes wide, so a row step is $28; this table walks every OTHER row). ⚠ The same 1 KB is the dash-code overlay at race time (docs/static-map.md §Open item 10)."
+0x7E85,menu_row_attr,data,0,"[DERIVED] MODE 7 page: the front end's menu rows' attribute cell, +$50 per row (the teletext page is 40 bytes wide, so a row step is $28; this table walks every OTHER row). ⚠⚠ IT ONLY MEANS THE MENU WHILE THE FRONT END IS UP. The same 1 KB is the dash-code overlay at race time (docs/static-map.md §Open item 10), and at race time $7E85 is inside view_cell_chain_b_mid's unit block — it is the nearest preceding row for eight of that chain's stores, which made every RACE attribution report read as if a menu routine were painting the viewport. tools/bbc_refloop_race.mjs now resolves a PC against `func` rows only; keep any new PC-naming tool to the same rule."
 0x7FC5,menu_cursor_cell,data,0,"[DERIVED] MODE 7 page: the front end's ""nothing chosen yet"" marker cell."
 
 ## ---- named TABLE bases found only in a twin ---------------------------------------------------

@@ -1220,12 +1220,19 @@ if (charset) {
 if (fillArg && fillWrites) {
     // Name the PCs from disasm/symbols.csv — the nearest preceding symbol, so a write from
     // the middle of a routine still lands on that routine.
+    // ⚠⚠ `func` ROWS ONLY. A PC is code, so only a code symbol can name it — and the pages the
+    // dash-code overlay shares with the MODE 7 screen carry DATA symbols interleaved with the
+    // very chains that run there. `menu_row_attr` ($7E85) is the correct name for the front
+    // end's menu attribute cell and the nearest preceding row for eight of view_cell_chain_b's
+    // unit stores, so every attribution report of the RACE used to read as if a menu routine
+    // were painting the viewport. Filtering to `func` names them view_cell_chain_b_mid, which
+    // is what they are, and costs nothing elsewhere: a PC always has a preceding func.
     const syms = [];
     try {
         const csv = fs.readFileSync(new URL("../disasm/symbols.csv", import.meta.url), "utf8");
         for (const line of csv.split("\n")) {
-            const m = line.match(/^0x([0-9A-Fa-f]{4}),([^,]+),/);
-            if (m) syms.push([parseInt(m[1], 16), m[2]]);
+            const m = line.match(/^0x([0-9A-Fa-f]{4}),([^,]+),([^,]*),/);
+            if (m && m[3].trim() === "func") syms.push([parseInt(m[1], 16), m[2]]);
         }
         syms.sort((a, b) => a[0] - b[0]);
     } catch { /* names are a convenience; the addresses are the finding */ }
