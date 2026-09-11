@@ -184,6 +184,17 @@ ifdef CRASHPROBE
 EXTRA_DEFINES += -DREVS_CRASHPROBE
 endif
 
+# ⭐⭐ `make VIEWSKIP=1` — the view sweep SKIPS a scan line whose forty sources are all clean,
+# whose display line still holds the background byte, and whose last paint was flat.  39% of
+# line-visits while driving on the host; this is the switch that turns that into a framerate.
+# ⚠ It is gated ONLY by the host differentials (determinism / -drive / -crash / -steer / -race
+# and viewdiff) — `make validate` cannot see it.  Read the effect off g_viewSkipLines /
+# g_viewSkipPaints; docs/direct-bitplane-plan.md §7i.
+ifdef VIEWSKIP
+EXTRA_DEFINES += -DREVS_VIEWSKIP
+PROBE_SYMS_VIEWSKIP = g_viewSkipLines g_viewSkipPaints
+endif
+
 # `make NOUNITS=1` — ⚠⚠ THE PICTURE IS WRONG BY CONSTRUCTION.  The $7BE2 unit loop keeps its
 # iterations and loses its memory work, so `phase 24 with this on` is the per-line drivers plus
 # the bare loop.  A decomposition the VIEWSPLIT brackets cannot give honestly: bracketing 118
@@ -624,6 +635,7 @@ PROBE_SYMS += $(PROBE_SYMS_ISRSPLIT)
 endif
 PROBE_SYMS += $(PROBE_SYMS_CHECK) $(PROBE_SYMS_PLOT) $(PROBE_SYMS_BANDCHECK)
 PROBE_SYMS += $(PROBE_SYMS_BCD)
+PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
 
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \
             $(addprefix -Wl$(COMMA)--undefined=,$(PROBE_SYMS))

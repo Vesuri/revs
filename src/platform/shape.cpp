@@ -1,10 +1,13 @@
 /* shape.cpp — the input-distribution counters described in shape.h. */
-#include <stdio.h>
-#include <stdlib.h>
 #include "shape.h"
-#include "bbc_screen.h"
 
 #ifdef REVS_SHAPE
+
+/* ⚠ INSIDE the guard: the m68k-amiga cross toolchain has no <stdio.h>, and this file is in the
+   Amiga source list unconditionally, so an include out here breaks `amiga/make` outright. */
+#include <stdio.h>
+#include <stdlib.h>
+#include "bbc_screen.h"
 
 #include "../cpu/mem_decl.h"
 #include "../gen/mem.h"
