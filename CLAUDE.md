@@ -351,6 +351,10 @@ in the same session from a clean build rather than diffing against it (`docs/per
 ⚠ The whole view pipeline is now real C — `build_track_geometry`'s tree and `draw_road`'s tree both
 have **no transliteration left in them** — and neither pass's twins moved the framerate. Removing
 the interpreter from this subsystem is DONE; the next win must remove accesses or points.
+⚠⚠ **And so is SPECIALISING the consumer's run entry** — a single-run, flat-span chain-entry path
+covering every one of phases 2/3's entries (proven: the fall-back counter read 0 on all five
+trajectories) measured **-0.15%**, which retracts the "~10% prize" the per-run fit predicted. The
+sweep's per-run cost is NOT the run set-up. `docs/perf-method.md` §the run-entry rewrite is a NULL.
 ⭐⭐ **The lever is the VIEW PIPELINE: `build_track_geometry` → `draw_road` → `view_paint_lines` is 54% of the frame
 and it is ONE subsystem** — the first two *produce* source bytes into the forty `$80`-spaced blocks
 at `$3000..$4380`, the third is the single *consumer*. Current shares, every past change and its

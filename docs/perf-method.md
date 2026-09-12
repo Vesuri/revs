@@ -535,8 +535,9 @@ figures in all three phases, so the sweep's structure is the same on both and th
 
 ⭐ **What the corrected reading leaves for step 2, and what it hands to a SEPARATE item.** The
 ~25 ms is per-run entry cost in phases 2 and 3, and `VIEWP3=3` removing the chain entries is
-precisely what measured it (~370 of phase 3's ~540 µs/run), so the ~10% prize stands — the
-descriptor rewrite must replace the **run entry**, not the cell loop. ⚠⚠ And it cannot be extended
+precisely what measured it (~370 of phase 3's ~540 µs/run), so the ~10% prize looked to stand — the
+descriptor rewrite must replace the **run entry**, not the cell loop. ⚠⚠ **That conclusion was
+tested and is RETRACTED — see the next section.** ⚠⚠ And it cannot be extended
 to phase 1: phase 1's row does **not move** under either `VIEWP3=2` or `=3` (22 ms, 1442 units, 36
 runs, 619 µs/line in all three builds), because `view_enter_chain` is phases 2/3's entry and not
 its. So phase 1's own ~530 µs/line of per-line driver — 40 units at ~2 µs is only 80 µs of the 611
@@ -544,6 +545,48 @@ its. So phase 1's own ~530 µs/line of per-line driver — 40 units at ~2 µs is
 background-byte lookup, the segment arithmetic, `view_stop_from` and two `view_span_is_ram` tests,
 ~3800 cycles for work whose instruction count is nothing like that. It is the same open ~6× that
 §The four view probes' calibration left standing, and it is now localised to a named 530 µs.
+
+#### ⭐⭐⭐ …AND THE RUN-ENTRY REWRITE WAS BUILT AND IS A **NULL**: −0.15%. The ~10% prize is RETRACTED
+
+The paragraph above says the ~25 ms is the run ENTRY and the prize stands. It was built, and it is
+not. `paint_run_one` — a specialised single-run, single-line, flat-span chain entry in
+`view_enter_chain`, replacing `paint_cells` for every one of phases 2 and 3's entries — measured
+**4.557 FPS against a 4.564 control**: −0.15%, an order of magnitude below the 3% floor.
+
+What it deleted from 66 of the frame's 118 runs: the eleven-register `movem` frame, the
+`oneSeg`/`segBase`/`segEnd`/`segLimit`/`lastSeg`/`curUnit` derivation, the outer segment `for(;;)`
+and its crossing tail, the `stopHere` test, the per-unit `busSafe` branch (hoisted to a
+precondition), the `advance_first` test and the `$7EEE` terminator read on the stop exit. It kept
+the unit loop and the consume, byte for byte.
+
+**Three controls, because a null is only a result if the change provably happened:**
+
+- **It ran.** The fall-back counter (`g_shapeViewSlow`, `make SHAPE=1`) read **0 chain entries** on
+  all five trajectories — parked 300, drive 300, steer 300, crash 1500 and the 13 000-frame race,
+  1.07 M entries — i.e. no precondition ever failed. Positive control: forcing the fast path off
+  made it read 16 236 entries in 250 frames = **65 runs/frame**, the 66 of 118 the table predicts.
+- **It was emitted.** `paint_run_one` inlines into `view_enter_chain`, which goes **6 → 324
+  instructions** in the objdump while `paint_cells` stays at 642 and keeps phase 1 and the
+  fall-back. The specialised path is what the target executes.
+- **It was faithful.** `validate FN=view_paint_lines` 700 cases / 0 mismatch, all five determinism
+  trajectories byte-identical, `viewdiff` matching the real BBC on every circuit, `mode7`,
+  `tracks`, `track-run`, `transtrap` green — plus a per-entry shadow differential (both paths run
+  on the same 64 KB, then diffed) finding zero divergence, itself verified by five sabotages: four
+  caught, and the fifth (`& 0xFF` → `& 0xFE` on `stopUnit << 3`) is a provable no-change whose
+  sibling `& 0xF7` **was** caught.
+
+⭐⭐ **So the ~528 µs/run intercept is NOT `paint_cells`' run set-up and teardown.** That was the
+only reading the fit licensed and it is now excluded by experiment. What survives: the intercept is
+per-**LINE** driver work in the callers (`paint_lines_short` / `paint_lines_clipped` —
+`view_move_stop` → `view_plant` → the stop-list ops, `step_scanline`, the operand patches), or
+`VIEWP3=3`'s 25 ms differential was measuring something broader than the entry it removed. Both
+point at the same subject as phase 1's immovable **19 ms/frame** of per-line driver, which is now
+the only place the sweep's per-run cost can be hiding — and it is a phase-1 item, so no chain
+rewrite reaches it.
+
+⚠ **The code was not kept.** 324 instructions duplicating the unit loop, for 0%. The finding is
+the deliverable; `src/platform/shape.h`'s arm and run counters stay because they are what priced
+it, and re-deriving the path from this section is an afternoon if a later change ever needs it.
 
 ⚠ **[INFERRED] — and the objdump makes that 530 µs look HONEST rather than mysterious, which would
 partly settle the ~6×.** `paint_cells` is 2046 bytes / **637 instructions** in the shipping build
