@@ -524,6 +524,45 @@ is the one place it is computed, the same argument `hook_camera_scale_by_gradien
 ⭐ This closes the read-through: batches 1-9 cover all 16 979 lines of `src/gen/revs_native.c`.
 What remains on this file is the user-parked COMMENT CONDENSATION, not a findings front.
 
+# ⭐⭐ OPEN FRONT — THE `cpu` STRUCT MUST GO (user-raised, 2026-09-12)
+
+> "I'm still seeing a lot of cpu references in the code.  It appears that many of them are kept
+> alive by the validation harness.  Lately we determined that validation should only use values
+> actually used by the game instead of random data.  We want the cpu struct gone."
+
+⚠⚠ **This SUPERSEDES §The thing this sweep must not do for the live-mask half.** A `live=` mask is
+a fixture domain claim exactly like `fill_random` is, and the same rule now governs both: the mask
+must describe what the GAME's callers read, not what a register happens to hold. Narrowing one is
+sweep work from here on. What does NOT change is the standard of proof — narrowing still needs the
+caller audit (every arm, hook re-entries included) written at the code, because `validate` passing
+is not evidence when the mask is what made it pass.
+
+## The classification (356 `cpu` lines, and they are not one problem)
+
+⚠ Do not scope this by `grep -c 'cpu\.'` per function: a one-line shim
+(`void car_index_inc(void) { cpu.X = car_index_inc_core(cpu.X); }`) gets charged to whatever
+`_core` was defined above it. Attribute by what the line IS.
+
+| Class | Lines | Shipping? | What has to happen |
+|---|---:|---|---|
+| **6502-ABI shim marshalling** | ~142 | **no** — 26 of the 44 have NO native call site; only `revs_gen.c` and the oracle-only hook TU call them | move them to their own translation unit, then a lint keeps `revs_native.c` from regaining `cpu` |
+| **Hook/SMC entry ABI** | ~104 in 23 twins + 15 dispatch sites | **yes**, on the four expansion circuits | each twin gets a TYPED core and the entry ABI is passed as arguments; `revs_track_hook` carries an explicit register struct for the oracle fallback only. ⚠ `make viewdiff` is the only gate |
+| **`_core` bodies** | ~40 real (the rest was the regex artefact) | **yes** | ambient register → argument, flag chain → return value; narrow the mask first where one is what keeps it alive |
+| **ISR seam** | 7 | **yes** | a small explicit register struct; `g_irqClobberCount` stays the assertion |
+| **`cpu.D = 0`** | several | **yes** | ⭐ STAYS. Architectural state the routine leaves its caller, and `validate_native.c` asserts it |
+
+⚠ The hook-seam class is NOT harness generality and must not be swept as if it were: the six
+`cpu` writes at `build_track_geometry_core`'s `$2538` site are a hook ENTRY ABI, and handing `Y`
+over wrong there cost one wrong horizon scan line on Oulton AND Snetterton — a defect only a real
+BBC could see. Passing the register file explicitly is the fix; assuming it is dead is not.
+
+## Order of attack
+
+1. the `_core` bodies that are not hook seams — ambient `cpu` into arguments
+2. the hook/SMC seam — typed cores per twin, entry ABI as arguments
+3. the oracle-only shims — move out, then lint `revs_native.c`
+4. the ISR seam
+
 # Open front — THE FIXTURE LIVE MASKS (its own campaign, not part of the read-through)
 
 ℹ ✅ **CLOSED.** `view_paint_lines`, the three NEAR-SLOT routines (which retired `cpx_ge` and
