@@ -982,3 +982,52 @@ A one-shot prologue effect and a mid-run transient are both invisible to an end-
 the surviving control says nothing about the change — it says the gate is the wrong instrument.
 When no gate can see a byte the 6502 provably wrote, the faithful move is to KEEP reproducing it
 and to write the argument at the code, because a run will never report its loss.
+
+## ⭐⭐⭐ THE RESULTS RULE (user-stated, and it outranks the full-`mem[]` diff)
+
+> "Our intent is to have faithful behavior from the user's point of view, not exact replication of
+> the 6502 architecture. We want validation of results, not implementation details. This should
+> govern all the work; otherwise there is no chance to improve the performance of the port to the
+> intended level."
+
+This is the same correction as §THE DOMAIN RULE, applied to the **output** side instead of the
+input side.  There, the lesson was that a fixture models the GAME and not the input space; here it
+is that the differential must pin the **results** the rest of the engine and the player can
+observe, and **not** the transliteration's own working notes.
+
+**What that makes an implementation detail — and therefore ignorable:**
+
+- A **scratch `mem[]` cell** the oracle stores into and nothing outside the twin ever reads.  The
+  6502 had three registers, so it spilled constantly; the 68000 keeps the value in `d0` and the
+  store is pure cost.  §THIRTEENTH's `$01FF` residue is the first instance of exactly this shape.
+- A **`cpu` register or flag dead at the exit** (the whole `cpu`-struct campaign, now held by
+  `make cpu-lint`).
+- The **order or count** of writes to a cell whose final value matches.
+
+**What is a RESULT and must still be byte-exact:** every cell any other code reads — and that
+question is answered by a written reader audit, not by intuition.  ⚠⚠ The audit is the hard half,
+and two traps have already been paid for:
+
+1. **The readers include the transliteration.** `region_23d8` is re-entered at `$2490` by every
+   expansion circuit's track hook, so a cell "only this twin uses" on Silverstone is live on four
+   other circuits.  A native-surface scan is not a reader audit (`docs/faithfulness-seam.md`).
+2. **The readers include the next pass.** The forty `$80`-spaced blocks at `$3000..$4380` are
+   `build_track_geometry` → `draw_road` → `view_paint_lines`'s interchange format; a producer's
+   "scratch" is the consumer's input.
+
+**How to apply it** — the same three conditions §THIRTEENTH established, which are the audit
+written down:
+
+1. The cell is provably unread outside the twin (transitively, and on every circuit).
+2. The surrounding invariant stays declared live, so a real leak still fails.
+3. The relaxation is **scoped** (`set_ignore` before, `set_ignore(0, 0)` after), so it cannot
+   loosen another twin's contract.
+
+⚠ And the ordering rule from §THIRTEENTH still holds, restated: **do not reach for the ignore list
+to avoid understanding a cell.** The ignore list records a *finished* argument that the cell is
+not a result; used before the argument exists it is just a green light on an unproven twin.
+
+⚠ `make determinism*` diffs all 64 KB and has no ignore mechanism, so a dropped scratch write shows
+up there as a divergence.  A cell this rule exempts must therefore be re-recorded
+(`make clean && make determinism-record`) **with the reader audit quoted in the commit message** —
+otherwise the re-record silently blesses whatever else moved.

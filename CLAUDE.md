@@ -432,6 +432,13 @@ Rules that must survive without opening `docs/perf-method.md`:
   WROTE the byte. It cost a software reimplementation of the NMOS decimal `ADC` in place of the
   68000's one-instruction `ABCD`. How to narrow one honestly: `docs/validation-harness.md`
   §THE DOMAIN RULE.
+  ⭐⭐ **And the same correction applies to the OUTPUT side: validate RESULTS, not implementation
+  details** (user-stated). Faithful means faithful *from the player's point of view*, not an exact
+  replay of a three-register machine's spills — a scratch `mem[]` cell the oracle stores and
+  nothing outside the twin reads is not a result, and reproducing it is pure byte traffic the port
+  cannot afford. Exempt one only with a **written reader audit** (the readers include the
+  transliteration a track hook re-enters, and the next pass in the pipeline), scoped through
+  `set_ignore`. `docs/validation-harness.md` §THE RESULTS RULE.
 - ⭐ **`bus_read`/`bus_write` are for the HARDWARE window ($FC00-$FEFF), and a pure-RAM access
   should not pay their range test.** The transpiler already routes every *constant* non-hardware
   address straight to `mem[]`; what leaks is the **indirect modes** (`(zp),Y`, `(zp,X)`) — the
