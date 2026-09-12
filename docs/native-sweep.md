@@ -558,10 +558,37 @@ BBC could see. Passing the register file explicitly is the fix; assuming it is d
 
 ## Order of attack
 
-1. the `_core` bodies that are not hook seams — ambient `cpu` into arguments
-2. the hook/SMC seam — typed cores per twin, entry ABI as arguments
+1. ✅ **the `_core` bodies that are not hook seams — DONE.** Six conversions, each with its
+   caller audit at the code: the steering lock stop's leaked carry, `draw_road`'s far-half add
+   (it read back flags it had just written), the race's exit carry (a return value now, and it
+   is the constant 1), `shift_key_commands` (X threaded as a local, A and Y were dead stores)
+   and `kbd_test_key`'s INKEY residue (17 call sites' worth of stores, three fixture masks).
+   What is LEFT in a `_core` body is all one of the argued classes: a hook entry ABI, `cpu.D`,
+   `cpu.S`, or the sanctioned flag-escape helpers.
+2. **the hook/SMC seam** — typed cores per twin, entry ABI as arguments. THE BIG ONE, and the
+   only remaining shipping class. `make viewdiff` is the only gate.
 3. the oracle-only shims — move out, then lint `revs_native.c`
 4. the ISR seam
+
+## ⭐ What track 1 taught, and it decides how tracks 2-4 are argued
+
+**The tell for a harness-only register is that ONLY registers diverge.** Remove the write and
+run the fixture unnarrowed: if the failures are X/Y (or C) alone across thousands of cases with
+**not one `mem[]` byte** differing, nothing computed anything from it — that is ABI residue.
+When a `mem[]` byte DOES move, the value is live in-game and the answer is to thread it as a
+local, not to narrow the mask: `shift_key_commands` failed 570 cases at `$0B46` with `live=none`
+already declared, which is how its X was caught as a real dependency.
+
+⚠ **Narrow the mask and remove the write in ONE commit.** Either half alone fails, and that is
+what makes it a domain correction instead of a loosening.
+
+⚠ **A `live=none` PASS is not proof a register is dead** — argue it from the caller. Two of
+`shift_key_commands`' three writes were justified in-code by "the harness compares registers at
+every OS-call boundary", which was simply not true: every callee took its arguments explicitly.
+
+⚠ **Some sabotages cannot be run.** Inverting `kbd_test_key`'s `CPX #$FF` spins the pause loop
+forever — the hang hazard that fixture's own header documents. Say so and put the unnarrowed
+divergence counts in its place; do not quietly skip the step.
 
 # Open front — THE FIXTURE LIVE MASKS (its own campaign, not part of the read-through)
 
