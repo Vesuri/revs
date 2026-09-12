@@ -10720,19 +10720,21 @@ static void clamp_and_store_steer_angle_core(uint8_t a)
    Not a 6502 routine of its own; kept as a function so the two entries above can share it. */
 /* $163B-$1677 — THROTTLE and BRAKE.  Returns 1 with *mode / *amount set when the driver is
    asking for something, 0 when nobody is driving (the caller then supplies the self-drive
-   demand).  The pedal carry is the one flag this leaves — mirrored so it leaks faithfully to the
-   gear tail's no-key return on the joystick path (nothing there overwrites it, which is why
-   clamp's own CMP #$91 carry can survive to the exit on the session-over path).  The clamp
-   fixture drops V and C, but determinism reads the live path, so the escaping carry is kept at
-   the real 6502 value by argument. */
+   demand).
+   ⭐ On the 6502 the dead-zone and in-range tests here leave their carry on the joystick path,
+   and nothing on the way out writes it again — so it leaks all the way to the chain's exit
+   alongside the gear tail's own A/N/Z/V.  None of it is read: the cluster's one native entry is
+   read_driving_controls_frame and the next frame call (apply_driving_model, $46A1) opens
+   `LDA $000B` / `LDX $000A` before any branch, with its only `BVC` behind its own `BIT`.  The
+   four sibling fixtures that used to compare the residue now declare it dead — the audit is in
+   tools/validate_native.c's test_driving_controls — so this routine publishes no register. */
 static int read_pedal_demand(uint8_t *mode, uint8_t *amount)
 {
     if (session_end_countdown != 0) return 0;          /* $163B — the session is over */
 
     if (mem[OPTION_FLAGS] & 0x80u) {                   /* $163F BIT/BMI — joystick */
         AdcRead a = adc_read_core(0x02u);              /* $1644 — channel 2 */
-        int outside = (a.mag >= 0x0Au);                /* $504F dead-zone carry (leaks to no_key) */
-        cpu.C = outside;
+        int outside = (a.mag >= 0x0Au);                /* $504F dead-zone test */
         if (!outside) return 0;                        /* $1649 — inside the dead zone */
 
         uint8_t mag = a.mag;                            /* $164B — scale the reading up x1.5 */
@@ -10745,13 +10747,11 @@ static int read_pedal_demand(uint8_t *mode, uint8_t *amount)
            below) — and the doubled sum CAN exceed $FF (mag=$7F → $13D). */
         unsigned sum = (unsigned)(uint8_t)(mag << 1) + half + (mag >> 7);
         if (sum <= 0xFFu) {                             /* $1652 — the sum didn't overflow */
-            uint8_t hi = ((uint8_t)sum >= 0xFAu);       /* $1654 CMP #$FA (carry leaks to no_key) */
-            cpu.C = hi;
+            uint8_t hi = ((uint8_t)sum >= 0xFAu);       /* $1654 CMP #$FA — over the top of range */
             if (!hi) { *mode = a.dir; *amount = (uint8_t)sum; return 1; }   /* in range */
         }
-        /* $1658 CPX #0 — the sign is unsigned so this carry is ALWAYS set, and it is the
-           routine's LIVE exit carry (it leaks through the gear tail to no_key). */
-        cpu.C = 1;
+        /* $1658 CPX #0 — the sign is unsigned, so this compares a magnitude against 0 and the
+           branch below is the whole of it. */
         if (a.dir == 0x00u) { *mode = 0x00u; *amount = 0xFAu; return 1; }   /* $1674 full brake */
         *mode = 0x01u; *amount = 0xFFu; return 1;                          /* $1665 full throttle */
     }
@@ -10775,54 +10775,45 @@ static void read_pedals_and_gears(void)
     pedal_amount = amount;
 
     /* $1685-$16DB — the GEARS.  One shift per key press, latched in gear_key_latch.
-       ⚠ BIT's V (bit 6 of OPTION_FLAGS) is a LIVE EXIT flag: the no_key and latch-held returns
-       set no V of their own, so it leaks out of the routine. */
+       ⭐ $1685's `BIT $05F5` is read for its SIGN only (bit 7, the joystick flag).  The V it also
+       sets — bit 6 of OPTION_FLAGS — is 6502 residue that leaks out on the no-key and latch-held
+       returns and is dead at every caller (see the header above), so it is not reproduced. */
     enum GearRequest { GEAR_NONE, GEAR_UP, GEAR_DOWN } request = GEAR_NONE;
-
-    cpu.V = (uint8_t)((mem[OPTION_FLAGS] >> 6) & 1u);  /* $1685 BIT — V escapes */
     if (mem[OPTION_FLAGS] & 0x80u) {                   /* $1685 BMI — joystick */
-        /* $168A — ADVAL 0, the stick buttons; the fire-button bits come back in X, and the MOS's
-           exit X/Y escape through the no-key return (see there).  Replay them now the cpu-free
-           wrapper no longer leaves them behind. */
+        /* $168A — ADVAL 0, the stick buttons; the fire-button bits come back in X.  The MOS's
+           exit X/Y are read here and nowhere else — they used to leak out through the no-key
+           return as well, which is residue nothing reads. */
         MosRegs b = mos_call(0xFFF4u, 0x80u, 0x00u, 0u);
-        cpu.X = b.x; cpu.Y = b.y;
-        if (b.x & 0x01u) {                             /* $1691 — the fire button (carry leaks in) */
-            cpu.Y = (uint8_t)(pedal_mode - 1);         /* $1696 LDY/DEY — Y escapes to the held return */
+        if (b.x & 0x01u) {                             /* $1691 — the fire button */
             if (pedal_mode != 0x01u) {
                 request = GEAR_UP;                     /* not braking: shift up */
             } else {
-                /* ⚠ CMP's C (pedal_amount >= $C8) is a LIVE exit flag — it leaks through the
-                   shift path to the latch-held return, which sets no carry of its own. */
+                /* $169D's CMP is a plain threshold test; its carry is residue past here. */
                 uint8_t hard = (pedal_amount >= 0xC8u);   /* $169D CMP #$C8 */
-                cpu.C   = hard;
                 request = hard ? GEAR_DOWN : GEAR_UP;  /* $169F — hard brake: shift down */
             }
         }
     } else {
-        int up = kbd_test_key_core(0x9Fu); cpu.C = up; /* $16A3 — gear up (carry leaks) */
+        int up = kbd_test_key_core(0x9Fu);             /* $16A3 — gear up */
         if (up) {
             request = GEAR_UP;
         } else {
-            int dn = kbd_test_key_core(0xEFu); cpu.C = dn;  /* $16AA — gear down (carry leaks) */
+            int dn = kbd_test_key_core(0xEFu);         /* $16AA — gear down */
             if (dn) request = GEAR_DOWN;
         }
     }
 
     if (request == GEAR_NONE) {
         gear_key_latch = 0x00u;                        /* $16B1 — release the latch */
-        cpu.A = 0x00u; cpu.N = 0; cpu.Z = 1;           /* exit A/N/Z (compared through the clamp tail);
-                                                          X and Y here came from a shared MOS call. */
         return;
     }
 
     delta = (request == GEAR_UP) ? 0xFFu               /* $16B7 — one gear up (adds -1) */
                                  : 0x01u;              /* $16BB — one gear down (adds +1) */
     gear_change_flag = (uint8_t)(gear_change_flag - 1);  /* $16BD */
-    /* $16C1 — latch still held from last frame?  X = the latch and N/Z from it escape on the held
-       return, as does A = the delta.  On the continue path draw_gear_indicator overwrites them. */
-    cpu.X = gear_key_latch;
-    cpu.N = (uint8_t)(gear_key_latch >> 7); cpu.Z = (gear_key_latch == 0);
-    cpu.A = delta;
+    /* $16C1 — latch still held from last frame?  The 6502 leaves the latch in X and the delta in
+       A with its N/Z on the held return; on the continue path draw_gear_indicator overwrites them
+       anyway, and nothing reads either, so the twin keeps them as locals. */
     if (gear_key_latch != 0) return;                   /* still held from last frame */
     gear_key_latch = delta;
     /* $16C5 — apply the gear delta ($FF down-one / $01 up-one) to gear_index.  The clamps below

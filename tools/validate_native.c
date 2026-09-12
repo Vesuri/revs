@@ -11038,6 +11038,35 @@ static int test_driving_controls(void)
        removal; either half alone fails (X and Y only, at 1053/981/852 cases — no mem[] byte and
        no A or flag ever differs, which is what identifies it as ABI residue rather than a
        result). */
+    /* ⭐⭐ A, N AND Z ARE DROPPED for the four routines whose exit A is the GEAR TAIL's residue
+       (clamp_and_store_steer_angle 9, steer_apply_with_assist 12, steer_assist_dispatch 13,
+       steer_demand_from_slip 15).  read_pedals_and_gears has four returns — no-key, latch-held,
+       and the two the pedal arm takes — and on the 6502 each leaves whatever A the last thing to
+       write it left: $00 on the no-key release, the latch byte's delta on the held return.
+       Nothing between there and the chain's exit writes A again, so it leaks out as these four
+       routines' exit A with N/Z to match.  ⚠ NO CALLER READS IT, by the same audit as the carry
+       and the INKEY pair below: the cluster's one native entry is read_driving_controls_frame
+       (result-only already), and the very next call the frame driver makes, apply_driving_model,
+       opens `LDA $000B` / `LDX $000A` at $46A1 — A and its flags are overwritten before the
+       routine's first branch.  All four `_core`s are called only from inside this cluster, where
+       the value passes as an argument, and the four `void` shims are oracle entries no shipping
+       code reaches (make transtrap, 9/9).
+       Comparing the residue was the sole reason read_pedals_and_gears carried TEN `cpu.` writes —
+       A/N/Z/V/C/X/Y across four exits, to satisfy four sibling masks.  Narrowed together with
+       those writes' removal; either half alone fails (A/N/Z only, at 1479/2392/1748/2283 cases —
+       no mem[] byte and no X, Y, C or V ever differs, which identifies it as ABI residue rather
+       than a result).
+       ⚠ steer_demand_store (14) reaches the gear tail too and is NOT dropped — it passes with A
+       compared, because its own tail writes the register again.  Drop only what is leaked.
+
+       ⭐ V goes with it for steer_apply_with_assist (12) ALONE.  The gear tail's $1685 `BIT
+       $05F5` puts OPTION_FLAGS bit 6 in V, and the no-key and latch-held returns set no V of
+       their own, so it leaks out on that one arm (376 cases; 13 and 15 pass with V compared,
+       their own tails writing it again).  Dead at the caller by the same chain: apply_driving_model
+       opens LDA/LDX, which touch no V, and the one `BVC` the routine reaches — $0D16, inside the
+       $0D01 it calls at $46A5 — is preceded by $0D14's own `BIT $007B`, which sets V from bit 6
+       of its own argument.  So no V the cluster leaves can reach a branch. */
+
     for (i = 0; i < 17; i++) {
         int subFail = 0, decimal = 0, joystick = 0, keyheld = 0, assist = 0;
         int textRow = 0, sessionOver = 0, patched = 0;
@@ -11053,11 +11082,17 @@ static int test_driving_controls(void)
             drop = LIVE_V;                  /* adc_read's recentre-add V (C is the real output) */
         else if (i == 12 || i == 13 || i == 15)
             drop = LIVE_C;                  /* the lock stop's leaked carry — see below */
+        if (i == 12)
+            drop |= LIVE_V;                 /* the gear tail's OPTION_FLAGS bit-6 V — see below */
         /* ...and the INKEY residue on top, for the three whose exit X/Y is it (see below).
            ⚠ Separate statement, not another arm: 9 and 12/13 are reached by different arms of
            the chain above and both drops apply. */
         if (i == 9 || i == 12 || i == 13)
             drop |= LIVE_X | LIVE_Y;
+        /* ⭐⭐ ...and A/N/Z on top, for the four whose exit A is read_pedals_and_gears' OWN
+           residue (see below).  Same shape, third separate statement. */
+        if (i == 9 || i == 12 || i == 13 || i == 15)
+            drop |= LIVE_A | LIVE_N | LIVE_Z;
         unsigned mask = resultOnly ? LIVE_NONE : (liveMask & ~drop);
         if (!want(list[i].name)) continue;
         /* apply_steering_assist (i == 11), steer_apply_with_assist (i == 12) and
