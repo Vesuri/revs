@@ -14,7 +14,6 @@ import re, sys
 ALLOWED = {
   # -- class 1: the HOOK / SMC SEAM.  The 6502 hands registers to a patched arm we do not own, so
   #    the register file is genuinely live there (docs/faithfulness-seam.md).
-  'hook_steer_response_doning': 'hook seam: mem[STACK_PAGE + cpu.S] is the residue the hook reads',
 
   # -- class 2: the ISR SEAM, and it is the one place where the ambient register file is the
   #    SUBJECT of the code: the "caller" is whatever foreground the interrupt preempted, so
@@ -24,10 +23,18 @@ ALLOWED = {
 
   # -- class 3: the STACK POINTER.  `cpu.S` here is an ADDRESS, not a value in a register --
   #    the routine is talking about a byte at $0100+S.  C has no equivalent to drop it into.
-  'mul16_by_1_5_core': 'cpu.S is an address', 'engine_init_core': 'cpu.S is an address',
-  'span_abandon_chain': 'cpu.S is an address',
-  'place_player_in_section_native': 'a real byte at $0100+S the differential compares',
-  'update_lap_timers_core': 'ditto -- a PHP/PLP pair still leaves the pushed P behind',
+  #    ⚠⚠ "THE DIFFERENTIAL COMPARES THE PUSHED BYTE" IS NO LONGER A REASON TO BE IN THIS CLASS.
+  #    Two rows used to sit here on exactly that ground (place_player_in_section's two PHAs
+  #    parking V1/V2, update_lap_timers' PHP whose SIGN is the one bit read back) and both are
+  #    gone under THE RESULTS RULE: residue below SP that the routine's own PULL pops is an
+  #    implementation detail, `tools/det_compare.py` already exempts $01B8..$01FF, and a scoped
+  #    `set_ignore` covers the fixture.  What earns a row here is `cpu.S` used as a VALUE the
+  #    routine computes with or hands on -- not a push the oracle happens to make.
+  #    ⭐ Down to two: `mul16_by_1_5_core`'s $476C PHA byte and `hook_steer_response_doning`'s
+  #    $5791 PHA byte were both residue writes under the same rule, and both went.  What is left
+  #    is `cpu.S` read as a VALUE: engine_init_core hands it to `top_level_stack` (abort's unwind
+  #    target) and span_abandon_chain passes `cpu.S + 2u` as an argument.
+  'engine_init_core': 'cpu.S is an address', 'span_abandon_chain': 'cpu.S is an address',
 
   # -- class 4: a decimal-mode clear inside a core.  `cpu.D = 0` is the 6502's own CLD and the
   #    oracle pushes/compares P; nothing in any core READS D (docs/static-map.md §Decimal mode).

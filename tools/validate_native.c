@@ -3216,6 +3216,11 @@ void update_lap_timers__t6502(void);
    (docs/static-map.md §Decimal mode).  Exit is dead at the only caller, so LIVE_NONE — but the
    $1017 PHP's stack residue and the hardware-write log are both in the diff.
    --------------------------------------------------------------------------- */
+/* The oracle's $1017 status byte, at $01FF because the fixture enters with S = $FF.  ONE address
+   is the measured minimum: widening it to $01FE..$01FC changes nothing, i.e. print_bcd_digits'
+   own pushes do not move when this one goes.  See the set_ignore at the diff below for the audit. */
+static const uint16_t g_ignore_lap_residue[] = { 0x01FFu };
+
 static int test_update_lap_timers(void)
 {
     static uint8_t pre[65536];
@@ -3300,8 +3305,17 @@ static int test_update_lap_timers(void)
         pre[0x5A19u] = (uint8_t)(1u + (xs() % 0x30u));   /* time_tick_period, non-zero */
         pre[0x0046u] = (uint8_t)(xs() % 0x31u);          /* time_tick_countdown */
 
+        /* ⭐⭐ THE RESULTS RULE: the oracle's $1017 PHP is stack residue, not a result.  The twin
+           reads the byte's SIGN as a local and pushes nothing, so page 1's top slots hold the
+           oracle's status byte and whatever print_bcd_digits then pushed one slot below it.
+           Reader audit: the pair is PHP…PLP inside one routine, the bytes are below SP at every
+           exit, and `tools/det_compare.py` exempts $01B8..$01FF for exactly this reason.  Scoped,
+           so no other twin's contract is loosened. */
+        set_ignore(g_ignore_lap_residue, (int)(sizeof g_ignore_lap_residue
+                                               / sizeof g_ignore_lap_residue[0]));
         fail += diff_run("update_lap_timers", pre, c, update_lap_timers,
                          update_lap_timers__t6502, LIVE_NONE, t, &printed);
+        set_ignore(0, 0);
     }
 
     if (!sawRace || !sawPractice || !sawCredit || !sawFlag
@@ -3317,7 +3331,7 @@ static int test_update_lap_timers(void)
         fail++;
     }
     printf("%-32s %7d cases, %d mismatch (must be 0)  result-only "
-           "(the $1017 PHP residue and the hw-write log are in the diff)\n",
+           "(hw-write log in the diff; the $1017 PHP residue is IGNORED — see the audit)\n",
            "update_lap_timers", cases, fail);
     return fail;
 }
@@ -8556,7 +8570,14 @@ static int test_model_arithmetic(void)
         int pinD0 = resultOnly || (i <= 3);
         unsigned mask = resultOnly ? LIVE_NONE : liveMask;
         if (!want(list[i].name)) continue;
-        if (i == 4)      set_ignore(addIgnore, 2);
+        /* ⭐⭐ i == 2 is mul16_by_1_5, whose $476C PHA the twin no longer reproduces (THE RESULTS
+           RULE).  Reader audit: the matching $4777 PLA pops it inside the same routine, the byte
+           is below SP at the exit, and `tools/det_compare.py` exempts $01B8..$01FF.  MEASURED to
+           be the only cell affected — without the ignore 1997 of 2000 cases differ, at $01FF and
+           nowhere else. */
+        static const uint16_t phaResidue[] = { 0x01FFu };
+        if (i == 2)      set_ignore(phaResidue, 1);
+        else if (i == 4) set_ignore(addIgnore, 2);
         else if (i >= 5) set_ignore(mulIgnore, 10);
         else             set_ignore(0, 0);
         for (t = 0; t < cases; t++) {
@@ -9370,6 +9391,12 @@ static int test_late_misc_trees(void)
       };
     static const uint16_t mathIgnore[] = { 0x0074, 0x0075 };   /* mul8/abs16 scratch */
     static const uint16_t gapIgnore[]  = { 0x01FF };           /* car_gap_tail's PHP/PLP stack byte */
+    /* ⭐⭐ place_player_in_section: mul8's scratch, plus the TWO bytes the oracle's $4639/$464E
+       PHAs leave at $01FF/$01FE.  THE RESULTS RULE — the twin keeps V1/V2 in `mag`/`placed`
+       instead of parking them in page 1.  Reader audit: the routine's own two PULLs pop both
+       before anything else could read them, they are below SP at every exit, and
+       `tools/det_compare.py` exempts $01B8..$01FF on exactly that argument. */
+    static const uint16_t placeIgnore[] = { 0x0074, 0x0075, 0x01FF, 0x01FE };
     static const uint16_t segIgnore[]  = { 0x0074, 0x0075, 0x01FF };  /* + the oracle's PHP stack byte */
     /* place_player pushes its two saved bytes to the real stack (byte-faithful over page 1),
        so only the mul8 scratch needs ignoring — the PHA slots are compared. */
@@ -9389,7 +9416,7 @@ static int test_late_misc_trees(void)
         if (!want(list[i].name)) continue;
         if (i == 1)        set_ignore(segIgnore, 3);    /* mul8 scratch + PHP stack byte */
         else if (i == 2)   set_ignore(mathIgnore, 1);   /* shallow arm's math_lo scratch */
-        else if (i == 5)   set_ignore(mathIgnore, 2);   /* mul8 scratch; PHA slots are compared */
+        else if (i == 5)   set_ignore(placeIgnore, 4);  /* mul8 scratch + the two PHA residue bytes */
         else if (i == 8)   set_ignore(contIgnore, 3);   /* mul8 scratch + PHP stack byte */
         else if (i == 10)  set_ignore(gapIgnore, 1);    /* PHP/PLP stack byte only ($74/$75 are OUTPUTS) */
         else if (i == 20)  set_ignore(gapIgnore, 1);    /* build_road_section's PHP/PLP byte at $01FF */
@@ -11857,9 +11884,15 @@ static int test_hook_twins(void)
             else                   { pre[0x0075] = (uint8_t)xs(); }
             pre[0x0074] = (uint8_t)xs();
 
-            dsub += diff_run("hook_steer_response_doning", pre, c,
-                             hook_steerd_twin, hook_steerd_oracle,
-                             LIVE_A | LIVE_X | LIVE_Y | LIVE_FLAGS, t, &printed);
+            /* ⭐⭐ The $5791 PHA's byte at $01FF is residue, not a result (THE RESULTS RULE): the
+               $57B2 PLA pops it inside this same hook and the twin carries the value in
+               `segment`.  MEASURED as the only affected cell.  See the audit at the hook. */
+            { static const uint16_t phaResidue[] = { 0x01FFu };
+              set_ignore(phaResidue, 1);
+              dsub += diff_run("hook_steer_response_doning", pre, c,
+                               hook_steerd_twin, hook_steerd_oracle,
+                               LIVE_A | LIVE_X | LIVE_Y | LIVE_FLAGS, t, &printed);
+              set_ignore(0, 0); }
         }
         fail += dsub;
         printf("%-32s %7d cases, %d mismatch (must be 0)  live=A,X,Y+flags\n",

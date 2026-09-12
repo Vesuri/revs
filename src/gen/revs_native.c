@@ -6477,12 +6477,13 @@ Wide16Exit mul16_by_1_5_core(uint16_t x)
     uint16_t half = (uint16_t)((int16_t)x >> 1);
     uint16_t sum  = (uint16_t)(x + half);
 
-    uint8_t hiHalf = (uint8_t)(half >> 8);            /* $476C PHA — the residue below */
+    /* $476C PHA parks x/2's high byte; the V replay below just uses `hiHalf` directly.
+       ⭐⭐ The residue write is GONE under THE RESULTS RULE: it stored the byte at $0100+S purely
+       so the differential matched.  Reader audit — the matching $4777 PLA pops it inside this
+       same routine, it is below SP at the exit, and `tools/det_compare.py` exempts $01B8..$01FF. */
+    uint8_t hiHalf = (uint8_t)(half >> 8);
     uint8_t hiIn   = (uint8_t)(x >> 8);
     uint8_t hiOut  = (uint8_t)(sum >> 8);
-
-    /* $476C PHA leaves x/2's high byte in the stack page, which the differential compares. */
-    mem[STACK_PAGE + cpu.S] = hiHalf;
 
     Wide16Exit e;
     e.value = sum;
@@ -10930,11 +10931,12 @@ EngineRegs place_player_in_section_native(uint8_t entryX, uint8_t entryY)
     section_quad_flags = (uint8_t)((quad_c << 7) | (section_quad_flags >> 1));   /* ROR section_quad_flags; N = quad_c */
     if (quad_c) mag = (uint8_t)((mag ^ 0x7F) + 1);   /* BMI arm: reflect past the quarter turn */
 
-    /* $4639 PHA: the routine parks this magnitude on the 6502 stack across the two
-       sub-calls, then pulls it back for the second fold.  The value is genuinely written
-       to page 1 and lives there below SP until the next frame overwrites it, so the twin
-       uses the real stack — determinism is byte-exact over $0100-$01FF. */
-    PUSH(mag);                                        /* push V1 (folded magnitude) */
+    /* $4639 PHA parks this magnitude across the two sub-calls; in C it just stays in `mag`.
+       ⭐⭐ The push itself is GONE under THE RESULTS RULE (`docs/validation-harness.md`): it was
+       reproduced on the real stack only so page 1 matched byte for byte.  Reader audit — both
+       pushes are popped by this routine's own two pulls before anything else can see them, they
+       are below SP at every exit, and `tools/det_compare.py` already exempts $01B8..$01FF on
+       exactly that argument.  The two residue bytes are scoped out in the fixture. */
 
     /* First fold: weight $BA, then flip if the nearest edge is far enough along ($28). */
     uint8_t a = scale_angle_in_section_core(mag, 0xBA);
@@ -10949,7 +10951,7 @@ EngineRegs place_player_in_section_native(uint8_t entryX, uint8_t entryY)
     if (neg) { AddFlags f = negate8(a); placed = f.hi; placedC = f.carry; }
     else     { placed = a; placedC = (nearest_edge_cursor >= 0x28); }
 
-    PUSH(placed);                                     /* $464E push V2 (placed) — stack residue */
+    /* $464E pushes V2 — `placed` already is V2; see the audit above. */
 
     /* Change since last frame -> record_section_jump's carry (SBC borrow = !C). */
     unsigned diff = (unsigned)placed - mem[MEM_car_section_across + x] - (placedC ? 0u : 1u);
@@ -10957,12 +10959,9 @@ EngineRegs place_player_in_section_native(uint8_t entryX, uint8_t entryY)
     if (diff & 0x100) d ^= 0xFF;                       /* BCC (borrow): EOR #$FF -> |diff| */
     record_section_jump_core(d >= 0x16, x);           /* CMP #$16 */
 
-    uint8_t v2, folded;
-    PULL(v2);                                         /* $465B pull V2 — this is `placed` */
-    mem[MEM_car_section_across + x] = v2;
-    PULL(folded);                                     /* $465F pull V1 back */
-    /* Second fold: weight $88, sign from the quadrant flag. */
-    uint8_t b = scale_angle_in_section_core((uint8_t)((folded ^ 0xFF) + 0x41), 0x88);  /* EOR;ADC #$41 */
+    mem[MEM_car_section_across + x] = placed;         /* $465B pull V2 -> the across cell */
+    /* Second fold: weight $88, sign from the quadrant flag.  $465F pulls V1 back — it is `mag`. */
+    uint8_t b = scale_angle_in_section_core((uint8_t)((mag ^ 0xFF) + 0x41), 0x88);  /* EOR;ADC #$41 */
     b = (uint8_t)(b << 2);
     if (!(section_quad_flags & 0x80)) b ^= 0xFF;             /* BIT section_quad_flags; BPL: EOR #$FF */
     mem[MEM_car_section_along + x] = b;
@@ -13036,10 +13035,16 @@ void reset_driving_variables_core(void)
    inside the real 0..19 lap domain the laps-left byte is either 0..$13 or $ED..$FF, so its bits
    6 and 7 are always EQUAL.  A quarter of the cases now span 0..99 to decouple them. */
 /* ⭐ ambX/ambY are the OSWRCH cursor, genuinely AMBIENT here: it arrives from whatever the body
-   called last and is handed on unchanged when the race arm prints nothing.  ambientPBits carries
-   the D and I bits ($08/$04) the $1017 PHP stacks — the routine reads only the SIGN back out, but
-   the whole byte is real memory the differential compares. */
-void update_lap_timers_core(uint8_t ambX, uint8_t ambY, uint8_t ambientPBits)
+   called last and is handed on unchanged when the race arm prints nothing.
+   ⭐⭐ The $1017 PHP is GONE, under THE RESULTS RULE (`docs/validation-harness.md`).  It used to be
+   reproduced as a real push, which meant composing a whole 6502 status byte — N, V (a live
+   `adc_overflow` call), Z, C, bit5/B and the two ambient D/I bits that were the only reason this
+   core took a third parameter — so that page 1 matched byte for byte.  The routine reads exactly
+   one bit of it back, the SIGN, and that is now a local.  Reader audit: the byte goes to
+   $0100+S with the routine's own PLP popping it before anything else can read it, it is below SP
+   at every exit, and `tools/det_compare.py` already exempts $01B8..$01FF on this same argument.
+   The residue is scoped out in the fixture's `set_ignore`. */
+void update_lap_timers_core(uint8_t ambX, uint8_t ambY)
 {
 
     if (session_is_race & 0x80u) {                    /* $0FFE/$1000 BPL — the practice arm */
@@ -13053,23 +13058,15 @@ void update_lap_timers_core(uint8_t ambX, uint8_t ambY, uint8_t ambientPBits)
                          + race_lap_total + (lapsDone >= 0x01u);
             uint8_t lapsLeft = (uint8_t)sum;
 
-            /* $1017 PHP — only the SIGN is read back at $1022, but the byte has to really take
-               its stack slot: print_bcd_digits pushes below it. */
-            PUSH((uint8_t)(0x30u                                       /* bit5 = 1, B = 1 */
-                | ((lapsLeft & 0x80u) ? 0x80u : 0u)                    /* N */
-                | (adc_overflow((uint8_t)(lapsDone ^ 0xFFu), race_lap_total,
-                                (uint8_t)(lapsDone >= 0x01u)) ? 0x40u : 0u)  /* V */
-                | ambientPBits                                         /* D and I, both ambient */
-                | ((lapsLeft == 0u) ? 0x02u : 0u)                      /* Z */
-                | ((sum > 0xFFu) ? 0x01u : 0u)));                      /* C */
+            /* $1017 PHP / $1022 PLP — the one bit the pair carries across the two prints. */
+            const int lapsRanOut = (lapsLeft & 0x80u) != 0;
 
             uint8_t lapsBcd = position_to_bcd_core(lapsLeft).a;   /* $1018 — 1-based BCD */
             ambX = 0x0Cu; ambY = 0x21u;               /* $101B/$101D — and the cursor STAYS
                                                          ambient past the two calls below */
             print_bcd_digits_at_core(lapsBcd, ambX, ambY);   /* $101F */
 
-            uint8_t pulled; PULL(pulled);             /* $1022 PLP */
-            if (pulled & 0x80u) {                     /* $1023 BPL — negative: the laps ran out */
+            if (lapsRanOut) {                         /* $1023 BPL — negative: the laps ran out */
                 ambY = print_message_pair_core(0x35u);/* $1027 — the chequered-flag line, and */
                 ambX = 0x2Du;                         /*   the script index it left in X */
             }
@@ -15750,7 +15747,8 @@ void hook_steer_response_doning(HookRegs *r)
     } else {
         uint8_t pardon;
 
-        mem[STACK_PAGE + cpu.S] = segment;                    /* $5791 PHA */
+        /* $5791 PHA parks the segment across the compares; `segment` already is it, and the
+           residue write is gone under THE RESULTS RULE (the $57B2 PLA below pops it). */
 
         if (segment == 0x58u)                              /* $5792 / $5796 LDA #$27 */
             pardon = (uint8_t)(offset > 0x27u);
