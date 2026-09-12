@@ -458,6 +458,52 @@ dashboard readouts that drive them (#185-#192).
   crash and never in a frame — no measurement would see it, and the loops are what the `$1805`
   disassembly says.
 
+# Batch 8 — lines 14330..16400 (the frame timers, the front end, the walk direction cluster, the per-circuit hooks)
+
+The window: `tick_race_timers`, `retire_car`, `finish_race`, the lap-value column printers
+(#196) and the two standings leaves (#197), `abort_if_quit_keys` / the dismiss waiters (#198),
+`print_standings_table` + `select_text_variant` (#199), `relocated_poison`, `enter_session` /
+`front_end_menus` (#205), the status-row printers (#206), `console_io` (#207), the road walk's
+direction cluster (#208-#212), `clear_surface_buffers` / `fill_line_surface` (#213-#214),
+`advance_player_section` (#215), `abort_to_front_end` (#216), `engine_init` / `engine_main`
+(#217-#218), `hw_init` (#219), and then the per-circuit hook twins — the four steering-response
+curves, the monotonic-horizon clamps and their yaw guard, the span-cap inheritance, the horizon
+recorder, the edge-walk limit, the walk-back gate, the three `$5772` merge bodies and the track
+generator's cursor/direction-vector hooks.
+
+The hook half needs nothing: every `cpu` read there is the hook/SMC seam class, each entry ABI
+is derived from the call site with the argument written down, and each body carries its sabotage
+ledger. `goto` 0, no 6502 flag macro, no unnamed hex address, and the only `bus_*` uses are
+`hw_init`'s hardware programming and `console_io`'s hoisted `page_is_ram` else-arm.
+
+## Open
+
+*(nothing outstanding in batch 8 — all three findings applied)*
+
+## Examined and closed — do not re-open without new evidence
+
+- **⚠⚠ `clear_surface_buffers`' four fills CANNOT be widened unconditionally.**  The four
+  surface-edge bases are $50, $5C and $50 apart, so an entry `horizon_extent` of $50 or more
+  makes buffer 0's fill run into buffer 1 — and then the 6502's per-line interleave (edge_1,
+  edge_3, edge_2, edge_0) is *observable*, because a later line's edge_0 store lands on a cell
+  an earlier line's edge_1 store already wrote.  Four separate `memset`s reorder that and the
+  fixture caught it at case 48 (5 bytes at $055A).  The byte loop is kept as the out-of-range
+  arm.  ⭐ The general shape: widening a fill is only safe while the fill stays inside the one
+  region, and "the value is the same byte" is not sufficient when the regions OVERLAP.
+
+- **`tick_race_timers_core` threading `add_frame_time`'s C and V through `cpu` is required.**
+  Its next call is `seed_car_track_position`, whose 6502 ABI captures the WHOLE flag byte as a
+  `PHP` residue at `$0100+S` that the differential compares — so those two flags are observable
+  output, not a leftover.  The live-flag-chain class.
+
+- **`engine_init_core`'s ten-byte `state_flags` wipe stays a byte loop.**  Once per boot, ten
+  bytes; `memset` would buy nothing measurable and the loop is what `$3862` says.
+
+- **`console_io_core`'s `bus_write` else-arm is the hoisted hardware test, not a leak.**  One
+  `page_is_ram(field)` for the whole field (the column only ever indexes $00..$FF off the base),
+  with the hardware arm kept — exactly the shape CLAUDE.md's `bus_read`/`bus_write` rule asks
+  for.
+
 # Open front — THE FIXTURE LIVE MASKS (its own campaign, not part of the read-through)
 
 ℹ ✅ **CLOSED.** `view_paint_lines`, the three NEAR-SLOT routines (which retired `cpx_ge` and

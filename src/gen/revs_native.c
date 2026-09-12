@@ -19,6 +19,7 @@
  *
  * Linked into BOTH backends; anything Amiga-only belongs in revs_native_amiga.cpp.
  */
+#include <string.h>            /* memset: the constant-byte mem[] fills */
 #include "../cpu/cpu.h"
 #include "../cpu/bus.h"
 #include "../cpu/m68k_math.h"   /* revs_mulu16: MULU.W, the 68000 op mul8 stands in for */
@@ -1651,15 +1652,15 @@ void race_main_loop_core(RestartDepth depth)
                a single diverging byte at $8B. */
             PROBE_PHASE(5);  PROBE_SHAPE_PHASE(5);  build_track_geometry_native();
             PROBE_PHASE(6);  PROBE_SHAPE_PHASE(6);  place_player_in_section_native();
-            PROBE_PHASE(7);  PROBE_SHAPE_PHASE(7);  advance_player_section();
+            PROBE_PHASE(7);  PROBE_SHAPE_PHASE(7);  advance_player_section_core();
             PROBE_PHASE(8);  PROBE_SHAPE_PHASE(8);  update_lap_timers();
             PROBE_PHASE(9);  PROBE_SHAPE_PHASE(9);  engine_sound_update();
-            PROBE_PHASE(10); PROBE_SHAPE_PHASE(10); clear_surface_buffers();
+            PROBE_PHASE(10); PROBE_SHAPE_PHASE(10); clear_surface_buffers_core();
             PROBE_SHAPE_ROAD_BEFORE();
             PROBE_PHASE(11); PROBE_SHAPE_PHASE(11); draw_road_core(edge_cursor, edge_end_side0);
             PROBE_SHAPE_ROAD_AFTER();
             PROBE_PHASE(12); PROBE_SHAPE_PHASE(12); engine_sound_update();
-            PROBE_PHASE(13); PROBE_SHAPE_PHASE(13); fill_line_surface();
+            PROBE_PHASE(13); PROBE_SHAPE_PHASE(13); fill_line_surface_core();
             PROBE_PHASE(14); PROBE_SHAPE_PHASE(14); build_road_sign();       /* the shim — see phase 5 */
             /* $172B: the object slot count is the starting slot */
             PROBE_PHASE(15); PROBE_SHAPE_PHASE(15);
@@ -15278,18 +15279,34 @@ void reverse_walk_direction_core(void)
    unrelated LDX next). */
 void clear_surface_buffers_core(void)
 {
-    /* The 6502 counts X down and exits on N, so an entry value of $80 or more
-       clears exactly ONE line and stops — kept, because horizon_extent is only
-       clamped to <= $4E by build_track_geometry, not by this routine. */
+    /* $66BA — lines horizon_extent..0 of all four buffers get the "no boundary here" marker.
+       ⭐ The 6502 walks them a byte at a time because it has no wider store; the fill value is
+       the SAME byte everywhere, which is the one shape the mem[] aliasing rule allows to be
+       widened, so the 68000 clears long words instead.  ~320 byte writes a frame gone.
+       ⚠⚠ ONLY while the fill stays inside one buffer's own 80 lines.  The four bases are $50,
+       $5C and $50 apart, so a horizon_extent of $50 or more makes buffer 0's fill run INTO
+       buffer 1 — and then the 6502's per-line interleave (edge_1, edge_3, edge_2, edge_0) is
+       observable, because the later line's edge_0 store lands on a cell the earlier line's
+       edge_1 store already wrote.  build_track_geometry clamps horizon_extent to <= $4E, not
+       this routine, so the byte loop stays as the out-of-range arm.
+       ⚠ And the 6502 exits on the DECREMENT's sign: an entry of $81..$FF writes exactly one
+       line, while $80 writes $80 and then carries on down to 0. */
     uint8_t line = horizon_extent;
-    do {
-        mem[MEM_surface_edge_1 + line] = 0x80u;              /* $66BA — in the 6502's own order */
-        mem[MEM_surface_edge_3 + line] = 0x80u;
-        mem[MEM_surface_edge_2 + line] = 0x80u;
-        mem[MEM_surface_edge_0 + line] = 0x80u;
-    } while (!(--line & 0x80u));
-    for (int l = 0x4F; l >= 0; l--)
-        mem[MEM_view_line_surface + l] = 0x00u;              /* $66CD — all 80 lines */
+    if (line < 0x50u) {
+        unsigned span = (unsigned)line + 1u;
+        memset(&mem[MEM_surface_edge_0], 0x80u, span);
+        memset(&mem[MEM_surface_edge_1], 0x80u, span);
+        memset(&mem[MEM_surface_edge_2], 0x80u, span);
+        memset(&mem[MEM_surface_edge_3], 0x80u, span);
+    } else {
+        do {
+            mem[MEM_surface_edge_1 + line] = 0x80u;          /* in the 6502's own order */
+            mem[MEM_surface_edge_3 + line] = 0x80u;
+            mem[MEM_surface_edge_2 + line] = 0x80u;
+            mem[MEM_surface_edge_0 + line] = 0x80u;
+        } while (!(--line & 0x80u));
+    }
+    memset(&mem[MEM_view_line_surface], 0x00u, 0x50u);       /* $66CD — all 80 lines */
 }
 
 /* $18BC  fill_line_surface  (twin #214)
@@ -15310,11 +15327,14 @@ void fill_line_surface_core(void)
     uint8_t seed  = ((far & 0x80u) && !(near & 0x80u)) ? 0x20u : 0x23u;
     mem[MEM_view_line_surface + horizon_extent] = seed;      /* $18D6 */
 
+    /* ⭐ The 6502 stores on every line because it has nowhere else to keep the running colour.
+       Where the entry is already non-zero the byte written IS the byte read, so only the ZERO
+       entries need a store — the same 80 bytes of memory, up to 80 writes a frame fewer. */
     uint8_t colour = 0x21u;                              /* $18D9 — below the road: ground */
     for (int line = 0x4F; line >= 0; line--) {           /* $18DD-$18E7 */
         uint8_t here = mem[MEM_view_line_surface + line];
-        if (here != 0u) colour = here;
-        mem[MEM_view_line_surface + line] = colour;
+        if (here != 0u) colour = here;                   /* inherit from here on down */
+        else            mem[MEM_view_line_surface + line] = colour;
     }
 }
 
