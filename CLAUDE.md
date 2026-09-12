@@ -450,6 +450,10 @@ Rules that must survive without opening `docs/perf-method.md`:
   the endianness rule below; it is legal only when every byte of the wide value is the same.
 - **RAM is uniformly slow — there is no "fast RAM" on the target A500.** Optimise by reducing the
   NUMBER of reads/writes, never by moving data to a "cheaper" buffer. (`docs/m68k-optimisation.md`)
+  ⭐ **And never explain a measurement with fast-vs-chip RAM** (user, 2026-09-12): on an A500 "fast
+  RAM" is usually slow RAM on the same bus, and even off-bus the difference is negligible because
+  the 68000 is simply slow and every access costs. It is a 68020-era distinction — it is not a
+  reason the rig and the target differ, and not a reason a buffer is cheaper.
 - **NEVER emit a 32-bit software mul/div** (`__mulsi3`/`__divsi3`/`__udivsi3`/`__modsi3`/
   `__umodsi3`) — the 68000 has none. Use `src/cpu/m68k_math.h`'s 16-bit helpers. `amiga/Makefile`
   audits every link (`muldiv-audit`); keep it clean.
