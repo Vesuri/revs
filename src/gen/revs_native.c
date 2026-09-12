@@ -3659,14 +3659,24 @@ SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     /* $1A24-$1A30 — the FAR half of the road.  The split is the horizon point in the 40..79
        half, but never nearer than point $31: the four passes below all measure "near" and
        "far" against it, and letting it come closer than that inverts them. */
-    /* ⚠ STAYS adc_step: on the fixture's SMC-early-return path fill_line_attr never reaches
-       edge_x_offscreen and the mark walk is skipped, so this add's V is draw_road's exit V and
-       the differential compares it (28/200 when it was a plain `+`). */
-    unsigned farBase = adc_step(horizon_index, 0x28, 0);
+    /* $1A24 — the far half starts 40 points past the horizon.  D = 0 on the road pass
+       (docs/static-map.md §Decimal mode), so this is a plain 8-bit binary add.
+       ⚠ Its C AND V are both LIVE: on the fixture's SMC-early-return path fill_line_attr never
+       reaches edge_x_offscreen and the mark walk is skipped, so this add's flags are draw_road's
+       own exit C/V and the differential compares them (28/200 when the V was dropped).  They are
+       computed here from the operands instead of being read back out of cpu — the sum's carry,
+       and signed overflow when two like-signed operands produce the other sign.
+       ⚠ Only V is harness-policed: forcing it to 0 fails 27/200, forcing the CARRY to 0 passes,
+       because every reachable path writes C again before the exit.  The carry is still a real
+       entry flag for fill_line_attr below, so it is computed correctly regardless. */
+    unsigned sum      = (unsigned)horizon_index + 0x28u;
+    unsigned farBase  = sum & 0xFFu;
     /* ⭐ The four passes below are a 6502 FLAG CHAIN: each stage's exit C/V is the next
        stage's entry.  Both callees return their exit state, so the chain is two locals —
        only the LAST mark's state is draw_road's own exit ABI and reaches cpu. */
-    int chainC = cpu.C, chainV = cpu.V;         /* the ADC above set both */
+    int chainC = (int)(sum > 0xFFu);
+    int chainV = (int)((~((unsigned)horizon_index ^ 0x28u)
+                        & ((unsigned)horizon_index ^ farBase) & 0x80u) != 0u);
     road_split_index = (uint8_t)clamp_up_to(farBase, 0x31);
 
     PLOT_SET_LO(plot_ptr2, 0);      /* the second pointer, for a span that crosses a page */
