@@ -3032,6 +3032,8 @@ def compute_liveness(insns, symbols, local_targets):
 # has been made explicit and its exit audited against its real callers.  Everything not listed
 # still gets the struct marshalled around it in the dispatcher, which is where that shrinks to.
 HOOK_TWINS_TYPED = {
+    'hook_scale_entry_by_gradient',
+    'hook_steer_response_nurburg',
     'hook_abs_by_track_direction',
     'hook_advance_gen_place_brands',
     'hook_advance_gen_place_doning',

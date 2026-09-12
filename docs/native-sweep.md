@@ -566,7 +566,7 @@ BBC could see. Passing the register file explicitly is the fix; assuming it is d
    What is LEFT in a `_core` body is all one of the argued classes: a hook entry ABI, `cpu.D`,
    `cpu.S`, or the sanctioned flag-escape helpers.
 2. ✅ **the hook/SMC seam — DONE.** `revs_track_hook_regs(addr, HookRegs *)` carries the entry
-   ABI as a value; all 50 twins take it typed (`HOOK_TWINS_TYPED`, `tools/transpile.py`); and
+   ABI as a value; all 52 twins take it typed (`HOOK_TWINS_TYPED`, `tools/transpile.py`); and
    every one of the 14 dispatch sites in `revs_native.c` now seeds the whole register file from
    its own values — `hook_cpu_to_regs` appears there zero times. `cpu` is marshalled only on the
    transliteration (oracle) path. Two of the conversions were structural rather than editorial:
@@ -609,6 +609,35 @@ BBC could see. Passing the register file explicitly is the fix; assuming it is d
    Audit the two phases either side of the site, and reach for the SLOT sabotage to prove the
    site is even exercised (falsifying the slot fails both determinism trajectories; falsifying
    entry Y, V or C passes all three — explanation three, which IS the argument).
+   ⭐⭐ **...and a fourth: THE `PHP` CLASS CONVERTS TOO, and "all 50 twins are typed" was false
+   for two of them.** This item was written up as closed while `hook_steer_response_nurburg` and
+   `hook_scale_entry_by_gradient` were still `void (void)` — the generated dispatch is the
+   evidence and it was never read: both arms came out as
+   `hook_regs_to_cpu(_r); hook_x(); hook_cpu_to_regs(_r);`, i.e. `cpu` marshalled on the
+   PRODUCTION path, on five of the six circuits' gradient scalers. ⚠ **Check what the transpiler
+   EMITS, not what its `HOOK_TWINS_TYPED` set contains** — a substring grep for `nurburg` matches
+   five other members and reads as a hit.
+   What kept them untyped was the belief that a `PHP`/`PHA` twin cannot be: the pushes are real
+   bytes at `$0100+S` the differential compares, so the macro must stay. It must — but only the
+   push does. `P_pack_regs`/`P_unpack_regs` + `PHP_REGS`/`PLP_REGS`/`PHA_REGS`/`PLA_REGS`
+   (`src/cpu/cpu.h`) move the same byte at the same address and assemble the P from the SEAM'S
+   OWN register file. `cpu.S` stays, because the residue's address genuinely is the stack
+   pointer; `cpu.D`/`cpu.I` stay in the packed byte, because `HookRegs` deliberately has neither
+   and the pushed byte is compared bit for bit. The third site, `hook_gen_dir_vector_at`'s
+   `hook_scale_by_gradient`, went the same way — its `cpu.C`/`cpu.V` write was the one place the
+   ledger called `cpu` "still right".
+   ⭐ **And the flag file between two pushes is LIVE STATE, not a per-call local.** That scaler
+   runs twice and the second `PHP` stacks the flags the FIRST call's tail left (`$461B` closes
+   with `mul8`, plus the `$4622 abs8`'s negate on the negative arm), not the octant chain's.
+   Handing the octant pair to both calls validates green on arithmetic and fails ~12% of every
+   circuit's cases on the residue byte — a real defect the fixture caught, which is the evidence
+   that pair is live.
+   Sabotage of the new machinery (each FAILS): the pushed N cleared (2005 nurburg / 2440 scaler),
+   the pulled N dropped (2430 scaler — 0 on nurburg, whose pulled N both arms overwrite), a
+   `PHA_REGS` of 0 (3477 nurburg — 0 on the scaler, which has no `PHA`), and the exit Y not the
+   `LDY`'s k (4000 nurburg). Each defect is caught by at least one of the pair and every zero is
+   accounted for.
+
 3. the oracle-only shims — move out, then lint `revs_native.c`
 4. the ISR seam
 

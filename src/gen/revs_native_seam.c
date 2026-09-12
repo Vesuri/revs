@@ -225,6 +225,16 @@ void scale_by_track_gradient_tail(void)
     abs8();                                  /* $4622 — negates A when the pulled N says so */
 }
 
+/* ...and the same with the register file as a value, for the typed hook seam at $57BB/$54EB/
+   $555C.  Identical work: only the flags' SOURCE changes, from ambient `cpu` to the caller's
+   own HookRegs.  The PULL still reads the byte the hook's own push left at $0100+S. */
+void scale_by_track_gradient_tail_regs(HookRegs *r)
+{
+    r->a = scale_by_track_gradient_tail_core(r->a, r->n);
+    PLP_REGS(r);                             /* $4621 */
+    abs8_regs(r);                            /* $4622 — negates A when the pulled N says so */
+}
+
 /* The 6502-ABI shim.  Both walk cursors are constants in the 6502; they are arguments here
    because they are the one thing that decides which half of the edge arrays each side owns. */
 void build_track_geometry(void)

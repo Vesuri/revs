@@ -154,6 +154,25 @@ void cpu_stack_ceiling(unsigned char s);
 #define PHP()    PUSH(P_pack())
 #define PLP()    do { uint8_t _p; PULL(_p); P_unpack(_p); } while(0)
 
+/* ⭐ THE SAME FOUR, WITH THE FLAG FILE AS A VALUE — for a hook twin whose sign escapes through
+   the 6502 stack.  The byte still moves at $0100+S (the stack POINTER is the sanctioned `cpu`
+   class: the residue's ADDRESS is genuinely S), but the P it assembles comes from the caller's
+   own HookRegs instead of ambient `cpu`, which is what lets the seam hand its entry ABI over by
+   value.  ⚠ D and I are deliberately not in HookRegs — no hook seam hands either over — so they
+   come from `cpu`, and they must, because the pushed byte is compared bit for bit. */
+static inline uint8_t P_pack_regs(const HookRegs *r) {
+    return (uint8_t)((r->n<<7)|(r->v<<6)|0x30|(cpu.D<<3)|(cpu.I<<2)|(r->z<<1)|r->c);
+}
+static inline void P_unpack_regs(HookRegs *r, uint8_t p) {
+    r->n=(p>>7)&1; r->v=(p>>6)&1; r->z=(p>>1)&1; r->c=p&1;
+    cpu.D=(p>>3)&1; cpu.I=(p>>2)&1;
+}
+#define PHP_REGS(r)  PUSH(P_pack_regs(r))
+#define PLP_REGS(r)  do { uint8_t _p; PULL(_p); P_unpack_regs((r), _p); } while(0)
+#define PHA_REGS(r)  PUSH((r)->a)
+#define PLA_REGS(r)  do { PULL((r)->a); (r)->n=(uint8_t)((r)->a>>7); \
+                          (r)->z=(uint8_t)((r)->a==0); } while(0)
+
 /* ---------- load / store ------------------------------------------ */
 #define LDA(v)  do { cpu.A=(uint8_t)(v); UPD_NZ(cpu.A); } while(0)
 #define LDX(v)  do { cpu.X=(uint8_t)(v); UPD_NZ(cpu.X); } while(0)

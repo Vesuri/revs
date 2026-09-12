@@ -740,6 +740,7 @@ uint8_t road_edge_walk_resume_core(uint8_t section, uint8_t midSlot, uint8_t poi
 uint8_t horizon_half_width_at_core(unsigned horizonPoint, uint8_t sectionX);
 uint8_t scale_by_track_gradient_tail_core(uint8_t value, int negative);
 void    scale_by_track_gradient_regs(HookRegs *r);   /* $4610 with the file as a value */
+void    scale_by_track_gradient_tail_regs(HookRegs *r);  /* $461B, ditto — for the $57BB seam */
 int road_span_advance_core(uint8_t y);
 AddFlags rotate_velocity_by_steer_core(void);
 AddFlags rotate_pair_a_by_steer_core(void);
@@ -917,7 +918,7 @@ void hook_merge_horizon_edges_nurburg(HookRegs *r);     /* Nurburgring $5772 */
 void hook_horizon_store_only(HookRegs *r);              /* Donington Park $5772 */
 void hook_horizon_half_width_abs_doning(HookRegs *r);   /* Donington Park $57B6 */
 void hook_section_ahead_doning(HookRegs *r);            /* Donington Park $53E9 */
-void hook_steer_response_nurburg(void);          /* Nurburgring $59D9 */              /* $2F23 — Donington + Snetterton */
+void hook_steer_response_nurburg(HookRegs *r);          /* Nurburgring $59D9 */              /* $2F23 — Donington + Snetterton */
 void hook_horizon_clamp_guarded_snetter(HookRegs *r);   /* Snetterton  $56C8 */
 void hook_horizon_clamp_guarded_nurburg(HookRegs *r);   /* Nurburgring $56C4 */
 
@@ -962,4 +963,4 @@ void hook_advance_gen_place_nurburg(HookRegs *r);
 /* The three cross-circuit one-line hook bodies (twins #227-#229) */
 void hook_horizon_half_width_scale(HookRegs *r);
 void hook_abs_by_track_direction(HookRegs *r);
-void hook_scale_entry_by_gradient(void);
+void hook_scale_entry_by_gradient(HookRegs *r);

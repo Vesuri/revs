@@ -16813,12 +16813,17 @@ GenDirVector hook_gen_dir_vector_core(uint16_t block)
    bytes of it: `PHP / JMP $461B`.  ⭐ The macro stays because a flag genuinely escapes: the P
    this pushes is what scale_by_track_gradient_tail's $4621 PLP pulls to re-sign the product, and
    the pushed byte lands in mem[] where the differential can see it. */
-static uint8_t hook_scale_by_gradient(uint8_t value)
+/* ⚠ `g` is threaded, not local: the caller scales TWICE and the second `PHP` stacks the C and V
+   the FIRST call's tail left standing, so the flag file has to survive between them.  N and Z are
+   re-derived from the value each time, which is what the 6502's own `LDA` does at both sites. */
+static uint8_t hook_scale_by_gradient(HookRegs *g, uint8_t value)
 {
-    LDA(value);                    /* the caller's own LDA — N is the sign it is about to stack */
-    PHP();
-    scale_by_track_gradient_tail();
-    return cpu.A;
+    g->a = value;                  /* the caller's own LDA — N is the sign it is about to stack */
+    g->n = (uint8_t)(value >> 7);
+    g->z = (uint8_t)(value == 0u);
+    PHP_REGS(g);
+    scale_by_track_gradient_tail_regs(g);
+    return g->a;
 }
 
 static void hook_gen_dir_vector_at(HookRegs *r, uint16_t block, uint8_t scale)
@@ -16832,14 +16837,19 @@ static void hook_gen_dir_vector_at(HookRegs *r, uint16_t block, uint8_t scale)
     math_hi = scale;                                       /* $54C7 — both scalings' multiplier */
 
     mem[MEM_track_dir_0 + dir] = d.compA;                      /* $54C9-$54CB */
-    /* ⚠ NOT the seam's register file, and the one place `cpu` is still right: these two are
-       what hook_scale_by_gradient's `PHP` stacks below, and the byte it pushes lands in mem[]
-       where the differential compares it. */
-    cpu.C = d.c; cpu.V = d.v;                              /* what the octant chain left standing */
-    mem[MEM_track_normal_y + dir] = hook_scale_by_gradient(d.compA);   /* $54CE-$54D1 */
+    /* ⭐ The octant chain's closing C and V reach the scaler in a LOCAL register file — they are
+       what its `PHP` stacks, and that pushed byte is real memory the differential compares, but
+       nothing here has to read them back out of ambient `cpu`. */
+    HookRegs g = *r;
+    g.c = d.c; g.v = d.v;                                  /* what the octant chain left standing */
+    mem[MEM_track_normal_y + dir] = hook_scale_by_gradient(&g, d.compA);   /* $54CE-$54D1 */
 
     mem[MEM_track_dir_2 + dir] = d.compB;                      /* $54D4-$54D6 */
-    AddFlags neg = negate8(hook_scale_by_gradient(d.compB));       /* $54D9-$54E0 */
+    /* ⚠ The second scaling's `PHP` stacks the flags the FIRST one's tail left, NOT the octant
+       chain's — $461B closes with mul8 and, on the negative arm, the $4622 abs8's negate — so `g`
+       carries them across.  Passing the octant pair to both calls fails ~12% of every circuit's
+       cases, which is how this was caught. */
+    AddFlags neg = negate8(hook_scale_by_gradient(&g, d.compB));       /* $54D9-$54E0 */
     mem[TRACK_NORMAL_X + dir] = neg.hi;                    /* $54E1 — the normal points the other way */
 
     uint8_t gradient = mem[block + 2u];                    /* $54E4 */
@@ -17149,12 +17159,12 @@ void hook_horizon_half_width_scale(HookRegs *r)
    S129 segment $40's scale $CD -> $CE                            1013
    S130 the default scale $B5 -> $B4                               966
    S131 the doubling arm's carry comes from the low byte           827 */
-void hook_steer_response_nurburg(void)
+void hook_steer_response_nurburg(HookRegs *r)
 {
     uint8_t segment, k;
 
-    PHP();                                          /* $59D9 — the engine's Z, wanted at $56B5 */
-    PHA();                                          /* $59DA — and the steering reading */
+    PHP_REGS(r);                                    /* $59D9 — the engine's Z, wanted at $56B5 */
+    PHA_REGS(r);                                    /* $59DA — and the steering reading */
 
     segment = mem[MEM_car_segment + player_car];     /* $59DB LDY player_car / $59DD LDA */
     k       = 0xB5u;                                 /* $59E0 LDY #$B5 */
@@ -17162,29 +17172,29 @@ void hook_steer_response_nurburg(void)
     if (segment == 0x40u) k = 0xCDu;                 /* $59E8 CMP #$40 / $59EC LDY #$CD */
     if (segment == 0xD0u) k = 0xCAu;                 /* $59EE CMP #$D0 / $59F2 LDY #$CA */
 
-    cpu.Y   = k;                                     /* the LDY, still live at the exit */
+    r->y    = k;                                     /* the LDY, still live at the exit */
     math_hi = k;                                     /* $59F4 TYA / $56AF STA math_hi */
 
-    PLA();                                           /* $56B1 — the reading back */
-    mul8();                                          /* $56B2 — reading x k, high byte into A */
-    PLP();                                           /* $56B5 — and the engine's flags back */
+    PLA_REGS(r);                                     /* $56B1 — the reading back */
+    math_lo = r->a; mul8_noinit_into(r);             /* $56B2 — reading x k, high byte into A */
+    PLP_REGS(r);                                     /* $56B5 — and the engine's flags back */
 
-    if (cpu.Z) {                                     /* $56B6 BEQ $56C1 */
-        mul8();                                      /* $56C1 — scaled by k a second time */
+    if (r->z) {                                      /* $56B6 BEQ $56C1 */
+        math_lo = r->a; mul8_noinit_into(r);         /* $56C1 — scaled by k a second time */
         return;
     }
 
-    math_hi = cpu.A;                                 /* $56B8 */
-    mul8();                                          /* $56BA — the scaled value squared */
+    math_hi = r->a;                                  /* $56B8 */
+    math_lo = r->a; mul8_noinit_into(r);             /* $56BA — the scaled value squared */
 
     /* $56BD ASL math_lo / $56BF ROL A — the 16-bit product doubled, its top bit into C. */
     {
-        uint16_t doubled = (uint16_t)((((uint16_t)cpu.A << 8) | math_lo) << 1);
-        cpu.C   = (uint8_t)(cpu.A >> 7);
+        uint16_t doubled = (uint16_t)((((uint16_t)r->a << 8) | math_lo) << 1);
+        r->c    = (uint8_t)(r->a >> 7);
         math_lo = (uint8_t)doubled;
-        cpu.A   = (uint8_t)(doubled >> 8);
-        cpu.N   = (uint8_t)((cpu.A >> 7) & 1u);
-        cpu.Z   = (uint8_t)(cpu.A == 0u);
+        r->a    = (uint8_t)(doubled >> 8);
+        r->n    = (uint8_t)((r->a >> 7) & 1u);
+        r->z    = (uint8_t)(r->a == 0u);
     }
 }
 
@@ -17286,7 +17296,7 @@ void hook_abs_by_track_direction(HookRegs *r)
    ⚠ S71/S73/S74 all print 5000 because each leaves $01FF wrong in EVERY case — 5 circuits x
    1000, one diff apiece.  S72 stacks a byte that is merely wrong in one bit, so it only diverges
    where the sign mattered. */
-void hook_scale_entry_by_gradient(void)
+void hook_scale_entry_by_gradient(HookRegs *r)
 {
     /* ⚠ The PHP is not bookkeeping to be optimised away: it is a REAL STORE to $01FF that the
        oracle makes and a differential sees, and the P it stacks is what the tail's own PLP pulls
@@ -17294,6 +17304,6 @@ void hook_scale_entry_by_gradient(void)
        fails the memory compare — so this is the sanctioned macro exception, at its narrowest:
        two macros, no arithmetic, and the tail below is a twin in ordinary C.
        (docs/faithfulness-seam.md §Writing one — where a flag genuinely leaves the routine.) */
-    PHP();                                   /* $57BB */
-    scale_by_track_gradient_tail();          /* $57BC JMP $461B — its PLP pulls that P back */
+    PHP_REGS(r);                             /* $57BB — the ENTRY P, off the seam's file */
+    scale_by_track_gradient_tail_regs(r);    /* $57BC JMP $461B — its PLP pulls that P back */
 }
