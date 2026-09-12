@@ -459,7 +459,9 @@ void mark_line_surfaces(void)
    colour, X as the surface class on the two arms that compute one. */
 void surface_colour_at(void)
 {
-    surface_colour_apply(cpu.Y);
+    SlotExit e = surface_colour_at_line_core(cpu.Y, cpu.X, cpu.V);
+    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
+    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
 }
 
 /* The 6502-ABI shim.  X is the first column, A the stop column, Y the first start line; X
@@ -868,11 +870,12 @@ void finish_race(void)
     finish_race_core();
 }
 
-/* $5052 tick_race_timers — no live outputs; the four entry flag bits it FORWARDS to the
-   seeder's PHP residue are its only inputs (see the twin's header). */
+/* $5052 tick_race_timers — no inputs and no live outputs.  (It used to take the four ambient
+   flag bits out of `cpu` and forward them to the seeder's PHP residue; that byte is stack
+   residue below SP and is no longer reproduced — see seed_car_track_position_next.) */
 void tick_race_timers(void)
 {
-    tick_race_timers_core(cpu.C, cpu.V, cpu.D, cpu.I);
+    tick_race_timers_core();
 }
 
 /* $17C3 add_frame_time — X selects the clock; the flags out are the low byte's decimal add. */
@@ -1096,23 +1099,21 @@ void draw_dash_needles_native(void)
     dial_needle_angle_plot();                     /* $513D — rev needle; falls into plot_line_octant.
                                                      Core-to-core: the model state is already live. */
 
-    /* $5145-$5146 / $5186 — the routine's own PHP/PLP is balanced (S restored), but the pushed
-       processor status stays on the stack as a residue at $0100+S.  It is the flags AFTER
-       LSR steer_angle_lo: N=0, Z from the shifted value, C = bit 0; V/D/I carry through from the
-       shared prefix (identical on both differential sides) and B/bit5 are set in a pushed copy.
-       The later plot_line_octant pushes only below this cell, so the residue survives. */
-    /* ⚠⚠ THIS in-marshal STAYS on the native path, and its POSITION is the reason: it sits after
-       the two needle plots because a plotted line can land inside $62A0..$62A5, so what the lanes
-       hold here is not what they held at entry.  Hoisting it into the shim would read the cells a
-       plot too early. */
+    /* ⭐ THE $5145 PHP RESIDUE IS GONE — and this one ran EVERY FRAME.  $5145/$5186 is a
+       balanced PHP/PLP, so the pushed byte at $0100+S is residue below SP: an implementation
+       detail, not a result (docs/validation-harness.md §THE RESULTS RULE), and the sibling of
+       the seeder's $6362 push (the audit is at seed_car_track_position_next below).  Readers:
+       the routine's own PLP, whose restored flags the comment above already declares dead at
+       the caller; nothing else can reach $0100+S, and tools/det_compare.py exempts
+       $01B8..$01FF on the same argument.  It was the LAST reader of `cpu.I` anywhere in the
+       port -- nothing consults the 6502's interrupt-disable bit, so race_main_loop_core's
+       $4F35 CLI went with it -- and one of the last two of `cpu.D`. */
+    /* ⚠⚠ THE car_angle MARSHAL-IN STAYS HERE, ON THE NATIVE PATH, and its POSITION is the
+       reason: it sits after the two needle plots because a plotted line can land inside
+       $62A0..$62A5, so what the lanes hold here is not what they held at entry.  Hoisting it
+       into the shim would read the cells a plot too early. */
     car_angle_marshal_in();                       /* consumer: element 2 of the relocated array */
     uint16_t steerAng = car_angle_16[CAR_ANGLE_STEER];
-    mem[STACK_PAGE + cpu.S] = (uint8_t)(0x30u                     /* bit5 = 1, B = 1 */
-        | (cpu.V ? 0x40u : 0u)
-        | (cpu.D ? 0x08u : 0u)
-        | (cpu.I ? 0x04u : 0u)
-        | ((((uint8_t)steerAng >> 1) == 0u) ? 0x02u : 0u)     /* Z */
-        | (steerAng & 0x01u));                                /* C */
 
     DashNeedle n;
     draw_dash_needle_core(steerAng, &n);          /* one word — the array is car_angle_16[] now */
@@ -1235,33 +1236,32 @@ void parse_two_digit_ascii(void)
     cpu.N = p.n;
 }
 
-uint8_t seed_car_track_position_flags(uint8_t c, uint8_t v, uint8_t d, uint8_t i)
+uint8_t seed_car_track_position_next(void)
 {
     /* $635D — seed one car's grid position from a timer-entropy byte (#158).  A math_lo
        reader-nat: $74 is internal scratch, its per-path exit value written below.  Exit ABI:
-       X live (the decremented car-index cursor the caller's loop reads); A/flags dead. */
+       X live (the decremented car-index cursor the caller's loop reads); A/flags dead.
+
+       ⭐ THE $6362 PHP IS GONE, AND WITH IT FOUR AMBIENT FLAG BITS THAT WERE THREADED THROUGH
+       TWO CALLERS.  The 6502 parks P at $0100+S here and pops it back at $637B, so the byte is
+       stack residue below SP: an implementation detail, not a result
+       (docs/validation-harness.md §THE RESULTS RULE).  The reader audit, written out because
+       the audit is the hard half of the rule:
+         - the routine's own PLP is the ONLY reader, and it restores the flags it pushed, which
+           are then dead at both callers (tick_race_timers' $507A returns immediately; the $4D59
+           loop reloads A/X at once);
+         - nothing else can read $0100+S -- stack discipline, and `tools/det_compare.py` exempts
+           $01B8..$01FF on exactly this argument;
+         - no circuit patches $635D..$63A0 (disasm/track_smc.txt has no site in the range), so no
+           expansion hook re-enters this body mid-flight;
+         - `make transtrap` proves no transliterated body runs anywhere, so the oracle is the
+           only thing that ever pushed it.
+       What this deletes upstream: `seed_car_track_position_with_carry` (the $4D59 LSR's escaping
+       carry fed the residue's C bit and NOTHING else), and all four parameters of
+       `tick_race_timers_core`, which existed only to forward bits into this one byte -- which is
+       what took `cpu` out of finish_race_core.  The three fixtures ignore $01FF, scoped. */
     uint8_t x       = mem[MEM_car_seed_index];               /* $635D LDX car_seed_index */
     uint8_t entropy = (uint8_t)bus_read(USRVIA_T2CL);    /* $635F LDA $FE68 (one read, as the 6502) */
-
-    /* $6362 PHP / $637B PLP is balanced (S restored) but the pushed P byte stays on the stack as a
-       residue at $0100+S that the differential compares.  It is the flags AFTER LDA $FE68: N = the
-       entropy byte's bit 7, Z set iff it was 0; C/V/D/I carry through from entry; bit5 and B are set
-       in the pushed copy.  Nothing after (JSR/RTS are C calls in the oracle) rewrites this cell. */
-    mem[STACK_PAGE + cpu.S] = (uint8_t)(0x30u
-        | ((entropy & 0x80u) ? 0x80u : 0u)               /* N */
-        | (v ? 0x40u : 0u)
-        | (d ? 0x08u : 0u)
-        | (i ? 0x04u : 0u)
-        | ((entropy == 0u) ? 0x02u : 0u)                 /* Z */
-        | (c ? 0x01u : 0u));                             /* C */
-    /* ⚠ SABOTAGE NOTE on those four forwarded bits.  Falsifying V, C or I fails the fixture
-       (4000/4000, 4000/4000 and 2026/4000 mismatch), and so does breaking the forwarding at
-       tick_race_timers' shim (175/4000) — the chain is live end to end.  Dropping D alone
-       PASSES, and that is explanation two, not a gap: the fixture pins `c.D = 0` because
-       docs/static-map.md §Decimal mode inventories all eight `SED` sites and none of them is on
-       any path that reaches this routine, so the bit is provably clear at every real entry and
-       there is no input on which `| (d ? 0x08u : 0u)` and `| 0u` differ.  It is kept because the
-       6502 pushes P, not a subset of it. */
 
     uint8_t mathlo;
     uint8_t xExit   = seed_car_track_position_core(x, entropy, &mathlo);
@@ -1270,20 +1270,10 @@ uint8_t seed_car_track_position_flags(uint8_t c, uint8_t v, uint8_t d, uint8_t i
     return xExit;                                        /* $639C..$639F — decremented cursor */
 }
 
-/* The 6502-ABI shim — the four ambient flag bits out of `cpu` for the transliterated callers
-   and the harness; `cpu.S` stays because the residue's ADDRESS is the stack pointer. */
+/* The 6502-ABI shim — nothing to marshal in now that the PHP residue is gone; X comes back. */
 void seed_car_track_position(void)
 {
-    cpu.X = seed_car_track_position_flags(cpu.C, cpu.V, cpu.D, cpu.I);
-}
-
-/* The one flag a caller of the seeder deliberately varies is the carry: reset_all_cars_for_
-   session's $4D59 LSR halves the car index and leaves its bit 0 in C, still live when the PHP
-   above captures it.  This form takes that bit and returns the decremented cursor, so the twin
-   itself needs no cpu at all. */
-uint8_t seed_car_track_position_with_carry(uint8_t carry)
-{
-    return seed_car_track_position_flags(carry ? 1u : 0u, cpu.V, cpu.D, cpu.I);
+    cpu.X = seed_car_track_position_next();
 }
 
 /* The marshal-IN below is oracle-only in production and stays on this 6502-ABI path for the
@@ -1782,3 +1772,118 @@ void abort_to_front_end(void) { abort_to_front_end_core(cpu.C); }   /* the ROR's
 void engine_init(void) { engine_init_core(); }
 void engine_main(void) { engine_main_core(); }
 void hw_init(void) { hw_init_core(cpu.Y); }   /* Y is the OSBYTE $9A call's input Y */
+
+/* ⭐ THE ISR SEAM — and it is the one place where the ambient 6502 register file is the SUBJECT
+   of the code rather than a calling convention to be marshalled away.  `irq1v_band_schedule`
+   ($4E5C) is Revs's own IRQ1V handler: bbc_hw.cpp calls it straight from interrupt context, so
+   the "caller" is whatever foreground the interrupt preempted and there is nothing to thread an
+   argument from.  The schedule itself is a cpu-free core in revs_native.c; everything the 6502
+   register file is involved in is here.
+
+   EXIT CONTRACT.  A, X and Y all come back as the interrupted code left them — measured on a
+   real BBC over 2858 engine-context interrupts (`make refloop --irq-abi`) and asserted at the
+   seam (g_irqClobberCount, and see docs/native-sweep.md track 4).  A arrives via mos_irq_a,
+   which only the MOS's own IRQ ENTRY ever writes; `PLA/TAX` restores X; Y is never touched;
+   flags and S come back from the RTI. */
+void irq1v_band_schedule(void)
+{
+    /* Is this interrupt ours?  User VIA IFR bit 6 is the T1 timeout.  If it is not, hand it to
+       whoever owned IRQ1V before us.
+       ⚠ The register state on THIS path is live and is NOT the exit contract above — the exit is
+       a JMP, not an RTI, and the routine arrives here with A = 0 from the IFR test. */
+    if ((bus_read(USRVIA_IFR) & 0x40) == 0) {
+        cpu.A = 0; cpu.N = 0; cpu.Z = 1;
+        platform_indirect_jmp((unsigned short)(mem[MEM_saved_irq1v] |
+                                               ((unsigned short)mem[MEM_saved_irq1v + 1] << 8)));
+        return;
+    }
+    bus_write(USRVIA_IFR, 0x40);  /* acknowledge our own T1 flag */
+
+    PUSH(cpu.X);                  /* X is the arms' loop counter, restored before the RTI */
+
+    /* $4E6A CLD.  ⚠⚠ A SABOTAGE THAT SURVIVES: deleting this line still prints 25628 cases,
+       0 mismatch.  That is the THIRD of CLAUDE.md's three explanations -- no change at all --
+       and not a fixture gap, and the argument has to be here because a green differential is
+       otherwise indistinguishable from a blind one:
+         - nothing between here and the RTI consults D.  The core's arithmetic is plain C and
+           bcd.h's ABCD/SBCD; the only readers of `cpu.D` in the port are cpu.h's ADC/SBC
+           macros, reached solely through `adc_step`, whose two live call sites are both on the
+           render path and neither of them is under this handler;
+         - and the exit is a PLP, which restores D from the P the interrupt entry pushed -- so
+           even D's own value is unobservable at the seam's boundary.
+       Widening the fixture cannot fix that; there is no input on which it differs.  It is kept
+       for the same reason as the three core CLDs (tools/cpu_lint.py class 4): `cpu.D = 1` is
+       written only by the 8 `SED()` sites in src/gen/revs_gen.c, which no `make transtrap`
+       scenario enters -- and a body no scenario DRIVES is unproven, not dead.  This is the
+       instruction that restores binary mode if one ever runs, exactly as on the 6502, and it
+       costs one store per field.  SIBLING CHECKED: add_tally_to_lap_total's fixture asserts D is
+       clear at exit (dLeftSet), which IS a live instrument for a CLD -- so the class is gated
+       where it can be, and argued where it cannot. */
+    cpu.D = 0;                    /* back to binary */
+
+    irq1v_band_schedule_core();
+
+    /* $4F0A  PLA / TAX / LDA $FC / RTI — the exit contract, and the only place it is spelled
+       out.  Every arm of the core reaches it, including the two that skip the T1 reload. */
+    {
+        unsigned char pulled;
+        PULL(pulled);
+        cpu.X = pulled;
+        cpu.A = mos_irq_a;
+        PLP();
+    }
+}
+
+/* ⭐ CLASS-6 SHIMS RELOCATED OUT OF revs_native.c: a 6502-ABI marshal whose callers are all
+   in this file (or in revs_native_abi.c) is seam code, not a core, and revs_native.c is for
+   cores.  They could not go to revs_native_abi.c, which is by definition the TU nothing in
+   the port calls -- that distinction is the only thing making that boundary mean anything. */
+
+/* $16E9's `BIT $05F4` — bit 6 of state_flags lands in V.  Through the macro rather than as a
+   plain mask because the test leaves N and V set across the calls that follow it, and "no
+   callee reads them" is a claim about a 400-routine subtree, not something to assume here. */
+int state_flags_bit6(void)
+{
+    bit_test(state_flags);
+    return cpu.V;
+}
+
+/* $4B4E — store_slip's exit ABI, replayed from the two values the core threads out. */
+void store_slip_exit_abi(uint8_t sign)
+{
+    cpu.A = math_lo;                                 /* $4B5B LDA math_lo — the stored low byte */
+    cpu.Y = mem[SLIP_OUT_INDEX];                     /* $4B56 LDY SLIP_OUT_INDEX */
+    cpu.N = (uint8_t)(math_lo >> 7);                 /* LDA math_lo sets N/Z */
+    cpu.Z = (uint8_t)(math_lo == 0u);
+    cpu.V = (uint8_t)((sign >> 6) & 1u);             /* $4B51 BIT SLIP_SIGN sets V = bit 6 */
+}
+
+/* Reconstruct sound_queue / sound_queue_default's exit: A/Y left by OSWORD 7 on the $0Bxx block
+   (reason code 7 in A, block high byte $0B in Y — both constants at this call site now the cpu-free
+   wrapper no longer leaves them behind), X restored from sound_saved_x (its N/Z the exit), and the
+   block-index ADD's C and V ($0B4D ADC #$10). */
+void sound_queue_exit_abi(uint8_t slot)
+{
+    BlockCV cv = sound_queue_block_cv(slot);
+    cpu.C = cv.c;
+    cpu.V = cv.v;
+    cpu.A = 0x07u;                                   /* OSWORD reason code, preserved through the call */
+    cpu.Y = 0x0Bu;                                   /* $0B — the sound block's high byte */
+    cpu.X = sound_saved_x;                           /* $0B73 LDX sound_saved_x (inside sound_osword) */
+    cpu.N = (uint8_t)(sound_saved_x >> 7);
+    cpu.Z = (uint8_t)(sound_saved_x == 0u);
+}
+
+/* $3450  abs8's `cpu` ENTRY.  The work is `abs8_regs` in revs_native.c, out of line, and that
+   is affordable here: the 36 callers in revs_gen.c / revs_track_hooks.c are transliterated
+   bodies, and `make transtrap` proves across nine scenarios that NONE of them is ever entered.
+   (The comment this replaces claimed a hot path on the strength of that call count.)  The one
+   live caller is `scale_by_track_gradient_tail` below, four instructions further on. */
+void abs8(void)
+{
+    HookRegs r;
+    hook_cpu_to_regs(&r);
+    abs8_regs(&r);
+    hook_regs_to_cpu(&r);
+}
+

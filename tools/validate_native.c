@@ -2520,8 +2520,12 @@ static int test_finish_race(void)
             }
         }
         if (getenv("REVS_TRACE_CASES")) { fprintf(stderr, "[case %d arm %d]\n", t, arm); fflush(stderr); }
+        /* $01FF — every pass reaches the seeder's $6362 PHP residue through $1171; stack
+           residue, audited at seed_car_track_position_next in revs_native_seam.c. */
+        set_ignore(g_ignore_pha_residue, 1);
         fail += diff_run("finish_race", pre, c, finish_race, finish_race__t6502,
                          LIVE_NONE, t, &printed);
+        set_ignore(0, 0);
     }
     printf("%-32s %7d cases, %d mismatch (must be 0)  result-only (race_main_loop returns)\n",
            "finish_race", cases, fail);
@@ -2581,8 +2585,12 @@ static int test_tick_race_timers(void)
         pre[0x06B4] = (uint8_t)(((xs() % 10u) << 4) | (xs() % 10u));
         pre[0x06E4] = (uint8_t)(((xs() % 10u) << 4) | (xs() % 10u));
         if (pre[0x06CC] == 0u || (((uint8_t)(pre[0x006A] + 1u)) & 0x1Fu) == 0u) sawRefresh = 1;
+        /* $01FF is the seeder's $6362 PHP residue, reached at $507A — stack residue below SP,
+           not a result; the audit is at seed_car_track_position_next in revs_native_seam.c. */
+        set_ignore(g_ignore_pha_residue, 1);
         fail += diff_run("tick_race_timers", pre, c,
                          tick_race_timers, tick_race_timers__t6502, LIVE_NONE, t, &printed);
+        set_ignore(0, 0);
     }
     printf("%-32s %7d cases, %d mismatch (must be 0)  result-only (A/X/Y dead at both callers)\n",
            "tick_race_timers", cases, fail);
@@ -3936,8 +3944,13 @@ static int test_draw_dash_needles(void)
         if (sgn) sign1++; else sign0++;
         if (sml) smallArm++; else { bigArm++; if (clamp) clampMirr++; else clampDir++; }
 
+        /* $01FF — the $5145 PHP residue, popped back at $5186.  Stack residue below SP, not a
+           result; the audit is at seed_car_track_position_next in revs_native_seam.c and the
+           note at the deleted write in draw_dash_needles_native. */
+        set_ignore(g_ignore_pha_residue, 1);
         fail += diff_run("draw_dash_needles", pre, c, draw_dash_needles,
                          draw_dash_needles__t6502, mask, t, &printed);
+        set_ignore(0, 0);
     }
     unsetenv("REVS_SMC_CONTINUE");
 
@@ -4106,11 +4119,19 @@ static int test_seed_car_track_position(void)
        decremented car_seed_index cursor) is the sole live exit — the caller FUN_4d4d loops on
        it.  Everything else is mem[]: math_lo ($74, the campaign's target — its per-path 6502
        exit value is still written until relocation), car_track_position[x] ($0128+x, the
-       result), car_seed_index ($4A, stored back), and the PHP/PLP residue byte at
-       mem[$0100+S] (the pushed P from the LDA $FE68's N/Z plus the entry V/D/I/C — the twin's
-       shim reproduces it, since the oracle's JSRs are C calls that never touch the emulated
-       stack).  D pinned 0: the ADC $5F40 at $6396 is binary and this is the (re)start path,
-       not one of the 8 SED sites (docs/static-map.md §Decimal mode). */
+       result), car_seed_index ($4A, stored back).  D pinned 0: the ADC $5F40 at $6396 is binary and
+       this is the (re)start path, not one of the 8 SED sites (docs/static-map.md §Decimal mode).
+
+       ⭐ THE $6362 PHP/PLP RESIDUE AT $01FF IS IGNORED, SCOPED.  The 6502 parks P there and pops
+       it back at $637B, so the byte is residue below SP: an implementation detail, not a result
+       (docs/validation-harness.md §THE RESULTS RULE, and tools/det_compare.py exempts
+       $01B8..$01FF on the same ground).  The reader audit is written at
+       seed_car_track_position_next in revs_native_seam.c — the routine's own PLP is the only
+       reader, the flags are dead at both callers, no circuit patches $635D..$63A0, and
+       `make transtrap` proves no transliteration runs.  Reproducing it cost FOUR ambient flag
+       bits threaded through two callers; the twin is now cpu-free and so is tick_race_timers.
+       ⚠ The entry flags are still randomised below: that is what proves the ignore is the ONLY
+       thing those bits ever reached. */
     unsigned mask = LIVE_X;
 
     int novice = 0, amateur = 0, pro = 0, signSet = 0, loop2 = 0, wrapX = 0, entZero = 0;
@@ -4156,8 +4177,10 @@ static int test_seed_car_track_position(void)
         if (ent & 0x80u) signSet++;
         if ((ent & 0x7Fu) >= 64u) loop2++;
 
+        set_ignore(g_ignore_pha_residue, 1);          /* $01FF — the $6362 PHP, see above */
         fail += diff_run("seed_car_track_position", pre, c, seed_car_track_position,
                          seed_car_track_position__t6502, mask, t, &printed);
+        set_ignore(0, 0);
     }
     platform_test_via_t2(0);
 

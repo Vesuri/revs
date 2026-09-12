@@ -177,26 +177,6 @@ static void ula_palette_table(unsigned table, int last)
         bbc_ula_palette_write(mem[table + x]);
 }
 
-/* The interrupt is not ours: hand it to whoever owned IRQ1V before us.
-   ⚠ The register state on this path is live and is NOT the exit contract above — the exit
-   is a JMP, not an RTI, and the routine arrives here with A = 0 from the IFR test. */
-static void irq1v_chain_on(void)
-{
-    cpu.A = 0; cpu.N = 0; cpu.Z = 1;
-    platform_indirect_jmp((unsigned short)(mem[MEM_saved_irq1v] |
-                                           ((unsigned short)mem[MEM_saved_irq1v + 1] << 8)));
-}
-
-/* PLA / TAX / LDA $FC / RTI — the exit contract, and the only place it is spelled out. */
-static void irq1v_return(void)
-{
-    unsigned char pulled;
-    PULL(pulled);
-    cpu.X = pulled;
-    cpu.A = mos_irq_a;
-    PLP();
-}
-
 /* band2_duration ($4F21/$4F22) relocated out of mem[].  Genuine cross-interrupt state: band 1's
    arm computes the horizon-split remainder and band 2's arm, a later T1 interrupt of the same
    field, loads it.  This function and its oracle are the only readers/writers.
@@ -233,38 +213,30 @@ void set_band2_duration_v(uint16_t v) { band2_duration_v = v; }
      $FF             the arm is skipped; the counter just wraps to 0 and takes band 0's
                      latch.  Any OTHER negative counter does nothing at all.
 
-   LEAVES BEHIND, in mem[]: the pushed X and irq_band_state, nothing else (band2_duration is
-   relocated to the native band2_duration_v below).  In hardware: $FE6D (ack), $FE20/$FE21 (the
+   LEAVES BEHIND, in mem[]: irq_band_state, and the X the shim pushed — nothing else
+   (band2_duration is relocated to the native band2_duration_v below).  In hardware: $FE6D (ack), $FE20/$FE21 (the
    ULA), $FE66/$FE67 (the next duration — the $FE66 write closes a band record in bbc_hw.cpp)
    and $FE69 once per field.
 
-   EXIT CONTRACT.  A, X and Y all come back as the interrupted code left them — measured on a
-   real BBC over 2858 engine-context interrupts (`make refloop --irq-abi`) and asserted at the
-   seam.  A arrives via mos_irq_a; `PLA/TAX` restores X; Y is never touched; flags and S from
-   the RTI.
+   ⭐ THE 6502-ABI ENTRY IS NOT HERE.  `irq1v_band_schedule` — the IFR test, the chain-on to
+   the previous IRQ1V owner, the X save and the `PLA/TAX/LDA $FC/RTI` exit contract — is in
+   src/gen/revs_native_seam.c, because the ambient register file is the SUBJECT of that code and
+   there is no caller to thread an argument from (the "caller" is whatever foreground the
+   interrupt preempted).  What is left here is the schedule itself, and it is cpu-free: the core
+   is entered with the interrupt already acknowledged and D already cleared, and it returns
+   normally on every path the shim then closes with the RTI.
  */
-void irq1v_band_schedule(void)
+void irq1v_band_schedule_core(void)
 {
     unsigned latch;               /* microseconds until the next band interrupt */
     unsigned char state;
-
-    /* Is this interrupt ours?  User VIA IFR bit 6 is the T1 timeout. */
-    if ((bus_read(USRVIA_IFR) & 0x40) == 0) {
-        irq1v_chain_on();
-        return;
-    }
-    bus_write(USRVIA_IFR, 0x40);  /* acknowledge our own T1 flag */
-
-    PUSH(cpu.X);                  /* X is the arms' loop counter, restored before the RTI */
-    cpu.D = 0;                    /* back to binary */
 
     state = irq_band_state;
     if (state >= 0x80) {
         /* Only $FF is a band; every other negative value leaves the machine entirely
            alone, which is how a half-initialised counter fails safe. */
         if (state != 0xFF) {
-            irq1v_return();
-            return;
+            return;               /* the shim's RTI restores X and A */
         }
         irq_band_state = 0;       /* and the tail INCs it again, so band 1 comes next */
         latch = 0x0FC4;           /* band 0's timing without band 0's palette */
@@ -336,7 +308,7 @@ void irq1v_band_schedule(void)
            `void (void)` whose whole body is a field counter, a rate accumulator and five
            `mem[] ^=` pairs, with NO call of any kind in it — so there is no subtree to be wrong
            about, and nothing that could read a register even in principle.  The far end agrees:
-           this arm falls through to the tail, whose `irq1v_return` overwrites X from the PULL
+           this arm falls through to the tail, whose shim in revs_native_seam.c overwrites X from the PULL
            and A from mos_irq_a and pulls the flags with PLP, so all five were dead at the exit
            as well.  Both ends closed, which is what the null measurement on its own was not. */
         PROBE_PHASE(PROBE_PHASE_BODYARM);
@@ -353,7 +325,6 @@ void irq1v_band_schedule(void)
     bus_write(USRVIA_T1LH, (uint8_t)(latch >> 8));
     bus_write(USRVIA_T1LL, (uint8_t)latch);
     irq_band_state++;
-    irq1v_return();
 }
 
 /* THE ROUTINE'S OWN SELF-MODIFIED CODE (symbols.csv `code` rows).  Each MEM_view_*_site is an
@@ -1408,15 +1379,6 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
    this is a named helper with the macro inside rather than plain C: the 68000 has no A. */
 void hold_a_for_irq_seam(uint8_t v) { LDA(v); }
 
-/* $16E9's `BIT $05F4` — bit 6 of state_flags lands in V.  Through the macro rather than as a
-   plain mask because the test leaves N and V set across the calls that follow it, and "no
-   callee reads them" is a claim about a 400-routine subtree, not something to assume here. */
-int state_flags_bit6(void)
-{
-    bit_test(state_flags);
-    return cpu.V;
-}
-
 /* $1765-$1771 — WHERE DOES AN INTERRUPTED SESSION RESUME?  Asked after a crash, and again
    after a quit, and the three answers are the three restart depths.  A practice lap and a
    qualifying session simply begin again; so does a Novice race, which is how the beginner
@@ -1605,14 +1567,12 @@ uint8_t race_main_loop_core(RestartDepth depth)
         /* the 6502's `LDA #0 / STA state_flags`: A is dead after the store — scale_wing_settings
            opens `LDX #1 / LDA wing_setting_front,X` and reads no entry register or flag. */
         state_flags = 0;
-        /* Scale the wing settings for the new session.  ⭐ Its closing `ADC #$3C`'s C and V are
-           the ambient carry/overflow at the frame body's first call ($1701), so they are kept
-           and handed to phase 1 by value.  Holding them across the inner loop is exact, not an
-           approximation: the 6502 re-runs $16FE every frame, and the routine reads only the two
-           pit-menu wing settings, which cannot change without LEAVING this loop (the pit request
-           returns LOOP_FINISHED and comes back round this outer for(;;)) — so every frame's
-           re-run would recompute the same two bits. */
-        WingScaleExit wing = scale_wing_settings_core();
+        /* Scale the wing settings for the new session.  ⭐ ITS EXIT FLAGS ARE NO LONGER KEPT.
+           The closing `ADC #$3C`'s C and V were the ambient carry/overflow at the frame body's
+           first call ($1701) and were held across the inner loop and handed to phase 1 by value
+           — but their only destination was the seeder's $6362 PHP residue two calls further
+           down, which is stack residue below SP and not a result. */
+        (void)scale_wing_settings_core();
         RESET_SPLIT(3);
 #undef RESET_SPLIT
 
@@ -1636,13 +1596,10 @@ uint8_t race_main_loop_core(RestartDepth depth)
             s_crashBodyStartVbi = g_vbiCount;    /* fields from here to the hold = the body cost */
 #endif
 
-            /* ⭐ Phase 1 takes the four ambient flag bits by value, not out of `cpu`.  C and V
-               are scale_wing_settings' (above).  D is 0: docs/static-map.md §Decimal mode
-               inventories all eight `SED` sites and none is on the frame body's path, and the
-               two BCD routines phase 1 itself can reach close with a `CLD`.  I is 0: the body's
-               only interrupt fence is phase 21's SEI/CLI pair, which closes before the frame
-               ends, so $1701 is always reached with interrupts enabled. */
-            PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers_core(wing.c, wing.v, 0u, 0u);
+            /* ⭐ Phase 1 takes nothing: the four ambient flag bits it used to be handed
+               (scale_wing_settings' C and V above, plus D = 0 and I = 0) went only into the
+               seeder's $6362 PHP residue, which is stack residue and no longer reproduced. */
+            PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers_core();
             PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  draw_starting_lights();
             /* ⭐ PHASES 3 AND 4 TALK DIRECTLY, NOT THROUGH mem[].  Both are native and adjacent,
                so the steering angle passes in car_angle_16[2]: the `_frame` entries drop phase 3's
@@ -1728,10 +1685,14 @@ uint8_t race_main_loop_core(RestartDepth depth)
     math_lo = 0x80;                                  /* $18EA STA $74 — the direction flag slot */
     copy_dash_data_core(0x80u);
     /* $17BF — the release's Y is copy_dash_data's own exit Y: the start offset of the LAST
-       dash block, which its block loop stopped on.  Core-to-core; the shim's only extra is
-       the CLI, which is cpu.I below. */
+       dash block, which its block loop stopped on.  Core-to-core.
+       ⭐ THE $4F35 CLI IS NOT MODELLED, and it has no reader left.  `cpu.I` was only ever
+       BOOKKEEPING on this port: nothing gates interrupt delivery on it (bbc_hw.cpp writes it at
+       the IRQ entry and never reads it back), so the only thing that could observe it was a
+       pushed P byte -- and both of those were balanced PHP/PLP residues below SP that
+       THE RESULTS RULE retired (draw_dash_needles_native's $5145 and the seeder's $6362).  The
+       real fence around the vector update is enter_mos_text_mode_core's, argued at $4F2D. */
     irq1v_release_core(mem[MEM_dash_block_starts + (DASH_BLOCK_COUNT - 1)]);
-    cpu.I = 0;                                       /* $4F35 CLI */
 
     /* ⚠ THE EXIT CARRY IS GENUINELY LIVE, and it is a CONSTANT: it is copy_dash_data's block
        loop closing on `CPX #$29` with X == $29, so C == 1 on every path that gets here.
@@ -2998,17 +2959,6 @@ REVS_FLAG_OP void abs8_into(HookRegs *r)
 }
 
 void abs8_regs(HookRegs *r) { abs8_into(r); }
-
-/* ⭐ The `cpu` entry is on the hot path (generated code calls it), so the shared body is
-   always_inline'd: the local file folds away and this compiles to the cpu field accesses it
-   always did.  Same for mul8_noinit below. */
-void abs8(void)
-{
-    HookRegs r;
-    hook_cpu_to_regs(&r);
-    abs8_into(&r);
-    hook_regs_to_cpu(&r);
-}
 
 /* $254A  road_edge_side — WHICH ROAD SIDE, AND WHICH WAY ROUND IT  (twin #11)
    Called twice a frame, with $00 and $80, and it EORs that against track_direction — so the
@@ -6072,16 +6022,16 @@ static SlotExit surface_colour_at_core(uint8_t line, uint8_t position,
                      line, entryV, c);
 }
 
-/* The 6502-ABI shim's body, parametrised by the scan line, and living here because the core is
-   static to this file.  ⭐ Its former second job is gone: column_gap_walk and plot_view_src_line
-   both call surface_colour_at_core directly now, so this is reached only through the shim — i.e.
-   only by the validation oracle and by any transliterated caller. */
-uint8_t surface_colour_apply(uint8_t line)
+/* The reachable-from-outside wrapper over the static core, parametrised by the scan line and
+   by the two registers the 6502 arrives with.  It lives here because the core and EDGE_COLUMN
+   are both private to this file, and it is cpu-FREE: `surface_colour_at` in
+   revs_native_seam.c replays the exit ABI.
+   ⭐ Its former second job is gone: column_gap_walk and plot_view_src_line both call
+   surface_colour_at_core directly now, so this is reached only through that shim — i.e. only
+   by the validation oracle and by any transliterated caller. */
+SlotExit surface_colour_at_line_core(uint8_t line, uint8_t entryX, uint8_t entryV)
 {
-    SlotExit e = surface_colour_at_core(line, mem[EDGE_COLUMN], cpu.X, cpu.V);
-    cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
-    cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
-    return e.a;
+    return surface_colour_at_core(line, mem[EDGE_COLUMN], entryX, entryV);
 }
 
 /* $1DAF  column_gap_walk — FILL ONE COLUMN'S EMPTY SOURCE BYTES  (twin #41)
@@ -7364,45 +7314,6 @@ uint8_t sound_stop_channel_core(uint8_t chan, uint8_t ambientY)
         if ((loop_counter & 0x02u) != 0u) return;    /* $4789-$478D — the two-frame hysteresis */
     }
     sound_stop_channel_core(3u, ambientY);           /* $478F-$4791 — Y flows through to the OSBYTE 21 */
-}
-
-void store_slip_exit_abi(uint8_t sign)
-{
-    cpu.A = math_lo;                                 /* $4B5B LDA math_lo — the stored low byte */
-    cpu.Y = mem[SLIP_OUT_INDEX];                     /* $4B56 LDY SLIP_OUT_INDEX */
-    cpu.N = (uint8_t)(math_lo >> 7);                 /* LDA math_lo sets N/Z */
-    cpu.Z = (uint8_t)(math_lo == 0u);
-    cpu.V = (uint8_t)((sign >> 6) & 1u);             /* $4B51 BIT SLIP_SIGN sets V = bit 6 */
-}
-
-/* The $0B4D `ADC #$10` block-index carry and overflow — a plain binary add (D = 0), so C is the
-   unsigned carry and V the signed overflow.  begin_spin threads these out as its exit C/V; the
-   exit ABI below replays them into cpu. */
-typedef struct { uint8_t c, v; } BlockCV;
-static BlockCV sound_queue_block_cv(uint8_t slot)
-{
-    unsigned s   = (uint8_t)(slot << 3);
-    unsigned sum = s + 0x10u;
-    BlockCV r;
-    r.c = (uint8_t)(sum > 0xFFu);
-    r.v = (uint8_t)(((~(s ^ 0x10u)) & (s ^ sum) & 0x80u) ? 1u : 0u);
-    return r;
-}
-
-/* Reconstruct sound_queue / sound_queue_default's exit: A/Y left by OSWORD 7 on the $0Bxx block
-   (reason code 7 in A, block high byte $0B in Y — both constants at this call site now the cpu-free
-   wrapper no longer leaves them behind), X restored from sound_saved_x (its N/Z the exit), and the
-   block-index ADD's C and V ($0B4D ADC #$10). */
-void sound_queue_exit_abi(uint8_t slot)
-{
-    BlockCV cv = sound_queue_block_cv(slot);
-    cpu.C = cv.c;
-    cpu.V = cv.v;
-    cpu.A = 0x07u;                                   /* OSWORD reason code, preserved through the call */
-    cpu.Y = 0x0Bu;                                   /* $0B — the sound block's high byte */
-    cpu.X = sound_saved_x;                           /* $0B73 LDX sound_saved_x (inside sound_osword) */
-    cpu.N = (uint8_t)(sound_saved_x >> 7);
-    cpu.Z = (uint8_t)(sound_saved_x == 0u);
 }
 
 /* $0E74  engine_sound_update — ONE STEP OF THE ENGINE NOTE  (twin #173)
@@ -10128,8 +10039,12 @@ int draw_starting_lights_core(void)
    mem[$0204]/mem[$0205] still holding $4E5C (src/platform/bbc_hw.cpp), and the transpiler routes
    the OS vector page for the same reason.
    ⚠ The SEI/CLI pair brackets the vector update so a band interrupt cannot land between the two
-   bytes.  On this port that is bookkeeping in cpu.I — which PHP still composes — so the shim
-   keeps it rather than dropping it.
+   bytes — on the 6502.  ⭐ ON THIS PORT IT FENCES NOTHING AND IS NOT MODELLED: interrupt
+   delivery is never gated on `cpu.I` (bbc_hw.cpp writes it at the IRQ entry and never reads it
+   back), and the last thing that could observe the bit — two balanced PHP/PLP residues below SP
+   — went under THE RESULTS RULE.  What actually makes the update atomic is the backend: the host
+   calls the ISR from a controlled point, and on the Amiga the vector pair is plain RAM that the
+   VERTB handler reads once per field.
 
    Result-only: the exit is dead at every caller.  Both do `JSR irq1v_release` / `RTS` — $17BF in
    the transliterated race body, and race_main_loop_core's very last statement. */
@@ -10702,11 +10617,10 @@ void reset_all_cars_for_session_core(uint8_t startCar)
         mem[MEM_car_grid_base + car] = (uint8_t)(car >> 1);
 
         /* $4D5E — the seeder reads and rewrites car_seed_index itself and hands the
-           decremented cursor back.  ⚠ A FLAG ESCAPES: the $4D59 LSR that halves the car index
-           leaves its bit 0 in the carry, which is still live inside the seeder — its PHP
-           residue byte at $0100+S captures it.  That residue is a function of the LIVE stack
-           pointer, so it stays in the seam; this call passes the escaping bit across. */
-        car = seed_car_track_position_with_carry(car & 1u);
+           decremented cursor back.  ⭐ NO FLAG ESCAPES ANY MORE: the $4D59 LSR's bit 0 was live
+           in the seeder only because its $6362 PHP parked the whole flag byte at $0100+S, and
+           that residue is an implementation detail the twin no longer reproduces. */
+        car = seed_car_track_position_next();
 
         mem[MEM_car_lap_lo  + car] = 0x00;               /* $4D61-$4D6B — the NEXT car's total */
         mem[MEM_car_lap_mid + car] = 0x00;
@@ -14271,7 +14185,7 @@ FrameTimeExit add_frame_time_core(uint8_t clockIdx)
         before the minutes byte has ticked at all.
    ⚠ Exit A/X/Y and the flags are DEAD: both callers ($1171 in finish_race, $1701 in
    race_main_loop) reload immediately, so the fixture compares mem[] alone. */
-void tick_race_timers_core(uint8_t entryC, uint8_t entryV, uint8_t entryD, uint8_t entryI)
+void tick_race_timers_core(void)
 {
     /* $5052-$505D — the divider.  At zero it reloads with period + 1 and then decrements, so the
        stored value cycles period..0; a period of $FF would wrap the reload to zero and the store
@@ -14282,13 +14196,10 @@ void tick_race_timers_core(uint8_t entryC, uint8_t entryV, uint8_t entryD, uint8
     if (divider != 0u)
         time_tick_countdown = (uint8_t)(divider - 1u);
 
-    if ((start_light_state & 0x80u) == 0u) {          /* $505F/$5061 BMI — lights out? */
-        FrameTimeExit ft = add_frame_time_core(0x00u);   /* $5063/$5065 — clock 0, the player's */
-        /* ⚠ Its carry and overflow stay AMBIENT in P as far as $507A, whose callee captures the
-           whole flag byte as a stack residue ($6362 PHP).  Forwarded as values, and D is 0
-           because add_frame_time closes its BCD arithmetic with a CLD. */
-        entryC = ft.c; entryV = ft.v; entryD = 0u;
-    }
+    if ((start_light_state & 0x80u) == 0u)            /* $505F/$5061 BMI — lights out? */
+        add_frame_time_core(0x00u);                  /* $5063/$5065 — clock 0, the player's.
+                                                        ⚠ Its C and V used to be forwarded to
+                                                        $507A's PHP residue; that byte is gone. */
 
     if (++loop_counter == 0u)                         /* $5068 INC / $506A BNE */
         loop_counter_hi++;                            /* $506C */
@@ -14296,8 +14207,8 @@ void tick_race_timers_core(uint8_t entryC, uint8_t entryV, uint8_t entryD, uint8
     /* $506F-$5078 — the speed refresh: every 32nd frame, and unconditionally until the player's
        minutes byte has ticked (which is how the field is seeded at the start of a session). */
     if (mem[MEM_race_clock_mid] == 0u || (loop_counter & 0x1Fu) == 0u)
-        seed_car_track_position_flags(entryC, entryV, entryD, entryI);   /* $507A — it reads its
-                                                         own cursor out of car_seed_index */
+        seed_car_track_position_next();          /* $507A — it reads its own cursor out of
+                                                    car_seed_index */
 }
 
 /* $11BE retire_car — TWIN #194.  Car X is out of the running: $C0 into car_flags_shape[X] (bit 6
@@ -14335,13 +14246,12 @@ void finish_race_core(void)
     retire_car_core(player_car);                     /* $116C/$116E — park the player */
 
     for (;;) {
-        /* $1171 — one frame of clock.  ⚠ The four flag bits it forwards to the seeder's PHP
-           residue are AMBIENT here and stay on `cpu`: unlike the frame body's $1701, this loop
-           re-enters from two branch-backs with different carries ($1196 BCC and $11A5 BCS) and
-           its V was last written somewhere inside drive_other_cars / check_car_pair — a
-           transliterated subtree, not a value this routine establishes.  The fixture compares
-           the residue byte (LIVE_NONE), so they are passed through as they are. */
-        tick_race_timers_core(cpu.C, cpu.V, cpu.D, cpu.I);
+        /* $1171 — one frame of clock.  ⭐ It used to be handed four AMBIENT flag bits off
+           `cpu`, and this loop was the reason they could not be proved: it re-enters from two
+           branch-backs with different carries ($1196 BCC and $11A5 BCS) and its V was last
+           written inside drive_other_cars / check_car_pair.  They only ever reached the seeder's
+           $6362 PHP residue — stack residue, not a result — so there is nothing to forward. */
+        tick_race_timers_core();
         shift_key_commands_core(0x00u);              /* $1174/$1176 — SHIFT+fn, the abort included */
         if (state_flags & 0x80u)                     /* $1179/$117C BMI — aborted */
             return;

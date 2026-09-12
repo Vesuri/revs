@@ -760,9 +760,28 @@ void    reject_all_object_slots_core(void);
 void    update_lap_timers_core(uint8_t ambX, uint8_t ambY);
 void    enter_mos_text_mode_core(void);
 void    irq1v_release_core(uint8_t ambientY);
+/* $4E5C — the raster-band schedule, cpu-free.  Its 6502-ABI entry (the IFR test, the chain-on,
+   the X save and the PLA/TAX/LDA $FC/RTI exit contract) is the ISR seam in revs_native_seam.c. */
+void    irq1v_band_schedule_core(void);
 uint8_t sound_queue_core(uint8_t slot, uint8_t amplitude, uint8_t savedX);
 SlotExit engine_sound_update_core(uint8_t entryX, uint8_t entryY,
                                   unsigned entryV, unsigned entryC, int* pushedPitch);
+/* The $0B4D `ADC #$10` block-index carry and overflow — a plain binary add (D = 0), so C is the
+   unsigned carry and V the signed overflow.  Shared because three cores in revs_native.c thread
+   these out as their exit C/V and `sound_queue_exit_abi` (revs_native_seam.c) replays them into
+   cpu.  `static inline` rather than a cross-TU call: the slot is a literal at every call site,
+   so both sides fold it to two constants. */
+typedef struct { uint8_t c, v; } BlockCV;
+static inline BlockCV sound_queue_block_cv(uint8_t slot)
+{
+    unsigned s   = (uint8_t)(slot << 3);
+    unsigned sum = s + 0x10u;
+    BlockCV r;
+    r.c = (uint8_t)(sum > 0xFFu);
+    r.v = (uint8_t)(((~(s ^ 0x10u)) & (s ^ sum) & 0x80u) ? 1u : 0u);
+    return r;
+}
+
 void sound_queue_exit_abi(uint8_t slot);
 uint8_t sound_stop_channel_core(uint8_t chan, uint8_t ambientY);
 int state_flags_bit6(void);
@@ -770,7 +789,8 @@ void store_slip_clamped_core(uint8_t valueHi);
 void store_slip_clamped_off_throttle_core(uint8_t valueHi);
 void store_slip_exit_abi(uint8_t sign);
 void store_slip_signed_core(uint8_t valueHi);
-uint8_t surface_colour_apply(uint8_t line);
+/* $1EAB's body -- cpu-free; `surface_colour_at` in revs_native_seam.c replays the exit ABI. */
+SlotExit surface_colour_at_line_core(uint8_t line, uint8_t entryX, uint8_t entryV);
 CameraExit update_camera_and_drive_state_core(void);
 EngineExit update_engine_revs_core(uint8_t carryIn, uint8_t entryY);
 void update_grip_limits_core(void);
@@ -795,7 +815,6 @@ void parse_two_digit_ascii_core(uint8_t char0, uint8_t char1, ParseNum *out);
 uint8_t console_read_two_digits_core(void);
 void prompt_wing_settings_core(void);
 uint8_t seed_car_track_position_core(uint8_t x, uint8_t entropy, uint8_t *mathlo_out);
-uint8_t seed_car_track_position_with_carry(uint8_t carry);
 /* $0B77 scale_wing_settings — the drag coefficient plus the closing `ADC #$3C`'s C and V, which
    are the frame body's ambient carry/overflow at its very first call ($1701). */
 typedef struct { uint8_t drag, c, v; } WingScaleExit;
@@ -823,15 +842,14 @@ PosDisplayExit update_position_display_core(uint8_t entryX, uint8_t entryY);
 typedef struct { uint8_t a, y, n, z, v, c; } FrameTimeExit;
 FrameTimeExit add_frame_time_core(uint8_t clockIdx);
 
-/* $5052 tick_race_timers — the four entry flag bits it FORWARDS.  It establishes none of them
-   itself; they reach `seed_car_track_position`'s `PHP` residue ($6362) two calls down, which is
-   the only thing in the frame that can see them.  The 6502-ABI shim supplies them from `cpu`;
-   the native driver hands over the values it can prove (see race_main_loop_core's phase 1). */
-void tick_race_timers_core(uint8_t entryC, uint8_t entryV, uint8_t entryD, uint8_t entryI);
+/* $5052 tick_race_timers — no inputs.  ⭐ It used to take four ambient flag bits and forward
+   them two calls down to `seed_car_track_position`'s $6362 `PHP` residue, the only thing in the
+   frame that could see them; that byte is stack residue below SP and is gone. */
+void tick_race_timers_core(void);
 
-/* $635D seed_car_track_position, with the `PHP` residue's four ambient flag bits by value
-   instead of out of `cpu`.  Returns the decremented car-index cursor (the exit ABI's X). */
-uint8_t seed_car_track_position_flags(uint8_t c, uint8_t v, uint8_t d, uint8_t i);
+/* $635D seed_car_track_position — cpu-free.  Returns the decremented car-index cursor (the
+   exit ABI's X); the $6362 PHP residue it used to compose is gone (the argument is at the body). */
+uint8_t seed_car_track_position_next(void);
 void shift_key_commands_core(uint8_t entryY);
 uint8_t retire_car_core(uint8_t x);
 /* $11AB spin_car_out — the slot as an argument; returns retire_car's lap comparison, or -1

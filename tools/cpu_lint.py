@@ -2,8 +2,10 @@
 """make cpu-lint — src/gen/revs_native.c may speak `cpu` only in the argued classes.
 
 ⭐⭐ WHY.  The campaign's goal is the 6502 register file GONE from the native surface.  What is
-left in revs_native.c is not residue: each site is one of the six classes below, argued at the
-code.  A NEW `cpu.` reference in any other function is the thing this lint exists to stop --
+left in revs_native.c is not residue: each site is one of the classes below, argued at the code.
+⭐ THREE OF THE SIX ARE NOW EMPTY (the ISR seam, the flag forwards and the class-6 shims), because "it is not
+oracle-only, so it cannot go to revs_native_abi.c" was never an argument for it living in a file
+whose job is CORES.  Both emptied into revs_native_seam.c, beside the callers.  A NEW `cpu.` reference in any other function is the thing this lint exists to stop --
 either it belongs in a typed core's parameter list, or its shim belongs in revs_native_abi.c.
 
 To add a function here you must also write the argument at the code.  Deleting a row is always
@@ -15,11 +17,14 @@ ALLOWED = {
   # -- class 1: the HOOK / SMC SEAM.  The 6502 hands registers to a patched arm we do not own, so
   #    the register file is genuinely live there (docs/faithfulness-seam.md).
 
-  # -- class 2: the ISR SEAM, and it is the one place where the ambient register file is the
-  #    SUBJECT of the code: the "caller" is whatever foreground the interrupt preempted, so
-  #    there is nothing to thread an argument from.  The MOS's own IRQ entry is the contract and
-  #    g_irqClobberCount asserts it on both backends (docs/native-sweep.md track 4).
-  'irq1v_band_schedule': 'ISR seam', 'irq1v_return': 'ISR seam', 'irq1v_chain_on': 'ISR seam',
+  # -- class 2: the ISR SEAM.  ⭐ EMPTY, and that is the point: the IRQ1V handler's register work
+  #    (the chain-on to the previous owner, the X save and the PLA/TAX/LDA $FC/RTI exit contract)
+  #    moved to `irq1v_band_schedule` in revs_native_seam.c and what is left here is
+  #    `irq1v_band_schedule_core`, the raster-band state machine, which touches no register at
+  #    all.  The ambient register file IS the subject of that seam code -- the "caller" is
+  #    whatever foreground the interrupt preempted, so there is nothing to thread an argument
+  #    from -- but that is an argument for where it lives, not for it living in a core file.
+  #    g_irqClobberCount asserts the contract on both backends (docs/native-sweep.md track 4).
 
   # -- class 3: the STACK POINTER.  `cpu.S` here is an ADDRESS, not a value in a register --
   #    the routine is talking about a byte at $0100+S.  C has no equivalent to drop it into.
@@ -36,27 +41,51 @@ ALLOWED = {
   #    target) and span_abandon_chain passes `cpu.S + 2u` as an argument.
   'engine_init_core': 'cpu.S is an address', 'span_abandon_chain': 'cpu.S is an address',
 
-  # -- class 4: a decimal-mode clear inside a core.  `cpu.D = 0` is the 6502's own CLD and the
-  #    oracle pushes/compares P; nothing in any core READS D (docs/static-map.md §Decimal mode).
+  # -- class 4: a decimal-mode clear inside a core.  `cpu.D = 0` is the 6502's own CLD.
+  #    ⚠⚠ THE OLD ARGUMENT HERE WAS WRONG AND IS THE REASON THESE THREE STAY.  It read
+  #    "nothing in any core READS D", which is false: `adc_step` (revs_native_seam.h) puts its
+  #    add through cpu.h's ADC macro, and that macro consults cpu.D to decide the RESULT BYTE.
+  #    Its two live call sites are road_edge_side_core's $2551 `CLC / ADC #$78` and the plot-
+  #    pointer marshal at revs_native_seam.c:365 -- both on the RENDER path, whose correctness
+  #    rests on D being 0 there (docs/static-map.md §Decimal mode).  D is written to 1 only by
+  #    the 8 `SED()` sites in src/gen/revs_gen.c, which `make transtrap` shows no scenario
+  #    enters -- but "a body no scenario DRIVES is unproven, not dead", so the CLD is the
+  #    mechanism that restores binary mode the moment one ever does run, exactly as on the 6502.
+  #    It is three bool stores in cold routines; deleting them buys nothing and removes the
+  #    invariant's only enforcement.  add_tally_to_lap_total's fixture ASSERTS D is clear at exit
+  #    (dLeftSet), which is the right instrument for a CLD and is why it is not a free-floating
+  #    claim.  ⭐ The sibling case: the ISR shim's own CLD in revs_native_seam.c is undetectable
+  #    by its fixture for the same reason and is kept on the same argument, written at the code.
   'sort_cars_by_key_core': 'CLD', 'add_tally_to_lap_total_core': 'CLD',
   'lap_complete_core': 'CLD',
 
-  # -- class 5: a documented forward of a caller's live flag, argued at the code.
-  'race_main_loop_core': 'the closing CLI', 'finish_race_core': 'documented forward',
+  # -- class 5: a documented forward of a caller's live flag.  ⭐ NOW EMPTY TOO, and the whole
+  #    class dissolved for one reason: every destination of a "forwarded" flag turned out to be
+  #    a balanced PHP/PLP residue below SP.
+  #    ⭐ finish_race_core used to forward four ambient flag bits into
+  #    tick_race_timers_core, and its own comment said why they could not be proved: the run-out
+  #    loop re-enters from two branch-backs with different carries.  But their only destination
+  #    was seed_car_track_position's $6362 PHP residue at $0100+S -- stack residue below SP, an
+  #    implementation detail and not a result -- so the whole chain went, taking four parameters
+  #    off tick_race_timers_core and the WingScaleExit hand-off out of race_main_loop_core's
+  #    phase 1 with it.  ⚠ The lesson generalises: a flag that is genuinely UNPROVABLE is a hint
+  #    to ask what READS it, because an unprovable value that nothing reads is not a forward.
+  #    ⭐ race_main_loop_core's $4F35 CLI went the same way: `cpu.I` is pure bookkeeping on this
+  #    port (nothing gates interrupt delivery on it), so once draw_dash_needles_native's $5145
+  #    residue -- a PER-FRAME write -- was retired, the bit had no reader anywhere.
 
-  # -- class 6: a 6502-ABI SHIM THAT A NATIVE CALLER STILL USES, so it cannot move to
-  #    revs_native_abi.c.  ⚠ A shim with NO native caller belongs in that file -- that is the
-  #    whole point of it.
+  # -- class 6: a 6502-ABI SHIM THAT A NATIVE CALLER STILL USES.  ⭐ ALSO EMPTY NOW, and the
+  #    reason is worth keeping: such a shim cannot go to revs_native_abi.c, which is by
+  #    definition the TU nothing in the port calls -- but "not revs_native_abi.c" was never an
+  #    argument for revs_native.c, which is for CORES.  The answer is the third file:
+  #    state_flags_bit6, surface_colour_apply (now the cpu-free surface_colour_at_line_core
+  #    here, with the exit ABI replayed by its shim), abs8's `cpu` entry, store_slip_exit_abi
+  #    and sound_queue_exit_abi all live in revs_native_seam.c beside their callers.
   #    ⚠⚠ THE CALLER AUDIT IS A TRANSITIVE CLOSURE, not a grep.  Six rows here used to say
   #    "shim: native callers" about callers that were themselves oracle-only shims in
   #    revs_native_abi.c (mul8 -> mul8_noinit, scale16_by_y -> abs16_math, and the three math
   #    helpers the twin comments called universal), so the whole cluster was oracle-only and
   #    moved out.  Ask it as: is this reachable from anything BUT an oracle-only shim?
-  'state_flags_bit6': 'shim: read from revs_native_seam.c',
-  'surface_colour_apply': 'shim: revs_native_seam.c',
-  'abs8': 'HookRegs shim: scale_by_track_gradient_tail in revs_native_seam.c',
-  'store_slip_exit_abi': 'exit ABI: revs_native_seam.c x3',
-  'sound_queue_exit_abi': 'exit ABI: revs_native_seam.c x5',
 }
 
 def strip_comments(lines):

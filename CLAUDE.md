@@ -112,12 +112,14 @@ make determinism-drive     # ⭐ ...and the same 300 frames with the car MOVING 
                            #   RUN BOTH after a change to any driver routine
 make determinism-crash     #   ...and the RESET LADDER (car off the track, full_track_scan_rebuild
                            #   runs 7x) — the gate on reset_driving_variables' practice arm
+make determinism-steer     #   ...and the same 300 frames with the WHEEL TURNED — a third
+                           #   trajectory, the gate on the steering/response path
 make determinism-race      # ⭐ ...and THE RACE PROPER (session_is_race = $80), the ONLY target
                            #   that reaches any `& $80` arm — every other determinism run is a
                            #   PRACTICE session.  ⚠ 13000 frames, RELEASE=1, ~2 min: ~12000 of
                            #   them are the qualifying session the grid is reached through
 make endian-lint           # fail if mem[] is aliased as a wide pointer
-make cpu-lint              # ⭐ fail if revs_native.c speaks `cpu` outside the six argued
+make cpu-lint              # ⭐ fail if revs_native.c speaks `cpu` outside the argued
                            #   classes (tools/cpu_lint.py names them, and a STALE allowlist
                            #   row fails too).  The 6502-ABI shims the oracle needs live in
                            #   src/gen/revs_native_abi.c — nothing in the port calls them

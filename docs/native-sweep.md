@@ -642,7 +642,7 @@ BBC could see. Passing the register file explicitly is the fix; assuming it is d
    **48** `void <name>(void)` shims now live in `src/gen/revs_native_abi.c` — every one whose only
    callers are `revs_gen.c` / `revs_track_hooks.c` (the oracle, which `make transtrap` proves no
    scenario executes) and `validate_native.c` (which enters a twin through its 6502 ABI on
-   purpose). `revs_native.c` is down to **24 functions** that speak `cpu`, in six argued classes
+   purpose). `revs_native.c` is down to **5 functions** that speak `cpu`, in two argued classes
    enumerated *in the lint itself* (`tools/cpu_lint.py`): the hook/SMC seam, the ISR seam, `cpu.S`
    as an ADDRESS, `cpu.D = 0` (CLD), a documented flag forward, and a shim a native caller still
    uses. A new `cpu.` reference anywhere else fails the build.
@@ -748,28 +748,56 @@ BBC could see. Passing the register file explicitly is the fix; assuming it is d
    reads them (`src/platform/bbc_hw.cpp`). The seam is the one place in the port where the
    ambient 6502 register file is the actual subject of the code.
 
-## ✅ The nineteen that remain, and why each one is not residue
+## ✅ The five that remain, and why each one is not residue
 
-`make cpu-lint` prints `19 functions in the argued classes` and the six classes live in
-`tools/cpu_lint.py`. Tracks 2 and 4 above argue classes 1 and 2 (the hook/SMC seam and the ISR
-seam). This is the rest — **57 `cpu` sites, and every one of them is a 6502 mechanism the
-differential can see, not a register the campaign failed to thread.**
+`make cpu-lint` prints `5 functions in the argued classes`, and the classes live in
+`tools/cpu_lint.py` — **FOUR of the original six are now EMPTY**: the ISR seam and the class-6
+shims (see §THE `_core` FRONT IS CLOSED below for where they went), and then class 5, the flag
+FORWARDS, which dissolved for a single reason worth stating on its own:
 
-**Class 3 — `cpu.S` is an ADDRESS, and the byte at `$0100+S` is compared** (5 functions, 9
-sites). C has no stack pointer to drop these into, and the values are not registers:
-- `mul16_by_1_5_core`'s `mem[STACK_PAGE + cpu.S] = hiHalf` and `update_lap_timers_core`'s
-  `PUSH`/`PULL` pair are **stack-page residue the oracle leaves and the fixture diffs**. The
-  6502 parks a byte with `PHA`/`PHP` and the harness compares all 64 KB, page 1 included, so
-  replacing the push with a C local changes a byte the differential reads. ⚠ That is the whole
-  reason they are not `uint8_t saved = ...`.
+⭐⭐ **EVERY "FORWARDED FLAG" TURNED OUT TO HAVE A BALANCED `PHP`/`PLP` AS ITS ONLY DESTINATION.**
+`finish_race_core` handed four ambient flag bits to `tick_race_timers_core`, which handed them two
+calls further down to `seed_car_track_position`'s `$6362 PHP` — a push whose own `$637B PLP` pops
+it back, leaving a byte at `$0100+S` below the stack pointer that nothing else can read. The same
+shape sat in `draw_dash_needles_native` (`$5145`/`$5186`) and that one ran EVERY FRAME. Both went
+under §THE RESULTS RULE with the reader audit written at the code, and the collapse ran upstream:
+four parameters off `tick_race_timers_core`, the whole `seed_car_track_position_with_carry` entry
+point, `race_main_loop_core`'s held `WingScaleExit`, and the `$4F35 CLI` — because
+`draw_dash_needles_native`'s residue was the LAST reader of `cpu.I` anywhere in the port.
+
+⭐ **The transferable lesson, and it is the useful half:** `finish_race_core`'s own comment said
+the four bits were *unprovable* — the run-out loop re-enters from two branch-backs with different
+carries and its V was last written inside a transliterated subtree. That comment was true, and it
+was the wrong question. **A value you cannot prove is a prompt to ask what READS it**, because an
+unprovable value with no reader is not a forward at all. Two sessions were spent threading those
+bits through three functions to keep them exact.
+
+Track 2 above argues class 1, the hook/SMC seam. This is the rest.
+
+⚠⚠ **THE ARGUMENT THIS SECTION USED TO MAKE FOR CLASS 3 WAS WRONG, and it was the most
+load-bearing wrong thing in this file.** It read: *"the 6502 parks a byte with `PHA`/`PHP` and
+the harness compares all 64 KB, page 1 included, so replacing the push with a C local changes a
+byte the differential reads — that is the whole reason they are not `uint8_t saved = ...`."*
+That is an argument about the **instrument**, not about the game, and the user's restated
+governing principle settles it the other way: *validate **results**, not implementation
+details.* A byte the routine's own `PULL` pops back, below SP, inside `$01B8..$01FF` — which
+`tools/det_compare.py` had **already** exempted on precisely this reasoning — is an
+implementation detail of a three-register machine. Four of them are gone (a scoped `set_ignore`
+in the fixture, with the reader audit written at each site), and with them
+`update_lap_timers_core`'s whole status-byte composition, including a live `adc_overflow` call
+that existed only to feed page 1. `docs/validation-harness.md` §THE RESULTS RULE.
+⭐ The transferable form: **when the only thing forcing an idiom is the harness, the harness is
+the thing to change.** Same shape as §THE DOMAIN RULE on the input side.
+
+**Class 3 — `cpu.S` read as a VALUE** (2 functions). C has no stack pointer to drop these into,
+and here `S` is genuinely the subject rather than a place a byte was parked:
 - `span_abandon_chain`'s `cpu.S + 2u` is the `TSX/INX/INX/TXS` two-level return **modelled as a
   value**: X really does come back as S+2 and the `$2F23` seam inherits it.
 - `engine_init_core`'s `top_level_stack = cpu.S` is the `$386D TSX` — the unwind target the
   abort path longjmps to. The *value* is the subject.
-- `place_player_in_section_native`'s two `PUSH`/`PULL` pairs are the routine's own fold of two
-  16-bit magnitudes through the stack.
-⚠ None of these can be removed by threading an argument, because no caller supplies them: the
-stack pointer is machine state the 6502 code computes with.
+⚠ Neither can be removed by threading an argument, because no caller supplies them: the stack
+pointer is machine state the 6502 code computes with. ⚠ And a PUSH whose byte is popped back is
+**not** a member — that ground is gone.
 
 **Class 4 — `cpu.D = 0`** (3 sites: `sort_cars_by_key_core`, `add_tally_to_lap_total_core`,
 `lap_complete_core`). The routine's own `CLD`, and it **stays** — `docs/static-map.md` §Decimal
@@ -976,7 +1004,7 @@ these two rest on ARGUMENT, not on a gate:
 
 **The fixture-live-mask front is now CLOSED.**
 
-## THE `_core` FRONT IS CLOSED: every surviving `cpu` read is one of six argued classes
+## THE `_core` FRONT IS CLOSED: every surviving `cpu` read is one of two argued classes
 
 The governing sweep's second bullet — *"add the `_core` function to properly pass in arguments if
 needed and use the `_core` when calling the function"* — is **done**, and the survey that says so
@@ -995,10 +1023,34 @@ attribute every such read to its enclosing function. That reduces the front to a
 ⚠⚠ **THE CLASSES AND THEIR MEMBERSHIP NOW LIVE IN `tools/cpu_lint.py`, AND THE LINT IS THE
 AUTHORITY** — `make cpu-lint` fails the build on any `cpu` reference outside them and fails
 again when a row goes stale, so the list cannot rot the way this table did. Read
-§*The nineteen that remain* above for the argument per class. The table below is kept for the
+§*The five that remain* above for the argument per class. The table below is kept for the
 reasoning it records, **not** for its membership: every entry in its last row has since MOVED to
 `src/gen/revs_native_abi.c` (tracks 3's transitive-closure audit), and `scale_by_track_gradient`
 went with them.
+
+⭐⭐ **AND THE COUNT IS NOW FIVE, IN TWO CLASSES — four of the six emptied.** Two separate
+arguments closed them:
+
+- **THE RESULTS RULE emptied the stack-residue ground.** Four `mem[STACK_PAGE + cpu.S]` /
+  `PUSH`/`PULL` pairs survived on the grounds that *"the differential compares the pushed byte"*,
+  and under the user's restated principle — validate **results**, not implementation details — a
+  byte the routine's own `PULL` pops back and nothing outside the twin reads is not a result.
+  `tools/det_compare.py` had already exempted `$01B8..$01FF` on exactly that argument; only
+  `make validate`'s full-`mem[]` diff was forcing them. What earns a **Stack / `S`** row now is
+  `cpu.S` read as a VALUE (`engine_init_core` hands it to `top_level_stack`, `span_abandon_chain`
+  passes `cpu.S + 2u`) — not a push the oracle happens to make.
+- **THE TU ROLES emptied the other two.** *"It has a native caller, so it cannot go to
+  `revs_native_abi.c`"* was never an argument for it living in `revs_native.c`, whose job is
+  CORES; the answer is the **third** file. The ISR seam (`irq1v_band_schedule`'s chain-on, X save
+  and `PLA/TAX/LDA $FC/RTI`) and all five class-6 shims (`state_flags_bit6`,
+  `surface_colour_apply`, `abs8`'s `cpu` entry, `store_slip_exit_abi`, `sound_queue_exit_abi`)
+  now live in `revs_native_seam.c` beside their callers. What stayed behind is
+  `irq1v_band_schedule_core`, the raster-band state machine, which touches no register at all.
+  ⚠ `surface_colour_apply` could not simply move — its core and `EDGE_COLUMN` are both `static`
+  to `revs_native.c`, and dropping `static` to reach a core from another TU is forbidden. So the
+  **replay** moved instead: it is now the cpu-free `surface_colour_at_line_core`, and its shim
+  `surface_colour_at` marshals the `SlotExit` onto `cpu`. That is the general fix when a shim
+  body is pinned by file-private state.
 
 Every remaining `cpu` read in `revs_native.c` is one of these, each with its argument written at
 the code:
@@ -1006,10 +1058,10 @@ the code:
 | Class | Sites | Why it is not an idiom |
 |---|---|---|
 | **Hook/SMC seam** | `horizon_half_width_at_core`, `scale_by_track_gradient`, `read_driving_controls_core`, `rebuild_walk_reversed_core`, `load_section_from_segment_core`, `fill_line_attr_core`, every `hook_*` | `revs_track_hook()` runs an expansion circuit's own 6502 code. The register file IS the calling convention — see CLAUDE.md's handover rule. Converting these would be a defect, not a cleanup |
-| **ISR seam** | `irq1v_band_schedule` (+ `irq1v_chain_on` / `irq1v_return`) | the measured exit contract is A/X/Y restored as the interrupted code left them, A via `mos_irq_a`. Its `PUSH(cpu.X)` is a stack residue the differential compares |
-| **Stack / `S`** | `engine_init_core`'s `top_level_stack = cpu.S`, `mul16_by_1_5_core`'s `mem[STACK_PAGE + cpu.S]` | C has no `S`, and the residue is compared |
+| ~~**ISR seam**~~ | ~~`irq1v_band_schedule`~~ | ⭐ **EMPTY** — moved to `revs_native_seam.c`. The measured exit contract (A/X/Y restored as the interrupted code left them, A via `mos_irq_a`) is unchanged and still asserted by `g_irqClobberCount`; it is just no longer in a core file |
+| **Stack / `S`** | `engine_init_core`'s `top_level_stack = cpu.S`, `span_abandon_chain`'s `cpu.S + 2u` | C has no `S`, and here it is an ADDRESS the routine computes with. ⚠ **NOT** "the residue is compared" — that ground is gone (THE RESULTS RULE) |
 | **Live flag chain** | `draw_road_core`'s `chainC`/`chainV`, `emit_edge_width_offset_core`'s `WidthExit` | the flag genuinely leaves the routine — the one sanctioned exception in CLAUDE.md |
-| **6502-ABI oracle counterpart** | `mul16_signed`, `scale16_by_y`, `mul16_by_1_5`, `abs16_math`, `neg16_math`, `neg16_math_noinit`, `abs8` | ⭐ **the native path already bypasses these entirely.** `apply_angle_term_body` folds `mul16_signed`'s arithmetic into 16-bit C; `stage_lateral_speed_delta_core` uses `model_scale16` / `model_mul_1_5`; the three "native callers of `abs16_math`" are two oracle bodies plus one *comment*. They survive only so the transliteration's 6502 callers and the validation oracle still link |
+| ~~**6502-ABI oracle counterpart**~~ | ~~`mul16_signed`, `scale16_by_y`, `mul16_by_1_5`, `abs16_math`, `neg16_math`, `neg16_math_noinit`, `abs8`~~ ⭐ **EMPTY** — in `revs_native_abi.c` or `revs_native_seam.c` | ⭐ **the native path already bypasses these entirely.** `apply_angle_term_body` folds `mul16_signed`'s arithmetic into 16-bit C; `stage_lateral_speed_delta_core` uses `model_scale16` / `model_mul_1_5`; the three "native callers of `abs16_math`" are two oracle bodies plus one *comment*. They survive only so the transliteration's 6502 callers and the validation oracle still link |
 
 ⭐ **The consequence for `scale16_by_y`'s `PHP`/`PLP`:** that pair looked like the last real idiom
 worth retiring, and retiring it would have meant loosening the differential to ignore a stack byte
