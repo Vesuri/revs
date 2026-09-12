@@ -79,6 +79,7 @@ CORE_C_SRCS := \
     $(wildcard $(REPO)/src/gen/revs_track_hooks.c) \
     $(wildcard $(REPO)/src/gen/revs_native.c) \
     $(wildcard $(REPO)/src/gen/revs_native_seam.c) \
+    $(wildcard $(REPO)/src/gen/revs_native_abi.c) \
     $(wildcard $(REPO)/src/gen/revs_manual.c)
 
 # Support runtime (freestanding CRT: program entry, memset…) + incbin'd assets.
@@ -694,6 +695,7 @@ obj/%.o : %.c
 	@$(CC) $(CORE_CFLAGS) -c -o $@ "$(abspath $<)"
 obj/revs_native.o : CORE_CFLAGS += $(NATIVE_OPT)
 obj/revs_native_seam.o : CORE_CFLAGS += $(NATIVE_OPT)
+obj/revs_native_abi.o : CORE_CFLAGS += $(NATIVE_OPT)
 
 # Support runtime: gcc8_c_support.c needs CCFLAGS (no core include paths).
 obj/gcc8_c_support.o : $(SUPPORT)/gcc8_c_support.c

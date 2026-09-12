@@ -218,7 +218,8 @@ C_SRCS := \
     $(wildcard src/gen/revs_track_hooks.c) \
     $(wildcard src/gen/revs_manual.c) \
     $(wildcard src/gen/revs_native.c) \
-    $(wildcard src/gen/revs_native_seam.c)
+    $(wildcard src/gen/revs_native_seam.c) \
+    $(wildcard src/gen/revs_native_abi.c)
 
 CXX_SRCS := \
     src/platform/Platform.cpp \
@@ -237,7 +238,7 @@ CXX_OBJS := $(CXX_SRCS:.cpp=.o)
 OBJS     := $(C_OBJS) $(CXX_OBJS)
 TARGET   := build/revs
 
-.PHONY: all clean gen validate image runtime dashcode sweep endian-lint refloop refloop-keys \
+.PHONY: cpu-lint all clean gen validate image runtime dashcode sweep endian-lint refloop refloop-keys \
         mode7 mode7-fixture font mos-font refloop-charset refloop-comp track-patch \
         tracks tracks-gen track-fixtures track-smc track-smc-check track-run viewdiff \
         trackmenu trackmenu-fixture titlescreen \
@@ -813,6 +814,9 @@ image:
 # the Amiga renders garbage.  This grep is the cheap structural guard.  The ONE legitimate
 # exception is a uniform-byte broadcast store; mark such a line with the comment
 # `ENDIAN-OK:` and it is allowed through.
+cpu-lint:
+	@python3 tools/cpu_lint.py
+
 endian-lint:
 	@hits=$$(grep -rnE '\((u?int(16|32)_t) *\*\) *(\(void\*\))? *(&? *mem|M\b)' \
 	          src/ tools/ 2>/dev/null | grep -v 'ENDIAN-OK:' || true); \

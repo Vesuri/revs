@@ -922,6 +922,70 @@ void hook_steer_response_nurburg(HookRegs *r);          /* Nurburgring $59D9 */ 
 void hook_horizon_clamp_guarded_snetter(HookRegs *r);   /* Snetterton  $56C8 */
 void hook_horizon_clamp_guarded_nurburg(HookRegs *r);   /* Nurburgring $56C4 */
 
+/* ---- what the ORACLE-ONLY 6502-ABI SHIMS need from here ------------------------------
+ * ⭐ src/gen/revs_native_abi.c holds every `void <name>(void)` shim with no native caller
+ * (its header carries the why, and `make cpu-lint` is what keeps them out of revs_native.c).
+ * Three kinds of thing had to come out of that file's private scope for the move:
+ *
+ * 1. The cell aliases below — here, not duplicated, because both files name the same cells.
+ * 2. The two shallow span arms, which the shims pass by address.  Both keep their `const`
+ *    and their initialisers stay in revs_native.c, so the constant-folding the span
+ *    rasteriser depends on is unaffected inside that TU.
+ * 3. Twenty cores that were file-static.  ⚠⚠ GCC inlined EVERY one of them away — none has
+ *    a symbol in amiga/obj/revs_native.o — so giving them external linkage forces them into
+ *    existence as real out-of-line functions.  That cost was measured either side of the
+ *    move and is recorded in docs/native-sweep.md.  Nothing but the shims should call them
+ *    across a TU boundary: a native caller belongs next to the core. */
+#define MUL_SRC_LO     MEM_point_delta_lo   /* point_delta_lo[0] — multiplicand low  (two's complement) */
+#define MUL_SRC_HI     (MEM_point_delta_lo + 1u)   /* point_delta_lo[1] — multiplicand high; bit 7 is its sign */
+#define MUL_TERM_LO    (MEM_point_delta_lo + 2u)   /* point_delta_lo[2] — multiplier low; the car angle, bit 0 = SIGN */
+#define MUL_TERM_HI    MEM_point_delta_hi   /* point_delta_hi[0] — multiplier high (heading_sin/heading_cos) */
+#define MUL_SIGN       MEM_hypot_min_hi   /* hypot_min_hi — product-sign accumulator (bit 7) + apply_angle_term's store/accumulate mode (bit 6) */
+#define SLIP_OUT_INDEX   MEM_hypot_min_lo  /* hypot_min_lo — here WHICH element the store lands in */
+#define SLOT_MARKER_P1     0x2FC0u
+#define SLOT_MARKER_P2     0x2FD7u
+
+extern const SpanArm ARM_SHALLOW_FWD;
+extern const SpanArm ARM_SHALLOW_REV;
+/* ⚠⚠ NOT the span leaves themselves.  `span_plot_core` and `span_walk` are
+   `static inline __attribute__((always_inline))` in revs_native.c and MUST STAY that way: the
+   SpanPlotter/SpanArm descriptor is a compile-time constant at every native call site, and
+   letting it become a memory operand in the inner loop cost 2.6% of the frame when it was
+   measured (docs/perf-method.md §twins #25-#39).  These two are out-of-line wrappers that exist
+   only so the oracle shims can reach them across the TU boundary; the native path never calls
+   them and keeps inlining as before. */
+SlotExit plot_shape_edges_core(void);
+uint8_t track_pos_advance_core(uint8_t x);
+uint8_t track_pos_retreat_core(uint8_t x);
+extern const SpanArm ARM_STEEP_FWD;
+extern const SpanArm ARM_STEEP_REV;
+void store_object_flags_core(uint8_t y, uint8_t a);
+void steer_demand_store_core(uint8_t a);
+void clamp_and_store_steer_angle_core(uint8_t a);
+void span_plot_oracle(const SpanPlotter *p, uint8_t column, uint8_t *y, unsigned *carry,
+                      int *abandoned);
+void span_walk_oracle(const SpanArm *arm, uint8_t phase, uint8_t startLine);
+void span_end_marker(unsigned slot, const uint16_t *ptr, uint8_t y, uint8_t *colMark, unsigned *carry);
+void add_signed_into_element_core(uint8_t slot, uint8_t signByte);
+void apply_angle_term_at_core(uint8_t mode, uint8_t angle);
+void rotate_state_pair_core(uint8_t dest, uint8_t source, uint8_t mode);
+void slip_magnitude_core(uint8_t slot);
+void check_wheel_slip_core(uint8_t axle);
+void clamp_slip_to_grip_core(uint8_t axle);
+void update_slip_sound_core(uint8_t axle, uint8_t ambientY);
+void compute_car_angles_core(uint16_t heading);
+SpinExit begin_spin_from_a_core(uint8_t severity, uint8_t savedX);
+uint8_t scale_angle_in_section_core(uint8_t a, uint8_t y);
+void apply_steer_demand_core(uint8_t signByte);
+uint8_t car_index_dec_core(uint8_t x);
+uint8_t car_index_inc_core(uint8_t x);
+uint8_t find_player_neighbours_core(void);
+void lap_complete_core(uint8_t x);
+int record_section_jump_core(int carry_in, uint8_t x);
+SlotExit scale_shape_vectors_core(uint8_t entryV);
+uint8_t section_angle_curve_core(uint8_t a);
+void steer_assist_dispatch_core(uint8_t demand);
+
 #endif /* REVS_NATIVE_SEAM_H */
 uint8_t hook_next_section_cursor_core(uint16_t genBlock);
 void hook_next_section_cursor_a(HookRegs *r);

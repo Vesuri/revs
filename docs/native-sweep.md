@@ -545,7 +545,7 @@ is not evidence when the mask is what made it pass.
 
 | Class | Lines | Shipping? | What has to happen |
 |---|---:|---|---|
-| **6502-ABI shim marshalling** | ~142 | **no** — 26 of the 44 have NO native call site; only `revs_gen.c` and the oracle-only hook TU call them | move them to their own translation unit, then a lint keeps `revs_native.c` from regaining `cpu` |
+| **6502-ABI shim marshalling** | ~142 | **no** — 48 of them have NO native call site (the survey said 26: it could not see a one-line shim) | ✅ moved to `src/gen/revs_native_abi.c`; `make cpu-lint` keeps `revs_native.c` from regaining `cpu` |
 | **Hook/SMC entry ABI** | ~104 in 23 twins + 15 dispatch sites | **yes**, on the four expansion circuits | each twin gets a TYPED core and the entry ABI is passed as arguments; `revs_track_hook` carries an explicit register struct for the oracle fallback only. ⚠ `make viewdiff` is the only gate |
 | **`_core` bodies** | ~40 real (the rest was the regex artefact) | **yes** | ambient register → argument, flag chain → return value; narrow the mask first where one is what keeps it alive |
 | **ISR seam** | 7 | **yes** | a small explicit register struct; `g_irqClobberCount` stays the assertion |
@@ -638,7 +638,56 @@ BBC could see. Passing the register file explicitly is the fix; assuming it is d
    `LDY`'s k (4000 nurburg). Each defect is caught by at least one of the pair and every zero is
    accounted for.
 
-3. the oracle-only shims — move out, then lint `revs_native.c`
+3. ✅ **DONE: the oracle-only shims are out, and `make cpu-lint` keeps them out.**
+   **48** `void <name>(void)` shims now live in `src/gen/revs_native_abi.c` — every one whose only
+   callers are `revs_gen.c` / `revs_track_hooks.c` (the oracle, which `make transtrap` proves no
+   scenario executes) and `validate_native.c` (which enters a twin through its 6502 ABI on
+   purpose). `revs_native.c` is down to **24 functions** that speak `cpu`, in six argued classes
+   enumerated *in the lint itself* (`tools/cpu_lint.py`): the hook/SMC seam, the ISR seam, `cpu.S`
+   as an ADDRESS, `cpu.D = 0` (CLD), a documented flag forward, and a shim a native caller still
+   uses. A new `cpu.` reference anywhere else fails the build.
+
+   ⭐⭐ **The audit found 12 more shims than the survey did, and the reason is worth keeping: the
+   survey's scan could not see a ONE-LINE shim.** `void mul8_accum(void) { ... cpu.A = e.a; ... }`
+   puts the definition and the register write on the same line, so a scanner that resolves the
+   enclosing function only *after* the line's brace opens attributes the write to the function
+   ABOVE — which is exactly the miscount this doc's own §classification warns about, made again
+   in the tool. With that fixed the lint reattributed a `cpu.D = 0` from
+   `full_track_scan_rebuild_core` to its real owner `lap_complete_core`, i.e. the broken
+   attribution had also mislabelled an allowlist row. **Both fixes are in `tools/cpu_lint.py`:
+   resolve the name before the check, and allow a leading indent** (a `/* promoted ... */`
+   definition line strips down to an indented one).
+
+   ⭐ **A lint's allowlist is a hole unless it is self-policing.** Every row must still name a
+   function that speaks `cpu` in the file, or `cpu-lint` FAILS as stale — so the list shrinks by
+   itself as the campaign closes and cannot drift into a permission slip. Seventeen rows written
+   from the survey's notes were wrong (the function lives in `revs_native_seam.c`, or does not
+   exist) and the staleness check is what said so, not a reading.
+
+   Sabotage of the lint (each FAILS, with the right function named): a `cpu.A = 0` inside
+   `plot_shape_edges_core`; a whole fake one-line shim appended to the file; and a deleted
+   allowlist row. ⚠ The one-line sabotage is the one that matters — it is the case the survey's
+   own scan got wrong.
+
+   **The cost, measured and accepted (user decision).** Twenty-five symbols had to lose `static`
+   for the move (20 cores, 3 more found by the audit, 2 `SpanArm` descriptors), and GCC had been
+   inlining every one of the cores away — none had a symbol in `amiga/obj/revs_native.o`. Each is
+   marked `/* promoted for revs_native_abi.c */` at its definition so the next reader knows the
+   `static` was not dropped by accident. ⚠⚠ **The two exceptions are the span leaves.**
+   `span_plot_core` and `span_walk` stay `static inline __attribute__((always_inline))` and the
+   shims reach them through out-of-line `span_plot_oracle`/`span_walk_oracle` wrappers instead:
+   their `SpanPlotter`/`SpanArm` descriptor is a compile-time constant at every native call site
+   and letting it become a memory operand in the rasteriser's inner loop measured 2.6% of the
+   frame (`docs/perf-method.md` §twins #25-#39). A call is free on the oracle side, which is not
+   on any native path.
+
+   **Measured: 4.564 FPS against a 4.574 control** (10 vs 11 non-outlier rows,
+   `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1`, `GDBSCRIPT=fps_series.gdb` under warp, clean
+   builds both sides). −0.2% is a fifth of one row's resolution, so the out-of-lining is not
+   resolvable and **nothing was reverted**. The cores are confirmed to have really been forced
+   out of line — `m68k-amiga-elf-objdump -t obj/revs_native.o` now carries a symbol for each,
+   against a `draw_road_core` control — so this is a null result, not a change that failed to
+   take effect.
 4. the ISR seam
 
 ## ⭐ What track 1 taught, and it decides how tracks 2-4 are argued
