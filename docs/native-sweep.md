@@ -438,30 +438,25 @@ dashboard readouts that drive them (#185-#192).
 
 ## Open
 
-- **F1 — `drive_one_car`'s `cpu.X = x;` is DEAD.**  `$288F`'s callee chain is core-to-core now:
-  `track_pos_advance_core(x)` calls `lap_complete_core(x)` with the index as an argument, and
-  neither reads `cpu.X`.  The write is a leftover from when the lap booker was reached through
-  its 6502-ABI shim.  Delete it.
+*(nothing outstanding in batch 7 — all three findings applied)*
 
-- **F2 — `shift_key_commands_core` calls two SHIMS, and leaves the OSBYTE's ambient Y in `cpu`.**
-  `sound_stop_all()` and `clear_surface_buffers()` both have `_core`s; the first exists only to
-  read `cpu.Y` and hand it on as the ambient Y the `OSBYTE 21` at `$0E65` carries (the
-  differential logs registers at every MOS boundary).  Thread that index explicitly and call
-  both cores.  ⚠ While doing it, note what the cpu-sourced version actually reads: on the
-  NO-MATCH scan exit the 6502 has `Y = $FF` (`$0EFA LDY $74 / DEY / BMI $0F11`), while the twin
-  leaves `cpu.Y = $00` — `kbd_test_key_core`'s residue from the last failing test.  That is
-  unreachable today, and the argument belongs at the code: `pause_request` is written by nothing
-  but this routine's own scan-apply (`symbols.csv $05F7`) and is cleared again at `$0F29` on
-  every call that reads it nonzero, so a NEGATIVE `pause_request` at `$0F11` implies the idx-7
-  key matched in this same call — the one path where `cpu.Y` was already right.
+## Examined and closed — do not re-open without new evidence
 
-- **F3 — `full_track_scan_rebuild_core` runs its retreat/advance loop counters as `mem[]`
-  read-modify-writes.**  `hypot_min_lo` is the step-2 outer index, `shared_temp_77` its inner
-  per-car counter and `shared_temp_76` the step-4 `$31` countdown: roughly 900 byte accesses a
-  call, in a driver `reset_driving_variables` runs seven times on a crash reset.  Nothing the
-  loops call reads any of the three (`track_pos_retreat_core` touches only the car arrays), so
-  they become locals with each cell published once at its 6502 exit value.  Gate:
-  `determinism-crash` is this driver's gate, plus the rest of the family.
+- **`shift_key_commands`' no-match ambient Y is unreachable, and the argument is now at the
+  code.**  The 6502 leaves `Y = $FF` there and the twin's cpu-sourced version read `$00`; it
+  cannot matter, because `pause_request` is written by nothing but this routine's own scan-apply
+  and cleared again at `$0F29`, so a negative value at `$0F11` implies the idx-7 match.  The
+  fixture's SAFE class deliberately keeps `pause_request` non-negative, so do not read its PASS
+  as coverage of that path.
+
+- **`track_pos_retreat_core`'s distance decrement really is a LOOP, not an `if`.**  `$14E4-$1506`
+  jumps back to `$14E4` after reloading both lanes from `lap_length`, so the `while` is the
+  6502's shape and a `lap_length_lo` of 0 would re-enter it.  Left as written.
+
+- **`reset_driving_variables_core`'s two wipes stay byte loops.**  `memset` over `mem[]` would
+  let the 68000 clear long words, but this is a session-reset path that runs seven times per
+  crash and never in a frame — no measurement would see it, and the loops are what the `$1805`
+  disassembly says.
 
 # Open front — THE FIXTURE LIVE MASKS (its own campaign, not part of the read-through)
 

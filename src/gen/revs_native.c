@@ -12404,6 +12404,11 @@ void full_track_scan_rebuild_core(uint8_t retreatDepth)
        steps.  ⚠ It must PUBLISH before step 6, which calls a shim that marshals in itself. */
     car_distance_marshal_in();
     shared_temp_76 = retreatDepth;            /* the per-cell retreat depth (see step 2) */
+    /* ⭐ The three counters below are LOOP COUNTERS, not shared state while they run: nothing
+       the loops call reads $76/$77/$78 (track_pos_retreat_core touches only the car arrays), so
+       they run in registers and each cell is published once at the value the 6502 leaves.  That
+       is ~900 mem[] byte accesses a call gone, and this driver runs seven times per crash
+       reset. */
 
     /* raise the off-line-scan flag.  SEC/ROR at $109E is byte-exact: the rotate shifts the old
        byte down under the new bit 7, and the matching LSR at exit shifts it back — reproduced so
@@ -12419,20 +12424,22 @@ void full_track_scan_rebuild_core(uint8_t retreatDepth)
         }
     } while (car_distance_16[0] != 0u);   /* the OR of the two lanes IS "the word is zero" */
 
-    /* 2. triangular retreat grid.  hypot_min_lo is the outer index cell ($FF then pre-incremented
-       to 0..$13); the inner sweep starts at the outer index and runs to $13. */
-    hypot_min_lo = 0xFFu;
+    /* 2. triangular retreat grid.  The outer index runs $FF pre-incremented to 0..$13 (its cell
+       is hypot_min_lo, published below); the inner sweep starts at it and runs to $13. */
+    uint8_t outer = 0xFFu, perCar = retreatDepth;
     for (;;) {
-        hypot_min_lo++;
-        if (hypot_min_lo >= 0x14u) break;
-        for (unsigned x = hypot_min_lo; x < 0x14u; x++) {
-            shared_temp_77 = shared_temp_76;                 /* reset the per-car retreat counter */
+        outer++;
+        if (outer >= 0x14u) break;
+        for (unsigned x = outer; x < 0x14u; x++) {
+            perCar = retreatDepth;                           /* reset the per-car retreat counter */
             do {
                 /* the car at this sorted position; exit C dead, the counter drives the loop */
                 track_pos_retreat_core(mem[MEM_car_order + x]);
-            } while ((int8_t)(--shared_temp_77) >= 0);       /* runs retreatDepth + 1 times */
+            } while ((int8_t)(--perCar) >= 0);               /* runs retreatDepth + 1 times */
         }
     }
+    hypot_min_lo   = outer;                   /* $14 — the value that broke the outer loop */
+    shared_temp_77 = perCar;                  /* the last inner countdown's exit byte */
 
     /* 3. re-anchor the pace car ($17): advance it until its gap to the player is exactly $20 the
        near way (car_gap_tail: C set = far side, so keep going; A == $20 = the target gap) */
@@ -12447,11 +12454,12 @@ void full_track_scan_rebuild_core(uint8_t retreatDepth)
 
     /* 4. back the pace car up $31 units, then on to the previous segment boundary, counting every
        section it spans (from $31) into shared_counter_42 for step 6 */
-    shared_temp_76 = 0x31u;
+    uint8_t backUp = 0x31u;
     shared_counter_42 = 0x31u;
     do {
         track_pos_retreat_core(0x17u);
-    } while (--shared_temp_76 != 0u);
+    } while (--backUp != 0u);
+    shared_temp_76 = backUp;                  /* 0 — the DEC that ended the loop */
     {
         uint8_t crossed;
         do {
@@ -12876,8 +12884,9 @@ static void drive_one_car(uint8_t x)
             along = (uint8_t)s;
             if (s > 0xFFu) {                                 /* $288D BCC skip — a carry crossed a unit */
                 mem[MEM_car_section_along + x] = along;      /* the callee may look at mem[] */
-                cpu.X = x;                                   /* track_pos_advance->lap_complete reads cpu.X */
-                track_pos_advance_core(x);                   /* $288F JSR track_pos_advance */
+                track_pos_advance_core(x);                   /* $288F — core-to-core, and so is its
+                                                                own call on lap_complete_core: the car
+                                                                index is the argument all the way down */
             }
         }
         mem[MEM_car_section_along + x] = along;              /* $288A STA car_section_along,X */
@@ -13619,26 +13628,39 @@ void shift_key_commands_core(uint8_t entryY)
     }
 
     uint8_t actionIdx = 0u;                      /* the action's state_flags index, live into the tail */
+    /* The ambient OSWRCH/OSBYTE Y at $0F11: the matched scan index, or $FF on the no-match exit
+       ($0EFA LDY $74 / DEY / BMI $0F11 leaves the index decremented past 0). */
+    uint8_t ambY = 0xFFu;
     if (matched) {                               /* $0F01..$0F0E */
         uint8_t action = mem[MEM_shift_key_action_tbl + math_lo];
         actionIdx = (uint8_t)(action & 0x0Fu);               /* low nibble = which state_flags cell */
         mem[MEM_state_flags + actionIdx] = (uint8_t)(action & 0xF0u);  /* high nibble = value */
-        cpu.Y = math_lo;                         /* $0F01 LDY $74 — the matched index escapes... */
+        ambY = math_lo;                          /* $0F01 LDY $74 — the matched index escapes... */
         cpu.X = actionIdx;                       /* $0F08 TAX — ...and so does the index */
     }
+    cpu.Y = ambY;
 
-    /* $0F11 — pause_request.  A/X/Y here reach the MOS inside sound_stop_all, so they are set
-       exactly as the transliteration leaves them (A = pause_request, X = the action's low nibble,
-       Y = the matched index) — the harness compares registers at every OS-call boundary.  ⚠ And
-       they stay AMBIENT from there on: the pause spin's kbd_test_key rewrites X and Y. */
+    /* $0F11 — pause_request.  A and X still reach the MOS through cpu (clear_surface_buffers and
+       kbd_test_key are the seam), so they are left exactly as the transliteration does: A =
+       pause_request, X = the action's low nibble.  The harness compares registers at every
+       OS-call boundary.  ⚠ They stay AMBIENT from there on — the pause spin's kbd_test_key
+       rewrites all three. */
     uint8_t pr = mem[MEM_pause_request];
     cpu.A = pr;                                  /* $0F11 LDA pause_request */
     if (pr != 0u) {                              /* $0F14 BEQ skips */
         if (pr & 0x80u) {                        /* $0F16 BPL — negative = real pause */
-            sound_stop_all();                    /* $0F18 */
+            /* ⭐ ambY is provably the MATCHED index here, never the $FF: nothing but this
+               routine's own scan-apply writes pause_request (symbols.csv $05F7) and $0F29
+               clears it again on every call that reads it nonzero, so a negative value at
+               $0F11 means the idx-7 key ($96, action $83) matched in THIS call.  Y is a dead
+               input to OSBYTE 21 but the differential logs it at the MOS boundary, so it is
+               threaded rather than left in cpu. */
+            sound_stop_all_core(ambY);           /* $0F18 */
             do {
-                clear_surface_buffers();         /* $0F1B */
-            } while (!kbd_test_key_core(0xA6u)); /* $0F1E/$0F20/$0F23 — spin until $A6 down */
+                clear_surface_buffers_core();    /* $0F1B */
+            } while (!kbd_test_key_core(0xA6u)); /* $0F1E/$0F20/$0F23 — spin until $A6 down.
+                                                    Its MOS residue is what leaves A/X/Y as the
+                                                    6502 has them from here on. */
         }
         mem[MEM_engine_note]++;                  /* $0F25 INC engine_note */
         mem[MEM_pause_request] = 0u;             /* $0F29 */
