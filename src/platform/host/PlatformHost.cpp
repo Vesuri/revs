@@ -248,6 +248,27 @@ void PlatformHost::renderFrame()
                 for (unsigned i = 0; i < 16; i++) std::printf(" %lu", g_shapeEdgeHist[i]);
                 std::printf("\n");
             }
+            if (g_shapeViewUnits[0] || g_shapeViewUnits[1] || g_shapeViewUnits[2]) {
+                /* ⭐ THE PREMIUM'S SOURCE.  shape.h carries the question; read the per-unit DIRTY
+                   share against the phase table's 15 / 35 / 98 us per unit, and read `identity`
+                   FIRST — it must say ok or the arms are fiction. */
+                std::printf("SHAPE   view consume arms, per phase (frames=%lu):\n", frames);
+                for (unsigned i = 0; i < 3; i++) {
+                    const unsigned long u = g_shapeViewUnits[i];
+                    if (!u) continue;
+                    const unsigned long other = g_shapeViewRunUnits[i] + g_shapeViewStops[i];
+                    std::printf("SHAPE     phase %u: units=%lu (%lu/frame)  clean=%lu%% "
+                                "dirty=%lu%% forced=%lu%%  runs=%lu (%lu not bus-safe) "
+                                "lines=%lu  identity: %lu vs %lu %s\n",
+                                i + 1, u, frames ? u / frames : 0,
+                                g_shapeViewClean[i] * 100 / u,
+                                g_shapeViewDirty[i] * 100 / u,
+                                g_shapeViewForced[i] * 100 / u,
+                                g_shapeViewRuns[i], g_shapeViewRunBus[i],
+                                g_shapeViewLines[i], u, other,
+                                u == other ? "ok" : "*** MISMATCH ***");
+                }
+            }
             if (g_shapeRoadCalls)
                 std::printf("SHAPE   road pass ($1A20): %lu calls, %lu of 8320 frame-buffer bytes "
                             "per call over %lu lines  last(%u bytes, %u lines, %u..%u)\n",

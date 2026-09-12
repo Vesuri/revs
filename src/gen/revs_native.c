@@ -701,6 +701,7 @@ static unsigned view_consume(MEM_QUAL unsigned char* srcp, unsigned byte, int fo
                              unsigned cell)
 {
     if (forced) {
+        PROBE_SHAPE_VIEW_ARM(2);
         *srcp = 0;
         return mem[MEM_view_cell_bytes + cell];
     }
@@ -710,10 +711,12 @@ static unsigned view_consume(MEM_QUAL unsigned char* srcp, unsigned byte, int fo
            `tst.l` in the 2093-unit loop. */
         unsigned char source = *srcp;
         if (source) {
+            PROBE_SHAPE_VIEW_ARM(1);
             *srcp = 0;
             return mem[MEM_view_cell_bytes + source];
         }
     }
+    PROBE_SHAPE_VIEW_ARM(0);
     return byte;
 }
 
@@ -811,6 +814,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
     for (;;) {
         if (advance_first) {
             PROBE_VIEW_LINE();
+            PROBE_SHAPE_VIEW_LINE();
             step_scanline((int*)0);
             /* the line's background byte: two bits of the per-line surface index */
             byte = mem[MEM_surface_colours + (mem[MEM_view_line_surface + line] & 3)];
@@ -939,6 +943,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                 MEM_QUAL unsigned char* runEnd =
                     stopHere ? dp + ((unsigned)(stopUnit - curUnit) << 3) : segEnd;
                 PROBE_VIEW_RUN((unsigned)(runEnd - dp) >> 3);
+                PROBE_SHAPE_VIEW_RUN((unsigned)(runEnd - dp) >> 3, busSafe);
 
 #ifdef REVS_NO_UNIT_LOOP
                 /* `make NOUNITS=2` — the loop does not run at all, so phase 24 is the per-line
@@ -990,6 +995,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                     unsigned char op;
                     PROBE_SHAPE_DASH_UNIT(line);
                     PROBE_VIEW_UNITS(1);                      /* the stop's own unit: consumed */
+                    PROBE_SHAPE_VIEW_STOP();
                     byte = view_consume(srcp, byte, forced, cell);
                     cell = (unsigned)(dp - segBase) & 0xFF;   /* its `LDY #<cell*8>` ran */
                     op = *slot;
@@ -1054,11 +1060,13 @@ static void paint_lines_short(ViewState* v)
 {
     PROBE_PHASE(PROBE_PHASE_VIEWP3);        /* one transition a sweep — src/platform/probe.h §33 */
     PROBE_VIEW_PHASE(2);
+    PROBE_SHAPE_VIEW_PHASE(2);
     for (;;) {
         unsigned edge, entry, next;
         int carry_out;
 
         PROBE_VIEW_LINE();
+        PROBE_SHAPE_VIEW_LINE();
         VIEWP3_PHASE(PROBE_PHASE_VIEWCTL);       /* the control: an empty bracket, opened and closed */
         VIEWP3_PHASE(PROBE_PHASE_VIEWP3);
         v->line = (v->line - 1) & 0xFF;
@@ -1160,6 +1168,7 @@ static void paint_lines_clipped(ViewState* v)
     PROBE_PHASE(PROBE_PHASE_VIEWP2);        /* one transition a sweep — src/platform/probe.h §33 */
     PROBE_VIEW_PHASE(1);                    /* its lines are counted in paint_cells, which it enters
                                                through view_next_scanline once per line */
+    PROBE_SHAPE_VIEW_PHASE(1);
     v->byte = OP_RTS;
     mem[MEM_view_chain_end_slot] = (unsigned char)v->byte;
 
@@ -1279,6 +1288,7 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
     ViewState v;
 
     PROBE_VIEW_PHASE(0);
+    PROBE_SHAPE_VIEW_PHASE(0);
     if (!g_viewTablesBuilt) view_build_tables();
     view_stops_rescan();          /* what is REALLY in the page, before any plant of ours */
 

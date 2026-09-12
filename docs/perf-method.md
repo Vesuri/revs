@@ -371,9 +371,12 @@ touched, RUNS = colour runs, LINES = scan lines painted, per phase).
 | tail (32) | 6 | — | — | — | — | — |
 | **total** | **70** | 2150 | 118 | 77 | 33 avg | — |
 
-⚠⚠ **Phase 3 is the single most expensive view phase — 27 ms — on the FEWEST units (282).** It
-costs 6.5× per unit what phase 1 does (98 µs vs 15). With 282 units over 25 lines and 50 runs, its
+⚠⚠ **Phase 3 is the single most expensive view phase — 27 ms — on the FEWEST units (282).** Its
 cost is the **per-line / per-run driver**, not the per-unit inner loop: ~1.1 ms per painted line.
+⚠ Do NOT read the µs/unit column as a premium phase 3 pays per cell — it is ~500 µs of per-run cost
+divided by a units/run that falls 40 → 5.6 across the phases, and the arm counters refute the
+per-unit reading outright (§BUT DIVIDE IT BY RUNS below). The column is kept because it is what the
+probe prints, not because it is the rate of anything.
 The lever is that driver (fewer lines, cheaper per-run setup), not the cell loop — the same
 per-item-setup shape as the other two stages. Phase 1, by contrast, is the honest throughput
 phase (1442 units at a flat 15 µs) and is already near its floor. **§The four view probes below
@@ -478,13 +481,69 @@ bracket-for-bracket comparable with `=1`. The **sanity check is the two stop bra
 still** (35: 434→403, 37: 197→187) while the entry brackets collapse (36: 1628→222, 38:
 2163→605).
 
-⭐⭐ **The chain runs are 740 µs/line = 18.5 ms/frame for 282 units → 66 µs/unit, against phase 1's
-15 µs/unit for the same "paint a cell" work — 4.4×.** Phase 2 (bracket 33) went 15 → 8 ms/frame
-with units 426 → 213 and runs 32 → 16, so its chains cost ~7 ms/frame at 33 µs/unit — 2.2×. **This
-is the SMC-simulation overhead quantified**, and it is the prize a descriptor rewrite is aiming at:
-phase 3's 282 units at phase 1's per-unit rate would be 4.2 ms instead of 18.5, plus ~5.2 ms of
-entry machinery, ~3.9 ms of stop planting and phase 2's ~3.8 ms → **~20-25 ms of a 256 ms frame =
-8-10%**, well clear of the 3% floor.
+⭐⭐ **The chain runs are 740 µs/line = 18.5 ms/frame in phase 3, and ~7 ms/frame in phase 2
+(bracket 33 went 15 → 8 ms with units 426 → 213 and runs 32 → 16). This is the SMC-simulation
+overhead quantified: ~25 ms of a 256 ms frame ≈ 10%**, well clear of the 3% floor, and it is the
+prize a descriptor rewrite aims at.
+
+#### ⚠⚠ BUT DIVIDE IT BY RUNS, NOT BY UNITS — "phase 3 costs 4.4× per unit" was a DIVISION ARTIFACT
+
+This section first wrote the 18.5 ms up as *66 µs/unit against phase 1's 15 — 4.4×*, and read that
+as a per-unit premium the port's machinery charges on each cell. **That reading is retracted. There
+is no per-unit premium at all**, and the correction matters because the two readings name different
+code to replace: a per-unit premium says rewrite the cell loop, a per-run cost says rewrite the run
+ENTRY and leave the loop alone.
+
+Divide the same table by RUNS instead of by units and the premium vanishes:
+
+| | ms/frame | units | runs | units/run | µs/**unit** | µs/**run** |
+|---|---|---|---|---|---|---|
+| phase 1 (24) | 22 | 1442 | 36 | 40.06 | 15 | **611** |
+| phase 2 (33) | 15 | 426 | 32 | 13.31 | 35 | **469** |
+| phase 3 (34) | 27 | 282 | 50 | 5.64 | 98 | **540** |
+
+⭐⭐ **A run costs ~400-600 µs whatever it paints.** The per-unit column is that near-constant
+divided by units/run, which falls 40 → 13.3 → 5.6 across the three phases — so `98/15 ≈ 6.5` is
+just `40.06/5.64 ≈ 7.1` read through a constant. Fitting `cost = A + B·units` on phases 1 and 3
+gives **A ≈ 528 µs per run, B ≈ 2.1 µs per unit**, and the frame total confirms it: 118 runs ×
+~460 µs = **54 ms** against 2150 units × ~2 µs = **4.3 ms**, summing to the sweep's 64 ms of phase
+rows. The cell loop is 7% of the sweep. It is not the subject and never was.
+
+⭐ **The arm mix was measured, and it REFUTES the per-unit reading rather than merely failing to
+support it.** `src/platform/shape.h`'s view-consume counters (`make SHAPE=1`, `REVS_SHAPE_WATCH=N`)
+split every `view_consume` call by the arm it takes — `clean` (zero source, return the carried
+byte), `dirty` (zero it, translate through `view_cell_bytes`), `forced` (a run's first unit, always
+translating). Host, `REVS_FIXED_RNG=1`, 600 frames, all three sum identities `ok`:
+
+| | clean | dirty | forced | units/run |
+|---|---|---|---|---|
+| phase 1 | 89% | 10% | 0% | 40.06 |
+| phase 2 | 89% | 6% | 3% | 13.31 |
+| phase 3 | **64%** | 17% | 17% | 5.64 |
+
+Phase 3 really is on the dear arm three times as often — the hypothesis was the right shape — but
+solve the two-arm model `0.90C + 0.10D = 15`, `0.66C + 0.34D = 66` and it returns **C = −6 µs**.
+A negative cost for a clean unit is not a fit that needs better data; it is a refutation. No arm
+cost whatsoever makes a 24-point shift in the mix produce a 51 µs/unit difference, because the
+difference is not per-unit.
+
+⚠ **`units/run` is also the CONTROL that licenses reading host arm shares onto the target.** The
+host runs a different trajectory (the 50 Hz body once per game frame, not ~50 ticks per paint), so
+its absolute counts are its own — but units/run comes out **40.06 / 13.31 / 5.64** on the host
+against **1442/36, 426/32, 282/50 = 40.06 / 13.31 / 5.64** on the Amiga. Identical to three
+figures in all three phases, so the sweep's structure is the same on both and the mix carries.
+
+⭐ **What the corrected reading leaves for step 2, and what it hands to a SEPARATE item.** The
+~25 ms is per-run entry cost in phases 2 and 3, and `VIEWP3=3` removing the chain entries is
+precisely what measured it (~370 of phase 3's ~540 µs/run), so the ~10% prize stands — the
+descriptor rewrite must replace the **run entry**, not the cell loop. ⚠⚠ And it cannot be extended
+to phase 1: phase 1's row does **not move** under either `VIEWP3=2` or `=3` (22 ms, 1442 units, 36
+runs, 619 µs/line in all three builds), because `view_enter_chain` is phases 2/3's entry and not
+its. So phase 1's own ~530 µs/line of per-line driver — 40 units at ~2 µs is only 80 µs of the 611
+— is **19 ms/frame of a different subject**, one no chain rewrite touches: `step_scanline`, the
+background-byte lookup, the segment arithmetic, `view_stop_from` and two `view_span_is_ram` tests,
+~3800 cycles for work whose instruction count is nothing like that. It is the same open ~6× that
+§The four view probes' calibration left standing, and it is now localised to a named 530 µs.
 
 ### ⭐ `fill_dash_edge_columns` (phase 18, 17 ms) decomposed — 151 cells, ALL on one arm
 

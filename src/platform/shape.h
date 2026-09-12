@@ -160,6 +160,55 @@ void shape_edge_call(void);
 void shape_edge_walk(unsigned cells);
 void shape_edge_cell(unsigned arm);
 
+/* ── ⭐⭐ THE VIEW SWEEP'S CONSUME ARMS, PER VIEW PHASE ───────────────────────────────────────
+ * ⭐ THE QUESTION THIS SETTLES, and it re-prices a whole plan item.  The four view probes put
+ * phase 3 (`paint_lines_short`, $7F18) at 98 us per UNIT against phase 1's 15 — 4.4x once the
+ * chain-entry brackets are netted out — and the reading on the table was that the premium is the
+ * port's SMC machinery, worth ~8-10% of the frame to replace with run descriptors.  Two cheaper
+ * explanations were checked first and BOTH failed: the per-run instrument is 2-3% of a row, and
+ * `paint_cells`' prologue is ~40 instructions in the objdump, nowhere near the ~1900 cycles the
+ * arithmetic demands.  What is left is that phase 3's units are simply DEARER work than phase 1's:
+ *
+ *   clean   `view_consume` found a zero source and returned the carried byte — no store to the
+ *           source, no `view_cell_bytes` lookup.  The cheap arm, and phase 1's sources are ~96%
+ *           empty (2093 units a frame for ~83 changing bytes).
+ *   dirty   a non-zero source: zero it, then translate through `view_cell_bytes`.  Two extra
+ *           mem[] accesses, one of them a WRITE.
+ *   forced  the run's first unit, which always takes the translate path.
+ *
+ * ⭐ And ONE MORE candidate the same hook prices for free: `busSafe`.  A span that fails
+ * `view_span_is_ram` routes every cell through `bus_write` — the hardware-range test per cell,
+ * which is exactly the per-unit premium being hunted.  If phase 3's runs are not bus-safe, that
+ * is the answer and it is a one-line fix, not a rewrite.
+ *
+ * ⚠ IF THE PREMIUM IS THE DIRTY ARM, IT IS THE GAME'S OWN WORK AND THE DESCRIPTOR REWRITE CANNOT
+ * TOUCH IT — price step 2 against this table before writing any of it.
+ * ⚠ THE INSTRUMENT'S SELF-CHECK is the sum identity `clean + dirty + forced == units`: every
+ * `view_consume` call takes exactly one arm, so a shortfall means a hook is missing an arm and an
+ * excess means one is double-counted.  `runs`/`lines` are here too as the CONTROL — the host runs
+ * a different trajectory than the target, and a per-phase unit count nothing like the target's
+ * 1442/426/282 would invalidate reading any of this across to the Amiga.
+ * ⚠ One increment per unit: a SHAPE build only. */
+extern volatile unsigned long g_shapeViewUnits[3];  /* view_consume calls, per phase      */
+extern volatile unsigned long g_shapeViewClean[3];  /* ...zero source, carried byte        */
+extern volatile unsigned long g_shapeViewDirty[3];  /* ...non-zero: zero it + translate    */
+extern volatile unsigned long g_shapeViewForced[3]; /* ...the run's first unit             */
+extern volatile unsigned long g_shapeViewRuns[3];   /* chain runs entered                  */
+extern volatile unsigned long g_shapeViewRunBus[3]; /* ...whose span was NOT bus-safe      */
+extern volatile unsigned long g_shapeViewLines[3];  /* scan lines                          */
+/* ⭐ THE OTHER SIDE OF THE SUM IDENTITY, counted somewhere else on purpose: the run lengths
+   come out of the run set-up's pointer arithmetic and the stop tails out of the stop branch,
+   while clean/dirty/forced are counted per `view_consume` CALL.  `clean + dirty + forced ==
+   runUnits + stops` therefore compares two independent derivations of the same quantity — an
+   identity a misplaced or unreachable hook breaks, which a self-consistent total cannot. */
+extern volatile unsigned long g_shapeViewRunUnits[3];
+extern volatile unsigned long g_shapeViewStops[3];
+void shape_view_phase(int idx);
+void shape_view_arm(unsigned arm);
+void shape_view_run(unsigned units, int busSafe);
+void shape_view_stop(void);
+void shape_view_line(void);
+
 /* ── THE ROAD PASS ($1A20, phase 11) ────────────────────────────────────────────────────────
  * The other half of step 2, and the number that prices direct plotting: how many BYTES of the
  * 8320-byte frame buffer does the road rasteriser actually write per frame?  The decode converts
@@ -224,6 +273,11 @@ void shape_frame_delta(void);
 #define PROBE_SHAPE_EDGE_CALL()    shape_edge_call()
 #define PROBE_SHAPE_EDGE_WALK(c)   shape_edge_walk((c))
 #define PROBE_SHAPE_EDGE_CELL(a)   shape_edge_cell((a))
+#define PROBE_SHAPE_VIEW_PHASE(i)  shape_view_phase((i))
+#define PROBE_SHAPE_VIEW_ARM(a)    shape_view_arm((a))
+#define PROBE_SHAPE_VIEW_RUN(n, b) shape_view_run((n), (b))
+#define PROBE_SHAPE_VIEW_STOP()    shape_view_stop()
+#define PROBE_SHAPE_VIEW_LINE()    shape_view_line()
 #define PROBE_SHAPE_ROAD_BEFORE()  shape_road_before()
 #define PROBE_SHAPE_ROAD_AFTER()   shape_road_after()
 #define PROBE_SHAPE_PHASE(n)       shape_phase_mark(n)
@@ -234,6 +288,11 @@ void shape_frame_delta(void);
 #define PROBE_SHAPE_EDGE_CALL()    ((void)0)
 #define PROBE_SHAPE_EDGE_WALK(c)   ((void)(c))
 #define PROBE_SHAPE_EDGE_CELL(a)   ((void)(a))
+#define PROBE_SHAPE_VIEW_PHASE(i)  ((void)0)
+#define PROBE_SHAPE_VIEW_ARM(a)    ((void)0)
+#define PROBE_SHAPE_VIEW_RUN(n, b) ((void)0)
+#define PROBE_SHAPE_VIEW_STOP()    ((void)0)
+#define PROBE_SHAPE_VIEW_LINE()    ((void)0)
 #define PROBE_SHAPE_DASH_BEFORE()  ((void)0)
 #define PROBE_SHAPE_DASH_AFTER()   ((void)0)
 #define PROBE_SHAPE_DASH_UNIT(line) ((void)(line))

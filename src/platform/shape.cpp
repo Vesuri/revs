@@ -320,6 +320,47 @@ void shape_edge_cell(unsigned arm)
     }
 }
 
+/* ── THE VIEW SWEEP'S CONSUME ARMS (phases 1/2/3) — shape.h carries the question ─────────── */
+volatile unsigned long g_shapeViewUnits[3]  = { 0, 0, 0 };
+volatile unsigned long g_shapeViewClean[3]  = { 0, 0, 0 };
+volatile unsigned long g_shapeViewDirty[3]  = { 0, 0, 0 };
+volatile unsigned long g_shapeViewForced[3] = { 0, 0, 0 };
+volatile unsigned long g_shapeViewRuns[3]   = { 0, 0, 0 };
+volatile unsigned long g_shapeViewRunBus[3] = { 0, 0, 0 };
+volatile unsigned long g_shapeViewLines[3]  = { 0, 0, 0 };
+volatile unsigned long g_shapeViewRunUnits[3] = { 0, 0, 0 };
+volatile unsigned long g_shapeViewStops[3]  = { 0, 0, 0 };
+
+/* ⚠ Its own index, NOT probe.h's g_viewPhaseIdx: the phase brackets are a PROBES build and this
+   is measured on the host, where they are compiled out.  Set at the same three call sites. */
+static int s_shapeViewPhase = 0;
+
+void shape_view_phase(int idx) { s_shapeViewPhase = (idx >= 0 && idx < 3) ? idx : 0; }
+
+/* 0 = clean (zero source, carried byte), 1 = dirty (zero it + translate), 2 = forced. */
+void shape_view_arm(unsigned arm)
+{
+    const int p = s_shapeViewPhase;
+    g_shapeViewUnits[p]++;
+    switch (arm) {
+        case 0: g_shapeViewClean[p]++;  break;
+        case 1: g_shapeViewDirty[p]++;  break;
+        case 2: g_shapeViewForced[p]++; break;
+        default: break;
+    }
+}
+
+void shape_view_run(unsigned units, int busSafe)
+{
+    g_shapeViewRuns[s_shapeViewPhase]++;
+    g_shapeViewRunUnits[s_shapeViewPhase] += units;
+    if (!busSafe) g_shapeViewRunBus[s_shapeViewPhase]++;
+}
+
+void shape_view_stop(void) { g_shapeViewStops[s_shapeViewPhase]++; }
+
+void shape_view_line(void) { g_shapeViewLines[s_shapeViewPhase]++; }
+
 volatile unsigned long g_shapeRoadCalls = 0;
 volatile unsigned long g_shapeRoadBytes = 0;
 volatile unsigned long g_shapeRoadLines = 0;
