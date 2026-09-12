@@ -16,8 +16,10 @@ ALLOWED = {
   #    the register file is genuinely live there (docs/faithfulness-seam.md).
   'hook_steer_response_doning': 'hook seam: mem[STACK_PAGE + cpu.S] is the residue the hook reads',
 
-  # -- class 2: the ISR SEAM.  The MOS's own IRQ entry is the contract, asserted by
-  #    g_irqClobberCount on both backends.
+  # -- class 2: the ISR SEAM, and it is the one place where the ambient register file is the
+  #    SUBJECT of the code: the "caller" is whatever foreground the interrupt preempted, so
+  #    there is nothing to thread an argument from.  The MOS's own IRQ entry is the contract and
+  #    g_irqClobberCount asserts it on both backends (docs/native-sweep.md track 4).
   'irq1v_band_schedule': 'ISR seam', 'irq1v_return': 'ISR seam', 'irq1v_chain_on': 'ISR seam',
 
   # -- class 3: the STACK POINTER.  `cpu.S` here is an ADDRESS, not a value in a register --

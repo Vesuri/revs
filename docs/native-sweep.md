@@ -688,7 +688,37 @@ BBC could see. Passing the register file explicitly is the fix; assuming it is d
    out of line — `m68k-amiga-elf-objdump -t obj/revs_native.o` now carries a symbol for each,
    against a `draw_road_core` control — so this is a null result, not a change that failed to
    take effect.
-4. the ISR seam
+4. ✅ **DONE: the ISR seam — five of its twelve `cpu` lines went, and the other seven ARE the
+   interrupt's ABI.**
+   What went is `irq1v_band_schedule`'s band-4 arm, which reproduced a five-register entry ABI
+   (`A` = the last palette byte, `X` = $FF from the loop's DEX, `N`/`Z` from that DEX, `C` = 1
+   from the dispatching `CMP #3`) for its `tick_wheel_spin` call. That had been kept with the
+   note that falsifying any of the five changes NOTHING in the differential, on the grounds that
+   *"the callee does not read it today" is a claim about a 400-routine subtree*.
+   ⭐⭐ **It was not a subtree, and that is the lesson: the note recorded the measurement and
+   never went and looked.** `tick_wheel_spin` is twin #122 — a `void (void)` whose entire body is
+   a field counter, a rate accumulator and five `mem[] ^=` pairs, **with no call of any kind in
+   it**. There is nothing to be wrong about. The far end agrees independently: the arm falls
+   through to the tail, and `irq1v_return` overwrites X from the PULL and A from `mos_irq_a` and
+   pulls the flags with `PLP`, so all five were dead at the exit too. A null measurement plus an
+   unread body is not an argument; a null measurement plus BOTH ENDS CLOSED is.
+
+   The remaining seven lines stay, and the lint (`tools/cpu_lint.py` classes 1-4) is where the
+   argument now lives, because they are not residue — they are the interrupt's own ABI and there
+   is no caller to thread them from. The "caller" is whatever foreground code was preempted, and
+   its register file IS `cpu`:
+   - `PUSH(cpu.X)` / the `PULL` in `irq1v_return` — a real byte at `$0100+S` that the
+     differential compares, and its value genuinely is the preempted X the `RTI` must restore.
+   - `cpu.D = 0` — the `$4E7B CLD`, architectural state left to the interrupted code.
+   - `irq1v_chain_on`'s `cpu.A = 0; cpu.N = 0; cpu.Z = 1` — handed to whoever owned IRQ1V before
+     us, i.e. code this port does not own, on the arm where the interrupt is not ours.
+   - `irq1v_return`'s `cpu.X` / `cpu.A = mos_irq_a` / `PLP` — the `PLA/TAX/LDA $FC/RTI` exit
+     contract, measured over 2858 engine-context interrupts and **asserted at the seam**
+     (`g_irqClobberCount`, which stays 0 on both backends).
+   ⚠ A register STRUCT here would be a rename, not a removal: its values would have to be loaded
+   from and stored back to `cpu` at the boundary, which is exactly where the assertion already
+   reads them (`src/platform/bbc_hw.cpp`). The seam is the one place in the port where the
+   ambient 6502 register file is the actual subject of the code.
 
 ## ⭐ What track 1 taught, and it decides how tracks 2-4 are argued
 

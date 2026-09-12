@@ -326,19 +326,20 @@ void irq1v_band_schedule(void)
         ula_palette_table(MEM_band4_palette, 3);
         irq_band_state = 0xFF;     /* the tail's INC wraps it to 0 */
 
-        /* tick_wheel_spin is an ordinary JSR target, so it is entered with whatever the
-           6502 state was: A = the last palette byte fetched, X = $FF from the DEX that
-           ended the loop, N/Z from that DEX, C = 1 from the CMP #3 that dispatched here,
-           Y from the interrupted foreground.  Reproduced explicitly because the twin does
-           not otherwise maintain the register file.
-           ⚑ MEASURED, not assumed: falsifying A, X or N/Z/C here changes NOTHING in the
-           differential (`make validate FN=irq1v`, 128 randomised band-4 cases, with the
-           same harness catching a dropped call at once) — the body reloads all of them
-           before use.  Kept anyway: it costs five stores per FIELD, and "the callee does
-           not read it today" is a claim about a 400-routine subtree. */
-        cpu.A = mem[MEM_band4_palette]; cpu.X = 0xFF;
-        cpu.N = 1; cpu.Z = 0; cpu.C = 1;
-
+        /* ⭐⭐ THE FIVE-REGISTER ENTRY ABI FOR tick_wheel_spin IS GONE, and this is the audit
+           rather than a measurement, because the measurement could never have settled it.
+           The 6502 enters $52A4 with A = the last palette byte fetched, X = $FF from the DEX
+           that ended the loop, N/Z from that DEX and C = 1 from the dispatching CMP #3, and
+           those five stores used to be reproduced here — kept, with the note that falsifying
+           any of them changes NOTHING in the differential, on the grounds that "the callee does
+           not read it today" was a claim about a 400-routine subtree.
+           It is not a subtree.  `tick_wheel_spin` is twin #122 a few hundred lines below: a
+           `void (void)` whose whole body is a field counter, a rate accumulator and five
+           `mem[] ^=` pairs, with NO call of any kind in it — so there is no subtree to be wrong
+           about, and nothing that could read a register even in principle.  The far end agrees:
+           this arm falls through to the tail, whose `irq1v_return` overwrites X from the PULL
+           and A from mos_irq_a and pulls the flags with PLP, so all five were dead at the exit
+           as well.  Both ends closed, which is what the null measurement on its own was not. */
         PROBE_PHASE(PROBE_PHASE_BODYARM);
         tick_wheel_spin();
         PROBE_PHASE(PROBE_PHASE_DRAIN);
