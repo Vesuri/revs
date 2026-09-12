@@ -1667,19 +1667,29 @@ uint8_t race_main_loop_core(RestartDepth depth)
             PROBE_PHASE(14); PROBE_SHAPE_PHASE(14); build_road_sign();       /* the shim — see phase 5 */
             /* $172B: the object slot count is the starting slot */
             PROBE_PHASE(15); PROBE_SHAPE_PHASE(15);
-            /* ⚠⚠ WHY THIS DRIVER STILL SPEAKS cpu.  X and Y are LIVE ACROSS PHASE BOUNDARIES and
-               the values are real: MEASURED over 300 driving frames, phases 1, 3, 4, 5, 7, 9, 12,
-               18, 20, 23, 24 and the tail each rewrite ambient X or Y, and three consumers read it
-               — update_lap_timers (phase 8) as a text cursor, engine_sound_update (9/12/20) and
-               check_crash (23) via sound_queue_core, which stores it in sound_saved_x, so it
-               reaches mem[].  The producers are not removable: phase 5's is build_track_geometry's
-               SHIM publishing GeoExit, the rest are the sanctioned hook/SMC seams.  A FrameAmbient
-               struct threaded through thirteen shims would move the same bytes and buy nothing. */
-            {   /* race_main_loop_core is cpu (NATIVE_FUNCS driver) — marshal the typed exit */
-                SlotExit e = draw_track_object_core(0x17, cpu.Y, cpu.V, cpu.C);
-                cpu.A = e.a; cpu.X = e.x; cpu.Y = e.y;
-                cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
-            }
+            /* $172B-$172D — slot $17 drawn: the sign phase 14 has just assembled.  ⭐ NO
+               AMBIENT cpu, in either direction.
+               ENTRY Y is build_road_sign's exit Y, and that is $17 on every path it can leave
+               by: its last call is write_object_slot, whose Y is `LDY shared_counter_42`
+               ($2A76) — the cell build_road_sign set to the sign slot before calling it — and
+               the two reject arms come back through reject_object_slot's $2AA6, which reloads
+               that same cell.  So it is handed over as the constant it provably is, not lifted
+               out of `cpu` (where the native path had a STALE value: phase 14's shim publishes
+               no register, so `cpu.Y` there was phase 12's leftover.  It never showed, because
+               entry Y survives draw_track_object only on the empty-slot arm — see below).
+               ENTRY V and C are write_object_slot's exit pair and are not observable: inside
+               draw_track_object both survive only that empty-slot arm, which returns them
+               untouched without reaching a single mem[] write, and the next reader of either is
+               phase 20's engine_sound_update — past phase 18, whose shim rewrites all seven
+               fields.  So they go over as 0 (the V note's shape, applied to a phase boundary).
+               THE EXIT is dropped for that same reason: phases 16 and 17 read no ambient
+               register at all (draw_corner_markers hands plot_object_core its slot, Y and V by
+               value; move_and_draw_cars_core takes none), and phase 18 (fill_dash_edge_columns)
+               overwrites A/X/Y/N/Z/V/C before anything downstream looks at them.
+               ⚠ SABOTAGE NOTE: falsifying the SLOT fails both determinism trajectories, so the
+               call is live and exercised on them; falsifying entry Y, V or C passes all three —
+               explanation three (no change at all), which is the argument above, not a gap. */
+            draw_track_object_core(0x17u, 0x17u, 0u, 0u);
             PROBE_PHASE(16); PROBE_SHAPE_PHASE(16); draw_corner_markers();
             PROBE_PHASE(17); PROBE_SHAPE_PHASE(17); move_and_draw_cars_core();
             PROBE_PHASE(18); PROBE_SHAPE_PHASE(18); fill_dash_edge_columns();
@@ -9049,8 +9059,14 @@ static void build_road_sign_core(void)
     threshold = offHeadingC ? 0x50u : 0x25u;
     shared_counter_42 = SIGN_SLOT;
     note_object_contact_core(threshold, offHeadingC);    /* exit dead here (build_road_sign is mem-only) */
-    { ProjPoint p = project_point_core(scratchX, VIEW_ORIGIN_STRIDE);   /* $4D1B */
-      write_object_slot_core(p.line, scratchX, /*V dead here*/ 0u, p.clip); }   /* $4D1E — exit dead */
+    /* $4D1B-$4D1E.  ⚠ The 6502 hands write_object_slot project_point's exit V here, and
+       ProjPoint does not carry it — an argued 0, not an oversight: write_object_slot's own V
+       reaches a reader only as draw_track_object's entry V one call later (the body's 15th),
+       and the audit at that site (race_main_loop_core, phase 15) shows entry V surviving only
+       the empty-slot arm, which returns it without touching mem[], and overwritten at phase 18
+       before the next reader.  The exit is dropped for the same reason. */
+    { ProjPoint p = project_point_core(scratchX, VIEW_ORIGIN_STRIDE);
+      write_object_slot_core(p.line, scratchX, 0u, p.clip); }
 }
 
 /* The 6502-ABI shims. */

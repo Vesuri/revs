@@ -117,7 +117,7 @@ exactly four groups, and each group is mandated somewhere other than this file:
 | **Circuit hook / SMC seam** | `horizon_half_width_at_core`, `update_camera_and_drive_state_core`, `read_driving_controls_core`, `rebuild_walk_reversed_core`, `load_section_from_segment_core`, `fill_line_attr_core` | CLAUDE.md: *a hook/SMC seam must hand over every register the 6502 has live there*, derived from the surrounding instructions, not from what Silverstone's callee reads. Each writes `cpu` immediately before `revs_track_hook(target)` and reads back what the circuit's own code left. |
 | **`cpu.D` for a BCD routine** | `add_tally_to_lap_total_core`, `tally_bcd_column_core`, `lap_complete_core`, `check_car_pair_core`, `sort_cars_by_key_core`, `tick_race_timers_core` | ✅ **CLOSED 2026-09-10** — see **The BCD routines** below. The arithmetic stays decimal but goes through `src/cpu/bcd.h`; every `cpu.D = 1` is gone, and the three surviving `cpu.D = 0` writes are the routines' architectural CLDs, not the idiom. |
 | **MOS / OS-call ABI** | `shift_key_commands_core`, `kbd_test_key_core`, `engine_init_core` (`cpu.S`), `mul16_by_1_5_core` (`PHA` residue at `$0100+S`) | The harness compares registers at every OS-call boundary, and a `PHA`/`PLA` pair leaves a real byte in the stack page. |
-| **A documented exit publish** | `race_main_loop_core`, `emit_edge_width_offset_core`, `build_track_geometry_core`, `draw_road_core`, `clamp_and_store_steer_angle_core`, `scale_angle_in_section_core`, `enter_session_core` | The fixture declares the mask; the argument is written at the code. |
+| **A documented exit publish** | `emit_edge_width_offset_core`, `build_track_geometry_core`, `draw_road_core`, `clamp_and_store_steer_angle_core`, `scale_angle_in_section_core`, `enter_session_core` | The fixture declares the mask; the argument is written at the code. |
 
 ⭐ **The general form: in this file a `cpu.` inside a `_core` is nearly always one of those four,
 and the productive question is which — not whether it can be deleted.**
@@ -590,6 +590,25 @@ BBC could see. Passing the register file explicitly is the fix; assuming it is d
      that mistake; all three are patched on all four expansion circuits. Search the extents for
      `addr+1` as well, and remember the file is a patch-extent report, not a disassembly — the
      real hook code is `src/gen/revs_track_hooks.c`.
+
+   ⭐⭐ **...and a third, from the driver that was supposed to be the exception.** The argued-0
+   rule generalises off the hook seams to any PHASE BOUNDARY inside a driver: the frame body's
+   15th call (`draw_track_object` for the sign slot, `$172B`) read `cpu.Y/V/C` and published
+   seven fields, justified in-code by a MEASURED note that ambient X/Y are live across phase
+   boundaries. The measurement was real and the conclusion was wrong, because it named the
+   producers and consumers globally instead of auditing THIS boundary: phases 16 and 17 read no
+   ambient register at all, and phase 18 (`fill_dash_edge_columns`) rewrites all seven fields
+   before the next reader — so the whole publish was dead, and entry V/C survive only
+   `draw_track_object`'s empty-slot arm, which returns them without touching `mem[]`.
+   ⚠ Entry Y was worse than dead: the 6502 has `$17` there on every path (`write_object_slot`'s
+   `LDY shared_counter_42`, and the reject arms reload the same cell), while the native path had
+   phase 12's leftover, because phase 14's shim publishes no register. It never showed for the
+   same reason the field is unobservable — but "stale" and "dead" are different claims and only
+   the second one had been argued. `race_main_loop_core` is now down to `cpu.I` (the `$4F35 CLI`).
+   ⭐ **The lesson: a frame-wide liveness measurement does not settle one call's entry ABI.**
+   Audit the two phases either side of the site, and reach for the SLOT sabotage to prove the
+   site is even exercised (falsifying the slot fails both determinism trajectories; falsifying
+   entry Y, V or C passes all three — explanation three, which IS the argument).
 3. the oracle-only shims — move out, then lint `revs_native.c`
 4. the ISR seam
 
