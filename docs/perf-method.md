@@ -268,8 +268,8 @@ largest and is now mostly the genuine per-tick four-channel walk for the ~1.8 ch
 into one pass to save a walk: `make sound` compares chip state **tick by tick** against a real MOS,
 and the intermediate state is part of the contract.
 
-⭐⭐ **The view pipeline (`build_track_geometry` → `draw_road` → `view_paint_lines`) is ~58% of
-the frame, and its whole call tree has no transliteration left in it.** Of the ordinary levers,
+⭐⭐ **The view pipeline (`build_track_geometry` → `draw_road` → `view_paint_lines`) remains the
+dominant subsystem, and its whole call tree has no interpreter dispatch left in it.** Of the ordinary levers,
 delete-the-interpreter, inline-the-flag-helpers and de-macro-to-idiomatic-C moved the table
 nothing — but a FOURTH did: **removing the 6502 stack ops (`PHP`/`PLP`) the idiom forced into the
 hot span setup cut real `mem[]` writes and bought ~+6% on `draw_road`'s row** (`interp_edge`, HEAD
@@ -277,20 +277,18 @@ hot span setup cut real `mem[]` writes and bought ~+6% on `draw_road`'s row** (`
 cannot. What remains is the same class — fewer per-item `mem[]` accesses — plus the representation
 (see Lessons below).
 
-⭐⭐ **The fat is PER-ITEM SETUP, not bulk throughput — measured at every stage** (subsections
-below). Each stage costs what it does because of the machinery it runs *per point / per span /
-per line*, not because of the pixels it ultimately writes: `draw_road` spends 84% of itself in
-per-span rasteriser setup over just **43 spans / 58 columns** a frame (~580 µs/column);
-`view_paint_lines`' most expensive phase costs **139 µs/unit on 282 units** while its cheapest costs
-17 µs/unit on 1443.
-The counts are tiny; the per-item constant is not. So what's left is not "another twin":
-1. **fewer POINTS / SPANS / LINES in the producers, or a cheaper per-item constant** — an
-   algorithmic question, not a transliteration one, and the biggest single lever now
+⚠⚠ **The former conclusion that the fat is exclusively per-item setup is superseded by the direct
+2026-09-12 splits below.** `span_walk` itself is ~24 ms, not near-free; the complete viewport
+unit/run interior is 29 ms, not the fit's 4.3 ms; and the geometry walks use native DIVU rather than
+the old restoring divider. The counts are modest, but both the loops and their setup matter. What
+remains is not "another twin":
+
+1. **fewer POINTS / SPANS / SOURCE VISITS, with setup and loops fused into native value pipelines**
 2. **the REPRESENTATION** (`docs/direct-bitplane-plan.md`) — the decode's port overhead, and the
    BBC-shaped buffer the consumer paints into which constrains it
 3. **asm, last**, and only against the post-representation arrangement
 
-### ⭐⭐ Inside `build_track_geometry` (phase 5) — where its ~16% goes, and why
+### ⚠ Historical `build_track_geometry` split — superseded after the native rewrite
 
 Decomposed with `make GEOSPLIT=1 PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1` +
 `EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=geosplit.gdb ./diag_run.sh 30` (probe.h §GEOSPLIT — four
@@ -329,7 +327,13 @@ arctan lookup, the hypot approximation and the emit machinery share it). This is
 / fewer ACCESSES" item above, now sized. Re-run `geosplit.gdb` **on a corner** (more subdivisions)
 before committing — this table is a near-straight section and undercounts the subdivision arm.
 
-### ⭐⭐ Inside `draw_road` (phase 11) — where its ~19% goes, and why
+⚠⚠ **Current measurement (2026-09-12): 28 ms total; 1 + 13 + 12 + ~0 ms across start, the two
+walks and tail.** The census still sees 27 points and zero subdivisions, but `g_geoDiv=0`: the old
+`div16by8` count above describes the pre-native implementation. Current native cores use
+`revs_divu16`/68000 DIVU. The current lever is a native `EdgePoint` value pipeline that avoids
+publishing and reconstructing split-byte scratch records between the two walks and the road stage.
+
+### ⚠ Historical `draw_road` split — the "columns are near-free" inference is superseded
 
 Decomposed with `make ROADSPLIT=1 PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1` +
 `EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=roadsplit.gdb ./diag_run.sh 30` (probe.h §ROADSPLIT +
@@ -350,12 +354,12 @@ counters explain it). Silverstone practice, car driving. **A PROBES/warp share �
 **WHY (per-frame leaf counts, same run):**
 - **43 spans** handed to `interp_edge`, **49 DDA scan lines**, **60 columns** merged
   (`road_span_plot`, 3 bus accesses each). **115 fill lines** in the line→point map, **15 mark points**.
-- ⚠⚠ **The inputs are tiny — 60 columns is ~180 bus accesses — so the cost is NOT the pixels and
-  NOT the bus-access count.** 57 ms over 60 columns is ~950 µs "per column", but that is a lie of
-  averaging: the columns are near-free and the money is the **per-span setup** — `interp_edge`'s
-  edge-interpolation arithmetic, run 43 times to place ~1.2 columns each. The lever here is the
-  per-span constant (fewer spans, or cheaper `interp_edge`), exactly as with the geometry walk's
-  per-point chain — not the DDA leaf, which the tiny column count proves is already cheap.
+- ⚠⚠ **The inference that columns are near-free did not follow from their small count.** A fresh
+  ROADSPLIT run measures 43 ms total: 4 ms `fill_line_attr`, 37 ms `draw_surface_spans`, 1 ms marks.
+  A temporary same-rate bracket around the out-of-line `span_walk` measures about **24 ms corrected**,
+  leaving roughly 13 ms in surface setup/remainder. Both halves are material. The next rewrite must
+  combine `interp_edge` and `span_walk` into one flat native SpanPlan/DDA kernel; specializing either
+  side alone retains the representation and call traffic between them.
 
 ### ⭐⭐ Inside `view_paint_lines` (phases 24/33/34/32) — where its ~27% goes, and why
 
@@ -481,12 +485,12 @@ bracket-for-bracket comparable with `=1`. The **sanity check is the two stop bra
 still** (35: 434→403, 37: 197→187) while the entry brackets collapse (36: 1628→222, 38:
 2163→605).
 
-⭐⭐ **The chain runs are 740 µs/line = 18.5 ms/frame in phase 3, and ~7 ms/frame in phase 2
+⚠⚠ **HISTORICAL INFERENCE, RETRACTED BELOW:** the chain runs appeared to be 740 µs/line = 18.5 ms/frame in phase 3, and ~7 ms/frame in phase 2
 (bracket 33 went 15 → 8 ms with units 426 → 213 and runs 32 → 16). This is the SMC-simulation
-overhead quantified: ~25 ms of a 256 ms frame ≈ 10%**, well clear of the 3% floor, and it is the
-prize a descriptor rewrite aims at.
+overhead apparently quantified at ~25 ms of a 256 ms frame ≈ 10%.** The fit and the later null did
+not identify that cost; the direct phase-30 bracket below replaces this claim.
 
-#### ⚠⚠ BUT DIVIDE IT BY RUNS, NOT BY UNITS — "phase 3 costs 4.4× per unit" was a DIVISION ARTIFACT
+#### ⚠⚠ HISTORICAL FIT, SUPERSEDED BY THE DIRECT BRACKET BELOW — dividing by runs did not identify a run cost
 
 This section first wrote the 18.5 ms up as *66 µs/unit against phase 1's 15 — 4.4×*, and read that
 as a per-unit premium the port's machinery charges on each cell. **That reading is retracted. There
@@ -502,12 +506,13 @@ Divide the same table by RUNS instead of by units and the premium vanishes:
 | phase 2 (33) | 15 | 426 | 32 | 13.31 | 35 | **469** |
 | phase 3 (34) | 27 | 282 | 50 | 5.64 | 98 | **540** |
 
-⭐⭐ **A run costs ~400-600 µs whatever it paints.** The per-unit column is that near-constant
-divided by units/run, which falls 40 → 13.3 → 5.6 across the three phases — so `98/15 ≈ 6.5` is
-just `40.06/5.64 ≈ 7.1` read through a constant. Fitting `cost = A + B·units` on phases 1 and 3
-gives **A ≈ 528 µs per run, B ≈ 2.1 µs per unit**, and the frame total confirms it: 118 runs ×
-~460 µs = **54 ms** against 2150 units × ~2 µs = **4.3 ms**, summing to the sweep's 64 ms of phase
-rows. The cell loop is 7% of the sweep. It is not the subject and never was.
+⚠⚠ **The following was a fit, not a decomposition.** Fitting `cost = A + B·units` on phases 1 and
+3 gave A ≈ 528 µs and B ≈ 2.1 µs/unit. That interpretation is now retracted. Runs per line are
+1, 2 and 2 in phases 1, 2 and 3, so the predictors "line", "run" and their enclosed boundary work
+are nearly collinear. A absorbs every cost that scales with lines-or-runs; B is correspondingly
+driven too low. The fit cannot say that a run costs 528 µs, that the unit loop costs 2.1 µs/unit,
+or that the unit loop is 7% of the sweep. The direct phase-30 measurement below settles the last
+two numbers independently.
 
 ⭐ **The arm mix was measured, and it REFUTES the per-unit reading rather than merely failing to
 support it.** `src/platform/shape.h`'s view-consume counters (`make SHAPE=1`, `REVS_SHAPE_WATCH=N`)
@@ -575,28 +580,101 @@ the unit loop and the consume, byte for byte.
   caught, and the fifth (`& 0xFF` → `& 0xFE` on `stopUnit << 3`) is a provable no-change whose
   sibling `& 0xF7` **was** caught.
 
-⭐⭐ **So the ~528 µs/run intercept is NOT `paint_cells`' run set-up and teardown.** That was the
-only reading the fit licensed and it is now excluded by experiment. What survives: the intercept is
-per-**LINE** driver work in the callers (`paint_lines_short` / `paint_lines_clipped` —
-`view_move_stop` → `view_plant` → the stop-list ops, `step_scanline`, the operand patches), or
-`VIEWP3=3`'s 25 ms differential was measuring something broader than the entry it removed. Both
-point at the same subject as phase 1's immovable **19 ms/frame** of per-line driver, which is now
-the only place the sweep's per-run cost can be hiding — and it is a phase-1 item, so no chain
-rewrite reaches it.
+⭐⭐ **What the null proves is narrower: this implementation and its proposed ~10% prize are dead.**
+It does **not** identify the fitted intercept or prove that run setup is absent. Post-hoc objdump of
+the saved experimental ELF showed that the specialised `view_enter_chain` became a 1044-byte
+out-of-line helper and made values in the retained clean-unit loop stack-resident. The resulting
+loop overhead can plausibly repay several milliseconds of the roughly 1-2 ms of setup that was
+deleted. Therefore the defensible result is "this shape measured 0%; do not retry it", not "the
+intercept is not setup" or "setup is worth at most 1%." The intercept remains unlocated because
+the original fit did not identify it.
 
 ⚠ **The code was not kept.** 324 instructions duplicating the unit loop, for 0%. The finding is
 the deliverable; `src/platform/shape.h`'s arm and run counters stay because they are what priced
 it, and re-deriving the path from this section is an afternoon if a later change ever needs it.
 
-⚠ **[INFERRED] — and the objdump makes that 530 µs look HONEST rather than mysterious, which would
-partly settle the ~6×.** `paint_cells` is 2046 bytes / **637 instructions** in the shipping build
-(`m68k-amiga-elf-objdump -d out/Revs.elf`, `0000f63e`), with `step_scanline` and the span tests all
-inlined into it and the per-line path duplicated across dozens of back-edges by the optimiser. 530
-µs is ~3760 cycles ≈ **~270 instructions at a 68000's ~14 cycles for a memory-operand instruction**
-— i.e. the per-line path executing ~270 of those 637. The earlier read that "`paint_cells`' setup
-is only ~40 instructions" counted the FUNCTION PROLOGUE, not the per-line loop body, which is where
-the driver actually lives. Tagged inferred because the executed path was not traced; tracing it is
-the next instrument if this 19 ms is attacked.
+⚠ **The earlier static attempt to validate the 530 µs intercept is superseded too.** Counting 637
+instructions in `paint_cells` established code size, not the executed path or ownership of the
+fitted intercept. It remains useful compiler evidence—the per-line path is duplicated across many
+back-edges—but it cannot turn the collinear fit into a measurement. Use the direct bracket below,
+or trace an executed path, before assigning that cost.
+
+#### ⭐⭐⭐ DIRECT TARGET MEASUREMENT (2026-09-12) — the unit/run interior is **29.0 ms/frame**, not 4.3 ms
+
+`PROBES=1 VIEWSPLIT=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`, FS-UAE warp, measured the
+production unit/run interior with phase 30 and the adjacent empty control phase 31. The bracket
+starts after base/source/segment/stop/`busSafe` setup and includes `runEnd`, the unit loops,
+source consume/translation/clear, destination stores and the stop tail.
+
+| run | phase 30 ticks | phase 31 ticks | frames | differential |
+|---|---:|---:|---:|---:|
+| 1 | 268099658 | 74577762 | 1480 | **32.641 ms/frame** |
+| 2 | 180673369 | 50316070 | 995 | **32.704 ms/frame** |
+
+The repeat spread is 0.2%. Phase 30 also carried probe-only census increments. A temporary build
+with those counters compiled out measured 30.306 ms/frame. Correcting the open bracket for its
+expected VERTB and band interrupts gives **29.029 ms/frame**. The exact production census is
+**2148 unit visits, 118 runs and 77 lines/frame**, hence an effective **13.51 µs/unit** for this
+whole interior. VIEWCAL1/VIEWCAL3 measured 3208/7362 µs per call; after the same ISR correction the
+known 1975 µs calibration slope was reproduced to about 1%, so the bracket scale is sound.
+
+This directly falsifies B = 2.1 µs/unit by about **6.4×**. It does not assign all 29 ms to the
+source byte load: the bracket deliberately contains the complete unit/run interior. A second
+controlled split does assign the largest parts:
+
+| build | phase 1 | phase 2 | phase 3 | interpretation |
+|---|---:|---:|---:|---|
+| control | 22 ms | 15 ms | 27 ms | normal consume + destination store |
+| `NOUNITS=3` | 17 ms | 13 ms | 26 ms | consume/clear retained; destination store suppressed |
+| difference | **5 ms** | **2 ms** | **1 ms** | about **8 ms/frame of stores** |
+
+The remaining **~21 ms/frame** is source scanning/testing, dirty translation and clearing,
+pointer/loop control and run control. The current moving census is approximately **88% clean,
+8% dirty and 3% forced**. The old "2093 units / 83 changes = 96% empty" premise mixed unlike
+quantities: unit visits in the viewport with framebuffer bytes whose *value changed*. It is not a
+source-arm census and must not size an optimisation.
+
+**Consequence.** A local store rewrite can reach only the 8 ms store floor. The next consumer
+experiment should change the representation: have producers emit per-line dirty events/runs and
+iterate those instead of testing all 2148 source slots. A five-bit line mask alone is not enough if
+the selected line still scans all forty units; the representation must name the changed units or
+runs. Preserve the full consumer as the byte-exact oracle.
+
+#### ⭐⭐⭐ OTHER TARGET SPLITS (2026-09-12) — where the next frame reductions can come from
+
+| subsystem | measured split | conclusion |
+|---|---|---|
+| framebuffer decode | **38 ms = 23 ms discovery/shadow scan + 15 ms dirty-cell expansion** | Two 1040-bit dirty maps, one per backbuffer, can remove most of the 23 ms scan. Set both maps only when a framebuffer byte genuinely changes; consume/clear the displayed backbuffer's map. Mode changes dirty the whole character row. |
+| `draw_road` | **43 ms = ~24 ms `span_walk` + ~13 ms surrounding surface setup + 4 ms attributes + 1 ms marks** | The old claim that span setup dominates and columns are nearly free is false. Rewrite `interp_edge` and `span_walk` together as one native SpanPlan/DDA kernel; removing only one side preserves the representation tax. |
+| `build_track_geometry` | **28 ms = ~25 ms in the two point walks**; 27 points, zero subdivisions | The old restoring divider is not active here (`g_geoDiv=0`); native paths use `revs_divu16`/DIVU. Carry native `EdgePoint` values between stages instead of publishing and reconstructing byte-lane scratch records. |
+| dash edge | **17 ms for 151 cells**, all on the same production arm | A production-arm specialization remains a plausible 5-10 ms item, behind the larger representation changes. |
+
+The decoder split has an independent FPS ceiling check from the same session. Shipping control was
+**4.570 FPS** (46.8 painted frames/512 VBLs); `NODECODE` was **5.586 FPS** (57.2/512), +22.2%,
+implying about 40 ms/frame removed. The screen is intentionally wrong in `NODECODE`, so this is a
+ceiling, not a shippable result. The temporary scan-only decoder retained shadow comparison/update
+but skipped bitplane expansion and measured 23 ms against the normal phase-27 38 ms. Thus the
+23/15 discovery/expansion split agrees with the independent ~40 ms gross ceiling.
+
+The hot view range contains no actual `cpu` state accesses; geometry/road has one hot use
+(`cpu.S+2` for a cap helper). Removing `cpu` from the whole file remains worthwhile hygiene, but it
+is not the first performance lever. The expensive 6502 inheritance is now chiefly **representation**:
+`mem[]` scratch, split byte lanes, simulated self-modifying slots, and values repeatedly published
+and reconstructed between stages.
+
+At the measured ~4.57 FPS baseline (~219 ms/painted frame), the credible local programme is:
+
+1. per-backbuffer framebuffer dirty maps (likely net 10-15 ms);
+2. a combined native road span kernel (15-25 ms);
+3. producer-emitted source dirty events/runs (12-18 ms);
+4. a native geometry value pipeline (8-12 ms);
+5. dash specialization (5-10 ms).
+
+Those ranges imply roughly **6-7 FPS**, not 25 FPS. Reaching 25 FPS (40 ms/frame) requires the
+architectural version: world points → native spans/events → Amiga bitplanes, bypassing the chain
+of split BBC edge arrays → SMC-style span scratch → forty source blocks → BBC framebuffer → shadow
+decode. The failed direct plotter attached only at the last arrow and therefore retained nearly all
+upstream cost.
 
 ### ⭐ `fill_dash_edge_columns` (phase 18, 17 ms) decomposed — 151 cells, ALL on one arm
 

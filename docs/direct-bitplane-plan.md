@@ -757,6 +757,51 @@ tenant at all but the chain itself, and pointed straight at the uninitialised ar
 single byte is wrong, watch that byte; do not reason from an attribution tool built for a
 different question.
 
+### ⭐⭐⭐ 7j. DIRECT COSTS SETTLED (2026-09-12) — two different scans, and two different dirty representations
+
+The conclusions in §7i about the expensive phases being chiefly per-line/per-run driver work are
+superseded. That inference came from an underidentified fit: phases 1/2/3 have 1/2/2 runs per line,
+so a line coefficient and a run coefficient cannot be separated honestly. A calibrated direct
+target bracket now measures the production unit/run interior itself:
+
+| item | target cost/frame | what is inside |
+|---|---:|---|
+| viewport unit/run interior | **29.0 ms** | 2148 unit visits, 118 runs, 77 lines; source consume/translation/clear, loop/run control and destination stores |
+| destination-store portion | **~8 ms** | `NOUNITS=3` retains consume/clear but suppresses the store |
+| source/translation/control remainder | **~21 ms** | the part a source-event representation can attack |
+| framebuffer decode | **38 ms** | BBC framebuffer/shadow discovery plus dirty-cell bitplane expansion |
+| decoder discovery/shadow scan | **~23 ms** | retained by a scan-only temporary build |
+| decoder dirty-cell expansion | **~15 ms** | the remainder |
+
+The viewport's current moving arm census is approximately **88% clean, 8% dirty and 3% forced**.
+The older 96% figure paired 2093 viewport unit visits with 83 framebuffer bytes whose *value
+changed*. Those are different stages and different events; that quotient is invalid. It must not
+be used to price a viewport dirty mask.
+
+There are therefore **two useful dirty representations**, at different seams:
+
+1. **Framebuffer dirty maps, one per backbuffer.** Keep two 1040-bit (130-byte) maps, initially all
+   dirty. Whenever a specialised framebuffer store genuinely changes a byte, set its cell bit in
+   both maps. The decoder iterates and clears only the displayed backbuffer's map. A mode change
+   dirties all forty cells of its character row. The existing full decoder remains the oracle.
+   Gross ceiling: the measured 23 ms discovery scan; expected net: roughly 10-15 ms.
+2. **Viewport source events/runs.** The producers know which of the forty `$80`-spaced source
+   blocks they touch. Emit changed units or contiguous runs and let `view_paint_lines` iterate the
+   events instead of testing all 2148 slots. A line-only bit is insufficient if it still causes a
+   forty-unit scan. Gross source/control surface: ~21 ms; expected net: roughly 12-18 ms. Keep the
+   present consumer as the byte-exact oracle until all trajectories agree.
+
+The failed direct plotter did not test either proposition: it replaced the final store while
+retaining the source scan and every upstream BBC-shaped representation. Its 9% loss therefore says
+that the last-arrow replacement was a bad trade, not that a higher representation seam is valueless.
+
+The measured implementation order is framebuffer dirty maps first, then a combined native
+`interp_edge` + `span_walk` kernel, then viewport source events. Even if all local items land, their
+credible total points to about **6-7 FPS from the current ~4.57**, not the 25 FPS floor. The floor
+requires the architectural path: world points → native spans/events → Amiga bitplanes, bypassing
+split BBC edge records, SMC-style span scratch, forty source blocks, the BBC framebuffer and the
+shadow decoder.
+
 ## 8. ⭐⭐ HARDWARE SPRITES for the instruments — capability the BBC never had (user, 2026-08-16)
 
 **The observation.** The BBC has no sprites, so *every* moving thing on the Revs dashboard is drawn
@@ -808,13 +853,11 @@ free, then the win here is only the moving instruments, which is a much smaller 
 
 ## 9. ⭐⭐ VECTOR / TRAPEZOID FILL from the edge lists — RELOCATE the seam, don't break it (user, 2026-08-21) — FUTURE, NOT YET MEASURED
 
-**Why this is the prize, in one number.** §7f/§7g settle that the rasteriser is bound by its **2148
-source reads a frame** — an instruction-fetch-bound *scan*, not the stores. §7g then splits the
-redundancy: a producer-side dirty-line flag can see **33%** of it (lines whose sources are clean at
-entry), but the other **~30%** is lines whose sources ARE dirty and whose translated byte is the one
-already on screen — invisible to any flag, detectable only by the per-cell read-compare that *is* the
-cost. **The only thing that retires that 30% is to stop scanning cells at all** — i.e. render the road
-from its geometry instead of from the forty source blocks. Every seam-clean lever tops out below it.
+**Why this remains the architectural prize.** §7j directly measures **29 ms/frame** inside the
+viewport unit/run interior and **38 ms/frame** in the downstream framebuffer decoder. Producer
+events and framebuffer dirty maps can remove much of those scans independently, but they still
+preserve the chain of BBC-shaped intermediates. Rendering from geometry can retire the entire
+chain rather than optimizing one scan at a time. That is the scale required for the 25 FPS floor.
 
 **The idea.** `draw_road` already computes, faithfully, the left/right road-edge x-position per scan
 line (the geometry/plot split point §5a identified at `interp_edge`). Tap *that* and paint the scene
@@ -850,6 +893,8 @@ edge lists give a clean per-line left/right x and count how many regions the roa
 into while driving. That measurement decides whether #1 is a trapezoid fill or a messier region
 problem, and it costs nothing but a read.
 
-**Sequencing.** After the seam-clean dirty-line skip (§7g) is taken — that is the measured near-term
-win and it does not foreclose this. This is the larger, later structural change and the natural home
-for the blitter once it earns its place.
+**Sequencing.** The §7i dirty-line skip measured a null and stays off. First build §7j's exact
+per-backbuffer dirty map and the combined native road-span kernel, because each is independently
+measurable and preserves an oracle. Treat the geometry-to-bitplane path as the larger successor,
+not as an accumulation of local consumer rewrites; it is the natural home for the blitter once it
+earns its place.

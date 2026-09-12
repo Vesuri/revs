@@ -344,19 +344,21 @@ negotiable** — 25 FPS means painting every other frame with the simulation sti
 The A500 is a 7 MHz 68000 and a frame is 20 ms: spending 10 ms on *anything* is half the budget.
 Be conscious of absolute milliseconds always.
 
-**Baseline: ~4.52 FPS rendered** (`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`,
-row-vector avg of the non-outlier rows; the two ~2.9 rows are the off-track/reset scene).
+**Baseline: ~4.57 FPS rendered** (`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`,
+46.8 painted frames per 512 VBLs over the non-outlier rows in the 2026-09-12 session).
 ⚠ One painted frame is 3.3% of a row, so this figure IS the noise floor — always re-run the control
 in the same session from a clean build rather than diffing against it (`docs/perf-method.md` §twin #13).
 ⚠ The whole view pipeline is now real C — `build_track_geometry`'s tree and `draw_road`'s tree both
 have **no transliteration left in them** — and neither pass's twins moved the framerate. Removing
 the interpreter from this subsystem is DONE; the next win must remove accesses or points.
-⚠⚠ **And so is SPECIALISING the consumer's run entry** — a single-run, flat-span chain-entry path
-covering every one of phases 2/3's entries (proven: the fall-back counter read 0 on all five
-trajectories) measured **-0.15%**, which retracts the "~10% prize" the per-run fit predicted. The
-sweep's per-run cost is NOT the run set-up. `docs/perf-method.md` §the run-entry rewrite is a NULL.
-⭐⭐ **The lever is the VIEW PIPELINE: `build_track_geometry` → `draw_road` → `view_paint_lines` is 54% of the frame
-and it is ONE subsystem** — the first two *produce* source bytes into the forty `$80`-spaced blocks
+⚠⚠ **The tested consumer run-entry specialisation is dead** — its single-run, flat-span path
+covered every phase-2/3 entry and measured **-0.15%**, retracting its predicted "~10% prize".
+Do not retry that code shape. The null does **not** prove setup is free: its emitted helper enlarged
+and slowed the retained unit loop, and the original line/run fit was underidentified. Direct target
+measurement instead puts the complete unit/run interior at **29 ms/frame: ~8 ms destination stores
+and ~21 ms source consume/translation/loop/run control**. `docs/perf-method.md` has the controls.
+⭐⭐ **The lever is the VIEW PIPELINE: `build_track_geometry` → `draw_road` → `view_paint_lines` is
+the dominant subsystem and it is ONE subsystem** — the first two *produce* source bytes into the forty `$80`-spaced blocks
 at `$3000..$4380`, the third is the single *consumer*. Current shares, every past change and its
 lesson, and the standing conclusion that **the port's biggest costs are the MACHINERY the
 transliteration is wrapped in, not the game's algorithms**: `docs/perf-method.md`.
