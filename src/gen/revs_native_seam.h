@@ -966,6 +966,10 @@ void span_plot_oracle(const SpanPlotter *p, uint8_t column, uint8_t *y, unsigned
                       int *abandoned);
 void span_walk_oracle(const SpanArm *arm, uint8_t phase, uint8_t startLine);
 void span_end_marker(unsigned slot, const uint16_t *ptr, uint8_t y, uint8_t *colMark, unsigned *carry);
+/* ⚠ the ORACLE entries, not the cores: div16by8_core and apply_angle_term_core stay `static`
+   so their hot native callers keep inlining them (see the note at div16by8_core_oracle). */
+Div16By8 div16by8_core_oracle(uint16_t dividend, uint8_t divisor);
+void apply_angle_term_core_oracle(uint8_t dest, uint8_t angle, uint8_t source);
 void add_signed_into_element_core(uint8_t slot, uint8_t signByte);
 void apply_angle_term_at_core(uint8_t mode, uint8_t angle);
 void rotate_state_pair_core(uint8_t dest, uint8_t source, uint8_t mode);

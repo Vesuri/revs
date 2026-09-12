@@ -545,7 +545,7 @@ is not evidence when the mask is what made it pass.
 
 | Class | Lines | Shipping? | What has to happen |
 |---|---:|---|---|
-| **6502-ABI shim marshalling** | ~142 | **no** — 48 of them have NO native call site (the survey said 26: it could not see a one-line shim) | ✅ moved to `src/gen/revs_native_abi.c`; `make cpu-lint` keeps `revs_native.c` from regaining `cpu` |
+| **6502-ABI shim marshalling** | ~142 | **no** — **56** of them have NO native call site (the survey said 26: it could not see a one-line shim, and the first audit asked the caller question one level deep) | ✅ moved to `src/gen/revs_native_abi.c`; `make cpu-lint` keeps `revs_native.c` from regaining `cpu` |
 | **Hook/SMC entry ABI** | ~104 in 23 twins + 15 dispatch sites | **yes**, on the four expansion circuits | each twin gets a TYPED core and the entry ABI is passed as arguments; `revs_track_hook` carries an explicit register struct for the oracle fallback only. ⚠ `make viewdiff` is the only gate |
 | **`_core` bodies** | ~40 real (the rest was the regex artefact) | **yes** | ambient register → argument, flag chain → return value; narrow the mask first where one is what keeps it alive |
 | **ISR seam** | 7 | **yes** | a small explicit register struct; `g_irqClobberCount` stays the assertion |
@@ -664,6 +664,34 @@ BBC could see. Passing the register file explicitly is the fix; assuming it is d
    from the survey's notes were wrong (the function lives in `revs_native_seam.c`, or does not
    exist) and the staleness check is what said so, not a reading.
 
+   ⭐⭐ **THE CALLER AUDIT IS A TRANSITIVE CLOSURE, AND ASKING IT ONE LEVEL DEEP LEFT EIGHT
+   SHIMS BEHIND.** Six allowlist rows said `shim: native callers` and the callers were
+   themselves shims in `revs_native_abi.c`: `mul8` is called only by the oracle and by
+   `mul8_noinit`'s own entry, `abs16_math` only by `scale16_by_y`, and `div16by8` /
+   `mul16_by_1_5` / `apply_angle_term` are the math helpers the twin comments called universal —
+   universal to the *6502*, whose native callers now go core-to-core. Asked properly (*is this
+   reachable from anything BUT an oracle-only shim?*, iterated to a fixed point over
+   `revs_native.c`, `revs_native_seam.c`, `revs_native_abi.c` and every `src/platform` TU) the
+   answer moved **eight** more out — those six plus `mul8_noinit` and `scale_by_track_gradient` —
+   and cost **no** promotions at all: `div16by8_core` and `apply_angle_term_core` stay `static`
+   behind out-of-line `*_core_oracle` wrappers (the span-leaf precedent — `div16by8_core` is the
+   road pass's hottest helper at 60 calls a frame driving, and the objdump confirms it is still
+   inlined into `bearing_to_section`/`project_point` with no `jsr` to it anywhere in
+   `revs_native.o`, so there is nothing to measure). **56** shims, **19** functions left
+   speaking `cpu`. ⚠ The six rows were not a measurement that went stale;
+   they were written from a grep for the shim's name and never checked, which is the same
+   failure the staleness gate was added for one level up.
+
+   ⚠⚠ **And two of the eight were invisible to the lint for a SECOND reason: they speak the
+   register file through `hook_cpu_to_regs`/`hook_regs_to_cpu`, not through `cpu.`.** That pair
+   copies all seven fields in and out through a `HookRegs` local, so it is a `cpu` reference in
+   every sense the campaign cares about, and `SPEAKS` had no pattern for it — `mul8_noinit` and
+   `scale_by_track_gradient` read as clean C. `SPEAKS` matches it now (sabotage: a
+   `hook_cpu_to_regs` call planted in `model_state_marshal_in` FAILS and names it), which is
+   also why `abs8` — the one member of that trio with a real native caller,
+   `scale_by_track_gradient_tail` in `revs_native_seam.c` — now has a class-6 row it did not
+   need before. **A lint that enumerates an idiom must enumerate every spelling of it.**
+
    Sabotage of the lint (each FAILS, with the right function named): a `cpu.A = 0` inside
    `plot_shape_edges_core`; a whole fake one-line shim appended to the file; and a deleted
    allowlist row. ⚠ The one-line sabotage is the one that matters — it is the case the survey's
@@ -719,6 +747,64 @@ BBC could see. Passing the register file explicitly is the fix; assuming it is d
    from and stored back to `cpu` at the boundary, which is exactly where the assertion already
    reads them (`src/platform/bbc_hw.cpp`). The seam is the one place in the port where the
    ambient 6502 register file is the actual subject of the code.
+
+## ✅ The nineteen that remain, and why each one is not residue
+
+`make cpu-lint` prints `19 functions in the argued classes` and the six classes live in
+`tools/cpu_lint.py`. Tracks 2 and 4 above argue classes 1 and 2 (the hook/SMC seam and the ISR
+seam). This is the rest — **57 `cpu` sites, and every one of them is a 6502 mechanism the
+differential can see, not a register the campaign failed to thread.**
+
+**Class 3 — `cpu.S` is an ADDRESS, and the byte at `$0100+S` is compared** (5 functions, 9
+sites). C has no stack pointer to drop these into, and the values are not registers:
+- `mul16_by_1_5_core`'s `mem[STACK_PAGE + cpu.S] = hiHalf` and `update_lap_timers_core`'s
+  `PUSH`/`PULL` pair are **stack-page residue the oracle leaves and the fixture diffs**. The
+  6502 parks a byte with `PHA`/`PHP` and the harness compares all 64 KB, page 1 included, so
+  replacing the push with a C local changes a byte the differential reads. ⚠ That is the whole
+  reason they are not `uint8_t saved = ...`.
+- `span_abandon_chain`'s `cpu.S + 2u` is the `TSX/INX/INX/TXS` two-level return **modelled as a
+  value**: X really does come back as S+2 and the `$2F23` seam inherits it.
+- `engine_init_core`'s `top_level_stack = cpu.S` is the `$386D TSX` — the unwind target the
+  abort path longjmps to. The *value* is the subject.
+- `place_player_in_section_native`'s two `PUSH`/`PULL` pairs are the routine's own fold of two
+  16-bit magnitudes through the stack.
+⚠ None of these can be removed by threading an argument, because no caller supplies them: the
+stack pointer is machine state the 6502 code computes with.
+
+**Class 4 — `cpu.D = 0`** (3 sites: `sort_cars_by_key_core`, `add_tally_to_lap_total_core`,
+`lap_complete_core`). The routine's own `CLD`, and it **stays** — `docs/static-map.md` §Decimal
+mode enumerates all 8 `SED` sites, `validate_native.c` asserts D on exit, and D is architectural
+state the routine hands back to its caller. Deleting the write is not a simplification, it is a
+faithfulness bug on the three routines that clear it. ⚠ The attribution fix in the lint moved one
+of these from `full_track_scan_rebuild_core` to its real owner `lap_complete_core`; the value was
+never wrong, the *label* was.
+
+**Class 5 — a documented forward of a caller's live flag** (2 sites):
+- `race_main_loop_core`'s closing `cpu.I = 0` is the `$4F35 CLI`. The interrupt-disable flag is
+  the one register bit the port's own ISR seam consults, so it is real state, not residue.
+- `finish_race_core`'s `tick_race_timers_core(cpu.C, cpu.V, cpu.D, cpu.I)` is **the one place a
+  core still reads four ambient flags, and the argument is written at the call**: unlike the
+  frame body's `$1701`, this loop re-enters from two branch-backs with different carries
+  (`$1196 BCC`, `$11A5 BCS`) and its V was last written somewhere inside
+  `drive_other_cars`/`check_car_pair` — a transliterated subtree, not a value this routine
+  establishes. They are *passed as arguments* (the core's signature is typed), which is the
+  campaign's shape; what `cpu` supplies is the ambient value, and there is no caller to get it
+  from because the producer is the transliteration.
+
+**Class 6 — a 6502-ABI shim a NATIVE caller still uses** (5 functions, 35 of the 57 sites, the
+whole remainder's bulk). These cannot move to `revs_native_abi.c` because something on the
+native path enters them through the 6502 ABI:
+- `state_flags_bit6` and `surface_colour_apply` — called from `revs_native_seam.c`
+  (`race_main_loop_core`'s restart predicate; the `$2F23` surface seam).
+- `abs8` — the `HookRegs` entry, called from `scale_by_track_gradient_tail`.
+- `store_slip_exit_abi` (×3) and `sound_queue_exit_abi` (×5 + 2 in the abi TU) — **exit** ABIs,
+  not entry ones: a twin whose 6502 tail is a `JMP` into another routine's publish sequence, and
+  the seam replays it for the arm it took.
+⭐ These 35 sites are where the campaign continues if it continues: each retires when its
+`revs_native_seam.c` caller is itself converted to call the typed core, which is per-site work in
+`docs/helper-elimination-audit.md`, not a file-wide pass. ⚠ And nothing may be *added* here
+without the caller audit as a transitive closure — the lint's own six wrong rows are the
+precedent.
 
 ## ⭐ What track 1 taught, and it decides how tracks 2-4 are argued
 
@@ -890,7 +976,7 @@ these two rest on ARGUMENT, not on a gate:
 
 **The fixture-live-mask front is now CLOSED.**
 
-## THE `_core` FRONT IS CLOSED: every surviving `cpu` read is one of five argued classes
+## THE `_core` FRONT IS CLOSED: every surviving `cpu` read is one of six argued classes
 
 The governing sweep's second bullet — *"add the `_core` function to properly pass in arguments if
 needed and use the `_core` when calling the function"* — is **done**, and the survey that says so
@@ -904,7 +990,15 @@ were false: a shim is just as converted when its core is *shared* or *differentl
 by asking **which function bodies READ `cpu` without delegating to a cpu-free callee**, and then
 attribute every such read to its enclosing function. That reduces the front to a handful.
 
-### The five classes, and why each one stays
+### The classes, and why each one stays
+
+⚠⚠ **THE CLASSES AND THEIR MEMBERSHIP NOW LIVE IN `tools/cpu_lint.py`, AND THE LINT IS THE
+AUTHORITY** — `make cpu-lint` fails the build on any `cpu` reference outside them and fails
+again when a row goes stale, so the list cannot rot the way this table did. Read
+§*The nineteen that remain* above for the argument per class. The table below is kept for the
+reasoning it records, **not** for its membership: every entry in its last row has since MOVED to
+`src/gen/revs_native_abi.c` (tracks 3's transitive-closure audit), and `scale_by_track_gradient`
+went with them.
 
 Every remaining `cpu` read in `revs_native.c` is one of these, each with its argument written at
 the code:

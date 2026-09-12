@@ -117,6 +117,10 @@ make determinism-race      # ⭐ ...and THE RACE PROPER (session_is_race = $80),
                            #   PRACTICE session.  ⚠ 13000 frames, RELEASE=1, ~2 min: ~12000 of
                            #   them are the qualifying session the grid is reached through
 make endian-lint           # fail if mem[] is aliased as a wide pointer
+make cpu-lint              # ⭐ fail if revs_native.c speaks `cpu` outside the six argued
+                           #   classes (tools/cpu_lint.py names them, and a STALE allowlist
+                           #   row fails too).  The 6502-ABI shims the oracle needs live in
+                           #   src/gen/revs_native_abi.c — nothing in the port calls them
 make transtrap             # ⭐⭐ does ANY 6502 transliteration still run?  Nine scenarios
                            #   (front end, race, crash, six circuits) under TRANS_TRAP=1; a hit
                            #   is a FAIL.  ⚠ a body no scenario DRIVES is unproven, not dead
@@ -255,6 +259,7 @@ hand-rename in generated files).
 | `src/gen/revs_gen.c` | Generated 6502→C transliteration (regenerated; do NOT edit by hand) |
 | `src/gen/revs_manual.c` | Hand-written stubs for self-modifying routines |
 | `src/gen/revs_native.c` | FAITHFUL native twins (idiomatic C `_core` + 6502-ABI shim), `make validate`d, linked into BOTH backends |
+| **`src/gen/revs_native_abi.c`** | ⭐ the 56 `void <name>(void)` 6502-ABI shims with **no native caller** — the oracle's and `validate_native.c`'s way in, nothing in the port calls them. It is the only native-surface TU allowed to speak `cpu` freely (`make cpu-lint`). ⚠ Never put a twin's BODY here; before adding a shim, ask the caller question as a TRANSITIVE CLOSURE (a shim called only by oracle-only shims is oracle-only) |
 | `src/platform/amiga/revs_native_amiga.cpp` | Genuinely Amiga-only, unvalidated code |
 | `src/platform/mos.cpp` | The MOS (Acorn OS) call layer — ⚠ a FLOOR, not a closed surface: three calls were found by RUNNING it |
 | **`src/platform/bbc_screen.h`** ⭐ | **THE DISPLAY MODEL** — geometry, pixel format, the five raster bands. Read before anything visual |

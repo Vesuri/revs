@@ -2,7 +2,7 @@
 """make cpu-lint — src/gen/revs_native.c may speak `cpu` only in the argued classes.
 
 ⭐⭐ WHY.  The campaign's goal is the 6502 register file GONE from the native surface.  What is
-left in revs_native.c is not residue: each site is one of the five classes below, argued at the
+left in revs_native.c is not residue: each site is one of the six classes below, argued at the
 code.  A NEW `cpu.` reference in any other function is the thing this lint exists to stop --
 either it belongs in a typed core's parameter list, or its shim belongs in revs_native_abi.c.
 
@@ -35,16 +35,19 @@ ALLOWED = {
   'lap_complete_core': 'CLD',
 
   # -- class 5: a documented forward of a caller's live flag, argued at the code.
-  'race_main_loop_core': 'CLI + the phase-1 forward', 'finish_race_core': 'documented forward',
+  'race_main_loop_core': 'the closing CLI', 'finish_race_core': 'documented forward',
 
   # -- class 6: a 6502-ABI SHIM THAT A NATIVE CALLER STILL USES, so it cannot move to
   #    revs_native_abi.c.  ⚠ A shim with NO native caller belongs in that file -- that is the
-  #    whole point of it, and the audit that says which is a grep for callers outside
-  #    revs_gen.c / revs_track_hooks.c / validate_native.c.
-  'state_flags_bit6': 'shim: read from revs_native_seam.c', 'abs16_math': 'shim: scale16_by_y',
-  'surface_colour_apply': 'shim: revs_native_seam.c', 'mul8': 'shim: native callers',
-  'div16by8': 'shim: native callers', 'scale16_by_y': 'shim: native callers',
-  'apply_angle_term': 'shim: native callers', 'mul16_by_1_5': 'shim: native callers',
+  #    whole point of it.
+  #    ⚠⚠ THE CALLER AUDIT IS A TRANSITIVE CLOSURE, not a grep.  Six rows here used to say
+  #    "shim: native callers" about callers that were themselves oracle-only shims in
+  #    revs_native_abi.c (mul8 -> mul8_noinit, scale16_by_y -> abs16_math, and the three math
+  #    helpers the twin comments called universal), so the whole cluster was oracle-only and
+  #    moved out.  Ask it as: is this reachable from anything BUT an oracle-only shim?
+  'state_flags_bit6': 'shim: read from revs_native_seam.c',
+  'surface_colour_apply': 'shim: revs_native_seam.c',
+  'abs8': 'HookRegs shim: scale_by_track_gradient_tail in revs_native_seam.c',
   'store_slip_exit_abi': 'exit ABI: revs_native_seam.c x3',
   'sound_queue_exit_abi': 'exit ABI: revs_native_seam.c x5',
 }
@@ -66,7 +69,11 @@ def strip_comments(lines):
         out.append(o)
     return out
 
-SPEAKS = re.compile(r'\bcpu\.|\bPUSH\s*\(|\bPULL\s*\(|\bPHP\s*\(|\bPLP\s*\(|\bPHA\s*\(|\bPLA\s*\(')
+# ⚠⚠ `hook_cpu_to_regs` / `hook_regs_to_cpu` ARE cpu references -- they copy the whole register
+# file in and out through a HookRegs local, and two oracle-only shims (mul8_noinit,
+# scale_by_track_gradient) hid from this lint for exactly that reason.
+SPEAKS = re.compile(r'\bcpu\.|\bPUSH\s*\(|\bPULL\s*\(|\bPHP\s*\(|\bPLP\s*\(|\bPHA\s*\(|\bPLA\s*\('
+                    r'|\bhook_cpu_to_regs\s*\(|\bhook_regs_to_cpu\s*\(')
 path = 'src/gen/revs_native.c'
 lines = strip_comments(open(path).read().split('\n'))
 fn, cand, depth, bad, used = None, None, 0, [], set()

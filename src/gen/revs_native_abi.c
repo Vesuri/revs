@@ -330,3 +330,112 @@ void steer_demand_store(void)           { car_angle_marshal_in(); steer_demand_s
 
 void clamp_and_store_steer_angle(void)  { car_angle_marshal_in(); clamp_and_store_steer_angle_core(cpu.A);
                                           car_angle_marshal_out(); }
+
+/* ⭐⭐ THE SECOND BATCH — six shims that LOOKED like they had native callers and did not.
+   The track-3 audit asked "is this shim called from anywhere but the oracle?" one level deep,
+   and these six answered yes: `scale16_by_y` calls `abs16_math`, `mul8` calls `mul8_noinit`,
+   and the twin comments named `apply_angle_term` / `div16by8` / `mul16_by_1_5` as the math
+   helpers "every caller goes through".  But the CALLERS are themselves shims in this file, and
+   the twins' real callers go core-to-core — so the whole cluster is oracle-only and the
+   question had to be asked as a TRANSITIVE CLOSURE: a shim whose only callers are oracle-only
+   shims is oracle-only too.  Six allowlist rows in tools/cpu_lint.py had said "shim: native
+   callers" on no evidence; the grep that settles it is in docs/native-sweep.md track 3.
+   ⚠ `mul8_noinit` and `scale_by_track_gradient` also hid from the lint for a second reason:
+   they speak the register file through `hook_cpu_to_regs`/`hook_regs_to_cpu` rather than
+   `cpu.` directly, so the SPEAKS pattern never matched them.  It matches HookRegs now, which
+   is why `abs8` — the one member of that trio with a real native caller — has a row. */
+void mul8_noinit(void)
+{
+    HookRegs r;
+    hook_cpu_to_regs(&r);
+    mul8_noinit_regs(&r);          /* the out-of-line entry; the body stays always_inline'd */
+    hook_regs_to_cpu(&r);
+}
+
+/* $0C00  mul8 — mul8_noinit with the multiplicand taken from A (a store, so no flags). */
+void mul8(void) { math_lo = cpu.A; mul8_noinit(); }
+
+/* $4610  scale_by_track_gradient — the register-file entry; the body is in revs_native.c. */
+void scale_by_track_gradient(void)
+{
+    HookRegs r;
+    hook_cpu_to_regs(&r);
+    scale_by_track_gradient_regs(&r);
+    hook_regs_to_cpu(&r);
+}
+
+/* $0C9C  div16by8 — the dividend arrives split between A and math_lo and the divisor in
+   shared_temp_76, all three the callers' own scratch cells, so mem[] sees only the quotient. */
+void div16by8(void)
+{
+    Div16By8 r = div16by8_core_oracle((uint16_t)((cpu.A << 8) | math_lo), shared_temp_76);
+
+    math_lo = r.quotient;
+    /* $0CA2 `ROL math_lo`, the routine's last instruction: N and Z from the finished quotient,
+       and C from the zero the opening ASL inserted — clear on every path through the loop. */
+    UPD_NZ(r.quotient);
+    cpu.C = 0;
+    cpu.A = r.remainder;
+    if (r.setV) cpu.V = r.overflow;     /* the last subtract's V; untouched when none ran */
+}
+
+/* $0E40  abs16_math — |math_lo:A| in place.  ⚠⚠ IT BRANCHES ON THE CALLER'S N, not on bit 7
+   of A: every real caller has just computed A, so the two agree there and nowhere else. */
+void abs16_math(void)
+{
+    if (!cpu.N) return;             /* $0E40 BPL — caller's N is the value's sign; positive: A kept */
+
+    /* Negate (cpu.A : math_lo) in place — the high byte the caller is holding is the value's high.
+       D = 0 on every caller (docs/static-map.md §Decimal mode), so a plain 16-bit negate.
+       $0E42 (neg16_math, the init entry abs16_math falls into) first PARKS the caller's high byte
+       in math_hi, and the negate leaves it there — so math_hi holds the PRE-negate high byte on
+       exit, which the pure-C twin reproduces because callers see that cell. */
+    uint8_t high = cpu.A;
+    uint16_t v = (uint16_t)(0u - (uint16_t)(((uint16_t)high << 8) | math_lo));
+    math_hi = high;
+    math_lo = (uint8_t)v;
+    cpu.A   = (uint8_t)(v >> 8);
+}
+
+/* $4753  scale16_by_y — |x| * Y >> 8, sign restored.  ⚠ PHP/PLP and both halves matter: the
+   sign is the CALLER's N, so it has to survive the multiply, and the push leaves a byte in the
+   stack page that the differential compares — hence the pair rather than a saved C local. */
+void scale16_by_y(void)
+{
+    uint8_t scale = cpu.Y;          /* the multiplier byte */
+    /* cpu.A holds the value's high byte on entry ($4753). */
+    PHP();                          /* $4753 — the caller's N, which is the value's sign */
+    abs16_math();                   /* $4754 */
+    shared_temp_76 = cpu.A;         /* $4757 */
+    math_hi        = scale;         /* $4759 */
+    /* Core-to-core: the shim only reconstructs A and N/Z/C/V, and all five are dead here —
+       the next line overwrites A and the PLP below overwrites every flag. */
+    (void)mul8_accum_core();        /* $475B */
+    cpu.A = math_hi;                /* $475E — a value only: the LDA's own N/Z are dead here,
+                                       because the PLP on the next line overwrites them.  Proved
+                                       by sabotage: swapping these two lines passes 3000 cases,
+                                       while KEEPING the load's flags across the PLP fails. */
+    PLP();                          /* $4760 */
+    abs16_math();                   /* $4761 */
+}
+
+/* $4765  mul16_by_1_5 — (A : math_lo) = (math_hi : math_lo) * 1.5.  The core does the
+   arithmetic and the PHA residue; this publishes the high-byte ADC's flags. */
+void mul16_by_1_5(void)
+{
+    Wide16Exit e = mul16_by_1_5_core((uint16_t)((math_hi << 8) | math_lo));
+    math_lo = (uint8_t)e.value;
+    cpu.A   = (uint8_t)(e.value >> 8);
+    cpu.C   = e.c;
+    cpu.V   = e.v;
+    cpu.N   = (uint8_t)((cpu.A >> 7) & 1u);
+    cpu.Z   = (uint8_t)(cpu.A == 0);
+}
+
+/* $0DD7's caller side — the destination slot in A, the angle in X, the source slot in Y. */
+void apply_angle_term(void)
+{
+    model_state_marshal_in();
+    car_angle_marshal_in(); apply_angle_term_core_oracle(cpu.A, cpu.X, cpu.Y);
+    model_state_marshal_out();
+}

@@ -154,7 +154,6 @@ void plot_ptrs_marshal_out(void)
     plot_ptr_marshal_out(); plot_ptr2_marshal_out(); plot_ptr3_marshal_out();
 }
 
-
 /* The object plotter (twin #94), defined far below but called from race_main_loop_core with
    the object slot count.  The main loop reaches it through the core, not the 6502-ABI shim. */
 SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, uint8_t entryC);
@@ -411,7 +410,6 @@ static MEM_QUAL unsigned char* const g_viewSlotP[40] = {
     SLOT_B(8), SLOT_B(9), SLOT_B(10), SLOT_B(11),
     SLOT_B(12), SLOT_B(13)
 };
-
 
 /* ⭐⭐ THE HARDWARE-WINDOW TEST, IN ONE PLACE.  CLAUDE.md's rule is to hoist the `bus_write`
    range check to wherever the POINTER is known — one test per scan line / column / fill, never
@@ -1349,7 +1347,6 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
     plot_ptr2_marshal_out();
 }
 
-
 /* $16DC  race_main_loop — THE RACE
 
    The driver — nothing is computed here.  One call runs a whole driving session (practice, a
@@ -1749,7 +1746,6 @@ uint8_t race_main_loop_core(RestartDepth depth)
     return 1u;
 }
 
-
 /* The road-geometry pass — its shared arrays, its subroutines, and at the end of the section
    the driver ($24F6) they all serve. */
 
@@ -1763,7 +1759,6 @@ uint8_t race_main_loop_core(RestartDepth depth)
                                       parallel section list starts $78 up the section cursor
                                       (section byte cursor 0..$77 for side 0, +$78 for side 1) */
 #define PLAYER_CAR       0x17u     /* slot 23 — the player's own car */
-
 
 /* max(value, floor).  Both callers (draw_road's two split clamps) snapshot the flag chain
    into locals from the adc_step BEFORE this call and read those locals afterwards, so the
@@ -1870,7 +1865,6 @@ SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
 SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV);   /* SlotExit: top of file */
 SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect);
 
-
 /* apply_driving_model's sub-models (twins #58-#86), all defined further down.  It reaches
    every one through its core so the whole chain is one native call sequence, not shim hops. */
 /* promoted for revs_native_abi.c */ void compute_car_angles_core(uint16_t heading);
@@ -1886,7 +1880,6 @@ static void apply_drag_terms_core(void);
 AddFlags integrate_state_rates_core(void);
 AddFlags integrate_car_position_core(void);
 CameraExit update_camera_and_drive_state_core(void);
-
 
 /* $12DC  clamp_near_edge_cursor — WHICH NEAR SLOT DOES THE NEXT FRAME REBUILD?  (twin #18)
    Handed a candidate slot, which it steps up by one first.  Two independent clamps:
@@ -1918,7 +1911,6 @@ void clamp_near_edge_cursor_core(uint8_t candidate)
     near_edge_cursor = (uint8_t)slot;                 /* $12F0 STX */
 }
 
-
 /* $12C8  clamp_near_edge_window — RE-OPEN THE WINDOW BY ONE SLOT  (twin #17)
    The other half of a section step: near_edge_last moves up one, held inside
    [near_edge_first, 6], and then the cursor clamp above runs on near_edge_cursor + 1.  (The
@@ -1938,7 +1930,6 @@ void clamp_near_edge_window_core(uint8_t nearSlots)   /* 6 — one past the last
 
     clamp_near_edge_cursor_core((uint8_t)(near_edge_cursor + 1u));   /* $12D9-$12DB */
 }
-
 
 /* $12A0  shift_near_edge_points — THE CAR CROSSED A SECTION  (twin #16)
    Slides the near slots of BOTH 40-point halves up by one — entry i becomes entry i+1 for
@@ -1976,7 +1967,6 @@ void shift_near_edge_points_core(uint8_t topSlot,       /* $2C — slot 4 of the
     clamp_near_edge_window_core(nearSlots);                            /* $12C4 */
 }
 
-
 /* $0BA2  rebase_edge_point — ONE SURVIVING POINT ONTO THIS FRAME'S CAMERA  (twin #19)
    An edge point is stored relative to the camera — its azimuth is measured from where the car
    points, its scan line from where the camera looks — so a point kept from last frame is
@@ -2008,7 +1998,6 @@ void rebase_edge_point_core(uint8_t slot)
     }
 }
 
-
 /* $1208  load_section_triple — TRACK FILE -> A LIVE SECTION SLOT  (twin #20)
    A track-file segment is an 8-byte record (which is why the wrap point is segment_count_x8),
    and fields 1..3 of it are the segment's three 16-bit coordinates.  This copies that triple
@@ -2029,7 +2018,6 @@ void load_section_triple_core(uint8_t destSection, uint8_t segmentByte)
     for (unsigned i = 0; i < 3; i++)
         section_word_set(destSection + i, segment_word(segmentByte + 1 + i));
 }
-
 
 /* hypot_max ($7A/$7B) relocated out of mem[] into a native uint16_t: the LARGER of the two
    ground-plane magnitudes bearing_to_section sorts, handed straight to point_distance_hypot.
@@ -2136,7 +2124,6 @@ void car_heading_marshal_out(void)
     car_heading_hi = (uint8_t)(car_heading_v >> 8);
 }
 
-
 /* bearing ($8A/$8B) relocated out of mem[] into a native uint16_t: bearing_to_section's whole
    output, the absolute angle from the camera to a section point.  Both producer arms
    (bearing_arm, bearing_diagonal) and both readers (emit_edge_bearing, build_road_sign) are
@@ -2232,7 +2219,6 @@ uint8_t point_distance_hypot_apply(void)
     return (uint8_t)(d.dist >> 8);       /* the distance high byte — the callers' live output */
 }
 
-
 /* $23C0  emit_edge_bearing — THE POINT'S ANGLE, RELATIVE TO THE CAR  (twin #21)
    bearing_to_section leaves an absolute bearing; an edge point stores the angle FROM WHERE
    THE CAR IS POINTING, so this is the one subtraction between them, written into both bytes
@@ -2253,7 +2239,6 @@ uint8_t emit_edge_bearing_core(uint8_t slot)
     return point_distance_hypot_apply();     /* $23CF JMP — the point's distance high byte in A */
 }
 
-
 /* $23BB  emit_edge_bearing_at_cursor — ...FOR THE POINT THE WALK IS ON  (twin #23)
    Five bytes: take the section's bearing from the camera, then emit it at edge_cursor.  It
    exists because road_edge_walk always wants both together, where road_edge_start picks the
@@ -2263,7 +2248,6 @@ uint8_t emit_edge_bearing_at_cursor_core(uint8_t sectionByte)
     bearing_to_section_core(sectionByte, 0);        /* $23BB -> $2145: origin 0 = the camera */
     return emit_edge_bearing_core(edge_cursor);     /* $23BE — at the cursor point; A = its distance */
 }
-
 
 /* emit_edge_width_offset's three helpers; the routine itself is at the end of this section. */
 
@@ -2973,7 +2957,6 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
     }
 }
 
-
 /* $3450  abs8 — |A|  (twin #12)
    Eight bytes and 21 callers, with one trap in them: the `BPL` at $3450 tests the CALLER's
    N flag, not bit 7 of A.  Real callers have just computed A so the two agree; a randomised
@@ -3042,7 +3025,6 @@ void abs8(void)
 
    No arithmetic, no hardware, and the two arms differ only in three constants. */
 
-
 static RoadSide road_edge_side_core(uint8_t sideSelect, uint8_t cursor, uint8_t direction)
 {
     RoadSide r;
@@ -3070,7 +3052,6 @@ RoadSide road_edge_side_apply(uint8_t sideSelect)
     road_side_index    = r.side;
     return r;
 }
-
 
 /* $22FF  road_edge_start — THE NEAR EDGE POINTS  (twin #9)
    build_track_geometry's first call, and the only part of the road pipeline that REUSES last
@@ -3227,7 +3208,6 @@ void road_edge_start_core(uint8_t nearSlotCount,   /* 6 — also the "nothing to
     if (staleHorizonCap < horizon_index_prev)        /* $23B4 CMP; A = 7 caps the horizon */
         horizon_extent = staleHorizonCap;
 }
-
 
 /* $23D2  road_edge_walk — ONE ROAD SIDE, FROM THE CURSOR INTO THE DISTANCE  (twin #10)
    The road pipeline's real walk, run once per side.  Starting from the section byte index
@@ -3478,7 +3458,6 @@ uint8_t road_edge_walk_resume_core(uint8_t section, uint8_t midSlot,
     return road_edge_walk_run(section, midSlot, pointCap, offAxis, 1);
 }
 
-
 /* $2505-$250C and $2513-$251A — ONE ROAD SIDE.  road_edge_side picks which side and which
    traversal direction the walk uses (A=0 and A=$80 are opposites whatever the car's
    direction bit holds); the walk then emits that side's points from `firstPoint` upward. */
@@ -3682,7 +3661,6 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
     return ex;
 }
 
-
 /* $1A20  draw_road — THE ROAD RASTERISER  (twin #5)
    The view pipeline's SECOND producer, and the eleventh call of the frame: it consumes
    build_track_geometry's two edge lists and produces the per-scan-line data view_paint_lines
@@ -3829,7 +3807,6 @@ SlotExit draw_road_core(uint8_t endCursorFar, uint8_t endCursorNear)
     return m;
 }
 
-
 /* ⭐⭐ THE DRIVING MODEL'S STATE VECTOR, relocated out of mem[]
    Fifteen 16-bit elements, plane-split in the 6502 as low bytes at $62D0 and high bytes at
    $62E0 — element i is ($62D0+i, $62E0+i).  It is the single largest wide-value base in the
@@ -3879,7 +3856,6 @@ void model_state_marshal_out(void)
    deliberately skipped.  See the banner in revs_native_seam.h. */
 uint16_t view_origin_16[9];
 
-
 static const uint8_t g_viewOriginSlots[6] = { 0u, 1u, 2u, 6u, 7u, 8u };
 
 void view_origin_marshal_in(void)
@@ -3899,7 +3875,6 @@ void view_origin_marshal_out(void)
         mem[MEM_view_origin_hi + j] = (uint8_t)(view_origin_16[j] >> 8);
     }
 }
-
 
 /* $46A1  apply_driving_model — THE PLAYER CAR'S PHYSICS  (twin #6)
    The body's 4th call, and nothing else in the frame writes the car's motion.  136 bytes of
@@ -3939,7 +3914,6 @@ void view_origin_marshal_out(void)
    disasm/symbols.csv under model_state_lo, and revs_native_seam.h names the elements.
 
    No hardware writes and no $FC00-$FEFF access in the driver itself. */
-
 
 /* ⚠ Every model cell below is read from mem[] at the point of use and never cached in a local:
    any of the fifteen sub-models can write any of them, and stage_lateral_speed_delta in particular is *supposed* to
@@ -4059,7 +4033,6 @@ CameraExit apply_driving_model_core(uint16_t heading, int entryC)
     return update_camera_and_drive_state_core();
 }
 
-
 /* $2AD1  draw_track_object — ONE OBJECT SLOT ONTO THE SCREEN  (twin #7)
    The body's 15th call, entered with an object SLOT index in X.  There are 24 slots and they
    hold both the other cars and the road signs, which is why the main loop can reuse this call
@@ -4084,7 +4057,6 @@ CameraExit apply_driving_model_core(uint16_t heading, int entryC)
 
    No hardware writes: the plotter's stores are RAM, and the transpiler was already routing
    this routine's own accesses straight to mem[]. */
-
 
 /* Exit ABI is the full register+flag set (SlotExit).  A, V and C differ per path; X, N and Z
    are the closing `LDX saved_slot_index`.  Entry Y passes through every path (nothing writes it
@@ -4158,7 +4130,6 @@ SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, ui
     return e;
 }
 
-
 /* $1E15  fill_dash_edge_columns — THE VIEW/DASHBOARD SEAM  (twin #8)
    The body's 18th call, and the smallest driver in the frame: 35 bytes, two calls of
    fill_edge_column_run.  What it makes happen is that the road view MEETS the front tyres and
@@ -4186,7 +4157,6 @@ SlotExit draw_track_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV, ui
    incoming flag survives to be wrong.  Swapping WHICH register carries which value does fail,
    as it must; swapping the order does not. */
 
-
 /* One end of the viewport.  `stopColumn` is exclusive of the plot_ptr2 half of the run and
    inclusive of the plot_ptr half — fill_edge_column_run walks two columns per iteration and
    tests the second one against it. */
@@ -4209,7 +4179,6 @@ SlotExit fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightStartS
     /* the second pass's exit is the routine's — the first's is overwritten by it. */
     return edge_column_pass(rightStartSrc, 0x1A, 0x22, 0x2B);
 }
-
 
 /* $18EA  copy_dash_data — THE SECOND UNPACK / STOW  (twin #115)
    The whole call tree is this one routine — it has no JSR of its own; it just moves bytes.
@@ -4291,7 +4260,6 @@ void copy_dash_data_core(uint8_t dirFlag)
     shared_temp_76  = bytes;
 }
 
-
 /* $0C47  div16by8 — THE ENGINE'S DIVIDE  (twin #13)
    mul8's opposite number, and the one function project_point and bearing_to_section call:
    unsigned (A : math_lo) / shared_temp_76, quotient back in math_lo, remainder in A.  Every
@@ -4340,7 +4308,6 @@ void copy_dash_data_core(uint8_t dirFlag)
    revs_gen.c.  So the loop below costs the shipping build nothing per frame, and replacing it
    would mean relaxing two fixtures that still compare V in order to speed up the ORACLE.  Same
    shape as `scale16_by_y`'s PHP/PLP: it is the oracle being an oracle (docs/native-sweep.md). */
-
 
 /* The numerator is ONE 16-bit value; the 6502 keeps its top half in A and its bottom half in
    math_lo, which the loop consumes bit by bit and hands back as the quotient, so the shim
@@ -4402,21 +4369,20 @@ static Div16By8 div16by8_core(uint16_t dividend, uint8_t divisor)
     return r;
 }
 
+/* The oracle's way in to div16by8_core — out of line ON PURPOSE, exactly like the span leaves:
+   the 6502-ABI shim lives in revs_native_abi.c and is on no native path, so a call is free
+   there, while the native callers (bearing_to_section / project_point, 60 calls a frame while
+   driving) keep whatever inlining GCC chose for a `static`.  ⚠ Do not "simplify" this by
+   dropping the `static` — that forces a jsr + argument setup onto the road pass's hottest
+   helper to save a call the oracle never pays for. */
+Div16By8 div16by8_core_oracle(uint16_t dividend, uint8_t divisor)
+{
+    return div16by8_core(dividend, divisor);
+}
+
 /* The 6502-ABI shim.  The dividend arrives split between A and math_lo and the divisor in
    shared_temp_76 — all three are the callers' own scratch cells, so they are arguments here
    and mem[] sees only the quotient. */
-void div16by8(void)
-{
-    Div16By8 r = div16by8_core((uint16_t)((cpu.A << 8) | math_lo), shared_temp_76);
-
-    math_lo = r.quotient;
-    /* $0CA2 `ROL math_lo`, the routine's last instruction: N and Z from the finished quotient,
-       and C from the zero the opening ASL inserted — clear on every path through the loop. */
-    UPD_NZ(r.quotient);
-    cpu.C = 0;
-    cpu.A = r.remainder;
-    if (r.setV) cpu.V = r.overflow;     /* the last subtract's V; untouched when none ran */
-}
 
 /* TWIN #14, $2145/$2147 bearing_to_section — THE BEARING
    TWIN #15, $2285/$2287 project_point      — THE PERSPECTIVE DIVIDE
@@ -4457,7 +4423,6 @@ void div16by8(void)
 /* reciprocal_table indexed by a MANTISSA: project_point normalises the distance until bit 7 is
    set, so the entry it wants is $80 below the table's base ($6200) — entry i = $8000/(i+$80). */
 #define RECIP_TABLE_BIAS  (MEM_reciprocal_table - 0x80u)
-
 
 /* One component of the camera-relative delta: the section coordinate minus the view origin,
    split into its sign (the high byte of the signed difference) and its magnitude (the absolute
@@ -4692,7 +4657,6 @@ ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin)
     return (ProjPoint){ lineByte, 0, (lineByte & 0x80u) != 0 };
 }
 
-
 /* $2B26-$2FFF  THE SPAN RASTERISER — twins #25-#39
    Everything draw_road reaches below its three stages, and the one part of the view pipeline
    that was still transliterated after twins #16-#24 closed the geometry pass.  Read as one
@@ -4737,11 +4701,9 @@ _Static_assert(SPAN_BLOCK == MEM_shared_temp_85, "point_delta_hi[2] is shared_te
 #define SPAN_YSTEP     (MEM_point_delta_sign + 1u)   /* point_delta_sign[1] — which way the plotters step Y */
 #define SPAN_CLIP      (MEM_point_delta_sign + 2u)   /* point_delta_sign[2] — two-bit rolling clip history */
 
-
 /* The two end-marker opcode slots, by address; the five Y-step slots and the two patched
    destination operands are symbols.csv `code` rows (MEM_span_step_*_slot, MEM_span_dest_p*_operand
    — the operand's high byte is the named low byte plus one). */
-
 
 #define OP_INY 0xC8u
 #define OP_DEY 0x88u
@@ -4771,21 +4733,6 @@ static int span_step_y(unsigned slot, uint8_t *y)
    value (docs/faithfulness-seam.md).
    ⚠ It BRANCHES ON THE CALLER'S N and then falls into neg16_math (twin #48), which is the
    function this now calls — nothing is duplicated. */
-void abs16_math(void)
-{
-    if (!cpu.N) return;             /* $0E40 BPL — caller's N is the value's sign; positive: A kept */
-
-    /* Negate (cpu.A : math_lo) in place — the high byte the caller is holding is the value's high.
-       D = 0 on every caller (docs/static-map.md §Decimal mode), so a plain 16-bit negate.
-       $0E42 (neg16_math, the init entry abs16_math falls into) first PARKS the caller's high byte
-       in math_hi, and the negate leaves it there — so math_hi holds the PRE-negate high byte on
-       exit, which the pure-C twin reproduces because callers see that cell. */
-    uint8_t high = cpu.A;
-    uint16_t v = (uint16_t)(0u - (uint16_t)(((uint16_t)high << 8) | math_lo));
-    math_hi = high;
-    math_lo = (uint8_t)v;
-    cpu.A   = (uint8_t)(v >> 8);
-}
 
 /* $2FEE  road_span_advance  (twin #26)
    "Has this span walked off the top of its source block?"  Returns nothing but the CARRY:
@@ -4803,7 +4750,6 @@ int road_span_advance_core(uint8_t y)
        line, CLEAR the moment it reaches (or precedes) it.  C = (Y > dash_block_starts[block]). */
     return y > mem[MEM_dash_block_starts + mem[SPAN_BLOCK]];
 }
-
 
 /* $2F12-$2F44  the run's SURFACE CAP
    Not a function of its own in the disassembly — it is the tail two of the four arms fall
@@ -4988,7 +4934,6 @@ void span_plot_core(const SpanPlotter* p, uint8_t column,
     *carry = span_step_y(p->stepOut, y) ? 0u : preC;
 }
 
-
 /* $2FC0  span_end_marker_p1  (twin #29)  and  $2FD7  span_end_marker_p2  (twin #30)
    Close a run: write the $FF terminator the view rasteriser reads as "no more spans on this
    line" through one of the two pointers, then reset X to $80.  Called once after each group
@@ -5021,7 +4966,6 @@ void span_plot_core(const SpanPlotter* p, uint8_t column,
     *colMark = 0x80u;
     *carry   = 0u;
 }
-
 
 /* $2D17 draw_span_shallow_fwd  (twin #31)   $2D9A draw_span_shallow_rev  (#32)
    $2E20 draw_span_steep_fwd    (twin #33)   $2E99 draw_span_steep_rev    (#34)
@@ -5059,7 +5003,6 @@ void span_plot_core(const SpanPlotter* p, uint8_t column,
 static const uint8_t SHALLOW_DDA_OFF[8] = { 0x02, 0x0D, 0x18, 0x23, 0x33, 0x3E, 0x49, 0x54 };
 static const uint8_t SHALLOW_COL_OFF[8] = { 0x08, 0x13, 0x1E, 0x29, 0x39, 0x44, 0x4F, 0x5A };
 static const uint8_t STEEP_COL_OFF[8]   = { 0x00, 0x0B, 0x16, 0x21, 0x2E, 0x39, 0x44, 0x4F };
-
 
 /* promoted for revs_native_abi.c */ const SpanArm ARM_SHALLOW_FWD = { 0x3E50u, 0x2D28u, 0x2D29u, SPAN_DY, SPAN_DX, 0, 0, 0x44u };
 /* promoted for revs_native_abi.c */ const SpanArm ARM_SHALLOW_REV = { 0x40D0u, 0x2DABu, 0x2DACu, SPAN_DY, SPAN_DX, 1, 0, 0x2Fu };
@@ -5268,7 +5211,6 @@ void span_walk_oracle(const SpanArm *arm, uint8_t phase, uint8_t startLine)
     span_walk(arm, phase, startLine);
 }
 
-
 /* $2B26  interp_edge  (twin #35)
    THE SPAN RASTERISER'S SETUP, and the routine that decides everything the four arms and the
    two plotters then do.  draw_surface_spans calls it once per span with the span's two
@@ -5318,7 +5260,6 @@ void span_walk_oracle(const SpanArm *arm, uint8_t phase, uint8_t startLine)
    test overwrites them, so the twin ignores them and its exit registers/flags are ALL dead
    (validate_native.c declares interp_edge LIVE_NONE).  The only mem[] the removed PHP would
    have written is one 6502-stack byte the oracle still writes; the fixture ignores it. */
-
 
 /* $2B26's three exits all run the same tail: publish this endpoint for the next span unless the
    endpoints were swapped, then report the two indices. */
@@ -5531,7 +5472,6 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
     return interp_edge_publish();
 }
 
-
 /* $1933 edge_x_offscreen (twin #36) and $193E fill_line_attr (twin #37)
    draw_road's FIRST stage, run once per road side: it turns the side's edge points into a
    PER-SCAN-LINE MAP.  line_attr_0 and line_attr_1 hold, for every scan line, the index of the
@@ -5591,7 +5531,6 @@ EdgeOffFlags edge_x_offscreen_core(uint8_t pointX)
     EdgeOffFlags e = { sum, v, (uint8_t)(old & 1u), offAxis, (uint8_t)(newv == 0) };
     return e;
 }
-
 
 /* Idiomatic C: the walk runs on local variables and plain math.  The routine's flags DO leave
    it (the differential checks A/X/Y and every flag), but they are all recovered at the end from
@@ -5782,7 +5721,6 @@ SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t first
     return e;
 }
 
-
 /* $19AF  draw_surface_spans  (twin #38)
    draw_road's SECOND stage, run four times.  It walks the two edge halves in lockstep — index
    i in one, i + span_pair_offset_tbl[pass] in the other — and hands each pair to interp_edge
@@ -5881,7 +5819,6 @@ void draw_surface_spans_core(uint8_t pass, uint8_t firstPoint)
         span_index_far  = x;             /* $1A1A */
     }
 }
-
 
 /* $1A98  mark_line_surfaces  (twin #39)
    draw_road's THIRD stage, run once per road side: it stamps each edge point's surface class
@@ -6004,7 +5941,6 @@ SlotExit mark_line_surfaces_core(uint8_t surfaceClass, uint8_t firstPoint, int e
     }
 }
 
-
 /* TWINS #40-#43 — THE VIEW/DASHBOARD SEAM'S OWN CALLEES
    With these four, the call tree under fill_dash_edge_columns (twin #8) has no
    transliteration left in it:
@@ -6058,7 +5994,6 @@ static int pointer_is_ram(unsigned base)
 {
     return page_is_ram(base);
 }
-
 
 /* $1E9E  surface_colour_at — WHICH SURFACE IS AT (LINE, POSITION)?  (twin #40)
    The road renderer's colour decision, and the only routine that reads all four
@@ -6148,7 +6083,6 @@ uint8_t surface_colour_apply(uint8_t line)
     cpu.N = e.n; cpu.Z = e.z; cpu.V = e.v; cpu.C = e.c;
     return e.a;
 }
-
 
 /* $1DAF  column_gap_walk — FILL ONE COLUMN'S EMPTY SOURCE BYTES  (twin #41)
    Walks EDGE_COLUMN's source block from span_line_cursor down to (not including)
@@ -6265,7 +6199,6 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
     }
 }
 
-
 /* $1DA6  fill_column_gaps — THE PATCH, THEN THE WALK  (twin #42)
    Three stores and a fall-through.  It exists because the walk is one routine serving two
    passes: this entry is what turns the registers into the walk's configuration.
@@ -6285,7 +6218,6 @@ SlotExit fill_column_gaps_core(uint8_t pointer, uint8_t branchOffset,
        three inputs are those, spelled here as values rather than read back from cpu. */
     return column_gap_walk_core(pointer, branchOffset, entryV);
 }
-
 
 /* $1DEF  fill_edge_column_run — ONE RUN OF END COLUMNS  (twin #43)
    Entered with X = the first column, A = the column to stop at and Y = the scan line the
@@ -6335,7 +6267,6 @@ SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
        compare leaves N=0, Z=1, C=1.  A, Y and V are the second walk's, untouched by the CPX. */
     { SlotExit e = { e2.a, (uint8_t)column, y, 0u, 1u, e2.v, 1u }; return e; }
 }
-
 
 /* TWINS #44-#49 — THE ENGINE'S MULTIPLY, AND THE NEGATE BESIDE IT
    The first group of apply_driving_model's callee tree, and the one place in this project
@@ -6421,16 +6352,7 @@ REVS_FLAG_OP void mul8_noinit_into(HookRegs *r)
 
 void mul8_noinit_regs(HookRegs *r) { mul8_noinit_into(r); }
 
-void mul8_noinit(void)
-{
-    HookRegs r;
-    hook_cpu_to_regs(&r);
-    mul8_noinit_into(&r);
-    hook_regs_to_cpu(&r);
-}
-
 /* $0C00  mul8 — mul8_noinit with the multiplicand taken from A (a store, so no flags). */
-void mul8(void) { math_lo = cpu.A; mul8_noinit(); }
 
 /* $0DBF  mul8_accum — THE 16x8 FIXED-POINT STEP  (twin #46)
    Multiplies the 16-bit value (shared_temp_76 : math_lo) by math_hi and keeps the top 16 bits
@@ -6478,7 +6400,6 @@ Mul8AccumExit mul8_accum_core(void)
     return e;
 }
 
-
 /* $0E42 / $0E44  neg16_math — NEGATE (math_hi : math_lo)  (twins #48, #49)
    Two's-complement negate of the 16-bit accumulator.  ⚠ The high byte comes back in A and is
    NOT written to math_hi — the caller decides whether to keep it — and the second subtract's
@@ -6486,7 +6407,6 @@ Mul8AccumExit mul8_accum_core(void)
    caller is holding); $0E44 negates what is already in the pair.  abs16_math falls into $0E42.
    D is always 0 on every path that reaches here (driving-model / steering / render callers —
    docs/static-map.md §Decimal mode), so these are plain 16-bit negates.  Both are KEPT shims. */
-
 
 /* TWINS #50-#57 — THE DRIVING MODEL'S 16-BIT ARITHMETIC
    The layer between the multiply and the sub-models: everything that reads or writes the
@@ -6545,24 +6465,6 @@ Mul8AccumExit mul8_accum_core(void)
    has — so it has to survive the multiply, and the 6502 parks it on the stack.  The push leaves
    a byte in the stack page that the differential compares, so the pair is reproduced rather
    than replaced by a saved C variable. */
-void scale16_by_y(void)
-{
-    uint8_t scale = cpu.Y;          /* the multiplier byte */
-    /* cpu.A holds the value's high byte on entry ($4753). */
-    PHP();                          /* $4753 — the caller's N, which is the value's sign */
-    abs16_math();                   /* $4754 */
-    shared_temp_76 = cpu.A;         /* $4757 */
-    math_hi        = scale;         /* $4759 */
-    /* Core-to-core: the shim only reconstructs A and N/Z/C/V, and all five are dead here —
-       the next line overwrites A and the PLP below overwrites every flag. */
-    (void)mul8_accum_core();        /* $475B */
-    cpu.A = math_hi;                /* $475E — a value only: the LDA's own N/Z are dead here,
-                                       because the PLP on the next line overwrites them.  Proved
-                                       by sabotage: swapping these two lines passes 3000 cases,
-                                       while KEEPING the load's flags across the PLP fails. */
-    PLP();                          /* $4760 */
-    abs16_math();                   /* $4761 */
-}
 
 /* $4765  mul16_by_1_5 — x + x/2, ARITHMETIC  (twin #52)
    (A : math_lo) = (math_hi : math_lo) * 1.5, with the halving SIGNED — the 6502 seeds the
@@ -6588,17 +6490,6 @@ Wide16Exit mul16_by_1_5_core(uint16_t x)
     e.c = (uint8_t)(((uint32_t)x + half) > 0xFFFFu);
     e.v = (uint8_t)(((~(hiHalf ^ hiIn) & (hiHalf ^ hiOut)) >> 7) & 1u);
     return e;
-}
-
-void mul16_by_1_5(void)
-{
-    Wide16Exit e = mul16_by_1_5_core((uint16_t)((math_hi << 8) | math_lo));
-    math_lo = (uint8_t)e.value;
-    cpu.A   = (uint8_t)(e.value >> 8);
-    cpu.C   = e.c;
-    cpu.V   = e.v;
-    cpu.N   = (uint8_t)((cpu.A >> 7) & 1u);
-    cpu.Z   = (uint8_t)(cpu.A == 0);
 }
 
 /* $47E5  model_integrate_element — ELEMENT X += ELEMENT 14  (twin #53)
@@ -6709,6 +6600,12 @@ static void apply_angle_term_core(uint8_t dest, uint8_t angle, uint8_t source)
     apply_angle_term_body(angle, source);
 }
 
+/* ...and the same for apply_angle_term_core — see div16by8_core_oracle above. */
+void apply_angle_term_core_oracle(uint8_t dest, uint8_t angle, uint8_t source)
+{
+    apply_angle_term_core(dest, angle, source);
+}
+
 /* promoted for revs_native_abi.c */ void apply_angle_term_at_core(uint8_t mode, uint8_t angle)
 {
     uint8_t source = mem[MODEL_SRC_SLOT];       /* $486D LDY — a local; exit Y is dead here */
@@ -6744,12 +6641,6 @@ int kbd_test_key_core(uint8_t keyCode)
     return r.x == 0xFFu;                             /* $0E57 CPX #$FF — Z set (key down) is the output */
 }
 
-void apply_angle_term(void)
-{
-    model_state_marshal_in();
-    car_angle_marshal_in(); apply_angle_term_core(cpu.A, cpu.X, cpu.Y);
-    model_state_marshal_out();
-}
 /* TWINS #58-#66 — THE DRIVING MODEL'S ROTATIONS AND INTEGRATIONS
    apply_driving_model's third group, and the one that says what the model DOES: the layer above
    the 16-bit arithmetic, where the state vector is treated as vectors and rates, not numbers.
@@ -7483,8 +7374,6 @@ void store_slip_exit_abi(uint8_t sign)
     cpu.V = (uint8_t)((sign >> 6) & 1u);             /* $4B51 BIT SLIP_SIGN sets V = bit 6 */
 }
 
-
-
 /* The $0B4D `ADC #$10` block-index carry and overflow — a plain binary add (D = 0), so C is the
    unsigned carry and V the signed overflow.  begin_spin threads these out as its exit C/V; the
    exit ABI below replays them into cpu. */
@@ -7636,8 +7525,6 @@ SlotExit engine_sound_update_core(uint8_t entryX, uint8_t entryY,
     return e;
 }
 
-
-
 /* THE EIGHT SUB-MODELS — apply_driving_model's tree, less its plumbing (the multiply, the
    16-bit arithmetic, the rotations/integrations, the slip/sound cluster).  These talk to the
    rest of the engine.
@@ -7689,7 +7576,6 @@ SlotExit engine_sound_update_core(uint8_t entryX, uint8_t entryY,
           Checked on both arms, which is what separates it from a coverage hole;
         * `update_engine_revs`' power curve is CONTINUOUS at all three breakpoints ($BA, $B6,
           $A2), so moving one changes nothing.  Sabotage a segment's OFFSET or SLOPE instead. */
-
 
 /* THE CAR-ANGLE ARRAY, relocated out of mem[]
    The three-entry array the 6502 kept PLANE-SPLIT — low bytes at $62A0-$62A2, high bytes at
@@ -7827,7 +7713,6 @@ uint8_t scale_by_track_gradient_tail_core(uint8_t value, int negative)
     math_lo = (uint8_t)p;
     return (uint8_t)(p >> 8);
 }
-
 
 /* $4DC9 / $4DCB  begin_spin — THE CAR LOSES CONTROL  (twins #81, #82)
    Seeds the two decaying counters from a severity (road_speed at the $4DC9 entry), nudges the
@@ -8546,13 +8431,6 @@ void scale_by_track_gradient_regs(HookRegs *r)
     }
 }
 
-void scale_by_track_gradient(void)
-{
-    HookRegs r;
-    hook_cpu_to_regs(&r);
-    scale_by_track_gradient_regs(&r);
-    hook_regs_to_cpu(&r);
-}
 /* begin_spin's exit ABI is sound_queue_default's: A/Y are left in cpu by the OSWORD (via mos_call
    inside the core), and sound_queue_exit_abi replays X/N/Z (from sound_saved_x) and the block C/V. */
 /* 6502-ABI entry: car_lateral_speed_entry ($38/$39) is a relocated input to the core (its producer,
@@ -8987,7 +8865,6 @@ void build_road_sign(void)      { hypot_max_marshal_in();  hypot_min_marshal_in(
    docs/rename.md.  The `OBJ_*` defines below are the pass's own names for those cells and the
    comment on each says whose they are the rest of the time. */
 
-
 /* The object pass's own names for the point_delta window it borrows (docs/rename.md). */
 #define OBJ_VECTOR_CURSOR   (MEM_point_delta_lo + 1u)   /* point_delta_lo[1] — the shape's vector cursor */
 #define OBJ_VECTOR_END      MEM_bearing_lo   /* bearing_lo        — one past its last vector */
@@ -9292,7 +9169,6 @@ SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV)
         shapeIdx = plot_shape;                         /* re-enter with the UNCLAMPED index */
     }
 }
-
 
 /* TWINS #96-#97 — THE OBJECT PLOTTER'S LINE SIDE, and with it the whole of
    draw_track_object's tree
@@ -9774,7 +9650,6 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect)
 
     return slot_prev_col(x, y);
 }
-
 
 /* TWINS #98-#114 — THE DRIVING CONTROLS
    Seventeen functions, ~700 bytes: everything `read_driving_controls` reaches.  One cluster, not
@@ -10896,7 +10771,6 @@ BcdAdd add_tally_to_lap_total_core(uint8_t column, uint8_t car)
    native leaf with a live-flag input (abs8, abs16_math), the seam reconstructs
    exactly the cpu inputs that leaf reads — nothing more. */
 
-
 /* $0B77  scale_wing_settings  (twin #116)
    Turns the two pit-menu wing settings into the downforce/drag coefficients the
    driving model reads.  Per wing: grip = ((base * (setting*4)) >> 8) + $5A.  Drag
@@ -11231,7 +11105,6 @@ void process_car_contact_native(void)
     sound_queue_exit_abi(SOUND_SLOT_IMPACT);
 }
 
-
 /* THE PER-CAR LAP DISTANCE, relocated out of mem[]
    Another plane-split array: low bytes $08D0-$08E7, high bytes $08E8-$08FF, one 16-bit
    distance-round-the-lap per car slot.  24 slots, $00-$17 — the twenty racing cars the field
@@ -11366,7 +11239,6 @@ GapTail car_gap_tail_core(uint8_t x, uint8_t y, unsigned carryIn)
     return r;
 }
 
-
 /* $0BCC  section_coord_add_delta  (twin #138)
    Integrates one signed direction step into a section's 3-component world coordinate:
 
@@ -11392,7 +11264,6 @@ void section_coord_add_delta_core(uint8_t dst, uint8_t src,
     }
 }
 
-
 /* Forward declarations for the core-to-core calls below: these three are defined further down
    with the car-position twins (#134/#135/#136), but the road builder and the track scan call
    them directly rather than through their 6502-ABI shims. */
@@ -11410,7 +11281,6 @@ void copy_section_height_to_side1_core(uint8_t x)
 {
     section_word_set(SECTION_SIDE1 + x + 1, section_word(x + 1));
 }
-
 
 /* $13DA  advance_dir_on_segment_flag  (twin #143)
    If bit 0 of the current segment's flags is set, advance segment_dir_index;
@@ -11469,7 +11339,6 @@ void build_section_step_delta_core(uint8_t y)
     math_hi               = (uint8_t)d[1];  mem[MEM_point_delta_hi + 1] = (uint8_t)(d[1] >> 8);
     shared_temp_76        = (uint8_t)d[2];  mem[MEM_point_delta_hi + 2] = (uint8_t)(d[2] >> 8);
 }
-
 
 /* $125A  derive_car_section_cursor  (twin #140)
    Maps the walk-origin section cursor to the CAR's section cursor: subtract $60
@@ -11798,7 +11667,6 @@ void load_section_from_segment_core(uint8_t x, uint8_t y)
 
     copy_section_height_to_side1_core(x);                   /* side-0 height -> side-1 */
 }
-
 
 /* $150E  step_section_curve  (twin #144)
    The section-CURVE stepper, a leaf of the build_road_section road-builder cluster.  It writes one byte,
@@ -12259,7 +12127,6 @@ uint8_t paint_fence_backdrop_core(uint8_t horizon)
     return last;
 }
 
-
 /* THE CAR-ORDER INDEX CLUSTER  (twins #129-#133)
    The mod-20 running-order index helpers, the car_order swap, and the two
    routines built on them.  All of it is index bookkeeping over the 20-entry
@@ -12286,7 +12153,6 @@ uint8_t paint_fence_backdrop_core(uint8_t horizon)
     return (i >= 0x14u) ? 0x00u : i;
 }
 
-
 /* $267F car_order_swap — exchange car_order[xi] and car_order[yi].  On exit the 6502
    leaves X = the value now at [xi] (old [yi]) and Y = the value now at [yi] (old [xi]),
    and parks old [xi] in the math_lo scratch. */
@@ -12300,7 +12166,6 @@ void car_order_swap_core(uint8_t xi, uint8_t yi, uint8_t* outX, uint8_t* outY)
     *outX = oldY;
     *outY = oldX;
 }
-
 
 /* $63A2 find_player_neighbours — locate the player's own car in the running order and
    record the cars immediately ahead and behind.  Scans car_order from slot 19 down; a
@@ -12319,7 +12184,6 @@ void car_order_swap_core(uint8_t xi, uint8_t yi, uint8_t* outX, uint8_t* outY)
     return car_behind;                           /* exit ABI: X = the last index computed */
 }
 
-
 /* $5011 clear_race_clock — zero the 3-byte BCD race clock for car X. */
 void clear_race_clock_core(uint8_t x)
 {
@@ -12327,7 +12191,6 @@ void clear_race_clock_core(uint8_t x)
     mem[MEM_race_clock_mid + x] = 0x00u;
     mem[MEM_race_clock_hi  + x] = 0x00u;
 }
-
 
 /* TWINS #134-#135 — the track-position STEPPERS.
 
@@ -12372,7 +12235,6 @@ void clear_race_clock_core(uint8_t x)
     return crossed;
 }
 
-
 /* $14C3 track_pos_retreat — step car x one offset-unit backward (the reverse of advance). */
 /* promoted for revs_native_abi.c */ uint8_t track_pos_retreat_core(uint8_t x)
 {
@@ -12410,7 +12272,6 @@ void clear_race_clock_core(uint8_t x)
     car_distance_16[x] = (uint16_t)(dist - 1u);
     return crossed;
 }
-
 
 /* $109B  full_track_scan_rebuild  —  NATIVE DRIVER (STAGE 5), the root of the crash-freeze subtree.
  *
@@ -12628,7 +12489,6 @@ void full_track_scan_rebuild_core(uint8_t retreatDepth)
     mem[MEM_car_lap_start_hi + x]  = mem[MEM_race_clock_hi];
     cpu.D = 0;                                          /* back to binary */
 }
-
 
 /* TWIN #178 — $261F  reject_all_object_slots
    Mark every one of the 23 object slots as rejected by the projection (car_flags_shape bit 7),
@@ -13646,7 +13506,6 @@ void sort_cars_by_key_core(uint8_t sel)
    ⚠ NOT a decimal-mode site (docs/static-map.md §Decimal mode); no arithmetic here
    is BCD, so it needs no D handling. */
 
-
 /* The only input is the scan index in Y.  The body is cpu-free: the 6502's X is threaded as a
    local (osX) because the envelope redefine in the tail genuinely reads it, and its exit A/Y
    are dead — the fixture declares LIVE_NONE ("RTS, no consumed register") and the native caller
@@ -13756,7 +13615,6 @@ void shift_key_commands_core(uint8_t entryY)
    expansion circuit: disasm/track_smc.txt has no extent anywhere in $111E-$1207, $1C0B-$1C1B,
    $2B0E-$2B1D or $43F6-$43FE, so Silverstone's control flow through here IS every circuit's
    and `make determinism` genuinely gates them. */
-
 
 /* $43F6  sound_stop_all — SILENCE EVERY CHANNEL  (twin #169)
    Four calls of sound_stop_channel, channel 3 down to 0.  ⚠ The 6502's `DEX` steps the X the
@@ -14033,7 +13891,6 @@ void mirror_draw_car_core(uint8_t lowerBound, uint8_t segment)
     plot_ptr_marshal_out();
 }
 
-
 /* ⭐ TWINS #181-#184 — THE NUMBER AND NAME PRINTERS
  * ------------------------------------------------------------------------------------------------
  * Four small routines that were the last transliterated holders of the vdu_char_def shim.  They
@@ -14178,7 +14035,6 @@ TextExit print_lap_time_core(uint8_t fieldMask, uint8_t carIdx, uint8_t y)
     e.a = t.a; e.n = t.n; e.z = t.z;
     return print_bcd_digits_core(mem[MEM_car_best_lap_lo + carIdx], carIdx, y); /* $7BB8 — hundredths */
 }
-
 
 /* ⭐ TWINS #185-#191 — THE DASHBOARD READOUTS THAT DRIVE THE PRINTERS
  * ------------------------------------------------------------------------------------------------
@@ -14591,7 +14447,6 @@ TextExit print_lap_value_field_core(uint8_t x, uint8_t y)
  * Both are result-only: their exit registers and flags are dead at every caller (print_standings_table reloads
  * X immediately, and text_script_interp's own exit ABI is dead by its twin's contract).
  * ================================================================================================ */
-
 
 /* $3E60 — the rule's two glyphs are chosen by the table MODE (shared_counter_42, which print_standings_table
    seeded from its mode nibble: $0, $4 or $8) and the ROW's parity, and written straight into
