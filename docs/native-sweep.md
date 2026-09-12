@@ -565,8 +565,13 @@ BBC could see. Passing the register file explicitly is the fix; assuming it is d
    and `kbd_test_key`'s INKEY residue (17 call sites' worth of stores, three fixture masks).
    What is LEFT in a `_core` body is all one of the argued classes: a hook entry ABI, `cpu.D`,
    `cpu.S`, or the sanctioned flag-escape helpers.
-2. **the hook/SMC seam** — typed cores per twin, entry ABI as arguments. THE BIG ONE, and the
-   only remaining shipping class. `make viewdiff` is the only gate.
+2. **the hook/SMC seam** — the BOUNDARY is done: `revs_track_hook_regs(addr, HookRegs *)` carries
+   the entry ABI as a value, all 15 dispatch sites in `revs_native.c` pass their own registers
+   and read the exit out of the struct, and `cpu` is marshalled only on the transliteration
+   (oracle) path and inside a not-yet-typed twin's one-line wrapper. What is LEFT: the 23 twins
+   get typed cores (register them in `HOOK_TWINS_TYPED`, `tools/transpile.py`), and the *ambient*
+   `hook_cpu_to_regs(&hr)` seeding at each site — labelled "residue" in place — gets replaced by
+   the caller's own values field by field. `make viewdiff` is the only gate.
 3. the oracle-only shims — move out, then lint `revs_native.c`
 4. the ISR seam
 
