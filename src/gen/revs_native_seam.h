@@ -391,17 +391,6 @@ REVS_FLAG_OP unsigned sbc_step(unsigned value, uint8_t subtrahend, int carry_in)
     return cpu.A;
 }
 
-/* `value >= limit`, spelled as the 6502's CMP so that the comparison's own C/N/Z are left
-   behind.  ⚠ NOT decoration: every SMC site in these two routines is an EXIT, so a clamp
-   test three lines earlier is the last thing that touched the flags on that path, and a
-   plain C `>=` reads the same and validates differently. */
-REVS_FLAG_OP int cmp_ge(unsigned value, uint8_t limit)
-{
-    cpu.A = (uint8_t)value;
-    CMP(limit);
-    return cpu.C;
-}
-
 REVS_FLAG_OP unsigned zp_pointer(unsigned zp)
 {
     return (unsigned)mem[zp & 0xFFu] | ((unsigned)mem[(uint8_t)(zp + 1)] << 8);

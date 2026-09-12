@@ -1749,13 +1749,16 @@ static unsigned clamp_up_to(unsigned value, uint8_t floor)
     return value >= floor ? value : floor;
 }
 
-/* ++mem[cell], leaving N and Z from the result.  Pure RAM by construction here, so unlike
-   the transliteration's INC_M it does not pay a bus_write range test. */
+/* ++mem[cell].  Pure RAM by construction here, so unlike the transliteration's INC_M it does
+   not pay a bus_write range test.
+   ⚠ The 6502's INC leaves N and Z, and this helper used to publish them.  They are dead at all
+   three call sites and that is argued, not assumed: append_corner_marker's caller overwrites
+   N/Z/C with its own CMP before every exit (and re-establishes them explicitly on the hook
+   arm); update_engine_revs' shim assigns N/Z from the returned struct; and road_edge_walk's
+   fixture declares live=S only, with build_track_geometry's tail rewriting A and the flags. */
 static void inc_mem(unsigned cell)
 {
-    uint8_t v = (uint8_t)(mem[cell] + 1);
-    mem[cell] = v;
-    UPD_NZ(v);
+    mem[cell] = (uint8_t)(mem[cell] + 1);
 }
 
 /* One 16-bit section coordinate, read and written as ONE value.  Each section owns three of
@@ -3204,15 +3207,25 @@ void road_edge_start_core(uint8_t nearSlotCount,   /* 6 — also the "nothing to
    function, because $2490 is both a branch target and a container split; the oracle for this
    twin is the $23D2 stub plus that whole region. */
 
-/* $2477-$2489 — |edge_x_hi[…]| against the off-axis threshold, spelled with the 6502's
-   LDA/BPL/EOR/CMP because both exits below inherit A and the compare's flags.  Note EOR #$FF
-   rather than a true negate: one less in magnitude, which is all a threshold needs. */
-static int angle_off_axis(unsigned addr, uint8_t threshold)
+/* $2477-$2489 — |edge_x_hi[…]| against the off-axis threshold.  EOR #$FF rather than a true
+   negate: one less in magnitude, which is all a threshold needs.
+   ⚠ The magnitude and the CMP's own N/Z/C DO survive into the $248B SMC site, so an expansion
+   circuit's hook reads them — but only on the PATCHED arm.  So this is plain C and returns
+   them, and the caller publishes them into cpu immediately before it dispatches; Silverstone
+   no longer pays five cpu field writes per compare, twice per edge point past the floor. */
+typedef struct { uint8_t magnitude, carry, neg, zero; } OffAxis;
+
+static OffAxis angle_off_axis(unsigned addr, uint8_t threshold)
 {
-    unsigned a = load_a(mem[addr]);
-    if (cpu.N)
-        a = load_a((uint8_t)(a ^ 0xFFu));
-    return cmp_ge(a, threshold);
+    uint8_t v = mem[addr];
+    uint8_t a = (v & 0x80u) ? (uint8_t)(v ^ 0xFFu) : v;   /* $247A BPL / $247C EOR #$FF */
+    uint8_t d = (uint8_t)(a - threshold);                 /* $247E CMP */
+    OffAxis o;
+    o.magnitude = a;
+    o.carry     = (uint8_t)(a >= threshold);
+    o.neg       = (uint8_t)(d >> 7);
+    o.zero      = (uint8_t)(d == 0u);
+    return o;
 }
 
 /* $2403-$2469 — the step was too coarse.  Interpolate three quarter-way midpoints between
@@ -3274,8 +3287,8 @@ static uint8_t road_edge_walk_subdivide(unsigned section, uint8_t midSlot)
 
     marker_count_saved = marker_count;               /* $245C — no corner marker for a midpoint */
     emit_edge_width_offset_core(walk_prev_section, 0x03, 0u);   /* mem-only here; exit V is dead */
-    marker_count       = marker_count_saved;     /* the LDA's N/Z die on the inc_mem below */
-    inc_mem(MEM_edge_cursor);                        /* $2467, and its N/Z are the exit flags */
+    marker_count       = marker_count_saved;
+    inc_mem(MEM_edge_cursor);                        /* $2467 */
     return (uint8_t)walk_prev_section;               /* $245A LDX $0014 */
 }
 
@@ -3319,19 +3332,22 @@ static uint8_t road_edge_walk_run(unsigned section, uint8_t midSlot, uint8_t poi
                already out there, in which case the side is done. */
             if (shared_counter_42 > edge_nearest_section) {              /* $2471 BEQ/$2473 BCC */
                 unsigned here = edge_cursor;                             /* $2475 LDY $12 */
-                if (angle_off_axis(MEM_edge_x_hi + here, offAxis)) {
-                    int prevFar = angle_off_axis((MEM_edge_x_hi - 1) + here, offAxis);
+                if (angle_off_axis(MEM_edge_x_hi + here, offAxis).carry) {
+                    OffAxis prev = angle_off_axis((MEM_edge_x_hi - 1) + here, offAxis);
 
                     /* ⚠ SMC $248B-$248F — see the header.  The unpatched arm just exits in mem[];
                        a circuit's own JMP is real 6502 code that READS the registers, so before
-                       dispatching to it re-establish the entry ABI: A + N/Z/C are angle_off_axis's
-                       CMP #$14 result (left in cpu by the helper), Y = edge_cursor (the $2475 LDY),
-                       X = section.  After the hook runs it owns the exit. */
+                       dispatching to it re-establish the entry ABI: A + N/Z/C are the SECOND
+                       compare's ($2489, the previous point's — it is the last flag writer before
+                       the SMC site), Y = edge_cursor (the $2475 LDY), X = section.  After the
+                       hook runs it owns the exit. */
                     if (mem[MEM_smc_edge_walk_hook] == 0xB0 && mem[MEM_smc_edge_walk_hook + 2] == 0x4C) {    /* unpatched: Silverstone */
-                        if (!prevFar)
+                        if (!prev.carry)
                             return road_edge_walk_subdivide(section, midSlot);
                         return (uint8_t)section;                         /* $248B BCS $24B8, X=section */
                     }
+                    cpu.A = prev.magnitude;
+                    cpu.N = prev.neg;  cpu.Z = prev.zero;  cpu.C = prev.carry;
                     cpu.Y = (uint8_t)here;
                     cpu.X = (uint8_t)section;
                     if (mem[MEM_smc_edge_walk_hook] == 0x4C) {                           /* a circuit's own JMP */
