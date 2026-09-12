@@ -13631,8 +13631,10 @@ void sort_cars_by_key_core(uint8_t sel)
    is BCD, so it needs no D handling. */
 
 
-/* The only input is the scan index in Y; the cpu writes inside are the MOS boundary's own
-   registers, not marshalling (see the tail's comment). */
+/* The only input is the scan index in Y.  The body is cpu-free: the 6502's X is threaded as a
+   local (osX) because the envelope redefine in the tail genuinely reads it, and its exit A/Y
+   are dead — the fixture declares LIVE_NONE ("RTS, no consumed register") and the native caller
+   (race_main_loop_core's tail, $1791) reads state_flags, not a register. */
 void shift_key_commands(void) { shift_key_commands_core(cpu.Y); }
 
 void shift_key_commands_core(uint8_t entryY)
@@ -13643,12 +13645,20 @@ void shift_key_commands_core(uint8_t entryY)
         return;                                   /* SHIFT not held -> nothing to do */
     }
 
-    /* $0EEE..$0EFF — scan shift_key_tbl[Y..0], stop on the first held key. */
+    /* $0EEE..$0EFF — scan shift_key_tbl[Y..0], stop on the first held key.
+       ⭐ osX TRACKS THE 6502'S X through the routine, because the envelope redefine in the tail
+       reads it: every INKEY leaves the MOS's answer there ($FF held, $00 not), the $0F08 TAX
+       overwrites it with the action index, and the pause spin's own INKEY overwrites it again.
+       It used to be read back out of cpu.X; as a local the dependency is visible. */
+    uint8_t osX = 0u;
     uint8_t y = entryY;
     int matched = 0;
     for (;;) {
+        MosRegs kr;
         math_lo = y;                             /* $0EF0 STA $74 — re-save the scan index */
-        if (kbd_test_key_core(mem[MEM_shift_key_tbl + y])) { matched = 1; break; }  /* $0EF2/$0EF5/$0EF8 BEQ */
+        kr = kbd_test_key_regs(mem[MEM_shift_key_tbl + y]);   /* $0EF2/$0EF5 */
+        osX = kr.x;
+        if (kr.x == 0xFFu) { matched = 1; break; }            /* $0EF8 BEQ — this key is down */
         if (y == 0u) break;                      /* $0EFC DEY / $0EFD BPL / $0EFF BMI — index wrapped */
         y = (uint8_t)(y - 1u);
     }
@@ -13662,17 +13672,15 @@ void shift_key_commands_core(uint8_t entryY)
         actionIdx = (uint8_t)(action & 0x0Fu);               /* low nibble = which state_flags cell */
         mem[MEM_state_flags + actionIdx] = (uint8_t)(action & 0xF0u);  /* high nibble = value */
         ambY = math_lo;                          /* $0F01 LDY $74 — the matched index escapes... */
-        cpu.X = actionIdx;                       /* $0F08 TAX — ...and so does the index */
+        osX = actionIdx;                         /* $0F08 TAX — ...and so does the index */
     }
-    cpu.Y = ambY;
 
-    /* $0F11 — pause_request.  A and X still reach the MOS through cpu (clear_surface_buffers and
-       kbd_test_key are the seam), so they are left exactly as the transliteration does: A =
-       pause_request, X = the action's low nibble.  The harness compares registers at every
-       OS-call boundary.  ⚠ They stay AMBIENT from there on — the pause spin's kbd_test_key
-       rewrites all three. */
+    /* $0F11 — pause_request.  ⚠ The transliteration leaves A = pause_request and Y = the
+       matched scan index here, and this twin used to publish both into cpu "for the MOS
+       boundary" — but every callee below takes its arguments explicitly (sound_stop_all_core
+       gets ambY, the INKEYs get their key code), so nothing read them.  Only X is really
+       live, and it is osX. */
     uint8_t pr = mem[MEM_pause_request];
-    cpu.A = pr;                                  /* $0F11 LDA pause_request */
     if (pr != 0u) {                              /* $0F14 BEQ skips */
         if (pr & 0x80u) {                        /* $0F16 BPL — negative = real pause */
             /* ⭐ ambY is provably the MATCHED index here, never the $FF: nothing but this
@@ -13682,11 +13690,13 @@ void shift_key_commands_core(uint8_t entryY)
                input to OSBYTE 21 but the differential logs it at the MOS boundary, so it is
                threaded rather than left in cpu. */
             sound_stop_all_core(ambY);           /* $0F18 */
-            do {
+            for (;;) {
+                MosRegs ks;
                 clear_surface_buffers_core();    /* $0F1B */
-            } while (!kbd_test_key_core(0xA6u)); /* $0F1E/$0F20/$0F23 — spin until $A6 down.
-                                                    Its MOS residue is what leaves A/X/Y as the
-                                                    6502 has them from here on. */
+                ks = kbd_test_key_regs(0xA6u);   /* $0F1E/$0F20/$0F23 — spin until $A6 down */
+                osX = ks.x;                      /* its MOS residue is the X the tail then sees */
+                if (ks.x == 0xFFu) break;
+            }
         }
         mem[MEM_engine_note]++;                  /* $0F25 INC engine_note */
         mem[MEM_pause_request] = 0u;             /* $0F29 */
@@ -13715,9 +13725,9 @@ void shift_key_commands_core(uint8_t entryY)
             /* $0F57/$0F59 — redefine envelope 1 (base 0) with the new attack level.  Core-to-
                core: the shim's whole job would be to put a 0 in cpu.A and read flags nothing
                here looks at, and X is not live across this call either. */
-            /* ⚠ X here is AMBIENT, not actionIdx: the pause spin's own kbd_test_key leaves
-               $FF in it on any frame that paused, so the live value has to come from cpu. */
-            sound_envelope_core(0x00u, cpu.X);
+            /* ⚠ X here is whatever ran LAST, not necessarily actionIdx: on a frame that
+               paused, the spin's own INKEY left $FF in it.  osX carries exactly that. */
+            sound_envelope_core(0x00u, osX);
             mem[MEM_engine_note]++;               /* $0F5C INC engine_note */
         }
     }
