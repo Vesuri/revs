@@ -504,6 +504,26 @@ ledger. `goto` 0, no 6502 flag macro, no unnamed hex address, and the only `bus_
   with the hardware arm kept — exactly the shape CLAUDE.md's `bus_read`/`bus_write` rule asks
   for.
 
+# Batch 9 — lines 16400..16979 (the track generator's hooks and the one-line hook bodies) — NOTHING TO APPLY
+
+The window: `hook_gen_dir_vector`, `hook_gen_step`, `hook_seg_advance`, `hook_gen_seed`,
+`hook_advance_gen_place` and their five per-circuit shims apiece, then the three cross-circuit
+one-line bodies (`hook_horizon_half_width_scale` + Donington's abs variant,
+`hook_steer_response_nurburg`, `hook_section_ahead_doning`, `hook_abs_by_track_direction`,
+`hook_scale_entry_by_gradient`).
+
+Read in full; nothing to fix.  `goto` 0, no unnamed hex address, no `bus_*`, no `FUN_*`/`region_*`
+reference, and every 16-bit quantity (the generator's heading, the segment turn) is already one
+`uint16_t`.  The six surviving macro uses are the two sanctioned stack seams — the `PHP` whose
+byte at `$01FF` the tail's `PLP` pulls back, and the Nurburgring curve's `PHP`/`PHA` pair that
+lets the ENGINE's Z choose between two curves — argued at the code with their sabotage counts.
+The `mul8` / `mul8_noinit` / `abs8` / `scale_by_track_gradient_tail` calls are 6502-ABI shims on
+purpose: the engine call site consumes that whole exit ABI (A, `math_lo`, N/Z/C/V), so the shim
+is the one place it is computed, the same argument `hook_camera_scale_by_gradient` carries.
+
+⭐ This closes the read-through: batches 1-9 cover all 16 979 lines of `src/gen/revs_native.c`.
+What remains on this file is the user-parked COMMENT CONDENSATION, not a findings front.
+
 # Open front — THE FIXTURE LIVE MASKS (its own campaign, not part of the read-through)
 
 ℹ ✅ **CLOSED.** `view_paint_lines`, the three NEAR-SLOT routines (which retired `cpx_ge` and
