@@ -565,13 +565,31 @@ BBC could see. Passing the register file explicitly is the fix; assuming it is d
    and `kbd_test_key`'s INKEY residue (17 call sites' worth of stores, three fixture masks).
    What is LEFT in a `_core` body is all one of the argued classes: a hook entry ABI, `cpu.D`,
    `cpu.S`, or the sanctioned flag-escape helpers.
-2. **the hook/SMC seam** — the BOUNDARY is done: `revs_track_hook_regs(addr, HookRegs *)` carries
-   the entry ABI as a value, all 15 dispatch sites in `revs_native.c` pass their own registers
-   and read the exit out of the struct, and `cpu` is marshalled only on the transliteration
-   (oracle) path and inside a not-yet-typed twin's one-line wrapper. What is LEFT: the 23 twins
-   get typed cores (register them in `HOOK_TWINS_TYPED`, `tools/transpile.py`), and the *ambient*
-   `hook_cpu_to_regs(&hr)` seeding at each site — labelled "residue" in place — gets replaced by
-   the caller's own values field by field. `make viewdiff` is the only gate.
+2. ✅ **the hook/SMC seam — DONE.** `revs_track_hook_regs(addr, HookRegs *)` carries the entry
+   ABI as a value; all 50 twins take it typed (`HOOK_TWINS_TYPED`, `tools/transpile.py`); and
+   every one of the 14 dispatch sites in `revs_native.c` now seeds the whole register file from
+   its own values — `hook_cpu_to_regs` appears there zero times. `cpu` is marshalled only on the
+   transliteration (oracle) path. Two of the conversions were structural rather than editorial:
+   `horizon_half_width_at_core`/`hook_horizon_clamp_core` took the section byte as a parameter,
+   and `build_track_geometry_native` → `place_player_in_section_native` →
+   `advance_player_section_core` now hand their exit index registers along the body's own call
+   chain by value (`GeoExit`, `EngineRegs`), which DELETED the live-mask `cpu.A/X/Y` writes that
+   existed only to feed the next call. Gated by `make viewdiff` (0 differing bytes on the road
+   view of all six circuits) plus all four determinism targets, `transtrap`, `tracks`,
+   `track-run`.
+
+   ⭐⭐ **Two rules this track paid for:**
+   - **Where a field is genuinely not established by the routine, hand over an argued 0 and write
+     the proof — never lift it out of `cpu`.** The proof has three parts: the seam's ACTUAL hook
+     targets (from `disasm/track_hooks.txt`), what those hooks read before overwriting it, and
+     what overwrites the flags immediately after. Six sites resolved this way.
+   - ⚠⚠ **`disasm/track_hooks.txt` lists only the bytes that CHANGE.** Where the unpatched
+     instruction is already a `JSR`, only the two operand bytes move, so the extent reads
+     `$128A-$128B` and grepping the table for the seam address `$1289` finds NOTHING. Three
+     seams ($1289, $13C9, $1426) were briefly written up as "patched by no circuit" on exactly
+     that mistake; all three are patched on all four expansion circuits. Search the extents for
+     `addr+1` as well, and remember the file is a patch-extent report, not a disassembly — the
+     real hook code is `src/gen/revs_track_hooks.c`.
 3. the oracle-only shims — move out, then lint `revs_native.c`
 4. the ISR seam
 

@@ -506,7 +506,7 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
    every cpu write is on the _native side, so the mem[] mirror `make determinism` compares is
    unchanged.  Reasoning at build_track_geometry in revs_native_seam.c;
    docs/wide-value-cleanup.md §IS THE MARSHALLING ORACLE-ONLY for the measurement. */
-void build_track_geometry_native(void);
+GeoExit build_track_geometry_native(void);
 void check_crash_native(void);
 void draw_dash_needles_native(void);
 void mirrors_update_native(void);
@@ -516,7 +516,7 @@ void road_edge_walk_resume_native(void);
 uint8_t road_edge_walk_resume_from(uint8_t sectionX);   /* $2490 by value */
 void    abs8_regs(HookRegs *r);          /* $637C with the file as a value */
 void    mul8_noinit_regs(HookRegs *r);   /* $0C02 with the file as a value */
-void place_player_in_section_native(void);
+EngineRegs place_player_in_section_native(uint8_t entryX, uint8_t entryY);   /* $4626's entry X/Y — build_track_geometry's exit */
 void build_player_car_native(void);
 
 unsigned car_gap_lo_core(uint8_t a, uint8_t b);
@@ -737,7 +737,7 @@ RoadSide road_edge_side_apply(uint8_t sideSelect);
 void road_edge_start_core(uint8_t nearSlotCount, uint8_t halfStride, uint8_t scratchSection, uint8_t pointLimit, uint8_t staleHorizonCap);
 uint8_t road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex, uint8_t midSlot, uint8_t pointCap, uint8_t offAxis);
 uint8_t road_edge_walk_resume_core(uint8_t section, uint8_t midSlot, uint8_t pointCap, uint8_t offAxis);
-uint8_t horizon_half_width_at_core(unsigned horizonPoint);
+uint8_t horizon_half_width_at_core(unsigned horizonPoint, uint8_t sectionX);
 uint8_t scale_by_track_gradient_tail_core(uint8_t value, int negative);
 void    scale_by_track_gradient_regs(HookRegs *r);   /* $4610 with the file as a value */
 int road_span_advance_core(uint8_t y);
@@ -855,7 +855,7 @@ void abort_to_front_end_core(int carry);
 void engine_init_core(void);
 void hw_init_core(uint8_t osbyteY);
 void engine_main_core(void);
-void advance_player_section_core(void);
+void advance_player_section_core(uint8_t entryX, uint8_t entryY);
 void clear_surface_buffers_core(void);
 void fill_line_surface_core(void);
 uint8_t console_io_core(uint16_t field, uint8_t width);
@@ -880,7 +880,7 @@ SlotExit write_object_slot_core(uint8_t projectedLine, uint8_t entryX, uint8_t e
 
 /* per-circuit hook twins (see revs_native.c's PER-CIRCUIT HOOK TWINS section) */
 extern int g_hookOracle;              /* 0 = twins, non-zero = the transliterated bodies */
-uint8_t hook_horizon_clamp_core(uint8_t entryY);
+uint8_t hook_horizon_clamp_core(uint8_t entryY, uint8_t entryX);
 uint8_t hook_record_horizon_core(uint8_t line, uint8_t point);
 void hook_record_horizon(HookRegs *r);
 void hook_edge_walk_limit(HookRegs *r);

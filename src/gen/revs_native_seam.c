@@ -212,7 +212,7 @@ void road_edge_walk_resume_native(void)
 /* $253B — the horizon point in Y, the half-width out in A. */
 void horizon_half_width_at(void)
 {
-    cpu.A = horizon_half_width_at_core(cpu.Y);
+    cpu.A = horizon_half_width_at_core(cpu.Y, cpu.X);
 }
 
 /* $461B — the gradient scaler's tail.  ⭐ THE SIGN COMES OFF THE 6502 STACK: the caller's PHP
@@ -245,20 +245,24 @@ void build_track_geometry(void)
     model_state_marshal_in();     /* the 16-bit driving-model state vector */
     car_heading_marshal_in();             /* every bearing it emits is measured against it */
     edge_nearest_marshal_in();            /* it ARMS the high lane and keeps the low one */
-    build_track_geometry_native();
+    /* live=AXY on the 6502-ABI path only: A is the horizon half-width, X the walk's last
+       section byte, Y the horizon point.  ⭐ The one in-game consumer of that X and Y is the
+       NEXT call of the frame ($1710 place_player_in_section, whose $462B hook seam inherits
+       them), and the native driver passes them by value instead — so these three writes belong
+       to the shim, not to the native path. */
+    GeoExit ex = build_track_geometry_native();
+    cpu.A = ex.a; cpu.X = ex.x; cpu.Y = ex.y;
 }
 
-void build_track_geometry_native(void)
+GeoExit build_track_geometry_native(void)
 {
     /* the top of the road pass, and the same IN/OUT pair as the two walks below it: whether any
        point reaches a bearing at all depends on the track, so the cells are carried through. */
     hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
     GeoExit ex = build_track_geometry_core(0x06, 0x2E);
-    /* live=AXY: A is the horizon half-width, X the walk's last section byte, Y the horizon
-       point.  The flags are a byproduct nothing downstream reads. */
-    cpu.A = ex.a; cpu.X = ex.x; cpu.Y = ex.y;
     hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
     edge_nearest_marshal_out();
+    return ex;
 }
 
 /* The 6502-ABI shim.  draw_road takes no arguments — the frame's geometry reaches it entirely
@@ -1750,7 +1754,7 @@ void reverse_walk_direction(void) { reverse_walk_direction_core(); }
 
 void clear_surface_buffers(void) { clear_surface_buffers_core(); }   /* exit ABI dead */
 void fill_line_surface(void)     { fill_line_surface_core(); }       /* exit ABI dead */
-void advance_player_section(void) { advance_player_section_core(); }   /* exit ABI dead */
+void advance_player_section(void) { advance_player_section_core(cpu.X, cpu.Y); }   /* exit ABI dead */
 void abort_to_front_end(void) { abort_to_front_end_core(cpu.C); }   /* the ROR's input carry */
 void engine_init(void) { engine_init_core(); }
 void engine_main(void) { engine_main_core(); }

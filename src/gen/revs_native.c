@@ -1650,9 +1650,12 @@ uint8_t race_main_loop_core(RestartDepth depth)
                bearing) are marshalled back into mem[$7A/$7B] and mem[$8A/$8B].  Calling the core
                here would leave the cells stale for a whole frame — which `make determinism` sees as
                a single diverging byte at $8B. */
-            PROBE_PHASE(5);  PROBE_SHAPE_PHASE(5);  build_track_geometry_native();
-            PROBE_PHASE(6);  PROBE_SHAPE_PHASE(6);  place_player_in_section_native();
-            PROBE_PHASE(7);  PROBE_SHAPE_PHASE(7);  advance_player_section_core();
+            /* ⭐ Its exit X and Y are the entry X and Y of the very next call ($1710), whose
+               $462B hook seam inherits them — passed by value, not through `cpu`. */
+            GeoExit geo;
+            PROBE_PHASE(5);  PROBE_SHAPE_PHASE(5);  geo = build_track_geometry_native();
+            PROBE_PHASE(6);  PROBE_SHAPE_PHASE(6);  EngineRegs place = place_player_in_section_native(geo.x, geo.y);
+            PROBE_PHASE(7);  PROBE_SHAPE_PHASE(7);  advance_player_section_core(place.x, place.y);
             PROBE_PHASE(8);  PROBE_SHAPE_PHASE(8);  update_lap_timers();
             PROBE_PHASE(9);  PROBE_SHAPE_PHASE(9);  engine_sound_update();
             PROBE_PHASE(10); PROBE_SHAPE_PHASE(10); clear_surface_buffers_core();
@@ -2925,10 +2928,10 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
            entry ABI before dispatching.  The hook runs to its own RTS and owns the EXIT state —
            hand cpu back verbatim (documented cpu exception, like cluster 5's per-circuit hooks). */
         HookRegs hr;
-        hook_cpu_to_regs(&hr);   /* ⚠ THE RESIDUE: X is not established by this routine, so it
-                                    is whatever the chain left — the same value the seam handed
-                                    over before the file became explicit.  Threading it from the
-                                    caller is the remaining work here. */
+        /* Every register the 6502 has live at $261A, from this routine's own values — no cpu:
+           X is the ENTRY X, because nothing between $2565 and $261A writes it ($25FD's `TXA`
+           reads it), and the entry X is the section byte this core was called with. */
+        hr.x = sectionByte;
         hr.y = edge_cursor;                           /* $2603 LDY $12, live into the JMP */
         hr.a = (uint8_t)line;
         hr.n = (uint8_t)((d >> 7) & 1u);
@@ -3345,8 +3348,9 @@ static uint8_t road_edge_walk_run(unsigned section, uint8_t midSlot, uint8_t poi
                     return road_edge_walk_subdivide(section, midSlot);
             }
 
-            /* $246A — EMIT: the point's second angle, and any corner marker it carries. */
-            emit_edge_width_offset_core((uint8_t)section, 0x03, 0u);   /* mem-only here; exit V dead */
+            /* $246A — EMIT: the point's second angle, and any corner marker it carries.
+               Its exit V is the last thing to touch V before the $248B seam below, so keep it. */
+            uint8_t emitV = emit_edge_width_offset_core((uint8_t)section, 0x03, 0u).v;
 
             /* $246D-$248F — past the subdivision floor, has the road swung more than $14 off the
                view axis in this one step?  If so, subdivide — unless the point BEFORE it was
@@ -3368,7 +3372,18 @@ static uint8_t road_edge_walk_run(unsigned section, uint8_t midSlot, uint8_t poi
                         return (uint8_t)section;                         /* $248B BCS $24B8, X=section */
                     }
                     HookRegs hr;
-                    hook_cpu_to_regs(&hr);      /* V alone is residue here — see below */
+                    /* ⭐⭐ V AT A HOOK SEAM — the argument every seam below cites.  V comes from
+                       the $246A call, the last instruction before this seam that writes it (the
+                       width ADC, or that call's own entry V).  ⚠ That entry V is project_point's,
+                       three call levels up, and it is UNOBSERVABLE here: the five circuits' hook
+                       corpus contains no `BVC`/`BVS` at all and exactly six `PHP`s, and all six are
+                       the scale_by_track_gradient tail entries ($54EB/$555C/$57BB/$59D9) that only
+                       the CAMERA and STEERING seams dispatch to — the seams that keep `cpu`
+                       deliberately, because that pushed P byte is a real store the differential
+                       compares.  Nothing a geometry/horizon/walk seam can reach reads V.  So V is
+                       handed over for the rule, not for an observable, and this seam's exit feeds
+                       only X.  `make viewdiff` is the gate. */
+                    hr.v = emitV;
                     hr.a = prev.magnitude;
                     hr.n = prev.neg;  hr.z = prev.zero;  hr.c = prev.carry;
                     hr.y = (uint8_t)here;
@@ -3461,7 +3476,7 @@ static uint8_t road_side_walk(uint8_t sideSelect, uint8_t firstPoint)
    build_track_geometry calls it inline (below) and three of the five expansion circuits call
    it from their own hook code at $56EE, which is why it needs a 6502-ABI entry as well: the
    horizon point arrives in Y and the half-width leaves in A. */
-uint8_t horizon_half_width_at_core(unsigned horizonPoint)
+uint8_t horizon_half_width_at_core(unsigned horizonPoint, uint8_t sectionX)
 {
     /* $253B — the two sides' x at the horizon point, differenced.  D=0 on the geometry path
        (static-map §Decimal mode), so this is a plain 8-bit subtract, and its own sign (bit 7)
@@ -3489,10 +3504,19 @@ uint8_t horizon_half_width_at_core(unsigned horizonPoint)
             /* Circuit-hook seam: the hook READS A and its sign N, so re-establish the 6502
                entry ABI before dispatching, then hand its own exit A back verbatim. */
             HookRegs hr;
-            hook_cpu_to_regs(&hr);          /* X/Y and Z/C/V are residue: this routine
-                                               establishes only the value and its sign */
+            /* The whole file, from this routine's own values — no cpu.  Y is the horizon point
+               ($2528's `TAY`, which is what $253B/$253F index by), X is the section byte
+               road_edge_walk left and build_track_geometry carries through to its own exit, and
+               N/Z/C are the $253F `SBC`'s (entry C=1 from the `SEC`, so C = "no borrow").  V is
+               that subtract's too, and unobservable besides (the V note at $248B). */
             hr.a = diff;
             hr.n = (diff >> 7) & 1u;
+            hr.z = (uint8_t)(diff == 0u);
+            hr.c = (uint8_t)(mem[MEM_edge_x_hi + horizonPoint] >=
+                             mem[MEM_edge_x_hi + EDGE_HALF + horizonPoint]);
+            hr.v = 0u;
+            hr.x = sectionX;
+            hr.y = (uint8_t)horizonPoint;
             revs_track_hook_regs(target, &hr);
             horizon_half_width = hr.a;
             return horizon_half_width;
@@ -3608,7 +3632,11 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
            hook's opening `LDA / SEC / SBC`.  All four sabotage to no change for those reasons,
            and Y sabotages to exactly the 16 bytes this fix removed. */
         HookRegs hr;
-        hook_cpu_to_regs(&hr);           /* V alone is residue — no op here writes it */
+        /* Nothing between $24F6 and $2538 that this routine owns writes V — its last writer is
+           whatever the second walk left — and no hook reachable from here can read it (the V note
+           at road_edge_walk's $248B seam above).  Handed over as 0 rather than lifted out of
+           `cpu`, so this seam has no ambient input at all. */
+        hr.v = 0u;
         hr.a = (uint8_t)horizonLine;     /* $2531/$252B — the clamped horizon line */
         hr.x = ex.x;                     /* road_edge_walk's exit section byte */
         hr.y = (uint8_t)horizonPoint;    /* $2528 TAY — the folded horizon point */
@@ -3625,7 +3653,7 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
         return ex;
     }
 
-    ex.a = horizon_half_width_at_core(horizonPoint);
+    ex.a = horizon_half_width_at_core(horizonPoint, ex.x);
     GEO_PHASE(5);   /* reopen the enclosing phase: its remainder is the driver + the return */
     return ex;
 }
@@ -4777,7 +4805,7 @@ int road_span_advance_core(uint8_t y)
    whose Z flag is the answer.  This is the sanctioned flag-escape seam: the cpu.h read is
    isolated in a named helper right at the external call.  Returns 1 when Z is set (the line is
    still empty — go on and stamp it), 0 when clear (already classified — leave it), -1 on a trap. */
-static int span_cap_line_slot_z(uint8_t y)
+static int span_cap_line_slot_z(uint8_t y, uint8_t entryX)
 {
     if (mem[MEM_smc_span_cap_load] == 0xB9) {                       /* unpatched: Silverstone, LDA $5F60,Y */
         return mem[MEM_view_line_surface + y] == 0;      /* Z set iff the entry is still zero */
@@ -4789,9 +4817,14 @@ static int span_cap_line_slot_z(uint8_t y)
                (from the LDA the BMI branched on), Y = this scan line (after the DEY), N/Z from
                that DEY.  The hook is circuit code that reads them and answers through Z. */
             HookRegs hr;
-            hook_cpu_to_regs(&hr);        /* X and C/V are residue at $2F23 */
             hr.a = span_swapped; hr.y = y;
             hr.n = (y >> 7) & 1; hr.z = (y == 0);
+            /* X is the entry X of whichever arm fell into this tail — $2F on the walk's own
+               exit (the `CPX #$2F` that let it through) and S+2 on the abandon path's
+               `TSX/INX/INX`.  The entry C and V are DEAD: the hook's opening `CMP` writes C
+               before anything reads it, and nothing here can observe V (the V note at $248B). */
+            hr.x = entryX;
+            hr.c = 0u;  hr.v = 0u;
             revs_track_hook_regs(hook, &hr);
             return hr.z ? 1 : 0;
         }
@@ -4800,13 +4833,14 @@ static int span_cap_line_slot_z(uint8_t y)
     platform_smc_unhandled(MEM_smc_span_cap_load, mem[MEM_smc_span_cap_load]); return -1;
 }
 
-static void span_cap_line(uint8_t y)
+/* `entryX` is the X the arm that fell into this tail was holding — see the $2F23 seam above. */
+static void span_cap_line(uint8_t y, uint8_t entryX)
 {
     unsigned code;
 
     if (span_swapped & 0x80u) {          /* $2F19-$2F1B: the walk ran the other way (BMI) */
         y--;
-        int z = span_cap_line_slot_z(y);
+        int z = span_cap_line_slot_z(y, entryX);
         if (z <= 0) return;              /* trapped, or the line already has a class — leave it */
         code = span_cap_surface_fill;    /* it stepped onto a line the run COVERED */
     } else {
@@ -4830,7 +4864,8 @@ static void span_cap_line(uint8_t y)
 static void span_abandon_chain(uint8_t y)
 {
     UNWIND_SET();                        /* the TSX/INX/INX/TXS two-level return, modelled */
-    if (span_cap_pending != 0) span_cap_line(y);
+    /* $2F7E's TSX/INX/INX left X = S+2, and that is the X the $2F23 seam inherits. */
+    if (span_cap_pending != 0) span_cap_line(y, (uint8_t)(cpu.S + 2u));
 }
 
 /* Did the leaf just abandon the chain?  The arms consume the flag exactly as the generated
@@ -5069,7 +5104,7 @@ static void span_walk_cap(uint8_t y)
 {
     mem[MEM_span_step_cap_slot] = mem[MEM_span_step_p1_in_slot];   /* copy the plotter's own Y-step opcode */
     if (!span_step_y(MEM_span_step_cap_slot, &y)) return;
-    span_cap_line(y);
+    span_cap_line(y, 0x2Fu);        /* $2F0B-$2F10: the fall-through proves mem[$73] == $2F */
 }
 
 /* ⭐ THE LEAVES OF THE SPAN WALK, all pure C now — no cpu register or flag carries state across
@@ -5600,10 +5635,16 @@ SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t first
        math_hi); $1949 `LDY horizon_extent` then discards whatever the hook left, which is why
        the walk below re-seeds y from horizon_extent rather than from cpu.Y. */
     HookRegs hr;
-    hook_cpu_to_regs(&hr);                   /* A and the entry flags are the caller's own, which
-                                                is what the 6502 has at $1946 too */
     hr.x = firstPoint;
     hr.y = onePastLast;
+    /* The rest of the file, from this routine's own values rather than out of `cpu`: A is the
+       buffer-low byte the $193E `STA $1970` just stored, N/Z are the $1943 `DEY`'s, and C/V are
+       still the caller's — nothing between $193E and $1946 writes either. */
+    hr.a = bufferLow;
+    hr.n = (uint8_t)((onePastLast >> 7) & 1u);
+    hr.z = (uint8_t)(onePastLast == 0u);
+    hr.c = (uint8_t)entryC;
+    hr.v = (uint8_t)entryV;
     if (mem[MEM_smc_fill_attr_hook] == 0x20) {
         uint16_t target = (uint16_t)(mem[MEM_smc_fill_attr_hook + 1] | (mem[MEM_smc_fill_attr_hook + 2] << 8));
         if (target == 0x1933) {
@@ -8526,11 +8567,21 @@ CameraExit update_camera_and_drive_state_core(void)
         } else if (mem[MEM_smc_camera_scale] == 0x20) {
             uint16_t target = (uint16_t)(mem[MEM_smc_camera_scale + 1] | (mem[MEM_smc_camera_scale + 2] << 8));
             if (target >= 0x5300 && target <= 0x5A25) {
-                /* SMC/hook boundary: the ASL it replaces reads only A, which is what this
-                   establishes; X/Y and the flags are residue. */
+                /* SMC/hook boundary.  The `ASL` it replaces reads only A, but a circuit's hook
+                   is real 6502 code inheriting the whole file, and here that matters more than
+                   anywhere else: this is the seam whose hooks reach scale_by_track_gradient's
+                   `PHP`, so the entry C and V are genuinely observable (the pushed P byte is a
+                   real store).  Every field is one this routine already computed for its own exit
+                   — X is the section cursor, untouched since $452D; Y is the direction index or
+                   the spin's MOS Y; N/Z are the arm's final `LDA #imm`; C/V are that arm's. */
                 HookRegs hr;
-                hook_cpu_to_regs(&hr);
                 hr.a = camA;
+                hr.x = preSmc.x;
+                hr.y = preSmc.y;
+                hr.n = preSmc.acc.neg;
+                hr.z = preSmc.acc.zero;
+                hr.c = (uint8_t)cArm;
+                hr.v = (uint8_t)vArm;
                 revs_track_hook_regs(target, &hr);
                 camA = hr.a;
             } else { platform_smc_unhandled(MEM_smc_camera_scale, target); return preSmc; }
@@ -10820,9 +10871,21 @@ static void read_driving_controls_core(void)
             else if (target >= 0x5300u && target <= 0x5A25u) {
                 /* the circuit's own hook squares the reading; it works through the 6502 ABI, so
                    hand it A and take the result back — a documented track-hook cpu boundary. */
+                /* Everything the 6502 has live at $1593, and all of it is adc_read's exit or
+                   this routine's own: A is the reading the $1591 `STA $75` just parked, X is
+                   the direction bit ($15A7's `TXA` reads it back after the call), Y is the raw
+                   ADVAL high byte, and N/Z/C are adc_read's dead-zone `CMP #$0A` with V the
+                   $5048 `ADC #$80`'s (which is just bit 7 of the raw reading).
+                   ⚠ The amplify-key flags this routine actually cares about are not here at all
+                   — the $1586 `PHP` stacked them and the $1596 `PLP` brings them back. */
                 HookRegs hr;
-                hook_cpu_to_regs(&hr);       /* the squaring reads A; the rest is residue */
                 hr.a = demandHi;
+                hr.x = dir;
+                hr.y = a.reading;
+                hr.c = (uint8_t)(demandHi >= 0x0Au);
+                hr.z = (uint8_t)(demandHi == 0x0Au);
+                hr.n = (uint8_t)(((uint8_t)(demandHi - 0x0Au) >> 7) & 1u);
+                hr.v = (uint8_t)((a.reading >> 7) & 1u);
                 revs_track_hook_regs(target, &hr);
                 demandHi = hr.a;
             }
@@ -11100,29 +11163,47 @@ void place_player_in_section(void)
 {
     edge_nearest_marshal_in();   /* its two folds weight the angle by the relocated running
                                     minimum (scale_angle_in_section_core reads edge_nearest_v) */
-    place_player_in_section_native();
+    EngineRegs ex = place_player_in_section_native(cpu.X, cpu.Y);
+    cpu.X = ex.x; cpu.Y = ex.y;   /* the 6502-ABI exit; the native driver takes them by value */
 }
 
-void place_player_in_section_native(void)
+EngineRegs place_player_in_section_native(uint8_t entryX, uint8_t entryY)
 {
     /* Relative angle of the nearest edge bearing to the section's yaw.  D=0, so a plain 8-bit
        subtract whose bit 7 is the sign abs8 negates on; a circuit hook instead READS the value
        and its sign N via cpu, so that seam re-establishes them. */
     uint8_t rel = (uint8_t)(nearest_edge_bearing_hi - section_yaw);
 
-    if (mem[MEM_smc_place_player_hook] != 0x20) { platform_smc_unhandled(MEM_smc_place_player_hook, mem[MEM_smc_place_player_hook]); return; }
+    if (mem[MEM_smc_place_player_hook] != 0x20) {
+        platform_smc_unhandled(MEM_smc_place_player_hook, mem[MEM_smc_place_player_hook]);
+        return (EngineRegs){ entryX, entryY };
+    }
     uint8_t mag;
     {
         uint16_t hook = (uint16_t)(mem[MEM_smc_place_player_hook + 1] | (mem[MEM_smc_place_player_hook + 2] << 8));
         if (hook == 0x3450)                          mag = abs8_value(rel);
         else if (hook >= 0x5300 && hook <= 0x5A25) {
+            /* The whole register file the 6502 has at $462B, none of it out of `cpu`: A is the
+               $4629 `SBC`'s result and N/Z/C/V are that subtract's own flags (entry C=1 from the
+               `SEC`, so C means "no borrow"), while X and Y are still the caller's — nothing
+               between $4626 and $462B writes either, and this routine's single in-game caller
+               is $1710, one instruction after build_track_geometry. */
             HookRegs hr;
-            hook_cpu_to_regs(&hr);
-            hr.a = rel; hr.n = (rel >> 7) & 1u;      /* the circuit hook reads A and its sign */
+            hr.a = rel;
+            hr.n = (uint8_t)((rel >> 7) & 1u);
+            hr.z = (uint8_t)(rel == 0u);
+            hr.c = (uint8_t)(nearest_edge_bearing_hi >= section_yaw);
+            hr.v = (uint8_t)((((nearest_edge_bearing_hi ^ section_yaw) &
+                               (nearest_edge_bearing_hi ^ rel)) >> 7) & 1u);
+            hr.x = entryX;
+            hr.y = entryY;
             revs_track_hook_regs(hook, &hr);
             mag = hr.a;
         }
-        else { platform_smc_unhandled(MEM_smc_place_player_hook, hook); return; }
+        else {
+            platform_smc_unhandled(MEM_smc_place_player_hook, hook);
+            return (EngineRegs){ entryX, entryY };
+        }
     }
 
     /* Quadrant flag: bit 7 of $0043 records whether |rel| reached a quarter turn ($40). */
@@ -11166,6 +11247,12 @@ void place_player_in_section_native(void)
     b = (uint8_t)(b << 2);
     if (!(section_quad_flags & 0x80)) b ^= 0xFF;             /* BIT section_quad_flags; BPL: EOR #$FF */
     mem[MEM_car_section_along + x] = b;
+
+    /* ⭐ The exit index registers, for the NEXT body call ($1713 advance_player_section, whose
+       three hook seams inherit them): X is the player slot loaded at $4647 and never touched
+       again, and Y is still the second fold's weight $88 — $4676's two `JSR $0C00`s are mul8,
+       which writes neither index register.  Passed by value instead of through `cpu`. */
+    return (EngineRegs){ x, 0x88u };
 }
 
 /* $52A4  tick_wheel_spin  (twin #122)
@@ -11607,10 +11694,20 @@ void build_road_section(void)
             /* ⭐⭐ The JSR replaces `CLC; ADC #$03` ($12FB-$12FD), so the hook's INPUT is the
                accumulator the ADC would have advanced — A = the old cursor in, A = the new one
                back.  Derived from the surrounding instructions, not from the unpatched arm
-               (which has no register to hand over at all). */
+               (which has no register to hand over at all).
+               N/Z are the $12F7 `LDA $24`'s, the last flag writer before the site.
+               ⚠ X, Y and C/V are the CALLER's — this routine establishes none of them — and they
+               are not observable at this seam: `make track-patch` gives the four targets that are
+               ever patched in here ($54F1 on Brands, $54EF on the other three), both of them
+               hook_next_section_cursor, which reads A and `cur_segment_flags` and WRITES A/C/V/N/Z
+               (plus Y on the gated arm).  The engine's next instruction, $12FE `CMP #$78`, then
+               overwrites N/V/Z/C, and this seam's only exit is A.  So they are handed over as 0
+               rather than lifted out of `cpu`, and `make viewdiff` is the gate. */
             HookRegs hr;
-            hook_cpu_to_regs(&hr);
             hr.a = section_cursor;
+            hr.n = (uint8_t)((section_cursor >> 7) & 1u);
+            hr.z = (uint8_t)(section_cursor == 0u);
+            hr.x = 0u; hr.y = 0u; hr.c = 0u; hr.v = 0u;
             revs_track_hook_regs(t, &hr);
             nextCursor = hr.a;
         }
@@ -11688,10 +11785,17 @@ void build_road_section(void)
         mem[MEM_point_delta_hi + 0] = (uint8_t)(nx >> 8);       /* faithful scratch residue */
         section_word_set(SECTION_SIDE1 + x, (uint16_t)(section_word(x) + nx));
 
-        /* side-1 comp 2 = side-0 comp 2 + across-track normal Y, scaled x4 */
-        uint16_t ny = (uint16_t)((int16_t)(int8_t)mem[MEM_track_normal_y + dir] << 2);
-        mem[MEM_point_delta_hi + 2] = (uint8_t)(ny >> 8);       /* faithful scratch residue */
-        section_word_set(SECTION_SIDE1 + 2 + x, (uint16_t)(section_word(2 + x) + ny));
+        /* side-1 comp 2 = side-0 comp 2 + across-track normal Y, scaled x4.  ⭐ The HIGH byte's
+           add ($13C3) is the last instruction to touch the flags before the $13C9 seam below,
+           so its carry/overflow/sign are kept rather than recomputed there. */
+        uint16_t ny    = (uint16_t)((int16_t)(int8_t)mem[MEM_track_normal_y + dir] << 2);
+        uint16_t base2 = section_word(2 + x);
+        uint32_t sum2  = (uint32_t)base2 + ny;
+        uint8_t  aHi   = (uint8_t)(base2 >> 8);
+        uint8_t  bHi   = (uint8_t)(ny >> 8);
+        uint8_t  rHi   = (uint8_t)(sum2 >> 8);
+        mem[MEM_point_delta_hi + 2] = bHi;                      /* faithful scratch residue */
+        section_word_set(SECTION_SIDE1 + 2 + x, (uint16_t)sum2);
 
         /* --- 5a. per-circuit direction-index hook (SMC $13C9) --- */
         if (mem[MEM_smc_section_tail_hook] == 0x20) {
@@ -11702,12 +11806,17 @@ void build_road_section(void)
                    the surrounding instructions: X is the section byte cursor ($13A2-$13C6 index
                    the two coordinate rows with it), Y the direction index ($1389 LDY $0002), A
                    the high byte of the side-1 component-2 add just stored at $13C6.  Inputs
-                   only — $13CC reloads X from section_cursor, so nothing is read back. */
+                   only — $13CC reloads X from section_cursor, so nothing is read back.
+                   The flags are NOT residue: $13C6's store sets none, so the $13C3 `ADC` that
+                   produced this very high byte is still the last flag writer. */
                 HookRegs hr;
-                hook_cpu_to_regs(&hr);   /* the flags are residue: $13C6's store set none */
                 hr.x = x;
                 hr.y = dir;
-                hr.a = (uint8_t)(section_word(SECTION_SIDE1 + 2 + x) >> 8);
+                hr.a = rHi;
+                hr.n = (uint8_t)((rHi >> 7) & 1u);
+                hr.z = (uint8_t)(rHi == 0u);
+                hr.c = (uint8_t)(sum2 > 0xFFFFu);
+                hr.v = (uint8_t)((((aHi ^ rHi) & (uint8_t)~(aHi ^ bHi)) >> 7) & 1u);
                 revs_track_hook_regs(t, &hr);
             }
             else { platform_smc_unhandled(MEM_smc_section_tail_hook, t); return; }
@@ -11759,9 +11868,23 @@ void cross_section_boundary(void)
                    left ($1284 LDY $0021) are both live at $1289, and $129C `STA $0702,X` goes
                    on using WHATEVER X THE HOOK LEFT — the same shape as $1248, where a stale
                    index put Brands Hatch's whole section_dir_index column out.  So hand both
-                   over and read X back. */
+                   over and read X back.
+                   A is load_section_from_segment's exit A — the side-0 height high byte its
+                   $1253 `LDA $0A01,X` left — and N/Z are that load's.  C and V are untouched by
+                   everything from $1267 to $1286 (all LDA/STA/LDY), so they are handed over as
+                   0, and neither is observable: all four circuits patch this seam to $5A1B
+                   (⚠ the extent table lists it as $128A-$128B, the OPERAND bytes — $1289 is
+                   already a `JSR`, so only the address changes and grepping for $1289 finds
+                   nothing), which tail-calls $557F -> $5582, where a `SEC` at $5588 precedes the
+                   first carry consumer; and the hook corpus has no BVC/BVS at all (the V note at
+                   road_edge_walk's $248B). */
+                uint8_t heightHi = mem[MEM_section_coord_hi + 1 + x];
                 HookRegs hr;
-                hook_cpu_to_regs(&hr);
+                hr.a = heightHi;
+                hr.n = (uint8_t)((heightHi >> 7) & 1u);
+                hr.z = (uint8_t)(heightHi == 0u);
+                hr.c = 0u;
+                hr.v = 0u;
                 hr.x = x;
                 hr.y = retreat_segment;
                 revs_track_hook_regs(t, &hr);
@@ -11816,8 +11939,21 @@ void load_section_from_segment_core(uint8_t x, uint8_t y)
     } else if (mem[MEM_smc_segment_load] == 0x20) {                       /* per-circuit hook JSR */
         uint16_t t = (uint16_t)(mem[MEM_smc_segment_load + 1] | (mem[MEM_smc_segment_load + 2] << 8));
         if (t >= 0x5300 && t <= 0x5A25) {
+            /* The whole file, from this routine's own values — no cpu.  A is the field-6 high
+               byte the $1242 `LDA $5306,Y` left (the last A/flag writer before $1248; $1245's
+               store sets none), so N/Z are that load's.  C and V are not established anywhere
+               in $1208-$1245 — every instruction there is an LDA/STA — and neither is
+               observable: all four circuits patch $1248 to the SAME hook ($5672), whose first
+               carry consumer ($5694 `ROR`) is preceded by an `LSR` that sets C itself, and the
+               hook corpus contains no BVC/BVS at all (the V note at road_edge_walk's $248B).
+               So they are handed over as 0 rather than lifted out of `cpu`. */
+            uint8_t segHi = mem[MEM_track_segment_hi + 6 + y];
             HookRegs hr;
-            hook_cpu_to_regs(&hr);
+            hr.a = segHi;
+            hr.n = (uint8_t)((segHi >> 7) & 1u);
+            hr.z = (uint8_t)(segHi == 0u);
+            hr.c = 0u;
+            hr.v = 0u;
             hr.x = x;                        /* the destination cursor $124D still wants */
             hr.y = y;                        /* ...and the segment index the hook indexes with */
             revs_track_hook_regs(t, &hr);
@@ -15332,10 +15468,18 @@ void rebuild_walk_reversed_core(uint8_t count)
         if (hook == 0x13DA) {
             advance_dir_on_segment_flag();           /* Silverstone; preserves X */
         } else if (hook >= 0x5300 && hook <= 0x5A25) {
+            /* A is the flipped direction and N/Z the $1422 `EOR`'s (the last flag writer before
+               $1426 — $1424's store sets none); X is the section count.  Y, C and V are not
+               established anywhere in $1420-$1424, and none of the three is observable: all four
+               circuits patch this seam to the SAME hook ($5572, per disasm/track_hooks.txt's
+               $1427-$1428 extent), which overwrites A/N/Z at once, reaches Y only through
+               $55C6's `LDY`, hits its first carry consumer behind a `SEC`/`CLC` ($5588, $55DC,
+               and abs16_math's own $0E46), and the hook corpus has no BVC/BVS at all (the V note
+               at road_edge_walk's $248B).  So they go over as 0 rather than out of `cpu`. */
             HookRegs hr;
-            hook_cpu_to_regs(&hr);
             hr.a = dir; hr.n = (dir >> 7) & 1u; hr.z = (dir == 0);
             hr.x = count;
+            hr.y = 0u; hr.c = 0u; hr.v = 0u;
             revs_track_hook_regs(hook, &hr);
             count = hr.x;
         } else { platform_smc_unhandled(MEM_smc_walk_dir_hook, hook); return; }
@@ -15474,7 +15618,8 @@ void fill_line_surface_core(void)
    The hook arms hand over A and the CMP's flags; X and Y arrive from the body
    untouched by this routine and are passed through as they stand. */
 static int section_hook_call(uint16_t site, uint16_t silverstone,
-                             void (*silverstoneFn)(void), uint8_t a, int carry, int zero)
+                             void (*silverstoneFn)(void), uint8_t a, int carry, int zero,
+                             uint8_t entryX, uint8_t entryY)
 {
     uint16_t target;
     if (mem[site] != 0x20) { platform_smc_unhandled(site, mem[site]); return 0; }
@@ -15482,12 +15627,17 @@ static int section_hook_call(uint16_t site, uint16_t silverstone,
     if (target == silverstone) { silverstoneFn(); return 1; }
     if (target >= 0x5300u && target <= 0x5A25u) {
         HookRegs hr;
-        hook_cpu_to_regs(&hr);                       /* X and Y arrive from the body untouched
-                                                        by this routine — residue by design */
         hr.a = a;                                    /* edge_nearest_section, as the CMP left it */
         hr.c = (uint8_t)carry;
         hr.z = (uint8_t)zero;
         hr.n = (uint8_t)((a >> 7) & 1u);
+        /* X and Y pass straight through: nothing in $24B9-$24F5 writes either, so they are
+           still place_player_in_section's exit pair (the previous body call), handed in as
+           arguments rather than read back out of `cpu`.  V is not established anywhere on the
+           way in either, and no hook can observe it (the V note at road_edge_walk's $248B). */
+        hr.x = entryX;
+        hr.y = entryY;
+        hr.v = 0u;
         revs_track_hook_regs(target, &hr);
         return 1;
     }
@@ -15495,7 +15645,7 @@ static int section_hook_call(uint16_t site, uint16_t silverstone,
     return 0;
 }
 
-void advance_player_section_core(void)
+void advance_player_section_core(uint8_t entryX, uint8_t entryY)
 {
     /* (a) the heading drift, as a signed quantity in the walk's own sense */
     uint8_t drift = (uint8_t)(section_yaw - heading_step_hi);       /* $24B9-$24BC */
@@ -15519,12 +15669,12 @@ void advance_player_section_core(void)
         if (count != ceiling)                                       /* $24ED — over it: step back twice */
             rebuild_walk_backward_core();                           /* $24EF */
         section_hook_call(MEM_smc_walk_back_hook, 0x140Bu, rebuild_walk_backward_core,
-                          count, 1, count == ceiling);              /* $24F2 */
+                          count, 1, count == ceiling, entryX, entryY);   /* $24F2 */
         return;
     }
     if (count < 0x0Cu) {                                            /* the road ran short */
         if (!section_hook_call(MEM_smc_section_ahead_hook, 0x12F3u, build_section_ahead_core,
-                               count, 0, 0))                        /* $24DE */
+                               count, 0, 0, entryX, entryY))        /* $24DE */
             return;
     }
     if (section_quad_flags & 0x80u)                                 /* $24E1-$24E3 */
@@ -15684,7 +15834,7 @@ void hw_init_core(uint8_t osbyteY)
    no width recompute.
    
    Returns the exit Y ($56F7's `LDY span_end_index / DEY`). */
-uint8_t hook_horizon_clamp_core(uint8_t entryY)
+uint8_t hook_horizon_clamp_core(uint8_t entryY, uint8_t entryX)
 {
     uint8_t y      = entryY;
     uint8_t latch  = (uint8_t)(entryY & 0x20u);   /* $56C8-$56CC — non-zero suppresses the one-shot */
@@ -15713,7 +15863,7 @@ uint8_t hook_horizon_clamp_core(uint8_t entryY)
 
         /* $56E8-$56F4 — the one-shot, fired by the first clamp only. */
         mem[MEM_smc_object_ceiling + 1] = cursor;     /* the patched `LDX #imm` operand */
-        (void)horizon_half_width_at_core((unsigned)(uint8_t)(y + 1));
+        (void)horizon_half_width_at_core((unsigned)(uint8_t)(y + 1), entryX);
         latch                 = 0x80u;            /* `SEC / ROR $82` on a zero latch */
         mem[HOOK_CLAMP_LATCH] = latch;
     }
@@ -15725,7 +15875,7 @@ uint8_t hook_horizon_clamp_core(uint8_t entryY)
 
 void hook_horizon_clamp(HookRegs *r)
 {
-    uint8_t exitY = hook_horizon_clamp_core(r->y);
+    uint8_t exitY = hook_horizon_clamp_core(r->y, r->x);
 
     /* $56FD `JMP edge_x_offscreen` is a tail call, so the hook also returns whatever that
        leaves: X is the entry X (the clamp never touches it) and Y survives the callee.  The
@@ -16103,7 +16253,7 @@ void hook_span_cap_slot_test(HookRegs *r)
    Nurburgring.  A single shared twin would have been sabotaged into a PASS on one circuit. */
 void hook_horizon_clamp_guarded_at(HookRegs *r, int segmentGated)
 {
-    uint8_t exitY = hook_horizon_clamp_core(r->y);
+    uint8_t exitY = hook_horizon_clamp_core(r->y, r->x);
 
     /* $53DC/$53E0 LDA section_yaw / abs8 — the sign is bit 7 of the byte the LDA just loaded. */
     uint8_t yaw  = section_yaw;
