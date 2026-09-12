@@ -1579,7 +1579,7 @@ static LoopVerdict race_frame_tail(RestartDepth* depth)
 
 /* The idiomatic core.  `depth` is how much of the session state the FIRST pass resets, which
    is the only thing the 6502 prologue decides before the loop starts. */
-void race_main_loop_core(RestartDepth depth)
+uint8_t race_main_loop_core(RestartDepth depth)
 {
 
     for (;;) {
@@ -1709,16 +1709,17 @@ void race_main_loop_core(RestartDepth depth)
     irq1v_release_core(mem[MEM_dash_block_starts + (DASH_BLOCK_COUNT - 1)]);
     cpu.I = 0;                                       /* $4F35 CLI */
 
-    /* ⚠ COPY_DASH_DATA'S EXIT REGISTER FILE, AND THE CARRY IS GENUINELY LIVE: enter_session_core's
-       `BIT state_flags` right after this call overwrites N, V and Z but NOT C, and its negative
-       arm hands C to abort_to_front_end_core ($656D).  C is the block loop closing on `CPX #$29`
-       with X == $29; A is `LDA $70 / ADC #$80`, X the block count.
+    /* ⚠ THE EXIT CARRY IS GENUINELY LIVE, and it is a CONSTANT: it is copy_dash_data's block
+       loop closing on `CPX #$29` with X == $29, so C == 1 on every path that gets here.
+       enter_session_core's `BIT state_flags` right after the call overwrites N, V and Z but not
+       C, and its negative arm hands that carry to abort_to_front_end_core ($656D), whose ROR
+       rotates it into abort_state.  So it is RETURNED rather than left in cpu — the rest of the
+       $17BA register file (A = `LDA $70 / ADC #$80`, X = the block count, N/Z) is 6502 ABI with
+       no native reader and is published by the shim, which is where an ABI belongs.
        ⚠⚠ DO NOT TRUST A GREEN HERE — this exit is reached exactly once in the whole determinism
        family (determinism-race, ~frame 12000) and that run does not take the negative arm, so
-       poisoning all six still PASSES every target.  Kept on the argument, not the test. */
-    cpu.A = (uint8_t)adc_step((uint8_t)(plot_ptr_lo - 0x80), 0x80u, 0);
-    cpu.X = DASH_BLOCK_COUNT;
-    cpu.N = 0; cpu.Z = 1; cpu.C = 1;
+       poisoning it still PASSES every target.  Kept on the argument, not the test. */
+    return 1u;
 }
 
 
@@ -14860,22 +14861,23 @@ void relocated_poison(void)
    ⚠ Still a 6502-ABI call at two points, both deliberate:
      * race_main_loop() — its shim IS the $16DC entry contract (hw_init, the view-origin
        marshal, the RESTART depth from state_flags bit 6), not a marshal to be deleted.
-     * abort_to_front_end_core(cpu.C) — the non-local exit's ROR rotates the LIVE CARRY into
-       abort_state, and that carry is whatever race_main_loop returned, so it has to be read
-       from the cpu here.  Nothing between the two calls may disturb it (the 6502's BIT does
-       not either). */
+     * the non-local exit's ROR rotates the LIVE CARRY into abort_state, and that carry is
+       whatever race_main_loop left; it is now the value race_main_loop_session() RETURNS
+       instead of a cpu.C read.  Nothing between the two calls may disturb it (the 6502's BIT
+       does not either), which the local makes structural rather than a comment. */
 void enter_session_core(uint8_t kind)
 {
     session_is_race   = kind;                    /* $655C */
     start_light_state = kind;                    /* $655E */
 
+    uint8_t exitCarry;
     do {
         prompt_wing_settings_core();             /* $6560 */
-        race_main_loop();                        /* $6563 — the whole engine */
+        exitCarry = race_main_loop_session();    /* $6563 — the whole engine */
     } while (state_flags & 0x40u);               /* $6566 BIT; BVS — restarted in the pits */
 
     if (state_flags & 0x80u)                     /* $656B BPL */
-        abort_to_front_end_core(cpu.C);          /* $656D — does not return on the 6502 */
+        abort_to_front_end_core(exitCarry);      /* $656D — does not return on the 6502 */
 }
 
 void enter_practice_session_core(void)

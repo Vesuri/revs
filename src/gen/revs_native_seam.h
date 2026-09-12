@@ -723,7 +723,11 @@ SlotExit plot_view_src_line_core(uint8_t mode, uint8_t colourSelect);
 uint8_t point_distance_hypot_apply(void);
 void poll_steering_assist_core(void);
 ProjPoint project_point_core(uint8_t sectionByte, uint8_t origin);
-void race_main_loop_core(RestartDepth depth);
+uint8_t race_main_loop_core(RestartDepth depth);
+/* The race, entered natively: the $16DC entry contract plus the core, returning the exit
+   carry enter_session hands to abort_to_front_end.  race_main_loop() is the 6502-ABI shim
+   around it and exists for the oracle. */
+uint8_t race_main_loop_session(void);
 void rebase_edge_point_core(uint8_t slot);
 RejectExit reject_object_slot_core(void);
 RoadSide road_edge_side_apply(uint8_t sideSelect);

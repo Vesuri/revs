@@ -15,7 +15,7 @@ void view_paint_lines(void)
 /* The 6502-ABI shim.  The only decision the prologue makes is how much to reset: bit 6 of
    state_flags is set when wait_flag_05F4 is re-entering the race after the pit-lane
    wing-settings menu, and then the session state must survive untouched. */
-void race_main_loop(void)
+uint8_t race_main_loop_session(void)
 {
     /* ⭐ THE DRIVER IMPORTS EVERY RELOCATED VALUE ITS CORE REACHES WITHOUT AN INNER SHIM.
        race_main_loop_core calls a good many `_core` functions DIRECTLY — read_driving_controls_core,
@@ -41,8 +41,23 @@ void race_main_loop(void)
     view_paint_lines_core(0x6700u, 0x4Fu,
                           mem[MEM_dash_block_starts + (DASH_BLOCK_COUNT - 1)]);
 
-    race_main_loop_core(state_flags_bit6() ? RESTART_NONE : RESTART_FULL);
-    view_origin_marshal_out();
+    {
+        uint8_t exitCarry = race_main_loop_core(state_flags_bit6() ? RESTART_NONE : RESTART_FULL);
+        view_origin_marshal_out();
+        return exitCarry;
+    }
+}
+
+/* The 6502-ABI shim proper: the oracle's enter_session JSRs this and then reads the $17BA exit
+   register file.  A is `LDA $70 / ADC #$80` (the add's flags are dead — N/Z/C below overwrite
+   them, so it is plain arithmetic), X the dash block count, and C the block loop's `CPX #$29`
+   closing carry, which the core returns. */
+void race_main_loop(void)
+{
+    uint8_t exitCarry = race_main_loop_session();
+    cpu.A = (uint8_t)((uint8_t)(plot_ptr_lo - 0x80) + 0x80u);
+    cpu.X = DASH_BLOCK_COUNT;
+    cpu.N = 0; cpu.Z = 1; cpu.C = exitCarry;
 }
 
 void clamp_near_edge_cursor(void)
