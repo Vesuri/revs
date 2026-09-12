@@ -425,6 +425,44 @@ tallies, `scale_wing_settings` / `compute_segment_scale`, the section walkers
 - **`place_player_in_section_native`'s `PUSH`/`PULL` pair stays.**  The magnitude really is
   written to page 1 and lives there below SP; determinism is byte-exact over `$0100-$01FF`.
 
+# Batch 7 — lines 12250..14330 (the track-position steppers, the other-car AI, the session reset, the dashboard printers)
+
+The window: `find_player_neighbours` / `clear_race_clock`, the two track-position steppers
+(`track_pos_advance` / `track_pos_retreat`), `full_track_scan_rebuild`, `lap_complete`,
+`reject_all_object_slots`, `move_and_draw_cars`, `draw_car_field`, `drive_other_cars` and its
+per-car body, `reset_driving_variables`, `update_lap_timers`, `stage_nearby_car`,
+`check_car_pair`, `sort_cars_by_key`, `shift_key_commands`, the crash/restart subtree
+(`sound_stop_all`, `begin_scrape`, `check_crash`, `build_player_car`, `step_delta_halve`),
+`project_object_slot`, `mirror_draw_car`, the number/name printers (#181-#184) and the
+dashboard readouts that drive them (#185-#192).
+
+## Open
+
+- **F1 — `drive_one_car`'s `cpu.X = x;` is DEAD.**  `$288F`'s callee chain is core-to-core now:
+  `track_pos_advance_core(x)` calls `lap_complete_core(x)` with the index as an argument, and
+  neither reads `cpu.X`.  The write is a leftover from when the lap booker was reached through
+  its 6502-ABI shim.  Delete it.
+
+- **F2 — `shift_key_commands_core` calls two SHIMS, and leaves the OSBYTE's ambient Y in `cpu`.**
+  `sound_stop_all()` and `clear_surface_buffers()` both have `_core`s; the first exists only to
+  read `cpu.Y` and hand it on as the ambient Y the `OSBYTE 21` at `$0E65` carries (the
+  differential logs registers at every MOS boundary).  Thread that index explicitly and call
+  both cores.  ⚠ While doing it, note what the cpu-sourced version actually reads: on the
+  NO-MATCH scan exit the 6502 has `Y = $FF` (`$0EFA LDY $74 / DEY / BMI $0F11`), while the twin
+  leaves `cpu.Y = $00` — `kbd_test_key_core`'s residue from the last failing test.  That is
+  unreachable today, and the argument belongs at the code: `pause_request` is written by nothing
+  but this routine's own scan-apply (`symbols.csv $05F7`) and is cleared again at `$0F29` on
+  every call that reads it nonzero, so a NEGATIVE `pause_request` at `$0F11` implies the idx-7
+  key matched in this same call — the one path where `cpu.Y` was already right.
+
+- **F3 — `full_track_scan_rebuild_core` runs its retreat/advance loop counters as `mem[]`
+  read-modify-writes.**  `hypot_min_lo` is the step-2 outer index, `shared_temp_77` its inner
+  per-car counter and `shared_temp_76` the step-4 `$31` countdown: roughly 900 byte accesses a
+  call, in a driver `reset_driving_variables` runs seven times on a crash reset.  Nothing the
+  loops call reads any of the three (`track_pos_retreat_core` touches only the car arrays), so
+  they become locals with each cell published once at its 6502 exit value.  Gate:
+  `determinism-crash` is this driver's gate, plus the rest of the family.
+
 # Open front — THE FIXTURE LIVE MASKS (its own campaign, not part of the read-through)
 
 ℹ ✅ **CLOSED.** `view_paint_lines`, the three NEAR-SLOT routines (which retired `cpx_ge` and
