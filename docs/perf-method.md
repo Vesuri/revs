@@ -545,6 +545,16 @@ background-byte lookup, the segment arithmetic, `view_stop_from` and two `view_s
 ~3800 cycles for work whose instruction count is nothing like that. It is the same open ~6× that
 §The four view probes' calibration left standing, and it is now localised to a named 530 µs.
 
+⚠ **[INFERRED] — and the objdump makes that 530 µs look HONEST rather than mysterious, which would
+partly settle the ~6×.** `paint_cells` is 2046 bytes / **637 instructions** in the shipping build
+(`m68k-amiga-elf-objdump -d out/Revs.elf`, `0000f63e`), with `step_scanline` and the span tests all
+inlined into it and the per-line path duplicated across dozens of back-edges by the optimiser. 530
+µs is ~3760 cycles ≈ **~270 instructions at a 68000's ~14 cycles for a memory-operand instruction**
+— i.e. the per-line path executing ~270 of those 637. The earlier read that "`paint_cells`' setup
+is only ~40 instructions" counted the FUNCTION PROLOGUE, not the per-line loop body, which is where
+the driver actually lives. Tagged inferred because the executed path was not traced; tracing it is
+the next instrument if this 19 ms is attacked.
+
 ### ⭐ `fill_dash_edge_columns` (phase 18, 17 ms) decomposed — 151 cells, ALL on one arm
 
 Phase 18 is the fifth-biggest row in the frame for a driver whose whole job is **twelve columns**,
