@@ -858,10 +858,11 @@ void finish_race(void)
     finish_race_core();
 }
 
-/* $5052 tick_race_timers — no inputs and no live outputs; see the twin's header. */
+/* $5052 tick_race_timers — no live outputs; the four entry flag bits it FORWARDS to the
+   seeder's PHP residue are its only inputs (see the twin's header). */
 void tick_race_timers(void)
 {
-    tick_race_timers_core();
+    tick_race_timers_core(cpu.C, cpu.V, cpu.D, cpu.I);
 }
 
 /* $17C3 add_frame_time — X selects the clock; the flags out are the low byte's decimal add. */
@@ -1224,7 +1225,7 @@ void parse_two_digit_ascii(void)
     cpu.N = p.n;
 }
 
-void seed_car_track_position(void)
+uint8_t seed_car_track_position_flags(uint8_t c, uint8_t v, uint8_t d, uint8_t i)
 {
     /* $635D — seed one car's grid position from a timer-entropy byte (#158).  A math_lo
        reader-nat: $74 is internal scratch, its per-path exit value written below.  Exit ABI:
@@ -1238,17 +1239,32 @@ void seed_car_track_position(void)
        in the pushed copy.  Nothing after (JSR/RTS are C calls in the oracle) rewrites this cell. */
     mem[STACK_PAGE + cpu.S] = (uint8_t)(0x30u
         | ((entropy & 0x80u) ? 0x80u : 0u)               /* N */
-        | (cpu.V ? 0x40u : 0u)
-        | (cpu.D ? 0x08u : 0u)
-        | (cpu.I ? 0x04u : 0u)
+        | (v ? 0x40u : 0u)
+        | (d ? 0x08u : 0u)
+        | (i ? 0x04u : 0u)
         | ((entropy == 0u) ? 0x02u : 0u)                 /* Z */
-        | (cpu.C ? 0x01u : 0u));                         /* C */
+        | (c ? 0x01u : 0u));                             /* C */
+    /* ⚠ SABOTAGE NOTE on those four forwarded bits.  Falsifying V, C or I fails the fixture
+       (4000/4000, 4000/4000 and 2026/4000 mismatch), and so does breaking the forwarding at
+       tick_race_timers' shim (175/4000) — the chain is live end to end.  Dropping D alone
+       PASSES, and that is explanation two, not a gap: the fixture pins `c.D = 0` because
+       docs/static-map.md §Decimal mode inventories all eight `SED` sites and none of them is on
+       any path that reaches this routine, so the bit is provably clear at every real entry and
+       there is no input on which `| (d ? 0x08u : 0u)` and `| 0u` differ.  It is kept because the
+       6502 pushes P, not a subset of it. */
 
     uint8_t mathlo;
     uint8_t xExit   = seed_car_track_position_core(x, entropy, &mathlo);
     math_lo = mathlo;                                    /* $6384/$6392 — $74 exit value per path */
-    cpu.X = xExit;                                       /* $639C..$639F — decremented cursor */
     mem[MEM_car_seed_index] = xExit;                         /* $639F STA car_seed_index */
+    return xExit;                                        /* $639C..$639F — decremented cursor */
+}
+
+/* The 6502-ABI shim — the four ambient flag bits out of `cpu` for the transliterated callers
+   and the harness; `cpu.S` stays because the residue's ADDRESS is the stack pointer. */
+void seed_car_track_position(void)
+{
+    cpu.X = seed_car_track_position_flags(cpu.C, cpu.V, cpu.D, cpu.I);
 }
 
 /* The one flag a caller of the seeder deliberately varies is the carry: reset_all_cars_for_
@@ -1257,9 +1273,7 @@ void seed_car_track_position(void)
    itself needs no cpu at all. */
 uint8_t seed_car_track_position_with_carry(uint8_t carry)
 {
-    cpu.C = carry ? 1u : 0u;
-    seed_car_track_position();
-    return cpu.X;
+    return seed_car_track_position_flags(carry ? 1u : 0u, cpu.V, cpu.D, cpu.I);
 }
 
 /* The marshal-IN below is oracle-only in production and stays on this 6502-ABI path for the

@@ -795,6 +795,10 @@ uint8_t console_read_two_digits_core(void);
 void prompt_wing_settings_core(void);
 uint8_t seed_car_track_position_core(uint8_t x, uint8_t entropy, uint8_t *mathlo_out);
 uint8_t seed_car_track_position_with_carry(uint8_t carry);
+/* $0B77 scale_wing_settings — the drag coefficient plus the closing `ADC #$3C`'s C and V, which
+   are the frame body's ambient carry/overflow at its very first call ($1701). */
+typedef struct { uint8_t drag, c, v; } WingScaleExit;
+WingScaleExit scale_wing_settings_core(void);
 int update_horizon_band_core(uint16_t *r_out, uint8_t *mathhi_out);
 /* The number/name printers ($3250/$37D0/$37D6/$7B9C).  TextChar is what the shared $5092
    dispatch returns; TextExit adds the carry the BCD printer's field-width shift produces. */
@@ -818,7 +822,15 @@ PosDisplayExit update_position_display_core(uint8_t entryX, uint8_t entryY);
 typedef struct { uint8_t a, y, n, z, v, c; } FrameTimeExit;
 FrameTimeExit add_frame_time_core(uint8_t clockIdx);
 
-void tick_race_timers_core(void);
+/* $5052 tick_race_timers — the four entry flag bits it FORWARDS.  It establishes none of them
+   itself; they reach `seed_car_track_position`'s `PHP` residue ($6362) two calls down, which is
+   the only thing in the frame that can see them.  The 6502-ABI shim supplies them from `cpu`;
+   the native driver hands over the values it can prove (see race_main_loop_core's phase 1). */
+void tick_race_timers_core(uint8_t entryC, uint8_t entryV, uint8_t entryD, uint8_t entryI);
+
+/* $635D seed_car_track_position, with the `PHP` residue's four ambient flag bits by value
+   instead of out of `cpu`.  Returns the decremented car-index cursor (the exit ABI's X). */
+uint8_t seed_car_track_position_flags(uint8_t c, uint8_t v, uint8_t d, uint8_t i);
 void shift_key_commands_core(uint8_t entryY);
 uint8_t retire_car_core(uint8_t x);
 /* $11AB spin_car_out — the slot as an argument; returns retire_car's lap comparison, or -1

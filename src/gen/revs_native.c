@@ -1607,7 +1607,14 @@ uint8_t race_main_loop_core(RestartDepth depth)
         /* the 6502's `LDA #0 / STA state_flags`: A is dead after the store — scale_wing_settings
            opens `LDX #1 / LDA wing_setting_front,X` and reads no entry register or flag. */
         state_flags = 0;
-        scale_wing_settings();                   /* scale the wing settings for the new session */
+        /* Scale the wing settings for the new session.  ⭐ Its closing `ADC #$3C`'s C and V are
+           the ambient carry/overflow at the frame body's first call ($1701), so they are kept
+           and handed to phase 1 by value.  Holding them across the inner loop is exact, not an
+           approximation: the 6502 re-runs $16FE every frame, and the routine reads only the two
+           pit-menu wing settings, which cannot change without LEAVING this loop (the pit request
+           returns LOOP_FINISHED and comes back round this outer for(;;)) — so every frame's
+           re-run would recompute the same two bits. */
+        WingScaleExit wing = scale_wing_settings_core();
         RESET_SPLIT(3);
 #undef RESET_SPLIT
 
@@ -1631,7 +1638,13 @@ uint8_t race_main_loop_core(RestartDepth depth)
             s_crashBodyStartVbi = g_vbiCount;    /* fields from here to the hold = the body cost */
 #endif
 
-            PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers_core();
+            /* ⭐ Phase 1 takes the four ambient flag bits by value, not out of `cpu`.  C and V
+               are scale_wing_settings' (above).  D is 0: docs/static-map.md §Decimal mode
+               inventories all eight `SED` sites and none is on the frame body's path, and the
+               two BCD routines phase 1 itself can reach close with a `CLD`.  I is 0: the body's
+               only interrupt fence is phase 21's SEI/CLI pair, which closes before the frame
+               ends, so $1701 is always reached with interrupts enabled. */
+            PROBE_PHASE(1);  PROBE_SHAPE_PHASE(1);  tick_race_timers_core(wing.c, wing.v, 0u, 0u);
             PROBE_PHASE(2);  PROBE_SHAPE_PHASE(2);  draw_starting_lights();
             /* ⭐ PHASES 3 AND 4 TALK DIRECTLY, NOT THROUGH mem[].  Both are native and adjacent,
                so the steering angle passes in car_angle_16[2]: the `_frame` entries drop phase 3's
@@ -11071,7 +11084,7 @@ BcdAdd add_tally_to_lap_total_core(uint8_t column, uint8_t car)
    folds both wings: ((3*rear + front) / 2) + $3C — accumulated as the 6502 does it,
    where the ASL feeds its own carry (bit 7 of rear) into the first ADD, a faithful
    8-bit quirk with no 16-bit equivalent. */
-void scale_wing_settings(void)
+WingScaleExit scale_wing_settings_core(void)
 {
     /* X walks 1 then 0: front wing (index 1) then rear wing (index 0). */
     for (int i = 1; i >= 0; i--) {
@@ -11086,8 +11099,30 @@ void scale_wing_settings(void)
     unsigned acc   = (unsigned)(uint8_t)(rear << 1) + rear + c;      /* rear x 3, the doubling's carry folded back in */
     acc = ((acc & 0xFF) + front + (acc >> 8)) & 0xFF;               /* ADC front (carry dropped) */
     c   = acc & 1;                                                   /* LSR A: carry = bit 0 */
-    acc = ((acc >> 1) + 0x3C + c) & 0xFF;                           /* ADC #$3C */
-    wing_drag_coeff = (uint8_t)acc;
+    unsigned half = (acc >> 1) + c;                                  /* the LSR's result, + its own carry-in */
+    unsigned sum  = half + 0x3Cu;                                    /* ADC #$3C */
+    wing_drag_coeff = (uint8_t)sum;
+
+    /* ⭐ That `ADC #$3C` is the last flag writer before the frame body's first call: $0B9F's
+       RTS sets none, so its C and V ARE the ambient carry/overflow at $1701.  Reported instead
+       of being left in `cpu` — tick_race_timers forwards them to the one thing that reads them
+       (seed_car_track_position's PHP residue). */
+    WingScaleExit e;
+    e.drag = (uint8_t)sum;
+    e.c    = (uint8_t)(sum > 0xFFu);
+    e.v    = adc_overflow((uint8_t)half, 0x3Cu, 0);
+    return e;
+}
+
+/* The 6502-ABI shim.  A, N and Z are dead at the only caller — $16FE's RTS lands on $1701's
+   `JSR`, which reads none of them — but C and V are NOT: the transliterated race_main_loop runs
+   straight into tick_race_timers, which forwards them to the seeder's PHP residue.  ⭐ They were
+   not published before, so the oracle path was reading a stale carry into that residue byte;
+   the harness could not see it, because tick_race_timers' fixture randomises `cpu` directly. */
+void scale_wing_settings(void)
+{
+    WingScaleExit e = scale_wing_settings_core();
+    cpu.C = e.c;  cpu.V = e.v;
 }
 
 /* $44C6  compute_segment_scale  (twin #117)
@@ -14621,7 +14656,7 @@ FrameTimeExit add_frame_time_core(uint8_t clockIdx)
         before the minutes byte has ticked at all.
    ⚠ Exit A/X/Y and the flags are DEAD: both callers ($1171 in finish_race, $1701 in
    race_main_loop) reload immediately, so the fixture compares mem[] alone. */
-void tick_race_timers_core(void)
+void tick_race_timers_core(uint8_t entryC, uint8_t entryV, uint8_t entryD, uint8_t entryI)
 {
     /* $5052-$505D — the divider.  At zero it reloads with period + 1 and then decrements, so the
        stored value cycles period..0; a period of $FF would wrap the reload to zero and the store
@@ -14634,10 +14669,10 @@ void tick_race_timers_core(void)
 
     if ((start_light_state & 0x80u) == 0u) {          /* $505F/$5061 BMI — lights out? */
         FrameTimeExit ft = add_frame_time_core(0x00u);   /* $5063/$5065 — clock 0, the player's */
-        /* ⚠ Its carry and overflow stay AMBIENT in P as far as $507A, whose callee still has a
-           6502 ABI that captures the whole flag byte as a stack residue.  So they are threaded
-           through cpu rather than dropped — the one place this twin touches it. */
-        cpu.C = ft.c; cpu.V = ft.v; cpu.D = 0;
+        /* ⚠ Its carry and overflow stay AMBIENT in P as far as $507A, whose callee captures the
+           whole flag byte as a stack residue ($6362 PHP).  Forwarded as values, and D is 0
+           because add_frame_time closes its BCD arithmetic with a CLD. */
+        entryC = ft.c; entryV = ft.v; entryD = 0u;
     }
 
     if (++loop_counter == 0u)                         /* $5068 INC / $506A BNE */
@@ -14646,7 +14681,8 @@ void tick_race_timers_core(void)
     /* $506F-$5078 — the speed refresh: every 32nd frame, and unconditionally until the player's
        minutes byte has ticked (which is how the field is seeded at the start of a session). */
     if (mem[MEM_race_clock_mid] == 0u || (loop_counter & 0x1Fu) == 0u)
-        seed_car_track_position();                    /* $507A — 6502 ABI: it reads its own cursor */
+        seed_car_track_position_flags(entryC, entryV, entryD, entryI);   /* $507A — it reads its
+                                                         own cursor out of car_seed_index */
 }
 
 /* $11BE retire_car — TWIN #194.  Car X is out of the running: $C0 into car_flags_shape[X] (bit 6
@@ -14684,7 +14720,13 @@ void finish_race_core(void)
     retire_car_core(player_car);                     /* $116C/$116E — park the player */
 
     for (;;) {
-        tick_race_timers_core();                     /* $1171 — one frame of clock */
+        /* $1171 — one frame of clock.  ⚠ The four flag bits it forwards to the seeder's PHP
+           residue are AMBIENT here and stay on `cpu`: unlike the frame body's $1701, this loop
+           re-enters from two branch-backs with different carries ($1196 BCC and $11A5 BCS) and
+           its V was last written somewhere inside drive_other_cars / check_car_pair — a
+           transliterated subtree, not a value this routine establishes.  The fixture compares
+           the residue byte (LIVE_NONE), so they are passed through as they are. */
+        tick_race_timers_core(cpu.C, cpu.V, cpu.D, cpu.I);
         shift_key_commands_core(0x00u);              /* $1174/$1176 — SHIFT+fn, the abort included */
         if (state_flags & 0x80u)                     /* $1179/$117C BMI — aborted */
             return;
