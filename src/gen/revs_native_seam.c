@@ -176,10 +176,25 @@ void road_edge_walk(void)
    harness; native callers enter at the _native split.  Full argument at build_track_geometry. */
 void road_edge_walk_resume(void)
 {
+    cpu.X = road_edge_walk_resume_from(cpu.X);
+}
+
+/* The same entry with the section index passed and returned as a value — for a TYPED hook twin
+   ($56C5's resume), which has no `cpu` to put it in.  ⚠ The marshal-INs above the core are the
+   6502-ABI path's and they are load-bearing here: hook_edge_walk_limit is itself entered with
+   mem[] randomised by the harness, and skipping them (the _native split) cost 696/348
+   mismatches. */
+uint8_t road_edge_walk_resume_from(uint8_t sectionX)
+{
     view_origin_marshal_in();
     car_heading_marshal_in();
     edge_nearest_marshal_in();
-    road_edge_walk_resume_native();
+    hypot_max_marshal_in();  hypot_min_marshal_in();  bearing_marshal_in();
+    uint8_t x = road_edge_walk_resume_core(sectionX, (uint8_t)MEM_section_midpoint_triple,
+                                           0x12, 0x14);
+    hypot_max_marshal_out(); hypot_min_marshal_out(); bearing_marshal_out();
+    edge_nearest_marshal_out();
+    return x;
 }
 
 void road_edge_walk_resume_native(void)

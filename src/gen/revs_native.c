@@ -2973,16 +2973,31 @@ static AddFlags negate8(uint8_t a)
 /* 6502-ABI shim: the value is in A and its SIGN is the caller's N (the $3450 `BPL` tests N, not
    bit 7 of A — a third of the fixture's cases decorrelate them).  Positive: RTS, A and every
    flag left alone.  Negative: negate, leaving A and the negate's full N/Z/V/C. */
+/* $637C's ABI as a value: negate A when N says the value is negative, and hand back the
+   negate's own flags.  A typed hook twin calls this one; the shim below is the harness's. */
+REVS_FLAG_OP void abs8_into(HookRegs *r)
+{
+    if (!r->n)
+        return;
+    AddFlags f = negate8(r->a);
+    r->a = f.hi;
+    r->c = f.carry;
+    r->v = f.overflow;
+    r->n = f.neg;
+    r->z = f.zero;
+}
+
+void abs8_regs(HookRegs *r) { abs8_into(r); }
+
+/* ⭐ The `cpu` entry is on the hot path (generated code calls it), so the shared body is
+   always_inline'd: the local file folds away and this compiles to the cpu field accesses it
+   always did.  Same for mul8_noinit below. */
 void abs8(void)
 {
-    if (!cpu.N)
-        return;
-    AddFlags f = negate8(cpu.A);
-    cpu.A = f.hi;
-    cpu.C = f.carry;
-    cpu.V = f.overflow;
-    cpu.N = f.neg;
-    cpu.Z = f.zero;
+    HookRegs r;
+    hook_cpu_to_regs(&r);
+    abs8_into(&r);
+    hook_regs_to_cpu(&r);
 }
 
 /* $254A  road_edge_side — WHICH ROAD SIDE, AND WHICH WAY ROUND IT  (twin #11)
@@ -6343,20 +6358,30 @@ static Mul8 mul8_noinit_core(uint8_t multiplier, uint8_t addend)
     return r;
 }
 
-void mul8_noinit(void)
+REVS_FLAG_OP void mul8_noinit_into(HookRegs *r)
 {
     /* $0C02 math_lo x math_hi -> A:math_lo.  The engine only ever multiplies in BINARY — none
        of the 8 SED sites reach here (docs/static-map.md §Decimal mode) — so this is one 16-bit
        product.  Exit: A = product high, math_lo = product low; N/Z from math_lo, C = 0, V = the
        final shift-and-add's. */
-    Mul8 r = mul8_noinit_core(math_lo, math_hi);
+    Mul8 p = mul8_noinit_core(math_lo, math_hi);
 
-    math_lo = (uint8_t)r.product;
-    cpu.A   = (uint8_t)(r.product >> 8);   /* the closing ROR is on math_lo — NOT on A */
-    cpu.N   = (uint8_t)((math_lo >> 7) & 1u);
-    cpu.Z   = (uint8_t)(math_lo == 0);
-    cpu.C   = 0;                          /* provably 0 for every operand pair */
-    if (r.setV) cpu.V = r.v;              /* escaping V; caller's V survives a zero multiplier */
+    math_lo = (uint8_t)p.product;
+    r->a    = (uint8_t)(p.product >> 8);   /* the closing ROR is on math_lo — NOT on A */
+    r->n    = (uint8_t)((math_lo >> 7) & 1u);
+    r->z    = (uint8_t)(math_lo == 0);
+    r->c    = 0;                          /* provably 0 for every operand pair */
+    if (p.setV) r->v = p.v;               /* escaping V; caller's V survives a zero multiplier */
+}
+
+void mul8_noinit_regs(HookRegs *r) { mul8_noinit_into(r); }
+
+void mul8_noinit(void)
+{
+    HookRegs r;
+    hook_cpu_to_regs(&r);
+    mul8_noinit_into(&r);
+    hook_regs_to_cpu(&r);
 }
 
 /* $0C00  mul8 — mul8_noinit with the multiplicand taken from A (a store, so no flags). */
@@ -8570,27 +8595,37 @@ CameraExit update_camera_and_drive_state_core(void)
 void compute_car_angles(void)            { car_angle_marshal_in();
                                            compute_car_angles_core((uint16_t)((cpu.A << 8) | cpu.X));
                                            car_angle_marshal_out(); }
+/* $4610's ABI as a value, because a typed hook twin has no `cpu` to put it in: A in and out, Y
+   the gradient index, and C/V both read and written (the positive arm passes them through).
+   Replay the $4610 exit ABI.  Positive arm ($4622 abs8 not taken): flags are the restored
+   EOR status — N = 0, Z = (eor == 0), C/V PASS THROUGH the caller's (the EOR touches neither,
+   the PHP/PLP carried them intact).  Negative arm: flags from abs8 negating the high byte —
+   N/Z from -(high), C = (high == 0) = Z, V = 0 (high ≤ 0x7F is never $80). */
+void scale_by_track_gradient_regs(HookRegs *r)
+{
+    uint8_t callerC = r->c, callerV = r->v;
+    uint8_t eor = (uint8_t)(mem[MEM_track_dir_1 + r->y] ^ track_direction);
+    uint8_t a = scale_by_track_gradient_core(r->a, r->y);
+    r->a = a;
+    if (eor & 0x80u) {
+        r->n = (uint8_t)((a >> 7) & 1u);
+        r->z = (uint8_t)(a == 0);
+        r->c = (uint8_t)(a == 0);
+        r->v = 0u;
+    } else {
+        r->n = 0u;
+        r->z = (uint8_t)(eor == 0);
+        r->c = callerC;
+        r->v = callerV;
+    }
+}
+
 void scale_by_track_gradient(void)
 {
-    /* Replay the $4610 exit ABI.  Positive arm ($4622 abs8 not taken): flags are the restored
-       EOR status — N = 0, Z = (eor == 0), C/V PASS THROUGH the caller's (the EOR touches neither,
-       the PHP/PLP carried them intact).  Negative arm: flags from abs8 negating the high byte —
-       N/Z from -(high), C = (high == 0) = Z, V = 0 (high ≤ 0x7F is never $80). */
-    uint8_t callerC = cpu.C, callerV = cpu.V;
-    uint8_t eor = (uint8_t)(mem[MEM_track_dir_1 + cpu.Y] ^ track_direction);
-    uint8_t a = scale_by_track_gradient_core(cpu.A, cpu.Y);
-    cpu.A = a;
-    if (eor & 0x80u) {
-        cpu.N = (uint8_t)((a >> 7) & 1u);
-        cpu.Z = (uint8_t)(a == 0);
-        cpu.C = (uint8_t)(a == 0);
-        cpu.V = 0u;
-    } else {
-        cpu.N = 0u;
-        cpu.Z = (uint8_t)(eor == 0);
-        cpu.C = callerC;
-        cpu.V = callerV;
-    }
+    HookRegs r;
+    hook_cpu_to_regs(&r);
+    scale_by_track_gradient_regs(&r);
+    hook_regs_to_cpu(&r);
 }
 /* begin_spin's exit ABI is sound_queue_default's: A/Y are left in cpu by the OSWORD (via mos_call
    inside the core), and sound_queue_exit_abi replays X/N/Z (from sound_saved_x) and the block C/V. */
@@ -15688,9 +15723,9 @@ uint8_t hook_horizon_clamp_core(uint8_t entryY)
     return math_hi;
 }
 
-void hook_horizon_clamp(void)
+void hook_horizon_clamp(HookRegs *r)
 {
-    uint8_t exitY = hook_horizon_clamp_core(cpu.Y);
+    uint8_t exitY = hook_horizon_clamp_core(r->y);
 
     /* $56FD `JMP edge_x_offscreen` is a tail call, so the hook also returns whatever that
        leaves: X is the entry X (the clamp never touches it) and Y survives the callee.  The
@@ -15698,9 +15733,9 @@ void hook_horizon_clamp(void)
        back only as far as the callee's own exit — ⚠ V is NOT reproduced, because the walk's
        own ADC sets it in the transliteration and the C core has no carry chain to set it from.
        The fixture declares X,Y for exactly that reason. */
-    EdgeOffFlags e = edge_x_offscreen_core(cpu.X);
-    cpu.Y = exitY;
-    cpu.A = e.a; cpu.V = e.v; cpu.C = e.c; cpu.N = e.n; cpu.Z = e.z;
+    EdgeOffFlags e = edge_x_offscreen_core(r->x);
+    r->y = exitY;
+    r->a = e.a; r->v = e.v; r->c = e.c; r->n = e.n; r->z = e.z;
 }
 
 /* $57A1 (Brands Hatch) — THE STEERING RESPONSE CURVE, RESHAPED FOR THIS CIRCUIT.  Patched in at
@@ -15736,32 +15771,32 @@ void hook_horizon_clamp(void)
    differ, checked at case 0: $64 vs $A4.) */
 /* The curve itself, shared by every circuit that patches $1593: scale the reading by k, square
    the scaled value, double the product.  Only the CHOICE of k differs per circuit. */
-static void steer_response_curve(uint8_t k)
+static void steer_response_curve(HookRegs *r, uint8_t k)
 {
-    cpu.Y = k;                                         /* the LDY, still live at the exit */
+    r->y = k;                                          /* the LDY, still live at the exit */
 
     Mul8 scaled = mul8_noinit_core(k, math_hi);        /* TYA / mul8 — k x the reading */
     uint8_t a   = (uint8_t)(scaled.product >> 8);
     math_lo     = (uint8_t)scaled.product;
-    if (scaled.setV) cpu.V = scaled.v;
+    if (scaled.setV) r->v = scaled.v;                  /* else the entry V stands */
 
     math_hi      = a;                                  /* $57B2 STA math_hi */
     Mul8 squared = mul8_noinit_core(a, a);             /* $57B4 mul8 — a * a */
-    if (squared.setV) cpu.V = squared.v;
+    if (squared.setV) r->v = squared.v;
 
     /* $57B7 ASL math_lo / $57B9 ROL A — the 16-bit product doubled, top bit into C. */
     uint16_t doubled = (uint16_t)(squared.product << 1);
     math_lo = (uint8_t)doubled;
-    cpu.A   = (uint8_t)(doubled >> 8);
-    cpu.C   = (uint8_t)(squared.product >> 15);
-    cpu.N   = (uint8_t)((cpu.A >> 7) & 1u);
-    cpu.Z   = (uint8_t)(cpu.A == 0u);
+    r->a    = (uint8_t)(doubled >> 8);
+    r->c    = (uint8_t)(squared.product >> 15);
+    r->n    = (uint8_t)((r->a >> 7) & 1u);
+    r->z    = (uint8_t)(r->a == 0u);
 }
 
-void hook_steer_response_brands(void)
+void hook_steer_response_brands(HookRegs *r)
 {
     /* $57A1-$57AD — $B5 everywhere, $F0 across segment $20. */
-    steer_response_curve(mem[MEM_car_segment + player_car] == 0x20u ? 0xF0u : 0xB5u);
+    steer_response_curve(r, mem[MEM_car_segment + player_car] == 0x20u ? 0xF0u : 0xB5u);
 }
 
 /* $57A1 (Oulton Park) — THE SAME STEERING RESPONSE CURVE, THREE SEGMENTS SINGLED OUT.  Patched
@@ -15785,7 +15820,7 @@ void hook_steer_response_brands(void)
    S86 the $B0 arm is dropped (only $B8 is special)              1030
    S87 the default scale is $BE, not $B5                         1000
    S88 the $48 test uses Brands Hatch's segment ($20)             994 */
-void hook_steer_response_oulton(void)
+void hook_steer_response_oulton(HookRegs *r)
 {
     uint8_t segment = mem[MEM_car_segment + player_car];   /* $57A1 LDY player_car / LDA */
     uint8_t k       = 0xB5u;                               /* $57A6 LDY #$B5 */
@@ -15795,7 +15830,7 @@ void hook_steer_response_oulton(void)
     if (segment == 0xB8u || segment == 0xB0u)              /* $57AE / $57B2 / $57B6 LDY #$BE */
         k = 0xBEu;
 
-    steer_response_curve(k);                               /* $57B8 TYA / mul8 / JMP $53EF */
+    steer_response_curve(r, k);                               /* $57B8 TYA / mul8 / JMP $53EF */
 }
 
 /* $57A1 (Snetterton) — THE SAME STEERING RESPONSE CURVE, AND A GRIP-LOSS PARDON.  The third
@@ -15823,7 +15858,7 @@ void hook_steer_response_oulton(void)
    S91 segment $A0 pardons too                                    767
    S92 the $28 scale is $DD                                      1607
    S93 $A8 scales by $B5 (the default)                            847 */
-void hook_steer_response_snetter(void)
+void hook_steer_response_snetter(HookRegs *r)
 {
     uint8_t car     = player_car;                          /* $57A1 LDY player_car */
     uint8_t segment = mem[MEM_car_segment + car];          /* $57A3 LDA car_segment,Y */
@@ -15845,7 +15880,7 @@ void hook_steer_response_snetter(void)
         }
     }
 
-    steer_response_curve(k);                               /* $53CF TYA / mul8 / mul8 / ASL / ROL */
+    steer_response_curve(r, k);                               /* $53CF TYA / mul8 / mul8 / ASL / ROL */
 }
 
 /* $5779 (Donington Park) — THE FOURTH STEERING RESPONSE CURVE, AND THE WIDEST PARDON.  Donington
@@ -15885,7 +15920,7 @@ void hook_steer_response_snetter(void)
    ⭐ S95/S96 first read 4 and 11 — an off-by-one in a threshold that a UNIFORM car_seg_offset
    barely reaches.  The fixture now puts half its cases ON the threshold or one either side,
    which is what makes those two a gate rather than luck. */
-void hook_steer_response_doning(void)
+void hook_steer_response_doning(HookRegs *r)
 {
     uint8_t car     = player_car;                          /* $5779 LDY player_car */
     uint8_t segment = mem[MEM_car_segment + car];          /* $577B LDA car_segment,Y */
@@ -15919,7 +15954,7 @@ void hook_steer_response_doning(void)
             k = 0xBCu;
     }
 
-    steer_response_curve(k);                               /* $53DC TYA / mul8 / mul8 / ASL / ROL */
+    steer_response_curve(r, k);                               /* $53DC TYA / mul8 / mul8 / ASL / ROL */
 }
 
 /* $59E9 (Brands) / $59C9 (Donington) / $59E7 (Oulton) / $59C7 (Snetterton) — THE CAMERA SCALE
@@ -15950,31 +15985,33 @@ void hook_steer_response_doning(void)
    S104 C is left alone instead of taking bit 15                  8036
    S105 the gradient callee's V is not allowed to escape          1520
    (counts are over 4 x 4000 runs — every circuit's entry through the one body.) */
-void hook_camera_scale_by_gradient(void)
+void hook_camera_scale_by_gradient(HookRegs *r)
 {
-    uint8_t a = cpu.A;
+    uint8_t a = r->a;
 
-    if (cpu.Z) {                                       /* $59E9 BNE — the settled arm only */
+    if (r->z) {                                        /* $59E9 BNE — the settled arm only */
         /* ⭐ The SHIM, not the core: this callee's exit V escapes the hook (its negative arm
            clears V, its positive arm passes the caller's through) and $45D8's own
            scale_by_track_gradient reads it, so the one place that ABI is written down should
            be the one place it is computed. */
-        cpu.A = road_speed;                            /* $59EB LDA road_speed */
-        scale_by_track_gradient();                     /* $59EC JSR $4610 */
-        a = cpu.A;
-        if (cpu.N)                                     /* $59EF BPL — the flag, not bit 7 of A */
+        r->a = road_speed;                             /* $59EB LDA road_speed */
+        scale_by_track_gradient_regs(r);               /* $59EC JSR $4610 — its exit C and V
+                                                          escape this hook, which is why the
+                                                          whole file goes in and comes back */
+        a = r->a;
+        if (r->n)                                      /* $59EF BPL — the flag, not bit 7 of A */
             shared_temp_77--;                          /* $59F1 DEC */
     }
 
     /* $59F4 ASL A / ROL shared_temp_77 — the 16-bit pair (shared_temp_77 : A) doubled, its top
        bit into C.  This is the doubling the JSR displaced at $45CB. */
     uint16_t pair = (uint16_t)(((uint16_t)shared_temp_77 << 8) | a);
-    cpu.C          = (uint8_t)(shared_temp_77 >> 7);
+    r->c           = (uint8_t)(shared_temp_77 >> 7);
     pair         <<= 1;
-    cpu.A          = (uint8_t)pair;
+    r->a           = (uint8_t)pair;
     shared_temp_77 = (uint8_t)(pair >> 8);
-    cpu.N          = (uint8_t)(shared_temp_77 >> 7);   /* the ROL's flags, not the ASL's */
-    cpu.Z          = (uint8_t)(shared_temp_77 == 0u);
+    r->n           = (uint8_t)(shared_temp_77 >> 7);   /* the ROL's flags, not the ASL's */
+    r->z           = (uint8_t)(shared_temp_77 == 0u);
 }
 
 /* $59ED (Donington) / $59E8 (Snetterton) — THE SURFACE CAP INHERITS THE LINE BELOW.  One body,
@@ -16010,24 +16047,24 @@ void hook_camera_scale_by_gradient(void)
    S109 the fallback reads the line below too                     4018
    S110 C is left at the caller's on the fallback path            2048
    (counts are over 2 x 4000 runs — both circuits' entries through the one body.) */
-void hook_span_cap_slot_test(void)
+void hook_span_cap_slot_test(HookRegs *r)
 {
-    uint8_t below = mem[MEM_view_line_surface + 1u + cpu.Y];   /* $59ED LDA view_line_surface+1,Y */
+    uint8_t below = mem[MEM_view_line_surface + 1u + r->y];   /* $59ED LDA view_line_surface+1,Y */
     uint8_t a;
 
     if (below == 0x8Bu) {                                  /* $59F0 CMP #$8B / BEQ */
         /* $59F8 LSR A.  The CMP set C on equality and the LSR shifts out $8B's bit 0 — both 1,
            so the two ways of spelling this carry agree. */
         a     = 0x8Bu >> 1;                                /* $45 — nonzero, so Z stays clear */
-        cpu.C = 1u;
+        r->c = 1u;
     } else {
-        cpu.C = (uint8_t)(below > 0x8Bu);                  /* only the CMP ran */
-        a     = mem[MEM_view_line_surface + cpu.Y];            /* $59F4 — the displaced load */
+        r->c = (uint8_t)(below > 0x8Bu);                  /* only the CMP ran */
+        a     = mem[MEM_view_line_surface + r->y];            /* $59F4 — the displaced load */
     }
 
-    cpu.A = a;
-    cpu.N = (uint8_t)((a >> 7) & 1u);
-    cpu.Z = (uint8_t)(a == 0u);
+    r->a = a;
+    r->n = (uint8_t)((a >> 7) & 1u);
+    r->z = (uint8_t)(a == 0u);
 }
 
 /* $56C8 (Snetterton) / $56C4 (the Nurburgring) — THE SAME MONOTONIC-HORIZON CLAMP, RELEASED
@@ -16064,9 +16101,9 @@ void hook_span_cap_slot_test(void)
    ⭐ S78 is the one that matters: it is Snetterton's guard applied to both, which is the twin
    this pair started as — 0 on Snetterton (correctly, it IS Snetterton's guard) and 292 on the
    Nurburgring.  A single shared twin would have been sabotaged into a PASS on one circuit. */
-static void hook_horizon_clamp_guarded_at(int segmentGated)
+void hook_horizon_clamp_guarded_at(HookRegs *r, int segmentGated)
 {
-    uint8_t exitY = hook_horizon_clamp_core(cpu.Y);
+    uint8_t exitY = hook_horizon_clamp_core(r->y);
 
     /* $53DC/$53E0 LDA section_yaw / abs8 — the sign is bit 7 of the byte the LDA just loaded. */
     uint8_t yaw  = section_yaw;
@@ -16081,25 +16118,25 @@ static void hook_horizon_clamp_guarded_at(int segmentGated)
     }
 
     if (!keep) {
-        EdgeOffFlags e = edge_x_offscreen_core(cpu.X); /* $53EC / $53F0 / $565F */
-        cpu.A = e.a; cpu.C = e.c; cpu.N = e.n; cpu.Z = e.z;
-        cpu.Y = exitY;
+        EdgeOffFlags e = edge_x_offscreen_core(r->x); /* $53EC / $53F0 / $565F */
+        r->a = e.a; r->c = e.c; r->n = e.n; r->z = e.z;
+        r->y = exitY;
         return;
     }
 
     /* $53E9 / $565C LSR shared_temp_76 — keep the point, at half the width. */
     uint8_t width  = shared_temp_76;
-    cpu.C          = (uint8_t)(width & 1u);
+    r->c          = (uint8_t)(width & 1u);
     width        >>= 1;
     shared_temp_76 = width;
-    cpu.A = a;
-    cpu.N = 0u;
-    cpu.Z = (uint8_t)(width == 0u);
-    cpu.Y = exitY;
+    r->a = a;
+    r->n = 0u;
+    r->z = (uint8_t)(width == 0u);
+    r->y = exitY;
 }
 
-void hook_horizon_clamp_guarded_snetter(void) { hook_horizon_clamp_guarded_at(0); }
-void hook_horizon_clamp_guarded_nurburg(void) { hook_horizon_clamp_guarded_at(1); }
+void hook_horizon_clamp_guarded_snetter(HookRegs *r) { hook_horizon_clamp_guarded_at(r, 0); }
+void hook_horizon_clamp_guarded_nurburg(HookRegs *r) { hook_horizon_clamp_guarded_at(r, 1); }
 
 /* $56AF — RECORD THIS POINT AS THE HORIZON, BUT ONLY CLOSE TO THE CAR (all four expansion
    circuits; byte-identical in each).  Patched in at $261A, over emit_edge_width_offset's own
@@ -16122,15 +16159,15 @@ uint8_t hook_record_horizon_core(uint8_t line, uint8_t point)
     return 0u;
 }
 
-void hook_record_horizon(void)
+void hook_record_horizon(HookRegs *r)
 {
-    cpu.C = hook_record_horizon_core(cpu.A, cpu.Y);
+    r->c = hook_record_horizon_core(r->a, r->y);
 
     /* ⚠ N and Z are NOT the compare's.  The 6502 saves A across the compare with PHA/PLA, and
        the PLA re-sets them from A — so the flags this hook hands emit_edge_width_offset are
        the carry from the section count and the sign/zero of the LINE. */
-    cpu.N = (uint8_t)((cpu.A >> 7) & 1u);
-    cpu.Z = (uint8_t)(cpu.A == 0u);
+    r->n = (uint8_t)((r->a >> 7) & 1u);
+    r->z = (uint8_t)(r->a == 0u);
 }
 
 /* $56BC — TEN SECTIONS IS ENOUGH SUBDIVIDING (Brands Hatch, Donington, Oulton, Snetterton;
@@ -16147,17 +16184,17 @@ void hook_record_horizon(void)
      S3 the compare's Z comes from $09                 ->  29/500
      S4 the count never reaches A                      -> 138/500
      S5 the non-stop arm returns instead of walking    -> 361/500 (+ VACUOUS: nothing emitted) */
-void hook_edge_walk_limit(void)
+void hook_edge_walk_limit(HookRegs *r)
 {
-    if (cpu.C) {
+    if (r->c) {
         uint8_t count = shared_counter_42;
 
         /* $56BE-$56C2 — the count lands in A and the compare's flags go with it. */
-        cpu.A = count;
-        cpu.C = (uint8_t)(count >= 0x0Au);
-        cpu.N = (uint8_t)(((count - 0x0Au) >> 7) & 1u);
-        cpu.Z = (uint8_t)(count == 0x0Au);
-        if (cpu.C)
+        r->a = count;
+        r->c = (uint8_t)(count >= 0x0Au);
+        r->n = (uint8_t)(((count - 0x0Au) >> 7) & 1u);
+        r->z = (uint8_t)(count == 0x0Au);
+        if (r->c)
             return;                                     /* $56C4 — stop, as Silverstone would */
     }
 
@@ -16167,7 +16204,7 @@ void hook_edge_walk_limit(void)
        relocated wide values stale.  The _native entry skips view_origin/car_heading/
        edge_nearest's marshal-INs, which is sound only for a caller that already holds them —
        see build_track_geometry.  Calling _native here cost 696/348 mismatches. */
-    road_edge_walk_resume();
+    r->x = road_edge_walk_resume_from(r->x);            /* the walk owns the exit X */
 }
 
 /* $55BD — STEP THE WALK BACK, UNLESS A SECTION IS ALREADY QUEUED (Brands Hatch, Donington,
@@ -16181,15 +16218,15 @@ void hook_edge_walk_limit(void)
      S8 Z comes from the flag byte, not from A & it    ->   7/200
      S9 V comes from bit 5                             ->  43/200
      S10 the rebuild is skipped entirely               -> 102/200 */
-void hook_walk_back_gate(void)
+void hook_walk_back_gate(HookRegs *r)
 {
     uint8_t flags = section_quad_flags;
 
     /* $55BD BIT — N/V from the flag byte's top two bits, Z from the mask against A.  Dead at
        this seam (advance_player_section returns immediately), replayed because they are free. */
-    cpu.N = (uint8_t)((flags >> 7) & 1u);
-    cpu.V = (uint8_t)((flags >> 6) & 1u);
-    cpu.Z = (uint8_t)((cpu.A & flags) == 0u);
+    r->n = (uint8_t)((flags >> 7) & 1u);
+    r->v = (uint8_t)((flags >> 6) & 1u);
+    r->z = (uint8_t)((r->a & flags) == 0u);
 
     if (flags & 0x80u)
         return;                                         /* $55BF BMI — leave it to the rebuild */
@@ -16277,20 +16314,20 @@ HookMergeExit hook_merge_horizon_edges_core(uint8_t point, uint8_t horizonLine,
     return ex;
 }
 
-static void hook_merge_horizon_edges_at(int clearStyleBelow6)
+void hook_merge_horizon_edges_at(HookRegs *r, int clearStyleBelow6)
 {
-    HookMergeExit ex = hook_merge_horizon_edges_core(cpu.Y, cpu.A, clearStyleBelow6);
+    HookMergeExit ex = hook_merge_horizon_edges_core(r->y, r->a, clearStyleBelow6);
     uint8_t point = horizon_index;                      /* $579E LDY */
 
-    cpu.A = ex.a;
-    cpu.Y = point;
-    cpu.N = (uint8_t)((point >> 7) & 1u);
-    cpu.Z = (uint8_t)(point == 0u);
-    cpu.C = 1u;                                         /* the loop only leaves on C set */
-    cpu.V = ex.v;
+    r->a = ex.a;
+    r->y = point;
+    r->n = (uint8_t)((point >> 7) & 1u);
+    r->z = (uint8_t)(point == 0u);
+    r->c = 1u;                                         /* the loop only leaves on C set */
+    r->v = ex.v;
 }
 
-void hook_merge_horizon_edges(void)         { hook_merge_horizon_edges_at(0); }
+void hook_merge_horizon_edges(HookRegs *r)         { hook_merge_horizon_edges_at(r, 0); }
 
 /* $5772 (the Nurburgring) — the same merge, and it also WIPES THE STYLE of the six points
    nearest the horizon.  ⚠ The clear sits INSIDE the loop, so it is "every merged point below
@@ -16301,7 +16338,7 @@ void hook_merge_horizon_edges(void)         { hook_merge_horizon_edges_at(0); }
    S112 only the near side's style is wiped                       -> 2498/4000
    S113 the boundary is `y <= 6`                                  -> 2849/4000
    S114 the style is wiped to $80 (marked covered) instead of 0   -> 2500/4000 */
-void hook_merge_horizon_edges_nurburg(void) { hook_merge_horizon_edges_at(1); }
+void hook_merge_horizon_edges_nurburg(HookRegs *r) { hook_merge_horizon_edges_at(r, 1); }
 
 /* $5772 (Donington Park) — THE DISPLACED STORE AND NOTHING ELSE.  ⚠ Donington's body is the
    first two instructions of the shared merge and then an RTS: the same address, the same
@@ -16317,10 +16354,10 @@ void hook_merge_horizon_edges_nurburg(void) { hook_merge_horizon_edges_at(1); }
    S116 the displaced store goes to the NEAR half                 -> 3999/4000
    S117 the merge loop runs after all (the shared body)           -> 4000/4000
    S118 the stores set N/Z as a load would                        -> 2981/4000 */
-void hook_horizon_store_only(void)
+void hook_horizon_store_only(HookRegs *r)
 {
-    mem[MEM_smc_object_ceiling + 1] = cpu.A;                /* $5772 — plot_object's ceiling */
-    mem[MEM_edge_y + EDGE_HALF + cpu.Y] = cpu.A;        /* $5775 — the displaced store */
+    mem[MEM_smc_object_ceiling + 1] = r->a;                /* $5772 — plot_object's ceiling */
+    mem[MEM_edge_y + EDGE_HALF + r->y] = r->a;        /* $5775 — the displaced store */
 }
 
 /* $557F / $5582 — STEP THE TRACK GENERATOR'S CURSOR ONE PLACE ALONG THE DIRECTION OF TRAVEL.
@@ -16401,25 +16438,25 @@ void hook_step_gen_cursor_core(uint16_t block)
 }
 
 /* The two shims.  A and Y come back as the stored pair; the flags are dead (see above). */
-static void hook_step_gen_cursor_at(uint16_t block)
+static void hook_step_gen_cursor_at(HookRegs *r, uint16_t block)
 {
     hook_step_gen_cursor_core(block);
-    cpu.A = mem[block + 5u];
-    cpu.Y = mem[block];
+    r->a = mem[block + 5u];
+    r->y = mem[block];
 }
 
-void hook_step_gen_cursor_a(void) { hook_step_gen_cursor_at(MEM_gen_cursor_place_a); }
-void hook_step_gen_cursor_b(void) { hook_step_gen_cursor_at(MEM_gen_cursor_place_b); }
+void hook_step_gen_cursor_a(HookRegs *r) { hook_step_gen_cursor_at(r, MEM_gen_cursor_place_a); }
+void hook_step_gen_cursor_b(HookRegs *r) { hook_step_gen_cursor_at(r, MEM_gen_cursor_place_b); }
 
 /* $557F — the same, with the engine's segment-direction step in front. */
-static void hook_step_dir_gen_cursor_at(uint16_t block)
+static void hook_step_dir_gen_cursor_at(HookRegs *r, uint16_t block)
 {
     step_segment_dir_index();
-    hook_step_gen_cursor_at(block);
+    hook_step_gen_cursor_at(r, block);
 }
 
-void hook_step_dir_gen_cursor_a(void) { hook_step_dir_gen_cursor_at(MEM_gen_cursor_place_a); }
-void hook_step_dir_gen_cursor_b(void) { hook_step_dir_gen_cursor_at(MEM_gen_cursor_place_b); }
+void hook_step_dir_gen_cursor_a(HookRegs *r) { hook_step_dir_gen_cursor_at(r, MEM_gen_cursor_place_a); }
+void hook_step_dir_gen_cursor_b(HookRegs *r) { hook_step_dir_gen_cursor_at(r, MEM_gen_cursor_place_b); }
 
 /* $54F1 (Brands Hatch) / $54EF (Donington, Oulton, Snetterton) / $54EB (the Nurburgring) — the
    SECTION-CURSOR ADVANCE, installed over the engine's own `CLC / ADC #$03` at $12FB inside
@@ -16458,22 +16495,22 @@ uint8_t hook_next_section_cursor_core(uint16_t genBlock)
     return (uint8_t)(section_cursor + 3u);          /* $54FA LDA / CLC / ADC #$03 */
 }
 
-static void hook_next_section_cursor_at(uint16_t block)
+static void hook_next_section_cursor_at(HookRegs *r, uint16_t block)
 {
     uint8_t gated  = (uint8_t)((cur_segment_flags & 0x40u) != 0u);
     uint8_t cursor = section_cursor;
     uint8_t next   = hook_next_section_cursor_core(block);
 
-    if (gated) cpu.Y = mem[block];                  /* the generator step's LDY, else Y is untouched */
-    cpu.A = next;
-    cpu.C = (uint8_t)(cursor + 3u > 0xFFu);
-    cpu.V = (uint8_t)((((cursor ^ next) & ~(cursor ^ 0x03u)) >> 7) & 1u);
-    cpu.N = (uint8_t)((next >> 7) & 1u);
-    cpu.Z = (uint8_t)(next == 0u);
+    if (gated) r->y = mem[block];                  /* the generator step's LDY, else Y is untouched */
+    r->a = next;
+    r->c = (uint8_t)(cursor + 3u > 0xFFu);
+    r->v = (uint8_t)((((cursor ^ next) & ~(cursor ^ 0x03u)) >> 7) & 1u);
+    r->n = (uint8_t)((next >> 7) & 1u);
+    r->z = (uint8_t)(next == 0u);
 }
 
-void hook_next_section_cursor_a(void) { hook_next_section_cursor_at(MEM_gen_cursor_place_a); }
-void hook_next_section_cursor_b(void) { hook_next_section_cursor_at(MEM_gen_cursor_place_b); }
+void hook_next_section_cursor_a(HookRegs *r) { hook_next_section_cursor_at(r, MEM_gen_cursor_place_a); }
+void hook_next_section_cursor_b(HookRegs *r) { hook_next_section_cursor_at(r, MEM_gen_cursor_place_b); }
 
 /* $5472 — THE GENERATOR'S DIRECTION-VECTOR STORE, one 6502 body in all five circuits (only the
    self-call's target and the state-block base differ).  Reached from $55C4 (which brackets it
@@ -16585,7 +16622,7 @@ static uint8_t hook_scale_by_gradient(uint8_t value)
     return cpu.A;
 }
 
-static void hook_gen_dir_vector_at(uint16_t block, uint8_t scale)
+static void hook_gen_dir_vector_at(HookRegs *r, uint16_t block, uint8_t scale)
 {
     GenDirVector d = hook_gen_dir_vector_core(block);
     uint8_t dir = segment_dir_index;                       /* $54C3 LDY */
@@ -16596,6 +16633,9 @@ static void hook_gen_dir_vector_at(uint16_t block, uint8_t scale)
     math_hi = scale;                                       /* $54C7 — both scalings' multiplier */
 
     mem[MEM_track_dir_0 + dir] = d.compA;                      /* $54C9-$54CB */
+    /* ⚠ NOT the seam's register file, and the one place `cpu` is still right: these two are
+       what hook_scale_by_gradient's `PHP` stacks below, and the byte it pushes lands in mem[]
+       where the differential compares it. */
     cpu.C = d.c; cpu.V = d.v;                              /* what the octant chain left standing */
     mem[MEM_track_normal_y + dir] = hook_scale_by_gradient(d.compA);   /* $54CE-$54D1 */
 
@@ -16606,20 +16646,20 @@ static void hook_gen_dir_vector_at(uint16_t block, uint8_t scale)
     uint8_t gradient = mem[block + 2u];                    /* $54E4 */
     mem[MEM_track_dir_1 + dir] = gradient;                     /* $54E7 */
 
-    cpu.A = gradient;
-    cpu.X = d.cosI;                                      /* the $5493 TAX, never overwritten */
-    cpu.Y = dir;
-    cpu.N = (uint8_t)((gradient >> 7) & 1u);
-    cpu.Z = (uint8_t)(gradient == 0u);
-    cpu.C = neg.carry;                                     /* the $54DF ADC's own flags survive */
-    cpu.V = neg.overflow;
+    r->a = gradient;
+    r->x = d.cosI;                                      /* the $5493 TAX, never overwritten */
+    r->y = dir;
+    r->n = (uint8_t)((gradient >> 7) & 1u);
+    r->z = (uint8_t)(gradient == 0u);
+    r->c = neg.carry;                                     /* the $54DF ADC's own flags survive */
+    r->v = neg.overflow;
 }
 
-void hook_gen_dir_vector_brands(void)  { hook_gen_dir_vector_at(TRACK_GEN_ARGS(BRANDS)); }
-void hook_gen_dir_vector_oulton(void)  { hook_gen_dir_vector_at(TRACK_GEN_ARGS(OULTON)); }
-void hook_gen_dir_vector_snetter(void) { hook_gen_dir_vector_at(TRACK_GEN_ARGS(SNETTER)); }
-void hook_gen_dir_vector_doning(void)  { hook_gen_dir_vector_at(TRACK_GEN_ARGS(DONING)); }
-void hook_gen_dir_vector_nurburg(void) { hook_gen_dir_vector_at(TRACK_GEN_ARGS(NURBURG)); }
+void hook_gen_dir_vector_brands(HookRegs *r)  { hook_gen_dir_vector_at(r, TRACK_GEN_ARGS(BRANDS)); }
+void hook_gen_dir_vector_oulton(HookRegs *r)  { hook_gen_dir_vector_at(r, TRACK_GEN_ARGS(OULTON)); }
+void hook_gen_dir_vector_snetter(HookRegs *r) { hook_gen_dir_vector_at(r, TRACK_GEN_ARGS(SNETTER)); }
+void hook_gen_dir_vector_doning(HookRegs *r)  { hook_gen_dir_vector_at(r, TRACK_GEN_ARGS(DONING)); }
+void hook_gen_dir_vector_nurburg(HookRegs *r) { hook_gen_dir_vector_at(r, TRACK_GEN_ARGS(NURBURG)); }
 
 /* $55C4  hook_gen_step — ONE STEP OF THE TRACK GENERATOR  (twin #223)
    Brands Hatch, Donington, Oulton and Snetterton, and the Nurburgring at $55BD — the SAME body
@@ -16663,9 +16703,9 @@ void hook_gen_dir_vector_nurburg(void) { hook_gen_dir_vector_at(TRACK_GEN_ARGS(N
 #define GEN_SEG_TURN_LO  (MEM_track_dir_1 + 0x28u)   /* gen_seg_turn_lo $5528[place] — ...and low */
 #define GEN_SEG_CLIMB    (MEM_track_dir_2 + 0x28u)   /* gen_seg_climb   $5628[place] — gradient delta */
 
-static void hook_gen_step_at(uint16_t block, uint8_t scale)
+static void hook_gen_step_at(HookRegs *r, uint16_t block, uint8_t scale)
 {
-    uint8_t savedX = cpu.X;
+    uint8_t savedX = r->x;
     saved_slot_index = savedX;                                  /* $55C4 STX */
 
     uint8_t place = mem[block - 2u];                            /* $55C6 LDY */
@@ -16688,18 +16728,18 @@ static void hook_gen_step_at(uint16_t block, uint8_t scale)
         mem[block + 2u] = (uint8_t)(mem[block + 2u] + climb);    /* $55F3 CLC / ADC / STA */
     }
 
-    hook_gen_dir_vector_at(block, scale);                        /* $55FA */
+    hook_gen_dir_vector_at(r, block, scale);                        /* $55FA */
 
-    cpu.X = savedX;                                              /* $55FD LDX — and its own N/Z */
-    cpu.N = (uint8_t)((savedX >> 7) & 1u);
-    cpu.Z = (uint8_t)(savedX == 0u);
+    r->x = savedX;                                              /* $55FD LDX — and its own N/Z */
+    r->n = (uint8_t)((savedX >> 7) & 1u);
+    r->z = (uint8_t)(savedX == 0u);
 }
 
-void hook_gen_step_brands(void)  { hook_gen_step_at(TRACK_GEN_ARGS(BRANDS)); }
-void hook_gen_step_oulton(void)  { hook_gen_step_at(TRACK_GEN_ARGS(OULTON)); }
-void hook_gen_step_snetter(void) { hook_gen_step_at(TRACK_GEN_ARGS(SNETTER)); }
-void hook_gen_step_doning(void)  { hook_gen_step_at(TRACK_GEN_ARGS(DONING)); }
-void hook_gen_step_nurburg(void) { hook_gen_step_at(TRACK_GEN_ARGS(NURBURG)); }   /* at $55BD */
+void hook_gen_step_brands(HookRegs *r)  { hook_gen_step_at(r, TRACK_GEN_ARGS(BRANDS)); }
+void hook_gen_step_oulton(HookRegs *r)  { hook_gen_step_at(r, TRACK_GEN_ARGS(OULTON)); }
+void hook_gen_step_snetter(HookRegs *r) { hook_gen_step_at(r, TRACK_GEN_ARGS(SNETTER)); }
+void hook_gen_step_doning(HookRegs *r)  { hook_gen_step_at(r, TRACK_GEN_ARGS(DONING)); }
+void hook_gen_step_nurburg(HookRegs *r) { hook_gen_step_at(r, TRACK_GEN_ARGS(NURBURG)); }   /* at $55BD */
 
 /* $5572  hook_seg_advance — ADVANCE THE GENERATOR ONE SEGMENT, IF THIS IS A BOUNDARY (twin #224)
    All five expansion circuits, identical in shape.  cur_segment_flags bit 6 is "this build step
@@ -16718,23 +16758,23 @@ void hook_gen_step_nurburg(void) { hook_gen_step_at(TRACK_GEN_ARGS(NURBURG)); } 
      S50 the no-op arm returns the flags byte instead of 0             -> 492..499 / 1000
    The 500s are the fixture's own gate split (half the cases cross a boundary), and S49 detects at
    the same rate because the step decides WHICH direction entry the generator writes. */
-static void hook_seg_advance_at(uint16_t block, uint8_t scale)
+static void hook_seg_advance_at(HookRegs *r, uint16_t block, uint8_t scale)
 {
     if (!(cur_segment_flags & 0x40u)) {     /* $5572 LDA / AND #$40 / BEQ — no boundary crossed */
-        cpu.A = 0u;
-        cpu.N = 0u;
-        cpu.Z = 1u;
+        r->a = 0u;
+        r->n = 0u;
+        r->z = 1u;
         return;
     }
     step_segment_dir_index();               /* $5578 — on to the next direction-basis entry */
-    hook_gen_step_at(block, scale);         /* $557B — and generate it */
+    hook_gen_step_at(r, block, scale);         /* $557B — and generate it */
 }
 
-void hook_seg_advance_brands(void)  { hook_seg_advance_at(TRACK_GEN_ARGS(BRANDS)); }
-void hook_seg_advance_oulton(void)  { hook_seg_advance_at(TRACK_GEN_ARGS(OULTON)); }
-void hook_seg_advance_snetter(void) { hook_seg_advance_at(TRACK_GEN_ARGS(SNETTER)); }
-void hook_seg_advance_doning(void)  { hook_seg_advance_at(TRACK_GEN_ARGS(DONING)); }
-void hook_seg_advance_nurburg(void) { hook_seg_advance_at(TRACK_GEN_ARGS(NURBURG)); }
+void hook_seg_advance_brands(HookRegs *r)  { hook_seg_advance_at(r, TRACK_GEN_ARGS(BRANDS)); }
+void hook_seg_advance_oulton(HookRegs *r)  { hook_seg_advance_at(r, TRACK_GEN_ARGS(OULTON)); }
+void hook_seg_advance_snetter(HookRegs *r) { hook_seg_advance_at(r, TRACK_GEN_ARGS(SNETTER)); }
+void hook_seg_advance_doning(HookRegs *r)  { hook_seg_advance_at(r, TRACK_GEN_ARGS(DONING)); }
+void hook_seg_advance_nurburg(HookRegs *r) { hook_seg_advance_at(r, TRACK_GEN_ARGS(NURBURG)); }
 
 /* $5672  hook_gen_seed — SEED THE GENERATOR AT A SECTION BOUNDARY (twin #225)
    All five expansion circuits, one body, block-shifted.  Entered with Y = the segment index the
@@ -16781,9 +16821,9 @@ void hook_seg_advance_nurburg(void) { hook_seg_advance_at(TRACK_GEN_ARGS(NURBURG
    the rate at which $87 and $07 differ.  S53 and S56 read the same 500 for the same reason — one
    is that bit again, the other the reverse arm's own half. */
 
-static void hook_gen_seed_at(uint16_t block, uint8_t scale)
+static void hook_gen_seed_at(HookRegs *r, uint16_t block, uint8_t scale)
 {
-    uint8_t segment = cpu.Y;
+    uint8_t segment = r->y;
     span_saved_index  = segment;                                 /* $5672 STY */
     segment_dir_index = mem[MEM_gen_segment_dir_tbl + segment];          /* $5677 */
 
@@ -16799,23 +16839,23 @@ static void hook_gen_seed_at(uint16_t block, uint8_t scale)
     mem[block + 3u] = 0u;                                        /* $569E — restart the place */
 
     if (track_direction & 0x80u) {          /* $56A3 BIT — reverse: no step, and V/C are left as */
-        cpu.V = (uint8_t)((track_direction >> 6) & 1u);          /* the BIT and the ROR set them */
-        cpu.C = 0u;
+        r->v = (uint8_t)((track_direction >> 6) & 1u);          /* the BIT and the ROR set them */
+        r->c = 0u;
     } else {
-        hook_gen_step_at(block, scale);                          /* $56A7 */
+        hook_gen_step_at(r, block, scale);                          /* $56A7 */
     }
 
-    cpu.Y = span_saved_index;                                    /* $56AA */
-    cpu.A = segment_dir_index;                                   /* $56AC — and its own N/Z */
-    cpu.N = (uint8_t)((cpu.A >> 7) & 1u);
-    cpu.Z = (uint8_t)(cpu.A == 0u);
+    r->y = span_saved_index;                                    /* $56AA */
+    r->a = segment_dir_index;                                   /* $56AC — and its own N/Z */
+    r->n = (uint8_t)((r->a >> 7) & 1u);
+    r->z = (uint8_t)(r->a == 0u);
 }
 
-void hook_gen_seed_brands(void)  { hook_gen_seed_at(TRACK_GEN_ARGS(BRANDS)); }
-void hook_gen_seed_oulton(void)  { hook_gen_seed_at(TRACK_GEN_ARGS(OULTON)); }
-void hook_gen_seed_snetter(void) { hook_gen_seed_at(TRACK_GEN_ARGS(SNETTER)); }
-void hook_gen_seed_doning(void)  { hook_gen_seed_at(TRACK_GEN_ARGS(DONING)); }
-void hook_gen_seed_nurburg(void) { hook_gen_seed_at(TRACK_GEN_ARGS(NURBURG)); }
+void hook_gen_seed_brands(HookRegs *r)  { hook_gen_seed_at(r, TRACK_GEN_ARGS(BRANDS)); }
+void hook_gen_seed_oulton(HookRegs *r)  { hook_gen_seed_at(r, TRACK_GEN_ARGS(OULTON)); }
+void hook_gen_seed_snetter(HookRegs *r) { hook_gen_seed_at(r, TRACK_GEN_ARGS(SNETTER)); }
+void hook_gen_seed_doning(HookRegs *r)  { hook_gen_seed_at(r, TRACK_GEN_ARGS(DONING)); }
+void hook_gen_seed_nurburg(HookRegs *r) { hook_gen_seed_at(r, TRACK_GEN_ARGS(NURBURG)); }
 
 /* $5A1B  hook_advance_gen_place — STEP THE GENERATOR'S CURSOR AND REBUILD ITS VECTOR (twin #226)
    All five expansion circuits, one body: `JSR $557F / JMP $5472`.  It is the pairing of the two
@@ -16840,17 +16880,17 @@ void hook_gen_seed_nurburg(void) { hook_gen_seed_at(TRACK_GEN_ARGS(NURBURG)); }
          on the other four — LOCALIZED by construction, since only that shim was patched.
    S59 detects everywhere because the ORDER is the whole routine: the vector is built from the
    heading the cursor has just moved to, so building it first builds the previous one. */
-static void hook_advance_gen_place_at(uint16_t block, uint8_t scale)
+static void hook_advance_gen_place_at(HookRegs *r, uint16_t block, uint8_t scale)
 {
-    hook_step_dir_gen_cursor_at(block - 2u);    /* $5A1B — the segment index and the cursor */
-    hook_gen_dir_vector_at(block, scale);       /* $5A1E — and the vector the cursor now names */
+    hook_step_dir_gen_cursor_at(r, block - 2u);    /* $5A1B — the segment index and the cursor */
+    hook_gen_dir_vector_at(r, block, scale);       /* $5A1E — and the vector the cursor now names */
 }
 
-void hook_advance_gen_place_brands(void)  { hook_advance_gen_place_at(MEM_gen_cursor_place_b, 0x88u); }
-void hook_advance_gen_place_oulton(void)  { hook_advance_gen_place_at(MEM_gen_cursor_place_b, 0x80u); }
-void hook_advance_gen_place_snetter(void) { hook_advance_gen_place_at(MEM_gen_cursor_place_b, 0x84u); }
-void hook_advance_gen_place_doning(void)  { hook_advance_gen_place_at(MEM_gen_state_heading_b, 0x86u); }
-void hook_advance_gen_place_nurburg(void) { hook_advance_gen_place_at(MEM_gen_state_heading_b, 0x9Au); }
+void hook_advance_gen_place_brands(HookRegs *r)  { hook_advance_gen_place_at(r, MEM_gen_cursor_place_b, 0x88u); }
+void hook_advance_gen_place_oulton(HookRegs *r)  { hook_advance_gen_place_at(r, MEM_gen_cursor_place_b, 0x80u); }
+void hook_advance_gen_place_snetter(HookRegs *r) { hook_advance_gen_place_at(r, MEM_gen_cursor_place_b, 0x84u); }
+void hook_advance_gen_place_doning(HookRegs *r)  { hook_advance_gen_place_at(r, MEM_gen_state_heading_b, 0x86u); }
+void hook_advance_gen_place_nurburg(HookRegs *r) { hook_advance_gen_place_at(r, MEM_gen_state_heading_b, 0x9Au); }
 
 /* THE THREE CROSS-CIRCUIT ONE-LINE HOOK BODIES (twins #227-#229)
    Fourteen (circuit, entry) pairs, three bodies.  Each is one or two 6502 instructions installed
@@ -16881,11 +16921,11 @@ void hook_advance_gen_place_nurburg(void) { hook_advance_gen_place_at(MEM_gen_st
    ⚠ S63 and S64 print the same count and it is NOT a stale build (the object was removed before
    each link): both defects change the product for exactly the cases with A != 0, and each such
    case differs in the same slots, so the totals coincide by construction.  S65/S66 separate. */
-void hook_horizon_half_width_scale(void)
+void hook_horizon_half_width_scale(HookRegs *r)
 {
-    math_hi = cpu.A;        /* the difference becomes the multiply's addend */
+    math_hi = r->a;         /* the difference becomes the multiply's addend */
     math_lo = 0xCDu;        /* $CD/256 = 0.801, the circuit's own horizon scale */
-    mul8_noinit();
+    mul8_noinit_regs(r);
 }
 
 /* $59D9 (the Nurburgring) — ITS STEERING RESPONSE CURVE, WITH A SECOND ARM.  The fifth and
@@ -16963,10 +17003,10 @@ void hook_steer_response_nurburg(void)
    S122 multiplier $CD -> $CC                                     ->  805/1000
    ⚠ S122 edits the SHARED body, so it fails hook_horizon_half_width_scale (3312) as well —
    which is the point: the two twins differ only by the abs8, and that is what S119 gates. */
-void hook_horizon_half_width_abs_doning(void)
+void hook_horizon_half_width_abs_doning(HookRegs *r)
 {
-    abs8();                             /* $57B6 — the engine's own call, kept */
-    hook_horizon_half_width_scale();    /* $57B9 JMP $53D0 — and then the shared scale */
+    abs8_regs(r);                        /* $57B6 — the engine's own call, kept */
+    hook_horizon_half_width_scale(r);    /* $57B9 JMP $53D0 — and then the shared scale */
 }
 
 /* $53E9 (Donington Park) — THE SECTION STEP FORWARD, TWICE WHERE THE ROAD RAN VERY SHORT.
@@ -16983,14 +17023,14 @@ void hook_horizon_half_width_abs_doning(void)
    S124 the threshold is $0C, not $0B                             ->  790/4000
    S125 the second build happens on the OTHER side of the test    -> 4000/4000
    S126 the CMP's carry is left as it arrived                     -> 1975/4000 */
-void hook_section_ahead_doning(void)
+void hook_section_ahead_doning(HookRegs *r)
 {
-    uint8_t count = cpu.A;                              /* $53E9 CMP #$0B */
+    uint8_t count = r->a;                               /* $53E9 CMP #$0B */
     uint8_t diff  = (uint8_t)(count - 0x0Bu);
 
-    cpu.C = (uint8_t)(count >= 0x0Bu);
-    cpu.Z = (uint8_t)(diff == 0u);
-    cpu.N = (uint8_t)((diff >> 7) & 1u);
+    r->c = (uint8_t)(count >= 0x0Bu);
+    r->z = (uint8_t)(diff == 0u);
+    r->n = (uint8_t)((diff >> 7) & 1u);
 
     if (count < 0x0Bu)
         build_section_ahead_core();                      /* $53ED — the extra section */
@@ -17016,13 +17056,13 @@ void hook_section_ahead_doning(void)
    S68 A + track_direction instead of A ^ track_direction        3005
    S69 leave the entry N standing instead of the EOR's           2570
    S70 drop the abs8                                             2490 */
-void hook_abs_by_track_direction(void)
+void hook_abs_by_track_direction(HookRegs *r)
 {
-    uint8_t eor = (uint8_t)(cpu.A ^ track_direction);
-    cpu.A = eor;
-    cpu.N = (uint8_t)((eor >> 7) & 1u);      /* the EOR's own flags; C and V pass through */
-    cpu.Z = (uint8_t)(eor == 0u);
-    abs8();                                  /* negate when the re-signed value came out negative */
+    uint8_t eor = (uint8_t)(r->a ^ track_direction);
+    r->a = eor;
+    r->n = (uint8_t)((eor >> 7) & 1u);       /* the EOR's own flags; C and V pass through */
+    r->z = (uint8_t)(eor == 0u);
+    abs8_regs(r);                            /* negate when the re-signed value came out negative */
 }
 
 /* $57BB (Brands Hatch) / $54EB (Donington, Oulton, Snetterton) / $555C (the Nurburgring) —

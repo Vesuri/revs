@@ -513,6 +513,9 @@ void mirrors_update_native(void);
 void process_car_contact_native(void);
 void apply_driving_model_frame_native(void);
 void road_edge_walk_resume_native(void);
+uint8_t road_edge_walk_resume_from(uint8_t sectionX);   /* $2490 by value */
+void    abs8_regs(HookRegs *r);          /* $637C with the file as a value */
+void    mul8_noinit_regs(HookRegs *r);   /* $0C02 with the file as a value */
 void place_player_in_section_native(void);
 void build_player_car_native(void);
 
@@ -736,6 +739,7 @@ uint8_t road_edge_walk_core(uint8_t firstPoint, uint8_t sectionIndex, uint8_t mi
 uint8_t road_edge_walk_resume_core(uint8_t section, uint8_t midSlot, uint8_t pointCap, uint8_t offAxis);
 uint8_t horizon_half_width_at_core(unsigned horizonPoint);
 uint8_t scale_by_track_gradient_tail_core(uint8_t value, int negative);
+void    scale_by_track_gradient_regs(HookRegs *r);   /* $4610 with the file as a value */
 int road_span_advance_core(uint8_t y);
 AddFlags rotate_velocity_by_steer_core(void);
 AddFlags rotate_pair_a_by_steer_core(void);
@@ -878,72 +882,72 @@ SlotExit write_object_slot_core(uint8_t projectedLine, uint8_t entryX, uint8_t e
 extern int g_hookOracle;              /* 0 = twins, non-zero = the transliterated bodies */
 uint8_t hook_horizon_clamp_core(uint8_t entryY);
 uint8_t hook_record_horizon_core(uint8_t line, uint8_t point);
-void hook_record_horizon(void);
-void hook_edge_walk_limit(void);
-void hook_walk_back_gate(void);
+void hook_record_horizon(HookRegs *r);
+void hook_edge_walk_limit(HookRegs *r);
+void hook_walk_back_gate(HookRegs *r);
 typedef struct { uint8_t a; uint8_t v; } HookMergeExit;
 HookMergeExit hook_merge_horizon_edges_core(uint8_t point, uint8_t horizonLine,
                                            int clearStyleBelow6);
-void hook_merge_horizon_edges(void);
+void hook_merge_horizon_edges(HookRegs *r);
 void hook_step_gen_cursor_core(uint16_t block);
-void hook_step_gen_cursor_a(void);
-void hook_step_gen_cursor_b(void);
-void hook_step_dir_gen_cursor_a(void);
-void hook_step_dir_gen_cursor_b(void);
-void hook_horizon_clamp(void);
-void hook_steer_response_brands(void);           /* Brands Hatch $57A1 */
-void hook_steer_response_oulton(void);           /* Oulton Park $57A1 */
-void hook_steer_response_snetter(void);          /* Snetterton $57A1 */
-void hook_steer_response_doning(void);           /* Donington Park $5779 */
-void hook_camera_scale_by_gradient(void);        /* $45CB — four circuits */
-void hook_span_cap_slot_test(void);
-void hook_merge_horizon_edges_nurburg(void);     /* Nurburgring $5772 */
-void hook_horizon_store_only(void);              /* Donington Park $5772 */
-void hook_horizon_half_width_abs_doning(void);   /* Donington Park $57B6 */
-void hook_section_ahead_doning(void);            /* Donington Park $53E9 */
+void hook_step_gen_cursor_a(HookRegs *r);
+void hook_step_gen_cursor_b(HookRegs *r);
+void hook_step_dir_gen_cursor_a(HookRegs *r);
+void hook_step_dir_gen_cursor_b(HookRegs *r);
+void hook_horizon_clamp(HookRegs *r);
+void hook_steer_response_brands(HookRegs *r);           /* Brands Hatch $57A1 */
+void hook_steer_response_oulton(HookRegs *r);           /* Oulton Park $57A1 */
+void hook_steer_response_snetter(HookRegs *r);          /* Snetterton $57A1 */
+void hook_steer_response_doning(HookRegs *r);           /* Donington Park $5779 */
+void hook_camera_scale_by_gradient(HookRegs *r);        /* $45CB — four circuits */
+void hook_span_cap_slot_test(HookRegs *r);
+void hook_merge_horizon_edges_nurburg(HookRegs *r);     /* Nurburgring $5772 */
+void hook_horizon_store_only(HookRegs *r);              /* Donington Park $5772 */
+void hook_horizon_half_width_abs_doning(HookRegs *r);   /* Donington Park $57B6 */
+void hook_section_ahead_doning(HookRegs *r);            /* Donington Park $53E9 */
 void hook_steer_response_nurburg(void);          /* Nurburgring $59D9 */              /* $2F23 — Donington + Snetterton */
-void hook_horizon_clamp_guarded_snetter(void);   /* Snetterton  $56C8 */
-void hook_horizon_clamp_guarded_nurburg(void);   /* Nurburgring $56C4 */
+void hook_horizon_clamp_guarded_snetter(HookRegs *r);   /* Snetterton  $56C8 */
+void hook_horizon_clamp_guarded_nurburg(HookRegs *r);   /* Nurburgring $56C4 */
 
 #endif /* REVS_NATIVE_SEAM_H */
 uint8_t hook_next_section_cursor_core(uint16_t genBlock);
-void hook_next_section_cursor_a(void);
-void hook_next_section_cursor_b(void);
+void hook_next_section_cursor_a(HookRegs *r);
+void hook_next_section_cursor_b(HookRegs *r);
 /* $5472's vector: the two ground-plane components (signed), what the $5493 TAX leaves in X,
    and the C and V standing at the first PHP (V is always 0 there — see the twin). */
 typedef struct { uint8_t compA, compB, cosI, c, v; } GenDirVector;
 GenDirVector hook_gen_dir_vector_core(uint16_t block);
-void hook_gen_dir_vector_brands(void);
-void hook_gen_dir_vector_oulton(void);
-void hook_gen_dir_vector_snetter(void);
-void hook_gen_dir_vector_doning(void);
-void hook_gen_dir_vector_nurburg(void);
-void hook_gen_step_brands(void);
-void hook_gen_step_oulton(void);
-void hook_gen_step_snetter(void);
-void hook_gen_step_doning(void);
-void hook_gen_step_nurburg(void);
-void hook_seg_advance_brands(void);
-void hook_seg_advance_oulton(void);
-void hook_seg_advance_snetter(void);
-void hook_seg_advance_doning(void);
-void hook_seg_advance_nurburg(void);
+void hook_gen_dir_vector_brands(HookRegs *r);
+void hook_gen_dir_vector_oulton(HookRegs *r);
+void hook_gen_dir_vector_snetter(HookRegs *r);
+void hook_gen_dir_vector_doning(HookRegs *r);
+void hook_gen_dir_vector_nurburg(HookRegs *r);
+void hook_gen_step_brands(HookRegs *r);
+void hook_gen_step_oulton(HookRegs *r);
+void hook_gen_step_snetter(HookRegs *r);
+void hook_gen_step_doning(HookRegs *r);
+void hook_gen_step_nurburg(HookRegs *r);
+void hook_seg_advance_brands(HookRegs *r);
+void hook_seg_advance_oulton(HookRegs *r);
+void hook_seg_advance_snetter(HookRegs *r);
+void hook_seg_advance_doning(HookRegs *r);
+void hook_seg_advance_nurburg(HookRegs *r);
 
 /* $5672 — seed the generator at a section boundary (twin #225) */
-void hook_gen_seed_brands(void);
-void hook_gen_seed_oulton(void);
-void hook_gen_seed_snetter(void);
-void hook_gen_seed_doning(void);
-void hook_gen_seed_nurburg(void);
+void hook_gen_seed_brands(HookRegs *r);
+void hook_gen_seed_oulton(HookRegs *r);
+void hook_gen_seed_snetter(HookRegs *r);
+void hook_gen_seed_doning(HookRegs *r);
+void hook_gen_seed_nurburg(HookRegs *r);
 
 /* $5A1B — step the generator's cursor, then rebuild its direction vector (twin #226) */
-void hook_advance_gen_place_brands(void);
-void hook_advance_gen_place_oulton(void);
-void hook_advance_gen_place_snetter(void);
-void hook_advance_gen_place_doning(void);
-void hook_advance_gen_place_nurburg(void);
+void hook_advance_gen_place_brands(HookRegs *r);
+void hook_advance_gen_place_oulton(HookRegs *r);
+void hook_advance_gen_place_snetter(HookRegs *r);
+void hook_advance_gen_place_doning(HookRegs *r);
+void hook_advance_gen_place_nurburg(HookRegs *r);
 
 /* The three cross-circuit one-line hook bodies (twins #227-#229) */
-void hook_horizon_half_width_scale(void);
-void hook_abs_by_track_direction(void);
+void hook_horizon_half_width_scale(HookRegs *r);
+void hook_abs_by_track_direction(HookRegs *r);
 void hook_scale_entry_by_gradient(void);
