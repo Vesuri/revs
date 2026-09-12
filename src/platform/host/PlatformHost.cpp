@@ -235,6 +235,19 @@ void PlatformHost::renderFrame()
             for (unsigned i = 0; i < 11; i++) std::printf(" %lu", g_shapeDashColHist[i]);
             std::printf("\nSHAPE   per-column dirty sweeps:");
             for (unsigned i = 0; i < 40; i++) std::printf(" %lu", g_shapeDashPerCol[i]);
+            if (g_shapeEdgeCalls) {
+                const unsigned long ec = g_shapeEdgeCalls;
+                std::printf("SHAPE   dash-edge walk ($1E15, phase 18): %lu calls, "
+                            "%lu walks/call, %lu.%02lu cells/call  "
+                            "arms: skip=%lu table=%lu colour=%lu (fallback=%lu) per call\n",
+                            ec, g_shapeEdgeWalks / ec,
+                            g_shapeEdgeCells / ec, (g_shapeEdgeCells * 100 / ec) % 100,
+                            g_shapeEdgeSkip / ec, g_shapeEdgeTable / ec,
+                            g_shapeEdgeColour / ec, g_shapeEdgeFallback / ec);
+                std::printf("SHAPE   cells-per-walk histogram (buckets of 8):");
+                for (unsigned i = 0; i < 16; i++) std::printf(" %lu", g_shapeEdgeHist[i]);
+                std::printf("\n");
+            }
             if (g_shapeRoadCalls)
                 std::printf("SHAPE   road pass ($1A20): %lu calls, %lu of 8320 frame-buffer bytes "
                             "per call over %lu lines  last(%u bytes, %u lines, %u..%u)\n",

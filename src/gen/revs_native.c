@@ -4125,6 +4125,7 @@ static SlotExit edge_column_pass(uint16_t startSrc, uint8_t firstColumn, uint8_t
    the viewport's own geometry and stay immediates. */
 SlotExit fill_dash_edge_columns_core(uint16_t leftStartSrc, uint16_t rightStartSrc)
 {
+    PROBE_SHAPE_EDGE_CALL();
     edge_column_pass(leftStartSrc,  0x03, 0x06, 0x1B);
     /* the second pass's exit is the routine's — the first's is overwritten by it. */
     return edge_column_pass(rightStartSrc, 0x1A, 0x22, 0x2B);
@@ -6084,6 +6085,12 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
        is the hardware-window test, which collapses to one comparison per store instead of a
        bus_read/bus_write dispatch (CLAUDE.md §bus_read/bus_write). */
     y = span_line_cursor;
+#ifdef REVS_SHAPE
+    unsigned shapeCells = 0;   /* the walk's cell count, for shape.h's histogram */
+#   define EDGE_CELL_SEEN()  (shapeCells++)
+#else
+#   define EDGE_CELL_SEEN()  ((void)0)
+#endif
     for (;;) {
         /* CPY #EDGE_BLOCK_START — the loop test.  On the equal exit its N/Z/C (0/1/1) are the
            routine's exit flags; its carry (y >= end) is the trap path's exit C otherwise. */
@@ -6091,8 +6098,12 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
         uint8_t loopC = (uint8_t)(y >= end);
         if (y == end) {
             SlotExit e = { a, x, y, 0u, 1u, v, 1u };
+#ifdef REVS_SHAPE
+            PROBE_SHAPE_EDGE_WALK(shapeCells);
+#endif
             return e;
         }
+        EDGE_CELL_SEEN();
 
         /* One word read per pass, not two lanes and an or.  This is still
            a RE-READ every pass, which the header above insists on — plot_store_resync keeps
@@ -6111,7 +6122,8 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
 
         if (src != 0) {
             /* $1DD4 — the patched branch: skip the cell, or map it into the table. */
-            if (offset == 0x09u) { y = (uint8_t)(line - 1); continue; }   /* $1DDF */
+            if (offset == 0x09u) { PROBE_SHAPE_EDGE_CELL(0);
+                                   y = (uint8_t)(line - 1); continue; }   /* $1DDF */
             /* ⚠ THE TRAP BELONGS HERE, not at the top: the branch is only reached once a
                non-zero source byte is found, so a column of zeroes never executes it and an
                unmodelled offset must leave A, Y and the flags as this LDA left them. */
@@ -6129,6 +6141,7 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
               unsigned dst     = (altBase + line) & 0xFFFFu;
               seam_write(dst, pointer_is_ram(altBase), stored);
               plot_store_resync(dst, stored); }
+            PROBE_SHAPE_EDGE_CELL(1);
             y = (uint8_t)(line - 1);
             continue;
         }
@@ -6137,6 +6150,7 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
            surface_colour_at's class escapes in X; its colour byte is A. */
         { SlotExit sc = surface_colour_at_core(line, mem[EDGE_COLUMN], x, v);
           x = sc.x;
+          PROBE_SHAPE_EDGE_CELL(sc.a ? 2u : 3u);
           a = sc.a ? sc.a : fallback; }               /* the colour, or the fallback if 0 */
         /* ⚠ storePtr is a zero-page ADDRESS chosen at runtime ($1DE9's operand), not a fixed
            pointer, so this one stays a mem[] lookup — and its store can land on $70..$73, which
@@ -6147,6 +6161,7 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
           plot_store_resync(dst, a); }
         y = (uint8_t)(line - 1);
     }
+#undef EDGE_CELL_SEEN
 }
 
 /* $1DA6  fill_column_gaps — THE PATCH, THEN THE WALK  (twin #42)

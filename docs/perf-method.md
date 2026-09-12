@@ -118,26 +118,34 @@ a PROBES build** — read `accounted NN.N%` first, it must be ~100 or the shares
 
 | ms/frame | Phase(s) | Callee | Code |
 |---|---|---|---|
-| 92 | 24+33+34+32 | **`view_paint_lines`** (the CONSUMER) — sweep 25 · tail 11 · phase-2 17 · phase-3 39 | native, whole tree |
-| 40 | 11+44-46 | **`draw_road`** (`$1A20`) — `draw_surface_spans` 33 · `fill_line_attr` 4 · `mark_line_surfaces` 1 | native, whole tree |
-| 34 | 5 | **`build_track_geometry`** (`$24F6`) | native, whole tree |
+| 70 | 24+33+34+32 | **`view_paint_lines`** (the CONSUMER) — sweep 22 · phase-2 15 · phase-3 27 · tail 6 | native, whole tree |
+| 40 | 11 | **`draw_road`** (`$1A20`) | native, whole tree |
 | 38 | 27 | `RevsScreen::decode()` | port |
-| 32 | 18 | `fill_dash_edge_columns` | native |
-| 22 | 26 | the 50 Hz drain (`irq1v_band_schedule`) | native |
+| 26 | 5 | **`build_track_geometry`** (`$24F6`) | native, whole tree |
+| 17 | 18 | `fill_dash_edge_columns` | native |
+| 14 | 26 | the 50 Hz drain (`irq1v_band_schedule`) | native |
 | 14 | 28 | the vblank spin | port |
-| ≤4 each | 15, 32, 33-tail, 3, 29, 14, and the rest of the 24-call body | remaining drivers and leaves | mixed |
+| ≤3 each | 15, 29, 14, 13, 10, and the rest of the 24-call body | remaining drivers and leaves | mixed |
 
-Re-measured 2026-08-20 at HEAD `f969843` in ONE run (`ROADSPLIT=1 PROBES=1 FIXED_RNG=1
-STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`, warp, 30 s, driving), ~440 loop frames: **~287 ms/frame total**
-(cross-checks the ~3.5 FPS: 1000/287 ≈ 3.48), of which the three pipeline rows are `92 + 40 + 34 =
-166 ms ≈ 58%`. ⚠ These are same-run shares — the three pipeline ms are directly comparable to each
-other in THIS run; **never diff a ms row against the earlier table it replaced** (Rule 2 — different
-session, different trajectory). ⭐ The span rasteriser reworked in `004a672`/`f969843` lives in
-`draw_surface_spans` (33 of draw_road's 40 ms) and in view phase 3's `span_walk` (below); those are
-where the two span passes' ~+7.6% landed. ⚠ On a ROADSPLIT build `phase4_prof`'s own `accounted`
-line reads low BY CONSTRUCTION — draw_road's ms are moved into ids 44-46, which its `i<40` sum
-excludes; read draw_road from `roadsplit.gdb` (which prints "phase 11 whole") and the rest from
-`phase4_prof`, as this table does.
+Re-measured 2026-09-12 at HEAD `8629ff9` in ONE run (`PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1
+HOLD_THROTTLE=1`, warp, 30 s, driving), 530 loop frames, **`accounted 96.8%`**: **~256 ms/frame
+total**, of which the three pipeline rows are `70 + 40 + 26 = 136 ms ≈ 53%`. ⚠ These are same-run
+shares — the three pipeline ms are directly comparable to each other in THIS run; **never diff a ms
+row against the earlier table it replaced** (Rule 2 — different session, different trajectory).
+⭐ The span rasteriser reworked in `004a672`/`f969843` lives in `draw_surface_spans` (inside
+draw_road's 40 ms) and in view phase 3's `span_walk` (below); those are where the two span passes'
+~+7.6% landed. ⚠ On a ROADSPLIT build `phase4_prof`'s own `accounted` line reads low BY
+CONSTRUCTION — draw_road's ms move into ids 44-46, which its `i<40` sum excludes; read draw_road
+from `roadsplit.gdb` (which prints "phase 11 whole"). This table is a plain (non-ROADSPLIT) run, so
+its `accounted` is the honest 96.8% and phase 11 is draw_road whole.
+
+⚠⚠ **Two rows moved a long way from the previous table and the direction matters.**
+`fill_dash_edge_columns` reads **17 ms, not 32**, and the consumer reads **70, not 92** — so the
+frame is 256 ms, not 287. Do not treat either as an improvement earned by a change: they are
+different sessions on different trajectories, which is exactly what Rule 2 forbids diffing. The
+usable content is the RANKING and the within-run shares, and the ranking did change — `draw_road`
+and the decode are now the top two rows, and the consumer is a distributed third rather than the
+single dominant cost.
 
 Two rows that are not phases and bound everything:
 - the **VERTB ISR**: charged pro-rata to whichever phase it preempted, so it appears in no row of
@@ -355,20 +363,21 @@ The CONSUMER — the single reader of the forty `$80`-spaced source blocks the t
 Same run; the painting is split into three phases (probe.h §PROBE_VIEW_* carries UNITS = cells
 touched, RUNS = colour runs, LINES = scan lines painted, per phase).
 
-| Painting phase | ms/frame | units | runs | lines | µs per unit |
-|---|---|---|---|---|---|
-| phase 1 (24) | 25 | 1443 | 36 | 36 | **17** |
-| phase 2 (33) | 17 | 426 | 32 | 16 | 40 |
-| **phase 3 (34)** | **40** | **282** | **50** | **25** | **142** |
-| tail (32) | 11 | — | — | — | — |
-| **total** | **95** | 2151 | 118 | 77 | 44 avg |
+| Painting phase | ms/frame | units | runs | lines | µs per unit | µs per line |
+|---|---|---|---|---|---|---|
+| phase 1 (24) | 22 | 1442 | 36 | 36 | **15** | 618 |
+| phase 2 (33) | 15 | 426 | 32 | 16 | 35 | 958 |
+| **phase 3 (34)** | **27** | **282** | **50** | **25** | **98** | **1106** |
+| tail (32) | 6 | — | — | — | — | — |
+| **total** | **70** | 2150 | 118 | 77 | 33 avg | — |
 
-⚠⚠ **Phase 3 is the single most expensive view phase — 40 ms — on the FEWEST units (282).** It
-costs 8× per unit what phase 1 does (142 µs vs 17). With 282 units over 25 lines and 50 runs, its
-cost is the **per-line / per-run driver**, not the per-unit inner loop: ~1.6 ms per painted line.
+⚠⚠ **Phase 3 is the single most expensive view phase — 27 ms — on the FEWEST units (282).** It
+costs 6.5× per unit what phase 1 does (98 µs vs 15). With 282 units over 25 lines and 50 runs, its
+cost is the **per-line / per-run driver**, not the per-unit inner loop: ~1.1 ms per painted line.
 The lever is that driver (fewer lines, cheaper per-run setup), not the cell loop — the same
 per-item-setup shape as the other two stages. Phase 1, by contrast, is the honest throughput
-phase (1443 units at a flat 17 µs) and is already near its floor.
+phase (1442 units at a flat 15 µs) and is already near its floor. **§The four view probes below
+decomposes phase 3's 27 ms further and names where 83% of it sits.**
 
 #### ⭐⭐ AND THIS TABLE IS WHY THE PER-LINE SKIP WAS A NULL — the skip can only reach phase 1
 
@@ -402,6 +411,110 @@ the all-flat cheap ones, so the surviving units carry the per-run setup over few
 ~8 ms appeared across phases 33/34/11/18, which is within trajectory noise; **the marking hooks
 (`view_mark_source`, called from `plot_store_resync` on every plotter store) are a PLAUSIBLE but
 UNPROVEN cost** — do not cite it as measured.
+
+### ⭐⭐ The four view probes (2026-09-12) — phase 3 decomposed, and the ~6× note RETRACTED
+
+Phase 3 was the most expensive view phase on the fewest units, and before anything was rewritten
+around it two questions had to be settled: **do the beam brackets tell the truth**, and **are its
+milliseconds in its body or in interrupts landing inside an open bracket**. Four probes
+(`amiga/Makefile` §VIEWCAL / VIEWP3), all on `PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1
+HOLD_THROTTLE=1` + warp + `phase4_prof.gdb`.
+
+**1. The calibration (`VIEWCAL=N`) — the brackets are HONEST to 1.005×.** `probe_burn_cycles()`
+is exactly 1000 × (`nop` 4 + `dbra` 10) = 14 000 cycles = **1975 µs** at 7.09 MHz, and the probe
+demands the row scale linearly in N or the burn is not what is being measured:
+
+| N | phase 39, µs/call |
+|---|---|
+| 1 | 3235 |
+| 2 | 5304 |
+
+The **slope** is what carries the answer: 2069 µs per known 14 000 cycles = **1.048× raw**, and
+correcting for the ~0.16/0.27 VERTB ISR fires (828 µs each) that land inside the open bracket gives
+**1985 vs 1975 = 1.005×**. The intercept D = 1166 µs/line = 29.2 ms/frame is phase 3's own driver,
+independently agreeing with the table above.
+
+⚠ **Read the intercept, not a single row.** A single `VIEWCAL=1` row at 3235 µs looks like 1.64×
+inflation and is not: `PROBE_PHASE` **switches** phase, it does not nest, and the loop-top re-arm
+is `VIEWP3_PHASE(...)`, compiled out unless `REVS_VIEWP3` is defined — so in a VIEWCAL build
+nothing re-arms phase 34 and **phase 39 holds the burn PLUS one whole phase-3 line body**. The
+contamination is a CONSTANT while the burn scales with N, which is why the two-point fit removes it
+exactly and why the linearity check is the right instrument.
+
+⭐⭐ **So the note that used to stand at `src/platform/probe.h:214` is RETRACTED.** It read "either
+the beam brackets inflate or a 68000 instruction here costs far more than an instruction count
+suggests". The first disjunct is now refuted to 0.5%; **the surviving one is that the code really
+does cost ~6× its instruction count**, and the mechanism is still open. ⚠ It is NOT chip-RAM
+contention on the rig versus the target: **fast versus chip RAM is not a usable explanation for
+anything on a 68000** (user-stated, 2026-09-12) — on an A500 "fast RAM" is usually slow RAM on the
+same bus anyway, and even off-bus the difference is negligible because the 68000 is simply slow and
+every access costs. That is a 68020-era distinction; do not reason from it here. The standing rule
+holds unchanged: **RAM is uniformly slow — reduce the NUMBER of accesses.**
+
+**2. The four-way split (`VIEWP3=1`), net of its own control.** ⭐ Phase **31 is an EMPTY bracket
+at the same rate — THE CONTROL, and it is read first**: 417 ticks = 104 µs/line, i.e. the split's
+six extra bracket transitions per line add ~12 ms/frame of pure instrument that must be netted out.
+
+| bracket | ticks/line | net µs/line |
+|---|---|---|
+| 35 chain A stop | 851 | 108 |
+| **36 chain A entry + boundary** | **2045** | **406** |
+| 37 chain B stop | 614 | 49 |
+| **38 chain B entry + boundary** | **2580** | **540** |
+| 34 remainder (2 brackets) | 964 | 32 |
+
+Total ≈1135 µs/line = **28.4 ms/frame — the third independent agreement** with the table's 27 and
+the calibration's 29.2. **83% of phase 3 is the two chain-ENTRY brackets; the planted stops are
+14%; the cell loop is negligible.**
+
+**3. The empty body (`VIEWP3=2`) answers the interrupt question.** `units=0/frame` proves the body
+truly did not run, and phase 34 falls to a net 88 µs/line ≈ 2.2 ms/frame over the same 25
+iterations. **Phase 3's milliseconds are genuinely in its body**, not ISR time accumulating inside
+an open bracket.
+
+**4. No chains (`VIEWP3=3`) prices the heritage overhead.** ⚠ `=3` uses `ifeq` on top of the base
+`ifdef VIEWP3`, so it defines BOTH `REVS_VIEWP3` and `REVS_VIEWP3_NOCHAIN` — which is what makes it
+bracket-for-bracket comparable with `=1`. The **sanity check is the two stop brackets holding
+still** (35: 434→403, 37: 197→187) while the entry brackets collapse (36: 1628→222, 38:
+2163→605).
+
+⭐⭐ **The chain runs are 740 µs/line = 18.5 ms/frame for 282 units → 66 µs/unit, against phase 1's
+15 µs/unit for the same "paint a cell" work — 4.4×.** Phase 2 (bracket 33) went 15 → 8 ms/frame
+with units 426 → 213 and runs 32 → 16, so its chains cost ~7 ms/frame at 33 µs/unit — 2.2×. **This
+is the SMC-simulation overhead quantified**, and it is the prize a descriptor rewrite is aiming at:
+phase 3's 282 units at phase 1's per-unit rate would be 4.2 ms instead of 18.5, plus ~5.2 ms of
+entry machinery, ~3.9 ms of stop planting and phase 2's ~3.8 ms → **~20-25 ms of a 256 ms frame =
+8-10%**, well clear of the 3% floor.
+
+### ⭐ `fill_dash_edge_columns` (phase 18, 17 ms) decomposed — 151 cells, ALL on one arm
+
+Phase 18 is the fifth-biggest row in the frame for a driver whose whole job is **twelve columns**,
+and "it is per-item setup like the rest" was an assumption until it was counted. `src/platform/shape.h`
+now carries dash-edge counters (`make SHAPE=1`, `REVS_SHAPE_WATCH=N` on the host build; the arms are
+hooked in `column_gap_walk_core`, and in a non-SHAPE build the cell counter is `#ifdef`-guarded so
+the shipping build provably pays nothing rather than relying on GCC to delete it).
+
+Constant across every watch interval, host, `REVS_FIXED_RNG=1`:
+**25 walks/call, 151.00 cells/call, skip=0, table=0, colour=151, fallback=132 (87%)**; cells-per-walk
+histogram (buckets of 8) = 20 walks of 0-7, 3 of 8-15, 2 of 16-23.
+
+⭐ **The instrument's self-check is the SUM IDENTITY**: `skip + table + colour == cells`
+(`0 + 0 + 151 = 151`), which proves no cell took an uncounted path — the thing that would otherwise
+make a zero arm indistinguishable from a misplaced hook. And the CONSTANCY is explained rather than
+suspicious: the dash edge is fixed geometry (columns `$03..$06` and `$1A..$22`, block starts from a
+static table), so it does not vary with the trajectory.
+
+Three findings:
+1. ⭐⭐ **EVERY cell takes the empty-cell arm.** The `$09` skip and the `offset != 0xEF` trap are
+   **dead on the game trajectory** — they exist only for the randomised fixture. Under the governing
+   rule (validate RESULTS on the data the engine actually produces) they are specialisable.
+2. **17 ms for 151 cells is ~113 µs per cell — 7.5× a view-sweep cell**, the most expensive
+   per-item cost anywhere in the frame. `column_gap_walk_core` re-reads all three patched operands
+   **per cell**, plus `mem[EDGE_BLOCK_START]` as the loop test and `mem[EDGE_COLUMN]` inside
+   `surface_colour_at_core`; and each column is walked TWICE (once via `plot_ptr2` into the
+   boundary table, once via `plot_ptr` into its own source block).
+3. **87% of cells get no surface colour** and fall back to the patched constant — so
+   `surface_colour_at_core` is called on all 151 and earns its answer on 19.
 
 ### ⚠⚠ MEASURED (2026-09-02): the WIDE-VALUE campaign is NOT VISIBLE end to end — +0.65%, inside noise
 

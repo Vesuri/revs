@@ -128,6 +128,38 @@ extern volatile unsigned long g_shapeMarkOver;         /* marked, nothing writte
 extern volatile unsigned long g_shapeMarkPerUnmarked[128];
 void shape_mark_source(unsigned addr);
 
+/* ── ⭐⭐ THE DASH-EDGE WALK (`fill_dash_edge_columns`, phase 18) ─────────────────────────────
+ * Phase 18 is 17 ms/frame — the sixth-biggest row in the frame — for a driver whose whole job is
+ * TWELVE columns at the two ends of the viewport (`revs_native.c` §$1E15).  Nothing says how many
+ * CELLS that is, and the two readings differ by an order of magnitude: twelve columns of a few
+ * lines each is a rounding error, twelve columns of forty lines is 480 cells and the row is honest
+ * throughput.  Until it is counted, "phase 18 is per-item setup like the rest" is an assumption.
+ *
+ * ⭐ AND THE ARM SPLIT IS THE ACTIONABLE HALF.  `column_gap_walk` re-reads its three patched
+ * operands ($1DD5/$1DDC/$1DE9) out of `mem[]` on EVERY cell and dispatches on them, so a cell's
+ * cost depends on which arm it takes:
+ *   skip      a non-zero source on the $09 arm — reads the byte, steps the line, stores nothing
+ *   table     a non-zero source on the $EF arm — one store into the per-line boundary table
+ *   colour    an empty cell — calls surface_colour_at, then stores
+ *   fallback  ...of which the surface had no colour and the patched fallback byte was used
+ * If `colour` dominates, the cost is surface_colour_at and the operand traffic is noise; if the
+ * cells are few and the row is still 17 ms, the cost is per-COLUMN setup and the walk is not the
+ * subject at all.  Counted, not argued.
+ * ⚠ One increment per cell: a SHAPE build only. */
+extern volatile unsigned long g_shapeEdgeCalls;    /* fill_dash_edge_columns calls        */
+extern volatile unsigned long g_shapeEdgeWalks;    /* column_gap_walk entries             */
+extern volatile unsigned long g_shapeEdgeCells;    /* loop passes = source bytes read     */
+extern volatile unsigned long g_shapeEdgeSkip;     /* non-zero source, the $09 arm        */
+extern volatile unsigned long g_shapeEdgeTable;    /* non-zero source, the $EF arm        */
+extern volatile unsigned long g_shapeEdgeColour;   /* empty cell -> surface_colour_at     */
+extern volatile unsigned long g_shapeEdgeFallback; /* ...with no surface colour           */
+/* Per walk, the cells it ran, as a histogram (buckets of 8, 16 buckets cover 0..127) — a mean
+   hides "two long columns and ten empty ones", which is a different subject than a flat run. */
+extern volatile unsigned long g_shapeEdgeHist[16];
+void shape_edge_call(void);
+void shape_edge_walk(unsigned cells);
+void shape_edge_cell(unsigned arm);
+
 /* ── THE ROAD PASS ($1A20, phase 11) ────────────────────────────────────────────────────────
  * The other half of step 2, and the number that prices direct plotting: how many BYTES of the
  * 8320-byte frame buffer does the road rasteriser actually write per frame?  The decode converts
@@ -189,6 +221,9 @@ void shape_frame_delta(void);
 #define PROBE_SHAPE_DASH_UNIT(line) shape_dash_unit(line)
 #define PROBE_SHAPE_DASH_STORE(d, v, line) shape_dash_store((d), (v), (line))
 #define PROBE_SHAPE_MARK(addr)     shape_mark_source((addr))
+#define PROBE_SHAPE_EDGE_CALL()    shape_edge_call()
+#define PROBE_SHAPE_EDGE_WALK(c)   shape_edge_walk((c))
+#define PROBE_SHAPE_EDGE_CELL(a)   shape_edge_cell((a))
 #define PROBE_SHAPE_ROAD_BEFORE()  shape_road_before()
 #define PROBE_SHAPE_ROAD_AFTER()   shape_road_after()
 #define PROBE_SHAPE_PHASE(n)       shape_phase_mark(n)
@@ -196,6 +231,9 @@ void shape_frame_delta(void);
 
 #else
 
+#define PROBE_SHAPE_EDGE_CALL()    ((void)0)
+#define PROBE_SHAPE_EDGE_WALK(c)   ((void)(c))
+#define PROBE_SHAPE_EDGE_CELL(a)   ((void)(a))
 #define PROBE_SHAPE_DASH_BEFORE()  ((void)0)
 #define PROBE_SHAPE_DASH_AFTER()   ((void)0)
 #define PROBE_SHAPE_DASH_UNIT(line) ((void)(line))

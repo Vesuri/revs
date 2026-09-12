@@ -212,12 +212,22 @@ unsigned long probe_beam_tick(void);
 #define PROBE_PHASE_P3_STOPB 37
 #define PROBE_PHASE_P3_CHAINB 38
 
-/* ⭐⭐ `make VIEWCAL=1` — THE CALIBRATION, and it is the only way to read any of the rows above as
- * cycles.  Every µs figure this routine produces is ~6x what its generated code can account for, so
- * either the beam brackets inflate or a 68000 instruction here costs far more than an instruction
- * count suggests.  probe_burn_cycles() runs EXACTLY 1000 x (`nop` 4 + `dbra` 10) = 14 000 cycles =
- * 1975 µs at 7.09 MHz, inside its own bracket at the same rate as the rest: phase 39 divided by its
- * call count IS the conversion, measured in the same run as the thing it calibrates. */
+/* ⭐⭐ `make VIEWCAL=N` — THE CALIBRATION, and it is the only way to read any of the rows above as
+ * cycles.  probe_burn_cycles() runs EXACTLY 1000 x (`nop` 4 + `dbra` 10) = 14 000 cycles = 1975 µs
+ * at 7.09 MHz, inside its own bracket at the same rate as the rest, and the row must scale LINEARLY
+ * in N or the burn is not what is being measured.
+ * ⭐⭐ IT HAS BEEN RUN, AND THE BRACKETS ARE HONEST — 1.048x raw from the two-point slope, 1.005x
+ * once the VERTB ISR fires landing inside the open bracket are accounted for.  This retracts the
+ * note that used to stand here ("either the beam brackets inflate or a 68000 instruction here costs
+ * far more than an instruction count suggests"): the first disjunct is refuted, so the ~6x is in
+ * THE CODE, and its mechanism is still open.  ⚠ It is not a fast-vs-chip-RAM effect — that
+ * distinction buys nothing on a 68000 (docs/perf-method.md §The four view probes, which carries the
+ * fit, the four differentials and why one row read in isolation says 1.64x).
+ * ⚠ READ THE SLOPE, NOT ONE ROW: PROBE_PHASE *switches* phase rather than nesting, and the loop-top
+ * re-arm is VIEWP3_PHASE(), compiled out unless REVS_VIEWP3 is defined — so in a VIEWCAL build
+ * nothing re-arms phase 34 and phase 39 holds the burn PLUS one whole phase-3 line body.  That
+ * contamination is a CONSTANT while the burn scales with N, which is exactly what the two-point fit
+ * removes. */
 #define PROBE_PHASE_CAL 39
 void probe_burn_cycles(void);
 

@@ -289,6 +289,37 @@ void shape_dash_after(void)
 /* ── the road pass ------------------------------------------------------------------------- */
 
 extern "C" {
+/* ── THE DASH-EDGE WALK (phase 18) — src/platform/shape.h has what the arms mean ─────────── */
+volatile unsigned long g_shapeEdgeCalls = 0;
+volatile unsigned long g_shapeEdgeWalks = 0;
+volatile unsigned long g_shapeEdgeCells = 0;
+volatile unsigned long g_shapeEdgeSkip = 0;
+volatile unsigned long g_shapeEdgeTable = 0;
+volatile unsigned long g_shapeEdgeColour = 0;
+volatile unsigned long g_shapeEdgeFallback = 0;
+volatile unsigned long g_shapeEdgeHist[16] = { 0 };
+
+void shape_edge_call(void) { g_shapeEdgeCalls++; }
+
+void shape_edge_walk(unsigned cells)
+{
+    g_shapeEdgeWalks++;
+    g_shapeEdgeHist[cells > 127 ? 15 : cells / 8]++;
+}
+
+/* The arm codes are shape.h's four, in the order the walk tests them. */
+void shape_edge_cell(unsigned arm)
+{
+    g_shapeEdgeCells++;
+    switch (arm) {
+        case 0: g_shapeEdgeSkip++;     break;
+        case 1: g_shapeEdgeTable++;    break;
+        case 2: g_shapeEdgeColour++;   break;
+        case 3: g_shapeEdgeColour++; g_shapeEdgeFallback++; break;
+        default: break;
+    }
+}
+
 volatile unsigned long g_shapeRoadCalls = 0;
 volatile unsigned long g_shapeRoadBytes = 0;
 volatile unsigned long g_shapeRoadLines = 0;
