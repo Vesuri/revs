@@ -11007,6 +11007,23 @@ static int test_driving_controls(void)
        not a result), so comparing them would be asserting an implementation detail the
        converted binary no longer reproduces.  adc_read drops only V (its recentre add's V is
        dead; its C — the dead-zone flag — is a real output and stays). */
+
+    /* ⭐⭐ C IS DROPPED for the three routines whose exit carry is the STEERING LOCK STOP's.
+       On the 6502 the $162D CMP #$91 in clamp_and_store_steer_angle is the last thing to write C
+       on the keyboard-and-no-input path, so it leaks back out through read_pedals_and_gears'
+       no_key exit as the chain's exit carry for steer_apply_with_assist (12), steer_assist_
+       dispatch (13) and steer_demand_from_slip (15).  ⚠ NO CALLER READS IT.  The cluster has one
+       native entry, race_main_loop_core's read_driving_controls_frame(), and the next call the
+       frame driver makes (apply_driving_model) opens LDA/LDX and writes its own flags before any
+       branch; nothing inside the cluster reads C either.  A live= mask states what the GAME
+       reads, so comparing this was the harness asserting an implementation detail — and it was
+       the sole reason the clamp had to carry a `cpu.C =` write at all.  The mask narrowing and
+       that write's removal are ONE change: either alone fails, which is what makes this a domain
+       correction rather than a loosening.
+       ⚠ steer_demand_store (14) reaches the clamp too and is NOT dropped — it passes with C
+       compared, because its own tail writes the flag again; drop only what is actually leaked.
+       limit_steer_demand (4) and poll_steering_assist (3) are leaves that never reach the clamp,
+       so their exit C is a real result and stays compared. */
     for (i = 0; i < 17; i++) {
         int subFail = 0, decimal = 0, joystick = 0, keyheld = 0, assist = 0;
         int textRow = 0, sessionOver = 0, patched = 0;
@@ -11020,6 +11037,8 @@ static int test_driving_controls(void)
             drop = LIVE_V | LIVE_C;         /* mode5_addr's address carry/overflow, propagated */
         else if (i == 2)
             drop = LIVE_V;                  /* adc_read's recentre-add V (C is the real output) */
+        else if (i == 12 || i == 13 || i == 15)
+            drop = LIVE_C;                  /* the lock stop's leaked carry — see below */
         unsigned mask = resultOnly ? LIVE_NONE : (liveMask & ~drop);
         if (!want(list[i].name)) continue;
         /* apply_steering_assist (i == 11), steer_apply_with_assist (i == 12) and

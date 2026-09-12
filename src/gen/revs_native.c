@@ -10577,17 +10577,15 @@ static void apply_steer_demand_core(uint8_t signByte)
 
 static void clamp_and_store_steer_angle_core(uint8_t a)
 {
-    /* $162D CMP #$91 — the lock stop.  Its carry ESCAPES: nothing on the keyboard-and-no-input
-       path through read_pedals_and_gears writes C again, so it leaks out through that routine's
-       no_key exit and IS the chain's exit C at every caller (steer_demand_from_slip,
-       steer_assist_dispatch, steer_apply_with_assist compare it; clamp's own fixture drops it).
-       ⚠ This write is LOAD-BEARING but its VALUE is not harness-distinguishable: removing the line
-       fails ~260 cases (the cpu-free core prefix leaves C undefined where the transliterated ORACLE
-       prefix set it via CMP, so the leaked exit C diverges), yet ANY value here passes — once an
-       oracle enters a native shim the whole downstream (this core included) IS native, so the C it
-       writes is applied identically to both models and cancels.  The faithful value is the real
-       6502's CMP #$91 result, `(a >= 0x91u)`; the harness cannot police it, so keep it correct here. */
-    cpu.C = (a >= 0x91u);
+    /* $162D CMP #$91 — the lock stop.  Its carry used to be published into cpu: nothing on the
+       keyboard-and-no-input path through read_pedals_and_gears writes C again, so on the 6502 it
+       leaks out through that routine's no_key exit and is the whole chain's exit C.
+       ⚠ NO GAME CALLER READS IT.  The cluster has exactly one native entry — race_main_loop_core's
+       read_driving_controls_frame() — and the very next thing the frame driver runs,
+       apply_driving_model, opens LDA/LDX and writes its own flags before any branch.  Inside the
+       cluster nothing reads C either; it was compared only by four fixtures (steer_demand_store,
+       steer_demand_from_slip, steer_assist_dispatch, steer_apply_with_assist), which now drop it
+       for the reason stated there.  So the lock stop is a clamp, not a flag producer. */
     if (a >= 0x91u) a = 0x91u;
     car_angle_16[CAR_ANGLE_STEER] = (uint16_t)(((uint16_t)a << 8) | mem[STEER_SIGN]);
     read_pedals_and_gears();                           /* $162D falls into the pedals/gears tail */
