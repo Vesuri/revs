@@ -644,7 +644,7 @@ runs. Preserve the full consumer as the byte-exact oracle.
 
 | subsystem | measured split | conclusion |
 |---|---|---|
-| framebuffer decode | **38 ms = 23 ms discovery/shadow scan + 15 ms dirty-cell expansion** | Two 1040-bit dirty maps, one per backbuffer, can remove most of the 23 ms scan. Set both maps only when a framebuffer byte genuinely changes; consume/clear the displayed backbuffer's map. Mode changes dirty the whole character row. |
+| framebuffer decode | **38 ms = 23 ms discovery/shadow scan + 15 ms dirty-cell expansion** | The two-map experiment removes the scan but loses ~8.5% end to end: per-store compare + two map RMWs cost more than the batched longword scan. `CHANGEDIRTY=1` is reproducible but off by default. |
 | `draw_road` | **43 ms = ~24 ms `span_walk` + ~13 ms surrounding surface setup + 4 ms attributes + 1 ms marks** | The old claim that span setup dominates and columns are nearly free is false. Rewrite `interp_edge` and `span_walk` together as one native SpanPlan/DDA kernel; removing only one side preserves the representation tax. |
 | `build_track_geometry` | **28 ms = ~25 ms in the two point walks**; 27 points, zero subdivisions | The old restoring divider is not active here (`g_geoDiv=0`); native paths use `revs_divu16`/DIVU. Carry native `EdgePoint` values between stages instead of publishing and reconstructing byte-lane scratch records. |
 | dash edge | **17 ms for 151 cells**, all on the same production arm | A production-arm specialization remains a plausible 5-10 ms item, behind the larger representation changes. |
@@ -664,11 +664,10 @@ and reconstructed between stages.
 
 At the measured ~4.57 FPS baseline (~219 ms/painted frame), the credible local programme is:
 
-1. per-backbuffer framebuffer dirty maps (likely net 10-15 ms);
-2. a combined native road span kernel (15-25 ms);
-3. producer-emitted source dirty events/runs (12-18 ms);
-4. a native geometry value pipeline (8-12 ms);
-5. dash specialization (5-10 ms).
+1. a combined native road span kernel (15-25 ms);
+2. producer-emitted source dirty events/runs (12-18 ms);
+3. a native geometry value pipeline (8-12 ms);
+4. dash specialization (5-10 ms).
 
 Those ranges imply roughly **6-7 FPS**, not 25 FPS. Reaching 25 FPS (40 ms/frame) requires the
 architectural version: world points → native spans/events → Amiga bitplanes, bypassing the chain

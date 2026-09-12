@@ -452,7 +452,7 @@ void view_skip_reset(void);   /* mark everything dirty — the fixture harness's
 REVS_FLAG_OP void seam_write(unsigned addr, int ram, uint8_t value)
 {
     if (ram) {
-        mem[addr] = value;
+        revs_fb_store_maybe((uint16_t)addr, value);
         PROBE_SHAPE_MARK(addr);   /* a store here may be a view SOURCE byte (§7h marking) */
         VIEW_MARK_SOURCE(addr);
 #ifdef REVS_INK_WATCH

@@ -386,6 +386,15 @@ ifeq ($(DIRTY),0)
 EXTRA_DEFINES += -DREVS_NO_DIRTY
 endif
 
+# `make CHANGEDIRTY=1` — experimental writer-maintained, change-aware dirty maps. Every changed
+# BBC framebuffer store sets its cell in BOTH backbuffer maps; decode consumes only its own map.
+# Correct under DIRTYCHECK, but OFF by default: target A/B at 929c61b measured 4.10-4.19 FPS versus
+# the shipping shadow scanner's 4.49-4.68. The extra producer reads and map RMWs cost more than the
+# two-longword-per-cell decoder scan they replace. See docs/direct-bitplane-plan.md §7j.
+ifeq ($(CHANGEDIRTY),1)
+EXTRA_DEFINES += -DREVS_CHANGE_DIRTY
+endif
+
 # `make DIRTYCHECK=1` — the dirty decode's ORACLE.  Every painted frame, re-run the conversion
 # UNCONDITIONALLY into a copy of the buffer the dirty pass just wrote and require byte equality:
 # g_decodeDirtyMismatch must be 0 over a run in which g_decodeDirtyChecks is large.  16 KB of extra

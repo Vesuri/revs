@@ -1658,6 +1658,7 @@ VALIDATE_SUFFIX = '__t6502'
 # platform.  (Revs never touches FRED or JIM, and never addresses the uPD7002 ADC
 # directly — the steering arrives via OSBYTE 128.  docs/static-map.md.)
 HW_BASE, HW_END = 0xFC00, 0xFF00
+FB_BASE, FB_END = 0x5A80, 0x7B00   # BBC display RAM, end-exclusive (bbc_screen.h)
 
 # The MOS entry block.  A JSR/JMP in here is an OS call, not a target in the image:
 # it must become platform_mos_call(), or the generated C would call into a function
@@ -2329,12 +2330,22 @@ def write_expr(mode, addr, idx, val_expr):
     if mode in ('zp','abs'):
         if needs_bus_write(addr):
             return f'bus_write({mem_index(addr)}, {val_expr})'
+        if FB_BASE <= addr < FB_END:
+            return f'revs_fb_store_screen({mem_index(addr)}, {val_expr})'
         alias = mem_alias(addr)
         if alias:
             return f'{alias} = {val_expr}'           # bare lvalue: level_stage = ...
         return f'mem[0x{addr:04X}] = {val_expr}'
     ea = operand_addr_expr(mode, addr, idx)
     if mode in ('absx','absy','zpx','zpy'):
+        # X/Y range over one byte. Route only indexed sites whose possible effective
+        # address overlaps display RAM; all other generated stores remain raw mem[].
+        # This is the static half of the write-seam proof: indirect stores take bus_write,
+        # and native twins use seam_write or explicit revs_fb_store_screen calls.
+        if mode in ('absx','absy') and addr < FB_END and addr + 0xFF >= FB_BASE:
+            if addr >= FB_BASE and addr + 0xFF < FB_END:
+                return f'revs_fb_store_screen((uint16_t)({ea}), {val_expr})'
+            return f'revs_fb_store_maybe((uint16_t)({ea}), {val_expr})'
         return f'mem[{ea}] = {val_expr}'
     # indirect modes
     return f'bus_write({ea}, {val_expr})'

@@ -357,6 +357,10 @@ Do not retry that code shape. The null does **not** prove setup is free: its emi
 and slowed the retained unit loop, and the original line/run fit was underidentified. Direct target
 measurement instead puts the complete unit/run interior at **29 ms/frame: ~8 ms destination stores
 and ~21 ms source consume/translation/loop/run control**. `docs/perf-method.md` has the controls.
+⚠⚠ **Writer-maintained framebuffer dirty maps are also dead as a shipping optimisation.**
+`make CHANGEDIRTY=1` is complete and byte-exact (0/23 oracle mismatches), but its per-store compare
+and two-map RMW traffic measured ~8.5% slower than the batched shadow scanner. It stays off by
+default as a reproducible experiment; do not retry it without producer-native change events.
 ⭐⭐ **The lever is the VIEW PIPELINE: `build_track_geometry` → `draw_road` → `view_paint_lines` is
 the dominant subsystem and it is ONE subsystem** — the first two *produce* source bytes into the forty `$80`-spaced blocks
 at `$3000..$4380`, the third is the single *consumer*. Current shares, every past change and its

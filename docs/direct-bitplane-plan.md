@@ -784,7 +784,7 @@ There are therefore **two useful dirty representations**, at different seams:
    dirty. Whenever a specialised framebuffer store genuinely changes a byte, set its cell bit in
    both maps. The decoder iterates and clears only the displayed backbuffer's map. A mode change
    dirties all forty cells of its character row. The existing full decoder remains the oracle.
-   Gross ceiling: the measured 23 ms discovery scan; expected net: roughly 10-15 ms.
+   Gross ceiling: the measured 23 ms discovery scan; pre-implementation expected net: 10-15 ms.
 2. **Viewport source events/runs.** The producers know which of the forty `$80`-spaced source
    blocks they touch. Emit changed units or contiguous runs and let `view_paint_lines` iterate the
    events instead of testing all 2148 slots. A line-only bit is insufficient if it still causes a
@@ -795,7 +795,26 @@ The failed direct plotter did not test either proposition: it replaced the final
 retaining the source scan and every upstream BBC-shaped representation. Its 9% loss therefore says
 that the last-arrow replacement was a bad trade, not that a higher representation seam is valueless.
 
-The measured implementation order is framebuffer dirty maps first, then a combined native
+**Implemented and rejected as the shipping path (2026-09-12).** `make CHANGEDIRTY=1` is the complete
+two-map implementation: generator, generic bus, native seam and hand-written framebuffer stores
+all compare before storing and set both maps on a genuine change; decode consumes the current
+backbuffer's map, and mode motion dirties the whole character row. Its full-decode oracle measured
+**0 mismatches / 23 moving-frame checks**, with `cells last=59`, `max=1040` (initial frame), throttle
+`$FF`, gear `$2F`, speed `$0C`. Thus the feature ran, did real skipping, and was byte-exact.
+
+It nevertheless loses decisively. Same-session, clean-build `fps_series.gdb` rows were
+**4.10-4.19 FPS** for the map (one 4.00 row in the shared-marker rerun) versus **4.49-4.68 FPS** for
+the unchanged shadow control: about **-8.5%**. Moving the bit arithmetic into one cold helper did
+not recover the loss. The reason is memory traffic: roughly 2991 candidate framebuffer stores per
+frame now need an extra destination read/compare, and each genuine change adds two map read/modify/writes.
+The old decoder instead batches discovery into aligned, contiguous longword comparisons over 1040
+cells. The proposed 23 ms was a gross decoder ceiling that omitted its producer-side price.
+
+`CHANGEDIRTY` therefore stays **OFF by default**, while remaining buildable and oracle-covered so
+the result is reproducible. Do not schedule another per-store change-aware map unless the producer
+representation itself supplies change events without rereading framebuffer destinations.
+
+The measured implementation order is now a combined native
 `interp_edge` + `span_walk` kernel, then viewport source events. Even if all local items land, their
 credible total points to about **6-7 FPS from the current ~4.57**, not the 25 FPS floor. The floor
 requires the architectural path: world points → native spans/events → Amiga bitplanes, bypassing
