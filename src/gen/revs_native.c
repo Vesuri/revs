@@ -6718,13 +6718,15 @@ MosRegs kbd_test_key_regs(uint8_t keyCode)
 
 int kbd_test_key_core(uint8_t keyCode)
 {
-    /* The $0E50 routine leaves A/X/Y as the INKEY call did (X=Y=$FF held, $00 not; A = the OSBYTE
-       number), and its callers on the driving-control path let those escape as the chain's exit
-       X/Y.  Replay them so the cpu-free wrapper's dropped residue is reconstructed — faithful,
-       since every JSR to this routine in the oracle leaves exactly these.  The boolean return is
-       the CPX #$FF result the flag-testing callers want. */
+    /* ⭐ cpu-free.  The $0E50 routine leaves A/X/Y as the INKEY call did (X = Y = $FF held, $00
+       not; A = the OSBYTE number), and on the 6502 that residue leaks out through the
+       driving-control chain as three routines' exit X/Y — so this used to publish it into cpu at
+       every one of 17 call sites.  Nothing reads it: those three fixtures were the only
+       consumers and now declare it dropped (see validate_native.c, the INKEY residue), and the
+       one place the residue is genuinely live in-game — shift_key_commands' envelope redefine —
+       calls kbd_test_key_regs and threads it as a local.  A caller that wants the registers asks
+       for them by name; this entry answers only the question the flag-testing callers ask. */
     MosRegs r = kbd_test_key_regs(keyCode);
-    cpu.A = r.a; cpu.X = r.x; cpu.Y = r.y;
     return r.x == 0xFFu;                             /* $0E57 CPX #$FF — Z set (key down) is the output */
 }
 

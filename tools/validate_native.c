@@ -11024,6 +11024,20 @@ static int test_driving_controls(void)
        compared, because its own tail writes the flag again; drop only what is actually leaked.
        limit_steer_demand (4) and poll_steering_assist (3) are leaves that never reach the clamp,
        so their exit C is a real result and stays compared. */
+
+    /* ⭐⭐ X AND Y ARE DROPPED for the three routines whose exit pair is the INKEY RESIDUE
+       (clamp_and_store_steer_angle 9, steer_apply_with_assist 12, steer_assist_dispatch 13).
+       kbd_test_key leaves the MOS's own answer in X and Y ($FF when the key is held, $00 when
+       it is not) and nothing on the keyboard path writes them again, so on the 6502 the pair
+       leaks out through read_pedals_and_gears as these routines' exit X/Y.  ⚠ NO CALLER READS
+       IT, by the same audit as the carry above: the cluster's one native entry is
+       read_driving_controls_frame, whose own fixture is already result-only, and no
+       transliteration runs in the shipping build (make transtrap, 9/9).  Comparing the residue
+       was the sole reason kbd_test_key_core had to publish cpu.A/X/Y at all — 17 call sites'
+       worth of register stores to satisfy three masks.  Narrowed together with that publish's
+       removal; either half alone fails (X and Y only, at 1053/981/852 cases — no mem[] byte and
+       no A or flag ever differs, which is what identifies it as ABI residue rather than a
+       result). */
     for (i = 0; i < 17; i++) {
         int subFail = 0, decimal = 0, joystick = 0, keyheld = 0, assist = 0;
         int textRow = 0, sessionOver = 0, patched = 0;
@@ -11039,6 +11053,11 @@ static int test_driving_controls(void)
             drop = LIVE_V;                  /* adc_read's recentre-add V (C is the real output) */
         else if (i == 12 || i == 13 || i == 15)
             drop = LIVE_C;                  /* the lock stop's leaked carry — see below */
+        /* ...and the INKEY residue on top, for the three whose exit X/Y is it (see below).
+           ⚠ Separate statement, not another arm: 9 and 12/13 are reached by different arms of
+           the chain above and both drops apply. */
+        if (i == 9 || i == 12 || i == 13)
+            drop |= LIVE_X | LIVE_Y;
         unsigned mask = resultOnly ? LIVE_NONE : (liveMask & ~drop);
         if (!want(list[i].name)) continue;
         /* apply_steering_assist (i == 11), steer_apply_with_assist (i == 12) and
