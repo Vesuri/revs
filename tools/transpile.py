@@ -2667,7 +2667,16 @@ def translate_insn(insn, func, all_funcs_by_start, symbols, local_targets,
         """A complete C call statement for an SMC-computed JSR target.  A target inside a
         merged region enters it by address; anything else is an ordinary named call."""
         if target in SMC_REGION_OF:
-            return f'{SMC_REGION_OF[target]}(0x{target:04X});'
+            region = SMC_REGION_OF[target]
+            # ⭐ A hook window's own intra-window JSRs re-enter the dispatcher, which now takes
+            # the register file as an argument.  ⚠ NOT `_r`: that is the file this body was
+            # ENTERED with, and the call site is many instructions later — the handover is
+            # whatever cpu holds NOW (a transliterated body only ever runs under g_hookOracle,
+            # so cpu is the live state).
+            if region.startswith('trk_'):
+                return (f'{{ HookRegs _hr; hook_cpu_to_regs(&_hr); '
+                        f'{region}(0x{target:04X}, &_hr); }}')
+            return f'{region}(0x{target:04X});'
         return f'{resolve_target_name(target)}();'
 
     # --- Self-modifying instruction? ---
@@ -3018,6 +3027,13 @@ def compute_liveness(insns, symbols, local_targets):
                 changed = True
     return live_out
 
+# ⭐⭐ Hook twins that take the seam's register file as an ARGUMENT (HookRegs *) instead of
+# reading it out of cpu.  Track 2 of the cpu campaign: a name moves in here when its entry ABI
+# has been made explicit and its exit audited against its real callers.  Everything not listed
+# still gets the struct marshalled around it in the dispatcher, which is where that shrinks to.
+HOOK_TWINS_TYPED = set()
+
+
 def compute_imm_store_folds(insns, symbols, local_targets, external_entry_labels,
                             blocked_addrs):
     """Fold a `LD{R}(value)` into the run of consecutive `ST{R}` that follows it,
@@ -3209,15 +3225,28 @@ def translate_func(func, all_funcs_by_start, symbols,
         return '' if is_oracle else f' REVS_TRANS_HIT("{label}");'
 
     if dispatch_entries:
-        lines.append(f'void {def_name}(uint16_t _entry) {{')
+        # ⭐ A HOOK window takes the seam's register file as an argument; an ordinary merged SMC
+        # region does not (its callers are transliteration and work through cpu).
+        if hook_twins is None:
+            lines.append(f'void {def_name}(uint16_t _entry) {{')
+        else:
+            lines.append(f'void {def_name}(uint16_t _entry, HookRegs *_r) {{')
+            lines.append('    /* the transliterated bodies below read the file out of cpu */')
+            lines.append('    if (g_hookOracle) hook_regs_to_cpu(_r);')
         lines.append('    switch (_entry) {')
         for e in dispatch_entries:
             twin = (hook_twins or {}).get(e)
             if twin:
                 # Production runs the twin; the harness sets g_hookOracle to reach the
                 # transliteration below, which is what it compares against.
+                if twin in HOOK_TWINS_TYPED:
+                    call = f'{twin}(_r);'
+                else:
+                    # Not yet converted: this twin still speaks the cpu ABI, so the file is
+                    # marshalled through the struct here and nowhere else.
+                    call = f'hook_regs_to_cpu(_r); {twin}(); hook_cpu_to_regs(_r);'
                 lines.append(f'    case 0x{e:04X}:'
-                             f' if (!g_hookOracle) {{ {twin}(); return; }}'
+                             f' if (!g_hookOracle) {{ {call} return; }}'
                              f'{trap(f"{name}@{e:04X}")} goto L_{e:04x};')
             else:
                 lines.append(f'    case 0x{e:04X}:{trap(f"{name}@{e:04X}")} goto L_{e:04x};')
@@ -3400,18 +3429,35 @@ def emit_track_hooks(rows, funcs_by_start, symbols, external_entries, wrapper_na
         '}',
         '#endif',
         '',
-        'void revs_track_hook(uint16_t addr)',
+        '/* ⭐ The seam proper: the register file is an ARGUMENT, and the exit is read back out',
+        '   of it.  Only the oracle path below goes near the cpu struct. */',
+        'void revs_track_hook_regs(uint16_t addr, HookRegs *r)',
         '{',
         '#ifdef REVS_HOOK_PROFILE',
         '    hook_profile_note(addr);',
         '#endif',
-        '    if (revs_track_hook_call(g_track, (unsigned short)addr)) { g_trackHookCalls++; return; }',
+        '    if (revs_track_hook_call(g_track, (unsigned short)addr, r)) {',
+        '        g_trackHookCalls++;',
+        '        /* The transliteration leaves its exit in cpu, and it returns from a dozen',
+        '           places inside the body, so the read-back is here rather than in it. */',
+        '        if (g_hookOracle) hook_cpu_to_regs(r);',
+        '        return;',
+        '    }',
         '    /* No body for this circuit at this address: record the FIRST, count them all.',
         '       ⚠ Never fall back to the unpatched engine routine — the patch replaced it',
         '       precisely because this circuit needs different behaviour there. */',
         '    if (g_trackHookMissing == 0) g_trackHookMissingAddr = addr;',
         '    g_trackHookMissing++;',
         '    platform_smc_unhandled(0x5A22, addr);',
+        '}',
+        '',
+        '/* The same dispatch with the file taken from cpu — what the transliteration calls. */',
+        'void revs_track_hook(uint16_t addr)',
+        '{',
+        '    HookRegs r;',
+        '    hook_cpu_to_regs(&r);',
+        '    revs_track_hook_regs(addr, &r);',
+        '    hook_regs_to_cpu(&r);',
         '}',
         '',
     ]
@@ -3428,8 +3474,9 @@ def emit_track_hooks(rows, funcs_by_start, symbols, external_entries, wrapper_na
             '#define REVS_HOOK_FN inline\n'
             'static REVS_HOOK_FN int revs_track_hook_has(unsigned char t, unsigned short a)\n'
             '{ (void)t; (void)a; return 0; }\n'
-            'static REVS_HOOK_FN int revs_track_hook_call(unsigned char t, unsigned short a)\n'
-            '{ (void)t; (void)a; return 0; }\n'
+            'static REVS_HOOK_FN int revs_track_hook_call(unsigned char t, unsigned short a,\n'
+            '                                            HookRegs *r)\n'
+            '{ (void)t; (void)a; (void)r; return 0; }\n'
             '#endif\n')
         OUT_HOOKS.write_text('\n'.join(
             ['/* GENERATED by tools/transpile.py — DO NOT EDIT.  No hook bodies in this build. */',
@@ -3479,7 +3526,7 @@ def emit_track_hooks(rows, funcs_by_start, symbols, external_entries, wrapper_na
         '',
     ]
     for row in rows:
-        decl.append(f'void trk_{row["dfs"].lower()}(unsigned short entry);'
+        decl.append(f'void trk_{row["dfs"].lower()}(unsigned short entry, HookRegs *r);'
                     f'   /* {row["disp"]} */')
     decl.append('')
 
@@ -3514,8 +3561,9 @@ def emit_track_hooks(rows, funcs_by_start, symbols, external_entries, wrapper_na
         # translate_func emits `void <name>(uint16_t _entry)`; the header declares it with
         # `unsigned short`, which is the same type — keep the signatures textually identical so
         # the Amiga C++ build (which has no <stdint.h>) does not see two different declarations.
-        body.extend(ln.replace(f'void {name}(uint16_t _entry)',
-                               f'void {name}(unsigned short _entry)') for ln in lines)
+        body.extend(ln.replace(f'void {name}(uint16_t _entry, HookRegs *_r)',
+                               f'void {name}(unsigned short _entry, HookRegs *_r)')
+                    for ln in lines)
 
     decl += [
         '/* Does circuit `t` have a body for hook address `a`?  ⚠ Both arguments are load-bearing:',
@@ -3534,12 +3582,13 @@ def emit_track_hooks(rows, funcs_by_start, symbols, external_entries, wrapper_na
              '',
              '/* Run it.  Returns 0 if this circuit has no body at that address — the caller',
              '   reports that; it must never be treated as "nothing to do". */',
-             'static REVS_HOOK_FN int revs_track_hook_call(unsigned char t, unsigned short a)',
+             'static REVS_HOOK_FN int revs_track_hook_call(unsigned char t, unsigned short a,',
+             '                                            HookRegs *r)',
              '{',
              '    if (!revs_track_hook_has(t, a)) return 0;',
              '    switch (t) {']
     for row in rows:
-        decl.append(f'    case {row["index"]}: trk_{row["dfs"].lower()}(a); return 1;')
+        decl.append(f'    case {row["index"]}: trk_{row["dfs"].lower()}(a, r); return 1;')
     decl += ['    default: return 0;',
              '    }',
              '}',

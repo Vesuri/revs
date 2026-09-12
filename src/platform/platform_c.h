@@ -92,6 +92,17 @@ extern uint16_t      g_badRegionEntry;
    Implemented in src/platform/track.c.  docs/phases.md §5, src/platform/track.h. */
 void    revs_track_hook(uint16_t addr);
 
+/* ⭐⭐ THE HOOK SEAM'S REGISTER FILE, PASSED BY VALUE.  A circuit's hook is real 6502 code and
+   inherits the whole file, so the seam has to hand over A/X/Y and the flags — derived from the
+   instructions AROUND the patched site, never from the store it replaced (handing over a stale
+   Y once cost one wrong horizon scan line on Oulton Park and Snetterton; docs/faithfulness-seam.md).
+   That is an ENTRY ABI, so it belongs in an argument: `revs_track_hook_regs` is what the engine's
+   native code calls, and the caller reads back whatever the hook's exit leaves live.
+   `revs_track_hook()` is the same dispatch with the file taken from `cpu` — the transliteration's
+   form, and the only one that should ever touch the struct. */
+struct HookRegs;   /* src/cpu/cpu.h — the 6502 register file as a value */
+void    revs_track_hook_regs(uint16_t addr, struct HookRegs *r);
+
 /* Hook calls that had no body for the selected circuit — see revs_track_hook().  ⚠ A missing
    body must be a NUMBER, not a shrug: running on past it would be the engine executing
    Silverstone's control flow over another circuit's geometry. */

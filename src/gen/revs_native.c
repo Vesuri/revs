@@ -2924,20 +2924,25 @@ WidthExit emit_edge_width_offset_core(uint8_t sectionByte, uint8_t firstScoringP
            with A = line and the CMP horizon_extent flags live (C=1 here), so re-establish that
            entry ABI before dispatching.  The hook runs to its own RTS and owns the EXIT state —
            hand cpu back verbatim (documented cpu exception, like cluster 5's per-circuit hooks). */
-        cpu.Y = edge_cursor;                          /* $2603 LDY $12, live into the JMP */
-        cpu.A = (uint8_t)line;
-        cpu.N = (uint8_t)((d >> 7) & 1u);
-        cpu.Z = (uint8_t)(d == 0u);
-        cpu.C = 1u;
-        cpu.V = vOut;
+        HookRegs hr;
+        hook_cpu_to_regs(&hr);   /* ⚠ THE RESIDUE: X is not established by this routine, so it
+                                    is whatever the chain left — the same value the seam handed
+                                    over before the file became explicit.  Threading it from the
+                                    caller is the remaining work here. */
+        hr.y = edge_cursor;                           /* $2603 LDY $12, live into the JMP */
+        hr.a = (uint8_t)line;
+        hr.n = (uint8_t)((d >> 7) & 1u);
+        hr.z = (uint8_t)(d == 0u);
+        hr.c = 1u;
+        hr.v = vOut;
         if (mem[MEM_smc_edge_width_hook] == 0x4C) {                              /* a circuit's own JMP */
             uint16_t target = (uint16_t)(mem[MEM_smc_edge_width_hook + 1] | (mem[MEM_smc_edge_width_hook + 2] << 8));
-            if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
+            if (target >= 0x5300 && target <= 0x5A25) revs_track_hook_regs(target, &hr);
             else                                      platform_smc_unhandled(MEM_smc_edge_width_hook, target);
         } else {
             platform_smc_unhandled(MEM_smc_edge_width_hook, mem[MEM_smc_edge_width_hook]);
         }
-        { WidthExit e = { cpu.A, cpu.Y, cpu.N, cpu.Z, cpu.V, cpu.C }; return e; }
+        { WidthExit e = { hr.a, hr.y, hr.n, hr.z, hr.v, hr.c }; return e; }
     }
 }
 
@@ -3347,18 +3352,20 @@ static uint8_t road_edge_walk_run(unsigned section, uint8_t midSlot, uint8_t poi
                             return road_edge_walk_subdivide(section, midSlot);
                         return (uint8_t)section;                         /* $248B BCS $24B8, X=section */
                     }
-                    cpu.A = prev.magnitude;
-                    cpu.N = prev.neg;  cpu.Z = prev.zero;  cpu.C = prev.carry;
-                    cpu.Y = (uint8_t)here;
-                    cpu.X = (uint8_t)section;
+                    HookRegs hr;
+                    hook_cpu_to_regs(&hr);      /* V alone is residue here — see below */
+                    hr.a = prev.magnitude;
+                    hr.n = prev.neg;  hr.z = prev.zero;  hr.c = prev.carry;
+                    hr.y = (uint8_t)here;
+                    hr.x = (uint8_t)section;
                     if (mem[MEM_smc_edge_walk_hook] == 0x4C) {                           /* a circuit's own JMP */
                         uint16_t target = (uint16_t)(mem[MEM_smc_edge_walk_hook + 1] | (mem[MEM_smc_edge_walk_hook + 2] << 8));
-                        if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
+                        if (target >= 0x5300 && target <= 0x5A25) revs_track_hook_regs(target, &hr);
                         else                                      platform_smc_unhandled(MEM_smc_edge_walk_hook, target);
-                        return cpu.X;                                    /* the hook owns the exit X */
+                        return hr.x;                                     /* the hook owns the exit X */
                     }
                     platform_smc_unhandled(MEM_smc_edge_walk_hook, mem[MEM_smc_edge_walk_hook]);
-                    return cpu.X;
+                    return hr.x;
                 }
             }
 
@@ -3466,10 +3473,13 @@ uint8_t horizon_half_width_at_core(unsigned horizonPoint)
         if (target >= 0x5300 && target <= 0x5A25) {
             /* Circuit-hook seam: the hook READS A and its sign N, so re-establish the 6502
                entry ABI before dispatching, then hand its own exit A back verbatim. */
-            cpu.A = diff;
-            cpu.N = (diff >> 7) & 1u;
-            revs_track_hook(target);
-            horizon_half_width = cpu.A;
+            HookRegs hr;
+            hook_cpu_to_regs(&hr);          /* X/Y and Z/C/V are residue: this routine
+                                               establishes only the value and its sign */
+            hr.a = diff;
+            hr.n = (diff >> 7) & 1u;
+            revs_track_hook_regs(target, &hr);
+            horizon_half_width = hr.a;
             return horizon_half_width;
         }
         platform_smc_unhandled(MEM_smc_half_width_call, target);
@@ -3582,15 +3592,17 @@ GeoExit build_track_geometry_core(uint8_t firstPointSide0, uint8_t firstPointSid
            $5F48+Y from $5F20+Y at the same Y), X is never read, and the entry flags die on the
            hook's opening `LDA / SEC / SBC`.  All four sabotage to no change for those reasons,
            and Y sabotages to exactly the 16 bytes this fix removed. */
-        cpu.A = (uint8_t)horizonLine;    /* $2531/$252B — the clamped horizon line */
-        cpu.X = ex.x;                    /* road_edge_walk's exit section byte */
-        cpu.Y = (uint8_t)horizonPoint;   /* $2528 TAY — the folded horizon point */
+        HookRegs hr;
+        hook_cpu_to_regs(&hr);           /* V alone is residue — no op here writes it */
+        hr.a = (uint8_t)horizonLine;     /* $2531/$252B — the clamped horizon line */
+        hr.x = ex.x;                     /* road_edge_walk's exit section byte */
+        hr.y = (uint8_t)horizonPoint;    /* $2528 TAY — the folded horizon point */
         /* The flags are the $252D `CMP #$4F`, except on the clamped path where the $2531
            `LDA #$4E` is the last op to touch N/Z and the compare's C=1 stands. */
-        cpu.Z = 0u;
-        cpu.N = (uint8_t)(horizonClamped ? 0u : 1u);
-        cpu.C = (uint8_t)(horizonClamped ? 1u : 0u);
-        if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
+        hr.z = 0u;
+        hr.n = (uint8_t)(horizonClamped ? 0u : 1u);
+        hr.c = (uint8_t)(horizonClamped ? 1u : 0u);
+        if (target >= 0x5300 && target <= 0x5A25) revs_track_hook_regs(target, &hr);
         else { platform_smc_unhandled(MEM_smc_geometry_store, target); ex.a = (uint8_t)horizonLine; return ex; }
     } else {
         platform_smc_unhandled(MEM_smc_geometry_store, mem[MEM_smc_geometry_store]);
@@ -4761,10 +4773,12 @@ static int span_cap_line_slot_z(uint8_t y)
             /* Reproduce the 6502 register context $2F19-$2F22 hands the hook: A = span_swapped
                (from the LDA the BMI branched on), Y = this scan line (after the DEY), N/Z from
                that DEY.  The hook is circuit code that reads them and answers through Z. */
-            cpu.A = span_swapped; cpu.Y = y;
-            cpu.N = (y >> 7) & 1; cpu.Z = (y == 0);
-            revs_track_hook(hook);
-            return cpu.Z ? 1 : 0;
+            HookRegs hr;
+            hook_cpu_to_regs(&hr);        /* X and C/V are residue at $2F23 */
+            hr.a = span_swapped; hr.y = y;
+            hr.n = (y >> 7) & 1; hr.z = (y == 0);
+            revs_track_hook_regs(hook, &hr);
+            return hr.z ? 1 : 0;
         }
         platform_smc_unhandled(MEM_smc_span_cap_load, hook); return -1;
     }
@@ -5570,24 +5584,32 @@ SlotExit fill_line_attr_core(uint8_t bufferLow, uint8_t endCursor, uint8_t first
        three surrounding instructions confirm ($1941 STY span_end_index, $1943 DEY, $1944 STY
        math_hi); $1949 `LDY horizon_extent` then discards whatever the hook left, which is why
        the walk below re-seeds y from horizon_extent rather than from cpu.Y. */
-    cpu.X = firstPoint;
-    cpu.Y = onePastLast;
+    HookRegs hr;
+    hook_cpu_to_regs(&hr);                   /* A and the entry flags are the caller's own, which
+                                                is what the 6502 has at $1946 too */
+    hr.x = firstPoint;
+    hr.y = onePastLast;
     if (mem[MEM_smc_fill_attr_hook] == 0x20) {
         uint16_t target = (uint16_t)(mem[MEM_smc_fill_attr_hook + 1] | (mem[MEM_smc_fill_attr_hook + 2] << 8));
-        if (target == 0x1933) edge_x_offscreen();
-        else if (target >= 0x5300 && target <= 0x5A25) revs_track_hook(target);
+        if (target == 0x1933) {
+            /* Silverstone's own callee, called by value — the four flags it produces are its
+               whole output and they stand as the seam's exit state. */
+            EdgeOffFlags e = edge_x_offscreen_core(firstPoint);
+            hr.a = e.a; hr.v = e.v; hr.c = e.c; hr.n = e.n; hr.z = e.z;
+        }
+        else if (target >= 0x5300 && target <= 0x5A25) revs_track_hook_regs(target, &hr);
         else { platform_smc_unhandled(MEM_smc_fill_attr_hook, target); return trapExit; }
     } else {
         platform_smc_unhandled(MEM_smc_fill_attr_hook, mem[MEM_smc_fill_attr_hook]);
         return trapExit;
     }
 
-    uint8_t x = cpu.X;                        /* a circuit hook may have moved the start index */
+    uint8_t x = hr.x;                        /* a circuit hook may have moved the start index */
     uint8_t y = horizon_extent;              /* $1949/$1977 — the first scan line to fill from */
     span_line_cursor = y;
 
-    int vFlag = cpu.V;                        /* last V produced by the SMC helper (edge_x_offscreen) */
-    int smcCarry = cpu.C;                     /* ...and its carry, the walk's exit carry if nothing runs */
+    int vFlag = hr.v;                        /* last V produced by the SMC helper (edge_x_offscreen) */
+    int smcCarry = hr.c;                     /* ...and its carry, the walk's exit carry if nothing runs */
     int completedAny = 0;
 
     for (;;) {
@@ -8479,9 +8501,13 @@ CameraExit update_camera_and_drive_state_core(void)
         } else if (mem[MEM_smc_camera_scale] == 0x20) {
             uint16_t target = (uint16_t)(mem[MEM_smc_camera_scale + 1] | (mem[MEM_smc_camera_scale + 2] << 8));
             if (target >= 0x5300 && target <= 0x5A25) {
-                cpu.A = camA;                            /* SMC/hook boundary — the circuit code runs on cpu.A */
-                revs_track_hook(target);
-                camA = cpu.A;
+                /* SMC/hook boundary: the ASL it replaces reads only A, which is what this
+                   establishes; X/Y and the flags are residue. */
+                HookRegs hr;
+                hook_cpu_to_regs(&hr);
+                hr.a = camA;
+                revs_track_hook_regs(target, &hr);
+                camA = hr.a;
             } else { platform_smc_unhandled(MEM_smc_camera_scale, target); return preSmc; }
         } else {
             platform_smc_unhandled(MEM_smc_camera_scale, mem[MEM_smc_camera_scale]); return preSmc;
@@ -10759,9 +10785,11 @@ static void read_driving_controls_core(void)
             else if (target >= 0x5300u && target <= 0x5A25u) {
                 /* the circuit's own hook squares the reading; it works through the 6502 ABI, so
                    hand it A and take the result back — a documented track-hook cpu boundary. */
-                cpu.A = demandHi;
-                revs_track_hook(target);
-                demandHi = cpu.A;
+                HookRegs hr;
+                hook_cpu_to_regs(&hr);       /* the squaring reads A; the rest is residue */
+                hr.a = demandHi;
+                revs_track_hook_regs(target, &hr);
+                demandHi = hr.a;
             }
             else { platform_smc_unhandled(MEM_smc_controls_hook, target); return; }
         }
@@ -11053,9 +11081,11 @@ void place_player_in_section_native(void)
         uint16_t hook = (uint16_t)(mem[MEM_smc_place_player_hook + 1] | (mem[MEM_smc_place_player_hook + 2] << 8));
         if (hook == 0x3450)                          mag = abs8_value(rel);
         else if (hook >= 0x5300 && hook <= 0x5A25) {
-            cpu.A = rel; cpu.N = (rel >> 7) & 1u;    /* the circuit hook reads A and its sign */
-            revs_track_hook(hook);
-            mag = cpu.A;
+            HookRegs hr;
+            hook_cpu_to_regs(&hr);
+            hr.a = rel; hr.n = (rel >> 7) & 1u;      /* the circuit hook reads A and its sign */
+            revs_track_hook_regs(hook, &hr);
+            mag = hr.a;
         }
         else { platform_smc_unhandled(MEM_smc_place_player_hook, hook); return; }
     }
@@ -11543,9 +11573,11 @@ void build_road_section(void)
                accumulator the ADC would have advanced — A = the old cursor in, A = the new one
                back.  Derived from the surrounding instructions, not from the unpatched arm
                (which has no register to hand over at all). */
-            cpu.A = section_cursor;
-            revs_track_hook(t);
-            nextCursor = cpu.A;
+            HookRegs hr;
+            hook_cpu_to_regs(&hr);
+            hr.a = section_cursor;
+            revs_track_hook_regs(t, &hr);
+            nextCursor = hr.a;
         }
         else { platform_smc_unhandled(MEM_smc_section_advance, t); return; }
     } else { platform_smc_unhandled(MEM_smc_section_advance, mem[MEM_smc_section_advance]); return; }
@@ -11636,10 +11668,12 @@ void build_road_section(void)
                    the two coordinate rows with it), Y the direction index ($1389 LDY $0002), A
                    the high byte of the side-1 component-2 add just stored at $13C6.  Inputs
                    only — $13CC reloads X from section_cursor, so nothing is read back. */
-                cpu.X = x;
-                cpu.Y = dir;
-                cpu.A = (uint8_t)(section_word(SECTION_SIDE1 + 2 + x) >> 8);
-                revs_track_hook(t);
+                HookRegs hr;
+                hook_cpu_to_regs(&hr);   /* the flags are residue: $13C6's store set none */
+                hr.x = x;
+                hr.y = dir;
+                hr.a = (uint8_t)(section_word(SECTION_SIDE1 + 2 + x) >> 8);
+                revs_track_hook_regs(t, &hr);
             }
             else { platform_smc_unhandled(MEM_smc_section_tail_hook, t); return; }
         } else { platform_smc_unhandled(MEM_smc_section_tail_hook, mem[MEM_smc_section_tail_hook]); return; }
@@ -11691,10 +11725,12 @@ void cross_section_boundary(void)
                    on using WHATEVER X THE HOOK LEFT — the same shape as $1248, where a stale
                    index put Brands Hatch's whole section_dir_index column out.  So hand both
                    over and read X back. */
-                cpu.X = x;
-                cpu.Y = retreat_segment;
-                revs_track_hook(t);
-                x = cpu.X;
+                HookRegs hr;
+                hook_cpu_to_regs(&hr);
+                hr.x = x;
+                hr.y = retreat_segment;
+                revs_track_hook_regs(t, &hr);
+                x = hr.x;
             }
             else { platform_smc_unhandled(MEM_smc_boundary_hook, t); return; }
         } else {
@@ -11745,11 +11781,13 @@ void load_section_from_segment_core(uint8_t x, uint8_t y)
     } else if (mem[MEM_smc_segment_load] == 0x20) {                       /* per-circuit hook JSR */
         uint16_t t = (uint16_t)(mem[MEM_smc_segment_load + 1] | (mem[MEM_smc_segment_load + 2] << 8));
         if (t >= 0x5300 && t <= 0x5A25) {
-            cpu.X = x;                       /* the destination cursor $124D still wants */
-            cpu.Y = y;                       /* ...and the segment index the hook indexes with */
-            revs_track_hook(t);
-            segment_dir_index = cpu.A;
-            x = cpu.X;                       /* $124D reads whatever X the hook left behind */
+            HookRegs hr;
+            hook_cpu_to_regs(&hr);
+            hr.x = x;                        /* the destination cursor $124D still wants */
+            hr.y = y;                        /* ...and the segment index the hook indexes with */
+            revs_track_hook_regs(t, &hr);
+            segment_dir_index = hr.a;
+            x = hr.x;                        /* $124D reads whatever X the hook left behind */
         }
         else { platform_smc_unhandled(MEM_smc_segment_load, t); return; }
     } else {
@@ -15259,10 +15297,12 @@ void rebuild_walk_reversed_core(uint8_t count)
         if (hook == 0x13DA) {
             advance_dir_on_segment_flag();           /* Silverstone; preserves X */
         } else if (hook >= 0x5300 && hook <= 0x5A25) {
-            cpu.A = dir; cpu.N = (dir >> 7) & 1u; cpu.Z = (dir == 0);
-            cpu.X = count;
-            revs_track_hook(hook);
-            count = cpu.X;
+            HookRegs hr;
+            hook_cpu_to_regs(&hr);
+            hr.a = dir; hr.n = (dir >> 7) & 1u; hr.z = (dir == 0);
+            hr.x = count;
+            revs_track_hook_regs(hook, &hr);
+            count = hr.x;
         } else { platform_smc_unhandled(MEM_smc_walk_dir_hook, hook); return; }
     }
 
@@ -15406,11 +15446,14 @@ static int section_hook_call(uint16_t site, uint16_t silverstone,
     target = (uint16_t)(mem[site + 1] | (mem[site + 2] << 8));
     if (target == silverstone) { silverstoneFn(); return 1; }
     if (target >= 0x5300u && target <= 0x5A25u) {
-        cpu.A = a;                                   /* edge_nearest_section, as the CMP left it */
-        cpu.C = (uint8_t)carry;
-        cpu.Z = (uint8_t)zero;
-        cpu.N = (uint8_t)((a >> 7) & 1u);
-        revs_track_hook(target);
+        HookRegs hr;
+        hook_cpu_to_regs(&hr);                       /* X and Y arrive from the body untouched
+                                                        by this routine — residue by design */
+        hr.a = a;                                    /* edge_nearest_section, as the CMP left it */
+        hr.c = (uint8_t)carry;
+        hr.z = (uint8_t)zero;
+        hr.n = (uint8_t)((a >> 7) & 1u);
+        revs_track_hook_regs(target, &hr);
         return 1;
     }
     platform_smc_unhandled(site, target);

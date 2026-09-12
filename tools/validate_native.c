@@ -11215,200 +11215,219 @@ static int test_driving_controls(void)
    suppressed arm (entry Y with bit 5 set) is exactly the kind of thing it would miss. */
 #define EDGE_HALF_T 0x28                       /* the stride between the two road sides */
 extern int g_hookOracle;                       /* src/gen/revs_track_hooks.c */
-void trk_brands(unsigned short entry);         /* src/gen/revs_track_hooks.h */
 extern unsigned char g_track;                  /* src/platform/track.h */
+
+/* ⭐ THE SEAM'S REGISTER FILE IS AN ARGUMENT NOW (HookRegs, src/cpu/cpu.h), so a fixture has to
+   hand the pre-state's registers in and read the exit back out — the harness sets up `cpu` and
+   compares `cpu`, and this is the one place that translates between the two.
+   ⚠⚠ This file used to carry its OWN `void trk_brands(unsigned short)` prototypes instead of
+   including the generated header, so when the seam grew the argument every call compiled clean
+   and passed GARBAGE as the register file: 1000/1000 mismatch with no compiler diagnostic.
+   Declare a generated function by including its header, never by retyping it. */
+void trk_brands (unsigned short entry, HookRegs *r);   /* src/gen/revs_track_hooks.h */
+void trk_oulton (unsigned short entry, HookRegs *r);
+void trk_snetter(unsigned short entry, HookRegs *r);
+void trk_nurburg(unsigned short entry, HookRegs *r);
+void trk_doning (unsigned short entry, HookRegs *r);
+
+static void hook_run(void (*fn)(unsigned short, HookRegs *), unsigned short entry)
+{
+    HookRegs r;
+    hook_cpu_to_regs(&r);
+    fn(entry, &r);
+    /* ⚠ ONLY the twin path answers through the file.  The ORACLE is transliteration: it works
+       in cpu and leaves its exit there, and the dispatcher cannot read it back (the body
+       returns from a dozen places), so writing the stale file over cpu here would erase
+       exactly the registers the differential is comparing. */
+    if (!g_hookOracle) hook_regs_to_cpu(&r);
+}
 
 /* $56AF — the horizon recorder.  Its whole observable is two zero-page stores and its exit
    flags, so the fixture's job is to straddle the section-count threshold and to check that A
    comes back untouched (the 6502 saves it across the compare). */
-static void hook_rec_twin(void)     { g_hookOracle = 0; trk_brands(0x56AF); }
-static void hook_rec_oracle(void)   { g_hookOracle = 1; trk_brands(0x56AF); g_hookOracle = 0; }
+static void hook_rec_twin(void)     { g_hookOracle = 0; hook_run(trk_brands, 0x56AF); }
+static void hook_rec_oracle(void)   { g_hookOracle = 1; hook_run(trk_brands, 0x56AF); g_hookOracle = 0; }
 
-static void hook_clamp_twin(void)   { g_hookOracle = 0; trk_brands(0x56C8); }
-static void hook_clamp_oracle(void) { g_hookOracle = 1; trk_brands(0x56C8); g_hookOracle = 0; }
+static void hook_clamp_twin(void)   { g_hookOracle = 0; hook_run(trk_brands, 0x56C8); }
+static void hook_clamp_oracle(void) { g_hookOracle = 1; hook_run(trk_brands, 0x56C8); g_hookOracle = 0; }
 
-void trk_oulton(unsigned short entry);         /* src/gen/revs_track_hooks.h */
-void trk_snetter(unsigned short entry);
-void trk_nurburg(unsigned short entry);
-void trk_doning(unsigned short entry);
-
-static void hook_steer_twin(void)   { g_hookOracle = 0; trk_brands(0x57A1); }
-static void hook_steer_oracle(void) { g_hookOracle = 1; trk_brands(0x57A1); g_hookOracle = 0; }
-static void hook_steero_twin(void)   { g_hookOracle = 0; trk_oulton(0x57A1); }
-static void hook_steero_oracle(void) { g_hookOracle = 1; trk_oulton(0x57A1); g_hookOracle = 0; }
-static void hook_steers_twin(void)   { g_hookOracle = 0; trk_snetter(0x57A1); }
-static void hook_steers_oracle(void) { g_hookOracle = 1; trk_snetter(0x57A1); g_hookOracle = 0; }
-static void hook_steerd_twin(void)   { g_hookOracle = 0; trk_doning(0x5779); }
-static void hook_steerd_oracle(void) { g_hookOracle = 1; trk_doning(0x5779); g_hookOracle = 0; }
+static void hook_steer_twin(void)   { g_hookOracle = 0; hook_run(trk_brands, 0x57A1); }
+static void hook_steer_oracle(void) { g_hookOracle = 1; hook_run(trk_brands, 0x57A1); g_hookOracle = 0; }
+static void hook_steero_twin(void)   { g_hookOracle = 0; hook_run(trk_oulton, 0x57A1); }
+static void hook_steero_oracle(void) { g_hookOracle = 1; hook_run(trk_oulton, 0x57A1); g_hookOracle = 0; }
+static void hook_steers_twin(void)   { g_hookOracle = 0; hook_run(trk_snetter, 0x57A1); }
+static void hook_steers_oracle(void) { g_hookOracle = 1; hook_run(trk_snetter, 0x57A1); g_hookOracle = 0; }
+static void hook_steerd_twin(void)   { g_hookOracle = 0; hook_run(trk_doning, 0x5779); }
+static void hook_steerd_oracle(void) { g_hookOracle = 1; hook_run(trk_doning, 0x5779); g_hookOracle = 0; }
 
 /* $45CB's camera scale — one body, and the four circuits that install it. */
-static void hook_cam_b_twin(void)   { g_hookOracle = 0; trk_brands(0x59E9); }
-static void hook_cam_b_oracle(void) { g_hookOracle = 1; trk_brands(0x59E9); g_hookOracle = 0; }
-static void hook_cam_d_twin(void)   { g_hookOracle = 0; trk_doning(0x59C9); }
-static void hook_cam_d_oracle(void) { g_hookOracle = 1; trk_doning(0x59C9); g_hookOracle = 0; }
-static void hook_cam_o_twin(void)   { g_hookOracle = 0; trk_oulton(0x59E7); }
-static void hook_cam_o_oracle(void) { g_hookOracle = 1; trk_oulton(0x59E7); g_hookOracle = 0; }
-static void hook_cam_s_twin(void)   { g_hookOracle = 0; trk_snetter(0x59C7); }
-static void hook_cam_s_oracle(void) { g_hookOracle = 1; trk_snetter(0x59C7); g_hookOracle = 0; }
+static void hook_cam_b_twin(void)   { g_hookOracle = 0; hook_run(trk_brands, 0x59E9); }
+static void hook_cam_b_oracle(void) { g_hookOracle = 1; hook_run(trk_brands, 0x59E9); g_hookOracle = 0; }
+static void hook_cam_d_twin(void)   { g_hookOracle = 0; hook_run(trk_doning, 0x59C9); }
+static void hook_cam_d_oracle(void) { g_hookOracle = 1; hook_run(trk_doning, 0x59C9); g_hookOracle = 0; }
+static void hook_cam_o_twin(void)   { g_hookOracle = 0; hook_run(trk_oulton, 0x59E7); }
+static void hook_cam_o_oracle(void) { g_hookOracle = 1; hook_run(trk_oulton, 0x59E7); g_hookOracle = 0; }
+static void hook_cam_s_twin(void)   { g_hookOracle = 0; hook_run(trk_snetter, 0x59C7); }
+static void hook_cam_s_oracle(void) { g_hookOracle = 1; hook_run(trk_snetter, 0x59C7); g_hookOracle = 0; }
 
 /* $2F23's slot test — Donington's and Snetterton's copies of the one body. */
-static void hook_slot_d_twin(void)   { g_hookOracle = 0; trk_doning(0x59ED); }
-static void hook_slot_d_oracle(void) { g_hookOracle = 1; trk_doning(0x59ED); g_hookOracle = 0; }
-static void hook_slot_s_twin(void)   { g_hookOracle = 0; trk_snetter(0x59E8); }
-static void hook_slot_s_oracle(void) { g_hookOracle = 1; trk_snetter(0x59E8); g_hookOracle = 0; }
+static void hook_slot_d_twin(void)   { g_hookOracle = 0; hook_run(trk_doning, 0x59ED); }
+static void hook_slot_d_oracle(void) { g_hookOracle = 1; hook_run(trk_doning, 0x59ED); g_hookOracle = 0; }
+static void hook_slot_s_twin(void)   { g_hookOracle = 0; hook_run(trk_snetter, 0x59E8); }
+static void hook_slot_s_oracle(void) { g_hookOracle = 1; hook_run(trk_snetter, 0x59E8); g_hookOracle = 0; }
 
 /* Snetterton's $56C8 and the Nurburgring's $56C4 run that same clamp loop and then release
    through a yaw guard of their own ($53DC / $53E0), so they get their own pair. */
-static void hook_clampg_s_twin(void)   { g_hookOracle = 0; trk_snetter(0x56C8); }
-static void hook_clampg_s_oracle(void) { g_hookOracle = 1; trk_snetter(0x56C8); g_hookOracle = 0; }
-static void hook_clampg_n_twin(void)   { g_hookOracle = 0; trk_nurburg(0x56C4); }
-static void hook_clampg_n_oracle(void) { g_hookOracle = 1; trk_nurburg(0x56C4); g_hookOracle = 0; }
+static void hook_clampg_s_twin(void)   { g_hookOracle = 0; hook_run(trk_snetter, 0x56C8); }
+static void hook_clampg_s_oracle(void) { g_hookOracle = 1; hook_run(trk_snetter, 0x56C8); g_hookOracle = 0; }
+static void hook_clampg_n_twin(void)   { g_hookOracle = 0; hook_run(trk_nurburg, 0x56C4); }
+static void hook_clampg_n_oracle(void) { g_hookOracle = 1; hook_run(trk_nurburg, 0x56C4); g_hookOracle = 0; }
 
 /* $56BC — the walk's point-count limit, installed over road_edge_walk's `BCS $24B8` at $248B.
    Two arms: stop (the off-axis carry set AND the count already at $0A), or straight back into
    the walk at $2490.  The second arm runs a whole road walk, so its result is mem[] only. */
-static void hook_lim_twin(void)     { g_hookOracle = 0; trk_brands(0x56BC); }
-static void hook_lim_oracle(void)   { g_hookOracle = 1; trk_brands(0x56BC); g_hookOracle = 0; }
+static void hook_lim_twin(void)     { g_hookOracle = 0; hook_run(trk_brands, 0x56BC); }
+static void hook_lim_oracle(void)   { g_hookOracle = 1; hook_run(trk_brands, 0x56BC); g_hookOracle = 0; }
 
 /* $55BD — the walk-back gate, installed over advance_player_section's `JSR rebuild_walk_backward`
    at $24F2.  The circuits gate that call on section_quad_flags' bit 7. */
-static void hook_back_twin(void)    { g_hookOracle = 0; trk_brands(0x55BD); }
-static void hook_back_oracle(void)  { g_hookOracle = 1; trk_brands(0x55BD); g_hookOracle = 0; }
+static void hook_back_twin(void)    { g_hookOracle = 0; hook_run(trk_brands, 0x55BD); }
+static void hook_back_oracle(void)  { g_hookOracle = 1; hook_run(trk_brands, 0x55BD); g_hookOracle = 0; }
 
 /* $5772 — the horizon edge merge, installed over build_track_geometry's second horizon store. */
-static void hook_merge_twin(void)   { g_hookOracle = 0; trk_brands(0x5772); }
-static void hook_merge_oracle(void) { g_hookOracle = 1; trk_brands(0x5772); g_hookOracle = 0; }
+static void hook_merge_twin(void)   { g_hookOracle = 0; hook_run(trk_brands, 0x5772); }
+static void hook_merge_oracle(void) { g_hookOracle = 1; hook_run(trk_brands, 0x5772); g_hookOracle = 0; }
 /* $5772's two other tenants: the Nurburgring's merge-plus-style-clear, and Donington's
    store-and-return (the same opening bytes, a different routine). */
-static void hook_mergen_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5772); }
-static void hook_mergen_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5772); g_hookOracle = 0; }
-static void hook_merged_twin(void)   { g_hookOracle = 0; trk_doning(0x5772); }
-static void hook_merged_oracle(void) { g_hookOracle = 1; trk_doning(0x5772); g_hookOracle = 0; }
+static void hook_mergen_twin(void)   { g_hookOracle = 0; hook_run(trk_nurburg, 0x5772); }
+static void hook_mergen_oracle(void) { g_hookOracle = 1; hook_run(trk_nurburg, 0x5772); g_hookOracle = 0; }
+static void hook_merged_twin(void)   { g_hookOracle = 0; hook_run(trk_doning, 0x5772); }
+static void hook_merged_oracle(void) { g_hookOracle = 1; hook_run(trk_doning, 0x5772); g_hookOracle = 0; }
 /* Donington's two remaining singletons: the horizon scale with the magnitude kept, and the
    double section step. */
-static void hook_hhwd_twin(void)    { g_hookOracle = 0; trk_doning(0x57B6); }
-static void hook_hhwd_oracle(void)  { g_hookOracle = 1; trk_doning(0x57B6); g_hookOracle = 0; }
-static void hook_sahd_twin(void)    { g_hookOracle = 0; trk_doning(0x53E9); }
-static void hook_sahd_oracle(void)  { g_hookOracle = 1; trk_doning(0x53E9); g_hookOracle = 0; }
+static void hook_hhwd_twin(void)    { g_hookOracle = 0; hook_run(trk_doning, 0x57B6); }
+static void hook_hhwd_oracle(void)  { g_hookOracle = 1; hook_run(trk_doning, 0x57B6); g_hookOracle = 0; }
+static void hook_sahd_twin(void)    { g_hookOracle = 0; hook_run(trk_doning, 0x53E9); }
+static void hook_sahd_oracle(void)  { g_hookOracle = 1; hook_run(trk_doning, 0x53E9); g_hookOracle = 0; }
 /* The Nurburgring's copies of four bodies already twinned, at its own addresses, plus the
    $1593 family's fifth member. */
-static void hook_back_n_twin(void)  { g_hookOracle = 0; trk_nurburg(0x53F3); }
-static void hook_back_n_oracle(void){ g_hookOracle = 1; trk_nurburg(0x53F3); g_hookOracle = 0; }
-static void hook_lim_n_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5456); }
-static void hook_lim_n_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5456); g_hookOracle = 0; }
-static void hook_rec_n_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5755); }
-static void hook_rec_n_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5755); g_hookOracle = 0; }
-static void hook_cam_n_twin(void)   { g_hookOracle = 0; trk_nurburg(0x57AD); }
-static void hook_cam_n_oracle(void) { g_hookOracle = 1; trk_nurburg(0x57AD); g_hookOracle = 0; }
-static void hook_steern_twin(void)   { g_hookOracle = 0; trk_nurburg(0x59D9); }
-static void hook_steern_oracle(void) { g_hookOracle = 1; trk_nurburg(0x59D9); g_hookOracle = 0; }
+static void hook_back_n_twin(void)  { g_hookOracle = 0; hook_run(trk_nurburg, 0x53F3); }
+static void hook_back_n_oracle(void){ g_hookOracle = 1; hook_run(trk_nurburg, 0x53F3); g_hookOracle = 0; }
+static void hook_lim_n_twin(void)   { g_hookOracle = 0; hook_run(trk_nurburg, 0x5456); }
+static void hook_lim_n_oracle(void) { g_hookOracle = 1; hook_run(trk_nurburg, 0x5456); g_hookOracle = 0; }
+static void hook_rec_n_twin(void)   { g_hookOracle = 0; hook_run(trk_nurburg, 0x5755); }
+static void hook_rec_n_oracle(void) { g_hookOracle = 1; hook_run(trk_nurburg, 0x5755); g_hookOracle = 0; }
+static void hook_cam_n_twin(void)   { g_hookOracle = 0; hook_run(trk_nurburg, 0x57AD); }
+static void hook_cam_n_oracle(void) { g_hookOracle = 1; hook_run(trk_nurburg, 0x57AD); g_hookOracle = 0; }
+static void hook_steern_twin(void)   { g_hookOracle = 0; hook_run(trk_nurburg, 0x59D9); }
+static void hook_steern_oracle(void) { g_hookOracle = 1; hook_run(trk_nurburg, 0x59D9); g_hookOracle = 0; }
 
 /* $5582 / $557F — the track generator's cursor step, in its two state blocks.  Brands Hatch
    carries the $53F8 one and Donington the $53FA one, so the two circuits are the two arms. */
-static void hook_gca_twin(void)     { g_hookOracle = 0; trk_brands(0x5582); }
-static void hook_gca_oracle(void)   { g_hookOracle = 1; trk_brands(0x5582); g_hookOracle = 0; }
-static void hook_gcb_twin(void)     { g_hookOracle = 0; trk_doning(0x5582); }
-static void hook_gcb_oracle(void)   { g_hookOracle = 1; trk_doning(0x5582); g_hookOracle = 0; }
-static void hook_dga_twin(void)     { g_hookOracle = 0; trk_brands(0x557F); }
-static void hook_dga_oracle(void)   { g_hookOracle = 1; trk_brands(0x557F); g_hookOracle = 0; }
-static void hook_dgb_twin(void)     { g_hookOracle = 0; trk_doning(0x557F); }
-static void hook_dgb_oracle(void)   { g_hookOracle = 1; trk_doning(0x557F); g_hookOracle = 0; }
+static void hook_gca_twin(void)     { g_hookOracle = 0; hook_run(trk_brands, 0x5582); }
+static void hook_gca_oracle(void)   { g_hookOracle = 1; hook_run(trk_brands, 0x5582); g_hookOracle = 0; }
+static void hook_gcb_twin(void)     { g_hookOracle = 0; hook_run(trk_doning, 0x5582); }
+static void hook_gcb_oracle(void)   { g_hookOracle = 1; hook_run(trk_doning, 0x5582); g_hookOracle = 0; }
+static void hook_dga_twin(void)     { g_hookOracle = 0; hook_run(trk_brands, 0x557F); }
+static void hook_dga_oracle(void)   { g_hookOracle = 1; hook_run(trk_brands, 0x557F); g_hookOracle = 0; }
+static void hook_dgb_twin(void)     { g_hookOracle = 0; hook_run(trk_doning, 0x557F); }
+static void hook_dgb_oracle(void)   { g_hookOracle = 1; hook_run(trk_doning, 0x557F); g_hookOracle = 0; }
 
 /* $54F1 / $54EF / $54EB — the section-cursor advance, over build_road_section's $12FB.  Brands
    Hatch carries the $53F8 generator block and Donington the $53FA one, so those are the arms. */
-static void hook_nsc_a_twin(void)   { g_hookOracle = 0; trk_brands(0x54F1); }
-static void hook_nsc_a_oracle(void) { g_hookOracle = 1; trk_brands(0x54F1); g_hookOracle = 0; }
-static void hook_nsc_b_twin(void)   { g_hookOracle = 0; trk_doning(0x54EF); }
-static void hook_nsc_b_oracle(void) { g_hookOracle = 1; trk_doning(0x54EF); g_hookOracle = 0; }
+static void hook_nsc_a_twin(void)   { g_hookOracle = 0; hook_run(trk_brands, 0x54F1); }
+static void hook_nsc_a_oracle(void) { g_hookOracle = 1; hook_run(trk_brands, 0x54F1); g_hookOracle = 0; }
+static void hook_nsc_b_twin(void)   { g_hookOracle = 0; hook_run(trk_doning, 0x54EF); }
+static void hook_nsc_b_oracle(void) { g_hookOracle = 1; hook_run(trk_doning, 0x54EF); g_hookOracle = 0; }
 
 /* $5472 — the generator's direction-vector store.  ⚠ ALL FIVE circuits get a fixture: the state
    block AND the gradient multiplier are both per-circuit, so a two-arm fixture would have left
    three circuits' constants unchecked (and did, until the byte differential caught Donington's
    $86 against Brands Hatch's $88). */
-static void hook_gdv_1_twin(void)   { g_hookOracle = 0; trk_brands(0x5472); }
-static void hook_gdv_1_oracle(void) { g_hookOracle = 1; trk_brands(0x5472); g_hookOracle = 0; }
-static void hook_gdv_2_twin(void)   { g_hookOracle = 0; trk_doning(0x5472); }
-static void hook_gdv_2_oracle(void) { g_hookOracle = 1; trk_doning(0x5472); g_hookOracle = 0; }
-static void hook_gdv_3_twin(void)   { g_hookOracle = 0; trk_oulton(0x5472); }
-static void hook_gdv_3_oracle(void) { g_hookOracle = 1; trk_oulton(0x5472); g_hookOracle = 0; }
-static void hook_gdv_4_twin(void)   { g_hookOracle = 0; trk_snetter(0x5472); }
-static void hook_gdv_4_oracle(void) { g_hookOracle = 1; trk_snetter(0x5472); g_hookOracle = 0; }
-static void hook_gstep_1_twin(void)   { g_hookOracle = 0; trk_brands(0x55C4); }
-static void hook_gstep_1_oracle(void) { g_hookOracle = 1; trk_brands(0x55C4); g_hookOracle = 0; }
-static void hook_gstep_2_twin(void)   { g_hookOracle = 0; trk_doning(0x55C4); }
-static void hook_gstep_2_oracle(void) { g_hookOracle = 1; trk_doning(0x55C4); g_hookOracle = 0; }
-static void hook_gstep_3_twin(void)   { g_hookOracle = 0; trk_oulton(0x55C4); }
-static void hook_gstep_3_oracle(void) { g_hookOracle = 1; trk_oulton(0x55C4); g_hookOracle = 0; }
-static void hook_gstep_4_twin(void)   { g_hookOracle = 0; trk_snetter(0x55C4); }
-static void hook_gstep_4_oracle(void) { g_hookOracle = 1; trk_snetter(0x55C4); g_hookOracle = 0; }
-static void hook_sadv_1_twin(void)   { g_hookOracle = 0; trk_brands(0x5572); }
-static void hook_sadv_1_oracle(void) { g_hookOracle = 1; trk_brands(0x5572); g_hookOracle = 0; }
-static void hook_sadv_2_twin(void)   { g_hookOracle = 0; trk_doning(0x5572); }
-static void hook_sadv_2_oracle(void) { g_hookOracle = 1; trk_doning(0x5572); g_hookOracle = 0; }
-static void hook_sadv_3_twin(void)   { g_hookOracle = 0; trk_oulton(0x5572); }
-static void hook_sadv_3_oracle(void) { g_hookOracle = 1; trk_oulton(0x5572); g_hookOracle = 0; }
-static void hook_sadv_4_twin(void)   { g_hookOracle = 0; trk_snetter(0x5572); }
-static void hook_sadv_4_oracle(void) { g_hookOracle = 1; trk_snetter(0x5572); g_hookOracle = 0; }
-static void hook_sadv_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5572); }
-static void hook_sadv_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5572); g_hookOracle = 0; }
-static void hook_gseed_1_twin(void)   { g_hookOracle = 0; trk_brands(0x5672); }
-static void hook_gseed_1_oracle(void) { g_hookOracle = 1; trk_brands(0x5672); g_hookOracle = 0; }
-static void hook_gseed_2_twin(void)   { g_hookOracle = 0; trk_doning(0x5672); }
-static void hook_gseed_2_oracle(void) { g_hookOracle = 1; trk_doning(0x5672); g_hookOracle = 0; }
-static void hook_gseed_3_twin(void)   { g_hookOracle = 0; trk_oulton(0x5672); }
-static void hook_gseed_3_oracle(void) { g_hookOracle = 1; trk_oulton(0x5672); g_hookOracle = 0; }
-static void hook_gseed_4_twin(void)   { g_hookOracle = 0; trk_snetter(0x5672); }
-static void hook_gseed_4_oracle(void) { g_hookOracle = 1; trk_snetter(0x5672); g_hookOracle = 0; }
-static void hook_gseed_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5672); }
-static void hook_gseed_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5672); g_hookOracle = 0; }
-static void hook_agp_1_twin(void)   { g_hookOracle = 0; trk_brands(0x5A1B); }
-static void hook_agp_1_oracle(void) { g_hookOracle = 1; trk_brands(0x5A1B); g_hookOracle = 0; }
-static void hook_agp_2_twin(void)   { g_hookOracle = 0; trk_doning(0x5A1B); }
-static void hook_agp_2_oracle(void) { g_hookOracle = 1; trk_doning(0x5A1B); g_hookOracle = 0; }
-static void hook_agp_3_twin(void)   { g_hookOracle = 0; trk_oulton(0x5A1B); }
-static void hook_agp_3_oracle(void) { g_hookOracle = 1; trk_oulton(0x5A1B); g_hookOracle = 0; }
-static void hook_agp_4_twin(void)   { g_hookOracle = 0; trk_snetter(0x5A1B); }
-static void hook_agp_4_oracle(void) { g_hookOracle = 1; trk_snetter(0x5A1B); g_hookOracle = 0; }
-static void hook_agp_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5A1B); }
-static void hook_agp_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5A1B); g_hookOracle = 0; }
+static void hook_gdv_1_twin(void)   { g_hookOracle = 0; hook_run(trk_brands, 0x5472); }
+static void hook_gdv_1_oracle(void) { g_hookOracle = 1; hook_run(trk_brands, 0x5472); g_hookOracle = 0; }
+static void hook_gdv_2_twin(void)   { g_hookOracle = 0; hook_run(trk_doning, 0x5472); }
+static void hook_gdv_2_oracle(void) { g_hookOracle = 1; hook_run(trk_doning, 0x5472); g_hookOracle = 0; }
+static void hook_gdv_3_twin(void)   { g_hookOracle = 0; hook_run(trk_oulton, 0x5472); }
+static void hook_gdv_3_oracle(void) { g_hookOracle = 1; hook_run(trk_oulton, 0x5472); g_hookOracle = 0; }
+static void hook_gdv_4_twin(void)   { g_hookOracle = 0; hook_run(trk_snetter, 0x5472); }
+static void hook_gdv_4_oracle(void) { g_hookOracle = 1; hook_run(trk_snetter, 0x5472); g_hookOracle = 0; }
+static void hook_gstep_1_twin(void)   { g_hookOracle = 0; hook_run(trk_brands, 0x55C4); }
+static void hook_gstep_1_oracle(void) { g_hookOracle = 1; hook_run(trk_brands, 0x55C4); g_hookOracle = 0; }
+static void hook_gstep_2_twin(void)   { g_hookOracle = 0; hook_run(trk_doning, 0x55C4); }
+static void hook_gstep_2_oracle(void) { g_hookOracle = 1; hook_run(trk_doning, 0x55C4); g_hookOracle = 0; }
+static void hook_gstep_3_twin(void)   { g_hookOracle = 0; hook_run(trk_oulton, 0x55C4); }
+static void hook_gstep_3_oracle(void) { g_hookOracle = 1; hook_run(trk_oulton, 0x55C4); g_hookOracle = 0; }
+static void hook_gstep_4_twin(void)   { g_hookOracle = 0; hook_run(trk_snetter, 0x55C4); }
+static void hook_gstep_4_oracle(void) { g_hookOracle = 1; hook_run(trk_snetter, 0x55C4); g_hookOracle = 0; }
+static void hook_sadv_1_twin(void)   { g_hookOracle = 0; hook_run(trk_brands, 0x5572); }
+static void hook_sadv_1_oracle(void) { g_hookOracle = 1; hook_run(trk_brands, 0x5572); g_hookOracle = 0; }
+static void hook_sadv_2_twin(void)   { g_hookOracle = 0; hook_run(trk_doning, 0x5572); }
+static void hook_sadv_2_oracle(void) { g_hookOracle = 1; hook_run(trk_doning, 0x5572); g_hookOracle = 0; }
+static void hook_sadv_3_twin(void)   { g_hookOracle = 0; hook_run(trk_oulton, 0x5572); }
+static void hook_sadv_3_oracle(void) { g_hookOracle = 1; hook_run(trk_oulton, 0x5572); g_hookOracle = 0; }
+static void hook_sadv_4_twin(void)   { g_hookOracle = 0; hook_run(trk_snetter, 0x5572); }
+static void hook_sadv_4_oracle(void) { g_hookOracle = 1; hook_run(trk_snetter, 0x5572); g_hookOracle = 0; }
+static void hook_sadv_5_twin(void)   { g_hookOracle = 0; hook_run(trk_nurburg, 0x5572); }
+static void hook_sadv_5_oracle(void) { g_hookOracle = 1; hook_run(trk_nurburg, 0x5572); g_hookOracle = 0; }
+static void hook_gseed_1_twin(void)   { g_hookOracle = 0; hook_run(trk_brands, 0x5672); }
+static void hook_gseed_1_oracle(void) { g_hookOracle = 1; hook_run(trk_brands, 0x5672); g_hookOracle = 0; }
+static void hook_gseed_2_twin(void)   { g_hookOracle = 0; hook_run(trk_doning, 0x5672); }
+static void hook_gseed_2_oracle(void) { g_hookOracle = 1; hook_run(trk_doning, 0x5672); g_hookOracle = 0; }
+static void hook_gseed_3_twin(void)   { g_hookOracle = 0; hook_run(trk_oulton, 0x5672); }
+static void hook_gseed_3_oracle(void) { g_hookOracle = 1; hook_run(trk_oulton, 0x5672); g_hookOracle = 0; }
+static void hook_gseed_4_twin(void)   { g_hookOracle = 0; hook_run(trk_snetter, 0x5672); }
+static void hook_gseed_4_oracle(void) { g_hookOracle = 1; hook_run(trk_snetter, 0x5672); g_hookOracle = 0; }
+static void hook_gseed_5_twin(void)   { g_hookOracle = 0; hook_run(trk_nurburg, 0x5672); }
+static void hook_gseed_5_oracle(void) { g_hookOracle = 1; hook_run(trk_nurburg, 0x5672); g_hookOracle = 0; }
+static void hook_agp_1_twin(void)   { g_hookOracle = 0; hook_run(trk_brands, 0x5A1B); }
+static void hook_agp_1_oracle(void) { g_hookOracle = 1; hook_run(trk_brands, 0x5A1B); g_hookOracle = 0; }
+static void hook_agp_2_twin(void)   { g_hookOracle = 0; hook_run(trk_doning, 0x5A1B); }
+static void hook_agp_2_oracle(void) { g_hookOracle = 1; hook_run(trk_doning, 0x5A1B); g_hookOracle = 0; }
+static void hook_agp_3_twin(void)   { g_hookOracle = 0; hook_run(trk_oulton, 0x5A1B); }
+static void hook_agp_3_oracle(void) { g_hookOracle = 1; hook_run(trk_oulton, 0x5A1B); g_hookOracle = 0; }
+static void hook_agp_4_twin(void)   { g_hookOracle = 0; hook_run(trk_snetter, 0x5A1B); }
+static void hook_agp_4_oracle(void) { g_hookOracle = 1; hook_run(trk_snetter, 0x5A1B); g_hookOracle = 0; }
+static void hook_agp_5_twin(void)   { g_hookOracle = 0; hook_run(trk_nurburg, 0x5A1B); }
+static void hook_agp_5_oracle(void) { g_hookOracle = 1; hook_run(trk_nurburg, 0x5A1B); g_hookOracle = 0; }
 
 /* The three cross-circuit one-line bodies: one twin each, entered at a different address on
    every circuit.  Every entry is exercised — a twin that is right for one dispatch row and
    wrong for another is exactly the defect this table exists to catch. */
-static void hook_hhw_1_twin(void)   { g_hookOracle = 0; trk_brands(0x53F0); }
-static void hook_hhw_1_oracle(void) { g_hookOracle = 1; trk_brands(0x53F0); g_hookOracle = 0; }
-static void hook_hhw_2_twin(void)   { g_hookOracle = 0; trk_oulton(0x53E8); }
-static void hook_hhw_2_oracle(void) { g_hookOracle = 1; trk_oulton(0x53E8); g_hookOracle = 0; }
-static void hook_hhw_3_twin(void)   { g_hookOracle = 0; trk_snetter(0x53C8); }
-static void hook_hhw_3_oracle(void) { g_hookOracle = 1; trk_snetter(0x53C8); g_hookOracle = 0; }
-static void hook_hhw_4_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5555); }
-static void hook_hhw_4_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5555); g_hookOracle = 0; }
+static void hook_hhw_1_twin(void)   { g_hookOracle = 0; hook_run(trk_brands, 0x53F0); }
+static void hook_hhw_1_oracle(void) { g_hookOracle = 1; hook_run(trk_brands, 0x53F0); g_hookOracle = 0; }
+static void hook_hhw_2_twin(void)   { g_hookOracle = 0; hook_run(trk_oulton, 0x53E8); }
+static void hook_hhw_2_oracle(void) { g_hookOracle = 1; hook_run(trk_oulton, 0x53E8); g_hookOracle = 0; }
+static void hook_hhw_3_twin(void)   { g_hookOracle = 0; hook_run(trk_snetter, 0x53C8); }
+static void hook_hhw_3_oracle(void) { g_hookOracle = 1; hook_run(trk_snetter, 0x53C8); g_hookOracle = 0; }
+static void hook_hhw_4_twin(void)   { g_hookOracle = 0; hook_run(trk_nurburg, 0x5555); }
+static void hook_hhw_4_oracle(void) { g_hookOracle = 1; hook_run(trk_nurburg, 0x5555); g_hookOracle = 0; }
 
-static void hook_abd_1_twin(void)   { g_hookOracle = 0; trk_brands(0x54EB); }
-static void hook_abd_1_oracle(void) { g_hookOracle = 1; trk_brands(0x54EB); g_hookOracle = 0; }
-static void hook_abd_2_twin(void)   { g_hookOracle = 0; trk_doning(0x53D7); }
-static void hook_abd_2_oracle(void) { g_hookOracle = 1; trk_doning(0x53D7); g_hookOracle = 0; }
-static void hook_abd_3_twin(void)   { g_hookOracle = 0; trk_oulton(0x59E1); }
-static void hook_abd_3_oracle(void) { g_hookOracle = 1; trk_oulton(0x59E1); g_hookOracle = 0; }
-static void hook_abd_4_twin(void)   { g_hookOracle = 0; trk_snetter(0x59C1); }
-static void hook_abd_4_oracle(void) { g_hookOracle = 1; trk_snetter(0x59C1); g_hookOracle = 0; }
-static void hook_abd_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x54FA); }
-static void hook_abd_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x54FA); g_hookOracle = 0; }
+static void hook_abd_1_twin(void)   { g_hookOracle = 0; hook_run(trk_brands, 0x54EB); }
+static void hook_abd_1_oracle(void) { g_hookOracle = 1; hook_run(trk_brands, 0x54EB); g_hookOracle = 0; }
+static void hook_abd_2_twin(void)   { g_hookOracle = 0; hook_run(trk_doning, 0x53D7); }
+static void hook_abd_2_oracle(void) { g_hookOracle = 1; hook_run(trk_doning, 0x53D7); g_hookOracle = 0; }
+static void hook_abd_3_twin(void)   { g_hookOracle = 0; hook_run(trk_oulton, 0x59E1); }
+static void hook_abd_3_oracle(void) { g_hookOracle = 1; hook_run(trk_oulton, 0x59E1); g_hookOracle = 0; }
+static void hook_abd_4_twin(void)   { g_hookOracle = 0; hook_run(trk_snetter, 0x59C1); }
+static void hook_abd_4_oracle(void) { g_hookOracle = 1; hook_run(trk_snetter, 0x59C1); g_hookOracle = 0; }
+static void hook_abd_5_twin(void)   { g_hookOracle = 0; hook_run(trk_nurburg, 0x54FA); }
+static void hook_abd_5_oracle(void) { g_hookOracle = 1; hook_run(trk_nurburg, 0x54FA); g_hookOracle = 0; }
 
-static void hook_seg_1_twin(void)   { g_hookOracle = 0; trk_brands(0x57BB); }
-static void hook_seg_1_oracle(void) { g_hookOracle = 1; trk_brands(0x57BB); g_hookOracle = 0; }
-static void hook_seg_2_twin(void)   { g_hookOracle = 0; trk_doning(0x54EB); }
-static void hook_seg_2_oracle(void) { g_hookOracle = 1; trk_doning(0x54EB); g_hookOracle = 0; }
-static void hook_seg_3_twin(void)   { g_hookOracle = 0; trk_oulton(0x54EB); }
-static void hook_seg_3_oracle(void) { g_hookOracle = 1; trk_oulton(0x54EB); g_hookOracle = 0; }
-static void hook_seg_4_twin(void)   { g_hookOracle = 0; trk_snetter(0x54EB); }
-static void hook_seg_4_oracle(void) { g_hookOracle = 1; trk_snetter(0x54EB); g_hookOracle = 0; }
-static void hook_seg_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x555C); }
-static void hook_seg_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x555C); g_hookOracle = 0; }
-static void hook_gstep_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x55BD); }
-static void hook_gstep_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x55BD); g_hookOracle = 0; }
-static void hook_gdv_5_twin(void)   { g_hookOracle = 0; trk_nurburg(0x5472); }
-static void hook_gdv_5_oracle(void) { g_hookOracle = 1; trk_nurburg(0x5472); g_hookOracle = 0; }
+static void hook_seg_1_twin(void)   { g_hookOracle = 0; hook_run(trk_brands, 0x57BB); }
+static void hook_seg_1_oracle(void) { g_hookOracle = 1; hook_run(trk_brands, 0x57BB); g_hookOracle = 0; }
+static void hook_seg_2_twin(void)   { g_hookOracle = 0; hook_run(trk_doning, 0x54EB); }
+static void hook_seg_2_oracle(void) { g_hookOracle = 1; hook_run(trk_doning, 0x54EB); g_hookOracle = 0; }
+static void hook_seg_3_twin(void)   { g_hookOracle = 0; hook_run(trk_oulton, 0x54EB); }
+static void hook_seg_3_oracle(void) { g_hookOracle = 1; hook_run(trk_oulton, 0x54EB); g_hookOracle = 0; }
+static void hook_seg_4_twin(void)   { g_hookOracle = 0; hook_run(trk_snetter, 0x54EB); }
+static void hook_seg_4_oracle(void) { g_hookOracle = 1; hook_run(trk_snetter, 0x54EB); g_hookOracle = 0; }
+static void hook_seg_5_twin(void)   { g_hookOracle = 0; hook_run(trk_nurburg, 0x555C); }
+static void hook_seg_5_oracle(void) { g_hookOracle = 1; hook_run(trk_nurburg, 0x555C); g_hookOracle = 0; }
+static void hook_gstep_5_twin(void)   { g_hookOracle = 0; hook_run(trk_nurburg, 0x55BD); }
+static void hook_gstep_5_oracle(void) { g_hookOracle = 1; hook_run(trk_nurburg, 0x55BD); g_hookOracle = 0; }
+static void hook_gdv_5_twin(void)   { g_hookOracle = 0; hook_run(trk_nurburg, 0x5472); }
+static void hook_gdv_5_oracle(void) { g_hookOracle = 1; hook_run(trk_nurburg, 0x5472); g_hookOracle = 0; }
 
 static int test_hook_twins(void)
 {

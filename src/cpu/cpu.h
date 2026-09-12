@@ -22,6 +22,30 @@ typedef struct {
 } Cpu6502;
 
 extern Cpu6502 cpu;
+
+/* ⭐⭐ THE HOOK SEAM'S REGISTER FILE AS A VALUE.  An expansion circuit's hook is real 6502 code
+   entered at a patched JSR, so it inherits A/X/Y and the flags from the site around it — an
+   ENTRY ABI, and one that bites: handing over a stale Y once addressed a neighbouring table and
+   cost a wrong horizon scan line on two circuits (docs/faithfulness-seam.md).  The engine's
+   native code passes this struct to revs_track_hook_regs() and reads the exit back out of it;
+   only the transliteration works through `cpu`, and these two are the single crossing point.
+   ⚠ S and D are deliberately absent: no hook seam hands over either. */
+typedef struct HookRegs {
+    uint8_t a, x, y;
+    uint8_t n, z, c, v;
+} HookRegs;
+
+static inline void hook_regs_to_cpu(const HookRegs *r)
+{
+    cpu.A = r->a; cpu.X = r->x; cpu.Y = r->y;
+    cpu.N = r->n; cpu.Z = r->z; cpu.C = r->c; cpu.V = r->v;
+}
+
+static inline void hook_cpu_to_regs(HookRegs *r)
+{
+    r->a = cpu.A; r->x = cpu.X; r->y = cpu.Y;
+    r->n = cpu.N; r->z = cpu.Z; r->c = cpu.C; r->v = cpu.V;
+}
 /* The 6502 address space.  MEM_QUAL is `volatile` ONLY under BODY_IN_ISR — dropping it in the
    shipping model is worth 10% of the frame, and mem_decl.h carries the argument for why that
    is sound here. */
