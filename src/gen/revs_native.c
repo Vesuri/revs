@@ -399,12 +399,6 @@ static inline int page_is_ram(unsigned base)
     return base_span_is_ram(base, 0x100u);
 }
 
-/* ...and the view sweep's unit: forty cells $00..$138 above the base, hoisted out of the scan. */
-static int view_span_is_ram(unsigned base)
-{
-    return base_span_is_ram(base, 40 * 8);
-}
-
 /* The screen address a boundary store lands on: one of the two pointers, plus the cell.  `base`
    is the relocated uint16_t, so this is one word read and an add. */
 static uint16_t view_screen_addr(uint16_t base, unsigned cell)
@@ -797,6 +791,45 @@ void revs_announce_viewskip(void)
      forced         entered at unit+$05: no dirty test, v->cell is the glyph index
      advance_first  entered at view_next_scanline (the JSRs from $7BF1 and $7D37), so the
                     pointers move and the line's background byte is loaded before any unit */
+/* ⭐⭐ ONE UNIT OF THE SWEEP, AS A MACRO SO THE LOOP CAN CARRY FOUR OF THEM.  It reads the
+   loop's own locals by name — `byte`, `srcp`, `dp`, `cell`, `busSafe`, `line` — which is the
+   same bargain PLOT_DECL/PLOT_UNIT already strike below, and for the same reason: the run
+   coalescer's accumulators are locals of paint_cells and a helper function cannot see them.
+   SOFF/DOFF are the unit's byte offsets from the pair of running pointers, so an unrolled
+   copy costs a displacement rather than a pointer bump.  The instrument arms live here once
+   instead of four times; each `make NOUNITS=n` build keeps the loop's ITERATIONS and drops
+   part of its body. */
+#if defined(REVS_NO_UNIT_WORK)
+/* `make NOUNITS=1` — the unit loop keeps its ITERATIONS and loses its memory work, so
+   phase 24 = the drivers plus the bare loop.  (A bracket cannot give this: bracketing 118
+   chain runs a frame costs more than it measures.)
+   ⚠ It also stops ZEROING the sources, and the control tables overlap the source blocks
+   ($3080 is column 1's), so the drivers' workload shifts — `NOUNITS=3` is the clean one. */
+#define VIEW_UNIT(SOFF, DOFF, FORCED)   PROBE_SHAPE_DASH_UNIT(line)
+#elif defined(REVS_NO_UNIT_STORE)
+/* `make NOUNITS=3` — everything but the STORE, so the sources are still consumed and the
+   drivers see their real workload. */
+#define VIEW_UNIT(SOFF, DOFF, FORCED)   do {                                            \
+            PROBE_SHAPE_DASH_UNIT(line);                                                \
+            byte = view_consume(srcp + (SOFF), byte, (FORCED), cell);                   \
+        } while (0)
+#elif defined(REVS_PLOT_ONLY)
+#define VIEW_UNIT(SOFF, DOFF, FORCED)   do {                                            \
+            PROBE_SHAPE_DASH_UNIT(line);                                                \
+            byte = view_consume(srcp + (SOFF), byte, (FORCED), cell);                   \
+            PLOT_UNIT((unsigned)(dp + (DOFF) - mem), byte);                             \
+        } while (0)
+#else
+#define VIEW_UNIT(SOFF, DOFF, FORCED)   do {                                            \
+            PROBE_SHAPE_DASH_UNIT(line);                                                \
+            byte = view_consume(srcp + (SOFF), byte, (FORCED), cell);                   \
+            PLOT_UNIT((unsigned)(dp + (DOFF) - mem), byte);                             \
+            PROBE_SHAPE_DASH_STORE((unsigned)(dp + (DOFF) - mem), byte, line);          \
+            if (busSafe) dp[(DOFF)] = (unsigned char)byte;                              \
+            else         bus_write((uint16_t)(dp + (DOFF) - mem), (uint8_t)byte);       \
+        } while (0)
+#endif
+
 static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
 {
     /* ⚠ The three threaded values become locals for the duration: this is 30% of the frame and
@@ -900,34 +933,30 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
         if (!lineSkipped)
 #endif
         {
-            unsigned base0 = plot_ptr_v;    /* ⭐ one word read each, not two bytes + shift + or */
-            unsigned base1 = plot_ptr2_v;
+            unsigned base0 = plot_ptr_v;    /* ⭐ one word read, not two bytes + shift + or */
             MEM_QUAL unsigned char* srcp = mem + MEM_view_src_blocks
                                                + ((unsigned)unit << 7) + line;
-            MEM_QUAL unsigned char* const dp1 = mem + base1;   /* set-up only — see the crossing */
-            int lastSeg;
-            /* THE SEGMENT AS A POINTER END, not an `i == 31` test in the loop.  Cells 0-31 come
-               off plot_ptr and 32-39 off plot_ptr2 (40 x 8 = 320 does not fit a page); one
-               `dp != segEnd` replaces two compares per unit, and the planted stop is carried as
-               an address too, so the run end is a register copy (see stopAddr below).
-               ⚠ Segment 0 ends at base0 + 256, NOT at plot_ptr2: the 6502 switches on the cell
-               INDEX, so a plot_ptr2 that is not plot_ptr + 256 must still paint 0-31 off
-               plot_ptr. */
-            /* ...AND WHEN THE POINTERS ARE ONE PAGE APART, ONE SEGMENT INSTEAD OF TWO.  For
-               every line this routine steps itself plot_ptr2 == plot_ptr + 256, so cell i lands
-               on base0 + i*8 across the whole line and the crossing — a second outer trip, stop
-               lookup and run set-up — is not needed.  Worth a branch because the per-RUN cost
-               dominates: ~280 us a run against ~5.5 us a unit (docs/perf-method.md), so phase
-               1's 36 crossings cost more than all 1440 of its units.
-               ⚠ The general path stays: paint_lines_short steps the pointers itself and its odd
-               carry tail can store a low byte to plot_ptr only, so the two CAN drift. */
-            const int oneSeg = (base1 == base0 + 256u);
-            MEM_QUAL unsigned char* dp      = (unit < 32 || oneSeg)
-                                            ? mem + base0 + ((unsigned)unit << 3)
-                                            : dp1 + (((unsigned)unit & 31u) << 3);
-            MEM_QUAL unsigned char* segEnd  = oneSeg    ? mem + base0 + 320
-                                            : (unit < 32) ? mem + base0 + 256 : dp1 + 64;
-            lastSeg = (unit >= 32) || oneSeg;
+            /* ⭐⭐ THE LINE IS ONE SEGMENT, AND THAT IS A THEOREM RATHER THAN A FAST PATH.
+               The 6502 reaches cells 0-31 through plot_ptr and 32-39 through plot_ptr2, because
+               40 x 8 = 320 does not fit in a page.  But `plot_ptr2 == plot_ptr + 256` is an
+               INVARIANT of this routine, so cell i lands on base0 + i*8 across the whole line
+               and one `dp != segEnd` replaces both the page switch and two compares per unit:
+                 * view_paint_lines_core seeds BOTH pointers whole from screenBase and never
+                   reads the entry value, so no caller can present a drifted pair;
+                 * step_scanline increments both inside a character row — guarded by `next & 7`,
+                   so the low byte provably did not wrap and neither high byte moves — and
+                   REBUILDS plot_ptr2 as exactly plot_ptr + 256 across one (its `c2` is the
+                   carry off $FFFF, and the high byte lives in $67..$7A);
+                 * paint_lines_short's odd carry tail stores the SAME low byte to both;
+                 * and nothing the sweep stores can reach $70-$73, the only other way in: it
+                   writes its source blocks ($3000-$43CF) and `base + cell*8`, base in $67..$7A.
+               Measured as well as argued: a counter here read ZERO two-segment runs over 78507
+               fixture runs — whose $70-$73 are fill_random, so the fixture was trying — and
+               34928 real chain runs on all five circuits, parked and driving.
+               ⚠ What this replaces claimed the two "CAN drift" because paint_lines_short's tail
+               "can store a low byte to plot_ptr only".  That was stale: the tail writes both. */
+            MEM_QUAL unsigned char* dp = mem + base0 + ((unsigned)unit << 3);
+            MEM_QUAL unsigned char* const segEnd = mem + base0 + 320;
             /* ⭐⭐ THE PLANTED STOP, LOOKED UP ONCE — see view_stop_from.  40 means "none in
                this chain run", which is every one of phase 1's lines. */
             const int stopUnit = view_stop_from(unit);
@@ -939,31 +968,32 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                the four segment shapes).  That retires `curUnit`, `segLimit` and `segBase` from
                the live set — three values the 68000 was spilling around an eleven-register
                frame — and turns `dp + ((stopUnit - curUnit) << 3)` into a register copy.
-               ⚠ `stopUnit - 32` needs no mask on the second arm: view_stop_from never returns
-               a unit below the one it was asked about, and that arm is the `unit >= 32` entry.
-               ⭐ SABOTAGE RECORD for the three new arguments: the stop tail's cell index
-               `& 31` -> `& 15` fails 647/700; the sentinel scan's `<` -> `<=` fails 670/700
-               (two different numbers, so neither is a stale object); `stopAddr < segEnd` ->
-               `<=` does not merely mismatch, it CRASHES the harness — `stopUnit == 40` lands
-               exactly on segEnd, so the no-stop case would run the stop tail.  The fourth,
-               dropping the `- 32` re-base at the crossing, PASSES, and that is a fixture gap
-               over provably dead code — see the invariant at the crossing below. */
-            MEM_QUAL unsigned char* stopAddr = (unit < 32 || oneSeg)
-                                             ? mem + base0 + ((unsigned)stopUnit << 3)
-                                             : dp1 + ((unsigned)(stopUnit - 32) << 3);
+               ⭐ SABOTAGE RECORD: the stop tail's cell index `& 31` -> `& 15` fails 647/700;
+               the sentinel scan's `<` -> `<=` fails 670/700 (two different numbers, so neither
+               is a stale object); and `stopAddr < segEnd` -> `<=` does not merely mismatch, it
+               CRASHES the harness — `stopUnit == 40` lands exactly on segEnd, so the no-stop
+               case would run the stop tail.  `stopUnit == 40` is also why the address form
+               needs no bound of its own: 40 * 8 is 320, which IS segEnd. */
+            MEM_QUAL unsigned char* const stopAddr = mem + base0 + ((unsigned)stopUnit << 3);
             /* THE BUS'S HARDWARE-RANGE TEST, HOISTED TO ONE CHECK PER SCAN LINE.  A cell store
                is `STA ($70),Y`, so the transliteration pays the $FC00-$FEFF test 2093 times a
                frame; here the whole line's span is known, so one check licenses plain mem[]
                stores.  ⚠ NOT deleted — the else arm still routes to the platform if a base ever
                does reach the window.  Inverting the flag passes all 700 fixture cases, which is
                expected rather than a gap: with a RAM address both arms store identically. */
-            const int busSafe = view_span_is_ram(base0) && view_span_is_ram(base1);
+            /* ⭐ ONE compare, and deliberately stricter than the line's own span.  A line
+               writes the 320 bytes above base0; the test asks for 320 + 256, because it used
+               to be `span_is_ram(base0) && span_is_ram(base0 + 256)` — one test per pointer —
+               and the second was the binding one.  Keeping the stricter bound keeps the arm
+               choice byte-identical, and there is nothing to win by relaxing it: both arms
+               store the same thing for a RAM address. */
+            const int busSafe = base_span_is_ram(base0, 40 * 8 + 256);
 
             int stopped = 0;                /* a planted stop ends the whole sweep, not just the run */
 
             VIEWSPLIT_UNITS_BEGIN();
-            for (;;) {
-                /* the run ends at the segment's last cell, or on the planted stop */
+            {
+                /* the run ends at the line's last cell, or on the planted stop */
                 const int stopHere = (stopAddr >= dp && stopAddr < segEnd);
                 MEM_QUAL unsigned char* runEnd = stopHere ? stopAddr : segEnd;
                 PROBE_VIEW_RUN((unsigned)(runEnd - dp) >> 3);
@@ -978,34 +1008,44 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                     dp = runEnd;
                 }
 #endif
-                while (dp != runEnd) {
-                    PROBE_SHAPE_DASH_UNIT(line);
-#ifdef REVS_NO_UNIT_WORK
-                    /* `make NOUNITS=1` — the unit loop keeps its ITERATIONS and loses its memory
-                       work, so phase 24 = the drivers plus the bare loop.  (A bracket cannot give
-                       this: bracketing 118 chain runs a frame costs more than it measures.)
-                       ⚠ It also stops ZEROING the sources, and the control tables overlap the
-                       source blocks ($3080 is column 1's), so the drivers' workload shifts —
-                       `NOUNITS=3` is the clean one. */
-                    srcp += 0x80;
-                    dp += 8;
-                    continue;
-#endif
-                    byte = view_consume(srcp, byte, forced, cell);
+                /* ⭐ THE FORCED UNIT, PEELED.  `forced` is only ever the run's FIRST unit —
+                   the caller's forced entry — and it was costing a test and a clear inside the
+                   2093-iteration loop to say so.  An empty run leaves it set for the stop tail
+                   below, which is what the single loop did too. */
+                if (forced && dp != runEnd) {
+                    VIEW_UNIT(0, 0, 1);
                     forced = 0;
-#ifdef REVS_NO_UNIT_STORE
-                    /* `make NOUNITS=3` — everything but the STORE, so the sources are still
-                       consumed and the drivers see their real workload. */
                     srcp += 0x80;
                     dp += 8;
-                    continue;
-#endif
-                    PLOT_UNIT((unsigned)(dp - mem), byte);
-#ifndef REVS_PLOT_ONLY
-                    PROBE_SHAPE_DASH_STORE((unsigned)(dp - mem), byte, line);
-                    if (busSafe) *dp = (unsigned char)byte;
-                    else         bus_write((uint16_t)(dp - mem), (uint8_t)byte);
-#endif
+                }
+                /* ⭐⭐ FOUR UNITS A TURN — AND THIS IS WHAT THE ONE-SEGMENT COLLAPSE WAS FOR.
+                   A unit is a byte load 128 apart, a test, and a byte store 8 apart: 16 cycles
+                   of work that the one-at-a-time loop wrapped in ~28 cycles of book-keeping
+                   (`addq`+`lea` to bump the two pointers, then `cmp`+`beq`+`bra` around the
+                   back edge, because gcc rotates this loop store-first and closes it with an
+                   unconditional branch).  Unrolled, three of the four units address their
+                   memory through a DISPLACEMENT — d16(An) costs 4 cycles, not the 8 an `addq`
+                   does — and one back edge serves four units instead of one.
+                   ⚠ It reads `dp != quad`, not `dp < quad`: both pointers walk the same
+                   8-byte grid from the same base, so equality is reached exactly.
+                   ⚠ Four was chosen against the run-length distribution, not by taste: runs
+                   average ~17.7 units (2093 over 118 a frame), so a quad loop keeps four full
+                   turns and leaves a short remainder.  Eight would spend more of the run in
+                   the one-at-a-time tail than it saves in the body. */
+                {
+                    MEM_QUAL unsigned char* const quad =
+                        dp + ((unsigned)(runEnd - dp) & ~31u);
+                    while (dp != quad) {
+                        VIEW_UNIT(0x000,  0, 0);
+                        VIEW_UNIT(0x080,  8, 0);
+                        VIEW_UNIT(0x100, 16, 0);
+                        VIEW_UNIT(0x180, 24, 0);
+                        srcp += 0x200;
+                        dp += 32;
+                    }
+                }
+                while (dp != runEnd) {
+                    VIEW_UNIT(0, 0, 0);
                     srcp += 0x80;
                     dp += 8;
                 }
@@ -1021,10 +1061,10 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                     PROBE_VIEW_UNITS(1);                      /* the stop's own unit: consumed */
                     PROBE_SHAPE_VIEW_STOP();
                     byte = view_consume(srcp, byte, forced, cell);
-                    /* its `LDY #<cell*8>` ran.  ⭐ `(dp - segBase) & $FF` and `(stopUnit & 31) * 8`
-                       are the same number in all four segment shapes — segment 1 starts at
-                       offset 256 when the pointers are one page apart and at offset 0 when they
-                       are not, and 32 * 8 is 256 — so the index form needs no segment base. */
+                    /* its `LDY #<cell*8>` ran.  ⭐ The 6502's `LDY` operand is the cell's
+                       offset from ITS page base, and the chain reaches cells 32-39 through the
+                       second pointer, so the index wraps at 32 — which `& 31` is, since
+                       32 * 8 is 256.  One segment or two, the byte is the same. */
                     cell = ((unsigned)stopUnit & 31u) << 3;
                     op = *slot;
                     if (op != OP_RTS) platform_smc_unhandled((uint16_t)(slot - mem), op);
@@ -1034,40 +1074,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                     if (dstLine < 208u) g_viewDstFlat[dstLine] = 0;
 #endif
                     stopped = 1;
-                    break;
                 }
-                if (lastSeg) break;
-                /* ⚠⚠ THIS BLOCK IS PROVABLY UNREACHABLE, AND SO IS EVERY `!oneSeg` ARM ABOVE.
-                   `plot_ptr2 == plot_ptr + 256` is an INVARIANT of this routine, not a property
-                   of the caller: the core seeds BOTH pointers whole from screenBase (it never
-                   reads the entry value), step_scanline increments both inside a character row
-                   — guarded by `next & 7`, so the low byte provably did not wrap and neither
-                   high byte moves — and REBUILDS plot_ptr2 as exactly plot_ptr + 256 at a row
-                   crossing (its `c2` is the carry off $FFFF and the high byte lives in
-                   $67..$7A), and the only other writer sets the SAME low byte on both.  Nothing
-                   the chain stores can reach $70-$73 either: it writes its source blocks and
-                   `base + cell*8` with base in $67..$7A.  So oneSeg holds on entry and is
-                   preserved by every mutation, which is why a counter here read ZERO over
-                   78507 fixture runs (whose $70-$73 are fill_random!) and 34928 real chain runs
-                   on all five circuits, parked and driving.  ⚠ Kept, not deleted, only because
-                   removing it is a separate change with its own gate run — the two-segment arms
-                   cost a test in three places plus `lastSeg` and this whole outer trip, on
-                   every one of ~90 runs a frame.
-                   Reaching here would mean the stop is at unit 32 or later (an earlier one
-                   would have ended the run in segment 0), so its address re-bases onto dp1;
-                   `stopUnit == 40` lands on dp1 + 64 == segEnd and so still reads as "no stop
-                   in this segment". */
-                /* ⭐ plot_ptr2 RE-READ rather than carried: the chain writes only its source
-                   blocks and `base + cell*8`, so it provably cannot move the pointer under
-                   itself (the same construction that licenses hoisting the bases at all), and
-                   re-reading here ends `dp1`'s live range in the set-up instead of spanning the
-                   whole unit loop — one address register back out of an eleven-register frame,
-                   paid for by a word read on a crossing that phase 1's own lines never take. */
-                MEM_QUAL unsigned char* const seg1 = mem + plot_ptr2_v;
-                dp       = seg1;
-                segEnd   = seg1 + 64;
-                stopAddr = seg1 + ((unsigned)(stopUnit - 32) << 3);
-                lastSeg  = 1;
             }
             if (stopped) break;                     /* the planted RTS: leave the bracket open */
             VIEWSPLIT_UNITS_END();
@@ -1092,6 +1099,8 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
     v->line = line;
     v->cell = cell;
 }
+
+#undef VIEW_UNIT
 
 /* $7BBF — un-plant everything the sweep planted.  The three recorded low bytes are copied
    into the restoring stores' own operands first; that is why the records survive the call. */
