@@ -4907,40 +4907,54 @@ const SpanPlotter SPAN_PLOT_2 = {
    carried it in A across the JSR and parked it in bearing_lo, so the twin used to take it as a
    parameter and immediately `(void)` it; the whole chain (two shims' `cpu.A`, sw_plot's `acc`)
    existed to hand a byte to nobody.  The walk keeps `acc` in its own local instead.
-   `*y` is the scan-line counter, stepped in place; `*carry` is the DDA carry threaded
-   column-to-column (in, and out); `*abandoned` tells the caller this span hit its predecessor
-   and the chain has been unwound.
+   `y` is the scan-line counter, stepped and handed back; `carryIn` is the DDA carry threaded
+   column-to-column, and the result says whether this span hit its predecessor and unwound the
+   chain.
+
+   ⭐⭐ THREE FACTS COME BACK IN ONE `d0`, AND THAT IS THE WHOLE POINT OF THE PACKING.  Taking
+   `&y`/`&carry`/`&abandoned` forced span_walk's loop state into its STACK FRAME: the DDA read
+   and wrote the carry in memory on every step (`adda.l -8(a5),a1` … `move.l d7,-8(a5)`), every
+   plot pushed three `pea`s, and the leaf dereferenced `*y` a dozen times.  By value they stay
+   in registers on both sides of the call — the same defect, and the same fix, as the framebuffer
+   decode's loop-invariant stack slots (docs/perf-method.md).
 
    Carry out: 0 on a normal exit; on either Y-step SMC-trap the pre-step compare's carry stands
    (that is what the 6502's CPY/CMP left in C when the trapping slot never ran); unchanged on
-   the entry-step trap.  On the abandon path the carry, y and accumulator are all dead. */
+   the entry-step trap.  On the abandon path the carry, y and accumulator are all dead — the
+   pack still returns the stepped y and the carry-in, so span_plot_oracle's pointer-out ABI
+   (which the draw_span_* oracles call) is byte-identical to what this routine used to store. */
+#define SPAN_PLOT_PACK(y, c, ab) \
+    (((unsigned)(uint8_t)(y) << 8) | (((unsigned)(c) & 1u) << 1) | (unsigned)(ab))
+#define SPAN_PLOT_Y(r)          ((uint8_t)((r) >> 8))
+#define SPAN_PLOT_CARRY(r)      (((r) >> 1) & 1u)
+#define SPAN_PLOT_ABANDONED(r)  ((r) & 1u)
+
 static inline __attribute__((always_inline))
-void span_plot_core(const SpanPlotter* p, uint8_t column,
-                    uint8_t *y, unsigned *carry, int *abandoned)
+unsigned span_plot_core(const SpanPlotter* p, uint8_t column,
+                        uint8_t y, unsigned carryIn)
 {
     unsigned cellAddr, cell, a, preC;
 
     ROAD_COUNT(g_roadCols);               /* one column of one span — the view pipeline's leaf */
-    *abandoned = 0;
-    if (!span_step_y(p->stepIn, y)) return;        /* entry slot trapped: carry_in stands */
-    if (*y == mem[SPAN_LINE_END]) { span_abandon_chain(*y); *abandoned = 1; return; }
+    if (!span_step_y(p->stepIn, &y))               /* entry slot trapped: carry_in stands */
+        return SPAN_PLOT_PACK(y, carryIn, 0);
+    if (y == mem[SPAN_LINE_END]) { span_abandon_chain(y); return SPAN_PLOT_PACK(y, carryIn, 1); }
 
     /* Which source block feeds this scan line, into the pass's surface_edge buffer. */
-    { unsigned d = (unsigned)((mem[p->destLo] | (mem[p->destHi] << 8)) + *y);
+    { unsigned d = (unsigned)((mem[p->destLo] | (mem[p->destHi] << 8)) + y);
       uint8_t sb = mem[SPAN_BLOCK];
       mem[(uint16_t)d] = sb; plot_store_resync(d, sb); }
 
-    cellAddr = (unsigned)*p->cellPtr + *y;
+    cellAddr = (unsigned)*p->cellPtr + y;
     cell     = mem[(uint16_t)cellAddr];
 
     if (cell == 0) {
         a    = mem[MEM_colour_pattern_tbl + column];        /* an empty cell takes the pattern whole */
-        preC = (*y >= mem[SPAN_LINE_END]);          /* CPY(SPAN_LINE_END): y != end here, so y > end */
+        preC = (y >= mem[SPAN_LINE_END]);           /* CPY(SPAN_LINE_END): y != end here, so y > end */
     } else {
-        if (*y < 0x2Cu && !road_span_advance_core(*y)) {   /* reached the block's first line */
-            span_step_y(p->stepOut, y);      /* road_span_advance left C=0, and a trap here keeps it */
-            *carry = 0u;
-            return;
+        if (y < 0x2Cu && !road_span_advance_core(y)) {     /* reached the block's first line */
+            span_step_y(p->stepOut, &y);     /* road_span_advance left C=0, and a trap here keeps it */
+            return SPAN_PLOT_PACK(y, 0u, 0);
         }
         preC = (cell >= 0x55u);                     /* CMP(0x55): carry survives to the exit trap */
         a    = (cell == 0x55u) ? 0u : cell;         /* "all four columns" reads as empty */
@@ -4950,11 +4964,12 @@ void span_plot_core(const SpanPlotter* p, uint8_t column,
 
     mem[(uint16_t)cellAddr] = (uint8_t)a;
     plot_store_resync(cellAddr, (uint8_t)a);
-    { unsigned l = (unsigned)(*p->linePtr + *y);
+    { unsigned l = (unsigned)(*p->linePtr + y);
       uint8_t bh = bearing_hi;
       mem[(uint16_t)l] = bh; plot_store_resync(l, bh); }
 
-    *carry = span_step_y(p->stepOut, y) ? 0u : preC;
+    { unsigned c = span_step_y(p->stepOut, &y) ? 0u : preC;
+      return SPAN_PLOT_PACK(y, c, 0); }
 }
 
 /* $2FC0  span_end_marker_p1  (twin #29)  and  $2FD7  span_end_marker_p2  (twin #30)
@@ -4970,22 +4985,39 @@ void span_plot_core(const SpanPlotter* p, uint8_t column,
    ⭐ X is the "the column ran clean to its end" mark: the arms load 0..3 into it before each
    plot and only the untouched $80 gets a terminator.  A is preserved across the store by the
    TAX/TXA pair, which is also what makes X's exit value $80 rather than the pattern byte. */
-/* promoted for revs_native_abi.c */ void span_end_marker(unsigned slot, const uint16_t *ptr, uint8_t y,
-                            uint8_t *colMark, unsigned *carry)
+/* ⭐⭐ BY VALUE, for the same reason span_plot_core is: `&colMark`/`&carry` are span_walk's own
+   DDA state, and one out-of-line callee taking their addresses pins them in the stack frame for
+   the whole walk.  Returns 0 for an opcode slot the marker cannot mean — colMark and the carry
+   then stand, exactly as the 6502's RTS / unhandled arms leave them. */
+#define SPAN_MARK_PACK(m, c)  (((unsigned)(uint8_t)(m) << 8) | ((unsigned)(c) & 1u))
+#define SPAN_MARK_COLMARK(r)  ((uint8_t)((r) >> 8))
+#define SPAN_MARK_CARRY(r)    ((r) & 1u)
+
+static inline __attribute__((always_inline))
+int span_end_marker_core(unsigned slot, const uint16_t *ptr, uint8_t y, uint8_t colMark)
 {
     switch (mem[slot]) {
-    case OP_RTS:      return;                    /* switched off: colMark, A, carry untouched */
+    case OP_RTS:      return 0;                  /* switched off: colMark, A, carry untouched */
     case OP_CPX_IMM:  break;
-    default:          platform_smc_unhandled(slot, mem[slot]); return;
+    default:          platform_smc_unhandled(slot, mem[slot]); return 0;
     }
 
-    if (*colMark == 0x80u) {                     /* the column never plotted anything */
+    if (colMark == 0x80u) {                      /* the column never plotted anything */
         int atEnd = 1;
         if (y < 0x2Cu) atEnd = road_span_advance_core(y);   /* still past the first line */
         if (atEnd)
             { unsigned m = (unsigned)(*ptr + y);
               mem[(uint16_t)m] = 0xFFu; plot_store_resync(m, 0xFFu); }
     }
+    return 1;
+}
+
+/* The 6502-ABI shims in revs_native_abi.c marshal X and C through pointers, so the pointer
+   form survives as a thin wrapper — it is not on any native path. */
+/* promoted for revs_native_abi.c */ void span_end_marker(unsigned slot, const uint16_t *ptr, uint8_t y,
+                            uint8_t *colMark, unsigned *carry)
+{
+    if (!span_end_marker_core(slot, ptr, y, *colMark)) return;
     *colMark = 0x80u;
     *carry   = 0u;
 }
@@ -5031,7 +5063,10 @@ void span_plot_core(const SpanPlotter* p, uint8_t column,
 void span_plot_oracle(const SpanPlotter *p, uint8_t column,
                       uint8_t *y, unsigned *carry, int *abandoned)
 {
-    span_plot_core(p, column, y, carry, abandoned);
+    unsigned r = span_plot_core(p, column, *y, *carry);
+    *y         = SPAN_PLOT_Y(r);
+    *carry     = SPAN_PLOT_CARRY(r);
+    *abandoned = (int)SPAN_PLOT_ABANDONED(r);
 }
 /* promoted for revs_native_abi.c */ const SpanArm ARM_STEEP_FWD   = { 0x3ED0u, 0x2E2Fu, 0x2E30u, SPAN_DX, SPAN_DY, 0, 1, 0x44u };
 /* promoted for revs_native_abi.c */ const SpanArm ARM_STEEP_REV   = { 0x3ED8u, 0x2EA8u, 0x2EA9u, SPAN_DX, SPAN_DY, 1, 1, 0x2Fu };
@@ -5117,7 +5152,9 @@ static void span_walk_cap(uint8_t y)
    What span_walk needs BACK from a plot is three facts: the scan line the plotter stepped to
    (y), whether the chain abandoned, and the plotter's EXIT CARRY — which is 0 on the ordinary
    path but not on the block-first-line / trapped-step exits, and the DDA feeds it straight into
-   the next add (the 6502 did `ADC` right after the plot with the plotter's C still live). */
+   the next add (the 6502 did `ADC` right after the plot with the plotter's C still live).
+   ⭐⭐ All three ride back in ONE `d0`, packed by SPAN_PLOT_PACK — see span_plot_core's header
+   for why: taken by pointer they made span_walk's whole DDA state live in its stack frame. */
 /* ⚠⚠ TWO SPECIALISATIONS, NOT ONE FUNCTION WITH A DESCRIPTOR ARGUMENT — and this is the same
    trap the always_inline on span_plot_core was put there to avoid, one level up.  Written as a
    single `sw_plot(usePlot2, ...)` choosing `usePlot2 ? &SPAN_PLOT_2 : &SPAN_PLOT_1`, the
@@ -5131,28 +5168,30 @@ static void span_walk_cap(uint8_t y)
    and the leaf is ~370 instructions, so inlining it would be ~30 KB of instruction fetch on a
    machine whose memory contention is as much on fetch as on data. */
 static __attribute__((noinline))
-void sw_plot_1(uint8_t column, uint8_t *y, int *abandoned, unsigned *carry)
+unsigned sw_plot_1(uint8_t column, uint8_t y, unsigned carryIn)
 {
-    span_plot_core(&SPAN_PLOT_1, column, y, carry, abandoned);
+    unsigned r = span_plot_core(&SPAN_PLOT_1, column, y, carryIn);
     /* The abandon path set the two-level-return flag (so the draw_span oracle sees it too);
        clear it here, once per plot, exactly as the oracle's `if (UNWIND_TAKEN()) return` does. */
-    if (*abandoned) (void)span_chain_abandoned();
+    if (SPAN_PLOT_ABANDONED(r)) (void)span_chain_abandoned();
+    return r;
 }
 static __attribute__((noinline))
-void sw_plot_2(uint8_t column, uint8_t *y, int *abandoned, unsigned *carry)
+unsigned sw_plot_2(uint8_t column, uint8_t y, unsigned carryIn)
 {
-    span_plot_core(&SPAN_PLOT_2, column, y, carry, abandoned);
-    if (*abandoned) (void)span_chain_abandoned();
+    unsigned r = span_plot_core(&SPAN_PLOT_2, column, y, carryIn);
+    if (SPAN_PLOT_ABANDONED(r)) (void)span_chain_abandoned();
+    return r;
 }
 static inline __attribute__((always_inline))
-void sw_plot(int usePlot2, uint8_t column,
-             uint8_t *y, int *abandoned, unsigned *carry)
+unsigned sw_plot(int usePlot2, uint8_t column, uint8_t y, unsigned carryIn)
 {
+    unsigned r;
     ROAD_PHASE(ROAD_PHASE_NULL);    /* the control: an empty bracket at the plot rate */
     ROAD_PHASE(ROAD_PHASE_PLOT);
-    if (usePlot2) sw_plot_2(column, y, abandoned, carry);
-    else          sw_plot_1(column, y, abandoned, carry);
+    r = usePlot2 ? sw_plot_2(column, y, carryIn) : sw_plot_1(column, y, carryIn);
     ROAD_PHASE(ROAD_PHASE_WALK);
+    return r;
 }
 
 /* The half/end markers test colMark against $80 ("this column plotted nothing") and reset it,
@@ -5167,11 +5206,13 @@ void sw_plot(int usePlot2, uint8_t column,
    twice per scan line — where it is now one absolute read and a compare.  span_end_marker's own
    `case OP_RTS: return` still stands: the 6502-ABI shims in revs_native_abi.c call it directly. */
 static inline __attribute__((always_inline))
-void sw_marker(int p2, uint8_t *colMark, uint8_t y, unsigned *carry)
+unsigned sw_marker(int p2, uint8_t colMark, uint8_t y, unsigned carry)
 {
     const unsigned slot = p2 ? SLOT_MARKER_P2 : SLOT_MARKER_P1;
-    if (mem[slot] == OP_RTS) return;      /* switched off: colMark, A, carry all untouched */
-    span_end_marker(slot, p2 ? &plot_ptr2_v : &plot_ptr_v, y, colMark, carry);
+    if (mem[slot] == OP_RTS) return SPAN_MARK_PACK(colMark, carry);   /* switched off */
+    if (!span_end_marker_core(slot, p2 ? &plot_ptr2_v : &plot_ptr_v, y, colMark))
+        return SPAN_MARK_PACK(colMark, carry);
+    return SPAN_MARK_PACK(0x80u, 0u);
 }
 
 /* Inlined so `arm->rev` and `arm->steep` become constants and the four specialisations lose
@@ -5188,7 +5229,6 @@ void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine)
     uint8_t colMark = 0x80u;            /* "this column has plotted nothing yet" (shallow) */
     uint8_t acc;
     unsigned carry;
-    int abandoned;
 
     /* Read this sub-column phase's entry offset and write it over the chain's branch operand.
        ⚠ That store is a real mem[] write and the differential sees it, so it stays even
@@ -5243,7 +5283,8 @@ void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine)
                Skipped when the entry landed past it, which is the whole point of the
                computed entry. */
             if (i == 4 && midAllowed) {
-                if (!arm->steep) sw_marker(arm->rev ? 0 : 1, &colMark, y, &carry);
+                if (!arm->steep) { unsigned m = sw_marker(arm->rev ? 0 : 1, colMark, y, carry);
+                                   colMark = SPAN_MARK_COLMARK(m); carry = SPAN_MARK_CARRY(m); }
                 mem[SPAN_BLOCK] = (uint8_t)(mem[SPAN_BLOCK] + (arm->rev ? -1 : 1));
             }
 
@@ -5252,8 +5293,9 @@ void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine)
                    comes first, and its exit carry (normally 0) is the carry-in to the adc — so
                    the line's CPX carry-in is overwritten before it is used, as on the 6502. */
                 for (;;) {
-                    sw_plot(usePlot2, (uint8_t)column, &y, &abandoned, &carry);
-                    if (abandoned) return;
+                    unsigned r = sw_plot(usePlot2, (uint8_t)column, y, carry);
+                    if (SPAN_PLOT_ABANDONED(r)) return;
+                    y = SPAN_PLOT_Y(r); carry = SPAN_PLOT_CARRY(r);
                     { unsigned s = (unsigned)acc + mem[arm->addend] + carry;
                       acc = (uint8_t)s; carry = s >> 8; }
                     if (carry) break;
@@ -5272,13 +5314,15 @@ void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine)
                       acc = (uint8_t)d; carry = (d >= 0); }
                 }
                 colMark = (uint8_t)column;
-                sw_plot(usePlot2, (uint8_t)column, &y, &abandoned, &carry);
-                if (abandoned) return;
+                { unsigned r = sw_plot(usePlot2, (uint8_t)column, y, carry);
+                  if (SPAN_PLOT_ABANDONED(r)) return;
+                  y = SPAN_PLOT_Y(r); carry = SPAN_PLOT_CARRY(r); }
                 /* carry is now the plotter's exit carry, the carry-in to the next column's adc */
             }
         }
 
-        if (!arm->steep) sw_marker(arm->rev ? 1 : 0, &colMark, y, &carry);
+        if (!arm->steep) { unsigned m = sw_marker(arm->rev ? 1 : 0, colMark, y, carry);
+                           colMark = SPAN_MARK_COLMARK(m); carry = SPAN_MARK_CARRY(m); }
 
         /* One scan line down (or up): the three screen pointers and the source block move
            together, and plot_ptr2_hi is the one the bound is measured on. */
