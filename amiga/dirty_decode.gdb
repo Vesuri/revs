@@ -29,6 +29,8 @@ tbreak Revs::render if g_vbiCount >= 900
 continue
 
 printf "=== vbi=%u painted=%lu\n", g_vbiCount, g_fpsFrames
+printf "=== modeLines=%lu (40 cells each; a moved band boundary, not a byte change)\n", \
+  g_decodeModeLines
 printf "=== cells last=%u max=%u total=%lu of 1040/frame   fullFrames=%u modeDirtyRows=%u\n", \
   g_decodeCells, g_decodeCellsMax, g_decodeCellsTotal, g_decodeFullFrames, g_decodeModeDirty
 printf "=== oracle checks=%lu mismatch=%lu firstOff=%u\n", \

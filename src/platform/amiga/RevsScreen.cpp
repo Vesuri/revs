@@ -199,6 +199,7 @@ volatile uint16_t g_decodeCellsMax   = 0;    /* the worst frame of the run      
 volatile unsigned long g_decodeCellsTotal = 0;/* running sum, so a mean is available             */
 volatile uint16_t g_decodeFullFrames = 0;    /* decodes that had to convert everything            */
 volatile uint16_t g_decodeModeDirty  = 0;    /* rows dirtied by a MODE change, not a byte change  */
+volatile unsigned long g_decodeModeLines = 0;/* ...and the LINES those cost, 40 cells each      */
 /* DIRTYCHECK only, but declared always so a .gdb script can read a zero rather than .text. */
 volatile unsigned long g_decodeDirtyChecks   = 0;
 volatile unsigned long g_decodeDirtyMismatch = 0;
@@ -950,6 +951,132 @@ void RevsScreen::vbiUpdate()
 }
 
 /* ---------------------------------------------------------------------------
+   THE DECODE'S TWO INNER LOOPS.
+
+   ⭐⭐ EVERY PREDICATE IN HERE IS LOOP-INVARIANT, AND THAT IS THE WHOLE POINT.  Written as one
+   loop with the tests inside, GCC runs out of address registers and spills `shadowRow` and
+   `rowDirty` to the stack, so each of the 760 cells a race frame scans paid `tst.l 48(sp)` +
+   `tst.l 52(sp)` — two longword RAM reads on top of the four the comparison actually needs, in a
+   loop whose body was ~30 bytes of instruction fetch.  With the decode running under two
+   bitplanes' DMA that measured ~212 cycles a clean cell against ~140 nominal, i.e. memory
+   traffic IS the cost.  So the row driver classifies the row ONCE and calls a specialisation.
+
+   `uniform` is 5, 4, or 0 = "consult mode[] per line", and it is a COMPILE-TIME CONSTANT at
+   every call site: these MUST be always_inline or the mode becomes a memory operand in the
+   inner loop (docs/perf-method.md §twins #25-#39).  ⚠ 0 cannot mean "uniformly flat" here —
+   a row with all eight lines flat has `any == 0` and never reaches these.
+   --------------------------------------------------------------------------- */
+#define REVS_DECODE_INLINE static inline __attribute__((always_inline))
+
+/* ONE CELL: eight source bytes -> eight interleaved 2-plane rows. */
+REVS_DECODE_INLINE void revs_expand_cell(const uint8_t* s, uint8_t* p,
+                                         const unsigned char* mode, int uniform)
+{
+    /* ⭐ EIGHT ITERATIONS, KNOWN AT COMPILE TIME — unrolled, because the rolled form spent
+       `lea 80(a3),a3` + `cmpa.l` + `bne` = 24 of its 76 cycles a line on loop control alone,
+       and at ~110 cells a frame that is ~5 ms.  GCC will not unroll it unasked at -O3. */
+#pragma GCC unroll 8
+    for (unsigned l = 0; l < BBC_SCREEN_LINES; l++, p += kRowBytes) {
+        const unsigned m = uniform ? (unsigned)uniform : (unsigned)mode[l];
+        if (!uniform && m == 0) continue;       /* flat band: write nothing */
+        const uint8_t b = s[l];
+        if (m == 5) {
+            p[0]      = s_expandLo[b];
+            p[kW / 8] = s_expandHi[b];          /* plane 2 = index bit 1 */
+        } else {
+            /* MODE 4: eight 1-bit pixels, straight into plane 2 so the set pixels land on
+               pen 2 = BBC logical colour 8, the ULA's index bit 3. */
+            p[0]      = 0;
+            p[kW / 8] = b;
+        }
+    }
+}
+
+/* ⭐ THE SHIPPING PATH: a shadow exists and the row's MODE pattern is unchanged, so a cell is
+   converted only if one of its eight bytes moved.  No `shadowRow` test and no `rowDirty` test:
+   both were loop-invariant values GCC had spilled. */
+REVS_DECODE_INLINE unsigned revs_scan_row(const uint8_t* s, uint8_t* p, uint32_t* sh,
+                                          const unsigned char* mode, int uniform)
+{
+    /* ⭐⭐ TWO PASSES, AND THE SPLIT IS THE OPTIMISATION.  Fused, the clean-cell path was 128
+       cycles of which only 60 were the four longword loads the comparison actually needs — the
+       rest was two branches and a five-pointer loop tail.  Unrolling fixes that, but unrolling a
+       loop with the expansion inlined into it multiplies the expansion's code instead.  Separated,
+       pass 1 is small enough to unroll for free and pass 2 runs ~2-6 times a row.
+       ⚠ Indexing `src[0]/src[1]` off a per-cell base also made GCC invent a second induction
+       variable per stream; post-increment walks keep it to two live pointers.  There is no
+       early-out lost by loading both halves up front — a CLEAN cell (the ~88% case) compares
+       both longwords anyway. */
+    uint8_t changed[BBC_SCREEN_CELLS];
+    const uint32_t* src = (const uint32_t*)(const void*)s;
+    unsigned n = 0;
+
+#pragma GCC unroll 4
+    for (unsigned c = 0; c < BBC_SCREEN_CELLS; c++) {
+        const uint32_t s0 = *src++;
+        const uint32_t s1 = *src++;
+        const uint32_t h0 = sh[0];
+        const uint32_t h1 = sh[1];
+        sh += 2;
+        /* ⚠ SPELT AS "dirty is the exception", not `if (clean) continue`.  The two forms are the
+           same predicate, but the `continue` form made GCC put the second compare out of line and
+           route the COMMON case through two taken `beq.w`s — 84 cycles a clean cell instead of the
+           72 the straight-line fall-through costs. */
+        if (__builtin_expect(s0 != h0 || s1 != h1, 0)) {
+            sh[-2] = s0;
+            sh[-1] = s1;
+            changed[n++] = (uint8_t)c;
+        }
+    }
+
+    for (unsigned i = 0; i < n; i++) {
+        const unsigned c = changed[i];
+        revs_expand_cell(s + c * BBC_SCREEN_LINES, p + c, mode, uniform);
+    }
+    return n;
+}
+
+/* ⭐⭐ ONE DISPLAY LINE, ALL 40 CELLS — what a moved band boundary actually costs.  The horizon
+   band slides as the car drives (`update_horizon_band`), so ~1.6 character rows a frame have a
+   changed mode pattern; dirtying the whole row for that re-expanded ~64 cells a frame against the
+   ~28 that had a byte move, i.e. 70% of the expansion was band movement.  Only the LINES the
+   boundary crossed change conversion, and this rewrites exactly those.
+   ⚠ `m == 0` writes nothing, which is not a shortcut: a line that went flat keeps whatever pixels
+   it had and band 1's sixteen identical palette entries hide them — that IS the display model
+   (bbc_screen.h, "the code hiding in the sky"), and the whole-row path did the same. */
+REVS_DECODE_INLINE void revs_expand_line(const uint8_t* s, uint8_t* p, unsigned m)
+{
+    if (m == 0) return;
+    for (unsigned c = 0; c < BBC_SCREEN_CELLS; c++, p++, s += BBC_SCREEN_LINES) {
+        const uint8_t b = *s;
+        if (m == 5) {
+            p[0]      = s_expandLo[b];
+            p[kW / 8] = s_expandHi[b];
+        } else {
+            p[0]      = 0;
+            p[kW / 8] = b;
+        }
+    }
+}
+
+/* THE FULL PATH: no shadow at all (the oracle and `make DIRTY=0`), or a row whose band schedule
+   moved under it.  Rare and not on the critical path, so it keeps the runtime `sh` test. */
+REVS_DECODE_INLINE unsigned revs_full_row(const uint8_t* s, uint8_t* p, uint32_t* sh,
+                                          const unsigned char* mode, int uniform)
+{
+    for (unsigned c = 0; c < BBC_SCREEN_CELLS;
+         c++, s += BBC_SCREEN_LINES, p++, sh += sh ? BBC_SCREEN_LINES / 4 : 0) {
+        if (sh) {
+            const uint32_t* const src = (const uint32_t*)(const void*)s;
+            sh[0] = src[0];
+            sh[1] = src[1];
+        }
+        revs_expand_cell(s, p, mode, uniform);
+    }
+    return BBC_SCREEN_CELLS;
+}
+
+/* ---------------------------------------------------------------------------
    THE CONVERSION ITSELF: BBC frame buffer -> one interleaved 2-plane buffer.
 
    ⭐ CELL-MAJOR WITHIN A CHARACTER ROW, which is what makes the dirty test cheap.  The BBC
@@ -986,19 +1113,22 @@ unsigned RevsScreen::convertRace(uint8_t* dst, uint8_t* shadow, unsigned char* s
         unsigned char any = 0;
         for (unsigned l = 0; l < BBC_SCREEN_LINES; l++) any |= mode[l];
 
-        /* ⚠ A MODE CHANGE DIRTIES THE WHOLE ROW EVEN WHEN NO BYTE MOVED.  m_lineMode comes from
+        /* ⚠ A MODE CHANGE MUST BE REDECODED EVEN THOUGH NO BYTE MOVED.  m_lineMode comes from
            this frame's band snapshot, so a moved band boundary re-points a line at a different
-           conversion (MODE 5 / MODE 4 / skipped) while its source byte is untouched. */
-        int rowDirty = (shadowRow == 0);
+           conversion (MODE 5 / MODE 4 / skipped) while its source byte is untouched.
+           ⭐⭐ BUT ONLY THE LINES IT CROSSED, which is the point of the bitmask: dirtying the row
+           charged 40 cells x 8 lines for a boundary that moved one line.  All eight bits set is
+           the whole row after all — including a row entering or leaving the flat band — and that
+           falls through to the full path below. */
+        unsigned modeChanged = 0;
         if (shadowMode) {
             for (unsigned l = 0; l < BBC_SCREEN_LINES; l++) {
                 if (shadowMode[y + l] != mode[l]) {
-                    rowDirty = 1;
-                    g_decodeModeDirty++;
-                    break;
+                    modeChanged |= 1u << l;
+                    shadowMode[y + l] = mode[l];
                 }
             }
-            for (unsigned l = 0; l < BBC_SCREEN_LINES; l++) shadowMode[y + l] = mode[l];
+            if (modeChanged) g_decodeModeDirty++;
         }
 
         if (!any) continue;   /* nothing to draw; the shadow BYTES deliberately stay stale */
@@ -1017,31 +1147,37 @@ unsigned RevsScreen::convertRace(uint8_t* dst, uint8_t* shadow, unsigned char* s
             continue;
 #endif
 
-        for (unsigned c = 0; c < BBC_SCREEN_CELLS; c++) {
-            const uint8_t* const s = rowBase + c * BBC_SCREEN_LINES;
-            if (shadowRow) {
-                uint32_t* const sh = (uint32_t*)(void*)(shadowRow + c * BBC_SCREEN_LINES);
-                const uint32_t* const src = (const uint32_t*)(const void*)s;
-                if (!rowDirty && sh[0] == src[0] && sh[1] == src[1]) continue;
-                sh[0] = src[0];
-                sh[1] = src[1];
-            }
-            converted++;
+        /* ⭐⭐ CLASSIFY THE ROW ONCE — mode[] is the same for all 40 of its cells.  Five raster
+           bands over 26 character rows means at most four rows can straddle a boundary, so in a
+           race frame ~17 of the 19 scanned rows take a path with no per-line mode test at all
+           (band 0 is MODE 4, bands 2-4 MODE 5, band 1 is the flat sky that `any` already
+           skipped).  See revs_scan_row above for why this is worth a switch. */
+        int uniform = mode[0];
+        for (unsigned l = 1; l < BBC_SCREEN_LINES; l++)
+            if (mode[l] != uniform) { uniform = 0; break; }
+        if (uniform != 5 && uniform != 4) uniform = 0;   /* 0 = mixed, consult mode[] per line */
 
-            uint8_t* p = rowDst + c;                    /* plane 1 = index bit 0 */
-            for (unsigned l = 0; l < BBC_SCREEN_LINES; l++, p += kRowBytes) {
-                const unsigned char m = mode[l];
-                if (m == 0) continue;                   /* flat band: write nothing */
-                const uint8_t b = s[l];
-                if (m == 5) {
-                    p[0]         = s_expandLo[b];
-                    p[kW / 8]    = s_expandHi[b];       /* plane 2 = index bit 1 */
-                } else {
-                    /* MODE 4: eight 1-bit pixels, straight into plane 2 so the set pixels land
-                       on pen 2 = BBC logical colour 8, the ULA's index bit 3. */
-                    p[0]      = 0;
-                    p[kW / 8] = b;
-                }
+        uint32_t* const sh = shadowRow ? (uint32_t*)(void*)shadowRow : (uint32_t*)0;
+        const int full = (shadowRow == 0) || modeChanged == 0xFFu;
+
+        switch (uniform) {
+        case 5:  converted += full ? revs_full_row(rowBase, rowDst, sh, mode, 5)
+                                   : revs_scan_row(rowBase, rowDst, sh, mode, 5);  break;
+        case 4:  converted += full ? revs_full_row(rowBase, rowDst, sh, mode, 4)
+                                   : revs_scan_row(rowBase, rowDst, sh, mode, 4);  break;
+        default: converted += full ? revs_full_row(rowBase, rowDst, sh, mode, 0)
+                                   : revs_scan_row(rowBase, rowDst, sh, mode, 0);  break;
+        }
+
+        /* The lines a moved boundary re-pointed, for every cell the scan skipped.  Redundant for
+           a cell the scan already expanded — the same bytes, written twice — and that is cheaper
+           than tracking which. */
+        if (!full && modeChanged) {
+            for (unsigned l = 0; l < BBC_SCREEN_LINES; l++) {
+                if (!(modeChanged & (1u << l))) continue;
+                revs_expand_line(rowBase + l, rowDst + revs_mulu16((uint16_t)l, kRowBytes),
+                                 mode[l]);
+                g_decodeModeLines++;
             }
         }
     }
