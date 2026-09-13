@@ -480,6 +480,55 @@ a pointer lives in memory.** Grep a hot kernel's objdump for frame-pointer opera
 `n(sp)`) and `pea` before concluding the shape is clean. What is left is genuinely the per-span
 REPRESENTATION (~11.5 ms for 43 spans) and the per-walk entry/exit (~10.5 ms for 24 walks).
 
+### ⚠⚠ ...and packing is not free — the NULL that bounds the rule above (`view_paint_lines`)
+
+The same packed-register ABI, applied to the other subsystem that had it: `view_paint_lines`'s
+chain and its two drivers threaded a `ViewState { byte, line, cell }` (the 6502's A/X/Y) as a
+local of `view_paint_lines_core` whose address went to out-of-line `paint_cells`, pinning all three
+in the stack frame. `paint_lines_short` made 45 `v->` accesses per scan line and
+`paint_lines_clipped` 28 — ~1570 memory operands a frame that should have been register operands.
+Converting to one packed `unsigned` (`VS_PACK`/`VS_BYTE`/`VS_LINE`/`VS_CELL`, bit 31 = trap) did
+exactly what the objdump promised and **cost +0.2 ms**:
+
+| | control (×2 runs) | packed ABI |
+|---|---|---|
+| view total (24+33+34+32) | 58.95 / 58.91 ms | **59.11 ms  (+0.20)** |
+| phase 33 (view phase 2) | 12.42 / 12.41 | 12.68 (**+0.27**) |
+| phase 11 `draw_road` (untouched) | 34.10 / 34.15 | 34.15 |
+| `view_paint_lines_core` `n(sp)` data operands | 58 | **27** |
+
+The mnemonic diff on the driver is the whole explanation — **18 `move.l n(sp)` deleted, 53
+shift/mask/merge instructions added** (`swap` 1→12, `or.l` 1→12, `clr.w` 6→17, `andi.l` 23→33,
+`lsr.l`+`lsl.l` 12→22):
+
+⇒ **THE 68000 HAS NO BYTE-INSERT INSTRUCTION.** A pack or unpack of three bytes is
+`swap`/`clr.w`/`or.l`/`andi.l`/`lsr.l` ≈ 40 cycles — the price of 2-3 `move.l n(sp)` (16-20 each).
+So the packed ABI wins only when **one pack serves many reloads**: the span plotters packed once
+per span and saved 232 DDA iterations' worth (−4.79 ms); here there were **eleven pack sites
+against eighteen deleted loads**, a wash that lands slightly negative.
+
+⭐⭐ **THE QUALIFIER TO THE ADDRESS-TAKEN RULE, AND IT IS THE USEFUL PART.** `&x` escaping to a
+CALL is not the same defect as `&x` escaping into a LOOP. GCC's alias analysis knows a local whose
+address reaches only call sites can stay in registers *between* calls and need only be reloaded
+after each one — `paint_lines_short` has ~7 call boundaries per line, so its real traffic was ~21
+memory ops a line, not 45, and the pack/unpack at each boundary costs about what those reloads
+cost. **Rank a frame-slot candidate by whether the slot is reloaded per LOOP ITERATION.** A
+per-call reload is already nearly free; only a per-iteration one has the reload:pack ratio that
+pays.
+
+⚠ And two corrections to how the candidate was *ranked*, both of which overstated it:
+- **`lea N(sp),sp` is not loop state** — it is post-call stack cleanup, one instruction per call
+  with `pea`-pushed arguments. Exclude it (and large `a6` offsets, which are `mem[]` base
+  addressing) from any frame-operand ranking.
+- **An `n(sp)` count rises harmlessly when GCC duplicates an epilogue.** `paint_cells` read 14 →
+  24 after the change with no new unit-loop traffic at all: the same `tst.l` on `advance_first` and
+  the same `48(sp)` and-pair, at shifted offsets, in a duplicated exit block.
+
+The change was fully validated (`make validate FN=view_paint_lines` 700 cases / 0 mismatch; all
+four determinism ladders byte-identical) and **reverted anyway, because it costs milliseconds.**
+Do not retry the packed ABI on this chain. The ~6× "code costs more than its instruction count" in
+phase 1's 530 µs/line driver and phase 3's chain-entry brackets is therefore **still unlocalised**.
+
 ### ⭐⭐ Inside `view_paint_lines` (phases 24/33/34/32) — where its ~27% goes, and why
 
 The CONSUMER — the single reader of the forty `$80`-spaced source blocks the two producers fill.

@@ -389,6 +389,14 @@ frame (265 `n(a5)` operands, three `pea`s per plot). Hand several small results 
 one `d0`** instead. ⚠ And the routine got BIGGER — 1708 → 2217 instructions — and faster; on the
 68000 a memory operand is 16-20 cycles against 4-8 for a register op, so **instruction count is not
 the scoreboard.** Grep a hot kernel for `n(a5)` / `n(sp)` / `pea` before calling its shape clean.
+  ⚠⚠ **But PACKING IS NOT FREE, AND THE TEST IS THE RATIO OF RELOADS TO PACKS, NOT THE OPERAND
+  COUNT.** The 68000 has no byte-insert, so every pack/unpack is `swap`/`clr.w`/`or.l`/`andi.l`/
+  `lsr.l` — ~40 cycles, i.e. what 2-3 `n(sp)` reloads cost. The span plotters paid because ONE pack
+  at entry served a 232-step DDA loop; the same ABI applied to `view_paint_lines`'s three threaded
+  bytes **cost +0.2 ms** because their address escaped only to CALLS (GCC already kept them in
+  registers between calls), so eleven packs bought eighteen loads. ⭐ **Before packing, count packs
+  against reloads in the objdump: a per-LOOP-ITERATION reload is the prize, a per-CALL one is
+  already nearly free.** `docs/perf-method.md` §packing is not free.
 ⭐⭐ **The lever is the VIEW PIPELINE: `build_track_geometry` → `draw_road` → `view_paint_lines` is
 the dominant subsystem and it is ONE subsystem** — the first two *produce* source bytes into the forty `$80`-spaced blocks
 at `$3000..$4380`, the third is the single *consumer*. Current shares, every past change and its
