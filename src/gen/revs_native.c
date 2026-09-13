@@ -474,38 +474,43 @@ static int view_is_slot(uint16_t dst, unsigned page)
    base + cell*8, and the sweep's pointers span $6700-$737D, below $7C00.
    Unit indices ascending with a 40 sentinel: normally one entry, none through phase 1. */
 static unsigned char g_viewStopList[41];
-static int g_viewStopN;
+
+/* ⭐⭐ THE SENTINEL IS THE BOUND IN ALL THREE OF THESE, NOT ONLY IN view_stop_from — AND
+   SPELLING IT AS `i < g_viewStopN` COST ~300 INSTRUCTIONS AND EVERY PLANT'S CALL.  These two
+   used to carry an explicit count, and gcc did to each of them exactly what view_stop_from's
+   comment below describes: peeled the trip count and unrolled the search eight ways, twice,
+   plus both shift loops.  That made view_plant a ~340-instruction body, which put it over
+   gcc's inlining threshold — so all ~130 plants a frame paid a FIVE-ARGUMENT out-of-line call
+   (the stop moves twice a line through phases 2 and 3), for a list that normally holds ONE
+   entry.  With the count gone the list's own 40 terminates every walk (every real entry is a
+   unit index 0..39, ascending), the end is POSITIONAL, and g_viewStopN is retired. */
 
 /* This unit's slot no longer holds `STA (zp),Y`. */
 static void view_stop_note(int unit)
 {
-    int i, j;
-    for (i = 0; i < g_viewStopN; i++) {
-        if (g_viewStopList[i] == unit) return;             /* already known */
-        if (g_viewStopList[i] > unit) break;
-    }
-    for (j = g_viewStopN; j > i; j--) g_viewStopList[j] = g_viewStopList[j - 1];
-    g_viewStopList[i] = (unsigned char)unit;
-    g_viewStopList[++g_viewStopN] = 40;
+    unsigned char* p = g_viewStopList;
+    unsigned char* q;
+    while ((int)*p < unit) p++;             /* the 40 stops this on its own */
+    if ((int)*p == unit) return;            /* already known */
+    for (q = p; *q != 40; q++) { }          /* the sentinel, which shifts up too */
+    while (q != p) { q[1] = q[0]; q--; }
+    p[1] = p[0];
+    *p = (unsigned char)unit;
 }
 
 /* ...and it does again. */
 static void view_stop_forget(int unit)
 {
-    int i, j;
-    for (i = 0; i < g_viewStopN; i++)
-        if (g_viewStopList[i] == unit) {
-            for (j = i; j < g_viewStopN - 1; j++) g_viewStopList[j] = g_viewStopList[j + 1];
-            g_viewStopList[--g_viewStopN] = 40;
-            return;
-        }
+    unsigned char* p = g_viewStopList;
+    while ((int)*p < unit) p++;
+    if ((int)*p != unit) return;
+    do { *p = p[1]; p++; } while (*p != 40);  /* shift down over it, sentinel included */
 }
 
 /* Rebuild the list from the page itself.  Once per sweep. */
 static void view_stops_rescan(void)
 {
     int i;
-    g_viewStopN = 0;
     g_viewStopList[0] = 40;
     for (i = 0; i < 40; i++)
         if (g_viewSlotP[i] && *g_viewSlotP[i] != OP_STA_IND_Y) view_stop_note(i);
@@ -513,7 +518,7 @@ static void view_stops_rescan(void)
 
 /* The first unit at or after `unit` whose store has been overwritten, or 40 for none.
    ⭐⭐ THE SENTINEL IS THE TRIP COUNT, AND SPELLING THE BOUND COSTS ~100 CYCLES A RUN.  The
-   list is ascending with a 40 at index g_viewStopN — view_stops_rescan, view_stop_note and
+   list is ascending with a 40 one past the last entry — view_stops_rescan, view_stop_note and
    view_stop_forget each maintain both halves — and every real entry is a unit index 0..39, so
    the sentinel satisfies `>= unit` for every unit this is asked about (0..40, from the chain
    entry's own slot) and stops the scan on its own.  Written WITHOUT `i < g_viewStopN` on
@@ -539,6 +544,20 @@ static int view_unit_of_slot(uint16_t dst)
    leave the real slot reading `STA` and diverge from the 6502 silently.
    ⚠ `opcode` lands in the carried byte; the 6502's `LDA` flags are dropped because
    view_paint_lines' fixture is LIVE_S (audited) and its whole tree reads no flag. */
+/* ⚠⚠ THIS ONE STAYS OUT OF LINE, AND IT IS THE MEASURED EXCEPTION TO CLAUDE.md's
+   constant-parameter RULE — do not re-try `always_inline` here.  Both of the last two
+   arguments ARE compile-time constants at every call site (`page` is a literal 0x7C or 0x7E,
+   `opcode` a literal STA (zp),Y or RTS) and folding them does everything the rule predicts:
+   view_low_page(page) becomes true, g_viewSlotOf's row becomes a constant base, the
+   `opcode == OP_STA_IND_Y` test that picks note-vs-forget collapses to ONE list walk, and the
+   inlined body lands at ~30 instructions rather than 108.  It still measured WORSE, twice:
+   always_inline alone put the frame +1.04 ms and phase 3's bracket +1.18; with the two list
+   walks additionally forced out of line (so the inlined body is ~20 instructions) it was
+   +1.01 and +1.44.  Phase 2's bracket liked it both times (-0.26 / -0.20) and phase 3's hated
+   it, which is the whole story: view_paint_lines_core grows 757 -> 995 instructions, and
+   paint_lines_short's per-line loop is already at the 68000's register ceiling, so eight
+   inlined copies cost more than the five-argument call they save.  The rule holds for a leaf
+   in an inner loop; it does not hold for a caller that has run out of registers. */
 static int view_plant(ViewState* v, uint16_t site, uint16_t opnd, unsigned page, uint8_t opcode)
 {
     uint16_t dst = (uint16_t)(mem[opnd] | (mem[opnd + 1] << 8));
