@@ -808,6 +808,75 @@ iterate those instead of testing all 2148 source slots. A five-bit line mask alo
 the selected line still scans all forty units; the representation must name the changed units or
 runs. Preserve the full consumer as the byte-exact oracle.
 
+#### ⭐⭐⭐ THE SWEEP IS 61% DRIVER/ENTRY, NOT UNIT WORK — and phase 1's "unexplained ~6x" is RETRACTED (2026-09-13)
+
+The standing open item was phase 1's ~440 us/line "for work whose instruction count is nothing
+like that". It is now decomposed, and **there is no 6x**: the instruction count IS like the
+measurement. Two instruments, one measured and one static, agree.
+
+**The differential.** `NOUNITS=2` (`REVS_NO_UNIT_LOOP`) keeps every per-line driver and every run
+set-up and does not run the unit loop at all, so `control - NOUNITS=2` is the unit loop and
+`NOUNITS=2` is the driver. Both runs `PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`,
+FS-UAE warp, 30 s (668 and 820 frames).
+
+| bracket | total | driver/entry | share | unit loop | cyc/unit | driver cyc/line |
+|---|---:|---:|---:|---:|---:|---:|
+| 24 — phase 1 (36 full-width lines) | 15.83 ms | **4.59 ms** | 29% | 11.23 ms | **55.2** | 905 |
+| 33 — phase 2 (16 lines) | 12.41 ms | **8.29 ms** | 67% | 4.13 ms | 68.7 | 3672 |
+| 34 — phase 3 (25 lines) | 24.49 ms | **19.48 ms** | 80% | 5.00 ms | 125.8 | 5526 |
+| **the whole sweep** | **52.73 ms** | **32.36 ms** | **61%** | **20.36 ms** | 9.5 us/unit | — |
+
+⭐ **Phase 3's 80% independently reproduces the VIEWP3 split's 83% chain-entry share** (§The four
+view probes) from a completely different instrument. Two agreeing decompositions, so the
+chain-entry cost is settled.
+
+**The static half — the quad loop is AT THE 68000's FLOOR.** `paint_cells`' unrolled body
+(`10418` in the shipping objdump) is 17 instructions for four units on the all-clean arm:
+
+    10426 move.b d2,d0        4      1044a move.b d0,24(a2)   12
+    10428 move.b d0,(a2)      8      1044e lea 32(a2),a2       8
+    1042a move.b 128(a0),d1  12      10452 cmpa.l a2,a4        6
+    1042e bne.w (not taken)  12      10454 beq.w (not taken)  12
+    10432 move.b d0,8(a2)    12      10458 lea 512(a0),a0      8
+    10436 move.b 256(a0),d1  12      1045c move.b (a0),d0      8
+    1043a bne.w (not taken)  12      1045e beq.s (taken)      10
+    1043e move.b d0,16(a2)   12
+    10442 move.b 384(a0),d1  12      = 172 cycles / 4 units = 43 cyc/unit
+    10446 bne.w (not taken)  12
+
+12 (load) + 12 (store) + 12 (branch) + ~9 amortised book-keeping is what a byte load, a
+zero test and a byte store COST on this machine, and 43 is that number. The census is 88%
+clean / 8% dirty / 3% forced, and the dirty arm (`clr.b`, a 255-mask, a `lea`, the cell-byte
+lookup, and the branch pair) adds ~80 cycles — **43 + 0.12 x 80 = 53 against 55.2 measured.**
+⇒ **No code shape can improve this loop.** Nor can widening help: the BBC layout puts the
+destination cells 8 bytes apart and the sources 128 apart, so there is nothing to coalesce into
+a `move.l` in either direction.
+
+**Consequence — the lever ordering changes.** The producer-emitted dirty-run representation
+(§the unit/run interior) attacks the **20 ms** of unit work and can approach all of it, but the
+**32 ms of per-line driver and chain-entry code is the larger half and a different problem.**
+Phase 1's 905 cyc/line driver has identifiable GCC fat in it, read off the same objdump:
+
+| what | cycles/line | the shape |
+|---|---:|---|
+| `line = (line - 1) & 0xFF` | ~50 | `subq.l #1,d3` / `move.l d3,48(sp)` / `moveq #0,d3` / `not.b d3` / `and.l 48(sp),d3` — a stack round trip to build `0xFF` |
+| re-biasing `mem` | ~90 | four `adda.l/addi.l #322944` plus two `lea 4ed80 <mem>,aN` per line |
+| `clr.l 68(sp)` | 28 | clearing the `forced` parameter in its stack home |
+| the background byte | ~28 wasted | two `lea (0,a6,dN.l),aN` where absolute-indexed addressing would do |
+
+⚠⚠ **But `paint_cells` is precisely the function whose 4x unroll must survive, so apply
+§a fragile local optimum's counting test before any of it**: grep the objdump for each loop
+invariant's absolute address and require the count to stay at 1.
+
+⚠ **Caveats on the differential, stated because they are real.** `NOUNITS=2`'s picture is wrong
+by construction, and that is visible downstream: phase 18 reads 5.88 ms against the control's
+10.18 because `column_gap_walk` walks a frame buffer that no longer holds road pixels. Phase 0
+is 318 fields against 315, so the window reached one more crash hold. What licenses the
+subtraction anyway is that **the view sweep's own census is identical across the two runs** —
+36/16/25 lines, 36/32/50 runs, 1442/426/282 units — and phase 11 (`draw_road`) is 34 ms in both.
+The driver's control flow reads the stop list, `plot_ptr`, and the per-line surface index, none
+of which is picture state.
+
 #### ⭐⭐⭐ OTHER TARGET SPLITS (2026-09-12) — where the next frame reductions can come from
 
 | subsystem | measured split | conclusion |

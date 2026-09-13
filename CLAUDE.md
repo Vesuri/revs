@@ -372,6 +372,16 @@ Do not retry that code shape. The null does **not** prove setup is free: its emi
 and slowed the retained unit loop, and the original line/run fit was underidentified. Direct target
 measurement instead puts the complete unit/run interior at **29 ms/frame: ~8 ms destination stores
 and ~21 ms source consume/translation/loop/run control**. `docs/perf-method.md` has the controls.
+⭐⭐⭐ **AND THE SWEEP IS 61% PER-LINE DRIVER AND CHAIN-ENTRY CODE, NOT UNIT WORK** — measured by
+differencing `NOUNITS=2` (drivers only) against the control: 32.4 ms of driver/entry against
+20.4 ms of unit loop, with phase 3 at 80% entry, which independently reproduces the `VIEWP3`
+split's 83%. **Phase 1's old "unexplained ~6x" is RETRACTED**: its unit loop is 55 cyc/unit and
+the objdump shows the unrolled body is 43 cyc/unit on the clean arm — 12 (load) + 12 (store) +
+12 (branch) + ~9 amortised, which is what those three operations COST on a 68000 — plus ~10 for
+the 12% dirty arm. ⇒ **No code shape can improve that loop, and widening is impossible** (the
+BBC layout puts destination cells 8 bytes apart and sources 128 apart). So the dirty-run
+representation change can reach only the 20 ms; the 32 ms of drivers is the larger, separate
+lever. `docs/perf-method.md` §the sweep is 61% driver/entry.
 ⚠⚠ **Writer-maintained framebuffer dirty maps are also dead as a shipping optimisation.**
 `CHANGEDIRTY` was complete and byte-exact (0/23 oracle mismatches), but its per-store compare and
 two-map RMW traffic measured ~8.5% slower than the batched shadow scanner, so **the code is reverted
