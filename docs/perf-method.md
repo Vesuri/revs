@@ -139,6 +139,26 @@ diffable against the next one taken the same way.
 38.89 and 38.90** (the packed span-plotter ABI, §below). Its −4.79 ms did **not** appear in the
 frame total — the vblank spin (phase 28) took +3.03 ms of it, which is Rule 1a's pad seen from the
 phase table. **Σ(1..39) − phase 28** moved 197.05 → 192.63 ms; that is the row to diff.
+⭐ **...and the span walk's step/marker OPCODE SLOTS became values at `8bc45ac`: `draw_road`
+34.09 → 33.70 ms (−0.40), the frame 206.09 → 205.49 bracketed (−0.60).** Same-session control
+(`HEAD~1`'s `revs_native.c`, a clean build and a 30 s warp run each side, `PROBES=1 FIXED_RNG=1
+STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`, 668 loop frames both). Every other phase moved ≤0.05 ms except
+the vblank spin (−0.11 — Rule 1a's pad again), and the bracketed Σ(1..39) equals `FRAME` to 0.00 ms
+on BOTH sides, which is the identity that makes two runs diffable at this size.
+⚠ **The prediction was 0.7-1.0 ms and the truth was 0.4-0.6.** Seven `mem[]` byte writes per span
+plus two indirect opcode loads and two three-way switches per plot came to 0.40 ms at 43 spans and
+~60 plots a frame ⇒ **price this class at ~10 µs per eliminated per-span byte round trip**, and do
+not expect a byte-traffic deletion to pay more than its own count. FPS did not move at all (5.56
+both sides, ten non-outlier rows): 0.3% of a frame is far under one painted frame's 3.3%, exactly
+what Rule 1a says to expect.
+
+⚠⚠ **A frame figure is only comparable WITHIN ITS OWN SCOPE, and three of them are in circulation
+for the same frame.** Measured together in one run (2026-09-13, `8bc45ac`): **wall** (`vbi /
+loopFrames × 20 ms`) = 214.3; **bracketed Σ(1..39)** = 205.49 — this doc's convention, and the only
+one the phase table can verify; **Σ minus the frame wait (25), the 50 Hz drain (26) and the vblank
+spin (28)** = 178.94, i.e. engine work with the pads and the body taken out. So a "178.5" sitting
+next to a "205.5" is the SAME FRAME TWICE, not a 27 ms regression — check the scope before reading
+a drift of that size as either a win or a loss.
 
 ⚠ The previous table (2026-09-12, HEAD `8629ff9`, 530 loop frames, `accounted 96.8%`) read
 **~256 ms/frame** with the consumer at 70 and the dash edge at 17 — a different session on a
