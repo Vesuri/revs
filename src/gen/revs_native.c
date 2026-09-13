@@ -979,13 +979,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                     PLOT_UNIT((unsigned)(dp - mem), byte);
 #ifndef REVS_PLOT_ONLY
                     PROBE_SHAPE_DASH_STORE((unsigned)(dp - mem), byte, line);
-                    if (busSafe) {
-#if defined(REVS_CHANGE_DIRTY) && !defined(REVS_NO_DIRTY)
-                        revs_fb_store_screen((uint16_t)(dp - mem), (uint8_t)byte);
-#else
-                        *dp = (unsigned char)byte;
-#endif
-                    }
+                    if (busSafe) *dp = (unsigned char)byte;
                     else         bus_write((uint16_t)(dp - mem), (uint8_t)byte);
 #endif
                     srcp += 0x80;
@@ -10196,17 +10190,10 @@ void poll_steering_assist_core(void)
        it round this with PHA/PLA); the exit ABI (A preserved, X = flag with its N/Z, C = bit 7 of
        track_direction) is a leaf output the callers read directly, so the shim reconstructs it. */
     uint8_t flag = steering_assist_flag;
-#if defined(REVS_CHANGE_DIRTY) && !defined(REVS_NO_DIRTY)
-    revs_fb_store_screen(MEM_assist_lamp_2, flag);                 /* $77E3 */
-    revs_fb_store_screen(MEM_assist_lamp_3, (uint8_t)(flag >> 1)); /* $77E4 */
-    revs_fb_store_screen(MEM_assist_lamp_1, (uint8_t)(flag >> 2)); /* $77DC */
-    revs_fb_store_screen(MEM_assist_lamp_0, (uint8_t)(flag >> 3)); /* $77DB */
-#else
-    mem[MEM_assist_lamp_2] = flag;
-    mem[MEM_assist_lamp_3] = (uint8_t)(flag >> 1);
-    mem[MEM_assist_lamp_1] = (uint8_t)(flag >> 2);
-    mem[MEM_assist_lamp_0] = (uint8_t)(flag >> 3);
-#endif
+    mem[MEM_assist_lamp_2] = flag;                         /* $77E3 */
+    mem[MEM_assist_lamp_3] = (uint8_t)(flag >> 1);         /* $77E4 */
+    mem[MEM_assist_lamp_1] = (uint8_t)(flag >> 2);         /* $77DC */
+    mem[MEM_assist_lamp_0] = (uint8_t)(flag >> 3);         /* $77DB */
 }
 
 /* $1F9B  limit_steer_demand — NEVER MORE LOCK THAN THE DRIVER ASKED FOR  (twin #106) */
@@ -10941,34 +10928,15 @@ void tick_wheel_spin(void)
     if (wheel_spin_rate == 0) return;        /* spin disabled */
 
     for (int x = 4; x >= 0; x--) {
-#if defined(REVS_CHANGE_DIRTY) && !defined(REVS_NO_DIRTY)
-        uint16_t addr = (uint16_t)(MEM_wheel_spin_run_a + x);
-        revs_fb_store_screen(addr, (uint8_t)(mem[addr] ^ mem[MEM_wheel_spin_xor_tbl_a + x]));
-        addr = (uint16_t)(MEM_wheel_spin_run_b + x);
-        revs_fb_store_screen(addr, (uint8_t)(mem[addr] ^ mem[MEM_wheel_spin_xor_tbl_b + x]));
-        if (x < 3) {                                     /* CPX #3; BCS skips this pair */
-            addr = (uint16_t)(MEM_wheel_spin_run_c + x);
-            revs_fb_store_screen(addr, (uint8_t)(mem[addr] ^ 0xF0u));
-            addr = (uint16_t)(MEM_wheel_spin_run_d + x);
-            uint8_t r = (uint8_t)(mem[addr] ^ 0xF0u);
-            revs_fb_store_screen(addr, r);
-            if (r != 0) continue;                        /* BNE: skip the lower pair */
-        }
-        addr = (uint16_t)(MEM_wheel_spin_run_e + x);
-        revs_fb_store_screen(addr, (uint8_t)(mem[addr] ^ 0xC0u));
-        addr = (uint16_t)(MEM_wheel_spin_run_f + x);
-        revs_fb_store_screen(addr, (uint8_t)(mem[addr] ^ 0x30u));
-#else
         mem[MEM_wheel_spin_run_a + x] ^= mem[MEM_wheel_spin_xor_tbl_a + x];
         mem[MEM_wheel_spin_run_b + x] ^= mem[MEM_wheel_spin_xor_tbl_b + x];
-        if (x < 3) {
+        if (x < 3) {                                     /* CPX #3; BCS skips this pair */
             mem[MEM_wheel_spin_run_c + x] ^= 0xF0;
             uint8_t r = (uint8_t)(mem[MEM_wheel_spin_run_d + x] ^= 0xF0);
-            if (r != 0) continue;
+            if (r != 0) continue;                        /* BNE: skip the lower pair */
         }
         mem[MEM_wheel_spin_run_e + x] ^= 0xC0;
         mem[MEM_wheel_spin_run_f + x] ^= 0x30;
-#endif
     }
 }
 

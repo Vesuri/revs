@@ -36,7 +36,6 @@
 
 #include "cpu.h"
 #include "../platform/platform_c.h"
-#include "../platform/framebuffer_dirty.h"
 
 /* SHEILA and the two 1 MHz bus pages.  One range test covers all three: the
    BBC's whole I/O window is the contiguous $FC00-$FEFF. */
@@ -67,14 +66,7 @@ static inline void bus_write(uint16_t addr, uint8_t val) {
         platform_hw_write(addr, val);
         return;
     }
-#ifdef REVS_PLATFORM_AMIGA
-    /* Indirect 6502 stores are the one generated write form whose target is not
-       statically knowable. Catch framebuffer writes here; ordinary RAM stays a
-       single store in revs_fb_store_maybe's fall-through arm. */
-    revs_fb_store_maybe(addr, val);
-#else
     mem[addr] = val;
-#endif
 #ifdef REVS_INK_WATCH
     revs_ink_watch(addr, val);
 #endif

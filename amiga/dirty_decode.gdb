@@ -1,9 +1,8 @@
 # ⭐⭐ THE DIRTY-REGION DECODE — did it engage, and does it produce the SAME PICTURE?
 #
 # Phase 6 item 0 step 2's payoff (docs/direct-bitplane-plan.md §7b): only 4.9% of the BBC frame
-# buffer changes per painted frame, so decode() converts only the cell columns whose eight source
-# bytes moved since THIS buffer was last decoded. Shipping discovers them with two byte shadows;
-# `CHANGEDIRTY=1` tests the writer-maintained maps from §7j.
+# buffer changes per painted frame, so decode() now converts only the cell columns whose eight
+# source bytes moved since THIS buffer (the Amiga is double-buffered) was last decoded.
 #
 # Three numbers, and each one can fail on its own:
 #   1. g_decodeCells — cell columns converted, of 1040.  A run that reads 1040 every frame has
@@ -18,10 +17,10 @@
 #      look perfect.  $61 (throttle) and $3C/$63 must show the car under power.
 #
 # Run (the oracle):
-#   . ./env.sh && make clean && make CHANGEDIRTY=1 DIRTYCHECK=1 STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1
+#   . ./env.sh && make clean && make DIRTYCHECK=1 STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1
 #   GDBSCRIPT=dirty_decode.gdb ./diag_run.sh 120
-# Run (the map's shape, diagnostic build; never use its FPS as the shipping baseline):
-#   . ./env.sh && make clean && make CHANGEDIRTY=1 STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1
+# Run (the shape, shipping build):
+#   . ./env.sh && make clean && make STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1
 #   GDBSCRIPT=dirty_decode.gdb ./diag_run.sh 120
 set pagination off
 set confirm off
