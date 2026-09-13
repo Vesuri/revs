@@ -344,10 +344,19 @@ negotiable** — 25 FPS means painting every other frame with the simulation sti
 The A500 is a 7 MHz 68000 and a frame is 20 ms: spending 10 ms on *anything* is half the budget.
 Be conscious of absolute milliseconds always.
 
-**Baseline: ~4.93 FPS rendered** (`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`,
-50.5 painted frames per 512 VBLs over the non-outlier rows in the 2026-09-13 session).
-⚠ One painted frame is 3.3% of a row, so this figure IS the noise floor — always re-run the control
-in the same session from a clean build rather than diffing against it (`docs/perf-method.md` §twin #13).
+**Baseline: a ~219 ms FRAME** — 209 ms of bracketed work plus the engine's own wait, i.e. ~11
+display fields (`PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` + `phase4_prof.gdb`,
+warp, 30 s, driving, 2026-09-13 at `9dfdf4e`; `vbi/loopFrames × 20 ms` IS the frame — the bracketed
+sum omits phase 0). **This is the number a change is sized against.** The displayed **~4.93 FPS**
+(`FPSCOUNT=1` + `fps_series.gdb`, 50.5 painted per 512 VBLs, same session) is the standing
+*displayed* figure and nothing else.
+⚠ One painted frame is 3.3% of an FPS row, so that figure IS the noise floor — always re-run the
+control in the same session from a clean build rather than diffing against it
+(`docs/perf-method.md` §twin #13).
+⚠ **A compute win is not all frame.** The engine's own frame wait at `$1760` (phase 0, excluded
+from the shares by construction) absorbs part of it until enough accumulates — the dash-edge pass
+removed 6.71 ms and the wall clock moved 2.28. Quote a change against the **bracketed** total and
+say how much of it reached the wall clock.
 ⚠ The whole view pipeline is now real C — `build_track_geometry`'s tree and `draw_road`'s tree both
 have **no transliteration left in them** — and neither pass's twins moved the framerate. Removing
 the interpreter from this subsystem is DONE; the next win must remove accesses or points.
@@ -402,6 +411,13 @@ Rules that must survive without opening `docs/perf-method.md`:
   at -O3, so every subtract was paying a `jsr` + `movem.l`. **Grep the objdump for
   `jsr <sub_from>` before believing any arithmetic twin is fast**, and match the build to the
   control (a `PROBES=1` build reads low). `docs/perf-method.md` §twins #14/#15.
+  ⭐⭐ **And the first thing to check after ANY size-changing edit to a hot function: count
+  `jsr <hot-leaf>` in the objdump and require 0.** GCC's inlining threshold is part of the change
+  in both directions — making a body smaller can drop it under the threshold and cost its
+  specialisation, and making one BIGGER (inlining it twice to serve two configurations) can evict
+  the leaf *it* calls. The second cost 4.3 ms/frame in the dash-edge walk, and register-pressure
+  reasoning pointed the wrong way. `always_inline` on a hot leaf and `noinline` on a cold sibling
+  are load-bearing, not hints. `docs/m68k-optimisation.md` §inlining threshold.
   ⭐⭐ **The general form: a parameter that is a COMPILE-TIME CONSTANT at every call site must be
   `always_inline`d, or it is a memory operand in the inner loop.** A `const SpanPlotter*`
   descriptor in the span rasteriser's leaf cost 2.6% of the frame on its own
