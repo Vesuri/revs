@@ -344,8 +344,8 @@ negotiable** — 25 FPS means painting every other frame with the simulation sti
 The A500 is a 7 MHz 68000 and a frame is 20 ms: spending 10 ms on *anything* is half the budget.
 Be conscious of absolute milliseconds always.
 
-**Baseline: ~4.57 FPS rendered** (`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`,
-46.8 painted frames per 512 VBLs over the non-outlier rows in the 2026-09-12 session).
+**Baseline: ~4.93 FPS rendered** (`STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` + `fps_series.gdb`,
+50.5 painted frames per 512 VBLs over the non-outlier rows in the 2026-09-13 session).
 ⚠ One painted frame is 3.3% of a row, so this figure IS the noise floor — always re-run the control
 in the same session from a clean build rather than diffing against it (`docs/perf-method.md` §twin #13).
 ⚠ The whole view pipeline is now real C — `build_track_geometry`'s tree and `draw_road`'s tree both
@@ -358,9 +358,15 @@ and slowed the retained unit loop, and the original line/run fit was underidenti
 measurement instead puts the complete unit/run interior at **29 ms/frame: ~8 ms destination stores
 and ~21 ms source consume/translation/loop/run control**. `docs/perf-method.md` has the controls.
 ⚠⚠ **Writer-maintained framebuffer dirty maps are also dead as a shipping optimisation.**
-`make CHANGEDIRTY=1` is complete and byte-exact (0/23 oracle mismatches), but its per-store compare
-and two-map RMW traffic measured ~8.5% slower than the batched shadow scanner. It stays off by
-default as a reproducible experiment; do not retry it without producer-native change events.
+`CHANGEDIRTY` was complete and byte-exact (0/23 oracle mismatches), but its per-store compare and
+two-map RMW traffic measured ~8.5% slower than the batched shadow scanner, so **the code is reverted
+and the flag no longer exists** — only its write-up survives. Do not retry it without producer-native
+change events.
+⭐⭐ **And the decode's own 38 ms turned out to be CODE SHAPE, not algorithm: ~22 ms now, +8.1%
+end to end** — the scan was re-reading two loop-invariant stack slots per cell and had spilled its
+pointers into data registers. **Read the objdump of a hot loop before theorising about its
+algorithm**, and see `docs/perf-method.md` for what to look for (a `tst.l <n>(sp)` on a loop
+invariant; pointers living in `d` registers).
 ⭐⭐ **The lever is the VIEW PIPELINE: `build_track_geometry` → `draw_road` → `view_paint_lines` is
 the dominant subsystem and it is ONE subsystem** — the first two *produce* source bytes into the forty `$80`-spaced blocks
 at `$3000..$4380`, the third is the single *consumer*. Current shares, every past change and its

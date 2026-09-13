@@ -816,7 +816,7 @@ representation itself supplies change events without rereading framebuffer desti
 
 The measured implementation order is now a combined native
 `interp_edge` + `span_walk` kernel, then viewport source events. Even if all local items land, their
-credible total points to about **6-7 FPS from the current ~4.57**, not the 25 FPS floor. The floor
+credible total points to about **6-7 FPS from the current ~4.93**, not the 25 FPS floor. The floor
 requires the architectural path: world points → native spans/events → Amiga bitplanes, bypassing
 split BBC edge records, SMC-style span scratch, forty source blocks, the BBC framebuffer and the
 shadow decoder.

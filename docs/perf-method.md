@@ -644,7 +644,7 @@ runs. Preserve the full consumer as the byte-exact oracle.
 
 | subsystem | measured split | conclusion |
 |---|---|---|
-| framebuffer decode | **38 ms = 23 ms discovery/shadow scan + 15 ms dirty-cell expansion** | The two-map experiment removes the scan but loses ~8.5% end to end: per-store compare + two map RMWs cost more than the batched longword scan. `CHANGEDIRTY=1` is reproducible but off by default. |
+| framebuffer decode | **was 38 ms = 23 ms discovery/shadow scan + 15 ms dirty-cell expansion; now ~22 ms** | ⭐ **CLOSED for now at +8.1%** — the cost was CODE SHAPE, not algorithm (next section). The two-map experiment removes the scan but loses ~8.5% end to end: per-store compare + two map RMWs cost more than the batched longword scan, and it has been reverted. |
 | `draw_road` | **43 ms = ~24 ms `span_walk` + ~13 ms surrounding surface setup + 4 ms attributes + 1 ms marks** | The old claim that span setup dominates and columns are nearly free is false. Rewrite `interp_edge` and `span_walk` together as one native SpanPlan/DDA kernel; removing only one side preserves the representation tax. |
 | `build_track_geometry` | **28 ms = ~25 ms in the two point walks**; 27 points, zero subdivisions | The old restoring divider is not active here (`g_geoDiv=0`); native paths use `revs_divu16`/DIVU. Carry native `EdgePoint` values between stages instead of publishing and reconstructing byte-lane scratch records. |
 | dash edge | **17 ms for 151 cells**, all on the same production arm | A production-arm specialization remains a plausible 5-10 ms item, behind the larger representation changes. |
@@ -662,18 +662,95 @@ is not the first performance lever. The expensive 6502 inheritance is now chiefl
 `mem[]` scratch, split byte lanes, simulated self-modifying slots, and values repeatedly published
 and reconstructed between stages.
 
-At the measured ~4.57 FPS baseline (~219 ms/painted frame), the credible local programme is:
+At the then-measured ~4.57 FPS baseline (~219 ms/painted frame), the credible local programme was:
 
 1. a combined native road span kernel (15-25 ms);
 2. producer-emitted source dirty events/runs (12-18 ms);
 3. a native geometry value pipeline (8-12 ms);
 4. dash specialization (5-10 ms).
 
+⚠ Item 0 — the decode itself — has since been taken and paid **+8.1%** (next section), so the
+baseline these ranges are measured against is now ~4.93 FPS / ~203 ms and each remaining item is a
+smaller FRACTION of the frame than when it was sized. Re-price before building, do not assume.
+
 Those ranges imply roughly **6-7 FPS**, not 25 FPS. Reaching 25 FPS (40 ms/frame) requires the
 architectural version: world points → native spans/events → Amiga bitplanes, bypassing the chain
 of split BBC edge arrays → SMC-style span scratch → forty source blocks → BBC framebuffer → shadow
 decode. The failed direct plotter attached only at the last arrow and therefore retained nearly all
 upstream cost.
+
+#### ⭐⭐⭐ THE DECODE WAS CODE SHAPE, NOT ALGORITHM — 38 ms -> ~22 ms, +8.1% (2026-09-13)
+
+**Measured**: control **4.564 FPS**, rewrite **4.934 FPS** — `fps_series.gdb` row vectors, both
+clean `STRAIGHT_TO_RACE=1 FPSCOUNT=1 FIXED_RNG=1` builds, 30 s warp runs, **same session**, the two
+off-track/reset rows (~3.2 / ~3.5) dropped. 219.1 -> 202.7 ms per painted frame = **16.4 ms**.
+⭐ The rows do not overlap: the new build's worst non-outlier row (4.78) beats the control's best
+(4.68), which is what makes an 8% claim safe at a 3% noise floor — **quote the separation, not just
+the means**.
+
+⭐⭐ **THE DIAGNOSIS CAME OUT OF THE OBJDUMP, AND NO EMULATOR RUN WAS NEEDED TO FIND IT.** Four
+successive codegen rounds, each read back from `m68k-amiga-elf-objdump`, against zero runs. This is
+the cheap high-yield alternative to another probing session (`docs/method-lessons.md`).
+
+What the clean-cell scan path was actually spending its ~140 cycles on — only ~50 of them were the
+four essential longword reads:
+
+- `tst.l 48(sp)` + `tst.l 52(sp)` = **32 cycles re-reading the loop-invariant `shadowRow` and
+  `rowDirty` off the stack on every one of the 760 cells**;
+- five induction variables advanced per cell (a3/a6/d2/a5/d3), with two shadow pointers parked in
+  DATA registers and copied into a0/a1 each iteration, plus an a5 spill/reload around the
+  expansion. ⭐ **The function had run out of address registers — the signal is pointers living in
+  `d` registers and a `tst.l <n>(sp)` on a value that cannot change inside the loop.**
+- the expansion used indexed `(0,a4,a0.l)` instead of post-increment, re-tested `mode[l]` per line
+  when it is invariant across all 40 cells of a row, and reloaded `moveq #8,d0` every iteration.
+
+The fix is all shape, no algorithm:
+
+1. classify the row ONCE as uniform MODE 5 / MODE 4 / mixed, dispatch a 3-arm switch into
+   `always_inline` specialisations — the per-line `mode[]` test folds away for the ~17 of 19 rows
+   that are uniform;
+2. **split the fused scan+expand into two passes** — find what moved into a `uint8_t changed[40]`,
+   then expand only those. This is what frees the registers; fusing was the register pressure.
+3. `#pragma GCC unroll 8` on the expansion, post-increment longword walks in the scan.
+   ⭐ **GCC 15.1.0 supports `#pragma GCC unroll N` and will NOT unroll a constant-trip-count
+   8-iteration loop unasked at -O3** — worth knowing before concluding a small loop is already flat.
+4. `__builtin_expect(s0 != h0 || s1 != h1, 0)` so the COMMON clean cell falls through. Without it
+   GCC hoisted the second compare out of line and routed the common case through two taken `beq.w`.
+   **128 -> ~80 cycles on the clean-cell path.**
+
+⭐ **THE SCAN VISITS 760 CELLS A FRAME, NOT 1040, AND THAT IS DERIVABLE STATICALLY.** Band 1 (flat
+blue sky) spans display lines 18.0..81.1 in `src/platform/bbc_screen.h`, so character rows 3..9 lie
+wholly inside it, read `any == 0` and are skipped: 19 x 40 = 760. Therefore 23 ms / 760 =
+30 us/cell = **~212 cycles at 7.09 MHz against ~140 nominal — a DMA-contention factor of ~1.6**, on
+the instruction fetch as much as on the data. Use that factor when converting a cycle count into a
+predicted millisecond figure; it took the prediction here (14 ms) to within 15% of the measurement
+(16.4 ms).
+
+⚠⚠ **THE PER-LINE MODE-DIRTY REFINEMENT IS A NULL IN THIS WORKLOAD.** Replacing the whole-row
+mode-dirty flag with a per-LINE bitmask plus a `revs_expand_line` repair pass gave `modeLines=10`
+against `modeDirtyRows=56`, and cells/frame moved 3301 -> 3291 (**0.3%**). Why: `update_horizon_band`
+sweeps the boundary ~12 display lines per PAINTED frame, more than a whole character row, so a
+mode-dirty row usually has all eight lines changed and takes the full path anyway. It is kept
+because it is correct and strictly better in principle; it is credited with nothing.
+⭐ The companion finding is the useful one: of ~92 cells expanded per frame, **~60 are the horizon
+band sliding, not pixels changing** — and those are rows the rising horizon newly revealed, so they
+are genuinely new pixels and irreducible. The expansion's remaining prize is the unroll, not the
+selection.
+
+**How it was proven byte-exact — and why ONE oracle was not enough.** `DIRTYCHECK=1` re-decodes each
+frame unconditionally and requires byte agreement: `checks=28 mismatch=0 firstOff=65535`, with
+`$61=ff $3C=31` proving the car was under power. ⚠ **But the two paths it compares SHARE
+`revs_expand_cell`, so it is blind to a bug in the expansion itself** — a common-mode defect passes.
+The independent check is `FILLWATCH=1` "check 2", which re-derives the expected bitplane bytes from
+`mem[]` through `s_expandLo`/`s_expandHi` and compares against `dst` over display lines 74..167:
+`decode mismatch=0 firstLine=65535` over 197 painted frames, with `horizon change max=2091 cells`
+confirming the scene was moving. ⭐ **Ask what the two sides of an oracle have in common before
+believing it** (`docs/validation-harness.md`).
+⚠ A `planes.bin` diff across the two BUILDS was considered and rejected as an equivalence check:
+they run at different speeds, so at a fixed `g_vbiCount` the sim has advanced differently and the
+picture legitimately differs.
+⚠ `DIRTYCHECK=1` converts twice per frame — **never quote a framerate from it**, nor from
+`FILLWATCH=1`.
 
 ### ⭐ `fill_dash_edge_columns` (phase 18, 17 ms) decomposed — 151 cells, ALL on one arm
 

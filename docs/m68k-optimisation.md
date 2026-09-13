@@ -153,3 +153,40 @@ so it can sit anywhere before the ADDX.
 so an objdump review cannot catch it.  `src/cpu/bcd.h` shipped it briefly and it was found only
 by an on-target sweep (`make BCDSELFTEST=1 PROBES=1`, 4500 add / 10000 sub failures out of
 40000).  **Inline asm for this target is unverified until it has RUN on the target.**
+
+## ⭐⭐ THE 68000 HAS EIGHT ADDRESS REGISTERS AND A HOT LOOP CAN EXHAUST THEM — read the objdump
+
+The framebuffer decode's per-cell scan cost ~140 cycles of which only ~50 were the four longword
+reads it exists to do. The rest was register pressure, and the objdump names it in two tells:
+
+- **`tst.l <n>(sp)` / any `<n>(sp)` operand on a value that cannot change inside the loop.** Two of
+  those (`tst.l 48(sp)` + `tst.l 52(sp)`, re-reading `shadowRow` and `rowDirty`) were **32 cycles a
+  cell**, 23% of the loop, spent re-deciding something settled before it started. GCC did not hoist
+  them because it had nowhere to hoist them TO.
+- **Pointers living in `d` registers**, copied into `a0`/`a1` at the top of each iteration, plus a
+  spill/reload of an `a` register around an inner call site. An address in a data register is not a
+  style choice the compiler made; it is the allocator telling you it ran out.
+
+⭐ **The fix is usually to SPLIT the loop, not to hand-optimise it.** Fusing "find what changed"
+with "act on what changed" is what creates the pressure: each half needs its own set of pointers and
+they are live simultaneously. Two passes over a small stack array (`uint8_t changed[40]`) each fit
+in registers, and the array never leaves cache. 128 → ~80 cycles on the common path, and the second
+pass unrolls cleanly because it no longer carries the first pass's induction variables.
+
+⭐ **Three companion tricks from the same rewrite:**
+- **`#pragma GCC unroll N` works on this toolchain (GCC 15.1.0), and -O3 will NOT unroll a
+  constant-trip-count 8-iteration loop unasked.** Do not assume a small fixed loop is already flat —
+  check, then ask for it. Unrolling also turns indexed `(0,a4,a0.l)` addressing into constant
+  displacements off one base.
+- **`__builtin_expect` on the *condition*, spelled as the mismatch, not the match.** Written as
+  `if (clean) continue;` GCC hoisted the second compare out of line and routed the COMMON case
+  through two taken `beq.w`. Written `if (__builtin_expect(a != b || c != d, 0))` the common case
+  falls straight through. Same semantics, ~8% of the loop.
+- **A test that is invariant across the inner loop belongs in a specialisation, not in the loop.**
+  Classifying a row once and dispatching a 3-arm switch into `always_inline` variants deletes a
+  per-line `mode[]` test from ~17 of 19 rows — the general form of the `always_inline` rule already
+  in this file, applied to a *predicate* rather than to a descriptor pointer.
+
+⚠ Converting a cycle count into a predicted millisecond figure on this target needs a **contention
+factor of ~1.6** (measured: 30 µs for a ~140-cycle cell at 7.09 MHz), and it applies to instruction
+fetch as much as to data. With it the prediction here landed within 15% of the measurement.

@@ -983,6 +983,30 @@ the surviving control says nothing about the change — it says the gate is the 
 When no gate can see a byte the 6502 provably wrote, the faithful move is to KEEP reproducing it
 and to write the argument at the code, because a run will never report its loss.
 
+## ⚠⚠ A DIFFERENTIAL IS BLIND TO WHAT ITS TWO SIDES SHARE (the decode rewrite, 2026-09-13)
+
+`make DIRTYCHECK=1` is a strong-looking oracle: after the optimised decode has run, re-decode the
+same frame **unconditionally** and require the two buffers to agree byte for byte. It reported
+`checks=28 mismatch=0 firstOff=65535` on a rewritten `RevsScreen::convertRace`, with the engine
+provably under power (`$61=ff`).
+
+⚠ **And it could not have caught a bug in the expansion, because both of its sides call
+`revs_expand_cell`.** It compares *which cells were selected*, not *what was written into them*. A
+defect in the shared leaf — a swapped plane, a wrong table, an off-by-one row stride — produces the
+same wrong bytes on both sides and passes silently. This is the same shape as §a differential
+harness carrying state between its two models, one level down: **the two models were never
+independent to begin with.**
+
+⭐ **The habit: before believing a differential, name what its two sides SHARE, and find a check
+that does not share it.** Here that is `FILLWATCH=1` "check 2", which re-derives the expected
+bitplane bytes straight from `mem[]` through `s_expandLo`/`s_expandHi` and compares them against
+`dst` over display lines 74..167 — it never calls the decode's code at all. It read
+`decode mismatch=0 firstLine=65535` over 197 painted frames with `horizon change max=2091 cells`,
+which is the result that actually licensed the commit.
+⚠ Note also what was REJECTED: diffing a `planes.bin` dump between the two BUILDS is not an
+equivalence check, because they run at different speeds and at a fixed `g_vbiCount` the simulation
+has advanced to a different place. A render-speed change moves the trajectory (`docs/perf-method.md`).
+
 ## ⭐⭐⭐ THE RESULTS RULE (user-stated, and it outranks the full-`mem[]` diff)
 
 > "Our intent is to have faithful behavior from the user's point of view, not exact replication of
