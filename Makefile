@@ -279,6 +279,13 @@ determinism-record: $(TARGET)
 	@cp $(DET_RUN).mem.$(DET_FRAME) $(DET_REF)
 	@echo "determinism: recorded frame $(DET_FRAME) -> $(DET_REF)"
 
+# ⚠⚠ ASYMMETRY WITH `determinism-drive` BELOW, AND IT IS A TRAP: this target does NOT clean.
+# It depends on `$(TARGET)`, so it runs whatever configuration the tree was last built in — and
+# because this Makefile tracks no build flag, `make STRAIGHT_TO_RACE=1` (or any other -D) followed
+# by `make determinism` compares the DEFAULT reference against a flagged binary and reports a
+# divergence that is the flag, not a defect.  `determinism-drive` cleans, builds its own flavour,
+# and rebuilds the default afterwards precisely to avoid it.  **`make clean` first, or run
+# `determinism-drive` (which leaves the default binary behind) immediately before this one.**
 determinism: $(TARGET)
 	@test -f $(DET_REF) || { echo "no reference — run 'make determinism-record' first"; exit 1; }
 	@mkdir -p tmp/determinism

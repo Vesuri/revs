@@ -218,6 +218,32 @@ caller picked `usePlot2 ? &SPAN_PLOT_2 : &SPAN_PLOT_1`, so the descriptor was a 
 `move.l 8(a2),d3`. Two `noinline` twins, one per descriptor, is the fix — `noinline` deliberately,
 because the leaf is ~370 instructions and there are twenty call sites.
 
+### ⚠⚠ THE SIBLING CASE: INLINING A BODY **TWICE** EVICTS THE HOT LEAF'S OWN INLINE (2026-09-13)
+
+Same threshold, opposite direction, and worth **4.3 ms/frame** on the dash-edge walk. Serving two
+configurations from one source body — `REVS_FLAG_OP void gap_walk_body(int reread, ...)` with
+`reread` a compile-time constant at both call sites — inlined the whole loop *twice* into
+`column_gap_walk_core`. That doubled the function, and the casualty was not the body: it pushed
+`surface_colour_at_core`, the six-arm classifier **every empty cell calls**, back out of line.
+Each call then cost four `move.l dN,-(sp)` argument pushes, a `lea 85(sp),a0` for the hidden
+struct-return pointer, a `lea 16(sp),sp` cleanup and an `rts`, and GCC unrolled the walk ×4-×7
+around it. Phase 18 went **17.13 → 21.46 ms/frame**.
+
+The objdump is unambiguous and is the only thing that was: `jsr <surface_colour_at_core>` — **0**
+at HEAD, **10** in the regressing build, **7** in the intermediate two-copy shapes.
+
+⭐⭐ **The fix is structural, and all three parts are load-bearing:** one source body, the cold
+instance in its own `static __attribute__((noinline))` wrapper so the hot function stays
+HEAD-sized, and `always_inline` **pinned** on the leaf. Result: 0 `jsr`, and phase 18 at
+**10.40 ms**.
+
+⚠ **The diagnosis I reached first was wrong, and the shape of the error is worth more than the
+fix.** "More hoisted values than there are registers" is the intuitive story, it is consistent with
+a hoist regressing, and it is **retracted** — the hot loop's stack references had gone *down*, not
+up. A plausible cycle-accounting story is not evidence. ⭐ **When a size-changing edit regresses,
+count the `jsr`s to the hot leaves BEFORE reasoning about register pressure** — it is one grep, and
+it is the same trap CLAUDE.md already documents as `jsr <sub_from>` with a different callee.
+
 ⚠⚠ **And the framing error that sent this pass at the wrong target: divide by the right
 denominator.** "24 ms in the span walk / 49 DDA scan lines = ~3 500 cycles per scan line" made the
 walk's inner loop look catastrophic. The honest denominator was **43 spans**, and the weight was in

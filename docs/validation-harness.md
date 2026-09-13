@@ -373,6 +373,13 @@ problems was in the twins.
    ⭐ The same class then produced a *phantom defect*: a "clean" 600-case run reporting 8
    mismatches, which was the previous sabotage's binary.  **Before believing either a green or a
    red, prove the binary is the source you think it is.**
+   ⚠⚠ **BUT THE TELL HAS A LOOK-ALIKE, AND CALLING IT STALENESS WASTES THE RUN: SATURATION.**  A
+   count equal to the fixture's TOTAL case count is not two defects agreeing, it is every case
+   failing — which is what a defect in the twin's *entry* does, and it is the honest result.  Two
+   sabotages both reading `1200 of 1200` say nothing about the build.  ⭐ Discriminate on the
+   **first differing byte**, not the count: staleness reproduces the whole report, saturation
+   reproduces only the total.  (The counts to distrust are the small ones — `2`, `8`, `17` — where
+   an identical number across unrelated defects really is one binary.)
 2. **A CALLEE CAN LOOP FOREVER WITHOUT ANY SMC INVOLVED.**  The tenth lesson above says a random
    SMC byte in a callee is a hang; this is the same symptom with a different cause and it needed
    the same `sample` of a 12-minute run to find.  `plot_object`'s outer loop (`$2002`-`$2027`)

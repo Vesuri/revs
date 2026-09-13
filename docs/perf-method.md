@@ -118,18 +118,27 @@ a PROBES build** — read `accounted NN.N%` first, it must be ~100 or the shares
 
 | ms/frame | Phase(s) | Callee | Code |
 |---|---|---|---|
-| 70 | 24+33+34+32 | **`view_paint_lines`** (the CONSUMER) — sweep 22 · phase-2 15 · phase-3 27 · tail 6 | native, whole tree |
-| 40 | 11 | **`draw_road`** (`$1A20`) | native, whole tree |
-| 38 | 27 | `RevsScreen::decode()` | port |
-| 26 | 5 | **`build_track_geometry`** (`$24F6`) | native, whole tree |
-| 17 | 18 | `fill_dash_edge_columns` | native |
-| 14 | 26 | the 50 Hz drain (`irq1v_band_schedule`) | native |
-| 14 | 28 | the vblank spin | port |
-| ≤3 each | 15, 29, 14, 13, 10, and the rest of the 24-call body | remaining drivers and leaves | mixed |
+| 58.7 | 24+33+34+32 | **`view_paint_lines`** (the CONSUMER) — sweep 15.6 · phase-2 12.4 · phase-3 24.5 · tail 6.3 | native, whole tree |
+| 38.9 | 11 | **`draw_road`** (`$1A20`) | native, whole tree |
+| 26.4 | 27 | `RevsScreen::decode()` | port |
+| 26.7 | 5 | **`build_track_geometry`** (`$24F6`) | native, whole tree |
+| 13.5 | 26 | the 50 Hz drain (`irq1v_band_schedule`) | native |
+| 11.0 | 28 | the vblank spin | port |
+| **10.4** | 18 | `fill_dash_edge_columns` — **was 17.1, see §fixed below** | native |
+| 5.1 · 3.6 · 3.1 | 3 · 4 · 15 | the next three rows down | native |
+| ≤2 each | 29, 14, 13, 10, 7, and the rest of the 24-call body | remaining drivers and leaves | mixed |
 
-Re-measured 2026-09-12 at HEAD `8629ff9` in ONE run (`PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1
-HOLD_THROTTLE=1`, warp, 30 s, driving), 530 loop frames, **`accounted 96.8%`**: **~256 ms/frame
-total**, of which the three pipeline rows are `70 + 40 + 26 = 136 ms ≈ 53%`. ⚠ These are same-run
+Re-measured 2026-09-13 at HEAD `9dfdf4e` (`PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1
+HOLD_THROTTLE=1`, warp, 30 s, driving), 670 loop frames, **`accounted 95.7%`**: **209.4 ms/frame
+bracketed, 218.8 ms wall** (`vbi/loopFrames × 20 ms` — quote that one for the frame, the bracketed
+sum omits phase 0). The three pipeline rows are `58.7 + 38.9 + 26.7 = 124.3 ms ≈ 59%` of the
+bracketed total. The same-session HEAD-minus-the-change control read **214.4 ms bracketed / 221.0
+wall**, and every row above except phase 18 reproduced within 1%, which is what makes this table
+diffable against the next one taken the same way.
+
+⚠ The previous table (2026-09-12, HEAD `8629ff9`, 530 loop frames, `accounted 96.8%`) read
+**~256 ms/frame** with the consumer at 70 and the dash edge at 17 — a different session on a
+different trajectory, so the drop to 209 is NOT a win anyone earned. ⚠ These are same-run
 shares — the three pipeline ms are directly comparable to each other in THIS run; **never diff a ms
 row against the earlier table it replaced** (Rule 2 — different session, different trajectory).
 ⭐ The span rasteriser reworked in `004a672`/`f969843` lives in `draw_surface_spans` (inside
@@ -822,6 +831,47 @@ Three findings:
    boundary table, once via `plot_ptr` into its own source block).
 3. **87% of cells get no surface colour** and fall back to the patched constant — so
    `surface_colour_at_core` is called on all 151 and earns its answer on 19.
+
+#### ⭐⭐ FIXED (2026-09-13, `9dfdf4e`): 17.10 → 10.40 ms/frame, −39%
+
+Differential: two `make clean` builds, `PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`,
+`EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=phase4_prof.gdb ./diag_run.sh 30`, **same session**, control
+built from a stash of the change. Controls: `draw_road` −0.5%, decode −0.0%, `build_track_geometry`
++0.3%, view phase 3 −0.5%, view phase 1 −1.0% — so the workloads match and the row is readable.
+
+The per-cell machinery, traced from the objdump of the empty-cell arm (~650 cycles at HEAD):
+
+| paid per cell | cycles | fate |
+|---|---|---|
+| `zp_pointer` reassembly of `plot_ptr` from two byte lanes (`addq`, `andi.l`, two indexed byte loads, `lsl.l #8`, `or.b`) | ~76 | **hoisted** |
+| `pointer_is_ram` ×2 (`addi.l #256`, `cmpi.l #64512`, `bls`) | ~84 | **compile-time 1** |
+| the colour fallback loaded then immediately SPILLED (`move.b mem+$1DDC,46(sp)`) to survive the classifier | ~32 | **moved into the arm that reads it** |
+| `plot_store_resync`'s `andi.l #65280` + `bne` | ~26 | **gone with the hoist** |
+| the `$1DD4` branch operand, read for an arm the game never takes | ~16 | **gone, decided once per walk** |
+| the loop test's carry (`cmp`/`scc`/`neg.b`), live only at the trap exit | ~16 | **re-derived at that exit** |
+
+⭐⭐ **ONE TEST PER WALK BOUGHT ALL OF IT, and the reason nothing was hoisted before is real rather
+than cautious**: the walk's own stores can land on the cells that drive it — a boundary-table
+pointer of `$005D` (a real randomised fixture case) makes the run cover `$0082` and `$0085`, the
+loop's end line and the column it is filling, and the three patch bytes at `$1DD5`/`$1DDC`/`$1DDE`
+are reachable the same way. So `walk_stores_are_private(base)` asks it once per walk for the three
+bases, and a `no` hands the whole walk to a cold `noinline` copy that re-reads everything exactly as
+before. `g_gapWalkSlow` counts those and reads **0** on the target.
+
+⭐ **The predicate paid off twice.** Because it proves `base >= 0x100`, GCC's value-range
+propagation derived that the store cannot alias `mem[$82]` and **hoisted the end-line load out of
+the loop by itself**, and dropped the `& 0xFFFF` masks. Verified in the fast loop's SCC: `lsl.l #8`
+0, `#64512` 0, `mem+0x82` 0, `scc` 0, `mem+0x1dd5` 0 (HEAD: 1, 4, 1, 1, 1).
+
+⚠⚠ **AND THE WALL CLOCK MOVED LESS THAN THE WORK DID — 221.03 → 218.75 ms/frame, −2.28 ms for
+−6.71 ms of compute.** The difference is not measurement error, it is the engine's **own** frame
+wait at `$1760` (phase 0, excluded from the shares by construction) absorbing it: its open count
+went **17403 → 26105** and it grew +2.74 ms/frame, and the 50 Hz body drain grew +1.29 ms on
++12.6% more drain batches for the same 7 3xx body ticks. Nothing in the change is reachable from
+the body — the walk's only callers are `fill_dash_edge_columns` (phase 18) and
+`plot_view_src_line_core` (the view sweep), all flat or down. ⭐ **So read a compute win against
+the BRACKETED total and treat the wall clock as partly banked slack**: `$1760` gives it back only
+once enough accumulates, which is §Rule 1a's `50/N` quantisation seen from the engine's side.
 
 ### ⚠⚠ MEASURED (2026-09-02): the WIDE-VALUE campaign is NOT VISIBLE end to end — +0.65%, inside noise
 
