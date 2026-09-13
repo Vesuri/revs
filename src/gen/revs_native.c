@@ -456,12 +456,31 @@ static int view_low_page(unsigned page)
     return page >= VIEW_LOW_PAGE && page < VIEW_LOW_PAGE + VIEW_LOW_PAGES;
 }
 
-/* Is `dst` a slot a writer pinned to `page` could name?  The generated oracle spells this
-   as an explicit case list; both come from the same operand-encoding argument. */
-static int view_is_slot(uint16_t dst, unsigned page)
+/* ⭐ ONE TABLE LOAD ANSWERS BOTH OF THE PLANT'S QUESTIONS.  `g_viewSlotOf` holds unit+1 for a
+   slot and 0 for everything else, so "is `lo` a slot a writer pinned to `page` could name" and
+   "which unit is it" are the SAME load.  Asking them as two helpers — view_is_slot then
+   view_unit_of_slot, which is how this was written — made gcc emit the indexed load twice and
+   round the second one through a stack slot (`move.b (0,a2,d0.l),23(sp)` / `move.b 23(sp),d4`).
+   Returns unit+1, or 0 for an address no writer could legally name; the generated oracle spells
+   the same test as an explicit case list, both from the operand-encoding argument above.
+
+   ⚠ SABOTAGE RECORD, and both survivors are argued rather than fixed:
+     * `view_low_page(page)` -> `if (0)` passes all 700 cases with the trap count unchanged, and
+       that is NO CHANGE AT ALL rather than a gap: `page` is the literal 0x7C or 0x7E at every
+       one of view_plant's eight call sites, so the predicate is true on every reachable call.
+       It stays as the ARRAY-BOUND guard on the row index, not as a test anything can fail.
+     * dropping view_plant's `(dst >> 8) == page` test also passes 700/700 with 194 traps, and
+       is a FIXTURE GAP: the fixture's hundred illegal cases perturb the operand's LOW byte,
+       never its high one.  The guard is still shipping code — the operand's high byte is laid
+       down by copy_dash_data and the sweep never writes it, so only an expansion circuit's hook
+       can move a driver store to another page, and `make viewdiff` is what gates that arm (per
+       CLAUDE.md, a hook's patched arm is gated by nothing else).  ⭐ The SIBLING CASE says the
+       gap is inherited, not introduced: the same defect in the two-helper form this replaced
+       (`(dst >> 8) != page` removed from view_is_slot) passes with byte-identical output. */
+static unsigned view_slot_unit1(unsigned lo, unsigned page)
 {
-    if ((dst >> 8) != page || !view_low_page(page)) return 0;
-    return g_viewSlotOf[page - VIEW_LOW_PAGE][dst & 0xFF] != 0;
+    if (!view_low_page(page)) return 0;      /* the row bound; see the sabotage record above */
+    return g_viewSlotOf[page - VIEW_LOW_PAGE][lo];
 }
 
 /* WHERE THE PLANTED STOPS ARE, TRACKED INSTEAD OF RE-READ PER UNIT.  45% of the unit loop was
@@ -480,9 +499,9 @@ static unsigned char g_viewStopList[41];
    used to carry an explicit count, and gcc did to each of them exactly what view_stop_from's
    comment below describes: peeled the trip count and unrolled the search eight ways, twice,
    plus both shift loops.  That made view_plant a ~340-instruction body, which put it over
-   gcc's inlining threshold — so all ~130 plants a frame paid a FIVE-ARGUMENT out-of-line call
-   (the stop moves twice a line through phases 2 and 3), for a list that normally holds ONE
-   entry.  With the count gone the list's own 40 terminates every walk (every real entry is a
+   gcc's inlining threshold — so all 25 plants a sweep paid a FIVE-ARGUMENT out-of-line call
+   (the stop moves on 9 of phase 3's 25 lines and 2 of phase 2's 16), for a list that normally
+   holds ONE entry.  With the count gone the list's own 40 terminates every walk (every real entry is a
    unit index 0..39, ascending), the end is POSITIONAL, and g_viewStopN is retired. */
 
 /* This unit's slot no longer holds `STA (zp),Y`. */
@@ -533,12 +552,6 @@ static int view_stop_from(int unit)
     return *p;
 }
 
-/* The unit an already-validated slot address belongs to. */
-static int view_unit_of_slot(uint16_t dst)
-{
-    return (int)g_viewSlotOf[(dst >> 8) - VIEW_LOW_PAGE][dst & 0xFF] - 1;
-}
-
 /* Plant `opcode` over the store of the unit named by the operand cell at `opnd`.  Returns
    0 (and traps) for a low byte that is not a slot boundary — planting mid-instruction would
    leave the real slot reading `STA` and diverge from the 6502 silently.
@@ -560,16 +573,34 @@ static int view_unit_of_slot(uint16_t dst)
    in an inner loop; it does not hold for a caller that has run out of registers. */
 static int view_plant(ViewState* v, uint16_t site, uint16_t opnd, unsigned page, uint8_t opcode)
 {
+    /* ⚠ `dst` STAYS ONE VALUE, and the objdump is the whole reason.  Splitting the operand into
+       `hi` and `lo` locals is the obvious way to write this — the page test wants one byte and
+       the slot lookup the other — but it is one more live value in a five-argument function that
+       is already at the register ceiling (the same ceiling that made `always_inline` cost 1 ms
+       here, see the banner above), so gcc spills `lo` as well and the body goes 106 -> 110.
+       Written as one `dst` it is 106, level with the two-helper form this replaced.
+
+       ⚠⚠ AND THAT IS THE RESULT: this fold is a WASH, not a win, which is worth knowing because
+       the shape looks like a win.  It does delete one of the two indexed table loads the
+       two-helper form emitted, but pays it straight back in `movea.l` + testing the byte through
+       the stack slot gcc still insists on (`move.b (0,a2,d0.l),20(sp)` / `tst.b 20(sp)`), so the
+       fast path is 33 instructions and ~50 cycles of table traffic either way.  Nothing was
+       sinkable onto the trap path either — `mem[dst]` needs `dst` on the fast path regardless.
+       ⭐ DO NOT SPEND A MEASUREMENT RUN ON THIS FUNCTION: the sweep makes 25 plants, so one
+       removed RAM access is ~350 cycles, ~0.05 ms/frame — two orders below what a run resolves.
+       view_plant is DONE as an optimisation target; the sweep's milliseconds are in the
+       per-run set-up in paint_cells, not here. */
     uint16_t dst = (uint16_t)(mem[opnd] | (mem[opnd + 1] << 8));
+    unsigned unit1 = ((dst >> 8) == page) ? view_slot_unit1(dst & 0xFFu, page) : 0;
     v->byte = opcode;
-    if (!view_is_slot(dst, page)) { platform_smc_unhandled(site, dst); return 0; }
-    /* view_is_slot has just proved `dst` is one of the known opcode slots in the $7C-$7E
-       code pages, so this is RAM by construction and the hardware-window test bus_write
-       would pay is dead. */
+    if (!unit1) { platform_smc_unhandled(site, dst); return 0; }
+    /* view_slot_unit1 has just proved this is one of the known opcode slots in the $7C-$7E
+       code pages, so it is RAM by construction and the hardware-window test bus_write would
+       pay is dead. */
     mem[dst] = (uint8_t)v->byte;
     /* the only writer of an opcode slot during a sweep, so the stop list stays exact */
-    if (opcode == OP_STA_IND_Y) view_stop_forget(view_unit_of_slot(dst));
-    else                        view_stop_note(view_unit_of_slot(dst));
+    if (opcode == OP_STA_IND_Y) view_stop_forget((int)unit1 - 1);
+    else                        view_stop_note((int)unit1 - 1);
     return 1;
 }
 
