@@ -1,4 +1,10 @@
 # ⭐⭐ WHY IS draw_road (phase 11) ~16% of the frame?  (src/platform/probe.h §ROADSPLIT)
+# ⚠⚠ TWO INSTRUMENT COSTS, AND NEITHER IS FREE.  (1) EVERY BRACKET TRANSITION COSTS ~107 us
+# (758 cycles) — bracket 49 measures it directly, because 49's bracket contains NOTHING.  So
+# correct every row by `instances x 107 us` before quoting it; doing that drives 49 itself to
+# -0.4 ms ~ 0, which is the verification.  (2) `ROAD_COUNT` is a volatile 32-bit RMW (~40 cycles)
+# and the DDA-step counter fires 232 times a frame, so even a floor-corrected sum over-reads a
+# plain PROBES=1 phase 11 by ~15%.  ⇒ READ ROADSPLIT FOR THE RATIO, phase4_prof FOR THE ABSOLUTE.
 #
 # Build: cd amiga && make clean && make -j4 ROADSPLIT=1 PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1
 # Run:   . ./env.sh && EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=roadsplit.gdb ./diag_run.sh 30

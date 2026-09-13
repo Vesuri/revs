@@ -119,7 +119,7 @@ a PROBES build** — read `accounted NN.N%` first, it must be ~100 or the shares
 | ms/frame | Phase(s) | Callee | Code |
 |---|---|---|---|
 | 58.7 | 24+33+34+32 | **`view_paint_lines`** (the CONSUMER) — sweep 15.6 · phase-2 12.4 · phase-3 24.5 · tail 6.3 | native, whole tree |
-| 38.9 | 11 | **`draw_road`** (`$1A20`) | native, whole tree |
+| **34.1** | 11 | **`draw_road`** (`$1A20`) — **was 38.9; the packed span-plotter ABI, §below** | native, whole tree |
 | 26.4 | 27 | `RevsScreen::decode()` | port |
 | 26.7 | 5 | **`build_track_geometry`** (`$24F6`) | native, whole tree |
 | 13.5 | 26 | the 50 Hz drain (`irq1v_band_schedule`) | native |
@@ -135,6 +135,10 @@ sum omits phase 0). The three pipeline rows are `58.7 + 38.9 + 26.7 = 124.3 ms �
 bracketed total. The same-session HEAD-minus-the-change control read **214.4 ms bracketed / 221.0
 wall**, and every row above except phase 18 reproduced within 1%, which is what makes this table
 diffable against the next one taken the same way.
+⭐ **`draw_road` was re-measured at `ea02975`: 34.10 ms, from two bracketing control runs that read
+38.89 and 38.90** (the packed span-plotter ABI, §below). Its −4.79 ms did **not** appear in the
+frame total — the vblank spin (phase 28) took +3.03 ms of it, which is Rule 1a's pad seen from the
+phase table. **Σ(1..39) − phase 28** moved 197.05 → 192.63 ms; that is the row to diff.
 
 ⚠ The previous table (2026-09-12, HEAD `8629ff9`, 530 loop frames, `accounted 96.8%`) read
 **~256 ms/frame** with the consumer at 70 and the dash edge at 17 — a different session on a
@@ -410,6 +414,71 @@ code-shape defect here of the kind the decode had.**
 ⇒ **The combined `interp_edge`+`span_walk` kernel's win has to come from deleting the per-span
 REPRESENTATION, not from flattening the call graph** — the call graph has now been flattened and it
 was worth 0.8%. ⚠ 37 ms to write **60 cell bytes** is the ratio to attack.
+⚠ That last sentence stood for one pass and is now **half retracted**: there WAS one more
+code-shape defect, and it was worth −4.79 ms. See the next two subsections.
+
+#### ⭐⭐ THE SPAN RASTERISER, DECOMPOSED IN FOUR — AND THE CONTROL BRACKET THAT MAKES IT READABLE (2026-09-13)
+
+`make ROADSPLIT=1 PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` +
+`GDBSCRIPT=roadsplit.gdb` now carves phase 45 into four (probe.h §47/48/49):
+
+| bracket | what | instances/frame |
+|---|---|---|
+| 45 | `interp_edge_core`'s per-span SETUP plus the driver | 26 |
+| 47 | `span_walk` — the four inlined DDA arms | 83 (= 24 walks + 60 re-opens after each plot) |
+| 48 | `span_plot_core` — one column merged into one cell | 60 |
+| **49** | **THE CONTROL: an empty bracket at exactly the plot rate** | 60 |
+
+⭐⭐⭐ **49 IS THE LOAD-BEARING PART, AND IT MEASURES THE INSTRUMENT'S FLOOR AT 107 µs (758 cycles)
+PER TRANSITION.** Its bracket contains *nothing*, so its ticks ARE the probe's own cost at this
+rate; correcting every row by `instances × 107 µs` drives the control itself to **−0.4 ms ≈ 0**,
+which is the verification (and it agrees with CLAUDE.md's documented 92 µs ISRSPLIT floor).
+⚠⚠ **So no ROADSPLIT row may be quoted raw**: adding brackets inflated the pass from 42 to 65 ms
+and the raw rows over-read by 2.8 / 8.9 / 6.4 ms. And ⚠ **`ROAD_COUNT` is not free either** — each
+one is a `volatile unsigned long` RMW, ~40 cycles, and the step counter fires 232 times a frame, so
+a floor-corrected ROADSPLIT sum still over-reads a plain `PROBES=1` phase 11 by ~15%. Use ROADSPLIT
+for the **ratio**, and the plain phase-11 row for the **absolute**.
+
+Floor-corrected, after the packed-ABI change below (~29 ms of `draw_surface_spans`):
+
+| item | ms/frame | per unit |
+|---|---|---|
+| per-span SETUP (45) | **~11.5** (40%) | 43 spans × ~1 900 cycles |
+| `span_walk` scaffolding (47) | **~10.5** (36%) | 24 walks × ~3 100 cycles, i.e. 232 DDA steps × ~320 |
+| `span_plot_core` (48) | **~7** (24%) | 60 plots × ~830 cycles |
+
+⭐⭐ **ONLY 24 OF THE 43 SPANS REACH THE WALK** (47's walk-entry count vs `g_roadSpans`) — the rest
+return earlier, publish-only or `block >= 0x28` off-side. Per DRAWN span the pass costs ~8 500
+cycles to plot 2.5 cells. That, not the scan-line count, is the ratio to attack.
+
+#### ⭐⭐ …AND THE SECOND CODE-SHAPE DEFECT: FIVE POINTER PARAMETERS WERE THE WALK'S LOOP STATE — −4.79 ms (2026-09-13)
+
+`sw_plot_1`/`sw_plot_2`/`span_plot_core` took `&y`, `&carry`, `&abandoned`; `span_end_marker` took
+`&colMark`, `&carry`. **Those five pointers are `span_walk`'s entire DDA state**, so address-taking
+them pinned the loop state in the stack frame — the objdump read `adda.l -8(a5),a1` … `move.l
+d7,-8(a5)` on every DDA step, **265 a5-relative operands** in `interp_edge_core`, three `pea`s per
+plot, and `*y` dereferenced a dozen times inside the leaf.
+
+The fix is a value-in / packed-value-out ABI: the plotters take `(column, y, carryIn)` and return
+**one `d0`** — y in the high byte, the exit carry in bit 1, "the chain abandoned" in bit 0
+(`SPAN_PLOT_PACK`). `span_end_marker` splits into an `always_inline` `_core` taking `colMark` by
+value plus the pointer wrapper the 6502-ABI shims need.
+
+| | control (×2 runs) | packed ABI |
+|---|---|---|
+| `draw_road` (phase 11) | 38.89 / 38.90 ms | **34.10 ms  (−4.79, −12.3%)** |
+| compute (Σ1..39 − spin) | 197.05 ms | 192.63 ms (−4.42) |
+| `interp_edge_core` `pea` / a5-operands | 60 / 265 | **8 / 0** |
+| `jsr span_end_marker` | 4 | **0** (the marker inlines whole) |
+
+⚠ `interp_edge_core` grew 1708 → 2217 instructions and got **faster** — the 68000's memory access
+is 16-20 cycles against 4-8 for a register op, so instruction count is the wrong scoreboard here.
+
+⇒ **THE STANDING CONCLUSION, REVISED.** "No code-shape defect of the kind the decode had" was
+wrong once, and the tell both times was the same one: **a hot loop whose state is reachable through
+a pointer lives in memory.** Grep a hot kernel's objdump for frame-pointer operands (`n(a5)`,
+`n(sp)`) and `pea` before concluding the shape is clean. What is left is genuinely the per-span
+REPRESENTATION (~11.5 ms for 43 spans) and the per-walk entry/exit (~10.5 ms for 24 walks).
 
 ### ⭐⭐ Inside `view_paint_lines` (phases 24/33/34/32) — where its ~27% goes, and why
 
@@ -1132,6 +1201,14 @@ Past the field boundary the response returns to ~90% of linear. The pad here is 
 **So the scoreboard is the PHASE TABLE in ms/frame; FPS is a derived `50/N` that follows.** (User,
 2026-09-13: *"you should not be looking at FPS numbers (they're indeed 50/N) but pure millisecond
 counts and get those down. FPS will follow."*)
+
+⭐⭐ **AND THE PAD HAS ITS OWN PHASE ROW, SO THE PHASE TABLE SHOWS THE ABSORPTION DIRECTLY:
+`phase 28` IS the spin.** A change that removes real compute reads as `phase 11 −4.79 ms,
+phase 28 +3.03 ms, Σ1..39 −1.39 ms` — and the +3 ms is not the change giving itself back, it is
+the pad growing to the same field boundary. ⇒ **size a change against `Σ(phases 1..39) − phase 28`,
+or against the one phase row you changed; the bracketed FRAME total moves in 20 ms steps and
+reads two identical control runs 2 ms apart.** (Measured on the span plotters' packed-ABI change,
+2026-09-13 — the section below.)
 
 ⭐⭐ **And the corollary is good news: the payoff is a STEP FUNCTION.** The frame's work now sits at
 ~9.06 fields, just above the 9-field boundary. The next ~1.5 ms moves the bulk of frames from N=10

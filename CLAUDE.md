@@ -382,6 +382,13 @@ end to end** — the scan was re-reading two loop-invariant stack slots per cell
 pointers into data registers. **Read the objdump of a hot loop before theorising about its
 algorithm**, and see `docs/perf-method.md` for what to look for (a `tst.l <n>(sp)` on a loop
 invariant; pointers living in `d` registers).
+⭐⭐ **The same class caught the span rasteriser a second time, for −4.79 ms: A HOT LOOP'S STATE
+LIVES IN MEMORY IF ANYTHING TAKES ITS ADDRESS.** `sw_plot_*(…, &y, &carry, &abandoned)` and
+`span_end_marker(…, &colMark, &carry)` *were* `span_walk`'s whole DDA state, so it sat in the stack
+frame (265 `n(a5)` operands, three `pea`s per plot). Hand several small results back **packed in
+one `d0`** instead. ⚠ And the routine got BIGGER — 1708 → 2217 instructions — and faster; on the
+68000 a memory operand is 16-20 cycles against 4-8 for a register op, so **instruction count is not
+the scoreboard.** Grep a hot kernel for `n(a5)` / `n(sp)` / `pea` before calling its shape clean.
 ⭐⭐ **The lever is the VIEW PIPELINE: `build_track_geometry` → `draw_road` → `view_paint_lines` is
 the dominant subsystem and it is ONE subsystem** — the first two *produce* source bytes into the forty `$80`-spaced blocks
 at `$3000..$4380`, the third is the single *consumer*. Current shares, every past change and its
@@ -401,6 +408,10 @@ Rules that must survive without opening `docs/perf-method.md`:
   quotable. The `total` spans a partial trailing row and varies 3% between identical builds.
 - **Use 30-second warp runs, not longer**: a `STRAIGHT_TO_RACE` run eventually leaves the track and
   resets, so a longer run DILUTES the measurement with a static scene instead of adding data.
+- ⚠⚠ **A COMPUTE WIN PARTLY REAPPEARS AS `phase 28`, THE VBLANK SPIN — that is the `50/N` pad, not
+  the change giving itself back.** `draw_road` −4.79 ms read as phase 28 +3.03 and a frame total of
+  only −1.39; two identical control runs read the frame total 2 ms apart. **Size a change against
+  `Σ(phases 1..39) − phase 28`, or against the single phase row you changed.**
 - **FPS over-reads wins — under ~3% is noise.** Quote a static cycle count or a differential ratio
   as the win; quote FPS only as the standing baseline. ⚠ Per-iteration ("t/it") phase numbers are
   not a safer alternative (~±10% trajectory noise) and must never be diffed across builds. Phase
