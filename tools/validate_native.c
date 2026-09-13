@@ -6505,8 +6505,14 @@ static int test_geometry_callees(void)
             c.X = (uint8_t)xs(); c.Y = (uint8_t)xs();
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
             c.D = 0;
+            /* ⭐ V IS NOT A RESULT HERE — the written reader audit is at
+               road_edge_side_core in revs_native.c: the routine's only V write is the
+               far-side `ADC #$78`, and every path from its RTS reaches the `SBC $6280,Y`
+               at $214B (through road_edge_walk $23D2 → $23BB → $2145) before any reader,
+               including the $248B hook re-entry.  The engine's twelve BVC/BVS sites are all
+               off this path.  So the twin adds the byte in plain C and V is ignored. */
             subFail += diff_run("road_edge_side", pre, c, road_edge_side,
-                                road_edge_side__t6502, liveMask, t, &printed);
+                                road_edge_side__t6502, liveMask & ~LIVE_V, t, &printed);
             if (mem[0x0049] != 0) farSide++;
         }
         fail += subFail;
@@ -6515,7 +6521,7 @@ static int test_geometry_callees(void)
                    "the two arms was never run\n", farSide, sideCases);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=AXY+flags-V  "
                "(%d/%d far side)\n", "road_edge_side", sideCases, subFail, farSide, sideCases);
     }
 

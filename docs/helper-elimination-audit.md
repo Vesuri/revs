@@ -12,27 +12,38 @@ is read by a caller, pushed by a `PHP` that the differential compares, or rolled
 D=0 (`static-map.md` §Decimal mode), so an `adc`/`sbc` byte chain is just a binary `+`/`-`.
 
 Audited 2026-08-23 at HEAD `c5f9b73` (60 sites, 31 functions). **16 KEEP, 44 CONVERT.**
+⚠ Part 1 was re-derived from the source on 2026-09-13 and nine of its rows were STALE — read
+its banner before trusting any row here.
 
 ---
 
-## Part 1 — KEEP: the flag genuinely escapes (16 sites) — PERMANENT LEDGER, do not re-litigate
+## Part 1 — KEEP: the flag genuinely escapes — the LIVE ledger
 
-These were confirmed by this audit and, for the render path, by the earlier `0c67002` / `f643922`
-audits. **Do not convert them** — the argument is written at each site in the source.
+⚠⚠ **A "DO NOT RE-LITIGATE" ROW IS ONLY AS GOOD AS THE AUDIT BEHIND IT.** The table this
+replaces carried eleven rows, nine of which named helpers (`adc_step`, `sub_from`, `adc_value`)
+that have had **no call site in `revs_native.c` for several commits** — the campaign ran past its
+own ledger and nobody re-read it. Worse, its `road_edge_side_core` row read *"far-side arm's V
+(`ADC #$78`) leaks to caller before RTS"*, which stopped at the RTS instead of following the
+caller, and the banner then protected the claim from being checked. **An escape claim must name
+the READER, or the transitive path to the instruction that overwrites the flag** — the same
+transitive-closure discipline the `cpu` campaign closed on. `road_edge_side_core` is now plain C.
+
+⭐ **Only the minimal single-flag replays survive, and the five-`cpu`-field macros are GONE:**
+`adc_step`, `sub_from`, `sbc_step`, `adc_value`, `sbc_value`, `lsr_a` and `ror_a` all have **0**
+call sites. Fifteen remain, and each is `adc_overflow` / `sbc_overflow` — a plain C add or
+subtract plus a replay of the ONE escaping flag, `cpu` untouched — or the single `load_a`.
 
 | function | line(s) | helper | why it stays |
 |---|---|---|---|
-| `step_scanline` | 733, 735, 736 | adc_step | 16-bit `plot_ptr` carry chain; 736's carry → `*carry_out`, read by `paint_lines_short`; may run D=1 |
-| `emit_edge_width_offset_core` | 2132 | adc_overflow | exit V — already the minimal "replay only V" idiom (565/2000) |
-| `road_edge_side_core` | 2226 | adc_step | far-side arm's V (`ADC #$78`) leaks to caller before RTS |
-| `draw_road_core` | 2788 | adc_step | exit V on the SMC-early-return path (28/200) |
-| `mark_line_surfaces_core` | 4874, 4876 | adc_step | 4876's last V is the routine's exit V (162/800); 4874's N is intertwined — keep the pair |
-| `edge_x_offscreen_core` | 4547 | adc_step | V escapes + the CMP-carry is ROR'd into `shared_temp_76` (the real output) |
-| `copy_dash_data` | 3189 | adc_step | exit V of `ADC #$80` (value is identity, but V replay still needs the helper) |
-| `sound_queue_core` | 6418 | adc_step | C and V both live at exit; nothing below writes either |
-| `plot_view_src_line_core` | 8248 | adc_step | V live at *every* exit below |
-| `place_player_in_section` | 9196 | sub_from | result A **and sign N** are live inputs to the `abs8()` leaf hook two lines down |
-| `tally_bcd_column` | 9605, 9607 | adc_value | genuine BCD inside the `cpu.D=1` region — one of the 8 SED sites; **keep `adc_value`** |
+| `race_frame_tail` | 1559 | load_a | publishes A into `cpu` for the frame hook's own caller |
+| `emit_edge_width_offset_core` | 2924 | adc_overflow | exit V (565/2000) |
+| `draw_track_object_core` | 4146 | adc_overflow | exit V on the drawn arm ($2AF1 `ADC #$50`) |
+| `mark_line_surfaces_core` | 6028, 6031 | adc_overflow | 6031's V is the routine's exit V (162/800) |
+| `column_gap_walk_core` | 6458 | adc_overflow | exit V rides out in `SlotExit`; a RESULTS-rule reader audit is still owed here |
+| `write_object_slot_core` | 8929, 8944 | sbc_overflow | exit V and C on the reject-line arm; exit V on the drawn arm |
+| `build_road_sign_core` | 9164, 9176, 9188, 9238, 9252 | adc_overflow | the sign's placement chain leaks V at several exits |
+| `scale_wing_settings_core` | 11062 | adc_overflow | exit V |
+| `hook_merge_horizon_edges_core` | 16356 | sbc_overflow | exit V, and this is a PATCHED-arm routine — settle it with `make viewdiff`, never a Silverstone run |
 
 ---
 

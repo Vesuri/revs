@@ -3051,10 +3051,17 @@ static RoadSide road_edge_side_core(uint8_t sideSelect, uint8_t cursor, uint8_t 
 {
     RoadSide r;
     if ((sideSelect ^ direction) & 0x80u) {          /* $254C-$254E EOR / BPL */
-        /* ⭐ The `CLC / ADC #$78` at $2551 is the ONLY thing in the routine that writes V, and
-           nothing overwrites it before the RTS — so the far-side arm leaks the overflow of
-           cursor + 120 to the caller and the add has to go through the 6502's own. */
-        r.sectionIndex = (uint8_t)adc_step(cursor, 0x78, 0);
+        /* ⭐⭐ THE `CLC / ADC #$78` AT $2551 IS THE ROUTINE'S ONLY V WRITE, AND THAT V IS DEAD
+           — audited as a transitive closure, which is what the first audit skipped.  Both call
+           sites ($2507, $2515) go `LDA #imm` (no V) straight into road_edge_walk at $23D2,
+           whose first act is `STA/LDA/STA` then `JSR $23BB` → `JSR $2145` →
+           `LDY #0 / LDA $0900,X / SEC / SBC $6280,Y`, and that `SBC` at $214B overwrites V.
+           Nothing in between reads it: the whole engine holds twelve `BVC`/`BVS` sites and
+           none is in $20xx-$25xx on this path (the nearest two, $2069 and $20FE, are in
+           FUN_202a and FUN_209a, off it).  The $248B hook re-entry is downstream of $214B
+           too, so an expansion circuit's patched arm cannot see this V either.
+           So this is a plain byte add and the fixture stops comparing V (validate_native.c). */
+        r.sectionIndex = (uint8_t)(cursor + 0x78u);
         r.wrapLimit    = 0x78;
         r.side         = 1;
     } else {
