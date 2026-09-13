@@ -1007,13 +1007,97 @@ than an obvious zero. `make probe-audit` enforces this on every link.
 - ⚠ **Never quote a framerate from a `PROBES` build.** The timing brackets are real cost —
   several register reads and a multiply per bracket transition — and the probes are what the
   honest build exists to measure against.
-- ⚠ **This harness OVER-reads a win.** A differential that predicts a small percentage change can
-  measure several times that end to end. **Under ~3% is agreement, not evidence.**
+- ⚠⚠ **THIS HARNESS UNDER-READS A WIN BY ~4x AT THE CURRENT OPERATING POINT — see Rule 1a, which
+  measures it both ways with a known burn.** The framerate is quantised to `50/N` and the frame
+  wait pads every saving back up to the next field boundary. The older note here said the opposite
+  ("over-reads a win; under ~3% is agreement, not evidence"); that reading came from cross-run
+  comparisons whose WORKLOAD had shifted, and Rule 1a's controls settle it. **Size a change in
+  ms/frame from the phase table; read FPS only as the standing baseline.**
 - ⚠ Sample in SHORT segments and discard rows where the run stopped doing the work being measured
   (the car leaving the track). A wide window straddling that under-reports badly.
 
 **So: quote a static cycle count or a differential ratio as the win, and an FPS row only as the
 standing baseline.**
+
+## ⭐⭐⭐ Rule 1a — THE FRAMERATE IS QUANTISED TO `50/N`, SO SIZE A CHANGE IN **ms/frame** (2026-09-13)
+
+`PlatformAmiga::renderFrame()` presents and then spins until `g_vbiCount` changes, so **a painted
+frame always lasts a whole number of PAL fields** and the framerate can only ever be `50/N`. The
+spin pads whatever the frame's work is up to the next field boundary — so a saving *smaller than
+the current pad* is entirely real and entirely invisible to FPS. So is a regression.
+
+**Measured, with a known burn.** N x 14 000 known cycles (1975 µs each) added to the painted frame,
+one burn per `renderFrame()`, in an otherwise honest `FPSCOUNT=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1`
+build, with the burn's own counter printed beside the series so the switch proves it ran (it read
+exactly one burn per painted frame):
+
+| burn | added ms/frame | FPS, non-outlier rows | FPS reads | unquantised would be | mean fields/frame |
+|---|---|---|---|---|---|
+| 0  | —     | 5.053 | —      | —      | 9.895 |
+| 4  | +7.9  | 5.004 | −0.97% | −3.8%  | 9.992 |
+| 8  | +15.8 | 4.702 | −6.9%  | −7.4%  | 10.634 |
+| 12 | +23.7 | 4.563 | −9.7%  | −10.7% | 10.958 |
+
+The first 7.9 ms of REAL added cost bought a 0.97% FPS change — **75% of it absorbed by the pad**.
+Past the field boundary the response returns to ~90% of linear. The pad here is ~0.6 field ≈ 12 ms.
+
+⚠⚠ **Both signs of the same factor, measured in one session:**
+- the unit-loop unroll saved **−12.5 ms/frame (+6.2%)** on a workload-identical phase differential
+  while `fps_series` read **+1.5%** — under-read **4.1x**;
+- the burn added **+7.9 ms/frame (−3.8%)** while `fps_series` read **−0.97%** — under-read **3.9x**.
+
+**So the scoreboard is the PHASE TABLE in ms/frame; FPS is a derived `50/N` that follows.** (User,
+2026-09-13: *"you should not be looking at FPS numbers (they're indeed 50/N) but pure millisecond
+counts and get those down. FPS will follow."*)
+
+⭐⭐ **And the corollary is good news: the payoff is a STEP FUNCTION.** The frame's work now sits at
+~9.06 fields, just above the 9-field boundary. The next ~1.5 ms moves the bulk of frames from N=10
+to N=9 — about **+10% of framerate for 1.5 ms** — and every millisecond cut before that is banked,
+not lost. This is also why several of this project's "null results" deserve re-reading: a change
+measured at −0.4% or +0.65% by FPS alone was never shown to be worth zero *milliseconds*.
+
+⚠ To rebuild the burn (it is not committed — it exists to price the grid once, and the grid is now
+priced): a `for (int b = 0; b < REVS_FPSBURN; ++b)` around `probe.cpp`'s exact
+`move.w #999 / nop / dbra` idiom at the top of `renderFrame()`, a `volatile unsigned long`
+call counter beside it, and `ifdef FPSBURN -> EXTRA_DEFINES += -DREVS_FPSBURN=$(FPSBURN)` in
+`amiga/Makefile`.
+
+### ⭐⭐ THE DIFFERENTIAL THAT CAN SEE A MILLISECOND — the phase table, arm against arm
+
+```
+cd amiga && make clean && make -j4 PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1
+. ./env.sh && EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=phase4_prof.gdb ./diag_run.sh 30
+```
+…then the same for the other arm, **in the same session**, and read `ticks/g_phaseFrames/4006` as
+ms/frame rather than the truncated integer column.
+
+⭐⭐ **What makes it a fair A/B is that the UNRELATED phases must agree**, and they do to a degree
+that no FPS row can approach — which is the proof the two arms ran the same workload despite the
+trajectory being free to shift:
+
+| | arm A | arm B | Δ |
+|---|---|---|---|
+| `build_track_geometry` (5) | 26.70 | 26.69 | −0.01 |
+| `draw_road` (11) | 38.97 | 38.95 | −0.02 |
+| `fill_dash_edge_columns` (18) | 17.12 | 17.11 | −0.01 |
+| frame-buffer decode (27) | 25.05 | 25.13 | +0.08 |
+| **control total** | **107.84** | **107.88** | **+0.04%** |
+| view phase 1 (24) | 21.99 | 15.80 | **−6.19** |
+| view phase 2 (33) | 14.69 | 12.06 | **−2.63** |
+| view phase 3 (34) | 25.13 | 23.46 | **−1.68** |
+| 50 Hz body drain (26) | 13.79 | 12.99 | −0.81 |
+| vblank spin (28) | 11.97 | 10.63 | −1.33 |
+| **frame total** | **216.27** | **203.75** | **−12.52 (+6.15%)** |
+
+Arm A is `fd414b4`, arm B the 4-way unrolled unit loop (`fa046af`). The census was identical in
+both (2148 unit visits, 118 runs, 77 lines per frame), and the same pair at a 30 s window read
+−10.57 ms of view painting with the controls agreeing to 0.29% — **so the number is
+window-independent**. The three derived rows (drain, spin, body arm) are consequences of a shorter
+frame, not separate wins: fewer 50 Hz ticks to drain per painted frame, and less pad to spin.
+
+⭐ Phase 1's 10.4 µs/unit against ~45 nominal cycles from the objdump reproduces the documented
+~1.6 contention factor, so the cycle model behind the prediction was sound all along: the
+objdump predicted ~6.8% and the honest differential measured 6.15%.
 
 ## Rule 2 — price a native/asm twin with an IN-PROCESS differential, never cross-run
 

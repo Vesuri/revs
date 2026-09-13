@@ -223,3 +223,44 @@ denominator.** "24 ms in the span walk / 49 DDA scan lines = ~3 500 cycles per s
 walk's inner loop look catastrophic. The honest denominator was **43 spans**, and the weight was in
 per-span setup, not per-line work. **Before optimising a loop, check how many times it actually
 runs** — `docs/perf-method.md` §the span kernel's call and search surface.
+
+## ⭐⭐ HAND-UNROLL: `#pragma GCC unroll N` IS IGNORED, AND THE WIN IS THE ADDRESSING (2026-09-13)
+
+m68k-amiga-elf-gcc 15.1.0 at `-O2` **ignores `#pragma GCC unroll 4`** — byte-identical output, 282
+instructions either way. Unroll by hand (a file-scope macro taking the unit's byte offsets, so the
+loop's own locals stay visible to it).
+
+What the unroll actually buys, measured on `view_paint_lines`' unit loop — a byte load 128 apart,
+a test, a byte store 8 apart:
+
+| | cycles/unit |
+|---|---|
+| one unit a turn | 64 |
+| …with the loop rotated store-first (gcc's own shape) | 72 |
+| **4 units a turn** | **43** |
+| remainder loop (recovers a conditional back edge) | 56 |
+
+Two mechanisms, both about addressing rather than about the branch:
+- three of the four units reach memory through a **`d16(An)` displacement (4 cycles)** instead of a
+  pointer bump (`addq`/`lea`, 8);
+- one back edge serves four units.
+
+⭐ Choose the factor against the RUN-LENGTH DISTRIBUTION, not by taste: runs averaged ~17.7 units,
+so a quad loop keeps four full turns and leaves a short remainder. An 8-way computes to ~41
+cycles/unit — 2 better — and would spend more of the run in the one-at-a-time tail.
+
+⭐⭐ **282 -> 785 instructions cost nothing: the 68000 has no instruction cache**, so cold arms of
+the unrolled body are never fetched. The only real cost is branch distance — three `bne.s` (8
+cycles not-taken) became `bne.w` (12).
+
+## ⚠⚠ GCC'S LOOP ROTATION IS NOT REACHABLE FROM THE SOURCE — CHECK THE BACK-EDGE MNEMONIC
+
+A plain `while`, a guarded `do`/`while` and an explicit down-counter all produced the **identical**
+store-first shape, and the down-counter was strength-reduced back into a pointer compare. GCC
+rotates such a loop so the store leads and closes it with an unconditional `bra`, which is ~8
+cycles a unit of pure book-keeping. You cannot ask for the other shape; you can only unroll so the
+book-keeping is amortised.
+
+⭐ So the objdump check on a hot loop is **the back-edge mnemonic**, not only the absence of a
+`jsr`: a conditional back edge (`bne.s`, 10 taken) is the good shape; a `bra` at the bottom plus a
+`beq` out of the middle is the rotated one, and it is costing you the difference.
