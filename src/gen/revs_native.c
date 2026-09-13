@@ -4959,11 +4959,6 @@ void span_plot_core(const SpanPlotter* p, uint8_t column,
    $58), above the $50 scan lines the span plotters can reach through ($70),Y.  Anything else
    goes to platform_smc_unhandled, exactly as an unrecognised opcode slot does. */
 
-/* Where an entry offset may land, relative to the chain's own base.  Both shallow arms share
-   one pair of tables and both steep arms share one: the two mirrors have identical layouts. */
-static const uint8_t SHALLOW_DDA_OFF[8] = { 0x02, 0x0D, 0x18, 0x23, 0x33, 0x3E, 0x49, 0x54 };
-static const uint8_t SHALLOW_COL_OFF[8] = { 0x08, 0x13, 0x1E, 0x29, 0x39, 0x44, 0x4F, 0x5A };
-static const uint8_t STEEP_COL_OFF[8]   = { 0x00, 0x0B, 0x16, 0x21, 0x2E, 0x39, 0x44, 0x4F };
 
 /* promoted for revs_native_abi.c */ const SpanArm ARM_SHALLOW_FWD = { 0x3E50u, 0x2D28u, 0x2D29u, SPAN_DY, SPAN_DX, 0, 0, 0x44u };
 /* promoted for revs_native_abi.c */ const SpanArm ARM_SHALLOW_REV = { 0x40D0u, 0x2DABu, 0x2DACu, SPAN_DY, SPAN_DX, 1, 0, 0x2Fu };
@@ -4982,21 +4977,58 @@ void span_plot_oracle(const SpanPlotter *p, uint8_t column,
 /* Decode a patched entry offset into "start at column c", plus whether the DDA test for that
    first column is skipped (the offset named its `LDX #k` slot) and whether the chain's own
    top runs first.  Returns 0 for an offset the chain cannot mean. */
-static int span_entry_decode(const SpanArm* arm, uint8_t offset,
+/* ⭐ THE COVERAGE SET IS THE SWITCH, AND IT IS THE ONLY COPY OF IT.  Where an entry offset may
+   land, relative to the chain's own base: both shallow arms share one pair of layouts and both
+   steep arms share one, because the two mirrors are identical — which is the declared coverage
+   limit in the header above, and exactly the set the four tables in the image hold (they sit at
+   offsets $50 and $58 in the source blocks' tails).
+   These used to be three `static const uint8_t[8]` arrays that this routine SEARCHED, up to
+   sixteen `move.b <abs.l>` reads at 16 cycles each to look up a compile-time constant — ~300
+   cycles per span.  As case labels the same set is one dispatch, and there is no second copy of
+   the numbers left to fall out of step with the first. */
+/* ⚠ ALWAYS_INLINE: with the search replaced by a switch GCC decided the routine was small
+   enough to share between the four specialisations, and a shared copy has to take `arm` as a
+   pointer — which puts `arm->steep` back in memory and adds a five-argument call per span to
+   a kernel that only runs 43 spans a frame.  Inlined, each arm keeps its own half of the
+   switch and nothing is passed at all. */
+static inline __attribute__((always_inline))
+int span_entry_decode(const SpanArm* arm, uint8_t offset,
                              int* column, int* forced, int* runTop)
 {
-    int i;
-
     *column = 0; *forced = 0; *runTop = 0;
 
     if (arm->steep) {
-        for (i = 0; i < 8; i++)
-            if (offset == STEEP_COL_OFF[i]) { *column = i; *forced = 1; return 1; }
+        switch (offset) {                          /* the steep arms' eight column entries */
+        case 0x00: *column = 0; *forced = 1; return 1;
+        case 0x0B: *column = 1; *forced = 1; return 1;
+        case 0x16: *column = 2; *forced = 1; return 1;
+        case 0x21: *column = 3; *forced = 1; return 1;
+        case 0x2E: *column = 4; *forced = 1; return 1;
+        case 0x39: *column = 5; *forced = 1; return 1;
+        case 0x44: *column = 6; *forced = 1; return 1;
+        case 0x4F: *column = 7; *forced = 1; return 1;
+        default:   break;
+        }
     } else {
-        if (offset == 0x00) { *runTop = 1; return 1; }     /* the `LDX #$80` at the top */
-        for (i = 0; i < 8; i++) {
-            if (offset == SHALLOW_COL_OFF[i]) { *column = i; *forced = 1; return 1; }
-            if (offset == SHALLOW_DDA_OFF[i]) { *column = i; return 1; }
+        switch (offset) {
+        case 0x00: *runTop = 1; return 1;                  /* the `LDX #$80` at the top */
+        case 0x08: *column = 0; *forced = 1; return 1;  /* a COLUMN entry: plot it whole */
+        case 0x13: *column = 1; *forced = 1; return 1;
+        case 0x1E: *column = 2; *forced = 1; return 1;
+        case 0x29: *column = 3; *forced = 1; return 1;
+        case 0x39: *column = 4; *forced = 1; return 1;
+        case 0x44: *column = 5; *forced = 1; return 1;
+        case 0x4F: *column = 6; *forced = 1; return 1;
+        case 0x5A: *column = 7; *forced = 1; return 1;
+        case 0x02: *column = 0; return 1;              /* a DDA entry: step first, then plot */
+        case 0x0D: *column = 1; return 1;
+        case 0x18: *column = 2; return 1;
+        case 0x23: *column = 3; return 1;
+        case 0x33: *column = 4; return 1;
+        case 0x3E: *column = 5; return 1;
+        case 0x49: *column = 6; return 1;
+        case 0x54: *column = 7; return 1;
+        default:   break;
         }
     }
     /* ⚠ The trap reports the computed TARGET, not the offset byte — that is what the
@@ -5024,22 +5056,57 @@ static void span_walk_cap(uint8_t y)
    (y), whether the chain abandoned, and the plotter's EXIT CARRY — which is 0 on the ordinary
    path but not on the block-first-line / trapped-step exits, and the DDA feeds it straight into
    the next add (the 6502 did `ADC` right after the plot with the plotter's C still live). */
-static void sw_plot(int usePlot2, uint8_t column,
-                    uint8_t *y, int *abandoned, unsigned *carry)
+/* ⚠⚠ TWO SPECIALISATIONS, NOT ONE FUNCTION WITH A DESCRIPTOR ARGUMENT — and this is the same
+   trap the always_inline on span_plot_core was put there to avoid, one level up.  Written as a
+   single `sw_plot(usePlot2, ...)` choosing `usePlot2 ? &SPAN_PLOT_2 : &SPAN_PLOT_1`, the
+   descriptor is a RUNTIME value inside the leaf, so inlining span_plot_core folded nothing: the
+   objdump read `lea SPAN_PLOT_2,a2` and then `move.l (a2),d2` / `move.l 8(a2),d3` /
+   `move.l 12(a2),d4` — five memory operands per plotted column, exactly what the descriptor
+   rule says costs 2.6% of the frame.  Splitting the selection into two `noinline` twins hands
+   each one a compile-time-constant descriptor (every slot address becomes an immediate) and
+   drops an argument from the push, at the cost of one extra copy of the leaf.
+   ⭐ `noinline` is deliberate: span_walk has twenty plot sites across its four specialisations
+   and the leaf is ~370 instructions, so inlining it would be ~30 KB of instruction fetch on a
+   machine whose memory contention is as much on fetch as on data. */
+static __attribute__((noinline))
+void sw_plot_1(uint8_t column, uint8_t *y, int *abandoned, unsigned *carry)
 {
-    span_plot_core(usePlot2 ? &SPAN_PLOT_2 : &SPAN_PLOT_1, column, y, carry, abandoned);
+    span_plot_core(&SPAN_PLOT_1, column, y, carry, abandoned);
     /* The abandon path set the two-level-return flag (so the draw_span oracle sees it too);
        clear it here, once per plot, exactly as the oracle's `if (UNWIND_TAKEN()) return` does. */
     if (*abandoned) (void)span_chain_abandoned();
 }
+static __attribute__((noinline))
+void sw_plot_2(uint8_t column, uint8_t *y, int *abandoned, unsigned *carry)
+{
+    span_plot_core(&SPAN_PLOT_2, column, y, carry, abandoned);
+    if (*abandoned) (void)span_chain_abandoned();
+}
+static inline __attribute__((always_inline))
+void sw_plot(int usePlot2, uint8_t column,
+             uint8_t *y, int *abandoned, unsigned *carry)
+{
+    if (usePlot2) sw_plot_2(column, y, abandoned, carry);
+    else          sw_plot_1(column, y, abandoned, carry);
+}
 
 /* The half/end markers test colMark against $80 ("this column plotted nothing") and reset it,
    so colMark is in/out; the marker's exit carry is the carry-in to the next column's DDA add
-   (0 when it did work, unchanged when its slot is RTS), so it is threaded too. */
-static void sw_marker(int p2, uint8_t *colMark, uint8_t y, unsigned *carry)
+   (0 when it did work, unchanged when its slot is RTS), so it is threaded too.
+
+   ⭐ ALWAYS_INLINE, AND THE SWITCHED-OFF TEST IS HOISTED TO THE CALL SITE.  `p2` is a
+   compile-time constant in each of span_walk's four specialisations, so the slot address and
+   the pointer fold to immediates; and interp_edge plants RTS over BOTH markers whenever the run
+   needs no terminator, which makes "do nothing" the common answer.  Reaching that answer used
+   to cost a five-argument push, a jsr and span_end_marker's own prologue — about 200 cycles,
+   twice per scan line — where it is now one absolute read and a compare.  span_end_marker's own
+   `case OP_RTS: return` still stands: the 6502-ABI shims in revs_native_abi.c call it directly. */
+static inline __attribute__((always_inline))
+void sw_marker(int p2, uint8_t *colMark, uint8_t y, unsigned *carry)
 {
-    span_end_marker(p2 ? SLOT_MARKER_P2 : SLOT_MARKER_P1,
-                    p2 ? &plot_ptr2_v : &plot_ptr_v, y, colMark, carry);
+    const unsigned slot = p2 ? SLOT_MARKER_P2 : SLOT_MARKER_P1;
+    if (mem[slot] == OP_RTS) return;      /* switched off: colMark, A, carry all untouched */
+    span_end_marker(slot, p2 ? &plot_ptr2_v : &plot_ptr_v, y, colMark, carry);
 }
 
 /* Inlined so `arm->rev` and `arm->steep` become constants and the four specialisations lose
