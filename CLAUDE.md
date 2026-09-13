@@ -405,7 +405,17 @@ Rules that must survive without opening `docs/perf-method.md`:
   ⭐⭐ **The general form: a parameter that is a COMPILE-TIME CONSTANT at every call site must be
   `always_inline`d, or it is a memory operand in the inner loop.** A `const SpanPlotter*`
   descriptor in the span rasteriser's leaf cost 2.6% of the frame on its own
-  (`docs/perf-method.md` §twins #25-#39).
+  (`docs/perf-method.md` §twins #25-#39). Two refinements, both measured:
+  ⭐ **`always_inline` on the LEAF does not fold a descriptor — the SELECTION must be specialised
+  too** (a leaf inlined into a caller that picks `cond ? &A : &B` still reads the fields out of
+  memory), and ⚠⚠ **making a hot routine SMALLER can revoke its inlining and cost more than the
+  edit saved** — a shared out-of-line copy takes its descriptor back as a pointer. Pin
+  `always_inline` explicitly and **re-read the objdump's call list after the edit**: a `jsr <name>`
+  where there were none is the tell. (`docs/m68k-optimisation.md`)
+- ⭐⭐ **Before optimising a loop, check how many times it actually RUNS.** The span rasteriser's
+  "~3 500 cycles per DDA scan line" was 24 ms divided by the wrong denominator; the real one is
+  **43 spans a frame**, which caps the whole kernel's call-and-search surface at ~5 ms (it measured
+  +0.8%). Price the ceiling against the leaf COUNTS before writing code, as with the phase table.
 - ⚠⚠ **A TWIN CAN ALSO BE SLOWER BECAUSE GCC WAS DELETING WORK.** A 6502 busy-DELAY loop whose
   only observable is its exit value gets folded away in the transliteration (final-value
   replacement), so the port never paid it; written out honestly in C it becomes a real burn. Twin

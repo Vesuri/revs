@@ -360,6 +360,47 @@ counters explain it). Silverstone practice, car driving. **A PROBES/warp share �
   leaving roughly 13 ms in surface setup/remainder. Both halves are material. The next rewrite must
   combine `interp_edge` and `span_walk` into one flat native SpanPlan/DDA kernel; specializing either
   side alone retains the representation and call traffic between them.
+  ⚠⚠ **But do NOT read that 24 ms as "3 500 cycles per DDA scan line" and go hunting the walk's
+  inner loop** — dividing by 49 is the wrong denominator and it cost a pass to find out. The call
+  and search surface of the whole kernel is ~5 ms and removing it was worth **+0.8%**; see the
+  subsection below.
+
+#### ⭐⭐ THE SPAN KERNEL'S CALL AND SEARCH SURFACE IS ONLY ~5 ms OF THE 37 — +0.8% (2026-09-13)
+
+The objdump method that paid on the framebuffer decode was pointed at `interp_edge_core` next (the
+span walk is `always_inline`d into it four ways, so the whole kernel is one 5.5 KB function and
+`span_walk` has no symbol of its own). It found three real defects:
+
+1. **The span plotter's `SpanPlotter` descriptor was a live memory operand after all.**
+   `span_plot_core` is `always_inline` *precisely* so the five slot fields fold to immediates — but
+   its only native caller was `sw_plot(usePlot2, ...)` picking `usePlot2 ? &SPAN_PLOT_2 :
+   &SPAN_PLOT_1`, so inside the leaf the descriptor was a **runtime value** and nothing folded:
+   `lea SPAN_PLOT_2,a2` then `move.l (a2),d2` / `move.l 8(a2),d3` / `move.l 12(a2),d4`.
+   ⭐⭐ **`always_inline` on the leaf does not satisfy the descriptor rule — the SELECTION has to be
+   specialised too.** Two `noinline` twins (`sw_plot_1`/`sw_plot_2`) fixed it.
+2. **`span_end_marker`'s "switched off" answer cost a five-argument out-of-line call**, ~90 times a
+   frame, where `interp_edge` plants `RTS` over both markers whenever the run needs no terminator.
+3. **`span_entry_decode` SEARCHED three `static const uint8_t[8]` tables** to look up a
+   compile-time constant — up to sixteen `move.b <abs.l>` reads, ~300 cycles per span.
+
+`interp_edge_core`'s setup path went 1644 → 1298 instructions. **Measured +0.8%** (4.969 against a
+same-session clean control at 4.930; four of ten comparable rows one painted frame better, none
+worse) — real, directional, and **well under the 3% floor**, so quoted from the static cycle count.
+
+⭐⭐⭐ **WHY IT IS SMALL, WHICH IS THE ACTUAL RESULT: divide by the right denominator.** A frame holds
+**43 spans, 49 DDA scan lines, 60 plotted columns and ~90 marker calls.** The per-plot and
+per-marker overhead therefore cannot be more than ~5 ms of a 37 ms pass however badly it is
+compiled. "~3 500 cycles per DDA scan line" — the figure that pointed at this work — is an artefact
+of dividing 24 ms by 49; the honest denominator is **43 spans at ~6 100 cycles each**, and the
+weight is in `interp_edge_core`'s **per-span SETUP**, ~2 100 cycles of byte-level `mem[]` work
+(`SPAN_CLIP`/`LINE_END`/`DX`/`DY`/`YSTEP`/`ARM`/`BLOCK`, four column patterns, five SMC slots, two
+patched dest operands) that the objdump shows **already compiled tightly** — `mem` held in `a1`,
+indexed reads as `lea (0,a1,d.l),a3` + `move.b d16(a3)`, no spilled invariants. There is **no
+code-shape defect here of the kind the decode had.**
+
+⇒ **The combined `interp_edge`+`span_walk` kernel's win has to come from deleting the per-span
+REPRESENTATION, not from flattening the call graph** — the call graph has now been flattened and it
+was worth 0.8%. ⚠ 37 ms to write **60 cell bytes** is the ratio to attack.
 
 ### ⭐⭐ Inside `view_paint_lines` (phases 24/33/34/32) — where its ~27% goes, and why
 

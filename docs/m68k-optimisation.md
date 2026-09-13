@@ -190,3 +190,36 @@ pass unrolls cleanly because it no longer carries the first pass's induction var
 ⚠ Converting a cycle count into a predicted millisecond figure on this target needs a **contention
 factor of ~1.6** (measured: 30 µs for a ~140-cycle cell at 7.09 MHz), and it applies to instruction
 fetch as much as to data. With it the prediction here landed within 15% of the measurement.
+
+## ⚠⚠ MAKING A FUNCTION SMALLER CAN MAKE IT SLOWER — GCC's inlining threshold is part of the change
+
+Measured on the span rasteriser, 2026-09-13, and it is a **1.4-percentage-point swing from one
+inlining decision**:
+
+`span_entry_decode(const SpanArm *arm, ...)` searched three `static const uint8_t[8]` tables to
+turn a patched entry offset into a column index. Replacing the two linear scans with `switch`
+statements deleted ~300 cycles of `move.b <abs.l>` table reads per span — and **measured −0.6%**.
+The cause was in the objdump: the smaller body dropped under GCC's inlining threshold, so the
+routine that had been *inlined into all four arm specialisations* became **one shared out-of-line
+copy** — and a shared copy has to take `arm` as a **pointer** again, which puts `arm->steep` back
+in memory and adds a five-argument call per span. The same switch with
+`inline __attribute__((always_inline))` measured **+0.8%**.
+
+⭐⭐ **The rule: when a hot routine is fast BECAUSE it is specialised, its `always_inline` is part of
+its correctness-for-speed, and any edit that changes its size can silently revoke it.** Pin it
+explicitly rather than relying on the size heuristic, and **re-read the call list in the objdump
+after the edit** (`jsr <name>` appearing where there were none is the whole tell).
+
+⭐ And the sibling half of the descriptor rule, from the same pass: **`always_inline` on the LEAF
+does not fold a descriptor — the SELECTION has to be specialised too.** `span_plot_core` was
+`always_inline` exactly so `SPAN_PLOT_1`/`SPAN_PLOT_2`'s fields would become immediates, but its
+caller picked `usePlot2 ? &SPAN_PLOT_2 : &SPAN_PLOT_1`, so the descriptor was a runtime value
+*inside* the inlined leaf and the objdump read `lea SPAN_PLOT_2,a2` / `move.l (a2),d2` /
+`move.l 8(a2),d3`. Two `noinline` twins, one per descriptor, is the fix — `noinline` deliberately,
+because the leaf is ~370 instructions and there are twenty call sites.
+
+⚠⚠ **And the framing error that sent this pass at the wrong target: divide by the right
+denominator.** "24 ms in the span walk / 49 DDA scan lines = ~3 500 cycles per scan line" made the
+walk's inner loop look catastrophic. The honest denominator was **43 spans**, and the weight was in
+per-span setup, not per-line work. **Before optimising a loop, check how many times it actually
+runs** — `docs/perf-method.md` §the span kernel's call and search surface.
