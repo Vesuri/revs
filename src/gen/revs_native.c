@@ -517,13 +517,21 @@ static void view_stops_rescan(void)
         if (g_viewSlotP[i] && *g_viewSlotP[i] != OP_STA_IND_Y) view_stop_note(i);
 }
 
-/* The first unit at or after `unit` whose store has been overwritten, or 40 for none. */
+/* The first unit at or after `unit` whose store has been overwritten, or 40 for none.
+   ⭐⭐ THE SENTINEL IS THE TRIP COUNT, AND SPELLING THE BOUND COSTS ~100 CYCLES A RUN.  The
+   list is ascending with a 40 at index g_viewStopN — view_stops_rescan, view_stop_note and
+   view_stop_forget each maintain both halves — and every real entry is a unit index 0..39, so
+   the sentinel satisfies `>= unit` for every unit this is asked about (0..40, from the chain
+   entry's own slot) and stops the scan on its own.  Written WITHOUT `i < g_viewStopN` on
+   purpose: with the bound, gcc peels the trip count and unrolls the search eight ways, which
+   is a seven-way `moveq`/`cmp`/`beq` ladder plus ~10 instructions of set-up before the first
+   compare — for a list that normally holds ONE entry and is empty through all of phase 1.
+   This is per-RUN cost, so it is paid ~90 times a frame. */
 static int view_stop_from(int unit)
 {
-    int i;
-    for (i = 0; i < g_viewStopN; i++)
-        if (g_viewStopList[i] >= unit) return g_viewStopList[i];
-    return 40;
+    const unsigned char* p = g_viewStopList;
+    while ((int)*p < unit) p++;
+    return *p;
 }
 
 /* The unit an already-validated slot address belongs to. */
@@ -896,13 +904,12 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
             unsigned base1 = plot_ptr2_v;
             MEM_QUAL unsigned char* srcp = mem + MEM_view_src_blocks
                                                + ((unsigned)unit << 7) + line;
-            MEM_QUAL unsigned char* const dp1 = mem + base1;
+            MEM_QUAL unsigned char* const dp1 = mem + base1;   /* set-up only — see the crossing */
             int lastSeg;
             /* THE SEGMENT AS A POINTER END, not an `i == 31` test in the loop.  Cells 0-31 come
                off plot_ptr and 32-39 off plot_ptr2 (40 x 8 = 320 does not fit a page); one
-               `dp != segEnd` replaces two compares per unit.  The cell index the stop path wants
-               comes back out of the pointer — `(dp - segBase) & $FF` is `i * 8` in both segments,
-               since segment 1 starts at offset 256.
+               `dp != segEnd` replaces two compares per unit, and the planted stop is carried as
+               an address too, so the run end is a register copy (see stopAddr below).
                ⚠ Segment 0 ends at base0 + 256, NOT at plot_ptr2: the 6502 switches on the cell
                INDEX, so a plot_ptr2 that is not plot_ptr + 256 must still paint 0-31 off
                plot_ptr. */
@@ -915,17 +922,35 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                ⚠ The general path stays: paint_lines_short steps the pointers itself and its odd
                carry tail can store a low byte to plot_ptr only, so the two CAN drift. */
             const int oneSeg = (base1 == base0 + 256u);
-            MEM_QUAL unsigned char* segBase = (unit < 32 || oneSeg) ? mem + base0 : dp1;
-            MEM_QUAL unsigned char* dp      = segBase + (((unsigned)unit & 31u) << 3)
-                                            + ((oneSeg && unit >= 32) ? 256u : 0u);
+            MEM_QUAL unsigned char* dp      = (unit < 32 || oneSeg)
+                                            ? mem + base0 + ((unsigned)unit << 3)
+                                            : dp1 + (((unsigned)unit & 31u) << 3);
             MEM_QUAL unsigned char* segEnd  = oneSeg    ? mem + base0 + 320
                                             : (unit < 32) ? mem + base0 + 256 : dp1 + 64;
-            int curUnit = unit;
-            int segLimit = (unit < 32 && !oneSeg) ? 32 : 40;
             lastSeg = (unit >= 32) || oneSeg;
             /* ⭐⭐ THE PLANTED STOP, LOOKED UP ONCE — see view_stop_from.  40 means "none in
                this chain run", which is every one of phase 1's lines. */
             const int stopUnit = view_stop_from(unit);
+            /* ⭐⭐ ...AND CARRIED AS AN ADDRESS, WHICH IS WHAT THE LOOP ACTUALLY WANTS.  `dp` and
+               `segEnd` already say where the segment starts and ends, so the stop's own cell
+               address answers both questions the run set-up used to compute from indices:
+               `stopAddr >= dp` IS `stopUnit >= curUnit` and `stopAddr < segEnd` IS
+               `stopUnit < segLimit` (cell i sits at base + i*8, monotonically, in every one of
+               the four segment shapes).  That retires `curUnit`, `segLimit` and `segBase` from
+               the live set — three values the 68000 was spilling around an eleven-register
+               frame — and turns `dp + ((stopUnit - curUnit) << 3)` into a register copy.
+               ⚠ `stopUnit - 32` needs no mask on the second arm: view_stop_from never returns
+               a unit below the one it was asked about, and that arm is the `unit >= 32` entry.
+               ⭐ SABOTAGE RECORD for the three new arguments: the stop tail's cell index
+               `& 31` -> `& 15` fails 647/700; the sentinel scan's `<` -> `<=` fails 670/700
+               (two different numbers, so neither is a stale object); `stopAddr < segEnd` ->
+               `<=` does not merely mismatch, it CRASHES the harness — `stopUnit == 40` lands
+               exactly on segEnd, so the no-stop case would run the stop tail.  The fourth,
+               dropping the `- 32` re-base at the crossing, PASSES, and that is a fixture gap
+               over provably dead code — see the invariant at the crossing below. */
+            MEM_QUAL unsigned char* stopAddr = (unit < 32 || oneSeg)
+                                             ? mem + base0 + ((unsigned)stopUnit << 3)
+                                             : dp1 + ((unsigned)(stopUnit - 32) << 3);
             /* THE BUS'S HARDWARE-RANGE TEST, HOISTED TO ONE CHECK PER SCAN LINE.  A cell store
                is `STA ($70),Y`, so the transliteration pays the $FC00-$FEFF test 2093 times a
                frame; here the whole line's span is known, so one check licenses plain mem[]
@@ -939,9 +964,8 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
             VIEWSPLIT_UNITS_BEGIN();
             for (;;) {
                 /* the run ends at the segment's last cell, or on the planted stop */
-                const int stopHere = (stopUnit >= curUnit && stopUnit < segLimit);
-                MEM_QUAL unsigned char* runEnd =
-                    stopHere ? dp + ((unsigned)(stopUnit - curUnit) << 3) : segEnd;
+                const int stopHere = (stopAddr >= dp && stopAddr < segEnd);
+                MEM_QUAL unsigned char* runEnd = stopHere ? stopAddr : segEnd;
                 PROBE_VIEW_RUN((unsigned)(runEnd - dp) >> 3);
                 PROBE_SHAPE_VIEW_RUN((unsigned)(runEnd - dp) >> 3, busSafe);
 
@@ -997,7 +1021,11 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                     PROBE_VIEW_UNITS(1);                      /* the stop's own unit: consumed */
                     PROBE_SHAPE_VIEW_STOP();
                     byte = view_consume(srcp, byte, forced, cell);
-                    cell = (unsigned)(dp - segBase) & 0xFF;   /* its `LDY #<cell*8>` ran */
+                    /* its `LDY #<cell*8>` ran.  ⭐ `(dp - segBase) & $FF` and `(stopUnit & 31) * 8`
+                       are the same number in all four segment shapes — segment 1 starts at
+                       offset 256 when the pointers are one page apart and at offset 0 when they
+                       are not, and 32 * 8 is 256 — so the index form needs no segment base. */
+                    cell = ((unsigned)stopUnit & 31u) << 3;
                     op = *slot;
                     if (op != OP_RTS) platform_smc_unhandled((uint16_t)(slot - mem), op);
                     PLOT_FLUSH();
@@ -1009,11 +1037,36 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                     break;
                 }
                 if (lastSeg) break;
-                segBase  = dp1;                         /* cells 32-39 live in the next page */
-                dp       = dp1;
-                segEnd   = dp1 + 64;
-                curUnit  = 32;
-                segLimit = 40;
+                /* ⚠⚠ THIS BLOCK IS PROVABLY UNREACHABLE, AND SO IS EVERY `!oneSeg` ARM ABOVE.
+                   `plot_ptr2 == plot_ptr + 256` is an INVARIANT of this routine, not a property
+                   of the caller: the core seeds BOTH pointers whole from screenBase (it never
+                   reads the entry value), step_scanline increments both inside a character row
+                   — guarded by `next & 7`, so the low byte provably did not wrap and neither
+                   high byte moves — and REBUILDS plot_ptr2 as exactly plot_ptr + 256 at a row
+                   crossing (its `c2` is the carry off $FFFF and the high byte lives in
+                   $67..$7A), and the only other writer sets the SAME low byte on both.  Nothing
+                   the chain stores can reach $70-$73 either: it writes its source blocks and
+                   `base + cell*8` with base in $67..$7A.  So oneSeg holds on entry and is
+                   preserved by every mutation, which is why a counter here read ZERO over
+                   78507 fixture runs (whose $70-$73 are fill_random!) and 34928 real chain runs
+                   on all five circuits, parked and driving.  ⚠ Kept, not deleted, only because
+                   removing it is a separate change with its own gate run — the two-segment arms
+                   cost a test in three places plus `lastSeg` and this whole outer trip, on
+                   every one of ~90 runs a frame.
+                   Reaching here would mean the stop is at unit 32 or later (an earlier one
+                   would have ended the run in segment 0), so its address re-bases onto dp1;
+                   `stopUnit == 40` lands on dp1 + 64 == segEnd and so still reads as "no stop
+                   in this segment". */
+                /* ⭐ plot_ptr2 RE-READ rather than carried: the chain writes only its source
+                   blocks and `base + cell*8`, so it provably cannot move the pointer under
+                   itself (the same construction that licenses hoisting the bases at all), and
+                   re-reading here ends `dp1`'s live range in the set-up instead of spanning the
+                   whole unit loop — one address register back out of an eleven-register frame,
+                   paid for by a word read on a crossing that phase 1's own lines never take. */
+                MEM_QUAL unsigned char* const seg1 = mem + plot_ptr2_v;
+                dp       = seg1;
+                segEnd   = seg1 + 64;
+                stopAddr = seg1 + ((unsigned)(stopUnit - 32) << 3);
                 lastSeg  = 1;
             }
             if (stopped) break;                     /* the planted RTS: leave the bracket open */
