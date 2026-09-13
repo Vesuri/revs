@@ -883,8 +883,15 @@ Found by reading the objdump of the phase-3 driver rather than measuring it, exa
 §the decode was code shape prescribes: 5526 cyc/line is far more than the driver's instruction
 count justifies, the plotter macros are `((void)0)` in a control build and the probe RMWs are
 ~3% of the frame, so the excess had to be in emitted code — and the objdump showed `view_plant`
-as a **348-instruction out-of-line five-argument function**, called ~135 times a frame (the stop
-moves twice a line through phases 2 and 3).
+as a **348-instruction out-of-line five-argument function**, called **25 times a sweep** (the
+stop moves on 9 of phase 3's 25 lines and 2 of phase 2's 16 — counted, see §the sweep's census).
+
+⚠⚠ **That denominator was first written down as "~135 plants a frame" and it was an ASSUMPTION,
+not a count** — the exact failure mode `docs/postmortem.md` names. Counting it changes what the
+win means: −0.84 ms/frame over 25 plants is **238 effective cyc/plant**, which is the right order
+for deleting a five-argument call plus four unrolled walks; spread over 135 it would be 44, far
+too little for what was removed. ⭐ **When a win's per-call price looks implausibly cheap, the
+denominator is the thing to doubt** — the arithmetic is a free check on the call count.
 
 The 348 instructions were not `view_plant`'s own work. It maintains `g_viewStopList[41]` — which
 unit stores currently hold a planted `RTS` — and **that list normally holds ONE entry and is
@@ -926,6 +933,50 @@ bracket gained both times and phase 3's lost more: the core grows 757 → **995*
 `paint_lines_short`'s per-line loop is already at the 68000's register ceiling. **The
 constant-parameter rule holds for a leaf in an inner loop, not for a caller that has run out of
 registers.** Do-not-retry written at the code.
+
+#### ⭐⭐ THE SWEEP'S CENSUS — COUNT IT ON THE HOST, NO EMULATOR RUN NEEDED (2026-09-13)
+
+Every "cost per X" in this file needs a denominator, and the cheapest correct place to get one is
+the **host build**, not a probe run. Measured with temporary counters in `PlatformHost.cpp` and
+`revs_native.c`, per view sweep:
+
+| quantity | count | where |
+|---|---|---|
+| `view_plant` calls | **25** | 3 initial + phase 2's pair 2×2 + phase 3's chain A 6×2 and chain B 3×2 |
+| `view_enter_chain` calls | **66** | 25 short lines ×2 + 16 clipped lines ×1 |
+| lines: phase 1 / phase 2 / phase 3 | **36 / 16 / 25** | `paint_cells` sees 52 = phase 1's 36 + phase 2's 16 entering through it |
+
+⭐⭐ **And the host is a VALID PROXY for this census: those line counts came out 36/16/25, exactly
+the Amiga's documented split.** Stable to two decimals over 937 sweeps (sampled at frames 300,
+600 and 1200). So a call count is a `make` away and costs no emulator time — which matters
+because a wrong denominator is not a small error: see the ~135-vs-25 correction above, where it
+changed a win's per-call price by 5.4×. ⚠ This licenses the host for **counting**, never for
+timing — the host is a different CPU and `make refloop` remains the visual ground truth.
+
+⚠ It also corrects a second guess: the stop does **not** move "twice a line". It moves on 9 of
+phase 3's 25 lines and 2 of phase 2's 16.
+
+#### ⚠⚠ THE PROBE INSTRUMENT LIVES INSIDE THE VIEW SWEEP'S BRACKETS — ~5.3 ms OF THE SWEEP'S 51.95 DOES NOT SHIP (2026-09-13)
+
+Reading the objdump of `paint_cells` for a different reason turned this up: **~14 instructions of
+`PROBE_VIEW_RUN` sit inside the per-run set-up itself** — the `g_viewPhaseIdx` load, two
+`add.l d1,d1`, a `lea g_viewUnits`, a `move.l #323644,52(sp)` and an 8-instruction indexed-long
+RMW pair. At ~200 raw cycles × 118 runs a frame that is **~5.3 ms/frame**, i.e. essentially all of
+CLAUDE.md's "~3% PROBES overhead" lands *inside* the view-sweep brackets rather than spread over
+the frame.
+
+What this does and does not invalidate:
+
+- ✅ **Absolute ms deltas are unaffected** — the instrument is in both arms of every differential
+  and cancels exactly. Every bracket table in this file stands.
+- ⚠ **The sweep's SHARE is inflated.** Of bracket 24+32+33+34 ≈ 51.95 ms, ~5.3 ms is instrument,
+  so the shipping sweep is ~46.6 ms and its fraction of the frame is correspondingly smaller.
+- ⚠⚠ **A "run set-up" optimisation's share reads bigger than its shipping value**, because the
+  instrument is itself run set-up. Price such a change against the ~46.6 ms, not the 51.95.
+
+⭐ The general rule this is an instance of: **an instrument placed per-iteration of the thing you
+are optimising distorts exactly the ratio you are trying to read.** `docs/method-lessons.md`
+§calibrate with a known quantity is the other half of this.
 
 #### ⭐⭐⭐ OTHER TARGET SPLITS (2026-09-12) — where the next frame reductions can come from
 

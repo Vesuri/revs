@@ -493,6 +493,11 @@ Rules that must survive without opening `docs/perf-method.md`:
   "~3 500 cycles per DDA scan line" was 24 ms divided by the wrong denominator; the real one is
   **43 spans a frame**, which caps the whole kernel's call-and-search surface at ~5 ms (it measured
   +0.8%). Price the ceiling against the leaf COUNTS before writing code, as with the phase table.
+  ⭐⭐ **COUNT IT ON THE HOST — a temporary counter in the host build is a valid proxy for a call
+  count and costs no emulator run** (the view sweep's line counts came out 36/16/25, exactly the
+  target's split). Licensed for COUNTING only, never for timing. And ⭐ **when a win's per-call
+  price comes out implausibly cheap, doubt the denominator**: "~135 plants a frame" was a guess,
+  the real count is 25 a sweep, and the arithmetic on a known ms delta is what exposed it.
 - ⚠⚠ **A TWIN CAN ALSO BE SLOWER BECAUSE GCC WAS DELETING WORK.** A 6502 busy-DELAY loop whose
   only observable is its exit value gets folded away in the transliteration (final-value
   replacement), so the port never paid it; written out honestly in C it becomes a real burn. Twin

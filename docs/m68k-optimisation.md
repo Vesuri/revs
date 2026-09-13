@@ -262,7 +262,7 @@ the bound as `i < g_viewStopN` makes gcc peel the trip count and unroll the sear
 Its two siblings, `view_stop_note` and `view_stop_forget`, still carried the bound — and gcc had
 done exactly that to both, plus to both shift loops. Four unrolled loops over a one-entry list
 made `view_plant` a **348-instruction** body, which put it over the inlining threshold, so every
-one of ~135 plants a frame paid a **five-argument out-of-line call**.
+one of the sweep's **25 plants** paid a **five-argument out-of-line call**.
 
 Rewriting all three walks to terminate on the 40 the list already carries — the end becomes
 POSITIONAL and the count is retired — took `view_plant` to **108** instructions and
