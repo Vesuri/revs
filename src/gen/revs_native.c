@@ -6116,7 +6116,14 @@ static SlotExit surf_exit(uint8_t colour, uint8_t x, uint8_t line, uint8_t entry
     return e;
 }
 
-static SlotExit surface_colour_at_core(uint8_t line, uint8_t position,
+/* ⚠⚠ `REVS_FLAG_OP` (always_inline) IS LOAD-BEARING HERE, NOT A HINT.  Every empty cell of the
+   dash-edge walk calls this — 151 a frame, the most expensive per-item cost in the whole frame —
+   and left to its own judgement GCC put it OUT OF LINE in column_gap_walk_core while inlining it
+   into the cold sibling, where each call cost four `move.l dN,-(sp)` argument pushes, a hidden
+   struct-return pointer and an `rts`.  That one silent decision is worth 4.3 ms/frame, which is
+   CLAUDE.md's `jsr <sub_from>` trap with a different callee.  ⭐ The check is
+   `jsr <surface_colour_at_core>` in the objdump, and it must be 0. */
+REVS_FLAG_OP SlotExit surface_colour_at_core(uint8_t line, uint8_t position,
                                        uint8_t entryX, uint8_t entryV)
 {
     unsigned attr;
@@ -6184,11 +6191,187 @@ SlotExit surface_colour_at_line_core(uint8_t line, uint8_t entryX, uint8_t entry
    the 6502 as (column + $60) >> 1 with the shifted-out bit rotated back into the low byte.
    The ADC that does it is the last thing to write V, and V is live at every exit. */
 
+/* ⭐⭐ THE WALK'S INVARIANTS CAN BE READ ONCE — WHEN ITS OWN STORES CANNOT REACH THEM.
+   Eight cells drive this loop and none of them changes during a walk: the three patch bytes
+   at $1DD5/$1DDC/$1DDE, the end line ($82), the column ($85), and the store pointer's two
+   zero-page lanes — plus a hardware-window test per access and a plot_store_resync per store.
+   Re-reading all of it per cell is ~250 of the ~790 cycles a cell costs
+   (docs/perf-method.md §fill_dash_edge_columns decomposed: 113 us per cell, the most expensive
+   per-item cost in the frame), and rebuilding the 16-bit store pointer out of two byte lanes
+   is the single biggest part of it.
+
+   In the game it is all dead weight: the walk stores through a source block
+   ($3000 + column*$80) or a per-line boundary table ($0504 / $4400), plus an 8-bit line, so
+   its whole reachable write range is [base, base+$FF] and provably excludes page zero, the
+   patch bytes and the hardware window.
+   ⚠ Under a randomised fixture it does NOT — column_gap_walk's fixture AIMS a store at the
+   pointer cells on purpose — so the predicate is TESTED once per walk instead of assumed, and
+   the re-reading loop is kept for the case it fails.  Both are the one body below specialised
+   on `reread`, so the two can never drift apart. */
+/* ⭐ The A/B switch prints its own state (CLAUDE.md §instruments): every walk that takes the
+   re-reading path is counted, and on the target this must read 0 — a non-zero there says a
+   store really can reach the cells that drive the walk, i.e. a hazard in the GAME and not in
+   the fixture.  Incremented only on that path, so the shipping build provably pays nothing. */
+unsigned long g_gapWalkSlow;
+#define GAP_WALK_SLOW()  (g_gapWalkSlow++)
+
+static int walk_stores_are_private(unsigned base)
+{
+    /* Every store is `base + line` with an 8-bit line, so [base, base+$FF] bounds the lot —
+       and demanding base+$FF stay below the I/O window rules out the 16-bit wrap too. */
+    if (base < 0x0100u)                                  return 0;   /* $70..$73, $82, $85 */
+    if (!page_is_ram(base))                              return 0;   /* the hardware window */
+    if (base <= 0x1DDEu && base + 0xFFu >= 0x1DD5u)      return 0;   /* the three patch bytes */
+    return 1;
+}
+
+/* One walk. `reread` is a compile-time constant at both call sites, so the fast copy has every
+   re-derivation below deleted outright and the slow copy is the loop this routine has always
+   been — one body, so the two can never drift apart. */
+/* ⭐⭐ ONE BODY, TWO OUT-OF-LINE INSTANCES — AND THE SHAPE IS THE WHOLE POINT.
+   `reread` is a compile-time constant in each instance, so the fast one has every re-derivation
+   below deleted outright and carries no test for it either; the slow one is the loop this
+   routine has always been.  They cannot drift apart because they are the same source.
+   ⭐ MEASURED: phase 18 17.10 -> 10.40 ms/frame (-39%), controls flat to <=1% (draw_road -0.5%,
+   decode -0.0%, build_track_geometry +0.3%).  docs/perf-method.md §fill_dash_edge_columns.
+
+   ⚠⚠ WHY NOT BOTH IN ONE FUNCTION.  Inlining this body twice into column_gap_walk_core doubles
+   it, and that pushed surface_colour_at_core — the six-arm classifier every empty cell calls —
+   BACK OUT OF LINE, where each call costs four `move.l dN,-(sp)` argument pushes, a hidden
+   struct-return pointer and an `rts`, and GCC then unrolled the walk x4 around it.  Measured:
+   phase 18 went 17.13 -> 21.46 ms/frame.  ⭐ **The check is `jsr <surface_colour_at_core>` in the
+   objdump of column_gap_walk_core, and it must be 0** — a silent inlining decision is what makes
+   or breaks this routine, so the slow copy lives in its own `noinline` function to keep this one
+   small enough to hold the classifier.  (docs/m68k-optimisation.md §the inline threshold) */
+REVS_FLAG_OP void gap_walk_body(int reread, SlotExit *out, uint8_t branch,
+                                uint8_t x, uint8_t v, uint8_t a, uint8_t y)
+{
+    /* ⭐ THE ONE HOIST: rebuilding this 16-bit pointer out of two zero-page byte lanes is
+       ~76 cycles a cell (an `addq`, an `andi.l`, two indexed byte loads, an `lsl.l #8` and an
+       `or.b`) for a value that cannot move on the fast path.  Nothing else is hoisted — an
+       absolute `mem[$xx]` load is 16 cycles and a spilled stack slot is 12 plus the store that
+       filled it, so hoisting one buys nothing and costs a register. */
+    unsigned storeBase = 0u;
+    if (!reread) storeBase = zp_pointer(mem[MEM_gap_ptr_operand]);
+    /* `branch` is $1DD5's operand, read ONCE per walk by the caller and passed in: on the fast
+       path nothing the walk stores can reach it (walk_stores_are_private rules the patch bytes
+       out), so the loop below needs no load and no third-value test.  The slow copy ignores it
+       and re-reads. */
+    (void)branch;
+
+    /* ⭐ The other half, and it costs no register at all: walk_stores_are_private has already
+       proved each of these 256-byte runs lies inside RAM, so here the per-access hardware-window
+       test is a compile-time 1 — seam_read/seam_write collapse to a bare mem[] access — and
+       base+$FF < $FC00 makes the 16-bit wrap impossible, so the mask goes with it. */
+#define GAP_ADDR(base, line)  (reread ? (((base) + (line)) & 0xFFFFu) : ((base) + (line)))
+#define GAP_RAM(base)         (!reread || pointer_is_ram(base))
+
+#ifdef REVS_SHAPE
+    unsigned shapeCells = 0;   /* the walk's cell count, for shape.h's histogram */
+#   define EDGE_CELL_SEEN()  (shapeCells++)
+#else
+#   define EDGE_CELL_SEEN()  ((void)0)
+#endif
+    for (;;) {
+        /* CPY #EDGE_BLOCK_START — the loop test.  On the equal exit its N/Z/C (0/1/1) are the
+           routine's exit flags.  ⚠ Its CARRY is live only at the trap exit below, and computing
+           it every pass cost a `cmp`/`scc`/`neg.b` a cell for a path the game never takes — so
+           it is re-derived down there from the same `line` and `end`, which is the same value. */
+        uint8_t end = mem[EDGE_BLOCK_START];
+        if (y == end) {
+#ifdef REVS_SHAPE
+            PROBE_SHAPE_EDGE_WALK(shapeCells);
+#endif
+            { SlotExit e = { a, x, y, 0u, 1u, v, 1u }; *out = e; }
+            return;
+        }
+        EDGE_CELL_SEEN();
+
+        /* ⚠⚠ srcBase IS RE-READ EVERY PASS ON BOTH PATHS, and deliberately: the walk's own
+           stores can land on the cells that drive it — a boundary-table pointer of $005D (a real
+           randomised case, 2 of 1200) makes the run cover $0082 and $0085, the loop's end line
+           and the column it is filling, and the three patch bytes at $1DD5/$1DDC/$1DDE are
+           reachable the same way.  The 6502 re-reads all of them and so does this. */
+        unsigned srcBase = plot_ptr_v;
+        uint8_t  line    = y;
+        uint8_t  src;
+
+        /* One word read per pass, not two lanes and an or. */
+        src = seam_read(GAP_ADDR(srcBase, line), GAP_RAM(srcBase));
+        a   = src;                                    /* LDA (plot_ptr),Y */
+
+        if (src != 0) {
+            /* $1DD4 — the patched branch: skip the cell, or map it into the table.  The slow
+               copy re-reads the operand, because a store aliasing $1DD5 can change it mid-walk;
+               the fast copy was handed it and cannot. */
+            uint8_t offset = reread ? mem[GAP_BRANCH_OPERAND] : branch;
+            if (offset == 0x09u) { PROBE_SHAPE_EDGE_CELL(0);
+                                   y = (uint8_t)(line - 1); continue; }   /* $1DDF */
+            /* ⚠⚠ THE UNMODELLED-PATCH TRAP EXISTS ONLY IN THE SLOW COPY, and the fast copy is
+               not merely trusting it: a third operand value is what routes the WHOLE walk here
+               in the first place (see column_gap_walk_core's gate), so this is the only place it
+               can be reached from and `reread` deletes the arm from the shipping loop outright.
+               It has to sit inside the `src != 0` test rather than at the top, because the 6502
+               only reaches the branch once a non-zero source byte is found — a column of zeroes
+               never executes it, and an unmodelled offset must leave A, Y and the flags exactly
+               as this LDA left them.  ⚠ platform_smc_unhandled is therefore reached on EVERY
+               build (CLAUDE.md: an undeclared SMC site fails silently and plausibly). */
+            if (reread && offset != 0xEFu) {
+                platform_smc_unhandled(MEM_smc_gap_walk_branch, (uint16_t)((MEM_smc_gap_walk_branch + 2) + (int8_t)offset));
+                { SlotExit e = { src, x, line, (uint8_t)((src >> 7) & 1u),
+                                 0u /* src != 0 */, v, (uint8_t)(line >= end) }; *out = e; }
+                return;
+            }
+            /* $1DC5 — the boundary-table pass: "all four columns" reads as empty. */
+            uint8_t stored;
+            if (src == 0x55u) { a = 0u; stored = 0u; }    /* CMP #$55 Z: LDA #0 */
+            else              { stored = src; }
+            { unsigned altBase = plot_ptr2_v;
+              unsigned dst     = GAP_ADDR(altBase, line);
+              seam_write(dst, GAP_RAM(altBase), stored);
+              if (reread) plot_store_resync(dst, stored); }
+            PROBE_SHAPE_EDGE_CELL(1);
+            y = (uint8_t)(line - 1);
+            continue;
+        }
+
+        /* $1DD6 — an empty cell takes the surface's colour, or the fallback if it has none.
+           surface_colour_at's class escapes in X; its colour byte is A.
+           ⚠ The fallback is loaded inside the arm that uses it.  At the top of the pass GCC
+           loaded it and immediately SPILLED it to the frame (`move.b mem+$1DDC,46(sp)`) to
+           survive the classifier — 32 cycles a cell for a byte only the colourless arm reads.
+           The classifier is pure reads (it only indexes tables), so moving the load past it
+           cannot observe a different value. */
+        { SlotExit sc = surface_colour_at_core(line, mem[EDGE_COLUMN], x, v);
+          x = sc.x;
+          PROBE_SHAPE_EDGE_CELL(sc.a ? 2u : 3u);
+          a = sc.a ? sc.a : mem[MEM_gap_colour_fallback_operand]; }
+        /* ⚠ storePtr is a zero-page ADDRESS chosen at runtime ($1DE9's operand), not a fixed
+           pointer, so the slow copy re-derives it every pass — and its store can land on
+           $70..$73, which is what the resync is for.  The fast copy has proved it cannot. */
+        { if (reread) storeBase = zp_pointer(mem[MEM_gap_ptr_operand]);
+          unsigned dst = GAP_ADDR(storeBase, line);
+          seam_write(dst, GAP_RAM(storeBase), a);
+          if (reread) plot_store_resync(dst, a); }
+        y = (uint8_t)(line - 1);
+    }
+#undef EDGE_CELL_SEEN
+#undef GAP_ADDR
+#undef GAP_RAM
+}
+
+/* The faithful walk, out of line so that it does not make column_gap_walk_core too big to hold
+   surface_colour_at_core.  ⚠ `noinline` is load-bearing, not a hint — see the header above. */
+static __attribute__((noinline)) SlotExit gap_walk_reread(uint8_t x, uint8_t v, uint8_t a, uint8_t y)
+{
+    SlotExit out;
+    gap_walk_body(1, &out, 0u /* re-read per cell */, x, v, a, y);
+    return out;
+}
+
 SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
 {
     unsigned column = mem[EDGE_COLUMN];
-    unsigned storePtr;
-    uint8_t fallback, offset;
     uint8_t x = entryX;          /* surface_colour_at's escaping class, threaded across the walk */
     uint8_t v;                   /* the entry ADC #$60 overflow, live at every exit below */
     uint8_t a;                   /* the 6502's A: the last cell handled, or the dead LSR result */
@@ -6216,91 +6399,37 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
     plot_ptr2_marshal_in();
     v = adc_overflow((uint8_t)column, 0x60u, 0);
 
-    /* ⚠⚠ NOTHING IN THIS LOOP IS HOISTED, AND THAT IS MEASURED RATHER THAN CAUTIOUS.  The
-       walk's own stores can land on the cells that drive it: a boundary-table pointer of
-       $005D (a real randomised case, 2 of 1200) makes the run cover $0082 and $0085, i.e. the
-       loop's end line and the column it is filling, and the 6502 re-reads both every pass.
-       The three patch bytes at $1DD5/$1DDC/$1DDE are reachable the same way.  What IS hoisted
-       is the hardware-window test, which collapses to one comparison per store instead of a
-       bus_read/bus_write dispatch (CLAUDE.md §bus_read/bus_write). */
     y = span_line_cursor;
-#ifdef REVS_SHAPE
-    unsigned shapeCells = 0;   /* the walk's cell count, for shape.h's histogram */
-#   define EDGE_CELL_SEEN()  (shapeCells++)
-#else
-#   define EDGE_CELL_SEEN()  ((void)0)
-#endif
-    for (;;) {
-        /* CPY #EDGE_BLOCK_START — the loop test.  On the equal exit its N/Z/C (0/1/1) are the
-           routine's exit flags; its carry (y >= end) is the trap path's exit C otherwise. */
-        uint8_t end   = mem[EDGE_BLOCK_START];
-        uint8_t loopC = (uint8_t)(y >= end);
-        if (y == end) {
-            SlotExit e = { a, x, y, 0u, 1u, v, 1u };
-#ifdef REVS_SHAPE
-            PROBE_SHAPE_EDGE_WALK(shapeCells);
-#endif
-            return e;
-        }
-        EDGE_CELL_SEEN();
 
-        /* One word read per pass, not two lanes and an or.  This is still
-           a RE-READ every pass, which the header above insists on — plot_store_resync keeps
-           plot_ptr_v tracking any store the walk lands on $70..$73, so the word is as live as
-           the lanes were. */
-        unsigned srcBase = plot_ptr_v;
-        uint8_t  line    = y;
-        uint8_t  src;
+    /* ⭐⭐ ONE TEST PER WALK DECIDES WHICH COPY RUNS — and it is per walk, not per cell.
+       Two questions, and either answer of `no` hands the whole walk to the faithful re-reading
+       copy, which is also where the exact 6502 behaviour for that case lives:
 
-        offset   = mem[GAP_BRANCH_OPERAND];
-        fallback = mem[MEM_gap_colour_fallback_operand];
-        storePtr = mem[MEM_gap_ptr_operand];
+       (1) Can any store this walk makes reach the cells that drive it?  Three bases, because
+           the two arms store through different pointers and the source is read through a third.
+       (2) Is $1DD5's branch operand one of the two the engine patches?  `fill_column_gaps_core`
+           is the only writer and its two call sites pass $09 and $EF, so a third value is an
+           unmodelled SMC patch — it belongs to gap_walk_body's trap arm, which reports it at
+           the exact 6502 point and reproduces the mid-walk register state.  ⭐ Asking HERE is
+           what keeps that arm, and the per-cell operand read it needed, out of the hot loop
+           entirely rather than optimising around a case the game cannot produce.
 
-        src = seam_read((srcBase + line) & 0xFFFFu, pointer_is_ram(srcBase));
-        a   = src;                                    /* LDA (plot_ptr),Y */
+       `g_gapWalkSlow` counts the walks that take the slow copy and must read 0 on the target
+       (amiga/gapwalk.gdb) — a non-zero there is a real hazard in the GAME, not a fixture
+       artefact. */
+    { unsigned zpBase = zp_pointer(mem[MEM_gap_ptr_operand]);
+      uint8_t  branch = mem[GAP_BRANCH_OPERAND];
+      if (!(branch == 0x09u || branch == 0xEFu)
+          || !(walk_stores_are_private(plot_ptr_v)
+               && walk_stores_are_private(plot_ptr2_v)
+               && walk_stores_are_private(zpBase))) {
+          GAP_WALK_SLOW();
+          return gap_walk_reread(x, v, a, y);
+      }
 
-        if (src != 0) {
-            /* $1DD4 — the patched branch: skip the cell, or map it into the table. */
-            if (offset == 0x09u) { PROBE_SHAPE_EDGE_CELL(0);
-                                   y = (uint8_t)(line - 1); continue; }   /* $1DDF */
-            /* ⚠ THE TRAP BELONGS HERE, not at the top: the branch is only reached once a
-               non-zero source byte is found, so a column of zeroes never executes it and an
-               unmodelled offset must leave A, Y and the flags as this LDA left them. */
-            if (offset != 0xEFu) {
-                platform_smc_unhandled(MEM_smc_gap_walk_branch, (uint16_t)((MEM_smc_gap_walk_branch + 2) + (int8_t)offset));
-                SlotExit e = { src, x, line, (uint8_t)((src >> 7) & 1u),
-                               0u /* src != 0 */, v, loopC };
-                return e;
-            }
-            /* $1DC5 — the boundary-table pass: "all four columns" reads as empty. */
-            uint8_t stored;
-            if (src == 0x55u) { a = 0u; stored = 0u; }    /* CMP #$55 Z: LDA #0 */
-            else              { stored = src; }
-            { unsigned altBase = plot_ptr2_v;
-              unsigned dst     = (altBase + line) & 0xFFFFu;
-              seam_write(dst, pointer_is_ram(altBase), stored);
-              plot_store_resync(dst, stored); }
-            PROBE_SHAPE_EDGE_CELL(1);
-            y = (uint8_t)(line - 1);
-            continue;
-        }
-
-        /* $1DD6 — an empty cell takes the surface's colour, or the fallback if it has none.
-           surface_colour_at's class escapes in X; its colour byte is A. */
-        { SlotExit sc = surface_colour_at_core(line, mem[EDGE_COLUMN], x, v);
-          x = sc.x;
-          PROBE_SHAPE_EDGE_CELL(sc.a ? 2u : 3u);
-          a = sc.a ? sc.a : fallback; }               /* the colour, or the fallback if 0 */
-        /* ⚠ storePtr is a zero-page ADDRESS chosen at runtime ($1DE9's operand), not a fixed
-           pointer, so this one stays a mem[] lookup — and its store can land on $70..$73, which
-           is what the resync is for. */
-        { unsigned storeBase = zp_pointer(storePtr);
-          unsigned dst       = (storeBase + line) & 0xFFFFu;
-          seam_write(dst, pointer_is_ram(storeBase), a);
-          plot_store_resync(dst, a); }
-        y = (uint8_t)(line - 1);
-    }
-#undef EDGE_CELL_SEEN
+      { SlotExit out;
+        gap_walk_body(0, &out, branch, x, v, a, y);
+        return out; } }
 }
 
 /* $1DA6  fill_column_gaps — THE PATCH, THEN THE WALK  (twin #42)

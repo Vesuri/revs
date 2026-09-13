@@ -127,5 +127,9 @@ printf "phase 25  ticks=%10lu  calls=%7lu  share=%2d.%01d%%  %4lu ms/frame  <- F
    g_phaseTicks[25], g_phaseCount[25], \
    (g_phaseTicks[25]/$per)/10, (g_phaseTicks[25]/$per)%10, \
    (g_phaseTicks[25]/g_phaseFrames)/4006
+# ⭐ The dash-edge walk's A/B switch printing its own state (CLAUDE.md §instruments): every walk
+# that could not prove its stores private, or found an unmodelled $1DD5 operand, takes the cold
+# re-reading copy.  This MUST read 0 — a non-zero is a real hazard in the GAME, not the fixture.
+printf "gap-walk slow copy: %lu walks (must be 0)\n", g_gapWalkSlow
 detach
 quit

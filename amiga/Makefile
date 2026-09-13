@@ -567,7 +567,7 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_viaT2Reads g_viaT2Last \
              g_badRegionCount g_badRegionEntry \
              g_screenFrontAddr g_screenCopperAddr g_screenBytes g_screenCopperWords \
-             g_bandRejects g_decodeFlatLines g_decodeFlatBands \
+             g_gapWalkSlow g_bandRejects g_decodeFlatLines g_decodeFlatBands \
              g_decodeCells g_decodeCellsMax g_decodeCellsTotal g_decodeFullFrames \
              g_decodeModeLines \
              g_decodeModeDirty g_decodeDirtyChecks g_decodeDirtyMismatch \
