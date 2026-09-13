@@ -272,6 +272,31 @@ Two more that generalise:
   Silverstone, the one circuit the change was not about. It surfaced only because the check races
   *every* circuit including the passive one.
 
+## A wrong loop detector still emits a ranked table ⚑ Revs
+
+Scanning every hot function's objdump for the defect that was worth +8.1% in the framebuffer
+decode (a loop invariant re-read from the frame per iteration) needed a loop finder. Two were
+written and **both were wrong, in opposite directions, and each produced a confident ranking of
+candidates before the error surfaced**:
+
+1. *Any backward branch is a loop.* It collects every shared exit tail and every cold landing pad.
+   The top-ranked candidate this produced was a function's `rts` sequence, and its "loop-invariant
+   reads" were struct fields correctly reloaded after a call.
+2. *A natural loop's header must dominate its back edge — so nothing outside may branch into the
+   body.* True of natural loops, false of what GCC emits: it rotates loops and enters them
+   mid-body. This reported **zero loops** in two functions that plainly walk byte arrays.
+
+What works is an SCC decomposition that strips each component's header set and recurses, reporting
+the leaves. ⭐ But the transferable half is the failure shape: **a static analysis that is wrong
+still produces a table, and a table of numbers reads as a measurement** — there is no error
+message, no empty output, nothing that feels like a failed run. Sabotage a new *analysis* the way
+CLAUDE.md already requires for a new *instrument*: point it at a known-good case (here, a loop
+whose shape is already documented) and require it to agree before believing a new ranking.
+
+⚠ And the ranking metric was wrong independently of the detector: on a register-poor target a
+stack slot is a legitimate home for an invariant, so "operands touching the frame" cannot separate
+a hoist from a reload. `docs/perf-method.md` §the frame-slot defect class is exhausted.
+
 ## Emit the mechanism, not a snapshot of it ⚑ Revs
 
 Revs has 24 self-modifying instructions, all inside the road rasteriser.  The inherited rule was

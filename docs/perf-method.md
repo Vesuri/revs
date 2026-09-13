@@ -1102,11 +1102,27 @@ Constant across every watch interval, host, `REVS_FIXED_RNG=1`:
 **25 walks/call, 151.00 cells/call, skip=0, table=0, colour=151, fallback=132 (87%)**; cells-per-walk
 histogram (buckets of 8) = 20 walks of 0-7, 3 of 8-15, 2 of 16-23.
 
+⚠⚠ **RE-MEASURED WHILE DRIVING (2026-09-13) AND TWO OF THOSE READINGS DO NOT HOLD.** Same host
+instrument, `REVS_FIXED_RNG=1 SHAPE=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`, ~780 000 calls (two
+consecutive watch intervals agreeing to the second decimal): **23 walks/call, 136.42 cells/call,
+skip=1, table=0, colour=135, fallback=117**; histogram 83% of walks at 0-7 cells, the rest at
+8-23, none longer. So:
+- ⚠ **The `$09` skip arm is NOT dead** — it fires on ~1 cell per call. The "all cells take the
+  empty-cell arm" reading below was a property of the run that produced it, and **finding 1's
+  "they are specialisable" no longer has a census behind it**; a specialisation that deletes the
+  non-zero-source arm would be wrong on this trajectory.
+- ⚠ **The walk is NOT trajectory-independent.** The columns are fixed geometry but their LENGTH
+  is not: each walk runs from `span_line_cursor` down to `dash_block_starts[column]`, and the
+  cursor moves with the scene (151 → 136 cells, 25 → 23 walks). "Constant across every watch
+  interval" was constant *within* one trajectory, which is a weaker statement than it reads as.
+⇒ the per-cell cost is now ~10.4 ms / 136 cells ≈ **76 µs, ~490 raw cycles**, and the arm split
+says the classifier still earns its answer on 18 of 136.
+
 ⭐ **The instrument's self-check is the SUM IDENTITY**: `skip + table + colour == cells`
 (`0 + 0 + 151 = 151`), which proves no cell took an uncounted path — the thing that would otherwise
 make a zero arm indistinguishable from a misplaced hook. And the CONSTANCY is explained rather than
 suspicious: the dash edge is fixed geometry (columns `$03..$06` and `$1A..$22`, block starts from a
-static table), so it does not vary with the trajectory.
+static table) — ⚠ but the walk LENGTHS do vary; see the correction immediately below.
 
 Three findings:
 1. ⭐⭐ **EVERY cell takes the empty-cell arm.** The `$09` skip and the `offset != 0xEF` trap are
@@ -1214,7 +1230,8 @@ Neither was wrong about the traffic it deleted. Change 1 really does remove one 
 zero-page byte-lane reassemblies per walk (`mem+0x1dde` reads 2 → 1, two indexed loads and an
 `lsl.l #8`/`or.b` gone), reading `plot_ptr_v`/`plot_ptr2_v` out of registers the walk entry had
 just written. Change 3 really does make the empty-cell arm the fall-through — SHAPE's census says
-**all 151 cells take it** (`skip=0, table=0, colour=151`) — collapsing fourteen out-of-line
+**all 151 cells take it** (`skip=0, table=0, colour=151`; ⚠ re-measured driving it is
+`skip=1` — see the census correction above, which does not change this change's verdict) — collapsing fourteen out-of-line
 landing pads and the two long branches per cell.
 
 ⭐⭐⭐ **WHAT THEY BOTH ALSO DID IS COLLAPSE GCC'S 4× UNROLL AND DE-HOIST FOUR LOOP INVARIANTS,
@@ -1266,6 +1283,45 @@ the per-walk `plot_ptr2_marshal_in()` (0.24 ms) is circular — the fast/slow ga
 needs a written reader audit under the RESULTS rule because the exit V rides out in `SlotExit`.
 The honest next levers are **structural** (fewer walks, or a hand-written kernel), not a rewrite
 of this C.
+
+#### ⭐⭐ THE FRAME-SLOT DEFECT CLASS IS EXHAUSTED OUTSIDE THE DECODE — A NEGATIVE RESULT (2026-09-13)
+
+The decode's +8.1% came from a hot loop re-reading two loop-invariant stack slots per cell, and
+CLAUDE.md turned that into a standing rule. So the whole native surface was scanned for the same
+shape: SCCs of every hot `_core`'s objdump, ranked by stack-slot operands in the cyclic region.
+**Nothing survived, and the reason generalises.**
+
+| candidate | what the scan said | what it actually is |
+|---|---|---|
+| `column_gap_walk_core` | 296-insn SCC, **50 sp-operands**, 18 never written in it | `43(sp)`/`34(sp)` are two walk invariants **deliberately parked in the frame and loaded once**, read once per out-of-line landing pad — the arrangement §above measured at +1.38 ms to undo |
+| `fill_edge_column_run_core` | 30-insn "loop", 6 invariant reads | **not a loop** — `0x1b042` is the `SlotExit` fill + `rts`, `0x1b06c` the `g_gapWalkSlow` fallback; the back edge is a jump into a shared exit tail |
+| `plot_view_src_line_core` | 151-insn SCC, n(sp)=10 | 4 invariant reads, one ref each, in a 151-instruction body — ~2% of the loop |
+| `fill_line_attr_core` | 515-insn loop | **n(sp)=0** |
+| `interp_edge_core`, `sw_plot_1/2`, `paint_cells` | — | no per-iteration invariant reload; `paint_cells` is at the 43 cyc/unit floor |
+
+⭐⭐⭐ **WHY A BIG `n(sp)` IS NOT A DEFECT SIGNAL ON THIS TARGET, and this is the lesson:** on a
+register-poor machine **the frame is a legitimate home for a loop invariant**. A slot loaded once
+into `43(sp)` and read from there by each of fourteen landing pads shows up in a static scan as
+"14 reads of a never-written slot" — indistinguishable, by counting alone, from the decode's
+per-cell reload of `tst.l n(sp)`. The two are opposite in value: one *is* the hoist, the other
+defeats it. ⇒ **The metric is reloads per ITERATION OF THE HOT PATH, never stack-slot operands per
+SCC** — and that means identifying the hot path first (which arm the census says the cells take),
+because an SCC aggregates every path through the loop and a 296-instruction SCC executes ~80 of
+those instructions on a pass.
+
+⚠⚠ **AND BOTH LOOP DETECTORS I WROTE WERE WRONG FIRST, each in a way that produced a confident
+ranking.** (1) *Any backward branch is a loop* — catches every shared exit tail and cold-path
+landing pad, which is what promoted `fill_edge_column_run_core`; the invariants it "found" were
+struct fields reloaded after a `jsr`, i.e. correct code. (2) *A natural loop's header must
+dominate its back edge, so nothing outside may branch into the body* — GCC rotates loops and
+enters them mid-body, so this filter reported **zero loops** in two functions that plainly walk
+byte arrays. What works is an SCC decomposition that strips each component's headers and recurses,
+reporting the leaves. ⭐ The general form of the trap: **a loop detector that is wrong in either
+direction still emits a ranked table, and a ranked table reads as a measurement.**
+(`docs/method-lessons.md` §a wrong loop detector still emits a ranked table.)
+
+⇒ **Do not re-run this scan.** The remaining milliseconds in the view pipeline are structural —
+the per-span representation, the per-span SMC emulation, fewer walks — not GCC's frame layout.
 
 ### ⚠⚠ MEASURED (2026-09-02): the WIDE-VALUE campaign is NOT VISIBLE end to end — +0.65%, inside noise
 

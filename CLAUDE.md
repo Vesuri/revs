@@ -392,6 +392,13 @@ end to end** — the scan was re-reading two loop-invariant stack slots per cell
 pointers into data registers. **Read the objdump of a hot loop before theorising about its
 algorithm**, and see `docs/perf-method.md` for what to look for (a `tst.l <n>(sp)` on a loop
 invariant; pointers living in `d` registers).
+  ⚠ **The counterweight is measured too, and the whole scan for a second instance came back
+  empty**: on a register-poor machine **a stack slot is a legitimate home for a loop invariant**.
+  One loaded *once* and read from there by each of fourteen out-of-line landing pads is
+  indistinguishable, by counting, from the decode's per-cell reload — and undoing it measured
+  **+1.38 ms**. ⭐ Rank by reloads **per iteration of the HOT PATH**, never by stack-slot operands
+  per loop (an SCC aggregates every path), and identify that path from a census before believing
+  a static ranking. `docs/perf-method.md` §the frame-slot defect class is exhausted.
 ⭐⭐ **The same class caught the span rasteriser a second time, for −4.79 ms: A HOT LOOP'S STATE
 LIVES IN MEMORY IF ANYTHING TAKES ITS ADDRESS.** `sw_plot_*(…, &y, &carry, &abandoned)` and
 `span_end_marker(…, &colMark, &carry)` *were* `span_walk`'s whole DDA state, so it sat in the stack
