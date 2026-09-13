@@ -463,6 +463,20 @@ Rules that must survive without opening `docs/perf-method.md`:
   edit saved** — a shared out-of-line copy takes its descriptor back as a pointer. Pin
   `always_inline` explicitly and **re-read the objdump's call list after the edit**: a `jsr <name>`
   where there were none is the tell. (`docs/m68k-optimisation.md`)
+  ⚠⚠ **The rule holds for a LEAF IN AN INNER LOOP, not for a caller that has run out of
+  registers — measure, don't assume it.** `view_plant` takes a literal `page` and a literal
+  `opcode` at every call site and folding them does everything the rule predicts (the
+  note-vs-forget test collapses to one list walk, the body lands at ~30 instructions), yet
+  `always_inline` measured **+1.04 ms/frame** — phase 2's bracket gained and phase 3's lost more,
+  because `view_paint_lines_core` grows 757 → 995 instructions and `paint_lines_short`'s per-line
+  loop is already at the 68000's register ceiling. It stays out of line; the do-not-retry is
+  written at the code.
+  ⭐ **A BOUNDED LOOP OVER A SHORT LIST IS A CODE-SIZE TRAP, AND THAT IS HOW A CALL GETS PAID.**
+  `for (i = 0; i < n; i++)` over a list that normally holds ONE entry makes gcc peel the trip
+  count and unroll eight ways; two such searches plus their shift loops made `view_plant`
+  348 instructions and so pushed it over the inlining threshold, costing every plant a
+  five-argument call. **Terminate on a sentinel the list already carries and drop the count** —
+  worth 0.8 ms/frame in the view sweep, and the end becomes positional.
   ⚠⚠⚠ **AND INLINING IS NOT THE ONLY DECISION AN EDIT CAN REVOKE — UNROLLING AND HOISTING GO THE
   SAME WAY, AND AN OUT-OF-LINE LANDING PAD IS A REGISTER-ALLOCATION BOUNDARY.** In
   `column_gap_walk_core` the loop invariants live in registers *precisely because* the bulky

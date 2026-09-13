@@ -250,6 +250,43 @@ walk's inner loop look catastrophic. The honest denominator was **43 spans**, an
 per-span setup, not per-line work. **Before optimising a loop, check how many times it actually
 runs** — `docs/perf-method.md` §the span kernel's call and search surface.
 
+### ⭐ THE THIRD CASE: A BOUNDED LOOP OVER A SHORT LIST IS WHAT PUSHES A BODY OVER THE THRESHOLD (2026-09-13)
+
+Worth **0.8 ms/frame** in the view sweep, and the diagnosis runs the opposite way round from the
+two above: the inlining decision was the *symptom*, and a loop bound was the cause.
+
+The sweep tracks which of the forty unit stores have had an `RTS` planted over them in
+`g_viewStopList[41]` — a list that **normally holds one entry and is empty through all of phase
+1**. `view_stop_from` already scanned it sentinel-style, with a comment explaining that spelling
+the bound as `i < g_viewStopN` makes gcc peel the trip count and unroll the search eight ways.
+Its two siblings, `view_stop_note` and `view_stop_forget`, still carried the bound — and gcc had
+done exactly that to both, plus to both shift loops. Four unrolled loops over a one-entry list
+made `view_plant` a **348-instruction** body, which put it over the inlining threshold, so every
+one of ~135 plants a frame paid a **five-argument out-of-line call**.
+
+Rewriting all three walks to terminate on the 40 the list already carries — the end becomes
+POSITIONAL and the count is retired — took `view_plant` to **108** instructions and
+`view_paint_lines_core` to 757 from 877. Phase 3's bracket 24.49 → 23.76 ms, the frame
+179.33 → 178.49, with phase 1's bracket flat (15.83 → 15.81) as the built-in control: phase 1
+plants nothing, so it must not move.
+
+⭐⭐ **The rule: before reaching for an inlining attribute, ask what made the body big.** A short
+list with an explicit count is the recurring answer on this target, because the trip-count peel
+is unconditional and its cost scales with the list's *declared* bound, not its real length.
+
+⚠⚠ **And then `always_inline` on the same routine measured WORSE — this is the exception to the
+constant-parameter rule.** `view_plant`'s last two arguments are literals at every call site
+(`page` 0x7C or 0x7E, `opcode` STA (zp),Y or RTS) and folding them does everything the rule
+predicts: `view_low_page(page)` becomes true, `g_viewSlotOf`'s row a constant base, the
+`opcode == OP_STA_IND_Y` test that picks note-vs-forget collapses to **one** list walk, and the
+inlined body lands at ~30 instructions rather than 108. It still cost **+1.04 ms/frame** (phase 3
++1.18); with the two list walks additionally forced `noinline`, so the inlined body is ~20
+instructions, **+1.01** (phase 3 +1.44). Phase 2's bracket gained both times (−0.26 / −0.20) and
+phase 3's lost more, which is the whole story: the core grows 757 → **995** instructions and
+`paint_lines_short`'s per-line loop is already at the register ceiling. **The constant-parameter
+rule holds for a leaf in an inner loop; it does not hold for a caller that has run out of
+registers.** Do not re-try it — the record is written at the code.
+
 ## ⭐⭐ HAND-UNROLL: `#pragma GCC unroll N` IS IGNORED, AND THE WIN IS THE ADDRESSING (2026-09-13)
 
 m68k-amiga-elf-gcc 15.1.0 at `-O2` **ignores `#pragma GCC unroll 4`** — byte-identical output, 282

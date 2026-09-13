@@ -877,6 +877,56 @@ subtraction anyway is that **the view sweep's own census is identical across the
 The driver's control flow reads the stop list, `plot_ptr`, and the per-line surface index, none
 of which is picture state.
 
+#### ⭐⭐ THE FIRST BITE OUT OF THAT 32 ms OF DRIVER: THE STOP LIST WAS A CODE-SIZE TRAP — −0.84 ms/frame (2026-09-13)
+
+Found by reading the objdump of the phase-3 driver rather than measuring it, exactly as
+§the decode was code shape prescribes: 5526 cyc/line is far more than the driver's instruction
+count justifies, the plotter macros are `((void)0)` in a control build and the probe RMWs are
+~3% of the frame, so the excess had to be in emitted code — and the objdump showed `view_plant`
+as a **348-instruction out-of-line five-argument function**, called ~135 times a frame (the stop
+moves twice a line through phases 2 and 3).
+
+The 348 instructions were not `view_plant`'s own work. It maintains `g_viewStopList[41]` — which
+unit stores currently hold a planted `RTS` — and **that list normally holds ONE entry and is
+empty through the whole of phase 1**. `view_stop_from` already walked it sentinel-style, with a
+comment saying why: spelled `i < g_viewStopN`, gcc peels the trip count and unrolls the search
+eight ways. Its two siblings `view_stop_note` and `view_stop_forget` still carried the count, and
+gcc had done precisely that to both, plus to both of their shift loops. Four unrolled loops over
+a one-entry list made the body big enough to cross gcc's inlining threshold, so every plant paid
+the call.
+
+**The fix is the sentinel the list already carries** — every real entry is a unit index 0..39
+ascending, terminated by a 40 — so the walks read `while (*p < unit) p++;`, the end becomes
+POSITIONAL, and `g_viewStopN` is retired from the binary. Static half: `view_plant`
+**348 → 108** instructions, `view_paint_lines_core` **877 → 757**.
+
+`PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`, warp, `phase4_prof.gdb`, 30 s, phase 0
+bit-identical at **315 fields in every run** (so the same workload), reproduced twice:
+
+| bracket | control | sentinel | delta |
+|---|---:|---:|---:|
+| 34 — view phase 3 | 24.49 | 23.76 | **−0.73** |
+| 33 — view phase 2 | 12.41 | 12.38 | −0.03 |
+| 24 — view phase 1 (**the control**) | 15.83 | 15.81 | −0.02 |
+| 32 — sweep tail | 6.21 | 6.20 | −0.00 |
+| sweep 24+33+34 | 52.73 | 51.95 | **−0.77** |
+| FRAME (Σ1..39 − 28) | 179.33 | 178.49 | **−0.84** |
+
+⭐ **Phase 1 is the built-in control for any plant-path change and it must not move** — it plants
+nothing, and it read +0.01 / −0.02 across runs. The whole win landing in phase 3, where the
+plants are, is what makes the attribution safe without a second instrument.
+
+⭐⭐ **The rule to carry forward: a bounded loop over a short list is a code-size trap, and that
+is how a call gets paid.** `docs/m68k-optimisation.md` §the third case has the general form.
+
+⚠⚠ **And `always_inline` on `view_plant` — which CLAUDE.md's constant-parameter rule asks for,
+since `page` and `opcode` are literals at every call site — measured +1.04 ms/frame** (phase 3
++1.18), and +1.01 with the list walks additionally forced out of line (phase 3 +1.44). Phase 2's
+bracket gained both times and phase 3's lost more: the core grows 757 → **995** instructions and
+`paint_lines_short`'s per-line loop is already at the 68000's register ceiling. **The
+constant-parameter rule holds for a leaf in an inner loop, not for a caller that has run out of
+registers.** Do-not-retry written at the code.
+
 #### ⭐⭐⭐ OTHER TARGET SPLITS (2026-09-12) — where the next frame reductions can come from
 
 | subsystem | measured split | conclusion |
