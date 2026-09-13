@@ -59,8 +59,19 @@ printf "loop ticks %lu of %lu elapsed  (accounted %d.%01d%% + phase 0 — MUST t
 # $1753 branches past whenever $62F6 is zero.  calls=0 ⇒ that wait is never entered and phase 0
 # really is just boot; calls>0 ⇒ phase 0 is boot PLUS a per-frame engine wait and must not be
 # read as a one-off.
-printf "phase 0 (boot + engine wait at $1760, excluded): ticks=%lu calls=%lu\n", \
-  g_phaseTicks[0], g_phaseCount[0]
+printf "phase 0 (boot + engine wait at $1760, excluded): ticks=%lu calls=%lu = %lu fields\n", \
+  g_phaseTicks[0], g_phaseCount[0], g_phaseTicks[0]/80120
+# ⭐⭐ THE FRAME, AND THE ONLY WALL FIGURE THAT IS COMPARABLE ACROSS BUILDS.  Raw
+# elapsed/loopFrames includes phase 0, and phase 0 is boot PLUS the engine's 2-second crash hold
+# ($1753 spins at $1760 on field_countdown — exactly 100 fields a crash).  A FASTER build runs
+# more game frames inside the same window, so it reaches MORE crashes and its raw wall frame reads
+# as if the win partly evaporated: -2.29 ms for -5.01 ms of real compute, all of the gap one extra
+# hold (docs/perf-method.md §the dash-edge walk).  ⚠ Compare the FIELD counts above between two
+# runs: a ~100-field difference means they are not the same workload.
+# This line must equal `loop ticks / loopFrames` above to ~0.1 ms — that identity is what proves
+# the brackets account for the whole frame.
+printf "FRAME = %lu ms  (wall %lu ms minus phase 0; compare THIS across builds, never wall)\n", \
+  ((g_beamEpoch - g_phaseTicks[0])/g_phaseFrames)/4006, (g_beamEpoch/g_phaseFrames)/4006
 # ⭐⭐ PHASE 26 IS THE 50 Hz BODY, AND ITS SIZE IS A RATIO, NOT A ROUTINE.  It runs once per
 # DISPLAY FIELD, so at ~1 painted FPS it runs ~50 times per painted frame — which is faithful (a
 # BBC's User VIA fires regardless of how long the foreground takes) and is why it can dominate a

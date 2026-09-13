@@ -344,19 +344,25 @@ negotiable** — 25 FPS means painting every other frame with the simulation sti
 The A500 is a 7 MHz 68000 and a frame is 20 ms: spending 10 ms on *anything* is half the budget.
 Be conscious of absolute milliseconds always.
 
-**Baseline: a ~219 ms FRAME** — 209 ms of bracketed work plus the engine's own wait, i.e. ~11
-display fields (`PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` + `phase4_prof.gdb`,
-warp, 30 s, driving, 2026-09-13 at `9dfdf4e`; `vbi/loopFrames × 20 ms` IS the frame — the bracketed
-sum omits phase 0). **This is the number a change is sized against.** The displayed **~4.93 FPS**
+**Baseline: a ~209 ms FRAME** — i.e. ~10.5 display fields (`PROBES=1 FIXED_RNG=1
+STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` + `phase4_prof.gdb`, warp, 30 s, driving, 2026-09-13 at
+`9dfdf4e`). **This is the number a change is sized against**, and it is both the bracketed total
+(`Σ phaseTicks[1..39]`) and `(elapsed − phase 0) / loopFrames` — they agree to 0.02 ms, so the
+brackets account for the whole frame. ⚠ **The raw `elapsed / loopFrames` reads ~219 ms and is NOT
+the frame**: phase 0 is boot plus the engine's own 2-second crash pauses. The displayed **~4.93 FPS**
 (`FPSCOUNT=1` + `fps_series.gdb`, 50.5 painted per 512 VBLs, same session) is the standing
 *displayed* figure and nothing else.
 ⚠ One painted frame is 3.3% of an FPS row, so that figure IS the noise floor — always re-run the
 control in the same session from a clean build rather than diffing against it
 (`docs/perf-method.md` §twin #13).
-⚠ **A compute win is not all frame.** The engine's own frame wait at `$1760` (phase 0, excluded
-from the shares by construction) absorbs part of it until enough accumulates — the dash-edge pass
-removed 6.71 ms and the wall clock moved 2.28. Quote a change against the **bracketed** total and
-say how much of it reached the wall clock.
+⚠⚠ **A WORKING CHANGE READS AS PARTLY GIVING ITSELF BACK, and the cause is dilution, not the
+engine.** A faster build runs more game frames inside the same window, so it reaches more of the
+2-second crash holds that sit in phase 0 — the dash-edge pass moved the frame the full −5.01 ms
+while raw `elapsed/loopFrames` moved −2.29, and the entire gap was **one extra 100-field hold**.
+So quote the **bracketed** total (= wall − phase 0), and before comparing two runs check phase 0:
+its tick count is **bit-identical** across runs of the same trajectory, so any difference at all
+means a different workload (`ticks / 80120` says how many holds). When phase 26 moves, read `ONE BODY TICK` first — a per-tick cost that moves with the
+body untouched is the trajectory, not the change. `docs/perf-method.md` §the dash-edge walk.
 ⚠ The whole view pipeline is now real C — `build_track_geometry`'s tree and `draw_road`'s tree both
 have **no transliteration left in them** — and neither pass's twins moved the framerate. Removing
 the interpreter from this subsystem is DONE; the next win must remove accesses or points.

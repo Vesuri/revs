@@ -863,15 +863,48 @@ propagation derived that the store cannot alias `mem[$82]` and **hoisted the end
 the loop by itself**, and dropped the `& 0xFFFF` masks. Verified in the fast loop's SCC: `lsl.l #8`
 0, `#64512` 0, `mem+0x82` 0, `scc` 0, `mem+0x1dd5` 0 (HEAD: 1, 4, 1, 1, 1).
 
-⚠⚠ **AND THE WALL CLOCK MOVED LESS THAN THE WORK DID — 221.03 → 218.75 ms/frame, −2.28 ms for
-−6.71 ms of compute.** The difference is not measurement error, it is the engine's **own** frame
-wait at `$1760` (phase 0, excluded from the shares by construction) absorbing it: its open count
-went **17403 → 26105** and it grew +2.74 ms/frame, and the 50 Hz body drain grew +1.29 ms on
-+12.6% more drain batches for the same 7 3xx body ticks. Nothing in the change is reachable from
-the body — the walk's only callers are `fill_dash_edge_columns` (phase 18) and
-`plot_view_src_line_core` (the view sweep), all flat or down. ⭐ **So read a compute win against
-the BRACKETED total and treat the wall clock as partly banked slack**: `$1760` gives it back only
-once enough accumulates, which is §Rule 1a's `50/N` quantisation seen from the engine's side.
+#### ⚠⚠ AND THE WALL CLOCK APPEARED TO MOVE LESS THAN THE WORK — 221.05 → 218.77, −2.29 ms for −5.01 ms of compute. THE GAP IS ONE EXTRA CRASH HOLD, and the frame really did move the full −5.01
+
+**⚠ The first explanation I wrote here — that the engine's own frame wait at `$1760` "absorbs" a
+compute win and hands it back only in lumps — is RETRACTED. It was a plausible cycle-accounting
+story with nothing behind it.** What the same two runs actually say, once phase 0 is subtracted:
+
+| | HEAD | after | Δ |
+|---|---|---|---|
+| `elapsed / loopFrames` (the raw wall frame) | 221.05 | 218.77 | −2.29 |
+| **`(elapsed − phase 0) / loopFrames`** | **214.38** | **209.36** | **−5.02** |
+| bracketed (`Σ phaseTicks[1..39]`) | 214.40 | 209.39 | −5.01 |
+
+⭐⭐ **`wall − phase 0` equals the bracketed total to 0.02 ms in BOTH runs.** The brackets are
+complete; nothing is absorbed anywhere, and the compute win reaches the frame 1:1. What sat in the
+raw wall figure was phase 0, and phase 0 is **boot plus the engine's own crash pause**: `$1753`
+branches past `$1760` on every ordinary frame, and the only thing that ever spins there is the
+2-second hold after a crash (`race_main_loop`'s tail stores `$9C` into `field_countdown` and spins
+until it goes positive — **exactly 100 fields**, `symbols.csv` `$62F7`).
+
+Count the fields and the arithmetic closes with nothing left over: phase 0 is **219.9 fields** at
+HEAD and **315.0** after — **+95.1, i.e. one more 100-field crash hold** (≈ boot + 2 holds vs boot
++ 3). The faster build ran 11 more game frames inside the same emulated window and reached one more
+crash with them. The `+12.6%` drain batches are the same fact seen from the body: during the hold
+the spin calls `platform_tick_vbi` every iteration, so each arriving field is drained **as its own
+batch** (8.37 → 7.47 ticks/batch) instead of ~11 accumulating behind one slow painted frame.
+
+⭐⭐ **THE RULE, AND IT IS A NEW SHAPE OF AN OLD TRAP.** §Rule 3 says a *longer* run dilutes the
+measurement with a static scene. This is the same dilution reached by the other axis: **a FASTER
+BUILD gets further down the same trajectory in the same window, so it reaches the dilutant sooner.**
+A change that works therefore *pulls in* more crash holds and reads as if it gave part of itself
+back. So:
+- **Quote `(elapsed − phase 0) / loopFrames`, never `elapsed / loopFrames`** — `phase4_prof.gdb`
+  prints both, and the second is the one that is comparable across builds.
+- **Check phase 0 between the two runs.** ⭐ Its tick count is **bit-identical** across runs of the
+  same trajectory (`17618273` in two separate HEAD runs 40 minutes apart — boot and the holds are
+  deterministic), so *any* difference there is a different workload, and the field count
+  (`ticks / 80120`) says how many holds' worth.
+- **When phase 26 moves, read `ONE BODY TICK` before believing it** (1276 → 1413 µs here, +10.7%
+  with the body untouched and body ticks flat at 7 2xx/7 3xx). A per-tick cost that moves on its
+  own is the trajectory talking, not the change: nothing edited is reachable from the body at all —
+  the walk's only callers are `fill_dash_edge_columns` (phase 18) and `plot_view_src_line_core`
+  (the view sweep).
 
 ### ⚠⚠ MEASURED (2026-09-02): the WIDE-VALUE campaign is NOT VISIBLE end to end — +0.65%, inside noise
 
