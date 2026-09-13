@@ -173,7 +173,7 @@ endif
 # Six bracket transitions a frame, so quotable.  Read with amiga/roadsplit.gdb.
 ifdef ROADSPLIT
 EXTRA_DEFINES += -DREVS_ROADSPLIT
-PROBE_SYMS_ROAD = g_roadFrames g_roadSpans g_roadSpanLines g_roadCols g_roadFillLines g_roadMarkPts
+PROBE_SYMS_ROAD = g_roadFrames g_roadSpans g_roadSpanLines g_roadCols g_roadColSteps g_roadFillLines g_roadMarkPts
 endif
 
 # ⭐ `make CRASHPROBE=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` — measure the ~5s crash-freeze.

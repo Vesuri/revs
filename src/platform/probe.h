@@ -120,7 +120,7 @@ extern volatile unsigned long g_isrSplitCount[PROBE_ISR_SLOTS];
 /* Number of phases the table below can hold — one per top-level call in $1701-$1763,
    plus id 0, plus slack.  ⚠ 40-43 are GEOSPLIT's sub-phases of build_track_geometry (see the
    bottom of this file), so the table must be sized past them. */
-#define PROBE_PHASES 48
+#define PROBE_PHASES 50
 
 /* ⭐ The DISPLAY-frame wait, bracketed on its own.
  *
@@ -375,6 +375,21 @@ extern int g_geoSide;                            /* which side the current walk 
 #define ROAD_PHASE_FILL  44   /* fill_line_attr    — line -> edge point map (both sides) */
 #define ROAD_PHASE_SPANS 45   /* draw_surface_spans — the span rasteriser (all four passes) */
 #define ROAD_PHASE_MARK  46   /* mark_line_surfaces — line -> surface class (both sides)  */
+/* ⭐⭐ 47 CARVES THE SPAN RASTERISER IN TWO, and it exists to settle one contradiction: the
+   per-frame leaf counts (43 spans, 49 DDA scan lines, 60 plotted columns) cannot fill 37 ms in
+   the WALK, yet a pre-flattening bracket read ~24 ms there and only ~13 ms in setup.  With 47
+   in the table, phase 45 is interp_edge_core's per-span SETUP plus the driver, and 47 is the
+   four `span_walk` specialisations — 45 + 47 is the old row.  docs/perf-method.md §the span
+   kernel.  86 transitions a frame, so the instrument is free at this rate. */
+#define ROAD_PHASE_WALK  47   /* span_walk — the four inlined DDA arms and their plotters   */
+/* ⭐⭐ 48/49 CARVE THE WALK AGAIN, and 49 IS THE CONTROL — the same shape as PROBE_PHASE_P3's
+   empty phase 31.  Three transitions per plotted column: 49 opens (closing the walk), 48 opens
+   (closing 49, whose bracket contains NOTHING, so phase 49's ticks ARE the probe's own cost at
+   this rate), and 47 reopens (closing 48 = one span_plot_core).  Read 49 FIRST: 48 is only
+   quotable as 48 − 49, and if 49 is comparable to 48 the instrument is the measurement.
+   ~59 columns a frame, so 177 transitions — the same order as the view drivers' splits. */
+#define ROAD_PHASE_PLOT  48   /* span_plot_core — one column of one span merged into a cell  */
+#define ROAD_PHASE_NULL  49   /* THE CONTROL: an empty bracket at exactly the plot rate      */
 
 #ifdef REVS_ROADSPLIT
 #ifdef __cplusplus
@@ -384,6 +399,7 @@ extern volatile unsigned long g_roadFrames;     /* draw_road calls (= main loop)
 extern volatile unsigned long g_roadSpans;       /* interp_edge calls — spans handed to raster */
 extern volatile unsigned long g_roadSpanLines;   /* span_walk outer iterations — DDA scan lines */
 extern volatile unsigned long g_roadCols;        /* road_span_plot(_2) calls — the leaf column  */
+extern volatile unsigned long g_roadColSteps;    /* span_walk's i-loop iterations — the DDA steps */
 extern volatile unsigned long g_roadFillLines;   /* fill_line_attr inner-loop line writes       */
 extern volatile unsigned long g_roadMarkPts;     /* mark_line_surfaces points stamped           */
 #ifdef __cplusplus

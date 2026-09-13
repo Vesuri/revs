@@ -5148,8 +5148,11 @@ static inline __attribute__((always_inline))
 void sw_plot(int usePlot2, uint8_t column,
              uint8_t *y, int *abandoned, unsigned *carry)
 {
+    ROAD_PHASE(ROAD_PHASE_NULL);    /* the control: an empty bracket at the plot rate */
+    ROAD_PHASE(ROAD_PHASE_PLOT);
     if (usePlot2) sw_plot_2(column, y, abandoned, carry);
     else          sw_plot_1(column, y, abandoned, carry);
+    ROAD_PHASE(ROAD_PHASE_WALK);
 }
 
 /* The half/end markers test colMark against $80 ("this column plotted nothing") and reset it,
@@ -5232,6 +5235,7 @@ void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine)
         if (!arm->steep && (!first || runTop)) colMark = 0x80u;
 
         for (i = startCol; i < 8; i++) {
+            ROAD_COUNT(g_roadColSteps);     /* one DDA step, plotted or not */
             int column   = arm->rev ? 3 - (i & 3) : (i & 3);
             int usePlot2 = arm->rev ? (i < 4) : (i >= 4);
 
@@ -5552,12 +5556,15 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
                 if (mem[SPAN_YSTEP] & 0x80u) startLine++; else startLine--;
             }
         }
+        ROAD_PHASE(ROAD_PHASE_WALK);    /* everything above this line is per-span SETUP */
         if (mem[SPAN_ARM] & 0x80u) span_walk(&ARM_SHALLOW_REV, phase, startLine);
         else                       span_walk(&ARM_SHALLOW_FWD, phase, startLine);
     } else {
+        ROAD_PHASE(ROAD_PHASE_WALK);
         if (mem[SPAN_ARM] & 0x80u) span_walk(&ARM_STEEP_REV, phase, startLine);
         else                       span_walk(&ARM_STEEP_FWD, phase, startLine);
     }
+    ROAD_PHASE(ROAD_PHASE_SPANS);
 
     return interp_edge_publish();
 }

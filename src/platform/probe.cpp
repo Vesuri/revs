@@ -242,6 +242,7 @@ extern "C" {
 volatile unsigned long g_roadFrames = 0;
 volatile unsigned long g_roadSpans = 0;
 volatile unsigned long g_roadSpanLines = 0;
+volatile unsigned long g_roadColSteps = 0;
 volatile unsigned long g_roadCols = 0;
 volatile unsigned long g_roadFillLines = 0;
 volatile unsigned long g_roadMarkPts = 0;
