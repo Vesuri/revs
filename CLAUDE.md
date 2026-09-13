@@ -453,6 +453,18 @@ Rules that must survive without opening `docs/perf-method.md`:
   edit saved** — a shared out-of-line copy takes its descriptor back as a pointer. Pin
   `always_inline` explicitly and **re-read the objdump's call list after the edit**: a `jsr <name>`
   where there were none is the tell. (`docs/m68k-optimisation.md`)
+  ⚠⚠⚠ **AND INLINING IS NOT THE ONLY DECISION AN EDIT CAN REVOKE — UNROLLING AND HOISTING GO THE
+  SAME WAY, AND AN OUT-OF-LINE LANDING PAD IS A REGISTER-ALLOCATION BOUNDARY.** In
+  `column_gap_walk_core` the loop invariants live in registers *precisely because* the bulky
+  inlined classifier sits on cold landing pads; `__builtin_expect` on the arm the game always
+  takes pulled it into the loop's main flow, GCC dropped the 4× unroll and evicted four
+  invariants to absolute reads, and the change measured **+1.38 ms** for ~20 cycles/cell of
+  branches saved. A six-instruction pure helper that deleted real memory traffic cost +0.32 ms
+  the same way. ⭐ **The counting test: grep the objdump for each loop invariant's absolute
+  address and require the count to stay at 1** — and treat a collapsing instruction count
+  (1176 → 340) as the tell that the unroll went with it. So the decode's "spell
+  `__builtin_expect` as the MISMATCH" **inverts when the cold arm is a large inlined callee**.
+  `docs/perf-method.md` §a fragile local optimum.
 - ⭐⭐ **Before optimising a loop, check how many times it actually RUNS.** The span rasteriser's
   "~3 500 cycles per DDA scan line" was 24 ms divided by the wrong denominator; the real one is
   **43 spans a frame**, which caps the whole kernel's call-and-search surface at ~5 ms (it measured

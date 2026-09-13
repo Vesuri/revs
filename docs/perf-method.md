@@ -1024,6 +1024,79 @@ back. So:
   the walk's only callers are `fill_dash_edge_columns` (phase 18) and `plot_view_src_line_core`
   (the view sweep).
 
+#### ⚠⚠⚠ AND THE 10.4 ms IS A FRAGILE LOCAL OPTIMUM: BOTH FOLLOW-UP EDITS MADE IT SLOWER (2026-09-13)
+
+Two changes were designed off the objdump, both aimed at the per-walk entry and the per-cell
+branch layout, both predicted to save ~0.4 ms. **Both measured as regressions, and so did their
+sum.** Matched 30 s warp runs, `PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`,
+`phase4_prof.gdb` — every row at `loopFrames=668`, phase 0 = **315 fields** in all four, and
+phase 11 (`draw_road`, untouched) reads 34.10-34.15 ms in all four, which is what licenses the
+comparison:
+
+| variant | phase 18 ticks | ms/frame | Δ |
+|---|---|---|---|
+| control (HEAD) | 27 245 155 | **10.18** | — |
+| **Change 1** — `gap_store_base()`, deleting the zero-page pointer round trip | 28 084 598 | 10.50 | **+0.32** |
+| **Change 3** — `__builtin_expect(src != 0, 0)` | 30 925 898 | 11.56 | **+1.38** |
+| both | 33 959 745 | 12.52 | **+2.34** |
+
+Neither was wrong about the traffic it deleted. Change 1 really does remove one of the two
+zero-page byte-lane reassemblies per walk (`mem+0x1dde` reads 2 → 1, two indexed loads and an
+`lsl.l #8`/`or.b` gone), reading `plot_ptr_v`/`plot_ptr2_v` out of registers the walk entry had
+just written. Change 3 really does make the empty-cell arm the fall-through — SHAPE's census says
+**all 151 cells take it** (`skip=0, table=0, colour=151`) — collapsing fourteen out-of-line
+landing pads and the two long branches per cell.
+
+⭐⭐⭐ **WHAT THEY BOTH ALSO DID IS COLLAPSE GCC'S 4× UNROLL AND DE-HOIST FOUR LOOP INVARIANTS,
+AND THAT COSTS MORE THAN EITHER SAVES.** Count the absolute reads of the walk's invariants in
+`column_gap_walk_core`'s objdump:
+
+| | HEAD | Change 1 | Change 3 |
+|---|---|---|---|
+| instructions in the body | 1176 | 339 | 344 |
+| `mem[$1F]` `horizon_extent` | **1** | 2 | 2 |
+| `mem[$85]` `EDGE_COLUMN` | **1** | 3 | 3 |
+| `mem[$29]` `line_attr_1_limit` | **1** | 2 | 2 |
+| `mem[$82]` `EDGE_BLOCK_START` | **1** | 3 | 3 |
+
+At HEAD each is loaded **exactly once**, into `d3`, `d1`, `43(sp)` and `34(sp)`, and `&mem[srcBase]`
+lives in `a1` across the whole walk; the per-cell path is `moveq/move.b/move.b (0,a1,d0.l),d5/
+beq.w <pad>` → classifier → `move.b d4,(0,a3,d0.l)/bra.w` back into the middle of the unrolled
+body. After either edit the loop is rotated so the empty-cell path re-enters *before* the pointer
+biasing: Change 1's hot loop head is `1a056`, but the store path returns to `1a01c`, which re-reads
+`mem[$82]` and re-executes three `addi.l #314696` pointer re-biasings per cell; Change 3 reloads
+the source base with `movea.l 30(sp),a0` and reads `mem[$1F]` and `mem[$85]` absolute per cell.
+**Four invariants × ~16 cycles × 151 cells ≈ 9 700 cycles ≈ 1.36 ms** — which closes against
+Change 3's measured +1.38.
+
+⭐⭐⭐ **THE RULE: AN OUT-OF-LINE LANDING PAD IS A REGISTER-ALLOCATION BOUNDARY, NOT JUST A LAYOUT
+ARTEFACT.** On a register-poor machine the invariants survive in registers across the loop
+*precisely because* the bulky inlined classifier is NOT in the loop's main flow. `__builtin_expect`
+pulls it in, and GCC pays for it by evicting them. So the decode's lesson — "spell
+`__builtin_expect` as the MISMATCH", §the framebuffer decode — **does not generalise to a loop
+whose cold arm is a large inlined callee**; there it inverts.
+
+⭐⭐ **THE COUNTING TEST, and it is cheap enough to run before every such edit:** weigh the
+branches saved per iteration (a taken `Bcc.w` + a `bra.w` ≈ 20 cycles) against the loop invariants
+that are in registers *only because* the body is out of line (≈16 cycles each per re-read).
+**Grep the objdump for each invariant's absolute address and require the count to stay at 1.**
+A collapse of the instruction count (1176 → ~340 here) is the same tell seen from the other side:
+the unroll went with it.
+
+⚠ This is the fourth instance of the standing trap in `docs/m68k-optimisation.md` §the inline
+threshold — *changing a hot function's shape revokes a GCC decision worth more than the edit* —
+and the first where the revoked decision was **unrolling plus hoisting** rather than inlining.
+The other three: the span rasteriser's descriptor (a smaller body lost four specialisations,
+−0.6% → +0.8% with `always_inline`), `gap_walk_body` inlined twice (evicted
+`surface_colour_at_core`, +4.3 ms), and the packed `ViewState` ABI (§packing is not free).
+
+⇒ **Do not retry either change.** What remains available in phase 18 is not source-level shape:
+the per-walk `plot_ptr2_marshal_in()` (0.24 ms) is circular — the fast/slow gate needs
+`plot_ptr2_v` before it can judge the walk safe — and dropping the entry `adc_overflow` (0.31 ms)
+needs a written reader audit under the RESULTS rule because the exit V rides out in `SlotExit`.
+The honest next levers are **structural** (fewer walks, or a hand-written kernel), not a rewrite
+of this C.
+
 ### ⚠⚠ MEASURED (2026-09-02): the WIDE-VALUE campaign is NOT VISIBLE end to end — +0.65%, inside noise
 
 The byte-lane→wide-value campaign (`docs/wide-value-cleanup.md`) had been argued entirely from
