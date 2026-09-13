@@ -7742,10 +7742,12 @@ static int test_span_arms(void)
 
     /* The descending arms' cap is the transliterated FUN_2f12→FUN_2f19 in the oracle, which
        spills through math_lo ($74) on its off-axis flatten; the pure-C span_walk_cap does not.
-       That one scratch cell is the only mem[] divergence — ignore it (harmless on the fwd arms,
-       which never reach the cap). */
-    static const uint16_t ig[] = { 0x0074 };
-    set_ignore(ig, 1);
+       ⭐ FUN_2f12 also COPIES the plotter's entry-step opcode into a slot of its own ($2F18)
+       and executes that, to reach a direction the caller already knew; span_walk_cap steps by
+       the value.  Neither byte is a result — see the reader audit cited at the interp_edge
+       fixture — so ignore both (harmless on the fwd arms, which never reach the cap). */
+    static const uint16_t ig[] = { 0x0074, 0x2F18 };
+    set_ignore(ig, 2);
 
     for (a = 0; a < 4; a++) {
         int subFail = 0, midChain = 0, trapped = 0, multiLine = 0, markerTrap = 0,
@@ -7815,8 +7817,15 @@ static int test_span_arms(void)
                 pre[0x0082] = (uint8_t)(c.Y + (step == 0xC8 ? 2 : -2) * (1 + (int)(xs() % 6)));
             c.N = xs() & 1; c.V = xs() & 1; c.Z = xs() & 1; c.C = xs() & 1;
             c.D = 0;
-            subFail += diff_run(arms[a].name, pre, c, arms[a].nat, arms[a].ref,
+            { int before = subFail;
+              subFail += diff_run(arms[a].name, pre, c, arms[a].nat, arms[a].ref,
                                 liveMask, t, &printed);
+              if (subFail != before)
+                printf("   [TMP] case %d: p2hi=$%02X bound=$%02X above=%d "
+                       "operand=$%04X table+phase=$%04X planted=$%02X dx=$%02X dy=$%02X\n",
+                       t, pre[0x0073], arms[a].bound, pre[0x0073] > arms[a].bound,
+                       0, arms[a].table + phase, pre[arms[a].table + phase],
+                       pre[0x0083], pre[0x0084]); }
         }
         fail += subFail;
         if (midChain == 0 || trapped == 0 || multiLine == 0 || markerTrap == 0
@@ -7981,7 +7990,22 @@ static int test_road_pass(void)
                carry; the twin takes it as a parameter and never touches the stack.  The only
                mem[] that PHP writes is the one 6502-stack byte at $01FF, which nothing reads —
                ignore it so the RESULT is compared, not a dead push. */
-            { static const uint16_t ig[] = { 0x01FF }; set_ignore(ig, 1); }
+            /* ⭐⭐ THE RESULTS RULE, applied to the walk's own SELF-MODIFIED OPCODES.
+               The 6502 remembered the walk direction and the end-marker switch by writing
+               opcode bytes into the two plotters' instruction streams ($2F47/$2F60 p1 in/out,
+               $2F89/$2FA2 p2 in/out, $2FC0/$2FD7 the markers) and a copy of the entry step
+               into a third slot of its own ($2F18); the port keeps the DIRECTION instead and
+               the bytes stop moving.  Those seven bytes are twin-private working notes: the
+               written reader audit (docs/validation-harness.md §THE RESULTS RULE, its
+               subsection on CODE bytes) finds
+               readers only inside the twins themselves and inside __t6502 oracles, NO track
+               hook targeting the $2F page, and NO circuit patching any of the seven — every
+               circuit's only patch on that page is $2F23-$2F25, a different cell that stays
+               in mem[].  mem[] still carries them as the 6502-ABI channel, so the standalone
+               plotter / marker / walk fixtures below still plant and read them. */
+            { static const uint16_t ig[] = { 0x01FF, 0x2F18, 0x2F47, 0x2F60,
+                                             0x2F89, 0x2FA2, 0x2FC0, 0x2FD7 };
+              set_ignore(ig, 8); }
             subFail += diff_run("interp_edge", pre, c, interp_edge, interp_edge__t6502,
                                 liveEdge, t, &printed);
             set_ignore(0, 0);
@@ -7995,7 +8019,7 @@ static int test_road_pass(void)
                    drew, published, swapped, solid, interpCases);
             fail++;
         }
-        printf("%-32s %7d cases, %d mismatch (must be 0)  live=XY ($01FF ignored)  "
+        printf("%-32s %7d cases, %d mismatch (must be 0)  live=XY ($01FF + the 7 step/marker slots ignored)  "
                "(%d reached a span walk, %d publish-only, %d swapped the endpoints, "
                "%d solid patterns)\n",
                "interp_edge", interpCases, subFail, drew, published, swapped, solid);

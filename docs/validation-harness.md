@@ -1062,3 +1062,78 @@ not a result; used before the argument exists it is just a green light on an unp
 up there as a divergence.  A cell this rule exempts must therefore be re-recorded
 (`make clean && make determinism-record`) **with the reader audit quoted in the commit message** —
 otherwise the re-record silently blesses whatever else moved.
+
+### ...and its first application to CODE bytes: the span walk's step and marker slots
+
+The four cells above are all *data*.  The span rasteriser gave the rule its first **executable**
+subject, and the shape is worth keeping because the audit questions are the same but the answers
+come from different places.
+
+The 6502 remembered two things about a span by writing **opcode bytes into the two plotters' own
+instruction streams**: which way Y steps (`$2F47`/`$2F60` for `road_span_plot`, `$2F89`/`$2FA2` for
+`road_span_plot_2` — entry slot and exit slot each), and whether the end markers are switched on
+(`$2FC0`/`$2FD7`, `CPX #imm` vs `RTS`).  The descending arms' shared exit then **copied** the
+entry opcode into a third slot of its own (`$2F12` → `$2F18`) and executed that.  `interp_edge` is
+the only writer, and it writes p1 and p2 identically at every site — so **seven bytes of traffic
+per span carried three values**, one of them a boolean.
+
+The audit, the seven addresses taken together:
+
+1. **The twins themselves** — yes, and that is the point: they are the only consumers.
+2. **`revs_gen.c`** — only inside `__t6502` oracles, plus `FUN_2f12`/`FUN_2f19`, whose only callers
+   are two of those oracles.  Oracle-only *by transitive closure*, which is the form trap 1 above
+   demands.
+3. **A track hook re-entering the transliteration** — none.  **No hook targets the `$2F` page at
+   all**, on any of the five circuits.
+4. **A per-circuit patch** — none.  The page's only patched bytes across all five circuits are
+   `$2F23-$2F25`, a *different* cell (`MEM_smc_span_cap_load`, modelled by
+   `span_cap_line_slot_z`) which therefore **stays in `mem[]`**.
+5. **`revs_smc_bytes.h` → `honoured()`** — a selection-time check, asked only about bytes a
+   circuit patches; unaffected, and the header does not change.
+6. **`src/platform/*`** — absent.
+7. **The next pass** (trap 2): `view_paint_lines` reads `view_line_surface` and the `$3000` blocks.
+   It never reads the `$2F` code page.
+
+So the direction became `SpanStep g_spanStepIn/g_spanStepOut` and the switch `int g_spanMarkOn`,
+with `mem[]` kept only as the **6502-ABI channel** that `span_plot_oracle` / `span_walk_oracle`
+decode at the two boundaries — which is what lets the standalone plotter, marker and walk fixtures
+go on planting opcode bytes.
+
+**Three things this cost, none of them predictable from the audit:**
+
+⭐⭐ **The differential's own boundary can scribble its own slot.** `span_plot_oracle` decoded the
+slots once on entry and set "the slots were just read"; but the caller hands over the screen
+pointers, and a fixture may leave them on page `$2F` — so the plotter's three stores land on the
+step bytes *between* that decode and the exit step that reads it.  Measured as `mem[$2FA2]` turning
+into a trap byte mid-plot.  A 6502-ABI boundary must **re-read at each use**, not cache.
+
+⭐⭐ **The `relocated_poison` rule extends to it, and the proof is a surviving sabotage.** Deleting
+`interp_edge`'s `g_spanStepIn` reset PASSED 600/600: the oracle runs first, its own boundary decode
+leaves the correct direction in the global, and the twin inherits it — the exact class
+`relocated_poison` exists for, on globals that were not relocations but *former `mem[]` code*.
+Poisoned with the decoders' own `SPAN_STEP_TRAP`/`SPAN_MARK_TRAP` (a value that can never be a
+correct answer), the sabotage is detected.  Five sibling sabotages fail loudly at 237/105/31/894/214
+mismatches — all distinct counts, which is also the staleness check.
+
+⭐ **An in-game-dead arm, kept behind an `#ifdef` for validation only.** On an ascending arm entered
+*above* its bound the walk runs the long way round, climbing the three screen pointers through
+every page including `$2F`, so its own stores land on the slots and the 6502 executes what it
+overwrote — a cached direction cannot see that (3 of 400 cases on `draw_span_shallow_fwd`, 11 of 400
+on `draw_span_steep_fwd`, **0 on both `rev` arms**, which stop *at* their bound and so never store
+there).  It cannot happen in the game, and the proof is **arithmetic, not empirical**: `interp_edge`
+derives the start page from a block it has already forced under `$28` (`block = (x - $30) >> 2`;
+`if (block >= $28) return`; `page = (block >> 1) + $30`), so plot_ptr/plot_ptr2 start in `$30..$43`
+and plot_ptr3 in `$31..$44` — strictly below the ascending bound `$44` and strictly above the
+descending bound `$2F`.  Either walk terminates within 20 scan lines without wrapping.  (The
+descending cap writes page `$2F` only as a *value* — `span_cap_line` stores to
+`view_line_surface + y`.)  The fixture plants the above-bound entry deliberately, because it is the
+only way the DDA's carry-in is ever 1.  So the re-read lives under
+`#if !defined(REVS_PLATFORM_AMIGA)` (`REVS_SPAN_SLOT_FALLBACK`) — the cache stays live and validated
+for every reachable input, and only the unreachable re-read is host-only.
+
+**What the whole-corpus differential then says**, and it is the audit's independent confirmation:
+across four 300-frame trajectories the change's entire 64 KB footprint is **five bytes** — the four
+step slots on `determinism`, `-steer` and `-crash`, plus `$2F18` on `-drive` (a descending arm ran).
+Nothing else moved, and `make viewdiff` is 0 differing bytes on the gated road view of all five
+circuits.  The markers never differ at all: their last-written value already equals the runtime
+image's own `CPX #imm`.

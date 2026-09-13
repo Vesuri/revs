@@ -4789,17 +4789,104 @@ _Static_assert(SPAN_BLOCK == MEM_shared_temp_85, "point_delta_hi[2] is shared_te
 #define OP_DEY 0x88u
 #define OP_NOP 0xEAu
 
-/* One Y-step slot.  Three opcodes are legal and anything else is a byte the model cannot
-   execute, so it traps exactly where the transliteration does — which is an EXIT, and the
-   caller has to take it as one.  Steps *y (INY/DEY/NOP); returns 0 on the trap, *y untouched. */
-static int span_step_y(unsigned slot, uint8_t *y)
+/* ⭐⭐ THE WALK DIRECTION AS A VALUE, NOT AS AN OPCODE IN MEM[].
+   The 6502 remembered which way the span walk steps Y by planting DEY/INY/NOP into the
+   PLOTTERS' OWN INSTRUCTION STREAMS — $2F47 and $2F60 inside road_span_plot, $2F89/$2FA2
+   inside road_span_plot_2, and copied on again to $2F18 for the descending arms' cap — and
+   the two end markers were switched off the same way, by planting RTS over $2FC0/$2FD7.  So
+   interp_edge paid six byte writes per span to set them, and every plotted column then
+   re-read an opcode byte out of mem[] and dispatched on it twice.  The port keeps the
+   DIRECTION instead: -1 (DEY), +1 (INY), 0 (NOP).
+
+   Both plotters always carry the SAME pair and both markers the same switch — interp_edge
+   writes all four step slots in one go at $2CC5 and swaps in/out together at $2CBC, and plants
+   the marker opcode over both at $2CAA/$2CB4 — so one pair and one flag serve both.
+
+   ⚠ The opcode bytes survive as the 6502-ABI CHANNEL, because that is how the four
+   draw_span_*__t6502 oracles and every fixture drive these routines (`plant_step` even plants
+   an unexecutable opcode one case in ten, to reach the trap).  The two ABI ways in
+   (span_walk_oracle, span_plot_oracle) decode mem[] into the values below on entry, so the
+   trap still fires at the same point in the same sequence with the same operands; nothing on
+   the native path touches those bytes at all.
+   ⭐ Safe because INTERP_EDGE IS THEIR ONLY WRITER: a native twin reachable from a
+   transliteration must refresh any native state that transliteration could have changed, and
+   here the twin that owns the state is the twin at the boundary.  Written reader audit for
+   dropping the writes: docs/validation-harness.md §THE RESULTS RULE, ...CODE bytes. */
+typedef signed char SpanStep;
+#define SPAN_STEP_TRAP  ((SpanStep)2)   /* an opcode slot the model cannot execute */
+
+#define SPAN_MARK_OFF   0               /* $2FC0/$2FD7 == RTS — do nothing at all */
+#define SPAN_MARK_ON    1               /* ...== CPX #imm — close the run */
+#define SPAN_MARK_TRAP  2
+
+/* ⭐ Seeded from the RUNTIME IMAGE's own bytes ($2F47/$2F89 = NOP, $2F60/$2FA2 = INY,
+   $2FC0/$2FD7 = CPX #imm), so the port starts where the binary starts.  Nothing reads any of
+   the three before writing it, though: interp_edge's step 5a sets the pair on every path that
+   reaches a walk, and the marker flag is written and read on the SAME branch — sw_marker is
+   called only where `!arm->steep`, which is the X-major branch that plants it. */
+static SpanStep g_spanStepIn  = (SpanStep)0;
+static SpanStep g_spanStepOut = (SpanStep)+1;
+static int      g_spanMarkOn  = SPAN_MARK_ON;
+
+/* Decode one Y-step slot.  Three opcodes are legal and anything else is a byte the model
+   cannot execute. */
+static SpanStep span_step_decode(unsigned slot)
 {
     switch (mem[slot]) {
-    case OP_DEY: (*y)--; return 1;
-    case OP_INY: (*y)++; return 1;
-    case OP_NOP:         return 1;
-    default:     platform_smc_unhandled(slot, mem[slot]); return 0;
+    case OP_DEY: return (SpanStep)-1;
+    case OP_INY: return (SpanStep)+1;
+    case OP_NOP: return (SpanStep)0;
+    default:     return SPAN_STEP_TRAP;
     }
+}
+
+/* ...and one marker slot.  RTS is "switched off", CPX #imm is "close the run", anything else
+   is a byte the marker cannot mean. */
+static int span_mark_decode(unsigned slot)
+{
+    return mem[slot] == OP_RTS     ? SPAN_MARK_OFF
+         : mem[slot] == OP_CPX_IMM ? SPAN_MARK_ON
+                                   : SPAN_MARK_TRAP;
+}
+
+/* ⚠⚠ THE ONE IN-GAME-DEAD ARM, AND IT IS HERE ONLY TO BE VALIDATED.
+   An ASCENDING arm entered ABOVE its bound runs the long way round to it, climbing the three
+   screen pointers through every page — including $2F, where these very slots live — so the
+   walk's own stores land on the opcode bytes and the 6502 then executes what it overwrote.
+   The port's cached direction cannot see that, and the two models diverge (measured: 3 of 400
+   fixture cases on draw_span_shallow_fwd, 11 of 400 on draw_span_steep_fwd, 0 on both `rev`
+   arms, which stop AT their bound and so never store to $2F).
+
+   ⭐ It cannot happen in the game, and the proof is arithmetic rather than empirical:
+   interp_edge derives the start page from a source block it has already forced under $28
+   ($2B26: `block = (x - $30) >> 2`, `if (block >= $28) return`), so plot_ptr2 starts in
+   $30..$43 — strictly below the ascending bound $44 and strictly above the descending bound
+   $2F.  Either walk therefore terminates within 20 scan lines without wrapping, and every
+   store it makes lands in $30xx..$44xx.  The fixture plants the above-bound entry deliberately
+   because it is the only way the DDA's carry-in is ever 1, so the arm is kept for the HOST
+   build that runs the differential and compiled out of the one that ships. */
+#if !defined(REVS_PLATFORM_AMIGA)
+#define REVS_SPAN_SLOT_FALLBACK 1
+static int g_spanSlotsWrapped;          /* this span is running the long way round */
+#define SPAN_SLOT_STEP(cached, slot)  (g_spanSlotsWrapped ? span_step_decode(slot) : (cached))
+#define SPAN_SLOT_MARK(cached, slot)  (g_spanSlotsWrapped ? span_mark_decode(slot) : (cached))
+#else
+#define SPAN_SLOT_STEP(cached, slot)  (cached)
+#define SPAN_SLOT_MARK(cached, slot)  (cached)
+#endif
+
+/* Take one step.  A trap is an EXIT and the caller has to take it as one, exactly where the
+   transliteration does; *y is untouched then.  `slot` is only ever used for the trap report,
+   so it stays an immediate on the cold path.
+   ⚠ The trap re-reads mem[slot] rather than remembering the byte, because that is what the
+   transliteration's own switch has in hand at this point and the harness diffs the argument. */
+static inline __attribute__((always_inline))
+int span_step_take(SpanStep step, unsigned slot, uint8_t *y)
+{
+    step = SPAN_SLOT_STEP(step, slot);
+    if (step == SPAN_STEP_TRAP) { platform_smc_unhandled(slot, mem[slot]); return 0; }
+    *y = (uint8_t)(*y + step);
+    return 1;
 }
 
 /* $0E40  abs16_math  (twin #25)
@@ -4993,7 +5080,7 @@ unsigned span_plot_core(const SpanPlotter* p, uint8_t column,
     unsigned cellAddr, cell, a, preC;
 
     ROAD_COUNT(g_roadCols);               /* one column of one span — the view pipeline's leaf */
-    if (!span_step_y(p->stepIn, &y))               /* entry slot trapped: carry_in stands */
+    if (!span_step_take(g_spanStepIn, p->stepIn, &y))   /* entry slot trapped: carry_in stands */
         return SPAN_PLOT_PACK(y, carryIn, 0);
     if (y == mem[SPAN_LINE_END]) { span_abandon_chain(y); return SPAN_PLOT_PACK(y, carryIn, 1); }
 
@@ -5010,7 +5097,8 @@ unsigned span_plot_core(const SpanPlotter* p, uint8_t column,
         preC = (y >= mem[SPAN_LINE_END]);           /* CPY(SPAN_LINE_END): y != end here, so y > end */
     } else {
         if (y < 0x2Cu && !road_span_advance_core(y)) {     /* reached the block's first line */
-            span_step_y(p->stepOut, &y);     /* road_span_advance left C=0, and a trap here keeps it */
+            span_step_take(g_spanStepOut, p->stepOut, &y);  /* road_span_advance left C=0, and
+                                               a trap here keeps it */
             return SPAN_PLOT_PACK(y, 0u, 0);
         }
         preC = (cell >= 0x55u);                     /* CMP(0x55): carry survives to the exit trap */
@@ -5025,7 +5113,7 @@ unsigned span_plot_core(const SpanPlotter* p, uint8_t column,
       uint8_t bh = bearing_hi;
       mem[(uint16_t)l] = bh; plot_store_resync(l, bh); }
 
-    { unsigned c = span_step_y(p->stepOut, &y) ? 0u : preC;
+    { unsigned c = span_step_take(g_spanStepOut, p->stepOut, &y) ? 0u : preC;
       return SPAN_PLOT_PACK(y, c, 0); }
 }
 
@@ -5050,15 +5138,11 @@ unsigned span_plot_core(const SpanPlotter* p, uint8_t column,
 #define SPAN_MARK_COLMARK(r)  ((uint8_t)((r) >> 8))
 #define SPAN_MARK_CARRY(r)    ((r) & 1u)
 
+/* The work itself, once the slot has been found to say "do it".  Split out so the native
+   rasteriser can reach it through g_spanMarkOn without re-reading the opcode byte. */
 static inline __attribute__((always_inline))
-int span_end_marker_core(unsigned slot, const uint16_t *ptr, uint8_t y, uint8_t colMark)
+void span_end_marker_body(const uint16_t *ptr, uint8_t y, uint8_t colMark)
 {
-    switch (mem[slot]) {
-    case OP_RTS:      return 0;                  /* switched off: colMark, A, carry untouched */
-    case OP_CPX_IMM:  break;
-    default:          platform_smc_unhandled(slot, mem[slot]); return 0;
-    }
-
     if (colMark == 0x80u) {                      /* the column never plotted anything */
         int atEnd = 1;
         if (y < 0x2Cu) atEnd = road_span_advance_core(y);   /* still past the first line */
@@ -5066,6 +5150,20 @@ int span_end_marker_core(unsigned slot, const uint16_t *ptr, uint8_t y, uint8_t 
             { unsigned m = (unsigned)(*ptr + y);
               mem[(uint16_t)m] = 0xFFu; plot_store_resync(m, 0xFFu); }
     }
+}
+
+/* The 6502-ABI form: the slot is still an opcode byte, which is what the shims in
+   revs_native_abi.c and the two marker fixtures hand it.  Its ONE caller is the out-of-line
+   span_end_marker wrapper just below, so it stays static — the rasteriser's own path goes
+   through span_end_marker_body instead. */
+static int span_end_marker_core(unsigned slot, const uint16_t *ptr, uint8_t y, uint8_t colMark)
+{
+    switch (mem[slot]) {
+    case OP_RTS:      return 0;                  /* switched off: colMark, A, carry untouched */
+    case OP_CPX_IMM:  break;
+    default:          platform_smc_unhandled(slot, mem[slot]); return 0;
+    }
+    span_end_marker_body(ptr, y, colMark);
     return 1;
 }
 
@@ -5120,6 +5218,20 @@ int span_end_marker_core(unsigned slot, const uint16_t *ptr, uint8_t y, uint8_t 
 void span_plot_oracle(const SpanPlotter *p, uint8_t column,
                       uint8_t *y, unsigned *carry, int *abandoned)
 {
+    /* The 6502-ABI channel: the caller planted the walk direction in this plotter's own opcode
+       slots, so decode them into the pair the core reads. */
+    g_spanStepIn  = span_step_decode(p->stepIn);
+    g_spanStepOut = span_step_decode(p->stepOut);
+#ifdef REVS_SPAN_SLOT_FALLBACK
+    /* ⚠⚠ AND THIS BOUNDARY ALWAYS RE-READS, because ONE PLOT can scribble its OWN exit slot.
+       The caller hands over the screen pointers, and a fixture is free to leave them on page
+       $2F — where these slots live — so the plotter's three stores land on the step bytes
+       between this decode and the exit step that reads it.  Measured: mem[$2FA2] turning into
+       a trap byte mid-plot, which the transliteration then executes and a cached direction
+       cannot see.  interp_edge pins all three pointers to $30..$44 (see the banner above), so
+       the game never does it, and nothing in the port calls this function at all. */
+    g_spanSlotsWrapped = 1;
+#endif
     unsigned r = span_plot_core(p, column, *y, *carry);
     *y         = SPAN_PLOT_Y(r);
     *carry     = SPAN_PLOT_CARRY(r);
@@ -5192,11 +5304,22 @@ int span_entry_decode(const SpanArm* arm, uint8_t offset,
 }
 
 /* $2F12-$2F18 — the two descending arms' shared exit: replay the plotters' Y step once more
-   (the opcode is copied out of road_span_plot's own entry slot) and cap the run's last line. */
+   and cap the run's last line.
+   ⭐ The 6502 replayed it by COPYING road_span_plot's own entry opcode into a third slot of its
+   own ($2F47 -> $2F18) and executing that — a read and a write per span to reach a direction it
+   already knew.  The value is g_spanStepIn, so the copy and the slot are both gone; the trap
+   still reports $2F18, which is where the transliteration's own switch reports it. */
 static void span_walk_cap(uint8_t y)
 {
-    mem[MEM_span_step_cap_slot] = mem[MEM_span_step_p1_in_slot];   /* copy the plotter's own Y-step opcode */
-    if (!span_step_y(MEM_span_step_cap_slot, &y)) return;
+    const SpanStep step = SPAN_SLOT_STEP(g_spanStepIn, MEM_span_step_p1_in_slot);
+    if (step == SPAN_STEP_TRAP) {
+        /* ⚠ The trap's operands are the transliteration's, not this code's: the SITE is the cap
+           slot and the VALUE the byte $2F12-$2F15 had just copied into it out of the plotter's
+           entry slot.  The harness diffs both (g_smcSite / g_smcValue). */
+        platform_smc_unhandled(MEM_span_step_cap_slot, mem[MEM_span_step_p1_in_slot]);
+        return;
+    }
+    y = (uint8_t)(y + step);
     span_cap_line(y, 0x2Fu);        /* $2F0B-$2F10: the fall-through proves mem[$73] == $2F */
 }
 
@@ -5266,9 +5389,13 @@ static inline __attribute__((always_inline))
 unsigned sw_marker(int p2, uint8_t colMark, uint8_t y, unsigned carry)
 {
     const unsigned slot = p2 ? SLOT_MARKER_P2 : SLOT_MARKER_P1;
-    if (mem[slot] == OP_RTS) return SPAN_MARK_PACK(colMark, carry);   /* switched off */
-    if (!span_end_marker_core(slot, p2 ? &plot_ptr2_v : &plot_ptr_v, y, colMark))
-        return SPAN_MARK_PACK(colMark, carry);
+    const int markOn = SPAN_SLOT_MARK(g_spanMarkOn, slot);
+    if (markOn != SPAN_MARK_ON) {
+        if (markOn == SPAN_MARK_TRAP)            /* an opcode the marker cannot mean */
+            platform_smc_unhandled(slot, mem[slot]);
+        return SPAN_MARK_PACK(colMark, carry);   /* switched off: colMark and the carry stand */
+    }
+    span_end_marker_body(p2 ? &plot_ptr2_v : &plot_ptr_v, y, colMark);
     return SPAN_MARK_PACK(0x80u, 0u);
 }
 
@@ -5315,6 +5442,12 @@ void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine)
        not in the shims.  mem[] is the live mirror (every mutation writes its byte lane through),
        so this is always the current value, whoever last moved it. */
     plot_ptrs_marshal_in();
+#ifdef REVS_SPAN_SLOT_FALLBACK
+    /* Is this the in-game-impossible entry documented above — running AWAY from the bound, so
+       the walk wraps through page $2F and scribbles on its own opcode slots? */
+    { unsigned p2hi0 = plot_ptr2_v >> 8;
+      g_spanSlotsWrapped = arm->rev ? (p2hi0 < arm->bound) : (p2hi0 > arm->bound); }
+#endif
 
     if (!span_entry_decode(arm, mem[arm->operand], &col, &forced, &runTop)) return;
 
@@ -5403,6 +5536,11 @@ void span_walk(const SpanArm *arm, uint8_t phase, uint8_t startLine)
 
 void span_walk_oracle(const SpanArm *arm, uint8_t phase, uint8_t startLine)
 {
+    /* The 6502-ABI channel, as above.  P1's bytes speak for both plotters and P1's marker for
+       both markers: interp_edge never writes either pair apart, and neither does any fixture. */
+    g_spanStepIn  = span_step_decode(MEM_span_step_p1_in_slot);
+    g_spanStepOut = span_step_decode(MEM_span_step_p1_out_slot);
+    g_spanMarkOn  = span_mark_decode(SLOT_MARKER_P1);
     span_walk(arm, phase, startLine);
 }
 
@@ -5574,12 +5712,11 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
         mem[SPAN_YSTEP] = ystep;
     }
 
-    /* 5a — the Y step the plotters take on the way OUT; the entry slots stay NOP for now. */
-    { uint8_t step = (ystep & 0x80u) ? OP_DEY : OP_INY;
-      mem[MEM_span_step_p1_out_slot] = step;
-      mem[MEM_span_step_p2_out_slot] = step;
-      mem[MEM_span_step_p1_in_slot]  = OP_NOP;
-      mem[MEM_span_step_p2_in_slot]  = OP_NOP; }
+    /* 5a — the Y step the plotters take on the way OUT; the entry step does nothing for now.
+       ⭐ $2CC5-$2CD7 wrote this as FOUR opcode bytes into the two plotters' own instruction
+       streams; the port keeps the direction (see SpanStep above). */
+    g_spanStepOut = (ystep & 0x80u) ? (SpanStep)-1 : (SpanStep)+1;
+    g_spanStepIn  = (SpanStep)0;
 
     /* 4 — the style record becomes this span's four column patterns. */
     for (i = 0; i < 4; i++) {
@@ -5636,12 +5773,8 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
            by planting RTS over their first byte. */
         int wantMarkers = (mem[MEM_colour_pattern_tbl] == 0xFFu)
                        || ((span_cap_surface_fill & 3u) == 3u);
-        if (!wantMarkers) {
-            mem[SLOT_MARKER_P2] = OP_RTS;
-            mem[SLOT_MARKER_P1] = OP_RTS;
-        } else {
-            mem[SLOT_MARKER_P2] = OP_CPX_IMM;
-            mem[SLOT_MARKER_P1] = OP_CPX_IMM;
+        g_spanMarkOn = wantMarkers ? SPAN_MARK_ON : SPAN_MARK_OFF;  /* $2CAA / $2CB4 */
+        if (wantMarkers) {
             /* $2CBC — for two of the four passes the step has to happen on the way IN
                instead, and Y is nudged to match.  The 6502 does CMP #2 / ROR A / EOR span_arm
                and branches on the result's bit 7. */
@@ -5649,11 +5782,8 @@ EdgeIndices interp_edge_core(uint8_t styleIndex, uint8_t farPoint, uint8_t nearP
             uint8_t cin = (pv >= 0x02u) ? 1u : 0u;                  /* CMP #2 carry */
             uint8_t sel = (uint8_t)(((cin << 7) | (pv >> 1)) ^ mem[SPAN_ARM]);
             if (sel & 0x80u) {
-                uint8_t step = mem[MEM_span_step_p1_out_slot];
-                mem[MEM_span_step_p1_in_slot]  = step;
-                mem[MEM_span_step_p2_in_slot]  = step;
-                mem[MEM_span_step_p1_out_slot] = OP_NOP;
-                mem[MEM_span_step_p2_out_slot] = OP_NOP;
+                g_spanStepIn  = g_spanStepOut;   /* four more opcode writes on the 6502 */
+                g_spanStepOut = (SpanStep)0;
                 if (mem[SPAN_YSTEP] & 0x80u) startLine++; else startLine--;
             }
         }
@@ -15024,6 +15154,17 @@ void print_standings_table_core(uint8_t variant, uint8_t mode)
 void relocated_poison(void)
 {
     plot_ptr_v = 0xA5A5u; plot_ptr2_v = 0xA5A6u; plot_ptr3_v = 0xA5A7u;
+    /* ⭐ The span walk's direction and marker switch are the same kind of relocation — they
+       used to be opcode bytes in mem[], which the pre-state restore would have refreshed.
+       Poison them with the value the decoders themselves call "cannot execute", so a read
+       before the write TRAPS and the differential sees it.  Without this, a dropped write in
+       interp_edge step 5a PASSES: the oracle's own boundary decode (span_walk_oracle) runs
+       first and leaves the right direction behind for the twin to inherit — measured.
+       ⚠ That sabotage now HANGS rather than mismatching, and the reason is worth knowing: the
+       trap arm returns before span_plot_core's `y == SPAN_LINE_END` test, which is the walk's
+       only terminator when the DDA cannot carry (SPAN_DX == 0).  A detection either way. */
+    g_spanStepIn = SPAN_STEP_TRAP; g_spanStepOut = SPAN_STEP_TRAP;
+    g_spanMarkOn = SPAN_MARK_TRAP;
     hypot_min_v = 0xA5A8u; hypot_max_v = 0xA5A9u;
     edge_nearest_v = 0xA5AAu; car_heading_v = 0xA5ABu; bearing_v = 0xA5ACu;
     lateral_speed_entry_v = 0xA5ADu;
