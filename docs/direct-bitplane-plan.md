@@ -1,7 +1,22 @@
 # Rendering DIRECT to bitplanes — the Phase 6 lever the plan was missing
 
-> **Status: PLAN, not shipped.** Written 2026-08-16 after the user pointed out that the Phase 6
-> target list (`docs/phases.md`) priced hand-asm on the hot functions and never questioned the
+> # ⛔⛔⛔ OBSOLETE — SUPERSEDED. DO NOT FOLLOW THIS AS A PLAN.
+> **The live rendering plan is `docs/span-render-plan.md`.** This document's plan (§1–§9 below, plus
+> its old §10) is the *earlier* approach — keep the BBC-shaped mem[] framebuffer and mirror stores /
+> skip the decode / maintain writer-side dirty maps. It did **not** work: three measured dead ends
+> (a mirror-each-store plotter −9%, the source-event/run consumer +25 ms, writer-maintained dirty
+> maps ~8.5% slower). Its baselines are from a ~1282 ms-frame era and are meaningless now.
+>
+> **It is kept, not deleted, for one reason only:** shipped source and other docs still cite its
+> §-numbers as the record of *findings* and *shipped* code — the plotter layout (§7e), the flat-band
+> skip (§4a), the dirty-region decode (§7b/§7c), the sweep/decode measurements. Those citations must
+> keep resolving. **Read those sections as history; take the go-forward plan from
+> `docs/span-render-plan.md` and nowhere else.**
+>
+> ---
+>
+> **Status (historical): PLAN, not shipped.** Written 2026-08-16 after the user pointed out that the
+> Phase 6 target list (`docs/phases.md`) priced hand-asm on the hot functions and never questioned the
 > arrangement those functions render *into*. It is the right objection: the port currently draws the
 > way the BBC drew, into a BBC-shaped buffer, and then pays a whole extra pass to turn that into
 > something an Amiga can display. ⚑ **The predecessor project shipped exactly this change and

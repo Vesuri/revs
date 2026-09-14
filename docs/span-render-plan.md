@@ -1,0 +1,533 @@
+# Rendering DIRECT to bitplanes — the Phase 6 lever the plan was missing
+
+> ## ⭐⭐⭐ READ THIS FIRST — THE PLAN AND ITS STATUS (single source of truth, 2026-09-14)
+>
+> **THE PLAN is §10** — *the replacement architecture: world points → spans → bitplanes* (user
+> directive, committed `ab9724c`). It **deletes** the whole `producer → BBC-framebuffer → decode`
+> chain and renders the game's own ~400-byte analytic scene (`surface_edge_0..3` + one colour per
+> line) straight to bitplanes as ≤5 longword-filled spans per line. Stages A/B/C/D, sized in §10e at
+> ~181 → **~48 ms** of per-frame work.
+>
+> **THE STATUS, unambiguously:**
+> - **Step 1 (`make SPANEMIT=1`) is BUILT and BYTE-EXACT** (oracle green, §10k). It is a
+>   **correctness scaffold, not the architecture** — it runs the *entire existing* `view_paint_lines`
+>   sweep at full cost and merely *adds* bitplane plotting on top, removing only the mem[] store on
+>   full lines. It is **additive by construction.**
+> - **Step 1 measured +54 ms** (§10L). ⭐ **This is EXPECTED and does NOT condemn §10.** Adding
+>   plotting to a pipeline you have not deleted must cost more. The +54 ms tests the scaffold, not
+>   the replacement.
+> - **The §10 architecture is NOT closed — it is UNPROVEN.** No build yet *deletes* `view_paint_lines`
+>   (58.7 ms) and renders from the analytic scene instead; that is Stage A/B, unbuilt. The only valid
+>   test is a full-line renderer that **replaces** the sweep for its lines, never one that adds to it.
+> - ⚠ Genuine risk remains (§10e's own warning): this project's record with cycle models at this seam
+>   is poor, and three schemes that *bolted onto* the mem[] scan all lost (a mirror-each-store plotter
+>   −9%, the source-event consumer +25 ms, this scaffold +54 ms). The architecture is different in
+>   kind — it removes the scan rather than adding to it — but "different in kind" is an argument, not
+>   yet a measurement.
+>
+> **THE EARLIER PLAN lives in `docs/direct-bitplane-plan.md`, now marked OBSOLETE.** It was a
+> different approach — keep the mem[] framebuffer, mirror stores into bitplanes and/or skip the
+> decode, with writer-maintained dirty maps — and it did not work (three measured dead ends). Its
+> baselines were from a ~1282 ms-frame era and are meaningless now. It is kept only because shipped
+> source and other docs still cite its §1–§9 findings (the layout, several shipped optimisations); do
+> **not** follow it as a plan. Every live fact it held (the layout, the "game reads its own
+> framebuffer" constraint, the sky-band hazard, the three nulls) is restated below where it is used.
+> **This document — `docs/span-render-plan.md` — is the only live rendering plan. Follow only this.**
+>
+> ---
+>
+> **Origin (kept for context).** The plan began 2026-08-16 after the user pointed out that the Phase 6
+> target list (`docs/phases.md`) priced hand-asm on the hot functions and never questioned the
+> arrangement those functions render *into* — the port draws the way the BBC drew, into a BBC-shaped
+> buffer, then pays a whole extra pass to turn that into something an Amiga can display. ⚑ **The
+> predecessor project shipped a change of this kind and measured it** (`~/Documents/Rescue on
+> Fractalus`, `docs/terrain-render-plan.md` + `docs/flight-perf-log.md`).
+
+---
+
+## 10. ⭐⭐⭐ THE REPLACEMENT ARCHITECTURE — world points → spans → bitplanes (user directive, 2026-09-14)
+
+> **The directive.** *"Come up with a plan that allows these problems to be really solved. Remember;
+> we are not here to verify faithful implementation details but faithfulness from the user point of
+> view. The original way of doing things should go if it can't be written to perform adequately. You
+> are allowed to rethink the entire rendering pipeline to make efficient use of the 68000 and Amiga
+> architecture. Create an architecture that efficiently writes direct to bitplanes without all the
+> memory access the current method adds. Get rid of the 6502 originated self modifying code
+> emulation. Do this stuff properly validating the outcome, not the details."*
+
+The plan called for a read-only scout before committing to this. **It has been run** (`src/platform/shape.cpp`
+§THE SPAN CENSUS, `make SHAPE=1` + `REVS_SHAPE_WATCH=N`), and it does not merely de-risk the idea —
+it changes the shape of the answer. Everything below is sized on it.
+
+### 10a. ⭐⭐⭐ WHAT THE CENSUS SETTLED — the pipeline moves ~500 bytes of information and spends 145 ms
+
+Per frame, driving, measured (practice and the race proper agree within 4%):
+
+| quantity | measured |
+|---|---|
+| source-block cells written by ALL producers | **161** (`draw_road` 77, objects 13 — **30** in the race, dash-edge fill 65, other 6) |
+| the edge record that describes the whole scene | **4 × 80 bytes** (`surface_edge_0..3`) + one colour per line |
+| framebuffer cell stores the sweep expands that into | **2155** |
+| plane bytes `decode()` then expands THOSE into | **16 640** |
+| **cost of the expansion** | **85.1 ms** (sweep 58.7 + decode 26.4) |
+| cost of producing the 161 cells + the edge record | **70.8 ms** (`build_track_geometry` 26.7 + `draw_road` 33.7 + dash edges 10.4) |
+
+⭐ **And the 2155 stores are a SPAN LIST, not a bitmap:**
+
+- **144 solid runs averaging 13.9 cells** (111 Amiga pixels) — 2003 of 2155 stored bytes, **93%**,
+  and every one of them is one of the **four** solid MODE 5 values (`$00`→0, `$0F`→1, `$F0`→2,
+  `$FF`→3; a MODE 5 byte is four bit-interleaved 2-bit pixels, so exactly four values paint a cell
+  in one colour).
+- **146 mixed runs averaging 1.04 cells** — the colour boundaries, *individual cells*, not runs.
+- **3.75 runs per painted line, and 93% of line paints have ≤5 runs.**
+
+The raster map says where, and it is the decisive table:
+
+| display rows | what the sweep does there | cells | **runs** |
+|---|---|---|---|
+| 0–80 | **nothing** — MODE 4 text + the sky band (which hides 5.5 KB of live code) | 0 | 0 |
+| 81–100 | 40 cells in **ONE run** each — the horizon | 800 (**37%**) | **20** |
+| 101–116 | 40 cells in 4–5 runs | 640 | ~72 |
+| 117–157 | narrowing 27→2, **outer cells only** | ~650 | ~145 |
+| 158–207 | **nothing** — the dashboard, owned by other code | 0 | 0 |
+
+⭐ **Rows 117–157 paint only the outer cells because `paint_lines_short` runs two chains — A inward
+from the left, B inward from the right — each stopping on a planted cell. The original never
+repaints the large uniform middle.** That is not an accident to preserve blindly: it is evidence
+that the author also saw the scene as spans.
+
+⭐⭐ **`surface_colour_at` ($1E9E) IS ALREADY A VECTOR RENDERER.** Given a scan line and a
+position it compares against all four `surface_edge` buffers and returns the surface's colour from
+`surface_colours` ($38FC). So the game already maintains a complete analytic description of the
+road scene in ~400 bytes, and **everything downstream is expansion of it.** The architecture below
+is not a speculative redesign — it evaluates a function the game already has, **once per REGION
+instead of once per CELL.**
+
+⭐ **The model and the measurement agree exactly, which is the reason to trust it.** Four boundaries
+per line, sorted, give ≤5 spans; the census independently measured ≤5 runs on 93% of line paints.
+
+### 10b. The architecture
+
+**One representation replaces three.** Today: edge record → 40 `$80`-spaced source blocks → BBC
+framebuffer → bitplanes. Proposed:
+
+```
+  build_track_geometry      world -> camera azimuths          (kept, faithful, validated)
+  road_edges                azimuth -> surface_edge_0..3[line] + view_line_surface[line]
+                            (Stage B: the SAME output, a native DDA instead of the SMC chain)
+            |
+            |   per display row: 4 boundary columns + a background colour
+            v
+  span_emit                 sorted boundaries -> <=5 spans -> LONGWORD FILL, 2 planes
+  edge_merge                <=2 boundary cells per row     -> masked RMW, 2 planes
+  object_layer              ~30 sparse cells               -> masked RMW, 2 planes
+  physics_tap               2 bytes -> mem[$713D], mem[$7205]   (designed in, not discovered — see hazard 1)
+```
+
+**Deleted outright:** the 40 source blocks as a rendering intermediate, the BBC framebuffer as a
+rendering intermediate, `RevsScreen::decode()` from the shipping path, `view_paint_lines` and its
+unrolled chains, `fill_dash_edge_columns`, and `view_plant`/`view_move_stop` — the consumer's own
+SMC emulation, which exists only to plant stops into an unrolled store chain.
+
+**The renderer is stateless.** It repaints rows 81–157 in full every frame, so nothing depends on
+what a previous frame left behind. Full coverage is 77 × 40 × 2 = **6160 bytes = 1540 longwords**,
+only 1.4× the 4310 plane-bytes the game's own 2155 cells occupy — so statelessness costs ~1 ms and
+buys the deletion of every dirty/skip question at this seam. ⭐ Given that three consecutive skip
+schemes nulled here (the per-line skip, the direct-plot cost study, and the `CHANGEDIRTY` map), **buying the problem out is the result
+the measurements point to.**
+
+### 10c. Why this is not the mirror-each-store plotter, which was built and lost 9%
+
+That plotter stayed **below** the seam: it wrote the same picture but still had to read each unit's own
+source byte out of a `$80`-strided block and test it — *that scan was the loop*. **This never reads
+a source block at all.** It also never iterates a sparse set of the present layout, which is the
+identified common cause of all three nulls. The work it deletes is not stores — stores are
+nearly free at 43 cyc/cell — it is the **scan, the addressing, and two whole intermediate
+representations.**
+
+### 10d. ⭐⭐ THE ADDRESSING, which is where this win can be spent instead of banked
+
+The index→pointer finding (`N = 36.5 + 35.3·E`) is binding, and the chosen layout (§10d) satisfies
+it **by construction** rather than by care:
+
+- `kRowBytes` = 80, plane 1 at +0, plane 2 at **+40** ⇒ the two planes' same-position bytes are a
+  fixed **40-byte displacement** apart. **One pointer serves both planes**: `move.l d0,(a0)` /
+  `move.l d1,40(a0)` / `addq.l #4,a0`. No second addressing chain, no second pointer to advance —
+  which is exactly the failure the layout note warned about ("an implementation that keeps two
+  independent plane pointers can spend the entire win on addressing").
+- Down one row is `addq.w #80,a0`. Across a span is `addq.l #4,a0`. **Every address in the renderer
+  is incremental**; nothing is computed from an index.
+- A BBC cell = 4 BBC px = 8 Amiga px = **exactly 1 byte per plane**, so a span of N cells is N
+  bytes per plane and the four solid colours are a **4-entry table of longword pairs**
+  (`$00000000`/`$FFFFFFFF` per plane). Colour selection is one table read, not a computation.
+- A boundary inside a cell lands on a 2-bit Amiga boundary, so the edge masks are the four values
+  `$C0`/`$F0`/`$FC`/`$FF` — and they are **derived from the game's own `view_compose(src, mask,
+  fill)` tables**, not reinvented.
+
+### 10e. Sizing, in milliseconds
+
+Against the **~181 ms of per-frame work** (the 205.5 ms bracketed frame less the 13.5 ms 50 Hz drain
+and the 11.0 ms vblank pad). Floor 40 ms, target 20 ms.
+
+| stage | what | now | after | basis |
+|---|---|---|---|---|
+| **A** | `view_paint_lines` + `decode()` → span renderer | **85.1** | **~8** | 1540 longword fills (18.5k cyc) + 144 spans × ~100 cyc (14.4k) + 146 edge merges × 60 (8.8k) + 77 rows × ~150 (11.5k) + objects (1.8k) ≈ 55k cyc |
+| **B** | `draw_road` → native DDA writing the same 4 edge arrays | **33.7** | **~3** | 43 spans/frame, ~600 DDA steps × 25 cyc + 24 perspective divides × 140 + 80 lines × 40 ≈ 21k cyc |
+| **C** | `fill_dash_edge_columns` — **deleted, not optimised** | **10.4** | **0** | its output is source bytes for a sweep that no longer exists, plus mask tables the renderer derives itself |
+| **D** | `build_track_geometry` — wide-value math, native divide | **26.7** | **~12** | real game math; the least certain row |
+| **E** | the dashboard + dial needle (§10m sprites) | in "other" | **not sized** | see 10h |
+| | everything else (sound, physics, front end) | ~25.1 | ~25.1 | untouched by this plan |
+| | **per-frame work** | **~181** | **~48** | |
+
+⚠⚠ **These are cycle models, and this project's record with cycle models at this seam is bad** —
+the source-event consumer was predicted to win and cost **+25.46 ms**. Two things are different and
+one of them is checkable: that scheme *added* per-item addressing to delete per-item stores, whereas
+this deletes a representation and its addressing is incremental by construction (10d) — and the
+honest calibration from the shipped `SpanStep` work is that **a byte-traffic deletion pays about its
+own count, ~10 µs per per-span round trip, no more.** So the plan does not ask for trust:
+
+⭐⭐ **THE CHEAP CHECKPOINT, and it is unusually cheap.** Rows **81–100 are 20 single-run rows
+carrying 37% of the sweep's stores.** A direct span emitter for *those rows only* is ~50 lines of
+code, needs no edge merging (one run per row, full width), and its share is large enough to measure
+against the phase table. **Build that first and measure it before writing the rest.** If 37% of the
+sweep's stores do not come off phase 1's bracket roughly in proportion, the model is wrong and
+almost nothing has been spent finding out.
+
+⚠ Stage D's ~12 ms is the softest number here and it is also the one that **does not** need to be
+believed to justify starting: A+B+C alone take ~181 → ~63 ms.
+
+### 10f. ⭐⭐ THE SMC ACCOUNTING — all 20 sites, and which stage retires each
+
+`SMC_SITES` holds **20 sites** (9 opcode, 6 operand, 5 branch), and they are not scattered — 14 of
+them are in `draw_road`'s tree and 13 in the span rasteriser alone:
+
+| stage | sites retired | what they are |
+|---|---|---|
+| **B** | `$2F4E` `$2F90` (dest operands, naming one of the four `surface_edge` buffers) · `$2F18` `$2F47` `$2F60` `$2F89` `$2FA2` (Y-step INY/DEY/NOP) · `$2FC0` `$2FD7` (end marker CPX/RTS) · `$2D27` `$2DAA` `$2E2E` `$2EA7` (computed entry offsets into the unrolled chain) · `$196F` (`fill_line_attr`) | **14** — a native DDA needs none of them: the step is a variable, the destination a pointer, the end a loop bound |
+| **C** | `$1DD4` `$1DDB` `$1DDD` (`column_gap_walk` / `fill_column_gaps` patched operands) | **3** — deleted with the pass |
+| **D** | `$23B2`/`$23B3` `smc_stale_horizon_cap` | **1** — ⚠ the per-circuit one, patched at RUN time by every expansion circuit's `$5672` hook and invisible to `make track-smc` |
+| **E** | `$5220` `$529B` (`smc_major_step`/`smc_minor_step`, the dial needle's octant DDA) | **2** |
+
+⇒ **Stages A+B+C retire 17 of the 20 sites**, plus — and this is the larger deletion — the
+consumer's own SMC emulation: `view_plant`/`view_move_stop`, the `$7C`/`$7D`/`$7E` chain pages, and
+the dashcode overlay's **40 opcode slots + 12 computed operands** steering two unrolled column
+chains (`DASH_CHAINS` in `tools/transpile.py`). Stage E retires the remaining dashboard SMC.
+
+⭐ The pattern is already shipped and calibrated: the span Y-step and end marker became
+`SpanStep g_spanStepIn/g_spanStepOut` + `g_spanMarkOn`, for −0.40 ms on `draw_road`. **Doing that
+site by site pays about its own byte count.** The architecture is what makes the sites *not exist*.
+
+### 10g. The hazards, each with its discharge designed in
+
+1. **⛔ The two physics bytes — the absolute constraint.** `update_grip_limits` reads
+   `mem[$713D]` and `mem[$7205]`: framebuffer cells on **display row 149, cells 7 and 32** (arithmetic
+   confirmed: `$713D − $5A80 = 5821 → row 18×8+5 = 149, cell 7`; `$7205 → row 149, cell 32`),
+   symmetric 12.5 cells either side of centre. `$FF` in either opens `grip_disturbance`.
+   **Discharge:** row 149 is inside the band the renderer owns and its sorted boundary list is in
+   hand when it paints — so the renderer **composes those two bytes exactly as the sweep did and
+   stores them to `mem[]`**, leaving the read side untouched and byte-exact. Two bytes, ~50 cycles.
+   ⚠ It is a *pixel* predicate: any change to dither, colour mapping or rounding at those two cells
+   changes the physics, so they are a differential fixture in their own right, not a comment.
+2. **The other framebuffer readers are self-consistent.** the framebuffer-reader sweep is done and the answer is
+   exactly two bytes: the six dial-needle reads (`$6E85` `$6E8A` `$6FB2` `$6FBD` `$6FC0` `$70F8`) are
+   the needle plotter's own read-modify-write, and `vdu_char_def` ($5092, OSWORD 10 + OSWRCH) merges
+   glyphs the same way. **Any plotter that keeps RMW semantics reproduces them** — on bitplanes that
+   is a read, an `or`, a write, per plane.
+3. **⭐ The code under the sky stops being a hazard.** Rows 0–80 hold 5.5 KB of live code and
+   variables at `$5E40-$66FF` *inside* the framebuffer's address range. The census confirms the sweep
+   never touches those rows. Once the picture lives in **Amiga** bitplanes and `mem[]` keeps only the
+   engine's memory, the aliasing **disappears by construction**, and it
+   also explains why the existing per-phase framebuffer instrument reports phases 5/10/11/13 "writing
+   lines 24..55": those are variable writes, not pixels. ⚠ Do not read that instrument as a picture.
+4. **⚠⚠ The `edge_opp_x` alias.** `edge_opp_x_lo`/`_hi` (`$5E50`/`$5EA0`) deliberately share bytes
+   with `edge_x_lo`/`_hi` at base+`$10`; each 40-entry half only holds points 6..23, so index *i*
+   lands in the 25..39 slack. Spreading the halves, widening an entry or moving either base breaks it
+   **silently**. Stage B consumes these and must not relocate them; Stage D must treat the alias as a
+   fixture invariant.
+5. **⚠⚠ The per-circuit hooks, and why Stage D is LAST.** `region_23d8` — `road_edge_walk`'s body,
+   dead on Silverstone because the twin runs the whole walk — is **re-entered at `$2490` by every
+   expansion circuit's hook**, so the rest of that walk runs transliterated over `mem[]` cells the
+   twin's path no longer uses. `$23B2` is patched at run time by the same hooks. A `region_*`/`FUN_*`
+   name is shipping code until proven otherwise and **"proven" cannot come from a Silverstone run.**
+   ⇒ Stages A–C do not touch that tree at all; Stage D does, and its gate is `make viewdiff` per
+   circuit, not `determinism`.
+6. **Reader audit owed before Stage C.** `fill_dash_edge_columns` writes `view_left_start_src`
+   (`$0504`) / `view_right_start_src` (`$4400`) and the per-line mask/fill tables as well as source
+   bytes. Deleting the pass needs the written reader audit the §RESULTS rule requires — the readers
+   include the transliteration a track hook re-enters.
+7. **Draw order is a behavioural delta.** Objects composite over the road today via the shared source
+   blocks; a span fill followed by an object layer reorders road-vs-object. The RoF precedent is that
+   this is safe (objects only *read* the silhouette) but it is **not mem-diffable** — it is a
+   `make viewdiff` question.
+
+### 10h. What is NOT sized, honestly
+
+**The dashboard.** §10m and `shape.h` both call `$7BE2` "the dashboard sweep" and attach **36.1% of the
+frame** to it. ⚠⚠ **The raster map shows `view_paint_lines` painting rows 81–157 and never rows
+158–207, so that 36.1% is the VIEW sweep, and §10m's sprite case is attached to the wrong routine.**
+The instruments in hand cannot size the real dashboard cost: the span census hooks only the view
+path, and the per-phase framebuffer diff is confounded by hazard 3 above. ⇒ **§10m must be re-sized
+before it is scheduled**, by a census of the writers of rows 158–207 (`make fbwrites` attributes
+every store to its PC on a real BBC, which is the instrument that settles it). This does not block
+Stages A–D; it does mean the "~25.1 ms other" row is unanalysed and the route from ~48 ms to the
+40 ms floor runs through it.
+
+**The 20 ms target is not reached by this plan.** A+B+C+D lands at ~48 ms of per-frame work; the
+floor is 40 and the target 20. Stage E plus the remaining geometry is where the rest would have to
+come from, and nothing measured so far says it is there.
+
+### 10i. ⭐⭐ Validation — the OUTCOME, and the oracle that survives the change
+
+The seam moves **up**, from source bytes to the per-line edge record, and every gate below validates
+a *result*:
+
+1. ⭐⭐⭐ **`decode()` is retained as a byte-exact ORACLE, not shipped.** The layout decision (§10d)
+   was taken precisely so this works: build both paths, let the existing pipeline paint the BBC
+   framebuffer and `decode()` it, run the span renderer into a second pair of planes, and **compare
+   the planes byte for byte.** That is an outcome comparison — same pixels, different route — and it
+   needs no agreement about intermediates. It is also how the colour→longword table and the edge
+   masks get **derived from the oracle** rather than reinvented (the §10m rule: a hand-built table that
+   merely looks right is the failure mode).
+2. **`make viewdiff` per circuit is the primary gate** — every circuit's race view against a real
+   BBC over display lines 82..166. It is the only check that covers an expansion circuit's patched
+   arm, and hazards 5 and 7 are answerable by nothing else.
+3. **`make refloop` is the visual ground truth** for any "faithful or port bug?" question.
+4. **The five `determinism*` trajectories** (parked, drive, crash, steer, race) are the backstop that
+   the *simulation* did not move — which is exactly what hazard 1 threatens, and the reason the
+   physics tap is a fixture.
+5. **`make transtrap`** must stay green: retiring the SMC sites removes transliterated bodies, and a
+   body no scenario drives is unproven, not dead.
+6. **`make tracks` / `make track-run`** behind those: the bytes land, and the circuit's own code runs.
+7. **The span census itself becomes a regression instrument** — it counts the span list the renderer
+   must emit, so it is the cheapest check that a rewrite still decomposes the scene the same way.
+
+⭐ What is deliberately **not** validated: the 40 source blocks' contents, the BBC framebuffer's
+contents, `view_plant`'s planted stops, and every scratch cell the unrolled chains use as working
+notes. Those are implementation details of a 6502 renderer, and reproducing them is the byte traffic
+this plan exists to delete.
+
+### 10j. Sequencing, and the decision points
+
+```
+  0. re-run the span census                                      (done — 10a)
+  1. ⭐ the flat-line span emitter, A/B against decode()          (BUILT, ORACLE GREEN — 10k)
+  2. Stage A in full: span emit + edge merge + object layer + physics tap
+  3. Stage B: native DDA producing surface_edge_0..3 (retires 14 SMC sites)
+  4. Stage C: delete fill_dash_edge_columns (reader audit first)
+  5. re-size §10m via make fbwrites, then Stage E / Stage D as the numbers direct
+```
+
+Steps 1–2 are self-contained, touch no producer, and cannot break an expansion circuit's patched arm
+(hazard 5), which is why they go first. Step 3 changes a producer but keeps its output format
+byte-identical, so `make validate` still applies to it. Step 4 deletes a pass and needs the audit.
+Step 5 is gated on a measurement that does not exist yet.
+
+⚠⚠ **LESSON FROM STEP 1 AS BUILT (2026-09-14, §10L):** the flat-line emitter was built as a scaffold
+that *adds* plotting while `view_paint_lines` keeps running in full — additive by construction, so it
+measured +54 ms and taught nothing about the architecture. **The measuring version of step 1 must
+*replace* the sweep for the lines it emits, not run beside it** (stop `view_paint_lines` painting those
+lines). Only a build that deletes sweep work can show whether the ~8 ms span-render estimate holds. The
+green oracle is reusable; the timing build is not the right experiment until it subtracts sweep cost.
+
+**✅ STEERED (user, 2026-09-14) — all four answered, so these are decisions, not options:**
+
+- ✅ **STATELESS, and for a stronger reason than the ~1 ms.** *"Keeping track of the previous frame
+  costs way more than it does to render everything, especially if the blitter gets involved."* ⇒ the
+  renderer owns rows 81..157 unconditionally; **no dirty map, no persistence, no previous-frame
+  state at this seam, and none is to be proposed again** — that is now four measurements and a
+  decision pointing the same way (the per-line skip, the direct-plot cost study, `CHANGEDIRTY`, and the statelessness costing).
+- ✅ **Stage D waits, but is not dropped.** `build_track_geometry` *"needs to be improved to the
+  maximum extent but can wait for the bigger improvements unless those bigger improvements need
+  it."* ⇒ A, B, C first; pull D forward only if one of them turns out to need it.
+- ✅ **~48 ms against a 20 ms target is accepted as the outcome of THIS rewrite.** *"Let's see how
+  far we get with this rewrite. There are still plenty of levers to pull after that."* ⇒ do not
+  narrow the scope of A–C to chase the target, and do not treat missing 20 ms as a failure of the
+  architecture.
+- ✅ **CPU first; the blitter is evaluated, not assumed.** ⭐⭐ And the reason to be sceptical of it
+  is the opposite of the usual one (user): **with a faster processor the blitter easily becomes the
+  BOTTLENECK** — it is a fixed-rate DMA engine, so an A500 68000 that has been made to wait less
+  starts waiting on the blitter instead. So a blitter fill is a candidate to be *measured against*
+  the 1540-longword CPU fill, never a default because "the blitter is free". Sprites belong to the
+  re-sized §10m.
+
+### 10k. ✅ STEP 1 IS BUILT AND BYTE-EXACT (`make SPANEMIT=1`, 2026-09-14)
+
+`revs_native.c` §THE SPAN EMITTER, in `paint_cells`'s per-line entry. A scan line that no producer
+wrote and that carries no planted stop is one run of its background byte
+(`surface_colours[view_line_surface[line] & 3]`), so it goes out as a single `revs_plot_run` into
+the bitplanes and the forty-unit chain is skipped.
+
+**The oracle (`SPANEMIT=1 SPANVERIFY=1 DIRECTCHECK=1`, driving, `$63 = $0B`):**
+
+```
+SPAN EMIT: lines emitted as one span 306   lines that ran the chain 838
+plot: runs=7627 cells=45108   last sweep: 346 runs / 2148 cells   lines 81..157
+ORACLE checks=21 mismatch=0                          <- byte-exact over the WHOLE buffer
+```
+
+⭐ **The census predicted the emit rate before the code existed**: ~20 of 77 painted lines = 26%,
+measured **306/1144 = 26.7%**. And the last sweep's 2148 plotted cells over lines 81..157
+reproduce the census's 2155 over rows 81..157 from a completely different instrument.
+
+⭐⭐ **The predicate is strictly weaker than the ⛔ skip's, and that is the architectural result.**
+The skip needed parts (2)-(4) — a destination shadow keyed by display line, proving the cells
+already held the byte it declined to write, the half that took a 153-stale-byte bug to get right.
+The emitter needs part (1) alone, because it writes the pixels. *Writing is cheaper than
+remembering* (§10j), and here that is not a cost argument but a **correctness** argument: the
+fragile half of the skip simply does not exist in an emitter.
+
+⚠⚠ **TWO WAYS THIS ORACLE READS GREEN WHILE PROVING NOTHING, both hit on the first run:**
+1. **Suppress the chain's run accumulator globally** and the chain's own pixels never reach the
+   planes — the check then compares `decode(new mem[])` against `decode(old mem[])` and mismatched
+   **5950** bytes. A check must reproduce *everything* the sweep changed, not just the part under
+   test.
+2. **Leave the accumulator on** and the chain re-plots the same forty cells straight over the
+   span, so a **wrong span compares equal**. It has to be suppressed per LINE, on exactly the
+   lines the emitter painted. Plain `SPANEMIT=1 DIRECTCHECK=1` is worthless for the third reason:
+   `PLOT_ONLY`'s carve-out leaves `mem[]` stale, so the reference is last frame's picture.
+
+⚠ And the first build **emitted zero spans** — `view_skip_reset()` primes every line dirty and the
+only code that cleared a line again was inside the `VIEWSKIP` block, so with `SPANEMIT` alone the
+predicate could never become true. The `g_spanEmitLines`/`g_spanEmitPaints` pair is what caught it:
+a build that emits nothing and an emitter that buys nothing read identically without it.
+
+ℹ `g_plotNoTarget` reads 1788 and is benign: `revs_plot_run` returns before touching
+`g_plotLineLo/Hi`, so a sweep with no bitplane buffer publishes no carve-out and the decode
+converts everything. No-target ⇒ no skipped decode, by construction.
+
+**✅ MEASURED — SEE §10L: the scaffold is +54 ms, which is EXPECTED and does NOT close §10.** The
+timing build was `SPANEMIT=1 PROBES=1` (no verify, so `PLOT_ONLY`'s carve-out is live) against a
+`PROBES=1` control from a clean tree, read on phase 24's row with `phase4_prof.gdb`. ⚠ **What this
+build is matters more than the number:** it still runs the *entire* `view_paint_lines` sweep and only
+*adds* plotting — it is not the §10 renderer, which *deletes* the sweep. So its +54 ms measures an
+additive scaffold, not the architecture. Nothing about the architecture should be believed from the
+green oracle alone (it proves the emitter is *correct*, not *fast*) — and nothing about it should be
+*disbelieved* from this scaffold's cost either.
+
+### 10L. ⚠ THE SCAFFOLD (STEP 1) MEASURED +54 ms — WHICH IS EXPECTED, AND DOES NOT CLOSE §10 (2026-09-14)
+
+> ⚠⚠ **RETRACTION (2026-09-14).** An earlier version of this section concluded from this measurement
+> that "the direct-bitplane premise is stale" and "the ceiling on the whole architecture is ~3–4 ms",
+> and closed the architecture. **That conclusion was wrong** and is withdrawn. It measured an
+> *additive scaffold* and reasoned as if it had measured the *replacement*. The correction is below.
+> (The flawed verdict was committed at `eee1c8c`; this supersedes it.)
+
+`SPANEMIT=1 PROBES=1` vs a clean `PROBES=1` control, same session, warp, 30 s, driving
+(`STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 FIXED_RNG=1`), `phase4_prof.gdb`. ms/frame:
+
+| phase | what | control | span | Δ |
+|---|---|---|---|---|
+| 24 | view P1 ($7BE2), 36 lines | 15 | 32 | **+17** (units 1440 → 604: emitter deletes 836) |
+| 33 | view P2 ($7D13), 16 lines | 12 | 27 | **+15** (units 426 → 426, *unchanged*) |
+| 34 | view P3 ($7F18), 25 lines | 23 | 48 | **+25** (units 282 → 282, *unchanged*) |
+| 27 | **DECODE** (carve-out) | 26 | 23 | **−3** |
+
+**Sweep +57 ms, decode −3 ms, net +54 ms.** These numbers are SOUND. The mistake was the inference
+drawn from them.
+
+**⭐⭐⭐ WHAT THIS BUILD ACTUALLY IS, and why +54 ms is the expected sign.** Step 1 is a **correctness
+scaffold bolted onto the existing pipeline**, not the §10 renderer:
+
+- it still runs **every producer** (`build_track_geometry`, `draw_road`) unchanged;
+- it still runs the **entire `view_paint_lines` sweep** — phases 33/34 show units *unchanged* at
+  426/282 and the ms *up*, because the sweep does all its old work **plus** the added plotting;
+- it merely **adds** `revs_plot_run` bitplane writes and removes only the mem[] byte store on full
+  lines.
+
+So the build's cost is `view_paint_lines (unchanged, 58.7) + plotting (added) − decode road (−3)`. It
+is **additive by construction**, and an additive build must be slower. **+54 ms is what "add plotting
+to a pipeline you did not delete" costs — it is not a measurement of "delete the pipeline and render
+from the analytic scene", which is what §10 proposes and which no build here has done.**
+
+**⭐⭐⭐ WHY THE OLD "~3–4 ms ceiling" ARGUMENT WAS WRONG.** It framed the win as "what the decode
+carve-out gives back" (~3–4 ms, decode's road cost) and said a direct plotter must redo that same
+expansion for no more than that. That accounting is correct **only for the scaffold**, in which
+`view_paint_lines` keeps running — so decode is indeed the only thing left to reclaim. But the mem[]
+pipeline expands the scene **twice**:
+
+| expansion | from → to | cost |
+|---|---|---|
+| `view_paint_lines` (the sweep) | 161 source cells → **2148** framebuffer cells | **58.7 ms** |
+| `decode()` (road portion) | 2148 changed cells → bitplane bytes | **~3–4 ms** |
+
+The §10 renderer deletes **both** and replaces them with ≤5 longword-filled spans per line read from
+`surface_edge` (§10e: ~8 ms). The old argument counted only the second row (~3–4 ms) as reclaimable,
+because the scaffold never removes the first. **The 58.7 ms of `view_paint_lines` is the win the
+scaffold hides and §10L originally omitted.** The ceiling is ~54 ms, not ~3–4 ms.
+
+**What the scaffold DOES legitimately show.** Bolting plotting onto the mem[] scan loses — now
+measured three times (a mirror-each-store plotter −9%, the source-event consumer +25 ms, this scaffold +54 ms), and exactly
+what `revs_plot.h`'s header warned about a mirror-each-store plotter. That is a real, consistent
+result: **do not ship a plotter that runs alongside `view_paint_lines`.** It says nothing about a
+renderer that *replaces* `view_paint_lines`, because none of the three tested that.
+
+**Instrument caveat (unchanged, still true, still not decisive):** the timing build carries diagnostic
+overhead the end state would not — six volatile counters per run (not `PROBES`-gated) and an
+out-of-line `revs_plot_run`. Irrelevant to the corrected conclusion either way, since the scaffold is
+the wrong experiment regardless of how cleanly it is built.
+
+**⭐ STATUS — the architecture is UNPROVEN, not closed.** The valid next experiment is the one §10j
+step 1 was *meant* to be but is not: a **full-line direct renderer that deletes `view_paint_lines` for
+the lines it owns** and fills spans from the analytic scene, measured against the phase table. §10e's
+own cheap checkpoint applies — rows 81–100 are 20 single-run rows carrying 37% of the stores; a span
+emitter *for those rows that also stops the sweep from painting them* is the smallest build that
+actually tests the premise. The emitter/oracle stay behind `SPANEMIT`/`SPANVERIFY`/`DIRECTCHECK` and
+are reusable for it; nothing ships yet.
+
+### 10m. ⭐⭐ HARDWARE SPRITES for the instruments — a separate future lever (user, 2026-08-16)
+
+> ⚠⚠ **RE-SIZE THIS BEFORE SCHEDULING IT — the 36.1% below is the VIEW sweep, not the dashboard.**
+> The span census's raster map (§10a) shows `$7BE2` painting display rows 81..157 and never rows
+> 158..207, so "the number-one item in the profile at 36.1%" is the road view. The sprite case for
+> the instruments may still be good, but its size is **unmeasured**; §10h names the instrument that
+> would settle it (`make fbwrites`, which attributes every framebuffer store to its PC on a real
+> BBC). Everything else in this section — the four constraints, the oracle-derived pre-render rule —
+> stands unchanged.
+
+**The observation.** The BBC has no sprites, so *every* moving thing on the Revs dashboard is drawn
+by the CPU into the frame buffer. The Amiga has eight. If the wheel, the rev-counter, the steering
+marker and the gear indicator were sprites, the **cockpit bitmap would be fully static — drawn once
+and never touched again**. `$7BE2` is the number-one item in the profile at **36.1%** of the frame,
+so this aims at the largest single cost the port has.
+
+**Why it is more than "draw it somewhere else".** The instruments are not translating images; their
+pixels are a function of a continuous value (wheel angle, rev level). Sprites convert that from
+*"redraw the shape every frame"* into *"pick one of N pre-rendered images and set a pointer"* — the
+per-frame CPU cost collapses to a pointer write, paid for once in chip RAM at startup. That is the
+same trade as `$3980`, the angle-indexed table the wheel drawing already reads (`$5168`); this just
+carries it all the way to the hardware.
+
+**Four constraints, and three of them happen to be favourable here:**
+
+- ✅ **Colours fit.** A sprite gives 3 colours + transparent, 15 for an attached pair. The race view
+  is **2 bitplanes = 4 colours**, so a single unattached sprite already matches the playfield's whole
+  palette. Sprite colours live in entries 16-31, which a 2-bitplane playfield never uses, so there is
+  **no palette conflict with the copper's band list** either.
+- ✅ **Resolution fits.** The display is **320 px** wide (`bbc_screen.h`), i.e. lores, which is
+  exactly sprite resolution — one sprite pixel per display pixel, no halving.
+- ✅ **The beam timing is easy for once.** The dashboard is **band 4, display lines 166-208** — the
+  bottom of the field — so its sprite data can be updated long after vblank without racing the beam.
+  ⚠ But `SPRxPT` *in the copper list* is read at **scanline 16** (CLAUDE.md), so the pointers
+  themselves still belong in the VBI; only the sprite data words are late-safe.
+- ⚠ **Width is the real limit, and it is unmeasured.** Eight sprites is **128 px per scanline** out
+  of 320, and the whole dashboard sits in one 42-line band, so vertical sprite reuse — the usual way
+  past the eight-sprite limit — buys nothing here. Whether the wheel rim alone fits inside that
+  budget is **the open question**, and it is a pixel-width measurement, not a judgement call.
+
+**What must stay CPU-drawn regardless:** the **wing mirrors**. Their content is the scene behind the
+car, not a glyph with N states, so they are rendered output and no sprite can hold them.
+
+**⭐ How this stays a faithful port — the same trick as §10i (validation via the oracle).** Do not redraw the instruments by hand.
+**Pre-render every sprite variant by running the game's own drawing code** (`$7BE2`'s wheel/dial
+arms) once per angle/level and capturing the pixels it produces. Then the sprite images are
+*derived from the oracle* rather than reinterpreted, and the differential is exact: for any state,
+sprite output must equal what the decode produces. A hand-drawn wheel that merely looks right is the
+failure mode this rule exists to prevent.
+
+**Sequencing — gated behind the §10 renderer (user decision, 2026-08-16).** This is a Phase 6 item, *after* direct
+bitplane rendering, for the same reason the asm is: both change how the dashboard reaches the screen,
+and sprite work written against the current arrangement gets rewritten. ⚠ In the §10 world the renderer is STATELESS (§10j) — it repaints the view every frame with no
+per-column dirty test — so the sprite win is the full per-frame cost of whatever instrument pixels
+move, not a residue left after a dirty-map.
+**`make fbwrites` sizes this whole item (§10h); measure it before scheduling.**
+

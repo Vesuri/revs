@@ -42,19 +42,22 @@ against its own phase row (Rule 1a); the framerate is quantised to `50/N` and ca
 | 11.0 | 28 | the vblank spin — the `50/N` pad, not a target |
 | 10.4 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
 
-### 1. ⛔⛔⛔ THE REPRESENTATION — render direct to bitplanes — MEASURED DEAD END (2026-09-14)
-⛔⛔⛔ **BUILT, ORACLE-GREEN, AND MEASURED AT +54 ms — CLOSED. `docs/direct-bitplane-plan.md` §10L.**
-The flat-line span emitter (`make SPANEMIT=1`) is byte-exact (§10k) but the timing measurement is a
-**+54 ms regression** (sweep +57, decode only −3). The decisive, sweep-independent reason: the decode
-carve-out skips 8 of the ~10 road rows, so its **−3 ms** delta captures decode's *entire* road cost —
-**decode expands the whole road view in ~3–4 ms** (dirty-region, batched longwords, ~10 cyc/cell).
-Relocating that expansion into the sweep must redo it at ≥ that cost + overhead, so **the ceiling on
-the whole architecture is ~3–4 ms.** §10/§10e's "85 ms of wasteful double work" premise is stale:
-decode is now 26 ms, dirty-region, and only ~3–4 ms of it is the road. `revs_plot.h`'s own header and
-§7f both predicted this. The emitter/oracle stay behind `SPANEMIT`/`SPANVERIFY`/`DIRECTCHECK` as the
-priced experiment; nothing ships. **⬅ THE NEXT LEVER IS ENTRY 2, 3, OR 4 (or decode itself) — a user
-decision, since this closes the architecture steered in §10j.** The span census below stays as valid
-reference (it is cited by entries 2–5).
+### 1. ⭐⭐⭐ THE REPRESENTATION — render direct to bitplanes — OPEN, UNPROVEN (step 1 built; 2026-09-14)
+⭐⭐⭐ **THE ARCHITECTURE (`docs/span-render-plan.md` §10) IS OPEN — NOT closed.** ⚠⚠ **A prior
+"CLOSED, +54 ms dead end" verdict here and in §10L is RETRACTED (was `eee1c8c`, superseded).** The
+`+54 ms` is real but it measured a **correctness scaffold, not the architecture**: `make SPANEMIT=1`
+still runs the *entire* `view_paint_lines` sweep (58.7 ms) and only *adds* plotting on top — additive
+by construction, so slower is expected and says nothing about §10, which **deletes** the sweep. The old
+"ceiling ~3–4 ms" argument counted only what the decode carve-out reclaims (~3–4 ms) and omitted the
+58.7 ms of `view_paint_lines` the scaffold keeps running; the real ceiling is ~54 ms.
+**Status:** step 1's emitter is byte-exact (§10k) and reusable; the timing build is the *wrong*
+experiment. **The next build must REPLACE the sweep for the lines it emits (stop `view_paint_lines`
+painting them), not run beside it** — the smallest such test is the rows-81–100 checkpoint (20
+single-run rows = 37% of stores) with the sweep stopped on those rows. Only a build that subtracts
+sweep cost can show whether §10e's ~8 ms span-render estimate holds.
+⚠ Genuine risk stands (§10e's own warning): cycle models at this seam have a poor record, and three
+schemes that *bolted onto* the mem[] scan lost (§7f −9%, source-event +25 ms, this scaffold +54 ms).
+The architecture differs in kind (removes the scan) — but that is an argument, not yet a measurement.
 
 ⭐⭐⭐ **THE SPAN CENSUS HAS RUN (2026-09-14) and it changed the shape of the answer** — the scout
 §9 had been asking for, now a committed instrument (`src/platform/shape.cpp` §THE SPAN CENSUS,
@@ -141,8 +144,8 @@ interpreter is already gone from the whole tree, so nothing is left to delete th
 sub-levers: producer-emitted source dirty events/runs (12-18 ms), a native geometry `EdgePoint`
 value pipeline (8-12 ms), dash specialisation (5-10 ms).
 
-### 5. ⭐ HARDWARE SPRITES for the instruments — gate DISCHARGED (entry 1 closed)
-`docs/direct-bitplane-plan.md` §8. ⚠ Its size figure is against the wrong routine (see §10 corrections); re-size with `make fbwrites` before scheduling. The BBC had no sprites so every moving dashboard item is
+### 5. ⭐ HARDWARE SPRITES for the instruments — gated behind entry 1 (the §10 renderer)
+`docs/span-render-plan.md` §10m. ⚠ Its old size figure was against the wrong routine (see §10a); re-size with `make fbwrites` before scheduling. The BBC had no sprites so every moving dashboard item is
 CPU-drawn; the Amiga has eight idle. The open constraint is **width** (8 × 16 px = 128 of 320 in
 one 42-line band, where vertical reuse buys nothing). Pre-render each variant by running the
 game's own drawing code, so the images derive from the oracle.
@@ -200,11 +203,11 @@ exists so nobody spends a day re-deriving a negative result.
 
 - **Writer-maintained framebuffer dirty maps** (`CHANGEDIRTY`) — byte-exact and **~8.5% slower**;
   reverted, the flag no longer exists. Needs producer-native change events to be worth retrying.
-- **Direct-to-bitplane / span-emit rendering** (`SPANEMIT`, `docs/direct-bitplane-plan.md` §10L) —
-  built, oracle byte-exact, measured **+54 ms** (sweep +57, decode −3). The ceiling is decode's road
-  cost, **~3–4 ms** (dirty-region + batched longwords already make expansion ~10 cyc/cell), so
-  relocating the expansion into the sweep cannot pay. The §10 "85 ms double work" premise was stale.
-  Emitter/oracle kept behind the flags as the priced experiment; nothing ships.
+- **A plotter that runs BESIDE `view_paint_lines`** (mirror-each-store, or the `SPANEMIT` scaffold
+  that adds plotting without deleting the sweep) — loses, now three times (§7f −9%, source-event
+  +25 ms, the SPANEMIT scaffold +54 ms). ⚠ **This is NOT the §10 architecture** (which *deletes* the
+  sweep and is OPEN — entry 1); it only forbids adding plotting on top of the existing sweep. Do not
+  ship a plotter alongside the sweep; a renderer that *replaces* it is untested and belongs to entry 1.
 - **Consumer run-entry specialisation** (single-run flat-span path) — **−0.15%**, retracting its
   predicted "~10% prize". Do not retry that code shape.
 - **The per-line skip** — **−0.4%** for 39.5% of line-visits deleted; phases 2+3 skip zero units.
