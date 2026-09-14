@@ -238,7 +238,7 @@ CXX_OBJS := $(CXX_SRCS:.cpp=.o)
 OBJS     := $(C_OBJS) $(CXX_OBJS)
 TARGET   := build/revs
 
-.PHONY: cpu-lint all clean gen validate image runtime dashcode sweep endian-lint refloop refloop-keys \
+.PHONY: todo cpu-lint all clean gen validate image runtime dashcode sweep endian-lint refloop refloop-keys \
         mode7 mode7-fixture font mos-font refloop-charset refloop-comp track-patch \
         tracks tracks-gen track-fixtures track-smc track-smc-check track-run viewdiff \
         trackmenu trackmenu-fixture titlescreen \
@@ -831,6 +831,37 @@ endian-lint:
 	  echo "endian-lint: mem[] aliased as a wide pointer (see docs/m68k-optimisation.md):"; \
 	  echo "$$hits"; exit 1; \
 	else echo "endian-lint: clean"; fi
+
+# ⭐⭐ WHAT IS OPEN, in one command.  docs/open-work.md is the QUEUE (ranked, each entry
+# carrying its ms size and its gate); this prints its headings and then SWEEPS the tracked,
+# non-vendored tree for live TODO/FIXME/HACK markers.  The sweep is the half that cannot go
+# stale: a marker in a file nobody opens still shows up here.  Vendored trees (tools/b2,
+# tools/jsbeeb, tools/ghidra-proj) and the generated corpus are excluded — their markers are
+# not this project's work items.
+#
+# ⭐ It matches MARKER FORMS, not the word: `NAME:`, `NAME(`, or a bare `NAME` ending a
+# comment.  The first version matched the bare word and printed nine hits from prose
+# EXPLAINING that a marker had been retired — and a gate that always prints false hits is a
+# gate nobody reads, which is the very failure this target exists to prevent.  So it carries
+# no allowlist: the expected output is "none", and anything printed is real.
+todo:
+	@echo "=== docs/open-work.md — THE QUEUE ==============================================="
+	@grep -nE '^#{2,3} ' docs/open-work.md | sed 's/^/  /'
+	@echo
+	@echo "=== live TODO/FIXME/HACK markers in tracked, non-vendored sources ==============="
+	@files=$$(git ls-files | grep -vE '^tools/(b2|jsbeeb|ghidra-proj)/' \
+	          | grep -vE '^src/gen/revs_(gen|tracks|track_hooks)\.c$$'); \
+	hits=$$(grep -nE '(TODO|FIXME|HACK)[:(]|[;#*/] *(TODO|FIXME|HACK) *$$' $$files \
+	        2>/dev/null || true); \
+	if [ -n "$$hits" ]; then echo "$$hits" | sed 's/^/  /'; \
+	  echo; echo "  ^ each of these is either a work item for docs/open-work.md or a stale"; \
+	  echo "    marker to delete.  A marker that is neither is the thing this target exists"; \
+	  echo "    to stop (docs/method-lessons.md: make the gap loud where it can be named)."; \
+	else echo "  none."; fi
+	@echo
+	@echo "=== the name queue ============================================================="
+	@if grep -q 'queue is currently empty' docs/rename.md; then echo "  docs/rename.md: empty."; \
+	 else grep -nE '^## ' docs/rename.md | sed 's/^/  /'; fi
 
 clean:
 	rm -f $(OBJS) $(TARGET) tools/validate_native.o build/validate_native \

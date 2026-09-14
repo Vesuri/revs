@@ -118,6 +118,10 @@ make determinism-race      # ⭐ ...and THE RACE PROPER (session_is_race = $80),
                            #   that reaches any `& $80` arm — every other determinism run is a
                            #   PRACTICE session.  ⚠ 13000 frames, RELEASE=1, ~2 min: ~12000 of
                            #   them are the qualifying session the grid is reached through
+make todo                  # ⭐⭐ WHAT IS OPEN: docs/open-work.md's queue + a live sweep for
+                           #   TODO/FIXME/HACK markers in the tracked, non-vendored tree.
+                           #   Expected output is "none" — a printed marker is either a real
+                           #   work item for the queue or a stale marker to delete
 make endian-lint           # fail if mem[] is aliased as a wide pointer
 make cpu-lint              # ⭐ fail if revs_native.c speaks `cpu` outside the argued
                            #   classes (tools/cpu_lint.py names them, and a STALE allowlist
@@ -227,7 +231,8 @@ Hard-won detail lives in `docs/`, not here. **Read the relevant one BEFORE worki
 | Doc | Read it when |
 |---|---|
 | **`docs/postmortem.md`** | **Early, once, in full.** The retrospective this project is built on |
-| `docs/phases.md` | Deciding what to work on next; the gating between phases |
+| **`docs/open-work.md`** ⭐⭐ | **"What is next?" — THE QUEUE.** Ranked open items with their ms sizes and their gates, plus ⛔ one line per measured dead end. `make todo` prints it + a live marker sweep |
+| `docs/phases.md` | The gating between phases, and what each phase owes |
 | **`docs/reference-sources.md`** ⭐ | **Before any disassembly work.** The annotated reconstruction, its licence limits, what is on this disc |
 | `docs/bbc-reference-loop.md` ⭐ | Anything about ground truth, jsbeeb/b2, or trusting an image |
 | `docs/entrypoint-sweep.md` ⭐ | Before generating C; whenever you find a dispatch table or vector |
@@ -259,7 +264,7 @@ hand-rename in generated files).
 | `tools/ssd_map.py` / `ssd_load.py` | DFS catalogue dump / post-load memory image builder (per-track) |
 | `tools/transpile.py` | The transpiler. Reads `disasm/listing.txt` + `symbols.csv`. Shape and traps: `docs/transpiler.md` |
 | `src/gen/revs_gen.c` | Generated 6502→C transliteration (regenerated; do NOT edit by hand) |
-| `src/gen/revs_manual.c` | Hand-written stubs for self-modifying routines |
+| `src/gen/revs_manual.c` | ⚠ **Does not exist, and that is the correct state** — `MANUAL_FUNCS` is empty because `SMC_SITES` covers all 24 self-modifying sites generically. Both Makefiles `wildcard` it. Add an address there only when a routine genuinely cannot be transliterated at all, and say why |
 | `src/gen/revs_native.c` | FAITHFUL native twins (idiomatic C `_core` + 6502-ABI shim), `make validate`d, linked into BOTH backends |
 | **`src/gen/revs_native_abi.c`** | ⭐ the 56 `void <name>(void)` 6502-ABI shims with **no native caller** — the oracle's and `validate_native.c`'s way in, nothing in the port calls them. It is the only native-surface TU allowed to speak `cpu` freely (`make cpu-lint`). ⚠ Never put a twin's BODY here; before adding a shim, ask the caller question as a TRANSITIVE CLOSURE (a shim called only by oracle-only shims is oracle-only) |
 | `src/platform/amiga/revs_native_amiga.cpp` | Genuinely Amiga-only, unvalidated code |
@@ -619,6 +624,12 @@ Rules that must survive without opening `docs/perf-method.md`:
   the first breach either way, and `make gen` fails on any undeclared `TSX/INX/INX/TXS`.
 
 ## Working conventions
+
+- ⭐⭐ **"What is next?" is answered by `docs/open-work.md` + `make todo`, never by a session
+  summary** (which only remembers what that session touched). It is a QUEUE like
+  `docs/rename.md`: an entry is **DELETED** in the commit that closes it, and what the work
+  taught goes in the doc that was wrong. ⛔ Its CLOSED section is one line per measured dead
+  end — read it before proposing a lever, so a negative result is not re-derived.
 
 - **Commit directly to `main`** (no feature branches). Commit each fix as soon as it is confirmed
   to work — one logical change per commit.

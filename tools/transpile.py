@@ -2904,7 +2904,7 @@ def translate_insn(insn, func, all_funcs_by_start, symbols, local_targets,
 
     # --- Unknown -------------------------------------------------------------------
     # ⚠⚠ A MNEMONIC THIS EMITTER DOES NOT KNOW IS A DROPPED INSTRUCTION, SO IT IS FATAL.
-    # This used to append `/* TODO: MNEM op */` and carry on: the C still compiled, the
+    # This used to append a bare `/* ... */` marker comment and carry on: the C compiled, the
     # instruction simply vanished, and the failure surfaced later and elsewhere as "the
     # rasteriser draws nothing".  docs/method-lessons.md is explicit that a TODO in
     # generated output is not loud — nobody reads 16 000 lines nobody wrote — and its four
