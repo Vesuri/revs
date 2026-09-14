@@ -1226,6 +1226,9 @@ static void paint_lines_short(ViewState* v)
         v->byte = view_compose(v->byte, mem[MEM_view_left_end_mask + v->line],
                                         mem[MEM_view_left_end_fill + v->line]);
         REVS_PLOT_CELL(view_screen_addr(plot_ptr_v, v->cell), (uint8_t)v->byte);
+        /* ⚠ the CHAIN-BOUNDARY cell does not go through VIEW_UNIT, so the span census has to be
+           hooked here too or it under-counts the composed edge bytes by ~50 a sweep. */
+        PROBE_SHAPE_DASH_STORE(view_screen_addr(plot_ptr_v, v->cell), (unsigned)v->byte, v->line);
         bus_write(view_screen_addr(plot_ptr_v, v->cell), (uint8_t)v->byte);
 #ifdef REVS_VIEWSKIP
         view_dst_touch(view_screen_addr(plot_ptr_v, v->cell));
@@ -1252,6 +1255,9 @@ static void paint_lines_short(ViewState* v)
                                         mem[MEM_view_right_end_fill + edge]);
         v->cell = math_hi;
         REVS_PLOT_CELL(view_screen_addr(plot_ptr2_v, v->cell), (uint8_t)v->byte);
+        /* ⚠ the CHAIN-BOUNDARY cell does not go through VIEW_UNIT, so the span census has to be
+           hooked here too or it under-counts the composed edge bytes by ~50 a sweep. */
+        PROBE_SHAPE_DASH_STORE(view_screen_addr(plot_ptr2_v, v->cell), (unsigned)v->byte, v->line);
         bus_write(view_screen_addr(plot_ptr2_v, v->cell), (uint8_t)v->byte);
 #ifdef REVS_VIEWSKIP
         view_dst_touch(view_screen_addr(plot_ptr2_v, v->cell));
@@ -1302,6 +1308,9 @@ static void paint_lines_clipped(ViewState* v)
         v->byte = view_compose(v->byte, mem[MEM_view_left_end_mask + v->line],
                                         mem[MEM_view_left_end_fill + v->line]);
         REVS_PLOT_CELL(view_screen_addr(plot_ptr_v, v->cell), (uint8_t)v->byte);
+        /* ⚠ the CHAIN-BOUNDARY cell does not go through VIEW_UNIT, so the span census has to be
+           hooked here too or it under-counts the composed edge bytes by ~50 a sweep. */
+        PROBE_SHAPE_DASH_STORE(view_screen_addr(plot_ptr_v, v->cell), (unsigned)v->byte, v->line);
         bus_write(view_screen_addr(plot_ptr_v, v->cell), (uint8_t)v->byte);
 #ifdef REVS_VIEWSKIP
         view_dst_touch(view_screen_addr(plot_ptr_v, v->cell));

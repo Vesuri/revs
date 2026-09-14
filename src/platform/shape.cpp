@@ -184,18 +184,24 @@ static void run_census_after(void)
    `docs/direct-bitplane-plan.md` turns on: a direct-to-bitplane renderer does not store cells,
    it emits SPANS, so the run list — not the cell count — is its workload.
 
-   ⭐ WHAT IT ANSWERED (driving, $63 = $2C..$32, 295 sweeps): 2089 stores a sweep are
-   **143 solid runs of 13.9 cells + 94 mixed runs of 1.07** — i.e. the road scene is a span
-   list of ~1.9 solid spans and ~1.3 individual boundary cells per painted line, and 95.2% of
+   ⭐ WHAT IT ANSWERED (driving, $63 = $2C..$32, 295 sweeps): 2155 stores a sweep are
+   **144 solid runs of 13.9 cells + 146 mixed runs of 1.04** — i.e. the road scene is a span
+   list of ~1.9 solid spans and ~1.9 individual boundary cells per painted line, and 93% of
    all painted bytes are one of the FOUR solid MODE 5 values.  That is what makes the direct
    renderer a trapezoid fill instead of a region problem.
 
    ⚠ Believe it because it agrees with two instruments it shares no code with: line paints
-   77.26 against the phase table's independently counted 36+16+25 = 77, and stores 2089 against
-   the run census's 2082.  Its own arithmetic closes too (2089 painted + 1001 unpainted =
-   77.26 x 40).  ⚠⚠ And it must be read from a MOVING car — a parked scene paints a tidy, tiny
+   77.26 against the phase table's independently counted 36+16+25 = 77, and stores 2155 against
+   its independently counted 1442+426+282 = 2150 units.  ⚠⚠ THAT AGREEMENT IS THE WHOLE
+   VERIFICATION, AND THE FIRST VERSION FAILED IT QUIETLY: hooked only from VIEW_UNIT it read
+   2089 against 2150, because `paint_lines_short` stores its three CHAIN-BOUNDARY cells through
+   REVS_PLOT_CELL directly — and those are exactly the composed edge bytes, so the miss landed
+   entirely on the number the span model cares about (mixed runs read 94 instead of 146, a 36%
+   under-count).  A 3% gap in a total was a 36% error in a component; chase a percent that does
+   not close.  ⚠⚠ And it must be read from a MOVING car — a parked scene paints a tidy, tiny
    span list and every conclusion drawn from it is about a scene nobody drives through, so the
-   report prints `road_speed` beside its numbers. */
+   report prints `road_speed` beside its numbers.  The shape is trajectory-robust: the race
+   proper reads 2148 / 280 runs / 143 solid / 137 mixed. */
 extern "C" {
 volatile unsigned long g_scoutSweeps  = 0;
 volatile unsigned long g_scoutPaints  = 0;   /* line paints with >= 1 store           */
