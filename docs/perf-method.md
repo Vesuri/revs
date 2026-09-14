@@ -976,6 +976,102 @@ timing — the host is a different CPU and `make refloop` remains the visual gro
 ⚠ It also corrects a second guess: the stop does **not** move "twice a line". It moves on 9 of
 phase 3's 25 lines and 2 of phase 2's 16.
 
+#### ⭐⭐⭐ THE RUN CENSUS — the must-visit set is **13% of cell stores, in 1.38 runs per line paint** (2026-09-14)
+
+`docs/direct-bitplane-plan.md` §7j item 2 — the viewport source-event/run consumer — was the
+largest un-built lever on the board and its pay-off hinged on a number nobody had measured: **how
+many cells a sweep would actually have to visit** if the consumer iterated events instead of all
+2148 slots. This section is that measurement. Instrument: `make SHAPE=1`'s run census
+(`src/platform/shape.h` §THE RUN CENSUS, implementation in `src/platform/shape.cpp`, target script
+`amiga/run_census.gdb`, host report in `PlatformHost.cpp`).
+
+⚠⚠ **First, the structural fact that makes this a different question from the ⛔ per-line skip:
+`paint_cells` stores on EVERY unit, and a clean unit's store is what ERASES last frame.** "Skip the
+clean units" is therefore not a scheme at all. What makes the real thing tractable is
+`view_consume`'s representation: a **non-zero** source byte means "new colour here" (return
+`view_cell_bytes[source]`), a **zero** source means "same as my left" (return the carried byte). So
+a painted line is a **run-length encoded colour**, and the destination store is **idempotent
+wherever the cell already holds that colour** — a road edge that moves one cell changes ONE cell,
+not the thirty-five to its right, which keep the same run value.
+
+⭐ **So the consumer must visit a cell if EITHER (a) its source is non-zero** — it has to be
+consumed, ZEROED and the carried byte updated — **or (b) its store would change the byte already
+there.** These are genuinely different sets and neither contains the other: a cell can change with
+no event of its own (the byte carried *into* it moved), and an event can change nothing (it
+re-states the colour already painted). The census counts both and their union, and counts the
+union's **contiguous runs**, because a run list is what the consumer would actually iterate.
+
+| per sweep | host (1 body tick/frame) | **target (~10 ticks/frame)** |
+|---|---:|---:|
+| cell stores (the cost today) | 2082 over 77 line paints | **2082 over 77** |
+| events — source non-zero | 10% | **11%** |
+| changed — the store moved the byte | 3% | **4%** |
+| ⭐ **UNION — must-visit cells** | **12%** — 3.30/line | **13%** — **3.77/line** |
+| …in contiguous runs | 1.28/line, 2.57 cells/run | **1.38/line, 2.71 cells/run** |
+| ⛔ producer-EXTENT scan (first..last) | 51% | **54%** |
+| line paints needing NOTHING | — | **873 of 3850 (23%)** |
+
+⭐⭐ **The ceiling, and it BRACKETS §7j's 12-18 ms estimate rather than replacing it.** 86% of unit
+visits are deletable; priced on the two axes this file keeps separate:
+
+| derivation | unit work today | 86% of it |
+|---|---:|---:|
+| objdump's 43 cyc/unit × 2082 stores | 12.6 ms | **~10.8 ms** |
+| the `NOUNITS=2` differential's unit loop | 20.4 ms | **~17.5 ms** |
+
+⚠ Those are the **two decompositions** §the sweep is 61% driver/entry warns about. Do not add or
+subtract them; quote the range.
+
+⚠ **Run and line control is NOT part of the prize.** The union needs **~106 runs a frame against
+the 118 chain runs the sweep already pays**, so per-run and per-line work stays roughly constant
+and the 32 ms driver/entry lever is untouched by this change. The prize is exactly the per-unit
+work, which is 86% of the visits.
+
+⛔ **And the cheap variant is dead, measured.** Bounding each line's scan by a producer-known
+first..last extent — the shape that was worth ~324 → 113 ticks in the predecessor project
+(`minScan`, one contiguous skyline band) — would still visit **54%** of the cells here, because our
+must-visit cells are **few but spread**: 3.77 cells in 1.38 runs, yet their extent spans half the
+line. It is a run list or nothing. This is the one of that project's four transferable findings
+that does **not** transfer, and it is now a ⛔ line in `docs/open-work.md` so it is not re-derived.
+
+⚠⚠ **The trap this measurement invites, and the control for it: a PARKED car repaints the same
+picture, so every cell reads redundant and the census says "skip everything" — true of a static
+scene and false of the game.** A flattering union is the *expected* artefact here, which is why
+both censuses now print the engine state (`$3C` revs / `$61` engine / `$63` speed / `$40` gear)
+beside the numbers and the target reading is only quoted with `$63` non-zero (it read `$22`-`$32`
+in gear 2). ⚠ `amiga/view_census.gdb`'s old claim that the host *cannot* produce the moving scene
+is stale — it predates `HOLD_THROTTLE` on the host build, which drives in gear 2 — and the note is
+fixed. Robustness beyond that: across **2664 host intervals the union stays in 10.7-12.7%** and
+does **not** grow with speed (11.8% in the `$63` = 40-50 band against 12.4% at 20-39), so the
+feared ~10× displacement effect moves `changed` only 3% → 4%. The target's extra point over the
+host is that displacement, and it is the whole reason a target run was spent on a pure count.
+
+**Four sabotages, each caught in its predicted direction and each with a DIFFERENT number** (which
+is itself the control for the stale-object failure mode — byte-identical mismatch counts from two
+different defects is the tell):
+
+| sabotage | prediction | read |
+|---|---|---|
+| never set the arm latch | events → 0, losses → all | events 0, `g_shapeRunArmLost` 616272 |
+| contiguity test always true | runs collapse | 1.28 → 0.73/line, 2.57 → 4.49 cells/run |
+| force `changed` = 0 | union == events | union == events exactly |
+| every store joins the union | union == stores | 100% |
+
+⚠ S1's 616272 losses against 614190 stores differ by **exactly 2082 — one sweep** — because losses
+increment live while stores accumulate at the per-sweep flush. An explained discrepancy, not a
+defect; a *round* difference like that is worth chasing to its explanation rather than shrugging at.
+
+**Free by-products of the census, all of which correct standing guesses:**
+- The average line paint stores **27 cells, not 40** (2082/77) — phases 2 and 3 enter mid-line.
+- **23% of target line paints need nothing at all** (873 of 3850), which is the per-line skip's
+  real headroom and is consistent with its ⛔ null: the lines it could skip are the cheap ones.
+- Events run **~225 per sweep** while driving, so the old "~83 non-zero" figure (a parked count,
+  paired with a framebuffer-byte denominator) is superseded on both halves of its ratio.
+
+⚠ A `SHAPE=1` build is heavily instrumented (an 8320-byte compare per phase boundary), so it is
+**licensed for COUNTING only, never for timing** — the target run got 50 sweeps in 141 s emulated
+for that reason, and that is fine for a count.
+
 #### ⚠⚠ THE PROBE INSTRUMENT LIVES INSIDE THE VIEW SWEEP'S BRACKETS — ~5.3 ms OF THE SWEEP'S 51.95 DOES NOT SHIP (2026-09-13)
 
 Reading the objdump of `paint_cells` for a different reason turned this up: **~14 instructions of

@@ -796,6 +796,44 @@ There are therefore **two useful dirty representations**, at different seams:
    forty-unit scan. Gross source/control surface: ~21 ms; expected net: roughly 12-18 ms. Keep the
    present consumer as the byte-exact oracle until all trajectories agree.
 
+   ⭐⭐⭐ **AND IT IS NOW COUNTED RATHER THAN ESTIMATED (2026-09-14) — `make SHAPE=1`'s run census,
+   `src/platform/shape.h` §THE RUN CENSUS, `amiga/run_census.gdb`.** The blocking structural fact
+   is that `paint_cells` stores on **every** unit — a clean unit's store is what *erases* last
+   frame — so "skip the clean units" is not the scheme and this is not §7i's per-line skip again.
+   `view_consume`'s real structure is what makes it tractable: a non-zero source means "new colour
+   here", a zero source means "same as my left", so a painted line is a **run-length encoded
+   colour** and the store is **idempotent** wherever the cell already holds that colour. A road
+   edge that moves one cell therefore changes ONE cell, not the thirty-five to its right, which
+   keep the same run value. A source-event consumer must visit a cell only if (a) its source is
+   non-zero — consume, zero, update the carried byte — or (b) its store would change the byte
+   already there. **The union of those two, measured on the target while driving:**
+
+   | | host, 1 body tick/frame | **target, ~10 ticks/frame** |
+   |---|---:|---:|
+   | stores / sweep | 2082 over 77 line paints | **2082 over 77** |
+   | events (source non-zero) | 10% | **11%** |
+   | changed (store moved the byte) | 3% | **4%** |
+   | ⭐ **union (must-visit cells)** | 12% — 3.30/line | **13% — 3.77/line** |
+   | contiguous runs | 1.28/line, 2.57 cells/run | **1.38/line, 2.71 cells/run** |
+   | producer-extent scan | 51% | **54%** |
+
+   ⭐ **So the ceiling is ~86% of the unit work, and it brackets the estimate above rather than
+   replacing it**: 2082 × 43 cyc/unit (the objdump's clean-arm figure) is 12.6 ms, of which 86% is
+   **~10.8 ms**; against the `NOUNITS=2` axis's 20.4 ms unit loop it is **~17.5 ms**. ⚠ Those are
+   the two decompositions warned about above — do not add or subtract them. What does **not**
+   shrink is run/line control: the union needs **106 runs/frame against the 118 chain runs the
+   sweep already pays**, so the per-run and per-line surface is a wash and only the per-unit work
+   is deleted.
+   ⛔ **And the cheaper variant is dead, measured: a scan bounded by a producer-known extent —
+   the predecessor project's ~324 → 113 tick win — would visit 54% of the cells here**, because
+   the must-visit cells are few but spread across the line (first..last spans half of it). It is a
+   run list or nothing.
+   ⚠ **Robustness, because a delta measurement invites the parked-car trap:** across 2664 host
+   intervals the union sits in **10.7..12.7%** and does not grow with speed (11.8% at $63 = 40-50
+   against 12.4% at 20-39), and both censuses print `$63` beside the numbers. The target's extra
+   point over the host is the ~10× displacement per paint, which is the whole reason the target
+   run was spent.
+
 The failed direct plotter did not test either proposition: it replaced the final store while
 retaining the source scan and every upstream BBC-shaped representation. Its 9% loss therefore says
 that the last-arrow replacement was a bad trade, not that a higher representation seam is valueless.
@@ -917,8 +955,13 @@ edge lists give a clean per-line left/right x and count how many regions the roa
 into while driving. That measurement decides whether #1 is a trapezoid fill or a messier region
 problem, and it costs nothing but a read.
 
-**Sequencing.** The §7i dirty-line skip measured a null and stays off. First build §7j's exact
-per-backbuffer dirty map and the combined native road-span kernel, because each is independently
-measurable and preserves an oracle. Treat the geometry-to-bitplane path as the larger successor,
+**Sequencing.** Two of the earlier candidates are closed by measurement and must not head this
+list: the §7i dirty-**line** skip shipped and measured a null, and §7j item 1's per-backbuffer
+framebuffer dirty map was built in full (`CHANGEDIRTY`), proved byte-exact, measured ~8.5% slower
+and was reverted. So the head of the queue is **§7j item 2, the viewport source-event/run
+consumer** — the one lever on this page whose prize is now counted rather than estimated (13% of
+cell stores are must-visit, in 1.38 runs per line paint ⇒ ~86% of the unit work, ~10.8-17.5 ms),
+and it preserves an oracle for free because the present consumer *is* the oracle. The combined
+native road-span kernel follows it. Treat the geometry-to-bitplane path as the larger successor,
 not as an accumulation of local consumer rewrites; it is the natural home for the blitter once it
 earns its place.
