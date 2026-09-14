@@ -286,9 +286,14 @@ What the campaign leaves on the table, if it is wanted:
 * the main loop's remaining calls that are in NONE of the six trees — the other-car AI ($2937
   and its projector), `process_car_contact`, `check_crash`, `sort_cars_by_key`, the lap and
   session bookkeeping;
-* `docs/rename.md` is down to open items that need a MEASUREMENT rather than more reading, and
-  three of them now name the exact reference-loop run that settles them (`section_curve`,
-  `car_section_along`/`car_section_across`, the fifteen state-vector elements);
+* ✅ ~~`docs/rename.md`'s open items that need a MEASUREMENT rather than more reading~~ — **the
+  queue is EMPTY.**  The three that named their own reference-loop run were all settled by running
+  it: `section_curve` (its two readers agree; `car_flags_0` was the misnomer), `car_section_along`
+  /`car_section_across` (which of the pair is which, two independent ways) and the state-vector
+  elements (element 8 is the car's LATERAL velocity).  The "third name for the track-normal region"
+  is settled by DECISION rather than by a rename, and `symbols.csv` carries it: $5700 keeps
+  `ModifyGameCode` because one address gets one name, with the race-time tenant written in the row
+  and $5800 named `track_normal_y`;
 * Phase 6's representation change (`docs/direct-bitplane-plan.md`), which is where the framerate
   actually is — and the campaign's standing conclusion is unchanged: **the port's biggest costs
   are the machinery the transliteration is wrapped in, not the game's algorithms.**
@@ -296,7 +301,8 @@ What the campaign leaves on the table, if it is wanted:
 ⚠ **CORRECTED along the way:** this section used to say `draw_track_object`'s tree is what reads
 `$5700`/`$5800`.  It is not — `$299D` is in the OTHER-CAR projector ($2937), which is in none of
 the six trees, and `$1391` is in `$12F7`.  The "third name for the track-normal region" decision
-therefore has no group to ride along with and is still open in `docs/rename.md`.
+therefore had no group to ride along with, and it is closed the only way a THREE-TENANT region can
+be: not by renaming, but by one row carrying all three readings (see the bullet above).
 
 ## Phase 0 — Scaffolding ✅
 
