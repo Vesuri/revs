@@ -1284,13 +1284,23 @@ Steps 1–2 are self-contained, touch no producer, and cannot break an expansion
 byte-identical, so `make validate` still applies to it. Step 4 deletes a pass and needs the audit.
 Step 5 is gated on a measurement that does not exist yet.
 
-**Open for steering (the plan does not pick these unilaterally):**
+**✅ STEERED (user, 2026-09-14) — all four answered, so these are decisions, not options:**
 
-- **Statelessness vs. the original's skip.** Repainting rows 81–157 in full costs ~1 ms more than
-  reproducing the original's "never repaint the middle", and removes all persistence reasoning. The
-  plan assumes **stateless**. It is the one place where the port would do *more* work than the BBC.
-- **How far to take Stage D.** `build_track_geometry` is real game math and the ~12 ms is a guess;
-  it could be left alone entirely (~63 ms instead of ~48 ms) and revisited after A–C are measured.
-- **The blitter and sprites are deliberately absent from Stages A–D.** A 1540-longword CPU fill is
-  ~18.5k cycles and the blitter's setup per span is not obviously cheaper at 13.9 cells/span; sprites
-  belong to the re-sized §8. Both become interesting *after* step 1 gives a real number.
+- ✅ **STATELESS, and for a stronger reason than the ~1 ms.** *"Keeping track of the previous frame
+  costs way more than it does to render everything, especially if the blitter gets involved."* ⇒ the
+  renderer owns rows 81..157 unconditionally; **no dirty map, no persistence, no previous-frame
+  state at this seam, and none is to be proposed again** — that is now four measurements and a
+  decision pointing the same way (§7i, §7j, `CHANGEDIRTY`, and the statelessness costing).
+- ✅ **Stage D waits, but is not dropped.** `build_track_geometry` *"needs to be improved to the
+  maximum extent but can wait for the bigger improvements unless those bigger improvements need
+  it."* ⇒ A, B, C first; pull D forward only if one of them turns out to need it.
+- ✅ **~48 ms against a 20 ms target is accepted as the outcome of THIS rewrite.** *"Let's see how
+  far we get with this rewrite. There are still plenty of levers to pull after that."* ⇒ do not
+  narrow the scope of A–C to chase the target, and do not treat missing 20 ms as a failure of the
+  architecture.
+- ✅ **CPU first; the blitter is evaluated, not assumed.** ⭐⭐ And the reason to be sceptical of it
+  is the opposite of the usual one (user): **with a faster processor the blitter easily becomes the
+  BOTTLENECK** — it is a fixed-rate DMA engine, so an A500 68000 that has been made to wait less
+  starts waiting on the blitter instead. So a blitter fill is a candidate to be *measured against*
+  the 1540-longword CPU fill, never a default because "the blitter is free". Sprites belong to the
+  re-sized §8.
