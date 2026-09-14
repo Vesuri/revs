@@ -319,7 +319,11 @@ c_shiftOk:
 	bra.s	c_done
 
 c_nonInterleaved:
-	; TODO
+	; NOT A REVS WORK ITEM, and unreachable in this port.  Inherited from the RoF
+	; framework, where a non-interleaved Bitmap was a supported configuration.  Every
+	; Bitmap this port constructs is INTERLEAVED (RevsScreen: 2 planes for the race
+	; view, 3 for teletext), so nothing can reach here.  Left unimplemented on purpose
+	; rather than carrying a TODO that a work-item sweep would keep re-finding.
 	bra	c_done
 
 c_cpu:
@@ -724,7 +728,8 @@ cWM_interleavedMultiBitplaneMask:
 
 cWM_nonInterleaved:
 
-	; TODO
+	; NOT A REVS WORK ITEM — same as c_nonInterleaved above: inherited RoF framework
+	; code for a Bitmap configuration this port never constructs.
 	add.w	#14,sp
 
 cWM_done:
