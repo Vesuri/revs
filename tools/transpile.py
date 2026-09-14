@@ -2902,9 +2902,21 @@ def translate_insn(insn, func, all_funcs_by_start, symbols, local_targets,
             lines.append(f'    ROR_M({ea});')
         return lines
 
-    # --- Unknown ---
-    lines.append(f'    /* TODO: {mnem} {op} */')
-    return lines
+    # --- Unknown -------------------------------------------------------------------
+    # ⚠⚠ A MNEMONIC THIS EMITTER DOES NOT KNOW IS A DROPPED INSTRUCTION, SO IT IS FATAL.
+    # This used to append `/* TODO: MNEM op */` and carry on: the C still compiled, the
+    # instruction simply vanished, and the failure surfaced later and elsewhere as "the
+    # rasteriser draws nothing".  docs/method-lessons.md is explicit that a TODO in
+    # generated output is not loud — nobody reads 16 000 lines nobody wrote — and its four
+    # siblings (BRK as a comment, an unmapped call target as an empty function, an unlisted
+    # SMC value, a VALIDATE_FUNCS entry with no fixture) are all gen-time failures or named
+    # runtime reports already.  This was the one left behind.  It fires zero times on the
+    # current corpus, so reaching it means the listing changed under the emitter.
+    raise SystemExit(
+        f'transpile: no emitter for `{mnem} {op}` at ${insn["addr"]:04X} '
+        f'in {func["name"]}\n'
+        f'  -> add it to translate_insn(), or if those bytes are DATA misidentified as '
+        f'code, cut them in disasm/listing.txt and re-check with `make sweep`.')
 
 # ---------------------------------------------------------------------------
 # Peephole: register/flag liveness + load-immediate→store folding
@@ -3922,11 +3934,20 @@ def main():
 
     # Stubs for JSR targets Ghidra didn't create functions for.
     if jsr_targets_unknown:
-        body.append('/* === Stubs for JSR targets without a known function === */')
-        body.append('/* TODO: investigate each — may be data misidentified as code. */')
+        # ⚠ Each of these is a JSR target with no decoded instructions behind it — most likely
+        # DATA misidentified as code, which is benign, but possibly a real routine the sweep
+        # missed, which is not.  It stays a stub rather than a hard failure for that reason;
+        # what it does NOT stay is silent.  report_unknown_jsr_targets() names them at
+        # generation time, and the body carries REVS_TRANS_HIT so `make transtrap` FAILS if
+        # one is ever actually entered (docs/method-lessons.md: make the gap loud at the
+        # earliest point that can name it).
+        body.append('/* === Stubs for JSR targets without a known function ===')
+        body.append('   Named at generation time by report_unknown_jsr_targets(); each traps')
+        body.append('   under `make transtrap` if it is ever entered. */')
         for addr in sorted(jsr_targets_unknown):
             name = symbols.get(addr, f'FUN_{addr:04x}')
-            body.append(f'void {name}(void) {{ /* stub: no instructions found at ${addr:04X} */ }}')
+            body.append(f'void {name}(void) {{ REVS_TRANS_HIT("{name} @ ${addr:04X}: '
+                        f'no instructions found"); }}')
         body.append('')
 
     # Emit split functions for mid-function entry points.
@@ -4122,11 +4143,22 @@ def main():
             '#include "../cpu/cpu.h"',
             '#include "../cpu/bus.h"',
             '#include "revs_decl.h"',
+            '#include "../platform/trans_trap.h"   /* the not-yet-written stub traps */',
             '#include <string.h>',
             '',
         ]
+        # ⚠ A TRAPPING stub, not a TODO line.  This file is written ONCE and then edited by
+        # hand, so whatever lands here ships until someone replaces it: an empty body would
+        # be a routine that silently does nothing.  MANUAL_FUNCS is empty on purpose today
+        # (SMC_SITES covers all 24 self-modifying sites generically), so this template has
+        # never been instantiated — which is exactly why it has to be right when it is.
         for a in sorted(MANUAL_FUNCS):
-            manual.append(f'/* TODO: {symbols.get(a, f"FUN_{a:04x}")} @ ${a:04X} */')
+            nm = symbols.get(a, f'FUN_{a:04x}')
+            manual.append(f'/* {nm} @ ${a:04X} — NOT YET WRITTEN.  Say here why it cannot be')
+            manual.append(f'   transliterated (docs/faithfulness-seam.md), then implement it. */')
+            manual.append(f'void {nm}(void) {{ REVS_TRANS_HIT("{nm} @ ${a:04X}: manual stub '
+                          f'not written"); }}')
+            manual.append('')
         OUT_MAN.write_text('\n'.join(manual) + '\n')
         print(f'Wrote {OUT_MAN}  (manual stubs)')
     elif OUT_MAN.exists():
@@ -4140,10 +4172,31 @@ def main():
     report_stack_drops(funcs, symbols)
     report_brk_targets(funcs, symbols)
     report_spin_candidates(funcs, symbols)
+    report_unknown_jsr_targets(jsr_targets_unknown, symbols)
 
 # ---------------------------------------------------------------------------
 # Reports
 # ---------------------------------------------------------------------------
+def report_unknown_jsr_targets(jsr_targets_unknown, symbols):
+    """JSR targets with no decoded instructions behind them, NAMED.
+
+    These are emitted as trapping stubs (see the stub block in emit_gen), and the reason they
+    are not a hard failure is that the benign reading — data misidentified as code, called
+    from a path that never runs — is common and harmless.  The malignant reading is a real
+    routine the entry-point sweep missed, and the two are indistinguishable from the listing
+    alone.  So: print the count and the names on every generation.  Zero is the expected
+    answer and has been since the sweep closed; a non-zero line is a `make sweep` question.
+    """
+    if not jsr_targets_unknown:
+        print('JSR targets without a decoded function: 0')
+        return
+    names = ', '.join(f'{symbols.get(a, f"FUN_{a:04x}")} (${a:04X})'
+                      for a in sorted(jsr_targets_unknown))
+    print(f'⚠ JSR targets without a decoded function: {len(jsr_targets_unknown)} '
+          f'-> emitted as trapping stubs: {names}')
+    print('  -> data misidentified as code, or a routine `make sweep` missed. '
+          'docs/entrypoint-sweep.md')
+
 def report_smc_coverage(funcs):
     """Every SMC_SITES address must land on a decoded instruction start, and every
     routine that contains one is named.  A site that does not match an instruction is a
