@@ -773,7 +773,7 @@ target bracket now measures the production unit/run interior itself:
 |---|---:|---|
 | viewport unit/run interior | **29.0 ms** | 2148 unit visits, 118 runs, 77 lines; source consume/translation/clear, loop/run control and destination stores |
 | destination-store portion | **~8 ms** | `NOUNITS=3` retains consume/clear but suppresses the store |
-| source/translation/control remainder | **~21 ms** | the part a source-event representation can attack |
+| source/translation/control remainder | **~21 ms** | ⛔ was "the part a source-event representation can attack" — that consumer was built and cost +25.46 ms |
 | framebuffer decode | **38 ms** | BBC framebuffer/shadow discovery plus dirty-cell bitplane expansion |
 | decoder discovery/shadow scan | **~23 ms** | retained by a scan-only temporary build |
 | decoder dirty-cell expansion | **~15 ms** | the remainder |
@@ -790,7 +790,8 @@ There are therefore **two useful dirty representations**, at different seams:
    both maps. The decoder iterates and clears only the displayed backbuffer's map. A mode change
    dirties all forty cells of its character row. The existing full decoder remains the oracle.
    Gross ceiling: the measured 23 ms discovery scan; pre-implementation expected net: 10-15 ms.
-2. **Viewport source events/runs.** The producers know which of the forty `$80`-spaced source
+2. ⛔⛔ **Viewport source events/runs — BUILT AND CLOSED, +25.46 ms; read the ⛔ block at the end
+   of this item before anything else here.** The producers know which of the forty `$80`-spaced source
    blocks they touch. Emit changed units or contiguous runs and let `view_paint_lines` iterate the
    events instead of testing all 2148 slots. A line-only bit is insufficient if it still causes a
    forty-unit scan. Gross source/control surface: ~21 ms; expected net: roughly 12-18 ms. Keep the
@@ -834,6 +835,30 @@ There are therefore **two useful dirty representations**, at different seams:
    point over the host is the ~10× displacement per paint, which is the whole reason the target
    run was spent.
 
+   ⛔⛔⛔ **AND IT WAS BUILT AND IT IS CLOSED: +25.46 ms ON THE SWEEP, BOTH STAGES (2026-09-14).**
+   `make VIEWEVT=1` implemented exactly the scheme above — producers mark a per-cell event bit,
+   `view_paint_lines` walks set bits and fills the gaps — and it deleted the 86% of unit visits the
+   census promised while costing **25 ms**, localised by `VIEWSPLIT=1` to **+24.11 ms inside the
+   per-run body** (phase 30: 36.80 → 60.91). A block-level cycle model weighted by a host walk
+   census reproduces it to **0.9%** and says why: **the walk walks INDICES and the scan walks
+   POINTERS, and on a 68000 index → pointer is the expensive direction.** Each walk step converts a
+   cell number into a destination (`lsl.l #3` + `lea`), a source (`lsl.l #7` + `add.l` + `adda.l`)
+   and a mask byte/bit (`lsr.l #3` + `lea` + `and.l` + a table read), then clears the bit
+   (`lsl.l` + `not.b` + `and.b` + store); the scan's equivalent is `addq.l #8,a2` and
+   `lea 128(a0),a0`. **76% of the walk's cycles are address arithmetic that exists only because the
+   representation is indexed by cell number**, and only **24%** of its 2145 cyc/run is painting
+   (against 878 cyc/run for the scan over the same 17.6 cells). Fitting both as
+   `scan = 43·N + 88·E` and `walk = 402 + 32·N + 476·E` gives break-even at
+   **N = 36.5 + 35.3·E** — a 37-cell run even at zero events, where a scan line is 40 cells and a
+   chain run averages 17.6. ⚠ **Stage 1's census was right about the counts and wrong to price a
+   deleted visit at the cost of the visit it replaced.** ⚠ **Stage 2 (producers emit the run list,
+   no mask scan) dies with it**: it removes the mask query but keeps the 402-cycle per-run prologue
+   and the 476-cyc/event addressing. Full account: `docs/perf-method.md` §the walk walks indices.
+   ⭐⭐ **What a future attempt must do differently:** amortise the addressing over a whole **line**
+   or **sweep** instead of per run (118 runs over 77 line paints), or have the producers hand over
+   byte **offsets** the consumer uses as pointers without arithmetic. That is now a design criterion
+   on the direct-bitplane layout itself, not a separate queue item.
+
 The failed direct plotter did not test either proposition: it replaced the final store while
 retaining the source scan and every upstream BBC-shaped representation. Its 9% loss therefore says
 that the last-arrow replacement was a bad trade, not that a higher representation seam is valueless.
@@ -858,7 +883,8 @@ the result is reproducible. Do not schedule another per-store change-aware map u
 representation itself supplies change events without rereading framebuffer destinations.
 
 The measured implementation order is now a combined native
-`interp_edge` + `span_walk` kernel, then viewport source events. Even if all local items land, their
+`interp_edge` + `span_walk` kernel; ⛔ **viewport source events used to follow it and are now closed,
+measured** (§7j item 2's ⛔ block). Even if all local items land, their
 credible total points to about **6-7 FPS from the current ~4.93**, not the 25 FPS floor. The floor
 requires the architectural path: world points → native spans/events → Amiga bitplanes, bypassing
 split BBC edge records, SMC-style span scratch, forty source blocks, the BBC framebuffer and the
@@ -955,13 +981,20 @@ edge lists give a clean per-line left/right x and count how many regions the roa
 into while driving. That measurement decides whether #1 is a trapezoid fill or a messier region
 problem, and it costs nothing but a read.
 
-**Sequencing.** Two of the earlier candidates are closed by measurement and must not head this
-list: the §7i dirty-**line** skip shipped and measured a null, and §7j item 1's per-backbuffer
-framebuffer dirty map was built in full (`CHANGEDIRTY`), proved byte-exact, measured ~8.5% slower
-and was reverted. So the head of the queue is **§7j item 2, the viewport source-event/run
-consumer** — the one lever on this page whose prize is now counted rather than estimated (13% of
-cell stores are must-visit, in 1.38 runs per line paint ⇒ ~86% of the unit work, ~10.8-17.5 ms),
-and it preserves an oracle for free because the present consumer *is* the oracle. The combined
-native road-span kernel follows it. Treat the geometry-to-bitplane path as the larger successor,
+**Sequencing.** ⛔ **THREE of the earlier candidates are closed by measurement and none of them may
+head this list**: the §7i dirty-**line** skip shipped and measured a null; §7j item 1's
+per-backbuffer framebuffer dirty map was built in full (`CHANGEDIRTY`), proved byte-exact, measured
+~8.5% slower and was reverted; and **§7j item 2, the viewport source-event/run consumer — the one
+lever here whose prize was counted rather than estimated — was built and cost +25.46 ms** (see its
+⛔ block above). ⚠⚠ **That is the third consecutive null from a SKIP-THE-REDUNDANT-WORK scheme at
+this seam, and the common cause is now identified rather than guessed: every one of them added
+per-item addressing or comparison to delete per-item stores, and on a 68000 a sequential store is
+already close to free** (43 cyc/cell with the load and the branch). **Stop proposing consumers that
+iterate a sparse set of the present layout.** So the head of the queue is the **architectural path**
+itself — world points → native spans/events → Amiga bitplanes — beginning with the read-only scout
+above, with the combined native `interp_edge` + `span_walk` kernel alongside it. The other live
+lever is not on this page at all: the sweep's **driver and chain-entry code**, 32.4 ms of the
+52.7 ms sweep (`docs/open-work.md` item 2), which every representation change so far has left
+untouched. Treat the geometry-to-bitplane path as the larger successor,
 not as an accumulation of local consumer rewrites; it is the natural home for the blitter once it
 earns its place.

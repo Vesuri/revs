@@ -384,9 +384,18 @@ split's 83%. **Phase 1's old "unexplained ~6x" is RETRACTED**: its unit loop is 
 the objdump shows the unrolled body is 43 cyc/unit on the clean arm — 12 (load) + 12 (store) +
 12 (branch) + ~9 amortised, which is what those three operations COST on a 68000 — plus ~10 for
 the 12% dirty arm. ⇒ **No code shape can improve that loop, and widening is impossible** (the
-BBC layout puts destination cells 8 bytes apart and sources 128 apart). So the dirty-run
-representation change can reach only the 20 ms; the 32 ms of drivers is the larger, separate
-lever. `docs/perf-method.md` §the sweep is 61% driver/entry.
+BBC layout puts destination cells 8 bytes apart and sources 128 apart). The 32 ms of drivers is
+the larger, separate lever. `docs/perf-method.md` §the sweep is 61% driver/entry.
+⛔⛔⛔ **AND THE REPRESENTATION CHANGE THAT WAS TO REACH THAT 20 ms IS CLOSED — the source-event/run
+consumer was built and cost +25.46 ms.** ⭐⭐⭐ **On a 68000 the expensive direction is INDEX →
+POINTER**: a cell-indexed event mask pays 476 cyc/event and a 402-cycle per-run prologue where the
+scan pays an incremental `addq.l #8`, so break-even is `N = 36.5 + 35.3·E` cells against a 40-cell
+line and a 17.6-cell average run — it cannot win at any event density, and 76% of the walk's cycles
+are address arithmetic. ⇒ **A sparse-iteration consumer must amortise its addressing over a LINE or
+a SWEEP, or take byte OFFSETS the producers already know.** ⭐⭐ **And price any skip scheme with TWO
+numbers before building it: how many visits it deletes, AND what one visit of the NEW shape costs** —
+a census of deleted visits bounds the saving and says nothing about the replacement, which is the
+error that cost this one. `docs/perf-method.md` §the walk walks indices.
 ⚠⚠ **Writer-maintained framebuffer dirty maps are also dead as a shipping optimisation.**
 `CHANGEDIRTY` was complete and byte-exact (0/23 oracle mismatches), but its per-store compare and
 two-map RMW traffic measured ~8.5% slower than the batched shadow scanner, so **the code is reverted

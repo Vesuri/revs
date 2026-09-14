@@ -287,6 +287,42 @@ phase 3's lost more, which is the whole story: the core grows 757 → **995** in
 rule holds for a leaf in an inner loop; it does not hold for a caller that has run out of
 registers.** Do not re-try it — the record is written at the code.
 
+### ⚠⚠⚠ THE FOURTH CASE, AND THE WORST: GROWING A SHARED `always_inline` LEAF RE-DECIDES EVERY CALLER (2026-09-14)
+
+The three cases above are all about **one** function's own size. This one is collateral, it hits
+functions the edit never mentions, and it was misdiagnosed for a whole session as *"adding ~300
+instructions to `revs_native.c` moved GCC's per-TU inline-growth budget and re-decided the whole
+file"* — **a story that is now disproven in both of its parts.**
+
+`view_mark_source` (`src/gen/revs_native_seam.h`) is a `REVS_FLAG_OP` — i.e. `always_inline` — and
+it is called from `seam_write`, **the port's universal store choke point**, which is itself an
+`always_inline` function in a header. So the leaf is inlined into every writer in the tree.
+Defining `REVS_VIEWEVT` adds one mask read-modify-write to it: two shifts, an `and`, a `lea` and a
+byte `or` to memory. That is ~6 instructions in the source and **104 inlined copies across 14
+functions** in the binary — and **13 of the 17 functions whose size changed are exactly those 14.**
+The worst casualty was nowhere near the edit: `column_gap_walk_core` went 1176 → 1029 instructions
+and **lost the 4× unroll** that §a fragile local optimum had already measured at 1.38 ms.
+
+⚠ **Both of the plausible fixes are dead, and neither was ever going to work:**
+- `--param inline-unit-growth=400` plus enormous `large-function-growth` / `large-function-insns`
+  caps produced **byte-identical output**. It is not a budget effect; it is 104 real copies of real
+  instructions, each of which legitimately changes its host's size and register pressure.
+- **Splitting the translation unit cannot help either** — an `always_inline` leaf in a *header* is
+  present in every TU that includes it, so the copies follow the callers wherever they are put.
+
+⭐⭐⭐ **The rule: before growing an `always_inline` leaf, count its call sites — the edit is
+multiplied by that number, and the cost lands in the callers, not in the leaf.** A universal
+choke point (`seam_write` here) is the one place on this target where a six-instruction change is
+a thousand-instruction change. ⭐ **The diagnostic, when an unrelated function slows down after an
+edit:** dump per-function sizes from both objdumps, diff them, and intersect the movers with the
+call sites of whatever leaf the edit touched. A 13-of-17 intersection settles it in one pass, and
+it is the only way to tell this apart from a genuine whole-file budget effect — which looks
+identical from the phase table.
+
+⭐ **The design fix is to not use the choke point at all.** A catch-all hook on every store is
+convenient and structurally wrong: mark at the handful of explicit producer sites (there are
+seven) and the leaf stays empty for the other 104.
+
 ## ⭐⭐ HAND-UNROLL: `#pragma GCC unroll N` IS IGNORED, AND THE WIN IS THE ADDRESSING (2026-09-13)
 
 m68k-amiga-elf-gcc 15.1.0 at `-O2` **ignores `#pragma GCC unroll 4`** — byte-identical output, 282

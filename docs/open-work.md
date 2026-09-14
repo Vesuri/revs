@@ -56,9 +56,11 @@ unconstrains the 58.7 ms consumer, which today paints into a layout the Amiga ca
    `build_track_geometry`→`draw_road`) untouched. Necessary, not sufficient.
 2. ⭐⭐ **Their single biggest win in the whole log was not rendering and not asm**: per-instrument
    **producer-side dirty flags** replacing a 560-cell shadow scan, **~1662 → ~65 ticks (~23×)**.
-   That is the shape our ⛔ `CHANGEDIRTY` got wrong — it compared at the STORE instead of letting
-   the producer, which already knows what it touched, say so. The live version of it here is the
-   viewport source-event representation below.
+   That is the shape our ⛔ `CHANGEDIRTY` got wrong — it compared at the STORE instead of letting the
+   producer, which already knows what it touched, say so. ⛔ **And our second attempt at it is
+   closed too** — the producer-marked source-event mask below — so the transferable part is
+   narrower than it looks: their flag works because ONE flag covers a whole instrument's redraw.
+   A per-CELL bit does not amortise on this machine.
 3. Bounding a scan by an extent the producer already knows (their `minScan` = topmost skyline row)
    was **~324 → 113 ticks** on its own. ⛔ **And this is the one of the four that does NOT transfer
    — measured, see CLOSED**: the same idea on our viewport would still visit 54% of the cells,
@@ -66,34 +68,19 @@ unconstrains the 58.7 ms consumer, which today paints into a layout the Amiga ca
 4. Reading the scan **4 bytes at a time** and overlapping blitter ops with disjoint CPU work took
    their direct renderer **~478 → ~170 ticks/call**.
 
-⭐⭐ **The live sub-lever, and it is the biggest single un-built item on this board — VIEWPORT
-SOURCE EVENTS/RUNS.** `docs/direct-bitplane-plan.md` §7j (the settled costing): the producers know
-which of the forty `$80`-spaced source blocks they touch, so `view_paint_lines` can iterate CHANGED
-units/runs instead of testing all 2148 slots. Gross source/translation/control surface **~21 ms**,
-expected net **12-18 ms**. ⚠ A line-only bit is insufficient if it still causes a forty-unit scan.
-Keep the present consumer as the byte-exact oracle until every trajectory agrees.
-⚠⚠ **Do not price this against a framebuffer dirty map** — that is ⛔ CLOSED below, and §7j is
-explicit that its ceiling omitted the producer-side price.
-
-⭐⭐⭐ **AND THE PRIZE IS NOW COUNTED, SO THIS ENTRY IS SIZED AND READY TO BUILD (2026-09-14).**
-`make SHAPE=1`'s run census (`src/platform/shape.h` §THE RUN CENSUS, `amiga/run_census.gdb`,
-`docs/perf-method.md` §the run census) measured the must-visit set on the target while driving.
-⚠⚠ The scheme is **not** "skip the clean units" — a clean unit's store is what ERASES last frame.
-It works because `view_consume` is run-length encoded (a zero source means "same as my left"), so
-the store is idempotent wherever the cell already holds that colour, and a cell must be visited
-only if its source is non-zero **or** its store would move the byte:
-
-| | target, driving |
-|---|---:|
-| cell stores per sweep | 2082 over 77 line paints |
-| ⭐ **union (must-visit)** | **13% — 3.77 per line paint, in 1.38 runs of 2.71 cells** |
-| line paints needing NOTHING | 873 of 3850 (23%) |
-
-⇒ **~86% of the unit work is deletable, worth ~10.8 ms (43 cyc/unit × 2082) to ~17.5 ms (the
-`NOUNITS=2` axis), which brackets the 12-18 ms above rather than replacing it.** Stable across
-2664 host intervals (10.7-12.7%) and flat in speed, so it is not a parked-car artefact.
-⚠ **Run/line control is NOT part of the prize** — the union needs ~106 runs/frame against the 118
-chain runs the sweep already pays, so entry 2 below stays exactly as large as it is.
+⛔⛔ **AND THE SOURCE-EVENT/RUN SUB-LEVER IS DEAD — BUILT, MEASURED AT +25.46 ms ON THE SWEEP, AND
+THE CYCLE MODEL SAYS WHY (2026-09-14).** It was the biggest un-built item on this board, and the
+census that sized it counted correctly and **priced wrongly**: 43 cyc/unit × the deleted 86% bounds
+the *saving* and says nothing about the *replacement*. One line in CLOSED below; the full account is
+`docs/perf-method.md` §the walk walks indices. The short form: on a 68000 the expensive direction is
+**index → pointer**, so a cell-indexed event mask pays 476 cyc/event and a 402-cyc per-run prologue
+against the scan's incremental 43 cyc/cell — break-even is **N = 36.5 + 35.3·E** cells, a scan line
+is 40 and a chain run averages 17.6. Both stages die together: stage 2 keeps the prologue and the
+per-event addressing.
+⭐⭐ **What survives is a REQUIREMENT ON THIS ENTRY, which is why it is recorded here rather than
+re-queued:** a sparse-iteration consumer is only affordable if its addressing amortises over a whole
+LINE or SWEEP, or if the producers hand over byte **offsets** the consumer can use as pointers
+without arithmetic. The direct-bitplane layout is chosen partly on that criterion now.
 
 ⚠ **Two decompositions of the same 52.7 ms sweep are in circulation and they are NOT the same
 axis** — `NOUNITS=2` differencing says 32.4 ms driver/entry + 20.4 ms unit loop (entry 2 below);
@@ -192,6 +179,13 @@ exists so nobody spends a day re-deriving a negative result.
 - **Consumer run-entry specialisation** (single-run flat-span path) — **−0.15%**, retracting its
   predicted "~10% prize". Do not retry that code shape.
 - **The per-line skip** — **−0.4%** for 39.5% of line-visits deleted; phases 2+3 skip zero units.
+- **The viewport SOURCE-EVENT/RUN consumer** (`VIEWEVT`, `docs/direct-bitplane-plan.md` §7j item 2,
+  **both stages**) — **+25.46 ms on the sweep** for 86% of unit visits deleted. The walk costs
+  2145 cyc/run against the scan's 878 for the same 17.6 cells, and only 24% of that is painting:
+  a cell-indexed mask forces index→pointer arithmetic at every step (476 cyc/event, 402 cyc/run
+  prologue) where the scan pays an incremental `addq.l #8`. Break-even **N = 36.5 + 35.3·E** cells;
+  a line is 40 and a run averages 17.6, so it cannot win at any event density.
+  `docs/perf-method.md` §the walk walks indices.
 - **The producer-EXTENT viewport scan** (a first..last bound per line, RoF's `minScan` shape) —
   measured **54% of cells still visited** (host 51%) by the run census, against 13% for a true run
   list. The must-visit cells are few but spread across the line. It is a run list or nothing.

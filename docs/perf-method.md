@@ -978,6 +978,10 @@ phase 3's 25 lines and 2 of phase 2's 16.
 
 #### ⭐⭐⭐ THE RUN CENSUS — the must-visit set is **13% of cell stores, in 1.38 runs per line paint** (2026-09-14)
 
+⛔⛔ **READ THE SEQUEL FIRST — §the walk walks indices, immediately below. The consumer this census
+sized was built and cost +25.46 ms.** The counts here are sound and are still the reference for what
+the sweep must visit; the *pricing* in this section is what the sequel corrects.
+
 `docs/direct-bitplane-plan.md` §7j item 2 — the viewport source-event/run consumer — was the
 largest un-built lever on the board and its pay-off hinged on a number nobody had measured: **how
 many cells a sweep would actually have to visit** if the consumer iterated events instead of all
@@ -1071,6 +1075,100 @@ defect; a *round* difference like that is worth chasing to its explanation rathe
 ⚠ A `SHAPE=1` build is heavily instrumented (an 8320-byte compare per phase boundary), so it is
 **licensed for COUNTING only, never for timing** — the target run got 50 sweeps in 141 s emulated
 for that reason, and that is fine for a count.
+
+#### ⛔⛔⛔ ...AND THE CONSUMER WAS BUILT AND IT COSTS **+25.46 ms**: THE WALK WALKS **INDICES**, THE SCAN WALKS **POINTERS** (2026-09-14)
+
+The census above is arithmetically correct and its conclusion was wrong. `make VIEWEVT=1` builds the
+consumer it sized — producers mark a per-cell event bit, the consumer walks the set bits and fills
+the gaps between them — and it measured, against a same-session control from a clean build
+(`PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`, `phase4_prof.gdb`, warp, 30 s):
+
+| build | view sweep | bracketed frame |
+|---|---:|---:|
+| control | 50.71 | 202.09 |
+| stage 1, walk inlined | **+31.98** | +41.69 |
+| stage 1, walk `noinline` | +40.74 | +46.17 |
+| mask maintenance only, scan retained | +3.86 | +5.20 |
+| + bit-scan tables (the 68000 has no `bfffo`) | +27.56 | +34.65 |
+| + empty-fill guard, unrolling off | **+25.46** | **+30.71** |
+
+⚠ It deletes 86% of the visits the census promised and costs 25 ms. **`VIEWSPLIT=1` puts 24.11 of
+them inside the per-run body** (phase 30: 36.80 → 60.91), with the drivers moving +0.6/+0.5/+1.0 and
+the empty control bracket flat at 12.5 — so the instrument cancels and the cost is in the work.
+
+**Why — the block-level cycle model, and it closes to 0.9%.** Costing each basic block from the
+objdump and weighting it by a host census of the walk (34928 walks, 596736 cells = 17.1/walk, 49189
+events, 1.84 fill runs/walk, 3.16 `view_next_event` calls/walk × 1.65 mask bytes each):
+
+| per chain run | control (scan) | event build (walk) |
+|---|---:|---:|
+| the consumer | **878 cyc** | **2145 cyc** |
+| the per-run tail (chain entry + driver) | 748 | 702 |
+| **total — modelled** | 1625 | **2848** |
+| **total — measured** (`VIEWSPLIT` ÷ 118 runs/frame) | 1438 | **2873** |
+
+The event build closes to **0.9%**; the control reads ~13% high because the estimator prices every
+`Bcc` at a flat 10 cycles. And the walk's 2145 cycles decompose so that **only the first row is
+work**:
+
+| part of the walk | cyc/run | share |
+|---|---:|---:|
+| fill stores — the actual painting | 518 | **24%** |
+| `view_next_event` × 3.16 (head + found-bit padding) | 474 | 22% |
+| run + walk prologue | 402 | 19% |
+| event consume × 1.37 | 296 | 14% |
+| previous stop's consume + mask bit clear | 216 | 10% |
+| fill-run setup × 1.84 | 202 | 9% |
+| loop close | 37 | 2% |
+
+⭐⭐⭐ **The mechanism, stated as a rule: on a 68000, converting an INDEX to an ADDRESS is the
+expensive direction, and an event mask indexed by cell number forces that conversion at every
+step.** The walk holds cell numbers because the mask is addressed by cell number, so each step pays
+`lsl.l #3` + `lea (0,a4,d3.l),a2` (cell → destination), `lsl.l #7` + `add.l` + `adda.l #imm`
+(cell → source), `lsr.l #3` + `lea (0,a3,d0.l),a0` + `and.l #7` + an indexed table read (cell →
+mask byte and bit), and `lsl.l d7,d0` + `not.b` + `and.b` + a store to clear the bit. The scan's
+equivalent of all of that is `addq.l #8,a2` and `lea 128(a0),a0` — **8 cycles, incremental, no
+arithmetic.** 76% of the walk's cycles are address arithmetic that exists only because the
+representation is indexed.
+
+⭐⭐⭐ **And that gives a break-even, which is the number that should have been computed before any
+code was written.** Fitting both consumers as functions of run length *N* and events in the run *E*:
+
+```
+scan = 43·N + 88·E                     (43 cyc/cell, measured from the unrolled quad body)
+walk = 402 + 32·N + 476·E              (32 cyc/cell of fill; 476 per event; 402 fixed per run)
+⇒ break-even   11·N = 402 + 388·E   ⇒   N = 36.5 + 35.3·E
+```
+
+**Even at zero events the walk needs a 37-cell run to pay for its own prologue. A scan line is 40
+cells and the average chain run is 17.6.** The representation cannot win on this geometry at any
+event density — not because the events are too many (they are few, exactly as counted) but because
+the *per-event* and *per-run* constants are 15× and 9× the scan's per-cell cost. A sparse set is
+only cheap to iterate if iterating it is cheap.
+
+⚠⚠ **What the census got wrong was not the count — it was pricing a deleted visit at the cost of the
+visit it replaced.** 43 cyc/unit × the deleted 86% is an upper bound on the *saving* and says nothing
+about the *replacement*, and the replacement here is 15× more expensive per event. ⭐ **A
+skip/sparse-iteration proposal needs TWO numbers: how many visits it deletes, and what one visit of
+the new shape costs.** The second is obtainable before building — the addressing shape is visible in
+any existing loop over the same data — and on this machine it is the one that decides.
+
+⚠ **Stage 2 (producers write the run list directly, no mask scan) dies with stage 1**, and the model
+says why without building it: it removes the `view_next_event` row (474) and the bit clear, and keeps
+the 402-cycle per-run prologue and the 476-per-event index→pointer machinery, so break-even stays far
+above 40 cells. A working version of this idea has to amortise the addressing over a whole LINE or
+SWEEP rather than per run (118 runs over 77 line paints), or have the producers write byte OFFSETS
+the consumer can use as pointers without arithmetic.
+
+ℹ **Two free readings, both correcting standing notes.** The per-run *tail* — chain entry plus
+driver, ~702-748 cyc × 118 runs ≈ **12.5 ms/frame in BOTH builds** — is untouched by any of this and
+is the larger remaining lever (§the sweep is 61% driver/entry, `docs/open-work.md` item 2). And
+`-funroll-loops` fully unrolled `view_next_event`'s 5-iteration mask-byte loop inline, then placed
+the **common** exit ("this byte has an event") out of line while leaving "keep scanning" as
+fall-through — the documented hot/cold inversion, one far branch out and one back on every query.
+⚠ My "register-pressure spilling costs ~4 ms" attribution is **RETRACTED**: `paint_cells`'s stack
+operands really do go 27 → 75, and the cycle model shows the per-run tail got *cheaper* (748 → 702).
+The spill is visible and is not where the time went.
 
 #### ⚠⚠ THE PROBE INSTRUMENT LIVES INSIDE THE VIEW SWEEP'S BRACKETS — ~5.3 ms OF THE SWEEP'S 51.95 DOES NOT SHIP (2026-09-13)
 
