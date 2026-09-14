@@ -707,7 +707,27 @@ static unsigned step_scanline(int* carry_out)
 /* THE RUN ACCUMULATOR (Amiga only — revs_plot.h).  The carried byte usually repeats and the
    Amiga's bitplane cells are contiguous along a scan line, so a run is one fill instead of N
    stores.  Changes no mem[] byte and no branch.  ⚠ A run never spans a scan line. */
-#ifdef REVS_DIRECT_PLOT
+#if defined(REVS_DIRECT_PLOT) && defined(REVS_SPAN_VERIFY)
+/* ⭐⭐ `make SPANEMIT=1 SPANVERIFY=1 DIRECTCHECK=1` — THE EMITTER'S ORACLE.  The chain still runs
+   (so mem[] stays true and the shipping decode is a valid reference) and still plots — EXCEPT on a
+   line the emitter painted, where its plotting is suppressed so every plane byte on that line came
+   from the span emitter alone.  Without that suppression the chain re-plots the same forty cells
+   straight over the span and a WRONG span compares equal.
+   ⚠⚠ AND SUPPRESSING IT GLOBALLY IS THE OTHER WAY TO GET A MEANINGLESS ANSWER, measured: with no
+   plotting at all the chain's own pixels never reach the planes, so the oracle compares
+   decode(new mem[]) against decode(old mem[]) and mismatched 5950 bytes on the first run — the
+   check has to reproduce EVERYTHING the sweep changed, not just the part under test.
+   `lineSpanned` is a local of paint_cells, which is the same bargain PLOT_UNIT already strikes
+   with `runAddr`/`runVal`/`runLen`. */
+#define PLOT_DECL()   unsigned runAddr = 0, runVal = 0, runLen = 0
+#define PLOT_UNIT(dd, aa)  do { if (!lineSpanned) {                                 \
+        if (runLen && (unsigned)(uint8_t)(aa) == runVal) runLen++;                  \
+        else { if (runLen) REVS_PLOT_RUN(runAddr, runVal, runLen);                  \
+               runAddr = (dd); runVal = (unsigned)(uint8_t)(aa); runLen = 1; } }     \
+    } while (0)
+#define PLOT_FLUSH()  do { if (runLen) { REVS_PLOT_RUN(runAddr, runVal, runLen); runLen = 0; } \
+                      } while (0)
+#elif defined(REVS_DIRECT_PLOT)
 #define PLOT_DECL()   unsigned runAddr = 0, runVal = 0, runLen = 0
 #define PLOT_UNIT(dd, aa)  do {                                                     \
         if (runLen && (unsigned)(uint8_t)(aa) == runVal) runLen++;                  \
@@ -772,8 +792,28 @@ static unsigned view_consume(MEM_QUAL unsigned char* srcp, unsigned byte, int fo
     return byte;
 }
 
-#ifdef REVS_VIEWSKIP
+#ifdef REVS_VIEW_MARKING
+/* ⭐ PART (1) OF THE PREDICATE, and the only part the span emitter needs: did any producer
+   write one of this source line's forty cells since the last sweep consumed them? */
 unsigned char g_viewLineDirty[128];
+
+/* Everything dirty and nothing seen — the state a fixture case must start from, because
+   fill_random writes sources behind the marking hooks' backs (revs_native_seam.h §VIEWSKIP). */
+void view_skip_reset(void)
+{
+    unsigned i;
+    for (i = 0; i < 128; i++) g_viewLineDirty[i] = 1;
+#ifdef REVS_VIEWSKIP
+    for (i = 0; i < 208; i++) { g_viewDstBg[i] = 0; g_viewDstFlat[i] = 0; }
+#endif
+}
+
+#ifdef REVS_VIEWSKIP
+/* ── parts (2)-(4): THE DESTINATION SHADOW, skip-only ──────────────────────────────────────
+   ⚠ The span emitter deliberately carries none of this.  A skip must prove the cells already
+   hold the byte it is declining to write, which means knowing where the line's plot_ptr walked
+   to and what was painted there last time; an emitter just writes them.  That asymmetry is why
+   the skip measured -0.4% and needed a 153-stale-byte bug to find its fourth part. */
 unsigned char g_viewDstBg[208];
 unsigned char g_viewDstFlat[208];
 
@@ -791,15 +831,6 @@ static unsigned view_dst_line(unsigned base)
     return row * BBC_SCREEN_LINES + sub;
 }
 
-/* Everything dirty and nothing seen — the state a fixture case must start from, because
-   fill_random writes sources behind the marking hooks' backs (revs_native_seam.h §VIEWSKIP). */
-void view_skip_reset(void)
-{
-    unsigned i;
-    for (i = 0; i < 128; i++) g_viewLineDirty[i] = 1;
-    for (i = 0; i < 208; i++) { g_viewDstBg[i] = 0; g_viewDstFlat[i] = 0; }
-}
-
 /* A store into the frame buffer that is NOT one of the chain's flat unit stores: whatever
    display line it lands on is no longer flat.  The sweep's own run-end composites go through
    here — they are the tenant the ink watch named on display line 87. */
@@ -813,9 +844,19 @@ static void view_dst_touch(unsigned addr)
         g_viewDstFlat[d] = 0;
     }
 }
+#endif /* REVS_VIEWSKIP */
 
 volatile unsigned long g_viewSkipLines  = 0;   /* lines the sweep did not paint */
 volatile unsigned long g_viewSkipPaints = 0;   /* ...and lines it did           */
+
+#ifdef REVS_SPAN_EMIT
+/* ⭐ The span emitter's own two counts — lines emitted as ONE span against lines that still ran
+   the forty-unit chain.  ⚠ An A/B switch must print its own state (CLAUDE.md): a build that
+   emits nothing reads identically to an emitter that buys nothing, so these are the difference.
+   Both in PROBE_SYMS (amiga/Makefile). */
+volatile unsigned long g_spanEmitLines  = 0;
+volatile unsigned long g_spanEmitPaints = 0;
+#endif
 
 #ifndef REVS_PLATFORM_AMIGA
 static void revs_report_viewskip(void)
@@ -888,6 +929,9 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
     unsigned byte = v->byte, line = v->line, cell = v->cell;
     PLOT_DECL();
     VIEWSPLIT_DECL();
+#ifdef REVS_SPAN_EMIT
+    int lineSpanned = 0;
+#endif
 #ifdef REVS_VIEWSKIP
     int lineSkipped = 0;
     /* ⚠⚠ THE HOLE THE FIRST VERSION FELL INTO.  The predicate's "last paint was flat" has to
@@ -899,6 +943,11 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
            forced entry), so units 0..unit-1 keep their sources;
          - a planted stop, which ends the sweep on the unit it sits on. */
     unsigned dstLine = 208u;
+#endif
+#ifdef REVS_VIEW_MARKING
+    /* ⚠⚠ A PARTIAL ENTRY LEAVES SOURCES UNCONSUMED, so the line stays dirty — the same
+       correctness point for the emitter as for the skip: entered at `unit` rather than 0, units
+       0..unit-1 keep their source bytes and the line is NOT one flat run. */
     if (!advance_first) g_viewLineDirty[v->line & 0x7Fu] = 1;
 #endif
 
@@ -910,6 +959,48 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
             /* the line's background byte: two bits of the per-line surface index */
             byte = mem[MEM_surface_colours + (mem[MEM_view_line_surface + line] & 3)];
             advance_first = 0; unit = 0; forced = 0;
+#ifdef REVS_SPAN_EMIT
+            /* ── ⭐⭐⭐ THE SPAN EMITTER (docs/direct-bitplane-plan.md §10j step 1) ───────────
+               Nothing wrote this line's forty sources and no stop is planted in it, so every one
+               of the forty units would consume a zero source, keep `byte`, and store it: **the
+               whole line is ONE run of the background byte.**  Emit it as one span straight into
+               the bitplanes and skip the chain — ~40 units at 43 cyc becomes ~20 longword pairs.
+
+               ⭐ THE PREDICATE IS STRICTLY WEAKER THAN THE SKIP'S, and that is the point.  The
+               skip also had to prove the destination ALREADY held this byte (`g_viewDstFlat` /
+               `g_viewDstBg`, keyed by display line because two source lines can share one) —
+               parts (2)-(4), the half that needed a 153-stale-byte bug to get right.  An emitter
+               writes the pixels, so it needs part (1) alone.  "Keeping track of the previous
+               frame costs way more than it does to render everything" (user, §10j).
+
+               ⚠ AMIGA ONLY, and deliberately: `REVS_PLOT_RUN` compiles to nothing on the host,
+               so a host build taking this path would paint nothing and `make determinism` would
+               diverge.  The gate is the decode ORACLE (`DIRECTCHECK=1`), not the host.
+               ⚠ The sources are already zero on this arm, so not consuming them is exact: the
+               units' `*srcp = 0` would be a no-op.  `cell` is left where unit 39 leaves it. */
+            {
+                /* ⚠⚠ ONLY A FULL RUN CONSUMES THE LINE — a planted stop ends the chain on the
+                   unit it sits on, so units from there to 39 keep their sources and the line is
+                   NOT one flat run.  Hoisted: the predicate and the clear ask the same question. */
+                const int fullRun = (view_stop_from(0) == 40);
+                if (!g_viewLineDirty[line] && fullRun) {
+                    REVS_PLOT_RUN(plot_ptr_v, byte, 40);
+                    g_spanEmitLines++;
+                    cell = 0x38;            /* unit 39's cell, as a full line leaves it */
+                    lineSpanned = 1;
+                } else {
+                    g_spanEmitPaints++;
+                    lineSpanned = 0;
+                    /* ⚠⚠ THE CLEAR HAS TO LIVE HERE TOO, and its absence is why the first build
+                       emitted ZERO spans: `view_skip_reset()` primes every line dirty for the
+                       first sweep, and the only code that cleared a line again was inside the
+                       VIEWSKIP block.  With SPANEMIT alone the predicate could never become true.
+                       ⭐ The counter is what caught it — a build that emits nothing and an emitter
+                       that buys nothing read identically without it. */
+                    if (fullRun) g_viewLineDirty[line] = 0;
+                }
+            }
+#endif
 #ifdef REVS_VIEWSKIP
             /* ⭐⭐ THE THREE-PART SKIP.  Nothing wrote this line's sources, its background byte
                is the one already on the screen, and the paint that put it there was itself flat
@@ -979,8 +1070,18 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
            ⚠ Hoisting the destination bases is safe by CONSTRUCTION: the chain writes only its
            source blocks ($3000-$43CF) and `base + cell*8`, so it cannot move plot_ptr under
            itself. */
+#if defined(REVS_SPAN_VERIFY)
+        /* ⚠ VERIFY MODE: the chain ALWAYS runs, so mem[] is the oracle's reference even on a
+           line the emitter painted.  `lineSpanned` then only records that a span went out. */
 #ifdef REVS_VIEWSKIP
         if (!lineSkipped)
+#endif
+#elif defined(REVS_VIEWSKIP) && defined(REVS_SPAN_EMIT)
+        if (!lineSkipped && !lineSpanned)
+#elif defined(REVS_VIEWSKIP)
+        if (!lineSkipped)
+#elif defined(REVS_SPAN_EMIT)
+        if (!lineSpanned)
 #endif
         {
             unsigned base0 = plot_ptr_v;    /* ⭐ one word read, not two bytes + shift + or */
@@ -1428,7 +1529,7 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
        on the real frame the driver arrives with $4F ambient and the seed is read first. */
     v.cell = entryCell;
 
-#ifdef REVS_VIEWSKIP
+#ifdef REVS_VIEW_MARKING
     /* ⚠⚠ THE FIRST SWEEP HAS NO HISTORY, and a zero-initialised array says the opposite.
        g_viewLineDirty starts all-zero = "nobody wrote these sources", so the first sweep
        recorded every line it painted as flat — including lines whose sources were already
@@ -1438,7 +1539,7 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
        it, exactly as the fixture path does. */
     { static int viewSkipPrimed = 0;
       if (!viewSkipPrimed) { viewSkipPrimed = 1; view_skip_reset(); } }
-#endif
+#endif /* REVS_VIEW_MARKING */
     paint_cells(&v, 0, 0, 1);
     paint_lines_clipped(&v);
 

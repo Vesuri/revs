@@ -425,6 +425,39 @@ PROBE_SYMS_PLOT = g_plotRuns g_plotCells g_plotRunsLast g_plotCellsLast \
                   g_plotLineLo g_plotLineHi g_plotNoTarget
 endif
 
+# ⭐⭐⭐ `make SPANEMIT=1` — §10j STEP 1, the cheap checkpoint on the span architecture
+# (docs/direct-bitplane-plan.md §10).  A scan line that no producer wrote and that carries no
+# planted stop is ONE run of its background byte, so the sweep emits it as a single span straight
+# into the bitplanes instead of running forty store units.  The span census says ~20 of phase 1's
+# 36 lines qualify, carrying 37% of the sweep's 2155 cell stores.
+#
+# ⭐ It measures the per-span COST MODEL on a subset where the answer is known: ~40 units at
+# 43 cyc against ~20 longword pairs, so phase 1's 22 ms should fall towards ~12.  If it does not,
+# §10e's arithmetic is wrong and almost nothing has been spent finding out.
+# ⚠ It implies PLOTONLY's carve-out: the emitted lines are NOT written to mem[], so the decode
+# must not convert them.  Validate with SPANEMIT=1 DIRECTCHECK=1 (g_plotMismatch must stay 0
+# with g_plotChecks large) before believing any timing from it.
+# ⭐⭐ `make SPANEMIT=1 SPANVERIFY=1 DIRECTCHECK=1` — the emitter's ORACLE.  Verify mode keeps the
+# forty-unit chain running (so mem[] stays true and the decode is a valid reference) and turns the
+# per-unit run accumulator OFF, so every plane byte on an emitted line comes from the span emitter
+# alone.  Without that the chain re-plots the same cells over the span and a WRONG span compares
+# equal.  ⚠ It also drops PLOT_ONLY, because a carved-out line leaves mem[] stale and the oracle
+# would then be comparing against last frame.  Diagnostic build: never quote a timing from it.
+ifeq ($(SPANVERIFY),1)
+EXTRA_DEFINES += -DREVS_SPAN_VERIFY
+endif
+
+ifeq ($(SPANEMIT),1)
+ifeq ($(SPANVERIFY),1)
+EXTRA_DEFINES += -DREVS_SPAN_EMIT -DREVS_DIRECT_PLOT
+else
+EXTRA_DEFINES += -DREVS_SPAN_EMIT -DREVS_DIRECT_PLOT -DREVS_PLOT_ONLY
+endif
+PROBE_SYMS_PLOT = g_plotRuns g_plotCells g_plotRunsLast g_plotCellsLast \
+                  g_plotLineLo g_plotLineHi g_plotNoTarget
+PROBE_SYMS_SPAN = g_spanEmitLines g_spanEmitPaints
+endif
+
 ifeq ($(DIRECTCHECK),1)
 EXTRA_DEFINES += -DREVS_DIRECT_PLOT -DREVS_DIRECT_CHECK
 # ⚠ Conditional, because probe-audit is right to fail otherwise: these three exist only in a
@@ -642,6 +675,7 @@ endif
 PROBE_SYMS += $(PROBE_SYMS_CHECK) $(PROBE_SYMS_PLOT) $(PROBE_SYMS_BANDCHECK)
 PROBE_SYMS += $(PROBE_SYMS_BCD)
 PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
+PROBE_SYMS += $(PROBE_SYMS_SPAN)
 
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \
             $(addprefix -Wl$(COMMA)--undefined=,$(PROBE_SYMS))

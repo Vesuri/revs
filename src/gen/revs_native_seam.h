@@ -415,8 +415,20 @@ REVS_FLAG_OP uint8_t seam_read(unsigned addr, int ram)
  * hook sees, so the shadow would license a skip the oracle does not take.  The harness resets
  * the state to "everything dirty" before each case, which makes the skip inert there rather
  * than wrong.  The real gates are `make determinism` / -drive / -crash / -race (all compare the
- * frame buffer) and `make viewdiff`. */
-#ifdef REVS_VIEWSKIP
+ * frame buffer) and `make viewdiff`.
+ *
+ * ⭐⭐ THE MARKING IS SHARED WITH `make SPANEMIT=1` (§10's span emitter) AND THE SKIP IS NOT.
+ * Both need part (1) — "no producer wrote this line's sources" — but the emitter needs ONLY
+ * that, because it PAINTS the line instead of assuming the destination already holds the right
+ * byte.  Parts (2)-(4), the `g_viewDstBg`/`g_viewDstFlat` destination shadow, are the fragile
+ * half (they are what `make determinism` caught as 153 stale bytes), and the emitter does not
+ * carry them: **writing the line is cheaper than remembering it was already written** — user,
+ * 2026-09-14, §10j.  So the marking is gated on REVS_VIEW_MARKING and the shadow stays here. */
+#if defined(REVS_VIEWSKIP) || defined(REVS_SPAN_EMIT)
+#define REVS_VIEW_MARKING 1
+#endif
+
+#ifdef REVS_VIEW_MARKING
 #define VIEW_SKIP_LINE_LO 0x03u
 #define VIEW_SKIP_LINE_HI 0x4Fu
 extern unsigned char g_viewLineDirty[128];   /* a producer wrote one of this line's sources */
@@ -424,8 +436,10 @@ extern unsigned char g_viewLineDirty[128];   /* a producer wrote one of this lin
    wherever plot_ptr has walked to, and two source lines — phase 1's and phase 3's — can land on
    the SAME display line, each overwriting what the other painted.  Keyed by source line the
    skip then licenses a repaint that never happened; keyed by the destination it does not. */
+#ifdef REVS_VIEWSKIP
 extern unsigned char g_viewDstBg[208];       /* the byte this display line was last painted flat with */
 extern unsigned char g_viewDstFlat[208];     /* ...and whether that paint was flat at all             */
+#endif
 
 /* One store that may be a source byte.  The blocks are $80 apart based at $3000 and only
    $03..$4F of each is ever painted, so anything else is not a source. */
@@ -439,6 +453,10 @@ REVS_FLAG_OP void view_mark_source(unsigned addr)
     }
 }
 void view_skip_reset(void);   /* mark everything dirty — the fixture harness's escape hatch */
+#ifdef REVS_SPAN_EMIT
+extern volatile unsigned long g_spanEmitLines;   /* lines emitted as ONE span      */
+extern volatile unsigned long g_spanEmitPaints;  /* ...and lines that ran the chain */
+#endif
 #define VIEW_MARK_SOURCE(addr) view_mark_source((addr))
 #else
 #define VIEW_MARK_SOURCE(addr) ((void)0)
