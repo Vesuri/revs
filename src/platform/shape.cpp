@@ -3,10 +3,16 @@
 
 #ifdef REVS_SHAPE
 
-/* ⚠ INSIDE the guard: the m68k-amiga cross toolchain has no <stdio.h>, and this file is in the
-   Amiga source list unconditionally, so an include out here breaks `amiga/make` outright. */
+/* ⚠⚠ INSIDE the guard AND host-only, and the second half was learned the hard way: the
+   m68k-amiga cross toolchain has no <stdio.h>, and this file is in the Amiga source list
+   unconditionally, so an include out here breaks `amiga/make` outright — and an include inside
+   `REVS_SHAPE` alone breaks `make SHAPE=1`, which is the very build `amiga/view_census.gdb`
+   documents as its own.  A counter file readable on the target must not need a host library to
+   compile; the one diagnostic that wants stdio is a host debug aid and is guarded to match. */
+#ifndef REVS_PLATFORM_AMIGA
 #include <stdio.h>
 #include <stdlib.h>
+#endif
 #include "bbc_screen.h"
 
 #include "../cpu/mem_decl.h"
@@ -232,9 +238,12 @@ static void line_census_after(void)
                                         g_shapeCleanChangedBgMoved++;
                                     g_shapeLineCleanButChanged++;
                                     g_shapeLinePerCleanChanged[x]++;
+#ifndef REVS_PLATFORM_AMIGA
                                     if (getenv("REVS_SHAPE_CBC"))
                                         fprintf(stderr, "CBC sweep %lu line $%02X\n",
-                                                g_shapeLineSweeps, x); }
+                                                g_shapeLineSweeps, x);
+#endif
+                                  }
         } else if (!s_lineChanged[x]) {
             g_shapeLineDirtyNoChange++;
         }
