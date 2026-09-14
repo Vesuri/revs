@@ -1,9 +1,14 @@
-/* PlatformAmiga — day-one bring-up skeleton.  See PlatformAmiga.h for the design rules.
+/* PlatformAmiga — the Amiga backend's machine takeover.  See PlatformAmiga.h for the design rules.
  *
- * What it does today: takes the machine over, installs the real VERTB interrupt, runs
- * Revs::run(), restores everything.  What it does NOT do yet: render the game, emulate
- * BBC hardware, service MOS calls, produce audio.  Each of those is a filed phase in
- * docs/phases.md; the seams are here and marked TODO so they can be filled in place.
+ * It takes the machine over, installs the real VERTB interrupt (the vector is taken over
+ * wholesale — graphics.library's own server no longer runs, so WaitTOF() is unavailable),
+ * runs Revs::run(), and restores everything.
+ *
+ * ⚠ This header used to read "day-one bring-up skeleton ... what it does NOT do yet: render
+ * the game, emulate BBC hardware, service MOS calls, produce audio".  All four are done and
+ * live elsewhere: RevsScreen (display), bbc_hw.cpp (the BBC hardware model behind
+ * bus_read/bus_write), mos.cpp (the MOS call layer), RevsAudio + sound.cpp (the MOS sound
+ * scheduler onto Paula).  This file is the takeover and the timebase, not a skeleton.
  */
 /* ⚠ INCLUDE ORDER IS LOAD-BEARING.  framework/AmigaHardware.h #defines bare register
    names (bplcon0, vposr, dmaconr, …) as offsets, and those collide with the `struct Custom`
@@ -139,8 +144,14 @@ static uint32_t vbiHandler()
     // dropped — and the dropped frame (a stall, a 2x animation jump, a copper write
     // landing behind the beam) is what a player reports, not the cost.  Bracket any new
     // ISR-side work with VPOSR/VHPOSR beam-line reads before theorising.
-    // TODO(phase: Amiga backend): dispatch the game's own IRQ1V/EVNTV body here, and do
-    // all copper bitplane POINTER swaps here — never mid-frame.
+    // ⚠⚠ AND DO NOT DISPATCH THE GAME'S 50 Hz BODY HERE.  This used to be a TODO asking for
+    // exactly that; it is settled the other way and the TODO was a trap.  The body DRAWS, so
+    // running it in the ISR preempts the main loop's painting at an arbitrary point and gave
+    // ~50 scene changes per painted frame.  Revs::vbi() COUNTS the field and the body is
+    // drained from main-loop context at the engine's own frame hook ($1701) and frame wait
+    // ($1760); `make BODY_IN_ISR=1` restores the old model for A/B only and amiga/fill_catch.gdb
+    // detects it (docs/amiga-arch.md).  The copper bitplane POINTER swaps DO belong here and
+    // are done, FIRST, in Revs::vbi() — the ordering and its beam measurement are written there.
     // The mouse counter is 8 bits and free-running, so it MUST be sampled every frame:
     // a missed frame loses the delta, and a delta taken across the wrap is a fast flick
     // in the wrong direction.  Two register reads, above the game body so it cannot be
