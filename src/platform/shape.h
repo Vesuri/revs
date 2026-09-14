@@ -6,8 +6,17 @@
  * is, and `docs/direct-bitplane-plan.md` §6 step 2 / §7 both turn on exactly that: ⚑ the
  * predecessor project's -36% came from input-distribution counters, not from PC sampling.
  *
+ * ⚠⚠ **"DASH" IN EVERY NAME HERE IS HISTORICAL AND IT MISLED §8.**  The rasteriser lives in the
+ * `$7B00` *dash overlay page*, which is why these counters are called `g_shapeDash*` — but the
+ * sweep it instruments paints the **VIEW band, display rows 81..157**, and never the dashboard's
+ * rows 158..207.  The span census below measured that raster map directly.  So `$7BE2`'s share of
+ * the frame is the ROAD VIEW's, and §8's "make the instruments sprites and the cockpit bitmap goes
+ * static" is attached to the wrong routine and must be re-sized against the writers of rows
+ * 158..207 before it is scheduled (`docs/direct-bitplane-plan.md` §10h).  The counter names stay:
+ * they are in `PROBE_SYMS` and in committed `.gdb` scripts.
+ *
  * The one measurement that sizes TWO whole Phase 6 items (§7 dirty flags, §8 hardware sprites)
- * is: **how much of the dashboard sweep is actually dirty per frame?**  The `$7B00` overlay is
+ * is: **how much of the sweep is actually dirty per frame?**  The `$7B00` overlay is
  * 40 unrolled column units, each opening with its own dirty test (`LDY table,X / BEQ +8`), so
  * the game already carries a per-column mechanism — and if the sweep is already dirty-limited,
  * both of those items shrink from "36% of the frame" to something much smaller.  Until this is

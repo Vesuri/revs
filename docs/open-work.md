@@ -43,10 +43,27 @@ against its own phase row (Rule 1a); the framerate is quantised to `50/N` and ca
 | 10.4 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
 
 ### 1. ⭐⭐⭐ THE REPRESENTATION — render direct to bitplanes
-`docs/direct-bitplane-plan.md`. **Gated FIRST**, and the gate is not about size: asm or sprite work
-written against the current BBC-shaped buffer has to be rewritten after this lands. Reaches the
+⭐⭐⭐ **THE ARCHITECTURE IS WRITTEN AND SIZED: `docs/direct-bitplane-plan.md` §10.** Read §10
+before anything else on this board. **Gated FIRST**, and the gate is not about size: asm or sprite
+work written against the current BBC-shaped buffer has to be rewritten after this lands. Reaches the
 26.4 ms decode directly (it becomes the validated ORACLE rather than the shipping path) and
 unconstrains the 58.7 ms consumer, which today paints into a layout the Amiga cannot display.
+
+⭐⭐⭐ **THE SPAN CENSUS HAS RUN (2026-09-14) and it changed the shape of the answer** — the scout
+§9 had been asking for, now a committed instrument (`src/platform/shape.cpp` §THE SPAN CENSUS,
+`make SHAPE=1` + `REVS_SHAPE_WATCH=N`). The sweep's 2155 cell stores a frame are **a span list**:
+**144 solid runs of 13.9 cells + 146 single-cell edge bytes**, with **93% of painted bytes** one of
+the four solid MODE 5 values and **≤5 runs on 93% of line paints**. Rows 81–100 alone are 37% of
+the stores as **20 single-run rows**. And the whole pipeline turns out to carry **161 source cells +
+320 bytes of edge table** of real information per frame, for which it spends **145 ms** (85.1 ms
+expanding, 70.8 ms producing). §10 sizes the replacement at **~48 ms of per-frame work** (from
+~181), retires **17 of the 20 `SMC_SITES`** plus the consumer's whole stop-planting mechanism, and
+names its own cheap checkpoint: **a 20-span emitter for rows 81–100 only, measured before the rest
+is written.**
+⚠⚠ Two corrections came out of it and both are in §10: the **§8 sprite item is sized against the
+wrong routine** (`$7BE2` paints rows 81–157, the VIEW band, never the dashboard's 158–207), and the
+per-phase framebuffer instrument's "phase 5 writes lines 24..55" is the **code under the sky**, not
+pixels.
 
 ⚑ **THE INHERITED GATE IS DISCHARGED (2026-09-14)** — `terrain-render-plan.md` +
 `flight-perf-log.md` §1 read in full. Four findings that transfer, so nobody re-reads 3 000 lines:
