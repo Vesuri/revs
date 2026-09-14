@@ -106,6 +106,13 @@ extern volatile unsigned long g_shapeLinePerUnits[128];
 extern volatile unsigned long g_shapeLinePerCleanChanged[128];
 void shape_dash_store(unsigned dst, unsigned value, unsigned line);
 
+/* ⭐⭐ THE SPAN CENSUS — the colour-run shape of a painted line, which is the workload of a
+   direct-to-bitplane renderer (the run census above is the workload of a SKIP scheme, a
+   different question).  Hooked from `shape_dash_store` / `shape_dash_after`; its result and
+   the two independent instruments that corroborate it are at the code in shape.cpp. */
+void scout_sweep_end(void);
+void scout_report(void);
+
 /* ── ⭐⭐ THE RUN CENSUS — what a SOURCE-EVENT consumer would actually have to visit ─────────
  * `docs/open-work.md` item 1's live sub-lever, and the count that decides whether it gets
  * built.  The per-line census above sized a per-LINE skip, that skip SHIPPED, and it measured

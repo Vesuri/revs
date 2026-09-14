@@ -16,6 +16,7 @@
 #endif
 #include "bbc_screen.h"
 
+#include "../cpu/m68k_math.h"
 #include "../cpu/mem_decl.h"
 #include "../gen/mem.h"
 extern "C" MEM_QUAL unsigned char mem[65536];
@@ -176,6 +177,217 @@ static void run_census_after(void)
     }
 }
 
+
+/* ── ⭐⭐ THE SPAN CENSUS: THE COLOUR-RUN SHAPE OF ONE PAINTED LINE ──────────────────────────
+   The run census above counts the cells that CHANGED, which sizes a SKIP scheme.  This counts
+   how many contiguous COLOUR RUNS the sweep paints, which is a different question and the one
+   `docs/direct-bitplane-plan.md` turns on: a direct-to-bitplane renderer does not store cells,
+   it emits SPANS, so the run list — not the cell count — is its workload.
+
+   ⭐ WHAT IT ANSWERED (driving, $63 = $2C..$32, 295 sweeps): 2089 stores a sweep are
+   **143 solid runs of 13.9 cells + 94 mixed runs of 1.07** — i.e. the road scene is a span
+   list of ~1.9 solid spans and ~1.3 individual boundary cells per painted line, and 95.2% of
+   all painted bytes are one of the FOUR solid MODE 5 values.  That is what makes the direct
+   renderer a trapezoid fill instead of a region problem.
+
+   ⚠ Believe it because it agrees with two instruments it shares no code with: line paints
+   77.26 against the phase table's independently counted 36+16+25 = 77, and stores 2089 against
+   the run census's 2082.  Its own arithmetic closes too (2089 painted + 1001 unpainted =
+   77.26 x 40).  ⚠⚠ And it must be read from a MOVING car — a parked scene paints a tidy, tiny
+   span list and every conclusion drawn from it is about a scene nobody drives through, so the
+   report prints `road_speed` beside its numbers. */
+extern "C" {
+volatile unsigned long g_scoutSweeps  = 0;
+volatile unsigned long g_scoutPaints  = 0;   /* line paints with >= 1 store           */
+volatile unsigned long g_scoutStores  = 0;   /* cell stores (the cost today)          */
+volatile unsigned long g_scoutRuns    = 0;   /* contiguous equal-value runs           */
+volatile unsigned long g_scoutRunHist[17];   /* runs per line paint, 0..15, 16 = more */
+volatile unsigned long g_scoutLenHist[9];    /* run length in cells: 1,2,3,4,5-8,9-16,17-24,25-32,33+ */
+volatile unsigned long g_scoutGapCells = 0;  /* cells NOT covered by the 40 (unpainted) */
+volatile unsigned long g_scoutValues[256];   /* distinct painted byte values          */
+volatile unsigned long g_scoutSolid   = 0;   /* stores of a SOLID MODE 5 byte (00/0F/F0/FF) */
+volatile unsigned long g_scoutMixed   = 0;   /* stores of a MIXED byte (a boundary inside a cell) */
+volatile unsigned long g_scoutSolidRuns = 0; /* runs whose value is solid                 */
+volatile unsigned long g_scoutMixedRuns = 0; /* runs whose value is mixed                 */
+/* ⭐ WHAT THE SWEEP DOES NOT OWN.  Only 27 of a line's 40 cells are stored, so 1001 cells a
+   sweep keep last frame's bytes — and a direct renderer has to know whether that is the SKY
+   beyond the road's ends (which it must leave alone, because some other pass owns it) or
+   INTERIOR cells (which would mean the span list is not contiguous and the whole trapezoid
+   model is wrong).  first/last give the extent, gaps counts the holes inside it. */
+volatile unsigned long g_scoutFirstSum = 0;  /* sum of the first painted cell per line paint */
+volatile unsigned long g_scoutLastSum  = 0;  /* ...and the last                              */
+volatile unsigned long g_scoutInterior = 0;  /* cells inside [first,last] that were NOT stored */
+volatile unsigned long g_scoutCellHist[40];  /* per cell, how many line paints stored it     */
+volatile unsigned long g_scoutFullLines = 0; /* line paints covering all 40 cells             */
+/* ⭐ THE RASTER MAP — cells stored per DISPLAY LINE, which is what a direct renderer has to
+   own.  `offset = charRow*320 + cell*8 + lineInRow` (bbc_screen.h), so the display line is
+   charRow*8 + lineInRow and this profile says exactly which rows the sweep paints and how
+   wide.  A row the sweep never touches is owned by some other pass and must stay that way. */
+volatile unsigned long g_scoutRowCells[208];
+volatile unsigned long g_scoutRowRuns[208];
+/* ⭐⭐ WHO WRITES THE SOURCE BLOCKS — the one thing the span model cannot assume.  The sweep
+   expands road surface AND object pixels (cars, markers, trees) out of the same 40 blocks, so
+   a renderer that emits spans from `surface_edge` alone would drop every object.  Attributing
+   source-cell writes to the PHASE that made them sizes the composited object layer:
+   phases 14..17 are the object plotters, 18 the dash-edge colour fill, 11 draw_road. */
+volatile unsigned long g_scoutSrcByPhase[40];
+}
+
+/* ⭐ A MODE 5 byte holds four 2-bit pixels bit-interleaved (px0 = bits 7,3; px1 = 6,2;
+   px2 = 5,1; px3 = 4,0), so exactly four of the 256 values paint a cell in ONE colour:
+   $00 -> 0, $0F -> 1, $F0 -> 2, $FF -> 3.  Anything else puts a colour BOUNDARY inside the
+   cell, which is the only thing a span filler cannot emit as a solid word. */
+static int scout_is_solid(unsigned char v)
+{
+    return v == 0x00u || v == 0x0Fu || v == 0xF0u || v == 0xFFu;
+}
+static unsigned char s_scPrevVal[128];
+static signed   char s_scPrevCell[128];
+static unsigned char s_scRuns[128];
+static unsigned char s_scStores[128];
+static unsigned char s_scRunLen[128];
+static unsigned char s_scRow[128];
+static unsigned char s_scFirst[128];
+static unsigned char s_scLast[128];
+
+static unsigned scout_len_bucket(unsigned n)
+{
+    if (n <= 4u) return n - 1u;
+    if (n <= 8u) return 4u;
+    if (n <= 16u) return 5u;
+    if (n <= 24u) return 6u;
+    if (n <= 32u) return 7u;
+    return 8u;
+}
+
+static void scout_close_run(unsigned x)
+{
+    if (s_scRunLen[x]) { g_scoutRuns++; g_scoutLenHist[scout_len_bucket(s_scRunLen[x])]++;
+                         g_scoutRowRuns[s_scRow[x]]++;
+                         if (scout_is_solid(s_scPrevVal[x])) g_scoutSolidRuns++;
+                         else                                g_scoutMixedRuns++;
+                         s_scRuns[x]++; s_scRunLen[x] = 0; }
+}
+
+static void scout_close_line(unsigned x)
+{
+    scout_close_run(x);
+    if (s_scStores[x]) {
+        g_scoutFirstSum += s_scFirst[x];
+        g_scoutLastSum  += s_scLast[x];
+        {   const unsigned extent = (unsigned)s_scLast[x] - (unsigned)s_scFirst[x] + 1u;
+            if (extent > s_scStores[x]) g_scoutInterior += extent - s_scStores[x];
+            if (s_scStores[x] >= 40u)   g_scoutFullLines++; }
+        g_scoutPaints++;
+        g_scoutStores += s_scStores[x];
+        g_scoutRunHist[s_scRuns[x] > 16u ? 16u : s_scRuns[x]]++;
+        if (s_scStores[x] < 40u) g_scoutGapCells += 40u - s_scStores[x];
+    }
+    s_scRuns[x] = 0; s_scStores[x] = 0; s_scPrevCell[x] = -1;
+}
+
+static void scout_store(unsigned dst, unsigned value, unsigned x)
+{
+    /* ⚠⚠ `revs_divu16`/`revs_modu16`, NOT `/` and `%`: a bare `off % BBC_SCREEN_BPR` promotes
+       to int and emits `__umodsi3`, which the 68000 does not have — `amiga/make`'s muldiv-audit
+       fails the link (CLAUDE.md §NEVER emit a 32-bit software mul/div).  `off` is < 8320, so a
+       32/16 DIVU is exact. */
+    unsigned off  = (dst - BBC_SCREEN_BASE) & 0xFFFFu;
+    unsigned cell = (off >= BBC_SCREEN_BYTES) ? 0xFFu
+                  : (unsigned)(revs_modu16(off, BBC_SCREEN_BPR) / 8u);
+    if (off < BBC_SCREEN_BYTES) {
+        const unsigned row = (unsigned)revs_divu16(off, BBC_SCREEN_BPR) * 8u + (off & 7u);
+        if (row < 208u) { g_scoutRowCells[row]++; s_scRow[x] = (unsigned char)row; }
+    }
+    /* the sweep walks cells left to right, so a non-advancing cell is a NEW line paint */
+    if (s_scPrevCell[x] >= 0 && (int)cell <= s_scPrevCell[x]) scout_close_line(x);
+    if (s_scRunLen[x] && (unsigned char)value != s_scPrevVal[x]) scout_close_run(x);
+    s_scPrevVal[x]  = (unsigned char)value;
+    s_scPrevCell[x] = (signed char)cell;
+    if (cell < 40u) {
+        g_scoutCellHist[cell]++;
+        /* seed on the line paint's FIRST store — a zero-initialised `first` would silently
+           report cell 0 as the extent's start for every line. */
+        if (!s_scStores[x]) { s_scFirst[x] = (unsigned char)cell; s_scLast[x] = (unsigned char)cell; }
+        else if (cell < s_scFirst[x]) s_scFirst[x] = (unsigned char)cell;
+        else if (cell > s_scLast[x])  s_scLast[x]  = (unsigned char)cell;
+    }
+    s_scRunLen[x]++;
+    s_scStores[x]++;
+    g_scoutValues[(unsigned char)value]++;
+    if (scout_is_solid((unsigned char)value)) g_scoutSolid++; else g_scoutMixed++;
+}
+
+void scout_sweep_end(void)
+{
+    g_scoutSweeps++;
+    for (unsigned x = 0; x < 128u; x++) scout_close_line(x);
+}
+
+void scout_report(void)
+{
+#ifndef REVS_PLATFORM_AMIGA
+    const unsigned long n = g_scoutSweeps ? g_scoutSweeps : 1u;
+    unsigned distinct = 0;
+    for (unsigned i = 0; i < 256u; i++) if (g_scoutValues[i]) distinct++;
+    printf("SCOUT sweeps=%lu  line-paints/sweep=%lu.%02lu  stores/sweep=%lu.%02lu  "
+                "RUNS/sweep=%lu.%02lu  cells/run=%lu.%02lu  runs/paint=%lu.%02lu  "
+                "distinct-bytes=%u  unpainted-cells/sweep=%lu.%02lu\n",
+                g_scoutSweeps,
+                g_scoutPaints / n, (g_scoutPaints * 100 / n) % 100,
+                g_scoutStores / n, (g_scoutStores * 100 / n) % 100,
+                g_scoutRuns / n,   (g_scoutRuns * 100 / n) % 100,
+                g_scoutRuns ? g_scoutStores / g_scoutRuns : 0,
+                g_scoutRuns ? (g_scoutStores * 100 / g_scoutRuns) % 100 : 0,
+                g_scoutPaints ? g_scoutRuns / g_scoutPaints : 0,
+                g_scoutPaints ? (g_scoutRuns * 100 / g_scoutPaints) % 100 : 0,
+                distinct,
+                g_scoutGapCells / n, (g_scoutGapCells * 100 / n) % 100);
+    /* ⚠⚠ THE PARKED-CAR TRAP, same guard the run census carries: a static scene paints a
+       tidy, tiny run list and every conclusion drawn from it is about a scene nobody drives
+       through.  road_speed ($63) must be non-zero for these numbers to mean anything. */
+    printf("SCOUT   road_speed $63=%02X (must be non-zero: a parked scene is a different "
+           "workload)\n", mem[MEM_road_speed]);
+    printf("SCOUT   solid/mixed: stores %lu.%02lu solid + %lu.%02lu mixed per sweep; "
+           "runs %lu.%02lu solid + %lu.%02lu mixed\n",
+           g_scoutSolid / n, (g_scoutSolid * 100 / n) % 100,
+           g_scoutMixed / n, (g_scoutMixed * 100 / n) % 100,
+           g_scoutSolidRuns / n, (g_scoutSolidRuns * 100 / n) % 100,
+           g_scoutMixedRuns / n, (g_scoutMixedRuns * 100 / n) % 100);
+    printf("SCOUT   extent: first=%lu.%02lu last=%lu.%02lu  interior-gaps/sweep=%lu.%02lu  "
+           "full-40 line paints=%lu.%02lu\n",
+           g_scoutPaints ? g_scoutFirstSum / g_scoutPaints : 0,
+           g_scoutPaints ? (g_scoutFirstSum * 100 / g_scoutPaints) % 100 : 0,
+           g_scoutPaints ? g_scoutLastSum / g_scoutPaints : 0,
+           g_scoutPaints ? (g_scoutLastSum * 100 / g_scoutPaints) % 100 : 0,
+           g_scoutInterior / n, (g_scoutInterior * 100 / n) % 100,
+           g_scoutFullLines / n, (g_scoutFullLines * 100 / n) % 100);
+    printf("SCOUT   source-block cells written per phase (phase:cells/sweep):");
+    for (unsigned i = 0; i < 40u; i++) if (g_scoutSrcByPhase[i] / n)
+        printf(" %u:%lu", i, g_scoutSrcByPhase[i] / n);
+    printf("\nSCOUT   per-display-line cells/sweep (row 0..207, 16 per line):");
+    for (unsigned i = 0; i < 208u; i++) {
+        if (!(i % 16u)) printf("\nSCOUT     row %3u:", i);
+        printf(" %2lu", g_scoutRowCells[i] / n);
+    }
+    printf("\nSCOUT   per-display-line runs/sweep (row 0..207):");
+    for (unsigned i = 0; i < 208u; i++) {
+        if (!(i % 16u)) printf("\nSCOUT     row %3u:", i);
+        printf(" %2lu", g_scoutRowRuns[i] / n);
+    }
+    printf("\nSCOUT   per-cell coverage (line paints storing cell 0..39):");
+    for (unsigned i = 0; i < 40u; i++) printf(" %lu", g_scoutCellHist[i] / n);
+    printf("\nSCOUT   runs-per-line-paint histogram (0..15,16+):");
+    for (unsigned i = 0; i < 17u; i++) printf(" %lu", g_scoutRunHist[i]);
+    printf("\nSCOUT   run-length histogram (1,2,3,4,5-8,9-16,17-24,25-32,33+):");
+    for (unsigned i = 0; i < 9u; i++) printf(" %lu", g_scoutLenHist[i]);
+    printf("\nSCOUT   painted byte values:");
+    for (unsigned i = 0; i < 256u; i++) if (g_scoutValues[i])
+        printf(" %02X:%lu", i, g_scoutValues[i] / n);
+    printf("\n");
+#endif
+}
+
 /* One cell store, before it lands.  ⭐ Comparing against what is already there is the whole
    point: it measures the sweep's REDUNDANCY directly instead of deriving it from the carry
    semantics, so the census cannot be wrong in the same way my reasoning could be. */
@@ -185,6 +397,7 @@ void shape_dash_store(unsigned dst, unsigned value, unsigned line)
     const int changed = (mem[dst] != (unsigned char)value);
     if (changed) s_lineChanged[x]++;
     run_census_store(x, dst, changed);
+    scout_store(dst, value, x);
 }
 
 /* ── the per-line census (shape.h) ---------------------------------------------------------- */
@@ -391,6 +604,7 @@ void shape_dash_after(void)
     g_shapeDashColsLeft += cols;
     g_shapeDashLastLeft  = (unsigned short)bytes;
     mark_snapshot();
+    scout_sweep_end();
 }
 
 
@@ -531,8 +745,29 @@ volatile unsigned char g_shapePhaseLast[40]   = {0};
 static unsigned char s_phaseSnap[BBC_SCREEN_BYTES];
 static int s_phaseOpen = -1;
 
+/* Diff the 40 `$80`-spaced source blocks against the last phase boundary and re-baseline in the
+   same pass, charging every changed cell to the phase that has just ENDED.  Host SHAPE build
+   only: 5120 compares a boundary. */
+static unsigned char s_scoutSrcSnap[DASH_COLUMNS][DASH_BLOCK_STRIDE];
+static int s_scoutSrcPrevPhase = -1;
+static void scout_src_boundary(int id)
+{
+    unsigned long changed = 0;
+    for (unsigned k = 0; k < DASH_COLUMNS; k++) {
+        const unsigned base = DASH_BLOCK_BASE + k * DASH_BLOCK_STRIDE;
+        for (unsigned x = 0; x < DASH_BLOCK_STRIDE; x++) {
+            const unsigned char v = mem[base + x];
+            if (v != s_scoutSrcSnap[k][x]) { s_scoutSrcSnap[k][x] = v; changed++; }
+        }
+    }
+    if (s_scoutSrcPrevPhase >= 0 && s_scoutSrcPrevPhase < 40)
+        g_scoutSrcByPhase[s_scoutSrcPrevPhase] += changed;
+    s_scoutSrcPrevPhase = (id >= 0 && id < 40) ? id : -1;
+}
+
 void shape_phase_mark(int id)
 {
+    scout_src_boundary(id);
     unsigned bytes = 0, first = 0xFFu, last = 0;
     /* ONE pass: compare and re-baseline in the same walk, so a boundary costs 8320 reads and
        only as many writes as there were changes. */
