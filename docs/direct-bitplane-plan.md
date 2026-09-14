@@ -1350,8 +1350,58 @@ a build that emits nothing and an emitter that buys nothing read identically wit
 `g_plotLineLo/Hi`, so a sweep with no bitplane buffer publishes no carve-out and the decode
 converts everything. No-target ⇒ no skipped decode, by construction.
 
-**⏳ NOT YET MEASURED: what it BUYS.** The timing build is `SPANEMIT=1 PROBES=1` (no verify, so
+**✅ MEASURED — SEE §10L: it is a +54 ms REGRESSION and the architecture is closed.** The timing build was `SPANEMIT=1 PROBES=1` (no verify, so
 `PLOT_ONLY`'s carve-out is live) against a `PROBES=1` control from a clean tree, read on phase 24's
 row with `phase4_prof.gdb`. §10e predicts phase 1's 22 ms falling towards ~12. Nothing about the
 architecture should be believed from the green oracle alone — it proves the emitter is *correct*,
 not that it is *fast*.
+
+### 10L. ⛔⛔⛔ MEASURED, AND IT IS A LARGE REGRESSION — THE DIRECT-BITPLANE PREMISE IS STALE (2026-09-14)
+
+`SPANEMIT=1 PROBES=1` vs a clean `PROBES=1` control, same session, warp, 30 s, driving
+(`STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 FIXED_RNG=1`), `phase4_prof.gdb`. ms/frame (normalises the
+dilution; call counts differ 676 vs 522 — the span build ran **fewer** frames, i.e. it is slower):
+
+| phase | what | control | span | Δ |
+|---|---|---|---|---|
+| 24 | view P1 ($7BE2), 36 lines | 15 | 32 | **+17** (units 1440 → 604: emitter deletes 836) |
+| 33 | view P2 ($7D13), 16 lines | 12 | 27 | **+15** (units 426 → 426, *unchanged*) |
+| 34 | view P3 ($7F18), 25 lines | 23 | 48 | **+25** (units 282 → 282, *unchanged*) |
+| 27 | **DECODE** (the intended win) | 26 | 23 | **−3** |
+
+**Sweep +57 ms, decode −3 ms, net view pipeline +54 ms.** The emit rate is as predicted
+(~1003 of 2912 line-visits over the run, ~26%), so the emitter *works* — it is the architecture
+that does not pay.
+
+**⭐⭐⭐ THE DECISIVE ARGUMENT, and it does not depend on the sweep's cost.** The decode carve-out
+skips whole character rows fully inside the last sweep's `g_plotLineLo..Hi` (measured 81..157), i.e.
+y = 88,96,…,144 — **8 of the ~10 road rows.** So the −3 ms delta captures decode's *entire*
+road-related cost: expansion **and** dirty-scan. ⇒ **decode expands the whole road view in only
+~3–4 ms.** It is dirty-region (only changed cells) and batched (longword fills, loop-invariants in
+registers) — ~10 cyc/cell. To plot the road directly, the sweep must redo *that same expansion*
+(same pixels) at **≥** that cost plus run/call/address overhead, while decode gives back at most
+~3–4 ms. **The ceiling on the entire architecture is ~3–4 ms**, and the realised result is +54 ms.
+
+**§10/§10e's premise is stale.** It sized the win against "85 ms expanding … wasteful double work",
+but decode has since become 26 ms, dirty-region, and **only ~3–4 ms of it is the road** (the rest is
+dashboard, digits, mirrors, MODE 4/7 text, and the base dirty-scan over 208 lines). There is no
+double work left to delete: the sweep's mem[] stores are cheap byte stores and decode's re-expansion
+is already near-optimal. This is exactly what `revs_plot.h`'s own header warned — *"A plotter that
+merely mirrored each store into bitplanes would be a LOSS, because the dirty-region decode already
+skips the unchanged cells"* — and what §7f measured (the direct plotter was 9% slower). The span
+emitter was meant to beat that by collapsing 2148 stores into ~150 run-fills; it does collapse them,
+but a run-fill through a non-inlined `revs_plot_run` (+ six volatile counters/run + the reshaped
+`paint_cells`, whose P2/P3 doubled with *identical* unit work) costs far more than the tight,
+unrolled byte-store loop it replaced.
+
+**Instrument caveat, and why it does not rescue the result:** the timing build carries diagnostic
+overhead the end state would not — volatile counters (not `PROBES`-gated) and an out-of-line
+`revs_plot_run`. A clean build would shave some of the +57 ms. But the ceiling argument is
+sweep-independent: even a *free* sweep plotter wins at most decode's ~3–4 ms road cost. Refining the
+sweep number does not change the conclusion, so it was not spent on (ship, don't survey).
+
+**Status:** the span emitter and the direct-plot path stay behind `SPANEMIT`/`SPANVERIFY`/`DIRECTCHECK`
+as the priced experiment (the oracle in §5/§10k is worth keeping); nothing ships. **The next lever is
+elsewhere** — the drivers (32 ms, `docs/perf-method.md` §the sweep is 61% driver/entry),
+`build_track_geometry` (phase 11, ~33 ms), or decode itself (26 ms) — and which one is a decision for
+the user, since this closes the architecture they steered in §10j.
