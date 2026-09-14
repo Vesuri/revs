@@ -106,6 +106,57 @@ extern volatile unsigned long g_shapeLinePerUnits[128];
 extern volatile unsigned long g_shapeLinePerCleanChanged[128];
 void shape_dash_store(unsigned dst, unsigned value, unsigned line);
 
+/* ── ⭐⭐ THE RUN CENSUS — what a SOURCE-EVENT consumer would actually have to visit ─────────
+ * `docs/open-work.md` item 1's live sub-lever, and the count that decides whether it gets
+ * built.  The per-line census above sized a per-LINE skip, that skip SHIPPED, and it measured
+ * -0.4% — because phases 2 and 3 skip zero lines.  The next granularity down is the CELL, and
+ * the reason it is not obviously hopeless is `view_consume`'s structure: a non-zero source means
+ * "new colour here", a zero source means "same as my left".  So a painted line is a RUN-LENGTH
+ * ENCODED colour, the store is IDEMPOTENT wherever the cell already holds that colour, and a
+ * road edge that moves one cell changes ONE cell — not the thirty-five to its right, which keep
+ * the same run value.
+ *
+ * ⚠⚠ BUT A CLEAN UNIT'S STORE IS WHAT ERASES LAST FRAME, so "skip the clean units" is not the
+ * scheme and this is not the per-line skip again.  A source-event consumer must visit a cell if
+ * EITHER
+ *   (a) its source is non-zero — it has to be consumed, ZEROED, and the carried byte updated;
+ *   (b) its store would change the byte already there — the picture genuinely moves.
+ * The prize is the size of that UNION, and (a) ∪ (b) is not (a) ∪ nothing: a cell can change
+ * with no event of its own (the byte carried into it moved) and an event can change nothing
+ * (it re-states the colour already painted).  So the union is MEASURED, not derived from my
+ * reading of the carry semantics — the same discipline the `changed` test above was written
+ * with.
+ *
+ * ⭐ And the union alone does not price it either: finding those cells costs per-RUN set-up, so
+ * the census counts CONTIGUOUS runs of must-visit cells as well.  Two runs of two beats four
+ * scattered singletons, and forty singletons is the present loop with extra book-keeping.
+ * Contiguity needs no screen geometry: cells of one line sit 8 bytes apart in visit order, so
+ * `dst == prev + 8` IS "adjacent", and a segment jump would honestly read as a run break.
+ * ⚠ The EXTENT (first..last must-visit cell) is counted too, because RoF's third transferable
+ * finding was a scan bounded by a producer-known extent (~324 -> 113 ticks) — a cheaper scheme
+ * than a run list, and the two are priced against each other here rather than in argument.
+ * ⚠ A SHAPE build only: one extra mem[] read per unit, on top of the per-line census's own. */
+extern volatile unsigned long g_shapeRunSweeps;
+extern volatile unsigned long g_shapeRunStores;    /* cell stores the sweep made (the cost)   */
+extern volatile unsigned long g_shapeRunEvents;    /* ...whose source was non-zero (arm 1/2)  */
+extern volatile unsigned long g_shapeRunChanged;   /* ...that changed the byte already there  */
+extern volatile unsigned long g_shapeRunUnion;     /* ...that are an event OR a change        */
+extern volatile unsigned long g_shapeRunRuns;      /* contiguous runs of union cells          */
+extern volatile unsigned long g_shapeRunExtent;    /* Σ per-line (last-first+1) union extent  */
+extern volatile unsigned long g_shapeRunLinesAny;  /* line paints with >= 1 union cell         */
+extern volatile unsigned long g_shapeRunLinesNone; /* ...with none at all (wholly redundant)   */
+/* ⭐ A mean hides a bimodal distribution — the per-line census's own lesson — so the union size
+   per line paint is a histogram: buckets 0,1,2,3,4,5-8,9-16,17-32,33-40. */
+extern volatile unsigned long g_shapeRunUnionHist[9];
+extern volatile unsigned long g_shapeRunRunsHist[9];   /* ...and the run count per line paint */
+/* Per source line, the union cells it needed — horizon or near field is a different subject. */
+extern volatile unsigned long g_shapeRunPerUnion[128];
+/* ⚠⚠ THE INSTRUMENT'S OWN STATE, because the event half is LATCHED rather than passed: the
+   arm is recorded by `view_consume` and read by the store hook one call later.  If that order
+   ever breaks, the union is silently wrong in the flattering direction, so the loss is counted
+   and printed — a non-zero value invalidates every event/union number above. */
+extern volatile unsigned long g_shapeRunArmLost;
+
 /* ── ⭐⭐ IS THE PRODUCER-SIDE MARKING COMPLETE? ────────────────────────────────────────────
  * The three-part skip needs a per-line DIRTY MARK set by whoever writes a source byte, and the
  * skip is only sound if that mark is set by EVERY writer.  "Which routines write $3000..$43CF"

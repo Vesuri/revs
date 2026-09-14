@@ -364,7 +364,11 @@ PROBE_SYMS_SHAPE = g_shapeDashCalls g_shapeDashDirty g_shapeDashLeft g_shapeDash
                    g_shapeLineCleanSrc g_shapeLineUnits g_shapeLineUnitsRedundant \
                    g_shapeLineUnitsCleanSrc g_shapeLineCleanButChanged \
                    g_shapeLineDirtyNoChange g_shapeLinePerVisit g_shapeLinePerRedundant \
-                   g_shapeLinePerUnits
+                   g_shapeLinePerUnits \
+                   g_shapeRunSweeps g_shapeRunStores g_shapeRunEvents g_shapeRunChanged \
+                   g_shapeRunUnion g_shapeRunRuns g_shapeRunExtent g_shapeRunLinesAny \
+                   g_shapeRunLinesNone g_shapeRunUnionHist g_shapeRunRunsHist \
+                   g_shapeRunPerUnion g_shapeRunArmLost
 endif
 
 # `make FLATSKIP=0` — decode EVERY display line, including the ones inside a palette band whose

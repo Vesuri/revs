@@ -366,6 +366,61 @@ void PlatformHost::renderFrame()
                                 g_shapeLinePerCleanChanged[x]);
                 }
             }
+            /* ⭐⭐ THE RUN CENSUS (src/platform/shape.h) — the union a source-event consumer
+               would have to visit, and in how many contiguous runs.  This is the number that
+               decides `docs/open-work.md` item 1's sub-lever: the present loop visits every
+               cell, and the scheme only pays if event ∪ changed is SMALL and CLUSTERED. */
+            if (g_shapeRunSweeps && g_shapeRunStores) {
+                const unsigned long n = g_shapeRunSweeps, st = g_shapeRunStores;
+                const unsigned long lines = g_shapeRunLinesAny + g_shapeRunLinesNone;
+                static const char* const bk[9] =
+                    {"0","1","2","3","4","5-8","9-16","17-32","33-40"};
+                /* ⚠⚠ THE ENGINE STATE GOES BESIDE THE NUMBERS, and that is not a nicety —
+                   `amiga/view_census.gdb` carries the trap in capitals: a PARKED or stalled car
+                   repaints the same picture, so every line reads redundant and the census says
+                   "skip everything", which is true of the static scene and false of the game.
+                   A union of 11% is only a measurement if $63 is non-zero. */
+                std::printf("SHAPE   engine: $3C(revs)=%02X $61(engine)=%02X $63(speed)=%02X "
+                            "$40(gear)=%02X $58=%02X\n",
+                            mem[0x3C], mem[0x61], mem[0x63], mem[0x40], mem[0x58]);
+                std::printf("SHAPE   RUN CENSUS over %lu sweeps: %lu stores/sweep over %lu "
+                            "line paints\n"
+                            "SHAPE     events (source non-zero):        %6lu = %2lu%% of stores\n"
+                            "SHAPE     changed (store moved the byte):  %6lu = %2lu%%\n"
+                            "SHAPE     ⭐ UNION (must-visit cells):      %6lu = %2lu%%  "
+                            "-> %lu.%02lu per line paint\n"
+                            "SHAPE     in %lu contiguous RUNS (%lu.%02lu per line paint, "
+                            "%lu.%02lu cells per run)\n"
+                            "SHAPE     producer-EXTENT scan would visit %6lu = %2lu%% "
+                            "(first..last union cell)\n"
+                            "SHAPE     line paints with no union cell at all: %lu of %lu\n"
+                            "SHAPE     arm latch LOST (must be 0): %lu\n",
+                            n, st / n, lines / n,
+                            g_shapeRunEvents, g_shapeRunEvents * 100 / st,
+                            g_shapeRunChanged, g_shapeRunChanged * 100 / st,
+                            g_shapeRunUnion, g_shapeRunUnion * 100 / st,
+                            lines ? g_shapeRunUnion / lines : 0,
+                            lines ? (g_shapeRunUnion * 100 / lines) % 100 : 0,
+                            g_shapeRunRuns,
+                            lines ? g_shapeRunRuns / lines : 0,
+                            lines ? (g_shapeRunRuns * 100 / lines) % 100 : 0,
+                            g_shapeRunRuns ? g_shapeRunUnion / g_shapeRunRuns : 0,
+                            g_shapeRunRuns ? (g_shapeRunUnion * 100 / g_shapeRunRuns) % 100 : 0,
+                            g_shapeRunExtent, g_shapeRunExtent * 100 / st,
+                            g_shapeRunLinesNone, lines,
+                            g_shapeRunArmLost);
+                std::printf("SHAPE     union cells per line paint:");
+                for (unsigned i = 0; i < 9; i++)
+                    std::printf("  %s:%lu", bk[i], g_shapeRunUnionHist[i]);
+                std::printf("\nSHAPE     runs per line paint:      ");
+                for (unsigned i = 0; i < 9; i++)
+                    std::printf("  %s:%lu", bk[i], g_shapeRunRunsHist[i]);
+                std::printf("\nSHAPE     union cells per source line:");
+                for (unsigned x = 0; x < 128; x++)
+                    if (g_shapeRunPerUnion[x])
+                        std::printf(" $%02X:%lu", x, g_shapeRunPerUnion[x] / n);
+                std::printf("\n");
+            }
             std::printf("SHAPE   per-row ($2C..$4F) dirty sweeps:");
             for (unsigned i = 0; i < 36; i++) std::printf(" %lu", g_shapeDashPerRow[i]);
             std::printf("\n");

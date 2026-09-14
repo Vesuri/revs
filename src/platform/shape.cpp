@@ -6,9 +6,10 @@
 /* ⚠⚠ INSIDE the guard AND host-only, and the second half was learned the hard way: the
    m68k-amiga cross toolchain has no <stdio.h>, and this file is in the Amiga source list
    unconditionally, so an include out here breaks `amiga/make` outright — and an include inside
-   `REVS_SHAPE` alone breaks `make SHAPE=1`, which is the very build `amiga/view_census.gdb`
-   documents as its own.  A counter file readable on the target must not need a host library to
-   compile; the one diagnostic that wants stdio is a host debug aid and is guarded to match. */
+   `REVS_SHAPE` alone breaks `make SHAPE=1`, which is the very build `amiga/view_census.gdb` and
+   `amiga/run_census.gdb` document as their own.  A counter file readable on the target must not
+   need a host library to compile; the one diagnostic that wants stdio is a host debug aid and is
+   guarded to match. */
 #ifndef REVS_PLATFORM_AMIGA
 #include <stdio.h>
 #include <stdlib.h>
@@ -82,12 +83,108 @@ void shape_dash_unit(unsigned line)
     s_lineUnits[line & 0x7Fu]++;
 }
 
+/* ── the run census (shape.h) ────────────────────────────────────────────────────────── */
+
+extern "C" {
+volatile unsigned long g_shapeRunSweeps = 0;
+volatile unsigned long g_shapeRunStores = 0;
+volatile unsigned long g_shapeRunEvents = 0;
+volatile unsigned long g_shapeRunChanged = 0;
+volatile unsigned long g_shapeRunUnion = 0;
+volatile unsigned long g_shapeRunRuns = 0;
+volatile unsigned long g_shapeRunExtent = 0;
+volatile unsigned long g_shapeRunLinesAny = 0;
+volatile unsigned long g_shapeRunLinesNone = 0;
+volatile unsigned long g_shapeRunUnionHist[9] = {0};
+volatile unsigned long g_shapeRunRunsHist[9] = {0};
+volatile unsigned long g_shapeRunPerUnion[128] = {0};
+volatile unsigned long g_shapeRunArmLost = 0;
+}
+
+/* THE LATCH.  `VIEW_UNIT` calls the unit hook, then `view_consume` (which reports its arm),
+   then the store hook — so the arm of the store about to land is the last one reported.  The
+   unit hook clears it to 0xFF so a stop unit's consume (which has no store) cannot leak its arm
+   into the next unit's store, and a store that finds 0xFF counts itself lost instead of guessing
+   clean. */
+static unsigned char s_armLatch = 0xFFu;
+
+/* Per line paint, in visit order.  `s_runPrevDst` is the last union cell's address + 1 so that
+   zero means "no union cell yet" without stealing an address. */
+static unsigned s_runFirstDst[128];
+static unsigned s_runPrevDst[128];
+static unsigned short s_runStores[128];
+static unsigned short s_runEvents[128];
+static unsigned short s_runUnion[128];
+static unsigned short s_runRuns[128];
+
+static unsigned hist_bucket(unsigned n)
+{
+    if (n <= 4u) return n;                  /* 0,1,2,3,4 exactly — the interesting end */
+    if (n <= 8u) return 5u;
+    if (n <= 16u) return 6u;
+    if (n <= 32u) return 7u;
+    return 8u;
+}
+
+static void run_census_store(unsigned x, unsigned dst, int changed)
+{
+    const unsigned char arm = s_armLatch;
+    int isEvent;
+    s_armLatch = 0xFFu;
+    if (arm == 0xFFu) { g_shapeRunArmLost++; isEvent = 0; }
+    else              isEvent = (arm != 0u);        /* 1 = non-zero source, 2 = forced entry */
+    s_runStores[x]++;
+    if (isEvent) s_runEvents[x]++;
+    if (!isEvent && !changed) return;               /* a cell the scheme could skip entirely */
+    s_runUnion[x]++;
+    if (!s_runPrevDst[x]) { s_runFirstDst[x] = dst; s_runRuns[x]++; }
+    else if (dst != s_runPrevDst[x] - 1u + 8u) s_runRuns[x]++;
+    s_runPrevDst[x] = dst + 1u;
+}
+
+static void run_census_before(void)
+{
+    unsigned x;
+    for (x = 0; x < 128; x++) {
+        s_runFirstDst[x] = 0; s_runPrevDst[x] = 0;
+        s_runStores[x] = 0; s_runEvents[x] = 0; s_runUnion[x] = 0; s_runRuns[x] = 0;
+    }
+    s_armLatch = 0xFFu;
+}
+
+static void run_census_after(void)
+{
+    unsigned x;
+    g_shapeRunSweeps++;
+    for (x = 0; x < 128; x++) {
+        if (!s_runStores[x]) continue;              /* the sweep never stored on this line */
+        g_shapeRunStores += s_runStores[x];
+        g_shapeRunEvents += s_runEvents[x];
+        g_shapeRunChanged += s_lineChanged[x];
+        g_shapeRunUnion += s_runUnion[x];
+        g_shapeRunRuns += s_runRuns[x];
+        g_shapeRunPerUnion[x] += s_runUnion[x];
+        g_shapeRunUnionHist[hist_bucket(s_runUnion[x])]++;
+        g_shapeRunRunsHist[hist_bucket(s_runRuns[x])]++;
+        if (s_runUnion[x]) {
+            g_shapeRunLinesAny++;
+            /* the extent a producer-known bound would scan: first..last union cell inclusive */
+            g_shapeRunExtent += ((s_runPrevDst[x] - 1u) - s_runFirstDst[x]) / 8u + 1u;
+        } else {
+            g_shapeRunLinesNone++;
+        }
+    }
+}
+
 /* One cell store, before it lands.  ⭐ Comparing against what is already there is the whole
    point: it measures the sweep's REDUNDANCY directly instead of deriving it from the carry
    semantics, so the census cannot be wrong in the same way my reasoning could be. */
 void shape_dash_store(unsigned dst, unsigned value, unsigned line)
 {
-    if (mem[dst] != (unsigned char)value) s_lineChanged[line & 0x7Fu]++;
+    const unsigned x = line & 0x7Fu;
+    const int changed = (mem[dst] != (unsigned char)value);
+    if (changed) s_lineChanged[x]++;
+    run_census_store(x, dst, changed);
 }
 
 /* ── the per-line census (shape.h) ---------------------------------------------------------- */
@@ -267,6 +364,7 @@ void shape_dash_before(void)
     unsigned bytes, cols;
     mark_census();
     line_census_before();
+    run_census_before();
     scan(&bytes, &cols, /*credit*/1);
     /* The unit count belongs to the sweep that just ENDED, so take its DELTA before this one
        runs — the cumulative total's low word would be a running sum, not a reading. */
@@ -287,6 +385,7 @@ void shape_dash_after(void)
 {
     unsigned bytes, cols;
     line_census_after();
+    run_census_after();       /* ⚠ after line_census_after: both read s_lineChanged */
     scan(&bytes, &cols, /*credit*/0);
     g_shapeDashLeft     += bytes;
     g_shapeDashColsLeft += cols;
@@ -349,6 +448,7 @@ void shape_view_phase(int idx) { s_shapeViewPhase = (idx >= 0 && idx < 3) ? idx 
 /* 0 = clean (zero source, carried byte), 1 = dirty (zero it + translate), 2 = forced. */
 void shape_view_arm(unsigned arm)
 {
+    s_armLatch = (unsigned char)arm;
     const int p = s_shapeViewPhase;
     g_shapeViewUnits[p]++;
     switch (arm) {

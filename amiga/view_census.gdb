@@ -12,9 +12,15 @@
 #
 # ⚠⚠ THE CAR MUST BE MOVING.  A parked or stalled car repaints the same picture, so EVERY line
 # reads redundant and the census says "skip everything" — which is true of the static scene and
-# false of the game.  The host cannot produce the moving scene (its autorun never selects a gear,
-# $63 stays 0), which is why this runs on the target.  The engine state is printed beside the
-# numbers so the two can never be separated.
+# false of the game.  The engine state is printed beside the numbers so the two can never be
+# separated: $63 must be non-zero or every number below is fiction.
+# ⚠ What this used to say — "the host cannot produce the moving scene (its autorun never selects
+# a gear, $63 stays 0)" — is STALE.  `make SHAPE=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` on the
+# host drives in gear 2 at $63 = $2C..$32, and its counts agree with this script's to a point or
+# two (`docs/perf-method.md` §the run census).  The target is still the honest run for anything
+# that is a frame-to-frame DELTA, because the host drains one 50 Hz body tick per main-loop frame
+# where the target drains ~10 — but a host count is no longer worthless here, and for a pure
+# COUNT it is free.
 #
 # Build: cd amiga && make clean && make SHAPE=1 FPSCOUNT=1 STRAIGHT_TO_RACE=1 FIXED_RNG=1
 # Run:   . ./env.sh && EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=view_census.gdb ./diag_run.sh 30
