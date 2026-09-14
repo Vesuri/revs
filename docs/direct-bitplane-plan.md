@@ -1272,7 +1272,7 @@ this plan exists to delete.
 
 ```
   0. re-run the span census                                      (done — 10a)
-  1. ⭐ ROWS 81-100 ONLY: a 20-span direct emitter, A/B against decode()    <- MEASURE HERE
+  1. ⭐ the flat-line span emitter, A/B against decode()          (BUILT, ORACLE GREEN — 10k)
   2. Stage A in full: span emit + edge merge + object layer + physics tap
   3. Stage B: native DDA producing surface_edge_0..3 (retires 14 SMC sites)
   4. Stage C: delete fill_dash_edge_columns (reader audit first)
@@ -1304,3 +1304,54 @@ Step 5 is gated on a measurement that does not exist yet.
   starts waiting on the blitter instead. So a blitter fill is a candidate to be *measured against*
   the 1540-longword CPU fill, never a default because "the blitter is free". Sprites belong to the
   re-sized §8.
+
+### 10k. ✅ STEP 1 IS BUILT AND BYTE-EXACT (`make SPANEMIT=1`, 2026-09-14)
+
+`revs_native.c` §THE SPAN EMITTER, in `paint_cells`'s per-line entry. A scan line that no producer
+wrote and that carries no planted stop is one run of its background byte
+(`surface_colours[view_line_surface[line] & 3]`), so it goes out as a single `revs_plot_run` into
+the bitplanes and the forty-unit chain is skipped.
+
+**The oracle (`SPANEMIT=1 SPANVERIFY=1 DIRECTCHECK=1`, driving, `$63 = $0B`):**
+
+```
+SPAN EMIT: lines emitted as one span 306   lines that ran the chain 838
+plot: runs=7627 cells=45108   last sweep: 346 runs / 2148 cells   lines 81..157
+ORACLE checks=21 mismatch=0                          <- byte-exact over the WHOLE buffer
+```
+
+⭐ **The census predicted the emit rate before the code existed**: ~20 of 77 painted lines = 26%,
+measured **306/1144 = 26.7%**. And the last sweep's 2148 plotted cells over lines 81..157
+reproduce the census's 2155 over rows 81..157 from a completely different instrument.
+
+⭐⭐ **The predicate is strictly weaker than the ⛔ skip's, and that is the architectural result.**
+The skip needed parts (2)-(4) — a destination shadow keyed by display line, proving the cells
+already held the byte it declined to write, the half that took a 153-stale-byte bug to get right.
+The emitter needs part (1) alone, because it writes the pixels. *Writing is cheaper than
+remembering* (§10j), and here that is not a cost argument but a **correctness** argument: the
+fragile half of the skip simply does not exist in an emitter.
+
+⚠⚠ **TWO WAYS THIS ORACLE READS GREEN WHILE PROVING NOTHING, both hit on the first run:**
+1. **Suppress the chain's run accumulator globally** and the chain's own pixels never reach the
+   planes — the check then compares `decode(new mem[])` against `decode(old mem[])` and mismatched
+   **5950** bytes. A check must reproduce *everything* the sweep changed, not just the part under
+   test.
+2. **Leave the accumulator on** and the chain re-plots the same forty cells straight over the
+   span, so a **wrong span compares equal**. It has to be suppressed per LINE, on exactly the
+   lines the emitter painted. Plain `SPANEMIT=1 DIRECTCHECK=1` is worthless for the third reason:
+   `PLOT_ONLY`'s carve-out leaves `mem[]` stale, so the reference is last frame's picture.
+
+⚠ And the first build **emitted zero spans** — `view_skip_reset()` primes every line dirty and the
+only code that cleared a line again was inside the `VIEWSKIP` block, so with `SPANEMIT` alone the
+predicate could never become true. The `g_spanEmitLines`/`g_spanEmitPaints` pair is what caught it:
+a build that emits nothing and an emitter that buys nothing read identically without it.
+
+ℹ `g_plotNoTarget` reads 1788 and is benign: `revs_plot_run` returns before touching
+`g_plotLineLo/Hi`, so a sweep with no bitplane buffer publishes no carve-out and the decode
+converts everything. No-target ⇒ no skipped decode, by construction.
+
+**⏳ NOT YET MEASURED: what it BUYS.** The timing build is `SPANEMIT=1 PROBES=1` (no verify, so
+`PLOT_ONLY`'s carve-out is live) against a `PROBES=1` control from a clean tree, read on phase 24's
+row with `phase4_prof.gdb`. §10e predicts phase 1's 22 ms falling towards ~12. Nothing about the
+architecture should be believed from the green oracle alone — it proves the emitter is *correct*,
+not that it is *fast*.
