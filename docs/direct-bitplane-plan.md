@@ -281,7 +281,9 @@ arrangement is asm that has to be rewritten after it.
 
 Order:
 
-1. **Skip the sky band in the decode** (§4). Independent, cheap, no faithfulness cost. ~75 ms.
+1. ✅ **Skip the sky band in the decode** (§4) — **SHIPPED 2026-08-16**, `g_decodeFlatLines` = 63
+   in one band, `make FLATSKIP=0` for the A/B. ⚠ Its "~75 ms" was measured against the 1282 ms
+   frame of that era and must not be quoted; today's whole decode is 26.4 ms.
 2. **Shape-probe before restructuring** (`docs/perf-method.md` Rule 4). Count what the plotters
    actually do per frame: spans by orientation and length, how many of the dashboard overlay's 40
    columns are dirty, how much of the frame is solid fill. RoF's −36% came from input-distribution
@@ -293,11 +295,14 @@ Order:
 5. **Then** the blitter fills, then asm.
 
 **Honest expectation** — RoF's own summary of the same change was *"real but not transformative"*,
-and its measured result was **~339 → ~172 ticks/frame** for the stage it replaced. Here, deleting
-the decode is worth ~250 ms of a 1282 ms frame; the DMA contention behind it (~350 ms) is
-structural, and the engine's own ~700 ms is untouched by any of this. So direct rendering is
-**necessary and not sufficient**: nothing else removes that 250 ms, and it is what unblocks blitter
-fills and dirty-region drawing — but the floor still needs the engine.
+and its measured result was **~339 → ~172 ticks/frame** for the stage it replaced. ⚠⚠ **The rest of
+this paragraph was written against a 1282 ms frame and every number in it is superseded** — the
+frame is **205.5 ms bracketed** and the whole decode is **26.4 ms** (`docs/open-work.md`), so
+"deleting the decode is worth ~250 ms" is off by an order of magnitude. Re-read §7j for the
+settled costing before quoting any figure here. So direct rendering is **necessary and not
+sufficient**: nothing else removes the decode, and it is what unblocks blitter fills, the pen
+permutation of §4a item 2 and dirty-region drawing — but the frame's floor is the engine's own
+view pipeline, which none of this touches.
 
 ## 7. ⭐⭐ The OTHER inherited lever, which may be bigger — and is not yet measured here
 

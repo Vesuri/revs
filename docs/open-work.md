@@ -47,9 +47,42 @@ against its own phase row (Rule 1a); the framerate is quantised to `50/N` and ca
 written against the current BBC-shaped buffer has to be rewritten after this lands. Reaches the
 26.4 ms decode directly (it becomes the validated ORACLE rather than the shipping path) and
 unconstrains the 58.7 ms consumer, which today paints into a layout the Amiga cannot display.
-⚑ The predecessor project shipped and measured this exact change — read its `terrain-render-plan.md`
-+ `flight-perf-log.md` first, and expect its verdict: "real but **not transformative**".
-⭐ Free ~75 ms of the decode is available on its own by not expanding the sky band.
+
+⚑ **THE INHERITED GATE IS DISCHARGED (2026-09-14)** — `terrain-render-plan.md` +
+`flight-perf-log.md` §1 read in full. Four findings that transfer, so nobody re-reads 3 000 lines:
+1. The direct renderer replacing the chunky→planar convert measured **~339 → ~172 ticks/frame** for
+   the stage it replaced, and the project's own verdict on it was *"real but **not
+   transformative**"* — because it left the compute floor (their fractal subdivision, our
+   `build_track_geometry`→`draw_road`) untouched. Necessary, not sufficient.
+2. ⭐⭐ **Their single biggest win in the whole log was not rendering and not asm**: per-instrument
+   **producer-side dirty flags** replacing a 560-cell shadow scan, **~1662 → ~65 ticks (~23×)**.
+   That is the shape our ⛔ `CHANGEDIRTY` got wrong — it compared at the STORE instead of letting
+   the producer, which already knows what it touched, say so. The live version of it here is the
+   viewport source-event representation below.
+3. Bounding a scan by an extent the producer already knows (their `minScan` = topmost skyline row)
+   was **~324 → 113 ticks** on its own.
+4. Reading the scan **4 bytes at a time** and overlapping blitter ops with disjoint CPU work took
+   their direct renderer **~478 → ~170 ticks/call**.
+
+⭐⭐ **The live sub-lever, and it is the biggest single un-built item on this board — VIEWPORT
+SOURCE EVENTS/RUNS.** `docs/direct-bitplane-plan.md` §7j (the settled costing): the producers know
+which of the forty `$80`-spaced source blocks they touch, so `view_paint_lines` can iterate CHANGED
+units/runs instead of testing all 2148 slots. Gross source/translation/control surface **~21 ms**,
+expected net **12-18 ms**. ⚠ A line-only bit is insufficient if it still causes a forty-unit scan.
+Keep the present consumer as the byte-exact oracle until every trajectory agrees.
+⚠⚠ **Do not price this against a framebuffer dirty map** — that is ⛔ CLOSED below, and §7j is
+explicit that its ceiling omitted the producer-side price.
+
+⚠ **Two decompositions of the same 52.7 ms sweep are in circulation and they are NOT the same
+axis** — `NOUNITS=2` differencing says 32.4 ms driver/entry + 20.4 ms unit loop (entry 2 below);
+§7j's calibrated bracket says 29.0 ms unit/run *interior*, of which ~8 ms is destination stores and
+~21 ms is source/translation/control. Never subtract one from the other.
+
+✅ Not open any more, recorded so it is not re-attempted: **the flat sky band is already skipped**
+(shipped 2026-08-16 — `g_decodeFlatLines` reads 63 in one band on the target, `make FLATSKIP=0` is
+the A/B). Its "~75 ms" tag was a 1282 ms-frame-era figure. What is still available on that side is
+§4a item 2 — lines 81..horizon made write-free by PERMUTING that band's pens — and it is a
+direct-renderer-only option, so it is gated behind this entry, not free today.
 
 ### 2. ⭐⭐ The view sweep's DRIVER AND CHAIN-ENTRY code — 32.4 ms of the 52.7 ms sweep
 `docs/perf-method.md` §the sweep is 61% driver/entry. Measured by differencing `NOUNITS=2`:
