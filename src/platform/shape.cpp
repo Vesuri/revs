@@ -663,7 +663,63 @@ volatile unsigned long g_shapeViewStops[3]  = { 0, 0, 0 };
    is measured on the host, where they are compiled out.  Set at the same three call sites. */
 static int s_shapeViewPhase = 0;
 
-void shape_view_phase(int idx) { s_shapeViewPhase = (idx >= 0 && idx < 3) ? idx : 0; }
+/* ── the flat-line count's per-sweep tally (shape.h §THE TAKEOVER'S FLAT-LINE COUNT) ─────── */
+volatile unsigned long g_shapeViewFlat[3]      = { 0, 0, 0 };
+volatile unsigned long g_shapeViewFull[3]      = { 0, 0, 0 };
+volatile unsigned long g_shapeViewFlatFull[3]  = { 0, 0, 0 };
+volatile unsigned long g_shapeViewFlatLines[3] = { 0, 0, 0 };
+volatile unsigned long g_shapeViewSweeps[3]    = { 0, 0, 0 };
+volatile unsigned char g_shapeViewFlatMin[3]   = { 0xFFu, 0xFFu, 0xFFu };
+volatile unsigned char g_shapeViewFlatMax[3]   = { 0, 0, 0 };
+volatile unsigned char g_shapeViewFlatLast[3]  = { 0, 0, 0 };
+
+static unsigned char s_flatThisSweep[3];
+static unsigned char s_linesThisSweep[3];
+
+void shape_view_phase(int idx)
+{
+    /* ⭐ THE SWEEP BOUNDARY, and there is exactly one: `view_paint_lines_core` sets phase 0 once
+       per sweep before any line runs, and phases 1 and 2 only ever follow it within the same
+       sweep.  So publishing the previous sweep's tally here is a complete, non-overlapping
+       partition — see shape.h on why a whole-run ratio cannot size the takeover. */
+    if (idx == 0) {
+        for (unsigned p = 0; p < 3u; p++) {
+            if (!s_linesThisSweep[p]) continue;      /* the phase did not run in that sweep */
+            g_shapeViewSweeps[p]++;
+            g_shapeViewFlatLast[p] = s_flatThisSweep[p];
+            if (s_flatThisSweep[p] < g_shapeViewFlatMin[p])
+                g_shapeViewFlatMin[p] = s_flatThisSweep[p];
+            if (s_flatThisSweep[p] > g_shapeViewFlatMax[p])
+                g_shapeViewFlatMax[p] = s_flatThisSweep[p];
+            s_flatThisSweep[p] = 0;
+            s_linesThisSweep[p] = 0;
+        }
+    }
+    s_shapeViewPhase = (idx >= 0 && idx < 3) ? idx : 0;
+}
+
+/* The forty-source test, at the point the emitter would ask it: after the line has been stepped
+   and its background byte resolved, before any unit runs.  `fullRun` is the caller's
+   `view_stop_from(0) == 40` — counted apart from `flat` so §10p's "no planted stops in phase 1"
+   claim is checked rather than trusted. */
+void shape_view_flat(unsigned line, int fullRun)
+{
+    const int p = s_shapeViewPhase;
+    unsigned k;
+    int flat = 1;
+
+    /* ⚠ `+ line` UNMASKED, exactly as `paint_cells` computes `srcp` — a `& 0x7F` here would be
+       a no-op while `line < 128` and would silently read a DIFFERENT byte than the consumer if it
+       ever were not, which is the one way this count could be wrong and look fine. */
+    for (k = 0; k < 40u; k++)
+        if (mem[MEM_view_src_blocks + (k << 7) + line]) { flat = 0; break; }
+
+    g_shapeViewFlatLines[p]++;
+    s_linesThisSweep[p]++;
+    if (flat)            g_shapeViewFlat[p]++;
+    if (fullRun)         g_shapeViewFull[p]++;
+    if (flat && fullRun) { g_shapeViewFlatFull[p]++; s_flatThisSweep[p]++; }
+}
 
 /* 0 = clean (zero source, carried byte), 1 = dirty (zero it + translate), 2 = forced. */
 void shape_view_arm(unsigned arm)

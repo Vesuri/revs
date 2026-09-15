@@ -976,6 +976,12 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
             /* the line's background byte: two bits of the per-line surface index */
             byte = mem[MEM_surface_colours + (mem[MEM_view_line_surface + line] & 3)];
             advance_first = 0; unit = 0; forced = 0;
+            /* ⭐⭐⭐ THE PHASE-1 TAKEOVER'S SIZING COUNT, host-side and free (shape.h §THE
+               TAKEOVER'S FLAT-LINE COUNT, docs/span-render-plan.md §10p step 1).  This is the
+               exact point the takeover's own predicate is asked, so the count is of the thing
+               that will be measured, not a proxy for it.  Compiled out entirely without SHAPE;
+               `view_stop_from` is not evaluated in that build. */
+            PROBE_SHAPE_VIEW_FLAT(line, view_stop_from(0) == 40);
 #ifdef REVS_SPAN_EMIT
             /* ── ⭐⭐⭐ THE SPAN EMITTER (docs/direct-bitplane-plan.md §10j step 1) ───────────
                Nothing wrote this line's forty sources and no stop is planted in it, so every one

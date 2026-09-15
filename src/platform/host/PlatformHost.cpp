@@ -270,6 +270,33 @@ void PlatformHost::renderFrame()
                                 u == other ? "ok" : "*** MISMATCH ***");
                 }
             }
+            if (g_shapeViewFlatLines[0] || g_shapeViewFlatLines[1] || g_shapeViewFlatLines[2]) {
+                /* ⭐⭐⭐ THE PHASE-1 TAKEOVER'S SIZING ROW (shape.h §THE TAKEOVER'S FLAT-LINE
+                   COUNT).  Read three things, in this order:
+                     1. `lines/sweep` against the target's 36/16/25 — if it disagrees, nothing
+                        else on this row carries across to the Amiga.
+                     2. `full` against `lines`: EQUAL on phase 1 is §10p's claim that no stop is
+                        ever planted in it, which makes the `fullRun` conjunct dead weight there.
+                     3. `flat&&full per sweep` min..max — the SPREAD is the sizing input, because
+                        a changed line costs ~2.3x a flat one and a mean hides a bimodal split. */
+                std::printf("SHAPE   view FLAT lines (the takeover's predicate), per phase:\n");
+                for (unsigned i = 0; i < 3; i++) {
+                    const unsigned long n = g_shapeViewFlatLines[i];
+                    if (!n) continue;
+                    const unsigned long sw = g_shapeViewSweeps[i];
+                    std::printf("SHAPE     phase %u: lines=%lu (%lu/sweep over %lu sweeps)  "
+                                "flat=%lu (%lu%%)  full=%lu (%s)  flat&&full=%lu (%lu%%)  "
+                                "per sweep %u..%u last %u\n",
+                                i + 1, n, sw ? n / sw : 0, sw,
+                                g_shapeViewFlat[i], g_shapeViewFlat[i] * 100 / n,
+                                g_shapeViewFull[i],
+                                g_shapeViewFull[i] == n ? "== lines, no stops ever planted"
+                                                        : "< lines, stops ARE planted",
+                                g_shapeViewFlatFull[i], g_shapeViewFlatFull[i] * 100 / n,
+                                g_shapeViewFlatMin[i] == 0xFFu ? 0 : g_shapeViewFlatMin[i],
+                                g_shapeViewFlatMax[i], g_shapeViewFlatLast[i]);
+                }
+            }
             if (g_shapeRoadCalls)
                 std::printf("SHAPE   road pass ($1A20): %lu calls, %lu of 8320 frame-buffer bytes "
                             "per call over %lu lines  last(%u bytes, %u lines, %u..%u)\n",

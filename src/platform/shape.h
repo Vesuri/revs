@@ -276,6 +276,70 @@ void shape_view_run(unsigned units, int busSafe);
 void shape_view_stop(void);
 void shape_view_line(void);
 
+/* ── ⭐⭐⭐ THE TAKEOVER'S FLAT-LINE COUNT (`docs/span-render-plan.md` §10p step 1) ──────────
+ * ⭐⭐ THE ONE NUMBER THE PHASE-1 TAKEOVER IS SIZED ON, and it costs no emulator run.  §10p
+ * puts a flat line at ~980 cycles against ~2300 for a changed one, so the FLAT FRACTION is the
+ * whole difference between a -8 ms and a -11 ms result.  CLAUDE.md licenses exactly this: count
+ * it on the host, where the view sweep's 36/16/25 line split already reproduces the target's.
+ *
+ * ⭐ THE PREDICATE IS THE WHOLE OF IT, AND IT IS STATELESS AND EXACT.  `view_consume` is RLE
+ * with a DESTRUCTIVE READ — zero source means "same as my left", non-zero means "change to
+ * `view_cell_bytes[source]`" AND THEN `*srcp = 0` — so a source is non-zero at line entry **iff
+ * a producer wrote it since the last sweep**, and a line is one flat run **iff all forty of its
+ * sources are zero**.  No map, no persistence, nothing to get stale.  ⛔ The dirty map this
+ * replaces marked on ANY write including a write of zero, so it was CONSERVATIVE where this is
+ * exact; it also cost +4.9 ms in the producers (`docs/span-render-plan.md` §10n).
+ *
+ * ⚠ THE SECOND CONJUNCT IS COUNTED SEPARATELY ON PURPOSE.  A planted stop ends the chain on the
+ * unit it sits on, so units from there to 39 keep their sources and the line is not one run —
+ * the emitter needs `flat && fullRun`.  §10p's reading of the stop list says `view_stop_from(0)
+ * == 40` is a CONSTANT TRUE through all of phase 1, i.e. `full == lines` on phase 1's row, and
+ * that is a CLAIM this instrument checks rather than trusts.  If it holds, the `fullRun`
+ * conjunct is dead weight in phase 1's predicate and can come out of the inner test.
+ *
+ * ⭐ THE PER-SWEEP TALLY IS PUBLISHED TOO — min, max and last, flushed at `shape_view_phase(0)`,
+ * the one call `view_paint_lines_core` makes per sweep.  ⚠⚠ BUT THE WORRY THAT MOTIVATED IT IS
+ * WITHDRAWN, AND THE CORRECTION IS THE USEFUL PART: I wrote that a whole-run ratio "cannot answer
+ * the sizing question" because 21-of-36 averaged could be bimodal.  It CAN, because the cost is
+ * LINEAR in the flat count — sum over sweeps of `flat*980 + (36-flat)*2300` is
+ * `36*2300*N - 1320*Σflat`, which depends on Σflat and on nothing else about its distribution.
+ * So the MEAN is a sufficient statistic for the average frame; the min..max spread bounds the
+ * WORST FRAME, which is a jitter question and a different one.  ⭐⭐ Ask whether the statistic is
+ * sufficient for the cost function before demanding a distribution — a linear cost needs only
+ * the total.
+ *
+ * ⭐⭐⭐ MEASURED (host, `REVS_FIXED_RNG=1`, STRAIGHT_TO_RACE + HOLD_THROTTLE so the car MOVES,
+ * 595 sweeps), and all three reads say something:
+ *   phase 1: 36 lines/sweep  flat=57%  full == lines  per sweep 0..36, last 21
+ *   phase 2: 16 lines/sweep  flat= 0%  full == 0      per sweep 0..0
+ *   phase 3: never enters this hook — only `view_paint_lines_core` and `paint_lines_clipped`
+ *            call `paint_cells`; `paint_lines_short` drives its own line loop.
+ * (1) The 36/16 split reproduces the target's, so the row carries across.  (2) `full == lines`
+ * over 21456 phase-1 lines CONFIRMS §10p's claim ⇒ the `fullRun` conjunct is dead weight in
+ * phase 1 and the predicate is the forty-source scan alone.  (3) 57% flat sizes the takeover at
+ * **-7.8 ms** on the average frame (36 x (0.57*980 + 0.43*2300) = 55.7k cyc = 7.86 ms against the
+ * measured 15.68), ranging -4.0 ms on a sweep with nothing flat to -10.7 ms on an all-flat one.
+ * ⭐ It also cross-checks the PARKED span census: `SPANFILL=1` found 21 of 36 lines spanned with
+ * a dirty-map predicate, and this driving run's last sweep reads 21 — so that 21 was not a
+ * parked-car artefact, which was the standing doubt about it.
+ *
+ * ⛔ AND THE FLAT PREDICATE IS PHASE-1-ONLY.  Not one of 9536 phase-2 lines had forty zero
+ * sources, and every one of them had stops planted (2.0 runs/line).  Phase 3's lines visit 11.2
+ * of 40 cells, so a forty-cell scan asks the wrong question there even before it is tried.  ⇒
+ * phases 2 and 3 are a DRIVER lever (§10p), never a span-fast-path one.
+ * ⚠ One forty-byte scan per line: a SHAPE build only, and a COUNT, never a timing.
+ * ⚠ Sabotaged four ways before its output was believed — one cell instead of forty reads 96%,
+ * the inverted test 0%, a 64-byte stride 0%, and the restored control reproduces 6109 exactly. */
+extern volatile unsigned long g_shapeViewFlat[3];      /* lines whose forty sources are all zero */
+extern volatile unsigned long g_shapeViewFull[3];      /* lines entered with the stop list empty  */
+extern volatile unsigned long g_shapeViewFlatFull[3];  /* ...both: the emitter's own predicate    */
+extern volatile unsigned long g_shapeViewFlatLines[3]; /* lines this hook saw (its own control)   */
+extern volatile unsigned long g_shapeViewSweeps[3];    /* sweeps in which the phase ran           */
+extern volatile unsigned char g_shapeViewFlatMin[3];   /* per-SWEEP flat&&full count: min         */
+extern volatile unsigned char g_shapeViewFlatMax[3];   /* ...and max                             */
+extern volatile unsigned char g_shapeViewFlatLast[3];  /* ...and the last completed sweep's       */
+void shape_view_flat(unsigned line, int fullRun);
+
 /* ── THE ROAD PASS ($1A20, phase 11) ────────────────────────────────────────────────────────
  * The other half of step 2, and the number that prices direct plotting: how many BYTES of the
  * 8320-byte frame buffer does the road rasteriser actually write per frame?  The decode converts
@@ -345,6 +409,7 @@ void shape_frame_delta(void);
 #define PROBE_SHAPE_VIEW_RUN(n, b) shape_view_run((n), (b))
 #define PROBE_SHAPE_VIEW_STOP()    shape_view_stop()
 #define PROBE_SHAPE_VIEW_LINE()    shape_view_line()
+#define PROBE_SHAPE_VIEW_FLAT(l,f) shape_view_flat((l), (f))
 #define PROBE_SHAPE_ROAD_BEFORE()  shape_road_before()
 #define PROBE_SHAPE_ROAD_AFTER()   shape_road_after()
 #define PROBE_SHAPE_PHASE(n)       shape_phase_mark(n)
@@ -360,6 +425,7 @@ void shape_frame_delta(void);
 #define PROBE_SHAPE_VIEW_RUN(n, b) ((void)0)
 #define PROBE_SHAPE_VIEW_STOP()    ((void)0)
 #define PROBE_SHAPE_VIEW_LINE()    ((void)0)
+#define PROBE_SHAPE_VIEW_FLAT(l,f) ((void)0)
 #define PROBE_SHAPE_DASH_BEFORE()  ((void)0)
 #define PROBE_SHAPE_DASH_AFTER()   ((void)0)
 #define PROBE_SHAPE_DASH_UNIT(line) ((void)(line))
