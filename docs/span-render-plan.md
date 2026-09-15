@@ -823,19 +823,60 @@ rule):**
 | `plot_ptr` / `plot_ptr2` ($70-$73) | phases 2 and 3 continue the walk from them | **must be left exactly as the chain leaves them** — `step_scanline` stays |
 | the forty source bytes | nothing, once consumed | free on the flat path: already zero, so "not consuming them" is exact |
 | `cell` / `view_cell_bytes` | the next chain entry | the emitter already reproduces this (`cell = 0x38`, "unit 39's cell, as a full line leaves it") |
-| **the framebuffer bytes for rows 81..101** | **⚠⚠ `column_gap_walk` (phase 18) READS framebuffer pixels** — `NOUNITS=2` reads ph 18 at 5.88 ms against 10.18 "because it walks a frame buffer that no longer holds road pixels" | **THE GATE. Unresolved.** |
+| **the framebuffer bytes for rows 81..116** (phase 1's own rows, measured) | **NOTHING** — measured, not argued: the poison test finds 0 of 1440 inverted bytes read back | ✅ **THE GATE IS OPEN. Own them outright — no write-back, no shadow.** |
+| the framebuffer bytes for rows 117..132 (phase 2) | `plot_line_octant`'s undo save, entries 28..31 | owed when phase 2 is taken over, not now |
+| the framebuffer bytes for rows 133..157 (phase 3) | `plot_line_octant` entries 32..35, **and `update_grip_limits` on row 149** | owed when phase 3 is taken over (Hazard 1 already names row 149) |
 
-⚠⚠ **That last row is the takeover's real gate and it was under-stated until now.** `fill_dash_edge_columns`
-is *also* a producer for the sweep (its two boundary tables `view_left_start_src` / `view_right_start_src`
-are what `view_paint_lines` composes each row's leading edge cell from, and "this call is their only
-producer"), so it cannot simply be sequenced after. It walks character columns 3..6 from scan line $1B
-and $1A..$22 from $2B; **whether those rows intersect 81..101 decides whether the takeover can stop
-writing mem[] there at all**, and it is a measurement (`make fbwrites`, or a watch on those columns),
-not a judgement. Resolve it before the first line of the takeover, because the answer picks the shape:
-either the owned rows are outside phase 18's window, or the takeover must compose those columns' bytes
-to `mem[]` the way Hazard 1 already requires for `update_grip_limits`' row 149
-(`mem[$713D]` / `mem[$7205]`, §10g — phase 3, so it does not bear on rows 81..101).
+#### ✅ STEP 2 IS DONE — THE READER GATE IS OPEN, MEASURED (`f80557d`, 2026-09-15)
 
-**Order of work:** ✅ (1) the host flat-line count — **DONE, 57%, `3b79ebc`**; (2) phase 18's row
-window; (3) the takeover's own line loop with the group-of-four scan, behind `SPANFILL=3`, oracled by
-the two in-process checks of §10n; (4) then stage A in full, then B, C, D, E as §10j has them.
+⛔ **First, a retraction: the gate's mechanism as written above was WRONG.** It claimed
+`column_gap_walk` (phase 18) reads frame-buffer pixels. It does not. It walks the **source blocks**
+at `$3000 + column*$80` and stores to `$0504` / `$4400` — not one of those addresses is inside the
+frame buffer (`$5A80..$7B40`; `BBC_SCREEN_BASE 0x5A80`, `BBC_SCREEN_BYTES 8320`). The `NOUNITS=2`
+observation the claim rested on (ph 18 at 5.88 ms against 10.18) is real and has a different cause:
+NOUNITS=2 never **consumes** the sources, so they stay non-zero, and the gap walk — which replaces
+every **zero** byte with `surface_colour_at`'s answer — finds fewer zeros to fill. Phase 18 is a
+**producer for the sweep**, not a consumer of the frame buffer. `fill_dash_edge_columns` being a
+producer is still true and still means it cannot simply be sequenced after; it is not a *reader*.
+
+⭐⭐ **And the audit itself was asked as a MEASUREMENT, which is why it closes.** A code read cannot
+close a reader audit on this project — the readers include the transliteration an expansion circuit's
+hook re-enters (CLAUDE.md: "a `region_*` name is SHIPPING code until proven otherwise"), and no scan
+of the native surface can see those. So `REVS_FB_POISON=<first>-<last>` (`shape_fb_poison`, hooked
+right after `view_paint_lines()` returns) **inverts** every `mem[]` byte of the named display lines —
+`^= 0xFF`, not a constant, so every poisoned byte provably differs from the pixels the sweep just
+wrote — and the whole 64 KB is diffed at frame 300 against an unpoisoned run. **Every difference
+inside the poisoned rows means nothing in the game read them**, and it covers the transliteration,
+the track hooks and the 50 Hz body for free, because it asks the machine rather than the source.
+
+Its positive control is built in and had to fire first: `update_grip_limits` reads `mem[$713D]` and
+`mem[$7205]`, both on **display line 149** (cells 7 and 32: `$713D − $5A80 = 18*320 + 7*8 + 5`).
+
+**Which rows each phase paints is measured too** — `shape_view_flat` now takes the screen pointer and
+keeps a per-phase min/max display line, because the gate has to be evaluated against the rows the
+takeover *owns*, not the whole band. They tile it exactly, and reproduce the 36/16/25 split:
+
+| rows | phase | lines | differ | inside | **OUTSIDE** | the reader |
+|---|---|---:|---:|---:|---:|---|
+| **81..116** | **1 `view_paint_lines_core`** | 36 | 1440 | 1440 | **0** | ⭐ **NONE** |
+| 117..132 | 2 `paint_lines_clipped` | 16 | 644 | 640 | 4 | `plot_line_octant`, undo 28..31 |
+| 133..157 | 3 `paint_lines_short` | 25 | 2796 | 796 | 2000 | …undo 32..35 **+ row 149** |
+| 149..149 | (the positive control) | 1 | 2325 | 34 | 2291 | `update_grip_limits` — the instrument works |
+
+⭐⭐⭐ **So the takeover may own display lines 81..116 OUTRIGHT: no compatibility write-back, no shadow
+copy, nothing.** All 1440 poisoned bytes also *survived* to the dump, so nothing overwrites those rows
+after the sweep and no masking can be hiding a reader behind a rewrite. Sub-ranges agree: `81..101`
+alone is clean (840/840 inside) and `102..116` alone is clean (600/600), so the answer is not an
+average over a mixed band.
+
+⭐⭐ **The reader in the other two phases is `plot_line_octant`, and it is not a pixel consumer.** It
+saves the **original** byte at each address it plots into `MEM_plot_undo_byte` (`$0780`, `src/gen/mem.h`)
+so the plot can be undone. The eight outside bytes are exactly entries 28..35, each the bit-inverse of
+the reference, and they split 4/4 between rows 117..132 and 133..148 — i.e. by phase. A takeover of
+phases 2/3 therefore owes the **undo table** real bytes, not the whole frame buffer. Phase 1 owes
+nothing, which is where the takeover starts.
+
+**Order of work:** ✅ (1) the host flat-line count — **DONE, 57%, `3b79ebc`**; ✅ (2) the reader gate —
+**DONE, OPEN for rows 81..116, `f80557d`**; (3) the takeover's own line loop with the group-of-four
+scan, behind `SPANFILL=3`, oracled by the two in-process checks of §10n; (4) then stage A in full,
+then B, C, D, E as §10j has them.
