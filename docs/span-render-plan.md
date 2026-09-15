@@ -193,6 +193,14 @@ against the phase table. **Build that first and measure it before writing the re
 sweep's stores do not come off phase 1's bracket roughly in proportion, the model is wrong and
 almost nothing has been spent finding out.
 
+> ⛔ **BUILT, MEASURED, AND THIS ROW OF THE TABLE IS WRONG — see §10n.** The stores did come off
+> (58% of phase 1's units, at 42 cyc/unit, matching the objdump to 2%) and bought only 32% of phase 1's
+> bracket, because **stage A above is sized as "stores deleted" when the bracket is driver + stores and
+> a hook-in reaches only the stores.** `NOUNITS=2` had already measured the sweep at **61%
+> driver/entry** when this table was written and the table did not apply it. ⇒ **Size a hook-in against
+> the differential for the part it can actually delete, never against a census of stores** — and note
+> that stage A's ~8 ms remains reachable only by the §10p *takeover*, which deletes the driver too.
+
 ⚠ Stage D's ~12 ms is the softest number here and it is also the one that **does not** need to be
 believed to justify starting: A+B+C alone take ~181 → ~63 ms.
 
@@ -466,13 +474,14 @@ overhead the end state would not — six volatile counters per run (not `PROBES`
 out-of-line `revs_plot_run`. Irrelevant to the corrected conclusion either way, since the scaffold is
 the wrong experiment regardless of how cleanly it is built.
 
-**⭐ STATUS — the architecture is UNPROVEN, not closed.** The valid next experiment is the one §10j
-step 1 was *meant* to be but is not: a **full-line direct renderer that deletes `view_paint_lines` for
-the lines it owns** and fills spans from the analytic scene, measured against the phase table. §10e's
-own cheap checkpoint applies — rows 81–100 are 20 single-run rows carrying 37% of the stores; a span
-emitter *for those rows that also stops the sweep from painting them* is the smallest build that
-actually tests the premise. The emitter/oracle stay behind `SPANEMIT`/`SPANVERIFY`/`DIRECTCHECK` and
-are reusable for it; nothing ships yet.
+**⭐ STATUS — SUPERSEDED BY §10n: that experiment was built as `make SPANFILL=1` and it has
+answered.** A full-line direct renderer that stops the sweep painting the lines it owns measures
+**−3.35 ms** on phase 1, its fill costs only **1.63 ms (6.87 cyc/byte, direct-to-bitplane writing
+exonerated)**, and it still nets **≈ 0** — because what it deletes is the unit loop at 42 cyc/unit
+while the **905 cyc/line driver survives**, and because its dirty-map predicate costs +4.4 ms in the
+producers. ⇒ **Read §10n for the measurement and §10p for the shape that follows from it** (the
+renderer owns phase 1's line loop rather than hooking into it). The three "bolt onto the scan"
+results below stand and are now four.
 
 ### 10m. ⭐⭐ HARDWARE SPRITES for the instruments — a separate future lever (user, 2026-08-16)
 
@@ -531,3 +540,251 @@ per-column dirty test — so the sprite win is the full per-frame cost of whatev
 move, not a residue left after a dirty-map.
 **`make fbwrites` sizes this whole item (§10h); measure it before scheduling.**
 
+
+### 10n. ⭐⭐⭐ THE §10e CHECKPOINT IS BUILT AND MEASURED — the fill is CHEAP, the PREDICATE is the cost, and the DRIVER is what has to go (2026-09-15)
+
+`make SPANFILL=1` (§10L's "valid next experiment": spans the lines it owns and **stops the sweep
+painting them**, no mirror, ownership per display line). Four builds, one session, **parked**
+(`STRAIGHT_TO_RACE=1 PROBES=1 FIXED_RNG=1`, warp, 30 s, `phase4_prof.gdb`), 4020 beam ticks/ms:
+
+| build | what it is | ph 5 | ph 11 | ph 18 | **ph 24** | ph 27 | ph 33 | ph 34 | ph 0 |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| CTL | clean control | 26.56 | 33.63 | 10.12 | **15.68** | 25.90 | 12.34 | 23.61 | 315 |
+| SF2 | `SPANFILL=2` — claim, no fill | 26.44 | 35.89 | 12.96 | **11.77** | 26.09 | 12.65 | 23.93 | 218 |
+| SF1 | `SPANFILL=1` — shipping arm | 26.43 | 35.69 | 12.96 | **13.39** | 25.97 | 12.68 | 23.90 | 217 |
+| SF1-NOSTAT | ...+ `SPANSTAT=0` | 26.51 | 35.14 | 12.98 | **12.33** | 25.93 | 12.67 | 23.84 | 311 |
+
+Census: units/frame 1440 → 606 → 602 → 592 over 36 lines, so **21 of 36 lines were spanned** (runs
+36 → 15; phase 1's lines are one run each — see below).
+
+**⭐⭐ READ THE QUAD AS TWO PAIRS, AND PHASE 0 IS WHAT PARTITIONS IT.** Phase 0's field count says how
+many of the engine's 100-field crash holds the window reached, and a hold is a *static* scene whose
+sweeps sit at the cheap end — so it dilutes the view phases' per-frame averages downward. CTL and
+SF1-NOSTAT reached 3.15/3.11 holds; SF1 and SF2 reached 2.17/2.18. **Each derived quantity therefore
+wants its own pair:**
+
+| quantity | pair | dilution | value |
+|---|---|---|---:|
+| the NET, and the collateral | CTL ↔ SF1-NOSTAT | matched | **−3.35 ms** on ph 24 |
+| the FILL | SF1 ↔ SF2 | matched | **+1.63 ms** |
+| the DIAGNOSTICS | SF1 ↔ SF1-NOSTAT | **crosses** | **≤ +1.06 ms** (upper bound) |
+
+⚠ This supersedes an earlier reading of this same quad that called phase 0 "not a reliable
+discriminator" and judged soundness from untouched-phase agreement alone. Both tests matter and they
+say different things: untouched-phase agreement rejects a *build* difference, matched phase 0 rejects
+a *workload* difference. SF1↔SF2 passes both (every untouched phase inside 0.20 ms, ph 18 to 0.00).
+
+#### ⭐⭐⭐ THE FILL IS CHEAP, AND DIRECT-TO-BITPLANE WRITING IS EXONERATED
+
+**+1.63 ms/frame for 21 spans × 80 bytes = 550 cycles/span = 6.87 cycles/byte**, against an objdump
+prediction of ~550 (call+prologue+epilogue+rts 82, two bounds tests ~30, `s_lineOf` ~18, `g_plotOwn`
+store ~20, `s_planeOff` ~24, the `lea`/`lsl`/two `s_expand4` reads ~60, and 316 for the twenty
+stores). **The model closes to 1%.**
+
+The fill's whole measured history is now consistent, and every step of it was code shape:
+
+| build | µs/frame | cyc per 8 B | what was wrong |
+|---|---:|---:|---|
+| generic `revs_plot_run`, original loop | +5470 | 185 | the loop re-derived its advancing pointer and re-read lo4/hi4/limit out of three loop-invariant stack slots every turn — CLAUDE.md's frame-slot class |
+| ...loop fixed | +4050 | 56 | the loop was at the floor; the **preamble** (variable count to split, alignment step, byte tail, two synthesised broadcasts, an 8-register `movem`) was bigger than the stores |
+| **specialised `revs_plot_span`** | **+1630** | **27** | nothing left above the store floor |
+
+⇒ **The deficit was never the bitplanes.** It was, in order: a stack-slot-reloading inner loop, then
+a preamble bigger than its stores, then the predicate below. ⭐ And the last three cycles per byte are
+known and declined: GCC emits the twenty stores as `move.l Dn,d16(a0)` (16 cyc) rather than
+`move.l Dn,(a0)+` (12), which is 316 against 240 — ~0.22 ms/frame that only inline asm can take, i.e.
+0.1% of frame. `movem.l` is costed and **rejected** at the code (368 cycles against 240: the ten
+registers must be reloaded with hi4 between planes, and eight are callee-saved).
+
+#### ⭐⭐ THE DIAGNOSTICS COST ≤1.06 ms — SHIPPING PRICE ≠ COUNTING PRICE
+
+Six `volatile` absolute-address RMWs per span plus two per line: ≤359 cycles/span. `make SPANSTAT=0`
+removes them. Same class as `SND_STAT()` in the VERTB ISR. **Any span price quoted from a counting
+build is ~25% too high**, which is a quarter of what the whole deletion bought.
+
+#### ⭐⭐⭐ AND THE SPAN DELETES THE UNIT LOOP AND ESSENTIALLY NOTHING ELSE — 42 cyc/unit
+
+Backing the diagnostics out of SF2 puts the pure deletion at **4.98 ms for 834 units = 1681
+cycles/line = 42.0 cyc/unit** (an *upper* bound, since the diagnostics figure crosses the pairs and
+so is itself an upper bound). The objdump's clean-arm quad body is **43 cyc/unit**
+(`docs/perf-method.md` §the sweep is 61% driver/entry). **These are the same number.**
+
+That is the finding, and it is sharper than a sizing error: the span skips the run set-up as well as
+the forty units, and the measurement gives that **no credit at all**. What a span deletes is the unit
+loop, at exactly the rate the unrolled body costs. **The per-line driver survives it.**
+
+⚠⚠ **A TWO-POINT FIT ON (LINES, UNITS) CANNOT SEE THIS, AND MINE DIDN'T.** Solving
+`36D + 1440u = 15.68` / `36D + 606u = 11.77` gives u = 33 cyc and D = 248 µs/line — a ~8.9 ms
+per-line driver, 57% of the bracket — and **that fit is withdrawn.** It assumes one uniform `u`
+across all 1440 units, and the units are not uniform: the 834 deleted ones are *by construction*
+the all-clean ones at 42 cyc, while the 606 survivors carry the dirty arm (+80 cyc each) and
+average ~72. With `NOUNITS=2`'s independently measured 905 cyc/line driver the parked numbers close
+exactly on that split. **This is the underidentified line/run fit that CLAUDE.md already records
+from the run-entry specialisation, made a second time on the same routine** — a two-parameter fit
+on two points has no residual to warn you with, so it always looks like it worked.
+
+#### ⛔⛔⛔ THE PREDICATE IS A WRITER-MAINTAINED DIRTY MAP, AND IT COSTS MORE THAN THE SPAN SAVES
+
+CTL ↔ SF1-NOSTAT, matched dilution:
+
+| phase | what | Δ |
+|---|---|---:|
+| 24 | `view_paint_lines` phase 1 | **−3.35** ← the span's own win |
+| 11 | `draw_road` | **+1.51** |
+| 18 | `fill_dash_edge_columns` | **+2.86** |
+| 33 / 34 | view phases 2 / 3 | +0.33 / +0.23 |
+| 5 / 27 | untouched | −0.05 / +0.03 |
+
+⇒ **net +1.0 ms/frame.** The collateral is the build, not the trajectory: all three span builds read
+ph 18 at 12.96 / 12.96 / 12.98, agreeing to 0.02 ms across two different dilutions.
+
+**⭐⭐⭐ The mechanism is inline bloat, not the map's arithmetic.** `REVS_SPAN_EMIT` turns on
+`REVS_VIEW_MARKING`, which inlines the `REVS_FLAG_OP` leaf `view_mark_source` into `seam_write` —
+the choke point every indirect store passes. The objdump counts **164 inlined copies of
+`g_viewLineDirty` in the span build and 0 in the control.** Twenty land inside
+`column_gap_walk_core` (1149 → 924 instructions), whose caller `fill_edge_column_run_core` then
+collapses **532 → 54 instructions**: it lost its callee's inlining outright. That is ph 18's +2.86.
+Another ~46 are spread through `draw_road`'s tree (`plot_view_src_line_core` 19, `interp_edge_core`
+8, `fill_object_gap_core` 7, `sw_plot_1/2` 7, `paint_fence_backdrop_core` 5) — ph 11's +1.51.
+`draw_road_core` (192 instrs) and `draw_surface_spans_core.part.0` (169) are byte-identical in shape
+between builds, so the cost is entirely in the source-writing leaves.
+
+⇒ **A CONSUMER-SIDE PREDICATE MAY NOT BE MAINTAINED BY THE WRITERS.** Second measured instance behind
+`CHANGEDIRTY`, by a **different** mechanism — not per-store compare traffic but inline bloat arriving
+through a header — and a violation of the standing STATELESS directive either way. Annotated at
+`src/gen/revs_native_seam.h`'s `REVS_VIEW_MARKING` gate.
+
+#### ⭐⭐ WHAT §10e GOT WRONG, IN ITS OWN TERMS
+
+§10e's checkpoint asked: *"if 37% of the sweep's stores do not come off phase 1's bracket roughly in
+proportion, the model is wrong."* **58% of phase 1's units came off and bought 32% of phase 1's
+bracket** (4.98 of 15.68); against the whole sweep, 39% of its 2155 stores bought 9.6% of its
+51.63 ms. Not in proportion.
+
+The error is **not** the fill (1% of prediction) and **not** the store rate (2% of prediction). It is
+that **§10e sized stage A as "stores deleted" when the bracket is driver + stores, and a hook-in
+reaches only the stores.** That was already published when §10e was written — `NOUNITS=2` puts phase 1
+at 29% driver / 71% units and the whole sweep at **61% driver/entry** — and §10e simply did not apply
+it. ⇒ **Size a hook-in against the differential for the part it can actually delete, never against a
+census of stores.** (CLAUDE.md already carries the general form: *price a skip scheme with TWO
+numbers — visits deleted, and what one visit of the NEW shape costs.* The missing third number is
+**what survives**.)
+
+**The floor this puts under a hook-in.** Even a free, exact predicate and a free fill leave phase 1's
+driver standing: spanning *all* 36 lines would delete 11.23 ms of unit loop and leave 4.59 ms. And a
+stateless predicate is not free — reading the forty sources per line is ~2.44 ms over 36 lines (below)
+— so the best hook-in available is:
+
+| hook-in variant | ph 24 | collateral | net |
+|---|---:|---:|---:|
+| as built (dirty map) | −3.35 | +4.93 | **+1.6** |
+| stateless 40-source scan instead | −3.35 + 2.44 | 0 | **−0.9** |
+
+**Both are zero.** ⇒ **THE DRIVER MUST GO. The span renderer has to OWN phase 1's line loop, not hook
+into it** — where the source scan *replaces* the chain's own forty source reads instead of being added
+to them. That is §10p.
+
+#### ⭐ Correctness, and one instrument retired
+
+Both in-process oracles were green against the specialised span: **the span bytes**
+(`SPANFILL=1 SPANVERIFY=1 DIRECTCHECK=1` + `span_emit.gdb`) `checks=21 mismatch=0`, and **the
+carve-out** (`SPANFILL=1 DIRTYCHECK=1` + `span_fill.gdb`) `checks=29 mismatch=0`, exact by
+construction because an owned line is `m_lineMode[y]=0` and the reference conversion writes nothing
+there. ⚠⚠ **Cross-build pixel dumps at the same game frame are retired** (`amiga/span_fill_dump.gdb`
+carries the reasoning): the 50 Hz body runs on wall clock, so at equal game frames a faster build has
+taken a different number of body ticks — frame 40 was vbi=556 in the control and 574 under
+`SPANFILL=1`. That trajectory divergence is what produced the "lines 133..140, plane 2" diff that
+stood open for a session.
+
+### 10p. ⭐⭐⭐ THE PHASE-1 TAKEOVER — the renderer owns the line loop (the live next build)
+
+§10n's verdict in one line: **a span deletes 42 cyc/unit and the 905 cyc/line driver survives, so the
+win is in owning the loop, not in being called from it.** Phase 1 is the right first owner: 36 lines,
+full width, and — measured below — structurally the simplest of the three phases.
+
+**What `view_paint_lines` phase 1 actually does per line**, read off `revs_native.c`:
+
+1. `step_scanline()` advances `plot_ptr`/`plot_ptr2` ($70-$73);
+2. `byte = surface_colours[view_line_surface[line] & 3]` — **the line's colour is one table lookup
+   off a per-line index.** No chain state.
+3. run set-up: `view_stop_from(0)`, the segment pointers, `base_span_is_ram`;
+4. forty units, each `view_consume(src) → store`.
+
+⭐⭐ **AND `view_consume` IS RLE WITH A DESTRUCTIVE READ, WHICH IS WHAT MAKES A STATELESS PREDICATE
+EXACT.** A zero source means "same as my left"; a non-zero source means "change to
+`view_cell_bytes[source]`" **and is then cleared to zero**. So at line entry a source byte is
+non-zero *iff a producer wrote it since the last sweep consumed it*, and:
+
+> **a line is one flat run ⟺ all forty of its sources are zero.**
+
+Two consequences, both load-bearing:
+
+- **⭐ The stateless test is EXACT where the dirty map is CONSERVATIVE.** `g_viewLineDirty` marks on
+  *any* write, including a write of zero, so it rejects lines that are in fact flat. The 40-source OR
+  therefore qualifies **at least** the 21 of 36 lines the map qualified, and possibly more.
+- **⭐ `view_stop_from(0) == 40` is a constant `true` in phase 1** — the planted-stop list "is empty
+  through all of phase 1" (`view_stop_from`'s own note; `stopUnit == 40` is "none in this chain run,
+  which is every one of phase 1's lines"). The `fullRun` conjunct is dead weight here, which is why
+  phase 1's census reads exactly one run per line. **Phase 1 needs the source test and nothing else.**
+
+⭐⭐ **THE SCAN, AND ITS 3× SHORTCUT.** Source bytes sit at `view_src_blocks + (cell << 7) + line`, so
+for one line they are forty reads 128 bytes apart: `or.b d16(a0),d0` × 40 = **480 cycles** (offsets
+0..4992 fit the signed displacement, one base register, no table). But **along the other axis the
+stride is 1** — four *consecutive lines* of one cell are four consecutive bytes — so one
+`or.l d16(a0),d0` (18 cyc) tests four lines at once and forty of them answer **four lines for 720
+cycles = 180 cyc/line**, a 2.7× reduction, with a zero byte lane naming each flat line. Phase 1's 36
+lines are 9 groups: **0.91 ms instead of 2.44.**
+⚠ Two constraints, both to be discharged in code: the group base must be **even** (a `move.l` at an
+odd address is an address error on the 68000), and reading mem[] four bytes at a time is exactly the
+alias `make endian-lint` forbids — legal here only because the accumulator is used as four
+*independent byte lanes* and OR is lane-order-independent, but the lane→line map is not, so the
+exception must be declared at the code and the lane test written per byte.
+
+**Sizing, per line, against `NOUNITS=2`'s measured 905 cyc/line driver + 55 cyc/unit:**
+
+| line kind | now | takeover | basis |
+|---|---:|---:|---|
+| flat | 905 + 40×55 = **3105** | ~250 driver + 180 scan + 550 fill = **~980** | the fill is measured; the driver is a hand-written loop with no stack round trips |
+| not flat | **3105** | ~250 + 180 + 480 positional walk + 550 fill + boundaries×~70 ≈ **~2300** | the OR loses position, so a changed line pays the byte scan too |
+
+| phase 1 | ms |
+|---|---:|
+| now (`NOUNITS=2`, driving) | **15.83** = 4.59 driver + 11.23 units |
+| takeover, all 36 lines flat | **~5.0** |
+| takeover at the parked 21/36 flat split | **~8.1** |
+
+⇒ **−8 to −11 ms on phase 1, against the hook-in's ≈ 0.** And the same shape then addresses phases 2
+and 3 — 12.34 + 23.61 = 36 ms at **67% and 80% chain-entry**, the larger prize, which is why the
+takeover is built on phase 1 first and not last.
+
+**⭐⭐ THE CHEAP CHECKPOINT FOR *THIS* STAGE, and it needs no emulator run.** The flat fraction is the
+whole difference between −8 and −11 ms, and `REVS_VIEWSKIP_ASSERT` already contains the exact
+forty-source loop. Put a counter behind it on the **host** and print how many of phase 1's 36 lines
+have all forty sources zero at line entry, parked and driving. CLAUDE.md licenses a host counter for
+counting, it costs nothing, and it also settles whether the exact test beats the dirty map's 21.
+**Do this before writing the takeover.**
+
+**What the takeover still owes `mem[]` — the reader audit, which is the hard half (§10i, the RESULTS
+rule):**
+
+| what | who reads it | status |
+|---|---|---|
+| `plot_ptr` / `plot_ptr2` ($70-$73) | phases 2 and 3 continue the walk from them | **must be left exactly as the chain leaves them** — `step_scanline` stays |
+| the forty source bytes | nothing, once consumed | free on the flat path: already zero, so "not consuming them" is exact |
+| `cell` / `view_cell_bytes` | the next chain entry | the emitter already reproduces this (`cell = 0x38`, "unit 39's cell, as a full line leaves it") |
+| **the framebuffer bytes for rows 81..101** | **⚠⚠ `column_gap_walk` (phase 18) READS framebuffer pixels** — `NOUNITS=2` reads ph 18 at 5.88 ms against 10.18 "because it walks a frame buffer that no longer holds road pixels" | **THE GATE. Unresolved.** |
+
+⚠⚠ **That last row is the takeover's real gate and it was under-stated until now.** `fill_dash_edge_columns`
+is *also* a producer for the sweep (its two boundary tables `view_left_start_src` / `view_right_start_src`
+are what `view_paint_lines` composes each row's leading edge cell from, and "this call is their only
+producer"), so it cannot simply be sequenced after. It walks character columns 3..6 from scan line $1B
+and $1A..$22 from $2B; **whether those rows intersect 81..101 decides whether the takeover can stop
+writing mem[] there at all**, and it is a measurement (`make fbwrites`, or a watch on those columns),
+not a judgement. Resolve it before the first line of the takeover, because the answer picks the shape:
+either the owned rows are outside phase 18's window, or the takeover must compose those columns' bytes
+to `mem[]` the way Hazard 1 already requires for `update_grip_limits`' row 149
+(`mem[$713D]` / `mem[$7205]`, §10g — phase 3, so it does not bear on rows 81..101).
+
+**Order of work:** (1) the host flat-line count; (2) phase 18's row window; (3) the takeover's own
+line loop with the group-of-four scan, behind `SPANFILL=3`, oracled by the two in-process checks of
+§10n; (4) then stage A in full, then B, C, D, E as §10j has them.
