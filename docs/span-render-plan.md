@@ -722,10 +722,15 @@ Two consequences, both load-bearing:
 - **⭐ The stateless test is EXACT where the dirty map is CONSERVATIVE.** `g_viewLineDirty` marks on
   *any* write, including a write of zero, so it rejects lines that are in fact flat. The 40-source OR
   therefore qualifies **at least** the 21 of 36 lines the map qualified, and possibly more.
+  ✅ **MEASURED at 57% — 20.5 of 36 — over 595 DRIVING sweeps** (the count below). So the exact test
+  and the conservative map qualify the *same* set to within the workload difference; the map's 21 was
+  not leaving lines on the table. What the map cost was its **producers**, not its precision.
 - **⭐ `view_stop_from(0) == 40` is a constant `true` in phase 1** — the planted-stop list "is empty
   through all of phase 1" (`view_stop_from`'s own note; `stopUnit == 40` is "none in this chain run,
   which is every one of phase 1's lines"). The `fullRun` conjunct is dead weight here, which is why
   phase 1's census reads exactly one run per line. **Phase 1 needs the source test and nothing else.**
+  ✅ **MEASURED AND CONFIRMED: `full == lines` exactly, over 21456 phase-1 lines.** This was a claim
+  read off a comment; it is now a count, and the conjunct comes out of the predicate.
 
 ⭐⭐ **THE SCAN, AND ITS 3× SHORTCUT.** Source bytes sit at `view_src_blocks + (cell << 7) + line`, so
 for one line they are forty reads 128 bytes apart: `or.b d16(a0),d0` × 40 = **480 cycles** (offsets
@@ -747,22 +752,68 @@ exception must be declared at the code and the lane test written per byte.
 | flat | 905 + 40×55 = **3105** | ~250 driver + 180 scan + 550 fill = **~980** | the fill is measured; the driver is a hand-written loop with no stack round trips |
 | not flat | **3105** | ~250 + 180 + 480 positional walk + 550 fill + boundaries×~70 ≈ **~2300** | the OR loses position, so a changed line pays the byte scan too |
 
-| phase 1 | ms |
-|---|---:|
-| now (`NOUNITS=2`, driving) | **15.83** = 4.59 driver + 11.23 units |
-| takeover, all 36 lines flat | **~5.0** |
-| takeover at the parked 21/36 flat split | **~8.1** |
+| phase 1 | ms | saving |
+|---|---:|---:|
+| now (`NOUNITS=2`, driving) | **15.83** = 4.59 driver + 11.23 units | — |
+| takeover, all 36 lines flat (the best sweep observed) | **~5.0** | −10.7 |
+| **takeover at the MEASURED 57% flat** | **~7.9** | **−7.8** |
+| takeover with nothing flat (the worst sweep observed) | **~11.7** | −4.0 |
 
-⇒ **−8 to −11 ms on phase 1, against the hook-in's ≈ 0.** And the same shape then addresses phases 2
+⇒ **−7.8 ms on phase 1 on the average frame, against the hook-in's ≈ 0**, bracketed −4.0 to −10.7 by
+the observed per-sweep spread. ⭐ The average is the right headline number and the spread does not
+dilute it, because the cost is **linear** in the flat count: `Σ(flat·980 + (36−flat)·2300)` is
+`36·2300·N − 1320·Σflat`, which depends on Σflat and on nothing else about its distribution. The
+spread bounds the WORST FRAME instead — a jitter question, and a real one at 11.7 ms.
+And the same shape then addresses phases 2
 and 3 — 12.34 + 23.61 = 36 ms at **67% and 80% chain-entry**, the larger prize, which is why the
 takeover is built on phase 1 first and not last.
 
-**⭐⭐ THE CHEAP CHECKPOINT FOR *THIS* STAGE, and it needs no emulator run.** The flat fraction is the
-whole difference between −8 and −11 ms, and `REVS_VIEWSKIP_ASSERT` already contains the exact
-forty-source loop. Put a counter behind it on the **host** and print how many of phase 1's 36 lines
-have all forty sources zero at line entry, parked and driving. CLAUDE.md licenses a host counter for
-counting, it costs nothing, and it also settles whether the exact test beats the dirty map's 21.
-**Do this before writing the takeover.**
+#### ✅ STEP 1 IS DONE — THE FLAT-LINE COUNT, MEASURED (`3b79ebc`, 2026-09-15)
+
+The cheap checkpoint for this stage, and it needed no emulator run: `shape_view_flat` (`make SHAPE=1`,
+`REVS_SHAPE_WATCH=N`) asks the takeover's own predicate at the exact point the takeover will ask it —
+in `paint_cells`'s `advance_first` arm, after the line is stepped and its background byte resolved,
+before any unit runs. Host, `REVS_FIXED_RNG=1`, **`STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` so the car
+MOVES** (the parked-car trap: a static scene reports "skip everything"), 595 sweeps:
+
+| phase | lines/sweep | flat | `full` | flat&&full | per sweep |
+|---|---:|---:|---|---:|---|
+| 1 (`view_paint_lines_core`) | **36** | **57%** | **== lines** | **57%** | 0..36, last 21 |
+| 2 (`paint_lines_clipped`) | **16** | **0%** | == 0 | 0% | 0..0 |
+| 3 (`paint_lines_short`) | — | — | — | — | never enters the hook |
+
+**Read in the order the instrument's own comment gives:**
+
+1. **36 and 16 reproduce the target's line split**, so the row carries across to the Amiga. (Phase 3
+   is absent because only `view_paint_lines_core` and `paint_lines_clipped` call `paint_cells`;
+   `paint_lines_short` drives its own line loop. That is a structural finding, not a gap.)
+2. **`full == lines`, exactly, over 21456 lines** ⇒ §10p's no-planted-stops claim holds and the
+   `fullRun` conjunct leaves the predicate.
+3. **57% flat ⇒ −7.8 ms** on the average frame (the table above).
+
+⭐ **And it cross-checks the PARKED span census.** `SPANFILL=1` found 21 of 36 lines spanned with the
+dirty-map predicate; this **driving** run's last sweep reads **21**, and its mean is 20.5. The
+standing doubt about that 21 — that a parked car reports a static scene — is discharged.
+
+⛔ **THE FLAT PREDICATE IS PHASE-1-ONLY, AND THAT IS THE ONE UNWELCOME RESULT.** Not one of 9536
+phase-2 lines had forty zero sources, and every one of them had stops planted (2.0 runs/line). Phase
+3's lines visit **11.2 of 40** cells, so a forty-cell scan asks the wrong question there before it is
+even tried — 180 cyc/line of scan to save 11 × 55 = 605. ⇒ **phases 2 and 3 are a DRIVER lever, never
+a span-fast-path one**, and the 36 ms behind them has to be reached by owning their loops, not by
+qualifying their lines. The takeover's shape must not assume otherwise.
+
+⚠⚠ **A caveat this doc and `shape.h` both carried is WITHDRAWN, and the correction is the
+transferable part.** I wrote that a whole-run ratio "cannot answer the sizing question" because
+21-of-36 averaged could be bimodal, and built a per-sweep min/max tally to defend against it. It can:
+the cost is **linear** in the flat count, so `Σflat` is a *sufficient statistic* for the average frame
+and the distribution is irrelevant to it. ⭐⭐ **Ask whether the statistic is sufficient for the COST
+FUNCTION before demanding a distribution** — a linear cost needs only the total; the min/max earns its
+keep on the *jitter* question (worst frame 11.7 ms) and not on the sizing one.
+
+⚠ Sabotaged four ways before its output was believed: one cell instead of forty reads 96%, the
+inverted test 0%, a 64-byte source stride 0%, and the restored control reproduces 6109 exactly.
+`view_stop_from` is pure, so the SHAPE build's trajectory is the default's; `determinism`,
+`-drive` and `-steer` all PASS.
 
 **What the takeover still owes `mem[]` — the reader audit, which is the hard half (§10i, the RESULTS
 rule):**
@@ -785,6 +836,6 @@ either the owned rows are outside phase 18's window, or the takeover must compos
 to `mem[]` the way Hazard 1 already requires for `update_grip_limits`' row 149
 (`mem[$713D]` / `mem[$7205]`, §10g — phase 3, so it does not bear on rows 81..101).
 
-**Order of work:** (1) the host flat-line count; (2) phase 18's row window; (3) the takeover's own
-line loop with the group-of-four scan, behind `SPANFILL=3`, oracled by the two in-process checks of
-§10n; (4) then stage A in full, then B, C, D, E as §10j has them.
+**Order of work:** ✅ (1) the host flat-line count — **DONE, 57%, `3b79ebc`**; (2) phase 18's row
+window; (3) the takeover's own line loop with the group-of-four scan, behind `SPANFILL=3`, oracled by
+the two in-process checks of §10n; (4) then stage A in full, then B, C, D, E as §10j has them.
