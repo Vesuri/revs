@@ -10,6 +10,9 @@
 #if defined(REVS_VIEWSKIP) && !defined(REVS_PLATFORM_AMIGA)
 extern "C" void revs_announce_viewskip(void);
 #endif
+#if defined(REVS_SPAN_SCANCHECK) && !defined(REVS_PLATFORM_AMIGA)
+extern "C" void revs_announce_spanscan(void);
+#endif
 
 #if defined(REVS_PLATFORM_AMIGA)
   #include "PlatformAmiga.h"        /* src/platform/amiga — on the cross-build's -I path */
@@ -48,6 +51,12 @@ int main(int argc, char* argv[]) {
        against a control that silently had the switch in the same position measures nothing.
        On the Amiga the same fact is read off g_viewSkipLines through gdb. */
     revs_announce_viewskip();
+#endif
+#if defined(REVS_SPAN_SCANCHECK) && !defined(REVS_PLATFORM_AMIGA)
+    /* ⭐ Same rule, and here it is load-bearing twice over: an oracle that silently did not run
+       reads exactly like an oracle that found nothing (CLAUDE.md §an A/B switch must print its
+       own state; `revs_verify_the_instrument`). */
+    revs_announce_spanscan();
 #endif
 
     plt.run();   /* runs the game; returns when the user quits */

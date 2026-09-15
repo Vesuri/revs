@@ -499,6 +499,25 @@ endif
 # if they do not, the runs are still not comparable and nothing may be concluded.
 # ⚠ Parked INFLATES the emit rate (a static scene's sources are clean, so more lines qualify), so
 # read the per-span PRICE from it, never the shipping share — that comes from the driving run.
+# ⭐⭐⭐ `make SPANFILL=3` — THE STATELESS PREDICATE, i.e. the §10p takeover's own test in place
+# of the ⛔ writer-maintained dirty map.  SPANFILL=1's span and fill, unchanged; the predicate
+# becomes "read this line's forty sources" (`view_line_flat`), which is EXACT where the map was
+# conservative, needs no priming, and — the point — deletes `view_mark_source` from `seam_write`
+# and with it the +4.35 ms of producer collateral the map cost in phases 11 and 18
+# (src/gen/revs_native_seam.h §the marking is a measured dead end).  Sizing: the scan costs
+# ~480 cyc on a flat line and less on one that exits early, ~1.8 ms over phase 1's 36 lines,
+# against 4.35 recovered — so SPANFILL=3 minus the control is the first NET-POSITIVE span build.
+# ⭐⭐ `make SPANFILL=4` — ...and the GROUP-OF-FOUR scan: one `or.l` tests four lines at once
+# (180 cyc/line instead of 480) because along the line axis the source stride is 1.  The sweep's
+# lines are consecutive, so one accumulator is cached across four line entries.
+# ⭐⭐ `make SPANFILL=4 SPANSCAN=1` — ITS ORACLE, and it is not optional before believing it:
+# the lane->line map is the one endian-dependent part of the longword read, and a wrong map
+# answers "flat" about a NEIGHBOURING line, which paints a plausible picture.  Every line entry
+# asks both scans and compares; g_spanScanMismatch must stay 0 with g_spanScanChecks large.
+# ⭐ Run `make SPANSCAN=1` ON THE HOST too (the repo-root Makefile): the check does NOT depend on
+# REVS_SPAN_EMIT, so the host can run it over the whole sweep — and the host is little-endian
+# while the Amiga is big-endian, which is the only way one source tree exercises both arms of the
+# `#if` that picks the lane order.
 ifneq ($(SPANFILL),)
 ifeq ($(SPANVERIFY),1)
 EXTRA_DEFINES += -DREVS_SPAN_EMIT -DREVS_DIRECT_PLOT
@@ -507,6 +526,16 @@ EXTRA_DEFINES += -DREVS_SPAN_EMIT -DREVS_DIRECT_PLOT -DREVS_SPAN_OWN
 endif
 ifeq ($(SPANFILL),2)
 EXTRA_DEFINES += -DREVS_SPAN_NO_FILL
+endif
+ifeq ($(SPANFILL),3)
+EXTRA_DEFINES += -DREVS_SPAN_STATELESS
+endif
+ifeq ($(SPANFILL),4)
+EXTRA_DEFINES += -DREVS_SPAN_STATELESS -DREVS_SPAN_GROUPSCAN
+ifeq ($(SPANSCAN),1)
+EXTRA_DEFINES += -DREVS_SPAN_SCANCHECK
+PROBE_SYMS_SCAN = g_spanScanChecks g_spanScanMismatch
+endif
 endif
 PROBE_SYMS_PLOT = g_plotRuns g_plotCells g_plotRunsLast g_plotCellsLast \
                   g_plotLineLo g_plotLineHi g_plotNoTarget
@@ -749,6 +778,7 @@ PROBE_SYMS += $(PROBE_SYMS_CHECK) $(PROBE_SYMS_PLOT) $(PROBE_SYMS_BANDCHECK)
 PROBE_SYMS += $(PROBE_SYMS_BCD)
 PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
 PROBE_SYMS += $(PROBE_SYMS_SPAN)
+PROBE_SYMS += $(PROBE_SYMS_SCAN)
 
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \
             $(addprefix -Wl$(COMMA)--undefined=,$(PROBE_SYMS))

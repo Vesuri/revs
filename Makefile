@@ -190,6 +190,22 @@ CFLAGS   += -DREVS_SHAPE
 CXXFLAGS += -DREVS_SHAPE
 endif
 
+# ⭐⭐ `make SPANSCAN=1` — THE GROUP-OF-FOUR SCAN'S LANE MAP, CHECKED ON THIS HOST.
+# The §10p takeover's fast predicate reads FOUR of a cell's source lines as one longword and
+# treats it as four independent byte lanes (docs/span-render-plan.md §10p; the one argued
+# exception to CLAUDE.md's "never alias mem[] as uint32_t*").  Only the lane->line map is
+# endian-dependent, and a WRONG one is invisible by inspection — it answers "flat" about a
+# NEIGHBOURING line, which paints a plausible picture.  So every sweep line asks both the group
+# scan and a plain forty-byte scan and the two are compared: g_spanScanMismatch must be 0 over
+# a large g_spanScanChecks, printed at exit.
+# ⭐ THE HOST IS THE HALF OF THIS TEST THE TARGET CANNOT DO: it is little-endian and the Amiga is
+# big-endian, so running it here and under `make SPANFILL=4 SPANSCAN=1` there is what exercises
+# BOTH arms of the `#if` that picks the lane order.  Costs nothing else — it needs no renderer.
+ifdef SPANSCAN
+CFLAGS   += -DREVS_SPAN_SCANCHECK
+CXXFLAGS += -DREVS_SPAN_SCANCHECK
+endif
+
 # ⭐ `make GEOSPLIT=1` — build_track_geometry's per-frame call tallies (points, transforms,
 # divides), platform-independent so the host counts them for free (src/platform/probe.h §GEOSPLIT).
 # The beam TIME split is Amiga-only; here it is the COUNTS half.

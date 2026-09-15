@@ -630,7 +630,8 @@ static int view_move_stop(ViewState* v, unsigned stop, uint16_t rec,
     return view_plant(v, plantSite, plantOpnd, page, OP_RTS);
 }
 
-static void paint_cells(ViewState* v, int unit, int forced, int advance_first);
+static void paint_cells(ViewState* v, int unit, int forced, int advance_first,
+                        int mayOwn);
 
 /* A `JSR` into the middle of a chain.  The two legal entry offsets are the unit start and
    unit+$05 — the latter skips the dirty test and uses the cell index the caller just
@@ -648,7 +649,7 @@ static int view_enter_chain(ViewState* v, uint16_t site, uint16_t opnd, unsigned
     if ((target >> 8) == page && view_low_page(page)) {
         unsigned char u = g_viewUnitOf[page - VIEW_LOW_PAGE][target & 0xFF];
         if (u) {
-            paint_cells(v, (u & 0x7F) - 1, (u & 0x80) != 0, 0);
+            paint_cells(v, (u & 0x7F) - 1, (u & 0x80) != 0, 0, 0);
             return 1;
         }
     }
@@ -894,6 +895,140 @@ void revs_announce_viewskip(void)
 #endif
 #endif
 
+#if defined(REVS_SPAN_STATELESS) || defined(REVS_SPAN_SCANCHECK)
+/* ── ⭐⭐⭐ THE TAKEOVER'S STATELESS FLAT TEST (docs/span-render-plan.md §10p step 3) ─────────
+   `view_consume` is RLE with a DESTRUCTIVE read: a zero source means "same as my left", and a
+   non-zero one is translated through `view_cell_bytes` **and then cleared to zero**.  So at line
+   entry a source byte is non-zero *iff a producer wrote it since the last sweep consumed it*, and
+
+       a line is one flat run  ⟺  all forty of its sources are zero.
+
+   ⭐⭐ THAT MAKES THE PREDICATE EXACT WHERE THE WRITER-MAINTAINED MAP WAS CONSERVATIVE, and it
+   is why the map is gone: `g_viewLineDirty` marked on *any* store to a source block including a
+   store of zero, so it rejected lines that were in fact flat — and it cost +4.35 ms/frame in its
+   PRODUCERS to save 3.35 in the consumer, through inline bloat at `seam_write`
+   (revs_native_seam.h §the marking is a measured dead end).  Reading the forty bytes here costs
+   ~480 cycles and taxes nobody else.  The user's standing directive is STATELESS.
+
+   ⭐ AND THE FIRST-SWEEP HAZARD CANNOT EXIST ON THIS ARM.  The map needed priming, because a
+   zero-initialised array says "nobody wrote these sources" about a line whose blocks were
+   already loaded — the 153 stale bytes `make determinism` reported (§the first sweep has no
+   history).  A test that remembers nothing has no wrong initial state to prime away.
+
+   ⚠ The early exit is per group of eight, not per byte: a non-flat line pays this scan AND the
+   forty-unit chain, so cutting it short is worth one test per eight reads, while a flat line —
+   which must read all forty to know — pays only five. */
+static int view_line_flat(unsigned line)
+{
+    MEM_QUAL const unsigned char* p = mem + MEM_view_src_blocks + line;
+    unsigned k;
+
+    /* ⭐ Eight at a time with CONSTANT displacements: the blocks are $80 apart and 40 of them
+       span 4992 bytes, which fits the 68000's signed 16-bit `d16(An)`, so each read is one
+       `or.b d16(a0),d0` at 12 cycles instead of a pointer bump plus `or.b (a0),d0` at ~20. */
+    for (k = 0; k < 5u; k++) {
+        unsigned acc = p[0x000] | p[0x080] | p[0x100] | p[0x180]
+                     | p[0x200] | p[0x280] | p[0x300] | p[0x380];
+        if (acc) return 0;
+        p += 0x400;
+    }
+    return 1;
+}
+
+/* ── ⭐⭐ THE GROUP-OF-FOUR SCAN — the same question for FOUR lines at 2.7x the rate ──────────
+   Along the cell axis a line's sources are forty reads 128 bytes apart; along the LINE axis the
+   stride is 1, so four consecutive lines of one cell are four CONSECUTIVE BYTES.  One
+   `or.l d16(a0),d0` (18 cyc) therefore tests four lines at once and forty of them answer four
+   lines for ~720 cycles = **180 cyc/line** against the byte scan's 480.  The sweep walks its
+   lines consecutively (`line = (line - 1) & 0xFF`, descending), so one accumulator serves four
+   consecutive line entries and the caller caches it.
+
+   ⚠⚠ THE ALIGNMENT IS A THEOREM, NOT A HOPE: the group base is `line & ~3`, a multiple of four,
+   and `MEM_view_src_blocks` ($3000) and `cell << 7` are both multiples of four — so every
+   longword read here is 4-aligned and an odd-address fault is impossible on the 68000.
+
+   ⚠⚠ AND THIS IS THE ONE ARGUED EXCEPTION TO CLAUDE.md's "never alias mem[] as uint32_t*".
+   The rule exists because a wide VALUE read out of mem[] is byte-swapped between host and
+   target.  Here the longword is never a value: it is FOUR INDEPENDENT BYTE LANES and the only
+   operation applied to it is OR, which is per-byte and so lane-order-independent.  What *is*
+   endian-dependent is the lane→line map, and that is written out per target below rather than
+   derived.  `VIEW_SCAN_LANE` is the whole of the exception's surface, and
+   `REVS_SPAN_SCANCHECK` compares every lane against `view_line_flat`'s own byte answer. */
+#if defined(__BIG_ENDIAN__) || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+/* big-endian (the Amiga): byte offset 0 of a longword is the MOST significant */
+#define VIEW_SCAN_LANE(acc, i)   (((acc) >> (24u - 8u * (unsigned)(i))) & 0xFFu)
+#else
+/* little-endian (the dev host): byte offset 0 is the least significant */
+#define VIEW_SCAN_LANE(acc, i)   (((acc) >> (8u * (unsigned)(i))) & 0xFFu)
+#endif
+
+static unsigned view_group_sources(unsigned group)
+{
+    /* ENDIAN-OK: four independent byte LANES, never a wide value — see the note above. */
+    MEM_QUAL const unsigned char* p = mem + MEM_view_src_blocks + group;
+    unsigned acc = 0, k;
+
+    for (k = 0; k < 5u; k++) {
+        acc |= *(const uint32_t*)(p + 0x000) | *(const uint32_t*)(p + 0x080)   /* ENDIAN-OK: lanes */
+             | *(const uint32_t*)(p + 0x100) | *(const uint32_t*)(p + 0x180)   /* ENDIAN-OK: lanes */
+             | *(const uint32_t*)(p + 0x200) | *(const uint32_t*)(p + 0x280)   /* ENDIAN-OK: lanes */
+             | *(const uint32_t*)(p + 0x300) | *(const uint32_t*)(p + 0x380);  /* ENDIAN-OK: lanes */
+        p += 0x400;
+    }
+    return acc;
+}
+
+#ifdef REVS_SPAN_SCANCHECK
+/* ⭐⭐ THE LANE MAP'S ORACLE (`make SPANSCAN=1` on the host, `SPANFILL=4 SPANSCAN=1` on the
+   target).  Every line the sweep enters — all three phases, not just the owned one — asks both
+   scans and compares the group scan's lane against `view_line_flat`'s forty byte reads.
+   ⚠⚠ A WRONG LANE→LINE MAP IS OTHERWISE INVISIBLE: it answers "flat" about a NEIGHBOURING line,
+   which paints a plausible picture rather than an obviously broken one, and it is precisely the
+   defect CLAUDE.md's endianness rule exists to prevent.  So it gets a counter, not an argument.
+   ⭐ AND IT DELIBERATELY DOES NOT DEPEND ON REVS_SPAN_EMIT, so the HOST can run it: the host is
+   little-endian and the Amiga is big-endian, and testing it on both is the only way one source
+   tree exercises both arms of the `#if` that picks the lane order.
+   ⭐ SABOTAGED FIVE WAYS ON A DRIVING WORKLOAD, every one caught (out of 6032 checks): lane order
+   reversed 1120, lane index ignored 123, the BIG-ENDIAN map used on the host 1120, one of the
+   forty cells dropped from the group scan 9, and the byte reference's stride bent by 4 -> 469.
+   ⚠ The two SMALLEST counts are the instructive ones — a defect that only sometimes disagrees is
+   exactly what this counter exists to catch, and neither would have shown up in a rendered frame. */
+volatile unsigned long g_spanScanChecks   = 0;
+volatile unsigned long g_spanScanMismatch = 0;
+
+#define SPAN_SCAN_CHECK(ln) do {                                                        \
+        const unsigned g_ = (ln) & ~3u;                                                 \
+        g_spanScanChecks++;                                                             \
+        if ((VIEW_SCAN_LANE(view_group_sources(g_), (ln) - g_) == 0)                    \
+            != view_line_flat((ln))) g_spanScanMismatch++;                              \
+    } while (0)
+
+#ifndef REVS_PLATFORM_AMIGA
+static void revs_report_spanscan(void)
+{
+    extern int printf(const char*, ...);
+    printf("SPANSCAN: %lu group-scan lanes checked against the byte scan, %lu MISMATCH%s\n",
+           g_spanScanChecks, g_spanScanMismatch,
+           g_spanScanMismatch ? "  *** THE LANE MAP IS WRONG ***" : " — the lane map is right");
+}
+
+void revs_announce_spanscan(void)
+{
+    extern int printf(const char*, ...);
+    extern int atexit(void (*)(void));
+    printf("SPANSCAN: ON — every sweep line's group-scan lane is checked against a byte scan\n");
+    atexit(revs_report_spanscan);
+}
+#endif
+#else
+#define SPAN_SCAN_CHECK(ln) ((void)0)
+#endif
+
+#endif /* REVS_SPAN_STATELESS || REVS_SPAN_SCANCHECK */
+#ifndef SPAN_SCAN_CHECK
+#define SPAN_SCAN_CHECK(ln) ((void)0)
+#endif
+
 /* The chain itself, $7BF7-$7F16.  Runs units `unit`..39 of the current line, then the
    $7EEE tail, which either returns or steps to the next line and starts over at unit 0.
      forced         entered at unit+$05: no dirty test, v->cell is the glyph index
@@ -938,7 +1073,18 @@ void revs_announce_viewskip(void)
         } while (0)
 #endif
 
-static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
+/* `mayOwn` — ⭐⭐⭐ MAY THE SPAN RENDERER TAKE THESE LINES OVER?  1 only from
+   `view_paint_lines_core`, i.e. PHASE 1, display lines 81..116.  Two measurements pick that
+   scope and neither is a judgement call (docs/span-render-plan.md §10p):
+     * the flat count — 57% of phase 1's lines are one flat run and **0% of phase 2's** are
+       (0 of 9536), so the scan is pure cost there;
+     * the reader gate — poisoning rows 81..116 reads 0 bytes outside them, while 117..132 and
+       133..157 both feed `plot_line_octant`'s undo save and 149 feeds `update_grip_limits`.
+   ⚠ A runtime parameter rather than two specialisations on purpose: it is tested once per LINE
+   (52 tests a sweep, ~12 cycles each), and `paint_cells` is 30% of the frame — duplicating it
+   would evict the inlining its own callees depend on (CLAUDE.md §making a hot routine bigger). */
+static void paint_cells(ViewState* v, int unit, int forced, int advance_first,
+                        int mayOwn)
 {
     /* ⚠ The three threaded values become locals for the duration: this is 30% of the frame and
        `v->byte` in the 2093-iteration loop is a memory operand gcc cannot register-allocate.
@@ -948,6 +1094,14 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
     VIEWSPLIT_DECL();
 #ifdef REVS_SPAN_EMIT
     int lineSpanned = 0;
+#endif
+#ifdef REVS_SPAN_GROUPSCAN
+    /* ⭐ THE GROUP-OF-FOUR SCAN'S CACHE, and it is two plain locals so it stays in registers:
+       taking the address of either would move the sweep's hottest state into the stack frame,
+       which is CLAUDE.md's measured §a hot loop's state lives in memory if anything takes its
+       address.  The sweep's lines are consecutive, so one longword OR serves four line entries.
+       `scanGroup` starts at a value no `line & ~3u` can equal, so the first line always scans. */
+    unsigned scanGroup = 0xFFFFu, scanLanes = 0;
 #endif
 #ifdef REVS_VIEWSKIP
     int lineSkipped = 0;
@@ -982,6 +1136,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                that will be measured, not a proxy for it.  Compiled out entirely without SHAPE;
                `view_stop_from` is not evaluated in that build. */
             PROBE_SHAPE_VIEW_FLAT(line, view_stop_from(0) == 40, plot_ptr_v);
+            SPAN_SCAN_CHECK(line);
 #ifdef REVS_SPAN_EMIT
             /* ── ⭐⭐⭐ THE SPAN EMITTER (docs/direct-bitplane-plan.md §10j step 1) ───────────
                Nothing wrote this line's forty sources and no stop is planted in it, so every one
@@ -1002,15 +1157,56 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                ⚠ The sources are already zero on this arm, so not consuming them is exact: the
                units' `*srcp = 0` would be a no-op.  `cell` is left where unit 39 leaves it. */
             {
-                /* ⚠⚠ ONLY A FULL RUN CONSUMES THE LINE — a planted stop ends the chain on the
-                   unit it sits on, so units from there to 39 keep their sources and the line is
-                   NOT one flat run.  Hoisted: the predicate and the clear ask the same question. */
-                const int fullRun = (view_stop_from(0) == 40);
-                if (!g_viewLineDirty[line] && fullRun) {
+#ifdef REVS_SPAN_STATELESS
+                /* ⭐⭐⭐ THE STATELESS PREDICATE (§10p step 3) — the forty sources, read here and
+                   remembered nowhere.  `view_stop_from(0) == 40` stays as the cheap conjunct and
+                   is tested FIRST: with `unit == 0` the walk exits on its first compare, so it is
+                   one absolute byte load and ~16 cycles against the scan's 480.
+                   ⚠⚠ AND IT IS NOT DEAD WEIGHT EVEN THOUGH IT MEASURED CONSTANT.  Phase 1's
+                   `full == lines` came out exact over 21456 lines (§10p step 1), but every one of
+                   those lines was SILVERSTONE: `make determinism`, `-drive` and `-steer` all race
+                   it, and an expansion circuit's hook re-enters the transliteration and plants
+                   what it likes (CLAUDE.md §a hook/SMC seam, §the patched arm is gated by
+                   NOTHING).  A stop planted in phase 1 on one of the other four circuits would
+                   make this span paint over units the chain was told to stop before — a plausible
+                   wrong picture, on the exact arm `make viewdiff` exists to cover.  16 cycles is
+                   not the price at which to buy that. */
+                int flat;
+                if (!mayOwn || view_stop_from(0) != 40) flat = 0;
+                else {
+#ifdef REVS_SPAN_GROUPSCAN
+                    const unsigned g = line & ~3u;
+                    if (g != scanGroup) { scanGroup = g; scanLanes = view_group_sources(g); }
+                    flat = (VIEW_SCAN_LANE(scanLanes, line - g) == 0);
+#else
+                    flat = view_line_flat(line);
+#endif
+                }
+                if (flat) {
                     /* ⭐ A SPAN, NOT A RUN: `revs_plot_span` also CLAIMS the display line, so
                        `RevsScreen::decode()` leaves it alone instead of painting mem[] over it
                        (revs_plot.h §g_plotOwn).  Claiming from inside revs_plot_run would be
                        wrong — the boundary cells and the chain's mirror are runs too. */
+                    REVS_PLOT_SPAN(plot_ptr_v, byte);
+                    SPAN_EMIT_STAT(g_spanEmitLines++);
+                    cell = 0x38;            /* unit 39's cell, as a full line leaves it */
+                    lineSpanned = 1;
+                } else {
+                    SPAN_EMIT_STAT(g_spanEmitPaints++);
+                    lineSpanned = 0;
+                    /* ⭐ NOTHING TO CLEAR — that is the whole point of the stateless arm.  The
+                       marking arm below had to clear the line here, and forgetting it is why the
+                       first span build emitted ZERO spans (`view_skip_reset` primes every line
+                       dirty and only the VIEWSKIP block ever cleared one again).  A predicate
+                       that reads the sources cannot be out of date. */
+                }
+#else /* the ⛔ writer-maintained map — kept as the measured control, never as the shipping arm */
+                /* ⚠⚠ ONLY A FULL RUN CONSUMES THE LINE — a planted stop ends the chain on the
+                   unit it sits on, so units from there to 39 keep their sources and the line is
+                   NOT one flat run.  Hoisted: the predicate and the clear ask the same question. */
+                const int fullRun = (view_stop_from(0) == 40);
+                (void)mayOwn;
+                if (!g_viewLineDirty[line] && fullRun) {
                     REVS_PLOT_SPAN(plot_ptr_v, byte);
                     SPAN_EMIT_STAT(g_spanEmitLines++);
                     cell = 0x38;            /* unit 39's cell, as a full line leaves it */
@@ -1026,6 +1222,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                        that buys nothing read identically without it. */
                     if (fullRun) g_viewLineDirty[line] = 0;
                 }
+#endif
             }
 #endif
 #ifdef REVS_VIEWSKIP
@@ -1431,7 +1628,7 @@ static void paint_lines_clipped(ViewState* v)
             mem[(MEM_view_p2_enter_b_site + 1u)] = (unsigned char)v->cell;
         }
 
-        paint_cells(v, 0, 0, 1);                /* the JSR through view_next_scanline */
+        paint_cells(v, 0, 0, 1, 0);             /* the JSR through view_next_scanline */
 
         v->byte = view_compose(v->byte, mem[MEM_view_left_end_mask + v->line],
                                         mem[MEM_view_left_end_fill + v->line]);
@@ -1576,7 +1773,7 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
        about to be made replace the claims just honoured" is true. */
     REVS_PLOT_OWN_RESET();
 
-    paint_cells(&v, 0, 0, 1);
+    paint_cells(&v, 0, 0, 1, 1);        /* phase 1 — the span renderer may own these lines */
     paint_lines_clipped(&v);
 
     /* Publish the two pointers back into mem[] for the 6502-ABI mirror.  In the CORE, not the

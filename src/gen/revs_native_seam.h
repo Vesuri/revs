@@ -449,7 +449,13 @@ REVS_FLAG_OP uint8_t seam_read(unsigned addr, int ram)
  * successor asks the same question by READING the forty sources itself, which costs ~500 cycles
  * a line and is not a tax at all once the renderer OWNS the line: the scan replaces the chain's
  * own forty source reads instead of being added to them (§10p, the phase-1 takeover). */
-#if defined(REVS_VIEWSKIP) || defined(REVS_SPAN_EMIT)
+/* ⭐⭐⭐ AND `REVS_SPAN_STATELESS` (`make SPANFILL=3`) IS THE SUCCESSOR THAT TAKES THE WHOLE
+   MARKING OUT — no `view_mark_source`, so no inlined copy of it inside `seam_write`, so none of
+   the +4.35 ms of producer collateral above.  The span emitter then asks its question by READING
+   the forty sources at the line it is about to own (`view_line_flat` / `view_group_sources` in
+   revs_native.c), which is EXACT where this map was conservative and costs the producers nothing.
+   §10p step 3.  The map stays compiled here only as that measurement's control. */
+#if defined(REVS_VIEWSKIP) || (defined(REVS_SPAN_EMIT) && !defined(REVS_SPAN_STATELESS))
 #define REVS_VIEW_MARKING 1
 #endif
 
@@ -478,13 +484,19 @@ REVS_FLAG_OP void view_mark_source(unsigned addr)
     }
 }
 void view_skip_reset(void);   /* mark everything dirty — the fixture harness's escape hatch */
+#define VIEW_MARK_SOURCE(addr) view_mark_source((addr))
+#else
+#define VIEW_MARK_SOURCE(addr) ((void)0)
+#endif
+
+/* ⚠ OUTSIDE the marking block on purpose: the stateless arm has no map and still has spans. */
 #if defined(REVS_SPAN_EMIT) && defined(REVS_SPAN_STATS)
 extern volatile unsigned long g_spanEmitLines;   /* lines emitted as ONE span      */
 extern volatile unsigned long g_spanEmitPaints;  /* ...and lines that ran the chain */
 #endif
-#define VIEW_MARK_SOURCE(addr) view_mark_source((addr))
-#else
-#define VIEW_MARK_SOURCE(addr) ((void)0)
+#ifdef REVS_SPAN_SCANCHECK
+extern volatile unsigned long g_spanScanChecks;    /* group-scan lanes compared against the byte scan */
+extern volatile unsigned long g_spanScanMismatch;  /* ...and disagreements.  MUST stay 0 */
 #endif
 
 /* ⚠⚠ THE RAM ARM BYPASSES bus_write, SO IT BYPASSES THE INK WATCH TOO — and that made the
