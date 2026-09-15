@@ -245,7 +245,7 @@ Hard-won detail lives in `docs/`, not here. **Read the relevant one BEFORE worki
 | `docs/helper-elimination-audit.md` | The math-helper campaign's per-site KEEP/CONVERT ledger — which `revs_native.c` sites keep a 6502 flag-helper (a flag escapes) and which convert to plain C |
 | **`docs/wide-value-cleanup.md`** | The byte-lane→wide-value campaign ledger: replacing 6502 `_lo`/`_hi`/carry handling of 16/24-bit values with plain-C `uintNN_t` math. Tiers, per-base status, the two mechanisms, the SoA `value_16[N]` relocation. ⚠⚠ **MEASURED end to end and it is a NULL RESULT (+0.65%, inside noise)** — the instruction-count win is real but the byte lanes are not where the frame goes; ⭐⭐ **rank a candidate pair by OPS-PER-MARSHAL, never by ref count** (a shared *scratch* cell's huge ref count counts TENANTS, not wide arithmetic — the error that made `math_lo/hi` look like the biggest prize for three passes) |
 | `docs/perf-method.md` ⚑ | Quoting, sizing or judging ANY performance number; where the time goes |
-| **`docs/span-render-plan.md`** ⭐ | **Before touching any plotter or any Phase 6 asm — THE live rendering plan.** The replacement architecture: world points → spans → bitplanes, §10 sizing, step 1 status, §10m the SPRITE lever. (⛔ `docs/direct-bitplane-plan.md` is the OBSOLETE earlier plan — kept only because source/docs cite its §-numbers; read it as history, never as a plan) |
+| **`docs/span-render-plan.md`** ⭐ | **Before touching any plotter or any Phase 6 asm — THE live rendering plan.** The replacement architecture: world points → spans → bitplanes, §10 sizing, **§10n the measured checkpoint** (the fill is 6.87 cyc/byte and direct-to-bitplane writing is exonerated; a hook-in nets zero), **§10p the live build** (the renderer owns phase 1's line loop, stateless predicate, and the unmeasured phase-18 gate), §10m the SPRITE lever. (⛔ `docs/direct-bitplane-plan.md` is the OBSOLETE earlier plan — kept only because source/docs cite its §-numbers; read it as history, never as a plan) |
 | `docs/m68k-optimisation.md` ⚑ | Optimising a hot function or writing an asm twin (68000 rules) |
 | `docs/amiga-lessons.md` ⚑ | Copper lists, sprites, the VBI, write-only registers |
 | `docs/amiga-arch.md` ⚑ | The Amiga display/interrupt architecture decisions and why |
@@ -396,11 +396,24 @@ a SWEEP, or take byte OFFSETS the producers already know.** ⭐⭐ **And price a
 numbers before building it: how many visits it deletes, AND what one visit of the NEW shape costs** —
 a census of deleted visits bounds the saving and says nothing about the replacement, which is the
 error that cost this one. `docs/perf-method.md` §the walk walks indices.
-⚠⚠ **Writer-maintained framebuffer dirty maps are also dead as a shipping optimisation.**
-`CHANGEDIRTY` was complete and byte-exact (0/23 oracle mismatches), but its per-store compare and
-two-map RMW traffic measured ~8.5% slower than the batched shadow scanner, so **the code is reverted
-and the flag no longer exists** — only its write-up survives. Do not retry it without producer-native
-change events.
+⚠⚠ **Writer-maintained dirty maps are dead as a shipping optimisation, twice now and by TWO
+DIFFERENT MECHANISMS.** `CHANGEDIRTY`'s per-store compare and two-map RMW traffic measured ~8.5%
+slower than the batched shadow scanner (byte-exact, 0/23 — reverted, the flag no longer exists).
+Then the *consumer* predicate `g_viewLineDirty` cost **+4.9 ms in the producers against the 3.4 ms
+its span saved**, and not through store traffic at all: turning marking on inlines the `REVS_FLAG_OP`
+leaf `view_mark_source` into `seam_write`, **a header choke point**, and the objdump counts **164
+inlined copies** of the map's address — twenty in `column_gap_walk_core`, whose caller then collapses
+532 → 54 instructions. ⭐⭐ **So price a marking scheme by what it does to the PRODUCERS' code shape,
+not by its per-store cost** — and prefer a **stateless** predicate the data already carries:
+`view_consume`'s destructive read makes a non-zero source at line entry *exactly* "a producer wrote
+it since the last sweep", which is what the map was approximating conservatively.
+⭐⭐⭐ **AND SIZE A HOOK-IN AGAINST THE DIFFERENTIAL FOR THE PART IT CAN ACTUALLY DELETE, NEVER
+AGAINST A CENSUS OF STORES — THE MISSING THIRD NUMBER IS WHAT SURVIVES.** The direct-span checkpoint
+deleted 58% of phase 1's units at exactly the predicted 42 cyc/unit and still netted zero, because a
+per-line hook-in reaches the **unit loop** while the bracket is **905 cyc/line of driver** plus
+units, and `NOUNITS=2` had already published that split (61% driver/entry for the whole sweep) before
+the plan was written. This is the companion to the two-number rule above: visits deleted, cost of the
+new shape, **and what the hook cannot touch**. `docs/span-render-plan.md` §10n.
 ⭐⭐ **And the decode's own 38 ms turned out to be CODE SHAPE, not algorithm: ~22 ms now, +8.1%
 end to end** — the scan was re-reading two loop-invariant stack slots per cell and had spilled its
 pointers into data registers. **Read the objdump of a hot loop before theorising about its

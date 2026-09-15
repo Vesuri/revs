@@ -42,22 +42,45 @@ against its own phase row (Rule 1a); the framerate is quantised to `50/N` and ca
 | 11.0 | 28 | the vblank spin — the `50/N` pad, not a target |
 | 10.4 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
 
-### 1. ⭐⭐⭐ THE REPRESENTATION — render direct to bitplanes — OPEN, UNPROVEN (step 1 built; 2026-09-14)
-⭐⭐⭐ **THE ARCHITECTURE (`docs/span-render-plan.md` §10) IS OPEN — NOT closed.** ⚠⚠ **A prior
-"CLOSED, +54 ms dead end" verdict here and in §10L is RETRACTED (was `eee1c8c`, superseded).** The
-`+54 ms` is real but it measured a **correctness scaffold, not the architecture**: `make SPANEMIT=1`
-still runs the *entire* `view_paint_lines` sweep (58.7 ms) and only *adds* plotting on top — additive
-by construction, so slower is expected and says nothing about §10, which **deletes** the sweep. The old
-"ceiling ~3–4 ms" argument counted only what the decode carve-out reclaims (~3–4 ms) and omitted the
-58.7 ms of `view_paint_lines` the scaffold keeps running; the real ceiling is ~54 ms.
-**Status:** step 1's emitter is byte-exact (§10k) and reusable; the timing build is the *wrong*
-experiment. **The next build must REPLACE the sweep for the lines it emits (stop `view_paint_lines`
-painting them), not run beside it** — the smallest such test is the rows-81–100 checkpoint (20
-single-run rows = 37% of stores) with the sweep stopped on those rows. Only a build that subtracts
-sweep cost can show whether §10e's ~8 ms span-render estimate holds.
-⚠ Genuine risk stands (§10e's own warning): cycle models at this seam have a poor record, and three
-schemes that *bolted onto* the mem[] scan lost (§7f −9%, source-event +25 ms, this scaffold +54 ms).
-The architecture differs in kind (removes the scan) — but that is an argument, not yet a measurement.
+### 1. ⭐⭐⭐ THE REPRESENTATION — render direct to bitplanes — the PHASE-1 TAKEOVER, −8 to −11 ms
+⭐⭐⭐ **THE ARCHITECTURE IS OPEN AND ITS FIRST HALF IS NOW MEASURED, NOT ARGUED** — `make
+SPANFILL=1` is §10e's own cheap checkpoint built and run (`docs/span-render-plan.md` §10n). Three
+results, and they point at a different next build than this entry used to name:
+- ⭐⭐ **DIRECT-TO-BITPLANE WRITING IS EXONERATED.** The fill costs **1.63 ms for 21 spans
+  (550 cyc/span, 6.87 cyc/byte)**, and an objdump model closes to 1%. Every earlier "the plotter is
+  too dear" figure was a code shape: 185 cyc/8 B (stack-slot reloads) → 56 (preamble bigger than
+  its stores) → **27**.
+- ⭐⭐ **A HOOK-IN CANNOT WIN, BECAUSE THE SPAN DELETES THE UNIT LOOP AND THE DRIVER SURVIVES IT.**
+  The deletion measures 4.98 ms at **42.0 cyc/unit** — the objdump's clean-arm rate, so it reaches
+  the units and nothing else — while phase 1's **905 cyc/line** driver runs on. 58% of the units
+  came off and bought 32% of the bracket.
+- ⛔ **AND ITS PREDICATE COSTS MORE THAN IT SAVES: net +1.0 ms as built, −0.9 ms stateless.** One
+  line in CLOSED below; the mechanism is inline bloat, not compare traffic.
+
+⇒ **THE LIVE BUILD IS THE PHASE-1 TAKEOVER (§10p): the renderer OWNS the line loop, driver
+included.** `view_consume` is RLE with a *destructive* read, so a source is non-zero at line entry
+**iff a producer wrote it since the last sweep** — a stateless forty-source test is therefore
+**exact where the dirty map was merely conservative**, and `view_stop_from(0) == 40` is a constant
+`true` through all of phase 1. The scan costs **180 cyc/line, not 480**, because four consecutive
+*lines* of one cell are four consecutive bytes (`or.l`, one test per four lines). Per line:
+905 + 40×55 = 3105 cyc becomes ~250 + 180 + 550 ≈ **980** flat, ~2300 changed.
+**Size: phase 1 15.83 → ~5.0 ms all-flat, ~8.1 ms at the parked 21/36 split.** Phases 2/3
+(12.34 + 23.61 ms at 67%/80% chain-entry) are the larger prize behind the same shape.
+**Order of work is §10p's:** (1) the free host-side flat-line count (`REVS_VIEWSKIP_ASSERT` already
+has the forty-source loop — the flat fraction *is* the difference between −8 and −11 ms);
+(2) **the gate below**; (3) the takeover's line loop behind `SPANFILL=3`, oracled by §10n's two
+in-process checks; (4) then stage A in full, then B, C, D, E as §10j has them.
+⛔ **GATE, unmeasured, and it can move the design:** `column_gap_walk` (phase 18) **reads
+framebuffer pixels** (`NOUNITS=2` reads it 5.88 vs 10.18 for exactly that reason) while
+`fill_dash_edge_columns` is the **only producer** of `view_left_start_src`/`view_right_start_src`,
+the two tables `view_paint_lines` composes each row's leading edge cell from — so it cannot simply
+be sequenced after. It walks character columns 3..6 from scan line $1B and $1A..$22 from $2B;
+**whether those rows intersect display rows 81..101 decides whether the takeover may stop writing
+mem[] there at all.** That is a measurement (`make fbwrites`, or a watch on those columns), not a
+judgement, and it comes before any takeover code.
+⚠ Genuine risk still stands: **four** schemes that bolted onto the mem[] scan have now lost (§7f
+−9%, source-event +25 ms, the SPANEMIT scaffold +54 ms, and this checkpoint's hook-in ≈ 0). The
+takeover differs in kind — it *removes* the driver — but that is an argument until measured.
 
 ⭐⭐⭐ **THE SPAN CENSUS HAS RUN (2026-09-14) and it changed the shape of the answer** — the scout
 §9 had been asking for, now a committed instrument (`src/platform/shape.cpp` §THE SPAN CENSUS,
@@ -203,11 +226,24 @@ exists so nobody spends a day re-deriving a negative result.
 
 - **Writer-maintained framebuffer dirty maps** (`CHANGEDIRTY`) — byte-exact and **~8.5% slower**;
   reverted, the flag no longer exists. Needs producer-native change events to be worth retrying.
-- **A plotter that runs BESIDE `view_paint_lines`** (mirror-each-store, or the `SPANEMIT` scaffold
-  that adds plotting without deleting the sweep) — loses, now three times (§7f −9%, source-event
-  +25 ms, the SPANEMIT scaffold +54 ms). ⚠ **This is NOT the §10 architecture** (which *deletes* the
-  sweep and is OPEN — entry 1); it only forbids adding plotting on top of the existing sweep. Do not
-  ship a plotter alongside the sweep; a renderer that *replaces* it is untested and belongs to entry 1.
+- **A writer-maintained CONSUMER predicate** (`g_viewLineDirty`, `REVS_VIEW_MARKING`, the second
+  instance and a **different** mechanism) — the span it qualifies saves 3.35 ms and the marking
+  costs **+4.93 ms in the producers**, for a net **+1.0 ms**. Not compare traffic: turning marking
+  on inlines the `REVS_FLAG_OP` leaf `view_mark_source` into `seam_write`, a header choke point, and
+  the objdump counts **164 inlined copies** of the map's address — twenty in `column_gap_walk_core`,
+  whose caller then collapses 532 → 54 instructions. ⭐ The replacement is **stateless and exact**:
+  `view_consume`'s destructive read means a non-zero source at line entry *is* the change flag
+  (`docs/span-render-plan.md` §10p). **No dirty map, in any form, on this path.**
+- **A plotter that runs BESIDE `view_paint_lines`** (mirror-each-store, the `SPANEMIT` scaffold that
+  adds plotting without deleting the sweep, or a per-line **hook-in** that stops the sweep on its own
+  lines but leaves the sweep's driver running) — loses, now **four** times (§7f −9%, source-event
+  +25 ms, the SPANEMIT scaffold +54 ms, `SPANFILL=1`'s hook-in ≈ 0). ⭐⭐ The fourth is the sharp one:
+  it *did* delete 58% of phase 1's units at the predicted rate and still netted zero, because a
+  hook-in reaches the **unit loop** and phase 1's bracket is **905 cyc/line of driver** plus units.
+  ⇒ **Size a hook-in against the differential for the part it can actually delete, never against a
+  census of stores — the missing third number is WHAT SURVIVES.** ⚠ **This is NOT the §10
+  architecture** (which deletes the driver too — entry 1's takeover); it forbids bolting onto the
+  sweep, not replacing it.
 - **Consumer run-entry specialisation** (single-run flat-span path) — **−0.15%**, retracting its
   predicted "~10% prize". Do not retry that code shape.
 - **The per-line skip** — **−0.4%** for 39.5% of line-visits deleted; phases 2+3 skip zero units.
