@@ -425,18 +425,20 @@ PROBE_SYMS_PLOT = g_plotRuns g_plotCells g_plotRunsLast g_plotCellsLast \
                   g_plotLineLo g_plotLineHi g_plotNoTarget
 endif
 
-# ⭐⭐⭐ `make SPANEMIT=1` — §10j STEP 1, the cheap checkpoint on the span architecture
-# (docs/direct-bitplane-plan.md §10).  A scan line that no producer wrote and that carries no
-# planted stop is ONE run of its background byte, so the sweep emits it as a single span straight
-# into the bitplanes instead of running forty store units.  The span census says ~20 of phase 1's
-# 36 lines qualify, carrying 37% of the sweep's 2155 cell stores.
+# ⛔⛔ `make SPANEMIT=1` — SUPERSEDED AS A TIMING BUILD BY `SPANFILL=1` BELOW, AND KEPT ONLY AS THE
+# BYTE ORACLE.  It is additive by construction: `PLOT_UNIT` mirrors every chain store, so the sweep
+# runs in full and the plotting is ADDED on top (+54 ms, and the number says nothing about the
+# architecture).  Quote a timing from SPANFILL, never from here.  docs/span-render-plan.md §10n.
 #
-# ⭐ It measures the per-span COST MODEL on a subset where the answer is known: ~40 units at
-# 43 cyc against ~20 longword pairs, so phase 1's 22 ms should fall towards ~12.  If it does not,
-# §10e's arithmetic is wrong and almost nothing has been spent finding out.
+# What it still does, and what it is for: a scan line that no producer wrote and that carries no
+# planted stop is ONE run of its background byte, so the emitter writes it as a single span straight
+# into the bitplanes.  ~21 of phase 1's 36 lines qualify, carrying 37% of the sweep's 2155 cell
+# stores.  ⚠ The census share is NOT the saving — SPANFILL measured 37% of the stores buying 9.6%
+# of the sweep, because a per-line hook-in deletes the unit loop and phase 1's bracket is 905
+# cyc/line of DRIVER plus units.  §10p's takeover is what deletes the driver.
 # ⚠ It implies PLOTONLY's carve-out: the emitted lines are NOT written to mem[], so the decode
 # must not convert them.  Validate with SPANEMIT=1 DIRECTCHECK=1 (g_plotMismatch must stay 0
-# with g_plotChecks large) before believing any timing from it.
+# with g_plotChecks large) before believing anything from it.
 # ⭐⭐ `make SPANEMIT=1 SPANVERIFY=1 DIRECTCHECK=1` — the emitter's ORACLE.  Verify mode keeps the
 # forty-unit chain running (so mem[] stays true and the decode is a valid reference) and turns the
 # per-unit run accumulator OFF, so every plane byte on an emitted line comes from the span emitter
