@@ -876,7 +876,47 @@ the reference, and they split 4/4 between rows 117..132 and 133..148 — i.e. by
 phases 2/3 therefore owes the **undo table** real bytes, not the whole frame buffer. Phase 1 owes
 nothing, which is where the takeover starts.
 
+#### ✅ STEP 3a IS WRITTEN AND ITS ENDIAN HALF IS ORACLED — the stateless predicate (2026-09-15)
+
+⭐⭐ **The predicate needs no state at all, and that is a THEOREM about `view_consume`, not a
+heuristic.** The consume is RLE with a **destructive read**: a zero source means "same as my left",
+a non-zero one is translated through `view_cell_bytes[source]` and then **`*srcp = 0`**. So a source
+byte is non-zero at line entry *iff* a producer wrote it since the last sweep, and therefore
+
+> **a line is one flat run ⟺ all forty of its sources are zero.**
+
+That is **exact** where the ⛔ dirty map was merely conservative, it needs no priming (the map's
+153-stale-byte first-sweep hazard cannot exist), and it deletes the whole `REVS_VIEW_MARKING`
+surface from the producers — the +4.35 ms of inline bloat that killed the map is simply not spent.
+`SPANFILL=3` is that arm; the map arm is kept verbatim beside it as the measured control.
+
+⭐ **The scan is cheap because the LINE axis has stride 1.** Along the cell axis the forty sources
+are 128 bytes apart (40 × `or.b d16(a0),d0` = 480 cyc), but four *consecutive lines* of one cell are
+four consecutive bytes, so one `or.l d16(a0),d0` (18 cyc) tests four lines at once: 40 × 18 =
+720 cyc per group of four = **180 cyc/line**, and `line` decrements through `$4F..$2C`, which is
+exactly the consecutive descending order a group-of-four accumulator wants. Alignment is a theorem,
+not a hope — the group base is `line & ~3`, and `MEM_view_src_blocks` (`$3000`) and `cell << 7` are
+both multiples of 4, so an odd-address fault cannot arise. That is `SPANFILL=4`.
+
+⚠⚠ **The longword read is the ONE argued exception to CLAUDE.md's endianness rule, and it is gated
+by a counter rather than by the argument.** The longword is never a *value*: it is four independent
+byte lanes whose only operation is OR, which is per-byte and lane-order-independent. What *is*
+endian-dependent is the lane→line map, so that is written out per target (`VIEW_SCAN_LANE` under
+`__BYTE_ORDER__`) and `REVS_SPAN_SCANCHECK` compares every lane against the byte scan's own answer
+on every line of all three phases. A wrong map is otherwise **invisible** — it answers "flat" about
+a *neighbouring* line, which paints a plausible picture rather than a broken one.
+
+- host (little-endian), driving workload: **15392 lanes checked, 0 MISMATCH**.
+- ⭐ **sabotaged five ways, all five caught** (of 6032 checks): lane order reversed 1120, lane index
+  ignored 123, the big-endian map used on the host 1120, one of the forty cells dropped from the
+  group scan 9, the byte reference's stride bent by 4 → 469. ⚠ The two *smallest* counts are the
+  instructive ones: a defect that only sometimes disagrees is exactly what a counter catches and a
+  rendered frame does not.
+- ⏳ owed: the same check on the target (`make SPANFILL=4 SPANSCAN=1`) — the big-endian arm of the
+  `#if` is the half the host cannot run.
+
 **Order of work:** ✅ (1) the host flat-line count — **DONE, 57%, `3b79ebc`**; ✅ (2) the reader gate —
-**DONE, OPEN for rows 81..116, `f80557d`**; (3) the takeover's own line loop with the group-of-four
-scan, behind `SPANFILL=3`, oracled by the two in-process checks of §10n; (4) then stage A in full,
-then B, C, D, E as §10j has them.
+**DONE, OPEN for rows 81..116, `f80557d`**; ✅ (3a) the stateless predicate + the group-of-four scan
+— **WRITTEN, endian-oracled on the host**; ⏳ (3b) the takeover's own line loop, which deletes the
+905 cyc/line driver — oracled by the two in-process checks of §10n; (4) then stage A in full, then
+B, C, D, E as §10j has them.
