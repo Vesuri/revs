@@ -707,7 +707,19 @@ static unsigned step_scanline(int* carry_out)
 /* THE RUN ACCUMULATOR (Amiga only — revs_plot.h).  The carried byte usually repeats and the
    Amiga's bitplane cells are contiguous along a scan line, so a run is one fill instead of N
    stores.  Changes no mem[] byte and no branch.  ⚠ A run never spans a scan line. */
-#if defined(REVS_DIRECT_PLOT) && defined(REVS_SPAN_VERIFY)
+#if defined(REVS_DIRECT_PLOT) && defined(REVS_SPAN_OWN)
+/* ⭐⭐⭐ `make SPANFILL=1` — THE SHIPPING ARM, AND ITS DEFINING PROPERTY IS THAT THERE IS NO
+   MIRROR.  The scaffold (`SPANEMIT=1`) plotted every chain store on every line the emitter did
+   not paint; that is the ⛔ mirror-each-store plotter §10c closed at -9%, and the larger half of
+   the scaffold's +54 ms (§10L).  Here the two painters are DISJOINT — an owned line comes from
+   its span alone, every other line from mem[] through the decode exactly as today — so the run
+   accumulator does not exist and the chain's stores are not seen twice.
+   ⚠ The span itself still goes out: it is emitted by REVS_PLOT_SPAN at the line entry below,
+   not by this macro. */
+#define PLOT_DECL()   ((void)0)
+#define PLOT_UNIT(dd, aa) ((void)0)
+#define PLOT_FLUSH()  ((void)0)
+#elif defined(REVS_DIRECT_PLOT) && defined(REVS_SPAN_VERIFY)
 /* ⭐⭐ `make SPANEMIT=1 SPANVERIFY=1 DIRECTCHECK=1` — THE EMITTER'S ORACLE.  The chain still runs
    (so mem[] stays true and the shipping decode is a valid reference) and still plots — EXCEPT on a
    line the emitter painted, where its plotting is suppressed so every plane byte on that line came
@@ -849,13 +861,18 @@ static void view_dst_touch(unsigned addr)
 volatile unsigned long g_viewSkipLines  = 0;   /* lines the sweep did not paint */
 volatile unsigned long g_viewSkipPaints = 0;   /* ...and lines it did           */
 
-#ifdef REVS_SPAN_EMIT
+#if defined(REVS_SPAN_EMIT) && defined(REVS_SPAN_STATS)
 /* ⭐ The span emitter's own two counts — lines emitted as ONE span against lines that still ran
    the forty-unit chain.  ⚠ An A/B switch must print its own state (CLAUDE.md): a build that
    emits nothing reads identically to an emitter that buys nothing, so these are the difference.
-   Both in PROBE_SYMS (amiga/Makefile). */
+   Both in PROBE_SYMS (amiga/Makefile).
+   ⚠ ...and both are a `volatile` RMW on the sweep's per-LINE path, ~44 cycles x 36 lines, so
+   `make SPANSTAT=0` compiles them out with the plotter's own counters (revs_plot.h). */
 volatile unsigned long g_spanEmitLines  = 0;
 volatile unsigned long g_spanEmitPaints = 0;
+#define SPAN_EMIT_STAT(stmt) do { stmt; } while (0)
+#else
+#define SPAN_EMIT_STAT(stmt) ((void)0)
 #endif
 
 #ifndef REVS_PLATFORM_AMIGA
@@ -984,12 +1001,16 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                    NOT one flat run.  Hoisted: the predicate and the clear ask the same question. */
                 const int fullRun = (view_stop_from(0) == 40);
                 if (!g_viewLineDirty[line] && fullRun) {
-                    REVS_PLOT_RUN(plot_ptr_v, byte, 40);
-                    g_spanEmitLines++;
+                    /* ⭐ A SPAN, NOT A RUN: `revs_plot_span` also CLAIMS the display line, so
+                       `RevsScreen::decode()` leaves it alone instead of painting mem[] over it
+                       (revs_plot.h §g_plotOwn).  Claiming from inside revs_plot_run would be
+                       wrong — the boundary cells and the chain's mirror are runs too. */
+                    REVS_PLOT_SPAN(plot_ptr_v, byte);
+                    SPAN_EMIT_STAT(g_spanEmitLines++);
                     cell = 0x38;            /* unit 39's cell, as a full line leaves it */
                     lineSpanned = 1;
                 } else {
-                    g_spanEmitPaints++;
+                    SPAN_EMIT_STAT(g_spanEmitPaints++);
                     lineSpanned = 0;
                     /* ⚠⚠ THE CLEAR HAS TO LIVE HERE TOO, and its absence is why the first build
                        emitted ZERO spans: `view_skip_reset()` primes every line dirty for the
@@ -1540,6 +1561,15 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
     { static int viewSkipPrimed = 0;
       if (!viewSkipPrimed) { viewSkipPrimed = 1; view_skip_reset(); } }
 #endif /* REVS_VIEW_MARKING */
+
+    /* ⭐⭐ OWNERSHIP IS PER SWEEP, AND IT IS RELEASED HERE — not in present() and not in decode().
+       A span claims its display line so the decode will not paint mem[] over it (revs_plot.h
+       §g_plotOwn); the claim must outlive every decode that happens BEFORE the next sweep, and
+       the crash path renders extra frames with no sweep at all (`platform_render_frame()` around
+       the 100-field hold).  Clearing at the top of the sweep is the one point where "the claims
+       about to be made replace the claims just honoured" is true. */
+    REVS_PLOT_OWN_RESET();
+
     paint_cells(&v, 0, 0, 1);
     paint_lines_clipped(&v);
 

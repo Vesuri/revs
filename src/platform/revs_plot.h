@@ -47,7 +47,41 @@ void revs_plot_run(unsigned short addr, unsigned char value, unsigned short cell
 /* A single cell (the phase drivers' composed boundary bytes). */
 void revs_plot_cell(unsigned short addr, unsigned char value);
 
-/* Counters — every one of them in PROBE_SYMS (amiga/Makefile). */
+/* ⭐⭐ ONE WHOLE DISPLAY LINE, AND THE PLOTTER NOW *OWNS* IT (docs/span-render-plan.md §10j).
+ * Same fill as revs_plot_run, plus a claim: `g_plotOwn[display line] = 1`.  A BBC row base has
+ * `(base - $5A80) % 320` in 0..7, so all forty of a source line's cells (`base + i*8`) land on
+ * the SAME display line — one span is exactly one line, which is why ownership can be per line
+ * and needs no character-row alignment.
+ * ⚠ It claims nothing when there is no target: no buffer was painted, so `decode()` must still
+ * convert the line out of mem[].
+ *
+ * ⭐⭐⭐ NO CELL COUNT, AND THAT IS LOAD-BEARING.  A span is a WHOLE display line — forty cells
+ * from cell 0 — so the count is structural, not a parameter, and the emitter's
+ * `view_stop_from(0) == 40` is its proof.  Passed as an argument it was a value GCC could not
+ * fold across the TU boundary, and the generic `revs_plot_run` it forced the call into priced
+ * the fill at ~17 cycles a byte against a 3-cycle store floor (RevsPlot.cpp has the decomposition
+ * and the rejected movem.l arithmetic). */
+void revs_plot_span(unsigned short addr, unsigned char value);
+
+/* ⭐⭐⭐ WHICH DISPLAY LINES THE SPAN EMITTER PAINTED THIS SWEEP — the ownership publication, and
+ * the thing the scaffold could not express.  `g_plotLineLo/Hi` + whole-character-row skipping
+ * cannot: a BBC cell is EIGHT display lines, so converting one cell of a partly-owned row paints
+ * frozen mem[] bytes straight over emitted lines.  `RevsScreen::decode()` reads this and zeroes
+ * `m_lineMode[y]` for an owned line, which the decode already understands as "write nothing"
+ * (revs_expand_cell), skips a fully-owned character row on wholesale (`any`), and re-expands on
+ * the frame a line stops being owned (`modeChanged`).
+ * ⚠ CLEARED AT THE TOP OF `view_paint_lines_core`, NOT in present() or decode(): the crash hold
+ * calls platform_render_frame() extra times with no sweep in between, and clearing per decode
+ * would let those repaint stale mem[] over the spans. */
+extern unsigned char g_plotOwn[208];   /* = BBC_SCREEN_HEIGHT; checked in RevsPlot.cpp */
+void revs_plot_own_reset(void);
+
+/* Counters — every one of them in PROBE_SYMS (amiga/Makefile).
+   ⚠ `make SPANSTAT=0` compiles them and their updates away: six volatile RMWs a span is ~220
+   cycles, and that instrument is how the shipping price is separated from the counting price.
+   A .gdb script that reads one must therefore not be run against a SPANSTAT=0 build — the
+   probe audit refuses it, because PROBE_SYMS_PLOT goes away with them. */
+#ifdef REVS_SPAN_STATS
 extern volatile unsigned long g_plotRuns;      /* runs emitted, summed over frames  */
 extern volatile unsigned long g_plotCells;     /* cells covered by them             */
 extern volatile unsigned short g_plotRunsLast; /* ...on the most recent sweep       */
@@ -55,10 +89,27 @@ extern volatile unsigned short g_plotCellsLast;
 extern volatile unsigned char  g_plotLineLo;   /* display lines the last sweep painted */
 extern volatile unsigned char  g_plotLineHi;
 extern volatile unsigned long  g_plotNoTarget; /* runs dropped for want of a buffer */
+#endif
 
 #define REVS_PLOT_TARGET(p)     revs_plot_target(p)
 #define REVS_PLOT_RUN(a, v, n)  revs_plot_run((unsigned short)(a), (unsigned char)(v), (unsigned short)(n))
+#define REVS_PLOT_SPAN(a, v)    revs_plot_span((unsigned short)(a), (unsigned char)(v))
+#define REVS_PLOT_OWN_RESET()   revs_plot_own_reset()
+
+#ifdef REVS_SPAN_OWN
+/* ⭐⭐⭐ NO MIRRORING IN THE SHIPPING ARM, AND THIS IS THE WHOLE POINT OF `REVS_SPAN_OWN`.
+ * `make SPANEMIT=1`'s scaffold mirrored EVERY chain store into the bitplanes on every line the
+ * emitter did not paint — which is precisely the ⛔ mirror-each-store plotter shape §10c closed
+ * at -9%, and the larger half of its +54 ms (§10L).  Here the two painters are DISJOINT: an
+ * owned line comes from its span alone, and every other line comes from mem[] through the decode
+ * exactly as it does today.  So PLOT_UNIT and the phase-2/3 boundary cells compile to nothing.
+ * ⚠ They must stay LIVE under REVS_SPAN_VERIFY: with no plotting at all the oracle compares
+ * decode(new mem[]) against decode(old mem[]) and mismatches ~5950 bytes (§10k trap 1) — a check
+ * has to reproduce everything the sweep changed, not just the part under test. */
+#define REVS_PLOT_CELL(a, v)    ((void)0)
+#else
 #define REVS_PLOT_CELL(a, v)    revs_plot_cell((unsigned short)(a), (unsigned char)(v))
+#endif
 
 #ifdef REVS_DIRECT_CHECK
 /* ⭐⭐ THE ORACLE (§5), bracketing the sweep.  `before` converts mem[] with the SHIPPING decode and
@@ -81,7 +132,9 @@ extern volatile unsigned short g_plotMismatchOff;
 
 #define REVS_PLOT_TARGET(p)      ((void)(p))
 #define REVS_PLOT_RUN(a, v, n)   ((void)0)
+#define REVS_PLOT_SPAN(a, v)     ((void)0)
 #define REVS_PLOT_CELL(a, v)     ((void)0)
+#define REVS_PLOT_OWN_RESET()    ((void)0)
 #define REVS_PLOT_CHECK_BEFORE() ((void)0)
 #define REVS_PLOT_CHECK_AFTER()  ((void)0)
 

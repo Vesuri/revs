@@ -423,7 +423,32 @@ REVS_FLAG_OP uint8_t seam_read(unsigned addr, int ram)
  * byte.  Parts (2)-(4), the `g_viewDstBg`/`g_viewDstFlat` destination shadow, are the fragile
  * half (they are what `make determinism` caught as 153 stale bytes), and the emitter does not
  * carry them: **writing the line is cheaper than remembering it was already written** — user,
- * 2026-09-14, §10j.  So the marking is gated on REVS_VIEW_MARKING and the shadow stays here. */
+ * 2026-09-14, §10j.  So the marking is gated on REVS_VIEW_MARKING and the shadow stays here.
+ *
+ * ⛔⛔⛔ AND THE MARKING ITSELF IS NOW A MEASURED DEAD END — IT COSTS +4.35 ms/frame IN THE
+ * PRODUCERS TO SAVE 3.35 ms IN THE CONSUMER.  Parked quad at 7.09 MHz, PROBES=1 FIXED_RNG=1,
+ * every untouched phase agreeing to 0.2 ms (docs/span-render-plan.md §10n):
+ *
+ *     phase 24  view_paint_lines phase 1   15.68 -> 12.33 ms   the span's own win, -3.35
+ *     phase 11  draw_road                  33.63 -> 35.14 ms   +1.51  <- collateral
+ *     phase 18  fill_dash_edge_columns     10.12 -> 12.98 ms   +2.86  <- collateral
+ *
+ * ⭐⭐⭐ THE MECHANISM IS NOT THE MAP'S ARITHMETIC, IT IS THE INLINE BLOAT — `view_mark_source`
+ * is a REVS_FLAG_OP leaf inlined into `seam_write`, the choke point EVERY indirect store passes,
+ * and the objdump counts **164 inlined copies** of it (control: 0).  Twenty of them land inside
+ * `column_gap_walk_core`, whose caller `fill_edge_column_run_core` then collapses 532 -> 54
+ * instructions: it lost its callee's inlining outright.  Another 46 are spread through
+ * draw_road's tree (plot_view_src_line_core 19, interp_edge_core 8, fill_object_gap_core 7,
+ * sw_plot_1/2 7, paint_fence_backdrop_core 5).  This is CLAUDE.md's "count a shared leaf's call
+ * sites before growing it" and "an out-of-line landing pad is a register-allocation boundary",
+ * arriving through a header rather than through an edit to the hot function itself.
+ *
+ * ⇒ A CONSUMER-SIDE PREDICATE MAY NOT BE MAINTAINED BY THE WRITERS.  The user's standing
+ * directive is STATELESS — no dirty map, no persistence — and this is the second measured
+ * instance behind CHANGEDIRTY (CLAUDE.md §writer-maintained dirty maps).  The span renderer's
+ * successor asks the same question by READING the forty sources itself, which costs ~500 cycles
+ * a line and is not a tax at all once the renderer OWNS the line: the scan replaces the chain's
+ * own forty source reads instead of being added to them (§10p, the phase-1 takeover). */
 #if defined(REVS_VIEWSKIP) || defined(REVS_SPAN_EMIT)
 #define REVS_VIEW_MARKING 1
 #endif
@@ -453,7 +478,7 @@ REVS_FLAG_OP void view_mark_source(unsigned addr)
     }
 }
 void view_skip_reset(void);   /* mark everything dirty — the fixture harness's escape hatch */
-#ifdef REVS_SPAN_EMIT
+#if defined(REVS_SPAN_EMIT) && defined(REVS_SPAN_STATS)
 extern volatile unsigned long g_spanEmitLines;   /* lines emitted as ONE span      */
 extern volatile unsigned long g_spanEmitPaints;  /* ...and lines that ran the chain */
 #endif

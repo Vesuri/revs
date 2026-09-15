@@ -458,6 +458,59 @@ PROBE_SYMS_PLOT = g_plotRuns g_plotCells g_plotRunsLast g_plotCellsLast \
 PROBE_SYMS_SPAN = g_spanEmitLines g_spanEmitPaints
 endif
 
+# ⭐⭐⭐ `make SPANFILL=1` — THE VALID §10e CHEAP CHECKPOINT, i.e. what SPANEMIT's scaffold was
+# MEANT to be (docs/span-render-plan.md §10L).  Same predicate and same span as SPANEMIT, and
+# three deletions that are the whole difference:
+#   1. NO MIRROR.  SPANEMIT's `PLOT_UNIT` plotted every chain store on every line the emitter did
+#      not paint — the ⛔ mirror-each-store plotter §10c closed at -9%, and the larger half of the
+#      scaffold's +54 ms.  Here PLOT_UNIT and the phase-2/3 boundary cells compile to NOTHING, so
+#      an owned line comes from its span alone and every other line from mem[] as today.
+#   2. NO WHOLE-ROW CARVE-OUT.  Ownership is published PER DISPLAY LINE (`g_plotOwn`) and spelled
+#      as `m_lineMode[y] = 0`, which the decode already reads as "write nothing".  PLOT_ONLY's
+#      `g_plotLineLo/Hi` row carve-out cannot express it — a BBC cell is eight display lines — and
+#      is NOT used here, so mem[] stays true everywhere the emitter did not paint.
+#   3. THE PLOT TARGET MOVES TO present().  Aimed from decode() the sweep plotted into the buffer
+#      just presented; the flip happens between the two (RevsScreen::present()).
+# ⭐ WHAT IT IS FOR: rows 81-100 are 20 single-run rows carrying 37% of the sweep's 2155 stores.
+# If 37% of them do not come off phase 1's bracket roughly in proportion, §10e's model is wrong and
+# almost nothing has been spent finding out.  Measure phase 24 AND the decode against a clean
+# PROBES=1 control in the SAME session.
+# ⭐⭐ `make SPANFILL=1 SPANVERIFY=1 DIRECTCHECK=1` — the span bytes' ORACLE, identical to
+# SPANEMIT's: verify mode keeps the chain running (mem[] stays true, so the decode is a valid
+# reference), keeps the mirror LIVE except on an emitted line, and drops the ownership carve-out
+# (the reference conversion reads m_lineMode too, so a carved-out mode would blank the reference
+# on exactly the lines under test).  g_plotMismatch must stay 0 with g_plotChecks large.
+# Diagnostic build: never quote a timing from it.
+# ⚠⚠ `make SPANFILL=2` — THE PICTURE IS WRONG BY CONSTRUCTION, and it is the DECOMPOSITION.
+# Identical to SPANFILL=1 except the span's longword fill is deleted while the claim, the
+# counters and the deletion of the chain's forty units all stay.  Three runs then separate the
+# two halves of the checkpoint with no bracket inside the sweep:
+#     control            phase 24 = drivers + 1440 units
+#     SPANFILL=2         phase 24 = drivers +  591 units + 21 claims          (the DELETION)
+#     SPANFILL=1         ... + the 21 x 20 longword pairs                     (the FILL)
+# ⭐⭐ RUN THE TRIPLE PARKED, and check it: `STRAIGHT_TO_RACE=1 PROBES=1 FIXED_RNG=1` with NO
+# HOLD_THROTTLE.  A driving pair is not comparable across builds at this resolution — the 50 Hz
+# body runs on WALL CLOCK, so a build of a different speed takes a different number of body ticks
+# per main-loop frame and drives a different scene: a measured driving pair moved phases 11 and 18
+# — which SPANFILL cannot touch — by +1.6 and +2.9 ms, against the +1.7 under test.  Parked, the
+# scene is static and phase 0 plus every untouched phase must agree to well under a millisecond;
+# if they do not, the runs are still not comparable and nothing may be concluded.
+# ⚠ Parked INFLATES the emit rate (a static scene's sources are clean, so more lines qualify), so
+# read the per-span PRICE from it, never the shipping share — that comes from the driving run.
+ifneq ($(SPANFILL),)
+ifeq ($(SPANVERIFY),1)
+EXTRA_DEFINES += -DREVS_SPAN_EMIT -DREVS_DIRECT_PLOT
+else
+EXTRA_DEFINES += -DREVS_SPAN_EMIT -DREVS_DIRECT_PLOT -DREVS_SPAN_OWN
+endif
+ifeq ($(SPANFILL),2)
+EXTRA_DEFINES += -DREVS_SPAN_NO_FILL
+endif
+PROBE_SYMS_PLOT = g_plotRuns g_plotCells g_plotRunsLast g_plotCellsLast \
+                  g_plotLineLo g_plotLineHi g_plotNoTarget
+PROBE_SYMS_SPAN = g_spanEmitLines g_spanEmitPaints g_decodeOwnLines
+endif
+
 ifeq ($(DIRECTCHECK),1)
 EXTRA_DEFINES += -DREVS_DIRECT_PLOT -DREVS_DIRECT_CHECK
 # ⚠ Conditional, because probe-audit is right to fail otherwise: these three exist only in a
@@ -465,6 +518,24 @@ EXTRA_DEFINES += -DREVS_DIRECT_PLOT -DREVS_DIRECT_CHECK
 PROBE_SYMS_CHECK = g_plotChecks g_plotMismatch g_plotMismatchOff
 PROBE_SYMS_PLOT  = g_plotRuns g_plotCells g_plotRunsLast g_plotCellsLast \
                    g_plotLineLo g_plotLineHi g_plotNoTarget
+endif
+
+# ⭐⭐ `make SPANSTAT=0` — PRICE THE DIAGNOSTICS, and it must come AFTER every block above that
+# sets PROBE_SYMS_PLOT / PROBE_SYMS_SPAN, because it takes them away again.
+# The span path carries SIX volatile counter RMWs per span (~220 cycles: a 32-bit absolute-address
+# read-modify-write cannot be coalesced) plus two more per LINE in the sweep (g_spanEmitLines /
+# g_spanEmitPaints, ~44 cycles x 36).  Parked that is ~0.9 ms a frame — a quarter of what deleting
+# 851 chain units bought — so the counting build's span price is NOT the shipping price, and this
+# is the instrument that separates them.  Same class as SND_STAT() in the VERTB ISR (CLAUDE.md:
+# a volatile diagnostic counter is 13% of snd_tick).
+# ⚠ Default ON: both span oracles and every committed span .gdb script read these.  A SPANSTAT=0
+# build therefore has NO span probe symbols at all, and running a span script against one is a
+# probe-audit failure by design rather than a silent zero.
+ifneq ($(SPANSTAT),0)
+EXTRA_DEFINES += -DREVS_SPAN_STATS
+else
+PROBE_SYMS_PLOT =
+PROBE_SYMS_SPAN =
 endif
 
 # `make ISRWATCH=1` — does the 50 Hz body write the fill chain's inputs ($3000-$43FF column

@@ -200,6 +200,11 @@ volatile unsigned long g_decodeCellsTotal = 0;/* running sum, so a mean is avail
 volatile uint16_t g_decodeFullFrames = 0;    /* decodes that had to convert everything            */
 volatile uint16_t g_decodeModeDirty  = 0;    /* rows dirtied by a MODE change, not a byte change  */
 volatile unsigned long g_decodeModeLines = 0;/* ...and the LINES those cost, 40 cells each      */
+/* ⭐ THE CARVE-OUT'S OWN STATE PRINT (`make SPANFILL=1`): display lines this decode left to the
+   span emitter.  An A/B switch must print its own state — a build whose predicate never fires and
+   a carve-out that buys nothing read identically without it, which is the mistake `g_spanEmitLines`
+   was added to catch on the emitter side.  Declared always so a .gdb script reads a zero. */
+volatile uint16_t g_decodeOwnLines = 0;
 /* DIRTYCHECK only, but declared always so a .gdb script can read a zero rather than .text. */
 volatile unsigned long g_decodeDirtyChecks   = 0;
 volatile unsigned long g_decodeDirtyMismatch = 0;
@@ -864,6 +869,24 @@ void RevsScreen::present()
     g_screenFrontAddr = (uint32_t)m_bitmap[m_back]->data;
     m_back  ^= 1u;
     m_ready  = false;
+
+    /* ⭐⭐⭐ AND *THIS* IS WHERE THE PLOT TARGET IS SET, not at the top of decode().
+     *
+     * The frame order is: renderFrame() = decode (fills m_bitmap[m_back], m_ready = true) then
+     * spin one field, during which THIS runs and flips m_back — and only then do the engine's
+     * phases 1..23 and, at phase 24, the view sweep.  So the buffer the sweep must plot into is
+     * m_bitmap[m_back] *as it is immediately after the flip*: the one the NEXT decode will fill
+     * and the one after that will present.  Aimed from decode() instead, the sweep plotted into
+     * the buffer decode had just filled — which this flip then put on screen, so every span was
+     * torn into the live display and then discarded by the next decode's buffer swap.
+     *
+     * ⚠ No present can intervene between the sweep and that next decode: present returns at once
+     * unless `m_ready`, and only decode() sets it.  Exactly one present runs per painted frame,
+     * here, before any phase the sweep belongs to.
+     * ⚠ MODE 7 has no race buffer, so the front end clears the target rather than aiming at a
+     * teletext page. */
+    REVS_PLOT_TARGET(tt_active() || !m_bitmap[m_back] ? (uint8_t*)0
+                                                      : (uint8_t*)m_bitmap[m_back]->data);
 }
 
 /* ⭐⭐ SNAPSHOT THE BAND RECORD WITH THE FRAME IT DESCRIBES.  Main-loop context, called from
@@ -1214,10 +1237,9 @@ void RevsScreen::decode()
     Bitmap* bm = m_bitmap[m_back];
     if (!bm) return;
     s_lastDecoded = this;
-    /* ⭐ The 3D view rasteriser plots straight into the buffer this decode is filling (revs_plot.h).
-       Set per painted frame and only in the race configuration: MODE 7 has no race buffer, and a
-       plotter with a stale target would paint into a bitmap the copper is displaying. */
-    REVS_PLOT_TARGET((uint8_t*)bm->data);
+    /* ⚠ THE PLOT TARGET IS NOT SET HERE — see present().  This decode fills m_bitmap[m_back],
+       but the sweep that plots into it runs AFTER the flip that present() is about to do, so
+       aiming the plotter from here aims it one buffer too early. */
 
     /* ⭐ FIRST, before a single pixel is decoded: capture the raster schedule that belongs to
        the frame buffer we are about to read.  See snapshotBands() — the pixels and the band
@@ -1225,6 +1247,30 @@ void RevsScreen::decode()
        palette.  It also fills m_lineMode, which the loop below reads per row. */
     snapshotBands();
     buildLineModes();
+
+#ifdef REVS_SPAN_OWN
+    /* ⭐⭐⭐ THE SPAN EMITTER OWNS THESE DISPLAY LINES — EXPRESSED AS MODE 0, WHICH THE DECODE
+     * ALREADY UNDERSTANDS AS "WRITE NOTHING" (revs_expand_cell's `if (!uniform && m == 0)
+     * continue`).  Four properties fall out of the existing machinery for free, and each one is
+     * a thing the scaffold's `g_plotLineLo/Hi` carve-out could not do:
+     *   - PER LINE, not per character row.  A BBC cell is eight display lines, so converting one
+     *     cell of a partly-owned row paints frozen mem[] straight over emitted lines.  The
+     *     sweep's own region is 77 lines and never row-aligned.
+     *   - A fully-owned row costs nothing at all: `any` is the OR of the eight modes, so it is
+     *     skipped before a byte is read.
+     *   - The frame a line STOPS being owned repaints correctly: mode 0 was written to
+     *     `shadowMode`, so the mode-change bitmask fires and `revs_expand_line` re-expands it.
+     *     That is the whole owned -> not-owned transition, already written and already tested.
+     *   - No change to the hot loops.
+     * ⚠ Not compiled under REVS_SPAN_VERIFY: the oracle's reference conversion reads m_lineMode
+     * too, so a carved-out mode would blank the reference on exactly the lines under test. */
+    {
+        unsigned owned = 0;
+        for (unsigned y = 0; y < kH; y++)
+            if (g_plotOwn[y]) { m_lineMode[y] = 0; owned++; }
+        g_decodeOwnLines = owned;
+    }
+#endif
 
 #ifdef REVS_FILLWATCH
     const unsigned long rejects0 = g_bandRejects;
