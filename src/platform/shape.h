@@ -338,7 +338,9 @@ extern volatile unsigned long g_shapeViewSweeps[3];    /* sweeps in which the ph
 extern volatile unsigned char g_shapeViewFlatMin[3];   /* per-SWEEP flat&&full count: min         */
 extern volatile unsigned char g_shapeViewFlatMax[3];   /* ...and max                             */
 extern volatile unsigned char g_shapeViewFlatLast[3];  /* ...and the last completed sweep's       */
-void shape_view_flat(unsigned line, int fullRun);
+extern volatile unsigned char g_shapeViewDstFirst[3]; /* lowest DISPLAY line the phase painted */
+extern volatile unsigned char g_shapeViewDstLast[3];  /* ...and the highest              */
+void shape_view_flat(unsigned line, int fullRun, unsigned screenPtr);
 
 /* ── THE ROAD PASS ($1A20, phase 11) ────────────────────────────────────────────────────────
  * The other half of step 2, and the number that prices direct plotting: how many BYTES of the
@@ -396,6 +398,61 @@ extern volatile unsigned char  g_shapeFrameLastLine;
 extern volatile unsigned short g_shapeFrameLines;  /* display lines changed, last paint  */
 void shape_frame_delta(void);
 
+/* ── ⭐⭐⭐ THE TAKEOVER'S READER GATE — POISON THE ROWS IT WANTS TO OWN ──────────────────────
+ * `docs/span-render-plan.md` §10p's reader audit asks: **if the takeover writes bitplanes instead
+ * of `mem[]` for display rows 81..101, does anything in the game read those `mem[]` bytes back?**
+ * §10i's RESULTS rule makes that a WRITTEN READER AUDIT, and a code read cannot close it — the
+ * readers include the transliteration an expansion circuit's hook re-enters, which no scan of the
+ * native surface can see (CLAUDE.md: "a `region_*` name is SHIPPING code until proven otherwise").
+ *
+ * ⭐⭐ SO ASK IT AS A MEASUREMENT INSTEAD, AND LET THE GAME ANSWER.  Immediately after the sweep
+ * returns, invert every `mem[]` byte of the display lines named by `REVS_FB_POISON=<first>-<last>`.
+ * `^= 0xFF` rather than a fixed pattern, so EVERY poisoned byte provably differs from what the
+ * sweep just wrote — a constant could coincide with the real pixels.  Then run a fixed trajectory
+ * and diff the whole 64 KB against an unpoisoned run: **if every difference lies inside the
+ * poisoned rows, nothing in the game read them.**  This covers the transliteration, the track
+ * hooks and the 50 Hz body for free, because it asks the machine rather than the source.
+ *
+ * ⭐ AND IT HAS A BUILT-IN POSITIVE CONTROL, which is why it is trustworthy at all.
+ * `update_grip_limits` reads `mem[$713D]` and `mem[$7205]` — both are frame-buffer addresses on
+ * DISPLAY LINE 149 (cells 7 and 32: $713D-$5A80 = 18*320 + 7*8 + 5, so row 18 line 5), and it
+ * feeds them into the two per-axle grip thresholds.  So `REVS_FB_POISON=149-149` MUST diverge,
+ * and a run where it does not is an instrument that measures nothing (`revs_verify_the_instrument`).
+ * Poisoning 81..101 and 149..149 in the same session is the control pair.
+ *
+ * ⚠ The poison does not accumulate: the sweep rewrites those rows every frame, so each frame's
+ * readers see exactly one frame's inversion.  ⚠ A SHAPE build only — it corrupts the display by
+ * construction, and the host has no renderer to corrupt.
+ *
+ * ── ⭐⭐⭐ THE ANSWER: PHASE 1'S ROWS HAVE NO READER, AND THE OTHER TWO DO ──────────────────
+ * `REVS_FIXED_RNG=1`, diff of the whole 64 KB at frame 300 against an unpoisoned run, with each
+ * phase's row range measured by `g_shapeViewDstFirst/Last` rather than assumed:
+ *
+ *     rows      phase                     differ  inside  OUTSIDE  reader
+ *     81..116   1 view_paint_lines_core     1440    1440      0     ⭐ NONE
+ *     117..132  2 paint_lines_clipped        644     640      4     plot_line_octant, undo 28..31
+ *     133..157  3 paint_lines_short         2796     796   2000     ...undo 32..35 + row 149
+ *     149..149  (the positive control)      2325      34   2291     update_grip_limits — it works
+ *
+ * ⭐ So the takeover may own display lines 81..116 OUTRIGHT: no compatibility write-back, no
+ * shadow copy, nothing.  All 1440 poisoned bytes also SURVIVED to the dump, so nothing overwrote
+ * those rows after the sweep and no masking can be hiding a reader.
+ *
+ * ⭐⭐ THE READER IN THE OTHER TWO IS `plot_line_octant`, AND IT IS NOT A PIXEL CONSUMER — it
+ * saves the ORIGINAL byte at each address it plots into `MEM_plot_undo_byte` ($0780) so the plot
+ * can be undone.  The eight outside bytes are exactly entries 28..35, each the bit-inverse of the
+ * reference.  A takeover of phases 2/3 therefore owes the undo table real bytes, not the whole
+ * frame buffer — but phase 1 owes nothing, which is where §10p starts.
+ *
+ * ⛔ AND §10p's ORIGINAL GATE MECHANISM IS RETRACTED: it claimed `column_gap_walk` reads frame
+ * buffer pixels.  It does not — it walks the SOURCE blocks at `$3000 + column*$80` and stores to
+ * `$0504`/`$4400`, none of them inside `$5A80..$7B40`.  The `NOUNITS=2` observation behind that
+ * claim (ph18 5.88 vs 10.18 ms) has a different cause: NOUNITS=2 never CONSUMES the sources, so
+ * they stay non-zero and the gap walk — which replaces every ZERO byte — finds fewer to fill.
+ * Phase 18 is a PRODUCER for the sweep, not a consumer of the frame buffer. */
+extern volatile unsigned long g_shapeFbPoisonBytes;  /* bytes inverted — its own control */
+void shape_fb_poison(void);
+
 #define PROBE_SHAPE_DASH_BEFORE()  shape_dash_before()
 #define PROBE_SHAPE_DASH_AFTER()   shape_dash_after()
 #define PROBE_SHAPE_DASH_UNIT(line) shape_dash_unit(line)
@@ -409,11 +466,12 @@ void shape_frame_delta(void);
 #define PROBE_SHAPE_VIEW_RUN(n, b) shape_view_run((n), (b))
 #define PROBE_SHAPE_VIEW_STOP()    shape_view_stop()
 #define PROBE_SHAPE_VIEW_LINE()    shape_view_line()
-#define PROBE_SHAPE_VIEW_FLAT(l,f) shape_view_flat((l), (f))
+#define PROBE_SHAPE_VIEW_FLAT(l,f,p) shape_view_flat((l), (f), (p))
 #define PROBE_SHAPE_ROAD_BEFORE()  shape_road_before()
 #define PROBE_SHAPE_ROAD_AFTER()   shape_road_after()
 #define PROBE_SHAPE_PHASE(n)       shape_phase_mark(n)
 #define PROBE_SHAPE_FRAME()        shape_frame_delta()
+#define PROBE_SHAPE_FB_POISON()    shape_fb_poison()
 
 #else
 
@@ -425,9 +483,10 @@ void shape_frame_delta(void);
 #define PROBE_SHAPE_VIEW_RUN(n, b) ((void)0)
 #define PROBE_SHAPE_VIEW_STOP()    ((void)0)
 #define PROBE_SHAPE_VIEW_LINE()    ((void)0)
-#define PROBE_SHAPE_VIEW_FLAT(l,f) ((void)0)
+#define PROBE_SHAPE_VIEW_FLAT(l,f,p) ((void)0)
 #define PROBE_SHAPE_DASH_BEFORE()  ((void)0)
 #define PROBE_SHAPE_DASH_AFTER()   ((void)0)
+#define PROBE_SHAPE_FB_POISON()    ((void)0)
 #define PROBE_SHAPE_DASH_UNIT(line) ((void)(line))
 #define PROBE_SHAPE_DASH_STORE(d, v, line) ((void)0)
 #define PROBE_SHAPE_MARK(addr)     ((void)0)

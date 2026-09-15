@@ -981,7 +981,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first)
                exact point the takeover's own predicate is asked, so the count is of the thing
                that will be measured, not a proxy for it.  Compiled out entirely without SHAPE;
                `view_stop_from` is not evaluated in that build. */
-            PROBE_SHAPE_VIEW_FLAT(line, view_stop_from(0) == 40);
+            PROBE_SHAPE_VIEW_FLAT(line, view_stop_from(0) == 40, plot_ptr_v);
 #ifdef REVS_SPAN_EMIT
             /* ── ⭐⭐⭐ THE SPAN EMITTER (docs/direct-bitplane-plan.md §10j step 1) ───────────
                Nothing wrote this line's forty sources and no stop is planted in it, so every one
@@ -1937,6 +1937,13 @@ uint8_t race_main_loop_core(RestartDepth depth)
             PROBE_SHAPE_DASH_BEFORE();
             PROBE_PHASE(24); PROBE_SHAPE_PHASE(24); view_paint_lines();
             PROBE_SHAPE_DASH_AFTER();
+            /* ⭐⭐⭐ THE PHASE-1 TAKEOVER'S READER GATE, and it is a no-op in every build but
+               `SHAPE=1` + `REVS_FB_POISON` (shape.h §THE TAKEOVER'S READER GATE).  Inverting the
+               rows the takeover wants to own, right where the takeover would stop writing them,
+               asks the GAME whether anything reads them back — which a scan of the native surface
+               cannot answer, because the readers include the transliteration a track hook
+               re-enters.  `update_grip_limits`' display line 149 is the positive control. */
+            PROBE_SHAPE_FB_POISON();
             /* Phase 32 exists so phase 24 means ONLY the view sweep; without it the tail's three
                JSRs were charged to the rasteriser (11 ms of its 82). */
             PROBE_PHASE(PROBE_PHASE_VIEWTAIL);

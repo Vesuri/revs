@@ -286,7 +286,7 @@ void PlatformHost::renderFrame()
                     const unsigned long sw = g_shapeViewSweeps[i];
                     std::printf("SHAPE     phase %u: lines=%lu (%lu/sweep over %lu sweeps)  "
                                 "flat=%lu (%lu%%)  full=%lu (%s)  flat&&full=%lu (%lu%%)  "
-                                "per sweep %u..%u last %u\n",
+                                "per sweep %u..%u last %u  DISPLAY LINES %u..%u\n",
                                 i + 1, n, sw ? n / sw : 0, sw,
                                 g_shapeViewFlat[i], g_shapeViewFlat[i] * 100 / n,
                                 g_shapeViewFull[i],
@@ -294,7 +294,9 @@ void PlatformHost::renderFrame()
                                                         : "< lines, stops ARE planted",
                                 g_shapeViewFlatFull[i], g_shapeViewFlatFull[i] * 100 / n,
                                 g_shapeViewFlatMin[i] == 0xFFu ? 0 : g_shapeViewFlatMin[i],
-                                g_shapeViewFlatMax[i], g_shapeViewFlatLast[i]);
+                                g_shapeViewFlatMax[i], g_shapeViewFlatLast[i],
+                                g_shapeViewDstFirst[i] == 0xFFu ? 0 : g_shapeViewDstFirst[i],
+                                g_shapeViewDstLast[i]);
                 }
             }
             if (g_shapeRoadCalls)

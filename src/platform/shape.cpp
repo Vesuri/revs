@@ -672,6 +672,9 @@ volatile unsigned long g_shapeViewSweeps[3]    = { 0, 0, 0 };
 volatile unsigned char g_shapeViewFlatMin[3]   = { 0xFFu, 0xFFu, 0xFFu };
 volatile unsigned char g_shapeViewFlatMax[3]   = { 0, 0, 0 };
 volatile unsigned char g_shapeViewFlatLast[3]  = { 0, 0, 0 };
+volatile unsigned long g_shapeFbPoisonBytes    = 0;
+volatile unsigned char g_shapeViewDstFirst[3]  = { 0xFFu, 0xFFu, 0xFFu };
+volatile unsigned char g_shapeViewDstLast[3]   = { 0, 0, 0 };
 
 static unsigned char s_flatThisSweep[3];
 static unsigned char s_linesThisSweep[3];
@@ -702,7 +705,7 @@ void shape_view_phase(int idx)
    and its background byte resolved, before any unit runs.  `fullRun` is the caller's
    `view_stop_from(0) == 40` — counted apart from `flat` so §10p's "no planted stops in phase 1"
    claim is checked rather than trusted. */
-void shape_view_flat(unsigned line, int fullRun)
+void shape_view_flat(unsigned line, int fullRun, unsigned screenPtr)
 {
     const int p = s_shapeViewPhase;
     unsigned k;
@@ -714,11 +717,71 @@ void shape_view_flat(unsigned line, int fullRun)
     for (k = 0; k < 40u; k++)
         if (mem[MEM_view_src_blocks + (k << 7) + line]) { flat = 0; break; }
 
+    /* ⭐ WHICH DISPLAY LINES THIS PHASE OWNS — the takeover's reader gate needs the row
+       range, not the source-block line index, because the poison test and `plot_line_octant`'s
+       undo table both speak display lines.  Same arithmetic as view_dst_line. */
+    {   unsigned off = (screenPtr - BBC_SCREEN_BASE) & 0xFFFFu;
+        if (off < BBC_SCREEN_BYTES) {
+            unsigned row = off / BBC_SCREEN_BPR, sub = off % BBC_SCREEN_BPR;
+            if (sub < BBC_SCREEN_LINES) {
+                unsigned d = row * BBC_SCREEN_LINES + sub;
+                if (d < g_shapeViewDstFirst[p]) g_shapeViewDstFirst[p] = (unsigned char)d;
+                if (d > g_shapeViewDstLast[p])  g_shapeViewDstLast[p]  = (unsigned char)d;
+            }
+        }
+    }
+
     g_shapeViewFlatLines[p]++;
     s_linesThisSweep[p]++;
     if (flat)            g_shapeViewFlat[p]++;
     if (fullRun)         g_shapeViewFull[p]++;
     if (flat && fullRun) { g_shapeViewFlatFull[p]++; s_flatThisSweep[p]++; }
+}
+
+/* ⭐⭐⭐ THE TAKEOVER'S READER GATE (shape.h §THE TAKEOVER'S READER GATE).  Invert every mem[]
+   byte of the display lines `REVS_FB_POISON=<first>-<last>` names, right after the sweep wrote
+   them.  Diff a fixed trajectory's 64 KB against an unpoisoned run: if every difference lies
+   inside the poisoned rows, nothing in the game read them back.
+   ⭐ An A/B switch must PRINT its own state (CLAUDE.md) — a build that parsed nothing reads
+   exactly like a game that ignores the rows, which is the answer we are trying to establish. */
+void shape_fb_poison(void)
+{
+    static int parsed = 0;
+    static int first = -1, last = -1;
+
+    if (!parsed) {
+        parsed = 1;
+        if (const char* e = getenv("REVS_FB_POISON")) {
+            char* p = 0;
+            long a = strtol(e, &p, 0);
+            long b = (p && *p == '-') ? strtol(p + 1, 0, 0) : a;
+            if (a >= 0 && b >= a && b < (long)BBC_SCREEN_HEIGHT) {
+                first = (int)a; last = (int)b;
+                printf("SHAPE fb-poison ARMED: display lines %d..%d, %d bytes/frame, ^= 0xFF\n",
+                            first, last, (last - first + 1) * 40);
+            } else {
+                printf("SHAPE fb-poison REFUSED '%s' — want <first>-<last> within 0..%u\n",
+                            e, (unsigned)BBC_SCREEN_HEIGHT - 1u);
+            }
+        } else {
+            printf("SHAPE fb-poison off (set REVS_FB_POISON=<first>-<last> to arm)\n");
+        }
+        fflush(stdout);
+    }
+
+    if (first < 0) return;
+
+    for (int d = first; d <= last; d++) {
+        /* The BBC layout: a character row's eight scan lines are 1 byte apart inside an 8-byte
+           cell, and the rows BBC_SCREEN_BPR apart.  Same arithmetic as view_dst_line, inverted. */
+        unsigned base = BBC_SCREEN_BASE
+                      + (unsigned)(d / BBC_SCREEN_LINES) * BBC_SCREEN_BPR
+                      + (unsigned)(d % BBC_SCREEN_LINES);
+        for (unsigned cell = 0; cell < 40u; cell++) {
+            mem[base + cell * 8u] ^= 0xFFu;
+            g_shapeFbPoisonBytes++;
+        }
+    }
 }
 
 /* 0 = clean (zero source, carried byte), 1 = dirty (zero it + translate), 2 = forced. */
