@@ -136,6 +136,18 @@ CXXFLAGS += -DREVS_VIEWSKIP_ASSERT
 endif
 endif
 
+# ⭐⭐⭐ `make VIEWOWN=1` — PHASES 2 AND 3 OWN THEIR RUNS (docs/span-render-plan.md §10p step 4).
+# The short phases ask `paint_cells` for ONE run of ONE line, four times a line, through
+# `view_enter_chain`'s synthesised 6502 address; this replaces those four entries with
+# `view_own_run` — the run, the stop tail and the terminator, and nothing else.  The plants, the
+# stop list, `view_consume` and every trap arm are the SAME code, so it is byte-exact by
+# construction and `make validate FN=view_paint_lines` + the five `determinism` trajectories
+# gate it directly.  It is the step that has to pay before the runs' stores go to the bitplanes.
+ifdef VIEWOWN
+CFLAGS   += -DREVS_VIEW_OWN_SHORT
+CXXFLAGS += -DREVS_VIEW_OWN_SHORT
+endif
+
 # ⭐ ...and `REVS_HOLD_STEER=l|r` at RUN time holds a STEERING key beside the throttle, which is
 # the only way to exercise the steering chain on a host build (the host has no keyboard, and the
 # mouse axis is the Amiga's).  It is how "the wheel does not turn" was reproduced off-target in

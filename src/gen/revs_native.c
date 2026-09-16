@@ -636,6 +636,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first,
 /* A `JSR` into the middle of a chain.  The two legal entry offsets are the unit start and
    unit+$05 — the latter skips the dirty test and uses the cell index the caller just
    computed (docs/static-map.md §Open items 10).  Returns 0 if it trapped. */
+#ifndef REVS_VIEW_OWN_SHORT   /* `VIEWOWN=1` retires it: nothing synthesises a chain address */
 static int view_enter_chain(ViewState* v, uint16_t site, uint16_t opnd, unsigned page)
 {
     uint16_t target = (uint16_t)(mem[opnd] | (mem[opnd + 1] << 8));
@@ -656,6 +657,7 @@ static int view_enter_chain(ViewState* v, uint16_t site, uint16_t opnd, unsigned
     platform_smc_unhandled(site, target);
     return 0;
 }
+#endif
 
 /* Step both screen pointers to the next scan line: +1 inside a character row, +$139 to
    cross into the next one.  Returns the incremented low byte; `*carry_out` reports the
@@ -1529,6 +1531,161 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first,
     v->cell = cell;
 }
 
+/* ⭐⭐⭐ THE CHAIN'S RUNS, WITHOUT THE CHAIN — the §10p takeover of the SHORT phases
+   (`make VIEWOWN=1`).  From unit `first` to the planted stop (or unit 39): a `view_consume` and
+   a store at `base0 + unit*8`, which is the ONE-SEGMENT theorem `paint_cells` argues above
+   (`plot_ptr2 == plot_ptr + 256` is an invariant of this routine, measured at zero two-segment
+   runs over 113435 runs), then the stop tail and the `$7EEE` terminator.
+
+   ⭐ IT REUSES `VIEW_UNIT` ON PURPOSE.  A unit is defined once in this file and this is that
+   definition, read through the same local names (`byte`/`srcp`/`dp`/`cell`/`busSafe`/`line`) —
+   a second copy of the consume-and-store is how a takeover and the oracle it is compared
+   against come to agree on a bug (RevsScreen.cpp §100 makes the same argument about a mapping).
+   It also means every `make NOUNITS=n` arm and every shape probe keeps working here for free.
+
+   ⚠⚠ WHAT IT DOES *NOT* DO IS THE POINT.  Phases 2 and 3 want ONE run of ONE line, four times a
+   line, and they ask `paint_cells` for it — a function with an eleven-register `movem`, a 28-byte
+   frame, the span / skip / phase-1-takeover arms and the four-segment derivation, none of which
+   a single short run can use.  What survives here is the run, its stop tail, and the line loop
+   the terminator can still ask for.
+
+   ⛔ IT DID NOT KEEP THE QUAD UNROLL AT FIRST, AND THAT COST PHASE 2 +0.231 ms — the unroll is
+   back below, with the measurement at it.  The retracted argument was that "phase 3's lines
+   visit 11.2 of 40 cells and the RLE mean run is 6.5", which is the length of a run of
+   NON-ZERO SOURCES and not the length of a CHAIN RUN; the target's census reads 13.3 units a
+   run in phase 2 and 5.6 in phase 3.  ⭐⭐ ASK WHICH DISTRIBUTION THE LOOP ACTUALLY ITERATES:
+   two different run lengths are measured in this sweep and only one of them is this loop's.
+
+   ⚠ `forced` is only ever the run's FIRST unit (the `unit+$05` entry, where the carried byte
+   comes from `cell` rather than from the source), exactly as the peeled unit in `paint_cells`.
+   An empty run leaves it set for the stop tail, which is what the chain does too.
+
+   ⚠⚠ IT ALWAYS RETURNS "CARRY ON", AND THAT IS THE CONTROL FLOW OF WHAT IT REPLACES — a trap
+   inside the chain ends the CHAIN, not the sweep: `view_enter_chain` returns 1 unconditionally
+   once the entry address has decoded, and phase 1's own `paint_cells` calls check nothing.  The
+   first version returned 0 from the stop tail's trap and from the terminator's, which aborted
+   the driver; a sabotage that dropped the terminator trap PASSED and is what exposed it. */
+static void view_own_run(ViewState* v, unsigned first, int forced)
+{
+    unsigned byte = v->byte, line = v->line, cell = v->cell;
+
+    for (;;) {
+        const unsigned base0 = plot_ptr_v;   /* ⭐ one word read, not two bytes + shift + or */
+        MEM_QUAL unsigned char* srcp = mem + MEM_view_src_blocks + (first << 7) + line;
+        MEM_QUAL unsigned char* dp   = mem + base0 + (first << 3);
+        /* ⭐⭐ THE PLANTED STOP AS AN ADDRESS, the same collapse `paint_cells` argues: 40 means
+           "none in this run", and 40 * 8 is 320, which IS the line's end — so one `runEnd`
+           serves both the stop and the no-stop case and needs no bound of its own. */
+        const int stopUnit = view_stop_from((int)first);
+        MEM_QUAL unsigned char* const runEnd = mem + base0 + ((unsigned)stopUnit << 3);
+        /* the same hoist, and the same deliberately stricter bound, as the chain's run set-up */
+        const int busSafe = base_span_is_ram(base0, 40 * 8 + 256);
+        PLOT_DECL();
+
+        PROBE_VIEW_RUN((unsigned)(runEnd - dp) >> 3);
+        PROBE_SHAPE_VIEW_RUN((unsigned)(runEnd - dp) >> 3, busSafe);
+        if (forced && dp != runEnd) {
+            VIEW_UNIT(0, 0, 1);
+            forced = 0;
+            srcp += 0x80;
+            dp   += 8;
+        }
+        /* ⭐⭐ FOUR UNITS A TURN, and the reason is MEASURED, not inherited from `paint_cells`.
+           The first version of this walk had no unroll, on the argument that the takeover's
+           lines visit few cells; the A/B said otherwise — phase 3 paid −1.207 ms and phase 2
+           GAINED +0.231, and the target's own census says why: phase 2's chain runs average
+           426/32 = 13.3 units and phase 3's 282/50 = 5.6, so phase 2 was losing three full
+           quad turns a run to buy one call's worth of entry.  ⚠ THE 6.5-CELL MEAN RUN THAT
+           ARGUED AGAINST THE UNROLL IS THE WRONG DENOMINATOR: it is the RLE distribution of
+           NON-ZERO SOURCES, which is what `view_consume` branches on, not the length of a
+           CHAIN RUN, which is what this loop iterates.  Three of the four units address their
+           memory through a displacement (d16(An) is 4 cycles, an `addq` 8) and one back edge
+           serves four.  `dp != quad` is exact: both pointers walk the same 8-byte grid from
+           the same base. */
+        {
+            MEM_QUAL unsigned char* const quad = dp + ((unsigned)(runEnd - dp) & ~31u);
+            while (dp != quad) {
+                VIEW_UNIT(0x000,  0, 0);
+                VIEW_UNIT(0x080,  8, 0);
+                VIEW_UNIT(0x100, 16, 0);
+                VIEW_UNIT(0x180, 24, 0);
+                srcp += 0x200;
+                dp   += 32;
+            }
+        }
+        while (dp != runEnd) {
+            VIEW_UNIT(0, 0, 0);
+            srcp += 0x80;
+            dp   += 8;
+        }
+
+        if (stopUnit < 40) {
+            /* the unit the stop sits on: its source is consumed, its store is not, and the
+               opcode slot is read AFTER the consume — the 6502's order, as in `paint_cells`. */
+            MEM_QUAL unsigned char* const slot = g_viewSlotP[stopUnit];
+            unsigned char op;
+            PROBE_SHAPE_DASH_UNIT(line);
+            PROBE_VIEW_UNITS(1);                      /* the stop's own unit: consumed */
+            PROBE_SHAPE_VIEW_STOP();
+            byte = view_consume(srcp, byte, forced, cell);
+            cell = ((unsigned)stopUnit & 31u) << 3;   /* its `LDY`; the index wraps at 32 */
+            op   = *slot;
+            if (op != OP_RTS) platform_smc_unhandled((uint16_t)(slot - mem), op);
+            PLOT_FLUSH();
+            break;                                    /* the planted RTS: the chain returns */
+        }
+
+        cell = 0x38;                                  /* unit 39's cell, had the chain not stopped */
+        PLOT_FLUSH();
+
+        /* $7EEE — the sweep's own terminator, itself an opcode slot.  ⚠ IT IS `RTS` THROUGHOUT
+           PHASES 2 AND 3, so the loop below this is dead on every trajectory the game takes:
+           `paint_lines_clipped` plants it at its first act and nothing between there and
+           `unplant_stops` can write $7EEE (the sweep stores to its source blocks $3000-$43CF and
+           to `base + cell*8` with base in $67..$7A, and page $7E's unit slots sit at
+           $7E00 + k*$11 + $0F, for which $EE would need 223/17).  ⭐ KEPT ANYWAY, because the
+           6502 has it and because a takeover that answers a live opcode slot differently from
+           the code it replaces is exactly the class `platform_smc_unhandled` exists to catch. */
+        {
+            unsigned op = mem[MEM_view_chain_end_slot];
+            if (op == OP_RTS) break;
+            if (op != OP_CPX_IMM) { platform_smc_unhandled(MEM_view_chain_end_slot, op); break; }
+        }
+        if (line_is_last(line, 0x2C)) break;          /* the last full-width line; its C is live */
+        line = (line - 1) & 0xFF;
+
+        /* the chain's own line advance, which `paint_cells` spells as `advance_first` */
+        PROBE_VIEW_LINE();
+        PROBE_SHAPE_VIEW_LINE();
+        step_scanline((int*)0);
+        byte  = mem[MEM_surface_colours + (mem[MEM_view_line_surface + line] & 3)];
+        first = 0;
+        forced = 0;
+    }
+
+    v->byte = (unsigned char)byte;
+    v->line = (unsigned char)line;
+    v->cell = (unsigned char)cell;
+}
+
+/* A `JSR` into the middle of a chain, WITHOUT synthesising the 6502 address — `view_enter_chain`
+   builds a 16-bit target out of the poked operand pair, range-tests its page, maps it back to a
+   unit and hands that unit to `paint_cells`.  The map is the same one; only the run is ours, and
+   the trap arm is kept byte for byte: an operand that does not decode to a unit of `page` is
+   still reported through `platform_smc_unhandled` with the SITE and the TARGET, and is the only
+   thing that stops the driver (see `view_own_run`'s note on which traps do not). */
+static int view_own_enter(ViewState* v, uint16_t site, uint16_t opnd, unsigned page)
+{
+    uint16_t target = (uint16_t)(mem[opnd] | (mem[opnd + 1] << 8));
+
+    if ((target >> 8) == page && view_low_page(page)) {
+        unsigned char u = g_viewUnitOf[page - VIEW_LOW_PAGE][target & 0xFF];
+        if (u) { view_own_run(v, (unsigned)(u & 0x7Fu) - 1u, (u & 0x80u) != 0); return 1; }
+    }
+    platform_smc_unhandled(site, target);
+    return 0;
+}
+
 #undef VIEW_UNIT
 
 /* $7BBF — un-plant everything the sweep planted.  The three recorded low bytes are copied
@@ -1601,7 +1758,11 @@ static void paint_lines_short(ViewState* v)
                                mem[MEM_view_left_start_mask + edge],
                                mem[MEM_view_left_start_fill + edge]);
         v->cell = v->byte;                          /* TAY */
+#ifdef REVS_VIEW_OWN_SHORT
+        if (!view_own_enter(v, MEM_view_p3_enter_a_site, (MEM_view_p3_enter_a_site + 1u), 0x7C)) return;
+#else
         if (!view_enter_chain(v, MEM_view_p3_enter_a_site, (MEM_view_p3_enter_a_site + 1u), 0x7C)) { return; }
+#endif
         v->byte = view_compose(v->byte, mem[MEM_view_left_end_mask + v->line],
                                         mem[MEM_view_left_end_fill + v->line]);
         REVS_PLOT_CELL(view_screen_addr(plot_ptr_v, v->cell), (uint8_t)v->byte);
@@ -1627,7 +1788,11 @@ static void paint_lines_short(ViewState* v)
                                mem[MEM_view_right_start_mask + v->line],
                                mem[MEM_view_right_start_fill + v->line]);
         v->cell = v->byte;                          /* the composed byte is the next cell index too */
+#ifdef REVS_VIEW_OWN_SHORT
+        if (!view_own_enter(v, MEM_view_p3_enter_b_site, (MEM_view_p3_enter_b_site + 1u), 0x7E)) return;
+#else
         if (!view_enter_chain(v, MEM_view_p3_enter_b_site, (MEM_view_p3_enter_b_site + 1u), 0x7E)) { return; }
+#endif
         math_hi = (unsigned char)v->cell;           /* the chain's cell, parked in scratch */
         edge    = mem[MEM_view_edge_phase + v->line];
         v->byte = view_compose(v->byte, mem[MEM_view_right_end_mask + edge],
@@ -1682,7 +1847,23 @@ static void paint_lines_clipped(ViewState* v)
             mem[(MEM_view_p2_enter_b_site + 1u)] = (unsigned char)v->cell;
         }
 
+#ifdef REVS_VIEW_OWN_SHORT
+        /* ⭐⭐⭐ THE PHASE-2 TAKEOVER (§10p, `make VIEWOWN=1`) — the driver owns its own runs.
+           This is the `advance_first` prologue of `paint_cells` (the scan-line step and the
+           line's background byte) followed by the run itself; what it deletes is the call, the
+           frame, and every arm of that function phase 2 cannot use.
+           ⚠ BYTE-EXACT BY CONSTRUCTION, and deliberately so: the plants, the stop list, the
+           consume and the trap arms are the SAME code — only the way the run is *reached*
+           changes.  That is what makes `make validate FN=view_paint_lines` and the five
+           `make determinism` trajectories the gate on this, rather than a picture. */
+        PROBE_VIEW_LINE();
+        PROBE_SHAPE_VIEW_LINE();
+        step_scanline((int*)0);
+        v->byte = mem[MEM_surface_colours + (mem[MEM_view_line_surface + v->line] & 3)];
+        view_own_run(v, 0, 0);
+#else
         paint_cells(v, 0, 0, 1, 0);             /* the JSR through view_next_scanline */
+#endif
 
         v->byte = view_compose(v->byte, mem[MEM_view_left_end_mask + v->line],
                                         mem[MEM_view_left_end_fill + v->line]);
@@ -1699,7 +1880,11 @@ static void paint_lines_clipped(ViewState* v)
                                mem[MEM_view_right_start_mask + v->line],
                                mem[MEM_view_right_start_fill + v->line]);
         v->cell = v->byte;                          /* the composed byte is the next cell index too */
+#ifdef REVS_VIEW_OWN_SHORT
+        if (!view_own_enter(v, MEM_view_p2_enter_b_site, (MEM_view_p2_enter_b_site + 1u), 0x7E)) return;
+#else
         if (!view_enter_chain(v, MEM_view_p2_enter_b_site, (MEM_view_p2_enter_b_site + 1u), 0x7E)) { return; }
+#endif
 
         if (line_is_last(v->line, 0x1C)) break;
     }

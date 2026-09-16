@@ -222,6 +222,17 @@ EXTRA_DEFINES += -DREVS_VIEWSKIP
 PROBE_SYMS_VIEWSKIP = g_viewSkipLines g_viewSkipPaints
 endif
 
+# ⭐⭐⭐ `make VIEWOWN=1` — PHASES 2 AND 3 OWN THEIR RUNS (docs/span-render-plan.md §10p step 4).
+# The short phases ask `paint_cells` for ONE run of ONE line, four times a line, through
+# `view_enter_chain`'s synthesised 6502 address; this replaces those four entries with
+# `view_own_run` — the run, the stop tail and the terminator, and nothing else.  The plants, the
+# stop list, `view_consume` and every trap arm are the SAME code, so it is byte-exact by
+# construction and `make validate FN=view_paint_lines` + the five `determinism` trajectories
+# gate it directly.  It is the step that has to pay before the runs' stores go to the bitplanes.
+ifdef VIEWOWN
+EXTRA_DEFINES += -DREVS_VIEW_OWN_SHORT
+endif
+
 # `make NOUNITS=1` — ⚠⚠ THE PICTURE IS WRONG BY CONSTRUCTION.  The $7BE2 unit loop keeps its
 # iterations and loses its memory work, so `phase 24 with this on` is the per-line drivers plus
 # the bare loop.  A decomposition the VIEWSPLIT brackets cannot give honestly: bracketing 118
