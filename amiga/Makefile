@@ -588,7 +588,8 @@ EXTRA_DEFINES += -DREVS_SPAN_SCANCHECK
 PROBE_SYMS_SCAN = g_spanScanChecks g_spanScanMismatch
 endif
 PROBE_SYMS_PLOT = g_plotRuns g_plotCells g_plotRunsLast g_plotCellsLast \
-                  g_plotLineLo g_plotLineHi g_plotNoTarget g_plotChainLines
+                  g_plotLineLo g_plotLineHi g_plotNoTarget g_plotChainLines \
+                  g_plotChainNZ g_plotChainNZLast
 PROBE_SYMS_SPAN = g_spanEmitLines g_spanEmitPaints g_decodeOwnLines
 endif
 
@@ -598,7 +599,8 @@ EXTRA_DEFINES += -DREVS_DIRECT_PLOT -DREVS_DIRECT_CHECK
 # DIRECTCHECK build, and a symbol listed but absent is exactly what the audit is for.
 PROBE_SYMS_CHECK = g_plotChecks g_plotMismatch g_plotMismatchOff
 PROBE_SYMS_PLOT  = g_plotRuns g_plotCells g_plotRunsLast g_plotCellsLast \
-                   g_plotLineLo g_plotLineHi g_plotNoTarget g_plotChainLines
+                   g_plotLineLo g_plotLineHi g_plotNoTarget g_plotChainLines \
+                  g_plotChainNZ g_plotChainNZLast
 endif
 
 # ⭐⭐ `make SPANSTAT=0` — PRICE THE DIAGNOSTICS, and it must come AFTER every block above that

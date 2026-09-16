@@ -130,6 +130,13 @@ extern volatile unsigned char  g_plotLineLo;   /* display lines the last sweep p
 extern volatile unsigned char  g_plotLineHi;
 extern volatile unsigned long  g_plotNoTarget; /* runs dropped for want of a buffer */
 extern volatile unsigned long  g_plotChainLines; /* lines the §10p takeover painted cell by cell */
+/* ⭐⭐ THE RUN CENSUS ON THE TAKEOVER'S OWN LINES (§10p step 3c's sizing number).  `view_consume`
+   is RLE — a zero source means "same colour as my left" — so a line's colour RUNS are exactly
+   1 + (non-zero sources at cells 1..39), and that is what decides whether the cell loop can
+   become a LONGWORD-FILL run loop.  ⚠ It must be counted on the NON-FLAT lines only: the flat
+   ones are already `revs_plot_span`'s and would drag the average to 1.0 by construction. */
+extern volatile unsigned long  g_plotChainNZ;     /* Σ non-zero sources over those lines */
+extern volatile unsigned short g_plotChainNZLast; /* ...on the most recent sweep         */
 #endif
 
 #define REVS_PLOT_TARGET(p)     revs_plot_target(p)

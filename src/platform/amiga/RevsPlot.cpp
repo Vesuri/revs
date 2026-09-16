@@ -69,6 +69,8 @@ volatile unsigned char  g_plotLineLo    = 0xFF;
 volatile unsigned char  g_plotLineHi    = 0;
 volatile unsigned long  g_plotNoTarget  = 0;
 volatile unsigned long  g_plotChainLines = 0;   /* lines the TAKEOVER painted cell by cell */
+volatile unsigned long  g_plotChainNZ     = 0;  /* ...and their non-zero sources = runs - 1 */
+volatile unsigned short g_plotChainNZLast = 0;
 }
 #endif
 
@@ -103,6 +105,7 @@ extern "C" void revs_plot_target(unsigned char* planeBase)
 #ifdef REVS_SPAN_STATS
     g_plotRunsLast = 0;
     g_plotCellsLast = 0;
+    g_plotChainNZLast = 0;
     g_plotLineLo = 0xFF;
     g_plotLineHi = 0;
 #endif
@@ -283,6 +286,30 @@ extern "C" int revs_plot_has_target(void) { return s_target != 0; }
    pair is 8.  Four, not eight: the plane stores want a register-indirect-postincrement that a
    longer unroll starts spilling around.
 
+   ⛔⛔ AND WIDENING THE STORES IS CLOSED — BOTH SHAPES, ON ARITHMETIC, BEFORE ANY EMULATOR RUN.
+   The instinct is strong and it is wrong, so the numbers are kept.  `g_plotChainNZ` is the census
+   that prices it: `view_consume` is RLE, so a line's colour RUNS are exactly `1 + nonzero
+   sources`, and the target reports **5.12 nonzero sources over 1277 takeover lines** ⇒ 6.1 runs
+   in forty cells, a 6.5-cell mean run.  Per line the loop below is ten groups of 210 cycles.
+     - A per-RUN loop: 6.5 cells is far too short to amortise a run prologue, and §10n's
+       ⛔ index→pointer result prices one at up to 402 cycles — 6.1 of those exceed the whole loop.
+     - A GROUP-OF-FOUR-CELLS longword fill (four consecutive cells' plane bytes ARE adjacent, even
+       though their sources are 128 apart and can never be widened): a uniform group falls from
+       210 to 132 cycles (60 for the four-way `or.b` test, 10 for the branch, 28 for two `move.l`,
+       34 tail) — but a MIXED group rises to 316, because the group test is pure overhead on top
+       of the per-cell tests it failed to replace.  At 0.51 changes per group, ~6 groups are
+       uniform and ~4 mixed: 6(132) + 4(316) = 2056 against 2100.  **Zero.**
+   ⭐⭐ THE GENERAL FORM, and it is the two-number rule's sibling: A COARSE TEST ONLY PAYS IF IT
+   REPLACES THE FINE ONES, never if the fine ones still run on its failing arm — so the break-even
+   is set by how often the coarse test SUCCEEDS, not by how much the wide store saves.  Here the
+   floor is the scan: forty source reads and branches at stride $80 is 880 of the 2100 cycles, and
+   no store shape touches it.  ⇒ The remaining lever on this function is a GROUP OF FOUR **LINES**
+   (source stride along the line axis is 1, so one `move.l` tests four lines at one cell — the
+   trick `view_group_sources` already uses and VIEW_SCAN_LANE already verified on the target),
+   which needs eight live destination pointers and is therefore a register-pressure question, not
+   an arithmetic one.  Not attempted: extending ownership to phases 2 and 3 buys 0.119 ms of
+   decode per display line MEASURED, and is ~5x larger.
+
    ⚠ ENDIAN-OK, and it is not an exception to the `mem[]` rule: every `mem[]` access here is a
    BYTE.  The plane bytes are not `mem[]` at all — they are the bitplane buffer, which the Amiga
    reads as bits — and they are written a byte at a time too, because consecutive cells need not
@@ -319,20 +346,29 @@ extern "C" unsigned char revs_plot_chain(unsigned short addr, unsigned char valu
         uint8_t  lo = g_bbcExpandLo[byte];
         uint8_t  hi = g_bbcExpandHi[byte];
         unsigned i;
+#ifdef REVS_SPAN_STATS
+        /* ⭐⭐ The run census (§10p step 3c's sizing number) — a PLAIN local summed once at the
+           end, not a volatile RMW per cell: six volatile RMWs a span is ~220 cycles (§SPANSTAT)
+           and this one sits in the innermost loop of the whole renderer. */
+        unsigned nz = 0;
+#define CHAIN_NZ()   (nz++)
+#else
+#define CHAIN_NZ()   ((void)0)
+#endif
 
         /* ⚠⚠ `REVS_SPAN_VERIFY` DOES NOT CONSUME — the chain is still running in that build and
            it is the one destructive reader `view_consume`'s RLE allows.  See revs_plot.h. */
 #ifdef REVS_SPAN_VERIFY
 #define PLOT_CHAIN_CELL(SOFF, DOFF)  do {                                       \
             const uint8_t s_ = srcp[(SOFF)];                                    \
-            if (s_) { byte = cellBytes[s_];                                     \
+            if (s_) { CHAIN_NZ(); byte = cellBytes[s_];                         \
                       lo = g_bbcExpandLo[byte]; hi = g_bbcExpandHi[byte]; }     \
             p1[(DOFF)] = lo; p2[(DOFF)] = hi;                                   \
         } while (0)
 #else
 #define PLOT_CHAIN_CELL(SOFF, DOFF)  do {                                       \
             const uint8_t s_ = srcp[(SOFF)];                                    \
-            if (s_) { srcp[(SOFF)] = 0; byte = cellBytes[s_];                   \
+            if (s_) { CHAIN_NZ(); srcp[(SOFF)] = 0; byte = cellBytes[s_];       \
                       lo = g_bbcExpandLo[byte]; hi = g_bbcExpandHi[byte]; }     \
             p1[(DOFF)] = lo; p2[(DOFF)] = hi;                                   \
         } while (0)
@@ -348,6 +384,11 @@ extern "C" unsigned char revs_plot_chain(unsigned short addr, unsigned char valu
             p2 += 4;
         }
 #undef PLOT_CHAIN_CELL
+#undef CHAIN_NZ
+#ifdef REVS_SPAN_STATS
+        g_plotChainNZ += nz;
+        g_plotChainNZLast = (unsigned short)(g_plotChainNZLast + nz);
+#endif
     }
     return (unsigned char)byte;
 }
