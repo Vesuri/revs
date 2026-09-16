@@ -252,6 +252,19 @@ extern int g_viewPhaseIdx;
 /* Accumulated whole display frames, in beam ticks.  Bumped by the VERTB ISR only. */
 extern volatile unsigned long g_beamEpoch;
 
+/* ⭐⭐ Non-zero once `make PROBEFIELDS=N`'s window has closed — the proof the arms of an A/B
+   really covered the same EMULATED window and not just the same wall-clock one.  The value is
+   the BEAM TICK at which it closed, so it also serves as the window's exact length wherever a
+   still-climbing g_beamEpoch would be wrong.  Always defined, so every phase script may read it.
+   ⚠⚠ The four shadows are the PARTIAL-FREEZE TRAP's fix: the freeze stops the phase
+   accumulators but not the counters bumped elsewhere, so a script must read these — not the live
+   g_bodyTicks / g_viewUnits / g_viewRuns / g_viewLines — whenever g_probeFrozen is set, or it
+   divides a live numerator by a frozen denominator and prints a plausible lie.  probe.cpp has
+   the reasoning and the two numbers that caught it. */
+extern volatile unsigned long g_probeFrozen;
+extern volatile unsigned long g_probeFrozenBody;
+extern volatile unsigned long g_probeFrozenUnits[3], g_probeFrozenRuns[3], g_probeFrozenLines[3];
+
 /* Call once per display frame from the VERTB ISR, before any game work. */
 #define PROBE_VBI() (g_beamEpoch += PROBE_BEAM_TICKS_PER_FRAME)
 

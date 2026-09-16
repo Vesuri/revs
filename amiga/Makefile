@@ -123,6 +123,32 @@ ifdef PROBES
 EXTRA_DEFINES += -DREVS_PROBE
 endif
 
+# ⭐⭐⭐ `make PROBEFIELDS=N PROBES=1` — BOUND THE MEASUREMENT IN EMULATED TIME, not host time.
+# diag_run.sh's window is `sleep <wall seconds>`, and under warp the host's throughput depends on
+# what else the machine is doing, so two arms of one A/B can cover very different amounts of GAME
+# time (measured: 75 s vs 144 s out of the same 30 s wall window) — and since a STRAIGHT_TO_RACE
+# run leaves the track and resets, the longer arm is diluted with a different scene mix.  With
+# this set, the phase table, its counts AND g_phaseFrames freeze after N display FIELDS, so every
+# arm describes the same emulated window frame for frame.
+#   make clean && make -j4 PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1 PROBEFIELDS=3000   # 60 s of game
+#   GDBTAIL=200 EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=phase4_prof.gdb ./diag_run.sh 60
+# ⚠ The wall delay must be long enough for the SLOWEST arm to reach N; `g_probeFrozen` (printed in
+# the phase4_prof.gdb header) is the proof it did, and a table with `frozen=0` is an ordinary
+# wall-clock sample that may NOT be compared arm to arm.  src/platform/probe.cpp has the reasoning.
+# ⭐ Its VALUE is the window in beam ticks and must equal N * 80120 (a verification run read
+# 240521225 against 240360000 for N=3000 — 0.07%), which is a second, independent check that the
+# freeze fired on the right field and the 4006-ticks/ms phase clock is calibrated.
+# ⚠⚠ THE PARTIAL-FREEZE TRAP: the freeze stops the PHASE accumulators, not the program, so every
+# counter bumped elsewhere (the body drain, the ISR, the view census, g_vbiCount, g_beamEpoch)
+# keeps climbing and any row mixing the two is FICTION — `ONE BODY TICK` read 379 us against a true
+# 1414 and the view census 5526 units/frame against 1440, both plausible enough to survive a
+# review.  probe.cpp snapshots what it cannot stop and phase4_prof.gdb reads the snapshot whenever
+# g_probeFrozen is set; if you add a row to that script, pick $wall/$body/$fields/$u/$r/$l and
+# never the live global.  docs/perf-method.md §the partial-freeze trap.
+ifdef PROBEFIELDS
+EXTRA_DEFINES += -DREVS_PROBE_FIELDS=$(PROBEFIELDS)
+endif
+
 # `make VIEWSPLIT=1 PROBES=1` — split phase 24 ($7BE2) into the 2093-unit chain (phase 30) and
 # the ~77 lines of driver around it (whatever stays in 24), with an empty bracket at the same
 # rate as the control (phase 31).  src/platform/probe.h has the reasoning.  Measurement only:
@@ -742,7 +768,8 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
 # stays: a symbol a committed .gdb script reads must be listed in the configuration that
 # script is run against.  phase4_prof.gdb is a PROBES script.
 ifdef PROBES
-PROBE_SYMS += g_phaseTicks g_phaseCount g_phaseFrames g_beamEpoch \
+PROBE_SYMS += g_phaseTicks g_phaseCount g_phaseFrames g_beamEpoch g_probeFrozen \
+             g_probeFrozenBody g_probeFrozenUnits g_probeFrozenRuns g_probeFrozenLines \
              g_viewUnits g_viewRuns g_viewLines \
              g_probeIsrTicks g_probeIsrCount g_probeIrqTicks g_probeIrqCount \
              g_probeBandTicks g_probeBandCount \

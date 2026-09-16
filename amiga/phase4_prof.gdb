@@ -34,8 +34,11 @@
 set pagination off
 set confirm off
 continue
-printf "=== vbi=%u loopFrames=%lu brk=%lu smc=%lu ===\n", \
-  g_vbiCount, g_phaseFrames, g_brkCount, g_smcUnhandled
+printf "=== vbi=%u loopFrames=%lu brk=%lu smc=%lu frozen=%lu ===\n", \
+  g_vbiCount, g_phaseFrames, g_brkCount, g_smcUnhandled, g_probeFrozen
+# ⭐⭐ `frozen=1` means this table describes exactly `make PROBEFIELDS=N`'s emulated window and may
+# be compared arm to arm; `frozen=0` means the window was the WALL CLOCK, which under warp differs
+# between arms by however much the host was loaded.  Never diff two arms unless both read 1.
 # Phase 0 is a ONE-OFF: it accumulates from program start to the first bracket (boot + front
 # end), so it is reported but excluded from the shares, which are shares of the LOOP.
 #
@@ -52,9 +55,26 @@ while $i < 40
   set $i = $i + 1
 end
 set $per = $tot / 1000
-set $eper = g_beamEpoch / 1000
+# ⚠⚠ THE PARTIAL-FREEZE TRAP.  Under `make PROBEFIELDS=N` the phase accumulators stop at the
+# window's edge but the run does not, so g_beamEpoch and g_bodyTicks keep climbing and every row
+# that mixes one of them with a phase tick is fiction — `ONE BODY TICK` read 379 us against a
+# true 1313 this way, which is plausible enough to survive a review.  probe.cpp snapshots both
+# at the freeze; take the snapshot whenever the window closed, and the live value otherwise.
+set $wall = g_beamEpoch
+set $body = g_bodyTicks
+if g_probeFrozen > 0
+  set $wall = g_probeFrozen
+  set $body = g_probeFrozenBody
+end
+set $eper = $wall / 1000
+# ...and the field count the window covered, for the same reason: g_vbiCount keeps climbing, so
+# `ticks/field must be ~1` reads 0.27 against the live one where the truth is 0.99.
+set $fields = g_vbiCount
+if g_probeFrozen > 0
+  set $fields = $wall / 80120
+end
 printf "loop ticks %lu of %lu elapsed  (accounted %d.%01d%% + phase 0 — MUST total ~100)\n", \
-  $tot, g_beamEpoch, ($tot/$eper)/10, ($tot/$eper)%10
+  $tot, $wall, ($tot/$eper)/10, ($tot/$eper)%10
 # ⚠ calls MATTERS here.  Phase 0 is re-opened at L_1760, the ENGINE's own frame wait, which
 # $1753 branches past whenever $62F6 is zero.  calls=0 ⇒ that wait is never entered and phase 0
 # really is just boot; calls>0 ⇒ phase 0 is boot PLUS a per-frame engine wait and must not be
@@ -71,22 +91,22 @@ printf "phase 0 (boot + engine wait at $1760, excluded): ticks=%lu calls=%lu = %
 # This line must equal `loop ticks / loopFrames` above to ~0.1 ms — that identity is what proves
 # the brackets account for the whole frame.
 printf "FRAME = %lu ms  (wall %lu ms minus phase 0; compare THIS across builds, never wall)\n", \
-  ((g_beamEpoch - g_phaseTicks[0])/g_phaseFrames)/4006, (g_beamEpoch/g_phaseFrames)/4006
+  (($wall - g_phaseTicks[0])/g_phaseFrames)/4006, ($wall/g_phaseFrames)/4006
 # ⭐⭐ PHASE 26 IS THE 50 Hz BODY, AND ITS SIZE IS A RATIO, NOT A ROUTINE.  It runs once per
 # DISPLAY FIELD, so at ~1 painted FPS it runs ~50 times per painted frame — which is faithful (a
 # BBC's User VIA fires regardless of how long the foreground takes) and is why it can dominate a
 # per-frame table without any one call being slow.  The number that matters is therefore the cost
 # of ONE tick against the 20 ms a tick has: print it, and check the port is not running more ticks
 # than there were fields.
-printf "body: ticks=%lu drains=%lu dropped=%lu pending=%u   fields=%u  (ticks/field must be ~1)\n", \
-  g_bodyTicks, g_bodyDrains, g_bodyTicksDropped, g_bodyPending, g_vbiCount
-if g_bodyTicks > 0
+printf "body: ticks=%lu drains=%lu dropped=%lu pending=%u   fields=%lu  (ticks/field must be ~1)\n", \
+  $body, g_bodyDrains, g_bodyTicksDropped, g_bodyPending, $fields
+if $body > 0
   # ⚠ 26 + 29: phase 29 is the body's own arm ($52A4), split out of 26.  Summing them is the
   # WHOLE body tick — reading 26 alone after the split would silently halve the headline number.
   printf "   ONE BODY TICK = %lu us of its 20000 us budget  (phases 26+29 / body ticks)\n", \
-    ((g_phaseTicks[26]+g_phaseTicks[29])/g_bodyTicks)*1000/4006
+    ((g_phaseTicks[26]+g_phaseTicks[29])/$body)*1000/4006
   printf "   of which the arm ($52A4, phase 29) = %lu us, the rest of the band cycle = %lu us\n", \
-    (g_phaseTicks[29]/g_bodyTicks)*1000/4006, (g_phaseTicks[26]/g_bodyTicks)*1000/4006
+    (g_phaseTicks[29]/$body)*1000/4006, (g_phaseTicks[26]/$body)*1000/4006
 end
 if g_probeIsrCount > 0
   printf "VERTB ISR: %lu calls, %lu us each  (copper + present + audio; charged to whatever phase it preempted)\n", \
@@ -94,7 +114,7 @@ if g_probeIsrCount > 0
 end
 if g_probeIrqCount > 0
   printf "irq1v_band_schedule: %lu calls (%lu per body tick), %lu us each\n", \
-    g_probeIrqCount, g_probeIrqCount/g_bodyTicks, (g_probeIrqTicks/g_probeIrqCount)*1000/4006
+    g_probeIrqCount, g_probeIrqCount/$body, (g_probeIrqTicks/g_probeIrqCount)*1000/4006
 end
 set $i = 1
 while $i < 40
@@ -116,14 +136,24 @@ while $i < 3
   if $i == 2
     set $ph = 34
   end
+  # the census counters are bumped per unit visit, so the freeze cannot stop them — read the
+  # snapshot, or units/frame reads high by the ratio of the whole run to the window (5526 vs 1442).
+  set $u = g_viewUnits[$i]
+  set $r = g_viewRuns[$i]
+  set $l = g_viewLines[$i]
+  if g_probeFrozen > 0
+    set $u = g_probeFrozenUnits[$i]
+    set $r = g_probeFrozenRuns[$i]
+    set $l = g_probeFrozenLines[$i]
+  end
   printf "view phase %d (bracket %d, %4lu ms/frame): units=%4lu/frame runs=%3lu/frame lines=%3lu/frame", \
      $i + 1, $ph, (g_phaseTicks[$ph]/g_phaseFrames)/4006, \
-     g_viewUnits[$i]/g_phaseFrames, g_viewRuns[$i]/g_phaseFrames, g_viewLines[$i]/g_phaseFrames
-  if g_viewUnits[$i] > 0
-    printf "  %4lu us/unit", (g_phaseTicks[$ph]/g_viewUnits[$i])*1000/4006
+     $u/g_phaseFrames, $r/g_phaseFrames, $l/g_phaseFrames
+  if $u > 0
+    printf "  %4lu us/unit", (g_phaseTicks[$ph]/$u)*1000/4006
   end
-  if g_viewLines[$i] > 0
-    printf "  %5lu us/line", (g_phaseTicks[$ph]/g_viewLines[$i])*1000/4006
+  if $l > 0
+    printf "  %5lu us/line", (g_phaseTicks[$ph]/$l)*1000/4006
   end
   printf "\n"
   set $i = $i + 1

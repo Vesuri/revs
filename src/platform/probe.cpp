@@ -16,6 +16,53 @@ volatile unsigned long g_phaseTicks[PROBE_PHASES] = {0};
 volatile unsigned long g_phaseCount[PROBE_PHASES] = {0};
 volatile unsigned long g_phaseFrames = 0;      /* completed main-loop iterations */
 
+/* ⭐⭐⭐ `make PROBEFIELDS=N` — FREEZE THE WHOLE TABLE AFTER N DISPLAY FIELDS, so two arms
+   cover the SAME EMULATED WINDOW instead of the same wall-clock window.
+ *
+ * ⚠⚠ Why this exists: diag_run.sh bounds a run with `sleep`, i.e. HOST seconds, and under warp
+ * the host's throughput varies with whatever else the machine is doing.  Two arms of one A/B
+ * then cover different amounts of GAME time — measured: 75 s against 144 s of emulated time
+ * from the same 30 s wall window — and a `STRAIGHT_TO_RACE` run leaves the track and resets, so
+ * the longer arm is diluted with a different scene mix.  The tells were `ONE BODY TICK` moving
+ * 1313 -> 1417 us with the 50 Hz body untouched, phase 0 holding 1 crash hold against 3, and two
+ * phases whose unit/run/line CENSUS was identical moving by 4%.  docs/perf-method.md.
+ *
+ * ⭐ The cap counts FIELDS, not loop frames.  A faster build drains fewer 50 Hz body ticks per
+ * loop frame, so capping on PAINTED frames would give the arms different amounts of SIM time and
+ * hence different scenes; fields are emulated real time, so the sim trajectory, the scene
+ * sequence and the crash holds are all identical at the cap and the arms differ only in how many
+ * frames they PAINTED inside it — which is the thing being measured.
+ *
+ * ⚠ The run keeps going after the freeze (the window is over, not the program), so the wall
+ * delay must merely be long enough for the SLOWEST arm to reach N: `g_probeFrozen` is the proof
+ * it did, and a table read with g_probeFrozen == 0 is a wall-clock sample like any other.
+ * ⚠ g_vbiCount is a uint16_t, so N must stay under 65536 (21.8 minutes).
+ *
+ * ⚠⚠ THE PARTIAL-FREEZE TRAP, and it is the reason for the five shadows below.  Closing the
+ * window stops the PHASE accumulators, but the run keeps going, so every counter bumped from
+ * somewhere else — the body drain, the ISR, the view census, g_vbiCount, the beam epoch — keeps
+ * climbing.  Any row that divides one of those by a frozen quantity is then FICTION, and it does
+ * not look like fiction: `ONE BODY TICK` read 379 us against a true 1313, and the view census
+ * read 5526 units/frame against a true 1442, both by exactly the ratio of the whole run to the
+ * window.  A plausible wrong number in a table nobody flagged is the failure this project pays
+ * most for, so the freeze SNAPSHOTS what it cannot stop, once, and the phase script reads the
+ * snapshot whenever g_probeFrozen is set.
+ *
+ * ⭐ Snapshotting is the right shape here and gating the counters is NOT: the census macros run
+ * per UNIT VISIT (thousands a frame), so testing g_probeFrozen inside them would add a load to
+ * the very loop whose unit count is being A/B'd — the instrument would move the measurement.
+ * One copy of nine longwords at the window's edge costs nothing measurable.
+ *
+ * ⭐ g_probeFrozen holds the BEAM TICK at which the window closed, not a bare 1, so it is both
+ * the flag ("this table is comparable") and the window's exact length — which is what the
+ * accounted-for check and the FRAME row need in place of the still-climbing g_beamEpoch.  It
+ * cannot read 0 while set: the window closes at N >= 1 fields, i.e. at >= 80120 ticks. */
+volatile unsigned long g_probeFrozen      = 0;   /* beam ticks at the freeze (0 = still open) */
+volatile unsigned long g_probeFrozenBody  = 0;   /* g_bodyTicks there                         */
+volatile unsigned long g_probeFrozenUnits[3] = {0, 0, 0};   /* g_viewUnits there              */
+volatile unsigned long g_probeFrozenRuns[3]  = {0, 0, 0};   /* g_viewRuns  there              */
+volatile unsigned long g_probeFrozenLines[3] = {0, 0, 0};   /* g_viewLines there              */
+
 /* Whole display frames elapsed, in beam ticks.  Bumped by the VERTB ISR (PROBE_VBI()). */
 volatile unsigned long g_beamEpoch = 0;
 
@@ -73,6 +120,30 @@ static unsigned long s_mark  = 0;
 void probe_phase(int id)
 {
     unsigned long now = beamTick();
+#if defined(REVS_PROBE_FIELDS) && defined(REVS_PLATFORM_AMIGA)
+    /* The window is closed: stop accumulating ticks, counts AND frames, so every printed
+       number describes exactly the first REVS_PROBE_FIELDS fields.  Returning here also
+       freezes phase 0, which is the comparison's validity fingerprint. */
+    {
+        extern volatile uint16_t g_vbiCount;
+        if ((unsigned long)g_vbiCount >= (unsigned long)(REVS_PROBE_FIELDS)) {
+            if (!g_probeFrozen) {
+                /* Snapshot the counters the freeze cannot stop — see the trap above.  The flag
+                   is published LAST so no reader can see a half-built snapshot. */
+                extern volatile unsigned long g_bodyTicks;
+                int i;
+                g_probeFrozenBody = g_bodyTicks;
+                for (i = 0; i < 3; i++) {
+                    g_probeFrozenUnits[i] = g_viewUnits[i];
+                    g_probeFrozenRuns[i]  = g_viewRuns[i];
+                    g_probeFrozenLines[i] = g_viewLines[i];
+                }
+                g_probeFrozen = now;
+            }
+            return;
+        }
+    }
+#endif
     /* beamTick() is monotonic now, so `d` can only be negative if g_beamEpoch itself
        wrapped (2^32 ticks ≈ 18 minutes of run time).  Keep the guard as a backstop —
        it must never be the thing that makes a long phase readable. */
