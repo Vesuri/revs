@@ -915,8 +915,106 @@ a *neighbouring* line, which paints a plausible picture rather than a broken one
 - ⏳ owed: the same check on the target (`make SPANFILL=4 SPANSCAN=1`) — the big-endian arm of the
   `#if` is the half the host cannot run.
 
+#### ✅ STEP 3a IS MEASURED ON THE TARGET — the predicate is FREE and the hook-in is −0.82 ms (2026-09-16)
+
+Five arms, one `make clean` each, every one asserting `probe-audit: clean (153 symbols)` before it
+ran and `frozen=1` after: control, `SPANFILL=1` (the ⛔ dirty map, kept as the measured control),
+`SPANFILL=3` (stateless + byte scan), `SPANFILL=4` (stateless + group-of-four scan), and a **second
+control** to publish this protocol's noise floor. `PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1
+SPANSTAT=0 PROBEFIELDS=3000`, warp, parked, `diag_run.sh 45`.
+
+⭐⭐ **The noise floor first, because it is what makes the rest readable: +0.03 ms on a 197.53 ms
+frame — 0.015%**, with the worst untouched phase drifting 0.023 ms. Two separately compiled,
+separately run builds of identical source. That is ~70× tighter than the FPS instrument's one-frame
+resolution and ~60× tighter than the ±2 ms two-control spread this doc has been quoting, and it is
+entirely the field-bounded window's doing (`PROBEFIELDS`, `docs/perf-method.md`).
+
+| arm | ph24 view p1 | producers 11+15+18+32 | ph27 decode | ph33+34 | **Σ−ph28** |
+|---|---:|---:|---:|---:|---:|
+| control2 (noise floor) | +0.01 | −0.01 | −0.08 | +0.01 | **+0.03** |
+| `SPANFILL=1` dirty map | **−3.40** | **+5.24** | +0.18 | +0.29 | **+2.92** |
+| `SPANFILL=3` stateless, byte scan | −1.14 | +0.22 | +0.15 | +0.03 | **−0.82** |
+| `SPANFILL=4` stateless, group scan | −1.61 | +0.26 | +0.38 | +0.70 | **−0.13** |
+
+1. ⛔⛔ **The dirty map is dead a third time, and now by a margin 97× the noise floor.** It buys the
+   *largest* phase-24 saving of the three — −3.40 ms, because marking also catches lines whose only
+   write was a zero — and still loses by 2.92 ms, the tax landing as +1.81 on `draw_road` and +2.94
+   on `fill_dash_edge_columns`. This reproduces the inline-bloat mechanism (CLAUDE.md §writer-
+   maintained dirty maps) at 100× the resolution the original verdict was reached at. It will not be
+   proposed again.
+2. ⭐⭐ **The stateless predicate is FREE in the producers: +0.22 ms across all four producer phases**,
+   against the map's +5.24 — 24× cheaper, and only 7× the noise floor. The RLE theorem delivers
+   exactly what it promised, and `REVS_VIEW_MARKING` leaves the producers for good.
+3. ⚠ **A retraction of my own: the "−2.72 / −2.66 ms" published for `SPANFILL=3/4` was window noise.**
+   That quad's arms covered 75 s and 144 s of *emulated* time from the same wall window, so the
+   faster arm met fewer of the engine's crash holds. The figures above supersede it.
+4. **All three predicates delete the same work** — after normalising each arm's census for the
+   post-freeze tail, `units/line` reads 40.0 (control) and 16.7 / 16.7 / 16.7, `runs/line` 1.00 and
+   0.42 / 0.41 / 0.42. So **58% of phase 1's lines qualify**, which is §10p step 1's host-measured
+   **57% reproduced on the target with the car PARKED** — the two workloads agree, and the exact test
+   qualifies no more lines than the conservative map did, as predicted.
+5. **The group scan wins inside phase 24 and loses outside it.** `SPANFILL=4` saves 0.47 ms more of
+   phase 24 than `SPANFILL=3` (the 180-vs-480 cyc/line scan, predicted 1.5 ms, measured 0.47), then
+   gives 1.16 ms back across ph27/33/34 — phases the predicate never runs in, i.e. pure code-shape
+   collateral in the shared `paint_cells`. ⭐ **The takeover moots this**: the scan moves into the
+   renderer's own loop and stops perturbing the chain consumer at all, so neither arm's shape is the
+   one that ships. Do not read `3 > 4` as a verdict on the scan.
+
+⭐⭐⭐ **AND THE HEADLINE IS THAT −0.82 ms IS §10n REPEATING, EXACTLY AS §10n PREDICTED IT WOULD.** 58%
+of the unit visits deleted — 837 of 1442 units, worth 837 × 55 = 46 035 cyc = **6.5 ms** — returns
+**0.82 ms**, because the hook-in leaves the 905 cyc/line driver running and pays a scan and a fill to
+replace the units it deletes. A per-line hook-in cannot win. **The takeover is the only version of
+this that pays**, and this is now measured twice rather than argued once.
+
+#### ⭐⭐ WHERE THE 905 CYCLES GO — the driver priced from the objdump (2026-09-16)
+
+`NOUNITS=2`'s 905 cyc/line was a differential; step 3b needs to know which part of it the takeover
+inherits. Priced instruction by instruction off the control build's `paint_cells.isra.0` (gcc peels
+two copies of the per-line prologue; this is one of them, `0x113e2..0x1148c`, 51 instructions):
+
+| part of one per-line prologue | cycles | does the takeover pay it? |
+|---|---:|---|
+| the `g_viewLines` census — **PROBES-only, never shipped** | 102 | no (it is not in a release build either) |
+| `step_scanline` inlined: `plot_ptr_v` + `plot_ptr2_v` | ~250 | **yes** — phases 2/3 continue the walk from them (§10p's reader audit) |
+| the background byte: `surface_colours[view_line_surface[line] & 3]` | ~100 | **yes** — it is the fill colour |
+| pointer re-bases into `mem[]`, the threaded writeback, `bra` | ~100 | no — the takeover's loop keeps these in registers |
+| **total** | **~554** | **~350 irreducible** |
+
+The remaining ~350 of the 905 is `view_paint_lines_core`'s chain-entry and stop-list walk, which the
+takeover deletes outright. And the decomposition closes against the measured bracket:
+
+```
+36 lines × 905 cyc  =  32 580   driver/entry   28.8%
+1442 units × 55 cyc =  79 310   unit loop      70.1%
+                       ───────
+                       111 890 cyc = 15.78 ms    vs 15.95 ms measured → 1.1%
+```
+
+⇒ **905 cyc/line is confirmed and the ~2500 alternative is refuted.** Two things follow:
+
+- ⚠ **102 cyc/line of every phase-24 figure this project has published is probe census, not
+  shipping code** — 3672 cyc = 0.52 ms of the 15.95 (3.3%), and the same tax sits on phases 2 and 3.
+  It is identical in both arms of every A/B, so no differential is affected, but the *shipping*
+  phase 1 is ~15.4 ms and a release build's sweep is correspondingly cheaper than any table here.
+- **The takeover's irreducible core is ~350 cyc/line, not 905.** Re-sizing step 3b with the fill
+  measured at 6.87 cyc/byte and the scan at 180 cyc/line:
+
+| new work, per frame | cycles |
+|---|---:|
+| 36 × irreducible prologue (350) | 12 600 |
+| 36 × group-of-four scan (180) | 6 480 |
+| 21 flat × 80-byte longword fill (550) | 11 550 |
+| 15 chained × 40 cells × ~60 | 36 000 |
+| **total** | **66 630 = 9.40 ms** |
+
+⇒ **−6.6 ms on phase 1**, against §10p's independently-built −7.8; the two models bracket the answer
+at **−6.6 to −7.8 ms**, 220× the noise floor. Plus the decode carve-out, measured LIVE at 21 display
+lines left to the emitter, against phase 27's 28.70 ms.
+
 **Order of work:** ✅ (1) the host flat-line count — **DONE, 57%, `3b79ebc`**; ✅ (2) the reader gate —
 **DONE, OPEN for rows 81..116, `f80557d`**; ✅ (3a) the stateless predicate + the group-of-four scan
-— **WRITTEN, endian-oracled on the host**; ⏳ (3b) the takeover's own line loop, which deletes the
-905 cyc/line driver — oracled by the two in-process checks of §10n; (4) then stage A in full, then
+— **WRITTEN, endian-oracled on the host, and MEASURED on the target: the predicate is free
+(+0.22 ms) and the hook-in is −0.82 ms**; ⏳ (3b) the takeover's own line loop, which deletes the
+905 cyc/line driver (~350 of it inherited) for **−6.6 to −7.8 ms** — oracled by the two in-process
+checks of §10n; (4) then stage A in full, then
 B, C, D, E as §10j has them.
