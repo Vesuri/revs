@@ -29,6 +29,11 @@
    against exec/types.h — a hard error.  The prototypes use the underlying types instead, which are
    the same types on this target (m68k ILP32, char 8 / short 16 / long 32). */
 
+/* MEM_QUAL only — a lone #define, so it brings none of the stdint trouble above with it.  The
+   chain painter below takes a `mem[]` pointer across the TU boundary and the qualifier has to be
+   the same on both sides of it (`make BODY_IN_ISR=1` makes it `volatile`). */
+#include "../cpu/mem_decl.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -63,6 +68,41 @@ void revs_plot_cell(unsigned short addr, unsigned char value);
  * and the rejected movem.l arithmetic). */
 void revs_plot_span(unsigned short addr, unsigned char value);
 
+/* ⭐⭐⭐ ...AND THE LINE THAT IS *NOT* ONE FLAT RUN — THE §10p TAKEOVER (step 3b).
+ *
+ * `revs_plot_span` can only take a line the sweep would have painted in one colour, which is 21 of
+ * phase 1's 36.  The other 15 still went through the chain: forty `mem[]` stores, then the decode
+ * converting them back out again.  This paints them straight into the two bitplanes instead, which
+ * is the whole architecture — **the renderer owns the line, and `mem[]` is not in the path at all.**
+ *
+ * It IS the chain, in the chain's own terms: forty cells of one source line at `srcp`, `$80` apart,
+ * `view_consume`'s RLE (a zero source repeats the byte to its left, a non-zero one is translated
+ * through `cellBytes` = `view_cell_bytes` and then ZEROED), and the carried byte comes back so the
+ * caller can thread it into the next line exactly as unit 39 would have left it.
+ * ⭐ The RLE is what makes it cheap: the two expansion lookups happen once per RUN — two or three
+ * times a line — not once per cell.  A cell is then a source test and two byte stores.
+ *
+ * ⚠⚠ UNDER `REVS_SPAN_VERIFY` IT DOES NOT CONSUME.  The oracle build keeps the chain running so
+ * `mem[]` stays a valid reference, and two consumers of one destructive read is one too many: the
+ * chain would find zeroed sources and paint a flat line into the very bytes it is being compared
+ * against.  The caller drops the return value in that build for the same reason.
+ *
+ * ⚠ The caller must have checked `revs_plot_has_target()` — there is no buffer to paint into
+ * otherwise, and unlike a span there is no cheap way to put the line back. */
+unsigned char revs_plot_chain(unsigned short addr, unsigned char value,
+                              MEM_QUAL unsigned char* srcp,
+                              MEM_QUAL const unsigned char* cellBytes);
+
+/* ⭐⭐ IS THERE A BUFFER TO PAINT INTO THIS FRAME?  Asked ONCE PER SWEEP, not per line — the
+ * target is set once per painted frame in `present()` — and the answer is what licenses ownership
+ * (`paint_cells`'s `mayOwn`).
+ * ⚠⚠ IT IS A CORRECTNESS GATE, NOT AN OPTIMISATION.  A claimed line is painted by the renderer
+ * ALONE: the forty chain stores are gone, so `mem[]` no longer holds that line either.  With no
+ * target the fill is dropped, and a build that still skipped the chain would leave the line painted
+ * by nobody — `g_plotNoTarget` counted exactly that and nothing acted on it.  MODE 7 and the frames
+ * either side of it are when this is 0. */
+int revs_plot_has_target(void);
+
 /* ⭐⭐⭐ WHICH DISPLAY LINES THE SPAN EMITTER PAINTED THIS SWEEP — the ownership publication, and
  * the thing the scaffold could not express.  `g_plotLineLo/Hi` + whole-character-row skipping
  * cannot: a BBC cell is EIGHT display lines, so converting one cell of a partly-owned row paints
@@ -89,11 +129,15 @@ extern volatile unsigned short g_plotCellsLast;
 extern volatile unsigned char  g_plotLineLo;   /* display lines the last sweep painted */
 extern volatile unsigned char  g_plotLineHi;
 extern volatile unsigned long  g_plotNoTarget; /* runs dropped for want of a buffer */
+extern volatile unsigned long  g_plotChainLines; /* lines the §10p takeover painted cell by cell */
 #endif
 
 #define REVS_PLOT_TARGET(p)     revs_plot_target(p)
 #define REVS_PLOT_RUN(a, v, n)  revs_plot_run((unsigned short)(a), (unsigned char)(v), (unsigned short)(n))
 #define REVS_PLOT_SPAN(a, v)    revs_plot_span((unsigned short)(a), (unsigned char)(v))
+#define REVS_PLOT_CHAIN(a, v, s, t) \
+        revs_plot_chain((unsigned short)(a), (unsigned char)(v), (s), (t))
+#define REVS_PLOT_HAS_TARGET()  revs_plot_has_target()
 #define REVS_PLOT_OWN_RESET()   revs_plot_own_reset()
 
 #ifdef REVS_SPAN_OWN
@@ -133,6 +177,8 @@ extern volatile unsigned short g_plotMismatchOff;
 #define REVS_PLOT_TARGET(p)      ((void)(p))
 #define REVS_PLOT_RUN(a, v, n)   ((void)0)
 #define REVS_PLOT_SPAN(a, v)     ((void)0)
+#define REVS_PLOT_CHAIN(a, v, s, t)  ((unsigned char)(v))
+#define REVS_PLOT_HAS_TARGET()   0
 #define REVS_PLOT_CELL(a, v)     ((void)0)
 #define REVS_PLOT_OWN_RESET()    ((void)0)
 #define REVS_PLOT_CHECK_BEFORE() ((void)0)

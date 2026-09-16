@@ -1176,9 +1176,13 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first,
                    make this span paint over units the chain was told to stop before — a plausible
                    wrong picture, on the exact arm `make viewdiff` exists to cover.  16 cycles is
                    not the price at which to buy that. */
-                int flat;
-                if (!mayOwn || view_stop_from(0) != 40) flat = 0;
-                else {
+                /* ⭐⭐⭐ MAY THE RENDERER TAKE THIS LINE OVER AT ALL?  Both arms below need the
+                   answer, so it is one value: the caller licenses ownership (phase 1, and only
+                   when there is a buffer to paint into), and no stop is planted in the chain.
+                   The stop test is FIRST and is one absolute byte load — see the note below. */
+                const int mayTake = mayOwn && (view_stop_from(0) == 40);
+                int flat = 0;
+                if (mayTake) {
 #ifdef REVS_SPAN_GROUPSCAN
                     const unsigned g = line & ~3u;
                     if (g != scanGroup) { scanGroup = g; scanLanes = view_group_sources(g); }
@@ -1196,7 +1200,52 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first,
                     SPAN_EMIT_STAT(g_spanEmitLines++);
                     cell = 0x38;            /* unit 39's cell, as a full line leaves it */
                     lineSpanned = 1;
-                } else {
+                }
+#ifdef REVS_SPAN_TAKEOVER
+                else if (mayTake) {
+                    /* ── ⭐⭐⭐ THE TAKEOVER (§10p step 3b) — THE LINE THAT IS NOT ONE FLAT RUN ──
+                       The span above can only have a line the chain would paint in one colour, and
+                       that is 21 of phase 1's 36.  This takes the other 15: the renderer walks the
+                       forty cells itself, straight into the two bitplanes, and `mem[]` is not in
+                       the path.  What it deletes is not the unit loop — §10n measured that a
+                       hook-in which only deletes units nets ZERO — it is the whole per-line RUN
+                       SET-UP below (the two re-bases, the stop address, the bus-range test, the
+                       run end, the probe run bracket) plus this line's share of the decode.
+
+                       ⚠⚠ THE PRICE OF OWNING IT IS THAT `mem[]` GOES STALE HERE, and that is only
+                       licensed because the reader gate was MEASURED OPEN for display lines 81..116
+                       (`f80557d`, and `mayOwn` is 1 from nowhere else): poisoning those rows reads
+                       zero bytes anywhere outside them, so nothing — `column_gap_walk`'s pixel
+                       reads included — consumes what is no longer written.
+                       ⚠ `revs_plot_chain` still CONSUMES the sources, exactly as the forty units
+                       would: the RLE's destructive read is what makes the next sweep's predicate
+                       exact, and leaving them would make every line non-flat forever. */
+#ifdef REVS_SPAN_VERIFY
+                    /* ⭐⭐ THE ORACLE BUILD: paint the pixels, consume nothing, thread nothing.
+                       The chain below still runs — the `#if REVS_SPAN_VERIFY` guard on the unit
+                       loop ignores `lineSpanned` — so `mem[]` stays the reference the whole
+                       buffer is compared against, and it re-threads `byte` and `cell` itself.
+                       ⚠⚠ `lineSpanned = 1` ANYWAY, AND THAT IS THE WHOLE ORACLE: the flag's
+                       OTHER job is to suppress `PLOT_UNIT`'s mirror (§PLOT_UNIT), and with the
+                       mirror left on the chain re-plots the same forty cells straight over the
+                       takeover's — so a WRONG takeover compares equal.  Measured, not argued:
+                       with `lineSpanned = 0` here, XOR-ing every plane byte the takeover writes
+                       was INVISIBLE to `g_plotMismatch` over 21 whole-buffer checks. */
+                    (void)REVS_PLOT_CHAIN(plot_ptr_v, byte,
+                                          mem + MEM_view_src_blocks + line,
+                                          mem + MEM_view_cell_bytes);
+                    lineSpanned = 1;
+#else
+                    byte = REVS_PLOT_CHAIN(plot_ptr_v, byte,
+                                           mem + MEM_view_src_blocks + line,
+                                           mem + MEM_view_cell_bytes);
+                    cell = 0x38;            /* unit 39's cell, as a full line leaves it */
+                    lineSpanned = 1;
+#endif
+                    SPAN_EMIT_STAT(g_spanEmitPaints++);
+                }
+#endif
+                else {
                     SPAN_EMIT_STAT(g_spanEmitPaints++);
                     lineSpanned = 0;
                     /* ⭐ NOTHING TO CLEAR — that is the whole point of the stateless arm.  The
@@ -1778,7 +1827,12 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
        about to be made replace the claims just honoured" is true. */
     REVS_PLOT_OWN_RESET();
 
-    paint_cells(&v, 0, 0, 1, 1);        /* phase 1 — the span renderer may own these lines */
+    /* ⭐⭐ PHASE 1 — THE SPAN RENDERER MAY OWN THESE LINES, IF THERE IS A BUFFER TO PAINT INTO.
+       Asked once per sweep rather than per line: the target is set once per painted frame.
+       ⚠⚠ It is a correctness gate, not a speed one (revs_plot.h §revs_plot_has_target).  An owned
+       line is painted by the renderer ALONE — the forty chain stores are gone with it — so a build
+       that claimed ownership with no target would leave the line painted by nobody. */
+    paint_cells(&v, 0, 0, 1, REVS_PLOT_HAS_TARGET());
     paint_lines_clipped(&v);
 
     /* Publish the two pointers back into mem[] for the 6502-ABI mirror.  In the CORE, not the

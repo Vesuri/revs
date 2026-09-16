@@ -544,6 +544,27 @@ endif
 # REVS_SPAN_EMIT, so the host can run it over the whole sweep — and the host is little-endian
 # while the Amiga is big-endian, which is the only way one source tree exercises both arms of the
 # `#if` that picks the lane order.
+#   ✅ MEASURED ON THE TARGET, DRIVING: 3796 checks, 0 mismatches — the big-endian lane order is
+#   right, and that is the half no host run can reach (2026-09-16).
+#
+# ⭐⭐⭐ `make SPANFILL=5` — THE TAKEOVER (docs/span-render-plan.md §10p step 3b), i.e. the first
+# build in which the renderer owns phase 1 OUTRIGHT rather than hooking into it.  SPANFILL=4's
+# predicate and scan, unchanged; what is new is the arm for a line that is NOT one flat run: it is
+# painted cell by cell straight into the two bitplanes (`revs_plot_chain`) instead of into forty
+# `mem[]` bytes a decode then converts back.  So all 36 of phase 1's lines are claimed, not 21.
+#   WHAT IT DELETES, and why a hook-in could not: not the unit loop — §10n measured that deleting
+#   58% of phase 1's units nets −0.82 ms — but the per-line RUN SET-UP the unit loop sits inside
+#   (two re-bases, the stop address, the bus-range test, the run end, the probe run bracket), plus
+#   the decode's share of 36 lines rather than 21.  Sized at −6.6 to −7.8 ms on phase 24.
+#   ⚠⚠ `mem[]` GOES STALE on display lines 81..116.  Licensed only by the reader gate measured at
+#   `f80557d` (poisoning those rows reads 0 bytes outside them) and by `mayOwn`, which is 1 from
+#   `view_paint_lines_core` alone.
+#   ⚠ ITS ORACLES, both in-process (§10n) and neither optional:
+#       make SPANFILL=5 SPANVERIFY=1 DIRECTCHECK=1   — the span BYTES: the chain still runs, so
+#           mem[] is a valid reference, and g_plotMismatch must stay 0 over a whole frame.
+#       make SPANFILL=5 DIRTYCHECK=1                 — the CARVE-OUT: g_decodeDirtyMismatch == 0.
+#   ⚠ `units/frame` in phase4_prof.gdb goes to ~0 for phase 1 in this build, BY CONSTRUCTION — the
+#   units are not visited, so `us/unit` is meaningless there.  Read `ms/frame` and `us/line`.
 ifneq ($(SPANFILL),)
 ifeq ($(SPANVERIFY),1)
 EXTRA_DEFINES += -DREVS_SPAN_EMIT -DREVS_DIRECT_PLOT
@@ -558,13 +579,16 @@ EXTRA_DEFINES += -DREVS_SPAN_STATELESS
 endif
 ifeq ($(SPANFILL),4)
 EXTRA_DEFINES += -DREVS_SPAN_STATELESS -DREVS_SPAN_GROUPSCAN
+endif
+ifeq ($(SPANFILL),5)
+EXTRA_DEFINES += -DREVS_SPAN_STATELESS -DREVS_SPAN_GROUPSCAN -DREVS_SPAN_TAKEOVER
+endif
 ifeq ($(SPANSCAN),1)
 EXTRA_DEFINES += -DREVS_SPAN_SCANCHECK
 PROBE_SYMS_SCAN = g_spanScanChecks g_spanScanMismatch
 endif
-endif
 PROBE_SYMS_PLOT = g_plotRuns g_plotCells g_plotRunsLast g_plotCellsLast \
-                  g_plotLineLo g_plotLineHi g_plotNoTarget
+                  g_plotLineLo g_plotLineHi g_plotNoTarget g_plotChainLines
 PROBE_SYMS_SPAN = g_spanEmitLines g_spanEmitPaints g_decodeOwnLines
 endif
 
@@ -574,7 +598,7 @@ EXTRA_DEFINES += -DREVS_DIRECT_PLOT -DREVS_DIRECT_CHECK
 # DIRECTCHECK build, and a symbol listed but absent is exactly what the audit is for.
 PROBE_SYMS_CHECK = g_plotChecks g_plotMismatch g_plotMismatchOff
 PROBE_SYMS_PLOT  = g_plotRuns g_plotCells g_plotRunsLast g_plotCellsLast \
-                   g_plotLineLo g_plotLineHi g_plotNoTarget
+                   g_plotLineLo g_plotLineHi g_plotNoTarget g_plotChainLines
 endif
 
 # ⭐⭐ `make SPANSTAT=0` — PRICE THE DIAGNOSTICS, and it must come AFTER every block above that

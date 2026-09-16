@@ -68,6 +68,7 @@ volatile unsigned short g_plotCellsLast = 0;
 volatile unsigned char  g_plotLineLo    = 0xFF;
 volatile unsigned char  g_plotLineHi    = 0;
 volatile unsigned long  g_plotNoTarget  = 0;
+volatile unsigned long  g_plotChainLines = 0;   /* lines the TAKEOVER painted cell by cell */
 }
 #endif
 
@@ -259,6 +260,96 @@ extern "C" void revs_plot_span(unsigned short addr, unsigned char value)
        is write-only (measured, `make fbwrites --fill-reads`).  Counters stay live so the run
        still reports the same 21 spans / 840 cells as the filling build. */
 #endif
+}
+
+extern "C" int revs_plot_has_target(void) { return s_target != 0; }
+
+/* ── ⭐⭐⭐ THE TAKEOVER'S OWN LINE (docs/span-render-plan.md §10p step 3b) ────────────────────
+   See revs_plot.h for what this is.  The chain, re-expressed against the Amiga's layout: the same
+   forty cells, the same RLE, the same translation table — and the destination is the two bitplanes
+   instead of forty `mem[]` bytes that a decode then has to convert back.
+
+   ⭐⭐ WHY IT IS ~45 CYCLES A CELL AND NOT ~160.  The chain pays, per cell, a source load at stride
+   $80, the translation, a `mem[]` store at stride 8, and then its share of the decode that reads
+   that byte back and expands it.  Here the translation and BOTH expansion lookups sit behind the
+   `if (s)` — `view_consume`'s zero source means "the byte to my left", so `lo`/`hi` are still the
+   ones the last non-zero cell computed.  With two or three runs to a line that is five lookups a
+   line, not eighty, and the common cell is a `tst.b d16(a0)` and two `move.b Dn,(An)+`.
+
+   ⚠ THE TWO POINTERS ADVANCE AND NOTHING ELSE IS LIVE ACROSS THE BACK EDGE — the same discipline
+   `revs_plot_span`'s note records, and for the same measured reason (CLAUDE.md §a hot loop's state
+   lives in memory if anything takes its address).  `srcp` is bumped once per four cells and the
+   four source reads are displacements off it, because `d16(An)` is 4 cycles where an `addq`+`lea`
+   pair is 8.  Four, not eight: the plane stores want a register-indirect-postincrement that a
+   longer unroll starts spilling around.
+
+   ⚠ ENDIAN-OK, and it is not an exception to the `mem[]` rule: every `mem[]` access here is a
+   BYTE.  The plane bytes are not `mem[]` at all — they are the bitplane buffer, which the Amiga
+   reads as bits — and they are written a byte at a time too, because consecutive cells need not
+   share a value.  (The FLAT line is the one that gets longword stores; that is `revs_plot_span`.) */
+extern "C" unsigned char revs_plot_chain(unsigned short addr, unsigned char value,
+                                         MEM_QUAL uint8_t* srcp,
+                                         MEM_QUAL const uint8_t* cellBytes)
+{
+    const unsigned off = (unsigned)addr - BBC_SCREEN_BASE;
+    unsigned byte = value;
+
+    if (!s_target) { SPAN_STAT(g_plotNoTarget++); return (unsigned char)byte; }
+    if (off >= FB_BYTES) return (unsigned char)byte;
+
+    /* The claim and the counters first — they are the last readers of `off`, so nothing but the
+       three pointers and the two expanded bytes is live over the loop. */
+    {
+        const unsigned char y = s_lineOf[off];
+        g_plotOwn[y] = 1;
+#ifdef REVS_SPAN_STATS
+        g_plotChainLines++;
+        g_plotRuns++;
+        g_plotCells += BBC_SCREEN_CELLS;
+        g_plotRunsLast++;
+        g_plotCellsLast = (unsigned short)(g_plotCellsLast + BBC_SCREEN_CELLS);
+        if (y < g_plotLineLo) g_plotLineLo = y;
+        if (y > g_plotLineHi) g_plotLineHi = y;
+#endif
+    }
+
+    {
+        uint8_t* p1 = s_target + s_planeOff[off];
+        uint8_t* p2 = p1 + kPlaneGap;
+        uint8_t  lo = g_bbcExpandLo[byte];
+        uint8_t  hi = g_bbcExpandHi[byte];
+        unsigned i;
+
+        /* ⚠⚠ `REVS_SPAN_VERIFY` DOES NOT CONSUME — the chain is still running in that build and
+           it is the one destructive reader `view_consume`'s RLE allows.  See revs_plot.h. */
+#ifdef REVS_SPAN_VERIFY
+#define PLOT_CHAIN_CELL(SOFF, DOFF)  do {                                       \
+            const uint8_t s_ = srcp[(SOFF)];                                    \
+            if (s_) { byte = cellBytes[s_];                                     \
+                      lo = g_bbcExpandLo[byte]; hi = g_bbcExpandHi[byte]; }     \
+            p1[(DOFF)] = lo; p2[(DOFF)] = hi;                                   \
+        } while (0)
+#else
+#define PLOT_CHAIN_CELL(SOFF, DOFF)  do {                                       \
+            const uint8_t s_ = srcp[(SOFF)];                                    \
+            if (s_) { srcp[(SOFF)] = 0; byte = cellBytes[s_];                   \
+                      lo = g_bbcExpandLo[byte]; hi = g_bbcExpandHi[byte]; }     \
+            p1[(DOFF)] = lo; p2[(DOFF)] = hi;                                   \
+        } while (0)
+#endif
+
+        for (i = 0; i < BBC_SCREEN_CELLS / 4u; i++) {
+            PLOT_CHAIN_CELL(0x000, 0);
+            PLOT_CHAIN_CELL(0x080, 1);
+            PLOT_CHAIN_CELL(0x100, 2);
+            PLOT_CHAIN_CELL(0x180, 3);
+            srcp += 0x200;
+            p1 += 4;
+            p2 += 4;
+        }
+#undef PLOT_CHAIN_CELL
+    }
+    return (unsigned char)byte;
 }
 
 /* Cleared from `view_paint_lines_core`, i.e. once per SWEEP — not per decode.  The crash hold
