@@ -59,4 +59,10 @@ sleep 2
 kill -9 "$GDB_PID" 2>/dev/null || true
 fsuae_stop
 echo "=== gdb output (filtered) ==="
-grep -v "Internal error: pc" "$RUN/gdb-out.log" | grep -vE "^warning:" | tail -40
+# ⚠⚠ $GDBTAIL: the default 40 lines is enough for a phase table and NOTHING ELSE — it cuts the
+# `=== vbi=... loopFrames=... ===` header, `phase 0` and `FRAME = ... ms`.  The parked-comparison
+# protocol (amiga/Makefile §SPANFILL) *requires* phase 0, whose tick count is bit-identical
+# across runs of the same trajectory, so raise this for any run you intend to compare:
+#   GDBTAIL=200 EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=phase4_prof.gdb ./diag_run.sh 30
+# ⚠ and raise it for BOTH arms — never diff two runs captured with different amounts of output.
+grep -v "Internal error: pc" "$RUN/gdb-out.log" | grep -vE "^warning:" | tail -"${GDBTAIL:-40}"

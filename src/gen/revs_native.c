@@ -862,20 +862,6 @@ static void view_dst_touch(unsigned addr)
 volatile unsigned long g_viewSkipLines  = 0;   /* lines the sweep did not paint */
 volatile unsigned long g_viewSkipPaints = 0;   /* ...and lines it did           */
 
-#if defined(REVS_SPAN_EMIT) && defined(REVS_SPAN_STATS)
-/* ⭐ The span emitter's own two counts — lines emitted as ONE span against lines that still ran
-   the forty-unit chain.  ⚠ An A/B switch must print its own state (CLAUDE.md): a build that
-   emits nothing reads identically to an emitter that buys nothing, so these are the difference.
-   Both in PROBE_SYMS (amiga/Makefile).
-   ⚠ ...and both are a `volatile` RMW on the sweep's per-LINE path, ~44 cycles x 36 lines, so
-   `make SPANSTAT=0` compiles them out with the plotter's own counters (revs_plot.h). */
-volatile unsigned long g_spanEmitLines  = 0;
-volatile unsigned long g_spanEmitPaints = 0;
-#define SPAN_EMIT_STAT(stmt) do { stmt; } while (0)
-#else
-#define SPAN_EMIT_STAT(stmt) ((void)0)
-#endif
-
 #ifndef REVS_PLATFORM_AMIGA
 static void revs_report_viewskip(void)
 {
@@ -893,6 +879,25 @@ void revs_announce_viewskip(void)
     atexit(revs_report_viewskip);
 }
 #endif
+#endif
+
+#if defined(REVS_SPAN_EMIT) && defined(REVS_SPAN_STATS)
+/* ⭐ The span emitter's own two counts — lines emitted as ONE span against lines that still ran
+   the forty-unit chain.  ⚠ An A/B switch must print its own state (CLAUDE.md): a build that
+   emits nothing reads identically to an emitter that buys nothing, so these are the difference.
+   Both in PROBE_SYMS (amiga/Makefile).
+   ⚠ ...and both are a `volatile` RMW on the sweep's per-LINE path, ~44 cycles x 36 lines, so
+   `make SPANSTAT=0` compiles them out with the plotter's own counters (revs_plot.h).
+   ⚠⚠ This block lives OUTSIDE `REVS_VIEW_MARKING` deliberately: the STATELESS emitter
+   (`SPANFILL=3`/`=4`) turns marking off, and while these sat inside it the macro had no
+   definition at all on that path, so `SPAN_EMIT_STAT(...)` compiled as an implicit CALL and
+   the link failed on `SPAN_EMIT_STAT` itself.  A configuration that is never built is not a
+   configuration.  Keep it next to the seam header's matching externs. */
+volatile unsigned long g_spanEmitLines  = 0;
+volatile unsigned long g_spanEmitPaints = 0;
+#define SPAN_EMIT_STAT(stmt) do { stmt; } while (0)
+#else
+#define SPAN_EMIT_STAT(stmt) ((void)0)
 #endif
 
 #if defined(REVS_SPAN_STATELESS) || defined(REVS_SPAN_SCANCHECK)
