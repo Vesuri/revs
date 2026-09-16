@@ -563,6 +563,27 @@ Rules that must survive without opening `docs/perf-method.md`:
   `docs/perf-method.md` §The VERTB ISR.
 - **An A/B switch must PRINT its own state**, and any new instrument must be sabotaged before its
   output is believed.
+  ⚠⚠ **And PROVE THE FLAGS REACHED THE BUILD — `zsh` does not word-split an unquoted parameter**, so
+  `COMMON="PROBES=1 FIXED_RNG=1 …"; make $COMMON` passes ONE argument, `make` reads it as
+  `PROBES = "1 FIXED_RNG=1 …"`, and **every flag after the first is silently never set**. Use a zsh
+  ARRAY (`COMMON=(A=1 B=2)`) or literal flags, and assert the build's own fingerprint — the
+  `probe-audit: clean (N symbols)` count is a function of the flag set. ⭐ A frame total that does
+  not resemble the published baseline is the cheapest tell that a flag did not land.
+  `docs/perf-method.md` §prove the flags reached the build.
+- ⭐⭐⭐ **BOUND A PHASE-TABLE A/B IN EMULATED TIME, NOT HOST TIME — `make PROBEFIELDS=N`, and it is
+  the protocol for every arm-against-arm comparison.** `diag_run.sh` bounds a run with `sleep`, i.e.
+  HOST seconds, and under warp the emulator's throughput moves with the host's load, so two arms
+  covered **75 s against 144 s of emulated time from the same 30 s window** and met different
+  numbers of the engine's crash holds. Capping on FIELDS (not painted frames — a faster build drains
+  fewer 50 Hz ticks per frame, so a frame cap gives unequal sim time) makes the trajectory identical
+  and takes two identical control runs from ±2 ms to **+0.03 ms on a 197.53 ms frame**. Require
+  `frozen=` non-zero on **every** arm before diffing, and check its value equals `N × 80120`.
+  ⚠⚠ **A frozen numerator over a live denominator prints a PLAUSIBLE LIE** — the freeze stops the
+  phase accumulators, not the program, so the body drain, the ISR, the view census and `g_beamEpoch`
+  keep climbing (`ONE BODY TICK` read 379 µs against a true 1414; the census 5526 units/frame
+  against 1440). The freeze SNAPSHOTS them and `phase4_prof.gdb` reads the snapshot; gating the
+  counters instead would put a load in the loop whose unit count is being measured.
+  `docs/perf-method.md` §bound the window in emulated time.
 
 ## Hard rules (violating these costs a day)
 

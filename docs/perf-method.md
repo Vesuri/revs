@@ -1821,6 +1821,128 @@ frame, not separate wins: fewer 50 Hz ticks to drain per painted frame, and less
 ~1.6 contention factor, so the cycle model behind the prediction was sound all along: the
 objdump predicted ~6.8% and the honest differential measured 6.15%.
 
+### ⭐⭐⭐ BOUND THE WINDOW IN EMULATED TIME, NOT HOST TIME — `make PROBEFIELDS=N` (2026-09-16)
+
+**This is now the protocol for every phase-table A/B, and it takes the instrument from ±2 ms to
+±0.03 ms.** `diag_run.sh N` bounds a run with `sleep`, i.e. HOST seconds, and under warp the
+emulator's throughput moves with whatever else the machine is doing — including this session's own
+greps. Two arms of one A/B then cover different amounts of GAME time, and a `STRAIGHT_TO_RACE` run
+eventually leaves the track and resets, so the longer arm is diluted with a different scene mix.
+Measured: **75 s against 144 s of emulated time from the same 30 s wall window**, one arm meeting
+one crash hold and the other three.
+
+`make PROBEFIELDS=N` freezes `g_phaseTicks` / `g_phaseCount` / `g_phaseFrames` — and phase 0 — after
+exactly N display fields, so both arms describe the same emulated window:
+
+```
+cd amiga && make clean && make -j4 PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1 PROBEFIELDS=3000
+. ./env.sh && EXTRA_ARGS="--warp_mode=1" GDBSCRIPT=phase4_prof.gdb ./diag_run.sh 45
+```
+
+⭐ **Fields, not painted frames, and the distinction is the whole point.** A faster build drains
+fewer 50 Hz body ticks per loop frame, so capping on *frames* would hand the arms different amounts
+of SIM time and hence different scenes. Fields are emulated real time: at the cap the sim
+trajectory, the scene sequence and the crash holds are identical, and the arms differ only in how
+many frames they PAINTED inside the window — which is the thing being measured.
+
+**What it buys, measured with a second control run of identical source** (`docs/span-render-plan.md`
+§10p step 3a, five arms): **+0.03 ms on a 197.53 ms frame — 0.015%**, worst untouched phase 0.023 ms,
+phase 0 agreeing to 0.9% and `loopFrames` to 0.4%. Against the wall-clock protocol's ±2 ms two-
+control spread and the FPS instrument's 3.3% one-row resolution, that is a different class of
+instrument: a 0.2 ms change is now quotable.
+
+⭐ **Two validity fingerprints, and BOTH must be read before diffing two arms:**
+
+- `frozen=` in the header must be **non-zero on every arm.** Zero means that arm never reached N
+  fields inside the wall delay, so its window was the wall clock like any other run and it is not
+  comparable. The run keeps going after the freeze — the window closes, the program does not — so
+  the delay only has to be long enough for the *slowest* arm.
+- **`frozen`'s VALUE is the window in beam ticks, and `N × 80120` is what it must equal.** A
+  verification run read 240 521 225 against the exact 240 360 000 — **0.07%** — which independently
+  confirms the freeze fired on the right field and that the 4006-ticks/ms phase clock is calibrated.
+  A value far off `N × 80120` means the field counter and the beam clock disagree; stop.
+
+⚠ `g_vbiCount` is a `uint16_t`, so N must stay under 65536 (21.8 minutes).
+
+#### ⚠⚠ THE PARTIAL-FREEZE TRAP — a frozen numerator over a live denominator prints a plausible lie
+
+Found within minutes of building the cap, and it is the reason the instrument needed sabotaging
+before its output was believed. **The freeze stops the phase accumulators. It does not stop the
+program**, so every counter bumped from somewhere else keeps climbing: the body drain, the ISR, the
+view census, `g_vbiCount`, `g_beamEpoch`. Any row mixing the two is fiction — and it does not look
+like fiction:
+
+| row | read | truth | by what factor |
+|---|---:|---:|---|
+| `ONE BODY TICK` | 379 µs | 1414 µs | the whole run ÷ the window |
+| view phase 1 `units/frame` | 5526 | 1440 | ditto, inverted |
+| view phase 1 `lines/frame` | 138 | 36 | ditto |
+| `ticks/field must be ~1` | 0.27 | 0.99 | ditto |
+
+Every one of those is a *plausible* number in a table nobody flagged, which is the failure mode this
+project pays most for. **The fix is a SNAPSHOT at the window's edge**, not a gate on the counters:
+`probe.cpp` copies `g_bodyTicks` and the nine census longwords once when the freeze fires, and
+`phase4_prof.gdb` reads the snapshot whenever `g_probeFrozen` is set (`$wall` / `$body` / `$fields`
+/ `$u` / `$r` / `$l` — there is exactly one place each is chosen).
+
+⭐⭐ **Gating the counters would have been the wrong fix, and the reason generalises: the census
+macros run per UNIT VISIT, thousands a frame, so a `g_probeFrozen` test inside them adds a load to
+the very loop whose unit count is being A/B'd.** An instrument that moves the measurement is worse
+than no instrument. One copy of nine longwords at the window's edge costs nothing measurable.
+
+⚠ **The instrument was verified against its own known-bad control**, which is the cheapest possible
+sabotage: the pre-fix run had already published five wrong values, so re-running that exact arm and
+requiring all five to land on the independently-known truth (1414 vs 1313–1417 µs, 1440 vs 1442
+units, 36/16/25 lines) is a real check and not a self-consistent one.
+
+### ⚠⚠ ...AND PROVE THE FLAGS REACHED THE BUILD — zsh ate all but the first (2026-09-16)
+
+**`zsh` does not word-split an unquoted parameter.** So the obvious way to write an A/B driver
+script is silently wrong:
+
+```zsh
+COMMON="PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1 SPANSTAT=0"
+make -j4 $COMMON SPANFILL=4        # ⛔ ONE argument: make reads PROBES = "1 FIXED_RNG=1 …"
+```
+
+`make` accepts it — the first `=` makes it a variable assignment — and **every flag after the
+first is never set**. Nothing fails, nothing warns; `ifdef STRAIGHT_TO_RACE` is simply false.
+It cost a four-arm quad and three oracle runs, in two different ways at once:
+
+- the arm flags were separate words, so `SPANFILL=n` *did* apply while `SPANSTAT=0` did not ⇒ the
+  three span arms each carried ~0.6 ms of `volatile` counter RMWs that the control (no span path)
+  did not, which is most of the "unexplained" phase-24 rise the arms were being judged on;
+- a run whose `SPANFILL=4` sat *inside* `COMMON` built **no span emitter at all**, and its gdb
+  script then failed on `No symbol "g_spanEmitLines"` — the one loud symptom in the whole episode;
+- and `STRAIGHT_TO_RACE` never applying put the whole quad on a **different trajectory**
+  (`FRAME = 266 ms` against this project's 208 ms baseline). ⭐ A frame total that does not
+  resemble the published baseline is the cheapest tell that a flag did not land — check it first.
+
+⭐⭐ **The fix is a FINGERPRINT the build prints for itself**, not more care: `probe-audit` reports
+`$(words $(PROBE_SYMS))` on every link, and that count is a function of the flag set, so assert it
+in the script and abort the arm when it disagrees:
+
+```zsh
+COMMON=(PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1 SPANSTAT=0)   # ⭐ an ARRAY expands to words
+make -j4 $COMMON $X > $arm.build 2>&1
+N=$(grep -o 'probe-audit: clean ([0-9]* symbols)' $arm.build | tail -1 | tr -dc 0-9)
+[[ "$N" == 152 ]] || { echo "⚠⚠ FLAGS DID NOT REACH THE BUILD"; continue; }
+```
+
+⚠ To read what `make` itself computed for a flag set, note that macOS ships GNU make 3.81 (no
+`--eval`); pipe a wrapper makefile instead:
+
+```zsh
+printf 'include Makefile\nx:;@echo $(words $(PROBE_SYMS))\n' | make -f - x SPANFILL=4 SPANSTAT=1
+```
+
+⚠ Every measurement published before that session was invoked with its flags spelled out
+literally on the command line (checked, across every transcript that mentions `NOUNITS` or
+`SPANFILL`) — the blast radius was the script-driven runs only. The general rule: **a run script
+is an instrument, and an instrument must be sabotaged and fingerprinted before its output is
+believed** — the A/B switch printing its own state (`g_span*` counters) was not enough here,
+because the switch that failed was the one that decides whether those counters exist.
+
 ## Rule 2 — price a native/asm twin with an IN-PROCESS differential, never cross-run
 
 ```
