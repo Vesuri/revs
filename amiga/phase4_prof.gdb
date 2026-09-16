@@ -34,8 +34,13 @@
 set pagination off
 set confirm off
 continue
-printf "=== vbi=%u loopFrames=%lu brk=%lu smc=%lu frozen=%lu ===\n", \
-  g_vbiCount, g_phaseFrames, g_brkCount, g_smcUnhandled, g_probeFrozen
+printf "=== vbi=%u loopFrames=%lu brk=%lu smc=%lu frozen=%lu build=%lx ===\n", \
+  g_vbiCount, g_phaseFrames, g_brkCount, g_smcUnhandled, g_probeFrozen, g_probeBuildFlags
+# ⭐⭐⭐ `build=` IS THE A/B SWITCH PRINTING ITS OWN STATE, and it is not decoration: read it on
+# BOTH arms before diffing them.  A flag that never reached the compiler produces two arms with
+# bit-identical phase tables, which is indistinguishable from an honest null result — and did
+# happen (`VIEWOWN` written as `CFLAGS +=` in a Makefile that uses `EXTRA_DEFINES`).  The bits
+# are named in src/platform/probe.cpp; bit 0 = VIEWOWN, and `build=0` is the control.
 # ⭐⭐ `frozen=1` means this table describes exactly `make PROBEFIELDS=N`'s emulated window and may
 # be compared arm to arm; `frozen=0` means the window was the WALL CLOCK, which under warp differs
 # between arms by however much the host was loaded.  Never diff two arms unless both read 1.

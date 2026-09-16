@@ -795,6 +795,7 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
 # script is run against.  phase4_prof.gdb is a PROBES script.
 ifdef PROBES
 PROBE_SYMS += g_phaseTicks g_phaseCount g_phaseFrames g_beamEpoch g_probeFrozen \
+             g_probeBuildFlags \
              g_probeFrozenBody g_probeFrozenUnits g_probeFrozenRuns g_probeFrozenLines \
              g_viewUnits g_viewRuns g_viewLines \
              g_probeIsrTicks g_probeIsrCount g_probeIrqTicks g_probeIrqCount \

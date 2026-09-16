@@ -63,6 +63,66 @@ volatile unsigned long g_probeFrozenUnits[3] = {0, 0, 0};   /* g_viewUnits there
 volatile unsigned long g_probeFrozenRuns[3]  = {0, 0, 0};   /* g_viewRuns  there              */
 volatile unsigned long g_probeFrozenLines[3] = {0, 0, 0};   /* g_viewLines there              */
 
+/* ⭐⭐⭐ THE BUILD'S OWN A/B STATE, AS A NUMBER THE PROBE SCRIPT PRINTS — CLAUDE.md's
+ * "an A/B switch must PRINT its own state", made structural rather than per-flag.
+ *
+ * ⚠⚠ IT EXISTS BECAUSE A NO-OP FLAG READS AS A NULL RESULT, NOT AS A MISTAKE.  `VIEWOWN=1`
+ * was once written into `amiga/Makefile` as `CFLAGS +=` where that file uses `EXTRA_DEFINES`,
+ * so the define never reached the cross-compiler; the two arms then produced BIT-IDENTICAL
+ * phase tables (+0.000 ms on every row), which is a perfectly readable "the change did
+ * nothing" if you do not happen to notice that two different builds cannot agree to the tick.
+ * One word in the header line turns that silent failure into a visible 0.
+ *
+ * ⭐ It is a BITMASK, not one global per flag, so a new switch costs one line here and no
+ * `PROBE_SYMS` edit — and it is composed from the SAME `#ifdef`s the code reads, in a
+ * translation unit the define has to reach the same way, which is what makes it a test of
+ * the build rather than a restatement of the Makefile.
+ *
+ * ✅ SABOTAGE-EQUIVALENT ALREADY RUN, and it is the discriminating one: the two arms of the
+ * `VIEWOWN` A/B printed `build=0` and `build=1` on the same source tree, which a flag-blind
+ * instrument cannot do.  Both cases, both directions, no extra run. */
+enum {
+    PROBE_BUILD_VIEW_OWN_SHORT = 1u << 0,   /* VIEWOWN=1    — phases 2/3 own their runs     */
+    PROBE_BUILD_VIEWSKIP       = 1u << 1,   /* VIEWSKIP=1   — the all-clean line skip       */
+    PROBE_BUILD_SPAN_EMIT      = 1u << 2,   /* SPANFILL=*   — the direct-span arm is built  */
+    PROBE_BUILD_SPAN_STATELESS = 1u << 3,   /* SPANFILL>=3  — ...with the stateless predicate */
+    PROBE_BUILD_SPAN_TAKEOVER  = 1u << 4,   /* SPANFILL=5   — ...and phase 1's line loop    */
+    PROBE_BUILD_NO_UNIT_WORK   = 1u << 5,   /* NOUNITS=1/2  — ⚠ picture wrong by construction */
+    PROBE_BUILD_NO_UNIT_LOOP   = 1u << 6,   /* NOUNITS=2    — ⚠ likewise                      */
+    PROBE_BUILD_VIEWP3         = 1u << 7,   /* VIEWP3=*     — ⚠ likewise                      */
+    PROBE_BUILD_BODY_IN_ISR    = 1u << 8    /* BODY_IN_ISR=1 — the rejected 50 Hz model      */
+};
+
+volatile unsigned long g_probeBuildFlags =
+#ifdef REVS_VIEW_OWN_SHORT
+    PROBE_BUILD_VIEW_OWN_SHORT |
+#endif
+#ifdef REVS_VIEWSKIP
+    PROBE_BUILD_VIEWSKIP |
+#endif
+#ifdef REVS_SPAN_EMIT
+    PROBE_BUILD_SPAN_EMIT |
+#endif
+#ifdef REVS_SPAN_STATELESS
+    PROBE_BUILD_SPAN_STATELESS |
+#endif
+#ifdef REVS_SPAN_TAKEOVER
+    PROBE_BUILD_SPAN_TAKEOVER |
+#endif
+#ifdef REVS_NO_UNIT_WORK
+    PROBE_BUILD_NO_UNIT_WORK |
+#endif
+#ifdef REVS_NO_UNIT_LOOP
+    PROBE_BUILD_NO_UNIT_LOOP |
+#endif
+#ifdef REVS_VIEWP3
+    PROBE_BUILD_VIEWP3 |
+#endif
+#ifdef REVS_BODY_IN_ISR
+    PROBE_BUILD_BODY_IN_ISR |
+#endif
+    0u;
+
 /* Whole display frames elapsed, in beam ticks.  Bumped by the VERTB ISR (PROBE_VBI()). */
 volatile unsigned long g_beamEpoch = 0;
 
