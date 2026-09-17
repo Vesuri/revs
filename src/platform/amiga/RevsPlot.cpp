@@ -187,7 +187,10 @@ extern "C" void revs_plot_cell(unsigned short addr, unsigned char value)
    See revs_plot.h.  A source line's forty cells all land on ONE display line, so a span is one
    line and the claim is one byte.  ⚠ Nothing is claimed without a target: `revs_plot_run` drops
    the fill in that case (`g_plotNoTarget`), so the decode must still convert the line. */
-extern "C" { unsigned char g_plotOwn[BBC_SCREEN_HEIGHT]; }
+/* ⭐ ALIGNED, and load-bearing: the decode tests these 208 flags FOUR AT A TIME (a group-of-
+   four `tst.l`, the same idiom as the span scan), which is only a legal `move.l` because of
+   this attribute.  208 separate byte tests measured 1.75 ms/frame — probe.h §DECODESPLIT. */
+extern "C" { unsigned char g_plotOwn[BBC_SCREEN_HEIGHT] __attribute__((aligned(4))); }
 
 /* The header cannot include bbc_screen.h (see its stdint note), so 208 is spelled twice — once
    there as a literal and once here as the constant.  This is the two staying equal. */

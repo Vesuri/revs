@@ -157,6 +157,8 @@ private:
 
     /* Which BBC mode each display line is in, from the band plan.  Written by
        buildLineModes() just before the decode loop that reads it, so the two cannot disagree
-       within a frame, and the expensive loop stays branch-free per row. */
-    unsigned char m_lineMode[208];
+       within a frame, and the expensive loop stays branch-free per row.
+       ⚠ `aligned(4)` is load-bearing, not a hint: buildLineModes fills this table a LONGWORD at
+       a time (208 byte stores measured 1.64 ms/frame — probe.h §DECODESPLIT). */
+    unsigned char m_lineMode[208] __attribute__((aligned(4)));
 };

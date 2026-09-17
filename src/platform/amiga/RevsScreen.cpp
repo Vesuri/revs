@@ -31,6 +31,9 @@ extern "C" MEM_QUAL uint8_t mem[65536];
    ⚠ Must agree with the DIWSTRT/DIWSTOP PlatformAmiga::run programs. */
 static const uint16_t kW          = BBC_SCREEN_WIDTH;
 static const uint16_t kH          = BBC_SCREEN_HEIGHT;
+/* The ownership scan below walks kH as longword GROUPS; 26 rows x 8 lines is a multiple of
+   four, and this is that staying true if the geometry ever changes. */
+typedef char revs_screen_height_group_check[(BBC_SCREEN_HEIGHT % 4) == 0 ? 1 : -1];
 static const uint8_t  kBP         = 2;
 static const uint16_t kDisplayTop = 0x2C;
 static const uint16_t kRowBytes   = (kW / 8) * kBP;          /* 80: interleaved */
@@ -225,7 +228,10 @@ static uint32_t s_shadow[2][(BBC_SCREEN_BPR * BBC_SCREEN_ROWS) / 4];
    trip: the front end draws into its own bitmap, so a race buffer's content still matches its
    shadow when the race list comes back, and anything the engine changed in mem[] meanwhile is
    caught by the byte compare like any other change. */
-static uint8_t  s_shadowMode[2][BBC_SCREEN_HEIGHT];
+/* ⚠ `aligned(4)` is load-bearing: convertRace compares a character row's eight shadowed modes
+   against the live ones as TWO LONGWORDS, and a row starts at line row*8, which is aligned
+   whenever the array is.  (probe.h §DECODESPLIT — the per-byte form cost 1.9 ms a frame.) */
+static uint8_t  s_shadowMode[2][BBC_SCREEN_HEIGHT] __attribute__((aligned(4)));
 
 /* ⭐ WHAT THE TARGET IS ACTUALLY DISPLAYING, addressable from gdb.  amiga/screen_dump.gdb
    dumps these two blocks out of a running FS-UAE and tools/amiga_ppm.py turns them into a
@@ -764,6 +770,29 @@ void RevsScreen::shutdown()
    m_plan — and the VBI only copies numbers into copper words, which is all an ISR should do.
    (It also removes the old main-loop-reads / VBI-writes race on m_lineMode.)
    --------------------------------------------------------------------------- */
+/* ⭐⭐ THE MODE TABLE IS FILLED A LONGWORD AT A TIME, AND THAT IS WORTH 1.3 ms A FRAME.
+   Five bands cover all 208 display lines, so the byte-at-a-time fill this replaces ran 208
+   times a frame and measured 1.64 ms (~56 cycles a line for one `move.b` — probe.h
+   §DECODESPLIT carves it).  A band boundary is not 4-aligned, so head and tail bytes stay
+   per-byte and only the middle widens; `m_lineMode` is `aligned(4)`, which is what makes the
+   middle a legal `move.l` at all.
+   ENDIAN-OK, and it is the documented exception to the mem[]-aliasing rule (CLAUDE.md): all
+   four bytes of the written longword are the SAME value, so byte order cannot be observed. */
+static inline void revs_fill_modes(unsigned char* p, int a, int b, unsigned char v)
+{
+    while (a < b && (a & 3)) p[a++] = v;
+    int n = (b - a) >> 2;
+    if (n > 0) {
+        uint32_t w = (uint32_t)v;
+        w |= w << 8;
+        w |= w << 16;
+        uint32_t* q = (uint32_t*)(void*)(p + a);
+        a += n << 2;
+        do { *q++ = w; } while (--n);
+    }
+    while (a < b) p[a++] = v;
+}
+
 void RevsScreen::buildLineModes()
 {
     /* The record must be the game's five bands, identified by the state it wrote them
@@ -806,18 +835,23 @@ void RevsScreen::buildLineModes()
            test is deliberately strict — all four pens, in both BBC modes — even though a
            MODE 4 band can only ever show pens 0 and 2 (decode() writes plane 1 as zero).
            Band 0 is 18 blanked lines, so the finer test would buy nothing and would make
-           this depend on the mode as well as the palette. */
+           this depend on the mode as well as the palette.
+           ⭐ AND THE TEST IS ON THE PALETTE BYTES, NOT ON FOUR bbcColour() CALLS.  bbcColour is
+           `phys = (byte & 7) ^ 7` followed by a BIJECTION from those three bits onto three
+           colour nibbles, so `bbcColour(a) == bbcColour(b)` if and only if
+           `(a & 7) == (b & 7)` — exactly, not approximately.  Inlined four times a band it was
+           twenty `btst`/`ori.w` chains a frame (probe.h §DECODESPLIT). */
         {
-            const uint16_t c0 = bbcColour(s.palette[rec][kLogicalForPen[0]]);
-            if (c0 == bbcColour(s.palette[rec][kLogicalForPen[1]]) &&
-                c0 == bbcColour(s.palette[rec][kLogicalForPen[2]]) &&
-                c0 == bbcColour(s.palette[rec][kLogicalForPen[3]])) {
+            const unsigned p0 = (unsigned)s.palette[rec][kLogicalForPen[0]] & 7u;
+            if (p0 == ((unsigned)s.palette[rec][kLogicalForPen[1]] & 7u) &&
+                p0 == ((unsigned)s.palette[rec][kLogicalForPen[2]] & 7u) &&
+                p0 == ((unsigned)s.palette[rec][kLogicalForPen[3]] & 7u)) {
                 mode = 0u;
                 if (b > a) { flatBands++; flatLines = (uint16_t)(flatLines + (b - a)); }
             }
         }
 #endif
-        for (int y = a; y < b; y++) m_lineMode[y] = (unsigned char)mode;
+        revs_fill_modes(m_lineMode, a, b, (unsigned char)mode);
 
         m_plan.line[n] = (short)lineStart;
         m_plan.rec[n]  = (unsigned char)rec;
@@ -1126,18 +1160,30 @@ unsigned RevsScreen::convertRace(uint8_t* dst, uint8_t* shadow, unsigned char* s
     unsigned converted = 0;
     unsigned y = 0;
 
-    for (unsigned row = 0; row < BBC_SCREEN_ROWS; row++, y += BBC_SCREEN_LINES) {
-        const uint8_t* const rowBase = base + revs_mulu16((uint16_t)row, BBC_SCREEN_BPR);
-        uint8_t* const rowDst =
-            dst + revs_mulu16((uint16_t)row, (uint16_t)(BBC_SCREEN_LINES * kRowBytes));
-        const unsigned char* const mode = &m_lineMode[y];
-        uint8_t* const shadowRow = shadow ? shadow + revs_mulu16((uint16_t)row, BBC_SCREEN_BPR)
-                                          : (uint8_t*)0;
+    /* ⭐⭐ RUNNING POINTERS, NOT `row *` — two `mulu.w` a row is 140 cycles for a walk whose
+       stride is a constant.  `y` advances with them, so the three row-relative bases and the
+       mode index stay in step by construction. */
+    const uint8_t* rowBase  = base;
+    uint8_t*       rowDst   = dst;
+    uint8_t*       shadowRow = shadow;
 
-        /* Is any line of this row displayed at all?  A character row wholly inside the flat
-           blue band is 40 cells nobody can see — and its bytes are engine variables. */
-        unsigned char any = 0;
-        for (unsigned l = 0; l < BBC_SCREEN_LINES; l++) any |= mode[l];
+    for (unsigned row = 0; row < BBC_SCREEN_ROWS; row++, y += BBC_SCREEN_LINES,
+             rowBase += BBC_SCREEN_BPR,
+             rowDst  += BBC_SCREEN_LINES * kRowBytes,
+             shadowRow = shadowRow ? shadowRow + BBC_SCREEN_BPR : (uint8_t*)0) {
+        const unsigned char* const mode = &m_lineMode[y];
+
+        /* ⭐⭐ A CHARACTER ROW'S EIGHT MODES ARE TWO LONGWORDS, AND ALL THREE TESTS BELOW READ
+           THEM THAT WAY.  Per byte they were three 8-iteration loops — the OR, the uniformity
+           compare and the shadow compare — measured together at ~3 ms a frame on 26 rows
+           (probe.h §DECODESPLIT).  `m_lineMode` and `s_shadowMode` are `aligned(4)` and a row
+           begins at line row*8, so both halves are legal `move.l`s.
+           ENDIAN-OK, three times over and each for its own reason: `m0 | m1` is compared
+           against ZERO, the uniformity test compares against a longword whose four bytes are
+           the SAME, and the shadow test is an equality compare of two identically-laid-out
+           longwords.  None of the three can observe byte order. */
+        const uint32_t* const mw = (const uint32_t*)(const void*)mode;
+        const uint32_t m0 = mw[0], m1 = mw[1];
 
         /* ⚠ A MODE CHANGE MUST BE REDECODED EVEN THOUGH NO BYTE MOVED.  m_lineMode comes from
            this frame's band snapshot, so a moved band boundary re-points a line at a different
@@ -1145,19 +1191,27 @@ unsigned RevsScreen::convertRace(uint8_t* dst, uint8_t* shadow, unsigned char* s
            ⭐⭐ BUT ONLY THE LINES IT CROSSED, which is the point of the bitmask: dirtying the row
            charged 40 cells x 8 lines for a boundary that moved one line.  All eight bits set is
            the whole row after all — including a row entering or leaving the flat band — and that
-           falls through to the full path below. */
+           falls through to the full path below.
+           ⭐ The bitmask is built per byte, but only on the frames a boundary actually moved:
+           four rows of 26 can straddle one, and a boundary moves on a fraction of frames, so
+           the two longword compares answer "nothing moved" for the whole row nearly always. */
         unsigned modeChanged = 0;
         if (shadowMode) {
-            for (unsigned l = 0; l < BBC_SCREEN_LINES; l++) {
-                if (shadowMode[y + l] != mode[l]) {
-                    modeChanged |= 1u << l;
-                    shadowMode[y + l] = mode[l];
+            uint32_t* const sw = (uint32_t*)(void*)&shadowMode[y];
+            if (sw[0] != m0 || sw[1] != m1) {
+                for (unsigned l = 0; l < BBC_SCREEN_LINES; l++) {
+                    if (shadowMode[y + l] != mode[l]) {
+                        modeChanged |= 1u << l;
+                        shadowMode[y + l] = mode[l];
+                    }
                 }
+                g_decodeModeDirty++;
             }
-            if (modeChanged) g_decodeModeDirty++;
         }
 
-        if (!any) continue;   /* nothing to draw; the shadow BYTES deliberately stay stale */
+        /* Is any line of this row displayed at all?  A character row wholly inside the flat
+           blue band is 40 cells nobody can see — and its bytes are engine variables. */
+        if (!(m0 | m1)) continue;   /* nothing to draw; the shadow BYTES deliberately stay stale */
 
 #ifdef REVS_PLOT_ONLY
         /* ⭐ THE PLOTTER OWNS THESE LINES.  Under REVS_PLOT_ONLY the view rasteriser no longer
@@ -1178,10 +1232,24 @@ unsigned RevsScreen::convertRace(uint8_t* dst, uint8_t* shadow, unsigned char* s
            race frame ~17 of the 19 scanned rows take a path with no per-line mode test at all
            (band 0 is MODE 4, bands 2-4 MODE 5, band 1 is the flat sky that `any` already
            skipped).  See revs_scan_row above for why this is worth a switch. */
-        int uniform = mode[0];
-        for (unsigned l = 1; l < BBC_SCREEN_LINES; l++)
-            if (mode[l] != uniform) { uniform = 0; break; }
-        if (uniform != 5 && uniform != 4) uniform = 0;   /* 0 = mixed, consult mode[] per line */
+        /* The wide test is EXACT, not an approximation of the old per-byte loop: `m0 == m1` and
+           `m0 == v * 0x01010101` together say every one of the eight bytes equals v, which is
+           what "uniform" means.  Byte order is irrelevant — both operands are longwords read
+           from the same array with the same layout, so this is an equality compare, never an
+           interpretation of lanes.
+           ⚠⚠ AND DIRTYCHECK CANNOT GATE THIS BLOCK — dropping the `m0 == m1` guard survives
+           31/31 oracle checks with mismatch=0.  The oracle's reference pass is
+           convertRace(scratch, 0, 0) over the SAME m_lineMode, so it classifies the row the same
+           wrong way and both sides are wrong identically.  That is structural to an in-process
+           differential and not a fixture to widen: DIRTYCHECK gates what the DIRTY PASS SKIPS
+           (sabotaging the shadow-mode compare below fires it at mismatch=4050), and the gate on
+           the classification is the PICTURE — amiga/screen_dump.gdb, or `make DIRTY=0`, which
+           takes the mixed path for every row. */
+        int uniform = 0;                                 /* 0 = mixed, consult mode[] per line */
+        if (m0 == m1) {
+            if (m0 == 0x05050505u)      uniform = 5;
+            else if (m0 == 0x04040404u) uniform = 4;
+        }
 
         uint32_t* const sh = shadowRow ? (uint32_t*)(void*)shadowRow : (uint32_t*)0;
         const int full = (shadowRow == 0) || modeChanged == 0xFFu;
@@ -1280,9 +1348,21 @@ void RevsScreen::decode()
      * ⚠ Not compiled under REVS_SPAN_VERIFY: the oracle's reference conversion reads m_lineMode
      * too, so a carved-out mode would blank the reference on exactly the lines under test. */
     {
+        /* ⭐⭐ FOUR FLAGS AT A TIME.  The per-line form of this loop measured 1.75 ms/frame —
+           ~60 cycles a display line to test one byte (probe.h §DECODESPLIT) — and the flags are
+           SPARSE: the sweep owns ~36 of 208 lines, so 43 of the 52 groups are wholly zero and
+           cost one `tst.l` between them.  Same idiom as the span scan's group-of-four `or.l`.
+           ENDIAN-OK: the wide read is a ZERO TEST, and zero has no byte order.  The per-line
+           work re-reads the bytes rather than unpacking the longword, so nothing here depends
+           on which end byte 0 sits at.  `g_plotOwn` is `aligned(4)` for this. */
+        const uint32_t* const grp = (const uint32_t*)(const void*)g_plotOwn;
         unsigned owned = 0;
-        for (unsigned y = 0; y < kH; y++)
-            if (g_plotOwn[y]) { m_lineMode[y] = 0; owned++; }
+        for (unsigned q = 0; q < kH / 4u; q++) {
+            if (!grp[q]) continue;
+            const unsigned y0 = q * 4u;
+            for (unsigned y = y0; y < y0 + 4u; y++)
+                if (g_plotOwn[y]) { m_lineMode[y] = 0; owned++; }
+        }
         g_decodeOwnLines = owned;
     }
 #endif
@@ -1447,7 +1527,14 @@ void RevsScreen::decode()
      * byte-identical bitplanes.  The scratch starts as a COPY of what the dirty pass produced,
      * so the flat-band lines — which neither pass writes — are equal by construction and any
      * difference is the dirty test wrongly skipping something.  ⚠ It runs the whole reference
-     * pass every frame, so this build is far slower than shipping: never quote FPS from it. */
+     * pass every frame, so this build is far slower than shipping: never quote FPS from it.
+     * ⚠⚠ AND THAT IS ITS EXACT SCOPE — SKIPPING, NOT CLASSIFYING.  The reference pass reads the
+     * same m_lineMode, so anything convertRace derives FROM m_lineMode (the `uniform` switch, the
+     * `any` fast-out's interpretation of a mode byte) is computed identically wrong on both
+     * sides and this oracle reads mismatch=0.  Measured both ways: sabotaging the shadow-mode
+     * compare fires it at 4050, sabotaging the uniformity guard survives 31/31.  A classification
+     * change is gated by the PICTURE (amiga/screen_dump.gdb) or by argument at the code, never
+     * here. */
     {
         static uint8_t scratch[BBC_SCREEN_HEIGHT * kRowBytes];
         for (unsigned i = 0; i < sizeof scratch; i++) scratch[i] = dst[i];

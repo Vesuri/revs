@@ -113,7 +113,9 @@ int revs_plot_has_target(void);
  * ⚠ CLEARED AT THE TOP OF `view_paint_lines_core`, NOT in present() or decode(): the crash hold
  * calls platform_render_frame() extra times with no sweep in between, and clearing per decode
  * would let those repaint stale mem[] over the spans. */
-extern unsigned char g_plotOwn[208];   /* = BBC_SCREEN_HEIGHT; checked in RevsPlot.cpp */
+/* ⚠ `aligned(4)` is part of the CONTRACT, not a hint: the decode scans these flags as
+ * longwords (probe.h §DECODESPLIT).  It is spelled on the definition too. */
+extern unsigned char g_plotOwn[208] __attribute__((aligned(4)));  /* = BBC_SCREEN_HEIGHT */
 void revs_plot_own_reset(void);
 
 /* Counters — every one of them in PROBE_SYMS (amiga/Makefile).
