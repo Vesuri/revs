@@ -1061,7 +1061,26 @@ arms agree), `viewdiff` 0 bytes on display lines 82..166 for every circuit.
 ⭐⭐ Phases 2/3's census was **identical in both arms** (426/32/16 and 282/50/25) — that is what
 makes it a shape win rather than a trajectory (`docs/perf-method.md` §the entry was deleted).
 
-⭐⭐⭐ **(5b) — THE LIVE STEP IS THE PER-LINE SET-UP, AND THE PLANTS ARE NOT IT.**
+⭐⭐⭐ **(5b) — DEFERRED BEHIND STEP 3b, AND THE OBJDUMP IS WHY: THE PER-LINE BODY IS LONG, NOT
+WRAPPED.** Bracketing `paint_lines_short.constprop.0` two ways — a floor (cheapest path from loop
+head to back edge with every plant/trap block priced at infinity) and a ceiling (every non-cold
+instruction once) — puts phase 3's measured 5348 cyc/line between **2154 and 6026 over 499
+non-cold instructions**, i.e. **~89% of the body runs on every one of its 25 lines**, which
+`NOUNITS=2`'s 80%-driver figure independently confirms. There is no hotspot and nothing to unwrap:
+the body serves **four chain entries a line**, each with its own run set-up, stop tail,
+`view_compose` pair, unit lookup and `g_viewStopList` search, at an average run of **5.6 cells**.
+⇒ ⭐⭐⭐ **A BITPLANE SPAN PAINTER PAYS IN PROPORTION TO RUN LENGTH, AND THE PHASES ARE 40 / 13.3 /
+5.6 CELLS PER RUN** — so **step 3b (phase 1, one 40-cell run a line) is the live build** and this
+step waits for it. ⚠⚠ And in no phase does the painter delete the **source walk**: `view_consume`'s
+RLE must read every cell's source byte whatever the destination is, so a cell goes 54 → ~48 cyc,
+not to zero. **The prize is the driver and the decode carve-out, never the stores.**
+`docs/perf-method.md` §where phases 2/3's 29 ms is, settled from the objdump.
+
+⚠ **THE UNIT LOOP IS 54 cyc/cell, NOT 43** — 43 was phase 1's clean-arm figure, and reusing it here
+is half of what opened the phantom gap (the other half was forgetting the ~680 cyc/line census
+instrument is inside every ms figure). With both fixed phase 2's per-item budget closes to 7%.
+
+**The plants are not it either.**
 An earlier draft of this step named the plants and sized them at "888 cyc of phase 3's 5346
 cyc/line". **Both halves were wrong, and a host census settled it** (`docs/perf-method.md`
 §the plants' denominator): the sweep makes **25 plants, of which 9 are phase 3's stop moves**,
@@ -1089,10 +1108,11 @@ the line loop's back-edge is at `128a6` with both inline runs on pads *past* it,
 stack slot serving many out-of-line pads. ⇒ **Nothing local fixes 3358 cyc/line. Doing less per
 line does, and that is the pipeline change this plan exists for.**
 
-⇒ **THE BUILD: a per-line SPAN painter, phase 2 first (67% ownership, the smaller driver).**
-~26.6 cells at the measured 13.7 cyc/cell bitplane span fill + ~300 cyc of span set-up is
-**~660 cyc/line against 4502**, i.e. phase 2 at ~1.5 ms instead of 10.16, plus its share of the
-decode. The ~300 is the estimate to validate, and the ownership mask below is the obstacle.
+⛔ **THE "per-line SPAN painter, phase 2 first" BUILD IS RETRACTED, and so is its "phase 2 at
+~1.5 ms instead of 10.16" sizing.** It assumed the span fill replaced the per-cell work; it only
+replaces the **store**, and the source walk it cannot touch is 34 of the 54 cyc/cell. At 26.6 cells
+a line phase 2 would go 4502 → ~4300, not to 660. The ownership mask below is still the obstacle
+when phases 2/3 are eventually taken, but run length is the reason they come second.
 
 ⚠⚠ **AND THE STORE FLIP IS STILL A WASH — contiguity is an ENABLER, not the win.** On the BBC a
 scan line's run is N bytes at **stride 8** (`charRow*320 + cell*8 + lineInRow`), un-widenable at
