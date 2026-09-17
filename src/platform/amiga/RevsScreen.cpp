@@ -14,6 +14,9 @@
 #include "../bbc_screen.h"
 #include "../teletext.h"           /* the MODE 7 model: the VDU driver's page + the SAA5050 */
 #include "../revs_plot.h"        /* the direct-to-bitplane plotter: this is where it is aimed */
+#ifdef REVS_DECODE_SPLIT
+#include "../probe.h"              /* DECODESPLIT: the three spare phase ids carve decode() */
+#endif
 #ifdef REVS_PLOT_ONLY
 extern "C" volatile unsigned char g_plotLineLo, g_plotLineHi;
 #endif
@@ -1241,12 +1244,24 @@ void RevsScreen::decode()
        but the sweep that plots into it runs AFTER the flip that present() is about to do, so
        aiming the plotter from here aims it one buffer too early. */
 
+#ifdef REVS_DECODE_SPLIT
+    /* ⭐ THE CONTROL FIRST, and its bracket must stay EMPTY (probe.h §DECODESPLIT): phase 52's
+       ticks are one transition's own cost, which every other row here has to be corrected by. */
+    PROBE_PHASE(DEC_PHASE_NULL);
+    PROBE_PHASE(DEC_PHASE_PRE);
+#endif
     /* ⭐ FIRST, before a single pixel is decoded: capture the raster schedule that belongs to
        the frame buffer we are about to read.  See snapshotBands() — the pixels and the band
        boundaries have to come from the same game frame or the horizon lands in the wrong
        palette.  It also fills m_lineMode, which the loop below reads per row. */
     snapshotBands();
+#ifdef REVS_DECODE_SPLIT
+    PROBE_PHASE(DEC_PHASE_MODES);
+#endif
     buildLineModes();
+#ifdef REVS_DECODE_SPLIT
+    PROBE_PHASE(DEC_PHASE_OWN);
+#endif
 
 #ifdef REVS_SPAN_OWN
     /* ⭐⭐⭐ THE SPAN EMITTER OWNS THESE DISPLAY LINES — EXPRESSED AS MODE 0, WHICH THE DECODE
@@ -1274,18 +1289,20 @@ void RevsScreen::decode()
 
 #ifdef REVS_VIEW_CARVE
     /* ⚠⚠ THE PICTURE IS WRONG BY CONSTRUCTION — A CEILING PROBE, NEVER A SHIPPING ARM.
-     * `make VIEWCARVE=1`.  Claims the view sweep's SHORT phases outright — display lines
-     * 117..157, which `shape_view_flat` measured as phase 2's rows 117..132 and phase 3's
-     * 133..157 (docs/span-render-plan.md §10p step 2's table) — so phase 27 stops converting
-     * them.  Nothing paints them instead, so the dashboard and the near road FREEZE at
-     * whatever they last held; that is the point.  The delta on ph27 is the ENTIRE prize of
-     * flipping phases 2/3's run stores to the bitplanes: `093e560` established that the store
-     * flip itself is a wash (a bitplane pair costs about what the `mem[]` byte cost), so the
-     * decode carve-out is what is left, and it is worth knowing before the painter is written.
+     * `make VIEWCARVE=<lo>-<hi>` (bare `VIEWCARVE=1` = 117..157).  Claims a block of display
+     * lines outright — `m_lineMode = 0` — so phase 27 stops converting them, and nothing
+     * paints them instead: they FREEZE at whatever they last held.  That is the point.
+     * 117..157 is the view sweep's SHORT phases (phase 2's 117..132 + phase 3's 133..157,
+     * measured in §10p step 2); 158..207 is the dashboard and 0..17 the two MODE 4 text rows,
+     * i.e. every block of §11's 208-row ledger, priced on ONE scale.
+     * The delta on ph27 is the ENTIRE prize of flipping those stores to the bitplanes, because
+     * `093e560` established that the store flip itself is a wash (a bitplane pair costs about
+     * what the `mem[]` byte cost).  So the decode carve-out is what is left, and it is worth
+     * knowing before the painter is written.
      * ⚠ It is a CEILING and not the achievable figure: a real per-run takeover owns two cell
      * RANGES a line, not the line, so the cells between the runs — the dash, the needles —
      * would still have to be converted. */
-    for (unsigned y = 117; y <= 157; y++) m_lineMode[y] = 0;
+    for (unsigned y = REVS_VIEW_CARVE_LO; y <= REVS_VIEW_CARVE_HI; y++) m_lineMode[y] = 0;
 #endif
 
 #ifdef REVS_FILLWATCH
@@ -1409,10 +1426,16 @@ void RevsScreen::decode()
     /* ⭐⭐ THE CONVERSION, dirty-region by default (see g_decodeCells above).  s_shadow is
        indexed by m_back because the Amiga is DOUBLE buffered: the bytes this buffer's pixels
        came from are two decodes old, not one. */
+#ifdef REVS_DECODE_SPLIT
+    PROBE_PHASE(DEC_PHASE_CONVERT);
+#endif
 #ifdef REVS_NO_DIRTY
     const unsigned cells = convertRace(dst, 0, 0);
 #else
     const unsigned cells = convertRace(dst, (uint8_t*)s_shadow[m_back], s_shadowMode[m_back]);
+#endif
+#ifdef REVS_DECODE_SPLIT
+    PROBE_PHASE(PROBE_PHASE_DECODE);   /* the remainder goes back on the original row */
 #endif
     g_decodeCells       = (uint16_t)cells;
     g_decodeCellsTotal += cells;

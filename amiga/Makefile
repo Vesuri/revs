@@ -244,8 +244,23 @@ endif
 # `SPANFILL=5 VIEWOWN=1` base.
 # ⚠ A ceiling, not the achievable figure: a per-run takeover owns two cell RANGES a line, so
 # the cells between the runs still need converting.  Never quote it as a saving.
+# ⭐ AND IT TAKES A RANGE: `make VIEWCARVE=158-207` prices the DASHBOARD's rows the same way,
+# `VIEWCARVE=0-17` the two MODE 4 text rows.  `VIEWCARVE=1` keeps the original 117..157.  One
+# instrument, so the blocks of the 208-row ledger (§11) are sized on the same scale.
+# ⭐⭐ `make DECODESPLIT=1` — carve phase 27 five ways: snapshotBands (50), buildLineModes (53),
+# the ownership/carve loops (54), convertRace (51) and an EMPTY control bracket (52), with the
+# remainder left on 27.  src/platform/probe.h §DECODESPLIT says why: the 208-row ledger accounts
+# for only half the decode, and the other half converts nothing.  Read with
+# amiga/decodesplit.gdb, and read its control row FIRST.  A measurement build.
+ifdef DECODESPLIT
+EXTRA_DEFINES += -DREVS_DECODE_SPLIT
+endif
+
 ifdef VIEWCARVE
 EXTRA_DEFINES += -DREVS_VIEW_CARVE
+VIEWCARVE_WORDS := $(subst -, ,$(VIEWCARVE))
+EXTRA_DEFINES += -DREVS_VIEW_CARVE_LO=$(if $(word 2,$(VIEWCARVE_WORDS)),$(word 1,$(VIEWCARVE_WORDS)),117)
+EXTRA_DEFINES += -DREVS_VIEW_CARVE_HI=$(if $(word 2,$(VIEWCARVE_WORDS)),$(word 2,$(VIEWCARVE_WORDS)),157)
 endif
 
 # `make NOUNITS=1` — ⚠⚠ THE PICTURE IS WRONG BY CONSTRUCTION.  The $7BE2 unit loop keeps its

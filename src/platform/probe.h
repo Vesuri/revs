@@ -118,9 +118,10 @@ extern volatile unsigned long g_isrSplitCount[PROBE_ISR_SLOTS];
 #define PROBE_IRQ_NULL()  probe_irq_null()
 
 /* Number of phases the table below can hold — one per top-level call in $1701-$1763,
-   plus id 0, plus slack.  ⚠ 40-43 are GEOSPLIT's sub-phases of build_track_geometry (see the
-   bottom of this file), so the table must be sized past them. */
-#define PROBE_PHASES 50
+   plus id 0, plus slack.  ⚠ 40-43 are GEOSPLIT's sub-phases of build_track_geometry, 44-49
+   ROADSPLIT's of draw_road and 50-54 DECODESPLIT's of RevsScreen::decode() (see the bottom of
+   this file), so the table must be sized past them. */
+#define PROBE_PHASES 56
 
 /* ⭐ The DISPLAY-frame wait, bracketed on its own.
  *
@@ -431,3 +432,40 @@ extern volatile unsigned long g_roadMarkPts;     /* mark_line_surfaces points st
    the road pass without also turning on the ROADSPLIT counters. */
 #define ROAD_PHASE(id)   REVS_CANARY(id)
 #endif /* REVS_ROADSPLIT */
+
+/* ===========================================================================
+ * ⭐⭐ `make DECODESPLIT=1 PROBES=1` — WHAT IS THE HALF OF phase 27 THAT CONVERTS NOTHING?
+ * ---------------------------------------------------------------------------
+ * `RevsScreen::decode()` is the port's own cost with no BBC counterpart, and the 208-row
+ * ledger (docs/span-render-plan.md §11) sizes it by ROWS: claiming a block of display lines as
+ * `m_lineMode = 0` deletes that block's conversion, and `make VIEWCARVE=<lo>-<hi>` prices any
+ * block on one scale.  Summed over the whole picture that accounts for only HALF the row:
+ * carving all 208 lines still leaves ~12 ms, and stubbing decode() outright leaves 0.13 — so
+ * ~12 ms is real work inside decode() that converts nothing and no amount of ownership can
+ * reach.  This carves it:
+ *
+ *   50/53/54  the PROLOGUE, carved three ways — snapshotBands(), buildLineModes() and the
+ *       ownership/carve loops.  Everything before a source byte is read, and per FRAME rather
+ *       than per cell, so a large row here is a fixed tax the row ledger cannot see.
+ *       ⭐ 53 is the one that SURVIVES the end state: `m_plan` is the COPPER's palette
+ *       schedule, so snapshotBands + buildLineModes still have to run every frame even when
+ *       the painter owns all 208 rows and decode() is never called.
+ *   51  convertRace() — the conversion proper (the per-cell dirty scan + the expands).
+ *   52  THE CONTROL, and it must be read first: its bracket contains NOTHING, so its ticks ARE
+ *       one transition's cost (the same shape as ROADSPLIT's phase 49).  SIX brackets a frame
+ *       here, so subtract one control's worth from every row before quoting it.
+ *
+ * Phase 27 keeps the remainder (the MODE 7 test, the bitmap lookup, the counters).
+ *
+ * ⭐⭐ WHAT IT ANSWERED, control-corrected, and the split CLOSES (24.29 against the base build's
+ * 24.20 ms): control 0.10 / snapshotBands 0.77 / buildLineModes 1.64 / own+carve 1.75 /
+ * convertRace 17.09 / remainder 3.04.  ⇒ THE "12 ms FLOOR" WAS MOSTLY CODE SHAPE, NOT A FLOOR:
+ * ownership can only delete convertRace's per-ROW conversion, and everything else here goes
+ * with the CALL — which is why the end state is two steps (own all 208 rows, THEN stop calling
+ * decode()), and why only snapshotBands + buildLineModes survive it.
+ * ⚠ A measurement build only; read it with amiga/decodesplit.gdb, which sums 27 + 50..54. */
+#define DEC_PHASE_PRE     50   /* snapshotBands — the band record, 95 volatile reads         */
+#define DEC_PHASE_CONVERT 51   /* convertRace — the scan and the expands                     */
+#define DEC_PHASE_NULL    52   /* an EMPTY bracket: the transition cost itself               */
+#define DEC_PHASE_MODES   53   /* buildLineModes — us -> display lines, 208 mode bytes       */
+#define DEC_PHASE_OWN     54   /* the ownership/carve loops over the 208 display lines       */
