@@ -748,7 +748,8 @@ tm.processor.debugWrite.add((addr, b) => {
         const pc = tm.processor.getPrevPc(0);
         let e = fillPC.get(pc);
         if (!e) fillPC.set(pc, (e = { n: 0, lines: new Set(), nonzero: 0, changed: 0,
-                                      perLine: new Uint32Array(LINES * ROWS) }));
+                                      perLine: new Uint32Array(LINES * ROWS),
+                                      perLineChanged: new Uint32Array(LINES * ROWS) }));
         e.n++;
         e.lines.add(fillLineOf[addr]);
         e.perLine[fillLineOf[addr]]++;
@@ -756,7 +757,9 @@ tm.processor.debugWrite.add((addr, b) => {
         /* ⚠ peekmem, NOT readmem: readmem fires the READ hook, and this instrument would then
            report its own comparison as the game reading the frame buffer back — measured, it
            doubled every store site's read count exactly. */
-        if (tm.processor.peekmem(addr) !== b) { e.changed++; fillChanged++; }
+        if (tm.processor.peekmem(addr) !== b) {
+            e.changed++; fillChanged++; e.perLineChanged[fillLineOf[addr]]++;
+        }
         fillWrites++;
     }
     if (addr !== ULA_CTRL && addr !== ULA_PAL) return;
@@ -1263,17 +1266,63 @@ if (fillArg && fillWrites) {
         const fn = nameOf(pc).split("+")[0];
         let f = byFn.get(fn);
         if (!f) byFn.set(fn, (f = { n: 0, changed: 0, pcs: 0, lo: 999, hi: -1,
-                                    perLine: new Uint32Array(LINES * ROWS) }));
+                                    perLine: new Uint32Array(LINES * ROWS),
+                                    perLineChanged: new Uint32Array(LINES * ROWS) }));
         f.n += e.n; f.changed += e.changed; f.pcs++;
-        for (let y = 0; y < f.perLine.length; y++) f.perLine[y] += e.perLine[y];
+        for (let y = 0; y < f.perLine.length; y++) {
+            f.perLine[y] += e.perLine[y];
+            f.perLineChanged[y] += e.perLineChanged[y];
+        }
         for (const y of e.lines) { if (y < f.lo) f.lo = y; if (y > f.hi) f.hi = y; }
     }
+    /* ⚠⚠ EVERY ROUTINE, NOT A TOP-N SLICE.  A `slice(0, 16)` here hid `vdu_char_emit` — 32
+       stores in 200 frames, i.e. the cheapest writer on the screen and therefore the one whose
+       rows are most worth OWNING — and a narrower `--fill` window had already reported it.  A
+       census that ranks by volume buries exactly the finding an ownership ledger is looking for. */
     console.log(`\n⭐⭐ ROLLED UP PER ROUTINE (stores per frame over ${nWin} frames):`);
     const ranked = [...byFn.entries()].sort((a, b) => b[1].n - a[1].n);
-    for (const [fn, f] of ranked.slice(0, 16)) {
-        console.log(`   ${fn.padEnd(24)} ${String((f.n / nWin).toFixed(0)).padStart(6)} stores/frame  ` +
-            `${String((f.changed / nWin).toFixed(0)).padStart(6)} changes/frame  ` +
+    for (const [fn, f] of ranked) {
+        console.log(`   ${fn.padEnd(24)} ${String((f.n / nWin).toFixed(f.n / nWin < 10 ? 2 : 0)).padStart(7)} stores/frame  ` +
+            `${String((f.changed / nWin).toFixed(f.changed / nWin < 10 ? 2 : 0)).padStart(7)} changes/frame  ` +
             `lines ${f.lo}..${f.hi}  (${f.pcs} PCs)`);
+    }
+
+    /* ⭐⭐⭐ THE OWNERSHIP LEDGER — DISPLAY LINES GROUPED BY THEIR *WRITER SET*.
+       docs/span-render-plan.md §11 prices the decode per display row and the only thing that
+       decides whether a row can be OWNED by a direct-to-bitplane painter is which routines write
+       it: own a row and every one of its writers has to be retargeted, so a block with one cheap
+       writer is worth more than a block with a big decode cost and five.  A lo..hi range per
+       routine cannot answer that — this can, and it is the same walk that produces §11's table.
+       ⚠ A LINE WITH NO WRITER IS THE CHEAPEST ROW ON THE SCREEN: its pixels are already in the
+       bitplanes from the frame the picture was built, so owning it costs a claim and nothing else.
+       ⚠⚠ But "no writer IN THIS WINDOW" is not "no writer": this is a driving Silverstone
+       practice lap, so a routine that only runs at a lap boundary, on a gear change, in the pits
+       or in a RACE is absent by construction.  Widen --fill-frames and re-run before owning a
+       block on the strength of a zero here. */
+    {
+        const setOf = (y) => {
+            const w = [];
+            for (const [fn, f] of ranked) if (f.perLine[y]) w.push(fn);
+            return w;
+        };
+        const storesAt = (y) => { let n = 0; for (const [, f] of ranked) n += f.perLine[y]; return n; };
+        const changesAt = (y) => { let n = 0; for (const [, f] of ranked) n += f.perLineChanged[y]; return n; };
+        console.log(`\n⭐⭐⭐ THE OWNERSHIP LEDGER — display lines grouped by their WRITER SET ` +
+            `(stores and changes per frame over ${nWin} frames):`);
+        const H = LINES * ROWS;
+        let y0 = 0;
+        for (let y = 1; y <= H; y++) {
+            const a = y < H ? setOf(y).join(",") : "\u0000";
+            if (a === setOf(y0).join(",")) continue;
+            let st = 0, ch = 0;
+            for (let k = y0; k < y; k++) { st += storesAt(k); ch += changesAt(k); }
+            const w = setOf(y0);
+            console.log(`   lines ${String(y0).padStart(3)}..${String(y - 1).padStart(3)} ` +
+                `(${String(y - y0).padStart(3)})  ${String((st / nWin).toFixed(1)).padStart(7)} st/f ` +
+                `${String((ch / nWin).toFixed(1)).padStart(7)} ch/f  ` +
+                `${w.length ? w.join(" + ") : "⭐ NO WRITER AT ALL"}`);
+            y0 = y;
+        }
     }
     /* ⭐⭐ WHERE ON THE SCREEN, per display line — because "lines 81..157" is a RANGE, and a
        renderer's shape is in the distribution.  A routine that paints a 3D view puts most of its
