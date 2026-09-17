@@ -233,6 +233,20 @@ ifdef VIEWOWN
 EXTRA_DEFINES += -DREVS_VIEW_OWN_SHORT
 endif
 
+# ⚠⚠ `make VIEWCARVE=1` — THE PICTURE IS WRONG BY CONSTRUCTION, and it prices ONE NUMBER: what
+# the decode spends on the view sweep's SHORT phases.  Display lines 117..157 (phase 2's
+# 117..132 + phase 3's 133..157, measured in §10p step 2) are claimed as `m_lineMode = 0` and
+# nothing paints them, so the dash and the near road freeze.  ph27's delta is the CEILING of
+# the phases-2/3 bitplane flip, because `093e560` measured the store half as a wash — a
+# bitplane pair costs about what the `mem[]` byte it replaces cost, so the decode carve-out is
+# the whole prize.  Run it BEFORE writing the painter; it is one build and one run against a
+# `SPANFILL=5 VIEWOWN=1` base.
+# ⚠ A ceiling, not the achievable figure: a per-run takeover owns two cell RANGES a line, so
+# the cells between the runs still need converting.  Never quote it as a saving.
+ifdef VIEWCARVE
+EXTRA_DEFINES += -DREVS_VIEW_CARVE
+endif
+
 # `make NOUNITS=1` — ⚠⚠ THE PICTURE IS WRONG BY CONSTRUCTION.  The $7BE2 unit loop keeps its
 # iterations and loses its memory work, so `phase 24 with this on` is the per-line drivers plus
 # the bare loop.  A decomposition the VIEWSPLIT brackets cannot give honestly: bracketing 118

@@ -1272,6 +1272,22 @@ void RevsScreen::decode()
     }
 #endif
 
+#ifdef REVS_VIEW_CARVE
+    /* ⚠⚠ THE PICTURE IS WRONG BY CONSTRUCTION — A CEILING PROBE, NEVER A SHIPPING ARM.
+     * `make VIEWCARVE=1`.  Claims the view sweep's SHORT phases outright — display lines
+     * 117..157, which `shape_view_flat` measured as phase 2's rows 117..132 and phase 3's
+     * 133..157 (docs/span-render-plan.md §10p step 2's table) — so phase 27 stops converting
+     * them.  Nothing paints them instead, so the dashboard and the near road FREEZE at
+     * whatever they last held; that is the point.  The delta on ph27 is the ENTIRE prize of
+     * flipping phases 2/3's run stores to the bitplanes: `093e560` established that the store
+     * flip itself is a wash (a bitplane pair costs about what the `mem[]` byte cost), so the
+     * decode carve-out is what is left, and it is worth knowing before the painter is written.
+     * ⚠ It is a CEILING and not the achievable figure: a real per-run takeover owns two cell
+     * RANGES a line, not the line, so the cells between the runs — the dash, the needles —
+     * would still have to be converted. */
+    for (unsigned y = 117; y <= 157; y++) m_lineMode[y] = 0;
+#endif
+
 #ifdef REVS_FILLWATCH
     const unsigned long rejects0 = g_bandRejects;
 

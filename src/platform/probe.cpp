@@ -90,7 +90,8 @@ enum {
     PROBE_BUILD_NO_UNIT_WORK   = 1u << 5,   /* NOUNITS=1/2  — ⚠ picture wrong by construction */
     PROBE_BUILD_NO_UNIT_LOOP   = 1u << 6,   /* NOUNITS=2    — ⚠ likewise                      */
     PROBE_BUILD_VIEWP3         = 1u << 7,   /* VIEWP3=*     — ⚠ likewise                      */
-    PROBE_BUILD_BODY_IN_ISR    = 1u << 8    /* BODY_IN_ISR=1 — the rejected 50 Hz model      */
+    PROBE_BUILD_BODY_IN_ISR    = 1u << 8,   /* BODY_IN_ISR=1 — the rejected 50 Hz model      */
+    PROBE_BUILD_VIEW_CARVE     = 1u << 9    /* VIEWCARVE=1  — ⚠ picture wrong: the ph27 ceiling */
 };
 
 volatile unsigned long g_probeBuildFlags =
@@ -120,6 +121,9 @@ volatile unsigned long g_probeBuildFlags =
 #endif
 #ifdef REVS_BODY_IN_ISR
     PROBE_BUILD_BODY_IN_ISR |
+#endif
+#ifdef REVS_VIEW_CARVE
+    PROBE_BUILD_VIEW_CARVE |
 #endif
     0u;
 
