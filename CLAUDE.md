@@ -544,6 +544,12 @@ Rules that must survive without opening `docs/perf-method.md`:
   target's split). Licensed for COUNTING only, never for timing. And ⭐ **when a win's per-call
   price comes out implausibly cheap, doubt the denominator**: "~135 plants a frame" was a guess,
   the real count is 25 a sweep, and the arithmetic on a known ms delta is what exposed it.
+  ⭐⭐ **IMPLAUSIBLY EXPENSIVE IS THE SAME TELL, AND A BRACKET SPLIT'S SMALL ROWS ARE WHERE IT
+  HIDES: subtracting a fixed control bracket over-credits the SMALLEST blocks**, because the
+  subtraction error is a fixed number of cycles and the block is not. An 815 cyc/line control
+  taken off a block whose true cost is ~280 made the view sweep's plants read 3x their real size
+  and put a whole step in the live plan around them. **Read a split's BIG rows as sizings and
+  check every small one against a count** — a host counter costs no emulator run.
 - ⚠⚠ **A TWIN CAN ALSO BE SLOWER BECAUSE GCC WAS DELETING WORK.** A 6502 busy-DELAY loop whose
   only observable is its exit value gets folded away in the transliteration (final-value
   replacement), so the port never paid it; written out honestly in C it becomes a real burn. Twin
