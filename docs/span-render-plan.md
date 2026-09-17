@@ -1033,10 +1033,14 @@ escape: +0.73 ms, aliasing barrier, recorded there.
 ⚠ A ceiling, never an achievable saving: a per-run takeover owns two cell *ranges* a line, so the
 cells between the runs still need converting.
 
-⛔⛔ **AND WHOLE-LINE OWNERSHIP OF PHASES 2/3 IS CLOSED ON ARITHMETIC, BEFORE ANY CODE.**
-`revs_plot_chain` paints a 40-cell line at ~2550 cyc = 0.36 ms/line, so 41 lines is **14.8 ms of
-painting** against **4.9 ms of unit work + 5.07 ms of decode** it could delete: **+4.8 ms net.**
-The short phases must stay per-RUN.
+⛔⛔ **AND WHOLE-LINE OWNERSHIP OF PHASES 2/3 IS CLOSED — BUT ON CORRECTNESS, NOT ARITHMETIC.**
+⚠ The arithmetic this entry used to give is RETRACTED: it priced the painter at `revs_plot_chain`'s
+~2550 cyc per 40-cell line (64 cyc/cell), and a **bitplane span fill is 13.7 cyc/cell**, which
+turns its "+4.8 ms net" into ~−6.8 ms. The real obstacle is that whole-line ownership makes the
+painter responsible for all 40 cells including the ones the sweep never writes — the dash, the
+needles, the mirrors, and every cell `view_consume`'s RLE leaves alone because it is unchanged.
+The painter cannot produce those. ⇒ The short phases must stay per-RUN, and the reason is content,
+not cycles.
 
 ⚠⚠ **The one real correctness obstacle to deleting the run stores is MIXED CELLS.**
 `m_lineMode[y] = 0` is per-line-ALL-40-CELLS, so a cell owned on some of its 8 lines and written
@@ -1057,21 +1061,59 @@ arms agree), `viewdiff` 0 bytes on display lines 82..166 for every circuit.
 ⭐⭐ Phases 2/3's census was **identical in both arms** (426/32/16 and 282/50/25) — that is what
 makes it a shape win rather than a trajectory (`docs/perf-method.md` §the entry was deleted).
 
-⭐⭐⭐ **(5b) — THE LIVE STEP — IS THE PLANTS, AND IT IS A FAITHFULNESS EDIT, NOT A SHAPE ONE.**
-What is left of the entry is `view_move_stop`/`view_plant` planting and unplanting **RTS opcodes**
-in page-$7C/$7E slots — 888 cyc of phase 3's remaining 5346 cyc/line, plus the two stop tails that
-fall out with them. Both ends of `[first .. stop)` are already known to the driver, so the opcodes
-exist only so a 6502 `RTS` would land in the right slot. They are `mem[]` writes ⇒ **the RESULTS
-RULE**: a written reader audit (the readers include the transliteration an expansion circuit's
-hook re-enters), scoped `set_ignore`, a `determinism` re-record, and a commit quoting the audit.
-⚠⚠ Keep `view_stop_from` as the stop authority — the planted stop is a **state machine over
-`mem[rec]`**, so it cannot be derived from the tables (`docs/open-work.md` entry 2 has the trap).
-⚠⚠ And the geometry tables still cannot be precomputed: `view_run_right_end` ($3080) collides with
-column 1's source block at $309B on phase 3's topmost line.
-Then the bitplane painter, its ownership mask and the disappearance of the last `mem[]`
-destination all fall out of the same rewrite.
+⭐⭐⭐ **(5b) — THE LIVE STEP IS THE PER-LINE SET-UP, AND THE PLANTS ARE NOT IT.**
+An earlier draft of this step named the plants and sized them at "888 cyc of phase 3's 5346
+cyc/line". **Both halves were wrong, and a host census settled it** (`docs/perf-method.md`
+§the plants' denominator): the sweep makes **25 plants, of which 9 are phase 3's stop moves**,
+so all planting in all three phases is **~1 ms** — exactly what `view_plant`'s own
+do-not-optimise banner already said ("one removed RAM access is ~350 cycles"). The 836 cyc/line
+the `VIEWP3=1` split charged to the two stop blocks is **subtraction error**: an 815 cyc/line
+control bracket subtracted from a block whose true cost is ~280 cyc/line is dominated by the
+subtraction, and the split's 4.5% over-sum lands disproportionately on its SMALLEST blocks.
+⇒ **Do not read a split's small rows as sizings.** Size the block, then check it against a count.
 
-⚠ Reader debt to discharge with it: `plot_line_octant`'s undo entries 28..35, and
+**Where phases 2/3's 29.0 ms actually is** — phase row ÷ lines, minus the run at the measured
+43 cyc/cell:
+
+| | cyc/line | run | **per-line SET-UP** | cells painted |
+|---|---|---|---|---|
+| phase 2 (16 lines, 10.16 ms) | 4502 | 1143 | **3358** | 26.6 of 40 = 67% |
+| phase 3 (25 lines, 18.86 ms) | 5348 | 485 | **4862** | 11.3 of 40 = 28% |
+
+⭐ The set-up has **no single hotspot** — that is the finding. Per line phase 3 makes ~22 indexed
+`mem[]` table reads, 2 SMC operand pokes, 4 `view_compose` calls, 2 unit-table lookups and 2
+`view_stop_from` calls, and the objdump's main body is ~200 instructions at ~20 cyc each **because
+nearly every operand is an indexed `mem[]` byte or a stack slot**. ⚠ The spills are NOT the cause:
+the line loop's back-edge is at `128a6` with both inline runs on pads *past* it, so only 15 of the
+35 invariant-slot touches are in the body (~240 cyc/line) — CLAUDE.md's counterweight case, a
+stack slot serving many out-of-line pads. ⇒ **Nothing local fixes 3358 cyc/line. Doing less per
+line does, and that is the pipeline change this plan exists for.**
+
+⇒ **THE BUILD: a per-line SPAN painter, phase 2 first (67% ownership, the smaller driver).**
+~26.6 cells at the measured 13.7 cyc/cell bitplane span fill + ~300 cyc of span set-up is
+**~660 cyc/line against 4502**, i.e. phase 2 at ~1.5 ms instead of 10.16, plus its share of the
+decode. The ~300 is the estimate to validate, and the ownership mask below is the obstacle.
+
+⚠⚠ **AND THE STORE FLIP IS STILL A WASH — contiguity is an ENABLER, not the win.** On the BBC a
+scan line's run is N bytes at **stride 8** (`charRow*320 + cell*8 + lineInRow`), un-widenable at
+12 cyc/cell; on the bitplane it is N **contiguous** bytes in each of TWO planes, `move.l`-fillable
+at the measured 6.87 cyc/byte = **13.7 cyc/cell**. Those are level, which is what `093e560`
+measured. Contiguity's value is that it lets the painter write two planes for what `mem[]` charged
+for one — without it, two strided plane writes would cost 24 cyc/cell and eat the decode's prize.
+⭐ MODE 5 has four colours, so each cell colour is a precomputed nibble-doubled 32-bit pattern and
+a same-colour run is one `move.l` per 4 cells per plane.
+
+⚠ The plants come out as a CONSEQUENCE of the driver owning its geometry, not as their own step
+with their own audit — but the audit's finding stands and is load-bearing: **`copy_dash_data_core(0x80)`
+at `race_main_loop`'s exit stows the whole $7B00 page back into the $3000 block tails**, so the
+opcode slots and the three `VIEW_REC_*` operands are read, persisted and re-assembled into the NEXT
+race's page. They are cross-race state, not scratch, and no RESULTS-RULE exemption can treat them
+as twin-private. ⚠⚠ Keep `view_stop_from` as the stop authority (the planted stop is a state
+machine over `mem[rec]`), and the geometry tables still cannot be precomputed —
+`view_run_right_end` ($3080) collides with column 1's source block at $309B on phase 3's topmost
+line.
+
+⚠ Reader debt to discharge with the painter: `plot_line_octant`'s undo entries 28..35, and
 `update_grip_limits`' `mem[$713D]`/`mem[$7205]` on display line 149.
 
 (6) then stage A in full, then B, C, D, E as §10j has them.

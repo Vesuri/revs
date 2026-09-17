@@ -157,27 +157,42 @@ direct-renderer-only option, so it is gated behind this entry, not free today.
 round trip is gone, and phases 2+3 went **35.61 → 29.03 ms** with their census identical to the
 unit (426/32/16 and 282/50/25). Phase 3 is now **5346 cyc/line for 5.6 painted cells**.
 
-**What is still in there, measured, per phase-3 line:**
+**Where the 29.03 ms IS** (phase row ÷ lines, minus the run at the measured 43 cyc/cell —
+`docs/perf-method.md` §where phases 2/3's 29 ms IS):
 
-| what | cyc/line | how it goes |
-|---|---:|---|
-| the unit loop + 2 composed boundary bytes — **real work, CLOSED** | ~1100 | — |
-| `view_move_stop` ×2 — plants/unplants **RTS opcodes** in page-$7C/$7E slots | 888 | **the RESULTS RULE** ↓ |
-| `step_scanline` — a 28-instruction 6502 byte-lane dance for one pointer step | ~400 | wide-value rewrite |
-| the two stop tails + the `ViewState` writes at the exits | ~400 | falls out with the plants |
-| the rest (line decrement, table indexing, the cold-arm tests) | ~2500 | needs its own split |
+| | cyc/line | run | **per-line SET-UP** | cells painted |
+|---|---:|---:|---:|---|
+| phase 2 (16 lines, 10.16 ms) | 4502 | 1143 | **3358** | 26.6 of 40 = 67% |
+| phase 3 (25 lines, 18.86 ms) | 5348 | 485 | **4862** | 11.3 of 40 = 28% |
 
-⭐ **THE NEXT EDIT IS THE PLANTS, AND IT NEEDS THE RESULTS RULE, NOT A CODE SHAPE.** The run's
-geometry is `[first .. stop)` and both ends are known to the driver before any opcode is planted;
-the plants exist only so a 6502 `RTS` would land in the right slot. They are `mem[]` writes,
-so removing them needs a **written reader audit** (the readers include the transliteration an
-expansion circuit's hook re-enters — `docs/validation-harness.md` §THE RESULTS RULE), scoped
-through `set_ignore`, a `determinism` re-record, and a commit that quotes the audit.
-⚠⚠ **But keep `view_stop_from` as the stop authority and do NOT derive the stop from the tables.**
+⭐⭐⭐ **THE NEXT EDIT IS A PER-LINE SPAN PAINTER, PHASE 2 FIRST.** ~26.6 cells at the measured
+13.7 cyc/cell bitplane span fill plus ~300 cyc of span set-up is **~660 cyc/line against 4502** —
+phase 2 at ~1.5 ms instead of 10.16, plus its share of the decode carve-out. 67% ownership and the
+smaller driver make it the tractable first instance; `docs/span-render-plan.md` §10p (5b) has the
+build and the mixed-cell mask that gates it.
+
+⭐ **The set-up has NO single hotspot, and that is why nothing local will do.** Per line phase 3
+makes ~22 indexed `mem[]` table reads, 2 SMC operand pokes, 4 `view_compose` calls, 2 unit-table
+lookups and 2 `view_stop_from` calls; the objdump's main body is ~200 instructions at ~20 cyc each
+because nearly every operand is an indexed `mem[]` byte or a stack slot. Three candidates were
+checked and **all three are too small to matter**:
+
+| candidate | measured | verdict |
+|---|---|---|
+| the plants (`view_move_stop`/`view_plant`) | **25 plants a sweep, ~1 ms all phases** | ⛔ not a step — a host census, not the split's 888 cyc/line |
+| the census instrument (`PROBE_VIEW_*`) | ~680 cyc/line ≈ 13% | instrument, and it is inside every figure here |
+| the four spilled invariants | 15 body touches/line ≈ 240 cyc | ⛔ the `column_gap_walk_core` trap — both runs are on pads past the back-edge |
+| `step_scanline`'s 28-instruction byte-lane dance | ~400 cyc/line | ○ still a real wide-value candidate |
+
+⚠⚠ **`copy_dash_data_core(0x80)` at `race_main_loop`'s exit stows the whole $7B00 page back into
+the $3000 block tails**, so the opcode slots and the three `VIEW_REC_*` operands are read,
+persisted and re-assembled into the NEXT race's page. They are cross-RACE state — no RESULTS-RULE
+exemption can treat them as twin-private.
+⚠⚠ **Keep `view_stop_from` as the stop authority and do NOT derive the stop from the tables.**
 The planted stop is a **state machine over `mem[rec]`**: `view_move_stop` returns early when
 `stop_unchanged(stop, mem[rec])` and `unplant_stops` restores `STA` at the end of phase 3, so on a
 phase's FIRST line a table byte equal to the stale record plants nothing and the run legitimately
-runs to unit 39. `g_viewStopList` is maintained exactly and reads in ~6 instructions.
+runs to unit 39.
 ⚠⚠ **And the geometry tables still cannot be precomputed** — `view_run_right_end` ($3080) collides
 with column 1's source block at exactly one byte ($309B, phase 3's topmost line), so every table
 read must happen where the 6502 did it.

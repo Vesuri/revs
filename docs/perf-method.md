@@ -607,6 +607,83 @@ the all-flat cheap ones, so the surviving units carry the per-run setup over few
 (`view_mark_source`, called from `plot_store_resync` on every plotter store) are a PLAUSIBLE but
 UNPROVEN cost** — do not cite it as measured.
 
+### ⭐⭐⭐ The plants' denominator, and WHY A SPLIT'S SMALL ROWS ARE NOT SIZINGS (2026-09-17)
+
+The `VIEWP3=1` four-way split, re-run on the post-`214c8ae` build, decomposed phase 3's
+5346 cyc/line (control-subtracted against phase 31 VIEWCTL at 815 cyc/line):
+
+| block | cyc/line | share |
+|---|---|---|
+| P3_STOPA (`view_move_stop`, chain A) | 569 | 10.6% |
+| **P3_CHAINA** (entry + run + boundary) | **1715** | 32% |
+| P3_STOPB (`view_move_stop`, chain B) | 267 | 5.0% |
+| **P3_CHAINB** | **2782** | 52% |
+| the rest (line step, hoists, loop) | 254 | 4.8% |
+
+It validates two ways — the five rows sum to 5587 against 5346 unsplit (4.5% over), and the
+instrument's own predicted inflation (7 transitions × 815 cyc × 25 lines = 20.1 ms) matches the
+observed 21 ms split-vs-unsplit gap. **And its two small rows are still wrong by 3×.**
+
+⭐⭐ **A HOST CENSUS SETTLED IT, AND IT COST NO EMULATOR RUN.** Temporary counters in
+`revs_native.c` under `determinism-drive`'s flavour (`STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`,
+296 sweeps of a moving car), per sweep:
+
+| | per sweep |
+|---|---|
+| `view_move_stop` chain A3 | 25 calls — **6 actually move** |
+| `view_move_stop` chain B3 | 25 calls — **3 actually move** |
+| **total `view_plant` calls, all phases** | **25** |
+| `view_stop_from` | 118 calls, 66 list steps |
+| `view_stops_rescan` | 1 · longest list ever seen: **3** |
+
+So 41 of phase 3's 50 `view_move_stop` calls early-return on one `mem[rec]` read, and all
+planting in all three phases is **~1 ms** — which is what `view_plant`'s own do-not-optimise
+banner had already published ("the sweep makes 25 plants, so one removed RAM access is ~350
+cycles, ~0.05 ms/frame"). The split charged those two blocks 836 cyc/line ⇒ **~2.9 ms, 3× the
+truth.**
+
+⇒ **THE RULE: subtracting a fixed control bracket over-credits the SMALLEST blocks, because the
+subtraction error is a fixed number of cycles and the block is not.** An 815 cyc/line control
+taken off a block whose true cost is ~280 cyc/line is dominated by the subtraction; the 4.5%
+over-sum is real but it does not distribute proportionally, it piles onto the small rows. **Read a
+split's BIG rows as sizings and check every small one against a count** — and the count is cheap,
+because CLAUDE.md already licenses host counters as a proxy for call counts. This is the
+"when a win's per-call price comes out implausibly cheap, doubt the denominator" rule running in
+reverse: *implausibly expensive* is the same tell.
+
+⚠ It also cost a step of the live plan. `docs/span-render-plan.md` §10p step (5b) had been written
+around the plants as "the live step, a faithfulness edit" with a RESULTS-RULE audit attached; at
+~1 ms it is not a step at all, and the audit's real finding turned out to be the opposite of
+permissive (`copy_dash_data_core(0x80)` stows the $7B00 page back into the $3000 block tails at
+`race_main_loop`'s exit, so the opcode slots are cross-RACE state).
+
+### ⭐⭐⭐ ...and where phases 2/3's 29 ms IS: per-line SET-UP, with no hotspot (2026-09-17)
+
+Phase row ÷ lines, minus the run at the measured 43 cyc/cell:
+
+| | cyc/line | run | **per-line SET-UP** | cells painted |
+|---|---|---|---|---|
+| phase 2 (16 lines, 10.16 ms) | 4502 | 1143 | **3358** | 26.6 of 40 = 67% |
+| phase 3 (25 lines, 18.86 ms) | 5348 | 485 | **4862** | 11.3 of 40 = 28% |
+
+⭐ **The set-up has no single hotspot, and that IS the finding.** Per line phase 3 makes ~22 indexed
+`mem[]` table reads, 2 SMC operand pokes, 4 `view_compose` calls, 2 unit-table lookups and 2
+`view_stop_from` calls; the objdump's main body is ~200 instructions at ~20 cyc each **because
+nearly every operand is an indexed `mem[]` byte or a stack slot.** Three candidate causes were
+checked and all three are too small: the plants (~1 ms, above), the census instrument
+(`PROBE_VIEW_*`, ~680 cyc/line ≈ 13% — real, and it is inside every figure here), and the spills.
+
+⚠ **The spills are the GOOD kind and undoing them is the `column_gap_walk_core` trap.** 95 stack
+operands in `paint_lines_short.constprop.0`, 35 of them the four invariants (`line` 48(sp) ×15,
+`dstLine` 52(sp) ×9, `srcLine` 60(sp) ×6, `stop<<3` 64(sp) ×5) — but the line loop's back-edge is
+`128a6 → 1254a` and **both inline run copies sit on pads past it**, so only 15 of those 35 touches
+are in the body (~240 cyc/line). One slot loaded once and read by many out-of-line pads is exactly
+the case this doc records as costing +1.38 ms to "fix".
+
+⇒ **Nothing local fixes 3358 cyc/line; doing less per line does.** That is the sizing behind
+`docs/span-render-plan.md` §10p (5b)'s span painter: ~26.6 cells at 13.7 cyc/cell + ~300 cyc of
+span set-up is ~660 cyc/line against 4502.
+
 ### ⭐⭐ The four view probes (2026-09-12) — phase 3 decomposed, and the ~6× note RETRACTED
 
 Phase 3 was the most expensive view phase on the fewest units, and before anything was rewritten
