@@ -66,18 +66,26 @@ included.** `view_consume` is RLE with a *destructive* read, so a source is non-
 905 + 40×55 = 3105 cyc becomes ~250 + 180 + 550 ≈ **980** flat, ~2300 changed.
 **Size: phase 1 15.83 → ~5.0 ms all-flat, ~8.1 ms at the parked 21/36 split.** Phases 2/3
 (12.34 + 23.61 ms at 67%/80% chain-entry) are the larger prize behind the same shape.
-**Order of work is §10p's:** (1) the free host-side flat-line count (`REVS_VIEWSKIP_ASSERT` already
-has the forty-source loop — the flat fraction *is* the difference between −8 and −11 ms);
-(2) **the gate below**; (3) the takeover's line loop behind `SPANFILL=3`, oracled by §10n's two
-in-process checks; (4) then stage A in full, then B, C, D, E as §10j has them.
-⛔ **GATE, unmeasured, and it can move the design:** `column_gap_walk` (phase 18) **reads
-framebuffer pixels** (`NOUNITS=2` reads it 5.88 vs 10.18 for exactly that reason) while
-`fill_dash_edge_columns` is the **only producer** of `view_left_start_src`/`view_right_start_src`,
-the two tables `view_paint_lines` composes each row's leading edge cell from — so it cannot simply
-be sequenced after. It walks character columns 3..6 from scan line $1B and $1A..$22 from $2B;
-**whether those rows intersect display rows 81..101 decides whether the takeover may stop writing
-mem[] there at all.** That is a measurement (`make fbwrites`, or a watch on those columns), not a
-judgement, and it comes before any takeover code.
+**Order of work is §10p's, and steps 1-4 are DONE** — the full ledger with its commits lives
+there; the short form: ✅ the host flat-line count (57%, `3b79ebc`); ✅ the reader gate, **OPEN for
+rows 81..116** (`f80557d`, `REVS_FB_POISON` — ⛔ the old `column_gap_walk` gate is RETRACTED,
+nothing reads those rows); ✅ the stateless predicate (`df4cd40`, free at +0.22 ms); ✅ **phase 1's
+takeover — all 36 lines paint straight to the two bitplanes, `make SPANFILL=5`, `5a970bb`**, both
+§10n oracles clean on the target driving; ✅ **phases 2/3 own their runs, `make VIEWOWN=1`,
+`aa5703a`, −1.74 ms on the sweep and −1.989 ms on Σ(1..39)−ph28**; ✅ **`bus_write` left the
+renderer, `b29aab7`, −1.17 ms** (the range test was a constant and its arm unreachable — `$6700` is
+an immediate operand in the game's own code).
+⇒ **THE LIVE STEP IS §10p (5), THE DRIVER REWRITE, AND IT IS ENTRY 2 BELOW** — the two levers have
+converged: what stands between the short phases and the bitplanes is the chain-entry machinery, not
+the painting. Two figures bound it: the decode's own ceiling for those lines is **−5.07 ms**
+(`make VIEWCARVE=1`, ~2.0 scan / ~3.0 expand, and a per-run takeover reaches only the expand half),
+and ⛔ **whole-line ownership of phases 2/3 is closed on arithmetic** — 41 lines × 0.36 ms of
+painting = 14.8 ms against 4.9 ms of units + 5.07 ms of decode = **+4.8 ms net.** They stay
+per-RUN.
+⚠⚠ **The remaining correctness obstacle is MIXED CELLS:** `m_lineMode[y] = 0` is
+per-line-ALL-40-CELLS, so a cell owned on some of its 8 lines and written through `mem[]` on the
+others repaints from a stale byte. Priced: per-cell RMW **1.6 ms ⛔**; per-row prefix-XOR delta
+**≈0.9 ms**; per-changed-cell 8-line range test **≈1.1 ms**.
 ⚠ Genuine risk still stands: **four** schemes that bolted onto the mem[] scan have now lost (§7f
 −9%, source-event +25 ms, the SPANEMIT scaffold +54 ms, and this checkpoint's hook-in ≈ 0). The
 takeover differs in kind — it *removes* the driver — but that is an argument until measured.
@@ -143,11 +151,21 @@ the A/B). Its "~75 ms" tag was a 1282 ms-frame-era figure. What is still availab
 §4a item 2 — lines 81..horizon made write-free by PERMUTING that band's pens — and it is a
 direct-renderer-only option, so it is gated behind this entry, not free today.
 
-### 2. ⭐⭐ The view sweep's DRIVER AND CHAIN-ENTRY code — 32.4 ms of the 52.7 ms sweep
+### 2. ⭐⭐⭐ The view sweep's DRIVER AND CHAIN-ENTRY code — 30.2 ms, AND IT IS NOW NAMED
 `docs/perf-method.md` §the sweep is 61% driver/entry. Measured by differencing `NOUNITS=2`:
-**32.36 ms of per-line driver/entry against 20.36 ms of unit loop**, phase 3 at 80% entry (which
-the VIEWP3 split independently reproduces at 83%). This is the larger half and it is a *separate*
-lever from the representation.
+**32.36 ms of per-line driver/entry against 20.36 ms of unit loop**, phase 3 at 80% entry.
+⭐⭐⭐ **AND THE CALIBRATED `VIEWP3` SPLIT NAMES THE CODE: 84% of phase 3 is the two chain-ENTRY
+brackets, at 2616 cycles per run** (`docs/perf-method.md` §chain entry is 84% of phase 3) —
+× 82 runs/frame = **30.2 ms/frame**, which closes on the `NOUNITS=2` figure from the other axis.
+Those 2616 cycles are a **poke-then-decode round trip with zero semantic content**:
+`paint_lines_short` writes the run's start cell as a 6502 *operand byte*, `view_own_enter` reads it
+back and decodes it through `g_viewUnitOf[]` to recover the same index, `view_own_run` re-discovers
+the run's END by walking `g_viewStopList`, and `view_move_stop`/`view_plant` plant and unplant
+**RTS opcodes** in page-$7E slots — while `[first .. stop)` is known to the caller before any of it
+runs. ⇒ **this is the 6502 SMC emulation the directive names, it is 30 ms of the frame, and
+deleting it is the same edit as entry 1's next step.** The destination goes in a **local** (see the
+`bus_write` result: `plot_ptr_v` is a global fifteen unrelated routines use as scratch, which is
+why GCC could not fold the constant base).
 ⚠⚠ **The unit loop itself is CLOSED** — 43 cyc/unit is what a byte load, a zero test and a byte
 store cost on a 68000, and widening is impossible (destination cells 8 bytes apart, sources 128).
 ⚠⚠ Any edit to `paint_cells` must pass **the counting test**: grep the objdump for each loop
@@ -265,6 +283,15 @@ exists so nobody spends a day re-deriving a negative result.
   classifier into the loop's main flow, GCC dropped the 4× unroll and evicted four invariants.
 - **The packed-register ABI on `view_paint_lines`' three threaded bytes** — **+0.2 ms**; eleven
   packs bought eighteen loads, because their address escaped only to CALLS.
+- **A `noinline` ESCAPE for the view sweep's cold hardware-window arm** — **+0.73 ms**, and the
+  mechanism is the general lesson: an *inline* `bus_write` merges its `mem[addr] = val` with the
+  fast arm's store so the cold instructions never run, while a `noinline` callee is an **aliasing
+  barrier** that makes GCC assume any memory is written — `view_own_run`'s stack slots go 17 → 30
+  and its CSE'd displacement reads collapse. ⇒ **bulk in a cold arm is cheap; a call boundary in a
+  hot loop is not.** ⚠ The register-pressure explanation was tried and is WITHDRAWN (a third arm
+  removed the live range and measured identically) — separate the arms before believing a
+  mechanism. And the test itself was **unreachable**, not merely cold: `docs/perf-method.md`
+  §the second bite.
 - **The direct plotter alone** — **9% slower**; `$7BE2`'s cost is the SOURCE SCAN (2093 units read,
   ~83 non-zero), so it is stage two, not stage one.
 - **`fill_dash_edge_columns` (phase 18) further changes** — a written do-not-retry at the code.

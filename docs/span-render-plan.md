@@ -707,7 +707,8 @@ full width, and — measured below — structurally the simplest of the three ph
 1. `step_scanline()` advances `plot_ptr`/`plot_ptr2` ($70-$73);
 2. `byte = surface_colours[view_line_surface[line] & 3]` — **the line's colour is one table lookup
    off a per-line index.** No chain state.
-3. run set-up: `view_stop_from(0)`, the segment pointers, `base_span_is_ram`;
+3. run set-up: `view_stop_from(0)`, the segment pointers (⚠ and, until `b29aab7`, a `base_span_is_ram`
+   range test that was testing a constant — see the order of work below);
 4. forty units, each `view_consume(src) → store`.
 
 ⭐⭐ **AND `view_consume` IS RLE WITH A DESTRUCTIVE READ, WHICH IS WHAT MAKES A STATELESS PREDICATE
@@ -1011,10 +1012,52 @@ takeover deletes outright. And the decomposition closes against the measured bra
 at **−6.6 to −7.8 ms**, 220× the noise floor. Plus the decode carve-out, measured LIVE at 21 display
 lines left to the emitter, against phase 27's 28.70 ms.
 
-**Order of work:** ✅ (1) the host flat-line count — **DONE, 57%, `3b79ebc`**; ✅ (2) the reader gate —
-**DONE, OPEN for rows 81..116, `f80557d`**; ✅ (3a) the stateless predicate + the group-of-four scan
-— **WRITTEN, endian-oracled on the host, and MEASURED on the target: the predicate is free
-(+0.22 ms) and the hook-in is −0.82 ms**; ⏳ (3b) the takeover's own line loop, which deletes the
-905 cyc/line driver (~350 of it inherited) for **−6.6 to −7.8 ms** — oracled by the two in-process
-checks of §10n; (4) then stage A in full, then
-B, C, D, E as §10j has them.
+**Order of work.**
+✅ (1) the host flat-line count — **DONE, 57%, `3b79ebc`**.
+✅ (2) the reader gate — **DONE, OPEN for rows 81..116, `f80557d`**.
+✅ (3a) the stateless predicate + the group-of-four scan — **DONE, endian-oracled on the host and
+measured on the target: the predicate is free (+0.22 ms), the hook-in −0.82 ms** (`df4cd40`).
+✅ (3b) the takeover's own line loop — **DONE, `5a970bb` (`make SPANFILL=5`)**: all 36 of phase 1's
+lines paint straight into the two bitplanes and `mem[]` is not in the path. Both §10n oracles pass
+on the target driving (`SPANFILL=5 SPANVERIFY=1 DIRECTCHECK=1` → 0 of 473 takeover lines;
+`SPANFILL=5 DIRTYCHECK=1` → 0, ownLines 36 of 208, decode down to 15 of 1040 cell columns).
+✅ (4) phases 2 and 3 own their runs — **DONE, `aa5703a` (`make VIEWOWN=1`), −1.74 ms on the sweep
+and −1.989 ms on Σ(1..39)−ph28.** All four short-phase chain entries reach `view_own_run` directly
+instead of through a synthesised 6502 address and `paint_cells`.
+✅ (4b) `bus_write` left the renderer — **DONE, `b29aab7`, −1.17 ms on phases 2+3.** The range test
+was a constant 1 and the arm it selected was unreachable, because `$6700` is an *immediate operand*
+in the game's own code (`docs/perf-method.md` §the second bite). ⛔ Do not reach for a `noinline`
+escape: +0.73 ms, aliasing barrier, recorded there.
+🔬 (4c) the decode's ceiling for the short phases — **MEASURED, `make VIEWCARVE=1` = −5.07 ms**
+(~2.0 ms scan / ~3.0 ms expand), and **a per-run takeover can only reach the expand half.**
+⚠ A ceiling, never an achievable saving: a per-run takeover owns two cell *ranges* a line, so the
+cells between the runs still need converting.
+
+⛔⛔ **AND WHOLE-LINE OWNERSHIP OF PHASES 2/3 IS CLOSED ON ARITHMETIC, BEFORE ANY CODE.**
+`revs_plot_chain` paints a 40-cell line at ~2550 cyc = 0.36 ms/line, so 41 lines is **14.8 ms of
+painting** against **4.9 ms of unit work + 5.07 ms of decode** it could delete: **+4.8 ms net.**
+The short phases must stay per-RUN.
+
+⚠⚠ **The one real correctness obstacle to deleting the run stores is MIXED CELLS.**
+`m_lineMode[y] = 0` is per-line-ALL-40-CELLS, so a cell owned on some of its 8 lines and written
+through `mem[]` on others gets repainted from a stale `mem[]` byte. Three mask shapes priced:
+per-cell RMW **1.6 ms ⛔**; per-row prefix-XOR delta **≈0.9 ms**; per-changed-cell 8-line range
+test **≈1.1 ms**.
+
+⭐⭐⭐ **(5) — THE LIVE STEP — IS THE DRIVER REWRITE, AND THE MEASUREMENT NAMES IT.** The calibrated
+`VIEWP3` split (`docs/perf-method.md` §chain entry is 84% of phase 3) puts **84% of phase 3 in the
+two chain-ENTRY brackets at 2616 cycles per run**, which × 82 runs a frame = **30.2 ms/frame** and
+closes on `NOUNITS=2`'s 31.5 ms driver figure. What those 2616 cycles do is a **poke-then-decode
+round trip with zero semantic content**: `paint_lines_short` writes the run's start cell as a 6502
+*operand byte* (`mem[MEM_view_p3_enter_a_site + 1] = v->byte`), `view_own_enter` reads that byte
+back and decodes it through `g_viewUnitOf[]` to recover the same index, `view_own_run` re-discovers
+the run's END by walking `g_viewStopList`, and `view_move_stop`/`view_plant` plant and unplant
+**RTS opcodes** in page-$7E slots. Both ends of `[first .. stop)` are known to the caller before
+any of it runs. ⇒ make the run geometry explicit, delete the planting and the decode, and the
+bitplane painter, its ownership mask and the disappearance of the last `mem[]` destination all fall
+out of the same rewrite.
+
+⚠ Reader debt to discharge with it: `plot_line_octant`'s undo entries 28..35, and
+`update_grip_limits`' `mem[$713D]`/`mem[$7205]` on display line 149.
+
+(6) then stage A in full, then B, C, D, E as §10j has them.

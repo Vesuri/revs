@@ -897,6 +897,115 @@ subtraction anyway is that **the view sweep's own census is identical across the
 The driver's control flow reads the stop list, `plot_ptr`, and the per-line surface index, none
 of which is picture state.
 
+#### ⭐⭐⭐ AND THE FOURTH, CALIBRATED DECOMPOSITION NAMES THE CODE: **CHAIN ENTRY IS 84% OF PHASE 3, AT 2616 CYCLES PER RUN** (2026-09-16)
+
+Everything above agreed that phase 3 is run-entry work and not unit work; none of it said *which
+lines of C*. That needed the `VIEWP3=1` split re-run on the arm that actually ships — `SPANFILL=5
+VIEWOWN=1`, `build=9d`, `PROBEFIELDS=3000` (loopFrames=252, `frozen=240387424` = 3000 × 80120) —
+with its own empty bracket read first.
+
+| bracket | raw cyc/line | net (−1 control) | share | ms/frame |
+|---|---:|---:|---:|---:|
+| ph31 `VIEWCTL` — the empty-bracket CONTROL | 820 | 0 | — | 2.890 raw |
+| ph34 `VIEWP3` residual (line decrement, `step_scanline`, entry byte) | 1881 | 236 | 3.4% | 0.83 |
+| ph35 `P3_STOPA` (`view_move_stop`, chain A) | 1423 | 590 | 8.4% | 2.08 |
+| **ph36 `P3_CHAINA`** (compose ×2 + `view_own_enter` + `view_own_run` + boundary store) | 3168 | **2297** | **32.8%** | 8.09 |
+| ph37 `P3_STOPB` | 1125 | 298 | 4.3% | 1.05 |
+| **ph38 `P3_CHAINB`** | 4477 | **3577** | **51.1%** | 12.61 |
+
+**The instrument is calibrated and it is honest.** Turning the split on inflated phase 3 from
+24.664 to 45.444 ms (+20.78), and 7 bracket transitions/line × 820 cyc (the control) × 25 lines
+= 20.2 ms accounts for all of it. The split's brackets sum to 7154 cyc/line against arm A's
+unsplit 6998 — a +2.2% perturbation.
+
+⇒ **CHAINA + CHAINB = 5874 cyc/line = 84% of phase 3, and the unit loop is 641 cyc/line = 9%.**
+Chain ENTRY is 5233 cyc/line over 2 runs = **2616 cycles per run**; × 82 runs a frame (32 in
+phase 2 + 50 in phase 3) = **30.2 ms/frame**, which closes independently on the 31.5 ms
+`NOUNITS=2` put on the driver, and reproduces the historical "83% in the two chain-ENTRY
+brackets" on a completely different base.
+
+⭐⭐ **And 2616 cycles per run buys nothing.** What chain entry *does* is a poke-then-decode round
+trip with zero semantic content:
+
+  * `paint_lines_short` writes the run's start cell as a 6502 **operand byte** —
+    `mem[MEM_view_p3_enter_a_site + 1u] = v->byte`;
+  * `view_own_enter` immediately reads that byte back and decodes it through
+    `g_viewUnitOf[page - VIEW_LOW_PAGE][target & 0xFF]` to recover the same cell index;
+  * `view_own_run` then re-discovers the run's END by walking `g_viewStopList` via
+    `view_stop_from`;
+  * and `view_move_stop` / `view_plant` plant and unplant **RTS opcodes** into page-$7E slots
+    (`view_plant` is 106 instructions out of line and calls `memmove`).
+
+The run's geometry is `[first .. stop)`. Both ends are known to the caller before any of this
+runs. ⇒ **this is the 6502 SMC emulation the directive names, and it is 30 ms of the frame.**
+
+⚠ **Why the objdump could not settle it and the bracket had to.** `paint_lines_short`'s own body
+is **86 instructions**; the cost is in what it inlines and re-derives, not in its size. The
+inlined-callee histogram inside `view_paint_lines_core` (from `objdump -dl`, which gives
+source-line attribution — plain `-d` does not, and a run of this comparison was wasted that way)
+reads `paint_cells` 357, `bus_write` 244, `view_consume` 189, `paint_lines_clipped` 116,
+`step_scanline` 98, `view_own_enter` 94, `paint_lines_short` 86. **A static count of 86 cannot
+explain 6355 cyc/line**, which is exactly when a bracket split is the right instrument.
+
+#### ⭐⭐ THE SECOND BITE: `bus_write` LEFT THE RENDERER — −1.17 ms, AND A ⛔ NULL THAT NAMES THE MECHANISM (2026-09-16)
+
+The sweep's four store sites each paid a `$FC00-$FEFF` range test, hoisted to one `busSafe` local
+per line/run. **The test was a constant 1 and the arm it selected was unreachable**, which the
+game's own bytes settle: `view_paint_lines` ($7BE2) opens `LDA #0 / STA $70 / STA $72 / LDX #$67 /
+STX $71 / INX / STX $73`, so the sweep has no pointer *input* — it builds `$6700`/`$6800` from
+immediates. Every store is then `base0 + cell*8` with `base0 = plot_ptr_v`, and `step_scanline` is
+the only in-sweep mutator: monotone `+1` inside a character row, `+$0138` crossing one. The line
+loop is bounded by a byte ⇒ ≤ 256 steps, ≤ 32 crossings ⇒ the highest reachable address is
+`$6700 + $27E0 + $100 + $140 = $8F60`, and the real geometry stops at `$74C5`. The I/O window
+begins 27 KB above that.
+
+| | arm A (control) | arm I (no test) | Δ |
+|---|---:|---:|---:|
+| ph24 phase 1 | 15.496 | 15.451 | −0.045 |
+| ph33 phase 2 | 12.186 | 11.789 | −0.397 |
+| ph34 phase 3 | 24.664 | 23.893 | −0.770 |
+| **phases 2+3** | **36.850** | **35.682** | **−1.167** |
+| Σ(1..39) − ph28 | 191.800 | 190.139 | −1.661 |
+
+`PROBEFIELDS=3000`, phase 0 = 124 fields on both arms (same trajectory). The arithmetic closes:
+791 stores a frame (709 units + 82 boundary) at 1.167 ms = **10.5 cycles per store**, which is a
+register-resident test plus the addressing its cold arm forced. `view_paint_lines_core`
+1710 → 1146 instructions, `view_own_run` 771 → 349.
+
+⛔⛔ **AND THE OBVIOUS FIX WAS THE WRONG ONE: PUTTING THE ELSE ARM BEHIND A `noinline` ESCAPE COSTS
++0.73 ms. BULK IN A COLD ARM IS CHEAP; A CALL BOUNDARY IN A HOT LOOP IS NOT.** Three arms on
+`build=1d`, `make clean` between each, noise floor ~0.05 ms:
+
+| arm | ph24 | ph33 | ph34 | phases 2+3 | vs A |
+|---|---:|---:|---:|---:|---:|
+| **A** control (inline `bus_write` in both cold arms) | 15.496 | 12.186 | 24.664 | 36.850 | — |
+| **E** both `noinline` + per-line `busSafe` hoist | 15.522 | 12.423 | 25.174 | 37.597 | +0.747 |
+| **F** both `noinline`, test recomputed at the store | 15.466 | 12.365 | 25.213 | 37.579 | +0.729 |
+| **G** unit loop back inline, boundary stores still `noinline` | 15.433 | 12.187 | 24.784 | 36.971 | **+0.122** |
+
+⇒ the unit loop's escape was **0.61 ms** of the 0.73; the boundary stores' the remaining 0.12. The
+escape *looks* right by every static measure — it deletes 598 instructions
+(`view_paint_lines_core` 1710 → 1366, `view_own_run` 771 → 517) and removes `platform_hw_write`
+from both call lists. The mechanism is **aliasing**: an *inline* `bus_write` lets GCC merge its
+`mem[addr] = val` with the fast arm's store, so neither path contains a call and the 191/244
+instructions are cold hardware path that never executes; a `noinline` callee forces GCC to assume
+it writes any memory, so the loop's register-cached values spill. **The tells:**
+`view_own_run`'s `n(sp)` operands went 17 → 30, and the CSE'd source-displacement reads dropped
+(`128(a` 22→12, `256(a` 9→6, `384(a` 8→6) with the `movem` save unchanged at d2-d7/a2-a6.
+
+⚠⚠ **I first blamed that regression on the hoisted `busSafe` local's live range**, citing the
+register ceiling that makes `view_plant` refuse `always_inline`. **Arm F removed the live range and
+measured identically to E — the hypothesis is withdrawn.** The lesson is procedural: *separate the
+arms before believing a mechanism*, and note that the boundary hoist was unjustifiable on its own
+arithmetic before any measurement — the unit-loop hoist it was copied from covers **2093** stores a
+frame, the boundary hoist **82**, so a 2-instruction test on 82 stores was only ever ~0.02 ms.
+
+⭐ **The transferable rule** is neither "hoist the test" nor "wrap the call": **make the store
+target statically known.** GCC could not fold `busSafe` itself for one reason — the base is
+laundered through `plot_ptr_v`, a *global* that fifteen unrelated engine routines use as scratch,
+so constant propagation dies at the global, not at the arithmetic. **Carry a hot destination in a
+local.**
+
 #### ⭐⭐ THE FIRST BITE OUT OF THAT 32 ms OF DRIVER: THE STOP LIST WAS A CODE-SIZE TRAP — −0.84 ms/frame (2026-09-13)
 
 Found by reading the objdump of the phase-3 driver rather than measuring it, exactly as
