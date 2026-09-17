@@ -446,6 +446,37 @@ misnomer had made read plausibly — "`tick_wheel_spin`, the 50 Hz simulation" �
 obviously false and were false before.  A rename that fixes a wrong name will expose the sentences
 that were built on it: re-read each hit in context, and fix the claim, not the token.
 
+## A census that RANKS BY VOLUME buries the finding an ownership question is looking for ⚑ Revs
+
+`make fbwrites` attributes every frame-buffer store to the PC that made it, and its per-routine
+rollup printed `ranked.slice(0, 16)` — the sixteen biggest writers.  Asked "which display rows are
+cheapest to OWN?", that report answers with the rows that are most expensive to own, and reports
+the cheapest ones as **writer-free**: `vdu_char_emit` sits at position **26 of 62** with 4.76
+stores/frame, so display lines 0..23 and 192..207 printed empty.  The ownership plan named the
+dashboard as the next domain for two sessions on the strength of that silence, when the real
+cheapest domain was three blocks whose single writer stores ~3.7 bytes a frame.
+
+⭐⭐ **A top-N cut is a claim that the question is about magnitude.**  An ownership, retargeting or
+dependency question is about *presence*, and presence lives in the tail.  Print the whole
+distribution, or group by the thing being decided — `fbwrites` now emits an **OWNERSHIP LEDGER**:
+consecutive display lines grouped by identical writer *set*, which makes "no writer at all" a row
+you can read off instead of an absence you have to notice.
+
+⚠ It is the same defect class as *the window is the measurement* (`revs_verify_the_instrument`),
+along the other axis: there the **sample** was too narrow, here the **report** was.  Both give a
+coherent, plausible, wrong answer.
+- ⭐ **The tell was a CONTRADICTION between two runs of the same tool**, not a smell in either one:
+  a narrow `--fill` window had already named `vdu_char_emit+55` on lines 192..199, and the
+  full-picture run said those lines had no writer.  Two runs of one instrument disagreeing about a
+  *shared* input is a defect in the instrument, never a property of the data.
+- ⭐⭐ **A grouped table's positive control is a PARTITION CHECK**: the 47 blocks must sum to the
+  header's independently counted total (2962.3 st/f and 536.8 ch/f against 2962 and 537), which
+  proves every store is attributed to exactly one block — a grouping bug that double-counts or
+  drops a line cannot survive it.
+- ⚠⚠ **And a zero in a windowed census means "no writer IN THIS WINDOW".**  A lap-boundary, pit or
+  RACE-only routine is absent from a 200-frame practice window by construction, so widen the window
+  before acting on an emptiness.
+
 ## Record findings the moment you find them
 
 Two conventions that exist because deferring cost real time:

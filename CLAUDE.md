@@ -443,6 +443,16 @@ every block now priced, −0.08 to −0.12 ms a row — is `docs/span-render-pla
 state is TWO steps and **`ph27` → 0 is RETRACTED**: owning all 208 rows is worth −11.18 ms and the
 rest goes with the CALL, of which `snapshotBands` + `buildLineModes` (~2.4 ms) must keep running
 forever because `m_plan` is the COPPER's palette schedule, not decode work (§11a).
+  ⭐⭐⭐ **BUT THE PRIZE IS ONLY HALF AN OWNERSHIP DECISION — RANK A DOMAIN BY ROWS OWNED ÷ WRITER
+  SET, because owning a row means RETARGETING EVERY ROUTINE THAT WRITES IT.** The measured
+  writer-set ledger (`make fbwrites FILL=all`, §11b) groups all 208 display lines by their writer
+  *set*: rows 0..17 + 192..207 have **one** writer, `vdu_char_emit` at ~3.7 stores/frame, and 8 of
+  them have **none at all** — 34 rows for −3.31 ms — while the dashboard's needles are 34 rows for
+  −2.79 ms and 66 stores/frame from two plotters plus two more routines. ⚠ A census that **ranks by
+  volume** buries exactly that finding (a `slice(0, 16)` hid `vdu_char_emit` at position 26 of 62 and
+  made 16 rows look writer-free for two sessions) — `docs/method-lessons.md`. ⚠⚠ And a **mirrored
+  painter whose erase is cross-frame stateful must write BOTH plane buffers**, or the needle from two
+  frames ago stays put: "the back buffer is enough" holds only for a painter that repaints a whole row.
 ⭐⭐ **And the decode's own 38 ms turned out to be CODE SHAPE, not algorithm — TWICE, and it is
 ~20 ms now** — the scan was re-reading two loop-invariant stack slots per cell and had spilled its
 pointers into data registers; then `make DECODESPLIT=1` attributed the remaining "12 ms floor" and

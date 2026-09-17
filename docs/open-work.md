@@ -47,12 +47,25 @@ is `tail`-truncated to the last 40 lines (`GDBTAIL`), which silently drops phase
 | 10.2 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
 
 ### 1. ⭐⭐⭐ THE REPRESENTATION — ROW OWNERSHIP of the decode — −11.18 ms of rows, then the CALL
-⭐⭐ **THE LIVE BUILD IS THE DASHBOARD, display rows 158..207 — `−4.11 ms`, 50 rows, and the
-largest UNBLOCKED block** (`make VIEWCARVE=158-207` priced it at HEAD). Rows 117..157 are worth
-more (−5.07) and are blocked: three foreign writers plus a **game-logic reader** —
-`update_grip_limits` samples the surface colour under a wheel from `mem[$713D]`/`mem[$7205]` on
-display line 149, so those rows cannot be owned until that read is served another way. The
-dashboard's own hazard is the needles (display lines 129..180 — they cross the boundary).
+⭐⭐⭐ **THE LIVE BUILD IS DOMAIN A: display rows 0..17 + 192..199 + 200..207 — 34 rows,
+`≈ −3.31 ms`, and it costs ONE retargeted routine.** The measured writer-set ledger
+(`make fbwrites FILL=all FILLFRAMES=1-200 FRAMES=210`, `docs/span-render-plan.md` §11b) says the
+only writer on all 34 is **`vdu_char_emit`, ~3.7 stores/frame**, and 8 of them (200..207) have **no
+writer at all** — a claim and nothing else. ⚠ **This SUPERSEDES "the live build is the dashboard"**:
+the needles (158..191) are the same 34 rows for a smaller prize (−2.79 ms) and 66 stores/frame from
+two plotters mirrored into **both** plane buffers, plus `mirror_draw_car` and `poll_steering_assist`.
+⇒ **Rank an ownership domain by PRIZE ÷ WRITER SET, never by prize alone** — the entry ranked by
+prize for two sessions because the writer set had never been measured per display line.
+Build order: (1) `revs_plot_byte(addr, value)` in `revs_plot.h`/`RevsPlot.cpp` — "this BBC frame-buffer
+byte just became `value`, put it in the planes", MODE 4/5 from `bbc_screen.h`'s band table, ⚠ writing
+**both** buffers; (2) call it from `vdu_char_emit`'s store sites while KEEPING every `mem[]` write, so
+no reader gate is needed yet and `validate`/`determinism` stay green; (3) the per-buffer static-base
+flag (a buffer-initialisation boolean, ⛔ **not** a dirty map) and claim the 34 rows; (4) measure
+`ph27` against `151e282`'s **20.00 ms** with `PROBEFIELDS=3000`, warp, driving.
+Then **domain B, the needles (158..191, ≈ −2.79 ms)**. Rows 117..157 are worth the most (−5.07) and
+stay blocked: a **game-logic reader** — `update_grip_limits` samples the surface colour under a wheel
+from `mem[$713D]`/`mem[$7205]` on display line 149 — so they cannot be owned until that read is
+served another way (retargeting the needle plotters removes two of their foreign writers).
 ⭐⭐⭐ **THE ARCHITECTURE IS OPEN AND ITS FIRST HALF IS NOW MEASURED, NOT ARGUED** — `make
 SPANFILL=1` is §10e's own cheap checkpoint built and run (`docs/span-render-plan.md` §10n). Three
 results, and they point at a different next build than this entry used to name:

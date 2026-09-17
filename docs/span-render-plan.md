@@ -1173,7 +1173,7 @@ this from the objdump and the three arms now say it end to end), not the driver,
 | 0..17 | 18 | band 0, MODE 4 — the two text rows | **−2.00** | −0.111 | ○ sized `VIEWCARVE=0-17` |
 | 18..80 | 63 | band 1, the flat blue sky (and the `$7B00` code hiding in it) | **0** | — | ✅ already free — `convertRace`'s `if (!any) continue` skips a row wholly inside the flat band |
 | 81..116 | 36 | view phase 1 (`$7BE2`), one 40-cell run a line | −4.44 | −0.123 | ✅ **OWNED** (`SPANFILL=5`) |
-| 117..157 | 41 | view phases 2/3, 6.1 runs of 6.5 cells a line | −5.07 ceiling | −0.124 | ⏳ behind the mixed-cell mask AND three foreign writers (§11b) |
+| 117..157 | 41 | view phases 2/3, 6.1 runs of 6.5 cells a line | −5.07 ceiling | −0.124 | ⏳ behind the mixed-cell mask AND three foreign writers (§11a tail, and §11b names them per row) |
 | 158..207 | 50 | the dashboard — edge columns, needles, mirrors | **−4.11** | −0.082 | ○ sized `VIEWCARVE=158-207` |
 
 ⚠ The two `VIEWCARVE` rows are measured at HEAD (`151e282`); 81..116 and 117..157 were measured
@@ -1234,8 +1234,93 @@ five raster bands' boundaries and colours have to be recomputed and handed to th
 paints the pixels. So the end state is `ph27` → **~2.4 ms**, and the true remaining prize is
 **~17.6 ms**, not 20.00. Budget the band schedule as a permanent cost of the display model.
 
-⇒ **The next domain is the dashboard (158..207, −4.11 ms, 50 rows).** It is the largest unblocked
+⇒ ⚠ **SUPERSEDED BY §11b — read that first.** The next domain is NOT the dashboard, because this
+passage ranks by the PRIZE and never measured the WRITER SET. What follows remains true about the
+blocked rows. ~~The next domain is the dashboard (158..207, −4.11 ms, 50 rows).~~ It is the largest unblocked
 block: rows 117..157 are worth more (−5.07) but have three foreign writers (`tick_wheel_spin`,
 `undraw_plot_lines`, `plot_line_octant`) and two real readers, one of them game logic —
 `update_grip_limits` reads `mem[$713D]`/`mem[$7205]` on display line 149 to sample the surface
 colour under a wheel, so those rows cannot be owned until that read is served another way.
+
+### 11b. ⭐⭐⭐ THE MEASURED WRITER-SET LEDGER — and it RE-ORDERS §11a's build plan (2026-09-17)
+
+§11a named the dashboard as the next domain on the strength of the **prize** alone (−4.11 ms, 50
+rows). The prize is only half of an ownership decision: owning a row means **retargeting every
+routine that writes it**, so the *writer set* is the cost. Nothing had ever measured that per
+display line.
+
+`make fbwrites FILL=all FILLFRAMES=1-200 FRAMES=210` now prints an **OWNERSHIP LEDGER** —
+consecutive display lines grouped by identical writer set, with stores/frame and *changed*
+bytes/frame per block (`5af24d1`). Driving Silverstone practice: 62 routines, 2962 stores/frame,
+537 of them changing the byte.
+
+| display lines | n | st/f | ch/f | writer set |
+|---|---:|---:|---:|---|
+| 0..0 | 1 | 0.0 | 0.0 | ⭐ **NO WRITER AT ALL** |
+| 1..8 | 8 | 1.5 | 0.0 | `vdu_char_emit` |
+| 9..9 | 1 | 0.0 | 0.0 | ⭐ **NO WRITER** |
+| 10..17 | 8 | 2.0 | 0.6 | `vdu_char_emit` |
+| 18..23 | 6 | 0.0 | 0.0 | ⭐ **NO WRITER** (already free — inside band 1) |
+| 81..116 | 36 | 1440.0 | 58.9 | `view_cell_chain_a` + `_b_mid` + `_b` — ✅ already OWNED |
+| 117..128 | 12 | 322.0 | 10.6 | chains + `view_paint_lines_clipped` |
+| 129..132 | 4 | 111.6 | 10.3 | chains + `plot_line_octant` + `undraw_plot_lines` + `view_paint_lines_clipped` |
+| 133..139 | 7 | 141.7 | 24.9 | chains + `view_paint_lines_short` + `tick_wheel_spin` + both needle plotters |
+| 140..140 | 1 | 15.9 | 2.3 | chains + `view_paint_lines_short` + `tick_wheel_spin` |
+| 141..145 | 5 | 58.0 | 1.4 | chains + `view_paint_lines_short` |
+| 146..153 | 8 | 71.3 | 2.8 | chains + `view_paint_lines_short` + both needle plotters |
+| 154..157 | 4 | 23.2 | 1.5 | ...+ `mirror_draw_car` |
+| 158..178 | 21 | 36.1 | 22.4 | `plot_line_octant` + `undraw_plot_lines` + `mirror_draw_car` |
+| 179..186 | 8 | 9.8 | 7.8 | `plot_line_octant` + `undraw_plot_lines` |
+| 187..188 | 2 | 6.0 | 1.4 | ...+ `poll_steering_assist` (the CAS lamp) |
+| 189..191 | 3 | 2.7 | 2.0 | `plot_line_octant` + `undraw_plot_lines` |
+| 192..199 | 8 | 0.2 | 0.1 | `vdu_char_emit` |
+| 200..207 | 8 | 0.0 | 0.0 | ⭐ **NO WRITER AT ALL** |
+
+(Lines 24..80 are band 1, the flat blue sky. The ~40 routines the ledger lists there write *engine
+variables that happen to live inside the frame buffer's address range*, not pixels, and the band is
+already free.)
+
+⇒ ⭐⭐⭐ **THE CHEAPEST DOMAIN ON THE SCREEN IS `vdu_char_emit`'s ROWS PLUS THE TWO EMPTY BLOCKS, AND
+IT IS NOT THE DASHBOARD.**
+
+| domain | rows | prize | what it costs |
+|---|---:|---:|---|
+| **A** 0..17 + 192..199 + 200..207 | 34 | **≈ −3.31 ms** | ONE routine retargeted, `vdu_char_emit`, ~3.7 stores/frame — and 8 of those rows have **no writer at all**, so they are a claim and nothing else |
+| B 158..191 (the needles) | 34 | ≈ −2.79 ms | 66 stores/frame from `plot_line_octant` + `undraw_plot_lines`, mirrored into **both** plane buffers, plus `mirror_draw_car` (154..178) and `poll_steering_assist` |
+
+Same 34 rows, a bigger prize, a **fraction** of the code touched — and `vdu_char_emit` is the
+*shared* text painter, so one retarget unlocks both the top text rows and the dash text rows.
+§11a's "the next domain is the dashboard" is superseded: **domain A first, B second.**
+
+⚠⚠ **"No writer IN THIS WINDOW" is not "no writer".** A lap-boundary, pit or RACE-only routine is
+absent from a 200-frame practice window *by construction*. Widen `--fill-frames` before owning a
+block on the strength of a zero — and the lesson that produced this table is its sibling: the
+census had been printing `ranked.slice(0, 16)`, which buried `vdu_char_emit` at position 26 of 62
+and made lines 0..23 and 192..207 look writer-free. **A census that ranks by VOLUME buries exactly
+the finding an ownership ledger is looking for.** The instrument's positive control is a partition
+check: the 47 blocks sum to 2962.3 st/f and 536.8 ch/f against the header's independently counted
+2962 and 537, so every store is attributed to exactly one block.
+
+#### Three design facts settled with the ledger, before any code
+
+1. ⭐⭐ **A mirrored painter whose ERASE is cross-frame stateful must write BOTH plane buffers.**
+   `undraw_plot_lines` restores bytes saved when the needle was drawn *last* frame. With double
+   buffering, mirroring undraw+draw into the back buffer only leaves the needle from **two** frames
+   ago in place ⇒ trails. Writing both keeps them identical and correct (~1.3 ms rather than
+   ~0.64 ms, against a 2.8 ms prize). §10n's "the painter need only write the back buffer" holds
+   only for a painter that repaints a whole row.
+2. ⭐ **The claim needs a per-buffer BOOTSTRAP GATE, and it is a buffer-initialisation flag, not a
+   dirty map.** A dash row is ~38.4 of its 40 cells static cockpit; the painter maintains only the
+   delta, so the claim is valid only once that buffer's planes hold the static base. Each buffer's
+   shadow starts zeroed, so ONE unclaimed decode paints the base; a per-buffer boolean gates the
+   claim. No per-writer state, no persistence.
+3. ⭐ **OWNING A ROW WHILE STILL WRITING `mem[]` NEEDS NO READER GATE.** `REVS_FB_POISON` is
+   required only by the step that *deletes* the `mem[]` stores. So "mirror **and** claim, keep the
+   stores" is a cheap first step that keeps `validate`/`determinism` green and defers the poison run.
+
+⭐ **And the frame order is confirmed favourable, by reading `race_main_loop` rather than measuring
+it.** Per game frame: `platform_render_frame()` (decode + present) → phases 1..N, including phase 24
+`view_paint_lines_core` where `g_plotOwn` is cleared → `engine_sound_update()` →
+`draw_dash_needles_native()` → loop top. A claim published by the dash painter is therefore set
+**after** the sweep's clear and consumed by the **very next** decode. The existing clear point
+serves both painters unchanged.
