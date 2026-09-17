@@ -382,12 +382,14 @@ static MEM_QUAL unsigned char* const g_viewSlotP[40] = {
     SLOT_B(12), SLOT_B(13)
 };
 
-/* ⭐⭐ THE HARDWARE-WINDOW TEST, IN ONE PLACE.  CLAUDE.md's rule is to hoist the `bus_write`
-   range check to wherever the POINTER is known — one test per scan line / column / fill, never
-   one per cell — and every hoist in this file asks the same question: does the whole run of
-   bytes above `base` stay below the $FC00 I/O window?  It used to be spelled five different
-   ways, one of them a bare `0xFB01` that would have gone silently wrong if BBC_IO_LO moved.
-   Both forms below derive from BBC_IO_LO, and `span` is the run's length in bytes. */
+/* ⭐⭐ THE HARDWARE-WINDOW TEST, IN ONE PLACE — AND IT IS A LAST RESORT, NOT A HOIST TARGET.
+   CLAUDE.md's rule is that `bus_write` must not be used where the target is known not to need
+   it.  The best answer is a STATICALLY known target, which is what the view sweep has (§the
+   renderer does not speak to the bus); this test is for the walks whose base really is a runtime
+   value — a script pointer, a copy destination, a field address — where one check per page
+   replaces one per byte.  It used to be spelled five different ways, one of them a bare `0xFB01`
+   that would have gone silently wrong if BBC_IO_LO moved.  Both forms below derive from
+   BBC_IO_LO, and `span` is the run's length in bytes. */
 static inline int base_span_is_ram(unsigned base, unsigned span)
 {
     return (base + span) <= BBC_IO_LO;
@@ -404,6 +406,39 @@ static inline int page_is_ram(unsigned base)
 static uint16_t view_screen_addr(uint16_t base, unsigned cell)
 {
     return (uint16_t)(base + cell);
+}
+
+/* ⭐⭐⭐ THE RENDERER DOES NOT SPEAK TO THE BUS, AND THERE IS NO ELSE ARM TO KEEP, BECAUSE
+   $6700 IS AN IMMEDIATE OPERAND IN THE GAME'S OWN CODE.  `view_paint_lines` ($7BE2) opens with
+   `LDA #0 / STA $70 / STA $72 / LDX #$67 / STX $71 / INX / STX $73`: the sweep has no pointer
+   INPUT: it builds its destination from immediates before it does anything else, which is why
+   both call sites of the core pass the literal `0x6700u` and why `dash_pre` can `fill_random`
+   straight over mem[$70..$73] and still get 700/700.  From there every store is `base0 + cell*8`
+   (plus $100 for the second page) with `base0 = plot_ptr_v`, and `step_scanline` is the only
+   in-sweep mutator: monotone `+1` inside a character row, `+$0138` crossing one, and
+   PLOT_PTR_SET_LO rewrites the low byte only.  The line loop is bounded by a byte, so at most
+   256 steps and 32 crossings ⇒ the highest address the sweep can reach is
+   $6700 + $27E0 + $100 + $140 = $8F60, and the real geometry stops at $74C5.  The I/O window
+   begins 27 KB above that.  ⇒ the $FC00-$FEFF arm is UNREACHABLE, not cold, and the test that
+   used to select it was a constant 1.
+   ⚠⚠ SO WHY COULDN'T GCC SEE IT?  Because the base is laundered through `plot_ptr_v`, a GLOBAL
+   that fifteen unrelated engine routines also use as scratch — constant propagation dies at the
+   global, not at the arithmetic.  That is the defect, and the fix is to carry the destination in
+   a LOCAL, never to test it, hoist the test, or wrap the call.
+   ⛔ DO NOT "FIX" THIS BY PUTTING `bus_write` BEHIND A `noinline` ESCAPE.  Measured three ways:
+   the escape deletes 598 instructions (`view_paint_lines_core` 1710→1366, `view_own_run`
+   771→517) and costs **+0.73 ms** on phases 2+3, of which +0.61 is the unit loop's cold arm
+   alone.  An INLINE `bus_write` is merged with the fast arm's store, so neither path contains a
+   call and the bulk is cold code that never runs; a `noinline` callee is an ALIASING BARRIER —
+   GCC must assume it writes any memory, so the loop spills (`view_own_run`'s `n(sp)` operands
+   17→30, CSE'd source-displacement reads down ~40%).  Bulk in a cold arm is cheap; a call
+   boundary in a hot loop is not.
+   ⚠ `make INK_WATCH=1` cannot see these stores at all now.  It never could see the fast arm
+   either, which is why the frame-buffer differential — `make viewdiff` — and not the watch is
+   the gate on what the sweep writes. */
+static inline void view_store_cell(unsigned base, unsigned cell, unsigned byte)
+{
+    mem[view_screen_addr((uint16_t)base, cell)] = (unsigned char)byte;
 }
 
 /* One boundary cell of a run: the per-line source byte masked to the part the run covers, then
@@ -1042,7 +1077,7 @@ void revs_announce_spanscan(void)
      advance_first  entered at view_next_scanline (the JSRs from $7BF1 and $7D37), so the
                     pointers move and the line's background byte is loaded before any unit */
 /* ⭐⭐ ONE UNIT OF THE SWEEP, AS A MACRO SO THE LOOP CAN CARRY FOUR OF THEM.  It reads the
-   loop's own locals by name — `byte`, `srcp`, `dp`, `cell`, `busSafe`, `line` — which is the
+   loop's own locals by name — `byte`, `srcp`, `dp`, `cell`, `line` — which is the
    same bargain PLOT_DECL/PLOT_UNIT already strike below, and for the same reason: the run
    coalescer's accumulators are locals of paint_cells and a helper function cannot see them.
    SOFF/DOFF are the unit's byte offsets from the pair of running pointers, so an unrolled
@@ -1075,8 +1110,7 @@ void revs_announce_spanscan(void)
             byte = view_consume(srcp + (SOFF), byte, (FORCED), cell);                   \
             PLOT_UNIT((unsigned)(dp + (DOFF) - mem), byte);                             \
             PROBE_SHAPE_DASH_STORE((unsigned)(dp + (DOFF) - mem), byte, line);          \
-            if (busSafe) dp[(DOFF)] = (unsigned char)byte;                              \
-            else         bus_write((uint16_t)(dp + (DOFF) - mem), (uint8_t)byte);       \
+            dp[(DOFF)] = (unsigned char)byte;                                           \
         } while (0)
 #endif
 
@@ -1406,19 +1440,11 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first,
                case would run the stop tail.  `stopUnit == 40` is also why the address form
                needs no bound of its own: 40 * 8 is 320, which IS segEnd. */
             MEM_QUAL unsigned char* const stopAddr = mem + base0 + ((unsigned)stopUnit << 3);
-            /* THE BUS'S HARDWARE-RANGE TEST, HOISTED TO ONE CHECK PER SCAN LINE.  A cell store
-               is `STA ($70),Y`, so the transliteration pays the $FC00-$FEFF test 2093 times a
-               frame; here the whole line's span is known, so one check licenses plain mem[]
-               stores.  ⚠ NOT deleted — the else arm still routes to the platform if a base ever
-               does reach the window.  Inverting the flag passes all 700 fixture cases, which is
-               expected rather than a gap: with a RAM address both arms store identically. */
-            /* ⭐ ONE compare, and deliberately stricter than the line's own span.  A line
-               writes the 320 bytes above base0; the test asks for 320 + 256, because it used
-               to be `span_is_ram(base0) && span_is_ram(base0 + 256)` — one test per pointer —
-               and the second was the binding one.  Keeping the stricter bound keeps the arm
-               choice byte-identical, and there is nothing to win by relaxing it: both arms
-               store the same thing for a RAM address. */
-            const int busSafe = base_span_is_ram(base0, 40 * 8 + 256);
+            /* ⭐⭐⭐ NO HARDWARE-WINDOW TEST, BECAUSE THERE IS NOTHING TO TEST.  `base0` is
+               $6700 plus a monotone walk, and the game's own code builds that from immediates
+               (§the renderer does not speak to the bus): the $FC00 arm this used to select is
+               unreachable, so the store below is a plain mem[] store.  It was `STA ($70),Y` on
+               the 6502, i.e. 2093 `bus_write`s a frame in the transliteration; it is now zero. */
 
             int stopped = 0;                /* a planted stop ends the whole sweep, not just the run */
 
@@ -1428,7 +1454,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first,
                 const int stopHere = (stopAddr >= dp && stopAddr < segEnd);
                 MEM_QUAL unsigned char* runEnd = stopHere ? stopAddr : segEnd;
                 PROBE_VIEW_RUN((unsigned)(runEnd - dp) >> 3);
-                PROBE_SHAPE_VIEW_RUN((unsigned)(runEnd - dp) >> 3, busSafe);
+                PROBE_SHAPE_VIEW_RUN((unsigned)(runEnd - dp) >> 3, 1);
 
 #ifdef REVS_NO_UNIT_LOOP
                 /* `make NOUNITS=2` — the loop does not run at all, so phase 24 is the per-line
@@ -1538,7 +1564,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first,
    runs over 113435 runs), then the stop tail and the `$7EEE` terminator.
 
    ⭐ IT REUSES `VIEW_UNIT` ON PURPOSE.  A unit is defined once in this file and this is that
-   definition, read through the same local names (`byte`/`srcp`/`dp`/`cell`/`busSafe`/`line`) —
+   definition, read through the same local names (`byte`/`srcp`/`dp`/`cell`/`line`) —
    a second copy of the consume-and-store is how a takeover and the oracle it is compared
    against come to agree on a bug (RevsScreen.cpp §100 makes the same argument about a mapping).
    It also means every `make NOUNITS=n` arm and every shape probe keeps working here for free.
@@ -1578,12 +1604,11 @@ static void view_own_run(ViewState* v, unsigned first, int forced)
            serves both the stop and the no-stop case and needs no bound of its own. */
         const int stopUnit = view_stop_from((int)first);
         MEM_QUAL unsigned char* const runEnd = mem + base0 + ((unsigned)stopUnit << 3);
-        /* the same hoist, and the same deliberately stricter bound, as the chain's run set-up */
-        const int busSafe = base_span_is_ram(base0, 40 * 8 + 256);
+        /* no window test here either, and for the same reason as the chain's run set-up */
         PLOT_DECL();
 
         PROBE_VIEW_RUN((unsigned)(runEnd - dp) >> 3);
-        PROBE_SHAPE_VIEW_RUN((unsigned)(runEnd - dp) >> 3, busSafe);
+        PROBE_SHAPE_VIEW_RUN((unsigned)(runEnd - dp) >> 3, 1);
         if (forced && dp != runEnd) {
             VIEW_UNIT(0, 0, 1);
             forced = 0;
@@ -1769,7 +1794,7 @@ static void paint_lines_short(ViewState* v)
         /* ⚠ the CHAIN-BOUNDARY cell does not go through VIEW_UNIT, so the span census has to be
            hooked here too or it under-counts the composed edge bytes by ~50 a sweep. */
         PROBE_SHAPE_DASH_STORE(view_screen_addr(plot_ptr_v, v->cell), (unsigned)v->byte, v->line);
-        bus_write(view_screen_addr(plot_ptr_v, v->cell), (uint8_t)v->byte);
+        view_store_cell(plot_ptr_v, v->cell, v->byte);
 #ifdef REVS_VIEWSKIP
         view_dst_touch(view_screen_addr(plot_ptr_v, v->cell));
 #endif
@@ -1802,7 +1827,7 @@ static void paint_lines_short(ViewState* v)
         /* ⚠ the CHAIN-BOUNDARY cell does not go through VIEW_UNIT, so the span census has to be
            hooked here too or it under-counts the composed edge bytes by ~50 a sweep. */
         PROBE_SHAPE_DASH_STORE(view_screen_addr(plot_ptr2_v, v->cell), (unsigned)v->byte, v->line);
-        bus_write(view_screen_addr(plot_ptr2_v, v->cell), (uint8_t)v->byte);
+        view_store_cell(plot_ptr2_v, v->cell, v->byte);
 #ifdef REVS_VIEWSKIP
         view_dst_touch(view_screen_addr(plot_ptr2_v, v->cell));
 #endif
@@ -1865,13 +1890,14 @@ static void paint_lines_clipped(ViewState* v)
         paint_cells(v, 0, 0, 1, 0);             /* the JSR through view_next_scanline */
 #endif
 
+
         v->byte = view_compose(v->byte, mem[MEM_view_left_end_mask + v->line],
                                         mem[MEM_view_left_end_fill + v->line]);
         REVS_PLOT_CELL(view_screen_addr(plot_ptr_v, v->cell), (uint8_t)v->byte);
         /* ⚠ the CHAIN-BOUNDARY cell does not go through VIEW_UNIT, so the span census has to be
            hooked here too or it under-counts the composed edge bytes by ~50 a sweep. */
         PROBE_SHAPE_DASH_STORE(view_screen_addr(plot_ptr_v, v->cell), (unsigned)v->byte, v->line);
-        bus_write(view_screen_addr(plot_ptr_v, v->cell), (uint8_t)v->byte);
+        view_store_cell(plot_ptr_v, v->cell, v->byte);
 #ifdef REVS_VIEWSKIP
         view_dst_touch(view_screen_addr(plot_ptr_v, v->cell));
 #endif

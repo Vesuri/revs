@@ -604,13 +604,34 @@ Rules that must survive without opening `docs/perf-method.md`:
   cannot afford. Exempt one only with a **written reader audit** (the readers include the
   transliteration a track hook re-enters, and the next pass in the pipeline), scoped through
   `set_ignore`. `docs/validation-harness.md` §THE RESULTS RULE.
-- ⭐ **`bus_read`/`bus_write` are for the HARDWARE window ($FC00-$FEFF), and a pure-RAM access
-  should not pay their range test.** The transpiler already routes every *constant* non-hardware
-  address straight to `mem[]`; what leaks is the **indirect modes** (`(zp),Y`, `(zp,X)`) — the
-  plotters. Measured on the host: **~10 600 bus calls a game frame, 144 of them real hardware.**
-  In a twin, hoist the test to wherever the *pointer* is known (one check per scan line, not per
-  cell) and keep the else arm. ⚠ Widening `mem[]` to `uint16_t*`/`uint32_t*` is NOT the fix — see
-  the endianness rule below; it is legal only when every byte of the wide value is the same.
+- ⭐⭐ **`bus_write`/`bus_read` MUST NEVER BE USED WHERE THE TARGET IS KNOWN NOT TO NEED THEM**
+  (user directive) **— and inside the renderer that is everywhere.** They exist for the HARDWARE
+  window ($FC00-$FEFF); a pure-RAM access must not pay their range test. The transpiler already
+  routes every *constant* non-hardware address straight to `mem[]`; what leaks is the **indirect
+  modes** (`(zp),Y`, `(zp,X)`) — the plotters. Measured on the host: **~10 600 bus calls a game
+  frame, 144 of them real hardware.**
+  ⭐⭐⭐ **THE ANSWER IS A STATICALLY KNOWN TARGET, NOT A CHEAPER TEST — ASK WHERE THE POINTER IS
+  BUILT, AND YOU WILL USUALLY FIND AN IMMEDIATE.** The whole view sweep writes `$6700 + cell*8`
+  because `view_paint_lines` ($7BE2) opens `LDA #0 / STA $70 / LDX #$67 / STX $71` — the
+  destination is an *immediate operand in the game's own code*, and a monotone `+1`/`+$138` walk
+  from there cannot reach $FC00 in the 256 steps a byte line counter allows. So the else arm was
+  **unreachable, not cold**, and the test selecting it was a constant 1. GCC could not fold it for
+  one reason: the base is laundered through `plot_ptr_v`, a GLOBAL fifteen unrelated routines use
+  as scratch, so constant propagation dies at the global. ⇒ **carry a hot destination in a LOCAL.**
+  `base_span_is_ram` stays for the walks whose base really is a runtime value (script pointer,
+  copy destination, field address) — one check per page, never per byte, else arm kept.
+  ⛔⛔ **DO NOT PUT THE ELSE ARM BEHIND A `noinline` ESCAPE — MEASURED +0.73 ms, AND THE MECHANISM
+  IS THE GENERAL LESSON: BULK IN A COLD ARM IS CHEAP, A CALL BOUNDARY IN A HOT LOOP IS NOT.** The
+  escape deleted 598 instructions (`view_paint_lines_core` 1710→1366, `view_own_run` 771→517) and
+  cost time, +0.61 ms of it the unit loop's arm alone. An INLINE `bus_write` gets merged with the
+  fast arm's store, so neither path contains a call and its ~200 instructions are cold code that
+  never runs; a `noinline` callee is an **aliasing barrier** — GCC must assume it writes any
+  memory, so the surrounding loop spills (`view_own_run`'s `n(sp)` operands 17→30, CSE'd
+  source-displacement reads down ~40%). ⚠ And I first blamed that regression on a hoisted
+  `busSafe` local's live range; removing the live range measured **identically**, so
+  register pressure was the wrong story — **separate the arms before believing a mechanism.**
+  ⚠ Widening `mem[]` to `uint16_t*`/`uint32_t*` is NOT the fix — see the endianness rule below; it
+  is legal only when every byte of the wide value is the same.
 - **RAM is uniformly slow — there is no "fast RAM" on the target A500.** Optimise by reducing the
   NUMBER of reads/writes, never by moving data to a "cheaper" buffer. (`docs/m68k-optimisation.md`)
   ⭐ **And never explain a measurement with fast-vs-chip RAM** (user, 2026-09-12): on an A500 "fast
