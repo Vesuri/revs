@@ -157,32 +157,40 @@ direct-renderer-only option, so it is gated behind this entry, not free today.
 round trip is gone, and phases 2+3 went **35.61 → 29.03 ms** with their census identical to the
 unit (426/32/16 and 282/50/25). Phase 3 is now **5346 cyc/line for 5.6 painted cells**.
 
-**Where the 29.03 ms IS** (phase row ÷ lines, minus the run at the measured 43 cyc/cell —
-`docs/perf-method.md` §where phases 2/3's 29 ms IS):
+**Where the 29.03 ms IS — SETTLED FROM THE OBJDUMP, and it is that THE BODY IS LONG** (floor =
+cheapest plant/trap-free path from loop head to back edge; ceiling = every non-cold instruction
+once; `docs/perf-method.md` §where phases 2/3's 29 ms is, settled from the objdump):
 
-| | cyc/line | run | **per-line SET-UP** | cells painted |
-|---|---:|---:|---:|---|
-| phase 2 (16 lines, 10.16 ms) | 4502 | 1143 | **3358** | 26.6 of 40 = 67% |
-| phase 3 (25 lines, 18.86 ms) | 5348 | 485 | **4862** | 11.3 of 40 = 28% |
+| | floor | **measured cyc/line** | ceiling | non-cold instrs | cells/line |
+|---|---:|---:|---:|---:|---|
+| phase 2 (16 lines, 10.16 ms) | — (all routes touch a plant block) | **4502** | 4374 + unit turns | 365 | 26.6 |
+| phase 3 (25 lines, 18.86 ms) | 2154 | **5348** | 6026 | 499 | 11.3 |
 
-⭐⭐⭐ **THE NEXT EDIT IS A PER-LINE SPAN PAINTER, PHASE 2 FIRST.** ~26.6 cells at the measured
-13.7 cyc/cell bitplane span fill plus ~300 cyc of span set-up is **~660 cyc/line against 4502** —
-phase 2 at ~1.5 ms instead of 10.16, plus its share of the decode carve-out. 67% ownership and the
-smaller driver make it the tractable first instance; `docs/span-render-plan.md` §10p (5b) has the
-build and the mixed-cell mask that gates it.
+⇒ **Phase 3 runs ~89% of its non-cold body on every line. There is no hotspot and no marshalling
+layer to delete** — the body serves **four chain entries a line** (two stops, two entries), each
+with its own run set-up, stop tail, `view_compose` pair, unit lookup and `g_viewStopList` search,
+for an average run of **5.6 cells**. `NOUNITS=2`'s 80%-driver figure confirms it independently.
 
-⭐ **The set-up has NO single hotspot, and that is why nothing local will do.** Per line phase 3
-makes ~22 indexed `mem[]` table reads, 2 SMC operand pokes, 4 `view_compose` calls, 2 unit-table
-lookups and 2 `view_stop_from` calls; the objdump's main body is ~200 instructions at ~20 cyc each
-because nearly every operand is an indexed `mem[]` byte or a stack slot. Three candidates were
-checked and **all three are too small to matter**:
+⭐⭐⭐ **THE NEXT EDIT IS PHASE 1's LINE LOOP (§10p step 3b), NOT A PHASE-2 SPAN PAINTER.** The
+principle the objdump yields: **a bitplane span painter pays in proportion to RUN LENGTH, and the
+phases are 40 / 13.3 / 5.6 cells per run.** ⚠⚠ In no phase does it delete the **source walk** —
+`view_consume`'s RLE must read every cell's source byte whatever the destination is, so a cell goes
+54 → ~48 cyc, not to zero. **The prize is the driver and the decode carve-out, never the stores.**
+Phase 1: 3457 cyc/line = 2160 units (40 × 54) + 1297 driver ⇒ a takeover deletes the 905 cyc/line
+driver (4.6 ms), improves the store (~1.3 ms) and carves 36 of 208 rows out of the decode (4.2 ms)
+= the published −8 to −11 ms. ⛔ **The "phase 2 at ~1.5 ms instead of 10.16" estimate is RETRACTED**
+— it assumed the span deleted the source walk.
+
+⭐ **Four candidate causes of the per-line cost were checked and ALL are too small:**
 
 | candidate | measured | verdict |
 |---|---|---|
 | the plants (`view_move_stop`/`view_plant`) | **25 plants a sweep, ~1 ms all phases** | ⛔ not a step — a host census, not the split's 888 cyc/line |
 | the census instrument (`PROBE_VIEW_*`) | ~680 cyc/line ≈ 13% | instrument, and it is inside every figure here |
 | the four spilled invariants | 15 body touches/line ≈ 240 cyc | ⛔ the `column_gap_walk_core` trap — both runs are on pads past the back-edge |
-| `step_scanline`'s 28-instruction byte-lane dance | ~400 cyc/line | ○ still a real wide-value candidate |
+| phase 2's cold `view_own_run` arm | **16 of 32 runs, one per line** (host census) | ⛔ ~150 cyc/line: a `ViewState` marshal + a call, not a fallback path |
+| the per-line table reads | `lea (0,a3,d7.l),a5` once, then 12-cyc `d16(a5)` | ⛔ already optimal, nothing to hoist |
+| `step_scanline`'s byte-lane dance | ~230 cyc/line (phase 3 ~280, carry tail) | ○ **the one real local item: ~1.4 ms, a wide-value rewrite** |
 
 ⚠⚠ **`copy_dash_data_core(0x80)` at `race_main_loop`'s exit stows the whole $7B00 page back into
 the $3000 block tails**, so the opcode slots and the three `VIEW_REC_*` operands are read,

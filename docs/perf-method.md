@@ -684,6 +684,68 @@ the case this doc records as costing +1.38 ms to "fix".
 `docs/span-render-plan.md` §10p (5b)'s span painter: ~26.6 cells at 13.7 cyc/cell + ~300 cyc of
 span set-up is ~660 cyc/line against 4502.
 
+### ⭐⭐⭐ WHERE PHASES 2/3's 29 ms IS, SETTLED FROM THE OBJDUMP: THE BODY IS LONG, AND ~89% OF IT RUNS EVERY LINE (2026-09-17)
+
+The bracket split said phase 3 spent 4862 cyc/line on "set-up" and no per-item count came within
+3000 cycles of it. The objdump settles it, and there is **no hotspot and no marshalling layer to
+delete** — the per-line body is simply ~500 instructions long, and nearly all of them run.
+
+Method (cheap, no emulator run): parse `paint_lines_clipped` / `paint_lines_short.constprop.0`
+out of `m68k-amiga-elf-objdump -d out/Revs.elf`, find the line loop's back edge, then bracket the
+per-line cost two ways — a **floor** (Dijkstra for the cheapest path from loop head to back edge
+with every basic block containing a `view_plant` or `platform_smc_unhandled` call priced at
+infinity, which also excludes unit-loop iterations by construction) and a **ceiling** (every
+non-cold instruction in the body once), weighting by addressing mode because that is what costs
+on a 68000: absolute long 20/24, indexed 14/18, `d16(An)` 12/16, register 4/8.
+
+| | floor | **measured** | ceiling | non-cold instrs | cells/line |
+|---|---|---|---|---|---|
+| phase 2 `paint_lines_clipped` | — (every route touches a plant block) | **4502** | 4374 + extra unit turns | 365 | 26.6 |
+| phase 3 `paint_lines_short` | 2154 | **5348** | 6026 | 499 | 11.3 |
+
+⇒ **Phase 3 executes ~89% of its non-cold loop body on every one of its 25 lines.** Independently
+confirmed by a measurement already in this file: `NOUNITS=2` put phase 3 at 80% driver/entry.
+
+**Why the body is long: FOUR CHAIN ENTRIES A LINE.** Phase 3 carries two stops and two entries,
+and each one pays its own run set-up, stop tail, `view_compose` pair, unit-table lookup and
+`g_viewStopList` linear search — for an average run of **5.6 cells** (282 units / 50 runs). Phase 2
+carries two entries at 13.3 cells. The per-line items, read off the objdump:
+
+  * `1254a..12598` / `11c0a..11c82` — **`step_scanline` inlined**, the byte-lane dance in full:
+    `(ptr+1)&7` test, lane recombine, `+312`, then high-word/high-byte extraction via
+    `clr.w`/`swap`/`lsr.l #8` and a shift back up to build `plot_ptr2_v`. ~230 cyc (phase 3 ~280,
+    it has the carry tail). ⭐ **41 lines × ~250 = 1.4 ms/frame, and it is a wide-value rewrite.**
+  * `12646..12680` — **`view_stop_from` as an inlined linear search** over `g_viewStopList`,
+    38 cyc per entry scanned, twice a line in phase 3.
+  * ⭐ the per-line table reads are **already optimal**: `lea (0,a3,d7.l),a5` makes `a5 = mem + line`
+    once and every table read is a 12-cyc `move.b 12624(a5),d2`. There is nothing to hoist.
+
+⭐⭐ **AND THE UNIT LOOP IS 54 cyc/cell, NOT 43** — the 43 was phase 1's clean-arm figure and using it
+elsewhere is what opened the phantom gap. The inline clean path is four instructions
+(`move.b d2,d0` 4 / `move.b d0,(a1)` 8 / `move.b 128(a0),d1` 12 / `bne.s` 8 = 32) plus 14.5 cyc/cell
+of amortised quad back edge = ~46 clean, ~54 with the 13% dirty arm. Phase 2's budget then closes
+to 7% (model 4196 vs 4502 measured) with **no unexplained remainder**, once the `PROBE_VIEW_*`
+census instrument's ~680 cyc/line is also counted — it is inside every ms figure this file quotes.
+
+⭐⭐⭐ **THE PRINCIPLE THIS YIELDS: A BITPLANE SPAN PAINTER PAYS IN PROPORTION TO RUN LENGTH, AND THE
+THREE PHASES ARE 40 / 13.3 / 5.6 CELLS PER RUN.** So phase 1 is where direct-to-bitplane writing
+wins and phases 2/3 are where it structurally cannot — the reverse of the "phase 2 first, it is the
+smaller driver" order that was in the plan. ⚠⚠ And in **no** phase does the span painter delete the
+**source walk**: `view_consume`'s RLE has to read every cell's source byte whatever the destination
+is, so a cell goes 54 → ~48 cyc (12 source + 8 test + 14 back edge + 13.7 two-plane fill), not to
+zero. **The painter's prize is the DRIVER and the DECODE CARVE-OUT, never the stores.**
+
+Phase 1 re-costed with the 54: 17.55 ms / 36 lines = 3457 cyc/line, of which 40 cells × 54 = 2160
+(62%) is units and 1297 is driver. A full takeover deletes the 905 cyc/line driver (4.6 ms),
+improves the store (~1.3 ms) and carves 36 of 208 rows out of the decode (4.2 ms) ⇒ the published
+−8 to −11 ms, **whose largest single component is the decode, not the stores.**
+
+⚠ **An instance of the frozen-census rule, for the record:** in a `PROBEFIELDS` run phase 1's row
+read `units=4/frame` against its true 1440 (`probe.h:191`, and the non-frozen `ctl2.log`), because
+the freeze snapshots the census numerator while `loopFrames` keeps climbing. Phases 2/3's 426/282
+survived the same run unharmed, so **one bad row next to two good ones is the tell** — cross-check
+any frozen census row against a non-frozen log before reasoning from it.
+
 ### ⭐⭐ The four view probes (2026-09-12) — phase 3 decomposed, and the ~6× note RETRACTED
 
 Phase 3 was the most expensive view phase on the fewest units, and before anything was rewritten
