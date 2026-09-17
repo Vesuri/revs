@@ -1168,17 +1168,21 @@ this from the objdump and the three arms now say it end to end), not the driver,
 
 ### The 208-row ledger, which is now the plan
 
-| display rows | n | what paints them | decode cost | state |
-|---|---:|---|---:|---|
-| 0..17 | 18 | band 0, MODE 4 — the two text rows | unsized | ○ |
-| 18..80 | 63 | band 1, the flat blue sky (and the `$7B00` code hiding in it) | **0** | ✅ already free — `convertRace`'s `if (!any) continue` skips a row wholly inside the flat band |
-| 81..116 | 36 | view phase 1 (`$7BE2`), one 40-cell run a line | −4.44 measured | ✅ **OWNED** (`SPANFILL=5`) |
-| 117..157 | 41 | view phases 2/3, 6.1 runs of 6.5 cells a line | −5.07 ceiling | ⏳ next, behind the mixed-cell mask |
-| 158..207 | 50 | the dashboard — edge columns, needles, mirrors | **unsized, and by subtraction the largest block left** | ○ |
+| display rows | n | what paints them | decode cost | ms/row | state |
+|---|---:|---|---:|---:|---|
+| 0..17 | 18 | band 0, MODE 4 — the two text rows | **−2.00** | −0.111 | ○ sized `VIEWCARVE=0-17` |
+| 18..80 | 63 | band 1, the flat blue sky (and the `$7B00` code hiding in it) | **0** | — | ✅ already free — `convertRace`'s `if (!any) continue` skips a row wholly inside the flat band |
+| 81..116 | 36 | view phase 1 (`$7BE2`), one 40-cell run a line | −4.44 | −0.123 | ✅ **OWNED** (`SPANFILL=5`) |
+| 117..157 | 41 | view phases 2/3, 6.1 runs of 6.5 cells a line | −5.07 ceiling | −0.124 | ⏳ behind the mixed-cell mask AND three foreign writers (§11b) |
+| 158..207 | 50 | the dashboard — edge columns, needles, mirrors | **−4.11** | −0.082 | ○ sized `VIEWCARVE=158-207` |
 
-The end state is what the user's directive asked for and it is now a number: **no decode pass, no
-shadow buffer, no `mem[]` framebuffer on the render path — `ph27` → 0, worth 28.74 ms**, of which
-4.44 is banked. That is bigger than any painter rewrite on the board.
+⚠ The two `VIEWCARVE` rows are measured at HEAD (`151e282`); 81..116 and 117..157 were measured
+before it, against a decode 4.20 ms fatter. **That barely moved them** — the dashboard re-priced
+−4.40 → −4.11 — because the shape pass deleted the per-**row** driver (26 rows) while ownership
+collects the per-**cell** scan. Do not scale a row price by the decode's total.
+
+⇒ **Owning every remaining row is worth −11.18 ms** (2.00 + 5.07 + 4.11), on top of the 4.44
+banked. **It does not reach `ph27` → 0, and the earlier claim that it did was wrong** — see §11a.
 
 ⚠ **Two invariants every new ownership domain must satisfy**, both already paid for once:
 1. **The reader gate** — nothing may read those rows back through `mem[]`. Measured for 81..116
@@ -1192,3 +1196,46 @@ shadow buffer, no `mem[]` framebuffer on the render path — `ph27` → 0, worth
 `SPANFILL=0` are the A/B controls now). Gated by `make validate` PASS, all five `determinism`
 trajectories PASS, and both §10n target oracles green at `5a970bb`. ⚠ `SPANSTAT` now defaults to
 PROBES-only, because six volatile RMWs per span (~0.9 ms/frame) must not ship.
+
+### 11a. ⭐⭐⭐ THE "12 ms FLOOR" IS ATTRIBUTED, AND OWNERSHIP IS ONLY HALF THE END STATE (2026-09-17)
+
+The ledger above sizes the decode by rows, and summed over the whole picture it accounted for only
+half of `ph27`: carving **all 208** display lines still left ~12 ms, while `NODECODE` — stubbing
+`decode()` outright — left **0.13 ms**. So ~12 ms was real work inside `decode()` that converts
+nothing and that no amount of ownership can reach, with no instrument able to name it.
+
+`make DECODESPLIT=1` + `amiga/decodesplit.gdb` names it. Control-corrected (six brackets a frame,
+the EMPTY bracket 52 reading 0.10 ms), measured before the shape pass so it reconciles with the
+24.20 ms row:
+
+| bracket | ms/frame | what it is |
+|---|---:|---|
+| 52 — EMPTY control | 0.10 | one bracket transition, read FIRST and subtracted from every row |
+| 50 `snapshotBands` | 0.77 | 95 volatile reads of the ISR-written band record |
+| 53 `buildLineModes` | 1.64 | µs → display lines + 208 mode-byte stores — ⭐ **SURVIVES the end state** |
+| 54 own/carve loops | 1.75 | 208 byte tests of `g_plotOwn` |
+| 51 `convertRace` | 17.09 | the scan (~760 cells to find ~57 changed) + the expands |
+| 27 remainder | 3.04 | the call path, the MODE 7 test, four volatile counters |
+
+Sum **24.29** against the base build's **24.20** ⇒ the split closes, so nothing is unattributed.
+
+⇒ ⭐⭐⭐ **THE FLOOR WAS MOSTLY CODE SHAPE, NOT A FLOOR.** Four of the five rows were byte loops
+over longword-aligned data and came out at `151e282` for −4.20 ms. What remains is a **two-step**
+end state, and conflating the steps is what produced the wrong "`ph27` → 0, worth 28.74 ms":
+
+1. **Own all 208 rows** — deletes only `convertRace`'s per-row conversion, **capped at −11.18 ms**
+   from here. The carve-all arm reads ~12 rather than 0 *because it does not delete the call*:
+   the prologue, the 26-row driver and the remainder all still run.
+2. **Then stop calling `decode()`** — worth the rest, which is why `NODECODE` reads 0.13.
+
+⚠⚠ **But `snapshotBands` + `buildLineModes` (~2.4 ms) are NOT part of step 2's prize — they must
+keep running every frame.** `m_plan` is the **copper's palette schedule**, not decode work: the
+five raster bands' boundaries and colours have to be recomputed and handed to the copper whoever
+paints the pixels. So the end state is `ph27` → **~2.4 ms**, and the true remaining prize is
+**~17.6 ms**, not 20.00. Budget the band schedule as a permanent cost of the display model.
+
+⇒ **The next domain is the dashboard (158..207, −4.11 ms, 50 rows).** It is the largest unblocked
+block: rows 117..157 are worth more (−5.07) but have three foreign writers (`tick_wheel_spin`,
+`undraw_plot_lines`, `plot_line_octant`) and two real readers, one of them game logic —
+`update_grip_limits` reads `mem[$713D]`/`mem[$7205]` on display line 149 to sample the surface
+colour under a wheel, so those rows cannot be owned until that read is served another way.

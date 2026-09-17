@@ -1014,6 +1014,35 @@ which is the result that actually licensed the commit.
 equivalence check, because they run at different speeds and at a fixed `g_vbiCount` the simulation
 has advanced to a different place. A render-speed change moves the trajectory (`docs/perf-method.md`).
 
+### ⭐⭐⭐ …and the SHARED THING CAN BE AN INPUT, WHICH BOUNDS WHAT THE ORACLE COVERS FOR GOOD (2026-09-17)
+
+The same oracle, measured both ways on the same commit, and this is the sharp statement of its
+scope. `convertRace` classifies each character row from its eight `m_lineMode` bytes — is any line
+non-blank (`any`), are all eight the same mode (`uniform`) — and then either skips the row or picks
+an expand path. Two sabotages:
+
+| sabotage | what it breaks | oracle |
+|---|---|---:|
+| the shadow-mode compare always says "equal" | a moved band boundary is never re-expanded — the dirty pass **SKIPS** work | **mismatch=4050**, firstOff=805 |
+| the `m0 == m1` guard dropped from `uniform` | a straddling row is **CLASSIFIED** as uniform and expanded down one path | **mismatch=0**, 31/31 |
+
+⇒ The reference pass is `convertRace(scratch, 0, 0)` — **the same code over the same
+`m_lineMode`** — so anything derived from that input is derived identically wrongly on both sides.
+The differential sees *which cells were selected*, and a classification error changes the selection
+on **neither** side.
+
+⭐⭐ **So this is a fixture gap that cannot be closed by widening the fixture** — it is what an
+in-process differential IS. The three §FIFTEENTH explanations for a surviving sabotage want a
+fourth reading here: *the oracle shares the input the defect lives in.* Two consequences:
+
+1. **State the scope AT the oracle**, in the terms of the code it guards: `DIRTYCHECK` gates what
+   the dirty pass SKIPS, and nothing about how it classifies. Written at
+   `RevsScreen::decode()`'s `#ifdef REVS_DIRTYCHECK` block and at the `uniform` switch.
+2. **Gate a classification another way** — by argument where the predicate is exactly equivalent
+   (`m0 == m1 && m0 == v*0x01010101` ⟺ all eight bytes are `v`, which is what "uniform" means),
+   or by the PICTURE (`amiga/screen_dump.gdb`), or with `make DIRTY=0`, which takes the mixed path
+   for every row and so does not consult the classification at all.
+
 ## ⭐⭐⭐ THE RESULTS RULE (user-stated, and it outranks the full-`mem[]` diff)
 
 > "Our intent is to have faithful behavior from the user's point of view, not exact replication of

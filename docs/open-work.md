@@ -26,23 +26,33 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **205.5 ms bracketed** (Σ phases 1..39 = wall − phase 0), `PROBES=1
-FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`, warp, 30 s, driving, HEAD `8bc45ac`. Target is
-**20 ms** (50 FPS), floor **40 ms** (25 FPS) — so this is a 5-10× problem, not a tuning problem,
-and an entry worth under ~1 ms is not where the answer is. ⚠ Size every candidate in **ms/frame**
-against its own phase row (Rule 1a); the framerate is quantised to `50/N` and cannot see it.
+**Where the frame stands:** **192.99 ms bracketed** (Σ phases 1..39 = wall − phase 0), `PROBES=1
+FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 PROBEFIELDS=3000`, warp, driving, HEAD `151e282`
+(`frozen=240440078`, `loopFrames=298`, `build=1d`). Target is **20 ms** (50 FPS), floor **40 ms**
+(25 FPS) — so this is a 5-10× problem, not a tuning problem, and an entry worth under ~1 ms is not
+where the answer is. ⚠ Size every candidate in **ms/frame** against its own phase row (Rule 1a);
+the framerate is quantised to `50/N` and cannot see it.
+⚠⚠ **Read the phase table out of `.run/gdb-out.log`, never out of `diag_run.sh`'s stdout** — that
+is `tail`-truncated to the last 40 lines (`GDBTAIL`), which silently drops phases 1..5 AND the
+`frozen=` gate line, and a total summed from it reads ~36 ms low. It has now cost two bad diffs.
 
 | ms/frame | phase(s) | what |
 |---:|---|---|
-| 58.7 | 24+33+34+32 | `view_paint_lines` — the consumer |
-| 33.7 | 11 | `draw_road` |
+| 53.0 | 24+33+34+32 | `view_paint_lines` — the consumer |
+| 34.3 | 11 | `draw_road` |
 | 26.7 | 5 | `build_track_geometry` |
-| 26.4 | 27 | `RevsScreen::decode()` — port overhead, no BBC counterpart |
-| 13.5 | 26 | the 50 Hz drain |
-| 11.0 | 28 | the vblank spin — the `50/N` pad, not a target |
-| 10.4 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
+| 20.0 | 27 | `RevsScreen::decode()` — port overhead, no BBC counterpart |
+| 12.4 | 28 | the vblank spin — the `50/N` pad, not a target |
+| 12.2 | 26 | the 50 Hz drain |
+| 10.2 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
 
-### 1. ⭐⭐⭐ THE REPRESENTATION — render direct to bitplanes — the PHASE-1 TAKEOVER, −8 to −11 ms
+### 1. ⭐⭐⭐ THE REPRESENTATION — ROW OWNERSHIP of the decode — −11.18 ms of rows, then the CALL
+⭐⭐ **THE LIVE BUILD IS THE DASHBOARD, display rows 158..207 — `−4.11 ms`, 50 rows, and the
+largest UNBLOCKED block** (`make VIEWCARVE=158-207` priced it at HEAD). Rows 117..157 are worth
+more (−5.07) and are blocked: three foreign writers plus a **game-logic reader** —
+`update_grip_limits` samples the surface colour under a wheel from `mem[$713D]`/`mem[$7205]` on
+display line 149, so those rows cannot be owned until that read is served another way. The
+dashboard's own hazard is the needles (display lines 129..180 — they cross the boundary).
 ⭐⭐⭐ **THE ARCHITECTURE IS OPEN AND ITS FIRST HALF IS NOW MEASURED, NOT ARGUED** — `make
 SPANFILL=1` is §10e's own cheap checkpoint built and run (`docs/span-render-plan.md` §10n). Three
 results, and they point at a different next build than this entry used to name:
@@ -176,12 +186,20 @@ Three arms of one field-bounded session settled it: phase 1's takeover moves **p
 (15.53 → 15.50, forty `mem[]` bytes + forty units + a 905 cyc/line driver replaced by two bitplane
 writes a cell) and **the frame by −5.62, all of it `ph27`** (28.74 → 24.30 for 36 of 208 rows =
 −0.123 ms/row, which reproduces `VIEWCARVE`'s −0.124 to 1%). ⇒ **A direct-to-bitplane painter is
-worth `rows owned × 0.123 ms` and nothing else.** The predicted −6.6 to −7.8 ms on phase 24 is
+worth `rows owned × 0.123 ms` and nothing else** (0.08–0.12 depending on the block — every one is
+now priced in §11's ledger, and ⚠ **a row price does NOT scale with the decode's total**: the
+−4.20 ms shape pass at `151e282` re-priced the dashboard only −4.40 → −4.11, because it deleted
+the per-**row** driver while ownership collects the per-**cell** scan). The predicted −6.6 to −7.8 ms on phase 24 is
 ⛔ **RETRACTED**: it priced a driver deletion that the measurement says is not there to collect.
 ⚠⚠ In no phase does the painter delete the **source walk** — `view_consume`'s RLE must read every
-cell's source byte whatever the destination is. **The prize is the DECODE, and the end state is
-`ph27` → 0 = 28.74 ms.** The 208-row ledger, the two invariants (the measured reader gate; per-
-display-line ownership) and the next domain are §11's; ⛔ **the "phase 2 at ~1.5 ms instead of
+cell's source byte whatever the destination is. **The prize is the DECODE**, but ⛔ **"the end
+state is `ph27` → 0 = 28.74 ms" is RETRACTED as well** (§11a): `DECODESPLIT` attributed the whole
+row, and ownership deletes only `convertRace`'s per-row conversion — **−11.18 ms from here, in
+step 1 of two**. The rest goes with the CALL (hence `NODECODE` = 0.13 ms), and of it
+`snapshotBands` + `buildLineModes` (~2.4 ms) must keep running forever, because `m_plan` is the
+COPPER's palette schedule rather than decode work. **End state `ph27` → ~2.4 ms, prize ~17.6 ms.**
+The 208-row ledger with every block now priced, the two invariants (the measured reader gate;
+per-display-line ownership) and the next domain are §11's; ⛔ **the "phase 2 at ~1.5 ms instead of
 10.16" estimate is RETRACTED** too — it assumed the span deleted the source walk.
 ✅ **Step 0 is DONE: the new pipeline is the DEFAULT build** — `VIEWOWN=0` / `SPANFILL=0` are now
 the A/B controls, so the shipping frame goes **196.59 → 182.62 ms (−13.97)**. `validate` PASS, all

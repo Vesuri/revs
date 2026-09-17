@@ -300,6 +300,12 @@ hand-rename in generated files).
    write the argument at the code (`docs/validation-harness.md` §FIFTEENTH).
    ⭐ Ask what the TEST BACKEND answers, not just what the fixture randomises — a `Platform`
    virtual with a constant answer is a whole arm that never runs.
+   ⭐⭐ **And an IN-PROCESS differential cannot see a defect in how a SHARED INPUT is classified —
+   only in what the fast path SKIPS.** `DIRTYCHECK` re-decodes into a scratch buffer from the same
+   `m_lineMode`, so sabotaging the dirty pass's skip test fires it (mismatch=4050) while sabotaging
+   its uniformity classification survives 31/31: both sides classify the row the same wrong way.
+   That is structural, not a fixture to widen — **state each such oracle's scope AT the oracle**,
+   and gate a classification by the picture or by argument.
    ⚠⚠ **A scripted sabotage loop MUST `rm` the object file and the binary before every build.**
    Left to `make`, a rewrite-then-rebuild loop reuses the previous iteration's object on some
    iterations and reports that the defect is undetectable. **The tell is two different defects
@@ -349,12 +355,15 @@ negotiable** — 25 FPS means painting every other frame with the simulation sti
 The A500 is a 7 MHz 68000 and a frame is 20 ms: spending 10 ms on *anything* is half the budget.
 Be conscious of absolute milliseconds always.
 
-**Baseline: a ~209 ms FRAME** — i.e. ~10.5 display fields (`PROBES=1 FIXED_RNG=1
-STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1` + `phase4_prof.gdb`, warp, 30 s, driving, 2026-09-13 at
-`9dfdf4e`). **This is the number a change is sized against**, and it is both the bracketed total
-(`Σ phaseTicks[1..39]`) and `(elapsed − phase 0) / loopFrames` — they agree to 0.02 ms, so the
-brackets account for the whole frame. ⚠ **The raw `elapsed / loopFrames` reads ~219 ms and is NOT
-the frame**: phase 0 is boot plus the engine's own 2-second crash pauses. The displayed **~4.93 FPS**
+**Baseline: a ~193 ms FRAME** — i.e. ~9.7 display fields (`PROBES=1 FIXED_RNG=1
+STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 PROBEFIELDS=3000` + `phase4_prof.gdb`, warp, driving,
+2026-09-17 at `151e282`). **This is the number a change is sized against**, and it is both the
+bracketed total (`Σ phaseTicks[1..39]`) and `(elapsed − phase 0) / loopFrames` — they agree to
+0.02 ms, so the brackets account for the whole frame. ⚠ **The raw `elapsed / loopFrames` is NOT
+the frame**: phase 0 is boot plus the engine's own 2-second crash pauses.
+⚠⚠ **Read the phase table out of `amiga/.run/gdb-out.log`, never out of `diag_run.sh`'s stdout** —
+that is `tail`-truncated to 40 lines (`GDBTAIL`), which drops phases 1..5 *and* the `frozen=` gate
+line, so a total summed from it reads ~36 ms low. It has cost two bad diffs. The displayed **~4.93 FPS**
 (`FPSCOUNT=1` + `fps_series.gdb`, 50.5 painted per 512 VBLs, same session) is the standing
 *displayed* figure and nothing else.
 ⚠ One painted frame is 3.3% of an FPS row, so that figure IS the noise floor — always re-run the
@@ -429,11 +438,18 @@ while the frame moved −5.62, *all* of it the decode (28.74 → 24.30 ms for 36
 ⇒ **A direct-to-bitplane painter is worth `rows owned × 0.123 ms` and nothing else, so rank
 ownership work by ROWS OWNED and never by the phase's own cost** — and a row wholly inside the flat
 blue band is already free. Two invariants for a new domain: the reader gate must be **measured**
-(`REVS_FB_POISON`), and ownership is per DISPLAY LINE, not per character row. The 208-row ledger is
-`docs/span-render-plan.md` §11; the end state is `ph27` → 0, worth 28.74 ms.
-⭐⭐ **And the decode's own 38 ms turned out to be CODE SHAPE, not algorithm: ~22 ms now, +8.1%
-end to end** — the scan was re-reading two loop-invariant stack slots per cell and had spilled its
-pointers into data registers. **Read the objdump of a hot loop before theorising about its
+(`REVS_FB_POISON`), and ownership is per DISPLAY LINE, not per character row. The 208-row ledger —
+every block now priced, −0.08 to −0.12 ms a row — is `docs/span-render-plan.md` §11. ⚠ The end
+state is TWO steps and **`ph27` → 0 is RETRACTED**: owning all 208 rows is worth −11.18 ms and the
+rest goes with the CALL, of which `snapshotBands` + `buildLineModes` (~2.4 ms) must keep running
+forever because `m_plan` is the COPPER's palette schedule, not decode work (§11a).
+⭐⭐ **And the decode's own 38 ms turned out to be CODE SHAPE, not algorithm — TWICE, and it is
+~20 ms now** — the scan was re-reading two loop-invariant stack slots per cell and had spilled its
+pointers into data registers; then `make DECODESPLIT=1` attributed the remaining "12 ms floor" and
+four of its five rows were **byte loops over longword-aligned data** (−4.20 ms at `151e282`).
+⭐ **A fixed per-FRAME row is invisible to a per-ROW or per-CELL ledger** — that is why the ledger
+summed to half the phase, and why a split whose rows close against the unsplit row is what settles
+it. **Read the objdump of a hot loop before theorising about its
 algorithm**, and see `docs/perf-method.md` for what to look for (a `tst.l <n>(sp)` on a loop
 invariant; pointers living in `d` registers).
   ⚠ **The counterweight is measured too, and the whole scan for a second instance came back

@@ -57,6 +57,25 @@ make clean && make -j4 PROBES=1
   `EXTRA_ARGS=--cpu=68040`.  See `docs/amiga-lessons.md` §SPRxPT — A1200 alone was not enough
   there; the 68040 is what made the violation fire.
 
+## ⚠⚠ READ THE TABLE OUT OF `.run/gdb-out.log`, NOT OUT OF `diag_run.sh`'s STDOUT
+
+`diag_run.sh` ends with `grep -v … | tail -"${GDBTAIL:-40}"`, so **its stdout is the last 40 lines
+of a script's output and nothing else.**  For `phase4_prof.gdb` that silently drops
+
+* **phases 1..5** — including phase 5, `build_track_geometry`, which is 26.7 ms; and
+* the **`=== vbi=… frozen=… build=… ===` header**, i.e. the `PROBEFIELDS` gate and the flag
+  fingerprint, the two things every arm is supposed to prove before it is quoted.
+
+A frame total summed from that stdout reads **~36 ms low**, and it looks entirely plausible.  ⚠ It
+is worse than a wrong number on its own, because the truncation depends on how many lines the
+script happened to print: an arm with one extra row keeps a phase the control lost, so two runs
+get summed **on different bases** — which is the same defect as §A CONTROL THE INSTRUMENT ERASES,
+and it has now cost two bad diffs.
+
+⭐ **The habit: `cp amiga/.run/gdb-out.log` to a per-arm file the moment a run ends, and compute
+from that** (`GDBTAIL=400` widens the console view, but the log is the record).  Assert
+`frozen=` and `build=` from it before diffing anything.
+
 ## ⚠ The stale-build trap
 
 **Always `make clean && make -j4 PROBES=1` before a headless probe run**, and **run `make clean`
