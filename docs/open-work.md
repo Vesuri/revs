@@ -151,21 +151,39 @@ the A/B). Its "~75 ms" tag was a 1282 ms-frame-era figure. What is still availab
 §4a item 2 — lines 81..horizon made write-free by PERMUTING that band's pens — and it is a
 direct-renderer-only option, so it is gated behind this entry, not free today.
 
-### 2. ⭐⭐⭐ The view sweep's DRIVER AND CHAIN-ENTRY code — 30.2 ms, AND IT IS NOW NAMED
-`docs/perf-method.md` §the sweep is 61% driver/entry. Measured by differencing `NOUNITS=2`:
-**32.36 ms of per-line driver/entry against 20.36 ms of unit loop**, phase 3 at 80% entry.
-⭐⭐⭐ **AND THE CALIBRATED `VIEWP3` SPLIT NAMES THE CODE: 84% of phase 3 is the two chain-ENTRY
-brackets, at 2616 cycles per run** (`docs/perf-method.md` §chain entry is 84% of phase 3) —
-× 82 runs/frame = **30.2 ms/frame**, which closes on the `NOUNITS=2` figure from the other axis.
-Those 2616 cycles are a **poke-then-decode round trip with zero semantic content**:
-`paint_lines_short` writes the run's start cell as a 6502 *operand byte*, `view_own_enter` reads it
-back and decodes it through `g_viewUnitOf[]` to recover the same index, `view_own_run` re-discovers
-the run's END by walking `g_viewStopList`, and `view_move_stop`/`view_plant` plant and unplant
-**RTS opcodes** in page-$7E slots — while `[first .. stop)` is known to the caller before any of it
-runs. ⇒ **this is the 6502 SMC emulation the directive names, it is 30 ms of the frame, and
-deleting it is the same edit as entry 1's next step.** The destination goes in a **local** (see the
-`bus_write` result: `plot_ptr_v` is a global fifteen unrelated routines use as scratch, which is
-why GCC could not fold the constant base).
+### 2. ⭐⭐⭐ The view sweep's DRIVER code — **29.03 ms left in phases 2+3**, and the ENTRY half is DONE
+⭐⭐ **−6.58 ms taken** (`214c8ae`, `docs/perf-method.md` §the entry was deleted): the runs are
+**inline in both drivers**, `byte`/`line`/`cell` are in registers, `view_own_enter`'s poke-decode
+round trip is gone, and phases 2+3 went **35.61 → 29.03 ms** with their census identical to the
+unit (426/32/16 and 282/50/25). Phase 3 is now **5346 cyc/line for 5.6 painted cells**.
+
+**What is still in there, measured, per phase-3 line:**
+
+| what | cyc/line | how it goes |
+|---|---:|---|
+| the unit loop + 2 composed boundary bytes — **real work, CLOSED** | ~1100 | — |
+| `view_move_stop` ×2 — plants/unplants **RTS opcodes** in page-$7C/$7E slots | 888 | **the RESULTS RULE** ↓ |
+| `step_scanline` — a 28-instruction 6502 byte-lane dance for one pointer step | ~400 | wide-value rewrite |
+| the two stop tails + the `ViewState` writes at the exits | ~400 | falls out with the plants |
+| the rest (line decrement, table indexing, the cold-arm tests) | ~2500 | needs its own split |
+
+⭐ **THE NEXT EDIT IS THE PLANTS, AND IT NEEDS THE RESULTS RULE, NOT A CODE SHAPE.** The run's
+geometry is `[first .. stop)` and both ends are known to the driver before any opcode is planted;
+the plants exist only so a 6502 `RTS` would land in the right slot. They are `mem[]` writes,
+so removing them needs a **written reader audit** (the readers include the transliteration an
+expansion circuit's hook re-enters — `docs/validation-harness.md` §THE RESULTS RULE), scoped
+through `set_ignore`, a `determinism` re-record, and a commit that quotes the audit.
+⚠⚠ **But keep `view_stop_from` as the stop authority and do NOT derive the stop from the tables.**
+The planted stop is a **state machine over `mem[rec]`**: `view_move_stop` returns early when
+`stop_unchanged(stop, mem[rec])` and `unplant_stops` restores `STA` at the end of phase 3, so on a
+phase's FIRST line a table byte equal to the stale record plants nothing and the run legitimately
+runs to unit 39. `g_viewStopList` is maintained exactly and reads in ~6 instructions.
+⚠⚠ **And the geometry tables still cannot be precomputed** — `view_run_right_end` ($3080) collides
+with column 1's source block at exactly one byte ($309B, phase 3's topmost line), so every table
+read must happen where the 6502 did it.
+⚠ Phase 2 also carries **one byte of SMC state across its lines on purpose**: the poke of chain B's
+entry sits inside the `stop_unchanged` test, so that entry must be read from `mem[]`, not a local.
+
 ⚠⚠ **The unit loop itself is CLOSED** — 43 cyc/unit is what a byte load, a zero test and a byte
 store cost on a 68000, and widening is impossible (destination cells 8 bytes apart, sources 128).
 ⚠⚠ Any edit to `paint_cells` must pass **the counting test**: grep the objdump for each loop

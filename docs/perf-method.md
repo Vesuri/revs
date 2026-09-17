@@ -897,6 +897,74 @@ subtraction anyway is that **the view sweep's own census is identical across the
 The driver's control flow reads the stop list, `plot_ptr`, and the per-line surface index, none
 of which is picture state.
 
+#### ⭐⭐⭐ AND THE ENTRY WAS DELETED: THE SHORT PHASES' RUNS WENT **INLINE** — 35.61 → 29.03 ms, the frame −7.63 (2026-09-17)
+
+The decomposition below named 2616 cycles per chain entry and called it "a poke-then-decode round
+trip with zero semantic content". That was actionable, and this is the action: the run is now
+**inline in the driver** (`VIEW_SHORT_RUN` in `revs_native.c`), with `byte`/`line`/`cell` — the
+6502's A, X and Y — in **registers** for the whole line, and `srcLine`/`dstLine` hoisted once a
+line so a run's set-up is one shift and one `lea`.
+
+Both arms `SPANFILL=5 VIEWOWN=1`, `PROBEFIELDS=3000` + warp, `build=1d`, `smc=0`, and the windows
+match to 0.0002% (`frozen` 240442943 vs 240443466):
+
+| bracket | control | inline runs | delta |
+|---|---:|---:|---:|
+| ph33 `VIEWP2` | 11.78 ms | **10.16** | −1.62 (−13.8%) |
+| ph34 `VIEWP3` | 23.83 ms | **18.86** | −4.96 (−20.8%) |
+| **ph33 + ph34** | **35.61 ms** | **29.03** | **−6.58 (−18.5%)** |
+| ph24 view phase 1 | 17.45 | 17.55 | +0.10 |
+| ph32 `VIEWTAIL` | 6.26 | 6.39 | +0.13 |
+| **Σ(1..39) − ph28** | **192.34 ms** | **184.71** | **−7.63** |
+
+Per line: phase 3 **953 → 754 µs** (6757 → 5346 cyc), phase 2 **736 → 635 µs**.
+
+⭐⭐ **THE CENSUS IS WHAT MAKES IT A CODE-SHAPE RESULT AND NOT A WORKLOAD SHIFT.** Phases 2 and 3
+report **426 units / 32 runs / 16 lines** and **282 / 50 / 25** in *both* arms — identical to the
+unit. A phase row that moves while its own census holds still is a shape win by construction, and
+this is the cheapest way to rule out the trajectory (§bound the window in emulated time warns
+about the other direction). Quote the census beside the row.
+
+⭐⭐⭐ **THE MECHANISM: A STRUCT WHOSE ADDRESS ESCAPES IS MEMORY FOR THE WHOLE LOOP, AND
+`ViewState` WAS THE 6502'S THREE REGISTERS.** `&v` reaches `view_plant` and `view_own_run`, so GCC
+had no choice — every `v->byte` in a per-line driver was a real memory access, and each of the four
+chain entries a *marshal* out and back. This is the same class as §a hot loop's state lives in
+memory if anything takes its address (the −4.79 ms span rasteriser), arrived at from the other
+side: there the fix was packing results into `d0`, here it is holding the state in locals and
+syncing **only around the cold call**. ⭐ The enabling observation was that the sync is nearly
+free to omit: `view_plant`/`view_move_stop` write only `v->byte`, and that write is **dead** in
+both drivers (each overwrites it before the next read), so 21 of the 25 plants a sweep need no
+sync at all.
+
+⭐⭐ **THE DEAD-ARM PATTERN, THIRD USE, AND IT IS NOW THE DEFAULT MOVE.** A run with no planted
+stop (`stopUnit >= 40`) can only end at the `$7EEE` terminator, which is `RTS` throughout phases 2
+and 3 — so the hot path tests the precondition and hands the whole arm to the **existing**
+`view_own_run`: the terminator test, both its traps and the multi-line continuation, in code
+already written and already gated. **No `#ifdef`, no fixture narrowing, and the faithful arm is
+untouched** (as with `column_gap_walk_core`'s `gap_walk_reread`). ⇒ *Don't optimise around a dead
+arm; make its own precondition select a cold copy.*
+
+⚠ **The itemised prize over-predicted by ~1/3, and that is the calibration to carry.** Hand-counting
+the objdump put the deletable items at ~2150 cyc/line (two `movem` frames ≈600, two per-run
+prologue recomputes ≈800, two entry decodes ≈750); the measured saving is **1411 cyc/line**. The
+gap is not mystery — what survives is named: the two stop tails, the plants, `step_scanline`'s
+28-instruction byte-lane dance, and the new cold-arm test — but a per-item estimate of a
+*code-shape* change should be quoted as an upper bound, not a forecast.
+
+⚠⚠ **AND A NOTE IS NOT A LOG — I nearly published a phantom regression.** My own carried-over note
+said phase 1 read `units=1440 runs=36`; the new arm read `units=4 runs=0` and I spent a paragraph
+theorising about the stateless predicate flipping. **The control log said `units=5 runs=0`.** The
+1440 came from a different arm's log (`SPANFILL` without the takeover) that had been summarised
+into a note and then trusted over the file. This is §verify the instrument's rule with the
+subject changed: *when a reading surprises you, re-read the control's own log before explaining
+it* — the explanation was ready and the premise was false.
+
+**What is left in phase 3: 5346 cyc/line for 5.6 painted cells.** ~1100 of that is the unit loop
+plus the two composed boundary bytes; the rest is the plants/pokes (STOPA 590 + STOPB 298),
+`step_scanline` (~400), the two stop tails and the `ViewState` writes at the exits.
+`docs/open-work.md` item 2 carries the remainder and its gate.
+
+
 #### ⭐⭐⭐ AND THE FOURTH, CALIBRATED DECOMPOSITION NAMES THE CODE: **CHAIN ENTRY IS 84% OF PHASE 3, AT 2616 CYCLES PER RUN** (2026-09-16)
 
 Everything above agreed that phase 3 is run-entry work and not unit work; none of it said *which

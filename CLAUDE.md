@@ -386,6 +386,13 @@ the objdump shows the unrolled body is 43 cyc/unit on the clean arm — 12 (load
 the 12% dirty arm. ⇒ **No code shape can improve that loop, and widening is impossible** (the
 BBC layout puts destination cells 8 bytes apart and sources 128 apart). The 32 ms of drivers is
 the larger, separate lever. `docs/perf-method.md` §the sweep is 61% driver/entry.
+⭐⭐ **AND THE CHAIN-ENTRY HALF OF IT IS NOW DELETED — −6.58 ms**: the short phases' runs went
+INLINE in their drivers (phases 2+3 **35.61 → 29.03 ms**), which killed the poke-then-decode round
+trip that reached them. Two transferable moves did it, both below — state in LOCALS rather than a
+struct whose address escapes, and a **dead arm selected by its own precondition** into the
+existing out-of-line copy. ⭐ **Quote the sweep's CENSUS beside the phase row**: 426/32/16 and
+282/50/25 were identical across both arms, which is what makes a moved row a shape win rather
+than a trajectory. The ~29 ms that remains is `docs/open-work.md` entry 2.
 ⛔⛔⛔ **AND THE REPRESENTATION CHANGE THAT WAS TO REACH THAT 20 ms IS CLOSED — the source-event/run
 consumer was built and cost +25.46 ms.** ⭐⭐⭐ **On a 68000 the expensive direction is INDEX →
 POINTER**: a cell-indexed event mask pays 476 cyc/event and a 402-cycle per-run prologue where the
@@ -433,6 +440,11 @@ frame (265 `n(a5)` operands, three `pea`s per plot). Hand several small results 
 one `d0`** instead. ⚠ And the routine got BIGGER — 1708 → 2217 instructions — and faster; on the
 68000 a memory operand is 16-20 cycles against 4-8 for a register op, so **instruction count is not
 the scoreboard.** Grep a hot kernel for `n(a5)` / `n(sp)` / `pea` before calling its shape clean.
+  ⭐ **Second instance, −6.58 ms, and it names the cheapest fix:** the view sweep's `ViewState` was
+  the 6502's A/X/Y and sat in the frame because `&v` reached two callees, so every `v->byte` in a
+  per-line driver was a memory access. Hold it in **locals** and sync only around the COLD
+  callee — and check whether the sync is needed at all first: the plants write one field that is
+  dead in every caller, so 21 of 25 a sweep needed none.
   ⚠⚠ **But PACKING IS NOT FREE, AND THE TEST IS THE RATIO OF RELOADS TO PACKS, NOT THE OPERAND
   COUNT.** The 68000 has no byte-insert, so every pack/unpack is `swap`/`clr.w`/`or.l`/`andi.l`/
   `lsr.l` — ~40 cycles, i.e. what 2-3 `n(sp)` reloads cost. The span plotters paid because ONE pack

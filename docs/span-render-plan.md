@@ -1044,18 +1044,32 @@ through `mem[]` on others gets repainted from a stale `mem[]` byte. Three mask s
 per-cell RMW **1.6 ms ⛔**; per-row prefix-XOR delta **≈0.9 ms**; per-changed-cell 8-line range
 test **≈1.1 ms**.
 
-⭐⭐⭐ **(5) — THE LIVE STEP — IS THE DRIVER REWRITE, AND THE MEASUREMENT NAMES IT.** The calibrated
-`VIEWP3` split (`docs/perf-method.md` §chain entry is 84% of phase 3) puts **84% of phase 3 in the
-two chain-ENTRY brackets at 2616 cycles per run**, which × 82 runs a frame = **30.2 ms/frame** and
-closes on `NOUNITS=2`'s 31.5 ms driver figure. What those 2616 cycles do is a **poke-then-decode
-round trip with zero semantic content**: `paint_lines_short` writes the run's start cell as a 6502
-*operand byte* (`mem[MEM_view_p3_enter_a_site + 1] = v->byte`), `view_own_enter` reads that byte
-back and decodes it through `g_viewUnitOf[]` to recover the same index, `view_own_run` re-discovers
-the run's END by walking `g_viewStopList`, and `view_move_stop`/`view_plant` plant and unplant
-**RTS opcodes** in page-$7E slots. Both ends of `[first .. stop)` are known to the caller before
-any of it runs. ⇒ make the run geometry explicit, delete the planting and the decode, and the
-bitplane painter, its ownership mask and the disappearance of the last `mem[]` destination all fall
-out of the same rewrite.
+✅ (5a) **THE ENTRY HALF OF THE DRIVER REWRITE — DONE, `214c8ae`, −6.58 ms on phases 2+3**
+(35.61 → 29.03; Σ(1..39)−ph28 192.34 → 184.71). The run is **inline in both drivers**
+(`VIEW_SHORT_RUN`), the run geometry is explicit `[first .. stop)`, `byte`/`line`/`cell` are in
+registers, `srcLine`/`dstLine` are hoisted once a line, and `view_own_enter`'s poke-then-decode
+round trip is deleted — the page is a literal at every call site, so `view_low_page` folded to
+`if (1)` and only the operand's high byte is still read. `stopUnit >= 40` routes to the existing
+`view_own_run` as a cold arm, so the `$7EEE` terminator, both traps and the multi-line
+continuation are unchanged code. Gated: `validate` 700/0 with the trap count unchanged at 194,
+all five `determinism` trajectories (recorded from the `VIEWOWN=0` arm, so they prove the two
+arms agree), `viewdiff` 0 bytes on display lines 82..166 for every circuit.
+⭐⭐ Phases 2/3's census was **identical in both arms** (426/32/16 and 282/50/25) — that is what
+makes it a shape win rather than a trajectory (`docs/perf-method.md` §the entry was deleted).
+
+⭐⭐⭐ **(5b) — THE LIVE STEP — IS THE PLANTS, AND IT IS A FAITHFULNESS EDIT, NOT A SHAPE ONE.**
+What is left of the entry is `view_move_stop`/`view_plant` planting and unplanting **RTS opcodes**
+in page-$7C/$7E slots — 888 cyc of phase 3's remaining 5346 cyc/line, plus the two stop tails that
+fall out with them. Both ends of `[first .. stop)` are already known to the driver, so the opcodes
+exist only so a 6502 `RTS` would land in the right slot. They are `mem[]` writes ⇒ **the RESULTS
+RULE**: a written reader audit (the readers include the transliteration an expansion circuit's
+hook re-enters), scoped `set_ignore`, a `determinism` re-record, and a commit quoting the audit.
+⚠⚠ Keep `view_stop_from` as the stop authority — the planted stop is a **state machine over
+`mem[rec]`**, so it cannot be derived from the tables (`docs/open-work.md` entry 2 has the trap).
+⚠⚠ And the geometry tables still cannot be precomputed: `view_run_right_end` ($3080) collides with
+column 1's source block at $309B on phase 3's topmost line.
+Then the bitplane painter, its ownership mask and the disappearance of the last `mem[]`
+destination all fall out of the same rewrite.
 
 ⚠ Reader debt to discharge with it: `plot_line_octant`'s undo entries 28..35, and
 `update_grip_limits`' `mem[$713D]`/`mem[$7205]` on display line 149.
