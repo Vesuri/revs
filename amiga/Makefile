@@ -229,7 +229,8 @@ endif
 # stop list, `view_consume` and every trap arm are the SAME code, so it is byte-exact by
 # construction and `make validate FN=view_paint_lines` + the five `determinism` trajectories
 # gate it directly.  It is the step that has to pay before the runs' stores go to the bitplanes.
-ifdef VIEWOWN
+# ⭐⭐⭐ ON BY DEFAULT since the row-ownership design (§11): `make VIEWOWN=0` is the A/B control.
+ifneq ($(VIEWOWN),0)
 EXTRA_DEFINES += -DREVS_VIEW_OWN_SHORT
 endif
 
@@ -590,7 +591,12 @@ endif
 #       make SPANFILL=5 DIRTYCHECK=1                 — the CARVE-OUT: g_decodeDirtyMismatch == 0.
 #   ⚠ `units/frame` in phase4_prof.gdb goes to ~0 for phase 1 in this build, BY CONSTRUCTION — the
 #   units are not visited, so `us/unit` is meaningless there.  Read `ms/frame` and `us/line`.
-ifneq ($(SPANFILL),)
+# ⭐⭐⭐ ON BY DEFAULT AT LEVEL 5 since the row-ownership design (§11): the renderer OWNS display
+# lines 81..116 and the decode does not convert them, which is where the win actually is (the
+# store flip itself is a wash).  `make SPANFILL=0` is the A/B control that turns the whole span
+# path off; levels 1..4 remain the historical ladder.
+SPANFILL ?= 5
+ifneq ($(SPANFILL),0)
 ifeq ($(SPANVERIFY),1)
 EXTRA_DEFINES += -DREVS_SPAN_EMIT -DREVS_DIRECT_PLOT
 else
@@ -639,6 +645,12 @@ endif
 # ⚠ Default ON: both span oracles and every committed span .gdb script read these.  A SPANSTAT=0
 # build therefore has NO span probe symbols at all, and running a span script against one is a
 # probe-audit failure by design rather than a silent zero.
+# ⚠⚠ DEFAULT IS NOW `PROBES`, NOT `1`: with SPANFILL on by default the six volatile RMWs per
+# span would otherwise be in the SHIPPING path (~0.9 ms/frame).  Every span oracle and .gdb
+# script is a PROBES build, so they still get their symbols.
+ifeq ($(SPANSTAT),)
+SPANSTAT := $(if $(PROBES),1,0)
+endif
 ifneq ($(SPANSTAT),0)
 EXTRA_DEFINES += -DREVS_SPAN_STATS
 else

@@ -1137,3 +1137,58 @@ line.
 `update_grip_limits`' `mem[$713D]`/`mem[$7205]` on display line 149.
 
 (6) then stage A in full, then B, C, D, E as §10j has them.
+
+## 11. ⭐⭐⭐ THE ROW-OWNERSHIP ARCHITECTURE — the decode is the prize, the painter is a wash (2026-09-17)
+
+**This section supersedes §10p's build ORDER.** §10p ranked the work by phase cost — phase 1's
+line loop, then phases 2/3's runs — on the assumption that painting a bitplane directly is cheaper
+than painting a `mem[]` byte a decode then converts. **It is not cheaper. It is the same.** Three
+arms of one field-bounded session (`PROBEFIELDS=3000`, warp, driving, `frozen` within 0.022%,
+`build=` 0 / 1 / 1d so each arm proves its own flag set):
+
+| arm | Σ(1..39) − ph28 | ph24 view p1 | ph27 decode | ph33+34 |
+|---|---:|---:|---:|---:|
+| default — what shipped until today | **196.59 ms** | 15.53 | 28.74 | 36.92 |
+| `VIEWOWN=1` | 188.24 | 16.22 | 28.35 | 29.05 |
+| `VIEWOWN=1 SPANFILL=5` | **182.62** | 15.50 | **24.30** | 28.80 |
+
+⭐⭐⭐ **Phase 1's takeover moves phase 1 by −0.03 ms and the frame by −5.62, and the difference is
+entirely `ph27`.** All 36 of its lines stopped going through forty `mem[]` bytes and forty units
+and a 905 cyc/line driver, and went straight into two bitplanes instead — and its own bracket did
+not move (15.53 → 15.50). The +0.69 the takeover appears to "recover" in `ph24` is `VIEWOWN`'s
+code-shape collateral in the shared `paint_cells`, not the painter's win. What *did* move is the
+decode: **28.74 → 24.30 for 36 of 208 display rows, −0.123 ms per row**, which reproduces
+`VIEWCARVE`'s independently measured −5.07 ms for 41 rows (−0.124 ms/row) to 1%.
+
+⇒ ⭐⭐⭐ **THE DESIGN RULE: A DIRECT-TO-BITPLANE PAINTER IS WORTH `rows owned × 0.123 ms`, AND
+NOTHING ELSE.** Not the stores (a bitplane pair costs what the `mem[]` byte cost — `093e560` said
+this from the objdump and the three arms now say it end to end), not the driver, not the units.
+**So rank ownership work by ROWS, never by the phase's own cost**, and stop tuning painters: the
+28.74 ms decode is larger than the 15.5 ms sweep that feeds it.
+
+### The 208-row ledger, which is now the plan
+
+| display rows | n | what paints them | decode cost | state |
+|---|---:|---|---:|---|
+| 0..17 | 18 | band 0, MODE 4 — the two text rows | unsized | ○ |
+| 18..80 | 63 | band 1, the flat blue sky (and the `$7B00` code hiding in it) | **0** | ✅ already free — `convertRace`'s `if (!any) continue` skips a row wholly inside the flat band |
+| 81..116 | 36 | view phase 1 (`$7BE2`), one 40-cell run a line | −4.44 measured | ✅ **OWNED** (`SPANFILL=5`) |
+| 117..157 | 41 | view phases 2/3, 6.1 runs of 6.5 cells a line | −5.07 ceiling | ⏳ next, behind the mixed-cell mask |
+| 158..207 | 50 | the dashboard — edge columns, needles, mirrors | **unsized, and by subtraction the largest block left** | ○ |
+
+The end state is what the user's directive asked for and it is now a number: **no decode pass, no
+shadow buffer, no `mem[]` framebuffer on the render path — `ph27` → 0, worth 28.74 ms**, of which
+4.44 is banked. That is bigger than any painter rewrite on the board.
+
+⚠ **Two invariants every new ownership domain must satisfy**, both already paid for once:
+1. **The reader gate** — nothing may read those rows back through `mem[]`. Measured for 81..116
+   with `REVS_FB_POISON` (`f80557d`); it is a *measurement*, not an argument, because a track
+   hook's transliteration is one of the readers.
+2. **Ownership is per DISPLAY LINE, not per character row** (`m_lineMode[y]`, mode 0 = write
+   nothing). A cell owned on some of its eight lines and written through `mem[]` on the others
+   repaints from a stale byte — the mixed-cell problem, priced at ≈0.9–1.1 ms for rows 117..157.
+
+⇒ **Step 0 of this design is done: the new pipeline is the DEFAULT build** (`VIEWOWN=0` /
+`SPANFILL=0` are the A/B controls now). Gated by `make validate` PASS, all five `determinism`
+trajectories PASS, and both §10n target oracles green at `5a970bb`. ⚠ `SPANSTAT` now defaults to
+PROBES-only, because six volatile RMWs per span (~0.9 ms/frame) must not ship.

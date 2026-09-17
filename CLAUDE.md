@@ -245,7 +245,7 @@ Hard-won detail lives in `docs/`, not here. **Read the relevant one BEFORE worki
 | `docs/helper-elimination-audit.md` | The math-helper campaign's per-site KEEP/CONVERT ledger — which `revs_native.c` sites keep a 6502 flag-helper (a flag escapes) and which convert to plain C |
 | **`docs/wide-value-cleanup.md`** | The byte-lane→wide-value campaign ledger: replacing 6502 `_lo`/`_hi`/carry handling of 16/24-bit values with plain-C `uintNN_t` math. Tiers, per-base status, the two mechanisms, the SoA `value_16[N]` relocation. ⚠⚠ **MEASURED end to end and it is a NULL RESULT (+0.65%, inside noise)** — the instruction-count win is real but the byte lanes are not where the frame goes; ⭐⭐ **rank a candidate pair by OPS-PER-MARSHAL, never by ref count** (a shared *scratch* cell's huge ref count counts TENANTS, not wide arithmetic — the error that made `math_lo/hi` look like the biggest prize for three passes) |
 | `docs/perf-method.md` ⚑ | Quoting, sizing or judging ANY performance number; where the time goes |
-| **`docs/span-render-plan.md`** ⭐ | **Before touching any plotter or any Phase 6 asm — THE live rendering plan.** The replacement architecture: world points → spans → bitplanes, §10 sizing, **§10n the measured checkpoint** (the fill is 6.87 cyc/byte and direct-to-bitplane writing is exonerated; a hook-in nets zero), **§10p the live build** (the renderer owns phase 1's line loop, stateless predicate, and the unmeasured phase-18 gate), §10m the SPRITE lever. (⛔ `docs/direct-bitplane-plan.md` is the OBSOLETE earlier plan — kept only because source/docs cite its §-numbers; read it as history, never as a plan) |
+| **`docs/span-render-plan.md`** ⭐ | **Before touching any plotter or any Phase 6 asm — THE live rendering plan.** The replacement architecture: world points → spans → bitplanes, §10 sizing, **§10n the measured checkpoint** (the fill is 6.87 cyc/byte and direct-to-bitplane writing is exonerated; a hook-in nets zero), **§11 THE LIVE DESIGN** (row ownership: the decode is the prize, the painter is a wash, and the 208-row ledger is the plan), §10p the build ledger, §10m the SPRITE lever. (⛔ `docs/direct-bitplane-plan.md` is the OBSOLETE earlier plan — kept only because source/docs cite its §-numbers; read it as history, never as a plan) |
 | `docs/m68k-optimisation.md` ⚑ | Optimising a hot function or writing an asm twin (68000 rules) |
 | `docs/amiga-lessons.md` ⚑ | Copper lists, sprites, the VBI, write-only registers |
 | `docs/amiga-arch.md` ⚑ | The Amiga display/interrupt architecture decisions and why |
@@ -421,6 +421,16 @@ per-line hook-in reaches the **unit loop** while the bracket is **905 cyc/line o
 units, and `NOUNITS=2` had already published that split (61% driver/entry for the whole sweep) before
 the plan was written. This is the companion to the two-number rule above: visits deleted, cost of the
 new shape, **and what the hook cannot touch**. `docs/span-render-plan.md` §10n.
+⭐⭐⭐ **AND THE REASON DIRECT-TO-BITPLANE PAYS IS THAT AN OWNED DISPLAY ROW STOPS BEING DECODED —
+NOT THAT THE STORE IS CHEAPER. A BITPLANE PAIR COSTS WHAT THE `mem[]` BYTE COST.** Measured three
+arms end to end: phase 1's whole line loop went direct — forty `mem[]` bytes, forty units and a
+905 cyc/line driver replaced by two byte writes a cell — and **its own bracket moved −0.03 ms**,
+while the frame moved −5.62, *all* of it the decode (28.74 → 24.30 ms for 36 of 208 rows).
+⇒ **A direct-to-bitplane painter is worth `rows owned × 0.123 ms` and nothing else, so rank
+ownership work by ROWS OWNED and never by the phase's own cost** — and a row wholly inside the flat
+blue band is already free. Two invariants for a new domain: the reader gate must be **measured**
+(`REVS_FB_POISON`), and ownership is per DISPLAY LINE, not per character row. The 208-row ledger is
+`docs/span-render-plan.md` §11; the end state is `ph27` → 0, worth 28.74 ms.
 ⭐⭐ **And the decode's own 38 ms turned out to be CODE SHAPE, not algorithm: ~22 ms now, +8.1%
 end to end** — the scan was re-reading two loop-invariant stack slots per cell and had spilled its
 pointers into data registers. **Read the objdump of a hot loop before theorising about its

@@ -171,15 +171,21 @@ layer to delete** — the body serves **four chain entries a line** (two stops, 
 with its own run set-up, stop tail, `view_compose` pair, unit lookup and `g_viewStopList` search,
 for an average run of **5.6 cells**. `NOUNITS=2`'s 80%-driver figure confirms it independently.
 
-⭐⭐⭐ **THE NEXT EDIT IS PHASE 1's LINE LOOP (§10p step 3b), NOT A PHASE-2 SPAN PAINTER.** The
-principle the objdump yields: **a bitplane span painter pays in proportion to RUN LENGTH, and the
-phases are 40 / 13.3 / 5.6 cells per run.** ⚠⚠ In no phase does it delete the **source walk** —
-`view_consume`'s RLE must read every cell's source byte whatever the destination is, so a cell goes
-54 → ~48 cyc, not to zero. **The prize is the driver and the decode carve-out, never the stores.**
-Phase 1: 3457 cyc/line = 2160 units (40 × 54) + 1297 driver ⇒ a takeover deletes the 905 cyc/line
-driver (4.6 ms), improves the store (~1.3 ms) and carves 36 of 208 rows out of the decode (4.2 ms)
-= the published −8 to −11 ms. ⛔ **The "phase 2 at ~1.5 ms instead of 10.16" estimate is RETRACTED**
-— it assumed the span deleted the source walk.
+⭐⭐⭐ **AND THE PAINTER IS A WASH — RANK OWNERSHIP BY ROWS, NOT BY PHASE COST (§11, 2026-09-17).**
+Three arms of one field-bounded session settled it: phase 1's takeover moves **phase 1 by −0.03 ms**
+(15.53 → 15.50, forty `mem[]` bytes + forty units + a 905 cyc/line driver replaced by two bitplane
+writes a cell) and **the frame by −5.62, all of it `ph27`** (28.74 → 24.30 for 36 of 208 rows =
+−0.123 ms/row, which reproduces `VIEWCARVE`'s −0.124 to 1%). ⇒ **A direct-to-bitplane painter is
+worth `rows owned × 0.123 ms` and nothing else.** The predicted −6.6 to −7.8 ms on phase 24 is
+⛔ **RETRACTED**: it priced a driver deletion that the measurement says is not there to collect.
+⚠⚠ In no phase does the painter delete the **source walk** — `view_consume`'s RLE must read every
+cell's source byte whatever the destination is. **The prize is the DECODE, and the end state is
+`ph27` → 0 = 28.74 ms.** The 208-row ledger, the two invariants (the measured reader gate; per-
+display-line ownership) and the next domain are §11's; ⛔ **the "phase 2 at ~1.5 ms instead of
+10.16" estimate is RETRACTED** too — it assumed the span deleted the source walk.
+✅ **Step 0 is DONE: the new pipeline is the DEFAULT build** — `VIEWOWN=0` / `SPANFILL=0` are now
+the A/B controls, so the shipping frame goes **196.59 → 182.62 ms (−13.97)**. `validate` PASS, all
+five `determinism` trajectories PASS.
 
 ⭐ **Four candidate causes of the per-line cost were checked and ALL are too small:**
 

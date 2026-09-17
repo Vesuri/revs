@@ -143,7 +143,8 @@ endif
 # stop list, `view_consume` and every trap arm are the SAME code, so it is byte-exact by
 # construction and `make validate FN=view_paint_lines` + the five `determinism` trajectories
 # gate it directly.  It is the step that has to pay before the runs' stores go to the bitplanes.
-ifdef VIEWOWN
+# ⭐⭐⭐ ON BY DEFAULT since the row-ownership design (§11): `make VIEWOWN=0` is the A/B control.
+ifneq ($(VIEWOWN),0)
 CFLAGS   += -DREVS_VIEW_OWN_SHORT
 CXXFLAGS += -DREVS_VIEW_OWN_SHORT
 endif
