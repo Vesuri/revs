@@ -45,6 +45,27 @@ extern "C" {
    front end has no race buffer at all). */
 void revs_plot_target(unsigned char* planeBase);
 
+/* ⭐⭐⭐ BOTH PLANE BUFFERS, ONCE AT START-UP — A DIFFERENT CONTRACT FROM `revs_plot_target`.
+ * A span painter repaints its whole display line every sweep, so the buffer the next decode will
+ * fill is all it needs.  The GLYPH painter below is a DELTA painter: it maintains the ~3.7 bytes a
+ * frame that change on rows nothing else on the screen touches, so a byte put into one buffer
+ * alone would be missing from the other FOR EVER — the two alternate on screen and no pass
+ * repaints them.
+ * ⚠⚠ That is the general rule and it is measured, not aesthetic: a mirrored painter whose state
+ * is CROSS-FRAME must write BOTH plane buffers; "the back buffer is enough" holds only for a
+ * painter that repaints a whole row (CLAUDE.md, docs/span-render-plan.md §11b). */
+void revs_plot_planes(unsigned char* planeA, unsigned char* planeB);
+
+/* THE BAND RECORD'S MODE PER BAND, published once per decode by `RevsScreen::buildLineModes()`.
+ * `firstLine[n]` is band n's first display line (band 0's is NEGATIVE — it starts before the
+ * display) and `mode[n]` is 4 or 5.
+ * ⚠⚠ THE GLYPH PAINTER MAY NOT READ `m_lineMode`, WHICH IS WHY THIS EXISTS.  That table has
+ * already had the owned lines zeroed (mode 0 = "write nothing") by the time any painter runs, and
+ * the flat-band test zeroes more of it besides — while the painter must put the pixels in
+ * whatever the palette says today, because on an owned row NOTHING will ever re-expand them from
+ * mem[].  A flat band is a palette fact about what is VISIBLE, not about what is stored. */
+void revs_plot_bands(const short* firstLine, const unsigned char* mode, unsigned count);
+
 /* One run of `cells` identical MODE 5 bytes starting at BBC frame-buffer address `addr`, i.e.
    addr, addr+8, addr+16, ... — contiguous plane bytes on this side. */
 void revs_plot_run(unsigned short addr, unsigned char value, unsigned short cells);
@@ -118,6 +139,53 @@ int revs_plot_has_target(void);
 extern unsigned char g_plotOwn[208] __attribute__((aligned(4)));  /* = BBC_SCREEN_HEIGHT */
 void revs_plot_own_reset(void);
 
+#ifdef REVS_PLOT_TEXT
+/* ⭐⭐⭐ THE GLYPH DOMAIN — display lines 0..17 AND 192..207, OWNED OUTRIGHT (§11b, domain A).
+ *
+ * WHY THESE 34 ROWS AND NOT THE DASHBOARD.  The measured writer-set ledger (`make fbwrites
+ * FILL=all`) groups all 208 display lines by the SET of routines that write them, and these two
+ * blocks — the two MODE 4 text rows at the top and the bottom two character rows of the
+ * dashboard — have exactly ONE writer between them, `vdu_char_emit`, at ~3.7 stores a frame; the
+ * bottom eight (200..207) have none at all.  Same 34 rows as the needle block for ~0.5 ms more
+ * decode, against 66 stores a frame from four routines there.  ⭐⭐⭐ RANK A DOMAIN BY ROWS OWNED
+ * ÷ WRITER SET, never by the prize alone: owning a row means retargeting every routine that
+ * writes it.
+ *
+ * HOW IT WORKS, and there are only two moving parts:
+ *   1. THE BASE.  `revs_plot_own_reset()` expands all 34 rows of mem[] into BOTH buffers once,
+ *      the first sweep it has planes and a band record.  A dash row is ~38.4 of its 40 cells
+ *      static cockpit, so a delta painter is only valid once the planes already hold that static
+ *      base.  ⛔ This is a buffer-INITIALISATION flag, not a dirty map — nothing per cell,
+ *      nothing per frame, nothing the writers maintain (CLAUDE.md §writer-maintained dirty maps).
+ *   2. THE DELTA.  `revs_plot_byte` from `vdu_char_emit`'s one store site, into both buffers.
+ *
+ * ⭐ AND THE `mem[]` STORES ALL STAY.  Owning a row while still writing mem[] needs NO reader
+ * gate — `REVS_FB_POISON` is owed only by the step that DELETES the stores — so `make validate`
+ * and every `determinism` trajectory are untouched by this.  The prize is the decode's, not the
+ * store's: a row the decode stops converting is worth ~0.098 ms and the store flip is a wash
+ * (CLAUDE.md, §10n). */
+void revs_plot_byte(unsigned short addr, unsigned char value);
+#define REVS_PLOT_BYTE(a, v)  revs_plot_byte((unsigned short)(a), (unsigned char)(v))
+#ifdef REVS_SPAN_STATS
+extern volatile unsigned long g_plotTextBytes;   /* bytes mirrored into the two buffers */
+extern volatile unsigned long g_plotTextBases;   /* full re-expansions of the 34 rows    */
+#endif
+#ifdef REVS_PLOT_TEXT_CHECK
+/* ⭐⭐ THE STALENESS ORACLE (`make TEXTCHECK=1`), and it is the ONE thing a delta painter on an
+ * owned row has to prove: that no writer reaches these 34 rows unmirrored.  Once per sweep it
+ * re-expands mem[] for both blocks and compares against what the two buffers actually hold, so a
+ * byte written by anyone but `vdu_char_emit` shows up as a mismatch on the very next sweep.
+ * ⚠ It cannot be `revs_screen_convert_reference`: that reads `m_lineMode`, which the carve has
+ * zeroed on exactly the lines under test, so the reference would be blank there (§10k trap 1).
+ * It expands from the band record the painter itself uses. */
+extern volatile unsigned long  g_plotTextChecks;
+extern volatile unsigned long  g_plotTextMismatch;
+extern volatile unsigned short g_plotTextMismatchY;  /* first offending display line */
+#endif
+#else
+#define REVS_PLOT_BYTE(a, v)  ((void)0)
+#endif
+
 /* Counters — every one of them in PROBE_SYMS (amiga/Makefile).
    ⚠ `make SPANSTAT=0` compiles them and their updates away: six volatile RMWs a span is ~220
    cycles, and that instrument is how the shipping price is separated from the counting price.
@@ -142,6 +210,8 @@ extern volatile unsigned short g_plotChainNZLast; /* ...on the most recent sweep
 #endif
 
 #define REVS_PLOT_TARGET(p)     revs_plot_target(p)
+#define REVS_PLOT_PLANES(a, b)  revs_plot_planes((a), (b))
+#define REVS_PLOT_BANDS(l, m, n) revs_plot_bands((l), (m), (unsigned)(n))
 #define REVS_PLOT_RUN(a, v, n)  revs_plot_run((unsigned short)(a), (unsigned char)(v), (unsigned short)(n))
 #define REVS_PLOT_SPAN(a, v)    revs_plot_span((unsigned short)(a), (unsigned char)(v))
 #define REVS_PLOT_CHAIN(a, v, s, t) \
@@ -184,6 +254,9 @@ extern volatile unsigned short g_plotMismatchOff;
 #else   /* !REVS_DIRECT_PLOT */
 
 #define REVS_PLOT_TARGET(p)      ((void)(p))
+#define REVS_PLOT_PLANES(a, b)   ((void)0)
+#define REVS_PLOT_BANDS(l, m, n) ((void)0)
+#define REVS_PLOT_BYTE(a, v)     ((void)0)
 #define REVS_PLOT_RUN(a, v, n)   ((void)0)
 #define REVS_PLOT_SPAN(a, v)     ((void)0)
 #define REVS_PLOT_CHAIN(a, v, s, t)  ((unsigned char)(v))

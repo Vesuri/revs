@@ -11023,6 +11023,19 @@ uint8_t vdu_char_emit_core(void)
             unsigned dst  = (base + line) & 0xFFFFu;
             uint8_t  byte = mem[MEM_vdu_char_block + i];
             seam_write(dst, pointer_is_ram(base), byte);
+            /* ⭐⭐⭐ AND STRAIGHT INTO THE BITPLANES — THE GLYPH DOMAIN'S DELTA (revs_plot.h).
+               This ONE call site is every race-view glyph, space and text-script character:
+               print_spaces loops vdu_emit_char(' '), vdu_emit_char dispatches through
+               vdu_char_def to here, and text_script_interp reaches the same pair.  That is what
+               makes display lines 0..17 + 192..207 a ONE-WRITER domain the renderer can own
+               outright, worth ~3.31 ms of decode (docs/span-render-plan.md §11b).
+               ⚠ The hook is HERE and deliberately not in `seam_write`: that is a header choke
+               point, and growing it inlined a marking leaf 164 times for +4.9 ms in the
+               producers (CLAUDE.md).
+               ⚠ And the mem[] store above STAYS.  Owning a row while still writing mem[] needs
+               no reader gate, so `make validate` and every determinism trajectory are unmoved;
+               REVS_FB_POISON is owed only by the step that deletes the store. */
+            REVS_PLOT_BYTE(dst, byte);
             /* ⚠ UNPROVEN BY CONSTRUCTION, and it cannot be proven here.  Dropping this line
                passes every case, because the cluster's fixture pins char_row_addr to $5800+ —
                not for convenience but because a page-$00/$01 base breaks the TRANSLITERATED

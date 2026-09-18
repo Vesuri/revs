@@ -448,7 +448,10 @@ forever because `m_plan` is the COPPER's palette schedule, not decode work (§11
   writer-set ledger (`make fbwrites FILL=all`, §11b) groups all 208 display lines by their writer
   *set*: rows 0..17 + 192..207 have **one** writer, `vdu_char_emit` at ~3.7 stores/frame, and 8 of
   them have **none at all** — 34 rows for −3.31 ms — while the dashboard's needles are 34 rows for
-  −2.79 ms and 66 stores/frame from two plotters plus two more routines. ⚠ A census that **ranks by
+  −2.79 ms and 66 stores/frame from two plotters plus two more routines. ⇒ ✅ **that glyph domain is
+  BUILT (`make TEXTOWN=1`): `ph27` 20.13 → 17.19 ms, base-plus-delta into BOTH plane buffers, and
+  ⭐ discount a ledger's row price by ~10% (predicted −3.31, measured −2.93 — the second instance)**;
+  the dash needles are the live domain (§11c). ⚠ A census that **ranks by
   volume** buries exactly that finding (a `slice(0, 16)` hid `vdu_char_emit` at position 26 of 62 and
   made 16 rows look writer-free for two sessions) — `docs/method-lessons.md`. ⚠⚠ And a **mirrored
   painter whose erase is cross-frame stateful must write BOTH plane buffers**, or the needle from two

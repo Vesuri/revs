@@ -44,6 +44,19 @@ static uint8_t  s_lineOf[FB_BYTES];
 static uint8_t  s_mapBuilt;
 static uint8_t* s_target;
 
+/* ⭐⭐ BOTH PLANE BUFFERS, for the delta painter below — and it is a different thing from
+   `s_target`.  `s_target` is "the buffer the next decode will fill", aimed once per painted frame
+   from present(); a painter that repaints a whole display line needs nothing else.  The glyph
+   painter maintains only the few bytes a frame that CHANGE, so a byte it puts in one buffer alone
+   would be missing from the other for ever (revs_plot.h). */
+static uint8_t* s_plane[2];
+#ifdef REVS_PLOT_TEXT
+/* ⛔ A buffer-INITIALISATION flag, NOT a dirty map — nothing per cell, nothing the writers
+   maintain.  Declared up here because `revs_plot_target` clears it when the race view leaves the
+   screen, and that is far above the glyph domain's own section. */
+static uint8_t s_textBased;
+#endif
+
 /* ⭐⭐ THE BROADCAST AS A TABLE, because the 68000 cannot make one cheaply.  `0x01010101 * b` is
    not a multiply on this target — GCC synthesises it as moveq/move.b/move.l/lsl.l #8/add.l/swap/
    clr.w/add.l, ~64 cycles, and a fill needs TWO of them (one per plane).  128 cycles a span for a
@@ -71,6 +84,10 @@ volatile unsigned long  g_plotNoTarget  = 0;
 volatile unsigned long  g_plotChainLines = 0;   /* lines the TAKEOVER painted cell by cell */
 volatile unsigned long  g_plotChainNZ     = 0;  /* ...and their non-zero sources = runs - 1 */
 volatile unsigned short g_plotChainNZLast = 0;
+#ifdef REVS_PLOT_TEXT
+volatile unsigned long  g_plotTextBytes = 0;    /* glyph bytes mirrored into both buffers */
+volatile unsigned long  g_plotTextBases = 0;    /* full re-expansions of the 34 owned rows */
+#endif
 }
 #endif
 
@@ -102,6 +119,12 @@ extern "C" void revs_plot_target(unsigned char* planeBase)
 {
     if (!s_mapBuilt) buildMap();
     s_target = planeBase;
+#ifdef REVS_PLOT_TEXT
+    /* ⚠ No target means the race view is not on screen (MODE 7, `tt_active()`), and MODE 7 is the
+       same chip memory time-multiplexed — so the glyph domain's static base is gone and the next
+       sweep must lay it down again.  One byte, in the VBI, which is where the fact is known. */
+    if (!planeBase) s_textBased = 0;
+#endif
 #ifdef REVS_SPAN_STATS
     g_plotRunsLast = 0;
     g_plotCellsLast = 0;
@@ -270,6 +293,44 @@ extern "C" void revs_plot_span(unsigned short addr, unsigned char value)
 
 extern "C" int revs_plot_has_target(void) { return s_target != 0; }
 
+/* ── the band record, as the painters need it ─────────────────────────────────────────────── */
+/* Five entries at most, published once per decode by `RevsScreen::buildLineModes()` — the ONE
+   thing a painter cannot get from `m_lineMode` (revs_plot.h says why: the carve has zeroed its
+   own lines there, and the flat-band test zeroes more). */
+static short   s_bandFirst[5];
+static uint8_t s_bandMode[5];
+static uint8_t s_bandCount;
+
+extern "C" void revs_plot_bands(const short* firstLine, const unsigned char* mode, unsigned count)
+{
+    unsigned n;
+    if (count > 5u) count = 5u;
+    for (n = 0; n < count; n++) { s_bandFirst[n] = firstLine[n]; s_bandMode[n] = mode[n]; }
+    s_bandCount = (uint8_t)count;
+}
+
+/* Which MODE display line `y` is stored in.  Backwards over five entries: the bands are in line
+   order, so the first one that starts at or before `y` is the one `y` is in.  ⚠ Band 0 starts
+   BEFORE the display (BBC_BAND0_ANCHOR_US is negative), hence the signed compare. */
+static unsigned plotModeOf(unsigned y)
+{
+    unsigned n = s_bandCount;
+    while (n--)
+        if ((int)y >= (int)s_bandFirst[n]) return s_bandMode[n];
+    return 5u;   /* no record yet — MODE 5 is the race view's own mode */
+}
+
+extern "C" void revs_plot_planes(unsigned char* planeA, unsigned char* planeB)
+{
+    s_plane[0] = planeA;
+    s_plane[1] = planeB;
+    /* ⭐ Build the address map HERE, not on first use.  This runs from
+       `RevsScreen::initialize()`, after the expansion tables are filled and long before the
+       display is up, which is the only place 16.6 KB of table fill is free — and it retires the
+       lazy build the geometry comment above warns about. */
+    if (!s_mapBuilt) buildMap();
+}
+
 /* ── ⭐⭐⭐ THE TAKEOVER'S OWN LINE (docs/span-render-plan.md §10p step 3b) ────────────────────
    See revs_plot.h for what this is.  The chain, re-expressed against the Amiga's layout: the same
    forty cells, the same RLE, the same translation table — and the destination is the two bitplanes
@@ -396,6 +457,160 @@ extern "C" unsigned char revs_plot_chain(unsigned short addr, unsigned char valu
     return (unsigned char)byte;
 }
 
+#ifdef REVS_PLOT_TEXT
+/* ── ⭐⭐⭐ THE GLYPH DOMAIN — display lines 0..17 AND 192..207 ────────────────────────────────
+   Why these 34 rows, what the two moving parts are and why the mem[] stores all stay: revs_plot.h.
+   Here is only the mechanism. */
+
+/* The two blocks, [first, end).  ⭐ Per DISPLAY LINE, not per character row (CLAUDE.md): 0..17 is
+   the two MODE 4 text rows plus the two lines of row 2 that the band boundary at 18.0 puts above
+   the sky, and 192..207 is the bottom two character rows of the dashboard. */
+static const unsigned char kTextBlock[2][2] = { { 0u, 18u }, { 192u, 208u } };
+
+static uint8_t s_baseMode[5];      /* the band record the base was laid down under */
+static short   s_baseFirst[5];
+static uint8_t s_baseCount;
+
+static int textLineOwned(int y)
+{
+    return (y >= (int)kTextBlock[0][0] && y < (int)kTextBlock[0][1]) ||
+           (y >= (int)kTextBlock[1][0] && y < (int)kTextBlock[1][1]);
+}
+
+/* One owned display line, all forty cells, into BOTH buffers — the BASE.  A dash row is ~38.4 of
+   its 40 cells static cockpit that no routine ever rewrites, so the delta painter is only valid
+   once the planes already hold them.
+   ⚠ Shifts, never a multiply: `row * 320` and `y * 80` with a runtime operand emit __mulsi3 and
+   the 68000 has none (CLAUDE.md, and `make muldiv-audit` fails the link). */
+static void plotTextBaseRow(unsigned y, unsigned mode)
+{
+    const unsigned row    = y >> 3;
+    const unsigned rowOff = (y << 6) + (y << 4);                       /* y * 80  */
+    MEM_QUAL uint8_t* src = mem + BBC_SCREEN_BASE + ((row << 8) + (row << 6)) + (y & 7);
+    uint8_t* a = s_plane[0] + rowOff;
+    uint8_t* b = s_plane[1] + rowOff;
+    unsigned c;
+    if (mode == 4u) {
+        for (c = 0; c < BBC_SCREEN_CELLS; c++, src += BBC_SCREEN_LINES) {
+            const uint8_t v = *src;
+            a[c] = 0; a[c + kPlaneGap] = v;
+            b[c] = 0; b[c + kPlaneGap] = v;
+        }
+    } else {
+        for (c = 0; c < BBC_SCREEN_CELLS; c++, src += BBC_SCREEN_LINES) {
+            const uint8_t v = *src;
+            const uint8_t lo = g_bbcExpandLo[v], hi = g_bbcExpandHi[v];
+            a[c] = lo; a[c + kPlaneGap] = hi;
+            b[c] = lo; b[c + kPlaneGap] = hi;
+        }
+    }
+}
+
+/* Has the geometry moved under the base?  A MODE change or a different band count invalidates it
+   outright.  A moved BOUNDARY only matters if it crossed an owned block — and the one boundary
+   that moves is the horizon (band 2/3, around line 81..101), seventy lines from either block, so
+   this normally accepts the move and keeps the base.  ⚠ Bands 0/1 (18.0) and 3/4 (166.1) are
+   FIXED — bands 2+3 sum to a constant $153C — which is why both blocks can be owned at all
+   (docs/span-render-plan.md §11b). */
+static int textBaseStale(void)
+{
+    unsigned n;
+    if (s_bandCount != s_baseCount) return 1;
+    for (n = 0; n < s_bandCount; n++) {
+        if (s_bandMode[n] != s_baseMode[n]) return 1;
+        if (s_bandFirst[n] == s_baseFirst[n]) continue;
+        if (textLineOwned(s_bandFirst[n]) || textLineOwned(s_baseFirst[n])) return 1;
+        s_baseFirst[n] = s_bandFirst[n];   /* outside the domain: nothing owned depends on it */
+    }
+    return 0;
+}
+
+/* ⚠⚠ SABOTAGED FIVE WAYS, AND FOUR FIRED — the fifth is written down here because it is the one
+   worth knowing.  Deleting the DELTA's mirror (mismatch 6720), swapping lo/hi in the base
+   (196606), aiming the delta at one buffer only (6888) and expanding a MODE 4 row as MODE 5
+   (42658) all fail loudly.  Deleting the BASE's SECOND buffer survives 497/497 at mismatch 0, and
+   the reason is sequencing, not a fixture gap: the claim needs `s_bandCount`, which only a decode
+   publishes, and the sweep runs after the decode — so by the first claim BOTH buffers have had a
+   full unowned decode and already hold these rows.  It becomes load-bearing on the MODE 7 ROUND
+   TRIP, where the buffers are reused for a teletext page while the claim from the last race sweep
+   still stands: the first decode back skips the owned rows in whichever buffer it gets, so the
+   re-base must lay down both.  A `STRAIGHT_TO_RACE` oracle never leaves the race and so cannot
+   reach it — which is a statement of the oracle's scope, not a reason to drop the write.
+   ⭐ The SIBLING case is what settles it (CLAUDE.md): the DELTA's two-buffer write is the same
+   claim and it fires at 6888. */
+static void plotTextBase(void)
+{
+    unsigned blk, y, n;
+    for (blk = 0; blk < 2u; blk++)
+        for (y = kTextBlock[blk][0]; y < kTextBlock[blk][1]; y++)
+            plotTextBaseRow(y, plotModeOf(y));
+    for (n = 0; n < 5u; n++) { s_baseMode[n] = s_bandMode[n]; s_baseFirst[n] = s_bandFirst[n]; }
+    s_baseCount = s_bandCount;
+    s_textBased = 1;
+#ifdef REVS_SPAN_STATS
+    g_plotTextBases++;
+#endif
+}
+
+#ifdef REVS_PLOT_TEXT_CHECK
+extern "C" {
+volatile unsigned long  g_plotTextChecks    = 0;
+volatile unsigned long  g_plotTextMismatch  = 0;
+volatile unsigned short g_plotTextMismatchY = 0;   /* (y << 8) | cell of the FIRST mismatch */
+}
+
+/* ⭐⭐ THE STALENESS ORACLE — see revs_plot.h.  Called at the TOP of the sweep's own_reset, before
+   any re-base, so what it compares is the accumulated delta state: a byte written into these 34
+   rows by anybody but `vdu_char_emit` shows up here on the very next sweep. */
+static void plotTextCheck(void)
+{
+    unsigned blk, y, c;
+    if (!s_textBased) return;
+    g_plotTextChecks++;
+    for (blk = 0; blk < 2u; blk++)
+        for (y = kTextBlock[blk][0]; y < kTextBlock[blk][1]; y++) {
+            const unsigned mode   = plotModeOf(y);
+            const unsigned row    = y >> 3;
+            const unsigned rowOff = (y << 6) + (y << 4);
+            MEM_QUAL uint8_t* src = mem + BBC_SCREEN_BASE + ((row << 8) + (row << 6)) + (y & 7);
+            for (c = 0; c < BBC_SCREEN_CELLS; c++, src += BBC_SCREEN_LINES) {
+                const uint8_t v  = *src;
+                const uint8_t lo = (mode == 4u) ? (uint8_t)0 : g_bbcExpandLo[v];
+                const uint8_t hi = (mode == 4u) ? v           : g_bbcExpandHi[v];
+                if (s_plane[0][rowOff + c] != lo || s_plane[0][rowOff + c + kPlaneGap] != hi ||
+                    s_plane[1][rowOff + c] != lo || s_plane[1][rowOff + c + kPlaneGap] != hi) {
+                    if (!g_plotTextMismatch)
+                        g_plotTextMismatchY = (unsigned short)((y << 8) | c);
+                    g_plotTextMismatch++;
+                }
+            }
+        }
+}
+#endif /* REVS_PLOT_TEXT_CHECK */
+
+/* ⭐⭐⭐ THE DELTA.  "This BBC frame-buffer byte just became `value`" — one line of one cell, into
+   both buffers' planes.  Called from `vdu_char_emit_core`'s single store site, which is where
+   every race-view glyph, space and text-script character reaches the screen.
+   ⚠ It hooks THAT call site and explicitly NOT `seam_write`: growing that header choke point made
+   164 inlined copies of a marking leaf and cost +4.9 ms in the producers (CLAUDE.md). */
+extern "C" void revs_plot_byte(unsigned short addr, unsigned char value)
+{
+    const unsigned off = (unsigned)addr - BBC_SCREEN_BASE;
+    unsigned po;
+    uint8_t lo, hi;
+    if (!s_textBased || off >= (unsigned)FB_BYTES) return;   /* based implies the map is built */
+    if (!textLineOwned(s_lineOf[off])) return;               /* not ours — the decode has it */
+    po = s_planeOff[off];
+    if (plotModeOf(s_lineOf[off]) == 4u) { lo = 0; hi = value; }
+    else { lo = g_bbcExpandLo[value]; hi = g_bbcExpandHi[value]; }
+    s_plane[0][po] = lo;  s_plane[0][po + kPlaneGap] = hi;
+    s_plane[1][po] = lo;  s_plane[1][po + kPlaneGap] = hi;
+#ifdef REVS_SPAN_STATS
+    g_plotTextBytes++;
+#endif
+}
+#endif /* REVS_PLOT_TEXT */
+
 /* Cleared from `view_paint_lines_core`, i.e. once per SWEEP — not per decode.  The crash hold
    renders extra frames with no sweep between them, and those must keep honouring the last
    sweep's spans instead of repainting stale mem[] over them. */
@@ -403,6 +618,20 @@ extern "C" void revs_plot_own_reset(void)
 {
     unsigned i;
     for (i = 0; i < BBC_SCREEN_HEIGHT; i++) g_plotOwn[i] = 0;
+#ifdef REVS_PLOT_TEXT
+    /* ⭐ THE CLAIM, and it is asserted HERE rather than in present() for a hard reason: basing 34
+       rows is ~10 000 stores, and work in the vblank ISR is capped at one frame (CLAUDE.md).
+       This is main-loop context (phase 24), once per sweep, and the decode reads the claim on the
+       frame after — which is the same one-sweep lag the span emitter's claim already has. */
+    if (s_bandCount && s_plane[0] && s_plane[1]) {
+#ifdef REVS_PLOT_TEXT_CHECK
+        plotTextCheck();
+#endif
+        if (!s_textBased || textBaseStale()) plotTextBase();
+        for (i = kTextBlock[0][0]; i < kTextBlock[0][1]; i++) g_plotOwn[i] = 1;
+        for (i = kTextBlock[1][0]; i < kTextBlock[1][1]; i++) g_plotOwn[i] = 1;
+    }
+#endif
 }
 
 #ifdef REVS_DIRECT_CHECK

@@ -508,6 +508,12 @@ void RevsScreen::initialize()
     m_nullSprite  = Sprite::allocate(0);
     if (!m_bitmap[0] || !m_bitmap[1] || !m_copper || !m_nullSprite) return;
 
+    /* ⭐ BOTH plane buffers to the plot module, once — the glyph domain's delta painter keeps a
+       few bytes a frame on rows nothing else repaints, so it must reach both (revs_plot.h).
+       ⚠ Here and not in present(): it also builds the 16.6 KB address map, which is free at
+       start-up and is a dropped frame inside one. */
+    REVS_PLOT_PLANES((unsigned char*)m_bitmap[0]->data, (unsigned char*)m_bitmap[1]->data);
+
     /* MODE 7's own configuration.  ⚠ Allocated up front, never on the mode switch: a chip-RAM
        allocation inside a frame is the Atari port's 3.6-second freeze, and a FAILED one at a
        mode switch would blank the front end with no way to attribute it. */
@@ -814,6 +820,7 @@ void RevsScreen::buildLineModes()
        So the interval that starts at band n is the one recorded against band n-1. */
     int startUs = (int)BBC_BAND0_ANCHOR_US;
     uint16_t flatLines = 0, flatBands = 0;
+    unsigned char bandMode[5];
 
     for (unsigned n = 0; n < 5; n++) {
         unsigned rec  = slot[n];
@@ -829,6 +836,12 @@ void RevsScreen::buildLineModes()
         int a = lineStart < 0 ? 0 : lineStart;
         int b = lineEnd > (int)kH ? (int)kH : lineEnd;
         unsigned mode = (s.control[rec] == BBC_ULA_MODE4) ? 4u : 5u;
+        /* ⚠ THE PAINTERS GET THIS, THE PRE-FLAT-TEST MODE, DELIBERATELY.  A flat band is a
+           PALETTE fact — "nothing here is observable right now" — and skipping the decode under
+           it is free because the decode runs again the moment it un-flattens.  An OWNED row is
+           never re-expanded, so a painter that wrote nothing under a flat band would lose that
+           content permanently. */
+        bandMode[n] = (unsigned char)mode;
 #ifndef REVS_NO_FLATSKIP
         /* ⭐ Mode 0 = "do not decode these lines at all": all four colour registers of this
            band hold the same colour, so no bitplane content is observable under it.  The
@@ -859,6 +872,7 @@ void RevsScreen::buildLineModes()
         startUs = nextUs;
     }
     m_plan.valid = 1;
+    REVS_PLOT_BANDS(m_plan.line, bandMode, 5);
     g_decodeFlatLines = flatLines;
     g_decodeFlatBands = flatBands;
 }

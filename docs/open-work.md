@@ -26,9 +26,9 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 ## ⭐⭐ THE PERFORMANCE QUEUE, ranked
 
-**Where the frame stands:** **192.99 ms bracketed** (Σ phases 1..39 = wall − phase 0), `PROBES=1
-FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 PROBEFIELDS=3000`, warp, driving, HEAD `151e282`
-(`frozen=240440078`, `loopFrames=298`, `build=1d`). Target is **20 ms** (50 FPS), floor **40 ms**
+**Where the frame stands:** **192.64 ms bracketed** (Σ phases 1..39 = wall − phase 0), `PROBES=1
+FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 PROBEFIELDS=3000`, warp, driving, at the domain-A
+commit (`frozen=240410697`, `loopFrames=298`, `build=1d`, `probe-audit` 173 symbols). Target is **20 ms** (50 FPS), floor **40 ms**
 (25 FPS) — so this is a 5-10× problem, not a tuning problem, and an entry worth under ~1 ms is not
 where the answer is. ⚠ Size every candidate in **ms/frame** against its own phase row (Rule 1a);
 the framerate is quantised to `50/N` and cannot see it.
@@ -38,31 +38,31 @@ is `tail`-truncated to the last 40 lines (`GDBTAIL`), which silently drops phase
 
 | ms/frame | phase(s) | what |
 |---:|---|---|
-| 53.0 | 24+33+34+32 | `view_paint_lines` — the consumer |
-| 34.3 | 11 | `draw_road` |
+| 53.5 | 24+33+34+32 | `view_paint_lines` — the consumer |
+| 34.4 | 11 | `draw_road` |
 | 26.7 | 5 | `build_track_geometry` |
-| 20.0 | 27 | `RevsScreen::decode()` — port overhead, no BBC counterpart |
-| 12.4 | 28 | the vblank spin — the `50/N` pad, not a target |
-| 12.2 | 26 | the 50 Hz drain |
+| 17.2 | 27 | `RevsScreen::decode()` — port overhead, no BBC counterpart (was 20.0; 34 rows are OWNED) |
+| 14.1 | 28 | the vblank spin — the `50/N` pad, not a target |
+| 12.5 | 26 | the 50 Hz drain |
 | 10.2 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
 
 ### 1. ⭐⭐⭐ THE REPRESENTATION — ROW OWNERSHIP of the decode — −11.18 ms of rows, then the CALL
-⭐⭐⭐ **THE LIVE BUILD IS DOMAIN A: display rows 0..17 + 192..199 + 200..207 — 34 rows,
-`≈ −3.31 ms`, and it costs ONE retargeted routine.** The measured writer-set ledger
-(`make fbwrites FILL=all FILLFRAMES=1-200 FRAMES=210`, `docs/span-render-plan.md` §11b) says the
-only writer on all 34 is **`vdu_char_emit`, ~3.7 stores/frame**, and 8 of them (200..207) have **no
-writer at all** — a claim and nothing else. ⚠ **This SUPERSEDES "the live build is the dashboard"**:
-the needles (158..191) are the same 34 rows for a smaller prize (−2.79 ms) and 66 stores/frame from
-two plotters mirrored into **both** plane buffers, plus `mirror_draw_car` and `poll_steering_assist`.
-⇒ **Rank an ownership domain by PRIZE ÷ WRITER SET, never by prize alone** — the entry ranked by
+✅ **DOMAIN A IS DONE — `make TEXTOWN=1`, the glyph rows 0..17 + 192..207, `ph27` 20.13 → 17.19 ms
+(−2.93).** Base-plus-delta, both plane buffers, both screen modes, oracle clean over 1226 sweeps:
+`docs/span-render-plan.md` §11c, including the sabotage that survives by sequencing and the MODE 7
+round trip neither it nor `determinism` covers.
+⭐⭐⭐ **THE LIVE BUILD IS DOMAIN B: the needles, display rows 158..191 — 34 rows, `≈ −2.79 ms`.**
+Retarget `plot_line_octant` + `undraw_plot_lines` (33 stores/frame each, ONE PC each) and
+`poll_steering_assist`'s four CAS-lamp constants into **both** plane buffers, and retarget
+`mirror_draw_car` for its 154..178 sub-block. ⚠⚠ These painters' erase is **cross-frame stateful**
+(`undraw_plot_lines` restores bytes saved when the needle was drawn *last* frame), so back-buffer-only
+mirroring leaves the needle from two frames ago in place — §11b fact 1, and §11c's sabotage D fires
+at 6888 when it is violated. Reuse §11c's shape verbatim: `revs_plot_byte` for the delta, a
+`plotTextBase`-style base + `textBaseStale` re-base policy for the static cockpit, the `mem[]` stores
+KEPT so no reader gate is owed, and `TEXTCHECK=1`'s oracle widened to the new block.
+⇒ **Rank an ownership domain by PRIZE ÷ WRITER SET, never by prize alone** — this entry ranked by
 prize for two sessions because the writer set had never been measured per display line.
-Build order: (1) `revs_plot_byte(addr, value)` in `revs_plot.h`/`RevsPlot.cpp` — "this BBC frame-buffer
-byte just became `value`, put it in the planes", MODE 4/5 from `bbc_screen.h`'s band table, ⚠ writing
-**both** buffers; (2) call it from `vdu_char_emit`'s store sites while KEEPING every `mem[]` write, so
-no reader gate is needed yet and `validate`/`determinism` stay green; (3) the per-buffer static-base
-flag (a buffer-initialisation boolean, ⛔ **not** a dirty map) and claim the 34 rows; (4) measure
-`ph27` against `151e282`'s **20.00 ms** with `PROBEFIELDS=3000`, warp, driving.
-Then **domain B, the needles (158..191, ≈ −2.79 ms)**. Rows 117..157 are worth the most (−5.07) and
+Rows 117..157 are worth the most (−5.07) and
 stay blocked: a **game-logic reader** — `update_grip_limits` samples the surface colour under a wheel
 from `mem[$713D]`/`mem[$7205]` on display line 149 — so they cannot be owned until that read is
 served another way (retargeting the needle plotters removes two of their foreign writers).

@@ -639,6 +639,32 @@ PROBE_SYMS_PLOT = g_plotRuns g_plotCells g_plotRunsLast g_plotCellsLast \
 PROBE_SYMS_SPAN = g_spanEmitLines g_spanEmitPaints g_decodeOwnLines
 endif
 
+# ⭐⭐⭐ `make TEXTOWN=0` — THE A/B CONTROL FOR THE GLYPH DOMAIN (docs/span-render-plan.md §11b,
+# domain A).  Default ON: the renderer owns display lines 0..17 + 192..207 outright — 34 rows the
+# writer-set ledger says have exactly ONE writer (`vdu_char_emit`, ~3.7 stores a frame) and eight
+# of which have none at all — so the decode stops converting them, worth ~3.31 ms.
+# ⭐ RANK AN OWNERSHIP DOMAIN BY ROWS OWNED / WRITER SET, never by the prize: the dashboard's
+# needles are the same 34 rows for 0.5 ms more and four routines to retarget.
+# ⚠ It needs the CARVE (`REVS_SPAN_OWN`), which SPANVERIFY drops because that arm's oracle reads
+# m_lineMode — so the domain is off in a verify build and off at SPANFILL=0 with the plot module.
+# ⭐⭐ `make TEXTCHECK=1` — THE STALENESS ORACLE, and it is the one thing a DELTA painter on an
+# owned row owes: once per sweep it re-expands both blocks from mem[] and compares the two plane
+# buffers against them, so a byte written by anybody but `vdu_char_emit` shows as a mismatch on
+# the next sweep.  `g_plotTextMismatch` must be 0; `g_plotTextMismatchY` is (y << 8) | cell of the
+# first offender.  ⚠ NOT revs_screen_convert_reference: that reads m_lineMode, which the carve has
+# zeroed on exactly the lines under test — a vacuous oracle (§10k trap 1).
+TEXTOWN ?= 1
+ifneq ($(TEXTOWN),0)
+ifneq ($(SPANVERIFY),1)
+EXTRA_DEFINES += -DREVS_PLOT_TEXT
+PROBE_SYMS_TEXT = g_plotTextBytes g_plotTextBases
+ifeq ($(TEXTCHECK),1)
+EXTRA_DEFINES += -DREVS_PLOT_TEXT_CHECK
+PROBE_SYMS_TEXTCHK = g_plotTextChecks g_plotTextMismatch g_plotTextMismatchY
+endif
+endif
+endif
+
 ifeq ($(DIRECTCHECK),1)
 EXTRA_DEFINES += -DREVS_DIRECT_PLOT -DREVS_DIRECT_CHECK
 # ⚠ Conditional, because probe-audit is right to fail otherwise: these three exist only in a
@@ -671,6 +697,7 @@ EXTRA_DEFINES += -DREVS_SPAN_STATS
 else
 PROBE_SYMS_PLOT =
 PROBE_SYMS_SPAN =
+PROBE_SYMS_TEXT =
 endif
 
 # `make ISRWATCH=1` — does the 50 Hz body write the fill chain's inputs ($3000-$43FF column
@@ -885,6 +912,7 @@ PROBE_SYMS += $(PROBE_SYMS_BCD)
 PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
 PROBE_SYMS += $(PROBE_SYMS_SPAN)
 PROBE_SYMS += $(PROBE_SYMS_SCAN)
+PROBE_SYMS += $(PROBE_SYMS_TEXT) $(PROBE_SYMS_TEXTCHK)
 
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \
             $(addprefix -Wl$(COMMA)--undefined=,$(PROBE_SYMS))

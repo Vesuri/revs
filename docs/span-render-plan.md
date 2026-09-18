@@ -1324,3 +1324,90 @@ it.** Per game frame: `platform_render_frame()` (decode + present) → phases 1.
 `draw_dash_needles_native()` → loop top. A claim published by the dash painter is therefore set
 **after** the sweep's clear and consumed by the **very next** decode. The existing clear point
 serves both painters unchanged.
+
+### 11c. ✅ DOMAIN A IS BUILT AND MEASURED — the glyph domain, `ph27` 20.13 → 17.19 ms
+
+`make TEXTOWN=1` (default on) gives the renderer display lines **0..17 + 192..207** and retargets
+`vdu_char_emit` straight at the bitplanes. The A/B, both arms `PROBES=1 FIXED_RNG=1
+STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 PROBEFIELDS=3000` under warp:
+
+| | `TEXTOWN=0` | `TEXTOWN=1` | Δ |
+|---|---:|---:|---:|
+| **phase 27 (the decode)** | **20.127 ms** | **17.194 ms** | **−2.93** |
+| Σ(1..39) − phase 28 | 180.89 | 178.57 | −2.32 |
+| phase 28 (the `50/N` pad) | 12.42 | 14.07 | +1.65 |
+| frame, bracketed | 193.31 | 192.64 | −0.67 |
+
+Both arms: `frozen` within 0.03% of 3000 × 80120, **phase 0 = 129 fields on both**, loopFrames
+298/297, `probe-audit: clean` at **173 vs 171 symbols** (the build fingerprint that proves the flag
+landed). ⚠ **Predicted −3.31, measured −2.93** — 0.086 ms/row against the ledger's 0.097, the same
+discount §11a already recorded (predicted −4.40 on the span domain, got −4.11). **A row price does
+not scale with the phase total**; discount a ledger prediction by ~10% before believing it.
+
+#### The shape: a BASE plus a DELTA, and it is two different mechanisms
+
+A glyph row is not repainted per frame — `vdu_char_emit` writes ~3.7 bytes a frame into 34 rows
+that are otherwise static — so a painter that only mirrors the stores would own 34 rows of
+whatever the planes happened to hold. Hence two halves, and the split is the whole design:
+
+- **the BASE** (`plotTextBase`, `RevsPlot.cpp`) expands both blocks out of `mem[]` into **both**
+  plane buffers once, then sets `s_textBased` and claims the rows. ~10 000 stores, so it runs from
+  `revs_plot_own_reset` in **main-loop** context (phase 24, `view_paint_lines_core`), never from
+  `present()` — VBI work is capped at one frame.
+- **the DELTA** (`revs_plot_byte`, hooked at the ONE store site in `vdu_char_emit_core`) puts each
+  new byte in the planes as it is written. ⛔ `seam_write` is **not** where the hook goes: it is a
+  header choke point with 164 inlined copies and growing it cost +4.9 ms once already.
+
+⚠ **The `mem[]` store STAYS.** Owning a row while still writing `mem[]` needs no reader gate
+(§11b fact 3), so `validate`, `determinism` and `-drive` stay green and `REVS_FB_POISON` is owed
+only by the later step that deletes the stores.
+
+#### Four things the build had to get right
+
+1. ⚠⚠ **BOTH plane buffers, from `initialize()`.** `s_target` is a single pointer aimed in VBI
+   context; a cross-frame-stateful painter needs both (§11b fact 1), so `revs_plot_planes()` is
+   handed `m_bitmap[0]->data` and `m_bitmap[1]->data` once at init — which also moves `buildMap()`
+   off the lazy `present()` path.
+2. ⚠⚠ **The two blocks are in DIFFERENT SCREEN MODES.** Rows 0..17 are band 0 = **MODE 4**
+   (`lo = 0; hi = b`); rows 192..207 are band 4 = **MODE 5** (`lo = g_bbcExpandLo[b];
+   hi = g_bbcExpandHi[b]`). `buildLineModes()` publishes a five-entry band table
+   (`REVS_PLOT_BANDS`) that `plotModeOf()` scans backwards — deliberately **not** a second 208-byte
+   per-line table, which would have doubled `buildLineModes`' 1.64 ms fill and eaten half the prize.
+3. ⭐ **The painter gets the PRE-flat-test mode, deliberately.** `buildLineModes()` overwrites
+   `mode = 0` for a band whose whole span is one colour, because a flat band needs no decode. A
+   flat band is a **palette** fact; an owned row is never re-expanded, so a painter that wrote
+   nothing under a flat band would lose that content permanently. `bandMode[n]` is captured
+   immediately after the mode is read and before that test.
+4. ⭐ **The re-base policy is `textBaseStale()`, and the horizon is why it exists.** A mode change
+   or a band-count change invalidates the base. A moved *boundary* is accepted unless it lies
+   inside an owned block — band 2's boundary slides every frame (it is the horizon) and a per-sweep
+   re-base would cost ~10 000 stores. Both domain-A blocks sit in bands whose boundaries never
+   move: band 0 is fixed, and bands 2+3 sum to a constant `$153C`, so band 4 always starts at 166.1.
+
+#### The oracle, and the one sabotage that survived
+
+`make TEXTOWN=1 TEXTCHECK=1` + `amiga/text_own.gdb` re-expands **both blocks from `mem[]` on every
+sweep** and compares all four plane bytes per cell, recording `(y<<8)|c` of the first offender.
+Driving Silverstone through the reset ladder: **checks=1226, mismatch=0**, `bases=1`, and
+`decode owned lines=70` (36 span + 34 glyph). This strictly dominates a `TEXTOWN=0` screen-dump
+diff for these rows — every byte of both buffers, every sweep, against a fresh expansion — so the
+picture diff was skipped as redundant, not omitted.
+
+⚠ The script uses a plain `continue` + `diag_run.sh`'s SIGINT and **not** a conditional
+breakpoint: gdb evaluates a condition on every render, which throttled the emulator to ~0.4× real
+time (45 s of wall bought 18 s emulated / 65 sweeps). Plain `continue` bought 288 s / 1226 sweeps.
+
+Five sabotages, four fire loudly: drop the delta → mismatch **6720**; swap LO/HI in the MODE 5
+base → **196606**; delta into one buffer only → **6888**; expand the MODE 4 rows as MODE 5 →
+**42658**. The fifth — **base only ONE buffer** — survives at **0/497**, and it is sequencing, not
+a fixture gap: the claim needs `s_bandCount`, which only a decode publishes, and the sweep runs
+*after* that decode, so by the first claim **both** buffers already hold a full unowned decode of
+these rows. It becomes load-bearing only on the MODE 7 round trip (the buffers reused for a
+teletext page while the last sweep's claim still stands), which is also the one path neither the
+oracle nor `determinism` covers. The sibling case — the DELTA's second buffer — fires at 6888,
+which is what makes the two-buffer rule itself proven rather than assumed. Argument written at
+`plotTextBase` and in `text_own.gdb`.
+
+⇒ **Next: domain B, the needles (158..191, ≈ −2.79 ms)** — retarget `plot_line_octant` +
+`undraw_plot_lines` (33 st/f each, one PC each) and `poll_steering_assist`'s four constants into
+both buffers, with `mirror_draw_car` retargeted for its 154..178 sub-block.
