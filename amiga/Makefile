@@ -629,6 +629,43 @@ endif
 ifeq ($(SPANFILL),5)
 EXTRA_DEFINES += -DREVS_SPAN_STATELESS -DREVS_SPAN_GROUPSCAN -DREVS_SPAN_TAKEOVER
 endif
+# ⛔⛔⛔ `make SPANPAINT=1` IS A PARKED MEASUREMENT ARM, NOT A WIN — it is EXACT and it costs
+# +3.48 ms/frame (178.10 -> 185.53 ms bracketed; the producer below is +3.68 more).  A wholesale
+# group is 236 cycles against the 184 of the four `revs_plot_chain` cells it replaces, because
+# the group still has to SCAN the four sources to qualify.  Arithmetic at `revs_plot_spans` in
+# RevsPlot.cpp, verdict in `docs/span-render-plan.md` §10q.  Kept only so the numbers below can
+# be re-measured; the live step is §10p (5), the DRIVER, which wants none of this.
+# ⭐⭐⭐ `make SPANPAINT=1` — STAGE A, the takeover's non-flat line painted from the GAME'S OWN
+# ROAD RECORD (`surface_edge_0..3[line]` through `view_span_line`) instead of from the forty
+# `$80`-spaced cell chains.  Needs SPANFILL=5: it replaces `revs_plot_chain` on exactly the lines
+# the takeover already owns, threads `byte` the same way and consumes the sources the same way, so
+# both of SPANFILL=5's oracles cover it unchanged.
+#   WHAT IT DELETES: the chain stores forty cells as eighty byte stores; this fills a group of four
+#   with ONE longword pair wherever the carried byte already equals the run's colour, which the
+#   span record states rather than tests.  ⭐ `g_plotSpansWide / (g_plotSpansLines * 10)` is the
+#   number the design turns on — 8 of 10 groups predicted — and a run that reads much less than
+#   that is measuring a workload with more road boundaries in it, not a broken painter.
+#   ⚠ THE HOST CANNOT RUN THIS ARM (REVS_PLOT_SPANS compiles to nothing there, so the line would
+#   be painted nowhere) — same constraint as the chain arm it replaces.  Its gate is
+#   `make SPANFILL=5 SPANPAINT=1 SPANVERIFY=1 DIRECTCHECK=1`, where the chain still runs and
+#   `g_plotMismatch` must stay 0; the EXACTNESS of the rule itself is settled on the host by
+#   `make SHAPE=1`'s composite model (0 misses in 1 280 208 cells).
+ifeq ($(SPANPAINT),1)
+EXTRA_DEFINES += -DREVS_SPAN_SPANPAINT
+# ⚠ Cleared again by the SPANSTAT=0 branch below, like its three siblings: these four live
+# under REVS_SPAN_STATS, which is OFF in a non-PROBES build, and probe-audit is right to fail
+# on a listed-but-absent symbol.
+PROBE_SYMS_PAINT = g_plotSpansLines g_plotSpansNZ g_plotSpansRuns g_plotSpansWide
+endif
+# ⭐⭐ `make SPANPAINT=2` — THE COST SPLIT, a MEASUREMENT arm only: `view_span_line` runs and its
+# span record is thrown away, and the chain paints the line.  Stage A's two halves are sized by
+# different arithmetic — the producer pays per LINE (n+1 calls into `surface_colour_at_core`) and
+# the painter per GROUP OF FOUR — so phase 24 alone cannot attribute a delta between them.
+#   ph24(SPANPAINT=2) - ph24(SPANPAINT=0) = `view_span_line`
+#   ph24(SPANPAINT=1) - ph24(SPANPAINT=2) = `revs_plot_spans`
+ifeq ($(SPANPAINT),2)
+EXTRA_DEFINES += -DREVS_SPAN_SPANPAINT -DREVS_SPAN_PAINT_COST
+endif
 ifeq ($(SPANSCAN),1)
 EXTRA_DEFINES += -DREVS_SPAN_SCANCHECK
 PROBE_SYMS_SCAN = g_spanScanChecks g_spanScanMismatch
@@ -702,6 +739,7 @@ else
 PROBE_SYMS_PLOT =
 PROBE_SYMS_SPAN =
 PROBE_SYMS_DELTA =
+PROBE_SYMS_PAINT =
 endif
 
 # `make ISRWATCH=1` — does the 50 Hz body write the fill chain's inputs ($3000-$43FF column
@@ -911,7 +949,8 @@ endif
 ifdef ISRSPLIT
 PROBE_SYMS += $(PROBE_SYMS_ISRSPLIT)
 endif
-PROBE_SYMS += $(PROBE_SYMS_CHECK) $(PROBE_SYMS_PLOT) $(PROBE_SYMS_BANDCHECK)
+PROBE_SYMS += $(PROBE_SYMS_CHECK) $(PROBE_SYMS_PLOT) $(PROBE_SYMS_BANDCHECK) \
+              $(PROBE_SYMS_PAINT)
 PROBE_SYMS += $(PROBE_SYMS_BCD)
 PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
 PROBE_SYMS += $(PROBE_SYMS_SPAN)

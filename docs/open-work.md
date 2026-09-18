@@ -113,6 +113,24 @@ takeover — all 36 lines paint straight to the two bitplanes, `make SPANFILL=5`
 `aa5703a`, −1.74 ms on the sweep and −1.989 ms on Σ(1..39)−ph28**; ✅ **`bus_write` left the
 renderer, `b29aab7`, −1.17 ms** (the range test was a constant and its arm unreachable — `$6700` is
 an immediate operand in the game's own code).
+⛔⛔⛔ **AND STAGE A — THE LINE PAINTED FROM THE ROAD RECORD INSTEAD OF THE CELL CHAINS — IS BUILT,
+EXACT AND CLOSED ON COST (§10q, 2026-09-18): +7.16 ms/frame** (`view_span_line` +3.68,
+`revs_plot_spans` +3.48; `Σ(1..39)−ph28` 178.10 → 185.53 with a three-arm cost split). The picture
+is right — 0 misses in 1 280 208 host cells, target oracle `checks=23 mismatch=0` — and the design's
+one turning number came in (the wholesale arm fires on **74%** of groups against 80% predicted).
+⭐⭐⭐ **It loses on the arm that WORKS, and the law is general: a coarse test only pays if it
+REPLACES the fine ones, and a group-of-four source test cannot — the scan it must do to qualify
+costs what the per-cell source test cost.** A wholesale group is **236 cycles against the 184** of
+the four chain cells it replaces. And a *free* version of it (free lane map, free producer) still
+models to a wash, because the floor is 5.57 events a line plus forty cells' two plane stores —
+§11's result arriving again: **the painter is a wash, the decode is the prize.**
+⇒ **So step 3b is a RANGE painter over `revs_plot_chain`'s own 46-cycle cell with the per-line
+driver deleted** — no span record, no producer, no new faithfulness surface. The driver is the
+measured prize: ph24 is 500 µs/line over 36 lines, of which the cell loop is ~2329 of 3546 cycles,
+leaving **~1200 cyc/line ≈ 6 ms a frame** of re-bases, bus-range test, `s_lineOf`/`s_planeOff`, the
+`g_plotOwn` claim, an 11-register `movem` and a five-argument call. Stages B..E of §10j inherit the
+verdict: **the representation change is closed, the driver deletion is the work.**
+
 ⇒ **THE LIVE STEP IS §10p (5), THE DRIVER REWRITE, AND IT IS ENTRY 2 BELOW** — the two levers have
 converged: what stands between the short phases and the bitplanes is the chain-entry machinery, not
 the painting. Two figures bound it: the decode's own ceiling for those lines is **−5.07 ms**
@@ -355,6 +373,17 @@ exists so nobody spends a day re-deriving a negative result.
   census of stores — the missing third number is WHAT SURVIVES.** ⚠ **This is NOT the §10
   architecture** (which deletes the driver too — entry 1's takeover); it forbids bolting onto the
   sweep, not replacing it.
+- **STAGE A — a line painted from the ROAD RECORD (spans) instead of the forty cell chains**
+  (`make SPANPAINT=1`, built, exact, oracle-green, then closed on cost) — **+7.16 ms/frame**
+  (producer +3.68, painter +3.48). ⭐⭐⭐ **A coarse test only pays if it REPLACES the fine ones,
+  and a group-of-four source test cannot: the scan it must do to qualify costs what the per-cell
+  source test cost** — a wholesale group is 236 cycles against the 184 of the four chain cells it
+  replaces, i.e. **+32 cyc/group on the arm that fires** (74% of groups, as designed). And a free
+  version of it still models to a wash against the floor (5.57 events a line, forty cells' two
+  plane stores), so it is the IDEA that is closed, not the tuning. ⭐ Collateral, and general:
+  **a sorting network is a code-size trap** — five compare-exchanges plus an unrolled consumer
+  behind them made `view_span_line` **726 instructions**, one arm per ordering of four edges.
+  `docs/span-render-plan.md` §10q. **Do not re-propose painting from a span record.**
 - **A per-byte DELTA painter for the dashboard's needles** (display lines 158..191, `kDeltaBlock`'s
   third block — built, oracle-green over 1000 sweeps and five sabotages, then **closed on cost**) —
   **−5.44 ms of phase 27 against +5.41 ms of phase 32, net +1.37 ms**, and **+3.29 of that cost is

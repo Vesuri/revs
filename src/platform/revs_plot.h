@@ -33,6 +33,7 @@
    chain painter below takes a `mem[]` pointer across the TU boundary and the qualifier has to be
    the same on both sides of it (`make BODY_IN_ISR=1` makes it `volatile`). */
 #include "../cpu/mem_decl.h"
+#include "view_span.h"      /* ViewSpan — revs_plot_spans's whole argument (Stage A) */
 
 #ifdef __cplusplus
 extern "C" {
@@ -111,6 +112,47 @@ void revs_plot_span(unsigned short addr, unsigned char value);
  * ⚠ The caller must have checked `revs_plot_has_target()` — there is no buffer to paint into
  * otherwise, and unlike a span there is no cheap way to put the line back. */
 unsigned char revs_plot_chain(unsigned short addr, unsigned char value,
+                              MEM_QUAL unsigned char* srcp,
+                              MEM_QUAL const unsigned char* cellBytes);
+
+/* ⭐⭐⭐ ...AND THE SAME LINE PAINTED FROM THE GAME'S OWN ROAD RECORD — STAGE A.
+ *
+ * ⛔⛔⛔ PARKED ON COST — READ THIS BEFORE THE DESIGN ARGUMENT BELOW, WHICH IS THE ONE THE
+ * MEASUREMENT REFUTED.  Built, exact, oracle green, and **+3.48 ms/frame against
+ * `revs_plot_chain`** — the loss is on the arm that WORKS: a wholesale group is 236 cycles and the
+ * four chain cells it replaces are 184.  The coarse test does NOT replace the fine ones, because
+ * the group must still SCAN the four sources to prove they are zero and that scan costs what the
+ * per-cell source test cost.  The full arithmetic, the free-painter bound and what survives are at
+ * the definition in RevsPlot.cpp; the verdict is `docs/span-render-plan.md` §10q.
+ * ⇒ Nothing calls this unless `make SPANPAINT=1` is on.  Do not revive it to serve step 3b.
+ *
+ * `revs_plot_chain` is the chain rewritten; this is the chain REPLACED.  Its extra argument is the
+ * line's colour structure straight out of `surface_edge_0..3[line]` + `surface_colour_at` (see
+ * view_span.h): a line's colour is piecewise constant with at most four breakpoints, so at most
+ * FIVE spans cover all forty cells, and the span list is a pure function of the per-scan-line road
+ * record the producers already wrote.  The forty source bytes then supply only the cells the
+ * classifier cannot express — the MIXED bytes with a road boundary INSIDE the cell.
+ *
+ * ⭐⭐⭐ WHAT THE SPAN LIST BUYS IS A COARSE TEST THAT ACTUALLY REPLACES THE FINE ONES, which is
+ * the one thing `revs_plot_chain`'s own group-of-four arithmetic could not have (RevsPlot.cpp:
+ * "a MIXED group rises to 316, because the group test is pure overhead on top of the per-cell
+ * tests it failed to replace").  Here a group of four cells is filled with ONE longword pair when
+ * the carried byte already equals the span colour and no boundary falls inside the group — and
+ * those two facts come from the span record, not from testing the four cells.  The per-cell arm is
+ * byte for byte `revs_plot_chain`'s, so a slow group costs what it always cost.
+ *
+ * ⭐⭐ IT IS EXACT, NOT APPROXIMATE, AND THAT IS MEASURED: the host oracle (`make SHAPE=1`, the
+ * composite model in shape.cpp) compares this exact rule against every byte the chain stores and
+ * reads **0 misses in 1 280 208 cells** over a 250-frame driving window, with the overlay writing
+ * 1.95 cells a line.  So there is no fallback arm and no per-cell compare against the fill.
+ * ⚠ The rule that makes it exact: an event byte is written AT its cell and CARRIED rightwards —
+ * `view_consume`'s RLE — and the three CHAIN-BOUNDARY bytes the drivers compose themselves are
+ * events too.  Modelling those as ordinary cells read 2.36% miss (commit e7f359e).
+ *
+ * ⚠ Same contract as the chain otherwise: it consumes the sources (not under `REVS_SPAN_VERIFY`),
+ * it claims the display line, and it returns the carried byte for the caller to thread on.
+ * `nSpans` is `view_span_line`'s return value; `spans[0].colour` is the line background. */
+unsigned char revs_plot_spans(unsigned short addr, const ViewSpan* spans, unsigned nSpans,
                               MEM_QUAL unsigned char* srcp,
                               MEM_QUAL const unsigned char* cellBytes);
 
@@ -240,6 +282,8 @@ extern volatile unsigned short g_plotChainNZLast; /* ...on the most recent sweep
 #define REVS_PLOT_SPAN(a, v)    revs_plot_span((unsigned short)(a), (unsigned char)(v))
 #define REVS_PLOT_CHAIN(a, v, s, t) \
         revs_plot_chain((unsigned short)(a), (unsigned char)(v), (s), (t))
+#define REVS_PLOT_SPANS(a, sp, n, s, t) \
+        revs_plot_spans((unsigned short)(a), (sp), (n), (s), (t))
 #define REVS_PLOT_HAS_TARGET()  revs_plot_has_target()
 #define REVS_PLOT_OWN_RESET()   revs_plot_own_reset()
 
@@ -284,6 +328,7 @@ extern volatile unsigned short g_plotMismatchOff;
 #define REVS_PLOT_RUN(a, v, n)   ((void)0)
 #define REVS_PLOT_SPAN(a, v)     ((void)0)
 #define REVS_PLOT_CHAIN(a, v, s, t)  ((unsigned char)(v))
+#define REVS_PLOT_SPANS(a, sp, n, s, t)  ((unsigned char)0)
 #define REVS_PLOT_HAS_TARGET()   0
 #define REVS_PLOT_CELL(a, v)     ((void)0)
 #define REVS_PLOT_OWN_RESET()    ((void)0)

@@ -36,7 +36,7 @@ extern "C" {
 /* `start` is the first cell of the run; the run ends where the next one starts, and the last
    ends at VIEW_SPAN_CELLS.  ⭐ NO LENGTH FIELD — the same load-bearing choice revs_plot_span
    makes: a length is a second thing that can disagree with the list. */
-typedef struct {
+typedef struct ViewSpan {
     unsigned char start;
     unsigned char colour;      /* the painted MODE 5 byte: one of surface_colours' four */
 } ViewSpan;
@@ -46,6 +46,12 @@ typedef struct {
    src/gen/revs_native.c beside `surface_colour_at_core`, because the classifier is the
    routine's whole body and is `always_inline` there for measured reasons. */
 unsigned view_span_line(unsigned char line, ViewSpan* out);
+
+#ifdef REVS_SPAN_PAINT_COST
+/* `make SPANPAINT=2`'s volatile sink — see the arm in revs_native.c.  Without a consumer GCC
+   deletes the whole `view_span_line` call and the cost-split arm measures the control. */
+extern volatile unsigned char g_spanCostSink;
+#endif
 
 #ifdef __cplusplus
 }

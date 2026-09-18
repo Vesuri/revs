@@ -1138,6 +1138,99 @@ line.
 
 (6) then stage A in full, then B, C, D, E as §10j has them.
 
+### 10q. ⛔⛔⛔ STAGE A IS BUILT, EXACT AND CLOSED ON COST — a group-of-four wholesale arm cannot pay, and the DRIVER is the only prize left (2026-09-18)
+
+Stage A is the §10p takeover's non-flat line painted from the **game's own road record** instead of
+from the forty `$80`-spaced cell chains: `view_span_line` turns `surface_edge_0..3[line]` into at
+most five solid runs, and `revs_plot_spans` fills a group of four cells with **one longword pair**
+wherever the carried byte already equals the run's colour. Both halves are built, and the idea was
+sound on paper — the span record *states* the coarse condition that `revs_plot_chain`'s own header
+says a group-of-four test would otherwise have to re-derive.
+
+**It is exact.** The host composite model reads **0 misses in 1 280 208 cells** (`make SHAPE=1`),
+and the target oracle (`make SPANPAINT=1 SPANVERIFY=1 DIRECTCHECK=1`) reads
+`checks=23 mismatch=0` against `mem[]` with the chain still mirroring. This is a **cost** result,
+not a correctness one.
+
+**It costs +7.16 ms/frame.** Three arms, `PROBEFIELDS=3000`, warp, driving, `Σ(1..39) − ph28`:
+
+| arm | what runs | frame | ph24 |
+|---|---|---|---|
+| `SPANPAINT=0` | the chain (control) | **178.10 ms** | 18.02 |
+| `SPANPAINT=2` | the record is built and **thrown away**, the chain paints | 181.85 | 21.70 |
+| `SPANPAINT=1` | Stage A | **185.53 ms** | 25.18 |
+
+⇒ `view_span_line` **+3.68 ms**, `revs_plot_spans` **+3.48 ms**. Phase 1 paints 36 lines a frame
+and 59% of them are one flat span, so the denominator is ~15 lines ⇒ **+1645 cyc/line** for the
+painter, **+1739 cyc/line** for the producer. ⚠ Both halves' first cycle models were 4x optimistic
+and the objdump is what closed them; the two mechanisms are different and both are general.
+
+#### ⭐⭐⭐ The painter: a wholesale group is 236 cycles and the four chain cells it replaces are 184
+
+From `revs_plot_spans`' own objdump, per group of four cells:
+
+| | cyc | |
+|---|---|---|
+| group head | 88 | `cell` spilled 16, `scol` read from the stack 16, source 0 12, the `brk` compare 14, two branches 18, `+4` 8 |
+| qualify | 52 | the four sources **re-read to prove they are zero** |
+| the payoff | 28 | two longword stores where eight byte stores were 96 |
+| statistics | 28 | `g_plotSpansWide`, an uncoalescable stack RMW |
+| advance + loop | 28 | |
+
+**⭐⭐⭐ A COARSE TEST ONLY PAYS IF IT REPLACES THE FINE ONES, AND A GROUP-OF-FOUR SOURCE TEST
+CANNOT — THE SCAN IT MUST DO TO QUALIFY COSTS WHAT THE PER-CELL SOURCE TEST COST.** The design's
+condition (3) was written as "the four sources are zero — the same four reads the chain does
+anyway", and that sentence is the error: the chain's four reads **are** its four cell tests
+(`move.b src,d1` + `beq.s` = 22 of the cell's 46 cycles), so doing them as a group `or` first and
+then falling into the per-cell path when it fails pays them **twice** on the 26% and saves only
+36 of 88 on the 74%. Against that, the store compression is worth 68. **Net, on the arm that
+fires: +32 cycles a group.** Line total models to 3638 against the chain's 2329 (+1309 predicted
+against +1645 measured, 80%).
+
+**⭐⭐ And a free version of this painter still would not win, which is what closes the idea and
+not merely the code.** Give it a free source scan — step 3a's group-of-four-LINES `or.l` lane map
+is 180 cyc/line and would make a pure-fill group 52 cycles instead of 236 — *and* a free producer,
+and the line still models to ~2487 against the chain's 2329. A wash, because what remains is the
+**floor**: **5.57 events a line** (measured in a consuming build; the host composite model
+predicted 1.95) and forty cells whose two plane stores nothing deletes. ⇒ §11's published result
+arrives a second time down a different road: **a bitplane pair costs what the `mem[]` byte cost,
+the painter is a wash, and the decode is the prize.**
+
+⚠ The wholesale arm is **not** the disappointment. It was measured firing on **74%** of groups in
+a consuming build against 80% predicted (`g_plotSpansWide / (g_plotSpansLines × 10)`), so the
+design's one turning number came in — the arm simply is not worth firing.
+
+#### ⭐⭐⭐ The producer: a sorting network is a code-size trap, and it multiplied by what followed it
+
+`view_span_line` compiles to **726 instructions with 116 stack operands** and a cascade of far
+branches, to place at most five breakpoints. Five compare-exchanges hand GCC a **permutation** of
+four values; the unrolled `SPAN_INTERVAL` chain behind them is specialisable per permutation; so it
+emitted roughly **one straight-line arm per ordering of four edges** — 24 of them, with the
+classifier inlined five times in each. ⚠⚠ The `memmove` fix that preceded it was **right** (taking
+the four-byte array's address away removed both `jsr <memmove>` calls, and the objdump confirms 0
+calls); **the unroll behind the sort is what cost.** ⇒ **A sorting network is a code-size trap for
+the same reason a bounded loop over a short list is** — it is branchy by construction, and whatever
+follows it gets copied once per outcome. The fix, if ever revived, is four registers for the sort
+and the intervals emitted from a **loop**: ~150 cycles, not 1739.
+
+⭐ **And the cheap general check: after any edit that changes a hot routine's shape, read its
+INSTRUCTION COUNT as well as its call list.** 726 instructions for a routine that tests four bytes
+is the tell, and it was visible in the objdump without an emulator run — which is where this
+session's four-fold model error would have been caught first.
+
+#### ⭐⭐⭐ What survives: the DRIVER, and it needs nothing from Stage A
+
+The chain arm costs **500 µs/line** (ph24 18.02 ms ÷ 36 lines = 3546 cyc) of which the cell loop is
+~2329, leaving **~1200 cyc/line of per-line driver and entry** — the two re-bases, the bus-range
+test, `s_lineOf`/`s_planeOff`, the `g_plotOwn` claim, an 11-register `movem` and a five-argument
+call. Over 36 lines that is **~6 ms a frame**, consistent with §10p step 3b's published −7.8 ms.
+
+⇒ **Step 3b is a RANGE painter over `revs_plot_chain`'s own 46-cycle cell, with the per-line driver
+deleted.** It needs no span record, no producer, and no new faithfulness surface — which also means
+Stage A was never on its critical path. Stages B..E of §10j inherit the same verdict: **the
+representation change is closed; the driver deletion is the remaining work.** Do not revive the
+wholesale arm to serve it.
+
 ## 11. ⭐⭐⭐ THE ROW-OWNERSHIP ARCHITECTURE — the decode is the prize, the painter is a wash (2026-09-17)
 
 **This section supersedes §10p's build ORDER.** §10p ranked the work by phase cost — phase 1's

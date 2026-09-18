@@ -756,6 +756,7 @@ static unsigned step_scanline(int* carry_out)
    ⚠ The span itself still goes out: it is emitted by REVS_PLOT_SPAN at the line entry below,
    not by this macro. */
 #define PLOT_DECL()   ((void)0)
+#define PLOT_SPANNED_DECL() ((void)0)
 #define PLOT_UNIT(dd, aa) ((void)0)
 #define PLOT_FLUSH()  ((void)0)
 #elif defined(REVS_DIRECT_PLOT) && defined(REVS_SPAN_VERIFY)
@@ -769,8 +770,15 @@ static unsigned step_scanline(int* carry_out)
    decode(new mem[]) against decode(old mem[]) and mismatched 5950 bytes on the first run — the
    check has to reproduce EVERYTHING the sweep changed, not just the part under test.
    `lineSpanned` is a local of paint_cells, which is the same bargain PLOT_UNIT already strikes
-   with `runAddr`/`runVal`/`runLen`. */
+   with `runAddr`/`runVal`/`runLen`.
+   ⚠⚠ AND THE OTHER RUN DRIVERS HAVE NO SUCH LOCAL, which is why the suppression predicate is
+   DECLARED BY A MACRO rather than named directly: `view_own_run` and `VIEW_SHORT_RUN` are phases
+   2 and 3, which never reach the span painter, so there the predicate is a constant 0 — and a
+   verify build that merely NAMES `lineSpanned` there does not compile at all.  (It did not, from
+   the commit that took those runs inline until this one; an oracle nothing builds is an oracle
+   nothing gates.) */
 #define PLOT_DECL()   unsigned runAddr = 0, runVal = 0, runLen = 0
+#define PLOT_SPANNED_DECL()  const int lineSpanned = 0
 #define PLOT_UNIT(dd, aa)  do { if (!lineSpanned) {                                 \
         if (runLen && (unsigned)(uint8_t)(aa) == runVal) runLen++;                  \
         else { if (runLen) REVS_PLOT_RUN(runAddr, runVal, runLen);                  \
@@ -780,6 +788,7 @@ static unsigned step_scanline(int* carry_out)
                       } while (0)
 #elif defined(REVS_DIRECT_PLOT)
 #define PLOT_DECL()   unsigned runAddr = 0, runVal = 0, runLen = 0
+#define PLOT_SPANNED_DECL() ((void)0)
 #define PLOT_UNIT(dd, aa)  do {                                                     \
         if (runLen && (unsigned)(uint8_t)(aa) == runVal) runLen++;                  \
         else { if (runLen) REVS_PLOT_RUN(runAddr, runVal, runLen);                  \
@@ -789,6 +798,7 @@ static unsigned step_scanline(int* carry_out)
                       } while (0)
 #else
 #define PLOT_DECL()   ((void)0)
+#define PLOT_SPANNED_DECL() ((void)0)
 #define PLOT_UNIT(dd, aa) ((void)0)
 #define PLOT_FLUSH()  ((void)0)
 #endif
@@ -1257,7 +1267,51 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first,
                        ⚠ `revs_plot_chain` still CONSUMES the sources, exactly as the forty units
                        would: the RLE's destructive read is what makes the next sweep's predicate
                        exact, and leaving them would make every line non-flat forever. */
-#ifdef REVS_SPAN_VERIFY
+#ifdef REVS_SPAN_SPANPAINT
+                    /* ── ⭐⭐⭐ STAGE A (`make SPANPAINT=1`) — the line painted from the ROAD
+                       RECORD instead of from the forty cell chains.  `view_span_line` turns
+                       `surface_edge_0..3[line]` into at most five solid runs (view_span.h) and
+                       the painter fills a group of four cells with one longword pair wherever the
+                       carried byte already agrees with the run — which the host oracle measured
+                       EXACT, 0 misses in 1 280 208 cells (shape.cpp §THE COMPOSITE MODEL).
+                       ⚠ It still consumes the sources and still threads `byte`, so it is a
+                       drop-in for the chain and `REVS_SPAN_VERIFY` compares it the same way.
+                       ⚠⚠ THE SPAN LIST'S STARTS ARE STRICTLY INCREASING and the painter's
+                       one-compare-per-cell boundary test depends on it: `view_span_line` skips a
+                       zero breakpoint and any duplicate, so no two runs can start on one cell.
+                       Emitting an empty run would silently lose every boundary after it. */
+                    {
+                        ViewSpan spans[VIEW_SPAN_MAX];
+                        const unsigned nSpans = view_span_line((unsigned char)line, spans);
+#ifdef REVS_SPAN_PAINT_COST
+                        /* ⭐⭐ `make SPANPAINT=2` — THE COST SPLIT, and it is a MEASUREMENT ARM,
+                           never a shipping one: the span record is built and then THROWN AWAY and
+                           the chain paints the line.  Phase 24's delta against `SPANPAINT=0` is
+                           then `view_span_line` alone, and its delta against `SPANPAINT=1` is
+                           `revs_plot_spans` alone.  Needed because the two halves of Stage A are
+                           sized by different arithmetic — the producer pays per LINE (n+1 calls
+                           into `surface_colour_at_core`) and the painter per GROUP OF FOUR — and
+                           a single bracket cannot tell one from the other.
+                           ⚠ `nSpans` is deliberately still consumed by a volatile sink, or GCC
+                           deletes the whole call and the arm measures the control. */
+                        g_spanCostSink = (unsigned char)nSpans;
+                        byte = REVS_PLOT_CHAIN(plot_ptr_v, byte,
+                                               mem + MEM_view_src_blocks + line,
+                                               mem + MEM_view_cell_bytes);
+                        cell = 0x38;
+#elif defined(REVS_SPAN_VERIFY)
+                        (void)REVS_PLOT_SPANS(plot_ptr_v, spans, nSpans,
+                                              mem + MEM_view_src_blocks + line,
+                                              mem + MEM_view_cell_bytes);
+#else
+                        byte = REVS_PLOT_SPANS(plot_ptr_v, spans, nSpans,
+                                               mem + MEM_view_src_blocks + line,
+                                               mem + MEM_view_cell_bytes);
+                        cell = 0x38;        /* unit 39's cell, as a full line leaves it */
+#endif
+                    }
+                    lineSpanned = 1;
+#elif defined(REVS_SPAN_VERIFY)
                     /* ⭐⭐ THE ORACLE BUILD: paint the pixels, consume nothing, thread nothing.
                        The chain below still runs — the `#if REVS_SPAN_VERIFY` guard on the unit
                        loop ignores `lineSpanned` — so `mem[]` stays the reference the whole
@@ -1607,6 +1661,7 @@ static void view_own_run(ViewState* v, unsigned first, int forced)
         MEM_QUAL unsigned char* const runEnd = mem + base0 + ((unsigned)stopUnit << 3);
         /* no window test here either, and for the same reason as the chain's run set-up */
         PLOT_DECL();
+        PLOT_SPANNED_DECL();    /* phase 2/3 never reach the span painter — see PLOT_UNIT */
 
         PROBE_VIEW_RUN((unsigned)(runEnd - dp) >> 3);
         PROBE_SHAPE_VIEW_RUN((unsigned)(runEnd - dp) >> 3, 1);
@@ -1754,6 +1809,7 @@ static void view_own_run(ViewState* v, unsigned first, int forced)
                both cases and needs no bound of its own. */                             \
             MEM_QUAL unsigned char* const runEnd = dstLine + ((unsigned)stop_ << 3);    \
             PLOT_DECL();                                                                \
+            PLOT_SPANNED_DECL();  /* a constant 0 here; see PLOT_UNIT */                \
             PROBE_VIEW_RUN((unsigned)(runEnd - dp) >> 3);                                \
             PROBE_SHAPE_VIEW_RUN((unsigned)(runEnd - dp) >> 3, 1);                       \
             if (forced_ && dp != runEnd) {      /* the `unit+$05` entry; see view_own_run */ \
@@ -7213,6 +7269,18 @@ SlotExit surface_colour_at_line_core(uint8_t line, uint8_t entryX, uint8_t entry
     return surface_colour_at_core(line, mem[EDGE_COLUMN], entryX, entryV);
 }
 
+/* One `surface_edge_N[line]` entry as a breakpoint, or 0xFF meaning "not on this line".
+   ⚠ 1..39 is on the line.  A breakpoint at 0 would open an EMPTY first interval (the interval
+   starting at cell 0 already covers it), and `$80` is what `clear_surface_buffers` leaves in an
+   unwritten entry, i.e. "no road on this line" — so both become the sentinel, which sorts to the
+   end and is skipped there.  ⭐ 0xFF cannot collide with a real breakpoint, which is what lets
+   one `!= 0xFF` test retire every later one in a sorted list. */
+static unsigned char span_breakpoint(unsigned addr)
+{
+    const unsigned char e = mem[addr];
+    return (unsigned char)(((unsigned)(e - 1u) < (VIEW_SPAN_CELLS - 1u)) ? e : 0xFFu);
+}
+
 /* ── ⭐⭐⭐ THE SPAN RECORD — ONE VIEW LINE AS AT MOST FIVE SOLID RUNS (view_span.h) ─────────
    The replacement renderer's producer.  `surface_colour_at_core` above is a pure function of
    (line, position) whose only position-dependence is the four `>=` tests, so the colour along
@@ -7231,42 +7299,74 @@ SlotExit surface_colour_at_line_core(uint8_t line, uint8_t entryX, uint8_t entry
    `clear_surface_buffers` leaves in an unwritten `surface_edge` entry, so this is also the
    "no road on this line" case.  A breakpoint at 0 would open an empty first interval, so it is
    dropped too and its colour comes out of the interval that starts there. */
+#ifdef REVS_SPAN_PAINT_COST
+volatile unsigned char g_spanCostSink = 0;
+#endif
+
+/* ⛔⛔ PARKED WITH STAGE A, AND FOR A SECOND, DIFFERENT SHAPE DEFECT: THIS COSTS +3.68 ms A
+   FRAME — ~1739 CYCLES A LINE to place at most five breakpoints, measured by the `SPANPAINT=2`
+   cost-split arm (178.10 → 181.85 ms with the record built and then thrown away).
+   ⭐⭐⭐ ITS OBJDUMP IS 726 INSTRUCTIONS, 116 STACK OPERANDS AND A CASCADE OF FAR BRANCHES
+   (`cmp.b d1,d0 / bls.w`, `cmp.b d2,d7 / bcs.w`, …), AND THE CAUSE IS THE COMBINATION OF THE
+   TWO FIXES BELOW, NOT EITHER ONE: five compare-exchanges hand GCC a PERMUTATION of four
+   values, the unrolled `SPAN_INTERVAL` chain behind them is specialisable per permutation, so
+   it emitted roughly one straight-line arm per ordering of four edges — 24 of them, with the
+   classifier inlined five times in each.  Every line then walks a chain of far branches into a
+   giant switch.  ⚠⚠ THE `memmove` FIX WAS RIGHT AND THE UNROLL IS WHAT COST: taking the array's
+   ADDRESS away (0 `jsr`/`bsr`, confirmed) is the rule CLAUDE.md states; unrolling the consumer
+   behind a sort is what let GCC multiply the orderings.  ⇒ A SORTING NETWORK IS A CODE-SIZE TRAP
+   FOR THE SAME REASON A BOUNDED LOOP OVER A SHORT LIST IS — it is branchy-by-construction, and
+   whatever follows it gets copied once per outcome.  The fix, if this is ever revived, is to keep
+   four registers for the SORT and emit the intervals from a LOOP so there is one copy of the
+   classifier: ~150 cycles, not 1739.  ⭐ And the general form for next time: after any edit that
+   changes a hot routine's shape, read its INSTRUCTION COUNT as well as its call list — 726 for
+   a routine that tests four bytes is the tell, and it was visible without an emulator run.
+   Not worth fixing now: `revs_plot_spans`' header shows the painter it feeds is a wash even with
+   this producer free, and §10p step 3b needs no span record at all. */
+
 unsigned view_span_line(unsigned char line, ViewSpan* out)
 {
-    unsigned char bp[4];               /* the distinct in-line breakpoints, ascending */
-    unsigned n = 0, i, count = 0;
+    /* ⭐⭐ FOUR NAMED LOCALS AND A SORTING NETWORK, not an array and an insertion sort.  The
+       obvious `for (j = n; j > k; j--) bp[j] = bp[j-1]` over a FOUR-BYTE array compiled to TWO
+       `jsr <memmove>` calls and put `bp` in the stack frame, because its address escaped there —
+       both of CLAUDE.md's shape rules at once, in a routine that runs 22 times a sweep.  Five
+       compare-exchanges sort four registers and touch no memory.
+       ⚠ The buffers are in no particular order and never were: they are four drawing PASSES, not
+       four sorted boundaries (draw_surface_spans patches its store operand per pass). */
+    unsigned char e0 = span_breakpoint(MEM_surface_edge_0 + line);
+    unsigned char e1 = span_breakpoint(MEM_surface_edge_1 + line);
+    unsigned char e2 = span_breakpoint(MEM_surface_edge_2 + line);
+    unsigned char e3 = span_breakpoint(MEM_surface_edge_3 + line);
+    unsigned count = 0;
 
-    /* Insertion-sorted because the four buffers are in no particular order (they are four
-       drawing PASSES, not four sorted boundaries — draw_surface_spans patches its store
-       operand per pass), and because four entries make a sort a pair of compares. */
-    for (i = 0; i < 4u; i++) {
-        static const unsigned short kEdge[4] = {
-            MEM_surface_edge_0, MEM_surface_edge_1, MEM_surface_edge_2, MEM_surface_edge_3
-        };
-        const unsigned char e = mem[kEdge[i] + line];
-        unsigned k, j;
-        if (e == 0u || e >= VIEW_SPAN_CELLS) continue;
-        for (k = 0; k < n && bp[k] < e; k++) { }
-        if (k < n && bp[k] == e) continue;                 /* two passes on one column */
-        for (j = n; j > k; j--) bp[j] = bp[j - 1];
-        bp[k] = e; n++;
-    }
+#define SPAN_SORT2(a, b)  do { if ((b) < (a)) {                                          \
+        const unsigned char t_ = (a); (a) = (b); (b) = t_; } } while (0)
+    SPAN_SORT2(e0, e1); SPAN_SORT2(e2, e3);      /* the 4-element network, 5 comparators */
+    SPAN_SORT2(e0, e2); SPAN_SORT2(e1, e3);
+    SPAN_SORT2(e1, e2);
+#undef SPAN_SORT2
 
-    /* The n+1 intervals, each asked once and merged with its left neighbour when the answer
-       repeats — ⭐ an interval starts AT its breakpoint, because the classifier selects on
+    /* Each interval asked ONCE and merged with its left neighbour when the answer repeats —
+       ⭐ an interval starts AT its breakpoint, because the classifier selects on
        `position >= edge`.  (That is why the Stage A oracle's +1-cell sabotage is weak and its
        -1-cell sabotage is 6x: +1 misclassifies only the boundary cell, which a producer writes
        anyway; -1 corrupts an interior cell nobody writes.  Argument at the oracle in shape.cpp.)
-       Merging is the common case: two of the four boundaries usually coincide off the
-       line, and the census's 1.9 runs a line is this count. */
-    for (i = 0; i <= n; i++) {
-        const unsigned char start  = (i == 0u) ? 0u : bp[i - 1];
-        const unsigned char colour = surface_colour_at_core(line, start, 0u, 0u).a;
-        if (count && out[count - 1].colour == colour) continue;
-        out[count].start  = start;
-        out[count].colour = colour;
-        count++;
-    }
+       Merging is the common case: two of the four boundaries usually coincide off the line, and
+       the census's 1.9 runs a line is this count.
+       ⭐ Sorted, so duplicates are ADJACENT and comparing with the immediate predecessor is the
+       whole dedup; and a sentinel cannot equal a real breakpoint, so the first `!= 0xFF` guard
+       also retires every later one. */
+#define SPAN_INTERVAL(st)  do {                                                          \
+        const unsigned char c_ = surface_colour_at_core(line, (st), 0u, 0u).a;           \
+        if (!count || out[count - 1].colour != c_) {                                     \
+            out[count].start = (st); out[count].colour = c_; count++; } } while (0)
+    SPAN_INTERVAL(0u);
+    if (e0 != 0xFFu)              SPAN_INTERVAL(e0);
+    if (e1 != 0xFFu && e1 != e0)  SPAN_INTERVAL(e1);
+    if (e2 != 0xFFu && e2 != e1)  SPAN_INTERVAL(e2);
+    if (e3 != 0xFFu && e3 != e2)  SPAN_INTERVAL(e3);
+#undef SPAN_INTERVAL
+
     return count;
 }
 

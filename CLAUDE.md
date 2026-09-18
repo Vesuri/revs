@@ -558,6 +558,13 @@ Rules that must survive without opening `docs/perf-method.md`:
   the leaf *it* calls. The second cost 4.3 ms/frame in the dash-edge walk, and register-pressure
   reasoning pointed the wrong way. `always_inline` on a hot leaf and `noinline` on a cold sibling
   are load-bearing, not hints. `docs/m68k-optimisation.md` §inlining threshold.
+  ⭐⭐ **And read the INSTRUCTION COUNT beside the call list — 726 instructions for a routine that
+  tests four bytes is the tell, and it needs no emulator run.** `view_span_line` sorts four
+  breakpoints and emits ≤5 intervals; five compare-exchanges handed GCC a *permutation* and the
+  unrolled interval chain behind them was specialisable per permutation, so it emitted ~one
+  straight-line arm per ordering — 1739 cyc/line. ⭐ **A SORTING NETWORK IS A CODE-SIZE TRAP for
+  the same reason a bounded loop over a short list is: it is branchy by construction, and whatever
+  follows it gets copied once per outcome.** Sort in registers, emit from a LOOP.
   ⭐⭐ **The general form: a parameter that is a COMPILE-TIME CONSTANT at every call site must be
   `always_inline`d, or it is a memory operand in the inner loop.** A `const SpanPlotter*`
   descriptor in the span rasteriser's leaf cost 2.6% of the frame on its own
@@ -594,6 +601,18 @@ Rules that must survive without opening `docs/perf-method.md`:
   (1176 → 340) as the tell that the unroll went with it. So the decode's "spell
   `__builtin_expect` as the MISMATCH" **inverts when the cold arm is a large inlined callee**.
   `docs/perf-method.md` §a fragile local optimum.
+- ⭐⭐⭐ **A COARSE TEST ONLY PAYS IF IT REPLACES THE FINE ONES — AND THE SCAN IT MUST DO TO
+  QUALIFY IS PART OF ITS PRICE.** Stage A's span painter filled a group of four cells with one
+  longword pair whenever the four sources were zero, on the reasoning that those are "the same four
+  reads the chain does anyway". They are not: the chain's four reads **are** its four cell tests, so
+  the group `or` pays them twice on the groups that fail and saves only 36 of 88 cycles on the ones
+  that pass. A wholesale group measured **236 cycles against the 184** of the four cells it
+  replaced — **+32 cyc/group on the arm that fires**, at the designed 74% hit rate, for +3.48 ms a
+  frame. ⭐⭐ And a *free* version of it still modelled to a wash, which is what closes the idea
+  rather than the tuning: the floor is the events (5.57/line) plus forty cells' two plane stores.
+  ⇒ **Price a coarse arm as (what it deletes) − (what qualifying costs) − (what the slow arm now
+  pays twice), and check the FREE version still wins before building it.**
+  `docs/span-render-plan.md` §10q.
 - ⭐⭐ **Before optimising a loop, check how many times it actually RUNS.** The span rasteriser's
   "~3 500 cycles per DDA scan line" was 24 ms divided by the wrong denominator; the real one is
   **43 spans a frame**, which caps the whole kernel's call-and-search surface at ~5 ms (it measured

@@ -84,6 +84,14 @@ volatile unsigned long  g_plotNoTarget  = 0;
 volatile unsigned long  g_plotChainLines = 0;   /* lines the TAKEOVER painted cell by cell */
 volatile unsigned long  g_plotChainNZ     = 0;  /* ...and their non-zero sources = runs - 1 */
 volatile unsigned short g_plotChainNZLast = 0;
+/* ⭐ Stage A's own four: how many lines the SPAN painter took, their sources, their span count,
+   and `g_plotSpansWide` — the groups that took the wholesale arm, which is the number the whole
+   design turns on (8 of 10 predicted).  A ratio, so a target run can check the prediction
+   without a bracket inside the sweep. */
+volatile unsigned long  g_plotSpansLines = 0;
+volatile unsigned long  g_plotSpansNZ    = 0;
+volatile unsigned long  g_plotSpansRuns  = 0;
+volatile unsigned long  g_plotSpansWide  = 0;
 #ifdef REVS_PLOT_DELTA
 volatile unsigned long  g_plotDeltaBytes = 0;    /* glyph bytes mirrored into both buffers */
 volatile unsigned long  g_plotDeltaBases = 0;    /* full re-expansions of the 34 owned rows */
@@ -452,6 +460,238 @@ extern "C" unsigned char revs_plot_chain(unsigned short addr, unsigned char valu
 #ifdef REVS_SPAN_STATS
         g_plotChainNZ += nz;
         g_plotChainNZLast = (unsigned short)(g_plotChainNZLast + nz);
+#endif
+    }
+    return (unsigned char)byte;
+}
+
+/* ⛔⛔⛔ PARKED ON COST, AND THE ARITHMETIC IS HERE SO NOBODY RE-DERIVES IT: THIS PAINTER IS
+   +3.48 ms/FRAME AGAINST `revs_plot_chain`, AND THE LOSS IS ON THE ARM THAT WORKS.
+   Measured three arms at `PROBEFIELDS=3000` (`make SPANPAINT=0/2/1`, Σ(1..39)−ph28):
+   178.10 / 181.85 / 185.53 ms ⇒ `view_span_line` +3.68, this +3.48, over ~15 non-flat lines a
+   frame (phase 1 paints 36 lines; 59% of them are one flat span).  The picture is EXACT and the
+   oracle is green (`checks=23 mismatch=0`) — this is not a correctness result, it is a cost one.
+
+   ⭐⭐⭐ WHY, FROM THIS FUNCTION'S OWN OBJDUMP: A WHOLESALE GROUP IS 236 CYCLES AND THE FOUR
+   CHAIN CELLS IT REPLACES ARE 184.  The prediction below said 114 against 210 — both halves wrong.
+       group head   88   (`cell` spilled 16, `scol` read from the stack 16, source 0 12,
+                          the `brk` compare 14, two branches 18, the `+4` 8)
+       qualify      52   (the four sources RE-READ to prove they are zero)
+       the payoff   28   (two longword stores where eight byte stores were 96)
+       statistics   28   (`g_plotSpansWide`, an uncoalescable stack RMW)
+       advance+loop 28
+   ⭐⭐⭐ SO THE LAW IS THE ONE `revs_plot_chain`'s OWN HEADER ALREADY STATES, NOW WITH THE
+   ARITHMETIC ON THE OTHER SIDE: A COARSE TEST ONLY PAYS IF IT REPLACES THE FINE ONES, AND A
+   GROUP-OF-FOUR SOURCE TEST CANNOT — THE SCAN IT MUST DO TO QUALIFY COSTS WHAT THE PER-CELL
+   SOURCE TEST COST.  Condition (3) below is NOT "the same four reads the chain does anyway": the
+   chain's four reads ARE its four cell tests, so doing them as a group `or` first and then falling
+   into the per-cell path when it fails pays them twice on the 26% and saves only 36 of 88 on the
+   74%.  Against that the store compression is worth 68.  Net, ON THE ARM THAT FIRES: +32 cyc a
+   group.  The line models to 3638 cycles against the chain's 2329 (+1309 predicted against +1645
+   measured, 80% — where before reading this objdump the model said +0.4 ms and was 4x off).
+
+   ⭐⭐ AND A FREE VERSION OF THIS PAINTER STILL WOULD NOT WIN, WHICH IS WHAT PARKS THE IDEA AND
+   NOT MERELY THE CODE.  Hand it a free source scan (step 3a's group-of-four-LINES `or.l` lane map,
+   180 cyc/line, which would make a pure-fill group 52 cycles instead of 236) AND a free producer,
+   and the line still models to ~2487 against the chain's 2329 — a wash, because what is left is
+   the FLOOR: 5.57 events a line (measured in a CONSUMING build — the host composite model
+   predicted 1.95) and forty cells whose two plane stores nothing deletes.  ⇒ This is CLAUDE.md's
+   published result arriving a second time down a different road: A BITPLANE PAIR COSTS WHAT THE
+   `mem[]` BYTE COST, THE PAINTER IS A WASH, AND THE DECODE IS THE PRIZE (§11).
+   ⚠ The 74% wholesale rate is NOT the disappointment: it was measured at 74% in a consuming build
+   against 80% predicted, so the arm fires as designed — it is simply not worth firing.
+
+   ⭐⭐⭐ WHAT SURVIVES, AND IT NEEDS NOTHING FROM HERE.  The chain arm costs 500 µs/line
+   (ph24 18.02 ms ÷ 36 lines) of which this file's cell loop is ~330, so ~1200 cyc/line is
+   PER-LINE DRIVER AND ENTRY — the two re-bases, the bus-range test, `s_lineOf`/`s_planeOff`, the
+   `g_plotOwn` claim, an 11-register `movem` and a five-argument call — times 36 lines ≈ 6 ms a
+   frame.  §10p step 3b deletes that by painting a RANGE of lines, and what it wants is
+   `revs_plot_chain`'s 46-cycle cell WITH THE DRIVER GONE: no span record, no producer, no new
+   faithfulness surface.  Do not revive the wholesale arm to serve it.
+   The span record's own cost is a separate measured defect, recorded at `view_span_line`. */
+
+/* ── ⭐⭐⭐ STAGE A: THE SAME LINE PAINTED FROM THE ROAD RECORD ───────────────────────────────
+   revs_plot.h says what this is and why it is exact (composite miss 0 of 1 280 208 cells).  Here
+   is the mechanism and its arithmetic.
+
+   It is `revs_plot_chain` with ONE addition: a group of four cells whose four plane bytes are two
+   longword stores instead of eight byte stores.  The chain could not have that — its own note
+   prices the group-of-four-CELLS store at exactly zero, because the four-way source test is pure
+   overhead on top of the per-cell tests it fails to replace, and ~4 of 10 groups are mixed.
+   ⭐⭐ THE SPAN RECORD IS WHAT MAKES THE COARSE TEST REPLACE THE FINE ONES.  The group can be
+   filled wholesale when
+     (1) the carried byte already equals this group's span colour — `dirty == 0`, maintained at the
+         only two places it can change (an event, and a span boundary), never tested per cell; and
+     (2) no span boundary falls inside the group — one compare against `brk`, the NEXT boundary,
+         which the span list hands over sorted; and
+     (3) the four sources are zero — the same four reads the chain does anyway.
+   (1) and (2) are ~6 cycles between them and they are what (3) is allowed to conclude from.  With
+   1.46 spans and 1.95 overlay cells a line the common line has ONE boundary and ONE event, so 8 of
+   10 groups take the wholesale arm: ~114 cycles against the chain's 210, and a slow group costs
+   the chain's 210 because its inner arm IS the chain's.
+
+   ⚠⚠ THE LONGWORD STORES ARE ALIGNED BY CONSTRUCTION, and the loop shape is what guarantees it:
+   `p1` starts at `s_planeOff[off]` = `y*80 + cell`, and a takeover line enters at cell 0, so the
+   base is a multiple of 4 (80 is); the cursor then advances by exactly 4 whichever arm runs, so
+   every group starts 4-aligned.  ⭐ That is why this is TEN FIXED GROUPS and not a cell cursor
+   that sometimes steps by one — a per-cell advance would put the fast arm on an odd address and
+   fault on the 68000.
+
+   ⚠ ENDIAN-OK on both counts, for the two reasons already argued in this file: the plane bytes are
+   the bitplane buffer (bits to the Amiga, never an alias of `mem[]`), and `s_expand4`'s longwords
+   are uniform-byte broadcasts, so no byte order can tell them apart. */
+extern "C" unsigned char revs_plot_spans(unsigned short addr, const ViewSpan* spans,
+                                         unsigned nSpans,
+                                         MEM_QUAL uint8_t* srcp,
+                                         MEM_QUAL const uint8_t* cellBytes)
+{
+    const unsigned off = (unsigned)addr - BBC_SCREEN_BASE;
+    unsigned byte = spans[0].colour;         /* == the line background; the oracle's MISS=0 is
+                                                what proves the equality, see revs_plot.h */
+
+    if (!s_target) { SPAN_STAT(g_plotNoTarget++); return (unsigned char)byte; }
+    if (off >= FB_BYTES) return (unsigned char)byte;
+
+    /* The claim and the counters first — last readers of `off`, as in the chain. */
+    {
+        const unsigned char y = s_lineOf[off];
+        g_plotOwn[y] = 1;
+#ifdef REVS_SPAN_STATS
+        g_plotSpansLines++;
+        g_plotRuns++;
+        g_plotCells += BBC_SCREEN_CELLS;
+        g_plotRunsLast++;
+        g_plotCellsLast = (unsigned short)(g_plotCellsLast + BBC_SCREEN_CELLS);
+        if (y < g_plotLineLo) g_plotLineLo = y;
+        if (y > g_plotLineHi) g_plotLineHi = y;
+#endif
+    }
+
+    {
+        uint8_t* p1 = s_target + s_planeOff[off];
+        uint8_t* p2 = p1 + kPlaneGap;
+        /* ⭐⭐ THE CARRIED BYTE LIVES AS ITS TWO BROADCAST LONGWORDS, AND THAT IS WHAT MAKES
+           THE WHOLESALE ARM CHEAPER THAN FOUR CELLS.  `s_expand4[v][n]` holds the plane byte in
+           all four positions, so the low byte of `lo4` IS the byte a single cell stores and no
+           second pair of variables is needed: a byte store is `move.b d3,-40(a0)` (12) and a
+           group store `move.l d3,-40(a0)` (16) out of the SAME register.  Reading the pair out
+           of the table per group instead cost 24 cycles a group — a memory-to-memory `move.l`
+           is 28 against a register's 16 — and holding the table POINTER cost a register that
+           the wholesale counter then had to spend a stack slot for.
+           ⚠ ENDIAN-OK, and the uniformity is the reason: every byte of the longword is the same,
+           so which one `(uint8_t)` takes cannot be told apart. */
+        uint32_t lo4 = s_expand4[byte][0];
+        uint32_t hi4 = s_expand4[byte][1];
+        unsigned si    = 1u;                              /* the next span to open           */
+        unsigned brk   = (nSpans > 1u) ? spans[1].start : BBC_SCREEN_CELLS;
+        unsigned scol  = spans[0].colour;                 /* this group's fill colour        */
+        unsigned cell  = 0;
+        unsigned g;
+#ifdef REVS_SPAN_STATS
+        unsigned nz = 0, wide = 0;
+#define SPANS_NZ()    (nz++)
+#define SPANS_WIDE()  (wide++)
+#else
+#define SPANS_NZ()    ((void)0)
+#define SPANS_WIDE()  ((void)0)
+#endif
+
+        /* ⭐ THE EVENT — a producer-written cell, ~1.95 a line.  It is the only thing that can
+           change the carried byte, so it is also the only place the two expansions and the
+           wholesale longword pair are recomputed.  `s_expand4[byte]` was a `lsl.l #3` + an
+           `adda.l #imm` inside the group loop for a value that changes twice a line: 34 cycles
+           a group, and the group is 10 a line. */
+#ifdef REVS_SPAN_VERIFY
+#define SPANS_CONSUME(SOFF)   ((void)0)      /* the chain is still the reference — revs_plot.h */
+#else
+#define SPANS_CONSUME(SOFF)   (srcp[(SOFF)] = 0)
+#endif
+#define SPANS_EVENT(SOFF)  do {                                                 \
+            SPANS_NZ(); SPANS_CONSUME(SOFF);                                    \
+            byte = cellBytes[s_];                                               \
+            lo4 = s_expand4[byte][0]; hi4 = s_expand4[byte][1];                 \
+        } while (0)
+
+        /* ⭐⭐⭐ A CELL INSIDE A RUN — byte for byte `PLOT_CHAIN_CELL`, AND NOT ONE INSTRUCTION
+           MORE.  THE SPAN CURSOR DOES NOT BELONG HERE, and the first version of this painter is
+           the measurement that says so: a per-cell `cell + DOFF == brk` test is
+           `move.l d3,d7 / subq.l #2,d7 / cmp.l d7,d6 / beq.w` = 30 cycles on top of a clean cell
+           whose ENTIRE cost is 46, and it measured **+1067 cycles a line** — 8.5 boundary-free
+           groups x 4 cells x 30.  That is `revs_plot_chain`'s own warning read in the other
+           direction: a coarse test only pays if it REPLACES the fine ones, and what I had added
+           was a FINE test on top of the fine tests it was supposed to replace.  The group header
+           below already knows whether a boundary is in range, so 34 of 40 cells ask nothing. */
+#define PLOT_SPANS_CELL(SOFF, DOFF)  do {                                       \
+            const uint8_t s_ = srcp[(SOFF)];                                    \
+            if (s_) SPANS_EVENT(SOFF);                                          \
+            p1[(DOFF)] = (uint8_t)lo4; p2[(DOFF)] = (uint8_t)hi4;               \
+        } while (0)
+
+        /* ...and a cell that may OPEN a run — only reached in the ~1.5 groups a line that carry a
+           boundary.  ⚠ THE BOUNDARY IS OPENED BEFORE THE EVENT IS APPLIED and both before the
+           store: a span starts AT its breakpoint (the classifier selects on `position >= edge`)
+           and an event byte lands AT its own cell, so this cell belongs to the new span and
+           carries the new byte.  Getting that order wrong is a whole-line error, not a one-cell
+           one — it was worth 22 580 of 30 197 misses when the oracle made the same mistake
+           (e7f359e). */
+#define PLOT_SPANS_EDGE(SOFF, DOFF)  do {                                       \
+            const uint8_t s_ = srcp[(SOFF)];                                    \
+            if (cell + (DOFF) == brk) {                                         \
+                scol = spans[si].colour;                                        \
+                si++;                                                           \
+                brk = (si < nSpans) ? spans[si].start : BBC_SCREEN_CELLS;       \
+            }                                                                   \
+            if (s_) SPANS_EVENT(SOFF);                                          \
+            p1[(DOFF)] = (uint8_t)lo4; p2[(DOFF)] = (uint8_t)hi4;               \
+        } while (0)
+
+        /* ⭐⭐⭐ THREE ARMS, AND ONE COMPARE AT THE GROUP HEADER SELECTS BETWEEN THEM.  `brk` is
+           the next run's first cell, so `brk >= cell + 4` says "no run opens inside this group",
+           which is true of ~8.5 of the 10 groups.  THAT is the coarse test earning its keep: it
+           retires four fine ones.
+             1. boundary-free, carried byte already the run colour, no source: one longword pair.
+             2. boundary-free: four chain cells, no span cursor at all.
+             3. a run opens inside this group: four cells that carry the cursor.
+           ⚠⚠ THE LONGWORD STORES ARE ALIGNED BY CONSTRUCTION — `p1` starts at `y*80 + 0` (80 is
+           a multiple of 4) and the cursor advances by exactly 4 on every arm, which is why this
+           is ten FIXED groups and not a cell cursor that sometimes steps by one.
+           ⚠ AND `byte == scol` IS ASKED HERE AS A COMPARE, NOT CARRIED AS A FLAG.  A `dirty`
+           local written once a group is not free on this machine: GCC materialises it as
+           `cmp.l scol,byte / sne / ext.w / ext.l / neg.l / move.l d1,44(sp)` — ~48 cycles to
+           store what one 16-cycle compare at the only reader answers. */
+        for (g = 0; g < BBC_SCREEN_CELLS / 4u; g++) {
+            if (brk >= cell + 4u) {
+                if (byte == scol && !(srcp[0x000] | srcp[0x080] | srcp[0x100] | srcp[0x180])) {
+                    /* The run colour's broadcast IS the carried byte's here, so the pair already
+                       in registers is the group's whole picture. */
+                    *(uint32_t*)(void*)p1 = lo4;
+                    *(uint32_t*)(void*)p2 = hi4;
+                    SPANS_WIDE();
+                    srcp += 0x200; p1 += 4; p2 += 4; cell += 4u;
+                    continue;
+                }
+                PLOT_SPANS_CELL(0x000, 0);
+                PLOT_SPANS_CELL(0x080, 1);
+                PLOT_SPANS_CELL(0x100, 2);
+                PLOT_SPANS_CELL(0x180, 3);
+            } else {
+                PLOT_SPANS_EDGE(0x000, 0);
+                PLOT_SPANS_EDGE(0x080, 1);
+                PLOT_SPANS_EDGE(0x100, 2);
+                PLOT_SPANS_EDGE(0x180, 3);
+            }
+            srcp += 0x200; p1 += 4; p2 += 4; cell += 4u;
+        }
+#undef PLOT_SPANS_EDGE
+#undef PLOT_SPANS_CELL
+#undef SPANS_EVENT
+#undef SPANS_CONSUME
+#undef SPANS_NZ
+#undef SPANS_WIDE
+#ifdef REVS_SPAN_STATS
+        g_plotSpansNZ   += nz;
+        g_plotSpansWide += wide;
+        g_plotSpansRuns += nSpans;
 #endif
     }
     return (unsigned char)byte;
