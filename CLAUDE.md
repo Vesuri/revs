@@ -451,13 +451,27 @@ forever because `m_plan` is the COPPER's palette schedule, not decode work (§11
   *set*: rows 0..17 + 192..207 have **one** writer, `vdu_char_emit` at ~3.7 stores/frame, and 8 of
   them have **none at all** — 34 rows for −3.31 ms — while the dashboard's needles are 34 rows for
   −2.79 ms and 66 stores/frame from two plotters plus two more routines. ⇒ ✅ **that glyph domain is
-  BUILT (`make TEXTOWN=1`): `ph27` 20.13 → 17.19 ms, base-plus-delta into BOTH plane buffers, and
-  ⭐ discount a ledger's row price by ~10% (predicted −3.31, measured −2.93 — the second instance)**;
-  the dash needles are the live domain (§11c). ⚠ A census that **ranks by
+  BUILT (`make DELTAOWN=1`): `ph27` 20.13 → 17.19 ms, base-plus-delta into BOTH plane buffers, and
+  ⭐ discount a ledger's row price by ~10% (predicted −3.31, measured −2.93 — the second instance)**.
+  ⚠ A census that **ranks by
   volume** buries exactly that finding (a `slice(0, 16)` hid `vdu_char_emit` at position 26 of 62 and
   made 16 rows look writer-free for two sessions) — `docs/method-lessons.md`. ⚠⚠ And a **mirrored
   painter whose erase is cross-frame stateful must write BOTH plane buffers**, or the needle from two
   frames ago stays put: "the back buffer is enough" holds only for a painter that repaints a whole row.
+  ⛔⛔⛔ **AND THE SECOND DOMAIN WAS BUILT, VALIDATED AND CLOSED ON COST — A DELTA PAINTER'S
+  BREAK-EVEN IS ~0.8 DELIVERED BYTES PER OWNED ROW PER FRAME, AND THE NEEDLES ARE AT 1.7.** The
+  budget is the decode the rows delete, **~544 cycles a row** (40 cells × 13.6 cyc/`mem[]` byte —
+  the 6.87 cyc/plane-byte fill rate); the cost is **~666 cycles per byte the painter delivers**,
+  and both sides are measured. Rows 158..191 paid **−5.44 ms of phase 27** (the biggest decode
+  prize yet: 0.080 ms/row over 68 rows) and **+5.41 ms of phase 32**, netting **+1.37 ms**.
+  ⭐⭐ **61% of that cost — +3.29 of +5.41 — is paid with every call EARLY-RETURNING** (the arm
+  where those rows are unowned), so the dominant term is the PLUMBING on bytes that turn out not to
+  be in the domain: `plot_line_octant` and `undraw_plot_lines` also write 129..157.
+  ⇒ **Read the ownership ledger's `st/f` column, divide by the row count, and count the writers'
+  stores OUTSIDE the candidate block, before writing a painter.** And the two placements lose by
+  two *different* mechanisms — in the writers' loops the call is an aliasing barrier (+3.45 ms),
+  batched after them the second walk of the undo list is ~110 cyc/entry — so there is no third
+  place to put the hook. `docs/span-render-plan.md` §11d.
 ⭐⭐ **And the decode's own 38 ms turned out to be CODE SHAPE, not algorithm — TWICE, and it is
 ~20 ms now** — the scan was re-reading two loop-invariant stack slots per cell and had spilled its
 pointers into data registers; then `make DECODESPLIT=1` attributed the remaining "12 ms floor" and

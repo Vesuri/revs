@@ -1327,11 +1327,11 @@ serves both painters unchanged.
 
 ### 11c. ✅ DOMAIN A IS BUILT AND MEASURED — the glyph domain, `ph27` 20.13 → 17.19 ms
 
-`make TEXTOWN=1` (default on) gives the renderer display lines **0..17 + 192..207** and retargets
+`make DELTAOWN=1` (default on) gives the renderer display lines **0..17 + 192..207** and retargets
 `vdu_char_emit` straight at the bitplanes. The A/B, both arms `PROBES=1 FIXED_RNG=1
 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 PROBEFIELDS=3000` under warp:
 
-| | `TEXTOWN=0` | `TEXTOWN=1` | Δ |
+| | `DELTAOWN=0` | `DELTAOWN=1` | Δ |
 |---|---:|---:|---:|
 | **phase 27 (the decode)** | **20.127 ms** | **17.194 ms** | **−2.93** |
 | Σ(1..39) − phase 28 | 180.89 | 178.57 | −2.32 |
@@ -1350,8 +1350,8 @@ A glyph row is not repainted per frame — `vdu_char_emit` writes ~3.7 bytes a f
 that are otherwise static — so a painter that only mirrors the stores would own 34 rows of
 whatever the planes happened to hold. Hence two halves, and the split is the whole design:
 
-- **the BASE** (`plotTextBase`, `RevsPlot.cpp`) expands both blocks out of `mem[]` into **both**
-  plane buffers once, then sets `s_textBased` and claims the rows. ~10 000 stores, so it runs from
+- **the BASE** (`plotDeltaBase`, `RevsPlot.cpp`) expands both blocks out of `mem[]` into **both**
+  plane buffers once, then sets `s_deltaBased` and claims the rows. ~10 000 stores, so it runs from
   `revs_plot_own_reset` in **main-loop** context (phase 24, `view_paint_lines_core`), never from
   `present()` — VBI work is capped at one frame.
 - **the DELTA** (`revs_plot_byte`, hooked at the ONE store site in `vdu_char_emit_core`) puts each
@@ -1378,7 +1378,7 @@ only by the later step that deletes the stores.
    flat band is a **palette** fact; an owned row is never re-expanded, so a painter that wrote
    nothing under a flat band would lose that content permanently. `bandMode[n]` is captured
    immediately after the mode is read and before that test.
-4. ⭐ **The re-base policy is `textBaseStale()`, and the horizon is why it exists.** A mode change
+4. ⭐ **The re-base policy is `deltaBaseStale()`, and the horizon is why it exists.** A mode change
    or a band-count change invalidates the base. A moved *boundary* is accepted unless it lies
    inside an owned block — band 2's boundary slides every frame (it is the horizon) and a per-sweep
    re-base would cost ~10 000 stores. Both domain-A blocks sit in bands whose boundaries never
@@ -1386,10 +1386,10 @@ only by the later step that deletes the stores.
 
 #### The oracle, and the one sabotage that survived
 
-`make TEXTOWN=1 TEXTCHECK=1` + `amiga/text_own.gdb` re-expands **both blocks from `mem[]` on every
+`make DELTAOWN=1 DELTACHECK=1` + `amiga/delta_own.gdb` re-expands **both blocks from `mem[]` on every
 sweep** and compares all four plane bytes per cell, recording `(y<<8)|c` of the first offender.
 Driving Silverstone through the reset ladder: **checks=1226, mismatch=0**, `bases=1`, and
-`decode owned lines=70` (36 span + 34 glyph). This strictly dominates a `TEXTOWN=0` screen-dump
+`decode owned lines=70` (36 span + 34 glyph). This strictly dominates a `DELTAOWN=0` screen-dump
 diff for these rows — every byte of both buffers, every sweep, against a fresh expansion — so the
 picture diff was skipped as redundant, not omitted.
 
@@ -1406,8 +1406,104 @@ these rows. It becomes load-bearing only on the MODE 7 round trip (the buffers r
 teletext page while the last sweep's claim still stands), which is also the one path neither the
 oracle nor `determinism` covers. The sibling case — the DELTA's second buffer — fires at 6888,
 which is what makes the two-buffer rule itself proven rather than assumed. Argument written at
-`plotTextBase` and in `text_own.gdb`.
+`plotDeltaBase` and in `delta_own.gdb`.
 
-⇒ **Next: domain B, the needles (158..191, ≈ −2.79 ms)** — retarget `plot_line_octant` +
-`undraw_plot_lines` (33 st/f each, one PC each) and `poll_steering_assist`'s four constants into
-both buffers, with `mirror_draw_car` retargeted for its 154..178 sub-block.
+⇒ Domain B, the needles (158..191), was built next — and **§11d closes it on cost.**
+
+### 11d. ⛔⛔⛔ DOMAIN B IS BUILT, VALIDATED AND CLOSED — a delta painter's break-even is a WRITER-STORE RATE (2026-09-18)
+
+Display lines **158..191** — the needles, the lamps and the wing mirrors — were added to
+`kDeltaBlock` as a third block and the four writers retargeted, giving the domain 68 rows. It is
+correct (the oracle is green and five sabotages fire) and it is **a net loss of +1.37 ms**. The
+block has been removed; the code that survives is the kind table and the widened oracle, both of
+which are domain-agnostic. **Do not rebuild this domain in this shape.**
+
+#### The three-arm A/B, one session, `PROBEFIELDS=3000` under warp
+
+Arm 0 is `DELTAOWN=0`. Arm A and arm B are **the same binary shape** — all five hooks compiled in,
+`probe-audit: clean (173 symbols)` — differing only in `kDeltaBlock[1]`, so arm A's needle hooks all
+reach `revs_plot_byte` and early-return on `kind == 0`. That is what separates the plumbing from
+the work.
+
+| | arm 0 — no domain | arm A — 34 rows (A only) | arm B — 68 rows (A+B) |
+|---|---:|---:|---:|
+| phase 24 (`revs_plot_own_reset`, the base) | 17.682 | 18.042 **+0.36** | 18.314 **+0.63** |
+| **phase 27 (the decode — the prize)** | 19.471 | 16.545 **−2.93** | **14.033 −5.44** |
+| **phase 32 (the dash tail — the cost)** | 6.433 | 9.722 **+3.29** | **11.841 +5.41** |
+| Σ(1..39) − phase 28 | **181.04** | 182.34 **+1.30** | 182.41 **+1.37** |
+
+Gates: `frozen` = 240 391 994 / 240 417 801 / 240 392 013 against 3000 × 80120, **phase 0 = 129 /
+129 / 130 fields**, loopFrames 297/296/296.
+
+⚠ **Arm A is NOT domain A as it ships** — it carries domain B's hooks with the rows unowned, which
+is the +3.29 ms. Its phase 27 (**−2.926**) independently reproduces §11c's **−2.93** to 0.2%, which
+is what makes the three arms comparable at all; the shipping `DELTAOWN=1` is arm 0 plus the
+`vdu_char_emit` hook alone, still −2.32 ms on Σ−ph28.
+
+⭐ **Phase 27 is the largest decode prize yet measured: −5.44 ms, 0.080 ms/row over 68 rows**, which
+is the ledger's 0.09 discounted by the same ~10% §11a and §11c both saw. The prize is real. The
+domain still loses.
+
+#### ⭐⭐⭐ THE ARITHMETIC THAT DECIDES ANY DELTA DOMAIN — a budget in cycles per ROW against a cost in cycles per DELIVERED BYTE
+
+Both sides of this are measured in the table above, and the model closes to 4%:
+
+- **The budget** is the decode the rows delete: **~544 cycles a row** (40 cells × 13.6 cyc/`mem[]`
+  byte, i.e. the 6.87 cyc/plane-byte fill rate of §10n — and 34 × 544 = 18 500 against the 17 795
+  cycles arm A→arm B actually recovered in phase 27).
+- **The cost** is per byte the painter delivers. `g_plotDeltaBytes` says the needle block takes
+  **57.6 bytes a sweep**, and phase 32 grew 38 346 cycles/frame ⇒ **666 cycles per delivered
+  byte**, split by the arms as **261 of plane work** (arm B − arm A: expand + `s_planeOff` + four
+  stores) and **~405 of getting there** (arm A − arm 0).
+- ⇒ **break-even is `544 / 666` ≈ 0.8 delivered bytes per owned row per frame.** Domain A runs at
+  **3.7 / 34 = 0.11** and wins by 7×. Domain B runs at **57.6 / 34 = 1.69** and loses by 2.1×.
+
+⭐⭐ **And the dominant term is the 405, which is paid on bytes that turn out NOT to be in the
+domain** — 61% of the cost (+3.29 of +5.41) is arm A, where every needle call early-returns. The
+needle writers reach well below the block: the ownership ledger has `plot_line_octant` +
+`undraw_plot_lines` on **129..157** as well, so most of what the hook filters was never ownable.
+⇒ **Read the ledger's `st/f` column and divide by the row count before writing a painter**, and
+count the writers' stores *outside* the candidate block too.
+
+#### ⛔ And there is no third place to put the hook — the two placements lose by two DIFFERENT mechanisms
+
+1. **At the store, inside the writers' loops** (the first build): a cross-TU call in a hot loop is
+   an **aliasing barrier**, so the loop spills — the CLAUDE.md rule that closed the `noinline`
+   `bus_write` escape, here worth **+3.45 ms**.
+2. **Batched after the loops** (the second build, the one measured above): the hook moves out of
+   the loop and the loops keep their register allocation, but the flush must **walk the undo list a
+   second time** — two indexed `mem[]` byte loads, a shift and an or per entry before the painter
+   is even called — at ~110 cyc/entry over ~210 entries a frame. That is the 405.
+
+Both numbers exceed the 544-cycle-a-row budget at this store rate, and there is nowhere else: the
+address is known only inside the loop (placement 1) or must be reconstructed (placement 2).
+
+#### ⭐⭐ The `noinline` finding, which is transferable and cost an hour
+
+`plot_delta_flush` and `mirror_delta_flush` **had to be `__attribute__((noinline))`**, and the
+objdump says why: inlined, GCC peels the flush's trip count and unrolls it ~8 ways, putting **seven
+copies of the body — each with its own `jsr (a5)` to `revs_plot_byte` — inside
+`undraw_plot_lines_core`** (332 instructions against 206 without the hook), which then pushes that
+routine's inlined `bus_write` back out of line. `noinline` restored the control's shape exactly
+(undraw 206→204 insns / 7 `jsr`, octant 319→334, mirror 118→129). This is CLAUDE.md's
+"a bounded loop over a short list is a code-size trap" in its second instance, and the tell is the
+same: **count `jsr <hot-leaf>` in the objdump after any size-changing edit.**
+
+#### What was proven correct, so that a future domain can reuse it
+
+The oracle widened with `kDeltaBlock` for free — it re-expands whatever blocks the table names —
+and on the needle block it read **bases=1, checks=1000, mismatch=0, 57 609 delta bytes** over a
+driving Silverstone run through the reset ladder, with `decode owned lines=104` (36 span + 68
+delta). So the mechanism scales; only the economics do not.
+
+#### ⇒ The rows are still worth −2.5 ms, and there is exactly ONE domain shape that can collect them
+
+The census closed the obvious escape: **every** one of 158..191 has a writer, so there is no
+writer-free sub-block to own cheaply (192..207 is already domain A's, and 200..207 has no writer at
+all). What is left is to stop paying the 405 by making the filter always succeed — **own
+129..191 as ONE domain**, so that every store `plot_line_octant`, `undraw_plot_lines` and
+`mirror_draw_car` make is in-domain and the needles' ~130 stores amortise over 63 rows
+(63 × 544 = 34 300 cycles of budget) instead of 34. That makes domain B a sub-problem of the
+**117..157 block**, which the ledger already prices at −5.07 ms and which is blocked by
+`update_grip_limits`' reader on display line 149 — i.e. **these are one queue entry, not two.**
+`docs/open-work.md` entry 1.

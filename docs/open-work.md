@@ -47,25 +47,31 @@ is `tail`-truncated to the last 40 lines (`GDBTAIL`), which silently drops phase
 | 10.2 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
 
 ### 1. ⭐⭐⭐ THE REPRESENTATION — ROW OWNERSHIP of the decode — −11.18 ms of rows, then the CALL
-✅ **DOMAIN A IS DONE — `make TEXTOWN=1`, the glyph rows 0..17 + 192..207, `ph27` 20.13 → 17.19 ms
+✅ **DOMAIN A IS DONE — `make DELTAOWN=1`, the glyph rows 0..17 + 192..207, `ph27` 20.13 → 17.19 ms
 (−2.93).** Base-plus-delta, both plane buffers, both screen modes, oracle clean over 1226 sweeps:
 `docs/span-render-plan.md` §11c, including the sabotage that survives by sequencing and the MODE 7
 round trip neither it nor `determinism` covers.
-⭐⭐⭐ **THE LIVE BUILD IS DOMAIN B: the needles, display rows 158..191 — 34 rows, `≈ −2.79 ms`.**
-Retarget `plot_line_octant` + `undraw_plot_lines` (33 stores/frame each, ONE PC each) and
-`poll_steering_assist`'s four CAS-lamp constants into **both** plane buffers, and retarget
-`mirror_draw_car` for its 154..178 sub-block. ⚠⚠ These painters' erase is **cross-frame stateful**
-(`undraw_plot_lines` restores bytes saved when the needle was drawn *last* frame), so back-buffer-only
-mirroring leaves the needle from two frames ago in place — §11b fact 1, and §11c's sabotage D fires
-at 6888 when it is violated. Reuse §11c's shape verbatim: `revs_plot_byte` for the delta, a
-`plotTextBase`-style base + `textBaseStale` re-base policy for the static cockpit, the `mem[]` stores
-KEPT so no reader gate is owed, and `TEXTCHECK=1`'s oracle widened to the new block.
+⛔⛔ **DOMAIN B — the needles, 158..191 — WAS BUILT, VALIDATED AND CLOSED ON COST (§11d).** It is
+correct (oracle green over 1000 sweeps, five sabotages fire) and it is **a net +1.37 ms**: −5.44 ms
+of phase 27 for 68 rows against **+5.41 ms of phase 32**, of which **+3.29 is paid with every call
+early-returning**. ⭐⭐⭐ **The rule it produced, and the one to apply to any future domain: a delta
+painter's budget is ~544 cycles a ROW (the decode it deletes) against ~666 cycles a DELIVERED BYTE,
+so a row pays only below ~0.8 delivered bytes a frame** — the glyph rows are at 0.11, the needles at
+1.69. ⇒ **Read the ownership ledger's `st/f` column and divide by the row count before writing a
+painter.** Do not rebuild this domain per-byte; the code is gone and `kDeltaBlock` is back to two
+blocks.
+⭐⭐⭐ **THE LIVE BUILD IS THEREFORE ONE DOMAIN, 117..191 (−5.07 of the ledger plus the needles'
+−2.5), NOT TWO — and the census is what merges them.** The needle writers `plot_line_octant`,
+`undraw_plot_lines` and `mirror_draw_car` also write **129..157**, so a domain that stops at 158
+pays the 666-cycle trip on stores that were never ownable; extend it down and every one of their
+stores is in-domain, the filter always succeeds, and their ~130 stores a frame amortise over 63
+rows of budget (63 × 544 = 34 300 cycles) instead of 34. ⚠ The gate is unchanged and is a
+**game-logic reader**: `update_grip_limits` samples the surface colour under a wheel from
+`mem[$713D]`/`mem[$7205]` on **display line 149**, so 117..157 cannot be owned until that read is
+served another way. Serve it, and the needles come with it.
 ⇒ **Rank an ownership domain by PRIZE ÷ WRITER SET, never by prize alone** — this entry ranked by
-prize for two sessions because the writer set had never been measured per display line.
-Rows 117..157 are worth the most (−5.07) and
-stay blocked: a **game-logic reader** — `update_grip_limits` samples the surface colour under a wheel
-from `mem[$713D]`/`mem[$7205]` on display line 149 — so they cannot be owned until that read is
-served another way (retargeting the needle plotters removes two of their foreign writers).
+prize for two sessions because the writer set had never been measured per display line, and then by
+writer-set *size* for one more, because the writers' **store rate** had not been priced either.
 ⭐⭐⭐ **THE ARCHITECTURE IS OPEN AND ITS FIRST HALF IS NOW MEASURED, NOT ARGUED** — `make
 SPANFILL=1` is §10e's own cheap checkpoint built and run (`docs/span-render-plan.md` §10n). Three
 results, and they point at a different next build than this entry used to name:
@@ -340,6 +346,16 @@ exists so nobody spends a day re-deriving a negative result.
   census of stores — the missing third number is WHAT SURVIVES.** ⚠ **This is NOT the §10
   architecture** (which deletes the driver too — entry 1's takeover); it forbids bolting onto the
   sweep, not replacing it.
+- **A per-byte DELTA painter for the dashboard's needles** (display lines 158..191, `kDeltaBlock`'s
+  third block — built, oracle-green over 1000 sweeps and five sabotages, then **closed on cost**) —
+  **−5.44 ms of phase 27 against +5.41 ms of phase 32, net +1.37 ms**, and **+3.29 of that cost is
+  paid with every call EARLY-RETURNING** because `plot_line_octant` / `undraw_plot_lines` also write
+  129..157. ⭐⭐⭐ **A delta painter's break-even is ~0.8 DELIVERED BYTES per owned row per frame** —
+  budget ~544 cyc/row (the decode the row deletes), cost ~666 cyc per delivered byte; the glyph rows
+  are at 0.11 and the needles at 1.69. ⇒ read the ownership ledger's `st/f` column and divide by the
+  row count first. ⚠ This closes the per-byte mechanism for these rows, **not the rows** — they
+  come back as part of one 117..191 domain (entry 1) where every writer store is in-domain.
+  `docs/span-render-plan.md` §11d.
 - **Consumer run-entry specialisation** (single-run flat-span path) — **−0.15%**, retracting its
   predicted "~10% prize". Do not retry that code shape.
 - **The per-line skip** — **−0.4%** for 39.5% of line-visits deleted; phases 2+3 skip zero units.
