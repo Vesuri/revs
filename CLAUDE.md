@@ -487,6 +487,16 @@ forever because `m_plan` is the COPPER's palette schedule, not decode work (§11
   11.0 ms against 4.8 of budget). ⇒ ⭐⭐⭐ **A MIRROR CAN ONLY PAY ON ROWS WHOSE WRITERS ARE NEARLY
   SILENT — a row with a busy writer is won by making that writer's own store land in the bitplanes
   INSTEAD of `mem[]`, not in addition to it.** `docs/span-render-plan.md` §11d.
+  ⭐⭐⭐ **AND THE RETARGET HAS ITS OWN BREAK-EVEN, 32x MORE PERMISSIVE, SO RANK AN OWNERSHIP
+  DOMAIN BY STORES PER ROW — ASCENDING — AND THE LEDGER'S ORDER INVERTS.** One retargeted byte
+  costs ~30 cyc (four plane bytes — two planes x two BUFFERS — less the `mem[]` store it
+  replaces) against a mirror's 666, so the admission threshold is **26.4 stores per owned row per
+  frame** against the mirror's **0.82 delivered bytes**, while the prize is ~789 cyc a row
+  **whoever paints it**. ⇒ the needles (1.6 st/row) are the BEST block on the screen as a
+  retarget (≈ −3.4 ms) and the worst as a mirror, and the view sweep's own 117..157 sits AT
+  break-even (6..28 st/row, ±0.6 ms a block) because a row repainted 27 times a frame costs 27
+  retargets to own. A ledger's ROW PRICE cannot see that; only `st/row` can.
+  `docs/span-render-plan.md` §11e.
 ⭐⭐ **And the decode's own 38 ms turned out to be CODE SHAPE, not algorithm — TWICE, and it is
 ~20 ms now** — the scan was re-reading two loop-invariant stack slots per cell and had spilled its
 pointers into data registers; then `make DECODESPLIT=1` attributed the remaining "12 ms floor" and

@@ -60,23 +60,28 @@ so a row pays only below ~0.8 delivered bytes a frame** — the glyph rows are a
 1.69. ⇒ **Read the ownership ledger's `st/f` column and divide by the row count before writing a
 painter.** Do not rebuild this domain per-byte; the code is gone and `kDeltaBlock` is back to two
 blocks.
-⛔ **AND WIDENING THE MIRROR TO 129..191 IS REFUTED BY THE SAME ARITHMETIC — it was this entry's
-next line for about an hour, so it is written down rather than left to be built.** The 405 is not a
-filter that a wider block satisfies, it is the flush's **walk**: ~110 cyc over ~210 undo
-entry-visits a frame, paid before the painter is called. Widening converts an early return into a
-delivery — 371 cyc a visit, **11.0 ms** against 4.8–6.3 ms of budget, *worse* than the 68-row
-build. The rate rule says it in one line: 210 delivered bytes over 63 owned rows is **3.3 a row a
-frame** against a break-even of 0.8.
-⭐⭐⭐ **SO THE LIVE SHAPE FOR THESE ROWS IS RETARGETING THE WRITER, NOT MIRRORING IT — a MIRROR
-can only pay on rows whose writers are nearly silent.** `plot_line_octant` and
-`undraw_plot_lines` must walk **plane addresses directly, instead of `mem[]`** — the address is
-already in a register at the store site, so there is no hook, no walk and no filter. Two things
-are owed and both are contained: the undo table (`MEM_plot_undo_byte` `$0780`) must save and
-restore *plane* bytes, and **`update_grip_limits`' two cells on display line 149 are the view
-sweep's bytes, not the plotters'** — so the sweep keeps its `mem[]` store on that one line and the
-game-logic reader is served, ⚠ which is an argument until `REVS_FB_POISON=149-149` (the poison
-test's own positive control) says so. This is a plotter REWRITE of the same kind as phase 1's
-takeover, and it collects 117..157's −5.07 and the needles' −2.5 together.
+⭐⭐⭐ **THE LIVE BUILD IS THE NEEDLE PLOTTERS' RETARGET — ROWS 158..191, ≈ −3.4 ms, AND IT IS THE
+BEST BLOCK ON THE SCREEN** (§11e). Same rows domain B closed, opposite verdict, because the
+mechanism is opposite: a MIRROR pays 666 cyc on top of every byte its writer stores, a RETARGET
+pays ~30 (four plane bytes less the `mem[]` store it replaces). ⇒ **two break-evens, 32× apart —
+0.82 delivered bytes per owned row per frame for a mirror, 26.4 stores per owned row per frame for
+a retarget** — against a prize of ~789 cyc a row that **does not depend on who paints it**.
+⭐⭐ **So rank an ownership domain by STORES PER ROW, ascending, and the ledger's order inverts:**
+the needles are at 1.6 st/row (net −4.67 before the undo table), while **117..157 is at 6..28 and
+nets between −0.6 and +0.02 a block.** This entry stalled on 117..157 for three sessions because
+that block is genuinely AT break-even — the view sweep repaints its rows 27 times a frame, and a
+row repainted 27 times costs 27 retargets to own. The ledger's row price cannot see that; only
+`st/row` can.
+⭐ The needles' −4.90 is §11d's own MEASURED arm A→B move of phase 27 (−5.44, the largest yet),
+not a ledger estimate. What it costs: +0.23 ms of stores, plus the undo table's rework — ~210 undo
+entry-visits a frame must save and restore **plane** bytes instead of one `mem[]` byte (~1.2 ms
+done naively). ⇒ **the undo table is where the care goes, not the plot.**
+✅ **And the row-149 reader gate is settled without a measurement: EXCLUDE THE ROW.** The poison
+test already fired there (2325 differ, 2291 outside — it is the instrument's own positive control);
+what was unresolved is only whose byte `update_grip_limits` reads. Leave 149 unowned — the decode
+keeps painting it, every writer keeps its `mem[]` store for it — for **one row's prize, 0.11 of
+4.90**, and a question whose wrong answer would be a game-logic bug disappears. The plotters need a
+per-row ownership test anyway: they write 129..191, straddling the boundary whatever 149 does.
 ⇒ **Rank an ownership domain by PRIZE ÷ WRITER SET, never by prize alone** — this entry ranked by
 prize for two sessions because the writer set had never been measured per display line, then by
 writer-set *size* for one more because the writers' **store rate** had not been priced, and then
