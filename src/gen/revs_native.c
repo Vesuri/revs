@@ -1748,6 +1748,114 @@ static void view_own_run(ViewState* v, unsigned first, int forced)
     v->line = (unsigned char)line;
     v->cell = (unsigned char)cell;
 }
+/* ⭐⭐ THE HOISTED PRECONDITION'S OWN COUNTER (`make VIEWFULL=1 VIEWFULLCHECK=1`).
+   `view_own_full` asks `view_stop_from(0) == 40` ONCE, as its caller's precondition, where
+   `paint_cells` asks it on every line.  The argument for that is a writer set — the stop list's
+   only three writers (`view_stop_note`, `view_stop_forget`, `view_stops_rescan`) are reached
+   from `view_plant`, `unplant_stops` and the sweep's entry rescan, none of which phase 1 runs —
+   and a writer-set argument is exactly the kind that is right until some circuit's hook makes it
+   wrong.  ⚠⚠ IT IS ALSO THE ONE THING THIS DRIVER CANNOT GATE ANY OTHER WAY: a cross-run picture
+   diff is invalid here (a faster build reaches a different game state at the same field), and
+   `SPANVERIFY`'s byte oracle needs the chain to keep writing `mem[]`, which is the very thing a
+   dedicated driver deletes.  So the assumption gets a counter, in-process, exactly as the lane
+   map above does — and everything else about this driver is the SAME statements in the same
+   order, whose pixels `SPANFILL=5`'s oracle already covers.
+   ⚠ A non-zero count does not mean a wrong picture; it means the hoist is unsound and the test
+   belongs back in the loop.
+   ⭐ The two counters are defined in EVERY build, not only under the flag, so ONE A/B script
+   reads both arms: the control's `driver lines/frame=0` beside the driver's 36 is the switch
+   printing its own state, which is the cheapest proof the flag reached the compiler. */
+volatile unsigned long g_viewFullLines   = 0;
+volatile unsigned long g_viewFullStopBad = 0;
+
+#ifdef REVS_VIEW_OWN_FULL
+#ifdef REVS_VIEW_OWN_FULL_CHECK
+#define VIEW_FULL_CHECK() do {                                                          \
+        g_viewFullLines++;                                                              \
+        if (view_stop_from(0) != 40) g_viewFullStopBad++;                               \
+    } while (0)
+#else
+#define VIEW_FULL_CHECK() ((void)0)
+#endif
+
+/* ⭐⭐⭐ PHASE 1'S OWN LINE DRIVER — THE TAKEOVER WITHOUT `paint_cells` (§10q, `make VIEWFULL=1`)
+   ============================================================================================
+   `view_own_run` above did this for the SHORT phases' runs; this is the same move for the one
+   call phase 1 makes, and it is the whole of §10q's surviving prize.  Phase 1 enters
+   `paint_cells` ONCE and that call loops all 36 lines, so what a dedicated driver deletes is not
+   a frame or a `movem` — those are paid once a sweep either way — it is the per-line cost of
+   walking a 704-instruction body whose span arms, four-segment run derivation, quad-unrolled
+   unit loop, stop tail and skip/verify arms this path cannot use, and whose register allocation
+   every line of phase 1 pays for.  §10p (5b) measured ~89% of that body running on every line
+   of phases 2/3, which is the same shape.
+
+   ⭐⭐⭐ AND THE PRECONDITION HOISTS OUT OF THE LINE LOOP, WHICH IS WHY THIS IS A DRIVER AND NOT
+   A FAST PATH.  `paint_cells` asks `view_stop_from(0) == 40` on every line.  It takes no line
+   argument: the stop list is a property of the CHAIN'S PAGE, and its only three writers
+   (`view_stop_note`, `view_stop_forget`, `view_stops_rescan`) are reached from `view_plant`,
+   `unplant_stops` and the sweep's own entry rescan — none of which phase 1 runs.  ⇒ the answer
+   is the same for all 36 lines, so it is asked ONCE, by the caller, as this routine's
+   precondition.  A planted stop (or no plot target) selects `paint_cells` for the whole phase,
+   which is CLAUDE.md's dead-arm-by-its-own-precondition move and not a duplicated fast path.
+
+   ⚠ THE `$7EEE` TERMINATOR IS *NOT* HOISTED, and the asymmetry is deliberate.  It is invariant
+   by the same theorem (the sweep stores only to $3000-$43CF and to base + cell*8 with base in
+   $67..$73, so it cannot reach page $7E), but it is a LIVE OPCODE SLOT the 6502 reads every
+   line, and a takeover that answers one differently from the code it replaces is exactly the
+   class `platform_smc_unhandled` exists to catch — `view_own_run` keeps it for the same reason.
+   One absolute byte load a line is the price of that.
+
+   ⚠ BYTE-EXACT BY CONSTRUCTION: the prologue, the scan, the two painter calls and the
+   terminator are the SAME code as `paint_cells`' takeover arm, read through the same locals.
+   Only the way they are REACHED changes, which is what makes the five `make determinism`
+   trajectories and `make SPANFILL=5 SPANVERIFY=1 DIRECTCHECK=1` the gate rather than a picture. */
+static void view_own_full(ViewState* v)
+{
+    unsigned byte = v->byte, line = v->line, cell = v->cell;
+    /* the group-of-four scan's cache, in locals for the reason `paint_cells` argues at its own */
+    unsigned scanGroup = 0xFFFFu, scanLanes = 0;
+
+    for (;;) {
+        /* the `advance_first` prologue: the scan-line step and the line's background byte */
+        PROBE_VIEW_LINE();
+        PROBE_SHAPE_VIEW_LINE();
+        step_scanline((int*)0);
+        byte = mem[MEM_surface_colours + (mem[MEM_view_line_surface + line] & 3)];
+        PROBE_SHAPE_VIEW_FLAT(line, view_stop_from(0) == 40, plot_ptr_v);
+        SPAN_SCAN_CHECK(line);
+        VIEW_FULL_CHECK();
+
+        {
+            const unsigned g = line & ~3u;
+            if (g != scanGroup) { scanGroup = g; scanLanes = view_group_sources(g); }
+            if (VIEW_SCAN_LANE(scanLanes, line - g) == 0) {
+                /* nothing wrote this line's forty sources: ONE span of the background byte */
+                REVS_PLOT_SPAN(plot_ptr_v, byte);
+                SPAN_EMIT_STAT(g_spanEmitLines++);
+            } else {
+                /* the other arm: the renderer walks the forty cells straight into the planes */
+                byte = REVS_PLOT_CHAIN(plot_ptr_v, byte,
+                                       mem + MEM_view_src_blocks + line,
+                                       mem + MEM_view_cell_bytes);
+                SPAN_EMIT_STAT(g_spanEmitPaints++);
+            }
+            cell = 0x38;                /* unit 39's cell, as a full line leaves it */
+        }
+
+        {                               /* $7EEE — the sweep's own terminator */
+            unsigned op = mem[MEM_view_chain_end_slot];
+            if (op == OP_RTS) break;
+            if (op != OP_CPX_IMM) { platform_smc_unhandled(MEM_view_chain_end_slot, op); break; }
+        }
+        if (line_is_last(line, 0x2C)) break;    /* the last full-width line; its C is live */
+        line = (line - 1) & 0xFF;
+    }
+
+    v->byte = (unsigned char)byte;
+    v->line = (unsigned char)line;
+    v->cell = (unsigned char)cell;
+}
+#endif /* REVS_VIEW_OWN_FULL */
 
 /* ⭐⭐⭐ THE SHORT PHASES' DRIVERS, WITHOUT THE CHAIN AND WITHOUT THE CALL (§10p, `make VIEWOWN=1`)
    ============================================================================================
@@ -2273,7 +2381,17 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
        ⚠⚠ It is a correctness gate, not a speed one (revs_plot.h §revs_plot_has_target).  An owned
        line is painted by the renderer ALONE — the forty chain stores are gone with it — so a build
        that claimed ownership with no target would leave the line painted by nobody. */
+#ifdef REVS_VIEW_OWN_FULL
+    /* ⭐⭐⭐ ...AND PHASE 1 GETS ITS OWN DRIVER WHEN IT CAN USE ONE (§10q, `make VIEWFULL=1`).
+       Both halves of the precondition are SWEEP-level, so they are asked here and not 36 times:
+       the plot target is set once a painted frame, and the stop list is a property of the chain's
+       page that nothing in phase 1 writes (§view_own_full).  Either one failing selects
+       `paint_cells` for the whole phase — the dead arm chosen by its own precondition. */
+    if (REVS_PLOT_HAS_TARGET() && view_stop_from(0) == 40) view_own_full(&v);
+    else                                                   paint_cells(&v, 0, 0, 1, 0);
+#else
     paint_cells(&v, 0, 0, 1, REVS_PLOT_HAS_TARGET());
+#endif
     paint_lines_clipped(&v);
 
     /* Publish the two pointers back into mem[] for the 6502-ABI mirror.  In the CORE, not the

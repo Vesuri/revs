@@ -91,7 +91,8 @@ enum {
     PROBE_BUILD_NO_UNIT_LOOP   = 1u << 6,   /* NOUNITS=2    — ⚠ likewise                      */
     PROBE_BUILD_VIEWP3         = 1u << 7,   /* VIEWP3=*     — ⚠ likewise                      */
     PROBE_BUILD_BODY_IN_ISR    = 1u << 8,   /* BODY_IN_ISR=1 — the rejected 50 Hz model      */
-    PROBE_BUILD_VIEW_CARVE     = 1u << 9    /* VIEWCARVE=1  — ⚠ picture wrong: the ph27 ceiling */
+    PROBE_BUILD_VIEW_CARVE     = 1u << 9,   /* VIEWCARVE=1  — ⚠ picture wrong: the ph27 ceiling */
+    PROBE_BUILD_VIEW_OWN_FULL  = 1u << 10   /* VIEWFULL=1   — phase 1 owns its LINE LOOP too   */
 };
 
 volatile unsigned long g_probeBuildFlags =
@@ -124,6 +125,9 @@ volatile unsigned long g_probeBuildFlags =
 #endif
 #ifdef REVS_VIEW_CARVE
     PROBE_BUILD_VIEW_CARVE |
+#endif
+#ifdef REVS_VIEW_OWN_FULL
+    PROBE_BUILD_VIEW_OWN_FULL |
 #endif
     0u;
 

@@ -629,6 +629,33 @@ endif
 ifeq ($(SPANFILL),5)
 EXTRA_DEFINES += -DREVS_SPAN_STATELESS -DREVS_SPAN_GROUPSCAN -DREVS_SPAN_TAKEOVER
 endif
+
+# ⭐⭐⭐ `make VIEWFULL=1` — PHASE 1'S OWN LINE DRIVER (docs/span-render-plan.md §10q).
+# SPANFILL=5 gave the renderer phase 1's PIXELS; this gives it phase 1's LINE LOOP.  Phase 1
+# makes ONE `paint_cells` call that loops all 36 lines, so what this deletes is per-LINE walking
+# of a 704-instruction shared body (span arms, four-segment run derivation, the quad-unrolled unit
+# loop, the stop tail, the skip/verify arms) that the takeover path cannot use — plus the
+# stop-list test, which is a property of the chain's PAGE and so hoists out of the loop to become
+# the driver's precondition.  Sized at ~6 to ~11.5 ms/frame off ph24 (§10q's decomposition).
+# ⚠ Needs SPANFILL=5: with no takeover arm there is nothing for a dedicated driver to drive.
+# ⭐ `make VIEWFULL=0` is the A/B control, and both of SPANFILL=5's oracles cover this unchanged —
+# the prologue, the scan, the two painter calls and the terminator are the SAME code.
+# ⭐ The two counters are compiled into EVERY arm (revs_native.c), so the ONE A/B script reads the
+# control too and its `driver lines/frame=0` is the switch printing its own state.
+PROBE_SYMS_VIEWFULL = g_viewFullLines g_viewFullStopBad
+ifeq ($(VIEWFULL),1)
+EXTRA_DEFINES += -DREVS_VIEW_OWN_FULL
+# ⭐⭐ `make SPANFILL=5 VIEWFULL=1 VIEWFULLCHECK=1` — THE HOIST'S ORACLE, and it is the only gate
+# this driver can have.  It re-asks `view_stop_from(0) == 40` on every line the driver paints and
+# counts the disagreements; `g_viewFullStopBad` must stay 0 with `g_viewFullLines` large.  ⚠ Why
+# nothing else covers it: a cross-run picture diff is invalid (a faster build reaches a different
+# game state at the same field), and `SPANVERIFY`'s byte oracle needs the forty-unit chain to keep
+# writing `mem[]` — the very thing this driver deletes.  Everything else about the driver is the
+# same statements in the same order, with the pixels covered by SPANFILL=5's own oracles.
+ifeq ($(VIEWFULLCHECK),1)
+EXTRA_DEFINES += -DREVS_VIEW_OWN_FULL_CHECK
+endif
+endif
 # ⛔⛔⛔ `make SPANPAINT=1` IS A PARKED MEASUREMENT ARM, NOT A WIN — it is EXACT and it costs
 # +3.48 ms/frame (178.10 -> 185.53 ms bracketed; the producer below is +3.68 more).  A wholesale
 # group is 236 cycles against the 184 of the four `revs_plot_chain` cells it replaces, because
@@ -887,6 +914,7 @@ PROBE_SYMS = g_vbiCount g_fpsFrames g_smcUnhandled g_smcSite g_smcValue g_brkCou
              g_bandCount g_bandOverflow g_bandSkips g_bandRuns g_bandHorizonMoves g_keyUnmapped g_keyUnmappedCode g_keyEvents g_keyDown \
              g_spaceEdges g_spaceAnswered g_spacePolls g_keyLatchHits g_screenMode7 \
              $(PROBE_SYMS_TAPTEST) \
+             $(PROBE_SYMS_VIEWFULL) \
              g_mouseBtnMask g_mouseBtnSeen \
              g_irqClobberCount g_irqClobberWhich \
              g_irqUnwindPending g_irqUnwindTouched g_irqStackImbalance \
