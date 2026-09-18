@@ -1220,10 +1220,30 @@ session's four-fold model error would have been caught first.
 
 #### ⭐⭐⭐ What survives: the DRIVER, and it needs nothing from Stage A
 
-The chain arm costs **500 µs/line** (ph24 18.02 ms ÷ 36 lines = 3546 cyc) of which the cell loop is
-~2329, leaving **~1200 cyc/line of per-line driver and entry** — the two re-bases, the bus-range
-test, `s_lineOf`/`s_planeOff`, the `g_plotOwn` claim, an 11-register `movem` and a five-argument
-call. Over 36 lines that is **~6 ms a frame**, consistent with §10p step 3b's published −7.8 ms.
+Phase 1 has **two** per-line arms, so the line count is the wrong denominator on its own: 21 of the
+36 lines are `revs_plot_span`'s longword fill and only ~15 run the chain's cell loop.
+
+```
+ph24 = 36·D + 15·C + 21·S      C ≈ 2329 cyc (the cell loop)   S ≈ 550 (the flat fill)
+18.02 ms = 127 762 cyc    ⇒    D ≈ 2258 cyc/line ≈ 11.5 ms a frame
+```
+
+⚠⚠ **An earlier reading of this divided ph24 by 36 and subtracted C as if every line ran it, giving
+1220 cyc/line ≈ 6 ms.** That is a FLOOR, not the figure. ⭐ **The general trap: when a phase has
+two per-line arms of very different cost, one division by the line count prices the cheap arm at
+the expensive arm's rate.**
+
+`D` is the two re-bases, the bus-range test, `s_lineOf`/`s_planeOff`, the `g_plotOwn` claim, an
+11-register `movem`, a five-argument call, `step_scanline`'s two global pointer updates, the
+background-byte read — **and `paint_cells`' whole shared body**, whose span / skip / takeover /
+verify arms and 28-byte frame every line pays for whether or not it uses them. §10p (5b) measured
+exactly that on phases 2/3: ~89% of the body runs on every line.
+
+⚠ It does **not** close against `NOUNITS=2`'s 905 cyc/line, and the gap is accounted for rather
+than mysterious: 102 cyc/line of any PROBES figure is the `g_viewLines` census, `SPANSTAT` adds six
+volatile counter RMWs a span, and 905 was measured on the build *without* the takeover's three
+extra arms. ⇒ **the prize is bracketed at ~6 to ~11.5 ms**, which is large enough to build against
+and not worth modelling further (`docs/method-lessons.md` §ship, don't survey).
 
 ⇒ **Step 3b is a RANGE painter over `revs_plot_chain`'s own 46-cycle cell, with the per-line driver
 deleted.** It needs no span record, no producer, and no new faithfulness surface — which also means

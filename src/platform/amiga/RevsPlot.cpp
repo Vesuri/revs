@@ -501,13 +501,26 @@ extern "C" unsigned char revs_plot_chain(unsigned short addr, unsigned char valu
    ⚠ The 74% wholesale rate is NOT the disappointment: it was measured at 74% in a consuming build
    against 80% predicted, so the arm fires as designed — it is simply not worth firing.
 
-   ⭐⭐⭐ WHAT SURVIVES, AND IT NEEDS NOTHING FROM HERE.  The chain arm costs 500 µs/line
-   (ph24 18.02 ms ÷ 36 lines) of which this file's cell loop is ~330, so ~1200 cyc/line is
-   PER-LINE DRIVER AND ENTRY — the two re-bases, the bus-range test, `s_lineOf`/`s_planeOff`, the
-   `g_plotOwn` claim, an 11-register `movem` and a five-argument call — times 36 lines ≈ 6 ms a
-   frame.  §10p step 3b deletes that by painting a RANGE of lines, and what it wants is
-   `revs_plot_chain`'s 46-cycle cell WITH THE DRIVER GONE: no span record, no producer, no new
-   faithfulness surface.  Do not revive the wholesale arm to serve it.
+   ⭐⭐⭐ WHAT SURVIVES, AND IT NEEDS NOTHING FROM HERE: THE PER-LINE DRIVER, AND IT IS THE
+   BIGGEST ITEM LEFT IN THE SWEEP.  ⚠ Take the denominator seriously — only the ~15 NON-FLAT lines
+   run this file's cell loop; the other 21 are `revs_plot_span`'s longword fill:
+       ph24 = 36·D + 15·C + 21·S,   C ≈ 2329 cyc (the cell loop), S ≈ 550 (the flat fill)
+       18.02 ms = 127 762 cyc  ⇒  D ≈ 2258 cyc/line ≈ 11.5 ms a frame
+   (An earlier reading of this block divided ph24 by 36 while subtracting C as if every line ran
+   it, and got 1220 cyc/line ≈ 6 ms — a FLOOR, not the figure.  ⭐ The general trap: when a phase
+   has two per-line arms, a single division by the line count prices the cheap arm at the
+   expensive arm's rate.)  D is the two re-bases, the bus-range test, `s_lineOf`/`s_planeOff`, the
+   `g_plotOwn` claim, an 11-register `movem`, a five-argument call, `step_scanline`'s two global
+   pointer updates, the background-byte read — and `paint_cells`' whole shared body, whose span /
+   skip / takeover / verify arms and 28-byte frame every line pays for (§10p (5b) measured the
+   same thing on phases 2/3: ~89% of that body runs on every line).
+   ⚠ It does NOT close against `NOUNITS=2`'s 905 cyc/line, and the difference is not mysterious:
+   102 cyc/line of that is PROBES census, `SPANSTAT` adds six volatile RMWs a span, and 905 was
+   measured on the build WITHOUT the takeover's three extra arms.  So the prize is bracketed at
+   ~6 to ~11.5 ms and is worth building against rather than modelling further.
+   ⇒ §10p step 3b deletes D by painting a RANGE of lines, and what it wants is `revs_plot_chain`'s
+   46-cycle cell WITH THE DRIVER GONE: no span record, no producer, no new faithfulness surface.
+   Do not revive the wholesale arm to serve it.
    The span record's own cost is a separate measured defect, recorded at `view_span_line`. */
 
 /* ── ⭐⭐⭐ STAGE A: THE SAME LINE PAINTED FROM THE ROAD RECORD ───────────────────────────────
