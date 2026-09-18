@@ -50,11 +50,11 @@ static uint8_t* s_target;
    painter maintains only the few bytes a frame that CHANGE, so a byte it puts in one buffer alone
    would be missing from the other for ever (revs_plot.h). */
 static uint8_t* s_plane[2];
-#ifdef REVS_PLOT_TEXT
+#ifdef REVS_PLOT_DELTA
 /* ⛔ A buffer-INITIALISATION flag, NOT a dirty map — nothing per cell, nothing the writers
    maintain.  Declared up here because `revs_plot_target` clears it when the race view leaves the
    screen, and that is far above the glyph domain's own section. */
-static uint8_t s_textBased;
+static uint8_t s_deltaBased;
 #endif
 
 /* ⭐⭐ THE BROADCAST AS A TABLE, because the 68000 cannot make one cheaply.  `0x01010101 * b` is
@@ -84,9 +84,9 @@ volatile unsigned long  g_plotNoTarget  = 0;
 volatile unsigned long  g_plotChainLines = 0;   /* lines the TAKEOVER painted cell by cell */
 volatile unsigned long  g_plotChainNZ     = 0;  /* ...and their non-zero sources = runs - 1 */
 volatile unsigned short g_plotChainNZLast = 0;
-#ifdef REVS_PLOT_TEXT
-volatile unsigned long  g_plotTextBytes = 0;    /* glyph bytes mirrored into both buffers */
-volatile unsigned long  g_plotTextBases = 0;    /* full re-expansions of the 34 owned rows */
+#ifdef REVS_PLOT_DELTA
+volatile unsigned long  g_plotDeltaBytes = 0;    /* glyph bytes mirrored into both buffers */
+volatile unsigned long  g_plotDeltaBases = 0;    /* full re-expansions of the 34 owned rows */
 #endif
 }
 #endif
@@ -119,11 +119,11 @@ extern "C" void revs_plot_target(unsigned char* planeBase)
 {
     if (!s_mapBuilt) buildMap();
     s_target = planeBase;
-#ifdef REVS_PLOT_TEXT
+#ifdef REVS_PLOT_DELTA
     /* ⚠ No target means the race view is not on screen (MODE 7, `tt_active()`), and MODE 7 is the
        same chip memory time-multiplexed — so the glyph domain's static base is gone and the next
        sweep must lay it down again.  One byte, in the VBI, which is where the fact is known. */
-    if (!planeBase) s_textBased = 0;
+    if (!planeBase) s_deltaBased = 0;
 #endif
 #ifdef REVS_SPAN_STATS
     g_plotRunsLast = 0;
@@ -457,32 +457,70 @@ extern "C" unsigned char revs_plot_chain(unsigned short addr, unsigned char valu
     return (unsigned char)byte;
 }
 
-#ifdef REVS_PLOT_TEXT
-/* ── ⭐⭐⭐ THE GLYPH DOMAIN — display lines 0..17 AND 192..207 ────────────────────────────────
-   Why these 34 rows, what the two moving parts are and why the mem[] stores all stay: revs_plot.h.
-   Here is only the mechanism. */
+#ifdef REVS_PLOT_DELTA
+/* ── ⭐⭐⭐ THE DELTA DOMAIN — display lines 0..17 AND 192..207 ────────────────────────────────
+   Why these 34 rows, which routine mirrors into them and why the mem[] stores all stay:
+   revs_plot.h.  Here is only the mechanism. */
 
 /* The two blocks, [first, end).  ⭐ Per DISPLAY LINE, not per character row (CLAUDE.md): 0..17 is
    the two MODE 4 text rows plus the two lines of row 2 that the band boundary at 18.0 puts above
-   the sky, and 192..207 is the bottom two character rows of the dashboard. */
-static const unsigned char kTextBlock[2][2] = { { 0u, 18u }, { 192u, 208u } };
+   the sky, and 192..207 is the two MODE 5 text rows under the dashboard.  Both are
+   `vdu_char_emit`'s, at ~3.7 stores a frame between them.
+   ⛔⛔ AND THE NEEDLE ROWS 158..191 ARE A MEASURED DEAD END FOR THIS MECHANISM, NOT A GAP — they
+   were built, validated and A/B'd as a third block and cost +5.41 ms of phase 32 against the
+   −2.51 ms of decode they own.  ⭐⭐⭐ The number that decides it is a RATE, and it is the one to
+   check before widening this table again: the BUDGET is ~544 cycles a row (the decode those rows
+   delete) and the COST is ~666 cycles per byte the painter DELIVERS, so **a row pays for a delta
+   painter only below ~0.8 delivered bytes a frame** — `vdu_char_emit`'s rows are at 3.7/34 = 0.11
+   and the needles at 57.6/34 = 1.69.  docs/span-render-plan.md §11d has the three-arm table and
+   why no placement of the hook escapes it. */
+static const unsigned char kDeltaBlock[2][2] = { { 0u, 18u }, { 192u, 208u } };
 
-static uint8_t s_baseMode[5];      /* the band record the base was laid down under */
-static short   s_baseFirst[5];
-static uint8_t s_baseCount;
+/* ⭐⭐⭐ THE OWNED-ROW KIND TABLE — the domain's whole per-row state, and it is ONE byte load on
+   every path that used to ask a question:
+     0    this row is the decode's.
+     4/5  the renderer owns it, and this is the MODE its bytes expand under.
+   It replaces three separate lookups, two of them measured expensive: a block test per mirrored
+   byte, `plotModeOf`'s backwards band scan per mirrored byte, and a staleness test that asked the
+   band record twice per OWNED ROW (two five-entry scans a row — +2.1 ms in phase 24 at 34 owned
+   rows and +3.4 ms at 68, which was most of what the domain was buying).
+   ⭐ And the rebuild's own answer — "did any owned row's kind change?" — IS the staleness test.
+   The base's content depends on exactly two things: the mem[] bytes, which the delta tracks byte
+   by byte, and the MODE each owned row expands under.  So a band boundary that MOVES is not a
+   change (bands 3 and 4 are both MODE 5 and band 4's start at 166 sits inside the owned block; a
+   line of jitter there would otherwise re-base ~20 000 stores every sweep), and a band that
+   changes MODE is one wherever it lands. */
+static uint8_t s_deltaKind[BBC_SCREEN_HEIGHT];
 
-static int textLineOwned(int y)
+/* Rebuilt once a sweep BY BAND — at most five spans clamped to the two owned blocks — never by
+   asking the band record per row.  Returns 1 if any owned row's kind moved. */
+static int deltaKindRebuild(void)
 {
-    return (y >= (int)kTextBlock[0][0] && y < (int)kTextBlock[0][1]) ||
-           (y >= (int)kTextBlock[1][0] && y < (int)kTextBlock[1][1]);
+    unsigned blk, n;
+    int changed = 0;
+    for (blk = 0; blk < 2u; blk++) {
+        const unsigned lo = kDeltaBlock[blk][0], hi = kDeltaBlock[blk][1];
+        for (n = 0; n < s_bandCount; n++) {
+            const uint8_t kind = (s_bandMode[n] == 4u) ? 4u : 5u;
+            unsigned bs = (unsigned)(int)s_bandFirst[n];
+            unsigned be = (n + 1u < s_bandCount) ? (unsigned)(int)s_bandFirst[n + 1u]
+                                                 : (unsigned)BBC_SCREEN_HEIGHT;
+            unsigned y;
+            if (bs < lo) bs = lo;
+            if (be > hi) be = hi;
+            for (y = bs; y < be; y++)
+                if (s_deltaKind[y] != kind) { s_deltaKind[y] = kind; changed = 1; }
+        }
+    }
+    return changed;
 }
 
-/* One owned display line, all forty cells, into BOTH buffers — the BASE.  A dash row is ~38.4 of
-   its 40 cells static cockpit that no routine ever rewrites, so the delta painter is only valid
-   once the planes already hold them.
+/* One owned display line, all forty cells, into BOTH buffers — the BASE.  An owned row is nearly
+   all cells that no routine rewrites within a frame, so the delta painter is only valid once the
+   planes already hold them.
    ⚠ Shifts, never a multiply: `row * 320` and `y * 80` with a runtime operand emit __mulsi3 and
    the 68000 has none (CLAUDE.md, and `make muldiv-audit` fails the link). */
-static void plotTextBaseRow(unsigned y, unsigned mode)
+static void plotDeltaBaseRow(unsigned y, unsigned kind)
 {
     const unsigned row    = y >> 3;
     const unsigned rowOff = (y << 6) + (y << 4);                       /* y * 80  */
@@ -490,7 +528,7 @@ static void plotTextBaseRow(unsigned y, unsigned mode)
     uint8_t* a = s_plane[0] + rowOff;
     uint8_t* b = s_plane[1] + rowOff;
     unsigned c;
-    if (mode == 4u) {
+    if (kind == 4u) {
         for (c = 0; c < BBC_SCREEN_CELLS; c++, src += BBC_SCREEN_LINES) {
             const uint8_t v = *src;
             a[c] = 0; a[c + kPlaneGap] = v;
@@ -506,25 +544,6 @@ static void plotTextBaseRow(unsigned y, unsigned mode)
     }
 }
 
-/* Has the geometry moved under the base?  A MODE change or a different band count invalidates it
-   outright.  A moved BOUNDARY only matters if it crossed an owned block — and the one boundary
-   that moves is the horizon (band 2/3, around line 81..101), seventy lines from either block, so
-   this normally accepts the move and keeps the base.  ⚠ Bands 0/1 (18.0) and 3/4 (166.1) are
-   FIXED — bands 2+3 sum to a constant $153C — which is why both blocks can be owned at all
-   (docs/span-render-plan.md §11b). */
-static int textBaseStale(void)
-{
-    unsigned n;
-    if (s_bandCount != s_baseCount) return 1;
-    for (n = 0; n < s_bandCount; n++) {
-        if (s_bandMode[n] != s_baseMode[n]) return 1;
-        if (s_bandFirst[n] == s_baseFirst[n]) continue;
-        if (textLineOwned(s_bandFirst[n]) || textLineOwned(s_baseFirst[n])) return 1;
-        s_baseFirst[n] = s_bandFirst[n];   /* outside the domain: nothing owned depends on it */
-    }
-    return 0;
-}
-
 /* ⚠⚠ SABOTAGED FIVE WAYS, AND FOUR FIRED — the fifth is written down here because it is the one
    worth knowing.  Deleting the DELTA's mirror (mismatch 6720), swapping lo/hi in the base
    (196606), aiming the delta at one buffer only (6888) and expanding a MODE 4 row as MODE 5
@@ -538,55 +557,53 @@ static int textBaseStale(void)
    reach it — which is a statement of the oracle's scope, not a reason to drop the write.
    ⭐ The SIBLING case is what settles it (CLAUDE.md): the DELTA's two-buffer write is the same
    claim and it fires at 6888. */
-static void plotTextBase(void)
+static void plotDeltaBase(void)
 {
-    unsigned blk, y, n;
+    unsigned blk, y;
     for (blk = 0; blk < 2u; blk++)
-        for (y = kTextBlock[blk][0]; y < kTextBlock[blk][1]; y++)
-            plotTextBaseRow(y, plotModeOf(y));
-    for (n = 0; n < 5u; n++) { s_baseMode[n] = s_bandMode[n]; s_baseFirst[n] = s_bandFirst[n]; }
-    s_baseCount = s_bandCount;
-    s_textBased = 1;
+        for (y = kDeltaBlock[blk][0]; y < kDeltaBlock[blk][1]; y++)
+            plotDeltaBaseRow(y, s_deltaKind[y]);
+    s_deltaBased = 1;
 #ifdef REVS_SPAN_STATS
-    g_plotTextBases++;
+    g_plotDeltaBases++;
 #endif
 }
 
-#ifdef REVS_PLOT_TEXT_CHECK
+#ifdef REVS_PLOT_DELTA_CHECK
 extern "C" {
-volatile unsigned long  g_plotTextChecks    = 0;
-volatile unsigned long  g_plotTextMismatch  = 0;
-volatile unsigned short g_plotTextMismatchY = 0;   /* (y << 8) | cell of the FIRST mismatch */
+volatile unsigned long  g_plotDeltaChecks    = 0;
+volatile unsigned long  g_plotDeltaMismatch  = 0;
+volatile unsigned short g_plotDeltaMismatchY = 0;   /* (y << 8) | cell of the FIRST mismatch */
 }
 
 /* ⭐⭐ THE STALENESS ORACLE — see revs_plot.h.  Called at the TOP of the sweep's own_reset, before
    any re-base, so what it compares is the accumulated delta state: a byte written into these 34
    rows by anybody but `vdu_char_emit` shows up here on the very next sweep. */
-static void plotTextCheck(void)
+static void plotDeltaCheck(void)
 {
     unsigned blk, y, c;
-    if (!s_textBased) return;
-    g_plotTextChecks++;
+    if (!s_deltaBased) return;
+    g_plotDeltaChecks++;
     for (blk = 0; blk < 2u; blk++)
-        for (y = kTextBlock[blk][0]; y < kTextBlock[blk][1]; y++) {
-            const unsigned mode   = plotModeOf(y);
+        for (y = kDeltaBlock[blk][0]; y < kDeltaBlock[blk][1]; y++) {
+            const unsigned kind   = s_deltaKind[y];
             const unsigned row    = y >> 3;
             const unsigned rowOff = (y << 6) + (y << 4);
             MEM_QUAL uint8_t* src = mem + BBC_SCREEN_BASE + ((row << 8) + (row << 6)) + (y & 7);
             for (c = 0; c < BBC_SCREEN_CELLS; c++, src += BBC_SCREEN_LINES) {
                 const uint8_t v  = *src;
-                const uint8_t lo = (mode == 4u) ? (uint8_t)0 : g_bbcExpandLo[v];
-                const uint8_t hi = (mode == 4u) ? v           : g_bbcExpandHi[v];
+                const uint8_t lo = (kind == 4u) ? (uint8_t)0 : g_bbcExpandLo[v];
+                const uint8_t hi = (kind == 4u) ? v           : g_bbcExpandHi[v];
                 if (s_plane[0][rowOff + c] != lo || s_plane[0][rowOff + c + kPlaneGap] != hi ||
                     s_plane[1][rowOff + c] != lo || s_plane[1][rowOff + c + kPlaneGap] != hi) {
-                    if (!g_plotTextMismatch)
-                        g_plotTextMismatchY = (unsigned short)((y << 8) | c);
-                    g_plotTextMismatch++;
+                    if (!g_plotDeltaMismatch)
+                        g_plotDeltaMismatchY = (unsigned short)((y << 8) | c);
+                    g_plotDeltaMismatch++;
                 }
             }
         }
 }
-#endif /* REVS_PLOT_TEXT_CHECK */
+#endif /* REVS_PLOT_DELTA_CHECK */
 
 /* ⭐⭐⭐ THE DELTA.  "This BBC frame-buffer byte just became `value`" — one line of one cell, into
    both buffers' planes.  Called from `vdu_char_emit_core`'s single store site, which is where
@@ -597,19 +614,23 @@ extern "C" void revs_plot_byte(unsigned short addr, unsigned char value)
 {
     const unsigned off = (unsigned)addr - BBC_SCREEN_BASE;
     unsigned po;
-    uint8_t lo, hi;
-    if (!s_textBased || off >= (unsigned)FB_BYTES) return;   /* based implies the map is built */
-    if (!textLineOwned(s_lineOf[off])) return;               /* not ours — the decode has it */
+    uint8_t kind, lo, hi;
+    if (off >= (unsigned)FB_BYTES) return;
+    /* ⭐ ONE byte decides both questions, and a non-zero kind implies the base is down and the
+       map is built: only `revs_plot_own_reset` writes this table, under the same two conditions
+       (`s_plane[]` set, which is what builds the map) and immediately before laying the base. */
+    kind = s_deltaKind[s_lineOf[off]];
+    if (!kind) return;                                        /* the decode's row */
     po = s_planeOff[off];
-    if (plotModeOf(s_lineOf[off]) == 4u) { lo = 0; hi = value; }
+    if (kind == 4u) { lo = 0; hi = value; }
     else { lo = g_bbcExpandLo[value]; hi = g_bbcExpandHi[value]; }
     s_plane[0][po] = lo;  s_plane[0][po + kPlaneGap] = hi;
     s_plane[1][po] = lo;  s_plane[1][po + kPlaneGap] = hi;
 #ifdef REVS_SPAN_STATS
-    g_plotTextBytes++;
+    g_plotDeltaBytes++;
 #endif
 }
-#endif /* REVS_PLOT_TEXT */
+#endif /* REVS_PLOT_DELTA */
 
 /* Cleared from `view_paint_lines_core`, i.e. once per SWEEP — not per decode.  The crash hold
    renders extra frames with no sweep between them, and those must keep honouring the last
@@ -618,18 +639,21 @@ extern "C" void revs_plot_own_reset(void)
 {
     unsigned i;
     for (i = 0; i < BBC_SCREEN_HEIGHT; i++) g_plotOwn[i] = 0;
-#ifdef REVS_PLOT_TEXT
+#ifdef REVS_PLOT_DELTA
     /* ⭐ THE CLAIM, and it is asserted HERE rather than in present() for a hard reason: basing 34
        rows is ~10 000 stores, and work in the vblank ISR is capped at one frame (CLAUDE.md).
        This is main-loop context (phase 24), once per sweep, and the decode reads the claim on the
        frame after — which is the same one-sweep lag the span emitter's claim already has. */
     if (s_bandCount && s_plane[0] && s_plane[1]) {
-#ifdef REVS_PLOT_TEXT_CHECK
-        plotTextCheck();
+#ifdef REVS_PLOT_DELTA_CHECK
+        plotDeltaCheck();
 #endif
-        if (!s_textBased || textBaseStale()) plotTextBase();
-        for (i = kTextBlock[0][0]; i < kTextBlock[0][1]; i++) g_plotOwn[i] = 1;
-        for (i = kTextBlock[1][0]; i < kTextBlock[1][1]; i++) g_plotOwn[i] = 1;
+        /* ⚠ The rebuild runs unconditionally — it is the table every mirrored byte reads,
+           not merely the staleness test — so it must not sit behind `||`'s short circuit. */
+        const int kindMoved = deltaKindRebuild();
+        if (kindMoved || !s_deltaBased) plotDeltaBase();
+        for (i = kDeltaBlock[0][0]; i < kDeltaBlock[0][1]; i++) g_plotOwn[i] = 1;
+        for (i = kDeltaBlock[1][0]; i < kDeltaBlock[1][1]; i++) g_plotOwn[i] = 1;
     }
 #endif
 }

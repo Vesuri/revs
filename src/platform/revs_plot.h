@@ -139,48 +139,72 @@ int revs_plot_has_target(void);
 extern unsigned char g_plotOwn[208] __attribute__((aligned(4)));  /* = BBC_SCREEN_HEIGHT */
 void revs_plot_own_reset(void);
 
-#ifdef REVS_PLOT_TEXT
-/* ⭐⭐⭐ THE GLYPH DOMAIN — display lines 0..17 AND 192..207, OWNED OUTRIGHT (§11b, domain A).
+#ifdef REVS_PLOT_DELTA
+/* ⭐⭐⭐ THE DELTA DOMAIN — display lines 0..17 AND 192..207, OWNED OUTRIGHT (§11b/§11c/§11d).
  *
- * WHY THESE 34 ROWS AND NOT THE DASHBOARD.  The measured writer-set ledger (`make fbwrites
- * FILL=all`) groups all 208 display lines by the SET of routines that write them, and these two
- * blocks — the two MODE 4 text rows at the top and the bottom two character rows of the
- * dashboard — have exactly ONE writer between them, `vdu_char_emit`, at ~3.7 stores a frame; the
- * bottom eight (200..207) have none at all.  Same 34 rows as the needle block for ~0.5 ms more
- * decode, against 66 stores a frame from four routines there.  ⭐⭐⭐ RANK A DOMAIN BY ROWS OWNED
- * ÷ WRITER SET, never by the prize alone: owning a row means retargeting every routine that
- * writes it.
+ * WHY THESE 34 ROWS.  The measured writer-set ledger (`make fbwrites FILL=all`) groups all 208
+ * display lines by the SET of routines that write them, and these two blocks are where that set
+ * is a SINGLE routine at a handful of stores a frame:
  *
- * HOW IT WORKS, and there are only two moving parts:
+ *   0..17    the two MODE 4 text rows                      `vdu_char_emit`, ~3.7 st/f between
+ *   192..207 the bottom two dash text rows                  them — and 8 of the 34 have NO writer
+ *
+ * ⭐⭐⭐ RANK A DOMAIN BY ROWS OWNED / WRITER SET, never by the prize alone: owning a row means
+ * retargeting every routine that writes it.
+ * ⛔⛔⛔ AND THE STORE RATE IS NOT A TIE-BREAKER, IT IS THE WHOLE DECISION — display lines
+ * 158..191, the needles and lamps, were built as a third block of this same domain and measured
+ * a NET LOSS (+5.41 ms of phase 32 against the −2.79 ms of decode they own).  ⭐⭐⭐ The rule that
+ * falls out, and the one to apply before adding any block here: the BUDGET is the decode the rows
+ * delete, ~544 cycles a row (40 cells x 13.6 cyc/mem[] byte, the 6.87 cyc/plane-byte fill rate of
+ * §10n), and the COST is ~666 cycles per byte the painter DELIVERS — 261 of plane work and ~405 of
+ * getting there — so **a row pays for a delta painter only below ~0.8 delivered bytes a frame.**
+ * These rows are at 3.7/34 = 0.11; the needles are at 57.6/34 = 1.69.  §11d has the three-arm
+ * table, the two placements that lose by two different mechanisms, and the ONE domain shape that
+ * could still collect those rows.
+ *
+ * HOW IT WORKS, and there are only two moving parts whatever the domain:
  *   1. THE BASE.  `revs_plot_own_reset()` expands all 34 rows of mem[] into BOTH buffers once,
- *      the first sweep it has planes and a band record.  A dash row is ~38.4 of its 40 cells
- *      static cockpit, so a delta painter is only valid once the planes already hold that static
- *      base.  ⛔ This is a buffer-INITIALISATION flag, not a dirty map — nothing per cell,
- *      nothing per frame, nothing the writers maintain (CLAUDE.md §writer-maintained dirty maps).
- *   2. THE DELTA.  `revs_plot_byte` from `vdu_char_emit`'s one store site, into both buffers.
+ *      the first sweep it has planes and a band record.  An owned row is nearly all cells that
+ *      nothing rewrites within a frame, so a delta painter is only valid once the planes already
+ *      hold that static base.  ⛔ This is a buffer-INITIALISATION flag, not a dirty map —
+ *      nothing per cell, nothing per frame, nothing the writers maintain (CLAUDE.md §writer-
+ *      maintained dirty maps).  `deltaBaseStale` re-lays it only when an owned row's MODE moves.
+ *   2. THE DELTA.  `revs_plot_byte` from the writer's own store site, into both buffers.  It
+ *      filters by display line, so a writer whose range straddles the edge needs no bounds test
+ *      of its own — ⚠ but that filter is NOT free, and paying it on out-of-domain stores is most
+ *      of what closed the needle block above.
+ *
+ * ⚠⚠ BOTH BUFFERS, ALWAYS.  A writer whose erase is cross-frame stateful — `undraw_plot_lines`
+ * restores bytes saved when the needle was drawn LAST frame — would otherwise leave the mark from
+ * two frames ago standing in the other buffer (§11b fact 1; the glyph domain's sabotage of
+ * exactly this fires at 6888).  It holds for `vdu_char_emit` too: a glyph cell is not repainted
+ * every frame, so one buffer's copy would never be refreshed.
  *
  * ⭐ AND THE `mem[]` STORES ALL STAY.  Owning a row while still writing mem[] needs NO reader
  * gate — `REVS_FB_POISON` is owed only by the step that DELETES the stores — so `make validate`
- * and every `determinism` trajectory are untouched by this.  The prize is the decode's, not the
- * store's: a row the decode stops converting is worth ~0.098 ms and the store flip is a wash
- * (CLAUDE.md, §10n). */
+ * and every `determinism` trajectory are untouched by this, and `undraw_plot_lines`' own saved
+ * bytes keep coming out of mem[].  The prize is the decode's, not the store's: a row the decode
+ * stops converting is worth ~0.09 ms and the store flip is a wash (CLAUDE.md, §10n). */
 void revs_plot_byte(unsigned short addr, unsigned char value);
 #define REVS_PLOT_BYTE(a, v)  revs_plot_byte((unsigned short)(a), (unsigned char)(v))
 #ifdef REVS_SPAN_STATS
-extern volatile unsigned long g_plotTextBytes;   /* bytes mirrored into the two buffers */
-extern volatile unsigned long g_plotTextBases;   /* full re-expansions of the 34 rows    */
+extern volatile unsigned long g_plotDeltaBytes;   /* bytes mirrored into the two buffers */
+extern volatile unsigned long g_plotDeltaBases;   /* full re-expansions of the owned rows */
 #endif
-#ifdef REVS_PLOT_TEXT_CHECK
-/* ⭐⭐ THE STALENESS ORACLE (`make TEXTCHECK=1`), and it is the ONE thing a delta painter on an
- * owned row has to prove: that no writer reaches these 34 rows unmirrored.  Once per sweep it
- * re-expands mem[] for both blocks and compares against what the two buffers actually hold, so a
- * byte written by anyone but `vdu_char_emit` shows up as a mismatch on the very next sweep.
+#ifdef REVS_PLOT_DELTA_CHECK
+/* ⭐⭐ THE STALENESS ORACLE (`make DELTACHECK=1`), and it is the ONE thing a delta painter on an
+ * owned row has to prove: that no writer reaches the owned rows unmirrored.  Once per sweep it
+ * re-expands mem[] for every block of `kDeltaBlock` and compares against what the two buffers
+ * actually hold, so a byte written by a routine with no `REVS_PLOT_BYTE` at its store site shows
+ * up as a mismatch on the very next sweep.  ⭐ It is domain-agnostic by construction — widening
+ * `kDeltaBlock` widens the oracle with it, which is how the needle block was proven correct
+ * before it was closed on cost.
  * ⚠ It cannot be `revs_screen_convert_reference`: that reads `m_lineMode`, which the carve has
  * zeroed on exactly the lines under test, so the reference would be blank there (§10k trap 1).
  * It expands from the band record the painter itself uses. */
-extern volatile unsigned long  g_plotTextChecks;
-extern volatile unsigned long  g_plotTextMismatch;
-extern volatile unsigned short g_plotTextMismatchY;  /* first offending display line */
+extern volatile unsigned long  g_plotDeltaChecks;
+extern volatile unsigned long  g_plotDeltaMismatch;
+extern volatile unsigned short g_plotDeltaMismatchY;  /* first offending display line */
 #endif
 #else
 #define REVS_PLOT_BYTE(a, v)  ((void)0)

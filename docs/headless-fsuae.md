@@ -119,7 +119,7 @@ with a plain `continue` and `diag_run.sh`'s SIGINT bought **288 s emulated / 122
 the evidence from the same wall clock.
 
 ⭐ **So: count in the PROGRAM and print once at the end** (a `volatile` counter plus a first-offender
-record, e.g. `g_plotTextMismatch` + `g_plotTextMismatchY`), never "stop when it goes wrong".  The
+record, e.g. `g_plotDeltaMismatch` + `g_plotDeltaMismatchY`), never "stop when it goes wrong".  The
 cheap version of the same rule is already in `docs/perf-method.md`: quote a framerate only from a
 script with no gdb stop inside the window.
 
@@ -141,7 +141,7 @@ evidence that an option did anything.  What settled it was an outside observer w
 lsof -p <fs-uae pid> | grep -ic CoreAudio    # 3 on a normal run, 0 with --audio_driver=dummy
 ```
 
-⭐ And an instrument change must be shown to change no measurement: the same `TEXTOWN=1` arm
+⭐ And an instrument change must be shown to change no measurement: the same `DELTAOWN=1` arm
 re-run silently read `phase 27` **17.181 ms against 17.194**, with phase 0's call count identical
 at 8437.
 
