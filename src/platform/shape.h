@@ -122,6 +122,13 @@ void shape_dash_store(unsigned dst, unsigned value, unsigned line);
 void scout_sweep_end(void);
 void scout_report(void);
 
+/* ⭐⭐⭐ THE STAGE A ORACLE (shape.cpp §THE STAGE A ORACLE) — every cell the sweep stores,
+   against `view_span_line`'s prediction for that (line, cell), attributed by the cell's own
+   consume arm.  The number that decides the replacement renderer's representation is
+   `carry-miss`: a cell the RLE carried (zero source) that the span record got wrong.
+   Printed beside the span census by REVS_SHAPE_WATCH. */
+void span_pred_report(void);
+
 /* ── ⭐⭐ THE RUN CENSUS — what a SOURCE-EVENT consumer would actually have to visit ─────────
  * `docs/open-work.md` item 1's live sub-lever, and the count that decides whether it gets
  * built.  The per-line census above sized a per-LINE skip, that skip SHIPPED, and it measured

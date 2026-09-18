@@ -219,6 +219,7 @@ void PlatformHost::renderFrame()
     if (const char* sw = std::getenv("REVS_SHAPE_WATCH")) {
         unsigned long every = std::strtoul(sw, 0, 0); if (!every) every = 50;
         if (frames && frames % every == 0) scout_report();
+        if (frames && frames % every == 0) span_pred_report();
         if (frames && frames % every == 0 && g_shapeDashCalls) {
             const unsigned long n = g_shapeDashCalls;
             std::printf("SHAPE frame %lu: sweeps=%lu  dirty/sweep=%lu.%02lu of 1440  "

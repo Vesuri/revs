@@ -32,6 +32,7 @@
 #include "../platform/probe.h"        /* PROBE_PHASE(): the phase-29 body-arm split */
 #include "../platform/shape.h"        /* PROBE_SHAPE_DASH_UNIT(): the §7a unit counter */
 #include "../platform/revs_plot.h"    /* REVS_PLOT_*: the direct-to-bitplane run plotter */
+#include "../platform/view_span.h"    /* ViewSpan / view_span_line: the span record */
 #include "../platform/track.h"        /* TRACK_GEN_ARGS(): the generator's two per-circuit constants */
 
 /* ⚠ Seed sites ONLY.  draw_road writes the three low bytes and interp_edge the three pages, so
@@ -7204,6 +7205,63 @@ REVS_FLAG_OP SlotExit surface_colour_at_core(uint8_t line, uint8_t position,
 SlotExit surface_colour_at_line_core(uint8_t line, uint8_t entryX, uint8_t entryV)
 {
     return surface_colour_at_core(line, mem[EDGE_COLUMN], entryX, entryV);
+}
+
+/* ── ⭐⭐⭐ THE SPAN RECORD — ONE VIEW LINE AS AT MOST FIVE SOLID RUNS (view_span.h) ─────────
+   The replacement renderer's producer.  `surface_colour_at_core` above is a pure function of
+   (line, position) whose only position-dependence is the four `>=` tests, so the colour along
+   a line is piecewise constant with at most four breakpoints and asking the classifier once
+   per interval is EXACTLY asking it per cell.  That is what makes this exact by construction:
+   it reuses the game's validated colour decision rather than re-deriving the road.
+
+   ⭐ The classifier's byte needs no translation on the way to the screen.  `view_cell_bytes`
+   ($6000) is the identity map with one hole — index $55 reads $00 — and `surface_colours`
+   ($38FC) is `00 0F F0 FF`, the four solid MODE 5 bytes.  So a surface class's painted cell IS
+   its `surface_colours` entry, and the $55 the dash-edge walk substitutes for a colourless
+   surface is just the RLE's escape for "$00 without meaning same-as-my-left" (the walk's own
+   fallback operand, $1DAC's $55), which translates straight back to $00.
+
+   ⚠ A breakpoint AT or PAST cell 40 is off the line and contributes no interval; `$80` is what
+   `clear_surface_buffers` leaves in an unwritten `surface_edge` entry, so this is also the
+   "no road on this line" case.  A breakpoint at 0 would open an empty first interval, so it is
+   dropped too and its colour comes out of the interval that starts there. */
+unsigned view_span_line(unsigned char line, ViewSpan* out)
+{
+    unsigned char bp[4];               /* the distinct in-line breakpoints, ascending */
+    unsigned n = 0, i, count = 0;
+
+    /* Insertion-sorted because the four buffers are in no particular order (they are four
+       drawing PASSES, not four sorted boundaries — draw_surface_spans patches its store
+       operand per pass), and because four entries make a sort a pair of compares. */
+    for (i = 0; i < 4u; i++) {
+        static const unsigned short kEdge[4] = {
+            MEM_surface_edge_0, MEM_surface_edge_1, MEM_surface_edge_2, MEM_surface_edge_3
+        };
+        const unsigned char e = mem[kEdge[i] + line];
+        unsigned k, j;
+        if (e == 0u || e >= VIEW_SPAN_CELLS) continue;
+        for (k = 0; k < n && bp[k] < e; k++) { }
+        if (k < n && bp[k] == e) continue;                 /* two passes on one column */
+        for (j = n; j > k; j--) bp[j] = bp[j - 1];
+        bp[k] = e; n++;
+    }
+
+    /* The n+1 intervals, each asked once and merged with its left neighbour when the answer
+       repeats — ⭐ an interval starts AT its breakpoint, because the classifier selects on
+       `position >= edge`.  (That is why the Stage A oracle's +1-cell sabotage is weak and its
+       -1-cell sabotage is 6x: +1 misclassifies only the boundary cell, which a producer writes
+       anyway; -1 corrupts an interior cell nobody writes.  Argument at the oracle in shape.cpp.)
+       Merging is the common case: two of the four boundaries usually coincide off the
+       line, and the census's 1.9 runs a line is this count. */
+    for (i = 0; i <= n; i++) {
+        const unsigned char start  = (i == 0u) ? 0u : bp[i - 1];
+        const unsigned char colour = surface_colour_at_core(line, start, 0u, 0u).a;
+        if (count && out[count - 1].colour == colour) continue;
+        out[count].start  = start;
+        out[count].colour = colour;
+        count++;
+    }
+    return count;
 }
 
 /* $1DAF  column_gap_walk — FILL ONE COLUMN'S EMPTY SOURCE BYTES  (twin #41)

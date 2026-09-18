@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #endif
 #include "bbc_screen.h"
+#include "view_span.h"      /* ⭐ the Stage A oracle compares against view_span_line */
 
 #include "../cpu/m68k_math.h"
 #include "../cpu/mem_decl.h"
@@ -394,6 +395,157 @@ void scout_report(void)
 #endif
 }
 
+/* ── ⭐⭐⭐ THE STAGE A ORACLE: CAN THE SPAN RECORD REPRODUCE THE SWEEP'S PICTURE? ──────────
+   The one question the replacement renderer turns on (docs/span-render-plan.md §10e/§10i), and
+   it is answerable on the HOST with no emulator run: for every cell the sweep stores, compare
+   the byte it stores against `view_span_line`'s prediction for that (line, cell).
+
+   THE CLASSIFICATION IS THE MEASUREMENT, not the match rate.  A disagreement is not
+   automatically a defect — the span list is the line's INTERIOR and two other things paint
+   into the same forty cells — so each miss is attributed by what the sweep's own consume arm
+   says about that cell's source byte:
+
+     match         the prediction is what the sweep painted.  Stage A owns this cell outright.
+     event-miss    the source was NON-ZERO, i.e. a producer composed this cell: a boundary at
+                   pixel precision, or an object (car, tree, marker).  ⭐ These are §10b's
+                   overlay and their COUNT is its size — the number to hold against the
+                   census's independently measured ~1.9 mixed cells a line.
+     carry-miss    the source was ZERO, so `view_consume` carried the byte from the cell to its
+                   left.  ⚠⚠ THIS IS THE KILL SIGNAL: a zero source means the picture there is
+                   pure RLE background, which is exactly what the classifier claims to know.
+                   A carry-miss that is not downstream of an event-miss on the same line means
+                   the interval structure is WRONG, and the offender list is what says how.
+
+   ⚠ The prediction is rebuilt lazily on the first store of each line rather than hooked into
+   the sweep's per-line prologue, so the sweep's hot code is untouched and phases 2 and 3 —
+   which enter mid-chain with no prologue at all — are covered on the same terms as phase 1.
+   The four `surface_edge` buffers and `horizon_extent` are written by the producers BEFORE the
+   sweep and by nothing during it, so a lazy read is the same read.
+
+   ⭐⭐ SABOTAGED SIX WAYS (250-frame driving window; control MATCH 92.56%, carry-miss 12719):
+
+     breakpoints -1 cell        79.01%   75944   6.0x
+     colour ignores `position`  83.79%   53010   4.2x
+     classifier read on line^1  82.24%   62191   4.9x
+     edge_3 buffer dropped      88.84%   30313   2.4x
+     breakpoints +3 cells       88.31%   27176   2.1x
+     breakpoints +1 cell        92.29%   12719   1.0x  <- argued, see below
+
+   ⚠⚠ The +1 arm prints a carry-miss BYTE-IDENTICAL to the control, which is CLAUDE.md's named
+   tell for a stale object file.  It is not one (MATCH and runs/line both moved, and the build
+   rm's its objects), and the asymmetry against the -1 arm is the proof: `surface_colour_at_core`
+   selects on `position >= edge`, so an interval starts AT `e`.  Shifting +1 therefore
+   misclassifies exactly cell `e` — the BOUNDARY cell, which a producer writes at pixel
+   precision — so the damage is charged to event-miss (1.40 -> 1.47/line, +1326, against the
+   1427 cells MATCH lost).  Shifting -1 corrupts cell `e-1`, an ordinary interior cell nobody
+   writes, and carry-miss goes 6x.  ⇒ the oracle sees interval defects; the +1 direction is
+   simply hidden behind the overlay the renderer has to paint anyway.  */
+extern "C" {
+volatile unsigned long g_spanPredLines   = 0;   /* line paints a prediction was built for  */
+volatile unsigned long g_spanPredSpans   = 0;   /* runs in those predictions               */
+volatile unsigned long g_spanPredCells   = 0;   /* cells compared                          */
+volatile unsigned long g_spanPredMatch   = 0;
+volatile unsigned long g_spanPredEventMiss = 0;
+volatile unsigned long g_spanPredCarryMiss = 0;
+volatile unsigned long g_spanPredEventHit  = 0; /* matched anyway, though a producer wrote it */
+volatile unsigned long g_spanPredMixed     = 0; /* misses whose stored byte is a MIXED cell  */
+volatile unsigned long g_spanPredLost      = 0; /* the arm latch was lost (see s_armLatch)   */
+volatile unsigned long g_spanPredSpanHist[VIEW_SPAN_MAX + 1] = {0};
+}
+
+/* The offender list — ⭐ the whole point of recording it is that a COUNT cannot tell an
+   off-by-one boundary from a car: (line, cell, predicted, painted) can. */
+#define SPAN_PRED_OFFENDERS 12u
+struct SpanPredOffender { unsigned char line, cell, pred, got, kind; };
+static SpanPredOffender s_spOff[SPAN_PRED_OFFENDERS];
+static unsigned s_spOffN = 0;
+
+static unsigned char s_spPredRow[VIEW_SPAN_CELLS];
+static unsigned      s_spPredLine = 0xFFFFu;
+
+static void span_pred_line(unsigned line)
+{
+    ViewSpan spans[VIEW_SPAN_MAX];
+    const unsigned n = view_span_line((unsigned char)line, spans);
+    unsigned i, c;
+    for (i = 0; i < n; i++) {
+        const unsigned end = (i + 1u < n) ? spans[i + 1].start : VIEW_SPAN_CELLS;
+        for (c = spans[i].start; c < end; c++) s_spPredRow[c] = spans[i].colour;
+    }
+    s_spPredLine = line;
+    g_spanPredLines++;
+    g_spanPredSpans += n;
+    g_spanPredSpanHist[n > VIEW_SPAN_MAX ? VIEW_SPAN_MAX : n]++;
+}
+
+/* `arm` is `view_consume`'s own report for THIS cell, read out of the run census's latch
+   before it is consumed: 0 = zero source, 1 = non-zero source, 2 = forced entry, $FF = lost. */
+static void span_pred_store(unsigned dst, unsigned value, unsigned x, unsigned char arm)
+{
+    const unsigned off = (dst - BBC_SCREEN_BASE) & 0xFFFFu;
+    unsigned cell;
+    unsigned char pred;
+    if (off >= BBC_SCREEN_BYTES) return;
+    cell = (unsigned)(revs_modu16(off, BBC_SCREEN_BPR) / 8u);
+    if (cell >= VIEW_SPAN_CELLS) return;
+    if (x >= 80u) return;                      /* not a line the surface record covers */
+    if (x != s_spPredLine) span_pred_line(x);
+
+    pred = s_spPredRow[cell];
+    g_spanPredCells++;
+    if (pred == (unsigned char)value) {
+        g_spanPredMatch++;
+        if (arm == 1u || arm == 2u) g_spanPredEventHit++;
+        return;
+    }
+    if (!scout_is_solid((unsigned char)value)) g_spanPredMixed++;
+    if (arm == 0xFFu)                  g_spanPredLost++;
+    else if (arm == 1u || arm == 2u)   g_spanPredEventMiss++;
+    else {
+        g_spanPredCarryMiss++;
+        if (s_spOffN < SPAN_PRED_OFFENDERS) {
+            SpanPredOffender* o = &s_spOff[s_spOffN++];
+            o->line = (unsigned char)x; o->cell = (unsigned char)cell;
+            o->pred = pred; o->got = (unsigned char)value; o->kind = 0u;
+        }
+        return;
+    }
+    /* keep a couple of event misses too, so the list shows both shapes side by side */
+    if (s_spOffN < SPAN_PRED_OFFENDERS && (s_spOffN & 3u) != 3u) {
+        SpanPredOffender* o = &s_spOff[s_spOffN++];
+        o->line = (unsigned char)x; o->cell = (unsigned char)cell;
+        o->pred = pred; o->got = (unsigned char)value; o->kind = 1u;
+    }
+}
+
+void span_pred_report(void)
+{
+#ifndef REVS_PLATFORM_AMIGA
+    const unsigned long n = g_spanPredLines ? g_spanPredLines : 1u;
+    const unsigned long c = g_spanPredCells ? g_spanPredCells : 1u;
+    unsigned i;
+    printf("SPANPRED line-paints=%lu  runs/line=%lu.%02lu  cells=%lu  "
+           "MATCH=%lu.%02lu%%  event-miss=%lu.%02lu/line  carry-miss=%lu  lost=%lu\n",
+           g_spanPredLines,
+           g_spanPredSpans / n, (g_spanPredSpans * 100 / n) % 100,
+           g_spanPredCells,
+           g_spanPredMatch * 100 / c, (g_spanPredMatch * 10000 / c) % 100,
+           g_spanPredEventMiss / n, (g_spanPredEventMiss * 100 / n) % 100,
+           g_spanPredCarryMiss, g_spanPredLost);
+    printf("SPANPRED   of the matches, %lu were cells a producer had written; %lu of the "
+           "misses are MIXED bytes (a boundary inside the cell)\n",
+           g_spanPredEventHit, g_spanPredMixed);
+    printf("SPANPRED   runs-per-line histogram (0..%u):", VIEW_SPAN_MAX);
+    for (i = 0; i <= VIEW_SPAN_MAX; i++) printf(" %lu", g_spanPredSpanHist[i]);
+    printf("\nSPANPRED   first offenders (kind C=carry E=event):");
+    for (i = 0; i < s_spOffN; i++)
+        printf(" %c(l=%u,c=%u,pred=%02X,got=%02X)", s_spOff[i].kind ? 'E' : 'C',
+               s_spOff[i].line, s_spOff[i].cell, s_spOff[i].pred, s_spOff[i].got);
+    printf("\nSPANPRED   road_speed $63=%02X (a parked scene is a different workload)\n",
+           mem[MEM_road_speed]);
+#endif
+}
+
 /* One cell store, before it lands.  ⭐ Comparing against what is already there is the whole
    point: it measures the sweep's REDUNDANCY directly instead of deriving it from the carry
    semantics, so the census cannot be wrong in the same way my reasoning could be. */
@@ -401,9 +553,12 @@ void shape_dash_store(unsigned dst, unsigned value, unsigned line)
 {
     const unsigned x = line & 0x7Fu;
     const int changed = (mem[dst] != (unsigned char)value);
+    /* ⚠ BEFORE run_census_store, which consumes the latch. */
+    const unsigned char arm = s_armLatch;
     if (changed) s_lineChanged[x]++;
     run_census_store(x, dst, changed);
     scout_store(dst, value, x);
+    span_pred_store(dst, value, x, arm);
 }
 
 /* ── the per-line census (shape.h) ---------------------------------------------------------- */
