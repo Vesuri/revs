@@ -60,18 +60,27 @@ so a row pays only below ~0.8 delivered bytes a frame** — the glyph rows are a
 1.69. ⇒ **Read the ownership ledger's `st/f` column and divide by the row count before writing a
 painter.** Do not rebuild this domain per-byte; the code is gone and `kDeltaBlock` is back to two
 blocks.
-⭐⭐⭐ **THE LIVE BUILD IS THEREFORE ONE DOMAIN, 117..191 (−5.07 of the ledger plus the needles'
-−2.5), NOT TWO — and the census is what merges them.** The needle writers `plot_line_octant`,
-`undraw_plot_lines` and `mirror_draw_car` also write **129..157**, so a domain that stops at 158
-pays the 666-cycle trip on stores that were never ownable; extend it down and every one of their
-stores is in-domain, the filter always succeeds, and their ~130 stores a frame amortise over 63
-rows of budget (63 × 544 = 34 300 cycles) instead of 34. ⚠ The gate is unchanged and is a
-**game-logic reader**: `update_grip_limits` samples the surface colour under a wheel from
-`mem[$713D]`/`mem[$7205]` on **display line 149**, so 117..157 cannot be owned until that read is
-served another way. Serve it, and the needles come with it.
+⛔ **AND WIDENING THE MIRROR TO 129..191 IS REFUTED BY THE SAME ARITHMETIC — it was this entry's
+next line for about an hour, so it is written down rather than left to be built.** The 405 is not a
+filter that a wider block satisfies, it is the flush's **walk**: ~110 cyc over ~210 undo
+entry-visits a frame, paid before the painter is called. Widening converts an early return into a
+delivery — 371 cyc a visit, **11.0 ms** against 4.8–6.3 ms of budget, *worse* than the 68-row
+build. The rate rule says it in one line: 210 delivered bytes over 63 owned rows is **3.3 a row a
+frame** against a break-even of 0.8.
+⭐⭐⭐ **SO THE LIVE SHAPE FOR THESE ROWS IS RETARGETING THE WRITER, NOT MIRRORING IT — a MIRROR
+can only pay on rows whose writers are nearly silent.** `plot_line_octant` and
+`undraw_plot_lines` must walk **plane addresses directly, instead of `mem[]`** — the address is
+already in a register at the store site, so there is no hook, no walk and no filter. Two things
+are owed and both are contained: the undo table (`MEM_plot_undo_byte` `$0780`) must save and
+restore *plane* bytes, and **`update_grip_limits`' two cells on display line 149 are the view
+sweep's bytes, not the plotters'** — so the sweep keeps its `mem[]` store on that one line and the
+game-logic reader is served, ⚠ which is an argument until `REVS_FB_POISON=149-149` (the poison
+test's own positive control) says so. This is a plotter REWRITE of the same kind as phase 1's
+takeover, and it collects 117..157's −5.07 and the needles' −2.5 together.
 ⇒ **Rank an ownership domain by PRIZE ÷ WRITER SET, never by prize alone** — this entry ranked by
-prize for two sessions because the writer set had never been measured per display line, and then by
-writer-set *size* for one more, because the writers' **store rate** had not been priced either.
+prize for two sessions because the writer set had never been measured per display line, then by
+writer-set *size* for one more because the writers' **store rate** had not been priced, and then
+for an hour by a store rate applied to the wrong side of the hook.
 ⭐⭐⭐ **THE ARCHITECTURE IS OPEN AND ITS FIRST HALF IS NOW MEASURED, NOT ARGUED** — `make
 SPANFILL=1` is §10e's own cheap checkpoint built and run (`docs/span-render-plan.md` §10n). Three
 results, and they point at a different next build than this entry used to name:
@@ -354,8 +363,9 @@ exists so nobody spends a day re-deriving a negative result.
   budget ~544 cyc/row (the decode the row deletes), cost ~666 cyc per delivered byte; the glyph rows
   are at 0.11 and the needles at 1.69. ⇒ read the ownership ledger's `st/f` column and divide by the
   row count first. ⚠ This closes the per-byte mechanism for these rows, **not the rows** — they
-  come back as part of one 117..191 domain (entry 1) where every writer store is in-domain.
-  `docs/span-render-plan.md` §11d.
+  come back only by RETARGETING the plotters' own stores into the planes instead of `mem[]` (entry
+  1) — ⛔ widening the *mirror* to 129..191 is refuted by the same arithmetic, 11.0 ms of walk plus
+  delivery against 4.8 ms of budget. `docs/span-render-plan.md` §11d.
 - **Consumer run-entry specialisation** (single-run flat-span path) — **−0.15%**, retracting its
   predicted "~10% prize". Do not retry that code shape.
 - **The per-line skip** — **−0.4%** for 39.5% of line-visits deleted; phases 2+3 skip zero units.

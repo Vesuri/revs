@@ -1496,14 +1496,58 @@ and on the needle block it read **bases=1, checks=1000, mismatch=0, 57 609 delta
 driving Silverstone run through the reset ladder, with `decode owned lines=104` (36 span + 68
 delta). So the mechanism scales; only the economics do not.
 
-#### ⇒ The rows are still worth −2.5 ms, and there is exactly ONE domain shape that can collect them
+#### ⛔ AND WIDENING THE DOMAIN TO 129..191 DOES NOT RESCUE IT — the same arithmetic refutes that too
 
-The census closed the obvious escape: **every** one of 158..191 has a writer, so there is no
-writer-free sub-block to own cheaply (192..207 is already domain A's, and 200..207 has no writer at
-all). What is left is to stop paying the 405 by making the filter always succeed — **own
-129..191 as ONE domain**, so that every store `plot_line_octant`, `undraw_plot_lines` and
-`mirror_draw_car` make is in-domain and the needles' ~130 stores amortise over 63 rows
-(63 × 544 = 34 300 cycles of budget) instead of 34. That makes domain B a sub-problem of the
-**117..157 block**, which the ledger already prices at −5.07 ms and which is blocked by
-`update_grip_limits`' reader on display line 149 — i.e. **these are one queue entry, not two.**
-`docs/open-work.md` entry 1.
+The obvious escape reads well and is wrong, so it is written down here rather than left for someone
+to build: *make the filter always succeed*. Every one of 158..191 has a writer (192..207 is already
+domain A's, and only 200..207 has none at all), so there is no writer-free sub-block; but
+`plot_line_octant`, `undraw_plot_lines` and `mirror_draw_car` also write **129..157**, so owning
+**129..191 as one domain** would put every store they make in-domain, and the 405 — paid on bytes
+that turn out not to be ownable — would go away.
+
+**It does not go away. It turns into the 261, which is 2.4× worse.** The 405 is not a filter, it is
+the flush's *walk*: ~110 cycles an entry over ~210 entry-visits a frame, paid before the painter is
+called at all. Widening the block does not delete a single walk step — it converts an early return
+into a delivery:
+
+| | cost per undo entry-visit | ~210 visits a frame |
+|---|---:|---:|
+| arm A — walked, filtered out | 110 cyc | 23 100 cyc = **3.3 ms** (measured: +3.29) |
+| arm B — walked, 57.6 of them delivered | 110 + 261 on 27% | 38 300 cyc = **5.4 ms** (measured: +5.41) |
+| **129..191 — walked, all delivered** | **371 cyc** | **77 900 cyc = 11.0 ms** |
+
+against a budget of 63 × 544 = 34 300 cycles = **4.8 ms** flat, or ~6.3 ms at the ledger's own row
+prices for those rows (34 × 0.080 measured + 29 × 0.124). ⇒ **it loses by 1.7–2.3×, worse than the
+68-row build did.** The rate rule says it in one line and would have said it before the table was
+built: **~210 delivered bytes over 63 owned rows is 3.3 a row a frame, against a break-even of
+0.8.** ⚠ Whether those 210 visits are 210 distinct bytes does not matter — `undraw_plot_lines`'
+flush walks from entry 0 on every call, so some are revisits — because the per-visit cost rises
+from 110 to 371 either way.
+
+#### ⇒ ⭐⭐⭐ THE ROWS ARE WORTH −2.5 ms AND THE SHAPE THAT COLLECTS THEM IS RETARGETING THE WRITER, NOT MIRRORING IT
+
+The general form of the break-even, and the reason it is worth knowing beyond this domain:
+
+> **A MIRROR can only pay on rows whose writers are nearly silent.** It costs a full delivery per
+> byte written *on top of* whatever the writer already pays, so the writer's store rate is a tax on
+> the row's decode. Rows with a busy writer can only be won by making the writer's own store land
+> in the bitplanes — **instead of** `mem[]`, not in addition to it.
+
+For 129..191 that means `plot_line_octant`'s and `undraw_plot_lines`' DDA walking plane addresses
+directly: the address is already in a register at the store site, so there is no hook, no walk and
+no filter, and the cost is the expand plus a second store rather than 371 cycles of getting there.
+Two things are then owed, and both are contained:
+
+- **The undo table holds `mem[]` bytes** (`MEM_plot_undo_byte` `$0780`, the reader §10p's poison
+  test found at entries 28..35). A plotter that plots planes must save and restore *plane* bytes —
+  a change inside the two plotters, not a new cross-TU surface.
+- **`update_grip_limits` reads `mem[$713D]` / `mem[$7205]`**, cells 7 and 32 of display line 149,
+  and they are the *view sweep's* bytes, not the plotters'. So the sweep keeps its `mem[]` store on
+  that one line and nothing is owed — ⚠ but that is an argument, not a measurement, and
+  `REVS_FB_POISON=149-149` is the instrument that settles it (it is already the poison test's own
+  positive control, which is why it is known to fire).
+
+This is a plotter REWRITE, not a hook — the same kind of work as phase 1's takeover rather than
+domain A's mirror — and it is what the governing directive means by getting rid of the `mem[]`
+round trip. It sits behind the **117..157** block in `docs/open-work.md` entry 1, which the ledger
+prices at −5.07 ms; the needles' −2.5 comes with it.

@@ -471,7 +471,11 @@ forever because `m_plan` is the COPPER's palette schedule, not decode work (§11
   stores OUTSIDE the candidate block, before writing a painter.** And the two placements lose by
   two *different* mechanisms — in the writers' loops the call is an aliasing barrier (+3.45 ms),
   batched after them the second walk of the undo list is ~110 cyc/entry — so there is no third
-  place to put the hook. `docs/span-render-plan.md` §11d.
+  place to put the hook, and ⛔ **widening the block so the filter always succeeds is refuted by
+  the same arithmetic** (the walk is paid per entry either way; delivering all ~210 of them costs
+  11.0 ms against 4.8 of budget). ⇒ ⭐⭐⭐ **A MIRROR CAN ONLY PAY ON ROWS WHOSE WRITERS ARE NEARLY
+  SILENT — a row with a busy writer is won by making that writer's own store land in the bitplanes
+  INSTEAD of `mem[]`, not in addition to it.** `docs/span-render-plan.md` §11d.
 ⭐⭐ **And the decode's own 38 ms turned out to be CODE SHAPE, not algorithm — TWICE, and it is
 ~20 ms now** — the scan was re-reading two loop-invariant stack slots per cell and had spilled its
 pointers into data registers; then `make DECODESPLIT=1` attributed the remaining "12 ms floor" and
