@@ -131,8 +131,8 @@ as a screech, and no probe this project takes reads the sound hardware.  `run.sh
 it runs at real speed and is the by-ear A/B script — with `FSUAE_SILENT=1` to mute it.
 
 ⚠⚠ **`--volume=0` is NOT the knob, and the way that was established is the transferable part.**
-This fsemu-core FS-UAE contains `FIXME: Set volume not implemented yet` right beside its `volume`
-option, and **FS-UAE echoes every option you pass into its log whether it implements it or not** —
+This fsemu-core FS-UAE marks `Set volume not implemented yet` in its own source right beside
+its `volume` option, and **FS-UAE echoes every option you pass into its log whether it implements it or not** —
 a deliberately misspelt `--zz_bogus_option=7` appears in the config dump exactly like a real one,
 and `--log_audio=1` produces no `[AUD]` lines in this build at all.  So the config dump is **not**
 evidence that an option did anything.  What settled it was an outside observer with a control:

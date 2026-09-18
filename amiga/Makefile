@@ -644,9 +644,9 @@ endif
 # writer-set ledger says have exactly ONE writer (`vdu_char_emit`, ~3.7 stores a frame) and eight
 # of which have none at all — so the decode stops converting them, worth -2.93 ms.
 # ⭐ RANK AN OWNERSHIP DOMAIN BY ROWS OWNED / WRITER SET, never by the prize.
-# ⛔⛔ AND THE DASHBOARD'S NEEDLES (158..191) ARE A MEASURED DEAD END for this mechanism, not a
-# TODO: same 34 rows, built and A/B'd as a third block, +5.41 ms of phase 32 against -2.51 of
-# decode.  ⭐⭐⭐ A row pays for a DELTA painter only below ~0.8 DELIVERED BYTES a frame — budget
+# ⛔⛔ AND THE DASHBOARD'S NEEDLES (158..191) ARE A MEASURED DEAD END for this mechanism, not an
+# open item: same 34 rows, built and A/B'd as a third block, +5.41 ms of phase 32 against -2.51
+# of decode.  ⭐⭐⭐ A row pays for a DELTA painter only below ~0.8 DELIVERED BYTES a frame — budget
 # ~544 cycles a row (the decode it deletes) against ~666 cycles a delivered byte; these rows are
 # at 3.7/34 = 0.11, the needles at 57.6/34 = 1.69.  §11d.
 # ⚠ It needs the CARVE (`REVS_SPAN_OWN`), which SPANVERIFY drops because that arm's oracle reads
