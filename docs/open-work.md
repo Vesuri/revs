@@ -46,190 +46,7 @@ is `tail`-truncated to the last 40 lines (`GDBTAIL`), which silently drops phase
 | 12.5 | 26 | the 50 Hz drain |
 | 10.2 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
 
-### 1. ⭐⭐⭐ THE REPRESENTATION — ROW OWNERSHIP of the decode — −11.18 ms of rows, then the CALL
-✅ **DOMAIN A IS DONE — `make DELTAOWN=1`, the glyph rows 0..17 + 192..207, `ph27` 20.13 → 17.19 ms
-(−2.93).** Base-plus-delta, both plane buffers, both screen modes, oracle clean over 1226 sweeps:
-`docs/span-render-plan.md` §11c, including the sabotage that survives by sequencing and the MODE 7
-round trip neither it nor `determinism` covers.
-⛔⛔ **DOMAIN B — the needles, 158..191 — WAS BUILT, VALIDATED AND CLOSED ON COST (§11d).** It is
-correct (oracle green over 1000 sweeps, five sabotages fire) and it is **a net +1.37 ms**: −5.44 ms
-of phase 27 for 68 rows against **+5.41 ms of phase 32**, of which **+3.29 is paid with every call
-early-returning**. ⭐⭐⭐ **The rule it produced, and the one to apply to any future domain: a delta
-painter's budget is ~544 cycles a ROW (the decode it deletes) against ~666 cycles a DELIVERED BYTE,
-so a row pays only below ~0.8 delivered bytes a frame** — the glyph rows are at 0.11, the needles at
-1.69. ⇒ **Read the ownership ledger's `st/f` column and divide by the row count before writing a
-painter.** Do not rebuild this domain per-byte; the code is gone and `kDeltaBlock` is back to two
-blocks.
-⭐⭐⭐ **THE LIVE BUILD IS THE NEEDLE PLOTTERS' RETARGET — ROWS 158..191, ≈ −3.4 ms, AND IT IS THE
-BEST BLOCK ON THE SCREEN** (§11e). Same rows domain B closed, opposite verdict, because the
-mechanism is opposite: a MIRROR pays 666 cyc on top of every byte its writer stores, a RETARGET
-pays ~30 (four plane bytes less the `mem[]` store it replaces). ⇒ **two break-evens, 32× apart —
-0.82 delivered bytes per owned row per frame for a mirror, 26.4 stores per owned row per frame for
-a retarget** — against a prize of ~789 cyc a row that **does not depend on who paints it**.
-⭐⭐ **So rank an ownership domain by STORES PER ROW, ascending, and the ledger's order inverts:**
-the needles are at 1.6 st/row (net −4.67 before the undo table), while **117..157 is at 6..28 and
-nets between −0.6 and +0.02 a block.** This entry stalled on 117..157 for three sessions because
-that block is genuinely AT break-even — the view sweep repaints its rows 27 times a frame, and a
-row repainted 27 times costs 27 retargets to own. The ledger's row price cannot see that; only
-`st/row` can.
-⭐ The needles' −4.90 is §11d's own MEASURED arm A→B move of phase 27 (−5.44, the largest yet),
-not a ledger estimate. What it costs: +0.23 ms of stores, plus the undo table's rework — ~210 undo
-entry-visits a frame must save and restore **plane** bytes instead of one `mem[]` byte (~1.2 ms
-done naively). ⇒ **the undo table is where the care goes, not the plot.**
-✅ **And the row-149 reader gate is settled without a measurement: EXCLUDE THE ROW.** The poison
-test already fired there (2325 differ, 2291 outside — it is the instrument's own positive control);
-what was unresolved is only whose byte `update_grip_limits` reads. Leave 149 unowned — the decode
-keeps painting it, every writer keeps its `mem[]` store for it — for **one row's prize, 0.11 of
-4.90**, and a question whose wrong answer would be a game-logic bug disappears. The plotters need a
-per-row ownership test anyway: they write 129..191, straddling the boundary whatever 149 does.
-⇒ **Rank an ownership domain by PRIZE ÷ WRITER SET, never by prize alone** — this entry ranked by
-prize for two sessions because the writer set had never been measured per display line, then by
-writer-set *size* for one more because the writers' **store rate** had not been priced, and then
-for an hour by a store rate applied to the wrong side of the hook.
-⭐⭐⭐ **THE ARCHITECTURE IS OPEN AND ITS FIRST HALF IS NOW MEASURED, NOT ARGUED** — `make
-SPANFILL=1` is §10e's own cheap checkpoint built and run (`docs/span-render-plan.md` §10n). Three
-results, and they point at a different next build than this entry used to name:
-- ⭐⭐ **DIRECT-TO-BITPLANE WRITING IS EXONERATED.** The fill costs **1.63 ms for 21 spans
-  (550 cyc/span, 6.87 cyc/byte)**, and an objdump model closes to 1%. Every earlier "the plotter is
-  too dear" figure was a code shape: 185 cyc/8 B (stack-slot reloads) → 56 (preamble bigger than
-  its stores) → **27**.
-- ⭐⭐ **A HOOK-IN CANNOT WIN, BECAUSE THE SPAN DELETES THE UNIT LOOP AND THE DRIVER SURVIVES IT.**
-  The deletion measures 4.98 ms at **42.0 cyc/unit** — the objdump's clean-arm rate, so it reaches
-  the units and nothing else — while phase 1's **905 cyc/line** driver runs on. 58% of the units
-  came off and bought 32% of the bracket.
-- ⛔ **AND ITS PREDICATE COSTS MORE THAN IT SAVES: net +1.0 ms as built, −0.9 ms stateless.** One
-  line in CLOSED below; the mechanism is inline bloat, not compare traffic.
-
-⇒ **THE LIVE BUILD IS THE PHASE-1 TAKEOVER (§10p): the renderer OWNS the line loop, driver
-included.** `view_consume` is RLE with a *destructive* read, so a source is non-zero at line entry
-**iff a producer wrote it since the last sweep** — a stateless forty-source test is therefore
-**exact where the dirty map was merely conservative**, and `view_stop_from(0) == 40` is a constant
-`true` through all of phase 1. The scan costs **180 cyc/line, not 480**, because four consecutive
-*lines* of one cell are four consecutive bytes (`or.l`, one test per four lines). Per line:
-905 + 40×55 = 3105 cyc becomes ~250 + 180 + 550 ≈ **980** flat, ~2300 changed.
-**Size: phase 1 15.83 → ~5.0 ms all-flat, ~8.1 ms at the parked 21/36 split.** Phases 2/3
-(12.34 + 23.61 ms at 67%/80% chain-entry) are the larger prize behind the same shape.
-**Order of work is §10p's, and steps 1-4 are DONE** — the full ledger with its commits lives
-there; the short form: ✅ the host flat-line count (57%, `3b79ebc`); ✅ the reader gate, **OPEN for
-rows 81..116** (`f80557d`, `REVS_FB_POISON` — ⛔ the old `column_gap_walk` gate is RETRACTED,
-nothing reads those rows); ✅ the stateless predicate (`df4cd40`, free at +0.22 ms); ✅ **phase 1's
-takeover — all 36 lines paint straight to the two bitplanes, `make SPANFILL=5`, `5a970bb`**, both
-§10n oracles clean on the target driving; ✅ **phases 2/3 own their runs, `make VIEWOWN=1`,
-`aa5703a`, −1.74 ms on the sweep and −1.989 ms on Σ(1..39)−ph28**; ✅ **`bus_write` left the
-renderer, `b29aab7`, −1.17 ms** (the range test was a constant and its arm unreachable — `$6700` is
-an immediate operand in the game's own code).
-⛔⛔⛔ **AND STAGE A — THE LINE PAINTED FROM THE ROAD RECORD INSTEAD OF THE CELL CHAINS — IS BUILT,
-EXACT AND CLOSED ON COST (§10q, 2026-09-18): +7.16 ms/frame** (`view_span_line` +3.68,
-`revs_plot_spans` +3.48; `Σ(1..39)−ph28` 178.10 → 185.53 with a three-arm cost split). The picture
-is right — 0 misses in 1 280 208 host cells, target oracle `checks=23 mismatch=0` — and the design's
-one turning number came in (the wholesale arm fires on **74%** of groups against 80% predicted).
-⭐⭐⭐ **It loses on the arm that WORKS, and the law is general: a coarse test only pays if it
-REPLACES the fine ones, and a group-of-four source test cannot — the scan it must do to qualify
-costs what the per-cell source test cost.** A wholesale group is **236 cycles against the 184** of
-the four chain cells it replaces. And a *free* version of it (free lane map, free producer) still
-models to a wash, because the floor is 5.57 events a line plus forty cells' two plane stores —
-§11's result arriving again: **the painter is a wash, the decode is the prize.**
-⛔⛔⛔ **AND THE DRIVER DELETION — THE LAST THING STAGE A LEFT STANDING — IS NOW BUILT AND CLOSED
-TOO (§10q, 2026-09-18): `make VIEWFULL=1` is worth −0.33 ms, and 83% OF PHASE 1 IS THE PAINTER.**
-`view_own_full` gives phase 1 its own line loop with the stop test hoisted to a sweep-level
-precondition (gated by its own counter: 48 888 lines, 0 disagreements): ph24 **18.02 → 17.69 ms**,
-frame 178.10 → 177.85, on a bit-identical trajectory. A third arm settles the whole phase —
-`VIEWFULLCARVE=1` runs the driver and does **not** paint, and reads **ph24 = 3.05 ms**. ⇒ phase 1's
-entire per-line driver is **601 cyc/line**, the painters are 14.64 ms, and **there is no
-multi-millisecond driver prize in this sweep.**
-⭐⭐⭐ **THE PREDICTION WAS 3.8× OVER, AND THE METHOD ERROR IS THE TRANSFERABLE PART: `D` WAS A
-RESIDUAL — A *MEASURED* BRACKET MINUS A *MODELLED* PAINTER — SO EVERY MODELLING ERROR LANDED IN THE
-ONE TERM BEING SIZED.** A bracket is wall time (DMA contention, fetch, instrumentation); a nominal
-cycle count is none of those, and this subsystem's own calibration already showed the gap (the fill
-is 6.87 cyc/byte against ~5 nominal). ⇒ **Price the part you intend to delete with an arm that
-deletes it, not with a model that subtracts it** — one build and one run replaced three sessions of
-arithmetic that had been wrong in both directions (≈6 ms, then ≈11.5 ms, truth 3.05 total). ⭐ And
-the tell was free: `revs_plot_chain`'s objdump opens with **seven volatile `SPAN_STAT` global
-RMWs** plus a `movem`, three stack loads, the bus-range test and four table lookups — the "per-line
-driver cost" was mostly a per-CALL prologue.
-⇒ ⛔ **the RANGE painter is closed without being built** (its target was `D`, ≤0.7 ms of which is
-the prologue, perhaps half PROBES-only statistics), and Stages B..E of §10j inherit it. **The only
-lever left in this domain is §11's: ROWS OWNED.** The carve says it a third way — its `ph27` *rises*
-17.19 → 18.78 ms, because `g_plotOwn[y]` is claimed inside the painter, so not painting is not
-owning and the decode does those rows again.
-
-⇒ **THE LIVE STEP IS §10p (5), THE DRIVER REWRITE, AND IT IS ENTRY 2 BELOW** — the two levers have
-converged: what stands between the short phases and the bitplanes is the chain-entry machinery, not
-the painting. Two figures bound it: the decode's own ceiling for those lines is **−5.07 ms**
-(`make VIEWCARVE=1`, ~2.0 scan / ~3.0 expand, and a per-run takeover reaches only the expand half),
-and ⛔ **whole-line ownership of phases 2/3 is closed on arithmetic** — 41 lines × 0.36 ms of
-painting = 14.8 ms against 4.9 ms of units + 5.07 ms of decode = **+4.8 ms net.** They stay
-per-RUN.
-⚠⚠ **The remaining correctness obstacle is MIXED CELLS:** `m_lineMode[y] = 0` is
-per-line-ALL-40-CELLS, so a cell owned on some of its 8 lines and written through `mem[]` on the
-others repaints from a stale byte. Priced: per-cell RMW **1.6 ms ⛔**; per-row prefix-XOR delta
-**≈0.9 ms**; per-changed-cell 8-line range test **≈1.1 ms**.
-⚠ Genuine risk still stands: **four** schemes that bolted onto the mem[] scan have now lost (§7f
-−9%, source-event +25 ms, the SPANEMIT scaffold +54 ms, and this checkpoint's hook-in ≈ 0). The
-takeover differs in kind — it *removes* the driver — but that is an argument until measured.
-
-⭐⭐⭐ **THE SPAN CENSUS HAS RUN (2026-09-14) and it changed the shape of the answer** — the scout
-§9 had been asking for, now a committed instrument (`src/platform/shape.cpp` §THE SPAN CENSUS,
-`make SHAPE=1` + `REVS_SHAPE_WATCH=N`). The sweep's 2155 cell stores a frame are **a span list**:
-**144 solid runs of 13.9 cells + 146 single-cell edge bytes**, with **93% of painted bytes** one of
-the four solid MODE 5 values and **≤5 runs on 93% of line paints**. Rows 81–100 alone are 37% of
-the stores as **20 single-run rows**. And the whole pipeline turns out to carry **161 source cells +
-320 bytes of edge table** of real information per frame, for which it spends **145 ms** (85.1 ms
-expanding, 70.8 ms producing). §10 sizes the replacement at **~48 ms of per-frame work** (from
-~181), retires **17 of the 20 `SMC_SITES`** plus the consumer's whole stop-planting mechanism, and
-names its own cheap checkpoint: **a 20-span emitter for rows 81–100 only, measured before the rest
-is written.**
-⚠⚠ Two corrections came out of it and both are in §10: the **§8 sprite item is sized against the
-wrong routine** (`$7BE2` paints rows 81–157, the VIEW band, never the dashboard's 158–207), and the
-per-phase framebuffer instrument's "phase 5 writes lines 24..55" is the **code under the sky**, not
-pixels.
-
-⚑ **THE INHERITED GATE IS DISCHARGED (2026-09-14)** — `terrain-render-plan.md` +
-`flight-perf-log.md` §1 read in full. Four findings that transfer, so nobody re-reads 3 000 lines:
-1. The direct renderer replacing the chunky→planar convert measured **~339 → ~172 ticks/frame** for
-   the stage it replaced, and the project's own verdict on it was *"real but **not
-   transformative**"* — because it left the compute floor (their fractal subdivision, our
-   `build_track_geometry`→`draw_road`) untouched. Necessary, not sufficient.
-2. ⭐⭐ **Their single biggest win in the whole log was not rendering and not asm**: per-instrument
-   **producer-side dirty flags** replacing a 560-cell shadow scan, **~1662 → ~65 ticks (~23×)**.
-   That is the shape our ⛔ `CHANGEDIRTY` got wrong — it compared at the STORE instead of letting the
-   producer, which already knows what it touched, say so. ⛔ **And our second attempt at it is
-   closed too** — the producer-marked source-event mask below — so the transferable part is
-   narrower than it looks: their flag works because ONE flag covers a whole instrument's redraw.
-   A per-CELL bit does not amortise on this machine.
-3. Bounding a scan by an extent the producer already knows (their `minScan` = topmost skyline row)
-   was **~324 → 113 ticks** on its own. ⛔ **And this is the one of the four that does NOT transfer
-   — measured, see CLOSED**: the same idea on our viewport would still visit 54% of the cells,
-   because our must-visit cells are few but SPREAD (their skyline extent is one contiguous band).
-4. Reading the scan **4 bytes at a time** and overlapping blitter ops with disjoint CPU work took
-   their direct renderer **~478 → ~170 ticks/call**.
-
-⛔⛔ **AND THE SOURCE-EVENT/RUN SUB-LEVER IS DEAD — BUILT, MEASURED AT +25.46 ms ON THE SWEEP, AND
-THE CYCLE MODEL SAYS WHY (2026-09-14).** It was the biggest un-built item on this board, and the
-census that sized it counted correctly and **priced wrongly**: 43 cyc/unit × the deleted 86% bounds
-the *saving* and says nothing about the *replacement*. One line in CLOSED below; the full account is
-`docs/perf-method.md` §the walk walks indices. The short form: on a 68000 the expensive direction is
-**index → pointer**, so a cell-indexed event mask pays 476 cyc/event and a 402-cyc per-run prologue
-against the scan's incremental 43 cyc/cell — break-even is **N = 36.5 + 35.3·E** cells, a scan line
-is 40 and a chain run averages 17.6. Both stages die together: stage 2 keeps the prologue and the
-per-event addressing.
-⭐⭐ **What survives is a REQUIREMENT ON THIS ENTRY, which is why it is recorded here rather than
-re-queued:** a sparse-iteration consumer is only affordable if its addressing amortises over a whole
-LINE or SWEEP, or if the producers hand over byte **offsets** the consumer can use as pointers
-without arithmetic. The direct-bitplane layout is chosen partly on that criterion now.
-
-⚠ **Two decompositions of the same 52.7 ms sweep are in circulation and they are NOT the same
-axis** — `NOUNITS=2` differencing says 32.4 ms driver/entry + 20.4 ms unit loop (entry 2 below);
-§7j's calibrated bracket says 29.0 ms unit/run *interior*, of which ~8 ms is destination stores and
-~21 ms is source/translation/control. Never subtract one from the other.
-
-✅ Not open any more, recorded so it is not re-attempted: **the flat sky band is already skipped**
-(shipped 2026-08-16 — `g_decodeFlatLines` reads 63 in one band on the target, `make FLATSKIP=0` is
-the A/B). Its "~75 ms" tag was a 1282 ms-frame-era figure. What is still available on that side is
-§4a item 2 — lines 81..horizon made write-free by PERMUTING that band's pens — and it is a
-direct-renderer-only option, so it is gated behind this entry, not free today.
-
-### 2. ⭐⭐⭐ The view sweep's DRIVER code — **29.03 ms left in phases 2+3**, and the ENTRY half is DONE
+### 1. ⭐⭐⭐ The view sweep's DRIVER code — **29.03 ms left in phases 2+3**, and the ENTRY half is DONE
 ⭐⭐ **−6.58 ms taken** (`214c8ae`, `docs/perf-method.md` §the entry was deleted): the runs are
 **inline in both drivers**, `byte`/`line`/`cell` are in registers, `view_own_enter`'s poke-decode
 round trip is gone, and phases 2+3 went **35.61 → 29.03 ms** with their census identical to the
@@ -267,11 +84,29 @@ step 1 of two**. The rest goes with the CALL (hence `NODECODE` = 0.13 ms), and o
 `snapshotBands` + `buildLineModes` (~2.4 ms) must keep running forever, because `m_plan` is the
 COPPER's palette schedule rather than decode work. **End state `ph27` → ~2.4 ms, prize ~17.6 ms.**
 The 208-row ledger with every block now priced, the two invariants (the measured reader gate;
-per-display-line ownership) and the next domain are §11's; ⛔ **the "phase 2 at ~1.5 ms instead of
+per-display-line ownership) are §11's; ⛔ **the "phase 2 at ~1.5 ms instead of
 10.16" estimate is RETRACTED** too — it assumed the span deleted the source walk.
+⛔⛔⛔ **AND THAT −11.18 ms OF ROWS IS ITSELF CLOSED NOW: 70 ROWS ARE OWNED** (phase 1's 81..116
+plus domain A's 0..17 + 192..207), **63 SKY ROWS WERE ALREADY FREE, AND THE REMAINING 75 ARE PRICED
+OUT** — the whole remaining ownership campaign is **−3.61 ms best case against a measured
++3.45 ms** for the only placement ever built (see CLOSED). ⇒ **this entry's 29.03 ms has to be won
+INSIDE the driver; it cannot be won by taking the decode's rows away from it.**
 ✅ **Step 0 is DONE: the new pipeline is the DEFAULT build** — `VIEWOWN=0` / `SPANFILL=0` are now
 the A/B controls, so the shipping frame goes **196.59 → 182.62 ms (−13.97)**. `validate` PASS, all
 five `determinism` trajectories PASS.
+
+⛔ **And WHOLE-LINE ownership of these two phases is closed on arithmetic — they stay per-RUN:**
+41 lines × 0.36 ms of painting = 14.8 ms against 4.9 ms of units + 5.07 ms of decode = **+4.8 ms
+net**. That −5.07 ms is also the decode's whole ceiling for these lines (`make VIEWCARVE=1`, ~2.0
+scan / ~3.0 expand — and a per-run takeover reaches only the expand half).
+⚠⚠ **The correctness obstacle, if any of these lines is ever owned, is MIXED CELLS:**
+`m_lineMode[y] = 0` is per-line-ALL-40-CELLS, so a cell owned on some of its 8 display lines and
+written through `mem[]` on the others repaints from a stale byte. Priced: per-cell RMW **1.6 ms
+⛔**; per-row prefix-XOR delta **≈0.9 ms**; per-changed-cell 8-line range test **≈1.1 ms**.
+⚠ **Two decompositions of the same 52.7 ms sweep are in circulation and they are NOT the same
+axis** — `NOUNITS=2` differencing says 32.4 ms driver/entry + 20.4 ms unit loop; §7j's calibrated
+bracket says 29.0 ms unit/run *interior*, of which ~8 ms is destination stores and ~21 ms is
+source/translation/control. Never subtract one from the other.
 
 ⭐ **Four candidate causes of the per-line cost were checked and ALL are too small:**
 
@@ -304,7 +139,7 @@ store cost on a 68000, and widening is impossible (destination cells 8 bytes apa
 ⚠⚠ Any edit to `paint_cells` must pass **the counting test**: grep the objdump for each loop
 invariant's absolute address and require the count to stay at 1, or the 4× unroll is gone.
 
-### 3. ⭐⭐ The per-span REPRESENTATION — ~11.5 ms of `draw_road`'s 33.7
+### 2. ⭐⭐ The per-span REPRESENTATION — ~11.5 ms of `draw_road`'s 33.7
 `docs/perf-method.md` §per-span SETUP (45): 43 spans × ~1 900 cycles. The remaining phase-11 lever
 now that the kernel's shape and its opcode slots are done. **Needs SPAN_DX/DY/BLOCK moved out of
 the 6502 address space**, which changes the measured self-overwriting-DDA behaviour ⇒ a **written
@@ -312,26 +147,30 @@ RESULTS-rule reader audit** (`docs/validation-harness.md` §THE RESULTS RULE), a
 `set_ignore`, and `make viewdiff`. Sibling, same subsystem: **the per-walk entry/exit, ~10.5 ms
 for 24 walks**.
 
-### 4. ⭐⭐ Fewer POINTS / SPANS / SOURCE VISITS — `build_track_geometry`, 26.7 ms
+### 3. ⭐⭐ Fewer POINTS / SPANS / SOURCE VISITS — `build_track_geometry`, 26.7 ms
 `docs/perf-method.md` §What is left. Setup and loops fused into native value pipelines; the
 interpreter is already gone from the whole tree, so nothing is left to delete there. Named
 sub-levers: producer-emitted source dirty events/runs (12-18 ms), a native geometry `EdgePoint`
 value pipeline (8-12 ms), dash specialisation (5-10 ms).
 
-### 5. ⭐ HARDWARE SPRITES for the instruments — gated behind entry 1 (the §10 renderer)
+### 4. ⭐ HARDWARE SPRITES for the instruments — gated behind the §10 renderer
 `docs/span-render-plan.md` §10m. ⚠ Its old size figure was against the wrong routine (see §10a); re-size with `make fbwrites` before scheduling. The BBC had no sprites so every moving dashboard item is
 CPU-drawn; the Amiga has eight idle. The open constraint is **width** (8 × 16 px = 128 of 320 in
 one 42-line band, where vertical reuse buys nothing). Pre-render each variant by running the
 game's own drawing code, so the images derive from the oracle.
+⭐ **The row-ownership closure below gives this entry a second prize it did not have:** sprites take
+the needles' CPU stores off display rows 158..191 entirely, and a block's ownership COST is exactly
+its writers' store rate (§11e ranks by `st/row`), so sprites are the one thing that could reopen
+those rows' −2.51 ms of decode.
 
-### 6. ⭐ The VERTB ISR — ~720 µs/field left, ≈3.6% of WALL CLOCK
+### 5. ⭐ The VERTB ISR — ~720 µs/field left, ≈3.6% of WALL CLOCK
 `docs/perf-method.md` §The VERTB ISR. Invisible to every phase row, and permanent: 50 fires a
 second whatever the framerate does. `snd_tick` ×2 (~276 µs) is the largest remaining row;
 everything else is at or near the 92 µs instrument floor. ⚠ **Do not merge the two ticks into one
 pass** — `make sound` compares chip state tick by tick against a real MOS and the intermediate
 state is part of the contract.
 
-### 7. ⭐ RE-PRICE the four FPS-era "nulls" in milliseconds
+### 6. ⭐ RE-PRICE the four FPS-era "nulls" in milliseconds
 They were judged with an instrument that cannot see 2% (Rule 1a), so a real 1-3 ms win could be
 sitting inside any of them: `paint_run_one` (−0.15% FPS), the wide-value campaign (+0.65%), the
 span kernel's call/search flattening (+0.8%), the direct plotter ("9% slower" — it is stage TWO of
@@ -393,7 +232,7 @@ exists so nobody spends a day re-deriving a negative result.
   hook-in reaches the **unit loop** and phase 1's bracket is **905 cyc/line of driver** plus units.
   ⇒ **Size a hook-in against the differential for the part it can actually delete, never against a
   census of stores — the missing third number is WHAT SURVIVES.** ⚠ **This is NOT the §10
-  architecture** (which deletes the driver too — entry 1's takeover); it forbids bolting onto the
+  architecture** (which deletes the driver too — the phase-1 takeover); it forbids bolting onto the
   sweep, not replacing it.
 - **STAGE A — a line painted from the ROAD RECORD (spans) instead of the forty cell chains**
   (`make SPANPAINT=1`, built, exact, oracle-green, then closed on cost) — **+7.16 ms/frame**
@@ -414,8 +253,8 @@ exists so nobody spends a day re-deriving a negative result.
   budget ~544 cyc/row (the decode the row deletes), cost ~666 cyc per delivered byte; the glyph rows
   are at 0.11 and the needles at 1.69. ⇒ read the ownership ledger's `st/f` column and divide by the
   row count first. ⚠ This closes the per-byte mechanism for these rows, **not the rows** — they
-  come back only by RETARGETING the plotters' own stores into the planes instead of `mem[]` (entry
-  1) — ⛔ widening the *mirror* to 129..191 is refuted by the same arithmetic, 11.0 ms of walk plus
+  come back only by RETARGETING the plotters' own stores into the planes instead of `mem[]`, which
+  is ⛔ closed too, one row below — ⛔ widening the *mirror* to 129..191 is refuted by the same arithmetic, 11.0 ms of walk plus
   delivery against 4.8 ms of budget. `docs/span-render-plan.md` §11d.
 - **Consumer run-entry specialisation** (single-run flat-span path) — **−0.15%**, retracting its
   predicted "~10% prize". Do not retry that code shape.
@@ -456,3 +295,33 @@ exists so nobody spends a day re-deriving a negative result.
   widening is impossible given the BBC layout.
 - **Re-running the frame-slot scan, the `span_walk` `mem[arm->addend]` hoist, `BODY_IN_ISR`** — all
   settled; `make BODY_IN_ISR=1` survives for A/B measurement only.
+- **The view sweep's own per-line DRIVER, and the RANGE painter that was waiting behind it**
+  (`make VIEWFULL=1` — phase 1 gets its own line loop with the stop test hoisted to a sweep-level
+  precondition, gated by its own counter: 48 888 lines, 0 disagreements) — **−0.33 ms**, against a
+  prediction of −6.6 to −11.5. A third arm settles the phase outright: `VIEWFULLCARVE=1` runs the
+  driver and does **not** paint, and reads **ph24 = 3.05 ms** ⇒ the entire per-line driver is
+  **601 cyc/line and phase 1 is 83% painter** (~90% shipping — ~1.3 ms of that 3.05 is
+  `revs_plot_chain`'s seven volatile `SPAN_STAT` prologue RMWs, and `SPANSTAT` defaults to
+  `$(if $(PROBES),1,0)` so they do not ship). ⭐⭐⭐ **The method error is the transferable part:
+  the prediction's driver term was a RESIDUAL — a *measured* bracket minus a *modelled* painter —
+  so every modelling error landed in the one term being sized.** ⇒ **Price the part you intend to
+  delete with an arm that DELETES it, never with a model that subtracts it**: one build and one run
+  replaced three sessions of arithmetic that was wrong in both directions (≈6 ms, then ≈11.5, truth
+  3.05 total). `docs/span-render-plan.md` §10q; Stages B..E of §10j inherit the closure.
+- **ROW OWNERSHIP beyond domain A — every display row the decode still owns, by EITHER mechanism**
+  (§11e) — the whole remaining campaign is **−3.61 ms best case** (all 75 unowned rows, an ideal
+  *inline* retarget, no shape cost) against a **measured +3.45 ms** for the only store-site
+  placement ever built, because a cross-TU call in the writers' own loops is an aliasing barrier and
+  the loop spills. ⭐⭐⭐ **Two mechanisms, two break-evens 15-32× apart: a MIRROR costs 666 cyc per
+  delivered byte (break-even 0.82 delivered bytes per owned row per frame); a RETARGET costs
+  ~30-44 cyc per store (break-even 12-26 stores per owned row per frame) — and the prize, ~789 cyc
+  a row, is identical either way, because the decode a row deletes does not care who paints it.**
+  ⇒ **a row's ownership COST scales with its writers' store rate and its PRIZE does not: rank by
+  `st/row`, ascending, never by the ledger's row price.** That ranks the needles (1.6 st/row) best
+  at −2.18 ms net and leaves the view sweep's own 117..157 within 4% of break-even from the wrong
+  side — a row repainted 27 times a frame costs 27 retargets to own — which is why this stalled for
+  three sessions. ✅ The owed row-149 reader gate dies with it, unasked. `docs/span-render-plan.md`
+  §11e.
+- **§4a item 2 — permuting the view band's pens so display lines 81..horizon need no writes at
+  all** — MOOT rather than measured: phase 1 owns rows 81..116 outright (`make SPANFILL=5`), so the
+  decode does not touch that band any more and there is nothing left for a permutation to save.

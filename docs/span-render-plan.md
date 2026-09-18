@@ -1710,59 +1710,77 @@ Two things are then owed, and both are contained:
 
 This is a plotter REWRITE, not a hook — the same kind of work as phase 1's takeover rather than
 domain A's mirror — and it is what the governing directive means by getting rid of the `mem[]`
-round trip. It sits behind the **117..157** block in `docs/open-work.md` entry 1, which the ledger
-prices at −5.07 ms; the needles' −2.5 comes with it.
+round trip. It sits behind the **117..157** block, which the ledger prices at −5.07 ms; the
+needles' −2.5 comes with it.
+⛔⛔⛔ **AND §11e BELOW CLOSES ALL OF IT ON COST — read that before building any of this.** The
+prize above is right and the mechanism is right; what kills it is that 117..157's writers store 27
+bytes a row a frame, so owning those rows costs 27 retargets each.
 
-### 11e. ⭐⭐⭐ THE RETARGET'S OWN BREAK-EVEN IS A STORE RATE TOO — AND IT INVERTS THE LEDGER'S ORDER (2026-09-18)
+### 11e. ⛔⛔⛔ AND THAT CLOSES ROW OWNERSHIP ALTOGETHER — THE WHOLE REMAINING CAMPAIGN IS −3.6 ms BEST CASE, AGAINST A MEASURED +3.45 (2026-09-18)
 
-§11d ends by naming the right mechanism and then hands the reader the wrong order: "it sits behind
-the **117..157** block … the needles' −2.5 comes with it." Putting the retarget's cost next to the
-mirror's, per block, says the opposite — **the needles are the best block on the screen and
-117..157 is the worst.** Nothing new was measured to find this; it is §11b's ledger and §11d's own
-constants, divided the other way.
+§11d ends by naming a better mechanism — retarget the writer instead of mirroring it — and leaves
+it as this entry's next build. Pricing it per block against §11b's ledger says there is no build
+left worth doing. Nothing new was measured to establish this; it is §11b's store counts and §11d's
+own three arms, divided the other way.
 
-**The two mechanisms have two break-evens, and they differ by 32×:**
+**The two mechanisms have two break-evens, and the retarget's is 15-32× more permissive:**
 
 | mechanism | what one written byte costs | break-even |
 |---|---|---|
 | **MIRROR** (a delta hook beside the writer) | 666 cyc — 405 of getting there, 261 of plane work | **0.82 delivered bytes per owned row per frame** |
-| **RETARGET** (the writer's own store lands in planes) | ~30 cyc — 4 plane bytes (2 planes × 2 **buffers**) + the expand pair, *less* the `mem[]` store it replaces | **26.4 stores per owned row per frame** |
+| **RETARGET** (the writer's own store lands in planes) | ~30-44 cyc — 4 plane bytes (2 planes × 2 **buffers**) + the expand pair, less the `mem[]` store *if* it can go | **12-26 stores per owned row per frame** |
 
-The prize is the same either way — ~789 cyc (0.111 ms) per owned row, the ledger's 0.1237 discounted
-the ~10% §11a/§11c/§11d all saw — because **the decode a row deletes does not care who paints it.**
-⇒ **A row's ownership COST scales with its writers' store rate; its PRIZE does not. Rank an
-ownership domain by stores per row, ascending.**
+⭐ The plotters' `mem[]` store **cannot** go — `plot_line_octant` reads the screen byte to save it
+in the undo list and ORs the pixel into it, and `undraw_plot_lines` writes it back — so for them
+the plane work is *added* (44 cyc) and only the decode is deleted. The view sweep's store *can* go
+(30 cyc). The prize is the same either way, because **the decode a row deletes does not care who
+paints it** ⇒ **a row's ownership COST scales with its writers' store rate; its PRIZE does not.
+Rank an ownership domain by stores per row, ascending.**
 
-| rows | n | st/f | **st/row** | prize | retarget cost | **net** | writers |
+| rows | n | **st/row** | prize | retarget cost | **net** | break-even | writers |
 |---|---:|---:|---:|---:|---:|---:|---|
-| **158..191** | 34 | 54.6 | **1.6** | **−4.90** | +0.23 | **−4.67** | `plot_line_octant` + `undraw_plot_lines` + `mirror_draw_car` |
-| 154..157 | 4 | 23.2 | 5.8 | −0.45 | +0.10 | −0.35 | …+ `mirror_draw_car` |
-| 146..153 | 8 | 71.3 | 8.9 | −0.89 | +0.30 | −0.59 | chains + `_short` + both needle plotters |
-| 141..145 | 5 | 58.0 | 11.6 | −0.56 | +0.24 | −0.31 | chains + `_short` — **sweep only** |
-| 140 | 1 | 15.9 | 15.9 | −0.11 | +0.07 | −0.04 | …+ `tick_wheel_spin` |
-| 133..139 | 7 | 141.7 | 20.2 | −0.78 | +0.60 | −0.18 | …+ `tick_wheel_spin`, needles |
-| 117..128 | 12 | 322.0 | 26.8 | −1.34 | +1.36 | **+0.02** | chains + `_clipped` — **sweep only** |
-| 129..132 | 4 | 111.6 | 27.9 | −0.45 | +0.47 | **+0.02** | …+ octant/undraw |
+| **158..191** | 34 | **1.6** | **−2.51** | +0.33 | **−2.18** | 12.0 | `plot_line_octant` + `undraw_plot_lines` + `mirror_draw_car` |
+| 154..157 | 4 | 5.8 | −0.45 | +0.10 | −0.35 | 26.4 | …+ `mirror_draw_car` |
+| 146..153 | 8 | 8.9 | −0.89 | +0.30 | −0.59 | 26.4 | chains + `_short` + both needle plotters |
+| 141..145 | 5 | 11.6 | −0.56 | +0.24 | −0.31 | 26.4 | chains + `_short` — **sweep only** |
+| 140 | 1 | 15.9 | −0.11 | +0.07 | −0.04 | 26.4 | …+ `tick_wheel_spin` |
+| 133..139 | 7 | 20.2 | −0.78 | +0.60 | −0.18 | 26.4 | …+ `tick_wheel_spin`, needles |
+| 117..128 | 12 | 26.8 | −1.34 | +1.36 | **+0.02** | 26.4 | chains + `_clipped` — **sweep only** |
+| 129..132 | 4 | 27.9 | −0.45 | +0.47 | **+0.02** | 26.4 | …+ octant/undraw |
+| | **75** | | **−7.09** | **+3.47** | **−3.61** | | ⇐ every unowned row, best case |
 
-⭐⭐ **117..128 and 129..132 land within 4% of the 26.4 break-even, from the other side.** That is
-not a coincidence to be optimised away — the view sweep repaints its rows *hard* (27 stores a row a
-frame against the needles' 1.6), and a row repainted 27 times costs 27 retargets to own. **Entry 1
-stalled on 117..157 for three sessions because that block is genuinely at break-even**, and the
-ledger's row price — which is what it was ranked by — cannot see it.
+⛔⛔⛔ **−3.61 ms is the CEILING for every row the decode still owns, and §11d already measured one
+mechanism that costs +3.45 ms on its own** — placement 1, the hook at the store site inside the
+writers' loops, where a cross-TU call in a hot loop is an aliasing barrier and the loop spills. A
+true retarget would have to beat that by inlining the plane work into `plot_line_octant`'s DDA
+loop across a TU boundary, in the routine CLAUDE.md's unrolling/hoisting rule is most afraid of —
+to collect at most −2.18 ms on the one block that clears its break-even. ⇒ **Row ownership stops
+here. Domain A ships; nothing else on the screen pays.**
 
-⭐ **And the needles' −4.90 is a MEASURED prize, not a ledger estimate**: it is §11d's own arm A→arm
-B move of phase 27 (−5.44, the largest yet), discounted 10%. §11d's "−2.5" is §11b's estimate for
-the same rows; prefer the measurement. Against it the retarget pays 0.23 ms of stores plus the undo
-table's rework (~210 undo entry-visits a frame saving 4 plane bytes instead of 1 `mem[]` byte,
-~1.2 ms if done naively) ⇒ **≈ −3.4 ms, and the undo rework is where the care goes, not the plot.**
+⭐⭐ **117..128 and 129..132 land within 4% of their 26.4 break-even, from the wrong side, and that
+is the whole reason the row-ownership queue entry stalled on 117..157 for three sessions.** The view sweep repaints its
+rows *hard* — 27 stores a row a frame against the needles' 1.6 — and a row repainted 27 times
+costs 27 retargets to own. The ledger's ROW PRICE, which is what the entry ranked by, cannot see
+that; only `st/row` can.
 
-#### ✅ The row-149 reader gate needs no new measurement — EXCLUDE THE ROW
+#### ⚠⚠ MY OWN ERROR, THE SECOND OF THIS SHAPE IN ONE SESSION: A BRACKET'S MOVE ATTRIBUTED TO ONE OF ITS PARTS
 
-§11d leaves `REVS_FB_POISON=149-149` owed. It is already run and already in §10p's table above
-(2325 differ, 34 inside, **2291 outside** — the positive control that proves the instrument works),
-so the reader is not in doubt; what was owed is only *whose* byte it reads. **Don't answer it —
-price it away.** Leave display line 149 out of the owned set: the decode keeps painting it, every
-writer keeps its `mem[]` store for it, and `update_grip_limits` is served by construction. It costs
-**one row's prize, 0.11 ms of 4.90**, and it removes a question whose wrong answer is a game-logic
-bug rather than a visual one. The plotters need a per-row ownership test regardless — they write
-129..191, which straddles the boundary at 157/158 whatever is decided about 149.
+The first version of this section ranked 158..191 at **−4.90 ms** and called it "the best block on
+the screen", because it read §11d's headline **−5.44 ms of phase 27** as domain B's prize. It is
+not: **arm A is 34 rows and arm B is 68**, so −5.44 is A+B and domain B's own contribution is
+−5.44 − (−2.93) = **−2.51**. §11d's tail says "the rows are worth −2.5 ms" in as many words and I
+preferred my own arithmetic to it. Halving that prize turns a −4.67 ms block into −2.18 and a
+"build this next" into "the campaign is over".
+
+This is the same family as §10q's residual, one commit apart: **§10q attributed a bracket minus a
+model to the part it wanted, and this attributed a two-block total to one block.** The general
+rule covers both — ⭐⭐⭐ **a measured delta belongs to everything that changed between the two
+arms, so before quoting one as a part's price, name what else moved.** Here the answer was printed
+in the arm's own column header.
+
+#### ✅ The row-149 reader gate is moot, not owed
+
+§11d leaves `REVS_FB_POISON=149-149` owed for a 117..157 build. There is no such build: the block
+is at break-even. And the one block that clears its break-even, 158..191, needs no reader gate at
+all — its writers keep their `mem[]` stores (§11b fact 3: owning a row while still writing `mem[]`
+needs no reader gate), and line 149 is not in it.

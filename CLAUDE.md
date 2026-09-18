@@ -403,7 +403,7 @@ trip that reached them. Two transferable moves did it, both below — state in L
 struct whose address escapes, and a **dead arm selected by its own precondition** into the
 existing out-of-line copy. ⭐ **Quote the sweep's CENSUS beside the phase row**: 426/32/16 and
 282/50/25 were identical across both arms, which is what makes a moved row a shape win rather
-than a trajectory. The ~29 ms that remains is `docs/open-work.md` entry 2.
+than a trajectory. The ~29 ms that remains is `docs/open-work.md`'s top entry.
 ⛔⛔⛔ **AND THE REPRESENTATION CHANGE THAT WAS TO REACH THAT 20 ms IS CLOSED — the source-event/run
 consumer was built and cost +25.46 ms.** ⭐⭐⭐ **On a 68000 the expensive direction is INDEX →
 POINTER**: a cell-indexed event mask pays 476 cyc/event and a 402-cycle per-run prologue where the
@@ -489,13 +489,23 @@ forever because `m_plan` is the COPPER's palette schedule, not decode work (§11
   INSTEAD of `mem[]`, not in addition to it.** `docs/span-render-plan.md` §11d.
   ⭐⭐⭐ **AND THE RETARGET HAS ITS OWN BREAK-EVEN, 32x MORE PERMISSIVE, SO RANK AN OWNERSHIP
   DOMAIN BY STORES PER ROW — ASCENDING — AND THE LEDGER'S ORDER INVERTS.** One retargeted byte
-  costs ~30 cyc (four plane bytes — two planes x two BUFFERS — less the `mem[]` store it
-  replaces) against a mirror's 666, so the admission threshold is **26.4 stores per owned row per
+  costs ~30-44 cyc (four plane bytes — two planes x two BUFFERS — less the `mem[]` store it
+  replaces) against a mirror's 666, so the admission threshold is **12-26 stores per owned row per
   frame** against the mirror's **0.82 delivered bytes**, while the prize is ~789 cyc a row
-  **whoever paints it**. ⇒ the needles (1.6 st/row) are the BEST block on the screen as a
-  retarget (≈ −3.4 ms) and the worst as a mirror, and the view sweep's own 117..157 sits AT
-  break-even (6..28 st/row, ±0.6 ms a block) because a row repainted 27 times a frame costs 27
-  retargets to own. A ledger's ROW PRICE cannot see that; only `st/row` can.
+  **whoever paints it**. ⇒ **a row's ownership COST scales with its writers' store rate and its
+  PRIZE does not — so rank by `st/row`, ascending**, which puts the needles (1.6 st/row) first at
+  −2.18 ms net and leaves the view sweep's own 117..157 AT break-even (6..28 st/row, ±0.6 ms a
+  block): a row repainted 27 times a frame costs 27 retargets to own. A ledger's ROW PRICE cannot
+  see that; only `st/row` can.
+  ⛔⛔⛔ **AND THAT CLOSES ROW OWNERSHIP ALTOGETHER — THE WHOLE REMAINING CAMPAIGN IS −3.61 ms BEST
+  CASE** (all 75 unowned rows, ideal inline retarget, no shape cost) **AGAINST A MEASURED +3.45 ms
+  FOR THE ONLY STORE-SITE PLACEMENT EVER BUILT**, because a cross-TU call in the writers' own loops
+  is an aliasing barrier and the loop spills. **Domain A ships; nothing else on the screen pays.**
+  ⚠⚠ **And the arithmetic error that made the needles look like −4.67 is the transferable half: A
+  MEASURED DELTA BELONGS TO EVERYTHING THAT CHANGED BETWEEN ITS TWO ARMS, so name what else moved
+  before quoting it as one part's price.** §11d's headline −5.44 ms is arm B − arm 0, and arm B owns
+  **68** rows (domains A+B) where arm A owns 34 ⇒ the needles' own prize is −5.44 − (−2.93) =
+  **−2.51**, half what I first used. Same shape as §10q's residual-`D` error one commit earlier.
   `docs/span-render-plan.md` §11e.
 ⭐⭐ **And the decode's own 38 ms turned out to be CODE SHAPE, not algorithm — TWICE, and it is
 ~20 ms now** — the scan was re-reading two loop-invariant stack slots per cell and had spilled its
