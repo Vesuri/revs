@@ -432,6 +432,17 @@ per-line hook-in reaches the **unit loop** while the bracket is **905 cyc/line o
 units, and `NOUNITS=2` had already published that split (61% driver/entry for the whole sweep) before
 the plan was written. This is the companion to the two-number rule above: visits deleted, cost of the
 new shape, **and what the hook cannot touch**. `docs/span-render-plan.md` §10n.
+⭐⭐⭐ **AND THE THIRD MEMBER OF THAT FAMILY, WHICH COST THREE SESSIONS: NEVER SIZE A PRIZE AS A
+RESIDUAL OF A MEASURED BRACKET MINUS A MODELLED PART.** The residual collects every error in the
+part you modelled, with its sign pointing at the term you are about to build against — a bracket is
+WALL TIME (DMA contention, instruction fetch, instrumentation) and a static cycle count is none of
+those. Phase 1's per-line driver was published as `ph24 − modelled painters = 2258 cyc/line ≈
+11.5 ms`; an arm that runs the driver and simply **does not paint** reads **3.05 ms total, 601
+cyc/line**, and the driver deletion built against that 11.5 collected **−0.33 ms**. ⇒ **Price the
+part you intend to delete with an ARM THAT DELETES IT** — one build and one run — and **read the hot
+callee's PROLOGUE first**: `revs_plot_chain` opens with seven volatile `SPAN_STAT` global RMWs, a
+`movem`, three stack loads, the bus-range test and four table lookups, so most of that "per-line
+driver cost" was a per-CALL cost. `docs/span-render-plan.md` §10q.
 ⭐⭐⭐ **AND THE REASON DIRECT-TO-BITPLANE PAYS IS THAT AN OWNED DISPLAY ROW STOPS BEING DECODED —
 NOT THAT THE STORE IS CHEAPER. A BITPLANE PAIR COSTS WHAT THE `mem[]` BYTE COST.** Measured three
 arms end to end: phase 1's whole line loop went direct — forty `mem[]` bytes, forty units and a

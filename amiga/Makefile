@@ -655,6 +655,14 @@ EXTRA_DEFINES += -DREVS_VIEW_OWN_FULL
 ifeq ($(VIEWFULLCHECK),1)
 EXTRA_DEFINES += -DREVS_VIEW_OWN_FULL_CHECK
 endif
+# ⚠⚠ `make SPANFILL=5 VIEWFULL=1 VIEWFULLCARVE=1` — PICTURE WRONG BY CONSTRUCTION.  The driver
+# runs and does not paint, which prices every per-line thing it does EXCEPT the two painter calls
+# directly, in one run.  ⭐ It exists because §10q sized its prize as a RESIDUAL — a measured
+# bracket minus a MODELLED painter — and a residual collects every error in the part you modelled,
+# which is precisely the term you are about to build against.
+ifeq ($(VIEWFULLCARVE),1)
+EXTRA_DEFINES += -DREVS_VIEW_OWN_FULL_CARVE
+endif
 endif
 # ⛔⛔⛔ `make SPANPAINT=1` IS A PARKED MEASUREMENT ARM, NOT A WIN — it is EXACT and it costs
 # +3.48 ms/frame (178.10 -> 185.53 ms bracketed; the producer below is +3.68 more).  A wholesale

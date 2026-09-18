@@ -1138,7 +1138,7 @@ line.
 
 (6) then stage A in full, then B, C, D, E as §10j has them.
 
-### 10q. ⛔⛔⛔ STAGE A IS BUILT, EXACT AND CLOSED ON COST — a group-of-four wholesale arm cannot pay, and the DRIVER is the only prize left (2026-09-18)
+### 10q. ⛔⛔⛔ STAGE A IS BUILT, EXACT AND CLOSED ON COST — and so is the DRIVER deletion behind it: phase 1 is 83% painter (2026-09-18)
 
 Stage A is the §10p takeover's non-flat line painted from the **game's own road record** instead of
 from the forty `$80`-spaced cell chains: `view_span_line` turns `surface_edge_0..3[line]` into at
@@ -1218,38 +1218,77 @@ INSTRUCTION COUNT as well as its call list.** 726 instructions for a routine tha
 is the tell, and it was visible in the objdump without an emulator run — which is where this
 session's four-fold model error would have been caught first.
 
-#### ⭐⭐⭐ What survives: the DRIVER, and it needs nothing from Stage A
+#### ⛔⛔⛔ What survived — the DRIVER — IS BUILT, MEASURED AND CLOSED: it is worth −0.33 ms, and 83% of phase 1 is the PAINTER
 
-Phase 1 has **two** per-line arms, so the line count is the wrong denominator on its own: 21 of the
-36 lines are `revs_plot_span`'s longword fill and only ~15 run the chain's cell loop.
+`view_own_full` is phase 1's own line loop (`make VIEWFULL=1`, `1d9c182`), and it is the right
+shape: phase 1 makes **one** `paint_cells` call that loops all 36 lines, and the stop test is a
+property of the chain's **page**, not of a line — `view_stop_from(int unit)` takes no line argument
+and `g_viewStopList`'s three writers are all reached from code phase 1 never runs — so it **hoists
+out of the loop** and becomes the driver's sweep-level precondition. Its hoist is gated by its own
+in-process counter (`VIEWFULLCHECK=1`: **48 888 lines, 0 disagreements**), which is the only gate
+available: the host never runs the driver, a cross-run picture diff is invalid, and `SPANVERIFY`
+needs the very chain the driver deletes.
 
-```
-ph24 = 36·D + 15·C + 21·S      C ≈ 2329 cyc (the cell loop)   S ≈ 550 (the flat fill)
-18.02 ms = 127 762 cyc    ⇒    D ≈ 2258 cyc/line ≈ 11.5 ms a frame
-```
+| arm (`PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 PROBEFIELDS=3000 SPANFILL=5`) | Σ(1..39) − ph28 | ph24 | ph27 |
+|---|---:|---:|---:|
+| `VIEWFULL=0` — `paint_cells` drives (control, `build=1d`) | **178.10 ms** | 18.02 | 17.17 |
+| `VIEWFULL=1` — the driver (`build=41d`) | **177.85 ms** | **17.69** | 17.19 |
+| `VIEWFULL=1 VIEWFULLCARVE=1` — the driver **runs and does not paint** ⚠ picture wrong | 163.26 | **3.05** | 18.78 |
 
-⚠⚠ **An earlier reading of this divided ph24 by 36 and subtracted C as if every line ran it, giving
-1220 cyc/line ≈ 6 ms.** That is a FLOOR, not the figure. ⭐ **The general trap: when a phase has
-two per-line arms of very different cost, one division by the line count prices the cheap arm at
-the expensive arm's rate.**
+The control reproduced the previous session's row to the second decimal on a bit-identical
+trajectory (`ph0` holds=129, census 36/16/25 on all three arms), so **−0.33 ms is real and it is
+all there is.** Walking `paint_cells`' 704-instruction shared body cost **~65 cyc/line**.
 
-`D` is the two re-bases, the bus-range test, `s_lineOf`/`s_planeOff`, the `g_plotOwn` claim, an
-11-register `movem`, a five-argument call, `step_scanline`'s two global pointer updates, the
-background-byte read — **and `paint_cells`' whole shared body**, whose span / skip / takeover /
-verify arms and 28-byte frame every line pays for whether or not it uses them. §10p (5b) measured
-exactly that on phases 2/3: ~89% of the body runs on every line.
+**⭐⭐⭐ AND THE THIRD ARM IS WHY: PHASE 1'S ENTIRE PER-LINE DRIVER IS 3.05 ms — 601 cyc/line — AND
+THE PAINTERS ARE 14.64 ms, 83% OF THE PHASE.** The 601 closes against its parts without a
+residual: the group-of-four `or.l` lane scan (180 cyc/line, §step 3a), the `g_viewLines` PROBES
+census (~102), `step_scanline`'s two global pointer updates, the background-byte read, the `$7EEE`
+terminator load and `line_is_last`. ⇒ **There is no multi-millisecond driver prize in this sweep,
+and there never was.**
 
-⚠ It does **not** close against `NOUNITS=2`'s 905 cyc/line, and the gap is accounted for rather
-than mysterious: 102 cyc/line of any PROBES figure is the `g_viewLines` census, `SPANSTAT` adds six
-volatile counter RMWs a span, and 905 was measured on the build *without* the takeover's three
-extra arms. ⇒ **the prize is bracketed at ~6 to ~11.5 ms**, which is large enough to build against
-and not worth modelling further (`docs/method-lessons.md` §ship, don't survey).
+#### ⭐⭐⭐ THE METHOD FAILURE, WHICH IS THE TRANSFERABLE PART: NEVER SIZE A PRIZE AS A RESIDUAL OF A MEASURED BRACKET MINUS A MODELLED PART
 
-⇒ **Step 3b is a RANGE painter over `revs_plot_chain`'s own 46-cycle cell, with the per-line driver
-deleted.** It needs no span record, no producer, and no new faithfulness surface — which also means
-Stage A was never on its critical path. Stages B..E of §10j inherit the same verdict: **the
-representation change is closed; the driver deletion is the remaining work.** Do not revive the
-wholesale arm to serve it.
+This block previously read `ph24 = 36·D + 15·C + 21·S` with `C ≈ 2329` and `S ≈ 550` taken from a
+static cycle count, solved it for `D ≈ 2258 cyc/line ≈ 11.5 ms a frame`, and published that as a
+prize "bracketed at ~6 to ~11.5 ms, large enough to build against and not worth modelling further".
+**Measured: 601 cyc/line — 3.8× over-stated, and 0.33 ms of it was actually collectable.** Two
+compounding errors, and the second is the general one:
+
+1. **The denominator was guessed.** "21 of 36 lines are flat, ~15 run the chain" was inference; the
+   arm counters in a live-window run say **17.0 flat and 19.0 chain**.
+2. **⭐⭐⭐ `D` was a RESIDUAL — a *measured* bracket minus a *modelled* painter — so every error in
+   the model landed in the one term being sized, with its sign pointing the wrong way.** A measured
+   bracket is wall time and carries DMA contention, instruction fetch and instrumentation; a
+   nominal cycle count carries none. This project had already calibrated that gap in the same
+   subsystem — the CPU fill measures **6.87 cyc/byte against ~5 nominal** (§10n) — and a byte-store
+   cell loop, with more fetches per byte moved, runs a larger multiple still: the chain's cell
+   prices at ~46 cycles nominal and ~100 of wall time. All of that discrepancy had nowhere to go
+   but into `D`.
+
+⇒ **Price the part you intend to DELETE, directly, and prefer an arm that deletes it to a model
+that subtracts it.** `VIEWFULLCARVE=1` is that arm — the driver runs and does not paint — it cost
+one build and one run, and it answers in one number what three sessions of arithmetic got wrong in
+both directions (first ≈6 ms as a floor, then ≈11.5 ms as a figure, truth 3.05 ms *total*).
+⭐ The tell was available for free: the first thing in `revs_plot_chain`'s objdump is **seven
+volatile global RMWs of `SPAN_STAT` census** plus a 7-register `movem`, three stack loads, the
+bus-range test and four table lookups — a per-CALL prologue, which is where a "per-line driver
+cost" mostly lived. Reading the callee's prologue would have pre-empted the model.
+
+#### ⇒ The consequences for the plan
+
+- ⛔ **The range painter (§10p step 3b) is CLOSED without being built.** Its target was `D`, and
+  `D` is 3.05 ms of which the painter's per-call prologue is at most ~0.7 — perhaps half of that
+  PROBES-only statistics. A new painter ABI cannot repay that.
+- ⛔ **Stages B..E of §10j inherit the same verdict.** The representation change is closed, and now
+  so is the driver deletion that was to follow it.
+- ✅ `VIEWFULL=1` **stays** as an opt-in flag with its −0.33 ms: it is the honest shape (a dead arm
+  selected by its own precondition), it is gated, and its carve arm is the instrument above.
+- ⭐⭐⭐ **§11 stands, unchallenged and now uncontested: rank by ROWS OWNED.** The three arms say it
+  a third way — the carve's `ph27` **rises** 17.19 → 18.78 ms when the painters are removed,
+  because the ownership claim (`g_plotOwn[y]`) lives *inside* the painter, so not painting means
+  not owning and the decode does those 36 rows again. **The painter's whole value is the decode it
+  cancels**, at ~0.044 ms/row here, and phase 1's own 17.69 ms is the price of admission, not the
+  prize.
 
 ## 11. ⭐⭐⭐ THE ROW-OWNERSHIP ARCHITECTURE — the decode is the prize, the painter is a wash (2026-09-17)
 

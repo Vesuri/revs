@@ -124,12 +124,29 @@ costs what the per-cell source test cost.** A wholesale group is **236 cycles ag
 the four chain cells it replaces. And a *free* version of it (free lane map, free producer) still
 models to a wash, because the floor is 5.57 events a line plus forty cells' two plane stores —
 §11's result arriving again: **the painter is a wash, the decode is the prize.**
-⇒ **So step 3b is a RANGE painter over `revs_plot_chain`'s own 46-cycle cell with the per-line
-driver deleted** — no span record, no producer, no new faithfulness surface. The driver is the
-measured prize: ph24 is 500 µs/line over 36 lines, of which the cell loop is ~2329 of 3546 cycles,
-leaving **~1200 cyc/line ≈ 6 ms a frame** of re-bases, bus-range test, `s_lineOf`/`s_planeOff`, the
-`g_plotOwn` claim, an 11-register `movem` and a five-argument call. Stages B..E of §10j inherit the
-verdict: **the representation change is closed, the driver deletion is the work.**
+⛔⛔⛔ **AND THE DRIVER DELETION — THE LAST THING STAGE A LEFT STANDING — IS NOW BUILT AND CLOSED
+TOO (§10q, 2026-09-18): `make VIEWFULL=1` is worth −0.33 ms, and 83% OF PHASE 1 IS THE PAINTER.**
+`view_own_full` gives phase 1 its own line loop with the stop test hoisted to a sweep-level
+precondition (gated by its own counter: 48 888 lines, 0 disagreements): ph24 **18.02 → 17.69 ms**,
+frame 178.10 → 177.85, on a bit-identical trajectory. A third arm settles the whole phase —
+`VIEWFULLCARVE=1` runs the driver and does **not** paint, and reads **ph24 = 3.05 ms**. ⇒ phase 1's
+entire per-line driver is **601 cyc/line**, the painters are 14.64 ms, and **there is no
+multi-millisecond driver prize in this sweep.**
+⭐⭐⭐ **THE PREDICTION WAS 3.8× OVER, AND THE METHOD ERROR IS THE TRANSFERABLE PART: `D` WAS A
+RESIDUAL — A *MEASURED* BRACKET MINUS A *MODELLED* PAINTER — SO EVERY MODELLING ERROR LANDED IN THE
+ONE TERM BEING SIZED.** A bracket is wall time (DMA contention, fetch, instrumentation); a nominal
+cycle count is none of those, and this subsystem's own calibration already showed the gap (the fill
+is 6.87 cyc/byte against ~5 nominal). ⇒ **Price the part you intend to delete with an arm that
+deletes it, not with a model that subtracts it** — one build and one run replaced three sessions of
+arithmetic that had been wrong in both directions (≈6 ms, then ≈11.5 ms, truth 3.05 total). ⭐ And
+the tell was free: `revs_plot_chain`'s objdump opens with **seven volatile `SPAN_STAT` global
+RMWs** plus a `movem`, three stack loads, the bus-range test and four table lookups — the "per-line
+driver cost" was mostly a per-CALL prologue.
+⇒ ⛔ **the RANGE painter is closed without being built** (its target was `D`, ≤0.7 ms of which is
+the prologue, perhaps half PROBES-only statistics), and Stages B..E of §10j inherit it. **The only
+lever left in this domain is §11's: ROWS OWNED.** The carve says it a third way — its `ph27` *rises*
+17.19 → 18.78 ms, because `g_plotOwn[y]` is claimed inside the painter, so not painting is not
+owning and the decode does those rows again.
 
 ⇒ **THE LIVE STEP IS §10p (5), THE DRIVER REWRITE, AND IT IS ENTRY 2 BELOW** — the two levers have
 converged: what stands between the short phases and the bitplanes is the chain-entry machinery, not

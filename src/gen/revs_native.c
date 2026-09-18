@@ -1781,7 +1781,14 @@ volatile unsigned long g_viewFullStopBad = 0;
 /* ⭐⭐⭐ PHASE 1'S OWN LINE DRIVER — THE TAKEOVER WITHOUT `paint_cells` (§10q, `make VIEWFULL=1`)
    ============================================================================================
    `view_own_run` above did this for the SHORT phases' runs; this is the same move for the one
-   call phase 1 makes, and it is the whole of §10q's surviving prize.  Phase 1 enters
+   call phase 1 makes.
+   ⚠⚠ MEASURED AND IT IS WORTH -0.33 ms (ph24 18.02 -> 17.69), NOT the ~11.5 ms §10q predicted:
+   walking the shared body costs ~65 cyc/line.  `VIEWFULLCARVE=1` then priced the rest of this
+   routine directly — the driver runs and does not paint, ph24 = 3.05 ms — so phase 1 is 3.05 ms
+   of driver and 14.64 of PAINTER, and there is no further driver prize here.  §10q carries the
+   method failure (a prize sized as a residual of a measured bracket minus a modelled painter);
+   the range painter that was to follow this is closed without being built.  This routine stays
+   because it is the honest shape and it does win, slightly.  Phase 1 enters
    `paint_cells` ONCE and that call loops all 36 lines, so what a dedicated driver deletes is not
    a frame or a `movem` — those are paid once a sweep either way — it is the per-line cost of
    walking a 704-instruction body whose span arms, four-segment run derivation, quad-unrolled
@@ -1829,6 +1836,15 @@ static void view_own_full(ViewState* v)
             const unsigned g = line & ~3u;
             if (g != scanGroup) { scanGroup = g; scanLanes = view_group_sources(g); }
             if (VIEW_SCAN_LANE(scanLanes, line - g) == 0) {
+#ifdef REVS_VIEW_OWN_FULL_CARVE
+                /* ⚠⚠ PICTURE WRONG BY CONSTRUCTION — `make VIEWFULL=1 VIEWFULLCARVE=1` prices
+                   EVERYTHING THIS DRIVER DOES EXCEPT PAINT, by not painting.  §10q sized its
+                   prize as a RESIDUAL (a measured bracket minus a modelled painter) and was
+                   wrong by 30x; this measures the same term directly in one run.  The sources
+                   are still CONSUMED (`view_group_sources` above is destructive-read
+                   bookkeeping the next frame depends on), so only the pixels are missing. */
+                (void)byte;
+#else
                 /* nothing wrote this line's forty sources: ONE span of the background byte */
                 REVS_PLOT_SPAN(plot_ptr_v, byte);
                 SPAN_EMIT_STAT(g_spanEmitLines++);
@@ -1838,6 +1854,7 @@ static void view_own_full(ViewState* v)
                                        mem + MEM_view_src_blocks + line,
                                        mem + MEM_view_cell_bytes);
                 SPAN_EMIT_STAT(g_spanEmitPaints++);
+#endif
             }
             cell = 0x38;                /* unit 39's cell, as a full line leaves it */
         }
