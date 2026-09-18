@@ -1924,8 +1924,10 @@ static __attribute__((noinline)) void paint_lines_short(ViewState* v)
                                   mem[MEM_view_left_end_fill + line]);
         REVS_PLOT_CELL(view_screen_addr(plot_ptr_v, cell), (uint8_t)byte);
         /* ⚠ the CHAIN-BOUNDARY cell does not go through VIEW_UNIT, so the span census has to be
-           hooked here too or it under-counts the composed edge bytes by ~50 a sweep. */
-        PROBE_SHAPE_DASH_STORE(view_screen_addr(plot_ptr_v, cell), (unsigned)byte, line);
+           hooked here too or it under-counts the composed edge bytes by ~50 a sweep.  ⭐ And it
+           hooks as an EDGE store, not a unit store: this byte is composed from the edge tables,
+           so the arm latch belongs to another cell (shape.h). */
+        PROBE_SHAPE_DASH_EDGE(view_screen_addr(plot_ptr_v, cell), (unsigned)byte, line);
         view_store_cell(plot_ptr_v, cell, byte);
 #ifdef REVS_VIEWSKIP
         view_dst_touch(view_screen_addr(plot_ptr_v, cell));
@@ -1959,8 +1961,10 @@ static __attribute__((noinline)) void paint_lines_short(ViewState* v)
         cell    = math_hi;
         REVS_PLOT_CELL(view_screen_addr(plot_ptr2_v, cell), (uint8_t)byte);
         /* ⚠ the CHAIN-BOUNDARY cell does not go through VIEW_UNIT, so the span census has to be
-           hooked here too or it under-counts the composed edge bytes by ~50 a sweep. */
-        PROBE_SHAPE_DASH_STORE(view_screen_addr(plot_ptr2_v, cell), (unsigned)byte, line);
+           hooked here too or it under-counts the composed edge bytes by ~50 a sweep.  ⭐ And it
+           hooks as an EDGE store, not a unit store: this byte is composed from the edge tables,
+           so the arm latch belongs to another cell (shape.h). */
+        PROBE_SHAPE_DASH_EDGE(view_screen_addr(plot_ptr2_v, cell), (unsigned)byte, line);
         view_store_cell(plot_ptr2_v, cell, byte);
 #ifdef REVS_VIEWSKIP
         view_dst_touch(view_screen_addr(plot_ptr2_v, cell));
@@ -2045,8 +2049,10 @@ static __attribute__((noinline)) void paint_lines_clipped(ViewState* v)
                                   mem[MEM_view_left_end_fill + line]);
         REVS_PLOT_CELL(view_screen_addr(plot_ptr_v, cell), (uint8_t)byte);
         /* ⚠ the CHAIN-BOUNDARY cell does not go through VIEW_UNIT, so the span census has to be
-           hooked here too or it under-counts the composed edge bytes by ~50 a sweep. */
-        PROBE_SHAPE_DASH_STORE(view_screen_addr(plot_ptr_v, cell), (unsigned)byte, line);
+           hooked here too or it under-counts the composed edge bytes by ~50 a sweep.  ⭐ And it
+           hooks as an EDGE store, not a unit store: this byte is composed from the edge tables,
+           so the arm latch belongs to another cell (shape.h). */
+        PROBE_SHAPE_DASH_EDGE(view_screen_addr(plot_ptr_v, cell), (unsigned)byte, line);
         view_store_cell(plot_ptr_v, cell, byte);
 #ifdef REVS_VIEWSKIP
         view_dst_touch(view_screen_addr(plot_ptr_v, cell));

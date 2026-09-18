@@ -451,6 +451,29 @@ volatile unsigned long g_spanPredEventHit  = 0; /* matched anyway, though a prod
 volatile unsigned long g_spanPredMixed     = 0; /* misses whose stored byte is a MIXED cell  */
 volatile unsigned long g_spanPredLost      = 0; /* the arm latch was lost (see s_armLatch)   */
 volatile unsigned long g_spanPredSpanHist[VIEW_SPAN_MAX + 1] = {0};
+/* ⭐⭐⭐ THE COMPOSITE MODEL — the cell counters above say the representation HOLDS; these say
+   the PAINTER is exact.  `revs_plot_spans` fills the <=5 runs and then lets each event byte carry
+   rightwards over the cells the fill got wrong, so its answer at cell c is
+       carrySeen ? lastEventByte : spanColour(c)
+   and that is what `g_spanPredComposite` compares against every byte the chain stores.  Cells at
+   or after the line's first event match BY CONSTRUCTION (the overlay writes the chain's own byte),
+   so what this actually measures is the region BEFORE the first event — which is exactly the
+   place a wrong interval structure would show and the place the cell census cannot separate.
+   ⚠⚠ g_spanPredCompMiss MUST BE 0.  A single mismatch is a cell the painter would get wrong with
+   no producer byte to cover for it, and Stage A does not ship until it is zero.
+   ⭐⭐⭐ IT IS 0 — 0 of 1 280 208 cells over a 250-frame driving window, and the overlay costs
+   1.95 writes a line against the <=5 longword runs that cover all forty cells.  So the painter is
+   EXACT, not approximate: `revs_plot_spans` needs no fallback arm and no per-cell compare.
+   ⚠ Its sabotage control is free and was measured: model the three CHAIN-BOUNDARY stores as clean
+   cells (drop arm 3) and MISS reads 30 197 with 22 580 of them DOWNSTREAM — one unmodelled carry
+   update poisons every zero-source cell to its right, which is why the miss count landed within
+   1% of the carry-miss count and looked like a defect in the representation.  ⭐ That is the
+   general shape: in an RLE stream a missing EVENT and a wrong INTERVAL are indistinguishable by
+   count, and only the arm split (`composite misses by arm`) separates them. */
+volatile unsigned long g_spanPredComposite = 0;   /* cells the composite model predicted      */
+volatile unsigned long g_spanPredCompMiss  = 0;   /* ...and got wrong.  ⚠⚠ MUST BE 0          */
+volatile unsigned long g_spanPredCompUp    = 0;   /* of those, upstream of every event        */
+volatile unsigned long g_spanPredOverlay   = 0;   /* cells the overlay must WRITE (its cost)  */
 }
 
 /* The offender list — ⭐ the whole point of recording it is that a COUNT cannot tell an
@@ -459,9 +482,18 @@ volatile unsigned long g_spanPredSpanHist[VIEW_SPAN_MAX + 1] = {0};
 struct SpanPredOffender { unsigned char line, cell, pred, got, kind; };
 static SpanPredOffender s_spOff[SPAN_PRED_OFFENDERS];
 static unsigned s_spOffN = 0;
+/* ⚠ The composite needs its OWN slots: the shared list fills up with the first twelve carry/event
+   misses ever seen, so a composite offender never reached it and the first diagnosis had to be
+   made from counts alone.  An instrument whose interesting case cannot be printed is half an
+   instrument. */
+static SpanPredOffender s_spCompOff[SPAN_PRED_OFFENDERS];
+static unsigned s_spCompOffN = 0;
+static unsigned long s_spCompMissArm[5] = {0};   /* by arm, slot 4 = latch lost */
 
 static unsigned char s_spPredRow[VIEW_SPAN_CELLS];
 static unsigned      s_spPredLine = 0xFFFFu;
+/* the composite model's per-line state: the byte the last event on this line left carrying */
+static unsigned      s_spCarry    = 0x100u;       /* >0xFF = no event on this line yet */
 
 static void span_pred_line(unsigned line)
 {
@@ -473,13 +505,16 @@ static void span_pred_line(unsigned line)
         for (c = spans[i].start; c < end; c++) s_spPredRow[c] = spans[i].colour;
     }
     s_spPredLine = line;
+    s_spCarry    = 0x100u;
     g_spanPredLines++;
     g_spanPredSpans += n;
     g_spanPredSpanHist[n > VIEW_SPAN_MAX ? VIEW_SPAN_MAX : n]++;
 }
 
 /* `arm` is `view_consume`'s own report for THIS cell, read out of the run census's latch
-   before it is consumed: 0 = zero source, 1 = non-zero source, 2 = forced entry, $FF = lost. */
+   before it is consumed: 0 = zero source, 1 = non-zero source, 2 = forced entry, $FF = lost —
+   plus 3, which the CHAIN-BOUNDARY hook supplies for itself (shape.h). */
+#define SPAN_ARM_EVENT(a) ((a) == 1u || (a) == 2u || (a) == 3u)
 static void span_pred_store(unsigned dst, unsigned value, unsigned x, unsigned char arm)
 {
     const unsigned off = (dst - BBC_SCREEN_BASE) & 0xFFFFu;
@@ -492,15 +527,45 @@ static void span_pred_store(unsigned dst, unsigned value, unsigned x, unsigned c
     if (x != s_spPredLine) span_pred_line(x);
 
     pred = s_spPredRow[cell];
+
+    /* ── the composite model (see the counters) — asked BEFORE the cell-wise classification so
+          the two instruments stay independent of each other's early returns. ── */
+    {
+        unsigned upstream;
+        unsigned char want;
+        /* ⚠ THE EVENT IS APPLIED FIRST.  The overlay writes the producer's composed byte AT the
+           event cell and only then carries it rightwards, so an event cell's answer is that byte
+           — not the carry from its left.  (Ordering this the other way round made every event
+           cell predict its left neighbour and read 10.6% miss.)  ⇒ event cells match BY
+           CONSTRUCTION and what this measures is every OTHER cell, which is the point. */
+        if (SPAN_ARM_EVENT(arm)) s_spCarry = (unsigned char)value;
+        upstream = (s_spCarry > 0xFFu);
+        want     = upstream ? pred : (unsigned char)s_spCarry;
+        g_spanPredComposite++;
+        if (want != (unsigned char)value) {
+            g_spanPredCompMiss++;
+            if (upstream) g_spanPredCompUp++;
+            s_spCompMissArm[arm < 4u ? arm : 4u]++;
+            if (s_spCompOffN < SPAN_PRED_OFFENDERS) {
+                SpanPredOffender* o = &s_spCompOff[s_spCompOffN++];
+                o->line = (unsigned char)x; o->cell = (unsigned char)cell;
+                o->pred = want; o->got = (unsigned char)value; o->kind = 2u;
+            }
+        }
+        /* the overlay's true write traffic: every cell whose answer the RUN FILL did not
+           already put there — this is what the painter costs beyond its <=5 longword runs. */
+        if (want != pred) g_spanPredOverlay++;
+    }
+
     g_spanPredCells++;
     if (pred == (unsigned char)value) {
         g_spanPredMatch++;
-        if (arm == 1u || arm == 2u) g_spanPredEventHit++;
+        if (SPAN_ARM_EVENT(arm)) g_spanPredEventHit++;
         return;
     }
     if (!scout_is_solid((unsigned char)value)) g_spanPredMixed++;
     if (arm == 0xFFu)                  g_spanPredLost++;
-    else if (arm == 1u || arm == 2u)   g_spanPredEventMiss++;
+    else if (SPAN_ARM_EVENT(arm))      g_spanPredEventMiss++;
     else {
         g_spanPredCarryMiss++;
         if (s_spOffN < SPAN_PRED_OFFENDERS) {
@@ -535,11 +600,23 @@ void span_pred_report(void)
     printf("SPANPRED   of the matches, %lu were cells a producer had written; %lu of the "
            "misses are MIXED bytes (a boundary inside the cell)\n",
            g_spanPredEventHit, g_spanPredMixed);
+    printf("SPANPRED  ⭐ COMPOSITE (what revs_plot_spans would paint): cells=%lu  MISS=%lu"
+           " (upstream-of-every-event %lu)  overlay writes=%lu.%02lu/line\n",
+           g_spanPredComposite, g_spanPredCompMiss, g_spanPredCompUp,
+           g_spanPredOverlay / n, (g_spanPredOverlay * 100 / n) % 100);
+    printf("SPANPRED   composite misses by arm (0=clean 1=source 2=forced 3=edge 4=lost): "
+           "%lu %lu %lu %lu %lu  offenders:",
+           s_spCompMissArm[0], s_spCompMissArm[1], s_spCompMissArm[2], s_spCompMissArm[3],
+           s_spCompMissArm[4]);
+    for (i = 0; i < s_spCompOffN; i++)
+        printf(" X(l=%u,c=%u,want=%02X,got=%02X)", s_spCompOff[i].line, s_spCompOff[i].cell,
+               s_spCompOff[i].pred, s_spCompOff[i].got);
+    printf("\n");
     printf("SPANPRED   runs-per-line histogram (0..%u):", VIEW_SPAN_MAX);
     for (i = 0; i <= VIEW_SPAN_MAX; i++) printf(" %lu", g_spanPredSpanHist[i]);
-    printf("\nSPANPRED   first offenders (kind C=carry E=event):");
+    printf("\nSPANPRED   first offenders (kind C=carry E=event X=COMPOSITE):");
     for (i = 0; i < s_spOffN; i++)
-        printf(" %c(l=%u,c=%u,pred=%02X,got=%02X)", s_spOff[i].kind ? 'E' : 'C',
+        printf(" %c(l=%u,c=%u,pred=%02X,got=%02X)", "CEX"[s_spOff[i].kind],
                s_spOff[i].line, s_spOff[i].cell, s_spOff[i].pred, s_spOff[i].got);
     printf("\nSPANPRED   road_speed $63=%02X (a parked scene is a different workload)\n",
            mem[MEM_road_speed]);
@@ -549,7 +626,7 @@ void span_pred_report(void)
 /* One cell store, before it lands.  ⭐ Comparing against what is already there is the whole
    point: it measures the sweep's REDUNDANCY directly instead of deriving it from the carry
    semantics, so the census cannot be wrong in the same way my reasoning could be. */
-void shape_dash_store(unsigned dst, unsigned value, unsigned line)
+static void dash_store_common(unsigned dst, unsigned value, unsigned line, unsigned spanArm)
 {
     const unsigned x = line & 0x7Fu;
     const int changed = (mem[dst] != (unsigned char)value);
@@ -558,7 +635,20 @@ void shape_dash_store(unsigned dst, unsigned value, unsigned line)
     if (changed) s_lineChanged[x]++;
     run_census_store(x, dst, changed);
     scout_store(dst, value, x);
-    span_pred_store(dst, value, x, arm);
+    span_pred_store(dst, value, x, spanArm > 0xFFu ? arm : (unsigned char)spanArm);
+}
+
+void shape_dash_store(unsigned dst, unsigned value, unsigned line)
+{
+    dash_store_common(dst, value, line, 0x100u);      /* whatever the latch says */
+}
+
+/* ⭐ The chain boundary (shape.h): the driver composed this byte itself, so the latch describes
+   someone else's cell.  ⚠ The RUN CENSUS still sees the real latch — its published 426/32/16 is a
+   different question and must not move underneath a diagnosis of the span model. */
+void shape_dash_store_edge(unsigned dst, unsigned value, unsigned line)
+{
+    dash_store_common(dst, value, line, 3u);
 }
 
 /* ── the per-line census (shape.h) ---------------------------------------------------------- */

@@ -114,6 +114,14 @@ extern volatile unsigned long g_shapeLinePerUnits[128];
    unsound everywhere or only where some OTHER routine writes the viewport. */
 extern volatile unsigned long g_shapeLinePerCleanChanged[128];
 void shape_dash_store(unsigned dst, unsigned value, unsigned line);
+/* ⭐⭐ The CHAIN-BOUNDARY store, which is a different animal from a unit store and has to say so.
+   Its byte is `view_compose`d from the edge tables by the DRIVER and written with its own
+   `REVS_PLOT_CELL` — so it is neither the chain's carried byte nor `view_cell_bytes[source]`, and
+   `view_consume`'s arm latch (left over from the chain's last unit) describes a different cell.
+   Reported to the span oracle as arm 3, which counts as an EVENT: a producer-written cell whose
+   byte the painter's overlay must write and then CARRY.  Modelling it as a clean cell instead
+   mispredicts the boundary and then poisons every zero-source cell to its right. */
+void shape_dash_store_edge(unsigned dst, unsigned value, unsigned line);
 
 /* ⭐⭐ THE SPAN CENSUS — the colour-run shape of a painted line, which is the workload of a
    direct-to-bitplane renderer (the run census above is the workload of a SKIP scheme, a
@@ -464,6 +472,7 @@ void shape_fb_poison(void);
 #define PROBE_SHAPE_DASH_AFTER()   shape_dash_after()
 #define PROBE_SHAPE_DASH_UNIT(line) shape_dash_unit(line)
 #define PROBE_SHAPE_DASH_STORE(d, v, line) shape_dash_store((d), (v), (line))
+#define PROBE_SHAPE_DASH_EDGE(d, v, line)  shape_dash_store_edge((d), (v), (line))
 #define PROBE_SHAPE_MARK(addr)     shape_mark_source((addr))
 #define PROBE_SHAPE_EDGE_CALL()    shape_edge_call()
 #define PROBE_SHAPE_EDGE_WALK(c)   shape_edge_walk((c))
@@ -496,6 +505,7 @@ void shape_fb_poison(void);
 #define PROBE_SHAPE_FB_POISON()    ((void)0)
 #define PROBE_SHAPE_DASH_UNIT(line) ((void)(line))
 #define PROBE_SHAPE_DASH_STORE(d, v, line) ((void)0)
+#define PROBE_SHAPE_DASH_EDGE(d, v, line)  ((void)0)
 #define PROBE_SHAPE_MARK(addr)     ((void)0)
 #define PROBE_SHAPE_ROAD_BEFORE()  ((void)0)
 #define PROBE_SHAPE_ROAD_AFTER()   ((void)0)
