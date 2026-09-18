@@ -13,6 +13,17 @@ ROM="${1:-${KICKSTART:-$HOME/Documents/RetroPie/BIOS/kick31.rom}}"
 [ -f "$ROM" ] || { echo "Kickstart ROM not found: $ROM  (pass as \$1 or set \$KICKSTART)"; exit 1; }
 [ -f out/Revs.elf ] || { echo "build first: make"; exit 1; }
 
+# ⭐ SILENT by default.  A warp run is ~4.9x speed, so the game's audio comes out as an
+# ear-piercing screech, and no probe this project takes reads the sound hardware.  The `dummy`
+# SDL audio driver opens no device at all — verified with a control: a normal run maps
+# /System/Library/Components/CoreAudio.component into the process, a `dummy` run maps nothing.
+# ⚠ `--volume=0` is NOT the knob — this fsemu-core build's volume path is an unimplemented
+# FIXME ("Set volume not implemented yet"), and FS-UAE echoes any option you pass it (including
+# a misspelt one) into its log, so the config dump is not evidence an option DID anything.
+# FSUAE_SOUND=1 puts the audio back, for an audio bug that has to be heard.
+AUDIO_ARGS="--audio_driver=dummy"
+[ "${FSUAE_SOUND:-0}" = 1 ] && AUDIO_ARGS=""
+
 RUN=.run; DH0="$RUN/dh0"; DH1="$RUN/dh1"; GDBHOME="$RUN/gdbhome"
 mkdir -p "$DH0/s" "$DH1" "$RUN/state" "$GDBHOME"
 printf 'cd dh1:\nRevs\n' > "$DH0/s/startup-sequence"
@@ -24,6 +35,7 @@ fsuae_claim_port
   --kickstart_file="$ROM" \
   --hard_drive_0="$DH0" --hard_drive_1="$DH1" \
   --automatic_input_grab=0 --fullscreen=0 --window_width=720 --window_height=568 \
+  $AUDIO_ARGS \
   --remote_debugger=20 --remote_debugger_port="$DEBUG_PORT" --remote_debugger_trigger=Revs \
   --ntsc_mode=0 --state_dir="$RUN/state" > "$RUN/fsuae-dbg.log" 2>&1 &
 FSUAE_PID=$!

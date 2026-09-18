@@ -90,6 +90,61 @@ behaviour).
 **Treat any unexplained runtime regression right after a header edit or a `PROBES` toggle as a
 stale build until a clean rebuild rules it out** — don't chase it as a logic bug first.
 
+## ⚠⚠ A FAILED RUN LEAVES YESTERDAY'S LOG IN PLACE — CHECK THE MTIME, NOT THE CONTENT
+
+`diag_run.sh` writes `.run/gdb-out.log` only if gdb runs.  When FS-UAE never starts, gdb exits
+immediately, the **previous run's log is still on disk**, and the script's own filtered tail prints
+it.  Measured here: a brand-new oracle script appeared to print *the phase table* instead of its
+own output.  The cause was `fs-uae: command not found` — `. ./env.sh` had not been in the **same
+shell command** as the run (the loop's first rule, above) — and what was being read was a log from
+the previous day.
+
+⭐ **The check is one command, and it costs nothing:**
+
+```sh
+date; ls -l amiga/.run/gdb-out.log     # an mtime older than "now" means the run did not happen
+```
+
+A stale log is the nastiest shape of instrument failure this project keeps meeting, because the
+content is *internally consistent* — a real table from a real run, just not yours.  Grep the log
+for a string only the NEW script prints, or check its mtime; never conclude anything from a log
+whose age you have not looked at.
+
+## ⚠ A CONDITIONAL BREAKPOINT THROTTLES THE EMULATOR ~2.5×, SO A VERIFICATION SCRIPT MUST NOT USE ONE
+
+gdb evaluates a breakpoint condition **in the host debugger on every hit**, with a stub round trip
+each time.  An oracle breakpointing a per-render function with `if g_mismatch != 0` ran the
+emulator at ~0.4× real time: 45 s of wall bought **18 s emulated / 65 sweeps**.  The same script
+with a plain `continue` and `diag_run.sh`'s SIGINT bought **288 s emulated / 1226 sweeps** — 19×
+the evidence from the same wall clock.
+
+⭐ **So: count in the PROGRAM and print once at the end** (a `volatile` counter plus a first-offender
+record, e.g. `g_plotTextMismatch` + `g_plotTextMismatchY`), never "stop when it goes wrong".  The
+cheap version of the same rule is already in `docs/perf-method.md`: quote a framerate only from a
+script with no gdb stop inside the window.
+
+## ⭐ HEADLESS RUNS ARE SILENT, and `--volume=0` is not what does it
+
+`diag_run.sh` and `debug.sh` pass **`--audio_driver=dummy`** (`FSUAE_SOUND=1` puts the audio back
+for an audio bug that has to be heard).  A warp run is ~4.9× speed, so the game's sound comes out
+as a screech, and no probe this project takes reads the sound hardware.  `run.sh` stays audible —
+it runs at real speed and is the by-ear A/B script — with `FSUAE_SILENT=1` to mute it.
+
+⚠⚠ **`--volume=0` is NOT the knob, and the way that was established is the transferable part.**
+This fsemu-core FS-UAE contains `FIXME: Set volume not implemented yet` right beside its `volume`
+option, and **FS-UAE echoes every option you pass into its log whether it implements it or not** —
+a deliberately misspelt `--zz_bogus_option=7` appears in the config dump exactly like a real one,
+and `--log_audio=1` produces no `[AUD]` lines in this build at all.  So the config dump is **not**
+evidence that an option did anything.  What settled it was an outside observer with a control:
+
+```sh
+lsof -p <fs-uae pid> | grep -ic CoreAudio    # 3 on a normal run, 0 with --audio_driver=dummy
+```
+
+⭐ And an instrument change must be shown to change no measurement: the same `TEXTOWN=1` arm
+re-run silently read `phase 27` **17.181 ms against 17.194**, with phase 0's call count identical
+at 8437.
+
 ## ⚠⚠ `Remote connection closed` mid-run is usually ANOTHER SESSION, not your build
 
 `diag_run.sh`, `run.sh` and `debug.sh` used to begin with an **unqualified `pkill -9 fs-uae`** —

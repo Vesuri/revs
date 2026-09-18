@@ -41,6 +41,12 @@ SHOTS="${FSEMU_SCREENSHOTS_DIR:-$HOME/Pictures/Screenshots}"
 mkdir -p "$SHOTS"
 export FSEMU_SCREENSHOTS_DIR="$SHOTS"
 
+# This one stays AUDIBLE: it is the by-ear A/B script and it runs at real speed, where the
+# game's sound is the point.  `FSUAE_SILENT=1 ./run.sh` mutes it the way the debug scripts are
+# muted by default (the `dummy` SDL audio driver opens no device — see diag_run.sh).
+AUDIO_ARGS=""
+if [ "${FSUAE_SILENT:-0}" = 1 ]; then AUDIO_ARGS="--audio_driver=dummy"; fi
+
 fsuae_stop_previous
 # After the exec this shell IS fs-uae, so record $$ as the emulator pid.
 fsuae_track_self
@@ -50,6 +56,7 @@ exec "$FSUAE" \
   --kickstart_file="$ROM" \
   --hard_drive_0="$DH0" --hard_drive_1="$DH1" \
   --joystick_port_0=none --joystick_port_1=none \
+  $AUDIO_ARGS \
   --automatic_input_grab=0 --fullscreen=0 --window_width=720 --window_height=568 \
   --ntsc_mode=0 --state_dir="$RUN/state" \
   --screenshots_output_dir="$SHOTS"

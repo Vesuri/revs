@@ -182,7 +182,9 @@ make            # build out/Revs.exe (+ Revs.elf; runs the muldiv audit on every
 make STRAIGHT_TO_RACE=1   # ⭐ boot straight into the race — see below
 ./run.sh        # boot in FS-UAE (Kickstart 3.1; CTRL + left mouse button quits)
 ./debug.sh      # source-level debug via the FS-UAE GDB stub (prints its $DEBUG_PORT)
-./diag_run.sh N # headless probe run for N seconds (needs a PROBES=1 build)
+./diag_run.sh N # headless probe run for N seconds (needs a PROBES=1 build).  ⭐ SILENT
+                #   (`--audio_driver=dummy` — a warp run's audio is a screech and no probe reads
+                #   it); `FSUAE_SOUND=1` restores it, `FSUAE_SILENT=1` mutes the audible ./run.sh
 make PROBES=1 ISRSPLIT=1  # ⭐ split the VERTB ISR into its own timed slots (amiga/isr_split.gdb)
                           #   — the ONLY instrument that can see it, because the ISR's time is
                           #   charged to whichever phase it preempted.  ISRCAL=1 adds the known-
