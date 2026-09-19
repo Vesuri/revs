@@ -28,14 +28,15 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 
 **Where the frame stands:** **192.64 ms bracketed** (Σ phases 1..39 = wall − phase 0), `PROBES=1
 FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 PROBEFIELDS=3000`, warp, driving, at the domain-A
-commit (`frozen=240410697`, `loopFrames=298`, `build=1d`, `probe-audit` 173 symbols). Target is **20 ms** (50 FPS), floor **40 ms**
-(25 FPS), and an entry worth under ~1 ms is not where the answer is.
+commit (`frozen=240410697`, `loopFrames=298`, `build=1d`, `probe-audit` 173 symbols). **Target is ~48 ms** (2× the original game; stretch **40 ms**, where the
+`50/N` display ladder actually steps to 25 fps), and an entry worth under ~1 ms is not where the
+answer is.
 
 ⭐⭐⭐ **AND THE REAL BBC RUNS THIS SAME SCENE AT 97.0 ms A FRAME — 10.31 fps, measured, `make
 refloop` prints it.** So the port is **1.96× the original hardware**, not 5-10× off a reasonable
-figure; the 40 ms floor is **2.43× faster than Crammond ever ran it** and the 20 ms target
-**4.85×**. Neither target was ever set against this number. ⇒ **the queue below cannot reach
-them** — every remaining entry summed is a small fraction of the 150 ms gap, and a 68000's bus
+figure; the old 40 ms floor is **2.43× faster than Crammond ever ran it** and the old 20 ms
+target **4.85×** — neither was ever set against this number, and 20 ms is now ⛔ off the table.
+⇒ **the queue below cannot reach even the 48 ms target** — every remaining entry summed is a small fraction of the 150 ms gap, and a 68000's bus
 cycle is 564 ns against the 6502's 500, so per byte touched it is *slower*; it wins only on
 batching the BBC's 8-byte-apart cells and 128-byte-apart sources forbid. The queue is worth
 working for what it is (a ~2× machine should not be a 2× *slower* port), but **20 ms needs the

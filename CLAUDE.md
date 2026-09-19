@@ -351,16 +351,21 @@ menu's fields hand the engine a backlog to run in one burst. Reasoning: `docs/am
 
 ## Performance
 
-**Target: 50 FPS on an A500. Floor: 25 FPS** (user decision; reachability unknown). These are
-*displayed* frames (`50 * g_fpsFrames / g_vbiCount`).
-⭐⭐⭐ **THE REAL BBC RUNS THIS SCENE AT 97.0 ms/frame — 10.31 fps (`make refloop` measures and
-calibrates it).** Quote every frame figure against that, not only against the target: the port at
-~190 ms is **1.96× the original hardware**, the 40 ms floor is **2.43× FASTER than the game ever
-ran** and the 20 ms target **4.85×**. A 68000's bus cycle is 564 ns against the 6502's 500, so per
-byte touched it is *slower* and wins only on batching — which the BBC's 8-byte-apart destination
-cells and 128-byte-apart sources forbid. ⇒ **the targets are not reachable by making the inherited
-work faster, only by changing the layouts on both sides.** `docs/perf-method.md` §what the original
-hardware achieves. The **50 Hz sim tick is separate and not
+⭐⭐⭐ **THE REAL BBC RUNS THIS SCENE AT 97.0 ms/frame — 10.31 fps (`make refloop` measures it and
+prints its own calibration).** That is the yardstick: quote every frame figure against it. The
+port at ~190 ms is **1.96× the original hardware** — a 2× problem, not a 10× one.
+
+**⭐⭐ TARGET: ~48 ms a frame, 2× the original game** (user decision, superseding "50 FPS / floor
+25 FPS", taken once the original's own cost was known). **Stretch: 40 ms**, and the reason is the
+`50/N` display ladder, not ambition — a frame is *displayed* every `ceil(ms/20)` fields, so 41-60 ms
+all show an identical **16.7 fps** and only **≤40 ms steps to 25**. ⇒ 48 ms is the commitment,
+the last 8 ms is the only part of that band a player can see.
+
+⛔ **20 ms is off the table as a goal**: it is 4.85× the original on a CPU with *no* per-byte
+advantage — a 68000's bus cycle is 564 ns against the 6502's 500 — which wins only on batching,
+and the BBC's 8-byte-apart destination cells and 128-byte-apart sources forbid it by construction.
+⇒ **no code shape reaches these numbers; only changing the layouts on both producer and consumer
+sides does.** `docs/perf-method.md` §what the original hardware achieves. The **50 Hz sim tick is separate and not
 negotiable** — 25 FPS means painting every other frame with the simulation still at full rate.
 The A500 is a 7 MHz 68000 and a frame is 20 ms: spending 10 ms on *anything* is half the budget.
 Be conscious of absolute milliseconds always.
