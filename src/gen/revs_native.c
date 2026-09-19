@@ -1176,6 +1176,25 @@ unsigned char  g_viewRowBg[VIEW_EV_LINES];   /* ...and its surface colour, the c
    there are ~90 of them a frame (CLAUDE.md §the VERTB ISR: a volatile counter is real money). */
 volatile unsigned long g_viewEvents = 0;   /* sources found and consumed */
 
+/* ⭐⭐⭐ WHICH CELLS THE SWEEP IS ENTITLED TO CONSUME, AND IT IS NOT ALL OF THEM.
+   `view_consume` is a destructive read inside the RUN, so a cell the runs never visit — the car
+   and the dash sides — keeps its source byte from frame to frame, and `span_plot_core` composes
+   into it with a read-modify-write.  A scan that zeroes all forty cells therefore destroys live
+   producer state; it does not show up as a wrong pixel, it shows up two frames later as the car
+   leaving the track.  (That is what made the first shipping attempt hang in the crash reset while
+   the byte oracle read 0 mismatches — the bytes were right and the STATE was not.)
+   ⭐ The silhouette is monotone in the line, so "is cell c painted?" is true for every line at or
+   below one threshold, which collapses the whole question to one byte a cell.  `view_low_build`
+   derives it and asserts the contiguity rather than assuming it.
+   ⚠⚠ $FF UNTIL THE TABLE IS BUILT: the build needs the boundary tables `fill_dash_edge_columns`
+   writes, so it happens on the first sweep AFTER the scan — and until it does, `paint_lines_short`
+   is still the painter and the sources are still ITS to consume. */
+static unsigned char s_lowConsume[VIEW_SPAN_CELLS] = {
+    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu,
+    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu,
+    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu,
+    0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu };
+
 /* One longword: four lines of one cell column, at least one of them non-zero.  ⭐ `always_inline`
    because it is selected by a test in the hot loop — out of line it would be an aliasing barrier
    over the scan's own induction variable (CLAUDE.md §bulk in a cold arm is cheap, a call is not). */
@@ -1186,9 +1205,19 @@ static inline __attribute__((always_inline)) void view_scan_lanes(MEM_QUAL unsig
     unsigned j;
     for (j = 0; j < 4u; j++) {
         const unsigned src = p[j];
+        /* ⚠⚠ A CELL THE RUNS NEVER VISIT IS NOT OURS TO TOUCH — not to consume AND NOT TO RECORD.
+           Skipping only the consume left the car's cells in the event list, where they are found
+           again every frame because nothing ever clears them: 1124 events a frame against 91, and
+           ~9 ms of pure recording plus the long skip-walks it puts in the painter.  One test, two
+           bugs.  (Above the low block the renderer paints all forty cells, so `s_lowConsume` is
+           the line the block begins at and everything there passes.) */
+#ifdef REVS_TERRAIN_LOW
+        if (src && line + j >= s_lowConsume[cell]) {
+#else
         if (src) {
+#endif
             ViewSpan* q = g_viewEvEnd[line + j];
-            if (consume) p[j] = 0;                      /* the consume */
+            if (consume) p[j] = 0;
             q->start  = (unsigned char)cell;
             q->colour = xlat[src];
             g_viewEvEnd[line + j] = q + 1;
@@ -1203,7 +1232,7 @@ static inline __attribute__((always_inline)) void view_scan_lanes(MEM_QUAL unsig
    would steal the sources out from under it and paint the top of the view black.
    ⭐ `always_inline` with literal bounds: the trip count folds, which is what lets the nine (or
    twenty) longword tests be constant displacements off one base instead of a counted loop. */
-static inline __attribute__((always_inline)) void view_scan_range(unsigned lo, unsigned hi, int consume)
+static inline __attribute__((always_inline)) void view_scan_body(unsigned lo, unsigned hi, int consume)
 {
     unsigned cell, found = 0, line;
 
@@ -1218,7 +1247,18 @@ static inline __attribute__((always_inline)) void view_scan_range(unsigned lo, u
            the 62 a three-variable loop emitted (pointer, line and a second cursor, all stepped).
            ENDIAN-OK: a ZERO TEST over four independent byte lanes has no byte order, and the
            lanes themselves are read as BYTES in the cold arm. */
-        for (k = 0; k < (hi + 1u - lo) / 4u; k++)
+        /* ⭐⭐⭐ START AT THE CELL'S OWN FLOOR.  Below it the cell is inside the car, where the
+           sweep never consumes — so those bytes PERSIST, every longword there tests non-zero
+           every frame, and the scan pays the four-lane arm for cells it will then reject.  That
+           is not a small tax: scanning the low block's lines for all forty cells measured
+           +17 ms/frame on phase 24, against ~3 ms for the longword tests themselves.
+           ⚠ Rounded DOWN to a group of four, which is safe — the lane test rejects the few lines
+           below the floor that the rounding lets through. */
+        unsigned k0 = 0;
+#ifdef REVS_TERRAIN_LOW
+        if (s_lowConsume[cell] > lo) k0 = (s_lowConsume[cell] - lo) >> 2;
+#endif
+        for (k = k0; k < (hi + 1u - lo) / 4u; k++)
             if (*(const uint32_t*)(base + k * 4u))
                 view_scan_lanes(base + k * 4u, lo + k * 4u, cell, &found, consume);
     }
@@ -1228,6 +1268,26 @@ static inline __attribute__((always_inline)) void view_scan_range(unsigned lo, u
 
     g_viewEvents += found;
 }
+
+/* ⭐⭐ ONE OUT-OF-LINE COPY PER RANGE, AND THAT IS A MEASURED DECISION, NOT TIDINESS.  Inlined
+   into `view_paint_lines_core` the two copies took it from 2 780 to 7 704 bytes and phase 24 from
+   15 to 34 ms — the scan's own work is ~3 ms, so the rest was the sweep's hot LINE LOOP losing
+   its registers to a function three times the size (CLAUDE.md §an out-of-line landing pad is a
+   register-allocation boundary, and §making a function bigger can revoke what it had).  The scan
+   runs ONCE A SWEEP, so a `jsr` costs nothing and the literal bounds still fold inside the
+   wrapper, which is what keeps the twenty longword tests unrolled onto constant displacements. */
+#if defined(REVS_TERRAIN_SPANS) && defined(REVS_TERRAIN_LOW)
+static __attribute__((noinline)) void view_scan_all(void)  { view_scan_body(0u, 79u, 1); }
+#endif
+#if defined(REVS_TERRAIN_SPANS)
+static __attribute__((noinline)) void view_scan_high(void) { view_scan_body(44u, 79u, 1); }
+#endif
+#if defined(REVS_TERRAIN_LOW)
+static __attribute__((noinline)) void view_scan_low(void)  { view_scan_body(0u, 43u, 1); }
+#ifdef REVS_TERRAIN_LOW_CHECK
+static __attribute__((noinline)) void view_scan_low_keep(void) { view_scan_body(0u, 43u, 0); }
+#endif
+#endif
 #endif /* REVS_TERRAIN_SPANS || REVS_TERRAIN_LOW */
 #ifndef SPAN_SCAN_CHECK
 #define SPAN_SCAN_CHECK(ln) ((void)0)
@@ -2159,12 +2219,27 @@ static void view_low_build(void)
         s_lowClipped[line] = (unsigned char)(stopB != 0u);
     }
 
+    /* the per-cell consume floor, plus its contiguity assertion — see s_lowConsume */
+    if (!bad) {
+        unsigned cell;
+        for (cell = 0; cell < VIEW_SPAN_CELLS; cell++) {
+            unsigned lo = VIEW_LOW_HI + 1u, covered = 0;
+            for (line = VIEW_LOW_LO; line <= VIEW_LOW_HI; line++) {
+                const int in = (cell >= s_lowA0[line] && cell <= s_lowA1[line])
+                            || (cell >= s_lowB0[line] && cell <= s_lowB1[line]);
+                if (in) { covered++; if (line < lo) lo = line; }
+            }
+            if (covered != 0u && covered != VIEW_LOW_HI + 1u - lo) bad++;   /* not contiguous */
+            s_lowConsume[cell] = (unsigned char)lo;
+        }
+    }
+
     g_terrainClipBad += bad;
     if (!bad) s_lowBuilt = 1;
 }
 
 #ifdef REVS_TERRAIN_LOW_CHECK
-#define TERRAIN_LOW_CONSUME 0
+#define TERRAIN_LOW_SCAN()  view_scan_low_keep()
 volatile unsigned long  g_lowChecks = 0, g_lowMismatch = 0;
 volatile unsigned short g_lowMismatchAt = 0;   /* (line << 8) | cell of the first */
 volatile unsigned char  g_lowWant = 0, g_lowGot = 0;
@@ -2180,7 +2255,7 @@ static void revs_report_low(void)
 }
 #endif
 #else
-#define TERRAIN_LOW_CONSUME 1
+#define TERRAIN_LOW_SCAN()  view_scan_low()
 #endif
 
 /* One run: cells `first`..`last`, entered with `entry` and leaving through `(byte & mask) | fill`.
@@ -2835,13 +2910,12 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
 #if REVS_TERRAIN_CARVE >= 3
     (void)0;                            /* ⚠ the scan carved out too */
 #elif defined(REVS_TERRAIN_SPANS) && defined(REVS_TERRAIN_LOW)
-    if (REVS_PLOT_HAS_TARGET()) view_scan_range(0u, 79u, 1);   /* both blocks are ours */
-    else                        view_scan_range(0u, 43u, 1);   /* phase 1 fell back to the chain */
+    if (REVS_PLOT_HAS_TARGET()) view_scan_all();   /* both blocks are ours */
+    else                        view_scan_low();   /* phase 1 fell back to the chain */
 #elif defined(REVS_TERRAIN_SPANS)
-    if (REVS_PLOT_HAS_TARGET()) view_scan_range(44u, 79u, 1);
+    if (REVS_PLOT_HAS_TARGET()) view_scan_high();
 #else
-    view_scan_range(0u, 43u, TERRAIN_LOW_CONSUME); /* ⚠ the check arm leaves the chain
-                                                     the sources it still needs */
+    TERRAIN_LOW_SCAN();     /* ⚠ the check arm leaves the chain the sources it needs */
 #endif
 #endif
 

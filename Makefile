@@ -157,9 +157,11 @@ endif
 # `view_consume`'s own RLE, so the bytes are the chain's.
 # ⚠ It writes `mem[]` only — the car and the dash sides are furniture the decode still paints —
 # which is why the HOST builds it and why `make determinism` (all five trajectories) is the gate.
-# ⏳⏳ OFF BY DEFAULT AND NOT SHIPPING YET: the painter is byte-exact (TERRAINLOWCHECK reads 0
-# of 21 240 cells) but the arm that REPLACES the chain hangs in the crash reset a few sweeps in.
-# The bytes are right; the chain page's SMC state is what is still owed.  See view_own_low.
+# ⭐⭐⭐ ON BY DEFAULT: byte-exact against the chain on all four `determinism` trajectories
+# (64K, 300 and 1500 frames), so the PICTURE is identical by construction — this path writes
+# mem[] and the decode still paints it.  Phases 2+3 26 -> 18 ms, frame 188 -> 185 bracketed.
+# `make TERRAINLOW=0` is the A/B control.
+TERRAINLOW ?= 1
 ifeq ($(TERRAINLOW),1)
 CFLAGS   += -DREVS_TERRAIN_LOW
 CXXFLAGS += -DREVS_TERRAIN_LOW
