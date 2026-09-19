@@ -46,7 +46,7 @@ is `tail`-truncated to the last 40 lines (`GDBTAIL`), which silently drops phase
 | 12.5 | 26 | the 50 Hz drain |
 | 10.2 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
 
-### 1. ⭐⭐⭐ The view sweep's DRIVER code — **27.37 ms left in phases 2+3**, and the ENTRY half is DONE
+### 1. ⭐⭐⭐ The view sweep's DRIVER code — **27.23 ms left in phases 2+3**, and the ENTRY half is DONE
 ⭐⭐ **−6.58 ms taken** (`214c8ae`, `docs/perf-method.md` §the entry was deleted): the runs are
 **inline in both drivers**, `byte`/`line`/`cell` are in registers, `view_own_enter`'s poke-decode
 round trip is gone, and phases 2+3 went **35.61 → 29.03 ms** with their census identical to the
@@ -79,15 +79,39 @@ against ~39 instructions of real unit work** in phase 3's 5.6-cell runs. ⇒ **r
 edits by instructions deleted per line** (one deleted instruction ≈ 0.065 ms/frame if phase 3
 only, 0.109 ms if it hits both phases).
 
-⏳ **The designed next edit, ~1.16 ms:** the run set-up still spills the destination pointer —
-`moveq #0,d4 / move.w d6,d4 / addi.l #352760,d4 / move.l d4,44(sp)` … `adda.l 44(sp),a1` …
-`move.l 44(sp),d4` at `122b8` — purely from register pressure (the function opens
-`movem.l d2-d7/a2-a6`, i.e. all eleven usable registers). Carry `srcBase`/`dstBase` as **16-bit
-offsets in data registers** and form every run pointer as `lea (0,a4,dN.l)` off the permanently
-live `a4 = mem`. Faithfulness is unchanged: `plot_ptr_v` spans `$6700-$737D`, `+39*8` cannot wrap,
-and the current code is likewise unmasked. Smaller follow-ons, already sized: the two surviving
-duplicate table reads (~0.25 ms — sound, because the block heads the unit loop writes and the
-`0x50`/`0x79` tails it reads are disjoint) and a `view_stop_from` byte compare (~0.19 ms).
+⭐ **−0.136 ms more taken** (`b6d5374`): **27.371 → 27.230 ms**, census identical again. The
+run set-up was spilling the destination pointer purely from register pressure (the function opens
+`movem.l d2-d7/a2-a6` — all eleven usable registers), and the cause was not the arithmetic but
+**two REDUNDANT REPRESENTATIONS of values the line body already keeps live**: `srcLine` was a
+third spelling of `line` (which is live for `line_is_last`, and `mem + line` is already CSE'd into
+an address register for the per-line table reads) and `dstLine` a second of `plot_ptr_v` (live
+because the chain boundary store composes its address). Deleting both hoists and forming each run
+pointer at the point of use took `44(sp)` traffic 8 → 2, all `n(sp)` **21 → 12**, and the function
+**571 → 569 instructions**. ⭐ **DELETE A REDUNDANT REPRESENTATION BEFORE FIGHTING THE SPILL IT
+CAUSES.** ⚠ Sized at ~0.2-0.5 ms and paid 0.136 — the give-back is real and named below.
+
+⛔ **Two follow-ons to that are CLOSED, both from the objdump and neither needing an emulator
+run.** (a) *Hoist `srcLine` only* — the asymmetric version, on the reasoning that `(d8,An,Dn.l)`
+has an **eight-bit** displacement so `srcp`'s `$3000` cannot ride the address and must be re-formed
+as `adda.l #mem+$3000` a run, while `dp`'s base carries no constant at all and is free. It is a
+true asymmetry and it does not help: the spill simply **moves** from `dstLine` to `srcLine`
+(`n(sp)` straight back to 21, `44(sp)` to 8, plus a per-cell reload). ⇒ **there is no room for ONE
+hoisted pointer either — the allocator is saturated, so "hoist the base that absorbs a
+non-displaceable constant" is a real rule with no seat at this table.** (b) *Spelling the base as
+`(mem + MEM_view_src_blocks) + (line + …)`* to make GCC keep `mem+$3000` in an address register —
+**byte-identical output**, GCC reassociates through the parentheses.
+
+⚠⚠ **And the retraction that goes with them: "the edit grew the function 571 → 645 instructions"
+was an ARTEFACT OF DIFFING TWO BUILD CONFIGURATIONS** — the "after" dump was from a `PROBES=1`
+build (it carries a `jsr probe_phase` the other has not) and the "before" from a plain one. Built
+the same way the edit is 2 instructions *smaller*. ⇒ **an objdump is a measurement and takes the
+same rule as a phase table: same flags on both arms, and check the artefact's own fingerprint
+(here: the load address moved `0x11ee0` → `0x1293e`) before diffing.**
+
+Smaller follow-ons, already sized: the two surviving duplicate table reads (~0.25 ms — sound,
+because the block heads the unit loop writes and the `0x50`/`0x79` tails it reads are disjoint), a
+`view_stop_from` byte compare (~0.19 ms), and `step_scanline`'s byte-lane dance (~1.4 ms, a
+wide-value rewrite).
 
 ⇒ **Phase 3 runs ~89% of its non-cold body on every line. There is no hotspot and no marshalling
 layer to delete** — the body serves **four chain entries a line** (two stops, two entries), each
@@ -117,7 +141,7 @@ per-display-line ownership) are §11's; ⛔ **the "phase 2 at ~1.5 ms instead of
 ⛔⛔⛔ **AND THAT −11.18 ms OF ROWS IS ITSELF CLOSED NOW: 70 ROWS ARE OWNED** (phase 1's 81..116
 plus domain A's 0..17 + 192..207), **63 SKY ROWS WERE ALREADY FREE, AND THE REMAINING 75 ARE PRICED
 OUT** — the whole remaining ownership campaign is **−3.61 ms best case against a measured
-+3.45 ms** for the only placement ever built (see CLOSED). ⇒ **this entry's 27.37 ms has to be won
++3.45 ms** for the only placement ever built (see CLOSED). ⇒ **this entry's 27.23 ms has to be won
 INSIDE the driver; it cannot be won by taking the decode's rows away from it.**
 ✅ **Step 0 is DONE: the new pipeline is the DEFAULT build** — `VIEWOWN=0` / `SPANFILL=0` are now
 the A/B controls, so the shipping frame goes **196.59 → 182.62 ms (−13.97)**. `validate` PASS, all

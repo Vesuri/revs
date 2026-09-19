@@ -393,3 +393,43 @@ The two forms are the *same value* for every unsigned input, the `0 → $FF` wra
 is no precondition to establish — this is a spelling change, not a narrowing. ⇒ **On a
 register-poor machine a byte operation written as a masked word operation can cost a register, and
 the tell is a stack slot appearing next to arithmetic that should need none.**
+
+## ⭐⭐⭐ A HOISTED BASE POINTER IS A SECOND REPRESENTATION — DELETE IT BEFORE FIGHTING THE SPILL IT CAUSES (2026-09-19)
+
+The classic "hoist the loop-invariant address out" is a *net* win only where there is a register
+free to hold it. On a 68000 driving a real workload there usually is not, and the hoist's true
+cost is paid somewhere the hoist itself is not visible.
+
+The view sweep's per-line driver hoisted two bases a line:
+
+```c
+srcLine = mem + MEM_view_src_blocks + line;   /* $3000 + line          */
+dstLine = mem + plot_ptr_v;                   /* this line's screen row */
+```
+
+so each of the four runs a line could form its pointers with one `lea`. It read as free. It was
+not, because **both are second representations of values the line body already keeps live**:
+`line` is in a data register for the loop's own exit test, GCC has already CSE'd `mem + line` into
+an address register for the per-line table reads, and `plot_ptr_v` is live because the chain
+boundary store composes its address. The function opens `movem.l d2-d7/a2-a6` — all eleven usable
+registers — so the surplus copy went to the frame, and the *spill* is what shows up in the
+objdump: `move.l d4,44(sp)` once a line, `adda.l 44(sp),aN` once a run, and a reload per cell on
+one arm. Forming both pointers at the point of use instead: `n(sp)` **21 → 12**, the function two
+instructions **smaller**, and −0.136 ms of a 27.37 ms pair of phases.
+
+⭐ **The tell is not "this loop has stack operands" — it is a value that exists twice.** Read the
+live set at the top of the loop body and ask, of each hoisted pointer, *what is it made of*; if
+every input is already live, the hoist has bought an addition and sold a register.
+
+### ⚠ The asymmetry is real and still does not buy a seat
+
+`(d8,An,Dn.l)` has an **eight-bit** displacement, so a base with a large constant in it —
+`mem + $3000 + line` — genuinely cannot be re-formed by an addressing mode and costs a whole
+`adda.l #imm32` per use, while a base that is just `mem + <16-bit>` re-forms as one `lea` for
+nothing. That predicts "hoist the one with the constant, drop the one without", and it is wrong in
+practice: hoisting either one alone put the spill straight back (`n(sp)` 12 → 21) with the *same*
+per-cell reload, because the constraint is the register file, not which value is in it.
+⇒ **when the allocator is saturated, the question is never which invariant to hoist — it is
+whether to hoist at all.** And note GCC reassociates through parentheses, so
+`(mem + CONST) + (line + off)` emits byte-identical code to `mem + (CONST + line + off)`; you
+cannot spell your way to a constant base register.
