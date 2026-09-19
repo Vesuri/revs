@@ -2372,6 +2372,23 @@ coarser lever.**
 about FINDING, and it has paid repeatedly (the frame-slot defect, the `n(a5)` DDA state, the
 sorting network). It bounds what the reading entitles you to CLAIM.
 
+⭐⭐ **THIRD INSTANCE, AND IT NAMES THE OTHER HALF OF THE ERROR: A BY-BODY INSTRUCTION CENSUS
+COUNTS INLINE COPIES, NOT EXECUTIONS — SO DIVIDE BY THE CALL-SITE COUNT BEFORE RANKING.**
+`interp_edge_core`'s dump attributes **211 instructions to `plot_store_resync`** plus 124 more at
+its dispatch line, second only to `span_walk`'s 965 — which reads as the biggest thing in the
+routine after the walk. It is nine inline copies of a six-instruction fast path, and the published
+leaf census (**60 plotted columns a frame**, ≤3 guard calls each) caps the whole guard at
+**≤0.9 ms**. ⇒ **Rank a body in a dump by `instructions ÷ inline copies × a COUNTED call rate`,
+and if you do not have the call rate, get it from the census before reading any further.** The
+census cost nothing; the dump reading cost an hour.
+
+⚠ And the host-counter route to that call rate is **not** free the way `docs/method-lessons.md`'s
+"count it on the host" rule implies, if you reach for it carelessly: the host Makefile has no
+`CFLAGS_EXTRA`, so a counter goes in through `OPT=`, and **`make` does not track flag changes** —
+either you get a mixed-optimisation binary (the previous object files survive) or you `make clean`
+and a whole-corpus `-O1` build makes a 300-frame run take **>10 minutes** instead of ~1. Check for
+an existing published count first.
+
 ## Rule 2 — price a native/asm twin with an IN-PROCESS differential, never cross-run
 
 ```

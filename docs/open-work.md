@@ -230,7 +230,16 @@ each** — a host census of the four exits (12 803 spans, no emulator run) shows
 exits leave after step 2, so the setup is NOT paid 43 times. ⛔ It also kills the coarse lever that
 reading suggests: the `block >= 0x28` off-side test sits at the END of the setup though `block` is
 known right after step 2, and it fires **0 times in 12 803 spans**. The remaining phase-11 lever
-now that the kernel's shape and its opcode slots are done. **Needs SPAN_DX/DY/BLOCK moved out of
+now that the kernel's shape and its opcode slots are done.
+⛔ **And it kills a second reading of the same dump: `plot_store_resync` (the page-$00 alias guard)
+is 211 inlined instructions plus 124 at its dispatch line — the single biggest inlined body inside
+`interp_edge_core` after the walk itself — and it is worth AT MOST 0.9 ms.** The published leaf
+census is the whole argument and it needed no run: **60 plotted columns a frame**
+(`docs/perf-method.md` §WHY), ≤3 guard calls per column ⇒ ≤180 calls, and the guard's fast path is
+six instructions (GCC folds the `addr >= 0x100` test into the switch's own `addr - $70 <= 31` range
+check, so it is one `andi.l` + a five-instruction bounded jump-table test, ~35 cyc). 180 × 35 =
+6 300 cyc = **0.9 ms**, and most of that is the mask and the range test the oracle genuinely needs.
+⇒ Rule 1b, third instance: **the instruction count measured the nine INLINE COPIES, not the path.** **Needs SPAN_DX/DY/BLOCK moved out of
 the 6502 address space**, which changes the measured self-overwriting-DDA behaviour ⇒ a **written
 RESULTS-rule reader audit** (`docs/validation-harness.md` §THE RESULTS RULE), a scoped
 `set_ignore`, and `make viewdiff`. Sibling, same subsystem: **the per-walk entry/exit, ~10.5 ms
