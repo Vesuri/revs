@@ -1602,7 +1602,13 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first,
         }
         /* The last full-width line.  Its C is live. */
         if (line_is_last(line, 0x2C)) break;
-        line = (line - 1) & 0xFF;
+        /* ⭐ A BYTE DECREMENT, NOT A MASKED WORD ONE — the same value, spelled so that the
+           68000 can use `.b` arithmetic.  `(unsigned char)(x - 1u)` IS `(x - 1) & 0xFF` for
+           every unsigned x (including the 0 -> $FF wrap), so this is a pure spelling change;
+           but from the masked form GCC materialised the constant (`moveq #0` + `not.b`) and
+           SPILLED `line` to 48(sp) to free a register for it — five instructions and two
+           stack accesses a line for what `subq.b` does in one. */
+        line = (unsigned char)(line - 1u);
         advance_first = 1;
     }
 
@@ -1733,7 +1739,13 @@ static void view_own_run(ViewState* v, unsigned first, int forced)
             if (op != OP_CPX_IMM) { platform_smc_unhandled(MEM_view_chain_end_slot, op); break; }
         }
         if (line_is_last(line, 0x2C)) break;          /* the last full-width line; its C is live */
-        line = (line - 1) & 0xFF;
+        /* ⭐ A BYTE DECREMENT, NOT A MASKED WORD ONE — the same value, spelled so that the
+           68000 can use `.b` arithmetic.  `(unsigned char)(x - 1u)` IS `(x - 1) & 0xFF` for
+           every unsigned x (including the 0 -> $FF wrap), so this is a pure spelling change;
+           but from the masked form GCC materialised the constant (`moveq #0` + `not.b`) and
+           SPILLED `line` to 48(sp) to free a register for it — five instructions and two
+           stack accesses a line for what `subq.b` does in one. */
+        line = (unsigned char)(line - 1u);
 
         /* the chain's own line advance, which `paint_cells` spells as `advance_first` */
         PROBE_VIEW_LINE();
@@ -1865,7 +1877,13 @@ static void view_own_full(ViewState* v)
             if (op != OP_CPX_IMM) { platform_smc_unhandled(MEM_view_chain_end_slot, op); break; }
         }
         if (line_is_last(line, 0x2C)) break;    /* the last full-width line; its C is live */
-        line = (line - 1) & 0xFF;
+        /* ⭐ A BYTE DECREMENT, NOT A MASKED WORD ONE — the same value, spelled so that the
+           68000 can use `.b` arithmetic.  `(unsigned char)(x - 1u)` IS `(x - 1) & 0xFF` for
+           every unsigned x (including the 0 -> $FF wrap), so this is a pure spelling change;
+           but from the masked form GCC materialised the constant (`moveq #0` + `not.b`) and
+           SPILLED `line` to 48(sp) to free a register for it — five instructions and two
+           stack accesses a line for what `subq.b` does in one. */
+        line = (unsigned char)(line - 1u);
     }
 
     v->byte = (unsigned char)byte;
@@ -1939,14 +1957,21 @@ static void view_own_full(ViewState* v)
             MEM_QUAL unsigned char* srcp  = srcLine + (off_ << 4);   /* first_ * $80 */  \
             MEM_QUAL unsigned char* dp    = dstLine + off_;                             \
             /* ⭐⭐ the stop AS AN ADDRESS, the collapse `paint_cells` argues: 40 means      \
-               "none in this run" and 40 * 8 is the line's end, so one `runEnd` serves    \
-               both cases and needs no bound of its own. */                             \
-            MEM_QUAL unsigned char* const runEnd = dp + (((unsigned)stop_ - first_) << 3); \
+               "none in this run" and 40 * $80 is the column's end, so one `srcEnd` serves \
+               both cases and needs no bound of its own.                                \
+               ⭐⭐⭐ AND THE BOUND IS ON `srcp`, NOT `dp`, BECAUSE `dp` DIES AT THE RUN'S END  \
+               AND `srcp` DOES NOT — the stop tail consumes `srcp[0]`.  Bounding on `dp`   \
+               made GCC elect `dp` the induction variable and RECONSTRUCT the final `srcp` \
+               at the tail: a spill of the run's first `dp` to 52(sp), a reload, a        \
+               `lsl.l #4` of the pointer difference and an `adda` — ~70 cycles a run,      \
+               twice a line, for a value the loop was already holding in an address       \
+               register.  ⭐ BOUND A LOOP ON THE POINTER THAT OUTLIVES IT. */             \
+            MEM_QUAL unsigned char* const srcEnd = srcp + (((unsigned)stop_ - first_) << 7); \
             PLOT_DECL();                                                                \
             PLOT_SPANNED_DECL();  /* a constant 0 here; see PLOT_UNIT */                \
-            PROBE_VIEW_RUN((unsigned)(runEnd - dp) >> 3);                                \
-            PROBE_SHAPE_VIEW_RUN((unsigned)(runEnd - dp) >> 3, 1);                       \
-            if (forced_ && dp != runEnd) {      /* the `unit+$05` entry; see view_own_run */ \
+            PROBE_VIEW_RUN((unsigned)(srcEnd - srcp) >> 7);                                \
+            PROBE_SHAPE_VIEW_RUN((unsigned)(srcEnd - srcp) >> 7, 1);                       \
+            if (forced_ && srcp != srcEnd) {      /* the `unit+$05` entry; see view_own_run */ \
                 VIEW_UNIT(0, 0, 1);                                                     \
                 forced_ = 0;                                                            \
                 srcp += 0x80;                                                           \
@@ -1959,8 +1984,8 @@ static void view_own_full(ViewState* v)
                it pays; phase 3's are 5.6 (282/50) and it does not.  UNROLL is a literal at  \
                every call site, so `if (0)` deletes the block outright. */                \
             if (UNROLL) {                                                               \
-                MEM_QUAL unsigned char* const quad = dp + ((unsigned)(runEnd - dp) & ~31u); \
-                while (dp != quad) {                                                    \
+                MEM_QUAL unsigned char* const quad = srcp + ((unsigned)(srcEnd - srcp) & ~511u); \
+                while (srcp != quad) {                                                    \
                     VIEW_UNIT(0x000,  0, 0);                                            \
                     VIEW_UNIT(0x080,  8, 0);                                            \
                     VIEW_UNIT(0x100, 16, 0);                                            \
@@ -1969,7 +1994,7 @@ static void view_own_full(ViewState* v)
                     dp   += 32;                                                         \
                 }                                                                       \
             }                                                                           \
-            while (dp != runEnd) {                                                      \
+            while (srcp != srcEnd) {                                                      \
                 VIEW_UNIT(0, 0, 0);                                                     \
                 srcp += 0x80;                                                           \
                 dp   += 8;                                                              \
@@ -2057,7 +2082,13 @@ static __attribute__((noinline)) void paint_lines_short(ViewState* v)
         PROBE_SHAPE_VIEW_LINE();
         VIEWP3_PHASE(PROBE_PHASE_VIEWCTL);       /* the control: an empty bracket, opened and closed */
         VIEWP3_PHASE(PROBE_PHASE_VIEWP3);
-        line = (line - 1) & 0xFF;
+        /* ⭐ A BYTE DECREMENT, NOT A MASKED WORD ONE — the same value, spelled so that the
+           68000 can use `.b` arithmetic.  `(unsigned char)(x - 1u)` IS `(x - 1) & 0xFF` for
+           every unsigned x (including the 0 -> $FF wrap), so this is a pure spelling change;
+           but from the masked form GCC materialised the constant (`moveq #0` + `not.b`) and
+           SPILLED `line` to 48(sp) to free a register for it — five instructions and two
+           stack accesses a line for what `subq.b` does in one. */
+        line = (unsigned char)(line - 1u);
 
 #ifdef REVS_VIEWP3_EMPTY
         /* `make VIEWP3=2` — picture wrong by construction: phase 3's line loop keeps its 25
@@ -2206,7 +2237,13 @@ static __attribute__((noinline)) void paint_lines_clipped(ViewState* v)
     mem[MEM_view_chain_end_slot] = (unsigned char)byte;
 
     for (;;) {
-        line = (line - 1) & 0xFF;
+        /* ⭐ A BYTE DECREMENT, NOT A MASKED WORD ONE — the same value, spelled so that the
+           68000 can use `.b` arithmetic.  `(unsigned char)(x - 1u)` IS `(x - 1) & 0xFF` for
+           every unsigned x (including the 0 -> $FF wrap), so this is a pure spelling change;
+           but from the masked form GCC materialised the constant (`moveq #0` + `not.b`) and
+           SPILLED `line` to 48(sp) to free a register for it — five instructions and two
+           stack accesses a line for what `subq.b` does in one. */
+        line = (unsigned char)(line - 1u);
 
         /* ⭐ No `ViewState` sync around the plants: the only field they write is `v->byte`, and
            the line's background colour (or `paint_cells`) overwrites it below. */
