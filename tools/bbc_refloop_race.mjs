@@ -260,13 +260,29 @@ for (const [inkey, name] of [
 // It was never a key-injection problem.  Fitting a REAL `Video` fixes it — and pays twice,
 // because a real Video also renders actual RGB pixels, which is the ground truth the port's
 // output can be compared against instead of just the frame-buffer bytes.
+// Absolute 6502 cycles.  jsbeeb keeps a wrapping `currentCycles` plus a `cycleSeconds` count,
+// and the wrap unit is the MODEL's clock — never hardcode 2 MHz, ask the model (jsbeeb's own
+// comment on `cyclesPerSecond` says the same).
+// ⚠ `tm` is a `const` declared below and the Video CONSTRUCTOR paints once, so the callback can
+// fire while that binding is still in its temporal dead zone — where even `typeof` throws.  Hence
+// the explicit flag rather than a guard on `tm` itself.
+let machineReady = false;
+const cpuCycles = () =>
+    tm.processor.cycleSeconds * tm.processor.model.cyclesPerSecond + tm.processor.currentCycles;
+
 const FB_W = 1024, FB_H = 625;
 const fb8 = new Uint8Array(FB_W * FB_H * 4);
 const fb32 = new Uint32Array(fb8.buffer);
 const completeFb8 = new Uint8Array(FB_W * FB_H * 4);
 let paints = 0;
+// ⚠ THE FRAME-COST INSTRUMENT'S CALIBRATION, against a KNOWN QUANTITY (docs/method-lessons.md):
+// this callback fires once per displayed PAL field, i.e. every 312*64 us = 39 936 cycles at
+// 2 MHz.  If the median gap here is not ~39 936, the cycle accessor is being read wrong and the
+// frame figure beside it is worthless.
+const paintCycles = [];
 const video = new Video(false, fb32, function () {
     paints++;
+    if (machineReady && paintCycles.length < 4000) paintCycles.push(cpuCycles());
     completeFb8.set(fb8); // snapshot at paint time: always a whole frame, never mid-render
 });
 
@@ -281,6 +297,7 @@ const soundCmds = [];
 
 const data = fs.readFileSync(new URL("../revs.ssd", import.meta.url));
 const tm = new TestMachine("B-DFS1.2", soundChip ? { video, soundChip } : { video });
+machineReady = true;
 await tm.initialise();
 if (soundChip) {
     attachSoundCapture(tm, soundChip);
@@ -369,6 +386,7 @@ let menuEntries = 0,
 let sessionEntries = 0,
     frames = 0,
     spacebarPrompts = 0;
+const frameCycles = [];
 let numAsks = 0,
     numValidations = 0,
     numRejects = 0,
@@ -451,6 +469,12 @@ tm.processor.debugInstruction.add((addr) => {
             break;
         case FRAME:
             frames++;
+            // ⭐⭐⭐ THE PORT'S ONLY HONEST TARGET: what does the REAL BBC spend on one painted
+            // frame of the same scene?  $1701 is the engine's own per-frame back-edge, so the
+            // gap between two hits is one whole game frame in 2 MHz cycles — DMA, interrupts,
+            // the 50 Hz body and all.  Everything else this project measures is the port's
+            // cost with nothing to compare it to.
+            frameCycles.push(cpuCycles());
             // ⭐ --peek=a,b,... : the TUPLE of those cells sampled once a frame, histogrammed.
             // --watch answers "who wrote it"; this answers "did these two ever hold X at the same
             // time", which no per-address watch can (surface_change_0 AND _1 both $FF is what
@@ -1541,6 +1565,39 @@ if (dumpDir && frames > 0) {
     for (let i = 0; i < 0x10000; i++) memBuf[i] = rd(i);
     const memF = path.join(dir, `bbc_mem_${tag}.bin`);
     fs.writeFileSync(memF, memBuf);
+
+// ── ⭐⭐⭐ THE REAL BBC'S OWN FRAME COST ────────────────────────────────────────────────────
+// Reported as a MEDIAN over the settled window, not a mean: the engine's crash/reset holds and
+// the first frames after the drive-in are outliers of a different workload, exactly as phase 0
+// is on the Amiga side (docs/perf-method.md §the dash-edge walk).
+if (frameCycles.length > 12) {
+    const warm = frameCycles.slice(8);            // skip the drive-in, as the zero-byte scan does
+    const gaps = [];
+    for (let i = 1; i < warm.length; i++) gaps.push(warm[i] - warm[i - 1]);
+    gaps.sort((a, b) => a - b);
+    const med = gaps[gaps.length >> 1];
+    const mean = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+    const hz = tm.processor.model.cyclesPerSecond;   // never hardcode the clock — ask the model
+    const ms = (c) => ((c * 1000) / hz).toFixed(1);
+    console.log(`\nTHE REAL BBC'S FRAME COST over ${gaps.length} settled frames at $1701:`);
+    console.log(`   median ${med} cycles = ${ms(med)} ms = ${(hz / med).toFixed(2)} fps` +
+                `   (mean ${ms(mean)} ms, p10 ${ms(gaps[Math.floor(gaps.length * 0.1)])}, ` +
+                `p90 ${ms(gaps[Math.floor(gaps.length * 0.9)])})`);
+    console.log(`   ⭐ This is the number the Amiga port's bracketed frame must be quoted against.`);
+
+    // The calibration, printed beside it so the figure is never read without it.
+    if (paintCycles.length > 20) {
+        const pg = [];
+        for (let i = 1; i < paintCycles.length; i++) pg.push(paintCycles[i] - paintCycles[i - 1]);
+        pg.sort((a, b) => a - b);
+        const pmed = pg[pg.length >> 1];
+        const want = Math.round(hz * 312 * 64e-6);
+        const off = Math.abs(pmed - want) / want;
+        console.log(`   calibration: one PAL field measures ${pmed} cycles, a 312x64us field is ` +
+                    `${want} — ${(off * 100).toFixed(2)}% off  ` +
+                    (off < 0.02 ? "✓" : "⚠ INSTRUMENT SUSPECT"));
+    }
+}
 
     console.log(`\nground truth written (${paints} frames painted by the real Video chip):`);
     console.log(`   frame buffer $${BASE.toString(16)}+$${LEN.toString(16)} -> ${rawF}`);
