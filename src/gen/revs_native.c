@@ -1918,7 +1918,7 @@ static void view_own_full(ViewState* v)
    `line`, `cell`, `srcLine` and `dstLine`.  The body below the `stopUnit` test is
    `view_own_run`'s, read through the same names — including the quad unroll, whose +0.231 ms
    is measured at that function. */
-#define VIEW_SHORT_RUN(FIRST, FORCED)   do {                                            \
+#define VIEW_SHORT_RUN(FIRST, FORCED, UNROLL)   do {                                    \
         unsigned  first_  = (FIRST);                                                    \
         int       forced_ = (FORCED);                                                   \
         const int stop_   = view_stop_from((int)first_);                                \
@@ -1927,12 +1927,21 @@ static void view_own_full(ViewState* v)
             view_own_run(v, first_, forced_);                                           \
             VIEW_SHORT_IN();                                                            \
         } else {                                                                        \
-            MEM_QUAL unsigned char* srcp = srcLine + (first_ << 7);                     \
-            MEM_QUAL unsigned char* dp   = dstLine + (first_ << 3);                     \
+            /* ⭐⭐⭐ THREE POINTERS OUT OF ONE SHIFT, AND `srcLine`/`dstLine` DIE HERE.  The   \
+               obvious spelling asks for `dstLine` TWICE (once for `dp`, once for         \
+               `runEnd`) and for two independent shifts of `first_`; on a machine with     \
+               five usable address registers that second use is what pushed both bases    \
+               through the stack frame — the set-up read 52(sp)/56(sp)/60(sp)/64(sp) and  \
+               re-materialised `mem +` twice per run.  `stop_ >= first_` is what           \
+               `view_stop_from` returns, so the run's LENGTH is the only other quantity    \
+               needed and `runEnd` comes off `dp`.  Same three addresses, one live base. */ \
+            const unsigned          off_  = first_ << 3;                                \
+            MEM_QUAL unsigned char* srcp  = srcLine + (off_ << 4);   /* first_ * $80 */  \
+            MEM_QUAL unsigned char* dp    = dstLine + off_;                             \
             /* ⭐⭐ the stop AS AN ADDRESS, the collapse `paint_cells` argues: 40 means      \
                "none in this run" and 40 * 8 is the line's end, so one `runEnd` serves    \
                both cases and needs no bound of its own. */                             \
-            MEM_QUAL unsigned char* const runEnd = dstLine + ((unsigned)stop_ << 3);    \
+            MEM_QUAL unsigned char* const runEnd = dp + (((unsigned)stop_ - first_) << 3); \
             PLOT_DECL();                                                                \
             PLOT_SPANNED_DECL();  /* a constant 0 here; see PLOT_UNIT */                \
             PROBE_VIEW_RUN((unsigned)(runEnd - dp) >> 3);                                \
@@ -1943,7 +1952,14 @@ static void view_own_full(ViewState* v)
                 srcp += 0x80;                                                           \
                 dp   += 8;                                                              \
             }                                                                           \
-            {   MEM_QUAL unsigned char* const quad = dp + ((unsigned)(runEnd - dp) & ~31u); \
+            /* ⭐⭐ THE UNROLL IS PER PHASE, BECAUSE ITS PRICE IS PER RUN AND ITS PRIZE IS    \
+               PER CELL.  Its prologue, its `quad == dp` test and the `srcp` fix-up that   \
+               follows it are ~20 instructions a run whatever the run's length; the back    \
+               edges it deletes are ~3 a cell.  Phase 2's runs are 13.3 cells (426/32) and  \
+               it pays; phase 3's are 5.6 (282/50) and it does not.  UNROLL is a literal at  \
+               every call site, so `if (0)` deletes the block outright. */                \
+            if (UNROLL) {                                                               \
+                MEM_QUAL unsigned char* const quad = dp + ((unsigned)(runEnd - dp) & ~31u); \
                 while (dp != quad) {                                                    \
                     VIEW_UNIT(0x000,  0, 0);                                            \
                     VIEW_UNIT(0x080,  8, 0);                                            \
@@ -1983,7 +1999,7 @@ static void view_own_full(ViewState* v)
    ⚠ The trap arm is kept byte for byte: an operand that does not decode to a unit of PAGE is
    still reported through `platform_smc_unhandled` with the SITE and the TARGET, and is still
    the only thing that stops the driver (see `view_own_run` on which traps do not). */
-#define VIEW_SHORT_ENTER(SITE, OPND, PAGE, LO)  do {                                    \
+#define VIEW_SHORT_ENTER(SITE, OPND, PAGE, LO, UNROLL)  do {                            \
         unsigned      lo_ = (LO);                                                       \
         unsigned      hi_ = mem[(OPND) + 1u];                                           \
         unsigned char u_  = (hi_ == (PAGE))                                             \
@@ -1992,7 +2008,7 @@ static void view_own_full(ViewState* v)
             platform_smc_unhandled((SITE), (uint16_t)((hi_ << 8) | lo_));               \
             goto abandon;                                                               \
         }                                                                               \
-        VIEW_SHORT_RUN((unsigned)(u_ & 0x7Fu) - 1u, (u_ & 0x80u) != 0);                  \
+        VIEW_SHORT_RUN((unsigned)(u_ & 0x7Fu) - 1u, (u_ & 0x80u) != 0, (UNROLL));        \
     } while (0)
 
 /* The 6502's A/X/Y, out to the `ViewState` and back.  `srcLine`/`dstLine` are derived, so the
@@ -2095,7 +2111,7 @@ static __attribute__((noinline)) void paint_lines_short(ViewState* v)
                                mem[MEM_view_left_start_fill + edge]);
         cell    = byte;                             /* TAY */
 #ifdef REVS_VIEW_OWN_SHORT
-        VIEW_SHORT_ENTER(MEM_view_p3_enter_a_site, (MEM_view_p3_enter_a_site + 1u), 0x7Cu, enterLo);
+        VIEW_SHORT_ENTER(MEM_view_p3_enter_a_site, (MEM_view_p3_enter_a_site + 1u), 0x7Cu, enterLo, 0);
 #else
         VIEW_SHORT_OUT();
         if (!view_enter_chain(v, MEM_view_p3_enter_a_site, (MEM_view_p3_enter_a_site + 1u), 0x7C)) { goto abandon; }
@@ -2129,7 +2145,7 @@ static __attribute__((noinline)) void paint_lines_short(ViewState* v)
                                mem[MEM_view_right_start_fill + line]);
         cell    = byte;                             /* the composed byte is the next cell index too */
 #ifdef REVS_VIEW_OWN_SHORT
-        VIEW_SHORT_ENTER(MEM_view_p3_enter_b_site, (MEM_view_p3_enter_b_site + 1u), 0x7Eu, enterLo);
+        VIEW_SHORT_ENTER(MEM_view_p3_enter_b_site, (MEM_view_p3_enter_b_site + 1u), 0x7Eu, enterLo, 0);
 #else
         VIEW_SHORT_OUT();
         if (!view_enter_chain(v, MEM_view_p3_enter_b_site, (MEM_view_p3_enter_b_site + 1u), 0x7E)) { goto abandon; }
@@ -2219,7 +2235,7 @@ static __attribute__((noinline)) void paint_lines_clipped(ViewState* v)
         srcLine = mem + MEM_view_src_blocks + line;
         dstLine = mem + plot_ptr_v;
         byte    = mem[MEM_surface_colours + (mem[MEM_view_line_surface + line] & 3)];
-        VIEW_SHORT_RUN(0, 0);
+        VIEW_SHORT_RUN(0, 0, 1);
 #else
         VIEW_SHORT_OUT();
         paint_cells(v, 0, 0, 1, 0);             /* the JSR through view_next_scanline */
@@ -2249,7 +2265,7 @@ static __attribute__((noinline)) void paint_lines_clipped(ViewState* v)
            stop did not move, chain B's entry is whatever an EARLIER line poked.  Phase 2
            carries this one byte of SMC state across its lines on purpose. */
         VIEW_SHORT_ENTER(MEM_view_p2_enter_b_site, (MEM_view_p2_enter_b_site + 1u), 0x7Eu,
-                         mem[(MEM_view_p2_enter_b_site + 1u)]);
+                         mem[(MEM_view_p2_enter_b_site + 1u)], 1);
 #else
         VIEW_SHORT_OUT();
         if (!view_enter_chain(v, MEM_view_p2_enter_b_site, (MEM_view_p2_enter_b_site + 1u), 0x7E)) { goto abandon; }
