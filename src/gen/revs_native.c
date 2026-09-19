@@ -530,6 +530,17 @@ static unsigned view_slot_unit1(unsigned lo, unsigned page)
    Unit indices ascending with a 40 sentinel: normally one entry, none through phase 1. */
 static unsigned char g_viewStopList[41];
 
+/* ⭐⭐⭐ EVERY LISTED STOP HOLDS `RTS`, AND THAT IS WHY THE HOT PATH DOES NOT READ THE OPCODE
+   BACK.  Only two things put a byte in an opcode slot: `view_plant`, which writes `RTS` on
+   exactly the path that NOTES the unit (its other opcode is `STA (zp),Y`, which FORGETS it),
+   and whatever was already in the page when the sweep started, which `view_stops_rescan`
+   walks.  So a listed unit whose slot is not `RTS` can only come from the rescan — which is
+   validate poisoning the page between calls, never the game — and this flag says whether the
+   rescan found one.  0 puts every run's stop tail back on the full read-and-compare.
+   ⚠ Conservative on purpose: `view_stop_forget` does not re-raise it when the offending entry
+   leaves the list, because a sweep that saw garbage once may as well pay the check throughout. */
+static unsigned char g_viewStopAllRts;
+
 /* ⭐⭐ THE SENTINEL IS THE BOUND IN ALL THREE OF THESE, NOT ONLY IN view_stop_from — AND
    SPELLING IT AS `i < g_viewStopN` COST ~300 INSTRUCTIONS AND EVERY PLANT'S CALL.  These two
    used to carry an explicit count, and gcc did to each of them exactly what view_stop_from's
@@ -567,8 +578,12 @@ static void view_stops_rescan(void)
 {
     int i;
     g_viewStopList[0] = 40;
+    g_viewStopAllRts  = 1;
     for (i = 0; i < 40; i++)
-        if (g_viewSlotP[i] && *g_viewSlotP[i] != OP_STA_IND_Y) view_stop_note(i);
+        if (g_viewSlotP[i] && *g_viewSlotP[i] != OP_STA_IND_Y) {
+            if (*g_viewSlotP[i] != OP_RTS) g_viewStopAllRts = 0;
+            view_stop_note(i);
+        }
 }
 
 /* The first unit at or after `unit` whose store has been overwritten, or 40 for none.
@@ -586,6 +601,24 @@ static int view_stop_from(int unit)
     const unsigned char* p = g_viewStopList;
     while ((int)*p < unit) p++;
     return *p;
+}
+
+/* The chain has arrived at its planted stop: report the byte if it is not the `RTS` the 6502
+   would have executed.  ⭐⭐⭐ THE SLOT IS NOT ADDRESSED ON THE PATH THAT FINDS IT INTACT —
+   `g_viewStopAllRts` is the whole test, and the `g_viewSlotP` index, the pointer load and the
+   compare all sink into the arm that can actually fire (see the flag).  That read-back was
+   ~90 cycles a run, 82 runs a frame, and it is the last of the 6502's self-modifying-code
+   round trips left on the sweep's hot path: the driver planted this byte itself.
+   ⚠ Called AFTER `view_consume`, keeping the 6502's order — the source blocks and the chain's
+   own page cannot overlap, so the value is the same either way, but the order is not
+   something to have to argue. */
+REVS_FLAG_OP void view_stop_opcode_check(int stopUnit)
+{
+    if (!g_viewStopAllRts) {
+        MEM_QUAL unsigned char* const slot = g_viewSlotP[stopUnit];
+        const unsigned char           op   = *slot;
+        if (op != OP_RTS) platform_smc_unhandled((uint16_t)(slot - mem), op);
+    }
 }
 
 /* Plant `opcode` over the store of the unit named by the operand cell at `opnd`.  Returns
@@ -1563,12 +1596,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first,
                 }
 
                 if (stopHere) {
-                    /* the unit the stop sits on: its source is consumed, its store is not.
-                       ⚠ The slot byte is read AFTER the consume, in the 6502's order — the
-                       source blocks and the chain's own page cannot overlap, so the value is
-                       the same either way, but the order is not something to have to argue. */
-                    MEM_QUAL unsigned char* slot = g_viewSlotP[stopUnit];
-                    unsigned char op;
+                    /* the unit the stop sits on: its source is consumed, its store is not. */
                     PROBE_SHAPE_DASH_UNIT(line);
                     PROBE_VIEW_UNITS(1);                      /* the stop's own unit: consumed */
                     PROBE_SHAPE_VIEW_STOP();
@@ -1578,8 +1606,7 @@ static void paint_cells(ViewState* v, int unit, int forced, int advance_first,
                        second pointer, so the index wraps at 32 — which `& 31` is, since
                        32 * 8 is 256.  One segment or two, the byte is the same. */
                     cell = ((unsigned)stopUnit & 31u) << 3;
-                    op = *slot;
-                    if (op != OP_RTS) platform_smc_unhandled((uint16_t)(slot - mem), op);
+                    view_stop_opcode_check(stopUnit);
                     PLOT_FLUSH();
 #ifdef REVS_VIEWSKIP
                     g_viewLineDirty[line & 0x7Fu] = 1;   /* units past the stop keep their sources */
@@ -1707,17 +1734,13 @@ static void view_own_run(ViewState* v, unsigned first, int forced)
         }
 
         if (stopUnit < 40) {
-            /* the unit the stop sits on: its source is consumed, its store is not, and the
-               opcode slot is read AFTER the consume — the 6502's order, as in `paint_cells`. */
-            MEM_QUAL unsigned char* const slot = g_viewSlotP[stopUnit];
-            unsigned char op;
+            /* the unit the stop sits on: its source is consumed, its store is not. */
             PROBE_SHAPE_DASH_UNIT(line);
             PROBE_VIEW_UNITS(1);                      /* the stop's own unit: consumed */
             PROBE_SHAPE_VIEW_STOP();
             byte = view_consume(srcp, byte, forced, cell);
             cell = ((unsigned)stopUnit & 31u) << 3;   /* its `LDY`; the index wraps at 32 */
-            op   = *slot;
-            if (op != OP_RTS) platform_smc_unhandled((uint16_t)(slot - mem), op);
+            view_stop_opcode_check(stopUnit);
             PLOT_FLUSH();
             break;                                    /* the planted RTS: the chain returns */
         }
@@ -2021,15 +2044,12 @@ static void view_own_full(ViewState* v)
             }                                                                           \
             /* the unit the stop sits on: its source is consumed, its store is not, and  \
                the opcode slot is read AFTER the consume — the 6502's order. */          \
-            {   MEM_QUAL unsigned char* const slot = g_viewSlotP[stop_];                \
-                unsigned char op_;                                                      \
-                PROBE_SHAPE_DASH_UNIT(line);                                            \
+            {   PROBE_SHAPE_DASH_UNIT(line);                                            \
                 PROBE_VIEW_UNITS(1);                                                    \
                 PROBE_SHAPE_VIEW_STOP();                                                \
                 byte = view_consume(srcp, byte, forced_, cell);                          \
                 cell = ((unsigned)stop_ & 31u) << 3;    /* its `LDY`; wraps at 32 */     \
-                op_  = *slot;                                                           \
-                if (op_ != OP_RTS) platform_smc_unhandled((uint16_t)(slot - mem), op_);  \
+                view_stop_opcode_check(stop_);                                          \
                 PLOT_FLUSH();                                                           \
             }                                                                           \
         }                                                                               \
