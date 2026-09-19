@@ -299,6 +299,185 @@ extern "C" void revs_plot_span(unsigned short addr, unsigned char value)
 #endif
 }
 
+
+#ifdef REVS_TERRAIN_SPANS
+/* ⭐⭐⭐ THE TERRAIN PAINTER — ONE DISPLAY LINE AS A HANDFUL OF LONGWORD RUNS (§12)
+   ============================================================================================
+   `revs_plot_chain` walks forty cells: a 128-byte-strided source load, a test and two BYTE
+   stores, ~46 cycles a cell, ~1840 a line — 23 cycles for each of the 80 bytes it writes, where
+   the 68000's floor for `move.l Dn,(An)+` is 3.  Everything above that floor is the chain asking,
+   once per cell, a question whose answer changes about three times a line.
+
+   ⭐⭐⭐ SO ASK IT SOMEWHERE ELSE AND WRITE LONGWORDS.  `view_scan_events` reads the same forty
+   sources TRANSPOSED — for a fixed cell the sweep's lines are contiguous bytes, so four test with
+   one `move.l` — and hands this routine the cells that were non-zero.  What is left is pure
+   filling: the line is the background colour up to the first event, then each event's byte to the
+   next one.  That is not an approximation of the chain, it IS the chain: `view_consume`'s RLE
+   says a zero source means "the same as my left", so the events are exactly the run boundaries.
+   ⇒ byte-for-byte identical output, ~3.5 runs instead of 40 cells.
+
+   ⛔ AND IT DOES NOT USE `view_span_line`.  The span record predicts the same runs from the road
+   record — exactly, `make SHAPE=1`'s composite model says 0 misses — but the carve ladder priced
+   the producer at 167 us a line (6.0 ms/frame) against the ~480 cycles of source tests it would
+   save, and the events have to be read anyway to get the pixel-precision boundary bytes.  A
+   second, costlier source of a fact you already hold is not a simplification.  Do not re-add it. */
+/* ⭐⭐ THE SWEEP RECORD the driver publishes (revs_native.c) — one entry per display line it
+   reached.  It is read here and nowhere else. */
+extern "C" {
+extern ViewSpan       g_viewEv[80][48];
+extern unsigned short g_viewRowAddr[80];
+extern unsigned char  g_viewRowBg[80];
+}
+
+#ifdef REVS_TERRAIN_CHECK
+extern "C" {
+volatile unsigned long  g_terrainChecks    = 0;
+volatile unsigned long  g_terrainMismatch  = 0;   /* ⚠⚠ MUST BE 0 */
+volatile unsigned short g_terrainMismatchAt = 0;  /* (addr << 8) | cell of the first */
+}
+#endif
+
+/* ONE display line, as TEN UNROLLED GROUPS OF FOUR CELLS.  `background` is the byte the chain
+   enters with; `ev` is the line's event list — the cells a producer composed at pixel precision,
+   ascending, already translated through `view_cell_bytes`, ending in a `$FF` sentinel.  The line
+   is `background` up to the first event and each event's byte up to the next: `view_consume`'s
+   RLE exactly, so this is byte-for-byte what the chain painted.
+
+   ⭐⭐⭐ THE GROUP IS FOUR CELLS BECAUSE THAT IS ONE `move.l` PER PLANE, AND QUALIFYING IS FREE.
+   ⛔ Stage A tried a group of four and cost +3.48 ms because it had to READ four sources to find
+   out whether the group was uniform — "a coarse test only pays if it REPLACES the fine ones"
+   (§10q).  Here the event list already says where a run starts, so the test is one byte compare
+   against a pointer already in a register.  That is the difference, and it is the whole reason
+   this shape is allowed a second attempt.
+   ⚠⚠ TWO SHAPES WERE MEASURED AND REJECTED BEFORE THIS ONE, both by the carve ladder:
+     - an aligned head/core/tail fill of each run [a,b): 266 us a line.  A run averages ELEVEN
+       cells, so the ~6 unaligned head and tail byte stores outweigh the two or three longword
+       pairs in the core.  Alignment bookkeeping only pays over long runs and a 40-cell line
+       has none.
+     - the same groups in a LOOP: 215 us a line, and the objdump says why — 132 cycles a group of
+       which only 24 are the two stores.  Ten iterations of loop control to write 80 bytes.
+   ⭐ `lo4`/`hi4` are carried across groups and re-derived only where a run starts.  Every byte of
+   a broadcast longword is the same, so the byte arm takes its byte straight out of them and
+   `g_bbcExpandLo/Hi` are never consulted here at all. */
+#define TERRAIN_GROUP(K)  do {                                                          \
+        if (ev->start == (K) * 4u) {                                                    \
+            lo4 = s_expand4[ev->colour][0];                                             \
+            hi4 = s_expand4[ev->colour][1];                                             \
+            ev++;                                                                       \
+        }                                                                               \
+        if (ev->start >= (K) * 4u + 4u) {                                               \
+            q1[(K)] = lo4;                          /* uniform: one longword a plane */ \
+            q2[(K)] = hi4;                                                              \
+        } else {                                                                        \
+            uint8_t* const b1 = (uint8_t*)(void*)&q1[(K)];                              \
+            uint8_t* const b2 = (uint8_t*)(void*)&q2[(K)];                              \
+            unsigned       j  = 0;                                                      \
+            for (;;) {                                                                  \
+                b1[j] = (uint8_t)lo4;                                                   \
+                b2[j] = (uint8_t)hi4;                                                   \
+                if (++j == 4u) break;                                                   \
+                if (ev->start == (K) * 4u + j) {                                        \
+                    lo4 = s_expand4[ev->colour][0];                                     \
+                    hi4 = s_expand4[ev->colour][1];                                     \
+                    ev++;                                                               \
+                }                                                                       \
+            }                                                                           \
+        }                                                                               \
+    } while (0)
+
+static inline void plot_terrain_line(unsigned short addr, unsigned background, const ViewSpan* ev)
+{
+    const unsigned off = (unsigned)addr - BBC_SCREEN_BASE;
+#ifdef REVS_TERRAIN_CHECK
+    const ViewSpan* const evHead = ev;
+#endif
+    uint8_t* p1;
+    /* ENDIAN-OK throughout: these are uniform-byte broadcasts into the BITPLANE buffer, whose
+       bytes the Amiga reads as bits.  They are never an alias of mem[]. */
+    uint32_t lo4, hi4;
+
+    if (off >= FB_BYTES) return;
+    g_plotOwn[s_lineOf[off]] = 1;
+    p1  = s_target + s_planeOff[off];
+    lo4 = s_expand4[background][0];
+    hi4 = s_expand4[background][1];
+
+#if defined(REVS_TERRAIN_CARVE)
+    /* ⚠⚠ `make TERRAIN=1 TERRAINCARVE=N` — PICTURE WRONG BY CONSTRUCTION.  The line is still
+       CLAIMED, so the decode's share is identical across the ladder and ph24 alone moves.
+       §10q: price the part you intend to delete with an arm that deletes it. */
+    (void)ev; (void)p1; (void)lo4; (void)hi4;
+#else
+    if (ev->start >= BBC_SCREEN_CELLS) {
+        /* The flat line — the sentinel is the first entry — takes `revs_plot_span`'s
+           straight-line block verbatim, for the reasons argued at it. */
+        uint32_t* q = (uint32_t*)(void*)p1;
+
+        *q++ = lo4; *q++ = lo4; *q++ = lo4; *q++ = lo4; *q++ = lo4;
+        *q++ = lo4; *q++ = lo4; *q++ = lo4; *q++ = lo4; *q++ = lo4;
+        *q++ = hi4; *q++ = hi4; *q++ = hi4; *q++ = hi4; *q++ = hi4;
+        *q++ = hi4; *q++ = hi4; *q++ = hi4; *q++ = hi4; *q++ = hi4;
+        return;
+    }
+
+    {
+        uint32_t* const q1 = (uint32_t*)(void*)p1;
+        uint32_t* const q2 = (uint32_t*)(void*)(p1 + kPlaneGap);
+
+        TERRAIN_GROUP(0); TERRAIN_GROUP(1); TERRAIN_GROUP(2); TERRAIN_GROUP(3);
+        TERRAIN_GROUP(4); TERRAIN_GROUP(5); TERRAIN_GROUP(6); TERRAIN_GROUP(7);
+        TERRAIN_GROUP(8); TERRAIN_GROUP(9);
+    }
+#endif
+#ifdef REVS_TERRAIN_CHECK
+    /* ⭐⭐ THE PAINTER'S ORACLE (`make TERRAIN=1 TERRAINCHECK=1`), and it is the only one this
+       path can have.  A cross-run picture diff is invalid — a faster build has painted a
+       different game frame by the same field, measured at 63 frames against 59 — and
+       `SPANVERIFY`/`DIRECTCHECK` both need the forty-unit chain to keep writing `mem[]`, which is
+       exactly what this deletes.  So the differential is IN PROCESS and against the same data:
+       walk the event list one cell at a time, the way `view_consume` does, and require every one
+       of the eighty bytes the unrolled groups wrote to match.
+       ⚠ What it covers is the PAINTER — the sentinel, the group unroll, the uniform test and the
+       byte arm.  That the events themselves equal the chain's non-zero cells is an argument, not
+       a measurement: `view_scan_events` reads the same bytes from the same blocks and zeroes them
+       (see it), and the picture is the backstop on the line map. */
+    {
+        /* ⚠ FROM THE SAVED HEAD — the group macros advance `ev`, so reading the parameter here
+           starts at the sentinel and compares every line against a flat background.  That first
+           version read 32% mismatch on a correct painter, which is the oracle failing its own
+           sabotage test by accident (CLAUDE.md §verify the instrument). */
+        const ViewSpan* e = evHead;
+        unsigned        v = background, c;
+        for (c = 0; c < BBC_SCREEN_CELLS; c++) {
+            if (e->start == c) { v = e->colour; e++; }
+            g_terrainChecks++;
+            if (p1[c] != g_bbcExpandLo[v] || p1[c + kPlaneGap] != g_bbcExpandHi[v]) {
+                if (!g_terrainMismatch)
+                    g_terrainMismatchAt = (unsigned short)((s_lineOf[off] << 8) | c);
+                g_terrainMismatch++;
+            }
+        }
+    }
+#endif
+}
+
+/* ⭐⭐⭐ THE WHOLE SWEEP, in ONE call.  Lines run DOWNWARD (`first` is the top display row's sweep
+   line and `last` is where the driver stopped), and the driver's own loop is then call-free —
+   which the carve ladder priced at 107 us a line, more than the fill itself costs. */
+extern "C" void revs_plot_terrain(unsigned first, unsigned last)
+{
+    unsigned line;
+
+    if (!s_target) { SPAN_STAT(g_plotNoTarget++); return; }
+    if (last > first) return;
+
+    for (line = first; ; line--) {
+        plot_terrain_line(g_viewRowAddr[line], g_viewRowBg[line], &g_viewEv[line][0]);
+        if (line == last) break;
+    }
+}
+#endif /* REVS_TERRAIN_SPANS */
+
 extern "C" int revs_plot_has_target(void) { return s_target != 0; }
 
 /* ── the band record, as the painters need it ─────────────────────────────────────────────── */

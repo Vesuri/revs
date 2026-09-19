@@ -1064,6 +1064,107 @@ static unsigned view_group_sources(unsigned group)
     return acc;
 }
 
+#ifdef REVS_TERRAIN_SPANS
+/* ⭐⭐⭐ THE TRANSPOSED SOURCE SCAN — ONCE A SWEEP, NOT FORTY TIMES A LINE
+   ============================================================================================
+   `revs_plot_chain` reads a line's forty sources because a source is the only thing that can
+   change the colour mid-line.  That walk is STRIDED: cell `c` of line `l` lives at
+   `view_src_blocks + c*$80 + l`, so along a LINE the forty cells are 128 bytes apart — forty
+   byte loads and forty tests before a single run can be filled.  Along a CELL COLUMN they are
+   CONTIGUOUS, and four lines test with one `move.l`.
+
+   So the scan runs the other way round: forty columns of nine longwords covering the thirty-six
+   lines, which is ~9 tests a line instead of 40, and it records the ~2.5 cells a line that are
+   actually non-zero.  Those records are the RUN BOUNDARIES the painter fills between — the same
+   RLE `view_consume` implements, so `revs_plot_terrain` is byte-exact with the chain and not an
+   approximation of it.
+
+   ⚠⚠ IT IS THE DESTRUCTIVE READER NOW.  `view_consume` zeroes a source as it consumes it and the
+   next frame's composition depends on that (`span_plot_core` composes into the source cell with a
+   read-modify-write, so a stale byte corrupts it).  The chain no longer runs on these lines, so
+   this scan must zero exactly what the chain would have.
+   ⚠ And it translates through `view_cell_bytes` HERE, so the painter needs no mem[] at all.
+
+   ⭐ THE APPEND IS A POINTER, NOT A COUNT.  With a count, every event pays `line * sizeof(row)`
+   to find its slot; with a per-line write pointer it is one indexed load, two byte stores and one
+   indexed store.
+   ⭐⭐ AND THE LIST ENDS IN A `$FF` SENTINEL, not a length.  Cell $FF is past cell 39, so the
+   painter's two ordinary tests — "does a run start at this cell?" and "does one start inside this
+   group?" — both answer correctly at the end with no separate bounds test.  That is two compares
+   a group saved over ten groups, and it is CLAUDE.md's own rule: terminate on a sentinel the list
+   already carries, and the end becomes positional. */
+#define VIEW_TERRAIN_LO   44u    /* sweep line $2C = display line 116, phase 1's last  */
+#define VIEW_TERRAIN_HI   79u    /* sweep line $4F = display line  81, phase 1's first */
+#define VIEW_EV_LINES     80u
+/* ⭐ THE STRUCTURAL MAXIMUM, not a measured one: a line has forty cells and each contributes at
+   most one event, so `g_viewEvDrops` is an assertion rather than a risk.  It was 16 for one run
+   and `g_viewEvPeak` read 12 — two thirds of the way to silently losing pixels on a busier scene
+   than a Silverstone straight.  6.4 KB buys the whole question away. */
+#define VIEW_EV_MAX       48u    /* 40 events + a $FF sentinel, rounded so the index is shifts */
+
+/* ⭐ THE SWEEP RECORD, shared with the painter (revs_plot.h).  The driver's line loop must stay
+   here — `step_scanline`, the surface byte and the `$7EEE` terminator are the engine's — but the
+   PAINTING does not, and a cross-TU call inside that loop cost 107 us a line (the carve ladder:
+   192 against §10q's 85 for the same loop with no call).  So the loop RECORDS and the painter is
+   entered ONCE a sweep. */
+ViewSpan       g_viewEv[VIEW_EV_LINES][VIEW_EV_MAX];
+ViewSpan*      g_viewEvEnd[VIEW_EV_LINES];   /* the append cursor, and the painter's end marker */
+unsigned short g_viewRowAddr[VIEW_EV_LINES]; /* the line's BBC frame-buffer address */
+unsigned char  g_viewRowBg[VIEW_EV_LINES];   /* ...and its surface colour, the chain's entry byte */
+
+/* ⚠ A plain local, published ONCE a sweep — a volatile RMW in the non-zero arm is ~40 cycles and
+   there are ~90 of them a frame (CLAUDE.md §the VERTB ISR: a volatile counter is real money). */
+volatile unsigned long g_viewEvents = 0;   /* sources found and consumed */
+
+/* One longword: four lines of one cell column, at least one of them non-zero.  ⭐ `always_inline`
+   because it is selected by a test in the hot loop — out of line it would be an aliasing barrier
+   over the scan's own induction variable (CLAUDE.md §bulk in a cold arm is cheap, a call is not). */
+static inline __attribute__((always_inline)) void view_scan_lanes(MEM_QUAL unsigned char* p, unsigned line,
+                                               unsigned cell, unsigned* found)
+{
+    MEM_QUAL const unsigned char* const xlat = mem + MEM_view_cell_bytes;
+    unsigned j;
+    for (j = 0; j < 4u; j++) {
+        const unsigned src = p[j];
+        if (src) {
+            ViewSpan* q = g_viewEvEnd[line + j];
+            p[j] = 0;                                   /* the consume */
+            q->start  = (unsigned char)cell;
+            q->colour = xlat[src];
+            g_viewEvEnd[line + j] = q + 1;
+            (*found)++;
+        }
+    }
+}
+
+static void view_scan_events(void)
+{
+    unsigned cell, found = 0, line;
+
+    for (line = VIEW_TERRAIN_LO; line <= VIEW_TERRAIN_HI; line++)
+        g_viewEvEnd[line] = &g_viewEv[line][0];
+
+    for (cell = 0; cell < VIEW_SPAN_CELLS; cell++) {
+        MEM_QUAL unsigned char* const base =
+            mem + MEM_view_src_blocks + cell * 0x80u + VIEW_TERRAIN_LO;
+        unsigned k;
+        /* ⭐ ONE induction variable and no trip test: the nine longwords are constant
+           displacements off `base`, so each is a `tst.l d16(a0)` + a branch — 26 cycles against
+           the 62 a three-variable loop emitted (pointer, line and a second cursor, all stepped).
+           ENDIAN-OK: a ZERO TEST over four independent byte lanes has no byte order, and the
+           lanes themselves are read as BYTES in the cold arm. */
+        for (k = 0; k < (VIEW_TERRAIN_HI + 1u - VIEW_TERRAIN_LO) / 4u; k++)
+            if (*(const uint32_t*)(base + k * 4u))
+                view_scan_lanes(base + k * 4u, VIEW_TERRAIN_LO + k * 4u, cell, &found);
+    }
+
+    for (line = VIEW_TERRAIN_LO; line <= VIEW_TERRAIN_HI; line++)
+        g_viewEvEnd[line]->start = 0xFFu;      /* the sentinel — see the note above */
+
+    g_viewEvents += found;
+}
+#endif /* REVS_TERRAIN_SPANS */
+
 #ifdef REVS_SPAN_SCANCHECK
 /* ⭐⭐ THE LANE MAP'S ORACLE (`make SPANSCAN=1` on the host, `SPANFILL=4 SPANSCAN=1` on the
    target).  Every line the sweep enters — all three phases, not just the owned one — asks both
@@ -1867,6 +1968,21 @@ static void view_own_full(ViewState* v)
         SPAN_SCAN_CHECK(line);
         VIEW_FULL_CHECK();
 
+#ifdef REVS_TERRAIN_SPANS
+        /* ⭐⭐⭐ THE TERRAIN PAINTER — the line straight from its SPAN RECORD (§12).
+           No group scan, no flat/paint fork, no forty-cell chain: `view_span_line` says where the
+           colour changes and `view_scan_events` has already found (and consumed) the handful of
+           cells a producer composed.  Both arms this replaces are gone, not selected between. */
+        {
+            /* ⭐ RECORD, DO NOT PAINT — see the sweep record above.  Two stores a line against a
+               four-argument cross-TU call whose `movem` alone saves eleven registers. */
+            g_viewRowAddr[line] = (unsigned short)plot_ptr_v;
+            g_viewRowBg[line]   = (unsigned char)byte;
+            SPAN_EMIT_STAT(g_spanEmitPaints++);
+            cell = 0x38;                /* unit 39's cell, as a full line leaves it */
+        }
+        (void)scanGroup; (void)scanLanes;
+#else
         {
             const unsigned g = line & ~3u;
             if (g != scanGroup) { scanGroup = g; scanLanes = view_group_sources(g); }
@@ -1893,6 +2009,7 @@ static void view_own_full(ViewState* v)
             }
             cell = 0x38;                /* unit 39's cell, as a full line leaves it */
         }
+#endif /* REVS_TERRAIN_SPANS */
 
         {                               /* $7EEE — the sweep's own terminator */
             unsigned op = mem[MEM_view_chain_end_slot];
@@ -1909,6 +2026,12 @@ static void view_own_full(ViewState* v)
         line = (unsigned char)(line - 1u);
     }
 
+#ifdef REVS_TERRAIN_SPANS
+    /* ⭐⭐ ONE CALL A SWEEP.  `line` is where the loop stopped, so the recorded rows are
+       `line..VIEW_TERRAIN_HI` — the terminator can end the sweep early and the painter must not
+       paint a row the driver never reached. */
+    REVS_PLOT_TERRAIN(VIEW_TERRAIN_HI, line);
+#endif
     v->byte = (unsigned char)byte;
     v->line = (unsigned char)line;
     v->cell = (unsigned char)cell;
@@ -2464,6 +2587,18 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
        the 100-field hold).  Clearing at the top of the sweep is the one point where "the claims
        about to be made replace the claims just honoured" is true. */
     REVS_PLOT_OWN_RESET();
+
+#ifdef REVS_TERRAIN_SPANS
+    /* ⭐⭐⭐ THE SOURCES, FOUND AND CONSUMED ONCE — see `view_scan_events`.  It runs here, before
+       any line is painted, because the producers have all finished and nothing writes a source
+       during the sweep; and it must run BEFORE the first paint, because it is the destructive
+       read `view_consume` used to be. */
+#if REVS_TERRAIN_CARVE >= 3
+    (void)0;                            /* ⚠ the scan carved out too */
+#else
+    if (REVS_PLOT_HAS_TARGET()) view_scan_events();
+#endif
+#endif
 
     /* ⭐⭐ PHASE 1 — THE SPAN RENDERER MAY OWN THESE LINES, IF THERE IS A BUFFER TO PAINT INTO.
        Asked once per sweep rather than per line: the target is set once per painted frame.

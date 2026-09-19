@@ -664,6 +664,43 @@ ifeq ($(VIEWFULLCARVE),1)
 EXTRA_DEFINES += -DREVS_VIEW_OWN_FULL_CARVE
 endif
 endif
+# ⭐⭐⭐ `make TERRAIN=1` — THE TERRAIN RENDERER (docs/span-render-plan.md §12).  The step that
+# retires `revs_plot_chain`: a display line is painted from its SPAN RECORD — the <=5 solid runs
+# `view_span_line` derives from the game's own `surface_edge_0..3` — plus a short list of the
+# cells a producer composed at pixel precision.  Two structural changes, and the second is what
+# makes the first cheap:
+#   1. THE PAINTER fills intervals, longword-wide, instead of testing forty cells (`revs_plot_
+#      terrain`).  ~240 cycles a line against the chain's ~1840.
+#   2. THE SCAN IS TRANSPOSED (`view_scan_events`).  For a fixed CELL the sweep's lines are
+#      CONTIGUOUS bytes, so four test with one `move.l`; for a fixed LINE the forty cells are
+#      128 bytes apart.  Once a sweep, forty columns of nine longwords, and it is the destructive
+#      reader `view_consume` used to be.
+# ⭐⭐⭐ ON BY DEFAULT: the painter is byte-exact with the chain (TERRAINCHECK, 0 of 56 480 cells)
+# and phase 1 is 504 -> 435 us/line.  `make TERRAIN=0` is the A/B control.
+# ⚠ Needs SPANFILL=5 and VIEWFULL=1 (it replaces what `view_own_full` paints), and turns both on.
+# ⚠⚠ ITS GATE IS THE PICTURE, which must be byte-identical to the chain's: the painter fills
+# between the same RLE boundaries `view_consume` carries, so it is exact and not approximate.
+# ⚠ `SPANVERIFY=1` cannot cover it: that oracle needs the forty-unit chain to keep writing mem[],
+# which is exactly what this deletes.
+TERRAIN ?= 1
+ifeq ($(TERRAIN),1)
+EXTRA_DEFINES += -DREVS_TERRAIN_SPANS -DREVS_VIEW_OWN_FULL
+PROBE_SYMS_TERRAIN = g_viewEvents
+# ⚠⚠ `TERRAINCARVE=1|2|3` — PICTURE WRONG BY CONSTRUCTION, the cost ladder.  Each level deletes
+# one more part while still CLAIMING the line, so the decode's share is constant and ph24 alone
+# moves: 1 = no fill and no overlay, 2 = ...and no `view_span_line`, 3 = ...and no source scan.
+ifneq ($(TERRAINCARVE),)
+EXTRA_DEFINES += -DREVS_TERRAIN_CARVE=$(TERRAINCARVE)
+endif
+# ⭐⭐ `TERRAINCHECK=1` — the painter's in-process oracle: every line is also walked cell by cell
+# the way `view_consume` does, and `g_terrainMismatch` must stay 0 with `g_terrainChecks` large.
+# ⚠ Diagnostic only; no framerate may be quoted from such a build.
+ifeq ($(TERRAINCHECK),1)
+EXTRA_DEFINES += -DREVS_TERRAIN_CHECK
+PROBE_SYMS_TERRAIN += g_terrainChecks g_terrainMismatch g_terrainMismatchAt
+endif
+endif
+
 # ⛔⛔⛔ `make SPANPAINT=1` IS A PARKED MEASUREMENT ARM, NOT A WIN — it is EXACT and it costs
 # +3.48 ms/frame (178.10 -> 185.53 ms bracketed; the producer below is +3.68 more).  A wholesale
 # group is 236 cycles against the 184 of the four `revs_plot_chain` cells it replaces, because
@@ -991,6 +1028,7 @@ PROBE_SYMS += $(PROBE_SYMS_BCD)
 PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
 PROBE_SYMS += $(PROBE_SYMS_SPAN)
 PROBE_SYMS += $(PROBE_SYMS_SCAN)
+PROBE_SYMS += $(PROBE_SYMS_TERRAIN)
 PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK)
 
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \

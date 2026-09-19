@@ -156,6 +156,23 @@ unsigned char revs_plot_spans(unsigned short addr, const ViewSpan* spans, unsign
                               MEM_QUAL unsigned char* srcp,
                               MEM_QUAL const unsigned char* cellBytes);
 
+#ifdef REVS_TERRAIN_SPANS
+/* ⭐⭐⭐ THE TERRAIN PAINTER — the whole display line from its SPAN RECORD plus an EVENT LIST,
+ * and the routine that retires `revs_plot_chain`'s forty-cell walk.
+ *
+ * It paints sweep lines `first` DOWN TO `last` from the record `view_own_full` published — the
+ * per-line frame-buffer address and surface byte, plus the event list `view_scan_events` found by
+ * its TRANSPOSED scan.  A line is its surface colour up to the first event and each event's byte
+ * up to the next, which is `view_consume`'s RLE exactly, so the output is byte-for-byte the
+ * chain's in ~3.5 longword runs instead of 40 cells.
+ *
+ * ⭐ ONE CALL A SWEEP, not one a line: the carve ladder priced a per-line cross-TU call at 107 us
+ * a line, more than the filling itself.
+ * ⚠ It claims the display lines and it does NOT consume: the scan is the destructive reader now.
+ * ⛔ It deliberately does not use `view_span_line` — see the note at the definition. */
+void revs_plot_terrain(unsigned first, unsigned last);
+#endif
+
 /* ⭐⭐ IS THERE A BUFFER TO PAINT INTO THIS FRAME?  Asked ONCE PER SWEEP, not per line — the
  * target is set once per painted frame in `present()` — and the answer is what licenses ownership
  * (`paint_cells`'s `mayOwn`).
@@ -284,6 +301,7 @@ extern volatile unsigned short g_plotChainNZLast; /* ...on the most recent sweep
         revs_plot_chain((unsigned short)(a), (unsigned char)(v), (s), (t))
 #define REVS_PLOT_SPANS(a, sp, n, s, t) \
         revs_plot_spans((unsigned short)(a), (sp), (n), (s), (t))
+#define REVS_PLOT_TERRAIN(f, l)  revs_plot_terrain((unsigned)(f), (unsigned)(l))
 #define REVS_PLOT_HAS_TARGET()  revs_plot_has_target()
 #define REVS_PLOT_OWN_RESET()   revs_plot_own_reset()
 
@@ -329,6 +347,7 @@ extern volatile unsigned short g_plotMismatchOff;
 #define REVS_PLOT_SPAN(a, v)     ((void)0)
 #define REVS_PLOT_CHAIN(a, v, s, t)  ((unsigned char)(v))
 #define REVS_PLOT_SPANS(a, sp, n, s, t)  ((unsigned char)0)
+#define REVS_PLOT_TERRAIN(f, l)  ((void)0)
 #define REVS_PLOT_HAS_TARGET()   0
 #define REVS_PLOT_CELL(a, v)     ((void)0)
 #define REVS_PLOT_OWN_RESET()    ((void)0)
