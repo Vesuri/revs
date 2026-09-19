@@ -2328,6 +2328,28 @@ is an instrument, and an instrument must be sabotaged and fingerprinted before i
 believed** — the A/B switch printing its own state (`g_span*` counters) was not enough here,
 because the switch that failed was the one that decides whether those counters exist.
 
+## ⭐⭐⭐ Rule 1b — AN OBJDUMP DELTA IS NOT A FORWARD PREDICTION, AND THE SCALING TEST SAYS SO (2026-09-19)
+
+Reading the objdump is the cheap way to FIND a defect (it found four in this subsystem). It is not
+a way to SIZE one. The view sweep's stop tail was nine instructions, seven of them memory operands,
+taken on **82 runs a frame**; deleting it is a static ~90 cyc × 82 ≈ **0.7 ms**, and the phase
+table paid **0.118**. The three edits before it in the same body went −0.733, −0.136, −0.118
+against static predictions of the same shape — so on a driver at the 68000's register ceiling,
+**a static count over-reads by roughly 6×.** Why: the count prices each instruction at its
+worst-case operand cost, in isolation, on a path the count merely assumes it is on.
+
+⭐⭐⭐ **THE DIAGNOSTIC IS THE SPLIT, NOT THE TOTAL — IF A DELETION'S WIN DOES NOT SCALE WITH THE
+COUNT OF THE THING IT DELETES, THE INSTRUCTION WAS NOT ON THE PATH THE COUNT DESCRIBES.** That
+0.118 ms is **−0.111 in phase 2 and −0.008 in phase 3**, and phase 3 has **50 runs against phase
+2's 32**. A genuinely per-run cost pays out in proportion to runs; this one paid out inverted. No
+further objdump reading can say which path it really was on — only an arm can. ⇒ **once a body's
+edits are down to the 2-7 instruction grain, stop sizing them and either measure one or move to a
+coarser lever.**
+
+⚠ This does not retract "read the objdump before theorising about the algorithm" — that rule is
+about FINDING, and it has paid repeatedly (the frame-slot defect, the `n(a5)` DDA state, the
+sorting network). It bounds what the reading entitles you to CLAIM.
+
 ## Rule 2 — price a native/asm twin with an IN-PROCESS differential, never cross-run
 
 ```

@@ -589,6 +589,15 @@ Rules that must survive without opening `docs/perf-method.md`:
   the leaf *it* calls. The second cost 4.3 ms/frame in the dash-edge walk, and register-pressure
   reasoning pointed the wrong way. `always_inline` on a hot leaf and `noinline` on a cold sibling
   are load-bearing, not hints. `docs/m68k-optimisation.md` §inlining threshold.
+  ⭐⭐⭐ **AN OBJDUMP DELTA IS FOR FINDING A DEFECT, NEVER FOR SIZING ONE — ON A REGISTER-BOUND
+  DRIVER IT OVER-READS BY ~6x.** Deleting the view sweep's nine-instruction stop tail (seven memory
+  operands, 82 runs a frame) statically prices at ~0.7 ms and the phase table paid **0.118**; the
+  three edits before it in the same body priced the same way and paid −0.733/−0.136/−0.118.
+  ⭐⭐⭐ **The diagnostic is the SPLIT: if a deletion's win does not scale with the count of the
+  thing it deletes, the instruction was not on the path the count describes** — that 0.118 was
+  −0.111 in phase 2 (32 runs) and −0.008 in phase 3 (50 runs), which is inverted. ⇒ once a body is
+  down to 2-7 instruction edits, measure one or move to a coarser lever.
+  `docs/perf-method.md` §Rule 1b.
   ⭐⭐ **And read the INSTRUCTION COUNT beside the call list — 726 instructions for a routine that
   tests four bytes is the tell, and it needs no emulator run.** `view_span_line` sorts four
   breakpoints and emits ≤5 intervals; five compare-exchanges handed GCC a *permutation* and the

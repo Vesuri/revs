@@ -46,7 +46,26 @@ is `tail`-truncated to the last 40 lines (`GDBTAIL`), which silently drops phase
 | 12.5 | 26 | the 50 Hz drain |
 | 10.2 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
 
-### 1. ⭐⭐⭐ The view sweep's DRIVER code — **27.23 ms left in phases 2+3**, and the ENTRY half is DONE
+### 1. ⭐⭐ The view sweep's DRIVER code — **27.11 ms left in phases 2+3**, and it is MINED OUT at this grain
+⛔⛔⛔ **EVERY CANDIDATE THIS ENTRY EVER NAMED IS NOW CLOSED, AND THE REASON TO STOP IS A
+MEASURED CALIBRATION, NOT A LACK OF IDEAS: ON THIS DRIVER AN OBJDUMP DELTA OVER-READS THE BRACKET
+BY ~6×.** The last edit deleted **seven memory-operand instructions from a tail taken 82 runs a
+frame** — a static ~0.7 ms — and the phase table paid **0.118**. The three edits before it went
+−0.733, −0.136, −0.118, i.e. the grain is exhausted: what is left in the body is 2-7 instruction
+items (the three `addi.l #12416,d6` index rebuilds that miss the `mem + line` base already in
+`a2`; the two `VIEW_SHORT_ENTER` page reads; the run set-up's two `lsl.l #7`), and they are worth
+**~0.1 ms together**, not the ~0.3 the instruction count says.
+⭐⭐⭐ **AND THE SPLIT IS THE TELL, NOT THE TOTAL: phase 2 took −0.111 of that 0.118 and phase 3,
+which has HALF AGAIN AS MANY RUNS (50 against 32), took −0.008.** A per-run cost cannot do that.
+⇒ **when a deletion's win does not scale with the count of the thing it deletes, the instruction
+was not on the path the count describes** — and no amount of further objdump reading will say
+which path it *was* on. Size the next one with an arm, or do not build it.
+⇒ **What would actually win this 27 ms is not an instruction: it is FEWER CHAIN ENTRIES PER
+LINE.** Phase 3 spends **~4880 cyc/line to paint 11.3 cells**, of which the unit loop is ~486
+(43 cyc/unit, measured, irreducible) — so **~4400 cyc/line is driver serving four chain entries**
+(two stops, two entries), each with its own set-up, tail, `view_compose` pair, unit lookup and
+`g_viewStopList` search. That is a REPRESENTATION question and it belongs with §2/§3, not here.
+
 ⭐⭐ **−6.58 ms taken** (`214c8ae`, `docs/perf-method.md` §the entry was deleted): the runs are
 **inline in both drivers**, `byte`/`line`/`cell` are in registers, `view_own_enter`'s poke-decode
 round trip is gone, and phases 2+3 went **35.61 → 29.03 ms** with their census identical to the
@@ -108,10 +127,24 @@ the same way the edit is 2 instructions *smaller*. ⇒ **an objdump is a measure
 same rule as a phase table: same flags on both arms, and check the artefact's own fingerprint
 (here: the load address moved `0x11ee0` → `0x1293e`) before diffing.**
 
-Smaller follow-ons, already sized: the two surviving duplicate table reads (~0.25 ms — sound,
-because the block heads the unit loop writes and the `0x50`/`0x79` tails it reads are disjoint), a
-`view_stop_from` byte compare (~0.19 ms), and `step_scanline`'s byte-lane dance (~1.4 ms, a
-wide-value rewrite).
+⛔ **AND THE THREE "smaller follow-ons" THIS ENTRY LISTED ARE ALL CLOSED, none of them needing an
+emulator run.** (a) *The two duplicate table reads (~0.25 ms)* — **both are load-bearing**, and the
+rule that settles it is worth more than the item was:
+⭐⭐⭐ **SOURCE-BLOCK ALIASING DECIDES WHETHER A REPEATED TABLE READ IS REDUNDANT.** The sweep's
+source bytes live at `$3000 + cell*$80 + line`, so a per-line table at `T + line` is aliased by a
+current-line `view_consume` **iff `cell*$80 == T`** — and `MEM_view_run_right_end` is `$3080`,
+which **IS cell 1's source byte**, so the consume can zero it between the two reads.
+(`MEM_view_edge_phase` at `$3050` is never aliased, and that is the *other* read.) ⭐ The second
+reason is independent and kills the `edge` pair on its own: **`VIEW_SHORT_RUN`'s cold arm can
+advance `line`** — `stop_ >= 40` calls `view_own_run`, whose own comment says "the cold run may
+have advanced the line and the plot pointer", and a host counter puts it at **333 of 4958 run
+entries (6.7%)** ⇒ a per-line value re-read after a run is a real dependency, not a duplicate.
+(b) *`step_scanline`'s byte-lane dance* — ⛔ **the ~1.4 ms sizing is RETRACTED and the real ceiling
+is ~0.35 ms**: the objdump's common path is **9 instructions ≈ 98 cyc/line**, and the byte-lane
+carry arm the wide-value rewrite would delete runs **1 line in 8**. The ~230 cyc/line in the table
+below is the bracket including that arm's amortised share, not what a rewrite can collect.
+(c) *The `view_stop_from` byte compare (~0.19 ms)* — already **4 instructions (~24 cyc) on the
+common path** with its base hoisted to `a6`; there is nothing left in it.
 
 ⇒ **Phase 3 runs ~89% of its non-cold body on every line. There is no hotspot and no marshalling
 layer to delete** — the body serves **four chain entries a line** (two stops, two entries), each
@@ -169,7 +202,7 @@ source/translation/control. Never subtract one from the other.
 | the four spilled invariants | 15 body touches/line ≈ 240 cyc | ⛔ the `column_gap_walk_core` trap — both runs are on pads past the back-edge |
 | phase 2's cold `view_own_run` arm | **16 of 32 runs, one per line** (host census) | ⛔ ~150 cyc/line: a `ViewState` marshal + a call, not a fallback path |
 | the per-line table reads | `lea (0,a3,d7.l),a5` once, then 12-cyc `d16(a5)` | ⛔ already optimal, nothing to hoist |
-| `step_scanline`'s byte-lane dance | ~230 cyc/line (phase 3 ~280, carry tail) | ○ **the one real local item: ~1.4 ms, a wide-value rewrite** |
+| `step_scanline`'s byte-lane dance | ~230 cyc/line (phase 3 ~280, carry tail) | ⛔ **~0.35 ms, not the ~1.4 ms once claimed** — 9 instructions on the common path, the carry arm is 1-in-8 (above) |
 
 ⚠⚠ **`copy_dash_data_core(0x80)` at `race_main_loop`'s exit stows the whole $7B00 page back into
 the $3000 block tails**, so the opcode slots and the three `VIEW_REC_*` operands are read,
