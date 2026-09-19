@@ -746,6 +746,75 @@ the freeze snapshots the census numerator while `loopFrames` keeps climbing. Pha
 survived the same run unharmed, so **one bad row next to two good ones is the tell** — cross-check
 any frozen census row against a non-frozen log before reasoning from it.
 
+#### ⭐⭐⭐ AND THE DRIVER'S COST IS ITS MEMORY OPERANDS — 28.10 → 27.37 ms, and MY OWN "~9 ms OF SLACK" IS RETRACTED (2026-09-18)
+
+The section above says the body is long and has no hotspot. The next question is what a long body
+*costs*, and answering it with a count of **logical operations** — "the driver does ~66 things a
+line, ≈1174 cycles, against a 3785 cyc/line bracket, so there is ~2× slack worth ~9 ms" — is the
+error this file already records twice (§never size a prize as a residual). ⛔ **That ~9 ms figure
+is retracted; it is a third instance of the same mistake and it was caught by reading the objdump
+instead of the residual.** The real accounting, summing all 71 blocks of
+`paint_lines_short.constprop.0`:
+
+| | count | unit price | cycles |
+|---|---:|---:|---:|
+| driver instructions with a **memory operand** (17 absolute, 7 `n(sp)`, rest indexed/displacement) | 63 | ~18 | ~1134 |
+| driver instructions, register-only | 133 | ~7 | ~931 |
+| the two unit loops | 90 | — | (charged per cell) |
+| **driver total, nominal** | **196** | **19.3** | **~2065** |
+
+×~1.3 for DMA contention ≈ 2685, and the probe instrument (~13%) plus ISR landings close the rest
+of the bracket. ⇒ **The driver costs approximately what its 196 instructions cost. There is no
+slack to find — the only lever is deleting instructions, and a memory operand counts as 2.6.**
+
+⭐⭐ **WHAT IS LEFT IS PER-RUN OVERHEAD, AND IT IS 2.7× THE WORK IT DRIVES.** Of those 196: two run
+set-ups ~32, two stop tails ~30, two ENTER decodes + two `g_viewStopList` walks ~45 = **~107
+instructions of per-run overhead against ~39 instructions of actual unit work** in phase 3's
+5.6-cell runs. That ratio, not any single block, is this entry's remaining prize.
+
+**Two defects read straight off the objdump, measured together at −0.733 ms** (phases 2+3
+**28.104 → 27.371**; ph33 10.234 → 10.075, ph34 17.870 → 17.296; census identical on both arms at
+426/32/16 and 282/50/25; `frozen` 240519894 vs 240390586, 0.05% apart). Predicted 0.89, got 0.73 —
+⭐ the same ~15% over-prediction the row-price ledgers show, in a third place.
+
+⭐⭐⭐ **BOUND A LOOP ON THE POINTER THAT OUTLIVES IT.** `VIEW_SHORT_RUN`'s unit loop advances
+`srcp` and `dp` together and used to test `dp != runEnd`. So GCC elected `dp` the induction
+variable — and the stop tail needs the final **`srcp`** (it consumes `srcp[0]`), which `dp`'s
+choice made it **reconstruct**: a spill of the run's first `dp` to `52(sp)`, a reload, an
+`lsl.l #4` of the pointer difference and an `adda`, ~70 cycles a run and twice a line, for a value
+the loop had been holding in an address register all along. `dp` is **dead** at the run's end (the
+boundary store addresses the screen through `view_screen_addr(cell)`, not `dp`) and `srcp` is not,
+so the bound belongs on `srcp`. The tail then reads `(a5)` directly, because `srcEnd` **is** the
+final `srcp`: `lsl.l #4` in the shipping driver goes **2 → 0** and its stack operands **24 → 21**.
+⇒ **When two pointers step together, test the one whose final value someone still wants.** The
+general form is that an induction variable is a *choice*, and GCC makes it from the loop's exit
+test, not from the code after the loop.
+
+⭐ **A BYTE DECREMENT, NOT A MASKED WORD ONE.** `line = (line - 1) & 0xFF` on an `unsigned` made
+GCC materialise the constant (`moveq #0` + `not.b`) and **spill `line` to `48(sp)`** to free a
+register for it — five instructions and two stack accesses a line, in a function that already
+opens `movem.l d2-d7/a2-a6` (all eleven usable registers). `(unsigned char)(x - 1u)` *is*
+`(x - 1) & 0xFF` for every unsigned x, the `0 → $FF` wrap included, so it is a pure spelling
+change with no precondition to prove; it lands as `subq.b #1,d3 / andi.l #255,d3`. Five sites in
+the sweep's drivers. ⇒ **On a register-poor machine, spell an operation in the width the hardware
+has** — a mask that needs a constant register is not free, and the tell is a stack slot appearing
+next to arithmetic that should need none.
+
+⚠ **And the `mem[]` aliasing that blocks CSE of the per-line table reads is compiler conservatism,
+not real** — worth stating so nobody sizes it again: every table load sits at block offset `0x50`
+or `0x79` within the `$80`-spaced blocks at `$3000` (displacements 12368/12496/12624/14073/14544/
+14672 = blocks 0,1,2,13,17,18), while the unit loop writes only block **heads**
+(`$3000 + line + cell*$80`, line ≤ 40 ⇒ offsets `0x00..0x28`), the screen at `$6700`, and
+`view_plant` writes pages `$7C`/`$7E`. All disjoint. But only **two** duplicate reads survive per
+line (`MEM_view_run_right_end + line` at CHAINA and again at STOPB; `MEM_view_edge_phase + line`
+at CHAINA and again at CHAINB) ⇒ ~24 cyc/line ≈ **0.25 ms**, which is the size of the prize and
+not the size of the aliasing story.
+
+⚠ **The unit loop is CLOSED, confirmed a second time from this objdump**: seven instructions per
+clean cell with both pointers advancing (`move.b (a0),d1 / bne / move.b d2,(a1) / lea 128(a0),a0 /
+cmpa.l a5,a0 / beq / addq.l #8,a1`). Destination cells are 8 bytes apart and sources 128, so
+widening is impossible (§the sweep is 61% driver/entry). No further effort goes there.
+
 ### ⭐⭐ The four view probes (2026-09-12) — phase 3 decomposed, and the ~6× note RETRACTED
 
 Phase 3 was the most expensive view phase on the fewest units, and before anything was rewritten

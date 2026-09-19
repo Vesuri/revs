@@ -46,20 +46,48 @@ is `tail`-truncated to the last 40 lines (`GDBTAIL`), which silently drops phase
 | 12.5 | 26 | the 50 Hz drain |
 | 10.2 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
 
-### 1. ⭐⭐⭐ The view sweep's DRIVER code — **29.03 ms left in phases 2+3**, and the ENTRY half is DONE
+### 1. ⭐⭐⭐ The view sweep's DRIVER code — **27.37 ms left in phases 2+3**, and the ENTRY half is DONE
 ⭐⭐ **−6.58 ms taken** (`214c8ae`, `docs/perf-method.md` §the entry was deleted): the runs are
 **inline in both drivers**, `byte`/`line`/`cell` are in registers, `view_own_enter`'s poke-decode
 round trip is gone, and phases 2+3 went **35.61 → 29.03 ms** with their census identical to the
-unit (426/32/16 and 282/50/25). Phase 3 is now **5346 cyc/line for 5.6 painted cells**.
+unit (426/32/16 and 282/50/25).
+⭐ **−0.733 ms more taken** (`422e68c`, `docs/perf-method.md` §the driver's cost is its memory
+operands): **28.104 → 27.371 ms**, census identical again, from two objdump-read defects — the
+unit loop was bound on `dp`, the pointer that DIES at the run's end, so the stop tail
+reconstructed the `srcp` the loop already held; and `line = (line - 1) & 0xFF` cost a
+materialised constant and a stack spill where `subq.b` does the job. Phase 3 is now
+**4906 cyc/line for 5.6 painted cells**.
 
-**Where the 29.03 ms IS — SETTLED FROM THE OBJDUMP, and it is that THE BODY IS LONG** (floor =
+**Where that time IS — SETTLED FROM THE OBJDUMP, and it is that THE BODY IS LONG** (floor =
 cheapest plant/trap-free path from loop head to back edge; ceiling = every non-cold instruction
 once; `docs/perf-method.md` §where phases 2/3's 29 ms is, settled from the objdump):
 
 | | floor | **measured cyc/line** | ceiling | non-cold instrs | cells/line |
 |---|---:|---:|---:|---:|---|
-| phase 2 (16 lines, 10.16 ms) | — (all routes touch a plant block) | **4502** | 4374 + unit turns | 365 | 26.6 |
-| phase 3 (25 lines, 18.86 ms) | 2154 | **5348** | 6026 | 499 | 11.3 |
+| phase 2 (16 lines, 10.08 ms) | — (all routes touch a plant block) | **4502** | 4374 + unit turns | 365 | 26.6 |
+| phase 3 (25 lines, 17.30 ms) | 2154 | **5348** | 6026 | 499 | 11.3 |
+
+⭐⭐⭐ **AND THE BODY COSTS WHAT ITS INSTRUCTIONS COST — THE LEVER IS PER-RUN OVERHEAD, 2.7× THE
+WORK IT DRIVES.** Summing all 71 blocks: **286 instructions/line, 90 of them the two unit loops ⇒
+196 driver instructions, 63 of which carry a memory operand** (~18 cyc against 4-8 for a register
+op) ⇒ ~2065 cyc nominal, ×1.3 for DMA ≈ 2685, which closes against the bracket once the probe
+(~13%) comes off. ⛔ **So there is no "2× slack" to find, and my own ~9 ms estimate of it is
+retracted** — it differenced a modelled operation count against a measured wall-clock bracket,
+the error `docs/perf-method.md` records three times. Of the 196: two run set-ups ~32, two stop
+tails ~30, two ENTER decodes + two stop-list walks ~45 = **~107 instructions of per-run overhead
+against ~39 instructions of real unit work** in phase 3's 5.6-cell runs. ⇒ **rank the remaining
+edits by instructions deleted per line** (one deleted instruction ≈ 0.065 ms/frame if phase 3
+only, 0.109 ms if it hits both phases).
+
+⏳ **The designed next edit, ~1.16 ms:** the run set-up still spills the destination pointer —
+`moveq #0,d4 / move.w d6,d4 / addi.l #352760,d4 / move.l d4,44(sp)` … `adda.l 44(sp),a1` …
+`move.l 44(sp),d4` at `122b8` — purely from register pressure (the function opens
+`movem.l d2-d7/a2-a6`, i.e. all eleven usable registers). Carry `srcBase`/`dstBase` as **16-bit
+offsets in data registers** and form every run pointer as `lea (0,a4,dN.l)` off the permanently
+live `a4 = mem`. Faithfulness is unchanged: `plot_ptr_v` spans `$6700-$737D`, `+39*8` cannot wrap,
+and the current code is likewise unmasked. Smaller follow-ons, already sized: the two surviving
+duplicate table reads (~0.25 ms — sound, because the block heads the unit loop writes and the
+`0x50`/`0x79` tails it reads are disjoint) and a `view_stop_from` byte compare (~0.19 ms).
 
 ⇒ **Phase 3 runs ~89% of its non-cold body on every line. There is no hotspot and no marshalling
 layer to delete** — the body serves **four chain entries a line** (two stops, two entries), each
@@ -89,7 +117,7 @@ per-display-line ownership) are §11's; ⛔ **the "phase 2 at ~1.5 ms instead of
 ⛔⛔⛔ **AND THAT −11.18 ms OF ROWS IS ITSELF CLOSED NOW: 70 ROWS ARE OWNED** (phase 1's 81..116
 plus domain A's 0..17 + 192..207), **63 SKY ROWS WERE ALREADY FREE, AND THE REMAINING 75 ARE PRICED
 OUT** — the whole remaining ownership campaign is **−3.61 ms best case against a measured
-+3.45 ms** for the only placement ever built (see CLOSED). ⇒ **this entry's 29.03 ms has to be won
++3.45 ms** for the only placement ever built (see CLOSED). ⇒ **this entry's 27.37 ms has to be won
 INSIDE the driver; it cannot be won by taking the decode's rows away from it.**
 ✅ **Step 0 is DONE: the new pipeline is the DEFAULT build** — `VIEWOWN=0` / `SPANFILL=0` are now
 the A/B controls, so the shipping frame goes **196.59 → 182.62 ms (−13.97)**. `validate` PASS, all

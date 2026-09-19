@@ -363,3 +363,33 @@ book-keeping is amortised.
 ⭐ So the objdump check on a hot loop is **the back-edge mnemonic**, not only the absence of a
 `jsr`: a conditional back edge (`bne.s`, 10 taken) is the good shape; a `bra` at the bottom plus a
 `beq` out of the middle is the rotated one, and it is costing you the difference.
+
+## ⭐⭐⭐ BOUND A LOOP ON THE POINTER THAT OUTLIVES IT — the induction variable is GCC's CHOICE, and it makes it from the exit test (2026-09-18)
+
+When a loop steps two pointers together, GCC elects **the one the exit test names** as the
+induction variable and is then free to treat the other as derived — which means *reconstructing*
+it anywhere it is still needed. If the code **after** the loop wants the other one, that
+reconstruction is pure loss: it recomputes a value the loop had been holding in a register.
+
+Measured in the view sweep's `VIEW_SHORT_RUN` (part of a −0.733 ms pair, `docs/perf-method.md`
+§the driver's cost is its memory operands). The unit loop advanced `srcp` (+128) and `dp` (+8) and
+tested `dp != runEnd`. `dp` is **dead** at the run's end; `srcp` is **live** (the stop tail
+consumes `srcp[0]`). GCC therefore emitted, at the tail, a spill of the run's *first* `dp` to
+`52(sp)`, a reload, an `lsl.l #4` of the pointer difference (`/8` then `×128`) and an `adda` —
+~70 cycles a run, twice a line. Bounding on `srcp` instead made the tail a plain `move.b (a5),d1`,
+because the bound **is** the final `srcp`: `lsl.l #4` 2 → 0, stack operands 24 → 21.
+
+⇒ **Test the pointer whose final value someone still wants.** The objdump tell is a shift or
+multiply by a stride appearing *after* a loop that contained no multiply.
+
+## ⭐ SPELL AN OPERATION IN THE WIDTH THE HARDWARE HAS — a mask that needs a constant register is not free (2026-09-18)
+
+`line = (line - 1) & 0xFF` on an `unsigned` cost five instructions and two stack accesses per line
+in `paint_lines_short`: GCC materialised the mask (`moveq #0` + `not.b`) and **spilled `line` to
+`48(sp)`** to free a register for it, in a function that already opens `movem.l d2-d7/a2-a6` — all
+eleven usable registers. Written `(unsigned char)(line - 1u)` it is `subq.b #1,d3 / andi.l #255,d3`.
+
+The two forms are the *same value* for every unsigned input, the `0 → $FF` wrap included, so there
+is no precondition to establish — this is a spelling change, not a narrowing. ⇒ **On a
+register-poor machine a byte operation written as a masked word operation can cost a register, and
+the tell is a stack slot appearing next to arithmetic that should need none.**
