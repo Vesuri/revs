@@ -468,8 +468,30 @@ Floor-corrected, after the packed-ABI change below (~29 ms of `draw_surface_span
 | `span_plot_core` (48) | **~7** (24%) | 60 plots × ~830 cycles |
 
 ⭐⭐ **ONLY 24 OF THE 43 SPANS REACH THE WALK** (47's walk-entry count vs `g_roadSpans`) — the rest
-return earlier, publish-only or `block >= 0x28` off-side. Per DRAWN span the pass costs ~8 500
-cycles to plot 2.5 cells. That, not the scan-line count, is the ratio to attack.
+return earlier. Per DRAWN span the pass costs ~8 500 cycles to plot 2.5 cells. That, not the
+scan-line count, is the ratio to attack.
+
+⭐ **WHICH early return, measured — a host census of `interp_edge_core`'s four exits over 300
+driving frames (12 803 spans, `-DIECENSUS`, no emulator run):**
+
+| exit | count | share | returns after |
+|---|---:|---:|---|
+| `publishOnly` | 3 306 | 25.8% | step 2 |
+| both ends clipped (`SPAN_CLIP & 0xC0 == 0xC0`) | 2 451 | 19.1% | step 2 |
+| `SPAN_DX == 0 && SPAN_DY == 0` | **0** | 0% | step 3 |
+| **`block >= 0x28` off the side** | **0** | **0%** | the END of setup |
+| reaches `span_walk` | 7 046 | 55.0% | — |
+
+⛔ **So the obvious coarse lever here is DEAD: the off-side test sits at the very end of the setup —
+after the deltas, the four-iteration colour-pattern loop, both cap surfaces and the `LINE_END`
+clamp — while `block` derives only from `shared_temp_7e`, which is known right after step 2. It
+looks like ~5 ms of wasted setup and it is worth ZERO, because it never fires.** ⚠ Do not delete
+either zero-count test: Silverstone practice is one trajectory, an expansion circuit's hook
+re-enters this subtree, and CLAUDE.md's rule is that a body no scenario drives is *unproven*, not
+dead.
+⇒ **The correction that matters: both non-walking exits leave after step 2, so the ~1 900 cyc
+setup is paid by the ~24 spans that WALK, not by 43 — i.e. ~3 400 cycles of setup per drawn span,
+to plot 2.5 columns.** Any attack on the per-span representation is an attack on that 3 400.
 
 #### ⭐⭐ …AND THE SECOND CODE-SHAPE DEFECT: FIVE POINTER PARAMETERS WERE THE WALK'S LOOP STATE — −4.79 ms (2026-09-13)
 

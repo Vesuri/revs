@@ -225,7 +225,11 @@ store cost on a 68000, and widening is impossible (destination cells 8 bytes apa
 invariant's absolute address and require the count to stay at 1, or the 4× unroll is gone.
 
 ### 2. ⭐⭐ The per-span REPRESENTATION — ~11.5 ms of `draw_road`'s 33.7
-`docs/perf-method.md` §per-span SETUP (45): 43 spans × ~1 900 cycles. The remaining phase-11 lever
+`docs/perf-method.md` §per-span SETUP (45): **~24 drawn spans × ~3 400 cycles to plot 2.5 columns
+each** — a host census of the four exits (12 803 spans, no emulator run) shows both non-walking
+exits leave after step 2, so the setup is NOT paid 43 times. ⛔ It also kills the coarse lever that
+reading suggests: the `block >= 0x28` off-side test sits at the END of the setup though `block` is
+known right after step 2, and it fires **0 times in 12 803 spans**. The remaining phase-11 lever
 now that the kernel's shape and its opcode slots are done. **Needs SPAN_DX/DY/BLOCK moved out of
 the 6502 address space**, which changes the measured self-overwriting-DDA behaviour ⇒ a **written
 RESULTS-rule reader audit** (`docs/validation-harness.md` §THE RESULTS RULE), a scoped
