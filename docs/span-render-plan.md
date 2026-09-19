@@ -1784,3 +1784,118 @@ in the arm's own column header.
 is at break-even. And the one block that clears its break-even, 158..191, needs no reader gate at
 all — its writers keep their `mem[]` stores (§11b fact 3: owning a row while still writing `mem[]`
 needs no reader gate), and line 149 is not in it.
+
+---
+
+## ⭐⭐⭐ §12 — THE CAR LEAVES THE TERRAIN BITPLANE (user directive, 2026-09-19)
+
+> *"The bottommost 50 rows should never have to be fully redrawn. The mirrors have limited
+> content in them and the gear indicator changes but those are the only, very limited, changes
+> that this part of the screen ever should have. The 41 rows above that have both the car and
+> the terrain visible on them. The terrain should be rendered as if the car wasn't there and the
+> car should be blitted on top with a mask. In fact, we could even use dual playfield so that
+> the car is a separate playfield altogether. Even the tires don't need to be drawn; the tire
+> animation can be achieved with pre-made sprites that only need switching between two sprites
+> as needed. The steering wheel indicator can be a sprite as well. With this in mind, make the
+> track renderer as simple and efficient as possible. If the original has complex logic to render
+> only to the edges of the car outline, all that can go."*
+
+**This supersedes §11d/§11e's closure of row ownership.** Those sections are still correct about
+what they measured; they are answering a question this directive deletes.
+
+### Why it reopens everything §11e closed
+
+§11e closed row ownership because the remaining 75 rows cost more to own than they pay. Both
+halves of that arithmetic are consequences of **one** fact — *the car is drawn into the same
+bitplane as the terrain* — and neither survives its removal:
+
+| §11's blocker | the measured number | what it is really measuring | after §12 |
+|---|---|---|---|
+| 117..157 is at retarget break-even | **6..28 st/row** against a 12..26 threshold | the terrain being repainted *around the car outline*, plus four car writers landing in the same bytes | **~1 st/row** — the terrain is written once, full width |
+| 158..191 loses as a delta painter | 1.69 delivered bytes/row/frame against a 0.82 break-even | the needles being *redrawn* every frame | the rows are **not redrawn at all** |
+| the mixed-cell mask | ≈0.9..1.1 ms for 117..157 | a cell containing both terrain and car | **no such cell exists** |
+
+⇒ The whole §11d/§11e cost side was the price of *sharing a bitplane with the car*. The directive
+does not pay that price more cleverly; it stops incurring it.
+
+### The three commitments
+
+1. **The terrain renderer paints display rows 81..157 FULL WIDTH, unconditionally, from the span
+   record.** Forty cells, no clipping, no car-outline test, no mixed-cell mask, no overlay. This
+   is the "as simple and efficient as possible" the directive asks for, and it is what makes the
+   wholesale Stage A painter a plain run fill.
+2. **The car is a separate playfield.** The race display is 320x208 **two** bitplanes today
+   (`RevsScreen.h`), so dual playfield is an unusually clean fit — see the plane map below.
+3. **Rows 158..207 are painted once and left.** Only the mirror contents and the gear indicator
+   change, and both are small overlays into the car playfield.
+
+### The plane map — why this fits without touching the palette schedule
+
+Dual playfield splits the bitplanes by parity: **PF1 = odd planes (1,3), PF2 = even planes (2,4)**,
+each playfield two bits deep. The assignment that costs the least:
+
+- **Terrain → PF1, planes 1 and 3.** Colours `COLOR01..03` over `COLOR00`. This is *exactly* the
+  four-colour decode `convertRace` already produces, and the copper's existing per-band palette
+  schedule (`m_plan`, which reprograms `COLOR00..03` per raster band) is **unchanged**. The
+  terrain path does not learn that dual playfield happened.
+- **Car → PF2, planes 2 and 4, in front** (`PF2PRI` in BPLCON2). Three colours `COLOR09..11`
+  plus transparent. The wheel in the reference frame is red / white-grey / black — three. ✓
+
+⇒ No mask, no read-modify-write, no compositing. The two painters never touch the same byte.
+
+**Costs, stated honestly:**
+- 2 extra bitplanes of display DMA across the race view. Lores 320 has the slots (dual playfield
+  allows up to 3+3), but it does take chip-RAM bandwidth from the 68000 during the display window.
+  ⚠ **This is the one number in §12 that is not yet measured** and it is a subtraction from every
+  figure below — measure it with a do-nothing 4-plane build before banking the net.
+- +2 planes x 208 rows x 40 bytes x 2 buffers = **33 KB** more chip RAM.
+- Simplest first cut keeps 4 planes for the whole race display rather than switching plane count
+  mid-screen with the copper; that can be optimised later and probably is not worth it.
+
+### Sprites
+
+All eight sprite channels are currently parked on one 8-byte null sprite (`RevsScreen.h`), so the
+entire sprite system is free.
+
+- **Steering-wheel indicator → a genuine hardware sprite.** Small, moves every frame, 16px is
+  ample. This is the best sprite fit on the screen.
+- **Tyres → two pre-made bitmaps blitted into PF2**, flipped between for the animation. ⚠ The
+  directive says "sprites"; a hardware sprite is 16px wide and each tyre is wider than that, so
+  an all-sprite tyre costs 3 channels a side (6 of 8). Blitting two pre-made frames into the car
+  playfield gets the same "never draw a tyre" saving without spending the sprite budget, and the
+  hardware-sprite version stays available if PF2 blit cost ever matters.
+
+### What this deletes
+
+- **`fill_dash_edge_columns` — 10.2 ms/frame, straight to zero.** It exists for no other purpose
+  than rendering terrain up to the edges of the car outline. This is Stage C, which was already
+  queued as "must flip on with Stage A"; it now flips on because there is nothing left to do.
+- **`column_gap_walk`'s mixed-cell machinery**, for the same reason.
+- The per-frame repaint of 158..207.
+- Stage A's hardest sub-step: *"handle the dash edges for rows 117..157 and the ~30 object cells
+  as an overlay layer"*. There is no overlay layer.
+
+### ⚠ The one hazard, and it is a real one
+
+`update_grip_limits` reads **two framebuffer bytes at display row 149, cells 7 and 32** — the game
+detects leaving the track by *reading its own picture*. Row 149 is inside 117..157, and cells 7
+and 32 are near the left and right edges, which is where the front tyres are.
+
+On the BBC the car IS in the framebuffer, so those reads see whatever is on top. If either cell
+sits under the car, "terrain as if the car weren't there" **changes what the physics reads** — a
+faithfulness break that no picture diff of the *terrain* would catch, because the terrain would be
+right and the car would be right and the physics would be wrong.
+
+⇒ **Settle it by measurement before the painter ships**, not by argument: `make fbwrites` already
+attributes every framebuffer store to its PC, so ask which routine last writes row 149 cells 7 and
+32 on a driving frame. If it is ever a car writer, the renderer must compose those two bytes *with*
+the car and store them to `mem[]` (~50 cycles, already in the Stage A budget). `make viewdiff` at
+row 149 is the gate either way.
+
+### Order
+
+§12 changes what Stage A *is*, not when it lands. The build order is unchanged — the span producer,
+then the full-width painter — but the painter is now substantially simpler than §10p specified, and
+Stage C retires with it. The car playfield is a separate, parallel piece of work that gates nothing
+in the terrain path: until it exists, the car writers keep writing `mem[]` and the picture stays
+correct (the terrain is simply overdrawn, as it is today).

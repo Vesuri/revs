@@ -7510,48 +7510,99 @@ static unsigned char span_breakpoint(unsigned addr)
 volatile unsigned char g_spanCostSink = 0;
 #endif
 
-/* ⛔⛔ PARKED WITH STAGE A, AND FOR A SECOND, DIFFERENT SHAPE DEFECT: THIS COSTS +3.68 ms A
-   FRAME — ~1739 CYCLES A LINE to place at most five breakpoints, measured by the `SPANPAINT=2`
-   cost-split arm (178.10 → 181.85 ms with the record built and then thrown away).
-   ⭐⭐⭐ ITS OBJDUMP IS 726 INSTRUCTIONS, 116 STACK OPERANDS AND A CASCADE OF FAR BRANCHES
-   (`cmp.b d1,d0 / bls.w`, `cmp.b d2,d7 / bcs.w`, …), AND THE CAUSE IS THE COMBINATION OF THE
-   TWO FIXES BELOW, NOT EITHER ONE: five compare-exchanges hand GCC a PERMUTATION of four
-   values, the unrolled `SPAN_INTERVAL` chain behind them is specialisable per permutation, so
-   it emitted roughly one straight-line arm per ordering of four edges — 24 of them, with the
-   classifier inlined five times in each.  Every line then walks a chain of far branches into a
-   giant switch.  ⚠⚠ THE `memmove` FIX WAS RIGHT AND THE UNROLL IS WHAT COST: taking the array's
-   ADDRESS away (0 `jsr`/`bsr`, confirmed) is the rule CLAUDE.md states; unrolling the consumer
-   behind a sort is what let GCC multiply the orderings.  ⇒ A SORTING NETWORK IS A CODE-SIZE TRAP
-   FOR THE SAME REASON A BOUNDED LOOP OVER A SHORT LIST IS — it is branchy-by-construction, and
-   whatever follows it gets copied once per outcome.  The fix, if this is ever revived, is to keep
-   four registers for the SORT and emit the intervals from a LOOP so there is one copy of the
-   classifier: ~150 cycles, not 1739.  ⭐ And the general form for next time: after any edit that
-   changes a hot routine's shape, read its INSTRUCTION COUNT as well as its call list — 726 for
-   a routine that tests four bytes is the tell, and it was visible without an emulator run.
-   Not worth fixing now: `revs_plot_spans`' header shows the painter it feeds is a wash even with
-   this producer free, and §10p step 3b needs no span record at all. */
+/* ⭐⭐⭐ THE SORT STAYS IN REGISTERS AND THE INTERVALS COME OUT OF A SENTINEL-TERMINATED LOOP,
+   SO THE CLASSIFIER IS EMITTED ONCE.  The first version of this routine cost +3.68 ms a frame —
+   ~1739 cycles a line to place at most five breakpoints — and its objdump was 726 instructions,
+   116 stack operands and a cascade of far branches.  Neither of its two ingredients was wrong
+   alone; the COMBINATION was.  Five compare-exchanges hand GCC a PERMUTATION of four values,
+   and the UNROLLED interval chain behind them is specialisable per permutation, so it emitted
+   roughly one straight-line arm per ordering of four edges — 24 of them, with the classifier
+   inlined five times in each.
+   ⇒ ⭐⭐⭐ A SORTING NETWORK IS A CODE-SIZE TRAP FOR THE SAME REASON A BOUNDED LOOP OVER A SHORT
+   LIST IS: it is branchy by construction, and whatever follows it gets copied once per outcome.
+   Sort in registers — that part was always right, and it is what keeps `memmove` out — then emit
+   from a LOOP, and there is exactly one copy of `surface_colour_at_core`.
+   ⭐ The loop needs no trip count because the data already carries a sentinel: `span_breakpoint`
+   maps every off-line edge to `$FF`, and `$FF` sorts to the TOP, so "the first `$FF`" IS the end
+   of the list (CLAUDE.md: terminate on a sentinel the list already carries).  `bp[4]` is that
+   sentinel made unconditional, so no iteration can run off the four.
+   ⚠ This routine is on the replacement renderer's critical path at SEVENTY-SEVEN rows a frame,
+   not the twenty-two Stage A ran it for, so its per-line cost is a budget line and not a detail:
+   `docs/span-render-plan.md` §10e allows it ~150 cyc/line. ⭐ Read its INSTRUCTION COUNT after
+   any edit — 726 for a routine that tests four bytes was the tell, visible with no emulator.
+   The four edits below took it 726 -> 649 (loop) -> 466 (hoist) -> 350 (`unroll 1`) -> 325
+   (one row base), with `jsr` 0 throughout and stack operands 116 -> 33.
+   ⭐ GATE: `make SHAPE=1 HOLD_THROTTLE=1 STRAIGHT_TO_RACE=1` then `REVS_SHAPE_WATCH=600
+   REVS_SCREEN_FRAME=1500 ./build/revs`, and read SPANPRED's **COMPOSITE MISS**, which must be 0
+   (302 859 408 cells at this shape).  ⚠ Its neighbours MATCH=93.11% and carry-miss=292 are NOT
+   failures — they are the raw per-cell prediction, which the overlay's 1.92 writes/line is
+   defined to correct; COMPOSITE is the one that says what would be PAINTED.  Check that the
+   report prints a non-zero `road_speed`: a parked scene exercises none of this. */
 
 unsigned view_span_line(unsigned char line, ViewSpan* out)
 {
-    /* ⭐⭐ FOUR NAMED LOCALS AND A SORTING NETWORK, not an array and an insertion sort.  The
-       obvious `for (j = n; j > k; j--) bp[j] = bp[j-1]` over a FOUR-BYTE array compiled to TWO
-       `jsr <memmove>` calls and put `bp` in the stack frame, because its address escaped there —
-       both of CLAUDE.md's shape rules at once, in a routine that runs 22 times a sweep.  Five
-       compare-exchanges sort four registers and touch no memory.
-       ⚠ The buffers are in no particular order and never were: they are four drawing PASSES, not
-       four sorted boundaries (draw_surface_spans patches its store operand per pass). */
+    /* The boundaries read in the CLASSIFIER's priority order — 0, 2, 3, 1, which is NOT their
+       numeric order.  `e0..e3` below are these same four values sorted for EMISSION, and the
+       two orders are why this routine both classifies and sorts.
+       ⚠ The four edge buffers are in no particular order and never were: they are four drawing
+       PASSES, not four sorted boundaries (draw_surface_spans patches its store operand per). */
+    /* ⭐ Every table here is indexed by the SAME line, so hand GCC one base: left as
+       `mem[CONST + line]` it emitted a separate `lea (0,a0,dN.l),aM` per table (five of them
+       in the objdump) instead of one displacement off a shared register. */
+    const unsigned char* const row = mem + line;
+    const unsigned char x0 = row[MEM_surface_edge_0];
+    const unsigned char x2 = row[MEM_surface_edge_2];
+    const unsigned char x3 = row[MEM_surface_edge_3];
+    const unsigned char x1 = row[MEM_surface_edge_1];
+    /* ⭐⭐⭐ THE FIVE COLOURS THE CLASSIFIER CAN RETURN, AND NONE OF THEM DEPENDS ON POSITION.
+       Read `surface_colour_at_core` beside this: the position appears ONLY in the four `>=`
+       tests, so every one of its six arms yields a value that is a function of the LINE alone.
+       Hoisting them turns each evaluation from ~100 instructions and ten `mem[]` loads into
+       four register compares, which is what makes emitting from a loop actually pay. */
+    const unsigned char cOut = mem[MEM_surface_colours + 3];   /* p >= edge 0: outside it all */
+    const unsigned char cE3  = mem[MEM_surface_colours + 0];   /* p >= edge 3 */
+    const unsigned char cE2  = (unsigned char)((line >= line_attr_1_limit) ? cOut
+                   : mem[MEM_surface_colours + (mem[EDGE_STYLE_PREV +
+                       (row[MEM_line_attr_1] & 0x7Fu)] & 3u)]);
+    const unsigned char cE1  = (unsigned char)((line >= line_attr_0_limit) ? cOut
+                   : mem[MEM_surface_colours + (mem[EDGE_STYLE_PREV +
+                       (row[MEM_line_attr_0] & 0x7Fu)] & 3u)]);
+    const unsigned char cBg  = mem[MEM_surface_colours +       /* inside everything */
+                                   (row[MEM_view_line_surface] & 3u)];
+/* The classifier itself, now that its constants are out of it: `surface_colour_at_core`'s
+   `else if` cascade, verbatim in its priority order.  One copy, in the loop below. */
+#define SPAN_COLOUR(p)  ((p) >= x0 ? cOut : (p) >= x2 ? cE2 \
+                       : (p) >= x3 ? cE3  : (p) >= x1 ? cE1 : cBg)
+
     unsigned char e0 = span_breakpoint(MEM_surface_edge_0 + line);
     unsigned char e1 = span_breakpoint(MEM_surface_edge_1 + line);
     unsigned char e2 = span_breakpoint(MEM_surface_edge_2 + line);
     unsigned char e3 = span_breakpoint(MEM_surface_edge_3 + line);
-    unsigned count = 0;
+    unsigned char bp[VIEW_SPAN_MAX];   /* the four sorted breakpoints + the $FF that ends them */
+    unsigned char prev;
+    unsigned count, i;
 
+    /* ⭐ Above the horizon there is no surface and no boundary can matter: the whole line is one
+       sky span.  Taking it here also keeps the sky test out of the per-breakpoint chain. */
+    if (line > horizon_extent) {
+        out[0].start = 0u; out[0].colour = mem[MEM_surface_colours + 1];
+        return 1u;
+    }
+
+    /* ⭐⭐ FOUR NAMED REGISTERS AND A SORTING NETWORK, not an array and an insertion sort.  The
+       obvious `for (j = n; j > k; j--) bp[j] = bp[j-1]` over a four-byte array compiled to TWO
+       `jsr <memmove>` calls and put the array in the stack frame, because its address escaped
+       there — both of CLAUDE.md's shape rules at once.  Five compare-exchanges sort four
+       registers and touch no memory; only the finished order is spilled to `bp` below. */
 #define SPAN_SORT2(a, b)  do { if ((b) < (a)) {                                          \
         const unsigned char t_ = (a); (a) = (b); (b) = t_; } } while (0)
     SPAN_SORT2(e0, e1); SPAN_SORT2(e2, e3);      /* the 4-element network, 5 comparators */
     SPAN_SORT2(e0, e2); SPAN_SORT2(e1, e3);
     SPAN_SORT2(e1, e2);
 #undef SPAN_SORT2
+
+    bp[0] = e0; bp[1] = e1; bp[2] = e2; bp[3] = e3;
+    bp[4] = 0xFFu;                     /* ⭐ the loop's only bound — see the header */
 
     /* Each interval asked ONCE and merged with its left neighbour when the answer repeats —
        ⭐ an interval starts AT its breakpoint, because the classifier selects on
@@ -7563,16 +7614,31 @@ unsigned view_span_line(unsigned char line, ViewSpan* out)
        ⭐ Sorted, so duplicates are ADJACENT and comparing with the immediate predecessor is the
        whole dedup; and a sentinel cannot equal a real breakpoint, so the first `!= 0xFF` guard
        also retires every later one. */
-#define SPAN_INTERVAL(st)  do {                                                          \
-        const unsigned char c_ = surface_colour_at_core(line, (st), 0u, 0u).a;           \
-        if (!count || out[count - 1].colour != c_) {                                     \
-            out[count].start = (st); out[count].colour = c_; count++; } } while (0)
-    SPAN_INTERVAL(0u);
-    if (e0 != 0xFFu)              SPAN_INTERVAL(e0);
-    if (e1 != 0xFFu && e1 != e0)  SPAN_INTERVAL(e1);
-    if (e2 != 0xFFu && e2 != e1)  SPAN_INTERVAL(e2);
-    if (e3 != 0xFFu && e3 != e2)  SPAN_INTERVAL(e3);
-#undef SPAN_INTERVAL
+    out[0].start  = 0u;
+    out[0].colour = SPAN_COLOUR(0u);
+    count = 1;
+    /* ⚠ `prev` may start at 0 only because `span_breakpoint` already maps a zero edge to $FF:
+       no real breakpoint is ever 0, so this seeds the dedup without suppressing anything. */
+    prev = 0u;
+
+    /* ⚠⚠ THE `unroll 1` IS LOAD-BEARING, NOT A HINT — IT IS THE OTHER HALF OF THE CODE-SIZE
+       TRAP.  A sentinel loop whose trip count GCC can still BOUND at four (it can: `bp[4]` is
+       an unconditional `$FF`) gets fully unrolled, and once unrolled it is specialisable per
+       permutation of the sort again — exactly the 24-arm explosion the loop was written to
+       stop.  Measured on this routine: 466 instructions unrolled, 350 pinned.  ⇒ WHEN A LOOP
+       EXISTS TO STOP A SORT'S PERMUTATIONS FROM BEING COPIED, IT MUST ALSO BE PINNED. */
+#pragma GCC unroll 1
+    for (i = 0; bp[i] != 0xFFu; i++) {
+        const unsigned char st = bp[i];
+        unsigned char c;
+        if (st == prev) continue;      /* sorted ⇒ duplicates are ADJACENT, so this is the dedup */
+        prev = st;
+        c = SPAN_COLOUR(st);
+        if (out[count - 1].colour != c) {
+            out[count].start = st; out[count].colour = c; count++;
+        }
+    }
+#undef SPAN_COLOUR
 
     return count;
 }
