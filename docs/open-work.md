@@ -57,7 +57,19 @@ is `tail`-truncated to the last 40 lines (`GDBTAIL`), which silently drops phase
 | 12.5 | 26 | the 50 Hz drain |
 | 10.2 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
 
-### 1. ⭐⭐ The view sweep's DRIVER code — **27.11 ms left in phases 2+3**, and it is MINED OUT at this grain
+### 1. ⭐⭐⭐ The TRANSPOSED SCAN — **10.00 ms**, measured with `SCANDOUBLE=1`, and the fix is a PRODUCER change
+`docs/perf-method.md` §the view sweep, fully split.  The scan reads all 3200 source bytes back to
+find the ~446 non-zero ones, because `draw_road` scattered them into forty 128-byte-apart blocks
+and threw away what it knew.  ⇒ **the producer should APPEND `(line, cell, colour)` to `g_viewEv[]`
+at its store site**, which deletes this 10 ms outright and makes the producer's stores sequential;
+it is entry 3's first sub-lever reached from the consumer side.  ⚠ Gates owed: a written
+RESULTS-rule reader audit (`copy_dash_data`'s stow, `plot_view_src_line`, every expansion
+circuit's hook read those blocks), a scoped `set_ignore`, a `make determinism` re-record and
+`make viewdiff`.
+⭐ The rest of the sweep, for ranking: phase 1's painter 5.55, its driver ~5.2, the low block 16.1,
+the tail 6.3.
+
+### 1b. ⭐⭐ The view sweep's DRIVER code — **phases 2+3 are DELETED by §12; this entry is history**
 ⛔⛔⛔ **EVERY CANDIDATE THIS ENTRY EVER NAMED IS NOW CLOSED, AND THE REASON TO STOP IS A
 MEASURED CALIBRATION, NOT A LACK OF IDEAS: ON THIS DRIVER AN OBJDUMP DELTA OVER-READS THE BRACKET
 BY ~6×.** The last edit deleted **seven memory-operand instructions from a tail taken 82 runs a
@@ -319,6 +331,10 @@ determinism run is a PRACTICE session. Worth running after a change to session/l
 ---
 
 ## ⛔ CLOSED — measured dead ends, one line each. Do not rebuild these.
+
+- ⛔ **Packing `surface_colour_at_core`'s `SlotExit` return** (phase 18, 2026-09-19): `column_gap_walk_core` 1176→620 instructions and `fill_edge_column_run_core` 540→61, twins byte-exact, and phase 18 went **10.4 → 12.8 ms**. An `always_inline` struct return is already free (SRA + DCE); the pack is real hot-path work on a machine with no byte-insert. `docs/perf-method.md`.
+- ⛔ **`TERRAINCARVE=3` as an instrument** with `TERRAINLOW=1`: it deletes the scan the low block's painter depends on, so the arm measures a collapsed trajectory (phase 33 = 883 ms/frame), not a scan-less frame. Use `SCANDOUBLE=1`. `amiga/Makefile`.
+- ⛔ **`plotDeltaBase` re-basing every sweep** as an explanation for phase 24: `amiga/dbase_probe.gdb` reads `deltaBases=1` over 331 sweeps.
 
 Each was built, measured and reverted or retracted. The reasoning is in the named doc; this list
 exists so nobody spends a day re-deriving a negative result.

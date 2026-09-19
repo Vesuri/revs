@@ -700,10 +700,24 @@ EXTRA_DEFINES += -DREVS_TERRAIN_LOW
 PROBE_SYMS_TERRAINLOW = g_terrainClipBad
 endif
 
+# ⭐⭐ `make SCANDOUBLE=1` — price the transposed scan without deleting it (src/gen/revs_native.c
+# §view_scan_all_keep).  Runs the scan an extra time with `consume = 0`: no byte, no pixel and no
+# trajectory changes, so `phase 24` minus the control IS the scan's cost.  An INSTRUMENT ONLY.
+ifeq ($(SCANDOUBLE),1)
+EXTRA_DEFINES += -DREVS_SCAN_DOUBLE
+endif
+
 TERRAIN ?= 1
 ifeq ($(TERRAIN),1)
 EXTRA_DEFINES += -DREVS_TERRAIN_SPANS -DREVS_VIEW_OWN_FULL
 PROBE_SYMS_TERRAIN = g_viewEvents
+# ⛔⛔ `TERRAINCARVE=3` IS INVALID WITH `TERRAINLOW=1` AND MEASURES NOTHING — level 3 carves the
+# transposed SCAN, which the low block's painter now depends on for its event lists, so
+# `view_low_run` walks an unterminated list: phase 33 reads 883 ms/frame and the run covers 53
+# game frames instead of 314.  The ladder predates the low block.  Use level 1 (scan kept, phase
+# 1's painting carved) to price the painter, and `TERRAINLOW=0 TERRAINCARVE=3` if the scan itself
+# has to be priced.  ⭐ The tell was the FRAME total not resembling the baseline at all
+# (CLAUDE.md §prove the flags reached the build) — 1130 against 182.
 # ⚠⚠ `TERRAINCARVE=1|2|3` — PICTURE WRONG BY CONSTRUCTION, the cost ladder.  Each level deletes
 # one more part while still CLAIMING the line, so the decode's share is constant and ph24 alone
 # moves: 1 = no fill and no overlay, 2 = ...and no `view_span_line`, 3 = ...and no source scan.

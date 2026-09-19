@@ -1765,6 +1765,70 @@ picture legitimately differs.
 ⚠ `DIRTYCHECK=1` converts twice per frame — **never quote a framerate from it**, nor from
 `FILLWATCH=1`.
 
+### ⭐⭐⭐ THE VIEW SWEEP, FULLY SPLIT (2026-09-19) — AND THE TRANSPOSED SCAN IS 10 ms
+
+`PROBES=1 FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 PROBEFIELDS=3000`, warp, one session,
+**frame 182 ms bracketed**.  Two arms against that control, each with every other phase flat:
+
+| arm | phase 24 | delta | what it prices |
+|---|---:|---:|---|
+| control | 20.8 ms | — | scan + phase 1's driver + phase 1's painter + `own_reset` |
+| `TERRAINCARVE=1` | 15.25 | **−5.55** | phase 1's PAINTER, 36 lines direct to bitplanes = 154 µs/line |
+| `SCANDOUBLE=1` | 30.8 | **+10.00** | the TRANSPOSED SCAN |
+
+⇒ the whole sweep, 43.2 ms:
+
+| | ms | per line |
+|---|---:|---|
+| the transposed scan (80 lines × 40 source cells) | **10.00** | — (once a sweep) |
+| phase 1's painter (36 lines, 80 plane bytes each) | 5.55 | 154 µs |
+| phase 1's driver + `revs_plot_own_reset` | ~5.2 | ~145 µs |
+| the low block, phase 33 (41 lines into `mem[]`) | 16.1 | 393 µs |
+| the sweep tail, phase 32 | 6.3 | — |
+
+**Three things this settles, two of them retractions.**
+
+1. ⭐⭐⭐ **THE SCAN IS THE BIGGEST SINGLE ITEM IN THE SWEEP, and `view_scan_events`' own banner
+   saying "the scan's own work is ~3 ms" IS STALE BY 3×** — it was written when the scan covered
+   lines 44..79 (9 longwords a cell); `view_scan_all` covers 0..79, twenty longwords a cell over
+   forty cells, plus the low block's much denser lane bodies.  ⚠ **A measurement written at the
+   code ages when the code's RANGE changes, and nothing rechecks it** — the figure was quoted
+   twice in this session's reasoning before the arm contradicted it.
+2. ⭐⭐ **Phase 1's driver is ~145 µs/line and that is exactly what its ~40 instructions should
+   cost**, so the "both drivers are 2500 cyc/line" reading — obtained by subtracting a modelled
+   painter from a measured bracket — was the residual error CLAUDE.md records three times, in its
+   fourth instance.  The arm cost one build and settled it.
+3. `plotDeltaBase` is **not** in the loop: `amiga/dbase_probe.gdb` reads `deltaBases=1` over 331
+   sweeps (and `deltaBytes=80`), so `revs_plot_own_reset` is the 208-byte claim clear plus a
+   five-band rebuild and nothing else.  That hypothesis cost one run to kill.
+
+⇒ **THE NEXT PIECE IS PRODUCER-EMITTED EVENTS** (`docs/open-work.md` entry 3's first sub-lever).
+`draw_road` writes ~2082 source bytes a sweep into forty 128-byte-apart blocks and the scan then
+reads all 3200 of them back to find which are non-zero.  The producer already knows: appending
+`(line, cell, colour)` to `g_viewEv[]` at the store site deletes the scan's 10 ms outright and
+makes `draw_road`'s scattered stores sequential.  ⚠ It needs a written RESULTS-rule reader audit —
+`copy_dash_data`'s stow, `plot_view_src_line` and every expansion circuit's hook read those
+blocks — and a `make determinism` re-record.
+
+### ⛔ `surface_colour_at_core`'s STRUCT RETURN IS FREE — packing it cost +2.3 ms
+
+Phase 18 is 490 cycles to fill ONE source byte, and the classifier's objdump is overwhelming:
+`SlotExit` is seven fields, it is built at all eight exits, and the two hot callers read two of
+them.  Splitting it into a value core returning `colour | class<<8 | carry<<16` plus a flag shim
+took `column_gap_walk_core` **1176 → 620** instructions and `fill_edge_column_run_core`
+**540 → 61**, with `jsr <surface_colour_value>` still 0 and all five twins in the tree byte-exact.
+**Phase 18 went 10.4 → 12.8 ms** (controls flat: phase 11 +0.03%, 24 +0.4%, 33 −0.5%), frame
+182 → 186.
+⭐⭐⭐ **The mechanism is why the instruction count lied: `always_inline` + SRA means the struct
+never exists** — the seven fields are registers and the five nobody reads are dead-code-eliminated,
+so the return costs nothing, and those 1176 instructions are the six arms' COLD code with one arm
+running per cell.  The pack is real HOT-path work: the 68000 has no byte-insert, so `class << 8` is
+an `lsl.l #8` (24 cycles) plus an `or.l`, and the unpack an `lsr.l #8`.
+⇒ **AN INSTRUCTION COUNT CANNOT SEE DEAD-CODE ELIMINATION INSIDE AN INLINED CALLEE**, so an
+`always_inline` struct return is already free and its apparent size is cold arms.  CLAUDE.md
+§packing is not free, second instance, and the discriminator is the same: one pack per CALL loses,
+one pack serving a long loop wins.
+
 ### ⭐ `fill_dash_edge_columns` (phase 18, 17 ms) decomposed — 151 cells, ALL on one arm
 
 Phase 18 is the fifth-biggest row in the frame for a driver whose whole job is **twelve columns**,

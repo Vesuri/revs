@@ -1287,7 +1287,15 @@ static inline __attribute__((always_inline)) void view_scan_body(unsigned lo, un
    its registers to a function three times the size (CLAUDE.md §an out-of-line landing pad is a
    register-allocation boundary, and §making a function bigger can revoke what it had).  The scan
    runs ONCE A SWEEP, so a `jsr` costs nothing and the literal bounds still fold inside the
-   wrapper, which is what keeps the twenty longword tests unrolled onto constant displacements. */
+   wrapper, which is what keeps the twenty longword tests unrolled onto constant displacements.
+   ⚠⚠⚠ THE "~3 ms" ABOVE IS RETRACTED — IT IS **10.00 ms**, measured with `make SCANDOUBLE=1`
+   (docs/perf-method.md §the view sweep, fully split).  That figure was taken when the scan
+   covered lines 44..79 only, nine longwords a cell; `view_scan_all` covers 0..79, TWENTY
+   longwords over forty cells, plus the low block's far denser lane bodies.  ⭐ The transferable
+   half: **A MEASUREMENT WRITTEN AT THE CODE AGES WHEN THE CODE'S RANGE CHANGES, AND NOTHING
+   RECHECKS IT** — this one was quoted twice as fact before an arm contradicted it, and it is the
+   biggest single item in the sweep, not a rounding error.  ⇒ the fix is not this loop's shape but
+   deleting the scan: the PRODUCER already knows every source byte it writes. */
 #if defined(REVS_TERRAIN_SPANS) && defined(REVS_TERRAIN_LOW)
 static __attribute__((noinline)) void view_scan_all(void)  { view_scan_body(0u, 79u, 1); }
 #endif
@@ -1296,9 +1304,25 @@ static __attribute__((noinline)) void view_scan_high(void) { view_scan_body(44u,
 #endif
 #if defined(REVS_TERRAIN_LOW)
 static __attribute__((noinline)) void view_scan_low(void)  { view_scan_body(0u, 43u, 1); }
-#ifdef REVS_TERRAIN_LOW_CHECK
+#if defined(REVS_TERRAIN_LOW_CHECK) || defined(REVS_SCAN_DOUBLE)
 static __attribute__((noinline)) void view_scan_low_keep(void) { view_scan_body(0u, 43u, 0); }
 #endif
+#endif
+
+#ifdef REVS_SCAN_DOUBLE
+/* ⭐⭐⭐ `make SCANDOUBLE=1` — WHAT THE SCAN COSTS, AND IT CHANGES NOTHING TO ASK.
+   The scan is the one part of phase 24 no carve level can price on its own: `TERRAINCARVE=3`
+   deletes it, but the low block's painter needs its event lists, so that arm measures a collapsed
+   trajectory (883 ms in phase 33) rather than a scan-less frame.  ⇒ instead of DELETING the
+   scan, run it TWICE — the extra pass with `consume = 0`, before the real one.
+     * the picture is IDENTICAL: the extra pass consumes nothing, so the real pass sees exactly
+       the sources it would have seen, and its own event lists overwrite the extra pass's;
+     * the trajectory is IDENTICAL: not one `mem[]` byte differs, so this is not a carve arm with
+       the usual "is it the same workload?" caveat — the census and phase 0 must match exactly;
+     * the extra pass does the SAME work as the real one (same longword walk, same lane bodies,
+       same recording), so `phase 24(arm) − phase 24(control)` IS the scan's cost.
+   ⚠ It is an instrument, never a shipping arm: it doubles the scan. */
+static __attribute__((noinline)) void view_scan_all_keep(void) { view_scan_body(0u, 79u, 0); }
 #endif
 #endif /* REVS_TERRAIN_SPANS || REVS_TERRAIN_LOW */
 #ifndef SPAN_SCAN_CHECK
@@ -2927,6 +2951,9 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
        any line is painted, because the producers have all finished and nothing writes a source
        during the sweep; and it must run BEFORE the first paint, because it is the destructive
        read `view_consume` used to be. */
+#ifdef REVS_SCAN_DOUBLE
+    view_scan_all_keep();   /* `make SCANDOUBLE=1` — prices the scan, changes no byte */
+#endif
 #if REVS_TERRAIN_CARVE >= 3
     (void)0;                            /* ⚠ the scan carved out too */
 #elif defined(REVS_TERRAIN_SPANS) && defined(REVS_TERRAIN_LOW)
@@ -7908,6 +7935,26 @@ static SlotExit surf_exit(uint8_t colour, uint8_t x, uint8_t line, uint8_t entry
                    (uint8_t)(colour == 0u), entryV, c };
     return e;
 }
+
+/* ⛔⛔ DO NOT PACK THIS RETURN — BUILT, VALIDATED AND MEASURED AT +2.3 ms OF PHASE 18.
+   `SlotExit` is seven fields and the two hot callers read two of them (`gap_walk_body` wants the
+   colour and the class, `plot_view_src_line_core` only the colour), and the objdump makes the
+   case look overwhelming: splitting this into a value core returning `colour | class<<8 |
+   carry<<16` plus a flag shim for the ABI took `column_gap_walk_core` 1176 -> 620 instructions
+   and `fill_edge_column_run_core` 540 -> 61, with `jsr <surface_colour_value>` still 0.  Phase 18
+   went 10.4 -> 12.8 ms (controls flat: phase 11 +0.03%, 24 +0.4%, 33 -0.5%) and the frame
+   182 -> 186.  All five twins in the tree stayed byte-exact, so this is purely a shape result.
+   ⭐⭐⭐ THE MECHANISM, AND IT IS THE REASON THE INSTRUCTION COUNT LIED: `always_inline` + GCC's
+   SRA means this struct NEVER EXISTS — the seven fields are registers and the five no caller
+   reads are dead-code-eliminated, so the return costs NOTHING.  The 1176 instructions are the
+   six arms' COLD code, of which one arm runs per cell.  A pack, by contrast, is real work on the
+   HOT path: the 68000 has no byte-insert, so `class << 8` is an `lsl.l #8` (24 cycles) plus an
+   `or.l`, and the unpack an `lsr.l #8` — ~50-70 cycles a cell added to delete nothing.
+   ⇒ CLAUDE.md §packing is not free, SECOND INSTANCE, and it names the discriminator: ONE pack per
+   CALL against an unpack the caller needed anyway is the losing ratio; the span plotters won
+   because one pack at entry served a 232-step DDA loop.  ⭐ And the transferable half is about
+   the instrument: AN INSTRUCTION COUNT CANNOT SEE DEAD-CODE ELIMINATION INSIDE AN INLINED
+   CALLEE, so a struct return that is always_inline'd is already free and its size is cold arms.
 
 /* ⚠⚠ `REVS_FLAG_OP` (always_inline) IS LOAD-BEARING HERE, NOT A HINT.  Every empty cell of the
    dash-edge walk calls this — 151 a frame, the most expensive per-item cost in the whole frame —
