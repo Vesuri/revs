@@ -1904,8 +1904,9 @@ static void view_own_full(ViewState* v)
 
    ⇒ THE RUN IS INLINE HERE, and `byte`/`line`/`cell` — the 6502's A, X and Y — live in
    REGISTERS for the whole line instead of in the `ViewState` the address of which GCC has to
-   spill.  `srcLine` and `dstLine` are hoisted once per line, so a run's set-up is one shift
-   and one `lea` rather than a whole prologue.
+   spill.  A run's set-up is one shift and one `lea` off `line` / `plot_ptr_v` rather than a
+   whole prologue — and NOT off hoisted copies of them, which is a redundant representation the
+   allocator has to find a home for (see the set-up's own banner).
 
    ⭐ IT STILL REUSES `VIEW_UNIT`, for the same reason `view_own_run` does: a unit is defined
    ONCE in this file, and a takeover that spells the consume-and-store a second time is how it
@@ -1933,7 +1934,7 @@ static void view_own_full(ViewState* v)
    so these three writes are for `unplant_stops` and for the next reader, not for a result. */
 
 /* One chain run, from unit FIRST to its planted stop, over the enclosing driver's `byte`,
-   `line`, `cell`, `srcLine` and `dstLine`.  The body below the `stopUnit` test is
+   `line` and `cell`.  The body below the `stopUnit` test is
    `view_own_run`'s, read through the same names — including the quad unroll, whose +0.231 ms
    is measured at that function. */
 #define VIEW_SHORT_RUN(FIRST, FORCED, UNROLL)   do {                                    \
@@ -1945,17 +1946,36 @@ static void view_own_full(ViewState* v)
             view_own_run(v, first_, forced_);                                           \
             VIEW_SHORT_IN();                                                            \
         } else {                                                                        \
-            /* ⭐⭐⭐ THREE POINTERS OUT OF ONE SHIFT, AND `srcLine`/`dstLine` DIE HERE.  The   \
-               obvious spelling asks for `dstLine` TWICE (once for `dp`, once for         \
-               `runEnd`) and for two independent shifts of `first_`; on a machine with     \
-               five usable address registers that second use is what pushed both bases    \
-               through the stack frame — the set-up read 52(sp)/56(sp)/60(sp)/64(sp) and  \
-               re-materialised `mem +` twice per run.  `stop_ >= first_` is what           \
-               `view_stop_from` returns, so the run's LENGTH is the only other quantity    \
-               needed and `runEnd` comes off `dp`.  Same three addresses, one live base. */ \
+            /* ⭐⭐⭐ THREE POINTERS OUT OF ONE SHIFT, AND BOTH BASES ARE `line` AND         \
+               `plot_ptr_v` THEMSELVES — NOT HOISTED COPIES OF THEM.  A hoisted           \
+               `srcLine`/`dstLine` looks free (one `lea` a run instead of an add) and is    \
+               not, because it is a SECOND REPRESENTATION of a value the line body already  \
+               keeps: `line` is live in a data register for `line_is_last`, and GCC has     \
+               already CSE'd `mem + line` into an address register for the per-line table   \
+               reads, so `mem + $3000 + line` was a third spelling of it; `plot_ptr_v` is   \
+               live because the chain boundary store composes its address.  With all        \
+               eleven saved registers in use that surplus copy is what went to the stack —  \
+               `move.l d4,44(sp)` a line, `adda.l 44(sp)` and two more reloads a run.       \
+               Formed here instead, the spill is gone: `44(sp)` traffic 8 -> 2, all `n(sp)`   \
+               21 -> 14, and phases 2+3 measured 27.366 -> 27.230 ms (-0.136, same census).   \
+               ⭐ DELETE A REDUNDANT REPRESENTATION BEFORE FIGHTING THE SPILL IT CAUSES.        \
+               ⚠ It only PARTLY pays, and the residual is an addressing-mode limit worth      \
+               writing down: `(d8,An,Dn.l)` has an EIGHT-BIT displacement, so the $3000 in    \
+               `srcp` cannot ride the address and GCC re-materialises the whole base as       \
+               `adda.l #mem+$3000` a run (~16 cyc x2 runs x41 lines ~ 0.09 ms) -- which is     \
+               most of the ~70 cyc/line of spill this deleted, handed back.  `dp` has no      \
+               such constant, so it is genuinely free.  ⭐⭐ THE TWO HOISTS WERE NOT THE SAME   \
+               TRADE: hoist the base that absorbs a NON-DISPLACEABLE CONSTANT, drop the one   \
+               that does not.                                                                \
+               ⚠ Re-reading `plot_ptr_v` per run is the same value the hoist captured: the   \
+               only in-sweep mutator is `step_scanline`, above the runs, and the plants      \
+               write pages $7C/$7E (see the hoist comment this replaces).                   \
+               `stop_ >= first_` is what `view_stop_from` returns, so the run's LENGTH is    \
+               the only other quantity needed and the bound comes off `srcp`. */            \
             const unsigned          off_  = first_ << 3;                                \
-            MEM_QUAL unsigned char* srcp  = srcLine + (off_ << 4);   /* first_ * $80 */  \
-            MEM_QUAL unsigned char* dp    = dstLine + off_;                             \
+            MEM_QUAL unsigned char* srcp  = mem + (MEM_view_src_blocks + line             \
+                                                   + (off_ << 4));  /* first_ * $80 */  \
+            MEM_QUAL unsigned char* dp    = mem + (plot_ptr_v + off_);                  \
             /* ⭐⭐ the stop AS AN ADDRESS, the collapse `paint_cells` argues: 40 means      \
                "none in this run" and 40 * $80 is the column's end, so one `srcEnd` serves \
                both cases and needs no bound of its own.                                \
@@ -2036,15 +2056,14 @@ static void view_own_full(ViewState* v)
         VIEW_SHORT_RUN((unsigned)(u_ & 0x7Fu) - 1u, (u_ & 0x80u) != 0, (UNROLL));        \
     } while (0)
 
-/* The 6502's A/X/Y, out to the `ViewState` and back.  `srcLine`/`dstLine` are derived, so the
-   way in re-derives them: the cold run may have advanced the line and the plot pointer. */
+/* The 6502's A/X/Y, out to the `ViewState` and back.  ⭐ Nothing else needs re-deriving: the
+   cold run may have advanced the line and the plot pointer, and since every run forms its own
+   pointers from `line` and `plot_ptr_v` at the point of use, it picks that up for free. */
 #define VIEW_SHORT_OUT()  do {                                                          \
         v->byte = byte; v->line = line; v->cell = cell;                                 \
     } while (0)
 #define VIEW_SHORT_IN()   do {                                                          \
         byte = v->byte; line = v->line; cell = v->cell;                                 \
-        srcLine = mem + MEM_view_src_blocks + line;                                     \
-        dstLine = mem + plot_ptr_v;                                                     \
     } while (0)
 
 /* $7BBF — un-plant everything the sweep planted.  The three recorded low bytes are copied
@@ -2066,10 +2085,6 @@ static void unplant_stops(ViewState* v)
 static __attribute__((noinline)) void paint_lines_short(ViewState* v)
 {
     unsigned byte = v->byte, line = v->line, cell = v->cell;
-#ifdef REVS_VIEW_OWN_SHORT
-    MEM_QUAL unsigned char* srcLine;        /* this line's source column, hoisted once */
-    MEM_QUAL unsigned char* dstLine;        /* ...and its screen row: ONE word read a line */
-#endif
 
     PROBE_PHASE(PROBE_PHASE_VIEWP3);        /* one transition a sweep — src/platform/probe.h §33 */
     PROBE_VIEW_PHASE(2);
@@ -2094,9 +2109,6 @@ static __attribute__((noinline)) void paint_lines_short(ViewState* v)
         /* `make VIEWP3=2` — picture wrong by construction: phase 3's line loop keeps its 25
            iterations and loses its whole body, so phase 34 is the loop alone.  It answers "is the
            chain-entry time really in this body, or interrupt time landing in an open bracket?" */
-#ifdef REVS_VIEW_OWN_SHORT
-        (void)srcLine; (void)dstLine;
-#endif
         if (line_is_last(line, 0x03)) break;
         continue;
 #endif
@@ -2122,13 +2134,6 @@ static __attribute__((noinline)) void paint_lines_short(ViewState* v)
             PLOT_PTR_SET_LO(plot_ptr_v,  next);
             PLOT_PTR_SET_LO(plot_ptr2_v, next);
         }
-#ifdef REVS_VIEW_OWN_SHORT
-        /* ⭐ The line's two bases, once.  Nothing between here and the chain-B store moves
-           either: the plants write only to pages $7C/$7E, and the boundary stores write the
-           screen, not the pointer. */
-        srcLine = mem + MEM_view_src_blocks + line;
-        dstLine = mem + plot_ptr_v;
-#endif
         VIEWP3_PHASE(PROBE_PHASE_P3_CHAINA);
 
         /* Chain A enters at $F1 - view_run_right_end[line] (SEC/SBC), with the boundary cell
@@ -2224,10 +2229,6 @@ abandon:                                /* a trap ended the sweep; publish what 
 static __attribute__((noinline)) void paint_lines_clipped(ViewState* v)
 {
     unsigned byte, line = v->line, cell = v->cell;
-#ifdef REVS_VIEW_OWN_SHORT
-    MEM_QUAL unsigned char* srcLine;        /* this line's source column, hoisted once */
-    MEM_QUAL unsigned char* dstLine;        /* ...and its screen row: ONE word read a line */
-#endif
 
     PROBE_PHASE(PROBE_PHASE_VIEWP2);        /* one transition a sweep — src/platform/probe.h §33 */
     PROBE_VIEW_PHASE(1);                    /* its lines are counted in paint_cells, which it enters
@@ -2269,8 +2270,6 @@ static __attribute__((noinline)) void paint_lines_clipped(ViewState* v)
         PROBE_VIEW_LINE();
         PROBE_SHAPE_VIEW_LINE();
         step_scanline((int*)0);
-        srcLine = mem + MEM_view_src_blocks + line;
-        dstLine = mem + plot_ptr_v;
         byte    = mem[MEM_surface_colours + (mem[MEM_view_line_surface + line] & 3)];
         VIEW_SHORT_RUN(0, 0, 1);
 #else
