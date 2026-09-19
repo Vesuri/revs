@@ -682,6 +682,22 @@ endif
 # between the same RLE boundaries `view_consume` carries, so it is exact and not approximate.
 # ⚠ `SPANVERIFY=1` cannot cover it: that oracle needs the forty-unit chain to keep writing mem[],
 # which is exactly what this deletes.
+# ⭐⭐⭐ `make TERRAINLOW=1` — THE LOW BLOCK, display lines 117..157 (§12).  Phases 2 and 3 paint
+# those 41 lines as two runs clipped to the DASHBOARD's silhouette, and `amiga/car_probe.gdb`
+# measured that silhouette to be STATIC — so the runs' cell bounds are a constant table and the
+# per-line plants, pokes, stop moves and chain entries that recompute them have nothing to do.
+# ⚠ It writes `mem[]` only: the car and the dash sides are furniture that reaches the screen
+# through the decode, and the renderer does not own these rows.  That also means the HOST builds
+# it, so `make determinism` (all five trajectories) is its gate — byte-exact against the chain.
+# ⚠⚠ `g_terrainClipBad` must be 0; a non-zero count leaves `paint_lines_clipped` in charge.
+# ⏳⏳ OFF BY DEFAULT AND NOT SHIPPING YET: the painter is byte-exact (TERRAINLOWCHECK reads 0
+# of 21 240 cells) but the arm that REPLACES the chain hangs in the crash reset a few sweeps in.
+# The bytes are right; the chain page's SMC state is what is still owed.  See view_own_low.
+ifeq ($(TERRAINLOW),1)
+EXTRA_DEFINES += -DREVS_TERRAIN_LOW
+PROBE_SYMS_TERRAINLOW = g_terrainClipBad
+endif
+
 TERRAIN ?= 1
 ifeq ($(TERRAIN),1)
 EXTRA_DEFINES += -DREVS_TERRAIN_SPANS -DREVS_VIEW_OWN_FULL
@@ -1028,7 +1044,7 @@ PROBE_SYMS += $(PROBE_SYMS_BCD)
 PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
 PROBE_SYMS += $(PROBE_SYMS_SPAN)
 PROBE_SYMS += $(PROBE_SYMS_SCAN)
-PROBE_SYMS += $(PROBE_SYMS_TERRAIN)
+PROBE_SYMS += $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW)
 PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK)
 
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \

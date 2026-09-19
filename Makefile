@@ -149,6 +149,30 @@ CFLAGS   += -DREVS_VIEW_OWN_SHORT
 CXXFLAGS += -DREVS_VIEW_OWN_SHORT
 endif
 
+# ⭐⭐⭐ `make TERRAINLOW=1` — THE LOW BLOCK, display lines 117..157 (§12).  Phases 2 and 3 paint
+# those 41 lines as two runs clipped to the DASHBOARD's silhouette, and `amiga/car_probe.gdb`
+# measured that silhouette to be STATIC — so the runs' cell bounds are a constant table derived
+# once, and the per-line plants, pokes, stop moves and chain entries that recompute them have
+# nothing left to do.  The interior comes from the transposed source scan's event list, which is
+# `view_consume`'s own RLE, so the bytes are the chain's.
+# ⚠ It writes `mem[]` only — the car and the dash sides are furniture the decode still paints —
+# which is why the HOST builds it and why `make determinism` (all five trajectories) is the gate.
+# ⏳⏳ OFF BY DEFAULT AND NOT SHIPPING YET: the painter is byte-exact (TERRAINLOWCHECK reads 0
+# of 21 240 cells) but the arm that REPLACES the chain hangs in the crash reset a few sweeps in.
+# The bytes are right; the chain page's SMC state is what is still owed.  See view_own_low.
+ifeq ($(TERRAINLOW),1)
+CFLAGS   += -DREVS_TERRAIN_LOW
+CXXFLAGS += -DREVS_TERRAIN_LOW
+# ⭐⭐ `TERRAINLOWCHECK=1` — the low block's ORACLE.  The chain stays in charge and the scan does
+# not consume, so the replacement's byte for every one of the ~708 cells a sweep is compared
+# against what the chain actually wrote, in the same frame on the same data.  `g_lowMismatch`
+# must be 0.  ⚠ Diagnostic only: both painters run.
+ifeq ($(TERRAINLOWCHECK),1)
+CFLAGS   += -DREVS_TERRAIN_LOW_CHECK
+CXXFLAGS += -DREVS_TERRAIN_LOW_CHECK
+endif
+endif
+
 # ⭐ ...and `REVS_HOLD_STEER=l|r` at RUN time holds a STEERING key beside the throttle, which is
 # the only way to exercise the steering chain on a host build (the host has no keyboard, and the
 # mouse axis is the Amiga's).  It is how "the wheel does not turn" was reproduced off-target in
