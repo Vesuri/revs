@@ -29,8 +29,18 @@ rebuilding it — if an entry there needs a paragraph, the paragraph lives in it
 **Where the frame stands:** **192.64 ms bracketed** (Σ phases 1..39 = wall − phase 0), `PROBES=1
 FIXED_RNG=1 STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1 PROBEFIELDS=3000`, warp, driving, at the domain-A
 commit (`frozen=240410697`, `loopFrames=298`, `build=1d`, `probe-audit` 173 symbols). Target is **20 ms** (50 FPS), floor **40 ms**
-(25 FPS) — so this is a 5-10× problem, not a tuning problem, and an entry worth under ~1 ms is not
-where the answer is. ⚠ Size every candidate in **ms/frame** against its own phase row (Rule 1a);
+(25 FPS), and an entry worth under ~1 ms is not where the answer is.
+
+⭐⭐⭐ **AND THE REAL BBC RUNS THIS SAME SCENE AT 97.0 ms A FRAME — 10.31 fps, measured, `make
+refloop` prints it.** So the port is **1.96× the original hardware**, not 5-10× off a reasonable
+figure; the 40 ms floor is **2.43× faster than Crammond ever ran it** and the 20 ms target
+**4.85×**. Neither target was ever set against this number. ⇒ **the queue below cannot reach
+them** — every remaining entry summed is a small fraction of the 150 ms gap, and a 68000's bus
+cycle is 564 ns against the 6502's 500, so per byte touched it is *slower*; it wins only on
+batching the BBC's 8-byte-apart cells and 128-byte-apart sources forbid. The queue is worth
+working for what it is (a ~2× machine should not be a 2× *slower* port), but **20 ms needs the
+layout change on both producer and consumer sides, not this list**. `docs/perf-method.md`
+§what the original hardware achieves. ⚠ Size every candidate in **ms/frame** against its own phase row (Rule 1a);
 the framerate is quantised to `50/N` and cannot see it.
 ⚠⚠ **Read the phase table out of `.run/gdb-out.log`, never out of `diag_run.sh`'s stdout** — that
 is `tail`-truncated to the last 40 lines (`GDBTAIL`), which silently drops phases 1..5 AND the

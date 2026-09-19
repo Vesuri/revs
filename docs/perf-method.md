@@ -6,6 +6,60 @@
 > `docs/headless-fsuae.md` (how to drive the target), `docs/direct-bitplane-plan.md` (the
 > representation-level plan the current table points at).
 
+## ⭐⭐⭐ WHAT THE ORIGINAL HARDWARE ACHIEVES — 97.0 ms a frame, 10.31 fps
+
+**Every other number in this file is the port's cost with nothing to compare it to.** This one is
+the comparison, and it is measured, not remembered:
+
+```
+make refloop FRAMES=120          # the last block it prints
+
+THE REAL BBC'S FRAME COST over 165 settled frames at $1701:
+   median 193994 cycles = 97.0 ms = 10.31 fps   (mean 112.1 ms, p10 85.4, p90 101.3)
+   calibration: one PAL field measures 40000 cycles, a 312x64us field is 39936 — 0.16% off  ✓
+```
+
+`$1701` is the engine's own per-frame back-edge, so the gap between two hits is **one whole game
+frame** in 2 MHz cycles — the road rasteriser, the view pass, the dashboard, the MOS's interrupts
+and the 50 Hz body all inside it. Silverstone practice, driving, the same scene the port is
+profiled on. Reported as a **median**: the engine's crash/reset holds are a different workload,
+exactly as phase 0 is on the Amiga side. The calibration line is not optional decoration — it is
+the known-quantity check (`docs/method-lessons.md`) that the cycle accessor is being read right,
+and it is printed beside the figure so the figure is never read without it.
+
+### What it reframes
+
+| | ms/frame | vs the real BBC |
+|---|---:|---:|
+| **the real BBC, its own hardware** | **97.0** | 1.00× |
+| the port, bracketed | ~190 | **1.96× slower** |
+| the port, less `decode()` (phase 27, work the BBC never did) | ~173 | 1.78× |
+| the stated **floor**, 25 FPS | 40 | **2.43× FASTER than the original** |
+| the stated **target**, 50 FPS | 20 | **4.85× FASTER than the original** |
+
+Three things follow, and they are the numeric case for the rewrite the governing directive
+licenses rather than for more tuning:
+
+1. **The port is not 10× off a reasonable figure; it is 2× off the original.** "5-10× problem" in
+   the queue header is measured against a target nobody ever priced. Against the game as it
+   actually ran, the gap is a factor of two.
+2. **The targets were never derived from this game.** 50 FPS is the Amiga's field rate, not a
+   number Revs ever produced; the original is a ~10 fps game. Reaching 20 ms means running
+   Crammond's 1985 simulation **almost five times faster than he did**, on a CPU that is not five
+   times the machine.
+3. **And the headroom for that is not in the instruction set.** A 68000 at 7.09 MHz has a 4-clock
+   bus cycle — 564 ns against the 2 MHz 6502's 500 ns — so **per byte touched it is marginally
+   SLOWER**, and it wins only where bytes can be batched into words/longwords or held in its
+   sixteen registers. The BBC layout the port inherited forbids exactly that batching: destination
+   cells 8 bytes apart, sources 128 apart (`VIEW_UNIT`), which is why the sweep's unit loop
+   measured 43 cyc/unit against a modelled 43 and **no code shape can improve it**. ⇒ **A 4.85×
+   win cannot come from making this work faster. It can only come from not doing it** — changing
+   the layouts on the producer and consumer sides at once so the 68000's word moves apply.
+
+⇒ **Quote every frame figure against 97.0 ms from now on**, and size an architecture proposal by
+which side of the 1.96× it is trying to close. Anything that only chips at the port's overhead is
+bounded by ~93 ms and cannot reach 40, let alone 20.
+
 ## ⭐⭐ THE PHASE-SHARE PROFILE — the exact recipe, so you never re-derive it
 
 **Question it answers:** where does one painted frame's time go, function by function. SHARES

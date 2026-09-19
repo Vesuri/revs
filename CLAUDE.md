@@ -352,7 +352,15 @@ menu's fields hand the engine a backlog to run in one burst. Reasoning: `docs/am
 ## Performance
 
 **Target: 50 FPS on an A500. Floor: 25 FPS** (user decision; reachability unknown). These are
-*displayed* frames (`50 * g_fpsFrames / g_vbiCount`). The **50 Hz sim tick is separate and not
+*displayed* frames (`50 * g_fpsFrames / g_vbiCount`).
+⭐⭐⭐ **THE REAL BBC RUNS THIS SCENE AT 97.0 ms/frame — 10.31 fps (`make refloop` measures and
+calibrates it).** Quote every frame figure against that, not only against the target: the port at
+~190 ms is **1.96× the original hardware**, the 40 ms floor is **2.43× FASTER than the game ever
+ran** and the 20 ms target **4.85×**. A 68000's bus cycle is 564 ns against the 6502's 500, so per
+byte touched it is *slower* and wins only on batching — which the BBC's 8-byte-apart destination
+cells and 128-byte-apart sources forbid. ⇒ **the targets are not reachable by making the inherited
+work faster, only by changing the layouts on both sides.** `docs/perf-method.md` §what the original
+hardware achieves. The **50 Hz sim tick is separate and not
 negotiable** — 25 FPS means painting every other frame with the simulation still at full rate.
 The A500 is a 7 MHz 68000 and a frame is 20 ms: spending 10 ms on *anything* is half the budget.
 Be conscious of absolute milliseconds always.
