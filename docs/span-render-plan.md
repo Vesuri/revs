@@ -1811,7 +1811,7 @@ bitplane as the terrain* — and neither survives its removal:
 
 | §11's blocker | the measured number | what it is really measuring | after §12 |
 |---|---|---|---|
-| 117..157 is at retarget break-even | **6..28 st/row** against a 12..26 threshold | the terrain being repainted *around the car outline*, plus four car writers landing in the same bytes | **~1 st/row** — the terrain is written once, full width |
+| 117..157 is at retarget break-even | **6..28 st/row** against a 12..26 threshold | the terrain being repainted *around the car outline*, plus four car writers landing in the same bytes | the metric stops applying — see §12a |
 | 158..191 loses as a delta painter | 1.69 delivered bytes/row/frame against a 0.82 break-even | the needles being *redrawn* every frame | the rows are **not redrawn at all** |
 | the mixed-cell mask | ≈0.9..1.1 ms for 117..157 | a cell containing both terrain and car | **no such cell exists** |
 
@@ -1899,3 +1899,53 @@ then the full-width painter — but the painter is now substantially simpler tha
 Stage C retires with it. The car playfield is a separate, parallel piece of work that gates nothing
 in the terrain path: until it exists, the car writers keep writing `mem[]` and the picture stays
 correct (the terrain is simply overdrawn, as it is today).
+
+### §12a — WHAT A REAL BBC ACTUALLY WRITES INTO 117..207, AND IT REFINES §12
+
+`make fbwrites FILL=117-207 FILLFRAMES=20-40 FRAMES=60`, driving Silverstone practice, 21 frames:
+
+| routine | stores/frame | **changes/frame** | lines |
+|---|---|---|---|
+| `view_cell_chain_b_mid` | 329 | **3.05** | 117..157 |
+| `view_cell_chain_a` | 313 | **1.00** | 117..157 |
+| `view_paint_lines_short` | 50 | **0.00** | 133..157 |
+| `view_paint_lines_clipped` | 16 | **0.00** | 117..132 |
+| `undraw_plot_lines` | 35 | 23 | 129..180 |
+| `plot_line_octant` | 35 | 23 | 129..180 |
+| `tick_wheel_spin` | 24 | 24 | 133..140 |
+| `poll_steering_assist` | 4 | 0.00 | 187..188 |
+
+**Three findings, and the first one redirects §12's emphasis.**
+
+1. ⭐⭐⭐ **The store traffic in 117..157 is the VIEW SWEEP, not the car — 708 stores/frame against
+   the car writers' ~94 — and the sweep writes 692 of those bytes to change FOUR.** A 99.4%
+   redundancy rate. So the prize in this band is not mainly "stop the car writers landing in
+   terrain bytes"; it is that the terrain painter re-stores a nearly-static band every frame.
+   ⚠ Read with the window's limits: 21 frames of one trajectory, and a re-plotted identical span
+   costs full price while showing as no change (that is what this instrument exists to expose).
+   The change count is low partly because 117..157 is where the visible terrain narrows to a
+   sliver at each edge — most of those 40 cells are behind the car.
+
+2. **`st/row` stops being the right metric under §12.** §11 used it because ownership meant
+   *retargeting an existing `mem[]` store*. The wholesale painter does not retarget anything: it
+   writes the bitplanes directly and makes no `mem[]` store at all in this band (bar the two
+   physics bytes below). §11e's break-even arithmetic is not beaten, it is out of scope.
+
+3. ⭐⭐ **The user's read of the bottom 50 rows is confirmed by measurement.** Of rows 158..207:
+   `undraw_plot_lines` + `plot_line_octant` own 159..180 (22 rows, the needles), `poll_steering_assist`
+   touches 187..188 with **0 changes/frame**, and **181..186 plus 189..207 — 25 rows — have NO
+   WRITER AT ALL.** Nothing in that band needs redrawing per frame except the needles and the
+   mirror contents.
+
+### ✅ The row-149 hazard is DISCHARGED
+
+`make fbwrites FILL=149-149` names every writer of that line over 21 driving frames:
+**`view_cell_chain_a`, `view_cell_chain_b_mid`, `view_paint_lines_short`** — 8 stores/frame, and
+all three are the view sweep. **No car writer touches row 149**: `plot_line_octant`,
+`undraw_plot_lines`, `mirror_draw_car` and `tick_wheel_spin` are all absent from it.
+
+⇒ The two bytes `update_grip_limits` reads (row 149, cells 7 and 32) are **pure terrain**.
+Rendering the terrain as if the car were not there does **not** change what the physics reads, and
+the renderer does not need to composite the car into them. It must still compose and store those
+two bytes to `mem[]` — that was always in the Stage A budget at ~50 cycles — and `make viewdiff`
+at row 149 remains the gate, but the faithfulness break §12 warned about does not exist.
