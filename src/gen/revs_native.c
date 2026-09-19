@@ -1258,9 +1258,21 @@ static inline __attribute__((always_inline)) void view_scan_body(unsigned lo, un
 #ifdef REVS_TERRAIN_LOW
         if (s_lowConsume[cell] > lo) k0 = (s_lowConsume[cell] - lo) >> 2;
 #endif
-        for (k = k0; k < (hi + 1u - lo) / 4u; k++)
-            if (*(const uint32_t*)(base + k * 4u))
-                view_scan_lanes(base + k * 4u, lo + k * 4u, cell, &found, consume);
+        /* ⭐⭐ ONE INDUCTION VARIABLE.  Indexed as `base[k*4]` with a variable start the loop kept
+           THREE — the line counter, the source pointer and the event cursor — and stepped all of
+           them on the ZERO path: 66 cycles a longword of which twelve are the load.  Walking the
+           pointer and deriving the line only in the cold arm is 38. */
+        {
+            MEM_QUAL unsigned char* q  = base + k0 * 4u;
+            MEM_QUAL unsigned char* qe = base + (hi + 1u - lo);
+            /* ⚠ `<`, NOT `!=`: before the clip table is built `s_lowConsume` is $FF, so the
+               start can be past the end — a `!=` loop then walks off mem[] and segfaults,
+               where the counted form it replaced simply did not run. */
+            for (; q < qe; q += 4)
+                if (*(const uint32_t*)q)
+                    view_scan_lanes(q, lo + (unsigned)(q - base), cell, &found, consume);
+        }
+        (void)k;
     }
 
     for (line = lo; line <= hi; line++)
@@ -2262,41 +2274,49 @@ static void revs_report_low(void)
    ⭐ The colour between events is `view_consume`'s RLE — a zero source means "the same as my
    left" — so the events the transposed scan found ARE the run's interior boundaries and there is
    nothing per cell to test. */
+#ifdef REVS_TERRAIN_LOW_CHECK
+/* ⭐⭐ THE LOW BLOCK'S ORACLE (`make TERRAINLOW=1 TERRAINLOWCHECK=1`): the chain is still in
+   charge and has already written this cell, and the scan did NOT consume — so this is a
+   byte-for-byte differential against the code being replaced, in the same frame on the same
+   data.  `g_lowMismatch` must be 0. */
+#define LOW_PUT(V)  do {                                                        \
+        g_lowChecks++;                                                          \
+        if (*d != (unsigned char)(V)) {                                         \
+            if (!g_lowMismatch) {                                               \
+                g_lowMismatchAt = (unsigned short)((line << 8) | c);            \
+                g_lowWant = (unsigned char)(V); g_lowGot = *d;                  \
+            }                                                                   \
+            g_lowMismatch++;                                                    \
+        }                                                                       \
+    } while (0)
+#else
+#define LOW_PUT(V)  (*d = (unsigned char)(V))
+#endif
+
 static inline __attribute__((always_inline)) const ViewSpan* view_low_run(unsigned base, const ViewSpan* ev,
                                                     unsigned first, unsigned last, unsigned entry,
                                                     unsigned mask, unsigned fill, unsigned line)
 {
-    unsigned c     = first;
-    unsigned value = entry;
+    /* ⭐⭐ FILL BETWEEN EVENTS, DO NOT ASK AT EVERY CELL.  Written as one loop that tested both
+       `ev->start == c` and `c == last` per cell and recomputed `base + c*8` from scratch, this
+       cost ~80 cycles a cell; the events are ~2.5 a line over seventeen cells, so almost all of
+       that was asking a question whose answer the event list already gives.  The interior is now
+       a plain byte fill to the next event with the destination walking by eight, and the
+       boundary cell — the only composed one — is lifted out of the loop entirely. */
+    unsigned                c     = first;
+    unsigned                value = entry;
+    MEM_QUAL unsigned char* d     = mem + ((base + (first << 3)) & 0xFFFFu);
 
-    while (ev->start < first) ev++;           /* events left of the run belong to nobody */
-    for (;;) {
-        if (ev->start == c) { value = ev->colour; ev++; }
-        {
-            const unsigned want = (c == last) ? ((value & mask) | fill) : value;
-            const uint16_t dst  = (uint16_t)(base + (c << 3));
-#ifdef REVS_TERRAIN_LOW_CHECK
-            /* ⭐⭐ THE LOW BLOCK'S ORACLE (`make TERRAINLOW=1 TERRAINLOWCHECK=1`).  The chain is
-               still in charge and has already written this cell, and the scan did NOT consume —
-               so this is a byte-for-byte differential against the code being replaced, in the
-               same frame, on the same data.  `g_lowMismatch` must be 0. */
-#ifndef REVS_PLATFORM_AMIGA
-            { extern int atexit(void (*)(void)); static int reg = 0;
-              if (!reg) { reg = 1; atexit(revs_report_low); } }
-#endif
-            g_lowChecks++;
-            if (mem[dst] != (unsigned char)want && !g_lowMismatch) {
-                g_lowMismatch++;
-                g_lowMismatchAt = (unsigned short)((line << 8) | c);
-                g_lowWant = (unsigned char)want; g_lowGot = mem[dst];
-            } else if (mem[dst] != (unsigned char)want) g_lowMismatch++;
-#else
-            mem[dst] = (unsigned char)want;
-#endif
-        }
-        if (c == last) break;
-        c++;
+    while (ev->start < first) ev++;
+    while (c < last) {
+        unsigned end = ev->start;               /* the next event, or the $FF sentinel */
+        if (end > last) end = last;             /* `last` is the composed cell, handled below */
+        while (c < end) { LOW_PUT(value); d += 8; c++; }
+        if (c < last) { value = ev->colour; ev++; }
     }
+    if (ev->start == last) { value = ev->colour; ev++; }
+    { const unsigned want = (value & mask) | fill; LOW_PUT(want); }
+
     return ev;
 }
 
