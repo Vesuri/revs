@@ -1045,6 +1045,19 @@ fourth reading here: *the oracle shares the input the defect lives in.* Two cons
 
 ## ⭐⭐⭐ THE RESULTS RULE (user-stated, and it outranks the full-`mem[]` diff)
 
+⭐⭐⭐ **A WORKED EXAMPLE OF THE AUDIT THIS RULE DEMANDS is `docs/span-render-plan.md` §12b** — the
+forty view source blocks, `make srcaudit`. Read it before writing the next one; three things in it
+generalise. **(1) Get the address set right first**: the obvious range was 3200 bytes and the real
+one is 2188, because the game packs twelve tables into the offsets below each block's start —
+auditing the whole range would have put twelve innocent tables in the answer and made the item look
+blocked. **(2) Attribute on the AUTHENTIC ENGINE, not the port**: `make srcaudit` flags the bytes
+under jsbeeb and names the routine behind every read, which is the only way to cover the arms a
+Silverstone run cannot reach (it was run on all five circuits and they agree). **(3) The interesting
+answer is usually a class you did not predict**: the three readers named in advance included one
+that does not read those bytes at all, missed the producers' own read-modify-write (13% of reads,
+and the real design constraint), and missed two producers that only run outside a practice session.
+
+
 > "Our intent is to have faithful behavior from the user's point of view, not exact replication of
 > the 6502 architecture. We want validation of results, not implementation details. This should
 > govern all the work; otherwise there is no chance to improve the performance of the port to the

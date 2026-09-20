@@ -567,6 +567,91 @@ if (fillReads) {
     });
 }
 
+// ── ⭐⭐⭐ THE SOURCE-BLOCK READER AUDIT (`--src-audit`) ───────────────────────────────────
+// The RESULTS rule (docs/validation-harness.md) lets the port stop reproducing a mem[] byte that
+// nothing outside the twin reads — but only behind a WRITTEN reader audit, and the readers include
+// arms no Silverstone run reaches.  So ask the authentic engine: flag every byte of the forty
+// $80-spaced view source blocks and record the PC of everything that reads or writes one.
+//
+// ⚠⚠ THE LIVE SPAN IS NOT THE WHOLE BLOCK, and getting that wrong would put twelve innocent
+// tables in the answer.  Per disasm/symbols.csv §the $3080 question: each block's live source span
+// is offsets dash_block_starts[col]..$4F; offsets BELOW the start are dead, which is exactly why
+// the game packs view_run_right_end, dial_needle_dda_tbl, dash_block_starts itself and nine more
+// tables into them, and offsets $50..$7F are the block TAILS (the dashData code copy_dash_data
+// moves to $7B00).  `--src-audit` arms only the live span; `--src-audit=full` arms all 3200 bytes,
+// which is how you SEE the tables show up and confirm the span is right rather than assuming it.
+//
+// ⚠ Opcode fetches come through readmem too.  The live span holds no code — the dash code is in
+// the tails — so `--src-audit` is clean, and `=full` is the arm where a fetch could appear.
+const srcAuditArg = opt("src-audit", null);
+const srcFlags = new Uint8Array(0x10000);
+const srcCellOf = new Int16Array(0x10000).fill(-1);
+const srcLineOf = new Int16Array(0x10000).fill(-1);
+const srcReadPC = new Map(), srcWritePC = new Map();
+let srcReads = 0, srcWrites = 0, srcArmed = 0;
+const SRC_BASE = 0x3000, SRC_CELLS = 40, SRC_STRIDE = 0x80, SRC_LINES = 0x50;
+
+/* ⚠⚠ ARMED LAZILY, ON THE FIRST ACCESS INSIDE THE WINDOW, and that is not a style choice — it is
+   the fix for a measured failure.  The flags depend on dash_block_starts, which has to be read out
+   of the RUNNING machine (an expansion circuit's hook may patch it), so the first version armed
+   after the race was reached: `frames` was already 44 and the 20..40 window had closed, giving a
+   confident 0 reads / 0 writes.  Registering the hooks at module scope and building the flags on
+   first use inside the window gets both: the real machine's table, and the whole window.
+   ⭐ The "NOTHING touched the armed bytes" line in the report is what caught it — an instrument
+   that cannot report its own silence is indistinguishable from a finding. */
+function srcArm() {
+    /* live   — offsets dash_block_starts[col]..$4F, the bytes the view actually uses
+       full   — offsets $00..$4F, i.e. the live span PLUS the dead-below-start offsets the game
+                packs twelve tables into: the arm that CONFIRMS the boundary instead of assuming
+                it, because every extra reader it shows must be one of those tables
+       tails  — offsets $50..$7F, the block TAILS copy_dash_data assembles $7B00-$7FFF from.  This
+                is the arm that DISCHARGES the named `copy_dash_data` concern positively, by
+                showing where it does read; its absence from `live`/`full` proves nothing, because
+                those never arm a byte it could touch.
+       blocks — all $80 bytes, all three at once */
+    const mode = srcAuditArg;
+    const full = mode === "full" || mode === "blocks";
+    const lineLo = (c, starts) => mode === "tails" ? SRC_LINES : (full ? 0 : starts[c]);
+    const lineHi = (mode === "tails" || mode === "blocks") ? SRC_STRIDE : SRC_LINES;
+    const starts = [];
+    for (let c = 0; c < SRC_CELLS; c++) starts.push(tm.processor.peekmem(0x3900 + c));
+    for (let c = 0; c < SRC_CELLS; c++)
+        for (let L = lineLo(c, starts); L < lineHi; L++) {
+            const a = SRC_BASE + c * SRC_STRIDE + L;
+            srcFlags[a] = 1; srcCellOf[a] = c; srcLineOf[a] = L; srcArmed++;
+        }
+    const what = { live:  "LIVE span only, offsets dash_block_starts[col]..$4F",
+                   full:  "offsets $00..$4F — live span PLUS the twelve tables in the dead offsets",
+                   tails: "block TAILS only, offsets $50..$7F — the dashData source",
+                   blocks:"WHOLE blocks, offsets $00..$7F" }[mode] || mode;
+    console.log(`\nsource-block audit armed at frame ${frames}: ${srcArmed} bytes (${what})`);
+    console.log(`  dash_block_starts = ${starts.map(v => v.toString(16).padStart(2, "0")).join(" ")}\n`);
+}
+if (srcAuditArg) {
+    tm.processor.debugRead.add((addr) => {
+        if (frames < fillFrameLo || frames > fillFrameHi) return;
+        if (!srcArmed) srcArm();
+        if (!srcFlags[addr]) return;
+        const pc = tm.processor.getPrevPc(0);
+        let e = srcReadPC.get(pc);
+        if (!e) srcReadPC.set(pc, (e = { n: 0, cells: new Set(), lines: new Set(), sample: [] }));
+        e.n++; e.cells.add(srcCellOf[addr]); e.lines.add(srcLineOf[addr]);
+        if (e.sample.length < 6) e.sample.push(addr);
+        srcReads++;
+    });
+    tm.processor.debugWrite.add((addr, b) => {
+        if (frames < fillFrameLo || frames > fillFrameHi) return;
+        if (!srcArmed) srcArm();
+        if (!srcFlags[addr]) return;
+        const pc = tm.processor.getPrevPc(0);
+        let e = srcWritePC.get(pc);
+        if (!e) srcWritePC.set(pc, (e = { n: 0, cells: new Set(), lines: new Set(), zero: 0 }));
+        e.n++; e.cells.add(srcCellOf[addr]); e.lines.add(srcLineOf[addr]);
+        if (b === 0) e.zero++;
+        srcWrites++;
+    });
+}
+
 // ── the interrupt register contract, measured ─────────────────────────────────────────────
 // Catch the CPU at the OS's IRQ entry (the address in $FFFE/$FFFF), where A/X/Y are still the
 // INTERRUPTED program's, read the return address off the 6502 stack the sequence just pushed,
@@ -1241,6 +1326,56 @@ if (charset) {
             console.log("      single-width (or blank, when the half it wants is empty).");
         }
     }
+}
+
+// ── ⭐⭐⭐ THE SOURCE-BLOCK READER AUDIT REPORT ───────────────────────────────────────────────
+if (srcAuditArg) {
+    const syms = [];
+    try {
+        const csv = fs.readFileSync(new URL("../disasm/symbols.csv", import.meta.url), "utf8");
+        for (const line of csv.split("\n")) {
+            const m = line.match(/^0x([0-9A-Fa-f]{4}),([^,]+),([^,]*),/);
+            if (m && m[3].trim() === "func") syms.push([parseInt(m[1], 16), m[2]]);
+        }
+        syms.sort((a, b) => a[0] - b[0]);
+    } catch { /* names are a convenience; the addresses are the finding */ }
+    const nameOf = (pc) => {
+        let best = null;
+        for (const [a, n] of syms) { if (a <= pc) best = [a, n]; else break; }
+        return best ? `${best[1]}${best[0] === pc ? "" : "+" + (pc - best[0])}` : "?";
+    };
+    const nWin = fillFrameHi - fillFrameLo + 1;
+    const roll = (map) => {
+        const byFn = new Map();
+        for (const [pc, e] of map.entries()) {
+            const fn = nameOf(pc).split("+")[0];
+            let f = byFn.get(fn);
+            if (!f) byFn.set(fn, (f = { n: 0, pcs: 0, cells: new Set(), lines: new Set(), zero: 0 }));
+            f.n += e.n; f.pcs++; f.zero += (e.zero || 0);
+            for (const c of e.cells) f.cells.add(c);
+            for (const L of e.lines) f.lines.add(L);
+        }
+        return [...byFn.entries()].sort((a, b) => b[1].n - a[1].n);
+    };
+    const span = (set) => {
+        const v = [...set].sort((a, b) => a - b);
+        return v.length === 0 ? "-" : v.length <= 6 ? v.join(",") : `${v[0]}..${v[v.length - 1]} (${v.length})`;
+    };
+    console.log(`\n⭐⭐⭐ THE VIEW SOURCE BLOCKS ON A REAL BBC — frames ${fillFrameLo}..${fillFrameHi}, ` +
+                `${srcArmed} bytes armed`);
+    console.log(`   READS  ${srcReads} (${(srcReads / nWin).toFixed(0)}/frame) from ${srcReadPC.size} PCs`);
+    console.log(`   WRITES ${srcWrites} (${(srcWrites / nWin).toFixed(0)}/frame) from ${srcWritePC.size} PCs`);
+    console.log(`\n   ⭐ WHO READS THEM — every one of these is a reader the RESULTS rule must account for:`);
+    for (const [fn, f] of roll(srcReadPC))
+        console.log(`      ${String(Math.round(f.n / nWin)).padStart(6)}/frame  ${fn.padEnd(26)} ` +
+                    `cells ${span(f.cells).padEnd(14)} lines ${span(f.lines)}   (${f.pcs} PCs)`);
+    console.log(`\n   WHO WRITES THEM:`);
+    for (const [fn, f] of roll(srcWritePC))
+        console.log(`      ${String(Math.round(f.n / nWin)).padStart(6)}/frame  ${fn.padEnd(26)} ` +
+                    `cells ${span(f.cells).padEnd(14)} lines ${span(f.lines)}   ` +
+                    `(${f.pcs} PCs, ${Math.round(f.zero / nWin)}/frame wrote ZERO)`);
+    if (srcReads === 0 && srcWrites === 0)
+        console.log("   ⚠⚠ NOTHING touched the armed bytes — suspect the arming, not the engine.");
 }
 
 // ── who filled those lines ────────────────────────────────────────────────────────────────

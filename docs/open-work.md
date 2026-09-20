@@ -268,6 +268,31 @@ RESULTS-rule reader audit** (`docs/validation-harness.md` §THE RESULTS RULE), a
 `set_ignore`, and `make viewdiff`. Sibling, same subsystem: **the per-walk entry/exit, ~10.5 ms
 for 24 walks**.
 
+### 2b. ✅ THE SOURCE-BLOCK READER AUDIT IS DONE — `docs/span-render-plan.md` §12b, `make srcaudit`
+The RESULTS-rule gate on "the producers stop maintaining the source blocks in `mem[]`" is
+**written and measured on all five circuits**: no reader outside the view pipeline touches a live
+source byte during a race. What it changed about the plan, and none of it was in the guess it
+replaced:
+- ⚠⚠ **13% of the reads are the producers reading their OWN byte back** to compose two shape edges
+  landing in the same cell. "The producer already knows every byte it writes" is true per STORE and
+  false per CELL, so the replacement representation must carry the composition. **This is the real
+  constraint on the item and it is a design question, not an audit one.**
+- `copy_dash_data` reads the **live span**, not the tails as CLAUDE.md says — but it brackets the
+  race (assemble in, stow out) and never interleaves, so it does not block.
+- Two producers the practice-session window cannot reach go with the rest: `draw_starting_lights`
+  (`$42C0`) and `paint_fence_backdrop`.
+- The gate is `make viewdiff` per circuit plus a scoped `set_ignore` and a `determinism` re-record.
+
+⚠ **AND THE VALUE IS SMALLER THAN THE ENTRY BELOW IMPLIED — RE-PRICE BEFORE BUILDING.** The
+producers make only **~176 source-byte stores a sweep** (the "2082" in circulation is the
+CONSUMER's destination stores), so deleting the stores themselves is ~0.75 ms. The prize is the
+**scan's 10.00 ms**, and ⛔ the one route to it that has been built measured **+14 ms**
+(`9d503ed`, producer-emitted events: the same note costs 67 cycles inline in a loop we own and
+~2700 as a `jsr` in `draw_road`'s hot loops). ⇒ this item is unblocked on FAITHFULNESS and still
+blocked on COST; what it needs is a note placement that is neither a call in `draw_road`'s loops
+nor an inline copy in them — e.g. one note per RUN rather than per byte, since
+`plot_view_src_line` already knows the column and the line range.
+
 ### 3. ⭐⭐ Fewer POINTS / SPANS / SOURCE VISITS — `build_track_geometry`, 26.7 ms
 `docs/perf-method.md` §What is left. Setup and loops fused into native value pipelines; the
 interpreter is already gone from the whole tree, so nothing is left to delete there. Named

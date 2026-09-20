@@ -79,9 +79,11 @@ address.** `revs_mem.bin` (`tools/ssd_load.py`, `make image TRACK=…`) is only 
 and the replay's input. Mechanism and traps: `docs/static-map.md`.
 
 ⚠⚠ **There is a SECOND unpack.** `copy_dash_data` (`$18EA`) assembles `$7B00-$7FFF` — 1280 bytes
-of live code including the view rasteriser and the wing mirrors — at *runtime* from the tails of 41
+of live code including the view rasteriser and the wing mirrors — at *runtime* from 41
 `$80`-spaced blocks at `$3000`, and stows it back before returning to MODE 7, so the page is empty
-in every static image and every out-of-race RAM dump. `make dashcode` replays it into
+in every static image and every out-of-race RAM dump. ⚠ It copies offsets `dash_block_starts[col]`..`$4F`
+— the view's own LIVE SOURCE SPAN, not the block tails (measured, `docs/span-render-plan.md` §12b);
+those blocks are time-multiplexed, dash code out of race and source bytes in race. `make dashcode` replays it into
 `disasm/dashcode.txt`, which `make gen` ingests by default (`DASHCODE=0` opts out). ⚠ That page is
 also the MODE 7 screen (same 1 KB, time-multiplexed) and is heavily self-modifying — 42 patch
 sites. `docs/static-map.md` §Open items 6 and 10.

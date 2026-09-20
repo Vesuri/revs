@@ -1949,3 +1949,127 @@ Rendering the terrain as if the car were not there does **not** change what the 
 the renderer does not need to composite the car into them. It must still compose and store those
 two bytes to `mem[]` — that was always in the Stage A budget at ~50 cycles — and `make viewdiff`
 at row 149 remains the gate, but the faithfulness break §12 warned about does not exist.
+
+### ⭐⭐⭐ §12b — THE SOURCE-BLOCK READER AUDIT (`make srcaudit`, 2026-09-20)
+
+**This is the written reader audit the RESULTS rule requires** (`docs/validation-harness.md` §THE
+RESULTS RULE) before the producers may stop maintaining the forty view source blocks in `mem[]`.
+It replaces the three-name guess that was standing in for it (`docs/perf-method.md` §what is left
+named "`copy_dash_data`'s stow, `plot_view_src_line` and every expansion circuit's hook") — one of
+those three turns out not to be a reader of these bytes at all, and the audit found readers that
+list did not contain.
+
+#### The scope, and it is NOT the whole 3200-byte block area
+
+Each `$80` block splits three ways, and only the first part is in question:
+
+| offsets | bytes | what |
+|---|---:|---|
+| `dash_block_starts[col] .. $4F` | **2188** | ⭐ **the live source span — the subject of this audit** |
+| `$00 .. dash_block_starts[col]-1` | 1012 | dead to the view; the game packs **twelve tables** here |
+| `$50 .. $7F` | 1920 | the block tails |
+
+`dash_block_starts` (`$3900`, read out of the running machine) is
+`1b 1b 1b 15 03 02 02 06 0b 0f 13 17 1b 26 2b×13 26 1b 17 13 0f 0b 06 02 02 03 15 1b 1b 1b`.
+⚠⚠ **Auditing the whole block area instead would have put twelve innocent tables in the answer**
+and made the item look blocked: `view_run_right_end`, `dial_needle_dda_tbl`, `steer_needle_dda_tbl`,
+`dash_block_starts` itself, `octant_major/minor_step_tbl`, `mirror_seg_*`, `char_row_addr_hi`,
+`text_script_1f/22` and `object_gap_top_tbl` all live in the dead-below-start offsets
+(`disasm/symbols.csv` §the `$3080` question).
+
+#### The method
+
+`make srcaudit` (`tools/bbc_refloop_race.mjs --src-audit=`) flags every byte of the chosen range and
+attributes **every read and every write** to the routine that made it, on the **authentic engine**
+under jsbeeb — so the answer covers arms no port run reaches. Four arming modes: `live` (the span
+above), `full` (`$00..$4F`, i.e. + the tables), `tails` (`$50..$7F`), `blocks` (everything). Run on
+**all five circuits**, driving practice, frames 20..40. Cross-checked by a static sweep of every
+literal `$3000..$43FF` access in the whole generated corpus, and by reading `copy_dash_data`.
+
+#### The result — every reader of the live span, identical on all five circuits
+
+| class | reader | reads/frame | cells | what it is |
+|---|---|---:|---|---|
+| **A** | `view_cell_chain_a` | 983-1053 | 0..15 | **THE CONSUMER.** Reads and ZEROES |
+| **A** | `view_cell_chain_b_mid` | 922-957 | 26..39 | " |
+| **A** | `view_cell_chain_b` | 377-396 | 16..25 | " |
+| **B** | `column_gap_walk` | 198-209 | 3..39 | **A PRODUCER READING ITS OWN BYTE BACK** |
+| **B** | `road_span_plot` | 61-108 | 0..39 | " |
+| **B** | `road_span_plot_2` | 56-104 | 1..39 | " |
+| **B** | `span_end_marker_p1` / `_p2` | 2-31 each | varies | " |
+| **B** | `plot_view_src_line` | 0-20 | varies | " |
+| **B** | `fill_object_gap` | 0-4 | 36,37,39 | " |
+| **D** | `view_paint_lines_short` | 2 | **1, line 27** | ⚠ NOT a source reader — see below |
+
+Class A is **87%** of the ~2700 reads a frame; class B is 13%. **There is no class outside the view
+pipeline in the race window**, on any circuit.
+
+⭐ **CLASS D IS THE INSTRUMENT VALIDATING ITSELF.** `view_paint_lines_short` reads cell 1, line 27
+— that is **`$309B`**, and `disasm/symbols.csv` had already derived by hand that `$3080`
+(`view_run_right_end`) and column 1's live span "collide in exactly ONE byte, `$309B`, at phase 3's
+topmost line". The instrument reproduced a byte-precise hand result it knew nothing about. In the
+`full` arm the same PC widens to cells 1, lines 3..27 — exactly the `X = 3..$1B` range the note
+predicts. It is a **table** read that shares one address, not a source-byte read.
+
+#### ⚠⚠ CLASS C — the one reader outside the view pipeline, and the named guess was wrong about it
+
+**`copy_dash_data` reads and writes the live source span — not the tails.** CLAUDE.md describes it
+as assembling `$7B00-$7FFF` "from the tails of 41 `$80`-spaced blocks", and that one line is
+imprecise: the twin's loop is `y = $4F` counting **down to `dash_block_starts[b]`**, i.e. exactly
+`[start+1, $4F]`. The `tails` arm shows it absent and the `blocks` arm shows it reading offsets
+`$00..$4F` of all forty blocks, twice (≈6400 accesses). `revs_native.c` already carried the
+consequence from a different direction — *"in STOW mode this writes the view's own SOURCE blocks, so
+it is a producer the skip has to know about"*, with its 207-stale-byte history.
+
+⭐⭐ **BUT IT BRACKETS THE RACE AND NEVER INTERLEAVES WITH THE PRODUCERS**, which is what makes the
+item viable: it is called exactly twice per race — ASSEMBLE (`A=$00`) on the way in, STOW (`A=$80`)
+on the way out — and it appears in **neither** mid-race window on any circuit. So for the whole
+duration of a race the live span has exactly two tenants, the producers and the consumer, and the
+blocks are **time-multiplexed storage**: dash overlay code out of race, source bytes in race.
+
+#### ⚠ THE AUDIT'S SCOPE LIMIT, stated rather than left to be discovered
+
+The dynamic arm is a **driving practice session**. Two port-side producers write live source bytes
+and could not run in that window, found by the static sweep instead:
+
+- **`draw_starting_lights_core`** writes `$42C0` (block 37, offset `$40`; start `$1B`, so live).
+  Grid start lights exist only in a RACE, not practice.
+- **`paint_fence_backdrop_core`** walks the blocks from `MEM_view_src_blocks`.
+
+Both must be retargeted with the producers. `make determinism-race` is the trajectory that reaches
+the first one. Everything else in the generated corpus is clean: **every literal `$3000..$43FF`
+access in `revs_gen.c` is a tail byte or a dead-below-start byte, and `revs_native.c`,
+`revs_native_abi.c` and `revs_track_hooks.c` contain none at all.** `region_23d8` — the walk body
+every expansion circuit re-enters at `$2490`, the one CLAUDE.md warns can never be cleared by a
+Silverstone run — touches no `$3xxx`/`$4xxx` literal, no `plot_ptr` and no bus access in its 351
+lines.
+
+#### ✅ THE VERDICT
+
+**No reader outside the view pipeline touches a live source byte during a race.** The bytes are an
+implementation detail of the producer/consumer pair under the RESULTS rule, and the producers may
+stop maintaining them in `mem[]` subject to four conditions the audit itself establishes:
+
+1. ⚠⚠ **Class B is real state, not a handoff.** 13% of the reads are producers reading back a byte
+   they are about to modify, because two shape edges landing in the same cell must compose at pixel
+   precision. "The producers already know every byte they write" is therefore **only true per
+   store, not per cell** — the replacement representation has to carry the composition, or the
+   picture changes where edges overlap. This is the real design constraint and it is new.
+2. `copy_dash_data`'s ASSEMBLE must still find the overlay. It does — more reliably, since
+   producers that stop writing never clobber it — but its STOW then writes back bytes that differ
+   from the 6502's, so `make determinism` diverges by construction and needs the scoped
+   `set_ignore` + a re-record whose commit quotes this section.
+3. `draw_starting_lights` and `paint_fence_backdrop` go with the producers (scope limit above).
+4. **The gate is `make viewdiff` per circuit**, not `determinism` — the bytes stop matching on
+   purpose, so only the picture can decide.
+
+#### ⚠ And the instrument's own failure, because it is the reusable half
+
+The first version armed its flags *after* the race was reached, to read `dash_block_starts` out of
+the running machine. `frames` was already **44** and the requested 20..40 window had closed, so it
+reported a confident **0 reads / 0 writes** — for bytes the engine writes 378 times a frame. What
+caught it was the one line in the report that says so (`⚠⚠ NOTHING touched the armed bytes —
+suspect the arming, not the engine`) plus an explicit `armed at frames=N; window is A..B` line.
+⇒ **an instrument that cannot report its own silence is indistinguishable from a finding.** The fix
+is lazy arming: register the hooks at module scope, build the flags on the first access inside the
+window, and get both the real machine's table and the whole window.

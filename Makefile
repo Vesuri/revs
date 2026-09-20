@@ -1086,6 +1086,24 @@ viewdiff:
 # shows up as nothing).  The report prints both, per routine.
 #   make fbwrites                    lines 0..207, frames 9..23 of a driving Silverstone practice
 #   make fbwrites FILL=80-165 FILLFRAMES=30-40    just the road band, a later window
+# ⭐⭐⭐ THE SOURCE-BLOCK READER AUDIT — who reads the forty view source blocks on a REAL BBC.
+# The gate the RESULTS rule demands before the producers can stop maintaining those bytes
+# (docs/validation-harness.md §THE RESULTS RULE).  Attributes every READ and WRITE of the live
+# source span to the routine that made it, on the authentic engine, so the answer covers arms no
+# port run reaches.
+#   make srcaudit                     the LIVE span only (dash_block_starts[col]..$4F)
+#   make srcaudit SRCAUDIT=full       all 3200 bytes — shows the twelve tables that share the
+#                                     dead offsets below each block's start, which is how you
+#                                     confirm the span is right instead of assuming it
+#   make srcaudit TRACK=3             an EXPANSION circuit: its hooks are the readers no
+#                                     Silverstone run can show you
+SRCAUDIT ?= live
+.PHONY: srcaudit
+srcaudit:
+	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs \
+	    --frames=$(FRAMES) --track=$(TRACK) --wing=$(WING) --drive \
+	    --src-audit=$(SRCAUDIT) --fill-frames=$(FILLFRAMES)
+
 FILL ?= all
 FILLFRAMES ?= 9-23
 fbwrites:
