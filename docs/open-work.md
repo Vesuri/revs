@@ -283,15 +283,20 @@ replaced:
   (`$42C0`) and `paint_fence_backdrop`.
 - The gate is `make viewdiff` per circuit plus a scoped `set_ignore` and a `determinism` re-record.
 
-⚠ **AND THE VALUE IS SMALLER THAN THE ENTRY BELOW IMPLIED — RE-PRICE BEFORE BUILDING.** The
-producers make only **~176 source-byte stores a sweep** (the "2082" in circulation is the
-CONSUMER's destination stores), so deleting the stores themselves is ~0.75 ms. The prize is the
-**scan's 10.00 ms**, and ⛔ the one route to it that has been built measured **+14 ms**
-(`9d503ed`, producer-emitted events: the same note costs 67 cycles inline in a loop we own and
-~2700 as a `jsr` in `draw_road`'s hot loops). ⇒ this item is unblocked on FAITHFULNESS and still
-blocked on COST; what it needs is a note placement that is neither a call in `draw_road`'s loops
-nor an inline copy in them — e.g. one note per RUN rather than per byte, since
-`plot_view_src_line` already knows the column and the line range.
+⛔⛔⛔ **AND THE ROUTE IT UNBLOCKS IS NOW CLOSED ON ARITHMETIC — the ceiling is −2.16 ms.**
+`docs/perf-method.md` §producer-emitted source events are closed for good. The scan's 10.00 ms is
+**5.30 walk + 4.70 record**, and only the walk is deletable: the record is 161 event appends that
+have to happen wherever the events come from, and the producer route's ordered insert is strictly
+MORE work than the scan's in-order append. Against a **measured** +3.89 ms call barrier in
+`interp_edge_core`'s loops, best case is −5.30 − 0.75 + 3.89 = **−2.16 ms** — for a new
+representation that must preserve class B's read-modify-write composition, plus a scoped
+`set_ignore`, a `determinism` re-record and per-circuit `viewdiff` gating. **Do not re-open
+without a new number.** Two sub-ideas died with it: bounding the scan by `dash_block_starts` is
+worth exactly ZERO (`s_lowConsume[cell] == dash_block_starts[cell] + 1` on all forty cells — the
+scan is already at its floor), and the `SRCEVNULL` split is confounded by IPA.
+
+⇒ **The AUDIT keeps its value** (it is the permanent gate, it corrected CLAUDE.md on
+`copy_dash_data`, and it is the worked example the RESULTS rule now points at); the route does not.
 
 ### 3. ⭐⭐ Fewer POINTS / SPANS / SOURCE VISITS — `build_track_geometry`, 26.7 ms
 `docs/perf-method.md` §What is left. Setup and loops fused into native value pipelines; the

@@ -604,6 +604,11 @@ Rules that must survive without opening `docs/perf-method.md`:
   the leaf *it* calls. The second cost 4.3 ms/frame in the dash-edge walk, and register-pressure
   reasoning pointed the wrong way. `always_inline` on a hot leaf and `noinline` on a cold sibling
   are load-bearing, not hints. `docs/m68k-optimisation.md` §inlining threshold.
+  ⚠⚠⚠ **AND THAT GREP MUST MATCH GCC'S CLONE SUFFIXES — `.constprop.N`, `.isra.N`, `.part.N` — SO
+  GREP THE PREFIX `<name`, NEVER `<name>`.** A call emitted as
+  `jsr <view_ev_note_addr.constprop.0>` reads as ZERO calls, which is precisely the answer this
+  check treats as success. Measured 2026-09-20: it cost a wrong conclusion ("GCC deleted the
+  calls") and a needless edit, while four calls sat in `interp_edge_core` untouched.
   ⭐⭐⭐ **AN OBJDUMP DELTA IS FOR FINDING A DEFECT, NEVER FOR SIZING ONE — ON A REGISTER-BOUND
   DRIVER IT OVER-READS BY ~6x.** Deleting the view sweep's nine-instruction stop tail (seven memory
   operands, 82 runs a frame) statically prices at ~0.7 ms and the phase table paid **0.118**; the

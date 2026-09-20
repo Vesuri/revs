@@ -766,6 +766,15 @@ endif
 # (src/gen/revs_native.c §producer-emitted source events).  `SRCEVENTSCHECK=1` nests and is
 # the ORACLE: the scan still runs and fills its own list, the producers fill a shadow, and
 # the two are compared entry for entry.
+# ⭐⭐⭐ `make SRCEVNULL=1` — keep the note CALL at `plot_store_resync`'s site and delete its WORK,
+# to split the measured +15.28 ms into "per call" (fewer notes would help) vs "per loop shape"
+# (an aliasing barrier — fewer notes help nothing).  Use with SRCEVENTSCHECK=1 so the painters
+# still read the scan's list and the trajectory is identical.  src/gen/revs_native.c §SRCEVNULL.
+ifeq ($(SRCEVNULL),1)
+EXTRA_DEFINES += -DREVS_SRC_EV_NULL
+PROBE_SYMS_SRCEVNULL = g_srcEvNulls
+endif
+
 ifeq ($(SRCEVENTS),1)
 EXTRA_DEFINES += -DREVS_SRC_EVENTS
 ifeq ($(SRCEVENTSCHECK),1)
@@ -1141,7 +1150,7 @@ PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
 PROBE_SYMS += $(PROBE_SYMS_SPAN)
 PROBE_SYMS += $(PROBE_SYMS_SCAN)
 PROBE_SYMS += $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV)
-PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK) $(PROBE_SYMS_FASTMEM)
+PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK) $(PROBE_SYMS_FASTMEM) $(PROBE_SYMS_SRCEVNULL)
 
 # ⭐⭐ THE BLOCK-OP WRAP.  The shared support library's memset/memcpy/memmove are BYTE LOOPS
 # (24-40 cycles a byte); src/platform/amiga/fastmem.c replaces them with longword ones.  Wrapping

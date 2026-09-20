@@ -1494,12 +1494,65 @@ static void view_ev_check(void)
    `draw_road`'s hot loops, which is the shape CLAUDE.md measured at +4.9 ms.  Out of line it is
    one `jsr` per plotter source store (~40 a sweep) — but a call is an ALIASING BARRIER, so the
    surrounding loop may spill instead.  Both failure modes are real; the phase table decides. */
+/* ⭐⭐⭐ `make SRCEVNULL=1` — THE ARM THAT SPLITS THE +15.28 ms INTO ITS TWO POSSIBLE CAUSES, and
+   it is the whole reason the per-run idea is testable without building it.  The note's cost at
+   this site is either
+     (a) per CALL — the ordered insert, ~40 of them a sweep — in which case emitting one note per
+         RUN instead of per BYTE divides it, or
+     (b) per LOOP SHAPE — a cross-TU call in `interp_edge_core`'s hot loops is an ALIASING BARRIER,
+         so the loop spills whatever the callee does — in which case fewer notes buy NOTHING and
+         the only route is to get the call out of the loop entirely.
+   This arm keeps the call and the barrier and deletes the WORK.  Run it with SRCEVENTSCHECK=1:
+   there the painters are fed by the scan's own list, so the trajectory is identical across all
+   three arms and `phase 11` is directly comparable.
+
+   ⚠⚠ MEASURED, AND THEN THE SPLIT ITSELF WAS RETRACTED — READ BOTH HALVES.  The three arms read
+   `phase 11` = 34.255 (control) / 38.143 (this arm) / 49.396 (full notes), which looks like
+   "barrier +3.89, insert +11.25, so the insert is 74% and fewer notes would divide it".  **That
+   decomposition is CONFOUNDED BY IPA and must not be quoted.**  GCC can see this callee's body in
+   the same TU, so with the body reduced to one global increment it knows only `g_srcEvNulls`
+   changes and the barrier it imposes on `interp_edge_core` is WEAK; the full callee touches
+   `EV_ARRAY`, `EV_END`, `s_lowConsume` and `mem[]`, so its barrier is STRONGER.  The two arms
+   therefore differ in the barrier as well as the work, and (B - C) is not the insert.
+   ⇒ **+3.89 ms is a LOWER BOUND on the call-shape cost and nothing more.**  A clean split would
+   need the callee in its own translation unit (maximal barrier, no IPA) — which measures a
+   DIFFERENT, stronger barrier than the real arm has.  There is no arrangement that isolates them,
+   which is why the route below is closed on the scan's own split instead.
+   ⚠ Two things are forced or the arm measures nothing: `noinline` (with an empty body GCC would
+   inline it into all nine copies and there would be no call to price) and the `asm volatile`
+   memory clobber (otherwise GCC proves the callee side-effect-free and deletes the call).  The
+   clobber does NOT contaminate the caller: a `noinline` call is already a full barrier there.
+   ⭐ VERIFY BEFORE READING IT: `jsr <view_ev_note_addr>` must still appear 9x in the objdump. */
+#ifdef REVS_SRC_EV_NULL
+unsigned long g_srcEvNulls = 0;    /* ⭐ and it is what makes the arm PROVE it fired */
+__attribute__((noinline))
+void view_ev_note_addr(unsigned addr, unsigned src)
+{
+    const unsigned off = (addr & 0xFFFFu) - MEM_view_src_blocks;
+    (void)src;
+    if (off >= VIEW_SPAN_CELLS * 0x80u) return;
+    /* The counter makes the arm PROVE it fired (CLAUDE.md §an A/B switch must print its own
+       state) and guarantees the call cannot be reasoned away.  Non-volatile deliberately:
+       ~3 instructions, ~20 cycles x ~40 calls a sweep = ~0.11 ms, stated rather than ignored.
+       ⚠⚠⚠ AND THE REASON IT IS HERE IS A CHECK THAT WAS WRONG, WHICH IS THE LESSON:
+       `grep -c "jsr.*<view_ev_note_addr>"` read 0 on the first build of this arm and I concluded
+       GCC had deleted the calls.  It had not.  GCC had emitted a CONSTPROP CLONE — the call is
+       `jsr <view_ev_note_addr.constprop.0>` — so the grep matched nothing while four calls sat in
+       `interp_edge_core` exactly as intended.  ⇒ **AN OBJDUMP CHECK FOR A CALL MUST MATCH THE
+       CLONE SUFFIXES** (`.constprop.N`, `.isra.N`, `.part.N`), or a working arm reads as a
+       deleted one; grep the prefix `<name`, not `<name>`.  The same trap inverts CLAUDE.md's
+       "require `jsr <hot-leaf>` == 0" check, which can read 0 while the call is still there. */
+    g_srcEvNulls++;
+    /* the ordered insert is what this arm deletes */
+}
+#else
 void view_ev_note_addr(unsigned addr, unsigned src)
 {
     const unsigned off = (addr & 0xFFFFu) - MEM_view_src_blocks;
     if (off >= VIEW_SPAN_CELLS * 0x80u) return;        /* not a view source byte */
     view_ev_note(off & 0x7Fu, off >> 7, src);
 }
+#endif
 #define VIEW_NOTE_SRC_AT(l, c, val)    view_ev_note((unsigned)(l), (unsigned)(c), (unsigned)(val))
 #else
 #define VIEW_NOTE_SRC_AT(l, c, val)    ((void)0)

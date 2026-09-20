@@ -1926,6 +1926,68 @@ sabotages, five distinct counts (599 / 447 / 7 / 600 / 600), so the arm is cover
 the 5.92 ms. That is the next thing there, and it is small — the routine has gone from the frame's
 most expensive per-item cost to a 3.4% row.
 
+### ⛔⛔⛔ PRODUCER-EMITTED SOURCE EVENTS ARE CLOSED FOR GOOD — the ceiling is −2.16 ms, and my own −9 was a fifth residual error
+
+`9d503ed` closed the built version on cost (+14 ms). The follow-up idea was "one note per RUN
+rather than per byte", on the reasoning that the ~2700-cycle note was a per-CALL cost that fewer
+notes would divide. **The idea is dead, and what kills it is the scan's own split, not the note.**
+
+⭐⭐⭐ **THE SCAN'S 10.00 ms IS 5.30 WALK + 4.70 RECORD, AND ONLY THE WALK IS DELETABLE.** The
+record half is 161 events × 207 cycles of *appending to the event list* — work that has to happen
+wherever the events come from, and the producer route's `view_ev_note` does an **ordered insert**,
+which is strictly MORE than the scan's in-order append (the scan walks cells in ascending order, so
+it appends; a producer stores in DDA order, so it must search and shift). So:
+
+| | ms |
+|---|---:|
+| scan WALK — the blind 2188-byte sweep, deletable | **−5.30** |
+| the producers' own ~176 `mem[]` source stores a sweep | **−0.75** |
+| scan RECORD — **not deletable**, and the replacement is dearer | 0 |
+| the call barrier in `interp_edge_core`'s loops, **measured** | **+3.89** |
+| **best case, with the insert reduced to zero** | **−2.16** |
+
+…for a new representation that must preserve the producers' read-modify-write composition
+(`docs/span-render-plan.md` §12b class B), a scoped `set_ignore`, a `determinism` re-record and
+per-circuit `viewdiff` gating. **Not worth building. Do not re-open without a new number here.**
+
+⭐⭐⭐ **AND THE ERROR IS THE FAMILY CLAUDE.md ALREADY RECORDS, IN ITS FIFTH INSTANCE: I PRICED THE
+PRIZE AGAINST THE WHOLE MEASURED BRACKET WHEN ONLY PART OF IT WAS DELETABLE.** My reported figure
+was "−10 (scan) − 0.75 (stores) + 1.66 (notes) = −9.1". The missing number is the one §10n named:
+**what survives.** Same shape as the span hook-in that deleted 58% of phase 1's units and netted
+zero, and as §11d's two-block delta quoted as one block's.
+
+#### ⛔ Two sub-ideas killed with it, both cheap to check and worth recording
+
+1. **Bounding the scan by `dash_block_starts` — worth exactly ZERO, measured.** The audit
+   (§12b) establishes that offsets below `dash_block_starts[col]` can never hold a source byte:
+   1012 of the 3200 block bytes, 32%. The scan already skips them.
+   ⭐⭐ **`s_lowConsume[cell] == dash_block_starts[cell] + 1` for all forty cells** (one gdb run),
+   and the `+1` is exactly the sentinel `copy_dash_data` never copies. That is a strong
+   cross-validation of both tables: `s_lowConsume` is derived at RUNTIME by `view_low_build` from
+   the run tables, `dash_block_starts` is STATIC data in the binary, and two independent encodings
+   of the dashboard silhouette agree on all forty cells. **The scan is at its floor in both
+   senses — per-longword cost and range walked.**
+2. ⚠⚠ **The `SRCEVNULL` split is CONFOUNDED BY IPA and its 74%/26% must not be quoted.** The arm
+   keeps the note call and empties its body, reading `phase 11` 34.255 / 38.143 / 49.396 for
+   control / empty / full. But GCC sees the callee in the same TU: with the body reduced to one
+   global increment it knows only that global changes, so the barrier it imposes is **weaker** than
+   the full callee's (which touches `EV_ARRAY`, `EV_END`, `s_lowConsume` and `mem[]`). The arms
+   differ in the barrier *and* the work. ⇒ **+3.89 ms is a LOWER BOUND on the call-shape cost,
+   nothing more**, and there is no arrangement that isolates the two (putting the callee in its own
+   TU measures a *stronger* barrier than the real arm has).
+
+#### ⚠⚠⚠ AND A GREP THAT READ ZERO WHILE THE CALL WAS RIGHT THERE — `.constprop.0`
+
+Building the null arm I ran `grep -c "jsr.*<view_ev_note_addr>"`, got **0**, and concluded GCC had
+deleted the calls — then added a counter to "force" them back. It had deleted nothing: GCC had
+emitted a **constprop clone**, so every call reads `jsr <view_ev_note_addr.constprop.0>` and the
+grep for `<name>` matched none of them. Four calls sat in `interp_edge_core` in every arm.
+
+⇒ ⭐⭐⭐ **AN OBJDUMP CHECK FOR A CALL MUST MATCH THE CLONE SUFFIXES — `.constprop.N`, `.isra.N`,
+`.part.N` — SO GREP THE PREFIX `<name`, NEVER `<name>`.** This inverts a check CLAUDE.md tells you
+to run: "count `jsr <hot-leaf>` in the objdump and require 0" reads 0 just as happily when the leaf
+is being called under a clone name, which is the failure it exists to catch.
+
 ### ⭐⭐⭐ THE TOOLCHAIN'S `memset`/`memcpy`/`memmove` ARE BYTE LOOPS — every block op in the port
 
 Found by reading the objdump while sizing the twenty never-profiled small phase rows, and it is a
