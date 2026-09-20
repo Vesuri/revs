@@ -57,7 +57,19 @@ is `tail`-truncated to the last 40 lines (`GDBTAIL`), which silently drops phase
 | 12.5 | 26 | the 50 Hz drain |
 | 10.2 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
 
-### 0. ⭐⭐⭐ `fill_dash_edge_columns`' PASS A, MADE CHEAP — **−7.5 ms, and `determinism` gates it**
+### 0. ⭐⭐⭐ `fill_dash_edge_columns` — FLATTEN THE CALL CHAIN, **~6 ms**, `determinism` gates it
+`docs/perf-method.md` §phase 18 is per-walk, not per-cell. **22 walks and ~136 cells a frame, and
+~2000 of the ~3255 cycles a walk are SETUP** (`EDGEDOUBLE=1` priced a walk at 3490; `EDGECOUNT=1`
+counted the population). The setup is four levels of 6502-shaped chain per walk: two `movem`
+frames, `plot_ptr`/`plot_ptr2` byte-lane marshals, three `walk_stores_are_private` tests, a
+`zp_pointer` reassembly, an `adc_overflow`, three patch-byte stores, four `mem[EDGE_*]` stores and
+two 7-field `SlotExit` returns. Collapse it to one loop for this routine's own use and keep the
+generic chain for `plot_view_src_line`'s caller and the oracles. `mem[]` stays byte-identical.
+⛔⛔ **Do NOT price anything here per CELL — three attempts have, and measured +2.3 / 0.0 / +1.0 ms.**
+⚠ And `view_edge_start_only` is INCOMPLETE (it computes 2 of 11 pass-B walks); its oracle had a
+vacuous region. Fix or delete it before reusing it.
+
+### 0b. `fill_dash_edge_columns`' PASS A, MADE CHEAP — **superseded by 0; see the ⛔ list**
 `docs/perf-method.md` §the gap fill is load-bearing. 136 cells a frame at **~490 cycles each** —
 the most expensive per-item cost anywhere in the frame — spent in a four-deep 6502-shaped chain
 (`fill_edge_column_run` → `fill_column_gaps` → `column_gap_walk` → `gap_walk_body`), each level
@@ -344,6 +356,9 @@ determinism run is a PRACTICE session. Worth running after a change to session/l
 ---
 
 ## ⛔ CLOSED — measured dead ends, one line each. Do not rebuild these.
+
+- ⛔ **`EDGEFILL=1`, pass A's per-cell re-reads hoisted into a precondition-selected sibling**: byte-exact (6 twins, 4 determinism trajectories) and measured **0.0** — the cost is per-walk, not per-cell.
+- ⛔ **Skipping "empty" pass-B walks**: **+1.0 ms and it never fired** — 0 of 11 000 pass-B walks are empty (`EDGECOUNT=1`). The premise came from a partly vacuous oracle; see `docs/perf-method.md`.
 
 - ⛔ **Dropping `fill_dash_edge_columns`' source gap fill** (`EDGESTART=1`): −13 ms and **353-403 bytes of the gated road view wrong on all five circuits**. The carry into cells 4..6 / 27..34 comes from a *road* colour to their left, not from the run's entry composite. Keep the fill, make it cheap (entry 0). `docs/perf-method.md`.
 

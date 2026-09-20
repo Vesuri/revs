@@ -8385,6 +8385,92 @@ REVS_FLAG_OP void gap_walk_body(int reread, SlotExit *out, uint8_t branch,
 #undef GAP_RAM
 }
 
+/* ⛔⛔ PASS A, SPECIALISED ON ITS OWN PRECONDITION (`make EDGEFILL=1`) — BUILT, BYTE-EXACT,
+   AND IT MEASURED **NOTHING** (phase 18 −0.6%, i.e. noise; frame and loopFrames identical).
+   All six twins in the tree stay 0-mismatch and all four `determinism` trajectories are
+   byte-identical, so it is correct — it just deletes the wrong thing.
+   ⭐⭐⭐ WHY, AND IT IS THE FACT THIS ROUTINE HAS BEEN MIS-SIZED AGAINST THREE TIMES: the famous
+   "490 cycles per cell, the most expensive per-item cost in the frame" is a per-WALK cost divided
+   by a per-CELL count.  `make EDGEDOUBLE=1` adds eleven all-skip pass-A walks and costs
+   **+5.42 ms** — ~3490 cycles a walk — and `make EDGECOUNT=1` says there are **22 walks and ~136
+   cells**, i.e. ~6 cells a walk.  Even at 200 cyc/cell that leaves **~2000 cycles of SETUP per
+   walk, ~6 ms of the 10.1 ms bracket**: two `movem` frames, `plot_ptr`/`plot_ptr2` byte-lane
+   marshals, three `walk_stores_are_private` tests, a `zp_pointer` reassembly, an `adc_overflow`,
+   three patch-byte stores, four `mem[EDGE_*]` stores and two 7-field `SlotExit` returns — per
+   walk, four levels deep.
+   ⇒ **THE LEVER IS FLATTENING THE CHAIN, NOT THE CELL LOOP.**  136 cells was the wrong
+   denominator and every per-cell edit has priced accordingly: the classifier's struct return
+   (+2.3 ms), these per-cell re-reads (0.0), and an empty-walk skip built on a false premise
+   (+1.0, and it never fired).  Kept below as the measured null.
+
+   THE SPECIALISATION ITSELF (correct, just not where the time is):
+   ============================================================================================
+   136 cells a frame at ~490 cycles each — the most expensive per-item cost anywhere in the
+   frame (docs/perf-method.md §fill_dash_edge_columns decomposed) — and its gap fill is
+   LOAD-BEARING, so it cannot be deleted (§what fill_dash_edge_columns actually delivers:
+   dropping it is -13 ms and 353-403 bytes of wrong road view).  ⇒ it has to get cheap instead.
+
+   ⭐⭐ THIS IS THE DEAD-ARM-BY-ITS-OWN-PRECONDITION MOVE, not an optimisation AROUND the generic
+   walk (CLAUDE.md, and the same shape that took the dash-edge walk -39% and `column_gap_walk`'s
+   `$1DD5` operand out of the hot loop).  `column_gap_walk_core`'s gate already knows which of the
+   two passes it is running, so the whole pass-A configuration is decided ONCE per walk instead of
+   being re-read and re-tested per cell:
+
+     * a NON-ZERO source is skipped outright — pass A's `$1DD5` operand is $09, so there is no
+       branch-operand load, no third-value trap arm and no table-mapping arm in this body at all;
+     * THE STORE AND THE READ SHARE ONE POINTER.  Pass A's patched store pointer is
+       `MEM_plot_ptr_lo`, so `zp_pointer(...)` IS `plot_ptr_v`, which is also the source base —
+       one `a0` read and written, no second base and no `zp_pointer` reassembly per cell.  The
+       gate PROVES it rather than assuming it (see its `zpBase == plot_ptr_v` test), which is what
+       keeps the generic body as the answer if it were ever false;
+     * the end line, the column, the fallback colour and the classifier's three limits are walk
+       invariants, and `walk_stores_are_private` has already proved this walk's stores cannot
+       reach any of them — the same proof that licenses the existing hoist.
+
+   ⚠ `seam_write`/`seam_read` with a COMPILE-TIME `ram = 1` rather than a bare `mem[]` access:
+   the range test folds away, and the marking and ink-watch hooks inside the seam keep firing.
+   A direct store here would silently blind `make SHAPE=1`'s source census and the ink watch,
+   which is the trap revs_native_seam.h records at `seam_write`.
+   ⚠ `noinline` for `gap_walk_reread`'s reason: it keeps `column_gap_walk_core` small enough to
+   hold `surface_colour_at_core` inline, and `jsr <surface_colour_at_core>` must stay 0. */
+#ifdef REVS_EDGE_FILL
+static __attribute__((noinline)) SlotExit gap_walk_fill(uint8_t x, uint8_t v, uint8_t a, uint8_t y)
+{
+    const unsigned column   = mem[EDGE_COLUMN];
+    const unsigned end      = mem[EDGE_BLOCK_START];
+    const uint8_t  fallback = mem[MEM_gap_colour_fallback_operand];
+    const unsigned base     = plot_ptr_v;
+    unsigned       line     = y;
+#ifdef REVS_SHAPE
+    unsigned       shapeCells = 0;
+#endif
+
+    while (line != end) {
+        const uint8_t src = seam_read(base + line, 1);
+#ifdef REVS_SHAPE
+        shapeCells++;
+#endif
+        a = src;                                  /* LDA (plot_ptr),Y — set before the branch */
+        if (src) {
+            PROBE_SHAPE_EDGE_CELL(0);             /* $1DDF — the $09 skip */
+        } else {
+            /* $1DD6 — an empty cell takes the surface's colour, or the fallback if it has none */
+            SlotExit sc = surface_colour_at_core((uint8_t)line, (uint8_t)column, x, v);
+            x = sc.x;
+            PROBE_SHAPE_EDGE_CELL(sc.a ? 2u : 3u);
+            a = sc.a ? sc.a : fallback;
+            seam_write(base + line, 1, a);
+        }
+        line = (unsigned char)(line - 1u);
+    }
+#ifdef REVS_SHAPE
+    PROBE_SHAPE_EDGE_WALK(shapeCells);
+#endif
+    /* the CPY's equal exit: N = 0, Z = 1, C = 1, and A/X/V are the last cell's */
+    { SlotExit e = { a, x, (uint8_t)line, 0u, 1u, v, 1u }; return e; }
+}
+#endif /* REVS_EDGE_FILL */
+
 /* The faithful walk, out of line so that it does not make column_gap_walk_core too big to hold
    surface_colour_at_core.  ⚠ `noinline` is load-bearing, not a hint — see the header above. */
 static __attribute__((noinline)) SlotExit gap_walk_reread(uint8_t x, uint8_t v, uint8_t a, uint8_t y)
@@ -8452,6 +8538,13 @@ SlotExit column_gap_walk_core(uint8_t entryX, uint8_t entryY, uint8_t entryV)
           return gap_walk_reread(x, v, a, y);
       }
 
+#ifdef REVS_EDGE_FILL
+      /* ⭐ PASS A GETS ITS OWN COPY, chosen by the two facts that define it: its branch operand
+         is $09 and its patched store pointer is plot_ptr, i.e. the block it is already reading.
+         Both are PROVED here, not assumed — if either were ever false the generic body below is
+         still the answer. */
+      if (branch == 0x09u && zpBase == plot_ptr_v) return gap_walk_fill(x, v, a, y);
+#endif
       { SlotExit out;
         gap_walk_body(0, &out, branch, x, v, a, y);
         return out; } }
@@ -8505,6 +8598,21 @@ SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
         mem[EDGE_COLUMN]      = (uint8_t)column;                       /* $1DF1 */
         span_line_cursor      = y;                                     /* $1DF3 */
         mem[EDGE_BLOCK_START] = mem[MEM_dash_block_starts + column];       /* $1DF5-$1DF8 */
+#ifdef REVS_EDGE_COUNT
+        {   extern int printf(const char*, ...);
+            static unsigned long bTot, bEmpty, calls, iters;
+            unsigned n = 0, yy = y, e = mem[EDGE_BLOCK_START];
+            while (yy != e && n < 200u) { yy = (unsigned char)(yy - 1u); n++; }
+            bTot++; iters++;
+            if (!n) bEmpty++;
+            if (column == 0x03u) calls++;
+            if (calls && (iters % 2200u) == 0u)
+                printf("EDGECOUNT  %lu passB walks over %lu run-calls: %lu EMPTY (%lu%%), "
+                       "this one col $%02X y=$%02X end=$%02X cells=%u\n",
+                       bTot, calls, bEmpty, bEmpty * 100 / bTot, column, y,
+                       mem[EDGE_BLOCK_START], n);
+        }
+#endif
 
         /* $1DFA — this column into the per-line boundary table, $55 mapped to empty.  Its exit
            line is discarded: both walks in an iteration start from the SAME span_line_cursor. */
@@ -8515,6 +8623,18 @@ SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
            walk's exit line is what the next column's walk starts from ($1DF3 next iteration). */
         mem[EDGE_COLUMN] = (uint8_t)(column + 1);
         e2 = fill_column_gaps_core(MEM_plot_ptr_lo, 0x09u, 0x55u, v);
+#ifdef REVS_EDGE_DOUBLE
+        /* ⭐⭐ `make EDGEDOUBLE=1` — WHERE PHASE 18'S 10 ms ACTUALLY IS, and it changes nothing to
+           ask.  Reading the code has now mis-sized this routine twice (the classifier's struct
+           return, then the per-cell re-reads: predicted 1.2 ms, measured 0.06), so the split gets
+           an ARM.  A SECOND pass-A walk over the same column finds every cell already filled —
+           the fill writes `colour ?: $55`, both non-zero — so it takes the $09 skip on every one
+           and stores NOTHING: not one `mem[]` byte, pixel or sim step differs, and its result is
+           discarded so the real walk's exit still threads.  ⇒ the phase-18 delta is
+           (per-walk setup + an all-skip loop) x 11 columns, which partitions the bracket against
+           the per-CELL fill work the real walk does.  ⚠ INSTRUMENT ONLY. */
+        (void)fill_column_gaps_core(MEM_plot_ptr_lo, 0x09u, 0x55u, v);
+#endif
         y  = e2.y;
         v  = e2.v;
 
@@ -8560,18 +8680,30 @@ SlotExit fill_edge_column_run_core(uint8_t firstColumn, uint8_t stopColumn,
    instead of `viewdiff` gating it by eye.  ⚠ It does not collect the −1.75/−2.83 ms EDGESTART also
    took out of phases 24 and 33 — those came from deleting 136 EVENTS, and the events are real.
 
-   ⭐⭐⭐ AND PASS B DOES REAL WORK IN ONLY THE FIRST ITERATION OF EACH RUN, which is the fact that
-   makes this cheap and which reading the loop is the only way to see.  `fill_edge_column_run_core`
-   walks pass B on `column` and pass A on `column + 1`, then takes the next iteration's start line
-   from pass A's EXIT — which is `dash_block_starts[column + 1]`, i.e. exactly where the next
-   iteration's pass B is told to STOP.  So every pass B after the first walks zero cells.
-   ⇒ the whole boundary-table output is TWO SHORT LOOPS: column $03 from line $1B, and column $1A
-   from line $2B, each down to its own block start — about twenty lines each.
+   ⛔⛔⛔ RETRACTED, AND IT INVALIDATES THE TWO CONCLUSIONS BELOW.  This header said "pass B does
+   real work in only the FIRST iteration of each run", reasoning that pass A's exit line is
+   `dash_block_starts[column + 1]` and so lands exactly where the next pass B is told to stop.
+   ⚠⚠ IT IS NOT: `mem[EDGE_BLOCK_START]` is written ONCE per iteration, ABOVE BOTH PASSES, so pass
+   A(column+1) also stops at `bs[column]` — its exit is `bs[column]`, the next iteration re-arms
+   the end to `bs[column+1]`, and that pass B walks `bs[column] -> bs[column+1]`.
+   ⭐ `make EDGECOUNT=1` counts them: **0 of 11 000 pass-B walks are empty**, ~6 cells each.
+   ⇒ `view_edge_start_only` below computes only the FIRST walk of each run and is INCOMPLETE,
+   missing 9 of the 11.
 
-   ⇒ `make EDGESTART=1` keeps pass B and DROPS PASS A.  ⚠⚠ **PICTURE WRONG BY CONSTRUCTION** — it
-   is kept only because it PRICES pass A at −13 ms (phase 18 10.12 → 0.68, ph24 −1.75, ph33 −2.83,
-   frame 182 → 169), the budget any cheap replacement must beat.
-   `make EDGESTART=1 EDGESTARTCHECK=1` is the oracle for the half that IS exact: the real routine runs, then this computes the same two tables into a scratch and
+   ⚠⚠⚠ AND ITS ORACLE COULD NOT SEE THAT, BECAUSE I BUILT THE VACUOUS REGION MYSELF.  It seeds the
+   scratch with what the real routine left "so only the bytes this computes differ" — which means
+   every table byte OUTSIDE the computed range was compared against a copy of the answer.  The
+   0-of-327 424 is therefore ~100 bytes a call of real comparison and the rest self-against-self,
+   and the four sabotages all fired because they perturb the range that IS computed, so they could
+   not expose it either.  ⇒ **CLAUDE.md §a control that cannot fail, in the shape that is hardest
+   to catch: a partly vacuous oracle whose sabotages still fire.**  Seeding a differential's
+   reference from the thing under test is the tell to look for.    ⇒ `make EDGESTART=1` drops pass A **and runs an incomplete pass B**, so its −13 ms price tag
+   (phase 18 10.12 → 0.68, ph24 −1.75, ph33 −2.83, frame 182 → 169) is sound — that is a bracket
+   measurement — but its `viewdiff` failure (353-403 bytes of the gated road view on all five
+   circuits) is CONFOUNDED between the two changes and does NOT establish that pass A's fill is
+   load-bearing.  ⚠ Do not quote it as if it did; re-run the arm with a COMPLETE pass B first.
+   `make EDGESTART=1 EDGESTARTCHECK=1` is its oracle, and read the retraction above before
+   trusting it: the real routine runs, then this computes the same two tables into a scratch and
    requires every byte to match.  ⚠ That is a VALID in-process differential and not the
    shared-input trap, because it compares a COMPUTATION against the routine's own OUTPUT rather
    than two consumers of one input — and pass A provably cannot disturb its inputs: pass A runs on

@@ -176,6 +176,20 @@ CXXFLAGS += -DREVS_EDGE_START_CHECK
 endif
 endif
 
+ifeq ($(EDGECOUNT),1)
+CFLAGS   += -DREVS_EDGE_COUNT
+CXXFLAGS += -DREVS_EDGE_COUNT
+endif
+
+# ⭐⭐ `make EDGEFILL=1` — `fill_dash_edge_columns`' pass A specialised on its own
+# precondition (src/gen/revs_native.c §pass A, specialised).  Its 136 cells a frame cost
+# ~490 cycles each; the fill is load-bearing so it cannot be deleted, only made cheap.
+# ⭐ `mem[]` stays BYTE-IDENTICAL, so `make determinism` is the gate.
+ifeq ($(EDGEFILL),1)
+CFLAGS   += -DREVS_EDGE_FILL
+CXXFLAGS += -DREVS_EDGE_FILL
+endif
+
 TERRAINLOW ?= 1
 ifeq ($(TERRAINLOW),1)
 CFLAGS   += -DREVS_TERRAIN_LOW

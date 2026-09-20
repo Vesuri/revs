@@ -1810,7 +1810,47 @@ makes `draw_road`'s scattered stores sequential.  ⚠ It needs a written RESULTS
 `copy_dash_data`'s stow, `plot_view_src_line` and every expansion circuit's hook read those
 blocks — and a `make determinism` re-record.
 
-### ⛔ `fill_dash_edge_columns`' GAP FILL IS LOAD-BEARING — but it prices at −13 ms
+### ⭐⭐⭐ PHASE 18 IS PER-WALK, NOT PER-CELL — and "490 cycles a cell" was the wrong denominator
+
+This is the correction that matters, because three separate optimisations have now been priced
+against the per-cell figure and all three failed.
+
+`make EDGEDOUBLE=1` adds eleven extra pass-A walks that skip every (already filled) cell and store
+nothing — no `mem[]` byte, pixel or sim step changes — and costs **+5.42 ms**, i.e. **~3490 cycles
+a walk**. `make EDGECOUNT=1` counts the population: **22 walks and ~136 cells a frame, ~6 cells a
+walk**, and **0 of 11 000 pass-B walks are empty**. Even at a generous 200 cyc/cell that leaves
+**~2000 cycles of SETUP per walk — ~6 of the 10.1 ms bracket**, spent four levels deep
+(`edge_column_pass` → `fill_edge_column_run` → `fill_column_gaps` → `column_gap_walk` →
+`gap_walk_body`): two `movem` frames, `plot_ptr`/`plot_ptr2` byte-lane marshals, three
+`walk_stores_are_private` tests, a `zp_pointer` reassembly, an `adc_overflow`, three patch-byte
+stores, four `mem[EDGE_*]` stores and two 7-field `SlotExit` returns, per walk.
+
+⇒ **The lever is FLATTENING THE CHAIN.** The three per-cell attempts and their measured prices:
+packing the classifier's struct return **+2.3 ms**; hoisting the per-cell re-reads into a
+precondition-selected sibling (`EDGEFILL=1`, byte-exact, all four determinism trajectories clean)
+**0.0**; skipping "empty" pass-B walks **+1.0 ms, and it never fired at all**.
+
+⛔⛔⛔ **AND THE PREMISE THAT LAST ONE RESTED ON WAS FALSE, WITH A PARTLY VACUOUS ORACLE BEHIND
+IT — the sharpest instrument failure of this campaign, because its sabotages still fired.**
+I claimed pass B does real work only in the first iteration of each run, reasoning that pass A's
+exit lands exactly where the next pass B is told to stop. `mem[EDGE_BLOCK_START]` is written **once
+per iteration, above both passes**, so pass A(column+1) stops at `bs[column]` too; the next pass B
+walks `bs[column] → bs[column+1]` and is not empty. `EDGECOUNT` says 0% empty.
+⇒ `view_edge_start_only` computes only the first walk of each run and is **incomplete**, missing 9
+of 11. Its oracle read 0 of 327 424 bytes **because I seeded the scratch with the real routine's
+output** "so only the bytes this computes differ" — which compared every byte outside the computed
+range against a copy of the answer. All four sabotages perturbed the range that *is* computed, so
+they fired and proved nothing about the rest.
+⭐⭐⭐ **Never seed a differential's reference from the thing under test.** And a partly vacuous
+oracle whose sabotages fire is the hardest shape of this failure to catch — the sabotage test
+checks the region you wrote, not the region you forgot.
+
+⚠⚠ **Consequence for the entry below: `EDGESTART=1`'s −13 ms price tag stands (it is a bracket
+measurement), but its `viewdiff` failure is CONFOUNDED** between dropping pass A and running an
+incomplete pass B, and therefore does **not** establish that the gap fill is load-bearing. Re-run
+that arm with a complete pass B before quoting it.
+
+### ⚠ `fill_dash_edge_columns`' GAP FILL — −13 ms to drop, but the picture result is CONFOUNDED
 
 `make EDGESTART=1` keeps the routine's boundary tables and drops its 136-cell source gap fill, on
 the argument that `view_consume`'s RLE carries the surface colour across a zero source by itself.

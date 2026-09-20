@@ -705,6 +705,20 @@ PROBE_SYMS_EDGESTART = g_edgeStartChecks g_edgeStartMismatch g_edgeStartMismatch
 endif
 endif
 
+# ⭐⭐ `make EDGEDOUBLE=1` — price phase 18's per-WALK half without changing a byte: a second
+# pass-A walk skips every (already filled) cell and stores nothing.  INSTRUMENT ONLY.
+ifeq ($(EDGEDOUBLE),1)
+EXTRA_DEFINES += -DREVS_EDGE_DOUBLE
+endif
+
+# ⭐⭐ `make EDGEFILL=1` — `fill_dash_edge_columns`' pass A specialised on its own
+# precondition (src/gen/revs_native.c §pass A, specialised).  Its 136 cells a frame cost
+# ~490 cycles each; the fill is load-bearing so it cannot be deleted, only made cheap.
+# ⭐ `mem[]` stays BYTE-IDENTICAL, so `make determinism` is the gate.
+ifeq ($(EDGEFILL),1)
+EXTRA_DEFINES += -DREVS_EDGE_FILL
+endif
+
 TERRAINLOW ?= 1
 ifeq ($(TERRAINLOW),1)
 EXTRA_DEFINES += -DREVS_TERRAIN_LOW
