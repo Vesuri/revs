@@ -12246,6 +12246,19 @@ SlotExit plot_object_core(uint8_t slot, uint8_t entryY, uint8_t entryV)
         mem[OBJ_VECTOR_END]     = mem[MEM_shape_vector_start + 1 + shapeIdx];
         plot_ptr3_lo            = mem[MEM_shape_edge_start + shapeIdx];
 
+#ifdef REVS_SIGN_DOUBLE
+        /* ⭐⭐ `make SIGNDOUBLE=1` — PRICE `scale_shape_vectors` WITHOUT CHANGING A BYTE.  It is
+           IDEMPOTENT: it derives `shape_scale_tbl[2..7]` and the sixteen `shape_vertex` entries
+           from `proj_width`/`proj_width_shift` and the shape's vector list, re-reads
+           OBJ_VECTOR_CURSOR fresh on every call and never advances it, so a second run writes the
+           same bytes over themselves and takes the same exit.  ⇒ phase 15 minus the control IS
+           its cost, with no picture change, no carve and no workload caveat — the trajectory-
+           neutral doubling arm (docs/perf-method.md).  INSTRUMENT ONLY.
+           ⚠ The extra result is discarded deliberately: on the abandon path both calls abandon
+           identically, so taking the FIRST one's exit would be correct too but would make the arm
+           look like it changed control flow. */
+        (void)scale_shape_vectors_core(v);
+#endif
         SlotExit sv = scale_shape_vectors_core(v);
         if (sv.c) return sv;                          /* a vertex did not fit — its exit is ours */
 

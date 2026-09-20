@@ -770,6 +770,12 @@ endif
 # to split the measured +15.28 ms into "per call" (fewer notes would help) vs "per loop shape"
 # (an aliasing barrier — fewer notes help nothing).  Use with SRCEVENTSCHECK=1 so the painters
 # still read the scan's list and the trajectory is identical.  src/gen/revs_native.c §SRCEVNULL.
+# ⭐⭐ `make SIGNDOUBLE=1` — price the road sign's vertex scaling without changing a byte
+# (`scale_shape_vectors` is idempotent).  INSTRUMENT ONLY; src/gen/revs_native.c §SIGNDOUBLE.
+ifeq ($(SIGNDOUBLE),1)
+EXTRA_DEFINES += -DREVS_SIGN_DOUBLE
+endif
+
 ifeq ($(SRCEVNULL),1)
 EXTRA_DEFINES += -DREVS_SRC_EV_NULL
 PROBE_SYMS_SRCEVNULL = g_srcEvNulls

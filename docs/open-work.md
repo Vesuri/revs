@@ -298,6 +298,25 @@ scan is already at its floor), and the `SRCEVNULL` split is confounded by IPA.
 ⇒ **The AUDIT keeps its value** (it is the permanent gate, it corrected CLAUDE.md on
 `copy_dash_data`, and it is the worked example the RESULTS rule now points at); the route does not.
 
+### 2c. ⚠⚠⚠ THE OBJECT PLOTTER — ~9 ms of a REAL race, and every baseline hides 5 ms of it
+`docs/perf-method.md` §the object plotter. The road sign (phases 14+15, 5.15 ms) is at its local
+optimum: the chain `plot_view_src_line` → `column_gap_walk` → `fill_edge_column_run` has zero
+frame operands, no `pea`, no absolute reads in a loop — the dash-edge campaign already took it
+there — so **~1.3 ms is all a large rewrite would buy for the sign alone**. `scale_shape_vectors`
+is priced exactly at 0.686 ms (`make SIGNDOUBLE=1`, a new idempotent doubling arm): 765 cyc/vertex
+over 6.37 vertices, with 3.63 edges at ~4 970 cyc each.
+
+⚠⚠ **BUT `move_and_draw_cars` (phase 17) reads 0.21 ms in every measurement ever taken because
+`STRAIGHT_TO_RACE` IS A PRACTICE SESSION AND THE PLAYER IS ALONE ON TRACK** — that 1 500 cycles is
+22 empty-slot tests and nothing else. A host census of the race proper (gated to frame ≥ 12000;
+ungated it is 42% low, being almost all qualifying) draws **2.32 objects a frame against practice's
+0.89**. At 3.63 ms per drawn object that is **~8.4 ms in a race**, phase 17 becoming ~5.2 ms, so
+**the 172 ms baseline understates a real race by ~5 ms.**
+
+⇒ **NEXT STEP IS A MEASUREMENT, NOT A REWRITE:** a `PROBES=1 RACEPROPER=1` target run that reaches
+the grid, to replace the estimate (target per-object cost × host object count) with a phase table.
+Until then the object plotter is sized, not measured.
+
 ### 3. ⭐⭐ Fewer POINTS / SPANS / SOURCE VISITS — `build_track_geometry`, 26.7 ms
 `docs/perf-method.md` §What is left. Setup and loops fused into native value pipelines; the
 interpreter is already gone from the whole tree, so nothing is left to delete there. Named

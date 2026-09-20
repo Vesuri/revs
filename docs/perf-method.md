@@ -1926,6 +1926,73 @@ sabotages, five distinct counts (599 / 447 / 7 / 600 / 600), so the arm is cover
 the 5.92 ms. That is the next thing there, and it is small — the routine has gone from the frame's
 most expensive per-item cost to a 3.4% row.
 
+### ⚠⚠⚠ THE OBJECT PLOTTER — the road sign is 5.15 ms, and every baseline UNDERSTATES A REAL RACE BY ~5 ms
+
+Profiling the never-examined small rows reached phases 14 + 15, the road sign: `build_road_sign`
+1.918 ms and `draw_track_object(slot $17)` 3.231 ms. Two results, and the second is worth more than
+the first.
+
+#### The sign itself is at its local optimum — ~1.3 ms available for a large rewrite
+
+Host census (295 phase-15 calls, counters only, no emulator run): `plot_object_core` **0.89** calls
+per phase-15 call (11% of frames the slot is empty or off-view), its shape loop 1.37,
+`scale_shape_vectors` **6.37 vertices**, `plot_shape_edges` **3.63 edges**, `plot_view_src_line`
+3.69, `column_gap_walk` 1.60.
+
+⭐ **`scale_shape_vectors` priced EXACTLY at 0.686 ms by a new trajectory-neutral doubling arm**
+(`make SIGNDOUBLE=1`, phase 15 3.231 → 3.917): it is **idempotent** — it derives
+`shape_scale_tbl[2..7]` and the sixteen `shape_vertex` entries from `proj_width` and the shape's
+vector list, re-reads `OBJ_VECTOR_CURSOR` fresh every call and never advances it — so a second run
+writes the same bytes over themselves. That is **765 cycles a vertex**, and the remaining 2.545 ms
+is 3.63 edges at **~4 970 cycles an edge**.
+
+⛔ **And there is no pathological shape to find.** The chain is `plot_view_src_line_core` (687
+instructions) → `column_gap_walk_core` (1176) → `fill_edge_column_run_core` (540), and all five
+bodies in the subtree have **zero** frame operands (`n(a5)`/`n(sp)`), **no** `pea` in a hot body and
+**no** absolute `mem+` reads inside a loop. They are the dash-edge campaign's own subjects and
+already sit at the optimum it left them at (`column_gap_walk_core`'s 1176 instructions is that
+campaign's own figure, and its invariants live in registers precisely because the classifier sits
+on cold landing pads). The cost is genuine 6502-shaped work thinly spread over a four-level chain
+whose per-walk setup phase 18 already measured at ~2000 cycles. ⇒ **~1.3 ms best case for a large
+rewrite, 0.9% of the frame. Not worth it for the sign alone.**
+
+#### ⚠⚠⚠ …BUT THE SIGN IS NOT THE ONLY OBJECT, AND THE BASELINE IS A PRACTICE SESSION
+
+`move_and_draw_cars` (phase 17) reads **0.21 ms** in every measurement this project has ever taken
+— 1 500 cycles for ~22 slots, i.e. ~68 cycles each, which is exactly the cost of the empty-slot
+test and nothing else. **Every car slot is empty, because `STRAIGHT_TO_RACE` is a PRACTICE session
+and the player is alone on the track.**
+
+Host census of `determinism-race` — and it needs a gate, which is the transferable half:
+
+| | slots tested | empty | off-view | **DRAWN** |
+|---|---:|---:|---:|---:|
+| ungated over 12 573 frames | 23.00 | 21.01 | 0.65 | **1.34** |
+| **gated to the race proper** (frame ≥ 12000, 573 frames) | 23.04 | 20.62 | 0.10 | **2.32** |
+
+⚠ **The ungated figure is almost entirely QUALIFYING** — `determinism-race` spends ~12 000 of its
+12 600 frames there, alone on track with every slot empty — so it under-reports the race by 42%.
+**Gate a census on the session it is about.**
+
+At the target-measured **3.63 ms per drawn object** (3.231 ÷ 0.89):
+
+- practice, 0.89 drawn a frame → **3.23 ms** ← what every baseline contains
+- a real race, 2.32 drawn a frame → **8.42 ms**
+- ⇒ phase 17 goes 0.21 → **~5.2 ms**, and **the standing 172 ms baseline understates a real race
+  by ~5.2 ms.**
+
+⚠ Stated assumption: this multiplies a target-measured per-object cost for the SIGN shape by a
+host-measured object COUNT from a race. A car shape may carry a different edge count, so it is a
+sized estimate, not a measurement — the measurement needs a `PROBES=1 RACEPROPER=1` target run that
+reaches the grid. **But it re-ranks the object plotter from "0.9% available" to ~9 ms of a real
+race's frame, which is the same order as `fill_dash_edge_columns` was before it was flattened.**
+
+⭐⭐ **THE GENERAL LESSON, and it applies to every number in `docs/perf-method.md`: THE BASELINE
+TRAJECTORY DECIDES WHICH CODE EXISTS, not just how hot it is.** CLAUDE.md already records the
+weaker form ("size a road-pass routine while DRIVING, not parked — it is 8x"). This is the stronger
+one: a whole subsystem can read as 0.1% of the frame because the chosen session never populates its
+inputs, and no amount of care with the instrument can see it.
+
 ### ⛔⛔⛔ PRODUCER-EMITTED SOURCE EVENTS ARE CLOSED FOR GOOD — the ceiling is −2.16 ms, and my own −9 was a fifth residual error
 
 `9d503ed` closed the built version on cost (+14 ms). The follow-up idea was "one note per RUN

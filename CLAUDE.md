@@ -706,6 +706,14 @@ Rules that must survive without opening `docs/perf-method.md`:
   byte-pair carry idiom there computes nothing a `uint16_t` add doesn't; keep `adc_value`/`sbc_value`
   ONLY in twins of those 8 BCD routines. Render fixtures pin `c.D = 0` citing that table, and
   `make determinism-drive` is the backstop that D=0 truly holds on the path.
+- ⚠⚠⚠ **AND THE BASELINE TRAJECTORY DECIDES WHICH CODE EXISTS AT ALL, NOT JUST HOW HOT IT IS.**
+  `STRAIGHT_TO_RACE` is a **PRACTICE** session: the player is alone on track, every car slot is
+  empty, and `move_and_draw_cars` (phase 17) therefore reads **0.21 ms** in every measurement this
+  project has taken — 22 empty-slot tests and nothing else. A race draws **2.32 objects a frame
+  against practice's 0.89**, i.e. **~5 ms the standing baseline does not contain**
+  (`docs/perf-method.md` §the object plotter). ⭐ And **gate a session census on the session it is
+  about**: `determinism-race` spends ~12000 of its 12600 frames in QUALIFYING, alone on track, so
+  an ungated count reads 42% low. Ask what the chosen trajectory never populates.
 - ⚠⚠ **SIZE A ROAD-PASS ROUTINE WHILE DRIVING, NOT PARKED — it is 8x.** `div16by8` runs 7.8 times a
   frame parked and **60.5 driving** (`STRAIGHT_TO_RACE=1 HOLD_THROTTLE=1`), because
   `road_edge_start` reuses last frame's edge points. A parked call count next to a driving
