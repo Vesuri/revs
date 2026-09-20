@@ -1833,6 +1833,43 @@ count suggests (CLAUDE.md §Rule 1b). `unroll 1` here is load-bearing, not a hin
 ⭐ What remains in phase 33's 14.16 ms is the runs' OUTER loop and the boundary composites — ~5
 segment entries a line — not the fill. The fill is now ~5.2 of the 14.
 
+### ⛔⛔⛔ PRODUCER-EMITTED SOURCE EVENTS: BUILT, PROVED CORRECT, CLOSED ON COST (+14 ms)
+
+`make SRCEVENTS=1` has the producers append to the painters' event list as they store, and deletes
+the transposed scan. Measured against HEAD (frame **172 → 186**):
+
+| phase | control | arm | Δ |
+|---|---:|---:|---:|
+| 24 — the scan, deleted | 20.72 | 10.12 | **−10.59** (the arms predicted 10.00) |
+| 11 `draw_road` | 34.21 | 49.49 | **+15.28** |
+| 18 — `edge_run_flat`'s 136 notes | 5.93 | 7.21 | +1.29 |
+| 33 — source-zeroing + list reset | 14.16 | 16.05 | +1.89 |
+
+⭐⭐⭐ **The two producer rows price CLAUDE.md's call-boundary rule at 40× on the same five lines
+of code, and that is the result worth keeping.** The identical note costs **67 cycles** at
+`edge_run_flat`'s site (1.29 ms / 136 notes, inline in a loop we own) and **~2700 cycles** inside
+`interp_edge_core` (15.28 ms / ~40 notes), because there it is a `jsr` in `draw_road`'s hot loops
+and a call boundary is an aliasing barrier — GCC must assume it writes any memory, so the loops
+spill. Inlining instead is the other horn: six copies of an ordered insert inside the frame's
+biggest routine is exactly what cost +4.9 ms when a marking leaf went into `seam_write`.
+**There is no third placement.** ⇒ the scan's 10 ms is the price of not touching `draw_road`.
+
+⭐⭐ **The mechanism itself is correct, and the oracle is the honest kind.**
+`SRCEVENTS=1 SRCEVENTSCHECK=1` runs the scan and the producers into separate lists and compares
+them entry for entry: **0 mismatch in the steady state over 3584 sweeps, ~440 000 entries.** Two
+unrelated mechanisms deriving the same list from the same stores, neither seeded from the other.
+⇒ if a producer is ever rewritten so its note is inline in a loop it owns — as `edge_run_flat` now
+is — the list machinery is proved and ready. Today only ~40 of the 176 stores need the risky site,
+but they are the ones that carry the walk.
+
+⚠⚠ **Three defects it cost, each a named trap:** `&EV_ARRAY[line][0]` is a 96-byte stride and GCC
+emitted `__mulsi3` (muldiv-audit failed the link — walk the pointer); with the scan gone nothing
+reset the lists before the first paint, so sweep 1 handed the painters BSS with no `$FF` sentinel
+and the target **hung in the front end with `loopFrames=0`**; and the producer's line range must
+equal the consumer's, which is a build *and* runtime question — the first oracle run reported 36
+mismatching lines a sweep, all of them lines 44..79 that the host's scan never covers because
+`REVS_TERRAIN_SPANS` is Amiga-only.
+
 ### ⛔ THE TRANSPOSED SCAN IS AT ITS FLOOR AT THIS GRAIN — 5.30 ms walk + 4.70 ms recording
 
 `make SCANDOUBLE=1` (an extra pass before the real one: full walk + every lane body) prices the

@@ -57,19 +57,17 @@ is `tail`-truncated to the last 40 lines (`GDBTAIL`), which silently drops phase
 | 12.5 | 26 | the 50 Hz drain |
 | 10.2 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
 
-### 1. ⚠ The TRANSPOSED SCAN — **10.00 ms, both halves AT THE FLOOR; only a PRODUCER HOOK deletes it**
-`docs/perf-method.md` §the transposed scan is at its floor. Split by two trajectory-neutral arms:
-**walk 5.30 ms** (`SCANDOUBLE=2`) + **recording 4.70 ms** (`SCANDOUBLE=1` minus that), 207 cycles
-for each of 161 events. The walk is ~47 cyc/longword against ~29 for a bare `tst.l` + branch with
-DMA; the recording is 15 non-redundant instructions. The objdump closes to ~10% on both.
-⇒ the 10 ms is the REPRESENTATION. The producer census supports the fix (176 stores to 161 events,
-**1.09:1**, so emitting directly costs 15 extra bodies and deletes all ~800 tests) but ⚠⚠ **a
-complete hook needs `plot_store_resync`, inlined NINE times inside `interp_edge_core`** — the shape
-CLAUDE.md measured at +4.9 ms, with the damage landing on `draw_road`, the biggest row in the frame.
-**A judgement call for the user, not a formality.** ⭐ `edge_run_flat`'s 136 of those 176 stores are
-now in a loop we own and hook trivially; only ~40 need the risky site.
-⭐ Small real slack, unclaimed: GCC recomputes `(line + j) * 4` per lane for `g_viewEvEnd` instead
-of using constant displacements off one index — ≈0.55 ms.
+### 1. ⛔ The TRANSPOSED SCAN — **10.00 ms, and BOTH routes to it are now CLOSED**
+`docs/perf-method.md` §the transposed scan is at its floor, and §producer-emitted source events.
+Its two halves are at the floor (**walk 5.30** + **recording 4.70**, objdump closes to ~10%), and
+the representation change that deletes it was **built, proved correct and measured at +14 ms**:
+the scan really does go (−10.59) and `draw_road` pays **+15.28** for the hook.
+⭐⭐⭐ The same note costs 67 cycles inline in a loop we own and ~2700 inside `interp_edge_core` —
+**40×** — because there it is a `jsr` in `draw_road`'s hot loops. Inlining it instead is the other
+horn (+4.9 ms precedent). There is no third placement.
+⇒ **the 10 ms is the price of not touching `draw_road`.** Reopen only if a producer is rewritten so
+its note is inline in a loop it owns; the list machinery is proved (0 mismatch, 3584 sweeps) and
+sits behind `SRCEVENTS=1`.
 
 ### 1b. ⭐⭐ The view sweep's DRIVER code — **phases 2+3 are DELETED by §12; this entry is history**
 ⛔⛔⛔ **EVERY CANDIDATE THIS ENTRY EVER NAMED IS NOW CLOSED, AND THE REASON TO STOP IS A

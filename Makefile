@@ -203,6 +203,20 @@ CFLAGS   += -DREVS_EDGE_FILL
 CXXFLAGS += -DREVS_EDGE_FILL
 endif
 
+# ⭐⭐⭐ `make SRCEVENTS=1` — PRODUCER-EMITTED SOURCE EVENTS: the producers append to the
+# painters' event list as they store, and the 10.00 ms transposed scan is deleted
+# (src/gen/revs_native.c §producer-emitted source events).  `SRCEVENTSCHECK=1` nests and is
+# the ORACLE: the scan still runs and fills its own list, the producers fill a shadow, and
+# the two are compared entry for entry.
+ifeq ($(SRCEVENTS),1)
+CFLAGS   += -DREVS_SRC_EVENTS
+CXXFLAGS += -DREVS_SRC_EVENTS
+ifeq ($(SRCEVENTSCHECK),1)
+CFLAGS   += -DREVS_SRC_EVENTS_CHECK
+CXXFLAGS += -DREVS_SRC_EVENTS_CHECK
+endif
+endif
+
 TERRAINLOW ?= 1
 ifeq ($(TERRAINLOW),1)
 CFLAGS   += -DREVS_TERRAIN_LOW

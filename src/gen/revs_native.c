@@ -118,6 +118,15 @@ static inline uint8_t abs8_value(uint8_t v)
     return (v & 0x80u) ? (uint8_t)(0u - v) : v;
 }
 
+#if defined(REVS_SRC_EVENTS) || defined(REVS_SRC_EVENTS_CHECK)
+/* Declared here because `plot_store_resync` below is the plotters' store choke point and needs it
+   long before the event machinery can be defined — see §producer-emitted source events. */
+void view_ev_note_addr(unsigned addr, unsigned src);
+#define VIEW_NOTE_SRC(addr, val)    view_ev_note_addr((unsigned)(addr), (unsigned)(val))
+#else
+#define VIEW_NOTE_SRC(addr, val)    ((void)0)
+#endif
+
 /* THE ALIAS GUARD — a store that lands on a pointer's own lane must update the relocated value,
    because the oracle re-reads the pointer from mem[] at every dereference.  Without it the four
    span fixtures fail 7/400 (shallow_fwd) and 5/400 (steep_fwd), ascending arms only.
@@ -133,6 +142,12 @@ void plot_store_resync(unsigned addr, uint8_t val)
     addr &= 0xFFFFu;
     PROBE_SHAPE_MARK(addr);   /* every plotter store passes here, so it is the marking hook too */
     VIEW_MARK_SOURCE(addr);
+    /* ⚠⚠ THE RISKY SITE, and it is named as such: this body is inlined NINE TIMES inside
+       `interp_edge_core`, so anything added here multiplies by nine in the frame's biggest row
+       (CLAUDE.md §a shared leaf's call sites — growing `seam_write`'s marking leaf made 164
+       copies and cost +4.9 ms).  It is hooked because a COMPLETE event list needs it: this is
+       where `plot_view_src_line` and `interp_edge` put their ~40 source bytes a sweep. */
+    VIEW_NOTE_SRC(addr, val);
     if (addr >= 0x0100u) return;              /* the overwhelmingly common case */
     switch (addr) {
     case MEM_plot_ptr_lo:   PLOT_SET_LO(plot_ptr,  val); break;
@@ -740,6 +755,16 @@ static int view_enter_chain(ViewState* v, uint16_t site, uint16_t opnd, unsigned
 #if defined(REVS_EDGE_START) || defined(REVS_EDGE_START_CHECK)
 static void view_edge_start_only(unsigned char* dst);   /* see §what fill_dash_edge_columns delivers */
 #endif
+#if defined(REVS_SRC_EVENTS) || defined(REVS_SRC_EVENTS_CHECK)
+extern unsigned char g_evLineHi;
+static void view_ev_reset(void);
+#ifndef REVS_SRC_EVENTS_CHECK
+static void view_ev_consume(void);
+#endif
+#endif
+#ifdef REVS_SRC_EVENTS_CHECK
+static void view_ev_check(void);
+#endif
 #ifdef REVS_EDGE_FLAT
 static int      edge_flat_ok(unsigned startSrc, unsigned firstColumn, unsigned stopColumn);
 static SlotExit edge_run_flat(unsigned startSrc, unsigned firstColumn, unsigned stopColumn,
@@ -1181,12 +1206,6 @@ void revs_announce_spanscan(void)
    entered ONCE a sweep. */
 ViewSpan       g_viewEv[VIEW_EV_LINES][VIEW_EV_MAX];
 ViewSpan*      g_viewEvEnd[VIEW_EV_LINES];   /* the append cursor, and the painter's end marker */
-unsigned short g_viewRowAddr[VIEW_EV_LINES]; /* the line's BBC frame-buffer address */
-unsigned char  g_viewRowBg[VIEW_EV_LINES];   /* ...and its surface colour, the chain's entry byte */
-
-/* ⚠ A plain local, published ONCE a sweep — a volatile RMW in the non-zero arm is ~40 cycles and
-   there are ~90 of them a frame (CLAUDE.md §the VERTB ISR: a volatile counter is real money). */
-volatile unsigned long g_viewEvents = 0;   /* sources found and consumed */
 
 /* ⭐⭐⭐ WHICH CELLS THE SWEEP IS ENTITLED TO CONSUME, AND IT IS NOT ALL OF THEM.
    `view_consume` is a destructive read inside the RUN, so a cell the runs never visit — the car
@@ -1206,6 +1225,292 @@ static unsigned char s_lowConsume[VIEW_SPAN_CELLS] = {
     0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu,
     0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu,
     0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu };
+
+#if defined(REVS_SRC_EVENTS) || defined(REVS_SRC_EVENTS_CHECK)
+/* ⛔⛔⛔ PRODUCER-EMITTED SOURCE EVENTS (`make SRCEVENTS=1`) — BUILT, PROVED CORRECT, AND CLOSED
+   ON COST: the scan really does go (−10.59 ms) and `draw_road` pays +15.28 for it.  NET +14 ms.
+   ============================================================================================
+   THE VERDICT, measured against HEAD (frame 172 → 186), every figure from one session:
+
+     phase 24  20.72 → 10.12   −10.59   the transposed scan, DELETED as predicted (arms said 10.00)
+     phase 11  34.21 → 49.49   +15.28   `draw_road` — the hook's aliasing barrier
+     phase 18   5.93 →  7.21    +1.29   `edge_run_flat`'s 136 notes, in a loop we own
+     phase 33  14.16 → 16.05    +1.89   the source-zeroing and list-reset passes
+
+   ⭐⭐⭐ AND THE TWO PHASE-18 / PHASE-11 ROWS TOGETHER PRICE THE RULE EXACTLY, WHICH IS WHY THIS
+   ARM WAS WORTH BUILDING EVEN THOUGH IT LOSES.  The SAME note costs:
+     *  67 cycles each at `edge_run_flat`'s site (1.29 ms for 136 notes), inline in a loop we own;
+     * ~2700 cycles each inside `interp_edge_core` (15.28 ms for ~40 notes) — FORTY TIMES more —
+       because there it is a `jsr` in `draw_road`'s hot loops, and a call boundary is an ALIASING
+       BARRIER: GCC must assume it writes any memory, so the loops spill.
+   ⇒ CLAUDE.md §bulk in a cold arm is cheap, a call boundary in a hot loop is not — here measured
+   at 40x on the same five lines of code, which is a sharper statement of it than the +4.9 ms
+   precedent that predicted this.  ⚠ Inlining instead is the other horn: six copies of an ordered
+   insert inside the frame's biggest routine is what cost +4.9 ms the last time a marking leaf was
+   inlined into a choke point.  THERE IS NO THIRD PLACEMENT.
+
+   ⭐⭐ THE MECHANISM IS CORRECT AND THAT IS WORTH KEEPING: `make SRCEVENTS=1 SRCEVENTSCHECK=1`
+   runs the scan AND the producers, into separate lists, and compares them entry for entry —
+   **0 mismatch in the steady state over 3584 sweeps and ~440 000 entries** (the 41 it reports are
+   one warm-up sweep, the one on which `view_low_build` first succeeds, so the scan accepts sources
+   the producers were still rejecting).  ⚠ It is a genuine independent differential — two unrelated
+   mechanisms deriving the same list from the same stores, NEITHER seeded from the other, which is
+   the trap this session fell into once already.
+   ⇒ if the hook ever becomes affordable (a producer rewritten so the note is inline in a loop it
+   owns, as `edge_run_flat` now is), the list machinery below is proved and ready.
+
+   ⚠⚠ THREE DEFECTS THIS COST, ALL WORTH KNOWING:
+     1. `&EV_ARRAY[line][0]` is a 96-byte stride — not a power of two — and GCC emitted
+        `__mulsi3`, which the 68000 does not have.  `make muldiv-audit` failed the link.  Every
+        row access here WALKS a pointer.
+     2. With the scan gone, nothing reset the lists before the first paint: sweep 1 handed the
+        painters BSS, where `start = 0` reads as an event at cell 0 and there is NO SENTINEL, so
+        the painter ran off the end of the array.  The target hung in the front end with
+        `loopFrames=0`.  The one-time reset is in `view_paint_lines_core`.
+     3. The producer's line RANGE must equal the consumer's, and it is a build AND runtime
+        question (`REVS_TERRAIN_SPANS` is Amiga-only; the target also needs a plot target).  The
+        first oracle run reported 36 mismatching lines a sweep, all of them lines 44..79 that the
+        host's scan never covers.  `g_evLineHi` is published from the same expression that picks
+        the scan.
+
+   ---- the original rationale, kept because the arithmetic is still right ----
+   The transposed scan is 10.00 ms and BOTH HALVES ARE AT THEIR FLOOR (docs/perf-method.md): a
+   5.30 ms longword walk over ~3200 source bytes at ~47 cyc a longword against ~29 for the bare
+   `tst.l` + branch, and 4.70 ms of recording — 15 non-redundant instructions per event.  There is
+   nothing left to shave, so the only way down is to stop LOOKING for the events: the producer
+   already holds the line, the cell and the value in registers at the moment it stores.
+
+   ⭐⭐ THE CENSUS IS WHAT LICENSES THIS, and it is the two-number test CLAUDE.md demands before a
+   skip scheme is built (`make SHAPE=1`, src/platform/shape.cpp): **176 producer stores a sweep
+   against 161 real events, 1.09:1**, stable over 1024 sweeps.  A producer list pays one body per
+   STORE where the scan pays one per EVENT plus the whole walk — so emitting directly costs about
+   fifteen extra bodies and deletes ~800 longword tests.  ⚠ Had that ratio been the 4.7:1 I first
+   guessed, this would lose outright; the number decided it, not the idea.
+
+   ⭐ AND 161 EVENTS OVER 80 LINES IS 2.0 A LINE, which is what makes the ORDER free.  The painters
+   require ascending cells — the transposed scan gets that for nothing by walking cell-major — so a
+   producer list has to insert in place.  At two entries a line that is one or two compares and at
+   most one 2-byte shift, not a sort: ⛔ a sorting network here would be CLAUDE.md's code-size trap
+   (`view_span_line`'s 726 instructions for four breakpoints).
+
+   ⚠⚠ A ZERO STORE UN-RECORDS THE CELL.  The scan records what is non-zero AT SWEEP TIME, so a
+   producer that writes a colour and then writes zero leaves no event.  The list has to shrink for
+   that, or the painter paints a cell the chain would have left alone.
+   ⚠⚠ AND THE SOURCES MUST STILL END THE SWEEP ZEROED, because that is what `view_consume`'s
+   destructive read used to do and `make determinism` compares all 64 KB.  The scan zeroed each
+   byte as it recorded it; here the sweep walks its own event list afterwards and zeroes exactly
+   those cells — the same set, by construction. */
+/* ⭐ THE LIVE ARM WRITES THE PAINTERS' OWN ARRAYS and the scan is skipped; the CHECK arm writes a
+   SHADOW and lets the scan fill the real ones, so the two lists can be compared cell for cell.
+   ⭐⭐ That is a genuine independent differential — two unrelated mechanisms deriving the same
+   list from the same stores — and NOT the trap this session already fell into: neither side is
+   seeded from the other. */
+#ifdef REVS_SRC_EVENTS_CHECK
+ViewSpan  g_srcEv[VIEW_EV_LINES][VIEW_EV_MAX];
+ViewSpan* g_srcEvEnd[VIEW_EV_LINES];
+#define EV_ARRAY g_srcEv
+#define EV_END   g_srcEvEnd
+#else
+#define EV_ARRAY g_viewEv
+#define EV_END   g_viewEvEnd
+#endif
+
+#ifdef REVS_SPAN_STATS
+volatile unsigned long g_srcEvNotes = 0;      /* producer stores offered   */
+volatile unsigned long g_srcEvKept  = 0;      /* ...that became events     */
+#define SRC_EV_STAT(x)  (x)
+#else
+#define SRC_EV_STAT(x)  ((void)0)
+#endif
+
+/* The top line the sweep's own painters cover this frame — see `view_ev_note`.  Conservative
+   before the first sweep publishes it: 43 is the low block alone, which is always ours. */
+unsigned char g_evLineHi = 43u;
+
+/* ⚠ WALK THE POINTER, NEVER INDEX THE ROW.  `EV_ARRAY` is `[80][48]` of a 2-byte entry, so
+   `&EV_ARRAY[line][0]` is `line * 96` — not a power of two — and GCC reached straight for
+   `__mulsi3`, which the 68000 does not have (CLAUDE.md; `make muldiv-audit` failed the link and
+   is the reason this is spelled as a walk). */
+static void view_ev_reset(void)
+{
+    unsigned  line;
+    ViewSpan* row = &EV_ARRAY[0][0];
+    for (line = 0; line < VIEW_EV_LINES; line++, row += VIEW_EV_MAX) {
+        EV_END[line] = row;
+        row->start   = 0xFFu;                 /* the painter's sentinel */
+    }
+}
+
+/* ⚠⚠ THE SOURCES MUST END THE SWEEP ZEROED — that is what the scan's destructive read did, and
+   `make determinism` compares all 64 KB.  The event list names exactly the cells that were
+   non-zero, so this is the same set the scan would have cleared, by construction. */
+#ifndef REVS_SRC_EVENTS_CHECK
+static void view_ev_consume(void)
+{
+    unsigned              line;
+    const ViewSpan*       row = &EV_ARRAY[0][0];       /* ⚠ walked, not indexed — see above */
+    for (line = 0; line < VIEW_EV_LINES; line++, row += VIEW_EV_MAX) {
+        const ViewSpan* e = row;
+        for (; e->start != 0xFFu; e++)
+            mem[MEM_view_src_blocks + ((unsigned)e->start << 7) + line] = 0u;
+    }
+}
+#endif
+
+/* One producer store, as an event.  `always_inline` and deliberately branch-light: this sits at
+   the plotters' own store sites. */
+REVS_FLAG_OP void view_ev_note(unsigned line, unsigned cell, unsigned src)
+{
+    ViewSpan *e, *end;
+
+    /* ⚠⚠ THE PRODUCER'S RANGE MUST EQUAL THE CONSUMER'S, and getting that wrong is what the
+       first run of this oracle reported as 36 mismatching lines a sweep.  Which lines the sweep
+       owns is a BUILD-and-RUNTIME question — `REVS_TERRAIN_SPANS` is Amiga-only, so on the host
+       phase 1 is still the chain's and only 0..43 are ours; on the target it depends on there
+       being a plot target.  `view_paint_lines_core` publishes the answer once a sweep from the
+       very expression that selects the scan, so the two cannot drift.
+       ⭐ Recording outside the range is not merely wasted: `view_ev_consume` would then ZERO
+       sources that `paint_cells` still has to read. */
+    if (line > g_evLineHi || cell >= VIEW_SPAN_CELLS) return;
+#ifdef REVS_TERRAIN_LOW
+    /* ⚠ THE SAME GATE THE SCAN APPLIES, and it is not an optimisation: a cell the runs never
+       visit is not ours to record.  Recording the car's cells put 1124 events a frame in the list
+       against 91 and left them there for ever, because nothing clears what no painter consumes.
+       ⭐ Above the low block `s_lowConsume` is 44, so every line 44..79 passes. */
+    if (line < s_lowConsume[cell]) return;
+#endif
+    SRC_EV_STAT(g_srcEvNotes++);
+
+    e   = &EV_ARRAY[line][0];
+    end = EV_END[line];
+    while (e < end && e->start < cell) e++;
+
+    if (e < end && e->start == cell) {                 /* this cell is already recorded */
+        if (src) { e->colour = mem[MEM_view_cell_bytes + src]; return; }
+        for (; e + 1 < end; e++) e[0] = e[1];          /* a zero store removes it again */
+        end--;
+        EV_END[line] = end;
+        end->start = 0xFFu;
+        return;
+    }
+    if (!src) return;                                  /* zero over zero: nothing to record */
+
+    { ViewSpan* q; for (q = end; q > e; q--) q[0] = q[-1]; }
+    e->start  = (unsigned char)cell;
+    e->colour = mem[MEM_view_cell_bytes + src];
+    end++;
+    EV_END[line] = end;
+    end->start = 0xFFu;
+    SRC_EV_STAT(g_srcEvKept++);
+}
+
+#ifdef REVS_SRC_EVENTS_CHECK
+/* ⭐⭐ THE ORACLE (`make SRCEVENTS=1 SRCEVENTSCHECK=1`).  The scan has just built `g_viewEv` the
+   way it always does — walking and consuming — and the producers have built `g_srcEv` from the
+   very same stores.  Require the two lists to be identical, entry for entry, on every line.
+   `g_srcEvMismatch` must be 0.  ⚠ Scope, stated here rather than assumed: this proves the LIST
+   is the same, which is the whole of what the painters read.  It says nothing about the sources
+   being zeroed afterwards — `make determinism` is what covers that. */
+volatile unsigned long  g_srcEvChecks = 0, g_srcEvMismatch = 0;
+volatile unsigned short g_srcEvMismatchAt = 0;   /* (line << 8) | index */
+volatile unsigned char  g_srcEvWantStart = 0, g_srcEvGotStart = 0;
+volatile unsigned char  g_srcEvWantCol = 0,   g_srcEvGotCol = 0;
+
+static void view_ev_check(void)
+{
+    unsigned line;
+    /* ⚠ THE FIRST SWEEP IS NOT A COMPARISON: the producer lists are still BSS (no reset has run
+       yet) and `s_lowConsume` is $FF, so nothing was recorded on either side for a reason that
+       has nothing to do with the mechanism.  Skip it, or 80 lines of noise bury the real diff —
+       which is exactly what it did on the first run of this oracle. */
+    static int warm;
+    const ViewSpan* rowA = &g_viewEv[0][0];        /* ⚠ walked, not indexed — see view_ev_reset */
+    const ViewSpan* rowB = &g_srcEv[0][0];
+    if (!warm) { warm = 1; return; }
+    for (line = 0; line <= g_evLineHi; line++, rowA += VIEW_EV_MAX, rowB += VIEW_EV_MAX) {
+        const ViewSpan* a = rowA;                  /* the scan's */
+        const ViewSpan* b = rowB;                  /* the producers' */
+        unsigned i = 0;
+        for (;;) {
+            const unsigned as = a->start, bs = b->start;
+            g_srcEvChecks++;
+            if (as != bs || (as != 0xFFu && a->colour != b->colour)) {
+                if (!g_srcEvMismatch) {
+                    g_srcEvMismatchAt = (unsigned short)((line << 8) | (i & 0xFFu));
+                    g_srcEvWantStart = (unsigned char)as; g_srcEvGotStart = (unsigned char)bs;
+                    g_srcEvWantCol = a->colour;           g_srcEvGotCol = b->colour;
+                }
+                g_srcEvMismatch++;
+#ifndef REVS_PLATFORM_AMIGA
+                {   static int shown; static unsigned long sw;
+                    extern int printf(const char*, ...);
+                    if (shown < 4 && ++sw > 400u) {
+                        const ViewSpan* p1 = rowA;
+                        const ViewSpan* p2 = rowB;
+                        unsigned k;
+                        shown++;
+                        printf("SRCEV DIFF line $%02X idx %u  s_lowConsume: ", line, i);
+                        for (k = 0; k < 8u; k++) printf("%02X ", s_lowConsume[k]);
+                        printf("\n   scan:      ");
+                        for (k = 0; k < 8u && p1[k].start != 0xFFu; k++)
+                            printf("(c%u=%02X) ", p1[k].start, p1[k].colour);
+                        printf("[end]\n   producers: ");
+                        for (k = 0; k < 8u && p2[k].start != 0xFFu; k++)
+                            printf("(c%u=%02X) ", p2[k].start, p2[k].colour);
+                        printf("[end]\n   src bytes at that line: ");
+                        for (k = 0; k < 8u; k++)
+                            printf("%02X ", mem[MEM_view_src_blocks + (k << 7) + line]);
+                        printf("\n");
+                    }
+                }
+#endif
+                break;
+            }
+            if (as == 0xFFu) break;
+            a++; b++; i++;
+        }
+    }
+#ifndef REVS_PLATFORM_AMIGA
+    {   static unsigned long sweeps;
+        extern int printf(const char*, ...);
+        if ((++sweeps % 256u) == 0u) {
+            printf("SRCEVENTS  %lu sweeps: %lu list entries compared, %lu MISMATCH",
+                   sweeps, g_srcEvChecks, g_srcEvMismatch);
+            if (g_srcEvMismatch)
+                printf(" — first line $%02X index %u: scan %02X/%02X, producers %02X/%02X",
+                       g_srcEvMismatchAt >> 8, g_srcEvMismatchAt & 0xFFu,
+                       g_srcEvWantStart, g_srcEvWantCol, g_srcEvGotStart, g_srcEvGotCol);
+            printf("\n");
+        }
+    }
+#endif
+}
+#endif /* REVS_SRC_EVENTS_CHECK */
+
+/* The address form, for the sites that hold a pointer rather than a (line, cell) pair. */
+/* ⚠⚠ NOT `always_inline`, and that is the whole risk question this build exists to settle.
+   Its only caller is `plot_store_resync`, which is inlined NINE TIMES inside `interp_edge_core`
+   (the frame's biggest row); inlining this there would put nine copies of an ordered insert in
+   `draw_road`'s hot loops, which is the shape CLAUDE.md measured at +4.9 ms.  Out of line it is
+   one `jsr` per plotter source store (~40 a sweep) — but a call is an ALIASING BARRIER, so the
+   surrounding loop may spill instead.  Both failure modes are real; the phase table decides. */
+void view_ev_note_addr(unsigned addr, unsigned src)
+{
+    const unsigned off = (addr & 0xFFFFu) - MEM_view_src_blocks;
+    if (off >= VIEW_SPAN_CELLS * 0x80u) return;        /* not a view source byte */
+    view_ev_note(off & 0x7Fu, off >> 7, src);
+}
+#define VIEW_NOTE_SRC_AT(l, c, val)    view_ev_note((unsigned)(l), (unsigned)(c), (unsigned)(val))
+#else
+#define VIEW_NOTE_SRC_AT(l, c, val)    ((void)0)
+#endif
+unsigned short g_viewRowAddr[VIEW_EV_LINES]; /* the line's BBC frame-buffer address */
+unsigned char  g_viewRowBg[VIEW_EV_LINES];   /* ...and its surface colour, the chain's entry byte */
+
+/* ⚠ A plain local, published ONCE a sweep — a volatile RMW in the non-zero arm is ~40 cycles and
+   there are ~90 of them a frame (CLAUDE.md §the VERTB ISR: a volatile counter is real money). */
+volatile unsigned long g_viewEvents = 0;   /* sources found and consumed */
+
 
 /* One longword: four lines of one cell column, at least one of them non-zero.  ⭐ `always_inline`
    because it is selected by a test in the hot loop — out of line it would be an aliasing barrier
@@ -3004,7 +3309,31 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
 #if defined(REVS_SCAN_DOUBLE) && REVS_SCAN_DOUBLE == 1
     view_scan_all_keep();   /* `make SCANDOUBLE=1` — prices the scan, changes no byte */
 #endif
-#if REVS_TERRAIN_CARVE >= 3
+#if defined(REVS_SRC_EVENTS) || defined(REVS_SRC_EVENTS_CHECK)
+    /* ⚠⚠⚠ THE LISTS MUST EXIST BEFORE THE FIRST PAINT, and forgetting this hung the target build
+       in the front end with `loopFrames=0`.  The scan used to reset every line and plant the
+       `$FF` sentinel as its first act; with the scan gone, sweep 1 would hand the painters BSS —
+       `start = 0` reads as "an event at cell 0" and there is NO SENTINEL, so the painter walks
+       off the end of `g_viewEv` for 48 entries.  Nothing is lost by resetting here: no producer
+       store can have been KEPT yet, because `s_lowConsume` is $FF until `view_low_build` runs
+       inside this very routine. */
+    { static int evReady; if (!evReady) { evReady = 1; view_ev_reset(); } }
+    /* ⭐ ONE source of truth for the owned range, taken from the same conditions that pick the
+       scan below — so a producer can never record a line the painters do not cover. */
+#if defined(REVS_TERRAIN_SPANS) && defined(REVS_TERRAIN_LOW)
+    g_evLineHi = REVS_PLOT_HAS_TARGET() ? 79u : 43u;
+#elif defined(REVS_TERRAIN_SPANS)
+    g_evLineHi = REVS_PLOT_HAS_TARGET() ? 79u : 0u;
+#else
+    g_evLineHi = 43u;
+#endif
+#endif
+#if defined(REVS_SRC_EVENTS) && !defined(REVS_SRC_EVENTS_CHECK)
+    /* ⭐⭐⭐ `make SRCEVENTS=1` — NO SCAN.  The producers have already built the list (see
+       `view_ev_note`), so there is nothing to look for.  The sources are zeroed from that list
+       after the painters, which is what keeps `mem[]` byte-identical. */
+    (void)0;
+#elif REVS_TERRAIN_CARVE >= 3
     (void)0;                            /* ⚠ the scan carved out too */
 #elif defined(REVS_TERRAIN_SPANS) && defined(REVS_TERRAIN_LOW)
     if (REVS_PLOT_HAS_TARGET()) view_scan_all();   /* both blocks are ours */
@@ -3056,6 +3385,14 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
 #endif
 #else
     paint_lines_clipped(&v);
+#endif
+
+#ifdef REVS_SRC_EVENTS_CHECK
+    view_ev_check();
+    view_ev_reset();
+#elif defined(REVS_SRC_EVENTS)
+    view_ev_consume();
+    view_ev_reset();
 #endif
 
 #if defined(REVS_SCAN_DOUBLE) && REVS_SCAN_DOUBLE >= 2
@@ -5988,6 +6325,7 @@ void copy_dash_data_core(uint8_t dirFlag)
                column until it marked). */
             PROBE_SHAPE_MARK((unsigned)((to - mem) + y));
             VIEW_MARK_SOURCE((unsigned)((to - mem) + y));
+            VIEW_NOTE_SRC((unsigned)((to - mem) + y), from[y]);
             bytes++;
             y--;
         } while (y != mem[MEM_dash_block_starts + b]);
@@ -8962,6 +9300,7 @@ static SlotExit edge_run_flat(unsigned startSrc, unsigned firstColumn, unsigned 
             if (s) {
                 PROBE_SHAPE_EDGE_CELL(1);
                 seam_write(startSrc + line, 1, (s == 0x55u) ? 0u : s);
+                /* ⚠ the boundary TABLE, not a source block — nothing to record */
             } else {
                 a = surface_colour_at_core((uint8_t)line, (uint8_t)column, 0u, 0u).a;
                 PROBE_SHAPE_EDGE_CELL(a ? 2u : 3u);
@@ -8997,6 +9336,9 @@ static SlotExit edge_run_flat(unsigned startSrc, unsigned firstColumn, unsigned 
                 PROBE_SHAPE_EDGE_CELL(c ? 2u : 3u);
                 a = c ? c : 0x55u;
                 seam_write(plot_ptr_v + line, 1, a);
+                /* ⭐ 136 of the sweep's 176 source stores are THIS ONE, and here the line and the
+                   column are already in registers — no address to decode. */
+                VIEW_NOTE_SRC_AT(line, column, a);
             }
         }
 #ifdef REVS_SHAPE
@@ -12821,12 +13163,14 @@ int draw_starting_lights_core(void)
     { int i;
       for (i = 9; i >= 0; i--) { mem[light_col + i] = 0xF0u;   /* $7B8A — clear ten rows */
                                  PROBE_SHAPE_MARK(light_col + i);
-                                 VIEW_MARK_SOURCE(light_col + i); }
+                                 VIEW_MARK_SOURCE(light_col + i);
+                                 VIEW_NOTE_SRC(light_col + i, 0xF0u); }
       uint8_t a = pattern;
       for (i = 5; i >= 0; i--) {                    /* $7B93 — pattern into the middle six */
           mem[light_col + 2 + i] = a;
           PROBE_SHAPE_MARK(light_col + 2 + i);
           VIEW_MARK_SOURCE(light_col + 2 + i);
+          VIEW_NOTE_SRC(light_col + 2 + i, a);
           a ^= eor;                                 /* $7B96 EOR math_lo */
       }
     }
@@ -14828,6 +15172,7 @@ uint8_t paint_fence_backdrop_core(uint8_t horizon)
             VIEW_MARK_SOURCE(block + y);
             VIEW_MARK_SOURCE(MEM_view_left_start_src  + y);
             VIEW_MARK_SOURCE(MEM_view_right_start_src + y);
+            VIEW_NOTE_SRC(block + y, b);
             last = b;
 
             pat = (uint8_t)((pat - 1) & 3);     /* 3,2,1,0,3,... (DEX / BPL / LDX #3) */

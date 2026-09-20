@@ -738,6 +738,19 @@ ifeq ($(LOWDOUBLE),1)
 EXTRA_DEFINES += -DREVS_LOW_DOUBLE
 endif
 
+# ⭐⭐⭐ `make SRCEVENTS=1` — PRODUCER-EMITTED SOURCE EVENTS: the producers append to the
+# painters' event list as they store, and the 10.00 ms transposed scan is deleted
+# (src/gen/revs_native.c §producer-emitted source events).  `SRCEVENTSCHECK=1` nests and is
+# the ORACLE: the scan still runs and fills its own list, the producers fill a shadow, and
+# the two are compared entry for entry.
+ifeq ($(SRCEVENTS),1)
+EXTRA_DEFINES += -DREVS_SRC_EVENTS
+ifeq ($(SRCEVENTSCHECK),1)
+EXTRA_DEFINES += -DREVS_SRC_EVENTS_CHECK
+PROBE_SYMS_SRCEV = g_srcEvChecks g_srcEvMismatch g_srcEvMismatchAt
+endif
+endif
+
 TERRAINLOW ?= 1
 ifeq ($(TERRAINLOW),1)
 EXTRA_DEFINES += -DREVS_TERRAIN_LOW
@@ -1104,7 +1117,7 @@ PROBE_SYMS += $(PROBE_SYMS_BCD)
 PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
 PROBE_SYMS += $(PROBE_SYMS_SPAN)
 PROBE_SYMS += $(PROBE_SYMS_SCAN)
-PROBE_SYMS += $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_EDGESTART)
+PROBE_SYMS += $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV)
 PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK)
 
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \
