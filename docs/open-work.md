@@ -57,17 +57,19 @@ is `tail`-truncated to the last 40 lines (`GDBTAIL`), which silently drops phase
 | 12.5 | 26 | the 50 Hz drain |
 | 10.2 | 18 | `fill_dash_edge_columns` — ⛔ see CLOSED |
 
-### 1. ⭐⭐⭐ The TRANSPOSED SCAN — **10.00 ms**, measured with `SCANDOUBLE=1`, and the fix is a PRODUCER change
-`docs/perf-method.md` §the view sweep, fully split.  The scan reads all 3200 source bytes back to
-find the ~446 non-zero ones, because `draw_road` scattered them into forty 128-byte-apart blocks
-and threw away what it knew.  ⇒ **the producer should APPEND `(line, cell, colour)` to `g_viewEv[]`
-at its store site**, which deletes this 10 ms outright and makes the producer's stores sequential;
-it is entry 3's first sub-lever reached from the consumer side.  ⚠ Gates owed: a written
-RESULTS-rule reader audit (`copy_dash_data`'s stow, `plot_view_src_line`, every expansion
-circuit's hook read those blocks), a scoped `set_ignore`, a `make determinism` re-record and
-`make viewdiff`.
-⭐ The rest of the sweep, for ranking: phase 1's painter 5.55, its driver ~5.2, the low block 16.1,
-the tail 6.3.
+### 1. ⚠ The TRANSPOSED SCAN — **10.00 ms, both halves AT THE FLOOR; only a PRODUCER HOOK deletes it**
+`docs/perf-method.md` §the transposed scan is at its floor. Split by two trajectory-neutral arms:
+**walk 5.30 ms** (`SCANDOUBLE=2`) + **recording 4.70 ms** (`SCANDOUBLE=1` minus that), 207 cycles
+for each of 161 events. The walk is ~47 cyc/longword against ~29 for a bare `tst.l` + branch with
+DMA; the recording is 15 non-redundant instructions. The objdump closes to ~10% on both.
+⇒ the 10 ms is the REPRESENTATION. The producer census supports the fix (176 stores to 161 events,
+**1.09:1**, so emitting directly costs 15 extra bodies and deletes all ~800 tests) but ⚠⚠ **a
+complete hook needs `plot_store_resync`, inlined NINE times inside `interp_edge_core`** — the shape
+CLAUDE.md measured at +4.9 ms, with the damage landing on `draw_road`, the biggest row in the frame.
+**A judgement call for the user, not a formality.** ⭐ `edge_run_flat`'s 136 of those 176 stores are
+now in a loop we own and hook trivially; only ~40 need the risky site.
+⭐ Small real slack, unclaimed: GCC recomputes `(line + j) * 4` per lane for `g_viewEvEnd` instead
+of using constant displacements off one index — ≈0.55 ms.
 
 ### 1b. ⭐⭐ The view sweep's DRIVER code — **phases 2+3 are DELETED by §12; this entry is history**
 ⛔⛔⛔ **EVERY CANDIDATE THIS ENTRY EVER NAMED IS NOW CLOSED, AND THE REASON TO STOP IS A
@@ -331,6 +333,8 @@ determinism run is a PRACTICE session. Worth running after a change to session/l
 ---
 
 ## ⛔ CLOSED — measured dead ends, one line each. Do not rebuild these.
+
+- ✅ **`view_low_run`'s inner fill was unrolled eight ways** — `#pragma GCC unroll 1`, phase 33 **16.12 → 14.16 ms**, `mem[]` byte-identical. ⭐ `LOWDOUBLE=1` first established that the low block's cost IS the painting, not the driver — the opposite of phase 18.
 
 - ✅ **`fill_dash_edge_columns` flattened** (`EDGEFLAT=1`, default): phase 18 **10.12 → 5.92 ms**, `mem[]` byte-identical, all four determinism trajectories + viewdiff clean. Its remaining 5.92 is ~2.9 of classifier calls. ⛔ Do not price anything there per CELL — the cost was always per WALK.
 

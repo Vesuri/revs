@@ -2347,6 +2347,17 @@ static inline __attribute__((always_inline)) const ViewSpan* view_low_run(unsign
     while (c < last) {
         unsigned end = ev->start;               /* the next event, or the $FF sentinel */
         if (end > last) end = last;             /* `last` is the composed cell, handled below */
+        /* ⭐⭐⭐ `unroll 1` IS LOAD-BEARING, NOT A HINT — AND IT IS WORTH MILLISECONDS.  Left to
+           itself GCC peels the trip count and unrolls this eight ways: 127 instructions for a
+           loop whose body is `move.b` + `addq`.  The segments between events average ~12 cells
+           over ~200 segment entries a frame, so almost every entry pays the peel's arithmetic
+           and never reaches the unrolled core — `make LOWDOUBLE=1` priced the two runs at
+           ~16 ms of phase 33's 16.12, i.e. 164 cycles per byte STORED where the loop body is
+           ~52.  CLAUDE.md §a bounded loop over a short list is a code-size trap, and the cost
+           here is the PEEL rather than the call it caused there. */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC unroll 1
+#endif
         while (c < end) { LOW_PUT(value); d += 8; c++; }
         if (c < last) { value = ev->colour; ev++; }
     }
@@ -2379,6 +2390,33 @@ static void view_own_low(ViewState* v)
             const unsigned  base = plot_ptr_v;
             const ViewSpan* ev   = &g_viewEv[line][0];
 
+#ifdef REVS_LOW_DOUBLE
+            /* ⭐⭐ `make LOWDOUBLE=1` — WHAT THE LOW BLOCK'S PAINTING COSTS, vs its per-line
+               DRIVER, and it changes nothing to ask.  `view_low_run` is a pure function of the
+               event list and the clip tables, and `LOW_PUT` writes the byte that is already
+               there on a second pass — so running the pair TWICE stores the same values over
+               themselves: not one `mem[]` byte, pixel or sim step differs.  ⇒ the phase-33 delta
+               IS the two runs, and the remainder is the driver.
+               ⚠ `ev` must be REWOUND, or the second pair walks past the sentinel.
+               ⚠ INSTRUMENT ONLY. */
+            {   const ViewSpan* evSave = ev;
+                const ViewSpan* e2 = view_low_run(base, ev, s_lowA0[line], s_lowA1[line],
+                          clip ? view_compose(mem[MEM_view_left_start_src  + line],
+                                              mem[MEM_view_left_start_mask + edge],
+                                              mem[MEM_view_left_start_fill + edge])
+                               : mem[MEM_surface_colours
+                                     + (mem[MEM_view_line_surface + line] & 3u)],
+                          mem[MEM_view_left_end_mask + line],
+                          mem[MEM_view_left_end_fill + line], line);
+                (void)view_low_run(base, e2, s_lowB0[line], s_lowB1[line],
+                           view_compose(mem[MEM_view_right_start_src  + line],
+                                        mem[MEM_view_right_start_mask + line],
+                                        mem[MEM_view_right_start_fill + line]),
+                           clip ? mem[MEM_view_right_end_mask + edge] : 0xFFu,
+                           clip ? mem[MEM_view_right_end_fill + edge] : 0x00u, line);
+                ev = evSave;
+            }
+#endif
             ev = view_low_run(base, ev, s_lowA0[line], s_lowA1[line],
                               clip ? view_compose(mem[MEM_view_left_start_src  + line],
                                                   mem[MEM_view_left_start_mask + edge],
@@ -2963,7 +3001,7 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
        any line is painted, because the producers have all finished and nothing writes a source
        during the sweep; and it must run BEFORE the first paint, because it is the destructive
        read `view_consume` used to be. */
-#ifdef REVS_SCAN_DOUBLE
+#if defined(REVS_SCAN_DOUBLE) && REVS_SCAN_DOUBLE == 1
     view_scan_all_keep();   /* `make SCANDOUBLE=1` — prices the scan, changes no byte */
 #endif
 #if REVS_TERRAIN_CARVE >= 3
@@ -3018,6 +3056,20 @@ void view_paint_lines_core(unsigned screenBase, unsigned firstLine, uint8_t entr
 #endif
 #else
     paint_lines_clipped(&v);
+#endif
+
+#if defined(REVS_SCAN_DOUBLE) && REVS_SCAN_DOUBLE >= 2
+    /* ⭐⭐ `make SCANDOUBLE=2` — THE WALK ALONE, with the lane bodies subtracted out.  Level 1
+       runs the extra pass BEFORE the real one, so it pays the full walk AND every event body;
+       here it runs AFTER the painters, when the real scan has already zeroed every source in
+       range, so not one lane body executes and the delta is the LONGWORD WALK by itself.
+       ⇒ level 1 − level 2 = what RECORDING costs, which is the split that says whether to
+       attack the walk (a narrower range, or producer-emitted events) or the recording code.
+       ⚠ It must run after the PAINTERS, not before them: `view_scan_body` resets
+       `g_viewEvEnd[line]` and plants a sentinel, so an extra pass before the paint would hand
+       every painter an empty event list.  Here the lists are spent, and the next sweep rebuilds
+       them.  `consume = 0` writes no `mem[]` byte, so this is trajectory-neutral like level 1. */
+    view_scan_all_keep();
 #endif
 
     /* Publish the two pointers back into mem[] for the 6502-ABI mirror.  In the CORE, not the

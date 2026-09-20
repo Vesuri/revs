@@ -1810,6 +1810,55 @@ makes `draw_road`'s scattered stores sequential.  ⚠ It needs a written RESULTS
 `copy_dash_data`'s stow, `plot_view_src_line` and every expansion circuit's hook read those
 blocks — and a `make determinism` re-record.
 
+### ✅ FIXED — the low block's inner fill was UNROLLED: phase 33 **16.12 → 14.16 ms**
+
+`#pragma GCC unroll 1` on `view_low_run`'s byte fill. One line, `mem[]` byte-identical, all four
+`determinism` trajectories clean, **−1.96 ms**, frame 174 → 172.
+
+⭐⭐ **The arm came first and it inverted my expectation.** `make LOWDOUBLE=1` runs the two
+`view_low_run` calls twice per line — they are a pure function of the event list and the clip
+tables, and `LOW_PUT` writes the byte already there, so nothing changes — and phase 33 went
+**16.12 → 33.27 ms**. ⇒ the low block's cost **IS the painting, not the per-line driver**, which is
+the opposite of phase 18 and the opposite of what the line count suggested. Guessing would have
+sent me at the driver.
+
+⭐⭐⭐ **And the defect the objdump then named: GCC peeled and unrolled that fill EIGHT WAYS —
+127 instructions for a body that is `move.b` + `addq`.** The segments between events average ~12
+cells over ~200 segment entries a frame, so nearly every entry pays the peel's arithmetic and never
+reaches the unrolled core: 164 cycles per byte STORED where the loop body is ~52. With `unroll 1`
+the fill is **24 instructions** and `view_paint_lines_core` 2026 → 1922.
+⚠ **The static delta over-reads as usual** — 127 → 24 instructions paid 1.96 ms, not the ~6 the
+count suggests (CLAUDE.md §Rule 1b). `unroll 1` here is load-bearing, not a hint.
+
+⭐ What remains in phase 33's 14.16 ms is the runs' OUTER loop and the boundary composites — ~5
+segment entries a line — not the fill. The fill is now ~5.2 of the 14.
+
+### ⛔ THE TRANSPOSED SCAN IS AT ITS FLOOR AT THIS GRAIN — 5.30 ms walk + 4.70 ms recording
+
+`make SCANDOUBLE=1` (an extra pass before the real one: full walk + every lane body) prices the
+scan at **10.00 ms**; `SCANDOUBLE=2` (an extra pass *after the painters*, when every source in
+range is already zeroed, so not one lane body runs) prices the **walk alone at 5.30 ms**. Both are
+trajectory-neutral — `consume = 0` writes no `mem[]` byte. ⇒ recording is **4.70 ms for 161
+events, 207 cycles each**.
+
+Both halves are at the floor, and the objdump closes to ~10%:
+- the walk is ~47 cyc/longword against ~29 for a bare `tst.l` + branch with DMA contention, over
+  ~560-800 longwords — the bare cost of testing 3200 source bytes;
+- the recording is **15 instructions on the firing path** (~150 cyc, ~195 with DMA): the lane
+  test, the `s_lowConsume` gate (hoisted, one reference), the `g_viewEvEnd` pointer load, the
+  consume, two byte stores and the pointer bump. Nothing is redundant. ⚠ `MEM_QUAL` is **not**
+  volatile in a default build, so this is genuinely optimised code, not a seam artefact.
+
+⇒ **the scan's 10 ms is the REPRESENTATION, not the code**, and the only thing that deletes it is
+producer-emitted events. ⚠⚠ **That hook is a real risk, not a formality:** a complete one needs
+`plot_store_resync`, which is inlined **nine times** inside `interp_edge_core` — the same shape
+CLAUDE.md records at **+4.9 ms** when a marking leaf was inlined into `seam_write`, and the damage
+would land on `draw_road`, the frame's biggest row. The producer census (176 stores to 161 events,
+1.09:1) says the arithmetic works; the codegen risk is what has to be decided.
+⭐ One small piece of real slack found and left: the four lanes' `g_viewEvEnd` slots are 4 bytes
+apart, and GCC recomputes `(line + j) * 4` per lane instead of using constant displacements off one
+index — ~24 cycles a firing lane, ≈0.55 ms.
+
 ### ✅ FIXED — `fill_dash_edge_columns` flattened: phase 18 **10.12 → 5.92 ms**, frame 182 → 174
 
 `make EDGEFLAT=1` (now the default) replaces the four-level 6502-shaped chain with one loop for

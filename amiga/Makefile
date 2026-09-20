@@ -731,6 +731,13 @@ ifeq ($(EDGEFILL),1)
 EXTRA_DEFINES += -DREVS_EDGE_FILL
 endif
 
+# ⭐⭐ `make LOWDOUBLE=1` — price the low block's PAINTING against its per-line driver without
+# changing a byte: `view_low_run` is idempotent, so the pair runs twice over the same values.
+# INSTRUMENT ONLY (src/gen/revs_native.c §view_own_low).
+ifeq ($(LOWDOUBLE),1)
+EXTRA_DEFINES += -DREVS_LOW_DOUBLE
+endif
+
 TERRAINLOW ?= 1
 ifeq ($(TERRAINLOW),1)
 EXTRA_DEFINES += -DREVS_TERRAIN_LOW
@@ -740,8 +747,8 @@ endif
 # ⭐⭐ `make SCANDOUBLE=1` — price the transposed scan without deleting it (src/gen/revs_native.c
 # §view_scan_all_keep).  Runs the scan an extra time with `consume = 0`: no byte, no pixel and no
 # trajectory changes, so `phase 24` minus the control IS the scan's cost.  An INSTRUMENT ONLY.
-ifeq ($(SCANDOUBLE),1)
-EXTRA_DEFINES += -DREVS_SCAN_DOUBLE
+ifneq ($(SCANDOUBLE),)
+EXTRA_DEFINES += -DREVS_SCAN_DOUBLE=$(SCANDOUBLE)
 endif
 
 TERRAIN ?= 1
