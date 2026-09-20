@@ -469,3 +469,4 @@ extern volatile unsigned long g_roadMarkPts;     /* mark_line_surfaces points st
 #define DEC_PHASE_NULL    52   /* an EMPTY bracket: the transition cost itself               */
 #define DEC_PHASE_MODES   53   /* buildLineModes — us -> display lines, 208 mode bytes       */
 #define DEC_PHASE_OWN     54   /* the ownership/carve loops over the 208 display lines       */
+#define DEC_PHASE_RECTS   55   /* §12c's dynamic-rectangle re-expand over the owned band     */

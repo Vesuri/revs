@@ -269,6 +269,25 @@ extern volatile unsigned short g_plotDeltaMismatchY;  /* first offending display
 #define REVS_PLOT_BYTE(a, v)  ((void)0)
 #endif
 
+#ifdef REVS_PLOT_RECTS
+/* ⭐⭐⭐ §12c — THE DYNAMIC RECTANGLES, the third ownership mechanism and the one that collects
+ * the rows §11d closed.  Re-expands a handful of small, FIXED rectangles of `mem[]` into the back
+ * buffer once per painted frame, so a writer's price to an owned block becomes the AREA it can
+ * reach rather than the number of stores it makes.  The needles fire 57.6 times a frame into 291
+ * bytes; as a per-byte delta that is ~5.4 ms of "getting there" and as a rectangle it is ~0.56.
+ * ⚠ Call it once per PAINTED FRAME and after the decode — `tick_wheel_spin` runs at 50 Hz from
+ * the band schedule and `draw_dash_needles` is `race_main_loop`'s last drawing call, so anything
+ * earlier publishes a frame-old dashboard.  The table, and why the wing mirrors are in it though
+ * no practice measurement can see them, are at the definition (RevsPlot.cpp). */
+void revs_plot_rects(void);
+#define REVS_PLOT_RECTS()  revs_plot_rects()
+#ifdef REVS_SPAN_STATS
+extern volatile unsigned long g_plotRectPasses;
+#endif
+#else
+#define REVS_PLOT_RECTS()  ((void)0)
+#endif
+
 /* Counters — every one of them in PROBE_SYMS (amiga/Makefile).
    ⚠ `make SPANSTAT=0` compiles them and their updates away: six volatile RMWs a span is ~220
    cycles, and that instrument is how the shipping price is separated from the counting price.
@@ -351,6 +370,7 @@ extern volatile unsigned short g_plotMismatchOff;
 #define REVS_PLOT_HAS_TARGET()   0
 #define REVS_PLOT_CELL(a, v)     ((void)0)
 #define REVS_PLOT_OWN_RESET()    ((void)0)
+#define REVS_PLOT_RECTS()        ((void)0)
 #define REVS_PLOT_CHECK_BEFORE() ((void)0)
 #define REVS_PLOT_CHECK_AFTER()  ((void)0)
 

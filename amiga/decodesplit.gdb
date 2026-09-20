@@ -22,7 +22,7 @@ printf "=== vbi=%u loopFrames=%lu frozen=%lu ===\n", \
   g_vbiCount, g_phaseFrames, g_probeFrozen
 
 set $dec = g_phaseTicks[27] + g_phaseTicks[50] + g_phaseTicks[51] + g_phaseTicks[52] \
-         + g_phaseTicks[53] + g_phaseTicks[54]
+         + g_phaseTicks[53] + g_phaseTicks[54] + g_phaseTicks[55]
 set $per = $dec / 1000
 if $per == 0
   set $per = 1
@@ -49,6 +49,10 @@ printf "  %-30s %3lu.%02lu ms/frame  %2d.%01d%%  (calls=%lu)\n", \
   "own/carve loops      (54)", \
   (g_phaseTicks[54]/$f)/4006, ((g_phaseTicks[54]/$f)%4006)*100/4006, \
   (g_phaseTicks[54]/$per)/10, (g_phaseTicks[54]/$per)%10, g_phaseCount[54]
+printf "  %-30s %3lu.%02lu ms/frame  %2d.%01d%%  (calls=%lu)  <- §12c, DASHOWN only\n", \
+  "dynamic rectangles   (55)", \
+  (g_phaseTicks[55]/$f)/4006, ((g_phaseTicks[55]/$f)%4006)*100/4006, \
+  (g_phaseTicks[55]/$per)/10, (g_phaseTicks[55]/$per)%10, g_phaseCount[55]
 printf "  %-30s %3lu.%02lu ms/frame  %2d.%01d%%  (calls=%lu)\n", \
   "convertRace          (51)", \
   (g_phaseTicks[51]/$f)/4006, ((g_phaseTicks[51]/$f)%4006)*100/4006, \

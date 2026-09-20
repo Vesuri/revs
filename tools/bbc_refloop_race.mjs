@@ -528,6 +528,10 @@ tm.processor.debugInstruction.add((addr) => {
 // record the PC of whatever writes one.  The answer is a routine, not a guess.
 const fillFlags = new Uint8Array(0x10000);
 const fillLineOf = new Int16Array(0x10000).fill(-1);
+/* ⭐ …AND ITS CELL.  A rectangle painter needs the CELL bounds as much as the line bounds — a
+   writer confined to four cells of a row is a 44-byte re-expand where the row is 40 cells, and
+   the line-only roll-up below cannot tell those apart.  (docs/span-render-plan.md §12c.) */
+const fillCellOf = new Int16Array(0x10000).fill(-1);
 const fillPC = new Map(); // pc -> {n, lines:Set}
 let fillWrites = 0, fillChanged = 0;
 const [fillFrameLo, fillFrameHi] = fillFramesArg.split("-").map(Number);
@@ -539,6 +543,7 @@ if (fillArg) {
             const a = FB_BASE + row * BPR + c * LINES + line;
             fillFlags[a] = 1;
             fillLineOf[a] = y;
+            fillCellOf[a] = c;
         }
     }
     console.log(`fill attribution armed for display lines ${lo}..${hi}\n`);
@@ -873,11 +878,12 @@ tm.processor.debugWrite.add((addr, b) => {
         // instruction's own start (6502.js executeInternal).
         const pc = tm.processor.getPrevPc(0);
         let e = fillPC.get(pc);
-        if (!e) fillPC.set(pc, (e = { n: 0, lines: new Set(), nonzero: 0, changed: 0,
+        if (!e) fillPC.set(pc, (e = { n: 0, lines: new Set(), cells: new Set(), nonzero: 0, changed: 0,
                                       perLine: new Uint32Array(LINES * ROWS),
                                       perLineChanged: new Uint32Array(LINES * ROWS) }));
         e.n++;
         e.lines.add(fillLineOf[addr]);
+        e.cells.add(fillCellOf[addr]);
         e.perLine[fillLineOf[addr]]++;
         if (b !== 0) e.nonzero++;
         /* ⚠ peekmem, NOT readmem: readmem fires the READ hook, and this instrument would then
@@ -1442,6 +1448,7 @@ if (fillArg && fillWrites) {
         const fn = nameOf(pc).split("+")[0];
         let f = byFn.get(fn);
         if (!f) byFn.set(fn, (f = { n: 0, changed: 0, pcs: 0, lo: 999, hi: -1,
+                                    cells: new Set(),
                                     perLine: new Uint32Array(LINES * ROWS),
                                     perLineChanged: new Uint32Array(LINES * ROWS) }));
         f.n += e.n; f.changed += e.changed; f.pcs++;
@@ -1450,17 +1457,40 @@ if (fillArg && fillWrites) {
             f.perLineChanged[y] += e.perLineChanged[y];
         }
         for (const y of e.lines) { if (y < f.lo) f.lo = y; if (y > f.hi) f.hi = y; }
+        for (const c of e.cells) f.cells.add(c);
     }
     /* ⚠⚠ EVERY ROUTINE, NOT A TOP-N SLICE.  A `slice(0, 16)` here hid `vdu_char_emit` — 32
        stores in 200 frames, i.e. the cheapest writer on the screen and therefore the one whose
        rows are most worth OWNING — and a narrower `--fill` window had already reported it.  A
        census that ranks by volume buries exactly the finding an ownership ledger is looking for. */
+    /* A compact "0,1,38,39" / "3..34" rendering: a writer split between the two screen edges is
+       a DIFFERENT shape from one covering the middle, and a bare lo..hi hides exactly that. */
+    const cellSpan = (set) => {
+        const cs = [...set].filter((c) => c >= 0).sort((a, b) => a - b);
+        if (!cs.length) return "-";
+        if (cs.length <= 6) return cs.join(",");
+        return `${cs[0]}..${cs[cs.length - 1]} (${cs.length})`;
+    };
     console.log(`\n⭐⭐ ROLLED UP PER ROUTINE (stores per frame over ${nWin} frames):`);
     const ranked = [...byFn.entries()].sort((a, b) => b[1].n - a[1].n);
     for (const [fn, f] of ranked) {
         console.log(`   ${fn.padEnd(24)} ${String((f.n / nWin).toFixed(f.n / nWin < 10 ? 2 : 0)).padStart(7)} stores/frame  ` +
             `${String((f.changed / nWin).toFixed(f.changed / nWin < 10 ? 2 : 0)).padStart(7)} changes/frame  ` +
-            `lines ${f.lo}..${f.hi}  (${f.pcs} PCs)`);
+            `lines ${f.lo}..${f.hi}  cells ${cellSpan(f.cells)}  (${f.pcs} PCs)`);
+    }
+    /* ⭐⭐⭐ AND THE RECTANGLE EACH ONE OCCUPIES, which is what a per-frame re-expand costs.
+       A writer's price to an owned block is not its store count — the painter re-expands its
+       BOUNDING BOX from mem[] once a painted frame, so the number that matters is
+       (lines x cells) bytes at ~13.6 cyc, and a writer with a tall thin box is cheap however
+       often it fires.  (docs/span-render-plan.md §12c.) */
+    console.log(`\n⭐⭐⭐ THE RE-EXPAND RECTANGLE PER ROUTINE — (lines x cells) bytes a painted frame:`);
+    for (const [fn, f] of ranked) {
+        const cs = [...f.cells].filter((c) => c >= 0).sort((a, b) => a - b);
+        if (!cs.length || f.hi < f.lo) continue;
+        const nl = f.hi - f.lo + 1, nc = cs[cs.length - 1] - cs[0] + 1;
+        console.log(`   ${fn.padEnd(24)} ${String(nl).padStart(3)} lines x ${String(nc).padStart(2)} cells ` +
+            `= ${String(nl * nc).padStart(5)} bytes  ~${(nl * nc * 13.6 / 7093).toFixed(3)} ms/frame ` +
+            `(vs ${(nl * 544 / 7093).toFixed(3)} ms of decode those lines cost)`);
     }
 
     /* ⭐⭐⭐ THE OWNERSHIP LEDGER — DISPLAY LINES GROUPED BY THEIR *WRITER SET*.
@@ -1512,6 +1542,7 @@ if (fillArg && fillWrites) {
             if (!f) byFnR.set(fn, (f = { n: 0, lo: 999, hi: -1 }));
             f.n += e.n;
             for (const y of e.lines) { if (y < f.lo) f.lo = y; if (y > f.hi) f.hi = y; }
+        for (const c of e.cells) f.cells.add(c);
         }
         console.log(`\n⭐⭐ WHO READS THE FRAME BUFFER BACK — ${fbReads} reads ` +
             `(${(fbReads / nWin).toFixed(0)}/frame) from ${readPC.size} PCs.  A WRITE-ONLY region ` +

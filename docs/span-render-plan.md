@@ -2073,3 +2073,90 @@ suspect the arming, not the engine`) plus an explicit `armed at frames=N; window
 ⇒ **an instrument that cannot report its own silence is indistinguishable from a finding.** The fix
 is lazy arming: register the hooks at module scope, build the flags on the first access inside the
 window, and get both the real machine's table and the whole window.
+
+### ⛔⛔⛔ §12c — THE BOTTOM BAND AS DYNAMIC RECTANGLES: BUILT, PROVED CORRECT, CLOSED ON THE PRIZE (2026-09-20)
+
+`make DASHOWN=1` (default **0**), `make DASHCHECK=1` its oracle, `make DASHBARE=1` its enumerator.
+
+**The idea, and it was a sound one.** §11d closed display lines 158..191 because a per-byte delta
+painter costs ~666 cycles a DELIVERED byte — ~261 of plane work and **~405 of getting there**, an
+out-of-line call and a display-line filter paid once per STORE. That term is a property of the
+HOOK, not of the rows, so a mechanism with no per-store term should escape it: re-expand a few
+FIXED rectangles once per painted frame and the cost stops scaling with how often a writer fires.
+Six rectangles cover everything that moves in the band — the two needles (one 8-cell column), the
+two front-wheel dithers, the two wing mirrors — 398 bytes.
+
+**It works. It is correct. It costs +8.12 ms.** Carved six ways with `DECODESPLIT=1`, same
+session, `PROBEFIELDS=3000`, driving:
+
+| decode, carved | DASHOWN=0 | DASHOWN=1 | Δ |
+|---|---:|---:|---:|
+| empty bracket (the control) | 0.11 | 0.11 | — |
+| `snapshotBands` | 0.92 | 0.92 | 0 |
+| `buildLineModes` | 1.63 | 1.61 | −0.02 |
+| own/carve loops | 2.00 | 2.02 | +0.02 |
+| **dynamic rectangles** | 0.11 | **8.02** | **+7.91** |
+| **`convertRace`** | **7.22** | **7.29** | **+0.07** |
+| whole `decode()` | 15.04 | 23.16 | **+8.12** |
+
+#### ⭐⭐⭐ THE FINDING, AND IT IS ABOUT THE PRIZE, NOT THE PAINTER: `convertRace` DID NOT MOVE
+
+Owning 34 more rows bought **+0.07 ms**. `convertRace` is **dirty-region** — it converts only the
+cells whose `mem[]` byte changed against the shadow — so it had **already** skipped this band.
+And the number closes exactly: 0.07 ms is ~500 cycles is ~37 cells at 13.6 cyc/cell, against the
+**33 changes a frame** `make fbwrites` measures in 158..191. The decode was converting the needle
+and nothing else.
+
+⇒ **OWNING A ROW IS WORTH (the cells the DIRTY decode actually converts on it) × 13.6 cyc, NOT
+(40 cells) × 13.6.** §11's ~544 cyc/row is the price of a row the producers **rewrite wholesale**
+— which is what the terrain rows are, and is why `VIEWCARVE` measured it there. For a row that
+changes in a handful of cells the true price is **~13 cycles**, a factor of **40** smaller.
+⭐⭐ And the writer-set ledger has been printing the right number all along, in the column nobody
+used: rank an ownership domain by **`ch/f`**, never by `st/f` and never by the row count.
+158..191 is 0.97 changed cells per row per frame.
+
+⇒ **No tuning rescues this.** A painter can be made cheaper; a prize of zero cannot. The
+mechanism is closed on the budget.
+
+#### ⭐⭐ THE SECOND CORRECTION: 13.6 cyc/byte IS A WHOLESALE RATE AND DOES NOT TRANSFER
+
+The rectangles ran at a measured **143 cyc/byte**, ten times the decode's own 13.6. That is not a
+defect in the painter — it is what the 13.6 actually is: a **longword-batched, dirty-SKIPPING**
+rate over 40 contiguous cells with the per-row setup amortised across all of them. An 8-cell
+strip with byte stores gets none of that amortisation. **Never price a small-region pass at a
+rate measured on a wholesale one** — same family as §10q's coarse-test rule.
+
+#### ⇒ WHERE THE DECODE'S TIME ACTUALLY IS, which redirects the rest of the plan
+
+The shipping carve says `decode()` = 15.04 ms as **0.92 snapshotBands + 1.63 buildLineModes +
+2.00 own/carve + 7.22 convertRace + 3.02 remainder**. Of the 138 unowned rows, 158..191 is worth
+0.07 and the 63 sky rows are flat and static ⇒ **`convertRace`'s 7.22 ms is essentially display
+lines 117..157 alone**, the rows the view sweep rewrites in full every frame. Those are the only
+rows left with a real prize, and they are exactly the ones §12 says are blocked on the car
+furniture. ⚠ And a rectangle painter on THEM must beat 143 cyc/byte to be usable: the needle
+column above 158 is 232 bytes, i.e. ~4.7 ms at the measured rate.
+
+⭐ Two rows of that table are pure bookkeeping and nobody has looked inside them: **own/carve
+2.00 ms** (a per-frame scan of all 208 display lines that exists only because ownership exists)
+and the **3.02 ms remainder**. 5 ms of overhead around 7.2 ms of real conversion.
+
+#### What was proven, and what is worth keeping
+
+- The oracle (`DASHCHECK=1`): 75 checks, **0 mismatch**, driving. Five sabotages — rectangles
+  suppressed **2258**, the sampled bounds **12**, wrong buffer **1053**, lo/hi swapped **16147**,
+  right wing-mirror rectangle deleted **0**. The last survives by the argument stated at the
+  oracle *before* the run: a practice lap has an empty track and never draws a mirror.
+- ⭐⭐ **THE ENUMERATOR IS THE REUSABLE HALF.** `make DASHBARE=1 DASHCHECK=1` suppresses every
+  rectangle so the oracle's histograms report *every* cell in the band that moves. It exists
+  because a 41-frame `make fbwrites` window **under-reported a ROTATING object**: it put
+  `plot_line_octant` in lines 129..180 × cells 16..22 and the truth is 158..191 × cells 16..23.
+  **A sample of a moving thing is not its range** — enumerate the footprint, never sample it.
+- ⚠⚠ And the trap that fired first: with `STRAIGHT_TO_RACE=1` but **no `HOLD_THROTTLE=1`** the car
+  is PARKED, revs and steering are constant, the needles land on the same bytes every frame and
+  the enumerator reports that *nothing in the band moves*. The parked-car trap again.
+- `make fbwrites` now reports **cells** as well as lines per routine, plus a re-expand-rectangle
+  table. That is what made the six rectangles derivable at all.
+- The wing mirrors' footprint (display lines 154..178, cells 0..2 and 37..39, 118 bytes, six
+  segments) is derived from the game's own `mirror_seg_addr_lo/hi` + `mirror_seg_start_row` /
+  `mirror_seg_end_row` tables, walked as `mirror_draw_car_core` walks them. No practice
+  measurement can see them.

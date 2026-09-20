@@ -502,6 +502,25 @@ forever because `m_plan` is the COPPER's palette schedule, not decode work (§11
   11.0 ms against 4.8 of budget). ⇒ ⭐⭐⭐ **A MIRROR CAN ONLY PAY ON ROWS WHOSE WRITERS ARE NEARLY
   SILENT — a row with a busy writer is won by making that writer's own store land in the bitplanes
   INSTEAD of `mem[]`, not in addition to it.** `docs/span-render-plan.md` §11d.
+  ⛔⛔⛔ **AND ALL OF THAT ARITHMETIC IS SUPERSEDED BY ONE MEASUREMENT: `convertRace` IS
+  DIRTY-REGION, SO A ROW THE DECODE ALREADY SKIPS IS WORTH NOTHING TO OWN.** A third mechanism —
+  re-expanding a few small FIXED rectangles once per painted frame, which has no per-store term at
+  all and so escapes both break-evens above — was built for display lines 158..191, proved correct
+  (75 checks, 0 mismatch, four of five sabotages fire) and cost **+8.12 ms**. Carved six ways
+  (`make DECODESPLIT=1`), owning all 34 rows moves `convertRace` **7.22 → 7.29 ms: +0.07**, i.e.
+  ~500 cycles, i.e. exactly the **33 cells a frame** that band changes.
+  ⇒ ⭐⭐⭐ **OWNING A ROW IS WORTH (the cells the DIRTY decode converts on it) × 13.6 cyc, NOT
+  (40 cells) × 13.6.** The ~544 cyc/row above is the price of a row the producers **rewrite
+  wholesale** (the terrain); for a sparsely-changing row it is **~13**, forty times less.
+  ⭐⭐ **Rank an ownership domain by the writer-set ledger's `ch/f` column — never `st/f`, never
+  the row count, never the ledger's row price.** `make fbwrites` prints `ch/f` already.
+  ⇒ And the consequence for the plan: of the 138 unowned rows, 158..191 is worth ~0 and the 63 sky
+  rows are flat, so **`convertRace`'s whole 7.22 ms is display lines 117..157** — the rows the view
+  sweep rewrites in full — and they are the only ownership prize left.
+  ⚠ **Second correction, and it is general: 13.6 cyc/byte is a WHOLESALE rate and does not
+  transfer.** It is longword-batched, dirty-skipping and amortised over 40 contiguous cells; the
+  same expansion over an 8-cell strip measured **143 cyc/byte**. Never price a small-region pass
+  at a rate measured on a wholesale one. `docs/span-render-plan.md` §12c.
   ⭐⭐⭐ **AND THE RETARGET HAS ITS OWN BREAK-EVEN, 32x MORE PERMISSIVE, SO RANK AN OWNERSHIP
   DOMAIN BY STORES PER ROW — ASCENDING — AND THE LEDGER'S ORDER INVERTS.** One retargeted byte
   costs ~30-44 cyc (four plane bytes — two planes x two BUFFERS — less the `mem[]` store it
@@ -673,6 +692,15 @@ Rules that must survive without opening `docs/perf-method.md`:
   ⇒ **Price a coarse arm as (what it deletes) − (what qualifying costs) − (what the slow arm now
   pays twice), and check the FREE version still wins before building it.**
   `docs/span-render-plan.md` §10q.
+- ⭐⭐⭐ **A SAMPLE OF A MOVING THING IS NOT ITS RANGE — ENUMERATE A FOOTPRINT, NEVER SAMPLE IT.**
+  `make fbwrites FILL=117-207` over 41 driving frames of a real BBC puts `plot_line_octant` in
+  display lines 129..180 x cells 16..22; the truth is **158..191 x cells 16..23**, because a
+  needle ROTATES and 41 frames do not hold every rev range. Both bounds were short and an
+  area-based painter built on them was wrong on its second frame. The fix is an arm that
+  SUPPRESSES the thing under test and lets the oracle's own histograms report the whole set
+  (`make DASHBARE=1 DASHCHECK=1`). ⚠ And run it DRIVING: with `STRAIGHT_TO_RACE=1` but no
+  `HOLD_THROTTLE=1` the car is parked, revs and steering are constant, the needles land on the
+  same bytes every frame and the enumerator reports that nothing moves at all.
 - ⭐⭐ **Before optimising a loop, check how many times it actually RUNS.** The span rasteriser's
   "~3 500 cycles per DDA scan line" was 24 ms divided by the wrong denominator; the real one is
   **43 spans a frame**, which caps the whole kernel's call-and-search surface at ~5 ms (it measured

@@ -1536,6 +1536,26 @@ void RevsScreen::decode()
     if (cells > g_decodeCellsMax) g_decodeCellsMax = (uint16_t)cells;
     if (cells >= BBC_SCREEN_ROWS * BBC_SCREEN_CELLS) g_decodeFullFrames++;
 
+    /* ⭐⭐⭐ §12c — AND THE DYNAMIC RECTANGLES, over the rows the conversion just skipped.
+       The bottom band is OWNED, so `convertRace` wrote none of it; what still moves down there is
+       six small rectangles (the two needles, the two front-wheel dithers, the two wing mirrors)
+       and they are re-expanded here from `mem[]`.  ⚠ HERE, at the end of the decode, for two
+       reasons: this is the last point in a painted frame at which `mem[]` is final — the needles
+       are `race_main_loop`'s closing draw and `tick_wheel_spin` runs at 50 Hz from the band
+       schedule — and `s_target` is this buffer (present() aims it at `m_bitmap[m_back]` and
+       decode fills that same one, which is the pairing the comment at present() exists for). */
+    /* ⚠ ITS OWN DECODESPLIT SLOT.  The rect pass lives inside the decode's phase, so `ph27`
+       alone cannot say whether a move is the conversion the rows delete or the re-expand that
+       replaces it — the first A/B of this change read +8.0 ms on that one row with no way to
+       attribute it.  `make DECODESPLIT=1` carves the rest of decode() the same way. */
+#ifdef REVS_DECODE_SPLIT
+    PROBE_PHASE(DEC_PHASE_RECTS);
+#endif
+    REVS_PLOT_RECTS();
+#ifdef REVS_DECODE_SPLIT
+    PROBE_PHASE(PROBE_PHASE_DECODE);
+#endif
+
 #ifdef REVS_DIRTYCHECK
     /* ⭐⭐ THE ORACLE, and it is exact: an UNCONDITIONAL decode of the same frame must produce
      * byte-identical bitplanes.  The scratch starts as a COPY of what the dirty pass produced,

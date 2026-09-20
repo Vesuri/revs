@@ -298,7 +298,26 @@ scan is already at its floor), and the `SRCEVNULL` split is confounded by IPA.
 ⇒ **The AUDIT keeps its value** (it is the permanent gate, it corrected CLAUDE.md on
 `copy_dash_data`, and it is the worked example the RESULTS rule now points at); the route does not.
 
-### 2a. ⭐⭐⭐ ROWS 117..157 — only 17 of the 41 are ownable, ~−1.5 ms, and it is SUBSUMED BY entry 3
+### 2a. ⭐⭐⭐ ROWS 117..157 — THE ONLY ROWS LEFT WITH A DECODE PRIZE, and it is ~7 ms
+⭐⭐⭐ **RE-PRICED 2026-09-20 BY §12c, AND THE RE-PRICING IS THE POINT.** `convertRace` is
+DIRTY-REGION: it converts only the cells whose `mem[]` byte changed. Carving `decode()` six ways
+shows owning the whole of 158..191 moves it **7.22 → 7.29 ms (+0.07)** — those rows change ~33
+cells a frame and the decode had already skipped the rest. Of the 138 unowned rows, 158..191 is
+worth ~0 and the 63 sky rows are flat ⇒ **`convertRace`'s 7.22 ms is essentially 117..157 alone**,
+the rows the view sweep rewrites in full every frame.
+⇒ **Own these 41 rows and the decode's conversion very nearly goes to zero.** They are blocked on
+exactly what §12 says: the car, the tyres and the dash sides are furniture that lives in `mem[]`
+and reaches the screen through the decode, so `TERRAINLOW` deliberately writes `mem[]` and claims
+nothing. The furniture is STATIC (measured, `amiga/car_probe.gdb`) ⇒ a one-time base into both
+plane buffers, plus a painter for the three things on these rows that move: the wheel dither
+(`tick_wheel_spin`, 32 bytes), the steering-wheel mark and the needle column's upper half.
+⚠⚠ **And the painter must beat 143 cyc/byte**, which is what §12c's rectangle re-expand measured —
+the needle column above line 158 is 232 bytes, i.e. ~4.7 ms at that rate against a ~7 ms prize.
+The decode's own 13.6 cyc/byte is a WHOLESALE longword-batched rate and does not transfer to a
+small region. Getting the terrain painter to write the planes directly (as `TERRAIN=1` already
+does for 81..116) is the shape that has the rate; a strip re-expand is not.
+
+### 2a-old. ROWS 117..157 under the pre-§12c model — only 17 of the 41 have a single writer
 `make fbwrites FILL=117-157 FILLFRAMES=15-70` gives the per-line writer set: **117..128 (12) and
 141..145 (5) have the view sweep as their ONLY writer**; 129..132 and 146..157 add
 `undraw_plot_lines` + `plot_line_octant`, and 133..140 add `tick_wheel_spin` (the tyres). Those 24
@@ -391,6 +410,15 @@ every one of them leaves 144 against a 48 ms target.** It is worth doing because
 certain, not because it changes the arithmetic — that still rests on `draw_road` (34) and
 `build_track_geometry` (26).
 
+### 5b. ⭐⭐ THE DECODE'S BOOKKEEPING — 5 ms around 7.2 ms of real work, never looked inside
+`make DECODESPLIT=1` now carves `decode()` SIX ways (§12c added the rect slot). The shipping
+15.04 ms is **0.92 `snapshotBands` + 1.63 `buildLineModes` + 2.00 own/carve + 7.22 `convertRace`
++ 3.02 remainder + 0.11 bracket**. `snapshotBands` + `buildLineModes` must survive forever
+(`m_plan` is the COPPER's palette schedule, §11a), but **the own/carve loops are 2.00 ms of
+per-frame scan over all 208 display lines that exists only because ownership exists**, and the
+**3.02 ms remainder is unattributed**. Neither has ever been read. Cheap and certain, unlike the
+rows.
+
 ### 6. ⭐ RE-PRICE the four FPS-era "nulls" in milliseconds
 They were judged with an instrument that cannot see 2% (Rule 1a), so a real 1-3 ms win could be
 sitting inside any of them: `paint_run_one` (−0.15% FPS), the wide-value campaign (+0.65%), the
@@ -431,6 +459,22 @@ determinism run is a PRACTICE session. Worth running after a change to session/l
 ---
 
 ## ⛔ CLOSED — measured dead ends, one line each. Do not rebuild these.
+
+- ⛔⛔⛔ **THE BOTTOM BAND AS DYNAMIC RECTANGLES** (`make DASHOWN=1`, display lines 158..191; built,
+  oracle-green over 75 checks, five sabotages, then closed) — **+8.12 ms of `decode()`**, and
+  ⭐⭐⭐ **the reason is the PRIZE, not the painter, so no tuning rescues it: `convertRace` is
+  DIRTY-REGION and had already skipped these rows — owning all 34 moves it 7.22 → 7.29 ms, +0.07,
+  which is ~37 cells, which is the band's measured 33 changes a frame.**
+  ⇒ **OWNING A ROW IS WORTH (the cells the dirty decode converts on it) × 13.6 cyc, NOT 40 × 13.6.**
+  §11's ~544 cyc/row is the price of a row the producers REWRITE WHOLESALE; for a sparsely-changing
+  row it is ~13, a factor of 40. ⭐⭐ **Rank an ownership domain by the writer-set ledger's `ch/f`
+  column, never `st/f` and never the row count.** ⚠ Second correction: the rectangles ran at
+  **143 cyc/byte** against the decode's 13.6, because 13.6 is a wholesale, longword-batched,
+  dirty-skipping rate over 40 contiguous cells — **never price a small-region pass at a rate
+  measured on a wholesale one.** `docs/span-render-plan.md` §12c.
+  ⭐ Kept from it: `make DASHBARE=1 DASHCHECK=1` (**the enumerator** — suppresses every rectangle so
+  the oracle's histograms report the whole moving footprint) and `make fbwrites`' new per-routine
+  **cell** range and re-expand-rectangle table.
 
 - ✅ **`view_low_run`'s inner fill was unrolled eight ways** — `#pragma GCC unroll 1`, phase 33 **16.12 → 14.16 ms**, `mem[]` byte-identical. ⭐ `LOWDOUBLE=1` first established that the low block's cost IS the painting, not the driver — the opposite of phase 18.
 

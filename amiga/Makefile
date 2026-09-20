@@ -902,6 +902,46 @@ ifeq ($(DELTACHECK),1)
 EXTRA_DEFINES += -DREVS_PLOT_DELTA_CHECK
 PROBE_SYMS_DELTACHK = g_plotDeltaChecks g_plotDeltaMismatch g_plotDeltaMismatchY
 endif
+
+# ⛔⛔⛔ `make DASHOWN=1` — THE BOTTOM BAND AS DYNAMIC RECTANGLES: BUILT, PROVED CORRECT AND
+# CLOSED ON THE BUDGET (docs/span-render-plan.md §12c).  DEFAULT OFF.
+# Display lines 158..191 join the delta domain and six fixed rectangles (the two needles, the two
+# front-wheel dithers, the two wing mirrors) are re-expanded from mem[] into the BACK BUFFER once
+# per painted frame instead of per store — the third ownership mechanism, and the one §11d's
+# ~666 cyc/delivered-byte does not price.  The oracle is green (`DASHCHECK=1`, 75 checks / 0
+# mismatch, four of five sabotages fire) and it still costs +8.12 ms of decode.
+# ⭐⭐⭐ AND THE REASON IS THE PRIZE, NOT THE PAINTER, WHICH IS WHY NO TUNING SAVES IT:
+# `convertRace` is DIRTY-REGION and had ALREADY skipped these rows.  Carved six ways
+# (`DECODESPLIT=1`), owning all 34 moves convertRace 7.22 -> 7.29 ms — **+0.07**, i.e. ~500
+# cycles, i.e. the ~37 cells a frame that band actually CHANGES.  The rectangles then re-expand
+# 398 bytes unconditionally at a measured 143 cyc/byte for 8.02 ms.
+# ⭐⭐⭐ ⇒ OWNING A ROW IS WORTH (the cells the DIRTY decode converts on it) x 13.6 cyc, NOT
+# (40 cells) x 13.6.  §11's ~544 cyc/row is the price of a row the producers REWRITE WHOLESALE;
+# for a row that changes in a handful of cells it is ~13.  The writer-set ledger prints the right
+# number already and it is the `ch/f` column, never `st/f`.
+# ⚠ 143 cyc/byte is also a correction: the decode's 13.6 is a WHOLESALE, longword-batched,
+# dirty-SKIPPING rate over 40 contiguous cells, and an 8-cell strip gets none of that amortisation.
+# ⚠⚠ ONE OF THE SIX RECTANGLES IS INVISIBLE TO EVERY PRACTICE MEASUREMENT: the WING MIRRORS are
+# empty on an empty track.  Their footprint comes from the game's own six-segment tables instead.
+# ⭐⭐ `make DASHCHECK=1` — THE RECTANGLE SET'S ORACLE, and it is the one thing this mechanism
+# owes: that the six rectangles are the COMPLETE set of what moves in the band.  Every painted
+# frame it re-expands all forty cells of 158..191 from mem[] and compares the BACK BUFFER against
+# them, so a writer with neither a rectangle nor a `REVS_PLOT_BYTE` shows up on the frame it
+# writes.  `g_plotRectMismatch` must be 0; `g_plotRectMismatchAt` is (line << 8) | cell.
+# ⚠ ONE buffer, unlike DELTACHECK — a rectangle is repainted in full every frame, so that IS the
+# invariant; checking both would fail on a correct build.  ⚠⚠ It cannot falsify the two WING
+# MIRROR rectangles: a practice session has an empty track and never draws one.
+DASHOWN ?= 0
+ifneq ($(DASHOWN),0)
+EXTRA_DEFINES += -DREVS_PLOT_RECTS
+ifeq ($(DASHBARE),1)
+EXTRA_DEFINES += -DREVS_PLOT_RECTS_BARE
+endif
+ifeq ($(DASHCHECK),1)
+EXTRA_DEFINES += -DREVS_PLOT_RECTS_CHECK
+PROBE_SYMS_DASHCHK = g_plotRectChecks g_plotRectMismatch g_plotRectMismatchAt g_plotRectMissRow g_plotRectMissCell g_plotRectMissFirst g_plotRectMissLast
+endif
+endif
 endif
 endif
 
@@ -1156,7 +1196,7 @@ PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
 PROBE_SYMS += $(PROBE_SYMS_SPAN)
 PROBE_SYMS += $(PROBE_SYMS_SCAN)
 PROBE_SYMS += $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV)
-PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK) $(PROBE_SYMS_FASTMEM) $(PROBE_SYMS_SRCEVNULL)
+PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK) $(PROBE_SYMS_DASHCHK) $(PROBE_SYMS_FASTMEM) $(PROBE_SYMS_SRCEVNULL)
 
 # ⭐⭐ THE BLOCK-OP WRAP.  The shared support library's memset/memcpy/memmove are BYTE LOOPS
 # (24-40 cycles a byte); src/platform/amiga/fastmem.c replaces them with longword ones.  Wrapping

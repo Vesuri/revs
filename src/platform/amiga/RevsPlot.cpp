@@ -95,6 +95,9 @@ volatile unsigned long  g_plotSpansWide  = 0;
 #ifdef REVS_PLOT_DELTA
 volatile unsigned long  g_plotDeltaBytes = 0;    /* glyph bytes mirrored into both buffers */
 volatile unsigned long  g_plotDeltaBases = 0;    /* full re-expansions of the 34 owned rows */
+#ifdef REVS_PLOT_RECTS
+volatile unsigned long  g_plotRectPasses = 0;    /* §12c dynamic-rectangle re-expands */
+#endif
 #endif
 }
 #endif
@@ -912,7 +915,25 @@ extern "C" unsigned char revs_plot_spans(unsigned short addr, const ViewSpan* sp
    painter only below ~0.8 delivered bytes a frame** — `vdu_char_emit`'s rows are at 3.7/34 = 0.11
    and the needles at 57.6/34 = 1.69.  docs/span-render-plan.md §11d has the three-arm table and
    why no placement of the hook escapes it. */
+#ifdef REVS_PLOT_RECTS
+/* ⭐⭐⭐ §12c — AND THE NEEDLE ROWS COME BACK, BY A THIRD MECHANISM THE RATE ABOVE DOES NOT PRICE.
+   The paragraph above is still correct about what it measured: at ~666 cycles per DELIVERED byte
+   no per-store mirror can pay for 158..191.  ⭐ But "delivered bytes" is a property of the HOOK,
+   not of the rows — the ~405 cycles of "getting there" is a call and a display-line filter paid
+   once per store, and a writer that stores 57.6 bytes a frame into a rectangle of 291 pays it
+   57.6 times.  RE-EXPAND THE RECTANGLE INSTEAD, once per painted frame, and the per-store term
+   disappears: the cost stops scaling with how often a writer fires and starts scaling with the
+   AREA it can reach, at the decode's own ~13.6 cyc/byte.
+   ⇒ 291 bytes = ~0.56 ms against the 34 rows' ~2.61 ms of decode.  The needles fire 50 times a
+   second and it does not matter; `tick_wheel_spin` fires 50 times a second over 32 bytes and it
+   does not matter either.  That is the whole difference, and it is why this is not a re-run of
+   §11d. */
+static const unsigned char kDeltaBlock[3][2] = { { 0u, 18u }, { 158u, 192u }, { 192u, 208u } };
+#define DELTA_BLOCKS 3u
+#else
 static const unsigned char kDeltaBlock[2][2] = { { 0u, 18u }, { 192u, 208u } };
+#define DELTA_BLOCKS 2u
+#endif
 
 /* ⭐⭐⭐ THE OWNED-ROW KIND TABLE — the domain's whole per-row state, and it is ONE byte load on
    every path that used to ask a question:
@@ -936,7 +957,7 @@ static int deltaKindRebuild(void)
 {
     unsigned blk, n;
     int changed = 0;
-    for (blk = 0; blk < 2u; blk++) {
+    for (blk = 0; blk < DELTA_BLOCKS; blk++) {
         const unsigned lo = kDeltaBlock[blk][0], hi = kDeltaBlock[blk][1];
         for (n = 0; n < s_bandCount; n++) {
             const uint8_t kind = (s_bandMode[n] == 4u) ? 4u : 5u;
@@ -998,7 +1019,7 @@ static void plotDeltaBaseRow(unsigned y, unsigned kind)
 static void plotDeltaBase(void)
 {
     unsigned blk, y;
-    for (blk = 0; blk < 2u; blk++)
+    for (blk = 0; blk < DELTA_BLOCKS; blk++)
         for (y = kDeltaBlock[blk][0]; y < kDeltaBlock[blk][1]; y++)
             plotDeltaBaseRow(y, s_deltaKind[y]);
     s_deltaBased = 1;
@@ -1006,6 +1027,182 @@ static void plotDeltaBase(void)
     g_plotDeltaBases++;
 #endif
 }
+
+#ifdef REVS_PLOT_RECTS
+/* ⭐⭐⭐ §12c — THE DYNAMIC RECTANGLES, i.e. the THIRD ownership mechanism.
+   ============================================================================================
+   The base lays a whole owned row once; the per-byte delta mirrors a writer's store.  Between
+   them sits the shape both get wrong: a writer that is FAST-CHANGING but SMALL-FOOTPRINT.
+   `tick_wheel_spin` fires 50 times a second over 32 bytes; the two dash needles are redrawn and
+   un-drawn every frame over 7 cells.  A per-store mirror prices those at ~666 cycles a byte and
+   loses (§11d); a per-row base repaints 40 cells to change 7 and loses too.
+
+   ⭐ SO PRICE THE AREA, NOT THE STORES.  Each rectangle is re-expanded from `mem[]` into the
+   BACK BUFFER once per painted frame, at the decode's own ~13.6 cyc/byte — which makes the cost
+   independent of how often the writer fires, and independent of how many stores it makes.
+
+   ⚠ ONE BUFFER, NOT TWO, AND THAT IS THE ECONOMY.  §11d's delta must write both buffers because
+   it delivers only the bytes that CHANGED and the other buffer would keep a stale one.  A
+   rectangle is repainted in full every painted frame, so the buffer being drawn is always
+   complete on its own — the halving is free and it is why this shape fits where that one did not.
+
+   ⚠⚠ THE RECTANGLES ARE MEASURED, NOT GUESSED, AND ONE OF THEM IS INVISIBLE IN PRACTICE.
+   `make fbwrites FILL=117-207` on a real BBC gives the first four directly.  The WING MIRRORS do
+   not appear in it at all — a `STRAIGHT_TO_RACE`/refloop lap is a PRACTICE session with an empty
+   track, so nothing is ever reflected (CLAUDE.md §the baseline trajectory decides which code
+   EXISTS).  Their footprint is derived instead from the game's own six-segment tables
+   (`mirror_seg_addr_lo/hi`, `mirror_seg_start_row`, `mirror_seg_end_row`) walked exactly as
+   `mirror_draw_car_core` walks them: 118 bytes, display lines 154..178, cells 0..2 and 37..39 —
+   the two wing mirrors at the screen edges.  Owning these rows without that rectangle would
+   freeze both mirrors in a real race and nothing in any practice measurement could see it. */
+struct PlotRect { unsigned char y0, y1, c0, c1; };      /* display lines and cells, INCLUSIVE */
+static const PlotRect kDynRect[] = {
+    /* ⭐⭐⭐ THE NEEDLE COLUMN — the rev-counter needle, the steering-wheel mark and
+       `poll_steering_assist`'s two cells, all inside one 8-cell column.  Both marks are drawn by
+       `plot_line_octant` and erased from its undo list by `undraw_plot_lines`.
+       ⚠⚠ THESE BOUNDS ARE ENUMERATED, NOT SAMPLED, AND THE DIFFERENCE MATTERED TWICE.
+       `make fbwrites FILL=117-207` over 41 driving frames of a real BBC reports lines 129..180 x
+       cells 16..22 — and both are SHORT, because a needle ROTATES and a sample of a moving thing
+       is not its range.  `make DASHBARE=1 DASHCHECK=1` suppresses every rectangle and lets the
+       oracle's histograms report the whole set instead: over 81 painted frames the band's
+       dynamic cells are lines 158..191 (all of them) x cells 16..23.  The upper half is carried
+       at the BBC figure until rows 117..157 are owned and the enumerator can reach it. */
+    { 129u, 191u, 16u, 23u },
+    { 133u, 140u,  0u,  1u },  /* tick_wheel_spin — the left  front-wheel arch dither */
+    { 133u, 140u, 38u, 39u },  /* tick_wheel_spin — the right front-wheel arch dither */
+    { 154u, 178u,  0u,  2u },  /* wing mirror, left  (segments 0,1,2) */
+    { 154u, 178u, 37u, 39u },  /* wing mirror, right (segments 3,4,5) */
+};
+
+/* ⭐ `s_deltaKind[y]` IS the in-domain test, and it costs one byte load.  A rectangle may
+   overhang the owned band — the needle column runs up to display line 129, inside the view
+   sweep's rows — and an unowned row is the decode's, so painting it would be wasted work over a
+   byte the decode is about to write anyway.  Using the kind table rather than a clamp means the
+   table needs no edit when the owned band grows downward. */
+static void plotDynRects(void)
+{
+    unsigned r;
+#ifdef REVS_PLOT_RECTS_BARE
+    /* ⭐⭐ `make DASHBARE=1 DASHCHECK=1` — THE ENUMERATOR, and it is the instrument that sets this
+       table rather than a measured window on the BBC.  With every rectangle suppressed, the
+       oracle's per-line and per-cell histograms report EVERY cell of 158..191 that moves, in the
+       trajectory that matters, on the port itself.
+       ⚠ It exists because a `make fbwrites` window under-reported a ROTATING object: 41 frames of
+       practice put `plot_line_octant` in lines 129..180, and the needle reaches past 180 at rev
+       ranges that window never held.  A bound taken from a sample of a moving thing is a guess;
+       this is the whole set. */
+    return;
+#endif
+    for (r = 0; r < sizeof kDynRect / sizeof kDynRect[0]; r++) {
+        const unsigned c0 = kDynRect[r].c0, c1 = kDynRect[r].c1, y1 = kDynRect[r].y1;
+        unsigned y;
+        for (y = kDynRect[r].y0; y <= y1; y++) {
+            const unsigned kind = s_deltaKind[y];
+            const unsigned row  = y >> 3;
+            /* ⚠ Shifts, never a multiply — `__mulsi3` does not exist on a 68000 and
+               `make muldiv-audit` fails the link (CLAUDE.md). */
+            const unsigned rowOff = (y << 6) + (y << 4);                   /* y * 80 */
+            MEM_QUAL uint8_t* src = mem + BBC_SCREEN_BASE + ((row << 8) + (row << 6))
+                                  + (y & 7u) + (c0 << 3);                  /* + cell * 8 */
+            uint8_t* const p = s_target + rowOff;
+            unsigned c;
+            if (!kind) continue;                       /* still the decode's row */
+            if (kind == 4u) {
+                for (c = c0; c <= c1; c++, src += BBC_SCREEN_LINES) {
+                    p[c] = 0; p[c + kPlaneGap] = *src;
+                }
+            } else {
+                for (c = c0; c <= c1; c++, src += BBC_SCREEN_LINES) {
+                    const uint8_t v = *src;
+                    p[c] = g_bbcExpandLo[v]; p[c + kPlaneGap] = g_bbcExpandHi[v];
+                }
+            }
+        }
+    }
+}
+
+/* Called once per PAINTED FRAME, after the decode has skipped the owned rows.  ⚠ Not once per
+   SWEEP like the claim: `tick_wheel_spin` runs from the band schedule at 50 Hz and
+   `draw_dash_needles` is `race_main_loop`'s LAST drawing call, so a sweep-time re-expand would
+   publish the state from before both of them. */
+#ifdef REVS_PLOT_RECTS_CHECK
+/* ⭐⭐ THE RECTANGLE SET'S ORACLE (`make DASHCHECK=1`), and it proves the ONE thing this
+   mechanism can get wrong: that the six rectangles are the COMPLETE set of what moves inside the
+   owned band.  Immediately after the re-expand, every cell of display lines 158..191 is expanded
+   from `mem[]` again and compared against what the back buffer actually holds.  A byte written
+   by any routine with neither a rectangle nor a `REVS_PLOT_BYTE` at its store site is stale
+   relative to `mem[]` from the frame it was written, and shows up here on that very frame.
+
+   ⚠ IT CHECKS ONE BUFFER, DELIBERATELY, AND THAT IS NOT A WEAKER TEST — it is the matching one.
+   `plotDeltaCheck` compares BOTH buffers because a per-byte delta delivers only what changed; a
+   rectangle is repainted in full every painted frame, so "the buffer being drawn is complete on
+   its own" IS the invariant, and checking the other buffer would fail by construction on a
+   correct build.  (CLAUDE.md: state an oracle's scope AT the oracle.)
+
+   ⚠⚠ AND ITS SCOPE LIMIT, stated rather than left to be discovered: a rectangle for a writer
+   that never FIRES in the measured trajectory is unfalsifiable here.  `STRAIGHT_TO_RACE` is a
+   practice session with an empty track, so the two WING-MIRROR rectangles are exercised by
+   nothing — this oracle proves they do no harm, not that their bounds are right.  Their bounds
+   come from the game's own segment tables instead (see kDynRect). */
+extern "C" {
+volatile unsigned long  g_plotRectChecks     = 0;
+volatile unsigned long  g_plotRectMismatch   = 0;    /* ⚠⚠ MUST BE 0 */
+volatile unsigned short g_plotRectMismatchAt = 0;    /* (display line << 8) | cell of the first */
+/* ⭐ WHERE, not just how many.  A single "first offender" names one cell and a missing rectangle
+   is a SHAPE — the per-line and per-cell spreads are what say which routine it is, and they cost
+   two byte increments on a check that is already scanning the band. */
+volatile unsigned char  g_plotRectMissRow[34];       /* per display line 158..191 */
+volatile unsigned char  g_plotRectMissCell[40];      /* per cell */
+/* ⭐⭐ TRANSIENT OR RECURRING — the two have DIFFERENT fixes and a total cannot tell them apart.
+   A missing rectangle mismatches on every painted frame from the write onward (the base is laid
+   once); a start-up sequencing hole mismatches on one check and never again.  First and last
+   check index says which, and it is two stores. */
+volatile unsigned long  g_plotRectMissFirst = 0;
+volatile unsigned long  g_plotRectMissLast  = 0;
+}
+
+static void plotRectCheck(void)
+{
+    unsigned y;
+    g_plotRectChecks++;
+    for (y = 158u; y < 192u; y++) {
+        const unsigned kind = s_deltaKind[y];
+        const unsigned row  = y >> 3;
+        const unsigned rowOff = (y << 6) + (y << 4);
+        MEM_QUAL uint8_t* src = mem + BBC_SCREEN_BASE + ((row << 8) + (row << 6)) + (y & 7u);
+        const uint8_t* const p = s_target + rowOff;
+        unsigned c;
+        if (!kind) continue;
+        for (c = 0; c < BBC_SCREEN_CELLS; c++, src += BBC_SCREEN_LINES) {
+            const uint8_t v  = *src;
+            const uint8_t lo = (kind == 4u) ? (uint8_t)0 : g_bbcExpandLo[v];
+            const uint8_t hi = (kind == 4u) ? v          : g_bbcExpandHi[v];
+            if (p[c] != lo || p[c + kPlaneGap] != hi) {
+                if (!g_plotRectMismatch)
+                    g_plotRectMismatchAt = (unsigned short)((y << 8) | c);
+                g_plotRectMismatch++;
+                if (g_plotRectMissRow[y - 158u] < 255u) g_plotRectMissRow[y - 158u]++;
+                if (g_plotRectMissCell[c] < 255u)       g_plotRectMissCell[c]++;
+                if (!g_plotRectMissFirst) g_plotRectMissFirst = g_plotRectChecks;
+                g_plotRectMissLast = g_plotRectChecks;
+            }
+        }
+    }
+}
+#endif /* REVS_PLOT_RECTS_CHECK */
+
+extern "C" void revs_plot_rects(void)
+{
+    if (!s_target || !s_deltaBased) return;
+    plotDynRects();
+#ifdef REVS_PLOT_RECTS_CHECK
+    plotRectCheck();
+#endif
+#ifdef REVS_SPAN_STATS
+    g_plotRectPasses++;
+#endif
+}
+#endif /* REVS_PLOT_RECTS */
 
 #ifdef REVS_PLOT_DELTA_CHECK
 extern "C" {
@@ -1090,8 +1287,11 @@ extern "C" void revs_plot_own_reset(void)
            not merely the staleness test — so it must not sit behind `||`'s short circuit. */
         const int kindMoved = deltaKindRebuild();
         if (kindMoved || !s_deltaBased) plotDeltaBase();
-        for (i = kDeltaBlock[0][0]; i < kDeltaBlock[0][1]; i++) g_plotOwn[i] = 1;
-        for (i = kDeltaBlock[1][0]; i < kDeltaBlock[1][1]; i++) g_plotOwn[i] = 1;
+        {
+            unsigned blk;
+            for (blk = 0; blk < DELTA_BLOCKS; blk++)
+                for (i = kDeltaBlock[blk][0]; i < kDeltaBlock[blk][1]; i++) g_plotOwn[i] = 1;
+        }
     }
 #endif
 }
