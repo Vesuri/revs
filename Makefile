@@ -1104,6 +1104,19 @@ srcaudit:
 	    --frames=$(FRAMES) --track=$(TRACK) --wing=$(WING) --drive \
 	    --src-audit=$(SRCAUDIT) --fill-frames=$(FILLFRAMES)
 
+# ⭐⭐ THE GENERAL READER AUDIT — every read and write of an arbitrary address range on a REAL BBC,
+# attributed to the routine that made it.  The RESULTS rule's instrument, and the producer rewrite
+# (docs/open-work.md entry 3) needs it once per set of intermediates it moves out of mem[].
+#   make rangeaudit RANGE=0080-0088          the camera-relative delta vector
+#   make rangeaudit RANGE=0080-0088 TRACK=3  ...on an expansion circuit
+# ⚠ A range holding CODE reports the CPU as its own reader (opcode fetches come through readmem).
+RANGE ?= 0080-0088
+.PHONY: rangeaudit
+rangeaudit:
+	cd tools/jsbeeb && volta run --node 24.15.0 -- node ../bbc_refloop_race.mjs \
+	    --frames=$(FRAMES) --track=$(TRACK) --wing=$(WING) --drive \
+	    --range-audit=$(RANGE) --fill-frames=$(FILLFRAMES)
+
 FILL ?= all
 FILLFRAMES ?= 9-23
 fbwrites:

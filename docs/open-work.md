@@ -298,6 +298,17 @@ scan is already at its floor), and the `SRCEVNULL` split is confounded by IPA.
 ⇒ **The AUDIT keeps its value** (it is the permanent gate, it corrected CLAUDE.md on
 `copy_dash_data`, and it is the worked example the RESULTS rule now points at); the route does not.
 
+### 2a. ⭐⭐⭐ ROWS 117..157 — only 17 of the 41 are ownable, ~−1.5 ms, and it is SUBSUMED BY entry 3
+`make fbwrites FILL=117-157 FILLFRAMES=15-70` gives the per-line writer set: **117..128 (12) and
+141..145 (5) have the view sweep as their ONLY writer**; 129..132 and 146..157 add
+`undraw_plot_lines` + `plot_line_octant`, and 133..140 add `tick_wheel_spin` (the tyres). Those 24
+rows OR their pixels into `mem[]`, so owning them means they never reach the screen ⇒ **blocked on
+the car becoming sprites/a playfield** (§12's commitments). The 17 ownable rows price at −2.1 ms of
+decode against ~0.6 ms of interval-fill painting = **~−1.5 ms**, in two fragmented blocks needing
+base-plus-delta and a staleness oracle. ⇒ **Deliberately NOT built** (user decision, 2026-09-20):
+entry 3 makes the terrain for every view-sweep-only row bypass `mem[]` anyway, so these rows fall
+out of it and building them first is work entry 3 discards.
+
 ### 2c. ⚠⚠⚠ THE OBJECT PLOTTER — ~9 ms of a REAL race, and every baseline hides 5 ms of it
 `docs/perf-method.md` §the object plotter. The road sign (phases 14+15, 5.15 ms) is at its local
 optimum: the chain `plot_view_src_line` → `column_gap_walk` → `fill_edge_column_run` has zero
@@ -317,7 +328,18 @@ ungated it is 42% low, being almost all qualifying) draws **2.32 objects a frame
 the grid, to replace the estimate (target per-object cost × host object count) with a phase table.
 Until then the object plotter is sized, not measured.
 
-### 3. ⭐⭐ Fewer POINTS / SPANS / SOURCE VISITS — `build_track_geometry`, 26.7 ms
+### 3. ⭐⭐⭐ FEWER POINTS / SPANS — the producers, 61 ms, and the title is now the whole plan
+`docs/perf-method.md` §the producers mapped. **MEASURED 2026-09-20 and it redirects this entry:**
+61 ms turns **27 edge points** into **42 spans** and **58 plotted columns** (89 transforms, 231 DDA
+steps), and there is no bad kernel left — `div16by8` is already off the game path (a real `DIVU.W`
+in both transforms), the transforms are native wide-value C, and **every hot body has ZERO frame
+operands**. The residue is absolute `mem[]` operands at 10-21% of instructions, ~2x a plausible
+instruction-count floor, and ⛔ **a value pipeline is blocked by ZERO-PAGE TENANCY** — 
+`make rangeaudit RANGE=0080-0088` shows 23 readers of the delta vector because `$0084`/`$0085` are
+also `shared_temp_84/85`; the per-offset column says offsets 0/1/6/7 are candidates and 2/3/4/5 are
+not. ⇒ **the 61 ms must become LESS WORK, not cheaper work: fewer than 27 edge points and fewer
+than 42 spans.** That is a visual-fidelity trade (`viewdiff` fails by construction) and needs the
+user's decision on how much horizon/far detail may go.
 `docs/perf-method.md` §What is left. Setup and loops fused into native value pipelines; the
 interpreter is already gone from the whole tree, so nothing is left to delete there. Named
 sub-levers: producer-emitted source dirty events/runs (12-18 ms), a native geometry `EdgePoint`

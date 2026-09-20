@@ -583,6 +583,15 @@ if (fillReads) {
 //
 // ⚠ Opcode fetches come through readmem too.  The live span holds no code — the dash code is in
 // the tails — so `--src-audit` is clean, and `=full` is the arm where a fetch could appear.
+/* ⭐⭐ `--range-audit=LO-HI` (hex) — the SAME read/write PC attribution over an ARBITRARY address
+   range, because a RESULTS-rule reader audit is not a one-off: every step of the producer rewrite
+   (docs/open-work.md entry 3) moves a set of intermediate mem[] cells into registers and owes the
+   same question — "does anything outside this pass read these bytes?".  `--src-audit` is the view
+   source blocks' special case (it has to compute the live span from dash_block_starts); this is
+   the general form and needs no knowledge of what the bytes mean.
+   ⚠ Opcode fetches come through readmem, so a range holding CODE will report the CPU as its own
+   reader.  Zero page and the engine's scratch are safe; $5E40..$66FF and $7B00..$7FFF are not. */
+const rangeAuditArg = opt("range-audit", null);
 const srcAuditArg = opt("src-audit", null);
 const srcFlags = new Uint8Array(0x10000);
 const srcCellOf = new Int16Array(0x10000).fill(-1);
@@ -599,7 +608,15 @@ const SRC_BASE = 0x3000, SRC_CELLS = 40, SRC_STRIDE = 0x80, SRC_LINES = 0x50;
    first use inside the window gets both: the real machine's table, and the whole window.
    ⭐ The "NOTHING touched the armed bytes" line in the report is what caught it — an instrument
    that cannot report its own silence is indistinguishable from a finding. */
+function rangeArm() {
+    const [lo, hi] = rangeAuditArg.split("-").map((v) => parseInt(v, 16));
+    for (let a = lo; a <= hi; a++) { srcFlags[a] = 1; srcCellOf[a] = -1; srcLineOf[a] = a - lo; srcArmed++; }
+    console.log(`\nrange audit armed at frame ${frames}: $${lo.toString(16)}..$${hi.toString(16)} ` +
+                `(${srcArmed} bytes).  "lines" below are OFFSETS from $${lo.toString(16)}.\n`);
+}
+
 function srcArm() {
+    if (rangeAuditArg) return rangeArm();
     /* live   — offsets dash_block_starts[col]..$4F, the bytes the view actually uses
        full   — offsets $00..$4F, i.e. the live span PLUS the dead-below-start offsets the game
                 packs twelve tables into: the arm that CONFIRMS the boundary instead of assuming
@@ -627,7 +644,7 @@ function srcArm() {
     console.log(`\nsource-block audit armed at frame ${frames}: ${srcArmed} bytes (${what})`);
     console.log(`  dash_block_starts = ${starts.map(v => v.toString(16).padStart(2, "0")).join(" ")}\n`);
 }
-if (srcAuditArg) {
+if (srcAuditArg || rangeAuditArg) {
     tm.processor.debugRead.add((addr) => {
         if (frames < fillFrameLo || frames > fillFrameHi) return;
         if (!srcArmed) srcArm();
@@ -1329,7 +1346,7 @@ if (charset) {
 }
 
 // ── ⭐⭐⭐ THE SOURCE-BLOCK READER AUDIT REPORT ───────────────────────────────────────────────
-if (srcAuditArg) {
+if (srcAuditArg || rangeAuditArg) {
     const syms = [];
     try {
         const csv = fs.readFileSync(new URL("../disasm/symbols.csv", import.meta.url), "utf8");
@@ -1361,7 +1378,7 @@ if (srcAuditArg) {
         const v = [...set].sort((a, b) => a - b);
         return v.length === 0 ? "-" : v.length <= 6 ? v.join(",") : `${v[0]}..${v[v.length - 1]} (${v.length})`;
     };
-    console.log(`\n⭐⭐⭐ THE VIEW SOURCE BLOCKS ON A REAL BBC — frames ${fillFrameLo}..${fillFrameHi}, ` +
+    console.log(`\n⭐⭐⭐ ${rangeAuditArg ? `THE RANGE $${rangeAuditArg}` : "THE VIEW SOURCE BLOCKS"} ON A REAL BBC — frames ${fillFrameLo}..${fillFrameHi}, ` +
                 `${srcArmed} bytes armed`);
     console.log(`   READS  ${srcReads} (${(srcReads / nWin).toFixed(0)}/frame) from ${srcReadPC.size} PCs`);
     console.log(`   WRITES ${srcWrites} (${(srcWrites / nWin).toFixed(0)}/frame) from ${srcWritePC.size} PCs`);

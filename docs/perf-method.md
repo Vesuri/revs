@@ -1926,6 +1926,74 @@ sabotages, five distinct counts (599 / 447 / 7 / 600 / 600), so the arm is cover
 the 5.92 ms. That is the next thing there, and it is small — the routine has gone from the frame's
 most expensive per-item cost to a 3.4% row.
 
+### ⭐⭐⭐ THE PRODUCERS MAPPED (2026-09-20) — 61 ms for 27 edge points, and they are NEAR THEIR FLOOR
+
+`docs/open-work.md` entries 2+3, the last untouched mass. Both existing splits run, plus an
+objdump audit and a real-BBC reader audit of the intermediates. The conclusion is not the one the
+queue's sizings imply, so read it before building anything here.
+
+#### The two splits, and only ONE of them is quotable in ms
+
+| | control | split build | instrument cost | verdict |
+|---|---:|---:|---:|---|
+| `build_track_geometry` (GEOSPLIT) | 26.6 | 28 | **+1.4** | ✅ trustworthy |
+| `draw_road` (ROADSPLIT) | 34.3 | **66** | **+31.7** | ⛔ ms unusable — read the COUNTS |
+
+⚠ ROADSPLIT's own empty bracket (49) is **10.4% of its 66 ms**, and it transitions 45 000+ times a
+frame. CLAUDE.md §an instrument whose cost exceeds what it measures: its *shares* are indicative,
+its milliseconds are not, and its **counts** are the finding.
+
+#### ⭐⭐⭐ THE COUNTS — the whole reason this section exists
+
+| pass | work per frame | measured | per item |
+|---|---|---:|---:|
+| `build_track_geometry` | **27 edge points** (13 + 13), 89 transforms (30 bearing + 29 project + 30 hypot), 0 subdivisions | 26.6 ms | **~2 120 cyc/transform** |
+| `draw_road` | **42 spans**, 47 DDA scan lines, **231 DDA steps**, **58 plotted columns**, 115 fill lines | 34.3 ms | **~4 200 cyc/column** |
+
+`draw_surface_spans` is **91.1%** of `draw_road`; `road_edge_start` is 5.3% of the geometry and the
+two edge walks are 92.4% of it. **61 ms turns 27 edge points into 58 plotted columns.**
+
+#### ⛔ AND THERE IS NO BAD KERNEL LEFT TO FIND — the 2x is instruction COUNT and FETCH
+
+- `div16by8`'s eight-step restoring divide is **already off the game path** (GEOSPLIT counts 0):
+  `bearing_arm` and `project_point_core` each do their own `revs_divu16`, i.e. a real `DIVU.W`.
+  The remaining loop serves only the two `__t6502` oracle bodies.
+- `bearing_to_section_core` / `project_point_core` are already native wide-value C with the
+  16-bit values relocated out of `mem[]`, at 108 and 149 instructions.
+- **Every hot body has ZERO frame operands** (`n(a5)`/`n(sp)`): `interp_edge_core` 2244
+  instructions, `sw_plot_1/2` 427/407, `fill_line_attr_core` 813, `draw_surface_spans_core` 169 —
+  the "a hot loop's state lives in memory" class that paid −4.79 and −6.58 ms is exhausted here.
+
+What remains is **absolute `mem[]` operands at 10-21% of instructions** (`interp_edge_core` 225 of
+2244; `draw_surface_spans_core` 36 of 169; `project_point_core` 23 of 149). On a 68000 each is a
+6-byte instruction at ~18 cycles against 4-8 for a register op — and the *fetch* is half of that,
+which no data-layout change can avoid. A plausible floor for the work these passes actually do
+(≈22 000 instructions a frame) is ~28 ms against the measured 61.
+
+#### ⛔⛔ THE VALUE PIPELINE IS BLOCKED BY ZERO-PAGE TENANCY, NOT BY AN EXTERNAL READER
+
+`make rangeaudit RANGE=0080-0088` (the new general form of §12b's instrument — read/write PC
+attribution over an arbitrary range on the authentic engine) on the camera-relative delta vector:
+**3062 reads and 1825 writes a frame from 23 distinct readers**, including `rotate_state_pair`,
+`scale_shape_vectors`, `plot_line_octant`, `surface_colour_at` and `fill_line_attr` — routines
+from unrelated passes.
+
+⚠⚠ **That is the documented trap, not a finding about geometry: `$0084`/`$0085` carry a SECOND
+TENANCY as `shared_temp_84`/`shared_temp_85`**, so the reader count counts TENANTS
+(CLAUDE.md §rank a candidate pair by ops-per-marshal). The audit's per-offset column is what
+separates them — offsets 0, 1, 6, 7 have 1-3 readers each and are candidates; offsets 2, 3, 4, 5
+have 8-11 and are not. ⇒ **a value pipeline here is a per-CELL audit with a mostly negative
+answer, not a pass-level rewrite.**
+
+#### ⇒ WHAT THIS MEANS FOR THE TARGET, stated plainly
+
+The producers are ~2x a plausible instruction-count floor, and the gap is absolute-`mem[]`
+operands whose cells are shared scratch. **So the 61 ms cannot be halved by making it cheaper per
+unit; it has to become less work** — fewer edge points than 27, fewer spans than 42. That is an
+ALGORITHMIC and VISUAL-FIDELITY decision (`make viewdiff` fails by construction), which is the
+user's to take, and it is what `docs/open-work.md` entry 3's title has said all along: **fewer
+POINTS / SPANS / SOURCE VISITS.**
+
 ### ⚠⚠⚠ THE OBJECT PLOTTER — the road sign is 5.15 ms, and every baseline UNDERSTATES A REAL RACE BY ~5 ms
 
 Profiling the never-examined small rows reached phases 14 + 15, the road sign: `build_road_sign`
