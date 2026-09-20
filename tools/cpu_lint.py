@@ -108,17 +108,60 @@ def strip_comments(lines):
 # ⚠⚠ `hook_cpu_to_regs` / `hook_regs_to_cpu` ARE cpu references -- they copy the whole register
 # file in and out through a HookRegs local, and two oracle-only shims (mul8_noinit,
 # scale_by_track_gradient) hid from this lint for exactly that reason.
+# Declaration qualifiers and statement keywords that can precede the real name on a definition
+# line.  ⚠ Anything added here weakens the attribution, so keep it to things that can NEVER be a
+# function being defined.
+QUALIFIERS = {'__attribute__', '__asm__', 'if', 'while', 'for', 'switch', 'return', 'sizeof',
+              'static', 'inline', 'extern', 'const', 'unsigned', 'signed', 'struct', 'union'}
+
 SPEAKS = re.compile(r'\bcpu\.|\bPUSH\s*\(|\bPULL\s*\(|\bPHP\s*\(|\bPLP\s*\(|\bPHA\s*\(|\bPLA\s*\('
                     r'|\bhook_cpu_to_regs\s*\(|\bhook_regs_to_cpu\s*\(')
 path = 'src/gen/revs_native.c'
-lines = strip_comments(open(path).read().split('\n'))
+raw_lines = open(path).read().split('\n')
+lines = strip_comments(raw_lines)
+# ⚠⚠⚠ THE PREPROCESSOR HAS TO BE BALANCED OR THE WHOLE SCAN IS WRONG FROM ONE LINE ONWARD.
+# `#ifdef X / if (a) { / #else / if (b) { / #endif` is ordinary C and BOTH arms open a brace, so
+# a naive count sees two `{` and one `}`.  Measured 2026-09-20 at revs_native.c:1585: the depth
+# desynchronised there and never returned to 0, so every `cpu` site in the remaining ~17 000
+# lines was attributed to one function (`view_scan_lanes`), `used` came out EMPTY, every
+# allowlist row read as STALE, and the run exited on that before the real check below ever ran.
+# A gate that is red and blind at the same time.  Take the FIRST arm as authoritative: the arms
+# are alternatives, so any one of them balances the construct.
+# ⚠ ...AND A `#define` CONTINUES OVER `\`-TERMINATED LINES.  `#define M(x) do { ... \` skips the
+# directive line and then counted the continuation's `}`, losing a brace per multi-line macro —
+# which is what took the depth NEGATIVE by line 50, before the #if/#else problem even arrived.
+pp = []                     # (depth at the #if, depth at the end of the first arm)
+in_pp = False
 fn, cand, depth, bad, used = None, None, 0, [], set()
 for n, l in enumerate(lines):
-    if depth == 0 and not l.startswith('#'):
+    st = l.strip()
+    if in_pp or st.startswith('#'):
+        # ⚠ The continuation test reads the RAW line: a macro whose continuation carries a
+        # /* ... */ that spans lines strips to NOTHING, and testing the stripped line then drops
+        # out of the macro mid-way and counts the rest of its braces as code.
+        in_pp = raw_lines[n].rstrip().endswith('\\')
+        if st.startswith('#if'):
+            pp.append((depth, None))
+        elif st.startswith(('#else', '#elif')) and pp:
+            d0, dend = pp[-1]
+            pp[-1] = (d0, depth if dend is None else dend)
+            depth = d0
+        elif st.startswith('#endif') and pp:
+            d0, dend = pp.pop()
+            if dend is not None: depth = dend
+        continue
+    if depth == 0:
         # ⚠ allow leading blanks: a `/* promoted ... */ SlotExit foo(void)` line strips down to
         # one with an indent, and anchoring at column 0 attributed its body to the function ABOVE.
-        m = re.match(r'\s*[A-Za-z_].*?\b(\w+)\s*\(', l)
-        if m: cand = m.group(1)
+        # ⚠⚠ SKIP THE DECLARATION QUALIFIERS, OR EVERY SITE IS ATTRIBUTED TO `__attribute__`.
+        # The first `word(` on `static void __attribute__((noinline)) foo(void)` is the
+        # attribute, not the function — so `used` came out EMPTY, every allowlist row read as
+        # stale, and the run exited on that before the real "speaks cpu outside the argued
+        # classes" check below ever ran.  A gate that is red AND blind (measured 2026-09-20:
+        # all five sites, including `add_tally_to_lap_total_core`'s $66B4 CLD, attributed to
+        # `__attribute__`).  Take the first candidate that is not a qualifier or a keyword.
+        for _m in re.finditer(r'\b(\w+)\s*\(', l):
+            if _m.group(1) not in QUALIFIERS: cand = _m.group(1); break
     o, c = l.count('{'), l.count('}')
     # ⚠ the enclosing name must be resolved BEFORE the check, or a ONE-LINE shim
     # (`void mul8(void) { math_lo = cpu.A; ... }`) is attributed to nothing and skipped.
