@@ -69,7 +69,30 @@ CXX_SRCS := \
 # (revs_gen), the hand-written native twins (revs_native), and manual stubs for
 # self-modifying routines (revs_manual).  The generated files do not exist until
 # `make gen` at the repo root, so they are wildcarded.
+# ⭐⭐ FASTMEM — longword block operations (src/platform/amiga/fastmem.c).  ON by default; the
+# switch exists so the arm can be A/B'd against the toolchain's byte loops in one session, and it
+# reports itself in `build=` (probe.cpp §PROBE_BUILD_FASTMEM) so a run cannot be read on the wrong
+# arm.  `make fastmem` (repo root) is its differential.
+FASTMEM ?= 1
+ifeq ($(FASTMEM),1)
+EXTRA_DEFINES += -DREVS_FASTMEM
+FASTMEM_SRCS   = $(AMIGA_SRC)/fastmem.c
+FASTMEM_LDFLAGS = -Wl,--wrap=memset -Wl,--wrap=memcpy -Wl,--wrap=memmove
+endif
+
+# ⭐⭐ `make FASTMEMCHECK=1` — the TARGET-side postcondition check on every wrapped call, on the
+# real data.  Read its section in fastmem.c for what it can and cannot see; in short, a target
+# PIXEL diff cannot gate this change (a render-speed change moves the trajectory, so the two arms
+# are never on the same scene) and this can.  ⚠ A correctness arm only: it byte-loops over every
+# byte moved, so its own phase rows are void.  Require g_fmMismatch == 0 AND g_fmSkipped == a
+# number you have accounted for.
+ifdef FASTMEMCHECK
+EXTRA_DEFINES += -DREVS_FASTMEM_CHECK
+PROBE_SYMS_FASTMEM = g_fmChecks g_fmMismatch g_fmSkipped g_fmLongest
+endif
+
 CORE_C_SRCS := \
+    $(FASTMEM_SRCS) \
     $(REPO)/src/cpu/cpu.c \
     $(REPO)/src/platform/sound.c \
     $(REPO)/src/platform/track.c \
@@ -981,7 +1004,7 @@ OBJECTS := $(CXX_OBJS) $(CORE_C_OBJS) $(SUPPORT_C_OBJS) $(ASM_OBJS) $(FRAMEWORK_
 # Locate sources for the pattern rules.  (gcc8_c_support.c is deliberately NOT on
 # vpath %.c — it has its own explicit rule so it builds with CCFLAGS, not CORE_CFLAGS.)
 vpath %.cpp $(AMIGA_SRC)/framework $(AMIGA_SRC) $(REPO)/src/platform $(REPO)/src
-vpath %.c   $(REPO)/src/cpu $(REPO)/src/gen $(REPO)/src/platform
+vpath %.c   $(AMIGA_SRC) $(REPO)/src/cpu $(REPO)/src/gen $(REPO)/src/platform
 vpath %.s   $(AMIGA_SRC)/framework $(AMIGA_SRC)
 
 WARN = -Wall -Wno-unused-function -Wno-unused-parameter -Wno-unused-variable
@@ -1118,9 +1141,14 @@ PROBE_SYMS += $(PROBE_SYMS_VIEWSKIP)
 PROBE_SYMS += $(PROBE_SYMS_SPAN)
 PROBE_SYMS += $(PROBE_SYMS_SCAN)
 PROBE_SYMS += $(PROBE_SYMS_TERRAIN) $(PROBE_SYMS_TERRAINLOW) $(PROBE_SYMS_EDGESTART) $(PROBE_SYMS_SRCEV)
-PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK)
+PROBE_SYMS += $(PROBE_SYMS_DELTA) $(PROBE_SYMS_DELTACHK) $(PROBE_SYMS_FASTMEM)
 
+# ⭐⭐ THE BLOCK-OP WRAP.  The shared support library's memset/memcpy/memmove are BYTE LOOPS
+# (24-40 cycles a byte); src/platform/amiga/fastmem.c replaces them with longword ones.  Wrapping
+# at the LINK is what reaches the calls GCC emits by itself out of a constant-store loop, which
+# a named helper cannot — read fastmem.c's header before changing this.
 LDFLAGS   = -Wl,--emit-relocs,--gc-sections,-Ttext=0,-Map=$(OUT).map \
+            $(FASTMEM_LDFLAGS) \
             $(addprefix -Wl$(COMMA)--undefined=,$(PROBE_SYMS))
 COMMA := ,
 
@@ -1175,6 +1203,18 @@ obj/%.o : %.cpp
 obj/%.o : %.c
 	$(info C    $< [core])
 	@$(CC) $(CORE_CFLAGS) -c -o $@ "$(abspath $<)"
+# ⚠ -O2 and NOT $(NATIVE_OPT): fastmem.c's loops are ALREADY unrolled eight ways by hand, and
+# -funroll-loops peels them four times MORE — ~20 instructions of trip-count-modulo dispatch
+# ahead of the first store, which is pure loss on the 79-208 byte fills this port actually does
+# (CLAUDE.md §a bounded loop over a short list is a code-size trap).
+# ⚠⚠ -fno-tree-loop-distribute-patterns IS LOAD-BEARING AND ITS ABSENCE IS AN INFINITE LOOP.
+# GCC recognises fastmem.c's own small byte loops as the memset/memcpy idiom and emits a CALL to
+# memset — which --wrap then redirects back into __wrap_memset with the identical arguments, so
+# any fill of 1..7 bytes recurses until the stack dies.  (The toolchain's own support file carries
+# the same guard as a per-function attribute, for the same reason.)  The tell was `jsr
+# <__wrap_memset>` INSIDE __wrap_memset in the objdump; no test would have reached it, because the
+# short path only runs on a fill this port does not currently do.
+obj/fastmem.o : CORE_CFLAGS += -fno-unroll-loops -fno-tree-loop-distribute-patterns
 obj/revs_native.o : CORE_CFLAGS += $(NATIVE_OPT)
 obj/revs_native_seam.o : CORE_CFLAGS += $(NATIVE_OPT)
 obj/revs_native_abi.o : CORE_CFLAGS += $(NATIVE_OPT)

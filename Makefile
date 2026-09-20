@@ -935,6 +935,18 @@ image:
 cpu-lint:
 	@python3 tools/cpu_lint.py
 
+# ⭐⭐ THE BLOCK-OP DIFFERENTIAL.  src/platform/amiga/fastmem.c replaces the toolchain's
+# byte-loop memset/memcpy/memmove on the shipping Amiga binary, so a defect in it is a wrong
+# pixel or a crash anywhere, with nothing pointing back at it.  This runs all three against the
+# host libc's over every length 0..300 at every alignment pair, and asserts the one property the
+# host's results cannot show — that no wide access lands on an odd address, which on a 68000 is
+# an address error and not a slow path.  Seven sabotages, all FAIL (tools/fastmem_test.c).
+.PHONY: fastmem
+fastmem:
+	@$(CC) -std=c99 -O2 -Wall -Wextra -DFM_TRACE -o tmp/fastmem_test \
+	   tools/fastmem_test.c src/platform/amiga/fastmem.c
+	@tmp/fastmem_test
+
 endian-lint:
 	@hits=$$(grep -rnE '\((u?int(16|32)_t) *\*\) *(\(void\*\))? *(&? *mem|M\b)' \
 	          src/ tools/ 2>/dev/null | grep -v 'ENDIAN-OK:' || true); \

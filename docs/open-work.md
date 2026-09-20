@@ -291,6 +291,35 @@ everything else is at or near the 92 µs instrument floor. ⚠ **Do not merge th
 pass** — `make sound` compares chip state tick by tick against a real MOS and the intermediate
 state is part of the contract.
 
+### 7. ⭐ THE TWENTY NEVER-PROFILED SMALL PHASE ROWS — ~16 ms, plus phases 3/4/15 at 11.8
+Nobody has looked inside these, and the phase table's integer `ms/frame` column rounds most of them
+to `0`, which is why they stayed invisible — **compute them from `ticks / frames / (frozen/3000/20)`
+instead**. What the first pass through them found (2026-09-20):
+
+- ✅ **The block ops were byte loops** — `fastmem.c`, −1.05 ms across phases 10 and 24. CLOSED.
+- ⚠ **Phase 34 is a ONE-SHOT, not a per-frame row: `calls=1`.** `view_low_build` runs once and its
+  2.7 ms is that single run amortised over the window's 333 frames, so **the real recurring frame is
+  ~169 ms, not 172** — and a longer run reports a smaller number for the same binary. Any A/B that
+  straddles it is comparing two different amortisations. Check `calls=` on every row before diffing.
+- ⭐ **Phase 3 (`read_driving_controls`, 5.11 ms) is ~7 MOS calls a frame, priced at ~1450 cycles
+  each ≈ 2.1-2.5 ms.** Host census (`make`, a counter in `Platform::mosCall`): **2097 OSBYTE 129 +
+  839 OSWORD 7 over 300 frames = 7.0 key tests and 2.8 sound calls a frame.** One key test is a
+  `MosRegs` built on the stack → `jsr platform_mos_call_typed` → **virtual** `Platform::mosCall`
+  (468 instructions) → `switch(0xFFF4)` → `osbyte()` → `switch(0x81)` → **virtual**
+  `platform->keyDown()` → a **33-entry linear scan** (~760 cycles), with the struct copied by value
+  at three frames. The BBC paid an OS call because it had to scan a keyboard matrix; this port is
+  asking a byte array the input ISR already maintains. **Two independent fixes, both Amiga-local and
+  observably identical: a 256-byte BBC-code→rawkey reverse map inside `RevsInput`, and a direct
+  `platform_key_down()` entry that skips the OSBYTE dispatch.** Not yet built.
+- The rest, unexamined: phase 4 `apply_driving_model` 3.60 (real 6502 arithmetic, the BBC paid it
+  too), **phases 14+15 `build_road_sign` + `draw_track_object` 5.15 ms for ONE billboard** — the
+  next thing to read here — phase 23 `check_crash` 0.50, phases 9/12/20 `engine_sound_update` 1.79.
+
+⚠⚠ **THE CEILING IS HONEST AND SMALL: this whole block is ~28 ms of a 172 ms frame, and deleting
+every one of them leaves 144 against a 48 ms target.** It is worth doing because it is cheap and
+certain, not because it changes the arithmetic — that still rests on `draw_road` (34) and
+`build_track_geometry` (26).
+
 ### 6. ⭐ RE-PRICE the four FPS-era "nulls" in milliseconds
 They were judged with an instrument that cannot see 2% (Rule 1a), so a real 1-3 ms win could be
 sitting inside any of them: `paint_run_one` (−0.15% FPS), the wide-value campaign (+0.65%), the

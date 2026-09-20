@@ -781,6 +781,19 @@ Rules that must survive without opening `docs/perf-method.md`:
   register pressure was the wrong story — **separate the arms before believing a mechanism.**
   ⚠ Widening `mem[]` to `uint16_t*`/`uint32_t*` is NOT the fix — see the endianness rule below; it
   is legal only when every byte of the wide value is the same.
+- ⭐⭐ **THE TOOLCHAIN'S `memset`/`memcpy`/`memmove` ARE BYTE LOOPS (24-40 cyc/BYTE) — the Amiga
+  build wraps them with longword versions (`src/platform/amiga/fastmem.c`, `make FASTMEM=0` is the
+  control, `make fastmem` the differential, `make FASTMEMCHECK=1` the target-side postcondition
+  check). Two traps if you touch that file: `-fno-tree-loop-distribute-patterns` is **load-bearing**
+  (GCC turns its own small byte loops into a `memset` call, which `--wrap` sends back into
+  `__wrap_memset` — infinite recursion), and `-funroll-loops` peels an already-unrolled loop four
+  times more for pure loss. ⚠⚠ **And a target PIXEL diff CANNOT gate a change like this**: a
+  render-speed change moves the simulation's trajectory, so the two arms are never on the same
+  scene (measured: two `screen_dump.gdb` runs broke four fields apart). `docs/perf-method.md`.
+- ⭐ **THE PHASE TABLE'S `ms/frame` COLUMN IS INTEGER-TRUNCATED AND HIDES ~28 ms in twenty rows** —
+  compute a small row as `ticks / frames / (frozen/3000/20)`. ⚠ And **read `calls=` before diffing
+  any row**: phase 34 is `calls=1`, a ONE-SHOT amortised over the window, so the recurring frame is
+  ~169 ms where the table says 172 and a longer run reports a different number for the same binary.
 - **RAM is uniformly slow — there is no "fast RAM" on the target A500.** Optimise by reducing the
   NUMBER of reads/writes, never by moving data to a "cheaper" buffer. (`docs/m68k-optimisation.md`)
   ⭐ **And never explain a measurement with fast-vs-chip RAM** (user, 2026-09-12): on an A500 "fast

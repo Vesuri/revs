@@ -1926,6 +1926,75 @@ sabotages, five distinct counts (599 / 447 / 7 / 600 / 600), so the arm is cover
 the 5.92 ms. That is the next thing there, and it is small — the routine has gone from the frame's
 most expensive per-item cost to a 3.4% row.
 
+### ⭐⭐⭐ THE TOOLCHAIN'S `memset`/`memcpy`/`memmove` ARE BYTE LOOPS — every block op in the port
+
+Found by reading the objdump while sizing the twenty never-profiled small phase rows, and it is a
+whole CLASS rather than a site. The `-nostdlib` support library (`$(SUPPORT)/gcc8_c_support.c`,
+shared with the other Amiga projects and therefore outside this repo) implements all three as
+byte-at-a-time loops:
+
+| op | inner loop | cycles per BYTE |
+|---|---|---:|
+| `memset` | `move.b d0,(a0)+` / `cmpa.l d1,a0` / `bne.s` | 8 + 6 + 10 = **24** |
+| `memcpy` | `move.b (a0)+,(a1)+` / `cmp.l a0,d1` / `bne.s` | 12 + 6 + 10 = **28** |
+| `memmove` (descending) | four instructions a byte | **~40** |
+
+`src/platform/amiga/fastmem.c` replaces them with longword loops unrolled eight ways (~4.8
+cyc/byte as GCC emits it) and `-Wl,--wrap=` redirects every reference. `make FASTMEM=0` is the
+control arm and the build reports which one it is in `build=` (bit 11).
+
+**MEASURED, arm against arm at `PROBEFIELDS=3000`: −0.52 ms in phase 10 and −0.53 ms in phase 24.**
+Those are the only two phase rows in the frame that contain a block operation and they are the two
+that moved; every other row drifted +0.5 the other way on a trajectory that was not bit-identical
+(phase 0 read 130 fields against 120), so **the attributable figure is the −1.05 ms on those two
+rows, not the −0.42 the compute total showed**. Quote it that way.
+
+⭐⭐ **AND IT IS SMALLER THAN THE BYTE COUNT SUGGESTS, WHICH IS THE TRANSFERABLE HALF: SIZE A FILL
+FROM ITS RUNTIME BOUND, NOT ITS DECLARED ONE.** `clear_surface_buffers_core` reads as a 396-byte
+fill from the source (four buffers up to `horizon_extent` plus all 80 surface lines, and the code's
+own comment reasons about the `$50` ceiling) — but `horizon_extent` is ~28 in a real race, so it
+fills ~196, and the whole phase row was only 1.86 ms to begin with. The cycle model closes on the
+measured delta at 196 bytes and is 2x out at 396.
+
+⚠⚠ **THE WRAP HAS A TRAP THAT NO TEST WOULD HAVE REACHED, and the objdump is what caught it.** GCC
+recognises `fastmem.c`'s OWN small byte loops as the memset idiom and emits a call to `memset` —
+which `--wrap` then redirects back into `__wrap_memset` with identical arguments, so any fill of
+1..7 bytes recurses until the stack dies. `-fno-tree-loop-distribute-patterns` on that one object
+is load-bearing (the toolchain's own file carries the same guard as a per-function attribute). The
+tell was `jsr <__wrap_memset>` *inside* `__wrap_memset`; the shipped call sites never pass a length
+under 8, so it would have sat there until one did.
+
+⚠ And `-funroll-loops` (which `$(NATIVE_OPT)` carries) **peels an already-unrolled loop four times
+more**, adding ~20 instructions of trip-count-modulo dispatch ahead of the first store — pure loss
+on the 79..208-byte fills this port actually does. That object builds at plain `-O2`.
+
+⭐⭐⭐ **THE GATE IS THE INTERESTING PART, BECAUSE A TARGET PIXEL DIFF CANNOT SETTLE A CHANGE LIKE
+THIS AND I TRIED IT FIRST.** A render-speed change moves the simulation's trajectory, so the fast
+and slow arms are never on the same scene: two `screen_dump.gdb` runs broke four fields apart (vbi
+600 vs 604, 63 vs 65 painted) and their bitplanes differ for that reason alone. That is not a
+weaker gate, it is a **confounded** one, and its output must not be quoted in either direction.
+What settles it is two instruments neither of which can be confounded by timing:
+
+1. `make fastmem` — the host differential, all three against libc over every length 0..300 at
+   every source/destination alignment pair, 30 100 cases. **Seven sabotages, all FAIL.**
+   ⚠⚠ Its first version had a **vacuous** parity check: it computed the expected alignment from its
+   own copy of the rule rather than observing the code, so the sabotage that DELETES the parity test
+   passed 0-of-30 100 — the defect is invisible on x86, which permits unaligned access, and is an
+   address-error crash on a 68000. Fixed by making the code name every pointer it widens (`FM_WIDE`,
+   compiled out on the target) so the test asserts the parity from the shipped control flow.
+   24 612 wide accesses observed, 0 odd. **Second instance this month of a reference derived from
+   the thing under test.**
+2. `make FASTMEMCHECK=1` + `amiga/fastmem_probe.gdb` — the TARGET-side postcondition check on the
+   real data: every wrapped call verifies that memset left `len` copies of `val`, and that
+   memcpy/memmove left the source as it was at entry. That is what the C library *promises*, not
+   what this file does, so it cannot be satisfied by a wrong answer both sides compute the same way.
+   **2555 checks, 0 mismatch, 0 skipped**; sabotaged (write 7 longwords of 8) it reports 538 of 2559.
+   ⚠ It is a correctness arm only — it byte-loops over every byte moved, so its own phase rows are
+   void. And its `g_fmSkipped` hole was closed rather than documented: a call too long for the
+   1024-byte snapshot is still checked exactly when the regions are disjoint, which covers the one
+   >1 KB call in the port (`PlatformAmiga::loadImage`'s 64 KB image load — a `for` loop GCC turns
+   into a `memcpy`).
+
 ### ⭐⭐⭐ PHASE 18 IS PER-WALK, NOT PER-CELL — and "490 cycles a cell" was the wrong denominator
 
 This is the correction that matters, because three separate optimisations have now been priced
